@@ -135,6 +135,7 @@ Run 记录这些稳定引用。Prompt 正文、Schema 内容和 Parser 实现由
         "value": "Go"
       },
       "stance": "oppose",
+      "basis": "explicit",
       "evidence": ["message_101"],
       "knowledge_refs": ["knowledge_item_9"]
     },
@@ -147,6 +148,7 @@ Run 记录这些稳定引用。Prompt 正文、Schema 内容和 Parser 实现由
         "value": "Rust"
       },
       "stance": "support",
+      "basis": "explicit",
       "evidence": ["message_101"],
       "knowledge_refs": []
     }
@@ -162,4 +164,14 @@ oppose
 uncertain
 ```
 
-输出不包含中间对象、对象间关系状态或 Knowledge 管理命令。
+当 `stance` 为 `support` 或 `oppose` 时，`basis` 是必填字段，只能为：
+
+```text
+explicit
+inferred
+```
+
+- `explicit`：用户直接表达了对该知识的支持或反对；
+- `inferred`：Agent 结合上下文推断出用户支持或反对。
+
+当 `stance = uncertain` 时必须省略 `basis`。输出不包含中间对象、对象间关系状态或 Knowledge 管理命令。

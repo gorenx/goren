@@ -8,7 +8,7 @@
 
 ## 19. 验收场景
 
-### 19.1 支持新知识
+### 19.1 用户直接支持
 
 输入：
 
@@ -21,10 +21,32 @@
 - LLM 直接输出一个 `profile_fact`；
 - payload 表达用户主要使用 Go 开发后端服务；
 - `stance = support`；
+- `basis = explicit`；
 - Evidence 指向当前消息；
 - 不输出 Knowledge 管理命令。
 
-### 19.2 已有相同 Knowledge
+### 19.2 Agent 推断用户支持
+
+前文询问：
+
+```text
+“以后都用简短回答，可以吗？”
+```
+
+用户回答：
+
+```text
+“就这样。”
+```
+
+预期：
+
+- LLM 结合前文得到“用户偏好简短回答”；
+- `stance = support`；
+- `basis = inferred`；
+- Evidence 包含当前用户消息，并保留用于指代解析的上下文引用。
+
+### 19.3 已有相同 Knowledge
 
 只读接口返回“用户主要使用 Go”，新输入再次表达相同事实。
 
@@ -32,10 +54,11 @@
 
 - LLM 仍直接输出该知识；
 - `stance = support`；
+- `basis = explicit`；
 - `knowledge_refs` 引用已有信息；
 - 不增加“重复”状态。
 
-### 19.3 修正
+### 19.4 用户直接修正
 
 只读接口返回“用户主要使用 Go”，当前输入为：
 
@@ -45,12 +68,12 @@
 
 预期返回两项：
 
-- “主要使用 Go”：`stance = oppose`；
-- “主要使用 Rust”：`stance = support`。
+- “主要使用 Go”：`stance = oppose`、`basis = explicit`；
+- “主要使用 Rust”：`stance = support`、`basis = explicit`。
 
 不输出冲突、取代、撤回、更新或删除等额外状态。
 
-### 19.4 反对或撤回
+### 19.5 用户直接反对或撤回
 
 只读接口返回“用户偏好简短回答”，当前输入为：
 
@@ -62,10 +85,32 @@
 
 - 返回回答长度偏好对象；
 - `stance = oppose`；
+- `basis = explicit`；
 - Evidence 指向当前消息；
 - Agent 不决定下游是否删除该知识。
 
-### 19.5 不确定
+### 19.6 Agent 推断用户反对
+
+前文询问：
+
+```text
+“还要保留之前的回答长度偏好吗？”
+```
+
+用户回答：
+
+```text
+“不用了。”
+```
+
+预期：
+
+- LLM 结合前文得到用户反对继续保留回答长度偏好；
+- `stance = oppose`；
+- `basis = inferred`；
+- 如果无法可靠解析“不用了”所指对象，则必须改为 `uncertain`。
+
+### 19.7 不确定
 
 输入是含糊表述、假设或转述，无法确定用户自己的最终立场。
 
@@ -73,9 +118,10 @@
 
 - 能抽取知识对象时返回该对象；
 - `stance = uncertain`；
+- 不设置 `basis`；
 - 不猜测为 support 或 oppose。
 
-### 19.6 纯询问
+### 19.8 纯询问
 
 输入：
 
@@ -85,13 +131,13 @@
 
 预期返回空 `results`，不增加 `ignore` 等 stance。
 
-### 19.7 当前输入重复
+### 19.9 当前输入重复
 
 用户在多条消息中重复表达同一偏好。
 
 预期只返回一个规范化知识对象，并合并当前消息 Evidence。
 
-### 19.8 自定义知识类型
+### 19.10 自定义知识类型
 
 部署方增加 `long_term_instruction` 类型及其 Prompt、Schema、Parser 和 Validator，Agent 核心不修改。
 
@@ -101,15 +147,15 @@
 “以后审查代码时，先列出会阻断合并的问题。”
 ```
 
-预期直接返回 `kind = long_term_instruction`、对应 payload 和 `stance = support`。
+预期直接返回 `kind = long_term_instruction`、对应 payload、`stance = support` 和 `basis = explicit`。
 
-### 19.9 Knowledge Context 不完整
+### 19.11 Knowledge Context 不完整
 
 只读接口返回 `truncated = true`，缺失信息会影响最终立场判断。
 
-预期返回 `stance = uncertain`，并在运行记录中保存截断状态和 `context_ref`。
+预期返回 `stance = uncertain`、不设置 basis，并在运行记录中保存截断状态和 `context_ref`。
 
-### 19.10 Context 超限
+### 19.12 Context 超限
 
 当前消息、类型 Prompt/Schema、历史和 Knowledge Context 超过模型硬上限。
 
@@ -127,6 +173,8 @@
 
 - 按 `kind` 统计的知识抽取 precision 和 recall；
 - `support`、`oppose`、`uncertain` 分类准确率；
+- `explicit`、`inferred` 判断准确率；
+- 四种确定性组合 `support+explicit`、`support+inferred`、`oppose+explicit`、`oppose+inferred` 的混淆矩阵；
 - 当前输入内重复合并准确率；
 - Evidence coverage；
 - 临时内容误识别率；
@@ -154,9 +202,9 @@
 
 - 定义 Knowledge Model Port 和知识类型定义；
 - 定义只读 Knowledge Context Port；
-- 定义通用结果信封和三种 stance；
+- 定义通用结果信封、三种 stance 和两种确定性 basis；
 - 提供一个测试用 `profile_fact` 类型；
-- 建立支持、反对、不确定、修正、询问、重复和 Context 截断样本。
+- 建立直接支持、推断支持、直接反对、推断反对、不确定、修正、询问、重复和 Context 截断样本。
 
 ### P1：单类型最小闭环
 
@@ -188,7 +236,7 @@ P1 同时覆盖 token 预算、输出预留、低相关内容裁剪和 Evidence 
 ### P4：回放与评估
 
 - 建立统一回放和模型比较工具；
-- 固定抽取和 stance 基准集；
+- 固定抽取、stance 和 basis 基准集；
 - 验证相同输入版本的可重复性。
 
 ## 22. 待确认决策
@@ -219,8 +267,8 @@ Knowledge Information Provider
 
 Memory Agent
   管理 Context
-  调用 LLM 直接抽取知识并判断 stance
-  返回 support / oppose / uncertain 结果
+  调用 LLM 直接抽取知识并判断 stance 与 basis
+  返回 explicit/inferred support、explicit/inferred oppose 或 uncertain
 
 Model Runtime
   提供模型推理、Context 硬上限和 token 计数

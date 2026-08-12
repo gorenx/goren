@@ -10,16 +10,18 @@
 
 1. 一次 Run 的 Prompt、Schema、Parser、Validator 和结果必须使用同一个 `knowledge_model_version`。
 2. Agent 核心不得根据具体 `kind` 编写抽取或立场判断分支。
-3. LLM 直接输出知识对象和最终 stance，不引入额外中间语义状态。
+3. LLM 直接输出知识对象、最终 stance 和确定性立场的 basis，不引入额外中间语义状态。
 4. `stance` 只能是 `support`、`oppose` 或 `uncertain`。
-5. 每项结果都必须绑定当前输入 Evidence。
-6. `knowledge_refs` 只能引用本次 Knowledge Context 返回的信息。
-7. Knowledge Context Port 对 Agent 只读。
-8. 输出不得包含 Knowledge 管理命令。
-9. 信息不足时必须返回 `uncertain`，不得猜测为 `support` 或 `oppose`。
-10. 同一知识在一次结果中只能出现一项。
-11. 每次模型调用的输入加预留输出不得超过模型 Context 硬上限。
-12. 当前消息、Evidence 锚点和启用类型的最小输出 Schema 不能因压缩而丢失。
+5. `support` 和 `oppose` 必须携带 `basis = explicit | inferred`；`uncertain` 不得携带 basis。
+6. `inferred` 必须有足够的上下文 Evidence，不得作为低置信度猜测的替代标签。
+7. 每项结果都必须绑定当前输入 Evidence。
+8. `knowledge_refs` 只能引用本次 Knowledge Context 返回的信息。
+9. Knowledge Context Port 对 Agent 只读。
+10. 输出不得包含 Knowledge 管理命令。
+11. 信息不足时必须返回 `uncertain`，不得猜测为 `support` 或 `oppose`。
+12. 同一知识在一次结果中只能出现一项。
+13. 每次模型调用的输入加预留输出不得超过模型 Context 硬上限。
+14. 当前消息、Evidence 锚点和启用类型的最小输出 Schema 不能因压缩而丢失。
 
 ### 16.2 重试与回放
 
@@ -43,6 +45,8 @@ knowledge_context_ref
 - `kind` 未启用或 Schema 不匹配：拒绝结果；
 - payload 未通过 Validator：拒绝对应结果；
 - stance 不属于三种允许值：拒绝对应结果；
+- support/oppose 缺少 basis 或 basis 无效：拒绝对应结果；
+- uncertain 携带 basis：拒绝对应结果；
 - Evidence 或 Knowledge 引用不存在：拒绝对应结果；
 - 同一知识出现多个互相冲突的 stance：要求模型重新生成完整结果；
 - 重试后仍无效：Run 失败。
@@ -98,7 +102,7 @@ Knowledge Model Provider 属于受信扩展边界：
 - 使用的 Message、`context_ref` 和 `knowledge_ref`；
 - Context 硬上限、分区预算和实际 token；
 - 被裁剪、压缩和分批处理的内容数量；
-- 按 `kind` 和 stance 统计的结果数量；
+- 按 `kind`、stance 和 basis 统计的结果数量；
 - 只读接口和模型调用次数与耗时；
 - 重试、截断、不兼容项和失败原因；
 - token 和模型成本。

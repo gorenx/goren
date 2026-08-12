@@ -13,7 +13,7 @@ Memory Agent 负责：
 - 根据当前 Context Window 抽取配置允许的知识对象；
 - 通过只读接口获取判断所需的已有 Knowledge；
 - 合并当前输入中的重复表达；
-- 让 LLM 直接输出每个知识对象及用户的最终立场；
+- 让 LLM 直接输出每个知识对象、用户的最终立场，以及该立场是用户直接表态还是 Agent 根据上下文推断；
 - 校验并返回结构化结果和 Evidence。
 
 Memory Agent 不固定知识对象的种类。`Entity`、`Relation`、`Claim` 可以由某个 Provider 配置，也可以配置为偏好、用户事实、长期指令或其他静态记忆类型。
@@ -26,9 +26,10 @@ Memory Agent 不固定知识对象的种类。`Entity`、`Relation`、`Claim` �
 4. Knowledge Context Port 是只读接口，只返回 LLM 判断所需的信息。
 5. LLM 直接输出知识对象和最终立场，不引入中间领域对象或关系状态。
 6. 最终立场只有 `support`、`oppose`、`uncertain`。
-7. 没有长期记忆价值的内容不进入结果，不需要额外的 `ignore` 状态。
-8. Memory Agent 不创建、更新、删除或发布 Knowledge，也不关心 Knowledge 如何管理。
-9. Model Runtime 只提供推理、token 计数和 Context 硬上限；Memory Agent 管理硬上限内的实际 Context。
+7. `support` 和 `oppose` 必须标明 `basis = explicit` 或 `basis = inferred`；`uncertain` 不设置 basis。
+8. 没有长期记忆价值的内容不进入结果，不需要额外的 `ignore` 状态。
+9. Memory Agent 不创建、更新、删除或发布 Knowledge，也不关心 Knowledge 如何管理。
+10. Model Runtime 只提供推理、token 计数和 Context 硬上限；Memory Agent 管理硬上限内的实际 Context。
 
 ## 3. 目标与非目标
 
@@ -104,6 +105,7 @@ LLM 对每项知识直接输出：
 - `kind`；
 - 符合对应 Schema 的 `payload`；
 - `stance`；
+- `basis`，仅适用于 `support` 和 `oppose`；
 - 当前对话中的 `evidence`；
 - 判断时实际使用的已有 `knowledge_refs`，可为空。
 
@@ -119,11 +121,20 @@ LLM 对每项知识直接输出：
 
 纯询问、临时推理和无长期记忆价值的内容不返回结果。
 
-### 4.6 Evidence
+### 4.6 Basis
+
+`basis` 说明确定性立场如何得出：
+
+- `explicit`：用户在当前输入中直接陈述、确认、否认或撤回该知识，不需要 Agent 通过其他对话内容补全立场；
+- `inferred`：用户没有直接完整表达对该知识的立场，Agent 需要结合指代、前文问答、多条消息或已有 Knowledge 才能得出 `support` 或 `oppose`。
+
+`basis` 不是第四种 stance。`uncertain` 表示尚未形成支持或反对结论，因此不设置 basis。
+
+### 4.7 Evidence
 
 Evidence 指向产生判断的原始来源，例如 Message ID 及其中的字符或 token 范围。已有 Knowledge 的来源可以由只读接口提供，但返回结果必须至少绑定当前对话 Evidence。
 
-### 4.7 Knowledge Context
+### 4.8 Knowledge Context
 
 Knowledge Context 是只读接口提供给 LLM 的相关已有信息。Agent 只使用其内容和不透明引用辅助判断，不解释其持久化状态，也不依赖数据库、版本、索引或生命周期实现。
 
@@ -192,7 +203,7 @@ Memory Agent 是系统本体。Trigger Source、Conversation Source、Knowledge 
 #### Semantic Reasoner
 
 - 使用完整 Context 调用 Model Runtime；
-- 让 LLM 直接抽取知识并判断最终立场；
+- 让 LLM 直接抽取知识、判断最终立场，并区分直接表态与上下文推断；
 - 解析、校验并返回结构化结果。
 
 #### Knowledge Model Port

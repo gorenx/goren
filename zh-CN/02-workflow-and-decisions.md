@@ -12,7 +12,7 @@ flowchart TD
     B --> C["读取原始消息"]
     C --> D["按需读取相关 Knowledge"]
     D --> E["组装 Context 并计算 token 预算"]
-    E --> F["LLM 直接输出知识对象和 stance"]
+    E --> F["LLM 直接输出知识对象、stance 和 basis"]
     F --> G["Parser 和 Validator 校验"]
     G --> H["返回结构化结果"]
 ```
@@ -54,7 +54,8 @@ LLM 直接完成：
 - 抽取启用类型允许的知识对象；
 - 规范化同一对象的重复表达；
 - 结合完整 Context 判断用户最终立场；
-- 按 Schema 输出 `kind`、`payload`、`stance`、`evidence` 和可选 `knowledge_refs`。
+- 对 `support` 和 `oppose` 判断是用户直接表态还是 Agent 根据上下文推断；
+- 按 Schema 输出 `kind`、`payload`、`stance`、可选 `basis`、`evidence` 和可选 `knowledge_refs`。
 
 Workflow 不在 LLM 输出之后再引入额外的语义关系转换。
 
@@ -65,6 +66,8 @@ Parser 将模型响应转换为结构化结果，Validator 只做确定性检查
 - `kind` 和 Schema 版本属于本次 Knowledge Model；
 - payload 符合对应 Schema；
 - `stance` 只能是 `support`、`oppose` 或 `uncertain`；
+- `support` 和 `oppose` 必须携带 `basis = explicit | inferred`；
+- `uncertain` 不得携带 basis；
 - Evidence 指向本次输入消息；
 - `knowledge_refs` 只能引用本次接口返回的信息；
 - 同一知识对象在结果中只出现一次。
@@ -83,7 +86,7 @@ Parser 将模型响应转换为结构化结果，Validator 只做确定性检查
 “我主要使用 Go。”
 ```
 
-对应知识对象的 `stance` 为 `support`。
+对应知识对象的 `stance` 为 `support`。若用户直接陈述或确认该知识，`basis = explicit`；若需要结合指代、前文问答、多条消息或已有 Knowledge 才能得出支持结论，`basis = inferred`。
 
 ### 7.2 oppose
 
@@ -95,15 +98,26 @@ Parser 将模型响应转换为结构化结果，Validator 只做确定性检查
 “我已经不用 Go 了。”
 ```
 
-“主要使用 Go”对应对象的 `stance` 为 `oppose`。
+“主要使用 Go”对应对象的 `stance` 为 `oppose`。若用户直接否认或撤回该知识，`basis = explicit`；若需要结合指代、前文问答、多条消息或已有 Knowledge 才能得出反对结论，`basis = inferred`。
 
 ### 7.3 uncertain
 
 当前 Context 无法确定用户是否支持或反对该知识。
 
-假设、转述、语义含糊或 Knowledge Context 不足时返回 `uncertain`，不得猜测为 `support` 或 `oppose`。
+假设、转述、语义含糊或 Knowledge Context 不足时返回 `uncertain`，不得猜测为 `support` 或 `oppose`，也不得设置 basis。
 
-### 7.4 不返回结果
+### 7.4 basis 判断
+
+`explicit` 与 `inferred` 的判断对象是“用户对当前知识的立场是否直接表达”，不是知识本身是否来自当前消息。
+
+- 用户直接说“我主要使用 Go”：`support + explicit`。
+- 用户直接说“我已经不用 Go”：`oppose + explicit`。
+- 前文询问“以后都用简短回答，可以吗？”，用户回答“就这样”：对“偏好简短回答”判断为 `support + inferred`。
+- 前文询问“还要保留回答长度偏好吗？”，用户回答“不用了”：对该偏好判断为 `oppose + inferred`。
+
+不能可靠完成指代或上下文推断时返回 `uncertain`，不能以 `inferred` 掩盖不确定性。
+
+### 7.5 不返回结果
 
 以下内容不返回知识结果：
 
@@ -134,6 +148,8 @@ Parser 将模型响应转换为结构化结果，Validator 只做确定性检查
 - “主要使用 Go”：`oppose`；
 - “主要使用 Rust”：`support`。
 
+两项都是用户直接表达，因此均为 `basis = explicit`。
+
 无需输出“取代”“冲突”或“撤回”等额外关系。
 
 ### 8.3 已有 Knowledge
@@ -154,19 +170,23 @@ stateDiagram-v2
     Normalizing --> Rejected: 类型无效或缺少 Evidence
     Normalizing --> Validating: 规范化并合并当前输入内重复对象
 
-    Validating --> Supported: stance = support
-    Validating --> Opposed: stance = oppose
+    Validating --> ExplicitSupported: support + explicit
+    Validating --> InferredSupported: support + inferred
+    Validating --> ExplicitOpposed: oppose + explicit
+    Validating --> InferredOpposed: oppose + inferred
     Validating --> Uncertain: stance = uncertain
     Validating --> Rejected: payload 或引用校验失败
 
-    Supported --> Completed
-    Opposed --> Completed
+    ExplicitSupported --> Completed
+    InferredSupported --> Completed
+    ExplicitOpposed --> Completed
+    InferredOpposed --> Completed
     Uncertain --> Completed
     Rejected --> Completed
     Completed --> [*]
 ```
 
-`Supported`、`Opposed`、`Uncertain` 只是三种 stance 在处理流程中的对应节点，不是额外状态。`Rejected` 对象不进入最终结果；是否重试整个 Run 由 Agent 状态机决定。
+`ExplicitSupported`、`InferredSupported`、`ExplicitOpposed`、`InferredOpposed` 是 stance 与 basis 的有效组合，不是新的业务维度。`Uncertain` 不带 basis。`Rejected` 对象不进入最终结果；是否重试整个 Run 由 Agent 状态机决定。
 
 ## 9. Agent 状态机
 
@@ -223,8 +243,10 @@ stateDiagram-v2
 
 ## 10. 对话行为
 
-- 赞成或确认：对应知识返回 `support`。
-- 反对、否认或撤回：对应知识返回 `oppose`。
+- 用户直接赞成、确认或陈述：返回 `support + explicit`。
+- Agent 根据上下文推断用户支持：返回 `support + inferred`。
+- 用户直接反对、否认或撤回：返回 `oppose + explicit`。
+- Agent 根据上下文推断用户反对：返回 `oppose + inferred`。
 - 无法确定最终立场：对应知识返回 `uncertain`。
 - 纯询问或忽略：不返回知识结果。
-- 修正：旧知识返回 `oppose`，新知识返回 `support`。
+- 用户直接修正：旧知识返回 `oppose + explicit`，新知识返回 `support + explicit`。

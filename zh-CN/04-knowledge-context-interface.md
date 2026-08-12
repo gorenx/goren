@@ -70,7 +70,7 @@ Memory Agent：
 - 只在已有 Knowledge 可能影响最终立场或对象规范化时查询；
 - 根据剩余 token 预算限制返回规模；
 - 只把实际使用过的 `knowledge_ref` 放入结果；
-- 对缺失、截断或冲突且无法判断的信息返回 `uncertain`；
+- 对缺失、截断或冲突且无法判断的信息返回 `uncertain`，不得标记为 `inferred`；
 - 不通过接口执行写入、确认、发布或生命周期操作。
 
 ### 14.5 类型兼容性
@@ -81,6 +81,6 @@ Agent 只消费本次 Knowledge Model 中启用的 `kind` 和兼容 Schema。遇
 
 ## 15. 输出边界
 
-Knowledge Context 只作为 LLM 输入。Memory Agent 最终只返回知识对象、三种 stance、Evidence 和实际使用的 Knowledge 引用。
+Knowledge Context 只作为 LLM 输入。Memory Agent 最终只返回知识对象、stance、确定性立场的 basis、Evidence 和实际使用的 Knowledge 引用。
 
 下游如何根据这些结果管理 Knowledge，不属于 Memory Agent 的接口或 Workflow。

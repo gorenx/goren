@@ -6,12 +6,12 @@
 
 ## 文档职责
 
-- [01 架构与边界](./01-architecture-and-boundaries.md)：目标与非目标、可配置 Knowledge Model、三种 stance、系统边界，以及外部依赖和 Agent 内部职责。
-- [02 工作流与立场判断](./02-workflow-and-decisions.md)：一次 Run 的处理步骤、LLM 直接输出、重复与修正、抽取对象生命周期和 Agent 状态机。
+- [01 架构与边界](./01-architecture-and-boundaries.md)：目标与非目标、可配置 Knowledge Model、stance 与判断依据、系统边界，以及外部依赖和 Agent 内部职责。
+- [02 工作流与立场判断](./02-workflow-and-decisions.md)：一次 Run 的处理步骤、直接表态与上下文推断、重复与修正、抽取对象生命周期和 Agent 状态机。
 - [03 接口与数据契约](./03-tools-and-contracts.md)：Knowledge Model Port、只读 Knowledge Context Port，以及最终结果信封。
 - [04 Knowledge 信息接口](./04-knowledge-context-interface.md)：Agent 如何通过只读接口请求相关信息，以及明确不依赖的 Knowledge 管理细节。
 - [05 可靠性、安全与可观测性](./05-reliability-and-operations.md)：Agent 不变量、只读依赖失败、Scope 隔离、扩展安全、日志与指标要求。
-- [06 验收、评估与实施路线图](./06-acceptance-and-roadmap.md)：三种 stance 的验收、质量指标、实施计划和待确认决策。
+- [06 验收、评估与实施路线图](./06-acceptance-and-roadmap.md)：stance 与判断依据的验收、质量指标、实施计划和待确认决策。
 
 ## 阅读顺序
 
