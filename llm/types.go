@@ -11,9 +11,6 @@ type API string
 // Provider identifies who serves a model. Several providers can share one API.
 type Provider string
 
-// APIOpenAICompletions identifies the OpenAI-compatible Chat Completions wire protocol.
-const APIOpenAICompletions API = "openai-completions"
-
 // InputModality identifies an input kind accepted by a model.
 type InputModality string
 
