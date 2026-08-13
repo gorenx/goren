@@ -50,6 +50,8 @@ Add comments when a type's responsibility, lifecycle, or boundary cannot be unde
 
 Names for types and fields must first answer what the object is. If a name has to concatenate associated objects, processing steps, or storage details, check whether the type has multiple reasons to change; split distinct responsibilities instead of hiding them in a longer name.
 
+Variable names, including local variables, parameters, receiver names, and named return values, must not reuse the name of a function or type such as a struct, interface, or type alias. A capitalization-only difference does not make the names distinct: avoid declarations such as `model Model` or `client Client`; choose a name that states the variable's role instead.
+
 Preserve established names by default. Do not rename code incidentally for brevity, uniformity, or personal preference. Treat a name as a design defect when it misstates domain ownership, responsibility, lifecycle, or invariants and has caused incorrect dependencies, duplicate interfaces, misuse, or recurring adapter patches.
 
 Before renaming, classify the issue:
