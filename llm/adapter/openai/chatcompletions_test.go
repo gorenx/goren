@@ -139,6 +139,54 @@ func TestChatCompletionsReassemblesToolCall(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsNormalizesForeignToolIdentityAtProtocolBoundary(t *testing.T) {
+	requestBody := make(chan map[string]any, 1)
+	testServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		requestBody <- body
+		writer.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(writer, `{"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}`)
+		fmt.Fprint(writer, "data: [DONE]\n\n")
+	}))
+	defer testServer.Close()
+
+	foreignID := "call|foreign item"
+	llmClient := newClient(t, model(testServer.URL), testServer.Client())
+	_, err := llmClient.Complete(context.Background(), llm.Context{
+		Messages: []llm.Message{
+			llm.AssistantMessage{
+				API: "foreign-api", Provider: "foreign-provider", Model: "foreign-model",
+				StopReason: llm.StopReasonToolUse,
+				Content: []llm.AssistantContent{
+					llm.ToolCall{ID: foreignID, Name: "lookup", Arguments: json.RawMessage(`{}`)},
+				},
+			},
+			llm.ToolResultMessage{
+				ToolCallID: foreignID, ToolName: "lookup",
+				Content: []llm.ToolResultContent{llm.TextContent{Text: "found"}},
+			},
+			llm.NewTextMessage("continue"),
+		},
+		Tools: []llm.Tool{{Name: "lookup", Parameters: json.RawMessage(`{"type":"object"}`)}},
+	}, llm.StreamOptions{APIKey: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	messages := (<-requestBody)["messages"].([]any)
+	assistantMessage := messages[0].(map[string]any)
+	toolCalls := assistantMessage["tool_calls"].([]any)
+	callID := toolCalls[0].(map[string]any)["id"]
+	toolMessage := messages[1].(map[string]any)
+	if callID != "call" || toolMessage["tool_call_id"] != callID {
+		t.Fatalf("tool identity was not mapped consistently: call=%#v result=%#v", callID, toolMessage["tool_call_id"])
+	}
+}
+
 func TestHTTPFailureIsTerminalStreamEvent(t *testing.T) {
 	testServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		http.Error(writer, "rate limited", http.StatusTooManyRequests)

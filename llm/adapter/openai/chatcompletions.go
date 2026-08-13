@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -18,18 +16,18 @@ import (
 
 // New creates a model-bound OpenAI-compatible Chat Completions adapter.
 func New(targetModel llm.Model, httpClient *http.Client, adapterOptions ...AdapterOption) (llm.APIAdapter, error) {
-	if httpClient == nil {
-		httpClient = http.DefaultClient
+	if err := validateAdapterModel(targetModel, llm.APIOpenAICompletions); err != nil {
+		return nil, err
 	}
 	configuration, err := resolveAdapterConfig(adapterOptions)
 	if err != nil {
 		return nil, err
 	}
-	protocolAdapter, err := newAdapter(targetModel, httpClient, configuration)
-	if err != nil {
-		return nil, err
-	}
-	return protocolAdapter, nil
+	return &adapter{
+		targetModel: cloneModel(targetModel),
+		sdkClient:   newSDKClient(targetModel, httpClient),
+		config:      configuration,
+	}, nil
 }
 
 // adapter implements one model-bound OpenAI-compatible Chat Completions client
@@ -40,56 +38,17 @@ type adapter struct {
 	config      adapterConfig
 }
 
-func newAdapter(targetModel llm.Model, httpClient *http.Client, configuration adapterConfig) (*adapter, error) {
-	if err := llm.ValidateModel(targetModel); err != nil {
-		return nil, err
-	}
-	if targetModel.API != llm.APIOpenAICompletions {
-		return nil, fmt.Errorf(
-			"%w: got %q, want %q",
-			llm.ErrAPIMismatch,
-			targetModel.API,
-			llm.APIOpenAICompletions,
-		)
-	}
-	return &adapter{
-		targetModel: cloneModel(targetModel),
-		sdkClient: officialopenai.NewClient(
-			option.WithBaseURL(targetModel.BaseURL),
-			option.WithHTTPClient(httpClient),
-		),
-		config: configuration,
-	}, nil
-}
-
 func (*adapter) API() llm.API {
 	return llm.APIOpenAICompletions
 }
 
-// Stream validates and maps an invocation, then lets the SDK run asynchronously
+// Stream maps Client-prepared input, then lets the SDK run asynchronously
 // inside a normalized LLM event stream.
 func (protocolAdapter *adapter) Stream(
 	ctx context.Context,
 	input llm.Context,
 	invocationOptions llm.StreamOptions,
 ) (*llm.EventStream, error) {
-	if err := llm.ValidateContext(input); err != nil {
-		return nil, err
-	}
-	resolvedOptions, err := llm.ResolveStreamOptions(protocolAdapter.targetModel, invocationOptions)
-	if err != nil {
-		return nil, err
-	}
-	invocationOptions = resolvedOptions
-	if err := llm.ValidateToolSelection(input.Tools, invocationOptions); err != nil {
-		return nil, err
-	}
-	prepared, err := llm.PrepareContext(protocolAdapter.targetModel, input)
-	if err != nil {
-		return nil, err
-	}
-	input = prepared
-
 	completionRequest, err := protocolAdapter.makeRequest(input, invocationOptions)
 	if err != nil {
 		return nil, err
@@ -169,34 +128,7 @@ func (protocolAdapter *adapter) requestOptions(
 	invocationOptions llm.StreamOptions,
 	httpResponse **http.Response,
 ) []option.RequestOption {
-	opts := make([]option.RequestOption, 0, len(protocolAdapter.targetModel.Headers)+len(invocationOptions.Headers)+8)
-	opts = append(opts, option.WithAPIKey(invocationOptions.APIKey))
-	for name, value := range protocolAdapter.targetModel.Headers {
-		opts = append(opts, option.WithHeader(name, value))
-	}
-	for name, value := range invocationOptions.Headers {
-		opts = append(opts, option.WithHeader(name, value))
-	}
-	if invocationOptions.MaxRetries != nil {
-		opts = append(opts, option.WithMaxRetries(*invocationOptions.MaxRetries))
-	}
-	if invocationOptions.Timeout > 0 {
-		opts = append(opts, option.WithRequestTimeout(invocationOptions.Timeout))
-	}
-	if httpResponse != nil {
-		opts = append(opts, option.WithResponseInto(httpResponse))
-	}
-	if invocationOptions.RequestID != "" {
-		opts = append(opts, option.WithHeader("x-client-request-id", invocationOptions.RequestID))
-	}
-	if invocationOptions.SessionID != "" && (invocationOptions.CacheKey != "" || invocationOptions.CacheRetention != "") {
-		for _, headerName := range protocolAdapter.config.compat.SessionAffinityHeaders {
-			opts = append(opts, option.WithHeader(headerName, invocationOptions.SessionID))
-		}
-	}
-	if invocationOptions.MaxRetryDelay > 0 {
-		opts = append(opts, option.WithMiddleware(capRetryDelay(invocationOptions.MaxRetryDelay)))
-	}
+	opts := transportRequestOptions(protocolAdapter.targetModel, protocolAdapter.config.compat, invocationOptions, httpResponse)
 	if protocolAdapter.targetModel.Reasoning && invocationOptions.Reasoning != "" {
 		_, mappedEffort, _, _ := llm.ResolveReasoning(protocolAdapter.targetModel, invocationOptions.Reasoning)
 		switch protocolAdapter.config.compat.ReasoningFormat {
@@ -217,50 +149,7 @@ func (protocolAdapter *adapter) requestOptions(
 			opts = append(opts, option.WithJSONSet("enable_thinking", invocationOptions.Reasoning != llm.ReasoningOff))
 		}
 	}
-	if invocationOptions.ThinkingBudget > 0 && protocolAdapter.config.compat.ThinkingBudgetField != "" {
-		opts = append(opts, option.WithJSONSet(protocolAdapter.config.compat.ThinkingBudgetField, invocationOptions.ThinkingBudget))
-	}
 	return opts
-}
-
-func capRetryDelay(maximum time.Duration) option.Middleware {
-	return func(request *http.Request, next option.MiddlewareNext) (*http.Response, error) {
-		response, err := next(request)
-		if response == nil || maximum <= 0 {
-			return response, err
-		}
-		delay, ok := responseRetryDelay(response)
-		if !ok {
-			retryCount, _ := strconv.Atoi(request.Header.Get("X-Stainless-Retry-Count"))
-			delay = min(8*time.Second, time.Duration(0.5*float64(time.Second)*math.Pow(2, float64(retryCount))))
-		}
-		delay = min(delay, maximum)
-		milliseconds := max(int64(0), delay.Milliseconds())
-		response.Header.Set("Retry-After-Ms", strconv.FormatInt(milliseconds, 10))
-		response.Header.Del("Retry-After")
-		return response, err
-	}
-}
-
-func responseRetryDelay(response *http.Response) (time.Duration, bool) {
-	if milliseconds := response.Header.Get("Retry-After-Ms"); milliseconds != "" {
-		value, err := strconv.ParseFloat(milliseconds, 64)
-		if err == nil {
-			return max(0, time.Duration(value*float64(time.Millisecond))), true
-		}
-	}
-	value := response.Header.Get("Retry-After")
-	if value == "" {
-		return 0, false
-	}
-	if seconds, err := strconv.ParseFloat(value, 64); err == nil {
-		return max(0, time.Duration(seconds*float64(time.Second))), true
-	}
-	retryAt, err := http.ParseTime(value)
-	if err != nil {
-		return 0, false
-	}
-	return max(0, time.Until(retryAt)), true
 }
 
 func finishTransportError(ctx context.Context, eventSink llm.StreamEmitter, err error) {
@@ -283,7 +172,10 @@ func (protocolAdapter *adapter) makeRequest(
 	input llm.Context,
 	invocationOptions llm.StreamOptions,
 ) (officialopenai.ChatCompletionNewParams, error) {
-	outgoingMessages, err := mapMessages(input, protocolAdapter.config.compat)
+	if err := validateCompatibleInvocation(protocolAdapter.config.compat, invocationOptions); err != nil {
+		return officialopenai.ChatCompletionNewParams{}, err
+	}
+	outgoingMessages, err := mapMessages(protocolAdapter.targetModel, input, protocolAdapter.config.compat)
 	if err != nil {
 		return officialopenai.ChatCompletionNewParams{}, err
 	}
@@ -300,9 +192,6 @@ func (protocolAdapter *adapter) makeRequest(
 		completionRequest.Temperature = officialopenai.Float(*invocationOptions.Temperature)
 	}
 	maxOutputTokens := invocationOptions.MaxOutputTokens
-	if maxOutputTokens == 0 {
-		maxOutputTokens = protocolAdapter.targetModel.MaxOutputTokens
-	}
 	if maxOutputTokens > 0 {
 		if protocolAdapter.config.compat.MaxTokensField == MaxTokensLegacy {
 			completionRequest.MaxTokens = officialopenai.Int(int64(maxOutputTokens))
@@ -312,9 +201,6 @@ func (protocolAdapter *adapter) makeRequest(
 	}
 	if invocationOptions.ReasoningSummary != "" {
 		return officialopenai.ChatCompletionNewParams{}, errors.New("OpenAI Chat Completions does not support reasoning summary")
-	}
-	if invocationOptions.ThinkingBudget > 0 && protocolAdapter.config.compat.ThinkingBudgetField == "" {
-		return officialopenai.ChatCompletionNewParams{}, errors.New("OpenAI-compatible provider has no configured thinking budget field")
 	}
 	if protocolAdapter.targetModel.Reasoning && invocationOptions.Reasoning != "" && protocolAdapter.config.compat.ReasoningFormat == ReasoningFormatOpenAI {
 		_, mappedEffort, _, err := llm.ResolveReasoning(protocolAdapter.targetModel, invocationOptions.Reasoning)
@@ -341,9 +227,6 @@ func (protocolAdapter *adapter) makeRequest(
 		return officialopenai.ChatCompletionNewParams{}, err
 	}
 	if invocationOptions.ToolChoice != nil {
-		if protocolAdapter.config.compat.DisableToolChoice {
-			return officialopenai.ChatCompletionNewParams{}, errors.New("OpenAI-compatible provider does not support tool choice")
-		}
 		completionRequest.ToolChoice, err = mapChatToolChoice(*invocationOptions.ToolChoice)
 		if err != nil {
 			return officialopenai.ChatCompletionNewParams{}, err
@@ -396,7 +279,7 @@ func newResponseState(
 		target:          targetModel,
 		emitter:         eventSink,
 		tools:           make(map[int]*responseBlock),
-		toolDefinitions: cloneToolDefinitions(toolDefinitions),
+		toolDefinitions: toolDefinitions,
 		stopReason:      llm.StopReasonStop,
 		serviceTier:     serviceTier,
 	}
@@ -426,14 +309,14 @@ func (responseAssembler *responseState) consume(chunk officialopenai.ChatComplet
 	}
 
 	for _, choice := range chunk.Choices {
-		reasoningText, signature, err := reasoningContent(choice.Delta)
+		thinkingDelta, signature, err := reasoningContent(choice.Delta)
 		if err != nil {
 			return err
 		}
-		if reasoningText != "" {
+		if thinkingDelta != "" {
 			index, contentBlock := responseAssembler.ensureThinking(signature)
-			contentBlock.text.WriteString(reasoningText)
-			responseAssembler.emit(llm.ThinkingDeltaEvent{ContentIndex: index, Delta: reasoningText})
+			contentBlock.text.WriteString(thinkingDelta)
+			responseAssembler.emit(llm.ThinkingDeltaEvent{ContentIndex: index, Delta: thinkingDelta})
 		}
 		if choice.Delta.Content != "" {
 			index, contentBlock := responseAssembler.ensureText()
@@ -614,15 +497,6 @@ func (responseAssembler *responseState) snapshot() llm.AssistantMessage {
 		assistantReply.StopReason = llm.StopReasonToolUse
 	}
 	return assistantReply
-}
-
-func cloneToolDefinitions(toolDefinitions []llm.Tool) []llm.Tool {
-	cloned := make([]llm.Tool, len(toolDefinitions))
-	for index, toolDefinition := range toolDefinitions {
-		cloned[index] = toolDefinition
-		cloned[index].Parameters = append(json.RawMessage(nil), toolDefinition.Parameters...)
-	}
-	return cloned
 }
 
 func (responseAssembler *responseState) emit(streamEvent llm.Event) bool {

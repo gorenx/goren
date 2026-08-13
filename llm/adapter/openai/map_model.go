@@ -1,6 +1,8 @@
 package openai
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +12,8 @@ import (
 	officialopenai "github.com/openai/openai-go/v3"
 )
 
+// cloneModel gives an adapter its own snapshot when its constructor is used
+// directly or by a custom composition root.
 func cloneModel(targetModel llm.Model) llm.Model {
 	cloned := targetModel
 	cloned.Input = append([]llm.InputModality(nil), targetModel.Input...)
@@ -41,8 +45,9 @@ func cloneModel(targetModel llm.Model) llm.Model {
 	return cloned
 }
 
-func mapMessages(input llm.Context, compatibleBehavior Compatibility) ([]officialopenai.ChatCompletionMessageParamUnion, error) {
+func mapMessages(targetModel llm.Model, input llm.Context, compatibleBehavior Compatibility) ([]officialopenai.ChatCompletionMessageParamUnion, error) {
 	messages := make([]officialopenai.ChatCompletionMessageParamUnion, 0, len(input.Messages)+1)
+	toolCallIDs := make(map[string]string)
 	if input.SystemPrompt != "" {
 		if compatibleBehavior.SystemRole == SystemRoleDeveloper {
 			messages = append(messages, officialopenai.DeveloperMessage(input.SystemPrompt))
@@ -60,11 +65,14 @@ func mapMessages(input llm.Context, compatibleBehavior Compatibility) ([]officia
 			}
 			messages = append(messages, mapped)
 		case llm.AssistantMessage:
-			mapped, err := mapAssistantMessage(value)
+			mapped, mappedIDs, err := mapAssistantMessage(targetModel, value)
 			if err != nil {
 				return nil, fmt.Errorf("map assistant message %d: %w", index, err)
 			}
 			messages = append(messages, mapped)
+			for sourceID, wireID := range mappedIDs {
+				toolCallIDs[sourceID] = wireID
+			}
 		case llm.ToolResultMessage:
 			var imageParts []officialopenai.ChatCompletionContentPartUnionParam
 			for ; index < len(input.Messages); index++ {
@@ -82,7 +90,11 @@ func mapMessages(input llm.Context, compatibleBehavior Compatibility) ([]officia
 				if toolResult.IsError {
 					resultText = compatibleBehavior.ToolErrorPrefix + resultText
 				}
-				mappedResult, err := mapToolMessage(resultText, toolResult, compatibleBehavior)
+				mappedToolResult := toolResult
+				if wireID := toolCallIDs[toolResult.ToolCallID]; wireID != "" {
+					mappedToolResult.ToolCallID = wireID
+				}
+				mappedResult, err := mapToolMessage(resultText, mappedToolResult, compatibleBehavior)
 				if err != nil {
 					return nil, fmt.Errorf("map tool result message %d: %w", index, err)
 				}
@@ -135,9 +147,10 @@ func mapUserMessage(userInput llm.UserMessage) (officialopenai.ChatCompletionMes
 	return officialopenai.UserMessage(parts), nil
 }
 
-func mapAssistantMessage(assistantInput llm.AssistantMessage) (officialopenai.ChatCompletionMessageParamUnion, error) {
+func mapAssistantMessage(targetModel llm.Model, assistantInput llm.AssistantMessage) (officialopenai.ChatCompletionMessageParamUnion, map[string]string, error) {
 	var visibleText strings.Builder
 	mapped := officialopenai.ChatCompletionAssistantMessageParam{}
+	mappedIDs := make(map[string]string)
 	for _, block := range assistantInput.Content {
 		switch value := block.(type) {
 		case llm.AssistantTextContent:
@@ -151,11 +164,13 @@ func mapAssistantMessage(assistantInput llm.AssistantMessage) (officialopenai.Ch
 				arguments = json.RawMessage(`{}`)
 			}
 			if !json.Valid(arguments) {
-				return officialopenai.ChatCompletionMessageParamUnion{}, fmt.Errorf("tool call %q has invalid arguments", value.Name)
+				return officialopenai.ChatCompletionMessageParamUnion{}, nil, fmt.Errorf("tool call %q has invalid arguments", value.Name)
 			}
+			wireID := normalizeChatToolCallID(value.ID, targetModel)
+			mappedIDs[value.ID] = wireID
 			mapped.ToolCalls = append(mapped.ToolCalls, officialopenai.ChatCompletionMessageToolCallUnionParam{
 				OfFunction: &officialopenai.ChatCompletionMessageFunctionToolCallParam{
-					ID: value.ID,
+					ID: wireID,
 					Function: officialopenai.ChatCompletionMessageFunctionToolCallFunctionParam{
 						Name:      value.Name,
 						Arguments: string(arguments),
@@ -163,13 +178,62 @@ func mapAssistantMessage(assistantInput llm.AssistantMessage) (officialopenai.Ch
 				},
 			})
 		default:
-			return officialopenai.ChatCompletionMessageParamUnion{}, fmt.Errorf("unsupported assistant content %T", block)
+			return officialopenai.ChatCompletionMessageParamUnion{}, nil, fmt.Errorf("unsupported assistant content %T", block)
 		}
 	}
 	if visibleText.Len() > 0 {
 		mapped.Content.OfString = officialopenai.String(visibleText.String())
 	}
-	return officialopenai.ChatCompletionMessageParamUnion{OfAssistant: &mapped}, nil
+	return officialopenai.ChatCompletionMessageParamUnion{OfAssistant: &mapped}, mappedIDs, nil
+}
+
+func normalizeChatToolCallID(toolCallID string, targetModel llm.Model) string {
+	callID, _, _ := strings.Cut(toolCallID, "|")
+	maximumLength := 64
+	if targetModel.Provider == "openai" {
+		maximumLength = 40
+	}
+	return normalizeOpenAIToolCallID(callID, maximumLength)
+}
+
+func normalizeOpenAIToolCallID(toolCallID string, maximumLength int) string {
+	if validOpenAIWireID(toolCallID, maximumLength) {
+		return toolCallID
+	}
+	return hashedOpenAIWireID("call_", toolCallID, maximumLength)
+}
+
+func normalizeResponsesItemID(itemID string) string {
+	if strings.HasPrefix(itemID, "fc_") && validOpenAIWireID(itemID, 64) {
+		return itemID
+	}
+	return hashedOpenAIWireID("fc_", itemID, 64)
+}
+
+func validOpenAIWireID(identifier string, maximumLength int) bool {
+	if identifier == "" || len(identifier) > maximumLength {
+		return false
+	}
+	for _, character := range identifier {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || character == '_' || character == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func hashedOpenAIWireID(prefix string, source string, maximumLength int) string {
+	if maximumLength <= 0 {
+		return ""
+	}
+	if maximumLength <= len(prefix) {
+		return prefix[:maximumLength]
+	}
+	digest := sha256.Sum256([]byte(source))
+	encoded := hex.EncodeToString(digest[:])
+	return prefix + encoded[:min(len(encoded), maximumLength-len(prefix))]
 }
 
 func mapToolResultContent(resultBlocks []llm.ToolResultContent) (string, []llm.ImageContent, error) {

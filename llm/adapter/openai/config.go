@@ -85,14 +85,14 @@ func requestTransformOptions(ctx context.Context, targetModel llm.Model, invocat
 	if !bytes.Equal(payload.Body, encoded) {
 		return nil, errors.New("request transform cannot replace inspection-only Body; use Set")
 	}
-	requestOptions := make([]option.RequestOption, 0, len(payload.Set))
+	transformedOptions := make([]option.RequestOption, 0, len(payload.Set))
 	for path, value := range payload.Set {
 		if strings.TrimSpace(path) == "" {
 			return nil, errors.New("request transform field path cannot be empty")
 		}
-		requestOptions = append(requestOptions, option.WithJSONSet(path, value))
+		transformedOptions = append(transformedOptions, option.WithJSONSet(path, value))
 	}
-	return requestOptions, nil
+	return transformedOptions, nil
 }
 
 // AdapterOption configures one model-bound adapter without adding a factory.
@@ -162,6 +162,16 @@ func resolveAdapterConfig(adapterOptions []AdapterOption) (adapterConfig, error)
 	}
 	configuration.compat.SessionAffinityHeaders = append([]string(nil), configuration.compat.SessionAffinityHeaders...)
 	return configuration, nil
+}
+
+func validateCompatibleInvocation(compatibleBehavior Compatibility, invocationOptions llm.StreamOptions) error {
+	if invocationOptions.ThinkingBudget > 0 && compatibleBehavior.ThinkingBudgetField == "" {
+		return errors.New("OpenAI-compatible provider has no configured thinking budget field")
+	}
+	if invocationOptions.ToolChoice != nil && compatibleBehavior.DisableToolChoice {
+		return errors.New("OpenAI-compatible provider does not support tool choice")
+	}
+	return nil
 }
 
 func runBeforeRequest(ctx context.Context, targetModel llm.Model, invocationOptions llm.StreamOptions) error {

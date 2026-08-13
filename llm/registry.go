@@ -8,7 +8,10 @@ import (
 	"sync"
 )
 
-// APIAdapter streams one model-bound wire protocol into normalized LLM events.
+// APIAdapter maps one model-bound wire protocol into normalized LLM events.
+// Client passes validated, target-compatible input and resolved options. Stream
+// must consume message history synchronously and copy any data retained by its
+// asynchronous producer.
 type APIAdapter interface {
 	API() API
 	Stream(context.Context, Context, StreamOptions) (*EventStream, error)

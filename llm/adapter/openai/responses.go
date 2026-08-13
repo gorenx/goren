@@ -7,17 +7,13 @@ import (
 
 	"github.com/gorenx/goren/llm"
 	officialopenai "github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/responses"
 	"github.com/openai/openai-go/v3/shared"
 )
 
 // NewResponses creates a model-bound OpenAI Responses adapter.
 func NewResponses(targetModel llm.Model, httpClient *http.Client, adapterOptions ...AdapterOption) (llm.APIAdapter, error) {
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
-	if err := llm.ValidateModel(targetModel); err != nil {
+	if err := validateAdapterModel(targetModel, llm.APIOpenAIResponses); err != nil {
 		return nil, err
 	}
 	configuration, err := resolveAdapterConfig(adapterOptions)
@@ -27,21 +23,10 @@ func NewResponses(targetModel llm.Model, httpClient *http.Client, adapterOptions
 	if !configuration.systemRoleSet && targetModel.Reasoning {
 		configuration.compat.SystemRole = SystemRoleDeveloper
 	}
-	if targetModel.API != llm.APIOpenAIResponses {
-		return nil, fmt.Errorf(
-			"%w: got %q, want %q",
-			llm.ErrAPIMismatch,
-			targetModel.API,
-			llm.APIOpenAIResponses,
-		)
-	}
 	return &responsesAdapter{
 		targetModel: cloneModel(targetModel),
-		sdkClient: officialopenai.NewClient(
-			option.WithBaseURL(targetModel.BaseURL),
-			option.WithHTTPClient(httpClient),
-		),
-		config: configuration,
+		sdkClient:   newSDKClient(targetModel, httpClient),
+		config:      configuration,
 	}, nil
 }
 
@@ -62,23 +47,6 @@ func (protocolAdapter *responsesAdapter) Stream(
 	input llm.Context,
 	invocationOptions llm.StreamOptions,
 ) (*llm.EventStream, error) {
-	if err := llm.ValidateContext(input); err != nil {
-		return nil, err
-	}
-	resolvedOptions, err := llm.ResolveStreamOptions(protocolAdapter.targetModel, invocationOptions)
-	if err != nil {
-		return nil, err
-	}
-	invocationOptions = resolvedOptions
-	if err := llm.ValidateToolSelection(input.Tools, invocationOptions); err != nil {
-		return nil, err
-	}
-	prepared, err := llm.PrepareContext(protocolAdapter.targetModel, input)
-	if err != nil {
-		return nil, err
-	}
-	input = prepared
-
 	responseRequest, err := protocolAdapter.makeResponsesRequest(input, invocationOptions)
 	if err != nil {
 		return nil, err
@@ -121,7 +89,7 @@ func (protocolAdapter *responsesAdapter) runResponses(
 	sdkStream := protocolAdapter.sdkClient.Responses.NewStreaming(
 		requestContext,
 		responseRequest,
-		append(protocolAdapter.responsesRequestOptions(invocationOptions, &httpResponse), transformOptions...)...,
+		append(transportRequestOptions(protocolAdapter.targetModel, protocolAdapter.config.compat, invocationOptions, &httpResponse), transformOptions...)...,
 	)
 	defer sdkStream.Close()
 
@@ -158,48 +126,13 @@ func (protocolAdapter *responsesAdapter) runResponses(
 	eventSink.Done(assistantReply)
 }
 
-func (protocolAdapter *responsesAdapter) responsesRequestOptions(
-	invocationOptions llm.StreamOptions,
-	httpResponse **http.Response,
-) []option.RequestOption {
-	opts := make([]option.RequestOption, 0, len(protocolAdapter.targetModel.Headers)+len(invocationOptions.Headers)+8)
-	opts = append(opts, option.WithAPIKey(invocationOptions.APIKey))
-	for name, value := range protocolAdapter.targetModel.Headers {
-		opts = append(opts, option.WithHeader(name, value))
-	}
-	for name, value := range invocationOptions.Headers {
-		opts = append(opts, option.WithHeader(name, value))
-	}
-	if invocationOptions.MaxRetries != nil {
-		opts = append(opts, option.WithMaxRetries(*invocationOptions.MaxRetries))
-	}
-	if invocationOptions.Timeout > 0 {
-		opts = append(opts, option.WithRequestTimeout(invocationOptions.Timeout))
-	}
-	if httpResponse != nil {
-		opts = append(opts, option.WithResponseInto(httpResponse))
-	}
-	if invocationOptions.RequestID != "" {
-		opts = append(opts, option.WithHeader("x-client-request-id", invocationOptions.RequestID))
-	}
-	if invocationOptions.SessionID != "" && (invocationOptions.CacheKey != "" || invocationOptions.CacheRetention != "") {
-		for _, headerName := range protocolAdapter.config.compat.SessionAffinityHeaders {
-			opts = append(opts, option.WithHeader(headerName, invocationOptions.SessionID))
-		}
-	}
-	if invocationOptions.MaxRetryDelay > 0 {
-		opts = append(opts, option.WithMiddleware(capRetryDelay(invocationOptions.MaxRetryDelay)))
-	}
-	if invocationOptions.ThinkingBudget > 0 && protocolAdapter.config.compat.ThinkingBudgetField != "" {
-		opts = append(opts, option.WithJSONSet(protocolAdapter.config.compat.ThinkingBudgetField, invocationOptions.ThinkingBudget))
-	}
-	return opts
-}
-
 func (protocolAdapter *responsesAdapter) makeResponsesRequest(
 	input llm.Context,
 	invocationOptions llm.StreamOptions,
 ) (responses.ResponseNewParams, error) {
+	if err := validateCompatibleInvocation(protocolAdapter.config.compat, invocationOptions); err != nil {
+		return responses.ResponseNewParams{}, err
+	}
 	outgoingItems, err := mapResponsesMessages(protocolAdapter.targetModel, input, protocolAdapter.config.compat)
 	if err != nil {
 		return responses.ResponseNewParams{}, err
@@ -211,16 +144,10 @@ func (protocolAdapter *responsesAdapter) makeResponsesRequest(
 		},
 		Store: officialopenai.Bool(false),
 	}
-	if invocationOptions.ThinkingBudget > 0 && protocolAdapter.config.compat.ThinkingBudgetField == "" {
-		return responses.ResponseNewParams{}, fmt.Errorf("OpenAI-compatible provider has no configured thinking budget field")
-	}
 	if invocationOptions.Temperature != nil {
 		responseRequest.Temperature = officialopenai.Float(*invocationOptions.Temperature)
 	}
 	maxOutputTokens := invocationOptions.MaxOutputTokens
-	if maxOutputTokens == 0 {
-		maxOutputTokens = protocolAdapter.targetModel.MaxOutputTokens
-	}
 	if maxOutputTokens > 0 {
 		responseRequest.MaxOutputTokens = officialopenai.Int(int64(maxOutputTokens))
 	}
@@ -259,9 +186,6 @@ func (protocolAdapter *responsesAdapter) makeResponsesRequest(
 		return responses.ResponseNewParams{}, err
 	}
 	if invocationOptions.ToolChoice != nil {
-		if protocolAdapter.config.compat.DisableToolChoice {
-			return responses.ResponseNewParams{}, fmt.Errorf("OpenAI-compatible provider does not support tool choice")
-		}
 		responseRequest.ToolChoice, err = mapResponsesToolChoice(*invocationOptions.ToolChoice)
 		if err != nil {
 			return responses.ResponseNewParams{}, err

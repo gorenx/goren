@@ -41,21 +41,28 @@ func TestDeepSeekStreamingE2E(t *testing.T) {
 		ContextWindow:   1_000_000,
 		MaxOutputTokens: 32,
 	}
-	protocolAdapter, err := openaiadapter.New(
-		targetModel,
-		http.DefaultClient,
-		openaiadapter.WithCompatibility(openaiadapter.Compatibility{
-			MaxTokensField:  openaiadapter.MaxTokensLegacy,
-			ReasoningFormat: openaiadapter.ReasoningFormatDeepSeek,
-		}),
-	)
+	adapterRegistry := llm.NewRegistry()
+	err := adapterRegistry.Register(llm.APIOpenAICompletions, func(registeredModel llm.Model) (llm.APIAdapter, error) {
+		return openaiadapter.New(
+			registeredModel,
+			http.DefaultClient,
+			openaiadapter.WithCompatibility(openaiadapter.Compatibility{
+				MaxTokensField:  openaiadapter.MaxTokensLegacy,
+				ReasoningFormat: openaiadapter.ReasoningFormatDeepSeek,
+			}),
+		)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	llmClient, err := llm.NewClient(targetModel, adapterRegistry, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	responseStream, err := protocolAdapter.Stream(
+	responseStream, err := llmClient.Stream(
 		ctx,
 		llm.Context{Messages: []llm.Message{llm.NewTextMessage("Reply with exactly GOREN_E2E_OK and nothing else.")}},
 		llm.StreamOptions{

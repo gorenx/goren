@@ -26,9 +26,18 @@ type TokenCounter interface {
 // TokenCounterFunc adapts a function to TokenCounter.
 type TokenCounterFunc func(context.Context, Model, Context) (TokenCount, error)
 
-// CountTokens calls countTokens.
-func (countTokens TokenCounterFunc) CountTokens(ctx context.Context, targetModel Model, input Context) (TokenCount, error) {
-	return countTokens(ctx, targetModel, input)
+type toolArgumentsValidator interface {
+	Validate(any) error
+}
+
+type compiledToolSchema struct {
+	parameters string
+	validator  toolArgumentsValidator
+}
+
+// CountTokens calls the adapted token-counting function.
+func (countStrategy TokenCounterFunc) CountTokens(ctx context.Context, targetModel Model, input Context) (TokenCount, error) {
+	return countStrategy(ctx, targetModel, input)
 }
 
 // ConservativeTokenCounter is a deterministic upper-bound fallback. It counts
@@ -63,6 +72,9 @@ func ResolveStreamOptions(targetModel Model, invocationOptions StreamOptions) (S
 		return StreamOptions{}, err
 	}
 	resolvedOptions.Reasoning = resolvedLevel
+	if resolvedOptions.MaxOutputTokens == 0 {
+		resolvedOptions.MaxOutputTokens = targetModel.MaxOutputTokens
+	}
 	if resolvedOptions.ThinkingBudget == 0 {
 		resolvedOptions.ThinkingBudget = configuredBudget
 	}
@@ -86,9 +98,13 @@ func ValidateToolCall(toolDefinitions []Tool, requestedCall ToolCall) error {
 		return fmt.Errorf("tool %q arguments are invalid JSON", requestedCall.Name)
 	}
 
-	compiledSchema, err := compileToolSchema(*definition)
-	if err != nil {
-		return err
+	compiledSchema := definition.validator
+	if compiledSchema == nil || definition.validated != string(definition.Parameters) {
+		var err error
+		compiledSchema, err = compileToolSchema(*definition)
+		if err != nil {
+			return err
+		}
 	}
 	argumentValue, err := jsonschema.UnmarshalJSON(bytes.NewReader(requestedCall.Arguments))
 	if err != nil {
