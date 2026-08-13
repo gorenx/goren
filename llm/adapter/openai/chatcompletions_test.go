@@ -186,6 +186,9 @@ func TestMissingFinishReasonIsTerminalStreamError(t *testing.T) {
 	if assistantReply.StopReason != llm.StopReasonError || assistantReply.ErrorMessage != "LLM stream ended without finish reason" {
 		t.Fatalf("unexpected terminal message: %+v", assistantReply)
 	}
+	if llm.Text(assistantReply) != "partial" {
+		t.Fatalf("runtime error lost partial content: %+v", assistantReply)
+	}
 }
 
 func TestProviderErrorFinishReasonIsTerminalStreamError(t *testing.T) {
@@ -205,6 +208,56 @@ func TestProviderErrorFinishReasonIsTerminalStreamError(t *testing.T) {
 	}
 	if assistantReply.StopReason != llm.StopReasonError || assistantReply.ErrorMessage != "provider finish reason: content_filter" {
 		t.Fatalf("unexpected terminal message: %+v", assistantReply)
+	}
+}
+
+func TestChatCompletionsMapsToolResultImagesAndEnforcesModelModality(t *testing.T) {
+	requestBody := make(chan map[string]any, 1)
+	testServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		requestBody <- body
+		writer.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(writer, `{"choices":[{"delta":{"content":"seen"},"finish_reason":"stop"}]}`)
+		fmt.Fprint(writer, "data: [DONE]\n\n")
+	}))
+	defer testServer.Close()
+
+	targetModel := model(testServer.URL)
+	targetModel.Input = []llm.InputModality{llm.InputText, llm.InputImage}
+	llmClient := newClient(t, targetModel, testServer.Client())
+	call := llm.AssistantMessage{
+		API: targetModel.API, Provider: targetModel.Provider, Model: targetModel.ID,
+		StopReason: llm.StopReasonToolUse,
+		Content:    []llm.AssistantContent{llm.ToolCall{ID: "call-1", Name: "inspect", Arguments: json.RawMessage(`{}`)}},
+	}
+	_, err := llmClient.Complete(context.Background(), llm.Context{Messages: []llm.Message{
+		call,
+		llm.ToolResultMessage{ToolCallID: "call-1", ToolName: "inspect", Content: []llm.ToolResultContent{llm.ImageContent{MIMEType: "image/png", Data: "aW1hZ2U="}}},
+	}}, llm.StreamOptions{APIKey: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages := (<-requestBody)["messages"].([]any)
+	if len(messages) != 3 {
+		t.Fatalf("got messages %#v", messages)
+	}
+	imageMessage := messages[2].(map[string]any)
+	content := imageMessage["content"].([]any)
+	if imageMessage["role"] != "user" || content[1].(map[string]any)["type"] != "image_url" {
+		t.Fatalf("got image replay %#v", imageMessage)
+	}
+
+	unsupported := model(testServer.URL)
+	unsupportedClient := newClient(t, unsupported, testServer.Client())
+	_, err = unsupportedClient.Stream(context.Background(), llm.Context{Messages: []llm.Message{
+		llm.UserMessage{Content: []llm.UserContent{llm.ImageContent{MIMEType: "image/png", Data: "aW1hZ2U="}}},
+	}}, llm.StreamOptions{APIKey: "secret"})
+	if !errors.Is(err, llm.ErrUnsupportedModality) {
+		t.Fatalf("got unsupported image error %v", err)
 	}
 }
 

@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"fmt"
 )
 
 // APIKeyResolver resolves credentials by serving provider, independently of API routing.
@@ -20,14 +21,33 @@ func (keyResolver APIKeyResolverFunc) APIKey(ctx context.Context, servingProvide
 
 // Client validates invocations and delegates them to one model-bound adapter.
 type Client struct {
+	targetModel    Model
 	targetProvider Provider
 	adapter        APIAdapter
 	keys           APIKeyResolver
+	tokens         TokenCounter
+}
+
+// ClientOption configures stable model-runtime behavior.
+type ClientOption func(*clientConfig)
+
+type clientConfig struct {
+	tokens TokenCounter
+}
+
+// WithTokenCounter replaces the explicit conservative fallback with a
+// model-aware tokenizer.
+func WithTokenCounter(countStrategy TokenCounter) ClientOption {
+	return func(configuration *clientConfig) {
+		if countStrategy != nil {
+			configuration.tokens = countStrategy
+		}
+	}
 }
 
 // NewClient validates targetModel, resolves its registered constructor, and creates a
 // model-bound adapter for the lifetime of the client.
-func NewClient(targetModel Model, adapterRegistry *Registry, keys APIKeyResolver) (*Client, error) {
+func NewClient(targetModel Model, adapterRegistry *Registry, keys APIKeyResolver, clientOptions ...ClientOption) (*Client, error) {
 	if err := ValidateModel(targetModel); err != nil {
 		return nil, err
 	}
@@ -49,20 +69,47 @@ func NewClient(targetModel Model, adapterRegistry *Registry, keys APIKeyResolver
 	if protocolAdapter.API() != targetSnapshot.API {
 		return nil, ErrAPIMismatch
 	}
+	configuration := clientConfig{tokens: ConservativeTokenCounter{}}
+	for _, configure := range clientOptions {
+		if configure != nil {
+			configure(&configuration)
+		}
+	}
 	return &Client{
+		targetModel:    targetSnapshot,
 		targetProvider: targetSnapshot.Provider,
 		adapter:        protocolAdapter,
 		keys:           keys,
+		tokens:         configuration.tokens,
 	}, nil
 }
 
 func cloneModel(targetModel Model) Model {
 	cloned := targetModel
 	cloned.Input = append([]InputModality(nil), targetModel.Input...)
+	cloned.ReasoningLevels = append([]ReasoningLevel(nil), targetModel.ReasoningLevels...)
+	if targetModel.ReasoningMap != nil {
+		cloned.ReasoningMap = make(map[ReasoningLevel]string, len(targetModel.ReasoningMap))
+		for level, mapped := range targetModel.ReasoningMap {
+			cloned.ReasoningMap[level] = mapped
+		}
+	}
+	if targetModel.ReasoningBudget != nil {
+		cloned.ReasoningBudget = make(map[ReasoningLevel]int, len(targetModel.ReasoningBudget))
+		for level, budget := range targetModel.ReasoningBudget {
+			cloned.ReasoningBudget[level] = budget
+		}
+	}
 	if targetModel.Headers != nil {
 		cloned.Headers = make(map[string]string, len(targetModel.Headers))
 		for name, value := range targetModel.Headers {
 			cloned.Headers[name] = value
+		}
+	}
+	if targetModel.ServiceTierCost != nil {
+		cloned.ServiceTierCost = make(map[string]float64, len(targetModel.ServiceTierCost))
+		for tier, multiplier := range targetModel.ServiceTierCost {
+			cloned.ServiceTierCost[tier] = multiplier
 		}
 	}
 	return cloned
@@ -78,7 +125,19 @@ func (llmClient *Client) Stream(
 	if err := ValidateContext(input); err != nil {
 		return nil, err
 	}
-	if err := ValidateOptions(invocationOptions); err != nil {
+	resolvedOptions, err := ResolveStreamOptions(llmClient.targetModel, invocationOptions)
+	if err != nil {
+		return nil, err
+	}
+	invocationOptions = resolvedOptions
+	if err := ValidateToolSelection(input.Tools, invocationOptions); err != nil {
+		return nil, err
+	}
+	prepared, err := PrepareContext(llmClient.targetModel, input)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := llmClient.validateBudget(ctx, prepared, invocationOptions); err != nil {
 		return nil, err
 	}
 	if invocationOptions.APIKey == "" && llmClient.keys != nil {
@@ -86,7 +145,63 @@ func (llmClient *Client) Stream(
 			invocationOptions.APIKey = key
 		}
 	}
-	return llmClient.adapter.Stream(ctx, input, invocationOptions)
+	return llmClient.adapter.Stream(ctx, prepared, invocationOptions)
+}
+
+// CountTokens prepares input for this Client's target model and returns the
+// configured tokenizer result for observability and Context assembly.
+func (llmClient *Client) CountTokens(ctx context.Context, input Context) (TokenCount, error) {
+	if err := ValidateContext(input); err != nil {
+		return TokenCount{}, err
+	}
+	prepared, err := PrepareContext(llmClient.targetModel, input)
+	if err != nil {
+		return TokenCount{}, err
+	}
+	countedTokens, err := llmClient.tokens.CountTokens(ctx, llmClient.targetModel, prepared)
+	if err != nil {
+		return TokenCount{}, fmt.Errorf("count LLM context tokens: %w", err)
+	}
+	if err := validateTokenCount(countedTokens); err != nil {
+		return TokenCount{}, err
+	}
+	return countedTokens, nil
+}
+
+func (llmClient *Client) validateBudget(ctx context.Context, input Context, invocationOptions StreamOptions) (TokenCount, error) {
+	countedTokens, err := llmClient.tokens.CountTokens(ctx, llmClient.targetModel, input)
+	if err != nil {
+		return TokenCount{}, fmt.Errorf("count LLM context tokens: %w", err)
+	}
+	if err := validateTokenCount(countedTokens); err != nil {
+		return TokenCount{}, err
+	}
+	reservedOutput := invocationOptions.MaxOutputTokens
+	if reservedOutput == 0 {
+		reservedOutput = llmClient.targetModel.MaxOutputTokens
+	}
+	if llmClient.targetModel.ContextWindow > 0 && countedTokens.InputTokens+reservedOutput > llmClient.targetModel.ContextWindow {
+		return countedTokens, fmt.Errorf(
+			"%w: input=%d reserved_output=%d limit=%d strategy=%s estimated=%t",
+			ErrContextWindowExceeded,
+			countedTokens.InputTokens,
+			reservedOutput,
+			llmClient.targetModel.ContextWindow,
+			countedTokens.Strategy,
+			countedTokens.Estimated,
+		)
+	}
+	return countedTokens, nil
+}
+
+func validateTokenCount(countedTokens TokenCount) error {
+	if countedTokens.InputTokens < 0 {
+		return errors.New("token counter returned a negative input count")
+	}
+	if countedTokens.Strategy == "" {
+		return errors.New("token counter must identify its strategy")
+	}
+	return nil
 }
 
 // Complete waits for the terminal assistant message without draining events.

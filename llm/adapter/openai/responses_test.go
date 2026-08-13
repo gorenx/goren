@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gorenx/goren/llm"
@@ -40,10 +41,10 @@ func TestResponsesStreamsReasoningAndTextAndMapsRequest(t *testing.T) {
 		writeSSE(writer, `{"type":"response.output_item.added","output_index":0,"item":{"id":"rs-1","type":"reasoning","summary":[]}}`)
 		writeSSE(writer, `{"type":"response.reasoning_summary_text.delta","item_id":"rs-1","delta":"considered"}`)
 		writeSSE(writer, `{"type":"response.output_item.done","output_index":0,"item":{"id":"rs-1","type":"reasoning","summary":[{"type":"summary_text","text":"considered"}],"encrypted_content":"encrypted"}}`)
-		writeSSE(writer, `{"type":"response.output_item.added","output_index":1,"item":{"id":"msg-1","type":"message","role":"assistant","status":"in_progress","content":[]}}`)
+		writeSSE(writer, `{"type":"response.output_item.added","output_index":1,"item":{"id":"msg-1","type":"message","role":"assistant","phase":"final_answer","status":"in_progress","content":[]}}`)
 		writeSSE(writer, `{"type":"response.output_text.delta","item_id":"msg-1","output_index":1,"content_index":0,"delta":"hel"}`)
 		writeSSE(writer, `{"type":"response.output_text.delta","item_id":"msg-1","output_index":1,"content_index":0,"delta":"lo"}`)
-		writeSSE(writer, `{"type":"response.output_item.done","output_index":1,"item":{"id":"msg-1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hello","annotations":[]}]}}`)
+		writeSSE(writer, `{"type":"response.output_item.done","output_index":1,"item":{"id":"msg-1","type":"message","role":"assistant","phase":"final_answer","status":"completed","content":[{"type":"output_text","text":"hello","annotations":[]}]}}`)
 		writeSSE(writer, `{"type":"response.completed","response":{"id":"resp-1","model":"served-model","status":"completed","usage":{"input_tokens":15,"output_tokens":4,"total_tokens":19,"input_tokens_details":{"cached_tokens":3,"cache_write_tokens":2},"output_tokens_details":{"reasoning_tokens":1}}}}`)
 	}))
 	defer testServer.Close()
@@ -57,6 +58,8 @@ func TestResponsesStreamsReasoningAndTextAndMapsRequest(t *testing.T) {
 	targetModel.Headers["X-Model-Config"] = "mutated"
 
 	previousReasoning := `{"id":"rs-prior","type":"reasoning","summary":[{"type":"summary_text","text":"prior thought"}],"encrypted_content":"prior-encrypted"}`
+	textReplay := &llm.ReplayMetadata{API: llm.APIOpenAIResponses, Provider: "compatible-provider", Model: "requested-model", Data: json.RawMessage(`{"item_id":"msg-prior"}`)}
+	toolReplay := &llm.ReplayMetadata{API: llm.APIOpenAIResponses, Provider: "compatible-provider", Model: "requested-model", Data: json.RawMessage(`{"item_id":"fc-prior"}`)}
 	responseStream, err := llmClient.Stream(context.Background(), llm.Context{
 		SystemPrompt: "Return JSON.",
 		Messages: []llm.Message{
@@ -70,14 +73,15 @@ func TestResponsesStreamsReasoningAndTextAndMapsRequest(t *testing.T) {
 				Model:    "requested-model",
 				Content: []llm.AssistantContent{
 					llm.ThinkingContent{Thinking: "prior thought", Signature: previousReasoning},
-					llm.TextContent{Text: "I need a tool."},
-					llm.ToolCall{ID: "call-prior|fc-prior", Name: "lookup", Arguments: json.RawMessage(`{"q":"memory"}`)},
+					llm.AssistantTextContent{Text: "I need a tool.", Phase: llm.AssistantTextPhaseCommentary, Metadata: textReplay},
+					llm.ToolCall{ID: "call|opaque", Name: "lookup", Arguments: json.RawMessage(`{"q":"memory"}`), Metadata: toolReplay},
 				},
 				StopReason: llm.StopReasonToolUse,
 			},
 			llm.ToolResultMessage{
-				ToolCallID: "call-prior|fc-prior",
+				ToolCallID: "call|opaque",
 				ToolName:   "lookup",
+				IsError:    true,
 				Content: []llm.ToolResultContent{
 					llm.TextContent{Text: "found"},
 					llm.ImageContent{MIMEType: "image/png", Data: "cmVzdWx0"},
@@ -92,9 +96,10 @@ func TestResponsesStreamsReasoningAndTextAndMapsRequest(t *testing.T) {
 			Strict:      true,
 		}},
 	}, llm.StreamOptions{
-		APIKey:    "secret",
-		Reasoning: llm.ReasoningMedium,
-		Headers:   map[string]string{"X-Invocation": "request"},
+		APIKey:     "secret",
+		Reasoning:  llm.ReasoningMedium,
+		ToolChoice: &llm.ToolChoice{Mode: llm.ToolChoiceFunction, Name: "lookup"},
+		Headers:    map[string]string{"X-Invocation": "request"},
 		ResponseFormat: &llm.JSONSchemaFormat{
 			Name:        "answer",
 			Description: "Answer envelope",
@@ -141,6 +146,10 @@ func TestResponsesStreamsReasoningAndTextAndMapsRequest(t *testing.T) {
 	if !ok || thinking.Thinking != "considered" || !json.Valid([]byte(thinking.Signature)) {
 		t.Fatalf("got thinking %#v", assistantReply.Content[0])
 	}
+	visible, ok := assistantReply.Content[1].(llm.AssistantTextContent)
+	if !ok || visible.Phase != llm.AssistantTextPhaseFinalAnswer || visible.Metadata == nil || string(visible.Metadata.Data) != `{"item_id":"msg-1"}` {
+		t.Fatalf("got text replay metadata %#v", assistantReply.Content[1])
+	}
 	assertEventTypes(t, events,
 		llm.StartEvent{},
 		llm.ThinkingStartEvent{},
@@ -180,6 +189,10 @@ func TestResponsesStreamsReasoningAndTextAndMapsRequest(t *testing.T) {
 	if !ok || len(tools) != 1 || tools[0].(map[string]any)["strict"] != true {
 		t.Fatalf("got tools %#v", body["tools"])
 	}
+	toolChoice, ok := body["tool_choice"].(map[string]any)
+	if !ok || toolChoice["type"] != "function" || toolChoice["name"] != "lookup" {
+		t.Fatalf("got tool choice %#v", body["tool_choice"])
+	}
 	assertResponsesInput(t, body["input"])
 }
 
@@ -213,8 +226,28 @@ func TestResponsesReassemblesToolCall(t *testing.T) {
 	if !ok {
 		t.Fatalf("got content %T", assistantReply.Content[0])
 	}
-	if assembledCall.ID != "call-2|fc-2" || assembledCall.Name != "lookup" || string(assembledCall.Arguments) != `{"q":"memory"}` {
+	if assembledCall.ID != "call-2" || assembledCall.Name != "lookup" || string(assembledCall.Arguments) != `{"q":"memory"}` {
 		t.Fatalf("got tool call %+v", assembledCall)
+	}
+}
+
+func TestResponsesRejectsMalformedSameModelReplayMetadata(t *testing.T) {
+	targetModel := responsesModel("https://example.test")
+	llmClient := newResponsesClient(t, targetModel, http.DefaultClient)
+	_, err := llmClient.Stream(context.Background(), llm.Context{Messages: []llm.Message{
+		llm.AssistantMessage{
+			API: targetModel.API, Provider: targetModel.Provider, Model: targetModel.ID,
+			StopReason: llm.StopReasonStop,
+			Content: []llm.AssistantContent{llm.AssistantTextContent{
+				Text: "prior", Metadata: &llm.ReplayMetadata{
+					API: targetModel.API, Provider: targetModel.Provider, Model: targetModel.ID,
+					Data: json.RawMessage(`{"unexpected":"value"}`),
+				},
+			}},
+		},
+	}}, llm.StreamOptions{APIKey: "secret"})
+	if err == nil || !strings.Contains(err.Error(), "replay metadata has no item ID") {
+		t.Fatalf("got replay metadata error %v", err)
 	}
 }
 
@@ -240,7 +273,10 @@ func TestResponsesIncompleteMaxOutputTokensMapsToLength(t *testing.T) {
 func TestResponsesFailureIsTerminalStreamError(t *testing.T) {
 	testServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "text/event-stream")
-		writeSSE(writer, `{"type":"response.failed","response":{"id":"resp-4","status":"failed","error":{"code":"server_error","message":"upstream failed"}}}`)
+		writeSSE(writer, `{"type":"response.created","response":{"id":"resp-4","model":"served-model"}}`)
+		writeSSE(writer, `{"type":"response.output_item.added","output_index":0,"item":{"id":"msg-partial","type":"message","role":"assistant","status":"in_progress","content":[]}}`)
+		writeSSE(writer, `{"type":"response.output_text.delta","item_id":"msg-partial","output_index":0,"content_index":0,"delta":"partial"}`)
+		writeSSE(writer, `{"type":"response.failed","response":{"id":"resp-4","model":"served-model","status":"failed","usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7},"error":{"code":"server_error","message":"upstream failed"}}}`)
 	}))
 	defer testServer.Close()
 
@@ -254,6 +290,9 @@ func TestResponsesFailureIsTerminalStreamError(t *testing.T) {
 	if assistantReply.StopReason != llm.StopReasonError ||
 		assistantReply.ErrorMessage != "OpenAI response failed (server_error): upstream failed" {
 		t.Fatalf("unexpected terminal message: %+v", assistantReply)
+	}
+	if llm.Text(assistantReply) != "partial" || assistantReply.ResponseID != "resp-4" || assistantReply.ResponseModel != "served-model" || assistantReply.Usage.TotalTokens != 7 {
+		t.Fatalf("runtime error lost partial state: %+v", assistantReply)
 	}
 }
 
@@ -290,18 +329,21 @@ func assertResponsesInput(t *testing.T, rawInput any) {
 	if item(2)["type"] != "reasoning" || item(2)["id"] != "rs-prior" {
 		t.Fatalf("got reasoning replay %#v", item(2))
 	}
-	if item(3)["type"] != "message" || item(3)["role"] != "assistant" {
+	if item(3)["type"] != "message" || item(3)["role"] != "assistant" || item(3)["id"] != "msg-prior" || item(3)["phase"] != "commentary" {
 		t.Fatalf("got assistant replay %#v", item(3))
 	}
-	if item(4)["type"] != "function_call" || item(4)["call_id"] != "call-prior" || item(4)["id"] != "fc-prior" {
+	if item(4)["type"] != "function_call" || item(4)["call_id"] != "call|opaque" || item(4)["id"] != "fc-prior" {
 		t.Fatalf("got function call replay %#v", item(4))
 	}
-	if item(5)["type"] != "function_call_output" || item(5)["call_id"] != "call-prior" {
+	if item(5)["type"] != "function_call_output" || item(5)["call_id"] != "call|opaque" {
 		t.Fatalf("got function output %#v", item(5))
 	}
 	output, ok := item(5)["output"].([]any)
 	if !ok || len(output) != 2 || output[0].(map[string]any)["type"] != "input_text" || output[1].(map[string]any)["type"] != "input_image" {
 		t.Fatalf("got function output content %#v", item(5)["output"])
+	}
+	if output[0].(map[string]any)["text"] != "[tool_error] found" {
+		t.Fatalf("got tool error output %#v", output[0])
 	}
 	if item(6)["role"] != "user" {
 		t.Fatalf("got latest user input %#v", item(6))

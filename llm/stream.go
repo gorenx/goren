@@ -115,6 +115,15 @@ type EventStream struct {
 	done     chan struct{}
 	terminal bool
 	result   AssistantMessage
+	partial  AssistantMessage
+}
+
+// Snapshot returns an isolated copy of the latest partial Assistant state.
+// Consumers may call it after any incremental event.
+func (responseStream *EventStream) Snapshot() AssistantMessage {
+	responseStream.mu.Lock()
+	defer responseStream.mu.Unlock()
+	return cloneAssistantMessage(responseStream.partial)
 }
 
 func newEventStream() *EventStream {
@@ -158,7 +167,7 @@ func (responseStream *EventStream) Result(ctx context.Context) (AssistantMessage
 		return AssistantMessage{}, ctx.Err()
 	case <-responseStream.done:
 		responseStream.mu.Lock()
-		assistantReply := responseStream.result
+		assistantReply := cloneAssistantMessage(responseStream.result)
 		responseStream.mu.Unlock()
 		return assistantReply, nil
 	}
@@ -174,11 +183,13 @@ func (responseStream *EventStream) push(streamEvent Event) bool {
 	switch terminal := streamEvent.(type) {
 	case DoneEvent:
 		responseStream.terminal = true
-		responseStream.result = terminal.Message
+		responseStream.result = cloneAssistantMessage(terminal.Message)
+		responseStream.partial = cloneAssistantMessage(terminal.Message)
 		close(responseStream.done)
 	case ErrorEvent:
 		responseStream.terminal = true
-		responseStream.result = terminal.Message
+		responseStream.result = cloneAssistantMessage(terminal.Message)
+		responseStream.partial = cloneAssistantMessage(terminal.Message)
 		close(responseStream.done)
 	}
 	responseStream.events = append(responseStream.events, streamEvent)
@@ -192,14 +203,17 @@ func (responseStream *EventStream) push(streamEvent Event) bool {
 // StreamEmitter is the adapter-facing write side of an EventStream.
 type StreamEmitter interface {
 	Emit(Event) bool
+	Update(AssistantMessage) bool
 	Done(AssistantMessage) bool
 	Fail(error) bool
+	FailWith(AssistantMessage, error) bool
 	Abort(error) bool
+	AbortWith(AssistantMessage, error) bool
 }
 
 type streamEmitter struct {
 	stream *EventStream
-	model  Model
+	target Model
 }
 
 func (emitter *streamEmitter) Emit(streamEvent Event) bool {
@@ -214,11 +228,22 @@ func (emitter *streamEmitter) Emit(streamEvent Event) bool {
 	}
 }
 
+func (emitter *streamEmitter) Update(assistantReply AssistantMessage) bool {
+	emitter.stream.mu.Lock()
+	defer emitter.stream.mu.Unlock()
+	if emitter.stream.terminal {
+		return false
+	}
+	emitter.stream.partial = cloneAssistantMessage(assistantReply)
+	return true
+}
+
 func (emitter *streamEmitter) Done(assistantReply AssistantMessage) bool {
 	if assistantReply.StopReason != StopReasonStop &&
 		assistantReply.StopReason != StopReasonLength &&
 		assistantReply.StopReason != StopReasonToolUse {
-		return emitter.Fail(
+		return emitter.FailWith(
+			assistantReply,
 			fmt.Errorf("invalid successful stop reason %q", assistantReply.StopReason),
 		)
 	}
@@ -226,25 +251,39 @@ func (emitter *streamEmitter) Done(assistantReply AssistantMessage) bool {
 }
 
 func (emitter *streamEmitter) Fail(err error) bool {
-	return emitter.finishError(StopReasonError, err)
+	return emitter.finishError(StopReasonError, emitter.stream.Snapshot(), err)
+}
+
+func (emitter *streamEmitter) FailWith(assistantReply AssistantMessage, err error) bool {
+	return emitter.finishError(StopReasonError, assistantReply, err)
 }
 
 func (emitter *streamEmitter) Abort(err error) bool {
-	return emitter.finishError(StopReasonAborted, err)
+	return emitter.finishError(StopReasonAborted, emitter.stream.Snapshot(), err)
 }
 
-func (emitter *streamEmitter) finishError(reason StopReason, err error) bool {
+func (emitter *streamEmitter) AbortWith(assistantReply AssistantMessage, err error) bool {
+	return emitter.finishError(StopReasonAborted, assistantReply, err)
+}
+
+func (emitter *streamEmitter) finishError(reason StopReason, assistantReply AssistantMessage, err error) bool {
 	if err == nil {
 		err = errors.New(string(reason))
 	}
-	assistantReply := AssistantMessage{
-		API:          emitter.model.API,
-		Provider:     emitter.model.Provider,
-		Model:        emitter.model.ID,
-		StopReason:   reason,
-		ErrorMessage: err.Error(),
-		Timestamp:    time.Now(),
+	if assistantReply.API == "" {
+		assistantReply.API = emitter.target.API
 	}
+	if assistantReply.Provider == "" {
+		assistantReply.Provider = emitter.target.Provider
+	}
+	if assistantReply.Model == "" {
+		assistantReply.Model = emitter.target.ID
+	}
+	if assistantReply.Timestamp.IsZero() {
+		assistantReply.Timestamp = time.Now()
+	}
+	assistantReply.StopReason = reason
+	assistantReply.ErrorMessage = err.Error()
 	return emitter.stream.push(ErrorEvent{Reason: reason, Message: assistantReply})
 }
 
@@ -255,7 +294,13 @@ type StreamProducer func(context.Context, StreamEmitter)
 // event, including when the producer panics or returns without terminating.
 func NewEventStream(ctx context.Context, targetModel Model, produce StreamProducer) *EventStream {
 	responseStream := newEventStream()
-	emitter := &streamEmitter{stream: responseStream, model: targetModel}
+	responseStream.partial = AssistantMessage{
+		API:       targetModel.API,
+		Provider:  targetModel.Provider,
+		Model:     targetModel.ID,
+		Timestamp: time.Now(),
+	}
+	emitter := &streamEmitter{stream: responseStream, target: targetModel}
 	go func() {
 		defer func() {
 			if recovered := recover(); recovered != nil {
@@ -272,4 +317,24 @@ func NewEventStream(ctx context.Context, targetModel Model, produce StreamProduc
 		produce(ctx, emitter)
 	}()
 	return responseStream
+}
+
+func cloneAssistantMessage(assistantReply AssistantMessage) AssistantMessage {
+	cloned := assistantReply
+	cloned.Content = make([]AssistantContent, 0, len(assistantReply.Content))
+	for _, contentBlock := range assistantReply.Content {
+		switch typedContent := contentBlock.(type) {
+		case AssistantTextContent:
+			typedContent.Metadata = cloneReplayMetadata(typedContent.Metadata)
+			cloned.Content = append(cloned.Content, typedContent)
+		case ThinkingContent:
+			typedContent.Metadata = cloneReplayMetadata(typedContent.Metadata)
+			cloned.Content = append(cloned.Content, typedContent)
+		case ToolCall:
+			typedContent.Arguments = cloneRawMessage(typedContent.Arguments)
+			typedContent.Metadata = cloneReplayMetadata(typedContent.Metadata)
+			cloned.Content = append(cloned.Content, typedContent)
+		}
+	}
+	return cloned
 }

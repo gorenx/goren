@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,11 +17,15 @@ import (
 )
 
 // New creates a model-bound OpenAI-compatible Chat Completions adapter.
-func New(targetModel llm.Model, httpClient *http.Client) (llm.APIAdapter, error) {
+func New(targetModel llm.Model, httpClient *http.Client, adapterOptions ...AdapterOption) (llm.APIAdapter, error) {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	protocolAdapter, err := newAdapter(targetModel, httpClient)
+	configuration, err := resolveAdapterConfig(adapterOptions)
+	if err != nil {
+		return nil, err
+	}
+	protocolAdapter, err := newAdapter(targetModel, httpClient, configuration)
 	if err != nil {
 		return nil, err
 	}
@@ -30,10 +36,11 @@ func New(targetModel llm.Model, httpClient *http.Client) (llm.APIAdapter, error)
 // with the official OpenAI Go SDK.
 type adapter struct {
 	targetModel llm.Model
-	httpClient  *http.Client
+	sdkClient   officialopenai.Client
+	config      adapterConfig
 }
 
-func newAdapter(targetModel llm.Model, httpClient *http.Client) (*adapter, error) {
+func newAdapter(targetModel llm.Model, httpClient *http.Client, configuration adapterConfig) (*adapter, error) {
 	if err := llm.ValidateModel(targetModel); err != nil {
 		return nil, err
 	}
@@ -47,7 +54,11 @@ func newAdapter(targetModel llm.Model, httpClient *http.Client) (*adapter, error
 	}
 	return &adapter{
 		targetModel: cloneModel(targetModel),
-		httpClient:  httpClient,
+		sdkClient: officialopenai.NewClient(
+			option.WithBaseURL(targetModel.BaseURL),
+			option.WithHTTPClient(httpClient),
+		),
+		config: configuration,
 	}, nil
 }
 
@@ -65,15 +76,24 @@ func (protocolAdapter *adapter) Stream(
 	if err := llm.ValidateContext(input); err != nil {
 		return nil, err
 	}
-	if err := llm.ValidateOptions(invocationOptions); err != nil {
+	resolvedOptions, err := llm.ResolveStreamOptions(protocolAdapter.targetModel, invocationOptions)
+	if err != nil {
 		return nil, err
 	}
+	invocationOptions = resolvedOptions
+	if err := llm.ValidateToolSelection(input.Tools, invocationOptions); err != nil {
+		return nil, err
+	}
+	prepared, err := llm.PrepareContext(protocolAdapter.targetModel, input)
+	if err != nil {
+		return nil, err
+	}
+	input = prepared
 
 	completionRequest, err := protocolAdapter.makeRequest(input, invocationOptions)
 	if err != nil {
 		return nil, err
 	}
-
 	return llm.NewEventStream(
 		ctx, protocolAdapter.targetModel,
 		func(ctx context.Context, eventSink llm.StreamEmitter) {
@@ -81,7 +101,7 @@ func (protocolAdapter *adapter) Stream(
 				eventSink.Fail(fmt.Errorf("no API key for provider %q", protocolAdapter.targetModel.Provider))
 				return
 			}
-			protocolAdapter.run(ctx, eventSink, completionRequest, invocationOptions)
+			protocolAdapter.run(ctx, eventSink, completionRequest, input.Tools, invocationOptions)
 		},
 	), nil
 }
@@ -90,54 +110,157 @@ func (protocolAdapter *adapter) run(
 	ctx context.Context,
 	eventSink llm.StreamEmitter,
 	completionRequest officialopenai.ChatCompletionNewParams,
+	toolDefinitions []llm.Tool,
 	invocationOptions llm.StreamOptions,
 ) {
-	sdkClient := officialopenai.NewClient(
-		option.WithAPIKey(invocationOptions.APIKey),
-		option.WithBaseURL(protocolAdapter.targetModel.BaseURL),
-		option.WithHTTPClient(protocolAdapter.httpClient),
-	)
-	sdkStream := sdkClient.Chat.Completions.NewStreaming(
-		ctx,
+	requestContext := ctx
+	if invocationOptions.Timeout > 0 {
+		var cancel context.CancelFunc
+		requestContext, cancel = context.WithTimeout(ctx, invocationOptions.Timeout)
+		defer cancel()
+	}
+	if err := runBeforeRequest(requestContext, protocolAdapter.targetModel, invocationOptions); err != nil {
+		eventSink.Fail(err)
+		return
+	}
+	transformOptions, err := requestTransformOptions(requestContext, protocolAdapter.targetModel, invocationOptions, completionRequest)
+	if err != nil {
+		eventSink.Fail(err)
+		return
+	}
+	var httpResponse *http.Response
+	sdkStream := protocolAdapter.sdkClient.Chat.Completions.NewStreaming(
+		requestContext,
 		completionRequest,
-		protocolAdapter.requestOptions(invocationOptions)...,
+		append(protocolAdapter.requestOptions(invocationOptions, &httpResponse), transformOptions...)...,
 	)
 	defer sdkStream.Close()
 
 	if err := sdkStream.Err(); err != nil {
-		finishTransportError(ctx, eventSink, err)
+		finishTransportError(requestContext, eventSink, err)
+		return
+	}
+	if err := runAfterResponse(requestContext, invocationOptions, httpResponse); err != nil {
+		eventSink.Fail(err)
 		return
 	}
 
 	eventSink.Emit(llm.StartEvent{})
-	responseAssembler := newResponseState(protocolAdapter.targetModel, eventSink)
+	responseAssembler := newResponseState(protocolAdapter.targetModel, eventSink, toolDefinitions, invocationOptions.ServiceTier)
 	for sdkStream.Next() {
 		if err := responseAssembler.consume(sdkStream.Current()); err != nil {
-			eventSink.Fail(err)
+			finishStateError(requestContext, eventSink, responseAssembler.snapshot(), err)
 			return
 		}
 	}
 	if err := sdkStream.Err(); err != nil {
-		finishTransportError(ctx, eventSink, err)
+		finishStateError(requestContext, eventSink, responseAssembler.snapshot(), err)
 		return
 	}
 	assistantReply, err := responseAssembler.finish()
 	if err != nil {
-		eventSink.Fail(err)
+		finishStateError(requestContext, eventSink, assistantReply, err)
 		return
 	}
 	eventSink.Done(assistantReply)
 }
 
-func (protocolAdapter *adapter) requestOptions(invocationOptions llm.StreamOptions) []option.RequestOption {
-	opts := make([]option.RequestOption, 0, len(protocolAdapter.targetModel.Headers)+len(invocationOptions.Headers))
+func (protocolAdapter *adapter) requestOptions(
+	invocationOptions llm.StreamOptions,
+	httpResponse **http.Response,
+) []option.RequestOption {
+	opts := make([]option.RequestOption, 0, len(protocolAdapter.targetModel.Headers)+len(invocationOptions.Headers)+8)
+	opts = append(opts, option.WithAPIKey(invocationOptions.APIKey))
 	for name, value := range protocolAdapter.targetModel.Headers {
 		opts = append(opts, option.WithHeader(name, value))
 	}
 	for name, value := range invocationOptions.Headers {
 		opts = append(opts, option.WithHeader(name, value))
 	}
+	if invocationOptions.MaxRetries != nil {
+		opts = append(opts, option.WithMaxRetries(*invocationOptions.MaxRetries))
+	}
+	if invocationOptions.Timeout > 0 {
+		opts = append(opts, option.WithRequestTimeout(invocationOptions.Timeout))
+	}
+	if httpResponse != nil {
+		opts = append(opts, option.WithResponseInto(httpResponse))
+	}
+	if invocationOptions.RequestID != "" {
+		opts = append(opts, option.WithHeader("x-client-request-id", invocationOptions.RequestID))
+	}
+	if invocationOptions.SessionID != "" && (invocationOptions.CacheKey != "" || invocationOptions.CacheRetention != "") {
+		for _, headerName := range protocolAdapter.config.compat.SessionAffinityHeaders {
+			opts = append(opts, option.WithHeader(headerName, invocationOptions.SessionID))
+		}
+	}
+	if invocationOptions.MaxRetryDelay > 0 {
+		opts = append(opts, option.WithMiddleware(capRetryDelay(invocationOptions.MaxRetryDelay)))
+	}
+	if protocolAdapter.targetModel.Reasoning && invocationOptions.Reasoning != "" {
+		_, mappedEffort, _, _ := llm.ResolveReasoning(protocolAdapter.targetModel, invocationOptions.Reasoning)
+		switch protocolAdapter.config.compat.ReasoningFormat {
+		case ReasoningFormatOpenRouter:
+			opts = append(opts, option.WithJSONSet("reasoning.effort", mappedEffort))
+		case ReasoningFormatDeepSeek:
+			thinkingType := "enabled"
+			if invocationOptions.Reasoning == llm.ReasoningOff {
+				thinkingType = "disabled"
+				opts = append(opts, option.WithJSONSet("thinking.type", thinkingType))
+				break
+			}
+			opts = append(opts,
+				option.WithJSONSet("thinking.type", thinkingType),
+				option.WithJSONSet("reasoning_effort", mappedEffort),
+			)
+		case ReasoningFormatQwen:
+			opts = append(opts, option.WithJSONSet("enable_thinking", invocationOptions.Reasoning != llm.ReasoningOff))
+		}
+	}
+	if invocationOptions.ThinkingBudget > 0 && protocolAdapter.config.compat.ThinkingBudgetField != "" {
+		opts = append(opts, option.WithJSONSet(protocolAdapter.config.compat.ThinkingBudgetField, invocationOptions.ThinkingBudget))
+	}
 	return opts
+}
+
+func capRetryDelay(maximum time.Duration) option.Middleware {
+	return func(request *http.Request, next option.MiddlewareNext) (*http.Response, error) {
+		response, err := next(request)
+		if response == nil || maximum <= 0 {
+			return response, err
+		}
+		delay, ok := responseRetryDelay(response)
+		if !ok {
+			retryCount, _ := strconv.Atoi(request.Header.Get("X-Stainless-Retry-Count"))
+			delay = min(8*time.Second, time.Duration(0.5*float64(time.Second)*math.Pow(2, float64(retryCount))))
+		}
+		delay = min(delay, maximum)
+		milliseconds := max(int64(0), delay.Milliseconds())
+		response.Header.Set("Retry-After-Ms", strconv.FormatInt(milliseconds, 10))
+		response.Header.Del("Retry-After")
+		return response, err
+	}
+}
+
+func responseRetryDelay(response *http.Response) (time.Duration, bool) {
+	if milliseconds := response.Header.Get("Retry-After-Ms"); milliseconds != "" {
+		value, err := strconv.ParseFloat(milliseconds, 64)
+		if err == nil {
+			return max(0, time.Duration(value*float64(time.Millisecond))), true
+		}
+	}
+	value := response.Header.Get("Retry-After")
+	if value == "" {
+		return 0, false
+	}
+	if seconds, err := strconv.ParseFloat(value, 64); err == nil {
+		return max(0, time.Duration(seconds*float64(time.Second))), true
+	}
+	retryAt, err := http.ParseTime(value)
+	if err != nil {
+		return 0, false
+	}
+	return max(0, time.Until(retryAt)), true
 }
 
 func finishTransportError(ctx context.Context, eventSink llm.StreamEmitter, err error) {
@@ -148,20 +271,30 @@ func finishTransportError(ctx context.Context, eventSink llm.StreamEmitter, err 
 	eventSink.Fail(err)
 }
 
+func finishStateError(ctx context.Context, eventSink llm.StreamEmitter, assistantReply llm.AssistantMessage, err error) {
+	if ctx.Err() != nil {
+		eventSink.AbortWith(assistantReply, ctx.Err())
+		return
+	}
+	eventSink.FailWith(assistantReply, err)
+}
+
 func (protocolAdapter *adapter) makeRequest(
 	input llm.Context,
 	invocationOptions llm.StreamOptions,
 ) (officialopenai.ChatCompletionNewParams, error) {
-	outgoingMessages, err := mapMessages(input)
+	outgoingMessages, err := mapMessages(input, protocolAdapter.config.compat)
 	if err != nil {
 		return officialopenai.ChatCompletionNewParams{}, err
 	}
 	completionRequest := officialopenai.ChatCompletionNewParams{
 		Model:    protocolAdapter.targetModel.ID,
 		Messages: outgoingMessages,
-		StreamOptions: officialopenai.ChatCompletionStreamOptionsParam{
+	}
+	if !protocolAdapter.config.compat.DisableStreamingUsage {
+		completionRequest.StreamOptions = officialopenai.ChatCompletionStreamOptionsParam{
 			IncludeUsage: officialopenai.Bool(true),
-		},
+		}
 	}
 	if invocationOptions.Temperature != nil {
 		completionRequest.Temperature = officialopenai.Float(*invocationOptions.Temperature)
@@ -171,15 +304,50 @@ func (protocolAdapter *adapter) makeRequest(
 		maxOutputTokens = protocolAdapter.targetModel.MaxOutputTokens
 	}
 	if maxOutputTokens > 0 {
-		completionRequest.MaxCompletionTokens = officialopenai.Int(int64(maxOutputTokens))
+		if protocolAdapter.config.compat.MaxTokensField == MaxTokensLegacy {
+			completionRequest.MaxTokens = officialopenai.Int(int64(maxOutputTokens))
+		} else {
+			completionRequest.MaxCompletionTokens = officialopenai.Int(int64(maxOutputTokens))
+		}
 	}
-	if invocationOptions.Reasoning != "" {
-		completionRequest.ReasoningEffort = officialopenai.ReasoningEffort(invocationOptions.Reasoning)
+	if invocationOptions.ReasoningSummary != "" {
+		return officialopenai.ChatCompletionNewParams{}, errors.New("OpenAI Chat Completions does not support reasoning summary")
+	}
+	if invocationOptions.ThinkingBudget > 0 && protocolAdapter.config.compat.ThinkingBudgetField == "" {
+		return officialopenai.ChatCompletionNewParams{}, errors.New("OpenAI-compatible provider has no configured thinking budget field")
+	}
+	if protocolAdapter.targetModel.Reasoning && invocationOptions.Reasoning != "" && protocolAdapter.config.compat.ReasoningFormat == ReasoningFormatOpenAI {
+		_, mappedEffort, _, err := llm.ResolveReasoning(protocolAdapter.targetModel, invocationOptions.Reasoning)
+		if err != nil {
+			return officialopenai.ChatCompletionNewParams{}, err
+		}
+		completionRequest.ReasoningEffort = officialopenai.ReasoningEffort(mappedEffort)
+	}
+	if invocationOptions.CacheKey != "" {
+		completionRequest.PromptCacheKey = officialopenai.String(invocationOptions.CacheKey)
+	}
+	if invocationOptions.CacheRetention != "" {
+		completionRequest.PromptCacheRetention = officialopenai.ChatCompletionNewParamsPromptCacheRetention(invocationOptions.CacheRetention)
+	}
+	if len(invocationOptions.Metadata) > 0 {
+		completionRequest.Metadata = invocationOptions.Metadata
+	}
+	if invocationOptions.ServiceTier != "" {
+		completionRequest.ServiceTier = officialopenai.ChatCompletionNewParamsServiceTier(invocationOptions.ServiceTier)
 	}
 
-	completionRequest.Tools, err = mapTools(input.Tools)
+	completionRequest.Tools, err = mapTools(input.Tools, protocolAdapter.config.compat)
 	if err != nil {
 		return officialopenai.ChatCompletionNewParams{}, err
+	}
+	if invocationOptions.ToolChoice != nil {
+		if protocolAdapter.config.compat.DisableToolChoice {
+			return officialopenai.ChatCompletionNewParams{}, errors.New("OpenAI-compatible provider does not support tool choice")
+		}
+		completionRequest.ToolChoice, err = mapChatToolChoice(*invocationOptions.ToolChoice)
+		if err != nil {
+			return officialopenai.ChatCompletionNewParams{}, err
+		}
 	}
 	if invocationOptions.ResponseFormat != nil {
 		responseSchema, err := mapResponseFormat(*invocationOptions.ResponseFormat)
@@ -198,49 +366,63 @@ type responseBlock struct {
 	id        strings.Builder
 	name      strings.Builder
 	arguments strings.Builder
+	closed    bool
 }
 
 type responseState struct {
-	model         llm.Model
-	emitter       llm.StreamEmitter
-	blocks        []*responseBlock
-	text          *responseBlock
-	thinking      *responseBlock
-	tools         map[int]*responseBlock
-	responseID    string
-	responseModel string
-	usage         llm.Usage
-	stopReason    llm.StopReason
-	finishError   string
-	hasFinished   bool
+	target          llm.Model
+	emitter         llm.StreamEmitter
+	blocks          []*responseBlock
+	text            *responseBlock
+	thinking        *responseBlock
+	tools           map[int]*responseBlock
+	responseID      string
+	responseModel   string
+	tokenUsage      llm.Usage
+	stopReason      llm.StopReason
+	finishError     string
+	hasFinished     bool
+	toolDefinitions []llm.Tool
+	serviceTier     string
 }
 
-func newResponseState(targetModel llm.Model, eventSink llm.StreamEmitter) *responseState {
+func newResponseState(
+	targetModel llm.Model,
+	eventSink llm.StreamEmitter,
+	toolDefinitions []llm.Tool,
+	serviceTier string,
+) *responseState {
 	return &responseState{
-		model:      targetModel,
-		emitter:    eventSink,
-		tools:      make(map[int]*responseBlock),
-		stopReason: llm.StopReasonStop,
+		target:          targetModel,
+		emitter:         eventSink,
+		tools:           make(map[int]*responseBlock),
+		toolDefinitions: cloneToolDefinitions(toolDefinitions),
+		stopReason:      llm.StopReasonStop,
+		serviceTier:     serviceTier,
 	}
 }
 
 func (responseAssembler *responseState) consume(chunk officialopenai.ChatCompletionChunk) error {
+	defer func() { responseAssembler.emitter.Update(responseAssembler.snapshot()) }()
 	if chunk.ID != "" {
 		responseAssembler.responseID = chunk.ID
 	}
 	if chunk.Model != "" {
 		responseAssembler.responseModel = chunk.Model
 	}
+	if chunk.ServiceTier != "" {
+		responseAssembler.serviceTier = string(chunk.ServiceTier)
+	}
 	if chunk.JSON.Usage.Valid() {
 		cacheRead := int(chunk.Usage.PromptTokensDetails.CachedTokens)
 		cacheWrite := int(chunk.Usage.PromptTokensDetails.CacheWriteTokens)
-		responseAssembler.usage = llm.Usage{
+		responseAssembler.tokenUsage = llm.Usage{
 			InputTokens:      max(0, int(chunk.Usage.PromptTokens)-cacheRead-cacheWrite),
 			OutputTokens:     int(chunk.Usage.CompletionTokens),
 			CacheReadTokens:  cacheRead,
 			CacheWriteTokens: cacheWrite,
 		}
-		responseAssembler.usage.TotalTokens = responseAssembler.usage.InputTokens + responseAssembler.usage.OutputTokens + cacheRead + cacheWrite
+		responseAssembler.tokenUsage.TotalTokens = responseAssembler.tokenUsage.InputTokens + responseAssembler.tokenUsage.OutputTokens + cacheRead + cacheWrite
 	}
 
 	for _, choice := range chunk.Choices {
@@ -251,12 +433,12 @@ func (responseAssembler *responseState) consume(chunk officialopenai.ChatComplet
 		if reasoningText != "" {
 			index, contentBlock := responseAssembler.ensureThinking(signature)
 			contentBlock.text.WriteString(reasoningText)
-			responseAssembler.emitter.Emit(llm.ThinkingDeltaEvent{ContentIndex: index, Delta: reasoningText})
+			responseAssembler.emit(llm.ThinkingDeltaEvent{ContentIndex: index, Delta: reasoningText})
 		}
 		if choice.Delta.Content != "" {
 			index, contentBlock := responseAssembler.ensureText()
 			contentBlock.text.WriteString(choice.Delta.Content)
-			responseAssembler.emitter.Emit(llm.TextDeltaEvent{ContentIndex: index, Delta: choice.Delta.Content})
+			responseAssembler.emit(llm.TextDeltaEvent{ContentIndex: index, Delta: choice.Delta.Content})
 		}
 		for _, delta := range choice.Delta.ToolCalls {
 			index, contentBlock, created := responseAssembler.ensureTool(int(delta.Index))
@@ -267,7 +449,7 @@ func (responseAssembler *responseState) consume(chunk officialopenai.ChatComplet
 				contentBlock.name.WriteString(delta.Function.Name)
 			}
 			if created {
-				responseAssembler.emitter.Emit(llm.ToolCallStartEvent{
+				responseAssembler.emit(llm.ToolCallStartEvent{
 					ContentIndex: index,
 					ID:           contentBlock.id.String(),
 					Name:         contentBlock.name.String(),
@@ -275,7 +457,7 @@ func (responseAssembler *responseState) consume(chunk officialopenai.ChatComplet
 			}
 			if delta.Function.Arguments != "" {
 				contentBlock.arguments.WriteString(delta.Function.Arguments)
-				responseAssembler.emitter.Emit(llm.ToolCallDeltaEvent{ContentIndex: index, Delta: delta.Function.Arguments})
+				responseAssembler.emit(llm.ToolCallDeltaEvent{ContentIndex: index, Delta: delta.Function.Arguments})
 			}
 		}
 		if choice.FinishReason != "" {
@@ -306,7 +488,7 @@ func (responseAssembler *responseState) ensureText() (int, *responseBlock) {
 	if responseAssembler.text == nil {
 		responseAssembler.text = &responseBlock{kind: "text"}
 		responseAssembler.blocks = append(responseAssembler.blocks, responseAssembler.text)
-		responseAssembler.emitter.Emit(llm.TextStartEvent{ContentIndex: len(responseAssembler.blocks) - 1})
+		responseAssembler.emit(llm.TextStartEvent{ContentIndex: len(responseAssembler.blocks) - 1})
 	}
 	return responseAssembler.blockIndex(responseAssembler.text), responseAssembler.text
 }
@@ -315,7 +497,7 @@ func (responseAssembler *responseState) ensureThinking(signature string) (int, *
 	if responseAssembler.thinking == nil {
 		responseAssembler.thinking = &responseBlock{kind: "thinking", signature: signature}
 		responseAssembler.blocks = append(responseAssembler.blocks, responseAssembler.thinking)
-		responseAssembler.emitter.Emit(llm.ThinkingStartEvent{ContentIndex: len(responseAssembler.blocks) - 1})
+		responseAssembler.emit(llm.ThinkingStartEvent{ContentIndex: len(responseAssembler.blocks) - 1})
 	}
 	return responseAssembler.blockIndex(responseAssembler.thinking), responseAssembler.thinking
 }
@@ -342,48 +524,35 @@ func (responseAssembler *responseState) blockIndex(contentBlock *responseBlock) 
 }
 
 func (responseAssembler *responseState) finish() (llm.AssistantMessage, error) {
-	assistantReply := llm.AssistantMessage{
-		API:           responseAssembler.model.API,
-		Provider:      responseAssembler.model.Provider,
-		Model:         responseAssembler.model.ID,
-		ResponseModel: responseAssembler.responseModel,
-		ResponseID:    responseAssembler.responseID,
-		Usage:         responseAssembler.usage,
-		StopReason:    responseAssembler.stopReason,
-		Timestamp:     time.Now(),
-	}
-	assistantReply.Usage.Cost = responseAssembler.model.CalculateCost(assistantReply.Usage)
 	for index, contentBlock := range responseAssembler.blocks {
-		switch contentBlock.kind {
-		case "text":
-			visibleText := contentBlock.text.String()
-			assistantReply.Content = append(assistantReply.Content, llm.TextContent{Text: visibleText})
-			responseAssembler.emitter.Emit(llm.TextEndEvent{ContentIndex: index, Content: visibleText})
-		case "thinking":
-			thinkingText := contentBlock.text.String()
-			assistantReply.Content = append(assistantReply.Content, llm.ThinkingContent{
-				Thinking:  thinkingText,
-				Signature: contentBlock.signature,
-			})
-			responseAssembler.emitter.Emit(llm.ThinkingEndEvent{ContentIndex: index, Content: thinkingText})
-		case "tool":
+		if contentBlock.kind == "tool" {
 			arguments := contentBlock.arguments.String()
 			if arguments == "" {
 				arguments = `{}`
 			}
 			if !json.Valid([]byte(arguments)) {
-				return llm.AssistantMessage{}, fmt.Errorf("tool call %d has invalid streamed arguments", index)
+				return responseAssembler.snapshot(), fmt.Errorf("tool call %d has invalid streamed arguments", index)
 			}
-			assembledCall := llm.ToolCall{
-				ID:        contentBlock.id.String(),
-				Name:      contentBlock.name.String(),
-				Arguments: json.RawMessage(arguments),
+		}
+		contentBlock.closed = true
+	}
+	assistantReply := responseAssembler.snapshot()
+	for index, contentBlock := range responseAssembler.blocks {
+		switch contentBlock.kind {
+		case "text":
+			responseAssembler.emit(llm.TextEndEvent{ContentIndex: index, Content: contentBlock.text.String()})
+		case "thinking":
+			responseAssembler.emit(llm.ThinkingEndEvent{ContentIndex: index, Content: contentBlock.text.String()})
+		case "tool":
+			arguments := contentBlock.arguments.String()
+			if arguments == "" {
+				arguments = `{}`
 			}
-			assistantReply.Content = append(assistantReply.Content, assembledCall)
-			responseAssembler.emitter.Emit(llm.ToolCallEndEvent{ContentIndex: index, ToolCall: assembledCall})
+			assembledCall := llm.ToolCall{ID: contentBlock.id.String(), Name: contentBlock.name.String(), Arguments: json.RawMessage(arguments)}
+			responseAssembler.emit(llm.ToolCallEndEvent{ContentIndex: index, ToolCall: assembledCall})
 		}
 	}
-	if len(responseAssembler.tools) > 0 && responseAssembler.stopReason == llm.StopReasonStop {
+	if len(responseAssembler.tools) > 0 && assistantReply.StopReason == llm.StopReasonStop {
 		assistantReply.StopReason = llm.StopReasonToolUse
 	}
 	if !responseAssembler.hasFinished {
@@ -392,5 +561,71 @@ func (responseAssembler *responseState) finish() (llm.AssistantMessage, error) {
 	if responseAssembler.finishError != "" {
 		return assistantReply, errors.New(responseAssembler.finishError)
 	}
+	if err := llm.ValidateAssistantToolCalls(responseAssembler.toolDefinitions, assistantReply); err != nil {
+		return assistantReply, err
+	}
 	return assistantReply, nil
+}
+
+func (responseAssembler *responseState) snapshot() llm.AssistantMessage {
+	assistantReply := llm.AssistantMessage{
+		API:           responseAssembler.target.API,
+		Provider:      responseAssembler.target.Provider,
+		Model:         responseAssembler.target.ID,
+		ResponseModel: responseAssembler.responseModel,
+		ResponseID:    responseAssembler.responseID,
+		Usage:         responseAssembler.tokenUsage,
+		StopReason:    responseAssembler.stopReason,
+		Timestamp:     time.Now(),
+	}
+	assistantReply.Usage.ServiceTier = responseAssembler.serviceTier
+	assistantReply.Usage.Cost = responseAssembler.target.CalculateCostForTier(
+		assistantReply.Usage, responseAssembler.serviceTier)
+	for _, contentBlock := range responseAssembler.blocks {
+		switch contentBlock.kind {
+		case "text":
+			visibleText := contentBlock.text.String()
+			assistantReply.Content = append(assistantReply.Content,
+				llm.AssistantTextContent{Text: visibleText, Phase: llm.AssistantTextPhaseUnspecified},
+			)
+		case "thinking":
+			thinkingText := contentBlock.text.String()
+			assistantReply.Content = append(assistantReply.Content, llm.ThinkingContent{
+				Thinking:  thinkingText,
+				Signature: contentBlock.signature,
+			})
+		case "tool":
+			arguments := contentBlock.arguments.String()
+			var completedArguments json.RawMessage
+			if arguments == "" && contentBlock.closed {
+				completedArguments = json.RawMessage(`{}`)
+			} else if json.Valid([]byte(arguments)) {
+				completedArguments = json.RawMessage(arguments)
+			}
+			assembledCall := llm.ToolCall{
+				ID:        contentBlock.id.String(),
+				Name:      contentBlock.name.String(),
+				Arguments: completedArguments,
+			}
+			assistantReply.Content = append(assistantReply.Content, assembledCall)
+		}
+	}
+	if len(responseAssembler.tools) > 0 && assistantReply.StopReason == llm.StopReasonStop {
+		assistantReply.StopReason = llm.StopReasonToolUse
+	}
+	return assistantReply
+}
+
+func cloneToolDefinitions(toolDefinitions []llm.Tool) []llm.Tool {
+	cloned := make([]llm.Tool, len(toolDefinitions))
+	for index, toolDefinition := range toolDefinitions {
+		cloned[index] = toolDefinition
+		cloned[index].Parameters = append(json.RawMessage(nil), toolDefinition.Parameters...)
+	}
+	return cloned
+}
+
+func (responseAssembler *responseState) emit(streamEvent llm.Event) bool {
+	responseAssembler.emitter.Update(responseAssembler.snapshot())
+	return responseAssembler.emitter.Emit(streamEvent)
 }
