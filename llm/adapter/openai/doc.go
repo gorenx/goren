@@ -1,3 +1,3 @@
-// Package openai adapts the OpenAI-compatible Chat Completions protocol to the
+// Package openai adapts OpenAI Chat Completions and Responses protocols to the
 // provider-neutral goren streaming contract.
 package openai
