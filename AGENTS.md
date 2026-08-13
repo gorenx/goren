@@ -36,6 +36,8 @@ For documentation-only changes, verify Markdown links and run `git diff --check`
 
 Use idiomatic Go formatting and naming. Keep package names short and lowercase, exported declarations documented, and ownership boundaries visible in dependencies. Prefer table-driven tests where several cases share behavior, and run the narrowest relevant test during iteration before the full suite. Keep commits focused; pull requests should state the responsibility changed, design implications, checks run, and unresolved decisions.
 
+When one task changes both code and documentation, they must be committed separately. Put implementation, code-facing tests, and dependency changes in the code commit; put design documents, documentation indexes, and other prose-only changes in a separate documentation commit. Never combine code and documentation in the same commit.
+
 ## Security and Configuration
 
 Never commit credentials. `.env` is ignored; document required variables with safe placeholders in a tracked file such as `.env.example`.
