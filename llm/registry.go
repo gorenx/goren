@@ -8,56 +8,53 @@ import (
 	"sync"
 )
 
-// APIAdapter streams one wire protocol into normalized goren events.
+// APIAdapter streams one model-bound wire protocol into normalized LLM events.
 type APIAdapter interface {
 	API() API
-	Stream(context.Context, Model, Context, StreamOptions) (*EventStream, error)
+	Stream(context.Context, Context, StreamOptions) (*EventStream, error)
 }
 
-type adapterRegistration struct {
-	adapter  APIAdapter
-	sourceID string
-}
+// AdapterConstructor creates a model-bound adapter from generic model configuration.
+type AdapterConstructor func(Model) (APIAdapter, error)
 
-// Registry owns the active adapter for each wire protocol.
+// Registry owns the active adapter constructor for each wire protocol.
 type Registry struct {
-	mu       sync.RWMutex
-	adapters map[API]adapterRegistration
+	mu           sync.RWMutex
+	constructors map[API]AdapterConstructor
 }
 
 // NewRegistry returns an empty API adapter registry.
 func NewRegistry() *Registry {
-	return &Registry{adapters: make(map[API]adapterRegistration)}
+	return &Registry{constructors: make(map[API]AdapterConstructor)}
 }
 
-// Register installs or replaces the adapter for its wire protocol.
-func (adapterRegistry *Registry) Register(protocolAdapter APIAdapter, sourceID string) error {
-	if protocolAdapter == nil {
-		return errors.New("API adapter is nil")
-	}
-	protocol := protocolAdapter.API()
+// Register installs or replaces an adapter constructor for protocol.
+func (adapterRegistry *Registry) Register(protocol API, construct AdapterConstructor) error {
 	if protocol == "" {
-		return errors.New("API adapter has no API")
+		return errors.New("adapter API is required")
+	}
+	if construct == nil {
+		return errors.New("adapter constructor is nil")
 	}
 	adapterRegistry.mu.Lock()
-	adapterRegistry.adapters[protocol] = adapterRegistration{adapter: protocolAdapter, sourceID: sourceID}
+	adapterRegistry.constructors[protocol] = construct
 	adapterRegistry.mu.Unlock()
 	return nil
 }
 
-// Adapter returns the adapter currently registered for api.
-func (adapterRegistry *Registry) Adapter(protocol API) (APIAdapter, bool) {
+// Constructor returns the adapter constructor registered for protocol.
+func (adapterRegistry *Registry) Constructor(protocol API) (AdapterConstructor, bool) {
 	adapterRegistry.mu.RLock()
-	registration, ok := adapterRegistry.adapters[protocol]
+	construct, ok := adapterRegistry.constructors[protocol]
 	adapterRegistry.mu.RUnlock()
-	return registration.adapter, ok
+	return construct, ok
 }
 
 // APIs returns registered protocols in stable lexical order.
 func (adapterRegistry *Registry) APIs() []API {
 	adapterRegistry.mu.RLock()
-	protocols := make([]API, 0, len(adapterRegistry.adapters))
-	for protocol := range adapterRegistry.adapters {
+	protocols := make([]API, 0, len(adapterRegistry.constructors))
+	for protocol := range adapterRegistry.constructors {
 		protocols = append(protocols, protocol)
 	}
 	adapterRegistry.mu.RUnlock()
@@ -65,28 +62,24 @@ func (adapterRegistry *Registry) APIs() []API {
 	return protocols
 }
 
-// UnregisterSource removes all adapters installed by one source.
-func (adapterRegistry *Registry) UnregisterSource(sourceID string) {
+// Unregister removes the adapter constructor registered for protocol.
+func (adapterRegistry *Registry) Unregister(protocol API) {
 	adapterRegistry.mu.Lock()
-	for protocol, registration := range adapterRegistry.adapters {
-		if registration.sourceID == sourceID {
-			delete(adapterRegistry.adapters, protocol)
-		}
-	}
+	delete(adapterRegistry.constructors, protocol)
 	adapterRegistry.mu.Unlock()
 }
 
-// Clear removes all registered adapters.
+// Clear removes all registered adapter constructors.
 func (adapterRegistry *Registry) Clear() {
 	adapterRegistry.mu.Lock()
-	clear(adapterRegistry.adapters)
+	clear(adapterRegistry.constructors)
 	adapterRegistry.mu.Unlock()
 }
 
-func (adapterRegistry *Registry) resolve(protocol API) (APIAdapter, error) {
-	protocolAdapter, ok := adapterRegistry.Adapter(protocol)
+func (adapterRegistry *Registry) resolve(protocol API) (AdapterConstructor, error) {
+	construct, ok := adapterRegistry.Constructor(protocol)
 	if !ok {
 		return nil, fmt.Errorf("%w for API %q", ErrAdapterNotRegistered, protocol)
 	}
-	return protocolAdapter, nil
+	return construct, nil
 }

@@ -3,9 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+
 	"github.com/gorenx/goren/llm"
 	openaiadapter "github.com/gorenx/goren/llm/adapter/openai"
-	"os"
 )
 
 func main() {
@@ -15,26 +16,31 @@ func main() {
 		return
 	}
 
+	targetModel := llm.Model{
+		ID:              "gpt-4.1-mini",
+		Name:            "GPT-4.1 mini",
+		API:             llm.APIOpenAICompletions,
+		Provider:        "openai",
+		BaseURL:         "https://api.openai.com/v1",
+		Input:           []llm.InputModality{llm.InputText},
+		ContextWindow:   1_047_576,
+		MaxOutputTokens: 4_096,
+	}
 	adapterRegistry := llm.NewRegistry()
-	if err := adapterRegistry.Register(openaiadapter.New(nil), "built-in"); err != nil {
+	if err := adapterRegistry.Register(
+		llm.APIOpenAICompletions,
+		func(targetModel llm.Model) (llm.APIAdapter, error) {
+			return openaiadapter.New(targetModel, nil)
+		},
+	); err != nil {
 		panic(err)
 	}
-	llmClient, err := llm.NewClient(adapterRegistry, nil)
+	llmClient, err := llm.NewClient(targetModel, adapterRegistry, nil)
 	if err != nil {
 		panic(err)
 	}
 	assistantReply, err := llmClient.Complete(
 		context.Background(),
-		llm.Model{
-			ID:              "gpt-4.1-mini",
-			Name:            "GPT-4.1 mini",
-			API:             llm.APIOpenAICompletions,
-			Provider:        "openai",
-			BaseURL:         "https://api.openai.com/v1",
-			Input:           []llm.InputModality{llm.InputText},
-			ContextWindow:   1_047_576,
-			MaxOutputTokens: 4_096,
-		},
 		llm.Context{
 			Messages: []llm.Message{llm.NewTextMessage("Reply with exactly: hello")},
 		},
