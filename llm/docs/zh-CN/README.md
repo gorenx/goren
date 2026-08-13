@@ -6,7 +6,7 @@
 
 ## 文档职责
 
-- [01 LLM Runtime 能力需求与实现状态](./01-capability-requirements-and-status.md)：记录 LLM-01～LLM-18 的实现证据、后续能力、明确决策和验收条件。
+- [01 LLM Runtime 能力需求与实现状态](./01-capability-requirements-and-status.md)：记录 LLM-01～LLM-18 的实现证据、明确决策和验收条件，并区分未纳入当前范围的参考能力。
 
 ## 维护规则
 

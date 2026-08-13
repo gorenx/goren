@@ -2,7 +2,7 @@
 
 - 状态：当前有效
 - 最后核对：2026-08-13
-- Goren 基线：`e2f2ba8`
+- Goren 基线：`febcf16`
 - pi 参考快照：`20b78eafb` 的 `packages/ai`
 
 ## 1. 目的与边界
@@ -11,7 +11,7 @@
 
 1. Goren `llm` 当前已经实现并验证了什么；
 2. 为保证现有 OpenAI adapters 正确运行，还缺少什么；
-3. 如果继续扩展到 pi 已支持的 Provider 和运行场景，需要按什么顺序补充能力。
+3. 从 pi 观察到但尚未被 Goren 接受为需求的能力有哪些。
 
 本文只覆盖 Model Runtime。责任边界保持为：
 
@@ -20,7 +20,7 @@
 - Agent、Tools 和 Workflow 不由 `llm` 包实现；
 - Provider wire 字段、兼容差异、认证细节和 transport 生命周期由 adapter 或 composition root 所有。
 
-pi 用于发现能力和验证边界，不自动构成 Goren 的需求。矩阵中的“基线”表示当前已经存在的能力；“顺序 1”是现有契约正确性要求；“顺序 2”是生产运行能力；“按需”只在选择相应 Provider 或产品能力后进入实现范围。
+pi 用于发现能力和验证边界，不自动构成 Goren 的需求。LLM-01～LLM-18 是当前已经接受并实现的能力；LLM-19～LLM-22 是原有的按需能力，其中其他 Provider 已明确暂不实现。能力差距只有在产品范围和可观察行为被确认后，才能新增为编号需求。
 
 ## 2. 状态定义
 
@@ -29,6 +29,7 @@ pi 用于发现能力和验证边界，不自动构成 Goren 的需求。矩阵�
 | 已实现并验证 | 已有生产代码和针对性自动化测试 |
 | 部分实现 | 已有类型或部分路径，但关键行为缺失或未验证 |
 | 未实现 | 当前没有可用实现 |
+| 暂不实现 | 已明确不进入当前实现范围，不表示现有实现缺陷 |
 
 ## 3. 实现状态矩阵
 
@@ -40,7 +41,7 @@ pi 用于发现能力和验证边界，不自动构成 Goren 的需求。矩阵�
 | LLM-04 | OpenAI Chat Completions | 调用兼容 Chat Completions 的基础 SSE 接口 | 基线 | 已实现并验证 | [`chatcompletions.go`](../../adapter/openai/chatcompletions.go)、[`chatcompletions_test.go`](../../adapter/openai/chatcompletions_test.go) |
 | LLM-05 | OpenAI Responses | 流式处理 reasoning、text、function call、usage 和失败事件 | 基线 | 已实现并验证 | [`responses.go`](../../adapter/openai/responses.go)、[`responses_stream.go`](../../adapter/openai/responses_stream.go)、[`responses_test.go`](../../adapter/openai/responses_test.go) |
 | LLM-06 | 结构化输出与成本 | 请求 JSON Schema 输出并按 token 类别计算成本 | 基线 | 已实现并验证 | [`types.go`](../../types.go)、[`chatcompletions_test.go`](../../adapter/openai/chatcompletions_test.go)、[`responses_test.go`](../../adapter/openai/responses_test.go) |
-| LLM-07 | 跨模型消息转换 | 切换 Model 或 Provider 时生成合法、可回放的历史输入 | 1 | 已实现并验证 | [`context_prepare.go`](../../context_prepare.go)、[`context_runtime_test.go`](../../context_runtime_test.go) |
+| LLM-07 | 跨模型消息转换 | 切换 Model 或 Provider 时生成合法、可回放的历史输入 | 1 | 已实现并验证 | [`context_prepare.go`](../../context_prepare.go)、[`context_runtime_test.go`](../../context_runtime_test.go)、[`chatcompletions_test.go`](../../adapter/openai/chatcompletions_test.go)、[`responses_test.go`](../../adapter/openai/responses_test.go) |
 | LLM-08 | 运行期错误保留 partial | 失败或取消时返回已生成内容、identity 和 usage | 1 | 已实现并验证 | [`stream.go`](../../stream.go)、[`context_runtime_test.go`](../../context_runtime_test.go)、[`responses_test.go`](../../adapter/openai/responses_test.go) |
 | LLM-09 | Assistant 文本阶段与回放元数据 | 区分 `commentary`、`final_answer` 并精确回放 Responses item | 1 | 已实现并验证 | [`types.go`](../../types.go)、[`responses_map.go`](../../adapter/openai/responses_map.go)、[`responses_test.go`](../../adapter/openai/responses_test.go) |
 | LLM-10 | Context 稳定序列化 | 支持 Session 持久化、跨进程传输和确定性回放 | 1 | 已实现并验证 | [`context_codec.go`](../../context_codec.go)、[`context_runtime_test.go`](../../context_runtime_test.go) |
@@ -52,13 +53,10 @@ pi 用于发现能力和验证边界，不自动构成 Goren 的需求。矩阵�
 | LLM-16 | 调用控制 | 支持 timeout、retry、cache、session、hooks、metadata 和 service tier | 2 | 已实现并验证 | [`types.go`](../../types.go)、[`chatcompletions.go`](../../adapter/openai/chatcompletions.go)、[`responses.go`](../../adapter/openai/responses.go)、[`compatibility_test.go`](../../adapter/openai/compatibility_test.go)、[`deepseek_e2e_test.go`](../../adapter/openai/deepseek_e2e_test.go) |
 | LLM-17 | Reasoning capability negotiation | 支持 off、档位映射、clamp、budget 和 summary | 2 | 已实现并验证 | [`runtime.go`](../../runtime.go)、[`config.go`](../../adapter/openai/config.go)、[`context_runtime_test.go`](../../context_runtime_test.go)、[`responses_test.go`](../../adapter/openai/responses_test.go) |
 | LLM-18 | Tool 选择与错误结果语义 | 表达 auto、none、required、指定函数及工具错误 | 2 | 已实现并验证 | [`types.go`](../../types.go)、[`map_model.go`](../../adapter/openai/map_model.go)、[`responses_map.go`](../../adapter/openai/responses_map.go)、[`compatibility_test.go`](../../adapter/openai/compatibility_test.go) |
-| LLM-19 | 其他 Provider 协议 | 接入非 OpenAI wire protocol | 按需 | 部分实现 | 当前只有 [`openai-completions`、`openai-responses`](../../types_api.go) |
+| LLM-19 | 其他 Provider 协议 | 接入非 OpenAI wire protocol | 按需 | 暂不实现 | 当前只维护 [`openai-completions`、`openai-responses`](../../types_api.go) 及其兼容配置 |
 | LLM-20 | Model 目录 | 查询模型、Provider、价格、上下文和能力 | 按需 | 未实现 | 仅支持调用方手工构造 `Model` |
 | LLM-21 | Credential 集成 | 解析环境变量、OAuth、ADC 或云凭据 | 按需 | 部分实现 | [`APIKeyResolver`](../../client.go) 只提供注入边界，没有默认实现 |
 | LLM-22 | Image generation | 使用独立模型和 API 生成或编辑图片 | 按需 | 未实现 | — |
-| LLM-23 | Diagnostics 与 overflow 识别 | 记录 transport 失败并统一判断 Context overflow | 2 | 部分实现 | 已有 [`ErrContextWindowExceeded`](../../context_prepare.go)，尚无统一 diagnostics 和 rate-limit 分类 |
-| LLM-24 | Session transport 生命周期 | 管理缓存连接、fallback、续传和资源清理 | 按需 | 未实现 | — |
-| LLM-25 | 可编程测试 adapter | 无外部 API 地测试 Agent 流、失败、usage 和缓存 | 2 | 未实现 | 测试内有私有 scripted adapter，没有可复用实现 |
 
 ## 4. 顺序 1：现有契约正确性
 
@@ -77,7 +75,9 @@ pi 用于发现能力和验证边界，不自动构成 Goren 的需求。矩阵�
 
 pi 参考：`providers/transform-messages.ts`、`providers/openai-responses-shared.ts` 和 `providers/openai-completions.ts`。
 
-实现：`Client.Stream` 和两个 OpenAI adapters 都先调用 `PrepareContext`。转换会深复制输入，移除失败 turn，跨模型剥离 opaque metadata，把可见 thinking 降级为普通 Assistant 文本，规范化 tool call ID，并为孤立调用补充 `IsError=true` 的结果。
+实现：`Client.Stream` 是调用准备的唯一入口，只执行一次 `PrepareContext`，并用同一份结果计算 Context 预算和调用 adapter。转换不会修改调用方输入；它创建新的顶层消息集合，按需改写跨模型消息，并复制异步工具参数校验仍需持有的 Tool Schema。未变化的消息内容采用结构共享，adapter 必须在 `Stream` 返回前同步完成 wire request 映射，不能在异步 producer 中继续读取这些消息。两个 OpenAI adapters 只消费已经校验、解析并准备完成的输入，不再重复调用 `ValidateContext`、`ResolveStreamOptions`、`ValidateToolSelection` 或 `PrepareContext`。
+
+`PrepareContext` 仍负责移除失败 turn、跨模型剥离 opaque metadata、把可见 thinking 降级为普通 Assistant 文本，并为孤立调用补充 `IsError=true` 的结果。通用 Context 保留原始 tool call identity；Chat Completions 和 Responses adapter 在生成 wire request 时分别规范化 call ID / item ID，并用同一映射发送对应 tool result。
 
 ### 4.2 LLM-08 运行期错误保留 partial
 
@@ -158,7 +158,7 @@ final_answer
 - 校验不执行 Tool，也不修改原始 `ToolCall`；
 - 不允许 string-to-number 等隐式 coercion。
 
-实现：Tool Schema 在启动调用前编译；完整 `ToolCall` 在成功终止前使用 JSON Schema Draft 校验，错误携带 tool name 和 instance path。校验只读取参数，不执行 Tool，也不修改参数。
+实现：Tool Schema 在启动调用前编译一次，并作为本次调用的内部派生校验状态随准备后的 Tool 定义交给 adapter；完整 `ToolCall` 在成功终止前复用该校验器执行 JSON Schema Draft 校验，不会按 ToolCall 重复编译。缓存与原始 Schema 内容绑定，Schema 发生变化时必须重新编译。错误携带 tool name 和 instance path；校验只读取参数，不执行 Tool，也不修改参数。内部校验状态不进入 Context JSON wire schema。
 
 ### 4.7 LLM-13 输入模态能力执行
 
@@ -177,7 +177,7 @@ final_answer
 
 ### 5.1 LLM-14 Stream partial snapshot
 
-`EventStream.Snapshot` 返回隔离副本。两个 OpenAI assembler 在发布 start、delta 和 end 事件前更新 snapshot；tool arguments 的临时字符串仍只通过 delta 观察，只有完整合法 JSON 才进入持久化 `ToolCall.Arguments`。LLM-23 的统一 diagnostics 与 LLM-25 的公开测试 adapter 不在 LLM-01～LLM-18 范围内，继续保留在矩阵中。
+`EventStream.Snapshot` 返回隔离副本。两个 OpenAI assembler 在发布 start、delta 和 end 事件前更新 snapshot；tool arguments 的临时字符串仍只通过 delta 观察，只有完整合法 JSON 才进入持久化 `ToolCall.Arguments`。
 
 ### 5.2 Adapter 兼容与调用控制
 
@@ -198,6 +198,8 @@ LLM-15、LLM-16 和 LLM-17 归 adapter 配置与调用策略所有。通用层�
 
 - `Compatibility` 由 OpenAI adapter constructor 注入，覆盖 role、token 字段、stream usage、strict tool、tool-result name、reasoning wire shape、session header 和 tool error 前缀；不进入通用 `Model`；
 - adapter 构造时创建并长期持有 model-bound SDK client；每次调用只创建独立 SDK stream，API key 通过 request option 注入；
+- `Client.Stream` 冻结调用选项并准备一次 Context；adapter 不作为绕过 Client 校验、预算和转换的独立运行入口；
+- Max output 默认值在 `ResolveStreamOptions` 中统一解析，Context 预算和两个 OpenAI API 使用同一个结果；两个 API 的认证、headers、retry、timeout、response capture、session affinity 和 thinking budget 共用一条 transport option 组装路径；
 - `StreamOptions` 在异步 transport 启动前深复制 headers、metadata、schema 和控制指针，调用方后续修改不会污染在途请求；
 - timeout 和 cache 默认不启用；`MaxRetries=nil` 使用 SDK 默认值，显式 `0` 禁用重试，`MaxRetryDelay` 对 SDK 重试等待设置上限；
 - `RequestID` 作为 `X-Client-Request-Id` 发送，并在调用前限制为最长 512 字节的 ASCII 字符串；
@@ -237,9 +239,11 @@ LLM-18 的验收条件：
 
 实现：`ToolChoice` 表达四种通用选择；指定函数必须存在于本次 Context。OpenAI 两种 API 都映射 choice。它们没有通用原生 Tool 错误字段，因此使用 adapter 可配置、默认值为 `[tool_error] ` 的文本前缀。
 
-## 6. 按需扩展能力
+## 6. 按需能力与未纳入范围的参考能力
 
-### 6.1 Provider protocols
+旧矩阵中的 LLM-23～LLM-25 来自 pi 与 Goren 的能力差距梳理，没有独立的产品需求和验收依据，因此不再作为编号需求。下面分别记录 LLM-19～LLM-22 的按需范围，以及被移除三项的判断依据。
+
+### 6.1 其他 Provider 协议（LLM-19）
 
 pi 当前参考实现还包括：
 
@@ -251,15 +255,30 @@ pi 当前参考实现还包括：
 - Azure OpenAI Responses；
 - OpenAI Codex Responses。
 
-这些 adapter 只在产品确定需要对应 Provider 后进入实现范围。多个厂商共享 OpenAI-compatible wire protocol 时，应优先扩展兼容配置，而不是复制 adapter。
+当前不新增其他 Provider 协议。Goren 继续维护 OpenAI Chat Completions、OpenAI Responses 以及现有 OpenAI-compatible 配置；上面的 pi adapters 仅供边界对照，不属于当前实现范围。
 
-### 6.2 Model 目录与 Credential
+### 6.2 Model 目录、Credential 与 Image generation（LLM-20～LLM-22）
 
-Model 目录负责模型发现、能力、价格和限制，不负责保存密钥。Credential resolver 或 composition root 负责环境变量、OAuth、ADC 和云凭据；adapter 只消费已经解析的凭据。
+Model 目录、默认 Credential resolver 和 Image generation 都尚无当前产品需求。现有调用方继续显式构造 `Model`，通过 `APIKeyResolver` 或调用参数注入 credential。将来只有在调用方式或产品场景确定后，才分别定义需求；不能因为 pi 已实现就自动加入 Goren 路线图。
 
-### 6.3 Image generation 与 Session transport
+### 6.3 Provider 返回的 Context overflow
 
-Image generation 是独立于对话 LLM 的能力，需要独立的 input/output model 和 adapter registry。WebSocket cache、continuation 和 session resource cleanup 只属于明确支持这些 transport 的 adapter，不能进入所有 Client 的默认生命周期。
+当前 LLM-11 已在 adapter 调用前执行 Context 硬上限检查。pi 的 `isContextOverflow` 主要处理不同 Provider 的错误文本、静默截断和非标准终止方式；在不扩展其他 Provider 的当前范围内，不新增统一错误正则、通用 diagnostics 或 rate-limit 分类需求。
+
+如果将来 Workflow 确认需要根据 OpenAI 服务端返回的 overflow 类型执行特定恢复，再以该可观察行为单独立项；不得把 diagnostics、overflow 和 rate limit 合并成一个没有验收边界的需求。
+
+### 6.4 OpenAI 服务端状态与 Codex WebSocket
+
+OpenAI Responses 的服务端上下文续接和 pi 的 Codex WebSocket 缓存不是同一项能力：
+
+- `previous_response_id` 或 Conversation 属于 OpenAI Responses 的请求与服务端状态语义；
+- pi 的 cached WebSocket、connection-scoped continuation、WebSocket 到 SSE fallback 和 session resource cleanup 属于 Codex adapter 的传输实现。
+
+Goren 当前使用调用方持有的完整 `Context`，Responses 请求设置 `store=false`，没有已确认的 Codex WebSocket 需求。是否采用 OpenAI 服务端状态需要单独决策；不能用笼统的“Session transport 生命周期”代替，也不能把 Codex 连接管理加入所有 Client。
+
+### 6.5 可复用测试替身
+
+pi 的 `faux` Provider 是面向测试和示例的 opt-in 测试替身，不是生产 Provider。Goren 当前测试已经可以通过测试文件内的 `scriptedAdapter` 控制成功与失败路径。只有当 Memory Agent、Workflow 或外部使用方出现共同的确定性测试需求时，再决定是否提供公开测试包；当前不把它列为 Model Runtime 待实现需求。
 
 ## 7. 明确不复制的 pi 设计
 
@@ -268,6 +287,7 @@ Image generation 是独立于对话 LLM 的能力，需要独立的 input/output
 - 不在 adapter constructor 之外再包装独立 Factory；
 - `commentary` 建模为 Assistant content phase，不建模为 Agent 生命周期状态；
 - Provider compatibility 不堆成一个包含大量可选字段的通用 `Model`；
+- 不把 Codex WebSocket 连接缓存和资源清理抽象成所有 Client 的通用 Session 生命周期；
 - pi 的通用 Tool 仍然只是 function tool，不能据此声称已经有 Web Search、Computer 或 MCP 的通用模型；
 - 保留 Goren 已有的 JSON Schema structured response，不因 pi 通用接口缺少它而删除。
 
@@ -279,9 +299,11 @@ Image generation 是独立于对话 LLM 的能力，需要独立的 input/output
 2. Tool 参数严格按 JSON Schema 校验，不做类型 coercion；
 3. 支持注入精确 tokenizer，默认 fallback 是明确标记的保守上界；
 4. timeout、retry、cache、session、request ID、hooks、metadata、service tier 等跨 Provider 语义进入 `StreamOptions`，wire 差异进入 adapter `Compatibility`；
-5. Context wire schema 首版固定为 version `1`。
+5. Context wire schema 首版固定为 version `1`；
+6. 当前不新增其他 Provider 协议；pi 的额外 adapters 只作参考；
+7. 原 LLM-23～LLM-25 是能力差距，不是已确认需求，已从编号矩阵移除。
 
-后续范围仍包括：第一个非 OpenAI Provider、Model 目录来源、Credential 默认实现归属、LLM-23 diagnostics、LLM-24 session transport 和 LLM-25 公开测试 adapter。这些事项不影响 LLM-07～LLM-18 的当前实现。
+LLM-19 已明确暂不实现；LLM-20～LLM-22 仍按需决定。第 6.3～6.5 节只保留被移除能力的范围判断，不构成路线图。新增需求时必须先明确调用方、可观察行为和验收条件，再分配新的稳定编号。
 
 ## 9. Public contract 迁移影响
 
