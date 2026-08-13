@@ -52,7 +52,7 @@ func (script *scriptedAdapter) Stream(
 		eventSink.Emit(llm.TextDeltaEvent{ContentIndex: 0, Delta: script.script.response})
 		eventSink.Emit(llm.TextEndEvent{ContentIndex: 0, Content: script.script.response})
 		eventSink.Done(llm.AssistantMessage{
-			Content:    []llm.AssistantContent{llm.TextContent{Text: script.script.response}},
+			Content:    []llm.AssistantContent{llm.AssistantTextContent{Text: script.script.response}},
 			API:        script.targetModel.API,
 			Provider:   script.targetModel.Provider,
 			Model:      script.targetModel.ID,
@@ -194,6 +194,29 @@ func TestProducerWithoutTerminalEventBecomesRuntimeError(t *testing.T) {
 	}
 	if assistantReply.StopReason != llm.StopReasonError || assistantReply.ErrorMessage != llm.ErrInvalidStream.Error() {
 		t.Fatalf("unexpected terminal message: %+v", assistantReply)
+	}
+}
+
+func TestClientEnforcesContextWindowBeforeAdapterCall(t *testing.T) {
+	adapterRegistry := llm.NewRegistry()
+	constructScript := &constructorScript{api: "test", response: "should not run"}
+	if err := adapterRegistry.Register(constructScript.api, constructScript.construct); err != nil {
+		t.Fatal(err)
+	}
+	targetModel := validModel(constructScript.api, "provider")
+	tokenCounter := llm.TokenCounterFunc(func(context.Context, llm.Model, llm.Context) (llm.TokenCount, error) {
+		return llm.TokenCount{InputTokens: 8_000, Strategy: "exact-test"}, nil
+	})
+	llmClient, err := llm.NewClient(targetModel, adapterRegistry, nil, llm.WithTokenCounter(tokenCounter))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = llmClient.Stream(context.Background(), validContext(), llm.StreamOptions{})
+	if !errors.Is(err, llm.ErrContextWindowExceeded) {
+		t.Fatalf("got error %v", err)
+	}
+	if constructScript.streamCalls != 0 {
+		t.Fatalf("adapter was called %d times", constructScript.streamCalls)
 	}
 }
 

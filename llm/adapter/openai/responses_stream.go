@@ -20,31 +20,37 @@ type responsesBlock struct {
 	text      strings.Builder
 	arguments strings.Builder
 	closed    bool
+	phase     llm.AssistantTextPhase
 }
 
 type responsesState struct {
-	model         llm.Model
-	emitter       llm.StreamEmitter
-	blocks        []*responsesBlock
-	items         map[string]*responsesBlock
-	responseID    string
-	responseModel string
-	usage         llm.Usage
-	stopReason    llm.StopReason
-	finishError   string
-	hasFinished   bool
+	target          llm.Model
+	emitter         llm.StreamEmitter
+	blocks          []*responsesBlock
+	items           map[string]*responsesBlock
+	responseID      string
+	responseModel   string
+	tokenUsage      llm.Usage
+	stopReason      llm.StopReason
+	finishError     string
+	hasFinished     bool
+	toolDefinitions []llm.Tool
+	serviceTier     string
 }
 
-func newResponsesState(targetModel llm.Model, eventSink llm.StreamEmitter) *responsesState {
+func newResponsesState(targetModel llm.Model, eventSink llm.StreamEmitter, toolDefinitions []llm.Tool, serviceTier string) *responsesState {
 	return &responsesState{
-		model:      targetModel,
-		emitter:    eventSink,
-		items:      make(map[string]*responsesBlock),
-		stopReason: llm.StopReasonStop,
+		target:          targetModel,
+		emitter:         eventSink,
+		items:           make(map[string]*responsesBlock),
+		stopReason:      llm.StopReasonStop,
+		toolDefinitions: cloneToolDefinitions(toolDefinitions),
+		serviceTier:     serviceTier,
 	}
 }
 
 func (responseAssembler *responsesState) consume(streamEvent responses.ResponseStreamEventUnion) error {
+	defer func() { responseAssembler.emitter.Update(responseAssembler.snapshot()) }()
 	switch streamEvent.Type {
 	case "response.created":
 		responseAssembler.captureIdentity(streamEvent.Response)
@@ -55,7 +61,7 @@ func (responseAssembler *responsesState) consume(streamEvent responses.ResponseS
 	case "response.reasoning_summary_part.done":
 		if contentBlock := responseAssembler.items[streamEvent.ItemID]; contentBlock != nil && contentBlock.kind == "thinking" {
 			contentBlock.text.WriteString("\n\n")
-			responseAssembler.emitter.Emit(llm.ThinkingDeltaEvent{
+			responseAssembler.emit(llm.ThinkingDeltaEvent{
 				ContentIndex: responseAssembler.blockIndex(contentBlock),
 				Delta:        "\n\n",
 			})
@@ -84,6 +90,8 @@ func (responseAssembler *responsesState) consume(streamEvent responses.ResponseS
 			responseAssembler.finishError = "OpenAI response incomplete without a reason"
 		}
 	case "response.failed":
+		responseAssembler.captureIdentity(streamEvent.Response)
+		responseAssembler.captureUsage(streamEvent.Response)
 		return responseFailure(streamEvent.Response)
 	case "error":
 		if streamEvent.Code != "" {
@@ -107,20 +115,21 @@ func (responseAssembler *responsesState) startItem(item responses.ResponseOutput
 	case "reasoning":
 		contentBlock.kind = "thinking"
 		responseAssembler.appendBlock(contentBlock)
-		responseAssembler.emitter.Emit(llm.ThinkingStartEvent{ContentIndex: responseAssembler.blockIndex(contentBlock)})
+		responseAssembler.emit(llm.ThinkingStartEvent{ContentIndex: responseAssembler.blockIndex(contentBlock)})
 	case "message":
 		contentBlock.kind = "text"
+		contentBlock.phase = normalizeAssistantTextPhase(item.Phase)
 		responseAssembler.appendBlock(contentBlock)
-		responseAssembler.emitter.Emit(llm.TextStartEvent{ContentIndex: responseAssembler.blockIndex(contentBlock)})
+		responseAssembler.emit(llm.TextStartEvent{ContentIndex: responseAssembler.blockIndex(contentBlock)})
 	case "function_call":
 		contentBlock.kind = "tool"
 		contentBlock.callID = item.CallID
 		contentBlock.name = item.Name
 		contentBlock.arguments.WriteString(item.Arguments.OfString)
 		responseAssembler.appendBlock(contentBlock)
-		responseAssembler.emitter.Emit(llm.ToolCallStartEvent{
+		responseAssembler.emit(llm.ToolCallStartEvent{
 			ContentIndex: responseAssembler.blockIndex(contentBlock),
-			ID:           responsesToolCallID(contentBlock.callID, contentBlock.itemID),
+			ID:           contentBlock.callID,
 			Name:         contentBlock.name,
 		})
 	default:
@@ -140,7 +149,7 @@ func (responseAssembler *responsesState) appendThinking(itemID string, delta str
 		return err
 	}
 	contentBlock.text.WriteString(delta)
-	responseAssembler.emitter.Emit(llm.ThinkingDeltaEvent{
+	responseAssembler.emit(llm.ThinkingDeltaEvent{
 		ContentIndex: responseAssembler.blockIndex(contentBlock),
 		Delta:        delta,
 	})
@@ -153,7 +162,7 @@ func (responseAssembler *responsesState) appendText(itemID string, delta string)
 		return err
 	}
 	contentBlock.text.WriteString(delta)
-	responseAssembler.emitter.Emit(llm.TextDeltaEvent{
+	responseAssembler.emit(llm.TextDeltaEvent{
 		ContentIndex: responseAssembler.blockIndex(contentBlock),
 		Delta:        delta,
 	})
@@ -166,7 +175,7 @@ func (responseAssembler *responsesState) appendToolArguments(itemID string, delt
 		return err
 	}
 	contentBlock.arguments.WriteString(delta)
-	responseAssembler.emitter.Emit(llm.ToolCallDeltaEvent{
+	responseAssembler.emit(llm.ToolCallDeltaEvent{
 		ContentIndex: responseAssembler.blockIndex(contentBlock),
 		Delta:        delta,
 	})
@@ -183,7 +192,7 @@ func (responseAssembler *responsesState) finishToolArguments(itemID string, argu
 		delta := strings.TrimPrefix(arguments, partial)
 		if delta != "" {
 			contentBlock.arguments.WriteString(delta)
-			responseAssembler.emitter.Emit(llm.ToolCallDeltaEvent{
+			responseAssembler.emit(llm.ToolCallDeltaEvent{
 				ContentIndex: responseAssembler.blockIndex(contentBlock),
 				Delta:        delta,
 			})
@@ -233,14 +242,17 @@ func (responseAssembler *responsesState) finishItem(item responses.ResponseOutpu
 			contentBlock.text.WriteString(finalText)
 		}
 		contentBlock.signature = item.RawJSON()
-		responseAssembler.emitter.Emit(llm.ThinkingEndEvent{ContentIndex: index, Content: contentBlock.text.String()})
+		responseAssembler.emit(llm.ThinkingEndEvent{ContentIndex: index, Content: contentBlock.text.String()})
 	case "text":
+		if item.Phase != "" {
+			contentBlock.phase = normalizeAssistantTextPhase(item.Phase)
+		}
 		finalText := outputMessageText(item)
 		if finalText != "" {
 			contentBlock.text.Reset()
 			contentBlock.text.WriteString(finalText)
 		}
-		responseAssembler.emitter.Emit(llm.TextEndEvent{ContentIndex: index, Content: contentBlock.text.String()})
+		responseAssembler.emit(llm.TextEndEvent{ContentIndex: index, Content: contentBlock.text.String()})
 	case "tool":
 		if item.CallID != "" {
 			contentBlock.callID = item.CallID
@@ -258,12 +270,13 @@ func (responseAssembler *responsesState) finishItem(item responses.ResponseOutpu
 		if !json.Valid([]byte(arguments)) {
 			return fmt.Errorf("tool call %q has invalid streamed arguments", contentBlock.name)
 		}
-		responseAssembler.emitter.Emit(llm.ToolCallEndEvent{
+		responseAssembler.emit(llm.ToolCallEndEvent{
 			ContentIndex: index,
 			ToolCall: llm.ToolCall{
-				ID:        responsesToolCallID(contentBlock.callID, contentBlock.itemID),
+				ID:        contentBlock.callID,
 				Name:      contentBlock.name,
 				Arguments: json.RawMessage(arguments),
+				Metadata:  responseReplayMetadata(responseAssembler.target, contentBlock.itemID),
 			},
 		})
 	}
@@ -300,56 +313,30 @@ func (responseAssembler *responsesState) captureIdentity(response responses.Resp
 	if response.Model != "" {
 		responseAssembler.responseModel = string(response.Model)
 	}
+	if response.ServiceTier != "" {
+		responseAssembler.serviceTier = string(response.ServiceTier)
+	}
 }
 
 func (responseAssembler *responsesState) captureUsage(response responses.Response) {
 	cacheRead := int(response.Usage.InputTokensDetails.CachedTokens)
 	cacheWrite := int(response.Usage.InputTokensDetails.CacheWriteTokens)
-	responseAssembler.usage = llm.Usage{
+	responseAssembler.tokenUsage = llm.Usage{
 		InputTokens:      max(0, int(response.Usage.InputTokens)-cacheRead-cacheWrite),
 		OutputTokens:     int(response.Usage.OutputTokens),
 		CacheReadTokens:  cacheRead,
 		CacheWriteTokens: cacheWrite,
 		TotalTokens:      int(response.Usage.TotalTokens),
 	}
-	if responseAssembler.usage.TotalTokens == 0 {
-		responseAssembler.usage.TotalTokens = responseAssembler.usage.InputTokens +
-			responseAssembler.usage.OutputTokens + cacheRead + cacheWrite
+	if responseAssembler.tokenUsage.TotalTokens == 0 {
+		responseAssembler.tokenUsage.TotalTokens = responseAssembler.tokenUsage.InputTokens +
+			responseAssembler.tokenUsage.OutputTokens + cacheRead + cacheWrite
 	}
 }
 
 func (responseAssembler *responsesState) finish() (llm.AssistantMessage, error) {
-	assistantReply := llm.AssistantMessage{
-		API:           responseAssembler.model.API,
-		Provider:      responseAssembler.model.Provider,
-		Model:         responseAssembler.model.ID,
-		ResponseModel: responseAssembler.responseModel,
-		ResponseID:    responseAssembler.responseID,
-		Usage:         responseAssembler.usage,
-		StopReason:    responseAssembler.stopReason,
-		Timestamp:     time.Now(),
-	}
-	assistantReply.Usage.Cost = responseAssembler.model.CalculateCost(assistantReply.Usage)
+	assistantReply := responseAssembler.snapshot()
 	for _, contentBlock := range responseAssembler.blocks {
-		switch contentBlock.kind {
-		case "text":
-			assistantReply.Content = append(assistantReply.Content, llm.TextContent{Text: contentBlock.text.String()})
-		case "thinking":
-			assistantReply.Content = append(assistantReply.Content, llm.ThinkingContent{
-				Thinking:  contentBlock.text.String(),
-				Signature: contentBlock.signature,
-			})
-		case "tool":
-			arguments := contentBlock.arguments.String()
-			if arguments == "" {
-				arguments = `{}`
-			}
-			assistantReply.Content = append(assistantReply.Content, llm.ToolCall{
-				ID:        responsesToolCallID(contentBlock.callID, contentBlock.itemID),
-				Name:      contentBlock.name,
-				Arguments: json.RawMessage(arguments),
-			})
-		}
 		if !contentBlock.closed {
 			return assistantReply, fmt.Errorf("OpenAI response item %q did not complete", contentBlock.itemID)
 		}
@@ -368,7 +355,95 @@ func (responseAssembler *responsesState) finish() (llm.AssistantMessage, error) 
 			}
 		}
 	}
+	if err := llm.ValidateAssistantToolCalls(responseAssembler.toolDefinitions, assistantReply); err != nil {
+		return assistantReply, err
+	}
 	return assistantReply, nil
+}
+
+func (responseAssembler *responsesState) snapshot() llm.AssistantMessage {
+	assistantReply := llm.AssistantMessage{
+		API:           responseAssembler.target.API,
+		Provider:      responseAssembler.target.Provider,
+		Model:         responseAssembler.target.ID,
+		ResponseModel: responseAssembler.responseModel,
+		ResponseID:    responseAssembler.responseID,
+		Usage:         responseAssembler.tokenUsage,
+		StopReason:    responseAssembler.stopReason,
+		Timestamp:     time.Now(),
+	}
+	assistantReply.Usage.ServiceTier = responseAssembler.serviceTier
+	assistantReply.Usage.Cost = responseAssembler.target.CalculateCostForTier(assistantReply.Usage, responseAssembler.serviceTier)
+	for _, contentBlock := range responseAssembler.blocks {
+		switch contentBlock.kind {
+		case "text":
+			assistantReply.Content = append(assistantReply.Content, llm.AssistantTextContent{
+				Text:     contentBlock.text.String(),
+				Phase:    contentBlock.phase,
+				Metadata: responseReplayMetadata(responseAssembler.target, contentBlock.itemID),
+			})
+		case "thinking":
+			assistantReply.Content = append(assistantReply.Content, llm.ThinkingContent{
+				Thinking:  contentBlock.text.String(),
+				Signature: contentBlock.signature,
+				Metadata:  responseRawReplayMetadata(responseAssembler.target, contentBlock.signature),
+			})
+		case "tool":
+			arguments := contentBlock.arguments.String()
+			var completedArguments json.RawMessage
+			if arguments == "" && contentBlock.closed {
+				completedArguments = json.RawMessage(`{}`)
+			} else if json.Valid([]byte(arguments)) {
+				completedArguments = json.RawMessage(arguments)
+			}
+			assistantReply.Content = append(assistantReply.Content, llm.ToolCall{
+				ID:        contentBlock.callID,
+				Name:      contentBlock.name,
+				Arguments: completedArguments,
+				Metadata:  responseReplayMetadata(responseAssembler.target, contentBlock.itemID),
+			})
+		}
+	}
+	if responseAssembler.stopReason == llm.StopReasonStop {
+		for _, contentBlock := range responseAssembler.blocks {
+			if contentBlock.kind == "tool" {
+				assistantReply.StopReason = llm.StopReasonToolUse
+				break
+			}
+		}
+	}
+	return assistantReply
+}
+
+func responseReplayMetadata(targetModel llm.Model, itemID string) *llm.ReplayMetadata {
+	if itemID == "" {
+		return nil
+	}
+	data, _ := json.Marshal(replayItemMetadata{ItemID: itemID})
+	return &llm.ReplayMetadata{API: targetModel.API, Provider: targetModel.Provider, Model: targetModel.ID, Data: data}
+}
+
+func responseRawReplayMetadata(targetModel llm.Model, raw string) *llm.ReplayMetadata {
+	if raw == "" || !json.Valid([]byte(raw)) {
+		return nil
+	}
+	return &llm.ReplayMetadata{API: targetModel.API, Provider: targetModel.Provider, Model: targetModel.ID, Data: json.RawMessage(raw)}
+}
+
+func normalizeAssistantTextPhase(phase responses.ResponseOutputMessagePhase) llm.AssistantTextPhase {
+	switch phase {
+	case responses.ResponseOutputMessagePhaseCommentary:
+		return llm.AssistantTextPhaseCommentary
+	case responses.ResponseOutputMessagePhaseFinalAnswer:
+		return llm.AssistantTextPhaseFinalAnswer
+	default:
+		return llm.AssistantTextPhaseUnspecified
+	}
+}
+
+func (responseAssembler *responsesState) emit(streamEvent llm.Event) bool {
+	responseAssembler.emitter.Update(responseAssembler.snapshot())
+	return responseAssembler.emitter.Emit(streamEvent)
 }
 
 func (responseAssembler *responsesState) blockIndex(contentBlock *responsesBlock) int {
@@ -420,11 +495,4 @@ func responseFailure(response responses.Response) error {
 		return fmt.Errorf("OpenAI response failed: %s", response.IncompleteDetails.Reason)
 	}
 	return errors.New("OpenAI response failed without error details")
-}
-
-func responsesToolCallID(callID string, itemID string) string {
-	if itemID == "" {
-		return callID
-	}
-	return callID + "|" + itemID
 }

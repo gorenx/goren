@@ -11,11 +11,12 @@ import (
 	"github.com/openai/openai-go/v3/responses"
 )
 
-func mapResponsesMessages(targetModel llm.Model, input llm.Context) (responses.ResponseInputParam, error) {
+func mapResponsesMessages(targetModel llm.Model, input llm.Context, compatibleBehavior Compatibility) (responses.ResponseInputParam, error) {
 	items := make(responses.ResponseInputParam, 0, len(input.Messages)+1)
+	toolCallIDs := make(map[string]string)
 	if input.SystemPrompt != "" {
 		role := responses.EasyInputMessageRoleSystem
-		if targetModel.Reasoning {
+		if compatibleBehavior.SystemRole == SystemRoleDeveloper {
 			role = responses.EasyInputMessageRoleDeveloper
 		}
 		items = append(items, responses.ResponseInputItemParamOfMessage(input.SystemPrompt, role))
@@ -29,13 +30,26 @@ func mapResponsesMessages(targetModel llm.Model, input llm.Context) (responses.R
 			}
 			items = append(items, mapped)
 		case llm.AssistantMessage:
-			mapped, err := mapResponsesAssistantMessage(value, messageIndex)
+			mapped, err := mapResponsesAssistantMessage(targetModel, value, messageIndex)
 			if err != nil {
 				return nil, fmt.Errorf("map assistant message %d: %w", messageIndex, err)
 			}
 			items = append(items, mapped...)
+			for _, contentBlock := range value.Content {
+				if requestedCall, ok := contentBlock.(llm.ToolCall); ok {
+					callID, _, err := responsesToolCallIdentity(requestedCall, targetModel, value)
+					if err != nil {
+						return nil, fmt.Errorf("map assistant message %d: %w", messageIndex, err)
+					}
+					toolCallIDs[requestedCall.ID] = callID
+				}
+			}
 		case llm.ToolResultMessage:
-			mapped, err := mapResponsesToolResult(targetModel, value)
+			callID := toolCallIDs[value.ToolCallID]
+			if callID == "" {
+				callID = value.ToolCallID
+			}
+			mapped, err := mapResponsesToolResult(targetModel, value, callID, compatibleBehavior)
 			if err != nil {
 				return nil, fmt.Errorf("map tool result message %d: %w", messageIndex, err)
 			}
@@ -68,6 +82,7 @@ func mapResponsesUserMessage(userInput llm.UserMessage) (responses.ResponseInput
 }
 
 func mapResponsesAssistantMessage(
+	targetModel llm.Model,
 	assistantInput llm.AssistantMessage,
 	messageIndex int,
 ) ([]responses.ResponseInputItemUnionParam, error) {
@@ -76,17 +91,31 @@ func mapResponsesAssistantMessage(
 	for _, block := range assistantInput.Content {
 		switch value := block.(type) {
 		case llm.ThinkingContent:
-			if value.Signature == "" || assistantInput.API != llm.APIOpenAIResponses {
+			replayData := ""
+			if sameResponsesModel(targetModel, assistantInput) && value.Signature != "" {
+				replayData = value.Signature
+			}
+			if sameResponsesModel(targetModel, assistantInput) && value.Metadata != nil && value.Metadata.API == targetModel.API && value.Metadata.Provider == targetModel.Provider && value.Metadata.Model == targetModel.ID {
+				replayData = string(value.Metadata.Data)
+			}
+			if replayData == "" {
 				continue
 			}
 			var reasoning responses.ResponseReasoningItemParam
-			if err := json.Unmarshal([]byte(value.Signature), &reasoning); err != nil {
+			if err := json.Unmarshal([]byte(replayData), &reasoning); err != nil {
 				return nil, fmt.Errorf("decode reasoning replay metadata: %w", err)
 			}
 			items = append(items, responses.ResponseInputItemUnionParam{OfReasoning: &reasoning})
-		case llm.TextContent:
+		case llm.AssistantTextContent:
 			messageID := fmt.Sprintf("msg_goren_%d_%d", messageIndex, textIndex)
 			textIndex++
+			replayID, err := responsesReplayItemID(value.Metadata, targetModel, assistantInput)
+			if err != nil {
+				return nil, err
+			}
+			if replayID != "" {
+				messageID = replayID
+			}
 			outputText := responses.ResponseOutputTextParam{
 				Text:        value.Text,
 				Annotations: []responses.ResponseOutputTextAnnotationUnionParam{},
@@ -96,6 +125,9 @@ func mapResponsesAssistantMessage(
 				messageID,
 				responses.ResponseOutputMessageStatusCompleted,
 			)
+			if value.Phase == llm.AssistantTextPhaseCommentary || value.Phase == llm.AssistantTextPhaseFinalAnswer {
+				message.OfOutputMessage.Phase = responses.ResponseOutputMessagePhase(value.Phase)
+			}
 			items = append(items, message)
 		case llm.ToolCall:
 			arguments := value.Arguments
@@ -105,7 +137,10 @@ func mapResponsesAssistantMessage(
 			if !json.Valid(arguments) {
 				return nil, fmt.Errorf("tool call %q has invalid arguments", value.Name)
 			}
-			callID, itemID := splitResponsesToolCallID(value.ID)
+			callID, itemID, err := responsesToolCallIdentity(value, targetModel, assistantInput)
+			if err != nil {
+				return nil, err
+			}
 			functionCall := responses.ResponseInputItemParamOfFunctionCall(string(arguments), callID, value.Name)
 			if itemID != "" {
 				functionCall.OfFunctionCall.ID = officialopenai.String(itemID)
@@ -121,8 +156,9 @@ func mapResponsesAssistantMessage(
 func mapResponsesToolResult(
 	targetModel llm.Model,
 	toolResult llm.ToolResultMessage,
+	callID string,
+	compatibleBehavior Compatibility,
 ) (responses.ResponseInputItemUnionParam, error) {
-	callID, _ := splitResponsesToolCallID(toolResult.ToolCallID)
 	var textResult strings.Builder
 	hasImages := false
 	for _, block := range toolResult.Content {
@@ -137,6 +173,15 @@ func mapResponsesToolResult(
 		default:
 			return responses.ResponseInputItemUnionParam{}, fmt.Errorf("unsupported tool result content %T", block)
 		}
+	}
+	if toolResult.IsError {
+		originalText := textResult.String()
+		textResult.Reset()
+		textResult.WriteString(compatibleBehavior.ToolErrorPrefix)
+		textResult.WriteString(originalText)
+	}
+	if hasImages && !modelAccepts(targetModel, llm.InputImage) {
+		return responses.ResponseInputItemUnionParam{}, fmt.Errorf("%w: image", llm.ErrUnsupportedModality)
 	}
 
 	if hasImages && modelAccepts(targetModel, llm.InputImage) {
@@ -157,13 +202,22 @@ func mapResponsesToolResult(
 		}
 		return responses.ResponseInputItemParamOfFunctionCallOutput(callID, content), nil
 	}
-	if textResult.Len() == 0 {
-		textResult.WriteString("(see attached image)")
-	}
 	return responses.ResponseInputItemParamOfFunctionCallOutput(callID, textResult.String()), nil
 }
 
-func mapResponsesTools(toolDefinitions []llm.Tool) ([]responses.ToolUnionParam, error) {
+func responsesToolCallIdentity(requestedCall llm.ToolCall, targetModel llm.Model, assistantInput llm.AssistantMessage) (string, string, error) {
+	replayID, err := responsesReplayItemID(requestedCall.Metadata, targetModel, assistantInput)
+	if err != nil {
+		return "", "", err
+	}
+	if replayID != "" {
+		return requestedCall.ID, replayID, nil
+	}
+	callID, itemID := splitResponsesToolCallID(requestedCall.ID)
+	return callID, itemID, nil
+}
+
+func mapResponsesTools(toolDefinitions []llm.Tool, compatibleBehavior Compatibility) ([]responses.ToolUnionParam, error) {
 	mapped := make([]responses.ToolUnionParam, 0, len(toolDefinitions))
 	for _, toolDefinition := range toolDefinitions {
 		var parameterSchema map[string]any
@@ -173,7 +227,9 @@ func mapResponsesTools(toolDefinitions []llm.Tool) ([]responses.ToolUnionParam, 
 		definition := responses.FunctionToolParam{
 			Name:       toolDefinition.Name,
 			Parameters: parameterSchema,
-			Strict:     officialopenai.Bool(toolDefinition.Strict),
+		}
+		if !compatibleBehavior.DisableStrictTools {
+			definition.Strict = officialopenai.Bool(toolDefinition.Strict)
 		}
 		if toolDefinition.Description != "" {
 			definition.Description = officialopenai.String(toolDefinition.Description)
@@ -181,6 +237,45 @@ func mapResponsesTools(toolDefinitions []llm.Tool) ([]responses.ToolUnionParam, 
 		mapped = append(mapped, responses.ToolUnionParam{OfFunction: &definition})
 	}
 	return mapped, nil
+}
+
+func mapResponsesToolChoice(toolSelection llm.ToolChoice) (responses.ResponseNewParamsToolChoiceUnion, error) {
+	switch toolSelection.Mode {
+	case llm.ToolChoiceAuto, llm.ToolChoiceNone, llm.ToolChoiceRequired:
+		var mapped responses.ResponseNewParamsToolChoiceUnion
+		if err := json.Unmarshal([]byte(`"`+string(toolSelection.Mode)+`"`), &mapped); err != nil {
+			return responses.ResponseNewParamsToolChoiceUnion{}, fmt.Errorf("map tool choice: %w", err)
+		}
+		return mapped, nil
+	case llm.ToolChoiceFunction:
+		return responses.ResponseNewParamsToolChoiceUnion{
+			OfFunctionTool: &responses.ToolChoiceFunctionParam{Name: toolSelection.Name},
+		}, nil
+	default:
+		return responses.ResponseNewParamsToolChoiceUnion{}, fmt.Errorf("unsupported tool choice %q", toolSelection.Mode)
+	}
+}
+
+type replayItemMetadata struct {
+	ItemID string `json:"item_id"`
+}
+
+func responsesReplayItemID(metadata *llm.ReplayMetadata, targetModel llm.Model, assistantInput llm.AssistantMessage) (string, error) {
+	if metadata == nil || !sameResponsesModel(targetModel, assistantInput) || metadata.API != targetModel.API || metadata.Provider != targetModel.Provider || metadata.Model != targetModel.ID {
+		return "", nil
+	}
+	var replay replayItemMetadata
+	if err := json.Unmarshal(metadata.Data, &replay); err != nil {
+		return "", fmt.Errorf("decode Responses replay metadata: %w", err)
+	}
+	if replay.ItemID == "" {
+		return "", errors.New("Responses replay metadata has no item ID")
+	}
+	return replay.ItemID, nil
+}
+
+func sameResponsesModel(targetModel llm.Model, assistantInput llm.AssistantMessage) bool {
+	return assistantInput.API == targetModel.API && assistantInput.Provider == targetModel.Provider && assistantInput.Model == targetModel.ID
 }
 
 func mapResponsesFormat(schemaFormat llm.JSONSchemaFormat) (responses.ResponseFormatTextConfigUnionParam, error) {
