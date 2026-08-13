@@ -5,48 +5,63 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/gorenx/goren/llm"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/gorenx/goren/llm"
 	officialopenai "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 )
 
-// Adapter implements the OpenAI-compatible Chat Completions wire protocol with
-// the official OpenAI Go SDK.
-type Adapter struct {
-	client *http.Client
-}
-
-// New constructs an adapter using httpClient, or http.DefaultClient when nil.
-func New(httpClient *http.Client) *Adapter {
+// New creates a model-bound OpenAI-compatible Chat Completions adapter.
+func New(targetModel llm.Model, httpClient *http.Client) (llm.APIAdapter, error) {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	return &Adapter{client: httpClient}
+	protocolAdapter, err := newAdapter(targetModel, httpClient)
+	if err != nil {
+		return nil, err
+	}
+	return protocolAdapter, nil
 }
 
-// API returns the wire protocol implemented by Adapter.
-func (*Adapter) API() llm.API {
+// adapter implements one model-bound OpenAI-compatible Chat Completions client
+// with the official OpenAI Go SDK.
+type adapter struct {
+	targetModel llm.Model
+	httpClient  *http.Client
+}
+
+func newAdapter(targetModel llm.Model, httpClient *http.Client) (*adapter, error) {
+	if err := llm.ValidateModel(targetModel); err != nil {
+		return nil, err
+	}
+	if targetModel.API != llm.APIOpenAICompletions {
+		return nil, fmt.Errorf(
+			"%w: got %q, want %q",
+			llm.ErrAPIMismatch,
+			targetModel.API,
+			llm.APIOpenAICompletions,
+		)
+	}
+	return &adapter{
+		targetModel: cloneModel(targetModel),
+		httpClient:  httpClient,
+	}, nil
+}
+
+func (*adapter) API() llm.API {
 	return llm.APIOpenAICompletions
 }
 
 // Stream validates and maps an invocation, then lets the SDK run asynchronously
-// inside a normalized goren event stream.
-func (protocolAdapter *Adapter) Stream(
+// inside a normalized LLM event stream.
+func (protocolAdapter *adapter) Stream(
 	ctx context.Context,
-	targetModel llm.Model,
 	input llm.Context,
 	invocationOptions llm.StreamOptions,
 ) (*llm.EventStream, error) {
-	if targetModel.API != protocolAdapter.API() {
-		return nil, fmt.Errorf("%w: got %q, want %q", llm.ErrAPIMismatch, targetModel.API, protocolAdapter.API())
-	}
-	if err := llm.ValidateModel(targetModel); err != nil {
-		return nil, err
-	}
 	if err := llm.ValidateContext(input); err != nil {
 		return nil, err
 	}
@@ -54,33 +69,39 @@ func (protocolAdapter *Adapter) Stream(
 		return nil, err
 	}
 
-	completionRequest, err := makeRequest(targetModel, input, invocationOptions)
+	completionRequest, err := protocolAdapter.makeRequest(input, invocationOptions)
 	if err != nil {
 		return nil, err
 	}
 
-	return llm.NewEventStream(ctx, targetModel, func(ctx context.Context, eventSink llm.StreamEmitter) {
-		if invocationOptions.APIKey == "" {
-			eventSink.Fail(fmt.Errorf("no API key for provider %q", targetModel.Provider))
-			return
-		}
-		protocolAdapter.run(ctx, eventSink, targetModel, completionRequest, invocationOptions)
-	}), nil
+	return llm.NewEventStream(
+		ctx, protocolAdapter.targetModel,
+		func(ctx context.Context, eventSink llm.StreamEmitter) {
+			if invocationOptions.APIKey == "" {
+				eventSink.Fail(fmt.Errorf("no API key for provider %q", protocolAdapter.targetModel.Provider))
+				return
+			}
+			protocolAdapter.run(ctx, eventSink, completionRequest, invocationOptions)
+		},
+	), nil
 }
 
-func (protocolAdapter *Adapter) run(
+func (protocolAdapter *adapter) run(
 	ctx context.Context,
 	eventSink llm.StreamEmitter,
-	targetModel llm.Model,
 	completionRequest officialopenai.ChatCompletionNewParams,
 	invocationOptions llm.StreamOptions,
 ) {
 	sdkClient := officialopenai.NewClient(
 		option.WithAPIKey(invocationOptions.APIKey),
-		option.WithBaseURL(targetModel.BaseURL),
-		option.WithHTTPClient(protocolAdapter.client),
+		option.WithBaseURL(protocolAdapter.targetModel.BaseURL),
+		option.WithHTTPClient(protocolAdapter.httpClient),
 	)
-	sdkStream := sdkClient.Chat.Completions.NewStreaming(ctx, completionRequest, requestOptions(targetModel, invocationOptions)...)
+	sdkStream := sdkClient.Chat.Completions.NewStreaming(
+		ctx,
+		completionRequest,
+		protocolAdapter.requestOptions(invocationOptions)...,
+	)
 	defer sdkStream.Close()
 
 	if err := sdkStream.Err(); err != nil {
@@ -89,7 +110,7 @@ func (protocolAdapter *Adapter) run(
 	}
 
 	eventSink.Emit(llm.StartEvent{})
-	responseAssembler := newResponseState(targetModel, eventSink)
+	responseAssembler := newResponseState(protocolAdapter.targetModel, eventSink)
 	for sdkStream.Next() {
 		if err := responseAssembler.consume(sdkStream.Current()); err != nil {
 			eventSink.Fail(err)
@@ -108,9 +129,9 @@ func (protocolAdapter *Adapter) run(
 	eventSink.Done(assistantReply)
 }
 
-func requestOptions(targetModel llm.Model, invocationOptions llm.StreamOptions) []option.RequestOption {
-	opts := make([]option.RequestOption, 0, len(targetModel.Headers)+len(invocationOptions.Headers))
-	for name, value := range targetModel.Headers {
+func (protocolAdapter *adapter) requestOptions(invocationOptions llm.StreamOptions) []option.RequestOption {
+	opts := make([]option.RequestOption, 0, len(protocolAdapter.targetModel.Headers)+len(invocationOptions.Headers))
+	for name, value := range protocolAdapter.targetModel.Headers {
 		opts = append(opts, option.WithHeader(name, value))
 	}
 	for name, value := range invocationOptions.Headers {
@@ -127,8 +148,7 @@ func finishTransportError(ctx context.Context, eventSink llm.StreamEmitter, err 
 	eventSink.Fail(err)
 }
 
-func makeRequest(
-	targetModel llm.Model,
+func (protocolAdapter *adapter) makeRequest(
 	input llm.Context,
 	invocationOptions llm.StreamOptions,
 ) (officialopenai.ChatCompletionNewParams, error) {
@@ -137,7 +157,7 @@ func makeRequest(
 		return officialopenai.ChatCompletionNewParams{}, err
 	}
 	completionRequest := officialopenai.ChatCompletionNewParams{
-		Model:    targetModel.ID,
+		Model:    protocolAdapter.targetModel.ID,
 		Messages: outgoingMessages,
 		StreamOptions: officialopenai.ChatCompletionStreamOptionsParam{
 			IncludeUsage: officialopenai.Bool(true),
@@ -148,7 +168,7 @@ func makeRequest(
 	}
 	maxOutputTokens := invocationOptions.MaxOutputTokens
 	if maxOutputTokens == 0 {
-		maxOutputTokens = targetModel.MaxOutputTokens
+		maxOutputTokens = protocolAdapter.targetModel.MaxOutputTokens
 	}
 	if maxOutputTokens > 0 {
 		completionRequest.MaxCompletionTokens = officialopenai.Int(int64(maxOutputTokens))
@@ -169,158 +189,6 @@ func makeRequest(
 		completionRequest.ResponseFormat.OfJSONSchema = &responseSchema
 	}
 	return completionRequest, nil
-}
-
-func mapMessages(input llm.Context) ([]officialopenai.ChatCompletionMessageParamUnion, error) {
-	messages := make([]officialopenai.ChatCompletionMessageParamUnion, 0, len(input.Messages)+1)
-	if input.SystemPrompt != "" {
-		messages = append(messages, officialopenai.SystemMessage(input.SystemPrompt))
-	}
-	for index, conversationEntry := range input.Messages {
-		switch value := conversationEntry.(type) {
-		case llm.UserMessage:
-			mapped, err := mapUserMessage(value)
-			if err != nil {
-				return nil, fmt.Errorf("map user message %d: %w", index, err)
-			}
-			messages = append(messages, mapped)
-		case llm.AssistantMessage:
-			mapped, err := mapAssistantMessage(value)
-			if err != nil {
-				return nil, fmt.Errorf("map assistant message %d: %w", index, err)
-			}
-			messages = append(messages, mapped)
-		case llm.ToolResultMessage:
-			resultText, err := mapToolResultContent(value.Content)
-			if err != nil {
-				return nil, fmt.Errorf("map tool result message %d: %w", index, err)
-			}
-			messages = append(messages, officialopenai.ToolMessage(resultText, value.ToolCallID))
-		default:
-			return nil, fmt.Errorf("message %d has unsupported type %T", index, conversationEntry)
-		}
-	}
-	return messages, nil
-}
-
-func mapUserMessage(userInput llm.UserMessage) (officialopenai.ChatCompletionMessageParamUnion, error) {
-	if len(userInput.Content) == 1 {
-		if textBlock, ok := userInput.Content[0].(llm.TextContent); ok {
-			return officialopenai.UserMessage(textBlock.Text), nil
-		}
-	}
-
-	parts := make([]officialopenai.ChatCompletionContentPartUnionParam, 0, len(userInput.Content))
-	for _, block := range userInput.Content {
-		switch value := block.(type) {
-		case llm.TextContent:
-			parts = append(parts, officialopenai.TextContentPart(value.Text))
-		case llm.ImageContent:
-			if value.MIMEType == "" || value.Data == "" {
-				return officialopenai.ChatCompletionMessageParamUnion{}, errors.New("image content requires MIME type and base64 data")
-			}
-			parts = append(parts, officialopenai.ImageContentPart(
-				officialopenai.ChatCompletionContentPartImageImageURLParam{
-					URL: "data:" + value.MIMEType + ";base64," + value.Data,
-				},
-			))
-		default:
-			return officialopenai.ChatCompletionMessageParamUnion{}, fmt.Errorf("unsupported user content %T", block)
-		}
-	}
-	return officialopenai.UserMessage(parts), nil
-}
-
-func mapAssistantMessage(assistantInput llm.AssistantMessage) (officialopenai.ChatCompletionMessageParamUnion, error) {
-	var visibleText strings.Builder
-	mapped := officialopenai.ChatCompletionAssistantMessageParam{}
-	for _, block := range assistantInput.Content {
-		switch value := block.(type) {
-		case llm.TextContent:
-			visibleText.WriteString(value.Text)
-		case llm.ThinkingContent:
-			// Chat Completions has no portable replay field for reasoning.
-			continue
-		case llm.ToolCall:
-			arguments := value.Arguments
-			if len(arguments) == 0 {
-				arguments = json.RawMessage(`{}`)
-			}
-			if !json.Valid(arguments) {
-				return officialopenai.ChatCompletionMessageParamUnion{}, fmt.Errorf("tool call %q has invalid arguments", value.Name)
-			}
-			mapped.ToolCalls = append(mapped.ToolCalls, officialopenai.ChatCompletionMessageToolCallUnionParam{
-				OfFunction: &officialopenai.ChatCompletionMessageFunctionToolCallParam{
-					ID: value.ID,
-					Function: officialopenai.ChatCompletionMessageFunctionToolCallFunctionParam{
-						Name:      value.Name,
-						Arguments: string(arguments),
-					},
-				},
-			})
-		default:
-			return officialopenai.ChatCompletionMessageParamUnion{}, fmt.Errorf("unsupported assistant content %T", block)
-		}
-	}
-	if visibleText.Len() > 0 {
-		mapped.Content.OfString = officialopenai.String(visibleText.String())
-	}
-	return officialopenai.ChatCompletionMessageParamUnion{OfAssistant: &mapped}, nil
-}
-
-func mapToolResultContent(resultBlocks []llm.ToolResultContent) (string, error) {
-	var resultText strings.Builder
-	for _, block := range resultBlocks {
-		switch value := block.(type) {
-		case llm.TextContent:
-			resultText.WriteString(value.Text)
-		case llm.ImageContent:
-			return "", errors.New("OpenAI Chat Completions tool results do not support portable image replay")
-		default:
-			return "", fmt.Errorf("unsupported tool result content %T", block)
-		}
-	}
-	return resultText.String(), nil
-}
-
-func mapTools(toolDefinitions []llm.Tool) ([]officialopenai.ChatCompletionToolUnionParam, error) {
-	mapped := make([]officialopenai.ChatCompletionToolUnionParam, 0, len(toolDefinitions))
-	for _, toolDefinition := range toolDefinitions {
-		var parameterSchema officialopenai.FunctionParameters
-		if err := json.Unmarshal(toolDefinition.Parameters, &parameterSchema); err != nil {
-			return nil, fmt.Errorf("map tool %q parameters: %w", toolDefinition.Name, err)
-		}
-		definition := officialopenai.FunctionDefinitionParam{
-			Name:       toolDefinition.Name,
-			Parameters: parameterSchema,
-		}
-		if toolDefinition.Description != "" {
-			definition.Description = officialopenai.String(toolDefinition.Description)
-		}
-		if toolDefinition.Strict {
-			definition.Strict = officialopenai.Bool(true)
-		}
-		mapped = append(mapped, officialopenai.ChatCompletionFunctionTool(definition))
-	}
-	return mapped, nil
-}
-
-func mapResponseFormat(schemaFormat llm.JSONSchemaFormat) (officialopenai.ResponseFormatJSONSchemaParam, error) {
-	var schema any
-	if err := json.Unmarshal(schemaFormat.Schema, &schema); err != nil {
-		return officialopenai.ResponseFormatJSONSchemaParam{}, fmt.Errorf("map response format %q schema: %w", schemaFormat.Name, err)
-	}
-	mapped := officialopenai.ResponseFormatJSONSchemaParam{
-		JSONSchema: officialopenai.ResponseFormatJSONSchemaJSONSchemaParam{
-			Name:   schemaFormat.Name,
-			Schema: schema,
-			Strict: officialopenai.Bool(schemaFormat.Strict),
-		},
-	}
-	if schemaFormat.Description != "" {
-		mapped.JSONSchema.Description = officialopenai.String(schemaFormat.Description)
-	}
-	return mapped, nil
 }
 
 type responseBlock struct {
@@ -525,17 +393,4 @@ func (responseAssembler *responseState) finish() (llm.AssistantMessage, error) {
 		return assistantReply, errors.New(responseAssembler.finishError)
 	}
 	return assistantReply, nil
-}
-
-func mapStopReason(providerReason string) (llm.StopReason, string) {
-	switch providerReason {
-	case "stop", "end":
-		return llm.StopReasonStop, ""
-	case "length":
-		return llm.StopReasonLength, ""
-	case "tool_calls", "function_call":
-		return llm.StopReasonToolUse, ""
-	default:
-		return llm.StopReasonError, "provider finish reason: " + providerReason
-	}
 }

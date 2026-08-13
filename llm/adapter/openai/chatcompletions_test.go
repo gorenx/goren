@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/gorenx/goren/llm"
-	openaiadapter "github.com/gorenx/goren/llm/adapter/openai"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/gorenx/goren/llm"
+	openaiadapter "github.com/gorenx/goren/llm/adapter/openai"
 )
 
 func TestChatCompletionsStreamsTextAndMapsStructuredRequest(t *testing.T) {
@@ -20,6 +21,9 @@ func TestChatCompletionsStreamsTextAndMapsStructuredRequest(t *testing.T) {
 		}
 		if authorization := httpRequest.Header.Get("Authorization"); authorization != "Bearer secret" {
 			t.Errorf("got authorization %q", authorization)
+		}
+		if configured := httpRequest.Header.Get("X-Model-Config"); configured != "original" {
+			t.Errorf("got model header %q", configured)
 		}
 		var body map[string]any
 		if err := json.NewDecoder(httpRequest.Body).Decode(&body); err != nil {
@@ -36,10 +40,13 @@ func TestChatCompletionsStreamsTextAndMapsStructuredRequest(t *testing.T) {
 	}))
 	defer testServer.Close()
 
-	llmClient := newClient(t, testServer.Client())
+	targetModel := model(testServer.URL)
+	targetModel.Headers = map[string]string{"X-Model-Config": "original"}
+	llmClient := newClient(t, targetModel, testServer.Client())
+	targetModel.ID = "mutated-after-construction"
+	targetModel.Headers["X-Model-Config"] = "mutated"
 	responseStream, err := llmClient.Stream(
 		context.Background(),
-		model(testServer.URL),
 		llm.Context{
 			SystemPrompt: "Return JSON.",
 			Messages:     []llm.Message{llm.NewTextMessage("hello")},
@@ -108,8 +115,8 @@ func TestChatCompletionsReassemblesToolCall(t *testing.T) {
 	}))
 	defer testServer.Close()
 
-	llmClient := newClient(t, testServer.Client())
-	assistantReply, err := llmClient.Complete(context.Background(), model(testServer.URL), llm.Context{
+	llmClient := newClient(t, model(testServer.URL), testServer.Client())
+	assistantReply, err := llmClient.Complete(context.Background(), llm.Context{
 		Messages: []llm.Message{llm.NewTextMessage("look up memory")},
 		Tools: []llm.Tool{{
 			Name:       "lookup",
@@ -138,8 +145,8 @@ func TestHTTPFailureIsTerminalStreamEvent(t *testing.T) {
 	}))
 	defer testServer.Close()
 
-	llmClient := newClient(t, testServer.Client())
-	responseStream, err := llmClient.Stream(context.Background(), model(testServer.URL), llm.Context{
+	llmClient := newClient(t, model(testServer.URL), testServer.Client())
+	responseStream, err := llmClient.Stream(context.Background(), llm.Context{
 		Messages: []llm.Message{llm.NewTextMessage("hello")},
 	}, llm.StreamOptions{APIKey: "secret"})
 	if err != nil {
@@ -169,8 +176,8 @@ func TestMissingFinishReasonIsTerminalStreamError(t *testing.T) {
 	}))
 	defer testServer.Close()
 
-	llmClient := newClient(t, testServer.Client())
-	assistantReply, err := llmClient.Complete(context.Background(), model(testServer.URL), llm.Context{
+	llmClient := newClient(t, model(testServer.URL), testServer.Client())
+	assistantReply, err := llmClient.Complete(context.Background(), llm.Context{
 		Messages: []llm.Message{llm.NewTextMessage("hello")},
 	}, llm.StreamOptions{APIKey: "secret"})
 	if err != nil {
@@ -189,8 +196,8 @@ func TestProviderErrorFinishReasonIsTerminalStreamError(t *testing.T) {
 	}))
 	defer testServer.Close()
 
-	llmClient := newClient(t, testServer.Client())
-	assistantReply, err := llmClient.Complete(context.Background(), model(testServer.URL), llm.Context{
+	llmClient := newClient(t, model(testServer.URL), testServer.Client())
+	assistantReply, err := llmClient.Complete(context.Background(), llm.Context{
 		Messages: []llm.Message{llm.NewTextMessage("hello")},
 	}, llm.StreamOptions{APIKey: "secret"})
 	if err != nil {
@@ -201,25 +208,27 @@ func TestProviderErrorFinishReasonIsTerminalStreamError(t *testing.T) {
 	}
 }
 
-func TestAPIMismatchFailsBeforeStream(t *testing.T) {
-	protocolAdapter := openaiadapter.New(http.DefaultClient)
+func TestAPIMismatchFailsAtAdapterConstruction(t *testing.T) {
 	wrong := model("https://example.test")
 	wrong.API = "different"
-	responseStream, err := protocolAdapter.Stream(context.Background(), wrong, llm.Context{
-		Messages: []llm.Message{llm.NewTextMessage("hello")},
-	}, llm.StreamOptions{APIKey: "secret"})
-	if responseStream != nil || !errors.Is(err, llm.ErrAPIMismatch) {
-		t.Fatalf("stream=%v err=%v", responseStream, err)
+	protocolAdapter, err := openaiadapter.New(wrong, http.DefaultClient)
+	if protocolAdapter != nil || !errors.Is(err, llm.ErrAPIMismatch) {
+		t.Fatalf("adapter=%v err=%v", protocolAdapter, err)
 	}
 }
 
-func newClient(t *testing.T, httpClient *http.Client) *llm.Client {
+func newClient(t *testing.T, targetModel llm.Model, httpClient *http.Client) *llm.Client {
 	t.Helper()
 	adapterRegistry := llm.NewRegistry()
-	if err := adapterRegistry.Register(openaiadapter.New(httpClient), "built-in"); err != nil {
+	if err := adapterRegistry.Register(
+		llm.APIOpenAICompletions,
+		func(targetModel llm.Model) (llm.APIAdapter, error) {
+			return openaiadapter.New(targetModel, httpClient)
+		},
+	); err != nil {
 		t.Fatal(err)
 	}
-	llmClient, err := llm.NewClient(adapterRegistry, nil)
+	llmClient, err := llm.NewClient(targetModel, adapterRegistry, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

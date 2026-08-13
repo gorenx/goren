@@ -8,7 +8,7 @@ import (
 )
 
 var (
-	// ErrAdapterNotRegistered means no adapter owns the requested wire protocol.
+	// ErrAdapterNotRegistered means no adapter constructor owns the requested wire protocol.
 	ErrAdapterNotRegistered = errors.New("LLM API adapter not registered")
 	// ErrAPIMismatch means an adapter was invoked with a model for another protocol.
 	ErrAPIMismatch = errors.New("model API does not match adapter API")
