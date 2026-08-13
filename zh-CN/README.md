@@ -13,9 +13,13 @@
 - [05 可靠性、安全与可观测性](./05-reliability-and-operations.md)：两阶段不变量、解析校验、只读依赖失败、Scope 隔离、日志与指标要求。
 - [06 验收、评估与实施路线图](./06-acceptance-and-roadmap.md)：stance、basis 和 `add / update / keep / delete` 的验收、评估指标与实施计划。
 
+### 组件文档
+
+- [LLM Runtime 中文文档](../llm/docs/zh-CN/README.md)：Model Runtime、Provider adapter 的能力需求、实现状态和验收证据。
+
 ## 阅读顺序
 
-首次阅读按文件名前的 `01`–`06` 顺序进行。只需理解核心模型时可以读完 `01`–`03`；实现 Knowledge Information Provider 时继续阅读 `04`–`05`；制定交付范围时使用 `06`。
+首次阅读按文件名前的 `01`–`06` 顺序进行。只需理解核心模型时可以读完 `01`–`03`；实现 Knowledge Information Provider 时继续阅读 `04`–`05`；制定交付范围时使用 `06`。实现或评审 LLM Runtime 时，再进入对应的组件文档。
 
 ## 文档规则
 
