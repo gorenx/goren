@@ -199,6 +199,8 @@ type Tool struct {
 	Description string          `json:"description,omitempty"`
 	Parameters  json.RawMessage `json:"parameters"`
 	Strict      bool            `json:"strict,omitempty"`
+	validator   toolArgumentsValidator
+	validated   string
 }
 
 // Context is the complete provider-neutral input to one model invocation.

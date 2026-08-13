@@ -2,6 +2,7 @@ package llm_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ type constructorScript struct {
 	createCalls   int
 	streamCalls   int
 	receivedModel llm.Model
+	receivedInput llm.Context
 }
 
 func (script *constructorScript) construct(targetModel llm.Model) (llm.APIAdapter, error) {
@@ -38,10 +40,11 @@ func (script *scriptedAdapter) API() llm.API {
 
 func (script *scriptedAdapter) Stream(
 	ctx context.Context,
-	_ llm.Context,
+	input llm.Context,
 	_ llm.StreamOptions,
 ) (*llm.EventStream, error) {
 	script.script.streamCalls++
+	script.script.receivedInput = input
 	return llm.NewEventStream(ctx, script.targetModel, func(_ context.Context, eventSink llm.StreamEmitter) {
 		if script.script.failure != nil {
 			eventSink.Fail(script.script.failure)
@@ -60,6 +63,60 @@ func (script *scriptedAdapter) Stream(
 			Timestamp:  time.Now(),
 		})
 	}), nil
+}
+
+func TestClientPreparesInvocationBeforeAdapter(t *testing.T) {
+	adapterRegistry := llm.NewRegistry()
+	constructScript := &constructorScript{api: "target-api", response: "ok"}
+	if err := adapterRegistry.Register(constructScript.api, constructScript.construct); err != nil {
+		t.Fatal(err)
+	}
+	targetModel := validModel(constructScript.api, "target-provider")
+	llmClient, err := llm.NewClient(targetModel, adapterRegistry, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	originalID := "foreign|tool call"
+	originalSchema := json.RawMessage(`{"type":"object"}`)
+	input := llm.Context{
+		Messages: []llm.Message{
+			llm.AssistantMessage{
+				API: "source-api", Provider: "source-provider", Model: "source-model",
+				StopReason: llm.StopReasonToolUse,
+				Content: []llm.AssistantContent{
+					llm.ThinkingContent{Thinking: "reason"},
+					llm.ToolCall{ID: originalID, Name: "lookup", Arguments: json.RawMessage(`{}`)},
+				},
+			},
+			llm.ToolResultMessage{
+				ToolCallID: originalID, ToolName: "lookup",
+				Content: []llm.ToolResultContent{llm.TextContent{Text: "found"}},
+			},
+		},
+		Tools: []llm.Tool{{Name: "lookup", Parameters: originalSchema}},
+	}
+	responseStream, err := llmClient.Stream(context.Background(), input, llm.StreamOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.Tools[0].Parameters[0] = '['
+	if _, err := responseStream.Result(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	preparedAssistant := constructScript.receivedInput.Messages[0].(llm.AssistantMessage)
+	if _, ok := preparedAssistant.Content[0].(llm.AssistantTextContent); !ok {
+		t.Fatalf("foreign thinking was not downgraded: %#v", preparedAssistant.Content[0])
+	}
+	preparedCall := preparedAssistant.Content[1].(llm.ToolCall)
+	preparedResult := constructScript.receivedInput.Messages[1].(llm.ToolResultMessage)
+	if preparedCall.ID != originalID || preparedResult.ToolCallID != preparedCall.ID {
+		t.Fatalf("prepared context changed tool identity: call=%q result=%q", preparedCall.ID, preparedResult.ToolCallID)
+	}
+	if string(constructScript.receivedInput.Tools[0].Parameters) != `{"type":"object"}` {
+		t.Fatalf("adapter-retained tool schema shares caller data: %s", constructScript.receivedInput.Tools[0].Parameters)
+	}
 }
 
 func TestClientCreatesAdapterFromTargetModelOnce(t *testing.T) {

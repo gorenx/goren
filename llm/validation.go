@@ -92,51 +92,62 @@ func knownReasoningLevel(level ReasoningLevel) bool {
 
 // ValidateContext checks message and tool invariants before adapter execution.
 func ValidateContext(input Context) error {
+	_, err := validateContext(input)
+	return err
+}
+
+func validateContext(input Context) (map[string]compiledToolSchema, error) {
 	for index, conversationEntry := range input.Messages {
 		if conversationEntry == nil {
-			return fmt.Errorf("message %d is nil", index)
+			return nil, fmt.Errorf("message %d is nil", index)
 		}
 		switch value := conversationEntry.(type) {
 		case UserMessage:
 			if len(value.Content) == 0 {
-				return fmt.Errorf("user message %d has no content", index)
+				return nil, fmt.Errorf("user message %d has no content", index)
 			}
 		case AssistantMessage:
 			if len(value.Content) == 0 && value.StopReason != StopReasonError && value.StopReason != StopReasonAborted {
-				return fmt.Errorf("assistant message %d has no content", index)
+				return nil, fmt.Errorf("assistant message %d has no content", index)
 			}
 		case ToolResultMessage:
 			if value.ToolCallID == "" || value.ToolName == "" {
-				return fmt.Errorf("tool result message %d requires call ID and name", index)
+				return nil, fmt.Errorf("tool result message %d requires call ID and name", index)
 			}
 			if len(value.Content) == 0 {
-				return fmt.Errorf("tool result message %d has no content", index)
+				return nil, fmt.Errorf("tool result message %d has no content", index)
 			}
 		default:
-			return fmt.Errorf("message %d has unsupported type %T", index, conversationEntry)
+			return nil, fmt.Errorf("message %d has unsupported type %T", index, conversationEntry)
 		}
 		if err := validateMessageContent(conversationEntry, index); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	toolNames := make(map[string]bool, len(input.Tools))
+	compiledSchemas := make(map[string]compiledToolSchema, len(input.Tools))
 	for index, toolDefinition := range input.Tools {
 		if toolDefinition.Name == "" {
-			return fmt.Errorf("tool %d has no name", index)
+			return nil, fmt.Errorf("tool %d has no name", index)
 		}
 		if len(toolDefinition.Parameters) == 0 || !json.Valid(toolDefinition.Parameters) {
-			return fmt.Errorf("tool %q has invalid parameter schema", toolDefinition.Name)
-		}
-		if _, err := compileToolSchema(toolDefinition); err != nil {
-			return err
+			return nil, fmt.Errorf("tool %q has invalid parameter schema", toolDefinition.Name)
 		}
 		if toolNames[toolDefinition.Name] {
-			return fmt.Errorf("tool %q is defined more than once", toolDefinition.Name)
+			return nil, fmt.Errorf("tool %q is defined more than once", toolDefinition.Name)
+		}
+		compiledSchema, err := compileToolSchema(toolDefinition)
+		if err != nil {
+			return nil, err
+		}
+		compiledSchemas[toolDefinition.Name] = compiledToolSchema{
+			parameters: string(toolDefinition.Parameters),
+			validator:  compiledSchema,
 		}
 		toolNames[toolDefinition.Name] = true
 	}
-	return nil
+	return compiledSchemas, nil
 }
 
 func validateMessageContent(conversationEntry Message, messageIndex int) error {

@@ -231,6 +231,57 @@ func TestResponsesReassemblesToolCall(t *testing.T) {
 	}
 }
 
+func TestResponsesNormalizesForeignToolIdentityAtProtocolBoundary(t *testing.T) {
+	requestBody := make(chan map[string]any, 1)
+	testServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		requestBody <- body
+		writer.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(writer, `{"type":"response.created","response":{"id":"resp-normalized","model":"served-model"}}`)
+		writeSSE(writer, `{"type":"response.completed","response":{"id":"resp-normalized","model":"served-model","status":"completed"}}`)
+	}))
+	defer testServer.Close()
+
+	foreignID := "call with spaces|foreign item"
+	llmClient := newResponsesClient(t, responsesModel(testServer.URL), testServer.Client())
+	_, err := llmClient.Complete(context.Background(), llm.Context{
+		Messages: []llm.Message{
+			llm.AssistantMessage{
+				API: "foreign-api", Provider: "foreign-provider", Model: "foreign-model",
+				StopReason: llm.StopReasonToolUse,
+				Content: []llm.AssistantContent{
+					llm.ToolCall{ID: foreignID, Name: "lookup", Arguments: json.RawMessage(`{}`)},
+				},
+			},
+			llm.ToolResultMessage{
+				ToolCallID: foreignID, ToolName: "lookup",
+				Content: []llm.ToolResultContent{llm.TextContent{Text: "found"}},
+			},
+			llm.NewTextMessage("continue"),
+		},
+		Tools: []llm.Tool{{Name: "lookup", Parameters: json.RawMessage(`{"type":"object"}`)}},
+	}, llm.StreamOptions{APIKey: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	items := (<-requestBody)["input"].([]any)
+	functionCall := items[0].(map[string]any)
+	functionOutput := items[1].(map[string]any)
+	callID, _ := functionCall["call_id"].(string)
+	itemID, _ := functionCall["id"].(string)
+	if !strings.HasPrefix(callID, "call_") || len(callID) > 64 || functionOutput["call_id"] != callID {
+		t.Fatalf("call identity was not mapped consistently: call=%#v output=%#v", callID, functionOutput["call_id"])
+	}
+	if !strings.HasPrefix(itemID, "fc_") || len(itemID) > 64 {
+		t.Fatalf("item identity was not normalized: %#v", itemID)
+	}
+}
+
 func TestResponsesRejectsMalformedSameModelReplayMetadata(t *testing.T) {
 	targetModel := responsesModel("https://example.test")
 	llmClient := newResponsesClient(t, targetModel, http.DefaultClient)

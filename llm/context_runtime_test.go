@@ -54,8 +54,8 @@ func TestPrepareContextTransformsCrossModelHistoryWithoutMutation(t *testing.T) 
 		t.Fatalf("cross-model text metadata was retained: %#v", visible)
 	}
 	preparedCall := assistantReply.Content[2].(llm.ToolCall)
-	if preparedCall.ID == originalCallID || preparedCall.Metadata != nil || len(preparedCall.ID) > 64 {
-		t.Fatalf("tool call was not normalized: %#v", preparedCall)
+	if preparedCall.ID != originalCallID || preparedCall.Metadata != nil {
+		t.Fatalf("tool call identity or metadata was prepared incorrectly: %#v", preparedCall)
 	}
 	preparedResult := prepared.Messages[1].(llm.ToolResultMessage)
 	if preparedResult.ToolCallID != preparedCall.ID {
@@ -173,7 +173,7 @@ func TestResolveStreamOptionsAppliesModelReasoningBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.Reasoning != llm.ReasoningHigh || resolved.ThinkingBudget != 4096 {
+	if resolved.Reasoning != llm.ReasoningHigh || resolved.ThinkingBudget != 4096 || resolved.MaxOutputTokens != target.MaxOutputTokens {
 		t.Fatalf("got resolved options %#v", resolved)
 	}
 }

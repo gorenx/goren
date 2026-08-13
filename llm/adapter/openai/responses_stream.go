@@ -38,13 +38,18 @@ type responsesState struct {
 	serviceTier     string
 }
 
-func newResponsesState(targetModel llm.Model, eventSink llm.StreamEmitter, toolDefinitions []llm.Tool, serviceTier string) *responsesState {
+func newResponsesState(
+	targetModel llm.Model,
+	eventSink llm.StreamEmitter,
+	toolDefinitions []llm.Tool,
+	serviceTier string,
+) *responsesState {
 	return &responsesState{
 		target:          targetModel,
 		emitter:         eventSink,
 		items:           make(map[string]*responsesBlock),
 		stopReason:      llm.StopReasonStop,
-		toolDefinitions: cloneToolDefinitions(toolDefinitions),
+		toolDefinitions: toolDefinitions,
 		serviceTier:     serviceTier,
 	}
 }

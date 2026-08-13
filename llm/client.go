@@ -84,6 +84,8 @@ func NewClient(targetModel Model, adapterRegistry *Registry, keys APIKeyResolver
 	}, nil
 }
 
+// cloneModel gives Client an immutable snapshot independent of caller-owned
+// slices and maps.
 func cloneModel(targetModel Model) Model {
 	cloned := targetModel
 	cloned.Input = append([]InputModality(nil), targetModel.Input...)
@@ -122,7 +124,8 @@ func (llmClient *Client) Stream(
 	input Context,
 	invocationOptions StreamOptions,
 ) (*EventStream, error) {
-	if err := ValidateContext(input); err != nil {
+	compiledSchemas, err := validateContext(input)
+	if err != nil {
 		return nil, err
 	}
 	resolvedOptions, err := ResolveStreamOptions(llmClient.targetModel, invocationOptions)
@@ -137,6 +140,7 @@ func (llmClient *Client) Stream(
 	if err != nil {
 		return nil, err
 	}
+	attachToolValidators(prepared.Tools, compiledSchemas)
 	if _, err := llmClient.validateBudget(ctx, prepared, invocationOptions); err != nil {
 		return nil, err
 	}
@@ -151,14 +155,18 @@ func (llmClient *Client) Stream(
 // CountTokens prepares input for this Client's target model and returns the
 // configured tokenizer result for observability and Context assembly.
 func (llmClient *Client) CountTokens(ctx context.Context, input Context) (TokenCount, error) {
-	if err := ValidateContext(input); err != nil {
+	if _, err := validateContext(input); err != nil {
 		return TokenCount{}, err
 	}
 	prepared, err := PrepareContext(llmClient.targetModel, input)
 	if err != nil {
 		return TokenCount{}, err
 	}
-	countedTokens, err := llmClient.tokens.CountTokens(ctx, llmClient.targetModel, prepared)
+	return llmClient.countInputTokens(ctx, prepared)
+}
+
+func (llmClient *Client) countInputTokens(ctx context.Context, input Context) (TokenCount, error) {
+	countedTokens, err := llmClient.tokens.CountTokens(ctx, llmClient.targetModel, input)
 	if err != nil {
 		return TokenCount{}, fmt.Errorf("count LLM context tokens: %w", err)
 	}
@@ -169,17 +177,11 @@ func (llmClient *Client) CountTokens(ctx context.Context, input Context) (TokenC
 }
 
 func (llmClient *Client) validateBudget(ctx context.Context, input Context, invocationOptions StreamOptions) (TokenCount, error) {
-	countedTokens, err := llmClient.tokens.CountTokens(ctx, llmClient.targetModel, input)
+	countedTokens, err := llmClient.countInputTokens(ctx, input)
 	if err != nil {
-		return TokenCount{}, fmt.Errorf("count LLM context tokens: %w", err)
-	}
-	if err := validateTokenCount(countedTokens); err != nil {
 		return TokenCount{}, err
 	}
 	reservedOutput := invocationOptions.MaxOutputTokens
-	if reservedOutput == 0 {
-		reservedOutput = llmClient.targetModel.MaxOutputTokens
-	}
 	if llmClient.targetModel.ContextWindow > 0 && countedTokens.InputTokens+reservedOutput > llmClient.targetModel.ContextWindow {
 		return countedTokens, fmt.Errorf(
 			"%w: input=%d reserved_output=%d limit=%d strategy=%s estimated=%t",
