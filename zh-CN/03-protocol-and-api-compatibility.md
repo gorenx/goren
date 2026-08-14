@@ -385,24 +385,48 @@ TypeScript DSH SDK 的 newline JSON-RPC、Python SDK、`initialize`、`session/p
 
 ## 10. 兼容证据
 
-实现阶段建立与源基线绑定的 fixture：
+契约资产与固定源基线绑定，但不把 TypeScript schema 或客户端实现带入 Go 运行时：
 
 ```text
-contracts/deepseek-harness/<source-sha>/
+contracts/deepseek-harness/
   manifest.json
-  connection/
-  api/
-  session/
-  llm/
-  tools/
+  vectors.json
+
+tests/contract/
+  generate-vectors.ts
+  fixtures_test.go
+  client-smoke.ts
+  connection-reconnect.ts
+  source_client_test.go
 ```
 
-`manifest.json` 记录源 commit、提取脚本版本、协议类别和规范化规则。fixture 不手工“修正”为 Go 输出。
+`manifest.json` 是机器可读的范围与 provenance owner：记录源 commit/version/license/toolchain、HTTP/WS path、message/receipt/frame 判别集合、当前 unary method、privileged method、Excluded 和 Deferred 能力。源 commit 改变时必须显式更新该文件和全部向量，不能自动追随相邻 checkout。
+
+`generate-vectors.ts` 把固定上游 Zod schema 当作 oracle，对预先定义的 JSON 样本执行 `safeParse`，把输入、`accepted` 判定和 schema 规范化后的 JSON 写成确定性 `vectors.json`。这里的“向量”是 contract test case，不是 embedding，也不生成 Go 类型或生产代码。fixture 不手工“修正”为 Go 输出。
+
+普通 `go test ./...` 只读取已提交向量，验证 Go envelope decoder、`host.describe` 和 Mux/Host encoder，不需要 Node 或源 checkout。显式的 `go test -tags=contract ./tests/contract` 才使用 `DSH_SOURCE`（默认 `../deepseek-harness`）运行以下跨语言链：
+
+```text
+固定 TypeScript schema
+  -> generate-vectors.ts
+  -> 与已提交 vectors.json 逐字比较
+
+固定 WebApiClient
+  -> HTTP host.describe + 两条真实 WebSocket + /api/respond
+  -> Go Connection Host -> API Proxy
+
+固定 ConnectionController
+  -> 建立 mux + host + describe readiness
+  -> 任一 socket 结束
+  -> client-owned generation 作废并重建两条 socket
+```
+
+测试只导入上游 schema、`WebApiClient` 和 `ConnectionController` 作为 compatibility oracle；它们不编译进 Go binary，也不改变“客户端实现不复制”的范围。测试依赖缺失时显式失败并给出源依赖安装提示，不在普通 Go test 中静默安装依赖或修改源 checkout。
 
 验收包含：
 
-1. TypeScript 编码、Go 解码已纳入的 Connection message、API payload、Session、LLM 与 Tool；
-2. Go 编码、TypeScript 解码相同 contract；
+1. TypeScript schema 生成接受/拒绝/规范化向量，Go 对已纳入的 Connection message 和 API payload 作相同判断；
+2. Go 编码 Mux/Host frame 与响应，固定 TypeScript schema 和 `WebApiClient` 直接解析；
 3. 同一输入分别运行两端，比较事件顺序、稳定字段和最终 model-visible context；
 4. 取消、超时、插件卸载、无效参数和未知事件的负向用例；
 5. provider 特有事件经过 adapter 后的统一流 snapshot。

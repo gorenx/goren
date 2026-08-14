@@ -19,34 +19,34 @@
 
 | 阶段 | 执行状态 | 子目标进度 | 最高证据等级 | 当前重点 |
 | --- | --- | --- | --- | --- |
-| 阶段 0：基线与 Contract Freeze | In Progress | 6 Completed / 2 In Progress / 6 Planned | Go Verified | 建立 manifest、fixture generator 与完整首期 contract |
-| 阶段 1：Connection Host Carrier | In Progress | 15 Completed / 2 In Progress / 2 Planned | Go Verified | TypeScript differential 与慢客户端/泄漏验证 |
+| 阶段 0：基线与 Contract Freeze | In Progress | 10 Completed / 3 In Progress / 1 Planned | Contract Verified | 补齐首期 surface mapping 与 HTTP 负向 differential |
+| 阶段 1：Connection Host Carrier | In Progress | 17 Completed / 2 In Progress | Contract Verified | 补齐 HTTP differential 与慢客户端/泄漏验证 |
 | 阶段 2：Plugin Runtime | Planned | 0 Completed / 12 Planned | None | 等待 Connection carrier Gate 完成 |
 | 阶段 3：Session/Agent slice | Planned | 0 Completed / 16 Planned | None | 不先于阶段 1、2 进入实现 |
 | 阶段 4：LLM Contract | Planned | 0 Completed / 13 Planned | None | 既有 `llm` 尚未迁移到 Harness contract |
 | 阶段 5：Session 持久化 | Planned | 0 Completed / 14 Planned | None | 先以内存 Session 验证状态机 |
 | 阶段 6：客户端能力扩展 | Planned | 0 Completed / 19 Planned | None | 按 TypeScript Client 实际消费逐项进入 |
 | 阶段 7：Deferred 能力 | Deferred | 7 Deferred | None | 不创建 package、handler 或依赖占位 |
-| 阶段 8：Parity Hardening | Planned | 0 Completed / 2 In Progress / 13 Planned | Go Verified | 当前检查不等同发布验收 |
+| 阶段 8：Parity Hardening | In Progress | 0 Completed / 4 In Progress / 11 Planned | Contract Verified | 扩展当前 Connection contract suite，不等同发布验收 |
 
-当前没有能力达到 `Contract Verified`：TypeScript fixture/differential suite 尚未调用 Go server。原 Web Client 也未标记可运行。
+当前最小 Connection slice 达到 `Contract Verified`：固定 TypeScript schema 与 Go envelope/frame 已交叉校验，固定上游 `WebApiClient` 已调用 Go `host.describe`、读取两条 WebSocket 并调用 `/api/respond`，`ConnectionController` 已验证 client-owned generation 重建。Session/Agent 会话、完整 HTTP 失败矩阵、原 Web 产品和真实 DeepSeek Provider 均未据此标记兼容。
 
 ## 3. 阶段 0：基线与 Connection Contract Freeze
 
 | ID | 类别 | 子目标 | 执行状态 | 证据或缺口 |
 | --- | --- | --- | --- | --- |
 | S0-D01 | 交付 | 固定源 commit、版本、许可证和本地参考路径 | Completed | Implemented：`01` 已固定 `47f943...`、`0.1.0-rc.5` 和 `../deepseek-harness` |
-| S0-D02 | 交付 | 建立 included/excluded surface manifest | Planned | None：文档已有范围，机器可读 manifest 尚未建立 |
+| S0-D02 | 交付 | 建立 included/excluded surface manifest | Completed | Contract Verified：`contracts/deepseek-harness/manifest.json` 固定源、当前 surface、Excluded/Deferred 与 privileged method |
 | S0-D03 | 交付 | 提取 RPC message、result、receipt、frame、path 和 stable errors | Completed | Go Verified：RPC、path、stable errors、窄 stream request 与完整 Mux/Host frame union 已覆盖 |
 | S0-D04 | 交付 | 提取首期 Host、Session、approval/question 和 respond contract | In Progress | Go Verified：`host.describe` 与 respond envelope 已完成；Session 和 interaction 未完成 |
-| S0-D05 | 交付 | 建立 contract manifest 和可重复 TypeScript fixture generator | Planned | None：`contracts/deepseek-harness/...` 不存在 |
+| S0-D05 | 交付 | 建立 contract manifest 和可重复 TypeScript fixture generator | Completed | Contract Verified：固定源 Zod schema 可重复生成 `vectors.json` |
 | S0-D06 | 交付 | 单列完整 Web Client 所需但首期未纳入的能力 | Completed | Implemented：`01` 已区分 Workspace、Settings、Goals 等 Deferred 能力 |
 | S0-D07 | 交付 | 记录既有 Go `llm` 与目标 contract 的迁移差异 | Completed | Implemented：`01` 已记录 public model、stream 和 route 差异 |
 | S0-D08 | 交付 | 确定 NOTICE/provenance 形式 | Planned | None：形式仍是明确未决项 |
-| S0-G01 | Gate | fixture 可从干净源 checkout 重复生成 | Planned | None：依赖 S0-D05 |
+| S0-G01 | Gate | fixture 可从干净源 checkout 重复生成 | Completed | Contract Verified：源 checkout 保持干净，生成结果与 committed fixture 逐字一致 |
 | S0-G02 | Gate | 每个 surface 可映射到源路径、符号和 owner | In Progress | Implemented：首个 unary slice 已映射，全部 included surface 尚未覆盖 |
-| S0-G03 | Gate | path、status、header、discriminant、缺失值和错误码有正负 fixture | Planned | None：只有 Go tests，没有跨语言 fixture |
-| S0-G04 | Gate | extractor 不纳入排除项 | Planned | None：extractor 尚未建立 |
+| S0-G03 | Gate | path、status、header、discriminant、缺失值和错误码有正负 fixture | In Progress | Contract Verified：message/frame discriminant、缺失 payload/details、closed enum 和 receipt 已覆盖；HTTP status/header differential 未完成 |
+| S0-G04 | Gate | extractor 不纳入排除项 | Completed | Contract Verified：generator 只读取固定协议 schema；WebApiClient/ConnectionController 仅作为测试 oracle，不进入 Go 依赖闭包 |
 | S0-G05 | Gate | Agent 会话兼容与完整 Web 产品兼容分开记录 | Completed | Implemented：`01` 和 `05` 已明确区分 |
 | S0-G06 | Gate | 未实现能力只标记 Planned 或 Deferred | Completed | Implemented：当前矩阵未把未实现能力计为完成 |
 
@@ -62,13 +62,13 @@
 | S1-D06 | 交付 | 独立 stream lifecycle、pending correlation、取消和 bounded shutdown | Completed | Go Verified：stream 独立取消、pending 原子 claim/withdraw 与 bounded teardown 已覆盖 |
 | S1-D07 | 交付 | Host/Origin/cross-site fence 与 privileged method loopback policy | Completed | Go Verified：全局 fence 与 15 个源 privileged method 的二次 loopback fence 已覆盖 |
 | S1-D08 | 交付 | `apiproxy` 拥有 Mux/Host frame union | Completed | Go Verified：10 个 MuxFrame 与 10 个 HostFrame 分支、宽字段边界和 canonical type encoding 已覆盖 |
-| S1-G01 | Gate | TypeScript Connection 可调用 Go `host.describe` | Planned | None：仅真实 Go 进程 curl smoke 已通过 |
-| S1-G02 | Gate | HTTP 路径、载荷和失败状态与源实现一致 | In Progress | Go Verified：Go 侧正负测试已通过；尚无源 differential evidence |
+| S1-G01 | Gate | TypeScript Connection 可调用 Go `host.describe` | Completed | Contract Verified：固定源 `WebApiClient.host.describe` 直接调用真实 Go HTTPHost |
+| S1-G02 | Gate | HTTP 路径、载荷和失败状态与源实现一致 | In Progress | Contract Verified：`host.describe`、两条 WS path 和 respond/not-pending 已通过；完整 status/header/失败 differential 未完成 |
 | S1-G03 | Gate | Echo 默认路由、错误和 recovery 被协议 adapter 接管 | Completed | Go Verified：404/405、错误映射与 middleware panic recovery 已覆盖 |
 | S1-G04 | Gate | `rpcId`、accepted、not-pending 和 bad-response 全覆盖 | Completed | Go Verified：合法结算、坏响应重试、late/duplicate 和并发首个 claim 已覆盖 |
 | S1-G05 | Gate | WebSocket 客户端上行触发 policy close | Completed | Go Verified：code `1008`、reason `downlink only` |
 | S1-G06 | Gate | socket 断开取消对应 source，Host teardown 等待全部 cleanup | Completed | Go Verified：断线取消、新连接隔离、cleanup wait 与 deadline 已覆盖 |
-| S1-G07 | Gate | TypeScript Client 在任一 socket 结束后重建 generation | Planned | None：仍缺 TypeScript Connection 验证 |
+| S1-G07 | Gate | TypeScript Client 在任一 socket 结束后重建 generation | Completed | Contract Verified：首个 mux source 结束后固定源 `ConnectionController` 重开 mux/host 并再次 connected |
 | S1-G08 | Gate | HTTP 断开只取消 owned handler | Completed | Go Verified：`TestUnaryRequestCancellationReachesProvider` |
 | S1-G09 | Gate | `echo.Context` 不越过 transport boundary | Completed | Go Verified：API Proxy 仅接收 `context.Context` 和 typed request |
 | S1-G10 | Gate | body、慢客户端、stream failure、shutdown 和泄漏有测试 | In Progress | Go Verified：body、stream failure、cleanup wait/deadline 已覆盖；慢客户端和 leak audit 未完成 |
@@ -229,7 +229,7 @@ interaction owner registers stable rpcId + decoder
 | ID | 类别 | 子目标 | 执行状态 | 证据或缺口 |
 | --- | --- | --- | --- | --- |
 | S8-D01 | 交付 | included capability matrix | Planned | None：当前实施矩阵不替代最终 capability matrix |
-| S8-D02 | 交付 | 跨语言 replay/differential suite | Planned | None |
+| S8-D02 | 交付 | 跨语言 replay/differential suite | In Progress | Contract Verified：Connection/schema/client slice 已建立；Session/Agent/LLM replay 尚未进入 |
 | S8-D03 | 交付 | 多平台 CI | Planned | None |
 | S8-D04 | 交付 | race、fuzz、故障注入、泄漏和长时测试 | Planned | None |
 | S8-D05 | 交付 | dependency、license 和 NOTICE 清单 | In Progress | Implemented：Echo 准入已记录；完整发布清单未建立 |
@@ -239,8 +239,8 @@ interaction owner registers stable rpcId + decoder
 | S8-G01 | Gate | 每个 included surface 标明 P0/P1/P2/P3 | Planned | None |
 | S8-G02 | Gate | Connection 与 Agent 关键路径达到计划层级 | Planned | None |
 | S8-G03 | Gate | Linux、macOS、Windows 分别有支持证据 | Planned | None：当前只验证 `darwin/arm64` |
-| S8-G04 | Gate | 全量 Go、格式和 contract suite 通过 | In Progress | Go Verified：当前 Go checks 已通过；contract suite 尚不存在 |
-| S8-G05 | Gate | TypeScript Client 与 DeepSeek Provider 分别真实验收 | Planned | None |
+| S8-G04 | Gate | 全量 Go、格式和 contract suite 通过 | In Progress | Contract Verified：当前 Go checks 与显式 TypeScript contract suite 通过；全项目 parity suite 尚未完成 |
+| S8-G05 | Gate | TypeScript Client 与 DeepSeek Provider 分别真实验收 | In Progress | Contract Verified：固定 TypeScript Connection 最小 slice 已通过；DeepSeek Provider 与完整会话未验收 |
 | S8-G06 | Gate | 依赖闭包和二进制扫描确认排除范围未进入 | Planned | None |
 | S8-G07 | Gate | open decision 已解决、受控延期或移出 release | Planned | None |
 
@@ -263,6 +263,11 @@ interaction owner registers stable rpcId + decoder
 | pending accepted、坏响应重试、取消、late/duplicate 与并发 claim | `apiproxy/pending_test.go` |
 | `/api/respond` accepted/技术失败、privileged loopback 与 Echo Recover | `internal/connection/http_test.go` |
 | 命名规则与审计器自测 | `tests/architecture/naming_test.go` |
+| manifest 与 Go path/message/frame surface 一致 | `TestPinnedManifestMatchesGoSurface` |
+| Go envelope/frame 与固定 TypeScript schema 向量一致 | `TestGoAgreesWithPinnedSourceVectors` |
+| 固定源 schema 可重复生成 committed fixture | `TestPinnedSourceGeneratesCommittedVectors` |
+| 固定源 `WebApiClient` 调用 Go HTTP/WS/respond | `TestPinnedSourceWebApiClientTalksToGoHost` |
+| 固定源 `ConnectionController` 在单流结束后重建双流 | `TestPinnedSourceConnectionRebuildsBothStreams` |
 
 ## 13. 当前验证结果
 
@@ -274,11 +279,12 @@ interaction owner registers stable rpcId + decoder
 - `go test -race ./...`
 - `go vet ./...`
 - `go build ./...`
+- `go test -tags=contract ./tests/contract`（Node v22.23.0；源 commit `47f943...`）
 - `go run golang.org/x/vuln/cmd/govulncheck@latest ./...`：`No vulnerabilities found`
 - 变更文档本地链接检查
 - `git diff --check`
 
-真实进程 smoke：启动 `cmd/goren`，向 `127.0.0.1` 发送 `POST /api/host.describe`，得到同 `rpcId` 的成功 `ServerResponse`，value 包含 version、cwd、`attachedSessions=0` 和 `canOpenPath=false`。
+真实进程 smoke：启动 `cmd/goren`，向 `127.0.0.1` 发送 `POST /api/host.describe`，得到同 `rpcId` 的成功 `ServerResponse`，value 包含 version、cwd、`attachedSessions=0` 和 `canOpenPath=false`。跨语言测试另使用固定源 `WebApiClient` 直连测试 Go HTTPHost，并由固定源 `ConnectionController` 完成两代双流连接。
 
 ## 14. 安全与依赖状态
 
@@ -291,7 +297,7 @@ interaction owner registers stable rpcId + decoder
 
 按阶段 1 矩阵顺序推进：
 
-1. 建立 TypeScript-to-Go fixture/differential test，覆盖 frame schema、双流 readiness 与 client-owned generation；
-2. 补齐慢客户端背压和 goroutine/WebSocket leak audit。
+1. 补齐慢客户端背压和 goroutine/WebSocket leak audit；
+2. 完成剩余 HTTP status/header/失败 differential，收敛阶段 1 Gate。
 
 阶段 1 Gate 完成后进入 Plugin Runtime；approval/question 的业务闭环随阶段 3 的 Session/Agent owner 一起实现，不在 Connection 或通用 pending registry 中提前伪造。

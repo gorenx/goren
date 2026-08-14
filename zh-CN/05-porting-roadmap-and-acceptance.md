@@ -56,7 +56,7 @@ Existing TypeScript Client
 - 建立 included/excluded surface manifest；
 - 提取四类 RPC message、`RpcResult`、`RpcReceipt`、Mux/Host frame、HTTP/WS path 和 stable errors；
 - 提取首期 `host.describe`、`session.*`、approval/question 与 `/api/respond` 的 payload/result；
-- 建立 `contracts/deepseek-harness/<source-sha>/manifest.json` 和可重复的 TypeScript fixture 生成入口；
+- 建立 `contracts/deepseek-harness/manifest.json`、固定向量与可重复的 TypeScript fixture 生成入口；
 - 单列 full Web client 启动所需但首期未纳入的 Workspace、Settings、Goals 等能力；
 - 记录当前 Go `llm` API 与目标 contract 的迁移差异；
 - 确定 NOTICE/provenance 形式。
