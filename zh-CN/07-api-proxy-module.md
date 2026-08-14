@@ -22,9 +22,10 @@
 - transport-neutral `EventStreams` 与 mux/host 独立 stream handler；
 - `Request[P]`、`Outcome[V]`、`PayloadDecoder[P]`、`UnaryHandler[P,V]`；
 - method payload 的第二层 typed decode；
+- answerable `ServerRequest` 的 pending correlation、response 第二层 typed decode 与原子 settle；
 - 业务 success/failure 与技术 error/panic 的分离；
 - Host description contract 与 consumer-owned `HostDescriptionProvider`；
-- `/api/respond` 未来 pending interaction table 的业务入口。
+- `/api/respond` 的业务入口。
 
 API Proxy 不拥有：
 
@@ -48,6 +49,8 @@ canonical method
 泛型在注册时保证 decoder、handler request 与 response 类型一致；Catalog 内部只在异构 route map 中擦除类型。`json.RawMessage` 不越过 decoder，Provider 收到的是 owner-defined Go request type。
 
 Catalog 只允许一个 owner 注册同一 canonical method。Catalog 支持并发读取；注册发生在 listener 启动前，后续 Plugin Runtime 若支持 replacement，必须通过 Scope/effect 建立新的原子切换机制，不能直接在 live map 上覆盖。
+
+同一 Catalog 还持有运行期 pending correlation table，但不把不同 interaction 擦成通用业务模型。interaction owner 使用 `RegisterPendingResponse[V]` 为稳定 `rpcId` 注册自己的 `ResponseDecoder[V]`，并通过 `PendingResponse[V]` 等待或撤回；异构只存在于表的内部路由点。
 
 ## 4. 上下游交互
 
@@ -101,9 +104,34 @@ API Proxy 不缓存或推导这些状态，也不使用固定成功结果冒充�
 
 最后一条在 Go 中把源 `RpcResponse.rpcId` 的回显不变量收紧为结构保证，不改变 wire 观察结果。
 
-## 7. `/api/respond` 目标设计
+## 7. `/api/respond` pending 生命周期
 
-approval/question owner 在 API Proxy 中创建 pending entry：ServerRequest 创建稳定 `rpcId`，`Respond` 按 ID 路由并做 interaction payload 的第二层 decode，成功后原子 settle；late/duplicate 返回 `not-pending`。Connection 只负责 transport receipt，不拥有 pending 业务状态。
+```text
+interaction owner
+  -> mint stable rpcId
+  -> RegisterPendingResponse(rpcId, owner decoder)
+  -> publish answerable ServerRequest
+
+POST /api/respond
+  -> Connection parses ClientResponse envelope
+  -> Catalog lookup by echoed rpcId
+  -> owner decoder parses RpcResult
+  -> atomically claim entry
+  -> wake PendingResponse waiter
+  -> RpcReceipt
+```
+
+状态规则：
+
+- 未知、已撤回、late 或 duplicate `rpcId` 返回 `not-pending`；
+- interaction payload 无效返回 `bad-response`，entry 保持 pending，允许客户端修正后重试；
+- decoder panic 是技术错误，entry 保持 pending，由 Connection 返回 HTTP `500`；
+- 合法 response 只有一个并发请求能原子 claim，winner 返回 `accepted`，其余返回 `not-pending`；
+- owner context 取消时，`Wait` 撤回 entry 并返回取消原因；若合法 response 已先完成 claim，则 settlement 是权威结果；
+- carrier/WebSocket 断开本身不撤回 pending，保证 reconnect 后仍可使用同一个 `rpcId` 回答；
+- owner teardown 可显式 `Withdraw`，其后 late response 返回 `not-pending`。
+
+通用 registry 不拥有 approval/question schema、requested/resolved frame、broadcast 或 reconnect replay。具体 interaction owner 仍持有其领域 pending 状态，从该状态生成首次 frame、replay baseline 和 resolved frame；registry 只保证 response 路由与结算并发语义。
 
 ## 8. 后续进入规则
 

@@ -20,7 +20,7 @@
 | 阶段 | 执行状态 | 子目标进度 | 最高证据等级 | 当前重点 |
 | --- | --- | --- | --- | --- |
 | 阶段 0：基线与 Contract Freeze | In Progress | 5 Completed / 3 In Progress / 6 Planned | Go Verified | 建立 manifest、fixture generator 与完整首期 contract |
-| 阶段 1：Connection Host Carrier | In Progress | 9 Completed / 7 In Progress / 3 Planned | Go Verified | frame union、TypeScript differential 与真实 pending response |
+| 阶段 1：Connection Host Carrier | In Progress | 14 Completed / 2 In Progress / 3 Planned | Go Verified | frame union、TypeScript differential 与慢客户端/泄漏验证 |
 | 阶段 2：Plugin Runtime | Planned | 0 Completed / 12 Planned | None | 等待 Connection carrier Gate 完成 |
 | 阶段 3：Session/Agent slice | Planned | 0 Completed / 16 Planned | None | 不先于阶段 1、2 进入实现 |
 | 阶段 4：LLM Contract | Planned | 0 Completed / 13 Planned | None | 既有 `llm` 尚未迁移到 Harness contract |
@@ -57,15 +57,15 @@
 | S1-D01 | 交付 | `connection` 拥有 RPC、receipt、窄 stream request 和协议常量 | Completed | Go Verified：envelope、codec、path 与 `RPCRequest` 已覆盖 |
 | S1-D02 | 交付 | Echo v5 与 `coder/websocket` Host carrier | Completed | Go Verified：HTTP 与真实网络 WebSocket carrier 已覆盖 |
 | S1-D03 | 交付 | typed API method registry 与 deterministic handler | Completed | Go Verified：Catalog 与 `host.describe` 已覆盖 |
-| S1-D04 | 交付 | `POST /api/<method>` 与 `POST /api/respond` | In Progress | Go Verified：unary、bad-response、not-pending 已覆盖；accepted response 未实现 |
+| S1-D04 | 交付 | `POST /api/<method>` 与 `POST /api/respond` | Completed | Go Verified：unary、accepted、bad-response、not-pending 与技术失败已覆盖 |
 | S1-D05 | 交付 | `/api/events.mux` 与 `/api/events.host` 两条下行 WebSocket | Completed | Go Verified：两条真实 socket 独立发送 text `ServerRequest` |
-| S1-D06 | 交付 | 独立 stream lifecycle、pending correlation、取消和 bounded shutdown | In Progress | Go Verified：HTTP/stream 取消和 bounded teardown 已完成；pending interaction 未完成 |
-| S1-D07 | 交付 | Host/Origin/cross-site fence 与 privileged method loopback policy | In Progress | Go Verified：Host/Origin/cross-site 已覆盖；method policy 未实现 |
+| S1-D06 | 交付 | 独立 stream lifecycle、pending correlation、取消和 bounded shutdown | Completed | Go Verified：stream 独立取消、pending 原子 claim/withdraw 与 bounded teardown 已覆盖 |
+| S1-D07 | 交付 | Host/Origin/cross-site fence 与 privileged method loopback policy | Completed | Go Verified：全局 fence 与 15 个源 privileged method 的二次 loopback fence 已覆盖 |
 | S1-D08 | 交付 | `apiproxy` 拥有 Mux/Host frame union | Planned | None：当前只有 transport-neutral `EventStreams`，完整业务 frame 类型未提取 |
 | S1-G01 | Gate | TypeScript Connection 可调用 Go `host.describe` | Planned | None：仅真实 Go 进程 curl smoke 已通过 |
 | S1-G02 | Gate | HTTP 路径、载荷和失败状态与源实现一致 | In Progress | Go Verified：Go 侧正负测试已通过；尚无源 differential evidence |
-| S1-G03 | Gate | Echo 默认路由、错误和 recovery 被协议 adapter 接管 | In Progress | Go Verified：404/405 和错误映射已覆盖；Recover 已配置但缺显式 middleware panic test |
-| S1-G04 | Gate | `rpcId`、accepted、not-pending 和 bad-response 全覆盖 | In Progress | Go Verified：correlation、not-pending、bad-response 已覆盖；accepted 未覆盖 |
+| S1-G03 | Gate | Echo 默认路由、错误和 recovery 被协议 adapter 接管 | Completed | Go Verified：404/405、错误映射与 middleware panic recovery 已覆盖 |
+| S1-G04 | Gate | `rpcId`、accepted、not-pending 和 bad-response 全覆盖 | Completed | Go Verified：合法结算、坏响应重试、late/duplicate 和并发首个 claim 已覆盖 |
 | S1-G05 | Gate | WebSocket 客户端上行触发 policy close | Completed | Go Verified：code `1008`、reason `downlink only` |
 | S1-G06 | Gate | socket 断开取消对应 source，Host teardown 等待全部 cleanup | Completed | Go Verified：断线取消、新连接隔离、cleanup wait 与 deadline 已覆盖 |
 | S1-G07 | Gate | TypeScript Client 在任一 socket 结束后重建 generation | Planned | None：仍缺 TypeScript Connection 验证 |
@@ -95,6 +95,18 @@ GET /api/events.mux 或 /api/events.host
   -> ServerRequest text message
   -> socket close cancels only its source
 ```
+
+当前 response 调用链：
+
+```text
+interaction owner registers stable rpcId + decoder
+  -> POST /api/respond
+  -> ClientResponse envelope decode
+  -> API Proxy pending lookup and second parse
+  -> atomic settle or withdrawal-safe receipt
+```
+
+该链路已完成通用 pending 基础设施；approval/question 的具体 schema、requested/resolved frame、replay 和业务结果仍属于 S3-D08，不计为当前完成。
 
 ## 5. 阶段 2：Plugin Runtime 与 Server Assembly
 
@@ -246,6 +258,8 @@ GET /api/events.mux 或 /api/events.host
 | RPCRequest 到 ServerRequest 的 method/payload 补全 | `connection/stream_test.go` |
 | API Proxy mux/host 独立事件源 | `apiproxy/events_test.go` |
 | WebSocket 双流、426、1008、stream error、取消和 teardown | `internal/connection/websocket_test.go` |
+| pending accepted、坏响应重试、取消、late/duplicate 与并发 claim | `apiproxy/pending_test.go` |
+| `/api/respond` accepted/技术失败、privileged loopback 与 Echo Recover | `internal/connection/http_test.go` |
 | 命名规则与审计器自测 | `tests/architecture/naming_test.go` |
 
 ## 13. 当前验证结果
@@ -277,7 +291,6 @@ GET /api/events.mux 或 /api/events.host
 
 1. 完成 Mux/Host frame union；
 2. 建立 TypeScript-to-Go fixture/differential test，覆盖双流 readiness 与 client-owned generation；
-3. 补齐 privileged method loopback policy 和 Echo Recover 显式测试；
-4. 把 `/api/respond` 接到真实 pending approval/question。
+3. 补齐慢客户端背压和 goroutine/WebSocket leak audit。
 
-在这些子目标完成前不开始 Session/Agent 业务。
+阶段 1 Gate 完成后进入 Plugin Runtime；approval/question 的业务闭环随阶段 3 的 Session/Agent owner 一起实现，不在 Connection 或通用 pending registry 中提前伪造。

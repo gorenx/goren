@@ -111,11 +111,38 @@ API Proxy 事件源产生窄 `RPCRequest`，其中包含 `rpcId` 与带 `type` �
 | message `type`、`rpcId`、`method`、payload presence | `connection` envelope codec | 决定合法 JSON 内的 `bad-request` 与 correlation salvage |
 | path 与 envelope method 一致 | Connection HTTP adapter | path 是 carrier 输入，只有 adapter 同时拥有两者 |
 | method payload shape | API Proxy 注册行的 owner-defined decoder | method contract 不进入 transport |
+| `ClientResponse` envelope 与 `RpcResult` union | `connection` envelope codec | 决定 carrier 是否返回 `bad-response` receipt |
+| pending interaction response payload | API Proxy pending entry 的 owner-defined decoder | interaction contract 不进入 transport |
 | Host/Session/Agent 业务不变量 | 对应 Provider / application owner | 不在 carrier 或 storage adapter 重复判断 |
 
 JSON 语法检查与 envelope parse 是两个有意分离的阶段：前者决定 HTTP `400`，后者决定 HTTP `200 + bad-request`。除此之外，不再用 Echo Binder、额外 schema middleware 或 Provider 重复解析相同 payload。
 
-## 7. Echo v5 与 coder/websocket 使用决策
+## 7. `POST /api/respond` 流程
+
+```text
+POST /api/respond
+  -> trust fence
+  -> media type / body budget / JSON syntax
+  -> ClientResponse envelope parse
+  -> RPCDispatcher.Respond(ctx, message)
+  -> RpcReceipt
+```
+
+Connection 不持有 pending table，也不判断 approval/question payload。envelope 无效时直接返回 HTTP `200 + {accepted:false, reason:"bad-response"}`；合法 envelope 交给 API Proxy 按 `rpcId` 路由。API Proxy 返回 `accepted`、`not-pending` 或 `bad-response` receipt；其内部技术错误由 Connection 映射为 HTTP `500`。
+
+## 8. privileged method 信任边界
+
+所有 `/api` 请求先经过 deployment-wide trust fence。下列 method 随后再次以空 `trustedHosts` 检查，因此即使部署声明了非 loopback trusted host，也只能从 loopback same-origin 到达：
+
+- `agentPreset.read`、`agentPreset.copy`、`agentPreset.openDocument`、`agentPreset.remove`；
+- `host.pickDirectory`、`host.openPath`；
+- `settings.describe`、`settings.openDocument`、`settings.update`、`settings.replace`、`settings.mutate`；
+- `credentials.describe`、`credentials.set`、`credentials.unset`；
+- `llm.discoverModels`。
+
+该检查发生在 method ownership、body 读取和业务 dispatch 之前，避免通过未注册状态或 payload 错误绕开 reachability policy。它是 DNS rebinding/cross-site 防线，不是认证或授权。`agentPreset.list`、`agentPreset.select`、`llm.providers` 与 `llm.models` 按源契约不属于此集合；它们仍受全局 trust fence 约束。
+
+## 9. Echo v5 与 coder/websocket 使用决策
 
 实现选择 `github.com/labstack/echo/v5 v5.3.1`。组装方式遵循 Echo 官方 [Quick Start](https://echo.labstack.com/guide/quickstart/) 与 [Graceful Shutdown](https://echo.labstack.com/cookbook/graceful-shutdown/)：
 
@@ -129,7 +156,7 @@ WebSocket bridge 使用 `github.com/coder/websocket v1.8.15`，只在 `internal/
 
 API Proxy 已在自身边界把 Provider panic 转为技术错误；Echo Recover 只兜底 adapter/middleware panic。两者保护不同 owner，不对同一业务输入做重复验证。
 
-## 8. 取消与生命周期
+## 10. 取消与生命周期
 
 Echo request 的底层 `Context` 原样传给 `RPCDispatcher`。客户端断开或上游取消时，只取消本次 owned operation；Catalog、Provider registry 和共享 Runtime 不随请求关闭。
 
