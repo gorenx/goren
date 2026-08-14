@@ -397,7 +397,9 @@ tests/contract/
   fixtures_test.go
   client-smoke.ts
   connection-reconnect.ts
+  http-reference.ts
   source_client_test.go
+  source_http_test.go
 ```
 
 `manifest.json` 是机器可读的范围与 provenance owner：记录源 commit/version/license/toolchain、HTTP/WS path、message/receipt/frame 判别集合、当前 unary method、privileged method、Excluded 和 Deferred 能力。源 commit 改变时必须显式更新该文件和全部向量，不能自动追随相邻 checkout。
@@ -419,6 +421,10 @@ tests/contract/
   -> 建立 mux + host + describe readiness
   -> 任一 socket 结束
   -> client-owned generation 作废并重建两条 socket
+
+同一批 raw HTTP cases
+  -> 固定 toFetchHandler 与真实 Go HTTPHost
+  -> 比较 status、media type、稳定 text/JSON 和 failure precedence
 ```
 
 测试只导入上游 schema、`WebApiClient` 和 `ConnectionController` 作为 compatibility oracle；它们不编译进 Go binary，也不改变“客户端实现不复制”的范围。测试依赖缺失时显式失败并给出源依赖安装提示，不在普通 Go test 中静默安装依赖或修改源 checkout。

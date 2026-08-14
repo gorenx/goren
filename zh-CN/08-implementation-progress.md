@@ -19,9 +19,9 @@
 
 | 阶段 | 执行状态 | 子目标进度 | 最高证据等级 | 当前重点 |
 | --- | --- | --- | --- | --- |
-| 阶段 0：基线与 Contract Freeze | In Progress | 10 Completed / 3 In Progress / 1 Planned | Contract Verified | 补齐首期 surface mapping 与 HTTP 负向 differential |
-| 阶段 1：Connection Host Carrier | In Progress | 18 Completed / 1 In Progress | Contract Verified | 补齐 HTTP status/header/失败 differential |
-| 阶段 2：Plugin Runtime | Planned | 0 Completed / 12 Planned | None | 等待 Connection carrier Gate 完成 |
+| 阶段 0：基线与 Contract Freeze | In Progress | 11 Completed / 2 In Progress / 1 Planned | Contract Verified | 补齐首期 surface mapping 与 NOTICE/provenance 决策 |
+| 阶段 1：Connection Host Carrier | Completed | 19 Completed | Contract Verified | Gate 已完成，后续扩展随新增 included surface 进入 |
+| 阶段 2：Plugin Runtime | Planned | 0 Completed / 12 Planned | None | 开始 Service graph、Plugin lifecycle 与 typed config |
 | 阶段 3：Session/Agent slice | Planned | 0 Completed / 16 Planned | None | 不先于阶段 1、2 进入实现 |
 | 阶段 4：LLM Contract | Planned | 0 Completed / 13 Planned | None | 既有 `llm` 尚未迁移到 Harness contract |
 | 阶段 5：Session 持久化 | Planned | 0 Completed / 14 Planned | None | 先以内存 Session 验证状态机 |
@@ -45,7 +45,7 @@
 | S0-D08 | 交付 | 确定 NOTICE/provenance 形式 | Planned | None：形式仍是明确未决项 |
 | S0-G01 | Gate | fixture 可从干净源 checkout 重复生成 | Completed | Contract Verified：源 checkout 保持干净，生成结果与 committed fixture 逐字一致 |
 | S0-G02 | Gate | 每个 surface 可映射到源路径、符号和 owner | In Progress | Implemented：首个 unary slice 已映射，全部 included surface 尚未覆盖 |
-| S0-G03 | Gate | path、status、header、discriminant、缺失值和错误码有正负 fixture | In Progress | Contract Verified：message/frame discriminant、缺失 payload/details、closed enum 和 receipt 已覆盖；HTTP status/header differential 未完成 |
+| S0-G03 | Gate | path、status、header、discriminant、缺失值和错误码有正负 fixture | Completed | Contract Verified：21 个 raw HTTP case、message/frame vectors、receipt、缺失字段、closed enum、status 与 media type 已覆盖 |
 | S0-G04 | Gate | extractor 不纳入排除项 | Completed | Contract Verified：generator 只读取固定协议 schema；WebApiClient/ConnectionController 仅作为测试 oracle，不进入 Go 依赖闭包 |
 | S0-G05 | Gate | Agent 会话兼容与完整 Web 产品兼容分开记录 | Completed | Implemented：`01` 和 `05` 已明确区分 |
 | S0-G06 | Gate | 未实现能力只标记 Planned 或 Deferred | Completed | Implemented：当前矩阵未把未实现能力计为完成 |
@@ -63,7 +63,7 @@
 | S1-D07 | 交付 | Host/Origin/cross-site fence 与 privileged method loopback policy | Completed | Go Verified：全局 fence 与 15 个源 privileged method 的二次 loopback fence 已覆盖 |
 | S1-D08 | 交付 | `apiproxy` 拥有 Mux/Host frame union | Completed | Go Verified：10 个 MuxFrame 与 10 个 HostFrame 分支、宽字段边界和 canonical type encoding 已覆盖 |
 | S1-G01 | Gate | TypeScript Connection 可调用 Go `host.describe` | Completed | Contract Verified：固定源 `WebApiClient.host.describe` 直接调用真实 Go HTTPHost |
-| S1-G02 | Gate | HTTP 路径、载荷和失败状态与源实现一致 | In Progress | Contract Verified：`host.describe`、两条 WS path 和 respond/not-pending 已通过；完整 status/header/失败 differential 未完成 |
+| S1-G02 | Gate | HTTP 路径、载荷和失败状态与源实现一致 | Completed | Contract Verified：固定源 `toFetchHandler` 与真实 Go HTTPHost 对 21 个 success/failure case 的 status、media type 与稳定 body 一致 |
 | S1-G03 | Gate | Echo 默认路由、错误和 recovery 被协议 adapter 接管 | Completed | Go Verified：404/405、错误映射与 middleware panic recovery 已覆盖 |
 | S1-G04 | Gate | `rpcId`、accepted、not-pending 和 bad-response 全覆盖 | Completed | Go Verified：合法结算、坏响应重试、late/duplicate 和并发首个 claim 已覆盖 |
 | S1-G05 | Gate | WebSocket 客户端上行触发 policy close | Completed | Go Verified：code `1008`、reason `downlink only` |
@@ -270,6 +270,7 @@ interaction owner registers stable rpcId + decoder
 | 固定源 `ConnectionController` 在单流结束后重建双流 | `TestPinnedSourceConnectionRebuildsBothStreams` |
 | 慢客户端同步背压与 shutdown 解阻塞 | `TestWebSocketSlowClientBackpressuresSourceAndShutdownUnblocksWrite` |
 | 重复连接/断开后的 source、socket 与 pump 回收 | `TestWebSocketRepeatedConnectDisconnectLeavesNoOwnedResources` |
+| 固定源与 Go HTTP success/failure precedence | `TestPinnedSourceHTTPFailuresMatchGoHost` |
 
 ## 13. 当前验证结果
 
@@ -280,6 +281,7 @@ interaction owner registers stable rpcId + decoder
 - `go test ./...`
 - `go test -race ./...`
 - `go test -race ./internal/connection -run 'TestWebSocket(SlowClient|RepeatedConnectDisconnect)' -count=5`
+- `go test -race -tags=contract ./tests/contract`
 - `go vet ./...`
 - `go build ./...`
 - `go test -tags=contract ./tests/contract`（Node v22.23.0；源 commit `47f943...`）
@@ -298,9 +300,10 @@ interaction owner registers stable rpcId + decoder
 
 ## 15. 下一实现切片
 
-按阶段 1 矩阵顺序推进：
+阶段 1 的全部 Gate 已完成。下一切片进入阶段 2：
 
-1. 完成剩余 HTTP status/header/失败 differential，收敛阶段 1 Gate；
-2. 阶段 1 完成后进入 Plugin Runtime 与 Server Assembly。
+1. 先实现最小 Service Registry、Plugin/Factory contract、Scope 和可撤销 effect/disposer；
+2. 覆盖缺失/重复 service、启动失败 rollback、replacement 与 shutdown；
+3. 再把现有 Connection assembly 接入 Plugin Runtime，并引入首期 strict typed config。
 
-阶段 1 Gate 完成后进入 Plugin Runtime；approval/question 的业务闭环随阶段 3 的 Session/Agent owner 一起实现，不在 Connection 或通用 pending registry 中提前伪造。
+approval/question 的业务闭环仍随阶段 3 的 Session/Agent owner 一起实现，不在 Plugin Runtime、Connection 或通用 pending registry 中提前伪造。

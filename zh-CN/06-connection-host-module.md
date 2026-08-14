@@ -64,8 +64,9 @@ TypeScript Client
 ```text
 POST /api/<method>
   -> trust fence
-  -> route ownership check
+  -> canonical path 与 privileged loopback policy
   -> media type / body budget / JSON syntax
+  -> route ownership check
   -> ClientRequest envelope parse
   -> path == envelope.method
   -> RPCDispatcher.DispatchUnary(ctx, method, rpcId, payload)
@@ -75,9 +76,10 @@ POST /api/<method>
 错误分层保持源语义：
 
 - Host/Origin 不可信：Connection 返回 `403`，下游不执行；
-- path 未注册或 HTTP method 错误：Connection 返回 `404`；
+- HTTP method、API root 或非 unary route 错误：Connection 返回 `404`；
 - media type 错误：Connection 返回 `415`；
 - body 不是 JSON：Connection 返回 `400`；
+- 普通 `POST /api/<unknown>` 仍先执行 media type 与 JSON carrier validation，因此依次可能返回 `415`、`400` 或在 body 可读后返回 `404`；
 - envelope、path/method 或 method payload 错误：返回 HTTP `200` 的 `bad-request`；
 - Provider 返回技术错误或 panic：返回 HTTP `500`；
 - 业务拒绝：仍返回 HTTP `200` 的 `RpcResult` failure。
@@ -144,7 +146,7 @@ Connection 不持有 pending table，也不判断 approval/question payload。en
 - `credentials.describe`、`credentials.set`、`credentials.unset`；
 - `llm.discoverModels`。
 
-该检查发生在 method ownership、body 读取和业务 dispatch 之前，避免通过未注册状态或 payload 错误绕开 reachability policy。它是 DNS rebinding/cross-site 防线，不是认证或授权。`agentPreset.list`、`agentPreset.select`、`llm.providers` 与 `llm.models` 按源契约不属于此集合；它们仍受全局 trust fence 约束。
+该检查发生在 method ownership、body 读取和业务 dispatch 之前，避免通过未注册状态或 payload 错误绕开 reachability policy。普通未知 method 则保持源 `toFetchHandler` 的 carrier precedence：先检查 media type/JSON，再判定未注册。该 policy 是 DNS rebinding/cross-site 防线，不是认证或授权。`agentPreset.list`、`agentPreset.select`、`llm.providers` 与 `llm.models` 按源契约不属于此集合；它们仍受全局 trust fence 约束。
 
 ## 9. Echo v5 与 coder/websocket 使用决策
 
