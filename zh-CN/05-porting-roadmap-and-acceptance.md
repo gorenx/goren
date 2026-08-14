@@ -13,7 +13,7 @@ Existing TypeScript Client
 
 每个阶段仍以 DeepSeek Harness 的职责 owner 为默认边界，并使用[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)定义的证据分级。
 
-阶段的当前完成度、验证证据和下一步统一记录在[08 实施进度](./08-implementation-progress.md)，本文不维护日期性状态。
+阶段的当前完成度、全部交付/Gate 子目标状态、验证证据和下一步统一记录在[08 实施进度](./08-implementation-progress.md)，本文不维护日期性状态。阶段含多个子目标时，不得只用一个阶段级百分比或汇总状态代替逐项目标状态。
 
 ## 1. 实施原则
 
