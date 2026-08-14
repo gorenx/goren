@@ -1,0 +1,684 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "commit": "47f943859bef60e4160492346772ded9b24f765a",
+    "version": "0.1.0-rc.5"
+  },
+  "suites": {
+    "clientRequest": [
+      {
+        "name": "canonical",
+        "accepted": true,
+        "input": {
+          "type": "client-request",
+          "rpcId": "client-1",
+          "method": "host.describe",
+          "payload": {}
+        },
+        "normalized": {
+          "type": "client-request",
+          "rpcId": "client-1",
+          "method": "host.describe",
+          "payload": {}
+        }
+      },
+      {
+        "name": "unknown-field-stripped",
+        "accepted": true,
+        "input": {
+          "type": "client-request",
+          "rpcId": "client-2",
+          "method": "host.describe",
+          "payload": {},
+          "extra": true
+        },
+        "normalized": {
+          "type": "client-request",
+          "rpcId": "client-2",
+          "method": "host.describe",
+          "payload": {}
+        }
+      },
+      {
+        "name": "missing-payload",
+        "accepted": false,
+        "input": {
+          "type": "client-request",
+          "rpcId": "client-3",
+          "method": "host.describe"
+        }
+      },
+      {
+        "name": "wrong-discriminant",
+        "accepted": false,
+        "input": {
+          "type": "server-request",
+          "rpcId": "client-4",
+          "method": "host.describe",
+          "payload": {}
+        }
+      }
+    ],
+    "clientResponse": [
+      {
+        "name": "void-success",
+        "accepted": true,
+        "input": {
+          "type": "client-response",
+          "rpcId": "server-1",
+          "result": {
+            "ok": true
+          }
+        },
+        "normalized": {
+          "type": "client-response",
+          "rpcId": "server-1",
+          "result": {
+            "ok": true
+          }
+        }
+      },
+      {
+        "name": "business-failure",
+        "accepted": true,
+        "input": {
+          "type": "client-response",
+          "rpcId": "server-2",
+          "result": {
+            "ok": false,
+            "error": {
+              "code": "internal",
+              "message": "boom",
+              "details": {}
+            }
+          }
+        },
+        "normalized": {
+          "type": "client-response",
+          "rpcId": "server-2",
+          "result": {
+            "ok": false,
+            "error": {
+              "code": "internal",
+              "message": "boom",
+              "details": {}
+            }
+          }
+        }
+      },
+      {
+        "name": "missing-error-details",
+        "accepted": false,
+        "input": {
+          "type": "client-response",
+          "rpcId": "server-3",
+          "result": {
+            "ok": false,
+            "error": {
+              "code": "internal",
+              "message": "boom"
+            }
+          }
+        }
+      }
+    ],
+    "serverRequest": [
+      {
+        "name": "canonical",
+        "accepted": true,
+        "input": {
+          "type": "server-request",
+          "rpcId": "stream-1",
+          "method": "session/subscribed",
+          "payload": {
+            "type": "session/subscribed",
+            "sessionId": "session-1",
+            "lastSeq": -1
+          }
+        },
+        "normalized": {
+          "type": "server-request",
+          "rpcId": "stream-1",
+          "method": "session/subscribed",
+          "payload": {
+            "type": "session/subscribed",
+            "sessionId": "session-1",
+            "lastSeq": -1
+          }
+        }
+      },
+      {
+        "name": "missing-method",
+        "accepted": false,
+        "input": {
+          "type": "server-request",
+          "rpcId": "stream-2",
+          "payload": {}
+        }
+      }
+    ],
+    "serverResponse": [
+      {
+        "name": "host-describe-success",
+        "accepted": true,
+        "input": {
+          "type": "server-response",
+          "rpcId": "client-1",
+          "result": {
+            "ok": true,
+            "value": {
+              "version": "0.1.0-rc.5",
+              "cwd": "/workspace",
+              "attachedSessions": 0,
+              "canOpenPath": false
+            }
+          }
+        },
+        "normalized": {
+          "type": "server-response",
+          "rpcId": "client-1",
+          "result": {
+            "ok": true,
+            "value": {
+              "version": "0.1.0-rc.5",
+              "cwd": "/workspace",
+              "attachedSessions": 0,
+              "canOpenPath": false
+            }
+          }
+        }
+      },
+      {
+        "name": "missing-result",
+        "accepted": false,
+        "input": {
+          "type": "server-response",
+          "rpcId": "client-1"
+        }
+      }
+    ],
+    "receipt": [
+      {
+        "name": "accepted",
+        "accepted": true,
+        "input": {
+          "accepted": true
+        },
+        "normalized": {
+          "accepted": true
+        }
+      },
+      {
+        "name": "not-pending",
+        "accepted": true,
+        "input": {
+          "accepted": false,
+          "reason": "not-pending"
+        },
+        "normalized": {
+          "accepted": false,
+          "reason": "not-pending"
+        }
+      },
+      {
+        "name": "bad-response",
+        "accepted": true,
+        "input": {
+          "accepted": false,
+          "reason": "bad-response"
+        },
+        "normalized": {
+          "accepted": false,
+          "reason": "bad-response"
+        }
+      },
+      {
+        "name": "unknown-reason",
+        "accepted": false,
+        "input": {
+          "accepted": false,
+          "reason": "unknown"
+        }
+      }
+    ],
+    "hostDescribeRequest": [
+      {
+        "name": "empty",
+        "accepted": true,
+        "input": {},
+        "normalized": {}
+      },
+      {
+        "name": "unknown-field-stripped",
+        "accepted": true,
+        "input": {
+          "ignored": true
+        },
+        "normalized": {}
+      },
+      {
+        "name": "not-an-object",
+        "accepted": false,
+        "input": null
+      }
+    ],
+    "hostDescribeValue": [
+      {
+        "name": "minimal",
+        "accepted": true,
+        "input": {
+          "version": "0.1.0-rc.5",
+          "cwd": "/workspace",
+          "attachedSessions": 0,
+          "canOpenPath": false
+        },
+        "normalized": {
+          "version": "0.1.0-rc.5",
+          "cwd": "/workspace",
+          "attachedSessions": 0,
+          "canOpenPath": false
+        }
+      },
+      {
+        "name": "with-model",
+        "accepted": true,
+        "input": {
+          "version": "0.1.0-rc.5",
+          "cwd": "/workspace",
+          "provider": "deepseek",
+          "model": "deepseek-chat",
+          "attachedSessions": 2,
+          "canOpenPath": true
+        },
+        "normalized": {
+          "version": "0.1.0-rc.5",
+          "cwd": "/workspace",
+          "provider": "deepseek",
+          "model": "deepseek-chat",
+          "attachedSessions": 2,
+          "canOpenPath": true
+        }
+      },
+      {
+        "name": "negative-sessions",
+        "accepted": false,
+        "input": {
+          "version": "0.1.0-rc.5",
+          "cwd": "/workspace",
+          "attachedSessions": -1,
+          "canOpenPath": false
+        }
+      }
+    ],
+    "muxFrame": [
+      {
+        "name": "session/event",
+        "accepted": true,
+        "input": {
+          "type": "session/event",
+          "sessionId": "session-1",
+          "event": {
+            "type": "turn/start",
+            "seq": 0,
+            "time": 1,
+            "data": {
+              "turn": 1
+            }
+          }
+        },
+        "normalized": {
+          "type": "session/event",
+          "sessionId": "session-1",
+          "event": {
+            "type": "turn/start",
+            "seq": 0,
+            "time": 1,
+            "data": {
+              "turn": 1
+            }
+          }
+        }
+      },
+      {
+        "name": "session/subscribed",
+        "accepted": true,
+        "input": {
+          "type": "session/subscribed",
+          "sessionId": "session-1",
+          "lastSeq": -1
+        },
+        "normalized": {
+          "type": "session/subscribed",
+          "sessionId": "session-1",
+          "lastSeq": -1
+        }
+      },
+      {
+        "name": "approval/requested",
+        "accepted": true,
+        "input": {
+          "type": "approval/requested",
+          "sessionId": "session-1",
+          "approvalId": "approval-1",
+          "toolName": "bash"
+        },
+        "normalized": {
+          "type": "approval/requested",
+          "sessionId": "session-1",
+          "approvalId": "approval-1",
+          "toolName": "bash"
+        }
+      },
+      {
+        "name": "approval/resolved",
+        "accepted": true,
+        "input": {
+          "type": "approval/resolved",
+          "sessionId": "session-1",
+          "approvalId": "approval-1",
+          "outcome": "allowed-once"
+        },
+        "normalized": {
+          "type": "approval/resolved",
+          "sessionId": "session-1",
+          "approvalId": "approval-1",
+          "outcome": "allowed-once"
+        }
+      },
+      {
+        "name": "question/requested",
+        "accepted": true,
+        "input": {
+          "type": "question/requested",
+          "sessionId": "session-1",
+          "questions": [
+            {
+              "id": "question-1",
+              "question": "Continue?"
+            }
+          ]
+        },
+        "normalized": {
+          "type": "question/requested",
+          "sessionId": "session-1",
+          "questions": [
+            {
+              "id": "question-1",
+              "question": "Continue?"
+            }
+          ]
+        }
+      },
+      {
+        "name": "question/resolved",
+        "accepted": true,
+        "input": {
+          "type": "question/resolved",
+          "sessionId": "session-1",
+          "questionRpcId": "question-rpc-1",
+          "outcome": "answered"
+        },
+        "normalized": {
+          "type": "question/resolved",
+          "sessionId": "session-1",
+          "questionRpcId": "question-rpc-1",
+          "outcome": "answered"
+        }
+      },
+      {
+        "name": "session/queue",
+        "accepted": true,
+        "input": {
+          "type": "session/queue",
+          "sessionId": "session-1",
+          "items": []
+        },
+        "normalized": {
+          "type": "session/queue",
+          "sessionId": "session-1",
+          "items": []
+        }
+      },
+      {
+        "name": "session/jobs",
+        "accepted": true,
+        "input": {
+          "type": "session/jobs",
+          "sessionId": "session-1",
+          "jobs": []
+        },
+        "normalized": {
+          "type": "session/jobs",
+          "sessionId": "session-1",
+          "jobs": []
+        }
+      },
+      {
+        "name": "session/projection",
+        "accepted": true,
+        "input": {
+          "type": "session/projection",
+          "sessionId": "session-1",
+          "key": "todos",
+          "value": null,
+          "seq": 0
+        },
+        "normalized": {
+          "type": "session/projection",
+          "sessionId": "session-1",
+          "key": "todos",
+          "value": null,
+          "seq": 0
+        }
+      },
+      {
+        "name": "stream/error",
+        "accepted": true,
+        "input": {
+          "type": "stream/error",
+          "error": {
+            "code": "internal",
+            "message": "boom",
+            "details": {}
+          }
+        },
+        "normalized": {
+          "type": "stream/error",
+          "error": {
+            "code": "internal",
+            "message": "boom",
+            "details": {}
+          }
+        }
+      },
+      {
+        "name": "empty-question-batch",
+        "accepted": false,
+        "input": {
+          "type": "question/requested",
+          "sessionId": "session-1",
+          "questions": []
+        }
+      },
+      {
+        "name": "unknown-approval-outcome",
+        "accepted": false,
+        "input": {
+          "type": "approval/resolved",
+          "sessionId": "session-1",
+          "approvalId": "approval-1",
+          "outcome": "maybe"
+        }
+      }
+    ],
+    "hostFrame": [
+      {
+        "name": "host/session-added",
+        "accepted": true,
+        "input": {
+          "type": "host/session-added",
+          "sessionId": "session-1",
+          "blank": true
+        },
+        "normalized": {
+          "type": "host/session-added",
+          "sessionId": "session-1",
+          "blank": true
+        }
+      },
+      {
+        "name": "host/session-removed",
+        "accepted": true,
+        "input": {
+          "type": "host/session-removed",
+          "sessionId": "session-1"
+        },
+        "normalized": {
+          "type": "host/session-removed",
+          "sessionId": "session-1"
+        }
+      },
+      {
+        "name": "host/session-status",
+        "accepted": true,
+        "input": {
+          "type": "host/session-status",
+          "sessionId": "session-1",
+          "running": true
+        },
+        "normalized": {
+          "type": "host/session-status",
+          "sessionId": "session-1",
+          "running": true
+        }
+      },
+      {
+        "name": "host/agent-error",
+        "accepted": true,
+        "input": {
+          "type": "host/agent-error",
+          "sessionId": "session-1",
+          "message": "boom"
+        },
+        "normalized": {
+          "type": "host/agent-error",
+          "sessionId": "session-1",
+          "message": "boom"
+        }
+      },
+      {
+        "name": "host/workspace-changed",
+        "accepted": true,
+        "input": {
+          "type": "host/workspace-changed",
+          "workspace": {
+            "workspaceId": "workspace-1",
+            "path": "/workspace",
+            "title": "Workspace",
+            "sessionIds": [],
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:00Z"
+          }
+        },
+        "normalized": {
+          "type": "host/workspace-changed",
+          "workspace": {
+            "workspaceId": "workspace-1",
+            "path": "/workspace",
+            "title": "Workspace",
+            "sessionIds": [],
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:00Z"
+          }
+        }
+      },
+      {
+        "name": "host/workspace-removed",
+        "accepted": true,
+        "input": {
+          "type": "host/workspace-removed",
+          "workspaceId": "workspace-1"
+        },
+        "normalized": {
+          "type": "host/workspace-removed",
+          "workspaceId": "workspace-1"
+        }
+      },
+      {
+        "name": "host/workspace-order-changed",
+        "accepted": true,
+        "input": {
+          "type": "host/workspace-order-changed",
+          "workspaceIds": []
+        },
+        "normalized": {
+          "type": "host/workspace-order-changed",
+          "workspaceIds": []
+        }
+      },
+      {
+        "name": "host/archived-sessions-changed",
+        "accepted": true,
+        "input": {
+          "type": "host/archived-sessions-changed",
+          "archivedSessionIds": []
+        },
+        "normalized": {
+          "type": "host/archived-sessions-changed",
+          "archivedSessionIds": []
+        }
+      },
+      {
+        "name": "host/remote-event",
+        "accepted": true,
+        "input": {
+          "type": "host/remote-event",
+          "event": "commands/change",
+          "args": []
+        },
+        "normalized": {
+          "type": "host/remote-event",
+          "event": "commands/change",
+          "args": []
+        }
+      },
+      {
+        "name": "stream/error",
+        "accepted": true,
+        "input": {
+          "type": "stream/error",
+          "error": {
+            "code": "internal",
+            "message": "boom",
+            "details": {}
+          }
+        },
+        "normalized": {
+          "type": "stream/error",
+          "error": {
+            "code": "internal",
+            "message": "boom",
+            "details": {}
+          }
+        }
+      },
+      {
+        "name": "unknown-origin",
+        "accepted": false,
+        "input": {
+          "type": "host/session-added",
+          "sessionId": "session-1",
+          "blank": true,
+          "origin": "user"
+        }
+      },
+      {
+        "name": "missing-workspace-order",
+        "accepted": false,
+        "input": {
+          "type": "host/workspace-order-changed"
+        }
+      }
+    ]
+  }
+}
