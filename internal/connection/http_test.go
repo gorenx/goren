@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gorenx/goren/apiproxy"
@@ -127,6 +128,183 @@ func TestRespondCarrierContract(t *testing.T) {
 	}
 }
 
+func TestRespondCarrierAcceptsPendingResponse(t *testing.T) {
+	t.Parallel()
+	methods := apiproxy.NewCatalog()
+	waiting, err := apiproxy.RegisterPendingResponse(methods, "pending-http", func(result wire.RPCResult) (string, bool) {
+		if !result.OK || result.Error != nil {
+			return "", false
+		}
+		var value string
+		if err := json.Unmarshal(result.Value, &value); err != nil {
+			return "", false
+		}
+		return value, true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	carrier, err := NewHTTPHost(HTTPConfig{}, methods, idleEventSource())
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpRequest := httptest.NewRequest(http.MethodPost, "http://localhost/api/respond", strings.NewReader(
+		`{"type":"client-response","rpcId":"pending-http","result":{"ok":true,"value":"allowed"}}`,
+	))
+	httpRequest.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	carrier.ServeHTTP(recorder, httpRequest)
+	var receipt wire.RPCReceipt
+	if err := json.Unmarshal(recorder.Body.Bytes(), &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusOK || !receipt.Accepted {
+		t.Fatalf("status = %d, receipt = %#v", recorder.Code, receipt)
+	}
+	value, err := waiting.Wait(context.Background())
+	if err != nil || value != "allowed" {
+		t.Fatalf("value = %q, err = %v", value, err)
+	}
+}
+
+func TestRespondTechnicalFailureIsHTTP500AndRemainsPending(t *testing.T) {
+	t.Parallel()
+	methods := apiproxy.NewCatalog()
+	var first atomic.Bool
+	waiting, err := apiproxy.RegisterPendingResponse(methods, "pending-http-failure", func(result wire.RPCResult) (string, bool) {
+		if first.CompareAndSwap(false, true) {
+			panic("response decoder crashed")
+		}
+		var value string
+		if !result.OK || json.Unmarshal(result.Value, &value) != nil {
+			return "", false
+		}
+		return value, true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	carrier, err := NewHTTPHost(HTTPConfig{}, methods, idleEventSource())
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"type":"client-response","rpcId":"pending-http-failure","result":{"ok":true,"value":"retry"}}`
+	post := func() *httptest.ResponseRecorder {
+		httpRequest := httptest.NewRequest(http.MethodPost, "http://localhost/api/respond", strings.NewReader(body))
+		httpRequest.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		carrier.ServeHTTP(recorder, httpRequest)
+		return recorder
+	}
+	failed := post()
+	if failed.Code != http.StatusInternalServerError || !strings.Contains(failed.Body.String(), "response decoder crashed") {
+		t.Fatalf("status = %d, body = %q", failed.Code, failed.Body.String())
+	}
+	retried := post()
+	var receipt wire.RPCReceipt
+	if err := json.Unmarshal(retried.Body.Bytes(), &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if retried.Code != http.StatusOK || !receipt.Accepted {
+		t.Fatalf("status = %d, receipt = %#v", retried.Code, receipt)
+	}
+	value, err := waiting.Wait(context.Background())
+	if err != nil || value != "retry" {
+		t.Fatalf("value = %q, err = %v", value, err)
+	}
+}
+
+func TestPrivilegedMethodsRemainLoopbackOnlyOnTrustedHost(t *testing.T) {
+	t.Parallel()
+	methods := apiproxy.NewCatalog()
+	carrier, err := NewHTTPHost(HTTPConfig{TrustedHosts: []string{"harness.internal"}}, methods, idleEventSource())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range []string{
+		"agentPreset.read",
+		"agentPreset.copy",
+		"agentPreset.openDocument",
+		"agentPreset.remove",
+		"host.pickDirectory",
+		"host.openPath",
+		"settings.describe",
+		"settings.openDocument",
+		"settings.update",
+		"settings.replace",
+		"settings.mutate",
+		"credentials.describe",
+		"credentials.set",
+		"credentials.unset",
+		"llm.discoverModels",
+	} {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+			httpRequest := httptest.NewRequest(http.MethodPost, "http://harness.internal/api/"+method, nil)
+			recorder := httptest.NewRecorder()
+			carrier.ServeHTTP(recorder, httpRequest)
+			if recorder.Code != http.StatusForbidden || recorder.Body.String() != "forbidden" {
+				t.Fatalf("status = %d, body = %q", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestCatalogMethodsNeededByRemoteClientAreNotPrivileged(t *testing.T) {
+	t.Parallel()
+	methods := apiproxy.NewCatalog()
+	operation := func(context.Context, apiproxy.Request[struct{}]) (apiproxy.Outcome[struct{}], error) {
+		return apiproxy.OK(struct{}{}), nil
+	}
+	remoteMethods := []string{"agentPreset.list", "agentPreset.select", "llm.providers", "llm.models"}
+	for _, method := range remoteMethods {
+		if err := apiproxy.RegisterUnary(methods, method, apiproxy.DecodeObject[struct{}], operation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	carrier, err := NewHTTPHost(HTTPConfig{TrustedHosts: []string{"harness.internal"}}, methods, idleEventSource())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range remoteMethods {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+			body := `{"type":"client-request","rpcId":"remote","method":"` + method + `","payload":{}}`
+			httpRequest := httptest.NewRequest(http.MethodPost, "http://harness.internal/api/"+method, strings.NewReader(body))
+			httpRequest.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+			carrier.ServeHTTP(recorder, httpRequest)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %q", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestPrivilegedMethodIsAvailableOnLoopback(t *testing.T) {
+	t.Parallel()
+	methods := apiproxy.NewCatalog()
+	operation := func(context.Context, apiproxy.Request[struct{}]) (apiproxy.Outcome[struct{}], error) {
+		return apiproxy.OK(struct{}{}), nil
+	}
+	if err := apiproxy.RegisterUnary(methods, "settings.describe", apiproxy.DecodeObject[struct{}], operation); err != nil {
+		t.Fatal(err)
+	}
+	carrier, err := NewHTTPHost(HTTPConfig{}, methods, idleEventSource())
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpRequest := httptest.NewRequest(http.MethodPost, "http://localhost/api/settings.describe", strings.NewReader(
+		`{"type":"client-request","rpcId":"local","method":"settings.describe","payload":{}}`,
+	))
+	httpRequest.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	carrier.ServeHTTP(recorder, httpRequest)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestUnaryRequestCancellationReachesProvider(t *testing.T) {
 	t.Parallel()
 	started := make(chan struct{})
@@ -212,6 +390,34 @@ func TestTechnicalProviderFailureIsHTTP500(t *testing.T) {
 	if recorder.Code != http.StatusInternalServerError || !strings.Contains(recorder.Body.String(), "impl crashed") {
 		t.Fatalf("status = %d, body = %q", recorder.Code, recorder.Body.String())
 	}
+}
+
+func TestEchoRecoverContainsTransportPanic(t *testing.T) {
+	t.Parallel()
+	carrier, err := NewHTTPHost(HTTPConfig{}, crashingDispatcher{}, idleEventSource())
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpRequest := httptest.NewRequest(http.MethodPost, "http://localhost/api/test.crash", nil)
+	recorder := httptest.NewRecorder()
+	carrier.ServeHTTP(recorder, httpRequest)
+	if recorder.Code != http.StatusInternalServerError || recorder.Body.String() != "internal server error" {
+		t.Fatalf("status = %d, body = %q", recorder.Code, recorder.Body.String())
+	}
+}
+
+type crashingDispatcher struct{}
+
+func (crashingDispatcher) HasUnary(string) bool {
+	panic("transport dispatch crashed")
+}
+
+func (crashingDispatcher) DispatchUnary(context.Context, string, wire.RPCID, json.RawMessage) (wire.RPCResult, error) {
+	return wire.RPCResult{}, nil
+}
+
+func (crashingDispatcher) Respond(context.Context, wire.ClientResponse) (wire.RPCReceipt, error) {
+	return wire.RPCReceipt{}, nil
 }
 
 func configuredHost(t *testing.T) *HTTPHost {

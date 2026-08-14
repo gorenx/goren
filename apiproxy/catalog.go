@@ -43,16 +43,22 @@ type UnaryHandler[P, V any] func(context.Context, Request[P]) (Outcome[V], error
 
 type unaryRoute func(context.Context, connection.RPCID, json.RawMessage) (connection.RPCResult, error)
 
-// Catalog is the statically assembled method registry consumed by Connection.
-// Registration is safe during composition; duplicate ownership is rejected.
+// Catalog owns the statically assembled unary routes and the runtime pending
+// response correlation table consumed by Connection. Route registration is
+// safe during composition; duplicate ownership is rejected.
 type Catalog struct {
-	mutex  sync.RWMutex
-	routes map[string]unaryRoute
+	routeMutex   sync.RWMutex
+	routes       map[string]unaryRoute
+	pendingMutex sync.Mutex
+	pending      map[connection.RPCID]*pendingEntry
 }
 
 // NewCatalog creates an empty API method catalog.
 func NewCatalog() *Catalog {
-	return &Catalog{routes: make(map[string]unaryRoute)}
+	return &Catalog{
+		routes:  make(map[string]unaryRoute),
+		pending: make(map[connection.RPCID]*pendingEntry),
+	}
 }
 
 // RegisterUnary adds one canonical method with its typed decoder and handler.
@@ -85,8 +91,8 @@ func RegisterUnary[P, V any](methods *Catalog, method string, decodePayload Payl
 		return connection.Success(businessOutcome.value)
 	}
 
-	methods.mutex.Lock()
-	defer methods.mutex.Unlock()
+	methods.routeMutex.Lock()
+	defer methods.routeMutex.Unlock()
 	if _, exists := methods.routes[method]; exists {
 		return fmt.Errorf("apiproxy: method %q is already registered", method)
 	}
@@ -118,27 +124,21 @@ func (methods *Catalog) HasUnary(method string) bool {
 	if methods == nil {
 		return false
 	}
-	methods.mutex.RLock()
-	defer methods.mutex.RUnlock()
+	methods.routeMutex.RLock()
+	defer methods.routeMutex.RUnlock()
 	_, exists := methods.routes[method]
 	return exists
 }
 
 // DispatchUnary validates and invokes a registered unary method.
 func (methods *Catalog) DispatchUnary(requestContext context.Context, method string, rpcID connection.RPCID, rawPayload json.RawMessage) (connection.RPCResult, error) {
-	methods.mutex.RLock()
+	methods.routeMutex.RLock()
 	route, exists := methods.routes[method]
-	methods.mutex.RUnlock()
+	methods.routeMutex.RUnlock()
 	if !exists {
 		return connection.RPCResult{}, fmt.Errorf("apiproxy: method %q is not registered", method)
 	}
 	return route(requestContext, rpcID, rawPayload)
-}
-
-// Respond rejects answers while no pending interaction owns their rpcId. The
-// pending interaction table will replace this state when event downlinks land.
-func (methods *Catalog) Respond(context.Context, connection.ClientResponse) connection.RPCReceipt {
-	return connection.RejectedReceipt(connection.ReceiptNotPending)
 }
 
 func invoke[P, V any](operation UnaryHandler[P, V], requestContext context.Context, call Request[P]) (businessOutcome Outcome[V], err error) {

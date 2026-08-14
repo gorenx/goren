@@ -222,9 +222,11 @@ func TestWebSocketReconnectCreatesFreshStreamAfterOldSourceStops(t *testing.T) {
 
 func TestWebSocketTeardownWaitsForSourceCleanup(t *testing.T) {
 	t.Parallel()
+	streamStarted := make(chan struct{})
 	cleanupStarted := make(chan struct{})
 	releaseCleanup := make(chan struct{})
 	idleStream := func(requestContext context.Context, _ func(wire.RPCRequest) error) error {
+		close(streamStarted)
 		<-requestContext.Done()
 		close(cleanupStarted)
 		<-releaseCleanup
@@ -234,6 +236,7 @@ func TestWebSocketTeardownWaitsForSourceCleanup(t *testing.T) {
 	server := httptest.NewServer(carrier)
 	t.Cleanup(server.Close)
 	socket := dialWebSocket(t, server.URL, wire.MuxEventsPath, nil)
+	awaitSignal(t, streamStarted, "stream start")
 	closing := make(chan error, 1)
 	go func() {
 		closeContext, cancel := context.WithTimeout(context.Background(), 2*time.Second)
