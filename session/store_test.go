@@ -106,8 +106,12 @@ func TestStoreLifecyclePublishesCommittedEventsAndFlush(t *testing.T) {
 	if _, err := Append(conversation, fixtureEventKey, fixturePayload{Items: []string{"value"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := provider.registry.Flush(requestContext, conversation); err != nil {
+	participated, err := provider.registry.Flush(requestContext, conversation)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !participated {
+		t.Fatal("flush did not report its registered listener")
 	}
 	if err := engine.Unload(requestContext, consumerHandle); err != nil {
 		t.Fatal(err)

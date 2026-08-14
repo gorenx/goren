@@ -149,12 +149,17 @@ func EmitFrom[P any](requestContext context.Context, sourceScope *Scope, topic E
 
 // Parallel invokes every listener concurrently, waits for all, and joins failures.
 func Parallel[P any](requestContext context.Context, engine *Runtime, topic EventKey[P, struct{}], payload P) error {
+	_, err := dispatchParallel(requestContext, engine, topic, payload)
+	return err
+}
+
+func dispatchParallel[P any](requestContext context.Context, engine *Runtime, topic EventKey[P, struct{}], payload P) (int, error) {
 	if topic.ref.mode != ModeParallel {
-		return fmt.Errorf("plugin: event %q uses %s, not parallel", topic.ref.name, topic.ref.mode)
+		return 0, fmt.Errorf("plugin: event %q uses %s, not parallel", topic.ref.name, topic.ref.mode)
 	}
 	callbacks, err := subscriptions[NotifyHandler[P]](engine, topic.ref)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	errorsByIndex := make([]error, len(callbacks))
 	var group sync.WaitGroup
@@ -166,16 +171,17 @@ func Parallel[P any](requestContext context.Context, engine *Runtime, topic Even
 		}(index, callback)
 	}
 	group.Wait()
-	return errors.Join(errorsByIndex...)
+	return len(callbacks), errors.Join(errorsByIndex...)
 }
 
-// ParallelFrom dispatches a parallel event through the Runtime that owns sourceScope.
-func ParallelFrom[P any](requestContext context.Context, sourceScope *Scope, topic EventKey[P, struct{}], payload P) error {
+// ParallelFrom dispatches a parallel event through the Runtime that owns
+// sourceScope and returns how many listeners participated.
+func ParallelFrom[P any](requestContext context.Context, sourceScope *Scope, topic EventKey[P, struct{}], payload P) (int, error) {
 	engine, err := runtimeFromScope(sourceScope)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	return Parallel(requestContext, engine, topic, payload)
+	return dispatchParallel(requestContext, engine, topic, payload)
 }
 
 // Serial invokes listeners in order and stops at the first explicit bail.

@@ -18,7 +18,7 @@ type Store interface {
 	Prepare(*SessionID, CreateOptions) (*Session, error)
 	Enter(*Session) (plugin.Disposer, error)
 	Announce(context.Context, *Session) error
-	Flush(context.Context, *Session) error
+	Flush(context.Context, *Session) (bool, error)
 	Get(SessionID) (*Session, bool)
 	List() []*Session
 }
@@ -227,11 +227,12 @@ func (registry *MemoryStore) Announce(requestContext context.Context, conversati
 }
 
 // Flush awaits every registered durability listener for a live Session.
-func (registry *MemoryStore) Flush(requestContext context.Context, conversation *Session) error {
+func (registry *MemoryStore) Flush(requestContext context.Context, conversation *Session) (bool, error) {
 	if _, err := registry.liveEntry(conversation); err != nil {
-		return err
+		return false, err
 	}
-	return plugin.ParallelFrom(requestContext, registry.sourceScope, flushTopic, LifecycleNotice{Session: conversation})
+	listenerCount, err := plugin.ParallelFrom(requestContext, registry.sourceScope, flushTopic, LifecycleNotice{Session: conversation})
+	return listenerCount != 0, err
 }
 
 // Get looks up one live Session.
