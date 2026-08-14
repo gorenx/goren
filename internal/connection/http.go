@@ -22,7 +22,7 @@ const defaultGracefulTimeout = 5 * time.Second
 type RPCDispatcher interface {
 	HasUnary(method string) bool
 	DispatchUnary(context.Context, string, connection.RPCID, json.RawMessage) (connection.RPCResult, error)
-	Respond(context.Context, connection.ClientResponse) connection.RPCReceipt
+	Respond(context.Context, connection.ClientResponse) (connection.RPCReceipt, error)
 }
 
 // EventSource is the API Proxy event-stream surface consumed by the
@@ -113,7 +113,13 @@ func (carrier *HTTPHost) ServeHTTP(writer http.ResponseWriter, httpRequest *http
 func unaryHandler(dispatch RPCDispatcher, maxBodyBytes int64) echo.HandlerFunc {
 	return func(echoContext *echo.Context) error {
 		method := echoContext.Param("method")
-		if echoContext.Request().URL.EscapedPath() != connection.APIPath+"/"+method || !dispatch.HasUnary(method) {
+		if echoContext.Request().URL.EscapedPath() != connection.APIPath+"/"+method {
+			return writePlain(echoContext, http.StatusNotFound, "not found")
+		}
+		if isPrivilegedMethod(method) && !isTrustedAPIRequest(echoContext.Request(), nil) {
+			return writePlain(echoContext, http.StatusForbidden, "forbidden")
+		}
+		if !dispatch.HasUnary(method) {
 			return writePlain(echoContext, http.StatusNotFound, "not found")
 		}
 		body, status, err := readJSONBody(echoContext.Request(), maxBodyBytes)
@@ -152,7 +158,10 @@ func respondHandler(dispatch RPCDispatcher, maxBodyBytes int64) echo.HandlerFunc
 		if len(issues) != 0 {
 			return writeJSON(echoContext, http.StatusOK, connection.RejectedReceipt(connection.ReceiptBadResponse))
 		}
-		receipt := dispatch.Respond(echoContext.Request().Context(), message)
+		receipt, dispatchErr := dispatch.Respond(echoContext.Request().Context(), message)
+		if dispatchErr != nil {
+			return writePlain(echoContext, http.StatusInternalServerError, "handler failure: "+dispatchErr.Error())
+		}
 		return writeJSON(echoContext, http.StatusOK, receipt)
 	}
 }
