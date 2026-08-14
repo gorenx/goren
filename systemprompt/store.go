@@ -10,13 +10,21 @@ import (
 	"github.com/gorenx/goren/plugin"
 )
 
-type namedRecord[T any] struct {
+type namedContribution interface {
+	PromptSection | PromptContext | VariableProvider
+}
+
+type anonymousContribution interface {
+	struct{} | ToolProvider
+}
+
+type namedRecord[T namedContribution] struct {
 	name     string
 	retained T
 	active   bool
 }
 
-type namedTable[T any] struct {
+type namedTable[T namedContribution] struct {
 	byName map[string]*namedRecord[T]
 	names  []string
 }
@@ -62,18 +70,18 @@ func (storage *namedTable[T]) empty() bool {
 	return len(storage.byName) == 0
 }
 
-type namedItem[T any] struct {
+type namedItem[T namedContribution] struct {
 	name     string
 	retained T
 }
 
-type anonymousRecord[T any] struct {
+type anonymousRecord[T anonymousContribution] struct {
 	id       uint64
 	retained T
 	active   bool
 }
 
-type anonymousTable[T any] struct {
+type anonymousTable[T anonymousContribution] struct {
 	byID  map[uint64]*anonymousRecord[T]
 	order []uint64
 }
@@ -290,7 +298,7 @@ func duplicateMessage(selectedKey plugin.ScopeKey, kind string, name string) str
 	return fmt.Sprintf("systemprompt: prompt %s %q is already registered in this scope", kind, name)
 }
 
-func mergeNamed[T any](globalEntries []namedItem[T], layers []*promptLayer, pick func(*promptLayer) []namedItem[T]) []T {
+func mergeNamed[T namedContribution](globalEntries []namedItem[T], layers []*promptLayer, pick func(*promptLayer) []namedItem[T]) []T {
 	names := make([]string, 0, len(globalEntries))
 	byName := make(map[string]T)
 	for _, item := range globalEntries {
