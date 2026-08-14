@@ -20,14 +20,14 @@
 | 阶段 | 执行状态 | 子目标进度 | 最高证据等级 | 当前重点 |
 | --- | --- | --- | --- | --- |
 | 阶段 0：基线与 Contract Freeze | In Progress | 10 Completed / 3 In Progress / 1 Planned | Contract Verified | 补齐首期 surface mapping 与 HTTP 负向 differential |
-| 阶段 1：Connection Host Carrier | In Progress | 17 Completed / 2 In Progress | Contract Verified | 补齐 HTTP differential 与慢客户端/泄漏验证 |
+| 阶段 1：Connection Host Carrier | In Progress | 18 Completed / 1 In Progress | Contract Verified | 补齐 HTTP status/header/失败 differential |
 | 阶段 2：Plugin Runtime | Planned | 0 Completed / 12 Planned | None | 等待 Connection carrier Gate 完成 |
 | 阶段 3：Session/Agent slice | Planned | 0 Completed / 16 Planned | None | 不先于阶段 1、2 进入实现 |
 | 阶段 4：LLM Contract | Planned | 0 Completed / 13 Planned | None | 既有 `llm` 尚未迁移到 Harness contract |
 | 阶段 5：Session 持久化 | Planned | 0 Completed / 14 Planned | None | 先以内存 Session 验证状态机 |
 | 阶段 6：客户端能力扩展 | Planned | 0 Completed / 19 Planned | None | 按 TypeScript Client 实际消费逐项进入 |
 | 阶段 7：Deferred 能力 | Deferred | 7 Deferred | None | 不创建 package、handler 或依赖占位 |
-| 阶段 8：Parity Hardening | In Progress | 0 Completed / 4 In Progress / 11 Planned | Contract Verified | 扩展当前 Connection contract suite，不等同发布验收 |
+| 阶段 8：Parity Hardening | In Progress | 0 Completed / 5 In Progress / 10 Planned | Contract Verified | 扩展当前 Connection contract suite，不等同发布验收 |
 
 当前最小 Connection slice 达到 `Contract Verified`：固定 TypeScript schema 与 Go envelope/frame 已交叉校验，固定上游 `WebApiClient` 已调用 Go `host.describe`、读取两条 WebSocket 并调用 `/api/respond`，`ConnectionController` 已验证 client-owned generation 重建。Session/Agent 会话、完整 HTTP 失败矩阵、原 Web 产品和真实 DeepSeek Provider 均未据此标记兼容。
 
@@ -71,7 +71,7 @@
 | S1-G07 | Gate | TypeScript Client 在任一 socket 结束后重建 generation | Completed | Contract Verified：首个 mux source 结束后固定源 `ConnectionController` 重开 mux/host 并再次 connected |
 | S1-G08 | Gate | HTTP 断开只取消 owned handler | Completed | Go Verified：`TestUnaryRequestCancellationReachesProvider` |
 | S1-G09 | Gate | `echo.Context` 不越过 transport boundary | Completed | Go Verified：API Proxy 仅接收 `context.Context` 和 typed request |
-| S1-G10 | Gate | body、慢客户端、stream failure、shutdown 和泄漏有测试 | In Progress | Go Verified：body、stream failure、cleanup wait/deadline 已覆盖；慢客户端和 leak audit 未完成 |
+| S1-G10 | Gate | body、慢客户端、stream failure、shutdown 和泄漏有测试 | Completed | Go Verified：同步写背压、shutdown 解阻塞、32 次 source 清理、socket/pump 归零及既有 failure/deadline 均覆盖 |
 | S1-G11 | Gate | trust fence 覆盖 loopback、allowlist、Origin mismatch 和 cross-site | Completed | Go Verified：`internal/connection/trust_test.go` |
 
 当前纵向调用链：
@@ -231,7 +231,7 @@ interaction owner registers stable rpcId + decoder
 | S8-D01 | 交付 | included capability matrix | Planned | None：当前实施矩阵不替代最终 capability matrix |
 | S8-D02 | 交付 | 跨语言 replay/differential suite | In Progress | Contract Verified：Connection/schema/client slice 已建立；Session/Agent/LLM replay 尚未进入 |
 | S8-D03 | 交付 | 多平台 CI | Planned | None |
-| S8-D04 | 交付 | race、fuzz、故障注入、泄漏和长时测试 | Planned | None |
+| S8-D04 | 交付 | race、fuzz、故障注入、泄漏和长时测试 | In Progress | Go Verified：race 与 Connection-owned WebSocket/source leak audit 已有证据；fuzz、故障注入和长时测试未完成 |
 | S8-D05 | 交付 | dependency、license 和 NOTICE 清单 | In Progress | Implemented：Echo 准入已记录；完整发布清单未建立 |
 | S8-D06 | 交付 | security threat review | Planned | None |
 | S8-D07 | 交付 | 性能与资源预算 | Planned | None |
@@ -268,6 +268,8 @@ interaction owner registers stable rpcId + decoder
 | 固定源 schema 可重复生成 committed fixture | `TestPinnedSourceGeneratesCommittedVectors` |
 | 固定源 `WebApiClient` 调用 Go HTTP/WS/respond | `TestPinnedSourceWebApiClientTalksToGoHost` |
 | 固定源 `ConnectionController` 在单流结束后重建双流 | `TestPinnedSourceConnectionRebuildsBothStreams` |
+| 慢客户端同步背压与 shutdown 解阻塞 | `TestWebSocketSlowClientBackpressuresSourceAndShutdownUnblocksWrite` |
+| 重复连接/断开后的 source、socket 与 pump 回收 | `TestWebSocketRepeatedConnectDisconnectLeavesNoOwnedResources` |
 
 ## 13. 当前验证结果
 
@@ -277,6 +279,7 @@ interaction owner registers stable rpcId + decoder
 - `go mod tidy`
 - `go test ./...`
 - `go test -race ./...`
+- `go test -race ./internal/connection -run 'TestWebSocket(SlowClient|RepeatedConnectDisconnect)' -count=5`
 - `go vet ./...`
 - `go build ./...`
 - `go test -tags=contract ./tests/contract`（Node v22.23.0；源 commit `47f943...`）
@@ -297,7 +300,7 @@ interaction owner registers stable rpcId + decoder
 
 按阶段 1 矩阵顺序推进：
 
-1. 补齐慢客户端背压和 goroutine/WebSocket leak audit；
-2. 完成剩余 HTTP status/header/失败 differential，收敛阶段 1 Gate。
+1. 完成剩余 HTTP status/header/失败 differential，收敛阶段 1 Gate；
+2. 阶段 1 完成后进入 Plugin Runtime 与 Server Assembly。
 
 阶段 1 Gate 完成后进入 Plugin Runtime；approval/question 的业务闭环随阶段 3 的 Session/Agent owner 一起实现，不在 Connection 或通用 pending registry 中提前伪造。

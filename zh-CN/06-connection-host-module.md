@@ -96,6 +96,8 @@ GET /api/events.mux 或 /api/events.host
 
 API Proxy 事件源产生窄 `RPCRequest`，其中包含 `rpcId` 与带 `type` 判别的 payload；Connection 从 `payload.type` 补全 `ServerRequest.method`，不理解 Session/Host frame 的业务字段。两条 socket 及其 source context 相互独立，不提供跨流排序。
 
+每条 downlink 使用同步 `emit -> EncodeServerRequest -> socket.Write` 链路，任一时刻最多一个在途 frame。Connection 不增加无界队列，不在慢客户端时丢弃或重排 frame；socket 写未完成时 `emit` 保持阻塞，把背压传回事件源。客户端断开或 Host shutdown 会取消该写，事件源必须响应 context 并结束清理。业务 owner 若未来需要合并 snapshot 或限制生产速率，应在自己的事件语义中设计，不能由 carrier 猜测哪些 frame 可丢弃。
+
 此处的 frame 是应用层事件 payload：一个 `MuxFrame` 或 `HostFrame` 包入一个完整 `ServerRequest`，再写成一个 WebSocket text message。coder/websocket 可能采用的底层协议分片不属于 Harness contract，也不暴露给 API Proxy。
 
 客户端发送任意 data message 时以 code `1008`、reason `downlink only` 关闭。source 技术失败时，carrier 尽力发送一个 `stream/error` 后正常结束 socket；socket 先丢失时不再发送失败帧。普通 GET 只返回 `426 upgrade required`，不提供 SSE fallback。
