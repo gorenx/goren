@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"sync"
 )
 
@@ -13,11 +15,42 @@ type serviceContribution struct {
 	owned bool
 }
 
-type eventSubscription struct {
+type eventListenerState struct {
 	ref     eventRef
-	invoke  any
 	owned   bool
 	ordinal uint64
+	target  ScopeKey
+}
+
+type eventSubscription interface {
+	listenerState() *eventListenerState
+}
+
+type notifyEventSubscription[P any] struct {
+	metadata eventListenerState
+	callback NotifyHandler[P]
+}
+
+func (listener *notifyEventSubscription[P]) listenerState() *eventListenerState {
+	return &listener.metadata
+}
+
+type decisionEventSubscription[P, R any] struct {
+	metadata eventListenerState
+	callback DecisionHandler[P, R]
+}
+
+func (listener *decisionEventSubscription[P, R]) listenerState() *eventListenerState {
+	return &listener.metadata
+}
+
+type waterfallEventSubscription[P, R any] struct {
+	metadata eventListenerState
+	callback WaterfallHandler[P, R]
+}
+
+func (listener *waterfallEventSubscription[P, R]) listenerState() *eventListenerState {
+	return &listener.metadata
 }
 
 type ownedEffect struct {
@@ -33,15 +66,82 @@ type Scope struct {
 	record        *pluginRecord
 	mu            sync.Mutex
 	services      map[string]*serviceContribution
-	subscriptions []*eventSubscription
+	subscriptions []eventSubscription
 	effects       []*ownedEffect
 	closed        bool
 	activated     bool
 	disposing     bool
+	parent        *Scope
+	target        ScopeKey
+	children      map[string]*Scope
 }
 
 func newScope(owner *Runtime, record *pluginRecord) *Scope {
-	return &Scope{owner: owner, record: record, services: make(map[string]*serviceContribution)}
+	return &Scope{
+		owner: owner, record: record, services: make(map[string]*serviceContribution),
+		children: make(map[string]*Scope),
+	}
+}
+
+// Target returns the child-scope identity used by scoped capability
+// registries. Root plugin scopes return the global zero key.
+func (pluginScope *Scope) Target() ScopeKey {
+	if pluginScope == nil {
+		return ScopeKey{}
+	}
+	return pluginScope.target
+}
+
+// Child creates an effect-owned child Scope with a new opaque identity. The
+// returned disposer may end it early; parent teardown also disposes it.
+func (pluginScope *Scope) Child(label string) (*Scope, Disposer, error) {
+	if pluginScope == nil {
+		return nil, nil, errors.New("plugin: create child from nil scope")
+	}
+	if strings.TrimSpace(label) == "" || label != strings.TrimSpace(label) {
+		return nil, nil, errors.New("plugin: child scope label must be non-empty and trimmed")
+	}
+	pluginScope.mu.Lock()
+	if pluginScope.closed {
+		pluginScope.mu.Unlock()
+		return nil, nil, errors.New("plugin: scope is closed")
+	}
+	if _, exists := pluginScope.children[label]; exists {
+		pluginScope.mu.Unlock()
+		return nil, nil, fmt.Errorf("plugin: child scope %q already exists", label)
+	}
+	descendant := &Scope{
+		owner: pluginScope.owner, record: pluginScope.record,
+		services: make(map[string]*serviceContribution), children: make(map[string]*Scope),
+		parent: pluginScope, target: ScopeKey{token: &scopeToken{parent: pluginScope.target.token}},
+		activated: pluginScope.activated,
+	}
+	pluginScope.children[label] = descendant
+	pluginScope.mu.Unlock()
+
+	releaseChild := func(closeContext context.Context) error {
+		cleanupErr := descendant.dispose(closeContext)
+		pluginScope.mu.Lock()
+		if pluginScope.children[label] == descendant {
+			delete(pluginScope.children, label)
+		}
+		pluginScope.mu.Unlock()
+		return cleanupErr
+	}
+	ownedRelease, err := pluginScope.own("scope:"+label, releaseChild)
+	if err != nil {
+		return nil, nil, errors.Join(err, releaseChild(context.Background()))
+	}
+	return descendant, ownedRelease, nil
+}
+
+// Own records an already-acquired resource in a Scope and returns its
+// idempotent early-release capability.
+func Own(pluginScope *Scope, label string, release Disposer) (Disposer, error) {
+	if pluginScope == nil {
+		return nil, errors.New("plugin: own effect on nil scope")
+	}
+	return pluginScope.own(label, release)
 }
 
 // Effect acquires a resource immediately and records its disposer in this
@@ -90,6 +190,9 @@ func (pluginScope *Scope) own(label string, release Disposer) (Disposer, error) 
 func (pluginScope *Scope) provide(definition ServiceRef, value any) (Disposer, error) {
 	if err := definition.validate(); err != nil {
 		return nil, err
+	}
+	if pluginScope.parent != nil {
+		return nil, errors.New("plugin: child scopes cannot provide root services")
 	}
 	if !containsRef(pluginScope.record.metadata.Provides, definition) {
 		return nil, fmt.Errorf("plugin: %s did not declare provided service %q", pluginScope.record.metadata.Name, definition.name)
@@ -144,21 +247,48 @@ func (pluginScope *Scope) require(definition ServiceRef) (any, bool) {
 	return pluginScope.owner.resolveService(definition)
 }
 
-func (pluginScope *Scope) addSubscription(subscription *eventSubscription) (Disposer, error) {
+func (pluginScope *Scope) addSubscription(listener eventSubscription) (Disposer, error) {
 	pluginScope.mu.Lock()
 	if pluginScope.closed {
 		pluginScope.mu.Unlock()
 		return nil, errors.New("plugin: scope is closed")
 	}
-	subscription.owned = true
-	pluginScope.subscriptions = append(pluginScope.subscriptions, subscription)
+	listenerMetadata := listener.listenerState()
+	listenerMetadata.owned = true
+	listenerMetadata.target = pluginScope.target
 	pluginScope.mu.Unlock()
-	return pluginScope.own("listen:"+subscription.ref.name, func(context.Context) error {
-		pluginScope.mu.Lock()
-		defer pluginScope.mu.Unlock()
-		subscription.owned = false
+
+	registryScope := pluginScope.root()
+	registryScope.mu.Lock()
+	registryScope.subscriptions = append(registryScope.subscriptions, listener)
+	registryScope.mu.Unlock()
+	release, err := pluginScope.own("listen:"+listenerMetadata.ref.name, func(context.Context) error {
+		registryScope.mu.Lock()
+		defer registryScope.mu.Unlock()
+		listenerMetadata.owned = false
+		registryScope.subscriptions = slices.DeleteFunc(registryScope.subscriptions, func(candidate eventSubscription) bool {
+			return candidate == listener
+		})
 		return nil
 	})
+	if err != nil {
+		registryScope.mu.Lock()
+		listenerMetadata.owned = false
+		registryScope.subscriptions = slices.DeleteFunc(registryScope.subscriptions, func(candidate eventSubscription) bool {
+			return candidate == listener
+		})
+		registryScope.mu.Unlock()
+		return nil, err
+	}
+	return release, nil
+}
+
+func (pluginScope *Scope) root() *Scope {
+	rootScope := pluginScope
+	for rootScope.parent != nil {
+		rootScope = rootScope.parent
+	}
+	return rootScope
 }
 
 func (pluginScope *Scope) dispose(closeContext context.Context) error {

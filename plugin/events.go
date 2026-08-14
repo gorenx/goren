@@ -30,9 +30,9 @@ type eventRef struct {
 	token *eventToken
 }
 
-type typedSubscription[T any] struct {
-	ordinal uint64
-	invoke  T
+type orderedCallback[T any] struct {
+	ordinal  uint64
+	callback T
 }
 
 // EventKey is an owner-defined typed event identity. P is the payload and R
@@ -110,7 +110,7 @@ func OnNotify[P any](pluginScope *Scope, topic EventKey[P, struct{}], callback N
 	if topic.ref.mode != ModeEmit && topic.ref.mode != ModeParallel {
 		return nil, fmt.Errorf("plugin: event %q uses %s, not notify dispatch", topic.ref.name, topic.ref.mode)
 	}
-	return registerSubscription(pluginScope, topic.ref, callback)
+	return registerNotifySubscription(pluginScope, topic.ref, callback)
 }
 
 // OnDecision registers a serial or synchronous-bail listener.
@@ -121,7 +121,7 @@ func OnDecision[P, R any](pluginScope *Scope, topic EventKey[P, R], callback Dec
 	if topic.ref.mode != ModeSerial && topic.ref.mode != ModeBail {
 		return nil, fmt.Errorf("plugin: event %q uses %s, not decision dispatch", topic.ref.name, topic.ref.mode)
 	}
-	return registerSubscription(pluginScope, topic.ref, callback)
+	return registerDecisionSubscription(pluginScope, topic.ref, callback)
 }
 
 // OnWaterfall registers an outer-to-inner middleware listener.
@@ -132,7 +132,7 @@ func OnWaterfall[P, R any](pluginScope *Scope, topic EventKey[P, R], callback Wa
 	if topic.ref.mode != ModeWaterfall {
 		return nil, fmt.Errorf("plugin: event %q uses %s, not waterfall dispatch", topic.ref.name, topic.ref.mode)
 	}
-	return registerSubscription(pluginScope, topic.ref, callback)
+	return registerWaterfallSubscription(pluginScope, topic.ref, callback)
 }
 
 // Emit invokes listeners synchronously in registration order and joins failures.
@@ -140,7 +140,7 @@ func Emit[P any](requestContext context.Context, engine *Runtime, topic EventKey
 	if topic.ref.mode != ModeEmit {
 		return fmt.Errorf("plugin: event %q uses %s, not emit", topic.ref.name, topic.ref.mode)
 	}
-	callbacks, err := subscriptions[NotifyHandler[P]](engine, topic.ref)
+	callbacks, err := notifySubscriptions[P](engine, topic.ref, nil)
 	if err != nil {
 		return err
 	}
@@ -168,7 +168,7 @@ func CaptureEmitFrom[P any](sourceScope *Scope, topic EventKey[P, struct{}]) (Em
 	if topic.ref.mode != ModeEmit {
 		return EmitSnapshot[P]{}, fmt.Errorf("plugin: event %q uses %s, not emit", topic.ref.name, topic.ref.mode)
 	}
-	callbacks, err := subscriptions[NotifyHandler[P]](engine, topic.ref)
+	callbacks, err := notifySubscriptions[P](engine, topic.ref, nil)
 	if err != nil {
 		return EmitSnapshot[P]{}, err
 	}
@@ -185,7 +185,7 @@ func dispatchParallel[P any](requestContext context.Context, engine *Runtime, to
 	if topic.ref.mode != ModeParallel {
 		return 0, fmt.Errorf("plugin: event %q uses %s, not parallel", topic.ref.name, topic.ref.mode)
 	}
-	callbacks, err := subscriptions[NotifyHandler[P]](engine, topic.ref)
+	callbacks, err := notifySubscriptions[P](engine, topic.ref, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -239,6 +239,21 @@ func Bail[P, R any](requestContext context.Context, engine *Runtime, topic Event
 
 // Waterfall composes listeners outer-to-inner around terminal behavior.
 func Waterfall[P, R any](requestContext context.Context, engine *Runtime, topic EventKey[P, R], payload P, terminal Next[P, R]) (R, error) {
+	return waterfallAt(requestContext, engine, nil, topic, payload, terminal)
+}
+
+// WaterfallScopedFrom composes the unscoped listeners plus listeners owned by
+// selectedKey and its ancestors. Descendant and sibling listeners are excluded.
+func WaterfallScopedFrom[P, R any](requestContext context.Context, sourceScope *Scope, selectedKey ScopeKey, topic EventKey[P, R], payload P, terminal Next[P, R]) (R, error) {
+	engine, err := runtimeFromScope(sourceScope)
+	if err != nil {
+		var zero R
+		return zero, err
+	}
+	return waterfallAt(requestContext, engine, &selectedKey, topic, payload, terminal)
+}
+
+func waterfallAt[P, R any](requestContext context.Context, engine *Runtime, selectedKey *ScopeKey, topic EventKey[P, R], payload P, terminal Next[P, R]) (R, error) {
 	var zero R
 	if topic.ref.mode != ModeWaterfall {
 		return zero, fmt.Errorf("plugin: event %q uses %s, not waterfall", topic.ref.name, topic.ref.mode)
@@ -246,7 +261,7 @@ func Waterfall[P, R any](requestContext context.Context, engine *Runtime, topic 
 	if terminal == nil {
 		return zero, errors.New("plugin: waterfall terminal is nil")
 	}
-	callbacks, err := subscriptions[WaterfallHandler[P, R]](engine, topic.ref)
+	callbacks, err := waterfallSubscriptions[P, R](engine, topic.ref, selectedKey)
 	if err != nil {
 		return zero, err
 	}
@@ -262,7 +277,7 @@ func Waterfall[P, R any](requestContext context.Context, engine *Runtime, topic 
 }
 
 func dispatchDecision[P, R any](requestContext context.Context, engine *Runtime, topic EventKey[P, R], payload P) (Decision[R], error) {
-	callbacks, err := subscriptions[DecisionHandler[P, R]](engine, topic.ref)
+	callbacks, err := decisionSubscriptions[P, R](engine, topic.ref, nil)
 	if err != nil {
 		return Decision[R]{}, err
 	}
@@ -275,7 +290,25 @@ func dispatchDecision[P, R any](requestContext context.Context, engine *Runtime,
 	return Decision[R]{}, nil
 }
 
-func registerSubscription(pluginScope *Scope, definition eventRef, callback any) (Disposer, error) {
+func registerNotifySubscription[P any](pluginScope *Scope, definition eventRef, callback NotifyHandler[P]) (Disposer, error) {
+	return registerListener(pluginScope, definition, &notifyEventSubscription[P]{
+		metadata: eventListenerState{ref: definition}, callback: callback,
+	})
+}
+
+func registerDecisionSubscription[P, R any](pluginScope *Scope, definition eventRef, callback DecisionHandler[P, R]) (Disposer, error) {
+	return registerListener(pluginScope, definition, &decisionEventSubscription[P, R]{
+		metadata: eventListenerState{ref: definition}, callback: callback,
+	})
+}
+
+func registerWaterfallSubscription[P, R any](pluginScope *Scope, definition eventRef, callback WaterfallHandler[P, R]) (Disposer, error) {
+	return registerListener(pluginScope, definition, &waterfallEventSubscription[P, R]{
+		metadata: eventListenerState{ref: definition}, callback: callback,
+	})
+}
+
+func registerListener(pluginScope *Scope, definition eventRef, listener eventSubscription) (Disposer, error) {
 	if pluginScope == nil {
 		return nil, errors.New("plugin: listen on nil scope")
 	}
@@ -288,10 +321,41 @@ func registerSubscription(pluginScope *Scope, definition eventRef, callback any)
 	pluginScope.owner.nextListener++
 	ordinal := pluginScope.owner.nextListener
 	pluginScope.owner.mu.Unlock()
-	return pluginScope.addSubscription(&eventSubscription{ref: definition, invoke: callback, ordinal: ordinal})
+	listener.listenerState().ordinal = ordinal
+	return pluginScope.addSubscription(listener)
 }
 
-func subscriptions[T any](engine *Runtime, definition eventRef) ([]T, error) {
+func notifySubscriptions[P any](engine *Runtime, definition eventRef, selectedKey *ScopeKey) ([]NotifyHandler[P], error) {
+	return collectSubscriptions(engine, definition, selectedKey, func(listener eventSubscription) (NotifyHandler[P], bool) {
+		typedListener, ok := listener.(*notifyEventSubscription[P])
+		if !ok {
+			return nil, false
+		}
+		return typedListener.callback, true
+	})
+}
+
+func decisionSubscriptions[P, R any](engine *Runtime, definition eventRef, selectedKey *ScopeKey) ([]DecisionHandler[P, R], error) {
+	return collectSubscriptions(engine, definition, selectedKey, func(listener eventSubscription) (DecisionHandler[P, R], bool) {
+		typedListener, ok := listener.(*decisionEventSubscription[P, R])
+		if !ok {
+			return nil, false
+		}
+		return typedListener.callback, true
+	})
+}
+
+func waterfallSubscriptions[P, R any](engine *Runtime, definition eventRef, selectedKey *ScopeKey) ([]WaterfallHandler[P, R], error) {
+	return collectSubscriptions(engine, definition, selectedKey, func(listener eventSubscription) (WaterfallHandler[P, R], bool) {
+		typedListener, ok := listener.(*waterfallEventSubscription[P, R])
+		if !ok {
+			return nil, false
+		}
+		return typedListener.callback, true
+	})
+}
+
+func collectSubscriptions[T any](engine *Runtime, definition eventRef, selectedKey *ScopeKey, selectCallback func(eventSubscription) (T, bool)) ([]T, error) {
 	if engine == nil {
 		return nil, errors.New("plugin: dispatch on nil runtime")
 	}
@@ -301,7 +365,7 @@ func subscriptions[T any](engine *Runtime, definition eventRef) ([]T, error) {
 		engine.mu.RUnlock()
 		return nil, fmt.Errorf("plugin: event %q does not match its registered definition", definition.name)
 	}
-	registered := make([]typedSubscription[T], 0)
+	registered := make([]orderedCallback[T], 0)
 	for _, record := range engine.records {
 		// A stopping scope retains each subscription until its own disposer runs.
 		// Earlier LIFO cleanup effects may publish their final lifecycle edges.
@@ -309,17 +373,19 @@ func subscriptions[T any](engine *Runtime, definition eventRef) ([]T, error) {
 			continue
 		}
 		record.pluginScope.mu.Lock()
-		for _, subscription := range record.pluginScope.subscriptions {
-			if !subscription.owned || !sameEventRef(subscription.ref, definition) {
+		for _, listener := range record.pluginScope.subscriptions {
+			listenerMetadata := listener.listenerState()
+			if !listenerMetadata.owned || !sameEventRef(listenerMetadata.ref, definition) ||
+				(selectedKey != nil && !scopeAdmits(listenerMetadata.target, *selectedKey)) {
 				continue
 			}
-			callback, ok := subscription.invoke.(T)
+			callback, ok := selectCallback(listener)
 			if !ok {
 				record.pluginScope.mu.Unlock()
 				engine.mu.RUnlock()
 				return nil, fmt.Errorf("plugin: event %q listener has an incompatible Go type", definition.name)
 			}
-			registered = append(registered, typedSubscription[T]{ordinal: subscription.ordinal, invoke: callback})
+			registered = append(registered, orderedCallback[T]{ordinal: listenerMetadata.ordinal, callback: callback})
 		}
 		record.pluginScope.mu.Unlock()
 	}
@@ -329,9 +395,21 @@ func subscriptions[T any](engine *Runtime, definition eventRef) ([]T, error) {
 	})
 	typedCallbacks := make([]T, 0, len(registered))
 	for _, registeredListener := range registered {
-		typedCallbacks = append(typedCallbacks, registeredListener.invoke)
+		typedCallbacks = append(typedCallbacks, registeredListener.callback)
 	}
 	return typedCallbacks, nil
+}
+
+func scopeAdmits(listenerKey ScopeKey, selectedKey ScopeKey) bool {
+	if listenerKey.IsGlobal() {
+		return true
+	}
+	for current := selectedKey.token; current != nil; current = current.parent {
+		if current == listenerKey.token {
+			return true
+		}
+	}
+	return false
 }
 
 func sameEventRef(left eventRef, right eventRef) bool {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/gorenx/goren/apiproxy"
 	"github.com/gorenx/goren/connection"
+	"github.com/gorenx/goren/systemprompt"
 )
 
 type contractManifest struct {
@@ -32,6 +33,12 @@ type contractManifest struct {
 		UnaryMethods   []string `json:"unaryMethods"`
 		MuxFrameTypes  []string `json:"muxFrameTypes"`
 		HostFrameTypes []string `json:"hostFrameTypes"`
+		SystemPrompt   struct {
+			Service         string   `json:"service"`
+			Events          []string `json:"events"`
+			BuiltinSections []string `json:"builtinSections"`
+			ToolOrderRest   string   `json:"toolOrderRest"`
+		} `json:"systemPrompt"`
 	} `json:"included"`
 }
 
@@ -75,6 +82,13 @@ func TestPinnedManifestMatchesGoSurface(t *testing.T) {
 	}
 	if !slices.Equal(manifestDocument.Included.UnaryMethods, []string{apiproxy.HostDescribeMethod}) {
 		t.Fatalf("unary methods = %v", manifestDocument.Included.UnaryMethods)
+	}
+	promptSurface := manifestDocument.Included.SystemPrompt
+	if promptSurface.Service != systemprompt.ServiceName ||
+		!slices.Equal(promptSurface.Events, []string{systemprompt.AssembleEventName, systemprompt.ChangeEventName}) ||
+		!slices.Equal(promptSurface.BuiltinSections, []string{"harness:identity", systemprompt.PersonaSection}) ||
+		promptSurface.ToolOrderRest != systemprompt.ToolOrderRest {
+		t.Fatalf("system prompt surface = %#v", promptSurface)
 	}
 
 	muxNames := encodedMuxFrames(t)

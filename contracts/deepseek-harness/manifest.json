@@ -75,6 +75,18 @@
         "session/flush"
       ]
     },
+    "systemPrompt": {
+      "service": "systemPrompt",
+      "events": [
+        "system-prompt/assemble",
+        "system-prompt/change"
+      ],
+      "builtinSections": [
+        "harness:identity",
+        "deployment:persona"
+      ],
+      "toolOrderRest": "<unlisted-tools>"
+    },
     "privilegedMethods": [
       "agentPreset.read",
       "agentPreset.copy",

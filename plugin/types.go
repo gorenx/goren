@@ -54,6 +54,35 @@ type Handle struct {
 	id    uint64
 }
 
+type scopeToken struct {
+	parent *scopeToken
+}
+
+// ScopeKey is an opaque comparable identity for one child Scope. Its zero
+// value denotes the global/root contribution layer.
+type ScopeKey struct {
+	token *scopeToken
+}
+
+// IsGlobal reports whether the key selects only global contributions.
+func (selectedKey ScopeKey) IsGlobal() bool {
+	return selectedKey.token == nil
+}
+
+// ScopeLineage returns child keys from the farthest ancestor to selectedKey.
+// Global/root ownership is intentionally omitted.
+func ScopeLineage(selectedKey ScopeKey) []ScopeKey {
+	tokens := make([]*scopeToken, 0)
+	for current := selectedKey.token; current != nil; current = current.parent {
+		tokens = append(tokens, current)
+	}
+	lineage := make([]ScopeKey, len(tokens))
+	for index := range tokens {
+		lineage[len(tokens)-1-index] = ScopeKey{token: tokens[index]}
+	}
+	return lineage
+}
+
 // ID returns the runtime-local plugin identifier.
 func (pluginHandle Handle) ID() uint64 {
 	return pluginHandle.id
