@@ -186,12 +186,12 @@ JSONL or SQLite adapter (later)
   -> never assigns seq or rewrites surface
 ```
 
-默认 composition 故意按 Connection、API Proxy、Session 的 Consumer-before-Provider 顺序声明。Runtime 先让前两者等待；Session 发布 `sessions` 后，API Proxy 激活并发布 `apiProxy`，最后 Connection 激活。这证明新增 Session 没有恢复为文件顺序装配。
+默认 composition 按 Connection、API Proxy、System Prompt、Session 声明。Runtime 先让 Connection/API Proxy 等待；System Prompt 无当前依赖而独立激活；Session 发布 `sessions` 后，API Proxy 激活并发布 `apiProxy`，最后 Connection 激活。这证明新增 Provider 没有恢复为文件顺序装配。
 
 ## 9. 后续能力进入规则
 
 - Harness-compatible Message/Content contract 确定后，由 `session` 导出三个 core surface event key；不得先绑定当前待迁移的旧 `llm` 形态再做兼容分支。
-- Agent instance 出现时，在现有 Plugin Scope 上增加 Child Scope 与 scoped listener filter；不得建立 Session 私有的第二套 scope registry。
+- Agent instance 出现时，直接使用现有 `Scope.Child`、opaque lineage 与 scoped listener filter；不得建立 Session 私有的第二套 scope registry。
 - fork、repair、request header fold 和 derived messages 进入时复用当前 Header/Event/surface owner，不另建“持久化 Session”模型。
 - JSONL/SQLite/sqlc adapter 只能依赖 `Store` 和生命周期事件，不得让 driver/sqlc 类型进入本包。
 - API Proxy 只做 `session.Event -> apiproxy.SessionEvent` projection；不得让浏览器 frame 成为 Session 的领域类型。

@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有 `plugin` 与 `internal/assembly` 的职责、Go 类型模型、上下游流程和生命周期。全局依赖方向与未来 Agent Child Scope 由[02 Go 运行时架构与插件模型](./02-runtime-architecture-and-plugin-model.md)拥有；当前实施证据只见[08 实施进度](./08-implementation-progress.md)。
+本文拥有 `plugin` 与 `internal/assembly` 的职责、Go 类型模型、上下游流程和生命周期。全局依赖方向与 Child Scope 使用规则由[02 Go 运行时架构与插件模型](./02-runtime-architecture-and-plugin-model.md)拥有；System Prompt 的 overlay 消费语义由[11 System Prompt Registry 与 Assembly 模块设计](./11-system-prompt-registry-and-assembly.md)拥有；当前实施证据只见[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 源职责映射
 
@@ -15,8 +15,10 @@
 | `vendor/cordis/src/reflect.ts` 的 `provide`、`notify` | `ServiceKey[T]`、`Provide`、`Require` | Service Definition、唯一 Provider、Consumer 重启 |
 | `vendor/cordis/src/events.ts` | `EventKey[P,R]` 与五种 typed dispatch | listener ownership、顺序、bail 与 middleware control |
 | `vendor/cordis/src/context.ts` | `Scope` | Plugin instance 的资源与 contribution owner |
+| `packages/core/scope/src/index.ts`、`store.ts` | `Scope.Child`、`ScopeKey`、`ScopeLineage` | opaque child identity、祖先链、effect ownership 与 scoped event admission |
 | `packages/host/apiproxy` | `internal/assembly` 的 API Proxy Plugin | 提供 `apiProxy` Service |
 | `packages/client/connection` 的 Host half | `internal/assembly` 的 Connection Plugin | 消费 `apiProxy`，挂载 HTTP/WebSocket carrier |
+| `packages/core/system-prompt` | `internal/assembly` 的 System Prompt Plugin | 提供 `systemPrompt` Service |
 
 Go 不复制 Proxy property lookup、decorator、declaration merging、npm module loader、Profile evaluator 或 `!!js`。这些机制在 Go 中分别由显式 interface、泛型自由函数、静态 Catalog 和 typed config 取代；Service/Provider/Consumer、事件 mode 和 effect 生命周期不因语言变化而合并。
 
@@ -41,7 +43,7 @@ Go 不复制 Proxy property lookup、decorator、declaration merging、npm modul
 - 当前可实例化 Factory 的白名单；
 - process-derived `Environment` 与 Factory 输入 `PluginSpec`；
 - 当前 included server 的默认 declaration 集合；
-- Session Provider、API Proxy Consumer/Provider 与 Connection Consumer Plugin；
+- Session Provider、System Prompt Provider、API Proxy Consumer/Provider 与 Connection Consumer Plugin；
 - 多 Plugin 启动失败时的 composition rollback。
 
 它不重新解释 HTTP/RPC contract，也不把 Excluded/Deferred capability 注册为占位 Factory。外部扩展通过自定义 composition root 静态加入公开 Factory，而不是修改 Runtime 内部 map。
@@ -93,6 +95,8 @@ disposer 幂等、接受 cleanup context，并严格按登记逆序运行。候�
 
 Scope 进入 `stopping` 后，listener 不会一次性提前消失；每个 listener 直到自己的 disposer 执行才停止参与 dispatch。这样同一 Scope 中排在 listener 之后登记的业务 effect 可以在 LIFO teardown 时发布最终 disposed/flush edge，然后再注销 listener。未激活的 rollback Scope 仍不会进入全局 Event view。
 
+Root Plugin Scope 的 `Target()` 是 global zero key。`Scope.Child(label)` 生成 opaque key 并记录 parent lineage；Child 继承所属 Plugin 已声明的 Service dependency，但不能提供 root Service。Child 本身是 parent-owned effect，支持提前释放，parent teardown 也会按 LIFO 释放其嵌套 effect。scoped event 读取同一 lineage：global、祖先和 exact listener 可见，sibling 与 descendant listener 不可见。
+
 ## 5. Replacement 与 shutdown
 
 replacement 必须保持 Plugin canonical name 和 `Provides` 集合，避免把一个 Handle 偷换为不同职责。流程为：
@@ -114,7 +118,7 @@ Runtime shutdown 禁止新 Load，按依赖图的反向方向停止 Consumer 后
 
 ## 6. Typed Event modes
 
-`EventKey[P,R]` 固定 canonical name、dispatch mode 与 owner token。payload/result type 由 key 的泛型参数和 handler interface 在编译期确定；Runtime 私有表可擦除 handler，但 dispatch 必须恢复为该 key 对应的精确函数类型。Runtime 不使用反射推断业务类型。
+`EventKey[P,R]` 固定 canonical name、dispatch mode 与 owner token。payload/result type 由 key 的泛型参数确定；`EventHandler[P,R]` 是三种 handler named function type 的封闭编译期集合。Go 的 union type set 只能作为泛型约束，不能作为可调用的运行时值，因此 Runtime 不伪造一个统一 `Invoke` 方法。`typedEventSubscription[P,R,H]` 保留具体 callback；异构订阅只通过 `eventSubscription` 共享 lifecycle metadata，dispatch 恢复精确泛型订阅类型。callback 不经过 `any` 或反射。
 
 | Mode | Go handler 与控制语义 |
 | --- | --- |
@@ -144,14 +148,15 @@ Runtime shutdown 禁止新 Load，按依赖图的反向方向停止 Consumer 后
 shipped Catalog 当前只有：
 
 - `@deepseek-ai/dsh-host-apiproxy`；
-- `@deepseek-ai/dsh-client-connection` 的 Host half。
-- `@deepseek-ai/dsh-session` 的内存 Store Provider。
+- `@deepseek-ai/dsh-client-connection` 的 Host half；
+- `@deepseek-ai/dsh-session` 的内存 Store Provider；
+- `@deepseek-ai/dsh-system-prompt` 的 Registry/Assembly Provider。
 
-后者虽然沿用源 npm canonical name，但只实现服务端 Host carrier，不包含 `WebApiClient`、`ConnectionController` 或浏览器代码。Web UI、SDK、ACP、MCP、Typert 与其他 Deferred 能力不在 Catalog 或依赖闭包。
+其中 Connection Factory 虽然沿用源 npm canonical name，但只实现服务端 Host carrier，不包含 `WebApiClient`、`ConnectionController` 或浏览器代码。Web UI、SDK、ACP、MCP、Typert 与其他 Deferred 能力不在 Catalog 或依赖闭包。
 
 ## 8. 当前 server 组合流程
 
-默认 declarations 故意按 Connection、API Proxy、Session 的 Consumer-before-Provider 顺序声明，以证明 Runtime 按 Service graph 而不是文件顺序工作：
+默认 declarations 按 Connection、API Proxy、System Prompt、Session 声明。Connection/API Proxy/Session 链故意采用 Consumer-before-Provider 顺序，以证明 Runtime 按 Service graph 而不是文件顺序工作；System Prompt 无当前上游依赖，可独立激活：
 
 ```text
 cmd/goren
@@ -160,6 +165,9 @@ cmd/goren
   -> connection Factory.Create
   -> Connection StateWaiting (requires apiProxy)
   -> API Proxy StateWaiting (requires sessions)
+  -> System Prompt Factory.Create + Apply
+       -> promptStore + promptAssembler + built-in sections
+       -> Provide(systemPrompt)
   -> Session Factory.Create + Apply
        -> MemoryStore + Provide(sessions)
   -> Runtime settles API Proxy
@@ -178,6 +186,6 @@ cmd/goren
 
 ## 9. 隔离与后续能力进入
 
-当前 Scope 表达 Plugin instance ownership 和 root Service namespace。Agent Child Scope、同一 Service 的 label isolation 与 scoped listener filter 在 Agent preset/Agent instance 出现真实 Consumer 时进入阶段 3；实现时扩展现有 Scope resolution，不得另用 `context.Context.Value`、全局 map 或第二套 Registry。
+当前 Scope 已表达 Plugin instance ownership、effect-owned Child Scope、opaque lineage 和 scoped listener filter；System Prompt 是第一个真实 Consumer。Agent instance 后续直接复用它。当前尚未实现同一 Service 的 label isolation；只有出现真实多实例 resolution Consumer 时才扩展现有 Service resolution，不得另用 `context.Context.Value`、全局 map 或第二套 Registry。
 
 新能力进入 shipped composition 时必须同时提供 canonical Factory name、owner-defined typed config、Manifest dependencies、全部 effect disposer、失败 rollback 测试和 Excluded/Deferred 审计。Storage、Agent、Session 或 Tool 业务不能放入 assembly Factory 以绕开其能力 owner。

@@ -106,6 +106,12 @@ Factory 通过泛型注册保留具体配置类型；异构 Factory 只在 Catal
 
 源 Cordis Profile 只能通过显式迁移进入 Goren：把每个动态值翻译为 typed field、环境变量绑定、默认值函数或 composition 选择。Goren 不承诺原 Profile 文件直接可运行。
 
+### 4.4 System Prompt 插值不是配置 evaluator
+
+System Prompt 保留源实现的 strict single-pass `{{name}}` 文本替换；它只读取 owner 注册的 typed `VariableProvider` 结果，不读取任意对象属性，不执行表达式、filter、function、条件或循环。替换结果也不会再次扫描。该能力属于模型输入 assembly，不属于配置加载。
+
+core 不引入 [Gonja](https://github.com/nikolalohinski/gonja)。Gonja 的 Jinja control flow、filter、global function 和可扩展执行环境会扩大源 contract，并重新引入动态语言及安全面。未来真实 Plugin 若需要富模板，可在自身 typed provider 内预渲染普通文本，再交给 System Prompt；不得让模板 engine 进入 Factory config、Registry 或通信协议。完整边界见[11 System Prompt Registry 与 Assembly 模块设计](./11-system-prompt-registry-and-assembly.md)。
+
 ## 5. D-04：JSON 与 Schema
 
 JSON 编解码使用 `encoding/json`，协议边界通过自定义 `UnmarshalJSON` 或 presence 类型表达判别 union、缺失/`null` 和数值约束。禁止在核心领域到处传递 `map[string]any`。

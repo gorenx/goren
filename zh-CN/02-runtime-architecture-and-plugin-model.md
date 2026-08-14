@@ -222,7 +222,7 @@ type EventKey[P, R any] struct { /* name + mode + owner token */ }
 type Waterfall[P, R any] func(context.Context, P, Next[P, R]) (R, error)
 ```
 
-注册和 dispatch 同样使用泛型自由函数。Event key 持有私有、非零大小的 owner token，并通过泛型固定 payload/result type；相同字符串若由其他调用者重新创建，或以不同 mode 再次注册，Runtime 在启动期失败。payload/result 的匹配由 Go 编译器和 typed handler interface 保证，不使用 `reflect.Type`。异构 listener 只在 Runtime 私有表内短暂擦除为 `any`，业务代码不接触断言。
+注册和 dispatch 同样使用泛型自由函数。Event key 持有私有、非零大小的 owner token，并通过泛型固定 payload/result type；相同字符串若由其他调用者重新创建，或以不同 mode 再次注册，Runtime 在启动期失败。`EventHandler[P,R]` 是 `NotifyHandler[P] | DecisionHandler[P,R] | WaterfallHandler[P,R]` 的封闭编译期约束，而不是可作为值保存的运行时 union interface。每个订阅保留精确泛型 handler，异构表只共享 lifecycle metadata；dispatch 按 key 恢复精确订阅类型。callback 不存入 `any`，也不使用 `reflect.Type` 或 `invoke(any)`。
 
 | 源模式 | Go 语义 |
 | --- | --- |
@@ -275,9 +275,11 @@ active --replacement--> starting(candidate) -> commit -> stopping(old)
 
 ## 8. Scope 与 isolation
 
-Root Scope 拥有全局 Provider、Store 和配置。每个 Agent 创建 Child Scope；Agent Preset 在 Child Scope 中挂载 Prompt、Tools、Model selection 和局部 policy。
+每次 Plugin `Apply` 获得 Root Plugin Scope；其 `Target()` 是 global zero key。`Scope.Child(label)` 创建 effect-owned Child Scope 和 opaque `ScopeKey`，记录 parent lineage，并继承所属 Plugin 已声明的 Service dependency。Child 不能提供 root Service；显式 disposer 或 parent teardown 会释放其全部注册。
 
-`isolate(serviceKey, label)` 的 Go 语义是为指定 Service key 创建新的 resolution namespace。相同 label 的 Child Scope 可以共享实例；不同 label 不能看到彼此注册。Scope 过滤也应用到 scoped Event listener，避免一个 Agent 的 Tool、Prompt 或 lifecycle listener 观察另一个 Agent。
+System Prompt 已是 Child Scope 的首个真实 Consumer：named contribution 按 global、远祖先到近 scope shadow，scope-filtered waterfall 接受 global、祖先与 exact listener，排除 sibling 和 descendant listener。Agent Provider 后续直接使用这一 primitive 挂载 preset Prompt、Tools、Model selection 和局部 policy，不能另建第二套 Registry。具体规则由[11 System Prompt Registry 与 Assembly 模块设计](./11-system-prompt-registry-and-assembly.md)拥有。
+
+当前 Child Scope 只提供 contribution ownership、lineage 和 Event routing，不承诺 `isolate(serviceKey, label)` 的 Service namespace 语义。只有真实 Consumer 需要同一 Service 的多实例 resolution 时才扩展现有 Scope；不得用预设 label 规则推测未来行为。
 
 禁止用 `context.Context.Value` 充当 Service Registry。标准 `context.Context` 只传播 deadline、cancellation 和 request-scoped metadata；Service 与 Plugin ownership 由 `Scope` 表达。
 
@@ -306,7 +308,7 @@ ServerConfig 只描述部署选择，例如监听地址、trusted hosts、启用
 - platform-specific 选择由 composition root 或 build-tagged Provider 完成；
 - 派生默认值由显式、可单测的 Go 函数计算；
 - credential 使用引用或受控来源，不进入 config dump；
-- `!!js`、模板脚本、`ctx` 插值和任意代码执行一律不支持。
+- `!!js`、配置模板脚本、`ctx` 配置插值和任意代码执行一律不支持；System Prompt 的 strict `{{name}}` 文本替换是独立业务 contract，见 `11`。
 
 源 Cordis Profile 若需要迁移，必须把每个动态表达式显式翻译成字段、环境变量绑定、默认值函数或 composition 选择。Goren 不承诺直接加载源 Profile，也不提供另一种表达式语言替代 `!!js`。
 
