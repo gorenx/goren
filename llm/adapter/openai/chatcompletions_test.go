@@ -11,6 +11,7 @@ import (
 
 	"github.com/gorenx/goren/llm"
 	openaiadapter "github.com/gorenx/goren/llm/adapter/openai"
+	llmfactory "github.com/gorenx/goren/llm/factory"
 )
 
 func TestChatCompletionsStreamsTextAndMapsStructuredRequest(t *testing.T) {
@@ -178,8 +179,8 @@ func TestChatCompletionsNormalizesForeignToolIdentityAtProtocolBoundary(t *testi
 	}
 
 	messages := (<-requestBody)["messages"].([]any)
-	assistantMessage := messages[0].(map[string]any)
-	toolCalls := assistantMessage["tool_calls"].([]any)
+	assistantPayload := messages[0].(map[string]any)
+	toolCalls := assistantPayload["tool_calls"].([]any)
 	callID := toolCalls[0].(map[string]any)["id"]
 	toolMessage := messages[1].(map[string]any)
 	if callID != "call" || toolMessage["tool_call_id"] != callID {
@@ -320,16 +321,7 @@ func TestAPIMismatchFailsAtAdapterConstruction(t *testing.T) {
 
 func newClient(t *testing.T, targetModel llm.Model, httpClient *http.Client) *llm.Client {
 	t.Helper()
-	adapterRegistry := llm.NewRegistry()
-	if err := adapterRegistry.Register(
-		llm.APIOpenAICompletions,
-		func(targetModel llm.Model) (llm.APIAdapter, error) {
-			return openaiadapter.New(targetModel, httpClient)
-		},
-	); err != nil {
-		t.Fatal(err)
-	}
-	llmClient, err := llm.NewClient(targetModel, adapterRegistry, nil)
+	llmClient, err := llmfactory.NewClient(targetModel, llmfactory.WithHTTPClient(httpClient))
 	if err != nil {
 		t.Fatal(err)
 	}

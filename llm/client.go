@@ -21,11 +21,10 @@ func (keyResolver APIKeyResolverFunc) APIKey(ctx context.Context, servingProvide
 
 // Client validates invocations and delegates them to one model-bound adapter.
 type Client struct {
-	targetModel    Model
-	targetProvider Provider
-	adapter        APIAdapter
-	keys           APIKeyResolver
-	tokens         TokenCounter
+	targetModel Model
+	adapter     APIAdapter
+	keys        APIKeyResolver
+	tokens      TokenCounter
 }
 
 // ClientOption configures stable model-runtime behavior.
@@ -76,11 +75,10 @@ func NewClient(targetModel Model, adapterRegistry *Registry, keys APIKeyResolver
 		}
 	}
 	return &Client{
-		targetModel:    targetSnapshot,
-		targetProvider: targetSnapshot.Provider,
-		adapter:        protocolAdapter,
-		keys:           keys,
-		tokens:         configuration.tokens,
+		targetModel: targetSnapshot,
+		adapter:     protocolAdapter,
+		keys:        keys,
+		tokens:      configuration.tokens,
 	}, nil
 }
 
@@ -145,7 +143,7 @@ func (llmClient *Client) Stream(
 		return nil, err
 	}
 	if invocationOptions.APIKey == "" && llmClient.keys != nil {
-		if key, ok := llmClient.keys.APIKey(ctx, llmClient.targetProvider); ok {
+		if key, ok := llmClient.keys.APIKey(ctx, llmClient.targetModel.Provider); ok {
 			invocationOptions.APIKey = key
 		}
 	}

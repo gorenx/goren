@@ -13,7 +13,7 @@ import (
 )
 
 // cloneModel gives an adapter its own snapshot when its constructor is used
-// directly or by a custom composition root.
+// directly or through the LLM factory.
 func cloneModel(targetModel llm.Model) llm.Model {
 	cloned := targetModel
 	cloned.Input = append([]llm.InputModality(nil), targetModel.Input...)

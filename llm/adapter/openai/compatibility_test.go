@@ -12,6 +12,7 @@ import (
 
 	"github.com/gorenx/goren/llm"
 	openaiadapter "github.com/gorenx/goren/llm/adapter/openai"
+	llmfactory "github.com/gorenx/goren/llm/factory"
 )
 
 func TestChatCompatibilityAndInvocationControls(t *testing.T) {
@@ -107,7 +108,7 @@ func TestChatCompatibilityAndInvocationControls(t *testing.T) {
 	if body["max_tokens"] != float64(512) || body["max_completion_tokens"] != nil {
 		t.Fatalf("wrong token field: %#v", body)
 	}
-	if streamOptions, present := body["stream_options"]; present && streamOptions != nil || body["extension"] != "enabled" {
+	if streamedOptions, present := body["stream_options"]; present && streamedOptions != nil || body["extension"] != "enabled" {
 		t.Fatalf("compatibility/transform not applied: %#v", body)
 	}
 	reasoning := body["reasoning"].(map[string]any)
@@ -117,9 +118,9 @@ func TestChatCompatibilityAndInvocationControls(t *testing.T) {
 	if body["prompt_cache_key"] != "cache-1" || body["prompt_cache_retention"] != "24h" || body["service_tier"] != "priority" {
 		t.Fatalf("missing invocation controls: %#v", body)
 	}
-	toolChoice := body["tool_choice"].(map[string]any)
-	if toolChoice["type"] != "function" || toolChoice["function"].(map[string]any)["name"] != "lookup" {
-		t.Fatalf("got tool choice %#v", toolChoice)
+	selectedTool := body["tool_choice"].(map[string]any)
+	if selectedTool["type"] != "function" || selectedTool["function"].(map[string]any)["name"] != "lookup" {
+		t.Fatalf("got tool choice %#v", selectedTool)
 	}
 	tools := body["tools"].([]any)
 	if _, present := tools[0].(map[string]any)["strict"]; present {
@@ -258,13 +259,11 @@ func newConfiguredChatClient(
 	adapterOptions ...openaiadapter.AdapterOption,
 ) *llm.Client {
 	t.Helper()
-	adapterRegistry := llm.NewRegistry()
-	if err := adapterRegistry.Register(llm.APIOpenAICompletions, func(registeredModel llm.Model) (llm.APIAdapter, error) {
-		return openaiadapter.New(registeredModel, httpClient, adapterOptions...)
-	}); err != nil {
-		t.Fatal(err)
-	}
-	llmClient, err := llm.NewClient(targetModel, adapterRegistry, nil)
+	llmClient, err := llmfactory.NewClient(
+		targetModel,
+		llmfactory.WithHTTPClient(httpClient),
+		llmfactory.WithOpenAIAdapterOptions(adapterOptions...),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

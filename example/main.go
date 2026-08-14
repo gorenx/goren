@@ -6,7 +6,7 @@ import (
 	"os"
 
 	"github.com/gorenx/goren/llm"
-	openaiadapter "github.com/gorenx/goren/llm/adapter/openai"
+	llmfactory "github.com/gorenx/goren/llm/factory"
 )
 
 func main() {
@@ -26,16 +26,7 @@ func main() {
 		ContextWindow:   1_047_576,
 		MaxOutputTokens: 4_096,
 	}
-	adapterRegistry := llm.NewRegistry()
-	if err := adapterRegistry.Register(
-		llm.APIOpenAICompletions,
-		func(targetModel llm.Model) (llm.APIAdapter, error) {
-			return openaiadapter.New(targetModel, nil)
-		},
-	); err != nil {
-		panic(err)
-	}
-	llmClient, err := llm.NewClient(targetModel, adapterRegistry, nil)
+	llmClient, err := llmfactory.NewClient(targetModel)
 	if err != nil {
 		panic(err)
 	}
