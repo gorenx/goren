@@ -19,8 +19,8 @@
 
 | 阶段 | 执行状态 | 子目标进度 | 最高证据等级 | 当前重点 |
 | --- | --- | --- | --- | --- |
-| 阶段 0：基线与 Contract Freeze | In Progress | 5 Completed / 3 In Progress / 6 Planned | Go Verified | 建立 manifest、fixture generator 与完整首期 contract |
-| 阶段 1：Connection Host Carrier | In Progress | 14 Completed / 2 In Progress / 3 Planned | Go Verified | frame union、TypeScript differential 与慢客户端/泄漏验证 |
+| 阶段 0：基线与 Contract Freeze | In Progress | 6 Completed / 2 In Progress / 6 Planned | Go Verified | 建立 manifest、fixture generator 与完整首期 contract |
+| 阶段 1：Connection Host Carrier | In Progress | 15 Completed / 2 In Progress / 2 Planned | Go Verified | TypeScript differential 与慢客户端/泄漏验证 |
 | 阶段 2：Plugin Runtime | Planned | 0 Completed / 12 Planned | None | 等待 Connection carrier Gate 完成 |
 | 阶段 3：Session/Agent slice | Planned | 0 Completed / 16 Planned | None | 不先于阶段 1、2 进入实现 |
 | 阶段 4：LLM Contract | Planned | 0 Completed / 13 Planned | None | 既有 `llm` 尚未迁移到 Harness contract |
@@ -37,7 +37,7 @@
 | --- | --- | --- | --- | --- |
 | S0-D01 | 交付 | 固定源 commit、版本、许可证和本地参考路径 | Completed | Implemented：`01` 已固定 `47f943...`、`0.1.0-rc.5` 和 `../deepseek-harness` |
 | S0-D02 | 交付 | 建立 included/excluded surface manifest | Planned | None：文档已有范围，机器可读 manifest 尚未建立 |
-| S0-D03 | 交付 | 提取 RPC message、result、receipt、frame、path 和 stable errors | In Progress | Go Verified：RPC、path 与窄 stream request 已完成；完整 Mux/Host frame union 未完成 |
+| S0-D03 | 交付 | 提取 RPC message、result、receipt、frame、path 和 stable errors | Completed | Go Verified：RPC、path、stable errors、窄 stream request 与完整 Mux/Host frame union 已覆盖 |
 | S0-D04 | 交付 | 提取首期 Host、Session、approval/question 和 respond contract | In Progress | Go Verified：`host.describe` 与 respond envelope 已完成；Session 和 interaction 未完成 |
 | S0-D05 | 交付 | 建立 contract manifest 和可重复 TypeScript fixture generator | Planned | None：`contracts/deepseek-harness/...` 不存在 |
 | S0-D06 | 交付 | 单列完整 Web Client 所需但首期未纳入的能力 | Completed | Implemented：`01` 已区分 Workspace、Settings、Goals 等 Deferred 能力 |
@@ -61,7 +61,7 @@
 | S1-D05 | 交付 | `/api/events.mux` 与 `/api/events.host` 两条下行 WebSocket | Completed | Go Verified：两条真实 socket 独立发送 text `ServerRequest` |
 | S1-D06 | 交付 | 独立 stream lifecycle、pending correlation、取消和 bounded shutdown | Completed | Go Verified：stream 独立取消、pending 原子 claim/withdraw 与 bounded teardown 已覆盖 |
 | S1-D07 | 交付 | Host/Origin/cross-site fence 与 privileged method loopback policy | Completed | Go Verified：全局 fence 与 15 个源 privileged method 的二次 loopback fence 已覆盖 |
-| S1-D08 | 交付 | `apiproxy` 拥有 Mux/Host frame union | Planned | None：当前只有 transport-neutral `EventStreams`，完整业务 frame 类型未提取 |
+| S1-D08 | 交付 | `apiproxy` 拥有 Mux/Host frame union | Completed | Go Verified：10 个 MuxFrame 与 10 个 HostFrame 分支、宽字段边界和 canonical type encoding 已覆盖 |
 | S1-G01 | Gate | TypeScript Connection 可调用 Go `host.describe` | Planned | None：仅真实 Go 进程 curl smoke 已通过 |
 | S1-G02 | Gate | HTTP 路径、载荷和失败状态与源实现一致 | In Progress | Go Verified：Go 侧正负测试已通过；尚无源 differential evidence |
 | S1-G03 | Gate | Echo 默认路由、错误和 recovery 被协议 adapter 接管 | Completed | Go Verified：404/405、错误映射与 middleware panic recovery 已覆盖 |
@@ -90,7 +90,8 @@ POST /api/host.describe
 ```text
 GET /api/events.mux 或 /api/events.host
   -> trust fence / WebSocket upgrade
-  -> apiproxy.EventStreams
+  -> typed apiproxy.EventStreams
+  -> StreamRequest[MuxFrame 或 HostFrame]
   -> connection.RPCRequest
   -> ServerRequest text message
   -> socket close cancels only its source
@@ -257,6 +258,7 @@ interaction owner registers stable rpcId + decoder
 | Host/Origin/cross-site fence | `internal/connection/trust_test.go` |
 | RPCRequest 到 ServerRequest 的 method/payload 补全 | `connection/stream_test.go` |
 | API Proxy mux/host 独立事件源 | `apiproxy/events_test.go` |
+| Mux/Host 全部分支、closed enum、required array 与宽字段保真 | `apiproxy/frame_test.go` |
 | WebSocket 双流、426、1008、stream error、取消和 teardown | `internal/connection/websocket_test.go` |
 | pending accepted、坏响应重试、取消、late/duplicate 与并发 claim | `apiproxy/pending_test.go` |
 | `/api/respond` accepted/技术失败、privileged loopback 与 Echo Recover | `internal/connection/http_test.go` |
@@ -289,8 +291,7 @@ interaction owner registers stable rpcId + decoder
 
 按阶段 1 矩阵顺序推进：
 
-1. 完成 Mux/Host frame union；
-2. 建立 TypeScript-to-Go fixture/differential test，覆盖双流 readiness 与 client-owned generation；
-3. 补齐慢客户端背压和 goroutine/WebSocket leak audit。
+1. 建立 TypeScript-to-Go fixture/differential test，覆盖 frame schema、双流 readiness 与 client-owned generation；
+2. 补齐慢客户端背压和 goroutine/WebSocket leak audit。
 
 阶段 1 Gate 完成后进入 Plugin Runtime；approval/question 的业务闭环随阶段 3 的 Session/Agent owner 一起实现，不在 Connection 或通用 pending registry 中提前伪造。

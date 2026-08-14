@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有 Connection Host 模块的职责、Go 架构、上下游交互和生命周期。RPC 字段、HTTP status 与 WebSocket frame 的权威契约仍在[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)，本文不重复定义线协议；实现状态与验证证据见[08 实施进度](./08-implementation-progress.md)。
+本文拥有 Connection Host 模块的职责、Go 架构、上下游交互和生命周期。RPC 字段、HTTP status、应用层 Mux/Host frame 与 WebSocket transport 的权威契约仍在[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)，本文不重复定义线协议；实现状态与验证证据见[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 源职责与模块范围
 
@@ -95,6 +95,8 @@ GET /api/events.mux 或 /api/events.host
 ```
 
 API Proxy 事件源产生窄 `RPCRequest`，其中包含 `rpcId` 与带 `type` 判别的 payload；Connection 从 `payload.type` 补全 `ServerRequest.method`，不理解 Session/Host frame 的业务字段。两条 socket 及其 source context 相互独立，不提供跨流排序。
+
+此处的 frame 是应用层事件 payload：一个 `MuxFrame` 或 `HostFrame` 包入一个完整 `ServerRequest`，再写成一个 WebSocket text message。coder/websocket 可能采用的底层协议分片不属于 Harness contract，也不暴露给 API Proxy。
 
 客户端发送任意 data message 时以 code `1008`、reason `downlink only` 关闭。source 技术失败时，carrier 尽力发送一个 `stream/error` 后正常结束 socket；socket 先丢失时不再发送失败帧。普通 GET 只返回 `426 upgrade required`，不提供 SSE fallback。
 

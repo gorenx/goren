@@ -80,7 +80,31 @@ Session/Host owner
 
 API Proxy 拥有 frame 的业务来源、baseline/replay 和稳定 interaction `rpcId`；Connection 只从 `payload.type` 补全 wire `method` 并发送，不检查 Session/Host 业务字段。当前静态 composition 在尚无 Session/Host owner 时提供可取消的空事件源，表示真实的零事件状态，不生成虚假 frame。
 
-## 5. `host.describe` 纵向切片设计
+## 5. Mux/Host 应用层 frame union
+
+`frame` 表示事件流中的一条完整应用层记录，不是 WebSocket 底层分片。`MuxFrame` 把多个 Session 的事件汇聚到 `/api/events.mux`；`HostFrame` 把 Harness 进程级成员关系、状态和 Workspace 变化发送到 `/api/events.host`。精确分支及 wire 语义由[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md#64-两条-websocket-downlink)拥有。
+
+Go 使用带私有 marker 的封闭 interface 和 exported concrete frame type 表达两个判别联合。具体 owner 只能构造已纳入 union 的分支，不能向 `EventStreams` 发送任意 `map[string]any` 或 raw payload。`StreamRequest[F]` 保留源 `RpcRequest<Frame>` 的窄形态：显式携带 `rpcId` 与 typed payload，不提前加入 wire `type`/`method`。
+
+```text
+Mux/Host owner
+  -> StreamRequest[MuxFrame 或 HostFrame]
+  -> API Proxy frame validation + canonical type encoding
+  -> connection.RPCRequest
+  -> Connection completes ServerRequest
+```
+
+API Proxy 持有浏览器所需的 consumer-owned projection，而不是复制领域聚合：
+
+- `SessionEvent` 只固定 `type/seq/time/data` 等 wire envelope，`data` 仍由 Session event owner 定义；
+- Tool view 只固定 `for` 与 `view.card`，card 内部由 Tool presenter 定义；
+- queue message 只固定 identity、role、content/source 外壳，merge-extensible block/source 保持宽 JSON；
+- projection value 与 remote event args 按源 schema 保持 owner-defined JSON；
+- `WorkspaceView`、`JobView` 和 branded ID 是 API Proxy 面向浏览器的最小 DTO，不替代对应 owner 的内部模型。
+
+每条 typed frame 只在 API Proxy 出口验证一次；Connection 只读取已编码 payload 的 `type` 以补全 `method`，不重复验证业务字段。`stream/error` 同时实现两个 union，是唯一共享分支。
+
+## 6. `host.describe` 纵向切片设计
 
 `RegisterHostDescribe` 注册 canonical `host.describe`，payload 是 `HostDescribeRequest`，返回 `HostDescription`。`HostDescriptionProvider` 是 API Proxy 消费方拥有的最小接口，composition root 提供实现。
 
@@ -94,7 +118,7 @@ Provider 必须从已装配的 live Service 组装：
 
 API Proxy 不缓存或推导这些状态，也不使用固定成功结果冒充未装配能力。
 
-## 6. 结果与错误所有权
+## 7. 结果与错误所有权
 
 - `Outcome[V]` 表达业务 success/failure；业务 failure 被编码为 HTTP `200` 的 `RpcResult`；
 - Go `error` 只表示 Provider/依赖技术失败，由 Connection 映射为 HTTP `500`；
@@ -104,7 +128,7 @@ API Proxy 不缓存或推导这些状态，也不使用固定成功结果冒充�
 
 最后一条在 Go 中把源 `RpcResponse.rpcId` 的回显不变量收紧为结构保证，不改变 wire 观察结果。
 
-## 7. `/api/respond` pending 生命周期
+## 8. `/api/respond` pending 生命周期
 
 ```text
 interaction owner
@@ -133,7 +157,7 @@ POST /api/respond
 
 通用 registry 不拥有 approval/question schema、requested/resolved frame、broadcast 或 reconnect replay。具体 interaction owner 仍持有其领域 pending 状态，从该状态生成首次 frame、replay baseline 和 resolved frame；registry 只保证 response 路由与结算并发语义。
 
-## 8. 后续进入规则
+## 9. 后续进入规则
 
 每增加一个 API 模块，必须同时提供：
 

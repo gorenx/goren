@@ -257,13 +257,42 @@ Client 同时连接：
 
 两条 WebSocket 都是 Server 到 Client 的单向 text-frame transport：
 
-- 每个 frame 是完整 `ServerRequest` JSON；
+- `MuxFrame`/`HostFrame` 是应用层事件流的一条 payload，不是 WebSocket 协议的底层分片；
+- 每个应用层 frame 包入一个完整 `ServerRequest` JSON，并占一个 WebSocket text message；
 - `method` 等于 `payload.type`；
 - `events.mux` 传 Session Event、subscription baseline、approval/question、queue、jobs 和 projection；
 - `events.host` 传 Session membership/status、Agent error、Workspace change 和纳入的 Host frame；
 - Client 在 socket 上发送业务消息属于协议错误，Server 以 policy violation 关闭；
 - stream 实现失败时尽力发送一个 `stream/error` frame 后关闭；
 - 任一 socket 断开使当前 generation 失效，两条流一起重建。
+
+`MuxFrame` 是所有 Session 共用一条 socket 的 multiplexed union：
+
+| `payload.type` | 作用 |
+| --- | --- |
+| `session/event` | 传递一条持久化 Session Event 及可选 Tool view |
+| `session/subscribed` | 建立某 Session 的 `lastSeq` baseline |
+| `approval/requested` / `approval/resolved` | approval interaction 的请求与权威结果 |
+| `question/requested` / `question/resolved` | question interaction 的请求与权威结果 |
+| `session/queue` | 完整瞬态 inbox snapshot |
+| `session/jobs` | 完整可见 background job snapshot |
+| `session/projection` | 一个 projection unit 的新值与 watermark |
+| `stream/error` | mux stream 的终止技术错误 |
+
+`HostFrame` 描述 Harness 进程整体的成员关系和主机级变化：
+
+| `payload.type` | 作用 |
+| --- | --- |
+| `host/session-added` / `host/session-removed` | Session membership 变化 |
+| `host/session-status` | Session running 状态 |
+| `host/agent-error` | 没有 turn position 的 live Agent failure |
+| `host/workspace-changed` / `host/workspace-removed` | Workspace snapshot upsert/remove |
+| `host/workspace-order-changed` | 完整 Workspace 顺序 |
+| `host/archived-sessions-changed` | 完整归档 Session 集合 |
+| `host/remote-event` | allowlisted Host Cordis event |
+| `stream/error` | host stream 的终止技术错误 |
+
+两条应用流没有跨流排序保证；`stream/error` 是唯一同时属于两个 union 的分支。
 
 连接 readiness 保持源顺序：两条 downlink 已打开，并且 `host.describe` 成功后，Client 才发布 `onConnected`。重连依赖 stream baseline 与随后重新读取 list/history，不假设 Server replay 所有历史 frame。
 
