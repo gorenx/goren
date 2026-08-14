@@ -89,6 +89,8 @@ Go 可以合并只为 TypeScript 构建、声明合并或 npm 发布而存在的
 
 独立原因：Session 同时被 Agent、持久化、projection 和 API Proxy 消费，且 append 的串行一致性与后台 projection 不同。把 storage driver 放入 Session core 会阻止替换并污染 replay。
 
+已进入实现的 Header/Event、内存 log、surface 和 Store 生命周期由[10 Session Core 与生命周期模块设计](./10-session-core-and-lifecycle.md)拥有；fork、repair 和派生历史仍按本边界后续进入，不因首个切片尚未包含而转移 owner。
+
 ### 2.4 Storage Adapter
 
 存储依赖保持：

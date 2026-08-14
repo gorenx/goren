@@ -40,8 +40,8 @@ Go 不复制 Proxy property lookup、decorator、declaration merging、npm modul
 
 - 当前可实例化 Factory 的白名单；
 - process-derived `Environment` 与 Factory 输入 `PluginSpec`；
-- Connection-only 默认 declaration 集合；
-- API Proxy Provider Plugin 与 Connection Consumer Plugin；
+- 当前 included server 的默认 declaration 集合；
+- Session Provider、API Proxy Consumer/Provider 与 Connection Consumer Plugin；
 - 多 Plugin 启动失败时的 composition rollback。
 
 它不重新解释 HTTP/RPC contract，也不把 Excluded/Deferred capability 注册为占位 Factory。外部扩展通过自定义 composition root 静态加入公开 Factory，而不是修改 Runtime 内部 map。
@@ -91,6 +91,8 @@ Apply
 
 disposer 幂等、接受 cleanup context，并严格按登记逆序运行。候选 Scope 在 `Apply` 与 contribution invariant 全部成功前不进入全局 Service/Event view，因此启动失败不会留下 route、listener、goroutine 或 Service。`PluginStatus` 暴露 ID、canonical name、State、live effect label 和最后一次 lifecycle error，不暴露锁、内部表或业务对象。
 
+Scope 进入 `stopping` 后，listener 不会一次性提前消失；每个 listener 直到自己的 disposer 执行才停止参与 dispatch。这样同一 Scope 中排在 listener 之后登记的业务 effect 可以在 LIFO teardown 时发布最终 disposed/flush edge，然后再注销 listener。未激活的 rollback Scope 仍不会进入全局 Event view。
+
 ## 5. Replacement 与 shutdown
 
 replacement 必须保持 Plugin canonical name 和 `Provides` 集合，避免把一个 Handle 偷换为不同职责。流程为：
@@ -124,6 +126,8 @@ Runtime shutdown 禁止新 Load，按依赖图的反向方向停止 Consumer 后
 
 `Decision.Bail` 与 `Value` 分离，因为 `false`、`0`、空字符串等零值可能是合法的最终拒绝或选择；`Bail=false` 才表示当前 listener 不作决定。listener 是 Scope-owned effect，手动 disposer 或 Plugin unload 后不再参与 dispatch。
 
+需要先改变状态再发通知的 owner 可在 commit 前通过 `CaptureEmitFrom` 固定 `EmitSnapshot`，commit 后再调用 `Dispatch`。这样 listener 的并发注册/卸载不会改变一次已经开始的 publication；snapshot 仍保存精确 `NotifyHandler[P]`，不引入反射或无类型 callback。
+
 ## 7. Factory Catalog 与 typed config
 
 `Factory[C]` 的能力 owner 定义命名配置 `C`、strict decoder、cross-field validation 与构造函数。Catalog 只保存已注册的 decoder/constructor closure；`json.RawMessage` 在 `Catalog.Create` 后不再进入 Plugin。
@@ -141,12 +145,13 @@ shipped Catalog 当前只有：
 
 - `@deepseek-ai/dsh-host-apiproxy`；
 - `@deepseek-ai/dsh-client-connection` 的 Host half。
+- `@deepseek-ai/dsh-session` 的内存 Store Provider。
 
 后者虽然沿用源 npm canonical name，但只实现服务端 Host carrier，不包含 `WebApiClient`、`ConnectionController` 或浏览器代码。Web UI、SDK、ACP、MCP、Typert 与其他 Deferred 能力不在 Catalog 或依赖闭包。
 
-## 8. Connection-only 组合流程
+## 8. 当前 server 组合流程
 
-默认 declarations 故意先声明 Connection，再声明 API Proxy，以证明 Runtime 按 Service graph 而不是文件顺序工作：
+默认 declarations 故意按 Connection、API Proxy、Session 的 Consumer-before-Provider 顺序声明，以证明 Runtime 按 Service graph 而不是文件顺序工作：
 
 ```text
 cmd/goren
@@ -154,7 +159,10 @@ cmd/goren
   -> assembly.DefaultSpecs(listen, version)
   -> connection Factory.Create
   -> Connection StateWaiting (requires apiProxy)
-  -> API Proxy Factory.Create + Apply
+  -> API Proxy StateWaiting (requires sessions)
+  -> Session Factory.Create + Apply
+       -> MemoryStore + Provide(sessions)
+  -> Runtime settles API Proxy
        -> Catalog + host.describe + empty cancellable EventStreams
        -> Provide(apiProxy)
   -> Runtime settles Connection

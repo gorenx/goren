@@ -38,7 +38,7 @@ Session 是追加写事件日志，不是可被原地修改的会话对象。持
 {
   "type": "user/message",
   "seq": 12,
-  "time": "2026-08-14T18:42:00.000Z",
+  "time": 1786743546510,
   "data": {},
   "ignorable": true
 }
@@ -46,12 +46,14 @@ Session 是追加写事件日志，不是可被原地修改的会话对象。持
 
 约束如下：
 
-- `formatVersion` 初始保持 TypeScript 基线的 `0`；升级只能通过显式迁移。
-- `seq` 在单个 session 内严格递增，持久化成功后才可对外宣称事件已提交。
+- Session Header 的 `version` 初始保持 TypeScript 基线的 `0`；升级只能通过显式迁移。
+- `seq` 在单个 session 内严格递增；Event 进入内存日志后才发布 `session/event`，durability 则由 `session/flush` 单独确认。
 - 未知且未标记 `ignorable` 的事件必须拒绝读取；未知且可忽略的事件保留原始内容并跳过解释。
 - surface event 保留 `sourceEventSeqs` 与 `surfaceOp`，不得丢失到原始事件的可追溯关系。
 - 所有模型可见消息必须可由日志重建；模型可见但未落日志、或已落日志但请求未包含，均视为兼容缺陷。
-- 时间统一使用 RFC 3339 Nano 可表达的 UTC 时间；序列化 fixture 规定规范化形式，业务逻辑不得依赖字符串精度差异。
+- Header `createdAt` 与 Event `time` 都保持 Unix epoch milliseconds number，并限制在 JavaScript safe integer 范围。
+
+Header、Event、surface、append commit 与 flush 的唯一详细设计见[10 Session Core 与生命周期模块设计](./10-session-core-and-lifecycle.md)。
 
 核心 turn 顺序保持为：
 

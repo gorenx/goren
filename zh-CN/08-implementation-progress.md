@@ -3,7 +3,7 @@
 状态：In Progress
 更新时间：2026-08-14
 
-本文是 DeepSeek Harness Go 复刻实施状态、验证证据、阻塞项和下一步的唯一记录。全局范围与 Gate 由[05 复制路线图与验收](./05-porting-roadmap-and-acceptance.md)拥有；模块职责与设计分别由[06 Connection Host 模块设计与实现](./06-connection-host-module.md)、[07 API Proxy 模块设计与实现](./07-api-proxy-module.md)和[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)拥有。本文不重新定义协议或架构。
+本文是 DeepSeek Harness Go 复刻实施状态、验证证据、阻塞项和下一步的唯一记录。全局范围与 Gate 由[05 复制路线图与验收](./05-porting-roadmap-and-acceptance.md)拥有；模块职责与设计分别由[06 Connection Host 模块设计与实现](./06-connection-host-module.md)、[07 API Proxy 模块设计与实现](./07-api-proxy-module.md)、[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)和[10 Session Core 与生命周期模块设计](./10-session-core-and-lifecycle.md)拥有。本文不重新定义协议或架构。
 
 ## 1. 进度记录规则
 
@@ -22,14 +22,14 @@
 | 阶段 0：基线与 Contract Freeze | In Progress | 11 Completed / 2 In Progress / 1 Planned | Contract Verified | 补齐首期 surface mapping 与 NOTICE/provenance 决策 |
 | 阶段 1：Connection Host Carrier | Completed | 19 Completed | Contract Verified | Gate 已完成，后续扩展随新增 included surface 进入 |
 | 阶段 2：Plugin Runtime | Completed | 12 Completed | Go Verified | Gate 已完成；后续能力通过既有 Factory/Service/Event seam 进入 |
-| 阶段 3：Session/Agent slice | Planned | 0 Completed / 16 Planned | None | 不先于阶段 1、2 进入实现 |
+| 阶段 3：Session/Agent slice | In Progress | 1 Completed / 15 Planned | Contract Verified | Session core 已完成，继续 System Prompt/Tools |
 | 阶段 4：LLM Contract | Planned | 0 Completed / 13 Planned | None | 既有 `llm` 尚未迁移到 Harness contract |
 | 阶段 5：Session 持久化 | Planned | 0 Completed / 14 Planned | None | 先以内存 Session 验证状态机 |
 | 阶段 6：客户端能力扩展 | Planned | 0 Completed / 19 Planned | None | 按 TypeScript Client 实际消费逐项进入 |
 | 阶段 7：Deferred 能力 | Deferred | 7 Deferred | None | 不创建 package、handler 或依赖占位 |
 | 阶段 8：Parity Hardening | In Progress | 0 Completed / 5 In Progress / 10 Planned | Contract Verified | 扩展当前 Connection contract suite，不等同发布验收 |
 
-当前首个 Connection slice 达到 `Contract Verified`：固定 TypeScript schema 与 Go envelope/frame 已交叉校验，固定上游 `WebApiClient` 已调用 Go `host.describe`、读取两条 WebSocket 并调用 `/api/respond`，`ConnectionController` 已验证 client-owned generation 重建。Connection 已通过 Plugin Runtime 的 Service graph 与 effect 生命周期装配。Session/Agent 会话、原 Web 产品和真实 DeepSeek Provider 均未据此标记兼容。
+当前 Connection slice 与 Session core 达到 `Contract Verified`：固定 TypeScript schema 与 Go envelope/frame 已交叉校验，固定上游 `WebApiClient` 已调用 Go `host.describe`、读取两条 WebSocket 并调用 `/api/respond`，`ConnectionController` 已验证 client-owned generation 重建；固定源 Session 与 Go 已交叉验证 Header/Event、普通 append、seed marker 和 surface replace。Agent 会话、原 Web 产品和真实 DeepSeek Provider 均未据此标记兼容。
 
 ## 3. 阶段 0：基线与 Connection Contract Freeze
 
@@ -38,7 +38,7 @@
 | S0-D01 | 交付 | 固定源 commit、版本、许可证和本地参考路径 | Completed | Implemented：`01` 已固定 `47f943...`、`0.1.0-rc.5` 和 `../deepseek-harness` |
 | S0-D02 | 交付 | 建立 included/excluded surface manifest | Completed | Contract Verified：`contracts/deepseek-harness/manifest.json` 固定源、当前 surface、Excluded/Deferred 与 privileged method |
 | S0-D03 | 交付 | 提取 RPC message、result、receipt、frame、path 和 stable errors | Completed | Go Verified：RPC、path、stable errors、窄 stream request 与完整 Mux/Host frame union 已覆盖 |
-| S0-D04 | 交付 | 提取首期 Host、Session、approval/question 和 respond contract | In Progress | Go Verified：`host.describe` 与 respond envelope 已完成；Session 和 interaction 未完成 |
+| S0-D04 | 交付 | 提取首期 Host、Session、approval/question 和 respond contract | In Progress | Contract Verified：`host.describe`、respond envelope 与 Session core 已完成；interaction 未完成 |
 | S0-D05 | 交付 | 建立 contract manifest 和可重复 TypeScript fixture generator | Completed | Contract Verified：固定源 Zod schema 可重复生成 `vectors.json` |
 | S0-D06 | 交付 | 单列完整 Web Client 所需但首期未纳入的能力 | Completed | Implemented：`01` 已区分 Workspace、Settings、Goals 等 Deferred 能力 |
 | S0-D07 | 交付 | 记录既有 Go `llm` 与目标 contract 的迁移差异 | Completed | Implemented：`01` 已记录 public model、stream 和 route 差异 |
@@ -117,20 +117,20 @@ interaction owner registers stable rpcId + decoder
 | S2-D02 | 交付 | Service graph、typed Event modes、rollback、replacement 和 shutdown | Completed | Go Verified：waiting settlement、live withdraw/re-provide、五种 Event mode、shadow replacement 与 dependent-first shutdown 已覆盖 |
 | S2-D03 | 交付 | Factory Catalog 与静态 composition root | Completed | Go Verified：`cmd/goren -> internal/assembly -> Catalog -> Runtime`，入口不再直接拼装 Echo/API Proxy |
 | S2-D04 | 交付 | 首期 typed config 与 strict validation | Completed | Go Verified：owner config 拒绝 duplicate/unknown/type/range/combination 与多值输入，类型擦除止于 Factory Catalog |
-| S2-D05 | 交付 | 只包含 Connection Server 的 Plugin assembly | Completed | Go Verified：API Proxy Provider 提供 `apiProxy`，Connection Consumer 等待后绑定 listener 并提供 `webServer` |
+| S2-D05 | 交付 | 只包含当前 included server 能力的 Plugin assembly | Completed | Go Verified：Session 提供 `sessions`，API Proxy 等待后提供 `apiProxy`，Connection 再提供 `webServer` |
 | S2-D06 | 交付 | lifecycle diagnostics 和 leak-oriented tests | Completed | Go Verified：`PluginStatus` 暴露状态/effect/error；rollback、unload、replacement、shutdown 后 effect/contribution 清空 |
 | S2-G01 | Gate | Service 缺失、重复、启动失败、卸载和替换有测试 | Completed | Go Verified：`plugin/runtime_test.go` |
 | S2-G02 | Gate | Event modes 的顺序与错误语义有 fixture | Completed | Go Verified：`plugin/events_test.go` 覆盖 emit/parallel/serial/bail/waterfall |
 | S2-G03 | Gate | Plugin 启动失败不遗留 contribution 或资源 | Completed | Go Verified：LIFO rollback 与 composition occupied-listener rollback 后 Runtime 无 declaration |
 | S2-G04 | Gate | listener 与 handler registration 由 effect 拥有且可撤销 | Completed | Go Verified：Event listener disposer、Service disposer 和 API Proxy Service scope 均可撤销 |
-| S2-G05 | Gate | Excluded/Deferred 能力不进入 Catalog 或依赖闭包 | Completed | Go Verified：shipped Catalog 仅含 Host API Proxy 与 Connection Host half，显式拒绝 Web/SDK/ACP/MCP 等 factory |
+| S2-G05 | Gate | Excluded/Deferred 能力不进入 Catalog 或依赖闭包 | Completed | Go Verified：shipped Catalog 仅含 Session、Host API Proxy 与 Connection Host half，显式拒绝 Web/SDK/ACP/MCP 等 factory |
 | S2-G06 | Gate | `!!js`、未知字段、类型错误和无效组合严格失败 | Completed | Go Verified：generic 与 Connection/API Proxy Factory config fixtures |
 
 ## 6. 阶段 3：Session/Agent 会话纵向切片
 
 | ID | 类别 | 子目标 | 执行状态 | 证据或缺口 |
 | --- | --- | --- | --- | --- |
-| S3-D01 | 交付 | in-memory append-only Session | Planned | None |
+| S3-D01 | 交付 | in-memory append-only Session | Completed | Contract Verified：Header/Event、普通 append、seed marker 与 surface 已同固定源交叉验证；Go Verified：lossless snapshot、连续 `seq`、Store lifecycle/flush |
 | S3-D02 | 交付 | System Prompt registry 与 snapshot assembly | Planned | None |
 | S3-D03 | 交付 | Tool definition、registry、executor 和 policy waterfall | Planned | None |
 | S3-D04 | 交付 | Agent registry、inbox、scope 与实时事件 | Planned | None |
@@ -276,6 +276,10 @@ interaction owner registers stable rpcId + decoder
 | strict typed config 与 Factory Catalog 边界 | `plugin/catalog_test.go`、`internal/assembly/assembly_test.go` |
 | Connection Plugin 乱序依赖结算与真实 HTTP 服务 | `TestConnectionCompositionSettlesDependenciesAndServesHostDescribe` |
 | composition bind failure 无 declaration/contribution 遗留 | `TestCompositionFailureRollsBackEarlierDeclarations` |
+| Session payload snapshot、seed 连续性、surface 原子 replace 与负零拒绝 | `session/session_test.go` |
+| Session create/append/flush/dispose、rollback、observer containment 与重入拒绝 | `session/store_test.go` |
+| 固定源与 Go Session Header/Event/seed/surface 行为一致 | `TestPinnedSourceSessionCoreMatchesGo` |
+| Session -> API Proxy -> `host.describe.attachedSessions` 实时 projection | `TestConnectionCompositionSettlesDependenciesAndServesHostDescribe` |
 
 ## 13. 当前验证结果
 
@@ -294,7 +298,7 @@ interaction owner registers stable rpcId + decoder
 - 变更文档本地链接检查
 - `git diff --check`
 
-真实进程 smoke：启动 `cmd/goren`，入口通过 Factory Catalog 与 Plugin Runtime 激活 Connection，向 `127.0.0.1` 发送 `POST /api/host.describe`，得到同 `rpcId` 的成功 `ServerResponse`，value 包含 version、cwd、`attachedSessions=0` 和 `canOpenPath=false`。跨语言测试另使用固定源 `WebApiClient` 直连测试 Go HTTPHost，并由固定源 `ConnectionController` 完成两代双流连接。
+真实进程 smoke：启动 `cmd/goren`，入口通过 Factory Catalog 与 Plugin Runtime 依次结算 Session、API Proxy 与 Connection，向 `127.0.0.1` 发送 `POST /api/host.describe`，得到同 `rpcId` 的成功 `ServerResponse`，value 包含 version、cwd、`attachedSessions=0` 和 `canOpenPath=false`。assembly 测试创建 live Session 后同一 projection 返回 `attachedSessions=1`。跨语言测试另使用固定源 `WebApiClient` 直连测试 Go HTTPHost，并由固定源 `ConnectionController` 完成两代双流连接。
 
 ## 14. 安全与依赖状态
 
@@ -305,11 +309,12 @@ interaction owner registers stable rpcId + decoder
 
 ## 15. 下一实现切片
 
-阶段 1、2 的全部 Gate 已完成。下一切片进入阶段 3 的 Session/Agent 纵向链路：
+阶段 1、2 的全部 Gate 和阶段 3 的 Session core 已完成。下一切片继续阶段 3 的 Agent 纵向链路：
 
-1. 先建立 Session owner 的内存 append-only event log、连续 `seq` 与可取消订阅；
-2. 建立 System Prompt、Tool registry/executor 和 fake LLM 的 Service Definition / Provider / Consumer；
-3. 实现首个端到端 Agent Loop，再接入 `session.*` API 和 Mux/Host frame；
-4. 最后让固定 TypeScript Client 完成 prompt、事件接收、取消与 reconnect baseline Gate。
+1. 建立 System Prompt registry 与 deterministic snapshot assembly；
+2. 建立 Tool definition、registry/executor 与 policy waterfall；
+3. 在 Agent Loop 前先冻结其实际消费的 Harness-compatible Message/stream 子集，避免绑定待迁移旧 `llm` API；
+4. 实现 fake LLM、首个端到端 Agent Loop，再接入 `session.*` API 和 Mux/Host frame；
+5. 最后让固定 TypeScript Client 完成 prompt、事件接收、取消与 reconnect baseline Gate。
 
 approval/question 的业务闭环随阶段 3 的 Session/Agent owner 一起实现，不在 Plugin Runtime、Connection 或通用 pending registry 中提前伪造。Agent Child Scope 与 scoped listener isolation 也在真实 Agent instance 出现时扩展现有 Scope，不另建第二套 Registry。
