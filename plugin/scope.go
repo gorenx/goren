@@ -36,6 +36,8 @@ type Scope struct {
 	subscriptions []*eventSubscription
 	effects       []*ownedEffect
 	closed        bool
+	activated     bool
+	disposing     bool
 }
 
 func newScope(owner *Runtime, record *pluginRecord) *Scope {
@@ -105,12 +107,16 @@ func (pluginScope *Scope) provide(definition ServiceRef, value any) (Disposer, e
 	pluginScope.services[definition.name] = contribution
 	pluginScope.mu.Unlock()
 
-	release, err := pluginScope.own("provide:"+definition.name, func(context.Context) error {
+	release, err := pluginScope.own("provide:"+definition.name, func(disposeContext context.Context) error {
 		pluginScope.mu.Lock()
-		defer pluginScope.mu.Unlock()
+		withdrawLive := pluginScope.activated && !pluginScope.disposing
 		if contribution.owned {
 			delete(pluginScope.services, definition.name)
 			contribution.owned = false
+		}
+		pluginScope.mu.Unlock()
+		if withdrawLive {
+			return pluginScope.owner.withdrawService(disposeContext, pluginScope.record, definition, contribution)
 		}
 		return nil
 	})
@@ -119,6 +125,14 @@ func (pluginScope *Scope) provide(definition ServiceRef, value any) (Disposer, e
 		delete(pluginScope.services, definition.name)
 		pluginScope.mu.Unlock()
 		return nil, err
+	}
+	pluginScope.mu.Lock()
+	publishLive := pluginScope.activated && !pluginScope.disposing
+	pluginScope.mu.Unlock()
+	if publishLive {
+		if err := pluginScope.owner.publishService(context.Background(), pluginScope.record, contribution); err != nil {
+			return nil, errors.Join(err, release(context.Background()))
+		}
 	}
 	return release, nil
 }
@@ -154,6 +168,8 @@ func (pluginScope *Scope) dispose(closeContext context.Context) error {
 		return nil
 	}
 	pluginScope.closed = true
+	pluginScope.disposing = true
+	pluginScope.activated = false
 	effects := append([]*ownedEffect(nil), pluginScope.effects...)
 	pluginScope.mu.Unlock()
 

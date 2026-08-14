@@ -258,6 +258,71 @@ func TestRuntimeShutdownIsDependentFirst(t *testing.T) {
 	}
 }
 
+func TestProvidedServiceDisposerUpdatesLiveDependencyGraph(t *testing.T) {
+	t.Parallel()
+	requestContext := context.Background()
+	engine := plugin.NewRuntime()
+	transitions := []string{}
+	var providerScope *plugin.Scope
+	var withdraw plugin.Disposer
+	provider := fixturePlugin{
+		metadata: plugin.Manifest{Name: "dynamic-provider", Provides: []plugin.ServiceRef{textServiceKey.Ref()}},
+		body: func(_ context.Context, pluginScope *plugin.Scope) error {
+			providerScope = pluginScope
+			var err error
+			withdraw, err = plugin.Provide(pluginScope, textServiceKey, textService(textValue("v1")))
+			return err
+		},
+	}
+	if _, err := engine.Load(requestContext, provider); err != nil {
+		t.Fatal(err)
+	}
+	consumerHandle, err := engine.Load(requestContext, fixturePlugin{
+		metadata: plugin.Manifest{Name: "dynamic-consumer", Requires: []plugin.ServiceRef{textServiceKey.Ref()}},
+		body: func(_ context.Context, pluginScope *plugin.Scope) error {
+			dependency, found := plugin.Require(pluginScope, textServiceKey)
+			if !found {
+				return errors.New("dynamic service missing")
+			}
+			captured := dependency.Text()
+			transitions = append(transitions, "start:"+captured)
+			return pluginScope.Effect(requestContext, "consumer", func(context.Context) (plugin.Disposer, error) {
+				return func(context.Context) error {
+					transitions = append(transitions, "stop:"+captured)
+					return nil
+				}, nil
+			})
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := withdraw(requestContext); err != nil {
+		t.Fatal(err)
+	}
+	consumerStatus, err := engine.Status(consumerHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if consumerStatus.State != plugin.StateWaiting {
+		t.Fatalf("consumer after withdrawal = %s", consumerStatus.State)
+	}
+	if _, err := plugin.Provide(providerScope, textServiceKey, textService(textValue("v2"))); err != nil {
+		t.Fatal(err)
+	}
+	consumerStatus, err = engine.Status(consumerHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if consumerStatus.State != plugin.StateActive {
+		t.Fatalf("consumer after re-provide = %s", consumerStatus.State)
+	}
+	want := []string{"start:v1", "stop:v1", "start:v2"}
+	if !reflect.DeepEqual(transitions, want) {
+		t.Fatalf("transitions = %#v, want %#v", transitions, want)
+	}
+}
+
 func newTextProvider(providerName string, providedValue textValue, transitions *[]string) plugin.Plugin {
 	return fixturePlugin{
 		metadata: plugin.Manifest{Name: providerName, Provides: []plugin.ServiceRef{textServiceKey.Ref()}},

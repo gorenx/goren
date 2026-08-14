@@ -22,6 +22,7 @@ type serviceEntry struct {
 	definition ServiceRef
 	value      any
 	provider   *pluginRecord
+	owner      *serviceContribution
 }
 
 // Runtime coordinates plugin dependency settlement and owns all active scopes.
@@ -167,7 +168,7 @@ func (engine *Runtime) Replace(requestContext context.Context, pluginHandle Hand
 	engine.mu.Lock()
 	for serviceName, contribution := range shadowScope.services {
 		engine.services[serviceName] = serviceEntry{
-			definition: contribution.ref, value: contribution.value, provider: record,
+			definition: contribution.ref, value: contribution.value, provider: record, owner: contribution,
 		}
 	}
 	record.instance = candidate
@@ -175,6 +176,10 @@ func (engine *Runtime) Replace(requestContext context.Context, pluginHandle Hand
 	record.pluginScope = shadowScope
 	record.lastErr = nil
 	record.state = StateActive
+	shadowScope.mu.Lock()
+	shadowScope.record = record
+	shadowScope.activated = true
+	shadowScope.mu.Unlock()
 	engine.mu.Unlock()
 
 	cleanupErr := oldScope.dispose(requestContext)
@@ -311,9 +316,12 @@ func (engine *Runtime) activate(requestContext context.Context, record *pluginRe
 	record.order = engine.nextOrder
 	record.pluginScope = pluginScope
 	record.state = StateActive
+	pluginScope.mu.Lock()
+	pluginScope.activated = true
+	pluginScope.mu.Unlock()
 	for serviceName, contribution := range pluginScope.services {
 		engine.services[serviceName] = serviceEntry{
-			definition: contribution.ref, value: contribution.value, provider: record,
+			definition: contribution.ref, value: contribution.value, provider: record, owner: contribution,
 		}
 	}
 	engine.mu.Unlock()
@@ -321,6 +329,10 @@ func (engine *Runtime) activate(requestContext context.Context, record *pluginRe
 }
 
 func (engine *Runtime) stopDependents(closeContext context.Context, provider *pluginRecord, visited map[uint64]bool) error {
+	return engine.stopDependentsFor(closeContext, provider, provider.metadata.Provides, visited)
+}
+
+func (engine *Runtime) stopDependentsFor(closeContext context.Context, provider *pluginRecord, providedRefs []ServiceRef, visited map[uint64]bool) error {
 	if visited[provider.id] {
 		return nil
 	}
@@ -331,12 +343,51 @@ func (engine *Runtime) stopDependents(closeContext context.Context, provider *pl
 	var stopErr error
 	for index := len(records) - 1; index >= 0; index-- {
 		dependent := records[index]
-		if dependent == provider || dependent.state != StateActive || !dependsOn(dependent.metadata, provider.metadata.Provides) {
+		if dependent == provider || dependent.state != StateActive || !dependsOn(dependent.metadata, providedRefs) {
 			continue
 		}
 		stopErr = errors.Join(stopErr, engine.stopDependents(closeContext, dependent, visited))
 		stopErr = errors.Join(stopErr, engine.stopRecord(closeContext, dependent, StateWaiting))
 	}
+	return stopErr
+}
+
+func (engine *Runtime) publishService(requestContext context.Context, record *pluginRecord, contribution *serviceContribution) error {
+	engine.operations.Lock()
+	defer engine.operations.Unlock()
+	engine.mu.Lock()
+	if engine.closed || record.state != StateActive || engine.providers[contribution.ref.name] != record {
+		engine.mu.Unlock()
+		return fmt.Errorf("plugin: service %q cannot be provided by an inactive scope", contribution.ref.name)
+	}
+	if _, exists := engine.services[contribution.ref.name]; exists {
+		engine.mu.Unlock()
+		return fmt.Errorf("plugin: service %q is already active", contribution.ref.name)
+	}
+	engine.services[contribution.ref.name] = serviceEntry{
+		definition: contribution.ref, value: contribution.value, provider: record, owner: contribution,
+	}
+	engine.mu.Unlock()
+	_ = engine.reconcile(requestContext)
+	return nil
+}
+
+func (engine *Runtime) withdrawService(closeContext context.Context, record *pluginRecord, definition ServiceRef, contribution *serviceContribution) error {
+	engine.operations.Lock()
+	defer engine.operations.Unlock()
+	engine.mu.RLock()
+	entry, exists := engine.services[definition.name]
+	engine.mu.RUnlock()
+	if !exists || entry.provider != record || entry.owner != contribution {
+		return nil
+	}
+	stopErr := engine.stopDependentsFor(closeContext, record, []ServiceRef{definition}, make(map[uint64]bool))
+	engine.mu.Lock()
+	entry, exists = engine.services[definition.name]
+	if exists && entry.provider == record && entry.owner == contribution {
+		delete(engine.services, definition.name)
+	}
+	engine.mu.Unlock()
 	return stopErr
 }
 
