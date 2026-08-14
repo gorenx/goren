@@ -16,6 +16,7 @@ import (
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/systemprompt"
+	toolscore "github.com/gorenx/goren/tools"
 )
 
 type probePlugin struct {
@@ -24,8 +25,10 @@ type probePlugin struct {
 
 func (instance probePlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
-		Name:     "assembly-probe",
-		Requires: []plugin.ServiceRef{serverServiceKey.Ref(), session.StoreService.Ref(), systemprompt.Service.Ref()},
+		Name: "assembly-probe",
+		Requires: []plugin.ServiceRef{
+			serverServiceKey.Ref(), session.StoreService.Ref(), systemprompt.Service.Ref(), toolscore.Service.Ref(),
+		},
 	}
 }
 
@@ -39,7 +42,7 @@ func TestCatalogContainsOnlyCurrentServerSlice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{ConnectionFactoryName, APIProxyFactoryName, SessionFactoryName, SystemPromptFactoryName}
+	want := []string{ConnectionFactoryName, APIProxyFactoryName, SessionFactoryName, SystemPromptFactoryName, ToolsFactoryName}
 	if got := registry.Names(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("factory names = %#v, want %#v", got, want)
 	}
@@ -74,6 +77,10 @@ func TestConnectionFactoryUsesStrictTypedConfig(t *testing.T) {
 		{label: "prompt null bool", factoryName: SystemPromptFactoryName, input: `{"includeHarnessIdentity":null}`, wantMessage: "must be a boolean"},
 		{label: "prompt null order", factoryName: SystemPromptFactoryName, input: `{"toolOrder":null}`, wantMessage: "must be an array"},
 		{label: "prompt order", factoryName: SystemPromptFactoryName, input: `{"toolOrder":["bash"]}`, wantMessage: "must contain"},
+		{label: "tools unknown", factoryName: ToolsFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
+		{label: "tools null mode", factoryName: ToolsFactoryName, input: `{"mode":null}`, wantMessage: "mode must be"},
+		{label: "tools code mode", factoryName: ToolsFactoryName, input: `{"mode":"code"}`, wantMessage: "Code Runtime bridge"},
+		{label: "tools parallel limit", factoryName: ToolsFactoryName, input: `{"maxParallelSubCalls":0}`, wantMessage: "positive integer"},
 		{label: "dynamic", factoryName: ConnectionFactoryName, input: `!!js (() => ({ listenAddress: "127.0.0.1:0" }))`, wantMessage: "invalid config"},
 	} {
 		testCase := testCase
@@ -129,6 +136,13 @@ func TestConnectionCompositionSettlesDependenciesAndServesHostDescribe(t *testin
 		}
 		if promptText != "You are an AI agent powered by DeepSeek Harness." {
 			t.Fatalf("default system prompt = %q", promptText)
+		}
+		toolService, found := plugin.Require(pluginScope, toolscore.Service)
+		if !found {
+			t.Fatal("tools service is unavailable")
+		}
+		if projections := toolService.Schemas(plugin.ScopeKey{}); len(projections) != 0 {
+			t.Fatalf("default tool schemas = %#v", projections)
 		}
 		return nil
 	}}

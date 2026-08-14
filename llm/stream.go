@@ -322,8 +322,8 @@ func NewEventStream(ctx context.Context, targetModel Model, produce StreamProduc
 func cloneAssistantMessage(assistantReply AssistantMessage) AssistantMessage {
 	cloned := assistantReply
 	cloned.Content = make([]AssistantContent, 0, len(assistantReply.Content))
-	for _, contentBlock := range assistantReply.Content {
-		switch typedContent := contentBlock.(type) {
+	for _, contentEntry := range assistantReply.Content {
+		switch typedContent := contentEntry.(type) {
 		case AssistantTextContent:
 			typedContent.Metadata = cloneReplayMetadata(typedContent.Metadata)
 			cloned.Content = append(cloned.Content, typedContent)

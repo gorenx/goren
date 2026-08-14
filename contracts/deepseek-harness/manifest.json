@@ -87,6 +87,27 @@
       ],
       "toolOrderRest": "<unlisted-tools>"
     },
+    "tools": {
+      "service": "tools",
+      "events": [
+        "tools/pre-execute",
+        "tools/execute",
+        "tools/post-execute",
+        "tools/result",
+        "tools/change"
+      ],
+      "errorCodes": [
+        "UNKNOWN_TOOL",
+        "INVALID_ARGS",
+        "INVALID_TOOL_OUTPUT",
+        "ABORTED",
+        "ABORTED_BEFORE_DISPATCH"
+      ],
+      "reservedToolName": "run_code",
+      "presentationModes": [
+        "native"
+      ]
+    },
     "privilegedMethods": [
       "agentPreset.read",
       "agentPreset.copy",
@@ -112,7 +133,8 @@
     "Python",
     "Typert code generation",
     "browser Connection implementation",
-    "!!js evaluator"
+    "!!js evaluator",
+    "Tools Code Mode generated SDK and Code Runtime bridge"
   ],
   "deferred": [
     "Headless CLI",

@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"math"
 	"strings"
+
+	"github.com/gorenx/goren/internal/jsonvalue"
 )
 
 const endSeedEventType = "session/end-seed"
@@ -109,6 +109,9 @@ func (operation *SurfaceOperation) UnmarshalJSON(rawValue []byte) error {
 		*operation = SurfaceAppend()
 		return nil
 	}
+	if err := jsonvalue.Validate(rawValue); err != nil {
+		return fmt.Errorf("session: invalid surface operation: %w", err)
+	}
 	var replacement struct {
 		Op    string `json:"op"`
 		Start int64  `json:"start"`
@@ -118,9 +121,6 @@ func (operation *SurfaceOperation) UnmarshalJSON(rawValue []byte) error {
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&replacement); err != nil {
 		return fmt.Errorf("session: invalid surface operation: %w", err)
-	}
-	if err := ensureJSONEnd(decoder); err != nil {
-		return err
 	}
 	if replacement.Op != "replace" || !isSafeNonNegative(replacement.Start) || !isSafeNonNegative(replacement.End) {
 		return errors.New("session: invalid surface replace operation")
@@ -166,76 +166,7 @@ func snapshotPayload[D any](payload D) (json.RawMessage, error) {
 }
 
 func validateLosslessJSON(rawValue []byte) error {
-	decoder := json.NewDecoder(bytes.NewReader(rawValue))
-	decoder.UseNumber()
-	if err := scanJSONValue(decoder, "$", make(map[string]struct{})); err != nil {
-		return err
-	}
-	return ensureJSONEnd(decoder)
-}
-
-func scanJSONValue(decoder *json.Decoder, path string, scratch map[string]struct{}) error {
-	token, err := decoder.Token()
-	if err != nil {
-		return err
-	}
-	if numeric, ok := token.(json.Number); ok {
-		parsed, parseErr := numeric.Float64()
-		if parseErr != nil || math.IsInf(parsed, 0) || math.IsNaN(parsed) || parsed == 0 && math.Signbit(parsed) {
-			return fmt.Errorf("invalid JSON number %q at %s", numeric, path)
-		}
-		return nil
-	}
-	delimiter, isDelimiter := token.(json.Delim)
-	if !isDelimiter {
-		return nil
-	}
-	switch delimiter {
-	case '{':
-		clear(scratch)
-		for decoder.More() {
-			nameToken, tokenErr := decoder.Token()
-			if tokenErr != nil {
-				return tokenErr
-			}
-			fieldName, ok := nameToken.(string)
-			if !ok {
-				return fmt.Errorf("object key at %s is not a string", path)
-			}
-			if _, exists := scratch[fieldName]; exists {
-				return fmt.Errorf("duplicate field %q at %s", fieldName, path)
-			}
-			scratch[fieldName] = struct{}{}
-			if err := scanJSONValue(decoder, path+"."+fieldName, make(map[string]struct{})); err != nil {
-				return err
-			}
-		}
-		_, err = decoder.Token()
-		return err
-	case '[':
-		index := 0
-		for decoder.More() {
-			if err := scanJSONValue(decoder, fmt.Sprintf("%s[%d]", path, index), make(map[string]struct{})); err != nil {
-				return err
-			}
-			index++
-		}
-		_, err = decoder.Token()
-		return err
-	default:
-		return fmt.Errorf("unexpected delimiter %q", delimiter)
-	}
-}
-
-func ensureJSONEnd(decoder *json.Decoder) error {
-	var trailing json.RawMessage
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return errors.New("multiple JSON values")
-		}
-		return err
-	}
-	return nil
+	return jsonvalue.Validate(rawValue)
 }
 
 func cloneEvent(source Event) Event {
