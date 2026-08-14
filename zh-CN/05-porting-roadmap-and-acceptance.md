@@ -13,6 +13,8 @@ Existing TypeScript Client
 
 每个阶段仍以 DeepSeek Harness 的职责 owner 为默认边界，并使用[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)定义的证据分级。
 
+阶段的当前完成度、验证证据和下一步统一记录在[08 实施进度](./08-implementation-progress.md)，本文不维护日期性状态。
+
 ## 1. 实施原则
 
 1. **协议先行**：先冻结 Connection/API wire contract，再实现 Go carrier 和 handler。
@@ -318,24 +320,3 @@ Fuzz 至少覆盖 Connection 四类 message、API union/error、Session Event、
 - 公共名称或边界偏离必须给出源证据和迁移影响；
 - 每次提交列出实际检查，未运行项明确说明；
 - dirty worktree 中不属于本任务的文件不得被顺手修改或提交。
-
-## 16. 当前起点与首个代码切片
-
-截至本文编写时：
-
-- Harness 复刻处于设计阶段；
-- 仓库已有 Go module、`llm`、OpenAI-compatible adapter、测试和 example；
-- Connection Host、API Proxy、Plugin Runtime、Agent、Session 和 Tools 尚不能视为已实现；
-- Headless、ACP、MCP 和 Typert 均为 Deferred；`!!js` evaluator 明确 Excluded；
-- 现有 LLM transport 是迁移材料，不是 Harness parity 证据。
-
-建议第一个代码切片是：
-
-```text
-TypeScript Connection fixture
-  -> Go Connection Host
-  -> typed API Proxy
-  -> deterministic host.describe handler
-```
-
-第二个切片再接入 `Plugin Runtime + in-memory Session + fake LLM + deterministic Tool + 单轮 Agent`，并通过相同 Connection/API 路径完成 prompt 与事件闭环。这样最早验证真正的目标协议，同时保持 Connection、API、Plugin、Agent、Session、Tool 和 LLM 的源职责边界。

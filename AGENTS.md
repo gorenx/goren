@@ -34,6 +34,8 @@ Write detailed design in Simplified Chinese. Preserve canonical TypeScript publi
 
 Use `cmd/` for executable entry points, public root packages only for real extension contracts, and `internal/` for repository-private runtime, assembly, and adapters. Keep colocated `*_test.go` files and package-local `testdata/`. Do not create placeholder package trees.
 
+Keep package behavior tests colocated with their owner. Put repository-wide architecture and policy checks in `tests/architecture/` so they remain outside production packages while still running under `go test ./...`.
+
 ## Compatibility and Plugin Rules
 
 For included surfaces, compatibility means the same observable semantics: HTTP paths and status behavior, WebSocket paths and frame direction, RPC envelopes and correlation, canonical names, JSON field presence, discriminants, event ordering, error codes, cancellation, disposal, and replay. Source Cordis Profile syntax and dynamic configuration behavior are explicitly excluded. Go syntax does not need to imitate TypeScript decorators, declaration merging, or generated `.d.ts` files. Every compatibility claim must name a source symbol or fixture at the pinned commit and a Go test or implementation location.

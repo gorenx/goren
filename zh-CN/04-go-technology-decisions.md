@@ -216,7 +216,7 @@ Connection Host 是首期必需的入站 adapter：
 
 | 需求 | 选择 | 所有权 |
 | --- | --- | --- |
-| HTTP framework | [`github.com/labstack/echo/v5`](https://github.com/labstack/echo) | listener、路由、middleware、body limit、error mapping、graceful shutdown |
+| HTTP framework | [`github.com/labstack/echo/v5`](https://echo.labstack.com/guide/quickstart/) | listener、路由、middleware、body limit、error mapping、graceful shutdown |
 | WebSocket | [`github.com/coder/websocket`](https://pkg.go.dev/github.com/coder/websocket) | `/api/events.mux`、`/api/events.host` 的 server-to-client text frame 与 close policy |
 | JSON | `encoding/json` | 四类 RPC message、`RpcResult`、`RpcReceipt` 和 frame union |
 | Trust fence | custom Echo middleware | Host allowlist、Origin/Host 一致、`Sec-Fetch-Site` cross-site 拒绝和 privileged method loopback |
@@ -224,6 +224,8 @@ Connection Host 是首期必需的入站 adapter：
 API Proxy 注册 canonical method 与 typed handler；Connection 只处理 carrier、信封、`rpcId`、pending response、取消和 generation，不包含 Agent/Session 业务。Echo 只存在于 `internal/connection`，adapter 在路由边界把 Echo request 转换为协议输入；API Proxy、Agent、Session 和 Plugin 公共接口不得出现 `echo.Context`。
 
 协议实现不得使用 Echo 默认 binder 或默认 HTTP error rendering。四类 RPC message 继续由 `encoding/json` strict codec 解码；custom Echo error handler、recovery middleware、404/405 handler 和 body-limit middleware 必须映射到[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)规定的精确 status/envelope/header。handler 使用底层 request context 传播 disconnect cancellation；客户端断开时取消 owned operation，但不得关闭共享 Runtime。
+
+首个 unary slice 已采用 Echo `v5.3.1`：官方 Recover middleware 只兜底 adapter/middleware panic，集中 `HTTPErrorHandler` 负责未提交的 framework error，`StartConfig.Start` 负责带超时的 graceful lifecycle。Envelope 与 payload 不使用 Echo Binder；验证层级和实现边界由[06 Connection Host 模块设计与实现](./06-connection-host-module.md)拥有，当前证据见[08 实施进度](./08-implementation-progress.md)。
 
 `coder/websocket` 需要底层 HTTP request/response。该访问只封装在 `internal/connection` 的 WebSocket bridge 中，普通 handler 和核心逻辑继续只使用 Echo adapter 提供的协议 DTO 与 `context.Context`。Echo 的 context 不得在 handler 返回后被 goroutine 持有。
 
@@ -241,7 +243,27 @@ Trust fence 只减少浏览器跨站和错误暴露风险，不是身份认证�
 | Gin | Rejected | 功能成熟且可接 WebSocket，但其自有 Context/binding/rendering 对该 RPC carrier 没有比 Echo 更明确的收益 |
 | Fiber v3 | Rejected | 基于 fasthttp；与 `net/http`/`coder/websocket` 需要适配层或更换 WebSocket 栈，增加协议差异面 |
 
-### 10.3 Deferred adapter
+### 10.3 Echo v5 依赖准入记录
+
+核对日期：2026-08-14。
+
+| 项目 | 结论 |
+| --- | --- |
+| 能力 owner | Connection Host；Echo 只存在于 `internal/connection` |
+| 引入原因 | 项目已经排除直接装配 `net/http` router/server；现有依赖没有 listener、route、middleware、集中 error handling 与 graceful lifecycle |
+| 精确版本 | `github.com/labstack/echo/v5 v5.3.1`，发布于 2026-07-21，要求 Go 1.25+ |
+| checksum | module `h1:75maCxkQVGualckLc/5s/ihgpH1a1Dc6AuGWNVNs6bw=`；go.mod `h1:4iEGNQiPPZnkfYpNR/L6fINd3NLiGWUD5+eBotFALas=` |
+| license / notice | Echo 为 MIT；发布物的第三方 license/NOTICE 清单必须保留 LabStack copyright 与许可文本 |
+| 平台 / CGO | Echo 与当前使用路径是 pure Go、无 CGO；本次只在 `darwin/arm64` 验证，其他目标仍服从发布阶段平台 CI gate |
+| 权限面 | 打开网络 listener，读取 HTTP header/body，并通过底层 `net/http` request/response 服务请求；当前路径不启动 subprocess、不读取业务文件、不使用 `unsafe` |
+| 传递依赖 | `golang.org/x/time v0.15.0` 由 Echo middleware 引入；Echo 还把现有 `x/text` MVS 版本提升到 `v0.40.0`，二者均为 BSD-3-Clause；checksum 由 `go.sum` 固定 |
+| 安全核对 | `govulncheck` 在 Go 1.26.5 发现 6 个可达标准库漏洞，均标明由 1.26.6 修复；module 已提升到 Go 1.26.6，复扫结果为 `No vulnerabilities found` |
+| 最小 contract / failure test | `internal/connection/http_test.go` 覆盖 status、envelope、body limit、取消、technical failure；`trust_test.go` 覆盖 Host/Origin/cross-site；真实进程 smoke 已验证 `host.describe` |
+| 替换成本 | HTTP 实现封装在 `internal/connection.HTTPHost` 后；替换 framework 不改变 `connection` 或 `RPCDispatcher`，但必须重跑全部 HTTP/WS differential fixtures |
+
+当前引入 `middleware` 是为了使用 Echo 官方 Recover，并由 custom `HTTPErrorHandler` 保持源协议。未使用 Request Logger、Binder、模板、session、rate limiter 或其他 middleware 能力。
+
+### 10.4 Deferred adapter
 
 | 能力 | 未来候选 | 边界 |
 | --- | --- | --- |
