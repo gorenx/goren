@@ -336,23 +336,33 @@ func (entry *storeEntry) isLive() bool {
 	return entry.live
 }
 
-func (entry *storeEntry) beginAppend() (bool, error) {
+func (entry *storeEntry) beginAppend() (func(Event), error) {
 	entry.mu.Lock()
-	defer entry.mu.Unlock()
 	if !entry.live {
-		return false, nil
+		entry.mu.Unlock()
+		return nil, nil
 	}
 	if entry.appending {
-		return false, errors.New("session: append cannot reenter during event publication")
+		entry.mu.Unlock()
+		return nil, errors.New("session: append cannot reenter during event publication")
 	}
 	entry.appending = true
-	return true, nil
+	entry.mu.Unlock()
+	captured, err := plugin.CaptureEmitFrom(entry.owner.sourceScope, appendedTopic)
+	if err != nil {
+		entry.finishAppend()
+		return nil, err
+	}
+	return func(committed Event) {
+		defer entry.finishAppend()
+		entry.publishAppend(captured, committed)
+	}, nil
 }
 
-func (entry *storeEntry) publishAppend(committed Event) {
+func (entry *storeEntry) publishAppend(captured plugin.EmitSnapshot[AppendNotice], committed Event) {
 	notice := AppendNotice{Session: entry.conversation, Event: cloneEvent(committed)}
 	if err := safelyDispatch(func() error {
-		return plugin.EmitFrom(context.Background(), entry.owner.sourceScope, appendedTopic, notice)
+		return captured.Dispatch(context.Background(), notice)
 	}); err != nil {
 		entry.owner.observerError(fmt.Errorf("session %q event observer: %w", entry.conversation.ID(), err))
 	}

@@ -72,6 +72,21 @@ func (topic EventKey[P, R]) Mode() EventMode {
 // NotifyHandler observes an emit or parallel event.
 type NotifyHandler[P any] func(context.Context, P) error
 
+// EmitSnapshot is one immutable listener set captured before a caller commits
+// the state change that an emit event will announce.
+type EmitSnapshot[P any] struct {
+	callbacks []NotifyHandler[P]
+}
+
+// Dispatch invokes the captured listeners in registration order.
+func (captured EmitSnapshot[P]) Dispatch(requestContext context.Context, payload P) error {
+	var dispatchErr error
+	for _, callback := range captured.callbacks {
+		dispatchErr = errors.Join(dispatchErr, callback(requestContext, payload))
+	}
+	return dispatchErr
+}
+
 // Decision carries an explicit bail marker separately from R's zero value.
 type Decision[R any] struct {
 	Value R
@@ -129,11 +144,7 @@ func Emit[P any](requestContext context.Context, engine *Runtime, topic EventKey
 	if err != nil {
 		return err
 	}
-	var dispatchErr error
-	for _, callback := range callbacks {
-		dispatchErr = errors.Join(dispatchErr, callback(requestContext, payload))
-	}
-	return dispatchErr
+	return (EmitSnapshot[P]{callbacks: callbacks}).Dispatch(requestContext, payload)
 }
 
 // EmitFrom dispatches an emit event through the Runtime that owns sourceScope.
@@ -145,6 +156,23 @@ func EmitFrom[P any](requestContext context.Context, sourceScope *Scope, topic E
 		return err
 	}
 	return Emit(requestContext, engine, topic, payload)
+}
+
+// CaptureEmitFrom resolves one emit listener snapshot through the Runtime that
+// owns sourceScope. The caller may validate, capture, commit, then Dispatch.
+func CaptureEmitFrom[P any](sourceScope *Scope, topic EventKey[P, struct{}]) (EmitSnapshot[P], error) {
+	engine, err := runtimeFromScope(sourceScope)
+	if err != nil {
+		return EmitSnapshot[P]{}, err
+	}
+	if topic.ref.mode != ModeEmit {
+		return EmitSnapshot[P]{}, fmt.Errorf("plugin: event %q uses %s, not emit", topic.ref.name, topic.ref.mode)
+	}
+	callbacks, err := subscriptions[NotifyHandler[P]](engine, topic.ref)
+	if err != nil {
+		return EmitSnapshot[P]{}, err
+	}
+	return EmitSnapshot[P]{callbacks: callbacks}, nil
 }
 
 // Parallel invokes every listener concurrently, waits for all, and joins failures.
@@ -277,7 +305,7 @@ func subscriptions[T any](engine *Runtime, definition eventRef) ([]T, error) {
 	for _, record := range engine.records {
 		// A stopping scope retains each subscription until its own disposer runs.
 		// Earlier LIFO cleanup effects may publish their final lifecycle edges.
-		if record.state != StateActive && record.state != StateStopping || record.pluginScope == nil {
+		if (record.state != StateActive && record.state != StateStopping) || record.pluginScope == nil {
 			continue
 		}
 		record.pluginScope.mu.Lock()
