@@ -393,13 +393,14 @@ contracts/deepseek-harness/
   vectors.json
 
 tests/contract/
-  generate-vectors.ts
   fixtures_test.go
-  client-smoke.ts
-  connection-reconnect.ts
-  http-reference.ts
   source_client_test.go
   source_http_test.go
+  typescript/
+    generate-vectors.ts
+    client-smoke.ts
+    connection-reconnect.ts
+    http-reference.ts
 ```
 
 `manifest.json` 是机器可读的范围与 provenance owner：记录源 commit/version/license/toolchain、HTTP/WS path、message/receipt/frame 判别集合、当前 unary method、privileged method、Excluded 和 Deferred 能力。源 commit 改变时必须显式更新该文件和全部向量，不能自动追随相邻 checkout。
