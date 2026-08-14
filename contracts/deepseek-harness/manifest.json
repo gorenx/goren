@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "repository": "../deepseek-harness",
+    "commit": "47f943859bef60e4160492346772ded9b24f765a",
+    "version": "0.1.0-rc.5",
+    "license": "MIT",
+    "packageManager": "pnpm@11.7.0",
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "included": {
+    "http": {
+      "apiPath": "/api",
+      "respondPath": "/api/respond",
+      "muxEventsPath": "/api/events.mux",
+      "hostEventsPath": "/api/events.host"
+    },
+    "messageTypes": [
+      "client-request",
+      "server-response",
+      "server-request",
+      "client-response"
+    ],
+    "receiptReasons": [
+      "not-pending",
+      "bad-response"
+    ],
+    "unaryMethods": [
+      "host.describe"
+    ],
+    "muxFrameTypes": [
+      "session/event",
+      "session/subscribed",
+      "approval/requested",
+      "approval/resolved",
+      "question/requested",
+      "question/resolved",
+      "session/queue",
+      "session/jobs",
+      "session/projection",
+      "stream/error"
+    ],
+    "hostFrameTypes": [
+      "host/session-added",
+      "host/session-removed",
+      "host/session-status",
+      "host/agent-error",
+      "host/workspace-changed",
+      "host/workspace-removed",
+      "host/workspace-order-changed",
+      "host/archived-sessions-changed",
+      "host/remote-event",
+      "stream/error"
+    ],
+    "privilegedMethods": [
+      "agentPreset.read",
+      "agentPreset.copy",
+      "agentPreset.openDocument",
+      "agentPreset.remove",
+      "host.pickDirectory",
+      "host.openPath",
+      "settings.describe",
+      "settings.openDocument",
+      "settings.update",
+      "settings.replace",
+      "settings.mutate",
+      "credentials.describe",
+      "credentials.set",
+      "credentials.unset",
+      "llm.discoverModels"
+    ]
+  },
+  "excluded": [
+    "Web UI",
+    "browser client implementation",
+    "SDK",
+    "Python",
+    "Typert code generation",
+    "browser Connection implementation",
+    "!!js evaluator"
+  ],
+  "deferred": [
+    "Headless CLI",
+    "ACP stdio adapter",
+    "MCP Client Bridge",
+    "Jobs and Subagent workflow",
+    "unary methods other than host.describe"
+  ]
+}
