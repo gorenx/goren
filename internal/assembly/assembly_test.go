@@ -14,6 +14,7 @@ import (
 	"github.com/gorenx/goren/apiproxy"
 	protocol "github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/plugin"
+	"github.com/gorenx/goren/session"
 )
 
 type probePlugin struct {
@@ -21,7 +22,10 @@ type probePlugin struct {
 }
 
 func (instance probePlugin) Manifest() plugin.Manifest {
-	return plugin.Manifest{Name: "assembly-probe", Requires: []plugin.ServiceRef{serverServiceKey.Ref()}}
+	return plugin.Manifest{
+		Name:     "assembly-probe",
+		Requires: []plugin.ServiceRef{serverServiceKey.Ref(), session.StoreService.Ref()},
+	}
 }
 
 func (instance probePlugin) Apply(requestContext context.Context, pluginScope *plugin.Scope) error {
@@ -34,7 +38,7 @@ func TestCatalogContainsOnlyCurrentConnectionSlice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{ConnectionFactoryName, APIProxyFactoryName}
+	want := []string{ConnectionFactoryName, APIProxyFactoryName, SessionFactoryName}
 	if got := registry.Names(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("factory names = %#v, want %#v", got, want)
 	}
@@ -98,6 +102,13 @@ func TestConnectionCompositionSettlesDependenciesAndServesHostDescribe(t *testin
 			t.Fatal("webServer service is unavailable")
 		}
 		serverAddress = serverEndpoint.Address()
+		sessionStore, found := plugin.Require(pluginScope, session.StoreService)
+		if !found {
+			t.Fatal("sessions service is unavailable")
+		}
+		if _, createErr := sessionStore.Create(requestContext, pluginScope, nil, session.CreateOptions{}); createErr != nil {
+			return createErr
+		}
 		return nil
 	}}
 	if _, err := engine.Load(requestContext, probe); err != nil {
@@ -125,7 +136,8 @@ func TestConnectionCompositionSettlesDependenciesAndServesHostDescribe(t *testin
 	if err := json.Unmarshal(message.Result.Value, &description); err != nil {
 		t.Fatal(err)
 	}
-	if response.StatusCode != http.StatusOK || !message.Result.OK || description.Version != "0.1.0-rc.5" || description.CWD != "/contract-workspace" {
+	if response.StatusCode != http.StatusOK || !message.Result.OK || description.Version != "0.1.0-rc.5" ||
+		description.CWD != "/contract-workspace" || description.AttachedSessions != 1 {
 		t.Fatalf("response = (%d, %#v, %#v)", response.StatusCode, message, description)
 	}
 	if err := engine.Shutdown(requestContext); err != nil {

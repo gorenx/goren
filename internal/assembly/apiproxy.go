@@ -10,6 +10,7 @@ import (
 	protocol "github.com/gorenx/goren/connection"
 	connectionhost "github.com/gorenx/goren/internal/connection"
 	"github.com/gorenx/goren/plugin"
+	"github.com/gorenx/goren/session"
 )
 
 type apiProxyService interface {
@@ -51,15 +52,22 @@ type apiProxyPlugin struct {
 }
 
 func (instance *apiProxyPlugin) Manifest() plugin.Manifest {
-	return plugin.Manifest{Name: APIProxyFactoryName, Provides: []plugin.ServiceRef{apiProxyServiceKey.Ref()}}
+	return plugin.Manifest{
+		Name: APIProxyFactoryName, Provides: []plugin.ServiceRef{apiProxyServiceKey.Ref()},
+		Requires: []plugin.ServiceRef{session.StoreService.Ref()},
+	}
 }
 
 func (instance *apiProxyPlugin) Apply(_ context.Context, pluginScope *plugin.Scope) error {
+	sessionStore, found := plugin.Require(pluginScope, session.StoreService)
+	if !found {
+		return errors.New("assembly: sessions dependency is unavailable")
+	}
 	methods := apiproxy.NewCatalog()
 	descriptionSource := apiproxy.HostDescriptionFunc(func(context.Context) (apiproxy.HostDescription, error) {
 		return apiproxy.HostDescription{
 			Version: instance.settings.Version, CWD: instance.workingDirectory,
-			AttachedSessions: 0, CanOpenPath: false,
+			AttachedSessions: len(sessionStore.List()), CanOpenPath: false,
 		}, nil
 	})
 	if err := apiproxy.RegisterHostDescribe(methods, descriptionSource); err != nil {
