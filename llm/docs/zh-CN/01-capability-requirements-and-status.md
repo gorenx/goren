@@ -18,7 +18,7 @@
 - Model Runtime 提供模型调用、Context 硬上限、输出限制、token 计数、结构化响应、流事件和 usage；
 - Context Manager 选择消息并负责裁剪、压缩、分段和输出预留；
 - Agent、Tools 和 Workflow 不由 `llm` 包实现；
-- Provider wire 字段、兼容差异、认证细节和 transport 生命周期由 adapter 或 composition root 所有。
+- Provider wire 字段、兼容差异和 transport 生命周期由 adapter 所有；全部已实现的内置 adapters 的注册与 Client 装配由 `llm/factory` 所有，不转移给 Agent、Workflow、Knowledge 或其他领域的组合根。
 
 pi 用于发现能力和验证边界，不自动构成 Goren 的需求。LLM-01～LLM-18 是当前已经接受并实现的能力；LLM-19～LLM-22 是原有的按需能力，其中其他 Provider 已明确暂不实现。能力差距只有在产品范围和可观察行为被确认后，才能新增为编号需求。
 
@@ -35,7 +35,7 @@ pi 用于发现能力和验证边界，不自动构成 Goren 的需求。LLM-01�
 
 | ID | 需求 | 功能 | 顺序 | 状态 | 当前证据 |
 | --- | --- | --- | --- | --- | --- |
-| LLM-01 | Model-bound Client 与 API 路由 | 创建 Client 时固定模型并按 API 构造 adapter | 基线 | 已实现并验证 | [`client.go`](../../client.go)、[`registry.go`](../../registry.go)、[`client_test.go`](../../client_test.go) |
+| LLM-01 | Model-bound Client 与 API 路由 | LLM 工厂注册全部已实现 adapter，创建 Client 时固定模型并按 API 选择 adapter | 基线 | 已实现并验证 | [`factory/client.go`](../../factory/client.go)、[`factory/client_internal_test.go`](../../factory/client_internal_test.go)、[`factory/client_test.go`](../../factory/client_test.go)、[`client.go`](../../client.go)、[`registry.go`](../../registry.go) |
 | LLM-02 | 统一流事件与终止协议 | 归一化 text、thinking、tool call、done、error 和 abort | 基线 | 已实现并验证 | [`stream.go`](../../stream.go)、[`client_test.go`](../../client_test.go) |
 | LLM-03 | 通用消息与 Function Tool | 表达文本、图片、reasoning、函数调用和工具结果 | 基线 | 已实现并验证 | [`types.go`](../../types.go)、[`chatcompletions_test.go`](../../adapter/openai/chatcompletions_test.go)、[`responses_test.go`](../../adapter/openai/responses_test.go) |
 | LLM-04 | OpenAI Chat Completions | 调用兼容 Chat Completions 的基础 SSE 接口 | 基线 | 已实现并验证 | [`chatcompletions.go`](../../adapter/openai/chatcompletions.go)、[`chatcompletions_test.go`](../../adapter/openai/chatcompletions_test.go) |
@@ -196,7 +196,8 @@ LLM-15、LLM-16 和 LLM-17 归 adapter 配置与调用策略所有。通用层�
 
 实现边界：
 
-- `Compatibility` 由 OpenAI adapter constructor 注入，覆盖 role、token 字段、stream usage、strict tool、tool-result name、reasoning wire shape、session header 和 tool error 前缀；不进入通用 `Model`；
+- `llm/factory.NewClient` 是其他领域创建内置 LLM Client 的高层入口；它在 LLM 模块内注册全部已实现的 Chat Completions 和 Responses adapters，再由 `llm.NewClient` 根据 `targetModel.API` 选择一个，调用方不创建 Registry，也不承担注册顺序；
+- `Compatibility` 通过 `factory.WithOpenAIAdapterOptions` 传给 OpenAI adapter constructor，覆盖 role、token 字段、stream usage、strict tool、tool-result name、reasoning wire shape、session header 和 tool error 前缀；不进入通用 `Model`；
 - adapter 构造时创建并长期持有 model-bound SDK client；每次调用只创建独立 SDK stream，API key 通过 request option 注入；
 - `Client.Stream` 冻结调用选项并准备一次 Context；adapter 不作为绕过 Client 校验、预算和转换的独立运行入口；
 - Max output 默认值在 `ResolveStreamOptions` 中统一解析，Context 预算和两个 OpenAI API 使用同一个结果；两个 API 的认证、headers、retry、timeout、response capture、session affinity 和 thinking budget 共用一条 transport option 组装路径；
@@ -284,7 +285,7 @@ pi 的 `faux` Provider 是面向测试和示例的 opt-in 测试替身，不是�
 
 - target Model 继续在创建 Client 时注入，不恢复成每次 `Stream` 传入；
 - 不增加仅用于批量卸载注册项的 `sourceId`；
-- 不在 adapter constructor 之外再包装独立 Factory；
+- 不把内置 adapter 注册转移到 Agent、Workflow、Knowledge 或其他领域的组合根；LLM 工厂只负责技术装配，不持有这些领域的用例或状态；
 - `commentary` 建模为 Assistant content phase，不建模为 Agent 生命周期状态；
 - Provider compatibility 不堆成一个包含大量可选字段的通用 `Model`；
 - 不把 Codex WebSocket 连接缓存和资源清理抽象成所有 Client 的通用 Session 生命周期；
@@ -301,7 +302,8 @@ pi 的 `faux` Provider 是面向测试和示例的 opt-in 测试替身，不是�
 4. timeout、retry、cache、session、request ID、hooks、metadata、service tier 等跨 Provider 语义进入 `StreamOptions`，wire 差异进入 adapter `Compatibility`；
 5. Context wire schema 首版固定为 version `1`；
 6. 当前不新增其他 Provider 协议；pi 的额外 adapters 只作参考；
-7. 原 LLM-23～LLM-25 是能力差距，不是已确认需求，已从编号矩阵移除。
+7. 原 LLM-23～LLM-25 是能力差距，不是已确认需求，已从编号矩阵移除；
+8. 全部已实现的内置 adapters 由 `llm/factory.NewClient` 注册，再根据 `Model.API` 选择一个，其他领域不直接操作 Registry。
 
 LLM-19 已明确暂不实现；LLM-20～LLM-22 仍按需决定。第 6.3～6.5 节只保留被移除能力的范围判断，不构成路线图。新增需求时必须先明确调用方、可观察行为和验收条件，再分配新的稳定编号。
 
@@ -311,7 +313,8 @@ LLM-19 已明确暂不实现；LLM-20～LLM-22 仍按需决定。第 6.3～6.5 �
 - `Model` 新增 reasoning 档位、映射、budget 和 service-tier cost 配置；`StreamOptions` 新增调用控制；
 - `StreamOptions.MaxRetries` 是 `*int`：`nil` 表示沿用 SDK 默认值，指向 `0` 表示明确禁用；
 - `Context` 的 JSON 表示改为稳定 versioned schema；持久化方应以 schema version 为兼容边界；
-- `New` 和 `NewResponses` 通过可变参数接收 `AdapterOption`，原有两参数调用保持兼容。
+- `New` 和 `NewResponses` 通过可变参数接收 `AdapterOption`，原有两参数调用保持兼容；
+- `llm/factory.NewClient` 是内置 adapter 的高层工厂；底层 `llm.NewClient` 和 `Registry` 保留给 LLM 扩展、adapter 测试和自定义 runtime，不要求其他领域直接使用。
 
 ## 10. 状态更新规则
 
