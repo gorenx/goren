@@ -14,12 +14,13 @@
 - [06 Connection Host 模块设计与实现](./06-connection-host-module.md)：Connection wire contract、Echo inbound adapter、信任边界、验证所有权、取消与生命周期。
 - [07 API Proxy 模块设计与实现](./07-api-proxy-module.md)：typed method Catalog、Provider 边界、`host.describe` 纵向切片与结果/错误映射。
 - [08 实施进度](./08-implementation-progress.md)：阶段完成度、当前代码/测试证据、验证结果、阻塞项和下一步。
+- [09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)：typed Service/Event、Scope/effect、依赖结算、replacement、Factory Catalog 与 Connection 插件装配。
 
 首次阅读按 `01`–`05` 顺序理解全局设计；进入实现时读取对应模块文档，再从 `08` 查看当前进度。实现单个能力时，先从 `01` 确认范围，再读其拥有契约的文档。DeepSeek Harness 的 Service Definition / Provider / Consumer、事件 owner 和生命周期是默认职责边界；Go 包不机械复制每个 npm 包，但没有明确证据时也不另起一套领域切分。
 
 ## 权威关系
 
-- 本目录 `01`–`05` 拥有全局设计，`06`–`07` 拥有已进入实现的稳定模块设计，`08` 单独拥有日期性实施进度与证据。
+- 本目录 `01`–`05` 拥有全局设计，`06`、`07`、`09` 拥有已进入实现的稳定模块设计，`08` 单独拥有日期性实施进度与证据。
 - 根目录 `README.md` 与 `README.zh-CN.md` 只说明项目背景。
 - TypeScript 的行为证据来自固定 commit；源仓库后续变化不会自动成为 Go 需求。
 - Go 代码证明当前实现，跨语言 fixtures 和测试证明兼容性；设计状态不能代替实现或验收证据。

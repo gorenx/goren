@@ -78,7 +78,7 @@ Session/Host owner
   -> connection.ServerRequest text message
 ```
 
-API Proxy 拥有 frame 的业务来源、baseline/replay 和稳定 interaction `rpcId`；Connection 只从 `payload.type` 补全 wire `method` 并发送，不检查 Session/Host 业务字段。当前静态 composition 在尚无 Session/Host owner 时提供可取消的空事件源，表示真实的零事件状态，不生成虚假 frame。
+API Proxy 拥有 frame 的业务来源、baseline/replay 和稳定 interaction `rpcId`；Connection 只从 `payload.type` 补全 wire `method` 并发送，不检查 Session/Host 业务字段。当前 API Proxy Plugin 在尚无 Session/Host owner 时提供可取消的空事件源，表示真实的零事件状态，不生成虚假 frame。Plugin 通过 `apiProxy` Service 同时提供 `RPCDispatcher` 与 `EventSource` 两个 Connection 所需 facet；Connection 只消费 interface，不依赖具体 Catalog/EventStreams 类型。
 
 ## 5. Mux/Host 应用层 frame union
 

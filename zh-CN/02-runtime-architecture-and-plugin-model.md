@@ -13,7 +13,7 @@ flowchart TB
     API --> AR
     API --> SS
 
-    SERVER["cmd/dsh-server"] --> BOOT["Boot + Typed Config Assembly"]
+    SERVER["cmd/goren"] --> BOOT["Boot + Typed Config Assembly"]
     BOOT --> PR["Plugin Runtime"]
     PR --> SP["Service Registry"]
     PR --> ER["Typed Event Registry"]
@@ -189,7 +189,7 @@ type Disposer func(context.Context) error
 
 Go 标准库 `plugin` 只支持部分平台、不能卸载、race detector 支持不足，而且要求主程序与插件使用完全相同的 toolchain、build tags 和依赖源码。它不满足 Windows、单文件部署、可撤销 lifecycle 和稳定交付要求。
 
-外部扩展的交付方式是：Go module 实现公开 interface，应用装配者在自定义 `cmd/dsh-server` composition root 中显式加入 Factory，再构建新的静态二进制。Runtime 热替换的是已编译实例和 typed config，不是任意新代码。
+外部扩展的交付方式是：Go module 实现公开 interface，应用装配者在自定义 composition root 中显式加入 Factory，再构建新的静态二进制。Runtime 热替换的是已编译实例和 typed config，不是任意新代码。
 
 ## 5. Service Registry
 
@@ -216,11 +216,11 @@ func Require[T any](pluginScope *Scope, key ServiceKey[T]) (T, bool)
 源 Cordis 的 declaration merging 在 Go 中映射为 owner-defined typed key：
 
 ```go
-type EventKey[P any] struct { /* name + mode + type fingerprint */ }
+type EventKey[P, R any] struct { /* name + mode + owner token */ }
 type Waterfall[P, R any] func(context.Context, P, Next[P, R]) (R, error)
 ```
 
-注册和 dispatch 同样使用泛型自由函数。Event key 固定 dispatch mode 和 payload type；相同字符串若以不同 mode 或不同 Go type 重复声明，Runtime 在启动期失败。
+注册和 dispatch 同样使用泛型自由函数。Event key 持有私有、非零大小的 owner token，并通过泛型固定 payload/result type；相同字符串若由其他调用者重新创建，或以不同 mode 再次注册，Runtime 在启动期失败。payload/result 的匹配由 Go 编译器和 typed handler interface 保证，不使用 `reflect.Type`。异构 listener 只在 Runtime 私有表内短暂擦除为 `any`，业务代码不接触断言。
 
 | 源模式 | Go 语义 |
 | --- | --- |
@@ -313,7 +313,7 @@ ServerConfig 只描述部署选择，例如监听地址、trusted hosts、启用
 只在实现相应阶段时创建实际包。以下结构以源 Harness 的职责为默认映射，同时去掉 TypeScript/npm 专属层和明确排除项：
 
 ```text
-cmd/dsh-server/          TypeScript-client-compatible Agent server
+cmd/goren/               TypeScript-client-compatible Agent server
 plugin/                  public Plugin, Factory, Scope, Service/Event keys
 connection/              RPC envelopes, receipts, frame unions and protocol constants
 apiproxy/                included method contracts and core-facing handlers

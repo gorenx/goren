@@ -41,7 +41,7 @@
 
 ### 2.3 composition root
 
-`cmd/goren` 是 composition root：创建 API method Catalog、注册 Provider、创建 Connection Host，并用进程 signal context 控制 Echo 生命周期。Plugin Runtime 进入后，由 Plugin effect/disposer 接管同一 listener 与 handler assembly，不改变下游 contract。
+`cmd/goren` 是 composition root，但不直接构造 API method Catalog 或 Echo Host。它创建静态 Factory Catalog 与 Plugin Runtime，把 typed Plugin declarations 交给 `internal/assembly`，并用进程 signal context 触发 Runtime shutdown。`@deepseek-ai/dsh-client-connection` Plugin 依赖 `apiProxy` Service，通过 effect 同步绑定 listener、启动 Echo，并由 disposer 等待 HTTP/WebSocket cleanup；该装配不改变 Connection 的下游 contract。
 
 ## 3. 依赖方向
 
@@ -166,4 +166,4 @@ API Proxy 已在自身边界把 Provider panic 转为技术错误；Echo Recover
 
 Echo request 的底层 `Context` 原样传给 `RPCDispatcher`。客户端断开或上游取消时，只取消本次 owned operation；Catalog、Provider registry 和共享 Runtime 不随请求关闭。
 
-进程 signal 取消 `cmd/goren` 的 lifecycle context后，Echo 先停止接收新连接；随后 Connection 终止 hijacked WebSocket、取消事件源，并在当前默认五秒 graceful timeout 内等待 source cleanup。该 timeout 后续移入 Connection Plugin typed config；负值在启动前失败。
+进程 signal 取消 `cmd/goren` 的 lifecycle context后，Runtime 先按依赖图停止 Connection Consumer，再停止 API Proxy Provider。Echo 先停止接收新连接；随后 Connection 终止 hijacked WebSocket、取消事件源，并在 typed `gracefulTimeoutMillis`（零值使用 Connection 默认五秒）内等待 source cleanup。负值在 Factory strict decode 阶段失败。
