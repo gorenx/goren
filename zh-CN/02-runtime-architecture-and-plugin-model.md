@@ -134,14 +134,16 @@ Client Protocol Plane 按源职责拆成：
 
 ```text
 Connection Host carrier
-  -> HTTP/WebSocket、trust fence、rpcId、取消、generation
+  -> HTTP/WebSocket、trust fence、rpcId、独立 downlink 取消与 teardown
 API Proxy contract/handlers
   -> method/payload/result、RpcError、MuxFrame/HostFrame
 Core ports
   -> Agent、Session、Interaction、Model directory
+Existing TypeScript ConnectionController
+  -> 双流 readiness、connection generation、断线重连与 backoff
 ```
 
-Connection 和 API Proxy 不拥有 Agent 或 Session。它们把 wire 请求翻译为核心调用，并把 committed event、live state 与 interaction 翻译为 frame。连接断开只能取消该 connection 拥有的 request、stream 和 pending response，不能关闭共享 Runtime。
+Connection 和 API Proxy 不拥有 Agent 或 Session。它们把 wire 请求翻译为核心调用，并把 committed event、live state 与 interaction 翻译为 frame。每条 WebSocket 断开只取消对应的服务端 stream；Host teardown 才关闭全部 owned socket 并等待 source 清理。两条流的 generation/readiness 是现有 TypeScript Client 的职责，Go Host 不增加服务端 generation 状态或跨 socket 耦合。连接断开不能关闭共享 Runtime。
 
 Typert 不是 Protocol Plane 的必要入口。固定源基线中只有部分 auxiliary Remote endpoint 经 Typert interceptor 进入共享 `/api` channel；这些 endpoint 进入 capability matrix 前，不实现通用 Typert Registry/Gateway。
 

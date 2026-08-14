@@ -80,12 +80,13 @@ Existing TypeScript Client
 
 ### Go 交付
 
-- `connection`：四类 message、`RpcResult`、`RpcReceipt`、frame union 和协议常量；
+- `connection`：四类 message、`RpcResult`、`RpcReceipt`、窄 `RPCRequest` 和协议常量；
 - `internal/connection`：Echo v5 + `coder/websocket` Host carrier；
 - `apiproxy`：typed method registry 和一个 deterministic test handler；
+- `apiproxy`：Mux/Host frame union 与 transport-neutral event streams；
 - `POST /api/<method>` 与 `POST /api/respond`；
 - `/api/events.mux` 与 `/api/events.host` 两条 server-to-client WebSocket；
-- connection generation、pending request correlation、取消与 bounded shutdown；
+- 两条独立 stream 的 socket-close cancellation、pending request correlation 与 bounded shutdown；
 - Host allowlist、Origin/Host 一致、cross-site 拒绝与 privileged method loopback policy。
 
 ### Gate
@@ -95,7 +96,8 @@ Existing TypeScript Client
 - Echo 默认 binder/error/404/405/recovery 行为均被协议 adapter 接管，不改变源 status、header 或 JSON envelope；
 - `rpcId` 不重写；`/api/respond` 的 accepted、not-pending、bad-response 均覆盖；
 - WebSocket 客户端上行消息触发 policy close；
-- 任一 socket 断开使 generation 失效，重连不会收到旧 generation frame；
+- 每条 socket 断开取消对应的 Go event source，Host teardown 等待全部 source cleanup；
+- 现有 TypeScript Connection 观察任一 socket 结束后废弃 client-owned generation，重连不会消费旧 socket frame；
 - HTTP 断开取消 owned handler，且不会关闭共享 Runtime；
 - `echo.Context` 不越过 `internal/connection`，也不被异步 Agent/stream goroutine 持有；
 - body budget、慢客户端、stream failure、shutdown 和 goroutine 泄漏有测试；
@@ -269,7 +271,7 @@ Workspace、Filesystem、Shell、PTY、LSP、Sandbox、Guard、Credentials、Att
 | 层 | 目的 | 例子 |
 | --- | --- | --- |
 | Unit | 单一 owner 的状态与错误 | patch、event dispatch、stream parser、Tool policy |
-| Lifecycle | ownership 与释放 | Plugin rollback、connection generation、process cancellation |
+| Lifecycle | ownership 与释放 | Plugin rollback、downlink stream cleanup、process cancellation |
 | Contract | P0 wire/API | TS/Go Connection envelope、HTTP/WS、API payload/frame |
 | Semantic | P1 状态转换 | turn、retry、repair、compaction、permission |
 | API | P2 extension contract | 第三方测试 Plugin 只依赖公共 package |

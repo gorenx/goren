@@ -221,15 +221,15 @@ Connection Host 是首期必需的入站 adapter：
 | JSON | `encoding/json` | 四类 RPC message、`RpcResult`、`RpcReceipt` 和 frame union |
 | Trust fence | custom Echo middleware | Host allowlist、Origin/Host 一致、`Sec-Fetch-Site` cross-site 拒绝和 privileged method loopback |
 
-API Proxy 注册 canonical method 与 typed handler；Connection 只处理 carrier、信封、`rpcId`、pending response、取消和 generation，不包含 Agent/Session 业务。Echo 只存在于 `internal/connection`，adapter 在路由边界把 Echo request 转换为协议输入；API Proxy、Agent、Session 和 Plugin 公共接口不得出现 `echo.Context`。
+API Proxy 注册 canonical method、typed handler、pending interaction 与事件源；Connection 只处理 carrier、信封、`rpcId`、request/stream 取消和 teardown，不包含 Agent/Session 业务。双流 readiness 与 connection generation 由现有 TypeScript Client 拥有，不在 Go Host 增加镜像状态。Echo 只存在于 `internal/connection`，adapter 在路由边界把 Echo request 转换为协议输入；API Proxy、Agent、Session 和 Plugin 公共接口不得出现 `echo.Context`。
 
 协议实现不得使用 Echo 默认 binder 或默认 HTTP error rendering。四类 RPC message 继续由 `encoding/json` strict codec 解码；custom Echo error handler、recovery middleware、404/405 handler 和 body-limit middleware 必须映射到[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)规定的精确 status/envelope/header。handler 使用底层 request context 传播 disconnect cancellation；客户端断开时取消 owned operation，但不得关闭共享 Runtime。
 
-首个 unary slice 已采用 Echo `v5.3.1`：官方 Recover middleware 只兜底 adapter/middleware panic，集中 `HTTPErrorHandler` 负责未提交的 framework error，`StartConfig.Start` 负责带超时的 graceful lifecycle。Envelope 与 payload 不使用 Echo Binder；验证层级和实现边界由[06 Connection Host 模块设计与实现](./06-connection-host-module.md)拥有，当前证据见[08 实施进度](./08-implementation-progress.md)。
+当前 carrier 已采用 Echo `v5.3.1`：官方 Recover middleware 只兜底 adapter/middleware panic，集中 `HTTPErrorHandler` 负责未提交的 framework error，`StartConfig.Start` 负责带超时的 graceful lifecycle。Envelope 与 payload 不使用 Echo Binder；WebSocket bridge 通过 Echo 暴露的底层 request/response 完成 upgrade。验证层级和实现边界由[06 Connection Host 模块设计与实现](./06-connection-host-module.md)拥有，当前证据见[08 实施进度](./08-implementation-progress.md)。
 
 `coder/websocket` 需要底层 HTTP request/response。该访问只封装在 `internal/connection` 的 WebSocket bridge 中，普通 handler 和核心逻辑继续只使用 Echo adapter 提供的协议 DTO 与 `context.Context`。Echo 的 context 不得在 handler 返回后被 goroutine 持有。
 
-WebSocket 不接收客户端业务消息。任一 event socket 断开会使当前 generation 失效；服务端清理该 connection 拥有的 stream 与 pending request。源 `toFetchHandler` 的 SSE 仅用于 in-process 测试 adapter，不作为浏览器网络 fallback。
+WebSocket 不接收客户端业务消息。任一 event socket 断开时，服务端取消该 socket 对应的事件源；现有 TypeScript Client 观察到断开后废弃其当前 generation 并重建两条流。服务端不因单条 socket 断开主动关闭 sibling socket，也不拥有 Client generation。源 `toFetchHandler` 的 SSE 仅用于 in-process 测试 adapter，不作为浏览器网络 fallback。
 
 Trust fence 只减少浏览器跨站和错误暴露风险，不是身份认证。若以后允许非 loopback 部署，必须另行决定 TLS、认证、授权和反向代理信任边界。
 
@@ -263,7 +263,24 @@ Trust fence 只减少浏览器跨站和错误暴露风险，不是身份认证�
 
 当前引入 `middleware` 是为了使用 Echo 官方 Recover，并由 custom `HTTPErrorHandler` 保持源协议。未使用 Request Logger、Binder、模板、session、rate limiter 或其他 middleware 能力。
 
-### 10.4 Deferred adapter
+### 10.4 coder/websocket 依赖准入记录
+
+核对日期：2026-08-14。
+
+| 项目 | 结论 |
+| --- | --- |
+| 能力 owner | Connection Host；只在 `internal/connection` 实现浏览器 Host half 的 WebSocket bridge |
+| 引入原因 | Echo 不提供 RFC 6455 codec；源浏览器 carrier 明确要求两条 WebSocket downlink，标准库没有 WebSocket 实现 |
+| 精确版本 | `github.com/coder/websocket v1.8.15`，module metadata 时间为 2026-06-15，要求 Go 1.23+ |
+| checksum | module `h1:6B2JPeOGlpff2Uz6vOEH1Vzpi0iUz20A+lPVhPHtNUA=`；go.mod `h1:NX3SzP+inril6yawo5CQXx8+fk145lPDC6pumgx0mVg=` |
+| license / notice | ISC；发布物清单必须保留 2025 Coder copyright 与许可文本 |
+| 平台 / CGO | pure Go、无 CGO、无传递依赖；当前只在 `darwin/arm64` 验证，发布仍需多平台 CI |
+| 权限面 | 对已通过 trust fence 的 HTTP/1.1 请求执行 connection hijack，读取控制/客户端 data frame 并写下行 text/close frame；运行时代码不读取 filesystem、不启动 subprocess |
+| 安全核对 | 项目级 `govulncheck` 在引入后复扫为 `No vulnerabilities found`；默认 origin 检查与项目 trust fence 同时保留 |
+| 最小 contract / failure test | `internal/connection/websocket_test.go` 覆盖双流、426、1008、stream failure、trust、断线取消、新连接隔离、等待 cleanup 与 deadline |
+| 替换成本 | 依赖封装在 `webSocketDownlinks`；替换 codec 不改变 `connection.RPCRequest`、API Proxy `EventStreams` 或核心能力，但必须重跑 WebSocket differential fixtures |
+
+### 10.5 Deferred adapter
 
 | 能力 | 未来候选 | 边界 |
 | --- | --- | --- |

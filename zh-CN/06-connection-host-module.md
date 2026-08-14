@@ -23,6 +23,7 @@
 公共 `connection` package 是 transport-independent wire contract owner：
 
 - 拥有四类 RPC message、`RpcResult`、`RpcError`、`RpcReceipt` 和固定 path；
+- 拥有事件流的窄 `RPCRequest` 与补全 `ServerRequest` 的 codec；
 - 执行第一层 envelope parse，保留 `rpcId` mint/echo 规则；
 - 只在 wire erasure 点使用 `json.RawMessage`；
 - 不依赖 Echo、API Proxy、Agent、Session 或具体 Provider；
@@ -32,9 +33,9 @@
 
 `internal/connection` 是 Echo v5 inbound adapter：
 
-- 拥有 listener、route、body budget、content type、HTTP error rendering、panic recovery、trust fence 和 graceful shutdown；
+- 拥有 listener、route、body budget、content type、HTTP error rendering、panic recovery、trust fence、WebSocket pump 和 graceful shutdown；
 - 把 Echo request 映射为 `context.Context`、method、`rpcId` 与 raw payload；
-- 只依赖 consumer-owned `RPCDispatcher`，不导入 API Proxy 的具体类型；
+- 只依赖 consumer-owned `RPCDispatcher` 与 `EventSource`，不导入 API Proxy 的具体类型；
 - 不包含 method payload schema、Host snapshot 组装或 Agent/Session 业务；
 - 不把 `echo.Context` 传给下游或异步 goroutine。
 
@@ -46,12 +47,14 @@
 
 ```text
 TypeScript Client
-  -> HTTP /api carrier
+  -> HTTP /api + WebSocket downlinks
   -> internal/connection
        -> connection wire contract
        -> RPCDispatcher (consumer-owned interface)
             <- apiproxy.Catalog
                  -> host.describe Provider
+       -> EventSource (consumer-owned interface)
+            <- apiproxy.EventStreams
 ```
 
 允许的依赖是 inbound adapter 指向 contract 和消费接口，具体 Provider 只在 composition root 装配。`connection` 与 API Proxy 不知道 Echo；Host Provider 不知道 HTTP。
@@ -79,7 +82,25 @@ POST /api/<method>
 - Provider 返回技术错误或 panic：返回 HTTP `500`；
 - 业务拒绝：仍返回 HTTP `200` 的 `RpcResult` failure。
 
-## 5. 验证所有权：避免重复与冗余
+## 5. WebSocket 下行流程与生命周期
+
+```text
+GET /api/events.mux 或 /api/events.host
+  -> trust fence
+  -> 非 upgrade 请求返回 426
+  -> coder/websocket Accept
+  -> EventSource.Mux 或 EventSource.Host
+  -> connection.EncodeServerRequest
+  -> 一个完整 JSON 文档写入一个 text message
+```
+
+API Proxy 事件源产生窄 `RPCRequest`，其中包含 `rpcId` 与带 `type` 判别的 payload；Connection 从 `payload.type` 补全 `ServerRequest.method`，不理解 Session/Host frame 的业务字段。两条 socket 及其 source context 相互独立，不提供跨流排序。
+
+客户端发送任意 data message 时以 code `1008`、reason `downlink only` 关闭。source 技术失败时，carrier 尽力发送一个 `stream/error` 后正常结束 socket；socket 先丢失时不再发送失败帧。普通 GET 只返回 `426 upgrade required`，不提供 SSE fallback。
+
+单条 socket 断开会取消对应 source，新 socket 创建新的 source context。Go Host 不创建或协调 connection generation；现有 TypeScript `ConnectionController` 观察任一流结束后废弃其 client-owned generation 并重建两条流。Host teardown 先禁止新注册，取消全部 source、终止 active socket，再等待所有 pump 和 source cleanup，等待受 graceful deadline 限制。
+
+## 6. 验证所有权：避免重复与冗余
 
 每类输入只由一个 owner 作语义验证：
 
@@ -94,7 +115,7 @@ POST /api/<method>
 
 JSON 语法检查与 envelope parse 是两个有意分离的阶段：前者决定 HTTP `400`，后者决定 HTTP `200 + bad-request`。除此之外，不再用 Echo Binder、额外 schema middleware 或 Provider 重复解析相同 payload。
 
-## 6. Echo v5 使用决策
+## 7. Echo v5 与 coder/websocket 使用决策
 
 实现选择 `github.com/labstack/echo/v5 v5.3.1`。组装方式遵循 Echo 官方 [Quick Start](https://echo.labstack.com/guide/quickstart/) 与 [Graceful Shutdown](https://echo.labstack.com/cookbook/graceful-shutdown/)：
 
@@ -104,10 +125,12 @@ JSON 语法检查与 envelope parse 是两个有意分离的阶段：前者决�
 - `StartConfig.Start` 接收 lifecycle context 和 bounded graceful timeout；
 - 不使用 Echo Binder 或默认 JSON error rendering。
 
+WebSocket bridge 使用 `github.com/coder/websocket v1.8.15`，只在 `internal/connection` 访问 Echo 暴露的底层 `http.Request`/`http.ResponseWriter`。其默认 same-origin 检查不替代项目 trust fence；前者保护握手，后者还负责 canonical trusted authority 与 `Sec-Fetch-Site` 规则。
+
 API Proxy 已在自身边界把 Provider panic 转为技术错误；Echo Recover 只兜底 adapter/middleware panic。两者保护不同 owner，不对同一业务输入做重复验证。
 
-## 7. 取消与生命周期
+## 8. 取消与生命周期
 
 Echo request 的底层 `Context` 原样传给 `RPCDispatcher`。客户端断开或上游取消时，只取消本次 owned operation；Catalog、Provider registry 和共享 Runtime 不随请求关闭。
 
-进程 signal 取消 `cmd/goren` 的 lifecycle context后，Echo 停止接收新连接，并在当前默认五秒 graceful timeout 内等待在途请求。该 timeout 后续移入 Connection Plugin typed config；负值在启动前失败。
+进程 signal 取消 `cmd/goren` 的 lifecycle context后，Echo 先停止接收新连接；随后 Connection 终止 hijacked WebSocket、取消事件源，并在当前默认五秒 graceful timeout 内等待 source cleanup。该 timeout 后续移入 Connection Plugin typed config；负值在启动前失败。

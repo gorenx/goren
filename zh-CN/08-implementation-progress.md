@@ -20,8 +20,8 @@
 | 阶段 | 执行状态 | 子目标进度 | 最高证据等级 | 当前重点 |
 | --- | --- | --- | --- | --- |
 | 阶段 0：基线与 Contract Freeze | In Progress | 5 Completed / 3 In Progress / 6 Planned | Go Verified | 建立 manifest、fixture generator 与完整首期 contract |
-| 阶段 1：Connection Host Carrier | In Progress | 4 Completed / 9 In Progress / 4 Planned | Go Verified | WebSocket downlink、generation 与真实 pending response |
-| 阶段 2：Plugin Runtime | Planned | 0 Completed / 12 Planned | None | 等待 Connection generation 边界稳定 |
+| 阶段 1：Connection Host Carrier | In Progress | 9 Completed / 7 In Progress / 3 Planned | Go Verified | frame union、TypeScript differential 与真实 pending response |
+| 阶段 2：Plugin Runtime | Planned | 0 Completed / 12 Planned | None | 等待 Connection carrier Gate 完成 |
 | 阶段 3：Session/Agent slice | Planned | 0 Completed / 16 Planned | None | 不先于阶段 1、2 进入实现 |
 | 阶段 4：LLM Contract | Planned | 0 Completed / 13 Planned | None | 既有 `llm` 尚未迁移到 Harness contract |
 | 阶段 5：Session 持久化 | Planned | 0 Completed / 14 Planned | None | 先以内存 Session 验证状态机 |
@@ -37,7 +37,7 @@
 | --- | --- | --- | --- | --- |
 | S0-D01 | 交付 | 固定源 commit、版本、许可证和本地参考路径 | Completed | Implemented：`01` 已固定 `47f943...`、`0.1.0-rc.5` 和 `../deepseek-harness` |
 | S0-D02 | 交付 | 建立 included/excluded surface manifest | Planned | None：文档已有范围，机器可读 manifest 尚未建立 |
-| S0-D03 | 交付 | 提取 RPC message、result、receipt、frame、path 和 stable errors | In Progress | Go Verified：RPC/HTTP 部分已完成；Mux/Host frame 未完成 |
+| S0-D03 | 交付 | 提取 RPC message、result、receipt、frame、path 和 stable errors | In Progress | Go Verified：RPC、path 与窄 stream request 已完成；完整 Mux/Host frame union 未完成 |
 | S0-D04 | 交付 | 提取首期 Host、Session、approval/question 和 respond contract | In Progress | Go Verified：`host.describe` 与 respond envelope 已完成；Session 和 interaction 未完成 |
 | S0-D05 | 交付 | 建立 contract manifest 和可重复 TypeScript fixture generator | Planned | None：`contracts/deepseek-harness/...` 不存在 |
 | S0-D06 | 交付 | 单列完整 Web Client 所需但首期未纳入的能力 | Completed | Implemented：`01` 已区分 Workspace、Settings、Goals 等 Deferred 能力 |
@@ -54,23 +54,25 @@
 
 | ID | 类别 | 子目标 | 执行状态 | 证据或缺口 |
 | --- | --- | --- | --- | --- |
-| S1-D01 | 交付 | `connection` 拥有 RPC、receipt、frame union 和协议常量 | In Progress | Go Verified：RPC、receipt、path 已完成；frame union 未完成 |
-| S1-D02 | 交付 | Echo v5 与 `coder/websocket` Host carrier | In Progress | Go Verified：Echo unary carrier 已完成；WebSocket dependency 和 carrier 未进入 |
+| S1-D01 | 交付 | `connection` 拥有 RPC、receipt、窄 stream request 和协议常量 | Completed | Go Verified：envelope、codec、path 与 `RPCRequest` 已覆盖 |
+| S1-D02 | 交付 | Echo v5 与 `coder/websocket` Host carrier | Completed | Go Verified：HTTP 与真实网络 WebSocket carrier 已覆盖 |
 | S1-D03 | 交付 | typed API method registry 与 deterministic handler | Completed | Go Verified：Catalog 与 `host.describe` 已覆盖 |
 | S1-D04 | 交付 | `POST /api/<method>` 与 `POST /api/respond` | In Progress | Go Verified：unary、bad-response、not-pending 已覆盖；accepted response 未实现 |
-| S1-D05 | 交付 | `/api/events.mux` 与 `/api/events.host` 两条下行 WebSocket | Planned | None |
-| S1-D06 | 交付 | connection generation、pending correlation、取消和 bounded shutdown | In Progress | Go Verified：HTTP request cancellation 和 server graceful shutdown 已存在；generation、pending 和 stream shutdown 未完成 |
+| S1-D05 | 交付 | `/api/events.mux` 与 `/api/events.host` 两条下行 WebSocket | Completed | Go Verified：两条真实 socket 独立发送 text `ServerRequest` |
+| S1-D06 | 交付 | 独立 stream lifecycle、pending correlation、取消和 bounded shutdown | In Progress | Go Verified：HTTP/stream 取消和 bounded teardown 已完成；pending interaction 未完成 |
 | S1-D07 | 交付 | Host/Origin/cross-site fence 与 privileged method loopback policy | In Progress | Go Verified：Host/Origin/cross-site 已覆盖；method policy 未实现 |
+| S1-D08 | 交付 | `apiproxy` 拥有 Mux/Host frame union | Planned | None：当前只有 transport-neutral `EventStreams`，完整业务 frame 类型未提取 |
 | S1-G01 | Gate | TypeScript Connection 可调用 Go `host.describe` | Planned | None：仅真实 Go 进程 curl smoke 已通过 |
 | S1-G02 | Gate | HTTP 路径、载荷和失败状态与源实现一致 | In Progress | Go Verified：Go 侧正负测试已通过；尚无源 differential evidence |
 | S1-G03 | Gate | Echo 默认路由、错误和 recovery 被协议 adapter 接管 | In Progress | Go Verified：404/405 和错误映射已覆盖；Recover 已配置但缺显式 middleware panic test |
 | S1-G04 | Gate | `rpcId`、accepted、not-pending 和 bad-response 全覆盖 | In Progress | Go Verified：correlation、not-pending、bad-response 已覆盖；accepted 未覆盖 |
-| S1-G05 | Gate | WebSocket 客户端上行触发 policy close | Planned | None |
-| S1-G06 | Gate | socket 断开使 generation 失效且隔离旧 frame | Planned | None |
-| S1-G07 | Gate | HTTP 断开只取消 owned handler | Completed | Go Verified：`TestUnaryRequestCancellationReachesProvider` |
-| S1-G08 | Gate | `echo.Context` 不越过 transport boundary | Completed | Go Verified：API Proxy 仅接收 `context.Context` 和 typed request |
-| S1-G09 | Gate | body、慢客户端、stream failure、shutdown 和泄漏有测试 | In Progress | Go Verified：body budget 已覆盖；慢客户端、stream、leak 未覆盖 |
-| S1-G10 | Gate | trust fence 覆盖 loopback、allowlist、Origin mismatch 和 cross-site | Completed | Go Verified：`internal/connection/trust_test.go` |
+| S1-G05 | Gate | WebSocket 客户端上行触发 policy close | Completed | Go Verified：code `1008`、reason `downlink only` |
+| S1-G06 | Gate | socket 断开取消对应 source，Host teardown 等待全部 cleanup | Completed | Go Verified：断线取消、新连接隔离、cleanup wait 与 deadline 已覆盖 |
+| S1-G07 | Gate | TypeScript Client 在任一 socket 结束后重建 generation | Planned | None：仍缺 TypeScript Connection 验证 |
+| S1-G08 | Gate | HTTP 断开只取消 owned handler | Completed | Go Verified：`TestUnaryRequestCancellationReachesProvider` |
+| S1-G09 | Gate | `echo.Context` 不越过 transport boundary | Completed | Go Verified：API Proxy 仅接收 `context.Context` 和 typed request |
+| S1-G10 | Gate | body、慢客户端、stream failure、shutdown 和泄漏有测试 | In Progress | Go Verified：body、stream failure、cleanup wait/deadline 已覆盖；慢客户端和 leak audit 未完成 |
+| S1-G11 | Gate | trust fence 覆盖 loopback、allowlist、Origin mismatch 和 cross-site | Completed | Go Verified：`internal/connection/trust_test.go` |
 
 当前纵向调用链：
 
@@ -81,6 +83,17 @@ POST /api/host.describe
   -> typed API Proxy Catalog
   -> HostDescriptionProvider
   -> ServerResponse
+```
+
+当前下行调用链：
+
+```text
+GET /api/events.mux 或 /api/events.host
+  -> trust fence / WebSocket upgrade
+  -> apiproxy.EventStreams
+  -> connection.RPCRequest
+  -> ServerRequest text message
+  -> socket close cancels only its source
 ```
 
 ## 5. 阶段 2：Plugin Runtime 与 Server Assembly
@@ -230,6 +243,9 @@ POST /api/host.describe
 | request cancellation 传播 | `TestUnaryRequestCancellationReachesProvider` |
 | body budget | `TestBodyLimit` |
 | Host/Origin/cross-site fence | `internal/connection/trust_test.go` |
+| RPCRequest 到 ServerRequest 的 method/payload 补全 | `connection/stream_test.go` |
+| API Proxy mux/host 独立事件源 | `apiproxy/events_test.go` |
+| WebSocket 双流、426、1008、stream error、取消和 teardown | `internal/connection/websocket_test.go` |
 | 命名规则与审计器自测 | `tests/architecture/naming_test.go` |
 
 ## 13. 当前验证结果
@@ -250,7 +266,7 @@ POST /api/host.describe
 
 ## 14. 安全与依赖状态
 
-- Echo 固定为 `github.com/labstack/echo/v5 v5.3.1`，准入记录见[04 Go 技术架构决策与技术选型](./04-go-technology-decisions.md)；
+- Echo 固定为 `github.com/labstack/echo/v5 v5.3.1`，`coder/websocket` 固定为 `v1.8.15`，准入记录见[04 Go 技术架构决策与技术选型](./04-go-technology-decisions.md)；
 - 初次扫描在 Go 1.26.5 发现 6 个可达标准库漏洞；module 已提升到 Go 1.26.6 并复扫通过；
 - 当前 listener 默认只绑定 `127.0.0.1:3080`；非 loopback deployment 的 TLS、认证和授权尚未进入范围；
 - `.env`、credential 和 secret 未进入变更。
@@ -259,9 +275,9 @@ POST /api/host.describe
 
 按阶段 1 矩阵顺序推进：
 
-1. 完成 Mux/Host frame union 与两条 WebSocket downlink；
-2. 建立 connection generation、双 socket readiness、断线失效和 bounded stream shutdown；
-3. 把 `/api/respond` 接到真实 pending approval/question；
-4. 建立 TypeScript-to-Go fixture/differential test。
+1. 完成 Mux/Host frame union；
+2. 建立 TypeScript-to-Go fixture/differential test，覆盖双流 readiness 与 client-owned generation；
+3. 补齐 privileged method loopback policy 和 Echo Recover 显式测试；
+4. 把 `/api/respond` 接到真实 pending approval/question。
 
 在这些子目标完成前不开始 Session/Agent 业务。

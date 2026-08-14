@@ -9,6 +9,7 @@
 主要源证据：
 
 - `packages/host/apiproxy/src/api/rpc-map.ts`：canonical method 到 typed signature 的映射；
+- `packages/host/apiproxy/src/api/events.ts`：`EventsApi`、Mux/Host frame 与窄 `RpcRequest<Frame>`；
 - `packages/host/apiproxy/src/fetch/handler.ts`：第二层 payload parse 与 method invoke；
 - `packages/host/apiproxy/src/api/host.ts`、`host.schema.ts`：`host.describe` contract；
 - `packages/host/apiproxy/src/api-proxy.ts`：Host snapshot 与 interaction pending owner。
@@ -18,6 +19,7 @@
 `apiproxy` 拥有：
 
 - canonical method 的唯一注册点和重复 owner 拒绝；
+- transport-neutral `EventStreams` 与 mux/host 独立 stream handler；
 - `Request[P]`、`Outcome[V]`、`PayloadDecoder[P]`、`UnaryHandler[P,V]`；
 - method payload 的第二层 typed decode；
 - 业务 success/failure 与技术 error/panic 的分离；
@@ -62,6 +64,18 @@ internal/connection
 ```
 
 API Proxy 接收的是 Connection 已验证的 `rpcId`、method 和 raw payload。它不重复检查 content type、JSON 语法、RPC message type 或 path/method；只进行当前 method 的 payload decode。
+
+事件方向保持独立调用链：
+
+```text
+Session/Host owner
+  -> API Proxy EventStreamHandler
+  -> connection.RPCRequest（rpcId + frame payload）
+  -> internal/connection WebSocket carrier
+  -> connection.ServerRequest text message
+```
+
+API Proxy 拥有 frame 的业务来源、baseline/replay 和稳定 interaction `rpcId`；Connection 只从 `payload.type` 补全 wire `method` 并发送，不检查 Session/Host 业务字段。当前静态 composition 在尚无 Session/Host owner 时提供可取消的空事件源，表示真实的零事件状态，不生成虚假 frame。
 
 ## 5. `host.describe` 纵向切片设计
 
