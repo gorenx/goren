@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -284,6 +285,107 @@ func TestWebSocketTeardownHonorsDeadline(t *testing.T) {
 	_ = socket.CloseNow()
 }
 
+func TestWebSocketSlowClientBackpressuresSourceAndShutdownUnblocksWrite(t *testing.T) {
+	t.Parallel()
+	largeEvent, err := wire.NewRPCRequest("large-frame", struct {
+		Type string `json:"type"`
+		Data string `json:"data"`
+	}{Type: "test/large", Data: strings.Repeat("x", 4<<20)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var attemptedWrites atomic.Int32
+	var completedWrites atomic.Int32
+	sourceDone := make(chan struct{})
+	muxStream := func(requestContext context.Context, emit func(wire.RPCRequest) error) error {
+		defer close(sourceDone)
+		for {
+			attemptedWrites.Add(1)
+			if err := emit(largeEvent); err != nil {
+				return nil
+			}
+			completedWrites.Add(1)
+			select {
+			case <-requestContext.Done():
+				return nil
+			default:
+			}
+		}
+	}
+	idleStream := func(requestContext context.Context, _ func(wire.RPCRequest) error) error {
+		<-requestContext.Done()
+		return nil
+	}
+	carrier := webSocketTestHost(t, testEventSource{muxStream: muxStream, hostStream: idleStream})
+	server := httptest.NewServer(carrier)
+	t.Cleanup(server.Close)
+	socket := dialWebSocket(t, server.URL, wire.MuxEventsPath, nil)
+	t.Cleanup(func() { _ = socket.CloseNow() })
+
+	waitForStableBackpressure(t, &attemptedWrites, &completedWrites)
+
+	closeContext, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := carrier.Close(closeContext); err != nil {
+		t.Fatal(err)
+	}
+	awaitSignal(t, sourceDone, "slow-client source cleanup")
+	if completedWrites.Load() >= attemptedWrites.Load() {
+		t.Fatalf("blocked write was reported delivered: attempted %d, completed %d", attemptedWrites.Load(), completedWrites.Load())
+	}
+}
+
+func TestWebSocketRepeatedConnectDisconnectLeavesNoOwnedResources(t *testing.T) {
+	t.Parallel()
+	started := make(chan struct{}, 32)
+	cleaned := make(chan struct{}, 32)
+	var activeSources atomic.Int32
+	idleStream := func(requestContext context.Context, _ func(wire.RPCRequest) error) error {
+		activeSources.Add(1)
+		started <- struct{}{}
+		defer func() {
+			activeSources.Add(-1)
+			cleaned <- struct{}{}
+		}()
+		<-requestContext.Done()
+		return nil
+	}
+	carrier := webSocketTestHost(t, testEventSource{muxStream: idleStream, hostStream: idleStream})
+	server := httptest.NewServer(carrier)
+	t.Cleanup(server.Close)
+
+	for connectionIndex := range 16 {
+		muxSocket := dialWebSocket(t, server.URL, wire.MuxEventsPath, nil)
+		hostSocket := dialWebSocket(t, server.URL, wire.HostEventsPath, nil)
+		awaitSignal(t, started, "mux source start")
+		awaitSignal(t, started, "host source start")
+		_ = muxSocket.CloseNow()
+		_ = hostSocket.CloseNow()
+		awaitSignal(t, cleaned, "mux source cleanup")
+		awaitSignal(t, cleaned, "host source cleanup")
+		if activeSources.Load() != 0 {
+			t.Fatalf("iteration %d retained %d sources", connectionIndex, activeSources.Load())
+		}
+	}
+
+	closeContext, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := carrier.Close(closeContext); err != nil {
+		t.Fatal(err)
+	}
+	carrier.downlinks.mutex.Lock()
+	ownedSockets := len(carrier.downlinks.sockets)
+	carrier.downlinks.mutex.Unlock()
+	if ownedSockets != 0 || activeSources.Load() != 0 {
+		t.Fatalf("owned resources after close: sockets %d, sources %d", ownedSockets, activeSources.Load())
+	}
+	select {
+	case <-carrier.downlinks.done:
+	default:
+		t.Fatal("downlink pump wait did not complete")
+	}
+}
+
 func webSocketTestHost(t *testing.T, source EventSource) *HTTPHost {
 	t.Helper()
 	methods := apiproxy.NewCatalog()
@@ -366,4 +468,21 @@ func awaitValue(t *testing.T, values <-chan int, label string) int {
 		t.Fatal("timeout waiting for " + label)
 		return 0
 	}
+}
+
+func waitForStableBackpressure(t *testing.T, attemptedWrites *atomic.Int32, completedWrites *atomic.Int32) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		attempted := attemptedWrites.Load()
+		completed := completedWrites.Load()
+		if attempted > completed {
+			time.Sleep(25 * time.Millisecond)
+			if attemptedWrites.Load() == attempted && completedWrites.Load() == completed {
+				return
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("source write did not remain backpressured: attempted %d, completed %d", attemptedWrites.Load(), completedWrites.Load())
 }
