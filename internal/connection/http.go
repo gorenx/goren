@@ -25,6 +25,13 @@ type RPCDispatcher interface {
 	Respond(context.Context, connection.ClientResponse) connection.RPCReceipt
 }
 
+// EventSource is the API Proxy event-stream surface consumed by the
+// WebSocket carrier. Each method owns an independent stream lifetime.
+type EventSource interface {
+	Mux(context.Context, func(connection.RPCRequest) error) error
+	Host(context.Context, func(connection.RPCRequest) error) error
+}
+
 // HTTPConfig contains the typed transport configuration owned by Connection.
 type HTTPConfig struct {
 	TrustedHosts    []string
@@ -37,12 +44,16 @@ type HTTPConfig struct {
 type HTTPHost struct {
 	engine          *echo.Echo
 	gracefulTimeout time.Duration
+	downlinks       *webSocketDownlinks
 }
 
 // NewHTTPHost validates transport configuration and assembles the Echo carrier.
-func NewHTTPHost(settings HTTPConfig, dispatch RPCDispatcher) (*HTTPHost, error) {
+func NewHTTPHost(settings HTTPConfig, dispatch RPCDispatcher, streams EventSource) (*HTTPHost, error) {
 	if dispatch == nil {
 		return nil, errors.New("connection: RPC dispatcher is nil")
+	}
+	if streams == nil {
+		return nil, errors.New("connection: event source is nil")
 	}
 	trusted, err := validateTrustedHosts(settings.TrustedHosts)
 	if err != nil {
@@ -70,15 +81,28 @@ func NewHTTPHost(settings HTTPConfig, dispatch RPCDispatcher) (*HTTPHost, error)
 		DisableStackAll:   true,
 		DisablePrintStack: true,
 	}))
+	downlinks := newWebSocketDownlinks(streams)
+	engine.GET(connection.MuxEventsPath, downlinks.muxHandler())
+	engine.GET(connection.HostEventsPath, downlinks.hostHandler())
 	engine.POST(connection.RespondPath, respondHandler(dispatch, maxBodyBytes))
 	engine.POST(connection.APIPath+"/:method", unaryHandler(dispatch, maxBodyBytes))
-	return &HTTPHost{engine: engine, gracefulTimeout: gracefulTimeout}, nil
+	return &HTTPHost{engine: engine, gracefulTimeout: gracefulTimeout, downlinks: downlinks}, nil
 }
 
 // Start serves requests until the lifecycle context is cancelled.
 func (carrier *HTTPHost) Start(lifecycle context.Context, address string) error {
 	settings := echo.StartConfig{Address: address, GracefulTimeout: carrier.gracefulTimeout}
-	return settings.Start(lifecycle, carrier.engine)
+	serveErr := settings.Start(lifecycle, carrier.engine)
+	closeContext, cancel := context.WithTimeout(context.Background(), carrier.gracefulTimeout)
+	defer cancel()
+	return errors.Join(serveErr, carrier.Close(closeContext))
+}
+
+// Close terminates active WebSocket downlinks and waits for their event
+// sources to finish cleanup. Echo's ordinary HTTP shutdown remains owned by
+// StartConfig and the lifecycle passed to Start.
+func (carrier *HTTPHost) Close(closeContext context.Context) error {
+	return carrier.downlinks.close(closeContext)
 }
 
 // ServeHTTP exists for embedding and transport-level tests.

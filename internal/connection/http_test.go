@@ -141,7 +141,7 @@ func TestUnaryRequestCancellationReachesProvider(t *testing.T) {
 	if err := apiproxy.RegisterUnary(methods, "test.wait", apiproxy.DecodeObject[struct{}], operation); err != nil {
 		t.Fatal(err)
 	}
-	carrier, err := NewHTTPHost(HTTPConfig{}, methods)
+	carrier, err := NewHTTPHost(HTTPConfig{}, methods, idleEventSource())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +177,7 @@ func TestBodyLimit(t *testing.T) {
 	if err := apiproxy.RegisterHostDescribe(methods, source); err != nil {
 		t.Fatal(err)
 	}
-	carrier, err := NewHTTPHost(HTTPConfig{MaxBodyBytes: 8}, methods)
+	carrier, err := NewHTTPHost(HTTPConfig{MaxBodyBytes: 8}, methods, idleEventSource())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestTechnicalProviderFailureIsHTTP500(t *testing.T) {
 	if err := apiproxy.RegisterHostDescribe(methods, source); err != nil {
 		t.Fatal(err)
 	}
-	carrier, err := NewHTTPHost(HTTPConfig{}, methods)
+	carrier, err := NewHTTPHost(HTTPConfig{}, methods, idleEventSource())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func configuredHost(t *testing.T) *HTTPHost {
 	if err := apiproxy.RegisterHostDescribe(methods, source); err != nil {
 		t.Fatal(err)
 	}
-	carrier, err := NewHTTPHost(HTTPConfig{}, methods)
+	carrier, err := NewHTTPHost(HTTPConfig{}, methods, idleEventSource())
 	if err != nil {
 		t.Fatal(err)
 	}
