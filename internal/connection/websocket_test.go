@@ -20,41 +20,34 @@ func TestWebSocketDownlinksCarryIndependentStreamsAndCancelSources(t *testing.T)
 	t.Parallel()
 	muxCancelled := make(chan struct{})
 	hostCancelled := make(chan struct{})
-	muxEvent, err := wire.NewRPCRequest("mux-1", struct {
-		Type      string `json:"type"`
-		SessionID string `json:"sessionId"`
-		LastSeq   int    `json:"lastSeq"`
-	}{Type: "session/subscribed", SessionID: "session-1", LastSeq: 4})
-	if err != nil {
-		t.Fatal(err)
-	}
-	hostEvent, err := wire.NewRPCRequest("host-1", struct {
-		Type  string `json:"type"`
-		Event string `json:"event"`
-		Args  []any  `json:"args"`
-	}{Type: "host/remote-event", Event: "commands/change", Args: []any{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	source := testEventSource{
-		muxStream: func(requestContext context.Context, emit func(wire.RPCRequest) error) error {
-			if err := emit(muxEvent); err != nil {
+	streams, err := apiproxy.NewEventStreams(
+		func(requestContext context.Context, emit func(apiproxy.StreamRequest[apiproxy.MuxFrame]) error) error {
+			if err := emit(apiproxy.StreamRequest[apiproxy.MuxFrame]{
+				RPCID: "mux-1", Payload: apiproxy.SessionSubscribedFrame{SessionID: "session-1", LastSeq: 4},
+			}); err != nil {
 				return err
 			}
 			<-requestContext.Done()
 			close(muxCancelled)
 			return nil
 		},
-		hostStream: func(requestContext context.Context, emit func(wire.RPCRequest) error) error {
-			if err := emit(hostEvent); err != nil {
+		func(requestContext context.Context, emit func(apiproxy.StreamRequest[apiproxy.HostFrame]) error) error {
+			if err := emit(apiproxy.StreamRequest[apiproxy.HostFrame]{
+				RPCID: "host-1", Payload: apiproxy.HostRemoteEventFrame{
+					Event: "commands/change", Args: []json.RawMessage{},
+				},
+			}); err != nil {
 				return err
 			}
 			<-requestContext.Done()
 			close(hostCancelled)
 			return nil
 		},
+	)
+	if err != nil {
+		t.Fatal(err)
 	}
-	carrier := webSocketTestHost(t, source)
+	carrier := webSocketTestHost(t, streams)
 	server := startWebSocketTestServer(t, carrier)
 
 	muxSocket := dialWebSocket(t, server.URL, wire.MuxEventsPath, nil)

@@ -11,11 +11,19 @@ import (
 
 func TestEventStreamsKeepMuxAndHostIndependent(t *testing.T) {
 	t.Parallel()
-	muxEvent := connection.RPCRequest{RPCID: "mux"}
-	hostEvent := connection.RPCRequest{RPCID: "host"}
+	muxItem := apiproxy.StreamRequest[apiproxy.MuxFrame]{
+		RPCID: "mux", Payload: apiproxy.SessionSubscribedFrame{SessionID: "session-1", LastSeq: 4},
+	}
+	hostItem := apiproxy.StreamRequest[apiproxy.HostFrame]{
+		RPCID: "host", Payload: apiproxy.HostSessionStatusFrame{SessionID: "session-1", Running: true},
+	}
 	streams, err := apiproxy.NewEventStreams(
-		func(_ context.Context, emit func(connection.RPCRequest) error) error { return emit(muxEvent) },
-		func(_ context.Context, emit func(connection.RPCRequest) error) error { return emit(hostEvent) },
+		func(_ context.Context, emit func(apiproxy.StreamRequest[apiproxy.MuxFrame]) error) error {
+			return emit(muxItem)
+		},
+		func(_ context.Context, emit func(apiproxy.StreamRequest[apiproxy.HostFrame]) error) error {
+			return emit(hostItem)
+		},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -34,7 +42,10 @@ func TestEventStreamsKeepMuxAndHostIndependent(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if muxReceived.RPCID != "mux" || hostReceived.RPCID != "host" {
+	if muxReceived.RPCID != "mux" || string(muxReceived.Payload) != `{"type":"session/subscribed","sessionId":"session-1","lastSeq":4}` {
+		t.Fatalf("mux = %#v", muxReceived)
+	}
+	if hostReceived.RPCID != "host" || string(hostReceived.Payload) != `{"type":"host/session-status","sessionId":"session-1","running":true}` {
 		t.Fatalf("mux = %#v, host = %#v", muxReceived, hostReceived)
 	}
 }
@@ -43,8 +54,10 @@ func TestEventStreamsPreserveSourceFailure(t *testing.T) {
 	t.Parallel()
 	sourceFailure := errors.New("source failed")
 	streams, err := apiproxy.NewEventStreams(
-		func(context.Context, func(connection.RPCRequest) error) error { return sourceFailure },
-		func(context.Context, func(connection.RPCRequest) error) error { return nil },
+		func(context.Context, func(apiproxy.StreamRequest[apiproxy.MuxFrame]) error) error {
+			return sourceFailure
+		},
+		func(context.Context, func(apiproxy.StreamRequest[apiproxy.HostFrame]) error) error { return nil },
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -56,11 +69,38 @@ func TestEventStreamsPreserveSourceFailure(t *testing.T) {
 
 func TestEventStreamsRequireBothProviders(t *testing.T) {
 	t.Parallel()
-	idle := func(context.Context, func(connection.RPCRequest) error) error { return nil }
-	if _, err := apiproxy.NewEventStreams(nil, idle); err == nil {
+	idleMux := func(context.Context, func(apiproxy.StreamRequest[apiproxy.MuxFrame]) error) error { return nil }
+	idleHost := func(context.Context, func(apiproxy.StreamRequest[apiproxy.HostFrame]) error) error { return nil }
+	if _, err := apiproxy.NewEventStreams(nil, idleHost); err == nil {
 		t.Fatal("nil mux handler was accepted")
 	}
-	if _, err := apiproxy.NewEventStreams(idle, nil); err == nil {
+	if _, err := apiproxy.NewEventStreams(idleMux, nil); err == nil {
 		t.Fatal("nil host handler was accepted")
+	}
+}
+
+func TestEventStreamsRejectInvalidTypedFrameBeforeCarrier(t *testing.T) {
+	t.Parallel()
+	streams, err := apiproxy.NewEventStreams(
+		func(_ context.Context, emit func(apiproxy.StreamRequest[apiproxy.MuxFrame]) error) error {
+			return emit(apiproxy.StreamRequest[apiproxy.MuxFrame]{
+				RPCID: "bad", Payload: apiproxy.QuestionRequestedFrame{SessionID: "session-1", Questions: nil},
+			})
+		},
+		func(context.Context, func(apiproxy.StreamRequest[apiproxy.HostFrame]) error) error { return nil },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	err = streams.Mux(context.Background(), func(connection.RPCRequest) error {
+		called = true
+		return nil
+	})
+	if err == nil {
+		t.Fatal("invalid typed frame was accepted")
+	}
+	if called {
+		t.Fatal("carrier emit was called for an invalid frame")
 	}
 }

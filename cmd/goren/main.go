@@ -9,7 +9,6 @@ import (
 	"syscall"
 
 	"github.com/gorenx/goren/apiproxy"
-	"github.com/gorenx/goren/connection"
 	connectionhost "github.com/gorenx/goren/internal/connection"
 )
 
@@ -37,11 +36,15 @@ func main() {
 		fmt.Fprintln(os.Stderr, "register host.describe:", err)
 		os.Exit(1)
 	}
-	idleStream := func(requestContext context.Context, _ func(connection.RPCRequest) error) error {
+	idleMuxStream := func(requestContext context.Context, _ func(apiproxy.StreamRequest[apiproxy.MuxFrame]) error) error {
 		<-requestContext.Done()
 		return nil
 	}
-	eventStreams, err := apiproxy.NewEventStreams(idleStream, idleStream)
+	idleHostStream := func(requestContext context.Context, _ func(apiproxy.StreamRequest[apiproxy.HostFrame]) error) error {
+		<-requestContext.Done()
+		return nil
+	}
+	eventStreams, err := apiproxy.NewEventStreams(idleMuxStream, idleHostStream)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "create API event streams:", err)
 		os.Exit(1)
