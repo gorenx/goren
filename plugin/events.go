@@ -136,6 +136,17 @@ func Emit[P any](requestContext context.Context, engine *Runtime, topic EventKey
 	return dispatchErr
 }
 
+// EmitFrom dispatches an emit event through the Runtime that owns sourceScope.
+// Long-lived services retain their providing scope instead of receiving a
+// second Runtime reference solely for event publication.
+func EmitFrom[P any](requestContext context.Context, sourceScope *Scope, topic EventKey[P, struct{}], payload P) error {
+	engine, err := runtimeFromScope(sourceScope)
+	if err != nil {
+		return err
+	}
+	return Emit(requestContext, engine, topic, payload)
+}
+
 // Parallel invokes every listener concurrently, waits for all, and joins failures.
 func Parallel[P any](requestContext context.Context, engine *Runtime, topic EventKey[P, struct{}], payload P) error {
 	if topic.ref.mode != ModeParallel {
@@ -158,12 +169,30 @@ func Parallel[P any](requestContext context.Context, engine *Runtime, topic Even
 	return errors.Join(errorsByIndex...)
 }
 
+// ParallelFrom dispatches a parallel event through the Runtime that owns sourceScope.
+func ParallelFrom[P any](requestContext context.Context, sourceScope *Scope, topic EventKey[P, struct{}], payload P) error {
+	engine, err := runtimeFromScope(sourceScope)
+	if err != nil {
+		return err
+	}
+	return Parallel(requestContext, engine, topic, payload)
+}
+
 // Serial invokes listeners in order and stops at the first explicit bail.
 func Serial[P, R any](requestContext context.Context, engine *Runtime, topic EventKey[P, R], payload P) (Decision[R], error) {
 	if topic.ref.mode != ModeSerial {
 		return Decision[R]{}, fmt.Errorf("plugin: event %q uses %s, not serial", topic.ref.name, topic.ref.mode)
 	}
 	return dispatchDecision(requestContext, engine, topic, payload)
+}
+
+// SerialFrom dispatches a serial event through the Runtime that owns sourceScope.
+func SerialFrom[P, R any](requestContext context.Context, sourceScope *Scope, topic EventKey[P, R], payload P) (Decision[R], error) {
+	engine, err := runtimeFromScope(sourceScope)
+	if err != nil {
+		return Decision[R]{}, err
+	}
+	return Serial(requestContext, engine, topic, payload)
 }
 
 // Bail synchronously invokes listeners in order and stops at the first explicit bail.
@@ -240,7 +269,9 @@ func subscriptions[T any](engine *Runtime, definition eventRef) ([]T, error) {
 	}
 	registered := make([]typedSubscription[T], 0)
 	for _, record := range engine.records {
-		if record.state != StateActive || record.pluginScope == nil {
+		// A stopping scope retains each subscription until its own disposer runs.
+		// Earlier LIFO cleanup effects may publish their final lifecycle edges.
+		if record.state != StateActive && record.state != StateStopping || record.pluginScope == nil {
 			continue
 		}
 		record.pluginScope.mu.Lock()
@@ -271,4 +302,11 @@ func subscriptions[T any](engine *Runtime, definition eventRef) ([]T, error) {
 
 func sameEventRef(left eventRef, right eventRef) bool {
 	return left.name == right.name && left.mode == right.mode && left.token == right.token
+}
+
+func runtimeFromScope(sourceScope *Scope) (*Runtime, error) {
+	if sourceScope == nil || sourceScope.owner == nil {
+		return nil, errors.New("plugin: dispatch from nil scope")
+	}
+	return sourceScope.owner, nil
 }

@@ -52,6 +52,29 @@
       "host/remote-event",
       "stream/error"
     ],
+    "session": {
+      "formatVersion": 0,
+      "eventEnvelopeFields": [
+        "type",
+        "seq",
+        "time",
+        "data",
+        "sourceEventSeqs",
+        "surfaceOp",
+        "ignorable"
+      ],
+      "surfaceEventTypes": [
+        "user/message",
+        "assistant/message",
+        "tool/result"
+      ],
+      "lifecycleEvents": [
+        "session/created",
+        "session/disposed",
+        "session/event",
+        "session/flush"
+      ]
+    },
     "privilegedMethods": [
       "agentPreset.read",
       "agentPreset.copy",
