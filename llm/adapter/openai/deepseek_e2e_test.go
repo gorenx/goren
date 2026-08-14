@@ -2,7 +2,6 @@ package openai_test
 
 import (
 	"context"
-	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -10,14 +9,15 @@ import (
 
 	"github.com/gorenx/goren/llm"
 	openaiadapter "github.com/gorenx/goren/llm/adapter/openai"
+	llmfactory "github.com/gorenx/goren/llm/factory"
 )
 
 func TestDeepSeekStreamingE2E(t *testing.T) {
 	if os.Getenv("GOREN_E2E_DEEPSEEK") != "1" {
 		t.Skip("set GOREN_E2E_DEEPSEEK=1 to run the real DeepSeek test")
 	}
-	apiKey := os.Getenv("DEEPSEEK_API_KEY")
-	if apiKey == "" {
+	credential := os.Getenv("DEEPSEEK_API_KEY")
+	if credential == "" {
 		t.Fatal("DEEPSEEK_API_KEY is required")
 	}
 	baseURL := strings.TrimRight(os.Getenv("DEEPSEEK_API_BASE_URL"), "/")
@@ -41,21 +41,13 @@ func TestDeepSeekStreamingE2E(t *testing.T) {
 		ContextWindow:   1_000_000,
 		MaxOutputTokens: 32,
 	}
-	adapterRegistry := llm.NewRegistry()
-	err := adapterRegistry.Register(llm.APIOpenAICompletions, func(registeredModel llm.Model) (llm.APIAdapter, error) {
-		return openaiadapter.New(
-			registeredModel,
-			http.DefaultClient,
-			openaiadapter.WithCompatibility(openaiadapter.Compatibility{
-				MaxTokensField:  openaiadapter.MaxTokensLegacy,
-				ReasoningFormat: openaiadapter.ReasoningFormatDeepSeek,
-			}),
-		)
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	llmClient, err := llm.NewClient(targetModel, adapterRegistry, nil)
+	llmClient, err := llmfactory.NewClient(
+		targetModel,
+		llmfactory.WithOpenAIAdapterOptions(openaiadapter.WithCompatibility(openaiadapter.Compatibility{
+			MaxTokensField:  openaiadapter.MaxTokensLegacy,
+			ReasoningFormat: openaiadapter.ReasoningFormatDeepSeek,
+		})),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +58,7 @@ func TestDeepSeekStreamingE2E(t *testing.T) {
 		ctx,
 		llm.Context{Messages: []llm.Message{llm.NewTextMessage("Reply with exactly GOREN_E2E_OK and nothing else.")}},
 		llm.StreamOptions{
-			APIKey:          apiKey,
+			APIKey:          credential,
 			Reasoning:       llm.ReasoningOff,
 			Temperature:     floatPointer(0),
 			MaxOutputTokens: 32,

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/gorenx/goren/llm"
 	openaiadapter "github.com/gorenx/goren/llm/adapter/openai"
+	llmfactory "github.com/gorenx/goren/llm/factory"
 )
 
 func TestResponsesStreamsReasoningAndTextAndMapsRequest(t *testing.T) {
@@ -189,8 +189,8 @@ func TestResponsesStreamsReasoningAndTextAndMapsRequest(t *testing.T) {
 	if !ok || len(tools) != 1 || tools[0].(map[string]any)["strict"] != true {
 		t.Fatalf("got tools %#v", body["tools"])
 	}
-	toolChoice, ok := body["tool_choice"].(map[string]any)
-	if !ok || toolChoice["type"] != "function" || toolChoice["name"] != "lookup" {
+	selectedTool, ok := body["tool_choice"].(map[string]any)
+	if !ok || selectedTool["type"] != "function" || selectedTool["name"] != "lookup" {
 		t.Fatalf("got tool choice %#v", body["tool_choice"])
 	}
 	assertResponsesInput(t, body["input"])
@@ -373,8 +373,8 @@ func assertResponsesInput(t *testing.T, rawInput any) {
 	if item(0)["role"] != "developer" || item(0)["content"] != "Return JSON." {
 		t.Fatalf("got system input %#v", item(0))
 	}
-	userContent, ok := item(1)["content"].([]any)
-	if !ok || len(userContent) != 2 || userContent[0].(map[string]any)["type"] != "input_text" || userContent[1].(map[string]any)["type"] != "input_image" {
+	userParts, ok := item(1)["content"].([]any)
+	if !ok || len(userParts) != 2 || userParts[0].(map[string]any)["type"] != "input_text" || userParts[1].(map[string]any)["type"] != "input_image" {
 		t.Fatalf("got user input %#v", item(1))
 	}
 	if item(2)["type"] != "reasoning" || item(2)["id"] != "rs-prior" {
@@ -403,16 +403,7 @@ func assertResponsesInput(t *testing.T, rawInput any) {
 
 func newResponsesClient(t *testing.T, targetModel llm.Model, httpClient *http.Client) *llm.Client {
 	t.Helper()
-	adapterRegistry := llm.NewRegistry()
-	if err := adapterRegistry.Register(
-		llm.APIOpenAIResponses,
-		func(targetModel llm.Model) (llm.APIAdapter, error) {
-			return openaiadapter.NewResponses(targetModel, httpClient)
-		},
-	); err != nil {
-		t.Fatal(err)
-	}
-	llmClient, err := llm.NewClient(targetModel, adapterRegistry, nil)
+	llmClient, err := llmfactory.NewClient(targetModel, llmfactory.WithHTTPClient(httpClient))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -430,13 +421,4 @@ func responsesModel(baseURL string) llm.Model {
 		ContextWindow:   16_384,
 		MaxOutputTokens: 1_024,
 	}
-}
-
-func ExampleNewResponses() {
-	adapterRegistry := llm.NewRegistry()
-	_ = adapterRegistry.Register(llm.APIOpenAIResponses, func(targetModel llm.Model) (llm.APIAdapter, error) {
-		return openaiadapter.NewResponses(targetModel, nil)
-	})
-	fmt.Println(adapterRegistry.APIs())
-	// Output: [openai-responses]
 }
