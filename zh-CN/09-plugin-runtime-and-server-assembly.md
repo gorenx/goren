@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有 `plugin` 与 `internal/assembly` 的职责、Go 类型模型、上下游流程和生命周期。全局依赖方向与 Child Scope 使用规则由[02 Go 运行时架构与插件模型](./02-runtime-architecture-and-plugin-model.md)拥有；System Prompt 的 overlay 消费语义由[11 System Prompt Registry 与 Assembly 模块设计](./11-system-prompt-registry-and-assembly.md)拥有；当前实施证据只见[08 实施进度](./08-implementation-progress.md)。
+本文拥有 `plugin` 与 `internal/assembly` 的职责、Go 类型模型、上下游流程和生命周期。全局依赖方向与 Child Scope 使用规则由[02 Go 运行时架构与插件模型](./02-runtime-architecture-and-plugin-model.md)拥有；System Prompt 与 Tools 的消费语义分别由[11 System Prompt Registry 与 Assembly 模块设计](./11-system-prompt-registry-and-assembly.md)和[12 Tools Registry 与执行流水线模块设计](./12-tools-registry-and-execution-pipeline.md)拥有；当前实施证据只见[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 源职责映射
 
@@ -19,6 +19,7 @@
 | `packages/host/apiproxy` | `internal/assembly` 的 API Proxy Plugin | 提供 `apiProxy` Service |
 | `packages/client/connection` 的 Host half | `internal/assembly` 的 Connection Plugin | 消费 `apiProxy`，挂载 HTTP/WebSocket carrier |
 | `packages/core/system-prompt` | `internal/assembly` 的 System Prompt Plugin | 提供 `systemPrompt` Service |
+| `packages/core/tools` | `internal/assembly` 的 Tools Plugin | 消费 `systemPrompt`，提供 `tools` Service 并注册 schema projection |
 
 Go 不复制 Proxy property lookup、decorator、declaration merging、npm module loader、Profile evaluator 或 `!!js`。这些机制在 Go 中分别由显式 interface、泛型自由函数、静态 Catalog 和 typed config 取代；Service/Provider/Consumer、事件 mode 和 effect 生命周期不因语言变化而合并。
 
@@ -43,7 +44,7 @@ Go 不复制 Proxy property lookup、decorator、declaration merging、npm modul
 - 当前可实例化 Factory 的白名单；
 - process-derived `Environment` 与 Factory 输入 `PluginSpec`；
 - 当前 included server 的默认 declaration 集合；
-- Session Provider、System Prompt Provider、API Proxy Consumer/Provider 与 Connection Consumer Plugin；
+- Session Provider、System Prompt Provider、Tools Consumer/Provider、API Proxy Consumer/Provider 与 Connection Consumer Plugin；
 - 多 Plugin 启动失败时的 composition rollback。
 
 它不重新解释 HTTP/RPC contract，也不把 Excluded/Deferred capability 注册为占位 Factory。外部扩展通过自定义 composition root 静态加入公开 Factory，而不是修改 Runtime 内部 map。
@@ -132,6 +133,8 @@ Runtime shutdown 禁止新 Load，按依赖图的反向方向停止 Consumer 后
 
 需要先改变状态再发通知的 owner 可在 commit 前通过 `CaptureEmitFrom` 固定 `EmitSnapshot`，commit 后再调用 `Dispatch`。这样 listener 的并发注册/卸载不会改变一次已经开始的 publication；snapshot 仍保存精确 `NotifyHandler[P]`，不引入反射或无类型 callback。
 
+`EmitFrom(sourceScope, key, payload)` 从长期 Service 的 Scope 找到 Runtime 并通知全部存活 listener；`EmitScopedFrom(sourceScope, key, selectedKey, payload)` 仍从同一 Service Scope 找 Runtime，但只通知 global、`selectedKey` 祖先和 exact listener。Tools 因而用前者发布可能影响所有 Agent view 的 `tools/change`，用后者发布只属于一次 Agent scope 的 `tools/result`。`sourceScope` 表示事件发布者所在 Runtime，`selectedKey` 表示本次业务 view，不是两个 Service 实例。
+
 ## 7. Factory Catalog 与 typed config
 
 `Factory[C]` 的能力 owner 定义命名配置 `C`、strict decoder、cross-field validation 与构造函数。Catalog 只保存已注册的 decoder/constructor closure；`json.RawMessage` 在 `Catalog.Create` 后不再进入 Plugin。
@@ -150,13 +153,14 @@ shipped Catalog 当前只有：
 - `@deepseek-ai/dsh-host-apiproxy`；
 - `@deepseek-ai/dsh-client-connection` 的 Host half；
 - `@deepseek-ai/dsh-session` 的内存 Store Provider；
-- `@deepseek-ai/dsh-system-prompt` 的 Registry/Assembly Provider。
+- `@deepseek-ai/dsh-system-prompt` 的 Registry/Assembly Provider；
+- `@deepseek-ai/dsh-tools` 的 Native Registry/Execution Provider。
 
-其中 Connection Factory 虽然沿用源 npm canonical name，但只实现服务端 Host carrier，不包含 `WebApiClient`、`ConnectionController` 或浏览器代码。Web UI、SDK、ACP、MCP、Typert 与其他 Deferred 能力不在 Catalog 或依赖闭包。
+其中 Connection Factory 虽然沿用源 npm canonical name，但只实现服务端 Host carrier，不包含 `WebApiClient`、`ConnectionController` 或浏览器代码。Web UI、SDK、Tools Code Mode、ACP、MCP、Typert 与其他 Deferred 能力不在 Catalog 或依赖闭包。
 
 ## 8. 当前 server 组合流程
 
-默认 declarations 按 Connection、API Proxy、System Prompt、Session 声明。Connection/API Proxy/Session 链故意采用 Consumer-before-Provider 顺序，以证明 Runtime 按 Service graph 而不是文件顺序工作；System Prompt 无当前上游依赖，可独立激活：
+默认 declarations 按 Connection、API Proxy、System Prompt、Tools、Session 声明。Connection/API Proxy/Session 链故意采用 Consumer-before-Provider 顺序，以证明 Runtime 按 Service graph 而不是文件顺序工作；Tools 在 System Prompt 激活后消费其 Service：
 
 ```text
 cmd/goren
@@ -168,6 +172,11 @@ cmd/goren
   -> System Prompt Factory.Create + Apply
        -> promptStore + promptAssembler + built-in sections
        -> Provide(systemPrompt)
+  -> Tools Factory.Create + Apply
+       -> Require(systemPrompt)
+       -> toolStore + toolRegistry
+       -> register ToolProvider projection with System Prompt
+       -> Provide(tools)
   -> Session Factory.Create + Apply
        -> MemoryStore + Provide(sessions)
   -> Runtime settles API Proxy
@@ -186,6 +195,6 @@ cmd/goren
 
 ## 9. 隔离与后续能力进入
 
-当前 Scope 已表达 Plugin instance ownership、effect-owned Child Scope、opaque lineage 和 scoped listener filter；System Prompt 是第一个真实 Consumer。Agent instance 后续直接复用它。当前尚未实现同一 Service 的 label isolation；只有出现真实多实例 resolution Consumer 时才扩展现有 Service resolution，不得另用 `context.Context.Value`、全局 map 或第二套 Registry。
+当前 Scope 已表达 Plugin instance ownership、effect-owned Child Scope、opaque lineage 和 scoped listener filter；System Prompt 与 Tools 已直接复用它完成 overlay、restriction 与 scoped event。Agent instance 后续继续复用同一 identity。当前尚未实现同一 Service 的 label isolation；只有出现真实多实例 resolution Consumer 时才扩展现有 Service resolution，不得另用 `context.Context.Value`、全局 map 或第二套 Registry。
 
 新能力进入 shipped composition 时必须同时提供 canonical Factory name、owner-defined typed config、Manifest dependencies、全部 effect disposer、失败 rollback 测试和 Excluded/Deferred 审计。Storage、Agent、Session 或 Tool 业务不能放入 assembly Factory 以绕开其能力 owner。

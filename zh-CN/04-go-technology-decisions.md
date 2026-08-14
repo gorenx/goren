@@ -120,9 +120,11 @@ JSON Schema 复用仓库已有的 [`github.com/santhosh-tekuri/jsonschema/v6`](h
 
 - API Proxy payload 和 Tool 输入在进入 use case 前校验；
 - Factory config 由 owner-defined typed decoder 和 validation 在 `New` 前校验；
-- JSON Schema 仅在 API、Tool 或外部配置工具确有机器可读 contract 时编译并缓存，不替代 Go 类型；
+- JSON Schema 仅在 API、Tool 或外部配置工具确有机器可读 contract 时编译并缓存，不替代 Go 类型；Tool 的输入与输出 schema 在注册时各编译一次，执行期只验证 value；
 - schema URL、ref loader 和最大输入受限，不能任意访问网络或本地文件；
 - Go typed decode 与 schema validation 都必须成功，二者职责不能互相替代。
+
+Tool contract 允许任意 JSON shape，因此参数、canonical value、schema 和 presentation metadata 在这条协议边界使用经过 lossless validation/clone 的 `json.RawMessage`。这不扩展为 `map[string]any` 业务模型：Definition、policy decision、callback、execution 和 result 都使用具体 interface；异构行为表不保存 `any` 或反射调用。完整约束见[12 Tools Registry 与执行流水线模块设计](./12-tools-registry-and-execution-pipeline.md)。
 
 不引入第二个 JSON Schema engine，除非源 schema 使用当前库无法表达且有兼容 fixture 证明。
 

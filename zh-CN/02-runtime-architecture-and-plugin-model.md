@@ -277,7 +277,7 @@ active --replacement--> starting(candidate) -> commit -> stopping(old)
 
 每次 Plugin `Apply` 获得 Root Plugin Scope；其 `Target()` 是 global zero key。`Scope.Child(label)` 创建 effect-owned Child Scope 和 opaque `ScopeKey`，记录 parent lineage，并继承所属 Plugin 已声明的 Service dependency。Child 不能提供 root Service；显式 disposer 或 parent teardown 会释放其全部注册。
 
-System Prompt 已是 Child Scope 的首个真实 Consumer：named contribution 按 global、远祖先到近 scope shadow，scope-filtered waterfall 接受 global、祖先与 exact listener，排除 sibling 和 descendant listener。Agent Provider 后续直接使用这一 primitive 挂载 preset Prompt、Tools、Model selection 和局部 policy，不能另建第二套 Registry。具体规则由[11 System Prompt Registry 与 Assembly 模块设计](./11-system-prompt-registry-and-assembly.md)拥有。
+System Prompt 与 Tools 已是 Child Scope 的真实 Consumer：前者以 global、远祖先到近 scope 的 named shadow 组装 Prompt，后者用同一 lineage 计算 Tool shadow、restriction、guard 与 scoped execution/result event；两者的 scope-filtered listener 都只接受 global、祖先和 exact scope，排除 sibling 与 descendant。Agent Provider 后续直接使用这一 primitive 挂载 preset Prompt、Tools、Model selection 和局部 policy，不能另建第二套 Registry。具体规则分别由[11 System Prompt Registry 与 Assembly 模块设计](./11-system-prompt-registry-and-assembly.md)和[12 Tools Registry 与执行流水线模块设计](./12-tools-registry-and-execution-pipeline.md)拥有。
 
 当前 Child Scope 只提供 contribution ownership、lineage 和 Event routing，不承诺 `isolate(serviceKey, label)` 的 Service namespace 语义。只有真实 Consumer 需要同一 Service 的多实例 resolution 时才扩展现有 Scope；不得用预设 label 规则推测未来行为。
 

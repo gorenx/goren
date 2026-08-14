@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有 `systemprompt` 的贡献注册、scope overlay、assembly、工具 schema 排序、变量插值和渲染边界。通用 Child Scope、typed Event 与 effect 生命周期由[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)拥有；Harness LLM 公共词汇由[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)拥有；实施状态与验证证据只见[08 实施进度](./08-implementation-progress.md)。
+本文拥有 `systemprompt` 的贡献注册、scope overlay、assembly、工具 schema 排序、变量插值和渲染边界。通用 Child Scope、typed Event 与 effect 生命周期由[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)拥有；Tool definition、可见性与执行由[12 Tools Registry 与执行流水线模块设计](./12-tools-registry-and-execution-pipeline.md)拥有；Harness LLM 公共词汇由[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)拥有；实施状态与验证证据只见[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 固定源与职责映射
 
@@ -39,7 +39,7 @@ Go 不复制 Cordis context extension、WeakMap、declaration merging 或 TypeSc
 - Web UI、Client prompt editor、SDK 或 Typert gateway；
 - JSONL、SQLite、sqlc 或其他业务数据存储。
 
-`ToolProvider` 只把当前 assembly 可见的 `llm.ToolSchema` 投影给模型。Tool 是否存在、能否执行和如何授权仍由未来 `tools` owner 决定，不能从 schema 出现在 prompt 中反推执行成功。
+`ToolProvider` 只把当前 assembly 可见的 `llm.ToolSchema` 投影给模型。当前 `tools` owner 以同一个 scope view 提供 schema 和执行 lookup；但 restriction、guard、schema validation 与执行失败仍只由 Tools 决定，不能从 schema 出现在 prompt 中反推执行成功。
 
 ## 3. 内部职责划分
 
@@ -192,9 +192,10 @@ Agent Provider (later)
   -> RenderPrompt + RenderContextSections
   -> pass prompt/context/tool schemas to Harness LLM contract
 
-Tools Provider (later)
+Tools Provider
   -> owns definitions/restrictions
   -> registers ToolProvider projection
+  -> provides tools Service
   -> System Prompt never invokes executor
 ```
 
@@ -208,4 +209,4 @@ Tools Provider (later)
 - `PromptAssembly` 返回前复制 slice、map 和 JSON bytes，Consumer 不能修改 Registry 内部状态；
 - future Agent Child Scope 直接消费现有 `Scope.Child` 和 `ScopeKey`，只有出现真实 Service namespace isolation 需求时才扩展 Service resolution；
 - future LLM migration 扩充唯一 `llm` owner；不得为 System Prompt 再建一套 ToolSchema、Message 或 context DTO；
-- future Tool Registry 通过 `ToolProvider` 连接，不把执行/policy 逻辑塞进 `promptAssembler`。
+- 当前 Tool Registry 通过 `ToolProvider` 连接，不把执行/policy 逻辑塞进 `promptAssembler`；后续具体 Tool plugin 也只向 Tools owner 注册能力。
