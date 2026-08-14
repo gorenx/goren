@@ -33,10 +33,17 @@ void (async () => {
     settleReady = resolveReady
     rejectReady = reject
   })
+  let completed = false
+  const maybeSettle = () => {
+    if (completed || connectedCount < 2 || muxCount < 2 || hostCount < 2) return
+    completed = true
+    controller.stop()
+    settleReady?.()
+  }
   const apiClient = new WebApiClient(3_000)
   const controller = new ConnectionController(apiClient, {
-    onMuxEnvelope: () => { muxCount += 1 },
-    onHostEnvelope: () => { hostCount += 1 },
+    onMuxEnvelope: () => { muxCount += 1; maybeSettle() },
+    onHostEnvelope: () => { hostCount += 1; maybeSettle() },
     onStateChange: (state: string) => { states.push(state) },
     onConnected: () => {
       connectedCount += 1
@@ -53,10 +60,7 @@ void (async () => {
           rejectReady?.(error instanceof Error ? error : new Error(String(error)))
         })
       }
-      if (connectedCount === 2) {
-        controller.stop()
-        settleReady?.()
-      }
+      maybeSettle()
     },
   }, {
     backoffBaseMs: 2,
@@ -67,7 +71,7 @@ void (async () => {
 
   const timeout = setTimeout(() => {
     controller.stop()
-    rejectReady?.(new Error('ConnectionController did not establish a second generation'))
+    rejectReady?.(new Error('ConnectionController did not deliver both streams for its second generation'))
   }, 5_000)
   controller.start()
   await ready
