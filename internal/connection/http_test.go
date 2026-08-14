@@ -32,8 +32,22 @@ func TestUnaryCarrierContract(t *testing.T) {
 			name: "success", method: http.MethodPost, path: "/api/host.describe", contentType: "application/json; charset=utf-8",
 			body: `{"type":"client-request","rpcId":"r-1","method":"host.describe","payload":{}}`, wantStatus: http.StatusOK, wantRPCID: "r-1",
 		},
-		{name: "unknown path", method: http.MethodPost, path: "/api/no.such", wantStatus: http.StatusNotFound, wantText: "not found"},
-		{name: "encoded endpoint", method: http.MethodPost, path: "/api/host%2Edescribe", wantStatus: http.StatusNotFound, wantText: "not found"},
+		{
+			name: "unknown path", method: http.MethodPost, path: "/api/no.such", contentType: "application/json", body: `{}`,
+			wantStatus: http.StatusNotFound, wantText: "not found",
+		},
+		{
+			name: "unknown path still checks media type", method: http.MethodPost, path: "/api/no.such",
+			wantStatus: http.StatusUnsupportedMediaType, wantText: "content type must be application/json",
+		},
+		{
+			name: "unknown path still checks JSON", method: http.MethodPost, path: "/api/no.such", contentType: "application/json", body: `{oops`,
+			wantStatus: http.StatusBadRequest, wantText: "body is not JSON",
+		},
+		{
+			name: "encoded endpoint", method: http.MethodPost, path: "/api/host%2Edescribe", contentType: "application/json", body: `{}`,
+			wantStatus: http.StatusNotFound, wantText: "not found",
+		},
 		{name: "wrong method", method: http.MethodGet, path: "/api/host.describe", wantStatus: http.StatusNotFound, wantText: "not found"},
 		{
 			name: "wrong media type", method: http.MethodPost, path: "/api/host.describe", contentType: "text/plain", body: `{}`,
@@ -398,7 +412,8 @@ func TestEchoRecoverContainsTransportPanic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	httpRequest := httptest.NewRequest(http.MethodPost, "http://localhost/api/test.crash", nil)
+	httpRequest := httptest.NewRequest(http.MethodPost, "http://localhost/api/test.crash", strings.NewReader(`{}`))
+	httpRequest.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 	carrier.ServeHTTP(recorder, httpRequest)
 	if recorder.Code != http.StatusInternalServerError || recorder.Body.String() != "internal server error" {

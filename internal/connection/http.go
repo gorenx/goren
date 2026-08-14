@@ -119,12 +119,12 @@ func unaryHandler(dispatch RPCDispatcher, maxBodyBytes int64) echo.HandlerFunc {
 		if isPrivilegedMethod(method) && !isTrustedAPIRequest(echoContext.Request(), nil) {
 			return writePlain(echoContext, http.StatusForbidden, "forbidden")
 		}
-		if !dispatch.HasUnary(method) {
-			return writePlain(echoContext, http.StatusNotFound, "not found")
-		}
 		body, status, err := readJSONBody(echoContext.Request(), maxBodyBytes)
 		if err != nil {
 			return writePlain(echoContext, status, err.Error())
+		}
+		if !dispatch.HasUnary(method) {
+			return writePlain(echoContext, http.StatusNotFound, "not found")
 		}
 		message, issues := connection.DecodeClientRequest(body)
 		if len(issues) != 0 {

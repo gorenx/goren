@@ -263,12 +263,19 @@ func contractPaths(t *testing.T) (string, string) {
 }
 
 func runTypeScript(requestContext context.Context, sourceRoot string, arguments ...string) ([]byte, error) {
+	return runTypeScriptInput(requestContext, sourceRoot, nil, arguments...)
+}
+
+func runTypeScriptInput(requestContext context.Context, sourceRoot string, input []byte, arguments ...string) ([]byte, error) {
 	tsxPath := filepath.Join(sourceRoot, "node_modules", ".bin", "tsx")
 	if _, err := os.Stat(tsxPath); err != nil {
 		return nil, errors.New("source TypeScript dependencies are unavailable; run corepack pnpm install --frozen-lockfile in DSH_SOURCE")
 	}
 	command := exec.CommandContext(requestContext, tsxPath, arguments...)
 	command.Dir = sourceRoot
+	if input != nil {
+		command.Stdin = bytes.NewReader(input)
+	}
 	output, err := command.Output()
 	if err == nil {
 		return output, nil
