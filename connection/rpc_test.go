@@ -78,3 +78,39 @@ func TestBadRequestUsesArrayForEmptyIssues(t *testing.T) {
 		t.Fatalf("body = %s", body)
 	}
 }
+
+func TestRPCErrorValidityUsesCodeSpecificDetails(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		rpcError  connection.RPCError
+		wantValid bool
+	}{
+		{
+			name:      "valid internal error",
+			rpcError:  connection.RPCError{Code: connection.ErrorInternal, Message: "failed", Details: json.RawMessage(`{}`)},
+			wantValid: true,
+		},
+		{
+			name:      "valid typed details",
+			rpcError:  connection.RPCError{Code: connection.ErrorSessionNotFound, Message: "missing", Details: json.RawMessage(`{"sessionId":"s-1"}`)},
+			wantValid: true,
+		},
+		{
+			name:     "missing typed details",
+			rpcError: connection.RPCError{Code: connection.ErrorSessionNotFound, Message: "missing", Details: json.RawMessage(`{}`)},
+		},
+		{
+			name:     "unknown code",
+			rpcError: connection.RPCError{Code: "unknown", Message: "failed", Details: json.RawMessage(`{}`)},
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := testCase.rpcError.Valid(); got != testCase.wantValid {
+				t.Fatalf("Valid() = %v, want %v", got, testCase.wantValid)
+			}
+		})
+	}
+}

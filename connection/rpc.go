@@ -98,6 +98,17 @@ type RPCError struct {
 	Details json.RawMessage `json:"details"`
 }
 
+// Valid reports whether the error uses a known code and the code-specific
+// details shape required by the pinned wire contract.
+func (resultError RPCError) Valid() bool {
+	encoded, err := json.Marshal(resultError)
+	if err != nil {
+		return false
+	}
+	_, issues := decodeError(encoded)
+	return len(issues) == 0
+}
+
 // RPCResult is the wire success/failure union. Value is absent only for a void
 // success; Error is present only when OK is false.
 type RPCResult struct {
