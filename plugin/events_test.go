@@ -17,6 +17,7 @@ var (
 	serialTopic    = plugin.DefineEvent[string, string]("fixture.serial", plugin.ModeSerial)
 	bailTopic      = plugin.DefineEvent[string, string]("fixture.bail", plugin.ModeBail)
 	waterfallTopic = plugin.DefineEvent[string, string]("fixture.waterfall", plugin.ModeWaterfall)
+	scopedTopic    = plugin.DefineEvent[string, string]("fixture.scoped-waterfall", plugin.ModeWaterfall)
 )
 
 func TestEventEmitUsesRegistrationOrderAndScopeOwnership(t *testing.T) {
@@ -246,6 +247,88 @@ func TestEventWaterfallPreservesOuterToInnerControl(t *testing.T) {
 	}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls = %#v, want %#v", calls, want)
+	}
+}
+
+func TestScopedWaterfallAdmitsGlobalAndAncestorListeners(t *testing.T) {
+	t.Parallel()
+	requestContext := context.Background()
+	engine := plugin.NewRuntime()
+	var childScope *plugin.Scope
+	var nestedScope *plugin.Scope
+	var siblingScope *plugin.Scope
+	if _, err := engine.Load(requestContext, fixturePlugin{
+		metadata: plugin.Manifest{Name: "scoped-waterfall-owner"},
+		body: func(_ context.Context, pluginScope *plugin.Scope) error {
+			var childErr error
+			childScope, _, childErr = pluginScope.Child("child")
+			if childErr != nil {
+				return childErr
+			}
+			nestedScope, _, childErr = childScope.Child("nested")
+			if childErr != nil {
+				return childErr
+			}
+			siblingScope, _, childErr = pluginScope.Child("sibling")
+			if childErr != nil {
+				return childErr
+			}
+			for _, entry := range []struct {
+				owner *plugin.Scope
+				mark  string
+			}{
+				{owner: pluginScope, mark: "root"},
+				{owner: childScope, mark: "child"},
+				{owner: nestedScope, mark: "nested"},
+				{owner: siblingScope, mark: "sibling"},
+			} {
+				captured := entry
+				if _, registrationErr := plugin.OnWaterfall(captured.owner, scopedTopic,
+					func(chainContext context.Context, payload string, downstream plugin.Next[string, string]) (string, error) {
+						return downstream(chainContext, payload+"/"+captured.mark)
+					}); registrationErr != nil {
+					return registrationErr
+				}
+			}
+			return nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	terminal := func(_ context.Context, payload string) (string, error) { return payload, nil }
+	globalValue, err := plugin.WaterfallScopedFrom(requestContext, childScope, plugin.ScopeKey{}, scopedTopic, "x", terminal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if globalValue != "x/root" {
+		t.Fatalf("global scoped waterfall = %q", globalValue)
+	}
+	nestedValue, err := plugin.WaterfallScopedFrom(requestContext, childScope, nestedScope.Target(), scopedTopic, "x", terminal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nestedValue != "x/root/child/nested" {
+		t.Fatalf("nested scoped waterfall = %q", nestedValue)
+	}
+	siblingValue, err := plugin.WaterfallScopedFrom(requestContext, childScope, siblingScope.Target(), scopedTopic, "x", terminal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if siblingValue != "x/root/sibling" {
+		t.Fatalf("sibling scoped waterfall = %q", siblingValue)
+	}
+	unfilteredValue, err := plugin.Waterfall(requestContext, engine, scopedTopic, "x", terminal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unfilteredValue != "x/root/child/nested/sibling" {
+		t.Fatalf("unfiltered waterfall = %q", unfilteredValue)
+	}
+
+	lineage := plugin.ScopeLineage(nestedScope.Target())
+	if len(lineage) != 2 || lineage[0] != childScope.Target() || lineage[1] != nestedScope.Target() {
+		t.Fatalf("nested lineage = %#v", lineage)
 	}
 }
 

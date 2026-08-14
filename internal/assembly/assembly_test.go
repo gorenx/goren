@@ -15,6 +15,7 @@ import (
 	protocol "github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
+	"github.com/gorenx/goren/systemprompt"
 )
 
 type probePlugin struct {
@@ -24,7 +25,7 @@ type probePlugin struct {
 func (instance probePlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name:     "assembly-probe",
-		Requires: []plugin.ServiceRef{serverServiceKey.Ref(), session.StoreService.Ref()},
+		Requires: []plugin.ServiceRef{serverServiceKey.Ref(), session.StoreService.Ref(), systemprompt.Service.Ref()},
 	}
 }
 
@@ -32,13 +33,13 @@ func (instance probePlugin) Apply(requestContext context.Context, pluginScope *p
 	return instance.body(requestContext, pluginScope)
 }
 
-func TestCatalogContainsOnlyCurrentConnectionSlice(t *testing.T) {
+func TestCatalogContainsOnlyCurrentServerSlice(t *testing.T) {
 	t.Parallel()
 	registry, err := NewCatalog(Environment{WorkingDirectory: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{ConnectionFactoryName, APIProxyFactoryName, SessionFactoryName}
+	want := []string{ConnectionFactoryName, APIProxyFactoryName, SessionFactoryName, SystemPromptFactoryName}
 	if got := registry.Names(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("factory names = %#v, want %#v", got, want)
 	}
@@ -68,6 +69,11 @@ func TestConnectionFactoryUsesStrictTypedConfig(t *testing.T) {
 		{label: "wrong type", factoryName: ConnectionFactoryName, input: `{"listenAddress":7}`, wantMessage: "cannot unmarshal"},
 		{label: "negative limit", factoryName: ConnectionFactoryName, input: `{"listenAddress":"127.0.0.1:0","maxBodyBytes":-1}`, wantMessage: "must not be negative"},
 		{label: "empty version", factoryName: APIProxyFactoryName, input: `{"version":""}`, wantMessage: "version must be non-empty"},
+		{label: "prompt unknown", factoryName: SystemPromptFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
+		{label: "prompt wrong type", factoryName: SystemPromptFactoryName, input: `{"includeHarnessIdentity":"yes"}`, wantMessage: "must be a boolean"},
+		{label: "prompt null bool", factoryName: SystemPromptFactoryName, input: `{"includeHarnessIdentity":null}`, wantMessage: "must be a boolean"},
+		{label: "prompt null order", factoryName: SystemPromptFactoryName, input: `{"toolOrder":null}`, wantMessage: "must be an array"},
+		{label: "prompt order", factoryName: SystemPromptFactoryName, input: `{"toolOrder":["bash"]}`, wantMessage: "must contain"},
 		{label: "dynamic", factoryName: ConnectionFactoryName, input: `!!js (() => ({ listenAddress: "127.0.0.1:0" }))`, wantMessage: "invalid config"},
 	} {
 		testCase := testCase
@@ -108,6 +114,21 @@ func TestConnectionCompositionSettlesDependenciesAndServesHostDescribe(t *testin
 		}
 		if _, createErr := sessionStore.Create(requestContext, pluginScope, nil, session.CreateOptions{}); createErr != nil {
 			return createErr
+		}
+		promptService, found := plugin.Require(pluginScope, systemprompt.Service)
+		if !found {
+			t.Fatal("systemPrompt service is unavailable")
+		}
+		assembled, assembleErr := promptService.Assemble(requestContext, systemprompt.AssembleContext{})
+		if assembleErr != nil {
+			return assembleErr
+		}
+		promptText, renderErr := systemprompt.RenderPrompt(assembled)
+		if renderErr != nil {
+			return renderErr
+		}
+		if promptText != "You are an AI agent powered by DeepSeek Harness." {
+			t.Fatalf("default system prompt = %q", promptText)
 		}
 		return nil
 	}}
