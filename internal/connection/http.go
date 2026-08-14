@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -91,7 +92,23 @@ func NewHTTPHost(settings HTTPConfig, dispatch RPCDispatcher, streams EventSourc
 
 // Start serves requests until the lifecycle context is cancelled.
 func (carrier *HTTPHost) Start(lifecycle context.Context, address string) error {
-	settings := echo.StartConfig{Address: address, GracefulTimeout: carrier.gracefulTimeout}
+	return carrier.serve(lifecycle, echo.StartConfig{
+		Address: address, GracefulTimeout: carrier.gracefulTimeout, HideBanner: true, HidePort: true,
+	})
+}
+
+// Serve starts the carrier on an already-bound listener. Composition plugins
+// use this form so address binding fails synchronously during activation.
+func (carrier *HTTPHost) Serve(lifecycle context.Context, listener net.Listener) error {
+	if listener == nil {
+		return errors.New("connection: listener is nil")
+	}
+	return carrier.serve(lifecycle, echo.StartConfig{
+		Listener: listener, GracefulTimeout: carrier.gracefulTimeout, HideBanner: true, HidePort: true,
+	})
+}
+
+func (carrier *HTTPHost) serve(lifecycle context.Context, settings echo.StartConfig) error {
 	serveErr := settings.Start(lifecycle, carrier.engine)
 	closeContext, cancel := context.WithTimeout(context.Background(), carrier.gracefulTimeout)
 	defer cancel()
