@@ -165,6 +165,24 @@ func EmitFrom[P any](requestContext context.Context, sourceScope *Scope, topic E
 	return Emit(requestContext, engine, topic, payload)
 }
 
+// EmitScopedFrom dispatches an emit event through unscoped listeners plus
+// listeners owned by selectedKey and its ancestors. Descendants and siblings
+// are excluded.
+func EmitScopedFrom[P any](requestContext context.Context, sourceScope *Scope, selectedKey ScopeKey, topic EventKey[P, struct{}], payload P) error {
+	engine, err := runtimeFromScope(sourceScope)
+	if err != nil {
+		return err
+	}
+	if topic.ref.mode != ModeEmit {
+		return fmt.Errorf("plugin: event %q uses %s, not emit", topic.ref.name, topic.ref.mode)
+	}
+	callbacks, err := notifySubscriptions[P](engine, topic.ref, &selectedKey)
+	if err != nil {
+		return err
+	}
+	return (EmitSnapshot[P]{callbacks: callbacks}).Dispatch(requestContext, payload)
+}
+
 // CaptureEmitFrom resolves one emit listener snapshot through the Runtime that
 // owns sourceScope. The caller may validate, capture, commit, then Dispatch.
 func CaptureEmitFrom[P any](sourceScope *Scope, topic EventKey[P, struct{}]) (EmitSnapshot[P], error) {

@@ -13,6 +13,7 @@ import (
 	"github.com/gorenx/goren/apiproxy"
 	"github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/systemprompt"
+	toolscore "github.com/gorenx/goren/tools"
 )
 
 type contractManifest struct {
@@ -39,6 +40,13 @@ type contractManifest struct {
 			BuiltinSections []string `json:"builtinSections"`
 			ToolOrderRest   string   `json:"toolOrderRest"`
 		} `json:"systemPrompt"`
+		Tools struct {
+			Service           string   `json:"service"`
+			Events            []string `json:"events"`
+			ErrorCodes        []string `json:"errorCodes"`
+			ReservedToolName  string   `json:"reservedToolName"`
+			PresentationModes []string `json:"presentationModes"`
+		} `json:"tools"`
 	} `json:"included"`
 }
 
@@ -89,6 +97,19 @@ func TestPinnedManifestMatchesGoSurface(t *testing.T) {
 		!slices.Equal(promptSurface.BuiltinSections, []string{"harness:identity", systemprompt.PersonaSection}) ||
 		promptSurface.ToolOrderRest != systemprompt.ToolOrderRest {
 		t.Fatalf("system prompt surface = %#v", promptSurface)
+	}
+	toolSurface := manifestDocument.Included.Tools
+	if toolSurface.Service != toolscore.ServiceName ||
+		!slices.Equal(toolSurface.Events, []string{
+			toolscore.PreExecuteEventName, toolscore.ExecuteEventName, toolscore.PostExecuteEventName,
+			toolscore.ResultEventName, toolscore.ChangeEventName,
+		}) ||
+		!slices.Equal(toolSurface.ErrorCodes, []string{
+			"UNKNOWN_TOOL", "INVALID_ARGS", "INVALID_TOOL_OUTPUT",
+			toolscore.ToolAborted, toolscore.ToolAbortedBeforeDispatch,
+		}) || toolSurface.ReservedToolName != toolscore.RunCodeName ||
+		!slices.Equal(toolSurface.PresentationModes, []string{string(toolscore.PresentationNative)}) {
+		t.Fatalf("tools surface = %#v", toolSurface)
 	}
 
 	muxNames := encodedMuxFrames(t)

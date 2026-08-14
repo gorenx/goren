@@ -155,25 +155,25 @@ func validateMessageContent(conversationEntry Message, messageIndex int) error {
 	switch typedMessage := conversationEntry.(type) {
 	case UserMessage:
 		content = make([]any, len(typedMessage.Content))
-		for index, contentBlock := range typedMessage.Content {
-			content[index] = contentBlock
+		for index, contentEntry := range typedMessage.Content {
+			content[index] = contentEntry
 		}
 	case AssistantMessage:
 		if typedMessage.StopReason == StopReasonError || typedMessage.StopReason == StopReasonAborted {
 			return nil
 		}
 		content = make([]any, len(typedMessage.Content))
-		for index, contentBlock := range typedMessage.Content {
-			content[index] = contentBlock
+		for index, contentEntry := range typedMessage.Content {
+			content[index] = contentEntry
 		}
 	case ToolResultMessage:
 		content = make([]any, len(typedMessage.Content))
-		for index, contentBlock := range typedMessage.Content {
-			content[index] = contentBlock
+		for index, contentEntry := range typedMessage.Content {
+			content[index] = contentEntry
 		}
 	}
-	for contentIndex, contentBlock := range content {
-		switch typedContent := contentBlock.(type) {
+	for contentIndex, contentEntry := range content {
+		switch typedContent := contentEntry.(type) {
 		case TextContent:
 		case ImageContent:
 			if typedContent.MIMEType == "" || typedContent.Data == "" {
@@ -203,7 +203,7 @@ func validateMessageContent(conversationEntry Message, messageIndex int) error {
 				return fmt.Errorf("message %d content %d: %w", messageIndex, contentIndex, err)
 			}
 		default:
-			return fmt.Errorf("message %d content %d has unsupported type %T", messageIndex, contentIndex, contentBlock)
+			return fmt.Errorf("message %d content %d has unsupported type %T", messageIndex, contentIndex, contentEntry)
 		}
 	}
 	return nil
@@ -325,8 +325,8 @@ func ValidateModelOptions(targetModel Model, invocationOptions StreamOptions) er
 
 // ValidateAssistantToolCalls validates every complete ToolCall in a message.
 func ValidateAssistantToolCalls(toolDefinitions []Tool, assistantReply AssistantMessage) error {
-	for _, contentBlock := range assistantReply.Content {
-		requestedCall, ok := contentBlock.(ToolCall)
+	for _, contentEntry := range assistantReply.Content {
+		requestedCall, ok := contentEntry.(ToolCall)
 		if !ok {
 			continue
 		}

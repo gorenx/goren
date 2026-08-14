@@ -136,14 +136,14 @@ func encodeMessage(conversationEntry Message) (messageWire, error) {
 
 func encodeUserContent(content []UserContent) ([]contentWire, error) {
 	encoded := make([]contentWire, 0, len(content))
-	for _, contentBlock := range content {
-		switch typedContent := contentBlock.(type) {
+	for _, contentEntry := range content {
+		switch typedContent := contentEntry.(type) {
 		case TextContent:
 			encoded = append(encoded, contentWire{Type: "text", Text: typedContent.Text})
 		case ImageContent:
 			encoded = append(encoded, contentWire{Type: "image", Data: typedContent.Data, MIMEType: typedContent.MIMEType})
 		default:
-			return nil, fmt.Errorf("unsupported user content %T", contentBlock)
+			return nil, fmt.Errorf("unsupported user content %T", contentEntry)
 		}
 	}
 	return encoded, nil
@@ -151,8 +151,8 @@ func encodeUserContent(content []UserContent) ([]contentWire, error) {
 
 func encodeAssistantContent(content []AssistantContent) ([]contentWire, error) {
 	encoded := make([]contentWire, 0, len(content))
-	for _, contentBlock := range content {
-		switch typedContent := contentBlock.(type) {
+	for _, contentEntry := range content {
+		switch typedContent := contentEntry.(type) {
 		case AssistantTextContent:
 			encoded = append(encoded, contentWire{Type: "text", Text: typedContent.Text, Phase: typedContent.Phase, Metadata: cloneReplayMetadata(typedContent.Metadata)})
 		case ThinkingContent:
@@ -160,7 +160,7 @@ func encodeAssistantContent(content []AssistantContent) ([]contentWire, error) {
 		case ToolCall:
 			encoded = append(encoded, contentWire{Type: "tool_call", ID: typedContent.ID, Name: typedContent.Name, Arguments: cloneRawMessage(typedContent.Arguments), Metadata: cloneReplayMetadata(typedContent.Metadata)})
 		default:
-			return nil, fmt.Errorf("unsupported assistant content %T", contentBlock)
+			return nil, fmt.Errorf("unsupported assistant content %T", contentEntry)
 		}
 	}
 	return encoded, nil
@@ -168,14 +168,14 @@ func encodeAssistantContent(content []AssistantContent) ([]contentWire, error) {
 
 func encodeToolResultContent(content []ToolResultContent) ([]contentWire, error) {
 	encoded := make([]contentWire, 0, len(content))
-	for _, contentBlock := range content {
-		switch typedContent := contentBlock.(type) {
+	for _, contentEntry := range content {
+		switch typedContent := contentEntry.(type) {
 		case TextContent:
 			encoded = append(encoded, contentWire{Type: "text", Text: typedContent.Text})
 		case ImageContent:
 			encoded = append(encoded, contentWire{Type: "image", Data: typedContent.Data, MIMEType: typedContent.MIMEType})
 		default:
-			return nil, fmt.Errorf("unsupported tool-result content %T", contentBlock)
+			return nil, fmt.Errorf("unsupported tool-result content %T", contentEntry)
 		}
 	}
 	return encoded, nil

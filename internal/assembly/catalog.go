@@ -16,6 +16,7 @@ const (
 	ConnectionFactoryName   = "@deepseek-ai/dsh-client-connection"
 	SessionFactoryName      = "@deepseek-ai/dsh-session"
 	SystemPromptFactoryName = "@deepseek-ai/dsh-system-prompt"
+	ToolsFactoryName        = "@deepseek-ai/dsh-tools"
 )
 
 // Environment contains process-derived values that are not deployment config.
@@ -44,6 +45,9 @@ func NewCatalog(platform Environment) (*plugin.Catalog, error) {
 	if err := plugin.RegisterFactory(registry, systemPromptFactory{}); err != nil {
 		return nil, err
 	}
+	if err := plugin.RegisterFactory(registry, toolsFactory{}); err != nil {
+		return nil, err
+	}
 	return registry, nil
 }
 
@@ -63,6 +67,7 @@ func DefaultSpecs(listenAddress string, version string) ([]PluginSpec, error) {
 		{FactoryName: ConnectionFactoryName, Config: connectionRaw},
 		{FactoryName: APIProxyFactoryName, Config: apiProxyRaw},
 		{FactoryName: SystemPromptFactoryName, Config: json.RawMessage(`{}`)},
+		{FactoryName: ToolsFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: SessionFactoryName, Config: json.RawMessage(`{}`)},
 	}, nil
 }

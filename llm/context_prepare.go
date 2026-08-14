@@ -96,8 +96,8 @@ func PrepareContext(targetModel Model, input Context) (Context, error) {
 }
 
 func prepareUserMessage(targetModel Model, input UserMessage) (UserMessage, error) {
-	for _, contentBlock := range input.Content {
-		switch contentBlock.(type) {
+	for _, contentEntry := range input.Content {
+		switch contentEntry.(type) {
 		case TextContent:
 			if !ModelAccepts(targetModel, InputText) {
 				return UserMessage{}, fmt.Errorf("%w: text", ErrUnsupportedModality)
@@ -107,7 +107,7 @@ func prepareUserMessage(targetModel Model, input UserMessage) (UserMessage, erro
 				return UserMessage{}, fmt.Errorf("%w: image", ErrUnsupportedModality)
 			}
 		default:
-			return UserMessage{}, fmt.Errorf("unsupported content %T", contentBlock)
+			return UserMessage{}, fmt.Errorf("unsupported content %T", contentEntry)
 		}
 	}
 	return input, nil
@@ -117,8 +117,8 @@ func prepareAssistantMessage(targetModel Model, input AssistantMessage) (Assista
 	sameModel := input.API == targetModel.API && input.Provider == targetModel.Provider && input.Model == targetModel.ID
 	if sameModel {
 		var calls []ToolCall
-		for _, contentBlock := range input.Content {
-			switch typedContent := contentBlock.(type) {
+		for _, contentEntry := range input.Content {
+			switch typedContent := contentEntry.(type) {
 			case AssistantTextContent:
 				if !ModelAccepts(targetModel, InputText) {
 					return AssistantMessage{}, nil, fmt.Errorf("%w: text", ErrUnsupportedModality)
@@ -127,7 +127,7 @@ func prepareAssistantMessage(targetModel Model, input AssistantMessage) (Assista
 			case ToolCall:
 				calls = append(calls, typedContent)
 			default:
-				return AssistantMessage{}, nil, fmt.Errorf("unsupported content %T", contentBlock)
+				return AssistantMessage{}, nil, fmt.Errorf("unsupported content %T", contentEntry)
 			}
 		}
 		return input, calls, nil
@@ -136,8 +136,8 @@ func prepareAssistantMessage(targetModel Model, input AssistantMessage) (Assista
 	prepared := input
 	prepared.Content = make([]AssistantContent, 0, len(input.Content))
 	var calls []ToolCall
-	for _, contentBlock := range input.Content {
-		switch typedContent := contentBlock.(type) {
+	for _, contentEntry := range input.Content {
+		switch typedContent := contentEntry.(type) {
 		case AssistantTextContent:
 			if !ModelAccepts(targetModel, InputText) {
 				return AssistantMessage{}, nil, fmt.Errorf("%w: text", ErrUnsupportedModality)
@@ -159,15 +159,15 @@ func prepareAssistantMessage(targetModel Model, input AssistantMessage) (Assista
 			prepared.Content = append(prepared.Content, clonedContent)
 			calls = append(calls, clonedContent)
 		default:
-			return AssistantMessage{}, nil, fmt.Errorf("unsupported content %T", contentBlock)
+			return AssistantMessage{}, nil, fmt.Errorf("unsupported content %T", contentEntry)
 		}
 	}
 	return prepared, calls, nil
 }
 
 func prepareToolResultMessage(targetModel Model, input ToolResultMessage) (ToolResultMessage, error) {
-	for _, contentBlock := range input.Content {
-		switch contentBlock.(type) {
+	for _, contentEntry := range input.Content {
+		switch contentEntry.(type) {
 		case TextContent:
 			if !ModelAccepts(targetModel, InputText) {
 				return ToolResultMessage{}, fmt.Errorf("%w: text", ErrUnsupportedModality)
@@ -177,7 +177,7 @@ func prepareToolResultMessage(targetModel Model, input ToolResultMessage) (ToolR
 				return ToolResultMessage{}, fmt.Errorf("%w: image", ErrUnsupportedModality)
 			}
 		default:
-			return ToolResultMessage{}, fmt.Errorf("unsupported content %T", contentBlock)
+			return ToolResultMessage{}, fmt.Errorf("unsupported content %T", contentEntry)
 		}
 	}
 	return input, nil

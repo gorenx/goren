@@ -12,12 +12,13 @@ import (
 )
 
 var (
-	emitTopic      = plugin.DefineEvent[string, struct{}]("fixture.emit", plugin.ModeEmit)
-	parallelTopic  = plugin.DefineEvent[string, struct{}]("fixture.parallel", plugin.ModeParallel)
-	serialTopic    = plugin.DefineEvent[string, string]("fixture.serial", plugin.ModeSerial)
-	bailTopic      = plugin.DefineEvent[string, string]("fixture.bail", plugin.ModeBail)
-	waterfallTopic = plugin.DefineEvent[string, string]("fixture.waterfall", plugin.ModeWaterfall)
-	scopedTopic    = plugin.DefineEvent[string, string]("fixture.scoped-waterfall", plugin.ModeWaterfall)
+	emitTopic       = plugin.DefineEvent[string, struct{}]("fixture.emit", plugin.ModeEmit)
+	parallelTopic   = plugin.DefineEvent[string, struct{}]("fixture.parallel", plugin.ModeParallel)
+	serialTopic     = plugin.DefineEvent[string, string]("fixture.serial", plugin.ModeSerial)
+	bailTopic       = plugin.DefineEvent[string, string]("fixture.bail", plugin.ModeBail)
+	waterfallTopic  = plugin.DefineEvent[string, string]("fixture.waterfall", plugin.ModeWaterfall)
+	scopedTopic     = plugin.DefineEvent[string, string]("fixture.scoped-waterfall", plugin.ModeWaterfall)
+	scopedEmitTopic = plugin.DefineEvent[string, struct{}]("fixture.scoped-emit", plugin.ModeEmit)
 )
 
 func TestEventEmitUsesRegistrationOrderAndScopeOwnership(t *testing.T) {
@@ -63,6 +64,60 @@ func TestEventEmitUsesRegistrationOrderAndScopeOwnership(t *testing.T) {
 	want := []string{"first:one", "second:one", "second:two"}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls = %#v, want %#v", calls, want)
+	}
+}
+
+func TestScopedEmitAdmitsGlobalAndAncestorListeners(t *testing.T) {
+	t.Parallel()
+	requestContext := context.Background()
+	engine := plugin.NewRuntime()
+	var sourceScope *plugin.Scope
+	var nestedScope *plugin.Scope
+	calls := make([]string, 0)
+	if _, err := engine.Load(requestContext, fixturePlugin{
+		metadata: plugin.Manifest{Name: "scoped-emit-owner"},
+		body: func(_ context.Context, pluginScope *plugin.Scope) error {
+			sourceScope = pluginScope
+			childScope, _, childErr := pluginScope.Child("child")
+			if childErr != nil {
+				return childErr
+			}
+			nestedScope, _, childErr = childScope.Child("nested")
+			if childErr != nil {
+				return childErr
+			}
+			siblingScope, _, childErr := pluginScope.Child("sibling")
+			if childErr != nil {
+				return childErr
+			}
+			for _, entry := range []struct {
+				owner *plugin.Scope
+				mark  string
+			}{
+				{owner: pluginScope, mark: "root"},
+				{owner: childScope, mark: "child"},
+				{owner: nestedScope, mark: "nested"},
+				{owner: siblingScope, mark: "sibling"},
+			} {
+				captured := entry
+				if _, registrationErr := plugin.OnNotify(captured.owner, scopedEmitTopic,
+					func(context.Context, string) error {
+						calls = append(calls, captured.mark)
+						return nil
+					}); registrationErr != nil {
+					return registrationErr
+				}
+			}
+			return nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := plugin.EmitScopedFrom(requestContext, sourceScope, nestedScope.Target(), scopedEmitTopic, "payload"); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"root", "child", "nested"}; !reflect.DeepEqual(calls, want) {
+		t.Fatalf("scoped emit calls = %#v, want %#v", calls, want)
 	}
 }
 
