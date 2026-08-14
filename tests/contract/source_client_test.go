@@ -66,7 +66,7 @@ func TestPinnedSourceGeneratesCommittedVectors(t *testing.T) {
 	commandContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	output, err := runTypeScript(commandContext, sourceRoot,
-		filepath.Join(repositoryRoot, "tests", "contract", "generate-vectors.ts"),
+		filepath.Join(repositoryRoot, "tests", "contract", "typescript", "generate-vectors.ts"),
 		sourceRoot,
 		filepath.Join(repositoryRoot, "contracts", "deepseek-harness", "manifest.json"),
 	)
@@ -132,7 +132,7 @@ func TestPinnedSourceWebApiClientTalksToGoHost(t *testing.T) {
 	commandContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	output, err := runTypeScript(commandContext, sourceRoot,
-		filepath.Join(repositoryRoot, "tests", "contract", "client-smoke.ts"), sourceRoot, testServer.URL,
+		filepath.Join(repositoryRoot, "tests", "contract", "typescript", "client-smoke.ts"), sourceRoot, testServer.URL,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -227,7 +227,7 @@ func TestPinnedSourceConnectionRebuildsBothStreams(t *testing.T) {
 	commandContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	output, err := runTypeScript(commandContext, sourceRoot,
-		filepath.Join(repositoryRoot, "tests", "contract", "connection-reconnect.ts"), sourceRoot, testServer.URL,
+		filepath.Join(repositoryRoot, "tests", "contract", "typescript", "connection-reconnect.ts"), sourceRoot, testServer.URL,
 	)
 	if err != nil {
 		t.Fatal(err)

@@ -72,7 +72,7 @@ func TestPinnedSourceHTTPFailuresMatchGoHost(t *testing.T) {
 	commandContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	sourceOutput, err := runTypeScriptInput(commandContext, sourceRoot, encodedCases,
-		filepath.Join(repositoryRoot, "tests", "contract", "http-reference.ts"), sourceRoot,
+		filepath.Join(repositoryRoot, "tests", "contract", "typescript", "http-reference.ts"), sourceRoot,
 	)
 	if err != nil {
 		t.Fatal(err)

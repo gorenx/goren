@@ -15,7 +15,7 @@ type Manifest = {
 
 void (async () => {
 const scriptDirectory = dirname(resolve(process.argv[1]))
-const repositoryRoot = resolve(scriptDirectory, '../..')
+const repositoryRoot = resolve(scriptDirectory, '../../..')
 const sourceRoot = resolve(process.argv[2] ?? resolve(repositoryRoot, '../deepseek-harness'))
 const manifestPath = resolve(process.argv[3] ?? resolve(repositoryRoot, 'contracts/deepseek-harness/manifest.json'))
 const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Manifest
