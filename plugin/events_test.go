@@ -65,6 +65,56 @@ func TestEventEmitUsesRegistrationOrderAndScopeOwnership(t *testing.T) {
 	}
 }
 
+func TestEmitSnapshotFreezesListenerSet(t *testing.T) {
+	t.Parallel()
+	requestContext := context.Background()
+	engine := plugin.NewRuntime()
+	calls := []string{}
+	var sourceScope *plugin.Scope
+	firstHandle, err := engine.Load(requestContext, fixturePlugin{
+		metadata: plugin.Manifest{Name: "snapshot-first"},
+		body: func(_ context.Context, pluginScope *plugin.Scope) error {
+			sourceScope = pluginScope
+			_, registrationErr := plugin.OnNotify(pluginScope, emitTopic, func(context.Context, string) error {
+				calls = append(calls, "first")
+				return nil
+			})
+			return registrationErr
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	captured, err := plugin.CaptureEmitFrom(sourceScope, emitTopic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.Load(requestContext, fixturePlugin{
+		metadata: plugin.Manifest{Name: "snapshot-second"},
+		body: func(_ context.Context, pluginScope *plugin.Scope) error {
+			_, registrationErr := plugin.OnNotify(pluginScope, emitTopic, func(context.Context, string) error {
+				calls = append(calls, "second")
+				return nil
+			})
+			return registrationErr
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Unload(requestContext, firstHandle); err != nil {
+		t.Fatal(err)
+	}
+	if err := captured.Dispatch(requestContext, "captured"); err != nil {
+		t.Fatal(err)
+	}
+	if err := plugin.Emit(requestContext, engine, emitTopic, "live"); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"first", "second"}; !reflect.DeepEqual(calls, want) {
+		t.Fatalf("calls = %#v, want %#v", calls, want)
+	}
+}
+
 func TestEventParallelStartsAllListenersBeforeWaiting(t *testing.T) {
 	t.Parallel()
 	requestContext := context.Background()

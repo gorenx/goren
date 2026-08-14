@@ -174,9 +174,9 @@ func (conversation *Session) appendCandidate(candidate Event) (Event, error) {
 		return Event{}, err
 	}
 	owner := conversation.attachment
-	publish := false
+	var notify func(Event)
 	if owner != nil {
-		publish, err = owner.beginAppend()
+		notify, err = owner.beginAppend()
 		if err != nil {
 			conversation.mu.Unlock()
 			return Event{}, err
@@ -187,9 +187,8 @@ func (conversation *Session) appendCandidate(candidate Event) (Event, error) {
 	applySurface(&conversation.view, transition)
 	conversation.mu.Unlock()
 
-	if publish {
-		owner.publishAppend(committed)
-		owner.finishAppend()
+	if notify != nil {
+		notify(committed)
 	}
 	return cloneEvent(committed), nil
 }
