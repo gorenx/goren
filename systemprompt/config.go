@@ -8,6 +8,28 @@ import (
 	"slices"
 )
 
+// ValidateConfig applies defaults and rejects invalid tool ordering before a
+// runtime Plugin is constructed.
+func ValidateConfig(settings Config) (ValidatedConfig, error) {
+	configuredOrder, err := validateToolOrder(settings.ToolOrder)
+	if err != nil {
+		return ValidatedConfig{}, err
+	}
+	return ValidatedConfig{
+		includeHarnessIdentity: optionEnabled(settings.IncludeHarnessIdentity, true),
+		includeRuntimeContext:  optionEnabled(settings.IncludeRuntimeContext, true),
+		persona:                settings.Persona,
+		toolOrder:              configuredOrder,
+	}, nil
+}
+
+func optionEnabled(selected *bool, fallback bool) bool {
+	if selected == nil {
+		return fallback
+	}
+	return *selected
+}
+
 type configWire struct {
 	IncludeHarnessIdentity json.RawMessage `json:"includeHarnessIdentity"`
 	IncludeRuntimeContext  json.RawMessage `json:"includeRuntimeContext"`

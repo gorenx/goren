@@ -26,30 +26,12 @@ type eventSubscription interface {
 	listenerState() *eventListenerState
 }
 
-type notifyEventSubscription[P any] struct {
+type typedEventSubscription[P, R any, H EventHandler[P, R]] struct {
 	metadata eventListenerState
-	callback NotifyHandler[P]
+	callback H
 }
 
-func (listener *notifyEventSubscription[P]) listenerState() *eventListenerState {
-	return &listener.metadata
-}
-
-type decisionEventSubscription[P, R any] struct {
-	metadata eventListenerState
-	callback DecisionHandler[P, R]
-}
-
-func (listener *decisionEventSubscription[P, R]) listenerState() *eventListenerState {
-	return &listener.metadata
-}
-
-type waterfallEventSubscription[P, R any] struct {
-	metadata eventListenerState
-	callback WaterfallHandler[P, R]
-}
-
-func (listener *waterfallEventSubscription[P, R]) listenerState() *eventListenerState {
+func (listener *typedEventSubscription[P, R, H]) listenerState() *eventListenerState {
 	return &listener.metadata
 }
 
