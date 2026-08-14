@@ -1,6 +1,6 @@
 # 01. LLM Runtime 能力需求与实现状态
 
-- 状态：当前有效
+- 状态：迁移前实现记录（非 Harness 目标设计）
 - 最后核对：2026-08-13
 - Goren 基线：`febcf16`
 - pi 参考快照：`20b78eafb` 的 `packages/ai`
@@ -12,6 +12,8 @@
 1. Goren `llm` 当前已经实现并验证了什么；
 2. 为保证现有 OpenAI adapters 正确运行，还缺少什么；
 3. 从 pi 观察到但尚未被 Goren 接受为需求的能力有哪些。
+
+本文冻结主线切换前的实现状态，只用于把既有 transport、adapter 和测试迁移到 Harness LLM contract；不得用本文覆盖当前[协议与 API 兼容设计](../../../zh-CN/03-protocol-and-api-compatibility.md#4-llm-协议)。
 
 本文只覆盖 Model Runtime。责任边界保持为：
 
@@ -144,7 +146,7 @@ final_answer
 
 实现：`Client` 默认使用 `ConservativeTokenCounter`，按序列化 UTF-8 字节数给出带 strategy 标记的上界；调用方可通过 `WithTokenCounter` 注入模型 tokenizer。`CountTokens` 可单独记录结果，`Stream` 在 adapter 前执行硬限制并返回 `ErrContextWindowExceeded`，不会自动裁剪。
 
-设计依据：[Model Runtime 职责](../../../zh-CN/01-architecture-and-boundaries.md#56-model-runtime)和[Context 超限验收](../../../zh-CN/06-acceptance-and-roadmap.md#1914-context-超限)。
+历史设计依据：[Model Runtime 职责](../../../zh-CN/memory-design/01-architecture-and-boundaries.md#56-model-runtime)和[Context 超限验收](../../../zh-CN/memory-design/06-acceptance-and-roadmap.md#1914-context-超限)。
 
 ### 4.6 LLM-12 Tool 参数校验
 

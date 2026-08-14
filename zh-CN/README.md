@@ -1,30 +1,35 @@
-# Memory Agent 中文详设
+# DeepSeek Harness Go 复刻中文详设
 
 状态：Draft
 
-本目录是 Goren 中文详细设计的入口。文档按责任归属拆分：每个关键概念、行为或契约只由一个文档维护，其他文档通过链接引用，避免形成多个事实来源。
+本目录是 Goren 当前主线设计的唯一入口。设计以 DeepSeek Harness TypeScript 基线 `47f943859bef60e4160492346772ded9b24f765a` 为源代码证据，首要目标是在不复制客户端实现的前提下，让现有 TypeScript 客户端与 Go Agent 服务端保持通信协议兼容；Web UI、SDK 和 Python 不进入实现。
 
-## 文档职责
+## 阅读顺序与职责
 
-- [01 架构与边界](./01-architecture-and-boundaries.md)：Agent、Tools 与 Workflow 的组合、两阶段语义处理、对象版本边界和组件职责。
-- [02 工作流与知识决策](./02-workflow-and-decisions.md)：三者如何协作完成第一阶段立场判断与第二阶段冲突解决，以及对象生命周期和 Agent 状态机。
-- [03 接口与数据契约](./03-tools-and-contracts.md)：Conversation、Knowledge Model、Knowledge Context Tools、两阶段结果信封及禁止携带的对象版本字段。
-- [04 Knowledge 信息接口](./04-knowledge-context-interface.md)：第一阶段之后如何通过只读 Tool 获取现有 Knowledge 和 stance，以及 Agent 不依赖的管理细节。
-- [05 可靠性、安全与可观测性](./05-reliability-and-operations.md)：两阶段不变量、解析校验、只读依赖失败、Scope 隔离、日志与指标要求。
-- [06 验收、评估与实施路线图](./06-acceptance-and-roadmap.md)：stance、basis 和 `add / update / keep / delete` 的验收、评估指标与实施计划。
+- [01 复制范围与兼容基线](./01-porting-scope-and-baseline.md)：目标、非目标、纳入与排除范围、需求、不变量和源代码基线。
+- [02 Go 运行时架构与插件模型](./02-runtime-architecture-and-plugin-model.md)：模块边界、依赖方向、Plugin interface、typed config、Service/Event Registry、Scope 与生命周期。
+- [03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)：Client Connection、API Proxy、RPC/stream、Session/LLM/Tool 契约、Deferred adapter 边界和跨语言兼容验证。
+- [04 Go 技术架构决策与技术选型](./04-go-technology-decisions.md)：Connection carrier、typed config、标准库、第三方依赖、持久化、PTY、沙箱与可观测性决策。
+- [05 复制路线图与验收](./05-porting-roadmap-and-acceptance.md)：分阶段交付、源包映射、测试策略、完成定义和未决事项。
 
-### 组件文档
+首次阅读按 `01`–`05` 顺序进行。实现单个能力时，先从 `01` 确认范围，再读其拥有契约的文档。DeepSeek Harness 的 Service Definition / Provider / Consumer、事件 owner 和生命周期是默认职责边界；Go 包不机械复制每个 npm 包，但没有明确证据时也不另起一套领域切分。
 
-- [LLM Runtime 中文文档](../llm/docs/zh-CN/README.md)：Model Runtime、Provider adapter 的能力需求、实现状态和验收证据。
+## 权威关系
 
-## 阅读顺序
+- 本目录 `01`–`05` 是当前 Harness 复刻设计的权威来源。
+- 根目录 `README.md` 与 `README.zh-CN.md` 只说明项目背景。
+- TypeScript 的行为证据来自固定 commit；源仓库后续变化不会自动成为 Go 需求。
+- Go 代码证明当前实现，跨语言 fixtures 和测试证明兼容性；设计状态不能代替实现或验收证据。
+- `llm/docs/zh-CN/` 记录主线调整前的 LLM 实现状态，仅用于迁移审计，不拥有 Harness LLM API。
 
-首次阅读按文件名前的 `01`–`06` 顺序进行。只需理解核心模型时可以读完 `01`–`03`；实现 Knowledge Information Provider 时继续阅读 `04`–`05`；制定交付范围时使用 `06`。实现或评审 LLM Runtime 时，再进入对应的组件文档。
+## 隔离的历史设计
+
+[`memory-design/`](./memory-design/) 保存此前的 Memory Agent 设计。它不属于当前 Harness 复刻主线，不应被默认加载、引用或用来决定 Harness 的 Agent、Session、Tools、Workflow 和 Knowledge 边界；只有明确处理该历史主题时才读取。
 
 ## 文档规则
 
-- 根目录 [README.md](../README.md) 和 [README.zh-CN.md](../README.zh-CN.md) 只维护项目背景，不承载详细设计。
-- 本目录中的 `01`–`06` 专项文档是当前设计依据。
-- 详设文件名和一级标题使用两位数字前缀表达阅读顺序；本索引不参与编号。
-- 新增或调整设计时，应修改拥有该职责的文档，并同步更新本索引；不要在多个文件中复制同一契约或决策。
-- 未决事项保留在“验收、评估与实施路线图”的待确认决策中，在确认前不得写成既定行为。
+- 详设使用简体中文，两位数字文件名和一级标题表达阅读顺序。
+- 公共名、事件名、JSON 字段、配置键和既有领域术语保持 TypeScript 的 canonical form。
+- 一个事实只在拥有该职责的文档中定义，其他文档只链接。
+- 未确认的行为保留为显式未决事项，不写成已经实现或已经验证。
+- 新增、删除、重命名、重排文档或改变文档职责时同步更新本索引。

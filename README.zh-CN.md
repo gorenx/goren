@@ -1,7 +1,11 @@
 # Goren
 
-Goren 探索一个面向 Agent Memory 静态记忆产品的可复用 Memory Agent。此类产品通常重点解决长期事实、偏好、指令或摘要如何存储、组织和召回，但往往缺少一个独立的语义组件，用来持续理解对话中的知识变化。
+Goren 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Agent 服务端架构的 Go 复刻。首要兼容目标是现有 TypeScript 客户端与 Go Agent 服务端之间的通信协议，包括 RPC 信封、HTTP/WebSocket 载体、API 方法、事件、取消和错误语义；插件组合使用 Go `interface` 与静态链接的 Factory 实现。
 
-Memory Agent 由 Agent、Tools 和两阶段 Workflow 结合而成。第一阶段仅根据对话上下文抽取可配置的知识对象，判断用户支持、反对或不确定，并区分用户直接表态与 Agent 根据上下文推断；第二阶段再通过只读 Tool 获取相关已有 Knowledge，让 LLM 合并对象或解决冲突，输出 `add`、`update`、`keep` 或 `delete`。知识对象类型由接口、Schema、Prompt 和响应解析器定义；Agent 核心不固定具体类型，也不关心 Knowledge 如何存储或执行这些决策。
+项目不复制 Web UI、浏览器客户端实现、DeepSeek Harness SDK 或 Python SDK，但会实现 TypeScript Client Connection 协议的服务端一侧，使兼容客户端能够连接 Go Agent 服务端。Headless、ACP、MCP 及依赖 Typert 的辅助端点均为 Deferred，只有后续范围决策明确纳入时才实现。
 
-中文详细设计从[中文详设索引](./zh-CN/README.md)进入。英文背景见 [README.md](./README.md)。
+当前 `llm` 包早于这次项目主线调整，只是迁移时可复用的实现材料，不能证明已经兼容 DeepSeek Harness API。兼容性必须以固定的 TypeScript 源码基线和跨语言契约 fixtures 为准。
+
+详细复制范围、Go 技术架构、协议兼容策略、技术选型和实施路线图从[中文详设索引](./zh-CN/README.md)进入。英文背景见 [README.md](./README.md)。
+
+DeepSeek Harness 使用 MIT License，版权归 DeepSeek。复制或派生其实质代码时必须保留原许可证声明与归属信息。
