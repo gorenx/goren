@@ -1,0 +1,13 @@
+HTTP/1.1 200 OK
+Content-Type: text/event-stream
+Connection: close
+
+data: {"choices":[{"delta":{"role":"assistant","content":null,"reasoning_content":""}}]}
+
+data: {"choices":[{"delta":{"content":"hello"}}]}
+
+data: {"choices":[{"delta":{"content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1}}
+
+data: [DONE]
+
+: fixture transport closed
