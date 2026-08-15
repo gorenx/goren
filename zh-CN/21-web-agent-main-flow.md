@@ -65,6 +65,7 @@ sequenceDiagram
     participant S as Session Gateway
     participant G as Agent Loop
     participant D as DeepSeek Adapter
+    participant C as Session Store
     participant P as Session Persistence
 
     W->>H: host.describe
@@ -85,8 +86,13 @@ sequenceDiagram
     S->>G: Followup
     G->>D: stream model request
     D-->>G: StreamChunk sequence
-    G->>P: append turn/step/message facts
-    G-->>W: session/event + session-status
+    G->>C: append turn/step/message facts
+    C-->>P: committed session/event
+    C-->>H: committed event via API Proxy
+    H-->>W: session/event + session-status
+    G->>C: Flush after turn/end
+    C->>P: session/flush and await
+    P-->>G: durable boundary acknowledged
     W->>W: render draft, then committed message
 ```
 

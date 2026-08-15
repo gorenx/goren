@@ -31,6 +31,7 @@
 ## 模块内运行说明
 
 - [`session/README.zh-CN.md`](../session/README.zh-CN.md)：Session append-only log、Store、publication、`DeferAfterEvent` 与生命周期。
+- [`agentloop/README.zh-CN.md`](../agentloop/README.zh-CN.md)：Agent driver、Turn/Step、请求/Tool 调度、durability checkpoint 与 idle convergence。
 - [`apiproxy/README.zh-CN.md`](../apiproxy/README.zh-CN.md)：typed method adapter、Session/Interaction Gateway、live frame、correlation 与背压。
 - [`internal/assembly/README.zh-CN.md`](../internal/assembly/README.zh-CN.md)：Factory Catalog、typed config、依赖结算与 composition rollback。
 - [`workspace/README.zh-CN.md`](../workspace/README.zh-CN.md)：Workspace Registry、Session accounting、SQLite adapter 与 API/Host 交互。

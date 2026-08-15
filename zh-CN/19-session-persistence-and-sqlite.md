@@ -84,13 +84,16 @@ sequenceDiagram
     S-->>C: session/event
     C->>W: enqueue detached Event
     W->>B: AppendBatch on delay/batch boundary
-    U->>S: Flush
+    U->>S: Flush after committed turn/end
     S->>C: session/flush
     C->>W: flush and await
     W->>B: commit retained batch
+    B-->>U: durable boundary acknowledged
 ```
 
 Event 在进入 persistence listener 前已是 committed fact，因此 storage failure 不能倒转 Session memory。write-behind 必须保留失败 batch、保持原顺序并让显式 flush 报错；不能推进 durable cursor 或伪报成功。第一次 materialization 的 Header 和首批 Events 必须处于同一 Backend transaction。
+
+正常 Agent driver 在追加 `turn/end` 后调用 `session.Store.Flush`，并在它完成后才成功进入 successor Turn 或 idle convergence。Agent Loop 不直接调用 `Persistence` 或 SQLite；Store 通过 `session/flush` 并行等待全部 durability participant，`SessionLogStore` 再把该 Session 的 retained batch 提交给 Backend。调用方 Context 取消或 Backend failure 必须返回错误，未落盘 batch 仍由 writer 保留，供后续 flush、dispose 或 shutdown drain。
 
 每个 Session ID 有独立串行 gate，不同 Session 可并行。同一 live Session 只有一个 writer owner；duplicate listener、不同 seed prefix、CWD 冲突或 durable identity collision 明确失败。
 

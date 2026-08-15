@@ -12,7 +12,7 @@
 | `session/projection` | 通用 projection unit registry、live fold、snapshot、checkpoint/restore 与 change feed | 具体 projection key、API DTO、数据库事务 |
 | `session/title` | `session/title` 事实、fallback、Provider 调度、rename/refresh 与 title projection | 具体 LLM Provider、HTTP、wire handler、持久化 adapter |
 
-Go 调用方对后三个 capability 通常使用 `sessionpersistence`、`sessionprojection`、`sessiontitle` 显式 import alias，以保留 canonical 模块语义，同时让包路径按领域归组。
+Go 调用方对 Persistence 使用较短的 `sesspersist`，对其 SQLite adapter 使用 `sesssqlite`；公开包路径、领域类型与 Service 名不因导入缩写改变。Projection/Title 仍按各自调用点保留清晰的领域别名。
 
 ## 总体工作原理
 
@@ -38,6 +38,8 @@ flowchart LR
 ### Persistence 与 SQLite
 
 `session.Store` 只回答当前进程有哪些 live Session；`session/persistence.Persistence` 回答跨进程事实、cold inspection、恢复与 resume preparation。具体 `SessionLogStore` 是有状态 Go 对象：监听 `OnCreated`、`OnEvent`、`OnFlush`、`OnDisposed`，按 Session ID 串行化 write-behind、load 与 repair；`Backend` 只映射 records、revision、repair marker 和事务。
+
+正常 Agent Turn 在提交 `turn/end` 后调用 `session.Store.Flush`。Store 只发布并等待 `session/flush`；`SessionLogStore` 作为 durability participant 将 retained batch 提交给 Backend。这样 Agent Loop 不认识 SQLite，而 idle 表示该正常 Turn 已越过配置中的持久化边界。
 
 SQLite adapter 使用以下领域内结构：
 
