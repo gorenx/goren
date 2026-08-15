@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有 `plugin` 与 `internal/assembly` 的职责、Go 类型模型、上下游流程和生命周期。全局依赖方向与 Child Scope 使用规则由[02 Go 运行时架构与插件模型](./02-runtime-architecture-and-plugin-model.md)拥有；System Prompt、Tools、Agent Loop、Session API Gateway、Interaction Gateway、Session Projection/Title 与 Session Persistence 的消费语义分别由[11](./11-system-prompt-registry-and-assembly.md)、[12](./12-tools-registry-and-execution-pipeline.md)、[15](./15-agent-loop-and-request-driver.md)、[16](./16-session-api-gateway-and-live-frames.md)、[17](./17-approval-user-questions-and-interaction-gateway.md)、[18](./18-session-projection-and-title.md)和[19](./19-session-persistence-and-sqlite.md)拥有；当前实施证据只见[08 实施进度](./08-implementation-progress.md)。
+本文拥有 `plugin` 与 `internal/assembly` 的职责、Go 类型模型、上下游流程和生命周期。全局依赖方向与 Child Scope 使用规则由[02 Go 运行时架构与插件模型](./02-runtime-architecture-and-plugin-model.md)拥有；System Prompt、Tools、Agent Loop、Session API Gateway、Interaction Gateway、Session Projection/Title、Session Persistence 与 Workspace 的消费语义分别由[11](./11-system-prompt-registry-and-assembly.md)、[12](./12-tools-registry-and-execution-pipeline.md)、[15](./15-agent-loop-and-request-driver.md)、[16](./16-session-api-gateway-and-live-frames.md)、[17](./17-approval-user-questions-and-interaction-gateway.md)、[18](./18-session-projection-and-title.md)、[19](./19-session-persistence-and-sqlite.md)和[20](./20-workspace-registry-and-api.md)拥有；当前实施证据只见[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 源职责映射
 
@@ -26,7 +26,8 @@
 | `packages/core/llm-retry` | `internal/assembly` 的 LLM Retry Plugin | 消费 Agent request-error seam，安装默认 provider-routed retry Consumer |
 | `packages/session/session-projection` | `internal/assembly` 的 Session Projection Plugin | 提供 `sessionProjections` Registry |
 | `packages/session/session-title` | `internal/assembly` 的 Session Title Plugin | 消费 Session/Projection，提供 log-backed `sessionTitle` |
-| `packages/session/session-persistence-sqlite` | `internal/assembly` 的 Session Persistence SQLite Plugin | 消费 Session Store，提供 `sessionPersistence` |
+| `packages/session/session-persistence` 与 `session-persistence-sqlite` | `internal/assembly` 的 Session Persistence Plugin | 消费 Session Store，内部装配 SQLite Backend，只提供 `sessionPersistence` |
+| `packages/workspace/workspace` 与源 Storage Domain | `internal/assembly` 的 Workspace Plugin | 消费 Session Store/Persistence，内部装配 SQLite Backend，只提供 `workspaceRegistry` |
 | `packages/interaction/user-approval` | `internal/assembly` 的 Approval Plugin | 消费 System Prompt，提供 `approval` Service |
 | `packages/interaction/user-questions` | `internal/assembly` 的 UserQuestions Plugin | 提供 `userQuestions` Service，并可读取 live Agent Registry |
 | `packages/interaction/tool-ask-user` | `internal/assembly` 的 Tool Ask User Plugin | 消费 Tools/UserQuestions 并注册 `ask_user_question` |
@@ -167,7 +168,7 @@ shipped Catalog 当前只有：
 - `@deepseek-ai/dsh-llm-deepseek` 的 direct DeepSeek Adapter Consumer；
 - `@deepseek-ai/dsh-llm-retry` 的默认 RetryPolicy Consumer；
 - `@deepseek-ai/dsh-session` 的内存 Store Provider；
-- `@deepseek-ai/dsh-session-persistence-sqlite` 的 SQLite fact Backend 与 Persistence Coordinator；
+- `@deepseek-ai/dsh-session-persistence` 的 `SessionLogStore`，内部装配默认 SQLite fact Backend；
 - `@deepseek-ai/dsh-session-projection` 的内存 Registry Provider；
 - `@deepseek-ai/dsh-session-title` 的 log-backed Title Provider；
 - `@deepseek-ai/dsh-system-prompt` 的 Registry/Assembly Provider；
@@ -176,21 +177,22 @@ shipped Catalog 当前只有：
 - `@deepseek-ai/dsh-agent-loop` 的 concrete Agent lifecycle 与 request driver Provider；
 - `@deepseek-ai/dsh-user-approval` 的 policy/audit Provider；
 - `@deepseek-ai/dsh-user-questions` 的 question Provider Registry；
-- `@deepseek-ai/dsh-tool-ask-user` 的 `ask_user_question` Tool Consumer。
+- `@deepseek-ai/dsh-tool-ask-user` 的 `ask_user_question` Tool Consumer；
+- `@deepseek-ai/dsh-workspace` 的 Registry，内部装配默认 SQLite Workspace Backend。
 
-其中 Connection Factory 虽然沿用源 npm canonical name，但只实现服务端 Host carrier，不包含 `WebApiClient`、`ConnectionController` 或浏览器代码。Web UI、SDK、Tools Code Mode、ACP、MCP、Typert 与其他 Deferred 能力不在 Catalog 或依赖闭包。
+SQLite adapter 不单独注册 Factory，不提供 storage Service，也没有独立 Plugin Scope；Session Persistence 和 Workspace 两个能力插件各自构造并拥有自己的 adapter。Connection Factory 虽然沿用源 npm canonical name，但只实现服务端 Host carrier，不包含 `WebApiClient`、`ConnectionController` 或浏览器代码。Web UI、SDK、Tools Code Mode、ACP、MCP、Typert 与其他 Deferred 能力不在 Catalog 或依赖闭包。
 
 ## 8. 当前 server 组合流程
 
-默认 declarations 按 Connection、API Proxy、Tool Ask User、Agent Default Model、LLM Retry、Session Title、Session Projection、Agent Loop、Approval、UserQuestions、Agent、LLM、DeepSeek、System Prompt、Tools、Session 声明。Consumer 故意出现在部分 Provider 之前，以证明 Runtime 按 Service graph 而不是文件顺序工作：
+默认 declarations 按 Connection、API Proxy、Tool Ask User、Agent Default Model、LLM Retry、Session Title、Session Projection、Agent Loop、Approval、UserQuestions、Agent、LLM、DeepSeek、System Prompt、Tools、Session、Session Persistence、Workspace 声明。Consumer 故意出现在部分 Provider 之前，以证明 Runtime 按 Service graph 而不是文件顺序工作：
 
 ```text
 cmd/goren
   -> assembly.NewCatalog(Environment{cwd})
-  -> assembly.DefaultSpecs(listen, version)
+  -> assembly.DefaultSpecs(listen, version, sessionDB, workspaceDB)
   -> connection Factory.Create
   -> Connection StateWaiting (requires apiProxy)
-  -> API Proxy StateWaiting (requires agents/agentDefaultModel/llm/sessions/sessionProjections/sessionTitle/userQuestions)
+  -> API Proxy StateWaiting (requires agents/agentDefaultModel/llm/sessions/sessionPersistence/sessionProjections/sessionTitle/userQuestions/workspaceRegistry)
   -> Tool Ask User StateWaiting (requires tools/userQuestions)
   -> Agent Default Model Factory.Create + Apply
        -> static deployment selection + Provide(agentDefaultModel)
@@ -226,6 +228,12 @@ cmd/goren
        -> register ask_user_question Tool
   -> Session Factory.Create + Apply
        -> MemoryStore + Provide(sessions)
+  -> Runtime settles Session Persistence
+       -> construct SQLite Backend + SessionLogStore
+       -> Provide(sessionPersistence)
+  -> Runtime settles Workspace
+       -> construct SQLite Backend + DurableRegistry
+       -> Provide(workspaceRegistry)
   -> Runtime settles Session Title
        -> register title projection + event/llm observers
        -> Provide(sessionTitle)
@@ -234,8 +242,8 @@ cmd/goren
        -> register concrete Factory with agents
        -> Provide(agentLoop)
   -> Runtime settles API Proxy
-       -> Require agents/agentDefaultModel/llm/sessions/sessionProjections/sessionTitle/userQuestions
-       -> SessionGateway + host.describe + nine session.* methods
+       -> Require agents/agentDefaultModel/llm/sessions/sessionPersistence/sessionProjections/sessionTitle/userQuestions/workspaceRegistry
+       -> SessionGateway + WorkspaceGateway + host.describe + session.*/workspace.* methods
        -> InteractionGateway + approval/question pending/respond/replay
        -> real Mux/Host EventStreams
        -> Provide(apiProxy)

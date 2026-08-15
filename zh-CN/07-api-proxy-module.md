@@ -159,7 +159,7 @@ POST /api/respond
 
 ## 9. 具体 API 模块进入规则
 
-`host.describe` 仍由本文拥有；已进入的 `session.*` module 由[16](./16-session-api-gateway-and-live-frames.md)拥有，Approval/Question carrier adapter 由[17](./17-approval-user-questions-and-interaction-gateway.md)拥有。每增加一个其他 API 模块，必须同时提供：
+`host.describe` 仍由本文拥有；已进入的 `session.*` module 由[16](./16-session-api-gateway-and-live-frames.md)拥有，Approval/Question carrier adapter 由[17](./17-approval-user-questions-and-interaction-gateway.md)拥有，七个 `workspace.*` method、四个 Host frame 与 `session.create({workspaceId})` 由[20](./20-workspace-registry-and-api.md)拥有。每增加一个其他 API 模块，必须同时提供：
 
 1. 固定源 method/schema/Provider owner；
 2. owner-defined request、response 与 error details 类型；

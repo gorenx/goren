@@ -113,7 +113,8 @@ Headless 是不启动 Client Connection 的一次性 CLI adapter：读取一个 
 
 - Connection Host carrier：复制 `/api` HTTP unary、`rpcId` 关联、`RpcResult`/`RpcReceipt`、两条 WebSocket downlink、取消、body limit 与 Host/Origin trust fence。
 - API Proxy contract：保留纳入方法的 canonical method、payload/result schema、错误码与 frame union；Go handler 直接调用核心 Service。
-- 第一兼容切片以 `host.describe`、`session.*`、`events.mux`、`events.host`、`respond` 及它们依赖的 approval/question frame 为主。
+- 当前兼容切片包含 `host.describe`、`session.*`、七个 `workspace.*`、`events.mux`、`events.host`、`respond`，以及它们依赖的 Session/Workspace/approval/question frame。
+- Workspace 只纳入服务端 Registry、SQLite adapter、Session accounting 与协议/API；不复制浏览器 Workspace manager、目录选择 UI 或项目文件索引。
 - TypeScript Client 代码不复制，但源 Client contract tests 作为 Go Server 的外部兼容验收方。
 
 Connection Server composition 会打开协议端口，但不提供 HTML、JavaScript bundle、React、静态资源或浏览器客户端。这是 Agent 协议服务端，不是 Web 产品。Deferred Headless composition 若实现，仍不监听端口。
@@ -123,7 +124,7 @@ Connection Server composition 会打开协议端口，但不提供 HTML、JavaSc
 - Headless CLI；
 - ACP Server 与 MCP Client Bridge；
 - Typert Host Gateway；只有纳入 endpoint 在固定源基线中由 Typert Remote 拥有时，才实现该 endpoint 所需的最小 descriptor 与 Host dispatch；
-- Workspace、Subagent、Settings、Credentials、Goals、Remote extension 等非核心客户端功能；
+- Subagent、Settings、Credentials、Goals、Remote extension 等非核心客户端功能；
 - Codex/Claude Code/ACP subagent、Workflow、Schedule 等编排能力。
 
 Deferred 不算已复制，也不能通过空 handler 或固定成功响应占位。进入范围时仍保持源职责划分。

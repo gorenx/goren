@@ -135,6 +135,8 @@ TypeScript Client Connection
 
 Go 不复制左侧的 TypeScript Client 实现，但复制 Host carrier 和 API Proxy contract。兼容目标是现有 Client 可以使用原 path、信封、method、payload/result、frame 和重连流程连接 Go Server。
 
+当前纳入的应用 API 包含 `host.describe`、`session.*`、七个 `workspace.*` 与 `/api/respond`。Workspace 的 method、错误、Host frame 和 `session.create({workspaceId})` 由[20 Workspace Registry、SQLite 与 API Gateway](./20-workspace-registry-and-api.md)拥有；客户端实现仍只作为 contract oracle。
+
 ### 6.2 四类 RPC message
 
 Client 发起一元请求：

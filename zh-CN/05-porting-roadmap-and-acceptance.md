@@ -57,7 +57,7 @@ Existing TypeScript Client
 - 提取四类 RPC message、`RpcResult`、`RpcReceipt`、Mux/Host frame、HTTP/WS path 和 stable errors；
 - 提取首期 `host.describe`、`session.*`、approval/question 与 `/api/respond` 的 payload/result；
 - 建立 `contracts/deepseek-harness/manifest.json`、固定向量与可重复的 TypeScript fixture 生成入口；
-- 单列 full Web client 启动所需但首期未纳入的 Workspace、Settings、Goals 等能力；
+- 单列 full Web client 启动所需但阶段 0 尚未纳入的 Workspace、Settings、Goals 等能力；能力进入后必须回写范围与状态，不能保留为永久 Deferred 描述；
 - 记录当前 Go `llm` API 与目标 contract 的迁移差异；
 - 确定 NOTICE/provenance 形式。
 
@@ -169,7 +169,7 @@ Existing TypeScript Client
 - reconnect 能读取 baseline，不能重复提交已 committed event；
 - Agent Loop 不导入 Connection、storage driver、LLM vendor、CLI、ACP、MCP 或 filesystem Provider。
 
-这一阶段只承诺“现有 TypeScript Connection 可以完成 Agent 会话”。若原 Web Client 在启动时强制调用尚未纳入的 Workspace、Settings 或其他 API，必须通过 capability matrix 明确记录，不能把整个 Web 产品标记为兼容。
+这一阶段只承诺“现有 TypeScript Connection 可以完成 Agent 会话”。Workspace 已在阶段 6 作为独立能力进入；若原 Web Client 在启动时强制调用尚未纳入的 Settings 或其他 API，必须通过 capability matrix 明确记录，不能把整个 Web 产品标记为兼容。
 
 ## 7. 阶段 4：LLM Contract 与 DeepSeek Provider
 

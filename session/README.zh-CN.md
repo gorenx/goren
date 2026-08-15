@@ -19,7 +19,7 @@ Go 调用方对后三个 capability 通常使用 `sessionpersistence`、`session
 ```mermaid
 flowchart LR
     A[Agent or Application] -->|typed Append| B[Session Core]
-    B -->|committed session/event| C[Persistence Coordinator]
+    B -->|committed session/event| C[SessionLogStore]
     C -->|storage-only Backend calls| D[(SQLite facts)]
     B -->|committed session/event| E[Projection Registry]
     F[Title Service] -->|append session/title| B
@@ -37,7 +37,7 @@ flowchart LR
 
 ### Persistence 与 SQLite
 
-`session.Store` 只回答当前进程有哪些 live Session；`session/persistence.Persistence` 回答跨进程事实、cold inspection、恢复与 resume preparation。`Coordinator` 监听 `OnCreated`、`OnEvent`、`OnFlush`、`OnDisposed`，按 Session ID 串行化 write-behind、load 与 repair；`Backend` 只映射 records、revision、repair marker 和事务。
+`session.Store` 只回答当前进程有哪些 live Session；`session/persistence.Persistence` 回答跨进程事实、cold inspection、恢复与 resume preparation。具体 `SessionLogStore` 是有状态 Go 对象：监听 `OnCreated`、`OnEvent`、`OnFlush`、`OnDisposed`，按 Session ID 串行化 write-behind、load 与 repair；`Backend` 只映射 records、revision、repair marker 和事务。
 
 SQLite adapter 使用以下领域内结构：
 
@@ -49,7 +49,7 @@ session/persistence/sqlite/
 └── internal/dbsql/
 ```
 
-从仓库根目录运行 `sqlc generate -f session/persistence/sqlite/sqlc.yaml`。根目录不保存 sqlc 配置，生成类型也不离开 adapter。第一次 batch 在同一事务中创建 Session row、追加 Event rows 并递增 revision；repair 在同一事务中删除 torn tail、追加 Coordinator 已决定的 closing facts。SQLite 不分配 seq，也不解释业务状态。
+从仓库根目录运行 `sqlc generate -f session/persistence/sqlite/sqlc.yaml`。根目录不保存 sqlc 配置，生成类型也不离开 adapter。第一次 batch 在同一事务中创建 Session row、追加 Event rows 并递增 revision；repair 在同一事务中删除 torn tail、追加 `SessionLogStore` 已决定的 closing facts。SQLite 不分配 seq，也不解释业务状态。
 
 ### Projection 与 Title
 
@@ -70,6 +70,6 @@ JSONL 与 SQLite 是同一 `Backend` port 的可替换事实存储方案，不�
 
 Core `Create` 由 Prepare、Enter、Announce 组成；created listener 可 veto 并触发 rollback。Event commit 后 observer error 被包含和报告，不回滚事实。publication 期间直接重入 append 会拒绝，deferred queue 在 guard 释放后按登记顺序运行。
 
-Persistence 对同一 Session ID 的 load/append/repair 串行化。write-behind 失败保留未提交 batch；显式 flush、dispose 和插件关闭会等待 drain。Scope teardown 先停止 listener admission，再 drain writer，最后关闭 Backend。未知 required event、非连续 seq、Header 不一致或不可解释状态明确失败；是否删除 torn tail、追加哪些 recovery facts只由 Coordinator 决定。
+Persistence 对同一 Session ID 的 load/append/repair 串行化。write-behind 失败保留未提交 batch；显式 flush、dispose 和插件关闭会等待 drain。Scope teardown 先停止 listener admission，再 drain writer，最后关闭 Backend。未知 required event、非连续 seq、Header 不一致或不可解释状态明确失败；是否删除 torn tail、追加哪些 recovery facts只由 `SessionLogStore` 决定。
 
 调用方 Context 控制锁等待、读取、事务与 flush。Session dispose、Provider dispose、用户 rename 或更新 revision 会取消过期 title work；迟到结果在 append 前再次校验。慢客户端不参与这些事务，由 API Proxy 自己的 delivery queue 隔离。

@@ -147,11 +147,13 @@ DeepSeek direct adapter 的配置、调用链、SSE 和失败映射由[13 Harnes
 
 ## 7. D-06：Session 与持久化
 
-Session persistence 分为应用层 `Persistence`、storage-only `Backend` 和具体 adapter。Coordinator 拥有 live/cold 协调、连续 seq、write-behind、recovery 与 transaction intent；adapter 只保存 Header/Event records、执行被请求的事务并报告技术状态。完整设计见[19 Session Persistence 与 SQLite 事实存储设计](./19-session-persistence-and-sqlite.md)。
+Session persistence 分为应用层 `Persistence`、具体有状态对象 `SessionLogStore`、storage-only `Backend` 和 adapter。`SessionLogStore` 拥有 live/cold 协调、连续 seq、write-behind、recovery 与 transaction intent；adapter 只保存 Header/Event records、执行被请求的事务并报告技术状态。Session Persistence 是插件能力，SQLite 不是插件。完整设计见[19 Session Persistence 与 SQLite 事实存储设计](./19-session-persistence-and-sqlite.md)。
 
 SQLite 是当前默认 Session fact Backend。查询与写入统一由 [`sqlc`](https://sqlc.dev/) 按 SQLite dialect 根据 SQL schema/query 生成 `database/sql` Go 代码，driver 选用 [`modernc.org/sqlite`](https://pkg.go.dev/modernc.org/sqlite)，保持无 CGO 和单二进制交付。SQLite schema、query、`sqlc.yaml` 和生成包全部位于 `session/persistence/sqlite` owner 内。
 
-JSONL 与 SQLite 是同一 `Backend` port 的可替换 Provider，不执行双写，也不形成“JSONL 权威事实 + SQLite 事实副本”。若后续为 raw artifact、可移植导出或运维需求加入 JSONL，它仍不得分配 `seq`、创建 Session Event、判断 Turn/Step、实施 repair、retention 或权限策略。独立的 SQLite projection/query index 是可从事实流重建的 read model，不与当前事实数据库混为一体。
+JSONL 与 SQLite 是同一 `Backend` port 的可替换 adapter，不执行双写，也不形成“JSONL 权威事实 + SQLite 事实副本”。若后续为 raw artifact、可移植导出或运维需求加入 JSONL，它仍不得分配 `seq`、创建 Session Event、判断 Turn/Step、实施 repair、retention 或权限策略。独立的 SQLite projection/query index 是可从事实流重建的 read model，不与当前事实数据库混为一体。
+
+Go 实现不照搬 TypeScript 的函数式编排形态。长期持有状态和不变量的能力使用明确 struct 与 method，例如 `SessionLogStore` 和 `DurableRegistry`；跨模块替换点使用消费方拥有的 interface，例如 `Persistence`、Session `Backend` 与 Workspace `Backend`。函数值只用于事件 listener、时钟、ID 生成和 disposer 等天然 callback 边界，不用闭包表代替领域对象，也不把 SQLite 选择编码成运行时函数链。
 
 Projection 的业务语义仍位于 Projection/Application owner：它决定哪些 Event 产生哪些 mutation、字段如何解释以及一个 use case 需要哪些操作原子完成。任何 SQLite adapter 都只执行这些已决定的 mutation/query 和调用方要求的 transaction，不在 SQL trigger、生成 query wrapper 或 row mapper 中隐藏业务状态机。
 

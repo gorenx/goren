@@ -71,7 +71,7 @@ flowchart LR
 
 `Checkpoint` 只缓存 `{ver, seq, val}`。它可以丢弃、失效或从日志重建，不能成为业务事实。`RestoreFloor` 找出最低可用读取点；`Restore` 只接受连续 suffix，版本不兼容且缺少从 `seq=0` 的事实时拒绝，不能用空 state 伪造恢复成功。
 
-当前内存 Registry 与未来 SQLite/sqlc projection adapter 是不同职责：Registry 决定 fold；adapter 只保存可重建 checkpoint。默认 Session Persistence SQLite 只保存 Header/Event facts，见[19](./19-session-persistence-and-sqlite.md)，不能被描述为 projection store。
+当前内存 Registry 与未来 SQLite/sqlc projection adapter 是不同职责：Registry 决定 fold；adapter 只保存可重建 checkpoint。默认 Session Persistence 插件内部装配的 SQLite adapter 只保存 Header/Event facts，见[19](./19-session-persistence-and-sqlite.md)，不能被描述为 projection store 或独立 SQLite 插件。
 
 ## 5. `session/title` 事实
 

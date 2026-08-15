@@ -11,14 +11,14 @@
 | TypeScript owner | Go owner | 保留职责 |
 | --- | --- | --- |
 | `packages/session/session-persistence/src/index.ts` | `session/persistence/contracts.go` | `Persistence` capability、stored/log view 与错误边界 |
-| `coordinator.ts` | `session/persistence/coordinator.go` | live/cold 协调、恢复、revision 与 preparation |
+| `coordinator.ts` | `session/persistence/session_log_store.go` | live/cold 协调、恢复、revision 与 preparation；Go 以对象身份命名为 `SessionLogStore` |
 | `write-behind.ts` | `session/persistence/write_behind.go` | bounded-delay batch、flush、failure retention 与 drain |
 | `invariant.ts` | `session/persistence/recovery.go` | Header/Event/seq/turn/tool invariant 与 recovery plan |
-| `preparations.ts` | Coordinator reservation | unpublished Session identity 与 publication handoff |
+| `preparations.ts` | `SessionLogStore` reservation | unpublished Session identity 与 publication handoff |
 | `session-persistence-sqlite/src/index.ts` | `session/persistence/sqlite` | SQLite fact backend、事务、revision 与 row mapping |
 | `schema.ts` / `invariant.ts` | `sql/schema.sql`、`schema.go` | schema identity/version、打开时验证与存储不变量 |
 
-Go 不复制 Node file API、TypeScript 类型生成或浏览器 Connection。公共 wire 字段、Session event envelope、Service 名 `sessionPersistence` 和 Factory 名保持 canonical。
+Go 不复制 Node file API、TypeScript 类型生成或浏览器 Connection。公共 wire 字段、Session event envelope 与 Service 名 `sessionPersistence` 保持 canonical。源 SQLite package 同时承担插件与后端角色；Go 将插件身份收敛为 `@deepseek-ai/dsh-session-persistence`，把 SQLite 保留为 composition root 内的 `Backend` adapter，避免基础设施实现进入 Service graph。
 
 ## 2. 边界与依赖方向
 
@@ -26,8 +26,9 @@ Go 不复制 Node file API、TypeScript 类型生成或浏览器 Connection。�
 flowchart TD
     API[Session API Gateway] --> P[session/persistence.Persistence]
     LOOP[Agent Factory and Loop] --> P
-    P --> CORE[session Store and Session]
-    P --> PORT[session/persistence.Backend]
+    P --> LOG[SessionLogStore]
+    LOG --> CORE[session Store and Session]
+    LOG --> PORT[session/persistence.Backend]
     SQLITE[session/persistence/sqlite] -. implements .-> PORT
     SQLITE --> SQLC[internal/dbsql]
     SQLC --> DB[(SQLite Session facts)]
@@ -37,10 +38,12 @@ flowchart TD
 
 - `session` core 不依赖 persistence、SQLite、sqlc、API Proxy 或 Agent Loop；
 - `Persistence` 是上游 Consumer 使用的完整 durability capability；
-- `Backend` 是 Coordinator 拥有的 storage-only port，adapter 不决定业务恢复；
+- `Backend` 是 `SessionLogStore` 拥有的 storage-only port，adapter 不决定业务恢复；
 - SQLite/sqlc 类型止于 `session/persistence/sqlite`，映射后才返回 owner-defined contract；
 - API Gateway、Agent Loop 不导入 SQLite driver，不按表结构编排 use case；
-- JSONL、SQLite 和未来其他实现若进入，只能作为同一个 `Backend` port 的替换 Provider。
+- JSONL、SQLite 和未来其他实现若进入，只能作为同一个 `Backend` port 的替换 adapter。
+
+Plugin Runtime 只解析 Session Persistence capability：Factory 解码 `SessionPersistenceConfig`，构造当前内置 SQLite adapter 和 `SessionLogStore`，最终只 `Provide(sessionPersistence)`。SQLite 没有独立 Factory、Manifest、Service key 或依赖结算状态。这样更换 Backend 只改变 composition root 的构造选择，不要求 Agent、API、Workspace 或 Plugin Runtime 认识存储技术。
 
 ## 3. Store、Persistence 与 Backend
 
@@ -48,7 +51,7 @@ flowchart TD
 | --- | --- | --- | --- |
 | `session.Store` | 当前进程有哪些已 attached 的 live Session？ | Plugin Scope / Session attachment | `*session.Session`、live membership、created/event/flush/disposed |
 | `Persistence` | 跨进程有哪些 durable Session？如何检查、修复并恢复？ | durability plugin | detached Header/Event logical view、preparation |
-| `Backend` | 如何原子读取或写入物理 records？ | Persistence Coordinator | stored prefix/suffix、revision、repair marker |
+| `Backend` | 如何原子读取或写入物理 records？ | `SessionLogStore` | stored prefix/suffix、revision、repair marker |
 
 这三者不能合并。Store 中没有 cold record；Persistence 不能替代 live membership；Backend 不能创建 Session、选择 recovery event 或发布业务生命周期。
 
@@ -73,7 +76,7 @@ flowchart TD
 sequenceDiagram
     participant U as Agent/Application
     participant S as session.Store
-    participant C as Persistence Coordinator
+    participant C as SessionLogStore
     participant W as per-Session Writer
     participant B as Backend
     U->>S: Append typed fact
@@ -96,7 +99,7 @@ Event 在进入 persistence listener 前已是 committed fact，因此 storage f
 ```mermaid
 sequenceDiagram
     participant A as API or Agent Factory
-    participant C as Persistence Coordinator
+    participant C as SessionLogStore
     participant B as Backend
     participant S as session.Store
     A->>C: Prepare(sessionId)
@@ -122,11 +125,11 @@ Recovery 检查：
 - open Turn/Step 和未闭合 Tool call 按 source invariant 生成 ordinary closing Events；
 - repair 后完整日志再次通过相同 invariant。
 
-Backend 只返回 marker 或 corruption 技术事实。Coordinator 决定删除哪段 torn tail、追加哪些 closers，并通过 `CommitRepair` 请求一个事务完成。`Prepare` 返回的必须是最终 Enter 的同一个 Session 对象；reservation 在 publication 或显式 Dispose 时释放，防止两个 Agent 同时恢复同一 identity。缓存 prepared read 只能是受 revision 校验和容量限制的优化，不是第二个真相。
+Backend 只返回 marker 或 corruption 技术事实。`SessionLogStore` 决定删除哪段 torn tail、追加哪些 closers，并通过 `CommitRepair` 请求一个事务完成。`Prepare` 返回的必须是最终 Enter 的同一个 Session 对象；reservation 在 publication 或显式 Dispose 时释放，防止两个 Agent 同时恢复同一 identity。缓存 prepared read 只能是受 revision 校验和容量限制的优化，不是第二个真相。
 
 ## 7. SQLite/sqlc adapter
 
-SQLite 是当前默认 Session fact Backend，不是 projection cache。JSONL 若后续因 raw artifact、可移植导出或运维需求进入，是可替换 Backend；二者不双写，也不形成“JSONL 真相 + SQLite 影子”的强制架构。独立的 `session-query-sqlite` 仍是可从 facts 重建的查询索引。
+SQLite 是当前默认 Session fact Backend，不是插件或 projection cache。JSONL 若后续因 raw artifact、可移植导出或运维需求进入，是可替换 Backend；二者不双写，也不形成“JSONL 真相 + SQLite 影子”的强制架构。独立的 `session-query-sqlite` 仍是可从 facts 重建的查询索引。
 
 ### 7.1 目录所有权
 
@@ -159,7 +162,7 @@ session/persistence/sqlite/
 - 数据库连接限制为一个，避免 adapter 内无意引入跨连接写并发；
 - 新目录和文件使用 owner-only 权限；credentials 不写入数据库。
 
-sqlc 只生成查询调用；事务边界由 `Backend` method contract 与 Coordinator use case 决定，不能藏进 SQL trigger。Row decoder 验证 JSON、integer range、nullable field、surface operation 和 ignorable marker，再映射成 detached domain types。
+sqlc 只生成查询调用；事务边界由 `Backend` method contract 与 `SessionLogStore` use case 决定，不能藏进 SQL trigger。Row decoder 验证 JSON、integer range、nullable field、surface operation 和 ignorable marker，再映射成 detached domain types。
 
 ## 8. API 与 Agent 集成
 
@@ -178,7 +181,7 @@ Persistence plugin 的 Scope 按 LIFO 停止：先释放 listener、拒绝新 ad
 
 ## 10. 后续能力进入规则
 
-- 新 Backend 先实现同一 storage-only port，不复制 Coordinator/recovery；
+- 新 Backend 先实现同一 storage-only port，不复制 `SessionLogStore`/recovery；
 - migration 只有在明确版本转换与 crash atomicity 后进入；不能自动接受未知 schema；
 - projection checkpoint/query index 使用自己的 schema、owner 和 transaction，不向事实表加入 optional global model；
 - raw artifact/export 是 capability，不为 SQLite 伪造 per-Session 文件；

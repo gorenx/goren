@@ -176,7 +176,7 @@ Session Factory
   -> MemoryStore
   -> Provide(sessions)
 
-Agent / API use case / Persistence Coordinator
+Agent / API use case / SessionLogStore
   -> Require(sessions)
   -> Create, Append, Flush, Get/List
 
@@ -184,7 +184,7 @@ API Proxy
   -> Require(sessions)
   -> host.describe projects len(Store.List())
 
-session/persistence Coordinator
+session/persistence SessionLogStore
   -> OnEvent buffers exact committed Event
   -> OnFlush drains per-Session writer
   -> storage-only Backend

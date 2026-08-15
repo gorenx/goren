@@ -100,7 +100,7 @@ live Registry、durable Inbox、Agent-scoped event、initiator attribution 与 m
 ```text
 Agent / API consumer
   -> session/persistence.Persistence
-  -> Coordinator
+  -> SessionLogStore
   -> storage-only Backend
   -> SQLite fact adapter (default) or JSONL (optional replacement)
 
@@ -117,7 +117,7 @@ JSONL、SQLite 和未来其他 adapter 只拥有序列化、文件/数据库 I/O
 - retention、authorization、permission 或 workflow policy；
 - use case 的原子边界。
 
-Session Persistence Coordinator 检测开放轮次并决定追加 closing events；Projection owner 把 Event 转换为明确的 projection mutation。Adapter 只持久化调用者已经决定的数据。sqlc 生成类型和 driver 类型必须在 adapter 内映射，不能成为 `Persistence`/`Backend` 或领域模型。
+Session `SessionLogStore` 检测开放轮次并决定追加 closing events；Projection owner 把 Event 转换为明确的 projection mutation。Adapter 只持久化调用者已经决定的数据。sqlc 生成类型和 driver 类型必须在 adapter 内映射，不能成为 `Persistence`/`Backend` 或领域模型。插件以 Session Persistence capability 为身份；默认 SQLite 只是 composition root 选择的 `Backend` 实现，不单独进入插件依赖图。
 
 ### 2.5 Capability Plane
 

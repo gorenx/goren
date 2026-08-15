@@ -56,7 +56,7 @@ Session API Gateway 不拥有：
 
 `session.create` 的并发去重只共享同一 ID 的 acquisition，不共享调用者的 adoption policy。等待者在得到已创建对象后仍重新检查自己的 `cwd` 与 `agentPreset`，避免一个宽松请求替另一个冲突请求作出决定。
 
-当前没有 Workspace Service，因此携带 `workspaceId` 的 create 返回 `workspace-not-found`；没有 Attachment Service，因此 prompt image 和非 text queue edit 返回 attachment failure。history 中的 Tool view 只有对应 presenter/provider 进入组合后才出现，不能由 API adapter 猜测。Title 的规范化、fallback、Provider 调度、source union 与 projection fold 均由[18](./18-session-projection-and-title.md)拥有，Gateway 只做调用和 wire 映射。
+当前 Workspace Service 已进入默认组合：`session.create({workspaceId})` 读取 Workspace canonical path 作为 Session `cwd`，创建后执行 accounting；未知 ID 与 attach failure 使用各自稳定错误，完整边界见[20](./20-workspace-registry-and-api.md)。没有 Attachment Service，因此 prompt image 和非 text queue edit 返回 attachment failure。history 中的 Tool view 只有对应 presenter/provider 进入组合后才出现，不能由 API adapter 猜测。Title 的规范化、fallback、Provider 调度、source union 与 projection fold 均由[18](./18-session-projection-and-title.md)拥有，Gateway 只做调用和 wire 映射。
 
 ## 4. 默认模型与 Session 选择优先级
 
@@ -157,9 +157,9 @@ wire DTO 止于 `apiproxy`；Agent、Session、LLM 和默认模型包不依赖 C
 ## 9. 后续能力进入规则
 
 - Approval/Question 已由[17](./17-approval-user-questions-and-interaction-gateway.md)持有 pending、requested/resolved frame、replay 和 result schema；新增 interaction 必须复用同一 generic correlation 与 broker seam，不能把具体 schema 塞回 Session Gateway；
-- `session.search`、`fork` 和 attachment method 只有在其真实 Session/Workspace/Attachment capability 进入后才注册；
+- `session.search`、`fork` 和 attachment method 只有在其真实 Session/Attachment capability 进入后才注册；
 - Session Title 的 first-prompt/all-prompts LLM Provider 作为独立插件进入，不能把模型调用塞进 `SessionGateway` 或 core Title Service；
-- JSONL、SQLite/sqlc 只实现业务事实存取 adapter，resume/load/repair 由 `session/persistence` Coordinator 决定；
+- JSONL、SQLite/sqlc 只实现业务事实存取 adapter，resume/load/repair 由 `session/persistence.SessionLogStore` 决定；
 - Tool view、projection、remote event 和 Workspace frame 由相应 Provider 贡献，不能在 SessionGateway 中加入 optional global model；
 - 新增 method 必须经过 method-owned typed decoder、业务 success/failure/cancel 和固定源 Client/schema contract；
 - 浏览器 Connection、Web UI、SDK、Typert generator 和 `!!js` 不因 Session Gateway 扩展而进入 Go 依赖闭包。
