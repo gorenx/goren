@@ -104,26 +104,42 @@ func (owner *Adapter) LoadStoredFrom(
 	identifier session.SessionID,
 	fromSeq int64,
 ) (sesspersist.StoredSuffix, bool, error) {
-	row, err := owner.queries.GetSession(requestContext, string(identifier))
-	if errors.Is(err, sql.ErrNoRows) {
-		return sesspersist.StoredSuffix{}, false, nil
-	}
+	transaction, err := owner.database.BeginTx(requestContext, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return sesspersist.StoredSuffix{}, false, err
 	}
-	rows, err := owner.queries.ListEventsFrom(requestContext, dbsql.ListEventsFromParams{
+	queries := owner.queries.WithTx(transaction)
+	row, err := queries.GetSession(requestContext, string(identifier))
+	if errors.Is(err, sql.ErrNoRows) {
+		_ = transaction.Rollback()
+		return sesspersist.StoredSuffix{}, false, nil
+	}
+	if err != nil {
+		_ = transaction.Rollback()
+		return sesspersist.StoredSuffix{}, false, err
+	}
+	rows, err := queries.ListEventsFrom(requestContext, dbsql.ListEventsFromParams{
 		SessionID: string(identifier), Seq: fromSeq,
 	})
 	if err != nil {
+		_ = transaction.Rollback()
+		return sesspersist.StoredSuffix{}, false, err
+	}
+	if err := transaction.Commit(); err != nil {
 		return sesspersist.StoredSuffix{}, false, err
 	}
 	metadata, err := rowToHeader(row)
 	if err != nil {
 		return sesspersist.StoredSuffix{}, false, err
 	}
-	entries, _, err := scanEventRows(suffixEventRows(rows), fromSeq)
+	entries, marker, err := scanEventRows(suffixEventRows(rows), fromSeq)
 	if err != nil {
 		return sesspersist.StoredSuffix{}, false, err
+	}
+	if marker != nil {
+		return sesspersist.StoredSuffix{}, false, fmt.Errorf(
+			"session persistence sqlite: invalid stored suffix at seq %d", marker.from,
+		)
 	}
 	return sesspersist.StoredSuffix{Header: metadata, Events: entries}, true, nil
 }

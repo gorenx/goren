@@ -23,6 +23,7 @@ import (
 	"github.com/gorenx/goren/session"
 	sesspersist "github.com/gorenx/goren/session/persistence"
 	sessionprojection "github.com/gorenx/goren/session/projection"
+	sessionquery "github.com/gorenx/goren/session/query"
 	sessiontitle "github.com/gorenx/goren/session/title"
 	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/toolaskuser"
@@ -39,7 +40,7 @@ func (instance probePlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "assembly-probe",
 		Requires: []plugin.ServiceRef{
-			agentcore.Service.Ref(), agentdefaultmodel.Service.Ref(), agentloop.Service.Ref(), approval.Service.Ref(), serverServiceKey.Ref(), credentials.Service.Ref(), llm.Service.Ref(), session.StoreService.Ref(), sesspersist.Service.Ref(), sessionprojection.Service.Ref(), sessiontitle.Service.Ref(), systemprompt.Service.Ref(), toolscore.Service.Ref(), userquestions.Service.Ref(), workspace.Service.Ref(),
+			agentcore.Service.Ref(), agentdefaultmodel.Service.Ref(), agentloop.Service.Ref(), approval.Service.Ref(), serverServiceKey.Ref(), credentials.Service.Ref(), llm.Service.Ref(), session.StoreService.Ref(), sesspersist.Service.Ref(), sessionprojection.Service.Ref(), sessionquery.ServiceKey.Ref(), sessiontitle.Service.Ref(), systemprompt.Service.Ref(), toolscore.Service.Ref(), userquestions.Service.Ref(), workspace.Service.Ref(),
 		},
 	}
 }
@@ -58,7 +59,7 @@ func TestCatalogContainsOnlyCurrentServerSlice(t *testing.T) {
 		AgentFactoryName, AgentDefaultModelFactoryName, AgentLoopFactoryName,
 		ConnectionFactoryName, CredentialsFactoryName, APIProxyFactoryName, LLMFactoryName, DeepSeekFactoryName,
 		LLMRetryFactoryName,
-		SessionFactoryName, SessionPersistenceFactoryName, SessionProjectionFactoryName, SessionTitleFactoryName,
+		SessionFactoryName, SessionPersistenceFactoryName, SessionProjectionFactoryName, SessionQueryFactoryName, SessionTitleFactoryName,
 		SystemPromptFactoryName, ToolAskUserFactoryName,
 		ToolsFactoryName, ApprovalFactoryName, UserQuestionsFactoryName,
 		WorkspaceFactoryName, WebFrontendFactoryName,
@@ -119,6 +120,9 @@ func TestConnectionFactoryUsesStrictTypedConfig(t *testing.T) {
 		{label: "llm retry misplaced policy", factoryName: LLMRetryFactoryName, input: `{"retryPolicy":{"mode":"always"}}`, wantMessage: "belongs under each provider"},
 		{label: "llm retry null", factoryName: LLMRetryFactoryName, input: `null`, wantMessage: "must be an object"},
 		{label: "projection unknown", factoryName: SessionProjectionFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
+		{label: "query unknown", factoryName: SessionQueryFactoryName, input: `{"path":"/tmp/session-query.sqlite","unknown":true}`, wantMessage: "unknown field"},
+		{label: "query empty path", factoryName: SessionQueryFactoryName, input: `{"path":""}`, wantMessage: "path must be non-empty"},
+		{label: "query invalid limit", factoryName: SessionQueryFactoryName, input: `{"path":"/tmp/session-query.sqlite","defaultLimit":101,"maximumLimit":100}`, wantMessage: "must not exceed"},
 		{label: "title unknown", factoryName: SessionTitleFactoryName, input: `{"fallbackMaxWords":5,"fallbackMaxBytes":40,"maxTitleBytes":80,"unknown":true}`, wantMessage: "unknown field"},
 		{label: "title invalid cap", factoryName: SessionTitleFactoryName, input: `{"fallbackMaxWords":5,"fallbackMaxBytes":81,"maxTitleBytes":80}`, wantMessage: "must not exceed"},
 		{label: "title llm unknown", factoryName: SessionTitleFactoryName, input: `{"fallbackMaxWords":5,"fallbackMaxBytes":40,"maxTitleBytes":80,"llm":{"automaticMode":"first-prompt","targetWords":5,"targetCjkCharacters":10,"maxInputBytes":4096,"maxOutputTokens":64,"timeoutMs":60000,"unknown":true}}`, wantMessage: "unknown field"},
@@ -126,6 +130,7 @@ func TestConnectionFactoryUsesStrictTypedConfig(t *testing.T) {
 		{label: "persistence unknown", factoryName: SessionPersistenceFactoryName, input: `{"path":"/tmp/sessions.sqlite","unknown":true}`, wantMessage: "unknown field"},
 		{label: "persistence empty path", factoryName: SessionPersistenceFactoryName, input: `{"path":""}`, wantMessage: "path must be non-empty"},
 		{label: "persistence journal", factoryName: SessionPersistenceFactoryName, input: `{"path":"/tmp/sessions.sqlite","journalMode":"memory"}`, wantMessage: "journalMode must be"},
+		{label: "persistence cache", factoryName: SessionPersistenceFactoryName, input: `{"path":"/tmp/sessions.sqlite","preparedSessionCacheSize":-1}`, wantMessage: "must be a positive integer"},
 		{label: "workspace unknown", factoryName: WorkspaceFactoryName, input: `{"path":"/tmp/workspaces.sqlite","unknown":true}`, wantMessage: "unknown field"},
 		{label: "workspace empty path", factoryName: WorkspaceFactoryName, input: `{"path":""}`, wantMessage: "path must be non-empty"},
 		{label: "workspace journal", factoryName: WorkspaceFactoryName, input: `{"path":"/tmp/workspaces.sqlite","journalMode":"memory"}`, wantMessage: "journalMode must be"},

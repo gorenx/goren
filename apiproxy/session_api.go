@@ -9,6 +9,7 @@ import (
 
 const (
 	SessionListMethod        = "session.list"
+	SessionSearchMethod      = "session.search"
 	SessionCreateMethod      = "session.create"
 	SessionRenameMethod      = "session.rename"
 	SessionHistoryMethod     = "session.history"
@@ -46,6 +47,24 @@ type SessionProjectionsBlock struct {
 // SessionListValue is the complete session.list result.
 type SessionListValue struct {
 	Items []SessionSummary `json:"items"`
+}
+
+// SessionSearchRequest contains the normalized literal sidebar query.
+type SessionSearchRequest struct {
+	Query string
+}
+
+// SessionSearchItem contains content-search identity and a bounded plain-text
+// excerpt; display metadata remains owned by session.list.
+type SessionSearchItem struct {
+	SessionID SessionID `json:"sessionId"`
+	Snippet   string    `json:"snippet"`
+}
+
+// SessionSearchValue is one bounded, cursorless sidebar result.
+type SessionSearchValue struct {
+	Items   []SessionSearchItem `json:"items"`
+	HasMore bool                `json:"hasMore"`
 }
 
 // SessionCreateRequest creates or idempotently adopts an ordinary Session.
@@ -235,7 +254,9 @@ type AcceptedValue struct {
 	Accepted bool `json:"accepted"`
 }
 
-// SessionAPI owns typed implementations for the included session.* methods.
+// SessionAPI owns lifecycle, history, model selection, and interaction methods.
+// Content search is a separate capability because it has its own Query and
+// visibility dependencies.
 type SessionAPI interface {
 	List(context.Context, Request[SessionListRequest]) (Outcome[SessionListValue], error)
 	Create(context.Context, Request[SessionCreateRequest]) (Outcome[SessionCreateValue], error)
@@ -248,10 +269,18 @@ type SessionAPI interface {
 	Cancel(context.Context, Request[SessionCancelRequest]) (Outcome[AcceptedValue], error)
 }
 
+// SessionSearchAPI owns only session.search.
+type SessionSearchAPI interface {
+	Search(context.Context, Request[SessionSearchRequest]) (Outcome[SessionSearchValue], error)
+}
+
 // RegisterSessionAPI installs every currently included session method.
-func RegisterSessionAPI(methods *Catalog, service SessionAPI) error {
+func RegisterSessionAPI(methods *Catalog, service SessionAPI, searchService SessionSearchAPI) error {
 	registrations := []func() error{
 		func() error { return RegisterUnary(methods, SessionListMethod, DecodeSessionListRequest, service.List) },
+		func() error {
+			return RegisterUnary(methods, SessionSearchMethod, DecodeSessionSearchRequest, searchService.Search)
+		},
 		func() error {
 			return RegisterUnary(methods, SessionCreateMethod, DecodeSessionCreateRequest, service.Create)
 		},

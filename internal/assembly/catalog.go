@@ -14,6 +14,7 @@ import (
 	"github.com/gorenx/goren/internal/llmdeepseek"
 	"github.com/gorenx/goren/plugin"
 	sesspersist "github.com/gorenx/goren/session/persistence"
+	querysqlite "github.com/gorenx/goren/session/query/sqlite"
 	sessiontitle "github.com/gorenx/goren/session/title"
 )
 
@@ -31,6 +32,7 @@ const (
 	SessionFactoryName            = "@deepseek-ai/dsh-session"
 	SessionPersistenceFactoryName = "@deepseek-ai/dsh-session-persistence"
 	SessionProjectionFactoryName  = "@deepseek-ai/dsh-session-projection"
+	SessionQueryFactoryName       = "@deepseek-ai/dsh-session-query"
 	SessionTitleFactoryName       = "@deepseek-ai/dsh-session-title"
 	SystemPromptFactoryName       = "@deepseek-ai/dsh-system-prompt"
 	ToolAskUserFactoryName        = "@deepseek-ai/dsh-tool-ask-user"
@@ -110,6 +112,9 @@ func NewCatalog(platform Environment) (*plugin.Catalog, error) {
 	if err := plugin.RegisterFactory(registry, sessionProjectionFactory{}); err != nil {
 		return nil, err
 	}
+	if err := plugin.RegisterFactory(registry, sessionQueryFactory{}); err != nil {
+		return nil, err
+	}
 	if err := plugin.RegisterFactory(registry, sessionTitleFactory{}); err != nil {
 		return nil, err
 	}
@@ -159,7 +164,15 @@ func DefaultSpecs(
 	}
 	persistenceRaw, err := json.Marshal(SessionPersistenceConfig{
 		Path: sessionDatabasePath, JournalMode: "wal",
-		WriteBatchMaxDelayMS: sesspersist.DefaultWriteBatchMaxDelay.Milliseconds(),
+		WriteBatchMaxDelayMS:     sesspersist.DefaultWriteBatchMaxDelay.Milliseconds(),
+		PreparedSessionCacheSize: sesspersist.DefaultPreparedSessionCache,
+	})
+	if err != nil {
+		return nil, err
+	}
+	queryRaw, err := json.Marshal(SessionQueryConfig{
+		Path:        filepath.Join(filepath.Dir(sessionDatabasePath), "session-query.sqlite"),
+		JournalMode: querysqlite.JournalWAL,
 	})
 	if err != nil {
 		return nil, err
@@ -206,6 +219,7 @@ func DefaultSpecs(
 		{FactoryName: ToolsFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: SessionFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: SessionPersistenceFactoryName, Config: persistenceRaw},
+		{FactoryName: SessionQueryFactoryName, Config: queryRaw},
 		{FactoryName: WorkspaceFactoryName, Config: workspaceRaw},
 		{FactoryName: WebFrontendFactoryName, Config: json.RawMessage(`{}`)},
 	}, nil

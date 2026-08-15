@@ -25,7 +25,9 @@ import (
 	"github.com/gorenx/goren/workspace"
 )
 
-const defaultHistoryMessages int64 = 50
+const (
+	defaultHistoryMessages int64 = 50
+)
 
 var ianaTimeZonePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_+.-]*(?:/[A-Za-z0-9_+.-]+)+$`)
 
@@ -131,8 +133,15 @@ func NewSessionGateway(
 		return nil, err
 	}
 	owner := &SessionGateway{
-		sourceScope: sourceScope, agents: ports.Agents, sessions: ports.Sessions, persistence: ports.Persistence,
-		models: ports.LLM, catalog: modelDirectory, defaults: ports.Defaults, projections: ports.Projections, titles: ports.Titles,
+		sourceScope: sourceScope,
+		agents:      ports.Agents,
+		sessions:    ports.Sessions,
+		persistence: ports.Persistence,
+		models:      ports.LLM,
+		catalog:     modelDirectory,
+		defaults:    ports.Defaults,
+		projections: ports.Projections,
+		titles:      ports.Titles,
 		workspaces:  ports.Workspaces,
 		directories: ports.Directories,
 		workingDir:  settings.WorkingDirectory, newSession: newSession, newRPC: newRPC,
@@ -200,6 +209,14 @@ func (owner *SessionGateway) PublishHostFrame(payload HostFrame) error {
 
 // List returns the current attached Session baseline, newest human activity first.
 func (owner *SessionGateway) List(requestContext context.Context, _ Request[SessionListRequest]) (Outcome[SessionListValue], error) {
+	items, err := owner.visibleSessionSummaries(requestContext)
+	if err != nil {
+		return Outcome[SessionListValue]{}, err
+	}
+	return OK(SessionListValue{Items: items}), nil
+}
+
+func (owner *SessionGateway) visibleSessionSummaries(requestContext context.Context) ([]SessionSummary, error) {
 	items := make([]SessionSummary, 0)
 	liveIDs := make(map[session.SessionID]struct{})
 	for _, conversation := range owner.sessions.List() {
@@ -211,7 +228,7 @@ func (owner *SessionGateway) List(requestContext context.Context, _ Request[Sess
 		liveIDs[header.ID] = struct{}{}
 		projectionSnapshot, projectionErr := owner.projections.Snapshot(conversation)
 		if projectionErr != nil {
-			return Outcome[SessionListValue]{}, projectionErr
+			return nil, projectionErr
 		}
 		running := false
 		if subject, found := owner.agents.Get(header.ID); found {
@@ -221,7 +238,7 @@ func (owner *SessionGateway) List(requestContext context.Context, _ Request[Sess
 	}
 	storedHeaders, err := owner.persistence.List(requestContext)
 	if err != nil {
-		return Outcome[SessionListValue]{}, err
+		return nil, err
 	}
 	for _, header := range storedHeaders {
 		if _, live := liveIDs[header.ID]; live || header.CWD == nil {
@@ -229,11 +246,11 @@ func (owner *SessionGateway) List(requestContext context.Context, _ Request[Sess
 		}
 		loaded, err := owner.persistence.Inspect(requestContext, header.ID)
 		if err != nil {
-			return Outcome[SessionListValue]{}, err
+			return nil, err
 		}
 		restored, err := owner.projections.Restore(sessionprojection.Checkpoint{}, loaded.Events, 0)
 		if err != nil {
-			return Outcome[SessionListValue]{}, err
+			return nil, err
 		}
 		items = append(items, summarizeSession(loaded.Header, loaded.Events, false, restored.Snapshot))
 	}
@@ -243,7 +260,21 @@ func (owner *SessionGateway) List(requestContext context.Context, _ Request[Sess
 	if items == nil {
 		items = []SessionSummary{}
 	}
-	return OK(SessionListValue{Items: items}), nil
+	return items, nil
+}
+
+// VisibleSessionIDs exposes the same authorization boundary as session.list
+// without leaking its wire projection into the Session Search capability.
+func (owner *SessionGateway) VisibleSessionIDs(requestContext context.Context) (map[session.SessionID]struct{}, error) {
+	visible, err := owner.visibleSessionSummaries(requestContext)
+	if err != nil {
+		return nil, err
+	}
+	identifiers := make(map[session.SessionID]struct{}, len(visible))
+	for _, item := range visible {
+		identifiers[session.SessionID(item.SessionID)] = struct{}{}
+	}
+	return identifiers, nil
 }
 
 // Rename delegates normalization, pinning, and event append to Session Title.

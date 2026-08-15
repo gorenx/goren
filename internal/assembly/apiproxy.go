@@ -17,6 +17,7 @@ import (
 	"github.com/gorenx/goren/session"
 	sesspersist "github.com/gorenx/goren/session/persistence"
 	sessionprojection "github.com/gorenx/goren/session/projection"
+	sessionquery "github.com/gorenx/goren/session/query"
 	sessiontitle "github.com/gorenx/goren/session/title"
 	"github.com/gorenx/goren/userquestions"
 	"github.com/gorenx/goren/workspace"
@@ -75,6 +76,7 @@ func (instance *apiProxyPlugin) Manifest() plugin.Manifest {
 			session.StoreService.Ref(),
 			sesspersist.Service.Ref(),
 			sessionprojection.Service.Ref(),
+			sessionquery.ServiceKey.Ref(),
 			sessiontitle.Service.Ref(),
 			userquestions.Service.Ref(),
 			workspace.Service.Ref(),
@@ -90,19 +92,24 @@ func (instance *apiProxyPlugin) Apply(requestContext context.Context, pluginScop
 	sessionStore, found := plugin.Require(pluginScope, session.StoreService)
 	durability, persistenceFound := plugin.Require(pluginScope, sesspersist.Service)
 	projections, projectionsFound := plugin.Require(pluginScope, sessionprojection.Service)
+	queries, queriesFound := plugin.Require(pluginScope, sessionquery.ServiceKey)
 	titles, titlesFound := plugin.Require(pluginScope, sessiontitle.Service)
 	questionService, questionsFound := plugin.Require(pluginScope, userquestions.Service)
 	workspaceRegistry, workspacesFound := plugin.Require(pluginScope, workspace.Service)
 	credentialProvider, credentialsFound := plugin.Require(pluginScope, credentials.Service)
 
 	if !agentsFound || !defaultsFound || !modelsFound || !found || !persistenceFound ||
-		!projectionsFound || !titlesFound || !questionsFound || !workspacesFound || !credentialsFound {
+		!projectionsFound || !queriesFound || !titlesFound || !questionsFound || !workspacesFound || !credentialsFound {
 		return errors.New("assembly: API Proxy dependencies are unavailable")
 	}
 	gateway, err := apiproxy.NewSessionGateway(requestContext, pluginScope, apiproxy.SessionGatewayDependencies{
-		Agents: agentRegistry, Sessions: sessionStore, Persistence: durability,
-		LLM: modelRuntime, Defaults: defaultModels,
-		Projections: projections, Titles: titles,
+		Agents:      agentRegistry,
+		Sessions:    sessionStore,
+		Persistence: durability,
+		LLM:         modelRuntime,
+		Defaults:    defaultModels,
+		Projections: projections,
+		Titles:      titles,
 		Workspaces:  workspaceRegistry,
 		Directories: apiproxy.DirectoryProvisionerFunc(instance.ensureDirectory),
 	}, apiproxy.SessionGatewayOptions{WorkingDirectory: instance.workingDirectory})
@@ -140,7 +147,11 @@ func (instance *apiProxyPlugin) Apply(requestContext context.Context, pluginScop
 	if err := apiproxy.RegisterLLMAPI(methods, llmGateway); err != nil {
 		return err
 	}
-	if err := apiproxy.RegisterSessionAPI(methods, gateway); err != nil {
+	searchGateway, err := apiproxy.NewSessionSearchGateway(queries, gateway)
+	if err != nil {
+		return err
+	}
+	if err := apiproxy.RegisterSessionAPI(methods, gateway, searchGateway); err != nil {
 		return err
 	}
 	workspaceGateway, err := apiproxy.NewWorkspaceGateway(requestContext, pluginScope, workspaceRegistry, gateway)

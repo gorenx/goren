@@ -139,6 +139,7 @@ func TestPinnedManifestMatchesGoSurface(t *testing.T) {
 		apiproxy.LLMProvidersMethod,
 		apiproxy.LLMModelsMethod,
 		apiproxy.SessionListMethod,
+		apiproxy.SessionSearchMethod,
 		apiproxy.SessionCreateMethod,
 		apiproxy.SessionRenameMethod,
 		apiproxy.SessionHistoryMethod,
@@ -306,6 +307,10 @@ func TestGoAgreesWithPinnedSourceVectors(t *testing.T) {
 				_, issues := apiproxy.DecodeSessionListRequest(rawValue)
 				return issues
 			},
+			"sessionSearchRequest": func(rawValue json.RawMessage) []connection.ValidationIssue {
+				_, issues := apiproxy.DecodeSessionSearchRequest(rawValue)
+				return issues
+			},
 			"sessionCreateRequest": func(rawValue json.RawMessage) []connection.ValidationIssue {
 				_, issues := apiproxy.DecodeSessionCreateRequest(rawValue)
 				return issues
@@ -349,6 +354,7 @@ func TestGoAgreesWithPinnedSourceVectors(t *testing.T) {
 	t.Run("session values", func(t *testing.T) {
 		vectors := map[string]map[string]json.RawMessage{
 			"sessionListValue":        acceptedByName(t, fixtureData.Suites["sessionListValue"]),
+			"sessionSearchValue":      acceptedByName(t, fixtureData.Suites["sessionSearchValue"]),
 			"sessionCreateValue":      acceptedByName(t, fixtureData.Suites["sessionCreateValue"]),
 			"sessionRenameValue":      acceptedByName(t, fixtureData.Suites["sessionRenameValue"]),
 			"sessionHistoryValue":     acceptedByName(t, fixtureData.Suites["sessionHistoryValue"]),
@@ -359,6 +365,9 @@ func TestGoAgreesWithPinnedSourceVectors(t *testing.T) {
 			"sessionCancelValue":      acceptedByName(t, fixtureData.Suites["sessionCancelValue"]),
 		}
 		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionListValue{Items: []apiproxy.SessionSummary{}}), vectors["sessionListValue"]["empty"])
+		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionSearchValue{
+			Items: []apiproxy.SessionSearchItem{{SessionID: "session-1", Snippet: "matching text"}}, HasMore: true,
+		}), vectors["sessionSearchValue"]["match"])
 		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionCreateValue{SessionID: "session-1"}), vectors["sessionCreateValue"]["minimal"])
 		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionRenameValue{Title: "Named", Seq: 3}), vectors["sessionRenameValue"]["accepted"])
 		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionHistoryValue{Events: []apiproxy.HistoryEntry{}, HasMore: false}), vectors["sessionHistoryValue"]["empty"])

@@ -27,6 +27,8 @@ import (
 	sesspersist "github.com/gorenx/goren/session/persistence"
 	sesssqlite "github.com/gorenx/goren/session/persistence/sqlite"
 	sessionprojection "github.com/gorenx/goren/session/projection"
+	sessionquery "github.com/gorenx/goren/session/query"
+	querysqlite "github.com/gorenx/goren/session/query/sqlite"
 	sessiontitle "github.com/gorenx/goren/session/title"
 	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/tests/contract/fixture"
@@ -37,6 +39,7 @@ import (
 
 type sessionAPIContractState struct {
 	gateway          *apiproxy.SessionGateway
+	searchGateway    *apiproxy.SessionSearchGateway
 	workspaceGateway *apiproxy.WorkspaceGateway
 	backend          *sessionAPIContractAdapter
 	failures         contractFailureLog
@@ -95,6 +98,17 @@ func (extension *sessionAPIContractProvider) Apply(requestContext context.Contex
 	)
 	if err != nil {
 		_ = storage.Close(requestContext)
+		return err
+	}
+	queryIndex, err := querysqlite.Open(requestContext, querysqlite.Config{Path: ":memory:"})
+	if err != nil {
+		return err
+	}
+	queries, err := sessionquery.New(
+		providerScope, sessionStore, durability, queryIndex, sessionquery.Config{},
+	)
+	if err != nil {
+		_ = queryIndex.Close(requestContext)
 		return err
 	}
 	workspaceStorage, err := workspaceSqlite.Open(requestContext, workspaceSqlite.Config{
@@ -191,6 +205,10 @@ func (extension *sessionAPIContractProvider) Apply(requestContext context.Contex
 	if err != nil {
 		return err
 	}
+	searchGateway, err := apiproxy.NewSessionSearchGateway(queries, gateway)
+	if err != nil {
+		return err
+	}
 	workspaceGateway, err := apiproxy.NewWorkspaceGateway(
 		requestContext, providerScope, workspaceRegistry, gateway,
 	)
@@ -198,6 +216,7 @@ func (extension *sessionAPIContractProvider) Apply(requestContext context.Contex
 		return err
 	}
 	extension.state.gateway = gateway
+	extension.state.searchGateway = searchGateway
 	extension.state.workspaceGateway = workspaceGateway
 	return nil
 }
@@ -278,6 +297,7 @@ type sessionAPIClientObservation struct {
 	Models            bool     `json:"models"`
 	Selected          bool     `json:"selected"`
 	FirstPrompt       bool     `json:"firstPrompt"`
+	Searched          bool     `json:"searched"`
 	InitialProjection bool     `json:"initialProjection"`
 	FallbackTitle     bool     `json:"fallbackTitle"`
 	Renamed           bool     `json:"renamed"`
@@ -310,7 +330,7 @@ func TestPinnedSourceSessionWebApiClientTalksToGoGateway(t *testing.T) {
 	}
 
 	methods := apiproxy.NewCatalog()
-	if err := apiproxy.RegisterSessionAPI(methods, contractState.gateway); err != nil {
+	if err := apiproxy.RegisterSessionAPI(methods, contractState.gateway, contractState.searchGateway); err != nil {
 		t.Fatal(err)
 	}
 	if err := apiproxy.RegisterWorkspaceAPI(methods, contractState.workspaceGateway); err != nil {
@@ -354,7 +374,7 @@ func TestPinnedSourceSessionWebApiClientTalksToGoGateway(t *testing.T) {
 		!observation.EmptyHistory || !observation.InitialProjection || !observation.Models || !observation.Selected {
 		t.Fatalf("Session setup observation = %#v", observation)
 	}
-	if !observation.FirstPrompt || !observation.FallbackTitle || !slices.Contains(observation.FirstHistoryTypes, session.UserMessageEventName) ||
+	if !observation.FirstPrompt || !observation.Searched || !observation.FallbackTitle || !slices.Contains(observation.FirstHistoryTypes, session.UserMessageEventName) ||
 		!slices.Contains(observation.FirstHistoryTypes, session.TurnEndEventName) {
 		t.Fatalf("first turn observation = %#v", observation)
 	}
@@ -415,7 +435,7 @@ func TestPinnedSourceWorkspaceWebApiClientTalksToGoGateway(t *testing.T) {
 	}
 
 	methods := apiproxy.NewCatalog()
-	if err := apiproxy.RegisterSessionAPI(methods, contractState.gateway); err != nil {
+	if err := apiproxy.RegisterSessionAPI(methods, contractState.gateway, contractState.searchGateway); err != nil {
 		t.Fatal(err)
 	}
 	if err := apiproxy.RegisterWorkspaceAPI(methods, contractState.workspaceGateway); err != nil {
