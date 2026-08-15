@@ -190,14 +190,14 @@ System Prompt 的 contexts 不写入 system header，而是在每个 pre-step as
 ## 11. 上下游进入规则
 
 ```text
-Connection / session.* API（后续 inbound adapter）
+Connection / session.* API（`apiproxy.SessionGateway` inbound adapter）
   -> agents Registry / Agent live capability
   -> agentloop driver
   -> Session facts
-  -> Mux/Host projection（后续 outbound adapter）
+  -> Mux/Host projection（`SessionGateway` outbound projection）
 ```
 
-- `session.*` API 只把 wire request 映射为 Registry/Agent capability 调用；不得让 `agentloop` 依赖 Echo、RPC 或 frame DTO；
+- `session.*` API 只把 wire request 映射为 Registry/Agent capability 调用；不得让 `agentloop` 依赖 Echo、RPC 或 frame DTO；具体 method、projection 与 reconnect 规则由[16](./16-session-api-gateway-and-live-frames.md)拥有；
 - Session persistence 进入后，由 Session owner 提供 prepare/load/repair；Agent Loop 增加真实 resume transaction，并发布 `agent/session-start(resume)`，不能在 Adapter 内决定业务修复；
 - 默认 RetryPolicy 的 delay/jitter/attempt consumer 作为独立 Plugin 监听 `agent/request-error`，不能塞进 DeepSeek Adapter 或硬编码在 Agent Loop；
 - compaction、approval/question、Guard、Subagent 或 Workflow 通过现有 Session/Agent/Tools Event seam 进入，不在 Loop 中增加 capability-specific branch；

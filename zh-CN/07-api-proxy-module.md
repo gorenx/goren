@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有 API Proxy 的 method 注册、typed dispatch、Provider 边界和上下游交互。线协议由[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)拥有，Connection carrier 由[06 Connection Host 模块设计与实现](./06-connection-host-module.md)拥有，实现状态与验证证据见[08 实施进度](./08-implementation-progress.md)。
+本文拥有 API Proxy 的通用 method 注册、typed dispatch、Provider 边界和上下游交互。线协议由[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)拥有，Connection carrier 由[06 Connection Host 模块设计与实现](./06-connection-host-module.md)拥有，具体 `session.*` adapter 与 Session/Host live projection 由[16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)拥有，实现状态与验证证据见[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 源职责与模块范围
 
@@ -78,7 +78,7 @@ Session/Host owner
   -> connection.ServerRequest text message
 ```
 
-API Proxy 拥有 frame 的业务来源、baseline/replay 和稳定 interaction `rpcId`；Connection 只从 `payload.type` 补全 wire `method` 并发送，不检查 Session/Host 业务字段。当前 API Proxy Plugin 在尚无 Session/Host owner 时提供可取消的空事件源，表示真实的零事件状态，不生成虚假 frame。Plugin 通过 `apiProxy` Service 同时提供 `RPCDispatcher` 与 `EventSource` 两个 Connection 所需 facet；Connection 只消费 interface，不依赖具体 Catalog/EventStreams 类型。
+API Proxy 拥有 frame 的业务来源、baseline/replay 和稳定 interaction `rpcId`；Connection 只从 `payload.type` 补全 wire `method` 并发送，不检查 Session/Host 业务字段。当前 API Proxy Plugin 由 Session API Gateway 提供真实 Mux/Host 事件源，具体 baseline、high-water mark 和 live projection 规则见[16](./16-session-api-gateway-and-live-frames.md#5-mux-baseline-与-live-projection)。Plugin 通过 `apiProxy` Service 同时提供 `RPCDispatcher` 与 `EventSource` 两个 Connection 所需 facet；Connection 只消费 interface，不依赖具体 Catalog/EventStreams 类型。
 
 ## 5. Mux/Host 应用层 frame union
 
@@ -157,9 +157,9 @@ POST /api/respond
 
 通用 registry 不拥有 approval/question schema、requested/resolved frame、broadcast 或 reconnect replay。具体 interaction owner 仍持有其领域 pending 状态，从该状态生成首次 frame、replay baseline 和 resolved frame；registry 只保证 response 路由与结算并发语义。
 
-## 9. 后续进入规则
+## 9. 具体 API 模块进入规则
 
-每增加一个 API 模块，必须同时提供：
+`host.describe` 仍由本文拥有；已进入的 `session.*` module 由[16](./16-session-api-gateway-and-live-frames.md)拥有。每增加一个其他 API 模块，必须同时提供：
 
 1. 固定源 method/schema/Provider owner；
 2. owner-defined request、response 与 error details 类型；

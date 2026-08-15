@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有 `agent` 包的公开 Agent contract、live Registry、durable Inbox projection、Agent-scoped 实时事件、显式 initiator attribution 与单步 model selection snapshot。具体 Turn/Step 驱动由[15 Agent Loop 与请求驱动模块设计](./15-agent-loop-and-request-driver.md)拥有；Session 事实日志见[10 Session Core 与生命周期模块设计](./10-session-core-and-lifecycle.md)，通用 Scope/Event 语义见[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)，当前实施证据只见[08 实施进度](./08-implementation-progress.md)。
+本文拥有 `agent` 包的公开 Agent contract、live Registry、durable Inbox projection、Agent-scoped 实时事件、显式 initiator attribution 与单步 model selection snapshot。具体 Turn/Step 驱动由[15 Agent Loop 与请求驱动模块设计](./15-agent-loop-and-request-driver.md)拥有；Session 事实日志见[10 Session Core 与生命周期模块设计](./10-session-core-and-lifecycle.md)，Session API 与默认模型来源见[16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)，通用 Scope/Event 语义见[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)，当前实施证据只见[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 固定源与职责映射
 
@@ -162,7 +162,9 @@ Go handler 保留具体 function type，不经过 `any`、反射或统一 `Invok
 
 ## 8. Model selection snapshot
 
-`ModelSelectionRef.current` 是下一步选择，`assembled` 是当前 prompt assembly 捕获的选择。System Prompt waterfall 在进入 downstream 前读取 `current`，只有 downstream 成功后才发布为 `assembled`；因此 assembly 过程中并发切换只影响后续 step。
+`ModelSelectionRef.Current()` 是下一步选择，`assembled` 是当前 prompt assembly 捕获的选择。`Current()` 先读取进程内显式选择，再读取 Session request/header 来源，最后读取 live default 来源；来源解析失败必须返回错误，不能用空选择继续。完整优先级和 `agentDefaultModel` owner 见[16](./16-session-api-gateway-and-live-frames.md#4-默认模型与-session-选择优先级)。
+
+System Prompt waterfall 在进入 downstream 前读取 `Current()`，只有 downstream 成功后才发布为 `assembled`；因此 assembly 过程中并发切换只影响后续 step。
 
 同一步的 `agent/request` waterfall 在 downstream config 上覆盖 captured provider/model/reasoning effort。captured effort 缺失时必须清除 inherited effort，让所选模型恢复 provider/default 行为，不能把另一个模型的 effort 泄漏到新选择。
 
@@ -199,6 +201,6 @@ observer / extension
 
 - `agentloop` 实现 concrete Agent、Factory、Turn/Step、status/idle/cancel 与 retry attempt orchestration；Registry 不吸收这些状态机，具体流程见[15](./15-agent-loop-and-request-driver.md)；
 - Session persistence 进入后再增加 `ResumeOptions`/resume seam，并由 Session owner load/repair；
-- `session.*` API 和 Mux/Host projection 只读取 Agent/Session contract，不让 wire frame 成为 Agent 领域类型；
+- `session.*` API 和 Mux/Host projection 只读取 Agent/Session contract，不让 wire frame 成为 Agent 领域类型；具体边界见[16](./16-session-api-gateway-and-live-frames.md)；
 - approval/question、Jobs/Subagent、ACP、MCP 和 Headless CLI 继续保持 Deferred，直到范围和真实调用链明确；
 - 新 Inbox adapter 不得出现；Inbox 是 Session facts 的业务 projection，JSONL/SQLite adapter 只存取 facts。
