@@ -20,6 +20,7 @@
 | `packages/client/connection` 的 Host half | `internal/assembly` 的 Connection Plugin | 消费 `apiProxy`，挂载 HTTP/WebSocket carrier |
 | `packages/core/system-prompt` | `internal/assembly` 的 System Prompt Plugin | 提供 `systemPrompt` Service |
 | `packages/core/tools` | `internal/assembly` 的 Tools Plugin | 消费 `systemPrompt`，提供 `tools` Service 并注册 schema projection |
+| `packages/core/agent` | `internal/assembly` 的 Agent Plugin | 提供 `agents` Registry Service；具体 Factory 由 Agent Loop 注册 |
 
 Go 不复制 Proxy property lookup、decorator、declaration merging、npm module loader、Profile evaluator 或 `!!js`。这些机制在 Go 中分别由显式 interface、泛型自由函数、静态 Catalog 和 typed config 取代；Service/Provider/Consumer、事件 mode 和 effect 生命周期不因语言变化而合并。
 
@@ -157,12 +158,13 @@ shipped Catalog 当前只有：
 - `@deepseek-ai/dsh-session` 的内存 Store Provider；
 - `@deepseek-ai/dsh-system-prompt` 的 Registry/Assembly Provider；
 - `@deepseek-ai/dsh-tools` 的 Native Registry/Execution Provider。
+- `@deepseek-ai/dsh-agent` 的 live Registry/Inbox contract Provider。
 
 其中 Connection Factory 虽然沿用源 npm canonical name，但只实现服务端 Host carrier，不包含 `WebApiClient`、`ConnectionController` 或浏览器代码。Web UI、SDK、Tools Code Mode、ACP、MCP、Typert 与其他 Deferred 能力不在 Catalog 或依赖闭包。
 
 ## 8. 当前 server 组合流程
 
-默认 declarations 按 Connection、API Proxy、LLM、DeepSeek、System Prompt、Tools、Session 声明。Connection/API Proxy/Session 链故意采用 Consumer-before-Provider 顺序，以证明 Runtime 按 Service graph 而不是文件顺序工作；DeepSeek 和 Tools 分别在 LLM 与 System Prompt 激活后消费其 Service：
+默认 declarations 按 Connection、API Proxy、Agent、LLM、DeepSeek、System Prompt、Tools、Session 声明。Connection/API Proxy/Session 链故意采用 Consumer-before-Provider 顺序，以证明 Runtime 按 Service graph 而不是文件顺序工作；Agent Registry 无外部 Service 依赖，DeepSeek 和 Tools 分别在 LLM 与 System Prompt 激活后消费其 Service：
 
 ```text
 cmd/goren
@@ -171,6 +173,9 @@ cmd/goren
   -> connection Factory.Create
   -> Connection StateWaiting (requires apiProxy)
   -> API Proxy StateWaiting (requires sessions)
+  -> Agent Factory.Create + Apply
+       -> live Registry + Provide(agents)
+       -> concrete creation Factory 尚待 Agent Loop 注册
   -> LLM Factory.Create + Apply
        -> provider-neutral Runtime + Provide(llm)
   -> DeepSeek Factory.Create + Apply
@@ -202,7 +207,7 @@ cmd/goren
 
 ## 9. 隔离与后续能力进入
 
-当前 Scope 已表达 Plugin instance ownership、effect-owned Child Scope、opaque lineage 和 scoped listener filter；System Prompt 与 Tools 已直接复用它完成 overlay、restriction 与 scoped event，LLM/DeepSeek route contribution 也由 Provider Scope 精确拥有。Agent instance 后续继续复用同一 identity。当前尚未实现同一 Service 的 label isolation；只有出现真实多实例 resolution Consumer 时才扩展现有 Service resolution，不得另用 `context.Context.Value`、全局 map 或第二套 Registry。
+当前 Scope 已表达 Plugin instance ownership、effect-owned Child Scope、opaque lineage 和 scoped listener filter；System Prompt、Tools 与 Agent events 已直接复用它完成 overlay、restriction 与 subject isolation，LLM/DeepSeek route contribution 也由 Provider Scope 精确拥有。Agent 的详细边界见[14 Agent Registry、Inbox 与实时事件模块设计](./14-agent-registry-inbox-and-events.md)。当前尚未实现同一 Service 的 label isolation；只有出现真实多实例 resolution Consumer 时才扩展现有 Service resolution，不得另用 `context.Context.Value`、全局 map 或第二套 Registry。
 
 LLM Runtime 与 DeepSeek Provider 的本地职责、调用链和失败边界见[13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)。
 

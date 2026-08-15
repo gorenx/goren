@@ -191,7 +191,7 @@ JSONL or SQLite adapter (later)
 ## 9. 后续能力进入规则
 
 - Harness-compatible Message/Content contract 确定后，由 `session` 导出三个 core surface event key；不得先绑定当前待迁移的旧 `llm` 形态再做兼容分支。
-- Agent instance 出现时，直接使用现有 `Scope.Child`、opaque lineage 与 scoped listener filter；不得建立 Session 私有的第二套 scope registry。
+- Agent instance 直接使用现有 `Scope.Child`、opaque lineage 与 scoped listener filter，durable Inbox 以 `agent/inbox/spliced` 追加到同一 Session；具体 contract 见[14 Agent Registry、Inbox 与实时事件模块设计](./14-agent-registry-inbox-and-events.md)，不得建立 Session 私有的第二套 scope registry。
 - fork、repair、request header fold 和 derived messages 进入时复用当前 Header/Event/surface owner，不另建“持久化 Session”模型。
 - JSONL/SQLite/sqlc adapter 只能依赖 `Store` 和生命周期事件，不得让 driver/sqlc 类型进入本包。
 - API Proxy 只做 `session.Event -> apiproxy.SessionEvent` projection；不得让浏览器 frame 成为 Session 的领域类型。
