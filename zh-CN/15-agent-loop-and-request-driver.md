@@ -140,6 +140,10 @@ Agent Options / persisted exact-model effort
 
 第一次调用追加完整 `request/header`；已有 header 的新 Loop instance 使用 `resume` reason；后续只有 canonical header 真正改变时才追加 `change`。Adapter-owned default 在下一次 proposal 前移除，再由 exact Adapter 重新 materialize，避免 provider/model 切换时泄漏旧默认。`request/context` 只记录 provider、model 和可选 context window，未变化不重复追加。
 
+任一已 dispatch 请求的离线重建边界是该 Step 首个 `assistant/chunk` 之前的 Session 日志前缀。把此前缀交给一个全新 Session 后：`DeriveMessages()` 只按 surface 节点与 replacement 生成 `messages`，`RequestHeaderValue()`/header fold 给出当时完整 `config`、`system` 和 `tools`；加上 Session identity 即得到同一份 `GenerateOptions`。`request/context` 是 route capacity 事实，不重复进入 `GenerateOptions`。因此 Tool continuation、header change 或 surface compaction 都必须由日志中的 append/header/replace 事件解释，不能依赖旧 Loop instance 的临时字段。
+
+用已有日志 seed 一个新 Loop generation 时，构造阶段只恢复 Session fold、surface、Inbox 和最后 Turn 序号；该 generation 第一次真正请求时追加 `request/header(reason=resume)`，并从 seed 中的 replacement 后 surface 继续。这个 seed theorem 是 persistence-independent 的重建证明，不等于阶段 5 的 cold resume：持久化载入、Header metadata、crash repair、publication transaction 和 `agent/session-start(resume)` 仍必须由真实 Session Persistence/Recovery owner 进入。
+
 模型流中的每个 chunk 先作为 `assistant/chunk` durable fact 追加，再交给 `BlockAssembler`。正常完成后追加一个带 chunk provenance 的 `assistant/message` surface event；空完成 anchor 仍记录但不进入派生消息。`max-tokens` 不执行被截断的 Tool call。
 
 `finish:error` 或 `finish:aborted` 先进入 `agent/request-error` waterfall，payload 携带 structured failure 和 prepared Adapter 的 RetryPolicy snapshot。只有明确 retry action 才在同一 Step 重新发起 attempt；失败 attempt 的 chunk 保留为非 surface replay fact，不伪造 Assistant message。recovery 未选择 retry、recovery 自身失败或 cancellation 已生效时，Turn 以 structured error/aborted reason 结束。
