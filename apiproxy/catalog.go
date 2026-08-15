@@ -34,6 +34,15 @@ func Fail[V any](rpcError connection.RPCError) Outcome[V] {
 	return Outcome[V]{rpcError: &rpcError}
 }
 
+// NewRPCError encodes typed details into the canonical wire error.
+func NewRPCError[D any](code connection.RPCErrorCode, message string, details D) connection.RPCError {
+	encoded, err := json.Marshal(details)
+	if err != nil {
+		panic(err)
+	}
+	return connection.RPCError{Code: code, Message: message, Details: encoded}
+}
+
 // PayloadDecoder owns the second-level parse for one method payload.
 type PayloadDecoder[P any] func(json.RawMessage) (P, []connection.ValidationIssue)
 

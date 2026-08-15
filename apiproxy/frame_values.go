@@ -277,3 +277,11 @@ func validateJSONObjectWithString(label string, raw json.RawMessage, field strin
 	}
 	return nil
 }
+
+func cloneStringPointer(source *string) *string {
+	if source == nil {
+		return nil
+	}
+	copyValue := *source
+	return &copyValue
+}

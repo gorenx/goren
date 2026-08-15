@@ -31,7 +31,7 @@ type interactionFixture struct {
 	approvalService approval.Approval
 	questionService userquestions.UserQuestions
 	methods         *Catalog
-	frameHub        *sessionFrameHub
+	frameHub        *liveFrameHub
 
 	rpcMutex sync.Mutex
 	nextRPC  int
@@ -68,7 +68,7 @@ func (instance *interactionFixturePlugin) Apply(requestContext context.Context, 
 		return agentRegistry, true
 	}))
 	methods := NewCatalog()
-	frameHub := newSessionFrameHub(instance.state.mintRPC)
+	frameHub := newLiveFrameHub(instance.state.mintRPC)
 	if _, err := NewInteractionGateway(
 		requestContext,
 		pluginScope,

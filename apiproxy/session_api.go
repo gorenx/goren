@@ -2,9 +2,6 @@ package apiproxy
 
 import (
 	"context"
-	"encoding/json"
-
-	"github.com/gorenx/goren/connection"
 )
 
 const (
@@ -312,12 +309,4 @@ func RegisterSessionAPI(methods *Catalog, service SessionAPI, searchService Sess
 		}
 	}
 	return nil
-}
-
-func newRPCError[D any](code connection.RPCErrorCode, message string, details D) connection.RPCError {
-	encoded, err := json.Marshal(details)
-	if err != nil {
-		panic(err)
-	}
-	return connection.RPCError{Code: code, Message: message, Details: encoded}
 }

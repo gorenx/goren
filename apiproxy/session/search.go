@@ -1,10 +1,11 @@
-package apiproxy
+package sessionapi
 
 import (
 	"context"
 	"errors"
 	"unicode/utf8"
 
+	api "github.com/gorenx/goren/apiproxy"
 	"github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/session"
 	sessionquery "github.com/gorenx/goren/session/query"
@@ -16,39 +17,39 @@ const (
 	sessionSearchProviderCallLimit = 1_000
 )
 
-// SessionVisibility is the authorization boundary consumed by Session
+// Visibility is the authorization boundary consumed by Session
 // Search. It deliberately exposes identities instead of session.list DTOs.
-type SessionVisibility interface {
+type Visibility interface {
 	VisibleSessionIDs(context.Context) (map[session.SessionID]struct{}, error)
 }
 
-// SessionSearchGateway owns the session.search use case: fixed searchable
+// SearchGateway owns the session.search use case: fixed searchable
 // event scope, list-equivalent visibility, cursor recovery, and wire mapping.
 // Query observation and full-text mechanics remain in session/query.
-type SessionSearchGateway struct {
+type SearchGateway struct {
 	queries    sessionquery.QueryService
-	visibility SessionVisibility
+	visibility Visibility
 }
 
-// NewSessionSearchGateway binds Session Query to the API authorization view.
-func NewSessionSearchGateway(
+// NewSearchGateway binds Session Query to the API authorization view.
+func NewSearchGateway(
 	queries sessionquery.QueryService,
-	visibility SessionVisibility,
-) (*SessionSearchGateway, error) {
-	if queries == nil || visibility == nil {
+	visibilitySource Visibility,
+) (*SearchGateway, error) {
+	if queries == nil || visibilitySource == nil {
 		return nil, errors.New("apiproxy: Session Search Gateway dependencies are incomplete")
 	}
-	return &SessionSearchGateway{queries: queries, visibility: visibility}, nil
+	return &SearchGateway{queries: queries, visibility: visibilitySource}, nil
 }
 
 // Search enforces list-equivalent visibility and projects the fixed current
 // user/assistant message surface into the source wire result.
-func (owner *SessionSearchGateway) Search(
+func (owner *SearchGateway) Search(
 	requestContext context.Context,
-	call Request[SessionSearchRequest],
-) (Outcome[SessionSearchValue], error) {
-	cancelled := func() Outcome[SessionSearchValue] {
-		return Fail[SessionSearchValue](newRPCError(
+	call api.Request[api.SessionSearchRequest],
+) (api.Outcome[api.SessionSearchValue], error) {
+	cancelled := func() api.Outcome[api.SessionSearchValue] {
+		return api.Fail[api.SessionSearchValue](api.NewRPCError(
 			connection.ErrorCancelled, "session search was aborted", struct{}{},
 		))
 	}
@@ -57,12 +58,12 @@ func (owner *SessionSearchGateway) Search(
 	}
 	visibleIDs, err := owner.visibility.VisibleSessionIDs(requestContext)
 	if err != nil {
-		return Outcome[SessionSearchValue]{}, err
+		return api.Outcome[api.SessionSearchValue]{}, err
 	}
 	if len(visibleIDs) == 0 {
-		return OK(SessionSearchValue{Items: []SessionSearchItem{}}), nil
+		return api.OK(api.SessionSearchValue{Items: []api.SessionSearchItem{}}), nil
 	}
-	authorized := make([]SessionSearchItem, 0, sessionSearchResultLimit+1)
+	authorized := make([]api.SessionSearchItem, 0, sessionSearchResultLimit+1)
 	accepted := make(map[session.SessionID]struct{}, sessionSearchResultLimit+1)
 	seenCursors := make(map[sessionquery.Cursor]struct{})
 	var cursor sessionquery.Cursor
@@ -74,7 +75,7 @@ func (owner *SessionSearchGateway) Search(
 		}
 		providerCalls++
 		if providerCalls > sessionSearchProviderCallLimit {
-			return Outcome[SessionSearchValue]{}, errors.New("apiproxy: Session search exceeded provider call budget")
+			return api.Outcome[api.SessionSearchValue]{}, errors.New("apiproxy: Session search exceeded provider call budget")
 		}
 		page, searchErr := owner.queries.SearchSessions(requestContext, sessionquery.SearchSessionsRequest{
 			Text: call.Payload.Query,
@@ -97,12 +98,12 @@ func (owner *SessionSearchGateway) Search(
 			if requestContext.Err() != nil || errors.As(searchErr, &classified) && classified.Code == sessionquery.ErrorAborted {
 				return cancelled(), nil
 			}
-			return Fail[SessionSearchValue](newRPCError(
+			return api.Fail[api.SessionSearchValue](api.NewRPCError(
 				connection.ErrorInternal, "session search failed: "+searchErr.Error(), struct{}{},
 			)), nil
 		}
 		if len(page.Items) > sessionSearchResultLimit {
-			return Outcome[SessionSearchValue]{}, errors.New("apiproxy: Session Query returned too many search hits")
+			return api.Outcome[api.SessionSearchValue]{}, errors.New("apiproxy: Session Query returned too many search hits")
 		}
 		for _, hit := range page.Items {
 			if len(authorized) > sessionSearchResultLimit {
@@ -118,8 +119,8 @@ func (owner *SessionSearchGateway) Search(
 				continue
 			}
 			accepted[identifier] = struct{}{}
-			authorized = append(authorized, SessionSearchItem{
-				SessionID: SessionID(identifier),
+			authorized = append(authorized, api.SessionSearchItem{
+				SessionID: api.SessionID(identifier),
 				Snippet:   truncateCodePoints(hit.BestMatch.Snippet, sessionSearchSnippetMaximum),
 			})
 		}
@@ -127,7 +128,7 @@ func (owner *SessionSearchGateway) Search(
 			break
 		}
 		if _, repeated := seenCursors[page.NextCursor]; repeated {
-			return Outcome[SessionSearchValue]{}, errors.New("apiproxy: Session Query repeated a continuation cursor")
+			return api.Outcome[api.SessionSearchValue]{}, errors.New("apiproxy: Session Query repeated a continuation cursor")
 		}
 		seenCursors[page.NextCursor] = struct{}{}
 		cursor = page.NextCursor
@@ -137,9 +138,9 @@ func (owner *SessionSearchGateway) Search(
 		authorized = authorized[:sessionSearchResultLimit]
 	}
 	if authorized == nil {
-		authorized = []SessionSearchItem{}
+		authorized = []api.SessionSearchItem{}
 	}
-	return OK(SessionSearchValue{Items: authorized, HasMore: hasMore}), nil
+	return api.OK(api.SessionSearchValue{Items: authorized, HasMore: hasMore}), nil
 }
 
 func truncateCodePoints(textValue string, maximum int) string {

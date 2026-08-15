@@ -141,7 +141,7 @@ func RegisterWorkspaceAPI(methods *Catalog, service WorkspaceAPI) error {
 }
 
 func workspaceNotFound[V any](identifier WorkspaceID) Outcome[V] {
-	return Fail[V](newRPCError(
+	return Fail[V](NewRPCError(
 		connection.ErrorWorkspaceNotFound,
 		"workspace \""+string(identifier)+"\" not found",
 		struct {

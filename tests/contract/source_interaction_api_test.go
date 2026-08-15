@@ -14,6 +14,7 @@ import (
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentdefaultmodel"
 	"github.com/gorenx/goren/apiproxy"
+	sessionapi "github.com/gorenx/goren/apiproxy/session"
 	"github.com/gorenx/goren/approval"
 	connectionhost "github.com/gorenx/goren/internal/connection"
 	"github.com/gorenx/goren/llm"
@@ -35,7 +36,8 @@ type interactionAPIContractState struct {
 	approvalService approval.Approval
 	questionService userquestions.UserQuestions
 	methods         *apiproxy.Catalog
-	sessionGateway  *apiproxy.SessionGateway
+	sessionGateway  *sessionapi.Gateway
+	downlinks       *apiproxy.LiveFrameSource
 }
 
 type interactionAPIContractProvider struct {
@@ -115,19 +117,28 @@ func (extension *interactionAPIContractProvider) Apply(
 	if err != nil {
 		return err
 	}
-	sessionGateway, err := apiproxy.NewSessionGateway(
+	sessionGateway, err := sessionapi.NewGateway(
 		requestContext,
 		providerScope,
-		apiproxy.SessionGatewayDependencies{
+		sessionapi.Dependencies{
 			Agents: agentRegistry, Sessions: sessionStore, Persistence: durability,
 			LLM: modelRuntime, Defaults: defaultSelection,
 			Projections: projectionRegistry, Titles: titleService,
 			Workspaces: fixture.EmptyWorkspaces{},
-			Directories: apiproxy.DirectoryProvisionerFunc(func(string) error {
+			Directories: sessionapi.DirectoryProvisionerFunc(func(string) error {
 				return nil
 			}),
 		},
-		apiproxy.SessionGatewayOptions{WorkingDirectory: "/contract-workspace"},
+		sessionapi.Options{WorkingDirectory: "/contract-workspace"},
+	)
+	if err != nil {
+		return err
+	}
+	downlinks, err := apiproxy.NewLiveFrameSource(
+		requestContext,
+		providerScope,
+		apiproxy.LiveFrameDependencies{Sessions: sessionStore, Projections: projectionRegistry},
+		apiproxy.LiveFrameOptions{},
 	)
 	if err != nil {
 		return err
@@ -137,7 +148,7 @@ func (extension *interactionAPIContractProvider) Apply(
 		requestContext,
 		providerScope,
 		apiproxy.InteractionGatewayDependencies{
-			Methods: methods, Frames: sessionGateway.InteractionBroker(), UserQuestions: questionService,
+			Methods: methods, Frames: downlinks.InteractionBroker(), UserQuestions: questionService,
 		},
 		apiproxy.InteractionGatewayOptions{},
 	); err != nil {
@@ -150,6 +161,7 @@ func (extension *interactionAPIContractProvider) Apply(
 	extension.state.questionService = questionService
 	extension.state.methods = methods
 	extension.state.sessionGateway = sessionGateway
+	extension.state.downlinks = downlinks
 	return nil
 }
 
@@ -227,7 +239,7 @@ func TestPinnedSourceWebApiClientAnswersGoInteractions(t *testing.T) {
 	firstMuxFrames := make(chan apiproxy.StreamRequest[apiproxy.MuxFrame], 16)
 	firstMuxDone := make(chan error, 1)
 	go func() {
-		firstMuxDone <- contractState.sessionGateway.Mux(firstMuxContext, func(envelope apiproxy.StreamRequest[apiproxy.MuxFrame]) error {
+		firstMuxDone <- contractState.downlinks.Mux(firstMuxContext, func(envelope apiproxy.StreamRequest[apiproxy.MuxFrame]) error {
 			firstMuxFrames <- envelope
 			return nil
 		})
@@ -254,7 +266,7 @@ func TestPinnedSourceWebApiClientAnswersGoInteractions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	streams, err := apiproxy.NewEventStreams(contractState.sessionGateway.Mux, contractState.sessionGateway.Host)
+	streams, err := apiproxy.NewEventStreams(contractState.downlinks.Mux, contractState.downlinks.Host)
 	if err != nil {
 		t.Fatal(err)
 	}

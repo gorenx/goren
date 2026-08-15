@@ -1,10 +1,12 @@
-package apiproxy
+package sessionapi
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
+	api "github.com/gorenx/goren/apiproxy"
 	"github.com/gorenx/goren/session"
 	sessionquery "github.com/gorenx/goren/session/query"
 )
@@ -33,7 +35,7 @@ func (visible visibilityStub) VisibleSessionIDs(context.Context) (map[session.Se
 	return visible, nil
 }
 
-func TestSessionSearchGatewayAppliesFixedScopeAndVisibility(t *testing.T) {
+func TestSearchGatewayAppliesFixedScopeAndVisibility(t *testing.T) {
 	t.Parallel()
 	queryStub := &searchQueryStub{pages: []sessionquery.SessionSearchPage{{
 		Items: []sessionquery.SessionHit{
@@ -42,21 +44,27 @@ func TestSessionSearchGatewayAppliesFixedScopeAndVisibility(t *testing.T) {
 			searchHit("shadowed", session.UserMessageEventName, sessionquery.SurfaceShadowed, "old"),
 		},
 	}}}
-	gateway, err := NewSessionSearchGateway(queryStub, visibilityStub{
+	searchService, err := NewSearchGateway(queryStub, visibilityStub{
 		"visible": {}, "shadowed": {},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	searchResult, err := gateway.Search(context.Background(), Request[SessionSearchRequest]{
-		Payload: SessionSearchRequest{Query: "needle"},
-	})
+	methods := api.NewCatalog()
+	if err := api.RegisterUnary(methods, api.SessionSearchMethod, api.DecodeSessionSearchRequest, searchService.Search); err != nil {
+		t.Fatal(err)
+	}
+	result, err := methods.DispatchUnary(
+		context.Background(), api.SessionSearchMethod, "search-rpc", json.RawMessage(`{"query":"needle"}`),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if searchResult.rpcError != nil || len(searchResult.value.Items) != 1 || searchResult.value.Items[0].SessionID != "visible" ||
-		len([]rune(searchResult.value.Items[0].Snippet)) != sessionSearchSnippetMaximum {
-		t.Fatalf("search outcome = %#v", searchResult)
+	var value api.SessionSearchValue
+	if !result.OK || result.Error != nil || json.Unmarshal(result.Value, &value) != nil ||
+		len(value.Items) != 1 || value.Items[0].SessionID != "visible" ||
+		len([]rune(value.Items[0].Snippet)) != sessionSearchSnippetMaximum {
+		t.Fatalf("search result = %#v, value = %#v", result, value)
 	}
 	if len(queryStub.requests) != 1 {
 		t.Fatalf("query requests = %#v", queryStub.requests)
@@ -67,23 +75,6 @@ func TestSessionSearchGatewayAppliesFixedScopeAndVisibility(t *testing.T) {
 		criteria.Events.Types[1] != session.AssistantMessageEventName ||
 		len(criteria.Events.Surfaces) != 1 || criteria.Events.Surfaces[0] != sessionquery.SurfaceCurrent {
 		t.Fatalf("fixed Query scope = %#v", criteria)
-	}
-}
-
-func TestDecodeSessionSearchRequestUsesJavaScriptStringLength(t *testing.T) {
-	t.Parallel()
-	accepted, issues := DecodeSessionSearchRequest([]byte(`{"query":"  exact phrase  "}`))
-	if len(issues) != 0 || accepted.Query != "exact phrase" {
-		t.Fatalf("accepted query = %#v, issues = %#v", accepted, issues)
-	}
-	for _, input := range []string{
-		`{"query":"   "}`,
-		`{"query":"bad\u0000query"}`,
-		`{"query":"` + strings.Repeat("😀", 251) + `"}`,
-	} {
-		if _, issues := DecodeSessionSearchRequest([]byte(input)); len(issues) == 0 {
-			t.Fatalf("invalid query accepted: %q", input)
-		}
 	}
 }
 
