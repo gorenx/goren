@@ -122,6 +122,10 @@ func (instance *apiProxyPlugin) Apply(requestContext context.Context, pluginScop
 	if err := apiproxy.RegisterAgentPresetListAPI(methods, presetGateway); err != nil {
 		return err
 	}
+	settingsGateway := apiproxy.NewSettingsGateway(nil)
+	if err := apiproxy.RegisterSettingsDescribeAPI(methods, settingsGateway); err != nil {
+		return err
+	}
 	llmGateway, err := apiproxy.NewLLMGateway(modelRuntime)
 	if err != nil {
 		return err
