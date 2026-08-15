@@ -25,11 +25,11 @@
 | 阶段 3：Session/Agent slice | Completed | 16 Completed | Contract Verified | 全部交付与 Gate 已闭合；cold persistence/resume 仍由阶段 5 拥有 |
 | 阶段 4：LLM Contract | In Progress | 12 Completed / 1 Planned | Contract Verified | Runtime、DeepSeek adapter、response recordings、Agent attempt loop 与默认 retry Consumer 已完成；等待真实环境 smoke |
 | 阶段 5：Session 持久化 | In Progress | 13 Completed / 4 Planned | Contract Verified | SQLite facts、cold recovery/API/Agent resume 已闭环；等待 request-end checkpoint、真实 WebUI 与两个性能对齐项 |
-| 阶段 6：客户端能力扩展 | In Progress | 12 Completed / 22 Planned | Contract Verified | Workspace、Host LLM Catalog、Projection 与 Title/Rename 已闭环；Settings、Agent Preset、Filesystem 等逐项进入 |
+| 阶段 6：客户端能力扩展 | In Progress | 13 Completed / 23 Planned | Contract Verified | Workspace、Host LLM Catalog、absent Agent Preset roster、Projection 与 Title/Rename 已闭环；Settings、Preset composition、Filesystem 等逐项进入 |
 | 阶段 7：Deferred 能力 | Deferred | 7 Deferred | None | 不创建 package、handler 或依赖占位 |
 | 阶段 8：Parity Hardening | In Progress | 0 Completed / 5 In Progress / 10 Planned | Contract Verified | 扩展当前 Connection contract suite，不等同发布验收 |
 
-当前 Connection slice、Session core、System Prompt、Native Tools、Agent Inbox、Agent Loop、Session API Gateway、Session Projection、Session Title/Rename、Session Persistence/SQLite、Workspace Registry/API、Approval/UserQuestions/Interaction Gateway 与 LLM/DeepSeek contract 达到 `Contract Verified`：固定 TypeScript schema 与 Go envelope/frame 已交叉校验，固定上游 `WebApiClient` 已通过真实 Go HTTP/WebSocket 完成 Host LLM provider/model catalog、Session 与 Workspace create/list/rename/order/archive、`session.create({workspaceId})`、prompt 到 `turn/end`、queue edit/remove、cancel 到 aborted turn，并完成 title baseline/frame、Approval/Question requested、respond、resolved 和 reconnect replay；SQLite 重启后 cold list/history/create(resume) 也已有 Go E2E。固定源码的 `Session.rename()` 证明 response 与 `ProjectionValueStore` 的 higher-seq-wins 行为，`ConnectionController` 验证 client-owned generation 重建。具体 LLM Title Provider、Code Mode、原 Web 产品的真实 UI 启动验收和使用真实 credential/endpoint 的 DeepSeek 环境验收尚未据此标记兼容。
+当前 Connection slice、Session core、System Prompt、Native Tools、Agent Inbox、Agent Loop、Session API Gateway、Session Projection、Session Title/Rename、Session Persistence/SQLite、Workspace Registry/API、Approval/UserQuestions/Interaction Gateway 与 LLM/DeepSeek contract 达到 `Contract Verified`：固定 TypeScript schema 与 Go envelope/frame 已交叉校验，固定上游 `WebApiClient` 已通过真实 Go HTTP/WebSocket 完成 Host LLM provider/model catalog、absent Agent Preset roster、Session 与 Workspace create/list/rename/order/archive、`session.create({workspaceId})`、prompt 到 `turn/end`、queue edit/remove、cancel 到 aborted turn，并完成 title baseline/frame、Approval/Question requested、respond、resolved 和 reconnect replay；SQLite 重启后 cold list/history/create(resume) 也已有 Go E2E。固定源码的 `Session.rename()` 证明 response 与 `ProjectionValueStore` 的 higher-seq-wins 行为，`ConnectionController` 验证 client-owned generation 重建。具体 LLM Title Provider、完整 Agent Preset composition、Code Mode、原 Web 产品的真实 UI 启动验收和使用真实 credential/endpoint 的 DeepSeek 环境验收尚未据此标记兼容。
 
 ## 3. 阶段 0：基线与 Connection Contract Freeze
 
@@ -205,6 +205,8 @@ interaction owner registers stable rpcId + decoder
 | S6-W08 | Workspace | 能力插件与 SQLite adapter 装配边界 | Completed | Go Verified：Catalog 只注册 `@deepseek-ai/dsh-workspace`；SQLite 无 Factory、Manifest、Service key；`af33afd` |
 | S6-L01 | LLM Catalog | `llm.providers` 合并 configurable directory 与 active route | Completed | Contract Verified：声明顺序、active/dormant、undeclared active route 和 `declared` omission 由固定源 `WebApiClient` 验证 |
 | S6-L02 | LLM Catalog | `llm.models` Host catalog 与 `session.models` 共享投影 | Completed | Contract Verified：provider-local failure containment、reasoning metadata 与固定源 response schema 通过；目录逻辑统一在 `LLMGateway.Catalog` |
+| S6-P01 | Agent Preset | `agentPreset.list` absent-roster 合法部署分支 | Completed | Contract Verified：默认组合无 `AgentPresetRoster` 时返回 non-nil empty presets、`authorable:false`、`hasDocument:false`，固定源 `WebApiClient` 接受 |
+| S6-P02 | Agent Preset | Preset discovery、Agent child-scope composition、select 与 authoring | Planned | None：当前不伪造源内置 preset，`session.create.agentPreset` 仅保留持久化 identity/冲突 contract |
 | S6-D02 | 能力 | Filesystem | Planned | None |
 | S6-D03 | 能力 | Shell | Planned | None |
 | S6-D04 | 能力 | PTY | Planned | None |
@@ -247,7 +249,7 @@ interaction owner registers stable rpcId + decoder
 | ID | 类别 | 子目标 | 执行状态 | 证据或缺口 |
 | --- | --- | --- | --- | --- |
 | S8-D01 | 交付 | included capability matrix | Planned | None：当前实施矩阵不替代最终 capability matrix |
-| S8-D02 | 交付 | 跨语言 replay/differential suite | In Progress | Contract Verified：Connection/schema/client、Host LLM Catalog、Session core/API、Approval/Question interaction、System Prompt、Native Tools、Agent Inbox、Agent Loop happy/failure/reconstruction、LLM/DeepSeek 与 LLM Retry differential slice 已建立；其余 included capability 仍按矩阵进入 |
+| S8-D02 | 交付 | 跨语言 replay/differential suite | In Progress | Contract Verified：Connection/schema/client、Host LLM Catalog、absent Agent Preset roster、Session core/API、Approval/Question interaction、System Prompt、Native Tools、Agent Inbox、Agent Loop happy/failure/reconstruction、LLM/DeepSeek 与 LLM Retry differential slice 已建立；其余 included capability 仍按矩阵进入 |
 | S8-D03 | 交付 | 多平台 CI | Planned | None |
 | S8-D04 | 交付 | race、fuzz、故障注入、泄漏和长时测试 | In Progress | Go Verified：race 与 Connection-owned WebSocket/source leak audit 已有证据；fuzz、故障注入和长时测试未完成 |
 | S8-D05 | 交付 | dependency、license 和 NOTICE 清单 | In Progress | Implemented：Echo 准入已记录；完整发布清单未建立 |
@@ -258,7 +260,7 @@ interaction owner registers stable rpcId + decoder
 | S8-G02 | Gate | Connection 与 Agent 关键路径达到计划层级 | Planned | None |
 | S8-G03 | Gate | Linux、macOS、Windows 分别有支持证据 | Planned | None：当前只验证 `darwin/arm64` |
 | S8-G04 | Gate | 全量 Go、格式和 contract suite 通过 | In Progress | Contract Verified：当前 Go checks 与显式 TypeScript contract suite 通过；全项目 parity suite 尚未完成 |
-| S8-G05 | Gate | TypeScript Client 与 DeepSeek Provider 分别真实验收 | In Progress | Contract Verified：固定源 `WebApiClient` 已完成 Host LLM Catalog、当前 included Session 会话、双流、queue、cancel 与 Approval/Question；原 Web 产品和真实 DeepSeek Provider 环境尚未验收 |
+| S8-G05 | Gate | TypeScript Client 与 DeepSeek Provider 分别真实验收 | In Progress | Contract Verified：固定源 `WebApiClient` 已完成 Host LLM Catalog、absent Agent Preset roster、当前 included Session 会话、双流、queue、cancel 与 Approval/Question；原 Web 产品和真实 DeepSeek Provider 环境尚未验收 |
 | S8-G06 | Gate | 依赖闭包和二进制扫描确认排除范围未进入 | Planned | None |
 | S8-G07 | Gate | open decision 已解决、受控延期或移出 release | Planned | None |
 
