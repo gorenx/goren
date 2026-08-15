@@ -1,15 +1,16 @@
 import { useEffect, useRef } from 'react'
 import type { ConversationSnapshot, MessageRow } from '../types'
 import type { ConversationStore } from '../conversation-store'
-import { ActivityIcon, GorenMark } from '../icons'
+import { ActivityIcon, GorenMark, KeyIcon } from '../icons'
 import { Composer } from './Composer'
 
 interface ConversationPaneProps {
   store: ConversationStore
   snapshot: ConversationSnapshot
+  onOpenCredentials: () => void
 }
 
-export function ConversationPane({ store, snapshot }: ConversationPaneProps): React.JSX.Element {
+export function ConversationPane({ store, snapshot, onOpenCredentials }: ConversationPaneProps): React.JSX.Element {
   const current = store.currentSession()
   const rows = store.currentMessages()
   const events = store.currentEvents()
@@ -30,6 +31,9 @@ export function ConversationPane({ store, snapshot }: ConversationPaneProps): Re
         </div>
         <div className="ml-auto flex items-center gap-2">
           <span className="model-chip">{snapshot.host?.provider ?? 'DeepSeek'} · {snapshot.host?.model ?? 'default'}</span>
+          <button type="button" className="icon-button" aria-label="设置 DeepSeek API Key" onClick={onOpenCredentials}>
+            <KeyIcon size={16} />
+          </button>
         </div>
       </header>
 

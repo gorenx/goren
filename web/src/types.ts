@@ -57,6 +57,16 @@ export interface MessageRow {
   seq?: number
 }
 
+export interface CredentialView {
+  configured: boolean
+  source?: string
+  writable: boolean
+}
+
+export interface CredentialsDescribeValue {
+  credentials: Record<string, CredentialView>
+}
+
 export interface ConversationSnapshot {
   phase: 'booting' | 'ready' | 'failed'
   host?: HostDescription
@@ -67,6 +77,8 @@ export interface ConversationSnapshot {
   currentSessionId?: string
   onlineDownlinks: number
   composerState: string
+  credentialLoaded: boolean
+  credential?: CredentialView
   error?: string
 }
 

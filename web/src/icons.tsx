@@ -62,3 +62,7 @@ export function DatabaseIcon(props: IconProps): React.JSX.Element {
 export function CloseIcon(props: IconProps): React.JSX.Element {
   return <IconFrame {...props}><path d="m6 6 12 12M18 6 6 18" /></IconFrame>
 }
+
+export function KeyIcon(props: IconProps): React.JSX.Element {
+  return <IconFrame {...props}><circle cx="8.5" cy="15.5" r="4.5" /><path d="m12 12 7.5-7.5M16 8l2 2M18 6l2 2" /></IconFrame>
+}

@@ -11,6 +11,7 @@ const (
 	ProviderRoute              = "deepseek-official"
 	SettingsNamespace          = "llm-deepseek"
 	DefaultAPIKeyEnv           = "DEEPSEEK_API_KEY"
+	DefaultModelID             = "deepseek-v4-flash"
 	BaseURLEnv                 = "DEEPSEEK_BASE_URL"
 	PublicBaseURL              = "https://api.deepseek.com"
 	DefaultContextWindow       = 1_000_000
