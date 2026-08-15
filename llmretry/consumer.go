@@ -280,7 +280,7 @@ func (owner *retryConsumer) backoff(
 	if err := projection.addRetry(record); err != nil {
 		return agent.RequestErrorAction{}, err
 	}
-	if _, err := session.Append(conversation, retryScheduledEvent, record); err != nil {
+	if _, err := session.AppendSerialized(conversation, retryScheduledEvent, record); err != nil {
 		return agent.RequestErrorAction{}, err
 	}
 	if delayContext.Err() != nil {
@@ -298,7 +298,7 @@ func (owner *retryConsumer) backoff(
 	if err := latestProjection.addStarted(transition); err != nil {
 		return agent.RequestErrorAction{}, err
 	}
-	if _, err := session.Append(conversation, retryStartedEvent, transition); err != nil {
+	if _, err := session.AppendSerialized(conversation, retryStartedEvent, transition); err != nil {
 		return agent.RequestErrorAction{}, err
 	}
 	return agent.RequestErrorAction{Retry: true}, nil

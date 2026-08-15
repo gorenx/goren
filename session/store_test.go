@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gorenx/goren/plugin"
 )
@@ -206,5 +207,75 @@ func TestAppendObserverFailureIsContainedAndReentryRejected(t *testing.T) {
 	defer reportsMu.Unlock()
 	if len(reports) != 1 || !strings.Contains(reports[0].Error(), "observer failure") {
 		t.Fatalf("observer reports = %#v", reports)
+	}
+}
+
+func TestSerializedAppendsWaitForActivePublication(t *testing.T) {
+	t.Parallel()
+	requestContext := context.Background()
+	engine := plugin.NewRuntime()
+	publicationStarted := make(chan struct{})
+	releasePublication := make(chan struct{})
+	var firstPublication sync.Once
+	consumer := &storeConsumerPlugin{name: "fixture-serialized-producer-consumer"}
+	consumer.body = func(pluginScope *plugin.Scope, _ Store) error {
+		_, err := OnEvent(pluginScope, func(_ context.Context, _ *Session, _ Event) error {
+			firstPublication.Do(func() {
+				close(publicationStarted)
+				<-releasePublication
+			})
+			return nil
+		})
+		return err
+	}
+	if _, err := engine.Load(requestContext, consumer); err != nil {
+		t.Fatal(err)
+	}
+	provider := &storeProviderPlugin{}
+	if _, err := engine.Load(requestContext, provider); err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := provider.registry.Create(requestContext, consumer.scope, nil, CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstDone := make(chan struct{})
+	var firstCommitted Event
+	var firstErr error
+	go func() {
+		firstCommitted, firstErr = AppendSerialized(
+			conversation, fixtureEventKey, fixturePayload{Items: []string{"first"}},
+		)
+		close(firstDone)
+	}()
+	<-publicationStarted
+
+	secondDone := make(chan struct{})
+	var secondCommitted Event
+	var secondErr error
+	go func() {
+		secondCommitted, secondErr = AppendSerialized(
+			conversation, fixtureEventKey, fixturePayload{Items: []string{"second"}},
+		)
+		close(secondDone)
+	}()
+	select {
+	case <-secondDone:
+		t.Fatalf("second producer returned before active publication completed: %v", secondErr)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releasePublication)
+	<-firstDone
+	<-secondDone
+	if firstErr != nil || secondErr != nil {
+		t.Fatalf("serialized append errors = (%v, %v)", firstErr, secondErr)
+	}
+	if firstCommitted.Seq != 0 || secondCommitted.Seq != 1 || conversation.Seq() != 2 {
+		t.Fatalf(
+			"serialized seqs = (%d, %d), next seq = %d",
+			firstCommitted.Seq, secondCommitted.Seq, conversation.Seq(),
+		)
 	}
 }

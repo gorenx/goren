@@ -16,6 +16,7 @@ var endSeedEvent = EventKey[struct{}]{name: endSeedEventType}
 // transport, model, or Tool execution logic.
 type Session struct {
 	mu           sync.RWMutex
+	producerMu   sync.Mutex
 	header       Header
 	firstLiveSeq int64
 	entries      []Event
@@ -245,6 +246,17 @@ func Append[D any](conversation *Session, definition EventKey[D], payload D, opt
 	return conversation.appendCandidate(Event{Type: definition.name, Data: rawValue, Ignorable: settings.Ignorable})
 }
 
+// AppendSerialized commits one non-surface event as an independent runtime
+// producer. It preserves the source harness's synchronous append/publication
+// boundary while serializing Go goroutines that would be turns of the same
+// JavaScript event loop. An OnEvent callback must use Append directly when it
+// deliberately verifies the reentry guard, or DeferAfterEvent before appending.
+func AppendSerialized[D any](conversation *Session, definition EventKey[D], payload D, options ...AppendOptions) (Event, error) {
+	return serializeProducerAppend(conversation, func() (Event, error) {
+		return Append(conversation, definition, payload, options...)
+	})
+}
+
 // AppendSurface snapshots and commits one typed message-producing event.
 func AppendSurface[D any](conversation *Session, definition SurfaceEventKey[D], payload D, intent SurfaceIntent) (Event, error) {
 	if conversation == nil {
@@ -263,6 +275,23 @@ func AppendSurface[D any](conversation *Session, definition SurfaceEventKey[D], 
 		Type: definition.name, Data: rawValue, SourceEventSeqs: provenance,
 		SurfaceOp: &operation, Ignorable: intent.Ignorable,
 	})
+}
+
+// AppendSurfaceSerialized is the surface-event counterpart of
+// AppendSerialized for independent runtime producers.
+func AppendSurfaceSerialized[D any](conversation *Session, definition SurfaceEventKey[D], payload D, intent SurfaceIntent) (Event, error) {
+	return serializeProducerAppend(conversation, func() (Event, error) {
+		return AppendSurface(conversation, definition, payload, intent)
+	})
+}
+
+func serializeProducerAppend(conversation *Session, operation func() (Event, error)) (Event, error) {
+	if conversation == nil {
+		return Event{}, errors.New("session: append to nil Session")
+	}
+	conversation.producerMu.Lock()
+	defer conversation.producerMu.Unlock()
+	return operation()
 }
 
 func (conversation *Session) appendCandidate(candidate Event) (Event, error) {

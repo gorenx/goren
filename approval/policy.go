@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	askPolicyText = "Approval policy: ask. Operations that require approval may ask through the configured answerers; without an available answerer, the request fails closed."
+	askPolicyText   = "Approval policy: ask. Operations that require approval may ask through the configured answerers; without an available answerer, the request fails closed."
 	neverPolicyText = "Approval prompts are disabled in this session: actions that require approval are rejected automatically — do not request sandbox escalation (do not set `sandbox_permissions`)."
 )
 
@@ -45,7 +45,7 @@ func appendPolicy(conversation *session.Session, selectedPolicy Policy, source *
 	if source != nil && *source != PolicySourceDelegation {
 		return errors.New("approval: policy source must be delegation")
 	}
-	_, err := session.Append(conversation, PolicyEvent, PolicyChanged{Policy: selectedPolicy, Source: source})
+	_, err := session.AppendSerialized(conversation, PolicyEvent, PolicyChanged{Policy: selectedPolicy, Source: source})
 	return err
 }
 
