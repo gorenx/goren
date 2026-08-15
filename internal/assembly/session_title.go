@@ -7,8 +7,8 @@ import (
 
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/sessionprojection"
-	"github.com/gorenx/goren/sessiontitle"
+	sessionprojection "github.com/gorenx/goren/session/projection"
+	sessiontitle "github.com/gorenx/goren/session/title"
 )
 
 type sessionTitleFactory struct{}

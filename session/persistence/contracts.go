@@ -1,6 +1,6 @@
 // Package sessionpersistence owns durable Session-log orchestration and the
 // consumer-owned storage port implemented by concrete persistence adapters.
-package sessionpersistence
+package persistence
 
 import (
 	"context"

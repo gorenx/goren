@@ -13,7 +13,7 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/sessionpersistence"
+	sessionpersistence "github.com/gorenx/goren/session/persistence"
 	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/tools"
 )

@@ -9,8 +9,8 @@ import (
 
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/sessionpersistence"
-	sqlitepersistence "github.com/gorenx/goren/sessionpersistence/sqlite"
+	sessionpersistence "github.com/gorenx/goren/session/persistence"
+	sqlitepersistence "github.com/gorenx/goren/session/persistence/sqlite"
 )
 
 // SessionPersistenceSQLiteConfig is the strict deployment configuration for one fact store.

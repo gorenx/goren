@@ -1,6 +1,6 @@
 // Package sessionprojection owns the registry that drives domain-defined
 // read projections over committed Session events.
-package sessionprojection
+package projection
 
 import (
 	"encoding/json"
