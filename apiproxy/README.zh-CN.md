@@ -5,7 +5,7 @@
 ## 职责
 
 - method-owned request decoder、typed `Outcome` 和 canonical RPC error；
-- `host.describe` 与当前纳入的 `agentPreset.list`、`llm.providers`、`llm.models`、`session.*`、`workspace.*` handlers；
+- `host.describe` 与当前纳入的 `agentPreset.list`、`settings.describe`、`llm.providers`、`llm.models`、`session.*`、`workspace.*` handlers；
 - `LLMGateway` 对 configurable provider directory、active route 和 model catalog 的 Host wire 投影；
 - Session/Agent/Workspace/interaction facts 到 Mux/Host frame 的 projection；
 - pending response correlation 与 reconnect replay；
@@ -34,6 +34,8 @@ Workspace Gateway 将七个 `workspace.*` method 映射到 `workspace.Registry`/
 `LLMGateway` 是持有 `LLMDirectory` capability 的状态对象。`llm.providers` 先按 configurable declaration 顺序投影 active/dormant route，再追加未声明但已注册的 route；`llm.models` 按 active provider 隔离目录失败并复用同一 `Catalog` 方法供 `session.models` 使用。它不保存第二份 LLM 状态，也不使用函数工厂复制源端 `buildModelCatalog()`。
 
 `AgentPresetGateway` 持有可选的 `AgentPresetRoster` capability。当前默认组合未提供 roster，因此 `agentPreset.list` 按固定源 absent-provider 分支返回空列表并声明不可 author；这让原客户端隐藏 preset 控件而不把合法的无 preset 部署误报成失败。Preset 发现、Agent child scope composition、`agentPreset.select` 与 authoring API 尚未实现，空列表不代表这些能力已经完成。
+
+`SettingsGateway` 持有可选的 `SettingsDescriber` capability。当前默认组合未提供 Settings Provider，因此 `settings.describe` 按固定源返回 HTTP 200 内的 canonical `internal` absent-service failure，让客户端按 RPC 失败降级而不是遇到未注册方法。接口已经约束 redacted schema/value、secret slot、revision 和 `live/restart` 字段，但尚未装配文件 Provider 或任何 mutation method。
 
 ## 上下游
 

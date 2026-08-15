@@ -13,6 +13,7 @@
 - `packages/host/apiproxy/src/fetch/handler.ts`：第二层 payload parse 与 method invoke；
 - `packages/host/apiproxy/src/api/host.ts`、`host.schema.ts`：`host.describe` contract；
 - `packages/host/apiproxy/src/api/agent-presets.ts`、`agent-presets.schema.ts`：deployment roster 与 absent-provider 语义；
+- `packages/host/apiproxy/src/api/settings.ts`、`settings.schema.ts`：redacted Settings catalog 与 absent-provider 语义；
 - `packages/host/apiproxy/src/api/llm.ts`、`llm.schema.ts`：Host-scoped provider/model catalog contract；
 - `packages/host/apiproxy/src/api-proxy.ts`：Host snapshot 与 interaction pending owner。
 
@@ -132,6 +133,8 @@ API Proxy 不缓存或推导这些状态，也不使用固定成功结果冒充�
 
 当前 `AgentPresetGateway` 只纳入 `agentPreset.list` 的 deployment-roster 查询。它持有可选 consumer-owned `AgentPresetRoster`；有 Provider 时验证 detached entry 并投影 default/trust/authoring/native-open facts，无 Provider 时返回 `{presets: [], authorable: false, hasDocument: false}`。后者是固定源明确支持的合法部署，不是固定成功占位。完整 preset discovery、composition、selection 和 authoring 尚未进入，不能因这个只读 absent 分支而标记完成。
 
+当前 `SettingsGateway` 只纳入 `settings.describe`。它持有可选 consumer-owned `SettingsDescriber`，验证并 detach redacted namespace snapshot；默认组合没有 Settings Provider 时，返回固定源 canonical `internal` absent-service business failure。该方法存在是协议兼容，失败是部署能力事实；两者不能被折叠成 HTTP 404，也不能以空 namespace success 冒充已装配 Provider。文件持久化、schema registration、secret handling 和 mutation API 仍由后续 Settings 能力拥有。
+
 ## 8. `/api/respond` pending 生命周期
 
 ```text
@@ -163,7 +166,7 @@ POST /api/respond
 
 ## 9. 具体 API 模块进入规则
 
-`host.describe` 与当前 `agentPreset.list` absent-roster projection 仍由本文拥有；已进入的 `llm.providers` 与 `llm.models` 由[13](./13-harness-llm-runtime-and-deepseek-provider.md)拥有，`session.*` module 由[16](./16-session-api-gateway-and-live-frames.md)拥有，Approval/Question carrier adapter 由[17](./17-approval-user-questions-and-interaction-gateway.md)拥有，七个 `workspace.*` method、四个 Host frame 与 `session.create({workspaceId})` 由[20](./20-workspace-registry-and-api.md)拥有。每增加一个其他 API 模块，必须同时提供：
+`host.describe`、当前 `agentPreset.list` absent-roster projection 与 `settings.describe` absent-provider projection 仍由本文拥有；已进入的 `llm.providers` 与 `llm.models` 由[13](./13-harness-llm-runtime-and-deepseek-provider.md)拥有，`session.*` module 由[16](./16-session-api-gateway-and-live-frames.md)拥有，Approval/Question carrier adapter 由[17](./17-approval-user-questions-and-interaction-gateway.md)拥有，七个 `workspace.*` method、四个 Host frame 与 `session.create({workspaceId})` 由[20](./20-workspace-registry-and-api.md)拥有。每增加一个其他 API 模块，必须同时提供：
 
 1. 固定源 method/schema/Provider owner；
 2. owner-defined request、response 与 error details 类型；
