@@ -19,9 +19,9 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/sessionpersistence"
-	"github.com/gorenx/goren/sessionprojection"
-	"github.com/gorenx/goren/sessiontitle"
+	sessionpersistence "github.com/gorenx/goren/session/persistence"
+	sessionprojection "github.com/gorenx/goren/session/projection"
+	sessiontitle "github.com/gorenx/goren/session/title"
 )
 
 const defaultHistoryMessages int64 = 50

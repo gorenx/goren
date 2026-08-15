@@ -18,8 +18,8 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/llmretry"
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/sessionprojection"
-	"github.com/gorenx/goren/sessiontitle"
+	sessionprojection "github.com/gorenx/goren/session/projection"
+	sessiontitle "github.com/gorenx/goren/session/title"
 	"github.com/gorenx/goren/systemprompt"
 	toolscore "github.com/gorenx/goren/tools"
 )

@@ -1,6 +1,6 @@
 // Package sessiontitle owns log-backed Session titles, deterministic fallback
 // generation, provider scheduling, and the title projection unit.
-package sessiontitle
+package title
 
 import (
 	"bytes"

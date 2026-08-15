@@ -8,8 +8,8 @@ import (
 	"sync"
 
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/sessionpersistence"
-	"github.com/gorenx/goren/sessionpersistence/sqlite/internal/dbsql"
+	sessionpersistence "github.com/gorenx/goren/session/persistence"
+	"github.com/gorenx/goren/session/persistence/sqlite/internal/dbsql"
 )
 
 // Adapter implements only the storage primitives consumed by Persistence Coordinator.

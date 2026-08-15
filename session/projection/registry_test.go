@@ -1,4 +1,4 @@
-package sessionprojection
+package projection
 
 import (
 	"context"

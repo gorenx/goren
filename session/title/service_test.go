@@ -1,4 +1,4 @@
-package sessiontitle
+package title
 
 import (
 	"bytes"
@@ -11,7 +11,7 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/sessionprojection"
+	sessionprojection "github.com/gorenx/goren/session/projection"
 )
 
 var titleFixtureConfig = Config{FallbackMaxWords: 5, FallbackMaxBytes: 40, MaxTitleBytes: 80}

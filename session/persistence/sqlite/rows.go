@@ -8,7 +8,7 @@ import (
 	"fmt"
 
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/sessionpersistence/sqlite/internal/dbsql"
+	"github.com/gorenx/goren/session/persistence/sqlite/internal/dbsql"
 )
 
 type eventRow struct {

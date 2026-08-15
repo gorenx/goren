@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/gorenx/goren/plugin"
-	"github.com/gorenx/goren/sessionprojection"
+	sessionprojection "github.com/gorenx/goren/session/projection"
 )
 
 // SessionProjectionConfig is empty because projection persistence is a

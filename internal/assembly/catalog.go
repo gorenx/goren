@@ -10,7 +10,7 @@ import (
 	"os"
 
 	"github.com/gorenx/goren/plugin"
-	"github.com/gorenx/goren/sessionpersistence"
+	sessionpersistence "github.com/gorenx/goren/session/persistence"
 )
 
 const (

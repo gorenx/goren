@@ -1,11 +1,11 @@
-package sessiontitle
+package title
 
 import (
 	"encoding/json"
 	"errors"
 
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/sessionprojection"
+	sessionprojection "github.com/gorenx/goren/session/projection"
 )
 
 type titleProjectionUnit struct{}

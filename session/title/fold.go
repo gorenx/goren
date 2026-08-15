@@ -1,4 +1,4 @@
-package sessiontitle
+package title
 
 import (
 	"encoding/json"

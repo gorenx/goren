@@ -1,4 +1,4 @@
-package sessiontitle
+package title
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/sessionprojection"
+	sessionprojection "github.com/gorenx/goren/session/projection"
 )
 
 // Options supplies contained asynchronous error reporting.
