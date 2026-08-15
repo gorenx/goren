@@ -13,16 +13,30 @@ import (
 )
 
 func (owner *toolRegistry) Execute(requestContext context.Context, input ToolExecutionInput) ToolExecutionResult {
-	preparation := owner.Prepare(requestContext, input)
+	preparation, err := owner.Prepare(requestContext, input)
+	if err != nil {
+		return errorResult(err)
+	}
 	switch preparation.Stage {
 	case ScheduledDispatch:
-		dispatched := owner.Dispatch(preparation.Execution)
+		dispatched, dispatchErr := owner.Dispatch(preparation.Execution)
+		if dispatchErr != nil {
+			return errorResult(dispatchErr)
+		}
 		if dispatched.NeedsPost {
-			return owner.Finalize(preparation.Execution, dispatched.Result)
+			finalOutcome, finalizeErr := owner.Finalize(preparation.Execution, dispatched.Result)
+			if finalizeErr != nil {
+				return errorResult(finalizeErr)
+			}
+			return finalOutcome
 		}
 		return owner.Finish(preparation.Execution, dispatched.Result)
 	case ScheduledPostResult:
-		return owner.Finalize(preparation.Execution, preparation.Result)
+		finalOutcome, finalizeErr := owner.Finalize(preparation.Execution, preparation.Result)
+		if finalizeErr != nil {
+			return errorResult(finalizeErr)
+		}
+		return finalOutcome
 	case ScheduledFinalResult:
 		return owner.Finish(preparation.Execution, preparation.Result)
 	default:
@@ -34,7 +48,7 @@ func (owner *toolRegistry) Execute(requestContext context.Context, input ToolExe
 func (owner *toolRegistry) Scheduler() ToolExecutionScheduler { return owner }
 
 // Prepare runs ordered pre-execute policy and guards without starting the body.
-func (owner *toolRegistry) Prepare(requestContext context.Context, input ToolExecutionInput) ScheduledToolPreparation {
+func (owner *toolRegistry) Prepare(requestContext context.Context, input ToolExecutionInput) (ScheduledToolPreparation, error) {
 	entry := owner.store.view(input.Scope).visible[input.Name]
 	var finalizer ContentFinalizer
 	if entry != nil {
@@ -49,75 +63,75 @@ func (owner *toolRegistry) Prepare(requestContext context.Context, input ToolExe
 		return ScheduledToolPreparation{
 			Stage: ScheduledFinalResult, Execution: execution,
 			Result: errorResult(errors.New("tools: execution context is nil")),
-		}
+		}, nil
 	}
 	execution.state = &scheduledExecutionState{
 		owner: owner, requestContext: requestContext, entry: entry, finalizer: finalizer,
 	}
 	if err != nil {
-		return ScheduledToolPreparation{Stage: ScheduledFinalResult, Execution: execution, Result: errorResult(err)}
+		return ScheduledToolPreparation{Stage: ScheduledFinalResult, Execution: execution, Result: errorResult(err)}, nil
 	}
 	if requestContext.Err() != nil {
-		return ScheduledToolPreparation{Stage: ScheduledFinalResult, Execution: execution, Result: abortedResult(false)}
+		return ScheduledToolPreparation{Stage: ScheduledFinalResult, Execution: execution, Result: abortedResult(false)}, nil
 	}
 	gate, err := plugin.WaterfallScopedFrom(
 		requestContext, owner.sourceScope, execution.Scope, preExecuteEvent, execution,
 		func(context.Context, ToolExecution) (PreToolDecision, error) { return AllowDecision{}, nil },
 	)
 	if err != nil {
-		return ScheduledToolPreparation{Stage: ScheduledFinalResult, Execution: execution, Result: errorResult(err)}
+		return ScheduledToolPreparation{Stage: ScheduledFinalResult, Execution: execution, Result: errorResult(err)}, nil
 	}
 	resolvedGate, approvalCancelled, err := owner.resolveAsk(requestContext, execution, gate)
 	if err != nil {
-		return ScheduledToolPreparation{Stage: ScheduledFinalResult, Execution: execution, Result: errorResult(err)}
+		return ScheduledToolPreparation{Stage: ScheduledFinalResult, Execution: execution, Result: errorResult(err)}, nil
 	}
 	if approvalCancelled && requestContext.Err() != nil {
-		return ScheduledToolPreparation{Stage: ScheduledPostResult, Execution: execution, Result: abortedResult(false)}
+		return ScheduledToolPreparation{Stage: ScheduledPostResult, Execution: execution, Result: abortedResult(false)}, nil
 	}
 	denial := decisionDenial(execution.Name, resolvedGate)
 	if denial == "" {
 		denial, err = owner.guardDenial(execution)
 		if err != nil {
-			return ScheduledToolPreparation{Stage: ScheduledFinalResult, Execution: execution, Result: errorResult(err)}
+			return ScheduledToolPreparation{Stage: ScheduledFinalResult, Execution: execution, Result: errorResult(err)}, nil
 		}
 	}
 	if denial != "" {
-		return ScheduledToolPreparation{Stage: ScheduledPostResult, Execution: execution, Result: deniedResult(denial)}
+		return ScheduledToolPreparation{Stage: ScheduledPostResult, Execution: execution, Result: deniedResult(denial)}, nil
 	}
 	if requestContext.Err() != nil {
-		return ScheduledToolPreparation{Stage: ScheduledPostResult, Execution: execution, Result: abortedResult(false)}
+		return ScheduledToolPreparation{Stage: ScheduledPostResult, Execution: execution, Result: abortedResult(false)}, nil
 	}
-	return ScheduledToolPreparation{Stage: ScheduledDispatch, Execution: execution}
+	return ScheduledToolPreparation{Stage: ScheduledDispatch, Execution: execution}, nil
 }
 
 // Dispatch runs only the around-dispatch chain and body; Agent Loop may overlap this stage.
-func (owner *toolRegistry) Dispatch(execution ToolExecution) ScheduledToolDispatch {
+func (owner *toolRegistry) Dispatch(execution ToolExecution) (ScheduledToolDispatch, error) {
 	state, err := owner.executionState(execution)
 	if err != nil {
-		return ScheduledToolDispatch{Result: errorResult(err)}
+		return ScheduledToolDispatch{Result: errorResult(err)}, nil
 	}
 	outcome, err := owner.dispatch(state.requestContext, execution, state.entry)
 	if err != nil {
-		return ScheduledToolDispatch{Result: errorResult(err)}
+		return ScheduledToolDispatch{Result: errorResult(err)}, nil
 	}
-	return ScheduledToolDispatch{NeedsPost: true, Result: outcome}
+	return ScheduledToolDispatch{NeedsPost: true, Result: outcome}, nil
 }
 
 // Finalize applies ordered post-execute policy, cancellation, final content, and observation.
-func (owner *toolRegistry) Finalize(execution ToolExecution, outcome ToolExecutionResult) ToolExecutionResult {
+func (owner *toolRegistry) Finalize(execution ToolExecution, outcome ToolExecutionResult) (ToolExecutionResult, error) {
 	state, err := owner.executionState(execution)
 	if err != nil {
-		return errorResult(err)
+		return errorResult(err), nil
 	}
 	postOutcome, err := owner.post(state.requestContext, execution, state.entry, outcome)
 	if err != nil {
-		return owner.finish(state.requestContext, execution, errorResult(err), state.finalizer)
+		return owner.finish(state.requestContext, execution, errorResult(err), state.finalizer), nil
 	}
 	bodyInvoked, _, _ := state.executionOutcome()
 	if state.requestContext.Err() != nil && !postOutcome.Failed() {
 		postOutcome = abortedResult(bodyInvoked, postOutcome)
 	}
-	return owner.finish(state.requestContext, execution, postOutcome, state.finalizer)
+	return owner.finish(state.requestContext, execution, postOutcome, state.finalizer), nil
 }
 
 // Finish materializes a terminal staged result without running post-execute policy.

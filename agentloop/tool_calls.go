@@ -112,7 +112,11 @@ func (subject *ReactLoopAgent) runToolGroup(
 			}
 			finalOutcome := slot.outcome
 			if slot.needsPost {
-				finalOutcome = scheduler.Finalize(slot.execution, slot.outcome)
+				var finalizeErr error
+				finalOutcome, finalizeErr = scheduler.Finalize(slot.execution, slot.outcome)
+				if finalizeErr != nil {
+					return finalizeErr
+				}
 			} else {
 				finalOutcome = scheduler.Finish(slot.execution, slot.outcome)
 			}
@@ -137,7 +141,10 @@ func (subject *ReactLoopAgent) runToolGroup(
 		}
 		callSequences[index] = callSequence
 		started++
-		preparation := scheduler.Prepare(requestContext, group[index].input)
+		preparation, err := scheduler.Prepare(requestContext, group[index].input)
+		if err != nil {
+			return err
+		}
 		switch preparation.Stage {
 		case tools.ScheduledDispatch:
 			inFlight[index] = struct{}{}
@@ -149,7 +156,11 @@ func (subject *ReactLoopAgent) runToolGroup(
 					}
 					settled <- settlement
 				}()
-				dispatched := scheduler.Dispatch(preparation.Execution)
+				dispatched, dispatchErr := scheduler.Dispatch(preparation.Execution)
+				if dispatchErr != nil {
+					settlement.err = dispatchErr
+					return
+				}
 				settlement.slot = &settledToolSlot{
 					execution: preparation.Execution, outcome: dispatched.Result, needsPost: dispatched.NeedsPost,
 				}
@@ -186,10 +197,10 @@ func (subject *ReactLoopAgent) runToolGroup(
 		return nil
 	}
 
-	if err := fillPool(); err != nil {
-		return toolGroupOutcome{}, err
-	}
 	var schedulerErr error
+	if err := fillPool(); err != nil {
+		schedulerErr = err
+	}
 	for len(inFlight) != 0 {
 		settlement := <-settled
 		delete(inFlight, settlement.index)
