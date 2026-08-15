@@ -164,11 +164,13 @@ type Snapshot struct {
 	UpdatedAt int64 `json:"updatedAt"`
 }
 
-// Config contains required deterministic fallback and accepted-title limits.
+// Config owns deterministic title behavior and its optional model-backed
+// generation feature.
 type Config struct {
-	FallbackMaxWords int `json:"fallbackMaxWords"`
-	FallbackMaxBytes int `json:"fallbackMaxBytes"`
-	MaxTitleBytes    int `json:"maxTitleBytes"`
+	FallbackMaxWords int        `json:"fallbackMaxWords"`
+	FallbackMaxBytes int        `json:"fallbackMaxBytes"`
+	MaxTitleBytes    int        `json:"maxTitleBytes"`
+	LLM              *LLMConfig `json:"llm,omitempty"`
 }
 
 // Validate resolves and checks typed title configuration.
@@ -184,6 +186,13 @@ func (settings Config) Validate() (Config, error) {
 	}
 	if settings.FallbackMaxBytes > settings.MaxTitleBytes {
 		return Config{}, errors.New("sessiontitle: fallbackMaxBytes must not exceed maxTitleBytes")
+	}
+	if settings.LLM != nil {
+		validatedLLM, err := settings.LLM.Validate()
+		if err != nil {
+			return Config{}, err
+		}
+		settings.LLM = &validatedLLM
 	}
 	return settings, nil
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	sessionprojection "github.com/gorenx/goren/session/projection"
@@ -30,11 +31,15 @@ type sessionTitlePlugin struct {
 	settings sessiontitle.Config
 }
 
-func (*sessionTitlePlugin) Manifest() plugin.Manifest {
+func (instance *sessionTitlePlugin) Manifest() plugin.Manifest {
+	requires := []plugin.ServiceRef{session.StoreService.Ref(), sessionprojection.Service.Ref()}
+	if instance.settings.LLM != nil {
+		requires = append(requires, llm.Service.Ref())
+	}
 	return plugin.Manifest{
 		Name:     SessionTitleFactoryName,
 		Provides: []plugin.ServiceRef{sessiontitle.Service.Ref()},
-		Requires: []plugin.ServiceRef{session.StoreService.Ref(), sessionprojection.Service.Ref()},
+		Requires: requires,
 	}
 }
 
@@ -47,6 +52,19 @@ func (instance *sessionTitlePlugin) Apply(_ context.Context, pluginScope *plugin
 	titles, err := sessiontitle.NewLogService(pluginScope, store, projections, instance.settings, sessiontitle.Options{})
 	if err != nil {
 		return err
+	}
+	if instance.settings.LLM != nil {
+		modelRuntime, found := plugin.Require(pluginScope, llm.Service)
+		if !found {
+			return errors.New("assembly: Session Title LLM runtime is unavailable")
+		}
+		implementation, providerErr := sessiontitle.NewConfiguredLLMProvider(modelRuntime, *instance.settings.LLM)
+		if providerErr != nil {
+			return providerErr
+		}
+		if _, providerErr = titles.Register(pluginScope, implementation); providerErr != nil {
+			return providerErr
+		}
 	}
 	_, err = plugin.Provide(pluginScope, sessiontitle.Service, sessiontitle.TitleService(titles))
 	return err
