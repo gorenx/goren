@@ -154,8 +154,8 @@ interaction owner registers stable rpcId + decoder
 | ID | 类别 | 子目标 | 执行状态 | 证据或缺口 |
 | --- | --- | --- | --- | --- |
 | S4-D01 | 交付 | Harness-compatible Message、Content、ToolSchema、ContextSnapshotSection、StreamChunk、finish、usage 和 options | Completed | Contract Verified：固定源与 Go 的 wire message/request、chunk、assembly 和 core discriminant 一致；unknown extension 使用 opaque variant |
-| S4-D02 | 交付 | LLM Adapter Registry 与 Runtime | Completed | Go Verified：route/directory/discovery、model resolution、prepared call、replacement、replay-state filter、waterfall 与 terminal normalization；包内已按 contribution、resolution、call snapshot 和 generation owner 分文件，未增加平行入口 |
-| S4-D03 | 交付 | DeepSeek adapter | Completed | Contract Verified：direct chat-completions serialization、SSE translation、usage、finish 与默认 policy 同固定源一致 |
+| S4-D02 | 交付 | LLM Adapter Registry 与 Runtime | Completed | Go Verified：route/directory/discovery、model resolution、prepared call、replacement、replay-state filter、waterfall 与 terminal normalization；`5fd5602` 进一步分离公共 value/codec、Runtime state 与 Adapter registration，未增加平行入口 |
+| S4-D03 | 交付 | DeepSeek adapter | Completed | Contract Verified：direct chat-completions serialization、SSE translation、usage、finish 与默认 policy 同固定源一致；`5fd5602` 分离 Adapter 入口、model catalog、lazy stream、HTTP request/error、config resolve/codec 与双向映射职责 |
 | S4-D04 | 交付 | 建立可注入 outbound transport、迁移调用者并删除旧入口 | Completed | Go Verified：assembly 已提供 `llm` 并注册 `deepseek-official`；旧 OpenAI SDK/factory/client/example 入口已移除 |
 | S4-D05 | 交付 | retry、error classification、partial stream、usage 和 cancellation | In Progress | Go Verified：RetryPolicy、HTTP/provider/stream error、partial stream terminal、usage、idle timeout、cancel 和 Agent request-error retry attempt 已覆盖；默认 policy delay/jitter/attempt consumer 尚未实现 |
 | S4-D06 | 交付 | fake stream 与录制响应 fixtures | In Progress | Go Verified：`NewSliceStream` 与 inline HTTP/SSE fake 已覆盖 deterministic stream；可复用录制响应 fixture 尚未建立 |
@@ -328,7 +328,7 @@ interaction owner registers stable rpcId + decoder
 
 迭代中只运行受影响的 API Proxy、Agent、Session、assembly 与 contract tests；最终执行一次普通全量测试，并对本次并发边界执行 targeted race，不为同一状态重复运行 `go build ./...`。此前 Agent Loop 的 full race、Connection WebSocket 压力测试与 `govulncheck` 仍是对应阶段证据，不冒充本次重复验证。
 
-随后完成的 LLM 文件职责重组不改变公共 contract 或运行行为；受影响的 `llm`、DeepSeek、Agent Loop、API Proxy、assembly 与 architecture tests 通过后，只补跑一次 `go test ./...`、`go vet ./...` 和 `git diff --check`。该重组没有新增并发语义，因此未重复 race、TypeScript differential 或真实 endpoint smoke。
+LLM 文件职责重组提交 `5fd5602` 不改变公共 contract 或运行行为。该提交先通过 `go test ./llm ./internal/llmdeepseek`；随后在只包含该提交的干净 worktree 中通过一次 `go test ./...` 和 `go vet ./...`。该重组没有新增并发语义，因此未重复 race、TypeScript differential 或真实 endpoint smoke。
 
 先前真实进程 smoke 已证明 `cmd/goren` 可通过 Factory Catalog 与 Plugin Runtime 结算基础服务并响应 `host.describe`；本次未重复该 smoke。本次 contract test 直接组合真实 Registry/Session/LLM/SystemPrompt/Tools/AgentLoop/SessionGateway/Echo Host，让固定源 `WebApiClient` 通过真实 HTTP/WebSocket 完成 create/list/history/models/selectModel、prompt、queue edit/remove 和 cancel，并观察 `turn/end`、aborted turn 与 idle status。该证据仍不是原 Web 产品验收，也未使用真实 DeepSeek credential/endpoint。
 

@@ -10,9 +10,9 @@
 
 | 源 owner / symbol | Go owner | 保留职责 |
 | --- | --- | --- |
-| `packages/core/llm/src/types.ts` | `llm/message.go`、`message_source.go`、`harness_contract.go`、`stream.go`、`finish_reason.go`、`types.go` | Message、source、content、GenerateOptions、StreamChunk、finish、usage 与 model metadata |
+| `packages/core/llm/src/types.ts` | `llm/message.go`、`message_codec.go`、`message_source.go`、`content.go`、`content_codec.go`、`tool_schema.go`、`stream.go`、`stream_codec.go`、`finish_reason.go`、`types.go` | Message、source、content、GenerateOptions、StreamChunk、finish、usage 与 model metadata |
 | `packages/core/llm/src/index.ts` 的 `Llm` | `llm.LlmRuntime`、`runtimeService` | Adapter route、configurable provider、model discovery、call resolution 与 stream dispatch |
-| `packages/core/llm/src/index.ts` 的 adapter registration | `llm.AdapterRegistrationHandle`、`adapterRegistrationState` | 多 route 原子注册、replace、release 与 effect ownership |
+| `packages/core/llm/src/index.ts` 的 adapter registration | `llm/adapter_registration.go` 的 `AdapterRegistrationHandle`、`adapterRegistrationState` | 多 route 原子注册、replace、release 与 effect ownership |
 | `llm/stream` | `llm.StreamEvent` | 每次模型调用外层的 typed waterfall |
 | 源 retry policy schema/defaults | `llm.RetryPolicy`、`ResolveRetryPolicy` | normal/always union、默认 retryable code 与 backoff snapshot |
 | 源 assistant stream assembly | `llm.BlockAssembler` | 按 block index 增量组装 text、reasoning、tool-call、usage、finish 与 replay state |
@@ -47,31 +47,46 @@ Go 不复制 TypeScript class inheritance、declaration merging、fetch implemen
 
 | 文件 / 组件 | 单一职责 |
 | --- | --- |
-| `llm/message.go` | Message value、构造、严格 JSON 恢复和 detached clone |
+| `llm/message.go` | Message value、构造和 detached clone |
+| `llm/message_codec.go` | Message 的严格 JSON 恢复与 durable encoding |
 | `llm/message_source.go` | Message provenance/source 判别类型、校验和 opaque extension |
-| `llm/harness_contract.go` | ContentBlock 与 ToolSchema 公共 contract |
+| `llm/content.go` | ContentBlock 判别值、detached clone 与内容能力查询 |
+| `llm/content_codec.go` | ContentBlock 的严格 JSON 恢复、opaque extension 与嵌套 tool result codec |
+| `llm/tool_schema.go` | ToolSchema 与 ContextSnapshotSection 边界值 |
 | `llm/finish_reason.go` | FinishReason 判别类型、严格恢复和 opaque extension |
-| `llm/stream.go` | StreamChunk 公共 contract、codec 和 `ChunkStream` capability |
+| `llm/stream.go` | StreamChunk 判别值和 `ChunkStream` capability |
+| `llm/stream_codec.go` | StreamChunk durable codec 与 interface-valued field 恢复 |
 | `llm/slice_stream.go` | 测试及进程内调用使用的 deterministic pull stream |
 | `llm/adapter.go` | Service、Event、Adapter 与可选 capability interface |
-| `llm/registry.go` | Runtime state、Adapter route contribution、原子 replace 与 topology notification |
+| `llm/runtime_service.go` | Runtime state、构造、provider list 与 topology notification |
+| `llm/adapter_registration.go` | Adapter route contribution、校验、原子 replace/release 与 effect ownership |
 | `llm/provider_directory.go` | configurable provider directory contribution 与独立生命周期 |
 | `llm/model_discovery.go` | provider model discovery registration 与调用边界 |
 | `llm/runtime.go` | model metadata、exact model 和 effective call config resolution |
 | `llm/prepared_call.go` | immutable call snapshot 与 single-dispatch lifecycle |
 | `llm/generation.go` | waterfall dispatch、Adapter 调用、replay-state filter 和 terminal normalization |
 | `llm/retry_policy.go` | retry tagged union、默认值、范围校验与 detached snapshot |
+| `llm/retry_policy_codec.go` | retry typed config 的 omission 与严格 tagged-union JSON codec |
 | `llm/assembler.go` | provider-neutral 增量 block assembly |
-| `internal/llmdeepseek/config.go` | omission/null、默认值、环境派生、模型目录和 connection snapshot |
-| `internal/llmdeepseek/serialize.go` | Harness request 到 DeepSeek chat-completions request 的单向映射 |
+| `internal/llmdeepseek/config.go` | owner config、connection snapshot 与枚举值 |
+| `internal/llmdeepseek/config_codec.go` | omission/null 与 strict config JSON codec |
+| `internal/llmdeepseek/config_resolve.go` | 默认值、环境派生、模型目录校验与 atomic resolution |
+| `internal/llmdeepseek/serialize.go` | Harness Message 到 DeepSeek wire message 的单向映射 |
+| `internal/llmdeepseek/request_serialization.go` | 完整 chat-completions request、Tool schema 与 thinking resolution |
+| `internal/llmdeepseek/wire.go` | DeepSeek 私有 request/response wire DTO |
 | `internal/llmdeepseek/sse.go` | SSE framing、idle timeout、`[DONE]` 与 body lifecycle |
-| `internal/llmdeepseek/translate.go` | DeepSeek delta/usage/finish 到 Harness StreamChunk |
-| `internal/llmdeepseek/adapter.go` | lazy request、credential/identity resolution、HTTP headers、status/error 和取消 |
+| `internal/llmdeepseek/translate.go` | DeepSeek payload 到 Harness StreamChunk 的流状态机 |
+| `internal/llmdeepseek/response_mapping.go` | finish reason 与 token usage 的纯映射 |
+| `internal/llmdeepseek/adapter.go` | Adapter 构造、依赖和 lazy Stream 入口 |
+| `internal/llmdeepseek/model_catalog.go` | Provider metadata、retry snapshot 与 model capability |
+| `internal/llmdeepseek/stream.go` | 单次 lazy stream 的初始化、取消与 terminal lifecycle |
+| `internal/llmdeepseek/request.go` | credential/identity resolution、HTTP request/header/send 与 SSE bridge |
+| `internal/llmdeepseek/http_error.go` | HTTP/provider failure、retry-after 与稳定 Harness error code |
 | `internal/anonymoususerid/store.go` | installation identity 文件边界，不承担 LLM 或配置职责 |
 
 Registry 锁只保护 contribution membership 和 route 快照。Adapter、model discovery、observer、waterfall 和网络 I/O 都不在 Registry lock 内运行。DeepSeek parser、translator 与 BlockAssembler 分离：parser 只理解 SSE，translator 只理解 provider payload，assembler 只理解 Harness StreamChunk。
 
-上述文件划分按责任对象组织，而不是按开发顺序把不同 struct 和 method 交替堆放。它不把 `llm` 再拆成子包：这些类型共同组成一个公共 contract 和 Runtime 生命周期，额外子包会制造反向依赖或重复 facade。仅当未来出现可独立消费、可独立测试且依赖单向的新能力时，才建立新的包边界。
+上述文件划分按责任对象组织。判别 union 中多个 struct 仍可同处一个文件，因为它们共同组成一个 contract family；codec、registration lifecycle、network request 和 error mapping 等独立变化原因不得再混入该文件。它不把 `llm` 再拆成子包：这些类型共同组成一个公共 contract 和 Runtime 生命周期，额外子包会制造反向依赖或重复 facade。仅当未来出现可独立消费、可独立测试且依赖单向的新能力时，才建立新的包边界。
 
 ## 4. 公共 Service 与扩展边界
 
