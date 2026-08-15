@@ -81,7 +81,7 @@ Go 可以合并只为 TypeScript 构建、声明合并或 npm 发布而存在的
 
 独立原因：Agent loop 是同步热路径，必须在一次 Turn 中保持顺序；Session 是追加事实，Provider 与 Consumer 可以独立演进。把它们合并会迫使每个新能力修改 Loop。
 
-已进入实现的 live Registry、durable Inbox、Agent-scoped event、initiator attribution 与 model selection snapshot 由[14 Agent Registry、Inbox 与实时事件模块设计](./14-agent-registry-inbox-and-events.md)拥有；具体 Turn/Step Loop 仍按本边界由后续 `agentloop` Provider 实现。
+live Registry、durable Inbox、Agent-scoped event、initiator attribution 与 model selection snapshot 由[14 Agent Registry、Inbox 与实时事件模块设计](./14-agent-registry-inbox-and-events.md)拥有；concrete Agent、Turn/Step、request reconstruction 与 Tool-call scheduling 由[15 Agent Loop 与请求驱动模块设计](./15-agent-loop-and-request-driver.md)拥有。
 
 ### 2.3 Session Data Plane
 

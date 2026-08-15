@@ -117,7 +117,7 @@ Tool 定义至少保留：
 
 Native Tool 当前已实现 definition、scope-aware registry、restriction/guard、pre/execute/post waterfall、输入/输出 schema 校验、结果物化与取消；权威边界见[12 Tools Registry 与执行流水线模块设计](./12-tools-registry-and-execution-pipeline.md)。Code Mode 依赖生成 SDK 与 Code Runtime bridge，继续属于排除范围。
 
-输入必须先按 schema 校验。`ask` 通过 Interaction 能力请求许可；当前 Approval Service 尚未进入 composition 时稳定拒绝，未来若实现 Headless，也不能把无人值守模式自动解释为允许。工具运行产生的最终结果保留调用 ID；其 Session event 关联由后续 Agent/Session Consumer 拥有，Tools 不直接追加 Session。
+输入必须先按 schema 校验。`ask` 通过 Interaction 能力请求许可；当前 Approval Service 尚未进入 composition 时稳定拒绝，未来若实现 Headless，也不能把无人值守模式自动解释为允许。工具运行产生的最终结果保留调用 ID；其 Session event 关联由 Agent Loop Consumer 拥有，Tools 不直接追加 Session。
 
 ## 6. TypeScript Client Connection
 

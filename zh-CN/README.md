@@ -20,12 +20,13 @@
 - [12 Tools Registry 与执行流水线模块设计](./12-tools-registry-and-execution-pipeline.md)：Tool Definition、scope view、restriction/guard、policy waterfall、执行/取消、结果物化与 System Prompt 投影。
 - [13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)：provider-neutral LLM Service、Adapter Registry、模型路由、流组装、RetryPolicy，以及 DeepSeek typed config、HTTP/SSE 和错误映射。
 - [14 Agent Registry、Inbox 与实时事件模块设计](./14-agent-registry-inbox-and-events.md)：live Agent registry、Factory seam、durable Inbox projection、Agent-scoped events、initiator attribution 与 model selection snapshot。
+- [15 Agent Loop 与请求驱动模块设计](./15-agent-loop-and-request-driver.md)：concrete Agent lifecycle、Turn/Step 状态机、请求重建、模型 attempt、Tool-call 调度、取消与 runtime-context projection。
 
 首次阅读按 `01`–`05` 顺序理解全局设计；进入实现时读取对应模块文档，再从 `08` 查看当前进度。实现单个能力时，先从 `01` 确认范围，再读其拥有契约的文档。DeepSeek Harness 的 Service Definition / Provider / Consumer、事件 owner 和生命周期是默认职责边界；Go 包不机械复制每个 npm 包，但没有明确证据时也不另起一套领域切分。
 
 ## 权威关系
 
-- 本目录 `01`–`05` 拥有全局设计，`06`、`07`、`09`–`14` 拥有已进入实现的稳定模块设计，`08` 单独拥有日期性实施进度与证据。
+- 本目录 `01`–`05` 拥有全局设计，`06`、`07`、`09`–`15` 拥有已进入实现的稳定模块设计，`08` 单独拥有日期性实施进度与证据。
 - 根目录 `README.md` 与 `README.zh-CN.md` 只说明项目背景。
 - TypeScript 的行为证据来自固定 commit；源仓库后续变化不会自动成为 Go 需求。
 - Go 代码证明当前实现，跨语言 fixtures 和测试证明兼容性；设计状态不能代替实现或验收证据。
@@ -42,6 +43,6 @@
 - 一个事实只在拥有该职责的文档中定义，其他文档只链接。
 - 实施完成度、验证命令、阻塞项和下一步只更新 `08`，不得散落到路线图或模块设计文档。
 - 只为已经出现真实职责与代码边界的模块增加实现文档；不为规划目录或空 package 建文档占位。
-- 模块文档至少记录职责/非职责、源 owner、依赖方向、上下游流程、生命周期、失败/取消语义、验证所有权和后续能力进入规则；代码/测试证据与未完成项只写入 `08`。
+- 模块文档至少记录职责/非职责、源 owner、依赖方向、上下游流程、生命周期、失败/取消语义、验证所有权和后续能力进入规则；代码/测试证据与实施缺口只写入 `08`。
 - 未确认的行为保留为显式未决事项，不写成已经实现或已经验证。
 - 新增、删除、重命名、重排文档或改变文档职责时同步更新本索引。

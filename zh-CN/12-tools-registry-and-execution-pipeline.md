@@ -242,7 +242,7 @@ Tools 不调用 `RenderPrompt`，System Prompt 不读取 executor/output schema/
 - Code Mode 的 `run_code`、生成 TypeScript/Python SDK、Code Runtime 和 sub-dispatch log；
 - Web `presentCall`/`presentResult` 和卡片模型；
 - Approval Service 的交互实现；
-- Agent Loop 的批量并发调度、additional context 入队与 Session event commit；
+- Agent Loop 的批量并发编排、additional context 入队与 Session event commit；
 - filesystem/shell 等具体 Tool plugin。
 
-Agent Loop 进入时作为 Consumer 使用 `ExecutionMode`、`Execute` 和结果中的 `ConcludesTurn`；若并行调度证明需要把 pre/dispatch/post 拆成 consumer-owned staged port，应沿真实 call chain扩展现有 Service，而不是预建第二套 scheduler。additional context 只有在 Harness-compatible `UserMessage` 完成迁移并出现 Agent Consumer 后进入，不能绑定当前待迁移的旧 LLM Message。
+Agent Loop 作为 Consumer 使用 `ExecutionMode` 和 `ToolExecutionScheduler`：Tools owner 顺序执行 `Prepare`、`Finalize`、`Finish`，只有 `Dispatch`/body 可由 Agent Loop 重叠；结果中的 `ConcludesTurn` 和 `AdditionalContextMessages` 由 Agent Loop 在 durable `tool/result` 之后消费。批量算法和 Session event 顺序由[15 Agent Loop 与请求驱动模块设计](./15-agent-loop-and-request-driver.md)拥有，Tools 不建立第二套 driver 或 Inbox。

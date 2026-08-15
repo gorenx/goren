@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有 `agent` 包的公开 Agent contract、live Registry、durable Inbox projection、Agent-scoped 实时事件、显式 initiator attribution 与单步 model selection snapshot。具体 Turn/Step 驱动属于后续 `agentloop` Provider；Session 事实日志见[10 Session Core 与生命周期模块设计](./10-session-core-and-lifecycle.md)，通用 Scope/Event 语义见[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)，当前实施证据只见[08 实施进度](./08-implementation-progress.md)。
+本文拥有 `agent` 包的公开 Agent contract、live Registry、durable Inbox projection、Agent-scoped 实时事件、显式 initiator attribution 与单步 model selection snapshot。具体 Turn/Step 驱动由[15 Agent Loop 与请求驱动模块设计](./15-agent-loop-and-request-driver.md)拥有；Session 事实日志见[10 Session Core 与生命周期模块设计](./10-session-core-and-lifecycle.md)，通用 Scope/Event 语义见[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)，当前实施证据只见[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 固定源与职责映射
 
@@ -19,7 +19,7 @@
 | `AgentRegistry` 的 `AsyncLocalStorage` initiator | `WithInitiator`、`WithoutInitiator`、`InitiatorFrom` | 同进程调用链的因果归因 |
 | 源 `@deepseek-ai/dsh-agent` Plugin | `internal/assembly` 的 Agent Factory | 提供 canonical `agents` Service |
 
-Go 不复制 Typert lookup/context、Cordis Proxy、declaration merging 或 `AsyncLocalStorage`。Typert 不属于客户端与 Agent 服务端 wire 兼容的必要路径；Scope 由 opaque `plugin.ScopeKey` 表达，initiator 由显式 `context.Context` 传播。具体 Agent 构造和 Loop 驱动仍由源 `core/agent-loop` 对应的后续 Provider 拥有，不能并入 Registry。
+Go 不复制 Typert lookup/context、Cordis Proxy、declaration merging 或 `AsyncLocalStorage`。Typert 不属于客户端与 Agent 服务端 wire 兼容的必要路径；Scope 由 opaque `plugin.ScopeKey` 表达，initiator 由显式 `context.Context` 传播。具体 Agent 构造和 Loop 驱动由源 `core/agent-loop` 对应的 `agentloop` Provider 拥有，不能并入 Registry。
 
 ## 2. 职责与非职责
 
@@ -52,12 +52,12 @@ Agent Plugin
   -> NewRegistry(providerScope)
   -> Provide(agents)
 
-Agent Loop Plugin（后续）
+Agent Loop Plugin
   -> Require(agents)
   -> agents.SetFactory(loopScope, concreteFactory)
   -> disposer 精确撤回 factory
 
-API / driver Consumer（后续）
+API / driver Consumer
   -> Require(agents)
   -> agents.Create(ownerScope, CreateOptions)
   -> Registry 委派给当前 factory
@@ -65,7 +65,7 @@ API / driver Consumer（后续）
 
 `Factory` interface 由其 Consumer `Registry` 定义。Registry 不导入 `agentloop`，也不通过全局变量发现实现。没有 factory 时 `Create` 明确失败；重复注册 factory 明确失败；owner Scope unload 时 factory slot 由 effect disposer 撤回。
 
-首个 Go slice 只开放新建所需的 `CreateAgent` seam。源 `resume` 要等待 Session persistence 的真实 load/repair call chain 进入，届时扩展现有 consumer-owned interface，不预建返回假数据的入口。
+当前 Go boundary 开放新建所需的 `CreateAgent` seam。源 `resume` 要等待 Session persistence 的真实 load/repair call chain 进入，届时扩展现有 consumer-owned interface，不预建返回假数据的入口。
 
 ## 4. Registry 生命周期与 identity
 
@@ -197,7 +197,7 @@ observer / extension
 
 后续能力必须沿真实 Consumer 扩展：
 
-- `agentloop` 实现 concrete Agent、Factory、Turn/Step、status/idle/cancel 与 retry orchestration；Registry 不吸收这些状态机；
+- `agentloop` 实现 concrete Agent、Factory、Turn/Step、status/idle/cancel 与 retry attempt orchestration；Registry 不吸收这些状态机，具体流程见[15](./15-agent-loop-and-request-driver.md)；
 - Session persistence 进入后再增加 `ResumeOptions`/resume seam，并由 Session owner load/repair；
 - `session.*` API 和 Mux/Host projection 只读取 Agent/Session contract，不让 wire frame 成为 Agent 领域类型；
 - approval/question、Jobs/Subagent、ACP、MCP 和 Headless CLI 继续保持 Deferred，直到范围和真实调用链明确；

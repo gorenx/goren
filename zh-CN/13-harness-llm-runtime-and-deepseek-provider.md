@@ -153,7 +153,7 @@ DeepSeek prompt token 是累计值；`prompt_cache_hit_tokens` 或 `prompt_token
 
 DeepSeek Adapter 把 HTTP/provider/transport 事实映射成 `LlmError`：`AUTH`、`QUOTA`、`RATE_LIMIT`、`CONTEXT_WINDOW_EXCEEDED`、`INVALID_REQUEST`、`SERVER`、`TIMEOUT`、`TRANSPORT`、`EMPTY_RESPONSE`、`INVALID_CREDENTIAL` 等。HTTP status、provider retry-after 和 request ID 是结构化字段，不需要 Agent 解析错误字符串。
 
-`RetryPolicy` 由 Adapter registration 捕获并向 Agent request owner 暴露。默认 normal policy 是两次 retry、500ms 初始 delay、10s 上限、0.1 jitter，retryable code 为 `EMPTY_RESPONSE`、`RATE_LIMIT`、`SERVER`、`TIMEOUT`、`TRANSPORT`。`always` 表示持续到成功或取消。`llm` 定义并校验 policy，不自行启动跨请求 retry loop；何时允许重试、是否已有 model-visible output、何时记录新 request event，仍由后续 Agent Loop 拥有。
+`RetryPolicy` 由 Adapter registration 捕获并向 Agent request owner 暴露。默认 normal policy 是两次 retry、500ms 初始 delay、10s 上限、0.1 jitter，retryable code 为 `EMPTY_RESPONSE`、`RATE_LIMIT`、`SERVER`、`TIMEOUT`、`TRANSPORT`。`always` 表示持续到成功或取消。`llm` 定义并校验 policy，不自行启动跨请求 retry loop；Agent Loop 只执行 `agent/request-error` 明确返回的 retry action，具体 attempt boundary 见[15 Agent Loop 与请求驱动模块设计](./15-agent-loop-and-request-driver.md)。delay/jitter/attempt policy consumer 仍是独立 Plugin 职责。
 
 调用方 context、单次 `Next` context 和显式 `Close` 都可取消 owned request。取消不得撤销共享 Adapter registration、LLM Service 或其他 Agent 的请求。Adapter replacement 和 Plugin unload 只撤回 route contribution；已取得的 prepared call 仍绑定原 registration identity。
 
@@ -179,7 +179,7 @@ DeepSeek Plugin Apply
 
 ## 11. 后续能力进入规则
 
-- Agent Loop 进入时消费 `PrepareCall`、RetryPolicy、ChunkStream 与 BlockAssembler，不把 retry orchestration 回填进 Adapter；
+- Agent Loop 消费 `PrepareCall`、RetryPolicy、ChunkStream 与 BlockAssembler，不把 retry attempt orchestration 回填进 Adapter；
 - Session 派生模型历史时复用唯一 Message/Content contract，不创建 Session 专用 LLM DTO；
 - Provider model discovery 只有真实配置 UI/API Consumer 出现后才接入外部 endpoint；
 - 在线 DeepSeek smoke 必须使用显式环境 credential，并与离线 contract suite 分开记录；

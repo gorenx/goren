@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有 `plugin` 与 `internal/assembly` 的职责、Go 类型模型、上下游流程和生命周期。全局依赖方向与 Child Scope 使用规则由[02 Go 运行时架构与插件模型](./02-runtime-architecture-and-plugin-model.md)拥有；System Prompt 与 Tools 的消费语义分别由[11 System Prompt Registry 与 Assembly 模块设计](./11-system-prompt-registry-and-assembly.md)和[12 Tools Registry 与执行流水线模块设计](./12-tools-registry-and-execution-pipeline.md)拥有；当前实施证据只见[08 实施进度](./08-implementation-progress.md)。
+本文拥有 `plugin` 与 `internal/assembly` 的职责、Go 类型模型、上下游流程和生命周期。全局依赖方向与 Child Scope 使用规则由[02 Go 运行时架构与插件模型](./02-runtime-architecture-and-plugin-model.md)拥有；System Prompt、Tools 与 Agent Loop 的消费语义分别由[11](./11-system-prompt-registry-and-assembly.md)、[12](./12-tools-registry-and-execution-pipeline.md)和[15](./15-agent-loop-and-request-driver.md)拥有；当前实施证据只见[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 源职责映射
 
@@ -21,6 +21,7 @@
 | `packages/core/system-prompt` | `internal/assembly` 的 System Prompt Plugin | 提供 `systemPrompt` Service |
 | `packages/core/tools` | `internal/assembly` 的 Tools Plugin | 消费 `systemPrompt`，提供 `tools` Service 并注册 schema projection |
 | `packages/core/agent` | `internal/assembly` 的 Agent Plugin | 提供 `agents` Registry Service；具体 Factory 由 Agent Loop 注册 |
+| `packages/core/agent-loop` | `internal/assembly` 的 Agent Loop Plugin | 消费 Agent/Session/LLM/Tools/System Prompt，提供 `agentLoop` 并注册 concrete Factory |
 
 Go 不复制 Proxy property lookup、decorator、declaration merging、npm module loader、Profile evaluator 或 `!!js`。这些机制在 Go 中分别由显式 interface、泛型自由函数、静态 Catalog 和 typed config 取代；Service/Provider/Consumer、事件 mode 和 effect 生命周期不因语言变化而合并。
 
@@ -159,12 +160,13 @@ shipped Catalog 当前只有：
 - `@deepseek-ai/dsh-system-prompt` 的 Registry/Assembly Provider；
 - `@deepseek-ai/dsh-tools` 的 Native Registry/Execution Provider。
 - `@deepseek-ai/dsh-agent` 的 live Registry/Inbox contract Provider。
+- `@deepseek-ai/dsh-agent-loop` 的 concrete Agent lifecycle 与 request driver Provider。
 
 其中 Connection Factory 虽然沿用源 npm canonical name，但只实现服务端 Host carrier，不包含 `WebApiClient`、`ConnectionController` 或浏览器代码。Web UI、SDK、Tools Code Mode、ACP、MCP、Typert 与其他 Deferred 能力不在 Catalog 或依赖闭包。
 
 ## 8. 当前 server 组合流程
 
-默认 declarations 按 Connection、API Proxy、Agent、LLM、DeepSeek、System Prompt、Tools、Session 声明。Connection/API Proxy/Session 链故意采用 Consumer-before-Provider 顺序，以证明 Runtime 按 Service graph 而不是文件顺序工作；Agent Registry 无外部 Service 依赖，DeepSeek 和 Tools 分别在 LLM 与 System Prompt 激活后消费其 Service：
+默认 declarations 按 Connection、API Proxy、Agent Loop、Agent、LLM、DeepSeek、System Prompt、Tools、Session 声明。Connection/API Proxy/Session 与 Agent Loop 的链故意采用 Consumer-before-Provider 顺序，以证明 Runtime 按 Service graph 而不是文件顺序工作；Agent Registry 无外部 Service 依赖，DeepSeek 和 Tools 分别在 LLM 与 System Prompt 激活后消费其 Service：
 
 ```text
 cmd/goren
@@ -173,9 +175,9 @@ cmd/goren
   -> connection Factory.Create
   -> Connection StateWaiting (requires apiProxy)
   -> API Proxy StateWaiting (requires sessions)
+  -> Agent Loop StateWaiting (requires agents/sessions/llm/tools/systemPrompt)
   -> Agent Factory.Create + Apply
        -> live Registry + Provide(agents)
-       -> concrete creation Factory 尚待 Agent Loop 注册
   -> LLM Factory.Create + Apply
        -> provider-neutral Runtime + Provide(llm)
   -> DeepSeek Factory.Create + Apply
@@ -191,6 +193,10 @@ cmd/goren
        -> Provide(tools)
   -> Session Factory.Create + Apply
        -> MemoryStore + Provide(sessions)
+  -> Runtime settles Agent Loop
+       -> Require five capability Services
+       -> register concrete Factory with agents
+       -> Provide(agentLoop)
   -> Runtime settles API Proxy
        -> Catalog + host.describe + empty cancellable EventStreams
        -> Provide(apiProxy)
