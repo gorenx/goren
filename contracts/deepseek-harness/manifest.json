@@ -28,6 +28,7 @@
     "unaryMethods": [
       "host.describe",
       "agentPreset.list",
+      "settings.describe",
       "llm.providers",
       "llm.models",
       "session.list",
