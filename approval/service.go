@@ -79,14 +79,14 @@ func (owner *approvalService) Request(requestContext context.Context, decisionRe
 	if identifier == "" {
 		return "", errors.New("approval: minted request id is empty")
 	}
-	if _, err := session.Append(conversation, AskedEvent, Asked{
+	if _, err := session.AppendSerialized(conversation, AskedEvent, Asked{
 		ID: identifier, ToolName: decisionRequest.ToolName,
 		CallID: cloneCallID(decisionRequest.CallID), Reason: cloneString(decisionRequest.Reason),
 	}); err != nil {
 		return "", err
 	}
 	decisionOutcome := owner.decide(requestContext, decisionRequest, conversation)
-	if _, err := session.Append(conversation, DecidedEvent, Decided{ID: identifier, Outcome: decisionOutcome}); err != nil {
+	if _, err := session.AppendSerialized(conversation, DecidedEvent, Decided{ID: identifier, Outcome: decisionOutcome}); err != nil {
 		return "", err
 	}
 	return decisionOutcome, nil

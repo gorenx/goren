@@ -64,7 +64,7 @@ func (subject *ReactLoopAgent) executeStep(
 			if !found {
 				break
 			}
-			committed, appendErr := session.Append(subject.conversation, session.AssistantChunked, session.AssistantChunk{
+			committed, appendErr := session.AppendSerialized(subject.conversation, session.AssistantChunked, session.AssistantChunk{
 				Turn: turn, Step: step, Chunk: chunk,
 			})
 			if appendErr != nil {
@@ -129,7 +129,7 @@ func (subject *ReactLoopAgent) executeStep(
 		if usage, present := assembler.UsageValue(); present {
 			assembledPayload.Usage = &usage
 		}
-		if _, err := session.AppendSurface(subject.conversation, session.AssistantMessaged, assembledPayload, session.SurfaceIntent{
+		if _, err := session.AppendSurfaceSerialized(subject.conversation, session.AssistantMessaged, assembledPayload, session.SurfaceIntent{
 			Operation: session.SurfaceAppend(), SourceEventSeqs: &chunkSequences,
 		}); err != nil {
 			return nil, err
@@ -223,14 +223,14 @@ func (subject *ReactLoopAgent) buildRequest(
 		if baselineFound {
 			reason = session.RequestHeaderResume
 		}
-		if _, err := session.Append(subject.conversation, session.RequestHeaderSet, session.RequestHeaderSnapshot{
+		if _, err := session.AppendSerialized(subject.conversation, session.RequestHeaderSet, session.RequestHeaderSnapshot{
 			Header: headerSnapshot, Reason: reason,
 		}); err != nil {
 			return requestAttempt{}, err
 		}
 		subject.requestHeaderLogged = true
 	} else if !baselineFound || !session.EpochHeaderEqual(baseline, headerSnapshot) {
-		if _, err := session.Append(subject.conversation, session.RequestHeaderSet, session.RequestHeaderSnapshot{
+		if _, err := session.AppendSerialized(subject.conversation, session.RequestHeaderSet, session.RequestHeaderSnapshot{
 			Header: headerSnapshot, Reason: session.RequestHeaderChange,
 		}); err != nil {
 			return requestAttempt{}, err
@@ -249,7 +249,7 @@ func (subject *ReactLoopAgent) buildRequest(
 		return requestAttempt{}, err
 	}
 	if !contextFound || !sameRequestContext(previousContext, routeContext) {
-		if _, err := session.Append(subject.conversation, session.RequestContextSet, routeContext); err != nil {
+		if _, err := session.AppendSerialized(subject.conversation, session.RequestContextSet, routeContext); err != nil {
 			return requestAttempt{}, err
 		}
 	}

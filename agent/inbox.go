@@ -211,7 +211,7 @@ func (pending *Inbox) mutateLocked(target InboxTarget, start int, deleteCount in
 	if err != nil {
 		return nil, err
 	}
-	committed, err := session.Append(pending.conversation, InboxSpliced, mutation)
+	committed, err := session.AppendSerialized(pending.conversation, InboxSpliced, mutation)
 	if err != nil {
 		return nil, err
 	}

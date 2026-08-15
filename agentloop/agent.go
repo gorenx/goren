@@ -393,7 +393,7 @@ func (subject *ReactLoopAgent) runTurn(requestContext context.Context) (bool, er
 		subject.reportError(requestContext, problem)
 		return false, problem
 	}
-	if _, err := session.Append(subject.conversation, session.TurnStarted, session.TurnStart{Turn: turn}); err != nil {
+	if _, err := session.AppendSerialized(subject.conversation, session.TurnStarted, session.TurnStart{Turn: turn}); err != nil {
 		subject.reportError(requestContext, err)
 		return false, err
 	}
@@ -436,7 +436,7 @@ func (subject *ReactLoopAgent) runTurn(requestContext context.Context) (bool, er
 			ending = session.TurnCompleted{}
 			break
 		}
-		if _, err := session.Append(subject.conversation, session.StepStarted, session.StepPosition{Turn: turn, Step: step}); err != nil {
+		if _, err := session.AppendSerialized(subject.conversation, session.StepStarted, session.StepPosition{Turn: turn, Step: step}); err != nil {
 			operationErr = err
 			ending = session.TurnError{Error: failureFromError(err)}
 			subject.reportError(requestContext, err)
@@ -450,7 +450,7 @@ func (subject *ReactLoopAgent) runTurn(requestContext context.Context) (bool, er
 		if stepErr == nil {
 			stepEnding, stepErr = subject.executeStep(requestContext, turn, step, prepared)
 		}
-		_, endErr := session.Append(subject.conversation, session.StepEnded, session.StepPosition{Turn: turn, Step: step})
+		_, endErr := session.AppendSerialized(subject.conversation, session.StepEnded, session.StepPosition{Turn: turn, Step: step})
 		if stepErr != nil || endErr != nil {
 			operationErr = errors.Join(stepErr, endErr)
 			if requestContext.Err() != nil {
@@ -487,7 +487,7 @@ func (subject *ReactLoopAgent) runTurn(requestContext context.Context) (bool, er
 	if ending == nil {
 		ending = session.TurnError{Error: llm.LlmFailure{Message: "turn ended without a reason", Code: "UNKNOWN"}}
 	}
-	if _, err := session.Append(subject.conversation, session.TurnEnded, session.TurnEnd{Turn: turn, Reason: ending}); err != nil {
+	if _, err := session.AppendSerialized(subject.conversation, session.TurnEnded, session.TurnEnd{Turn: turn, Reason: ending}); err != nil {
 		operationErr = errors.Join(operationErr, err)
 		subject.reportError(requestContext, err)
 	}
@@ -502,7 +502,7 @@ func (subject *ReactLoopAgent) runTurn(requestContext context.Context) (bool, er
 
 func (subject *ReactLoopAgent) appendStepMessages(messages []llm.UserMessage) error {
 	for _, message := range messages {
-		if _, err := session.AppendSurface(subject.conversation, session.UserMessageAdded, message, session.SurfaceIntent{
+		if _, err := session.AppendSurfaceSerialized(subject.conversation, session.UserMessageAdded, message, session.SurfaceIntent{
 			Operation: session.SurfaceAppend(),
 		}); err != nil {
 			return err

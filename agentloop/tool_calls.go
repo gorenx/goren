@@ -254,7 +254,7 @@ func parseToolArguments(rawValue string) (json.RawMessage, error) {
 }
 
 func (subject *ReactLoopAgent) appendToolCall(turn int64, step int64, block llm.ToolCallBlock) (int64, error) {
-	committed, err := session.Append(subject.conversation, session.ToolCalled, session.ToolCall{
+	committed, err := session.AppendSerialized(subject.conversation, session.ToolCalled, session.ToolCall{
 		Turn: turn, Step: step, CallID: block.ID, Name: block.Name, Arguments: block.Arguments,
 	})
 	return committed.Seq, err
@@ -298,7 +298,7 @@ func (subject *ReactLoopAgent) appendToolResult(
 		payload.Error = &session.ToolErrorInfo{Name: failure.Info.Name, Code: failure.Info.Code}
 	}
 	provenance := []int64{callSequence}
-	_, err = session.AppendSurface(subject.conversation, session.ToolResultAdded, payload, session.SurfaceIntent{
+	_, err = session.AppendSurfaceSerialized(subject.conversation, session.ToolResultAdded, payload, session.SurfaceIntent{
 		Operation: session.SurfaceAppend(), SourceEventSeqs: &provenance,
 	})
 	return err

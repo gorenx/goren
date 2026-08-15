@@ -133,7 +133,7 @@ func (owner *LogService) Rename(conversation *session.Session, title string) (*S
 	state := owner.stateForLocked(conversation)
 	owner.supersedeLocked(state, errors.New("user rename superseded automatic title generation"))
 	owner.mu.Unlock()
-	if _, err := session.Append(conversation, TitleSet, EventData{
+	if _, err := session.AppendSerialized(conversation, TitleSet, EventData{
 		Title: normalized, MessageSeqs: []int64{}, Source: UserSource{Kind: "user"},
 	}); err != nil {
 		return nil, err
@@ -401,12 +401,14 @@ func (owner *LogService) startPending(
 	}
 	work := owner.activateLocked(owner.lifetime, state, pending)
 	owner.mu.Unlock()
-	if !owner.deferTask(func() {
-		if _, err := owner.runTrackedProvider(conversation, work, &route); err != nil &&
-			!errors.Is(err, context.Canceled) {
-			owner.reportError(fmt.Errorf("sessiontitle: session %q automatic provider: %w", conversation.ID(), err))
-		}
-	}) {
+	if !owner.deferTask(
+		func() {
+			if _, err := owner.runTrackedProvider(conversation, work, &route); err != nil &&
+				!errors.Is(err, context.Canceled) {
+				owner.reportError(fmt.Errorf("sessiontitle: session %q automatic provider: %w", conversation.ID(), err))
+			}
+		},
+	) {
 		owner.finishActive(conversation, work)
 	}
 }
@@ -446,7 +448,7 @@ func (owner *LogService) runTrackedProvider(
 		return nil, err
 	}
 	source := ProviderSource{Kind: "provider", Provider: work.registration.implementation.ID(), Model: cloneRoute(accepted.Model)}
-	if _, err := session.Append(conversation, TitleSet, EventData{
+	if _, err := session.AppendSerialized(conversation, TitleSet, EventData{
 		Title: accepted.Title, MessageSeqs: append([]int64{}, accepted.MessageSeqs...), Source: source,
 	}); err != nil {
 		return nil, err
@@ -537,7 +539,7 @@ func (owner *LogService) ensureFallback(
 		accepted, err = owner.Get(conversation)
 	}
 	if err == nil && accepted == nil {
-		_, err = session.Append(conversation, TitleSet, EventData{
+		_, err = session.AppendSerialized(conversation, TitleSet, EventData{
 			Title: title, MessageSeqs: []int64{messages[0].Seq}, Source: FallbackSource{Kind: "fallback"},
 		})
 		if err == nil {
@@ -565,7 +567,7 @@ func (owner *LogService) appendFallback(conversation *session.Session, first Use
 	if err != nil || title == "" {
 		return err
 	}
-	_, err = session.Append(conversation, TitleSet, EventData{
+	_, err = session.AppendSerialized(conversation, TitleSet, EventData{
 		Title: title, MessageSeqs: []int64{first.Seq}, Source: FallbackSource{Kind: "fallback"},
 	})
 	return err
