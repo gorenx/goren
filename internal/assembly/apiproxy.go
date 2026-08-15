@@ -91,6 +91,7 @@ func (instance *apiProxyPlugin) Apply(requestContext context.Context, pluginScop
 	titles, titlesFound := plugin.Require(pluginScope, sessiontitle.Service)
 	questionService, questionsFound := plugin.Require(pluginScope, userquestions.Service)
 	workspaceRegistry, workspacesFound := plugin.Require(pluginScope, workspace.Service)
+
 	if !agentsFound || !defaultsFound || !modelsFound || !found || !persistenceFound ||
 		!projectionsFound || !titlesFound || !questionsFound || !workspacesFound {
 		return errors.New("assembly: API Proxy dependencies are unavailable")
@@ -115,6 +116,10 @@ func (instance *apiProxyPlugin) Apply(requestContext context.Context, pluginScop
 		}, nil
 	})
 	if err := apiproxy.RegisterHostDescribe(methods, descriptionSource); err != nil {
+		return err
+	}
+	presetGateway := apiproxy.NewAgentPresetGateway(nil, apiproxy.AgentPresetGatewayOptions{CanOpenPath: false})
+	if err := apiproxy.RegisterAgentPresetListAPI(methods, presetGateway); err != nil {
 		return err
 	}
 	llmGateway, err := apiproxy.NewLLMGateway(modelRuntime)
