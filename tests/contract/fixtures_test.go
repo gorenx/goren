@@ -11,10 +11,12 @@ import (
 	"testing"
 
 	agentcore "github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentloop"
 	"github.com/gorenx/goren/apiproxy"
 	"github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/internal/llmdeepseek"
 	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/systemprompt"
 	toolscore "github.com/gorenx/goren/tools"
 )
@@ -43,6 +45,11 @@ type contractManifest struct {
 			InboxTargets []string `json:"inboxTargets"`
 			Statuses     []string `json:"statuses"`
 		} `json:"agent"`
+		AgentLoop struct {
+			Service                     string   `json:"service"`
+			DefaultMaxParallelToolCalls int      `json:"defaultMaxParallelToolCalls"`
+			SessionEvents               []string `json:"sessionEvents"`
+		} `json:"agentLoop"`
 		SystemPrompt struct {
 			Service         string   `json:"service"`
 			Events          []string `json:"events"`
@@ -119,6 +126,19 @@ func TestPinnedManifestMatchesGoSurface(t *testing.T) {
 		}) || !slices.Equal(agentSurface.InboxTargets, []string{string(agentcore.NextTurn), string(agentcore.NextStep)}) ||
 		!slices.Equal(agentSurface.Statuses, []string{string(agentcore.StatusIdle), string(agentcore.StatusRunning)}) {
 		t.Fatalf("agent surface = %#v", agentSurface)
+	}
+	loopSurface := manifestDocument.Included.AgentLoop
+	if loopSurface.Service != agentloop.ServiceName ||
+		loopSurface.DefaultMaxParallelToolCalls != agentloop.DefaultMaxParallelToolCalls ||
+		!slices.Equal(loopSurface.SessionEvents, []string{
+			session.TurnStartEventName, session.TurnEndEventName,
+			session.StepStartEventName, session.StepEndEventName,
+			session.UserMessageEventName, session.AssistantChunkEventName,
+			session.AssistantMessageEventName, session.ToolCallEventName,
+			session.ToolResultEventName, session.RequestHeaderEventName,
+			session.RequestContextEventName,
+		}) {
+		t.Fatalf("agent loop surface = %#v", loopSurface)
 	}
 	promptSurface := manifestDocument.Included.SystemPrompt
 	if promptSurface.Service != systemprompt.ServiceName ||

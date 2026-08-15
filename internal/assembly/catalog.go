@@ -14,6 +14,7 @@ import (
 
 const (
 	AgentFactoryName        = "@deepseek-ai/dsh-agent"
+	AgentLoopFactoryName    = "@deepseek-ai/dsh-agent-loop"
 	APIProxyFactoryName     = "@deepseek-ai/dsh-host-apiproxy"
 	ConnectionFactoryName   = "@deepseek-ai/dsh-client-connection"
 	DeepSeekFactoryName     = "@deepseek-ai/dsh-llm-deepseek"
@@ -40,6 +41,9 @@ type PluginSpec struct {
 func NewCatalog(platform Environment) (*plugin.Catalog, error) {
 	registry := plugin.NewCatalog()
 	if err := plugin.RegisterFactory(registry, agentFactory{}); err != nil {
+		return nil, err
+	}
+	if err := plugin.RegisterFactory(registry, agentLoopFactory{}); err != nil {
 		return nil, err
 	}
 	if err := plugin.RegisterFactory(registry, apiProxyFactory{workingDirectory: platform.WorkingDirectory}); err != nil {
@@ -89,6 +93,7 @@ func DefaultSpecs(listenAddress string, version string) ([]PluginSpec, error) {
 	return []PluginSpec{
 		{FactoryName: ConnectionFactoryName, Config: connectionRaw},
 		{FactoryName: APIProxyFactoryName, Config: apiProxyRaw},
+		{FactoryName: AgentLoopFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: AgentFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: LLMFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: DeepSeekFactoryName, Config: json.RawMessage(`{}`)},

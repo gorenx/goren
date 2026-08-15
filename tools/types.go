@@ -5,6 +5,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"time"
 
 	"github.com/gorenx/goren/llm"
@@ -156,6 +157,7 @@ type ToolExecution struct {
 	Parent     ToolExecutionToken
 	Token      ToolExecutionToken
 	arguments  json.RawMessage
+	state      *scheduledExecutionState
 }
 
 // ArgumentsJSON returns a detached copy of the losslessly materialized input.
@@ -167,15 +169,60 @@ func (execution ToolExecution) ArgumentsJSON() json.RawMessage {
 type ToolRunContext struct {
 	Context   context.Context
 	Execution ToolExecution
-	conclude  func()
+}
+
+// DeferContext attaches one plugin-authored message to this execution's final
+// result. Agent Loop admits deferred messages only after the containing tool
+// result has been committed, preserving model call/result adjacency.
+func (runContext ToolRunContext) DeferContext(message llm.UserMessage) {
+	if runContext.Execution.state != nil {
+		runContext.Execution.state.deferContext(message)
+	}
 }
 
 // ConcludeTurn marks this successful execution as terminal for the current
 // agent turn. Failed outcomes never carry the marker.
 func (runContext ToolRunContext) ConcludeTurn() {
-	if runContext.conclude != nil {
-		runContext.conclude()
+	if runContext.Execution.state != nil {
+		runContext.Execution.state.concludeTurn()
 	}
+}
+
+type scheduledExecutionState struct {
+	owner          *toolRegistry
+	requestContext context.Context
+	entry          *registeredTool
+	finalizer      ContentFinalizer
+
+	mu               sync.Mutex
+	bodyInvoked      bool
+	concludesTurn    bool
+	deferredContexts []llm.UserMessage
+}
+
+func (state *scheduledExecutionState) deferContext(message llm.UserMessage) {
+	state.mu.Lock()
+	state.deferredContexts = append(state.deferredContexts, message)
+	state.mu.Unlock()
+}
+
+func (state *scheduledExecutionState) concludeTurn() {
+	state.mu.Lock()
+	state.concludesTurn = true
+	state.mu.Unlock()
+}
+
+func (state *scheduledExecutionState) markBodyInvoked() {
+	state.mu.Lock()
+	state.bodyInvoked = true
+	state.mu.Unlock()
+}
+
+func (state *scheduledExecutionState) executionOutcome() (bool, bool, []llm.UserMessage) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	deferred, _ := cloneUserMessages(state.deferredContexts)
+	return state.bodyInvoked, state.concludesTurn, deferred
 }
 
 // ToolExecutionMode is the scheduler's fail-closed overlap classification.
@@ -187,6 +234,40 @@ const (
 	// ExecutionExclusive runs alone and forms an ordering barrier.
 	ExecutionExclusive ToolExecutionMode = "exclusive"
 )
+
+// ScheduledToolStage identifies which ordered scheduler stage owns a prepared call.
+type ScheduledToolStage string
+
+const (
+	// ScheduledDispatch means only the body/around-dispatch stage may overlap.
+	ScheduledDispatch ScheduledToolStage = "dispatch"
+	// ScheduledPostResult means the result still requires ordered post policy and finalization.
+	ScheduledPostResult ScheduledToolStage = "post-result"
+	// ScheduledFinalResult means policy failed terminally and only finalization remains.
+	ScheduledFinalResult ScheduledToolStage = "final-result"
+)
+
+// ScheduledToolPreparation is the ordered pre-policy outcome for one call.
+type ScheduledToolPreparation struct {
+	Stage     ScheduledToolStage
+	Execution ToolExecution
+	Result    ToolExecutionResult
+}
+
+// ScheduledToolDispatch is one settled overlapping dispatch outcome.
+type ScheduledToolDispatch struct {
+	NeedsPost bool
+	Result    ToolExecutionResult
+}
+
+// ToolExecutionScheduler separates ordered policy/finalization from the only
+// stage that Agent Loop may overlap: around-dispatch plus the tool body.
+type ToolExecutionScheduler interface {
+	Prepare(context.Context, ToolExecutionInput) ScheduledToolPreparation
+	Dispatch(ToolExecution) ScheduledToolDispatch
+	Finalize(ToolExecution, ToolExecutionResult) ToolExecutionResult
+	Finish(ToolExecution, ToolExecutionResult) ToolExecutionResult
+}
 
 // ToolErrorInfo is stable internal routing metadata for a failed call.
 type ToolErrorInfo struct {
@@ -204,6 +285,7 @@ type ToolFailure struct {
 type ToolExecutionResult interface {
 	Failed() bool
 	ContentBlocks() []llm.ContentBlock
+	AdditionalContextMessages() []llm.UserMessage
 	cloneResult() (ToolExecutionResult, error)
 }
 
@@ -215,16 +297,18 @@ type ToolResultSnapshot interface {
 	SuccessValue() (json.RawMessage, bool)
 	FailureDetail() (ToolFailure, bool)
 	PresentationMeta() json.RawMessage
+	AdditionalContextMessages() []llm.UserMessage
 	ConcludesAgentTurn() bool
 }
 
 // ToolExecutionSuccess is a validated canonical value and its projections.
 type ToolExecutionSuccess struct {
-	Value         json.RawMessage
-	Content       []llm.ContentBlock
-	Meta          json.RawMessage
-	ConcludesTurn bool
-	owner         *toolExecutionToken
+	Value              json.RawMessage
+	Content            []llm.ContentBlock
+	Meta               json.RawMessage
+	AdditionalContexts []llm.UserMessage
+	ConcludesTurn      bool
+	owner              *toolExecutionToken
 }
 
 // Failed reports false.
@@ -239,11 +323,21 @@ func (outcome *ToolExecutionSuccess) ContentBlocks() []llm.ContentBlock {
 	return detached
 }
 
+// AdditionalContextMessages returns detached next-step context in authored order.
+func (outcome *ToolExecutionSuccess) AdditionalContextMessages() []llm.UserMessage {
+	if outcome == nil {
+		return nil
+	}
+	detached, _ := cloneUserMessages(outcome.AdditionalContexts)
+	return detached
+}
+
 // ToolExecutionFailure is a normalized error and its model-facing content.
 type ToolExecutionFailure struct {
-	Error   ToolFailure
-	Content []llm.ContentBlock
-	Meta    json.RawMessage
+	Error              ToolFailure
+	Content            []llm.ContentBlock
+	Meta               json.RawMessage
+	AdditionalContexts []llm.UserMessage
 }
 
 // Failed reports true.
@@ -255,6 +349,15 @@ func (outcome *ToolExecutionFailure) ContentBlocks() []llm.ContentBlock {
 		return nil
 	}
 	detached, _ := llm.CloneContentBlocks(outcome.Content)
+	return detached
+}
+
+// AdditionalContextMessages returns detached next-step context in authored order.
+func (outcome *ToolExecutionFailure) AdditionalContextMessages() []llm.UserMessage {
+	if outcome == nil {
+		return nil
+	}
+	detached, _ := cloneUserMessages(outcome.AdditionalContexts)
 	return detached
 }
 
@@ -283,23 +386,34 @@ type PostToolDecision interface {
 	postToolDecision()
 }
 
-// AcceptDecision preserves the normalized result.
-type AcceptDecision struct{}
+// AcceptDecision preserves the normalized result and may append next-step context.
+type AcceptDecision struct {
+	AdditionalContexts []llm.UserMessage
+}
 
 func (AcceptDecision) postToolDecision() {}
 
 // ReplaceContentDecision replaces only the model-facing projection.
-type ReplaceContentDecision struct{ Content []llm.ContentBlock }
+type ReplaceContentDecision struct {
+	Content            []llm.ContentBlock
+	AdditionalContexts []llm.UserMessage
+}
 
 func (ReplaceContentDecision) postToolDecision() {}
 
 // ReplaceValueDecision replaces a successful canonical value and re-renders it.
-type ReplaceValueDecision struct{ Value json.RawMessage }
+type ReplaceValueDecision struct {
+	Value              json.RawMessage
+	AdditionalContexts []llm.UserMessage
+}
 
 func (ReplaceValueDecision) postToolDecision() {}
 
 // BlockDecision turns corrective feedback into a failed result.
-type BlockDecision struct{ Feedback []llm.ContentBlock }
+type BlockDecision struct {
+	Feedback           []llm.ContentBlock
+	AdditionalContexts []llm.UserMessage
+}
 
 func (BlockDecision) postToolDecision() {}
 
@@ -337,6 +451,7 @@ type ToolRuntime interface {
 	Get(string, plugin.ScopeKey) (ToolDefinition, bool)
 	Schemas(plugin.ScopeKey) []llm.ToolSchema
 	ExecutionMode(ToolExecutionInput) ToolExecutionMode
+	Scheduler() ToolExecutionScheduler
 	Execute(context.Context, ToolExecutionInput) ToolExecutionResult
 }
 

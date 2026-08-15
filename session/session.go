@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/gorenx/goren/llm"
 )
 
 var endSeedEvent = EventKey[struct{}]{name: endSeedEventType}
@@ -20,6 +22,14 @@ type Session struct {
 	view         surfaceState
 	clock        func() time.Time
 	attachment   *storeEntry
+
+	headerFold        *EpochHeader
+	headerFoldSeq     int
+	contextFold       *RequestRouteContext
+	contextFoldSeq    int
+	derived           []llm.Message
+	derivedNodes      int
+	derivedGeneration uint64
 }
 
 // New creates a detached Session and snapshots the borrowed seed.
@@ -119,6 +129,101 @@ func (conversation *Session) Surface() Surface {
 		Nodes:             nodes,
 		ReplaceGeneration: conversation.view.replaceGeneration,
 	}
+}
+
+// RequestHeaderValue returns the canonical header in force after the latest
+// request/header event. Each committed event is folded at most once.
+func (conversation *Session) RequestHeaderValue() (EpochHeader, bool, error) {
+	if conversation == nil {
+		return EpochHeader{}, false, errors.New("session: request header from nil Session")
+	}
+	conversation.mu.Lock()
+	defer conversation.mu.Unlock()
+	for index := conversation.headerFoldSeq; index < len(conversation.entries); index++ {
+		entry := conversation.entries[index]
+		if entry.Type != RequestHeaderEventName {
+			conversation.headerFoldSeq = index + 1
+			continue
+		}
+		var snapshot RequestHeaderSnapshot
+		if err := decodeSessionPayload(entry.Data, &snapshot); err != nil {
+			return EpochHeader{}, false, fmt.Errorf("session: invalid request/header at seq %d: %w", entry.Seq, err)
+		}
+		canonical := CanonicalEpochHeader(snapshot.Header)
+		conversation.headerFold = &canonical
+		conversation.headerFoldSeq = index + 1
+	}
+	if conversation.headerFold == nil {
+		return EpochHeader{}, false, nil
+	}
+	return CanonicalEpochHeader(*conversation.headerFold), true, nil
+}
+
+// RequestContextValue returns the latest resolved provider/model capacity metadata.
+func (conversation *Session) RequestContextValue() (RequestRouteContext, bool, error) {
+	if conversation == nil {
+		return RequestRouteContext{}, false, errors.New("session: request context from nil Session")
+	}
+	conversation.mu.Lock()
+	defer conversation.mu.Unlock()
+	for index := conversation.contextFoldSeq; index < len(conversation.entries); index++ {
+		entry := conversation.entries[index]
+		if entry.Type != RequestContextEventName {
+			conversation.contextFoldSeq = index + 1
+			continue
+		}
+		var snapshot RequestRouteContext
+		if err := decodeSessionPayload(entry.Data, &snapshot); err != nil {
+			return RequestRouteContext{}, false, fmt.Errorf("session: invalid request/context at seq %d: %w", entry.Seq, err)
+		}
+		if snapshot.Provider == "" || snapshot.Model == "" ||
+			(snapshot.ContextWindow != nil && *snapshot.ContextWindow <= 0) {
+			return RequestRouteContext{}, false, fmt.Errorf("session: invalid request/context at seq %d", entry.Seq)
+		}
+		contextSnapshot := snapshot
+		contextSnapshot.ContextWindow = cloneInt(snapshot.ContextWindow)
+		conversation.contextFold = &contextSnapshot
+		conversation.contextFoldSeq = index + 1
+	}
+	if conversation.contextFold == nil {
+		return RequestRouteContext{}, false, nil
+	}
+	result := *conversation.contextFold
+	result.ContextWindow = cloneInt(conversation.contextFold.ContextWindow)
+	return result, true, nil
+}
+
+// DeriveMessages projects the current surface into provider-neutral history.
+// Non-surface events and empty assistant anchors never enter the result.
+func (conversation *Session) DeriveMessages() ([]llm.Message, error) {
+	if conversation == nil {
+		return nil, errors.New("session: derive messages from nil Session")
+	}
+	conversation.mu.Lock()
+	if conversation.derivedGeneration != conversation.view.replaceGeneration {
+		conversation.derived = nil
+		conversation.derivedNodes = 0
+		conversation.derivedGeneration = conversation.view.replaceGeneration
+	}
+	for conversation.derivedNodes < len(conversation.view.nodes) {
+		sequence := conversation.view.nodes[conversation.derivedNodes]
+		if sequence < 0 || sequence >= int64(len(conversation.entries)) {
+			conversation.mu.Unlock()
+			return nil, fmt.Errorf("session: surface node %d is outside the event log", sequence)
+		}
+		messageValue, retained, err := decodeDerivedMessage(conversation.entries[sequence])
+		if err != nil {
+			conversation.mu.Unlock()
+			return nil, fmt.Errorf("session: derive surface seq %d: %w", sequence, err)
+		}
+		if retained {
+			conversation.derived = append(conversation.derived, messageValue)
+		}
+		conversation.derivedNodes++
+	}
+	cached := append([]llm.Message(nil), conversation.derived...)
+	conversation.mu.Unlock()
+	return llm.CloneMessages(cached)
 }
 
 // Append snapshots and commits one typed non-surface event.
