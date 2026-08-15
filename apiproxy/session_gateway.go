@@ -82,6 +82,7 @@ type SessionGateway struct {
 	sessions    session.Store
 	persistence sessionpersistence.Persistence
 	models      llm.LlmRuntime
+	catalog     *LLMGateway
 	defaults    agentdefaultmodel.DefaultModel
 	projections sessionprojection.Registry
 	titles      sessiontitle.TitleService
@@ -125,9 +126,13 @@ func NewSessionGateway(
 	if newRPC == nil {
 		newRPC = mintFrameRPCID
 	}
+	modelDirectory, err := NewLLMGateway(ports.LLM)
+	if err != nil {
+		return nil, err
+	}
 	owner := &SessionGateway{
 		sourceScope: sourceScope, agents: ports.Agents, sessions: ports.Sessions, persistence: ports.Persistence,
-		models: ports.LLM, defaults: ports.Defaults, projections: ports.Projections, titles: ports.Titles,
+		models: ports.LLM, catalog: modelDirectory, defaults: ports.Defaults, projections: ports.Projections, titles: ports.Titles,
 		workspaces:  ports.Workspaces,
 		directories: ports.Directories,
 		workingDir:  settings.WorkingDirectory, newSession: newSession, newRPC: newRPC,
@@ -407,7 +412,7 @@ func (owner *SessionGateway) Models(requestContext context.Context, call Request
 	if err != nil {
 		return Outcome[SessionModelsValue]{}, err
 	}
-	groups, failures := owner.modelCatalog(requestContext)
+	groups, failures := owner.catalog.Catalog(requestContext)
 	routable := slices.ContainsFunc(owner.models.ListProviders(), func(provider llm.ProviderInfo) bool {
 		return provider.ID == current.Provider
 	})
@@ -948,53 +953,6 @@ func (owner *SessionGateway) loggedOrDefaultSelection(
 		return selected, true, nil
 	}
 	return agent.ModelSelection{}, false, nil
-}
-
-func (owner *SessionGateway) modelCatalog(requestContext context.Context) ([]ModelProviderGroup, []ModelCatalogFailure) {
-	providers := owner.models.ListProviders()
-	groups := make([]ModelProviderGroup, 0, len(providers))
-	failures := make([]ModelCatalogFailure, 0)
-	for _, provider := range providers {
-		listedModels, err := owner.models.ListModels(requestContext, provider.ID)
-		if err != nil {
-			failures = append(failures, ModelCatalogFailure{ID: provider.ID, Name: provider.Name, Message: err.Error()})
-			continue
-		}
-		entries := make([]ModelCatalogModel, 0, len(listedModels))
-		providerFailed := false
-		for _, listed := range listedModels {
-			resolved, resolveErr := owner.models.ResolveModelInfo(requestContext, provider.ID, listed.ID)
-			if resolveErr != nil {
-				failures = append(failures, ModelCatalogFailure{ID: provider.ID, Name: provider.Name, Message: resolveErr.Error()})
-				providerFailed = true
-				break
-			}
-			entry := ModelCatalogModel{ID: listed.ID, Name: listed.Name, Description: listed.Description}
-			if resolved.Reasoning != nil {
-				reasoning := &ModelReasoning{
-					Efforts:       make([]ModelReasoningEffort, 0, len(resolved.Reasoning.Efforts)),
-					DefaultEffort: string(resolved.Reasoning.DefaultEffort),
-				}
-				for _, effort := range resolved.Reasoning.Efforts {
-					reasoning.Efforts = append(reasoning.Efforts, ModelReasoningEffort{
-						ID: string(effort.ID), Name: effort.Name, Description: effort.Description,
-					})
-				}
-				entry.Reasoning = reasoning
-			}
-			entries = append(entries, entry)
-		}
-		if !providerFailed && len(entries) != 0 {
-			groups = append(groups, ModelProviderGroup{ID: provider.ID, Name: provider.Name, Models: entries})
-		}
-	}
-	if groups == nil {
-		groups = []ModelProviderGroup{}
-	}
-	if failures == nil {
-		failures = []ModelCatalogFailure{}
-	}
-	return groups, failures
 }
 
 func (owner *SessionGateway) observeSessionEvent(_ context.Context, conversation *session.Session, committed session.Event) error {
