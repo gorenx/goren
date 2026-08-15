@@ -1,4 +1,5 @@
 import { isRecord, recordString } from './types'
+import type { Translator } from './i18n'
 
 interface ServerRequestEnvelope {
   rpcId: string
@@ -24,22 +25,22 @@ interface RPCReceipt {
   reason?: string
 }
 
-function decodeEnvelope(value: unknown): RPCEnvelope {
-  if (!isRecord(value)) throw new Error('Host 返回了无效的 RPC envelope')
+function decodeEnvelope(value: unknown, translateText: Translator): RPCEnvelope {
+  if (!isRecord(value)) throw new Error(translateText('error.invalidRPCEnvelope'))
   const rpcId = recordString(value, 'rpcId')
   const resultValue = value.result
   if (rpcId === undefined || !isRecord(resultValue) || typeof resultValue.ok !== 'boolean') {
-    throw new Error('Host 返回了无效的 RPC result')
+    throw new Error(translateText('error.invalidRPCResult'))
   }
   const errorValue = resultValue.error
   const error = isRecord(errorValue) ? { message: recordString(errorValue, 'message') } : undefined
   return { rpcId, result: { ok: resultValue.ok, value: resultValue.value, error } }
 }
 
-function decodeServerRequest(value: unknown): ServerRequestEnvelope {
-  if (!isRecord(value) || value.type !== 'server-request') throw new Error('Host 返回了无效的 server-request')
+function decodeServerRequest(value: unknown, translateText: Translator): ServerRequestEnvelope {
+  if (!isRecord(value) || value.type !== 'server-request') throw new Error(translateText('error.invalidServerRequest'))
   const rpcId = recordString(value, 'rpcId')
-  if (rpcId === undefined || !('payload' in value)) throw new Error('Host 返回了无效的 server-request')
+  if (rpcId === undefined || !('payload' in value)) throw new Error(translateText('error.invalidServerRequest'))
   return { rpcId, payload: value.payload }
 }
 
@@ -47,15 +48,17 @@ export class HarnessAPI {
   readonly #onMuxFrame: FrameReceiver
   readonly #onHostFrame: FrameReceiver
   readonly #onConnection: ConnectionReceiver
+  readonly #translateText: Translator
   readonly #sockets = new Set<WebSocket>()
   readonly #online = new Set<WebSocket>()
   readonly #reconnectTimers = new Set<number>()
   #closed = false
 
-  constructor(onMuxFrame: FrameReceiver, onHostFrame: FrameReceiver, onConnection: ConnectionReceiver) {
+  constructor(onMuxFrame: FrameReceiver, onHostFrame: FrameReceiver, onConnection: ConnectionReceiver, translateText: Translator) {
     this.#onMuxFrame = onMuxFrame
     this.#onHostFrame = onHostFrame
     this.#onConnection = onConnection
+    this.#translateText = translateText
   }
 
   async call<T>(method: string, payload: object): Promise<T> {
@@ -65,10 +68,10 @@ export class HarnessAPI {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ type: 'client-request', rpcId, method, payload }),
     })
-    if (!response.ok) throw new Error(`${method} 请求失败 (${String(response.status)})`)
-    const envelope = decodeEnvelope(await response.json())
-    if (envelope.rpcId !== rpcId) throw new Error(`${method} 返回了错误的 rpcId`)
-    if (!envelope.result.ok) throw new Error(envelope.result.error?.message ?? `${method} 执行失败`)
+    if (!response.ok) throw new Error(this.#translateText('error.requestFailed', { method, status: response.status }))
+    const envelope = decodeEnvelope(await response.json(), this.#translateText)
+    if (envelope.rpcId !== rpcId) throw new Error(this.#translateText('error.wrongRPCID', { method }))
+    if (!envelope.result.ok) throw new Error(envelope.result.error?.message ?? this.#translateText('error.methodFailed', { method }))
     return envelope.result.value as T
   }
 
@@ -78,16 +81,19 @@ export class HarnessAPI {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ type: 'client-response', rpcId, result }),
     })
-    if (!response.ok) throw new Error(`回答 Host 请求失败 (${String(response.status)})`)
+    if (!response.ok) throw new Error(this.#translateText('error.respondFailed', { status: response.status }))
     const rawReceipt: unknown = await response.json()
     if (!isRecord(rawReceipt) || typeof rawReceipt.accepted !== 'boolean') {
-      throw new Error('Host 返回了无效的回答回执')
+      throw new Error(this.#translateText('error.invalidReceipt'))
     }
     const receipt: RPCReceipt = {
       accepted: rawReceipt.accepted,
       reason: recordString(rawReceipt, 'reason'),
     }
-    if (!receipt.accepted) throw new Error(`Host 未接受回答${receipt.reason === undefined ? '' : `：${receipt.reason}`}`)
+    if (!receipt.accepted) {
+      const reason = receipt.reason === undefined ? '' : this.#translateText('error.responseReason', { reason: receipt.reason })
+      throw new Error(this.#translateText('error.responseRejected', { reason }))
+    }
   }
 
   connect(): void {
@@ -117,7 +123,7 @@ export class HarnessAPI {
     socket.addEventListener('message', event => {
       try {
         const envelope: unknown = JSON.parse(String(event.data))
-        receive(decodeServerRequest(envelope))
+        receive(decodeServerRequest(envelope, this.#translateText))
       } catch (error) {
         console.error(error)
       }

@@ -317,6 +317,49 @@
     white-space: nowrap;
   }
 
+  .language-switcher {
+    position: relative;
+    display: inline-flex;
+    flex: none;
+  }
+
+  .language-switcher select {
+    height: 30px;
+    appearance: none;
+    border: 1px solid rgb(15 23 42 / 0.08);
+    border-radius: 9px;
+    background: #fff;
+    padding: 0 24px 0 9px;
+    color: var(--color-secondary);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .language-switcher::after {
+    position: absolute;
+    top: 50%;
+    right: 9px;
+    width: 5px;
+    height: 5px;
+    border-right: 1.5px solid var(--color-caption);
+    border-bottom: 1.5px solid var(--color-caption);
+    content: '';
+    pointer-events: none;
+    transform: translateY(-65%) rotate(45deg);
+  }
+
+  .language-switcher select:hover,
+  .language-switcher select:focus-visible {
+    border-color: rgb(15 23 42 / 0.16);
+    outline: none;
+  }
+
+  .language-switcher select:focus-visible {
+    box-shadow: 0 0 0 3px rgb(43 183 169 / 0.14);
+  }
+
   .runtime-rail {
     position: relative;
     display: flex;

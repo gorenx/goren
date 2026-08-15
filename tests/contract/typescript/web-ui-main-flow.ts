@@ -28,6 +28,7 @@ browserWindow.fetch = ((input: string | URL | Request, init?: RequestInit): Prom
   return nativeFetch(resolved, init)
 }) as typeof browserWindow.fetch
 browserWindow.WebSocket = globalThis.WebSocket as typeof browserWindow.WebSocket
+browserWindow.localStorage.setItem('goren.locale', 'zh-CN')
 
 const scriptSource = browserWindow.document.querySelector('script[type="module"][src]')?.getAttribute('src')
 if (scriptSource === null || scriptSource === undefined) throw new Error('Web application entry is absent')
@@ -55,6 +56,29 @@ try {
     const candidate = browserWindow.document.getElementById('prompt')
     return candidate instanceof browserWindow.HTMLTextAreaElement && !candidate.disabled ? candidate : undefined
   }, 'live composer')
+
+  const languageSelect = browserWindow.document.getElementById('language-switch')
+  if (!(languageSelect instanceof browserWindow.HTMLSelectElement)) throw new Error('language selector is absent')
+  languageSelect.value = 'zh-CN'
+  languageSelect.dispatchEvent(new browserWindow.Event('change', { bubbles: true }))
+  await waitFor(() => {
+    const newSessionLabel = browserWindow.document.getElementById('new-session')?.textContent ?? ''
+    return browserWindow.document.documentElement.lang === 'zh-CN' &&
+      browserWindow.localStorage.getItem('goren.locale') === 'zh-CN' &&
+      newSessionLabel.includes('新对话')
+      ? true
+      : undefined
+  }, 'Chinese UI language')
+  languageSelect.value = 'en'
+  languageSelect.dispatchEvent(new browserWindow.Event('change', { bubbles: true }))
+  await waitFor(() => {
+    const newSessionLabel = browserWindow.document.getElementById('new-session')?.textContent ?? ''
+    return browserWindow.document.documentElement.lang === 'en' &&
+      browserWindow.localStorage.getItem('goren.locale') === 'en' &&
+      newSessionLabel.includes('New conversation')
+      ? true
+      : undefined
+  }, 'English UI language')
 
   const prompt = 'Reply with exactly OK. Do not call any tool.'
   const completedAssistantCount = browserWindow.document.querySelectorAll('.message.assistant:not(.streaming)').length
@@ -159,6 +183,7 @@ try {
     selected: true,
     history: true,
     questionAnswered: true,
+    localized: true,
     runtimeContextHidden,
   })}\n`)
 } finally {

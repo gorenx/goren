@@ -1,3 +1,5 @@
+import type { MessageKey } from './i18n'
+
 export interface HostDescription {
   version: string
   cwd: string
@@ -103,7 +105,7 @@ export interface ConversationSnapshot {
   localTitles: ReadonlyMap<string, string>
   currentSessionId?: string
   onlineDownlinks: number
-  composerState: string
+  composerState: MessageKey
   credentialLoaded: boolean
   credential?: CredentialView
   error?: string
