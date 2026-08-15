@@ -1,17 +1,27 @@
 import { isRecord, recordString } from './types'
 
-type FrameReceiver = (payload: unknown) => void
+interface ServerRequestEnvelope {
+  rpcId: string
+  payload: unknown
+}
+
+type FrameReceiver = (request: ServerRequestEnvelope) => void
 type ConnectionReceiver = (onlineDownlinks: number) => void
 
 interface RPCResult {
   ok: boolean
   value?: unknown
-  error?: { message?: string }
+  error?: { code?: string; message?: string; details?: unknown }
 }
 
 interface RPCEnvelope {
   rpcId: string
   result: RPCResult
+}
+
+interface RPCReceipt {
+  accepted: boolean
+  reason?: string
 }
 
 function decodeEnvelope(value: unknown): RPCEnvelope {
@@ -24,6 +34,13 @@ function decodeEnvelope(value: unknown): RPCEnvelope {
   const errorValue = resultValue.error
   const error = isRecord(errorValue) ? { message: recordString(errorValue, 'message') } : undefined
   return { rpcId, result: { ok: resultValue.ok, value: resultValue.value, error } }
+}
+
+function decodeServerRequest(value: unknown): ServerRequestEnvelope {
+  if (!isRecord(value) || value.type !== 'server-request') throw new Error('Host 返回了无效的 server-request')
+  const rpcId = recordString(value, 'rpcId')
+  if (rpcId === undefined || !('payload' in value)) throw new Error('Host 返回了无效的 server-request')
+  return { rpcId, payload: value.payload }
 }
 
 export class HarnessAPI {
@@ -55,6 +72,24 @@ export class HarnessAPI {
     return envelope.result.value as T
   }
 
+  async respond(rpcId: string, result: RPCResult): Promise<void> {
+    const response = await fetch('/api/respond', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'client-response', rpcId, result }),
+    })
+    if (!response.ok) throw new Error(`回答 Host 请求失败 (${String(response.status)})`)
+    const rawReceipt: unknown = await response.json()
+    if (!isRecord(rawReceipt) || typeof rawReceipt.accepted !== 'boolean') {
+      throw new Error('Host 返回了无效的回答回执')
+    }
+    const receipt: RPCReceipt = {
+      accepted: rawReceipt.accepted,
+      reason: recordString(rawReceipt, 'reason'),
+    }
+    if (!receipt.accepted) throw new Error(`Host 未接受回答${receipt.reason === undefined ? '' : `：${receipt.reason}`}`)
+  }
+
   connect(): void {
     this.#openDownlink('/api/events.mux', this.#onMuxFrame)
     this.#openDownlink('/api/events.host', this.#onHostFrame)
@@ -82,7 +117,7 @@ export class HarnessAPI {
     socket.addEventListener('message', event => {
       try {
         const envelope: unknown = JSON.parse(String(event.data))
-        receive(isRecord(envelope) ? envelope.payload : undefined)
+        receive(decodeServerRequest(envelope))
       } catch (error) {
         console.error(error)
       }

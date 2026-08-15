@@ -11,7 +11,8 @@ interface ComposerProps {
 export function Composer({ store, snapshot }: ComposerProps): React.JSX.Element {
   const [draft, setDraft] = useState('')
   const textarea = useRef<HTMLTextAreaElement>(null)
-  const canCompose = snapshot.currentSessionId !== undefined && snapshot.phase !== 'failed'
+  const waitingForAnswer = store.currentQuestion() !== undefined
+  const canCompose = snapshot.currentSessionId !== undefined && snapshot.phase !== 'failed' && !waitingForAnswer
 
   useLayoutEffect(() => {
     const element = textarea.current
@@ -50,7 +51,7 @@ export function Composer({ store, snapshot }: ComposerProps): React.JSX.Element 
           rows={1}
           disabled={!canCompose}
           defaultValue=""
-          placeholder="给 Agent 发消息…"
+          placeholder={waitingForAnswer ? '请先回答上方问题…' : '给 Agent 发消息…'}
           autoComplete="off"
           className="composer-input"
           onInput={event => setDraft(event.currentTarget.value)}

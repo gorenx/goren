@@ -105,7 +105,60 @@ try {
       : undefined
   }, 'selected session history')
 
-  process.stdout.write(`${JSON.stringify({ booted: true, prompted: true, selected: true, history: true })}\n`)
+  const questionComposer = await waitFor(() => {
+    const candidate = browserWindow.document.getElementById('prompt')
+    return candidate instanceof browserWindow.HTMLTextAreaElement && !candidate.disabled ? candidate : undefined
+  }, 'composer before question')
+  const assistantCountBeforeQuestion = browserWindow.document.querySelectorAll('.message.assistant:not(.streaming)').length
+  const questionPrompt = 'Ask one question before answering.'
+  questionComposer.value = questionPrompt
+  questionComposer.dispatchEvent(new browserWindow.Event('input', { bubbles: true }))
+  questionComposer.dispatchEvent(new browserWindow.KeyboardEvent('keydown', {
+    key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true,
+  }))
+
+  const questionDock = await waitFor(() => {
+    const errorToast = browserWindow.document.querySelector('.toast')?.textContent?.trim()
+    if (errorToast !== undefined && errorToast !== '') throw new Error(errorToast)
+    const candidate = browserWindow.document.querySelector('[data-question-rpc-id]')
+    if (candidate instanceof browserWindow.HTMLElement) return candidate
+    throw new Error((browserWindow.document.getElementById('composer-state')?.textContent ?? 'no composer state').trim())
+  }, 'question requested by Agent', 30_000)
+  const waitingComposer = browserWindow.document.getElementById('prompt')
+  if (!(waitingComposer instanceof browserWindow.HTMLTextAreaElement) || !waitingComposer.disabled) {
+    throw new Error('ordinary composer remained active while the Agent awaited a question answer')
+  }
+  const runtimeContextHidden = !(browserWindow.document.getElementById('messages')?.textContent ?? '')
+    .includes('Current runtime context.')
+  if (!runtimeContextHidden) throw new Error('plugin runtime context was rendered as a user message')
+
+  const architectureOption = questionDock.querySelector('[data-question-option="架构"]')
+  const answerButton = questionDock.querySelector('[data-question-submit]')
+  if (!(architectureOption instanceof browserWindow.HTMLButtonElement) ||
+      !(answerButton instanceof browserWindow.HTMLButtonElement)) {
+    throw new Error('question answer controls are incomplete')
+  }
+  architectureOption.click()
+  await waitFor(() => architectureOption.getAttribute('aria-pressed') === 'true' ? true : undefined, 'selected question option')
+  answerButton.click()
+  await waitFor(() => {
+    const completedAssistants = [...browserWindow.document.querySelectorAll('.message.assistant:not(.streaming) .message-body')]
+    const latestAssistant = completedAssistants.at(-1)?.textContent ?? ''
+    const questionClosed = browserWindow.document.querySelector('[data-question-rpc-id]') === null
+    return completedAssistants.length > assistantCountBeforeQuestion &&
+      questionClosed && latestAssistant.includes('question answered through the Web UI')
+      ? true
+      : undefined
+  }, 'question answer continuation', 30_000)
+
+  process.stdout.write(`${JSON.stringify({
+    booted: true,
+    prompted: true,
+    selected: true,
+    history: true,
+    questionAnswered: true,
+    runtimeContextHidden,
+  })}\n`)
 } finally {
   browserWindow.dispatchEvent(new browserWindow.Event('beforeunload'))
   dom.window.close()
