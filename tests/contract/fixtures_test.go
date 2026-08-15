@@ -16,6 +16,7 @@ import (
 	"github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/internal/llmdeepseek"
 	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/llmretry"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/systemprompt"
 	toolscore "github.com/gorenx/goren/tools"
@@ -72,6 +73,10 @@ type contractManifest struct {
 			StreamChunkTypes      []string `json:"streamChunkTypes"`
 			DefaultRetryableCodes []string `json:"defaultRetryableCodes"`
 		} `json:"llm"`
+		LLMRetry struct {
+			Factory       string   `json:"factory"`
+			SessionEvents []string `json:"sessionEvents"`
+		} `json:"llmRetry"`
 	} `json:"included"`
 }
 
@@ -182,6 +187,11 @@ func TestPinnedManifestMatchesGoSurface(t *testing.T) {
 		llm.EmptyResponseCode, "RATE_LIMIT", "SERVER", "TIMEOUT", "TRANSPORT",
 	}) {
 		t.Fatalf("llm surface = %#v", llmSurface)
+	}
+	retrySurface := manifestDocument.Included.LLMRetry
+	if retrySurface.Factory != "@deepseek-ai/dsh-llm-retry" ||
+		!slices.Equal(retrySurface.SessionEvents, []string{llmretry.RetryEventName, llmretry.RetryStartedEventName}) {
+		t.Fatalf("llm retry surface = %#v", retrySurface)
 	}
 
 	muxNames := encodedMuxFrames(t)

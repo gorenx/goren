@@ -2,6 +2,7 @@ package llm_test
 
 import (
 	"encoding/json"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -37,6 +38,18 @@ func TestResolveRetryPolicyDefaultsAndDetaches(t *testing.T) {
 	configuredNormal := configured.(llm.NormalRetryPolicy)
 	if !reflect.DeepEqual(configuredNormal.RetryableCodes, []string{"BUSY"}) {
 		t.Fatalf("configured codes = %#v", configuredNormal.RetryableCodes)
+	}
+}
+
+func TestLlmErrorRejectsNonFiniteRetryAfter(t *testing.T) {
+	t.Parallel()
+	for _, candidate := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		candidate := candidate
+		if _, err := llm.NewLlmError("busy", "SERVER", llm.LlmErrorOptions{
+			ProviderRetryAfterMS: &candidate,
+		}); err == nil || !strings.Contains(err.Error(), "positive and finite") {
+			t.Fatalf("NewLlmError(%v) error = %v", candidate, err)
+		}
 	}
 }
 

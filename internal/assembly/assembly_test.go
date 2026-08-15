@@ -52,6 +52,7 @@ func TestCatalogContainsOnlyCurrentServerSlice(t *testing.T) {
 	want := []string{
 		AgentFactoryName, AgentDefaultModelFactoryName, AgentLoopFactoryName,
 		ConnectionFactoryName, APIProxyFactoryName, LLMFactoryName, DeepSeekFactoryName,
+		LLMRetryFactoryName,
 		SessionFactoryName, SystemPromptFactoryName, ToolAskUserFactoryName,
 		ToolsFactoryName, ApprovalFactoryName, UserQuestionsFactoryName,
 	}
@@ -105,6 +106,9 @@ func TestConnectionFactoryUsesStrictTypedConfig(t *testing.T) {
 		{label: "questions unknown", factoryName: UserQuestionsFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
 		{label: "ask tool unknown", factoryName: ToolAskUserFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
 		{label: "llm unknown", factoryName: LLMFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
+		{label: "llm retry unknown", factoryName: LLMRetryFactoryName, input: `{"unknown":true}`, wantMessage: "unknown key"},
+		{label: "llm retry misplaced policy", factoryName: LLMRetryFactoryName, input: `{"retryPolicy":{"mode":"always"}}`, wantMessage: "belongs under each provider"},
+		{label: "llm retry null", factoryName: LLMRetryFactoryName, input: `null`, wantMessage: "must be an object"},
 		{label: "deepseek unknown", factoryName: DeepSeekFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
 		{label: "deepseek nested unknown", factoryName: DeepSeekFactoryName, input: `{"models":[{"id":"m","unknown":true}]}`, wantMessage: "unknown field"},
 		{label: "deepseek disabled high", factoryName: DeepSeekFactoryName, input: `{"thinking":"disabled","reasoningEffort":"high"}`, wantMessage: "only reasoningEffort off"},

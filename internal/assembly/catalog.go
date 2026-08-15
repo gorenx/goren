@@ -21,6 +21,7 @@ const (
 	ConnectionFactoryName        = "@deepseek-ai/dsh-client-connection"
 	DeepSeekFactoryName          = "@deepseek-ai/dsh-llm-deepseek"
 	LLMFactoryName               = "@deepseek-ai/dsh-llm"
+	LLMRetryFactoryName          = "@deepseek-ai/dsh-llm-retry"
 	SessionFactoryName           = "@deepseek-ai/dsh-session"
 	SystemPromptFactoryName      = "@deepseek-ai/dsh-system-prompt"
 	ToolAskUserFactoryName       = "@deepseek-ai/dsh-tool-ask-user"
@@ -83,6 +84,9 @@ func NewCatalog(platform Environment) (*plugin.Catalog, error) {
 	if err := plugin.RegisterFactory(registry, deepSeekFactory{lookupEnv: lookupEnv, userHome: userHome}); err != nil {
 		return nil, err
 	}
+	if err := plugin.RegisterFactory(registry, llmRetryFactory{}); err != nil {
+		return nil, err
+	}
 	if err := plugin.RegisterFactory(registry, sessionFactory{}); err != nil {
 		return nil, err
 	}
@@ -124,6 +128,7 @@ func DefaultSpecs(listenAddress string, version string) ([]PluginSpec, error) {
 		{FactoryName: APIProxyFactoryName, Config: apiProxyRaw},
 		{FactoryName: ToolAskUserFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: AgentDefaultModelFactoryName, Config: defaultModelRaw},
+		{FactoryName: LLMRetryFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: AgentLoopFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: ApprovalFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: UserQuestionsFactoryName, Config: json.RawMessage(`{}`)},
