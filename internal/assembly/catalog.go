@@ -14,25 +14,24 @@ import (
 )
 
 const (
-	AgentFactoryName                    = "@deepseek-ai/dsh-agent"
-	AgentDefaultModelFactoryName        = "@deepseek-ai/dsh-agent-default-model"
-	AgentLoopFactoryName                = "@deepseek-ai/dsh-agent-loop"
-	ApprovalFactoryName                 = "@deepseek-ai/dsh-user-approval"
-	APIProxyFactoryName                 = "@deepseek-ai/dsh-host-apiproxy"
-	ConnectionFactoryName               = "@deepseek-ai/dsh-client-connection"
-	DeepSeekFactoryName                 = "@deepseek-ai/dsh-llm-deepseek"
-	LLMFactoryName                      = "@deepseek-ai/dsh-llm"
-	LLMRetryFactoryName                 = "@deepseek-ai/dsh-llm-retry"
-	SessionFactoryName                  = "@deepseek-ai/dsh-session"
-	SessionPersistenceSQLiteFactoryName = "@deepseek-ai/dsh-session-persistence-sqlite"
-	SessionProjectionFactoryName        = "@deepseek-ai/dsh-session-projection"
-	SessionTitleFactoryName             = "@deepseek-ai/dsh-session-title"
-	SystemPromptFactoryName             = "@deepseek-ai/dsh-system-prompt"
-	ToolAskUserFactoryName              = "@deepseek-ai/dsh-tool-ask-user"
-	ToolsFactoryName                    = "@deepseek-ai/dsh-tools"
-	UserQuestionsFactoryName            = "@deepseek-ai/dsh-user-questions"
-	WorkspaceFactoryName                = "@deepseek-ai/dsh-workspace"
-	WorkspaceSQLiteFactoryName          = "@deepseek-ai/dsh-workspace-persistence-sqlite"
+	AgentFactoryName              = "@deepseek-ai/dsh-agent"
+	AgentDefaultModelFactoryName  = "@deepseek-ai/dsh-agent-default-model"
+	AgentLoopFactoryName          = "@deepseek-ai/dsh-agent-loop"
+	ApprovalFactoryName           = "@deepseek-ai/dsh-user-approval"
+	APIProxyFactoryName           = "@deepseek-ai/dsh-host-apiproxy"
+	ConnectionFactoryName         = "@deepseek-ai/dsh-client-connection"
+	DeepSeekFactoryName           = "@deepseek-ai/dsh-llm-deepseek"
+	LLMFactoryName                = "@deepseek-ai/dsh-llm"
+	LLMRetryFactoryName           = "@deepseek-ai/dsh-llm-retry"
+	SessionFactoryName            = "@deepseek-ai/dsh-session"
+	SessionPersistenceFactoryName = "@deepseek-ai/dsh-session-persistence"
+	SessionProjectionFactoryName  = "@deepseek-ai/dsh-session-projection"
+	SessionTitleFactoryName       = "@deepseek-ai/dsh-session-title"
+	SystemPromptFactoryName       = "@deepseek-ai/dsh-system-prompt"
+	ToolAskUserFactoryName        = "@deepseek-ai/dsh-tool-ask-user"
+	ToolsFactoryName              = "@deepseek-ai/dsh-tools"
+	UserQuestionsFactoryName      = "@deepseek-ai/dsh-user-questions"
+	WorkspaceFactoryName          = "@deepseek-ai/dsh-workspace"
 )
 
 // Environment contains process-derived values that are not deployment config.
@@ -96,7 +95,7 @@ func NewCatalog(platform Environment) (*plugin.Catalog, error) {
 	if err := plugin.RegisterFactory(registry, sessionFactory{}); err != nil {
 		return nil, err
 	}
-	if err := plugin.RegisterFactory(registry, sessionPersistenceSQLiteFactory{}); err != nil {
+	if err := plugin.RegisterFactory(registry, sessionPersistenceFactory{}); err != nil {
 		return nil, err
 	}
 	if err := plugin.RegisterFactory(registry, sessionProjectionFactory{}); err != nil {
@@ -118,9 +117,6 @@ func NewCatalog(platform Environment) (*plugin.Catalog, error) {
 		return nil, err
 	}
 	if err := plugin.RegisterFactory(registry, workspaceFactory{}); err != nil {
-		return nil, err
-	}
-	if err := plugin.RegisterFactory(registry, workspaceSQLiteFactory{}); err != nil {
 		return nil, err
 	}
 	return registry, nil
@@ -149,14 +145,14 @@ func DefaultSpecs(
 	if err != nil {
 		return nil, err
 	}
-	persistenceRaw, err := json.Marshal(SessionPersistenceSQLiteConfig{
+	persistenceRaw, err := json.Marshal(SessionPersistenceConfig{
 		Path: sessionDatabasePath, JournalMode: "wal",
 		WriteBatchMaxDelayMS: sessionpersistence.DefaultWriteBatchMaxDelay.Milliseconds(),
 	})
 	if err != nil {
 		return nil, err
 	}
-	workspaceSQLiteRaw, err := json.Marshal(WorkspaceSQLiteConfig{
+	workspaceRaw, err := json.Marshal(WorkspaceConfig{
 		Path: workspaceDatabasePath, JournalMode: "wal",
 	})
 	if err != nil {
@@ -179,9 +175,8 @@ func DefaultSpecs(
 		{FactoryName: SystemPromptFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: ToolsFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: SessionFactoryName, Config: json.RawMessage(`{}`)},
-		{FactoryName: SessionPersistenceSQLiteFactoryName, Config: persistenceRaw},
-		{FactoryName: WorkspaceFactoryName, Config: json.RawMessage(`{}`)},
-		{FactoryName: WorkspaceSQLiteFactoryName, Config: workspaceSQLiteRaw},
+		{FactoryName: SessionPersistenceFactoryName, Config: persistenceRaw},
+		{FactoryName: WorkspaceFactoryName, Config: workspaceRaw},
 	}, nil
 }
 

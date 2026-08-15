@@ -38,8 +38,9 @@ type RawArtifact struct {
 	Content  string
 }
 
-// Persistence is the backend-neutral durable Session service. JSONL and
-// SQLite are alternative providers of this same contract.
+// Persistence is the backend-neutral durable Session capability. Callers do
+// not observe whether its SessionLogStore uses a JSONL, SQLite, or other
+// Backend adapter.
 type Persistence interface {
 	Locate(session.Header) (Location, bool)
 	SupportsRawArtifacts() bool
@@ -62,7 +63,7 @@ type RepairMarker interface {
 	PersistenceRepairMarker()
 }
 
-// StoredPrefix is a fresh physical snapshot read by the coordinator.
+// StoredPrefix is a fresh physical snapshot read by SessionLogStore.
 type StoredPrefix struct {
 	Header session.Header
 	Events []session.Event

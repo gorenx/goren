@@ -32,7 +32,8 @@ type sessionTitlePlugin struct {
 
 func (*sessionTitlePlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
-		Name: SessionTitleFactoryName, Provides: []plugin.ServiceRef{sessiontitle.Service.Ref()},
+		Name:     SessionTitleFactoryName,
+		Provides: []plugin.ServiceRef{sessiontitle.Service.Ref()},
 		Requires: []plugin.ServiceRef{session.StoreService.Ref(), sessionprojection.Service.Ref()},
 	}
 }

@@ -86,9 +86,9 @@ func (extension *sessionAPIContractProvider) Apply(requestContext context.Contex
 	if err != nil {
 		return err
 	}
-	durability, err := sessionpersistence.NewCoordinator(
+	durability, err := sessionpersistence.NewSessionLogStore(
 		requestContext, providerScope, sessionStore, storage,
-		sessionpersistence.CoordinatorOptions{
+		sessionpersistence.SessionLogStoreOptions{
 			WriteBatchMaxDelay: time.Hour,
 			ObserverError:      extension.state.failures.report,
 		},

@@ -57,10 +57,10 @@ func TestCatalogContainsOnlyCurrentServerSlice(t *testing.T) {
 		AgentFactoryName, AgentDefaultModelFactoryName, AgentLoopFactoryName,
 		ConnectionFactoryName, APIProxyFactoryName, LLMFactoryName, DeepSeekFactoryName,
 		LLMRetryFactoryName,
-		SessionFactoryName, SessionPersistenceSQLiteFactoryName, SessionProjectionFactoryName, SessionTitleFactoryName,
+		SessionFactoryName, SessionPersistenceFactoryName, SessionProjectionFactoryName, SessionTitleFactoryName,
 		SystemPromptFactoryName, ToolAskUserFactoryName,
 		ToolsFactoryName, ApprovalFactoryName, UserQuestionsFactoryName,
-		WorkspaceFactoryName, WorkspaceSQLiteFactoryName,
+		WorkspaceFactoryName,
 	}
 	if got := registry.Names(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("factory names = %#v, want %#v", got, want)
@@ -118,9 +118,12 @@ func TestConnectionFactoryUsesStrictTypedConfig(t *testing.T) {
 		{label: "projection unknown", factoryName: SessionProjectionFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
 		{label: "title unknown", factoryName: SessionTitleFactoryName, input: `{"fallbackMaxWords":5,"fallbackMaxBytes":40,"maxTitleBytes":80,"unknown":true}`, wantMessage: "unknown field"},
 		{label: "title invalid cap", factoryName: SessionTitleFactoryName, input: `{"fallbackMaxWords":5,"fallbackMaxBytes":81,"maxTitleBytes":80}`, wantMessage: "must not exceed"},
-		{label: "persistence unknown", factoryName: SessionPersistenceSQLiteFactoryName, input: `{"path":"/tmp/sessions.sqlite","unknown":true}`, wantMessage: "unknown field"},
-		{label: "persistence empty path", factoryName: SessionPersistenceSQLiteFactoryName, input: `{"path":""}`, wantMessage: "path must be non-empty"},
-		{label: "persistence journal", factoryName: SessionPersistenceSQLiteFactoryName, input: `{"path":"/tmp/sessions.sqlite","journalMode":"memory"}`, wantMessage: "journalMode must be"},
+		{label: "persistence unknown", factoryName: SessionPersistenceFactoryName, input: `{"path":"/tmp/sessions.sqlite","unknown":true}`, wantMessage: "unknown field"},
+		{label: "persistence empty path", factoryName: SessionPersistenceFactoryName, input: `{"path":""}`, wantMessage: "path must be non-empty"},
+		{label: "persistence journal", factoryName: SessionPersistenceFactoryName, input: `{"path":"/tmp/sessions.sqlite","journalMode":"memory"}`, wantMessage: "journalMode must be"},
+		{label: "workspace unknown", factoryName: WorkspaceFactoryName, input: `{"path":"/tmp/workspaces.sqlite","unknown":true}`, wantMessage: "unknown field"},
+		{label: "workspace empty path", factoryName: WorkspaceFactoryName, input: `{"path":""}`, wantMessage: "path must be non-empty"},
+		{label: "workspace journal", factoryName: WorkspaceFactoryName, input: `{"path":"/tmp/workspaces.sqlite","journalMode":"memory"}`, wantMessage: "journalMode must be"},
 		{label: "deepseek unknown", factoryName: DeepSeekFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
 		{label: "deepseek nested unknown", factoryName: DeepSeekFactoryName, input: `{"models":[{"id":"m","unknown":true}]}`, wantMessage: "unknown field"},
 		{label: "deepseek disabled high", factoryName: DeepSeekFactoryName, input: `{"thinking":"disabled","reasoningEffort":"high"}`, wantMessage: "only reasoningEffort off"},

@@ -64,9 +64,9 @@ func (extension *interactionAPIContractProvider) Apply(
 	if err != nil {
 		return err
 	}
-	durability, err := sessionpersistence.NewCoordinator(
+	durability, err := sessionpersistence.NewSessionLogStore(
 		requestContext, providerScope, sessionStore, storage,
-		sessionpersistence.CoordinatorOptions{WriteBatchMaxDelay: time.Hour},
+		sessionpersistence.SessionLogStoreOptions{WriteBatchMaxDelay: time.Hour},
 	)
 	if err != nil {
 		_ = storage.Close(requestContext)
