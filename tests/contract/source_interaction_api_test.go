@@ -19,6 +19,10 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
+	"github.com/gorenx/goren/sessionpersistence"
+	sqlitepersistence "github.com/gorenx/goren/sessionpersistence/sqlite"
+	"github.com/gorenx/goren/sessionprojection"
+	"github.com/gorenx/goren/sessiontitle"
 	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/tests/contract/fixture"
 	"github.com/gorenx/goren/userquestions"
@@ -51,6 +55,32 @@ func (extension *interactionAPIContractProvider) Apply(
 		return err
 	}
 	sessionStore, err := session.NewMemoryStore(providerScope, session.MemoryStoreOptions{})
+	if err != nil {
+		return err
+	}
+	storage, err := sqlitepersistence.Open(requestContext, sqlitepersistence.Config{
+		Path: ":memory:", JournalMode: sqlitepersistence.JournalWAL,
+	})
+	if err != nil {
+		return err
+	}
+	durability, err := sessionpersistence.NewCoordinator(
+		requestContext, providerScope, sessionStore, storage,
+		sessionpersistence.CoordinatorOptions{WriteBatchMaxDelay: time.Hour},
+	)
+	if err != nil {
+		_ = storage.Close(requestContext)
+		return err
+	}
+	projectionRegistry, err := sessionprojection.NewDriveRegistry(providerScope)
+	if err != nil {
+		return err
+	}
+	titleService, err := sessiontitle.NewLogService(
+		providerScope, sessionStore, projectionRegistry,
+		sessiontitle.Config{FallbackMaxWords: 5, FallbackMaxBytes: 40, MaxTitleBytes: 80},
+		sessiontitle.Options{},
+	)
 	if err != nil {
 		return err
 	}
@@ -89,7 +119,9 @@ func (extension *interactionAPIContractProvider) Apply(
 		requestContext,
 		providerScope,
 		apiproxy.SessionGatewayDependencies{
-			Agents: agentRegistry, Sessions: sessionStore, LLM: modelRuntime, Defaults: defaultSelection,
+			Agents: agentRegistry, Sessions: sessionStore, Persistence: durability,
+			LLM: modelRuntime, Defaults: defaultSelection,
+			Projections: projectionRegistry, Titles: titleService,
 			Directories: apiproxy.DirectoryProvisionerFunc(func(string) error {
 				return nil
 			}),

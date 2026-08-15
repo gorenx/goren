@@ -6,11 +6,25 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/gorenx/goren/internal/jsonvalue"
 )
 
-const endSeedEventType = "session/end-seed"
+// EndSeedEventName separates inherited history from events produced by the
+// current live Session generation.
+const EndSeedEventName = "session/end-seed"
+
+const endSeedEventType = EndSeedEventName
+
+type eventTypeRegistry struct {
+	mutex sync.RWMutex
+	names map[string]struct{}
+}
+
+var knownEventTypes = eventTypeRegistry{
+	names: map[string]struct{}{EndSeedEventName: {}},
+}
 
 var surfaceEventTypes = map[string]struct{}{
 	"user/message":      {},
@@ -37,6 +51,7 @@ func DefineEvent[D any](canonicalName string) EventKey[D] {
 	if _, reserved := surfaceEventTypes[canonicalName]; reserved || canonicalName == endSeedEventType {
 		panic(fmt.Sprintf("session: event name %q is owned by the core session contract", canonicalName))
 	}
+	registerKnownEventType(canonicalName)
 	return EventKey[D]{name: canonicalName}
 }
 
@@ -44,7 +59,32 @@ func defineSurfaceEvent[D any](canonicalName string) SurfaceEventKey[D] {
 	if _, known := surfaceEventTypes[canonicalName]; !known {
 		panic(fmt.Sprintf("session: %q is not a core surface event", canonicalName))
 	}
+	registerKnownEventType(canonicalName)
 	return SurfaceEventKey[D]{name: canonicalName}
+}
+
+// IsKnownEventType reports whether this build registered an event definition
+// for the canonical name. Persistence uses it to refuse unknown required
+// events while allowing explicitly ignorable extension records.
+func IsKnownEventType(canonicalName string) bool {
+	return knownEventTypes.contains(canonicalName)
+}
+
+func registerKnownEventType(canonicalName string) {
+	knownEventTypes.register(canonicalName)
+}
+
+func (owner *eventTypeRegistry) contains(canonicalName string) bool {
+	owner.mutex.RLock()
+	_, found := owner.names[canonicalName]
+	owner.mutex.RUnlock()
+	return found
+}
+
+func (owner *eventTypeRegistry) register(canonicalName string) {
+	owner.mutex.Lock()
+	owner.names[canonicalName] = struct{}{}
+	owner.mutex.Unlock()
 }
 
 func validateEventName(canonicalName string) {

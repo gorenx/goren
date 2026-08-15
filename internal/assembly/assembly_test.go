@@ -20,6 +20,7 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
+	"github.com/gorenx/goren/sessionpersistence"
 	"github.com/gorenx/goren/sessionprojection"
 	"github.com/gorenx/goren/sessiontitle"
 	"github.com/gorenx/goren/systemprompt"
@@ -36,7 +37,7 @@ func (instance probePlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "assembly-probe",
 		Requires: []plugin.ServiceRef{
-			agentcore.Service.Ref(), agentdefaultmodel.Service.Ref(), agentloop.Service.Ref(), approval.Service.Ref(), serverServiceKey.Ref(), llm.Service.Ref(), session.StoreService.Ref(), sessionprojection.Service.Ref(), sessiontitle.Service.Ref(), systemprompt.Service.Ref(), toolscore.Service.Ref(), userquestions.Service.Ref(),
+			agentcore.Service.Ref(), agentdefaultmodel.Service.Ref(), agentloop.Service.Ref(), approval.Service.Ref(), serverServiceKey.Ref(), llm.Service.Ref(), session.StoreService.Ref(), sessionpersistence.Service.Ref(), sessionprojection.Service.Ref(), sessiontitle.Service.Ref(), systemprompt.Service.Ref(), toolscore.Service.Ref(), userquestions.Service.Ref(),
 		},
 	}
 }
@@ -55,7 +56,7 @@ func TestCatalogContainsOnlyCurrentServerSlice(t *testing.T) {
 		AgentFactoryName, AgentDefaultModelFactoryName, AgentLoopFactoryName,
 		ConnectionFactoryName, APIProxyFactoryName, LLMFactoryName, DeepSeekFactoryName,
 		LLMRetryFactoryName,
-		SessionFactoryName, SessionProjectionFactoryName, SessionTitleFactoryName,
+		SessionFactoryName, SessionPersistenceSQLiteFactoryName, SessionProjectionFactoryName, SessionTitleFactoryName,
 		SystemPromptFactoryName, ToolAskUserFactoryName,
 		ToolsFactoryName, ApprovalFactoryName, UserQuestionsFactoryName,
 	}
@@ -115,6 +116,9 @@ func TestConnectionFactoryUsesStrictTypedConfig(t *testing.T) {
 		{label: "projection unknown", factoryName: SessionProjectionFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
 		{label: "title unknown", factoryName: SessionTitleFactoryName, input: `{"fallbackMaxWords":5,"fallbackMaxBytes":40,"maxTitleBytes":80,"unknown":true}`, wantMessage: "unknown field"},
 		{label: "title invalid cap", factoryName: SessionTitleFactoryName, input: `{"fallbackMaxWords":5,"fallbackMaxBytes":81,"maxTitleBytes":80}`, wantMessage: "must not exceed"},
+		{label: "persistence unknown", factoryName: SessionPersistenceSQLiteFactoryName, input: `{"path":"/tmp/sessions.sqlite","unknown":true}`, wantMessage: "unknown field"},
+		{label: "persistence empty path", factoryName: SessionPersistenceSQLiteFactoryName, input: `{"path":""}`, wantMessage: "path must be non-empty"},
+		{label: "persistence journal", factoryName: SessionPersistenceSQLiteFactoryName, input: `{"path":"/tmp/sessions.sqlite","journalMode":"memory"}`, wantMessage: "journalMode must be"},
 		{label: "deepseek unknown", factoryName: DeepSeekFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
 		{label: "deepseek nested unknown", factoryName: DeepSeekFactoryName, input: `{"models":[{"id":"m","unknown":true}]}`, wantMessage: "unknown field"},
 		{label: "deepseek disabled high", factoryName: DeepSeekFactoryName, input: `{"thinking":"disabled","reasoningEffort":"high"}`, wantMessage: "only reasoningEffort off"},
@@ -137,7 +141,7 @@ func TestConnectionCompositionSettlesDependenciesAndServesHostDescribe(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	declarations, err := DefaultSpecs("127.0.0.1:0", "0.1.0-rc.5")
+	declarations, err := DefaultSpecs("127.0.0.1:0", "0.1.0-rc.5", t.TempDir()+"/sessions.sqlite")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,6 +185,9 @@ func TestConnectionCompositionSettlesDependenciesAndServesHostDescribe(t *testin
 		}
 		if _, createErr := sessionStore.Create(requestContext, pluginScope, nil, session.CreateOptions{}); createErr != nil {
 			return createErr
+		}
+		if durability, found := plugin.Require(pluginScope, sessionpersistence.Service); !found || durability == nil {
+			t.Fatal("sessionPersistence service is unavailable")
 		}
 		promptService, found := plugin.Require(pluginScope, systemprompt.Service)
 		if !found {
@@ -275,7 +282,7 @@ func TestCompositionFailureRollsBackEarlierDeclarations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	declarations, err := DefaultSpecs(reservedListener.Addr().String(), "test")
+	declarations, err := DefaultSpecs(reservedListener.Addr().String(), "test", t.TempDir()+"/sessions.sqlite")
 	if err != nil {
 		t.Fatal(err)
 	}

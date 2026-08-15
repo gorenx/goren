@@ -19,6 +19,7 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
+	"github.com/gorenx/goren/sessionpersistence"
 	"github.com/gorenx/goren/sessionprojection"
 	"github.com/gorenx/goren/sessiontitle"
 )
@@ -45,6 +46,7 @@ func (operation DirectoryProvisionerFunc) EnsureDirectory(path string) error {
 type SessionGatewayDependencies struct {
 	Agents      agent.Registry
 	Sessions    session.Store
+	Persistence sessionpersistence.Persistence
 	LLM         llm.LlmRuntime
 	Defaults    agentdefaultmodel.DefaultModel
 	Projections sessionprojection.Registry
@@ -76,6 +78,7 @@ type SessionGateway struct {
 	sourceScope *plugin.Scope
 	agents      agent.Registry
 	sessions    session.Store
+	persistence sessionpersistence.Persistence
 	models      llm.LlmRuntime
 	defaults    agentdefaultmodel.DefaultModel
 	projections sessionprojection.Registry
@@ -104,7 +107,7 @@ func NewSessionGateway(
 	if requestContext == nil || sourceScope == nil {
 		return nil, errors.New("apiproxy: Session Gateway Context and Scope are required")
 	}
-	if ports.Agents == nil || ports.Sessions == nil || ports.LLM == nil || ports.Defaults == nil ||
+	if ports.Agents == nil || ports.Sessions == nil || ports.Persistence == nil || ports.LLM == nil || ports.Defaults == nil ||
 		ports.Projections == nil || ports.Titles == nil || ports.Directories == nil {
 		return nil, errors.New("apiproxy: Session Gateway dependencies are incomplete")
 	}
@@ -120,7 +123,7 @@ func NewSessionGateway(
 		newRPC = mintFrameRPCID
 	}
 	owner := &SessionGateway{
-		sourceScope: sourceScope, agents: ports.Agents, sessions: ports.Sessions,
+		sourceScope: sourceScope, agents: ports.Agents, sessions: ports.Sessions, persistence: ports.Persistence,
 		models: ports.LLM, defaults: ports.Defaults, projections: ports.Projections, titles: ports.Titles,
 		directories: ports.Directories,
 		workingDir:  settings.WorkingDirectory, newSession: newSession, newRPC: newRPC,
@@ -178,39 +181,43 @@ func (owner *SessionGateway) Host(requestContext context.Context, emit func(Stre
 }
 
 // List returns the current attached Session baseline, newest human activity first.
-func (owner *SessionGateway) List(_ context.Context, _ Request[SessionListRequest]) (Outcome[SessionListValue], error) {
+func (owner *SessionGateway) List(requestContext context.Context, _ Request[SessionListRequest]) (Outcome[SessionListValue], error) {
 	items := make([]SessionSummary, 0)
+	liveIDs := make(map[session.SessionID]struct{})
 	for _, conversation := range owner.sessions.List() {
 		header := conversation.Header()
 		if header.CWD == nil {
 			continue
 		}
 		events := conversation.Events()
-		blank := true
-		updatedAt := header.CreatedAt
-		for _, committed := range events {
-			if committed.Type == session.TurnStartEventName {
-				blank = false
-			}
-			if committed.Type == session.UserMessageEventName && directUserEvent(committed) && committed.Time > updatedAt {
-				updatedAt = committed.Time
-			}
-		}
-		summary := SessionSummary{
-			SessionID: SessionID(header.ID), UpdatedAt: updatedAt, Blank: blank,
-			Origin: string(header.Origin), CWD: cloneStringPointer(header.CWD), AgentPreset: cloneStringPointer(header.AgentPreset),
-		}
+		liveIDs[header.ID] = struct{}{}
 		projectionSnapshot, projectionErr := owner.projections.Snapshot(conversation)
-		if projectionErr == nil && len(projectionSnapshot.Values) != 0 {
-			summary.Projections = projectionBlock(projectionSnapshot)
+		if projectionErr != nil {
+			return Outcome[SessionListValue]{}, projectionErr
 		}
-		if header.ParentSession != nil {
-			summary.ParentSessionID = SessionID(*header.ParentSession)
-		}
+		running := false
 		if subject, found := owner.agents.Get(header.ID); found {
-			summary.Running = subject.StatusValue() == agent.StatusRunning
+			running = subject.StatusValue() == agent.StatusRunning
 		}
-		items = append(items, summary)
+		items = append(items, summarizeSession(header, events, running, projectionSnapshot))
+	}
+	storedHeaders, err := owner.persistence.List(requestContext)
+	if err != nil {
+		return Outcome[SessionListValue]{}, err
+	}
+	for _, header := range storedHeaders {
+		if _, live := liveIDs[header.ID]; live || header.CWD == nil {
+			continue
+		}
+		loaded, err := owner.persistence.Inspect(requestContext, header.ID)
+		if err != nil {
+			return Outcome[SessionListValue]{}, err
+		}
+		restored, err := owner.projections.Restore(sessionprojection.Checkpoint{}, loaded.Events, 0)
+		if err != nil {
+			return Outcome[SessionListValue]{}, err
+		}
+		items = append(items, summarizeSession(loaded.Header, loaded.Events, false, restored.Snapshot))
 	}
 	sort.SliceStable(items, func(leftIndex int, rightIndex int) bool {
 		return items[leftIndex].UpdatedAt > items[rightIndex].UpdatedAt
@@ -222,8 +229,8 @@ func (owner *SessionGateway) List(_ context.Context, _ Request[SessionListReques
 }
 
 // Rename delegates normalization, pinning, and event append to Session Title.
-func (owner *SessionGateway) Rename(_ context.Context, call Request[SessionRenameRequest]) (Outcome[SessionRenameValue], error) {
-	subject, refused := owner.ordinaryAgent(call.Payload.SessionID)
+func (owner *SessionGateway) Rename(requestContext context.Context, call Request[SessionRenameRequest]) (Outcome[SessionRenameValue], error) {
+	subject, refused := owner.ordinaryAgent(requestContext, call.Payload.SessionID)
 	if refused != nil {
 		return Fail[SessionRenameValue](*refused), nil
 	}
@@ -272,7 +279,7 @@ func (owner *SessionGateway) Create(requestContext context.Context, call Request
 	if call.Payload.CWD != nil {
 		workingDirectory = *call.Payload.CWD
 	}
-	subject, err := owner.ensureSession(requestContext, identifier, workingDirectory, call.Payload.AgentPreset)
+	subject, err := owner.ensureSession(requestContext, identifier, workingDirectory, call.Payload.AgentPreset, true, nil)
 	if err != nil {
 		var ownership *subagentSessionOwnership
 		if errors.As(err, &ownership) {
@@ -314,17 +321,27 @@ func (owner *SessionGateway) Create(requestContext context.Context, call Request
 }
 
 // History reads without activating an Agent and paginates by append-origin messages.
-func (owner *SessionGateway) History(_ context.Context, call Request[SessionHistoryRequest]) (Outcome[SessionHistoryValue], error) {
+func (owner *SessionGateway) History(requestContext context.Context, call Request[SessionHistoryRequest]) (Outcome[SessionHistoryValue], error) {
 	identifier := session.SessionID(call.Payload.SessionID)
 	conversation, found := owner.sessions.Get(identifier)
-	if !found {
-		return Fail[SessionHistoryValue](sessionNotFoundError(call.Payload.SessionID)), nil
+	var events []session.Event
+	if found {
+		events = conversation.Events()
+	} else {
+		loaded, err := owner.persistence.Inspect(requestContext, identifier)
+		if err != nil {
+			var missing *sessionpersistence.NotFoundError
+			if errors.As(err, &missing) {
+				return Fail[SessionHistoryValue](sessionNotFoundError(call.Payload.SessionID)), nil
+			}
+			return Outcome[SessionHistoryValue]{}, err
+		}
+		events = loaded.Events
 	}
 	maxMessages := defaultHistoryMessages
 	if call.Payload.MaxMessages != nil {
 		maxMessages = *call.Payload.MaxMessages
 	}
-	events := conversation.Events()
 	page, hasMore, err := historyPage(events, call.Payload.BeforeSeq, maxMessages)
 	if err != nil {
 		return Outcome[SessionHistoryValue]{}, err
@@ -342,7 +359,7 @@ func (owner *SessionGateway) History(_ context.Context, call Request[SessionHist
 
 // Models returns one session's current selection plus independently loaded provider groups.
 func (owner *SessionGateway) Models(requestContext context.Context, call Request[SessionModelsRequest]) (Outcome[SessionModelsValue], error) {
-	subject, refused := owner.ordinaryAgent(call.Payload.SessionID)
+	subject, refused := owner.ordinaryAgent(requestContext, call.Payload.SessionID)
 	if refused != nil {
 		return Fail[SessionModelsValue](*refused), nil
 	}
@@ -365,7 +382,7 @@ func (owner *SessionGateway) Models(requestContext context.Context, call Request
 
 // SelectModel validates an exact route and applies it to the next assembled step.
 func (owner *SessionGateway) SelectModel(requestContext context.Context, call Request[SessionSelectModelRequest]) (Outcome[SessionSelectModelValue], error) {
-	subject, refused := owner.ordinaryAgent(call.Payload.SessionID)
+	subject, refused := owner.ordinaryAgent(requestContext, call.Payload.SessionID)
 	if refused != nil {
 		return Fail[SessionSelectModelValue](*refused), nil
 	}
@@ -417,7 +434,7 @@ func (owner *SessionGateway) SelectModel(requestContext context.Context, call Re
 
 // Prompt validates route and provenance before handing one immutable message to Agent.
 func (owner *SessionGateway) Prompt(requestContext context.Context, call Request[SessionPromptRequest]) (Outcome[SessionPromptValue], error) {
-	subject, refused := owner.ordinaryAgent(call.Payload.SessionID)
+	subject, refused := owner.ordinaryAgent(requestContext, call.Payload.SessionID)
 	if refused != nil {
 		return Fail[SessionPromptValue](*refused), nil
 	}
@@ -497,8 +514,8 @@ func (owner *SessionGateway) Prompt(requestContext context.Context, call Request
 }
 
 // UpdateQueue edits, removes, or strictly steers one still-pending occurrence.
-func (owner *SessionGateway) UpdateQueue(_ context.Context, call Request[SessionUpdateQueueRequest]) (Outcome[AcceptedValue], error) {
-	subject, refused := owner.ordinaryAgent(call.Payload.SessionID)
+func (owner *SessionGateway) UpdateQueue(requestContext context.Context, call Request[SessionUpdateQueueRequest]) (Outcome[AcceptedValue], error) {
+	subject, refused := owner.ordinaryAgent(requestContext, call.Payload.SessionID)
 	if refused != nil {
 		if refused.Code == connection.ErrorSessionNotFound {
 			return Fail[AcceptedValue](queueItemNotFoundError(call.Payload.ItemID)), nil
@@ -558,8 +575,8 @@ func (owner *SessionGateway) UpdateQueue(_ context.Context, call Request[Session
 }
 
 // Cancel preserves pending work while stopping the active ordinary Agent turn.
-func (owner *SessionGateway) Cancel(_ context.Context, call Request[SessionCancelRequest]) (Outcome[AcceptedValue], error) {
-	subject, refused := owner.ordinaryAgent(call.Payload.SessionID)
+func (owner *SessionGateway) Cancel(requestContext context.Context, call Request[SessionCancelRequest]) (Outcome[AcceptedValue], error) {
+	subject, refused := owner.ordinaryAgent(requestContext, call.Payload.SessionID)
 	if refused != nil {
 		return Fail[AcceptedValue](*refused), nil
 	}
@@ -572,6 +589,8 @@ func (owner *SessionGateway) ensureSession(
 	identifier session.SessionID,
 	workingDirectory string,
 	requestedPreset *string,
+	createMissing bool,
+	knownInspection *sessionpersistence.Inspection,
 ) (agent.Agent, error) {
 	owner.creationMutex.Lock()
 	if pending := owner.creations[identifier]; pending != nil {
@@ -590,7 +609,9 @@ func (owner *SessionGateway) ensureSession(
 	owner.creations[identifier] = pending
 	owner.creationMutex.Unlock()
 
-	pending.subject, pending.err = owner.createOrAdopt(requestContext, identifier, workingDirectory)
+	pending.subject, pending.err = owner.createOrAdopt(
+		requestContext, identifier, workingDirectory, createMissing, knownInspection,
+	)
 	owner.creationMutex.Lock()
 	delete(owner.creations, identifier)
 	close(pending.done)
@@ -605,12 +626,31 @@ func (owner *SessionGateway) createOrAdopt(
 	requestContext context.Context,
 	identifier session.SessionID,
 	workingDirectory string,
+	createMissing bool,
+	knownInspection *sessionpersistence.Inspection,
 ) (agent.Agent, error) {
 	if subject, found := owner.agents.Get(identifier); found {
 		return subject, nil
 	}
 	if conversation, found := owner.sessions.Get(identifier); found {
 		return nil, fmt.Errorf("session %q is attached without a live Agent (cwd %v)", identifier, conversation.Header().CWD)
+	}
+	loaded := sessionpersistence.Inspection{}
+	var inspectErr error
+	if knownInspection == nil {
+		loaded, inspectErr = owner.persistence.Inspect(requestContext, identifier)
+	} else {
+		loaded = *knownInspection
+	}
+	if inspectErr == nil {
+		return owner.resumeCold(requestContext, loaded)
+	}
+	var missing *sessionpersistence.NotFoundError
+	if !errors.As(inspectErr, &missing) {
+		return nil, inspectErr
+	}
+	if !createMissing {
+		return nil, missing
 	}
 	if !filepath.IsAbs(workingDirectory) {
 		return nil, fmt.Errorf("project directory %q must be absolute", workingDirectory)
@@ -651,6 +691,61 @@ func (owner *SessionGateway) createOrAdopt(
 	return handle.Subject, nil
 }
 
+func (owner *SessionGateway) resumeCold(
+	requestContext context.Context,
+	loaded sessionpersistence.Inspection,
+) (agent.Agent, error) {
+	identifier := loaded.Header.ID
+	if subject, found := owner.agents.Get(identifier); found {
+		return subject, nil
+	}
+	transient, err := session.New(identifier, session.CreateOptions{
+		Seed: loaded.Events, Metadata: sessionMetadataFromHeader(loaded.Header),
+	})
+	if err != nil {
+		return nil, err
+	}
+	selected, selectedFound, err := owner.loggedOrDefaultSelection(transient)
+	if err != nil {
+		return nil, err
+	}
+	loopOptions := agent.Options{}
+	if selectedFound {
+		loopOptions.Provider = selected.Provider
+		loopOptions.Model = selected.Model
+	}
+	if requestHeader, found, headerErr := transient.RequestHeaderValue(); headerErr != nil {
+		return nil, headerErr
+	} else if found && requestHeader.Config.MaxTokens != nil {
+		tokenLimit := *requestHeader.Config.MaxTokens
+		loopOptions.MaxTokens = &tokenLimit
+	}
+	selection := agent.NewModelSelectionRef(func() (agent.ModelSelection, bool, error) {
+		conversation, found := owner.sessions.Get(identifier)
+		if !found {
+			return agent.ModelSelection{}, false, nil
+		}
+		return owner.loggedOrDefaultSelection(conversation)
+	})
+	setup := agent.SetupFunc(func(_ context.Context, agentScope *plugin.Scope) (agent.SetupCommit, error) {
+		_, err := agent.InstallModelSelection(agentScope, selection)
+		return nil, err
+	})
+	handle, err := owner.agents.Resume(requestContext, owner.sourceScope, agent.ResumeOptions{
+		SessionID: identifier, AgentOptions: loopOptions, Setup: setup,
+	})
+	if err != nil {
+		if subject, found := owner.agents.Get(identifier); found {
+			return subject, nil
+		}
+		return nil, err
+	}
+	owner.selectionMutex.Lock()
+	owner.selections[identifier] = installedSelection{subject: handle.Subject, ref: selection}
+	owner.selectionMutex.Unlock()
+	return handle.Subject, nil
+}
+
 func (owner *SessionGateway) assertSessionAdoption(
 	subject agent.Agent,
 	workingDirectory string,
@@ -677,11 +772,38 @@ func (owner *SessionGateway) assertCWD(subject agent.Agent, requested string) (a
 	return subject, nil
 }
 
-func (owner *SessionGateway) ordinaryAgent(identifier SessionID) (agent.Agent, *connection.RPCError) {
+func (owner *SessionGateway) ordinaryAgent(
+	requestContext context.Context,
+	identifier SessionID,
+) (agent.Agent, *connection.RPCError) {
 	subject, found := owner.agents.Get(session.SessionID(identifier))
 	if !found {
-		problem := sessionNotFoundError(identifier)
-		return nil, &problem
+		loaded, err := owner.persistence.Inspect(requestContext, session.SessionID(identifier))
+		if err != nil {
+			var missing *sessionpersistence.NotFoundError
+			if errors.As(err, &missing) {
+				problem := sessionNotFoundError(identifier)
+				return nil, &problem
+			}
+			problem := newRPCError(connection.ErrorInternal, err.Error(), struct{}{})
+			return nil, &problem
+		}
+		workingDirectory := ""
+		if loaded.Header.CWD != nil {
+			workingDirectory = *loaded.Header.CWD
+		}
+		subject, err = owner.ensureSession(
+			requestContext, loaded.Header.ID, workingDirectory, loaded.Header.AgentPreset, false, &loaded,
+		)
+		if err != nil {
+			var disappeared *sessionpersistence.NotFoundError
+			if errors.As(err, &disappeared) {
+				problem := sessionNotFoundError(identifier)
+				return nil, &problem
+			}
+			problem := newRPCError(connection.ErrorInternal, err.Error(), struct{}{})
+			return nil, &problem
+		}
 	}
 	header := subject.SessionValue().Header()
 	if header.Origin == session.OriginSubagent || owner.hasLiveParent(subject, header) {
@@ -689,6 +811,62 @@ func (owner *SessionGateway) ordinaryAgent(identifier SessionID) (agent.Agent, *
 		return nil, &problem
 	}
 	return subject, nil
+}
+
+func summarizeSession(
+	metadata session.Header,
+	entries []session.Event,
+	running bool,
+	projectionSnapshot sessionprojection.Snapshot,
+) SessionSummary {
+	blank := true
+	updatedAt := metadata.CreatedAt
+	for _, committed := range entries {
+		if committed.Type == session.TurnStartEventName {
+			blank = false
+		}
+		if committed.Type == session.UserMessageEventName && directUserEvent(committed) && committed.Time > updatedAt {
+			updatedAt = committed.Time
+		}
+	}
+	summary := SessionSummary{
+		SessionID: SessionID(metadata.ID), UpdatedAt: updatedAt, Running: running, Blank: blank,
+		Origin: string(metadata.Origin), CWD: cloneStringPointer(metadata.CWD),
+		AgentPreset: cloneStringPointer(metadata.AgentPreset),
+	}
+	if metadata.ParentSession != nil {
+		summary.ParentSessionID = SessionID(*metadata.ParentSession)
+	}
+	if len(projectionSnapshot.Values) != 0 {
+		summary.Projections = projectionBlock(projectionSnapshot)
+	}
+	return summary
+}
+
+func sessionMetadataFromHeader(metadata session.Header) session.Metadata {
+	createdAt := metadata.CreatedAt
+	return session.Metadata{
+		CreatedAt: &createdAt, CWD: cloneStringPointer(metadata.CWD),
+		ParentSession: cloneSessionIDPointer(metadata.ParentSession), SeedLength: cloneInt64Pointer(metadata.SeedLength),
+		Origin: metadata.Origin, DelegationDepth: cloneInt64Pointer(metadata.DelegationDepth),
+		AgentPreset: cloneStringPointer(metadata.AgentPreset),
+	}
+}
+
+func cloneSessionIDPointer(source *session.SessionID) *session.SessionID {
+	if source == nil {
+		return nil
+	}
+	copyValue := *source
+	return &copyValue
+}
+
+func cloneInt64Pointer(source *int64) *int64 {
+	if source == nil {
+		return nil
+	}
+	copyValue := *source
+	return &copyValue
 }
 
 func (owner *SessionGateway) hasLiveParent(subject agent.Agent, header session.Header) bool {

@@ -13,6 +13,7 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
+	"github.com/gorenx/goren/sessionpersistence"
 	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/tools"
 )
@@ -22,6 +23,7 @@ import (
 type Loop interface {
 	agent.Factory
 	Create(context.Context, *plugin.Scope, session.SessionID, agent.Options, session.Metadata) (agent.Handle, error)
+	Resume(context.Context, *plugin.Scope, session.SessionID, agent.Options) (agent.Handle, error)
 	MaxParallelToolCalls() int
 }
 
@@ -91,10 +93,12 @@ func New(
 	}
 	for _, declaration := range settings.ConfiguredAgents() {
 		if declaration.ResumeSessionID != "" {
-			return nil, fmt.Errorf(
-				"agentloop: configured agent %q cannot resume %q: session persistence is not configured",
-				declaration.ID, declaration.ResumeSessionID,
-			)
+			if _, err := owner.Resume(
+				requestContext, sourceScope, declaration.ResumeSessionID, declaration.AgentOptions(),
+			); err != nil {
+				return nil, fmt.Errorf("agentloop: resume configured agent %q: %w", declaration.ID, err)
+			}
+			continue
 		}
 		identifier := declaration.SessionID
 		if identifier == "" {
@@ -133,6 +137,18 @@ func (owner *loopService) Create(
 	})
 }
 
+// Resume is the direct source-compatible durable-session entry point.
+func (owner *loopService) Resume(
+	requestContext context.Context,
+	ownerScope *plugin.Scope,
+	identifier session.SessionID,
+	loopOptions agent.Options,
+) (agent.Handle, error) {
+	return owner.ResumeAgent(requestContext, ownerScope, agent.ResumeOptions{
+		SessionID: identifier, AgentOptions: loopOptions,
+	})
+}
+
 // CreateAgent prepares unpublished resources, applies setup, then publishes Session and Agent in order.
 func (owner *loopService) CreateAgent(
 	requestContext context.Context,
@@ -148,9 +164,8 @@ func (owner *loopService) CreateAgent(
 	if createOptions.SessionID == "" {
 		return agent.Handle{}, errors.New("agentloop: Agent Session id is empty")
 	}
-	if createOptions.AgentOptions.MaxTokens != nil &&
-		(*createOptions.AgentOptions.MaxTokens <= 0 || int64(*createOptions.AgentOptions.MaxTokens) > maxSafeInteger) {
-		return agent.Handle{}, errors.New("agentloop: Agent maxTokens must be a positive safe integer")
+	if err := validateAgentOptions(createOptions.AgentOptions); err != nil {
+		return agent.Handle{}, err
 	}
 	identifier := createOptions.SessionID
 	conversation, err := owner.sessions.Prepare(&identifier, session.CreateOptions{
@@ -159,7 +174,41 @@ func (owner *loopService) CreateAgent(
 	if err != nil {
 		return agent.Handle{}, err
 	}
-	return owner.setupAndPublish(requestContext, ownerScope, conversation, createOptions.AgentOptions, createOptions.Setup)
+	return owner.setupAndPublish(
+		requestContext, ownerScope, conversation, createOptions.AgentOptions, createOptions.Setup, agent.SessionStartup,
+	)
+}
+
+// ResumeAgent loads one exact unpublished persisted Session before publication.
+func (owner *loopService) ResumeAgent(
+	requestContext context.Context,
+	ownerScope *plugin.Scope,
+	resumeOptions agent.ResumeOptions,
+) (agent.Handle, error) {
+	if requestContext == nil || ownerScope == nil {
+		return agent.Handle{}, errors.New("agentloop: resume Context and owner Scope are required")
+	}
+	if err := owner.assertAccepting(); err != nil {
+		return agent.Handle{}, err
+	}
+	if resumeOptions.SessionID == "" {
+		return agent.Handle{}, errors.New("agentloop: resume Session id is empty")
+	}
+	if err := validateAgentOptions(resumeOptions.AgentOptions); err != nil {
+		return agent.Handle{}, err
+	}
+	durability, found := plugin.Require(owner.sourceScope, sessionpersistence.Service)
+	if !found {
+		return agent.Handle{}, errors.New("agentloop: session persistence is not configured")
+	}
+	prepared, err := durability.Prepare(requestContext, resumeOptions.SessionID)
+	if err != nil {
+		return agent.Handle{}, err
+	}
+	defer prepared.Dispose()
+	return owner.setupAndPublish(
+		requestContext, ownerScope, prepared.UnpublishedSession(), resumeOptions.AgentOptions, resumeOptions.Setup, agent.SessionResume,
+	)
 }
 
 func (owner *loopService) setupAndPublish(
@@ -168,6 +217,7 @@ func (owner *loopService) setupAndPublish(
 	conversation *session.Session,
 	loopOptions agent.Options,
 	setup agent.Setup,
+	startSource agent.SessionStartSource,
 ) (agent.Handle, error) {
 	childLabel := fmt.Sprintf("agent-%d", owner.nextScope.Add(1))
 	agentScope, releaseScope, err := owner.sourceScope.Child(childLabel)
@@ -241,13 +291,21 @@ func (owner *loopService) setupAndPublish(
 	if err := lifecycle.assertActive(); err != nil {
 		return fail(err)
 	}
-	if observerErr := agent.EmitSessionStart(requestContext, owner.sourceScope, subject, agent.SessionStartup); observerErr != nil {
+	if observerErr := agent.EmitSessionStart(requestContext, owner.sourceScope, subject, startSource); observerErr != nil {
 		owner.report(fmt.Errorf("agentloop: Agent %q session-start observer: %w", subject.ID(), observerErr))
 	}
 	if err := lifecycle.assertActive(); err != nil {
 		return fail(err)
 	}
 	return agent.Handle{Subject: subject, Release: ownedRelease}, nil
+}
+
+func validateAgentOptions(loopOptions agent.Options) error {
+	if loopOptions.MaxTokens != nil &&
+		(*loopOptions.MaxTokens <= 0 || int64(*loopOptions.MaxTokens) > maxSafeInteger) {
+		return errors.New("agentloop: Agent maxTokens must be a positive safe integer")
+	}
+	return nil
 }
 
 func (owner *loopService) installVariables(requestContext context.Context, agentScope *plugin.Scope, subject *ReactLoopAgent) error {

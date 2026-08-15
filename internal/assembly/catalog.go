@@ -10,25 +10,27 @@ import (
 	"os"
 
 	"github.com/gorenx/goren/plugin"
+	"github.com/gorenx/goren/sessionpersistence"
 )
 
 const (
-	AgentFactoryName             = "@deepseek-ai/dsh-agent"
-	AgentDefaultModelFactoryName = "@deepseek-ai/dsh-agent-default-model"
-	AgentLoopFactoryName         = "@deepseek-ai/dsh-agent-loop"
-	ApprovalFactoryName          = "@deepseek-ai/dsh-user-approval"
-	APIProxyFactoryName          = "@deepseek-ai/dsh-host-apiproxy"
-	ConnectionFactoryName        = "@deepseek-ai/dsh-client-connection"
-	DeepSeekFactoryName          = "@deepseek-ai/dsh-llm-deepseek"
-	LLMFactoryName               = "@deepseek-ai/dsh-llm"
-	LLMRetryFactoryName          = "@deepseek-ai/dsh-llm-retry"
-	SessionFactoryName           = "@deepseek-ai/dsh-session"
-	SessionProjectionFactoryName = "@deepseek-ai/dsh-session-projection"
-	SessionTitleFactoryName      = "@deepseek-ai/dsh-session-title"
-	SystemPromptFactoryName      = "@deepseek-ai/dsh-system-prompt"
-	ToolAskUserFactoryName       = "@deepseek-ai/dsh-tool-ask-user"
-	ToolsFactoryName             = "@deepseek-ai/dsh-tools"
-	UserQuestionsFactoryName     = "@deepseek-ai/dsh-user-questions"
+	AgentFactoryName                    = "@deepseek-ai/dsh-agent"
+	AgentDefaultModelFactoryName        = "@deepseek-ai/dsh-agent-default-model"
+	AgentLoopFactoryName                = "@deepseek-ai/dsh-agent-loop"
+	ApprovalFactoryName                 = "@deepseek-ai/dsh-user-approval"
+	APIProxyFactoryName                 = "@deepseek-ai/dsh-host-apiproxy"
+	ConnectionFactoryName               = "@deepseek-ai/dsh-client-connection"
+	DeepSeekFactoryName                 = "@deepseek-ai/dsh-llm-deepseek"
+	LLMFactoryName                      = "@deepseek-ai/dsh-llm"
+	LLMRetryFactoryName                 = "@deepseek-ai/dsh-llm-retry"
+	SessionFactoryName                  = "@deepseek-ai/dsh-session"
+	SessionPersistenceSQLiteFactoryName = "@deepseek-ai/dsh-session-persistence-sqlite"
+	SessionProjectionFactoryName        = "@deepseek-ai/dsh-session-projection"
+	SessionTitleFactoryName             = "@deepseek-ai/dsh-session-title"
+	SystemPromptFactoryName             = "@deepseek-ai/dsh-system-prompt"
+	ToolAskUserFactoryName              = "@deepseek-ai/dsh-tool-ask-user"
+	ToolsFactoryName                    = "@deepseek-ai/dsh-tools"
+	UserQuestionsFactoryName            = "@deepseek-ai/dsh-user-questions"
 )
 
 // Environment contains process-derived values that are not deployment config.
@@ -92,6 +94,9 @@ func NewCatalog(platform Environment) (*plugin.Catalog, error) {
 	if err := plugin.RegisterFactory(registry, sessionFactory{}); err != nil {
 		return nil, err
 	}
+	if err := plugin.RegisterFactory(registry, sessionPersistenceSQLiteFactory{}); err != nil {
+		return nil, err
+	}
 	if err := plugin.RegisterFactory(registry, sessionProjectionFactory{}); err != nil {
 		return nil, err
 	}
@@ -116,7 +121,7 @@ func NewCatalog(platform Environment) (*plugin.Catalog, error) {
 // DefaultSpecs builds the current server composition. Consumers are
 // intentionally declared before Session to exercise dependency settlement
 // instead of relying on file order.
-func DefaultSpecs(listenAddress string, version string) ([]PluginSpec, error) {
+func DefaultSpecs(listenAddress string, version string, sessionDatabasePath string) ([]PluginSpec, error) {
 	connectionRaw, err := json.Marshal(ConnectionConfig{ListenAddress: listenAddress})
 	if err != nil {
 		return nil, err
@@ -127,6 +132,13 @@ func DefaultSpecs(listenAddress string, version string) ([]PluginSpec, error) {
 	}
 	defaultModelRaw, err := json.Marshal(AgentDefaultModelConfig{
 		Provider: "deepseek-official", Model: "deepseek-v4-flash",
+	})
+	if err != nil {
+		return nil, err
+	}
+	persistenceRaw, err := json.Marshal(SessionPersistenceSQLiteConfig{
+		Path: sessionDatabasePath, JournalMode: "wal",
+		WriteBatchMaxDelayMS: sessionpersistence.DefaultWriteBatchMaxDelay.Milliseconds(),
 	})
 	if err != nil {
 		return nil, err
@@ -148,6 +160,7 @@ func DefaultSpecs(listenAddress string, version string) ([]PluginSpec, error) {
 		{FactoryName: SystemPromptFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: ToolsFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: SessionFactoryName, Config: json.RawMessage(`{}`)},
+		{FactoryName: SessionPersistenceSQLiteFactoryName, Config: persistenceRaw},
 	}, nil
 }
 
