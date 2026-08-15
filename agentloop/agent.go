@@ -491,6 +491,12 @@ func (subject *ReactLoopAgent) runTurn(requestContext context.Context) (bool, er
 		operationErr = errors.Join(operationErr, err)
 		subject.reportError(requestContext, err)
 	}
+	// A normally completed turn is not idle until every Session durability
+	// participant has observed the committed turn/end boundary.
+	if _, err := subject.owner.sessions.Flush(requestContext, subject.conversation); err != nil {
+		operationErr = errors.Join(operationErr, err)
+		subject.reportError(requestContext, fmt.Errorf("agentloop: flush Session %q after turn %d: %w", subject.identifier, turn, err))
+	}
 	if operationErr != nil {
 		return false, operationErr
 	}
