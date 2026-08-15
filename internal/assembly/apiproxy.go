@@ -117,6 +117,13 @@ func (instance *apiProxyPlugin) Apply(requestContext context.Context, pluginScop
 	if err := apiproxy.RegisterHostDescribe(methods, descriptionSource); err != nil {
 		return err
 	}
+	llmGateway, err := apiproxy.NewLLMGateway(modelRuntime)
+	if err != nil {
+		return err
+	}
+	if err := apiproxy.RegisterLLMAPI(methods, llmGateway); err != nil {
+		return err
+	}
 	if err := apiproxy.RegisterSessionAPI(methods, gateway); err != nil {
 		return err
 	}
