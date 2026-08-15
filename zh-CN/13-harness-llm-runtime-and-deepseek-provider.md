@@ -42,7 +42,7 @@ Go 不复制 TypeScript class inheritance、declaration merging、fetch implemen
 - System Prompt section、Tool registry、Connection HTTP 入站或客户端状态；
 - JSONL、SQLite/sqlc 或 model catalog 的长期持久化。
 
-`internal/llmdeepseek` 只拥有一个 direct DeepSeek route 的 outbound protocol adapter。它不向 Agent 暴露 wire DTO，不建立“通用 OpenAI-compatible SDK”公共层，也不把 Provider 的 transport/error vocabulary 泄漏进 `llm` contract。
+`internal/llmdeepseek` 只拥有一个 direct DeepSeek route 的 outbound protocol adapter，代码近邻的工作原理和上下游流程见[`internal/llmdeepseek/README.zh-CN.md`](../internal/llmdeepseek/README.zh-CN.md)。它不向 Agent 暴露 wire DTO，不建立“通用 OpenAI-compatible SDK”公共层，也不把 Provider 的 transport/error vocabulary 泄漏进 `llm` contract。
 
 ## 3. 包内职责划分
 
