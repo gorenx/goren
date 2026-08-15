@@ -14,7 +14,8 @@
 4. 发送文本并观察 Agent 的流式回复；
 5. 切换会话后再次恢复刚才的历史；
 6. 在浏览器中设置、替换或删除 DeepSeek API Key；
-7. Agent 需要补充信息时回答结构化 Question，并让同一 Turn 继续到最终输出。
+7. Agent 需要补充信息时回答结构化 Question，并让同一 Turn 继续到最终输出；
+8. 在中文与英文界面之间切换，并在刷新后保持选择。
 
 DeepSeek credential 使用引用 `DEEPSEEK_API_KEY`。启动环境值优先且只读；没有环境值时由 owner-only local Store 提供，Web 可通过 write-only Host API 管理。仓库根 `.env` 仍只是本地开发输入，若使用则由 shell 显式加载，不进入二进制、typed config、Session、日志或提交。完整规则由[22 Credentials 与 API Key 管理](./22-credentials-and-api-key-management.md)拥有。
 
@@ -52,7 +53,7 @@ Session facts -> Session Persistence -> SQLite Backend
 composition root -> web.Handler + Connection + capabilities
 ```
 
-- `web` 只拥有浏览器展示状态、Host 调用、Question 输入投影和断线重连，不决定 Session、UserQuestions 或 Agent 业务规则。
+- `web` 只拥有浏览器展示状态、中文/英文资源与语言偏好、Host 调用、Question 输入投影和断线重连，不决定 Session、UserQuestions 或 Agent 业务规则。
 - `web` 只保留尚未提交的 password input draft；已存秘密不会从 Host 返回，也不进入浏览器 snapshot。
 - `internal/connection` 仍拥有 Echo route、trust fence、HTTP/WS 生命周期；它只消费 `http.Handler`，不知道 UI 页面结构。
 - `internal/assembly` 用 `@gorenx/dsh-web` Factory 把 `web.Site` 接到默认 Connection composition。
@@ -136,13 +137,15 @@ sequenceDiagram
 
 `ConversationStore` 不创建第二套业务模型。Session 标题优先读取 `projections.values.title`；首个 prompt 到正式 projection 到达前，只保留一个浏览器本地显示标题，不写回服务端。
 
+界面国际化由 `web/src/i18n.tsx` 的类型化资源表拥有，只包含 `zh-CN` 与 `en`。初始化顺序是已保存的 `goren.locale`、浏览器语言、英文 fallback；用户切换后同步更新 React context、`<html lang>` 与 `localStorage`。语言切换只重投影视图，不重建 `ConversationStore`、`HarnessAPI` 或 WebSocket，也不修改 Session facts。模型输出、Host 提供的 Question 内容及服务端业务错误保持原文，浏览器不承担内容翻译。
+
 ## 6. 失败、断线与安全边界
 
 - unary HTTP/业务失败显示为可消失错误提示，不伪造成功或修改历史；
 - 任一 downlink 断开后独立重连；socket 断开只结束订阅，不取消正在运行的 Agent turn；
 - pending Question 不进入 SQLite；Mux 重连会以同一 `rpcId` 重放，浏览器回答成功或收到 `question/resolved` 后幂等移除；
 - Question 等待期间普通 composer 禁用，避免把回答误提交为下一条 queued prompt；
-- 页面刷新后以 `session.list` 和 `session.history` 重建，不依赖 local storage；
+- 页面刷新后以 `session.list` 和 `session.history` 重建会话事实，不依赖 local storage；`localStorage` 只保存 `goren.locale` 界面偏好；
 - `index.html` 每次重验证，Vite 入口和 CSS 使用内容哈希 URL；只有哈希资源可标记 `immutable`，避免 Host 已升级而浏览器仍运行旧 Question/message projection；
 - UI 通过 `textContent` 渲染模型输出，不把模型文本作为 HTML 执行；
 - credential response 只包含 `configured/source/writable`；浏览器不会回读已存 secret，环境来源也不能被 Web 覆盖；
@@ -153,7 +156,7 @@ sequenceDiagram
 
 1. **Go component**：`web.Site` 的 hashed assets、cache policy、SPA fallback、API 排除和 Connection handler delegation 通过 Go test。
 2. **Host contract**：固定源 `WebApiClient` 经默认 `DefaultSpecs`、DeepSeek Adapter 和离线 HTTP oracle完成 `turn/end`。
-3. **UI contract**：`web-ui-main-flow.ts` 在 JSDOM 中加载真实内嵌页面，完成发送、回复、新建会话、切回、历史恢复、Question 回答到 Agent continuation，并确认 plugin runtime-context 不显示为用户消息；API Key dialog 当前以 TypeScript build 与 Host Credentials contract 分层验证。
+3. **UI contract**：`web-ui-main-flow.ts` 在 JSDOM 中加载真实内嵌页面，完成中英文切换与偏好写入、发送、回复、新建会话、切回、历史恢复、Question 回答到 Agent continuation，并确认 plugin runtime-context 不显示为用户消息；API Key dialog 当前以 TypeScript build 与 Host Credentials contract 分层验证。
 4. **Provider environment**：显式加载 `.env` 后，同一 UI contract 调用真实 `https://api.deepseek.com` 并完成主流程。
 5. **Visual browser**：只验证真实浏览器的布局、键盘和视觉行为；不能替代前四层，目前也不扩大业务能力范围。
 

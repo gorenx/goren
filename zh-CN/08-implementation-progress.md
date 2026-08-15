@@ -228,6 +228,7 @@ interaction owner registers stable rpcId + decoder
 | S6-WEB01 | Web UI | 内嵌主会话页面、Session 选择/history、prompt 与实时回复 | Completed | Contract Verified：`@gorenx/dsh-web` 默认装配 React/Vite/Tailwind 构建的 `web.Site`；JSDOM 对真实 Host 完成发送、新建、切换和历史恢复；未引入源 Client plugin runtime |
 | S6-WEB02 | Web UI | DeepSeek API Key 首次设置、替换、删除与环境只读提示 | Completed | Implemented：`CredentialDialog` 只持有未提交 draft，通过 `credentials.*` API 读 metadata/单向写值；TypeScript 检查和生产构建通过，交互式浏览器验收仍归阶段 8 |
 | S6-WEB03 | Web UI | `ask_user_question` 的 requested/respond/resolved 与 Turn continuation | Completed | Contract Verified：QuestionCard 支持 option、multi-select、custom 与取消；default composition oracle 验证浏览器回答形成 Tool message，并继续 DeepSeek 请求到最终输出 |
+| S6-WEB04 | Web UI | 中文/英文资源、浏览器语言初始化、切换与偏好持久化 | Completed | Contract Verified：类型化资源覆盖 UI chrome 与本地错误；JSDOM 切换两种语言并验证 `<html lang>`、`goren.locale` 和即时重投影 |
 | S6-L01 | LLM Catalog | `llm.providers` 合并 configurable directory 与 active route | Completed | Contract Verified：声明顺序、active/dormant、undeclared active route 和 `declared` omission 由固定源 `WebApiClient` 验证 |
 | S6-L02 | LLM Catalog | `llm.models` Host catalog 与 `session.models` 共享投影 | Completed | Contract Verified：provider-local failure containment、reasoning metadata 与固定源 response schema 通过；目录逻辑统一在 `LLMGateway.Catalog` |
 | S6-P01 | Agent Preset | `agentPreset.list` absent-roster 合法部署分支 | Completed | Contract Verified：默认组合无 `AgentPresetRoster` 时返回 non-nil empty presets、`authorable:false`、`hasDocument:false`，固定源 `WebApiClient` 接受 |

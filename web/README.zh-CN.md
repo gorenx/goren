@@ -10,6 +10,7 @@
 - 创建、选择 Session，并提交纯文本 prompt；
 - 展示 `question/requested`，通过 `/api/respond` 回答或取消后继续当前 Agent Turn；
 - 读取 value-free credential metadata，并通过 write-only Host API 设置、替换或删除 DeepSeek API Key；
+- 提供中文与英文界面资源，按浏览器语言初始化，并持久化用户手动选择；
 - 封装 Host unary RPC envelope 和 Mux/Host 两条 WebSocket downlink；
 - 在连接断开时重连，并从 Host baseline 重建浏览器状态。
 
@@ -23,6 +24,8 @@
 
 - `HarnessAPI` 负责 RPC、保留 server-request `rpcId`、`/api/respond`、WebSocket generation、重连和关闭；
 - `ConversationStore` 负责 Session list、selected Session、history、stream draft、pending Question、value-free credential metadata 与可观察状态；React 组件只投影视图并转发用户意图。
+
+界面文案集中在 `src/i18n.tsx` 的类型化资源表中。首次访问时优先读取 `goren.locale`，没有已保存选择时再按浏览器语言选择 `zh-CN` 或 `en`；切换后立即更新 `<html lang>`、界面文案和本地偏好。Session facts、模型输出、结构化 Question 内容和 Host 原始业务错误保持原文，不做浏览器侧机器翻译。`localStorage` 只保存语言标识，不保存 Session、credential 或 Agent 数据。
 
 ```mermaid
 flowchart LR
@@ -110,6 +113,7 @@ pnpm run build
 
 - `webFrontendPlugin` 在默认 composition 中构造 `Site`，Connection 只保存其 `http.Handler` 接口；
 - 两条 WebSocket 独立建立和重连，页面 `beforeunload` 会关闭 owned sockets；
+- 语言切换不重建 `ConversationStore` 或 WebSocket，不改变当前 Session、draft 和 pending Question；
 - WebSocket 断开不调用 `session.cancel`，因此页面刷新不会误取消 Agent；
 - pending Question 使用 requested frame 的原 `rpcId` 回答；断线重连后同一请求可重放，等待期间普通 composer 禁用；
 - unary failure 和 `stream/error` 只显示错误，不追加伪历史；
