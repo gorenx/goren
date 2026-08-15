@@ -13,6 +13,7 @@ import (
 )
 
 const (
+	AgentFactoryName        = "@deepseek-ai/dsh-agent"
 	APIProxyFactoryName     = "@deepseek-ai/dsh-host-apiproxy"
 	ConnectionFactoryName   = "@deepseek-ai/dsh-client-connection"
 	DeepSeekFactoryName     = "@deepseek-ai/dsh-llm-deepseek"
@@ -38,6 +39,9 @@ type PluginSpec struct {
 // NewCatalog registers only the factories included in the current server slice.
 func NewCatalog(platform Environment) (*plugin.Catalog, error) {
 	registry := plugin.NewCatalog()
+	if err := plugin.RegisterFactory(registry, agentFactory{}); err != nil {
+		return nil, err
+	}
 	if err := plugin.RegisterFactory(registry, apiProxyFactory{workingDirectory: platform.WorkingDirectory}); err != nil {
 		return nil, err
 	}
@@ -85,6 +89,7 @@ func DefaultSpecs(listenAddress string, version string) ([]PluginSpec, error) {
 	return []PluginSpec{
 		{FactoryName: ConnectionFactoryName, Config: connectionRaw},
 		{FactoryName: APIProxyFactoryName, Config: apiProxyRaw},
+		{FactoryName: AgentFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: LLMFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: DeepSeekFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: SystemPromptFactoryName, Config: json.RawMessage(`{}`)},

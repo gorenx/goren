@@ -75,6 +75,31 @@
         "session/flush"
       ]
     },
+    "agent": {
+      "service": "agents",
+      "events": [
+        "agent/created",
+        "agent/disposed",
+        "agent/status",
+        "agent/inbox/inserted",
+        "agent/inbox/claimed",
+        "agent/inbox/discarded",
+        "agent/session-start",
+        "agent/pre-step",
+        "agent/request",
+        "agent/request-error",
+        "agent/turn-stopping",
+        "agent/error"
+      ],
+      "inboxTargets": [
+        "next-turn",
+        "next-step"
+      ],
+      "statuses": [
+        "idle",
+        "running"
+      ]
+    },
     "systemPrompt": {
       "service": "systemPrompt",
       "events": [
