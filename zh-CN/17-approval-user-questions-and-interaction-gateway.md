@@ -159,7 +159,7 @@ Approval Plugin -> provides approval and emits typed approval/request
 API Proxy Plugin
   -> requires userQuestions to install the one Provider
   -> always registers the typed Approval answerer
-  -> owns SessionGateway, InteractionGateway, Catalog and EventStreams
+  -> owns apiproxy/session Gateway, LiveFrameSource, InteractionGateway, Catalog and EventStreams
 Connection Plugin -> consumes only API Proxy surface
 ```
 

@@ -7,6 +7,7 @@
 - method-owned request decoder、typed `Outcome` 和 canonical RPC error；
 - `host.describe` 与当前纳入的 `agentPreset.list`、`settings.describe`、`credentials.*`、`llm.providers`、`llm.models`、`session.*`、`workspace.*` handlers；
 - `LLMGateway` 对 configurable provider directory、active route 和 model catalog 的 Host wire 投影；
+- `apiproxy/session.Gateway` 实现 unary `session.*` façade，把读取、生命周期、模型和对话分别委派给独立状态对象；
 - Session/Agent/Workspace/interaction facts 到 Mux/Host frame 的 projection；
 - pending response correlation 与 reconnect replay；
 - per-subscriber ordering、high-water 和 shutdown。
@@ -20,14 +21,20 @@ flowchart LR
     A[TypeScript Client] --> B[Connection Host]
     B --> C[Catalog decoder]
     C --> D[LLM / Session / Workspace / Interaction Gateway]
-    D --> E[consumer-owned domain capability]
+    D --> E[capability-owned state object]
+    E --> G[consumer-owned domain capability]
+    G --> E
     E --> D
     D --> F[typed Outcome or frame]
     F --> B
     B --> A
 ```
 
-Session list 合并 live Store 与 cold Persistence，history 对 live facts 取 detached snapshot、对 cold facts 取 validated inspection，再在 Gateway 内完成 wire pagination；两者只消费 projection capability，不拥有 projection fold。`session.create` 指定已有 cold identity 时触发 Agent resume。`session.rename` 把 raw title 交给 `sessiontitle.TitleService`；成功只映射 `{title, seq}`。Projection change 被映射为 `session/projection`，value 必须存在且是合法 JSON。
+[`apiproxy/session`](./session/README.zh-CN.md) 拥有 Session API 实现。`Gateway` 自身只保持 façade 引用：`sessionReader` 负责 list/history/visibility，`sessionLifecycle` 负责 create/rename，`sessionModels` 负责 model catalog/selection，`sessionConversation` 负责 prompt/queue/cancel。它们共享的 ordinary Agent 解析进入 `AgentSessions`；该对象拥有并发 acquisition、cold resume、adoption 校验和 `ModelSelectionRef` 生命周期，不依赖 wire 类型。根 `apiproxy` 只保留 `SessionAPI`、request/result DTO、method decoder/registration 和 wire projector，因而不反向依赖实现子包。
+
+Session list 合并 live Store 与 cold Persistence，history 对 live facts 取 detached snapshot、对 cold facts 取 validated inspection，再由 reader 完成 wire pagination；两者只消费 projection capability，不拥有 projection fold。`session.create` 指定已有 cold identity 时触发 Agent resume。`session.rename` 把 raw title 交给 `sessiontitle.TitleService`；成功只映射 `{title, seq}`。Projection change 被映射为 `session/projection`，value 必须存在且是合法 JSON。
+
+`LiveFrameSource` 独立于 unary Gateway 安装 Session/Agent/Projection observer，并向内部 `liveFrameHub` 投递 Mux/Host/interaction frame。`live_frame_hub.go` 只管理 subscriber、baseline、high-water、pending replay 和队列，不解析 unary method。
 
 Workspace Gateway 将七个 `workspace.*` method 映射到 `workspace.Registry`/`Workspace`，并把 post-commit domain publication 投影为四个 Host frame。`session.create({workspaceId})` 只通过 Registry 读取 canonical path 并在创建后 accounting，不读取 Workspace SQLite 或复制 membership 规则。
 
@@ -42,11 +49,11 @@ Workspace Gateway 将七个 `workspace.*` method 映射到 `workspace.Registry`/
 ## 上下游
 
 - 上游：Connection dispatcher/event source、TypeScript wire requests。
-- 下游：Agent Registry、Session Store、SessionPersistence、Workspace Registry、Credentials Provider、LLM、DefaultModel、SessionProjection、SessionTitle、Approval/UserQuestions。
+- 下游：`apiproxy/session.Gateway`、Agent Registry、Session Store、SessionPersistence、Workspace Registry、Credentials Provider、LLM、DefaultModel、SessionProjection、SessionTitle、Approval/UserQuestions。
 - wire DTO 到此为止；下游包不依赖 RPC/frame 类型。
 
 ## 生命周期、错误、取消与背压
 
-Gateway listener 和 hub 归 API Proxy Scope；subscriber 断开只取消该 stream，不取消 Agent Turn。显式 `session.cancel` 才进入 Agent cancellation。业务拒绝编码为 RPC error value，transport/内部故障返回技术 error。
+`AgentSessions` 的 Agent dispose listener 与 `LiveFrameSource` 的 Session/Agent/Projection listener、hub 都归 API Proxy Scope；subscriber 断开只取消该 stream，不取消 Agent Turn。显式 `session.cancel` 才进入 Agent cancellation。业务拒绝编码为 RPC error value，transport/内部故障返回技术 error。
 
 每个 subscriber 有独立有序队列；Session event 的 high-water 只在 frame 成功生成后推进。已经 committed 的 Session/title/projection 派生通知不能因慢客户端或 frame 失败回滚。

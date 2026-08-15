@@ -10,10 +10,10 @@
 
 | 源 owner / symbol | Go owner | 保留职责 |
 | --- | --- | --- |
-| `packages/host/apiproxy/src/api/sessions.ts` | `apiproxy.SessionAPI`、`SessionGateway` | Session 生命周期、历史、模型和输入 method 的业务错误与 capability 映射 |
-| `packages/host/apiproxy/src/api-proxy.ts` 的 `sessions.search` | `apiproxy.SessionSearchAPI`、`SessionSearchGateway` | `session.search` 固定产品范围、可见性过滤、分页消耗与 wire 映射 |
+| `packages/host/apiproxy/src/api/sessions.ts` | `apiproxy.SessionAPI`、`apiproxy/session.Gateway` façade 与 capability objects | Session 生命周期、历史、模型和输入 method 的业务错误与 capability 映射 |
+| `packages/host/apiproxy/src/api-proxy.ts` 的 `sessions.search` | `apiproxy.SessionSearchAPI`、`apiproxy/session.SearchGateway` | `session.search` 固定产品范围、可见性过滤、分页消耗与 wire 映射 |
 | `packages/host/apiproxy/src/api/sessions.schema.ts` | `apiproxy/session_decode.go`、`session_api.go` | request/result union、字段缺失和 closed discriminant |
-| `packages/host/apiproxy/src/api-proxy.ts` 的 `sessions` 与 `events` | `apiproxy/session_stream.go` | Session baseline/live 与 Host edge frame 投影 |
+| `packages/host/apiproxy/src/api-proxy.ts` 的 `sessions` 与 `events` | `apiproxy.LiveFrameSource`、`live_frame_hub.go` | Session baseline/live 与 Host edge frame 投影 |
 | `packages/core/agent-default-model/src/index.ts` | `agentdefaultmodel.DefaultModel` | 未显式选择或未记录模型时的 live deployment default |
 | `packages/core/agent/src/model-selection.ts` | `agent.ModelSelectionRef` | 当前选择的优先级与单步 assembly snapshot |
 | 源 Web Client 的 `WebApiClient.sessions/events` | 仅作为 contract oracle | method/path/payload/frame 的兼容验证，不进入 Go 运行时 |
@@ -24,11 +24,13 @@ Go 不复制 Typert Host Gateway、schema 代码生成或浏览器 Connection。
 
 Session API adapter 层拥有：
 
-- `SessionGateway` 中的 `session.list`、`session.create`、`session.rename`、`session.history`、`session.models`、`session.selectModel`、`session.prompt`、`session.updateQueue` 和 `session.cancel`；
-- `SessionSearchGateway` 中独立的 `session.search`，包括 list-equivalent 可见性、固定 user/assistant current-surface 范围和结果裁剪；
+- `apiproxy/session.Gateway` façade 实现 `session.list`、`session.create`、`session.rename`、`session.history`、`session.models`、`session.selectModel`、`session.prompt`、`session.updateQueue` 和 `session.cancel`，但不集中持有各 method 的依赖；
+- `sessionReader`、`sessionLifecycle`、`sessionModels` 与 `sessionConversation` 分别拥有读取、生命周期、模型和对话用例；
+- `apiproxy/session.AgentSessions` 拥有 Session 对应 Agent 的并发 acquisition、cold activation、adoption 校验与 `ModelSelectionRef` 生命周期；
+- `apiproxy/session.SearchGateway` 中独立的 `session.search`，包括 list-equivalent 可见性、固定 user/assistant current-surface 范围和结果裁剪；
 - wire DTO 到 `agents`、`sessions`、`llm`、`agentDefaultModel`、`sessionProjections`、`sessionTitle` capability 的映射；
 - attached Session summary、history page、model directory、pending queue 等浏览器消费方 projection；
-- Mux 的 Session baseline/live frame 和 Host 的 membership/status/error edge；
+- `LiveFrameSource` 拥有 scoped observer，并把 Mux 的 Session baseline/live frame 和 Host 的 membership/status/error edge 交给内部 `liveFrameHub`；
 - 每个 stream subscriber 的有序投递、Session `seq` high-water mark 和 shutdown；
 - API 层业务错误到 canonical RPC error 的转换。
 
@@ -40,7 +42,37 @@ Session API Gateway 不拥有：
 - provider model catalog 的来源和模型解析规则；
 - Workspace registry、Attachment service、Agent Preset roster、Settings、approval/question、Jobs 或 persistence repair。
 
-因此 `SessionGateway` 是主会话 inbound adapter 与 browser projection owner，不是 Session 或 Agent 的第二套领域服务。内容检索有独立的 Query 与可见性依赖，所以由 `SessionSearchGateway` 承担，不继续扩张 `SessionGateway`。没有真实 Provider 的能力必须返回明确业务失败，不能以空结果或固定成功占位。
+因此 `apiproxy/session.Gateway` 只是实现稳定 `apiproxy.SessionAPI` method set 的 inbound façade，不是 Session 或 Agent 的第二套领域服务，也不拥有实时订阅。内容检索有独立的 Query 与可见性依赖，所以由同子包的 `SearchGateway` 承担；连接级实时状态由根 `apiproxy.LiveFrameSource` 承担；Agent activation 状态由 `AgentSessions` 承担。没有真实 Provider 的能力必须返回明确业务失败，不能以空结果或固定成功占位。
+
+### 2.1 实现对象与依赖方向
+
+| 对象 | 拥有的变化原因 | 直接下游 |
+| --- | --- | --- |
+| `apiproxy/session.Gateway` | `SessionAPI` façade compatibility | 四个 unary capability objects |
+| `sessionReader` | list、history、visibility 的读取与 wire projection | Agent Registry、Session Store、Persistence、Projection Registry |
+| `sessionLifecycle` | create、rename 与 Workspace accounting | `AgentSessions`、Title Service、Workspace Registry |
+| `sessionModels` | model catalog、route validation 与 selection | `AgentSessions`、LLM Runtime、Default Model |
+| `sessionConversation` | prompt、queue mutation 与 cancel | `AgentSessions`、LLM Runtime、Agent capability |
+| `apiproxy/session.AgentSessions` | create/resume/adopt 串行化和 selection ref 生命周期 | Agent Registry、Session Store、Persistence、Default Model、Directory Provisioner |
+| `LiveFrameSource` | scoped observer 与 Mux/Host/interaction frame publication | Session Store、Projection Registry、`liveFrameHub` |
+| `liveFrameHub` | subscriber baseline、ordering、high-water 与 pending replay | subscriber delivery queue |
+
+```mermaid
+flowchart LR
+    A[Root SessionAPI registration] --> B[apiproxy/session Gateway facade]
+    B --> C[sessionReader]
+    B --> D[sessionLifecycle]
+    B --> E[sessionModels]
+    B --> F[sessionConversation]
+    D --> G[apiproxy/session AgentSessions]
+    E --> G
+    F --> G
+    H[Session Agent Projection events] --> I[LiveFrameSource]
+    I --> J[liveFrameHub]
+    J --> K[Mux Host WebSocket sources]
+```
+
+`apiproxy/session` 不含 wire DTO，也不复制根 `session` 领域。实现子包依赖根 `apiproxy` 的 typed protocol contract；根包不依赖实现子包。Assembly 同时导入两者，把 `Gateway`/`SearchGateway` 注册为根接口，因此不存在 import cycle 或 ownerless global model。
 
 ## 3. 十个 `session.*` method
 
@@ -87,7 +119,7 @@ GET /api/events.mux
   -> drain ordered live delivery queue
 ```
 
-`session/subscribed.lastSeq` 是该 subscriber 的 per-Session high-water mark。后续 committed event 仅在 `event.seq > highwater` 时投递；baseline 读取期间迟到的同一 callback 不会重复发送已经纳入 snapshot 的 event。pending 交互的内容、结算与 replay identity 由[17](./17-approval-user-questions-and-interaction-gateway.md)拥有；本模块的 `sessionFrameHub` 只通过 `InteractionFrameBroker` 在同一个 subscriber registration/publish 临界区插入其 baseline，避免 open 与 live publish 之间丢帧。
+`session/subscribed.lastSeq` 是该 subscriber 的 per-Session high-water mark。后续 committed event 仅在 `event.seq > highwater` 时投递；baseline 读取期间迟到的同一 callback 不会重复发送已经纳入 snapshot 的 event。pending 交互的内容、结算与 replay identity 由[17](./17-approval-user-questions-and-interaction-gateway.md)拥有；本模块的 `liveFrameHub` 只通过 `InteractionFrameBroker` 在同一个 subscriber registration/publish 临界区插入其 baseline，避免 open 与 live publish 之间丢帧。
 
 Inbox mutation 的 live 顺序为：
 
@@ -126,7 +158,7 @@ Host stream 不重复发送全量 baseline。重连后的 authoritative baseline
 
 Session/Agent callback 不能被某个慢 WebSocket 的写入阻塞。每个 subscriber 因此拥有独立的有序 delivery queue：producer 只在 hub lock 下生成并入队 frame，Connection goroutine 再按序写 socket。该 queue 是进程内实时传递机制，不是业务存储，也不改变 Session durability。
 
-`SessionGateway` 在 API Proxy Plugin Scope 内安装 Session/Agent listener，并由同一 Scope 关闭 hub 和 subscriber queue。socket disconnect 只取消该 stream source；它不会推断用户要取消 Agent Turn。只有显式 `session.cancel` 才映射为 `UserCancel`。Session commit 已经发生后，projection observer error 只能被报告，不能否决或回滚业务事实。
+`AgentSessions` 在 API Proxy Plugin Scope 内安装 Agent dispose listener，只清理与被释放实例匹配的 selection ref。`LiveFrameSource` 在同一 Scope 内安装 Session/Agent/Projection listener，并由该 Scope 关闭 `liveFrameHub` 和 subscriber queue。socket disconnect 只取消该 stream source；它不会推断用户要取消 Agent Turn。只有显式 `session.cancel` 才映射为 `UserCancel`。Session commit 已经发生后，projection observer error 只能被报告，不能否决或回滚业务事实。
 
 ## 8. 上下游交互流程
 
@@ -136,8 +168,9 @@ Session/Agent callback 不能被某个慢 WebSocket 的写入阻塞。每个 sub
 TypeScript WebApiClient
   -> Echo Connection Host
   -> API Proxy Catalog + method-owned decoder
-  -> SessionGateway
-  -> Agent Registry / Session Store / Persistence / LLM / DefaultModel / Projection / Title
+  -> apiproxy/session.Gateway facade
+  -> reader / lifecycle / models / conversation object
+  -> AgentSessions or direct consumer-owned capability
   -> typed Outcome
   -> ServerResponse
 ```
@@ -147,9 +180,9 @@ TypeScript WebApiClient
 ```text
 Agent Loop
   -> Session append / Agent status
-  -> SessionGateway scoped listeners
+  -> LiveFrameSource scoped listeners
   -> Session/Host projection
-  -> per-subscriber delivery queue
+  -> liveFrameHub + per-subscriber delivery queue
   -> API Proxy EventStreams
   -> Connection WebSocket carrier
   -> TypeScript WebApiClient
@@ -161,23 +194,23 @@ wire DTO 止于 `apiproxy`；Agent、Session、LLM 和默认模型包不依赖 C
 
 ```text
 session.search
-  -> SessionSearchGateway
-  -> SessionGateway.VisibleSessionIDs
+  -> apiproxy/session.SearchGateway
+  -> Gateway.VisibleSessionIDs
   -> session/query.QueryService.SearchSessions
   -> disposable SQLite FTS index
   -> visibility and fixed-surface validation
   -> SessionSearchValue
 ```
 
-`SessionSearchGateway` 不复用 `session.list` 的 wire DTO 作为授权 contract，只通过最小 `SessionVisibility` 接口取得 ID 集合；Query Service 也不认识浏览器权限或 wire result。
+`SearchGateway` 不复用 `session.list` 的 wire DTO 作为授权 contract，只通过最小 `Visibility` 接口取得 ID 集合；Query Service 也不认识浏览器权限或 wire result。
 
 ## 9. 后续能力进入规则
 
 - Approval/Question 已由[17](./17-approval-user-questions-and-interaction-gateway.md)持有 pending、requested/resolved frame、replay 和 result schema；新增 interaction 必须复用同一 generic correlation 与 broker seam，不能把具体 schema 塞回 Session Gateway；
-- `session.search` 已通过独立 `SessionSearchGateway` 注册；它的 Query 语义见[23](./23-session-query-and-search.md)，不能回收到主 `SessionGateway` 或 SQLite fact Backend；
+- `session.search` 已通过独立 `apiproxy/session.SearchGateway` 注册；它的 Query 语义见[23](./23-session-query-and-search.md)，不能回收到主 `Gateway` 或 SQLite fact Backend；
 - Session Fork 明确排除，不注册 method、Factory 或占位；attachment method 只有在真实 Attachment capability 进入后才注册；
-- Session Title 的 first-prompt/all-prompts LLM 生成由同一个 Session Title 插件内的策略对象拥有；不能把模型调用塞进 `SessionGateway`；
+- Session Title 的 first-prompt/all-prompts LLM 生成由同一个 Session Title 插件内的策略对象拥有；不能把模型调用塞进 `Gateway`；
 - JSONL、SQLite/sqlc 只实现业务事实存取 adapter，resume/load/repair 由 `session/persistence.SessionLogStore` 决定；
-- Tool view、projection、remote event 和 Workspace frame 由相应 Provider 贡献，不能在 SessionGateway 中加入 optional global model；
+- Tool view、projection、remote event 和 Workspace frame 由相应 Provider 贡献，不能在 `Gateway` 中加入 optional global model；
 - 新增 method 必须经过 method-owned typed decoder、业务 success/failure/cancel 和固定源 Client/schema contract；
 - 浏览器 Connection、Web UI、SDK、Typert generator 和 `!!js` 不因 Session Gateway 扩展而进入 Go 依赖闭包。

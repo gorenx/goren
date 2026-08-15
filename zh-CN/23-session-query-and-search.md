@@ -16,7 +16,7 @@
 | `tracing.ts` | `exact.go` | Session lineage、surface replacement 与 source-event relationships |
 | `session-query-sqlite/src/index.ts` | `session/query.Service` + `session/query/sqlite.Adapter` | observation/reconciliation policy 与 storage-only derived index 分离 |
 | `query.ts` / `schema.ts` | `session/query/sqlite` | FTS5 schema、ranking、literal query、snippet、generation 与 row mapping |
-| `host/apiproxy/src/api-proxy.ts` 的 `sessions.search` | `apiproxy.SessionSearchGateway` | Host 可见性、固定 message scope、Provider page consumption 与 wire projection |
+| `host/apiproxy/src/api-proxy.ts` 的 `sessions.search` | `apiproxy/session.SearchGateway` | Host 可见性、固定 message scope、Provider page consumption 与 wire projection |
 
 Go 保留源项目的职责划分，但不翻译 TypeScript abstract class、函数组合或 AbortSignal 写法。`Service` 是有状态领域对象；exact query、corpus reconciliation 和 cursor policy 是它的方法。SQLite 只实现 `Index` port，不成为第二个 Session Persistence，也不拥有浏览器权限。
 
@@ -24,14 +24,14 @@ Go 保留源项目的职责划分，但不翻译 TypeScript abstract class、函
 
 ```mermaid
 flowchart LR
-    API[SessionSearchGateway] --> Q[session/query Service]
+    API[apiproxy/session SearchGateway] --> Q[session/query Service]
     OTHER[Future export or tool consumer] --> Q
     Q --> LIVE[session.Store]
     Q --> P[session/persistence.Persistence]
     Q --> I[session/query.Index]
     SQLITE[session/query/sqlite Adapter] -. implements .-> I
     SQLITE --> DB[(Disposable SQLite FTS5 index)]
-    API --> V[SessionVisibility]
+    API --> V[Visibility]
 ```
 
 依赖规则：
@@ -138,8 +138,8 @@ Opaque cursor 包含 provider instance、query scope、normalized request finger
 ```mermaid
 sequenceDiagram
     participant W as WebApiClient
-    participant G as SessionSearchGateway
-    participant V as SessionVisibility
+    participant G as apiproxy/session SearchGateway
+    participant V as Visibility
     participant Q as QueryService
     W->>G: session.search query
     G->>V: VisibleSessionIDs
@@ -150,7 +150,7 @@ sequenceDiagram
     G-->>W: max 20 items and hasMore
 ```
 
-Host 选择消费全局排序页后过滤，而不是把所有 visible ID 绑定到一条 SQLite statement；这保持 Provider ranking 和 SQLite portable variable budget。`SessionVisibility` 只暴露 ID 集合，不让 Search Gateway 依赖 `session.list` wire DTO。重复 cursor、超预算 Provider、越界 page 或不一致 hit 是内部 contract failure；取消映射为 canonical `cancelled` RPC error。
+Host 选择消费全局排序页后过滤，而不是把所有 visible ID 绑定到一条 SQLite statement；这保持 Provider ranking 和 SQLite portable variable budget。`apiproxy/session.Visibility` 只暴露 ID 集合，不让 Search Gateway 依赖 `session.list` wire DTO。重复 cursor、超预算 Provider、越界 page 或不一致 hit 是内部 contract failure；取消映射为 canonical `cancelled` RPC error。
 
 ## 9. 生命周期、失败与配置
 

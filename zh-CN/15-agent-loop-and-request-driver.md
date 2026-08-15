@@ -201,11 +201,11 @@ System Prompt 的 contexts 不写入 system header，而是在每个 pre-step as
 ## 11. 上下游进入规则
 
 ```text
-Connection / session.* API（`apiproxy.SessionGateway` inbound adapter）
+Connection / session.* API（`apiproxy/session.Gateway` inbound adapter）
   -> agents Registry / Agent live capability
   -> agentloop driver
   -> Session facts
-  -> Mux/Host projection（`SessionGateway` outbound projection）
+  -> Mux/Host projection（`apiproxy.LiveFrameSource` outbound projection）
 ```
 
 - `session.*` API 只把 wire request 映射为 Registry/Agent capability 调用；不得让 `agentloop` 依赖 Echo、RPC 或 frame DTO；具体 method、projection 与 reconnect 规则由[16](./16-session-api-gateway-and-live-frames.md)拥有；

@@ -247,7 +247,7 @@ cmd/goren
        -> Provide(agentLoop)
   -> Runtime settles API Proxy
        -> Require agents/agentDefaultModel/llm/sessions/sessionPersistence/sessionProjections/sessionTitle/userQuestions/workspaceRegistry
-       -> SessionGateway + WorkspaceGateway + host.describe + session.*/workspace.* methods
+       -> apiproxy/session Gateway + WorkspaceGateway + host.describe + session.*/workspace.* methods
        -> InteractionGateway + approval/question pending/respond/replay
        -> real Mux/Host EventStreams
        -> Provide(apiProxy)

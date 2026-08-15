@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | `packages/session/session-projection` | `session/projection`（alias `sessionprojection`） | projection unit 注册、live fold、snapshot、checkpoint/restore 与 change feed |
 | `packages/session/session-title`、`session-title-llm` 与两种 LLM Provider | `session/title`（alias `sessiontitle`） | `session/title`、fallback、rename/refresh、Provider 调度、模型请求策略与 `title` unit |
-| `packages/host/apiproxy` 的 Session API | `apiproxy.SessionGateway` | list/history baseline、`session.rename`、`session/projection` frame |
+| `packages/host/apiproxy` 的 Session API | `apiproxy/session.Gateway`、`apiproxy.LiveFrameSource` | list/history baseline、`session.rename`、`session/projection` frame |
 | Client `ProjectionValueStore` 与 `Session.rename` | 固定源码 contract oracle | `key -> {value, seq}` 的 higher-seq-wins 与 rename 即时折入验证 |
 
 TypeScript 的开放 projection key map 在 Go 中以 `json.RawMessage` 穿过框架边界。它是受 JSON 验证约束的 typed-erasure seam，不是业务回调中的 `any`：每个 domain unit 仍在自己的实现内解码和编码具体状态。
@@ -150,4 +150,4 @@ apiproxy -> sessiontitle + sessionprojection
 internal/assembly -> connect providers and consumers
 ```
 
-Domain packages 不依赖 `apiproxy`、Echo、WebSocket、数据库 driver 或客户端类型。后续新增 projection key 时，由该业务 domain 提供 `Unit`；不得修改 Registry 为 optional-field global model。LLM title 功能由 `sessiontitle.LLMProvider` 状态对象消费窄 `LLMStreamer` port，`LogService` 只协调 revision 与事实提交；模型调用不得进入 `SessionGateway`。
+Domain packages 不依赖 `apiproxy`、Echo、WebSocket、数据库 driver 或客户端类型。后续新增 projection key 时，由该业务 domain 提供 `Unit`；不得修改 Registry 为 optional-field global model。LLM title 功能由 `sessiontitle.LLMProvider` 状态对象消费窄 `LLMStreamer` port，`LogService` 只协调 revision 与事实提交；模型调用不得进入 `apiproxy/session.Gateway`。
