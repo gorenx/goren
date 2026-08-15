@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/gorenx/goren/credentials"
 	"github.com/gorenx/goren/internal/anonymoususerid"
 	"github.com/gorenx/goren/internal/llmdeepseek"
 	"github.com/gorenx/goren/llm"
@@ -42,13 +43,17 @@ type deepSeekPlugin struct {
 }
 
 func (*deepSeekPlugin) Manifest() plugin.Manifest {
-	return plugin.Manifest{Name: DeepSeekFactoryName, Requires: []plugin.ServiceRef{llm.Service.Ref()}}
+	return plugin.Manifest{
+		Name:     DeepSeekFactoryName,
+		Requires: []plugin.ServiceRef{llm.Service.Ref(), credentials.Service.Ref()},
+	}
 }
 
 func (instance *deepSeekPlugin) Apply(requestContext context.Context, pluginScope *plugin.Scope) error {
 	llmService, found := plugin.Require(pluginScope, llm.Service)
-	if !found {
-		return errors.New("assembly: required llm service is unavailable")
+	credentialProvider, credentialsFound := plugin.Require(pluginScope, credentials.Service)
+	if !found || !credentialsFound {
+		return errors.New("assembly: required llm or credentials service is unavailable")
 	}
 	lookupEnv := instance.lookupEnv
 	if lookupEnv == nil {
@@ -72,14 +77,21 @@ func (instance *deepSeekPlugin) Apply(requestContext context.Context, pluginScop
 		CurrentOptions: func() (llmdeepseek.ConnectionOptions, error) {
 			return instance.connection.Snapshot(), nil
 		},
-		ResolveAPIKey: func(_ context.Context, connection llmdeepseek.ConnectionOptions) (string, error) {
-			apiKey, found := lookupEnv(connection.APIKeyEnv)
-			if found && apiKey != "" {
-				return apiKey, nil
+		ResolveAPIKey: func(resolveContext context.Context, connection llmdeepseek.ConnectionOptions) (string, error) {
+			ref, refErr := credentials.NewRef(connection.APIKeyEnv)
+			if refErr != nil {
+				return "", refErr
+			}
+			resolved, credentialFound, resolveErr := credentialProvider.Resolve(resolveContext, ref)
+			if resolveErr != nil {
+				return "", resolveErr
+			}
+			if credentialFound {
+				return resolved.Value, nil
 			}
 			return "", llm.MustLlmError(
 				fmt.Sprintf(
-					"llm-deepseek: no API key for provider route %q; export %s in the launching environment",
+					"llm-deepseek: no API key for provider route %q; configure %s in Web Settings or export it in the launching environment",
 					llmdeepseek.ProviderRoute, connection.APIKeyEnv,
 				),
 				"MISSING_CREDENTIAL",

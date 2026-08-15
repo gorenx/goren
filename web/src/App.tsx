@@ -4,10 +4,13 @@ import { Sidebar } from './components/Sidebar'
 import { ConversationPane } from './components/ConversationPane'
 import { DetailsPanel } from './components/DetailsPanel'
 import { CloseIcon } from './icons'
+import { CredentialDialog } from './components/CredentialDialog'
 
 export function App(): React.JSX.Element {
   const [store] = useState(() => new ConversationStore())
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [credentialsOpen, setCredentialsOpen] = useState(false)
+  const [onboardingDismissed, setOnboardingDismissed] = useState(false)
   const snapshot = useSyncExternalStore(store.subscribe, store.snapshot)
 
   useEffect(() => {
@@ -20,11 +23,23 @@ export function App(): React.JSX.Element {
     }
   }, [store])
 
+  useEffect(() => {
+    if (snapshot.credentialLoaded && snapshot.credential?.configured === false && snapshot.credential.writable && !onboardingDismissed) {
+      setCredentialsOpen(true)
+    }
+  }, [onboardingDismissed, snapshot.credential, snapshot.credentialLoaded])
+
+  const closeCredentials = (): void => {
+    setCredentialsOpen(false)
+    setOnboardingDismissed(true)
+  }
+
   return (
     <div className="app-grid" data-sidebar-collapsed={sidebarCollapsed || undefined}>
       <Sidebar store={store} snapshot={snapshot} collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(value => !value)} />
-      <ConversationPane store={store} snapshot={snapshot} />
+      <ConversationPane store={store} snapshot={snapshot} onOpenCredentials={() => setCredentialsOpen(true)} />
       <DetailsPanel store={store} snapshot={snapshot} />
+      {credentialsOpen && <CredentialDialog store={store} snapshot={snapshot} onClose={closeCredentials} />}
       {snapshot.error !== undefined && (
         <div className="toast" role="alert">
           <span className="min-w-0 flex-1">{snapshot.error}</span>

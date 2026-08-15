@@ -8,7 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
+	credentialslocal "github.com/gorenx/goren/credentials/local"
+	"github.com/gorenx/goren/internal/llmdeepseek"
 	"github.com/gorenx/goren/plugin"
 	sesspersist "github.com/gorenx/goren/session/persistence"
 )
@@ -20,6 +23,7 @@ const (
 	ApprovalFactoryName           = "@deepseek-ai/dsh-user-approval"
 	APIProxyFactoryName           = "@deepseek-ai/dsh-host-apiproxy"
 	ConnectionFactoryName         = "@deepseek-ai/dsh-client-connection"
+	CredentialsFactoryName        = "@deepseek-ai/dsh-credentials"
 	DeepSeekFactoryName           = "@deepseek-ai/dsh-llm-deepseek"
 	LLMFactoryName                = "@deepseek-ai/dsh-llm"
 	LLMRetryFactoryName           = "@deepseek-ai/dsh-llm-retry"
@@ -76,12 +80,15 @@ func NewCatalog(platform Environment) (*plugin.Catalog, error) {
 	if err := plugin.RegisterFactory(registry, connectionFactory{}); err != nil {
 		return nil, err
 	}
-	if err := plugin.RegisterFactory(registry, llmFactory{}); err != nil {
-		return nil, err
-	}
 	lookupEnv := platform.LookupEnv
 	if lookupEnv == nil {
 		lookupEnv = os.LookupEnv
+	}
+	if err := plugin.RegisterFactory(registry, credentialsFactory{lookupEnv: lookupEnv}); err != nil {
+		return nil, err
+	}
+	if err := plugin.RegisterFactory(registry, llmFactory{}); err != nil {
+		return nil, err
 	}
 	userHome := platform.UserHomeDir
 	if userHome == nil {
@@ -144,7 +151,7 @@ func DefaultSpecs(
 		return nil, err
 	}
 	defaultModelRaw, err := json.Marshal(AgentDefaultModelConfig{
-		Provider: "deepseek-official", Model: "deepseek-v4-flash",
+		Provider: llmdeepseek.ProviderRoute, Model: llmdeepseek.DefaultModelID,
 	})
 	if err != nil {
 		return nil, err
@@ -152,6 +159,12 @@ func DefaultSpecs(
 	persistenceRaw, err := json.Marshal(SessionPersistenceConfig{
 		Path: sessionDatabasePath, JournalMode: "wal",
 		WriteBatchMaxDelayMS: sesspersist.DefaultWriteBatchMaxDelay.Milliseconds(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	credentialsRaw, err := json.Marshal(CredentialsConfig{
+		Local: credentialslocal.Config{Path: filepath.Join(filepath.Dir(sessionDatabasePath), ".credentials.json")},
 	})
 	if err != nil {
 		return nil, err
@@ -176,6 +189,7 @@ func DefaultSpecs(
 		{FactoryName: AgentFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: LLMFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: DeepSeekFactoryName, Config: json.RawMessage(`{}`)},
+		{FactoryName: CredentialsFactoryName, Config: credentialsRaw},
 		{FactoryName: SystemPromptFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: ToolsFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: SessionFactoryName, Config: json.RawMessage(`{}`)},

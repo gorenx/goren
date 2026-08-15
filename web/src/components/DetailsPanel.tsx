@@ -1,6 +1,6 @@
 import type { ConversationSnapshot } from '../types'
 import type { ConversationStore } from '../conversation-store'
-import { ActivityIcon, DatabaseIcon, FolderIcon } from '../icons'
+import { ActivityIcon, DatabaseIcon, FolderIcon, KeyIcon } from '../icons'
 
 interface DetailsPanelProps {
   store: ConversationStore
@@ -30,6 +30,7 @@ export function DetailsPanel({ store, snapshot }: DetailsPanelProps): React.JSX.
         <DetailSection title="模型路由">
           <Definition label="Provider" value={snapshot.host?.provider ?? 'DeepSeek'} />
           <Definition label="Model" value={snapshot.host?.model ?? 'default'} />
+          <Definition label="API Key" value={snapshot.credential?.configured ? `已配置 · ${snapshot.credential.source ?? 'unknown'}` : '未配置'} />
           <Definition label="Session" value={current?.sessionId ?? '尚未选择'} mono />
         </DetailSection>
 
@@ -44,7 +45,7 @@ export function DetailsPanel({ store, snapshot }: DetailsPanelProps): React.JSX.
           </ol>
         </DetailSection>
 
-        <p className="px-1 text-[11px] leading-5 text-caption">这里只展示 Host 已提供的事实。设置、插件清单和文件系统能力没有在浏览器中伪造。</p>
+        <p className="flex gap-2 px-1 text-[11px] leading-5 text-caption"><KeyIcon size={14} className="mt-0.5 shrink-0" />这里只展示 Host 已提供的事实。完整 Settings、插件清单和文件系统能力没有在浏览器中伪造。</p>
       </div>
     </aside>
   )

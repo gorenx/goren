@@ -1,6 +1,7 @@
 import { HarnessAPI } from './api'
 import type {
   ConversationSnapshot,
+  CredentialsDescribeValue,
   HostDescription,
   MessageRow,
   SessionCreateValue,
@@ -22,7 +23,10 @@ const initialSnapshot: ConversationSnapshot = {
   localTitles: new Map(),
   onlineDownlinks: 0,
   composerState: '正在连接 Go Agent',
+  credentialLoaded: false,
 }
+
+export const DEEPSEEK_CREDENTIAL_REF = 'DEEPSEEK_API_KEY'
 
 export class ConversationStore {
   readonly #subscribers = new Set<Subscriber>()
@@ -53,6 +57,7 @@ export class ConversationStore {
     try {
       const host = await this.#api.call<HostDescription>('host.describe', {})
       this.#patch({ host, composerState: '正在同步会话' })
+      await this.refreshCredential()
       this.#api.connect()
       await this.refreshSessions()
       if (this.#value.sessions.length === 0) await this.createSession()
@@ -74,6 +79,33 @@ export class ConversationStore {
       .filter(item => item.origin !== 'subagent')
       .sort((left, right) => right.updatedAt - left.updatedAt)
     this.#patch({ sessions })
+  }
+
+  async refreshCredential(): Promise<void> {
+    const result = await this.#api.call<CredentialsDescribeValue>('credentials.describe', {
+      refs: [DEEPSEEK_CREDENTIAL_REF],
+    })
+    this.#patch({ credential: result.credentials[DEEPSEEK_CREDENTIAL_REF], credentialLoaded: true })
+  }
+
+  async saveCredential(value: string): Promise<void> {
+    try {
+      await this.#api.call<unknown>('credentials.set', { ref: DEEPSEEK_CREDENTIAL_REF, value })
+      await this.refreshCredential()
+    } catch (error) {
+      this.#fail(error)
+      throw error
+    }
+  }
+
+  async unsetCredential(): Promise<void> {
+    try {
+      await this.#api.call<unknown>('credentials.unset', { ref: DEEPSEEK_CREDENTIAL_REF })
+      await this.refreshCredential()
+    } catch (error) {
+      this.#fail(error)
+      throw error
+    }
   }
 
   async createSession(): Promise<void> {

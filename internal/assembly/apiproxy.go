@@ -10,6 +10,7 @@ import (
 	"github.com/gorenx/goren/agentdefaultmodel"
 	"github.com/gorenx/goren/apiproxy"
 	protocol "github.com/gorenx/goren/connection"
+	"github.com/gorenx/goren/credentials"
 	connectionhost "github.com/gorenx/goren/internal/connection"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
@@ -77,6 +78,7 @@ func (instance *apiProxyPlugin) Manifest() plugin.Manifest {
 			sessiontitle.Service.Ref(),
 			userquestions.Service.Ref(),
 			workspace.Service.Ref(),
+			credentials.Service.Ref(),
 		},
 	}
 }
@@ -91,9 +93,10 @@ func (instance *apiProxyPlugin) Apply(requestContext context.Context, pluginScop
 	titles, titlesFound := plugin.Require(pluginScope, sessiontitle.Service)
 	questionService, questionsFound := plugin.Require(pluginScope, userquestions.Service)
 	workspaceRegistry, workspacesFound := plugin.Require(pluginScope, workspace.Service)
+	credentialProvider, credentialsFound := plugin.Require(pluginScope, credentials.Service)
 
 	if !agentsFound || !defaultsFound || !modelsFound || !found || !persistenceFound ||
-		!projectionsFound || !titlesFound || !questionsFound || !workspacesFound {
+		!projectionsFound || !titlesFound || !questionsFound || !workspacesFound || !credentialsFound {
 		return errors.New("assembly: API Proxy dependencies are unavailable")
 	}
 	gateway, err := apiproxy.NewSessionGateway(requestContext, pluginScope, apiproxy.SessionGatewayDependencies{
@@ -124,6 +127,10 @@ func (instance *apiProxyPlugin) Apply(requestContext context.Context, pluginScop
 	}
 	settingsGateway := apiproxy.NewSettingsGateway(nil)
 	if err := apiproxy.RegisterSettingsDescribeAPI(methods, settingsGateway); err != nil {
+		return err
+	}
+	credentialsGateway := apiproxy.NewCredentialsGateway(credentialProvider)
+	if err := apiproxy.RegisterCredentialsAPI(methods, credentialsGateway); err != nil {
 		return err
 	}
 	llmGateway, err := apiproxy.NewLLMGateway(modelRuntime)

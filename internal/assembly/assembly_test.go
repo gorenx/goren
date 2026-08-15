@@ -17,6 +17,7 @@ import (
 	"github.com/gorenx/goren/apiproxy"
 	"github.com/gorenx/goren/approval"
 	protocol "github.com/gorenx/goren/connection"
+	"github.com/gorenx/goren/credentials"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
@@ -38,7 +39,7 @@ func (instance probePlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "assembly-probe",
 		Requires: []plugin.ServiceRef{
-			agentcore.Service.Ref(), agentdefaultmodel.Service.Ref(), agentloop.Service.Ref(), approval.Service.Ref(), serverServiceKey.Ref(), llm.Service.Ref(), session.StoreService.Ref(), sesspersist.Service.Ref(), sessionprojection.Service.Ref(), sessiontitle.Service.Ref(), systemprompt.Service.Ref(), toolscore.Service.Ref(), userquestions.Service.Ref(), workspace.Service.Ref(),
+			agentcore.Service.Ref(), agentdefaultmodel.Service.Ref(), agentloop.Service.Ref(), approval.Service.Ref(), serverServiceKey.Ref(), credentials.Service.Ref(), llm.Service.Ref(), session.StoreService.Ref(), sesspersist.Service.Ref(), sessionprojection.Service.Ref(), sessiontitle.Service.Ref(), systemprompt.Service.Ref(), toolscore.Service.Ref(), userquestions.Service.Ref(), workspace.Service.Ref(),
 		},
 	}
 }
@@ -55,7 +56,7 @@ func TestCatalogContainsOnlyCurrentServerSlice(t *testing.T) {
 	}
 	want := []string{
 		AgentFactoryName, AgentDefaultModelFactoryName, AgentLoopFactoryName,
-		ConnectionFactoryName, APIProxyFactoryName, LLMFactoryName, DeepSeekFactoryName,
+		ConnectionFactoryName, CredentialsFactoryName, APIProxyFactoryName, LLMFactoryName, DeepSeekFactoryName,
 		LLMRetryFactoryName,
 		SessionFactoryName, SessionPersistenceFactoryName, SessionProjectionFactoryName, SessionTitleFactoryName,
 		SystemPromptFactoryName, ToolAskUserFactoryName,
@@ -98,6 +99,8 @@ func TestConnectionFactoryUsesStrictTypedConfig(t *testing.T) {
 		{label: "agent loop parallel limit", factoryName: AgentLoopFactoryName, input: `{"maxParallelToolCalls":0}`, wantMessage: "positive integer"},
 		{label: "agent loop identities", factoryName: AgentLoopFactoryName, input: `{"agents":[{"id":"a","sessionId":"s","resumeSessionId":"r"}]}`, wantMessage: "mutually exclusive"},
 		{label: "empty version", factoryName: APIProxyFactoryName, input: `{"version":""}`, wantMessage: "version must be non-empty"},
+		{label: "credentials unknown", factoryName: CredentialsFactoryName, input: `{"local":{"path":"/tmp/.credentials.json"},"unknown":true}`, wantMessage: "unknown field"},
+		{label: "credentials relative path", factoryName: CredentialsFactoryName, input: `{"local":{"path":".credentials.json"}}`, wantMessage: "path must be absolute"},
 		{label: "prompt unknown", factoryName: SystemPromptFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
 		{label: "prompt wrong type", factoryName: SystemPromptFactoryName, input: `{"includeHarnessIdentity":"yes"}`, wantMessage: "must be a boolean"},
 		{label: "prompt null bool", factoryName: SystemPromptFactoryName, input: `{"includeHarnessIdentity":null}`, wantMessage: "must be a boolean"},
