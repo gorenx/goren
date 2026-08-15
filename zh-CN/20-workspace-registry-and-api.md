@@ -217,7 +217,7 @@ TS Registry 用 Promise chain 将 mutation 排成事件循环 slot；Go Registry
 
 API create/rename/delete 还共享独立 mutex，因为 rename 的 name uniqueness 属于 API-level policy，必须与可能增加/删除候选标题的相邻调用串行。Registry 自己的 order、archive 和 entity mutation无需第二套 API 状态机。
 
-领域 publication 始终在 Backend commit 后发生；observer failure 只上报，不能回滚。Backend failure 时内存状态和 Host frame都不前进。Workspace 插件的 Scope owns Registry observers 和内部 SQLite adapter 的 close；SQLite 自身没有 Factory、Manifest 或 Service key。默认 CLI 的 Workspace database 可由 `--workspace-db` 指定，未指定时位于 Session database 同目录，但使用独立 `workspaces.sqlite`。
+领域 publication 始终在 Backend commit 后发生；observer failure 只上报，不能回滚。Backend failure 时内存状态和 Host frame都不前进。Workspace 插件的 Scope owns Registry observers 和内部 SQLite adapter 的 close；SQLite 自身没有 Factory、Manifest 或 Service key。默认 CLI 以 `--data-dir` 同时定位 `sessions.sqlite` 与独立的 `workspaces.sqlite`；`--workspace-db` 只覆盖 Workspace database 的具体路径，不改变 Session storage。
 
 ## 11. 依赖方向与验证所有权
 

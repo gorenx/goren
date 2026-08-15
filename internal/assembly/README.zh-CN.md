@@ -29,7 +29,7 @@ flowchart TD
 
 Session Projection 提供 `sessionProjections`；Session Title 消费 `sessions` 与 `sessionProjections` 后提供 `sessionTitle`；Session Persistence 插件消费 `sessions` 并提供 `sessionPersistence`；Workspace 插件消费 `sessions` 与 `sessionPersistence` 并提供 `workspaceRegistry`。Web 插件提供 `webFrontend`，默认 Connection 同时等待它和 `apiProxy`。Agent Loop 和 API Proxy 再按需消费其他 capability。Specs 可以故意乱序，依赖结算不能依赖文件或列表顺序。
 
-默认 CLI 的 `--session-db` 和 `--workspace-db` 分别指定两个 SQLite 数据库。`SessionPersistenceConfig` 与 `WorkspaceConfig` 属于能力插件的 typed config；对应 Factory 在 composition root 内构造 SQLite `Backend` adapter，再分别连接 `SessionLogStore` 与 `DurableRegistry`。SQLite 不拥有 Factory、Manifest、Service key 或单独插件生命周期，assembly 也不实现存储、recovery 或 Workspace 业务规则。
+默认 CLI 的 `--data-dir` 统一指定数据目录，Session 与 Workspace 默认分别使用其中的 `sessions.sqlite` 和 `workspaces.sqlite`；`--session-db`、`--workspace-db` 只作为具体数据库路径覆盖。根级 `Makefile` 的 `make run` 先构建 Web，再以 `DATA_DIR` 启动服务，`DATA_DIR` 默认是当前仓库目录。`SessionPersistenceConfig` 与 `WorkspaceConfig` 属于能力插件的 typed config；对应 Factory 在 composition root 内构造 SQLite `Backend` adapter，再分别连接 `SessionLogStore` 与 `DurableRegistry`。SQLite 不拥有 Factory、Manifest、Service key 或单独插件生命周期，assembly 也不实现存储、recovery 或 Workspace 业务规则。
 
 ## 上下游与生命周期
 

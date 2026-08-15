@@ -15,9 +15,9 @@
 | `packages/interaction/tool-ask-user` | `toolaskuser` | Tool 输入到 question batch 的映射、结构化 answer/result 与 Tool error projection |
 | `packages/host/apiproxy/src/api-proxy.ts` 的 `pendingApprovals`、`pendingQuestions`、`respond` 与 `events.mux` | `apiproxy.InteractionGateway`、`InteractionFrameBroker` | stable `rpcId`、requested/replay/resolved、response 第二层解析、取消与 teardown |
 | `api/approvals.schema.ts`、`questions.schema.ts`、`events.schema.ts` | `interaction_approval.go`、`interaction_question_response.go`、Mux frame values | client response payload 与 frame contract |
-| 源 `WebApiClient.respond/events.mux` | 仅作为 contract oracle | HTTP/WebSocket 协议验证；浏览器实现不进入 Go 运行时 |
+| 源 `WebApiClient.respond/events.mux` | contract oracle；仓库 `web.HarnessAPI`/`ConversationStore` 是当前浏览器 adapter | 固定 Client 验证协议；仓库 Web 消费 Question requested/respond/resolved，不复制源浏览器 runtime |
 
-Go 不复制 React/UI composer、浏览器 state、Typert generator、SDK 或 `!!js`。Interaction Gateway 只提供现有 TypeScript Client 所需的 Host half；CLI/ACP 等未来 adapter 必须复用 Approval/UserQuestions core，而不是模拟浏览器 frame。
+Go 不复制源 React/UI composer、浏览器 state、Typert generator、SDK 或 `!!js`。Interaction Gateway 提供现有 TypeScript Client 所需的 Host half；仓库自有 Web 只把已纳入的 Question contract 投影为交互控件。CLI/ACP 等未来 adapter 必须复用 Approval/UserQuestions core，而不是模拟浏览器 frame。
 
 ## 2. 四个 owner 的边界
 
@@ -71,7 +71,7 @@ Tools pre-execute returns AskDecision
   -> InteractionGateway finds this unclaimed audit record
   -> Catalog.RegisterPendingResponse(stable rpcId, approval decoder)
   -> InteractionFrameBroker publishes approval/requested
-  -> TypeScript Client POST /api/respond
+  -> TypeScript Client or repository Web POST /api/respond
   -> decoder requires matching sessionId + approvalId + client outcome
   -> first valid claimant resolves allowed-once or rejected
   -> broker removes replay entry and broadcasts approval/resolved
@@ -180,4 +180,4 @@ Approval audit 与 policy override 是 Session 业务事实，随 Session persis
 - 新 question intent 先进入 `userquestions` closed vocabulary 和固定源 schema，再扩展 UI/adapter；
 - sandbox/guard 只产生 Approval 请求或执行 effect，不接管 audit/pending；
 - persisted recovery、multi-host routing 或 external interaction queue 出现真实需求前，不把 live pending 写入通用数据库；
-- Web UI、浏览器 Connection、SDK、Typert generator 和 `!!js` 继续排除。
+- Approval 浏览器控件、源浏览器 Connection/runtime、SDK、Typert generator 和 `!!js` 继续排除；仓库 Web 的 Question adapter 由[21](./21-web-agent-main-flow.md)拥有。

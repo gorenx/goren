@@ -25,7 +25,7 @@
 | 阶段 3：Session/Agent slice | Completed | 16 Completed | Contract Verified | 全部交付与 Gate 已闭合；cold persistence/resume 仍由阶段 5 拥有 |
 | 阶段 4：LLM Contract | Completed | 13 Completed | Environment Verified | Runtime、DeepSeek adapter、response recordings、Agent attempt loop、默认 retry Consumer 与真实 Provider smoke 均已完成 |
 | 阶段 5：Session 持久化 | In Progress | 15 Completed / 2 Planned | Contract Verified | SQLite facts、cold recovery/API/Agent resume、turn-end checkpoint 与默认装配主流程已闭环；剩余读取优化 |
-| 阶段 6：客户端能力扩展 | Deferred | 18 Completed / 21 Deferred | Contract Verified | 主会话 UI 与 DeepSeek API Key 设置已完成；其余页面和管理能力保持冻结 |
+| 阶段 6：客户端能力扩展 | Deferred | 19 Completed / 21 Deferred | Contract Verified | 主会话 UI、Question 回答与 DeepSeek API Key 设置已完成；其余页面和管理能力保持冻结 |
 | 阶段 7：Deferred 能力 | Deferred | 7 Deferred | None | 不创建 package、handler 或依赖占位 |
 | 阶段 8：Parity Hardening | In Progress | 1 Completed / 4 In Progress / 10 Planned | Environment Verified | 默认 UI/Provider 主流程已有环境证据，完整发布验收仍未完成 |
 
@@ -49,6 +49,7 @@
 | WAF-12 | SQLite 保存并恢复完整会话事实 | Completed | Go Verified：cold list/history/resume 已通过；正常 `turn/end` 显式触发 durability checkpoint，并在 Agent idle 前从 SQLite storage-only Backend 直接读到完整边界 |
 | WAF-UI01 | 默认服务内嵌主会话 UI | Completed | Go Verified：React/Vite/Tailwind 生产构建、embedded assets、SPA fallback 和 Connection `http.Handler` delegation 已覆盖 |
 | WAF-UI02 | UI 完成发送、会话创建/选择和历史恢复 | Completed | Contract Verified：`web-ui-main-flow.ts` 加载真实内嵌页面，完成 prompt、流式终态、新建 Session、切回与 history |
+| WAF-UI03 | UI 回答 Question 并继续同一 Agent Turn | Completed | Contract Verified：真实内嵌页面保留 requested `rpcId`，经 `/api/respond` 提交选项、收到 resolved、驱动 Tool result continuation 到最终 assistant message；等待期间普通 composer 禁用，plugin runtime-context 不显示为用户消息 |
 | WAF-C01 | Credentials Manager/local Store、Host write-only API 与 Web API Key 设置 | Completed | Contract Verified：固定源 `WebApiClient.credentials` 调用真实 Go Host 完成 describe/set/unset；Manager precedence、owner-only JSON Store 与 value-free response 已覆盖；React dialog 已通过 TypeScript/生产构建，尚未声明交互式浏览器验收 |
 | WAF-A01 | 固定客户端经默认 composition 与 DeepSeek Adapter 完成轮次 | Completed | Contract Verified：默认 `DefaultSpecs`、真实 HTTP/WebSocket、DeepSeek Adapter 和离线 HTTP oracle 在同一进程到达 `turn/end` |
 | WAF-A02 | 使用真实 DeepSeek credential/endpoint 独立 smoke | Completed | Environment Verified：显式加载本地 `.env` 后，内嵌 UI 经真实 `https://api.deepseek.com` 完成 prompt、终态、会话切换与历史恢复；credential 未输出或提交 |
@@ -226,6 +227,7 @@ interaction owner registers stable rpcId + decoder
 | S6-W08 | Workspace | 能力插件与 SQLite adapter 装配边界 | Completed | Go Verified：Catalog 只注册 `@deepseek-ai/dsh-workspace`；SQLite 无 Factory、Manifest、Service key；`af33afd` |
 | S6-WEB01 | Web UI | 内嵌主会话页面、Session 选择/history、prompt 与实时回复 | Completed | Contract Verified：`@gorenx/dsh-web` 默认装配 React/Vite/Tailwind 构建的 `web.Site`；JSDOM 对真实 Host 完成发送、新建、切换和历史恢复；未引入源 Client plugin runtime |
 | S6-WEB02 | Web UI | DeepSeek API Key 首次设置、替换、删除与环境只读提示 | Completed | Implemented：`CredentialDialog` 只持有未提交 draft，通过 `credentials.*` API 读 metadata/单向写值；TypeScript 检查和生产构建通过，交互式浏览器验收仍归阶段 8 |
+| S6-WEB03 | Web UI | `ask_user_question` 的 requested/respond/resolved 与 Turn continuation | Completed | Contract Verified：QuestionCard 支持 option、multi-select、custom 与取消；default composition oracle 验证浏览器回答形成 Tool message，并继续 DeepSeek 请求到最终输出 |
 | S6-L01 | LLM Catalog | `llm.providers` 合并 configurable directory 与 active route | Completed | Contract Verified：声明顺序、active/dormant、undeclared active route 和 `declared` omission 由固定源 `WebApiClient` 验证 |
 | S6-L02 | LLM Catalog | `llm.models` Host catalog 与 `session.models` 共享投影 | Completed | Contract Verified：provider-local failure containment、reasoning metadata 与固定源 response schema 通过；目录逻辑统一在 `LLMGateway.Catalog` |
 | S6-P01 | Agent Preset | `agentPreset.list` absent-roster 合法部署分支 | Completed | Contract Verified：默认组合无 `AgentPresetRoster` 时返回 non-nil empty presets、`authorable:false`、`hasDocument:false`，固定源 `WebApiClient` 接受 |
@@ -329,7 +331,8 @@ interaction owner registers stable rpcId + decoder
 | strict typed config 与 Factory Catalog 边界 | `plugin/catalog_test.go`、`internal/assembly/assembly_test.go` |
 | Connection Plugin 乱序依赖结算与真实 HTTP 服务 | `TestConnectionCompositionSettlesDependenciesAndServesHostDescribe` |
 | 内嵌 Web 静态资源、SPA fallback 与 API route 隔离 | `web/site_test.go`、`TestFrontendHandlesOnlyUnownedBrowserRoutes` |
-| 默认 composition 经 DeepSeek Adapter 完成固定 Client 与 UI 主流程 | `TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter` |
+| 默认 composition 经 DeepSeek Adapter 完成固定 Client、UI 会话与 Question continuation | `TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter`、`web-ui-main-flow.ts` |
+| CLI `--data-dir` 默认数据库解析与具体路径覆盖 | `cmd/goren/main_test.go` |
 | composition bind failure 无 declaration/contribution 遗留 | `TestCompositionFailureRollsBackEarlierDeclarations` |
 | Session payload snapshot、seed 连续性、surface 原子 replace 与负零拒绝 | `session/session_test.go` |
 | Session create/append/flush/dispose、rollback、observer containment、重入拒绝与 publication 后 follow-up append | `session/store_test.go`、`session/title/service_test.go` |
@@ -387,17 +390,18 @@ interaction owner registers stable rpcId + decoder
 
 ## 13. 当前验证结果
 
-本次在固定 Web Agent 主调用链上补齐 `turn/end` durability checkpoint、React 主会话页面和 DeepSeek Credentials 闭环；没有按完整原版 WebUI 的 method 清单逐个扩展 API。当前在 Go 1.26.6、`darwin/arm64` 执行并通过：
+本次在固定 Web Agent 主调用链上补齐 Question 浏览器交互、消息可见性边界，以及带 Web 构建和数据目录配置的 `make run`；没有按完整原版 WebUI 的 method 清单逐个扩展 API。当前在 Go 1.26.6、`darwin/arm64` 执行并通过：
 
-- `cd web && pnpm install --frozen-lockfile && pnpm run build`
-- `go test ./... -count=1`
+- `pnpm -C web run build`
+- `go test ./...`
 - `go test -tags=contract ./internal/assembly -run TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter -count=1`
-- `go test -tags=contract ./tests/contract -run 'TestPinned(SourceCredentialsWebApiClientUsesGoProvider|ManifestMatchesGoSurface)' -count=1`
+- `make -n run`
+- `make run DATA_DIR=/tmp/goren-make-run.LqyhZv LISTEN=127.0.0.1:3089`，并以 HTTP GET 验证 Web shell；临时目录随后删除
 - `git diff --check`
 
-固定源码 `WebApiClient` 已通过真实 HTTP 完成 Credentials describe/set/unset，并通过真实 HTTP/WebSocket 创建 Session、选择模型、提交 prompt、驱动 Go Agent Loop、接收 `turn/end`、修改 queue、cancel、rename 和 respond。新增默认 composition contract 使用 deterministic DeepSeek HTTP oracle，在同一进程验证固定 Client 和内嵌 UI；UI 自动化完成发送、回复、新建/选择 Session 与 history 恢复。API Key dialog 已通过 TypeScript 检查和生产构建，但尚未单独执行交互式浏览器行为验收。
+固定源码 `WebApiClient` 已通过真实 HTTP 完成 Credentials describe/set/unset，并通过真实 HTTP/WebSocket 创建 Session、选择模型、提交 prompt、驱动 Go Agent Loop、接收 `turn/end`、修改 queue、cancel、rename 和 respond。默认 composition contract 使用 deterministic DeepSeek HTTP oracle，在同一进程验证固定 Client 和内嵌 UI；UI 自动化完成发送、回复、新建/选择 Session、history 恢复、Question 回答和 Agent continuation，并断言 plugin runtime-context 不进入用户消息投影。API Key dialog 已通过 TypeScript 检查和生产构建，但尚未单独执行交互式浏览器行为验收。
 
-真实环境验收显式加载本地 `.env`，启动默认 `cmd/goren` 后由同一 UI contract 调用真实 `https://api.deepseek.com`，结果为 `booted/prompted/selected/history = true`，最终 `runningCount = 0`。本次使用本机 Chrome headless 检查了桌面与窄屏渲染；浏览器插件和 macOS UI native pipe 均不可用，因此不声明键盘操作或 Chrome/Safari 人工验收。临时 SQLite 验收目录已移入系统废纸篓。
+既有真实环境验收显式加载本地 `.env`，启动默认 `cmd/goren` 后由同一 UI contract 调用真实 `https://api.deepseek.com`，结果为 `booted/prompted/selected/history = true`，最终 `runningCount = 0`。既有本机 Chrome headless 证据覆盖桌面与窄屏渲染；本次 in-app browser 不可用，因此不新增 Question 的交互式浏览器或 Chrome/Safari 人工验收声明。
 
 ## 14. 安全与依赖状态
 
@@ -413,6 +417,6 @@ Agent Loop core、九个 Session method、Session Persistence/SQLite、live Mux/
 1. 以 bounded prepared cache 和 Backend suffix seek 优化 cold read；二者不改变主流程正确性或公开协议；
 2. 有可用交互式浏览器时补键盘操作、API Key dialog 与 Chrome/Safari 人工验收；该项不阻塞当前 Host/UI 主流程 contract。
 
-完整 Settings、Preset、Filesystem、Shell、Attachment、Search、Fork、Typert Remote、Approval/Question 浏览器控件和完整原版 Web product 均保持 Deferred；当前不为它们增加 handler、service 或测试占位。Credentials watcher、`credentials/updated` 与跨进程 writer lock 也未进入当前闭包。
+完整 Settings、Preset、Filesystem、Shell、Attachment、Search、Fork、Typert Remote、Approval 浏览器控件和完整原版 Web product 均保持 Deferred；当前不为它们增加 handler、service 或测试占位。Credentials watcher、`credentials/updated` 与跨进程 writer lock 也未进入当前闭包。
 
 Session Persistence/SQLite 已负责 cold facts、repair 与 Agent resume；它不恢复进程内 pending callback、socket subscriber 或未完成 retry timer。默认 RetryPolicy Consumer 仍沿 `agent/request-error` 作为独立 Plugin 进入，没有回填 DeepSeek Adapter。Agent instance 继续消费既有 Child Scope 与 scoped listener isolation，不另建第二套 Registry。
