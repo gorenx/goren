@@ -67,7 +67,14 @@ func (owner *toolRegistry) Prepare(requestContext context.Context, input ToolExe
 	if err != nil {
 		return ScheduledToolPreparation{Stage: ScheduledFinalResult, Execution: execution, Result: errorResult(err)}
 	}
-	denial := decisionDenial(execution.Name, gate)
+	resolvedGate, approvalCancelled, err := owner.resolveAsk(requestContext, execution, gate)
+	if err != nil {
+		return ScheduledToolPreparation{Stage: ScheduledFinalResult, Execution: execution, Result: errorResult(err)}
+	}
+	if approvalCancelled && requestContext.Err() != nil {
+		return ScheduledToolPreparation{Stage: ScheduledPostResult, Execution: execution, Result: abortedResult(false)}
+	}
+	denial := decisionDenial(execution.Name, resolvedGate)
 	if denial == "" {
 		denial, err = owner.guardDenial(execution)
 		if err != nil {
@@ -387,13 +394,22 @@ func createExecution(input ToolExecutionInput) (ToolExecution, error) {
 	}
 	execution := ToolExecution{
 		CallID: input.CallID, RootCallID: rootCallID, Name: input.Name,
-		Scope: input.Scope, Parent: input.Parent, Token: ToolExecutionToken{token: identity},
+		Scope: input.Scope, Subject: input.Subject,
+		Parent: input.Parent, Token: ToolExecutionToken{token: identity},
 	}
 	if strings.TrimSpace(input.Name) == "" || input.Name != strings.TrimSpace(input.Name) {
 		return execution, errors.New("tools: tool name must be non-empty and trimmed")
 	}
 	if input.CallID == "" {
 		return execution, errors.New("tools: call ID is empty")
+	}
+	if input.Subject != nil {
+		if input.Subject.ScopeValue() == nil || input.Subject.SessionValue() == nil {
+			return execution, errors.New("tools: execution Agent must expose a Scope and Session")
+		}
+		if input.Subject.ScopeValue().Target() != input.Scope {
+			return execution, errors.New("tools: execution Scope does not match its Agent")
+		}
 	}
 	arguments, err := jsonvalue.Clone(input.Arguments)
 	if err != nil {
@@ -423,10 +439,7 @@ func decisionDenial(name string, decision PreToolDecision) string {
 	case DenyDecision:
 		return selected.Reason
 	case AskDecision:
-		if strings.TrimSpace(selected.Reason) != "" {
-			return selected.Reason
-		}
-		return fmt.Sprintf("tool %q requires approval (not yet supported)", name)
+		return fmt.Sprintf("tool %q approval decision was not resolved", name)
 	case nil:
 		return "pre-execute policy returned no decision"
 	default:

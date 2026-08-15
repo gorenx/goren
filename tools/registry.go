@@ -18,6 +18,7 @@ import (
 type toolRegistry struct {
 	sourceScope *plugin.Scope
 	store       *toolStore
+	approvals   ApprovalResolver
 	reporter    ResultObserverReporter
 }
 
@@ -27,6 +28,7 @@ func New(
 	requestContext context.Context,
 	sourceScope *plugin.Scope,
 	promptService systemprompt.SystemPrompt,
+	approvalCapability ApprovalResolver,
 	reporter ResultObserverReporter,
 	settings ValidatedConfig,
 ) (ToolRuntime, error) {
@@ -42,6 +44,7 @@ func New(
 	owner := &toolRegistry{
 		sourceScope: sourceScope,
 		store:       newToolStore(),
+		approvals:   approvalCapability,
 		reporter:    reporter,
 	}
 	_, err := promptService.Tools(requestContext, sourceScope,

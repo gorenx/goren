@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 )
@@ -145,6 +147,7 @@ type ToolExecutionInput struct {
 	Name       string
 	Arguments  json.RawMessage
 	Scope      plugin.ScopeKey
+	Subject    agent.Agent
 	Parent     ToolExecutionToken
 }
 
@@ -154,6 +157,7 @@ type ToolExecution struct {
 	RootCallID llm.CallID
 	Name       string
 	Scope      plugin.ScopeKey
+	Subject    agent.Agent
 	Parent     ToolExecutionToken
 	Token      ToolExecutionToken
 	arguments  json.RawMessage
@@ -441,6 +445,20 @@ func (operation ToolGuardFunc) DenyReason(execution ToolExecution) (string, bool
 // changing the already-final outcome.
 type ResultObserverReporter interface {
 	ReportToolObserverError(context.Context, ToolExecution, error)
+}
+
+// ApprovalResolver performs the source-compatible live lookup of the optional
+// Approval service for each ask decision.
+type ApprovalResolver interface {
+	ResolveApproval() (approval.Approval, bool)
+}
+
+// ApprovalResolverFunc adapts a live service lookup to ApprovalResolver.
+type ApprovalResolverFunc func() (approval.Approval, bool)
+
+// ResolveApproval invokes the adapted lookup.
+func (operation ApprovalResolverFunc) ResolveApproval() (approval.Approval, bool) {
+	return operation()
 }
 
 // ToolRuntime is the provider-owned registry and execution capability.

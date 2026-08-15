@@ -69,7 +69,7 @@ func (provider *harnessProvider) Apply(requestContext context.Context, pluginSco
 	if err != nil {
 		return err
 	}
-	toolRuntime, err := tools.New(requestContext, pluginScope, promptRuntime, nil, toolSettings)
+	toolRuntime, err := tools.New(requestContext, pluginScope, promptRuntime, nil, nil, toolSettings)
 	if err != nil {
 		return err
 	}
