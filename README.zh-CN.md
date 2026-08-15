@@ -1,8 +1,14 @@
 # Goren
 
-**一个 Go 版的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)。**
+**用 Go 重建 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Agent 服务端。**
 
-Goren 从用符合 Go 习惯的方式复刻 DeepSeek Harness 的核心职责、协议和 Agent 主流程开始。DeepSeek Harness 是起点，不是终点：Goren 不是围绕代码的 Harness，也不是围绕工作的 Harness，而是围绕人的 Harness。它的目标是让人在不同工具、任务和上下文之间仍然保有连续性、选择权与控制权。
+## 项目目标
+
+Goren 的目标是用符合 Go 习惯的方式重建 DeepSeek Harness Agent 服务端架构。首要兼容目标是现有 TypeScript Client 与 Go 服务端之间的协议，包括 HTTP/WebSocket 载体、RPC 信封、API 方法、事件、取消、重连与错误语义。
+
+Goren 保留源系统可观察的行为和职责边界，同时用 typed Go config、`interface`、有状态 Service 与静态链接 Factory 替代 TypeScript 专属机制。它是行为复刻，不是逐文件翻译，也不移植 Node.js/Cordis Runtime。
+
+当前默认服务首先以单一 Go 可执行文件交付可运行的对话主流程，并内嵌自有 Web UI：配置 DeepSeek API Key、创建和恢复 Session、提交 Prompt、接收 Agent 流式输出，以及回答结构化 Question。这不表示已经兼容原版完整 Web 产品、SDK 或仍为 Deferred 的辅助能力；准确基线与边界由复制范围设计统一定义。
 
 ## 当前功能对比
 
@@ -75,7 +81,7 @@ Goren 从用符合 Go 习惯的方式复刻 DeepSeek Harness 的核心职责、�
 | Headless 与 SDK | Headless Bundle，以及 TypeScript、Python SDK Surface | **暂缓** |
 | Code Runtime 与 E2B | Worker-thread Code Execution，以及 E2B 文件系统/子进程 Adapter | **暂缓；**代码执行不是产品中心 |
 
-该矩阵只提供易读的当前快照，不作为第二份进度记录。证据等级与剩余 Gate 见[实施进度](./zh-CN/08-implementation-progress.md)，职责与架构见[中文详设索引](./zh-CN/README.md)。
+该矩阵只提供易读的当前快照，不作为第二份进度记录。证据等级与剩余 Gate 由实施进度设计统一记录。
 
 英文版见 [README.md](./README.md)。
 

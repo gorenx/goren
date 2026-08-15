@@ -1,8 +1,14 @@
 # Goren
 
-**A Go version of [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).**
+**The [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Agent server, rebuilt in Go.**
 
-Goren begins by reproducing the core responsibilities, protocol, and Agent flow of DeepSeek Harness in idiomatic Go. DeepSeek Harness is the starting point, not the destination: Goren is not a harness for code and not a harness for work, but a harness around the person. Its direction is to help a person retain continuity, choice, and control across tools, tasks, and contexts.
+## Project goal
+
+Goren's goal is to provide an idiomatic Go implementation of the DeepSeek Harness Agent server architecture. Its primary compatibility target is the protocol between the existing TypeScript Client and the Go server: HTTP and WebSocket carriers, RPC envelopes, API methods, events, cancellation, reconnection, and error semantics.
+
+Goren preserves the source system's observable behavior and responsibility boundaries while replacing TypeScript-specific mechanisms with typed Go configuration, interfaces, stateful services, and statically linked factories. It is a behavioral reimplementation, not a line-by-line translation or a port of the Node.js/Cordis runtime.
+
+The default server currently delivers the core conversation loop as a single Go executable with an embedded Web UI: configure a DeepSeek API key, create and resume sessions, send prompts, stream Agent output, and answer structured questions. Compatibility with the original full Web product, SDKs, and deferred auxiliary surfaces is not implied. The authoritative porting-scope design defines the exact baseline and boundaries.
 
 ## Current feature comparison
 
@@ -75,8 +81,8 @@ Status: **Available** means the current Goren implementation provides the named 
 | Headless and SDKs | Headless bundle plus TypeScript and Python SDK surfaces | **Deferred** |
 | Code runtime and E2B | Worker-thread code execution and E2B filesystem/subprocess adapters | **Deferred;** code execution is not the product center |
 
-The matrix is a readable snapshot, not a second progress tracker. See the [implementation progress](./zh-CN/08-implementation-progress.md) for evidence levels and remaining gates, and the [Chinese design index](./zh-CN/README.md) for ownership and architecture.
+The matrix is a readable snapshot, not a second progress tracker. The implementation-progress design records evidence levels and remaining gates.
 
-The Chinese version is available in [README.zh-CN.md](./README.zh-CN.md).
+A Chinese version is included in the repository.
 
 DeepSeek Harness is MIT-licensed and copyright DeepSeek. Substantial copied or derived portions must preserve its license notice and attribution.
