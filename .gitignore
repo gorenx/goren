@@ -28,6 +28,13 @@ go.work.sum
 # env file
 .env
 
+# Local runtime data created by make run
+/sessions.sqlite
+/sessions.sqlite-*
+/workspaces.sqlite
+/workspaces.sqlite-*
+/.credentials.json
+
 # Editor/IDE
 .idea/
 .vscode/

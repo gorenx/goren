@@ -18,6 +18,13 @@ import (
 type commandConfig struct {
 	address           string
 	version           string
+	dataDirectory     string
+	sessionDatabase   string
+	workspaceDatabase string
+}
+
+type storagePaths struct {
+	dataDirectory     string
 	sessionDatabase   string
 	workspaceDatabase string
 }
@@ -35,23 +42,18 @@ func main() {
 		fmt.Fprintln(os.Stderr, "create factory catalog:", err)
 		os.Exit(1)
 	}
-	sessionDatabase := settings.sessionDatabase
-	workspaceDatabase := settings.workspaceDatabase
-	if sessionDatabase == "" {
-		configDirectory, configErr := os.UserConfigDir()
-		if configErr != nil {
-			fmt.Fprintln(os.Stderr, "resolve user config directory:", configErr)
-			os.Exit(1)
-		}
-		sessionDatabase = filepath.Join(configDirectory, "goren", "sessions.sqlite")
-		if workspaceDatabase == "" {
-			workspaceDatabase = filepath.Join(configDirectory, "goren", "workspaces.sqlite")
-		}
-	} else if workspaceDatabase == "" {
-		workspaceDatabase = filepath.Join(filepath.Dir(sessionDatabase), "workspaces.sqlite")
+	configDirectory, err := os.UserConfigDir()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "resolve user config directory:", err)
+		os.Exit(1)
+	}
+	paths, err := settings.resolveStorage(filepath.Join(configDirectory, "goren"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "resolve data storage paths:", err)
+		os.Exit(1)
 	}
 	declarations, err := assembly.DefaultSpecs(
-		settings.address, settings.version, sessionDatabase, workspaceDatabase,
+		settings.address, settings.version, paths.sessionDatabase, paths.workspaceDatabase,
 	)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "create server composition:", err)
@@ -65,10 +67,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "start server composition:", err)
 		os.Exit(1)
 	}
-	credentialPath := filepath.Join(filepath.Dir(sessionDatabase), ".credentials.json")
-	fmt.Fprintf(os.Stdout, "Goren Agent started\n  Web: http://%s\n  Workspace: %s\n  Model: %s / %s\n  Credentials: %s (environment %s takes precedence)\n",
-		settings.address, workingDirectory, llmdeepseek.ProviderRoute, llmdeepseek.DefaultModelID,
-		credentialPath, llmdeepseek.DefaultAPIKeyEnv,
+	credentialPath := filepath.Join(filepath.Dir(paths.sessionDatabase), ".credentials.json")
+	fmt.Fprintf(os.Stdout, "Goren Agent started\n  Web: http://%s\n  Workspace: %s\n  Data: %s\n  Session DB: %s\n  Workspace DB: %s\n  Model: %s / %s\n  Credentials: %s (environment %s takes precedence)\n",
+		settings.address, workingDirectory, paths.dataDirectory, paths.sessionDatabase, paths.workspaceDatabase,
+		llmdeepseek.ProviderRoute, llmdeepseek.DefaultModelID, credentialPath, llmdeepseek.DefaultAPIKeyEnv,
 	)
 	<-lifecycle.Done()
 	closeContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -82,11 +84,48 @@ func main() {
 func parseConfig() commandConfig {
 	address := flag.String("listen", "127.0.0.1:3080", "Echo listen address")
 	version := flag.String("version", "dev", "host.describe version")
-	sessionDatabase := flag.String("session-db", "", "SQLite Session database path (default: user config directory)")
-	workspaceDatabase := flag.String("workspace-db", "", "SQLite Workspace database path (default: beside Session database)")
+	dataDirectory := flag.String("data-dir", "", "data storage directory (default: user config directory)")
+	sessionDatabase := flag.String("session-db", "", "SQLite Session database path (default: <data-dir>/sessions.sqlite)")
+	workspaceDatabase := flag.String("workspace-db", "", "SQLite Workspace database path (default: <data-dir>/workspaces.sqlite)")
 	flag.Parse()
 	return commandConfig{
 		address: *address, version: *version,
-		sessionDatabase: *sessionDatabase, workspaceDatabase: *workspaceDatabase,
+		dataDirectory: *dataDirectory, sessionDatabase: *sessionDatabase,
+		workspaceDatabase: *workspaceDatabase,
 	}
+}
+
+func (settings commandConfig) resolveStorage(defaultDataDirectory string) (storagePaths, error) {
+	dataDirectory := settings.dataDirectory
+	if dataDirectory == "" {
+		dataDirectory = defaultDataDirectory
+	}
+	dataDirectory, err := filepath.Abs(dataDirectory)
+	if err != nil {
+		return storagePaths{}, fmt.Errorf("data directory: %w", err)
+	}
+	sessionDatabase, err := resolveStoragePath(settings.sessionDatabase, filepath.Join(dataDirectory, "sessions.sqlite"))
+	if err != nil {
+		return storagePaths{}, fmt.Errorf("Session database: %w", err)
+	}
+	workspaceDatabase, err := resolveStoragePath(settings.workspaceDatabase, filepath.Join(dataDirectory, "workspaces.sqlite"))
+	if err != nil {
+		return storagePaths{}, fmt.Errorf("Workspace database: %w", err)
+	}
+	return storagePaths{
+		dataDirectory: filepath.Clean(dataDirectory), sessionDatabase: sessionDatabase,
+		workspaceDatabase: workspaceDatabase,
+	}, nil
+}
+
+func resolveStoragePath(configuredPath string, fallbackPath string) (string, error) {
+	selectedPath := configuredPath
+	if selectedPath == "" {
+		selectedPath = fallbackPath
+	}
+	absolutePath, err := filepath.Abs(selectedPath)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(absolutePath), nil
 }
