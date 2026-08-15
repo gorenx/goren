@@ -100,7 +100,7 @@ Go 公共契约保留 TypeScript 的消息角色、`source` 判别和 content bl
 
 完成原因保持 `stop`、`tool-calls`、`max-tokens`、`aborted` 和 `error`。适配器负责将供应商事件归一化为这些类型；Agent Loop 不直接依赖供应商 SDK。
 
-当前 `llm` 包早于 Harness 复制方向。迁移时应把既有 provider 实现接到新的公共契约，逐个迁移调用方，然后删除旧入口；禁止再建立一个平行的 `harness/llm` 包或长期兼容包装层。
+`llm` 是唯一 Harness LLM 公共契约 owner；Agent、System Prompt、Tools 和 Provider adapter 都复用这里的 Message、ContentBlock、StreamChunk、finish 与 usage，不建立平行的 `harness/llm` 包或兼容包装层。Provider route、流归一化、DeepSeek wire/SSE 和生命周期详见[13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)。
 
 ## 5. Tool 协议
 

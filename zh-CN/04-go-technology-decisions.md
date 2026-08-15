@@ -135,13 +135,15 @@ Tool contract 允许任意 JSON shape，因此参数、canonical value、schema 
 技术策略：
 
 - Provider HTTP 默认使用 `net/http`，统一注入 timeout、proxy、TLS、User-Agent 和 telemetry transport；
-- 复用现有 OpenAI-compatible/DeepSeek adapter 的已验证 transport 逻辑，但迁移其输入输出类型；
-- 每个供应商 Adapter 只做 wire 转换，不拥有 retry、Agent step 或 Session；
-- retry 位于 LLM capability，根据错误分类和是否已有模型可见输出决定是否重试；
+- 不保留通用 OpenAI SDK/compatibility 公共层；每个供应商 Adapter 直接把自己的 wire 转换为唯一 Harness LLM contract；
+- 每个供应商 Adapter 只拥有 wire、网络 I/O 与 vendor error 映射，不拥有 retry orchestration、Agent step 或 Session；
+- LLM capability 拥有 RetryPolicy contract 和错误分类，Agent request owner 根据 policy、attempt 和是否已有模型可见输出执行重试；
 - stream parser 设置单事件和累计响应预算，并在 `context.Context` 取消时关闭 body；
 - secret 由 Credentials Service 提供，Model metadata 不携带明文 key。
 
 迁移完成后只保留一套公共 `llm` contract。旧接口的删除与新接口迁移属于同一代码演进，不通过长期 wrapper 延缓所有权修正。
+
+DeepSeek direct adapter 的配置、调用链、SSE 和失败映射由[13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)拥有。Echo 的“不使用原生 HTTP”决策只针对 inbound Host router/server；outbound Provider 继续以 `net/http` client/transport 作为可注入 I/O primitive，不引入第二个 server framework 或供应商 SDK。
 
 ## 7. D-06：Session 与持久化
 

@@ -152,6 +152,8 @@ shipped Catalog 当前只有：
 
 - `@deepseek-ai/dsh-host-apiproxy`；
 - `@deepseek-ai/dsh-client-connection` 的 Host half；
+- `@deepseek-ai/dsh-llm` 的 provider-neutral Runtime Provider；
+- `@deepseek-ai/dsh-llm-deepseek` 的 direct DeepSeek Adapter Consumer；
 - `@deepseek-ai/dsh-session` 的内存 Store Provider；
 - `@deepseek-ai/dsh-system-prompt` 的 Registry/Assembly Provider；
 - `@deepseek-ai/dsh-tools` 的 Native Registry/Execution Provider。
@@ -160,7 +162,7 @@ shipped Catalog 当前只有：
 
 ## 8. 当前 server 组合流程
 
-默认 declarations 按 Connection、API Proxy、System Prompt、Tools、Session 声明。Connection/API Proxy/Session 链故意采用 Consumer-before-Provider 顺序，以证明 Runtime 按 Service graph 而不是文件顺序工作；Tools 在 System Prompt 激活后消费其 Service：
+默认 declarations 按 Connection、API Proxy、LLM、DeepSeek、System Prompt、Tools、Session 声明。Connection/API Proxy/Session 链故意采用 Consumer-before-Provider 顺序，以证明 Runtime 按 Service graph 而不是文件顺序工作；DeepSeek 和 Tools 分别在 LLM 与 System Prompt 激活后消费其 Service：
 
 ```text
 cmd/goren
@@ -169,6 +171,11 @@ cmd/goren
   -> connection Factory.Create
   -> Connection StateWaiting (requires apiProxy)
   -> API Proxy StateWaiting (requires sessions)
+  -> LLM Factory.Create + Apply
+       -> provider-neutral Runtime + Provide(llm)
+  -> DeepSeek Factory.Create + Apply
+       -> Require(llm)
+       -> register configurable provider + adapter route
   -> System Prompt Factory.Create + Apply
        -> promptStore + promptAssembler + built-in sections
        -> Provide(systemPrompt)
@@ -195,6 +202,8 @@ cmd/goren
 
 ## 9. 隔离与后续能力进入
 
-当前 Scope 已表达 Plugin instance ownership、effect-owned Child Scope、opaque lineage 和 scoped listener filter；System Prompt 与 Tools 已直接复用它完成 overlay、restriction 与 scoped event。Agent instance 后续继续复用同一 identity。当前尚未实现同一 Service 的 label isolation；只有出现真实多实例 resolution Consumer 时才扩展现有 Service resolution，不得另用 `context.Context.Value`、全局 map 或第二套 Registry。
+当前 Scope 已表达 Plugin instance ownership、effect-owned Child Scope、opaque lineage 和 scoped listener filter；System Prompt 与 Tools 已直接复用它完成 overlay、restriction 与 scoped event，LLM/DeepSeek route contribution 也由 Provider Scope 精确拥有。Agent instance 后续继续复用同一 identity。当前尚未实现同一 Service 的 label isolation；只有出现真实多实例 resolution Consumer 时才扩展现有 Service resolution，不得另用 `context.Context.Value`、全局 map 或第二套 Registry。
+
+LLM Runtime 与 DeepSeek Provider 的本地职责、调用链和失败边界见[13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)。
 
 新能力进入 shipped composition 时必须同时提供 canonical Factory name、owner-defined typed config、Manifest dependencies、全部 effect disposer、失败 rollback 测试和 Excluded/Deferred 审计。Storage、Agent、Session 或 Tool 业务不能放入 assembly Factory 以绕开其能力 owner。

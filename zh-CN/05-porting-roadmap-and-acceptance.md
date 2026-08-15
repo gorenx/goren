@@ -178,7 +178,7 @@ Existing TypeScript Client
 - Harness-compatible Message、Content、StreamChunk、finish reason、usage、GenerateOptions 和 provider route；
 - LLM Adapter Registry 与 Runtime；
 - DeepSeek adapter；
-- 从现有 `llm` 提取可复用 transport，并迁移调用者；
+- 建立可注入的 outbound transport，迁移既有调用者并删除旧公共入口；
 - retry/error classification、partial stream、usage 与 cancellation；
 - fake stream 与录制响应 fixtures。
 
@@ -186,7 +186,7 @@ Existing TypeScript Client
 
 1. 用源 fixture 建立目标类型与编解码；
 2. 在现有 `llm` owner 内完成新 Runtime；
-3. 迁移 adapter、example 与调用者；
+3. 迁移 adapter、composition、example 与既有调用者；
 4. 删除旧 `Model`/`APIAdapter` 等重复入口；
 5. 运行 AST 命名审计，避免变量与类型/函数仅大小写不同。
 
