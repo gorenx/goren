@@ -24,8 +24,8 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
-	sessionpersistence "github.com/gorenx/goren/session/persistence"
-	sqlitepersistence "github.com/gorenx/goren/session/persistence/sqlite"
+	sesspersist "github.com/gorenx/goren/session/persistence"
+	sesssqlite "github.com/gorenx/goren/session/persistence/sqlite"
 	sessionprojection "github.com/gorenx/goren/session/projection"
 	sessiontitle "github.com/gorenx/goren/session/title"
 	"github.com/gorenx/goren/systemprompt"
@@ -80,15 +80,15 @@ func (extension *sessionAPIContractProvider) Apply(requestContext context.Contex
 	if err != nil {
 		return err
 	}
-	storage, err := sqlitepersistence.Open(requestContext, sqlitepersistence.Config{
-		Path: ":memory:", JournalMode: sqlitepersistence.JournalWAL,
+	storage, err := sesssqlite.Open(requestContext, sesssqlite.Config{
+		Path: ":memory:", JournalMode: sesssqlite.JournalWAL,
 	})
 	if err != nil {
 		return err
 	}
-	durability, err := sessionpersistence.NewSessionLogStore(
+	durability, err := sesspersist.NewSessionLogStore(
 		requestContext, providerScope, sessionStore, storage,
-		sessionpersistence.SessionLogStoreOptions{
+		sesspersist.SessionLogStoreOptions{
 			WriteBatchMaxDelay: time.Hour,
 			ObserverError:      extension.state.failures.report,
 		},

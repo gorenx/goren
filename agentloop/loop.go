@@ -13,7 +13,7 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
-	sessionpersistence "github.com/gorenx/goren/session/persistence"
+	sesspersist "github.com/gorenx/goren/session/persistence"
 	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/tools"
 )
@@ -197,7 +197,7 @@ func (owner *loopService) ResumeAgent(
 	if err := validateAgentOptions(resumeOptions.AgentOptions); err != nil {
 		return agent.Handle{}, err
 	}
-	durability, found := plugin.Require(owner.sourceScope, sessionpersistence.Service)
+	durability, found := plugin.Require(owner.sourceScope, sesspersist.Service)
 	if !found {
 		return agent.Handle{}, errors.New("agentloop: session persistence is not configured")
 	}

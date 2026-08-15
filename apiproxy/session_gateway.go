@@ -19,7 +19,7 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
-	sessionpersistence "github.com/gorenx/goren/session/persistence"
+	sesspersist "github.com/gorenx/goren/session/persistence"
 	sessionprojection "github.com/gorenx/goren/session/projection"
 	sessiontitle "github.com/gorenx/goren/session/title"
 	"github.com/gorenx/goren/workspace"
@@ -47,7 +47,7 @@ func (operation DirectoryProvisionerFunc) EnsureDirectory(path string) error {
 type SessionGatewayDependencies struct {
 	Agents      agent.Registry
 	Sessions    session.Store
-	Persistence sessionpersistence.Persistence
+	Persistence sesspersist.Persistence
 	LLM         llm.LlmRuntime
 	Defaults    agentdefaultmodel.DefaultModel
 	Projections sessionprojection.Registry
@@ -80,7 +80,7 @@ type SessionGateway struct {
 	sourceScope *plugin.Scope
 	agents      agent.Registry
 	sessions    session.Store
-	persistence sessionpersistence.Persistence
+	persistence sesspersist.Persistence
 	models      llm.LlmRuntime
 	catalog     *LLMGateway
 	defaults    agentdefaultmodel.DefaultModel
@@ -371,7 +371,7 @@ func (owner *SessionGateway) History(requestContext context.Context, call Reques
 	} else {
 		loaded, err := owner.persistence.Inspect(requestContext, identifier)
 		if err != nil {
-			var missing *sessionpersistence.NotFoundError
+			var missing *sesspersist.NotFoundError
 			if errors.As(err, &missing) {
 				return Fail[SessionHistoryValue](sessionNotFoundError(call.Payload.SessionID)), nil
 			}
@@ -631,7 +631,7 @@ func (owner *SessionGateway) ensureSession(
 	workingDirectory string,
 	requestedPreset *string,
 	createMissing bool,
-	knownInspection *sessionpersistence.Inspection,
+	knownInspection *sesspersist.Inspection,
 ) (agent.Agent, error) {
 	owner.creationMutex.Lock()
 	if pending := owner.creations[identifier]; pending != nil {
@@ -668,7 +668,7 @@ func (owner *SessionGateway) createOrAdopt(
 	identifier session.SessionID,
 	workingDirectory string,
 	createMissing bool,
-	knownInspection *sessionpersistence.Inspection,
+	knownInspection *sesspersist.Inspection,
 ) (agent.Agent, error) {
 	if subject, found := owner.agents.Get(identifier); found {
 		return subject, nil
@@ -676,7 +676,7 @@ func (owner *SessionGateway) createOrAdopt(
 	if conversation, found := owner.sessions.Get(identifier); found {
 		return nil, fmt.Errorf("session %q is attached without a live Agent (cwd %v)", identifier, conversation.Header().CWD)
 	}
-	loaded := sessionpersistence.Inspection{}
+	loaded := sesspersist.Inspection{}
 	var inspectErr error
 	if knownInspection == nil {
 		loaded, inspectErr = owner.persistence.Inspect(requestContext, identifier)
@@ -686,7 +686,7 @@ func (owner *SessionGateway) createOrAdopt(
 	if inspectErr == nil {
 		return owner.resumeCold(requestContext, loaded)
 	}
-	var missing *sessionpersistence.NotFoundError
+	var missing *sesspersist.NotFoundError
 	if !errors.As(inspectErr, &missing) {
 		return nil, inspectErr
 	}
@@ -734,7 +734,7 @@ func (owner *SessionGateway) createOrAdopt(
 
 func (owner *SessionGateway) resumeCold(
 	requestContext context.Context,
-	loaded sessionpersistence.Inspection,
+	loaded sesspersist.Inspection,
 ) (agent.Agent, error) {
 	identifier := loaded.Header.ID
 	if subject, found := owner.agents.Get(identifier); found {
@@ -821,7 +821,7 @@ func (owner *SessionGateway) ordinaryAgent(
 	if !found {
 		loaded, err := owner.persistence.Inspect(requestContext, session.SessionID(identifier))
 		if err != nil {
-			var missing *sessionpersistence.NotFoundError
+			var missing *sesspersist.NotFoundError
 			if errors.As(err, &missing) {
 				problem := sessionNotFoundError(identifier)
 				return nil, &problem
@@ -837,7 +837,7 @@ func (owner *SessionGateway) ordinaryAgent(
 			requestContext, loaded.Header.ID, workingDirectory, loaded.Header.AgentPreset, false, &loaded,
 		)
 		if err != nil {
-			var disappeared *sessionpersistence.NotFoundError
+			var disappeared *sesspersist.NotFoundError
 			if errors.As(err, &disappeared) {
 				problem := sessionNotFoundError(identifier)
 				return nil, &problem

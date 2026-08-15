@@ -8,7 +8,7 @@ import (
 
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
-	sessionpersistence "github.com/gorenx/goren/session/persistence"
+	sesspersist "github.com/gorenx/goren/session/persistence"
 	"github.com/gorenx/goren/workspace"
 	workspaceSqlite "github.com/gorenx/goren/workspace/persistence/sqlite"
 )
@@ -60,14 +60,14 @@ func (*workspacePlugin) Manifest() plugin.Manifest {
 		Provides: []plugin.ServiceRef{workspace.Service.Ref()},
 		Requires: []plugin.ServiceRef{
 			session.StoreService.Ref(),
-			sessionpersistence.Service.Ref(),
+			sesspersist.Service.Ref(),
 		},
 	}
 }
 
 func (instance *workspacePlugin) Apply(requestContext context.Context, pluginScope *plugin.Scope) error {
 	sessionStore, sessionsFound := plugin.Require(pluginScope, session.StoreService)
-	durability, persistenceFound := plugin.Require(pluginScope, sessionpersistence.Service)
+	durability, persistenceFound := plugin.Require(pluginScope, sesspersist.Service)
 	if !sessionsFound || !persistenceFound {
 		return errors.New("assembly: Workspace dependencies are unavailable")
 	}
@@ -103,7 +103,7 @@ func (instance *workspacePlugin) Apply(requestContext context.Context, pluginSco
 // immutable-header port consumed by Workspace.
 type workspaceSessionHeaders struct {
 	sessions    session.Store
-	persistence sessionpersistence.Persistence
+	persistence sesspersist.Persistence
 }
 
 func (source *workspaceSessionHeaders) Get(
@@ -115,7 +115,7 @@ func (source *workspaceSessionHeaders) Get(
 	}
 	loaded, err := source.persistence.Inspect(requestContext, identifier)
 	if err != nil {
-		var missing *sessionpersistence.NotFoundError
+		var missing *sesspersist.NotFoundError
 		if errors.As(err, &missing) {
 			return session.Header{}, false, nil
 		}

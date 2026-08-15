@@ -9,16 +9,16 @@ import (
 
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
-	sessionpersistence "github.com/gorenx/goren/session/persistence"
-	sqlitepersistence "github.com/gorenx/goren/session/persistence/sqlite"
+	sesspersist "github.com/gorenx/goren/session/persistence"
+	sesssqlite "github.com/gorenx/goren/session/persistence/sqlite"
 )
 
 // SessionPersistenceConfig configures the durable Session capability. SQLite
 // is the built-in Backend adapter, not a separately loadable plugin.
 type SessionPersistenceConfig struct {
-	Path                 string                        `json:"path"`
-	JournalMode          sqlitepersistence.JournalMode `json:"journalMode,omitempty"`
-	WriteBatchMaxDelayMS int64                         `json:"writeBatchMaxDelayMs,omitempty"`
+	Path                 string                 `json:"path"`
+	JournalMode          sesssqlite.JournalMode `json:"journalMode,omitempty"`
+	WriteBatchMaxDelayMS int64                  `json:"writeBatchMaxDelayMs,omitempty"`
 }
 
 type sessionPersistenceFactory struct{}
@@ -33,8 +33,8 @@ func (sessionPersistenceFactory) DecodeConfig(
 			return errors.New("path must be non-empty")
 		}
 		switch candidate.JournalMode {
-		case "", sqlitepersistence.JournalWAL, sqlitepersistence.JournalDelete,
-			sqlitepersistence.JournalTruncate, sqlitepersistence.JournalPersist:
+		case "", sesssqlite.JournalWAL, sesssqlite.JournalDelete,
+			sesssqlite.JournalTruncate, sesssqlite.JournalPersist:
 		default:
 			return errors.New("journalMode must be wal, delete, truncate, or persist")
 		}
@@ -47,10 +47,10 @@ func (sessionPersistenceFactory) DecodeConfig(
 		return SessionPersistenceConfig{}, err
 	}
 	if settings.JournalMode == "" {
-		settings.JournalMode = sqlitepersistence.JournalWAL
+		settings.JournalMode = sesssqlite.JournalWAL
 	}
 	if settings.WriteBatchMaxDelayMS == 0 {
-		settings.WriteBatchMaxDelayMS = sessionpersistence.DefaultWriteBatchMaxDelay.Milliseconds()
+		settings.WriteBatchMaxDelayMS = sesspersist.DefaultWriteBatchMaxDelay.Milliseconds()
 	}
 	return settings, nil
 }
@@ -69,7 +69,7 @@ type sessionPersistencePlugin struct {
 func (*sessionPersistencePlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name:     SessionPersistenceFactoryName,
-		Provides: []plugin.ServiceRef{sessionpersistence.Service.Ref()},
+		Provides: []plugin.ServiceRef{sesspersist.Service.Ref()},
 		Requires: []plugin.ServiceRef{session.StoreService.Ref()},
 	}
 }
@@ -82,15 +82,15 @@ func (instance *sessionPersistencePlugin) Apply(
 	if !found {
 		return errors.New("assembly: Session Persistence dependency is unavailable")
 	}
-	storage, err := sqlitepersistence.Open(requestContext, sqlitepersistence.Config{
+	storage, err := sesssqlite.Open(requestContext, sesssqlite.Config{
 		Path: instance.settings.Path, JournalMode: instance.settings.JournalMode,
 	})
 	if err != nil {
 		return err
 	}
-	durability, err := sessionpersistence.NewSessionLogStore(
+	durability, err := sesspersist.NewSessionLogStore(
 		requestContext, pluginScope, store, storage,
-		sessionpersistence.SessionLogStoreOptions{
+		sesspersist.SessionLogStoreOptions{
 			WriteBatchMaxDelay: time.Duration(instance.settings.WriteBatchMaxDelayMS) * time.Millisecond,
 		},
 	)
@@ -98,6 +98,6 @@ func (instance *sessionPersistencePlugin) Apply(
 		_ = storage.Close(requestContext)
 		return err
 	}
-	_, err = plugin.Provide(pluginScope, sessionpersistence.Service, sessionpersistence.Persistence(durability))
+	_, err = plugin.Provide(pluginScope, sesspersist.Service, sesspersist.Persistence(durability))
 	return err
 }
