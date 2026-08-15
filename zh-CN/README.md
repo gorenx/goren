@@ -24,11 +24,16 @@
 - [16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)：八个 `session.*` method、默认模型选择、Session/Agent consumer adapter、Mux baseline/live 与 Host edge。
 - [17 Approval、UserQuestions 与 Interaction Gateway](./17-approval-user-questions-and-interaction-gateway.md)：Approval policy/audit、UserQuestions Provider、`ask_user_question` Consumer，以及 requested/respond/resolved/replay 闭环。
 
+## 模块内运行说明
+
+- [`llmretry/README.zh-CN.md`](../llmretry/README.zh-CN.md)：默认 RetryPolicy Consumer 的职责、normal/always 决策、durable retry events、历史投影和取消/卸载流程。
+
 首次阅读按 `01`–`05` 顺序理解全局设计；进入实现时读取对应模块文档，再从 `08` 查看当前进度。实现单个能力时，先从 `01` 确认范围，再读其拥有契约的文档。DeepSeek Harness 的 Service Definition / Provider / Consumer、事件 owner 和生命周期是默认职责边界；Go 包不机械复制每个 npm 包，但没有明确证据时也不另起一套领域切分。
 
 ## 权威关系
 
 - 本目录 `01`–`05` 拥有全局设计，`06`、`07`、`09`–`17` 拥有已进入实现的稳定模块设计，`08` 单独拥有日期性实施进度与证据。
+- 子模块 `README.zh-CN.md` 解释贴近代码的职责、工作原理和交互流程；跨模块契约仍由本目录对应编号文档拥有，实施证据仍只由 `08` 拥有。
 - 根目录 `README.md` 与 `README.zh-CN.md` 只说明项目背景。
 - TypeScript 的行为证据来自固定 commit；源仓库后续变化不会自动成为 Go 需求。
 - Go 代码证明当前实现，跨语言 fixtures 和测试证明兼容性；设计状态不能代替实现或验收证据。
@@ -46,5 +51,6 @@
 - 实施完成度、验证命令、阻塞项和下一步只更新 `08`，不得散落到路线图或模块设计文档。
 - 只为已经出现真实职责与代码边界的模块增加实现文档；不为规划目录或空 package 建文档占位。
 - 模块文档至少记录职责/非职责、源 owner、依赖方向、上下游流程、生命周期、失败/取消语义、验证所有权和后续能力进入规则；代码/测试证据与实施缺口只写入 `08`。
+- 已实现的独立子模块在代码旁维护 `README.zh-CN.md`，流程与交互图使用 Mermaid；暂不增加子模块英文 README，也不为 helper、generated 或 test-only 目录批量创建模板文档。
 - 未确认的行为保留为显式未决事项，不写成已经实现或已经验证。
 - 新增、删除、重命名、重排文档或改变文档职责时同步更新本索引。

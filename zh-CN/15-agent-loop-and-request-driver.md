@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有 `agentloop` Provider 的 concrete Agent 构造、生命周期事务、Turn/Step 状态机、请求重建、模型流消费、失败 attempt 重试边界、Tool-call 调度和动态 runtime context 投影。live Agent contract、Registry、Inbox 和 `agent/*` Event Definition 由[14 Agent Registry、Inbox 与实时事件模块设计](./14-agent-registry-inbox-and-events.md)拥有；Session facts/surface 由[10 Session Core 与生命周期模块设计](./10-session-core-and-lifecycle.md)拥有；System Prompt、Tools 与 LLM 的 Provider 职责分别见[11](./11-system-prompt-registry-and-assembly.md)、[12](./12-tools-registry-and-execution-pipeline.md)和[13](./13-harness-llm-runtime-and-deepseek-provider.md)。当前实施状态、验证证据和剩余缺口只见[08 实施进度](./08-implementation-progress.md)。
+本文拥有 `agentloop` Provider 的 concrete Agent 构造、生命周期事务、Turn/Step 状态机、请求重建、模型流消费、失败 attempt 重试边界、Tool-call 调度和动态 runtime context 投影。live Agent contract、Registry、Inbox 和 `agent/*` Event Definition 由[14 Agent Registry、Inbox 与实时事件模块设计](./14-agent-registry-inbox-and-events.md)拥有；Session facts/surface 由[10 Session Core 与生命周期模块设计](./10-session-core-and-lifecycle.md)拥有；System Prompt、Tools 与 LLM 的 Provider 职责分别见[11](./11-system-prompt-registry-and-assembly.md)、[12](./12-tools-registry-and-execution-pipeline.md)和[13](./13-harness-llm-runtime-and-deepseek-provider.md)；默认 policy 的执行与等待生命周期见[`llmretry` 模块说明](../llmretry/README.zh-CN.md)。当前实施状态、验证证据和剩余缺口只见[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 固定源与职责映射
 
@@ -37,7 +37,7 @@ Go 不复制 Cordis `Service` 继承、Fiber、`AbortSignal`、`AsyncLocalStorag
 - live Registry membership、Inbox mutation contract 或 `agent/*` Event Definition；
 - Session `seq`、surface replacement、JSONL/SQLite/sqlc、load、repair 或 persistence I/O；
 - Prompt section/context/tool-schema registry、Tool policy/body/result semantics或 LLM Adapter route；
-- retry policy 的延时、jitter 和次数决策；Agent Loop 只提供 failed attempt 的 retry seam 并执行明确返回的 retry action；
+- retry policy 的延时、jitter 和次数决策；这些由[`llmretry`](../llmretry/README.zh-CN.md)负责，Agent Loop 只提供 failed attempt 的 retry seam 并执行明确返回的 retry action；
 - Echo、RPC、Mux/Host frame、`session.*` API、client disconnect mapping 或 reconnect baseline；
 - approval/question、permission、sandbox、Web UI、SDK、Typert 或 `!!js`。
 
@@ -205,6 +205,6 @@ Connection / session.* API（`apiproxy.SessionGateway` inbound adapter）
 
 - `session.*` API 只把 wire request 映射为 Registry/Agent capability 调用；不得让 `agentloop` 依赖 Echo、RPC 或 frame DTO；具体 method、projection 与 reconnect 规则由[16](./16-session-api-gateway-and-live-frames.md)拥有；
 - Session persistence 进入后，由 Session owner 提供 prepare/load/repair；Agent Loop 增加真实 resume transaction，并发布 `agent/session-start(resume)`，不能在 Adapter 内决定业务修复；
-- 默认 RetryPolicy 的 delay/jitter/attempt consumer 作为独立 Plugin 监听 `agent/request-error`，不能塞进 DeepSeek Adapter 或硬编码在 Agent Loop；
+- 默认 RetryPolicy 的 delay/jitter/attempt Consumer 由[`llmretry`](../llmretry/README.zh-CN.md)作为独立 Plugin 监听 `agent/request-error`，不能塞进 DeepSeek Adapter 或硬编码在 Agent Loop；
 - compaction、approval/question、Guard、Subagent 或 Workflow 通过现有 Session/Agent/Tools Event seam 进入，不在 Loop 中增加 capability-specific branch；
 - browser Connection、Web UI、SDK、Typert generator 和 `!!js` 始终不因 Agent Loop 实现而重新进入范围。

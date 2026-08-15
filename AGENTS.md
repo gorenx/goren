@@ -30,6 +30,8 @@ The existing `llm` package predates this direction. Reuse correct transport or a
 - `zh-CN/assets/` stores images referenced by Chinese documentation.
 - `llm/docs/zh-CN/` describes the pre-port implementation and is migration evidence, not the target API.
 
+Every cohesive implemented capability package must add or update a colocated `README.zh-CN.md`. For now, do not add package-local English `README.md` files. The package README explains the package's responsibilities and non-responsibilities, operating model, upstream/downstream interactions, lifecycle, and failure/cancellation behavior, and uses Mermaid for interaction or process diagrams. It links to the owning `zh-CN/NN-*.md` documents for cross-package contracts and to `zh-CN/08-implementation-progress.md` for implementation evidence instead of creating a second source of truth. Add these READMEs only to real implemented packages, not placeholders, small ownerless helper directories, generated code, or test-only directories.
+
 Write detailed design in Simplified Chinese. Preserve canonical TypeScript public names, event names, wire fields, configuration keys, and established domain terms. Update `zh-CN/README.md` whenever an authoritative design document changes responsibility or order. Link to the owning document instead of duplicating contracts. Keep unresolved choices explicit; do not turn proposals into accepted behavior silently.
 
 Use `cmd/` for executable entry points, public root packages only for real extension contracts, and `internal/` for repository-private runtime, assembly, and adapters. Keep colocated `*_test.go` files and package-local `testdata/`. Do not create placeholder package trees.
