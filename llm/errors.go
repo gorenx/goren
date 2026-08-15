@@ -3,6 +3,7 @@ package llm
 import (
 	"errors"
 	"fmt"
+	"math"
 )
 
 const (
@@ -55,8 +56,9 @@ func NewLlmError(summary string, failureCode string, options LlmErrorOptions) (*
 	if options.Status != nil && (*options.Status < 100 || *options.Status > 599) {
 		return nil, errors.New("llm: error status must be from 100 through 599")
 	}
-	if options.ProviderRetryAfterMS != nil && *options.ProviderRetryAfterMS <= 0 {
-		return nil, errors.New("llm: providerRetryAfterMs must be positive")
+	if options.ProviderRetryAfterMS != nil &&
+		(math.IsNaN(*options.ProviderRetryAfterMS) || math.IsInf(*options.ProviderRetryAfterMS, 0) || *options.ProviderRetryAfterMS <= 0) {
+		return nil, errors.New("llm: providerRetryAfterMs must be positive and finite")
 	}
 	if options.RequestID == "" {
 		options.RequestID = ProviderRequestID("")
@@ -135,7 +137,8 @@ func validateFailure(candidate LlmFailure) error {
 	if candidate.Status != nil && (*candidate.Status < 100 || *candidate.Status > 599) {
 		return errors.New("llm: failure status is invalid")
 	}
-	if candidate.ProviderRetryAfterMS != nil && *candidate.ProviderRetryAfterMS <= 0 {
+	if candidate.ProviderRetryAfterMS != nil &&
+		(math.IsNaN(*candidate.ProviderRetryAfterMS) || math.IsInf(*candidate.ProviderRetryAfterMS, 0) || *candidate.ProviderRetryAfterMS <= 0) {
 		return errors.New("llm: failure retry delay is invalid")
 	}
 	return nil

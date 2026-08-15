@@ -227,6 +227,13 @@
         "TRANSPORT"
       ]
     },
+    "llmRetry": {
+      "factory": "@deepseek-ai/dsh-llm-retry",
+      "sessionEvents": [
+        "llm/retry",
+        "llm/retry-started"
+      ]
+    },
     "privilegedMethods": [
       "agentPreset.read",
       "agentPreset.copy",
