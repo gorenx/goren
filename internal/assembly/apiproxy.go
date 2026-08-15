@@ -14,6 +14,7 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
+	"github.com/gorenx/goren/userquestions"
 )
 
 type apiProxyService interface {
@@ -64,6 +65,7 @@ func (instance *apiProxyPlugin) Manifest() plugin.Manifest {
 		Name: APIProxyFactoryName, Provides: []plugin.ServiceRef{apiProxyServiceKey.Ref()},
 		Requires: []plugin.ServiceRef{
 			agentcore.Service.Ref(), agentdefaultmodel.Service.Ref(), llm.Service.Ref(), session.StoreService.Ref(),
+			userquestions.Service.Ref(),
 		},
 	}
 }
@@ -73,7 +75,8 @@ func (instance *apiProxyPlugin) Apply(requestContext context.Context, pluginScop
 	defaultModels, defaultsFound := plugin.Require(pluginScope, agentdefaultmodel.Service)
 	modelRuntime, modelsFound := plugin.Require(pluginScope, llm.Service)
 	sessionStore, found := plugin.Require(pluginScope, session.StoreService)
-	if !agentsFound || !defaultsFound || !modelsFound || !found {
+	questionService, questionsFound := plugin.Require(pluginScope, userquestions.Service)
+	if !agentsFound || !defaultsFound || !modelsFound || !found || !questionsFound {
 		return errors.New("assembly: API Proxy dependencies are unavailable")
 	}
 	gateway, err := apiproxy.NewSessionGateway(requestContext, pluginScope, apiproxy.SessionGatewayDependencies{
@@ -96,6 +99,16 @@ func (instance *apiProxyPlugin) Apply(requestContext context.Context, pluginScop
 		return err
 	}
 	if err := apiproxy.RegisterSessionAPI(methods, gateway); err != nil {
+		return err
+	}
+	if _, err := apiproxy.NewInteractionGateway(
+		requestContext,
+		pluginScope,
+		apiproxy.InteractionGatewayDependencies{
+			Methods: methods, Frames: gateway.InteractionBroker(), UserQuestions: questionService,
+		},
+		apiproxy.InteractionGatewayOptions{},
+	); err != nil {
 		return err
 	}
 	streams, err := apiproxy.NewEventStreams(gateway.Mux, gateway.Host)
