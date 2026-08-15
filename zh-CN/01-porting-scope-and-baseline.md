@@ -3,7 +3,7 @@
 状态：Draft
 基线核对日期：2026-08-14
 
-本文拥有 Goren 复制 DeepSeek Harness 的目标、需求、纳入范围、排除范围、兼容基线和全局不变量。首要目标是 TypeScript 客户端与 Go Agent 服务端通信协议兼容。运行时结构见[02 Go 运行时架构与插件模型](./02-runtime-architecture-and-plugin-model.md)，具体协议见[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)，实施阶段见[05 复制路线图与验收](./05-porting-roadmap-and-acceptance.md)。
+本文拥有 Goren 复制 DeepSeek Harness 的目标、需求、纳入范围、排除范围、兼容基线和全局不变量。首要目标是 TypeScript 客户端与 Go Agent 服务端通信协议兼容。运行时结构见[02 Go 运行时架构与插件模型](./02-runtime-architecture-and-plugin-model.md)，具体协议见[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)，实施阶段见[05 复制路线图与验收](./05-porting-roadmap-and-acceptance.md)，当前交付闭包见[21 Web Agent 主会话闭环与能力边界](./21-web-agent-main-flow.md)。
 
 ## 1. 系统定位
 
@@ -113,7 +113,7 @@ Headless 是不启动 Client Connection 的一次性 CLI adapter：读取一个 
 
 - Connection Host carrier：复制 `/api` HTTP unary、`rpcId` 关联、`RpcResult`/`RpcReceipt`、两条 WebSocket downlink、取消、body limit 与 Host/Origin trust fence。
 - API Proxy contract：保留纳入方法的 canonical method、payload/result schema、错误码与 frame union；Go handler 直接调用核心 Service。
-- 当前兼容切片包含 `host.describe`、`session.*`、七个 `workspace.*`、`events.mux`、`events.host`、`respond`，以及它们依赖的 Session/Workspace/approval/question frame。
+- 当前兼容切片包含 `host.describe`、九个主流程 `session.*` method、七个 `workspace.*`、`events.mux`、`events.host`、`respond`，以及它们依赖的 Session/Workspace/approval/question frame。`session.search`、`session.fork` 与 `session.attachment` 不在本轮。
 - Workspace 只纳入服务端 Registry、SQLite adapter、Session accounting 与协议/API；不复制浏览器 Workspace manager、目录选择 UI 或项目文件索引。
 - TypeScript Client 代码不复制，但源 Client contract tests 作为 Go Server 的外部兼容验收方。
 
@@ -217,7 +217,7 @@ DeepSeek Harness 与 Goren 都使用 MIT License。复制或实质派生源代�
 ## 13. 未决事项
 
 - **O-01 基线升级节奏**：按 release、按月还是按需求升级；当前维持固定 commit。
-- **O-02 客户端 API 扩展顺序**：第一兼容切片以 `host.describe`、`session.*`、两条 event stream 和 `respond` 为主；其他客户端功能按实际需求加入 capability matrix。
+- **O-02 客户端 API 扩展顺序**：当前冻结为[21 Web Agent 主会话闭环与能力边界](./21-web-agent-main-flow.md)定义的文本主会话闭包；其他客户端功能只有在用户显式扩展目标或真实阻断该闭环时才进入。
 - **O-03 Windows 沙箱完成度**：是否首发即要求与源受限 token/ACL 相同，还是先以 Linux/macOS 为 release gate；不得用无沙箱实现冒充 parity。
 - **O-04 外部 Go Plugin 分发**：当前只支持自定义二进制静态链接；是否提供生成 composition root 的命令在实际用户需求出现后决定。
 - **O-05 typed config 输入**：首期是否需要配置文件、使用 YAML 还是 JSON，以及 defaults/file/environment/CLI 的覆盖顺序；无论选择如何，严格 Go 类型与禁止脚本已经确定。

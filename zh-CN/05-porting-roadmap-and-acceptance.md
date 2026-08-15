@@ -8,8 +8,12 @@
 Existing TypeScript Client
   -> Connection Host
   -> API Proxy
-  -> Session / Agent
+  -> Session / Agent Loop
+  -> LLM / DeepSeek
+  -> committed turn/end
 ```
+
+当前只推进[21 Web Agent 主会话闭环与能力边界](./21-web-agent-main-flow.md)定义的文本会话闭包。完整 Web product、Settings/Credentials、Agent Preset、Goal、Subagent、Typert Remote 与其他管理/扩展页面不再与主流程并行实施；已经存在的额外协议分支也不自动扩大本路线图。
 
 每个阶段仍以 DeepSeek Harness 的职责 owner 为默认边界，并使用[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)定义的证据分级。
 
@@ -215,9 +219,9 @@ TypeScript/Go 双向 Message/StreamChunk fixture、所有 finish reason、partia
 - Projection use case 决定 event-to-mutation 与 transaction intent，SQLite/sqlc adapter 只执行和映射；
 - Session fact Backend 可替换，独立 SQLite projection/query index 可从事实流重建。
 
-## 9. 阶段 6：按客户端需求扩展服务端能力
+## 9. 阶段 6：按客户端需求扩展服务端能力（当前冻结）
 
-Workspace、Filesystem、Shell、PTY、LSP、Sandbox、Guard、Credentials、Attachment、Spill、Settings、Goals 等按 capability matrix 逐项进入，不按源目录批量复制。
+Workspace、Filesystem、Shell、PTY、LSP、Sandbox、Guard、Credentials、Attachment、Spill、Settings、Goals 等按 capability matrix 逐项进入，不按源目录批量复制。当前目标只要求主会话闭环，因此本阶段不继续启动新能力；状态和历史完成项见[08 实施进度](./08-implementation-progress.md)。
 
 每项能力必须：
 
