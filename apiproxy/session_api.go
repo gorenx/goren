@@ -2,6 +2,7 @@ package apiproxy
 
 import (
 	"context"
+	"encoding/json"
 )
 
 const (
