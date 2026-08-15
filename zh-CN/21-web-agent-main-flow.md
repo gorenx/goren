@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有浏览器到 Go Agent Loop 的主会话闭包。默认服务提供仓库自有的极简 UI；它复用固定 DeepSeek Harness Host 协议，但不复制原版 `apps/web`、React 组件系统或 Client plugin runtime。实施状态与验证证据只记录在[08 实施进度](./08-implementation-progress.md)。
+本文拥有浏览器到 Go Agent Loop 的主会话闭包。默认服务提供仓库自有的主会话 UI；它复用固定 DeepSeek Harness Host 协议，但不复制原版 `apps/web` 的组件源码、Connection 实现或 Client plugin runtime。实施状态与验证证据只记录在[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 用户目标
 
@@ -18,7 +18,7 @@ DeepSeek credential 仍由 `DEEPSEEK_API_KEY` 环境变量提供。仓库根 `.e
 
 ## 2. UI 与源 Web 产品的关系
 
-纳入的是根级 `web` 包及其内嵌静态资源。界面参考 Harness 的紧凑对话工作台结构，但浏览器代码由本仓库独立实现，只连接以下既有 Host surface：
+纳入的是根级 `web` 包及其内嵌静态资源。浏览器源码使用 React、TypeScript、Vite 与 Tailwind CSS，由本仓库独立实现；信息布局参考 Harness 的紧凑三栏工作台，但只连接以下既有 Host surface：
 
 - `host.describe`；
 - `session.list`、`session.create`、`session.history`、`session.prompt`；
@@ -27,7 +27,7 @@ DeepSeek credential 仍由 `DEEPSEEK_API_KEY` 环境变量提供。仓库根 `.e
 以下原版浏览器能力不复制：
 
 - `window.__DSH_BOOT__`、`/plugins/<id>/client.js` 与 Client Module System；
-- React、Cordis browser context 和完整 `bundle/web-app` roster；
+- 原版 React 组件系统、Cordis browser context 和完整 `bundle/web-app` roster；
 - Workspace 树编辑、Settings、Credentials、Agent Preset、Goal、Subagent 和 Plugin Inventory 页面；
 - directory picker、附件、搜索、fork、Shell/PTY 面板；
 - Approval/Question 的交互控件。服务端协议和能力仍保留，但当前极简 UI 不消费这些 frame。
@@ -59,7 +59,7 @@ composition root -> web.Handler + Connection + capabilities
 ```mermaid
 sequenceDiagram
     actor U as User
-    participant W as web.ConversationApp
+    participant W as React UI / ConversationStore
     participant H as Connection Host
     participant A as API Proxy
     participant S as Session Gateway
@@ -103,9 +103,9 @@ sequenceDiagram
 浏览器实现保持两个有状态对象，不翻译源 TypeScript 的插件函数组合：
 
 - `HarnessAPI`：拥有 unary RPC envelope、两条 downlink WebSocket、重连和关闭；
-- `ConversationApp`：拥有 Session list、selected Session、history event、stream draft 和 DOM 投影。
+- `ConversationStore`：拥有 Session list、selected Session、history event、stream draft 和可观察状态；React 组件负责 DOM 投影。
 
-`ConversationApp` 不创建第二套业务模型。Session 标题优先读取 `projections.values.title`；首个 prompt 到正式 projection 到达前，只保留一个浏览器本地显示标题，不写回服务端。
+`ConversationStore` 不创建第二套业务模型。Session 标题优先读取 `projections.values.title`；首个 prompt 到正式 projection 到达前，只保留一个浏览器本地显示标题，不写回服务端。
 
 ## 6. 失败、断线与安全边界
 

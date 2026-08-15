@@ -10,7 +10,7 @@ The primary compatibility target is the protocol between the existing TypeScript
 
 The inbound Connection Host uses Echo v5 (`github.com/labstack/echo/v5`) rather than a directly assembled `net/http` router/server. Keep Echo inside `internal/connection`; API Proxy and core packages must not depend on `echo.Context`. Do not use Echo's permissive binder for protocol envelopes: decode with the repository's strict codecs. Install a custom Echo error handler and recovery mapping so framework defaults never change the pinned HTTP status, JSON envelope, or headers. Access the underlying request/response only inside the WebSocket bridge and cancellation/transport middleware required by `coder/websocket`.
 
-The default server includes the repository-owned `web` package for the core conversation flow only. Keep it self-contained and limited to session creation/selection, history, text prompts, and live Agent output. Exclude the original browser-side Connection implementation, React/client plugin runtime, full DeepSeek Harness Web product, DeepSeek Harness `packages/sdk`, Python SDKs, and generated client artifacts; do not import their runtime code into Go. Typert is an internal dispatch mechanism for selected Remote endpoints, not the overall client protocol. Headless, ACP, MCP, and Typert-backed auxiliary endpoints are deferred unless the current task explicitly brings them into scope.
+The default server includes the repository-owned `web` package for the core conversation flow only. Its source uses React, TypeScript, Vite, and Tailwind CSS, while Go embeds the committed production build and has no Node.js runtime dependency. Keep it self-contained and limited to session creation/selection, history, text prompts, and live Agent output. Exclude the original browser-side Connection implementation, React/client plugin runtime, full DeepSeek Harness Web product, DeepSeek Harness `packages/sdk`, Python SDKs, and generated client artifacts; do not import their runtime code into Go. Typert is an internal dispatch mechanism for selected Remote endpoints, not the overall client protocol. Headless, ACP, MCP, and Typert-backed auxiliary endpoints are deferred unless the current task explicitly brings them into scope.
 
 Configuration is owner-defined Go typed config. Do not implement or embed `!!js`, Goja, Node.js evaluation, Cordis expression interpolation, or another scripting substitute. CLI flags, environment variables, and optional config files must be decoded into named Go structs with strict unknown-field handling and explicit validation before a Plugin is created. Derived defaults and platform selection belong in explicit Go functions or the composition root.
 
@@ -59,6 +59,8 @@ This repository has a Go module. Use the standard commands unless repository wra
 - `go vet ./...`
 - `go build ./...`
 - `git diff --check`
+- `cd web && pnpm install --frozen-lockfile`
+- `cd web && pnpm run build`
 
 Run focused tests while iterating, then the applicable full checks. Prefer table-driven tests when cases share behavior. Documentation-only changes require Markdown link validation and `git diff --check`; do not claim Go behavior was verified by a documentation check. Protocol work also requires TypeScript-to-Go golden fixtures or differential tests. Real-provider tests must self-skip without credentials and remain separate from keyless acceptance.
 

@@ -23,6 +23,7 @@
 | D-10 | 日志使用 `log/slog`；OpenTelemetry 作为可选 Plugin，默认关闭 export | Accepted |
 | D-11 | Server CLI 首期使用标准库 `flag`；并发组合候选 `x/sync`，稳定 ID 候选 `google/uuid` | Proposed |
 | D-12 | 不使用标准库 `plugin`、CGO SQLite、Node.js runtime、嵌入式脚本引擎或浏览器依赖 | Accepted |
+| D-13 | Web 源码使用 React、TypeScript、Vite 与 Tailwind CSS；Go 只内嵌生产构建 | Accepted |
 
 `Accepted` 表示架构方向已经确定，不代表代码已经实现；`Proposed` 必须在首次引入依赖的代码提交中完成版本与 license 复核；`Deferred` 表示当前目标不依赖该能力，不能预先引入依赖或创建占位实现。
 
@@ -319,7 +320,13 @@ OpenTelemetry 是可选 Plugin，使用 [`go.opentelemetry.io/otel`](https://pkg
 
 简单功能继续使用标准库。只有存在当前能力需求、维护状态可接受、license 兼容且能减少真实协议风险时才新增依赖。
 
-## 13. 依赖准入与升级
+## 13. D-13：Web 构建栈
+
+根级 `web` 使用 React 管理视图、TypeScript 检查浏览器协议映射、Vite 生成生产资源，并由 Tailwind CSS 提供设计 token 和组件 utility。状态与 I/O 仍由 `ConversationStore`、`HarnessAPI` 两个命名对象拥有，不把服务端业务规则放入 React hook。
+
+`web/dist` 随仓库提交并由 `web.Site` 内嵌，因此 Go 二进制的构建和运行不依赖 Node.js；Node.js/pnpm 只属于修改前端时的构建工具。项目不导入原版 Harness Web 源码或 Client plugin runtime，也不因此扩大当前 Host API 范围。
+
+## 14. 依赖准入与升级
 
 每个第三方依赖的首次代码提交必须记录：
 
@@ -334,7 +341,7 @@ OpenTelemetry 是可选 Plugin，使用 [`go.opentelemetry.io/otel`](https://pkg
 
 依赖升级不得与无关功能混合。协议 SDK 升级后必须重跑对应跨语言 fixture；storage、PTY、watcher 和 sandbox 升级必须重跑平台/故障测试。
 
-## 14. 被拒绝的方案
+## 15. 被拒绝的方案
 
 | 方案 | 拒绝原因 |
 | --- | --- |

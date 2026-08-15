@@ -47,7 +47,7 @@
 | WAF-10 | Approval/Question 经 `/api/respond` 结算 | Completed | Contract Verified：requested、respond、resolved、replay 与错误响应恢复已覆盖 |
 | WAF-11 | rename 并投影稳定标题 | Completed | Contract Verified：固定客户端、`Session.rename()` 与 higher-seq-wins store 已覆盖 |
 | WAF-12 | SQLite 保存并恢复完整会话事实 | Completed | Go Verified：cold list/history/resume 已通过；正常 `turn/end` 显式触发 durability checkpoint，并在 Agent idle 前从 SQLite storage-only Backend 直接读到完整边界 |
-| WAF-UI01 | 默认服务内嵌极简主会话 UI | Completed | Go Verified：根级 `web` 包、embedded assets、SPA fallback 和 Connection `http.Handler` delegation 已覆盖 |
+| WAF-UI01 | 默认服务内嵌主会话 UI | Completed | Go Verified：React/Vite/Tailwind 生产构建、embedded assets、SPA fallback 和 Connection `http.Handler` delegation 已覆盖 |
 | WAF-UI02 | UI 完成发送、会话创建/选择和历史恢复 | Completed | Contract Verified：`web-ui-main-flow.ts` 加载真实内嵌页面，完成 prompt、流式终态、新建 Session、切回与 history |
 | WAF-A01 | 固定客户端经默认 composition 与 DeepSeek Adapter 完成轮次 | Completed | Contract Verified：默认 `DefaultSpecs`、真实 HTTP/WebSocket、DeepSeek Adapter 和离线 HTTP oracle 在同一进程到达 `turn/end` |
 | WAF-A02 | 使用真实 DeepSeek credential/endpoint 独立 smoke | Completed | Environment Verified：显式加载本地 `.env` 后，内嵌 UI 经真实 `https://api.deepseek.com` 完成 prompt、终态、会话切换与历史恢复；credential 未输出或提交 |
@@ -223,7 +223,7 @@ interaction owner registers stable rpcId + decoder
 | S6-W06 | Workspace | `session.create({workspaceId})` 与 cwd/accounting 集成 | Completed | Contract Verified：固定源 Client 验证 canonical cwd、attach 及 `workspaceId + cwd` 拒绝 |
 | S6-W07 | Workspace | 并发 mutation、post-commit publication 与失败边界 | Completed | Go Verified：`TestRegistrySerializesConcurrentSessionAccountingAtCommit` 及 Registry failure cases |
 | S6-W08 | Workspace | 能力插件与 SQLite adapter 装配边界 | Completed | Go Verified：Catalog 只注册 `@deepseek-ai/dsh-workspace`；SQLite 无 Factory、Manifest、Service key；`af33afd` |
-| S6-WEB01 | Web UI | 内嵌主会话页面、Session 选择/history、prompt 与实时回复 | Completed | Contract Verified：`@gorenx/dsh-web` 默认装配根级 `web.Site`；JSDOM 对真实 Host 完成发送、新建、切换和历史恢复；未引入源 React/plugin runtime |
+| S6-WEB01 | Web UI | 内嵌主会话页面、Session 选择/history、prompt 与实时回复 | Completed | Contract Verified：`@gorenx/dsh-web` 默认装配 React/Vite/Tailwind 构建的 `web.Site`；JSDOM 对真实 Host 完成发送、新建、切换和历史恢复；未引入源 Client plugin runtime |
 | S6-L01 | LLM Catalog | `llm.providers` 合并 configurable directory 与 active route | Completed | Contract Verified：声明顺序、active/dormant、undeclared active route 和 `declared` omission 由固定源 `WebApiClient` 验证 |
 | S6-L02 | LLM Catalog | `llm.models` Host catalog 与 `session.models` 共享投影 | Completed | Contract Verified：provider-local failure containment、reasoning metadata 与固定源 response schema 通过；目录逻辑统一在 `LLMGateway.Catalog` |
 | S6-P01 | Agent Preset | `agentPreset.list` absent-roster 合法部署分支 | Completed | Contract Verified：默认组合无 `AgentPresetRoster` 时返回 non-nil empty presets、`authorable:false`、`hasDocument:false`，固定源 `WebApiClient` 接受 |
@@ -383,15 +383,16 @@ interaction owner registers stable rpcId + decoder
 
 ## 13. 当前验证结果
 
-本次在固定 Web Agent 主调用链上补齐 `turn/end` durability checkpoint，并统一 Session Persistence 导入缩写；没有按完整原版 WebUI 的 method 清单逐个扩展 API。当前在 Go 1.26.6、`darwin/arm64` 执行并通过：
+本次在固定 Web Agent 主调用链上补齐 `turn/end` durability checkpoint，并把主会话页面重建为 React、Vite、Tailwind CSS 技术栈；没有按完整原版 WebUI 的 method 清单逐个扩展 API。当前在 Go 1.26.6、`darwin/arm64` 执行并通过：
 
+- `cd web && pnpm install --frozen-lockfile && pnpm run build`
 - `go test ./... -count=1`
 - `go test -tags=contract ./internal/assembly -run TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter -count=1`
 - `git diff --check`
 
 固定源码 `WebApiClient` 已通过真实 HTTP/WebSocket 创建 Session、选择模型、提交 prompt、驱动 Go Agent Loop、接收 `turn/end`、修改 queue、cancel、rename 和 respond。新增默认 composition contract 使用 deterministic DeepSeek HTTP oracle，在同一进程验证固定 Client 和内嵌 UI；UI 自动化完成发送、回复、新建/选择 Session 与 history 恢复。
 
-真实环境验收显式加载本地 `.env`，启动默认 `cmd/goren` 后由同一 UI contract 调用真实 `https://api.deepseek.com`，结果为 `booted/prompted/selected/history = true`，最终 `runningCount = 0`。当前环境没有可供自动化控制的真实浏览器，因此该证据验证浏览器逻辑与真实 Provider，不声明视觉布局已在 Chrome/Safari 人工验收。临时 SQLite 验收目录已移入系统废纸篓。
+真实环境验收显式加载本地 `.env`，启动默认 `cmd/goren` 后由同一 UI contract 调用真实 `https://api.deepseek.com`，结果为 `booted/prompted/selected/history = true`，最终 `runningCount = 0`。本次使用本机 Chrome headless 检查了桌面与窄屏渲染；浏览器插件和 macOS UI native pipe 均不可用，因此不声明键盘操作或 Chrome/Safari 人工验收。临时 SQLite 验收目录已移入系统废纸篓。
 
 ## 14. 安全与依赖状态
 
@@ -405,7 +406,7 @@ interaction owner registers stable rpcId + decoder
 Agent Loop core、九个 Session method、Session Persistence/SQLite、live Mux/Host projection、queue、cancel、rename、Approval/Question 和极简 Web UI 已组成可运行主流程。正常轮次的 `turn/end` 也已成为显式 durable boundary。当前主会话已到暂停边界，后续只保留以下非阻塞项：
 
 1. 以 bounded prepared cache 和 Backend suffix seek 优化 cold read；二者不改变主流程正确性或公开协议；
-2. 有可用真实浏览器时补视觉、键盘与响应式人工验收；该项不阻塞当前 Host/UI 主流程 contract。
+2. 有可用交互式浏览器时补键盘操作与 Chrome/Safari 人工验收；该项不阻塞当前 Host/UI 主流程 contract。
 
 Settings、Preset、Filesystem、Shell、Attachment、Search、Fork、Typert Remote、Approval/Question 浏览器控件和完整原版 Web product 均保持 Deferred；当前不为它们增加 handler、service 或测试占位。
 

@@ -1,10 +1,11 @@
 # Web 主会话 UI
 
-`web` 提供随 Go 二进制内嵌的极简浏览器 UI。它是主会话的入站适配器，不是 Session、Agent 或 LLM 的业务 owner。跨模块能力范围由[21 Web Agent 主会话闭环与能力边界](../zh-CN/21-web-agent-main-flow.md)拥有，当前完成度与验证证据见[08 实施进度](../zh-CN/08-implementation-progress.md)。
+`web` 提供随 Go 二进制内嵌的 React 主会话 UI。源码使用 TypeScript、Vite 和 Tailwind CSS 构建；Go 运行时只内嵌 `dist`，不依赖 Node.js。它是主会话的入站适配器，不是 Session、Agent 或 LLM 的业务 owner。跨模块能力范围由[21 Web Agent 主会话闭环与能力边界](../zh-CN/21-web-agent-main-flow.md)拥有，当前完成度与验证证据见[08 实施进度](../zh-CN/08-implementation-progress.md)。
 
 ## 职责
 
-- 通过 `embed.FS` 提供 `index.html`、`app.css` 和 `app.js`；
+- 使用 React 组件组织左侧会话、中央对话与右侧运行事实布局；
+- 通过 Vite/Tailwind 生成 `dist`，再由 `embed.FS` 提供 `index.html`、`app.css` 和 `app.js`；
 - 展示会话列表、当前会话历史和流式 Agent 输出；
 - 创建、选择 Session，并提交纯文本 prompt；
 - 封装 Host unary RPC envelope 和 Mux/Host 两条 WebSocket downlink；
@@ -19,11 +20,12 @@
 浏览器端有两个状态对象：
 
 - `HarnessAPI` 负责 RPC、WebSocket generation、重连和关闭；
-- `ConversationApp` 负责 Session list、selected Session、history、stream draft 与 DOM。
+- `ConversationStore` 负责 Session list、selected Session、history、stream draft 与可观察状态；React 组件只投影视图并转发用户意图。
 
 ```mermaid
 flowchart LR
-    Browser[ConversationApp] --> Client[HarnessAPI]
+    Browser[React UI] --> Store[ConversationStore]
+    Store --> Client[HarnessAPI]
     Client -->|POST /api/session.*| Host[Connection Host]
     Client -->|events.mux / events.host| Host
     Host --> Proxy[API Proxy]
@@ -58,6 +60,18 @@ stateDiagram-v2
     Loading --> Disconnected: HTTP/WS failure
     Disconnected --> Loading: reconnect / retry
 ```
+
+## 构建
+
+前端依赖和生产构建只在开发阶段需要：
+
+```sh
+cd web
+pnpm install --frozen-lockfile
+pnpm run build
+```
+
+`dist` 必须随源码提交，使 `go build` 和 `go test` 不需要现场安装 Node.js。修改前端后由 `pnpm run build` 同时执行 TypeScript 检查并刷新内嵌产物。
 
 ## 生命周期和失败边界
 
