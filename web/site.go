@@ -47,7 +47,11 @@ func (frontend *Site) ServeHTTP(responseWriter http.ResponseWriter, httpRequest 
 		return
 	}
 	if _, err := fs.Stat(frontend.files, resourcePath); err == nil {
-		frontend.writeAsset(responseWriter, httpRequest, resourcePath, "public, max-age=3600")
+		cacheControl := "no-cache"
+		if strings.HasPrefix(resourcePath, "assets/") {
+			cacheControl = "public, max-age=31536000, immutable"
+		}
+		frontend.writeAsset(responseWriter, httpRequest, resourcePath, cacheControl)
 		return
 	}
 	if strings.Contains(path.Base(resourcePath), ".") {

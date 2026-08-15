@@ -173,7 +173,7 @@ func TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter(t *
 	}
 	if pageResponse.StatusCode != http.StatusOK ||
 		!strings.Contains(string(pageBody), `id="root"`) ||
-		!strings.Contains(string(pageBody), "/app.js") {
+		!strings.Contains(string(pageBody), "/assets/app-") {
 		t.Fatalf("Web shell response = (%d, %q)", pageResponse.StatusCode, pageBody)
 	}
 
