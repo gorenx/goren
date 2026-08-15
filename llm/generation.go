@@ -33,10 +33,15 @@ func (owner *runtimeService) streamWithRoute(
 	if err != nil {
 		return nil, err
 	}
-	return plugin.WaterfallFrom(requestContext, owner.sourceScope, StreamEvent, detached,
+	return plugin.WaterfallFrom(
+		requestContext,
+		owner.sourceScope,
+		StreamEvent,
+		detached,
 		func(chainContext context.Context, request GenerateOptions) (ChunkStream, error) {
 			return owner.adapterBoundary(chainContext, request, record, preparedConfig)
-		})
+		},
+	)
 }
 
 func (owner *runtimeService) adapterBoundary(

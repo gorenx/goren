@@ -343,7 +343,12 @@ func waterfallAt[P, R any](requestContext context.Context, engine *Runtime, sele
 	return chain(requestContext, payload)
 }
 
-func dispatchDecision[P, R any](requestContext context.Context, engine *Runtime, topic EventKey[P, R], payload P) (Decision[R], error) {
+func dispatchDecision[P, R any](
+	requestContext context.Context,
+	engine *Runtime,
+	topic EventKey[P, R],
+	payload P,
+) (Decision[R], error) {
 	return dispatchDecisionAt(requestContext, engine, topic, payload, nil)
 }
 
@@ -385,13 +390,17 @@ func registerListener(pluginScope *Scope, definition eventRef, listener eventSub
 }
 
 func notifySubscriptions[P any](engine *Runtime, definition eventRef, selectedKey *ScopeKey) ([]NotifyHandler[P], error) {
-	return collectSubscriptions(engine, definition, selectedKey, func(listener eventSubscription) (NotifyHandler[P], bool) {
-		typedListener, ok := listener.(*typedEventSubscription[P, struct{}, NotifyHandler[P]])
-		if !ok {
-			return nil, false
-		}
-		return typedListener.callback, true
-	})
+	return collectSubscriptions(
+		engine,
+		definition,
+		selectedKey,
+		func(listener eventSubscription) (NotifyHandler[P], bool) {
+			typedListener, ok := listener.(*typedEventSubscription[P, struct{}, NotifyHandler[P]])
+			if !ok {
+				return nil, false
+			}
+			return typedListener.callback, true
+		})
 }
 
 func decisionSubscriptions[P, R any](engine *Runtime, definition eventRef, selectedKey *ScopeKey) ([]DecisionHandler[P, R], error) {

@@ -250,9 +250,11 @@ func OnError(pluginScope *plugin.Scope, callback ErrorHandler) (plugin.Disposer,
 	if callback == nil {
 		return nil, errors.New("agent: error handler is nil")
 	}
-	return plugin.OnNotify(pluginScope, errorEvent, func(requestContext context.Context, notice ErrorNotice) error {
-		return callback(requestContext, notice)
-	})
+	return plugin.OnNotify(pluginScope, errorEvent,
+		func(requestContext context.Context, notice ErrorNotice) error {
+			return callback(requestContext, notice)
+		},
+	)
 }
 
 func emitScoped[P any](requestContext context.Context, sourceScope *plugin.Scope, subject Agent, topic plugin.EventKey[P, struct{}], payload P) error {

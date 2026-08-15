@@ -67,9 +67,12 @@ func newReactLoopAgent(
 	closedActivity := make(chan struct{})
 	close(closedActivity)
 	subject := &ReactLoopAgent{
-		owner: owner, identifier: conversation.ID(), options: cloneAgentOptions(loopOptions),
-		conversation: conversation, agentScope: agentScope,
-		activity: activityState{kind: activityIdle, lastTurn: lastTurn}, activityDone: closedActivity,
+		owner:        owner,
+		identifier:   conversation.ID(),
+		options:      cloneAgentOptions(loopOptions),
+		conversation: conversation,
+		agentScope:   agentScope,
+		activity:     activityState{kind: activityIdle, lastTurn: lastTurn}, activityDone: closedActivity,
 	}
 	pending, err := agent.NewInbox(conversation, inboxEventBridge{subject: subject})
 	if err != nil {
