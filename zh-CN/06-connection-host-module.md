@@ -36,12 +36,14 @@
 - 拥有 listener、route、body budget、content type、HTTP error rendering、panic recovery、trust fence、WebSocket pump 和 graceful shutdown；
 - 把 Echo request 映射为 `context.Context`、method、`rpcId` 与 raw payload；
 - 只依赖 consumer-owned `RPCDispatcher` 与 `EventSource`，不导入 API Proxy 的具体类型；
+- 可在所有协议 route 之后挂载一个 `http.Handler` 处理未被占用的浏览器 GET/HEAD 路径；
 - 不包含 method payload schema、Host snapshot 组装或 Agent/Session 业务；
+- 不读取或解释前端静态资源，具体页面由根级 `web` 包拥有；
 - 不把 `echo.Context` 传给下游或异步 goroutine。
 
 ### 2.3 composition root
 
-`cmd/goren` 是 composition root，但不直接构造 API method Catalog 或 Echo Host。它创建静态 Factory Catalog 与 Plugin Runtime，把 typed Plugin declarations 交给 `internal/assembly`，并用进程 signal context 触发 Runtime shutdown。`@deepseek-ai/dsh-client-connection` Plugin 依赖 `apiProxy` Service，通过 effect 同步绑定 listener、启动 Echo，并由 disposer 等待 HTTP/WebSocket cleanup；该装配不改变 Connection 的下游 contract。
+`cmd/goren` 是 composition root，但不直接构造 API method Catalog 或 Echo Host。它创建静态 Factory Catalog 与 Plugin Runtime，把 typed Plugin declarations 交给 `internal/assembly`，并用进程 signal context 触发 Runtime shutdown。默认 `@deepseek-ai/dsh-client-connection` Plugin 依赖 `apiProxy` 与 `webFrontend` Service，通过 effect 同步绑定 listener、启动 Echo，并由 disposer 等待 HTTP/WebSocket cleanup；不启用 Web 的自定义 composition 仍可只依赖 `apiProxy`。该装配不改变 Connection 的下游 contract。
 
 ## 3. 依赖方向
 
@@ -55,6 +57,8 @@ TypeScript Client
                  -> host.describe Provider
        -> EventSource (consumer-owned interface)
             <- apiproxy.EventStreams
+       -> Frontend http.Handler (optional)
+            <- web.Site
 ```
 
 允许的依赖是 inbound adapter 指向 contract 和消费接口，具体 Provider 只在 composition root 装配。`connection` 与 API Proxy 不知道 Echo；Host Provider 不知道 HTTP。
@@ -154,6 +158,7 @@ Connection 不持有 pending table，也不判断 approval/question payload。en
 
 - `echo.New()` 创建唯一 carrier；
 - route 使用 `POST` parameter route，框架 `404/405` 由集中 error handler 映射为源协议的 `404`；
+- `/api` 与 WebSocket route 先注册，`RouteNotFound` 才把其余浏览器路径交给可选 Frontend handler；未知 API 不会落入 SPA fallback；
 - 使用官方 `middleware.RecoverWithConfig`，由集中 `HTTPErrorHandler` 负责未提交响应；
 - `StartConfig.Start` 接收 lifecycle context 和 bounded graceful timeout；
 - 不使用 Echo Binder 或默认 JSON error rendering。

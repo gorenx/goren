@@ -1,140 +1,125 @@
 # 21 Web Agent 主会话闭环与能力边界
 
-状态：Draft
+状态：Accepted
 
-本文拥有当前交付目标的纵向能力闭包：让固定 TypeScript Client 通过 Go Host 创建或打开文本会话，驱动真实 Agent Loop，并持续观察到终态。本文不重复各模块的 wire、领域或持久化契约；这些契约分别由对应模块文档拥有，实施状态与验证证据只记录在[08 实施进度](./08-implementation-progress.md)。
+本文拥有浏览器到 Go Agent Loop 的主会话闭包。默认服务提供仓库自有的极简 UI；它复用固定 DeepSeek Harness Host 协议，但不复制原版 `apps/web`、React 组件系统或 Client plugin runtime。实施状态与验证证据只记录在[08 实施进度](./08-implementation-progress.md)。
 
-## 1. 目标客户端
+## 1. 用户目标
 
-兼容对象是固定基线 `47f943859bef60e4160492346772ded9b24f765a` 中的 Host-facing TypeScript Client contract，尤其是 `packages/client/connection` 的 `WebApiClient` 和 `packages/client/runtime` 的 Session/Workspace object layer。
+启动 `cmd/goren` 后，用户直接打开 `http://127.0.0.1:3080`，可以：
 
-当前不复制或托管以下浏览器实现：
+1. 创建新对话；
+2. 从左侧选择已有对话；
+3. 读取该对话的持久历史；
+4. 发送文本并观察 Agent 的流式回复；
+5. 切换会话后再次恢复刚才的历史。
 
-- `apps/web`、React 组件、CSS、前端静态资源和 `/plugins/<id>/client.js`；
-- `window.__DSH_BOOT__`、Client Module System 和完整 `bundle/web-app` plugin roster；
-- Settings、Credentials、Agent Preset、Goal、Subagent、Plugin Inventory、Dynamic Cordis 等管理或扩展页面。
+DeepSeek credential 仍由 `DEEPSEEK_API_KEY` 环境变量提供。仓库根 `.env` 是本地开发输入，不进入二进制、配置对象、Session、日志或提交；启动时由 shell 显式加载。
 
-因此，“Web 主流程兼容”不等于“未经裁剪的源 `web` profile 所有页面均可用”。完整源 profile 的 Welcome Notice 会读取 `ui-onboarding` Settings namespace；该依赖不属于本轮主会话闭包，不能通过在 API Proxy 中硬编码成功值规避。使用完整源 profile 的产品级验收只有在显式扩大范围后才成立。
+## 2. UI 与源 Web 产品的关系
 
-## 2. 可观察闭环
+纳入的是根级 `web` 包及其内嵌静态资源。界面参考 Harness 的紧凑对话工作台结构，但浏览器代码由本仓库独立实现，只连接以下既有 Host surface：
 
-主流程必须从浏览器请求一直到 durable Session 终态，而不是分别证明若干同名类型存在：
+- `host.describe`；
+- `session.list`、`session.create`、`session.history`、`session.prompt`；
+- `/api/events.mux` 与 `/api/events.host`。
+
+以下原版浏览器能力不复制：
+
+- `window.__DSH_BOOT__`、`/plugins/<id>/client.js` 与 Client Module System；
+- React、Cordis browser context 和完整 `bundle/web-app` roster；
+- Workspace 树编辑、Settings、Credentials、Agent Preset、Goal、Subagent 和 Plugin Inventory 页面；
+- directory picker、附件、搜索、fork、Shell/PTY 面板；
+- Approval/Question 的交互控件。服务端协议和能力仍保留，但当前极简 UI 不消费这些 frame。
+
+因此，“默认 Web 主会话可用”不表示“原版 DeepSeek Harness Web 产品完整兼容”。
+
+## 3. 所有权与依赖方向
+
+```text
+web browser state
+  -> Connection Host HTTP/WebSocket
+  -> API Proxy typed methods/frames
+  -> Session Gateway
+  -> Agent Registry / Agent Loop
+  -> LLM Runtime / DeepSeek
+
+Session facts -> Session Persistence -> SQLite Backend
+composition root -> web.Handler + Connection + capabilities
+```
+
+- `web` 只拥有浏览器展示状态、Host 调用和断线重连，不决定 Session 或 Agent 业务规则。
+- `internal/connection` 仍拥有 Echo route、trust fence、HTTP/WS 生命周期；它只消费 `http.Handler`，不知道 UI 页面结构。
+- `internal/assembly` 用 `@gorenx/dsh-web` Factory 把 `web.Site` 接到默认 Connection composition。
+- API Proxy、Session、Agent Loop、LLM 和 persistence 均不导入 `web`。
+- SQLite adapter 只保存 Session 已提交的事实；UI 切换会话时通过 `session.history` 重新读取，不访问数据库。
+
+## 4. 主流程
 
 ```mermaid
 sequenceDiagram
-    participant C as TypeScript Client
+    actor U as User
+    participant W as web.ConversationApp
     participant H as Connection Host
     participant A as API Proxy
     participant S as Session Gateway
-    participant G as Agent Registry
-    participant L as Agent Loop
-    participant M as LLM Runtime / DeepSeek
+    participant G as Agent Loop
+    participant D as DeepSeek Adapter
     participant P as Session Persistence
 
-    C->>H: open events.mux + events.host
-    C->>H: host.describe
-    H->>A: typed unary dispatch
-    C->>H: session.list / workspace.list
-    C->>H: session.create
-    H->>S: create or resume Agent-backed Session
-    S->>G: Create or Resume Agent
-    C->>H: session.history + session.models
-    C->>H: session.prompt(text)
-    H->>S: admit immutable UserMessage
-    S->>L: Agent.Followup
-    L->>P: append turn/step/request/message facts
-    L->>M: stream selected model
-    M-->>L: StreamChunk sequence
-    L->>P: append assistant/tool/turn-end facts
-    L-->>A: Session and Agent events
-    A-->>C: Mux/Host frames
-    C->>H: session.cancel / session.updateQueue / respond
-    H->>S: cancel, queue mutation, or interaction settlement
+    W->>H: host.describe
+    W->>H: open events.mux + events.host
+    W->>H: session.list
+    alt no Session
+        W->>H: session.create({cwd})
+        H->>S: create Agent-backed Session
+    end
+    U->>W: select Session
+    W->>H: session.history({sessionId})
+    H->>S: read current/cold facts
+    S->>P: load when Session is cold
+    P-->>W: history via Host/API Proxy
+    U->>W: submit text
+    W->>H: session.prompt({mode:"queue"})
+    H->>S: admit UserMessage
+    S->>G: Followup
+    G->>D: stream model request
+    D-->>G: StreamChunk sequence
+    G->>P: append turn/step/message facts
+    G-->>W: session/event + session-status
+    W->>W: render draft, then committed message
 ```
 
-闭环成功的最终观察必须同时包含：
+`assistant/chunk` 只构成浏览器中的临时 draft；`assistant/message` 和 `turn/end` 到达后删除 draft，以 committed history 为准。选择另一个 Session 时，浏览器不复用当前 DOM 推断历史，而是重新调用 `session.history`。
 
-1. `session.prompt` 返回 `{accepted: true}`；
-2. Mux 收到同一 Session 的 committed events，最终包含 `turn/end`；
-3. Host 收到 `running:true` 到 `running:false` 的状态转换；
-4. `session.history` 能再次读取该轮已提交事实；
-5. 重启后 SQLite-backed Session 仍可 list、history 和 resume。
+## 5. 浏览器状态对象
 
-## 3. 纳入能力矩阵
+浏览器实现保持两个有状态对象，不翻译源 TypeScript 的插件函数组合：
 
-| ID | 用户结果 | 必需 Host surface | 主要所有者 |
-| --- | --- | --- | --- |
-| WAF-01 | 建立一个可用 connection generation | `events.mux`、`events.host`、`host.describe` | Connection Host、API Proxy |
-| WAF-02 | 读取 Session/Workspace 基线 | `session.list`、`workspace.list` | Session Gateway、Workspace Gateway |
-| WAF-03 | 创建 Agent-backed 文本 Session | `session.create`，支持 `workspaceId` 或 `cwd` | Session Gateway、Agent Registry |
-| WAF-04 | 打开会话并读取历史 | `session.history` | Session Gateway、Session Persistence |
-| WAF-05 | 查看并选择可路由模型 | `session.models`、`session.selectModel` | Session Gateway、LLM Runtime、Default Model |
-| WAF-06 | 提交文本并驱动完整轮次 | `session.prompt` | Session Gateway、Inbox、Agent Loop |
-| WAF-07 | 实时渲染模型、Tool 和终态 | `session/event`、`session/subscribed`、`host/session-status`、`host/agent-error` | Session Frame Hub |
-| WAF-08 | 处理 turn 内后续输入 | `session/queue`、`session.updateQueue` | Inbox、Session Gateway |
-| WAF-09 | 取消运行中轮次 | `session.cancel` | Agent、Agent Loop、Session Gateway |
-| WAF-10 | 回答 Approval/Question | `approval/*`、`question/*`、`POST /api/respond` | Interaction Gateway、Approval、UserQuestions |
-| WAF-11 | 修改会话标题 | `session.rename`、`title` projection | Session Title、Session Gateway |
-| WAF-12 | 保留并恢复会话事实 | SQLite Session Persistence、cold list/history/resume | Session Persistence |
+- `HarnessAPI`：拥有 unary RPC envelope、两条 downlink WebSocket、重连和关闭；
+- `ConversationApp`：拥有 Session list、selected Session、history event、stream draft 和 DOM 投影。
 
-七个既有 `workspace.*` method 和对应 Host frame 继续保留，因为 Workspace 已是 `session.create({workspaceId})` 的真实上游；拖拽排序、归档、删除等手势不是主聊天验收的必要步骤。`llm.providers` 与 `llm.models` 继续作为已实现的 Host catalog，但主会话只依赖 per-Session 的 `session.models` 与 `session.selectModel`。
+`ConversationApp` 不创建第二套业务模型。Session 标题优先读取 `projections.values.title`；首个 prompt 到正式 projection 到达前，只保留一个浏览器本地显示标题，不写回服务端。
 
-## 4. 明确不纳入本轮
+## 6. 失败、断线与安全边界
 
-以下方法或能力不是文本主会话闭环的依赖，不因完整 WebUI 中存在调用点而进入实现：
+- unary HTTP/业务失败显示为可消失错误提示，不伪造成功或修改历史；
+- 任一 downlink 断开后独立重连；socket 断开只结束订阅，不取消正在运行的 Agent turn；
+- 页面刷新后以 `session.list` 和 `session.history` 重建，不依赖 local storage；
+- UI 通过 `textContent` 渲染模型输出，不把模型文本作为 HTML 执行；
+- `/api` 仍由 Connection Host 优先匹配，未知 API 不落入 SPA fallback；
+- 默认 listener 仅绑定 loopback；非 loopback 部署仍需单独设计 TLS、认证和授权。
 
-- `session.search`、`session.fork`、`session.attachment`；
-- `host.pickDirectory`、`host.listDirectory`、`host.createDirectory`、`host.openPath`；
-- `settings.*`、`credentials.*`、`agentPreset.*` 的完整 Provider 与 mutation；
-- `skill.list`、`subagent.*`、`goal.*`、Jobs、Message Feedback；
-- Typert Host Gateway、`commands/*`、`pluginInventory/*`、`dynamicCordisRunner/*`；
-- Shell、Filesystem、PTY、LSP、Sandbox、Attachment、Spill 等非当前文本闭环 Tool Provider；
-- Web 静态资源、boot manifest、Client plugin bundle 与 React UI。
+## 7. 验收层级
 
-已存在的协议分支不自动成为当前 release gate，也不能作为继续扩展同一领域的理由。后续若纳入其中一项，必须给出主流程或明确用户场景中的真实 Consumer，并更新[01 复制范围与兼容基线](./01-porting-scope-and-baseline.md)。
+1. **Go component**：`web.Site` 的静态资源、SPA fallback、API 排除和 Connection handler delegation 通过 Go test。
+2. **Host contract**：固定源 `WebApiClient` 经默认 `DefaultSpecs`、DeepSeek Adapter 和离线 HTTP oracle完成 `turn/end`。
+3. **UI contract**：`web-ui-main-flow.ts` 在 JSDOM 中加载真实内嵌页面，完成发送、回复、新建会话、切回与历史恢复。
+4. **Provider environment**：显式加载 `.env` 后，同一 UI contract 调用真实 `https://api.deepseek.com` 并完成主流程。
+5. **Visual browser**：只验证真实浏览器的布局、键盘和视觉行为；不能替代前四层，目前也不扩大业务能力范围。
 
-## 5. 所有权与依赖方向
+较低层级不能替代较高层级；JSDOM 的 UI contract 不等同真实浏览器视觉验收，离线 DeepSeek oracle 也不等同真实 Provider。
 
-主流程不引入一个“Web Service”统管所有业务：
+## 8. 扩展门槛
 
-```text
-TypeScript Client
-  -> Connection Host          transport, trust, cancellation
-  -> API Proxy method adapter payload/result mapping only
-  -> capability owner         Session / Workspace / Interaction
-  -> Agent Registry           Agent identity and lifecycle
-  -> Agent Loop               turn and step state machine
-  -> LLM / Tools              provider-neutral execution
-
-SQLite adapters -> consumer-owned persistence ports
-composition root -> concrete services and adapters
-```
-
-- Connection Host 不推导 Session、模型或 Tool 状态。
-- API Proxy 不持有业务事实，不用 `nil Provider + fixed success` 冒充能力。
-- Session Gateway 可以编排 Session、Agent、LLM directory、Title 和 Workspace，但不导入 Echo、SQLite driver 或 DeepSeek HTTP 类型。
-- Agent Loop 只消费 Agent、Session、System Prompt、Tools 和 LLM capability，不依赖 Web、API Proxy 或 persistence adapter。
-- Session/Workspace persistence adapter 只保存业务 owner 已经决定的事实。
-- 默认 composition 只装配当前闭包所需的实现；新增页面 API 不得直接扩大 Agent Loop。
-
-## 6. 验收层级
-
-主流程按以下顺序验收，较低层级不能代替较高层级：
-
-1. **Go component**：Agent Loop、Session Gateway、Frame Hub、SQLite persistence 各自通过聚焦测试。
-2. **固定源 contract**：固定 `WebApiClient` 通过真实 HTTP/WebSocket 调用 Go Gateway，完成 create、history、models、prompt、queue、cancel、respond。
-3. **默认 composition**：`DefaultSpecs` 装配 Connection、Session、Agent Loop、LLM、DeepSeek 和 SQLite；固定 `WebApiClient` 经一条真实请求得到 `turn/end`。
-4. **Provider smoke**：显式提供真实 DeepSeek credential 后完成一次独立 smoke；离线 fake DeepSeek HTTP 只证明装配和协议，不声称真实环境可用。
-5. **restart**：进程级或等价 composition 重建后，SQLite 中的会话仍可恢复。
-
-当前工作只补缺失层级，不重复已经由更强证据覆盖的 schema 或单元断言。
-
-## 7. 进入下一能力的门槛
-
-只有满足以下任一条件，才从主会话闭包扩展能力：
-
-- 当前闭环在固定源 Client 上被该缺失能力实际阻断；
-- 用户明确把新的 UI 场景加入目标；
-- 当前实现的领域不变量要求该能力，否则会产生错误事实或不可恢复状态。
-
-页面上存在一个按钮、源仓库存在一个 package、或返回 404 本身都不是进入条件。进入后仍先确定业务 owner 和 consumer-owned port，再接 API method；不得从 `apiproxy` handler 反向发明领域对象。
+只有用户把新的 UI 场景加入目标，或当前主会话被已纳入能力真实阻断，才增加浏览器能力。进入时先确认对应业务 owner 和 Host contract；不得在 `web` 中直接读 SQLite、调用 DeepSeek、保存 credential 或补造 API 成功值。

@@ -2,7 +2,7 @@
 
 状态：Draft
 
-本目录是 Goren 当前主线设计的唯一入口。设计以 DeepSeek Harness TypeScript 基线 `47f943859bef60e4160492346772ded9b24f765a` 为源代码证据，首要目标是在不复制客户端实现的前提下，让现有 TypeScript 客户端与 Go Agent 服务端保持通信协议兼容；Web UI、SDK 和 Python 不进入实现。
+本目录是 Goren 当前主线设计的唯一入口。设计以 DeepSeek Harness TypeScript 基线 `47f943859bef60e4160492346772ded9b24f765a` 为源代码证据，首要目标是让现有 TypeScript 客户端与 Go Agent 服务端保持通信协议兼容。默认服务额外内嵌自有的极简主会话 UI；原版完整 Web 产品、SDK 和 Python 不进入实现。
 
 ## 阅读顺序与职责
 
@@ -26,7 +26,7 @@
 - [18 Session Projection 与 Session Title 模块设计](./18-session-projection-and-title.md)：通用 projection unit/registry/checkpoint、`session/title`、fallback/Provider 调度、rename 与客户端 higher-seq-wins。
 - [19 Session Persistence 与 SQLite 事实存储设计](./19-session-persistence-and-sqlite.md)：durable facts、Store/Persistence/Backend 边界、write-behind、cold recovery/resume、SQLite/sqlc schema 与事务。
 - [20 Workspace Registry、SQLite 与 API Gateway](./20-workspace-registry-and-api.md)：Workspace identity/order/accounting、历史 bootstrap、SQLite/sqlc Backend、七个 API、Host frame 与 `session.create({workspaceId})`。
-- [21 Web Agent 主会话闭环与能力边界](./21-web-agent-main-flow.md)：固定 TypeScript Client 到 Go Agent Loop 的纵向能力矩阵、排除面、依赖方向与分层验收。
+- [21 Web Agent 主会话闭环与能力边界](./21-web-agent-main-flow.md)：极简内嵌 Web UI 与固定 TypeScript Client 到 Go Agent Loop 的纵向能力矩阵、排除面、依赖方向与分层验收。
 
 ## 模块内运行说明
 
@@ -36,12 +36,13 @@
 - [`workspace/README.zh-CN.md`](../workspace/README.zh-CN.md)：Workspace Registry、Session accounting、SQLite adapter 与 API/Host 交互。
 - [`llmretry/README.zh-CN.md`](../llmretry/README.zh-CN.md)：默认 RetryPolicy Consumer 的职责、normal/always 决策、durable retry events、历史投影和取消/卸载流程。
 - [`internal/llmdeepseek/README.zh-CN.md`](../internal/llmdeepseek/README.zh-CN.md)：DeepSeek direct Provider adapter 的 typed config、lazy request、HTTP/SSE、流转换、错误/取消和 response recordings。
+- [`web/README.zh-CN.md`](../web/README.zh-CN.md)：内嵌主会话 UI、浏览器状态对象、Host RPC/WebSocket 交互与边界。
 
 首次阅读按 `01`–`05` 顺序理解全局设计；进入实现时读取对应模块文档，再从 `08` 查看当前进度。实现单个能力时，先从 `01` 确认范围，再读其拥有契约的文档。DeepSeek Harness 的 Service Definition / Provider / Consumer、事件 owner 和生命周期是默认职责边界；Go 包不机械复制每个 npm 包，但没有明确证据时也不另起一套领域切分。
 
 ## 权威关系
 
-- 本目录 `01`–`05` 拥有全局设计，`06`、`07`、`09`–`20` 拥有已进入实现的稳定模块设计，`08` 单独拥有日期性实施进度与证据。
+- 本目录 `01`–`05` 拥有全局设计，`06`、`07`、`09`–`21` 拥有已进入实现的稳定模块设计，`08` 单独拥有日期性实施进度与证据。
 - 子模块 `README.zh-CN.md` 解释贴近代码的职责、工作原理和交互流程；跨模块契约仍由本目录对应编号文档拥有，实施证据仍只由 `08` 拥有。
 - 根目录 `README.md` 与 `README.zh-CN.md` 只说明项目背景。
 - TypeScript 的行为证据来自固定 commit；源仓库后续变化不会自动成为 Go 需求。

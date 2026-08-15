@@ -13,7 +13,7 @@ Existing TypeScript Client
   -> committed turn/end
 ```
 
-当前只推进[21 Web Agent 主会话闭环与能力边界](./21-web-agent-main-flow.md)定义的文本会话闭包。完整 Web product、Settings/Credentials、Agent Preset、Goal、Subagent、Typert Remote 与其他管理/扩展页面不再与主流程并行实施；已经存在的额外协议分支也不自动扩大本路线图。
+当前只推进[21 Web Agent 主会话闭环与能力边界](./21-web-agent-main-flow.md)定义的文本会话闭包，包括仓库自有的极简内嵌 UI。原版完整 Web product、Settings/Credentials、Agent Preset、Goal、Subagent、Typert Remote 与其他管理/扩展页面不再与主流程并行实施；已经存在的额外协议分支也不自动扩大本路线图。
 
 每个阶段仍以 DeepSeek Harness 的职责 owner 为默认边界，并使用[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)定义的证据分级。
 
@@ -28,7 +28,7 @@ Existing TypeScript Client
 5. **单一身份迁移**：现有 `llm` 等代码迁移到 Harness contract，不长期并行旧/新 API。
 6. **先内存后持久**：先用 in-memory Provider 验证状态机，再添加 JSONL/SQLite adapter。
 7. **失败路径同等重要**：取消、rollback、repair、权限拒绝、partial stream、重连和 shutdown 都是阶段 gate。
-8. **排除项不进入依赖闭包**：Web UI、浏览器客户端实现、DSH SDK 和 Python 不以“暂时不启用”的方式引入。
+8. **排除项不进入依赖闭包**：原版 Web UI、浏览器客户端 runtime、DSH SDK 和 Python 不以“暂时不启用”的方式引入；自有极简 UI 只依赖 Host 协议。
 9. **Deferred 不占位**：Headless、ACP、MCP、Typert 和编排能力只有进入实际范围后才创建包和依赖。
 10. **配置无脚本**：所有配置严格解码为 owner-defined Go 类型；`!!js` 和替代表达式语言属于 Excluded。
 10. **证据分级**：Implemented、Go Verified、Contract Verified、Environment Verified 分别记录。
@@ -48,7 +48,7 @@ Existing TypeScript Client
 | `packages/host/apiproxy` | Go `apiproxy` method contract 与 core-facing handler |
 | npm-only barrel/build package | 若无运行时职责则不建立 Go package |
 | 平台实现混合包 | 公共 Definition 不变，按 OS 拆 build-tagged Provider |
-| Web/browser Client/SDK adapter | 删除，不把其职责吸收到 Core |
+| 原版 Web/browser Client/SDK adapter | 不复制；根级 `web` 仅重写主会话 UI，不把客户端状态或业务职责吸收到 Core |
 
 偏离源职责必须在代码提交或 ADR 中记录源符号、原 owner、Go 约束、新 owner、调用链、生命周期和兼容影响。
 
@@ -221,7 +221,7 @@ TypeScript/Go 双向 Message/StreamChunk fixture、所有 finish reason、partia
 
 ## 9. 阶段 6：按客户端需求扩展服务端能力（当前冻结）
 
-Workspace、Filesystem、Shell、PTY、LSP、Sandbox、Guard、Credentials、Attachment、Spill、Settings、Goals 等按 capability matrix 逐项进入，不按源目录批量复制。当前目标只要求主会话闭环，因此本阶段不继续启动新能力；状态和历史完成项见[08 实施进度](./08-implementation-progress.md)。
+Workspace、极简 Web UI、Filesystem、Shell、PTY、LSP、Sandbox、Guard、Credentials、Attachment、Spill、Settings、Goals 等按 capability matrix 逐项进入，不按源目录批量复制。当前目标只要求主会话闭环；自有 UI 进入后仍不拉入完整源 Web roster，其余状态和历史完成项见[08 实施进度](./08-implementation-progress.md)。
 
 每项能力必须：
 
@@ -314,7 +314,7 @@ Fuzz 至少覆盖 Connection 四类 message、API union/error、Session Event、
 - 自动化在目标平台通过；
 - 真实外部依赖按 release 要求验收；
 - 文档、capability matrix、provenance 和 license 已更新；
-- 不依赖 Web UI、浏览器客户端实现、DSH SDK 或 Python。
+- 不依赖原版 Web UI、浏览器客户端 runtime、DSH SDK 或 Python；自有极简 UI 不进入 Agent/Session/LLM Core 依赖方向。
 
 阶段完成不自动代表项目完成。最终声明必须明确兼容的源 commit、API/能力列表、平台、协议层级和未包含项。
 

@@ -178,20 +178,21 @@ shipped Catalog 当前只有：
 - `@deepseek-ai/dsh-user-approval` 的 policy/audit Provider；
 - `@deepseek-ai/dsh-user-questions` 的 question Provider Registry；
 - `@deepseek-ai/dsh-tool-ask-user` 的 `ask_user_question` Tool Consumer；
-- `@deepseek-ai/dsh-workspace` 的 Registry，内部装配默认 SQLite Workspace Backend。
+- `@deepseek-ai/dsh-workspace` 的 Registry，内部装配默认 SQLite Workspace Backend；
+- `@gorenx/dsh-web` 的极简内嵌 Web `http.Handler` Provider。
 
-SQLite adapter 不单独注册 Factory，不提供 storage Service，也没有独立 Plugin Scope；Session Persistence 和 Workspace 两个能力插件各自构造并拥有自己的 adapter。Connection Factory 虽然沿用源 npm canonical name，但只实现服务端 Host carrier，不包含 `WebApiClient`、`ConnectionController` 或浏览器代码。Web UI、SDK、Tools Code Mode、ACP、MCP、Typert 与其他 Deferred 能力不在 Catalog 或依赖闭包。
+SQLite adapter 不单独注册 Factory，不提供 storage Service，也没有独立 Plugin Scope；Session Persistence 和 Workspace 两个能力插件各自构造并拥有自己的 adapter。Connection Factory 虽然沿用源 npm canonical name，但只实现服务端 Host carrier，不包含 `WebApiClient`、`ConnectionController` 或页面代码；它通过私有 `webFrontend` Service 消费根级 `web.Site`。原版 Web runtime、SDK、Tools Code Mode、ACP、MCP、Typert 与其他 Deferred 能力不在 Catalog 或依赖闭包。
 
 ## 8. 当前 server 组合流程
 
-默认 declarations 按 Connection、API Proxy、Tool Ask User、Agent Default Model、LLM Retry、Session Title、Session Projection、Agent Loop、Approval、UserQuestions、Agent、LLM、DeepSeek、System Prompt、Tools、Session、Session Persistence、Workspace 声明。Consumer 故意出现在部分 Provider 之前，以证明 Runtime 按 Service graph 而不是文件顺序工作：
+默认 declarations 按 Connection、API Proxy、Tool Ask User、Agent Default Model、LLM Retry、Session Title、Session Projection、Agent Loop、Approval、UserQuestions、Agent、LLM、DeepSeek、System Prompt、Tools、Session、Session Persistence、Workspace、Web 声明。Consumer 故意出现在部分 Provider 之前，以证明 Runtime 按 Service graph 而不是文件顺序工作：
 
 ```text
 cmd/goren
   -> assembly.NewCatalog(Environment{cwd})
   -> assembly.DefaultSpecs(listen, version, sessionDB, workspaceDB)
   -> connection Factory.Create
-  -> Connection StateWaiting (requires apiProxy)
+  -> Connection StateWaiting (requires apiProxy/webFrontend)
   -> API Proxy StateWaiting (requires agents/agentDefaultModel/llm/sessions/sessionPersistence/sessionProjections/sessionTitle/userQuestions/workspaceRegistry)
   -> Tool Ask User StateWaiting (requires tools/userQuestions)
   -> Agent Default Model Factory.Create + Apply
@@ -234,6 +235,8 @@ cmd/goren
   -> Runtime settles Workspace
        -> construct SQLite Backend + DurableRegistry
        -> Provide(workspaceRegistry)
+  -> Web Factory.Create + Apply
+       -> embedded web.Site + Provide(webFrontend)
   -> Runtime settles Session Title
        -> register title projection + event/llm observers
        -> Provide(sessionTitle)
@@ -248,12 +251,13 @@ cmd/goren
        -> real Mux/Host EventStreams
        -> Provide(apiProxy)
   -> Runtime settles Connection
-       -> Require(apiProxy)
-       -> NewHTTPHost
+       -> Require(apiProxy/webFrontend)
+       -> NewHTTPHost with browser fallback handler
        -> pre-bind TCP listener
        -> Effect starts Echo Serve
        -> Provide(webServer)
-  -> existing TypeScript client can call HTTP/WebSocket contract
+  -> fixed TypeScript client can call HTTP/WebSocket contract
+  -> browser can open the embedded main-conversation UI
 ```
 
 预绑定 listener 让地址占用和权限错误在 Plugin activation 内同步失败，而不是让 goroutine 启动后才产生不可归属的异步错误。`apiProxy` 同时暴露 Connection 所需的 `RPCDispatcher` 与 `EventSource` facet；具体 `apiproxy.Catalog` 和 `EventStreams` 不越过 assembly boundary。

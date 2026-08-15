@@ -40,7 +40,7 @@ Goren 的当前主线不是设计一个新的 Agent 产品，也不是按 TypeSc
 4. 以 Go `interface` 实现插件机制，而不是移植 Cordis、使用 TypeScript Runtime 或加载 `.so`。
 5. 所有配置使用 owner-defined Go typed config，不执行 `!!js`、Node.js 或其他配置脚本。
 6. 得到默认无 CGO、可构建为单一可执行文件的 Agent Server Runtime。
-7. 排除 Web UI、浏览器客户端实现、DeepSeek Harness SDK 和 Python；保留位于 `packages/client/connection` 中但实际属于 Host 的协议职责。
+7. 排除原版完整 Web UI、浏览器客户端 runtime、DeepSeek Harness SDK 和 Python；保留位于 `packages/client/connection` 中但实际属于 Host 的协议职责，并允许自有极简主会话 UI 消费该协议。
 8. 让后续能力仍按 Plugin、Service Definition、Provider、Consumer 和事件 seam 扩展，而不是把行为堆入 Agent loop。
 9. 以源 Harness 已有职责划分作为默认实现地图；除 Go 约束、已证明的依赖缺陷和本文排除项外，不改变能力 owner。
 
@@ -115,9 +115,10 @@ Headless 是不启动 Client Connection 的一次性 CLI adapter：读取一个 
 - API Proxy contract：保留纳入方法的 canonical method、payload/result schema、错误码与 frame union；Go handler 直接调用核心 Service。
 - 当前兼容切片包含 `host.describe`、九个主流程 `session.*` method、七个 `workspace.*`、`events.mux`、`events.host`、`respond`，以及它们依赖的 Session/Workspace/approval/question frame。`session.search`、`session.fork` 与 `session.attachment` 不在本轮。
 - Workspace 只纳入服务端 Registry、SQLite adapter、Session accounting 与协议/API；不复制浏览器 Workspace manager、目录选择 UI 或项目文件索引。
+- 根级 `web` 包提供仓库自有的极简主会话 UI，只消费既有 Host API/Frame，不拥有 Session、Agent、LLM 或持久化业务逻辑。
 - TypeScript Client 代码不复制，但源 Client contract tests 作为 Go Server 的外部兼容验收方。
 
-Connection Server composition 会打开协议端口，但不提供 HTML、JavaScript bundle、React、静态资源或浏览器客户端。这是 Agent 协议服务端，不是 Web 产品。Deferred Headless composition 若实现，仍不监听端口。
+默认 Connection Server composition 同端口提供 `/api`、WebSocket 与内嵌 UI 静态资源。该 UI 只用于主会话，不等同原版 DeepSeek Harness Web 产品；Deferred Headless composition 若实现，仍不监听端口。
 
 ### 6.5 Deferred 能力
 
@@ -134,18 +135,18 @@ Deferred 不算已复制，也不能通过空 handler 或固定成功响应占�
 以下内容不实现，也不能为了复用而把其依赖重新拉入主线：
 
 - `packages/web/*`，包括 Web search、fetch Provider 和 `tool-web`；
-- `packages/client/*` 的浏览器侧实现、`apps/web`、`bundle/web-app` 及 React/client runtime；`packages/client/connection` 的 Host wire 行为是协议证据，不因目录名而排除；
+- `packages/client/*` 的原版浏览器侧实现、`apps/web`、`bundle/web-app` 及 React/client runtime；`packages/client/connection` 的 Host wire 行为是协议证据，根级 `web` 只重新实现已纳入的主会话交互；
 - `packages/sdk/*`、`python/*` 及 DeepSeek Harness SDK 的 JSON-RPC runtime/client/server；
-- directory picker、frontend static、浏览器资源 Host 与完整 WebServer 产品；协议所需的 `/api` 与 WebSocket server 由 Go adapter 实现；
+- directory picker、源 frontend static、Client plugin bundle、boot manifest 与完整 WebServer 产品；协议所需的 `/api`、WebSocket server 和自有极简 UI 由 Go composition 提供；
 - `extensions/cordis-client-runner`、`extensions/ui-cordis`、客户端测试 Runtime 和 React session export；
 - `subagent-dsh-sdk`；
-- website、前端构建、发布 npm/Python 包和浏览器可视化测试；
+- 原版 website/前端构建、发布 npm/Python 包和完整浏览器产品测试；极简 UI 的主流程 contract test 保留；
 - Typert generator/loader 的 TypeScript compiler、Node/npm discovery、decorator、声明合并、SRC 参数名弱解析、`.d.ts` 与 Remote Client 代码生成；
 - 源 Cordis Profile 的 `!!js` tag、JavaScript evaluator、动态 `ctx` 插值和配置脚本兼容；源配置必须显式迁移为 Go typed config；
 - `ClientRemote`、浏览器 Connection controller 与客户端 API 实现；Host `/api` carrier、`rpcId` 和 server downlink 明确保留；
 - 在运行时安装并执行新的 Go 源码、Go `.so` 插件或 TypeScript 插件。
 
-源 `bundle/base` 中的 Web rows 必须在 Go 默认 composition 中缺席，不能仅设置 `disabled: true`，因为禁用条目仍会污染 Factory Catalog、依赖闭包和配置目录。
+源 `bundle/base` 中的 Web rows 必须在 Go 默认 composition 中缺席，不能仅设置 `disabled: true`。默认 composition 只注册自有 `@gorenx/dsh-web` Factory；它不导入源 Client plugin runtime、配置目录或依赖闭包。
 
 ## 8. 当前仓库状态
 

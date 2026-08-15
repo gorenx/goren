@@ -8,6 +8,7 @@
 - 严格解码每个插件的 typed config；
 - 声明 `Provides/Requires/Optional`；
 - 构造 Provider/Consumer 并通过 Plugin Runtime 结算；
+- 将根级 `web.Site` 作为私有 `webFrontend` Service 接入默认 Connection；
 - 组合默认 server slice，失败时反向卸载本次已声明插件。
 
 本包不拥有任何 domain 规则、wire codec、存储逻辑或动态脚本 evaluator。`!!js` 与 Typert generator 不进入 composition。
@@ -26,7 +27,7 @@ flowchart TD
     I[any load failure] --> J[unload accepted handles in reverse]
 ```
 
-Session Projection 提供 `sessionProjections`；Session Title 消费 `sessions` 与 `sessionProjections` 后提供 `sessionTitle`；Session Persistence 插件消费 `sessions` 并提供 `sessionPersistence`；Workspace 插件消费 `sessions` 与 `sessionPersistence` 并提供 `workspaceRegistry`。Agent Loop 和 API Proxy 再按需消费这些 capability。Specs 可以故意乱序，依赖结算不能依赖文件或列表顺序。
+Session Projection 提供 `sessionProjections`；Session Title 消费 `sessions` 与 `sessionProjections` 后提供 `sessionTitle`；Session Persistence 插件消费 `sessions` 并提供 `sessionPersistence`；Workspace 插件消费 `sessions` 与 `sessionPersistence` 并提供 `workspaceRegistry`。Web 插件提供 `webFrontend`，默认 Connection 同时等待它和 `apiProxy`。Agent Loop 和 API Proxy 再按需消费其他 capability。Specs 可以故意乱序，依赖结算不能依赖文件或列表顺序。
 
 默认 CLI 的 `--session-db` 和 `--workspace-db` 分别指定两个 SQLite 数据库。`SessionPersistenceConfig` 与 `WorkspaceConfig` 属于能力插件的 typed config；对应 Factory 在 composition root 内构造 SQLite `Backend` adapter，再分别连接 `SessionLogStore` 与 `DurableRegistry`。SQLite 不拥有 Factory、Manifest、Service key 或单独插件生命周期，assembly 也不实现存储、recovery 或 Workspace 业务规则。
 
