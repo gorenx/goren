@@ -10,6 +10,7 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
+	"github.com/gorenx/goren/sessionpersistence"
 	"github.com/gorenx/goren/systemprompt"
 	toolscore "github.com/gorenx/goren/tools"
 )
@@ -41,6 +42,7 @@ func (*agentLoopPlugin) Manifest() plugin.Manifest {
 			agentcore.Service.Ref(), session.StoreService.Ref(), llm.Service.Ref(),
 			toolscore.Service.Ref(), systemprompt.Service.Ref(),
 		},
+		Optional: []plugin.ServiceRef{sessionpersistence.Service.Ref()},
 	}
 }
 

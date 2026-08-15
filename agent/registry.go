@@ -110,6 +110,23 @@ func (agents *registryService) Create(
 	return slot.target.CreateAgent(requestContext, ownerScope, settings)
 }
 
+func (agents *registryService) Resume(
+	requestContext context.Context,
+	ownerScope *plugin.Scope,
+	settings ResumeOptions,
+) (Handle, error) {
+	if ownerScope == nil {
+		return Handle{}, errors.New("agent: resume owner scope is nil")
+	}
+	agents.mu.RLock()
+	slot := agents.creator
+	agents.mu.RUnlock()
+	if slot == nil {
+		return Handle{}, errors.New("agent: no Agent factory registered; load an Agent Loop plugin")
+	}
+	return slot.target.ResumeAgent(requestContext, ownerScope, settings)
+}
+
 func (agents *registryService) Register(
 	requestContext context.Context,
 	ownerScope *plugin.Scope,

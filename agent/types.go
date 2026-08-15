@@ -124,6 +124,13 @@ type CreateOptions struct {
 	Setup        Setup
 }
 
+// ResumeOptions contains the identity and live-only setup for one durable Session resume.
+type ResumeOptions struct {
+	SessionID    session.SessionID
+	AgentOptions Options
+	Setup        Setup
+}
+
 // Handle is the owner capability returned by Factory creation.
 type Handle struct {
 	Subject Agent
@@ -142,12 +149,14 @@ func (owned Handle) Dispose(closeContext context.Context) error {
 // The interface belongs to Registry, its consumer.
 type Factory interface {
 	CreateAgent(context.Context, *plugin.Scope, CreateOptions) (Handle, error)
+	ResumeAgent(context.Context, *plugin.Scope, ResumeOptions) (Handle, error)
 }
 
 // Registry tracks live Agent membership and delegates creation to Agent Loop.
 type Registry interface {
 	SetFactory(context.Context, *plugin.Scope, Factory) (plugin.Disposer, error)
 	Create(context.Context, *plugin.Scope, CreateOptions) (Handle, error)
+	Resume(context.Context, *plugin.Scope, ResumeOptions) (Handle, error)
 	Register(context.Context, *plugin.Scope, Agent, Agent) (plugin.Disposer, error)
 	Enter(Agent, Agent) (plugin.Disposer, error)
 	Announce(context.Context, Agent) error

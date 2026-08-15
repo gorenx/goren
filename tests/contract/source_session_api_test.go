@@ -22,6 +22,8 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
+	"github.com/gorenx/goren/sessionpersistence"
+	sqlitepersistence "github.com/gorenx/goren/sessionpersistence/sqlite"
 	"github.com/gorenx/goren/sessionprojection"
 	"github.com/gorenx/goren/sessiontitle"
 	"github.com/gorenx/goren/systemprompt"
@@ -48,6 +50,20 @@ func (extension *sessionAPIContractProvider) Apply(requestContext context.Contex
 	}
 	sessionStore, err := session.NewMemoryStore(providerScope, session.MemoryStoreOptions{})
 	if err != nil {
+		return err
+	}
+	storage, err := sqlitepersistence.Open(requestContext, sqlitepersistence.Config{
+		Path: ":memory:", JournalMode: sqlitepersistence.JournalWAL,
+	})
+	if err != nil {
+		return err
+	}
+	durability, err := sessionpersistence.NewCoordinator(
+		requestContext, providerScope, sessionStore, storage,
+		sessionpersistence.CoordinatorOptions{WriteBatchMaxDelay: time.Hour},
+	)
+	if err != nil {
+		_ = storage.Close(requestContext)
 		return err
 	}
 	projectionRegistry, err := sessionprojection.NewDriveRegistry(providerScope)
@@ -106,7 +122,8 @@ func (extension *sessionAPIContractProvider) Apply(requestContext context.Contex
 		return err
 	}
 	gateway, err := apiproxy.NewSessionGateway(requestContext, providerScope, apiproxy.SessionGatewayDependencies{
-		Agents: agentRegistry, Sessions: sessionStore, LLM: modelRuntime, Defaults: defaultSelection,
+		Agents: agentRegistry, Sessions: sessionStore, Persistence: durability,
+		LLM: modelRuntime, Defaults: defaultSelection,
 		Projections: projectionRegistry, Titles: titleService,
 		Directories: apiproxy.DirectoryProvisionerFunc(func(string) error {
 			return nil
