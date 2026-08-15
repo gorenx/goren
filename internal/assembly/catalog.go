@@ -10,7 +10,7 @@ import (
 	"os"
 
 	"github.com/gorenx/goren/plugin"
-	sessionpersistence "github.com/gorenx/goren/session/persistence"
+	sesspersist "github.com/gorenx/goren/session/persistence"
 )
 
 const (
@@ -151,7 +151,7 @@ func DefaultSpecs(
 	}
 	persistenceRaw, err := json.Marshal(SessionPersistenceConfig{
 		Path: sessionDatabasePath, JournalMode: "wal",
-		WriteBatchMaxDelayMS: sessionpersistence.DefaultWriteBatchMaxDelay.Milliseconds(),
+		WriteBatchMaxDelayMS: sesspersist.DefaultWriteBatchMaxDelay.Milliseconds(),
 	})
 	if err != nil {
 		return nil, err

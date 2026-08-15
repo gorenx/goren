@@ -1,4 +1,4 @@
-// Package sessionpersistence owns durable Session-log orchestration and the
+// Package persistence owns durable Session-log orchestration and the
 // consumer-owned storage port implemented by concrete persistence adapters.
 package persistence
 

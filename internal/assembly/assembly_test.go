@@ -20,7 +20,7 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
-	sessionpersistence "github.com/gorenx/goren/session/persistence"
+	sesspersist "github.com/gorenx/goren/session/persistence"
 	sessionprojection "github.com/gorenx/goren/session/projection"
 	sessiontitle "github.com/gorenx/goren/session/title"
 	"github.com/gorenx/goren/systemprompt"
@@ -38,7 +38,7 @@ func (instance probePlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "assembly-probe",
 		Requires: []plugin.ServiceRef{
-			agentcore.Service.Ref(), agentdefaultmodel.Service.Ref(), agentloop.Service.Ref(), approval.Service.Ref(), serverServiceKey.Ref(), llm.Service.Ref(), session.StoreService.Ref(), sessionpersistence.Service.Ref(), sessionprojection.Service.Ref(), sessiontitle.Service.Ref(), systemprompt.Service.Ref(), toolscore.Service.Ref(), userquestions.Service.Ref(), workspace.Service.Ref(),
+			agentcore.Service.Ref(), agentdefaultmodel.Service.Ref(), agentloop.Service.Ref(), approval.Service.Ref(), serverServiceKey.Ref(), llm.Service.Ref(), session.StoreService.Ref(), sesspersist.Service.Ref(), sessionprojection.Service.Ref(), sessiontitle.Service.Ref(), systemprompt.Service.Ref(), toolscore.Service.Ref(), userquestions.Service.Ref(), workspace.Service.Ref(),
 		},
 	}
 }
@@ -196,7 +196,7 @@ func TestConnectionCompositionSettlesDependenciesAndServesHostDescribe(t *testin
 		if _, createErr := sessionStore.Create(requestContext, pluginScope, nil, session.CreateOptions{}); createErr != nil {
 			return createErr
 		}
-		if durability, found := plugin.Require(pluginScope, sessionpersistence.Service); !found || durability == nil {
+		if durability, found := plugin.Require(pluginScope, sesspersist.Service); !found || durability == nil {
 			t.Fatal("sessionPersistence service is unavailable")
 		}
 		promptService, found := plugin.Require(pluginScope, systemprompt.Service)

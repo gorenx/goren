@@ -14,7 +14,7 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
-	sessionpersistence "github.com/gorenx/goren/session/persistence"
+	sesspersist "github.com/gorenx/goren/session/persistence"
 	sessionprojection "github.com/gorenx/goren/session/projection"
 	sessiontitle "github.com/gorenx/goren/session/title"
 	"github.com/gorenx/goren/userquestions"
@@ -72,7 +72,7 @@ func (instance *apiProxyPlugin) Manifest() plugin.Manifest {
 			agentdefaultmodel.Service.Ref(),
 			llm.Service.Ref(),
 			session.StoreService.Ref(),
-			sessionpersistence.Service.Ref(),
+			sesspersist.Service.Ref(),
 			sessionprojection.Service.Ref(),
 			sessiontitle.Service.Ref(),
 			userquestions.Service.Ref(),
@@ -86,7 +86,7 @@ func (instance *apiProxyPlugin) Apply(requestContext context.Context, pluginScop
 	defaultModels, defaultsFound := plugin.Require(pluginScope, agentdefaultmodel.Service)
 	modelRuntime, modelsFound := plugin.Require(pluginScope, llm.Service)
 	sessionStore, found := plugin.Require(pluginScope, session.StoreService)
-	durability, persistenceFound := plugin.Require(pluginScope, sessionpersistence.Service)
+	durability, persistenceFound := plugin.Require(pluginScope, sesspersist.Service)
 	projections, projectionsFound := plugin.Require(pluginScope, sessionprojection.Service)
 	titles, titlesFound := plugin.Require(pluginScope, sessiontitle.Service)
 	questionService, questionsFound := plugin.Require(pluginScope, userquestions.Service)

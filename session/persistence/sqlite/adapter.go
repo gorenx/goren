@@ -8,7 +8,7 @@ import (
 	"sync"
 
 	"github.com/gorenx/goren/session"
-	sessionpersistence "github.com/gorenx/goren/session/persistence"
+	sesspersist "github.com/gorenx/goren/session/persistence"
 	"github.com/gorenx/goren/session/persistence/sqlite/internal/dbsql"
 )
 
@@ -32,51 +32,51 @@ func Open(requestContext context.Context, settings Config) (*Adapter, error) {
 
 func (owner *Adapter) BackendName() string { return "session-persistence-sqlite" }
 
-func (owner *Adapter) Locate(session.Header) (sessionpersistence.Location, bool) {
-	return sessionpersistence.Location{}, false
+func (owner *Adapter) Locate(session.Header) (sesspersist.Location, bool) {
+	return sesspersist.Location{}, false
 }
 
 func (owner *Adapter) SupportsRawArtifacts() bool { return false }
 
-func (owner *Adapter) ReadRaw(context.Context, session.SessionID) (sessionpersistence.RawArtifact, bool, error) {
-	return sessionpersistence.RawArtifact{}, false, errors.New("session persistence sqlite: raw artifacts are unavailable")
+func (owner *Adapter) ReadRaw(context.Context, session.SessionID) (sesspersist.RawArtifact, bool, error) {
+	return sesspersist.RawArtifact{}, false, errors.New("session persistence sqlite: raw artifacts are unavailable")
 }
 
 func (owner *Adapter) LoadStored(
 	requestContext context.Context,
 	identifier session.SessionID,
-) (sessionpersistence.StoredPrefix, bool, error) {
+) (sesspersist.StoredPrefix, bool, error) {
 	transaction, err := owner.database.BeginTx(requestContext, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return sessionpersistence.StoredPrefix{}, false, err
+		return sesspersist.StoredPrefix{}, false, err
 	}
 	queries := owner.queries.WithTx(transaction)
 	row, err := queries.GetSession(requestContext, string(identifier))
 	if errors.Is(err, sql.ErrNoRows) {
 		_ = transaction.Rollback()
-		return sessionpersistence.StoredPrefix{}, false, nil
+		return sesspersist.StoredPrefix{}, false, nil
 	}
 	if err != nil {
 		_ = transaction.Rollback()
-		return sessionpersistence.StoredPrefix{}, false, err
+		return sesspersist.StoredPrefix{}, false, err
 	}
 	rows, err := queries.ListEvents(requestContext, string(identifier))
 	if err != nil {
 		_ = transaction.Rollback()
-		return sessionpersistence.StoredPrefix{}, false, err
+		return sesspersist.StoredPrefix{}, false, err
 	}
 	if err := transaction.Commit(); err != nil {
-		return sessionpersistence.StoredPrefix{}, false, err
+		return sesspersist.StoredPrefix{}, false, err
 	}
 	metadata, err := rowToHeader(row)
 	if err != nil {
-		return sessionpersistence.StoredPrefix{}, false, err
+		return sesspersist.StoredPrefix{}, false, err
 	}
 	entries, marker, err := scanEventRows(listEventRows(rows), 0)
 	if err != nil {
-		return sessionpersistence.StoredPrefix{}, false, err
+		return sesspersist.StoredPrefix{}, false, err
 	}
-	result := sessionpersistence.StoredPrefix{
+	result := sesspersist.StoredPrefix{
 		Header: metadata, Events: entries, Token: owner.revision(row.Incarnation, row.Revision),
 	}
 	if marker != nil {
@@ -88,7 +88,7 @@ func (owner *Adapter) LoadStored(
 func (owner *Adapter) ReadStoredRevision(
 	requestContext context.Context,
 	identifier session.SessionID,
-) (sessionpersistence.Revision, bool, error) {
+) (sesspersist.Revision, bool, error) {
 	row, err := owner.queries.GetSessionRevision(requestContext, string(identifier))
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
@@ -103,29 +103,29 @@ func (owner *Adapter) LoadStoredFrom(
 	requestContext context.Context,
 	identifier session.SessionID,
 	fromSeq int64,
-) (sessionpersistence.StoredSuffix, bool, error) {
+) (sesspersist.StoredSuffix, bool, error) {
 	row, err := owner.queries.GetSession(requestContext, string(identifier))
 	if errors.Is(err, sql.ErrNoRows) {
-		return sessionpersistence.StoredSuffix{}, false, nil
+		return sesspersist.StoredSuffix{}, false, nil
 	}
 	if err != nil {
-		return sessionpersistence.StoredSuffix{}, false, err
+		return sesspersist.StoredSuffix{}, false, err
 	}
 	rows, err := owner.queries.ListEventsFrom(requestContext, dbsql.ListEventsFromParams{
 		SessionID: string(identifier), Seq: fromSeq,
 	})
 	if err != nil {
-		return sessionpersistence.StoredSuffix{}, false, err
+		return sesspersist.StoredSuffix{}, false, err
 	}
 	metadata, err := rowToHeader(row)
 	if err != nil {
-		return sessionpersistence.StoredSuffix{}, false, err
+		return sesspersist.StoredSuffix{}, false, err
 	}
 	entries, _, err := scanEventRows(suffixEventRows(rows), fromSeq)
 	if err != nil {
-		return sessionpersistence.StoredSuffix{}, false, err
+		return sesspersist.StoredSuffix{}, false, err
 	}
-	return sessionpersistence.StoredSuffix{Header: metadata, Events: entries}, true, nil
+	return sesspersist.StoredSuffix{Header: metadata, Events: entries}, true, nil
 }
 
 func (owner *Adapter) AppendBatch(
@@ -175,7 +175,7 @@ func (owner *Adapter) AppendBatch(
 func (owner *Adapter) CommitRepair(
 	requestContext context.Context,
 	metadata session.Header,
-	marker sessionpersistence.RepairMarker,
+	marker sesspersist.RepairMarker,
 	closers []session.Event,
 ) error {
 	transaction, err := owner.database.BeginTx(requestContext, nil)
@@ -238,18 +238,18 @@ func (owner *Adapter) ListStored(requestContext context.Context) ([]session.Head
 	return result, nil
 }
 
-func (owner *Adapter) ListStoredSnapshots(requestContext context.Context) ([]sessionpersistence.Snapshot, error) {
+func (owner *Adapter) ListStoredSnapshots(requestContext context.Context) ([]sesspersist.Snapshot, error) {
 	rows, err := owner.queries.ListSessions(requestContext)
 	if err != nil {
 		return nil, err
 	}
-	result := make([]sessionpersistence.Snapshot, 0, len(rows))
+	result := make([]sesspersist.Snapshot, 0, len(rows))
 	for _, row := range rows {
 		metadata, err := rowToHeader(row)
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, sessionpersistence.Snapshot{
+		result = append(result, sesspersist.Snapshot{
 			Header: metadata, Revision: owner.revision(row.Incarnation, row.Revision),
 		})
 	}
@@ -268,8 +268,8 @@ func (owner *Adapter) Close(closeContext context.Context) error {
 	return owner.closeErr
 }
 
-func (owner *Adapter) revision(incarnation string, counter int64) sessionpersistence.Revision {
-	return sessionpersistence.Revision(fmt.Sprintf(
+func (owner *Adapter) revision(incarnation string, counter int64) sesspersist.Revision {
+	return sesspersist.Revision(fmt.Sprintf(
 		"%s:incarnation:%s:revision:%d", owner.storeIdentity, incarnation, counter,
 	))
 }

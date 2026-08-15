@@ -7,8 +7,8 @@ import (
 
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
-	sessionpersistence "github.com/gorenx/goren/session/persistence"
-	sqlitepersistence "github.com/gorenx/goren/session/persistence/sqlite"
+	sesspersist "github.com/gorenx/goren/session/persistence"
+	sesssqlite "github.com/gorenx/goren/session/persistence/sqlite"
 )
 
 type testSessionProvider struct{}
@@ -37,7 +37,7 @@ type testPersistenceProvider struct {
 
 func (testPersistenceProvider) Manifest() plugin.Manifest {
 	return plugin.Manifest{
-		Name: "test-session-persistence", Provides: []plugin.ServiceRef{sessionpersistence.Service.Ref()},
+		Name: "test-session-persistence", Provides: []plugin.ServiceRef{sesspersist.Service.Ref()},
 		Requires: []plugin.ServiceRef{session.StoreService.Ref()},
 	}
 }
@@ -47,38 +47,38 @@ func (instance testPersistenceProvider) Apply(requestContext context.Context, pl
 	if !found {
 		return context.Canceled
 	}
-	storage, err := sqlitepersistence.Open(requestContext, sqlitepersistence.Config{
-		Path: instance.path, JournalMode: sqlitepersistence.JournalWAL,
+	storage, err := sesssqlite.Open(requestContext, sesssqlite.Config{
+		Path: instance.path, JournalMode: sesssqlite.JournalWAL,
 	})
 	if err != nil {
 		return err
 	}
-	durability, err := sessionpersistence.NewSessionLogStore(
+	durability, err := sesspersist.NewSessionLogStore(
 		requestContext, pluginScope, store, storage,
-		sessionpersistence.SessionLogStoreOptions{WriteBatchMaxDelay: time.Hour},
+		sesspersist.SessionLogStoreOptions{WriteBatchMaxDelay: time.Hour},
 	)
 	if err != nil {
 		_ = storage.Close(requestContext)
 		return err
 	}
-	_, err = plugin.Provide(pluginScope, sessionpersistence.Service, sessionpersistence.Persistence(durability))
+	_, err = plugin.Provide(pluginScope, sesspersist.Service, sesspersist.Persistence(durability))
 	return err
 }
 
 type testProbe struct {
-	body func(context.Context, *plugin.Scope, session.Store, sessionpersistence.Persistence) error
+	body func(context.Context, *plugin.Scope, session.Store, sesspersist.Persistence) error
 }
 
 func (testProbe) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name:     "test-persistence-probe",
-		Requires: []plugin.ServiceRef{session.StoreService.Ref(), sessionpersistence.Service.Ref()},
+		Requires: []plugin.ServiceRef{session.StoreService.Ref(), sesspersist.Service.Ref()},
 	}
 }
 
 func (instance testProbe) Apply(requestContext context.Context, pluginScope *plugin.Scope) error {
 	store, sessionsFound := plugin.Require(pluginScope, session.StoreService)
-	durability, persistenceFound := plugin.Require(pluginScope, sessionpersistence.Service)
+	durability, persistenceFound := plugin.Require(pluginScope, sesspersist.Service)
 	if !sessionsFound || !persistenceFound {
 		return context.Canceled
 	}
@@ -100,7 +100,7 @@ func TestSessionLogStorePersistsAnOpenTurnAndRepairsItOnColdLoad(t *testing.T) {
 		operationContext context.Context,
 		pluginScope *plugin.Scope,
 		store session.Store,
-		_ sessionpersistence.Persistence,
+		_ sesspersist.Persistence,
 	) error {
 		identifier := session.SessionID("cold-recovery")
 		conversation, err := store.Create(operationContext, pluginScope, &identifier, session.CreateOptions{})
@@ -130,7 +130,7 @@ func TestSessionLogStorePersistsAnOpenTurnAndRepairsItOnColdLoad(t *testing.T) {
 		operationContext context.Context,
 		_ *plugin.Scope,
 		_ session.Store,
-		durability sessionpersistence.Persistence,
+		durability sesspersist.Persistence,
 	) error {
 		loaded, err := durability.Load(operationContext, "cold-recovery")
 		if err != nil {

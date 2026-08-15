@@ -7,13 +7,13 @@ import (
 	"errors"
 
 	"github.com/gorenx/goren/session"
-	sessionpersistence "github.com/gorenx/goren/session/persistence"
+	sesspersist "github.com/gorenx/goren/session/persistence"
 )
 
 // SessionHeaderSource merges live and persisted immutable headers for Workspace tests.
 type SessionHeaderSource struct {
 	Sessions    session.Store
-	Persistence sessionpersistence.Persistence
+	Persistence sesspersist.Persistence
 }
 
 func (source SessionHeaderSource) Get(
@@ -25,7 +25,7 @@ func (source SessionHeaderSource) Get(
 	}
 	loaded, err := source.Persistence.Inspect(requestContext, identifier)
 	if err != nil {
-		var missing *sessionpersistence.NotFoundError
+		var missing *sesspersist.NotFoundError
 		if errors.As(err, &missing) {
 			return session.Header{}, false, nil
 		}
