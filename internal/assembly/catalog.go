@@ -14,6 +14,7 @@ import (
 	"github.com/gorenx/goren/internal/llmdeepseek"
 	"github.com/gorenx/goren/plugin"
 	sesspersist "github.com/gorenx/goren/session/persistence"
+	sessiontitle "github.com/gorenx/goren/session/title"
 )
 
 const (
@@ -175,13 +176,24 @@ func DefaultSpecs(
 	if err != nil {
 		return nil, err
 	}
+	titleRaw, err := json.Marshal(sessiontitle.Config{
+		FallbackMaxWords: 5, FallbackMaxBytes: 40, MaxTitleBytes: 80,
+		LLM: &sessiontitle.LLMConfig{
+			AutomaticMode: sessiontitle.AutomaticFirstPrompt,
+			TargetWords:   5, TargetCJKCharacters: 10, MaxInputBytes: 4096,
+			MaxOutputTokens: 64, TimeoutMS: 60000,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
 	return []PluginSpec{
 		{FactoryName: ConnectionFactoryName, Config: connectionRaw},
 		{FactoryName: APIProxyFactoryName, Config: apiProxyRaw},
 		{FactoryName: ToolAskUserFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: AgentDefaultModelFactoryName, Config: defaultModelRaw},
 		{FactoryName: LLMRetryFactoryName, Config: json.RawMessage(`{}`)},
-		{FactoryName: SessionTitleFactoryName, Config: json.RawMessage(`{"fallbackMaxWords":5,"fallbackMaxBytes":40,"maxTitleBytes":80}`)},
+		{FactoryName: SessionTitleFactoryName, Config: titleRaw},
 		{FactoryName: SessionProjectionFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: AgentLoopFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: ApprovalFactoryName, Config: json.RawMessage(`{}`)},

@@ -341,10 +341,10 @@ func (owner *LogService) onRequestHeader(
 func (owner *LogService) observeStream(
 	requestContext context.Context,
 	generationOptions llm.GenerateOptions,
-	next plugin.Next[llm.GenerateOptions, llm.ChunkStream],
+	downstream plugin.Next[llm.GenerateOptions, llm.ChunkStream],
 ) (llm.ChunkStream, error) {
 	owner.onMainRequest(generationOptions)
-	return next(requestContext, generationOptions)
+	return downstream(requestContext, generationOptions)
 }
 
 func (owner *LogService) onMainRequest(generationOptions llm.GenerateOptions) {

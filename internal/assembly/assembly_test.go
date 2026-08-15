@@ -121,6 +121,8 @@ func TestConnectionFactoryUsesStrictTypedConfig(t *testing.T) {
 		{label: "projection unknown", factoryName: SessionProjectionFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
 		{label: "title unknown", factoryName: SessionTitleFactoryName, input: `{"fallbackMaxWords":5,"fallbackMaxBytes":40,"maxTitleBytes":80,"unknown":true}`, wantMessage: "unknown field"},
 		{label: "title invalid cap", factoryName: SessionTitleFactoryName, input: `{"fallbackMaxWords":5,"fallbackMaxBytes":81,"maxTitleBytes":80}`, wantMessage: "must not exceed"},
+		{label: "title llm unknown", factoryName: SessionTitleFactoryName, input: `{"fallbackMaxWords":5,"fallbackMaxBytes":40,"maxTitleBytes":80,"llm":{"automaticMode":"first-prompt","targetWords":5,"targetCjkCharacters":10,"maxInputBytes":4096,"maxOutputTokens":64,"timeoutMs":60000,"unknown":true}}`, wantMessage: "unknown field"},
+		{label: "title llm incomplete route", factoryName: SessionTitleFactoryName, input: `{"fallbackMaxWords":5,"fallbackMaxBytes":40,"maxTitleBytes":80,"llm":{"automaticMode":"all-prompts","targetWords":5,"targetCjkCharacters":10,"maxInputBytes":4096,"maxOutputTokens":64,"timeoutMs":60000,"provider":"p"}}`, wantMessage: "must be supplied together"},
 		{label: "persistence unknown", factoryName: SessionPersistenceFactoryName, input: `{"path":"/tmp/sessions.sqlite","unknown":true}`, wantMessage: "unknown field"},
 		{label: "persistence empty path", factoryName: SessionPersistenceFactoryName, input: `{"path":""}`, wantMessage: "path must be non-empty"},
 		{label: "persistence journal", factoryName: SessionPersistenceFactoryName, input: `{"path":"/tmp/sessions.sqlite","journalMode":"memory"}`, wantMessage: "journalMode must be"},
