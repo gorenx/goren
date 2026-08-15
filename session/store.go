@@ -67,9 +67,12 @@ func OnDisposed(pluginScope *plugin.Scope, callback LifecycleListener) (plugin.D
 	if callback == nil {
 		return nil, errors.New("session: disposed listener is nil")
 	}
-	return plugin.OnNotify(pluginScope, disposedTopic, func(requestContext context.Context, notice LifecycleNotice) error {
-		return callback(requestContext, notice.Session)
-	})
+	return plugin.OnNotify(
+		pluginScope, disposedTopic,
+		func(requestContext context.Context, notice LifecycleNotice) error {
+			return callback(requestContext, notice.Session)
+		},
+	)
 }
 
 // OnEvent registers a scope-owned post-commit append observer.
