@@ -97,7 +97,7 @@ type AskUserQuestionItem struct {
 type SessionEvent struct {
 	Type            string          `json:"type"`
 	Seq             int64           `json:"seq"`
-	Time            float64         `json:"time"`
+	Time            int64           `json:"time"`
 	Data            json.RawMessage `json:"data"`
 	SourceEventSeqs *[]int64        `json:"sourceEventSeqs,omitempty"`
 	SurfaceOp       json.RawMessage `json:"surfaceOp,omitempty"`

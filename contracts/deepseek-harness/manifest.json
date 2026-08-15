@@ -26,7 +26,15 @@
       "bad-response"
     ],
     "unaryMethods": [
-      "host.describe"
+      "host.describe",
+      "session.list",
+      "session.create",
+      "session.history",
+      "session.models",
+      "session.selectModel",
+      "session.prompt",
+      "session.updateQueue",
+      "session.cancel"
     ],
     "muxFrameTypes": [
       "session/event",
@@ -218,6 +226,7 @@
     "ACP stdio adapter",
     "MCP Client Bridge",
     "Jobs and Subagent workflow",
-    "unary methods other than host.describe"
+    "session.search, session.rename, session.fork, and session.attachment",
+    "unary methods outside the included host.describe and session slice"
   ]
 }

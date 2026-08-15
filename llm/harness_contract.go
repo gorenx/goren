@@ -27,6 +27,13 @@ type TextBlock struct {
 	Text string `json:"text"`
 }
 
+// PlainTextContent is the capability adapters use for visible text without
+// depending on one concrete block representation.
+type PlainTextContent interface {
+	ContentBlock
+	PlainText() (string, bool)
+}
+
 // NewTextBlock creates one canonical text block.
 func NewTextBlock(content string) TextBlock {
 	return TextBlock{Type: "text", Text: content}
@@ -34,6 +41,9 @@ func NewTextBlock(content string) TextBlock {
 
 // ContentType returns the canonical discriminant.
 func (TextBlock) ContentType() string { return "text" }
+
+// PlainText returns the block's model-visible text.
+func (source TextBlock) PlainText() (string, bool) { return source.Text, true }
 
 // CloneContent returns an independent value copy.
 func (source TextBlock) CloneContent() (ContentBlock, error) {
@@ -127,6 +137,21 @@ func NewOpaqueContentBlock(typeName string, rawValue json.RawMessage) (OpaqueCon
 
 // ContentType returns the retained plugin discriminant.
 func (entry OpaqueContentBlock) ContentType() string { return entry.typeName }
+
+// PlainText exposes a losslessly retained text extension to adapters while
+// leaving every other opaque discriminant non-textual.
+func (entry OpaqueContentBlock) PlainText() (string, bool) {
+	if entry.typeName != "text" {
+		return "", false
+	}
+	var fields struct {
+		Text *string `json:"text"`
+	}
+	if json.Unmarshal(entry.rawValue, &fields) != nil || fields.Text == nil {
+		return "", false
+	}
+	return *fields.Text, true
+}
 
 // CloneContent returns an independent lossless JSON snapshot.
 func (entry OpaqueContentBlock) CloneContent() (ContentBlock, error) {
@@ -237,31 +262,31 @@ func decodeContentBlock(rawValue json.RawMessage) (ContentBlock, error) {
 	case "text":
 		var entry TextBlock
 		if err := decodeStrict(rawValue, &entry); err != nil {
-			return nil, err
+			return NewOpaqueContentBlock(header.Type, rawValue)
 		}
 		return entry, nil
 	case "reasoning":
 		var entry ReasoningBlock
 		if err := decodeStrict(rawValue, &entry); err != nil {
-			return nil, err
+			return NewOpaqueContentBlock(header.Type, rawValue)
 		}
 		return entry, nil
 	case "image":
 		var entry ImageBlock
 		if err := decodeStrict(rawValue, &entry); err != nil {
-			return nil, err
+			return NewOpaqueContentBlock(header.Type, rawValue)
 		}
 		return entry, nil
 	case "tool-call":
 		var entry ToolCallBlock
 		if err := decodeStrict(rawValue, &entry); err != nil {
-			return nil, err
+			return NewOpaqueContentBlock(header.Type, rawValue)
 		}
 		return entry, nil
 	case "tool-result":
 		var entry ToolResultBlock
 		if err := json.Unmarshal(rawValue, &entry); err != nil {
-			return nil, err
+			return NewOpaqueContentBlock(header.Type, rawValue)
 		}
 		return entry, nil
 	default:

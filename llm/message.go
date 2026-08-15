@@ -523,10 +523,14 @@ func decodeMessageSource(rawValue json.RawMessage) (MessageSource, error) {
 	switch header.Kind {
 	case "user":
 		var origin UserMessageSource
-		if err := decodeStrict(rawValue, &origin); err != nil {
-			return nil, err
+		if err := decodeStrict(rawValue, &origin); err == nil {
+			return origin.CloneSource()
 		}
-		return origin.CloneSource()
+		// MessageSourceMap is merge-extensible in the pinned TypeScript
+		// contract. Host adapters add rpcId and clientTimeZone to a direct user
+		// source, while core LLM code still needs only the kind. Keep those
+		// extension fields losslessly outside the core source vocabulary.
+		return NewOpaqueMessageSource(header.Kind, rawValue)
 	case "plugin":
 		var origin PluginMessageSource
 		if err := decodeStrict(rawValue, &origin); err != nil {

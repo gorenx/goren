@@ -6,9 +6,12 @@ import (
 	"errors"
 	"strings"
 
+	agentcore "github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentdefaultmodel"
 	"github.com/gorenx/goren/apiproxy"
 	protocol "github.com/gorenx/goren/connection"
 	connectionhost "github.com/gorenx/goren/internal/connection"
+	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
@@ -27,6 +30,7 @@ type APIProxyConfig struct {
 
 type apiProxyFactory struct {
 	workingDirectory string
+	ensureDirectory  func(string) error
 }
 
 func (builder apiProxyFactory) Name() string {
@@ -43,45 +47,58 @@ func (builder apiProxyFactory) DecodeConfig(rawConfig json.RawMessage) (APIProxy
 }
 
 func (builder apiProxyFactory) New(_ context.Context, settings APIProxyConfig) (plugin.Plugin, error) {
-	return &apiProxyPlugin{settings: settings, workingDirectory: builder.workingDirectory}, nil
+	return &apiProxyPlugin{
+		settings: settings, workingDirectory: builder.workingDirectory,
+		ensureDirectory: builder.ensureDirectory,
+	}, nil
 }
 
 type apiProxyPlugin struct {
 	settings         APIProxyConfig
 	workingDirectory string
+	ensureDirectory  func(string) error
 }
 
 func (instance *apiProxyPlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: APIProxyFactoryName, Provides: []plugin.ServiceRef{apiProxyServiceKey.Ref()},
-		Requires: []plugin.ServiceRef{session.StoreService.Ref()},
+		Requires: []plugin.ServiceRef{
+			agentcore.Service.Ref(), agentdefaultmodel.Service.Ref(), llm.Service.Ref(), session.StoreService.Ref(),
+		},
 	}
 }
 
-func (instance *apiProxyPlugin) Apply(_ context.Context, pluginScope *plugin.Scope) error {
+func (instance *apiProxyPlugin) Apply(requestContext context.Context, pluginScope *plugin.Scope) error {
+	agentRegistry, agentsFound := plugin.Require(pluginScope, agentcore.Service)
+	defaultModels, defaultsFound := plugin.Require(pluginScope, agentdefaultmodel.Service)
+	modelRuntime, modelsFound := plugin.Require(pluginScope, llm.Service)
 	sessionStore, found := plugin.Require(pluginScope, session.StoreService)
-	if !found {
-		return errors.New("assembly: sessions dependency is unavailable")
+	if !agentsFound || !defaultsFound || !modelsFound || !found {
+		return errors.New("assembly: API Proxy dependencies are unavailable")
+	}
+	gateway, err := apiproxy.NewSessionGateway(requestContext, pluginScope, apiproxy.SessionGatewayDependencies{
+		Agents: agentRegistry, Sessions: sessionStore, LLM: modelRuntime, Defaults: defaultModels,
+		Directories: apiproxy.DirectoryProvisionerFunc(instance.ensureDirectory),
+	}, apiproxy.SessionGatewayOptions{WorkingDirectory: instance.workingDirectory})
+	if err != nil {
+		return err
 	}
 	methods := apiproxy.NewCatalog()
 	descriptionSource := apiproxy.HostDescriptionFunc(func(context.Context) (apiproxy.HostDescription, error) {
+		selected := defaultModels.CurrentSelection()
 		return apiproxy.HostDescription{
 			Version: instance.settings.Version, CWD: instance.workingDirectory,
-			AttachedSessions: len(sessionStore.List()), CanOpenPath: false,
+			Provider: selected.Provider, Model: selected.Model,
+			AttachedSessions: len(agentRegistry.List()), CanOpenPath: false,
 		}, nil
 	})
 	if err := apiproxy.RegisterHostDescribe(methods, descriptionSource); err != nil {
 		return err
 	}
-	idleMuxStream := func(requestContext context.Context, _ func(apiproxy.StreamRequest[apiproxy.MuxFrame]) error) error {
-		<-requestContext.Done()
-		return nil
+	if err := apiproxy.RegisterSessionAPI(methods, gateway); err != nil {
+		return err
 	}
-	idleHostStream := func(requestContext context.Context, _ func(apiproxy.StreamRequest[apiproxy.HostFrame]) error) error {
-		<-requestContext.Done()
-		return nil
-	}
-	streams, err := apiproxy.NewEventStreams(idleMuxStream, idleHostStream)
+	streams, err := apiproxy.NewEventStreams(gateway.Mux, gateway.Host)
 	if err != nil {
 		return err
 	}

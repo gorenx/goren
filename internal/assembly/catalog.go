@@ -13,15 +13,16 @@ import (
 )
 
 const (
-	AgentFactoryName        = "@deepseek-ai/dsh-agent"
-	AgentLoopFactoryName    = "@deepseek-ai/dsh-agent-loop"
-	APIProxyFactoryName     = "@deepseek-ai/dsh-host-apiproxy"
-	ConnectionFactoryName   = "@deepseek-ai/dsh-client-connection"
-	DeepSeekFactoryName     = "@deepseek-ai/dsh-llm-deepseek"
-	LLMFactoryName          = "@deepseek-ai/dsh-llm"
-	SessionFactoryName      = "@deepseek-ai/dsh-session"
-	SystemPromptFactoryName = "@deepseek-ai/dsh-system-prompt"
-	ToolsFactoryName        = "@deepseek-ai/dsh-tools"
+	AgentFactoryName             = "@deepseek-ai/dsh-agent"
+	AgentDefaultModelFactoryName = "@deepseek-ai/dsh-agent-default-model"
+	AgentLoopFactoryName         = "@deepseek-ai/dsh-agent-loop"
+	APIProxyFactoryName          = "@deepseek-ai/dsh-host-apiproxy"
+	ConnectionFactoryName        = "@deepseek-ai/dsh-client-connection"
+	DeepSeekFactoryName          = "@deepseek-ai/dsh-llm-deepseek"
+	LLMFactoryName               = "@deepseek-ai/dsh-llm"
+	SessionFactoryName           = "@deepseek-ai/dsh-session"
+	SystemPromptFactoryName      = "@deepseek-ai/dsh-system-prompt"
+	ToolsFactoryName             = "@deepseek-ai/dsh-tools"
 )
 
 // Environment contains process-derived values that are not deployment config.
@@ -29,6 +30,7 @@ type Environment struct {
 	WorkingDirectory string
 	LookupEnv        func(string) (string, bool)
 	UserHomeDir      func() (string, error)
+	EnsureDirectory  func(string) error
 }
 
 // PluginSpec is one strict factory invocation at the catalog ingress boundary.
@@ -43,10 +45,19 @@ func NewCatalog(platform Environment) (*plugin.Catalog, error) {
 	if err := plugin.RegisterFactory(registry, agentFactory{}); err != nil {
 		return nil, err
 	}
+	if err := plugin.RegisterFactory(registry, agentDefaultModelFactory{}); err != nil {
+		return nil, err
+	}
 	if err := plugin.RegisterFactory(registry, agentLoopFactory{}); err != nil {
 		return nil, err
 	}
-	if err := plugin.RegisterFactory(registry, apiProxyFactory{workingDirectory: platform.WorkingDirectory}); err != nil {
+	ensureDirectory := platform.EnsureDirectory
+	if ensureDirectory == nil {
+		ensureDirectory = func(path string) error { return os.MkdirAll(path, 0o755) }
+	}
+	if err := plugin.RegisterFactory(registry, apiProxyFactory{
+		workingDirectory: platform.WorkingDirectory, ensureDirectory: ensureDirectory,
+	}); err != nil {
 		return nil, err
 	}
 	if err := plugin.RegisterFactory(registry, connectionFactory{}); err != nil {
@@ -90,9 +101,16 @@ func DefaultSpecs(listenAddress string, version string) ([]PluginSpec, error) {
 	if err != nil {
 		return nil, err
 	}
+	defaultModelRaw, err := json.Marshal(AgentDefaultModelConfig{
+		Provider: "deepseek-official", Model: "deepseek-v4-flash",
+	})
+	if err != nil {
+		return nil, err
+	}
 	return []PluginSpec{
 		{FactoryName: ConnectionFactoryName, Config: connectionRaw},
 		{FactoryName: APIProxyFactoryName, Config: apiProxyRaw},
+		{FactoryName: AgentDefaultModelFactoryName, Config: defaultModelRaw},
 		{FactoryName: AgentLoopFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: AgentFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: LLMFactoryName, Config: json.RawMessage(`{}`)},

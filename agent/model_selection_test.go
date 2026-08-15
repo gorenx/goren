@@ -98,4 +98,28 @@ func TestModelSelectionSnapshotsPromptAndRequestTogether(t *testing.T) {
 	}
 }
 
+func TestModelSelectionReadsLiveFallbackUntilExplicitlySelected(t *testing.T) {
+	t.Parallel()
+	fallback := agentcore.ModelSelection{Provider: "first", Model: "one"}
+	selection := agentcore.NewModelSelectionRef(func() (agentcore.ModelSelection, bool, error) {
+		return fallback, true, nil
+	})
+	current, found, err := selection.Current()
+	if err != nil || !found || current != fallback {
+		t.Fatalf("initial current = %#v, found = %t, error = %v", current, found, err)
+	}
+	fallback = agentcore.ModelSelection{Provider: "second", Model: "two"}
+	current, found, err = selection.Current()
+	if err != nil || !found || current != fallback {
+		t.Fatalf("live current = %#v, found = %t, error = %v", current, found, err)
+	}
+	explicit := agentcore.ModelSelection{Provider: "chosen", Model: "exact"}
+	selection.SetCurrent(&explicit)
+	fallback = agentcore.ModelSelection{Provider: "third", Model: "three"}
+	current, found, err = selection.Current()
+	if err != nil || !found || current != explicit {
+		t.Fatalf("explicit current = %#v, found = %t, error = %v", current, found, err)
+	}
+}
+
 func boolPointer(selected bool) *bool { return &selected }

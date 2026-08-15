@@ -12,6 +12,7 @@ import (
 	"time"
 
 	agentcore "github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentdefaultmodel"
 	"github.com/gorenx/goren/agentloop"
 	"github.com/gorenx/goren/apiproxy"
 	protocol "github.com/gorenx/goren/connection"
@@ -30,7 +31,7 @@ func (instance probePlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "assembly-probe",
 		Requires: []plugin.ServiceRef{
-			agentcore.Service.Ref(), agentloop.Service.Ref(), serverServiceKey.Ref(), llm.Service.Ref(), session.StoreService.Ref(), systemprompt.Service.Ref(), toolscore.Service.Ref(),
+			agentcore.Service.Ref(), agentdefaultmodel.Service.Ref(), agentloop.Service.Ref(), serverServiceKey.Ref(), llm.Service.Ref(), session.StoreService.Ref(), systemprompt.Service.Ref(), toolscore.Service.Ref(),
 		},
 	}
 }
@@ -45,7 +46,7 @@ func TestCatalogContainsOnlyCurrentServerSlice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{AgentFactoryName, AgentLoopFactoryName, ConnectionFactoryName, APIProxyFactoryName, LLMFactoryName, DeepSeekFactoryName, SessionFactoryName, SystemPromptFactoryName, ToolsFactoryName}
+	want := []string{AgentFactoryName, AgentDefaultModelFactoryName, AgentLoopFactoryName, ConnectionFactoryName, APIProxyFactoryName, LLMFactoryName, DeepSeekFactoryName, SessionFactoryName, SystemPromptFactoryName, ToolsFactoryName}
 	if got := registry.Names(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("factory names = %#v, want %#v", got, want)
 	}
@@ -75,6 +76,8 @@ func TestConnectionFactoryUsesStrictTypedConfig(t *testing.T) {
 		{label: "wrong type", factoryName: ConnectionFactoryName, input: `{"listenAddress":7}`, wantMessage: "cannot unmarshal"},
 		{label: "negative limit", factoryName: ConnectionFactoryName, input: `{"listenAddress":"127.0.0.1:0","maxBodyBytes":-1}`, wantMessage: "must not be negative"},
 		{label: "agent unknown", factoryName: AgentFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
+		{label: "default model unknown", factoryName: AgentDefaultModelFactoryName, input: `{"provider":"p","model":"m","unknown":true}`, wantMessage: "unknown field"},
+		{label: "default model empty", factoryName: AgentDefaultModelFactoryName, input: `{"provider":"p","model":""}`, wantMessage: "must be non-empty"},
 		{label: "agent loop unknown", factoryName: AgentLoopFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
 		{label: "agent loop nested unknown", factoryName: AgentLoopFactoryName, input: `{"agents":[{"id":"a","unknown":true}]}`, wantMessage: "unknown field"},
 		{label: "agent loop parallel limit", factoryName: AgentLoopFactoryName, input: `{"maxParallelToolCalls":0}`, wantMessage: "positive integer"},
@@ -219,7 +222,8 @@ func TestConnectionCompositionSettlesDependenciesAndServesHostDescribe(t *testin
 		t.Fatal(err)
 	}
 	if response.StatusCode != http.StatusOK || !message.Result.OK || description.Version != "0.1.0-rc.5" ||
-		description.CWD != "/contract-workspace" || description.AttachedSessions != 1 {
+		description.CWD != "/contract-workspace" || description.Provider != "deepseek-official" ||
+		description.Model != "deepseek-v4-flash" || description.AttachedSessions != 0 {
 		t.Fatalf("response = (%d, %#v, %#v)", response.StatusCode, message, description)
 	}
 	if err := engine.Shutdown(requestContext); err != nil {

@@ -53,6 +53,24 @@ const eventSchemas = await load<{ muxFrameSchema: Parser; hostFrameSchema: Parse
 const hostSchemas = await load<{ hostDescribeRequestSchema: Parser; hostDescribeValueSchema: Parser }>(
   'packages/host/apiproxy/src/api/host.schema.ts',
 )
+const sessionSchemas = await load<{
+  sessionListRequestSchema: Parser
+  sessionListValueSchema: Parser
+  sessionCreateRequestSchema: Parser
+  sessionCreateValueSchema: Parser
+  sessionHistoryRequestSchema: Parser
+  sessionHistoryValueSchema: Parser
+  sessionModelsRequestSchema: Parser
+  sessionModelsValueSchema: Parser
+  sessionSelectModelRequestSchema: Parser
+  sessionSelectModelValueSchema: Parser
+  sessionPromptRequestSchema: Parser
+  sessionPromptValueSchema: Parser
+  sessionUpdateQueueRequestSchema: Parser
+  sessionUpdateQueueValueSchema: Parser
+  sessionCancelRequestSchema: Parser
+  sessionCancelValueSchema: Parser
+}>('packages/host/apiproxy/src/api/sessions.schema.ts')
 
 const internalError = { code: 'internal', message: 'boom', details: {} }
 const workspace = {
@@ -115,6 +133,139 @@ const candidates: Record<string, { schema: Parser; values: Candidate[] }> = {
       { name: 'minimal', input: { version: '0.1.0-rc.5', cwd: '/workspace', attachedSessions: 0, canOpenPath: false } },
       { name: 'with-model', input: { version: '0.1.0-rc.5', cwd: '/workspace', provider: 'deepseek', model: 'deepseek-chat', attachedSessions: 2, canOpenPath: true } },
       { name: 'negative-sessions', input: { version: '0.1.0-rc.5', cwd: '/workspace', attachedSessions: -1, canOpenPath: false } },
+    ],
+  },
+  sessionListRequest: {
+    schema: sessionSchemas.sessionListRequestSchema,
+    values: [
+      { name: 'empty', input: {} },
+      { name: 'cursor-and-unknown', input: { cursor: 'reserved', ignored: true } },
+      { name: 'null-cursor', input: { cursor: null } },
+    ],
+  },
+  sessionListValue: {
+    schema: sessionSchemas.sessionListValueSchema,
+    values: [
+      { name: 'empty', input: { items: [] } },
+      { name: 'attached', input: { items: [{ sessionId: 'session-1', updatedAt: 7, running: false, blank: true, cwd: '/workspace' }] } },
+      { name: 'missing-items', input: {} },
+    ],
+  },
+  sessionCreateRequest: {
+    schema: sessionSchemas.sessionCreateRequestSchema,
+    values: [
+      { name: 'default', input: {} },
+      { name: 'explicit', input: { cwd: '/workspace', sessionId: 'session-1', agentPreset: 'coding', ignored: true } },
+      { name: 'workspace', input: { workspaceId: 'workspace-1' } },
+      { name: 'workspace-and-cwd', input: { workspaceId: 'workspace-1', cwd: '/workspace' } },
+      { name: 'null-session', input: { sessionId: null } },
+    ],
+  },
+  sessionCreateValue: {
+    schema: sessionSchemas.sessionCreateValueSchema,
+    values: [
+      { name: 'minimal', input: { sessionId: 'session-1' } },
+      { name: 'preset', input: { sessionId: 'session-1', agentPreset: 'coding' } },
+      { name: 'empty-id', input: { sessionId: '' } },
+    ],
+  },
+  sessionHistoryRequest: {
+    schema: sessionSchemas.sessionHistoryRequestSchema,
+    values: [
+      { name: 'tail', input: { sessionId: 'session-1' } },
+      { name: 'page', input: { sessionId: 'session-1', beforeSeq: 10, maxMessages: 50, ignored: true } },
+      { name: 'negative-before', input: { sessionId: 'session-1', beforeSeq: -1 } },
+      { name: 'zero-max', input: { sessionId: 'session-1', maxMessages: 0 } },
+      { name: 'null-before', input: { sessionId: 'session-1', beforeSeq: null } },
+    ],
+  },
+  sessionHistoryValue: {
+    schema: sessionSchemas.sessionHistoryValueSchema,
+    values: [
+      { name: 'empty', input: { events: [], hasMore: false } },
+      { name: 'event', input: { events: [{ event: { type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } } }], hasMore: false } },
+      { name: 'missing-more', input: { events: [] } },
+    ],
+  },
+  sessionModelsRequest: {
+    schema: sessionSchemas.sessionModelsRequestSchema,
+    values: [
+      { name: 'canonical', input: { sessionId: 'session-1', ignored: true } },
+      { name: 'empty-id', input: { sessionId: '' } },
+      { name: 'null-id', input: { sessionId: null } },
+    ],
+  },
+  sessionModelsValue: {
+    schema: sessionSchemas.sessionModelsValueSchema,
+    values: [
+      { name: 'empty-directory', input: { current: { provider: 'p', model: 'm' }, routable: true, groups: [], failures: [] } },
+      { name: 'group', input: { current: { provider: 'p', model: 'm', reasoningEffort: 'high' }, routable: true, groups: [{ id: 'p', name: 'Provider', models: [{ id: 'm', name: 'Model' }] }], failures: [] } },
+      { name: 'missing-failures', input: { current: { provider: 'p', model: 'm' }, routable: true, groups: [] } },
+    ],
+  },
+  sessionSelectModelRequest: {
+    schema: sessionSchemas.sessionSelectModelRequestSchema,
+    values: [
+      { name: 'canonical', input: { sessionId: 'session-1', provider: 'p', model: 'm', reasoningEffort: 'high', ignored: true } },
+      { name: 'minimal', input: { sessionId: 'session-1', provider: 'p', model: 'm' } },
+      { name: 'empty-provider', input: { sessionId: 'session-1', provider: '', model: 'm' } },
+      { name: 'null-effort', input: { sessionId: 'session-1', provider: 'p', model: 'm', reasoningEffort: null } },
+    ],
+  },
+  sessionSelectModelValue: {
+    schema: sessionSchemas.sessionSelectModelValueSchema,
+    values: [
+      { name: 'canonical', input: { selected: { provider: 'p', model: 'm' } } },
+      { name: 'missing-selected', input: {} },
+    ],
+  },
+  sessionPromptRequest: {
+    schema: sessionSchemas.sessionPromptRequestSchema,
+    values: [
+      { name: 'text', input: { sessionId: 'session-1', mode: 'queue', content: [{ type: 'text', text: 'hello', ignored: true }], clientTimeZone: 'UTC', ignored: true } },
+      { name: 'image', input: { sessionId: 'session-1', mode: 'steer', content: [{ type: 'image', mediaType: 'image/png', data: 'AA==' }] } },
+      { name: 'unknown-mode', input: { sessionId: 'session-1', mode: 'later', content: [] } },
+      { name: 'unknown-part', input: { sessionId: 'session-1', mode: 'queue', content: [{ type: 'audio', data: '' }] } },
+      { name: 'null-zone', input: { sessionId: 'session-1', mode: 'queue', content: [], clientTimeZone: null } },
+    ],
+  },
+  sessionPromptValue: {
+    schema: sessionSchemas.sessionPromptValueSchema,
+    values: [
+      { name: 'accepted', input: { accepted: true } },
+      { name: 'false', input: { accepted: false } },
+    ],
+  },
+  sessionUpdateQueueRequest: {
+    schema: sessionSchemas.sessionUpdateQueueRequestSchema,
+    values: [
+      { name: 'edit', input: { sessionId: 'session-1', itemId: 'message-1', action: { kind: 'edit', content: [{ type: 'text', text: 'changed', extension: 1 }] } } },
+      { name: 'remove', input: { sessionId: 'session-1', itemId: 'message-1', action: { kind: 'remove', ignored: true } } },
+      { name: 'steer', input: { sessionId: 'session-1', itemId: 'message-1', action: { kind: 'steer' } } },
+      { name: 'unknown-action', input: { sessionId: 'session-1', itemId: 'message-1', action: { kind: 'later' } } },
+      { name: 'null-content', input: { sessionId: 'session-1', itemId: 'message-1', action: { kind: 'edit', content: null } } },
+    ],
+  },
+  sessionUpdateQueueValue: {
+    schema: sessionSchemas.sessionUpdateQueueValueSchema,
+    values: [
+      { name: 'accepted', input: { accepted: true } },
+      { name: 'false', input: { accepted: false } },
+    ],
+  },
+  sessionCancelRequest: {
+    schema: sessionSchemas.sessionCancelRequestSchema,
+    values: [
+      { name: 'canonical', input: { sessionId: 'session-1', ignored: true } },
+      { name: 'empty-id', input: { sessionId: '' } },
+      { name: 'missing-id', input: {} },
+    ],
+  },
+  sessionCancelValue: {
+    schema: sessionSchemas.sessionCancelValueSchema,
+    values: [
+      { name: 'accepted', input: { accepted: true } },
+      { name: 'false', input: { accepted: false } },
     ],
   },
   muxFrame: {

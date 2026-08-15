@@ -17,12 +17,23 @@ type ModelSelection struct {
 	ReasoningEffort llm.ReasoningEffortID
 }
 
+// ModelSelectionSource resolves the live fallback used until this process
+// explicitly selects a model for the Agent.
+type ModelSelectionSource func() (ModelSelection, bool, error)
+
 // ModelSelectionRef couples mutable next-step selection to the value captured
 // for the current prompt assembly.
 type ModelSelectionRef struct {
 	mu        sync.RWMutex
 	current   *ModelSelection
 	assembled *ModelSelection
+	source    ModelSelectionSource
+}
+
+// NewModelSelectionRef keeps an optional logged/default source live until an
+// explicit SetCurrent selection takes precedence.
+func NewModelSelectionRef(source ModelSelectionSource) *ModelSelectionRef {
+	return &ModelSelectionRef{source: source}
 }
 
 // SetCurrent changes selection for the next step that enters prompt assembly.
@@ -32,14 +43,19 @@ func (selection *ModelSelectionRef) SetCurrent(selected *ModelSelection) {
 	selection.mu.Unlock()
 }
 
-// Current returns a detached next-step selection.
-func (selection *ModelSelectionRef) Current() (ModelSelection, bool) {
+// Current returns the explicit next-step selection or resolves its live fallback.
+func (selection *ModelSelectionRef) Current() (ModelSelection, bool, error) {
 	selection.mu.RLock()
-	defer selection.mu.RUnlock()
-	if selection.current == nil {
-		return ModelSelection{}, false
+	selected := cloneSelection(selection.current)
+	source := selection.source
+	selection.mu.RUnlock()
+	if selected != nil {
+		return *selected, true, nil
 	}
-	return *selection.current, true
+	if source == nil {
+		return ModelSelection{}, false, nil
+	}
+	return source()
 }
 
 // Assembled returns the selection captured for the most recent assembly.
@@ -60,7 +76,10 @@ func InstallModelSelection(agentScope *plugin.Scope, selection *ModelSelectionRe
 	}
 	releaseAssembly, err := systemprompt.OnAssemble(agentScope,
 		func(requestContext context.Context, _ *systemprompt.PromptAssembly, _ systemprompt.AssembleContext, downstream systemprompt.AssembleNext) (systemprompt.PromptAssembly, error) {
-			selected, found := selection.Current()
+			selected, found, selectionErr := selection.Current()
+			if selectionErr != nil {
+				return systemprompt.PromptAssembly{}, selectionErr
+			}
 			resolvedPrompt, resolveErr := downstream(requestContext)
 			if resolveErr != nil {
 				return systemprompt.PromptAssembly{}, resolveErr

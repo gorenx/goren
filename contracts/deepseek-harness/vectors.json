@@ -310,6 +310,709 @@
         }
       }
     ],
+    "sessionListRequest": [
+      {
+        "name": "empty",
+        "accepted": true,
+        "input": {},
+        "normalized": {}
+      },
+      {
+        "name": "cursor-and-unknown",
+        "accepted": true,
+        "input": {
+          "cursor": "reserved",
+          "ignored": true
+        },
+        "normalized": {
+          "cursor": "reserved"
+        }
+      },
+      {
+        "name": "null-cursor",
+        "accepted": false,
+        "input": {
+          "cursor": null
+        }
+      }
+    ],
+    "sessionListValue": [
+      {
+        "name": "empty",
+        "accepted": true,
+        "input": {
+          "items": []
+        },
+        "normalized": {
+          "items": []
+        }
+      },
+      {
+        "name": "attached",
+        "accepted": true,
+        "input": {
+          "items": [
+            {
+              "sessionId": "session-1",
+              "updatedAt": 7,
+              "running": false,
+              "blank": true,
+              "cwd": "/workspace"
+            }
+          ]
+        },
+        "normalized": {
+          "items": [
+            {
+              "sessionId": "session-1",
+              "updatedAt": 7,
+              "running": false,
+              "blank": true,
+              "cwd": "/workspace"
+            }
+          ]
+        }
+      },
+      {
+        "name": "missing-items",
+        "accepted": false,
+        "input": {}
+      }
+    ],
+    "sessionCreateRequest": [
+      {
+        "name": "default",
+        "accepted": true,
+        "input": {},
+        "normalized": {}
+      },
+      {
+        "name": "explicit",
+        "accepted": true,
+        "input": {
+          "cwd": "/workspace",
+          "sessionId": "session-1",
+          "agentPreset": "coding",
+          "ignored": true
+        },
+        "normalized": {
+          "cwd": "/workspace",
+          "sessionId": "session-1",
+          "agentPreset": "coding"
+        }
+      },
+      {
+        "name": "workspace",
+        "accepted": true,
+        "input": {
+          "workspaceId": "workspace-1"
+        },
+        "normalized": {
+          "workspaceId": "workspace-1"
+        }
+      },
+      {
+        "name": "workspace-and-cwd",
+        "accepted": false,
+        "input": {
+          "workspaceId": "workspace-1",
+          "cwd": "/workspace"
+        }
+      },
+      {
+        "name": "null-session",
+        "accepted": false,
+        "input": {
+          "sessionId": null
+        }
+      }
+    ],
+    "sessionCreateValue": [
+      {
+        "name": "minimal",
+        "accepted": true,
+        "input": {
+          "sessionId": "session-1"
+        },
+        "normalized": {
+          "sessionId": "session-1"
+        }
+      },
+      {
+        "name": "preset",
+        "accepted": true,
+        "input": {
+          "sessionId": "session-1",
+          "agentPreset": "coding"
+        },
+        "normalized": {
+          "sessionId": "session-1",
+          "agentPreset": "coding"
+        }
+      },
+      {
+        "name": "empty-id",
+        "accepted": false,
+        "input": {
+          "sessionId": ""
+        }
+      }
+    ],
+    "sessionHistoryRequest": [
+      {
+        "name": "tail",
+        "accepted": true,
+        "input": {
+          "sessionId": "session-1"
+        },
+        "normalized": {
+          "sessionId": "session-1"
+        }
+      },
+      {
+        "name": "page",
+        "accepted": true,
+        "input": {
+          "sessionId": "session-1",
+          "beforeSeq": 10,
+          "maxMessages": 50,
+          "ignored": true
+        },
+        "normalized": {
+          "sessionId": "session-1",
+          "beforeSeq": 10,
+          "maxMessages": 50
+        }
+      },
+      {
+        "name": "negative-before",
+        "accepted": false,
+        "input": {
+          "sessionId": "session-1",
+          "beforeSeq": -1
+        }
+      },
+      {
+        "name": "zero-max",
+        "accepted": false,
+        "input": {
+          "sessionId": "session-1",
+          "maxMessages": 0
+        }
+      },
+      {
+        "name": "null-before",
+        "accepted": false,
+        "input": {
+          "sessionId": "session-1",
+          "beforeSeq": null
+        }
+      }
+    ],
+    "sessionHistoryValue": [
+      {
+        "name": "empty",
+        "accepted": true,
+        "input": {
+          "events": [],
+          "hasMore": false
+        },
+        "normalized": {
+          "events": [],
+          "hasMore": false
+        }
+      },
+      {
+        "name": "event",
+        "accepted": true,
+        "input": {
+          "events": [
+            {
+              "event": {
+                "type": "turn/start",
+                "seq": 0,
+                "time": 1,
+                "data": {
+                  "turn": 1
+                }
+              }
+            }
+          ],
+          "hasMore": false
+        },
+        "normalized": {
+          "events": [
+            {
+              "event": {
+                "type": "turn/start",
+                "seq": 0,
+                "time": 1,
+                "data": {
+                  "turn": 1
+                }
+              }
+            }
+          ],
+          "hasMore": false
+        }
+      },
+      {
+        "name": "missing-more",
+        "accepted": false,
+        "input": {
+          "events": []
+        }
+      }
+    ],
+    "sessionModelsRequest": [
+      {
+        "name": "canonical",
+        "accepted": true,
+        "input": {
+          "sessionId": "session-1",
+          "ignored": true
+        },
+        "normalized": {
+          "sessionId": "session-1"
+        }
+      },
+      {
+        "name": "empty-id",
+        "accepted": false,
+        "input": {
+          "sessionId": ""
+        }
+      },
+      {
+        "name": "null-id",
+        "accepted": false,
+        "input": {
+          "sessionId": null
+        }
+      }
+    ],
+    "sessionModelsValue": [
+      {
+        "name": "empty-directory",
+        "accepted": true,
+        "input": {
+          "current": {
+            "provider": "p",
+            "model": "m"
+          },
+          "routable": true,
+          "groups": [],
+          "failures": []
+        },
+        "normalized": {
+          "current": {
+            "provider": "p",
+            "model": "m"
+          },
+          "routable": true,
+          "groups": [],
+          "failures": []
+        }
+      },
+      {
+        "name": "group",
+        "accepted": true,
+        "input": {
+          "current": {
+            "provider": "p",
+            "model": "m",
+            "reasoningEffort": "high"
+          },
+          "routable": true,
+          "groups": [
+            {
+              "id": "p",
+              "name": "Provider",
+              "models": [
+                {
+                  "id": "m",
+                  "name": "Model"
+                }
+              ]
+            }
+          ],
+          "failures": []
+        },
+        "normalized": {
+          "current": {
+            "provider": "p",
+            "model": "m",
+            "reasoningEffort": "high"
+          },
+          "routable": true,
+          "groups": [
+            {
+              "id": "p",
+              "name": "Provider",
+              "models": [
+                {
+                  "id": "m",
+                  "name": "Model"
+                }
+              ]
+            }
+          ],
+          "failures": []
+        }
+      },
+      {
+        "name": "missing-failures",
+        "accepted": false,
+        "input": {
+          "current": {
+            "provider": "p",
+            "model": "m"
+          },
+          "routable": true,
+          "groups": []
+        }
+      }
+    ],
+    "sessionSelectModelRequest": [
+      {
+        "name": "canonical",
+        "accepted": true,
+        "input": {
+          "sessionId": "session-1",
+          "provider": "p",
+          "model": "m",
+          "reasoningEffort": "high",
+          "ignored": true
+        },
+        "normalized": {
+          "sessionId": "session-1",
+          "provider": "p",
+          "model": "m",
+          "reasoningEffort": "high"
+        }
+      },
+      {
+        "name": "minimal",
+        "accepted": true,
+        "input": {
+          "sessionId": "session-1",
+          "provider": "p",
+          "model": "m"
+        },
+        "normalized": {
+          "sessionId": "session-1",
+          "provider": "p",
+          "model": "m"
+        }
+      },
+      {
+        "name": "empty-provider",
+        "accepted": false,
+        "input": {
+          "sessionId": "session-1",
+          "provider": "",
+          "model": "m"
+        }
+      },
+      {
+        "name": "null-effort",
+        "accepted": false,
+        "input": {
+          "sessionId": "session-1",
+          "provider": "p",
+          "model": "m",
+          "reasoningEffort": null
+        }
+      }
+    ],
+    "sessionSelectModelValue": [
+      {
+        "name": "canonical",
+        "accepted": true,
+        "input": {
+          "selected": {
+            "provider": "p",
+            "model": "m"
+          }
+        },
+        "normalized": {
+          "selected": {
+            "provider": "p",
+            "model": "m"
+          }
+        }
+      },
+      {
+        "name": "missing-selected",
+        "accepted": false,
+        "input": {}
+      }
+    ],
+    "sessionPromptRequest": [
+      {
+        "name": "text",
+        "accepted": true,
+        "input": {
+          "sessionId": "session-1",
+          "mode": "queue",
+          "content": [
+            {
+              "type": "text",
+              "text": "hello",
+              "ignored": true
+            }
+          ],
+          "clientTimeZone": "UTC",
+          "ignored": true
+        },
+        "normalized": {
+          "sessionId": "session-1",
+          "mode": "queue",
+          "content": [
+            {
+              "type": "text",
+              "text": "hello"
+            }
+          ],
+          "clientTimeZone": "UTC"
+        }
+      },
+      {
+        "name": "image",
+        "accepted": true,
+        "input": {
+          "sessionId": "session-1",
+          "mode": "steer",
+          "content": [
+            {
+              "type": "image",
+              "mediaType": "image/png",
+              "data": "AA=="
+            }
+          ]
+        },
+        "normalized": {
+          "sessionId": "session-1",
+          "mode": "steer",
+          "content": [
+            {
+              "type": "image",
+              "mediaType": "image/png",
+              "data": "AA=="
+            }
+          ]
+        }
+      },
+      {
+        "name": "unknown-mode",
+        "accepted": false,
+        "input": {
+          "sessionId": "session-1",
+          "mode": "later",
+          "content": []
+        }
+      },
+      {
+        "name": "unknown-part",
+        "accepted": false,
+        "input": {
+          "sessionId": "session-1",
+          "mode": "queue",
+          "content": [
+            {
+              "type": "audio",
+              "data": ""
+            }
+          ]
+        }
+      },
+      {
+        "name": "null-zone",
+        "accepted": false,
+        "input": {
+          "sessionId": "session-1",
+          "mode": "queue",
+          "content": [],
+          "clientTimeZone": null
+        }
+      }
+    ],
+    "sessionPromptValue": [
+      {
+        "name": "accepted",
+        "accepted": true,
+        "input": {
+          "accepted": true
+        },
+        "normalized": {
+          "accepted": true
+        }
+      },
+      {
+        "name": "false",
+        "accepted": false,
+        "input": {
+          "accepted": false
+        }
+      }
+    ],
+    "sessionUpdateQueueRequest": [
+      {
+        "name": "edit",
+        "accepted": true,
+        "input": {
+          "sessionId": "session-1",
+          "itemId": "message-1",
+          "action": {
+            "kind": "edit",
+            "content": [
+              {
+                "type": "text",
+                "text": "changed",
+                "extension": 1
+              }
+            ]
+          }
+        },
+        "normalized": {
+          "sessionId": "session-1",
+          "itemId": "message-1",
+          "action": {
+            "kind": "edit",
+            "content": [
+              {
+                "type": "text",
+                "text": "changed",
+                "extension": 1
+              }
+            ]
+          }
+        }
+      },
+      {
+        "name": "remove",
+        "accepted": true,
+        "input": {
+          "sessionId": "session-1",
+          "itemId": "message-1",
+          "action": {
+            "kind": "remove",
+            "ignored": true
+          }
+        },
+        "normalized": {
+          "sessionId": "session-1",
+          "itemId": "message-1",
+          "action": {
+            "kind": "remove"
+          }
+        }
+      },
+      {
+        "name": "steer",
+        "accepted": true,
+        "input": {
+          "sessionId": "session-1",
+          "itemId": "message-1",
+          "action": {
+            "kind": "steer"
+          }
+        },
+        "normalized": {
+          "sessionId": "session-1",
+          "itemId": "message-1",
+          "action": {
+            "kind": "steer"
+          }
+        }
+      },
+      {
+        "name": "unknown-action",
+        "accepted": false,
+        "input": {
+          "sessionId": "session-1",
+          "itemId": "message-1",
+          "action": {
+            "kind": "later"
+          }
+        }
+      },
+      {
+        "name": "null-content",
+        "accepted": false,
+        "input": {
+          "sessionId": "session-1",
+          "itemId": "message-1",
+          "action": {
+            "kind": "edit",
+            "content": null
+          }
+        }
+      }
+    ],
+    "sessionUpdateQueueValue": [
+      {
+        "name": "accepted",
+        "accepted": true,
+        "input": {
+          "accepted": true
+        },
+        "normalized": {
+          "accepted": true
+        }
+      },
+      {
+        "name": "false",
+        "accepted": false,
+        "input": {
+          "accepted": false
+        }
+      }
+    ],
+    "sessionCancelRequest": [
+      {
+        "name": "canonical",
+        "accepted": true,
+        "input": {
+          "sessionId": "session-1",
+          "ignored": true
+        },
+        "normalized": {
+          "sessionId": "session-1"
+        }
+      },
+      {
+        "name": "empty-id",
+        "accepted": false,
+        "input": {
+          "sessionId": ""
+        }
+      },
+      {
+        "name": "missing-id",
+        "accepted": false,
+        "input": {}
+      }
+    ],
+    "sessionCancelValue": [
+      {
+        "name": "accepted",
+        "accepted": true,
+        "input": {
+          "accepted": true
+        },
+        "normalized": {
+          "accepted": true
+        }
+      },
+      {
+        "name": "false",
+        "accepted": false,
+        "input": {
+          "accepted": false
+        }
+      }
+    ],
     "muxFrame": [
       {
         "name": "session/event",
