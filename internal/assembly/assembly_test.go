@@ -60,13 +60,13 @@ func TestCatalogContainsOnlyCurrentServerSlice(t *testing.T) {
 		SessionFactoryName, SessionPersistenceFactoryName, SessionProjectionFactoryName, SessionTitleFactoryName,
 		SystemPromptFactoryName, ToolAskUserFactoryName,
 		ToolsFactoryName, ApprovalFactoryName, UserQuestionsFactoryName,
-		WorkspaceFactoryName,
+		WorkspaceFactoryName, WebFrontendFactoryName,
 	}
 	if got := registry.Names(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("factory names = %#v, want %#v", got, want)
 	}
 	for _, excludedFactory := range []string{
-		"@deepseek-ai/dsh-client", "@deepseek-ai/dsh-sdk", "@deepseek-ai/dsh-host-frontend-static",
+		"@deepseek-ai/dsh-client", "@deepseek-ai/dsh-sdk",
 		"@deepseek-ai/dsh-acp", "@deepseek-ai/dsh-mcp-client",
 	} {
 		if _, err := registry.Create(context.Background(), excludedFactory, json.RawMessage(`{}`)); err == nil {
@@ -124,6 +124,7 @@ func TestConnectionFactoryUsesStrictTypedConfig(t *testing.T) {
 		{label: "workspace unknown", factoryName: WorkspaceFactoryName, input: `{"path":"/tmp/workspaces.sqlite","unknown":true}`, wantMessage: "unknown field"},
 		{label: "workspace empty path", factoryName: WorkspaceFactoryName, input: `{"path":""}`, wantMessage: "path must be non-empty"},
 		{label: "workspace journal", factoryName: WorkspaceFactoryName, input: `{"path":"/tmp/workspaces.sqlite","journalMode":"memory"}`, wantMessage: "journalMode must be"},
+		{label: "web unknown", factoryName: WebFrontendFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
 		{label: "deepseek unknown", factoryName: DeepSeekFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
 		{label: "deepseek nested unknown", factoryName: DeepSeekFactoryName, input: `{"models":[{"id":"m","unknown":true}]}`, wantMessage: "unknown field"},
 		{label: "deepseek disabled high", factoryName: DeepSeekFactoryName, input: `{"thinking":"disabled","reasoningEffort":"high"}`, wantMessage: "only reasoningEffort off"},

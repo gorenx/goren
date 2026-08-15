@@ -109,6 +109,35 @@ func TestUnaryCarrierContract(t *testing.T) {
 	}
 }
 
+func TestFrontendHandlesOnlyUnownedBrowserRoutes(t *testing.T) {
+	t.Parallel()
+	var frontendCalls atomic.Int32
+	frontendHandler := http.HandlerFunc(func(responseWriter http.ResponseWriter, _ *http.Request) {
+		frontendCalls.Add(1)
+		responseWriter.WriteHeader(http.StatusOK)
+		_, _ = responseWriter.Write([]byte("frontend"))
+	})
+	methods := apiproxy.NewCatalog()
+	carrier, err := NewHTTPHost(HTTPConfig{Frontend: frontendHandler}, methods, idleEventSource())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pageResponse := httptest.NewRecorder()
+	carrier.ServeHTTP(pageResponse, httptest.NewRequest(http.MethodGet, "http://localhost/sessions/example", nil))
+	if pageResponse.Code != http.StatusOK || pageResponse.Body.String() != "frontend" || frontendCalls.Load() != 1 {
+		t.Fatalf("frontend response = (%d, %q, calls=%d)", pageResponse.Code, pageResponse.Body.String(), frontendCalls.Load())
+	}
+
+	apiResponse := httptest.NewRecorder()
+	apiRequest := httptest.NewRequest(http.MethodPost, "http://localhost/api/missing", strings.NewReader(`{}`))
+	apiRequest.Header.Set("content-type", "application/json")
+	carrier.ServeHTTP(apiResponse, apiRequest)
+	if apiResponse.Code != http.StatusNotFound || apiResponse.Body.String() != "not found" || frontendCalls.Load() != 1 {
+		t.Fatalf("API response = (%d, %q, frontend calls=%d)", apiResponse.Code, apiResponse.Body.String(), frontendCalls.Load())
+	}
+}
+
 func TestRespondCarrierContract(t *testing.T) {
 	t.Parallel()
 	carrier := configuredHost(t)

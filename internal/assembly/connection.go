@@ -24,6 +24,7 @@ type ConnectionConfig struct {
 	TrustedHosts          []string `json:"trustedHosts,omitempty"`
 	MaxBodyBytes          int64    `json:"maxBodyBytes,omitempty"`
 	GracefulTimeoutMillis int64    `json:"gracefulTimeoutMillis,omitempty"`
+	ServeWeb              bool     `json:"serveWeb,omitempty"`
 }
 
 type connectionFactory struct{}
@@ -56,11 +57,15 @@ type connectionPlugin struct {
 }
 
 func (instance *connectionPlugin) Manifest() plugin.Manifest {
-	return plugin.Manifest{
+	pluginDescriptor := plugin.Manifest{
 		Name:     ConnectionFactoryName,
 		Provides: []plugin.ServiceRef{serverServiceKey.Ref()},
 		Requires: []plugin.ServiceRef{apiProxyServiceKey.Ref()},
 	}
+	if instance.settings.ServeWeb {
+		pluginDescriptor.Requires = append(pluginDescriptor.Requires, webFrontendServiceKey.Ref())
+	}
+	return pluginDescriptor
 }
 
 func (instance *connectionPlugin) Apply(requestContext context.Context, pluginScope *plugin.Scope) error {
@@ -68,10 +73,18 @@ func (instance *connectionPlugin) Apply(requestContext context.Context, pluginSc
 	if !found {
 		return errors.New("assembly: apiProxy dependency is unavailable")
 	}
+	var frontend webFrontend
+	if instance.settings.ServeWeb {
+		var frontendFound bool
+		frontend, frontendFound = plugin.Require(pluginScope, webFrontendServiceKey)
+		if !frontendFound {
+			return errors.New("assembly: web frontend dependency is unavailable")
+		}
+	}
 	gracefulTimeout := time.Duration(instance.settings.GracefulTimeoutMillis) * time.Millisecond
 	carrier, err := connectionhost.NewHTTPHost(connectionhost.HTTPConfig{
 		TrustedHosts: instance.settings.TrustedHosts, MaxBodyBytes: instance.settings.MaxBodyBytes,
-		GracefulTimeout: gracefulTimeout,
+		GracefulTimeout: gracefulTimeout, Frontend: frontend,
 	}, proxy, proxy)
 	if err != nil {
 		return err

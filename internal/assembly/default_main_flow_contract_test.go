@@ -5,11 +5,14 @@ package assembly
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -30,6 +33,13 @@ type defaultMainFlowObservation struct {
 	Accepted     bool     `json:"accepted"`
 	Idle         bool     `json:"idle"`
 	HistoryTypes []string `json:"historyTypes"`
+}
+
+type webUIMainFlowObservation struct {
+	Booted   bool `json:"booted"`
+	Prompted bool `json:"prompted"`
+	Selected bool `json:"selected"`
+	History  bool `json:"history"`
 }
 
 type defaultMainFlowDeepSeekRequest struct {
@@ -54,10 +64,14 @@ func TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter(t *
 			http.Error(responseWriter, "unexpected request", http.StatusBadRequest)
 			return
 		}
-		requestCount.Add(1)
+		requestNumber := requestCount.Add(1)
+		responseText := "hello from DeepSeek"
+		if requestNumber == 2 {
+			responseText = "hello from the Web UI"
+		}
 		responseWriter.Header().Set("content-type", "text/event-stream")
 		responseWriter.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprint(responseWriter, "data: {\"choices\":[{\"delta\":{\"content\":\"hello from DeepSeek\"}}]}\n\n")
+		_, _ = fmt.Fprintf(responseWriter, "data: {\"choices\":[{\"delta\":{\"content\":%q}}]}\n\n", responseText)
 		_, _ = fmt.Fprint(responseWriter, "data: {\"choices\":[{\"delta\":{\"content\":\"\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":4}}\n\n")
 		_, _ = fmt.Fprint(responseWriter, "data: [DONE]\n\n")
 	}))
@@ -124,6 +138,20 @@ func TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter(t *
 	if _, err := runtimeEngine.Load(context.Background(), serverProbe); err != nil {
 		t.Fatal(err)
 	}
+	pageResponse, err := http.Get("http://" + serverAddress + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pageBody, readErr := io.ReadAll(pageResponse.Body)
+	closeErr := pageResponse.Body.Close()
+	if readErr != nil || closeErr != nil {
+		t.Fatal(fmt.Errorf("read Web shell: %w", errors.Join(readErr, closeErr)))
+	}
+	if pageResponse.StatusCode != http.StatusOK ||
+		!strings.Contains(string(pageBody), "session-list") ||
+		!strings.Contains(string(pageBody), "/app.js") {
+		t.Fatalf("Web shell response = (%d, %q)", pageResponse.StatusCode, pageBody)
+	}
 
 	commandContext, cancelCommand := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancelCommand()
@@ -158,7 +186,27 @@ func TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter(t *
 			t.Fatalf("history types = %v, missing %s", observation.HistoryTypes, eventName)
 		}
 	}
-	if requestCount.Load() != 1 {
-		t.Fatalf("DeepSeek request count = %d, want 1", requestCount.Load())
+
+	webOutput, err := contractfixture.RunTypeScript(
+		commandContext,
+		sourceRoot,
+		nil,
+		filepath.Join(repositoryRoot, "tests", "contract", "typescript", "web-ui-main-flow.ts"),
+		sourceRoot,
+		"http://"+serverAddress,
+		"hello from the Web UI",
+	)
+	if err != nil {
+		t.Fatalf("embedded Web UI main flow: %v", err)
+	}
+	var webObservation webUIMainFlowObservation
+	if err := json.Unmarshal(webOutput, &webObservation); err != nil {
+		t.Fatalf("decode Web UI observation: %v; output = %s", err, webOutput)
+	}
+	if !webObservation.Booted || !webObservation.Prompted || !webObservation.Selected || !webObservation.History {
+		t.Fatalf("Web UI observation = %#v", webObservation)
+	}
+	if requestCount.Load() != 2 {
+		t.Fatalf("DeepSeek request count = %d, want 2", requestCount.Load())
 	}
 }

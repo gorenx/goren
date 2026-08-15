@@ -38,6 +38,7 @@ type HTTPConfig struct {
 	TrustedHosts    []string
 	MaxBodyBytes    int64
 	GracefulTimeout time.Duration
+	Frontend        http.Handler
 }
 
 // HTTPHost owns the Echo transport lifecycle while exposing no Echo types to
@@ -87,6 +88,9 @@ func NewHTTPHost(settings HTTPConfig, dispatch RPCDispatcher, streams EventSourc
 	engine.GET(connection.HostEventsPath, downlinks.hostHandler())
 	engine.POST(connection.RespondPath, respondHandler(dispatch, maxBodyBytes))
 	engine.POST(connection.APIPath+"/:method", unaryHandler(dispatch, maxBodyBytes))
+	if settings.Frontend != nil {
+		engine.RouteNotFound("/*", echo.WrapHandler(settings.Frontend))
+	}
 	return &HTTPHost{engine: engine, gracefulTimeout: gracefulTimeout, downlinks: downlinks}, nil
 }
 
