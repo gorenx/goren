@@ -122,6 +122,7 @@ func (extension *interactionAPIContractProvider) Apply(
 			Agents: agentRegistry, Sessions: sessionStore, Persistence: durability,
 			LLM: modelRuntime, Defaults: defaultSelection,
 			Projections: projectionRegistry, Titles: titleService,
+			Workspaces: fixture.EmptyWorkspaces{},
 			Directories: apiproxy.DirectoryProvisionerFunc(func(string) error {
 				return nil
 			}),

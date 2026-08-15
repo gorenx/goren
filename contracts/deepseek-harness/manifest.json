@@ -35,7 +35,14 @@
       "session.selectModel",
       "session.prompt",
       "session.updateQueue",
-      "session.cancel"
+      "session.cancel",
+      "workspace.list",
+      "workspace.create",
+      "workspace.rename",
+      "workspace.delete",
+      "workspace.insertBefore",
+      "workspace.insertSessionBefore",
+      "workspace.archiveSession"
     ],
     "muxFrameTypes": [
       "session/event",
@@ -278,6 +285,6 @@
     "MCP Client Bridge",
     "Jobs and Subagent workflow",
     "session.search, session.fork, and session.attachment",
-    "unary methods outside the included host.describe and session slice"
+    "unary methods outside the included host.describe, session, and workspace slices"
   ]
 }

@@ -347,6 +347,20 @@ func (hub *sessionFrameHub) agentError(identifier session.SessionID, cause error
 	return dispatchErr
 }
 
+func (hub *sessionFrameHub) hostFrame(payload HostFrame) error {
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	var dispatchErr error
+	for subscriber := range hub.host {
+		if err := hub.pushHostLocked(subscriber, payload); err != nil {
+			dispatchErr = errors.Join(dispatchErr, fmt.Errorf(
+				"apiproxy: mint %s Host frame: %w", payload.frameType(), err,
+			))
+		}
+	}
+	return dispatchErr
+}
+
 func (hub *sessionFrameHub) pushMuxLocked(subscriber *muxSubscriber, payload MuxFrame) error {
 	rpcID, err := hub.newRPC()
 	if err != nil {

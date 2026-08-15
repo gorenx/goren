@@ -140,6 +140,13 @@ func TestPinnedManifestMatchesGoSurface(t *testing.T) {
 		apiproxy.SessionPromptMethod,
 		apiproxy.SessionUpdateQueueMethod,
 		apiproxy.SessionCancelMethod,
+		apiproxy.WorkspaceListMethod,
+		apiproxy.WorkspaceCreateMethod,
+		apiproxy.WorkspaceRenameMethod,
+		apiproxy.WorkspaceDeleteMethod,
+		apiproxy.WorkspaceInsertBeforeMethod,
+		apiproxy.WorkspaceInsertSessionBeforeMethod,
+		apiproxy.WorkspaceArchiveSessionMethod,
 	}) {
 		t.Fatalf("unary methods = %v", manifestDocument.Included.UnaryMethods)
 	}
@@ -359,6 +366,81 @@ func TestGoAgreesWithPinnedSourceVectors(t *testing.T) {
 		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionPromptValue{Accepted: true}), vectors["sessionPromptValue"]["accepted"])
 		assertJSONEqual(t, mustMarshal(t, accepted), vectors["sessionUpdateQueueValue"]["accepted"])
 		assertJSONEqual(t, mustMarshal(t, accepted), vectors["sessionCancelValue"]["accepted"])
+	})
+	t.Run("workspace requests", func(t *testing.T) {
+		decoders := map[string]func(json.RawMessage) []connection.ValidationIssue{
+			"workspaceListRequest": func(rawValue json.RawMessage) []connection.ValidationIssue {
+				_, issues := apiproxy.DecodeWorkspaceListRequest(rawValue)
+				return issues
+			},
+			"workspaceCreateRequest": func(rawValue json.RawMessage) []connection.ValidationIssue {
+				_, issues := apiproxy.DecodeWorkspaceCreateRequest(rawValue)
+				return issues
+			},
+			"workspaceRenameRequest": func(rawValue json.RawMessage) []connection.ValidationIssue {
+				_, issues := apiproxy.DecodeWorkspaceRenameRequest(rawValue)
+				return issues
+			},
+			"workspaceDeleteRequest": func(rawValue json.RawMessage) []connection.ValidationIssue {
+				_, issues := apiproxy.DecodeWorkspaceDeleteRequest(rawValue)
+				return issues
+			},
+			"workspaceInsertBeforeRequest": func(rawValue json.RawMessage) []connection.ValidationIssue {
+				_, issues := apiproxy.DecodeWorkspaceInsertBeforeRequest(rawValue)
+				return issues
+			},
+			"workspaceInsertSessionBeforeRequest": func(rawValue json.RawMessage) []connection.ValidationIssue {
+				_, issues := apiproxy.DecodeWorkspaceInsertSessionBeforeRequest(rawValue)
+				return issues
+			},
+			"workspaceArchiveSessionRequest": func(rawValue json.RawMessage) []connection.ValidationIssue {
+				_, issues := apiproxy.DecodeWorkspaceArchiveSessionRequest(rawValue)
+				return issues
+			},
+		}
+		for suiteName, decodePayload := range decoders {
+			for _, candidate := range fixtureData.Suites[suiteName] {
+				issues := decodePayload(candidate.Input)
+				assertAcceptance(t, candidate, len(issues) == 0)
+			}
+		}
+	})
+	t.Run("workspace values", func(t *testing.T) {
+		vectors := map[string]map[string]json.RawMessage{
+			"workspaceListValue":                acceptedByName(t, fixtureData.Suites["workspaceListValue"]),
+			"workspaceCreateValue":              acceptedByName(t, fixtureData.Suites["workspaceCreateValue"]),
+			"workspaceRenameValue":              acceptedByName(t, fixtureData.Suites["workspaceRenameValue"]),
+			"workspaceDeleteValue":              acceptedByName(t, fixtureData.Suites["workspaceDeleteValue"]),
+			"workspaceInsertBeforeValue":        acceptedByName(t, fixtureData.Suites["workspaceInsertBeforeValue"]),
+			"workspaceInsertSessionBeforeValue": acceptedByName(t, fixtureData.Suites["workspaceInsertSessionBeforeValue"]),
+			"workspaceArchiveSessionValue":      acceptedByName(t, fixtureData.Suites["workspaceArchiveSessionValue"]),
+		}
+		view := apiproxy.WorkspaceView{
+			WorkspaceID: "workspace-1", Path: "/workspace", Title: "Workspace",
+			SessionIDs: []apiproxy.SessionID{},
+			CreatedAt:  "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z",
+		}
+		assertJSONEqual(t, mustMarshal(t, apiproxy.WorkspaceListValue{
+			Items: []apiproxy.WorkspaceView{}, ArchivedSessionIDs: []apiproxy.SessionID{},
+		}), vectors["workspaceListValue"]["empty"])
+		assertJSONEqual(t, mustMarshal(t, apiproxy.WorkspaceCreateValue{
+			Workspace: view, Created: true,
+		}), vectors["workspaceCreateValue"]["created"])
+		assertJSONEqual(t, mustMarshal(t, apiproxy.WorkspaceRenameValue{
+			Workspace: view,
+		}), vectors["workspaceRenameValue"]["canonical"])
+		assertJSONEqual(t, mustMarshal(t, apiproxy.WorkspaceDeleteValue{
+			Deleted: true,
+		}), vectors["workspaceDeleteValue"]["deleted"])
+		assertJSONEqual(t, mustMarshal(t, apiproxy.WorkspaceInsertBeforeValue{
+			WorkspaceIDs: []apiproxy.WorkspaceID{"workspace-2", "workspace-1"},
+		}), vectors["workspaceInsertBeforeValue"]["canonical"])
+		assertJSONEqual(t, mustMarshal(t, apiproxy.WorkspaceInsertSessionBeforeValue{
+			Workspace: view,
+		}), vectors["workspaceInsertSessionBeforeValue"]["canonical"])
+		assertJSONEqual(t, mustMarshal(t, apiproxy.WorkspaceArchiveSessionValue{
+			ArchivedSessionIDs: []apiproxy.SessionID{"session-1"},
+		}), vectors["workspaceArchiveSessionValue"]["canonical"])
 	})
 	t.Run("frames", func(t *testing.T) {
 		muxFixtures := acceptedByName(t, fixtureData.Suites["muxFrame"])

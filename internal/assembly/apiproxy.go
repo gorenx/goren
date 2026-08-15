@@ -18,6 +18,7 @@ import (
 	sessionprojection "github.com/gorenx/goren/session/projection"
 	sessiontitle "github.com/gorenx/goren/session/title"
 	"github.com/gorenx/goren/userquestions"
+	"github.com/gorenx/goren/workspace"
 )
 
 type apiProxyService interface {
@@ -67,9 +68,15 @@ func (instance *apiProxyPlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: APIProxyFactoryName, Provides: []plugin.ServiceRef{apiProxyServiceKey.Ref()},
 		Requires: []plugin.ServiceRef{
-			agentcore.Service.Ref(), agentdefaultmodel.Service.Ref(), llm.Service.Ref(), session.StoreService.Ref(),
+			agentcore.Service.Ref(),
+			agentdefaultmodel.Service.Ref(),
+			llm.Service.Ref(),
+			session.StoreService.Ref(),
 			sessionpersistence.Service.Ref(),
-			sessionprojection.Service.Ref(), sessiontitle.Service.Ref(), userquestions.Service.Ref(),
+			sessionprojection.Service.Ref(),
+			sessiontitle.Service.Ref(),
+			userquestions.Service.Ref(),
+			workspace.Service.Ref(),
 		},
 	}
 }
@@ -83,14 +90,16 @@ func (instance *apiProxyPlugin) Apply(requestContext context.Context, pluginScop
 	projections, projectionsFound := plugin.Require(pluginScope, sessionprojection.Service)
 	titles, titlesFound := plugin.Require(pluginScope, sessiontitle.Service)
 	questionService, questionsFound := plugin.Require(pluginScope, userquestions.Service)
+	workspaceRegistry, workspacesFound := plugin.Require(pluginScope, workspace.Service)
 	if !agentsFound || !defaultsFound || !modelsFound || !found || !persistenceFound ||
-		!projectionsFound || !titlesFound || !questionsFound {
+		!projectionsFound || !titlesFound || !questionsFound || !workspacesFound {
 		return errors.New("assembly: API Proxy dependencies are unavailable")
 	}
 	gateway, err := apiproxy.NewSessionGateway(requestContext, pluginScope, apiproxy.SessionGatewayDependencies{
 		Agents: agentRegistry, Sessions: sessionStore, Persistence: durability,
 		LLM: modelRuntime, Defaults: defaultModels,
 		Projections: projections, Titles: titles,
+		Workspaces:  workspaceRegistry,
 		Directories: apiproxy.DirectoryProvisionerFunc(instance.ensureDirectory),
 	}, apiproxy.SessionGatewayOptions{WorkingDirectory: instance.workingDirectory})
 	if err != nil {
@@ -109,6 +118,13 @@ func (instance *apiProxyPlugin) Apply(requestContext context.Context, pluginScop
 		return err
 	}
 	if err := apiproxy.RegisterSessionAPI(methods, gateway); err != nil {
+		return err
+	}
+	workspaceGateway, err := apiproxy.NewWorkspaceGateway(requestContext, pluginScope, workspaceRegistry, gateway)
+	if err != nil {
+		return err
+	}
+	if err := apiproxy.RegisterWorkspaceAPI(methods, workspaceGateway); err != nil {
 		return err
 	}
 	if _, err := apiproxy.NewInteractionGateway(

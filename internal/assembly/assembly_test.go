@@ -27,6 +27,7 @@ import (
 	"github.com/gorenx/goren/toolaskuser"
 	toolscore "github.com/gorenx/goren/tools"
 	"github.com/gorenx/goren/userquestions"
+	"github.com/gorenx/goren/workspace"
 )
 
 type probePlugin struct {
@@ -37,7 +38,7 @@ func (instance probePlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "assembly-probe",
 		Requires: []plugin.ServiceRef{
-			agentcore.Service.Ref(), agentdefaultmodel.Service.Ref(), agentloop.Service.Ref(), approval.Service.Ref(), serverServiceKey.Ref(), llm.Service.Ref(), session.StoreService.Ref(), sessionpersistence.Service.Ref(), sessionprojection.Service.Ref(), sessiontitle.Service.Ref(), systemprompt.Service.Ref(), toolscore.Service.Ref(), userquestions.Service.Ref(),
+			agentcore.Service.Ref(), agentdefaultmodel.Service.Ref(), agentloop.Service.Ref(), approval.Service.Ref(), serverServiceKey.Ref(), llm.Service.Ref(), session.StoreService.Ref(), sessionpersistence.Service.Ref(), sessionprojection.Service.Ref(), sessiontitle.Service.Ref(), systemprompt.Service.Ref(), toolscore.Service.Ref(), userquestions.Service.Ref(), workspace.Service.Ref(),
 		},
 	}
 }
@@ -59,6 +60,7 @@ func TestCatalogContainsOnlyCurrentServerSlice(t *testing.T) {
 		SessionFactoryName, SessionPersistenceSQLiteFactoryName, SessionProjectionFactoryName, SessionTitleFactoryName,
 		SystemPromptFactoryName, ToolAskUserFactoryName,
 		ToolsFactoryName, ApprovalFactoryName, UserQuestionsFactoryName,
+		WorkspaceFactoryName, WorkspaceSQLiteFactoryName,
 	}
 	if got := registry.Names(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("factory names = %#v, want %#v", got, want)
@@ -141,7 +143,11 @@ func TestConnectionCompositionSettlesDependenciesAndServesHostDescribe(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	declarations, err := DefaultSpecs("127.0.0.1:0", "0.1.0-rc.5", t.TempDir()+"/sessions.sqlite")
+	dataDirectory := t.TempDir()
+	declarations, err := DefaultSpecs(
+		"127.0.0.1:0", "0.1.0-rc.5",
+		dataDirectory+"/sessions.sqlite", dataDirectory+"/workspaces.sqlite",
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +288,11 @@ func TestCompositionFailureRollsBackEarlierDeclarations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	declarations, err := DefaultSpecs(reservedListener.Addr().String(), "test", t.TempDir()+"/sessions.sqlite")
+	dataDirectory := t.TempDir()
+	declarations, err := DefaultSpecs(
+		reservedListener.Addr().String(), "test",
+		dataDirectory+"/sessions.sqlite", dataDirectory+"/workspaces.sqlite",
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
