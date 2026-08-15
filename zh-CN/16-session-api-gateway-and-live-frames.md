@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有浏览器可达的 `session.*` API adapter、`agentDefaultModel`、Session/Agent 到 Mux/Host frame 的投影，以及这些边界的生命周期和失败语义。通用 method Catalog、RPC outcome 与 pending response 由[07 API Proxy 模块设计与实现](./07-api-proxy-module.md)拥有；Approval/Question 交互及其 pending replay 由[17](./17-approval-user-questions-and-interaction-gateway.md)拥有；Session Projection 与 Title 事实/调度由[18](./18-session-projection-and-title.md)拥有；Session 事实、Agent capability 和 Turn/Step 驱动分别由[10](./10-session-core-and-lifecycle.md)、[14](./14-agent-registry-inbox-and-events.md)和[15](./15-agent-loop-and-request-driver.md)拥有；当前实施状态与验证证据只见[08 实施进度](./08-implementation-progress.md)。
+本文拥有浏览器可达的 `session.*` API adapter、`agentDefaultModel`、Session/Agent 到 Mux/Host frame 的投影，以及这些边界的生命周期和失败语义。通用 method Catalog、RPC outcome 与 pending response 由[07 API Proxy 模块设计与实现](./07-api-proxy-module.md)拥有；Approval/Question 交互及其 pending replay 由[17](./17-approval-user-questions-and-interaction-gateway.md)拥有；Session Projection 与 Title 事实/调度由[18](./18-session-projection-and-title.md)拥有；Session Query 与可重建索引由[23](./23-session-query-and-search.md)拥有；Session 事实、Agent capability 和 Turn/Step 驱动分别由[10](./10-session-core-and-lifecycle.md)、[14](./14-agent-registry-inbox-and-events.md)和[15](./15-agent-loop-and-request-driver.md)拥有；当前实施状态与验证证据只见[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 固定源与职责映射
 
@@ -10,7 +10,8 @@
 
 | 源 owner / symbol | Go owner | 保留职责 |
 | --- | --- | --- |
-| `packages/host/apiproxy/src/api/sessions.ts` | `apiproxy.SessionAPI`、`SessionGateway` | `session.*` method、业务错误和 Agent/Session capability 映射 |
+| `packages/host/apiproxy/src/api/sessions.ts` | `apiproxy.SessionAPI`、`SessionGateway` | Session 生命周期、历史、模型和输入 method 的业务错误与 capability 映射 |
+| `packages/host/apiproxy/src/api-proxy.ts` 的 `sessions.search` | `apiproxy.SessionSearchAPI`、`SessionSearchGateway` | `session.search` 固定产品范围、可见性过滤、分页消耗与 wire 映射 |
 | `packages/host/apiproxy/src/api/sessions.schema.ts` | `apiproxy/session_decode.go`、`session_api.go` | request/result union、字段缺失和 closed discriminant |
 | `packages/host/apiproxy/src/api-proxy.ts` 的 `sessions` 与 `events` | `apiproxy/session_stream.go` | Session baseline/live 与 Host edge frame 投影 |
 | `packages/core/agent-default-model/src/index.ts` | `agentdefaultmodel.DefaultModel` | 未显式选择或未记录模型时的 live deployment default |
@@ -21,9 +22,10 @@ Go 不复制 Typert Host Gateway、schema 代码生成或浏览器 Connection。
 
 ## 2. 职责与非职责
 
-Session API Gateway 拥有：
+Session API adapter 层拥有：
 
-- `session.list`、`session.create`、`session.rename`、`session.history`、`session.models`、`session.selectModel`、`session.prompt`、`session.updateQueue` 和 `session.cancel`；
+- `SessionGateway` 中的 `session.list`、`session.create`、`session.rename`、`session.history`、`session.models`、`session.selectModel`、`session.prompt`、`session.updateQueue` 和 `session.cancel`；
+- `SessionSearchGateway` 中独立的 `session.search`，包括 list-equivalent 可见性、固定 user/assistant current-surface 范围和结果裁剪；
 - wire DTO 到 `agents`、`sessions`、`llm`、`agentDefaultModel`、`sessionProjections`、`sessionTitle` capability 的映射；
 - attached Session summary、history page、model directory、pending queue 等浏览器消费方 projection；
 - Mux 的 Session baseline/live frame 和 Host 的 membership/status/error edge；
@@ -38,9 +40,9 @@ Session API Gateway 不拥有：
 - provider model catalog 的来源和模型解析规则；
 - Workspace registry、Attachment service、Agent Preset roster、Settings、approval/question、Jobs 或 persistence repair。
 
-因此 `SessionGateway` 是 inbound adapter 与 browser projection owner，不是 Session 或 Agent 的第二套领域服务。没有真实 Provider 的能力必须返回明确业务失败，不能以空结果或固定成功占位。
+因此 `SessionGateway` 是主会话 inbound adapter 与 browser projection owner，不是 Session 或 Agent 的第二套领域服务。内容检索有独立的 Query 与可见性依赖，所以由 `SessionSearchGateway` 承担，不继续扩张 `SessionGateway`。没有真实 Provider 的能力必须返回明确业务失败，不能以空结果或固定成功占位。
 
-## 3. 九个 `session.*` method
+## 3. 十个 `session.*` method
 
 | Method | 下游 capability | 核心语义 |
 | --- | --- | --- |
@@ -48,6 +50,7 @@ Session API Gateway 不拥有：
 | `session.create` | Directory Provisioner、Agent Registry | 生成或采用指定 ID，确定 `cwd` 并确保目录存在；相同 ID/`cwd` 幂等，subagent、preset 或 `cwd` 不一致时拒绝 |
 | `session.rename` | Agent Registry、Session Title | 只接受 ordinary live Session；把 raw title 交给 Title Service 规范化和 pin，返回 accepted `{title, seq}`；控制字符归一为空时返回 `title-invalid` |
 | `session.history` | Session Store、Session Projection | 不激活或 resume Agent；按 append-origin message 边界向前分页，返回 raw event projection 与 `hasMore`；tail page 携带与同一 event cut 对齐的 projection block |
+| `session.search` | Session Query、Session Visibility | 搜索固定的 current user/assistant message surface；消费 Provider 全局排序页后执行与 `session.list` 相同的可见性校验，返回至多 20 个 Session ID 与 240 Unicode code point snippet |
 | `session.models` | Agent、LLM Runtime | 返回 Session 当前选择和逐 Provider model group；一个 Provider 目录失败不阻断其他 Provider |
 | `session.selectModel` | LLM Runtime、Model Selection、Default Model | 精确解析 provider/model/effort；Session 已含 image 时检查输入模态；更新下一步选择，保存默认选择失败不回滚本次选择 |
 | `session.prompt` | Agent capability | 校验当前 route、时区和 content；以 `rpcId`/`clientTimeZone` 形成 user provenance，按 `queue` 或 `steer` 进入 Agent |
@@ -154,10 +157,25 @@ Agent Loop
 
 wire DTO 止于 `apiproxy`；Agent、Session、LLM 和默认模型包不依赖 Connection 或 frame type。反方向的 Session facts 也不为浏览器 projection 增加字段。
 
+搜索请求走独立链路：
+
+```text
+session.search
+  -> SessionSearchGateway
+  -> SessionGateway.VisibleSessionIDs
+  -> session/query.QueryService.SearchSessions
+  -> disposable SQLite FTS index
+  -> visibility and fixed-surface validation
+  -> SessionSearchValue
+```
+
+`SessionSearchGateway` 不复用 `session.list` 的 wire DTO 作为授权 contract，只通过最小 `SessionVisibility` 接口取得 ID 集合；Query Service 也不认识浏览器权限或 wire result。
+
 ## 9. 后续能力进入规则
 
 - Approval/Question 已由[17](./17-approval-user-questions-and-interaction-gateway.md)持有 pending、requested/resolved frame、replay 和 result schema；新增 interaction 必须复用同一 generic correlation 与 broker seam，不能把具体 schema 塞回 Session Gateway；
-- `session.search`、`fork` 和 attachment method 只有在其真实 Session/Attachment capability 进入后才注册；
+- `session.search` 已通过独立 `SessionSearchGateway` 注册；它的 Query 语义见[23](./23-session-query-and-search.md)，不能回收到主 `SessionGateway` 或 SQLite fact Backend；
+- Session Fork 明确排除，不注册 method、Factory 或占位；attachment method 只有在真实 Attachment capability 进入后才注册；
 - Session Title 的 first-prompt/all-prompts LLM 生成由同一个 Session Title 插件内的策略对象拥有；不能把模型调用塞进 `SessionGateway`；
 - JSONL、SQLite/sqlc 只实现业务事实存取 adapter，resume/load/repair 由 `session/persistence.SessionLogStore` 决定；
 - Tool view、projection、remote event 和 Workspace frame 由相应 Provider 贡献，不能在 SessionGateway 中加入 optional global model；

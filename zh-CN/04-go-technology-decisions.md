@@ -151,9 +151,13 @@ DeepSeek direct adapter 的配置、调用链、SSE 和失败映射由[13 Harnes
 
 Session persistence 分为应用层 `Persistence`、具体有状态对象 `SessionLogStore`、storage-only `Backend` 和 adapter。`SessionLogStore` 拥有 live/cold 协调、连续 seq、write-behind、recovery 与 transaction intent；adapter 只保存 Header/Event records、执行被请求的事务并报告技术状态。Session Persistence 是插件能力，SQLite 不是插件。完整设计见[19 Session Persistence 与 SQLite 事实存储设计](./19-session-persistence-and-sqlite.md)。
 
-SQLite 是当前默认 Session fact Backend。查询与写入统一由 [`sqlc`](https://sqlc.dev/) 按 SQLite dialect 根据 SQL schema/query 生成 `database/sql` Go 代码，driver 选用 [`modernc.org/sqlite`](https://pkg.go.dev/modernc.org/sqlite)，保持无 CGO 和单二进制交付。SQLite schema、query、`sqlc.yaml` 和生成包全部位于 `session/persistence/sqlite` owner 内。
+SQLite 是当前默认 Session fact Backend。查询与写入由 [`sqlc`](https://sqlc.dev/) 按 SQLite dialect 根据 SQL schema/query 生成 `database/sql` Go 代码，driver 选用 [`modernc.org/sqlite`](https://pkg.go.dev/modernc.org/sqlite)，保持无 CGO 和单二进制交付。SQLite schema、query、`sqlc.yaml` 和生成包全部位于 `session/persistence/sqlite` owner 内。
 
 JSONL 与 SQLite 是同一 `Backend` port 的可替换 adapter，不执行双写，也不形成“JSONL 权威事实 + SQLite 事实副本”。若后续为 raw artifact、可移植导出或运维需求加入 JSONL，它仍不得分配 `seq`、创建 Session Event、判断 Turn/Step、实施 repair、retention 或权限策略。独立的 SQLite projection/query index 是可从事实流重建的 read model，不与当前事实数据库混为一体。
+
+Session Query 的默认 `Index` 同样使用 `modernc.org/sqlite`，但拥有独立数据库、schema、generation 和 `session/query/sqlite/sqlc.yaml`。FTS5 保存 semantic documents，不保存 canonical Session log。可选 filter 会改变 predicate 数量，因此 search statement 由 adapter 在固定 SQL fragment 集合内构造，所有值仍通过 positional parameter 绑定；schema、固定 CRUD 和 generation query 继续由 sqlc 生成。
+
+Prepared Session ready cache 采用 [`github.com/hashicorp/golang-lru/v2`](https://github.com/hashicorp/golang-lru) 的 generic fixed-capacity LRU。它只负责 ready entry 的容量与 recency；`preparedSessions` 状态对象在外层原子协调 ready cache 与 exclusive reservation。reserved Session 先移出 LRU，durable revision 由 `SessionLogStore` 校验，因此第三方库不拥有 identity、repair 或 publication policy。
 
 Go 实现不照搬 TypeScript 的函数式编排形态。长期持有状态和不变量的能力使用明确 struct 与 method，例如 `SessionLogStore` 和 `DurableRegistry`；跨模块替换点使用消费方拥有的 interface，例如 `Persistence`、Session `Backend` 与 Workspace `Backend`。函数值只用于事件 listener、时钟、ID 生成和 disposer 等天然 callback 边界，不用闭包表代替领域对象，也不把 SQLite 选择编码成运行时函数链。
 
@@ -163,7 +167,7 @@ sqlc 使用规则：
 
 - migration SQL 与 query SQL 位于拥有该 store/projection 的 adapter 内；
 - migration 是 schema 的权威，sqlc 配置读取同一 schema 或由它生成的受检 snapshot；
-- 常规查询写在 `.sql` 文件中，不在 Go 代码里散落手写 SQL；
+- 固定查询写在 `.sql` 文件中；只有 predicate shape 确实动态的 FTS query 可在所属 adapter 内由固定 fragment 和 positional parameter 构造，不允许拼接输入值或把 builder 提升为业务层；
 - 生成包放在 repository-private 路径，不手工修改；
 - 生成的 row、nullable wrapper 和 driver 类型只属于 adapter，返回前映射为 owner-defined 类型；
 - transaction boundary 由 use case owner 决定，adapter 使用 sqlc 的 transaction-bound query handle 执行；

@@ -325,7 +325,7 @@ Client 同时连接：
 - `/api/respond`
 - approval/question 的 request/response frame
 
-`session.search/fork/attachment` 及其他方法进入 capability matrix 后才能声明兼容。未纳入的方法返回源 carrier 的未注册行为，不能用固定成功、空对象或无副作用 stub 冒充实现。Session Projection、Title、tail baseline 与 rename 的 owner 见[18](./18-session-projection-and-title.md)。
+`session.search` 已进入 included method 与固定 schema/client contract，Query 语义见[23](./23-session-query-and-search.md)。Session Fork 明确排除；`session.attachment` 及其他方法进入 capability matrix 后才能声明兼容。未纳入的方法返回源 carrier 的未注册行为，不能用固定成功、空对象或无副作用 stub 冒充实现。Session Projection、Title、tail baseline 与 rename 的 owner 见[18](./18-session-projection-and-title.md)。
 
 这意味着“客户端可以连接并完成 Agent 对话”与“整个原 Web 产品所有页面可用”是两项不同声明；首期只承诺前者。
 

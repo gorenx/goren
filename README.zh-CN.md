@@ -55,8 +55,8 @@ Goren 保留源系统可观察的行为和职责边界，同时用 typed Go conf
 | Session Projection | 可扩展 Projection、Cache、Checkpoint 与实时 Frame | **已实现：** Projection Registry、Fold、Checkpoint/Restore、Baseline 与实时 Frame |
 | Session Title | Fallback、手工 Rename 与自动 LLM Title Provider | **已实现：** Fallback、Rename/Refresh，以及可配置的 First-Prompt 或 All-Prompts LLM 生成 |
 | Session 持久化 | 可插拔 Persistence，以及 JSONL、SQLite Adapter | **部分实现：** Persistence 边界与 SQLite/sqlc Adapter；未复制 JSONL Adapter |
-| Session Query 与导出 | SQLite Query、搜索、日志导出与 Query Tool | **暂缓** |
-| Session Fork | 从既有对话创建 Fork | **暂缓** |
+| Session Query 与导出 | 精确读取、过滤、关系追踪、SQLite 搜索、日志导出与 Query Tool | **部分实现：** live-preferred Query Service、可重建 SQLite/FTS5 Index 与 `session.search` 已实现；导出和 Agent Query Tool 暂缓 |
+| Session Fork | 从既有对话创建 Fork | **不在当前范围内** |
 | Workspace | Registry、排序、Archive、Session Accounting、持久化与 Web 管理 | **部分实现：** Registry、API、Accounting、排序/Archive 与 SQLite 已实现；Web 管理暂缓 |
 | Credentials | Provider/Manager/Store、环境变量、Local Store 与 Host API | **已实现：** 环境变量优先、Owner-only Local JSON Store、只写 Host API 与 Web DeepSeek API Key 设置 |
 | Settings | Typed Namespace、文件持久化、Describe 与 Mutation | **暂缓：** 当前只实现标准 absent-provider 兼容响应 |

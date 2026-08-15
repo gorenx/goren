@@ -55,8 +55,8 @@ Status: **Available** means the current Goren implementation provides the named 
 | Session projection | Extensible projections, cache, checkpoint, and live frames | **Available:** projection registry, fold, checkpoint/restore, baseline, and live frames |
 | Session title | Fallback, manual rename, and automatic LLM title providers | **Available:** fallback, rename/refresh, and configurable first-prompt or all-prompts LLM generation |
 | Session persistence | Pluggable persistence with JSONL and SQLite adapters | **Partial:** persistence boundary plus SQLite/sqlc adapter; JSONL adapter is not copied |
-| Session query and export | SQLite query, search, log export, and query tool | **Deferred** |
-| Session fork | Fork an existing conversation | **Deferred** |
+| Session query and export | Exact reads, filters, traces, SQLite search, log export, and query tool | **Partial:** live-preferred Query Service, disposable SQLite/FTS5 index, and `session.search` are available; export and Agent query tools are deferred |
+| Session fork | Fork an existing conversation | **Excluded from the current scope** |
 | Workspace | Registry, ordering, archive, Session accounting, persistence, and Web management | **Partial:** registry, API, accounting, ordering/archive, and SQLite are available; Web management is deferred |
 | Credentials | Provider/manager/store, environment values, local storage, and Host API | **Available:** environment precedence, owner-only local JSON store, write-only Host API, and Web DeepSeek API-key settings |
 | Settings | Typed namespaces, file persistence, description, and mutation | **Deferred:** only the canonical absent-provider compatibility response is implemented |

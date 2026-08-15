@@ -3,7 +3,7 @@
 状态：In Progress
 更新时间：2026-08-15
 
-本文是 DeepSeek Harness Go 复刻实施状态、验证证据、阻塞项和下一步的唯一记录。全局范围与 Gate 由[05 复制路线图与验收](./05-porting-roadmap-and-acceptance.md)拥有，当前 Web Agent 交付闭包由[21 Web Agent 主会话闭环与能力边界](./21-web-agent-main-flow.md)拥有；模块职责与设计分别由[06 Connection Host 模块设计与实现](./06-connection-host-module.md)、[07 API Proxy 模块设计与实现](./07-api-proxy-module.md)、[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)、[10 Session Core 与生命周期模块设计](./10-session-core-and-lifecycle.md)、[11 System Prompt Registry 与 Assembly 模块设计](./11-system-prompt-registry-and-assembly.md)、[12 Tools Registry 与执行流水线模块设计](./12-tools-registry-and-execution-pipeline.md)、[13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)、[14 Agent Registry、Inbox 与实时事件模块设计](./14-agent-registry-inbox-and-events.md)、[15 Agent Loop 与请求驱动模块设计](./15-agent-loop-and-request-driver.md)、[16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)、[17 Approval、UserQuestions 与 Interaction Gateway](./17-approval-user-questions-and-interaction-gateway.md)、[18 Session Projection 与 Session Title 模块设计](./18-session-projection-and-title.md)、[19 Session Persistence 与 SQLite 事实存储设计](./19-session-persistence-and-sqlite.md)、[20 Workspace Registry、SQLite 与 API Gateway](./20-workspace-registry-and-api.md)和[22 Credentials 与 API Key 管理](./22-credentials-and-api-key-management.md)拥有；代码近邻说明由各领域模块 `README.zh-CN.md` 持有。本文不重新定义协议或架构。
+本文是 DeepSeek Harness Go 复刻实施状态、验证证据、阻塞项和下一步的唯一记录。全局范围与 Gate 由[05 复制路线图与验收](./05-porting-roadmap-and-acceptance.md)拥有，当前 Web Agent 交付闭包由[21 Web Agent 主会话闭环与能力边界](./21-web-agent-main-flow.md)拥有；模块职责与设计分别由[06 Connection Host 模块设计与实现](./06-connection-host-module.md)、[07 API Proxy 模块设计与实现](./07-api-proxy-module.md)、[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)、[10 Session Core 与生命周期模块设计](./10-session-core-and-lifecycle.md)、[11 System Prompt Registry 与 Assembly 模块设计](./11-system-prompt-registry-and-assembly.md)、[12 Tools Registry 与执行流水线模块设计](./12-tools-registry-and-execution-pipeline.md)、[13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)、[14 Agent Registry、Inbox 与实时事件模块设计](./14-agent-registry-inbox-and-events.md)、[15 Agent Loop 与请求驱动模块设计](./15-agent-loop-and-request-driver.md)、[16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)、[17 Approval、UserQuestions 与 Interaction Gateway](./17-approval-user-questions-and-interaction-gateway.md)、[18 Session Projection 与 Session Title 模块设计](./18-session-projection-and-title.md)、[19 Session Persistence 与 SQLite 事实存储设计](./19-session-persistence-and-sqlite.md)、[20 Workspace Registry、SQLite 与 API Gateway](./20-workspace-registry-and-api.md)、[22 Credentials 与 API Key 管理](./22-credentials-and-api-key-management.md)和[23 Session Query 与 Search](./23-session-query-and-search.md)拥有；代码近邻说明由各领域模块 `README.zh-CN.md` 持有。本文不重新定义协议或架构。
 
 ## 1. 进度记录规则
 
@@ -24,12 +24,12 @@
 | 阶段 2：Plugin Runtime | Completed | 12 Completed | Go Verified | Gate 已完成；后续能力通过既有 Factory/Service/Event seam 进入 |
 | 阶段 3：Session/Agent slice | Completed | 16 Completed | Contract Verified | 全部交付与 Gate 已闭合；cold persistence/resume 仍由阶段 5 拥有 |
 | 阶段 4：LLM Contract | Completed | 13 Completed | Environment Verified | Runtime、DeepSeek adapter、response recordings、Agent attempt loop、默认 retry Consumer 与真实 Provider smoke 均已完成 |
-| 阶段 5：Session 持久化 | In Progress | 15 Completed / 2 Planned | Contract Verified | SQLite facts、cold recovery/API/Agent resume、turn-end checkpoint 与默认装配主流程已闭环；剩余读取优化 |
-| 阶段 6：客户端能力扩展 | Deferred | 21 Completed / 19 Deferred | Contract Verified | Session 自动标题、主会话 UI、Question 回答与 DeepSeek API Key 设置已完成；其余页面和管理能力保持冻结 |
+| 阶段 5：Session 持久化 | Completed | 17 Completed | Contract Verified | SQLite facts、cold recovery/API/Agent resume、turn-end checkpoint、prepared LRU 与 suffix seek 已闭环 |
+| 阶段 6：客户端能力扩展 | Deferred | 29 Completed / 19 Deferred / 1 Excluded | Contract Verified | Session Query/Search 已完成；Fork 明确排除，export、Query Tool 与其余页面/管理能力保持冻结 |
 | 阶段 7：Deferred 能力 | Deferred | 7 Deferred | None | 不创建 package、handler 或依赖占位 |
 | 阶段 8：Parity Hardening | In Progress | 1 Completed / 4 In Progress / 10 Planned | Environment Verified | 默认 UI/Provider 主流程已有环境证据，完整发布验收仍未完成 |
 
-当前 Connection slice、Credentials、Session core、System Prompt、Native Tools、Agent Inbox、Agent Loop、Session API Gateway、Session Projection、Session Title/Rename、Session Persistence/SQLite、Workspace Registry/API、Approval/UserQuestions/Interaction Gateway 与 LLM/DeepSeek contract 达到 `Contract Verified`：固定 TypeScript schema 与 Go envelope/frame 已交叉校验，固定上游 `WebApiClient` 已通过真实 Go HTTP/WebSocket 完成 credential describe/set/unset 与主会话 create/list/history/model/prompt、`turn/end`、queue、cancel、rename、respond、reconnect；SQLite 重启后 cold list/history/create(resume) 也已有 Go E2E。默认 `DefaultSpecs` 已内嵌主会话 UI 和 local Credentials Store，并经离线 DeepSeek oracle 与真实 DeepSeek endpoint 完成对话、会话切换和历史恢复。正常 Agent 轮次在 committed `turn/end` 后等待 `session.Store.Flush`，再进入 successor/idle convergence；原版完整 Web 产品、Settings Provider、Agent Preset composition 与其他页面能力不属于当前闭包。
+当前 Connection slice、Credentials、Session core、System Prompt、Native Tools、Agent Inbox、Agent Loop、Session API Gateway、Session Projection、Session Title/Rename、Session Persistence/SQLite、Session Query/Search、Workspace Registry/API、Approval/UserQuestions/Interaction Gateway 与 LLM/DeepSeek contract 达到 `Contract Verified`：固定 TypeScript schema 与 Go envelope/frame 已交叉校验，固定上游 `WebApiClient` 已通过真实 Go HTTP/WebSocket 完成 credential describe/set/unset 与主会话 create/list/search/history/model/prompt、`turn/end`、queue、cancel、rename、respond、reconnect；SQLite 重启后 cold list/history/create(resume) 也已有 Go E2E。默认 `DefaultSpecs` 已内嵌主会话 UI 和 local Credentials Store，并经离线 DeepSeek oracle 与真实 DeepSeek endpoint 完成对话、会话切换和历史恢复。正常 Agent 轮次在 committed `turn/end` 后等待 `session.Store.Flush`，再进入 successor/idle convergence；用户取消产生的 aborted `turn/end` 使用不继承该 Turn cancellation 的 durability barrier。原版完整 Web 产品、Settings Provider、Agent Preset composition 与其他页面能力不属于当前闭包。
 
 ### 2.1 当前 Web Agent 主流程状态矩阵
 
@@ -199,9 +199,9 @@ interaction owner registers stable rpcId + decoder
 | S5-D04 | 交付 | cold validation、torn-tail 与开放 Turn/Step/Tool recovery | Completed | Go Verified：`SessionLogStore` 与 recovery tests 覆盖 repair planning/commit |
 | S5-D05 | 交付 | cold `session.list/history/create(resume)` 与 Agent publication handoff | Completed | Contract Verified：默认 composition 重启 E2E 完成 list、history 和 exact Session resume |
 | S5-D06 | 交付 | reconnect baseline、pending replay 和 queue snapshot | Completed | Contract Verified：subscribed/high-water、stable interaction replay 与 queue snapshot 已覆盖；live callback 不作为 durable fact |
-| S5-D07 | 优化 | source-style bounded prepared cache 与 revision reuse | Planned | None：当前 reservation 保证唯一 unpublished Session，但 cold inspect/prepare 仍可重复读取 |
-| S5-D08 | 优化 | `ReadFrom` 使用 Backend seek 而非完整 prefix scan | Planned | None：公开后缀语义已实现，尚未消费 `LoadStoredFrom` 快路径 |
-| S5-D09 | 交付 | request/turn 完成边界的显式 durability checkpoint | Completed | Go Verified：`TestTurnEndAwaitsSessionDurabilityBeforeAgentBecomesIdle` 将 write-behind 延迟设为一小时，证明 Agent 在 committed `turn/end` 后调用 `session.Store.Flush`、SQLite 已可直接读取完整边界，且 flush 结束前不进入 idle |
+| S5-D07 | 优化 | source-style bounded prepared cache 与 revision reuse | Completed | Go Verified：`preparedSessions` 使用固定容量 generic LRU；ready source 命中验证 durable revision，reservation 移出 LRU 并保持 exact unpublished Session identity，外部 revision 改变触发 reload |
+| S5-D08 | 优化 | `ReadFrom` 使用 Backend seek 而非完整 prefix scan | Completed | Go Verified：`SessionLogStore.ReadFrom` 直接调用 `Backend.LoadStoredFrom`；SQLite 在一个只读事务中读取 Header/revision/suffix 并拒绝 torn marker，计数 Backend 证明不触发 full load |
+| S5-D09 | 交付 | request/turn 完成边界的显式 durability checkpoint | Completed | Go Verified：`TestTurnEndAwaitsSessionDurabilityBeforeAgentBecomesIdle` 将 write-behind 延迟设为一小时，证明 Agent 在 committed `turn/end` 后调用 `session.Store.Flush`、SQLite 已可直接读取完整边界，且 flush 结束前不进入 idle；取消场景证明 aborted outcome 的最终 durability Context 仍可用 |
 | S5-G01 | Gate | Header/首批 Event/seq/revision transaction 原子 | Completed | Go Verified：`TestAdapterMaterializesHeaderAndBatchAtomically` |
 | S5-G02 | Gate | torn tail、未知事件和开放状态 repair 不变量 | Completed | Go Verified：`TestAdapterMarksAndRepairsOnlyATornTail`、`SessionLogStore`/recovery tests |
 | S5-G03 | Gate | 背景写失败与取消不丢 batch、不伪成功 | Completed | Go Verified：`TestLiveWriterRetainsFailedBackgroundBatchForExplicitFlush`、`TestLiveWriterFlushCanCancelWhileBackgroundWriteRemainsOwned` |
@@ -249,8 +249,16 @@ interaction owner registers stable rpcId + decoder
 | S6-D14 | 能力 | Session Title Core 与 `session.rename` | Completed | Contract Verified：fallback、规范化、source union、user pin/refresh、Provider 调度 seam、`title` projection、`title-invalid`、九个 Session method 与固定源 `WebApiClient`/`Session.rename()` E2E 已通过 |
 | S6-D15 | 能力 | Session Title First-Prompt LLM Provider | Completed | Contract Verified：默认 Session Title 插件内配置 First-Prompt；共享 `LLMProvider` 覆盖 route、模型可见请求事实、预算、超时、流组装和 title 结果，固定主流程 oracle 观察到独立 title call |
 | S6-D16 | 能力 | Session Title All-Prompts LLM Provider | Completed | Go Verified：同一 Session Title 插件内以 `automaticMode=all-prompts` 构造策略对象；消息选择、source seq 与结果验证由 `llm_provider_test.go` 覆盖，不注册第二个插件 |
-| S6-D17 | 能力 | Session Query/Search | Deferred | 当前主会话不依赖 |
-| S6-D18 | 能力 | Session Fork | Deferred | 当前主会话不依赖 |
+| S6-Q01 | Session Query | consumer-owned `QueryService` 与 typed failure taxonomy | Completed | Go Verified：服务接口覆盖 exact reads、filter、title、surface、event、trace 与 full-text；API/SQLite 类型不进入 contract |
+| S6-Q02 | Session Query | live-preferred logical corpus 与 source conflict | Completed | Go Verified：live 覆盖同 ID persisted log但保留双 availability；Header conflict、cold-to-live transition 与 replay validation 明确处理 |
+| S6-Q03 | Session Query | exact list/read/filter/title/event/surface/window | Completed | Go Verified：provider-independent exact operations、bounded title inspection concurrency 与 literal event scan 由 `session/query/service_test.go` 覆盖 |
+| S6-Q04 | Session Query | Session lineage 与 Event relationship trace | Completed | Go Verified：ancestor/descendant、unresolved parent、cycle、replacement chain、source/derived edge 均由同一 logical observation 计算 |
+| S6-Q05 | Session Query | disposable SQLite/sqlc FTS5 index、reconciliation、ranking 与 cursor | Completed | Go Verified：schema/query/config/generated code 位于 `session/query/sqlite`；literal FTS、surface filter、live revision、global/per-Session generation 与 stale cursor 已覆盖 |
+| S6-Q06 | Session Query | 独立 `SessionSearchGateway` 与 `session.search` | Completed | Contract Verified：主 `SessionGateway` 只提供最小 visibility ID seam；Search Gateway 固定 current user/assistant 范围、过滤全局排名页并映射 20-item/240-code-point wire bound |
+| S6-Q07 | Session Query | typed config、默认 composition、源 schema/vector 与固定 Client | Completed | Contract Verified：Query Plugin 组合 Store/Persistence/Index；`session.search` request/value vectors 与固定源 `WebApiClient.sessions.search` 调用真实 Go Gateway 通过 |
+| S6-Q08 | Session Query | Session log export use case | Deferred | Query core 不把 SQLite derived index 或不支持 raw artifact 的 fact Backend 伪装成通用 export |
+| S6-Q09 | Session Query | `session_search` / `session_event_search` Agent Tool | Deferred | Query Service 已提供稳定消费边界；Tool 的 workspace visibility、schema 与 execution policy 尚未纳入 |
+| S6-D18 | 能力 | Session Fork | Excluded | 用户明确不实现；不注册 method、Factory、Service 或占位 |
 | S6-D19 | 能力 | 其他经 capability matrix 纳入的服务端能力 | Deferred | 当前主会话不依赖 |
 | S6-G01 | Gate | 确认真实 Consumer 后才进入实现 | Deferred | 扩大当前目标时重新启用 |
 | S6-G02 | Gate | 保留源 Definition、Provider 和 Consumer owner | Deferred | 扩大当前目标时重新启用 |
@@ -339,7 +347,7 @@ interaction owner registers stable rpcId + decoder
 | Session create/append/flush/dispose、rollback、observer containment、重入拒绝与 publication 后 follow-up append | `session/store_test.go`、`session/title/service_test.go` |
 | 固定源与 Go Session Header/Event/seed/surface 行为一致 | `TestPinnedSourceSessionCoreMatchesGo` |
 | Session -> API Proxy -> `host.describe.attachedSessions` 实时 projection | `TestConnectionCompositionSettlesDependenciesAndServesHostDescribe` |
-| 九个 `session.*` request union 的 strict decode 与负向组合 | `TestSessionRequestDecodersMatchIncludedUnionShapes`、`TestSessionRequestDecodersRejectNullAndInvalidCombinations`、固定源 rename vectors |
+| 十个 `session.*` request union 的 strict decode 与负向组合 | `TestSessionRequestDecodersMatchIncludedUnionShapes`、`TestSessionRequestDecodersRejectNullAndInvalidCombinations`、固定源 rename/search vectors |
 | history message-boundary pagination、durable queue fold 与宽 text extension 保真 | `TestHistoryPageCutsAtAppendMessageGroup`、`TestProjectQueueFoldsDurableSplicesAndUserPlacement`、`TestReplaceMessageContentPreservesLooseTextExtension` |
 | Mux baseline high-water 与 frame ID failure 不丢 committed event | `TestMuxBaselineHighwaterSuppressesLateCommittedCallback`、`TestSessionFrameHubSurfacesMintFailureWithoutAdvancingHighwater` |
 | live default 到显式选择的优先级与 prompt/request snapshot | `TestModelSelectionReadsLiveFallbackUntilExplicitlySelected`、`TestModelSelectionSnapshotsPromptAndRequestTogether` |
@@ -348,10 +356,15 @@ interaction owner registers stable rpcId + decoder
 | Session Title fallback、规范化、rename、projection、Provider supersession、refresh、JSON array wire 与 drain | `session/title/service_test.go` |
 | Session Title First/All-Prompts LLM 策略、请求事实、route、预算、timeout、finish 与默认组合 | `session/title/llm_provider_test.go`、`TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter` |
 | `SessionLogStore` 的 cold repair、exact preparation reservation 与 live write handoff | `session/persistence/session_log_store_test.go`、`recovery_test.go` |
+| prepared Session bounded LRU、exact object reuse、revision invalidation 与 SQLite suffix seek | `session/persistence/session_log_store_test.go`、`session/persistence/prepared_cache.go`、`session/persistence/sqlite/adapter.go` |
 | SQLite Header/首批 Events 原子 materialization、torn tail repair 与 foreign schema 拒绝 | `session/persistence/sqlite/adapter_test.go` |
 | write-behind 失败 batch 保留、显式 flush 与取消 ownership | `session/persistence/write_behind_test.go` |
-| Agent `turn/end` 到 SQLite durable boundary，再到 idle convergence | `TestTurnEndAwaitsSessionDurabilityBeforeAgentBecomesIdle` |
+| Agent `turn/end` 到 SQLite durable boundary，再到 idle convergence；取消后的 aborted boundary 不继承 Turn cancellation | `TestTurnEndAwaitsSessionDurabilityBeforeAgentBecomesIdle`、`TestFirstCancelCauseSurvivesDisposalRace` |
 | 默认 composition 重启后的 cold list/history/create(resume) | `internal/assembly/session_persistence_e2e_test.go` |
+| Session Query live-preferred corpus、exact reads/filter/title/surface/lineage/event trace | `session/query/service_test.go` |
+| SQLite FTS literal search、surface classification、reconciliation generation 与 stale cursor | `session/query/service_test.go`、`session/query/sqlite` |
+| 独立 Session Search Gateway 的固定 event scope、可见性、snippet 与 request decode | `apiproxy/session_search_gateway_test.go` |
+| 固定源 `WebApiClient.sessions.search` 调用真实 Go Gateway | `TestPinnedSourceSessionWebApiClientTalksToGoGateway` |
 | Workspace canonical identity、accounting、bootstrap、initialized-empty 与并发 commit | `workspace/registry_test.go` |
 | Workspace SQLite/sqlc、能力插件边界与默认 composition | `workspace/persistence/sqlite`、`internal/assembly/assembly_test.go` |
 | 固定源 `WebApiClient.workspace`、四个 Host frame 与 `session.create({workspaceId})` | `TestPinnedSourceWorkspaceWebApiClientTalksToGoGateway` |
@@ -392,17 +405,18 @@ interaction owner registers stable rpcId + decoder
 
 ## 13. 当前验证结果
 
-本次在固定 Web Agent 主调用链上补齐 Question 浏览器交互、消息可见性边界、内容哈希 Web 发布，以及带 Web 构建和数据目录配置的 `make run`；没有按完整原版 WebUI 的 method 清单逐个扩展 API。当前在 Go 1.26.6、`darwin/arm64` 执行并通过：
+本次补齐 Session Query/Search、prepared Session LRU、revision reuse、SQLite suffix seek、Gateway 职责拆分和取消后的 durability boundary；Session Fork 明确排除，export 与 Agent Query Tool 保持 Deferred。当前在 Go 1.26.6、`darwin/arm64` 执行并通过：
 
-- `pnpm -C web run build`
+- `sqlc generate -f session/persistence/sqlite/sqlc.yaml`
+- `sqlc generate -f session/query/sqlite/sqlc.yaml`
 - `go test ./...`
-- `go test -tags=contract ./internal/assembly -run TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter -count=1`
-- `make -n run`
-- `make run DATA_DIR=/tmp/goren-make-run.LqyhZv LISTEN=127.0.0.1:3089`，并以 HTTP GET 验证 Web shell；临时目录随后删除
-- 使用独立 3089 listener 验证新 HTML 引用 `/assets/app-<hash>.js`、HTML `no-cache`、哈希 asset `immutable` 与旧 `/app.js` 404；临时数据目录随后删除
+- `go test -tags=contract ./tests/contract -count=1`
+- `go test -race ./...`
+- `go vet ./...`
+- `go build ./...`
 - `git diff --check`
 
-固定源码 `WebApiClient` 已通过真实 HTTP 完成 Credentials describe/set/unset，并通过真实 HTTP/WebSocket 创建 Session、选择模型、提交 prompt、驱动 Go Agent Loop、接收 `turn/end`、修改 queue、cancel、rename 和 respond。默认 composition contract 使用 deterministic DeepSeek HTTP oracle，在同一进程验证固定 Client 和内嵌 UI；UI 自动化完成发送、回复、新建/选择 Session、history 恢复、Question 回答和 Agent continuation，并断言 plugin runtime-context 不进入用户消息投影。API Key dialog 已通过 TypeScript 检查和生产构建，但尚未单独执行交互式浏览器行为验收。
+固定源码 `WebApiClient` 已通过真实 HTTP 完成 Credentials describe/set/unset，并通过真实 HTTP/WebSocket 创建/搜索 Session、选择模型、提交 prompt、驱动 Go Agent Loop、接收 `turn/end`、修改 queue、cancel、rename 和 respond。默认 composition contract 使用 deterministic DeepSeek HTTP oracle，在同一进程验证固定 Client 和内嵌 UI；UI 自动化完成发送、回复、新建/选择 Session、history 恢复、Question 回答和 Agent continuation，并断言 plugin runtime-context 不进入用户消息投影。API Key dialog 已通过 TypeScript 检查和生产构建，但尚未单独执行交互式浏览器行为验收。
 
 既有真实环境验收显式加载本地 `.env`，启动默认 `cmd/goren` 后由同一 UI contract 调用真实 `https://api.deepseek.com`，结果为 `booted/prompted/selected/history = true`，最终 `runningCount = 0`。既有本机 Chrome headless 证据覆盖桌面与窄屏渲染；本次 in-app browser 不可用，因此不新增 Question 的交互式浏览器或 Chrome/Safari 人工验收声明。
 
@@ -415,12 +429,8 @@ interaction owner registers stable rpcId + decoder
 
 ## 15. 下一实现切片
 
-Agent Loop core、九个 Session method、Session Persistence/SQLite、live Mux/Host projection、queue、cancel、rename、自动 LLM title、Approval/Question、Credentials 与主会话 Web UI 已组成可运行主流程。正常轮次的 `turn/end` 也已成为显式 durable boundary。当前继续完成 Session 剩余功能，顺序为：
+Agent Loop core、十个 Session method、Session Persistence/SQLite、Session Query/Search、live Mux/Host projection、queue、cancel、rename、自动 LLM title、Approval/Question、Credentials 与主会话 Web UI 已组成可运行主流程。正常及取消轮次的 `turn/end` 都有显式 durable boundary；prepared LRU、revision reuse 与 Backend suffix seek 已完成，当前 Session 实现切片没有未完成的 included 子目标。
 
-1. 实现 Session Query/Search 的领域 Service、可重建 SQLite 查询索引与 `session.search` contract；
-2. 以 bounded prepared cache 和 Backend suffix seek 优化 cold read；二者不改变主流程正确性或公开协议；
-3. 有可用交互式浏览器时补键盘操作、API Key dialog 与 Chrome/Safari 人工验收；该项不阻塞当前 Host/UI 主流程 contract。
-
-Session Fork 按用户决策不实现。完整 Settings、Preset、Filesystem、Shell、Attachment、Typert Remote、Approval 浏览器控件和完整原版 Web product 均保持 Deferred；当前不为它们增加 handler、service 或测试占位。Credentials watcher、`credentials/updated` 与跨进程 writer lock 也未进入当前闭包。
+后续只在重新纳入能力时启动新切片：Session log export 与 Agent Query Tool 当前 Deferred；Session Fork 按用户决策 Excluded。完整 Settings、Preset、Filesystem、Shell、Attachment、Typert Remote、Approval 浏览器控件和完整原版 Web product 均保持 Deferred；当前不为它们增加 handler、service 或测试占位。有可用交互式浏览器时可补键盘操作、API Key dialog 与 Chrome/Safari 人工验收，但不阻塞当前 Host/UI 主流程 contract。Credentials watcher、`credentials/updated` 与跨进程 writer lock 也未进入当前闭包。
 
 Session Persistence/SQLite 已负责 cold facts、repair 与 Agent resume；它不恢复进程内 pending callback、socket subscriber 或未完成 retry timer。默认 RetryPolicy Consumer 仍沿 `agent/request-error` 作为独立 Plugin 进入，没有回填 DeepSeek Adapter。Agent instance 继续消费既有 Child Scope 与 scoped listener isolation，不另建第二套 Registry。

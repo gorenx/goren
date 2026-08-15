@@ -113,7 +113,7 @@ Headless 是不启动 Client Connection 的一次性 CLI adapter：读取一个 
 
 - Connection Host carrier：复制 `/api` HTTP unary、`rpcId` 关联、`RpcResult`/`RpcReceipt`、两条 WebSocket downlink、取消、body limit 与 Host/Origin trust fence。
 - API Proxy contract：保留纳入方法的 canonical method、payload/result schema、错误码与 frame union；Go handler 直接调用核心 Service。
-- 当前兼容切片包含 `host.describe`、`credentials.describe/set/unset`、九个主流程 `session.*` method、七个 `workspace.*`、`events.mux`、`events.host`、`respond`，以及它们依赖的 Session/Workspace/approval/question frame。`session.search`、`session.fork` 与 `session.attachment` 不在本轮。
+- 当前兼容切片包含 `host.describe`、`credentials.describe/set/unset`、十个主流程 `session.*` method（含 `session.search`）、七个 `workspace.*`、`events.mux`、`events.host`、`respond`，以及它们依赖的 Session/Workspace/approval/question frame。Session Fork 明确排除；`session.attachment` 仍未纳入。
 - Workspace 只纳入服务端 Registry、SQLite adapter、Session accounting 与协议/API；不复制浏览器 Workspace manager、目录选择 UI 或项目文件索引。
 - 根级 `web` 包提供仓库自有的主会话 UI，只消费既有 Host API/Frame，包含 DeepSeek API Key 设置但不拥有 Credentials precedence/存储、Session、Agent、LLM 或持久化业务逻辑。
 - TypeScript Client 代码不复制，但源 Client contract tests 作为 Go Server 的外部兼容验收方。

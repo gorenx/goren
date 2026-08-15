@@ -14,7 +14,7 @@
 | `coordinator.ts` | `session/persistence/session_log_store.go` | live/cold 协调、恢复、revision 与 preparation；Go 以对象身份命名为 `SessionLogStore` |
 | `write-behind.ts` | `session/persistence/write_behind.go` | bounded-delay batch、flush、failure retention 与 drain |
 | `invariant.ts` | `session/persistence/recovery.go` | Header/Event/seq/turn/tool invariant 与 recovery plan |
-| `preparations.ts` | `SessionLogStore` reservation | unpublished Session identity 与 publication handoff |
+| `preparations.ts` | `preparedSessions`、`SessionLogStore` orchestration | bounded ready LRU、unpublished Session reservation、revision validation 与 publication handoff |
 | `session-persistence-sqlite/src/index.ts` | `session/persistence/sqlite` | SQLite fact backend、事务、revision 与 row mapping |
 | `schema.ts` / `invariant.ts` | `sql/schema.sql`、`schema.go` | schema identity/version、打开时验证与存储不变量 |
 
@@ -68,7 +68,7 @@ Plugin Runtime 只解析 Session Persistence capability：Factory 解码 `Sessio
 | `List` / `ListSnapshots` | 枚举 cold Header，或 Header 加 source-qualified revision |
 | `Locate` / `ReadRaw` | 仅对能暴露 per-Session artifact 的 Backend 可用；SQLite 明确不支持 raw artifact |
 
-`Load` 与 `Inspect` 不带 limit，因为它们验证的是完整 Session log 不变量。`session.history` 的 `beforeSeq/maxMessages` 属于 API consumer，不能下推后改变 recovery 或 surface 语义。后续可以让 `ReadFrom` 使用 Backend seek 优化，但返回的逻辑契约不变。
+`Load` 与 `Inspect` 不带 limit，因为它们验证的是完整 Session log 不变量。`session.history` 的 `beforeSeq/maxMessages` 属于 API consumer，不能下推后改变 recovery 或 surface 语义。`ReadFrom` 使用 `Backend.LoadStoredFrom` 直接 seek 物理后缀，但仍验证 Header、format、起始 seq 连续性和 required event type；它不把部分日志伪装成可独立 replay 的完整 Session。
 
 ## 5. 正常写入与 durability
 
@@ -93,9 +93,20 @@ sequenceDiagram
 
 Event 在进入 persistence listener 前已是 committed fact，因此 storage failure 不能倒转 Session memory。write-behind 必须保留失败 batch、保持原顺序并让显式 flush 报错；不能推进 durable cursor 或伪报成功。第一次 materialization 的 Header 和首批 Events 必须处于同一 Backend transaction。
 
-正常 Agent driver 在追加 `turn/end` 后调用 `session.Store.Flush`，并在它完成后才成功进入 successor Turn 或 idle convergence。Agent Loop 不直接调用 `Persistence` 或 SQLite；Store 通过 `session/flush` 并行等待全部 durability participant，`SessionLogStore` 再把该 Session 的 retained batch 提交给 Backend。调用方 Context 取消或 Backend failure 必须返回错误，未落盘 batch 仍由 writer 保留，供后续 flush、dispose 或 shutdown drain。
+正常 Agent driver 在追加 `turn/end` 后调用 `session.Store.Flush`，并在它完成后才成功进入 successor Turn 或 idle convergence。Agent Loop 不直接调用 `Persistence` 或 SQLite；Store 通过 `session/flush` 并行等待全部 durability participant，`SessionLogStore` 再把该 Session 的 retained batch 提交给 Backend。用户取消当前 Turn 时，已提交的 aborted `turn/end` 仍必须越过 durability barrier，因此该最终屏障保留 Context value 但不继承 Turn cancellation。其他显式 flush 的调用方取消或 Backend failure 仍必须返回错误，未落盘 batch 由 writer 保留，供后续 flush、dispose 或 shutdown drain。
 
 每个 Session ID 有独立串行 gate，不同 Session 可并行。同一 live Session 只有一个 writer owner；duplicate listener、不同 seed prefix、CWD 冲突或 durable identity collision 明确失败。
+
+`SessionLogStore` 只编排 use case，不直接持有多种 map 和缓存算法。运行时状态由四个对象按变化原因拆分：
+
+| 状态对象 | 拥有内容 | 变化原因 |
+| --- | --- | --- |
+| `durableSessions` | durable Header、cursor、materialized 标记与 exact live owner | durable append、cold commit、live attach/detach |
+| `liveWrites` | exact `*Session` 到 write-behind controller | live Session publication/disposal |
+| `preparedSessions` | bounded ready LRU 与 exclusive reservation | cold inspect/prepare、revision 失效、publication handoff |
+| `sessionGates` | per-ID serial gate 与 admission close | 同 ID operation 生命周期、Provider shutdown |
+
+LRU 只保存可重用且尚未发布的完整 object graph；已 reservation 的对象移出 LRU，不能因容量淘汰而破坏 resume identity。`SessionLogStore` 仍负责决定何时 load、验证 revision、repair 和 commit，状态对象不调用 Backend 或产生业务事实。
 
 ## 6. Cold load、recovery 与 resume
 
@@ -128,11 +139,11 @@ Recovery 检查：
 - open Turn/Step 和未闭合 Tool call 按 source invariant 生成 ordinary closing Events；
 - repair 后完整日志再次通过相同 invariant。
 
-Backend 只返回 marker 或 corruption 技术事实。`SessionLogStore` 决定删除哪段 torn tail、追加哪些 closers，并通过 `CommitRepair` 请求一个事务完成。`Prepare` 返回的必须是最终 Enter 的同一个 Session 对象；reservation 在 publication 或显式 Dispose 时释放，防止两个 Agent 同时恢复同一 identity。缓存 prepared read 只能是受 revision 校验和容量限制的优化，不是第二个真相。
+Backend 只返回 marker 或 corruption 技术事实。`SessionLogStore` 决定删除哪段 torn tail、追加哪些 closers，并通过 `CommitRepair` 请求一个事务完成。`Prepare` 返回的必须是最终 Enter 的同一个 Session 对象；reservation 在 publication 或显式 Dispose 时释放，防止两个 Agent 同时恢复同一 identity。ready cache 使用固定容量 LRU；命中后先比较 durable revision，外部写入、repair 或本地 append 都使旧 source 失效。缓存只复用相同 revision 的 unpublished object graph，不是第二个真相。
 
 ## 7. SQLite/sqlc adapter
 
-SQLite 是当前默认 Session fact Backend，不是插件或 projection cache。JSONL 若后续因 raw artifact、可移植导出或运维需求进入，是可替换 Backend；二者不双写，也不形成“JSONL 真相 + SQLite 影子”的强制架构。独立的 `session-query-sqlite` 仍是可从 facts 重建的查询索引。
+SQLite 是当前默认 Session fact Backend，不是插件或 projection cache。JSONL 若后续因 raw artifact、可移植导出或运维需求进入，是可替换 Backend；二者不双写，也不形成“JSONL 真相 + SQLite 影子”的强制架构。独立的 `session/query/sqlite` adapter 仍是可从 facts 重建的查询索引。
 
 ### 7.1 目录所有权
 
@@ -159,6 +170,7 @@ session/persistence/sqlite/
 ### 7.3 事务与 I/O
 
 - 完整 prefix 读取在同一只读事务中取得 Header 与 Events；
+- 后缀读取在同一只读事务中取得 Header、revision 与 `seq >= fromSeq` 的 Events；检测到 torn marker 时拒绝返回不完整后缀；
 - `AppendBatch` 原子插入首个 Session row、Events 并递增 revision；
 - `CommitRepair` 原子删除 tail、追加 closers 并递增 revision；
 - `foreign_keys=ON`、`busy_timeout=5000`、`synchronous=FULL`；journal mode 由 typed config 在允许集合内选择；
@@ -189,4 +201,4 @@ Persistence plugin 的 Scope 按 LIFO 停止：先释放 listener、拒绝新 ad
 - projection checkpoint/query index 使用自己的 schema、owner 和 transaction，不向事实表加入 optional global model；
 - raw artifact/export 是 capability，不为 SQLite 伪造 per-Session 文件；
 - retention、fork、权限、workspace scope 和 search 由对应 use case owner 决定，Backend 只执行明确的 record operations；
-- prepared cache、suffix seek、batch tuning 属于可验证优化，不能改变公开语义或绕过 revision/invariant。
+- prepared cache、suffix seek、batch tuning 只能作为语义保持的优化；当前 bounded LRU 与 SQLite seek 已进入实现，后续调整不能绕过 revision/invariant。

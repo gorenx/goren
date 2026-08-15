@@ -21,13 +21,14 @@
 - [13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)：provider-neutral LLM Service、Adapter Registry、模型路由、流组装、RetryPolicy，以及 DeepSeek typed config、HTTP/SSE 和错误映射。
 - [14 Agent Registry、Inbox 与实时事件模块设计](./14-agent-registry-inbox-and-events.md)：live Agent registry、Factory seam、durable Inbox projection、Agent-scoped events、initiator attribution 与 model selection snapshot。
 - [15 Agent Loop 与请求驱动模块设计](./15-agent-loop-and-request-driver.md)：concrete Agent lifecycle、Turn/Step 状态机、请求重建、模型 attempt、Tool-call 调度、取消与 runtime-context projection。
-- [16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)：九个 `session.*` method、默认模型选择、Session/Agent/Projection/Title consumer adapter、Mux baseline/live 与 Host edge。
+- [16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)：十个 `session.*` method、主/搜索 Gateway 拆分、默认模型选择、Session/Agent/Projection/Title consumer adapter、Mux baseline/live 与 Host edge。
 - [17 Approval、UserQuestions 与 Interaction Gateway](./17-approval-user-questions-and-interaction-gateway.md)：Approval policy/audit、UserQuestions Provider、`ask_user_question` Consumer，以及 requested/respond/resolved/replay 闭环。
 - [18 Session Projection 与 Session Title 模块设计](./18-session-projection-and-title.md)：通用 projection unit/registry/checkpoint、`session/title`、fallback/Provider 调度、rename 与客户端 higher-seq-wins。
 - [19 Session Persistence 与 SQLite 事实存储设计](./19-session-persistence-and-sqlite.md)：durable facts、Store/Persistence/Backend 边界、write-behind、cold recovery/resume、SQLite/sqlc schema 与事务。
 - [20 Workspace Registry、SQLite 与 API Gateway](./20-workspace-registry-and-api.md)：Workspace identity/order/accounting、历史 bootstrap、SQLite/sqlc Backend、七个 API、Host frame 与 `session.create({workspaceId})`。
 - [21 Web Agent 主会话闭环与能力边界](./21-web-agent-main-flow.md)：极简内嵌 Web UI、Question 回答与固定 TypeScript Client 到 Go Agent Loop 的纵向能力矩阵、排除面、依赖方向与分层验收。
 - [22 Credentials 与 API Key 管理](./22-credentials-and-api-key-management.md)：Credentials Provider/Manager/Store 边界、local JSON Store、Host write-only API、DeepSeek 请求时解析与 Web API Key 设置。
+- [23 Session Query 与 Search](./23-session-query-and-search.md)：live-preferred corpus、exact read/filter/trace、语义文档、可重建 SQLite FTS5 index、cursor 与 `session.search`。
 
 ## 模块内运行说明
 
@@ -45,7 +46,7 @@
 
 ## 权威关系
 
-- 本目录 `01`–`05` 拥有全局设计，`06`、`07`、`09`–`22` 拥有已进入实现的稳定模块设计，`08` 单独拥有日期性实施进度与证据。
+- 本目录 `01`–`05` 拥有全局设计，`06`、`07`、`09`–`23` 拥有已进入实现的稳定模块设计，`08` 单独拥有日期性实施进度与证据。
 - 子模块 `README.zh-CN.md` 解释贴近代码的职责、工作原理和交互流程；跨模块契约仍由本目录对应编号文档拥有，实施证据仍只由 `08` 拥有。
 - 根目录 `README.md` 与 `README.zh-CN.md` 只说明项目背景。
 - TypeScript 的行为证据来自固定 commit；源仓库后续变化不会自动成为 Go 需求。

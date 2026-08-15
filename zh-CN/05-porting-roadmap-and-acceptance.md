@@ -220,9 +220,9 @@ TypeScript/Go 双向 Message/StreamChunk fixture、所有 finish reason、partia
 - Projection use case 决定 event-to-mutation 与 transaction intent，SQLite/sqlc adapter 只执行和映射；
 - Session fact Backend 可替换，独立 SQLite projection/query index 可从事实流重建。
 
-## 9. 阶段 6：按客户端需求扩展服务端能力（当前冻结）
+## 9. 阶段 6：按客户端需求扩展服务端能力
 
-Workspace、Web UI、Filesystem、Shell、PTY、LSP、Sandbox、Guard、Credentials、Attachment、Spill、Settings、Goals 等按 capability matrix 逐项进入，不按源目录批量复制。当前 Credentials 只纳入 DeepSeek API Key 主流程；自有 UI 仍不拉入完整源 Web roster，其余状态和历史完成项见[08 实施进度](./08-implementation-progress.md)。
+Workspace、Web UI、Session Query、Filesystem、Shell、PTY、LSP、Sandbox、Guard、Credentials、Attachment、Spill、Settings、Goals 等按 capability matrix 逐项进入，不按源目录批量复制。Session Query core、可重建 SQLite FTS5 index 与 `session.search` 已按真实 Host consumer 进入；export 和 Agent Query Tool 仍 Deferred，Session Fork 明确 Excluded。当前 Credentials 只纳入 DeepSeek API Key 主流程；自有 UI 仍不拉入完整源 Web roster，其余状态和历史完成项见[08 实施进度](./08-implementation-progress.md)。
 
 每项能力必须：
 
