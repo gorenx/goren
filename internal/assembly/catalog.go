@@ -31,6 +31,7 @@ const (
 	ToolAskUserFactoryName        = "@deepseek-ai/dsh-tool-ask-user"
 	ToolsFactoryName              = "@deepseek-ai/dsh-tools"
 	UserQuestionsFactoryName      = "@deepseek-ai/dsh-user-questions"
+	WebFrontendFactoryName        = "@gorenx/dsh-web"
 	WorkspaceFactoryName          = "@deepseek-ai/dsh-workspace"
 )
 
@@ -116,6 +117,9 @@ func NewCatalog(platform Environment) (*plugin.Catalog, error) {
 	if err := plugin.RegisterFactory(registry, userQuestionsFactory{}); err != nil {
 		return nil, err
 	}
+	if err := plugin.RegisterFactory(registry, webFrontendFactory{}); err != nil {
+		return nil, err
+	}
 	if err := plugin.RegisterFactory(registry, workspaceFactory{}); err != nil {
 		return nil, err
 	}
@@ -131,7 +135,7 @@ func DefaultSpecs(
 	sessionDatabasePath string,
 	workspaceDatabasePath string,
 ) ([]PluginSpec, error) {
-	connectionRaw, err := json.Marshal(ConnectionConfig{ListenAddress: listenAddress})
+	connectionRaw, err := json.Marshal(ConnectionConfig{ListenAddress: listenAddress, ServeWeb: true})
 	if err != nil {
 		return nil, err
 	}
@@ -177,6 +181,7 @@ func DefaultSpecs(
 		{FactoryName: SessionFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: SessionPersistenceFactoryName, Config: persistenceRaw},
 		{FactoryName: WorkspaceFactoryName, Config: workspaceRaw},
+		{FactoryName: WebFrontendFactoryName, Config: json.RawMessage(`{}`)},
 	}, nil
 }
 

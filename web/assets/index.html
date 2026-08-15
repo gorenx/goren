@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Goren · DeepSeek Harness</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="会话导航">
+      <header class="brand">
+        <span class="brand-mark" aria-hidden="true">G</span>
+        <div>
+          <strong>Goren</strong>
+          <span>DeepSeek Harness · Go</span>
+        </div>
+      </header>
+      <button class="new-session" id="new-session" type="button">
+        <span aria-hidden="true">＋</span> 新对话
+      </button>
+      <div class="section-label">最近对话</div>
+      <nav class="session-list" id="session-list" aria-label="对话列表"></nav>
+      <footer class="connection-state">
+        <span class="state-dot" id="state-dot" aria-hidden="true"></span>
+        <span id="connection-label">正在连接 Go Agent</span>
+      </footer>
+    </aside>
+
+    <main class="conversation">
+      <header class="conversation-header">
+        <div>
+          <span class="eyebrow">当前对话</span>
+          <h1 id="conversation-title">新对话</h1>
+        </div>
+        <div class="model-badge" id="model-badge">DeepSeek</div>
+      </header>
+
+      <section class="messages" id="messages" aria-live="polite" aria-label="对话内容">
+        <div class="empty-state" id="empty-state">
+          <div class="empty-glyph" aria-hidden="true">⌁</div>
+          <h2>从一个具体问题开始</h2>
+          <p>消息会由本地 Go AgentLoop 处理，并保存在当前会话中。</p>
+        </div>
+      </section>
+
+      <form class="composer" id="composer">
+        <label class="sr-only" for="prompt">发送消息</label>
+        <textarea id="prompt" rows="1" placeholder="输入消息，Enter 发送，Shift + Enter 换行" autocomplete="off"></textarea>
+        <div class="composer-footer">
+          <span id="composer-state">准备就绪</span>
+          <button id="send" type="submit" aria-label="发送消息">
+            <span>发送</span><span aria-hidden="true">↗</span>
+          </button>
+        </div>
+      </form>
+    </main>
+  </div>
+  <div class="toast" id="toast" role="alert" hidden></div>
+</body>
+</html>
