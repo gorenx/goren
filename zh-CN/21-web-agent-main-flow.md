@@ -143,6 +143,7 @@ sequenceDiagram
 - pending Question 不进入 SQLite；Mux 重连会以同一 `rpcId` 重放，浏览器回答成功或收到 `question/resolved` 后幂等移除；
 - Question 等待期间普通 composer 禁用，避免把回答误提交为下一条 queued prompt；
 - 页面刷新后以 `session.list` 和 `session.history` 重建，不依赖 local storage；
+- `index.html` 每次重验证，Vite 入口和 CSS 使用内容哈希 URL；只有哈希资源可标记 `immutable`，避免 Host 已升级而浏览器仍运行旧 Question/message projection；
 - UI 通过 `textContent` 渲染模型输出，不把模型文本作为 HTML 执行；
 - credential response 只包含 `configured/source/writable`；浏览器不会回读已存 secret，环境来源也不能被 Web 覆盖；
 - `/api` 仍由 Connection Host 优先匹配，未知 API 不落入 SPA fallback；
@@ -150,7 +151,7 @@ sequenceDiagram
 
 ## 7. 验收层级
 
-1. **Go component**：`web.Site` 的静态资源、SPA fallback、API 排除和 Connection handler delegation 通过 Go test。
+1. **Go component**：`web.Site` 的 hashed assets、cache policy、SPA fallback、API 排除和 Connection handler delegation 通过 Go test。
 2. **Host contract**：固定源 `WebApiClient` 经默认 `DefaultSpecs`、DeepSeek Adapter 和离线 HTTP oracle完成 `turn/end`。
 3. **UI contract**：`web-ui-main-flow.ts` 在 JSDOM 中加载真实内嵌页面，完成发送、回复、新建会话、切回、历史恢复、Question 回答到 Agent continuation，并确认 plugin runtime-context 不显示为用户消息；API Key dialog 当前以 TypeScript build 与 Host Credentials contract 分层验证。
 4. **Provider environment**：显式加载 `.env` 后，同一 UI contract 调用真实 `https://api.deepseek.com` 并完成主流程。

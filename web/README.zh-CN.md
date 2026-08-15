@@ -5,7 +5,7 @@
 ## 职责
 
 - 使用 React 组件组织左侧会话、中央对话与右侧运行事实布局；
-- 通过 Vite/Tailwind 生成 `dist`，再由 `embed.FS` 提供 `index.html`、`app.css` 和 `app.js`；
+- 通过 Vite/Tailwind 生成 `dist`，再由 `embed.FS` 提供 `index.html` 和内容哈希的 JS/CSS assets；
 - 展示会话列表、当前会话历史和流式 Agent 输出；
 - 创建、选择 Session，并提交纯文本 prompt；
 - 展示 `question/requested`，通过 `/api/respond` 回答或取消后继续当前 Agent Turn；
@@ -102,7 +102,7 @@ pnpm install --frozen-lockfile
 pnpm run build
 ```
 
-`dist` 必须随源码提交，使 `go build` 和 `go test` 不需要现场安装 Node.js。修改前端后由 `pnpm run build` 同时执行 TypeScript 检查并刷新内嵌产物。
+`dist` 必须随源码提交，使 `go build` 和 `go test` 不需要现场安装 Node.js。修改前端后由 `pnpm run build` 同时执行 TypeScript 检查并刷新内嵌产物。`index.html` 使用 `no-cache`，每次加载都会确认入口；Vite 为 JS/CSS 生成内容哈希路径，Host 只对这些不可变路径发送长期缓存。不得重新使用固定 `/app.js` 配合正 `max-age`，否则服务升级后浏览器会继续运行旧协议 adapter。
 
 仓库根执行 `make run` 会先完成上述 Web 构建，再以 `--data-dir "$(CURDIR)"` 启动 Go 服务；可通过 `make run DATA_DIR=/absolute/path` 覆盖数据目录。
 
