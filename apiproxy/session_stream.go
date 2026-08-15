@@ -83,17 +83,25 @@ type hostSubscriber struct {
 	queue *streamDeliveryQueue[StreamRequest[HostFrame]]
 }
 
+type pendingInteractionFrame struct {
+	rpcID   connection.RPCID
+	payload MuxFrame
+}
+
 type sessionFrameHub struct {
-	mu     sync.Mutex
-	mux    map[*muxSubscriber]struct{}
-	host   map[*hostSubscriber]struct{}
-	newRPC func() (connection.RPCID, error)
-	closed bool
+	mu                 sync.Mutex
+	mux                map[*muxSubscriber]struct{}
+	host               map[*hostSubscriber]struct{}
+	pendingInteraction map[connection.RPCID]pendingInteractionFrame
+	pendingOrder       []connection.RPCID
+	newRPC             func() (connection.RPCID, error)
+	closed             bool
 }
 
 func newSessionFrameHub(newRPC func() (connection.RPCID, error)) *sessionFrameHub {
 	return &sessionFrameHub{
-		mux: make(map[*muxSubscriber]struct{}), host: make(map[*hostSubscriber]struct{}), newRPC: newRPC,
+		mux: make(map[*muxSubscriber]struct{}), host: make(map[*hostSubscriber]struct{}),
+		pendingInteraction: make(map[connection.RPCID]pendingInteractionFrame), newRPC: newRPC,
 	}
 }
 
@@ -134,6 +142,19 @@ func (hub *sessionFrameHub) openMux(
 			delete(hub.mux, subscriber)
 			hub.mu.Unlock()
 			return err
+		}
+	}
+	// The answerable interaction baseline follows session subscription and
+	// precedes transient queue projections, matching the browser mux contract.
+	// Questions and approvals retain the source registry ordering while every
+	// request keeps its original rpcId across reconnects.
+	for _, requestedKind := range []string{"question/requested", "approval/requested"} {
+		for _, rpcID := range hub.pendingOrder {
+			pending, exists := hub.pendingInteraction[rpcID]
+			if !exists || pending.payload.frameType() != requestedKind {
+				continue
+			}
+			hub.pushMuxRequestLocked(subscriber, pending.rpcID, pending.payload)
 		}
 	}
 	for _, snapshot := range baselines {

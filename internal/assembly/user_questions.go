@@ -33,9 +33,11 @@ func (*userQuestionsPlugin) Manifest() plugin.Manifest {
 }
 
 func (*userQuestionsPlugin) Apply(_ context.Context, pluginScope *plugin.Scope) error {
-	agentResolver := userquestions.AgentRegistryResolverFunc(func() (agent.Registry, bool) {
-		return plugin.Require(pluginScope, agent.Service)
-	})
+	agentResolver := userquestions.AgentRegistryResolverFunc(
+		func() (agent.Registry, bool) {
+			return plugin.Require(pluginScope, agent.Service)
+		},
+	)
 	questionService := userquestions.New(agentResolver)
 	_, err := plugin.Provide(pluginScope, userquestions.Service, questionService)
 	return err
