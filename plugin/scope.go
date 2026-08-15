@@ -15,6 +15,10 @@ type serviceContribution struct {
 	owned bool
 }
 
+// eventListenerState retains listener ownership and routing metadata. Its
+// ordinal is the Runtime-wide registration sequence used to recover a
+// deterministic order after collecting listeners from multiple plugin
+// Scopes; it is neither a Session event seq nor a priority.
 type eventListenerState struct {
 	ref     eventRef
 	owned   bool

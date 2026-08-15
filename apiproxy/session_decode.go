@@ -57,6 +57,19 @@ func DecodeSessionCreateRequest(rawPayload json.RawMessage) (SessionCreateReques
 	}, nil
 }
 
+// DecodeSessionRenameRequest validates the source session.rename payload schema.
+func DecodeSessionRenameRequest(rawPayload json.RawMessage) (SessionRenameRequest, []connection.ValidationIssue) {
+	fields, issues := decodeRequestObject(rawPayload)
+	if len(issues) != 0 {
+		return SessionRenameRequest{}, issues
+	}
+	identifier, identifierIssues := requiredStringField(fields, "sessionId", true)
+	title, titleIssues := requiredStringField(fields, "title", false)
+	issues = append(issues, identifierIssues...)
+	issues = append(issues, titleIssues...)
+	return SessionRenameRequest{SessionID: SessionID(identifier), Title: title}, issues
+}
+
 // DecodeSessionHistoryRequest validates the source session.history payload schema.
 func DecodeSessionHistoryRequest(rawPayload json.RawMessage) (SessionHistoryRequest, []connection.ValidationIssue) {
 	fields, issues := decodeRequestObject(rawPayload)

@@ -269,6 +269,31 @@ func (hub *sessionFrameHub) sessionCreated(conversation *session.Session) error 
 	return dispatchErr
 }
 
+func (hub *sessionFrameHub) sessionProjection(
+	identifier session.SessionID,
+	key string,
+	value json.RawMessage,
+	sequence int64,
+) error {
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	var dispatchErr error
+	for subscriber := range hub.mux {
+		if _, subscribed := subscriber.highwater[identifier]; !subscribed {
+			continue
+		}
+		if err := hub.pushMuxLocked(subscriber, SessionProjectionFrame{
+			SessionID: SessionID(identifier), Key: key,
+			Value: append(json.RawMessage(nil), value...), Seq: sequence,
+		}); err != nil {
+			dispatchErr = errors.Join(dispatchErr, fmt.Errorf(
+				"apiproxy: mint projection frame for session %q key %q: %w", identifier, key, err,
+			))
+		}
+	}
+	return dispatchErr
+}
+
 func (hub *sessionFrameHub) sessionDisposed(identifier session.SessionID) error {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()

@@ -374,6 +374,42 @@
         }
       },
       {
+        "name": "attached-projections",
+        "accepted": true,
+        "input": {
+          "items": [
+            {
+              "sessionId": "session-1",
+              "updatedAt": 7,
+              "running": false,
+              "blank": false,
+              "projections": {
+                "asOfSeq": 3,
+                "values": {
+                  "title": "Named"
+                }
+              }
+            }
+          ]
+        },
+        "normalized": {
+          "items": [
+            {
+              "sessionId": "session-1",
+              "updatedAt": 7,
+              "running": false,
+              "blank": false,
+              "projections": {
+                "asOfSeq": 3,
+                "values": {
+                  "title": "Named"
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
         "name": "missing-items",
         "accepted": false,
         "input": {}
@@ -455,6 +491,78 @@
         "accepted": false,
         "input": {
           "sessionId": ""
+        }
+      }
+    ],
+    "sessionRenameRequest": [
+      {
+        "name": "raw",
+        "accepted": true,
+        "input": {
+          "sessionId": "session-1",
+          "title": "  Named  ",
+          "ignored": true
+        },
+        "normalized": {
+          "sessionId": "session-1",
+          "title": "  Named  "
+        }
+      },
+      {
+        "name": "empty-title",
+        "accepted": true,
+        "input": {
+          "sessionId": "session-1",
+          "title": ""
+        },
+        "normalized": {
+          "sessionId": "session-1",
+          "title": ""
+        }
+      },
+      {
+        "name": "empty-id",
+        "accepted": false,
+        "input": {
+          "sessionId": "",
+          "title": "Named"
+        }
+      },
+      {
+        "name": "missing-title",
+        "accepted": false,
+        "input": {
+          "sessionId": "session-1"
+        }
+      }
+    ],
+    "sessionRenameValue": [
+      {
+        "name": "accepted",
+        "accepted": true,
+        "input": {
+          "title": "Named",
+          "seq": 3
+        },
+        "normalized": {
+          "title": "Named",
+          "seq": 3
+        }
+      },
+      {
+        "name": "empty-title",
+        "accepted": false,
+        "input": {
+          "title": "",
+          "seq": 3
+        }
+      },
+      {
+        "name": "negative-seq",
+        "accepted": false,
+        "input": {
+          "title": "Named",
+          "seq": -1
         }
       }
     ],
@@ -554,6 +662,30 @@
             }
           ],
           "hasMore": false
+        }
+      },
+      {
+        "name": "tail-projections",
+        "accepted": true,
+        "input": {
+          "events": [],
+          "hasMore": false,
+          "projections": {
+            "asOfSeq": -1,
+            "values": {
+              "title": null
+            }
+          }
+        },
+        "normalized": {
+          "events": [],
+          "hasMore": false,
+          "projections": {
+            "asOfSeq": -1,
+            "values": {
+              "title": null
+            }
+          }
         }
       },
       {

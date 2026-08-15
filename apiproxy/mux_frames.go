@@ -172,7 +172,7 @@ func (item SessionProjectionFrame) validate() error {
 	if item.Seq < 0 {
 		return errors.New("projection seq must be non-negative")
 	}
-	if item.Value != nil && !json.Valid(item.Value) {
+	if len(item.Value) == 0 || !json.Valid(item.Value) {
 		return errors.New("projection value must be JSON")
 	}
 	return nil

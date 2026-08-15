@@ -2,7 +2,9 @@ import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 type Result<T> = { rpcId: string; result: { ok: true; value: T } | { ok: false; error: unknown } }
+type RpcResult<T> = { ok: true; value: T } | { ok: false; error: unknown }
 type Frame = { rpcId: string; payload: { type: string; [key: string]: unknown } }
+type Projections = { asOfSeq: number; values: Record<string, unknown> }
 
 void (async () => {
   const sourceRoot = resolve(process.argv[2])
@@ -17,12 +19,21 @@ void (async () => {
     sourceRoot,
     'packages/client/connection/src/client/web-api-client.ts',
   )).href
+  const sessionModuleURL = pathToFileURL(resolve(
+    sourceRoot,
+    'packages/client/runtime/src/client/sessions/session.ts',
+  )).href
   const { WebApiClient } = await import(moduleURL) as {
     WebApiClient: new (timeoutMs?: number) => {
       sessions: {
         list(payload: object): Promise<Result<{ items: Array<Record<string, unknown>> }>>
         create(payload: object): Promise<Result<{ sessionId: string }>>
-        history(payload: object): Promise<Result<{ events: Array<{ event: { type: string; data: unknown } }>; hasMore: boolean }>>
+        rename(payload: object): Promise<Result<{ title: string; seq: number }>>
+        history(payload: object): Promise<Result<{
+          events: Array<{ event: { seq: number; type: string; data: unknown } }>
+          hasMore: boolean
+          projections?: Projections
+        }>>
         models(payload: object): Promise<Result<{ current: { provider: string; model: string }; routable: boolean; groups: unknown[]; failures: unknown[] }>>
         selectModel(payload: object): Promise<Result<{ selected: { provider: string; model: string } }>>
         prompt(payload: object): Promise<Result<{ accepted: true }>>
@@ -33,6 +44,16 @@ void (async () => {
         mux(payload: object, signal: AbortSignal, onOpen: () => void): AsyncIterable<Frame>
         host(payload: object, signal: AbortSignal, onOpen: () => void): AsyncIterable<Frame>
       }
+    }
+  }
+  const { Session } = await import(sessionModuleURL) as {
+    Session: new (
+      sessionId: string,
+      api: unknown,
+      remote: unknown,
+    ) => {
+      rename(title: string): Promise<RpcResult<{ title: string; seq: number }>>
+      projections: { faceOf(key: string): { getSnapshot(): unknown } }
     }
   }
 
@@ -98,6 +119,12 @@ void (async () => {
 
   const listed = unwrap(await apiClient.sessions.list({}))
   const emptyHistory = unwrap(await apiClient.sessions.history({ sessionId }))
+  const listedRow = listed.items.find(item => item.sessionId === sessionId)
+  const listedProjections = listedRow?.projections as Projections | undefined
+  const initialProjection = listedProjections?.asOfSeq === -1
+    && listedProjections.values.title === null
+    && emptyHistory.projections?.asOfSeq === -1
+    && emptyHistory.projections.values.title === null
   const models = unwrap(await apiClient.sessions.models({ sessionId }))
   const selected = unwrap(await apiClient.sessions.selectModel({
     sessionId, provider: 'mock', model: 'mock-model',
@@ -106,6 +133,13 @@ void (async () => {
   const firstPrompt = unwrap(await apiClient.sessions.prompt({
     sessionId, mode: 'queue', content: [{ type: 'text', text: 'first' }], clientTimeZone: 'UTC',
   }))
+  const fallbackFrame = await nextMatching(
+    muxIterator,
+    frame => frame.payload.type === 'session/projection'
+      && frame.payload.key === 'title'
+      && frame.payload.value === 'first',
+    'fallback title projection',
+  )
   await nextMatching(muxIterator, frame => eventType(frame, 'turn/end'), 'first turn/end')
   await nextMatching(
     hostIterator,
@@ -113,6 +147,34 @@ void (async () => {
     'first idle status',
   )
   const firstHistory = unwrap(await apiClient.sessions.history({ sessionId }))
+
+  const runtimeSession = new Session(sessionId, apiClient, {})
+  const renameResult = await runtimeSession.rename('  重命名  ')
+  if (!renameResult.ok) throw new Error(`rename failed: ${JSON.stringify(renameResult.error)}`)
+  const renamed = renameResult.value
+  const runtimeProjection = runtimeSession.projections.faceOf('title').getSnapshot() === '重命名'
+  const renameFrame = await nextMatching(
+    muxIterator,
+    frame => frame.payload.type === 'session/projection'
+      && frame.payload.key === 'title'
+      && frame.payload.value === '重命名'
+      && frame.payload.seq === renamed.seq,
+    'renamed title projection',
+  )
+  const renamedListValue = unwrap(await apiClient.sessions.list({}))
+  const renamedHistoryValue = unwrap(await apiClient.sessions.history({ sessionId }))
+  const renamedListRow = renamedListValue.items.find(item => item.sessionId === sessionId)
+  const renamedListProjection = renamedListRow?.projections as Projections | undefined
+  const renamedEvent = renamedHistoryValue.events.find(entry => entry.event.seq === renamed.seq)
+  const renamedData = renamedEvent?.event.data as {
+    title?: string
+    messageSeqs?: unknown[]
+    source?: { kind?: string }
+  } | undefined
+  const invalidRename = await runtimeSession.rename('\u001b[31m')
+  const titleInvalid = !invalidRename.ok
+    && (invalidRename.error as { code?: string }).code === 'title-invalid'
+    && runtimeSession.projections.faceOf('title').getSnapshot() === '重命名'
 
   const secondPrompt = unwrap(await apiClient.sessions.prompt({
     sessionId, mode: 'queue', content: [{ type: 'text', text: 'blocking' }],
@@ -161,10 +223,25 @@ void (async () => {
     presetConflict,
     listed: listed.items.some(item => item.sessionId === sessionId),
     emptyHistory: emptyHistory.events.length === 0,
+    initialProjection,
     models: models.current.provider === 'mock' && models.current.model === 'mock-model'
       && models.routable && models.groups.length === 1 && models.failures.length === 0,
     selected: selected.selected.provider === 'mock' && selected.selected.model === 'mock-model',
     firstPrompt: firstPrompt.accepted,
+    fallbackTitle: fallbackFrame.payload.value === 'first'
+      && firstHistory.projections?.values.title === 'first',
+    renamed: renamed.title === '重命名',
+    runtimeProjection,
+    renameFrame: renameFrame.payload.value === '重命名',
+    renamedList: renamedListProjection?.values.title === '重命名'
+      && renamedListProjection.asOfSeq >= renamed.seq,
+    renamedHistory: renamedHistoryValue.projections?.values.title === '重命名'
+      && renamedHistoryValue.projections.asOfSeq >= renamed.seq
+      && renamedEvent?.event.type === 'session/title'
+      && renamedData?.title === '重命名'
+      && renamedData.source?.kind === 'user'
+      && renamedData.messageSeqs?.length === 0,
+    titleInvalid,
     firstHistoryTypes: firstHistory.events.map(entry => entry.event.type),
     secondPrompt: secondPrompt.accepted,
     cancelled: cancelled.accepted,

@@ -20,6 +20,8 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
+	"github.com/gorenx/goren/sessionprojection"
+	"github.com/gorenx/goren/sessiontitle"
 	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/toolaskuser"
 	toolscore "github.com/gorenx/goren/tools"
@@ -34,7 +36,7 @@ func (instance probePlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "assembly-probe",
 		Requires: []plugin.ServiceRef{
-			agentcore.Service.Ref(), agentdefaultmodel.Service.Ref(), agentloop.Service.Ref(), approval.Service.Ref(), serverServiceKey.Ref(), llm.Service.Ref(), session.StoreService.Ref(), systemprompt.Service.Ref(), toolscore.Service.Ref(), userquestions.Service.Ref(),
+			agentcore.Service.Ref(), agentdefaultmodel.Service.Ref(), agentloop.Service.Ref(), approval.Service.Ref(), serverServiceKey.Ref(), llm.Service.Ref(), session.StoreService.Ref(), sessionprojection.Service.Ref(), sessiontitle.Service.Ref(), systemprompt.Service.Ref(), toolscore.Service.Ref(), userquestions.Service.Ref(),
 		},
 	}
 }
@@ -53,7 +55,8 @@ func TestCatalogContainsOnlyCurrentServerSlice(t *testing.T) {
 		AgentFactoryName, AgentDefaultModelFactoryName, AgentLoopFactoryName,
 		ConnectionFactoryName, APIProxyFactoryName, LLMFactoryName, DeepSeekFactoryName,
 		LLMRetryFactoryName,
-		SessionFactoryName, SystemPromptFactoryName, ToolAskUserFactoryName,
+		SessionFactoryName, SessionProjectionFactoryName, SessionTitleFactoryName,
+		SystemPromptFactoryName, ToolAskUserFactoryName,
 		ToolsFactoryName, ApprovalFactoryName, UserQuestionsFactoryName,
 	}
 	if got := registry.Names(); !reflect.DeepEqual(got, want) {
@@ -109,6 +112,9 @@ func TestConnectionFactoryUsesStrictTypedConfig(t *testing.T) {
 		{label: "llm retry unknown", factoryName: LLMRetryFactoryName, input: `{"unknown":true}`, wantMessage: "unknown key"},
 		{label: "llm retry misplaced policy", factoryName: LLMRetryFactoryName, input: `{"retryPolicy":{"mode":"always"}}`, wantMessage: "belongs under each provider"},
 		{label: "llm retry null", factoryName: LLMRetryFactoryName, input: `null`, wantMessage: "must be an object"},
+		{label: "projection unknown", factoryName: SessionProjectionFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
+		{label: "title unknown", factoryName: SessionTitleFactoryName, input: `{"fallbackMaxWords":5,"fallbackMaxBytes":40,"maxTitleBytes":80,"unknown":true}`, wantMessage: "unknown field"},
+		{label: "title invalid cap", factoryName: SessionTitleFactoryName, input: `{"fallbackMaxWords":5,"fallbackMaxBytes":81,"maxTitleBytes":80}`, wantMessage: "must not exceed"},
 		{label: "deepseek unknown", factoryName: DeepSeekFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
 		{label: "deepseek nested unknown", factoryName: DeepSeekFactoryName, input: `{"models":[{"id":"m","unknown":true}]}`, wantMessage: "unknown field"},
 		{label: "deepseek disabled high", factoryName: DeepSeekFactoryName, input: `{"thinking":"disabled","reasoningEffort":"high"}`, wantMessage: "only reasoningEffort off"},

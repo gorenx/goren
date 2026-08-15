@@ -354,18 +354,23 @@ func (entry *storeEntry) beginAppend() (func(Event), error) {
 		return nil, err
 	}
 	return func(committed Event) {
-		defer entry.finishAppend()
-		entry.publishAppend(captured, committed)
+		deferred := entry.publishAppend(captured, committed)
+		entry.finishAppend()
+		if err := deferred.run(); err != nil {
+			entry.owner.observerError(fmt.Errorf("session %q deferred event work: %w", entry.conversation.ID(), err))
+		}
 	}, nil
 }
 
-func (entry *storeEntry) publishAppend(captured plugin.EmitSnapshot[AppendNotice], committed Event) {
+func (entry *storeEntry) publishAppend(captured plugin.EmitSnapshot[AppendNotice], committed Event) *afterEventQueue {
+	deferred := &afterEventQueue{}
 	notice := AppendNotice{Session: entry.conversation, Event: cloneEvent(committed)}
 	if err := safelyDispatch(func() error {
-		return captured.Dispatch(context.Background(), notice)
+		return captured.Dispatch(deferred.context(), notice)
 	}); err != nil {
 		entry.owner.observerError(fmt.Errorf("session %q event observer: %w", entry.conversation.ID(), err))
 	}
+	return deferred
 }
 
 func (entry *storeEntry) finishAppend() {

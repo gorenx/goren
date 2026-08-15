@@ -19,6 +19,8 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
+	"github.com/gorenx/goren/sessionprojection"
+	"github.com/gorenx/goren/sessiontitle"
 )
 
 const defaultHistoryMessages int64 = 50
@@ -45,6 +47,8 @@ type SessionGatewayDependencies struct {
 	Sessions    session.Store
 	LLM         llm.LlmRuntime
 	Defaults    agentdefaultmodel.DefaultModel
+	Projections sessionprojection.Registry
+	Titles      sessiontitle.TitleService
 	Directories DirectoryProvisioner
 }
 
@@ -74,6 +78,8 @@ type SessionGateway struct {
 	sessions    session.Store
 	models      llm.LlmRuntime
 	defaults    agentdefaultmodel.DefaultModel
+	projections sessionprojection.Registry
+	titles      sessiontitle.TitleService
 	directories DirectoryProvisioner
 	workingDir  string
 	newSession  func() (session.SessionID, error)
@@ -98,7 +104,8 @@ func NewSessionGateway(
 	if requestContext == nil || sourceScope == nil {
 		return nil, errors.New("apiproxy: Session Gateway Context and Scope are required")
 	}
-	if ports.Agents == nil || ports.Sessions == nil || ports.LLM == nil || ports.Defaults == nil || ports.Directories == nil {
+	if ports.Agents == nil || ports.Sessions == nil || ports.LLM == nil || ports.Defaults == nil ||
+		ports.Projections == nil || ports.Titles == nil || ports.Directories == nil {
 		return nil, errors.New("apiproxy: Session Gateway dependencies are incomplete")
 	}
 	if settings.WorkingDirectory == "" {
@@ -114,8 +121,9 @@ func NewSessionGateway(
 	}
 	owner := &SessionGateway{
 		sourceScope: sourceScope, agents: ports.Agents, sessions: ports.Sessions,
-		models: ports.LLM, defaults: ports.Defaults, directories: ports.Directories,
-		workingDir: settings.WorkingDirectory, newSession: newSession, newRPC: newRPC,
+		models: ports.LLM, defaults: ports.Defaults, projections: ports.Projections, titles: ports.Titles,
+		directories: ports.Directories,
+		workingDir:  settings.WorkingDirectory, newSession: newSession, newRPC: newRPC,
 		creations:  make(map[session.SessionID]*creationResult),
 		selections: make(map[session.SessionID]installedSelection),
 	}
@@ -146,6 +154,9 @@ func (owner *SessionGateway) installObservers(requestContext context.Context) er
 		return err
 	}
 	if _, err := agent.OnDisposed(owner.sourceScope, owner.observeAgentDisposed); err != nil {
+		return err
+	}
+	if _, err := owner.projections.OnChanged(owner.sourceScope, sessionprojection.ChangeListenerFunc(owner.observeProjectionChange)); err != nil {
 		return err
 	}
 	return requestContext.Err()
@@ -189,6 +200,10 @@ func (owner *SessionGateway) List(_ context.Context, _ Request[SessionListReques
 			SessionID: SessionID(header.ID), UpdatedAt: updatedAt, Blank: blank,
 			Origin: string(header.Origin), CWD: cloneStringPointer(header.CWD), AgentPreset: cloneStringPointer(header.AgentPreset),
 		}
+		projectionSnapshot, projectionErr := owner.projections.Snapshot(conversation)
+		if projectionErr == nil && len(projectionSnapshot.Values) != 0 {
+			summary.Projections = projectionBlock(projectionSnapshot)
+		}
 		if header.ParentSession != nil {
 			summary.ParentSessionID = SessionID(*header.ParentSession)
 		}
@@ -204,6 +219,31 @@ func (owner *SessionGateway) List(_ context.Context, _ Request[SessionListReques
 		items = []SessionSummary{}
 	}
 	return OK(SessionListValue{Items: items}), nil
+}
+
+// Rename delegates normalization, pinning, and event append to Session Title.
+func (owner *SessionGateway) Rename(_ context.Context, call Request[SessionRenameRequest]) (Outcome[SessionRenameValue], error) {
+	subject, refused := owner.ordinaryAgent(call.Payload.SessionID)
+	if refused != nil {
+		return Fail[SessionRenameValue](*refused), nil
+	}
+	accepted, err := owner.titles.Rename(subject.SessionValue(), call.Payload.Title)
+	if err != nil {
+		var invalid *sessiontitle.SessionTitleInvalidError
+		if errors.As(err, &invalid) {
+			return Fail[SessionRenameValue](newRPCError(
+				connection.ErrorTitleInvalid, invalid.Error(), struct {
+					SessionID SessionID `json:"sessionId"`
+				}{SessionID: call.Payload.SessionID},
+			)), nil
+		}
+		return Fail[SessionRenameValue](newRPCError(
+			connection.ErrorInternal,
+			fmt.Sprintf("failed to rename session %q: %v", call.Payload.SessionID, err),
+			struct{}{},
+		)), nil
+	}
+	return OK(SessionRenameValue{Title: accepted.Title, Seq: accepted.EventSeq}), nil
 }
 
 // Create publishes a fresh ordinary Agent or idempotently adopts the same id and cwd.
@@ -284,11 +324,20 @@ func (owner *SessionGateway) History(_ context.Context, call Request[SessionHist
 	if call.Payload.MaxMessages != nil {
 		maxMessages = *call.Payload.MaxMessages
 	}
-	page, hasMore, err := historyPage(conversation.Events(), call.Payload.BeforeSeq, maxMessages)
+	events := conversation.Events()
+	page, hasMore, err := historyPage(events, call.Payload.BeforeSeq, maxMessages)
 	if err != nil {
 		return Outcome[SessionHistoryValue]{}, err
 	}
-	return OK(SessionHistoryValue{Events: page, HasMore: hasMore}), nil
+	value := SessionHistoryValue{Events: page, HasMore: hasMore}
+	if call.Payload.BeforeSeq == nil {
+		restored, restoreErr := owner.projections.Restore(sessionprojection.Checkpoint{}, events, 0)
+		if restoreErr != nil {
+			return Outcome[SessionHistoryValue]{}, restoreErr
+		}
+		value.Projections = projectionBlock(restored.Snapshot)
+	}
+	return OK(value), nil
 }
 
 // Models returns one session's current selection plus independently loaded provider groups.
@@ -748,6 +797,20 @@ func (owner *SessionGateway) observeSessionEvent(_ context.Context, conversation
 		}
 	}
 	return owner.hub.sessionEvent(conversation.ID(), projected, queueChanged, queue)
+}
+
+func (owner *SessionGateway) observeProjectionChange(projectionChange sessionprojection.Change) {
+	_ = owner.hub.sessionProjection(
+		projectionChange.Session.ID(), projectionChange.Key, projectionChange.Value, projectionChange.Seq,
+	)
+}
+
+func projectionBlock(source sessionprojection.Snapshot) *SessionProjectionsBlock {
+	values := make(map[string]json.RawMessage, len(source.Values))
+	for key, rawValue := range source.Values {
+		values[key] = append(json.RawMessage(nil), rawValue...)
+	}
+	return &SessionProjectionsBlock{AsOfSeq: source.AsOfSeq, Values: values}
 }
 
 func (owner *SessionGateway) observeSessionCreated(_ context.Context, conversation *session.Session) error {

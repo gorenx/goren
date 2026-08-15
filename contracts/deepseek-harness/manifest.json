@@ -29,6 +29,7 @@
       "host.describe",
       "session.list",
       "session.create",
+      "session.rename",
       "session.history",
       "session.models",
       "session.selectModel",
@@ -82,6 +83,15 @@
         "session/event",
         "session/flush"
       ]
+    },
+    "sessionProjection": {
+      "service": "sessionProjections",
+      "frameType": "session/projection"
+    },
+    "sessionTitle": {
+      "service": "sessionTitle",
+      "sessionEvent": "session/title",
+      "projectionKey": "title"
     },
     "agent": {
       "service": "agents",
@@ -267,7 +277,7 @@
     "ACP stdio adapter",
     "MCP Client Bridge",
     "Jobs and Subagent workflow",
-    "session.search, session.rename, session.fork, and session.attachment",
+    "session.search, session.fork, and session.attachment",
     "unary methods outside the included host.describe and session slice"
   ]
 }
