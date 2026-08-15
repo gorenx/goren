@@ -10,11 +10,11 @@ export default defineConfig({
     sourcemap: false,
     rollupOptions: {
       output: {
-        entryFileNames: 'app.js',
+        entryFileNames: 'assets/app-[hash].js',
         chunkFileNames: 'assets/[name]-[hash].js',
         assetFileNames(assetInfo) {
           return assetInfo.names.some(name => name.endsWith('.css'))
-            ? 'app.css'
+            ? 'assets/app-[hash][extname]'
             : 'assets/[name]-[hash][extname]'
         },
       },

@@ -29,7 +29,9 @@ browserWindow.fetch = ((input: string | URL | Request, init?: RequestInit): Prom
 }) as typeof browserWindow.fetch
 browserWindow.WebSocket = globalThis.WebSocket as typeof browserWindow.WebSocket
 
-const scriptResponse = await nativeFetch(`${baseURL}/app.js`)
+const scriptSource = browserWindow.document.querySelector('script[type="module"][src]')?.getAttribute('src')
+if (scriptSource === null || scriptSource === undefined) throw new Error('Web application entry is absent')
+const scriptResponse = await nativeFetch(new URL(scriptSource, baseURL))
 if (!scriptResponse.ok) throw new Error(`Web application failed with ${String(scriptResponse.status)}`)
 browserWindow.eval(await scriptResponse.text())
 
