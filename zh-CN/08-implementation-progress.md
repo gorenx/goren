@@ -22,7 +22,7 @@
 | 阶段 0：基线与 Contract Freeze | In Progress | 12 Completed / 1 In Progress / 1 Planned | Contract Verified | 补齐其余 included surface mapping 与 NOTICE/provenance 决策 |
 | 阶段 1：Connection Host Carrier | Completed | 19 Completed | Contract Verified | Gate 已完成，后续扩展随新增 included surface 进入 |
 | 阶段 2：Plugin Runtime | Completed | 12 Completed | Go Verified | Gate 已完成；后续能力通过既有 Factory/Service/Event seam 进入 |
-| 阶段 3：Session/Agent slice | In Progress | 14 Completed / 2 In Progress | Contract Verified | Session API、live frame、client cancel 与 approval/question 已完成；下一步补 failure/resume golden |
+| 阶段 3：Session/Agent slice | In Progress | 15 Completed / 1 In Progress | Contract Verified | failure golden 已闭合；下一步完成 resume/compaction request reconstruction fixture |
 | 阶段 4：LLM Contract | In Progress | 10 Completed / 2 In Progress / 1 Planned | Contract Verified | 完成 Runtime、DeepSeek adapter 与 Agent attempt loop；等待默认 retry policy consumer、可复用录制 fixture 和真实环境 smoke |
 | 阶段 5：Session 持久化 | In Progress | 0 Completed / 1 In Progress / 13 Planned | Contract Verified | live reconnect/replay 已完成；cold recovery 和业务事实持久化尚未进入 |
 | 阶段 6：客户端能力扩展 | Planned | 0 Completed / 19 Planned | None | 按 TypeScript Client 实际消费逐项进入 |
@@ -141,7 +141,7 @@ interaction owner registers stable rpcId + decoder
 | S3-D09 | 交付 | client cancel、disconnect 与 turn cancellation 映射 | Completed | Contract Verified：`session.cancel` 映射 `UserCancel + KeepInbox` 并产生 aborted turn；WebSocket disconnect 只取消其 stream source，不取消 Agent Turn |
 | S3-G01 | Gate | TypeScript Connection 完成 Session prompt 并收到最终事件 | Completed | Contract Verified：固定源 `WebApiClient` 调用 Go `session.prompt`，收到 committed `turn/end` 与 idle status 并通过 history 读取结果 |
 | S3-G02 | Gate | `user/message` 到 `turn/end` 全流程可运行 | Completed | Contract Verified：`TestPinnedSourceAgentLoopMatchesGo` 覆盖 prompt、request/header/context、chunks、Assistant、Tool call/result、第二 Step 和 completed Turn |
-| S3-G03 | Gate | step、拒绝、取消、模型和 Tool failure 有 golden | In Progress | Go Verified：step、typed cancel/disposal race、request error retry 与 Tool cancel/drain 已覆盖；pre-step reject 和 Agent-level Tool failure 尚未进入跨语言 golden |
+| S3-G03 | Gate | step、拒绝、取消、模型和 Tool failure 有 golden | Completed | Contract Verified：固定源与 Go 的 pre-step blocked turn、模型 structured terminal failure 和 Agent-level scheduler failure event sequence 一致；Go race 验证 failure 停止补充、drain 已启动 body 且不伪造 Tool result |
 | S3-G04 | Gate | approval/question 通过 respond 形成闭环 | Completed | Contract Verified：固定源 `WebApiClient` 通过真实 HTTP/WebSocket 回答 Go Approval/Question；accepted、bad-response、not-pending、client cancellation 与 replay 已验证 |
 | S3-G05 | Gate | 每个模型请求可由 Session 日志重建 | In Progress | Contract Verified：两步 Tool continuation 的 request 与固定源一致；Go Verified：header/context folds、surface derivation 和 replacement cache；resume/compaction theorem fixture 尚未完成 |
 | S3-G06 | Gate | reconnect 读取 baseline 且不重复 committed event | Completed | Go Verified：Mux 先发送 subscribed/queue baseline，per-Session high-water 抑制 baseline 与迟到 callback 的重复 committed event；Host baseline 由 `session.list` 拥有 |
@@ -229,7 +229,7 @@ interaction owner registers stable rpcId + decoder
 | ID | 类别 | 子目标 | 执行状态 | 证据或缺口 |
 | --- | --- | --- | --- | --- |
 | S8-D01 | 交付 | included capability matrix | Planned | None：当前实施矩阵不替代最终 capability matrix |
-| S8-D02 | 交付 | 跨语言 replay/differential suite | In Progress | Contract Verified：Connection/schema/client、Session core/API、Approval/Question interaction、System Prompt、Native Tools、Agent Inbox、Agent Loop happy path 与 LLM/DeepSeek differential slice 已建立；Agent Loop reject/failure/resume replay 尚未完整覆盖 |
+| S8-D02 | 交付 | 跨语言 replay/differential suite | In Progress | Contract Verified：Connection/schema/client、Session core/API、Approval/Question interaction、System Prompt、Native Tools、Agent Inbox、Agent Loop happy/failure path 与 LLM/DeepSeek differential slice 已建立；Agent Loop resume/compaction replay 尚未完整覆盖 |
 | S8-D03 | 交付 | 多平台 CI | Planned | None |
 | S8-D04 | 交付 | race、fuzz、故障注入、泄漏和长时测试 | In Progress | Go Verified：race 与 Connection-owned WebSocket/source leak audit 已有证据；fuzz、故障注入和长时测试未完成 |
 | S8-D05 | 交付 | dependency、license 和 NOTICE 清单 | In Progress | Implemented：Echo 准入已记录；完整发布清单未建立 |
@@ -317,27 +317,29 @@ interaction owner registers stable rpcId + decoder
 | 固定源与 Go Inbox event、list、splice/claim/clear 和 notification 顺序一致 | `TestPinnedSourceAgentInboxMatchesGo` |
 | Agent Loop fresh lifecycle、Turn/Step、Tool continuation、request reconstruction 与 teardown | `TestLoopPublishesDrivesAndDisposesOneAgentLifecycle` |
 | bounded parallel Tool body 与 model-order result/context commit | `TestParallelBodiesCommitResultsAndContextsInModelOrder` |
+| scheduler failure 停止补充、drain 已启动 dispatch 且不伪造 result | `TestSchedulerFailureStopsReplenishmentAndDrainsStartedDispatch` |
 | maintenance wake、`WhenIdle` successor convergence 与 first typed cancel cause | `TestMaintenanceLatchedWakeKeepsWhenIdleBehindSuccessorTurn`、`TestFirstCancelCauseSurvivesDisposalRace` |
 | failed model attempt 通过 `agent/request-error` 在同一 Step retry | `TestRequestErrorRetryRepeatsAttemptInsideOneStep` |
 | 固定源与 Go Agent Loop event、request 和 derived message projection 一致 | `TestPinnedSourceAgentLoopMatchesGo` |
+| 固定源与 Go pre-step reject、模型 terminal failure 和 scheduler failure/drain 一致 | `TestPinnedSourceAgentLoopFailuresMatchGo` |
 
 ## 13. 当前验证结果
 
-本次 Approval/UserQuestions/Interaction Gateway 切片在 Go 1.26.6、`darwin/arm64` 执行并通过：
+本次 Agent Loop failure parity 切片在 Go 1.26.6、`darwin/arm64` 执行并通过：
 
 - `go test ./...`
 - `go vet ./...`
 - `go build ./...`
-- `go test -race ./apiproxy ./internal/assembly`
+- `go test -race ./tools ./agentloop`
 - `go test -tags contract ./tests/contract/... ./tests/architecture`（固定源 commit `47f943...`）
 - 变更文档本地链接检查
 - `git diff --check`
 
-迭代中只运行受影响的 Approval、UserQuestions、Tool Ask User、API Proxy、assembly 与 contract tests；最终执行一次普通全量测试、build/vet，并对 Interaction Gateway 和 composition 并发边界执行 targeted race。此前 Agent Loop 的 full race、Connection WebSocket 压力测试与 `govulncheck` 仍是对应阶段证据，不冒充本次重复验证。
+迭代中只运行受影响的 Tools、Agent Loop 与 contract tests；最终执行一次普通全量测试、build/vet，并对 scheduler/result 与 Agent Loop 收敛边界执行 targeted race。此前 Connection WebSocket 压力测试与 `govulncheck` 仍是对应阶段证据，不冒充本次重复验证。
 
 LLM 文件职责重组提交 `5fd5602` 不改变公共 contract 或运行行为。该提交先通过 `go test ./llm ./internal/llmdeepseek`；随后在只包含该提交的干净 worktree 中通过一次 `go test ./...` 和 `go vet ./...`。该重组没有新增并发语义，因此未重复 race、TypeScript differential 或真实 endpoint smoke。
 
-先前真实进程 smoke 已证明 `cmd/goren` 可通过 Factory Catalog 与 Plugin Runtime 结算基础服务并响应 `host.describe`；本次未重复该 smoke。本次 contract test 在既有真实 Session Gateway/Echo Host 上加入 Approval、UserQuestions 与 Interaction Gateway，让固定源 `WebApiClient` 通过真实 HTTP/WebSocket 接收 requested、提交无效及合法 response、观察 resolved，并在重连后用同一 `rpcId` 回答。该证据仍不是原 Web 产品验收，也未使用真实 DeepSeek credential/endpoint。
+先前真实进程 smoke 已证明 `cmd/goren` 可通过 Factory Catalog 与 Plugin Runtime 结算基础服务并响应 `host.describe`；本次未重复该 smoke。本次 differential 直接运行固定源 Agent Loop，并与 Go 比较 pre-step reject、模型 terminal failure 和 scheduler failure 的完整 Session event type 序列、Turn reason、request count、已启动 body、Tool call/result 及 idle-before-drain 状态。该证据不扩大 Web 产品或真实 DeepSeek endpoint 的验收范围。
 
 ## 14. 安全与依赖状态
 
@@ -348,12 +350,11 @@ LLM 文件职责重组提交 `5fd5602` 不改变公共 contract 或运行行为�
 
 ## 15. 下一实现切片
 
-Agent Loop core、八个 Session method、live Mux/Host projection、queue mutation、client cancel 与 Approval/Question 交互闭环已完成。下一切片继续阶段 3 尚未闭合的 golden，并按依赖推进后续能力：
+Agent Loop core、failure golden、八个 Session method、live Mux/Host projection、queue mutation、client cancel 与 Approval/Question 交互闭环已完成。下一切片先闭合 request reconstruction，再按依赖推进后续能力：
 
-1. 补 pre-step reject、Agent-level Tool failure 和模型 terminal failure 的跨语言 golden；
-2. 为 resume/compaction request reconstruction 建立 theorem fixture，但不在 persistence 进入前伪造 cold resume；
+1. 为 resume/compaction request reconstruction 建立 theorem fixture，但不在 persistence 进入前伪造 cold resume；
+2. 沿 `agent/request-error` 实现默认 RetryPolicy 的 delay/jitter/attempt Consumer；
 3. 按真实依赖决定 `session.search`、`rename`、`fork` 与 attachment method 的进入顺序；
-4. 沿 `agent/request-error` 实现默认 RetryPolicy 的 delay/jitter/attempt Consumer；
-5. 只有在 Recovery 和业务事实边界明确后才开始 JSONL/SQLite adapter，不把 live pending table 当持久化模型。
+4. 只有在 Recovery 和业务事实边界明确后才开始 JSONL/SQLite adapter，不把 live pending table 当持久化模型。
 
 Session persistence/resume 仍属于阶段 5：当前 fresh Agent Loop 不伪造 load/repair。默认 RetryPolicy 的 delay/jitter/attempt consumer 也沿 `agent/request-error` 作为独立 Plugin 进入，不回填 DeepSeek Adapter。Agent instance 继续消费既有 Child Scope 与 scoped listener isolation，不另建第二套 Registry。

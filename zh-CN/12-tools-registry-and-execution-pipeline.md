@@ -80,11 +80,14 @@ type ToolRuntime interface {
     Get(string, plugin.ScopeKey) (ToolDefinition, bool)
     Schemas(plugin.ScopeKey) []llm.ToolSchema
     ExecutionMode(ToolExecutionInput) ToolExecutionMode
+    Scheduler() ToolExecutionScheduler
     Execute(context.Context, ToolExecutionInput) ToolExecutionResult
 }
 ```
 
 `json.RawMessage` 只表示 Tool contract 本身允许任意 JSON shape 的参数、canonical value、schema 和 presentation metadata。内部 contribution table、callback、decision 和 result 不用 `any`；success/failure、pre decision 和 post decision 都是封闭 interface。`ToolExecution.ArgumentsJSON` 与 `ToolResultSnapshot` 的 accessor 每次返回 detached copy，policy 或 observer 不能通过共享 byte slice 改写下游执行。
+
+`ToolExecutionScheduler` 是 Tools 提供给 Agent Loop 的 staged capability，不是第二个 Tool executor。`Prepare`、`Dispatch`、`Finalize` 的 `error` 只表示无法形成规范结果的内部 scheduler failure；Tool body、policy、schema、取消和 unknown Tool 等预期失败仍返回封闭 `ToolExecutionResult`，由 Agent Loop 按模型顺序提交。`Finish` 是同步且 total 的最终物化边界。
 
 `llm.ContentBlock` 是 merge-extensible behavior interface，当前 core variant 为 `text`、`reasoning`、`image`、`tool-call` 与 `tool-result`。`image` 中的 durable reference 仍由 `attachment` owner 定义；引入这个被实际消费的 metadata contract 不等于 Attachment upload/storage Service 已实现。
 

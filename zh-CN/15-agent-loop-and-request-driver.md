@@ -164,7 +164,9 @@ classify first call
 
 parallel group 遇到重新分类为 exclusive 的 call 时先 drain 当前 pool，再让外层以新 barrier 处理。`maxParallelToolCalls` 限制每个 Agent Step 的 in-flight body 数，不限制不同 Agent。
 
-取消停止补充新 dispatch，但必须 drain 已启动 body、按顺序提交其真实 result/context，并为尚未启动的模型 call 追加 `ABORTED_BEFORE_DISPATCH` synthetic call/result pair，使 replay 保持 Tool call/result 平衡。内部 scheduler failure drain 已启动 body 后结束 Turn，不为未知结果伪造成功。
+取消停止补充新 dispatch，但必须 drain 已启动 body、按顺序提交其真实 result/context，并为尚未启动的模型 call 追加 `ABORTED_BEFORE_DISPATCH` synthetic call/result pair，使 replay 保持 Tool call/result 平衡。
+
+普通 Tool body、policy、schema 或 unknown Tool failure 是 `ToolExecutionResult`，继续走 model-order finalize 和 `tool/result` commit。只有 `Prepare`、`Dispatch` 或 `Finalize` 本身无法返回规范结果时才是 Agent-level scheduler failure：首个 failure 停止补充新 dispatch，所有已经启动的 dispatch 必须先 settle，随后 Step/Turn 以 error 收口；尚未启动的 call 不追加，已经写入 `tool/call` 但结果未知的 call 也不伪造 `tool/result`。因此 failure drain 与 cancellation drain 使用同一个收敛骨架，但持久化结果规则不同。
 
 ## 9. Dynamic runtime context
 
@@ -182,7 +184,7 @@ System Prompt 的 contexts 不写入 system header，而是在每个 pre-step as
 
 - 非取消失败转为 `TurnError`；`LlmError` 保留 structured failure，其他错误使用稳定 `UNKNOWN` code；
 - active cancellation 转为 `TurnAborted`，并把 user、parent、disposed、hook 或 legacy cause 写入 durable reason；
-- `agent/error` 是 live observer，不代替 `turn/end`；observer failure由 runtime reporter 包含，不能中断 boundary finalization；
+- `agent/error` 是 live observer，不代替 `turn/end`；observer failure 由 runtime reporter 包含，不能中断 boundary finalization；
 - `agent/status` 只在 `idle <-> running` 变化时发布，maintenance 不产生伪 running；
 - Assistant/Tool result 的 model-visible surface commit 与原始 chunk/call provenance 分离；
 - Agent Loop 不吞掉 Session、Prompt、LLM 或 Tool owner 返回的 contract error，也不把技术失败改写成成功。
