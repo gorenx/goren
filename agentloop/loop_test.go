@@ -14,6 +14,8 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
+	sesspersist "github.com/gorenx/goren/session/persistence"
+	sesssqlite "github.com/gorenx/goren/session/persistence/sqlite"
 	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/tools"
 )
@@ -298,6 +300,100 @@ func registerEchoTool(t *testing.T, state *harnessFixture) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestTurnEndAwaitsSessionDurabilityBeforeAgentBecomesIdle(t *testing.T) {
+	state := newHarnessFixture(t, [][]llm.StreamChunk{{
+		llm.BlockEndChunk{Index: 0, Block: llm.NewTextBlock("done")},
+		llm.FinishChunk{Reason: llm.StopFinish{}},
+	}})
+	requestContext := context.Background()
+	sqliteBackend, err := sesssqlite.Open(requestContext, sesssqlite.Config{
+		Path: t.TempDir() + "/sessions.sqlite", JournalMode: sesssqlite.JournalWAL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sesspersist.NewSessionLogStore(
+		requestContext,
+		state.pluginScope,
+		state.sessions,
+		sqliteBackend,
+		sesspersist.SessionLogStoreOptions{WriteBatchMaxDelay: time.Hour},
+	); err != nil {
+		_ = sqliteBackend.Close(requestContext)
+		t.Fatal(err)
+	}
+	flushStarted := make(chan struct{})
+	releaseFlush := make(chan struct{})
+	var signalOnce, releaseOnce sync.Once
+	releaseCheckpoint := func() { releaseOnce.Do(func() { close(releaseFlush) }) }
+	defer releaseCheckpoint()
+	if _, err := session.OnFlush(state.pluginScope, func(_ context.Context, conversation *session.Session) error {
+		events := conversation.Events()
+		if len(events) == 0 || events[len(events)-1].Type != session.TurnEndEventName {
+			return errors.New("durability checkpoint ran before turn/end committed")
+		}
+		signalOnce.Do(func() { close(flushStarted) })
+		<-releaseFlush
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := state.agents.Create(requestContext, state.pluginScope, agent.CreateOptions{
+		SessionID: "turn-checkpoint", AgentOptions: agent.Options{Provider: "mock", Model: "model"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if disposeErr := handle.Dispose(context.Background()); disposeErr != nil {
+			t.Error(disposeErr)
+		}
+	}()
+	if err := handle.Subject.Followup(userMessage(t, "run", llm.UserMessageSource{})); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-flushStarted:
+	case <-time.After(time.Second):
+		t.Fatal("turn did not reach the durability checkpoint")
+	}
+	var durableEvents []session.Event
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		storedPrefix, found, loadErr := sqliteBackend.LoadStored(requestContext, "turn-checkpoint")
+		if loadErr != nil {
+			t.Fatal(loadErr)
+		}
+		if found && len(storedPrefix.Events) != 0 && storedPrefix.Events[len(storedPrefix.Events)-1].Type == session.TurnEndEventName {
+			durableEvents = storedPrefix.Events
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if len(durableEvents) == 0 {
+		t.Fatal("turn/end was not durable while the checkpoint was in progress")
+	}
+	if status := handle.Subject.StatusValue(); status != agent.StatusRunning {
+		t.Fatalf("status while flush is pending = %q, want running", status)
+	}
+	idle := make(chan error, 1)
+	go func() { idle <- handle.Subject.WhenIdle(context.Background()) }()
+	select {
+	case err := <-idle:
+		t.Fatalf("WhenIdle returned before durability checkpoint: %v", err)
+	default:
+	}
+	releaseCheckpoint()
+	select {
+	case err := <-idle:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Agent did not become idle after durability checkpoint")
 	}
 }
 
