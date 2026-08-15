@@ -22,12 +22,13 @@
 - [14 Agent Registry、Inbox 与实时事件模块设计](./14-agent-registry-inbox-and-events.md)：live Agent registry、Factory seam、durable Inbox projection、Agent-scoped events、initiator attribution 与 model selection snapshot。
 - [15 Agent Loop 与请求驱动模块设计](./15-agent-loop-and-request-driver.md)：concrete Agent lifecycle、Turn/Step 状态机、请求重建、模型 attempt、Tool-call 调度、取消与 runtime-context projection。
 - [16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)：八个 `session.*` method、默认模型选择、Session/Agent consumer adapter、Mux baseline/live 与 Host edge。
+- [17 Approval、UserQuestions 与 Interaction Gateway](./17-approval-user-questions-and-interaction-gateway.md)：Approval policy/audit、UserQuestions Provider、`ask_user_question` Consumer，以及 requested/respond/resolved/replay 闭环。
 
 首次阅读按 `01`–`05` 顺序理解全局设计；进入实现时读取对应模块文档，再从 `08` 查看当前进度。实现单个能力时，先从 `01` 确认范围，再读其拥有契约的文档。DeepSeek Harness 的 Service Definition / Provider / Consumer、事件 owner 和生命周期是默认职责边界；Go 包不机械复制每个 npm 包，但没有明确证据时也不另起一套领域切分。
 
 ## 权威关系
 
-- 本目录 `01`–`05` 拥有全局设计，`06`、`07`、`09`–`16` 拥有已进入实现的稳定模块设计，`08` 单独拥有日期性实施进度与证据。
+- 本目录 `01`–`05` 拥有全局设计，`06`、`07`、`09`–`17` 拥有已进入实现的稳定模块设计，`08` 单独拥有日期性实施进度与证据。
 - 根目录 `README.md` 与 `README.zh-CN.md` 只说明项目背景。
 - TypeScript 的行为证据来自固定 commit；源仓库后续变化不会自动成为 Go 需求。
 - Go 代码证明当前实现，跨语言 fixtures 和测试证明兼容性；设计状态不能代替实现或验收证据。

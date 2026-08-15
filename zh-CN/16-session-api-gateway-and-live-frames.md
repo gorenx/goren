@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有浏览器可达的 `session.*` API adapter、`agentDefaultModel`、Session/Agent 到 Mux/Host frame 的投影，以及这些边界的生命周期和失败语义。通用 method Catalog、RPC outcome 与 pending response 由[07 API Proxy 模块设计与实现](./07-api-proxy-module.md)拥有；Session 事实、Agent capability 和 Turn/Step 驱动分别由[10](./10-session-core-and-lifecycle.md)、[14](./14-agent-registry-inbox-and-events.md)和[15](./15-agent-loop-and-request-driver.md)拥有；当前实施状态与验证证据只见[08 实施进度](./08-implementation-progress.md)。
+本文拥有浏览器可达的 `session.*` API adapter、`agentDefaultModel`、Session/Agent 到 Mux/Host frame 的投影，以及这些边界的生命周期和失败语义。通用 method Catalog、RPC outcome 与 pending response 由[07 API Proxy 模块设计与实现](./07-api-proxy-module.md)拥有；Approval/Question 交互及其 pending replay 由[17](./17-approval-user-questions-and-interaction-gateway.md)拥有；Session 事实、Agent capability 和 Turn/Step 驱动分别由[10](./10-session-core-and-lifecycle.md)、[14](./14-agent-registry-inbox-and-events.md)和[15](./15-agent-loop-and-request-driver.md)拥有；当前实施状态与验证证据只见[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 固定源与职责映射
 
@@ -77,11 +77,13 @@ Mux WebSocket 打开时先把订阅者登记到 hub，再在同一同步边界�
 GET /api/events.mux
   -> register subscriber
   -> each attached Session: session/subscribed(lastSeq)
+  -> each pending question: question/requested(stable rpcId)
+  -> each pending approval: approval/requested(stable rpcId)
   -> each non-empty pending Inbox: session/queue(items)
   -> drain ordered live delivery queue
 ```
 
-`session/subscribed.lastSeq` 是该 subscriber 的 per-Session high-water mark。后续 committed event 仅在 `event.seq > highwater` 时投递；baseline 读取期间迟到的同一 callback 不会重复发送已经纳入 snapshot 的 event。
+`session/subscribed.lastSeq` 是该 subscriber 的 per-Session high-water mark。后续 committed event 仅在 `event.seq > highwater` 时投递；baseline 读取期间迟到的同一 callback 不会重复发送已经纳入 snapshot 的 event。pending 交互的内容、结算与 replay identity 由[17](./17-approval-user-questions-and-interaction-gateway.md)拥有；本模块的 `sessionFrameHub` 只通过 `InteractionFrameBroker` 在同一个 subscriber registration/publish 临界区插入其 baseline，避免 open 与 live publish 之间丢帧。
 
 Inbox mutation 的 live 顺序为：
 
@@ -104,7 +106,7 @@ Host WebSocket 只发送进程级变化：
 - `host/session-status`；
 - `host/session-error`。
 
-Host stream 不重复发送全量 baseline。重连后的 authoritative baseline 由 `session.list` 获取，单 Session 历史由 `session.history` 获取；Mux 通过 `session/subscribed(lastSeq)` 和 queue snapshot 重建订阅位置。这样 Host edge 不需要伪装成持久化日志，也不会与 list baseline 形成双重 owner。
+Host stream 不重复发送全量 baseline。重连后的 authoritative baseline 由 `session.list` 获取，单 Session 历史由 `session.history` 获取；Mux 通过 `session/subscribed(lastSeq)`、pending interaction replay 和 queue snapshot 重建当前进程内的订阅位置。这样 Host edge 不需要伪装成持久化日志，也不会与 list baseline 形成双重 owner；进程重启后的 cold recovery 仍需阶段 5 的 durable owner，不能由 live replay table 冒充。
 
 ## 7. 并发、背压、失败与生命周期
 
@@ -143,7 +145,7 @@ wire DTO 止于 `apiproxy`；Agent、Session、LLM 和默认模型包不依赖 C
 
 ## 9. 后续能力进入规则
 
-- approval/question 必须由具体 interaction owner 持有 pending、requested/resolved frame、replay 和 result schema，再复用[07](./07-api-proxy-module.md#8-apirespond-pending-生命周期)的 correlation table；
+- Approval/Question 已由[17](./17-approval-user-questions-and-interaction-gateway.md)持有 pending、requested/resolved frame、replay 和 result schema；新增 interaction 必须复用同一 generic correlation 与 broker seam，不能把具体 schema 塞回 Session Gateway；
 - `session.search`、`rename`、`fork` 和 attachment method 只有在其真实 Session/Workspace/Attachment capability 进入后才注册；
 - JSONL、SQLite/sqlc 只实现业务事实存取 adapter，resume/load/repair 由 Session/application owner 决定；
 - Tool view、projection、remote event 和 Workspace frame 由相应 Provider 贡献，不能在 SessionGateway 中加入 optional global model；

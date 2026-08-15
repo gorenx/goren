@@ -40,7 +40,7 @@ Go 不复制 Cordis context extension、WeakMap、JavaScript `unknown` 对象、
 - Web 卡片、浏览器 presentation、SDK 生成或 Typert；
 - JSONL、SQLite、sqlc 或其他业务数据存储。
 
-`AskDecision` 在 Approval Service 尚未进入 composition 时稳定退化为拒绝，不能把缺少交互通道解释成允许。Tool timeout 只作为定义 metadata 保留；具体 timeout policy 通过 `tools/execute` wrapper 进入，不硬编码进 Registry。
+默认 composition 已提供 Approval；`AskDecision` 调用其 capability，并在 Service 或交互通道缺失、取消、失败时稳定退化为拒绝，不能把不可达解释成允许。Approval policy/audit 和 transport 闭环由[17](./17-approval-user-questions-and-interaction-gateway.md)拥有。Tool timeout 只作为定义 metadata 保留；具体 timeout policy 通过 `tools/execute` wrapper 进入，不硬编码进 Registry。
 
 ## 3. 包内职责划分
 
@@ -241,7 +241,7 @@ Tools 不调用 `RenderPrompt`，System Prompt 不读取 executor/output schema/
 
 - Code Mode 的 `run_code`、生成 TypeScript/Python SDK、Code Runtime 和 sub-dispatch log；
 - Web `presentCall`/`presentResult` 和卡片模型；
-- Approval Service 的交互实现；
+- Approval policy/audit、UserQuestions 与交互 transport（由[17](./17-approval-user-questions-and-interaction-gateway.md)拥有）；
 - Agent Loop 的批量并发编排、additional context 入队与 Session event commit；
 - filesystem/shell 等具体 Tool plugin。
 

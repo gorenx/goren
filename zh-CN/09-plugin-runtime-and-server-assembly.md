@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有 `plugin` 与 `internal/assembly` 的职责、Go 类型模型、上下游流程和生命周期。全局依赖方向与 Child Scope 使用规则由[02 Go 运行时架构与插件模型](./02-runtime-architecture-and-plugin-model.md)拥有；System Prompt、Tools、Agent Loop 与 Session API Gateway 的消费语义分别由[11](./11-system-prompt-registry-and-assembly.md)、[12](./12-tools-registry-and-execution-pipeline.md)、[15](./15-agent-loop-and-request-driver.md)和[16](./16-session-api-gateway-and-live-frames.md)拥有；当前实施证据只见[08 实施进度](./08-implementation-progress.md)。
+本文拥有 `plugin` 与 `internal/assembly` 的职责、Go 类型模型、上下游流程和生命周期。全局依赖方向与 Child Scope 使用规则由[02 Go 运行时架构与插件模型](./02-runtime-architecture-and-plugin-model.md)拥有；System Prompt、Tools、Agent Loop、Session API Gateway 与 Interaction Gateway 的消费语义分别由[11](./11-system-prompt-registry-and-assembly.md)、[12](./12-tools-registry-and-execution-pipeline.md)、[15](./15-agent-loop-and-request-driver.md)、[16](./16-session-api-gateway-and-live-frames.md)和[17](./17-approval-user-questions-and-interaction-gateway.md)拥有；当前实施证据只见[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 源职责映射
 
@@ -23,6 +23,9 @@
 | `packages/core/agent` | `internal/assembly` 的 Agent Plugin | 提供 `agents` Registry Service；具体 Factory 由 Agent Loop 注册 |
 | `packages/core/agent-default-model` | `internal/assembly` 的 Agent Default Model Plugin | 提供 `agentDefaultModel` Service；当前静态 Provider 保留 Settings 缺失时的 source fallback |
 | `packages/core/agent-loop` | `internal/assembly` 的 Agent Loop Plugin | 消费 Agent/Session/LLM/Tools/System Prompt，提供 `agentLoop` 并注册 concrete Factory |
+| `packages/interaction/user-approval` | `internal/assembly` 的 Approval Plugin | 消费 System Prompt，提供 `approval` Service |
+| `packages/interaction/user-questions` | `internal/assembly` 的 UserQuestions Plugin | 提供 `userQuestions` Service，并可读取 live Agent Registry |
+| `packages/interaction/tool-ask-user` | `internal/assembly` 的 Tool Ask User Plugin | 消费 Tools/UserQuestions 并注册 `ask_user_question` |
 
 Go 不复制 Proxy property lookup、decorator、declaration merging、npm module loader、Profile evaluator 或 `!!js`。这些机制在 Go 中分别由显式 interface、泛型自由函数、静态 Catalog 和 typed config 取代；Service/Provider/Consumer、事件 mode 和 effect 生命周期不因语言变化而合并。
 
@@ -47,7 +50,7 @@ Go 不复制 Proxy property lookup、decorator、declaration merging、npm modul
 - 当前可实例化 Factory 的白名单；
 - process-derived `Environment` 与 Factory 输入 `PluginSpec`；
 - 当前 included server 的默认 declaration 集合；
-- Session Provider、Default Model Provider、System Prompt Provider、Tools Consumer/Provider、API Proxy Consumer/Provider 与 Connection Consumer Plugin；
+- Session、Default Model、System Prompt、Tools、Approval、UserQuestions Provider，Tool Ask User Consumer、API Proxy Consumer/Provider 与 Connection Consumer Plugin；
 - 多 Plugin 启动失败时的 composition rollback。
 
 它不重新解释 HTTP/RPC contract，也不把 Excluded/Deferred capability 注册为占位 Factory。外部扩展通过自定义 composition root 静态加入公开 Factory，而不是修改 Runtime 内部 map。
@@ -162,13 +165,16 @@ shipped Catalog 当前只有：
 - `@deepseek-ai/dsh-system-prompt` 的 Registry/Assembly Provider；
 - `@deepseek-ai/dsh-tools` 的 Native Registry/Execution Provider；
 - `@deepseek-ai/dsh-agent` 的 live Registry/Inbox contract Provider；
-- `@deepseek-ai/dsh-agent-loop` 的 concrete Agent lifecycle 与 request driver Provider。
+- `@deepseek-ai/dsh-agent-loop` 的 concrete Agent lifecycle 与 request driver Provider；
+- `@deepseek-ai/dsh-user-approval` 的 policy/audit Provider；
+- `@deepseek-ai/dsh-user-questions` 的 question Provider Registry；
+- `@deepseek-ai/dsh-tool-ask-user` 的 `ask_user_question` Tool Consumer。
 
 其中 Connection Factory 虽然沿用源 npm canonical name，但只实现服务端 Host carrier，不包含 `WebApiClient`、`ConnectionController` 或浏览器代码。Web UI、SDK、Tools Code Mode、ACP、MCP、Typert 与其他 Deferred 能力不在 Catalog 或依赖闭包。
 
 ## 8. 当前 server 组合流程
 
-默认 declarations 按 Connection、API Proxy、Agent Default Model、Agent Loop、Agent、LLM、DeepSeek、System Prompt、Tools、Session 声明。Connection/API Proxy/Session 与 Agent Loop 的链故意采用 Consumer-before-Provider 顺序，以证明 Runtime 按 Service graph 而不是文件顺序工作；Agent Registry 和 Agent Default Model 无外部 Service 依赖，DeepSeek 和 Tools 分别在 LLM 与 System Prompt 激活后消费其 Service：
+默认 declarations 按 Connection、API Proxy、Tool Ask User、Agent Default Model、Agent Loop、Approval、UserQuestions、Agent、LLM、DeepSeek、System Prompt、Tools、Session 声明。Connection/API Proxy/Tool Ask User/Approval 与 Agent Loop 故意出现在部分 Provider 之前，以证明 Runtime 按 Service graph 而不是文件顺序工作：
 
 ```text
 cmd/goren
@@ -176,10 +182,14 @@ cmd/goren
   -> assembly.DefaultSpecs(listen, version)
   -> connection Factory.Create
   -> Connection StateWaiting (requires apiProxy)
-  -> API Proxy StateWaiting (requires agents/agentDefaultModel/llm/sessions)
+  -> API Proxy StateWaiting (requires agents/agentDefaultModel/llm/sessions/userQuestions)
+  -> Tool Ask User StateWaiting (requires tools/userQuestions)
   -> Agent Default Model Factory.Create + Apply
        -> static deployment selection + Provide(agentDefaultModel)
   -> Agent Loop StateWaiting (requires agents/sessions/llm/tools/systemPrompt)
+  -> Approval StateWaiting (requires systemPrompt)
+  -> UserQuestions Factory.Create + Apply
+       -> live optional Agent resolver + Provide(userQuestions)
   -> Agent Factory.Create + Apply
        -> live Registry + Provide(agents)
   -> LLM Factory.Create + Apply
@@ -190,11 +200,16 @@ cmd/goren
   -> System Prompt Factory.Create + Apply
        -> promptStore + promptAssembler + built-in sections
        -> Provide(systemPrompt)
+  -> Runtime settles Approval
+       -> policy/audit Runtime + Provide(approval)
   -> Tools Factory.Create + Apply
        -> Require(systemPrompt)
        -> toolStore + toolRegistry
        -> register ToolProvider projection with System Prompt
        -> Provide(tools)
+  -> Runtime settles Tool Ask User
+       -> Require tools/userQuestions
+       -> register ask_user_question Tool
   -> Session Factory.Create + Apply
        -> MemoryStore + Provide(sessions)
   -> Runtime settles Agent Loop
@@ -202,8 +217,9 @@ cmd/goren
        -> register concrete Factory with agents
        -> Provide(agentLoop)
   -> Runtime settles API Proxy
-       -> Require agents/agentDefaultModel/llm/sessions
+       -> Require agents/agentDefaultModel/llm/sessions/userQuestions
        -> SessionGateway + host.describe + eight session.* methods
+       -> InteractionGateway + approval/question pending/respond/replay
        -> real Mux/Host EventStreams
        -> Provide(apiProxy)
   -> Runtime settles Connection
