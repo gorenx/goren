@@ -314,16 +314,16 @@ Client 同时连接：
 
 ### 6.6 API Surface
 
-源 `RpcMethodMap` 和各 domain interface 是方法、payload、result 与错误的权威。第一兼容切片优先：
+源 `RpcMethodMap` 和各 domain interface 是方法、payload、result 与错误的权威。当前已纳入的 Session 会话切片为：
 
 - `host.describe`
-- 全部 `session.*`
+- `session.list/create/rename/history/models/selectModel/prompt/updateQueue/cancel`
 - `events.mux`
 - `events.host`
 - `/api/respond`
 - approval/question 的 request/response frame
 
-其他方法进入 capability matrix 后才能声明兼容。未纳入的方法返回源 carrier 的未注册行为，不能用固定成功、空对象或无副作用 stub 冒充实现。
+`session.search/fork/attachment` 及其他方法进入 capability matrix 后才能声明兼容。未纳入的方法返回源 carrier 的未注册行为，不能用固定成功、空对象或无副作用 stub 冒充实现。Session Projection、Title、tail baseline 与 rename 的 owner 见[18](./18-session-projection-and-title.md)。
 
 这意味着“客户端可以连接并完成 Agent 对话”与“整个原 Web 产品所有页面可用”是两项不同声明；首期只承诺前者。
 
@@ -405,6 +405,7 @@ tests/contract/
     client-smoke.ts
     connection-reconnect.ts
     http-reference.ts
+    session-client.ts
 ```
 
 `manifest.json` 是机器可读的范围与 provenance owner：记录源 commit/version/license/toolchain、HTTP/WS path、message/receipt/frame 判别集合、当前 unary method、privileged method、Excluded 和 Deferred 能力。源 commit 改变时必须显式更新该文件和全部向量，不能自动追随相邻 checkout。

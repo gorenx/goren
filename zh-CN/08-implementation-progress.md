@@ -3,7 +3,7 @@
 状态：In Progress
 更新时间：2026-08-15
 
-本文是 DeepSeek Harness Go 复刻实施状态、验证证据、阻塞项和下一步的唯一记录。全局范围与 Gate 由[05 复制路线图与验收](./05-porting-roadmap-and-acceptance.md)拥有；模块职责与设计分别由[06 Connection Host 模块设计与实现](./06-connection-host-module.md)、[07 API Proxy 模块设计与实现](./07-api-proxy-module.md)、[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)、[10 Session Core 与生命周期模块设计](./10-session-core-and-lifecycle.md)、[11 System Prompt Registry 与 Assembly 模块设计](./11-system-prompt-registry-and-assembly.md)、[12 Tools Registry 与执行流水线模块设计](./12-tools-registry-and-execution-pipeline.md)、[13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)、[14 Agent Registry、Inbox 与实时事件模块设计](./14-agent-registry-inbox-and-events.md)、[15 Agent Loop 与请求驱动模块设计](./15-agent-loop-and-request-driver.md)、[16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)和[17 Approval、UserQuestions 与 Interaction Gateway](./17-approval-user-questions-and-interaction-gateway.md)拥有；默认 RetryPolicy Consumer 的代码近邻说明见[`llmretry/README.zh-CN.md`](../llmretry/README.zh-CN.md)。本文不重新定义协议或架构。
+本文是 DeepSeek Harness Go 复刻实施状态、验证证据、阻塞项和下一步的唯一记录。全局范围与 Gate 由[05 复制路线图与验收](./05-porting-roadmap-and-acceptance.md)拥有；模块职责与设计分别由[06 Connection Host 模块设计与实现](./06-connection-host-module.md)、[07 API Proxy 模块设计与实现](./07-api-proxy-module.md)、[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)、[10 Session Core 与生命周期模块设计](./10-session-core-and-lifecycle.md)、[11 System Prompt Registry 与 Assembly 模块设计](./11-system-prompt-registry-and-assembly.md)、[12 Tools Registry 与执行流水线模块设计](./12-tools-registry-and-execution-pipeline.md)、[13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)、[14 Agent Registry、Inbox 与实时事件模块设计](./14-agent-registry-inbox-and-events.md)、[15 Agent Loop 与请求驱动模块设计](./15-agent-loop-and-request-driver.md)、[16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)、[17 Approval、UserQuestions 与 Interaction Gateway](./17-approval-user-questions-and-interaction-gateway.md)和[18 Session Projection 与 Session Title 模块设计](./18-session-projection-and-title.md)拥有；代码近邻说明由各子模块 `README.zh-CN.md` 持有。本文不重新定义协议或架构。
 
 ## 1. 进度记录规则
 
@@ -25,11 +25,11 @@
 | 阶段 3：Session/Agent slice | Completed | 16 Completed | Contract Verified | 全部交付与 Gate 已闭合；cold persistence/resume 仍由阶段 5 拥有 |
 | 阶段 4：LLM Contract | In Progress | 12 Completed / 1 Planned | Contract Verified | Runtime、DeepSeek adapter、response recordings、Agent attempt loop 与默认 retry Consumer 已完成；等待真实环境 smoke |
 | 阶段 5：Session 持久化 | In Progress | 0 Completed / 1 In Progress / 13 Planned | Contract Verified | live reconnect/replay 已完成；cold recovery 和业务事实持久化尚未进入 |
-| 阶段 6：客户端能力扩展 | Planned | 0 Completed / 19 Planned | None | 按 TypeScript Client 实际消费逐项进入 |
+| 阶段 6：客户端能力扩展 | In Progress | 2 Completed / 23 Planned | Contract Verified | Projection 与 Title/Rename 已闭环；具体 LLM Title Provider、Search、Fork、Attachment 等逐项进入 |
 | 阶段 7：Deferred 能力 | Deferred | 7 Deferred | None | 不创建 package、handler 或依赖占位 |
 | 阶段 8：Parity Hardening | In Progress | 0 Completed / 5 In Progress / 10 Planned | Contract Verified | 扩展当前 Connection contract suite，不等同发布验收 |
 
-当前 Connection slice、Session core、System Prompt、Native Tools、Agent Inbox、Agent Loop、Session API Gateway、Approval/UserQuestions/Interaction Gateway 与 LLM/DeepSeek contract 达到 `Contract Verified`：固定 TypeScript schema 与 Go envelope/frame 已交叉校验，固定上游 `WebApiClient` 已通过真实 Go HTTP/WebSocket 完成 create/list/history/models/selectModel、prompt 到 `turn/end`、queue edit/remove、cancel 到 aborted turn，并完成 Approval/Question requested、respond、resolved 和 reconnect replay；`ConnectionController` 已验证 client-owned generation 重建。固定源 Session、System Prompt、Native Tools、Agent Inbox、Agent Loop happy/failure path、seeded resume/compaction request reconstruction、DeepSeek serialization/stream/default policy，以及 provider-routed retry 的 delay/schedule/start 行为也分别与 Go 行为交叉验证。Code Mode、原 Web 产品、cold persistence resume 和使用真实 credential/endpoint 的 DeepSeek 环境验收尚未据此标记兼容。
+当前 Connection slice、Session core、System Prompt、Native Tools、Agent Inbox、Agent Loop、Session API Gateway、Session Projection、Session Title/Rename、Approval/UserQuestions/Interaction Gateway 与 LLM/DeepSeek contract 达到 `Contract Verified`：固定 TypeScript schema 与 Go envelope/frame 已交叉校验，固定上游 `WebApiClient` 已通过真实 Go HTTP/WebSocket 完成 create/list/history/rename/models/selectModel、prompt 到 `turn/end`、queue edit/remove、cancel 到 aborted turn，并完成 title baseline/frame、Approval/Question requested、respond、resolved 和 reconnect replay；固定源码的 `Session.rename()` 也已证明 response 与 `ProjectionValueStore` 的 higher-seq-wins 行为。`ConnectionController` 已验证 client-owned generation 重建。固定源 Session、System Prompt、Native Tools、Agent Inbox、Agent Loop happy/failure path、seeded resume/compaction request reconstruction、DeepSeek serialization/stream/default policy，以及 provider-routed retry 的 delay/schedule/start 行为也分别与 Go 行为交叉验证。具体 LLM Title Provider、Code Mode、原 Web 产品、cold persistence resume 和使用真实 credential/endpoint 的 DeepSeek 环境验收尚未据此标记兼容。
 
 ## 3. 阶段 0：基线与 Connection Contract Freeze
 
@@ -204,7 +204,13 @@ interaction owner registers stable rpcId + decoder
 | S6-D10 | 能力 | Spill | Planned | None |
 | S6-D11 | 能力 | Settings | Planned | None |
 | S6-D12 | 能力 | Goals | Planned | None |
-| S6-D13 | 能力 | 其他经 capability matrix 纳入的服务端能力 | Planned | None |
+| S6-D13 | 能力 | Session Projection Framework | Completed | Contract Verified：通用 Unit/Registry、live fold、whole-value change、versioned checkpoint/restore、list/history baseline 与 `session/projection` frame 已实现；固定源 schema 与客户端 projection store 通过 |
+| S6-D14 | 能力 | Session Title Core 与 `session.rename` | Completed | Contract Verified：fallback、规范化、source union、user pin/refresh、Provider 调度 seam、`title` projection、`title-invalid`、九个 Session method 与固定源 `WebApiClient`/`Session.rename()` E2E 已通过 |
+| S6-D15 | 能力 | Session Title First-Prompt LLM Provider | Planned | None：core 已提供 `AutomaticFirstPrompt` Provider seam，尚无具体模型调用插件 |
+| S6-D16 | 能力 | Session Title All-Prompts LLM Provider | Planned | None：core 已提供 `AutomaticAllPrompts` Provider seam，尚无具体模型调用插件 |
+| S6-D17 | 能力 | Session Query/Search | Planned | None |
+| S6-D18 | 能力 | Session Fork | Planned | None |
+| S6-D19 | 能力 | 其他经 capability matrix 纳入的服务端能力 | Planned | None |
 | S6-G01 | Gate | 确认真实 Consumer 后才进入实现 | Planned | None |
 | S6-G02 | Gate | 保留源 Definition、Provider 和 Consumer owner | Planned | None |
 | S6-G03 | Gate | effect-time enforcement 归 permission/guard/sandbox owner | Planned | None |
@@ -286,14 +292,17 @@ interaction owner registers stable rpcId + decoder
 | Connection Plugin 乱序依赖结算与真实 HTTP 服务 | `TestConnectionCompositionSettlesDependenciesAndServesHostDescribe` |
 | composition bind failure 无 declaration/contribution 遗留 | `TestCompositionFailureRollsBackEarlierDeclarations` |
 | Session payload snapshot、seed 连续性、surface 原子 replace 与负零拒绝 | `session/session_test.go` |
-| Session create/append/flush/dispose、rollback、observer containment 与重入拒绝 | `session/store_test.go` |
+| Session create/append/flush/dispose、rollback、observer containment、重入拒绝与 publication 后 follow-up append | `session/store_test.go`、`sessiontitle/service_test.go` |
 | 固定源与 Go Session Header/Event/seed/surface 行为一致 | `TestPinnedSourceSessionCoreMatchesGo` |
 | Session -> API Proxy -> `host.describe.attachedSessions` 实时 projection | `TestConnectionCompositionSettlesDependenciesAndServesHostDescribe` |
-| 八个 `session.*` request union 的 strict decode 与负向组合 | `TestSessionRequestDecodersMatchIncludedUnionShapes`、`TestSessionRequestDecodersRejectNullAndInvalidCombinations` |
+| 九个 `session.*` request union 的 strict decode 与负向组合 | `TestSessionRequestDecodersMatchIncludedUnionShapes`、`TestSessionRequestDecodersRejectNullAndInvalidCombinations`、固定源 rename vectors |
 | history message-boundary pagination、durable queue fold 与宽 text extension 保真 | `TestHistoryPageCutsAtAppendMessageGroup`、`TestProjectQueueFoldsDurableSplicesAndUserPlacement`、`TestReplaceMessageContentPreservesLooseTextExtension` |
 | Mux baseline high-water 与 frame ID failure 不丢 committed event | `TestMuxBaselineHighwaterSuppressesLateCommittedCallback`、`TestSessionFrameHubSurfacesMintFailureWithoutAdvancingHighwater` |
 | live default 到显式选择的优先级与 prompt/request snapshot | `TestModelSelectionReadsLiveFallbackUntilExplicitlySelected`、`TestModelSelectionSnapshotsPromptAndRequestTogether` |
 | 固定源 `WebApiClient` 调用 Go Session Gateway 完成 prompt/queue/cancel 双流会话 | `TestPinnedSourceSessionWebApiClientTalksToGoGateway` |
+| Session Projection late fold、whole-value change、registration refcount 与 versioned checkpoint/restore | `sessionprojection/registry_test.go` |
+| Session Title fallback、规范化、rename、projection、Provider supersession、refresh、JSON array wire 与 drain | `sessiontitle/service_test.go` |
+| 固定源 `WebApiClient` 与 `Session.rename()` 调用 Go rename，并折入 list/history/frame/client store | `TestPinnedSourceSessionWebApiClientTalksToGoGateway` |
 | System Prompt built-ins、scope shadow、snapshot、suppression、complete、tool order、插值与 invariant | `systemprompt/systemprompt_test.go` |
 | 固定源与 Go System Prompt assembly/render/failure 行为一致 | `TestPinnedSourceSystemPromptMatchesGo` |
 | Native Tool scope view、restriction/guard、schema cache、执行/取消、finalizer 与 detached result | `tools/runtime_test.go` |
@@ -328,21 +337,18 @@ interaction owner registers stable rpcId + decoder
 
 ## 13. 当前验证结果
 
-本次 DeepSeek response recording 切片在 Go 1.26.6、`darwin/arm64` 执行并通过：
+本次 Session Projection 与 Title/Rename 切片在 Go 1.26.6、`darwin/arm64` 执行并通过：
 
-- `go test ./internal/llmdeepseek -run 'TestAdapterStreamsRequestAndPublishesModelCapabilities|TestAdapterHTTPFailureCarriesStructuredFacts|TestAdapterClassifiesMidStreamReadFailureAsTransportAndTerminates' -count=1`
-- `go test -race ./internal/llmdeepseek`
-- `go test ./...`
+- `go test ./... -count=1`
 - `go vet ./...`
-- `go test -tags contract ./tests/contract -run '^TestPinnedSourceLLMDeepSeekMatchesGo$' -count=1`（固定源 commit `47f943...`）
+- `go test -race ./session ./sessionprojection ./sessiontitle ./plugin ./apiproxy ./internal/assembly -count=1`
+- `go test -tags=contract ./tests/contract -run 'TestPinnedSourceGeneratesCommittedVectors|TestPinnedManifestMatchesGoSurface|TestGoAgreesWithPinnedSourceVectors|TestPinnedSourceSessionWebApiClientTalksToGoGateway' -count=1 -timeout=60s`（固定源 commit `47f943...`）
 - 变更文档本地链接检查
 - `git diff --check`
 
-本次没有增加第二套 behavior assertion，而是让既有三条 Adapter 端到端测试读取原始 HTTP replay 输入。迭代中的首次全量测试由 AST 审计捕获 `wireRequest` shadow；变量改为 `fixtureRequest` 后先复验失败 package，再由最终 `go test ./...` 收口。生产代码未改变，因此没有重复运行 build 或无关 package race。此前 LLM Retry、request reconstruction、scheduler failure、Connection WebSocket 压力测试与 `govulncheck` 仍是对应阶段证据。
+固定源 E2E 使用真实 `WebApiClient` 调用 Go HTTP/WebSocket，并直接实例化固定源码的 `Session` 验证 `rename()` 在 RPC 成功后立即折入 `ProjectionValueStore`；随后同 seq 的 `session/projection` frame、list/history baseline 与 `session/title` user event 保持一致。测试曾捕获 Go 把空 `messageSeqs` slice 编码为 JSON `null` 的兼容缺陷；实现改为稳定编码 `[]`，并拒绝从 `null` 解码。AST 审计还捕获新增局部名与 `Key`、`Options`、`TitleSource` 的大小写冲突，已按角色修正并由全仓测试收口。
 
-LLM 文件职责重组提交 `5fd5602` 不改变公共 contract 或运行行为。该提交先通过 `go test ./llm ./internal/llmdeepseek`；随后在只包含该提交的干净 worktree 中通过一次 `go test ./...` 和 `go vet ./...`。该重组没有新增并发语义，因此未重复 race、TypeScript differential 或真实 endpoint smoke。
-
-先前真实进程 smoke 已证明 `cmd/goren` 可通过 Factory Catalog 与 Plugin Runtime 结算基础服务并响应 `host.describe`；本次未重复该 smoke。三个 recordings 分别保存与固定 TS `textEvents` 相同的完整文本流、带 HTTP-date Retry-After 的 429 provider error，以及产生 partial chunks 后 transport failure 的流；它们是脱敏 deterministic replay 输入，不声称来自真实 endpoint 抓包，也不扩大为真实 DeepSeek credential/endpoint 验收。
+代码提交为 `2c4a2f8`。本次没有实现具体 first-prompt/all-prompts LLM Title Provider，也没有把内存 projection checkpoint 描述成 SQLite/sqlc 持久化；两者继续保留在各自 Planned 子目标。先前 LLM Retry、request reconstruction、DeepSeek recordings、scheduler failure、Connection WebSocket 压力测试与 `govulncheck` 仍是对应阶段证据，本次未重复无关环境验收。
 
 ## 14. 安全与依赖状态
 
@@ -353,9 +359,9 @@ LLM 文件职责重组提交 `5fd5602` 不改变公共 contract 或运行行为�
 
 ## 15. 下一实现切片
 
-Agent Loop core、failure golden、request reconstruction theorem、DeepSeek response recordings、默认 RetryPolicy Consumer、八个 Session method、live Mux/Host projection、queue mutation、client cancel 与 Approval/Question 交互闭环已完成。下一切片按依赖推进后续能力：
+Agent Loop core、failure golden、request reconstruction theorem、DeepSeek response recordings、默认 RetryPolicy Consumer、九个 Session method、Session Projection、Title/Rename、live Mux/Host projection、queue mutation、client cancel 与 Approval/Question 交互闭环已完成。下一切片按依赖推进后续能力：
 
-1. 按固定客户端消费证据决定 `session.search`、`rename`、`fork` 与 attachment method 的进入顺序；
+1. 按固定客户端消费证据决定 first-prompt/all-prompts LLM Title Provider、`session.search`、`session.fork` 与 attachment method 的进入顺序；
 2. 明确 Session load/repair、publication transaction 与 pending interaction/retry 的 cold recovery 所有权；
 3. 在业务恢复边界明确后实现 JSONL adapter，再以同一 consumer-owned port 接入 SQLite/sqlc，不把 live pending table 当持久化模型；
 4. 真实 DeepSeek credential/endpoint smoke 保持独立、显式启用且无凭证时自跳过。

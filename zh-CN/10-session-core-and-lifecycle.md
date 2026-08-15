@@ -14,7 +14,7 @@
 | `packages/core/session/src/index.ts` 的 `Session` | `session.Session` | seed 接受、连续 `seq`、快照、append commit |
 | 同文件的 `SessionStore` | `session.Store`、`MemoryStore` | prepare/enter/announce、live membership、flush、detach |
 | `packages/core/session/src/surface.ts` | `session.SurfaceOperation` 与内部 surface fold | append/replace、provenance、原子转换 |
-| Cordis 的 `session/created`、`disposed`、`event`、`flush` | `OnCreated`、`OnDisposed`、`OnEvent`、`OnFlush` | listener ownership、创建 veto、post-commit feed、durability barrier |
+| Cordis 的 `session/created`、`disposed`、`event`、`flush` | `OnCreated`、`OnDisposed`、`OnEvent`、`OnFlush`、`DeferAfterEvent` | listener ownership、创建 veto、post-commit feed、publication 后续任务、durability barrier |
 | 源 `@deepseek-ai/dsh-session` Plugin | `internal/assembly` 的 Session Factory | 提供 canonical `sessions` Service |
 
 Go 不复制 TypeScript declaration merging、WeakMap attachment、对象冻结或 Typert lookup。对应语义分别由 owner-defined 泛型 key、包内 attachment、入口 JSON snapshot 加返回值深拷贝，以及显式 Go Service interface 实现。没有引入反射型 payload registry。
@@ -28,7 +28,7 @@ Go 不复制 TypeScript declaration merging、WeakMap attachment、对象冻结�
 - seed 验证、`firstLiveSeq` 与必要的 `session/end-seed` marker；
 - 单 Session 内连续 `seq` 分配、lossless JSON snapshot 和 append-only history；
 - model-visible surface 的 append、replace、provenance 与 replacement generation；
-- live membership、创建公告、post-commit 观察、flush barrier 和 disposer。
+- live membership、创建公告、post-commit 观察、publication 后续任务、flush barrier 和 disposer。
 
 `session` 不拥有：
 
@@ -36,7 +36,7 @@ Go 不复制 TypeScript declaration merging、WeakMap attachment、对象冻结�
 - Echo、WebSocket、RPC、Mux/Host frame 或浏览器 projection；
 - JSONL/SQLite 文件格式、sqlc 类型、事务、重试或 durability buffer；
 - Provider Message/Content/StreamChunk 的定义；
-- fork/repair policy、request header fold 和 derived LLM history 的尚未进入能力。
+- fork、load/repair 和 persistence recovery policy。
 
 后四项不能通过给 `Session` 增加可选 storage/transport 字段来提前实现。Storage adapter 只能观察已经 committed 的 Event，并在 `session/flush` 中完成自己拥有的 durability 工作。
 
@@ -119,12 +119,16 @@ typed payload
   -> append Event + apply surface atomically
   -> unlock Session
   -> publish session/event to captured live attachment
+  -> release append reentrancy guard
+  -> run DeferAfterEvent queue in registration order
   -> contain observer failure
 ```
 
 Event 进入内存日志并完成 surface transition 后就是 Session 语义上的 committed；observer error 不回滚 Event，也不能阻止后续 listener 收到同一条 feed。Durable committed 是另外的 checkpoint：调用方通过 `Store.Flush` 等待所有 `session/flush` listener，二者不能混成“写数据库成功才分配 seq”的事务。
 
-`session/event` listener 在原 append 的同步 publication 尚未结束时再次 append 会明确失败，避免事件顺序取决于 callback 嵌套。不同 Session 不共享 append lock。当前同一 Session 的并发 append 在 publication window 内也拒绝，由 Agent loop 维持单 writer；未来若出现真实多 writer 需求，应在 Session owner 增加明确 queue，而不是让 storage adapter 排序。
+`session/event` listener 在原 append 的同步 publication 尚未结束时再次 append 会明确失败，避免事件顺序取决于 callback 嵌套。确实需要追加 follow-up fact 的 listener 可调用 `DeferAfterEvent`：它只在当前 event callback context 内接受任务，等全部 listener 返回且 append guard 释放后再按登记顺序执行；每项 panic 独立包含并交给 observer reporter。它用于复制 TypeScript microtask 的 publication 时序，不是 sleep、重试、goroutine pool 或通用 scheduler。
+
+不同 Session 不共享 append lock。当前同一 Session 的并发 append 在 publication window 内也拒绝，由 Agent loop 维持单 writer；未来若出现真实多 writer 需求，应在 Session owner 增加明确 queue，而不是让 storage adapter 排序。
 
 ## 6. Store 生命周期
 
