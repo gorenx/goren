@@ -12,6 +12,7 @@
 | --- | --- | --- |
 | `packages/core/llm/src/types.ts` | `llm/message.go`、`message_codec.go`、`message_source.go`、`content.go`、`content_codec.go`、`tool_schema.go`、`stream.go`、`stream_codec.go`、`finish_reason.go`、`types.go` | Message、source、content、GenerateOptions、StreamChunk、finish、usage 与 model metadata |
 | `packages/core/llm/src/index.ts` 的 `Llm` | `llm.LlmRuntime`、`runtimeService` | Adapter route、configurable provider、model discovery、call resolution 与 stream dispatch |
+| `packages/host/apiproxy/src/api/llm.ts` 与 `api-proxy.ts` 的 `llm.providers`/`llm.models` | `apiproxy.LLMGateway` | configurable directory 与 active route 合并、Host-scoped model catalog wire 投影 |
 | `packages/core/llm/src/index.ts` 的 adapter registration | `llm/adapter_registration.go` 的 `AdapterRegistrationHandle`、`adapterRegistrationState` | 多 route 原子注册、replace、release 与 effect ownership |
 | `llm/stream` | `llm.StreamEvent` | 每次模型调用外层的 typed waterfall |
 | 源 retry policy schema/defaults | `llm.RetryPolicy`、`ResolveRetryPolicy` | normal/always union、默认 retryable code 与 backoff snapshot |
@@ -84,6 +85,8 @@ Go 不复制 TypeScript class inheritance、declaration merging、fetch implemen
 | `internal/llmdeepseek/request.go` | credential/identity resolution、HTTP request/header/send 与 SSE bridge |
 | `internal/llmdeepseek/http_error.go` | HTTP/provider failure、retry-after 与稳定 Harness error code |
 | `internal/anonymoususerid/store.go` | installation identity 文件边界，不承担 LLM 或配置职责 |
+| `apiproxy/llm_api.go` | `llm.providers`、`llm.models` wire DTO、API interface 与 typed registration |
+| `apiproxy/llm_gateway.go` | 持有 consumer-owned `LLMDirectory`，投影 provider topology 与共享 model catalog |
 
 Registry 锁只保护 contribution membership 和 route 快照。Adapter、model discovery、observer、waterfall 和网络 I/O 都不在 Registry lock 内运行。DeepSeek parser、translator 与 BlockAssembler 分离：parser 只理解 SSE，translator 只理解 provider payload，assembler 只理解 Harness StreamChunk。
 
@@ -133,6 +136,27 @@ DeepSeek Factory 的 canonical name 是 `@deepseek-ai/dsh-llm-deepseek`，注册
 配置不接受明文 API key。strict decode 拒绝未知字段、显式 `null`、错误类型、非安全整数、重复模型、无效 thinking/effort 组合和超出 Go timer/JavaScript safe integer 边界的值。Factory 创建 immutable `ConnectionOptions` snapshot；每次真实请求开始时再解析 API key 和 anonymous user ID，不把 secret 固化到 Plugin config、日志、Session 或 fixture。
 
 Model catalog 是 selector metadata，不是在线事实源。未列出的 model ID 仍可按文本模型解析，并使用 provider 默认 context/maxTokens；目录不会被误当作请求 allowlist。
+
+### 6.1 Host-scoped LLM API
+
+`apiproxy.LLMGateway` 是 API anti-corruption boundary 的状态对象，不是第二个 LLM Runtime。它只持有 consumer-owned `LLMDirectory` interface，通过方法表达两个查询和一个共享投影：
+
+```text
+llm.providers
+  -> LLMGateway.Providers
+  -> configurable declarations in declaration order
+  -> mark active routes
+  -> append active routes without a declaration
+
+llm.models / session.models
+  -> LLMGateway.Catalog
+  -> each active provider ListModels + ResolveModelInfo
+  -> sound ModelProviderGroup[] + isolated ModelCatalogFailure[]
+```
+
+`settingsNs` 与 `settingsPath` 只来自 configurable provider declaration；未声明但已注册的 route 仍可调用，因此以空 settings address 追加。一个 provider 的 list/resolve 失败只产生该 provider 的 failure 并丢弃其不完整 group，不影响其他 provider。`session.models` 在同一 catalog 上增加 Session 当前选择与 `routable`，不得复制目录遍历规则。
+
+Go 实现不照搬源端 `buildModelCatalog(ctx)` 的独立函数与对象字面量 API。Gateway 以 named struct 持有依赖，以 `Providers`、`Models`、`Catalog` 方法保持职责和可复用状态边界；泛型函数只保留在无状态 typed route registration seam。
 
 ## 7. DeepSeek 出站流程
 

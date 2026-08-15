@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有 API Proxy 的通用 method 注册、typed dispatch、Provider 边界和上下游交互。线协议由[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)拥有，Connection carrier 由[06 Connection Host 模块设计与实现](./06-connection-host-module.md)拥有，具体 `session.*` adapter 与 Session/Host live projection 由[16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)拥有，Approval/Question 的业务 pending 与 frame 由[17 Approval、UserQuestions 与 Interaction Gateway](./17-approval-user-questions-and-interaction-gateway.md)拥有，实现状态与验证证据见[08 实施进度](./08-implementation-progress.md)。
+本文拥有 API Proxy 的通用 method 注册、typed dispatch、Provider 边界和上下游交互。线协议由[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)拥有，Connection carrier 由[06 Connection Host 模块设计与实现](./06-connection-host-module.md)拥有，具体 `llm.providers`/`llm.models` 投影由[13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)拥有，`session.*` adapter 与 Session/Host live projection 由[16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)拥有，Approval/Question 的业务 pending 与 frame 由[17 Approval、UserQuestions 与 Interaction Gateway](./17-approval-user-questions-and-interaction-gateway.md)拥有，实现状态与验证证据见[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 源职责与模块范围
 
@@ -12,6 +12,7 @@
 - `packages/host/apiproxy/src/api/events.ts`：`EventsApi`、Mux/Host frame 与窄 `RpcRequest<Frame>`；
 - `packages/host/apiproxy/src/fetch/handler.ts`：第二层 payload parse 与 method invoke；
 - `packages/host/apiproxy/src/api/host.ts`、`host.schema.ts`：`host.describe` contract；
+- `packages/host/apiproxy/src/api/llm.ts`、`llm.schema.ts`：Host-scoped provider/model catalog contract；
 - `packages/host/apiproxy/src/api-proxy.ts`：Host snapshot 与 interaction pending owner。
 
 ## 2. 职责边界
@@ -78,7 +79,7 @@ Session/Host owner
   -> connection.ServerRequest text message
 ```
 
-API Proxy 拥有 frame 的业务来源、baseline/replay 和稳定 interaction `rpcId`；Connection 只从 `payload.type` 补全 wire `method` 并发送，不检查 Session/Host 业务字段。当前 API Proxy Plugin 由 Session API Gateway 提供真实 Session/Host 事件源，由 Interaction Gateway 提供 Approval/Question requested/replay/resolved；共享 Mux baseline 顺序与 high-water 规则分别见[16](./16-session-api-gateway-and-live-frames.md#5-mux-baseline-与-live-projection)和[17](./17-approval-user-questions-and-interaction-gateway.md#5-三层-pending-为什么不是重复业务逻辑)。Plugin 通过 `apiProxy` Service 同时提供 `RPCDispatcher` 与 `EventSource` 两个 Connection 所需 facet；Connection 只消费 interface，不依赖具体 Catalog/EventStreams 类型。
+API Proxy 拥有 frame 的业务来源、baseline/replay 和稳定 interaction `rpcId`；Connection 只从 `payload.type` 补全 wire `method` 并发送，不检查 Session/Host 业务字段。当前 API Proxy Plugin 通过 `LLMGateway` 提供 Host-scoped provider/model catalog，通过 Session API Gateway 提供真实 Session/Host 事件源，通过 Interaction Gateway 提供 Approval/Question requested/replay/resolved；共享 Mux baseline 顺序与 high-water 规则分别见[16](./16-session-api-gateway-and-live-frames.md#5-mux-baseline-与-live-projection)和[17](./17-approval-user-questions-and-interaction-gateway.md#5-三层-pending-为什么不是重复业务逻辑)。Plugin 通过 `apiProxy` Service 同时提供 `RPCDispatcher` 与 `EventSource` 两个 Connection 所需 facet；Connection 只消费 interface，不依赖具体 Catalog/EventStreams 类型。
 
 ## 5. Mux/Host 应用层 frame union
 
@@ -159,7 +160,7 @@ POST /api/respond
 
 ## 9. 具体 API 模块进入规则
 
-`host.describe` 仍由本文拥有；已进入的 `session.*` module 由[16](./16-session-api-gateway-and-live-frames.md)拥有，Approval/Question carrier adapter 由[17](./17-approval-user-questions-and-interaction-gateway.md)拥有，七个 `workspace.*` method、四个 Host frame 与 `session.create({workspaceId})` 由[20](./20-workspace-registry-and-api.md)拥有。每增加一个其他 API 模块，必须同时提供：
+`host.describe` 仍由本文拥有；已进入的 `llm.providers` 与 `llm.models` 由[13](./13-harness-llm-runtime-and-deepseek-provider.md)拥有，`session.*` module 由[16](./16-session-api-gateway-and-live-frames.md)拥有，Approval/Question carrier adapter 由[17](./17-approval-user-questions-and-interaction-gateway.md)拥有，七个 `workspace.*` method、四个 Host frame 与 `session.create({workspaceId})` 由[20](./20-workspace-registry-and-api.md)拥有。每增加一个其他 API 模块，必须同时提供：
 
 1. 固定源 method/schema/Provider owner；
 2. owner-defined request、response 与 error details 类型；

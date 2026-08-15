@@ -46,6 +46,8 @@ Runtime plugins implement the repository's Go `Plugin` interface and are instant
 
 Preserve the Service Definition / Service Provider / Consumer split. Consumers depend on capability interfaces, never concrete providers. Agent, Session, Tools, and LLM remain distinct owners. Model-visible input must be reconstructable from the append-only Session log. Do not change the Agent loop to add behavior that belongs on an existing plugin, event, tool, provider, or policy seam.
 
+Use idiomatic Go objects and methods instead of translating the TypeScript implementation's functional composition style. A stateful capability, lifecycle owner, coordinator, registry, gateway, or service must be a named struct that owns its invariants and exposes behavior through methods. Use interfaces only at real consumer/provider boundaries. Function adapters and callbacks are appropriate only for naturally stateless strategies, event handlers, or composition-root seams; do not reproduce TypeScript closure chains, function factories, or object-literal services as the primary Go design.
+
 ## Build and Verification
 
 This repository has a Go module. Use the standard commands unless repository wrappers replace them:
