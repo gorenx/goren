@@ -102,13 +102,15 @@ func flattenContentType(content []llm.ContentBlock, contentType string) string {
 		if entry == nil || entry.ContentType() != contentType {
 			continue
 		}
-		switch block := entry.(type) {
-		case llm.TextBlock:
-			flattened += block.Text
-		case *llm.TextBlock:
-			if block != nil {
-				flattened += block.Text
+		if contentType == "text" {
+			if readable, supported := entry.(llm.PlainTextContent); supported {
+				if value, available := readable.PlainText(); available {
+					flattened += value
+				}
 			}
+			continue
+		}
+		switch block := entry.(type) {
 		case llm.ReasoningBlock:
 			flattened += block.Text
 		case *llm.ReasoningBlock:

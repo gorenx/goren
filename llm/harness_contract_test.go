@@ -51,3 +51,30 @@ func TestContentBlockCloneContainsExtensionPanic(t *testing.T) {
 		t.Fatalf("clone error = %v", err)
 	}
 }
+
+func TestKnownContentExtensionRoundTripsAndRetainsTextCapability(t *testing.T) {
+	t.Parallel()
+	rawValue := json.RawMessage(`[{"type":"text","text":"visible","extension":1}]`)
+	blocks, err := llm.DecodeContentBlocks(rawValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("block count = %d, want 1", len(blocks))
+	}
+	readable, supported := blocks[0].(llm.PlainTextContent)
+	if !supported {
+		t.Fatalf("extended text type = %T, want PlainTextContent", blocks[0])
+	}
+	text, available := readable.PlainText()
+	if !available || text != "visible" {
+		t.Fatalf("plain text = %q, available = %t", text, available)
+	}
+	encoded, err := json.Marshal(blocks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encoded) != string(rawValue) {
+		t.Fatalf("extension round trip = %s, want %s", encoded, rawValue)
+	}
+}

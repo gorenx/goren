@@ -113,7 +113,17 @@ func TestPinnedManifestMatchesGoSurface(t *testing.T) {
 	}) {
 		t.Fatalf("receipt reasons = %v", manifestDocument.Included.ReceiptReasons)
 	}
-	if !slices.Equal(manifestDocument.Included.UnaryMethods, []string{apiproxy.HostDescribeMethod}) {
+	if !slices.Equal(manifestDocument.Included.UnaryMethods, []string{
+		apiproxy.HostDescribeMethod,
+		apiproxy.SessionListMethod,
+		apiproxy.SessionCreateMethod,
+		apiproxy.SessionHistoryMethod,
+		apiproxy.SessionModelsMethod,
+		apiproxy.SessionSelectModelMethod,
+		apiproxy.SessionPromptMethod,
+		apiproxy.SessionUpdateQueueMethod,
+		apiproxy.SessionCancelMethod,
+	}) {
 		t.Fatalf("unary methods = %v", manifestDocument.Included.UnaryMethods)
 	}
 	agentSurface := manifestDocument.Included.Agent
@@ -244,6 +254,74 @@ func TestGoAgreesWithPinnedSourceVectors(t *testing.T) {
 				assertJSONEqual(t, mustMarshal(t, snapshot), candidate.Normalized)
 			}
 		}
+	})
+	t.Run("session requests", func(t *testing.T) {
+		decoders := map[string]func(json.RawMessage) []connection.ValidationIssue{
+			"sessionListRequest": func(rawValue json.RawMessage) []connection.ValidationIssue {
+				_, issues := apiproxy.DecodeSessionListRequest(rawValue)
+				return issues
+			},
+			"sessionCreateRequest": func(rawValue json.RawMessage) []connection.ValidationIssue {
+				_, issues := apiproxy.DecodeSessionCreateRequest(rawValue)
+				return issues
+			},
+			"sessionHistoryRequest": func(rawValue json.RawMessage) []connection.ValidationIssue {
+				_, issues := apiproxy.DecodeSessionHistoryRequest(rawValue)
+				return issues
+			},
+			"sessionModelsRequest": func(rawValue json.RawMessage) []connection.ValidationIssue {
+				_, issues := apiproxy.DecodeSessionModelsRequest(rawValue)
+				return issues
+			},
+			"sessionSelectModelRequest": func(rawValue json.RawMessage) []connection.ValidationIssue {
+				_, issues := apiproxy.DecodeSessionSelectModelRequest(rawValue)
+				return issues
+			},
+			"sessionPromptRequest": func(rawValue json.RawMessage) []connection.ValidationIssue {
+				_, issues := apiproxy.DecodeSessionPromptRequest(rawValue)
+				return issues
+			},
+			"sessionUpdateQueueRequest": func(rawValue json.RawMessage) []connection.ValidationIssue {
+				_, issues := apiproxy.DecodeSessionUpdateQueueRequest(rawValue)
+				return issues
+			},
+			"sessionCancelRequest": func(rawValue json.RawMessage) []connection.ValidationIssue {
+				_, issues := apiproxy.DecodeSessionCancelRequest(rawValue)
+				return issues
+			},
+		}
+		for suiteName, decodePayload := range decoders {
+			for _, candidate := range fixtureData.Suites[suiteName] {
+				issues := decodePayload(candidate.Input)
+				assertAcceptance(t, candidate, len(issues) == 0)
+			}
+		}
+	})
+	t.Run("session values", func(t *testing.T) {
+		vectors := map[string]map[string]json.RawMessage{
+			"sessionListValue":        acceptedByName(t, fixtureData.Suites["sessionListValue"]),
+			"sessionCreateValue":      acceptedByName(t, fixtureData.Suites["sessionCreateValue"]),
+			"sessionHistoryValue":     acceptedByName(t, fixtureData.Suites["sessionHistoryValue"]),
+			"sessionModelsValue":      acceptedByName(t, fixtureData.Suites["sessionModelsValue"]),
+			"sessionSelectModelValue": acceptedByName(t, fixtureData.Suites["sessionSelectModelValue"]),
+			"sessionPromptValue":      acceptedByName(t, fixtureData.Suites["sessionPromptValue"]),
+			"sessionUpdateQueueValue": acceptedByName(t, fixtureData.Suites["sessionUpdateQueueValue"]),
+			"sessionCancelValue":      acceptedByName(t, fixtureData.Suites["sessionCancelValue"]),
+		}
+		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionListValue{Items: []apiproxy.SessionSummary{}}), vectors["sessionListValue"]["empty"])
+		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionCreateValue{SessionID: "session-1"}), vectors["sessionCreateValue"]["minimal"])
+		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionHistoryValue{Events: []apiproxy.HistoryEntry{}, HasMore: false}), vectors["sessionHistoryValue"]["empty"])
+		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionModelsValue{
+			Current: apiproxy.ModelSelection{Provider: "p", Model: "m"}, Routable: true,
+			Groups: []apiproxy.ModelProviderGroup{}, Failures: []apiproxy.ModelCatalogFailure{},
+		}), vectors["sessionModelsValue"]["empty-directory"])
+		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionSelectModelValue{
+			Selected: apiproxy.ModelSelection{Provider: "p", Model: "m"},
+		}), vectors["sessionSelectModelValue"]["canonical"])
+		accepted := apiproxy.AcceptedValue{Accepted: true}
+		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionPromptValue{Accepted: true}), vectors["sessionPromptValue"]["accepted"])
+		assertJSONEqual(t, mustMarshal(t, accepted), vectors["sessionUpdateQueueValue"]["accepted"])
+		assertJSONEqual(t, mustMarshal(t, accepted), vectors["sessionCancelValue"]["accepted"])
 	})
 	t.Run("frames", func(t *testing.T) {
 		muxFixtures := acceptedByName(t, fixtureData.Suites["muxFrame"])

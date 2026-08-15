@@ -103,6 +103,30 @@ func TestMessageRoundTripPreservesUnknownExtensions(t *testing.T) {
 	}
 }
 
+func TestDecodeUserMessagePreservesExtendedUserSource(t *testing.T) {
+	t.Parallel()
+	rawValue := json.RawMessage(`{"id":"message-1","role":"user","content":[{"type":"text","text":"hello"}],"source":{"kind":"user","rpcId":"rpc-1","clientTimeZone":"America/Los_Angeles"}}`)
+	restored, err := llm.DecodeUserMessage(rawValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(restored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotValue map[string]json.RawMessage
+	var wantValue map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &gotValue); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(rawValue, &wantValue); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotValue, wantValue) {
+		t.Fatalf("extended user source round trip = %s, want %s", encoded, rawValue)
+	}
+}
+
 func TestMessageDecodeRejectsUnknownCoreFields(t *testing.T) {
 	t.Parallel()
 	_, err := llm.DecodeMessage(json.RawMessage(`{"id":"m","role":"user","content":[],"source":{"kind":"user"},"extra":true}`))

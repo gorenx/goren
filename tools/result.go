@@ -106,9 +106,11 @@ func abortedResult(bodyInvoked bool, prior ...ToolExecutionResult) *ToolExecutio
 func failureMessage(content []llm.ContentBlock) string {
 	parts := make([]string, 0, len(content))
 	for _, entry := range content {
-		if textEntry, ok := entry.(llm.TextBlock); ok {
-			parts = append(parts, textEntry.Text)
-			continue
+		if readable, supported := entry.(llm.PlainTextContent); supported {
+			if textValue, available := readable.PlainText(); available {
+				parts = append(parts, textValue)
+				continue
+			}
 		}
 		parts = append(parts, "["+entry.ContentType()+" content]")
 	}
