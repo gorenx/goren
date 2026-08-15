@@ -1,10 +1,13 @@
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { createFrameMatcher } from './stream-matcher.ts'
 
 type Result<T> = { rpcId: string; result: { ok: true; value: T } | { ok: false; error: unknown } }
 type RpcResult<T> = { ok: true; value: T } | { ok: false; error: unknown }
 type Frame = { rpcId: string; payload: { type: string; [key: string]: unknown } }
 type Projections = { asOfSeq: number; values: Record<string, unknown> }
+
+let stopStreams: (() => Promise<void>) | undefined
 
 void (async () => {
   const sourceRoot = resolve(process.argv[2])
@@ -61,21 +64,6 @@ void (async () => {
     if (!response.result.ok) throw new Error(`RPC failed: ${JSON.stringify(response.result.error)}`)
     return response.result.value
   }
-  const nextMatching = async (
-    iterator: AsyncIterator<Frame>,
-    predicate: (frame: Frame) => boolean,
-    label: string,
-  ): Promise<Frame> => {
-    for (let index = 0; index < 200; index++) {
-      const outcome = await Promise.race([
-        iterator.next(),
-        new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error(`${label} timed out`)), 5_000)),
-      ])
-      if (outcome.done === true) throw new Error(`${label}: stream ended`)
-      if (predicate(outcome.value)) return outcome.value
-    }
-    throw new Error(`${label}: frame budget exhausted`)
-  }
   const eventType = (frame: Frame, event: string): boolean => {
     if (frame.payload.type !== 'session/event') return false
     const committed = frame.payload.event as { type?: string } | undefined
@@ -98,9 +86,24 @@ void (async () => {
   const hostOpen = new Promise<void>(resolveOpen => { resolveHostOpen = resolveOpen })
   const muxIterator = apiClient.events.mux({}, lifecycle.signal, resolveMuxOpen)[Symbol.asyncIterator]()
   const hostIterator = apiClient.events.host({}, lifecycle.signal, resolveHostOpen)[Symbol.asyncIterator]()
+  stopStreams = async () => {
+    lifecycle.abort()
+    await Promise.allSettled([muxIterator.return?.(), hostIterator.return?.()])
+  }
   const firstMux = muxIterator.next()
   const firstHost = hostIterator.next()
   await Promise.all([muxOpen, hostOpen])
+  const describeFrame = (frame: Frame): string => {
+    if (frame.payload.type !== 'session/event') return frame.payload.type
+    const event = frame.payload.event as { type?: string; seq?: number }
+    return `session/event:${event.type ?? '?'}:${event.seq ?? '?'}`
+  }
+  const nextMux = createFrameMatcher(muxIterator, {
+    timeoutMs: 5_000, maxFrames: 200, describeFrame,
+  })
+  const nextHost = createFrameMatcher(hostIterator, {
+    timeoutMs: 5_000, maxFrames: 200, describeFrame,
+  })
 
   const sessionId = 'session-client-contract'
   const created = unwrap(await apiClient.sessions.create({ sessionId, cwd: '/contract-workspace' }))
@@ -133,16 +136,14 @@ void (async () => {
   const firstPrompt = unwrap(await apiClient.sessions.prompt({
     sessionId, mode: 'queue', content: [{ type: 'text', text: 'first' }], clientTimeZone: 'UTC',
   }))
-  const fallbackFrame = await nextMatching(
-    muxIterator,
+  const fallbackFrame = await nextMux(
     frame => frame.payload.type === 'session/projection'
       && frame.payload.key === 'title'
       && frame.payload.value === 'first',
     'fallback title projection',
   )
-  await nextMatching(muxIterator, frame => eventType(frame, 'turn/end'), 'first turn/end')
-  await nextMatching(
-    hostIterator,
+  await nextMux(frame => eventType(frame, 'turn/end'), 'first turn/end')
+  await nextHost(
     frame => frame.payload.type === 'host/session-status' && frame.payload.running === false,
     'first idle status',
   )
@@ -153,8 +154,7 @@ void (async () => {
   if (!renameResult.ok) throw new Error(`rename failed: ${JSON.stringify(renameResult.error)}`)
   const renamed = renameResult.value
   const runtimeProjection = runtimeSession.projections.faceOf('title').getSnapshot() === '重命名'
-  const renameFrame = await nextMatching(
-    muxIterator,
+  const renameFrame = await nextMux(
     frame => frame.payload.type === 'session/projection'
       && frame.payload.key === 'title'
       && frame.payload.value === '重命名'
@@ -179,45 +179,43 @@ void (async () => {
   const secondPrompt = unwrap(await apiClient.sessions.prompt({
     sessionId, mode: 'queue', content: [{ type: 'text', text: 'blocking' }],
   }))
-  await nextMatching(
-    hostIterator,
+  await nextHost(
     frame => frame.payload.type === 'host/session-status' && frame.payload.running === true,
     'second running status',
   )
   unwrap(await apiClient.sessions.prompt({
     sessionId, mode: 'queue', content: [{ type: 'text', text: 'third' }],
   }))
-  const queuedFrame = await nextMatching(muxIterator, frame => queueItem(frame, 'third') !== undefined, 'third queue')
+  const queuedFrame = await nextMux(frame => queueItem(frame, 'third') !== undefined, 'third queue')
   const queued = queueItem(queuedFrame, 'third')
   if (queued === undefined) throw new Error('queued item disappeared')
   unwrap(await apiClient.sessions.updateQueue({
     sessionId, itemId: queued.id,
     action: { kind: 'edit', content: [{ type: 'text', text: 'edited', extension: 1 }] },
   }))
-  await nextMatching(muxIterator, frame => queueItem(frame, 'edited')?.id === queued.id, 'edited queue')
+  await nextMux(frame => queueItem(frame, 'edited')?.id === queued.id, 'edited queue')
   unwrap(await apiClient.sessions.updateQueue({
     sessionId, itemId: queued.id, action: { kind: 'remove' },
   }))
-  await nextMatching(muxIterator, frame => {
+  await nextMux(frame => {
     if (frame.payload.type !== 'session/queue') return false
     const items = frame.payload.items as Array<{ id: string }>
     return !items.some(item => item.id === queued.id)
   }, 'removed queue')
   const cancelled = unwrap(await apiClient.sessions.cancel({ sessionId }))
-  const aborted = await nextMatching(muxIterator, frame => {
+  const aborted = await nextMux(frame => {
     if (!eventType(frame, 'turn/end')) return false
     const committed = frame.payload.event as { data?: { reason?: { kind?: string } } }
     return committed.data?.reason?.kind === 'aborted'
   }, 'aborted turn')
-  await nextMatching(
-    hostIterator,
+  await nextHost(
     frame => frame.payload.type === 'host/session-status' && frame.payload.running === false,
     'cancelled idle status',
   )
   const finalHistory = unwrap(await apiClient.sessions.history({ sessionId }))
 
-  lifecycle.abort()
-  await Promise.allSettled([muxIterator.return?.(), hostIterator.return?.()])
+  await stopStreams()
+  stopStreams = undefined
   process.stdout.write(`${JSON.stringify({
     created,
     presetConflict,
@@ -248,7 +246,8 @@ void (async () => {
     aborted: eventType(aborted, 'turn/end'),
     finalHistoryTypes: finalHistory.events.map(entry => entry.event.type),
   })}\n`)
-})().catch((error: unknown) => {
+})().catch(async (error: unknown) => {
+  await stopStreams?.()
   console.error(error)
   process.exitCode = 1
 })

@@ -1145,6 +1145,441 @@
         }
       }
     ],
+    "workspaceListRequest": [
+      {
+        "name": "empty",
+        "accepted": true,
+        "input": {},
+        "normalized": {}
+      },
+      {
+        "name": "unknown-field-stripped",
+        "accepted": true,
+        "input": {
+          "ignored": true
+        },
+        "normalized": {}
+      },
+      {
+        "name": "not-an-object",
+        "accepted": false,
+        "input": null
+      }
+    ],
+    "workspaceListValue": [
+      {
+        "name": "empty",
+        "accepted": true,
+        "input": {
+          "items": [],
+          "archivedSessionIds": []
+        },
+        "normalized": {
+          "items": [],
+          "archivedSessionIds": []
+        }
+      },
+      {
+        "name": "canonical",
+        "accepted": true,
+        "input": {
+          "items": [
+            {
+              "workspaceId": "workspace-1",
+              "path": "/workspace",
+              "title": "Workspace",
+              "sessionIds": [],
+              "createdAt": "2026-01-01T00:00:00Z",
+              "updatedAt": "2026-01-01T00:00:00Z"
+            }
+          ],
+          "archivedSessionIds": [
+            "session-1"
+          ]
+        },
+        "normalized": {
+          "items": [
+            {
+              "workspaceId": "workspace-1",
+              "path": "/workspace",
+              "title": "Workspace",
+              "sessionIds": [],
+              "createdAt": "2026-01-01T00:00:00Z",
+              "updatedAt": "2026-01-01T00:00:00Z"
+            }
+          ],
+          "archivedSessionIds": [
+            "session-1"
+          ]
+        }
+      },
+      {
+        "name": "missing-archive-set",
+        "accepted": false,
+        "input": {
+          "items": []
+        }
+      }
+    ],
+    "workspaceCreateRequest": [
+      {
+        "name": "canonical",
+        "accepted": true,
+        "input": {
+          "path": "/workspace",
+          "ignored": true
+        },
+        "normalized": {
+          "path": "/workspace"
+        }
+      },
+      {
+        "name": "empty-path",
+        "accepted": true,
+        "input": {
+          "path": ""
+        },
+        "normalized": {
+          "path": ""
+        }
+      },
+      {
+        "name": "missing-path",
+        "accepted": false,
+        "input": {}
+      }
+    ],
+    "workspaceCreateValue": [
+      {
+        "name": "created",
+        "accepted": true,
+        "input": {
+          "workspace": {
+            "workspaceId": "workspace-1",
+            "path": "/workspace",
+            "title": "Workspace",
+            "sessionIds": [],
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:00Z"
+          },
+          "created": true
+        },
+        "normalized": {
+          "workspace": {
+            "workspaceId": "workspace-1",
+            "path": "/workspace",
+            "title": "Workspace",
+            "sessionIds": [],
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:00Z"
+          },
+          "created": true
+        }
+      },
+      {
+        "name": "resolved",
+        "accepted": true,
+        "input": {
+          "workspace": {
+            "workspaceId": "workspace-1",
+            "path": "/workspace",
+            "title": "Workspace",
+            "sessionIds": [],
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:00Z"
+          },
+          "created": false
+        },
+        "normalized": {
+          "workspace": {
+            "workspaceId": "workspace-1",
+            "path": "/workspace",
+            "title": "Workspace",
+            "sessionIds": [],
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:00Z"
+          },
+          "created": false
+        }
+      },
+      {
+        "name": "missing-created",
+        "accepted": false,
+        "input": {
+          "workspace": {
+            "workspaceId": "workspace-1",
+            "path": "/workspace",
+            "title": "Workspace",
+            "sessionIds": [],
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:00Z"
+          }
+        }
+      }
+    ],
+    "workspaceRenameRequest": [
+      {
+        "name": "raw",
+        "accepted": true,
+        "input": {
+          "workspaceId": "workspace-1",
+          "title": "  Named  ",
+          "ignored": true
+        },
+        "normalized": {
+          "workspaceId": "workspace-1",
+          "title": "  Named  "
+        }
+      },
+      {
+        "name": "blank-title",
+        "accepted": false,
+        "input": {
+          "workspaceId": "workspace-1",
+          "title": "  "
+        }
+      },
+      {
+        "name": "empty-id",
+        "accepted": false,
+        "input": {
+          "workspaceId": "",
+          "title": "Named"
+        }
+      }
+    ],
+    "workspaceRenameValue": [
+      {
+        "name": "canonical",
+        "accepted": true,
+        "input": {
+          "workspace": {
+            "workspaceId": "workspace-1",
+            "path": "/workspace",
+            "title": "Workspace",
+            "sessionIds": [],
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:00Z"
+          }
+        },
+        "normalized": {
+          "workspace": {
+            "workspaceId": "workspace-1",
+            "path": "/workspace",
+            "title": "Workspace",
+            "sessionIds": [],
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:00Z"
+          }
+        }
+      },
+      {
+        "name": "missing-workspace",
+        "accepted": false,
+        "input": {}
+      }
+    ],
+    "workspaceDeleteRequest": [
+      {
+        "name": "canonical",
+        "accepted": true,
+        "input": {
+          "workspaceId": "workspace-1",
+          "ignored": true
+        },
+        "normalized": {
+          "workspaceId": "workspace-1"
+        }
+      },
+      {
+        "name": "empty-id",
+        "accepted": false,
+        "input": {
+          "workspaceId": ""
+        }
+      }
+    ],
+    "workspaceDeleteValue": [
+      {
+        "name": "deleted",
+        "accepted": true,
+        "input": {
+          "deleted": true
+        },
+        "normalized": {
+          "deleted": true
+        }
+      },
+      {
+        "name": "false",
+        "accepted": false,
+        "input": {
+          "deleted": false
+        }
+      }
+    ],
+    "workspaceInsertBeforeRequest": [
+      {
+        "name": "before",
+        "accepted": true,
+        "input": {
+          "workspaceId": "workspace-1",
+          "beforeWorkspaceId": "workspace-2"
+        },
+        "normalized": {
+          "workspaceId": "workspace-1",
+          "beforeWorkspaceId": "workspace-2"
+        }
+      },
+      {
+        "name": "append",
+        "accepted": true,
+        "input": {
+          "workspaceId": "workspace-1"
+        },
+        "normalized": {
+          "workspaceId": "workspace-1"
+        }
+      },
+      {
+        "name": "null-anchor",
+        "accepted": false,
+        "input": {
+          "workspaceId": "workspace-1",
+          "beforeWorkspaceId": null
+        }
+      }
+    ],
+    "workspaceInsertBeforeValue": [
+      {
+        "name": "canonical",
+        "accepted": true,
+        "input": {
+          "workspaceIds": [
+            "workspace-2",
+            "workspace-1"
+          ]
+        },
+        "normalized": {
+          "workspaceIds": [
+            "workspace-2",
+            "workspace-1"
+          ]
+        }
+      },
+      {
+        "name": "missing-order",
+        "accepted": false,
+        "input": {}
+      }
+    ],
+    "workspaceInsertSessionBeforeRequest": [
+      {
+        "name": "before",
+        "accepted": true,
+        "input": {
+          "workspaceId": "workspace-1",
+          "sessionId": "session-1",
+          "beforeSessionId": "session-2"
+        },
+        "normalized": {
+          "workspaceId": "workspace-1",
+          "sessionId": "session-1",
+          "beforeSessionId": "session-2"
+        }
+      },
+      {
+        "name": "append",
+        "accepted": true,
+        "input": {
+          "workspaceId": "workspace-1",
+          "sessionId": "session-1"
+        },
+        "normalized": {
+          "workspaceId": "workspace-1",
+          "sessionId": "session-1"
+        }
+      },
+      {
+        "name": "missing-session",
+        "accepted": false,
+        "input": {
+          "workspaceId": "workspace-1"
+        }
+      }
+    ],
+    "workspaceInsertSessionBeforeValue": [
+      {
+        "name": "canonical",
+        "accepted": true,
+        "input": {
+          "workspace": {
+            "workspaceId": "workspace-1",
+            "path": "/workspace",
+            "title": "Workspace",
+            "sessionIds": [],
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:00Z"
+          }
+        },
+        "normalized": {
+          "workspace": {
+            "workspaceId": "workspace-1",
+            "path": "/workspace",
+            "title": "Workspace",
+            "sessionIds": [],
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:00Z"
+          }
+        }
+      },
+      {
+        "name": "missing-workspace",
+        "accepted": false,
+        "input": {}
+      }
+    ],
+    "workspaceArchiveSessionRequest": [
+      {
+        "name": "canonical",
+        "accepted": true,
+        "input": {
+          "sessionId": "session-1",
+          "ignored": true
+        },
+        "normalized": {
+          "sessionId": "session-1"
+        }
+      },
+      {
+        "name": "empty-id",
+        "accepted": false,
+        "input": {
+          "sessionId": ""
+        }
+      }
+    ],
+    "workspaceArchiveSessionValue": [
+      {
+        "name": "canonical",
+        "accepted": true,
+        "input": {
+          "archivedSessionIds": [
+            "session-1"
+          ]
+        },
+        "normalized": {
+          "archivedSessionIds": [
+            "session-1"
+          ]
+        }
+      },
+      {
+        "name": "missing-archive-set",
+        "accepted": false,
+        "input": {}
+      }
+    ],
     "muxFrame": [
       {
         "name": "session/event",

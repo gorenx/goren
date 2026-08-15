@@ -15,9 +15,10 @@ import (
 )
 
 type commandConfig struct {
-	address         string
-	version         string
-	sessionDatabase string
+	address           string
+	version           string
+	sessionDatabase   string
+	workspaceDatabase string
 }
 
 func main() {
@@ -34,6 +35,7 @@ func main() {
 		os.Exit(1)
 	}
 	sessionDatabase := settings.sessionDatabase
+	workspaceDatabase := settings.workspaceDatabase
 	if sessionDatabase == "" {
 		configDirectory, configErr := os.UserConfigDir()
 		if configErr != nil {
@@ -41,8 +43,15 @@ func main() {
 			os.Exit(1)
 		}
 		sessionDatabase = filepath.Join(configDirectory, "goren", "sessions.sqlite")
+		if workspaceDatabase == "" {
+			workspaceDatabase = filepath.Join(configDirectory, "goren", "workspaces.sqlite")
+		}
+	} else if workspaceDatabase == "" {
+		workspaceDatabase = filepath.Join(filepath.Dir(sessionDatabase), "workspaces.sqlite")
 	}
-	declarations, err := assembly.DefaultSpecs(settings.address, settings.version, sessionDatabase)
+	declarations, err := assembly.DefaultSpecs(
+		settings.address, settings.version, sessionDatabase, workspaceDatabase,
+	)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "create server composition:", err)
 		os.Exit(1)
@@ -68,6 +77,10 @@ func parseConfig() commandConfig {
 	address := flag.String("listen", "127.0.0.1:3080", "Echo listen address")
 	version := flag.String("version", "dev", "host.describe version")
 	sessionDatabase := flag.String("session-db", "", "SQLite Session database path (default: user config directory)")
+	workspaceDatabase := flag.String("workspace-db", "", "SQLite Workspace database path (default: beside Session database)")
 	flag.Parse()
-	return commandConfig{address: *address, version: *version, sessionDatabase: *sessionDatabase}
+	return commandConfig{
+		address: *address, version: *version,
+		sessionDatabase: *sessionDatabase, workspaceDatabase: *workspaceDatabase,
+	}
 }

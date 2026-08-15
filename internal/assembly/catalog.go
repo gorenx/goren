@@ -31,6 +31,8 @@ const (
 	ToolAskUserFactoryName              = "@deepseek-ai/dsh-tool-ask-user"
 	ToolsFactoryName                    = "@deepseek-ai/dsh-tools"
 	UserQuestionsFactoryName            = "@deepseek-ai/dsh-user-questions"
+	WorkspaceFactoryName                = "@deepseek-ai/dsh-workspace"
+	WorkspaceSQLiteFactoryName          = "@deepseek-ai/dsh-workspace-persistence-sqlite"
 )
 
 // Environment contains process-derived values that are not deployment config.
@@ -115,13 +117,24 @@ func NewCatalog(platform Environment) (*plugin.Catalog, error) {
 	if err := plugin.RegisterFactory(registry, userQuestionsFactory{}); err != nil {
 		return nil, err
 	}
+	if err := plugin.RegisterFactory(registry, workspaceFactory{}); err != nil {
+		return nil, err
+	}
+	if err := plugin.RegisterFactory(registry, workspaceSQLiteFactory{}); err != nil {
+		return nil, err
+	}
 	return registry, nil
 }
 
 // DefaultSpecs builds the current server composition. Consumers are
 // intentionally declared before Session to exercise dependency settlement
 // instead of relying on file order.
-func DefaultSpecs(listenAddress string, version string, sessionDatabasePath string) ([]PluginSpec, error) {
+func DefaultSpecs(
+	listenAddress string,
+	version string,
+	sessionDatabasePath string,
+	workspaceDatabasePath string,
+) ([]PluginSpec, error) {
 	connectionRaw, err := json.Marshal(ConnectionConfig{ListenAddress: listenAddress})
 	if err != nil {
 		return nil, err
@@ -139,6 +152,12 @@ func DefaultSpecs(listenAddress string, version string, sessionDatabasePath stri
 	persistenceRaw, err := json.Marshal(SessionPersistenceSQLiteConfig{
 		Path: sessionDatabasePath, JournalMode: "wal",
 		WriteBatchMaxDelayMS: sessionpersistence.DefaultWriteBatchMaxDelay.Milliseconds(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	workspaceSQLiteRaw, err := json.Marshal(WorkspaceSQLiteConfig{
+		Path: workspaceDatabasePath, JournalMode: "wal",
 	})
 	if err != nil {
 		return nil, err
@@ -161,6 +180,8 @@ func DefaultSpecs(listenAddress string, version string, sessionDatabasePath stri
 		{FactoryName: ToolsFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: SessionFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: SessionPersistenceSQLiteFactoryName, Config: persistenceRaw},
+		{FactoryName: WorkspaceFactoryName, Config: json.RawMessage(`{}`)},
+		{FactoryName: WorkspaceSQLiteFactoryName, Config: workspaceSQLiteRaw},
 	}, nil
 }
 

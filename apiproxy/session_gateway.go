@@ -22,6 +22,7 @@ import (
 	sessionpersistence "github.com/gorenx/goren/session/persistence"
 	sessionprojection "github.com/gorenx/goren/session/projection"
 	sessiontitle "github.com/gorenx/goren/session/title"
+	"github.com/gorenx/goren/workspace"
 )
 
 const defaultHistoryMessages int64 = 50
@@ -51,6 +52,7 @@ type SessionGatewayDependencies struct {
 	Defaults    agentdefaultmodel.DefaultModel
 	Projections sessionprojection.Registry
 	Titles      sessiontitle.TitleService
+	Workspaces  workspace.Registry
 	Directories DirectoryProvisioner
 }
 
@@ -83,6 +85,7 @@ type SessionGateway struct {
 	defaults    agentdefaultmodel.DefaultModel
 	projections sessionprojection.Registry
 	titles      sessiontitle.TitleService
+	workspaces  workspace.Registry
 	directories DirectoryProvisioner
 	workingDir  string
 	newSession  func() (session.SessionID, error)
@@ -108,7 +111,7 @@ func NewSessionGateway(
 		return nil, errors.New("apiproxy: Session Gateway Context and Scope are required")
 	}
 	if ports.Agents == nil || ports.Sessions == nil || ports.Persistence == nil || ports.LLM == nil || ports.Defaults == nil ||
-		ports.Projections == nil || ports.Titles == nil || ports.Directories == nil {
+		ports.Projections == nil || ports.Titles == nil || ports.Workspaces == nil || ports.Directories == nil {
 		return nil, errors.New("apiproxy: Session Gateway dependencies are incomplete")
 	}
 	if settings.WorkingDirectory == "" {
@@ -125,6 +128,7 @@ func NewSessionGateway(
 	owner := &SessionGateway{
 		sourceScope: sourceScope, agents: ports.Agents, sessions: ports.Sessions, persistence: ports.Persistence,
 		models: ports.LLM, defaults: ports.Defaults, projections: ports.Projections, titles: ports.Titles,
+		workspaces:  ports.Workspaces,
 		directories: ports.Directories,
 		workingDir:  settings.WorkingDirectory, newSession: newSession, newRPC: newRPC,
 		creations:  make(map[session.SessionID]*creationResult),
@@ -178,6 +182,15 @@ func (owner *SessionGateway) Mux(requestContext context.Context, emit func(Strea
 // Host streams host-level edges; reconnect baselines remain session.list's responsibility.
 func (owner *SessionGateway) Host(requestContext context.Context, emit func(StreamRequest[HostFrame]) error) error {
 	return owner.hub.openHost(requestContext, emit)
+}
+
+// PublishHostFrame lets sibling API domains publish committed Host-level
+// changes through the one connection-owned downlink hub.
+func (owner *SessionGateway) PublishHostFrame(payload HostFrame) error {
+	if payload == nil {
+		return errors.New("apiproxy: Host frame is nil")
+	}
+	return owner.hub.hostFrame(payload)
 }
 
 // List returns the current attached Session baseline, newest human activity first.
@@ -255,15 +268,18 @@ func (owner *SessionGateway) Rename(requestContext context.Context, call Request
 
 // Create publishes a fresh ordinary Agent or idempotently adopts the same id and cwd.
 func (owner *SessionGateway) Create(requestContext context.Context, call Request[SessionCreateRequest]) (Outcome[SessionCreateValue], error) {
+	var workspaceSubject workspace.Workspace
+	var workspaceSnapshot workspace.WorkspaceState
 	if call.Payload.WorkspaceID != nil {
-		identifier := *call.Payload.WorkspaceID
-		return Fail[SessionCreateValue](newRPCError(
-			connection.ErrorWorkspaceNotFound,
-			fmt.Sprintf("workspace %q not found", identifier),
-			struct {
-				WorkspaceID WorkspaceID `json:"workspaceId"`
-			}{WorkspaceID: identifier},
-		)), nil
+		resolved, found := owner.workspaces.Get(workspace.ID(*call.Payload.WorkspaceID))
+		if !found {
+			return workspaceNotFound[SessionCreateValue](*call.Payload.WorkspaceID), nil
+		}
+		workspaceSnapshot = resolved.Snapshot()
+		if workspaceSnapshot.ID == "" {
+			return workspaceNotFound[SessionCreateValue](*call.Payload.WorkspaceID), nil
+		}
+		workspaceSubject = resolved
 	}
 	identifier := session.SessionID("")
 	if call.Payload.SessionID == nil {
@@ -276,7 +292,9 @@ func (owner *SessionGateway) Create(requestContext context.Context, call Request
 		identifier = session.SessionID(*call.Payload.SessionID)
 	}
 	workingDirectory := owner.workingDir
-	if call.Payload.CWD != nil {
+	if workspaceSubject != nil {
+		workingDirectory = workspaceSnapshot.Path
+	} else if call.Payload.CWD != nil {
 		workingDirectory = *call.Payload.CWD
 	}
 	subject, err := owner.ensureSession(requestContext, identifier, workingDirectory, call.Payload.AgentPreset, true, nil)
@@ -313,6 +331,24 @@ func (owner *SessionGateway) Create(requestContext context.Context, call Request
 			fmt.Sprintf("failed to create session %q: %v", identifier, err),
 			struct{}{},
 		)), nil
+	}
+	if workspaceSubject != nil {
+		if err := workspaceSubject.AttachSession(requestContext, subject.SessionValue().ID()); err != nil {
+			return Fail[SessionCreateValue](newRPCError(
+				connection.ErrorWorkspaceAttachFailed,
+				fmt.Sprintf(
+					"session %q was created but could not attach to workspace %q: %v",
+					subject.SessionValue().ID(), workspaceSnapshot.ID, err,
+				),
+				struct {
+					SessionID   SessionID   `json:"sessionId"`
+					WorkspaceID WorkspaceID `json:"workspaceId"`
+				}{
+					SessionID:   SessionID(subject.SessionValue().ID()),
+					WorkspaceID: WorkspaceID(workspaceSnapshot.ID),
+				},
+			)), nil
+		}
 	}
 	header := subject.SessionValue().Header()
 	return OK(SessionCreateValue{

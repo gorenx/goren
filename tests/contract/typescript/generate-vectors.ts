@@ -73,6 +73,22 @@ const sessionSchemas = await load<{
   sessionCancelRequestSchema: Parser
   sessionCancelValueSchema: Parser
 }>('packages/host/apiproxy/src/api/sessions.schema.ts')
+const workspaceSchemas = await load<{
+  workspaceListRequestSchema: Parser
+  workspaceListValueSchema: Parser
+  workspaceCreateRequestSchema: Parser
+  workspaceCreateValueSchema: Parser
+  workspaceRenameRequestSchema: Parser
+  workspaceRenameValueSchema: Parser
+  workspaceDeleteRequestSchema: Parser
+  workspaceDeleteValueSchema: Parser
+  workspaceInsertBeforeRequestSchema: Parser
+  workspaceInsertBeforeValueSchema: Parser
+  workspaceInsertSessionBeforeRequestSchema: Parser
+  workspaceInsertSessionBeforeValueSchema: Parser
+  workspaceArchiveSessionRequestSchema: Parser
+  workspaceArchiveSessionValueSchema: Parser
+}>('packages/host/apiproxy/src/api/workspace.schema.ts')
 
 const internalError = { code: 'internal', message: 'boom', details: {} }
 const workspace = {
@@ -287,6 +303,111 @@ const candidates: Record<string, { schema: Parser; values: Candidate[] }> = {
     values: [
       { name: 'accepted', input: { accepted: true } },
       { name: 'false', input: { accepted: false } },
+    ],
+  },
+  workspaceListRequest: {
+    schema: workspaceSchemas.workspaceListRequestSchema,
+    values: [
+      { name: 'empty', input: {} },
+      { name: 'unknown-field-stripped', input: { ignored: true } },
+      { name: 'not-an-object', input: null },
+    ],
+  },
+  workspaceListValue: {
+    schema: workspaceSchemas.workspaceListValueSchema,
+    values: [
+      { name: 'empty', input: { items: [], archivedSessionIds: [] } },
+      { name: 'canonical', input: { items: [workspace], archivedSessionIds: ['session-1'] } },
+      { name: 'missing-archive-set', input: { items: [] } },
+    ],
+  },
+  workspaceCreateRequest: {
+    schema: workspaceSchemas.workspaceCreateRequestSchema,
+    values: [
+      { name: 'canonical', input: { path: '/workspace', ignored: true } },
+      { name: 'empty-path', input: { path: '' } },
+      { name: 'missing-path', input: {} },
+    ],
+  },
+  workspaceCreateValue: {
+    schema: workspaceSchemas.workspaceCreateValueSchema,
+    values: [
+      { name: 'created', input: { workspace, created: true } },
+      { name: 'resolved', input: { workspace, created: false } },
+      { name: 'missing-created', input: { workspace } },
+    ],
+  },
+  workspaceRenameRequest: {
+    schema: workspaceSchemas.workspaceRenameRequestSchema,
+    values: [
+      { name: 'raw', input: { workspaceId: 'workspace-1', title: '  Named  ', ignored: true } },
+      { name: 'blank-title', input: { workspaceId: 'workspace-1', title: '  ' } },
+      { name: 'empty-id', input: { workspaceId: '', title: 'Named' } },
+    ],
+  },
+  workspaceRenameValue: {
+    schema: workspaceSchemas.workspaceRenameValueSchema,
+    values: [
+      { name: 'canonical', input: { workspace } },
+      { name: 'missing-workspace', input: {} },
+    ],
+  },
+  workspaceDeleteRequest: {
+    schema: workspaceSchemas.workspaceDeleteRequestSchema,
+    values: [
+      { name: 'canonical', input: { workspaceId: 'workspace-1', ignored: true } },
+      { name: 'empty-id', input: { workspaceId: '' } },
+    ],
+  },
+  workspaceDeleteValue: {
+    schema: workspaceSchemas.workspaceDeleteValueSchema,
+    values: [
+      { name: 'deleted', input: { deleted: true } },
+      { name: 'false', input: { deleted: false } },
+    ],
+  },
+  workspaceInsertBeforeRequest: {
+    schema: workspaceSchemas.workspaceInsertBeforeRequestSchema,
+    values: [
+      { name: 'before', input: { workspaceId: 'workspace-1', beforeWorkspaceId: 'workspace-2' } },
+      { name: 'append', input: { workspaceId: 'workspace-1' } },
+      { name: 'null-anchor', input: { workspaceId: 'workspace-1', beforeWorkspaceId: null } },
+    ],
+  },
+  workspaceInsertBeforeValue: {
+    schema: workspaceSchemas.workspaceInsertBeforeValueSchema,
+    values: [
+      { name: 'canonical', input: { workspaceIds: ['workspace-2', 'workspace-1'] } },
+      { name: 'missing-order', input: {} },
+    ],
+  },
+  workspaceInsertSessionBeforeRequest: {
+    schema: workspaceSchemas.workspaceInsertSessionBeforeRequestSchema,
+    values: [
+      { name: 'before', input: { workspaceId: 'workspace-1', sessionId: 'session-1', beforeSessionId: 'session-2' } },
+      { name: 'append', input: { workspaceId: 'workspace-1', sessionId: 'session-1' } },
+      { name: 'missing-session', input: { workspaceId: 'workspace-1' } },
+    ],
+  },
+  workspaceInsertSessionBeforeValue: {
+    schema: workspaceSchemas.workspaceInsertSessionBeforeValueSchema,
+    values: [
+      { name: 'canonical', input: { workspace } },
+      { name: 'missing-workspace', input: {} },
+    ],
+  },
+  workspaceArchiveSessionRequest: {
+    schema: workspaceSchemas.workspaceArchiveSessionRequestSchema,
+    values: [
+      { name: 'canonical', input: { sessionId: 'session-1', ignored: true } },
+      { name: 'empty-id', input: { sessionId: '' } },
+    ],
+  },
+  workspaceArchiveSessionValue: {
+    schema: workspaceSchemas.workspaceArchiveSessionValueSchema,
+    values: [
+      { name: 'canonical', input: { archivedSessionIds: ['session-1'] } },
+      { name: 'missing-archive-set', input: {} },
     ],
   },
   muxFrame: {

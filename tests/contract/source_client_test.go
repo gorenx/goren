@@ -271,7 +271,15 @@ func runTypeScriptInput(requestContext context.Context, sourceRoot string, input
 	if _, err := os.Stat(tsxPath); err != nil {
 		return nil, errors.New("source TypeScript dependencies are unavailable; run corepack pnpm install --frozen-lockfile in DSH_SOURCE")
 	}
-	command := exec.CommandContext(requestContext, tsxPath, arguments...)
+	nodePath, err := exec.LookPath("node")
+	if err != nil {
+		return nil, errors.New("Node.js is unavailable")
+	}
+	commandArguments := append([]string{"--import", "tsx"}, arguments...)
+	// Run the TS loader in the Node process owned by CommandContext. Invoking
+	// the tsx launcher would add a child that can outlive a timed-out test and
+	// retain WebSocket and output-pipe file descriptors.
+	command := exec.CommandContext(requestContext, nodePath, commandArguments...)
 	command.Dir = sourceRoot
 	if input != nil {
 		command.Stdin = bytes.NewReader(input)

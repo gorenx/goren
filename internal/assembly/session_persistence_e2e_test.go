@@ -18,12 +18,14 @@ import (
 func TestDefaultCompositionListsHistoryAndResumesAColdSQLiteSession(t *testing.T) {
 	requestContext := context.Background()
 	workspace := t.TempDir()
-	databasePath := t.TempDir() + "/sessions.sqlite"
+	dataDirectory := t.TempDir()
+	databasePath := dataDirectory + "/sessions.sqlite"
+	workspaceDatabasePath := dataDirectory + "/workspaces.sqlite"
 	firstCatalog, err := NewCatalog(Environment{WorkingDirectory: workspace})
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstSpecs, err := DefaultSpecs("127.0.0.1:0", "test", databasePath)
+	firstSpecs, err := DefaultSpecs("127.0.0.1:0", "test", databasePath, workspaceDatabasePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +74,7 @@ func TestDefaultCompositionListsHistoryAndResumesAColdSQLiteSession(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondSpecs, err := DefaultSpecs("127.0.0.1:0", "test", databasePath)
+	secondSpecs, err := DefaultSpecs("127.0.0.1:0", "test", databasePath, workspaceDatabasePath)
 	if err != nil {
 		t.Fatal(err)
 	}

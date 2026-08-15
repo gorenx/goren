@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -27,12 +29,34 @@ import (
 	sessionprojection "github.com/gorenx/goren/session/projection"
 	sessiontitle "github.com/gorenx/goren/session/title"
 	"github.com/gorenx/goren/systemprompt"
+	"github.com/gorenx/goren/tests/contract/fixture"
 	"github.com/gorenx/goren/tools"
+	"github.com/gorenx/goren/workspace"
+	workspaceSqlite "github.com/gorenx/goren/workspace/persistence/sqlite"
 )
 
 type sessionAPIContractState struct {
-	gateway *apiproxy.SessionGateway
-	backend *sessionAPIContractAdapter
+	gateway          *apiproxy.SessionGateway
+	workspaceGateway *apiproxy.WorkspaceGateway
+	backend          *sessionAPIContractAdapter
+	failures         contractFailureLog
+}
+
+type contractFailureLog struct {
+	mutex   sync.Mutex
+	entries []error
+}
+
+func (observations *contractFailureLog) report(problem error) {
+	observations.mutex.Lock()
+	observations.entries = append(observations.entries, problem)
+	observations.mutex.Unlock()
+}
+
+func (observations *contractFailureLog) collectedErrors() []error {
+	observations.mutex.Lock()
+	defer observations.mutex.Unlock()
+	return append([]error(nil), observations.entries...)
 }
 
 type sessionAPIContractProvider struct {
@@ -44,11 +68,15 @@ func (*sessionAPIContractProvider) Manifest() plugin.Manifest {
 }
 
 func (extension *sessionAPIContractProvider) Apply(requestContext context.Context, providerScope *plugin.Scope) error {
-	agentRegistry, err := agent.NewRegistry(providerScope, agent.RegistryOptions{})
+	agentRegistry, err := agent.NewRegistry(providerScope, agent.RegistryOptions{
+		ObserverError: extension.state.failures.report,
+	})
 	if err != nil {
 		return err
 	}
-	sessionStore, err := session.NewMemoryStore(providerScope, session.MemoryStoreOptions{})
+	sessionStore, err := session.NewMemoryStore(providerScope, session.MemoryStoreOptions{
+		ObserverError: extension.state.failures.report,
+	})
 	if err != nil {
 		return err
 	}
@@ -60,10 +88,34 @@ func (extension *sessionAPIContractProvider) Apply(requestContext context.Contex
 	}
 	durability, err := sessionpersistence.NewCoordinator(
 		requestContext, providerScope, sessionStore, storage,
-		sessionpersistence.CoordinatorOptions{WriteBatchMaxDelay: time.Hour},
+		sessionpersistence.CoordinatorOptions{
+			WriteBatchMaxDelay: time.Hour,
+			ObserverError:      extension.state.failures.report,
+		},
 	)
 	if err != nil {
 		_ = storage.Close(requestContext)
+		return err
+	}
+	workspaceStorage, err := workspaceSqlite.Open(requestContext, workspaceSqlite.Config{
+		Path: ":memory:", JournalMode: workspaceSqlite.JournalWAL,
+	})
+	if err != nil {
+		return err
+	}
+	if err := providerScope.Effect(requestContext, "contract.workspaceStorage.close()",
+		func(context.Context) (plugin.Disposer, error) {
+			return workspaceStorage.Close, nil
+		}); err != nil {
+		_ = workspaceStorage.Close(requestContext)
+		return err
+	}
+	workspaceRegistry, err := workspace.NewRegistry(
+		requestContext, providerScope, workspaceStorage,
+		fixture.SessionHeaderSource{Sessions: sessionStore, Persistence: durability},
+		workspace.RegistryOptions{},
+	)
+	if err != nil {
 		return err
 	}
 	projectionRegistry, err := sessionprojection.NewDriveRegistry(providerScope)
@@ -75,7 +127,7 @@ func (extension *sessionAPIContractProvider) Apply(requestContext context.Contex
 		sessionStore,
 		projectionRegistry,
 		sessiontitle.Config{FallbackMaxWords: 5, FallbackMaxBytes: 40, MaxTitleBytes: 80},
-		sessiontitle.Options{},
+		sessiontitle.Options{ReportError: extension.state.failures.report},
 	)
 	if err != nil {
 		return err
@@ -107,7 +159,13 @@ func (extension *sessionAPIContractProvider) Apply(requestContext context.Contex
 	if _, err := agentloop.New(requestContext, providerScope, agentloop.Dependencies{
 		Agents: agentRegistry, Sessions: sessionStore, LLM: modelRuntime,
 		Tools: toolRuntime, SystemPrompt: promptRuntime,
-	}, loopSettings, agentloop.RuntimeOptions{}); err != nil {
+	}, loopSettings, agentloop.RuntimeOptions{ObserverError: extension.state.failures.report}); err != nil {
+		return err
+	}
+	if _, err := agent.OnError(providerScope, func(_ context.Context, notice agent.ErrorNotice) error {
+		extension.state.failures.report(notice.Err)
+		return nil
+	}); err != nil {
 		return err
 	}
 	if _, err := modelRuntime.RegisterAdapter(
@@ -125,6 +183,7 @@ func (extension *sessionAPIContractProvider) Apply(requestContext context.Contex
 		Agents: agentRegistry, Sessions: sessionStore, Persistence: durability,
 		LLM: modelRuntime, Defaults: defaultSelection,
 		Projections: projectionRegistry, Titles: titleService,
+		Workspaces: workspaceRegistry,
 		Directories: apiproxy.DirectoryProvisionerFunc(func(string) error {
 			return nil
 		}),
@@ -132,7 +191,14 @@ func (extension *sessionAPIContractProvider) Apply(requestContext context.Contex
 	if err != nil {
 		return err
 	}
+	workspaceGateway, err := apiproxy.NewWorkspaceGateway(
+		requestContext, providerScope, workspaceRegistry, gateway,
+	)
+	if err != nil {
+		return err
+	}
 	extension.state.gateway = gateway
+	extension.state.workspaceGateway = workspaceGateway
 	return nil
 }
 
@@ -247,6 +313,9 @@ func TestPinnedSourceSessionWebApiClientTalksToGoGateway(t *testing.T) {
 	if err := apiproxy.RegisterSessionAPI(methods, contractState.gateway); err != nil {
 		t.Fatal(err)
 	}
+	if err := apiproxy.RegisterWorkspaceAPI(methods, contractState.workspaceGateway); err != nil {
+		t.Fatal(err)
+	}
 	streams, err := apiproxy.NewEventStreams(contractState.gateway.Mux, contractState.gateway.Host)
 	if err != nil {
 		t.Fatal(err)
@@ -272,7 +341,10 @@ func TestPinnedSourceSessionWebApiClientTalksToGoGateway(t *testing.T) {
 		sourceRoot, testServer.URL,
 	)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf(
+			"%v; LLM request count = %d; contained failures = %v",
+			err, contractState.backend.callCount.Load(), contractState.failures.collectedErrors(),
+		)
 	}
 	var observation sessionAPIClientObservation
 	if err := json.Unmarshal(output, &observation); err != nil {
@@ -296,5 +368,108 @@ func TestPinnedSourceSessionWebApiClientTalksToGoGateway(t *testing.T) {
 	}
 	if contractState.backend.callCount.Load() != 2 {
 		t.Fatalf("LLM request count = %d, want 2", contractState.backend.callCount.Load())
+	}
+	if failures := contractState.failures.collectedErrors(); len(failures) != 0 {
+		t.Fatalf("contained service failures = %v", failures)
+	}
+}
+
+type workspaceClientObservation struct {
+	InitialEmpty            bool `json:"initialEmpty"`
+	Created                 bool `json:"created"`
+	Repeated                bool `json:"repeated"`
+	Renamed                 bool `json:"renamed"`
+	RenameFrame             bool `json:"renameFrame"`
+	Attached                bool `json:"attached"`
+	NameConflict            bool `json:"nameConflict"`
+	Reordered               bool `json:"reordered"`
+	OrderFrame              bool `json:"orderFrame"`
+	Archived                bool `json:"archived"`
+	ArchiveFrame            bool `json:"archiveFrame"`
+	ArchiveIdempotent       bool `json:"archiveIdempotent"`
+	Deleted                 bool `json:"deleted"`
+	RegistrationOnlyDelete  bool `json:"registrationOnlyDelete"`
+	NotFoundErrors          bool `json:"notFoundErrors"`
+	MoveInvalid             bool `json:"moveInvalid"`
+	UnknownSession          bool `json:"unknownSession"`
+	WorkspaceAndCWDRejected bool `json:"workspaceAndCwdRejected"`
+	WorkspaceCWD            bool `json:"workspaceCwd"`
+	FinalList               bool `json:"finalList"`
+	InvalidPath             bool `json:"invalidPath"`
+}
+
+func TestPinnedSourceWorkspaceWebApiClientTalksToGoGateway(t *testing.T) {
+	repositoryRoot, sourceRoot := contractPaths(t)
+	contractState := &sessionAPIContractState{backend: &sessionAPIContractAdapter{}}
+	engine := plugin.NewRuntime()
+	if _, err := engine.Load(context.Background(), &sessionAPIContractProvider{state: contractState}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := engine.Shutdown(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	if contractState.gateway == nil || contractState.workspaceGateway == nil {
+		t.Fatal("Workspace contract provider did not publish its gateways")
+	}
+
+	methods := apiproxy.NewCatalog()
+	if err := apiproxy.RegisterSessionAPI(methods, contractState.gateway); err != nil {
+		t.Fatal(err)
+	}
+	if err := apiproxy.RegisterWorkspaceAPI(methods, contractState.workspaceGateway); err != nil {
+		t.Fatal(err)
+	}
+	streams, err := apiproxy.NewEventStreams(contractState.gateway.Mux, contractState.gateway.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpHost, err := connectionhost.NewHTTPHost(connectionhost.HTTPConfig{}, methods, streams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testServer := httptest.NewServer(httpHost)
+	defer testServer.Close()
+	defer func() {
+		closeContext, cancelClose := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancelClose()
+		if err := httpHost.Close(closeContext); err != nil {
+			t.Errorf("close Go host: %v", err)
+		}
+	}()
+
+	dataDirectory := t.TempDir()
+	firstPath := filepath.Join(dataDirectory, "first")
+	secondPath := filepath.Join(dataDirectory, "second")
+	for _, directory := range []string{firstPath, secondPath} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commandContext, cancelCommand := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancelCommand()
+	output, err := runTypeScript(commandContext, sourceRoot,
+		filepath.Join(repositoryRoot, "tests", "contract", "typescript", "workspace-client.ts"),
+		sourceRoot, testServer.URL, firstPath, secondPath,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var observation workspaceClientObservation
+	if err := json.Unmarshal(output, &observation); err != nil {
+		t.Fatalf("decode source Workspace client observation: %v; output = %s", err, output)
+	}
+	want := workspaceClientObservation{
+		InitialEmpty: true, Created: true, Repeated: true, Renamed: true, RenameFrame: true,
+		Attached: true, NameConflict: true, Reordered: true, OrderFrame: true,
+		Archived: true, ArchiveFrame: true, ArchiveIdempotent: true,
+		Deleted: true, RegistrationOnlyDelete: true, NotFoundErrors: true,
+		MoveInvalid: true, UnknownSession: true,
+		WorkspaceAndCWDRejected: true, WorkspaceCWD: true,
+		FinalList: true, InvalidPath: true,
+	}
+	if observation != want {
+		t.Fatalf("Workspace observation = %#v, want %#v", observation, want)
 	}
 }
