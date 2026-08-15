@@ -23,8 +23,10 @@ import (
 type agentLoopContractState struct {
 	engine        *plugin.Runtime
 	providerScope *plugin.Scope
+	agents        agent.Registry
 	models        llm.LlmRuntime
 	toolRuntime   tools.ToolRuntime
+	prompts       systemprompt.SystemPrompt
 	loopRuntime   agentloop.Loop
 	modelAdapter  *agentLoopContractAdapter
 	decorateTools func(tools.ToolRuntime) tools.ToolRuntime
@@ -125,8 +127,10 @@ func (provider *agentLoopContractProvider) Apply(requestContext context.Context,
 		}
 	}
 	provider.state.providerScope = providerScope
+	provider.state.agents = agentRegistry
 	provider.state.models = modelRuntime
 	provider.state.toolRuntime = toolRuntime
+	provider.state.prompts = promptRuntime
 	provider.state.loopRuntime = loopRuntime
 	return nil
 }
