@@ -27,6 +27,8 @@ type agentLoopContractState struct {
 	toolRuntime   tools.ToolRuntime
 	loopRuntime   agentloop.Loop
 	modelAdapter  *agentLoopContractAdapter
+	decorateTools func(tools.ToolRuntime) tools.ToolRuntime
+	parallelLimit int
 }
 
 type agentLoopContractProvider struct {
@@ -72,13 +74,21 @@ func (provider *agentLoopContractProvider) Apply(requestContext context.Context,
 	if err != nil {
 		return err
 	}
-	loopSettings, err := agentloop.ValidateConfig(agentloop.Config{})
+	loopConfig := agentloop.Config{}
+	if provider.state.parallelLimit > 0 {
+		loopConfig.MaxParallelToolCalls = &provider.state.parallelLimit
+	}
+	loopSettings, err := agentloop.ValidateConfig(loopConfig)
 	if err != nil {
 		return err
 	}
+	loopTools := tools.ToolRuntime(toolRuntime)
+	if provider.state.decorateTools != nil {
+		loopTools = provider.state.decorateTools(toolRuntime)
+	}
 	loopRuntime, err := agentloop.New(requestContext, providerScope, agentloop.Dependencies{
 		Agents: agentRegistry, Sessions: sessionStore, LLM: modelRuntime,
-		Tools: toolRuntime, SystemPrompt: promptRuntime,
+		Tools: loopTools, SystemPrompt: promptRuntime,
 	}, loopSettings, agentloop.RuntimeOptions{})
 	if err != nil {
 		return err

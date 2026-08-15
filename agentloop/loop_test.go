@@ -19,15 +19,17 @@ import (
 )
 
 type harnessFixture struct {
-	engine       *plugin.Runtime
-	pluginScope  *plugin.Scope
-	agents       agent.Registry
-	sessions     session.Store
-	models       llm.LlmRuntime
-	toolRuntime  tools.ToolRuntime
-	prompts      systemprompt.SystemPrompt
-	loop         agentloop.Loop
-	modelAdapter *scriptedAdapter
+	engine        *plugin.Runtime
+	pluginScope   *plugin.Scope
+	agents        agent.Registry
+	sessions      session.Store
+	models        llm.LlmRuntime
+	toolRuntime   tools.ToolRuntime
+	prompts       systemprompt.SystemPrompt
+	loop          agentloop.Loop
+	modelAdapter  *scriptedAdapter
+	decorateTools func(tools.ToolRuntime) tools.ToolRuntime
+	parallelLimit int
 }
 
 type harnessProvider struct {
@@ -73,13 +75,21 @@ func (provider *harnessProvider) Apply(requestContext context.Context, pluginSco
 	if err != nil {
 		return err
 	}
-	loopSettings, err := agentloop.ValidateConfig(agentloop.Config{})
+	loopConfig := agentloop.Config{}
+	if provider.state.parallelLimit > 0 {
+		loopConfig.MaxParallelToolCalls = &provider.state.parallelLimit
+	}
+	loopSettings, err := agentloop.ValidateConfig(loopConfig)
 	if err != nil {
 		return err
 	}
+	loopTools := tools.ToolRuntime(toolRuntime)
+	if provider.state.decorateTools != nil {
+		loopTools = provider.state.decorateTools(toolRuntime)
+	}
 	loopRuntime, err := agentloop.New(requestContext, pluginScope, agentloop.Dependencies{
 		Agents: agentRegistry, Sessions: sessionStore, LLM: modelRuntime,
-		Tools: toolRuntime, SystemPrompt: promptRuntime,
+		Tools: loopTools, SystemPrompt: promptRuntime,
 	}, loopSettings, agentloop.RuntimeOptions{})
 	if err != nil {
 		return err
@@ -167,7 +177,20 @@ func (backend *scriptedAdapter) snapshots() []llm.GenerateOptions {
 
 func newHarnessFixture(t *testing.T, responses [][]llm.StreamChunk) *harnessFixture {
 	t.Helper()
-	state := &harnessFixture{engine: plugin.NewRuntime(), modelAdapter: &scriptedAdapter{responses: responses}}
+	return newHarnessFixtureWithTools(t, responses, 0, nil)
+}
+
+func newHarnessFixtureWithTools(
+	t *testing.T,
+	responses [][]llm.StreamChunk,
+	parallelLimit int,
+	decorateTools func(tools.ToolRuntime) tools.ToolRuntime,
+) *harnessFixture {
+	t.Helper()
+	state := &harnessFixture{
+		engine: plugin.NewRuntime(), modelAdapter: &scriptedAdapter{responses: responses},
+		parallelLimit: parallelLimit, decorateTools: decorateTools,
+	}
 	if _, err := state.engine.Load(context.Background(), &harnessProvider{state: state}); err != nil {
 		t.Fatal(err)
 	}
@@ -180,6 +203,54 @@ func newHarnessFixture(t *testing.T, responses [][]llm.StreamChunk) *harnessFixt
 		}
 	})
 	return state
+}
+
+type injectedSchedulerRuntime struct {
+	tools.ToolRuntime
+	staged tools.ToolExecutionScheduler
+}
+
+func (carrier *injectedSchedulerRuntime) Scheduler() tools.ToolExecutionScheduler {
+	return carrier.staged
+}
+
+type dispatchFailureScheduler struct {
+	delegate        tools.ToolExecutionScheduler
+	failureCallID   llm.CallID
+	waitForStarted  <-chan struct{}
+	failureReturned chan<- struct{}
+}
+
+func (bridge *dispatchFailureScheduler) Prepare(
+	requestContext context.Context,
+	input tools.ToolExecutionInput,
+) (tools.ScheduledToolPreparation, error) {
+	return bridge.delegate.Prepare(requestContext, input)
+}
+
+func (bridge *dispatchFailureScheduler) Dispatch(
+	execution tools.ToolExecution,
+) (tools.ScheduledToolDispatch, error) {
+	if execution.CallID != bridge.failureCallID {
+		return bridge.delegate.Dispatch(execution)
+	}
+	<-bridge.waitForStarted
+	close(bridge.failureReturned)
+	return tools.ScheduledToolDispatch{}, errors.New("scheduler failed")
+}
+
+func (bridge *dispatchFailureScheduler) Finalize(
+	execution tools.ToolExecution,
+	outcome tools.ToolExecutionResult,
+) (tools.ToolExecutionResult, error) {
+	return bridge.delegate.Finalize(execution, outcome)
+}
+
+func (bridge *dispatchFailureScheduler) Finish(
+	execution tools.ToolExecution,
+	outcome tools.ToolExecutionResult,
+) tools.ToolExecutionResult {
+	return bridge.delegate.Finish(execution, outcome)
 }
 
 func userMessage(t *testing.T, text string, source llm.MessageSource) llm.UserMessage {
@@ -351,6 +422,125 @@ func TestParallelBodiesCommitResultsAndContextsInModelOrder(t *testing.T) {
 	}
 	if got := messageTexts(requests[1].Messages[4:]); !reflect.DeepEqual(got, []string{"context-1", "context-2"}) {
 		t.Fatalf("derived context order = %#v", got)
+	}
+}
+
+func TestSchedulerFailureStopsReplenishmentAndDrainsStartedDispatch(t *testing.T) {
+	responses := [][]llm.StreamChunk{{
+		llm.BlockEndChunk{Index: 0, Block: llm.ToolCallBlock{ID: "call-1", Name: "parallel", Arguments: `{"id":1}`}},
+		llm.BlockEndChunk{Index: 1, Block: llm.ToolCallBlock{ID: "call-2", Name: "parallel", Arguments: `{"id":2}`}},
+		llm.BlockEndChunk{Index: 2, Block: llm.ToolCallBlock{ID: "call-3", Name: "parallel", Arguments: `{"id":3}`}},
+		llm.FinishChunk{Reason: llm.ToolCallsFinish{}},
+	}}
+	secondStarted := make(chan struct{})
+	releaseSecond := make(chan struct{})
+	failureReturned := make(chan struct{})
+	state := newHarnessFixtureWithTools(t, responses, 2, func(baseRuntime tools.ToolRuntime) tools.ToolRuntime {
+		return &injectedSchedulerRuntime{
+			ToolRuntime: baseRuntime,
+			staged: &dispatchFailureScheduler{
+				delegate: baseRuntime.Scheduler(), failureCallID: "call-1",
+				waitForStarted: secondStarted, failureReturned: failureReturned,
+			},
+		}
+	})
+	var startedMu sync.Mutex
+	startedIDs := make([]int, 0, 3)
+	_, err := state.toolRuntime.Register(context.Background(), state.pluginScope, tools.ToolDefinition{
+		Name: "parallel", Parameters: json.RawMessage(`{"type":"object","required":["id"],"properties":{"id":{"type":"integer"}}}`),
+		Output: tools.ToolOutputDefinition{
+			Schema: json.RawMessage(`{"type":"object"}`),
+			Renderer: tools.OutputRendererFunc(func(_ json.RawMessage, value json.RawMessage) ([]llm.ContentBlock, error) {
+				return []llm.ContentBlock{llm.NewTextBlock(string(value))}, nil
+			}),
+		},
+		ConcurrencyBehavior: tools.ConcurrencyClassifierFunc(func(json.RawMessage) bool { return true }),
+		Executor: tools.ExecutorFunc(func(arguments json.RawMessage, _ tools.ToolRunContext) (json.RawMessage, error) {
+			var input struct {
+				ID int `json:"id"`
+			}
+			if decodeErr := json.Unmarshal(arguments, &input); decodeErr != nil {
+				return nil, decodeErr
+			}
+			startedMu.Lock()
+			startedIDs = append(startedIDs, input.ID)
+			startedMu.Unlock()
+			if input.ID == 2 {
+				close(secondStarted)
+				<-releaseSecond
+			}
+			return append(json.RawMessage(nil), arguments...), nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := state.loop.Create(
+		context.Background(), state.pluginScope, "scheduler-failure",
+		agent.Options{Provider: "mock", Model: "model"}, session.Metadata{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if disposeErr := handle.Dispose(context.Background()); disposeErr != nil {
+			t.Error(disposeErr)
+		}
+	}()
+	if err := handle.Subject.Followup(userMessage(t, "run", llm.UserMessageSource{})); err != nil {
+		t.Fatal(err)
+	}
+	idleDone := make(chan error, 1)
+	go func() {
+		idleDone <- handle.Subject.WhenIdle(context.Background())
+	}()
+	select {
+	case <-failureReturned:
+	case <-time.After(time.Second):
+		t.Fatal("scheduler failure did not wait for the sibling dispatch to start")
+	}
+	select {
+	case idleErr := <-idleDone:
+		t.Fatalf("Agent became idle before the started sibling drained: %v", idleErr)
+	default:
+	}
+	close(releaseSecond)
+	select {
+	case idleErr := <-idleDone:
+		if idleErr != nil {
+			t.Fatal(idleErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Agent did not settle after the started sibling drained")
+	}
+	startedMu.Lock()
+	actualStarted := append([]int(nil), startedIDs...)
+	startedMu.Unlock()
+	if want := []int{2}; !reflect.DeepEqual(actualStarted, want) {
+		t.Fatalf("started Tool bodies = %#v, want %#v", actualStarted, want)
+	}
+	callIDs := make([]llm.CallID, 0, 2)
+	resultCount := 0
+	for _, event := range handle.Subject.SessionValue().Events() {
+		switch event.Type {
+		case session.ToolCallEventName:
+			var payload session.ToolCall
+			if err := json.Unmarshal(event.Data, &payload); err != nil {
+				t.Fatal(err)
+			}
+			callIDs = append(callIDs, payload.CallID)
+		case session.ToolResultEventName:
+			resultCount++
+		}
+	}
+	if want := []llm.CallID{"call-1", "call-2"}; !reflect.DeepEqual(callIDs, want) {
+		t.Fatalf("recorded Tool calls = %#v, want %#v", callIDs, want)
+	}
+	if resultCount != 0 {
+		t.Fatalf("Tool result count = %d, want 0 after scheduler failure", resultCount)
+	}
+	if ending := lastTurnEnd(t, handle.Subject.SessionValue()); ending.Kind != "error" {
+		t.Fatalf("turn ending = %#v, want error", ending)
 	}
 }
 

@@ -265,11 +265,13 @@ type ScheduledToolDispatch struct {
 }
 
 // ToolExecutionScheduler separates ordered policy/finalization from the only
-// stage that Agent Loop may overlap: around-dispatch plus the tool body.
+// stage that Agent Loop may overlap: around-dispatch plus the tool body. An
+// error is an internal scheduler failure; ordinary Tool and policy failures
+// remain typed ToolExecutionResult values so Agent Loop can commit them.
 type ToolExecutionScheduler interface {
-	Prepare(context.Context, ToolExecutionInput) ScheduledToolPreparation
-	Dispatch(ToolExecution) ScheduledToolDispatch
-	Finalize(ToolExecution, ToolExecutionResult) ToolExecutionResult
+	Prepare(context.Context, ToolExecutionInput) (ScheduledToolPreparation, error)
+	Dispatch(ToolExecution) (ScheduledToolDispatch, error)
+	Finalize(ToolExecution, ToolExecutionResult) (ToolExecutionResult, error)
 	Finish(ToolExecution, ToolExecutionResult) ToolExecutionResult
 }
 
