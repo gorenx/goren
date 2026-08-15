@@ -88,7 +88,7 @@ type pendingInteractionFrame struct {
 	payload MuxFrame
 }
 
-type sessionFrameHub struct {
+type liveFrameHub struct {
 	mu                 sync.Mutex
 	mux                map[*muxSubscriber]struct{}
 	host               map[*hostSubscriber]struct{}
@@ -98,14 +98,14 @@ type sessionFrameHub struct {
 	closed             bool
 }
 
-func newSessionFrameHub(newRPC func() (connection.RPCID, error)) *sessionFrameHub {
-	return &sessionFrameHub{
+func newLiveFrameHub(newRPC func() (connection.RPCID, error)) *liveFrameHub {
+	return &liveFrameHub{
 		mux: make(map[*muxSubscriber]struct{}), host: make(map[*hostSubscriber]struct{}),
 		pendingInteraction: make(map[connection.RPCID]pendingInteractionFrame), newRPC: newRPC,
 	}
 }
 
-func (hub *sessionFrameHub) openMux(
+func (hub *liveFrameHub) openMux(
 	requestContext context.Context,
 	conversations []*session.Session,
 	emit func(StreamRequest[MuxFrame]) error,
@@ -179,7 +179,7 @@ func (hub *sessionFrameHub) openMux(
 	return subscriber.queue.iterate(requestContext, emit)
 }
 
-func (hub *sessionFrameHub) openHost(
+func (hub *liveFrameHub) openHost(
 	requestContext context.Context,
 	emit func(StreamRequest[HostFrame]) error,
 ) error {
@@ -195,7 +195,7 @@ func (hub *sessionFrameHub) openHost(
 	return subscriber.queue.iterate(requestContext, emit)
 }
 
-func (hub *sessionFrameHub) sessionEvent(
+func (hub *liveFrameHub) sessionEvent(
 	identifier session.SessionID,
 	committed SessionEvent,
 	queueChanged bool,
@@ -231,7 +231,7 @@ func (hub *sessionFrameHub) sessionEvent(
 	return dispatchErr
 }
 
-func (hub *sessionFrameHub) sessionCreated(conversation *session.Session) error {
+func (hub *liveFrameHub) sessionCreated(conversation *session.Session) error {
 	header := conversation.Header()
 	events := conversation.Events()
 	lastSeq := int64(-1)
@@ -269,7 +269,7 @@ func (hub *sessionFrameHub) sessionCreated(conversation *session.Session) error 
 	return dispatchErr
 }
 
-func (hub *sessionFrameHub) sessionProjection(
+func (hub *liveFrameHub) sessionProjection(
 	identifier session.SessionID,
 	key string,
 	value json.RawMessage,
@@ -294,7 +294,7 @@ func (hub *sessionFrameHub) sessionProjection(
 	return dispatchErr
 }
 
-func (hub *sessionFrameHub) sessionDisposed(identifier session.SessionID) error {
+func (hub *liveFrameHub) sessionDisposed(identifier session.SessionID) error {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
 	var dispatchErr error
@@ -311,7 +311,7 @@ func (hub *sessionFrameHub) sessionDisposed(identifier session.SessionID) error 
 	return dispatchErr
 }
 
-func (hub *sessionFrameHub) agentStatus(identifier session.SessionID, running bool) error {
+func (hub *liveFrameHub) agentStatus(identifier session.SessionID, running bool) error {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
 	var dispatchErr error
@@ -327,7 +327,7 @@ func (hub *sessionFrameHub) agentStatus(identifier session.SessionID, running bo
 	return dispatchErr
 }
 
-func (hub *sessionFrameHub) agentError(identifier session.SessionID, cause error) error {
+func (hub *liveFrameHub) agentError(identifier session.SessionID, cause error) error {
 	message := ""
 	if cause != nil {
 		message = cause.Error()
@@ -347,7 +347,7 @@ func (hub *sessionFrameHub) agentError(identifier session.SessionID, cause error
 	return dispatchErr
 }
 
-func (hub *sessionFrameHub) hostFrame(payload HostFrame) error {
+func (hub *liveFrameHub) hostFrame(payload HostFrame) error {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
 	var dispatchErr error
@@ -361,7 +361,7 @@ func (hub *sessionFrameHub) hostFrame(payload HostFrame) error {
 	return dispatchErr
 }
 
-func (hub *sessionFrameHub) pushMuxLocked(subscriber *muxSubscriber, payload MuxFrame) error {
+func (hub *liveFrameHub) pushMuxLocked(subscriber *muxSubscriber, payload MuxFrame) error {
 	rpcID, err := hub.newRPC()
 	if err != nil {
 		return err
@@ -370,7 +370,7 @@ func (hub *sessionFrameHub) pushMuxLocked(subscriber *muxSubscriber, payload Mux
 	return nil
 }
 
-func (hub *sessionFrameHub) pushHostLocked(subscriber *hostSubscriber, payload HostFrame) error {
+func (hub *liveFrameHub) pushHostLocked(subscriber *hostSubscriber, payload HostFrame) error {
 	rpcID, err := hub.newRPC()
 	if err != nil {
 		return err
@@ -379,21 +379,21 @@ func (hub *sessionFrameHub) pushHostLocked(subscriber *hostSubscriber, payload H
 	return nil
 }
 
-func (hub *sessionFrameHub) removeMux(subscriber *muxSubscriber) {
+func (hub *liveFrameHub) removeMux(subscriber *muxSubscriber) {
 	hub.mu.Lock()
 	delete(hub.mux, subscriber)
 	hub.mu.Unlock()
 	subscriber.queue.close()
 }
 
-func (hub *sessionFrameHub) removeHost(subscriber *hostSubscriber) {
+func (hub *liveFrameHub) removeHost(subscriber *hostSubscriber) {
 	hub.mu.Lock()
 	delete(hub.host, subscriber)
 	hub.mu.Unlock()
 	subscriber.queue.close()
 }
 
-func (hub *sessionFrameHub) close() {
+func (hub *liveFrameHub) close() {
 	hub.mu.Lock()
 	if hub.closed {
 		hub.mu.Unlock()

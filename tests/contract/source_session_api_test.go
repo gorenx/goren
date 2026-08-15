@@ -20,6 +20,7 @@ import (
 	"github.com/gorenx/goren/agentdefaultmodel"
 	"github.com/gorenx/goren/agentloop"
 	"github.com/gorenx/goren/apiproxy"
+	sessionapi "github.com/gorenx/goren/apiproxy/session"
 	connectionhost "github.com/gorenx/goren/internal/connection"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
@@ -38,8 +39,9 @@ import (
 )
 
 type sessionAPIContractState struct {
-	gateway          *apiproxy.SessionGateway
-	searchGateway    *apiproxy.SessionSearchGateway
+	gateway          *sessionapi.Gateway
+	downlinks        *apiproxy.LiveFrameSource
+	searchGateway    *sessionapi.SearchGateway
 	workspaceGateway *apiproxy.WorkspaceGateway
 	backend          *sessionAPIContractAdapter
 	failures         contractFailureLog
@@ -193,29 +195,39 @@ func (extension *sessionAPIContractProvider) Apply(requestContext context.Contex
 	if err != nil {
 		return err
 	}
-	gateway, err := apiproxy.NewSessionGateway(requestContext, providerScope, apiproxy.SessionGatewayDependencies{
+	gateway, err := sessionapi.NewGateway(requestContext, providerScope, sessionapi.Dependencies{
 		Agents: agentRegistry, Sessions: sessionStore, Persistence: durability,
 		LLM: modelRuntime, Defaults: defaultSelection,
 		Projections: projectionRegistry, Titles: titleService,
 		Workspaces: workspaceRegistry,
-		Directories: apiproxy.DirectoryProvisionerFunc(func(string) error {
+		Directories: sessionapi.DirectoryProvisionerFunc(func(string) error {
 			return nil
 		}),
-	}, apiproxy.SessionGatewayOptions{WorkingDirectory: "/contract-workspace"})
+	}, sessionapi.Options{WorkingDirectory: "/contract-workspace"})
 	if err != nil {
 		return err
 	}
-	searchGateway, err := apiproxy.NewSessionSearchGateway(queries, gateway)
+	downlinks, err := apiproxy.NewLiveFrameSource(
+		requestContext,
+		providerScope,
+		apiproxy.LiveFrameDependencies{Sessions: sessionStore, Projections: projectionRegistry},
+		apiproxy.LiveFrameOptions{},
+	)
+	if err != nil {
+		return err
+	}
+	searchGateway, err := sessionapi.NewSearchGateway(queries, gateway)
 	if err != nil {
 		return err
 	}
 	workspaceGateway, err := apiproxy.NewWorkspaceGateway(
-		requestContext, providerScope, workspaceRegistry, gateway,
+		requestContext, providerScope, workspaceRegistry, downlinks,
 	)
 	if err != nil {
 		return err
 	}
 	extension.state.gateway = gateway
+	extension.state.downlinks = downlinks
 	extension.state.searchGateway = searchGateway
 	extension.state.workspaceGateway = workspaceGateway
 	return nil
@@ -336,7 +348,7 @@ func TestPinnedSourceSessionWebApiClientTalksToGoGateway(t *testing.T) {
 	if err := apiproxy.RegisterWorkspaceAPI(methods, contractState.workspaceGateway); err != nil {
 		t.Fatal(err)
 	}
-	streams, err := apiproxy.NewEventStreams(contractState.gateway.Mux, contractState.gateway.Host)
+	streams, err := apiproxy.NewEventStreams(contractState.downlinks.Mux, contractState.downlinks.Host)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -441,7 +453,7 @@ func TestPinnedSourceWorkspaceWebApiClientTalksToGoGateway(t *testing.T) {
 	if err := apiproxy.RegisterWorkspaceAPI(methods, contractState.workspaceGateway); err != nil {
 		t.Fatal(err)
 	}
-	streams, err := apiproxy.NewEventStreams(contractState.gateway.Mux, contractState.gateway.Host)
+	streams, err := apiproxy.NewEventStreams(contractState.downlinks.Mux, contractState.downlinks.Host)
 	if err != nil {
 		t.Fatal(err)
 	}

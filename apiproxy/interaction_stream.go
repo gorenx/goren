@@ -16,13 +16,7 @@ type InteractionFrameBroker interface {
 	ResolvePending(connection.RPCID, MuxFrame) error
 }
 
-// InteractionBroker exposes only the frame capability consumed by the
-// interaction gateway; callers cannot mutate Session Gateway state directly.
-func (owner *SessionGateway) InteractionBroker() InteractionFrameBroker {
-	return owner.hub
-}
-
-func (hub *sessionFrameHub) PublishPending(correlationID connection.RPCID, payload MuxFrame) error {
+func (hub *liveFrameHub) PublishPending(correlationID connection.RPCID, payload MuxFrame) error {
 	if payload == nil {
 		return errors.New("apiproxy: pending interaction frame is nil")
 	}
@@ -50,7 +44,7 @@ func (hub *sessionFrameHub) PublishPending(correlationID connection.RPCID, paylo
 	return nil
 }
 
-func (hub *sessionFrameHub) ResolvePending(correlationID connection.RPCID, payload MuxFrame) error {
+func (hub *liveFrameHub) ResolvePending(correlationID connection.RPCID, payload MuxFrame) error {
 	if payload == nil {
 		return errors.New("apiproxy: resolved interaction frame is nil")
 	}
@@ -83,7 +77,7 @@ func (hub *sessionFrameHub) ResolvePending(correlationID connection.RPCID, paylo
 	return nil
 }
 
-func (hub *sessionFrameHub) pushMuxRequestLocked(
+func (hub *liveFrameHub) pushMuxRequestLocked(
 	subscriber *muxSubscriber,
 	correlationID connection.RPCID,
 	payload MuxFrame,

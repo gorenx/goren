@@ -9,6 +9,7 @@ import (
 	agentcore "github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentdefaultmodel"
 	"github.com/gorenx/goren/apiproxy"
+	sessionapi "github.com/gorenx/goren/apiproxy/session"
 	protocol "github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/credentials"
 	connectionhost "github.com/gorenx/goren/internal/connection"
@@ -102,7 +103,7 @@ func (instance *apiProxyPlugin) Apply(requestContext context.Context, pluginScop
 		!projectionsFound || !queriesFound || !titlesFound || !questionsFound || !workspacesFound || !credentialsFound {
 		return errors.New("assembly: API Proxy dependencies are unavailable")
 	}
-	gateway, err := apiproxy.NewSessionGateway(requestContext, pluginScope, apiproxy.SessionGatewayDependencies{
+	gateway, err := sessionapi.NewGateway(requestContext, pluginScope, sessionapi.Dependencies{
 		Agents:      agentRegistry,
 		Sessions:    sessionStore,
 		Persistence: durability,
@@ -111,8 +112,17 @@ func (instance *apiProxyPlugin) Apply(requestContext context.Context, pluginScop
 		Projections: projections,
 		Titles:      titles,
 		Workspaces:  workspaceRegistry,
-		Directories: apiproxy.DirectoryProvisionerFunc(instance.ensureDirectory),
-	}, apiproxy.SessionGatewayOptions{WorkingDirectory: instance.workingDirectory})
+		Directories: sessionapi.DirectoryProvisionerFunc(instance.ensureDirectory),
+	}, sessionapi.Options{WorkingDirectory: instance.workingDirectory})
+	if err != nil {
+		return err
+	}
+	downlinks, err := apiproxy.NewLiveFrameSource(
+		requestContext,
+		pluginScope,
+		apiproxy.LiveFrameDependencies{Sessions: sessionStore, Projections: projections},
+		apiproxy.LiveFrameOptions{},
+	)
 	if err != nil {
 		return err
 	}
@@ -147,14 +157,14 @@ func (instance *apiProxyPlugin) Apply(requestContext context.Context, pluginScop
 	if err := apiproxy.RegisterLLMAPI(methods, llmGateway); err != nil {
 		return err
 	}
-	searchGateway, err := apiproxy.NewSessionSearchGateway(queries, gateway)
+	searchGateway, err := sessionapi.NewSearchGateway(queries, gateway)
 	if err != nil {
 		return err
 	}
 	if err := apiproxy.RegisterSessionAPI(methods, gateway, searchGateway); err != nil {
 		return err
 	}
-	workspaceGateway, err := apiproxy.NewWorkspaceGateway(requestContext, pluginScope, workspaceRegistry, gateway)
+	workspaceGateway, err := apiproxy.NewWorkspaceGateway(requestContext, pluginScope, workspaceRegistry, downlinks)
 	if err != nil {
 		return err
 	}
@@ -165,13 +175,13 @@ func (instance *apiProxyPlugin) Apply(requestContext context.Context, pluginScop
 		requestContext,
 		pluginScope,
 		apiproxy.InteractionGatewayDependencies{
-			Methods: methods, Frames: gateway.InteractionBroker(), UserQuestions: questionService,
+			Methods: methods, Frames: downlinks.InteractionBroker(), UserQuestions: questionService,
 		},
 		apiproxy.InteractionGatewayOptions{},
 	); err != nil {
 		return err
 	}
-	streams, err := apiproxy.NewEventStreams(gateway.Mux, gateway.Host)
+	streams, err := apiproxy.NewEventStreams(downlinks.Mux, downlinks.Host)
 	if err != nil {
 		return err
 	}

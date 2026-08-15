@@ -77,7 +77,7 @@ func (owner *WorkspaceGateway) Create(
 	defer owner.mutation.Unlock()
 	subject, created, err := owner.registry.Create(requestContext, call.Payload.Path)
 	if err != nil {
-		return Fail[WorkspaceCreateValue](newRPCError(
+		return Fail[WorkspaceCreateValue](NewRPCError(
 			connection.ErrorWorkspaceInvalidPath,
 			fmt.Sprintf("cannot create a workspace at %q: %v", call.Payload.Path, err),
 			struct {
@@ -105,7 +105,7 @@ func (owner *WorkspaceGateway) Rename(
 		for _, candidate := range owner.registry.List() {
 			candidateState := candidate.Snapshot()
 			if candidateState.ID != identifier && candidateState.Title == title {
-				return Fail[WorkspaceRenameValue](newRPCError(
+				return Fail[WorkspaceRenameValue](NewRPCError(
 					connection.ErrorWorkspaceNameConflict,
 					fmt.Sprintf("workspace name %q is already in use", title),
 					struct {
@@ -186,7 +186,7 @@ func (owner *WorkspaceGateway) InsertSessionBefore(
 	if err != nil {
 		var invalid *workspace.MoveInvalidError
 		if errors.As(err, &invalid) {
-			return Fail[WorkspaceInsertSessionBeforeValue](newRPCError(
+			return Fail[WorkspaceInsertSessionBeforeValue](NewRPCError(
 				connection.ErrorWorkspaceMoveInvalid, invalid.Error(), struct {
 					WorkspaceID     WorkspaceID `json:"workspaceId"`
 					SessionID       SessionID   `json:"sessionId"`
@@ -213,7 +213,7 @@ func (owner *WorkspaceGateway) ArchiveSession(
 	if err := owner.registry.ArchiveSession(requestContext, session.SessionID(call.Payload.SessionID)); err != nil {
 		var unknown *workspace.UnknownSessionError
 		if errors.As(err, &unknown) {
-			return Fail[WorkspaceArchiveSessionValue](newRPCError(
+			return Fail[WorkspaceArchiveSessionValue](NewRPCError(
 				connection.ErrorSessionNotFound, unknown.Error(), struct {
 					SessionID SessionID `json:"sessionId"`
 				}{SessionID: call.Payload.SessionID},
