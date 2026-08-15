@@ -13,6 +13,7 @@ import (
 
 	"github.com/gorenx/goren/apiproxy"
 	protocol "github.com/gorenx/goren/connection"
+	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/systemprompt"
@@ -27,7 +28,7 @@ func (instance probePlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "assembly-probe",
 		Requires: []plugin.ServiceRef{
-			serverServiceKey.Ref(), session.StoreService.Ref(), systemprompt.Service.Ref(), toolscore.Service.Ref(),
+			serverServiceKey.Ref(), llm.Service.Ref(), session.StoreService.Ref(), systemprompt.Service.Ref(), toolscore.Service.Ref(),
 		},
 	}
 }
@@ -42,7 +43,7 @@ func TestCatalogContainsOnlyCurrentServerSlice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{ConnectionFactoryName, APIProxyFactoryName, SessionFactoryName, SystemPromptFactoryName, ToolsFactoryName}
+	want := []string{ConnectionFactoryName, APIProxyFactoryName, LLMFactoryName, DeepSeekFactoryName, SessionFactoryName, SystemPromptFactoryName, ToolsFactoryName}
 	if got := registry.Names(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("factory names = %#v, want %#v", got, want)
 	}
@@ -81,6 +82,10 @@ func TestConnectionFactoryUsesStrictTypedConfig(t *testing.T) {
 		{label: "tools null mode", factoryName: ToolsFactoryName, input: `{"mode":null}`, wantMessage: "mode must be"},
 		{label: "tools code mode", factoryName: ToolsFactoryName, input: `{"mode":"code"}`, wantMessage: "Code Runtime bridge"},
 		{label: "tools parallel limit", factoryName: ToolsFactoryName, input: `{"maxParallelSubCalls":0}`, wantMessage: "positive integer"},
+		{label: "llm unknown", factoryName: LLMFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
+		{label: "deepseek unknown", factoryName: DeepSeekFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
+		{label: "deepseek nested unknown", factoryName: DeepSeekFactoryName, input: `{"models":[{"id":"m","unknown":true}]}`, wantMessage: "unknown field"},
+		{label: "deepseek disabled high", factoryName: DeepSeekFactoryName, input: `{"thinking":"disabled","reasoningEffort":"high"}`, wantMessage: "only reasoningEffort off"},
 		{label: "dynamic", factoryName: ConnectionFactoryName, input: `!!js (() => ({ listenAddress: "127.0.0.1:0" }))`, wantMessage: "invalid config"},
 	} {
 		testCase := testCase
@@ -143,6 +148,18 @@ func TestConnectionCompositionSettlesDependenciesAndServesHostDescribe(t *testin
 		}
 		if projections := toolService.Schemas(plugin.ScopeKey{}); len(projections) != 0 {
 			t.Fatalf("default tool schemas = %#v", projections)
+		}
+		llmService, found := plugin.Require(pluginScope, llm.Service)
+		if !found {
+			t.Fatal("llm service is unavailable")
+		}
+		if providers := llmService.ListProviders(); !reflect.DeepEqual(providers, []llm.ProviderInfo{{ID: "deepseek-official", Name: "DeepSeek"}}) {
+			t.Fatalf("default llm providers = %#v", providers)
+		}
+		if configurable := llmService.ListConfigurableProviders(); !reflect.DeepEqual(configurable, []llm.ConfigurableProvider{{
+			Provider: "deepseek-official", DisplayName: "DeepSeek", SettingsNS: "llm-deepseek", SettingsPath: []string{},
+		}}) {
+			t.Fatalf("default configurable providers = %#v", configurable)
 		}
 		return nil
 	}}

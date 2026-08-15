@@ -12,6 +12,8 @@ import (
 
 	"github.com/gorenx/goren/apiproxy"
 	"github.com/gorenx/goren/connection"
+	"github.com/gorenx/goren/internal/llmdeepseek"
+	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/systemprompt"
 	toolscore "github.com/gorenx/goren/tools"
 )
@@ -47,6 +49,15 @@ type contractManifest struct {
 			ReservedToolName  string   `json:"reservedToolName"`
 			PresentationModes []string `json:"presentationModes"`
 		} `json:"tools"`
+		LLM struct {
+			Service               string   `json:"service"`
+			Events                []string `json:"events"`
+			ProviderRoute         string   `json:"providerRoute"`
+			DefaultModels         []string `json:"defaultModels"`
+			ContentTypes          []string `json:"contentTypes"`
+			StreamChunkTypes      []string `json:"streamChunkTypes"`
+			DefaultRetryableCodes []string `json:"defaultRetryableCodes"`
+		} `json:"llm"`
 	} `json:"included"`
 }
 
@@ -110,6 +121,19 @@ func TestPinnedManifestMatchesGoSurface(t *testing.T) {
 		}) || toolSurface.ReservedToolName != toolscore.RunCodeName ||
 		!slices.Equal(toolSurface.PresentationModes, []string{string(toolscore.PresentationNative)}) {
 		t.Fatalf("tools surface = %#v", toolSurface)
+	}
+	llmSurface := manifestDocument.Included.LLM
+	if llmSurface.Service != llm.ServiceName ||
+		!slices.Equal(llmSurface.Events, []string{llm.AdaptersUpdatedEventName, llm.StreamEventName}) ||
+		llmSurface.ProviderRoute != llmdeepseek.ProviderRoute ||
+		!slices.Equal(llmSurface.DefaultModels, []string{"deepseek-v4-flash", "deepseek-v4-pro"}) ||
+		!slices.Equal(llmSurface.ContentTypes, []string{"text", "reasoning", "image", "tool-call", "tool-result"}) ||
+		!slices.Equal(llmSurface.StreamChunkTypes, []string{
+			"block-start", "text-delta", "reasoning-delta", "tool-call-delta", "block-end", "usage", "finish",
+		}) || !slices.Equal(llmSurface.DefaultRetryableCodes, []string{
+		llm.EmptyResponseCode, "RATE_LIMIT", "SERVER", "TIMEOUT", "TRANSPORT",
+	}) {
+		t.Fatalf("llm surface = %#v", llmSurface)
 	}
 
 	muxNames := encodedMuxFrames(t)

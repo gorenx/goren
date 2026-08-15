@@ -1,0 +1,230 @@
+package llmdeepseek
+
+import (
+	"encoding/json"
+	"fmt"
+
+	"github.com/gorenx/goren/llm"
+)
+
+const emptyToolOutput = "(no output)"
+
+type resolvedThinking struct {
+	thinking *ThinkingMode
+	effort   *ReasoningEffort
+}
+
+// SerializeMessages maps the Harness conversation vocabulary to the direct
+// DeepSeek chat-completions wire vocabulary without dropping core images.
+func SerializeMessages(conversation []llm.Message) ([]wireMessage, error) {
+	wireMessages := make([]wireMessage, 0, len(conversation))
+	for messageIndex, entry := range conversation {
+		if entry == nil {
+			return nil, fmt.Errorf("llm-deepseek: message %d is nil", messageIndex)
+		}
+		content := entry.ContentValue()
+		if llm.ContentHasImage(content) {
+			return nil, llm.MustLlmError(
+				"The DeepSeek chat-completions adapter does not support image content.",
+				"UNSUPPORTED_CONTENT",
+			)
+		}
+		switch entry.ConversationRole() {
+		case llm.RoleSystem:
+			wireMessages = append(wireMessages, wireSystemMessage{Role: "system", Content: flattenText(content)})
+		case llm.RoleAssistant:
+			wireMessages = append(wireMessages, serializeAssistant(content))
+		case llm.RoleUser:
+			wireMessages = append(wireMessages, serializeUser(content)...)
+		default:
+			return nil, fmt.Errorf("llm-deepseek: message %d has unsupported role %q", messageIndex, entry.ConversationRole())
+		}
+	}
+	return wireMessages, nil
+}
+
+func serializeAssistant(content []llm.ContentBlock) wireAssistantMessage {
+	visibleText := flattenText(content)
+	reasoningText := flattenContentType(content, "reasoning")
+	toolCalls := make([]wireToolCall, 0)
+	for _, entry := range content {
+		call, found := toolCallValue(entry)
+		if !found {
+			continue
+		}
+		toolCalls = append(toolCalls, wireToolCall{
+			ID: string(call.ID), Type: "function",
+			Function: wireToolFunction{Name: call.Name, Arguments: call.Arguments},
+		})
+	}
+	result := wireAssistantMessage{Role: "assistant", Content: stringPointer(visibleText)}
+	if len(toolCalls) > 0 {
+		result.ToolCalls = toolCalls
+		if reasoningText != "" {
+			result.ReasoningContent = stringPointer(reasoningText)
+		}
+	}
+	return result
+}
+
+func serializeUser(content []llm.ContentBlock) []wireMessage {
+	toolResults := make([]llm.ToolResultBlock, 0)
+	for _, entry := range content {
+		result, found := toolResultValue(entry)
+		if found {
+			toolResults = append(toolResults, result)
+		}
+	}
+	visibleText := flattenText(content)
+	wireMessages := make([]wireMessage, 0, len(toolResults)+1)
+	if visibleText != "" || len(toolResults) == 0 {
+		wireMessages = append(wireMessages, wireUserMessage{Role: "user", Content: visibleText})
+	}
+	for _, result := range toolResults {
+		output := flattenText(result.Content)
+		if output == "" {
+			output = emptyToolOutput
+		}
+		wireMessages = append(wireMessages, wireToolMessage{
+			Role: "tool", ToolCallID: string(result.ToolCallID), Content: output,
+		})
+	}
+	return wireMessages
+}
+
+func flattenText(content []llm.ContentBlock) string {
+	return flattenContentType(content, "text")
+}
+
+func flattenContentType(content []llm.ContentBlock, contentType string) string {
+	flattened := ""
+	for _, entry := range content {
+		if entry == nil || entry.ContentType() != contentType {
+			continue
+		}
+		switch block := entry.(type) {
+		case llm.TextBlock:
+			flattened += block.Text
+		case *llm.TextBlock:
+			if block != nil {
+				flattened += block.Text
+			}
+		case llm.ReasoningBlock:
+			flattened += block.Text
+		case *llm.ReasoningBlock:
+			if block != nil {
+				flattened += block.Text
+			}
+		}
+	}
+	return flattened
+}
+
+func toolCallValue(entry llm.ContentBlock) (llm.ToolCallBlock, bool) {
+	switch block := entry.(type) {
+	case llm.ToolCallBlock:
+		return block, true
+	case *llm.ToolCallBlock:
+		if block != nil {
+			return *block, true
+		}
+	}
+	return llm.ToolCallBlock{}, false
+}
+
+func toolResultValue(entry llm.ContentBlock) (llm.ToolResultBlock, bool) {
+	switch block := entry.(type) {
+	case llm.ToolResultBlock:
+		return block, true
+	case *llm.ToolResultBlock:
+		if block != nil {
+			return *block, true
+		}
+	}
+	return llm.ToolResultBlock{}, false
+}
+
+// SerializeRequest builds the complete direct-provider request. Optional
+// sampling fields retain omission semantics from GenerateOptions.
+func SerializeRequest(requestOptions llm.GenerateOptions, defaults RequestDefaults) (wireRequest, error) {
+	wireMessages, err := SerializeMessages(requestOptions.Messages)
+	if err != nil {
+		return wireRequest{}, err
+	}
+	if requestOptions.System != nil {
+		wireMessages = append([]wireMessage{
+			wireSystemMessage{Role: "system", Content: *requestOptions.System},
+		}, wireMessages...)
+	}
+	thinking, err := resolveThinking(requestOptions, defaults)
+	if err != nil {
+		return wireRequest{}, err
+	}
+	wireTools := make([]wireTool, 0, len(requestOptions.Tools))
+	for toolIndex, schema := range requestOptions.Tools {
+		if len(schema.Parameters) == 0 || !json.Valid(schema.Parameters) {
+			return wireRequest{}, fmt.Errorf("llm-deepseek: tool %d parameters must be valid JSON", toolIndex)
+		}
+		wireTools = append(wireTools, wireTool{
+			Type: "function",
+			Function: wireToolDefinition{
+				Name: schema.Name, Description: schema.Description,
+				Parameters: append(json.RawMessage(nil), schema.Parameters...),
+			},
+		})
+	}
+	request := wireRequest{
+		Model: requestOptions.Model, Messages: wireMessages, Stream: true,
+		StreamOptions: wireStreamOptions{IncludeUsage: true},
+		Temperature:   requestOptions.Temperature, MaxTokens: requestOptions.MaxTokens,
+	}
+	if thinking.thinking != nil {
+		request.Thinking = &wireThinking{Type: *thinking.thinking}
+	}
+	request.ReasoningEffort = thinking.effort
+	if len(wireTools) > 0 {
+		request.Tools = wireTools
+	}
+	if requestOptions.Stop != nil {
+		stopSequences := append([]string{}, requestOptions.Stop...)
+		request.Stop = &stopSequences
+	}
+	return request, nil
+}
+
+func resolveThinking(requestOptions llm.GenerateOptions, defaults RequestDefaults) (resolvedThinking, error) {
+	if requestOptions.Purpose == llm.PurposeSessionTitle {
+		return resolvedThinking{thinking: thinkingPointer(ThinkingDisabled)}, nil
+	}
+	effort := defaults.ReasoningEffort
+	if requestOptions.ReasoningEffort != "" {
+		candidate := ReasoningEffort(requestOptions.ReasoningEffort)
+		switch candidate {
+		case ReasoningOff, ReasoningHigh, ReasoningMax:
+			effort = &candidate
+		default:
+			return resolvedThinking{}, llm.MustLlmError(
+				fmt.Sprintf("DeepSeek does not support reasoning effort %q", requestOptions.ReasoningEffort),
+				"UNSUPPORTED_REASONING_EFFORT",
+			)
+		}
+	}
+	if defaults.Thinking != nil && *defaults.Thinking == ThinkingDisabled && effort != nil && *effort != ReasoningOff {
+		return resolvedThinking{}, llm.MustLlmError(
+			fmt.Sprintf("DeepSeek deployment does not support reasoning effort %q", *effort),
+			"UNSUPPORTED_REASONING_EFFORT",
+		)
+	}
+	if effort != nil {
+		switch *effort {
+		case ReasoningOff:
+			return resolvedThinking{thinking: thinkingPointer(ThinkingDisabled)}, nil
+		case ReasoningHigh, ReasoningMax:
+			wireEffort := *effort
+			return resolvedThinking{thinking: thinkingPointer(ThinkingEnabled), effort: &wireEffort}, nil
+		}
+	}
+	return resolvedThinking{thinking: cloneThinking(defaults.Thinking)}, nil
+}
+
+func thinkingPointer(value ThinkingMode) *ThinkingMode { return &value }
