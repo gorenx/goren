@@ -3,11 +3,8 @@ package llm
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-
-	"github.com/gorenx/goren/internal/jsonvalue"
 )
 
 // MessageRole is the provider-neutral conversation role.
@@ -46,6 +43,32 @@ type AssistantMessage struct{ messageValue }
 
 // ToolResultMessage is a user-role message containing one correlated tool result.
 type ToolResultMessage struct{ messageValue }
+
+// MessageInput contains complete role, content, and source for a new message.
+type MessageInput struct {
+	Role    MessageRole
+	Content []ContentBlock
+	Source  MessageSource
+}
+
+// UserMessageInput contains content and provenance for a new user message.
+type UserMessageInput struct {
+	Content []ContentBlock
+	Source  MessageSource
+}
+
+// AssistantMessageInput contains content and model provenance for a new assistant message.
+type AssistantMessageInput struct {
+	Content []ContentBlock
+	Source  ModelMessageSource
+}
+
+// ToolResultMessageInput contains one tool result before message construction.
+type ToolResultMessageInput struct {
+	CallID  CallID
+	Content []ContentBlock
+	IsError bool
+}
 
 // CloneUserMessage returns a detached user-role message while preserving its
 // stable identity and specialized Go type.
@@ -91,45 +114,6 @@ func CloneToolResultMessage(source ToolResultMessage) (ToolResultMessage, error)
 		return ToolResultMessage{}, errors.New("llm: message is not a tool-result message")
 	}
 	return ToolResultMessage{messageValue: copyValue}, nil
-}
-
-// DecodeUserMessage restores one durable user message and rejects other roles.
-func DecodeUserMessage(rawValue json.RawMessage) (UserMessage, error) {
-	restored, err := DecodeMessage(rawValue)
-	if err != nil {
-		return UserMessage{}, err
-	}
-	typedValue, ok := restored.(UserMessage)
-	if !ok {
-		return UserMessage{}, errors.New("llm: durable message is not a user message")
-	}
-	return CloneUserMessage(typedValue)
-}
-
-// MessageInput contains complete role, content, and source for a new message.
-type MessageInput struct {
-	Role    MessageRole
-	Content []ContentBlock
-	Source  MessageSource
-}
-
-// UserMessageInput contains content and provenance for a new user message.
-type UserMessageInput struct {
-	Content []ContentBlock
-	Source  MessageSource
-}
-
-// AssistantMessageInput contains content and model provenance for a new assistant message.
-type AssistantMessageInput struct {
-	Content []ContentBlock
-	Source  ModelMessageSource
-}
-
-// ToolResultMessageInput contains one tool result before message construction.
-type ToolResultMessageInput struct {
-	CallID  CallID
-	Content []ContentBlock
-	IsError bool
 }
 
 // NewMessage constructs one identified immutable message.
@@ -259,59 +243,6 @@ func (entry messageValue) SourceValue() MessageSource {
 
 func (entry messageValue) CloneMessage() (Message, error) {
 	return restoreMessageValue(entry.idValue, entry.roleValue, entry.content, entry.origin)
-}
-
-func (entry messageValue) MarshalJSON() ([]byte, error) {
-	if entry.idValue == "" || entry.origin == nil {
-		return nil, errors.New("llm: invalid message")
-	}
-	wireValue := struct {
-		ID      MessageID      `json:"id"`
-		Role    MessageRole    `json:"role"`
-		Content []ContentBlock `json:"content"`
-		Source  MessageSource  `json:"source"`
-	}{ID: entry.idValue, Role: entry.roleValue, Content: entry.content, Source: entry.origin}
-	return json.Marshal(wireValue)
-}
-
-// DecodeMessage restores one durable message and preserves unknown source/content extensions.
-func DecodeMessage(rawValue json.RawMessage) (Message, error) {
-	if err := jsonvalue.Validate(rawValue); err != nil {
-		return nil, fmt.Errorf("llm: invalid message JSON: %w", err)
-	}
-	var wireValue struct {
-		ID      MessageID       `json:"id"`
-		Role    MessageRole     `json:"role"`
-		Content json.RawMessage `json:"content"`
-		Source  json.RawMessage `json:"source"`
-	}
-	if err := decodeStrict(rawValue, &wireValue); err != nil {
-		return nil, err
-	}
-	detachedContent, err := DecodeContentBlocks(wireValue.Content)
-	if err != nil {
-		return nil, err
-	}
-	detachedOrigin, err := decodeMessageSource(wireValue.Source)
-	if err != nil {
-		return nil, err
-	}
-	entry, err := restoreMessageValue(wireValue.ID, wireValue.Role, detachedContent, detachedOrigin)
-	if err != nil {
-		return nil, err
-	}
-	if wireValue.Role == RoleAssistant && detachedOrigin.SourceKind() == "model" {
-		return AssistantMessage{messageValue: entry}, nil
-	}
-	if wireValue.Role == RoleUser && detachedOrigin.SourceKind() == "tool" && len(detachedContent) == 1 {
-		if _, ok := detachedContent[0].(ToolResultBlock); ok {
-			return ToolResultMessage{messageValue: entry}, nil
-		}
-	}
-	if wireValue.Role == RoleUser {
-		return UserMessage{messageValue: entry}, nil
-	}
-	return entry, nil
 }
 
 // CloneMessages validates and detaches one ordered conversation.

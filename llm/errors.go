@@ -40,6 +40,10 @@ type LlmError struct {
 	cause   error
 }
 
+type failureCarrier interface {
+	Failure() LlmFailure
+}
+
 // NewLlmError validates and constructs one Harness LLM failure.
 func NewLlmError(summary string, failureCode string, options LlmErrorOptions) (*LlmError, error) {
 	if summary == "" {
@@ -108,10 +112,6 @@ func (problem *LlmError) Failure() LlmFailure {
 		return LlmFailure{Message: "LLM adapter failed", Code: "UNKNOWN"}
 	}
 	return cloneFailure(problem.failure)
-}
-
-type failureCarrier interface {
-	Failure() LlmFailure
 }
 
 func normalizeLlmFailure(value error) LlmFailure {
