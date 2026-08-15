@@ -36,6 +36,11 @@ type ssePayloadStream struct {
 	dataLines []string
 }
 
+type lineResult struct {
+	line string
+	err  error
+}
+
 func newSSEPayloadStream(body io.ReadCloser, idleTimeout time.Duration, onComment func(string)) (payloadStream, error) {
 	if body == nil {
 		return nil, errors.New("llm-deepseek: SSE response body is nil")
@@ -108,11 +113,6 @@ func (streamState *ssePayloadStream) NextPayload(requestContext context.Context)
 			streamState.dataLines = append(streamState.dataLines, value)
 		}
 	}
-}
-
-type lineResult struct {
-	line string
-	err  error
 }
 
 func (streamState *ssePayloadStream) readLine(requestContext context.Context) (string, error) {

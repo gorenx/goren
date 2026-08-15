@@ -1,11 +1,9 @@
 package llm
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 
 	"github.com/gorenx/goren/attachment"
 	"github.com/gorenx/goren/internal/jsonvalue"
@@ -21,17 +19,17 @@ type ContentBlock interface {
 	CloneContent() (ContentBlock, error)
 }
 
-// TextBlock is plain user-visible text.
-type TextBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
-}
-
 // PlainTextContent is the capability adapters use for visible text without
 // depending on one concrete block representation.
 type PlainTextContent interface {
 	ContentBlock
 	PlainText() (string, bool)
+}
+
+// TextBlock is plain user-visible text.
+type TextBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
 }
 
 // NewTextBlock creates one canonical text block.
@@ -57,6 +55,15 @@ type ReasoningBlock struct {
 	Text string `json:"text"`
 }
 
+// ContentType returns the canonical discriminant.
+func (ReasoningBlock) ContentType() string { return "reasoning" }
+
+// CloneContent returns an independent value copy.
+func (source ReasoningBlock) CloneContent() (ContentBlock, error) {
+	source.Type = "reasoning"
+	return source, nil
+}
+
 // ImageBlock is one durable raster image reference.
 type ImageBlock struct {
 	Type       string                        `json:"type"`
@@ -69,15 +76,6 @@ func (ImageBlock) ContentType() string { return "image" }
 // CloneContent returns an independent value copy.
 func (source ImageBlock) CloneContent() (ContentBlock, error) {
 	source.Type = "image"
-	return source, nil
-}
-
-// ContentType returns the canonical discriminant.
-func (ReasoningBlock) ContentType() string { return "reasoning" }
-
-// CloneContent returns an independent value copy.
-func (source ReasoningBlock) CloneContent() (ContentBlock, error) {
-	source.Type = "reasoning"
 	return source, nil
 }
 
@@ -106,6 +104,40 @@ type ToolResultBlock struct {
 	IsError    bool           `json:"-"`
 
 	isErrorPresent bool
+}
+
+// ContentType returns the canonical discriminant.
+func (ToolResultBlock) ContentType() string { return "tool-result" }
+
+// CloneContent recursively detaches nested result content.
+func (source ToolResultBlock) CloneContent() (ContentBlock, error) {
+	content, err := CloneContentBlocks(source.Content)
+	if err != nil {
+		return nil, err
+	}
+	source.Type = "tool-result"
+	source.Content = content
+	return source, nil
+}
+
+// MarshalJSON preserves the distinction between an omitted optional isError
+// field and the explicit false emitted by NewToolResultMessage.
+func (source ToolResultBlock) MarshalJSON() ([]byte, error) {
+	content, err := CloneContentBlocks(source.Content)
+	if err != nil {
+		return nil, err
+	}
+	wireValue := struct {
+		Type       string         `json:"type"`
+		ToolCallID CallID         `json:"toolCallId"`
+		Content    []ContentBlock `json:"content"`
+		IsError    *bool          `json:"isError,omitempty"`
+	}{Type: "tool-result", ToolCallID: source.ToolCallID, Content: content}
+	if source.isErrorPresent || source.IsError {
+		isError := source.IsError
+		wireValue.IsError = &isError
+	}
+	return json.Marshal(wireValue)
 }
 
 // OpaqueContentBlock preserves a plugin-defined block across durable JSON
@@ -166,40 +198,6 @@ func (entry OpaqueContentBlock) MarshalJSON() ([]byte, error) {
 	return append([]byte(nil), entry.rawValue...), nil
 }
 
-// ContentType returns the canonical discriminant.
-func (ToolResultBlock) ContentType() string { return "tool-result" }
-
-// CloneContent recursively detaches nested result content.
-func (source ToolResultBlock) CloneContent() (ContentBlock, error) {
-	content, err := CloneContentBlocks(source.Content)
-	if err != nil {
-		return nil, err
-	}
-	source.Type = "tool-result"
-	source.Content = content
-	return source, nil
-}
-
-// MarshalJSON preserves the distinction between an omitted optional isError
-// field and the explicit false emitted by NewToolResultMessage.
-func (source ToolResultBlock) MarshalJSON() ([]byte, error) {
-	content, err := CloneContentBlocks(source.Content)
-	if err != nil {
-		return nil, err
-	}
-	wireValue := struct {
-		Type       string         `json:"type"`
-		ToolCallID CallID         `json:"toolCallId"`
-		Content    []ContentBlock `json:"content"`
-		IsError    *bool          `json:"isError,omitempty"`
-	}{Type: "tool-result", ToolCallID: source.ToolCallID, Content: content}
-	if source.isErrorPresent || source.IsError {
-		isError := source.IsError
-		wireValue.IsError = &isError
-	}
-	return json.Marshal(wireValue)
-}
-
 // CloneContentBlocks validates and detaches one content sequence.
 func CloneContentBlocks(source []ContentBlock) (detached []ContentBlock, cloneErr error) {
 	activeIndex := -1
@@ -225,127 +223,6 @@ func CloneContentBlocks(source []ContentBlock) (detached []ContentBlock, cloneEr
 		detached[index] = cloned
 	}
 	return detached, nil
-}
-
-// DecodeContentBlocks restores core variants and losslessly preserves unknown
-// plugin variants as OpaqueContentBlock values.
-func DecodeContentBlocks(rawValue json.RawMessage) ([]ContentBlock, error) {
-	if err := jsonvalue.Validate(rawValue); err != nil {
-		return nil, fmt.Errorf("llm: invalid content JSON: %w", err)
-	}
-	var encoded []json.RawMessage
-	if err := json.Unmarshal(rawValue, &encoded); err != nil {
-		return nil, errors.New("llm: content must be an array")
-	}
-	blocks := make([]ContentBlock, 0, len(encoded))
-	for index, blockJSON := range encoded {
-		entry, err := decodeContentBlock(blockJSON)
-		if err != nil {
-			return nil, fmt.Errorf("llm: content block %d: %w", index, err)
-		}
-		blocks = append(blocks, entry)
-	}
-	return blocks, nil
-}
-
-func decodeContentBlock(rawValue json.RawMessage) (ContentBlock, error) {
-	if !jsonvalue.IsObject(rawValue) {
-		return nil, errors.New("content block must be an object")
-	}
-	var header struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(rawValue, &header); err != nil || header.Type == "" {
-		return nil, errors.New("content block type is missing")
-	}
-	switch header.Type {
-	case "text":
-		var entry TextBlock
-		if err := decodeStrict(rawValue, &entry); err != nil {
-			return NewOpaqueContentBlock(header.Type, rawValue)
-		}
-		return entry, nil
-	case "reasoning":
-		var entry ReasoningBlock
-		if err := decodeStrict(rawValue, &entry); err != nil {
-			return NewOpaqueContentBlock(header.Type, rawValue)
-		}
-		return entry, nil
-	case "image":
-		var entry ImageBlock
-		if err := decodeStrict(rawValue, &entry); err != nil {
-			return NewOpaqueContentBlock(header.Type, rawValue)
-		}
-		return entry, nil
-	case "tool-call":
-		var entry ToolCallBlock
-		if err := decodeStrict(rawValue, &entry); err != nil {
-			return NewOpaqueContentBlock(header.Type, rawValue)
-		}
-		return entry, nil
-	case "tool-result":
-		var entry ToolResultBlock
-		if err := json.Unmarshal(rawValue, &entry); err != nil {
-			return NewOpaqueContentBlock(header.Type, rawValue)
-		}
-		return entry, nil
-	default:
-		return NewOpaqueContentBlock(header.Type, rawValue)
-	}
-}
-
-// UnmarshalJSON restores the nested content sequence of a tool-result block.
-func (entry *ToolResultBlock) UnmarshalJSON(rawValue []byte) error {
-	if entry == nil {
-		return errors.New("llm: cannot decode tool-result into nil target")
-	}
-	var encoded struct {
-		Type       string          `json:"type"`
-		ToolCallID CallID          `json:"toolCallId"`
-		Content    json.RawMessage `json:"content"`
-		IsError    json.RawMessage `json:"isError"`
-	}
-	if err := decodeStrict(rawValue, &encoded); err != nil {
-		return err
-	}
-	if encoded.Type != "tool-result" {
-		return errors.New("llm: invalid tool-result discriminant")
-	}
-	nested, err := DecodeContentBlocks(encoded.Content)
-	if err != nil {
-		return err
-	}
-	isError := false
-	isErrorPresent := len(encoded.IsError) != 0
-	if isErrorPresent {
-		if bytes.Equal(bytes.TrimSpace(encoded.IsError), []byte("null")) || json.Unmarshal(encoded.IsError, &isError) != nil {
-			return errors.New("llm: tool-result isError must be a boolean")
-		}
-	}
-	*entry = ToolResultBlock{
-		Type: "tool-result", ToolCallID: encoded.ToolCallID, Content: nested,
-		IsError: isError, isErrorPresent: isErrorPresent,
-	}
-	return nil
-}
-
-func decodeStrict[T any](rawValue []byte, destination *T) error {
-	if err := jsonvalue.Validate(rawValue); err != nil {
-		return err
-	}
-	decoder := json.NewDecoder(bytes.NewReader(rawValue))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(destination); err != nil {
-		return err
-	}
-	var trailing json.RawMessage
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return errors.New("llm: unexpected trailing JSON")
-		}
-		return err
-	}
-	return nil
 }
 
 // ContentHasImage reports whether any direct or nested tool-result block is an image.
@@ -376,19 +253,4 @@ type InvalidContentBlockError struct {
 
 func (problem *InvalidContentBlockError) Error() string {
 	return "llm: invalid content block"
-}
-
-// ToolSchema is the model-facing JSON Schema description of one callable
-// tool. Tool registry and execution policy remain owned outside llm.
-type ToolSchema struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	Parameters  json.RawMessage `json:"parameters"`
-}
-
-// ContextSnapshotSection is one attributed contribution to a runtime-context
-// snapshot in model-visible order.
-type ContextSnapshotSection struct {
-	Name string `json:"name"`
-	Text string `json:"text"`
 }
