@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有 API Proxy 的通用 method 注册、typed dispatch、Provider 边界和上下游交互。线协议由[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)拥有，Connection carrier 由[06 Connection Host 模块设计与实现](./06-connection-host-module.md)拥有，具体 `llm.providers`/`llm.models` 投影由[13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)拥有，`session.*` adapter 与 Session/Host live projection 由[16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)拥有，Approval/Question 的业务 pending 与 frame 由[17 Approval、UserQuestions 与 Interaction Gateway](./17-approval-user-questions-and-interaction-gateway.md)拥有，实现状态与验证证据见[08 实施进度](./08-implementation-progress.md)。
+本文拥有 API Proxy 的通用 method 注册、typed dispatch、Provider 边界和上下游交互。线协议由[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)拥有，Connection carrier 由[06 Connection Host 模块设计与实现](./06-connection-host-module.md)拥有，具体 `llm.providers`/`llm.models` 投影由[13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)拥有，`session.*` adapter 与 Session/Host live projection 由[16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)拥有，Approval/Question 的业务 pending 与 frame 由[17 Approval、UserQuestions 与 Interaction Gateway](./17-approval-user-questions-and-interaction-gateway.md)拥有，`credentials.*` 能力与 secret boundary 由[22 Credentials 与 API Key 管理](./22-credentials-and-api-key-management.md)拥有，实现状态与验证证据见[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 源职责与模块范围
 
@@ -14,6 +14,7 @@
 - `packages/host/apiproxy/src/api/host.ts`、`host.schema.ts`：`host.describe` contract；
 - `packages/host/apiproxy/src/api/agent-presets.ts`、`agent-presets.schema.ts`：deployment roster 与 absent-provider 语义；
 - `packages/host/apiproxy/src/api/settings.ts`、`settings.schema.ts`：redacted Settings catalog 与 absent-provider 语义；
+- `packages/host/apiproxy/src/api/credentials.ts`、`credentials.schema.ts`：write-only Credentials API 与 value-free view；
 - `packages/host/apiproxy/src/api/llm.ts`、`llm.schema.ts`：Host-scoped provider/model catalog contract；
 - `packages/host/apiproxy/src/api-proxy.ts`：Host snapshot 与 interaction pending owner。
 
@@ -135,6 +136,8 @@ API Proxy 不缓存或推导这些状态，也不使用固定成功结果冒充�
 
 当前 `SettingsGateway` 只纳入 `settings.describe`。它持有可选 consumer-owned `SettingsDescriber`，验证并 detach redacted namespace snapshot；默认组合没有 Settings Provider 时，返回固定源 canonical `internal` absent-service business failure。该方法存在是协议兼容，失败是部署能力事实；两者不能被折叠成 HTTP 404，也不能以空 namespace success 冒充已装配 Provider。文件持久化、schema registration、secret handling 和 mutation API 仍由后续 Settings 能力拥有。
 
+`CredentialsGateway` 纳入 `credentials.describe`、`credentials.set` 与 `credentials.unset`。它只持有不含 `Resolve` 的 consumer-owned `CredentialProvider`：浏览器可以读取 `configured/source/writable` metadata 并单向提交新 value，但 Gateway 在类型上没有读取 secret 的能力。引用 schema、Provider 拒绝与 write-only response 由[22](./22-credentials-and-api-key-management.md)拥有。
+
 ## 8. `/api/respond` pending 生命周期
 
 ```text
@@ -166,7 +169,7 @@ POST /api/respond
 
 ## 9. 具体 API 模块进入规则
 
-`host.describe`、当前 `agentPreset.list` absent-roster projection 与 `settings.describe` absent-provider projection 仍由本文拥有；已进入的 `llm.providers` 与 `llm.models` 由[13](./13-harness-llm-runtime-and-deepseek-provider.md)拥有，`session.*` module 由[16](./16-session-api-gateway-and-live-frames.md)拥有，Approval/Question carrier adapter 由[17](./17-approval-user-questions-and-interaction-gateway.md)拥有，七个 `workspace.*` method、四个 Host frame 与 `session.create({workspaceId})` 由[20](./20-workspace-registry-and-api.md)拥有。每增加一个其他 API 模块，必须同时提供：
+`host.describe`、当前 `agentPreset.list` absent-roster projection 与 `settings.describe` absent-provider projection 仍由本文拥有；已进入的 `llm.providers` 与 `llm.models` 由[13](./13-harness-llm-runtime-and-deepseek-provider.md)拥有，`session.*` module 由[16](./16-session-api-gateway-and-live-frames.md)拥有，Approval/Question carrier adapter 由[17](./17-approval-user-questions-and-interaction-gateway.md)拥有，七个 `workspace.*` method、四个 Host frame 与 `session.create({workspaceId})` 由[20](./20-workspace-registry-and-api.md)拥有，`credentials.*` 由[22](./22-credentials-and-api-key-management.md)拥有。每增加一个其他 API 模块，必须同时提供：
 
 1. 固定源 method/schema/Provider owner；
 2. owner-defined request、response 与 error details 类型；

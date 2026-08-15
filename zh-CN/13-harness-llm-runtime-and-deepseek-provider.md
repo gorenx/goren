@@ -166,7 +166,7 @@ Agent / auxiliary consumer
   -> llm/stream waterfall
   -> route + exact model resolution
   -> internal/llmdeepseek.Adapter.Stream
-  -> first ChunkStream.Next snapshots config/credential/user id
+  -> first ChunkStream.Next snapshots config and resolves credential/user id
   -> SerializeRequest
   -> POST {baseURL}/chat/completions
   -> SSE parser
@@ -210,23 +210,29 @@ DeepSeek Adapter 把 HTTP/provider/transport 事实映射成 `LlmError`：`AUTH`
 
 ## 10. Plugin 装配与生命周期
 
-默认组合先声明 `@deepseek-ai/dsh-llm` Provider，再声明需要 `llm` Service 的 DeepSeek Plugin：
+默认组合声明 `@deepseek-ai/dsh-llm` 与 `@deepseek-ai/dsh-credentials` Provider，再装配同时需要两项 Service 的 DeepSeek Plugin：
 
 ```text
 LLM Plugin Apply
   -> NewRuntime
   -> Provide(llm)
 
+Credentials Plugin Apply
+  -> credentialsFactory selects local Store
+  -> NewManager
+  -> Provide(credentials)
+
 DeepSeek Plugin Apply
-  -> Require(llm)
+  -> Require(llm + credentials)
   -> create typed Adapter
+  -> inject request-scoped credential resolver
   -> RegisterConfigurableProviders
   -> RegisterAdapter(deepseek-official)
 ```
 
-两项 registration 都绑定 DeepSeek Plugin Scope；apply 失败由 Runtime 逆序回滚，unload 自动撤销目录和 route，并发布 committed topology change。Anonymous identity 只在第一次真实请求时初始化，因此没有 credential 的普通 server 启动、`host.describe` 和非 LLM 测试不触碰用户目录或网络。
+DeepSeek 的两项 registration 都绑定 DeepSeek Plugin Scope；apply 失败由 Runtime 逆序回滚，unload 自动撤销目录和 route，并发布 committed topology change。DeepSeek 在每次新请求开始时通过 `credentials.Provider.Resolve(apiKeyEnv)` 解析 secret；环境优先级、只读状态与文件 Store 由[22](./22-credentials-and-api-key-management.md)拥有。Anonymous identity 只在第一次真实请求时初始化，因此普通 server 启动、`host.describe` 和非 LLM 测试不触发 Provider 网络请求。
 
-未来新增 Provider 必须实现 `llm.Adapter` 并在自己的 Plugin 中注册 route；不得复制 `LlmRuntime`、Message/Stream 类型、retry schema 或 Agent loop。若将来引入 Credentials/Settings Service，只替换 DeepSeek Factory 的 resolver 和 live options 来源，不改变 Agent—LLM 或 LLM—Adapter contract。
+未来新增 Provider 必须实现 `llm.Adapter` 并在自己的 Plugin 中注册 route；不得复制 `LlmRuntime`、Message/Stream 类型、retry schema 或 Agent loop。Credentials resolver 已经作为 DeepSeek Factory 的依赖进入，不改变 Agent—LLM 或 LLM—Adapter contract；未来 Settings Service 只替换 live options 来源。
 
 ## 11. 后续能力进入规则
 

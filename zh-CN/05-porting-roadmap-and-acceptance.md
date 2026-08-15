@@ -8,12 +8,13 @@
 Existing TypeScript Client
   -> Connection Host
   -> API Proxy
+  -> Credentials
   -> Session / Agent Loop
   -> LLM / DeepSeek
   -> committed turn/end
 ```
 
-当前只推进[21 Web Agent 主会话闭环与能力边界](./21-web-agent-main-flow.md)定义的文本会话闭包，包括仓库自有的极简内嵌 UI。原版完整 Web product、Settings/Credentials、Agent Preset、Goal、Subagent、Typert Remote 与其他管理/扩展页面不再与主流程并行实施；已经存在的额外协议分支也不自动扩大本路线图。
+当前只推进[21 Web Agent 主会话闭环与能力边界](./21-web-agent-main-flow.md)定义的文本会话闭包，包括仓库自有的内嵌 UI 与 DeepSeek API Key 设置。原版完整 Web product、完整 Settings/扩展 Credentials、Agent Preset、Goal、Subagent、Typert Remote 与其他管理/扩展页面不再与主流程并行实施；已经存在的额外协议分支也不自动扩大本路线图。
 
 每个阶段仍以 DeepSeek Harness 的职责 owner 为默认边界，并使用[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)定义的证据分级。
 
@@ -221,7 +222,7 @@ TypeScript/Go 双向 Message/StreamChunk fixture、所有 finish reason、partia
 
 ## 9. 阶段 6：按客户端需求扩展服务端能力（当前冻结）
 
-Workspace、极简 Web UI、Filesystem、Shell、PTY、LSP、Sandbox、Guard、Credentials、Attachment、Spill、Settings、Goals 等按 capability matrix 逐项进入，不按源目录批量复制。当前目标只要求主会话闭环；自有 UI 进入后仍不拉入完整源 Web roster，其余状态和历史完成项见[08 实施进度](./08-implementation-progress.md)。
+Workspace、Web UI、Filesystem、Shell、PTY、LSP、Sandbox、Guard、Credentials、Attachment、Spill、Settings、Goals 等按 capability matrix 逐项进入，不按源目录批量复制。当前 Credentials 只纳入 DeepSeek API Key 主流程；自有 UI 仍不拉入完整源 Web roster，其余状态和历史完成项见[08 实施进度](./08-implementation-progress.md)。
 
 每项能力必须：
 

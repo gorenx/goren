@@ -12,15 +12,17 @@
 2. 从左侧选择已有对话；
 3. 读取该对话的持久历史；
 4. 发送文本并观察 Agent 的流式回复；
-5. 切换会话后再次恢复刚才的历史。
+5. 切换会话后再次恢复刚才的历史；
+6. 在浏览器中设置、替换或删除 DeepSeek API Key。
 
-DeepSeek credential 仍由 `DEEPSEEK_API_KEY` 环境变量提供。仓库根 `.env` 是本地开发输入，不进入二进制、配置对象、Session、日志或提交；启动时由 shell 显式加载。
+DeepSeek credential 使用引用 `DEEPSEEK_API_KEY`。启动环境值优先且只读；没有环境值时由 owner-only local Store 提供，Web 可通过 write-only Host API 管理。仓库根 `.env` 仍只是本地开发输入，若使用则由 shell 显式加载，不进入二进制、typed config、Session、日志或提交。完整规则由[22 Credentials 与 API Key 管理](./22-credentials-and-api-key-management.md)拥有。
 
 ## 2. UI 与源 Web 产品的关系
 
 纳入的是根级 `web` 包及其内嵌静态资源。浏览器源码使用 React、TypeScript、Vite 与 Tailwind CSS，由本仓库独立实现；信息布局参考 Harness 的紧凑三栏工作台，但只连接以下既有 Host surface：
 
 - `host.describe`；
+- `credentials.describe`、`credentials.set`、`credentials.unset`；
 - `session.list`、`session.create`、`session.history`、`session.prompt`；
 - `/api/events.mux` 与 `/api/events.host`。
 
@@ -28,7 +30,7 @@ DeepSeek credential 仍由 `DEEPSEEK_API_KEY` 环境变量提供。仓库根 `.e
 
 - `window.__DSH_BOOT__`、`/plugins/<id>/client.js` 与 Client Module System；
 - 原版 React 组件系统、Cordis browser context 和完整 `bundle/web-app` roster；
-- Workspace 树编辑、Settings、Credentials、Agent Preset、Goal、Subagent 和 Plugin Inventory 页面；
+- Workspace 树编辑、完整 Settings/多 Provider Credentials、Agent Preset、Goal、Subagent 和 Plugin Inventory 页面；
 - directory picker、附件、搜索、fork、Shell/PTY 面板；
 - Approval/Question 的交互控件。服务端协议和能力仍保留，但当前极简 UI 不消费这些 frame。
 
@@ -40,8 +42,8 @@ DeepSeek credential 仍由 `DEEPSEEK_API_KEY` 环境变量提供。仓库根 `.e
 web browser state
   -> Connection Host HTTP/WebSocket
   -> API Proxy typed methods/frames
-  -> Session Gateway
-  -> Agent Registry / Agent Loop
+  -> Session Gateway / Credentials Gateway
+  -> Agent Registry / Agent Loop / Credentials Provider
   -> LLM Runtime / DeepSeek
 
 Session facts -> Session Persistence -> SQLite Backend
@@ -49,6 +51,7 @@ composition root -> web.Handler + Connection + capabilities
 ```
 
 - `web` 只拥有浏览器展示状态、Host 调用和断线重连，不决定 Session 或 Agent 业务规则。
+- `web` 只保留尚未提交的 password input draft；已存秘密不会从 Host 返回，也不进入浏览器 snapshot。
 - `internal/connection` 仍拥有 Echo route、trust fence、HTTP/WS 生命周期；它只消费 `http.Handler`，不知道 UI 页面结构。
 - `internal/assembly` 用 `@gorenx/dsh-web` Factory 把 `web.Site` 接到默认 Connection composition。
 - API Proxy、Session、Agent Loop、LLM 和 persistence 均不导入 `web`。
@@ -65,10 +68,18 @@ sequenceDiagram
     participant S as Session Gateway
     participant G as Agent Loop
     participant D as DeepSeek Adapter
+    participant K as Credentials Provider
     participant C as Session Store
     participant P as Session Persistence
 
     W->>H: host.describe
+    W->>H: credentials.describe(DEEPSEEK_API_KEY)
+    alt credential missing and writable
+        U->>W: paste API Key
+        W->>H: credentials.set(ref, value)
+        H->>K: Set(ref, value)
+        K-->>W: empty success
+    end
     W->>H: open events.mux + events.host
     W->>H: session.list
     alt no Session
@@ -85,6 +96,8 @@ sequenceDiagram
     H->>S: admit UserMessage
     S->>G: Followup
     G->>D: stream model request
+    D->>K: Resolve(DEEPSEEK_API_KEY)
+    K-->>D: request-scoped secret
     D-->>G: StreamChunk sequence
     G->>C: append turn/step/message facts
     C-->>P: committed session/event
@@ -103,7 +116,7 @@ sequenceDiagram
 浏览器实现保持两个有状态对象，不翻译源 TypeScript 的插件函数组合：
 
 - `HarnessAPI`：拥有 unary RPC envelope、两条 downlink WebSocket、重连和关闭；
-- `ConversationStore`：拥有 Session list、selected Session、history event、stream draft 和可观察状态；React 组件负责 DOM 投影。
+- `ConversationStore`：拥有 Session list、selected Session、history event、stream draft、value-free credential metadata 和可观察状态；React 组件负责 DOM 投影。
 
 `ConversationStore` 不创建第二套业务模型。Session 标题优先读取 `projections.values.title`；首个 prompt 到正式 projection 到达前，只保留一个浏览器本地显示标题，不写回服务端。
 
@@ -113,6 +126,7 @@ sequenceDiagram
 - 任一 downlink 断开后独立重连；socket 断开只结束订阅，不取消正在运行的 Agent turn；
 - 页面刷新后以 `session.list` 和 `session.history` 重建，不依赖 local storage；
 - UI 通过 `textContent` 渲染模型输出，不把模型文本作为 HTML 执行；
+- credential response 只包含 `configured/source/writable`；浏览器不会回读已存 secret，环境来源也不能被 Web 覆盖；
 - `/api` 仍由 Connection Host 优先匹配，未知 API 不落入 SPA fallback；
 - 默认 listener 仅绑定 loopback；非 loopback 部署仍需单独设计 TLS、认证和授权。
 
@@ -120,7 +134,7 @@ sequenceDiagram
 
 1. **Go component**：`web.Site` 的静态资源、SPA fallback、API 排除和 Connection handler delegation 通过 Go test。
 2. **Host contract**：固定源 `WebApiClient` 经默认 `DefaultSpecs`、DeepSeek Adapter 和离线 HTTP oracle完成 `turn/end`。
-3. **UI contract**：`web-ui-main-flow.ts` 在 JSDOM 中加载真实内嵌页面，完成发送、回复、新建会话、切回与历史恢复。
+3. **UI contract**：`web-ui-main-flow.ts` 在 JSDOM 中加载真实内嵌页面，完成发送、回复、新建会话、切回与历史恢复；API Key dialog 当前以 TypeScript build 与 Host Credentials contract 分层验证。
 4. **Provider environment**：显式加载 `.env` 后，同一 UI contract 调用真实 `https://api.deepseek.com` 并完成主流程。
 5. **Visual browser**：只验证真实浏览器的布局、键盘和视觉行为；不能替代前四层，目前也不扩大业务能力范围。
 
@@ -128,4 +142,4 @@ sequenceDiagram
 
 ## 8. 扩展门槛
 
-只有用户把新的 UI 场景加入目标，或当前主会话被已纳入能力真实阻断，才增加浏览器能力。进入时先确认对应业务 owner 和 Host contract；不得在 `web` 中直接读 SQLite、调用 DeepSeek、保存 credential 或补造 API 成功值。
+只有用户把新的 UI 场景加入目标，或当前主会话被已纳入能力真实阻断，才增加浏览器能力。进入时先确认对应业务 owner 和 Host contract；不得在 `web` 中直接读 SQLite、调用 DeepSeek、写 local credential 文件或补造 API 成功值。API Key 只能通过 `credentials.*` Host contract 提交给 Credentials Provider。

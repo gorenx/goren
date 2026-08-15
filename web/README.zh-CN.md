@@ -8,10 +8,11 @@
 - 通过 Vite/Tailwind 生成 `dist`，再由 `embed.FS` 提供 `index.html`、`app.css` 和 `app.js`；
 - 展示会话列表、当前会话历史和流式 Agent 输出；
 - 创建、选择 Session，并提交纯文本 prompt；
+- 读取 value-free credential metadata，并通过 write-only Host API 设置、替换或删除 DeepSeek API Key；
 - 封装 Host unary RPC envelope 和 Mux/Host 两条 WebSocket downlink；
 - 在连接断开时重连，并从 Host baseline 重建浏览器状态。
 
-本包不拥有 Session 状态机、Agent Loop、模型选择、DeepSeek HTTP、SQLite、Settings、credential、Tool/Approval/Question UI 或原版 Client plugin runtime。模型输出使用 `textContent` 渲染，不执行模型产生的 HTML。
+本包不拥有 Session 状态机、Agent Loop、模型选择、DeepSeek HTTP、SQLite、完整 Settings、credential precedence/存储、Tool/Approval/Question UI 或原版 Client plugin runtime。模型输出使用 `textContent` 渲染，不执行模型产生的 HTML；API Key 只作为未提交的 password input draft 存在于组件状态。
 
 ## 工作原理
 
@@ -20,15 +21,17 @@
 浏览器端有两个状态对象：
 
 - `HarnessAPI` 负责 RPC、WebSocket generation、重连和关闭；
-- `ConversationStore` 负责 Session list、selected Session、history、stream draft 与可观察状态；React 组件只投影视图并转发用户意图。
+- `ConversationStore` 负责 Session list、selected Session、history、stream draft、value-free credential metadata 与可观察状态；React 组件只投影视图并转发用户意图。
 
 ```mermaid
 flowchart LR
     Browser[React UI] --> Store[ConversationStore]
     Store --> Client[HarnessAPI]
     Client -->|POST /api/session.*| Host[Connection Host]
+    Client -->|POST /api/credentials.*| Host
     Client -->|events.mux / events.host| Host
     Host --> Proxy[API Proxy]
+    Proxy --> Credentials[Credentials Provider]
     Proxy --> Session[Session Gateway]
     Session --> Agent[Agent Loop]
     Agent --> LLM[LLM / DeepSeek]
@@ -60,6 +63,30 @@ stateDiagram-v2
     Loading --> Disconnected: HTTP/WS failure
     Disconnected --> Loading: reconnect / retry
 ```
+
+## API Key 设置
+
+页面启动时调用 `credentials.describe({refs:["DEEPSEEK_API_KEY"]})`。缺失且可写时自动打开设置对话框；文件来源允许替换和删除；环境来源显示只读提示。`credentials.set` 是秘密值唯一经过 wire 的方向，成功后只重新读取 metadata，不回读明文。
+
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant W as CredentialDialog
+    participant S as ConversationStore
+    participant H as Host Credentials API
+    participant C as Credentials Provider
+
+    S->>H: credentials.describe(ref)
+    H-->>S: configured/source/writable
+    U->>W: paste new key
+    W->>S: saveCredential(value)
+    S->>H: credentials.set(ref, value)
+    H->>C: Set(ref, value)
+    C-->>S: empty success
+    S->>H: credentials.describe(ref)
+```
+
+凭据业务与 local Store 由[22 Credentials 与 API Key 管理](../zh-CN/22-credentials-and-api-key-management.md)拥有；Web 不读取文件，也不调用 Credentials Go 包。
 
 ## 构建
 

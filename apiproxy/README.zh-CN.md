@@ -1,11 +1,11 @@
 # API Proxy 子模块
 
-`apiproxy` 是浏览器 wire 与 Go application/domain capability 之间的 anti-corruption boundary。权威设计见[`zh-CN/07-api-proxy-module.md`](../zh-CN/07-api-proxy-module.md)、[`zh-CN/13-harness-llm-runtime-and-deepseek-provider.md`](../zh-CN/13-harness-llm-runtime-and-deepseek-provider.md)、[`zh-CN/16-session-api-gateway-and-live-frames.md`](../zh-CN/16-session-api-gateway-and-live-frames.md)、[`zh-CN/17-approval-user-questions-and-interaction-gateway.md`](../zh-CN/17-approval-user-questions-and-interaction-gateway.md)与[`zh-CN/20-workspace-registry-and-api.md`](../zh-CN/20-workspace-registry-and-api.md)。
+`apiproxy` 是浏览器 wire 与 Go application/domain capability 之间的 anti-corruption boundary。权威设计见[`zh-CN/07-api-proxy-module.md`](../zh-CN/07-api-proxy-module.md)、[`zh-CN/13-harness-llm-runtime-and-deepseek-provider.md`](../zh-CN/13-harness-llm-runtime-and-deepseek-provider.md)、[`zh-CN/16-session-api-gateway-and-live-frames.md`](../zh-CN/16-session-api-gateway-and-live-frames.md)、[`zh-CN/17-approval-user-questions-and-interaction-gateway.md`](../zh-CN/17-approval-user-questions-and-interaction-gateway.md)、[`zh-CN/20-workspace-registry-and-api.md`](../zh-CN/20-workspace-registry-and-api.md)与[`zh-CN/22-credentials-and-api-key-management.md`](../zh-CN/22-credentials-and-api-key-management.md)。
 
 ## 职责
 
 - method-owned request decoder、typed `Outcome` 和 canonical RPC error；
-- `host.describe` 与当前纳入的 `agentPreset.list`、`settings.describe`、`llm.providers`、`llm.models`、`session.*`、`workspace.*` handlers；
+- `host.describe` 与当前纳入的 `agentPreset.list`、`settings.describe`、`credentials.*`、`llm.providers`、`llm.models`、`session.*`、`workspace.*` handlers；
 - `LLMGateway` 对 configurable provider directory、active route 和 model catalog 的 Host wire 投影；
 - Session/Agent/Workspace/interaction facts 到 Mux/Host frame 的 projection；
 - pending response correlation 与 reconnect replay；
@@ -37,10 +37,12 @@ Workspace Gateway 将七个 `workspace.*` method 映射到 `workspace.Registry`/
 
 `SettingsGateway` 持有可选的 `SettingsDescriber` capability。当前默认组合未提供 Settings Provider，因此 `settings.describe` 按固定源返回 HTTP 200 内的 canonical `internal` absent-service failure，让客户端按 RPC 失败降级而不是遇到未注册方法。接口已经约束 redacted schema/value、secret slot、revision 和 `live/restart` 字段，但尚未装配文件 Provider 或任何 mutation method。
 
+`CredentialsGateway` 持有不包含 `Resolve` 的窄 `CredentialProvider`。`credentials.describe` 只投影 `configured/source/writable`；`credentials.set` 是秘密值唯一经过 Host wire 的方向，成功响应为空；`credentials.unset` 幂等删除托管值。Gateway 不读取 Store，也没有取得 secret 的接口。
+
 ## 上下游
 
 - 上游：Connection dispatcher/event source、TypeScript wire requests。
-- 下游：Agent Registry、Session Store、SessionPersistence、Workspace Registry、LLM、DefaultModel、SessionProjection、SessionTitle、Approval/UserQuestions。
+- 下游：Agent Registry、Session Store、SessionPersistence、Workspace Registry、Credentials Provider、LLM、DefaultModel、SessionProjection、SessionTitle、Approval/UserQuestions。
 - wire DTO 到此为止；下游包不依赖 RPC/frame 类型。
 
 ## 生命周期、错误、取消与背压

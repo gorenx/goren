@@ -70,7 +70,8 @@ flowchart TD
     Assembly[DeepSeek Plugin assembly] -->|RegisterAdapter| Runtime[llm Runtime]
     Agent[agentloop 或其他 LLM Consumer] -->|PrepareCall / Stream| Runtime
     Runtime -->|GenerateOptions| Adapter[llmdeepseek Adapter]
-    Adapter -->|resolve config, credential, user id| Inputs[Launch environment and identity store]
+    Adapter -->|resolve config and user id| Inputs[Launch environment and identity store]
+    Adapter -->|request-scoped resolver| Credentials[Credentials Provider]
     Adapter -->|POST chat/completions| API[DeepSeek API]
     API -->|HTTP plus SSE bytes| Parser[SSE parser]
     Parser -->|data payloads| Translator[DeepSeek translator]
@@ -83,14 +84,15 @@ composition root 提供 `llm` Service 后再创建 DeepSeek Adapter，并把 rou
 
 ## 5. 配置与请求 generation
 
-配置只保存 credential reference，不保存明文 API key。主要字段包括 `apiKeyEnv`、`baseURL`、`thinking`、`reasoningEffort`、`maxTokens`、`defaultContextWindow`、`models`、`streamIdleTimeoutMs` 和 `retryPolicy`。默认 API key 环境变量是 `DEEPSEEK_API_KEY`，默认 base URL 是 `https://api.deepseek.com`。
+配置只保存 credential reference，不保存明文 API key。主要字段包括 `apiKeyEnv`、`baseURL`、`thinking`、`reasoningEffort`、`maxTokens`、`defaultContextWindow`、`models`、`streamIdleTimeoutMs` 和 `retryPolicy`。默认引用是 `DEEPSEEK_API_KEY`，由 composition 注入的 Credentials Provider 在每次请求开始时解析；默认 base URL 是 `https://api.deepseek.com`。Credentials precedence、Store 与 Host API 由[22 Credentials 与 API Key 管理](../../zh-CN/22-credentials-and-api-key-management.md)拥有。
 
 ```mermaid
 sequenceDiagram
     participant C as Plugin Factory
     participant R as ResolveOptions
     participant A as Adapter Stream
-    participant E as Environment
+    participant E as Launch environment and identity store
+    participant K as Credentials Provider
     participant D as DeepSeek API
 
     C->>R: strict Config plus launch environment
@@ -98,7 +100,8 @@ sequenceDiagram
     C->>A: register Adapter with snapshot resolver
     Note over A: Stream creation performs no network I/O
     A->>A: first Next starts one request generation
-    A->>E: resolve ConnectionOptions, API key, anonymous user id once
+    A->>E: resolve ConnectionOptions and anonymous user id once
+    A->>K: Resolve(apiKeyEnv) once for this request
     A->>D: POST baseURL/chat/completions
     D-->>A: HTTP/SSE response
 ```
@@ -159,7 +162,7 @@ HTTP 和 provider error 被映射为结构化 `llm.LlmFailure`；Adapter 不解�
 
 - 新 DeepSeek wire field 先由固定源或真实脱敏响应证明，再进入私有 wire DTO 和 mapper；
 - 新 Provider 实现自己的 `llm.Adapter` Plugin，不向本包增加 vendor switch；
-- 若未来加入 Credentials/Settings Service，只替换 resolver，不改变 Adapter 或 Agent—LLM contract；
+- Credentials Service 已通过 resolver 接入；未来 Settings Service 只替换 live options 来源，不改变 Adapter 或 Agent—LLM contract；
 - transport instrumentation 通过 `RequestSender` 或 request boundary 注入，不让 domain/runtime 依赖 HTTP DTO；
 - RetryPolicy 仍随 Provider registration 暴露，执行逻辑不能回填本包；
 - 真实 endpoint smoke 必须显式使用环境 credential、自跳过且单独记录，deterministic recording 不能提升为 `Environment Verified`。

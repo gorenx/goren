@@ -113,9 +113,9 @@ Headless 是不启动 Client Connection 的一次性 CLI adapter：读取一个 
 
 - Connection Host carrier：复制 `/api` HTTP unary、`rpcId` 关联、`RpcResult`/`RpcReceipt`、两条 WebSocket downlink、取消、body limit 与 Host/Origin trust fence。
 - API Proxy contract：保留纳入方法的 canonical method、payload/result schema、错误码与 frame union；Go handler 直接调用核心 Service。
-- 当前兼容切片包含 `host.describe`、九个主流程 `session.*` method、七个 `workspace.*`、`events.mux`、`events.host`、`respond`，以及它们依赖的 Session/Workspace/approval/question frame。`session.search`、`session.fork` 与 `session.attachment` 不在本轮。
+- 当前兼容切片包含 `host.describe`、`credentials.describe/set/unset`、九个主流程 `session.*` method、七个 `workspace.*`、`events.mux`、`events.host`、`respond`，以及它们依赖的 Session/Workspace/approval/question frame。`session.search`、`session.fork` 与 `session.attachment` 不在本轮。
 - Workspace 只纳入服务端 Registry、SQLite adapter、Session accounting 与协议/API；不复制浏览器 Workspace manager、目录选择 UI 或项目文件索引。
-- 根级 `web` 包提供仓库自有的极简主会话 UI，只消费既有 Host API/Frame，不拥有 Session、Agent、LLM 或持久化业务逻辑。
+- 根级 `web` 包提供仓库自有的主会话 UI，只消费既有 Host API/Frame，包含 DeepSeek API Key 设置但不拥有 Credentials precedence/存储、Session、Agent、LLM 或持久化业务逻辑。
 - TypeScript Client 代码不复制，但源 Client contract tests 作为 Go Server 的外部兼容验收方。
 
 默认 Connection Server composition 同端口提供 `/api`、WebSocket 与内嵌 UI 静态资源。该 UI 只用于主会话，不等同原版 DeepSeek Harness Web 产品；Deferred Headless composition 若实现，仍不监听端口。
@@ -125,7 +125,7 @@ Headless 是不启动 Client Connection 的一次性 CLI adapter：读取一个 
 - Headless CLI；
 - ACP Server 与 MCP Client Bridge；
 - Typert Host Gateway；只有纳入 endpoint 在固定源基线中由 Typert Remote 拥有时，才实现该 endpoint 所需的最小 descriptor 与 Host dispatch；
-- Subagent、Settings、Credentials、Goals、Remote extension 等非核心客户端功能；
+- Subagent、完整 Settings、扩展 Credentials Provider/watcher/event、Goals、Remote extension 等非核心客户端功能；
 - Codex/Claude Code/ACP subagent、Workflow、Schedule 等编排能力。
 
 Deferred 不算已复制，也不能通过空 handler 或固定成功响应占位。进入范围时仍保持源职责划分。

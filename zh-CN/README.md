@@ -27,6 +27,7 @@
 - [19 Session Persistence 与 SQLite 事实存储设计](./19-session-persistence-and-sqlite.md)：durable facts、Store/Persistence/Backend 边界、write-behind、cold recovery/resume、SQLite/sqlc schema 与事务。
 - [20 Workspace Registry、SQLite 与 API Gateway](./20-workspace-registry-and-api.md)：Workspace identity/order/accounting、历史 bootstrap、SQLite/sqlc Backend、七个 API、Host frame 与 `session.create({workspaceId})`。
 - [21 Web Agent 主会话闭环与能力边界](./21-web-agent-main-flow.md)：极简内嵌 Web UI 与固定 TypeScript Client 到 Go Agent Loop 的纵向能力矩阵、排除面、依赖方向与分层验收。
+- [22 Credentials 与 API Key 管理](./22-credentials-and-api-key-management.md)：Credentials Provider/Manager/Store 边界、local JSON Store、Host write-only API、DeepSeek 请求时解析与 Web API Key 设置。
 
 ## 模块内运行说明
 
@@ -38,12 +39,13 @@
 - [`llmretry/README.zh-CN.md`](../llmretry/README.zh-CN.md)：默认 RetryPolicy Consumer 的职责、normal/always 决策、durable retry events、历史投影和取消/卸载流程。
 - [`internal/llmdeepseek/README.zh-CN.md`](../internal/llmdeepseek/README.zh-CN.md)：DeepSeek direct Provider adapter 的 typed config、lazy request、HTTP/SSE、流转换、错误/取消和 response recordings。
 - [`web/README.zh-CN.md`](../web/README.zh-CN.md)：内嵌主会话 UI、浏览器状态对象、Host RPC/WebSocket 交互与边界。
+- [`credentials/README.zh-CN.md`](../credentials/README.zh-CN.md)：Credentials 能力、Manager precedence、storage-only Store 与 local owner-only 文件实现。
 
 首次阅读按 `01`–`05` 顺序理解全局设计；进入实现时读取对应模块文档，再从 `08` 查看当前进度。实现单个能力时，先从 `01` 确认范围，再读其拥有契约的文档。DeepSeek Harness 的 Service Definition / Provider / Consumer、事件 owner 和生命周期是默认职责边界；Go 包不机械复制每个 npm 包，但没有明确证据时也不另起一套领域切分。
 
 ## 权威关系
 
-- 本目录 `01`–`05` 拥有全局设计，`06`、`07`、`09`–`21` 拥有已进入实现的稳定模块设计，`08` 单独拥有日期性实施进度与证据。
+- 本目录 `01`–`05` 拥有全局设计，`06`、`07`、`09`–`22` 拥有已进入实现的稳定模块设计，`08` 单独拥有日期性实施进度与证据。
 - 子模块 `README.zh-CN.md` 解释贴近代码的职责、工作原理和交互流程；跨模块契约仍由本目录对应编号文档拥有，实施证据仍只由 `08` 拥有。
 - 根目录 `README.md` 与 `README.zh-CN.md` 只说明项目背景。
 - TypeScript 的行为证据来自固定 commit；源仓库后续变化不会自动成为 Go 需求。
