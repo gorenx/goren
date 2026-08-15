@@ -35,7 +35,7 @@ flowchart TB
         FS["Filesystem / Shell / PTY / LSP"]
         SB["Sandbox / Approval"]
         ORCH["Deferred: Jobs / Subagent / Workflow"]
-        DATA["JSONL / SQLite + sqlc / Projection"]
+        DATA["Session Persistence / SQLite + sqlc / Projection"]
     end
 
     TOOLS --> PROVIDERS
@@ -85,22 +85,24 @@ live Registry、durable Inbox、Agent-scoped event、initiator attribution 与 m
 
 ### 2.3 Session Data Plane
 
-**拥有**：Session Header、Event envelope、连续 `seq`、surface、fork、repair、append/flush 和派生历史。
+**拥有**：Session Header、Event envelope、连续 `seq`、surface、fork、append/flush 和派生历史；Persistence application owner 另行拥有 cold repair 编排。
 
 **不拥有**：谁触发 Turn、Event 业务决策、JSONL/SQLite 具体 I/O。
 
 独立原因：Session 同时被 Agent、持久化、projection 和 API Proxy 消费，且 append 的串行一致性与后台 projection 不同。把 storage driver 放入 Session core 会阻止替换并污染 replay。
 
-已进入实现的 Header/Event、内存 log、surface 和 Store 生命周期由[10 Session Core 与生命周期模块设计](./10-session-core-and-lifecycle.md)拥有；fork、repair 和派生历史仍按本边界后续进入，不因首个切片尚未包含而转移 owner。
+已进入实现的 Header/Event、内存 log、surface 和 Store 生命周期由[10 Session Core 与生命周期模块设计](./10-session-core-and-lifecycle.md)拥有；cold repair 由[19 Session Persistence 与 SQLite 事实存储设计](./19-session-persistence-and-sqlite.md)拥有。fork 与派生查询仍按各自 use case 边界进入。
 
 ### 2.4 Storage Adapter
 
 存储依赖保持：
 
 ```text
-Session / Application use case
-  -> consumer-owned Store interface
-  -> JSONL adapter
+Agent / API consumer
+  -> session/persistence.Persistence
+  -> Coordinator
+  -> storage-only Backend
+  -> SQLite fact adapter (default) or JSONL (optional replacement)
 
 Projection use case
   -> consumer-owned ProjectionStore interface
@@ -115,7 +117,7 @@ JSONL、SQLite 和未来其他 adapter 只拥有序列化、文件/数据库 I/O
 - retention、authorization、permission 或 workflow policy；
 - use case 的原子边界。
 
-Session Recovery owner 检测开放轮次并决定追加 `interrupted` 等事件；Projection owner 把 Event 转换为明确的 projection mutation。Adapter 只持久化调用者已经决定的数据。sqlc 生成类型和 driver 类型必须在 adapter 内映射，不能成为 Store interface 或领域模型。
+Session Persistence Coordinator 检测开放轮次并决定追加 closing events；Projection owner 把 Event 转换为明确的 projection mutation。Adapter 只持久化调用者已经决定的数据。sqlc 生成类型和 driver 类型必须在 adapter 内映射，不能成为 `Persistence`/`Backend` 或领域模型。
 
 ### 2.5 Capability Plane
 

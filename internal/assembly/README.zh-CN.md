@@ -26,7 +26,9 @@ flowchart TD
     I[any load failure] --> J[unload accepted handles in reverse]
 ```
 
-Session Projection 提供 `sessionProjections`；Session Title 消费 `sessions` 与 `sessionProjections` 后提供 `sessionTitle`；API Proxy 再消费两者。Specs 可以故意乱序，依赖结算不能依赖文件或列表顺序。
+Session Projection 提供 `sessionProjections`；Session Title 消费 `sessions` 与 `sessionProjections` 后提供 `sessionTitle`；Session Persistence SQLite 消费 `sessions` 并提供 `sessionPersistence`；Agent Loop 和 API Proxy 再按需消费 durability capability。Specs 可以故意乱序，依赖结算不能依赖文件或列表顺序。
+
+默认 CLI 的 `--session-db` 指定 SQLite facts 路径；未指定时使用用户配置目录下的 `goren/sessions.sqlite`。Factory 严格解码 `path`、`journalMode` 与 `writeBatchMaxDelayMs`，再连接 `session/persistence.Coordinator` 和 `session/persistence/sqlite.Adapter`，不在 composition root 实现存储或 recovery 规则。
 
 ## 上下游与生命周期
 

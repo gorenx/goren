@@ -117,7 +117,7 @@ Host WebSocket 只发送进程级变化：
 - `host/session-status`；
 - `host/session-error`。
 
-Host stream 不重复发送全量 baseline。重连后的 authoritative baseline 由 `session.list` 获取，单 Session 历史由 `session.history` 获取；Mux 通过 `session/subscribed(lastSeq)`、pending interaction replay 和 queue snapshot 重建当前进程内的订阅位置。这样 Host edge 不需要伪装成持久化日志，也不会与 list baseline 形成双重 owner；进程重启后的 cold recovery 仍需阶段 5 的 durable owner，不能由 live replay table 冒充。
+Host stream 不重复发送全量 baseline。重连后的 authoritative baseline 由 `session.list` 获取，单 Session 历史由 `session.history` 获取；Mux 通过 `session/subscribed(lastSeq)`、pending interaction replay 和 queue snapshot 重建当前进程内的订阅位置。Gateway 的 list 合并 live Store 与 cold Persistence，history 对 cold Session 使用 validated inspection，create 指定已有 cold identity 时通过 Agent Factory resume。这样 Host edge 不伪装成持久化日志，也不会与 list baseline 形成双重 owner；live replay table 仍不冒充进程重启后的 callback/socket 恢复。
 
 ## 7. 并发、背压、失败与生命周期
 
@@ -134,7 +134,7 @@ TypeScript WebApiClient
   -> Echo Connection Host
   -> API Proxy Catalog + method-owned decoder
   -> SessionGateway
-  -> Agent Registry / Session Store / LLM / DefaultModel / Projection / Title
+  -> Agent Registry / Session Store / Persistence / LLM / DefaultModel / Projection / Title
   -> typed Outcome
   -> ServerResponse
 ```
@@ -159,7 +159,7 @@ wire DTO 止于 `apiproxy`；Agent、Session、LLM 和默认模型包不依赖 C
 - Approval/Question 已由[17](./17-approval-user-questions-and-interaction-gateway.md)持有 pending、requested/resolved frame、replay 和 result schema；新增 interaction 必须复用同一 generic correlation 与 broker seam，不能把具体 schema 塞回 Session Gateway；
 - `session.search`、`fork` 和 attachment method 只有在其真实 Session/Workspace/Attachment capability 进入后才注册；
 - Session Title 的 first-prompt/all-prompts LLM Provider 作为独立插件进入，不能把模型调用塞进 `SessionGateway` 或 core Title Service；
-- JSONL、SQLite/sqlc 只实现业务事实存取 adapter，resume/load/repair 由 Session/application owner 决定；
+- JSONL、SQLite/sqlc 只实现业务事实存取 adapter，resume/load/repair 由 `session/persistence` Coordinator 决定；
 - Tool view、projection、remote event 和 Workspace frame 由相应 Provider 贡献，不能在 SessionGateway 中加入 optional global model；
 - 新增 method 必须经过 method-owned typed decoder、业务 success/failure/cancel 和固定源 Client/schema contract；
 - 浏览器 Connection、Web UI、SDK、Typert generator 和 `!!js` 不因 Session Gateway 扩展而进入 Go 依赖闭包。

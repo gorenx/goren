@@ -26,12 +26,12 @@ flowchart LR
     B --> A
 ```
 
-Session list/history 只读取 projection capability，不包含 projection fold。`session.rename` 把 raw title 交给 `sessiontitle.TitleService`；成功只映射 `{title, seq}`。Projection change 被映射为 `session/projection`，value 必须存在且是合法 JSON。
+Session list 合并 live Store 与 cold Persistence，history 对 live facts 取 detached snapshot、对 cold facts 取 validated inspection，再在 Gateway 内完成 wire pagination；两者只消费 projection capability，不拥有 projection fold。`session.create` 指定已有 cold identity 时触发 Agent resume。`session.rename` 把 raw title 交给 `sessiontitle.TitleService`；成功只映射 `{title, seq}`。Projection change 被映射为 `session/projection`，value 必须存在且是合法 JSON。
 
 ## 上下游
 
 - 上游：Connection dispatcher/event source、TypeScript wire requests。
-- 下游：Agent Registry、Session Store、LLM、DefaultModel、SessionProjection、SessionTitle、Approval/UserQuestions。
+- 下游：Agent Registry、Session Store、SessionPersistence、LLM、DefaultModel、SessionProjection、SessionTitle、Approval/UserQuestions。
 - wire DTO 到此为止；下游包不依赖 RPC/frame 类型。
 
 ## 生命周期、错误、取消与背压

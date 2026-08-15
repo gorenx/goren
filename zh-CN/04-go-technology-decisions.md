@@ -16,7 +16,7 @@
 | D-03 | 所有运行时配置使用 owner-defined Go typed config；不实现 `!!js` 或任何配置脚本 evaluator | Accepted |
 | D-04 | JSON 使用标准库；JSON Schema 复用 `jsonschema/v6` | Accepted |
 | D-05 | 把现有 `llm` 迁移成唯一 Harness LLM contract，不建立平行实现 | Accepted |
-| D-06 | JSONL 保持 Session 事实日志；SQLite adapter 使用 sqlc 生成访问代码 | Accepted |
+| D-06 | Session facts 通过 storage-only Backend 持久化；默认 SQLite adapter 使用 sqlc，JSONL 可替换 | Accepted |
 | D-07 | 文件监听使用 `fsnotify`，由上层维护递归目录与原子替换 | Proposed |
 | D-08 | 子进程使用 `os/exec`，跨平台 PTY 候选为 `go-pty`，Sandbox 按平台 Provider 分离 | Proposed |
 | D-09 | Connection Host 使用 Echo v5 与 `coder/websocket`；ACP、MCP、Typert 均 Deferred | Accepted |
@@ -147,27 +147,13 @@ DeepSeek direct adapter 的配置、调用链、SSE 和失败映射由[13 Harnes
 
 ## 7. D-06：Session 与持久化
 
-### 7.1 JSONL
+Session persistence 分为应用层 `Persistence`、storage-only `Backend` 和具体 adapter。Coordinator 拥有 live/cold 协调、连续 seq、write-behind、recovery 与 transaction intent；adapter 只保存 Header/Event records、执行被请求的事务并报告技术状态。完整设计见[19 Session Persistence 与 SQLite 事实存储设计](./19-session-persistence-and-sqlite.md)。
 
-标准库完成 JSONL append：
+SQLite 是当前默认 Session fact Backend。查询与写入统一由 [`sqlc`](https://sqlc.dev/) 按 SQLite dialect 根据 SQL schema/query 生成 `database/sql` Go 代码，driver 选用 [`modernc.org/sqlite`](https://pkg.go.dev/modernc.org/sqlite)，保持无 CGO 和单二进制交付。SQLite schema、query、`sqlc.yaml` 和生成包全部位于 `session/persistence/sqlite` owner 内。
 
-- 一个 Session 一个串行 append owner；
-- 每条记录完整编码后一次写入，并检查 short write；
-- flush 与 durability policy 显式区分；
-- adapter 检测并报告截断尾行、checksum/codec 与 I/O 错误，但不决定业务 repair；
-- Session Recovery owner 根据已读取事件判断开放轮次，并通过普通 append 接口写入 `interrupted` 等恢复事件；
-- atomic metadata 用同目录临时文件、flush 和 rename；
-- reader 有单条 event 大小上限，不能使用 `bufio.Scanner` 默认 token limit。
+JSONL 与 SQLite 是同一 `Backend` port 的可替换 Provider，不执行双写，也不形成“JSONL 权威事实 + SQLite 事实副本”。若后续为 raw artifact、可移植导出或运维需求加入 JSONL，它仍不得分配 `seq`、创建 Session Event、判断 Turn/Step、实施 repair、retention 或权限策略。独立的 SQLite projection/query index 是可从事实流重建的 read model，不与当前事实数据库混为一体。
 
-JSONL adapter 不分配 `seq`、不创建 Session Event、不判断 turn/step 状态，也不实施 retention 或权限策略。它只持久化 Session owner 已经构造并验证的数据。
-
-### 7.2 SQLite
-
-SQLite 查询与写入统一由 [`sqlc`](https://sqlc.dev/) 按 SQLite dialect 根据 SQL schema/query 生成 `database/sql` Go 代码。默认 driver 候选仍为 [`modernc.org/sqlite`](https://pkg.go.dev/modernc.org/sqlite)，以保持无 CGO 和交叉构建；driver 的首次引入仍需完成依赖准入与目标平台验证。
-
-SQLite adapter 只负责 source 中相应 store、projection storage 和 query 的持久化职责，不成为所有模块共享的“通用数据库”。每个 schema 有明确 owner、migration version 和 transaction boundary。JSONL 事实日志与 SQLite projection 的一致性通过 checkpoint/重建验证，不执行无法证明的双写事务。
-
-Projection 的业务语义位于 Projection/Application owner：它决定哪些 Event 产生哪些 mutation、字段如何解释以及一个 use case 需要哪些操作原子完成。SQLite adapter 只执行这些已决定的 mutation/query 和调用方要求的 transaction，不在 SQL trigger、生成 query wrapper 或 row mapper 中隐藏业务状态机。
+Projection 的业务语义仍位于 Projection/Application owner：它决定哪些 Event 产生哪些 mutation、字段如何解释以及一个 use case 需要哪些操作原子完成。任何 SQLite adapter 都只执行这些已决定的 mutation/query 和调用方要求的 transaction，不在 SQL trigger、生成 query wrapper 或 row mapper 中隐藏业务状态机。
 
 sqlc 使用规则：
 
@@ -177,10 +163,10 @@ sqlc 使用规则：
 - 生成包放在 repository-private 路径，不手工修改；
 - 生成的 row、nullable wrapper 和 driver 类型只属于 adapter，返回前映射为 owner-defined 类型；
 - transaction boundary 由 use case owner 决定，adapter 使用 sqlc 的 transaction-bound query handle 执行；
-- sqlc 工具版本、配置和生成结果随首次 SQLite 实现一起提交；
+- sqlc 配置放在拥有它的 adapter 目录，工具版本、配置和生成结果随 SQLite 实现一起提交；
 - CI 重新生成并检查工作树无差异，再编译和运行 migration/query/integration tests。
 
-引入前必须用目标平台基准验证写入延迟、文件锁、WAL、busy timeout、备份与崩溃恢复；若不满足要求，再以 ADR 更换 driver，不能让 driver 类型泄漏到 Service Definition。
+当前实现固定 `application_id`、schema version、foreign keys、busy timeout、`synchronous=FULL` 与受限 journal mode。目标环境仍需独立验证写入延迟、文件锁、WAL、备份与崩溃行为；若不满足要求，再以 ADR 更换 driver，不能让 driver 类型泄漏到 Service Definition。
 
 ## 8. D-07：文件监听
 

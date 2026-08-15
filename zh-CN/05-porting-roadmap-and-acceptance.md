@@ -196,23 +196,24 @@ TypeScript/Go 双向 Message/StreamChunk fixture、所有 finish reason、partia
 
 ### Go 交付
 
-- JSONL Session Store 的 append/flush/load adapter，以及 Session owner 的 fork/repair use case；
+- backend-neutral `Persistence` 与 storage-only `Backend`，以及 Session owner 的 load/inspect/repair/prepare use case；
+- SQLite Session fact Backend，使用领域目录内的 sqlc 配置和 repository-private 生成包；
+- write-behind、flush/dispose drain、stable revision 与 per-Session serialization；
+- cold `session.list/history/create(resume)` 和 Agent publication handoff；
 - reconnect 所需的 stream baseline、pending interaction replay 和 queue snapshot；
-- SQLite projection/query 仅在纳入的 Client API 确实需要时加入，并统一使用 sqlc 生成 repository-private adapter；
-- context transform、compaction、attachment/spill 及 model-visible budget；
-- stable identity 与 scope。
+- JSONL 只有出现 raw artifact/export 等实际需求时才作为同一 Backend port 的替换 Provider 进入。
 
 ### Gate
 
-- append crash、截断尾行、未知 required/ignorable event、开放 turn repair 有测试；
-- JSONL adapter 只报告技术读取状态；开放 turn 的 `interrupted` 决策由 Session Recovery 测试证明；
+- append crash、torn tail、未知 required/ignorable event、开放 Turn/Step/Tool repair 有测试；
+- adapter 只报告技术读取状态；开放状态的 closing facts 由 Session Recovery 测试证明；
 - reconnect 不丢 committed event，不把未提交 live state 冒充 durable fact；
 - compaction 前后 current request、Tool 关联和来源 evidence 不丢失；
 - 大事件、慢磁盘、锁冲突、磁盘满和取消不会产生伪成功；
 - 若使用 SQLite，migration 与 sqlc query 生成可重复，生成后工作树无差异；
 - sqlc row/nullable/driver 类型不泄漏到 Session 或领域 contract；
 - Projection use case 决定 event-to-mutation 与 transaction intent，SQLite/sqlc adapter 只执行和映射；
-- SQLite projection 可从 JSONL 事实流重建。
+- Session fact Backend 可替换，独立 SQLite projection/query index 可从事实流重建。
 
 ## 9. 阶段 6：按客户端需求扩展服务端能力
 

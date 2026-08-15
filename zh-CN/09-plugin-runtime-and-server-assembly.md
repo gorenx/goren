@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有 `plugin` 与 `internal/assembly` 的职责、Go 类型模型、上下游流程和生命周期。全局依赖方向与 Child Scope 使用规则由[02 Go 运行时架构与插件模型](./02-runtime-architecture-and-plugin-model.md)拥有；System Prompt、Tools、Agent Loop、Session API Gateway、Interaction Gateway、Session Projection 与 Title 的消费语义分别由[11](./11-system-prompt-registry-and-assembly.md)、[12](./12-tools-registry-and-execution-pipeline.md)、[15](./15-agent-loop-and-request-driver.md)、[16](./16-session-api-gateway-and-live-frames.md)、[17](./17-approval-user-questions-and-interaction-gateway.md)和[18](./18-session-projection-and-title.md)拥有；当前实施证据只见[08 实施进度](./08-implementation-progress.md)。
+本文拥有 `plugin` 与 `internal/assembly` 的职责、Go 类型模型、上下游流程和生命周期。全局依赖方向与 Child Scope 使用规则由[02 Go 运行时架构与插件模型](./02-runtime-architecture-and-plugin-model.md)拥有；System Prompt、Tools、Agent Loop、Session API Gateway、Interaction Gateway、Session Projection/Title 与 Session Persistence 的消费语义分别由[11](./11-system-prompt-registry-and-assembly.md)、[12](./12-tools-registry-and-execution-pipeline.md)、[15](./15-agent-loop-and-request-driver.md)、[16](./16-session-api-gateway-and-live-frames.md)、[17](./17-approval-user-questions-and-interaction-gateway.md)、[18](./18-session-projection-and-title.md)和[19](./19-session-persistence-and-sqlite.md)拥有；当前实施证据只见[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 源职责映射
 
@@ -26,6 +26,7 @@
 | `packages/core/llm-retry` | `internal/assembly` 的 LLM Retry Plugin | 消费 Agent request-error seam，安装默认 provider-routed retry Consumer |
 | `packages/session/session-projection` | `internal/assembly` 的 Session Projection Plugin | 提供 `sessionProjections` Registry |
 | `packages/session/session-title` | `internal/assembly` 的 Session Title Plugin | 消费 Session/Projection，提供 log-backed `sessionTitle` |
+| `packages/session/session-persistence-sqlite` | `internal/assembly` 的 Session Persistence SQLite Plugin | 消费 Session Store，提供 `sessionPersistence` |
 | `packages/interaction/user-approval` | `internal/assembly` 的 Approval Plugin | 消费 System Prompt，提供 `approval` Service |
 | `packages/interaction/user-questions` | `internal/assembly` 的 UserQuestions Plugin | 提供 `userQuestions` Service，并可读取 live Agent Registry |
 | `packages/interaction/tool-ask-user` | `internal/assembly` 的 Tool Ask User Plugin | 消费 Tools/UserQuestions 并注册 `ask_user_question` |
@@ -166,6 +167,7 @@ shipped Catalog 当前只有：
 - `@deepseek-ai/dsh-llm-deepseek` 的 direct DeepSeek Adapter Consumer；
 - `@deepseek-ai/dsh-llm-retry` 的默认 RetryPolicy Consumer；
 - `@deepseek-ai/dsh-session` 的内存 Store Provider；
+- `@deepseek-ai/dsh-session-persistence-sqlite` 的 SQLite fact Backend 与 Persistence Coordinator；
 - `@deepseek-ai/dsh-session-projection` 的内存 Registry Provider；
 - `@deepseek-ai/dsh-session-title` 的 log-backed Title Provider；
 - `@deepseek-ai/dsh-system-prompt` 的 Registry/Assembly Provider；

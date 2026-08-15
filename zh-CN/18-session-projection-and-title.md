@@ -10,8 +10,8 @@
 
 | TypeScript owner | Go owner | 保留职责 |
 | --- | --- | --- |
-| `packages/session/session-projection` | `sessionprojection` | projection unit 注册、live fold、snapshot、checkpoint/restore 与 change feed |
-| `packages/session/session-title` | `sessiontitle` | `session/title`、fallback、Provider seam、rename/refresh、`title` unit |
+| `packages/session/session-projection` | `session/projection`（alias `sessionprojection`） | projection unit 注册、live fold、snapshot、checkpoint/restore 与 change feed |
+| `packages/session/session-title` | `session/title`（alias `sessiontitle`） | `session/title`、fallback、Provider seam、rename/refresh、`title` unit |
 | `packages/host/apiproxy` 的 Session API | `apiproxy.SessionGateway` | list/history baseline、`session.rename`、`session/projection` frame |
 | Client `ProjectionValueStore` 与 `Session.rename` | 固定源码 contract oracle | `key -> {value, seq}` 的 higher-seq-wins 与 rename 即时折入验证 |
 
@@ -71,7 +71,7 @@ flowchart LR
 
 `Checkpoint` 只缓存 `{ver, seq, val}`。它可以丢弃、失效或从日志重建，不能成为业务事实。`RestoreFloor` 找出最低可用读取点；`Restore` 只接受连续 suffix，版本不兼容且缺少从 `seq=0` 的事实时拒绝，不能用空 state 伪造恢复成功。
 
-当前内存 Registry 与未来 SQLite/sqlc adapter 是不同职责：Registry 决定 fold；adapter 只保存可重建 checkpoint。JSONL 等业务存储仍只保存 Header/Event facts。
+当前内存 Registry 与未来 SQLite/sqlc projection adapter 是不同职责：Registry 决定 fold；adapter 只保存可重建 checkpoint。默认 Session Persistence SQLite 只保存 Header/Event facts，见[19](./19-session-persistence-and-sqlite.md)，不能被描述为 projection store。
 
 ## 5. `session/title` 事实
 

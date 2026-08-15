@@ -24,12 +24,11 @@
 - [16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)：九个 `session.*` method、默认模型选择、Session/Agent/Projection/Title consumer adapter、Mux baseline/live 与 Host edge。
 - [17 Approval、UserQuestions 与 Interaction Gateway](./17-approval-user-questions-and-interaction-gateway.md)：Approval policy/audit、UserQuestions Provider、`ask_user_question` Consumer，以及 requested/respond/resolved/replay 闭环。
 - [18 Session Projection 与 Session Title 模块设计](./18-session-projection-and-title.md)：通用 projection unit/registry/checkpoint、`session/title`、fallback/Provider 调度、rename 与客户端 higher-seq-wins。
+- [19 Session Persistence 与 SQLite 事实存储设计](./19-session-persistence-and-sqlite.md)：durable facts、Store/Persistence/Backend 边界、write-behind、cold recovery/resume、SQLite/sqlc schema 与事务。
 
 ## 模块内运行说明
 
 - [`session/README.zh-CN.md`](../session/README.zh-CN.md)：Session append-only log、Store、publication、`DeferAfterEvent` 与生命周期。
-- [`sessionprojection/README.zh-CN.md`](../sessionprojection/README.zh-CN.md)：通用 projection unit、live fold、snapshot、checkpoint/restore 与 change feed。
-- [`sessiontitle/README.zh-CN.md`](../sessiontitle/README.zh-CN.md)：标题事实、规范化、fallback、Provider 调度、rename/refresh 与取消。
 - [`apiproxy/README.zh-CN.md`](../apiproxy/README.zh-CN.md)：typed method adapter、Session/Interaction Gateway、live frame、correlation 与背压。
 - [`internal/assembly/README.zh-CN.md`](../internal/assembly/README.zh-CN.md)：Factory Catalog、typed config、依赖结算与 composition rollback。
 - [`llmretry/README.zh-CN.md`](../llmretry/README.zh-CN.md)：默认 RetryPolicy Consumer 的职责、normal/always 决策、durable retry events、历史投影和取消/卸载流程。
@@ -39,7 +38,7 @@
 
 ## 权威关系
 
-- 本目录 `01`–`05` 拥有全局设计，`06`、`07`、`09`–`18` 拥有已进入实现的稳定模块设计，`08` 单独拥有日期性实施进度与证据。
+- 本目录 `01`–`05` 拥有全局设计，`06`、`07`、`09`–`19` 拥有已进入实现的稳定模块设计，`08` 单独拥有日期性实施进度与证据。
 - 子模块 `README.zh-CN.md` 解释贴近代码的职责、工作原理和交互流程；跨模块契约仍由本目录对应编号文档拥有，实施证据仍只由 `08` 拥有。
 - 根目录 `README.md` 与 `README.zh-CN.md` 只说明项目背景。
 - TypeScript 的行为证据来自固定 commit；源仓库后续变化不会自动成为 Go 需求。

@@ -104,10 +104,10 @@ Headless 是不启动 Client Connection 的一次性 CLI adapter：读取一个 
 
 ### 6.3 Session 持久化与查询
 
-- Session JSONL persistence、repair、projection、list/history/query 与 title；
+- Session backend-neutral persistence、默认 SQLite facts、repair、projection、list/history/query 与 title；
 - reconnect 所需的 stream baseline、pending interaction replay 和 queue snapshot；
 - storage、identity 与 runtime invariants 中被上述路径实际消费的职责；
-- SQLite search、stats 和 telemetry 不是协议握手前置，按实际客户端能力要求进入后续切片；进入后统一通过 sqlc 生成的 repository-private adapter 访问。
+- JSONL raw artifact/export、SQLite search、stats 和 telemetry 不是协议握手前置，按实际客户端能力要求进入后续切片；SQLite 能力进入后统一通过领域目录内的 sqlc 配置生成 repository-private adapter。
 
 ### 6.4 Client Connection 与 API
 
