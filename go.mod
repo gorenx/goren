@@ -4,6 +4,7 @@ go 1.26.6
 
 require (
 	github.com/coder/websocket v1.8.15
+	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/labstack/echo/v5 v5.3.1
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	modernc.org/sqlite v1.56.0

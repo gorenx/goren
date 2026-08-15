@@ -56,6 +56,8 @@ const hostSchemas = await load<{ hostDescribeRequestSchema: Parser; hostDescribe
 const sessionSchemas = await load<{
   sessionListRequestSchema: Parser
   sessionListValueSchema: Parser
+  sessionSearchRequestSchema: Parser
+  sessionSearchValueSchema: Parser
   sessionCreateRequestSchema: Parser
   sessionCreateValueSchema: Parser
   sessionRenameRequestSchema: Parser
@@ -168,6 +170,25 @@ const candidates: Record<string, { schema: Parser; values: Candidate[] }> = {
       { name: 'attached', input: { items: [{ sessionId: 'session-1', updatedAt: 7, running: false, blank: true, cwd: '/workspace' }] } },
       { name: 'attached-projections', input: { items: [{ sessionId: 'session-1', updatedAt: 7, running: false, blank: false, projections: { asOfSeq: 3, values: { title: 'Named' } } }] } },
       { name: 'missing-items', input: {} },
+    ],
+  },
+  sessionSearchRequest: {
+    schema: sessionSchemas.sessionSearchRequestSchema,
+    values: [
+      { name: 'trimmed', input: { query: '  exact phrase  ', ignored: true } },
+      { name: 'empty', input: { query: '   ' } },
+      { name: 'nul', input: { query: 'bad\0query' } },
+      { name: 'too-long-utf16', input: { query: '😀'.repeat(251) } },
+    ],
+  },
+  sessionSearchValue: {
+    schema: sessionSchemas.sessionSearchValueSchema,
+    values: [
+      { name: 'empty', input: { items: [], hasMore: false } },
+      { name: 'match', input: { items: [{ sessionId: 'session-1', snippet: 'matching text' }], hasMore: true } },
+      { name: 'snippet-240-code-points', input: { items: [{ sessionId: 'session-1', snippet: '😀'.repeat(240) }], hasMore: false } },
+      { name: 'snippet-too-long', input: { items: [{ sessionId: 'session-1', snippet: '😀'.repeat(241) }], hasMore: false } },
+      { name: 'too-many-items', input: { items: Array.from({ length: 21 }, (_, index) => ({ sessionId: `session-${index}`, snippet: 'match' })), hasMore: true } },
     ],
   },
   sessionCreateRequest: {

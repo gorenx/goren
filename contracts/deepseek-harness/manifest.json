@@ -35,6 +35,7 @@
       "llm.providers",
       "llm.models",
       "session.list",
+      "session.search",
       "session.create",
       "session.rename",
       "session.history",
@@ -284,6 +285,7 @@
     "Typert code generation",
     "browser Connection implementation",
     "!!js evaluator",
+    "session.fork",
     "Tools Code Mode generated SDK and Code Runtime bridge"
   ],
   "deferred": [
@@ -291,7 +293,7 @@
     "ACP stdio adapter",
     "MCP Client Bridge",
     "Jobs and Subagent workflow",
-    "session.search, session.fork, and session.attachment",
+    "session.attachment",
     "unary methods outside the included host.describe, session, and workspace slices"
   ]
 }

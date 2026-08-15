@@ -16,9 +16,10 @@ import (
 // SessionPersistenceConfig configures the durable Session capability. SQLite
 // is the built-in Backend adapter, not a separately loadable plugin.
 type SessionPersistenceConfig struct {
-	Path                 string                 `json:"path"`
-	JournalMode          sesssqlite.JournalMode `json:"journalMode,omitempty"`
-	WriteBatchMaxDelayMS int64                  `json:"writeBatchMaxDelayMs,omitempty"`
+	Path                     string                 `json:"path"`
+	JournalMode              sesssqlite.JournalMode `json:"journalMode,omitempty"`
+	WriteBatchMaxDelayMS     int64                  `json:"writeBatchMaxDelayMs,omitempty"`
+	PreparedSessionCacheSize int                    `json:"preparedSessionCacheSize,omitempty"`
 }
 
 type sessionPersistenceFactory struct{}
@@ -41,6 +42,9 @@ func (sessionPersistenceFactory) DecodeConfig(
 		if candidate.WriteBatchMaxDelayMS < 0 {
 			return errors.New("writeBatchMaxDelayMs must be a positive integer")
 		}
+		if candidate.PreparedSessionCacheSize < 0 {
+			return errors.New("preparedSessionCacheSize must be a positive integer")
+		}
 		return nil
 	})
 	if err != nil {
@@ -51,6 +55,9 @@ func (sessionPersistenceFactory) DecodeConfig(
 	}
 	if settings.WriteBatchMaxDelayMS == 0 {
 		settings.WriteBatchMaxDelayMS = sesspersist.DefaultWriteBatchMaxDelay.Milliseconds()
+	}
+	if settings.PreparedSessionCacheSize == 0 {
+		settings.PreparedSessionCacheSize = sesspersist.DefaultPreparedSessionCache
 	}
 	return settings, nil
 }
@@ -91,7 +98,8 @@ func (instance *sessionPersistencePlugin) Apply(
 	durability, err := sesspersist.NewSessionLogStore(
 		requestContext, pluginScope, store, storage,
 		sesspersist.SessionLogStoreOptions{
-			WriteBatchMaxDelay: time.Duration(instance.settings.WriteBatchMaxDelayMS) * time.Millisecond,
+			WriteBatchMaxDelay:       time.Duration(instance.settings.WriteBatchMaxDelayMS) * time.Millisecond,
+			PreparedSessionCacheSize: instance.settings.PreparedSessionCacheSize,
 		},
 	)
 	if err != nil {

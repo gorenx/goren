@@ -828,6 +828,13 @@ func TestFirstCancelCauseSurvivesDisposalRace(t *testing.T) {
 		}},
 		llm.FinishChunk{Reason: llm.ToolCallsFinish{}},
 	}})
+	durabilityErrors := make(chan error, 1)
+	if _, err := session.OnFlush(state.pluginScope, func(checkpointContext context.Context, _ *session.Session) error {
+		durabilityErrors <- checkpointContext.Err()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	bodyStarted := make(chan struct{})
 	bodyCanceled := make(chan struct{})
 	releaseBody := make(chan struct{})
@@ -884,6 +891,14 @@ func TestFirstCancelCauseSurvivesDisposalRace(t *testing.T) {
 	ending := lastTurnEnd(t, handle.Subject.SessionValue())
 	if ending.Kind != "aborted" || ending.Reason == nil || ending.Reason.Kind != "user" {
 		t.Fatalf("turn ending = %#v, want first user cancellation", ending)
+	}
+	select {
+	case durabilityErr := <-durabilityErrors:
+		if durabilityErr != nil {
+			t.Fatalf("turn durability Context = %v, want usable Context after cancellation", durabilityErr)
+		}
+	default:
+		t.Fatal("canceled turn did not reach the durability checkpoint")
 	}
 }
 
