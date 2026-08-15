@@ -254,6 +254,19 @@ func SerialFrom[P, R any](requestContext context.Context, sourceScope *Scope, to
 	return Serial(requestContext, engine, topic, payload)
 }
 
+// SerialScopedFrom dispatches serial listeners owned by global, ancestor, or
+// exact selected scopes. Descendant and sibling listeners are excluded.
+func SerialScopedFrom[P, R any](requestContext context.Context, sourceScope *Scope, selectedKey ScopeKey, topic EventKey[P, R], payload P) (Decision[R], error) {
+	engine, err := runtimeFromScope(sourceScope)
+	if err != nil {
+		return Decision[R]{}, err
+	}
+	if topic.ref.mode != ModeSerial {
+		return Decision[R]{}, fmt.Errorf("plugin: event %q uses %s, not serial", topic.ref.name, topic.ref.mode)
+	}
+	return dispatchDecisionAt(requestContext, engine, topic, payload, &selectedKey)
+}
+
 // Bail synchronously invokes listeners in order and stops at the first explicit bail.
 func Bail[P, R any](requestContext context.Context, engine *Runtime, topic EventKey[P, R], payload P) (Decision[R], error) {
 	if topic.ref.mode != ModeBail {
@@ -314,7 +327,11 @@ func waterfallAt[P, R any](requestContext context.Context, engine *Runtime, sele
 }
 
 func dispatchDecision[P, R any](requestContext context.Context, engine *Runtime, topic EventKey[P, R], payload P) (Decision[R], error) {
-	callbacks, err := decisionSubscriptions[P, R](engine, topic.ref, nil)
+	return dispatchDecisionAt(requestContext, engine, topic, payload, nil)
+}
+
+func dispatchDecisionAt[P, R any](requestContext context.Context, engine *Runtime, topic EventKey[P, R], payload P, selectedKey *ScopeKey) (Decision[R], error) {
+	callbacks, err := decisionSubscriptions[P, R](engine, topic.ref, selectedKey)
 	if err != nil {
 		return Decision[R]{}, err
 	}

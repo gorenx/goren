@@ -243,6 +243,34 @@ type AssistantMessage struct{ messageValue }
 // ToolResultMessage is a user-role message containing one correlated tool result.
 type ToolResultMessage struct{ messageValue }
 
+// CloneUserMessage returns a detached user-role message while preserving its
+// stable identity and specialized Go type.
+func CloneUserMessage(source UserMessage) (UserMessage, error) {
+	copyValue, err := restoreMessageValue(
+		source.idValue, source.roleValue, source.content, source.origin,
+	)
+	if err != nil {
+		return UserMessage{}, err
+	}
+	if copyValue.roleValue != RoleUser {
+		return UserMessage{}, errors.New("llm: message is not a user message")
+	}
+	return UserMessage{messageValue: copyValue}, nil
+}
+
+// DecodeUserMessage restores one durable user message and rejects other roles.
+func DecodeUserMessage(rawValue json.RawMessage) (UserMessage, error) {
+	restored, err := DecodeMessage(rawValue)
+	if err != nil {
+		return UserMessage{}, err
+	}
+	typedValue, ok := restored.(UserMessage)
+	if !ok {
+		return UserMessage{}, errors.New("llm: durable message is not a user message")
+	}
+	return CloneUserMessage(typedValue)
+}
+
 // MessageInput contains complete role, content, and source for a new message.
 type MessageInput struct {
 	Role    MessageRole

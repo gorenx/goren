@@ -10,6 +10,7 @@ import (
 	"slices"
 	"testing"
 
+	agentcore "github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/apiproxy"
 	"github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/internal/llmdeepseek"
@@ -36,7 +37,13 @@ type contractManifest struct {
 		UnaryMethods   []string `json:"unaryMethods"`
 		MuxFrameTypes  []string `json:"muxFrameTypes"`
 		HostFrameTypes []string `json:"hostFrameTypes"`
-		SystemPrompt   struct {
+		Agent          struct {
+			Service      string   `json:"service"`
+			Events       []string `json:"events"`
+			InboxTargets []string `json:"inboxTargets"`
+			Statuses     []string `json:"statuses"`
+		} `json:"agent"`
+		SystemPrompt struct {
 			Service         string   `json:"service"`
 			Events          []string `json:"events"`
 			BuiltinSections []string `json:"builtinSections"`
@@ -101,6 +108,17 @@ func TestPinnedManifestMatchesGoSurface(t *testing.T) {
 	}
 	if !slices.Equal(manifestDocument.Included.UnaryMethods, []string{apiproxy.HostDescribeMethod}) {
 		t.Fatalf("unary methods = %v", manifestDocument.Included.UnaryMethods)
+	}
+	agentSurface := manifestDocument.Included.Agent
+	if agentSurface.Service != agentcore.ServiceName ||
+		!slices.Equal(agentSurface.Events, []string{
+			agentcore.CreatedEventName, agentcore.DisposedEventName, agentcore.StatusEventName,
+			agentcore.InboxInsertedEventName, agentcore.InboxClaimedEventName, agentcore.InboxDiscardedEventName,
+			agentcore.SessionStartEventName, agentcore.PreStepEventName, agentcore.RequestEventName,
+			agentcore.RequestErrorEventName, agentcore.TurnStoppingEventName, agentcore.ErrorEventName,
+		}) || !slices.Equal(agentSurface.InboxTargets, []string{string(agentcore.NextTurn), string(agentcore.NextStep)}) ||
+		!slices.Equal(agentSurface.Statuses, []string{string(agentcore.StatusIdle), string(agentcore.StatusRunning)}) {
+		t.Fatalf("agent surface = %#v", agentSurface)
 	}
 	promptSurface := manifestDocument.Included.SystemPrompt
 	if promptSurface.Service != systemprompt.ServiceName ||

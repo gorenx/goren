@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	agentcore "github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/apiproxy"
 	protocol "github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/llm"
@@ -28,7 +29,7 @@ func (instance probePlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "assembly-probe",
 		Requires: []plugin.ServiceRef{
-			serverServiceKey.Ref(), llm.Service.Ref(), session.StoreService.Ref(), systemprompt.Service.Ref(), toolscore.Service.Ref(),
+			agentcore.Service.Ref(), serverServiceKey.Ref(), llm.Service.Ref(), session.StoreService.Ref(), systemprompt.Service.Ref(), toolscore.Service.Ref(),
 		},
 	}
 }
@@ -43,7 +44,7 @@ func TestCatalogContainsOnlyCurrentServerSlice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{ConnectionFactoryName, APIProxyFactoryName, LLMFactoryName, DeepSeekFactoryName, SessionFactoryName, SystemPromptFactoryName, ToolsFactoryName}
+	want := []string{AgentFactoryName, ConnectionFactoryName, APIProxyFactoryName, LLMFactoryName, DeepSeekFactoryName, SessionFactoryName, SystemPromptFactoryName, ToolsFactoryName}
 	if got := registry.Names(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("factory names = %#v, want %#v", got, want)
 	}
@@ -72,6 +73,7 @@ func TestConnectionFactoryUsesStrictTypedConfig(t *testing.T) {
 		{label: "unknown", factoryName: ConnectionFactoryName, input: `{"listenAddress":"127.0.0.1:0","extra":true}`, wantMessage: "unknown field"},
 		{label: "wrong type", factoryName: ConnectionFactoryName, input: `{"listenAddress":7}`, wantMessage: "cannot unmarshal"},
 		{label: "negative limit", factoryName: ConnectionFactoryName, input: `{"listenAddress":"127.0.0.1:0","maxBodyBytes":-1}`, wantMessage: "must not be negative"},
+		{label: "agent unknown", factoryName: AgentFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
 		{label: "empty version", factoryName: APIProxyFactoryName, input: `{"version":""}`, wantMessage: "version must be non-empty"},
 		{label: "prompt unknown", factoryName: SystemPromptFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
 		{label: "prompt wrong type", factoryName: SystemPromptFactoryName, input: `{"includeHarnessIdentity":"yes"}`, wantMessage: "must be a boolean"},
@@ -115,6 +117,13 @@ func TestConnectionCompositionSettlesDependenciesAndServesHostDescribe(t *testin
 	}
 	serverAddress := ""
 	probe := probePlugin{body: func(_ context.Context, pluginScope *plugin.Scope) error {
+		agentService, found := plugin.Require(pluginScope, agentcore.Service)
+		if !found {
+			t.Fatal("agents service is unavailable")
+		}
+		if liveAgents := agentService.List(); len(liveAgents) != 0 {
+			t.Fatalf("default live Agents = %#v", liveAgents)
+		}
 		serverEndpoint, found := plugin.Require(pluginScope, serverServiceKey)
 		if !found {
 			t.Fatal("webServer service is unavailable")
