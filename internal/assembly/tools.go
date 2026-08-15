@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/systemprompt"
 	toolscore "github.com/gorenx/goren/tools"
@@ -34,6 +35,7 @@ func (instance *toolsPlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: ToolsFactoryName, Provides: []plugin.ServiceRef{toolscore.Service.Ref()},
 		Requires: []plugin.ServiceRef{systemprompt.Service.Ref()},
+		Optional: []plugin.ServiceRef{approval.Service.Ref()},
 	}
 }
 
@@ -42,7 +44,12 @@ func (instance *toolsPlugin) Apply(requestContext context.Context, pluginScope *
 	if !found {
 		return errors.New("assembly: required systemPrompt service is unavailable")
 	}
-	toolService, err := toolscore.New(requestContext, pluginScope, promptService, nil, instance.settings)
+	approvalResolver := toolscore.ApprovalResolverFunc(func() (approval.Approval, bool) {
+		return plugin.Require(pluginScope, approval.Service)
+	})
+	toolService, err := toolscore.New(
+		requestContext, pluginScope, promptService, approvalResolver, nil, instance.settings,
+	)
 	if err != nil {
 		return err
 	}

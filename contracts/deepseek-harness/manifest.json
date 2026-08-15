@@ -158,6 +158,40 @@
         "native"
       ]
     },
+    "approval": {
+      "service": "approval",
+      "events": [
+        "approval/request",
+        "approval/asked",
+        "approval/decided",
+        "approval/policy"
+      ],
+      "outcomes": [
+        "allowed-once",
+        "rejected",
+        "cancelled",
+        "unavailable"
+      ],
+      "policies": [
+        "ask",
+        "never"
+      ]
+    },
+    "userQuestions": {
+      "service": "userQuestions",
+      "tool": "ask_user_question",
+      "errorCodes": [
+        "NO_PROVIDER",
+        "DUPLICATE_PROVIDER",
+        "ASK_ABORTED",
+        "ASK_CANCELLED",
+        "EMPTY_QUESTIONS",
+        "CALLER_NOT_LIVE",
+        "DELEGATED_CALLER",
+        "BAD_INTENT",
+        "ASK_MISSING_AGENT"
+      ]
+    },
     "llm": {
       "service": "llm",
       "events": [

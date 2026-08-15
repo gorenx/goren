@@ -7,6 +7,7 @@ import (
 
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
+	"github.com/gorenx/goren/session"
 )
 
 const (
@@ -48,7 +49,8 @@ type ValidatedConfig struct {
 // AssembleContext selects the contribution and listener scope for one
 // assembly. Cancellation and deadlines travel through context.Context.
 type AssembleContext struct {
-	Scope plugin.ScopeKey
+	Scope   plugin.ScopeKey
+	Session *session.Session
 }
 
 // TextProvider resolves one section or runtime-context contribution for each

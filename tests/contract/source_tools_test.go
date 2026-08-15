@@ -41,7 +41,7 @@ func (instance toolsContractPlugin) Apply(requestContext context.Context, plugin
 	if err != nil {
 		return err
 	}
-	toolService, err := toolscore.New(requestContext, pluginScope, promptService, nil, toolSettings)
+	toolService, err := toolscore.New(requestContext, pluginScope, promptService, nil, nil, toolSettings)
 	if err != nil {
 		return err
 	}

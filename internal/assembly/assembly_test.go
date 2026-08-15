@@ -15,12 +15,15 @@ import (
 	"github.com/gorenx/goren/agentdefaultmodel"
 	"github.com/gorenx/goren/agentloop"
 	"github.com/gorenx/goren/apiproxy"
+	"github.com/gorenx/goren/approval"
 	protocol "github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/systemprompt"
+	"github.com/gorenx/goren/toolaskuser"
 	toolscore "github.com/gorenx/goren/tools"
+	"github.com/gorenx/goren/userquestions"
 )
 
 type probePlugin struct {
@@ -31,7 +34,7 @@ func (instance probePlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "assembly-probe",
 		Requires: []plugin.ServiceRef{
-			agentcore.Service.Ref(), agentdefaultmodel.Service.Ref(), agentloop.Service.Ref(), serverServiceKey.Ref(), llm.Service.Ref(), session.StoreService.Ref(), systemprompt.Service.Ref(), toolscore.Service.Ref(),
+			agentcore.Service.Ref(), agentdefaultmodel.Service.Ref(), agentloop.Service.Ref(), approval.Service.Ref(), serverServiceKey.Ref(), llm.Service.Ref(), session.StoreService.Ref(), systemprompt.Service.Ref(), toolscore.Service.Ref(), userquestions.Service.Ref(),
 		},
 	}
 }
@@ -46,7 +49,12 @@ func TestCatalogContainsOnlyCurrentServerSlice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{AgentFactoryName, AgentDefaultModelFactoryName, AgentLoopFactoryName, ConnectionFactoryName, APIProxyFactoryName, LLMFactoryName, DeepSeekFactoryName, SessionFactoryName, SystemPromptFactoryName, ToolsFactoryName}
+	want := []string{
+		AgentFactoryName, AgentDefaultModelFactoryName, AgentLoopFactoryName,
+		ConnectionFactoryName, APIProxyFactoryName, LLMFactoryName, DeepSeekFactoryName,
+		SessionFactoryName, SystemPromptFactoryName, ToolAskUserFactoryName,
+		ToolsFactoryName, ApprovalFactoryName, UserQuestionsFactoryName,
+	}
 	if got := registry.Names(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("factory names = %#v, want %#v", got, want)
 	}
@@ -92,6 +100,10 @@ func TestConnectionFactoryUsesStrictTypedConfig(t *testing.T) {
 		{label: "tools null mode", factoryName: ToolsFactoryName, input: `{"mode":null}`, wantMessage: "mode must be"},
 		{label: "tools code mode", factoryName: ToolsFactoryName, input: `{"mode":"code"}`, wantMessage: "Code Runtime bridge"},
 		{label: "tools parallel limit", factoryName: ToolsFactoryName, input: `{"maxParallelSubCalls":0}`, wantMessage: "positive integer"},
+		{label: "approval unknown", factoryName: ApprovalFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
+		{label: "approval policy", factoryName: ApprovalFactoryName, input: `{"policy":"sometimes"}`, wantMessage: "must be ask or never"},
+		{label: "questions unknown", factoryName: UserQuestionsFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
+		{label: "ask tool unknown", factoryName: ToolAskUserFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
 		{label: "llm unknown", factoryName: LLMFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
 		{label: "deepseek unknown", factoryName: DeepSeekFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
 		{label: "deepseek nested unknown", factoryName: DeepSeekFactoryName, input: `{"models":[{"id":"m","unknown":true}]}`, wantMessage: "unknown field"},
@@ -179,8 +191,14 @@ func TestConnectionCompositionSettlesDependenciesAndServesHostDescribe(t *testin
 		if !found {
 			t.Fatal("tools service is unavailable")
 		}
-		if projections := toolService.Schemas(plugin.ScopeKey{}); len(projections) != 0 {
+		if projections := toolService.Schemas(plugin.ScopeKey{}); len(projections) != 1 || projections[0].Name != toolaskuser.Name {
 			t.Fatalf("default tool schemas = %#v", projections)
+		}
+		if approvalService, found := plugin.Require(pluginScope, approval.Service); !found || approvalService == nil {
+			t.Fatal("approval service is unavailable")
+		}
+		if questionService, found := plugin.Require(pluginScope, userquestions.Service); !found || questionService == nil {
+			t.Fatal("userQuestions service is unavailable")
 		}
 		llmService, found := plugin.Require(pluginScope, llm.Service)
 		if !found {

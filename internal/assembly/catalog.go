@@ -16,13 +16,16 @@ const (
 	AgentFactoryName             = "@deepseek-ai/dsh-agent"
 	AgentDefaultModelFactoryName = "@deepseek-ai/dsh-agent-default-model"
 	AgentLoopFactoryName         = "@deepseek-ai/dsh-agent-loop"
+	ApprovalFactoryName          = "@deepseek-ai/dsh-user-approval"
 	APIProxyFactoryName          = "@deepseek-ai/dsh-host-apiproxy"
 	ConnectionFactoryName        = "@deepseek-ai/dsh-client-connection"
 	DeepSeekFactoryName          = "@deepseek-ai/dsh-llm-deepseek"
 	LLMFactoryName               = "@deepseek-ai/dsh-llm"
 	SessionFactoryName           = "@deepseek-ai/dsh-session"
 	SystemPromptFactoryName      = "@deepseek-ai/dsh-system-prompt"
+	ToolAskUserFactoryName       = "@deepseek-ai/dsh-tool-ask-user"
 	ToolsFactoryName             = "@deepseek-ai/dsh-tools"
+	UserQuestionsFactoryName     = "@deepseek-ai/dsh-user-questions"
 )
 
 // Environment contains process-derived values that are not deployment config.
@@ -49,6 +52,9 @@ func NewCatalog(platform Environment) (*plugin.Catalog, error) {
 		return nil, err
 	}
 	if err := plugin.RegisterFactory(registry, agentLoopFactory{}); err != nil {
+		return nil, err
+	}
+	if err := plugin.RegisterFactory(registry, approvalFactory{}); err != nil {
 		return nil, err
 	}
 	ensureDirectory := platform.EnsureDirectory
@@ -86,6 +92,12 @@ func NewCatalog(platform Environment) (*plugin.Catalog, error) {
 	if err := plugin.RegisterFactory(registry, toolsFactory{}); err != nil {
 		return nil, err
 	}
+	if err := plugin.RegisterFactory(registry, toolAskUserFactory{}); err != nil {
+		return nil, err
+	}
+	if err := plugin.RegisterFactory(registry, userQuestionsFactory{}); err != nil {
+		return nil, err
+	}
 	return registry, nil
 }
 
@@ -110,8 +122,11 @@ func DefaultSpecs(listenAddress string, version string) ([]PluginSpec, error) {
 	return []PluginSpec{
 		{FactoryName: ConnectionFactoryName, Config: connectionRaw},
 		{FactoryName: APIProxyFactoryName, Config: apiProxyRaw},
+		{FactoryName: ToolAskUserFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: AgentDefaultModelFactoryName, Config: defaultModelRaw},
 		{FactoryName: AgentLoopFactoryName, Config: json.RawMessage(`{}`)},
+		{FactoryName: ApprovalFactoryName, Config: json.RawMessage(`{}`)},
+		{FactoryName: UserQuestionsFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: AgentFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: LLMFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: DeepSeekFactoryName, Config: json.RawMessage(`{}`)},

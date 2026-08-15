@@ -64,7 +64,7 @@ func (extension *sessionAPIContractProvider) Apply(requestContext context.Contex
 	if err != nil {
 		return err
 	}
-	toolRuntime, err := tools.New(requestContext, providerScope, promptRuntime, nil, toolSettings)
+	toolRuntime, err := tools.New(requestContext, providerScope, promptRuntime, nil, nil, toolSettings)
 	if err != nil {
 		return err
 	}

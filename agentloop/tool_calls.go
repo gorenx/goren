@@ -51,7 +51,8 @@ func (subject *ReactLoopAgent) executeToolCalls(
 		plannedCalls[index] = plannedToolCall{
 			block: block,
 			input: tools.ToolExecutionInput{
-				CallID: block.ID, Name: block.Name, Arguments: arguments, Scope: subject.agentScope.Target(),
+				CallID: block.ID, Name: block.Name, Arguments: arguments,
+				Scope: subject.agentScope.Target(), Subject: subject,
 			},
 		}
 	}

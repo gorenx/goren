@@ -336,7 +336,7 @@ func (subject *ReactLoopAgent) prepareStep(
 		return preparedStep{}, err
 	}
 	assembled, err := subject.owner.prompts.Assemble(requestContext, systemprompt.AssembleContext{
-		Scope: subject.agentScope.Target(),
+		Scope: subject.agentScope.Target(), Session: subject.conversation,
 	})
 	if err != nil {
 		return preparedStep{}, err

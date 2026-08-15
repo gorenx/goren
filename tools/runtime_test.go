@@ -10,8 +10,11 @@ import (
 	"sync/atomic"
 	"testing"
 
+	agentcore "github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
+	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/systemprompt"
 	toolscore "github.com/gorenx/goren/tools"
 )
@@ -22,6 +25,7 @@ type toolFixture struct {
 	toolService   toolscore.ToolRuntime
 	promptService systemprompt.SystemPrompt
 	reporter      toolscore.ResultObserverReporter
+	approvals     toolscore.ApprovalResolver
 }
 
 type fixtureProvider struct {
@@ -60,7 +64,9 @@ func (instance *fixtureProvider) Apply(requestContext context.Context, pluginSco
 	if err != nil {
 		return err
 	}
-	toolService, err := toolscore.New(requestContext, pluginScope, promptService, instance.fixture.reporter, toolSettings)
+	toolService, err := toolscore.New(
+		requestContext, pluginScope, promptService, instance.fixture.approvals, instance.fixture.reporter, toolSettings,
+	)
 	if err != nil {
 		return err
 	}
@@ -77,8 +83,16 @@ func (instance *fixtureProvider) Apply(requestContext context.Context, pluginSco
 }
 
 func newToolFixture(t *testing.T, observer toolscore.ResultObserverReporter) *toolFixture {
+	return newToolFixtureWithApproval(t, observer, nil)
+}
+
+func newToolFixtureWithApproval(
+	t *testing.T,
+	observer toolscore.ResultObserverReporter,
+	approvalCapability toolscore.ApprovalResolver,
+) *toolFixture {
 	t.Helper()
-	state := &toolFixture{engine: plugin.NewRuntime(), reporter: observer}
+	state := &toolFixture{engine: plugin.NewRuntime(), reporter: observer, approvals: approvalCapability}
 	if _, err := state.engine.Load(context.Background(), &fixtureProvider{fixture: state}); err != nil {
 		t.Fatal(err)
 	}
@@ -88,6 +102,66 @@ func newToolFixture(t *testing.T, observer toolscore.ResultObserverReporter) *to
 		}
 	})
 	return state
+}
+
+type approvalStub struct {
+	outcome      approval.Outcome
+	failure      error
+	requestValue approval.Request
+	beforeReturn func()
+}
+
+func (answerer *approvalStub) Request(_ context.Context, decisionRequest approval.Request) (approval.Outcome, error) {
+	answerer.requestValue = decisionRequest
+	if answerer.beforeReturn != nil {
+		answerer.beforeReturn()
+	}
+	return answerer.outcome, answerer.failure
+}
+
+func (*approvalStub) EffectivePolicy(*session.Session) (approval.Policy, error) {
+	return approval.PolicyAsk, nil
+}
+
+func (*approvalStub) OverrideOf(*session.Session) (approval.Policy, bool, error) {
+	return "", false, nil
+}
+
+func (*approvalStub) SetPolicy(context.Context, agentcore.Agent, approval.Policy) error { return nil }
+
+type toolAgent struct {
+	identifier   session.SessionID
+	conversation *session.Session
+	agentScope   *plugin.Scope
+}
+
+func (subject *toolAgent) ID() session.SessionID                           { return subject.identifier }
+func (*toolAgent) OptionsValue() agentcore.Options                         { return agentcore.Options{} }
+func (subject *toolAgent) SessionValue() *session.Session                  { return subject.conversation }
+func (*toolAgent) InboxValue() *agentcore.Inbox                            { return nil }
+func (*toolAgent) StatusValue() agentcore.Status                           { return agentcore.StatusIdle }
+func (subject *toolAgent) ScopeValue() *plugin.Scope                       { return subject.agentScope }
+func (*toolAgent) Cancel(agentcore.CancelCause, agentcore.CancelOptions)   {}
+func (*toolAgent) WhenIdle(context.Context) error                          { return nil }
+func (*toolAgent) Send(llm.UserMessage, agentcore.InboxTarget, bool) error { return nil }
+func (*toolAgent) Followup(llm.UserMessage) error                          { return nil }
+func (*toolAgent) Steer(llm.UserMessage) error                             { return nil }
+func (*toolAgent) Inject(llm.UserMessage) error                            { return nil }
+func (*toolAgent) RunMaintenance(requestContext context.Context, task agentcore.MaintenanceTask) error {
+	return task.Run(requestContext)
+}
+
+func newToolAgent(t *testing.T, pluginScope *plugin.Scope, identifier session.SessionID) *toolAgent {
+	t.Helper()
+	agentScope, _, err := pluginScope.Child(string(identifier))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := session.New(identifier, session.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &toolAgent{identifier: identifier, conversation: conversation, agentScope: agentScope}
 }
 
 func objectTool(name string, description string, body toolscore.Executor) toolscore.ToolDefinition {
@@ -269,6 +343,87 @@ func TestChangeFailureRollsBackRegistration(t *testing.T) {
 	failChange = false
 }
 
+func TestAskDecisionUsesApprovalOutcomesBeforeDispatch(t *testing.T) {
+	t.Parallel()
+	testCases := []struct {
+		label          string
+		servicePresent bool
+		outcome        approval.Outcome
+		approvalErr    error
+		cancelCaller   bool
+		wantFailure    string
+		wantCode       string
+		wantBody       int
+	}{
+		{label: "missing service", wantFailure: "needs permission"},
+		{label: "allowed once", servicePresent: true, outcome: approval.OutcomeAllowedOnce, wantBody: 1},
+		{label: "rejected", servicePresent: true, outcome: approval.OutcomeRejected, wantFailure: `the user rejected tool "danger"`},
+		{label: "cancelled answer", servicePresent: true, outcome: approval.OutcomeCancelled, wantFailure: `approval for tool "danger" was cancelled`},
+		{label: "unavailable", servicePresent: true, outcome: approval.OutcomeUnavailable, wantFailure: `tool "danger" requires approval, but no approval channel is available`},
+		{label: "answerer failure", servicePresent: true, approvalErr: errors.New("approval transport failed"), wantFailure: "approval transport failed"},
+		{label: "caller cancellation", servicePresent: true, outcome: approval.OutcomeCancelled, cancelCaller: true, wantFailure: "tool call aborted before dispatch", wantCode: toolscore.ToolAbortedBeforeDispatch},
+	}
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase.label, func(t *testing.T) {
+			answerer := &approvalStub{outcome: testCase.outcome, failure: testCase.approvalErr}
+			var approvalCapability toolscore.ApprovalResolver
+			if testCase.servicePresent {
+				approvalCapability = toolscore.ApprovalResolverFunc(func() (approval.Approval, bool) {
+					return answerer, true
+				})
+			}
+			state := newToolFixtureWithApproval(t, nil, approvalCapability)
+			subject := newToolAgent(t, state.pluginScope, session.SessionID("approval-"+testCase.label))
+			bodyCalls := 0
+			if _, err := state.toolService.Register(context.Background(), state.pluginScope,
+				objectTool("danger", "danger", toolscore.ExecutorFunc(func(arguments json.RawMessage, _ toolscore.ToolRunContext) (json.RawMessage, error) {
+					bodyCalls++
+					return arguments, nil
+				}))); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := toolscore.OnPreExecute(subject.agentScope,
+				func(context.Context, toolscore.ToolExecution, toolscore.PreExecuteNext) (toolscore.PreToolDecision, error) {
+					return toolscore.AskDecision{Reason: "needs permission"}, nil
+				}); err != nil {
+				t.Fatal(err)
+			}
+			requestContext, cancelRequest := context.WithCancel(context.Background())
+			defer cancelRequest()
+			if testCase.cancelCaller {
+				answerer.beforeReturn = cancelRequest
+			}
+			outcome := state.toolService.Execute(requestContext, toolscore.ToolExecutionInput{
+				CallID: "danger-1", Name: "danger", Arguments: json.RawMessage(`{}`),
+				Scope: subject.agentScope.Target(), Subject: subject,
+			})
+			if bodyCalls != testCase.wantBody {
+				t.Fatalf("body calls = %d, want %d", bodyCalls, testCase.wantBody)
+			}
+			if testCase.wantFailure == "" {
+				if outcome.Failed() {
+					t.Fatalf("allowed outcome = %#v", outcome)
+				}
+			} else {
+				failure, ok := outcome.(*toolscore.ToolExecutionFailure)
+				if !ok || failure.Error.Message != testCase.wantFailure {
+					t.Fatalf("failure = %#v, want message %q", outcome, testCase.wantFailure)
+				}
+				if testCase.wantCode != "" && (failure.Error.Info == nil || failure.Error.Info.Code != testCase.wantCode) {
+					t.Fatalf("failure info = %#v", failure.Error.Info)
+				}
+			}
+			if testCase.servicePresent && (answerer.requestValue.Subject != subject ||
+				answerer.requestValue.ToolName != "danger" || answerer.requestValue.CallID == nil ||
+				*answerer.requestValue.CallID != "danger-1" || answerer.requestValue.Reason == nil ||
+				*answerer.requestValue.Reason != "needs permission") {
+				t.Fatalf("approval request = %#v", answerer.requestValue)
+			}
+		})
+	}
+}
+
 func TestExecutionPipelineOrderAndResultSnapshot(t *testing.T) {
 	state := newToolFixture(t, nil)
 	requestContext := context.Background()
@@ -425,7 +580,7 @@ func TestCallerCancellationSurvivesWrapperContextReplacement(t *testing.T) {
 			}))); err != nil {
 		t.Fatal(err)
 	}
-	callerContext, cancel := context.WithCancel(context.Background())
+	callerContext, cancelCaller := context.WithCancel(context.Background())
 	resultChannel := make(chan toolscore.ToolExecutionResult, 1)
 	go func() {
 		resultChannel <- state.toolService.Execute(callerContext, toolscore.ToolExecutionInput{
@@ -433,7 +588,7 @@ func TestCallerCancellationSurvivesWrapperContextReplacement(t *testing.T) {
 		})
 	}()
 	<-started
-	cancel()
+	cancelCaller()
 	outcome := <-resultChannel
 	select {
 	case <-settled:
