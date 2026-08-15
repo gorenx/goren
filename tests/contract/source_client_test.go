@@ -6,12 +6,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -20,6 +17,7 @@ import (
 
 	"github.com/gorenx/goren/apiproxy"
 	connectionhost "github.com/gorenx/goren/internal/connection"
+	contractfixture "github.com/gorenx/goren/tests/contract/fixture"
 )
 
 type sourceClientObservation struct {
@@ -249,17 +247,7 @@ func TestPinnedSourceConnectionRebuildsBothStreams(t *testing.T) {
 }
 
 func contractPaths(t *testing.T) (string, string) {
-	t.Helper()
-	_, currentFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("resolve contract test path")
-	}
-	repositoryRoot := filepath.Clean(filepath.Join(filepath.Dir(currentFile), "..", ".."))
-	sourceRoot := os.Getenv("DSH_SOURCE")
-	if sourceRoot == "" {
-		sourceRoot = filepath.Join(repositoryRoot, "..", "deepseek-harness")
-	}
-	return repositoryRoot, filepath.Clean(sourceRoot)
+	return contractfixture.Paths(t)
 }
 
 func runTypeScript(requestContext context.Context, sourceRoot string, arguments ...string) ([]byte, error) {
@@ -267,30 +255,5 @@ func runTypeScript(requestContext context.Context, sourceRoot string, arguments 
 }
 
 func runTypeScriptInput(requestContext context.Context, sourceRoot string, input []byte, arguments ...string) ([]byte, error) {
-	tsxPath := filepath.Join(sourceRoot, "node_modules", ".bin", "tsx")
-	if _, err := os.Stat(tsxPath); err != nil {
-		return nil, errors.New("source TypeScript dependencies are unavailable; run corepack pnpm install --frozen-lockfile in DSH_SOURCE")
-	}
-	nodePath, err := exec.LookPath("node")
-	if err != nil {
-		return nil, errors.New("Node.js is unavailable")
-	}
-	commandArguments := append([]string{"--import", "tsx"}, arguments...)
-	// Run the TS loader in the Node process owned by CommandContext. Invoking
-	// the tsx launcher would add a child that can outlive a timed-out test and
-	// retain WebSocket and output-pipe file descriptors.
-	command := exec.CommandContext(requestContext, nodePath, commandArguments...)
-	command.Dir = sourceRoot
-	if input != nil {
-		command.Stdin = bytes.NewReader(input)
-	}
-	output, err := command.Output()
-	if err == nil {
-		return output, nil
-	}
-	var exitError *exec.ExitError
-	if errors.As(err, &exitError) {
-		return nil, errors.New(string(exitError.Stderr))
-	}
-	return nil, err
+	return contractfixture.RunTypeScript(requestContext, sourceRoot, input, arguments...)
 }
