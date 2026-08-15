@@ -131,6 +131,7 @@ func TestPinnedManifestMatchesGoSurface(t *testing.T) {
 	}
 	if !slices.Equal(manifestDocument.Included.UnaryMethods, []string{
 		apiproxy.HostDescribeMethod,
+		apiproxy.AgentPresetListMethod,
 		apiproxy.LLMProvidersMethod,
 		apiproxy.LLMModelsMethod,
 		apiproxy.SessionListMethod,
