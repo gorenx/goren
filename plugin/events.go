@@ -267,6 +267,18 @@ func Waterfall[P, R any](requestContext context.Context, engine *Runtime, topic 
 	return waterfallAt(requestContext, engine, nil, topic, payload, terminal)
 }
 
+// WaterfallFrom composes every listener through the Runtime that owns
+// sourceScope. Long-lived services use it for events whose contract is not
+// associated with a child-scope business subject.
+func WaterfallFrom[P, R any](requestContext context.Context, sourceScope *Scope, topic EventKey[P, R], payload P, terminal Next[P, R]) (R, error) {
+	engine, err := runtimeFromScope(sourceScope)
+	if err != nil {
+		var zero R
+		return zero, err
+	}
+	return waterfallAt(requestContext, engine, nil, topic, payload, terminal)
+}
+
 // WaterfallScopedFrom composes the unscoped listeners plus listeners owned by
 // selectedKey and its ancestors. Descendant and sibling listeners are excluded.
 func WaterfallScopedFrom[P, R any](requestContext context.Context, sourceScope *Scope, selectedKey ScopeKey, topic EventKey[P, R], payload P, terminal Next[P, R]) (R, error) {

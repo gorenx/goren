@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/gorenx/goren/plugin"
 )
@@ -14,6 +15,8 @@ import (
 const (
 	APIProxyFactoryName     = "@deepseek-ai/dsh-host-apiproxy"
 	ConnectionFactoryName   = "@deepseek-ai/dsh-client-connection"
+	DeepSeekFactoryName     = "@deepseek-ai/dsh-llm-deepseek"
+	LLMFactoryName          = "@deepseek-ai/dsh-llm"
 	SessionFactoryName      = "@deepseek-ai/dsh-session"
 	SystemPromptFactoryName = "@deepseek-ai/dsh-system-prompt"
 	ToolsFactoryName        = "@deepseek-ai/dsh-tools"
@@ -22,6 +25,8 @@ const (
 // Environment contains process-derived values that are not deployment config.
 type Environment struct {
 	WorkingDirectory string
+	LookupEnv        func(string) (string, bool)
+	UserHomeDir      func() (string, error)
 }
 
 // PluginSpec is one strict factory invocation at the catalog ingress boundary.
@@ -37,6 +42,20 @@ func NewCatalog(platform Environment) (*plugin.Catalog, error) {
 		return nil, err
 	}
 	if err := plugin.RegisterFactory(registry, connectionFactory{}); err != nil {
+		return nil, err
+	}
+	if err := plugin.RegisterFactory(registry, llmFactory{}); err != nil {
+		return nil, err
+	}
+	lookupEnv := platform.LookupEnv
+	if lookupEnv == nil {
+		lookupEnv = os.LookupEnv
+	}
+	userHome := platform.UserHomeDir
+	if userHome == nil {
+		userHome = os.UserHomeDir
+	}
+	if err := plugin.RegisterFactory(registry, deepSeekFactory{lookupEnv: lookupEnv, userHome: userHome}); err != nil {
 		return nil, err
 	}
 	if err := plugin.RegisterFactory(registry, sessionFactory{}); err != nil {
@@ -66,6 +85,8 @@ func DefaultSpecs(listenAddress string, version string) ([]PluginSpec, error) {
 	return []PluginSpec{
 		{FactoryName: ConnectionFactoryName, Config: connectionRaw},
 		{FactoryName: APIProxyFactoryName, Config: apiProxyRaw},
+		{FactoryName: LLMFactoryName, Config: json.RawMessage(`{}`)},
+		{FactoryName: DeepSeekFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: SystemPromptFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: ToolsFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: SessionFactoryName, Config: json.RawMessage(`{}`)},

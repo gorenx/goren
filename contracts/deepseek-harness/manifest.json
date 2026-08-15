@@ -108,6 +108,41 @@
         "native"
       ]
     },
+    "llm": {
+      "service": "llm",
+      "events": [
+        "llm/adapters-updated",
+        "llm/stream"
+      ],
+      "providerRoute": "deepseek-official",
+      "defaultModels": [
+        "deepseek-v4-flash",
+        "deepseek-v4-pro"
+      ],
+      "contentTypes": [
+        "text",
+        "reasoning",
+        "image",
+        "tool-call",
+        "tool-result"
+      ],
+      "streamChunkTypes": [
+        "block-start",
+        "text-delta",
+        "reasoning-delta",
+        "tool-call-delta",
+        "block-end",
+        "usage",
+        "finish"
+      ],
+      "defaultRetryableCodes": [
+        "EMPTY_RESPONSE",
+        "RATE_LIMIT",
+        "SERVER",
+        "TIMEOUT",
+        "TRANSPORT"
+      ]
+    },
     "privilegedMethods": [
       "agentPreset.read",
       "agentPreset.copy",

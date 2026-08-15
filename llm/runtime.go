@@ -1,217 +1,465 @@
 package llm
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
+	"slices"
+	"sync"
 
-	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
+	"github.com/gorenx/goren/plugin"
 )
 
-// TokenCount records a token count and whether it is an estimate.
-type TokenCount struct {
-	InputTokens int
-	Estimated   bool
-	Strategy    string
+type resolvedCall struct {
+	config  CallConfig
+	context *ModelContext
 }
 
-// TokenCounter counts one prepared Context for a target model.
-type TokenCounter interface {
-	CountTokens(context.Context, Model, Context) (TokenCount, error)
+type preparedCallState struct {
+	owner           *runtimeService
+	route           *adapterRoute
+	config          CallConfig
+	policy          RetryPolicy
+	context         *ModelContext
+	adapterDefaults CallConfigAdapterDefaults
+
+	mu         sync.Mutex
+	dispatched bool
 }
 
-// TokenCounterFunc adapts a function to TokenCounter.
-type TokenCounterFunc func(context.Context, Model, Context) (TokenCount, error)
+type normalizedChunkStream struct {
+	upstream ChunkStream
 
-type toolArgumentsValidator interface {
-	Validate(any) error
+	mu         sync.Mutex
+	terminated bool
+	closed     bool
 }
 
-type compiledToolSchema struct {
-	parameters string
-	validator  toolArgumentsValidator
-}
-
-// CountTokens calls the adapted token-counting function.
-func (countStrategy TokenCounterFunc) CountTokens(ctx context.Context, targetModel Model, input Context) (TokenCount, error) {
-	return countStrategy(ctx, targetModel, input)
-}
-
-// ConservativeTokenCounter is a deterministic upper-bound fallback. It counts
-// every serialized UTF-8 byte as a token and records that strategy explicitly.
-type ConservativeTokenCounter struct{}
-
-// CountTokens returns a conservative estimated token count.
-func (ConservativeTokenCounter) CountTokens(_ context.Context, _ Model, input Context) (TokenCount, error) {
-	encoded, err := json.Marshal(input)
+func (owner *runtimeService) RetryPolicyFor(providerRoute string) (RetryPolicy, error) {
+	record, err := owner.routeFor(providerRoute)
 	if err != nil {
-		return TokenCount{}, fmt.Errorf("estimate context tokens: %w", err)
+		return nil, err
 	}
-	return TokenCount{
-		InputTokens: len(encoded),
-		Estimated:   true,
-		Strategy:    "serialized-utf8-byte-upper-bound-v1",
+	return record.policy.CloneRetryPolicy(), nil
+}
+
+func (owner *runtimeService) ListModels(requestContext context.Context, providerRoute string) ([]ModelInfo, error) {
+	record, err := owner.routeFor(providerRoute)
+	if err != nil {
+		return nil, err
+	}
+	catalog, ok := record.backend.(ModelCatalog)
+	if !ok {
+		return []ModelInfo{}, nil
+	}
+	models, err := catalog.ListModels(requestContext, providerRoute)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(models))
+	result := make([]ModelInfo, 0, len(models))
+	for _, candidate := range models {
+		if candidate.Provider != providerRoute || candidate.ID == "" || candidate.Name == "" {
+			return nil, MustLlmError(fmt.Sprintf("adapter returned invalid model metadata for provider %q", providerRoute), "INVALID_CATALOG")
+		}
+		if _, exists := seen[candidate.ID]; exists {
+			return nil, MustLlmError(fmt.Sprintf("adapter returned duplicate model metadata for provider %q", providerRoute), "INVALID_CATALOG")
+		}
+		seen[candidate.ID] = struct{}{}
+		candidate.InputModalities = slices.Clone(candidate.InputModalities)
+		result = append(result, candidate)
+	}
+	return result, nil
+}
+
+func (owner *runtimeService) ResolveModelInfo(
+	requestContext context.Context,
+	providerRoute string,
+	modelID string,
+) (ResolvedModelInfo, error) {
+	record, err := owner.routeFor(providerRoute)
+	if err != nil {
+		return ResolvedModelInfo{}, err
+	}
+	return owner.resolveModelFor(requestContext, record, modelID)
+}
+
+func (owner *runtimeService) resolveModelFor(
+	requestContext context.Context,
+	record *adapterRoute,
+	modelID string,
+) (ResolvedModelInfo, error) {
+	providerRoute := record.metadata.ID
+	resolved := ResolvedModelInfo{ModelInfo: ModelInfo{Provider: providerRoute, ID: modelID, Name: modelID}}
+	if resolver, ok := record.backend.(ModelResolver); ok {
+		candidate, err := resolver.ResolveModel(requestContext, providerRoute, modelID)
+		if err != nil {
+			return ResolvedModelInfo{}, err
+		}
+		resolved = candidate
+	}
+	if resolved.Provider != providerRoute || resolved.ID != modelID || resolved.Name == "" {
+		return ResolvedModelInfo{}, MustLlmError(
+			fmt.Sprintf("adapter returned invalid exact model metadata for provider %q model %q", providerRoute, modelID),
+			"INVALID_MODEL_INFO",
+		)
+	}
+	resolved.InputModalities = slices.Clone(resolved.InputModalities)
+	if resolved.Context != nil {
+		if resolved.Context.ContextWindow <= 0 {
+			return ResolvedModelInfo{}, MustLlmError(
+				fmt.Sprintf("adapter returned invalid context metadata for provider %q model %q", providerRoute, modelID),
+				"INVALID_MODEL_CONTEXT",
+			)
+		}
+		contextCopy := *resolved.Context
+		resolved.Context = &contextCopy
+	}
+	if resolved.DefaultMaxTokens != nil {
+		if *resolved.DefaultMaxTokens <= 0 {
+			return ResolvedModelInfo{}, MustLlmError(
+				fmt.Sprintf("adapter returned invalid default maxTokens for provider %q model %q", providerRoute, modelID),
+				"INVALID_MODEL_MAX_TOKENS",
+			)
+		}
+		resolved.DefaultMaxTokens = cloneInt(resolved.DefaultMaxTokens)
+	}
+	if resolved.Reasoning == nil {
+		return resolved, nil
+	}
+	if len(resolved.Reasoning.Efforts) == 0 {
+		return ResolvedModelInfo{}, MustLlmError(
+			fmt.Sprintf("adapter returned invalid reasoning metadata for provider %q model %q", providerRoute, modelID),
+			"INVALID_MODEL_REASONING",
+		)
+	}
+	seen := make(map[ReasoningEffortID]struct{}, len(resolved.Reasoning.Efforts))
+	efforts := make([]ReasoningEffortInfo, 0, len(resolved.Reasoning.Efforts))
+	for _, effort := range resolved.Reasoning.Efforts {
+		if effort.ID == "" || effort.Name == "" {
+			return ResolvedModelInfo{}, MustLlmError(
+				fmt.Sprintf("adapter returned invalid reasoning metadata for provider %q model %q", providerRoute, modelID),
+				"INVALID_MODEL_REASONING",
+			)
+		}
+		if _, exists := seen[effort.ID]; exists {
+			return ResolvedModelInfo{}, MustLlmError(
+				fmt.Sprintf("adapter returned duplicate reasoning metadata for provider %q model %q", providerRoute, modelID),
+				"INVALID_MODEL_REASONING",
+			)
+		}
+		seen[effort.ID] = struct{}{}
+		efforts = append(efforts, effort)
+	}
+	if resolved.Reasoning.DefaultEffort != "" {
+		if _, exists := seen[resolved.Reasoning.DefaultEffort]; !exists {
+			return ResolvedModelInfo{}, MustLlmError(
+				fmt.Sprintf("adapter returned an unknown default reasoning effort for provider %q model %q", providerRoute, modelID),
+				"INVALID_MODEL_REASONING",
+			)
+		}
+	}
+	reasoningCopy := *resolved.Reasoning
+	reasoningCopy.Efforts = efforts
+	resolved.Reasoning = &reasoningCopy
+	return resolved, nil
+}
+
+func (owner *runtimeService) ResolveCallConfig(requestContext context.Context, proposed CallConfig) (CallConfig, error) {
+	record, err := owner.routeFor(proposed.Provider)
+	if err != nil {
+		return CallConfig{}, err
+	}
+	resolved, err := owner.resolveCallFor(requestContext, record, proposed)
+	if err != nil {
+		return CallConfig{}, err
+	}
+	return cloneCallConfig(resolved.config), nil
+}
+
+func (owner *runtimeService) resolveCallFor(
+	requestContext context.Context,
+	record *adapterRoute,
+	proposed CallConfig,
+) (resolvedCall, error) {
+	if proposed.Provider == "" || proposed.Model == "" {
+		return resolvedCall{}, MustLlmError("an LLM call needs a provider and model", "INVALID_ARGS")
+	}
+	metadata, err := owner.resolveModelFor(requestContext, record, proposed.Model)
+	if err != nil {
+		return resolvedCall{}, err
+	}
+	effective := cloneCallConfig(proposed)
+	if effective.MaxTokens == nil && metadata.DefaultMaxTokens != nil {
+		effective.MaxTokens = cloneInt(metadata.DefaultMaxTokens)
+	}
+	if metadata.Reasoning == nil {
+		if effective.ReasoningEffort != "" {
+			return resolvedCall{}, MustLlmError(
+				fmt.Sprintf("provider %q model %q does not support reasoning effort %q", proposed.Provider, proposed.Model, effective.ReasoningEffort),
+				"UNSUPPORTED_REASONING_EFFORT",
+			)
+		}
+	} else {
+		effortID := effective.ReasoningEffort
+		if effortID == "" {
+			effortID = metadata.Reasoning.DefaultEffort
+		}
+		if effortID != "" {
+			matched := slices.ContainsFunc(metadata.Reasoning.Efforts, func(candidate ReasoningEffortInfo) bool {
+				return candidate.ID == effortID
+			})
+			if !matched {
+				return resolvedCall{}, MustLlmError(
+					fmt.Sprintf("provider %q model %q does not support reasoning effort %q", proposed.Provider, proposed.Model, effortID),
+					"UNSUPPORTED_REASONING_EFFORT",
+				)
+			}
+			effective.ReasoningEffort = effortID
+		}
+	}
+	result := resolvedCall{config: effective}
+	if metadata.Context != nil {
+		contextCopy := *metadata.Context
+		result.context = &contextCopy
+	}
+	return result, nil
+}
+
+func (owner *runtimeService) PrepareCall(requestContext context.Context, proposed CallConfig) (PreparedLlmCall, error) {
+	record, err := owner.routeFor(proposed.Provider)
+	if err != nil {
+		return nil, err
+	}
+	resolved, err := owner.resolveCallFor(requestContext, record, proposed)
+	if err != nil {
+		return nil, err
+	}
+	defaults := CallConfigAdapterDefaults{
+		ReasoningEffort: proposed.ReasoningEffort == "" && resolved.config.ReasoningEffort != "",
+		MaxTokens:       proposed.MaxTokens == nil && resolved.config.MaxTokens != nil,
+	}
+	return &preparedCallState{
+		owner: owner, route: record, config: cloneCallConfig(resolved.config),
+		policy: record.policy.CloneRetryPolicy(), context: cloneModelContext(resolved.context),
+		adapterDefaults: defaults,
 	}, nil
 }
 
-// ResolveStreamOptions freezes invocation-owned data, validates it against the
-// target model, and resolves reasoning effort and its configured token budget.
-func ResolveStreamOptions(targetModel Model, invocationOptions StreamOptions) (StreamOptions, error) {
-	resolvedOptions := invocationOptions.Clone()
-	if err := ValidateOptions(resolvedOptions); err != nil {
-		return StreamOptions{}, err
-	}
-	if err := ValidateModelOptions(targetModel, resolvedOptions); err != nil {
-		return StreamOptions{}, err
-	}
-	resolvedLevel, _, configuredBudget, err := ResolveReasoning(targetModel, resolvedOptions.Reasoning)
-	if err != nil {
-		return StreamOptions{}, err
-	}
-	resolvedOptions.Reasoning = resolvedLevel
-	if resolvedOptions.MaxOutputTokens == 0 {
-		resolvedOptions.MaxOutputTokens = targetModel.MaxOutputTokens
-	}
-	if resolvedOptions.ThinkingBudget == 0 {
-		resolvedOptions.ThinkingBudget = configuredBudget
-	}
-	return resolvedOptions, nil
+func (prepared *preparedCallState) ConfigValue() CallConfig {
+	return cloneCallConfig(prepared.config)
 }
 
-// ValidateToolCall validates a complete call against the matching function
-// tool's JSON Schema without coercing argument values.
-func ValidateToolCall(toolDefinitions []Tool, requestedCall ToolCall) error {
-	var definition *Tool
-	for index := range toolDefinitions {
-		if toolDefinitions[index].Name == requestedCall.Name {
-			definition = &toolDefinitions[index]
-			break
-		}
-	}
-	if definition == nil {
-		return fmt.Errorf("tool %q is not defined", requestedCall.Name)
-	}
-	if len(requestedCall.Arguments) == 0 || !json.Valid(requestedCall.Arguments) {
-		return fmt.Errorf("tool %q arguments are invalid JSON", requestedCall.Name)
-	}
+func (prepared *preparedCallState) RetryPolicyValue() RetryPolicy {
+	return prepared.policy.CloneRetryPolicy()
+}
 
-	compiledSchema := definition.validator
-	if compiledSchema == nil || definition.validated != string(definition.Parameters) {
+func (prepared *preparedCallState) ContextValue() (ModelContext, bool) {
+	if prepared.context == nil {
+		return ModelContext{}, false
+	}
+	return *prepared.context, true
+}
+
+func (prepared *preparedCallState) AdapterDefaultsValue() CallConfigAdapterDefaults {
+	return prepared.adapterDefaults
+}
+
+func (prepared *preparedCallState) Stream(requestContext context.Context, options GenerateOptions) (ChunkStream, error) {
+	prepared.mu.Lock()
+	if prepared.dispatched {
+		prepared.mu.Unlock()
+		return nil, MustLlmError("a prepared LLM call can only be dispatched once", "INVALID_PREPARED_CALL")
+	}
+	if !callConfigEqual(options.CallConfig, prepared.config) {
+		prepared.mu.Unlock()
+		return nil, MustLlmError("prepared LLM call config changed before adapter dispatch", "INVALID_PREPARED_CALL")
+	}
+	prepared.dispatched = true
+	prepared.mu.Unlock()
+	return prepared.owner.streamWithRoute(requestContext, options, prepared.route, &prepared.config)
+}
+
+func (owner *runtimeService) Stream(requestContext context.Context, options GenerateOptions) (ChunkStream, error) {
+	return owner.streamWithRoute(requestContext, options, nil, nil)
+}
+
+func (owner *runtimeService) streamWithRoute(
+	requestContext context.Context,
+	options GenerateOptions,
+	record *adapterRoute,
+	preparedConfig *CallConfig,
+) (ChunkStream, error) {
+	detached, err := cloneGenerateOptions(options)
+	if err != nil {
+		return nil, err
+	}
+	return plugin.WaterfallFrom(requestContext, owner.sourceScope, StreamEvent, detached,
+		func(chainContext context.Context, request GenerateOptions) (ChunkStream, error) {
+			return owner.adapterBoundary(chainContext, request, record, preparedConfig)
+		})
+}
+
+func (owner *runtimeService) adapterBoundary(
+	requestContext context.Context,
+	options GenerateOptions,
+	record *adapterRoute,
+	preparedConfig *CallConfig,
+) (ChunkStream, error) {
+	selected := record
+	if selected == nil {
 		var err error
-		compiledSchema, err = compileToolSchema(*definition)
+		selected, err = owner.routeFor(options.Provider)
 		if err != nil {
-			return err
+			return newTerminalStream(requestContext, err)
 		}
 	}
-	argumentValue, err := jsonschema.UnmarshalJSON(bytes.NewReader(requestedCall.Arguments))
+	var effective CallConfig
+	if preparedConfig == nil {
+		resolved, err := owner.resolveCallFor(requestContext, selected, options.CallConfig)
+		if err != nil {
+			return newTerminalStream(requestContext, err)
+		}
+		effective = resolved.config
+	} else {
+		if !callConfigEqual(options.CallConfig, *preparedConfig) {
+			return newTerminalStream(requestContext, MustLlmError(
+				"prepared LLM call config changed before adapter dispatch", "INVALID_PREPARED_CALL",
+			))
+		}
+		effective = cloneCallConfig(*preparedConfig)
+	}
+	detached, err := cloneGenerateOptions(options)
 	if err != nil {
-		return fmt.Errorf("tool %q arguments: %w", requestedCall.Name, err)
+		return newTerminalStream(requestContext, err)
 	}
-	if err := compiledSchema.Validate(argumentValue); err != nil {
-		var validationFailure *jsonschema.ValidationError
-		if errors.As(err, &validationFailure) {
-			validationFailure = deepestValidationFailure(validationFailure)
-			path := "/" + strings.Join(validationFailure.InstanceLocation, "/")
-			if path == "/" {
-				path = "$"
-			}
-			return fmt.Errorf("tool %q arguments at %s: %w", requestedCall.Name, path, err)
-		}
-		return fmt.Errorf("tool %q arguments: %w", requestedCall.Name, err)
-	}
-	return nil
-}
-
-func compileToolSchema(definition Tool) (*jsonschema.Schema, error) {
-	schemaDocument, err := jsonschema.UnmarshalJSON(bytes.NewReader(definition.Parameters))
+	detached.CallConfig = effective
+	detached, err = owner.forAdapter(detached, selected.backend)
 	if err != nil {
-		return nil, fmt.Errorf("tool %q schema: %w", definition.Name, err)
+		return newTerminalStream(requestContext, err)
 	}
-	compiler := jsonschema.NewCompiler()
-	const schemaLocation = "mem://goren/tool-schema.json"
-	if err := compiler.AddResource(schemaLocation, schemaDocument); err != nil {
-		return nil, fmt.Errorf("tool %q schema: %w", definition.Name, err)
-	}
-	compiledSchema, err := compiler.Compile(schemaLocation)
+	upstream, err := selected.backend.Stream(requestContext, detached)
 	if err != nil {
-		return nil, fmt.Errorf("tool %q schema: %w", definition.Name, err)
+		return newTerminalStream(requestContext, err)
 	}
-	return compiledSchema, nil
+	if upstream == nil {
+		return newTerminalStream(requestContext, errors.New("llm: adapter returned a nil stream"))
+	}
+	return &normalizedChunkStream{upstream: upstream}, nil
 }
 
-func deepestValidationFailure(validationFailure *jsonschema.ValidationError) *jsonschema.ValidationError {
-	deepest := validationFailure
-	for _, cause := range validationFailure.Causes {
-		candidate := deepestValidationFailure(cause)
-		if len(candidate.InstanceLocation) >= len(deepest.InstanceLocation) {
-			deepest = candidate
+func (owner *runtimeService) forAdapter(options GenerateOptions, backend Adapter) (GenerateOptions, error) {
+	changed := false
+	conversation := make([]Message, len(options.Messages))
+	for index, entry := range options.Messages {
+		conversation[index] = entry
+		if entry.ConversationRole() != RoleAssistant {
+			continue
 		}
+		origin := entry.SourceValue()
+		modelOrigin, ok := origin.(ModelMessageSource)
+		if !ok || len(modelOrigin.ReplayState) == 0 {
+			continue
+		}
+		owner.mu.RLock()
+		historical := owner.routes[modelOrigin.Provider]
+		preserve := historical != nil && historical.backend == backend
+		owner.mu.RUnlock()
+		if preserve {
+			continue
+		}
+		modelOrigin.ReplayState = nil
+		restored, err := restoreMessageValue(
+			entry.StableID(), entry.ConversationRole(), entry.ContentValue(), modelOrigin,
+		)
+		if err != nil {
+			return GenerateOptions{}, err
+		}
+		conversation[index] = restored
+		changed = true
 	}
-	return deepest
+	if changed {
+		options.Messages = conversation
+	}
+	return options, nil
 }
 
-// ResolveReasoning clamps a requested effort to targetModel capabilities and
-// returns the provider-facing mapped value and optional token budget.
-func ResolveReasoning(targetModel Model, requested ReasoningLevel) (ReasoningLevel, string, int, error) {
-	if requested == "" {
-		return "", "", 0, nil
+func (owner *runtimeService) routeFor(providerRoute string) (*adapterRoute, error) {
+	owner.mu.RLock()
+	record := owner.routes[providerRoute]
+	owner.mu.RUnlock()
+	if record == nil {
+		return nil, MustLlmError(fmt.Sprintf("no adapter registered for provider %q", providerRoute), "NO_ADAPTER")
 	}
-	if !knownReasoningLevel(requested) {
-		return "", "", 0, fmt.Errorf("unsupported reasoning level %q", requested)
-	}
-	if requested == ReasoningOff {
-		mapped := targetModel.ReasoningMap[ReasoningOff]
-		if mapped == "" {
-			mapped = "none"
-		}
-		return ReasoningOff, mapped, 0, nil
-	}
-	if !targetModel.Reasoning {
-		return "", "", 0, errors.New("target model does not support reasoning")
-	}
-	resolved := requested
-	if len(targetModel.ReasoningLevels) > 0 {
-		resolved = clampReasoning(targetModel.ReasoningLevels, requested)
-	}
-	mapped := string(resolved)
-	if configured := targetModel.ReasoningMap[resolved]; configured != "" {
-		mapped = configured
-	}
-	return resolved, mapped, targetModel.ReasoningBudget[resolved], nil
+	return record, nil
 }
 
-func clampReasoning(supported []ReasoningLevel, requested ReasoningLevel) ReasoningLevel {
-	rank := map[ReasoningLevel]int{
-		ReasoningOff: 0, ReasoningMinimal: 1, ReasoningLow: 2, ReasoningMedium: 3,
-		ReasoningHigh: 4, ReasoningXHigh: 5, ReasoningMax: 6,
+func newTerminalStream(requestContext context.Context, problem error) (ChunkStream, error) {
+	failureSnapshot := normalizeLlmFailure(problem)
+	var reason FinishReason = ErrorFinish{Kind: "error", Failure: failureSnapshot}
+	if requestContext.Err() != nil || failureSnapshot.Code == "ABORTED" {
+		reason = AbortedFinish{Kind: "aborted", Failure: failureSnapshot}
 	}
-	requestedRank := rank[requested]
-	var lower ReasoningLevel
-	lowerRank := -1
-	var upper ReasoningLevel
-	upperRank := int(^uint(0) >> 1)
-	for _, supportedLevel := range supported {
-		supportedRank := rank[supportedLevel]
-		if supportedRank == requestedRank {
-			return supportedLevel
+	return NewSliceStream([]StreamChunk{FinishChunk{Type: "finish", Reason: reason}})
+}
+
+func (flow *normalizedChunkStream) Next(requestContext context.Context) (StreamChunk, bool, error) {
+	flow.mu.Lock()
+	if flow.closed || flow.terminated {
+		flow.mu.Unlock()
+		return nil, false, nil
+	}
+	flow.mu.Unlock()
+	entry, present, err := flow.upstream.Next(requestContext)
+	if err != nil {
+		flow.mu.Lock()
+		flow.terminated = true
+		flow.mu.Unlock()
+		terminal, terminalErr := newTerminalStream(requestContext, err)
+		if terminalErr != nil {
+			return nil, false, terminalErr
 		}
-		if supportedRank < requestedRank && supportedRank > lowerRank {
-			lower = supportedLevel
-			lowerRank = supportedRank
+		return terminal.Next(requestContext)
+	}
+	if !present {
+		flow.mu.Lock()
+		flow.terminated = true
+		flow.mu.Unlock()
+		return nil, false, nil
+	}
+	if entry == nil {
+		flow.mu.Lock()
+		flow.terminated = true
+		flow.mu.Unlock()
+		terminal, terminalErr := newTerminalStream(requestContext, errors.New("llm: adapter yielded a nil stream chunk"))
+		if terminalErr != nil {
+			return nil, false, terminalErr
 		}
-		if supportedRank > requestedRank && supportedRank < upperRank {
-			upper = supportedLevel
-			upperRank = supportedRank
-		}
+		return terminal.Next(requestContext)
 	}
-	if upper != "" {
-		return upper
+	if entry.ChunkType() == "finish" {
+		flow.mu.Lock()
+		flow.terminated = true
+		flow.mu.Unlock()
 	}
-	if lower != "" {
-		return lower
+	return entry, true, nil
+}
+
+func (flow *normalizedChunkStream) Close(closeContext context.Context) error {
+	flow.mu.Lock()
+	if flow.closed {
+		flow.mu.Unlock()
+		return nil
 	}
-	return supported[0]
+	flow.closed = true
+	flow.mu.Unlock()
+	return flow.upstream.Close(closeContext)
+}
+
+func cloneModelContext(source *ModelContext) *ModelContext {
+	if source == nil {
+		return nil
+	}
+	detached := *source
+	return &detached
 }
