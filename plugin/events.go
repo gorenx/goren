@@ -9,14 +9,31 @@ import (
 	"sync"
 )
 
-// EventMode fixes the dispatch semantics of an owner-defined event key.
+// EventMode fixes the handler shape and dispatch control flow of an
+// owner-defined event key. Registration and publication must use the API that
+// matches this mode; it cannot be changed after the key is defined.
 type EventMode string
 
 const (
-	ModeEmit      EventMode = "emit"
-	ModeParallel  EventMode = "parallel"
-	ModeSerial    EventMode = "serial"
-	ModeBail      EventMode = "bail"
+	// ModeEmit invokes every listener synchronously in registration order and
+	// joins their errors. It is for post-state-change notifications: a listener
+	// cannot veto the change and one failure does not skip later listeners.
+	ModeEmit EventMode = "emit"
+	// ModeParallel starts every listener concurrently, waits for all of them,
+	// and joins their errors. It is for independent awaited work such as flush
+	// observers, where listener ordering must not imply a dependency.
+	ModeParallel EventMode = "parallel"
+	// ModeSerial invokes decision listeners in registration order and stops at
+	// the first error or explicit Decision.Bail. It is for ordered, awaitable
+	// hooks where each listener may make the final decision.
+	ModeSerial EventMode = "serial"
+	// ModeBail has the same ordered early-stop mechanics as ModeSerial, but
+	// names a synchronous decision/query contract whose purpose is to find the
+	// first authoritative answer rather than run an ordered workflow.
+	ModeBail EventMode = "bail"
+	// ModeWaterfall composes handlers outer-to-inner around a terminal
+	// operation. A handler controls whether Next runs and may transform its
+	// input, short-circuit the operation, or wrap the downstream result/error.
 	ModeWaterfall EventMode = "waterfall"
 )
 

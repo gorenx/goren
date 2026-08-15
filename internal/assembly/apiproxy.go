@@ -14,6 +14,8 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
+	"github.com/gorenx/goren/sessionprojection"
+	"github.com/gorenx/goren/sessiontitle"
 	"github.com/gorenx/goren/userquestions"
 )
 
@@ -65,7 +67,7 @@ func (instance *apiProxyPlugin) Manifest() plugin.Manifest {
 		Name: APIProxyFactoryName, Provides: []plugin.ServiceRef{apiProxyServiceKey.Ref()},
 		Requires: []plugin.ServiceRef{
 			agentcore.Service.Ref(), agentdefaultmodel.Service.Ref(), llm.Service.Ref(), session.StoreService.Ref(),
-			userquestions.Service.Ref(),
+			sessionprojection.Service.Ref(), sessiontitle.Service.Ref(), userquestions.Service.Ref(),
 		},
 	}
 }
@@ -75,12 +77,15 @@ func (instance *apiProxyPlugin) Apply(requestContext context.Context, pluginScop
 	defaultModels, defaultsFound := plugin.Require(pluginScope, agentdefaultmodel.Service)
 	modelRuntime, modelsFound := plugin.Require(pluginScope, llm.Service)
 	sessionStore, found := plugin.Require(pluginScope, session.StoreService)
+	projections, projectionsFound := plugin.Require(pluginScope, sessionprojection.Service)
+	titles, titlesFound := plugin.Require(pluginScope, sessiontitle.Service)
 	questionService, questionsFound := plugin.Require(pluginScope, userquestions.Service)
-	if !agentsFound || !defaultsFound || !modelsFound || !found || !questionsFound {
+	if !agentsFound || !defaultsFound || !modelsFound || !found || !projectionsFound || !titlesFound || !questionsFound {
 		return errors.New("assembly: API Proxy dependencies are unavailable")
 	}
 	gateway, err := apiproxy.NewSessionGateway(requestContext, pluginScope, apiproxy.SessionGatewayDependencies{
 		Agents: agentRegistry, Sessions: sessionStore, LLM: modelRuntime, Defaults: defaultModels,
+		Projections: projections, Titles: titles,
 		Directories: apiproxy.DirectoryProvisionerFunc(instance.ensureDirectory),
 	}, apiproxy.SessionGatewayOptions{WorkingDirectory: instance.workingDirectory})
 	if err != nil {

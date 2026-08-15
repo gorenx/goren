@@ -18,6 +18,8 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/llmretry"
 	"github.com/gorenx/goren/session"
+	"github.com/gorenx/goren/sessionprojection"
+	"github.com/gorenx/goren/sessiontitle"
 	"github.com/gorenx/goren/systemprompt"
 	toolscore "github.com/gorenx/goren/tools"
 )
@@ -77,6 +79,15 @@ type contractManifest struct {
 			Factory       string   `json:"factory"`
 			SessionEvents []string `json:"sessionEvents"`
 		} `json:"llmRetry"`
+		SessionProjection struct {
+			Service   string `json:"service"`
+			FrameType string `json:"frameType"`
+		} `json:"sessionProjection"`
+		SessionTitle struct {
+			Service       string `json:"service"`
+			SessionEvent  string `json:"sessionEvent"`
+			ProjectionKey string `json:"projectionKey"`
+		} `json:"sessionTitle"`
 	} `json:"included"`
 }
 
@@ -122,6 +133,7 @@ func TestPinnedManifestMatchesGoSurface(t *testing.T) {
 		apiproxy.HostDescribeMethod,
 		apiproxy.SessionListMethod,
 		apiproxy.SessionCreateMethod,
+		apiproxy.SessionRenameMethod,
 		apiproxy.SessionHistoryMethod,
 		apiproxy.SessionModelsMethod,
 		apiproxy.SessionSelectModelMethod,
@@ -192,6 +204,15 @@ func TestPinnedManifestMatchesGoSurface(t *testing.T) {
 	if retrySurface.Factory != "@deepseek-ai/dsh-llm-retry" ||
 		!slices.Equal(retrySurface.SessionEvents, []string{llmretry.RetryEventName, llmretry.RetryStartedEventName}) {
 		t.Fatalf("llm retry surface = %#v", retrySurface)
+	}
+	projectionSurface := manifestDocument.Included.SessionProjection
+	if projectionSurface.Service != sessionprojection.ServiceName || projectionSurface.FrameType != "session/projection" {
+		t.Fatalf("session projection surface = %#v", projectionSurface)
+	}
+	titleSurface := manifestDocument.Included.SessionTitle
+	if titleSurface.Service != sessiontitle.ServiceName || titleSurface.SessionEvent != sessiontitle.TitleEventName ||
+		titleSurface.ProjectionKey != sessiontitle.ProjectionKey {
+		t.Fatalf("session title surface = %#v", titleSurface)
 	}
 
 	muxNames := encodedMuxFrames(t)
@@ -275,6 +296,10 @@ func TestGoAgreesWithPinnedSourceVectors(t *testing.T) {
 				_, issues := apiproxy.DecodeSessionCreateRequest(rawValue)
 				return issues
 			},
+			"sessionRenameRequest": func(rawValue json.RawMessage) []connection.ValidationIssue {
+				_, issues := apiproxy.DecodeSessionRenameRequest(rawValue)
+				return issues
+			},
 			"sessionHistoryRequest": func(rawValue json.RawMessage) []connection.ValidationIssue {
 				_, issues := apiproxy.DecodeSessionHistoryRequest(rawValue)
 				return issues
@@ -311,6 +336,7 @@ func TestGoAgreesWithPinnedSourceVectors(t *testing.T) {
 		vectors := map[string]map[string]json.RawMessage{
 			"sessionListValue":        acceptedByName(t, fixtureData.Suites["sessionListValue"]),
 			"sessionCreateValue":      acceptedByName(t, fixtureData.Suites["sessionCreateValue"]),
+			"sessionRenameValue":      acceptedByName(t, fixtureData.Suites["sessionRenameValue"]),
 			"sessionHistoryValue":     acceptedByName(t, fixtureData.Suites["sessionHistoryValue"]),
 			"sessionModelsValue":      acceptedByName(t, fixtureData.Suites["sessionModelsValue"]),
 			"sessionSelectModelValue": acceptedByName(t, fixtureData.Suites["sessionSelectModelValue"]),
@@ -320,6 +346,7 @@ func TestGoAgreesWithPinnedSourceVectors(t *testing.T) {
 		}
 		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionListValue{Items: []apiproxy.SessionSummary{}}), vectors["sessionListValue"]["empty"])
 		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionCreateValue{SessionID: "session-1"}), vectors["sessionCreateValue"]["minimal"])
+		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionRenameValue{Title: "Named", Seq: 3}), vectors["sessionRenameValue"]["accepted"])
 		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionHistoryValue{Events: []apiproxy.HistoryEntry{}, HasMore: false}), vectors["sessionHistoryValue"]["empty"])
 		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionModelsValue{
 			Current: apiproxy.ModelSelection{Provider: "p", Model: "m"}, Routable: true,

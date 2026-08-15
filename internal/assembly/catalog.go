@@ -23,6 +23,8 @@ const (
 	LLMFactoryName               = "@deepseek-ai/dsh-llm"
 	LLMRetryFactoryName          = "@deepseek-ai/dsh-llm-retry"
 	SessionFactoryName           = "@deepseek-ai/dsh-session"
+	SessionProjectionFactoryName = "@deepseek-ai/dsh-session-projection"
+	SessionTitleFactoryName      = "@deepseek-ai/dsh-session-title"
 	SystemPromptFactoryName      = "@deepseek-ai/dsh-system-prompt"
 	ToolAskUserFactoryName       = "@deepseek-ai/dsh-tool-ask-user"
 	ToolsFactoryName             = "@deepseek-ai/dsh-tools"
@@ -90,6 +92,12 @@ func NewCatalog(platform Environment) (*plugin.Catalog, error) {
 	if err := plugin.RegisterFactory(registry, sessionFactory{}); err != nil {
 		return nil, err
 	}
+	if err := plugin.RegisterFactory(registry, sessionProjectionFactory{}); err != nil {
+		return nil, err
+	}
+	if err := plugin.RegisterFactory(registry, sessionTitleFactory{}); err != nil {
+		return nil, err
+	}
 	if err := plugin.RegisterFactory(registry, systemPromptFactory{}); err != nil {
 		return nil, err
 	}
@@ -129,6 +137,8 @@ func DefaultSpecs(listenAddress string, version string) ([]PluginSpec, error) {
 		{FactoryName: ToolAskUserFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: AgentDefaultModelFactoryName, Config: defaultModelRaw},
 		{FactoryName: LLMRetryFactoryName, Config: json.RawMessage(`{}`)},
+		{FactoryName: SessionTitleFactoryName, Config: json.RawMessage(`{"fallbackMaxWords":5,"fallbackMaxBytes":40,"maxTitleBytes":80}`)},
+		{FactoryName: SessionProjectionFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: AgentLoopFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: ApprovalFactoryName, Config: json.RawMessage(`{}`)},
 		{FactoryName: UserQuestionsFactoryName, Config: json.RawMessage(`{}`)},

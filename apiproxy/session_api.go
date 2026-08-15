@@ -10,6 +10,7 @@ import (
 const (
 	SessionListMethod        = "session.list"
 	SessionCreateMethod      = "session.create"
+	SessionRenameMethod      = "session.rename"
 	SessionHistoryMethod     = "session.history"
 	SessionModelsMethod      = "session.models"
 	SessionSelectModelMethod = "session.selectModel"
@@ -25,14 +26,21 @@ type SessionListRequest struct {
 
 // SessionSummary is the browser-visible projection of one attached Session.
 type SessionSummary struct {
-	SessionID       SessionID `json:"sessionId"`
-	UpdatedAt       int64     `json:"updatedAt"`
-	Running         bool      `json:"running"`
-	Blank           bool      `json:"blank"`
-	ParentSessionID SessionID `json:"parentSessionId,omitempty"`
-	Origin          string    `json:"origin,omitempty"`
-	CWD             *string   `json:"cwd,omitempty"`
-	AgentPreset     *string   `json:"agentPreset,omitempty"`
+	SessionID       SessionID                `json:"sessionId"`
+	UpdatedAt       int64                    `json:"updatedAt"`
+	Running         bool                     `json:"running"`
+	Blank           bool                     `json:"blank"`
+	ParentSessionID SessionID                `json:"parentSessionId,omitempty"`
+	Origin          string                   `json:"origin,omitempty"`
+	CWD             *string                  `json:"cwd,omitempty"`
+	AgentPreset     *string                  `json:"agentPreset,omitempty"`
+	Projections     *SessionProjectionsBlock `json:"projections,omitempty"`
+}
+
+// SessionProjectionsBlock is one consistent whole-value projection cut.
+type SessionProjectionsBlock struct {
+	AsOfSeq int64                      `json:"asOfSeq"`
+	Values  map[string]json.RawMessage `json:"values"`
 }
 
 // SessionListValue is the complete session.list result.
@@ -54,6 +62,18 @@ type SessionCreateValue struct {
 	AgentPreset *string   `json:"agentPreset,omitempty"`
 }
 
+// SessionRenameRequest contains raw user title input; the title owner normalizes it.
+type SessionRenameRequest struct {
+	SessionID SessionID
+	Title     string
+}
+
+// SessionRenameValue returns the accepted normalized value and title event seq.
+type SessionRenameValue struct {
+	Title string `json:"title"`
+	Seq   int64  `json:"seq"`
+}
+
 // SessionHistoryRequest pages backwards on whole message boundaries.
 type SessionHistoryRequest struct {
 	SessionID   SessionID
@@ -69,8 +89,9 @@ type HistoryEntry struct {
 
 // SessionHistoryValue is one contiguous raw history window.
 type SessionHistoryValue struct {
-	Events  []HistoryEntry `json:"events"`
-	HasMore bool           `json:"hasMore"`
+	Events      []HistoryEntry           `json:"events"`
+	HasMore     bool                     `json:"hasMore"`
+	Projections *SessionProjectionsBlock `json:"projections,omitempty"`
 }
 
 // SessionModelsRequest addresses one ordinary live Session.
@@ -218,6 +239,7 @@ type AcceptedValue struct {
 type SessionAPI interface {
 	List(context.Context, Request[SessionListRequest]) (Outcome[SessionListValue], error)
 	Create(context.Context, Request[SessionCreateRequest]) (Outcome[SessionCreateValue], error)
+	Rename(context.Context, Request[SessionRenameRequest]) (Outcome[SessionRenameValue], error)
 	History(context.Context, Request[SessionHistoryRequest]) (Outcome[SessionHistoryValue], error)
 	Models(context.Context, Request[SessionModelsRequest]) (Outcome[SessionModelsValue], error)
 	SelectModel(context.Context, Request[SessionSelectModelRequest]) (Outcome[SessionSelectModelValue], error)
@@ -232,6 +254,9 @@ func RegisterSessionAPI(methods *Catalog, service SessionAPI) error {
 		func() error { return RegisterUnary(methods, SessionListMethod, DecodeSessionListRequest, service.List) },
 		func() error {
 			return RegisterUnary(methods, SessionCreateMethod, DecodeSessionCreateRequest, service.Create)
+		},
+		func() error {
+			return RegisterUnary(methods, SessionRenameMethod, DecodeSessionRenameRequest, service.Rename)
 		},
 		func() error {
 			return RegisterUnary(methods, SessionHistoryMethod, DecodeSessionHistoryRequest, service.History)

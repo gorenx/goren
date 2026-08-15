@@ -58,6 +58,8 @@ const sessionSchemas = await load<{
   sessionListValueSchema: Parser
   sessionCreateRequestSchema: Parser
   sessionCreateValueSchema: Parser
+  sessionRenameRequestSchema: Parser
+  sessionRenameValueSchema: Parser
   sessionHistoryRequestSchema: Parser
   sessionHistoryValueSchema: Parser
   sessionModelsRequestSchema: Parser
@@ -148,6 +150,7 @@ const candidates: Record<string, { schema: Parser; values: Candidate[] }> = {
     values: [
       { name: 'empty', input: { items: [] } },
       { name: 'attached', input: { items: [{ sessionId: 'session-1', updatedAt: 7, running: false, blank: true, cwd: '/workspace' }] } },
+      { name: 'attached-projections', input: { items: [{ sessionId: 'session-1', updatedAt: 7, running: false, blank: false, projections: { asOfSeq: 3, values: { title: 'Named' } } }] } },
       { name: 'missing-items', input: {} },
     ],
   },
@@ -169,6 +172,23 @@ const candidates: Record<string, { schema: Parser; values: Candidate[] }> = {
       { name: 'empty-id', input: { sessionId: '' } },
     ],
   },
+  sessionRenameRequest: {
+    schema: sessionSchemas.sessionRenameRequestSchema,
+    values: [
+      { name: 'raw', input: { sessionId: 'session-1', title: '  Named  ', ignored: true } },
+      { name: 'empty-title', input: { sessionId: 'session-1', title: '' } },
+      { name: 'empty-id', input: { sessionId: '', title: 'Named' } },
+      { name: 'missing-title', input: { sessionId: 'session-1' } },
+    ],
+  },
+  sessionRenameValue: {
+    schema: sessionSchemas.sessionRenameValueSchema,
+    values: [
+      { name: 'accepted', input: { title: 'Named', seq: 3 } },
+      { name: 'empty-title', input: { title: '', seq: 3 } },
+      { name: 'negative-seq', input: { title: 'Named', seq: -1 } },
+    ],
+  },
   sessionHistoryRequest: {
     schema: sessionSchemas.sessionHistoryRequestSchema,
     values: [
@@ -184,6 +204,7 @@ const candidates: Record<string, { schema: Parser; values: Candidate[] }> = {
     values: [
       { name: 'empty', input: { events: [], hasMore: false } },
       { name: 'event', input: { events: [{ event: { type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } } }], hasMore: false } },
+      { name: 'tail-projections', input: { events: [], hasMore: false, projections: { asOfSeq: -1, values: { title: null } } } },
       { name: 'missing-more', input: { events: [] } },
     ],
   },

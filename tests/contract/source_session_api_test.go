@@ -22,6 +22,8 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
+	"github.com/gorenx/goren/sessionprojection"
+	"github.com/gorenx/goren/sessiontitle"
 	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/tools"
 )
@@ -45,6 +47,20 @@ func (extension *sessionAPIContractProvider) Apply(requestContext context.Contex
 		return err
 	}
 	sessionStore, err := session.NewMemoryStore(providerScope, session.MemoryStoreOptions{})
+	if err != nil {
+		return err
+	}
+	projectionRegistry, err := sessionprojection.NewDriveRegistry(providerScope)
+	if err != nil {
+		return err
+	}
+	titleService, err := sessiontitle.NewLogService(
+		providerScope,
+		sessionStore,
+		projectionRegistry,
+		sessiontitle.Config{FallbackMaxWords: 5, FallbackMaxBytes: 40, MaxTitleBytes: 80},
+		sessiontitle.Options{},
+	)
 	if err != nil {
 		return err
 	}
@@ -91,6 +107,7 @@ func (extension *sessionAPIContractProvider) Apply(requestContext context.Contex
 	}
 	gateway, err := apiproxy.NewSessionGateway(requestContext, providerScope, apiproxy.SessionGatewayDependencies{
 		Agents: agentRegistry, Sessions: sessionStore, LLM: modelRuntime, Defaults: defaultSelection,
+		Projections: projectionRegistry, Titles: titleService,
 		Directories: apiproxy.DirectoryProvisionerFunc(func(string) error {
 			return nil
 		}),
@@ -178,6 +195,14 @@ type sessionAPIClientObservation struct {
 	Models            bool     `json:"models"`
 	Selected          bool     `json:"selected"`
 	FirstPrompt       bool     `json:"firstPrompt"`
+	InitialProjection bool     `json:"initialProjection"`
+	FallbackTitle     bool     `json:"fallbackTitle"`
+	Renamed           bool     `json:"renamed"`
+	RuntimeProjection bool     `json:"runtimeProjection"`
+	RenameFrame       bool     `json:"renameFrame"`
+	RenamedList       bool     `json:"renamedList"`
+	RenamedHistory    bool     `json:"renamedHistory"`
+	TitleInvalid      bool     `json:"titleInvalid"`
 	FirstHistoryTypes []string `json:"firstHistoryTypes"`
 	SecondPrompt      bool     `json:"secondPrompt"`
 	Cancelled         bool     `json:"cancelled"`
@@ -237,12 +262,16 @@ func TestPinnedSourceSessionWebApiClientTalksToGoGateway(t *testing.T) {
 		t.Fatalf("decode source Session client observation: %v; output = %s", err, output)
 	}
 	if observation.Created.SessionID != "session-client-contract" || !observation.PresetConflict || !observation.Listed ||
-		!observation.EmptyHistory || !observation.Models || !observation.Selected {
+		!observation.EmptyHistory || !observation.InitialProjection || !observation.Models || !observation.Selected {
 		t.Fatalf("Session setup observation = %#v", observation)
 	}
-	if !observation.FirstPrompt || !slices.Contains(observation.FirstHistoryTypes, session.UserMessageEventName) ||
+	if !observation.FirstPrompt || !observation.FallbackTitle || !slices.Contains(observation.FirstHistoryTypes, session.UserMessageEventName) ||
 		!slices.Contains(observation.FirstHistoryTypes, session.TurnEndEventName) {
 		t.Fatalf("first turn observation = %#v", observation)
+	}
+	if !observation.Renamed || !observation.RuntimeProjection || !observation.RenameFrame ||
+		!observation.RenamedList || !observation.RenamedHistory || !observation.TitleInvalid {
+		t.Fatalf("rename observation = %#v", observation)
 	}
 	if !observation.SecondPrompt || !observation.Cancelled || !observation.Aborted ||
 		!slices.Contains(observation.FinalHistoryTypes, session.TurnEndEventName) {
