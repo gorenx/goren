@@ -11,18 +11,18 @@ import (
 	"strings"
 )
 
-//go:embed assets/*
-var assets embed.FS
+//go:embed dist/*
+var builtAssets embed.FS
 
 // Site serves the embedded conversation shell and its immutable assets.
 type Site struct {
 	files fs.FS
 }
 
-// New returns a frontend that has no filesystem or build-time dependency on
-// the TypeScript source checkout.
+// New returns the Vite production build without a runtime filesystem or
+// TypeScript source-checkout dependency.
 func New() *Site {
-	assetFiles, err := fs.Sub(assets, "assets")
+	assetFiles, err := fs.Sub(builtAssets, "dist")
 	if err != nil {
 		panic(err)
 	}

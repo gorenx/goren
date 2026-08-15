@@ -14,7 +14,7 @@ func TestSiteServesEmbeddedMainFlowAndSPAFallback(t *testing.T) {
 	indexBody := indexResponse.Body.String()
 	if indexResponse.Code != http.StatusOK ||
 		!strings.Contains(indexBody, "Goren") ||
-		!strings.Contains(indexBody, "session-list") ||
+		!strings.Contains(indexBody, `id="root"`) ||
 		!strings.Contains(indexBody, "/app.js") {
 		t.Fatalf("index response = (%d, %q)", indexResponse.Code, indexBody)
 	}
@@ -34,7 +34,7 @@ func TestSiteServesEmbeddedMainFlowAndSPAFallback(t *testing.T) {
 	}
 
 	spaResponse := requestSite(browserAssets, http.MethodGet, "/sessions/example")
-	if spaResponse.Code != http.StatusOK || !strings.Contains(spaResponse.Body.String(), "session-list") {
+	if spaResponse.Code != http.StatusOK || !strings.Contains(spaResponse.Body.String(), `id="root"`) {
 		t.Fatalf("SPA response = (%d, %q)", spaResponse.Code, spaResponse.Body.String())
 	}
 	for _, rejectedPath := range []string{"/api/unknown", "/missing.js"} {
