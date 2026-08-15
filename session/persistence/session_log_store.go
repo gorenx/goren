@@ -14,8 +14,8 @@ import (
 
 const DefaultWriteBatchMaxDelay = 200 * time.Millisecond
 
-// CoordinatorOptions contains orchestration policy, not backend configuration.
-type CoordinatorOptions struct {
+// SessionLogStoreOptions contains durable-log policy, not backend configuration.
+type SessionLogStoreOptions struct {
 	WriteBatchMaxDelay time.Duration
 	ObserverError      func(error)
 }
@@ -42,8 +42,10 @@ type serialGate struct {
 	refs  int
 }
 
-// Coordinator supplies backend-neutral persistence policy over one storage adapter.
-type Coordinator struct {
+// SessionLogStore owns the live-to-durable Session log lifecycle. It serializes
+// writes per Session, validates cold logs, and applies recovery decisions while
+// delegating physical storage to Backend.
+type SessionLogStore struct {
 	sourceScope *plugin.Scope
 	sessions    session.Store
 	storage     Backend
@@ -61,14 +63,14 @@ type Coordinator struct {
 	gates        map[session.SessionID]*serialGate
 }
 
-// NewCoordinator installs the live Session write path around a storage-only backend.
-func NewCoordinator(
+// NewSessionLogStore installs the live Session write path around a storage-only Backend.
+func NewSessionLogStore(
 	requestContext context.Context,
 	sourceScope *plugin.Scope,
 	sessions session.Store,
 	storage Backend,
-	settings CoordinatorOptions,
-) (*Coordinator, error) {
+	settings SessionLogStoreOptions,
+) (*SessionLogStore, error) {
 	if requestContext == nil || sourceScope == nil || sessions == nil || storage == nil {
 		return nil, errors.New("session persistence: Context, Scope, Session Store, and Backend are required")
 	}
@@ -83,7 +85,7 @@ func NewCoordinator(
 	if reporter == nil {
 		reporter = func(error) {}
 	}
-	owner := &Coordinator{
+	owner := &SessionLogStore{
 		sourceScope: sourceScope, sessions: sessions, storage: storage, delay: delay, reporter: reporter,
 		states: make(map[session.SessionID]*durableState), live: make(map[*session.Session]*liveSessionState),
 		reservations: make(map[session.SessionID]*preparedReservation), gates: make(map[session.SessionID]*serialGate),
@@ -114,22 +116,22 @@ func NewCoordinator(
 	return owner, requestContext.Err()
 }
 
-func (owner *Coordinator) Locate(metadata session.Header) (Location, bool) {
+func (owner *SessionLogStore) Locate(metadata session.Header) (Location, bool) {
 	return owner.storage.Locate(cloneHeader(metadata))
 }
 
-func (owner *Coordinator) SupportsRawArtifacts() bool {
+func (owner *SessionLogStore) SupportsRawArtifacts() bool {
 	return owner.storage.SupportsRawArtifacts()
 }
 
-func (owner *Coordinator) ReadRaw(requestContext context.Context, identifier session.SessionID) (RawArtifact, bool, error) {
+func (owner *SessionLogStore) ReadRaw(requestContext context.Context, identifier session.SessionID) (RawArtifact, bool, error) {
 	if !owner.storage.SupportsRawArtifacts() {
 		return RawArtifact{}, false, errRawArtifactsUnavailable
 	}
 	return owner.storage.ReadRaw(requestContext, identifier)
 }
 
-func (owner *Coordinator) Create(requestContext context.Context, metadata session.Header) error {
+func (owner *SessionLogStore) Create(requestContext context.Context, metadata session.Header) error {
 	if requestContext == nil {
 		return errors.New("session persistence: create Context is nil")
 	}
@@ -162,7 +164,7 @@ func (owner *Coordinator) Create(requestContext context.Context, metadata sessio
 	return nil
 }
 
-func (owner *Coordinator) Append(requestContext context.Context, identifier session.SessionID, entries []session.Event) error {
+func (owner *SessionLogStore) Append(requestContext context.Context, identifier session.SessionID, entries []session.Event) error {
 	if requestContext == nil {
 		return errors.New("session persistence: append Context is nil")
 	}
@@ -175,7 +177,7 @@ func (owner *Coordinator) Append(requestContext context.Context, identifier sess
 	return owner.appendCore(requestContext, identifier, batch)
 }
 
-func (owner *Coordinator) Prepare(requestContext context.Context, identifier session.SessionID) (*session.Preparation, error) {
+func (owner *SessionLogStore) Prepare(requestContext context.Context, identifier session.SessionID) (*session.Preparation, error) {
 	if requestContext == nil {
 		return nil, errors.New("session persistence: prepare Context is nil")
 	}
@@ -227,7 +229,7 @@ func (owner *Coordinator) Prepare(requestContext context.Context, identifier ses
 	}
 }
 
-func (owner *Coordinator) Load(requestContext context.Context, identifier session.SessionID) (Inspection, error) {
+func (owner *SessionLogStore) Load(requestContext context.Context, identifier session.SessionID) (Inspection, error) {
 	if requestContext == nil {
 		return Inspection{}, errors.New("session persistence: load Context is nil")
 	}
@@ -264,7 +266,7 @@ func (owner *Coordinator) Load(requestContext context.Context, identifier sessio
 	}
 }
 
-func (owner *Coordinator) Inspect(requestContext context.Context, identifier session.SessionID) (Inspection, error) {
+func (owner *SessionLogStore) Inspect(requestContext context.Context, identifier session.SessionID) (Inspection, error) {
 	if requestContext == nil {
 		return Inspection{}, errors.New("session persistence: inspect Context is nil")
 	}
@@ -298,7 +300,7 @@ func (owner *Coordinator) Inspect(requestContext context.Context, identifier ses
 	return loaded, nil
 }
 
-func (owner *Coordinator) ReadFrom(requestContext context.Context, identifier session.SessionID, fromSeq int64) (Inspection, error) {
+func (owner *SessionLogStore) ReadFrom(requestContext context.Context, identifier session.SessionID, fromSeq int64) (Inspection, error) {
 	if fromSeq < 0 {
 		return Inspection{}, errors.New("session persistence: fromSeq must be non-negative")
 	}
@@ -328,15 +330,15 @@ func (owner *Coordinator) ReadFrom(requestContext context.Context, identifier se
 	return Inspection{Header: loaded.Header, Events: snapshotEvents(loaded.Events[start:])}, nil
 }
 
-func (owner *Coordinator) List(requestContext context.Context) ([]session.Header, error) {
+func (owner *SessionLogStore) List(requestContext context.Context) ([]session.Header, error) {
 	return owner.storage.ListStored(requestContext)
 }
 
-func (owner *Coordinator) ListSnapshots(requestContext context.Context) ([]Snapshot, error) {
+func (owner *SessionLogStore) ListSnapshots(requestContext context.Context) ([]Snapshot, error) {
 	return owner.storage.ListStoredSnapshots(requestContext)
 }
 
-func (owner *Coordinator) onCreated(requestContext context.Context, conversation *session.Session) error {
+func (owner *SessionLogStore) onCreated(requestContext context.Context, conversation *session.Session) error {
 	if conversation == nil {
 		return errors.New("session persistence: created Session is nil")
 	}
@@ -442,7 +444,7 @@ func (owner *Coordinator) onCreated(requestContext context.Context, conversation
 	return nil
 }
 
-func (owner *Coordinator) onEvent(_ context.Context, conversation *session.Session, committed session.Event) error {
+func (owner *SessionLogStore) onEvent(_ context.Context, conversation *session.Session, committed session.Event) error {
 	owner.mutex.Lock()
 	live := owner.live[conversation]
 	owner.mutex.Unlock()
@@ -453,7 +455,7 @@ func (owner *Coordinator) onEvent(_ context.Context, conversation *session.Sessi
 	return nil
 }
 
-func (owner *Coordinator) onFlush(requestContext context.Context, conversation *session.Session) error {
+func (owner *SessionLogStore) onFlush(requestContext context.Context, conversation *session.Session) error {
 	owner.mutex.Lock()
 	live := owner.live[conversation]
 	owner.mutex.Unlock()
@@ -463,7 +465,7 @@ func (owner *Coordinator) onFlush(requestContext context.Context, conversation *
 	return live.writes.flush(requestContext)
 }
 
-func (owner *Coordinator) onDisposed(requestContext context.Context, conversation *session.Session) error {
+func (owner *SessionLogStore) onDisposed(requestContext context.Context, conversation *session.Session) error {
 	owner.mutex.Lock()
 	live := owner.live[conversation]
 	owner.mutex.Unlock()
@@ -487,7 +489,7 @@ func (owner *Coordinator) onDisposed(requestContext context.Context, conversatio
 	return nil
 }
 
-func (owner *Coordinator) installLive(conversation *session.Session) {
+func (owner *SessionLogStore) installLive(conversation *session.Session) {
 	identifier := conversation.ID()
 	writes := newLiveWriter(owner.delay, func(requestContext context.Context, entries []session.Event) error {
 		release, err := owner.acquire(requestContext, identifier)
@@ -504,7 +506,7 @@ func (owner *Coordinator) installLive(conversation *session.Session) {
 	owner.mutex.Unlock()
 }
 
-func (owner *Coordinator) appendLiveBatch(requestContext context.Context, identifier session.SessionID, entries []session.Event) error {
+func (owner *SessionLogStore) appendLiveBatch(requestContext context.Context, identifier session.SessionID, entries []session.Event) error {
 	owner.mutex.Lock()
 	tracked := owner.states[identifier]
 	owner.mutex.Unlock()
@@ -520,7 +522,7 @@ func (owner *Coordinator) appendLiveBatch(requestContext context.Context, identi
 	return owner.appendCore(requestContext, identifier, fresh)
 }
 
-func (owner *Coordinator) appendCore(requestContext context.Context, identifier session.SessionID, entries []session.Event) error {
+func (owner *SessionLogStore) appendCore(requestContext context.Context, identifier session.SessionID, entries []session.Event) error {
 	if len(entries) == 0 {
 		return nil
 	}
@@ -568,7 +570,7 @@ func (owner *Coordinator) appendCore(requestContext context.Context, identifier 
 	return nil
 }
 
-func (owner *Coordinator) loadCold(requestContext context.Context, identifier session.SessionID, commit bool) (Inspection, bool, error) {
+func (owner *SessionLogStore) loadCold(requestContext context.Context, identifier session.SessionID, commit bool) (Inspection, bool, error) {
 	stored, found, err := owner.storage.LoadStored(requestContext, identifier)
 	if err != nil {
 		return Inspection{}, false, err
@@ -583,7 +585,7 @@ func (owner *Coordinator) loadCold(requestContext context.Context, identifier se
 	return owner.commitCold(requestContext, identifier, stored)
 }
 
-func (owner *Coordinator) commitCold(
+func (owner *SessionLogStore) commitCold(
 	requestContext context.Context,
 	identifier session.SessionID,
 	stored StoredPrefix,
@@ -624,7 +626,7 @@ func (owner *Coordinator) commitCold(
 	return loaded, true, nil
 }
 
-func (owner *Coordinator) logicalInspection(identifier session.SessionID, stored StoredPrefix) (Inspection, error) {
+func (owner *SessionLogStore) logicalInspection(identifier session.SessionID, stored StoredPrefix) (Inspection, error) {
 	if stored.Header.ID != identifier {
 		return Inspection{}, owner.corruption(identifier, fmt.Errorf(
 			"stored identity mismatch: requested %q, header contains %q", identifier, stored.Header.ID,
@@ -637,7 +639,7 @@ func (owner *Coordinator) logicalInspection(identifier session.SessionID, stored
 	return loaded, nil
 }
 
-func (owner *Coordinator) normalizeLoadError(identifier session.SessionID, metadata session.Header, problem error) error {
+func (owner *SessionLogStore) normalizeLoadError(identifier session.SessionID, metadata session.Header, problem error) error {
 	var unsupported *UnsupportedFormatError
 	if errors.As(problem, &unsupported) {
 		if unsupported.Location == nil {
@@ -658,7 +660,7 @@ func (owner *Coordinator) normalizeLoadError(identifier session.SessionID, metad
 	return owner.corruption(identifier, problem)
 }
 
-func (owner *Coordinator) corruption(identifier session.SessionID, problem error) error {
+func (owner *SessionLogStore) corruption(identifier session.SessionID, problem error) error {
 	var storedFailure *CorruptionError
 	if errors.As(problem, &storedFailure) {
 		return problem
@@ -666,14 +668,14 @@ func (owner *Coordinator) corruption(identifier session.SessionID, problem error
 	return &CorruptionError{ID: identifier, Cause: problem}
 }
 
-func (owner *Coordinator) acquire(requestContext context.Context, identifier session.SessionID) (func(), error) {
+func (owner *SessionLogStore) acquire(requestContext context.Context, identifier session.SessionID) (func(), error) {
 	if requestContext == nil {
 		return nil, errors.New("session persistence: Context is nil")
 	}
 	owner.mutex.Lock()
 	if owner.closed {
 		owner.mutex.Unlock()
-		return nil, errors.New("session persistence: coordinator is closed")
+		return nil, errors.New("session persistence: Session Log Store is closed")
 	}
 	gate := owner.gates[identifier]
 	if gate == nil {
@@ -705,7 +707,7 @@ func (owner *Coordinator) acquire(requestContext context.Context, identifier ses
 	}
 }
 
-func (owner *Coordinator) close(closeContext context.Context) error {
+func (owner *SessionLogStore) close(closeContext context.Context) error {
 	if closeContext == nil {
 		closeContext = context.Background()
 	}
@@ -748,7 +750,7 @@ func (owner *Coordinator) close(closeContext context.Context) error {
 	return closeErr
 }
 
-func (owner *Coordinator) safeReport(problem error) {
+func (owner *SessionLogStore) safeReport(problem error) {
 	defer func() { _ = recover() }()
 	owner.reporter(problem)
 }

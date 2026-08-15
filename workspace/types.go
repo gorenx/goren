@@ -55,9 +55,6 @@ type Backend interface {
 	Close(context.Context) error
 }
 
-// BackendService is the composition key for one Workspace persistence adapter.
-var BackendService = plugin.DefineService[Backend]("workspacePersistence")
-
 // SessionHeaders is the Workspace-owned anti-corruption port for immutable
 // Session headers. Implementations may merge live and persisted Sessions.
 type SessionHeaders interface {

@@ -12,7 +12,7 @@ import (
 	"github.com/gorenx/goren/session/persistence/sqlite/internal/dbsql"
 )
 
-// Adapter implements only the storage primitives consumed by Persistence Coordinator.
+// Adapter implements only the storage primitives consumed by SessionLogStore.
 type Adapter struct {
 	database      *sql.DB
 	queries       *dbsql.Queries

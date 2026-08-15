@@ -13,21 +13,22 @@ import (
 	sqlitepersistence "github.com/gorenx/goren/session/persistence/sqlite"
 )
 
-// SessionPersistenceSQLiteConfig is the strict deployment configuration for one fact store.
-type SessionPersistenceSQLiteConfig struct {
+// SessionPersistenceConfig configures the durable Session capability. SQLite
+// is the built-in Backend adapter, not a separately loadable plugin.
+type SessionPersistenceConfig struct {
 	Path                 string                        `json:"path"`
 	JournalMode          sqlitepersistence.JournalMode `json:"journalMode,omitempty"`
 	WriteBatchMaxDelayMS int64                         `json:"writeBatchMaxDelayMs,omitempty"`
 }
 
-type sessionPersistenceSQLiteFactory struct{}
+type sessionPersistenceFactory struct{}
 
-func (sessionPersistenceSQLiteFactory) Name() string { return SessionPersistenceSQLiteFactoryName }
+func (sessionPersistenceFactory) Name() string { return SessionPersistenceFactoryName }
 
-func (sessionPersistenceSQLiteFactory) DecodeConfig(
+func (sessionPersistenceFactory) DecodeConfig(
 	rawConfig json.RawMessage,
-) (SessionPersistenceSQLiteConfig, error) {
-	settings, err := plugin.DecodeStrictConfig(rawConfig, func(candidate SessionPersistenceSQLiteConfig) error {
+) (SessionPersistenceConfig, error) {
+	settings, err := plugin.DecodeStrictConfig(rawConfig, func(candidate SessionPersistenceConfig) error {
 		if strings.TrimSpace(candidate.Path) == "" {
 			return errors.New("path must be non-empty")
 		}
@@ -43,7 +44,7 @@ func (sessionPersistenceSQLiteFactory) DecodeConfig(
 		return nil
 	})
 	if err != nil {
-		return SessionPersistenceSQLiteConfig{}, err
+		return SessionPersistenceConfig{}, err
 	}
 	if settings.JournalMode == "" {
 		settings.JournalMode = sqlitepersistence.JournalWAL
@@ -54,32 +55,32 @@ func (sessionPersistenceSQLiteFactory) DecodeConfig(
 	return settings, nil
 }
 
-func (sessionPersistenceSQLiteFactory) New(
+func (sessionPersistenceFactory) New(
 	_ context.Context,
-	settings SessionPersistenceSQLiteConfig,
+	settings SessionPersistenceConfig,
 ) (plugin.Plugin, error) {
-	return &sessionPersistenceSQLitePlugin{settings: settings}, nil
+	return &sessionPersistencePlugin{settings: settings}, nil
 }
 
-type sessionPersistenceSQLitePlugin struct {
-	settings SessionPersistenceSQLiteConfig
+type sessionPersistencePlugin struct {
+	settings SessionPersistenceConfig
 }
 
-func (*sessionPersistenceSQLitePlugin) Manifest() plugin.Manifest {
+func (*sessionPersistencePlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
-		Name:     SessionPersistenceSQLiteFactoryName,
+		Name:     SessionPersistenceFactoryName,
 		Provides: []plugin.ServiceRef{sessionpersistence.Service.Ref()},
 		Requires: []plugin.ServiceRef{session.StoreService.Ref()},
 	}
 }
 
-func (instance *sessionPersistenceSQLitePlugin) Apply(
+func (instance *sessionPersistencePlugin) Apply(
 	requestContext context.Context,
 	pluginScope *plugin.Scope,
 ) error {
 	store, found := plugin.Require(pluginScope, session.StoreService)
 	if !found {
-		return errors.New("assembly: Session Persistence SQLite dependency is unavailable")
+		return errors.New("assembly: Session Persistence dependency is unavailable")
 	}
 	storage, err := sqlitepersistence.Open(requestContext, sqlitepersistence.Config{
 		Path: instance.settings.Path, JournalMode: instance.settings.JournalMode,
@@ -87,9 +88,9 @@ func (instance *sessionPersistenceSQLitePlugin) Apply(
 	if err != nil {
 		return err
 	}
-	durability, err := sessionpersistence.NewCoordinator(
+	durability, err := sessionpersistence.NewSessionLogStore(
 		requestContext, pluginScope, store, storage,
-		sessionpersistence.CoordinatorOptions{
+		sessionpersistence.SessionLogStoreOptions{
 			WriteBatchMaxDelay: time.Duration(instance.settings.WriteBatchMaxDelayMS) * time.Millisecond,
 		},
 	)

@@ -53,9 +53,9 @@ func (instance testPersistenceProvider) Apply(requestContext context.Context, pl
 	if err != nil {
 		return err
 	}
-	durability, err := sessionpersistence.NewCoordinator(
+	durability, err := sessionpersistence.NewSessionLogStore(
 		requestContext, pluginScope, store, storage,
-		sessionpersistence.CoordinatorOptions{WriteBatchMaxDelay: time.Hour},
+		sessionpersistence.SessionLogStoreOptions{WriteBatchMaxDelay: time.Hour},
 	)
 	if err != nil {
 		_ = storage.Close(requestContext)
@@ -85,7 +85,7 @@ func (instance testProbe) Apply(requestContext context.Context, pluginScope *plu
 	return instance.body(requestContext, pluginScope, store, durability)
 }
 
-func TestCoordinatorPersistsAnOpenTurnAndRepairsItOnColdLoad(t *testing.T) {
+func TestSessionLogStorePersistsAnOpenTurnAndRepairsItOnColdLoad(t *testing.T) {
 	t.Parallel()
 	requestContext := context.Background()
 	path := t.TempDir() + "/sessions.sqlite"
