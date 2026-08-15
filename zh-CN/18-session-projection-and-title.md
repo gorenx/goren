@@ -11,7 +11,7 @@
 | TypeScript owner | Go owner | 保留职责 |
 | --- | --- | --- |
 | `packages/session/session-projection` | `session/projection`（alias `sessionprojection`） | projection unit 注册、live fold、snapshot、checkpoint/restore 与 change feed |
-| `packages/session/session-title` | `session/title`（alias `sessiontitle`） | `session/title`、fallback、Provider seam、rename/refresh、`title` unit |
+| `packages/session/session-title`、`session-title-llm` 与两种 LLM Provider | `session/title`（alias `sessiontitle`） | `session/title`、fallback、rename/refresh、Provider 调度、模型请求策略与 `title` unit |
 | `packages/host/apiproxy` 的 Session API | `apiproxy.SessionGateway` | list/history baseline、`session.rename`、`session/projection` frame |
 | Client `ProjectionValueStore` 与 `Session.rename` | 固定源码 contract oracle | `key -> {value, seq}` 的 higher-seq-wins 与 rename 即时折入验证 |
 
@@ -35,9 +35,11 @@ TypeScript 的开放 projection key map 在 Go 中以 `json.RawMessage` 穿过�
 - 标题规范化、UTF-8 byte 上限和 deterministic fallback；
 - `fallback`、`provider`、`user` provenance；
 - Provider 注册、自动生成调度、supersession、refresh 与 user pin；
+- `LLMProvider` 的 First-Prompt/All-Prompts 消息选择、route、预算、超时、流组装与输出校验；
+- 分发前的 `session/title-llm-request` 模型可见请求事实；
 - `title` projection unit。
 
-它不调用 HTTP 模型 API，不选择具体 Provider，也不产生 wire DTO。具体 first-prompt/all-prompts LLM Provider 是独立后续插件。
+它只通过 consumer-owned `LLMStreamer` 调用 provider-neutral LLM capability，不调用 HTTP、不依赖具体 adapter，也不产生 wire DTO。First-Prompt 与 All-Prompts 是同一个 `sessionTitlePlugin` 内的可配置策略对象，不是独立插件；具体 Provider/Model route 来自成对配置或 Session 已记录的 request route。
 
 ## 3. Projection Unit 契约
 
@@ -103,7 +105,7 @@ flowchart LR
 
 可选 `Provider` 声明 `AutomaticFirstPrompt` 或 `AutomaticAllPrompts`。Service 在 request header 与主 `llm/stream` route 对齐后才启动生成，向 Provider 传 detached messages 与 route。新请求、显式 rename、refresh、Session dispose、Provider dispose 或 Service close 都会使旧 revision 失效并取消 active call；迟到结果不能覆盖新标题。
 
-当前只实现 Provider interface 与完整调度器；具体 first-prompt/all-prompts LLM Provider 仍是阶段 6 的独立 Planned 子目标。
+默认组合在 Session Title typed config 中选择 First-Prompt；All-Prompts 使用同一 `LLMProvider` 对象和调用策略，只改变自动节奏与消息选择。两者都先记录完整 `session/title-llm-request`，其中包含 Provider ID、来源 seq、route、system、模型消息与 token 上限；验证失败发生在分发前时不写该事实，分发后的模型失败则保留请求事实和既有 fallback。
 
 ## 7. Rename 与客户端一致性
 
@@ -148,4 +150,4 @@ apiproxy -> sessiontitle + sessionprojection
 internal/assembly -> connect providers and consumers
 ```
 
-Domain packages 不依赖 `apiproxy`、Echo、WebSocket、数据库 driver 或客户端类型。后续新增 projection key 时，由该业务 domain 提供 `Unit`；不得修改 Registry 为 optional-field global model。具体 LLM title Provider 只消费 `sessiontitle.Provider` 与 `llm` capability，不把模型调用塞进 core title service。
+Domain packages 不依赖 `apiproxy`、Echo、WebSocket、数据库 driver 或客户端类型。后续新增 projection key 时，由该业务 domain 提供 `Unit`；不得修改 Registry 为 optional-field global model。LLM title 功能由 `sessiontitle.LLMProvider` 状态对象消费窄 `LLMStreamer` port，`LogService` 只协调 revision 与事实提交；模型调用不得进入 `SessionGateway`。

@@ -10,7 +10,7 @@
 | `session/persistence` | durable `Persistence` 服务、storage-only `Backend` port、write-behind、cold load 与 recovery 编排 | SQLite row/SQL、Agent 执行、Session seq 分配 |
 | `session/persistence/sqlite` | SQLite Header/Event fact adapter、schema、transaction、revision、sqlc row mapping | Turn/Step/Tool repair 决策、projection fold |
 | `session/projection` | 通用 projection unit registry、live fold、snapshot、checkpoint/restore 与 change feed | 具体 projection key、API DTO、数据库事务 |
-| `session/title` | `session/title` 事实、fallback、Provider 调度、rename/refresh 与 title projection | 具体 LLM Provider、HTTP、wire handler、持久化 adapter |
+| `session/title` | `session/title` 事实、fallback、rename/refresh、Provider 调度、First/All-Prompts LLM 策略与 title projection | 具体 LLM adapter、HTTP、wire handler、持久化 adapter |
 
 Go 调用方对 Persistence 使用较短的 `sesspersist`，对其 SQLite adapter 使用 `sesssqlite`；公开包路径、领域类型与 Service 名不因导入缩写改变。Projection/Title 仍按各自调用点保留清晰的领域别名。
 
@@ -57,13 +57,13 @@ session/persistence/sqlite/
 
 Projection `Registry` 只驱动 domain-owned `Unit`，不理解具体 state；`Changed` 显式控制 whole-value change，checkpoint 是可重建缓存而非事实。Title Service 把 fallback、Provider 或 user rename 统一追加为 `session/title`，以日志中的最新合法事件作为真相，再由 title unit 投影给 API Proxy。
 
-Fallback 通过 `DeferAfterEvent` 在原 user event publication 后追加。Rename 会 supersede 自动生成并 pin；Refresh 明确解除 pin。具体 first-prompt/all-prompts LLM Provider 保持独立插件，不进入 title core。
+Fallback 通过 `DeferAfterEvent` 在原 user event publication 后追加。Rename 会 supersede 自动生成并 pin；Refresh 明确解除 pin。First-Prompt 与 All-Prompts 是同一个 Session Title 插件内由 typed config 选择的 `LLMProvider` 策略对象，不是独立插件。该对象经 `LLMStreamer` 消费 provider-neutral LLM runtime，在分发前追加 `session/title-llm-request`，并负责输入/输出预算、超时、流组装与文本校验；`LogService` 仍拥有 revision、取消、迟到结果拒绝和最终 `session/title` 事实。
 
 ## 上下游与依赖方向
 
 - 上游：Agent/Application use case、Agent Factory/Loop resume、API Gateway cold list/history/create、Plugin Scope 生命周期；
 - 下游：Agent reconstruction、API Proxy，以及 SQLite `Backend`；
-- `session/title -> session/projection -> session`，`session/persistence -> session`；core 不反向依赖子包；
+- `session/title -> session/projection + llm + session`，`session/persistence -> session`；core 不反向依赖子包；
 - wire DTO、Echo/WebSocket、LLM adapter、sqlc row 和 SQLite driver 不进入 Session contract。
 
 JSONL 与 SQLite 是同一 `Backend` port 的可替换事实存储方案，不是业务层的两个 Session 模型；当前默认组合选择 SQLite。未来 `session-query-sqlite` 属于独立可重建查询索引，不与事实库混为一体。

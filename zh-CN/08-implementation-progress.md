@@ -25,7 +25,7 @@
 | 阶段 3：Session/Agent slice | Completed | 16 Completed | Contract Verified | 全部交付与 Gate 已闭合；cold persistence/resume 仍由阶段 5 拥有 |
 | 阶段 4：LLM Contract | Completed | 13 Completed | Environment Verified | Runtime、DeepSeek adapter、response recordings、Agent attempt loop、默认 retry Consumer 与真实 Provider smoke 均已完成 |
 | 阶段 5：Session 持久化 | In Progress | 15 Completed / 2 Planned | Contract Verified | SQLite facts、cold recovery/API/Agent resume、turn-end checkpoint 与默认装配主流程已闭环；剩余读取优化 |
-| 阶段 6：客户端能力扩展 | Deferred | 19 Completed / 21 Deferred | Contract Verified | 主会话 UI、Question 回答与 DeepSeek API Key 设置已完成；其余页面和管理能力保持冻结 |
+| 阶段 6：客户端能力扩展 | Deferred | 21 Completed / 19 Deferred | Contract Verified | Session 自动标题、主会话 UI、Question 回答与 DeepSeek API Key 设置已完成；其余页面和管理能力保持冻结 |
 | 阶段 7：Deferred 能力 | Deferred | 7 Deferred | None | 不创建 package、handler 或依赖占位 |
 | 阶段 8：Parity Hardening | In Progress | 1 Completed / 4 In Progress / 10 Planned | Environment Verified | 默认 UI/Provider 主流程已有环境证据，完整发布验收仍未完成 |
 
@@ -247,8 +247,8 @@ interaction owner registers stable rpcId + decoder
 | S6-D12 | 能力 | Goals | Deferred | 当前主会话不依赖 |
 | S6-D13 | 能力 | Session Projection Framework | Completed | Contract Verified：通用 Unit/Registry、live fold、whole-value change、versioned checkpoint/restore、list/history baseline 与 `session/projection` frame 已实现；固定源 schema 与客户端 projection store 通过 |
 | S6-D14 | 能力 | Session Title Core 与 `session.rename` | Completed | Contract Verified：fallback、规范化、source union、user pin/refresh、Provider 调度 seam、`title` projection、`title-invalid`、九个 Session method 与固定源 `WebApiClient`/`Session.rename()` E2E 已通过 |
-| S6-D15 | 能力 | Session Title First-Prompt LLM Provider | Deferred | core 已提供 `AutomaticFirstPrompt` Provider seam；当前主会话只要求稳定 fallback/rename |
-| S6-D16 | 能力 | Session Title All-Prompts LLM Provider | Deferred | core 已提供 `AutomaticAllPrompts` Provider seam；当前主会话只要求稳定 fallback/rename |
+| S6-D15 | 能力 | Session Title First-Prompt LLM Provider | Completed | Contract Verified：默认 Session Title 插件内配置 First-Prompt；共享 `LLMProvider` 覆盖 route、模型可见请求事实、预算、超时、流组装和 title 结果，固定主流程 oracle 观察到独立 title call |
+| S6-D16 | 能力 | Session Title All-Prompts LLM Provider | Completed | Go Verified：同一 Session Title 插件内以 `automaticMode=all-prompts` 构造策略对象；消息选择、source seq 与结果验证由 `llm_provider_test.go` 覆盖，不注册第二个插件 |
 | S6-D17 | 能力 | Session Query/Search | Deferred | 当前主会话不依赖 |
 | S6-D18 | 能力 | Session Fork | Deferred | 当前主会话不依赖 |
 | S6-D19 | 能力 | 其他经 capability matrix 纳入的服务端能力 | Deferred | 当前主会话不依赖 |
@@ -346,6 +346,7 @@ interaction owner registers stable rpcId + decoder
 | 固定源 `WebApiClient` 调用 Go Session Gateway 完成 prompt/queue/cancel 双流会话 | `TestPinnedSourceSessionWebApiClientTalksToGoGateway` |
 | Session Projection late fold、whole-value change、registration refcount 与 versioned checkpoint/restore | `session/projection/registry_test.go` |
 | Session Title fallback、规范化、rename、projection、Provider supersession、refresh、JSON array wire 与 drain | `session/title/service_test.go` |
+| Session Title First/All-Prompts LLM 策略、请求事实、route、预算、timeout、finish 与默认组合 | `session/title/llm_provider_test.go`、`TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter` |
 | `SessionLogStore` 的 cold repair、exact preparation reservation 与 live write handoff | `session/persistence/session_log_store_test.go`、`recovery_test.go` |
 | SQLite Header/首批 Events 原子 materialization、torn tail repair 与 foreign schema 拒绝 | `session/persistence/sqlite/adapter_test.go` |
 | write-behind 失败 batch 保留、显式 flush 与取消 ownership | `session/persistence/write_behind_test.go` |
@@ -414,11 +415,12 @@ interaction owner registers stable rpcId + decoder
 
 ## 15. 下一实现切片
 
-Agent Loop core、九个 Session method、Session Persistence/SQLite、live Mux/Host projection、queue、cancel、rename、Approval/Question、Credentials 与主会话 Web UI 已组成可运行主流程。正常轮次的 `turn/end` 也已成为显式 durable boundary。当前主会话已到暂停边界，后续只保留以下非阻塞项：
+Agent Loop core、九个 Session method、Session Persistence/SQLite、live Mux/Host projection、queue、cancel、rename、自动 LLM title、Approval/Question、Credentials 与主会话 Web UI 已组成可运行主流程。正常轮次的 `turn/end` 也已成为显式 durable boundary。当前继续完成 Session 剩余功能，顺序为：
 
-1. 以 bounded prepared cache 和 Backend suffix seek 优化 cold read；二者不改变主流程正确性或公开协议；
-2. 有可用交互式浏览器时补键盘操作、API Key dialog 与 Chrome/Safari 人工验收；该项不阻塞当前 Host/UI 主流程 contract。
+1. 实现 Session Query/Search 的领域 Service、可重建 SQLite 查询索引与 `session.search` contract；
+2. 以 bounded prepared cache 和 Backend suffix seek 优化 cold read；二者不改变主流程正确性或公开协议；
+3. 有可用交互式浏览器时补键盘操作、API Key dialog 与 Chrome/Safari 人工验收；该项不阻塞当前 Host/UI 主流程 contract。
 
-完整 Settings、Preset、Filesystem、Shell、Attachment、Search、Fork、Typert Remote、Approval 浏览器控件和完整原版 Web product 均保持 Deferred；当前不为它们增加 handler、service 或测试占位。Credentials watcher、`credentials/updated` 与跨进程 writer lock 也未进入当前闭包。
+Session Fork 按用户决策不实现。完整 Settings、Preset、Filesystem、Shell、Attachment、Typert Remote、Approval 浏览器控件和完整原版 Web product 均保持 Deferred；当前不为它们增加 handler、service 或测试占位。Credentials watcher、`credentials/updated` 与跨进程 writer lock 也未进入当前闭包。
 
 Session Persistence/SQLite 已负责 cold facts、repair 与 Agent resume；它不恢复进程内 pending callback、socket subscriber 或未完成 retry timer。默认 RetryPolicy Consumer 仍沿 `agent/request-error` 作为独立 Plugin 进入，没有回填 DeepSeek Adapter。Agent instance 继续消费既有 Child Scope 与 scoped listener isolation，不另建第二套 Registry。

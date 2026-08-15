@@ -198,7 +198,7 @@ cmd/goren
   -> Agent Default Model Factory.Create + Apply
        -> static deployment selection + Provide(agentDefaultModel)
   -> LLM Retry StateWaiting (requires agents)
-  -> Session Title StateWaiting (requires sessions/sessionProjections)
+  -> Session Title StateWaiting (requires sessions/sessionProjections/llm when LLM title is configured)
   -> Session Projection Factory.Create + Apply
        -> DriveRegistry + Provide(sessionProjections)
   -> Agent Loop StateWaiting (requires agents/sessions/llm/tools/systemPrompt)
@@ -239,6 +239,7 @@ cmd/goren
        -> embedded web.Site + Provide(webFrontend)
   -> Runtime settles Session Title
        -> register title projection + event/llm observers
+       -> construct configured First-Prompt or All-Prompts LLMProvider inside the same Plugin
        -> Provide(sessionTitle)
   -> Runtime settles Agent Loop
        -> Require five capability Services

@@ -158,7 +158,7 @@ wire DTO 止于 `apiproxy`；Agent、Session、LLM 和默认模型包不依赖 C
 
 - Approval/Question 已由[17](./17-approval-user-questions-and-interaction-gateway.md)持有 pending、requested/resolved frame、replay 和 result schema；新增 interaction 必须复用同一 generic correlation 与 broker seam，不能把具体 schema 塞回 Session Gateway；
 - `session.search`、`fork` 和 attachment method 只有在其真实 Session/Attachment capability 进入后才注册；
-- Session Title 的 first-prompt/all-prompts LLM Provider 作为独立插件进入，不能把模型调用塞进 `SessionGateway` 或 core Title Service；
+- Session Title 的 first-prompt/all-prompts LLM 生成由同一个 Session Title 插件内的策略对象拥有；不能把模型调用塞进 `SessionGateway`；
 - JSONL、SQLite/sqlc 只实现业务事实存取 adapter，resume/load/repair 由 `session/persistence.SessionLogStore` 决定；
 - Tool view、projection、remote event 和 Workspace frame 由相应 Provider 贡献，不能在 SessionGateway 中加入 optional global model；
 - 新增 method 必须经过 method-owned typed decoder、业务 success/failure/cancel 和固定源 Client/schema contract；

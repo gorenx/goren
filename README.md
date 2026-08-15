@@ -53,7 +53,7 @@ Status: **Available** means the current Goren implementation provides the named 
 | Conversation | History, prompt, streamed reasoning/output, and tool messages | **Available:** HTTP/WebSocket main flow and Web rendering |
 | Queue and cancellation | Read/edit/remove queued input and cancel an active turn | **Available:** queue baseline and mutation plus turn cancellation |
 | Session projection | Extensible projections, cache, checkpoint, and live frames | **Available:** projection registry, fold, checkpoint/restore, baseline, and live frames |
-| Session title | Fallback, manual rename, and automatic LLM title providers | **Partial:** stable fallback and manual rename; first/all-prompt LLM title providers are deferred |
+| Session title | Fallback, manual rename, and automatic LLM title providers | **Available:** fallback, rename/refresh, and configurable first-prompt or all-prompts LLM generation |
 | Session persistence | Pluggable persistence with JSONL and SQLite adapters | **Partial:** persistence boundary plus SQLite/sqlc adapter; JSONL adapter is not copied |
 | Session query and export | SQLite query, search, log export, and query tool | **Deferred** |
 | Session fork | Fork an existing conversation | **Deferred** |

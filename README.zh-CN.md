@@ -53,7 +53,7 @@ Goren 保留源系统可观察的行为和职责边界，同时用 typed Go conf
 | 对话 | History、Prompt、流式 Reasoning/Output 与 Tool Message | **已实现：** HTTP/WebSocket 主流程与 Web 渲染 |
 | Queue 与取消 | 读取/编辑/删除排队输入及取消运行中的 Turn | **已实现：** Queue Baseline、Mutation 与 Turn Cancellation |
 | Session Projection | 可扩展 Projection、Cache、Checkpoint 与实时 Frame | **已实现：** Projection Registry、Fold、Checkpoint/Restore、Baseline 与实时 Frame |
-| Session Title | Fallback、手工 Rename 与自动 LLM Title Provider | **部分实现：** 稳定 Fallback 与手工 Rename；First/All-Prompt LLM Title Provider 暂缓 |
+| Session Title | Fallback、手工 Rename 与自动 LLM Title Provider | **已实现：** Fallback、Rename/Refresh，以及可配置的 First-Prompt 或 All-Prompts LLM 生成 |
 | Session 持久化 | 可插拔 Persistence，以及 JSONL、SQLite Adapter | **部分实现：** Persistence 边界与 SQLite/sqlc Adapter；未复制 JSONL Adapter |
 | Session Query 与导出 | SQLite Query、搜索、日志导出与 Query Tool | **暂缓** |
 | Session Fork | 从既有对话创建 Fork | **暂缓** |
