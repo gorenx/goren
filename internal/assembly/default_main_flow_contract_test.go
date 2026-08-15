@@ -42,6 +42,7 @@ type webUIMainFlowObservation struct {
 	History              bool `json:"history"`
 	QuestionAnswered     bool `json:"questionAnswered"`
 	RuntimeContextHidden bool `json:"runtimeContextHidden"`
+	Localized            bool `json:"localized"`
 }
 
 type defaultMainFlowDeepSeekRequest struct {
@@ -228,7 +229,7 @@ func TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter(t *
 		t.Fatalf("decode Web UI observation: %v; output = %s", err, webOutput)
 	}
 	if !webObservation.Booted || !webObservation.Prompted || !webObservation.Selected || !webObservation.History ||
-		!webObservation.QuestionAnswered || !webObservation.RuntimeContextHidden {
+		!webObservation.QuestionAnswered || !webObservation.RuntimeContextHidden || !webObservation.Localized {
 		t.Fatalf("Web UI observation = %#v", webObservation)
 	}
 	if requestCount.Load() != 4 {

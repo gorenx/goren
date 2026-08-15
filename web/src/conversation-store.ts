@@ -16,6 +16,7 @@ import type {
   StreamDraft,
 } from './types'
 import { isRecord, recordBoolean, recordString } from './types'
+import type { Locale, Translator } from './i18n'
 
 type Subscriber = () => void
 
@@ -27,7 +28,7 @@ const initialSnapshot: ConversationSnapshot = {
   pendingQuestions: new Map(),
   localTitles: new Map(),
   onlineDownlinks: 0,
-  composerState: '正在连接 Go Agent',
+  composerState: 'composer.connecting',
   credentialLoaded: false,
 }
 
@@ -36,16 +37,19 @@ export const DEEPSEEK_CREDENTIAL_REF = 'DEEPSEEK_API_KEY'
 export class ConversationStore {
   readonly #subscribers = new Set<Subscriber>()
   readonly #api: HarnessAPI
+  readonly #translateText: Translator
   #value = initialSnapshot
   #selectionVersion = 0
   #toastTimer?: number
   #started = false
 
-  constructor() {
+  constructor(translateText: Translator) {
+    this.#translateText = translateText
     this.#api = new HarnessAPI(
       request => this.#receiveMux(request.rpcId, request.payload),
       request => this.#receiveHost(request.payload),
       count => this.#patch({ onlineDownlinks: count }),
+      translateText,
     )
   }
 
@@ -61,7 +65,7 @@ export class ConversationStore {
     this.#started = true
     try {
       const host = await this.#api.call<HostDescription>('host.describe', {})
-      this.#patch({ host, composerState: '正在同步会话' })
+      this.#patch({ host, composerState: 'composer.syncingSessions' })
       await this.refreshCredential()
       this.#api.connect()
       await this.refreshSessions()
@@ -128,13 +132,13 @@ export class ConversationStore {
     const selectionVersion = ++this.#selectionVersion
     const streams = new Map(this.#value.streams)
     streams.delete(sessionId)
-    this.#patch({ currentSessionId: sessionId, streams, composerState: '正在读取历史' })
+    this.#patch({ currentSessionId: sessionId, streams, composerState: 'composer.readingHistory' })
     try {
       const history = await this.#api.call<SessionHistoryValue>('session.history', { sessionId, maxMessages: 100 })
       if (selectionVersion !== this.#selectionVersion) return
       const events = new Map(this.#value.events)
       events.set(sessionId, (history.events ?? []).map(entry => entry.event))
-      this.#patch({ events, composerState: this.currentSession()?.running ? 'Agent 正在处理' : '准备就绪' })
+      this.#patch({ events, composerState: this.currentSession()?.running ? 'composer.agentWorking' : 'composer.ready' })
     } catch (error) {
       if (selectionVersion === this.#selectionVersion) this.#fail(error)
     }
@@ -146,7 +150,7 @@ export class ConversationStore {
     if (text === '' || sessionId === undefined) return
     const localTitles = new Map(this.#value.localTitles)
     localTitles.set(sessionId, text.slice(0, 52))
-    this.#patch({ localTitles, composerState: '已进入 Agent 队列' })
+    this.#patch({ localTitles, composerState: 'composer.queued' })
     try {
       await this.#api.call<unknown>('session.prompt', {
         sessionId,
@@ -155,7 +159,7 @@ export class ConversationStore {
         clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
       })
     } catch (error) {
-      this.#patch({ composerState: '发送失败' })
+      this.#patch({ composerState: 'composer.sendFailed' })
       this.#fail(error)
       throw error
     }
@@ -191,13 +195,13 @@ export class ConversationStore {
   }
 
   async answerQuestion(request: PendingQuestionRequest, answers: QuestionAnswerItem[]): Promise<void> {
-    if (!this.#value.pendingQuestions.has(request.rpcId)) throw new Error('这个问题已经结束')
+    if (!this.#value.pendingQuestions.has(request.rpcId)) throw new Error(this.#translateText('error.questionEnded'))
     try {
       await this.#api.respond(request.rpcId, {
         ok: true,
         value: { sessionId: request.sessionId, answer: { answers } },
       })
-      this.#removeQuestion(request.rpcId, 'Agent 正在继续处理')
+      this.#removeQuestion(request.rpcId, 'composer.agentContinuing')
     } catch (error) {
       this.#fail(error)
       throw error
@@ -211,7 +215,7 @@ export class ConversationStore {
         ok: false,
         error: { code: 'cancelled', message: 'cancelled by user', details: {} },
       })
-      this.#removeQuestion(request.rpcId, '已取消问题，Agent 正在收尾')
+      this.#removeQuestion(request.rpcId, 'composer.questionCancelled')
     } catch (error) {
       this.#fail(error)
       throw error
@@ -223,15 +227,17 @@ export class ConversationStore {
     const projected = summary.projections?.values.title
     if (local !== undefined) return local
     if (typeof projected === 'string' && projected.trim() !== '') return projected
-    return summary.blank ? '新对话' : `对话 ${summary.sessionId.slice(0, 8)}`
+    return summary.blank
+      ? this.#translateText('conversation.new')
+      : this.#translateText('session.fallback', { id: summary.sessionId.slice(0, 8) })
   }
 
-  relativeTime(timestamp: number): string {
+  relativeTime(timestamp: number, activeLanguage: Locale): string {
     const elapsed = Math.max(0, Date.now() - timestamp)
-    if (elapsed < 60_000) return '刚刚'
-    if (elapsed < 3_600_000) return `${String(Math.floor(elapsed / 60_000))} 分钟前`
-    if (elapsed < 86_400_000) return `${String(Math.floor(elapsed / 3_600_000))} 小时前`
-    return new Date(timestamp).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
+    if (elapsed < 60_000) return this.#translateText('time.justNow')
+    if (elapsed < 3_600_000) return this.#translateText('time.minutesAgo', { count: Math.floor(elapsed / 60_000) })
+    if (elapsed < 86_400_000) return this.#translateText('time.hoursAgo', { count: Math.floor(elapsed / 3_600_000) })
+    return new Date(timestamp).toLocaleDateString(activeLanguage, { month: 'short', day: 'numeric' })
   }
 
   dismissError(): void {
@@ -243,24 +249,24 @@ export class ConversationStore {
     const frameType = recordString(payload, 'type')
     if (frameType === 'stream/error') {
       const error = isRecord(payload.error) ? recordString(payload.error, 'message') : undefined
-      this.#fail(new Error(error ?? '事件流已断开'))
+      this.#fail(new Error(error ?? this.#translateText('error.streamDisconnected')))
       return
     }
     if (frameType === 'question/requested') {
       const request = readQuestionRequest(rpcId, payload)
       if (request === undefined) {
-        this.#fail(new Error('Host 返回了无效的问题请求'))
+        this.#fail(new Error(this.#translateText('error.invalidQuestion')))
         return
       }
       const pendingQuestions = new Map(this.#value.pendingQuestions)
       pendingQuestions.set(rpcId, request)
-      this.#patch({ pendingQuestions, composerState: 'Agent 正在等待你的回答' })
+      this.#patch({ pendingQuestions, composerState: 'composer.waitingForAnswer' })
       return
     }
     if (frameType === 'question/resolved') {
       const questionRpcId = recordString(payload, 'questionRpcId')
       if (questionRpcId === undefined) return
-      this.#removeQuestion(questionRpcId, 'Agent 正在继续处理')
+      this.#removeQuestion(questionRpcId, 'composer.agentContinuing')
       return
     }
     if (frameType !== 'session/event') return
@@ -278,7 +284,7 @@ export class ConversationStore {
     applyStreamEvent(streams, sessionId, eventValue)
     this.#patch({ events, streams })
     if (eventValue.type === 'turn/end') {
-      this.#patch({ composerState: '事实已同步，准备就绪' })
+      this.#patch({ composerState: 'composer.factsSynced' })
       globalThis.setTimeout(() => void this.refreshSessions().catch(error => this.#fail(error)), 100)
     }
   }
@@ -298,12 +304,12 @@ export class ConversationStore {
       this.#patch({
         sessions,
         composerState: sessionId === this.#value.currentSessionId
-          ? running ? 'Agent 正在处理' : '事实已同步，准备就绪'
+          ? running ? 'composer.agentWorking' : 'composer.factsSynced'
           : this.#value.composerState,
       })
       return
     }
-    if (frameType === 'host/agent-error') this.#fail(new Error(recordString(payload, 'message') ?? 'Agent 执行失败'))
+    if (frameType === 'host/agent-error') this.#fail(new Error(recordString(payload, 'message') ?? this.#translateText('error.agentFailed')))
   }
 
   #patch(patch: Partial<ConversationSnapshot>): void {
@@ -311,7 +317,7 @@ export class ConversationStore {
     for (const subscriber of this.#subscribers) subscriber()
   }
 
-  #removeQuestion(rpcId: string, composerState: string): void {
+  #removeQuestion(rpcId: string, composerState: ConversationSnapshot['composerState']): void {
     if (!this.#value.pendingQuestions.has(rpcId)) return
     const pendingQuestions = new Map(this.#value.pendingQuestions)
     pendingQuestions.delete(rpcId)

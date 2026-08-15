@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { ConversationStore } from '../conversation-store'
 import type { PendingQuestionRequest, QuestionAnswerItem, QuestionItem } from '../types'
+import { useI18n } from '../i18n'
 
 interface QuestionCardProps {
   store: ConversationStore
@@ -13,6 +14,7 @@ interface QuestionDraft {
 }
 
 export function QuestionCard({ store, request }: QuestionCardProps): React.JSX.Element {
+  const { translate } = useI18n()
   const [drafts, setDrafts] = useState(() => new Map<string, QuestionDraft>(
     request.questions.map(question => [question.id, { selected: [], custom: '' }]),
   ))
@@ -65,7 +67,7 @@ export function QuestionCard({ store, request }: QuestionCardProps): React.JSX.E
     event.preventDefault()
     const answerItems = answers()
     if (answerItems === undefined) {
-      setFailure('请回答每一个问题')
+      setFailure(translate('question.answerAll'))
       return
     }
     setBusy(true)
@@ -88,14 +90,14 @@ export function QuestionCard({ store, request }: QuestionCardProps): React.JSX.E
   }
 
   return (
-    <aside className="question-dock" data-question-rpc-id={request.rpcId} aria-label="Agent 正在等待回答">
+    <aside className="question-dock" data-question-rpc-id={request.rpcId} aria-label={translate('question.label')}>
       <form className="question-card" onSubmit={event => void submit(event)}>
         <div className="question-card-header">
           <div>
-            <p className="question-eyebrow">AGENT NEEDS INPUT</p>
-            <h2>回答后继续当前任务</h2>
+            <p className="question-eyebrow">{translate('question.eyebrow')}</p>
+            <h2>{translate('question.title')}</h2>
           </div>
-          <span className="question-waiting"><span aria-hidden="true" />WAITING</span>
+          <span className="question-waiting"><span aria-hidden="true" />{translate('question.waiting')}</span>
         </div>
 
         <div className="question-list">
@@ -105,7 +107,7 @@ export function QuestionCard({ store, request }: QuestionCardProps): React.JSX.E
             return (
               <fieldset className="question-field" key={question.id} disabled={busy}>
                 <legend>
-                  <span>{question.header ?? `问题 ${String(index + 1)}`}</span>
+                  <span>{question.header ?? translate('question.fallbackHeader', { number: index + 1 })}</span>
                   <strong>{question.question}</strong>
                 </legend>
                 {question.detail !== undefined && <p className="question-detail">{question.detail}</p>}
@@ -133,11 +135,11 @@ export function QuestionCard({ store, request }: QuestionCardProps): React.JSX.E
                   </div>
                 )}
                 <label className="question-custom">
-                  <span>{options.length === 0 ? '你的回答' : '其他回答'}</span>
+                  <span>{options.length === 0 ? translate('question.yourAnswer') : translate('question.otherAnswer')}</span>
                   <textarea
                     rows={2}
                     value={draft.custom}
-                    placeholder={options.length === 0 ? '输入回答…' : '也可以直接输入…'}
+                    placeholder={options.length === 0 ? translate('question.answerPlaceholder') : translate('question.otherPlaceholder')}
                     onChange={event => writeCustom(question, event.target.value)}
                   />
                 </label>
@@ -148,8 +150,8 @@ export function QuestionCard({ store, request }: QuestionCardProps): React.JSX.E
 
         <div className="question-actions">
           <div className="min-w-0 flex-1">{failure !== undefined && <p role="alert">{failure}</p>}</div>
-          <button type="button" className="question-cancel" disabled={busy} onClick={() => void cancel()}>取消提问</button>
-          <button type="submit" className="question-submit" data-question-submit disabled={busy}>{busy ? '正在继续…' : '回答并继续'}</button>
+          <button type="button" className="question-cancel" disabled={busy} onClick={() => void cancel()}>{translate('question.cancel')}</button>
+          <button type="submit" className="question-submit" data-question-submit disabled={busy}>{busy ? translate('question.continuing') : translate('question.submit')}</button>
         </div>
       </form>
     </aside>

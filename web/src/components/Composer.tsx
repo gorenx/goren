@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState } from 'react'
 import type { ConversationSnapshot } from '../types'
 import type { ConversationStore } from '../conversation-store'
 import { SendIcon, SparkIcon } from '../icons'
+import { useI18n } from '../i18n'
 
 interface ComposerProps {
   store: ConversationStore
@@ -9,6 +10,7 @@ interface ComposerProps {
 }
 
 export function Composer({ store, snapshot }: ComposerProps): React.JSX.Element {
+  const { translate } = useI18n()
   const [draft, setDraft] = useState('')
   const textarea = useRef<HTMLTextAreaElement>(null)
   const waitingForAnswer = store.currentQuestion() !== undefined
@@ -44,14 +46,14 @@ export function Composer({ store, snapshot }: ComposerProps): React.JSX.Element 
           void send()
         }}
       >
-        <label className="sr-only" htmlFor="prompt">发送消息</label>
+        <label className="sr-only" htmlFor="prompt">{translate('composer.label')}</label>
         <textarea
           ref={textarea}
           id="prompt"
           rows={1}
           disabled={!canCompose}
           defaultValue=""
-          placeholder={waitingForAnswer ? '请先回答上方问题…' : '给 Agent 发消息…'}
+          placeholder={waitingForAnswer ? translate('composer.waitingPlaceholder') : translate('composer.placeholder')}
           autoComplete="off"
           className="composer-input"
           onInput={event => setDraft(event.currentTarget.value)}
@@ -68,16 +70,16 @@ export function Composer({ store, snapshot }: ComposerProps): React.JSX.Element 
               <SparkIcon size={14} />
               <span className="max-w-40 truncate">{snapshot.host?.model ?? 'DeepSeek'}</span>
             </span>
-            <span className="hidden font-mono text-[9px] tracking-[0.08em] text-caption sm:inline">ENTER TO SEND</span>
+            <span className="hidden font-mono text-[9px] uppercase tracking-[0.08em] text-caption sm:inline">{translate('composer.enterToSend')}</span>
           </div>
-          <button id="send" type="submit" className="send-button" disabled={!canCompose || draft.trim() === ''} aria-label="发送消息">
+          <button id="send" type="submit" className="send-button" disabled={!canCompose || draft.trim() === ''} aria-label={translate('composer.send')}>
             <SendIcon size={18} />
           </button>
         </div>
       </form>
       <div id="composer-state" className="mt-2 flex items-center justify-center gap-2 font-mono text-[9px] tracking-[0.08em] text-caption">
         <span className={snapshot.currentSessionId !== undefined && store.currentSession()?.running ? 'status-pulse' : 'status-pin'} aria-hidden="true" />
-        {snapshot.composerState}
+        {translate(snapshot.composerState)}
       </div>
     </div>
   )

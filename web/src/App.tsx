@@ -1,13 +1,17 @@
-import { useEffect, useState, useSyncExternalStore } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { ConversationStore } from './conversation-store'
 import { Sidebar } from './components/Sidebar'
 import { ConversationPane } from './components/ConversationPane'
 import { DetailsPanel } from './components/DetailsPanel'
 import { CloseIcon } from './icons'
 import { CredentialDialog } from './components/CredentialDialog'
+import { useI18n } from './i18n'
 
 export function App(): React.JSX.Element {
-  const [store] = useState(() => new ConversationStore())
+  const { translate } = useI18n()
+  const translateRef = useRef(translate)
+  translateRef.current = translate
+  const [store] = useState(() => new ConversationStore((messageKey, values) => translateRef.current(messageKey, values)))
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [credentialsOpen, setCredentialsOpen] = useState(false)
   const [onboardingDismissed, setOnboardingDismissed] = useState(false)
@@ -43,7 +47,7 @@ export function App(): React.JSX.Element {
       {snapshot.error !== undefined && (
         <div className="toast" role="alert">
           <span className="min-w-0 flex-1">{snapshot.error}</span>
-          <button type="button" className="grid h-7 w-7 place-items-center rounded-full text-white/70 hover:bg-white/10 hover:text-white" aria-label="关闭错误提示" onClick={() => store.dismissError()}>
+          <button type="button" className="grid h-7 w-7 place-items-center rounded-full text-white/70 hover:bg-white/10 hover:text-white" aria-label={translate('app.dismissError')} onClick={() => store.dismissError()}>
             <CloseIcon size={15} />
           </button>
         </div>

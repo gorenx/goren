@@ -1,6 +1,7 @@
 import type { ConversationSnapshot } from '../types'
 import type { ConversationStore } from '../conversation-store'
 import { ActivityIcon, DatabaseIcon, FolderIcon, KeyIcon } from '../icons'
+import { useI18n } from '../i18n'
 
 interface DetailsPanelProps {
   store: ConversationStore
@@ -8,35 +9,36 @@ interface DetailsPanelProps {
 }
 
 export function DetailsPanel({ store, snapshot }: DetailsPanelProps): React.JSX.Element {
+  const { translate } = useI18n()
   const current = store.currentSession()
   const events = store.currentEvents()
   const lastEvent = events.at(-1)
   return (
-    <aside className="details-panel" aria-label="会话详情">
+    <aside className="details-panel" aria-label={translate('details.label')}>
       <header className="flex h-[68px] shrink-0 items-center border-b border-black/[0.06] px-5">
         <div>
-          <div className="font-mono text-[9px] tracking-[0.12em] text-caption">CONTEXT</div>
-          <div className="mt-1 text-sm font-semibold text-ink">当前会话</div>
+          <div className="font-mono text-[9px] uppercase tracking-[0.12em] text-caption">{translate('details.context')}</div>
+          <div className="mt-1 text-sm font-semibold text-ink">{translate('details.currentSession')}</div>
         </div>
       </header>
 
       <div className="details-scroll">
-        <DetailSection title="执行状态">
-          <FactRow icon={<ActivityIcon size={16} />} label="Agent" value={current?.running ? '运行中' : '空闲'} accent={current?.running === true} />
-          <FactRow icon={<DatabaseIcon size={16} />} label="事实边界" value={lastEvent === undefined ? '暂无事件' : `${lastEvent.type} · ${String(lastEvent.seq)}`} />
-          <FactRow icon={<FolderIcon size={16} />} label="工作区" value={current?.cwd ?? snapshot.host?.cwd ?? '未设置'} />
+        <DetailSection title={translate('details.executionStatus')}>
+          <FactRow icon={<ActivityIcon size={16} />} label={translate('details.agent')} value={current?.running ? translate('conversation.running') : translate('conversation.idle')} accent={current?.running === true} />
+          <FactRow icon={<DatabaseIcon size={16} />} label={translate('details.factBoundary')} value={lastEvent === undefined ? translate('details.noEvents') : `${lastEvent.type} · ${String(lastEvent.seq)}`} />
+          <FactRow icon={<FolderIcon size={16} />} label={translate('details.workspace')} value={current?.cwd ?? snapshot.host?.cwd ?? translate('details.notSet')} />
         </DetailSection>
 
-        <DetailSection title="模型路由">
+        <DetailSection title={translate('details.modelRoute')}>
           <Definition label="Provider" value={snapshot.host?.provider ?? 'DeepSeek'} />
           <Definition label="Model" value={snapshot.host?.model ?? 'default'} />
-          <Definition label="API Key" value={snapshot.credential?.configured ? `已配置 · ${snapshot.credential.source ?? 'unknown'}` : '未配置'} />
-          <Definition label="Session" value={current?.sessionId ?? '尚未选择'} mono />
+          <Definition label="API Key" value={snapshot.credential?.configured ? translate('details.configured', { source: snapshot.credential.source ?? 'unknown' }) : translate('details.notConfigured')} />
+          <Definition label="Session" value={current?.sessionId ?? translate('details.noSession')} mono />
         </DetailSection>
 
-        <DetailSection title="主流程">
+        <DetailSection title={translate('details.mainFlow')}>
           <ol className="pipeline">
-            {['Browser', 'Echo Host', 'Agent Loop', 'DeepSeek'].map((step, index) => (
+            {[translate('details.browser'), 'Echo Host', 'Agent Loop', 'DeepSeek'].map((step, index) => (
               <li key={step}>
                 <span>{String(index + 1).padStart(2, '0')}</span>
                 <strong>{step}</strong>
@@ -45,7 +47,7 @@ export function DetailsPanel({ store, snapshot }: DetailsPanelProps): React.JSX.
           </ol>
         </DetailSection>
 
-        <p className="flex gap-2 px-1 text-[11px] leading-5 text-caption"><KeyIcon size={14} className="mt-0.5 shrink-0" />这里只展示 Host 已提供的事实。完整 Settings、插件清单和文件系统能力没有在浏览器中伪造。</p>
+        <p className="flex gap-2 px-1 text-[11px] leading-5 text-caption"><KeyIcon size={14} className="mt-0.5 shrink-0" />{translate('details.note')}</p>
       </div>
     </aside>
   )
