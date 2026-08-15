@@ -148,7 +148,7 @@ func TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter(t *
 		t.Fatal(fmt.Errorf("read Web shell: %w", errors.Join(readErr, closeErr)))
 	}
 	if pageResponse.StatusCode != http.StatusOK ||
-		!strings.Contains(string(pageBody), "session-list") ||
+		!strings.Contains(string(pageBody), `id="root"`) ||
 		!strings.Contains(string(pageBody), "/app.js") {
 		t.Fatalf("Web shell response = (%d, %q)", pageResponse.StatusCode, pageBody)
 	}
