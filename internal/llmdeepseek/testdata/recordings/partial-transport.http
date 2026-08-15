@@ -1,0 +1,9 @@
+HTTP/1.1 200 OK
+Content-Type: text/event-stream
+Connection: close
+
+data: {"choices":[{"delta":{"role":"assistant","content":null,"reasoning_content":""}}]}
+
+data: {"choices":[{"delta":{"content":"partial"}}]}
+
+: fixture transport fault follows

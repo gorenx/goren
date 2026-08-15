@@ -43,6 +43,7 @@ func (bodyState *faultBody) Close() error {
 
 func TestAdapterStreamsRequestAndPublishesModelCapabilities(t *testing.T) {
 	t.Parallel()
+	recording := loadHTTPRecording(t, "text-success.http")
 	requestChannel := make(chan map[string]any, 1)
 	headerChannel := make(chan http.Header, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
@@ -54,12 +55,7 @@ func TestAdapterStreamsRequestAndPublishesModelCapabilities(t *testing.T) {
 		}
 		requestChannel <- body
 		headerChannel <- request.Header.Clone()
-		responseWriter.Header().Set("content-type", "text/event-stream")
-		_, _ = responseWriter.Write([]byte(
-			"data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n" +
-				"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1}}\n\n" +
-				"data: [DONE]\n\n",
-		))
+		replayHTTPRecording(responseWriter, recording)
 	}))
 	defer server.Close()
 
@@ -132,11 +128,9 @@ func TestAdapterStreamsRequestAndPublishesModelCapabilities(t *testing.T) {
 func TestAdapterHTTPFailureCarriesStructuredFacts(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2027, 1, 15, 12, 0, 0, 0, time.UTC)
+	recording := loadHTTPRecording(t, "rate-limit.http")
 	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, _ *http.Request) {
-		responseWriter.Header().Set("retry-after", now.Add(3*time.Second).Format(http.TimeFormat))
-		responseWriter.Header().Set("x-deepseek-request-id", "request-1")
-		responseWriter.WriteHeader(http.StatusTooManyRequests)
-		_, _ = responseWriter.Write([]byte(`{"error":{"message":"credits exhausted","code":"insufficient_quota"}}`))
+		replayHTTPRecording(responseWriter, recording)
 	}))
 	defer server.Close()
 	backend := mustAdapter(t, server.URL, 0, func() string { return "key" }, now)
@@ -240,13 +234,18 @@ func TestAdapterClassifiesMidStreamReadFailureAsTransportAndTerminates(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	bodyState := &faultBody{content: []byte(`data: {"choices":[{"delta":{"content":"partial"}}]}` + "\n\n")}
+	recording := loadHTTPRecording(t, "partial-transport.http")
+	bodyState := &faultBody{content: recording.body}
 	backend, err := NewAdapter(AdapterOptions{
 		CurrentOptions: func() (ConnectionOptions, error) { return connection.Snapshot(), nil },
 		ResolveAPIKey:  func(context.Context, ConnectionOptions) (string, error) { return "key", nil },
 		ResolveUserID:  func() (string, error) { return "00000000-0000-4000-8000-000000000001", nil },
 		RequestSender: requestSenderFunc(func(*http.Request) (*http.Response, error) {
-			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: bodyState}, nil
+			return &http.Response{
+				StatusCode: recording.statusCode,
+				Header:     recording.header.Clone(),
+				Body:       bodyState,
+			}, nil
 		}),
 	})
 	if err != nil {

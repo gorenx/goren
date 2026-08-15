@@ -1,0 +1,7 @@
+HTTP/1.1 429 Too Many Requests
+Content-Type: application/json
+Retry-After: Fri, 15 Jan 2027 12:00:03 GMT
+X-Deepseek-Request-Id: request-1
+Connection: close
+
+{"error":{"message":"credits exhausted","code":"insufficient_quota"}}
