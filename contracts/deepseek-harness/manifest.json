@@ -100,6 +100,23 @@
         "running"
       ]
     },
+    "agentLoop": {
+      "service": "agentLoop",
+      "defaultMaxParallelToolCalls": 10,
+      "sessionEvents": [
+        "turn/start",
+        "turn/end",
+        "step/start",
+        "step/end",
+        "user/message",
+        "assistant/chunk",
+        "assistant/message",
+        "tool/call",
+        "tool/result",
+        "request/header",
+        "request/context"
+      ]
+    },
     "systemPrompt": {
       "service": "systemPrompt",
       "events": [

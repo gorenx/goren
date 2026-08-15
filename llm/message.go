@@ -258,6 +258,37 @@ func CloneUserMessage(source UserMessage) (UserMessage, error) {
 	return UserMessage{messageValue: copyValue}, nil
 }
 
+// CloneAssistantMessage returns a detached model-produced assistant message.
+func CloneAssistantMessage(source AssistantMessage) (AssistantMessage, error) {
+	copyValue, err := restoreMessageValue(
+		source.idValue, source.roleValue, source.content, source.origin,
+	)
+	if err != nil {
+		return AssistantMessage{}, err
+	}
+	if copyValue.roleValue != RoleAssistant || copyValue.origin.SourceKind() != "model" {
+		return AssistantMessage{}, errors.New("llm: message is not a model assistant message")
+	}
+	return AssistantMessage{messageValue: copyValue}, nil
+}
+
+// CloneToolResultMessage returns a detached correlated tool-result message.
+func CloneToolResultMessage(source ToolResultMessage) (ToolResultMessage, error) {
+	copyValue, err := restoreMessageValue(
+		source.idValue, source.roleValue, source.content, source.origin,
+	)
+	if err != nil {
+		return ToolResultMessage{}, err
+	}
+	if copyValue.roleValue != RoleUser || copyValue.origin.SourceKind() != "tool" || len(copyValue.content) != 1 {
+		return ToolResultMessage{}, errors.New("llm: message is not a tool-result message")
+	}
+	if _, ok := copyValue.content[0].(ToolResultBlock); !ok {
+		return ToolResultMessage{}, errors.New("llm: message is not a tool-result message")
+	}
+	return ToolResultMessage{messageValue: copyValue}, nil
+}
+
 // DecodeUserMessage restores one durable user message and rejects other roles.
 func DecodeUserMessage(rawValue json.RawMessage) (UserMessage, error) {
 	restored, err := DecodeMessage(rawValue)

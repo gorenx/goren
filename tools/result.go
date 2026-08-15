@@ -26,8 +26,13 @@ func (outcome *ToolExecutionSuccess) cloneResult() (ToolExecutionResult, error) 
 	if err != nil {
 		return nil, fmt.Errorf("tools: invalid presentation metadata: %w", err)
 	}
+	additionalContexts, err := cloneUserMessages(outcome.AdditionalContexts)
+	if err != nil {
+		return nil, fmt.Errorf("tools: invalid additional context: %w", err)
+	}
 	return &ToolExecutionSuccess{
-		Value: value, Content: content, Meta: meta, ConcludesTurn: outcome.ConcludesTurn, owner: outcome.owner,
+		Value: value, Content: content, Meta: meta, AdditionalContexts: additionalContexts,
+		ConcludesTurn: outcome.ConcludesTurn, owner: outcome.owner,
 	}, nil
 }
 
@@ -51,7 +56,13 @@ func (outcome *ToolExecutionFailure) cloneResult() (ToolExecutionResult, error) 
 		retainedInfo := *outcome.Error.Info
 		retainedError.Info = &retainedInfo
 	}
-	return &ToolExecutionFailure{Error: retainedError, Content: content, Meta: meta}, nil
+	additionalContexts, err := cloneUserMessages(outcome.AdditionalContexts)
+	if err != nil {
+		return nil, fmt.Errorf("tools: invalid additional context: %w", err)
+	}
+	return &ToolExecutionFailure{
+		Error: retainedError, Content: content, Meta: meta, AdditionalContexts: additionalContexts,
+	}, nil
 }
 
 func cloneOptionalJSON(rawValue json.RawMessage) (json.RawMessage, error) {
@@ -77,11 +88,19 @@ func errorResult(cause error) *ToolExecutionFailure {
 	}
 }
 
-func abortedResult(bodyInvoked bool) *ToolExecutionFailure {
-	if bodyInvoked {
-		return errorResult(&abortError{message: "tool call aborted", code: ToolAborted})
+func abortedResult(bodyInvoked bool, prior ...ToolExecutionResult) *ToolExecutionFailure {
+	var additionalContexts []llm.UserMessage
+	if len(prior) != 0 && prior[0] != nil {
+		additionalContexts = prior[0].AdditionalContextMessages()
 	}
-	return errorResult(&abortError{message: "tool call aborted before dispatch", code: ToolAbortedBeforeDispatch})
+	var outcome *ToolExecutionFailure
+	if bodyInvoked {
+		outcome = errorResult(&abortError{message: "tool call aborted", code: ToolAborted})
+	} else {
+		outcome = errorResult(&abortError{message: "tool call aborted before dispatch", code: ToolAbortedBeforeDispatch})
+	}
+	outcome.AdditionalContexts = additionalContexts
+	return outcome
 }
 
 func failureMessage(content []llm.ContentBlock) string {
@@ -105,23 +124,28 @@ func replaceResultContent(outcome ToolExecutionResult, content []llm.ContentBloc
 	case *ToolExecutionSuccess:
 		return &ToolExecutionSuccess{
 			Value: retained.Value, Content: content, Meta: retained.Meta,
-			ConcludesTurn: retained.ConcludesTurn, owner: retained.owner,
+			AdditionalContexts: retained.AdditionalContexts,
+			ConcludesTurn:      retained.ConcludesTurn, owner: retained.owner,
 		}
 	case *ToolExecutionFailure:
-		return &ToolExecutionFailure{Error: retained.Error, Content: content, Meta: retained.Meta}
+		return &ToolExecutionFailure{
+			Error: retained.Error, Content: content, Meta: retained.Meta,
+			AdditionalContexts: retained.AdditionalContexts,
+		}
 	default:
 		return errorResult(errors.New("tools: unsupported result implementation"))
 	}
 }
 
 type resultSnapshot struct {
-	failed        bool
-	content       []llm.ContentBlock
-	value         json.RawMessage
-	failure       ToolFailure
-	hasFailure    bool
-	meta          json.RawMessage
-	concludesTurn bool
+	failed             bool
+	content            []llm.ContentBlock
+	value              json.RawMessage
+	failure            ToolFailure
+	hasFailure         bool
+	meta               json.RawMessage
+	additionalContexts []llm.UserMessage
+	concludesTurn      bool
 }
 
 func newResultSnapshot(outcome ToolExecutionResult) (ToolResultSnapshot, error) {
@@ -135,12 +159,14 @@ func newResultSnapshot(outcome ToolExecutionResult) (ToolResultSnapshot, error) 
 		snapshot.content = retained.Content
 		snapshot.value = retained.Value
 		snapshot.meta = retained.Meta
+		snapshot.additionalContexts = retained.AdditionalContexts
 		snapshot.concludesTurn = retained.ConcludesTurn
 	case *ToolExecutionFailure:
 		snapshot.content = retained.Content
 		snapshot.failure = retained.Error
 		snapshot.hasFailure = true
 		snapshot.meta = retained.Meta
+		snapshot.additionalContexts = retained.AdditionalContexts
 	default:
 		return nil, errors.New("tools: unsupported result implementation")
 	}
@@ -177,4 +203,44 @@ func (snapshot *resultSnapshot) PresentationMeta() json.RawMessage {
 	return append(json.RawMessage(nil), snapshot.meta...)
 }
 
+func (snapshot *resultSnapshot) AdditionalContextMessages() []llm.UserMessage {
+	detached, _ := cloneUserMessages(snapshot.additionalContexts)
+	return detached
+}
+
 func (snapshot *resultSnapshot) ConcludesAgentTurn() bool { return snapshot.concludesTurn }
+
+func cloneUserMessages(source []llm.UserMessage) ([]llm.UserMessage, error) {
+	if source == nil {
+		return nil, nil
+	}
+	detached := make([]llm.UserMessage, len(source))
+	for index, message := range source {
+		copyValue, err := llm.CloneUserMessage(message)
+		if err != nil {
+			return nil, fmt.Errorf("message %d: %w", index, err)
+		}
+		detached[index] = copyValue
+	}
+	return detached, nil
+}
+
+func appendAdditionalContexts(outcome ToolExecutionResult, additions []llm.UserMessage) (ToolExecutionResult, error) {
+	detached, err := outcome.cloneResult()
+	if err != nil {
+		return nil, err
+	}
+	additionalContexts, err := cloneUserMessages(additions)
+	if err != nil {
+		return nil, err
+	}
+	switch retained := detached.(type) {
+	case *ToolExecutionSuccess:
+		retained.AdditionalContexts = append(retained.AdditionalContexts, additionalContexts...)
+	case *ToolExecutionFailure:
+		retained.AdditionalContexts = append(retained.AdditionalContexts, additionalContexts...)
+	default:
+		return nil, errors.New("tools: unsupported result implementation")
+	}
+	return detached, nil
+}

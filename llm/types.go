@@ -113,18 +113,18 @@ const (
 
 // CallConfig contains request-header state that affects provider routing and cache reuse.
 type CallConfig struct {
-	Provider        string
-	Model           string
-	ReasoningEffort ReasoningEffortID
-	Temperature     *float64
-	MaxTokens       *int
-	Stop            []string
+	Provider        string            `json:"provider"`
+	Model           string            `json:"model"`
+	ReasoningEffort ReasoningEffortID `json:"reasoningEffort,omitempty"`
+	Temperature     *float64          `json:"temperature,omitempty"`
+	MaxTokens       *int              `json:"maxTokens,omitempty"`
+	Stop            []string          `json:"stop,omitempty"`
 }
 
 // CallConfigAdapterDefaults identifies fields materialized by exact-model resolution.
 type CallConfigAdapterDefaults struct {
-	ReasoningEffort bool
-	MaxTokens       bool
+	ReasoningEffort bool `json:"reasoningEffort,omitempty"`
+	MaxTokens       bool `json:"maxTokens,omitempty"`
 }
 
 // GenerateOptions is one fully assembled provider-neutral model request.
@@ -158,6 +158,12 @@ func callConfigEqual(left CallConfig, right CallConfig) bool {
 		slices.Equal(left.Stop, right.Stop)
 }
 
+// CallConfigEqual compares every provider-neutral request-header field while
+// preserving nil-versus-present optional values.
+func CallConfigEqual(left CallConfig, right CallConfig) bool {
+	return callConfigEqual(left, right)
+}
+
 func cloneCallConfig(inputSnapshot CallConfig) CallConfig {
 	detached := inputSnapshot
 	detached.Temperature = cloneFloat(inputSnapshot.Temperature)
@@ -166,6 +172,11 @@ func cloneCallConfig(inputSnapshot CallConfig) CallConfig {
 		detached.Stop = append([]string{}, inputSnapshot.Stop...)
 	}
 	return detached
+}
+
+// CloneCallConfig returns a detached request-header configuration.
+func CloneCallConfig(inputSnapshot CallConfig) CallConfig {
+	return cloneCallConfig(inputSnapshot)
 }
 
 func cloneGenerateOptions(inputSnapshot GenerateOptions) (GenerateOptions, error) {
@@ -186,6 +197,11 @@ func cloneGenerateOptions(inputSnapshot GenerateOptions) (GenerateOptions, error
 		detached.Tools[index].Parameters = append(json.RawMessage(nil), entry.Parameters...)
 	}
 	return detached, nil
+}
+
+// CloneGenerateOptions returns a detached provider-neutral request.
+func CloneGenerateOptions(inputSnapshot GenerateOptions) (GenerateOptions, error) {
+	return cloneGenerateOptions(inputSnapshot)
 }
 
 func equalFloat(left *float64, right *float64) bool {

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorenx/goren/llm"
 )
 
 type fixturePayload struct {
@@ -133,5 +135,118 @@ func TestAppendRejectsNegativeZeroBeforeCommit(t *testing.T) {
 	}
 	if !math.Signbit(math.Copysign(0, -1)) {
 		t.Fatal("test fixture did not construct negative zero")
+	}
+}
+
+func TestRequestFoldsAndDerivedMessagesTrackCurrentSurface(t *testing.T) {
+	t.Parallel()
+	conversation, err := New("agent-session", CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	maximum := 512
+	prompt := "system"
+	requestSnapshot := EpochHeader{
+		Config: llm.CallConfig{Provider: "mock", Model: "m", MaxTokens: &maximum, Stop: []string{"done"}},
+		System: &prompt,
+		Tools:  []llm.ToolSchema{{Name: "echo", Description: "echo", Parameters: json.RawMessage(`{"type":"object"}`)}},
+	}
+	if _, err := Append(conversation, RequestHeaderSet, RequestHeaderSnapshot{
+		Header: requestSnapshot, Reason: RequestHeaderInitial,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	window := 4096
+	if _, err := Append(conversation, RequestContextSet, RequestRouteContext{
+		Provider: "mock", Model: "m", ContextWindow: &window,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	requestSnapshot.Config.Stop[0] = "mutated"
+	requestSnapshot.Tools[0].Parameters[0] = '['
+
+	foldedHeader, found, err := conversation.RequestHeaderValue()
+	if err != nil || !found {
+		t.Fatalf("request header = %#v, found = %t, error = %v", foldedHeader, found, err)
+	}
+	if foldedHeader.Config.Stop[0] != "done" || string(foldedHeader.Tools[0].Parameters) != `{"type":"object"}` {
+		t.Fatalf("request header aliases input = %#v", foldedHeader)
+	}
+	foldedContext, found, err := conversation.RequestContextValue()
+	if err != nil || !found || foldedContext.ContextWindow == nil || *foldedContext.ContextWindow != 4096 {
+		t.Fatalf("request context = %#v, found = %t, error = %v", foldedContext, found, err)
+	}
+
+	userInput, err := llm.NewUserMessage(llm.UserMessageInput{
+		Content: []llm.ContentBlock{llm.NewTextBlock("hello")}, Source: llm.UserMessageSource{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AppendSurface(conversation, UserMessageAdded, userInput, SurfaceIntent{Operation: SurfaceAppend()}); err != nil {
+		t.Fatal(err)
+	}
+	emptyReply, err := llm.NewAssistantMessage(llm.AssistantMessageInput{
+		Source: llm.ModelMessageSource{Provider: "mock", Model: "m"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AppendSurface(conversation, AssistantMessaged, AssistantMessage{
+		Turn: 1, Step: 1, Message: emptyReply,
+	}, SurfaceIntent{Operation: SurfaceAppend()}); err != nil {
+		t.Fatal(err)
+	}
+	assistantReply, err := llm.NewAssistantMessage(llm.AssistantMessageInput{
+		Content: []llm.ContentBlock{llm.NewTextBlock("working")},
+		Source:  llm.ModelMessageSource{Provider: "mock", Model: "m"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AppendSurface(conversation, AssistantMessaged, AssistantMessage{
+		Turn: 1, Step: 1, Message: assistantReply,
+	}, SurfaceIntent{Operation: SurfaceAppend()}); err != nil {
+		t.Fatal(err)
+	}
+	toolReply, err := llm.NewToolResultMessage(llm.ToolResultMessageInput{
+		CallID: "call-1", Content: []llm.ContentBlock{llm.NewTextBlock("result")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AppendSurface(conversation, ToolResultAdded, ToolResult{
+		Turn: 1, Step: 1, Message: toolReply,
+	}, SurfaceIntent{Operation: SurfaceAppend()}); err != nil {
+		t.Fatal(err)
+	}
+
+	derived, err := conversation.DeriveMessages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(derived) != 3 || derived[0].StableID() != userInput.StableID() ||
+		derived[1].StableID() != assistantReply.StableID() || derived[2].StableID() != toolReply.StableID() {
+		t.Fatalf("derived messages = %#v", derived)
+	}
+	replacement, err := llm.NewUserMessage(llm.UserMessageInput{
+		Content: []llm.ContentBlock{llm.NewTextBlock("summary")},
+		Source:  llm.PluginMessageSource{Plugin: "compactor"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provenance := []int64{2, 3, 4, 5}
+	if _, err := AppendSurface(conversation, UserMessageAdded, replacement, SurfaceIntent{
+		Operation: SurfaceReplace(2, 5), SourceEventSeqs: &provenance,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	derived, err = conversation.DeriveMessages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(derived) != 1 || derived[0].StableID() != replacement.StableID() {
+		t.Fatalf("derived messages after replacement = %#v", derived)
 	}
 }

@@ -121,6 +121,31 @@ func resultMessage(t *testing.T, outcome toolscore.ToolExecutionResult) string {
 	return textBlock.Text
 }
 
+func pluginContext(t *testing.T, text string) llm.UserMessage {
+	t.Helper()
+	created, err := llm.NewUserMessage(llm.UserMessageInput{
+		Content: []llm.ContentBlock{llm.NewTextBlock(text)},
+		Source:  llm.PluginMessageSource{Plugin: "tools-test"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return created
+}
+
+func contextText(t *testing.T, retained llm.UserMessage) string {
+	t.Helper()
+	blocks := retained.ContentValue()
+	if len(blocks) != 1 {
+		t.Fatalf("context content count = %d", len(blocks))
+	}
+	textBlock, ok := blocks[0].(llm.TextBlock)
+	if !ok {
+		t.Fatalf("context content type = %T", blocks[0])
+	}
+	return textBlock.Text
+}
+
 func TestConfigPreservesOmissionAndRejectsUnavailablePresentation(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
@@ -611,5 +636,60 @@ func TestAroundDispatchAndPostDecisionsAreNormalized(t *testing.T) {
 	})
 	if authored.Failed() || resultMessage(t, authored) != `{"wrapper":true}` {
 		t.Fatalf("authored wrapper outcome = %#v", authored)
+	}
+}
+
+func TestDeferredAndPostExecuteContextsFollowFinalOutcome(t *testing.T) {
+	state := newToolFixture(t, nil)
+	requestContext := context.Background()
+	bodyContext := pluginContext(t, "body")
+	policyContext := pluginContext(t, "policy")
+	blockedContext := pluginContext(t, "blocked")
+	if _, err := state.toolService.Register(requestContext, state.pluginScope,
+		objectTool("contexts", "", toolscore.ExecutorFunc(
+			func(arguments json.RawMessage, runContext toolscore.ToolRunContext) (json.RawMessage, error) {
+				runContext.DeferContext(bodyContext)
+				return arguments, nil
+			}))); err != nil {
+		t.Fatal(err)
+	}
+
+	acceptedScope, _, err := state.pluginScope.Child("accepted-contexts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := toolscore.OnPostExecute(acceptedScope,
+		func(context.Context, toolscore.ToolExecution, toolscore.ToolResultSnapshot, toolscore.PostExecuteNext) (toolscore.PostToolDecision, error) {
+			return toolscore.AcceptDecision{AdditionalContexts: []llm.UserMessage{policyContext}}, nil
+		}); err != nil {
+		t.Fatal(err)
+	}
+	accepted := state.toolService.Execute(requestContext, toolscore.ToolExecutionInput{
+		CallID: "accepted-contexts", Name: "contexts", Arguments: json.RawMessage(`{}`), Scope: acceptedScope.Target(),
+	})
+	acceptedContexts := accepted.AdditionalContextMessages()
+	if len(acceptedContexts) != 2 || contextText(t, acceptedContexts[0]) != "body" || contextText(t, acceptedContexts[1]) != "policy" {
+		t.Fatalf("accepted contexts = %#v", acceptedContexts)
+	}
+
+	blockedScope, _, err := state.pluginScope.Child("blocked-contexts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := toolscore.OnPostExecute(blockedScope,
+		func(context.Context, toolscore.ToolExecution, toolscore.ToolResultSnapshot, toolscore.PostExecuteNext) (toolscore.PostToolDecision, error) {
+			return toolscore.BlockDecision{
+				Feedback:           []llm.ContentBlock{llm.NewTextBlock("blocked")},
+				AdditionalContexts: []llm.UserMessage{blockedContext},
+			}, nil
+		}); err != nil {
+		t.Fatal(err)
+	}
+	blocked := state.toolService.Execute(requestContext, toolscore.ToolExecutionInput{
+		CallID: "blocked-contexts", Name: "contexts", Arguments: json.RawMessage(`{}`), Scope: blockedScope.Target(),
+	})
+	blockedContexts := blocked.AdditionalContextMessages()
+	if !blocked.Failed() || len(blockedContexts) != 1 || contextText(t, blockedContexts[0]) != "blocked" {
+		t.Fatalf("blocked outcome = %#v, contexts = %#v", blocked, blockedContexts)
 	}
 }

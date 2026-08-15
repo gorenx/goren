@@ -12,6 +12,7 @@ import (
 	"time"
 
 	agentcore "github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentloop"
 	"github.com/gorenx/goren/apiproxy"
 	protocol "github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/llm"
@@ -29,7 +30,7 @@ func (instance probePlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "assembly-probe",
 		Requires: []plugin.ServiceRef{
-			agentcore.Service.Ref(), serverServiceKey.Ref(), llm.Service.Ref(), session.StoreService.Ref(), systemprompt.Service.Ref(), toolscore.Service.Ref(),
+			agentcore.Service.Ref(), agentloop.Service.Ref(), serverServiceKey.Ref(), llm.Service.Ref(), session.StoreService.Ref(), systemprompt.Service.Ref(), toolscore.Service.Ref(),
 		},
 	}
 }
@@ -44,7 +45,7 @@ func TestCatalogContainsOnlyCurrentServerSlice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{AgentFactoryName, ConnectionFactoryName, APIProxyFactoryName, LLMFactoryName, DeepSeekFactoryName, SessionFactoryName, SystemPromptFactoryName, ToolsFactoryName}
+	want := []string{AgentFactoryName, AgentLoopFactoryName, ConnectionFactoryName, APIProxyFactoryName, LLMFactoryName, DeepSeekFactoryName, SessionFactoryName, SystemPromptFactoryName, ToolsFactoryName}
 	if got := registry.Names(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("factory names = %#v, want %#v", got, want)
 	}
@@ -74,6 +75,10 @@ func TestConnectionFactoryUsesStrictTypedConfig(t *testing.T) {
 		{label: "wrong type", factoryName: ConnectionFactoryName, input: `{"listenAddress":7}`, wantMessage: "cannot unmarshal"},
 		{label: "negative limit", factoryName: ConnectionFactoryName, input: `{"listenAddress":"127.0.0.1:0","maxBodyBytes":-1}`, wantMessage: "must not be negative"},
 		{label: "agent unknown", factoryName: AgentFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
+		{label: "agent loop unknown", factoryName: AgentLoopFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
+		{label: "agent loop nested unknown", factoryName: AgentLoopFactoryName, input: `{"agents":[{"id":"a","unknown":true}]}`, wantMessage: "unknown field"},
+		{label: "agent loop parallel limit", factoryName: AgentLoopFactoryName, input: `{"maxParallelToolCalls":0}`, wantMessage: "positive integer"},
+		{label: "agent loop identities", factoryName: AgentLoopFactoryName, input: `{"agents":[{"id":"a","sessionId":"s","resumeSessionId":"r"}]}`, wantMessage: "mutually exclusive"},
 		{label: "empty version", factoryName: APIProxyFactoryName, input: `{"version":""}`, wantMessage: "version must be non-empty"},
 		{label: "prompt unknown", factoryName: SystemPromptFactoryName, input: `{"unknown":true}`, wantMessage: "unknown field"},
 		{label: "prompt wrong type", factoryName: SystemPromptFactoryName, input: `{"includeHarnessIdentity":"yes"}`, wantMessage: "must be a boolean"},
@@ -123,6 +128,22 @@ func TestConnectionCompositionSettlesDependenciesAndServesHostDescribe(t *testin
 		}
 		if liveAgents := agentService.List(); len(liveAgents) != 0 {
 			t.Fatalf("default live Agents = %#v", liveAgents)
+		}
+		loopRuntime, found := plugin.Require(pluginScope, agentloop.Service)
+		if !found || loopRuntime.MaxParallelToolCalls() != agentloop.DefaultMaxParallelToolCalls {
+			t.Fatalf("agentLoop service = %#v, found = %t", loopRuntime, found)
+		}
+		handle, createErr := agentService.Create(requestContext, pluginScope, agentcore.CreateOptions{
+			SessionID: "assembly-agent", AgentOptions: agentcore.Options{Provider: "deepseek-official", Model: "deepseek-chat"},
+		})
+		if createErr != nil {
+			return createErr
+		}
+		if _, found := agentService.Get("assembly-agent"); !found {
+			t.Fatal("Agent Loop factory did not publish the requested Agent")
+		}
+		if disposeErr := handle.Dispose(requestContext); disposeErr != nil {
+			return disposeErr
 		}
 		serverEndpoint, found := plugin.Require(pluginScope, serverServiceKey)
 		if !found {
