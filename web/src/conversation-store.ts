@@ -4,6 +4,10 @@ import type {
   CredentialsDescribeValue,
   HostDescription,
   MessageRow,
+  PendingQuestionRequest,
+  QuestionAnswerItem,
+  QuestionItem,
+  QuestionOption,
   SessionCreateValue,
   SessionEvent,
   SessionHistoryValue,
@@ -20,6 +24,7 @@ const initialSnapshot: ConversationSnapshot = {
   sessions: [],
   events: new Map(),
   streams: new Map(),
+  pendingQuestions: new Map(),
   localTitles: new Map(),
   onlineDownlinks: 0,
   composerState: '正在连接 Go Agent',
@@ -38,8 +43,8 @@ export class ConversationStore {
 
   constructor() {
     this.#api = new HarnessAPI(
-      payload => this.#receiveMux(payload),
-      payload => this.#receiveHost(payload),
+      request => this.#receiveMux(request.rpcId, request.payload),
+      request => this.#receiveHost(request.payload),
       count => this.#patch({ onlineDownlinks: count }),
     )
   }
@@ -179,6 +184,40 @@ export class ConversationStore {
     return rows
   }
 
+  currentQuestion(): PendingQuestionRequest | undefined {
+    const sessionId = this.#value.currentSessionId
+    if (sessionId === undefined) return undefined
+    return [...this.#value.pendingQuestions.values()].find(request => request.sessionId === sessionId)
+  }
+
+  async answerQuestion(request: PendingQuestionRequest, answers: QuestionAnswerItem[]): Promise<void> {
+    if (!this.#value.pendingQuestions.has(request.rpcId)) throw new Error('这个问题已经结束')
+    try {
+      await this.#api.respond(request.rpcId, {
+        ok: true,
+        value: { sessionId: request.sessionId, answer: { answers } },
+      })
+      this.#removeQuestion(request.rpcId, 'Agent 正在继续处理')
+    } catch (error) {
+      this.#fail(error)
+      throw error
+    }
+  }
+
+  async cancelQuestion(request: PendingQuestionRequest): Promise<void> {
+    if (!this.#value.pendingQuestions.has(request.rpcId)) return
+    try {
+      await this.#api.respond(request.rpcId, {
+        ok: false,
+        error: { code: 'cancelled', message: 'cancelled by user', details: {} },
+      })
+      this.#removeQuestion(request.rpcId, '已取消问题，Agent 正在收尾')
+    } catch (error) {
+      this.#fail(error)
+      throw error
+    }
+  }
+
   sessionTitle(summary: SessionSummary): string {
     const local = this.#value.localTitles.get(summary.sessionId)
     const projected = summary.projections?.values.title
@@ -199,12 +238,29 @@ export class ConversationStore {
     this.#patch({ error: undefined })
   }
 
-  #receiveMux(payload: unknown): void {
+  #receiveMux(rpcId: string, payload: unknown): void {
     if (!isRecord(payload)) return
     const frameType = recordString(payload, 'type')
     if (frameType === 'stream/error') {
       const error = isRecord(payload.error) ? recordString(payload.error, 'message') : undefined
       this.#fail(new Error(error ?? '事件流已断开'))
+      return
+    }
+    if (frameType === 'question/requested') {
+      const request = readQuestionRequest(rpcId, payload)
+      if (request === undefined) {
+        this.#fail(new Error('Host 返回了无效的问题请求'))
+        return
+      }
+      const pendingQuestions = new Map(this.#value.pendingQuestions)
+      pendingQuestions.set(rpcId, request)
+      this.#patch({ pendingQuestions, composerState: 'Agent 正在等待你的回答' })
+      return
+    }
+    if (frameType === 'question/resolved') {
+      const questionRpcId = recordString(payload, 'questionRpcId')
+      if (questionRpcId === undefined) return
+      this.#removeQuestion(questionRpcId, 'Agent 正在继续处理')
       return
     }
     if (frameType !== 'session/event') return
@@ -255,6 +311,13 @@ export class ConversationStore {
     for (const subscriber of this.#subscribers) subscriber()
   }
 
+  #removeQuestion(rpcId: string, composerState: string): void {
+    if (!this.#value.pendingQuestions.has(rpcId)) return
+    const pendingQuestions = new Map(this.#value.pendingQuestions)
+    pendingQuestions.delete(rpcId)
+    this.#patch({ pendingQuestions, composerState })
+  }
+
   #fail(error: unknown, fatal = false): void {
     const message = error instanceof Error ? error.message : String(error)
     this.#patch({ error: message, ...(fatal ? { phase: 'failed' as const } : {}) })
@@ -286,14 +349,22 @@ function applyStreamEvent(
 }
 
 function messageFromEvent(event: SessionEvent): MessageRow | undefined {
-  if (event.type === 'user/message') return readMessage(event.data, event.seq)
-  if (event.type === 'assistant/message' && isRecord(event.data)) return readMessage(event.data.message, event.seq)
-  if (event.type === 'tool/result' && isRecord(event.data)) return readMessage(event.data.message, event.seq)
+  if (event.type === 'user/message') return readMessage(event.data, event.seq, 'user', 'user')
+  if (event.type === 'assistant/message' && isRecord(event.data)) return readMessage(event.data.message, event.seq, 'assistant')
   return undefined
 }
 
-function readMessage(value: unknown, seq: number): MessageRow | undefined {
+function readMessage(
+  value: unknown,
+  seq: number,
+  expectedRole: MessageRow['role'],
+  expectedSourceKind?: string,
+): MessageRow | undefined {
   if (!isRecord(value) || !Array.isArray(value.content)) return undefined
+  if (recordString(value, 'role') !== expectedRole) return undefined
+  if (expectedSourceKind !== undefined) {
+    if (!isRecord(value.source) || recordString(value.source, 'kind') !== expectedSourceKind) return undefined
+  }
   let text = ''
   let reasoning = ''
   for (const block of value.content) {
@@ -305,11 +376,51 @@ function readMessage(value: unknown, seq: number): MessageRow | undefined {
   }
   if (text === '' && reasoning === '') return undefined
   return {
-    role: recordString(value, 'role') === 'assistant' ? 'assistant' : 'user',
+    role: expectedRole,
     text,
     reasoning,
     streaming: false,
     seq,
+  }
+}
+
+function readQuestionRequest(rpcId: string, payload: Record<string, unknown>): PendingQuestionRequest | undefined {
+  const sessionId = recordString(payload, 'sessionId')
+  if (sessionId === undefined || !Array.isArray(payload.questions) || payload.questions.length === 0) return undefined
+  const questions: QuestionItem[] = []
+  for (const rawQuestion of payload.questions) {
+    const question = readQuestion(rawQuestion)
+    if (question === undefined) return undefined
+    questions.push(question)
+  }
+  return { rpcId, sessionId, questions }
+}
+
+function readQuestion(value: unknown): QuestionItem | undefined {
+  if (!isRecord(value)) return undefined
+  const id = recordString(value, 'id')
+  const question = recordString(value, 'question')
+  if (id === undefined || question === undefined) return undefined
+  let options: QuestionOption[] | undefined
+  if (value.options !== undefined) {
+    if (!Array.isArray(value.options)) return undefined
+    options = []
+    for (const rawOption of value.options) {
+      if (!isRecord(rawOption)) return undefined
+      const label = recordString(rawOption, 'label')
+      if (label === undefined) return undefined
+      options.push({ label, description: recordString(rawOption, 'description') })
+    }
+  }
+  const multiSelect = value.multiSelect
+  if (multiSelect !== undefined && typeof multiSelect !== 'boolean') return undefined
+  return {
+    id,
+    question,
+    header: recordString(value, 'header'),
+    detail: recordString(value, 'detail'),
+    options,
+    multiSelect,
   }
 }
 

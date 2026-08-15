@@ -3,6 +3,7 @@ import type { ConversationSnapshot, MessageRow } from '../types'
 import type { ConversationStore } from '../conversation-store'
 import { ActivityIcon, GorenMark, KeyIcon } from '../icons'
 import { Composer } from './Composer'
+import { QuestionCard } from './QuestionCard'
 
 interface ConversationPaneProps {
   store: ConversationStore
@@ -17,6 +18,7 @@ export function ConversationPane({ store, snapshot, onOpenCredentials }: Convers
   const title = current === undefined ? '新对话' : store.sessionTitle(current)
   const lastEvent = events.at(-1)
   const durable = current?.running === false && lastEvent?.type === 'turn/end'
+  const pendingQuestion = store.currentQuestion()
 
   return (
     <main className="conversation-column">
@@ -44,6 +46,7 @@ export function ConversationPane({ store, snapshot, onOpenCredentials }: Convers
       </div>
 
       <MessageList rows={rows} cwd={snapshot.host?.cwd} />
+      {pendingQuestion !== undefined && <QuestionCard key={pendingQuestion.rpcId} store={store} request={pendingQuestion} />}
       <Composer store={store} snapshot={snapshot} />
     </main>
   )

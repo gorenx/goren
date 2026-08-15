@@ -36,10 +36,12 @@ type defaultMainFlowObservation struct {
 }
 
 type webUIMainFlowObservation struct {
-	Booted   bool `json:"booted"`
-	Prompted bool `json:"prompted"`
-	Selected bool `json:"selected"`
-	History  bool `json:"history"`
+	Booted               bool `json:"booted"`
+	Prompted             bool `json:"prompted"`
+	Selected             bool `json:"selected"`
+	History              bool `json:"history"`
+	QuestionAnswered     bool `json:"questionAnswered"`
+	RuntimeContextHidden bool `json:"runtimeContextHidden"`
 }
 
 type defaultMainFlowDeepSeekRequest struct {
@@ -65,9 +67,31 @@ func TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter(t *
 			return
 		}
 		requestNumber := requestCount.Add(1)
+		if requestNumber == 3 {
+			arguments := `{"questions":[{"id":"focus","question":"你想让我重点评价什么？","header":"选择方向","options":[{"label":"架构","description":"关注模块边界和依赖方向。"},{"label":"代码","description":"关注实现质量和测试。"}]}]}`
+			responseWriter.Header().Set("content-type", "text/event-stream")
+			responseWriter.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(responseWriter, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-question\",\"function\":{\"name\":\"ask_user_question\",\"arguments\":%q}}]}}]}\n\n", arguments)
+			_, _ = fmt.Fprint(responseWriter, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":6}}\n\n")
+			_, _ = fmt.Fprint(responseWriter, "data: [DONE]\n\n")
+			return
+		}
 		responseText := "hello from DeepSeek"
 		if requestNumber == 2 {
 			responseText = "hello from the Web UI"
+		} else if requestNumber == 4 {
+			hasToolMessage := false
+			for _, receivedMessage := range received.Messages {
+				if receivedMessage.Role == "tool" {
+					hasToolMessage = true
+					break
+				}
+			}
+			if !hasToolMessage {
+				http.Error(responseWriter, "question answer did not reach the continuation request", http.StatusBadRequest)
+				return
+			}
+			responseText = "question answered through the Web UI"
 		}
 		responseWriter.Header().Set("content-type", "text/event-stream")
 		responseWriter.WriteHeader(http.StatusOK)
@@ -197,16 +221,17 @@ func TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter(t *
 		"hello from the Web UI",
 	)
 	if err != nil {
-		t.Fatalf("embedded Web UI main flow: %v", err)
+		t.Fatalf("embedded Web UI main flow after %d DeepSeek requests: %v", requestCount.Load(), err)
 	}
 	var webObservation webUIMainFlowObservation
 	if err := json.Unmarshal(webOutput, &webObservation); err != nil {
 		t.Fatalf("decode Web UI observation: %v; output = %s", err, webOutput)
 	}
-	if !webObservation.Booted || !webObservation.Prompted || !webObservation.Selected || !webObservation.History {
+	if !webObservation.Booted || !webObservation.Prompted || !webObservation.Selected || !webObservation.History ||
+		!webObservation.QuestionAnswered || !webObservation.RuntimeContextHidden {
 		t.Fatalf("Web UI observation = %#v", webObservation)
 	}
-	if requestCount.Load() != 2 {
-		t.Fatalf("DeepSeek request count = %d, want 2", requestCount.Load())
+	if requestCount.Load() != 4 {
+		t.Fatalf("DeepSeek request count = %d, want 4", requestCount.Load())
 	}
 }

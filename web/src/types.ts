@@ -49,6 +49,32 @@ export interface StreamDraft {
   reasoning: string
 }
 
+export interface QuestionOption {
+  label: string
+  description?: string
+}
+
+export interface QuestionItem {
+  id: string
+  question: string
+  header?: string
+  detail?: string
+  options?: readonly QuestionOption[]
+  multiSelect?: boolean
+}
+
+export interface PendingQuestionRequest {
+  rpcId: string
+  sessionId: string
+  questions: readonly QuestionItem[]
+}
+
+export interface QuestionAnswerItem {
+  id: string
+  selected: string[]
+  custom?: string
+}
+
 export interface MessageRow {
   role: 'assistant' | 'user'
   text: string
@@ -73,6 +99,7 @@ export interface ConversationSnapshot {
   sessions: readonly SessionSummary[]
   events: ReadonlyMap<string, readonly SessionEvent[]>
   streams: ReadonlyMap<string, StreamDraft>
+  pendingQuestions: ReadonlyMap<string, PendingQuestionRequest>
   localTitles: ReadonlyMap<string, string>
   currentSessionId?: string
   onlineDownlinks: number
