@@ -10,7 +10,7 @@
 
 | 源 owner / symbol | Go owner | 保留职责 |
 | --- | --- | --- |
-| `packages/core/llm/src/types.ts` | `llm/message.go`、`llm/harness_contract.go`、`llm/stream.go`、`llm/types.go` | Message、content、GenerateOptions、StreamChunk、finish、usage 与 model metadata |
+| `packages/core/llm/src/types.ts` | `llm/message.go`、`message_source.go`、`harness_contract.go`、`stream.go`、`finish_reason.go`、`types.go` | Message、source、content、GenerateOptions、StreamChunk、finish、usage 与 model metadata |
 | `packages/core/llm/src/index.ts` 的 `Llm` | `llm.LlmRuntime`、`runtimeService` | Adapter route、configurable provider、model discovery、call resolution 与 stream dispatch |
 | `packages/core/llm/src/index.ts` 的 adapter registration | `llm.AdapterRegistrationHandle`、`adapterRegistrationState` | 多 route 原子注册、replace、release 与 effect ownership |
 | `llm/stream` | `llm.StreamEvent` | 每次模型调用外层的 typed waterfall |
@@ -47,10 +47,19 @@ Go 不复制 TypeScript class inheritance、declaration merging、fetch implemen
 
 | 文件 / 组件 | 单一职责 |
 | --- | --- |
-| `llm/message.go`、`harness_contract.go`、`stream.go` | 公共判别类型、严格 JSON 恢复、opaque extension 和 detached clone |
+| `llm/message.go` | Message value、构造、严格 JSON 恢复和 detached clone |
+| `llm/message_source.go` | Message provenance/source 判别类型、校验和 opaque extension |
+| `llm/harness_contract.go` | ContentBlock 与 ToolSchema 公共 contract |
+| `llm/finish_reason.go` | FinishReason 判别类型、严格恢复和 opaque extension |
+| `llm/stream.go` | StreamChunk 公共 contract、codec 和 `ChunkStream` capability |
+| `llm/slice_stream.go` | 测试及进程内调用使用的 deterministic pull stream |
 | `llm/adapter.go` | Service、Event、Adapter 与可选 capability interface |
-| `llm/registry.go` | route/configurable provider/discovery contribution、原子 replace 与 topology notification |
-| `llm/runtime.go` | model/call resolution、prepared call、waterfall dispatch、replay-state filter 和 terminal normalization |
+| `llm/registry.go` | Runtime state、Adapter route contribution、原子 replace 与 topology notification |
+| `llm/provider_directory.go` | configurable provider directory contribution 与独立生命周期 |
+| `llm/model_discovery.go` | provider model discovery registration 与调用边界 |
+| `llm/runtime.go` | model metadata、exact model 和 effective call config resolution |
+| `llm/prepared_call.go` | immutable call snapshot 与 single-dispatch lifecycle |
+| `llm/generation.go` | waterfall dispatch、Adapter 调用、replay-state filter 和 terminal normalization |
 | `llm/retry_policy.go` | retry tagged union、默认值、范围校验与 detached snapshot |
 | `llm/assembler.go` | provider-neutral 增量 block assembly |
 | `internal/llmdeepseek/config.go` | omission/null、默认值、环境派生、模型目录和 connection snapshot |
@@ -61,6 +70,8 @@ Go 不复制 TypeScript class inheritance、declaration merging、fetch implemen
 | `internal/anonymoususerid/store.go` | installation identity 文件边界，不承担 LLM 或配置职责 |
 
 Registry 锁只保护 contribution membership 和 route 快照。Adapter、model discovery、observer、waterfall 和网络 I/O 都不在 Registry lock 内运行。DeepSeek parser、translator 与 BlockAssembler 分离：parser 只理解 SSE，translator 只理解 provider payload，assembler 只理解 Harness StreamChunk。
+
+上述文件划分按责任对象组织，而不是按开发顺序把不同 struct 和 method 交替堆放。它不把 `llm` 再拆成子包：这些类型共同组成一个公共 contract 和 Runtime 生命周期，额外子包会制造反向依赖或重复 facade。仅当未来出现可独立消费、可独立测试且依赖单向的新能力时，才建立新的包边界。
 
 ## 4. 公共 Service 与扩展边界
 
