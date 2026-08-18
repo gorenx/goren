@@ -75,9 +75,12 @@ func NewCatalog(platform Environment) (*plugin.Catalog, error) {
 	if ensureDirectory == nil {
 		ensureDirectory = func(path string) error { return os.MkdirAll(path, 0o755) }
 	}
-	if err := plugin.RegisterFactory(registry, apiProxyFactory{
-		workingDirectory: platform.WorkingDirectory, ensureDirectory: ensureDirectory,
-	}); err != nil {
+	if err := plugin.RegisterFactory(registry,
+		apiProxyFactory{
+			workingDirectory: platform.WorkingDirectory,
+			ensureDirectory:  ensureDirectory,
+		},
+	); err != nil {
 		return nil, err
 	}
 	if err := plugin.RegisterFactory(registry, connectionFactory{}); err != nil {
@@ -189,14 +192,20 @@ func DefaultSpecs(
 	if err != nil {
 		return nil, err
 	}
-	titleRaw, err := json.Marshal(sessiontitle.Config{
-		FallbackMaxWords: 5, FallbackMaxBytes: 40, MaxTitleBytes: 80,
-		LLM: &sessiontitle.LLMConfig{
-			AutomaticMode: sessiontitle.AutomaticFirstPrompt,
-			TargetWords:   5, TargetCJKCharacters: 10, MaxInputBytes: 4096,
-			MaxOutputTokens: 64, TimeoutMS: 60000,
-		},
-	})
+	titleRaw, err := json.Marshal(
+		sessiontitle.Config{
+			FallbackMaxWords: 5,
+			FallbackMaxBytes: 40,
+			MaxTitleBytes:    80,
+			LLM: &sessiontitle.LLMConfig{
+				AutomaticMode:       sessiontitle.AutomaticFirstPrompt,
+				TargetWords:         5,
+				TargetCJKCharacters: 10,
+				MaxInputBytes:       4096,
+				MaxOutputTokens:     64,
+				TimeoutMS:           60000,
+			},
+		})
 	if err != nil {
 		return nil, err
 	}

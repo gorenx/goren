@@ -41,7 +41,7 @@ type liveSessionState struct {
 // delegating physical storage to Backend.
 type SessionLogStore struct {
 	sourceScope *plugin.Scope
-	sessions    session.Store
+	sessions    session.LiveStore
 	storage     Backend
 	delay       time.Duration
 	reporter    func(error)
@@ -61,7 +61,7 @@ type SessionLogStore struct {
 func NewSessionLogStore(
 	requestContext context.Context,
 	sourceScope *plugin.Scope,
-	sessions session.Store,
+	sessions session.LiveStore,
 	storage Backend,
 	settings SessionLogStoreOptions,
 ) (*SessionLogStore, error) {

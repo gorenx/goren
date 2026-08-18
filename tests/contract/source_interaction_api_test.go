@@ -32,7 +32,7 @@ import (
 type interactionAPIContractState struct {
 	pluginScope     *plugin.Scope
 	agents          agent.Registry
-	sessions        session.Store
+	sessions        session.LiveStore
 	approvalService approval.Approval
 	questionService userquestions.UserQuestions
 	methods         *apiproxy.Catalog

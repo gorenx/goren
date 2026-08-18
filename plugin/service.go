@@ -16,6 +16,11 @@ type ServiceKey[T any] struct {
 	ref ServiceRef
 }
 
+// Ref returns the type-erased identity used in a Manifest.
+func (typedKey ServiceKey[T]) Ref() ServiceRef {
+	return typedKey.ref
+}
+
 // ServiceRef is the type-erased service identity used by plugin manifests.
 type ServiceRef struct {
 	name  string
@@ -27,14 +32,12 @@ func DefineService[T any](canonicalName string) ServiceKey[T] {
 	if strings.TrimSpace(canonicalName) == "" || canonicalName != strings.TrimSpace(canonicalName) {
 		panic("plugin: service name must be non-empty and trimmed")
 	}
-	return ServiceKey[T]{ref: ServiceRef{
-		name: canonicalName, token: &serviceToken{},
-	}}
-}
-
-// Ref returns the type-erased identity used in a Manifest.
-func (typedKey ServiceKey[T]) Ref() ServiceRef {
-	return typedKey.ref
+	return ServiceKey[T]{
+		ref: ServiceRef{
+			name:  canonicalName,
+			token: &serviceToken{},
+		},
+	}
 }
 
 // Name returns the canonical source-compatible service name.

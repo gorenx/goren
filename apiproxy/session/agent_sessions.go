@@ -34,7 +34,7 @@ func (operation DirectoryProvisionerFunc) EnsureDirectory(path string) error {
 // Agents for API-visible Sessions.
 type AgentSessionDependencies struct {
 	Agents      agent.Registry
-	Sessions    session.Store
+	Sessions    session.LiveStore
 	Persistence sesspersist.Persistence
 	Defaults    agentdefaultmodel.DefaultModel
 	Directories DirectoryProvisioner
@@ -56,7 +56,7 @@ type installedSelection struct {
 type AgentSessions struct {
 	sourceScope *plugin.Scope
 	agents      agent.Registry
-	sessions    session.Store
+	sessions    session.LiveStore
 	persistence sesspersist.Persistence
 	defaults    agentdefaultmodel.DefaultModel
 	directories DirectoryProvisioner
@@ -82,10 +82,13 @@ func NewAgentSessions(
 	}
 	owner := &AgentSessions{
 		sourceScope: sourceScope,
-		agents:      ports.Agents, sessions: ports.Sessions, persistence: ports.Persistence,
-		defaults: ports.Defaults, directories: ports.Directories,
-		creations:  make(map[session.SessionID]*creationResult),
-		selections: make(map[session.SessionID]installedSelection),
+		agents:      ports.Agents,
+		sessions:    ports.Sessions,
+		persistence: ports.Persistence,
+		defaults:    ports.Defaults,
+		directories: ports.Directories,
+		creations:   make(map[session.SessionID]*creationResult),
+		selections:  make(map[session.SessionID]installedSelection),
 	}
 	if _, err := agent.OnDisposed(sourceScope, owner.observeAgentDisposed); err != nil {
 		return nil, err
@@ -171,9 +174,11 @@ func (owner *AgentSessions) Selection(subject agent.Agent) (*agent.ModelSelectio
 	if installed, found := owner.selections[identifier]; found && installed.subject == subject {
 		return installed.ref, nil
 	}
-	selectionRef := agent.NewModelSelectionRef(func() (agent.ModelSelection, bool, error) {
-		return owner.loggedOrDefaultSelection(subject.SessionValue())
-	})
+	selectionRef := agent.NewModelSelectionRef(
+		func() (agent.ModelSelection, bool, error) {
+			return owner.loggedOrDefaultSelection(subject.SessionValue())
+		},
+	)
 	if _, err := agent.InstallModelSelection(subject.ScopeValue(), selectionRef); err != nil {
 		return nil, err
 	}
@@ -345,7 +350,8 @@ func (owner *AgentSessions) loggedOrDefaultSelection(
 	}
 	if found {
 		return agent.ModelSelection{
-			Provider: header.Config.Provider, Model: header.Config.Model,
+			Provider:        header.Config.Provider,
+			Model:           header.Config.Model,
 			ReasoningEffort: header.Config.ReasoningEffort,
 		}, true, nil
 	}

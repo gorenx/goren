@@ -70,7 +70,8 @@ func DefineEvent[P, R any](canonicalName string, dispatchMode EventMode) EventKe
 	}
 	return EventKey[P, R]{
 		ref: eventRef{
-			name: canonicalName, mode: dispatchMode,
+			name:  canonicalName,
+			mode:  dispatchMode,
 			token: &eventToken{},
 		},
 	}
@@ -367,9 +368,14 @@ func dispatchDecisionAt[P, R any](requestContext context.Context, engine *Runtim
 }
 
 func registerSubscription[P, R any, H EventHandler[P, R]](pluginScope *Scope, definition eventRef, callback H) (Disposer, error) {
-	return registerListener(pluginScope, definition, &typedEventSubscription[P, R, H]{
-		metadata: eventListenerState{ref: definition}, callback: callback,
-	})
+	return registerListener(
+		pluginScope,
+		definition,
+		&typedEventSubscription[P, R, H]{
+			metadata: eventListenerState{ref: definition},
+			callback: callback,
+		},
+	)
 }
 
 func registerListener(pluginScope *Scope, definition eventRef, listener eventSubscription) (Disposer, error) {
@@ -404,13 +410,16 @@ func notifySubscriptions[P any](engine *Runtime, definition eventRef, selectedKe
 }
 
 func decisionSubscriptions[P, R any](engine *Runtime, definition eventRef, selectedKey *ScopeKey) ([]DecisionHandler[P, R], error) {
-	return collectSubscriptions(engine, definition, selectedKey, func(listener eventSubscription) (DecisionHandler[P, R], bool) {
-		typedListener, ok := listener.(*typedEventSubscription[P, R, DecisionHandler[P, R]])
-		if !ok {
-			return nil, false
-		}
-		return typedListener.callback, true
-	})
+	return collectSubscriptions(
+		engine, definition, selectedKey,
+		func(listener eventSubscription) (DecisionHandler[P, R], bool) {
+			typedListener, ok := listener.(*typedEventSubscription[P, R, DecisionHandler[P, R]])
+			if !ok {
+				return nil, false
+			}
+			return typedListener.callback, true
+		},
+	)
 }
 
 func waterfallSubscriptions[P, R any](engine *Runtime, definition eventRef, selectedKey *ScopeKey) ([]WaterfallHandler[P, R], error) {
@@ -423,7 +432,12 @@ func waterfallSubscriptions[P, R any](engine *Runtime, definition eventRef, sele
 	})
 }
 
-func collectSubscriptions[T any](engine *Runtime, definition eventRef, selectedKey *ScopeKey, selectCallback func(eventSubscription) (T, bool)) ([]T, error) {
+func collectSubscriptions[T any](
+	engine *Runtime,
+	definition eventRef,
+	selectedKey *ScopeKey,
+	selectCallback func(eventSubscription) (T, bool),
+) ([]T, error) {
 	if engine == nil {
 		return nil, errors.New("plugin: dispatch on nil runtime")
 	}

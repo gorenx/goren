@@ -64,7 +64,9 @@ type Scope struct {
 
 func newScope(owner *Runtime, record *pluginRecord) *Scope {
 	return &Scope{
-		owner: owner, record: record, services: make(map[string]*serviceContribution),
+		owner:    owner,
+		record:   record,
+		services: make(map[string]*serviceContribution),
 		children: make(map[string]*Scope),
 	}
 }
@@ -132,7 +134,11 @@ func Own(pluginScope *Scope, label string, release Disposer) (Disposer, error) {
 
 // Effect acquires a resource immediately and records its disposer in this
 // scope. If setup fails, no empty effect is retained.
-func (pluginScope *Scope) Effect(requestContext context.Context, label string, setup func(context.Context) (Disposer, error)) error {
+func (pluginScope *Scope) Effect(
+	requestContext context.Context,
+	label string,
+	setup func(context.Context) (Disposer, error),
+) error {
 	if setup == nil {
 		return errors.New("plugin: effect setup is nil")
 	}
@@ -196,19 +202,22 @@ func (pluginScope *Scope) provide(definition ServiceRef, value any) (Disposer, e
 	pluginScope.services[definition.name] = contribution
 	pluginScope.mu.Unlock()
 
-	release, err := pluginScope.own("provide:"+definition.name, func(disposeContext context.Context) error {
-		pluginScope.mu.Lock()
-		withdrawLive := pluginScope.activated && !pluginScope.disposing
-		if contribution.owned {
-			delete(pluginScope.services, definition.name)
-			contribution.owned = false
-		}
-		pluginScope.mu.Unlock()
-		if withdrawLive {
-			return pluginScope.owner.withdrawService(disposeContext, pluginScope.record, definition, contribution)
-		}
-		return nil
-	})
+	release, err := pluginScope.own(
+		"provide:"+definition.name,
+		func(disposeContext context.Context) error {
+			pluginScope.mu.Lock()
+			withdrawLive := pluginScope.activated && !pluginScope.disposing
+			if contribution.owned {
+				delete(pluginScope.services, definition.name)
+				contribution.owned = false
+			}
+			pluginScope.mu.Unlock()
+			if withdrawLive {
+				return pluginScope.owner.withdrawService(disposeContext, pluginScope.record, definition, contribution)
+			}
+			return nil
+		},
+	)
 	if err != nil {
 		pluginScope.mu.Lock()
 		delete(pluginScope.services, definition.name)

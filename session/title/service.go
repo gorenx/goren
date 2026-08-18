@@ -52,7 +52,7 @@ type titleWorkState struct {
 
 // LogService is the source-aligned in-process TitleService provider.
 type LogService struct {
-	store       session.Store
+	store       session.LiveStore
 	projections sessionprojection.Registry
 	settings    Config
 	reportError func(error)
@@ -69,7 +69,7 @@ type LogService struct {
 // NewLogService installs the title projection and automatic scheduling hooks.
 func NewLogService(
 	pluginScope *plugin.Scope,
-	store session.Store,
+	store session.LiveStore,
 	projections sessionprojection.Registry,
 	settings Config,
 	serviceOptions Options,

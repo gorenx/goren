@@ -19,7 +19,7 @@ import (
 // Dependencies are the domain capabilities consumed by the Session API.
 type Dependencies struct {
 	Agents      agent.Registry
-	Sessions    session.Store
+	Sessions    session.LiveStore
 	Persistence sesspersist.Persistence
 	LLM         llm.LlmRuntime
 	Defaults    agentdefaultmodel.DefaultModel

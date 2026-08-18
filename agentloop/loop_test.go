@@ -24,7 +24,7 @@ type harnessFixture struct {
 	engine        *plugin.Runtime
 	pluginScope   *plugin.Scope
 	agents        agent.Registry
-	sessions      session.Store
+	sessions      session.LiveStore
 	models        llm.LlmRuntime
 	toolRuntime   tools.ToolRuntime
 	prompts       systemprompt.SystemPrompt
@@ -102,7 +102,7 @@ func (provider *harnessProvider) Apply(requestContext context.Context, pluginSco
 			return provideErr
 		},
 		func() error {
-			_, provideErr := plugin.Provide(pluginScope, session.StoreService, session.Store(sessionStore))
+			_, provideErr := plugin.Provide(pluginScope, session.StoreService, session.LiveStore(sessionStore))
 			return provideErr
 		},
 		func() error {

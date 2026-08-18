@@ -17,7 +17,7 @@ const defaultHistoryMessages int64 = 50
 
 type sessionReader struct {
 	agents      agent.Registry
-	sessions    session.Store
+	sessions    session.LiveStore
 	persistence sesspersist.Persistence
 	projections sessionprojection.Registry
 }

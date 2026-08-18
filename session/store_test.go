@@ -32,13 +32,13 @@ func (instance *storeProviderPlugin) Apply(requestContext context.Context, plugi
 	}); err != nil {
 		return err
 	}
-	_, err = plugin.Provide(pluginScope, StoreService, Store(registry))
+	_, err = plugin.Provide(pluginScope, StoreService, LiveStore(registry))
 	return err
 }
 
 type storeConsumerPlugin struct {
 	name  string
-	body  func(*plugin.Scope, Store) error
+	body  func(*plugin.Scope, LiveStore) error
 	scope *plugin.Scope
 }
 
@@ -64,7 +64,7 @@ func TestStoreLifecyclePublishesCommittedEventsAndFlush(t *testing.T) {
 	engine := plugin.NewRuntime()
 	calls := []string{}
 	consumer := &storeConsumerPlugin{name: "fixture-session-consumer"}
-	consumer.body = func(pluginScope *plugin.Scope, _ Store) error {
+	consumer.body = func(pluginScope *plugin.Scope, _ LiveStore) error {
 		if _, err := OnCreated(pluginScope, func(context.Context, *Session) error {
 			calls = append(calls, "created")
 			return nil
@@ -132,7 +132,7 @@ func TestCreationFailureRollsBackWithPairedDisposal(t *testing.T) {
 	sentinel := errors.New("creation veto")
 	calls := []string{}
 	consumer := &storeConsumerPlugin{name: "fixture-veto-consumer"}
-	consumer.body = func(pluginScope *plugin.Scope, _ Store) error {
+	consumer.body = func(pluginScope *plugin.Scope, _ LiveStore) error {
 		if _, err := OnCreated(pluginScope, func(context.Context, *Session) error {
 			calls = append(calls, "created")
 			return sentinel
@@ -176,7 +176,7 @@ func TestAppendObserverFailureIsContainedAndReentryRejected(t *testing.T) {
 		reportsMu.Unlock()
 	}}
 	consumer := &storeConsumerPlugin{name: "fixture-reentrant-consumer"}
-	consumer.body = func(pluginScope *plugin.Scope, _ Store) error {
+	consumer.body = func(pluginScope *plugin.Scope, _ LiveStore) error {
 		_, err := OnEvent(pluginScope, func(_ context.Context, activeSession *Session, _ Event) error {
 			_, appendErr := Append(activeSession, fixtureEventKey, fixturePayload{Items: []string{"nested"}})
 			if appendErr == nil || !strings.Contains(appendErr.Error(), "cannot reenter") {
@@ -218,7 +218,7 @@ func TestSerializedAppendsWaitForActivePublication(t *testing.T) {
 	releasePublication := make(chan struct{})
 	var firstPublication sync.Once
 	consumer := &storeConsumerPlugin{name: "fixture-serialized-producer-consumer"}
-	consumer.body = func(pluginScope *plugin.Scope, _ Store) error {
+	consumer.body = func(pluginScope *plugin.Scope, _ LiveStore) error {
 		_, err := OnEvent(pluginScope, func(_ context.Context, _ *Session, _ Event) error {
 			firstPublication.Do(func() {
 				close(publicationStarted)

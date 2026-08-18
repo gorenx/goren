@@ -23,7 +23,10 @@ type sessionConversation struct {
 	runtime llm.LlmRuntime
 }
 
-func (flow *sessionConversation) Prompt(requestContext context.Context, call api.Request[api.SessionPromptRequest]) (api.Outcome[api.SessionPromptValue], error) {
+func (flow *sessionConversation) Prompt(
+	requestContext context.Context,
+	call api.Request[api.SessionPromptRequest],
+) (api.Outcome[api.SessionPromptValue], error) {
 	subject, refused := flow.access.ordinaryAgent(requestContext, call.Payload.SessionID)
 	if refused != nil {
 		return api.Fail[api.SessionPromptValue](*refused), nil
@@ -36,17 +39,21 @@ func (flow *sessionConversation) Prompt(requestContext context.Context, call api
 	if err != nil {
 		return api.Outcome[api.SessionPromptValue]{}, err
 	}
-	if !slices.ContainsFunc(flow.runtime.ListProviders(), func(provider llm.ProviderInfo) bool {
-		return provider.ID == current.Provider
-	}) {
-		return api.Fail[api.SessionPromptValue](api.NewRPCError(
-			connection.ErrorModelUnavailable,
-			fmt.Sprintf("no adapter serves provider %q; select a model for this session", current.Provider),
-			struct {
-				Provider string `json:"provider"`
-				Model    string `json:"model"`
-			}{Provider: current.Provider, Model: current.Model},
-		)), nil
+	if !slices.ContainsFunc(
+		flow.runtime.ListProviders(),
+		func(provider llm.ProviderInfo) bool {
+			return provider.ID == current.Provider
+		}) {
+		return api.Fail[api.SessionPromptValue](
+			api.NewRPCError(
+				connection.ErrorModelUnavailable,
+				fmt.Sprintf("no adapter serves provider %q; select a model for this session", current.Provider),
+				struct {
+					Provider string `json:"provider"`
+					Model    string `json:"model"`
+				}{Provider: current.Provider, Model: current.Model},
+			),
+		), nil
 	}
 	canonicalZone := ""
 	if call.Payload.ClientTimeZone != nil {

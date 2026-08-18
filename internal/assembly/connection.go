@@ -90,27 +90,31 @@ func (instance *connectionPlugin) Apply(requestContext context.Context, pluginSc
 		return err
 	}
 	var endpoint *boundServer
-	if err := pluginScope.Effect(requestContext, "connection-host", func(lifecycle context.Context) (plugin.Disposer, error) {
-		listener, listenErr := net.Listen("tcp", instance.settings.ListenAddress)
-		if listenErr != nil {
-			return nil, listenErr
-		}
-		serveContext, cancelServe := context.WithCancel(lifecycle)
-		finished := make(chan error, 1)
-		go func() {
-			finished <- carrier.Serve(serveContext, listener)
-		}()
-		endpoint = &boundServer{listenAddress: listener.Addr().String()}
-		return func(closeContext context.Context) error {
-			cancelServe()
-			select {
-			case serveErr := <-finished:
-				return serveErr
-			case <-closeContext.Done():
-				return errors.Join(closeContext.Err(), listener.Close(), carrier.Close(closeContext))
+	if err = pluginScope.Effect(
+		requestContext,
+		"connection-host",
+		func(lifecycle context.Context) (plugin.Disposer, error) {
+			listener, listenErr := net.Listen("tcp", instance.settings.ListenAddress)
+			if listenErr != nil {
+				return nil, listenErr
 			}
-		}, nil
-	}); err != nil {
+			serveContext, cancelServe := context.WithCancel(lifecycle)
+			finished := make(chan error, 1)
+			go func() {
+				finished <- carrier.Serve(serveContext, listener)
+			}()
+			endpoint = &boundServer{listenAddress: listener.Addr().String()}
+			return func(closeContext context.Context) error {
+				cancelServe()
+				select {
+				case serveErr := <-finished:
+					return serveErr
+				case <-closeContext.Done():
+					return errors.Join(closeContext.Err(), listener.Close(), carrier.Close(closeContext))
+				}
+			}, nil
+		},
+	); err != nil {
 		return err
 	}
 	_, err = plugin.Provide(pluginScope, serverServiceKey, serverService(endpoint))

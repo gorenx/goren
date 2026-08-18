@@ -42,6 +42,6 @@ func (*sessionPlugin) Apply(requestContext context.Context, pluginScope *plugin.
 	}); err != nil {
 		return err
 	}
-	_, err = plugin.Provide(pluginScope, session.StoreService, session.Store(registry))
+	_, err = plugin.Provide(pluginScope, session.StoreService, session.LiveStore(registry))
 	return err
 }

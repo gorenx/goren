@@ -15,7 +15,7 @@ const FormatVersion = 0
 
 const maxSafeInteger int64 = 1<<53 - 1
 
-// SessionID identifies one Session in a Store and in persistence artifacts.
+// SessionID identifies one Session in a LiveStore and in persistence artifacts.
 type SessionID string
 
 // Origin classifies how a Session was created for presentation purposes.

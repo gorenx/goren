@@ -102,7 +102,7 @@ func (instance *workspacePlugin) Apply(requestContext context.Context, pluginSco
 // workspaceSessionHeaders translates Session ownership into the minimal
 // immutable-header port consumed by Workspace.
 type workspaceSessionHeaders struct {
-	sessions    session.Store
+	sessions    session.LiveStore
 	persistence sesspersist.Persistence
 }
 

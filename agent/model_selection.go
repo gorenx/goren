@@ -23,6 +23,7 @@ type ModelSelectionSource func() (ModelSelection, bool, error)
 
 // ModelSelectionRef couples mutable next-step selection to the value captured
 // for the current prompt assembly.
+// TODO： optimize name, "current" is the model selection that is about to take effect, assembled is now selected
 type ModelSelectionRef struct {
 	mu        sync.RWMutex
 	current   *ModelSelection
@@ -44,6 +45,7 @@ func (selection *ModelSelectionRef) SetCurrent(selected *ModelSelection) {
 }
 
 // Current returns the explicit next-step selection or resolves its live fallback.
+// TODO: bool should be remove
 func (selection *ModelSelectionRef) Current() (ModelSelection, bool, error) {
 	selection.mu.RLock()
 	selected := cloneSelection(selection.current)
@@ -74,8 +76,14 @@ func InstallModelSelection(agentScope *plugin.Scope, selection *ModelSelectionRe
 	if agentScope == nil || selection == nil {
 		return nil, errors.New("agent: model selection Scope and reference are required")
 	}
-	releaseAssembly, err := systemprompt.OnAssemble(agentScope,
-		func(requestContext context.Context, _ *systemprompt.PromptAssembly, _ systemprompt.AssembleContext, downstream systemprompt.AssembleNext) (systemprompt.PromptAssembly, error) {
+	// TODO: restructure
+	releaseAssembly, err := systemprompt.OnAssemble(
+		agentScope,
+		func(requestContext context.Context,
+			_ *systemprompt.PromptAssembly,
+			_ systemprompt.AssembleContext,
+			downstream systemprompt.AssembleNext,
+		) (systemprompt.PromptAssembly, error) {
 			selected, found, selectionErr := selection.Current()
 			if selectionErr != nil {
 				return systemprompt.PromptAssembly{}, selectionErr
@@ -100,12 +108,18 @@ func InstallModelSelection(agentScope *plugin.Scope, selection *ModelSelectionRe
 			resolvedPrompt.Variables["provider"] = systemprompt.VariableValue{Value: selected.Provider, Defined: true}
 			resolvedPrompt.Variables["model"] = systemprompt.VariableValue{Value: selected.Model, Defined: true}
 			return resolvedPrompt, nil
-		})
+		},
+	)
 	if err != nil {
 		return nil, err
 	}
-	releaseRequest, err := OnRequest(agentScope,
-		func(requestContext context.Context, _ RequestNotice, downstream RequestNext) (llm.CallConfig, error) {
+	releaseRequest, err := OnRequest(
+		agentScope,
+		func(
+			requestContext context.Context,
+			_ RequestNotice,
+			downstream RequestNext,
+		) (llm.CallConfig, error) {
 			resolved, resolveErr := downstream(requestContext)
 			if resolveErr != nil {
 				return llm.CallConfig{}, resolveErr
@@ -118,7 +132,8 @@ func InstallModelSelection(agentScope *plugin.Scope, selection *ModelSelectionRe
 			resolved.Model = selected.Model
 			resolved.ReasoningEffort = selected.ReasoningEffort
 			return resolved, nil
-		})
+		},
+	)
 	if err != nil {
 		return nil, errors.Join(err, releaseAssembly(context.Background()))
 	}
