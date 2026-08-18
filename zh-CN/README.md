@@ -15,7 +15,7 @@
 - [07 API Proxy 模块设计与实现](./07-api-proxy-module.md)：typed method Catalog、Provider 边界、`host.describe` 纵向切片与结果/错误映射。
 - [08 实施进度](./08-implementation-progress.md)：阶段完成度、当前代码/测试证据、验证结果、阻塞项和下一步。
 - [09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)：typed Service/Event、Scope/effect、依赖结算、replacement、Factory Catalog 与 Connection 插件装配。
-- [10 Session Core 与生命周期模块设计](./10-session-core-and-lifecycle.md)：Header/Event、内存 append-only log、surface、Store 生命周期、订阅与 persistence 边界。
+- [10 Session Core 与生命周期模块设计](./10-session-core-and-lifecycle.md)：Header/Event、内存 append-only log、surface、LiveStore 生命周期、订阅与 persistence 边界。
 - [11 System Prompt Registry 与 Assembly 模块设计](./11-system-prompt-registry-and-assembly.md)：scope overlay、注册生命周期、deterministic assembly、tool schema 排序、严格插值与上下游边界。
 - [12 Tools Registry 与执行流水线模块设计](./12-tools-registry-and-execution-pipeline.md)：Tool Definition、scope view、restriction/guard、policy waterfall、执行/取消、结果物化与 System Prompt 投影。
 - [13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)：provider-neutral LLM Service、Adapter Registry、模型路由、流组装、RetryPolicy，以及 DeepSeek typed config、HTTP/SSE 和错误映射。
@@ -24,15 +24,15 @@
 - [16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)：根 wire contract 与 `apiproxy/session` 实现边界、十个 `session.*` method、主/搜索 Gateway、默认模型选择、Mux baseline/live 与 Host edge。
 - [17 Approval、UserQuestions 与 Interaction Gateway](./17-approval-user-questions-and-interaction-gateway.md)：Approval policy/audit、UserQuestions Provider、`ask_user_question` Consumer，以及 requested/respond/resolved/replay 闭环。
 - [18 Session Projection 与 Session Title 模块设计](./18-session-projection-and-title.md)：通用 projection unit/registry/checkpoint、`session/title`、fallback/Provider 调度、rename 与客户端 higher-seq-wins。
-- [19 Session Persistence 与 SQLite 事实存储设计](./19-session-persistence-and-sqlite.md)：durable facts、Store/Persistence/Backend 边界、write-behind、cold recovery/resume、SQLite/sqlc schema 与事务。
+- [19 Session Persistence 与 SQLite 事实存储设计](./19-session-persistence-and-sqlite.md)：durable facts、LiveStore/Persistence/Backend 边界、write-behind、cold recovery/resume、SQLite/sqlc schema 与事务。
 - [20 Workspace Registry、SQLite 与 API Gateway](./20-workspace-registry-and-api.md)：Workspace identity/order/accounting、历史 bootstrap、SQLite/sqlc Backend、七个 API、Host frame 与 `session.create({workspaceId})`。
 - [21 Web Agent 主会话闭环与能力边界](./21-web-agent-main-flow.md)：极简内嵌 Web UI、Question 回答与固定 TypeScript Client 到 Go Agent Loop 的纵向能力矩阵、排除面、依赖方向与分层验收。
-- [22 Credentials 与 API Key 管理](./22-credentials-and-api-key-management.md)：Credentials Provider/Manager/Store 边界、local JSON Store、Host write-only API、DeepSeek 请求时解析与 Web API Key 设置。
+- [22 Credentials 与 API Key 管理](./22-credentials-and-api-key-management.md)：Credentials Provider/Manager/LiveStore 边界、local JSON LiveStore、Host write-only API、DeepSeek 请求时解析与 Web API Key 设置。
 - [23 Session Query 与 Search](./23-session-query-and-search.md)：live-preferred corpus、exact read/filter/trace、语义文档、可重建 SQLite FTS5 index、cursor 与 `session.search`。
 
 ## 模块内运行说明
 
-- [`session/README.zh-CN.md`](../session/README.zh-CN.md)：Session append-only log、Store、publication、`DeferAfterEvent` 与生命周期。
+- [`session/README.zh-CN.md`](../session/README.zh-CN.md)：Session append-only log、LiveStore、publication、`DeferAfterEvent` 与生命周期。
 - [`agentloop/README.zh-CN.md`](../agentloop/README.zh-CN.md)：Agent driver、Turn/Step、请求/Tool 调度、durability checkpoint 与 idle convergence。
 - [`apiproxy/README.zh-CN.md`](../apiproxy/README.zh-CN.md)：typed method adapter、Session/Interaction Gateway、live frame、correlation 与背压。
 - [`apiproxy/session/README.zh-CN.md`](../apiproxy/session/README.zh-CN.md)：Session API façade、读取/生命周期/模型/对话/Search 用例与 Agent activation 状态。
@@ -41,7 +41,7 @@
 - [`llmretry/README.zh-CN.md`](../llmretry/README.zh-CN.md)：默认 RetryPolicy Consumer 的职责、normal/always 决策、durable retry events、历史投影和取消/卸载流程。
 - [`internal/llmdeepseek/README.zh-CN.md`](../internal/llmdeepseek/README.zh-CN.md)：DeepSeek direct Provider adapter 的 typed config、lazy request、HTTP/SSE、流转换、错误/取消和 response recordings。
 - [`web/README.zh-CN.md`](../web/README.zh-CN.md)：内嵌主会话 UI、浏览器状态对象、Host RPC/WebSocket/respond 交互与边界。
-- [`credentials/README.zh-CN.md`](../credentials/README.zh-CN.md)：Credentials 能力、Manager precedence、storage-only Store 与 local owner-only 文件实现。
+- [`credentials/README.zh-CN.md`](../credentials/README.zh-CN.md)：Credentials 能力、Manager precedence、storage-only LiveStore 与 local owner-only 文件实现。
 
 首次阅读按 `01`–`05` 顺序理解全局设计；进入实现时读取对应模块文档，再从 `08` 查看当前进度。实现单个能力时，先从 `01` 确认范围，再读其拥有契约的文档。DeepSeek Harness 的 Service Definition / Provider / Consumer、事件 owner 和生命周期是默认职责边界；Go 包不机械复制每个 npm 包，但没有明确证据时也不另起一套领域切分。
 

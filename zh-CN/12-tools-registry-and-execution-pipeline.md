@@ -58,7 +58,7 @@ Go 不复制 Cordis context extension、WeakMap、JavaScript `unknown` 对象、
 | `config.go` | typed config 的 omission/null/default/cross-field 语义 |
 | `types.go` | owner 公共 Definition、execution、policy 和 Service contract |
 
-共享锁只属于 `toolStore`。schema 编译发生在注册 mutation 之前；executor、renderer、policy、observer 和 finalizer 均不在 Store lock 内运行。Registry facade 不解析工具业务参数，Store 不调用 Plugin 或用户 callback。
+共享锁只属于 `toolStore`。schema 编译发生在注册 mutation 之前；executor、renderer、policy、observer 和 finalizer 均不在 LiveStore lock 内运行。Registry facade 不解析工具业务参数，LiveStore 不调用 Plugin 或用户 callback。
 
 ## 4. 公共 contract 与动态 JSON 边界
 
@@ -139,7 +139,7 @@ validate name/output/timeout
 
 同一 exact layer 重名失败，近层同名允许作为 scoped shadow；`run_code` 始终禁止注册。若 `plugin.Own` 或首次 change observer 失败，mutation 回滚且不留下半注册 Tool。正常 disposer 精确删除本次 record、回收空 layer，再发布一次 change。Guard 是 execution policy，不改变模型可见 schema，因此注册/撤销不发 `tools/change`。
 
-Definition 在进入 Store 前复制 schema bytes 并保留 behavior interface；`Get` 和 `Schemas` 再次 detach 公开 JSON。调用方修改原 Definition 或返回 schema 都不能改变 Registry state。
+Definition 在进入 LiveStore 前复制 schema bytes 并保留 behavior interface；`Get` 和 `Schemas` 再次 detach 公开 JSON。调用方修改原 Definition 或返回 schema 都不能改变 Registry state。
 
 ## 8. Schema 与 lossless JSON
 

@@ -85,7 +85,7 @@ Headless 是不启动 Client Connection 的一次性 CLI adapter：读取一个 
 
 ### 6.1 第一优先级：可运行主干
 
-- `core/session`：仅追加事件日志、surface、fork、repair、内存 Session Store。
+- `core/session`：仅追加事件日志、surface、fork、repair、内存 Session LiveStore。
 - `core/system-prompt`：Prompt section、Tool schema 和 Context snapshot 组装。
 - `core/tools`：Tool Registry、执行模式、策略流水线、结果与展示意图。
 - `core/agent`：Agent 接口、Registry、inbox、作用域与实时事件。

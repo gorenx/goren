@@ -14,7 +14,7 @@ The default server includes the repository-owned `web` package for the core conv
 
 Configuration is owner-defined Go typed config. Do not implement or embed `!!js`, Goja, Node.js evaluation, Cordis expression interpolation, or another scripting substitute. CLI flags, environment variables, and optional config files must be decoded into named Go structs with strict unknown-field handling and explicit validation before a Plugin is created. Derived defaults and platform selection belong in explicit Go functions or the composition root.
 
-Credentials are not Settings values. Typed config stores credential references; `credentials.Manager` owns environment precedence and mutation semantics, while `credentials.Store` implementations perform storage only. The composition root registers `credentialsFactory`, selects the current Store, and provides the capability. A concrete Store such as `credentials/local.Store` is neither a Plugin nor a capability Factory and must not duplicate Provider rules.
+Credentials are not Settings values. Typed config stores credential references; `credentials.Manager` owns environment precedence and mutation semantics, while `credentials.LiveStore` implementations perform storage only. The composition root registers `credentialsFactory`, selects the current LiveStore, and provides the capability. A concrete LiveStore such as `credentials/local.LiveStore` is neither a Plugin nor a capability Factory and must not duplicate Provider rules.
 
 SQLite adapters use sqlc-generated access over `database/sql`. Keep migrations and query files with the owning storage adapter, keep generated packages repository-private, and map generated rows into owner-defined types before returning through a capability interface. Do not hand-edit generated files or expose sqlc/driver types from Session or domain contracts. Pin and run the sqlc generation/check workflow when SQLite code is introduced.
 
@@ -73,6 +73,8 @@ When one task changes code and documentation, commit them separately. Code-facin
 Implement end-to-end behavior and fix incorrect ownership or abstractions at the source. Do not leave feature-critical TODOs, empty implementations, silent fallbacks, or duplicate compatibility paths. Keep exported declarations documented and dependencies flowing from inbound adapter to application/runtime to capability interface, with providers wired only in the composition root.
 
 Variables, parameters, receivers, and named returns must not reuse a function or type name, including capitalization-only variants such as `model Model` or `client Client`. Preserve established names by default. Before changing a public Go API, TypeScript-compatible name, wire field, event, configuration key, or persisted shape, document the evidence, compatibility impact, and migration, then update implementations, callers, fixtures, tests, and design together.
+
+Format keyed struct literals vertically: place exactly one `Field: value` assignment on each line, even for small literals. Never place multiple field assignments on the same line.
 
 Names for types and fields must first identify what the object is. If a name concatenates associated objects, processing steps, or storage details, check whether the type mixes responsibilities and repair the boundary before lengthening the name. Correct private names only when the evidence and impact are local and complete; do not mix unrelated naming cleanup into a porting change.
 

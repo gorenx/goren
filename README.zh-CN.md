@@ -58,11 +58,11 @@ Goren 保留源系统可观察的行为和职责边界，同时用 typed Go conf
 | Session Query 与导出 | 精确读取、过滤、关系追踪、SQLite 搜索、日志导出与 Query Tool | **部分实现：** live-preferred Query Service、可重建 SQLite/FTS5 Index 与 `session.search` 已实现；导出和 Agent Query Tool 暂缓 |
 | Session Fork | 从既有对话创建 Fork | **不在当前范围内** |
 | Workspace | Registry、排序、Archive、Session Accounting、持久化与 Web 管理 | **部分实现：** Registry、API、Accounting、排序/Archive 与 SQLite 已实现；Web 管理暂缓 |
-| Credentials | Provider/Manager/Store、环境变量、Local Store 与 Host API | **已实现：** 环境变量优先、Owner-only Local JSON Store、只写 Host API 与 Web DeepSeek API Key 设置 |
+| Credentials | Provider/Manager/LiveStore、环境变量、Local LiveStore 与 Host API | **已实现：** 环境变量优先、Owner-only Local JSON LiveStore、只写 Host API 与 Web DeepSeek API Key 设置 |
 | Settings | Typed Namespace、文件持久化、Describe 与 Mutation | **暂缓：** 当前只实现标准 absent-provider 兼容响应 |
 | Agent Preset 与 Persona | 发现、组合、选择、创作与 Persona Prompt | **暂缓：** 当前只实现标准 empty-roster 兼容响应 |
 | Web 应用 | 可扩展浏览器 Runtime 与完整产品 UI | **部分实现：** 仓库自有 React/Vite/Tailwind 对话 UI，包含 Session、History、Streaming、Question 与 Credential 设置 |
-| Attachment | Attachment Store、Reference、Upload 与 UI | **暂缓：** 只保留已被 LLM Content 消费的稳定 Image Reference Metadata |
+| Attachment | Attachment LiveStore、Reference、Upload 与 UI | **暂缓：** 只保留已被 LLM Content 消费的稳定 Image Reference Metadata |
 
 ### 扩展能力
 

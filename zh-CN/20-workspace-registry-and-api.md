@@ -79,7 +79,7 @@ SessionHeaders.List()   -> detached Header list
 
 ```text
 Get(id)
-  -> live Session Store
+  -> live Session LiveStore
   -> Session Persistence Inspect
 
 List()
@@ -231,7 +231,7 @@ Connection Host
 workspace.Registry
   -> workspace-owned SessionHeaders
   -> assembly adapter
-  -> Session Store / Session Persistence
+  -> Session LiveStore / Session Persistence
 ```
 
 - `workspace` 不依赖 API Proxy、Echo/WebSocket、Session persistence implementation、sqlc 或 SQLite driver；

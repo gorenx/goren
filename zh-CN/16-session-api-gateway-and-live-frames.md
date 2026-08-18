@@ -49,12 +49,12 @@ Session API Gateway 不拥有：
 | 对象 | 拥有的变化原因 | 直接下游 |
 | --- | --- | --- |
 | `apiproxy/session.Gateway` | `SessionAPI` façade compatibility | 四个 unary capability objects |
-| `sessionReader` | list、history、visibility 的读取与 wire projection | Agent Registry、Session Store、Persistence、Projection Registry |
+| `sessionReader` | list、history、visibility 的读取与 wire projection | Agent Registry、Session LiveStore、Persistence、Projection Registry |
 | `sessionLifecycle` | create、rename 与 Workspace accounting | `AgentSessions`、Title Service、Workspace Registry |
 | `sessionModels` | model catalog、route validation 与 selection | `AgentSessions`、LLM Runtime、Default Model |
 | `sessionConversation` | prompt、queue mutation 与 cancel | `AgentSessions`、LLM Runtime、Agent capability |
-| `apiproxy/session.AgentSessions` | create/resume/adopt 串行化和 selection ref 生命周期 | Agent Registry、Session Store、Persistence、Default Model、Directory Provisioner |
-| `LiveFrameSource` | scoped observer 与 Mux/Host/interaction frame publication | Session Store、Projection Registry、`liveFrameHub` |
+| `apiproxy/session.AgentSessions` | create/resume/adopt 串行化和 selection ref 生命周期 | Agent Registry、Session LiveStore、Persistence、Default Model、Directory Provisioner |
+| `LiveFrameSource` | scoped observer 与 Mux/Host/interaction frame publication | Session LiveStore、Projection Registry、`liveFrameHub` |
 | `liveFrameHub` | subscriber baseline、ordering、high-water 与 pending replay | subscriber delivery queue |
 
 ```mermaid
@@ -78,10 +78,10 @@ flowchart LR
 
 | Method | 下游 capability | 核心语义 |
 | --- | --- | --- |
-| `session.list` | Session Store、Agent Registry | 只列 attached 且有 `cwd` 的 Session；`blank` 由是否出现 `turn/start` 决定，`running` 读取 live Agent，`updatedAt` 取最近 direct user message，按新到旧返回 |
+| `session.list` | Session LiveStore、Agent Registry | 只列 attached 且有 `cwd` 的 Session；`blank` 由是否出现 `turn/start` 决定，`running` 读取 live Agent，`updatedAt` 取最近 direct user message，按新到旧返回 |
 | `session.create` | Directory Provisioner、Agent Registry | 生成或采用指定 ID，确定 `cwd` 并确保目录存在；相同 ID/`cwd` 幂等，subagent、preset 或 `cwd` 不一致时拒绝 |
 | `session.rename` | Agent Registry、Session Title | 只接受 ordinary live Session；把 raw title 交给 Title Service 规范化和 pin，返回 accepted `{title, seq}`；控制字符归一为空时返回 `title-invalid` |
-| `session.history` | Session Store、Session Projection | 不激活或 resume Agent；按 append-origin message 边界向前分页，返回 raw event projection 与 `hasMore`；tail page 携带与同一 event cut 对齐的 projection block |
+| `session.history` | Session LiveStore、Session Projection | 不激活或 resume Agent；按 append-origin message 边界向前分页，返回 raw event projection 与 `hasMore`；tail page 携带与同一 event cut 对齐的 projection block |
 | `session.search` | Session Query、Session Visibility | 搜索固定的 current user/assistant message surface；消费 Provider 全局排序页后执行与 `session.list` 相同的可见性校验，返回至多 20 个 Session ID 与 240 Unicode code point snippet |
 | `session.models` | Agent、LLM Runtime | 返回 Session 当前选择和逐 Provider model group；一个 Provider 目录失败不阻断其他 Provider |
 | `session.selectModel` | LLM Runtime、Model Selection、Default Model | 精确解析 provider/model/effort；Session 已含 image 时检查输入模态；更新下一步选择，保存默认选择失败不回滚本次选择 |
@@ -152,7 +152,7 @@ Host WebSocket 只发送进程级变化：
 - `host/session-status`；
 - `host/session-error`。
 
-Host stream 不重复发送全量 baseline。重连后的 authoritative baseline 由 `session.list` 获取，单 Session 历史由 `session.history` 获取；Mux 通过 `session/subscribed(lastSeq)`、pending interaction replay 和 queue snapshot 重建当前进程内的订阅位置。Gateway 的 list 合并 live Store 与 cold Persistence，history 对 cold Session 使用 validated inspection，create 指定已有 cold identity 时通过 Agent Factory resume。这样 Host edge 不伪装成持久化日志，也不会与 list baseline 形成双重 owner；live replay table 仍不冒充进程重启后的 callback/socket 恢复。
+Host stream 不重复发送全量 baseline。重连后的 authoritative baseline 由 `session.list` 获取，单 Session 历史由 `session.history` 获取；Mux 通过 `session/subscribed(lastSeq)`、pending interaction replay 和 queue snapshot 重建当前进程内的订阅位置。Gateway 的 list 合并 live LiveStore 与 cold Persistence，history 对 cold Session 使用 validated inspection，create 指定已有 cold identity 时通过 Agent Factory resume。这样 Host edge 不伪装成持久化日志，也不会与 list baseline 形成双重 owner；live replay table 仍不冒充进程重启后的 callback/socket 恢复。
 
 ## 7. 并发、背压、失败与生命周期
 

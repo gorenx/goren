@@ -6,7 +6,7 @@
 
 | 路径 | 职责 | 不拥有 |
 | --- | --- | --- |
-| `session` | Header、append-only Event log、model-visible surface、live `Store` 与生命周期事件 | Agent loop、API frame、数据库格式、repair policy |
+| `session` | Header、append-only Event log、model-visible surface、live `LiveStore` 与生命周期事件 | Agent loop、API frame、数据库格式、repair policy |
 | `session/persistence` | durable `Persistence` 服务、storage-only `Backend` port、write-behind、cold load 与 recovery 编排 | SQLite row/SQL、Agent 执行、Session seq 分配 |
 | `session/persistence/sqlite` | SQLite Header/Event fact adapter、schema、transaction、revision、sqlc row mapping | Turn/Step/Tool repair 决策、projection fold |
 | `session/query` | live-preferred corpus、exact read/filter/title/surface/trace、search reconciliation 与 cursor policy | browser visibility、SQLite row、canonical fact 写入 |
@@ -43,9 +43,9 @@ flowchart LR
 
 ### Persistence 与 SQLite
 
-`session.Store` 只回答当前进程有哪些 live Session；`session/persistence.Persistence` 回答跨进程事实、cold inspection、恢复与 resume preparation。具体 `SessionLogStore` 是有状态 Go 对象：监听 `OnCreated`、`OnEvent`、`OnFlush`、`OnDisposed`，编排 write-behind、load 与 repair；durable cursor、live writer、prepared LRU/reservation 和 per-ID gate 分别由内部状态对象拥有，`Backend` 只映射 records、revision、repair marker 和事务。
+`session.LiveStore` 只回答当前进程有哪些 live Session；`session/persistence.Persistence` 回答跨进程事实、cold inspection、恢复与 resume preparation。具体 `SessionLogStore` 是有状态 Go 对象：监听 `OnCreated`、`OnEvent`、`OnFlush`、`OnDisposed`，编排 write-behind、load 与 repair；durable cursor、live writer、prepared LRU/reservation 和 per-ID gate 分别由内部状态对象拥有，`Backend` 只映射 records、revision、repair marker 和事务。
 
-正常 Agent Turn 在提交 `turn/end` 后调用 `session.Store.Flush`。Store 只发布并等待 `session/flush`；`SessionLogStore` 作为 durability participant 将 retained batch 提交给 Backend。这样 Agent Loop 不认识 SQLite，而 idle 表示该正常 Turn 已越过配置中的持久化边界。
+正常 Agent Turn 在提交 `turn/end` 后调用 `session.LiveStore.Flush`。LiveStore 只发布并等待 `session/flush`；`SessionLogStore` 作为 durability participant 将 retained batch 提交给 Backend。这样 Agent Loop 不认识 SQLite，而 idle 表示该正常 Turn 已越过配置中的持久化边界。
 
 SQLite adapter 使用以下领域内结构：
 
@@ -61,7 +61,7 @@ session/persistence/sqlite/
 
 ### Query 与 Search
 
-`session/query.Service` 同时观察 live Store 和 durable Persistence；同 ID Header 必须兼容，Event log 始终 live-preferred，同时保留 live/persisted availability。Exact read、filter、title、surface、event window 与 trace 直接在 detached logical log 上执行，不依赖 FTS。
+`session/query.Service` 同时观察 live LiveStore 和 durable Persistence；同 ID Header 必须兼容，Event log 始终 live-preferred，同时保留 live/persisted availability。Exact read、filter、title、surface、event window 与 trace 直接在 detached logical log 上执行，不依赖 FTS。
 
 Full-text search 才进入 `session/query.Index`。默认 SQLite adapter 保存可删除的 `indexed_sessions` 与 FTS5 documents；Service 根据 live identity/seq 或 persisted revision 计算 reconciliation delta，adapter 在事务内 replace/remove 并推进 generation。Opaque cursor 绑定 Service instance、normalized request 与 generation，相关 corpus 改变时返回 stale cursor。
 
@@ -75,7 +75,7 @@ session/query/sqlite/
 └── internal/dbsql/
 ```
 
-从仓库根目录运行 `sqlc generate -f session/query/sqlite/sqlc.yaml`。固定 schema/query 由 sqlc 生成；可选 metadata filter 的 FTS statement 留在 adapter 内参数化构造。该数据库不是 Session facts，删除后可从 Store/Persistence 重建。
+从仓库根目录运行 `sqlc generate -f session/query/sqlite/sqlc.yaml`。固定 schema/query 由 sqlc 生成；可选 metadata filter 的 FTS statement 留在 adapter 内参数化构造。该数据库不是 Session facts，删除后可从 LiveStore/Persistence 重建。
 
 ### Projection 与 Title
 

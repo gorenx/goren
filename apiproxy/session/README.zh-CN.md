@@ -51,6 +51,6 @@ flowchart LR
 ## 上下游与生命周期
 
 - 上游：根 `apiproxy.RegisterSessionAPI` 与 Assembly composition root。
-- 下游：Agent Registry、Session Store、Session Persistence、Default Model、Directory Provisioner。
+- 下游：Agent Registry、Session LiveStore、Session Persistence、Default Model、Directory Provisioner。
 - `AgentSessions` 跟随 API Proxy Plugin Scope；Agent dispose listener 也由该 Scope 撤销。
 - 技术错误原样返回上游；`CWDConflictError`、`PresetConflictError` 与 `SubagentOwnershipError` 保留结构化事实，再由本子模块转换为根协议定义的 canonical RPC error。

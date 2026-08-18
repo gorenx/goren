@@ -32,7 +32,7 @@ flowchart LR
 
 [`apiproxy/session`](./session/README.zh-CN.md) 拥有 Session API 实现。`Gateway` 自身只保持 façade 引用：`sessionReader` 负责 list/history/visibility，`sessionLifecycle` 负责 create/rename，`sessionModels` 负责 model catalog/selection，`sessionConversation` 负责 prompt/queue/cancel。它们共享的 ordinary Agent 解析进入 `AgentSessions`；该对象拥有并发 acquisition、cold resume、adoption 校验和 `ModelSelectionRef` 生命周期，不依赖 wire 类型。根 `apiproxy` 只保留 `SessionAPI`、request/result DTO、method decoder/registration 和 wire projector，因而不反向依赖实现子包。
 
-Session list 合并 live Store 与 cold Persistence，history 对 live facts 取 detached snapshot、对 cold facts 取 validated inspection，再由 reader 完成 wire pagination；两者只消费 projection capability，不拥有 projection fold。`session.create` 指定已有 cold identity 时触发 Agent resume。`session.rename` 把 raw title 交给 `sessiontitle.TitleService`；成功只映射 `{title, seq}`。Projection change 被映射为 `session/projection`，value 必须存在且是合法 JSON。
+Session list 合并 live LiveStore 与 cold Persistence，history 对 live facts 取 detached snapshot、对 cold facts 取 validated inspection，再由 reader 完成 wire pagination；两者只消费 projection capability，不拥有 projection fold。`session.create` 指定已有 cold identity 时触发 Agent resume。`session.rename` 把 raw title 交给 `sessiontitle.TitleService`；成功只映射 `{title, seq}`。Projection change 被映射为 `session/projection`，value 必须存在且是合法 JSON。
 
 `LiveFrameSource` 独立于 unary Gateway 安装 Session/Agent/Projection observer，并向内部 `liveFrameHub` 投递 Mux/Host/interaction frame。`live_frame_hub.go` 只管理 subscriber、baseline、high-water、pending replay 和队列，不解析 unary method。
 
@@ -44,12 +44,12 @@ Workspace Gateway 将七个 `workspace.*` method 映射到 `workspace.Registry`/
 
 `SettingsGateway` 持有可选的 `SettingsDescriber` capability。当前默认组合未提供 Settings Provider，因此 `settings.describe` 按固定源返回 HTTP 200 内的 canonical `internal` absent-service failure，让客户端按 RPC 失败降级而不是遇到未注册方法。接口已经约束 redacted schema/value、secret slot、revision 和 `live/restart` 字段，但尚未装配文件 Provider 或任何 mutation method。
 
-`CredentialsGateway` 持有不包含 `Resolve` 的窄 `CredentialProvider`。`credentials.describe` 只投影 `configured/source/writable`；`credentials.set` 是秘密值唯一经过 Host wire 的方向，成功响应为空；`credentials.unset` 幂等删除托管值。Gateway 不读取 Store，也没有取得 secret 的接口。
+`CredentialsGateway` 持有不包含 `Resolve` 的窄 `CredentialProvider`。`credentials.describe` 只投影 `configured/source/writable`；`credentials.set` 是秘密值唯一经过 Host wire 的方向，成功响应为空；`credentials.unset` 幂等删除托管值。Gateway 不读取 LiveStore，也没有取得 secret 的接口。
 
 ## 上下游
 
 - 上游：Connection dispatcher/event source、TypeScript wire requests。
-- 下游：`apiproxy/session.Gateway`、Agent Registry、Session Store、SessionPersistence、Workspace Registry、Credentials Provider、LLM、DefaultModel、SessionProjection、SessionTitle、Approval/UserQuestions。
+- 下游：`apiproxy/session.Gateway`、Agent Registry、Session LiveStore、SessionPersistence、Workspace Registry、Credentials Provider、LLM、DefaultModel、SessionProjection、SessionTitle、Approval/UserQuestions。
 - wire DTO 到此为止；下游包不依赖 RPC/frame 类型。
 
 ## 生命周期、错误、取消与背压

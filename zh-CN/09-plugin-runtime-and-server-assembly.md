@@ -26,8 +26,8 @@
 | `packages/core/llm-retry` | `internal/assembly` 的 LLM Retry Plugin | 消费 Agent request-error seam，安装默认 provider-routed retry Consumer |
 | `packages/session/session-projection` | `internal/assembly` 的 Session Projection Plugin | 提供 `sessionProjections` Registry |
 | `packages/session/session-title` | `internal/assembly` 的 Session Title Plugin | 消费 Session/Projection，提供 log-backed `sessionTitle` |
-| `packages/session/session-persistence` 与 `session-persistence-sqlite` | `internal/assembly` 的 Session Persistence Plugin | 消费 Session Store，内部装配 SQLite Backend，只提供 `sessionPersistence` |
-| `packages/workspace/workspace` 与源 Storage Domain | `internal/assembly` 的 Workspace Plugin | 消费 Session Store/Persistence，内部装配 SQLite Backend，只提供 `workspaceRegistry` |
+| `packages/session/session-persistence` 与 `session-persistence-sqlite` | `internal/assembly` 的 Session Persistence Plugin | 消费 Session LiveStore，内部装配 SQLite Backend，只提供 `sessionPersistence` |
+| `packages/workspace/workspace` 与源 Storage Domain | `internal/assembly` 的 Workspace Plugin | 消费 Session LiveStore/Persistence，内部装配 SQLite Backend，只提供 `workspaceRegistry` |
 | `packages/interaction/user-approval` | `internal/assembly` 的 Approval Plugin | 消费 System Prompt，提供 `approval` Service |
 | `packages/interaction/user-questions` | `internal/assembly` 的 UserQuestions Plugin | 提供 `userQuestions` Service，并可读取 live Agent Registry |
 | `packages/interaction/tool-ask-user` | `internal/assembly` 的 Tool Ask User Plugin | 消费 Tools/UserQuestions 并注册 `ask_user_question` |
@@ -167,7 +167,7 @@ shipped Catalog 当前只有：
 - `@deepseek-ai/dsh-llm` 的 provider-neutral Runtime Provider；
 - `@deepseek-ai/dsh-llm-deepseek` 的 direct DeepSeek Adapter Consumer；
 - `@deepseek-ai/dsh-llm-retry` 的默认 RetryPolicy Consumer；
-- `@deepseek-ai/dsh-session` 的内存 Store Provider；
+- `@deepseek-ai/dsh-session` 的内存 LiveStore Provider；
 - `@deepseek-ai/dsh-session-persistence` 的 `SessionLogStore`，内部装配默认 SQLite fact Backend；
 - `@deepseek-ai/dsh-session-projection` 的内存 Registry Provider；
 - `@deepseek-ai/dsh-session-title` 的 log-backed Title Provider；

@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有 durable Session facts、cold inspection/load、resume preparation、recovery 编排、write-behind 与 SQLite/sqlc storage adapter 的跨模块设计。Session core 的 Header/Event/surface/live Store 由[10](./10-session-core-and-lifecycle.md)拥有；Agent resume 与 API 映射分别由[15](./15-agent-loop-and-request-driver.md)和[16](./16-session-api-gateway-and-live-frames.md)拥有；Projection/Title 由[18](./18-session-projection-and-title.md)拥有；实施状态与验证证据只见[08](./08-implementation-progress.md)。
+本文拥有 durable Session facts、cold inspection/load、resume preparation、recovery 编排、write-behind 与 SQLite/sqlc storage adapter 的跨模块设计。Session core 的 Header/Event/surface/live LiveStore 由[10](./10-session-core-and-lifecycle.md)拥有；Agent resume 与 API 映射分别由[15](./15-agent-loop-and-request-driver.md)和[16](./16-session-api-gateway-and-live-frames.md)拥有；Projection/Title 由[18](./18-session-projection-and-title.md)拥有；实施状态与验证证据只见[08](./08-implementation-progress.md)。
 
 ## 1. 固定源基线
 
@@ -27,7 +27,7 @@ flowchart TD
     API[Session API Gateway] --> P[session/persistence.Persistence]
     LOOP[Agent Factory and Loop] --> P
     P --> LOG[SessionLogStore]
-    LOG --> CORE[session Store and Session]
+    LOG --> CORE[session LiveStore and Session]
     LOG --> PORT[session/persistence.Backend]
     SQLITE[session/persistence/sqlite] -. implements .-> PORT
     SQLITE --> SQLC[internal/dbsql]
@@ -45,15 +45,15 @@ flowchart TD
 
 Plugin Runtime 只解析 Session Persistence capability：Factory 解码 `SessionPersistenceConfig`，构造当前内置 SQLite adapter 和 `SessionLogStore`，最终只 `Provide(sessionPersistence)`。SQLite 没有独立 Factory、Manifest、Service key 或依赖结算状态。这样更换 Backend 只改变 composition root 的构造选择，不要求 Agent、API、Workspace 或 Plugin Runtime 认识存储技术。
 
-## 3. Store、Persistence 与 Backend
+## 3. LiveStore、Persistence 与 Backend
 
 | 抽象 | 回答的问题 | 生命周期 | 数据 |
 | --- | --- | --- | --- |
-| `session.Store` | 当前进程有哪些已 attached 的 live Session？ | Plugin Scope / Session attachment | `*session.Session`、live membership、created/event/flush/disposed |
+| `session.LiveStore` | 当前进程有哪些已 attached 的 live Session？ | Plugin Scope / Session attachment | `*session.Session`、live membership、created/event/flush/disposed |
 | `Persistence` | 跨进程有哪些 durable Session？如何检查、修复并恢复？ | durability plugin | detached Header/Event logical view、preparation |
 | `Backend` | 如何原子读取或写入物理 records？ | `SessionLogStore` | stored prefix/suffix、revision、repair marker |
 
-这三者不能合并。Store 中没有 cold record；Persistence 不能替代 live membership；Backend 不能创建 Session、选择 recovery event 或发布业务生命周期。
+这三者不能合并。LiveStore 中没有 cold record；Persistence 不能替代 live membership；Backend 不能创建 Session、选择 recovery event 或发布业务生命周期。
 
 ## 4. Persistence contract
 
@@ -61,7 +61,7 @@ Plugin Runtime 只解析 Session Persistence capability：Factory 解码 `Sessio
 | --- | --- |
 | `Create` | 建立尚未 materialize 的 durable identity/cursor；不能覆盖已有事实 |
 | `Append` | 验证连续 seq 后追加 detached events；不重新分配 seq |
-| `Prepare` | 读取并提交必要 repair，再由 Store 创建唯一 unpublished Session，保留到 Enter/Announce 或 Dispose |
+| `Prepare` | 读取并提交必要 repair，再由 LiveStore 创建唯一 unpublished Session，保留到 Enter/Announce 或 Dispose |
 | `Load` | 返回 validated logical log；cold open state 的 recovery 会提交到 Backend |
 | `Inspect` | 返回 validated 逻辑视图，但不改写 cold store；可包含按规则推导的临时 closers |
 | `ReadFrom` | 从指定 seq 返回逻辑后缀；不是面向消息的 history pagination |
@@ -75,7 +75,7 @@ Plugin Runtime 只解析 Session Persistence capability：Factory 解码 `Sessio
 ```mermaid
 sequenceDiagram
     participant U as Agent/Application
-    participant S as session.Store
+    participant S as session.LiveStore
     participant C as SessionLogStore
     participant W as per-Session Writer
     participant B as Backend
@@ -93,7 +93,7 @@ sequenceDiagram
 
 Event 在进入 persistence listener 前已是 committed fact，因此 storage failure 不能倒转 Session memory。write-behind 必须保留失败 batch、保持原顺序并让显式 flush 报错；不能推进 durable cursor 或伪报成功。第一次 materialization 的 Header 和首批 Events 必须处于同一 Backend transaction。
 
-正常 Agent driver 在追加 `turn/end` 后调用 `session.Store.Flush`，并在它完成后才成功进入 successor Turn 或 idle convergence。Agent Loop 不直接调用 `Persistence` 或 SQLite；Store 通过 `session/flush` 并行等待全部 durability participant，`SessionLogStore` 再把该 Session 的 retained batch 提交给 Backend。用户取消当前 Turn 时，已提交的 aborted `turn/end` 仍必须越过 durability barrier，因此该最终屏障保留 Context value 但不继承 Turn cancellation。其他显式 flush 的调用方取消或 Backend failure 仍必须返回错误，未落盘 batch 由 writer 保留，供后续 flush、dispose 或 shutdown drain。
+正常 Agent driver 在追加 `turn/end` 后调用 `session.LiveStore.Flush`，并在它完成后才成功进入 successor Turn 或 idle convergence。Agent Loop 不直接调用 `Persistence` 或 SQLite；LiveStore 通过 `session/flush` 并行等待全部 durability participant，`SessionLogStore` 再把该 Session 的 retained batch 提交给 Backend。用户取消当前 Turn 时，已提交的 aborted `turn/end` 仍必须越过 durability barrier，因此该最终屏障保留 Context value 但不继承 Turn cancellation。其他显式 flush 的调用方取消或 Backend failure 仍必须返回错误，未落盘 batch 由 writer 保留，供后续 flush、dispose 或 shutdown drain。
 
 每个 Session ID 有独立串行 gate，不同 Session 可并行。同一 live Session 只有一个 writer owner；duplicate listener、不同 seed prefix、CWD 冲突或 durable identity collision 明确失败。
 
@@ -115,7 +115,7 @@ sequenceDiagram
     participant A as API or Agent Factory
     participant C as SessionLogStore
     participant B as Backend
-    participant S as session.Store
+    participant S as session.LiveStore
     A->>C: Prepare(sessionId)
     C->>B: LoadStored
     B-->>C: Header + committed prefix + marker + revision
@@ -181,7 +181,7 @@ sqlc 只生成查询调用；事务边界由 `Backend` method contract 与 `Sess
 
 ## 8. API 与 Agent 集成
 
-- `session.list` 合并 live Store 与 cold Persistence Header，并按 Session ID 去重；
+- `session.list` 合并 live LiveStore 与 cold Persistence Header，并按 Session ID 去重；
 - `session.history` 对 live Session 读 detached events，对 cold Session 用 `Inspect`，之后才执行 message pagination 与 projection restore；
 - `session.create` 指定已有 cold identity 时走 `Prepare` 和 Agent Factory resume，不新建同 ID；
 - 其他需要 Agent 的 `session.*` 调用可先恢复 cold Agent，再执行原 use case；

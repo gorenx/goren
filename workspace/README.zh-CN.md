@@ -19,7 +19,7 @@ flowchart LR
     A[API Gateway or Session creation] --> B[Workspace Registry]
     B --> C[canonical path and membership rules]
     B --> D[SessionHeaders port]
-    D --> E[Live Session Store]
+    D --> E[Live Session LiveStore]
     D --> F[Session Persistence]
     B --> G[storage-only Backend]
     G --> H[(Workspace SQLite)]

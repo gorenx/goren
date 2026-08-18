@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有 `session` 的 Header、Event envelope、内存 append-only log、surface、Store Service Definition、生命周期事件及其上下游交互。Plugin 的通用调度语义见[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)，wire projection 见[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)，实施状态与验证证据只见[08 实施进度](./08-implementation-progress.md)。
+本文拥有 `session` 的 Header、Event envelope、内存 append-only log、surface、LiveStore Service Definition、生命周期事件及其上下游交互。Plugin 的通用调度语义见[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)，wire projection 见[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)，实施状态与验证证据只见[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 固定源与职责映射
 
@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | `packages/core/session/src/types.ts` | `session.Header`、`Event`、typed event key | format version、Header、Event envelope、surface metadata |
 | `packages/core/session/src/index.ts` 的 `Session` | `session.Session` | seed 接受、连续 `seq`、快照、append commit |
-| 同文件的 `SessionStore` | `session.Store`、`MemoryStore` | prepare/enter/announce、live membership、flush、detach |
+| 同文件的 `SessionStore` | `session.LiveStore`、`MemoryStore` | prepare/enter/announce、live membership、flush、detach |
 | `packages/core/session/src/surface.ts` | `session.SurfaceOperation` 与内部 surface fold | append/replace、provenance、原子转换 |
 | Cordis 的 `session/created`、`disposed`、`event`、`flush` | `OnCreated`、`OnDisposed`、`OnEvent`、`OnFlush`、`DeferAfterEvent` | listener ownership、创建 veto、post-commit feed、publication 后续任务、durability barrier |
 | 源 `@deepseek-ai/dsh-session` Plugin | `internal/assembly` 的 Session Factory | 提供 canonical `sessions` Service |
@@ -124,13 +124,13 @@ typed payload
   -> contain observer failure
 ```
 
-Event 进入内存日志并完成 surface transition 后就是 Session 语义上的 committed；observer error 不回滚 Event，也不能阻止后续 listener 收到同一条 feed。Durable committed 是另外的 checkpoint：调用方通过 `Store.Flush` 等待所有 `session/flush` listener，二者不能混成“写数据库成功才分配 seq”的事务。
+Event 进入内存日志并完成 surface transition 后就是 Session 语义上的 committed；observer error 不回滚 Event，也不能阻止后续 listener 收到同一条 feed。Durable committed 是另外的 checkpoint：调用方通过 `LiveStore.Flush` 等待所有 `session/flush` listener，二者不能混成“写数据库成功才分配 seq”的事务。
 
 `session/event` listener 在原 append 的同步 publication 尚未结束时再次 append 会明确失败，避免事件顺序取决于 callback 嵌套。确实需要追加 follow-up fact 的 listener 可调用 `DeferAfterEvent`：它只在当前 event callback context 内接受任务，等全部 listener 返回且 append guard 释放后再按登记顺序执行；每项 panic 独立包含并交给 observer reporter。它用于复制 TypeScript microtask 的 publication 时序，不是 sleep、重试、goroutine pool 或通用 scheduler。
 
 不同 Session 不共享 append lock。当前同一 Session 的并发 append 在 publication window 内也拒绝，由 Agent loop 维持单 writer；未来若出现真实多 writer 需求，应在 Session owner 增加明确 queue，而不是让 storage adapter 排序。
 
-## 6. Store 生命周期
+## 6. LiveStore 生命周期
 
 `StoreService` 使用 canonical `sessions` key。`MemoryStore` 只保存 live membership 和 attachment，不持久化业务数据。
 
@@ -156,7 +156,7 @@ Announce
 
 `Create` 只是把三步放入调用方 Plugin Scope 的一个 effect：先获得 `Enter` disposer，再执行 `Announce`。创建 listener 返回 error 或 panic 时，effect setup 立即调用 disposer；因为 announcement 已经开始，已观察到 created 的 Consumer 会得到配对 disposed。未 announce 的 prepared/entered Session 被撤销时不伪造 disposed。
 
-detach 若发生在 created 或 event callback 内，只设置请求标记；等当前 publication unwind 后再从 Store 删除并发出 disposed，避免 callback 中途让同一生命周期失去 attachment。owner Scope unload 时，Session effect 先 detach，而 stopping Scope 的 listener effect 仍有效，因而 owner 自己仍能观察最终 disposed；listener disposer 随后按 LIFO 注销。
+detach 若发生在 created 或 event callback 内，只设置请求标记；等当前 publication unwind 后再从 LiveStore 删除并发出 disposed，避免 callback 中途让同一生命周期失去 attachment。owner Scope unload 时，Session effect 先 detach，而 stopping Scope 的 listener effect 仍有效，因而 owner 自己仍能观察最终 disposed；listener disposer 随后按 LIFO 注销。
 
 ## 7. Event mode 与错误语义
 
@@ -182,7 +182,7 @@ Agent / API use case / SessionLogStore
 
 API Proxy
   -> Require(sessions)
-  -> host.describe projects len(Store.List())
+  -> host.describe projects len(LiveStore.List())
 
 session/persistence SessionLogStore
   -> OnEvent buffers exact committed Event
@@ -191,7 +191,7 @@ session/persistence SessionLogStore
   -> default session/persistence/sqlite
 ```
 
-`Store` 只拥有 live membership 和 publication；`Persistence` 拥有 cold facts、repair 与 resume preparation；`Backend` 只执行物理存取。三者的完整边界见[19 Session Persistence 与 SQLite 事实存储设计](./19-session-persistence-and-sqlite.md)。
+`LiveStore` 只拥有 live membership 和 publication；`Persistence` 拥有 cold facts、repair 与 resume preparation；`Backend` 只执行物理存取。三者的完整边界见[19 Session Persistence 与 SQLite 事实存储设计](./19-session-persistence-and-sqlite.md)。
 
 默认 composition 按 Connection、API Proxy、System Prompt、Session 声明。Runtime 先让 Connection/API Proxy 等待；System Prompt 无当前依赖而独立激活；Session 发布 `sessions` 后，API Proxy 激活并发布 `apiProxy`，最后 Connection 激活。这证明新增 Provider 没有恢复为文件顺序装配。
 
@@ -200,5 +200,5 @@ session/persistence SessionLogStore
 - Harness-compatible Message/Content contract 确定后，由 `session` 导出三个 core surface event key；不得先绑定当前待迁移的旧 `llm` 形态再做兼容分支。
 - Agent instance 直接使用现有 `Scope.Child`、opaque lineage 与 scoped listener filter，durable Inbox 以 `agent/inbox/spliced` 追加到同一 Session；具体 contract 见[14 Agent Registry、Inbox 与实时事件模块设计](./14-agent-registry-inbox-and-events.md)，不得建立 Session 私有的第二套 scope registry。
 - fork、repair、request header fold 和 derived messages 复用当前 Header/Event/surface owner，不另建“持久化 Session”模型。
-- JSONL/SQLite/sqlc adapter 只能依赖 `Store` 和生命周期事件，不得让 driver/sqlc 类型进入本包。
+- JSONL/SQLite/sqlc adapter 只能依赖 `LiveStore` 和生命周期事件，不得让 driver/sqlc 类型进入本包。
 - API Proxy 只做 `session.Event -> apiproxy.SessionEvent` projection；不得让浏览器 frame 成为 Session 的领域类型。

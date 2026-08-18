@@ -12,7 +12,7 @@
 | `tool_calls.go` | bounded Tool body concurrency、barrier、model-order finalize 与 failure drain |
 | `runtime_context.go` | System Prompt runtime context 的 Session surface 投影 |
 
-本模块不拥有 Agent Registry/Inbox contract、Session seq/surface/persistence、LLM Provider、Tool policy、HTTP/RPC/WebSocket 或 Web UI。特别是它不导入 SQLite；持久化只通过 `session.Store` 的既有 flush capability 进入。
+本模块不拥有 Agent Registry/Inbox contract、Session seq/surface/persistence、LLM Provider、Tool policy、HTTP/RPC/WebSocket 或 Web UI。特别是它不导入 SQLite；持久化只通过 `session.LiveStore` 的既有 flush capability 进入。
 
 ## 依赖与主流程
 
@@ -20,7 +20,7 @@
 flowchart LR
     API[Session Gateway] --> REG[Agent Registry]
     REG --> LOOP[agentloop Loop and Agent]
-    LOOP --> S[session Store and Session]
+    LOOP --> S[session LiveStore and Session]
     LOOP --> L[LLM Runtime]
     LOOP --> T[Tools Runtime]
     LOOP --> P[System Prompt]
@@ -32,7 +32,7 @@ flowchart LR
 sequenceDiagram
     participant A as Session Gateway
     participant G as ReactLoopAgent
-    participant S as session.Store
+    participant S as session.LiveStore
     participant L as LLM Runtime
     participant T as Tools Runtime
     participant D as Durability Listener
@@ -56,7 +56,7 @@ sequenceDiagram
 
 - 每个 Agent 同时只有一个 `idle`、`maintenance` 或 `running` activity；`WhenIdle` 跟随已经锁存的 successor work，不能观察到伪空闲窗口。
 - `Followup`、`Steer` 与 `Inject` 只写入 Inbox 并按各自 target 唤醒；driver 在 boundary claim，不为每条输入建立独立 goroutine。
-- Turn 一旦开始必须追加一个 typed `turn/end`。正常 driver 在该 fact 提交后等待 `session.Store.Flush`，再进入 successor Turn 或 idle。
+- Turn 一旦开始必须追加一个 typed `turn/end`。正常 driver 在该 fact 提交后等待 `session.LiveStore.Flush`，再进入 successor Turn 或 idle。
 - request、Tool scheduler、Session append 或 flush failure 进入 `agent/error`，不得伪造成功 Tool result 或跳过 boundary 收口。
 - 取消使用第一个 typed cause，停止新 Tool dispatch，但等待已经启动的 body settle；调用方 Context 继续控制 request 和 flush 等待。
 

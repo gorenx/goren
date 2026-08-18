@@ -29,8 +29,8 @@
 
 ```mermaid
 flowchart LR
-    Browser[React UI] --> Store[ConversationStore]
-    Store --> Client[HarnessAPI]
+    Browser[React UI] --> LiveStore[ConversationStore]
+    LiveStore --> Client[HarnessAPI]
     Client -->|POST /api/session.*| Host[Connection Host]
     Client -->|POST /api/credentials.*| Host
     Client -->|POST /api/respond| Host
@@ -93,7 +93,7 @@ sequenceDiagram
     S->>H: credentials.describe(ref)
 ```
 
-凭据业务与 local Store 由[22 Credentials 与 API Key 管理](../zh-CN/22-credentials-and-api-key-management.md)拥有；Web 不读取文件，也不调用 Credentials Go 包。
+凭据业务与 local LiveStore 由[22 Credentials 与 API Key 管理](../zh-CN/22-credentials-and-api-key-management.md)拥有；Web 不读取文件，也不调用 Credentials Go 包。
 
 ## 构建
 

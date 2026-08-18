@@ -54,7 +54,7 @@ Go 不复制 Cordis context extension、WeakMap、declaration merging 或 TypeSc
 | `render.go` | 严格变量插值、prompt join 与 runtime-context snapshot join |
 | `config.go` | JSON presence/null 语义、默认值和 owner validation |
 
-共享锁只属于 `promptStore`。`promptRegistry` 不读取内部表，`promptAssembler` 不修改 Registry，provider callback 也绝不在 Store lock 内执行。
+共享锁只属于 `promptStore`。`promptRegistry` 不读取内部表，`promptAssembler` 不修改 Registry，provider callback 也绝不在 LiveStore lock 内执行。
 
 ## 4. 公共类型与 Service 边界
 
@@ -111,7 +111,7 @@ validate named input/provider
 
 若 `plugin.Own` 失败，立即撤销 mutation。若首次 change listener 失败，调用 disposer 回滚 contribution，且不发布第二个伪 change。正常 disposer 先精确删除本次 registration、回收空 scoped layer，再发布 change。相同 callback 注册两次仍是两个 anonymous contribution，并拥有独立 disposer。
 
-`PromptSection`/`PromptContext.Order` 必须是有限数；variable name 必须匹配 `^[a-z][a-z0-9_]*$`；nil provider 在修改 Store 前失败。重复验证不下沉到每个内部层：外部形态由 facade 校验，Store 只维护 uniqueness 和 ownership invariant。
+`PromptSection`/`PromptContext.Order` 必须是有限数；variable name 必须匹配 `^[a-z][a-z0-9_]*$`；nil provider 在修改 LiveStore 前失败。重复验证不下沉到每个内部层：外部形态由 facade 校验，LiveStore 只维护 uniqueness 和 ownership invariant。
 
 ## 7. Assembly 流程
 
@@ -119,7 +119,7 @@ validate named input/provider
 Agent/model-step caller
   -> SystemPrompt.Assemble(scope)
   -> promptStore.capture membership snapshot
-  -> unlock Store
+  -> unlock LiveStore
   -> resolve variables global -> ancestors -> selected scope
   -> resolve effective ordered sections
   -> resolve contexts unless suppressed

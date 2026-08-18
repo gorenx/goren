@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有 Credentials capability、默认 local Store、DeepSeek credential resolution、Host `credentials.*` API 与 Web API Key 设置闭环。Settings 的 redacted namespace 描述仍由[07 API Proxy 模块设计与实现](./07-api-proxy-module.md)拥有；DeepSeek 请求由[13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)拥有；浏览器主流程由[21 Web Agent 主会话闭环与能力边界](./21-web-agent-main-flow.md)拥有。实施状态和验证证据只见[08 实施进度](./08-implementation-progress.md)。
+本文拥有 Credentials capability、默认 local LiveStore、DeepSeek credential resolution、Host `credentials.*` API 与 Web API Key 设置闭环。Settings 的 redacted namespace 描述仍由[07 API Proxy 模块设计与实现](./07-api-proxy-module.md)拥有；DeepSeek 请求由[13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)拥有；浏览器主流程由[21 Web Agent 主会话闭环与能力边界](./21-web-agent-main-flow.md)拥有。实施状态和验证证据只见[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 源职责与纳入范围
 
@@ -25,7 +25,7 @@ Goren 纳入以下可观察行为：
 - DeepSeek 在每个新请求开始时解析 `apiKeyEnv` 引用；
 - Web 可完成首次设置、替换和删除 `DEEPSEEK_API_KEY`。
 
-源 local Provider 的 YAML comment preservation、`.env` fallback、watcher、`credentials/updated`、跨进程 advisory lock 和复杂文件关系防护没有进入当前主会话闭包。Goren 默认 local Store 使用 JSON；这是部署格式选择，不是协议偏离。
+源 local Provider 的 YAML comment preservation、`.env` fallback、watcher、`credentials/updated`、跨进程 advisory lock 和复杂文件关系防护没有进入当前主会话闭包。Goren 默认 local LiveStore 使用 JSON；这是部署格式选择，不是协议偏离。
 
 ## 2. Credentials 与 Settings 的区别
 
@@ -44,7 +44,7 @@ flowchart TD
     DeepSeek[DeepSeek Plugin] -->|Resolve per request| Capability
     Capability --> Manager[credentials.Manager]
     Manager -->|read-only precedence| Env[launch environment]
-    Manager -->|credentials.Store| Local[credentials/local.Store]
+    Manager -->|credentials.LiveStore| Local[credentials/local.LiveStore]
     Local --> File[.credentials.json]
     Factory[credentialsFactory] --> Manager
     Factory --> Local
@@ -54,13 +54,13 @@ flowchart TD
 
 - `credentials.Provider` 是向上游提供的完整能力接口；
 - `credentials.Manager` 是有状态规则对象，拥有 precedence、writability 和 mutation semantics；
-- `credentials.Store` 是 Manager 消费的 storage-only port，不读取环境、不决定优先级；
-- `credentials/local.Store` 是一个具体存储实现，不是 Plugin，也不提供 Service；
-- `credentialsFactory` 是 composition root Factory，选择 local Store、构造 Manager 并提供 `credentials.Service`；
+- `credentials.LiveStore` 是 Manager 消费的 storage-only port，不读取环境、不决定优先级；
+- `credentials/local.LiveStore` 是一个具体存储实现，不是 Plugin，也不提供 Service；
+- `credentialsFactory` 是 composition root Factory，选择 local LiveStore、构造 Manager 并提供 `credentials.Service`；
 - `apiproxy.CredentialProvider` 是 API Proxy 消费方拥有的窄接口，故意没有 `Resolve`，因此 Host API Gateway 无法读取 secret；
 - DeepSeek Plugin 消费完整 `credentials.Provider`，但 Adapter 的公共 contract 仍只接收 request-scoped resolver。
 
-这解释了为什么 Factory 叫 `credentialsFactory`，而不是 `credentialsLocalFactory`；也解释了为什么 `Store` 不能与 `Provider` 合并。前者是可替换的持久化端口，后者是包含业务规则的运行时能力。
+这解释了为什么 Factory 叫 `credentialsFactory`，而不是 `credentialsLocalFactory`；也解释了为什么 `LiveStore` 不能与 `Provider` 合并。前者是可替换的持久化端口，后者是包含业务规则的运行时能力。
 
 ## 4. 解析与写入语义
 
@@ -68,7 +68,7 @@ flowchart TD
 flowchart TD
     Start[Resolve or Describe Ref] --> Env{launch environment has non-empty value?}
     Env -- yes --> ReadOnly[source env, configured true, writable false]
-    Env -- no --> Stored{Store.Load found non-empty value?}
+    Env -- no --> Stored{LiveStore.Load found non-empty value?}
     Stored -- yes --> File[source file, configured true, writable true]
     Stored -- no --> Missing[configured false, writable true]
 ```
@@ -78,7 +78,7 @@ flowchart TD
 默认优先级只有：
 
 ```text
-launch environment > local Store
+launch environment > local LiveStore
 ```
 
 仓库 `.env` 不由 Credentials 包解析。需要使用 `.env` 时仍由启动 shell 显式加载，使其成为 launch environment；Goren 不建立第二套 dotenv 配置语义。
@@ -95,9 +95,9 @@ launch environment > local Store
 
 `CredentialsGateway` 只依赖没有 `Resolve` 的窄接口。这个结构限制比“调用方自觉不读”更强：API Proxy 代码没有获得读取凭据明文的能力。
 
-## 6. local Store 与安全边界
+## 6. local LiveStore 与安全边界
 
-默认文档位于 Session SQLite 同目录的 `.credentials.json`。local Store：
+默认文档位于 Session SQLite 同目录的 `.credentials.json`。local LiveStore：
 
 - 要求绝对路径；
 - 每次操作重新读取并验证整个文档；
@@ -106,9 +106,9 @@ launch environment > local Store
 - 创建 `0700` 目录与 `0600` 文档；
 - 拒绝权限过宽、非法 JSON、非法引用和空值。
 
-Goren 选择 JSON，是因为当前唯一 writer 是本仓库 Web/Host，不需要源 YAML Provider 的注释保留，标准库即可严格编码。此选择避免引入 YAML 依赖和隐式 scalar 语义。若未来需要人工编辑、注释保留或兼容源 `.credentials.yaml`，应新增另一个 `Store` 实现或显式迁移工具，不能让 `Manager` 分支判断文件格式。
+Goren 选择 JSON，是因为当前唯一 writer 是本仓库 Web/Host，不需要源 YAML Provider 的注释保留，标准库即可严格编码。此选择避免引入 YAML 依赖和隐式 scalar 语义。若未来需要人工编辑、注释保留或兼容源 `.credentials.yaml`，应新增另一个 `LiveStore` 实现或显式迁移工具，不能让 `Manager` 分支判断文件格式。
 
-当前 mutex 只保证同一 `local.Store` 实例内的并发操作。没有跨进程 writer lock，也没有 watcher 或 `credentials/updated` 推送。Store 每次读取最新文件，因此可以观察外部原子替换；但多进程并发写入不是当前承诺。
+当前 mutex 只保证同一 `local.LiveStore` 实例内的并发操作。没有跨进程 writer lock，也没有 watcher 或 `credentials/updated` 推送。LiveStore 每次读取最新文件，因此可以观察外部原子替换；但多进程并发写入不是当前承诺。
 
 ## 7. Web 与 DeepSeek 主流程
 
@@ -118,7 +118,7 @@ sequenceDiagram
     participant W as React ConversationStore
     participant H as Host CredentialsGateway
     participant M as credentials.Manager
-    participant S as local.Store
+    participant S as local.LiveStore
     participant D as DeepSeek Plugin
 
     W->>H: credentials.describe(DEEPSEEK_API_KEY)
@@ -140,9 +140,9 @@ Web 启动时读取 credential metadata。缺失且可写时打开 API Key dialo
 
 ## 8. 生命周期、失败与扩展规则
 
-- Plugin apply 只有在 Store 和 Manager 创建成功后才提供 Service；失败由 Runtime composition 回滚；
+- Plugin apply 只有在 LiveStore 和 Manager 创建成功后才提供 Service；失败由 Runtime composition 回滚；
 - DeepSeek Plugin 和 API Proxy Plugin 都声明需要 `credentials.Service`，避免运行期碰到未装配能力才打补丁；
 - 启动信息只打印凭据文件路径和环境变量名，不打印 configured value；
-- 新 Store 实现只实现 `credentials.Store`，不得复制 Manager 的 precedence 或 Host API；
-- 新 Credentials Provider 若具有不同业务语义，应实现 `credentials.Provider` 并由 Factory 显式选择，不能把多个 provider 塞进 local Store；
+- 新 LiveStore 实现只实现 `credentials.LiveStore`，不得复制 Manager 的 precedence 或 Host API；
+- 新 Credentials Provider 若具有不同业务语义，应实现 `credentials.Provider` 并由 Factory 显式选择，不能把多个 provider 塞进 local LiveStore；
 - `credentials/updated`、watcher、跨进程锁和完整 Settings UI 只有真实 Consumer 进入时才扩展，并分别补充生命周期与故障测试。

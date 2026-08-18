@@ -17,7 +17,7 @@
 7. Agent 需要补充信息时回答结构化 Question，并让同一 Turn 继续到最终输出；
 8. 在中文与英文界面之间切换，并在刷新后保持选择。
 
-DeepSeek credential 使用引用 `DEEPSEEK_API_KEY`。启动环境值优先且只读；没有环境值时由 owner-only local Store 提供，Web 可通过 write-only Host API 管理。仓库根 `.env` 仍只是本地开发输入，若使用则由 shell 显式加载，不进入二进制、typed config、Session、日志或提交。完整规则由[22 Credentials 与 API Key 管理](./22-credentials-and-api-key-management.md)拥有。
+DeepSeek credential 使用引用 `DEEPSEEK_API_KEY`。启动环境值优先且只读；没有环境值时由 owner-only local LiveStore 提供，Web 可通过 write-only Host API 管理。仓库根 `.env` 仍只是本地开发输入，若使用则由 shell 显式加载，不进入二进制、typed config、Session、日志或提交。完整规则由[22 Credentials 与 API Key 管理](./22-credentials-and-api-key-management.md)拥有。
 
 ## 2. UI 与源 Web 产品的关系
 
@@ -72,7 +72,7 @@ sequenceDiagram
     participant G as Agent Loop
     participant D as DeepSeek Adapter
     participant K as Credentials Provider
-    participant C as Session Store
+    participant C as Session LiveStore
     participant P as Session Persistence
 
     W->>H: host.describe

@@ -84,7 +84,7 @@ composition root 提供 `llm` Service 后再创建 DeepSeek Adapter，并把 rou
 
 ## 5. 配置与请求 generation
 
-配置只保存 credential reference，不保存明文 API key。主要字段包括 `apiKeyEnv`、`baseURL`、`thinking`、`reasoningEffort`、`maxTokens`、`defaultContextWindow`、`models`、`streamIdleTimeoutMs` 和 `retryPolicy`。默认引用是 `DEEPSEEK_API_KEY`，由 composition 注入的 Credentials Provider 在每次请求开始时解析；默认 base URL 是 `https://api.deepseek.com`。Credentials precedence、Store 与 Host API 由[22 Credentials 与 API Key 管理](../../zh-CN/22-credentials-and-api-key-management.md)拥有。
+配置只保存 credential reference，不保存明文 API key。主要字段包括 `apiKeyEnv`、`baseURL`、`thinking`、`reasoningEffort`、`maxTokens`、`defaultContextWindow`、`models`、`streamIdleTimeoutMs` 和 `retryPolicy`。默认引用是 `DEEPSEEK_API_KEY`，由 composition 注入的 Credentials Provider 在每次请求开始时解析；默认 base URL 是 `https://api.deepseek.com`。Credentials precedence、LiveStore 与 Host API 由[22 Credentials 与 API Key 管理](../../zh-CN/22-credentials-and-api-key-management.md)拥有。
 
 ```mermaid
 sequenceDiagram

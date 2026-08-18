@@ -67,13 +67,13 @@ unknown field、显式 `null`、错误类型、非安全 `maxTokens`、同时设
 一次 fresh create 使用同一个 `SessionID` 作为 Agent/Session identity，并按以下顺序执行：
 
 ```text
-Session Store Prepare（未发布）
+Session LiveStore Prepare（未发布）
   -> Agent Loop Child Scope
   -> ReactLoopAgent + Inbox replay + runtime-context projection
   -> ownerScope owns one memoized lifecycle disposer
   -> install provider/model/cwd prompt variables
   -> optional Setup.Apply + SetupCommit.Commit
-  -> Session Store Enter
+  -> Session LiveStore Enter
   -> Agent Registry Enter
   -> Session Announce
   -> Agent Announce
@@ -83,7 +83,7 @@ Session Store Prepare（未发布）
 
 Setup 运行在未发布的 Agent Scope，适合注册 scoped prompt、Tool、guard 或 Agent event listener。任何 setup、commit、collision、announcement 或 liveness 失败都沿同一个 lifecycle disposer 回滚，不发布半完成 Agent。
 
-销毁顺序固定为：拒绝新 work、以 `disposed` cause 取消 active activity、清空当时已存在的 Inbox、等待 driver/maintenance 收敛、释放 Agent Child Scope、从 Agent Registry detach、从 Session Store detach。Tool body 已经开始时必须先 drain；在取消后才完成并被 Tool result 接受的 additional context 仍按 durable 顺序进入 Inbox，但不能触发 disposal 后的新 Turn。
+销毁顺序固定为：拒绝新 work、以 `disposed` cause 取消 active activity、清空当时已存在的 Inbox、等待 driver/maintenance 收敛、释放 Agent Child Scope、从 Agent Registry detach、从 Session LiveStore detach。Tool body 已经开始时必须先 drain；在取消后才完成并被 Tool result 接受的 additional context 仍按 durable 顺序进入 Inbox，但不能触发 disposal 后的新 Turn。
 
 Factory、owner Scope 和 returned Handle 是同一 lifecycle 的共同 owner；重复 Dispose 必须幂等。Agent Registry detach 先于 Session detach，且二者只删除 exact lifecycle entry，旧 disposer 不能删除后续同 ID instance。
 
@@ -118,13 +118,13 @@ turn/start
             -> step/end
   -> agent/turn-stopping（仅无 next-step 时）
   -> next-step continuation 或 turn/end
-  -> session.Store.Flush
+  -> session.LiveStore.Flush
   -> successor Turn 或 idle convergence
 ```
 
 `step/start` 只在 pre-step admission 后追加；claimed/rewritten messages 只在 boundary 打开后进入 surface。`step/end` 由 finally-style boundary 保证，即使 request、stream 或 Tool execution 失败也不应留下无故开放的 Step。
 
-`turn/end` 提交后，Agent Loop 只通过 consumer 已持有的 `session.Store.Flush` 发起正常 durability checkpoint，不导入 `Persistence`、SQLite 或 Backend。未配置 durability listener 时它是可观测的 no-op；配置 `SessionLogStore` 时，driver 必须等待 write-behind retained batch 提交后才能成功进入 successor Turn 或 idle convergence。flush failure 进入 `agent/error` 并使当前 driver 失败，不能把尚未确认落盘的边界当作成功完成。
+`turn/end` 提交后，Agent Loop 只通过 consumer 已持有的 `session.LiveStore.Flush` 发起正常 durability checkpoint，不导入 `Persistence`、SQLite 或 Backend。未配置 durability listener 时它是可观测的 no-op；配置 `SessionLogStore` 时，driver 必须等待 write-behind retained batch 提交后才能成功进入 successor Turn 或 idle convergence。flush failure 进入 `agent/error` 并使当前 driver 失败，不能把尚未确认落盘的边界当作成功完成。
 
 一个 completed/max-tokens step 后若 `next-step` 出现，仍在同一 Turn 继续。`max-tokens` 是该 Turn 的 sticky reason：后续 completed step 不能降级；下一 Turn 重新计算。Tool result 标记 `concludesTurn` 时停止其本来需要的模型 continuation，但已经到达的 steering 仍可要求另一个 Step。
 
@@ -192,7 +192,7 @@ System Prompt 的 contexts 不写入 system header，而是在每个 pre-step as
 
 - 非取消失败转为 `TurnError`；`LlmError` 保留 structured failure，其他错误使用稳定 `UNKNOWN` code；
 - active cancellation 转为 `TurnAborted`，并把 user、parent、disposed、hook 或 legacy cause 写入 durable reason；
-- `turn/end` 提交后通过 `session.Store.Flush` 建立正常完成路径的 durability barrier；Persistence/SQLite 只作为 Store listener 参与；
+- `turn/end` 提交后通过 `session.LiveStore.Flush` 建立正常完成路径的 durability barrier；Persistence/SQLite 只作为 LiveStore listener 参与；
 - `agent/error` 是 live observer，不代替 `turn/end`；observer failure 由 runtime reporter 包含，不能中断 boundary finalization；
 - `agent/status` 只在 `idle <-> running` 变化时发布，maintenance 不产生伪 running；
 - Assistant/Tool result 的 model-visible surface commit 与原始 chunk/call provenance 分离；

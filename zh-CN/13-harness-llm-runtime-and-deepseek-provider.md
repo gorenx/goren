@@ -218,7 +218,7 @@ LLM Plugin Apply
   -> Provide(llm)
 
 Credentials Plugin Apply
-  -> credentialsFactory selects local Store
+  -> credentialsFactory selects local LiveStore
   -> NewManager
   -> Provide(credentials)
 
@@ -230,7 +230,7 @@ DeepSeek Plugin Apply
   -> RegisterAdapter(deepseek-official)
 ```
 
-DeepSeek 的两项 registration 都绑定 DeepSeek Plugin Scope；apply 失败由 Runtime 逆序回滚，unload 自动撤销目录和 route，并发布 committed topology change。DeepSeek 在每次新请求开始时通过 `credentials.Provider.Resolve(apiKeyEnv)` 解析 secret；环境优先级、只读状态与文件 Store 由[22](./22-credentials-and-api-key-management.md)拥有。Anonymous identity 只在第一次真实请求时初始化，因此普通 server 启动、`host.describe` 和非 LLM 测试不触发 Provider 网络请求。
+DeepSeek 的两项 registration 都绑定 DeepSeek Plugin Scope；apply 失败由 Runtime 逆序回滚，unload 自动撤销目录和 route，并发布 committed topology change。DeepSeek 在每次新请求开始时通过 `credentials.Provider.Resolve(apiKeyEnv)` 解析 secret；环境优先级、只读状态与文件 LiveStore 由[22](./22-credentials-and-api-key-management.md)拥有。Anonymous identity 只在第一次真实请求时初始化，因此普通 server 启动、`host.describe` 和非 LLM 测试不触发 Provider 网络请求。
 
 未来新增 Provider 必须实现 `llm.Adapter` 并在自己的 Plugin 中注册 route；不得复制 `LlmRuntime`、Message/Stream 类型、retry schema 或 Agent loop。Credentials resolver 已经作为 DeepSeek Factory 的依赖进入，不改变 Agent—LLM 或 LLM—Adapter contract；未来 Settings Service 只替换 live options 来源。
 

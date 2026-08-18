@@ -29,7 +29,7 @@
 | 阶段 7：Deferred 能力 | Deferred | 7 Deferred | None | 不创建 package、handler 或依赖占位 |
 | 阶段 8：Parity Hardening | In Progress | 1 Completed / 4 In Progress / 10 Planned | Environment Verified | 默认 UI/Provider 主流程已有环境证据，完整发布验收仍未完成 |
 
-当前 Connection slice、Credentials、Session core、System Prompt、Native Tools、Agent Inbox、Agent Loop、Session API Gateway、Session Projection、Session Title/Rename、Session Persistence/SQLite、Session Query/Search、Workspace Registry/API、Approval/UserQuestions/Interaction Gateway 与 LLM/DeepSeek contract 达到 `Contract Verified`：固定 TypeScript schema 与 Go envelope/frame 已交叉校验，固定上游 `WebApiClient` 已通过真实 Go HTTP/WebSocket 完成 credential describe/set/unset 与主会话 create/list/search/history/model/prompt、`turn/end`、queue、cancel、rename、respond、reconnect；SQLite 重启后 cold list/history/create(resume) 也已有 Go E2E。默认 `DefaultSpecs` 已内嵌主会话 UI 和 local Credentials Store，并经离线 DeepSeek oracle 与真实 DeepSeek endpoint 完成对话、会话切换和历史恢复。正常 Agent 轮次在 committed `turn/end` 后等待 `session.Store.Flush`，再进入 successor/idle convergence；用户取消产生的 aborted `turn/end` 使用不继承该 Turn cancellation 的 durability barrier。原版完整 Web 产品、Settings Provider、Agent Preset composition 与其他页面能力不属于当前闭包。
+当前 Connection slice、Credentials、Session core、System Prompt、Native Tools、Agent Inbox、Agent Loop、Session API Gateway、Session Projection、Session Title/Rename、Session Persistence/SQLite、Session Query/Search、Workspace Registry/API、Approval/UserQuestions/Interaction Gateway 与 LLM/DeepSeek contract 达到 `Contract Verified`：固定 TypeScript schema 与 Go envelope/frame 已交叉校验，固定上游 `WebApiClient` 已通过真实 Go HTTP/WebSocket 完成 credential describe/set/unset 与主会话 create/list/search/history/model/prompt、`turn/end`、queue、cancel、rename、respond、reconnect；SQLite 重启后 cold list/history/create(resume) 也已有 Go E2E。默认 `DefaultSpecs` 已内嵌主会话 UI 和 local Credentials LiveStore，并经离线 DeepSeek oracle 与真实 DeepSeek endpoint 完成对话、会话切换和历史恢复。正常 Agent 轮次在 committed `turn/end` 后等待 `session.LiveStore.Flush`，再进入 successor/idle convergence；用户取消产生的 aborted `turn/end` 使用不继承该 Turn cancellation 的 durability barrier。原版完整 Web 产品、Settings Provider、Agent Preset composition 与其他页面能力不属于当前闭包。
 
 ### 2.1 当前 Web Agent 主流程状态矩阵
 
@@ -50,7 +50,7 @@
 | WAF-UI01 | 默认服务内嵌主会话 UI | Completed | Go Verified：React/Vite/Tailwind 生产构建、content-hashed embedded assets、HTML revalidation、immutable asset cache、SPA fallback 和 Connection `http.Handler` delegation 已覆盖 |
 | WAF-UI02 | UI 完成发送、会话创建/选择和历史恢复 | Completed | Contract Verified：`web-ui-main-flow.ts` 加载真实内嵌页面，完成 prompt、流式终态、新建 Session、切回与 history |
 | WAF-UI03 | UI 回答 Question 并继续同一 Agent Turn | Completed | Contract Verified：真实内嵌页面保留 requested `rpcId`，经 `/api/respond` 提交选项、收到 resolved、驱动 Tool result continuation 到最终 assistant message；等待期间普通 composer 禁用，plugin runtime-context 不显示为用户消息 |
-| WAF-C01 | Credentials Manager/local Store、Host write-only API 与 Web API Key 设置 | Completed | Contract Verified：固定源 `WebApiClient.credentials` 调用真实 Go Host 完成 describe/set/unset；Manager precedence、owner-only JSON Store 与 value-free response 已覆盖；React dialog 已通过 TypeScript/生产构建，尚未声明交互式浏览器验收 |
+| WAF-C01 | Credentials Manager/local LiveStore、Host write-only API 与 Web API Key 设置 | Completed | Contract Verified：固定源 `WebApiClient.credentials` 调用真实 Go Host 完成 describe/set/unset；Manager precedence、owner-only JSON LiveStore 与 value-free response 已覆盖；React dialog 已通过 TypeScript/生产构建，尚未声明交互式浏览器验收 |
 | WAF-A01 | 固定客户端经默认 composition 与 DeepSeek Adapter 完成轮次 | Completed | Contract Verified：默认 `DefaultSpecs`、真实 HTTP/WebSocket、DeepSeek Adapter 和离线 HTTP oracle 在同一进程到达 `turn/end` |
 | WAF-A02 | 使用真实 DeepSeek credential/endpoint 独立 smoke | Completed | Environment Verified：显式加载本地 `.env` 后，内嵌 UI 经真实 `https://api.deepseek.com` 完成 prompt、终态、会话切换与历史恢复；credential 未输出或提交 |
 
@@ -152,7 +152,7 @@ interaction owner registers stable rpcId + decoder
 
 | ID | 类别 | 子目标 | 执行状态 | 证据或缺口 |
 | --- | --- | --- | --- | --- |
-| S3-D01 | 交付 | in-memory append-only Session | Completed | Contract Verified：Header/Event、普通 append、seed marker 与 surface 已同固定源交叉验证；Go Verified：lossless snapshot、连续 `seq`、Store lifecycle/flush |
+| S3-D01 | 交付 | in-memory append-only Session | Completed | Contract Verified：Header/Event、普通 append、seed marker 与 surface 已同固定源交叉验证；Go Verified：lossless snapshot、连续 `seq`、LiveStore lifecycle/flush |
 | S3-D02 | 交付 | System Prompt registry 与 snapshot assembly | Completed | Contract Verified：固定源与 Go 的 built-ins、global/scoped shadow、provider snapshot、suppression、complete、tool order、strict interpolation 与失败一致；Go Verified：typed config、change rollback、post-waterfall invariant 与 assembly detachment |
 | S3-D03 | 交付 | Tool definition、registry、executor 和 policy waterfall | Completed | Contract Verified：固定源与 Go 的 Native config、scope shadow/restriction、pre/execute/post policy、result/failure、cancellation 和 finalizer 一致；Go Verified：typed behavior interface、schema cache、guard、detached snapshot、observer containment 与 System Prompt projection |
 | S3-D04 | 交付 | Agent registry、inbox、scope 与实时事件 | Completed | Contract Verified：固定源与 Go 的 durable Inbox mutation/event/list/notification 顺序一致；Go Verified：Registry publication/rollback、runtime ownership、scoped event、initiator 与 model selection snapshot |
@@ -201,7 +201,7 @@ interaction owner registers stable rpcId + decoder
 | S5-D06 | 交付 | reconnect baseline、pending replay 和 queue snapshot | Completed | Contract Verified：subscribed/high-water、stable interaction replay 与 queue snapshot 已覆盖；live callback 不作为 durable fact |
 | S5-D07 | 优化 | source-style bounded prepared cache 与 revision reuse | Completed | Go Verified：`preparedSessions` 使用固定容量 generic LRU；ready source 命中验证 durable revision，reservation 移出 LRU 并保持 exact unpublished Session identity，外部 revision 改变触发 reload |
 | S5-D08 | 优化 | `ReadFrom` 使用 Backend seek 而非完整 prefix scan | Completed | Go Verified：`SessionLogStore.ReadFrom` 直接调用 `Backend.LoadStoredFrom`；SQLite 在一个只读事务中读取 Header/revision/suffix 并拒绝 torn marker，计数 Backend 证明不触发 full load |
-| S5-D09 | 交付 | request/turn 完成边界的显式 durability checkpoint | Completed | Go Verified：`TestTurnEndAwaitsSessionDurabilityBeforeAgentBecomesIdle` 将 write-behind 延迟设为一小时，证明 Agent 在 committed `turn/end` 后调用 `session.Store.Flush`、SQLite 已可直接读取完整边界，且 flush 结束前不进入 idle；取消场景证明 aborted outcome 的最终 durability Context 仍可用 |
+| S5-D09 | 交付 | request/turn 完成边界的显式 durability checkpoint | Completed | Go Verified：`TestTurnEndAwaitsSessionDurabilityBeforeAgentBecomesIdle` 将 write-behind 延迟设为一小时，证明 Agent 在 committed `turn/end` 后调用 `session.LiveStore.Flush`、SQLite 已可直接读取完整边界，且 flush 结束前不进入 idle；取消场景证明 aborted outcome 的最终 durability Context 仍可用 |
 | S5-G01 | Gate | Header/首批 Event/seq/revision transaction 原子 | Completed | Go Verified：`TestAdapterMaterializesHeaderAndBatchAtomically` |
 | S5-G02 | Gate | torn tail、未知事件和开放状态 repair 不变量 | Completed | Go Verified：`TestAdapterMarksAndRepairsOnlyATornTail`、`SessionLogStore`/recovery tests |
 | S5-G03 | Gate | 背景写失败与取消不丢 batch、不伪成功 | Completed | Go Verified：`TestLiveWriterRetainsFailedBackgroundBatchForExplicitFlush`、`TestLiveWriterFlushCanCancelWhileBackgroundWriteRemainsOwned` |
@@ -240,7 +240,7 @@ interaction owner registers stable rpcId + decoder
 | S6-D05 | 能力 | LSP | Deferred | 当前主会话不依赖 |
 | S6-D06 | 能力 | Sandbox | Deferred | 当前主会话不依赖 |
 | S6-D07 | 能力 | Guard | Deferred | 当前主会话不依赖 |
-| S6-D08 | Credentials | Provider/Manager/Store、local owner-only JSON、DeepSeek 请求时解析与 Host API | Completed | Contract Verified：`credentialsFactory` 提供能力，local 只实现 `Store`；环境优先且只读，`credentials.describe` 不含值，固定源 Client differential 已通过 |
+| S6-D08 | Credentials | Provider/Manager/LiveStore、local owner-only JSON、DeepSeek 请求时解析与 Host API | Completed | Contract Verified：`credentialsFactory` 提供能力，local 只实现 `LiveStore`；环境优先且只读，`credentials.describe` 不含值，固定源 Client differential 已通过 |
 | S6-D09 | 能力 | Attachment | Deferred | 当前主会话不依赖；Tools 只保留已被 image content 消费的稳定 `ImageAttachmentRef` metadata contract |
 | S6-D10 | 能力 | Spill | Deferred | 当前主会话不依赖 |
 | S6-D11 | 能力 | Settings Provider、typed namespace、file persistence 与 mutation API | Deferred | 当前只有既有 API absent-provider 分支；完整 Web profile onboarding 不作为主流程依赖 |
@@ -256,7 +256,7 @@ interaction owner registers stable rpcId + decoder
 | S6-Q05 | Session Query | disposable SQLite/sqlc FTS5 index、reconciliation、ranking 与 cursor | Completed | Go Verified：schema/query/config/generated code 位于 `session/query/sqlite`；literal FTS、surface filter、live revision、global/per-Session generation 与 stale cursor 已覆盖 |
 | S6-Q06 | Session Query | 独立 `apiproxy/session.SearchGateway` 与 `session.search` | Completed | Contract Verified：主 `Gateway` 只提供最小 visibility ID seam；Search Gateway 固定 current user/assistant 范围、过滤全局排名页并映射 20-item/240-code-point wire bound |
 | S6-API01 | API Proxy | Session wire、用例实现、Agent activation 与 live frame 职责拆分 | Completed | Go Verified：根 `apiproxy` 保留协议/Frame/`LiveFrameSource`；`apiproxy/session` 拥有 Gateway、reader/lifecycle/models/conversation/Search 与 `AgentSessions`；architecture naming audit 和全仓测试通过 |
-| S6-Q07 | Session Query | typed config、默认 composition、源 schema/vector 与固定 Client | Completed | Contract Verified：Query Plugin 组合 Store/Persistence/Index；`session.search` request/value vectors 与固定源 `WebApiClient.sessions.search` 调用真实 Go Gateway 通过 |
+| S6-Q07 | Session Query | typed config、默认 composition、源 schema/vector 与固定 Client | Completed | Contract Verified：Query Plugin 组合 LiveStore/Persistence/Index；`session.search` request/value vectors 与固定源 `WebApiClient.sessions.search` 调用真实 Go Gateway 通过 |
 | S6-Q08 | Session Query | Session log export use case | Deferred | Query core 不把 SQLite derived index 或不支持 raw artifact 的 fact Backend 伪装成通用 export |
 | S6-Q09 | Session Query | `session_search` / `session_event_search` Agent Tool | Deferred | Query Service 已提供稳定消费边界；Tool 的 workspace visibility、schema 与 execution policy 尚未纳入 |
 | S6-D18 | 能力 | Session Fork | Excluded | 用户明确不实现；不注册 method、Factory、Service 或占位 |
@@ -426,7 +426,7 @@ interaction owner registers stable rpcId + decoder
 - Echo 固定为 `github.com/labstack/echo/v5 v5.3.1`，`coder/websocket` 固定为 `v1.8.15`，准入记录见[04 Go 技术架构决策与技术选型](./04-go-technology-decisions.md)；
 - 初次扫描在 Go 1.26.5 发现 6 个可达标准库漏洞；module 已提升到 Go 1.26.6 并复扫通过；
 - 当前 listener 默认只绑定 `127.0.0.1:3080`；非 loopback deployment 的 TLS、认证和授权尚未进入范围；
-- DeepSeek 配置只保存 `apiKeyEnv` reference，请求开始时才通过 Credentials Provider 解析；启动环境优先且只读，local Store 使用 `0700` 目录和 `0600` JSON 文档；`.env`、真实 credential 和 secret 未进入变更。
+- DeepSeek 配置只保存 `apiKeyEnv` reference，请求开始时才通过 Credentials Provider 解析；启动环境优先且只读，local LiveStore 使用 `0700` 目录和 `0600` JSON 文档；`.env`、真实 credential 和 secret 未进入变更。
 
 ## 15. 下一实现切片
 

@@ -26,7 +26,7 @@ Go 保留源项目的职责划分，但不翻译 TypeScript abstract class、函
 flowchart LR
     API[apiproxy/session SearchGateway] --> Q[session/query Service]
     OTHER[Future export or tool consumer] --> Q
-    Q --> LIVE[session.Store]
+    Q --> LIVE[session.LiveStore]
     Q --> P[session/persistence.Persistence]
     Q --> I[session/query.Index]
     SQLITE[session/query/sqlite Adapter] -. implements .-> I
@@ -59,19 +59,19 @@ Exact reads 与关系追踪不依赖 SQLite。只有 full-text search 经过 `In
 
 ## 4. Live-preferred corpus
 
-同一 Session ID 可能同时存在于 live `session.Store` 和 durable `Persistence`。Query Service 先观察两类来源，再形成一个逻辑 Session：
+同一 Session ID 可能同时存在于 live `session.LiveStore` 和 durable `Persistence`。Query Service 先观察两类来源，再形成一个逻辑 Session：
 
 1. Persistence `ListSnapshots` 提供 cold Header 和 source-qualified revision；
-2. live Store 提供同一时刻 detached Header/Event snapshot；
+2. live LiveStore 提供同一时刻 detached Header/Event snapshot；
 3. 同 ID 同时存在时验证 Header compatibility，并选择 live Event log；
 4. availability 仍同时保留 `live=true` 与 `persisted=true`，来源选择不抹去事实；
-5. cold 读取在 `ListSnapshots -> Inspect` 之间再次检查 live Store；若 Session 已进入 live，最终仍选择 live；
+5. cold 读取在 `ListSnapshots -> Inspect` 之间再次检查 live LiveStore；若 Session 已进入 live，最终仍选择 live；
 6. 同 ID Header 冲突、重复 persisted listing 或无法 replay 的 log 明确失败，不能静默选择任一来源。
 
 ```mermaid
 sequenceDiagram
     participant C as Query Service
-    participant S as session.Store
+    participant S as session.LiveStore
     participant P as Persistence
     C->>P: ListSnapshots
     P-->>C: Header + revision
@@ -158,7 +158,7 @@ Session Query Plugin 依赖 `sessions` 与 `sessionPersistence`，提供唯一 `
 
 稳定错误码区分 aborted、corrupt-session、not-found、invalid filter/query/window/limit/cursor/lineage/surface、stale cursor、persistence failure、index failure 与 source conflict。API Gateway 只把当前 browser method 需要的取消和 internal failure 映射为 wire error；未来 Tool consumer 可以按稳定 Query code 使用不同产品语义。
 
-默认数据目录使用独立的 Session Query SQLite 文件。它可以删除并由下次 search 从 live Store/Persistence 重建；不能把该文件作为 history、resume、export 或灾难恢复来源。
+默认数据目录使用独立的 Session Query SQLite 文件。它可以删除并由下次 search 从 live LiveStore/Persistence 重建；不能把该文件作为 history、resume、export 或灾难恢复来源。
 
 ## 10. 明确边界与后续能力
 

@@ -24,7 +24,7 @@
 | D-11 | Server CLI 首期使用标准库 `flag`；并发组合候选 `x/sync`，稳定 ID 候选 `google/uuid` | Proposed |
 | D-12 | 不使用标准库 `plugin`、CGO SQLite、Node.js runtime、嵌入式脚本引擎或浏览器依赖 | Accepted |
 | D-13 | Web 源码使用 React、TypeScript、Vite 与 Tailwind CSS；Go 只内嵌生产构建 | Accepted |
-| D-14 | Credentials 使用 Manager/Store 分层；默认 local Store 使用标准库 JSON owner-only 文档 | Accepted |
+| D-14 | Credentials 使用 Manager/LiveStore 分层；默认 local LiveStore 使用标准库 JSON owner-only 文档 | Accepted |
 
 `Accepted` 表示架构方向已经确定，不代表代码已经实现；`Proposed` 必须在首次引入依赖的代码提交中完成版本与 license 复核；`Deferred` 表示当前目标不依赖该能力，不能预先引入依赖或创建占位实现。
 
@@ -61,7 +61,7 @@
 
 Goren 不复制 Cordis Profile 的动态配置语言，不识别或执行 `!!js`，也不引入 Goja、Node.js、模板脚本或另一种表达式 evaluator。配置格式不属于 TypeScript Client 与 Go Agent Server 的通信协议，因此这项偏离不影响当前兼容目标。
 
-每个能力 owner 定义自己的命名 Go 配置类型。例如 Connection 拥有监听与 trust 配置，Session Store 拥有路径和 durability 配置，LLM Provider 拥有 endpoint、model 与 credential reference 配置。不得建立一个跨能力、充满可选字段的全局配置模型。
+每个能力 owner 定义自己的命名 Go 配置类型。例如 Connection 拥有监听与 trust 配置，Session LiveStore 拥有路径和 durability 配置，LLM Provider 拥有 endpoint、model 与 credential reference 配置。不得建立一个跨能力、充满可选字段的全局配置模型。
 
 配置进入 Runtime 的过程是：
 
@@ -331,13 +331,13 @@ OpenTelemetry 是可选 Plugin，使用 [`go.opentelemetry.io/otel`](https://pkg
 
 `web/dist` 随仓库提交并由 `web.Site` 内嵌，因此 Go 二进制的构建和运行不依赖 Node.js；Node.js/pnpm 只属于修改前端时的构建工具。项目不导入原版 Harness Web 源码或 Client plugin runtime，也不因此扩大当前 Host API 范围。
 
-## 14. D-14：Credentials 与 local Store
+## 14. D-14：Credentials 与 local LiveStore
 
-Credentials capability 与存储格式分离。`credentials.Provider` 是上游能力，`credentials.Manager` 拥有启动环境优先级、只读遮蔽与 mutation semantics，`credentials.Store` 是 storage-only port。composition root 的 `credentialsFactory` 选择 Store 并提供 Service；`credentials/local.Store` 不是 Plugin，也不存在 `credentialsLocalFactory`。
+Credentials capability 与存储格式分离。`credentials.Provider` 是上游能力，`credentials.Manager` 拥有启动环境优先级、只读遮蔽与 mutation semantics，`credentials.LiveStore` 是 storage-only port。composition root 的 `credentialsFactory` 选择 LiveStore 并提供 Service；`credentials/local.LiveStore` 不是 Plugin，也不存在 `credentialsLocalFactory`。
 
-默认 local Store 使用 `encoding/json` 保存 owner-only mapping，而不复制源 `.credentials.yaml`。当前唯一 writer 是 Host API，业务不要求保留人工注释；标准库 JSON 可以避免新增 YAML 依赖、隐式 scalar 解析和 comment round-trip 复杂度。文件格式不属于 TypeScript Client 与 Go Agent 的 wire contract，`credentials.describe/set/unset` 仍保持固定源语义。
+默认 local LiveStore 使用 `encoding/json` 保存 owner-only mapping，而不复制源 `.credentials.yaml`。当前唯一 writer 是 Host API，业务不要求保留人工注释；标准库 JSON 可以避免新增 YAML 依赖、隐式 scalar 解析和 comment round-trip 复杂度。文件格式不属于 TypeScript Client 与 Go Agent 的 wire contract，`credentials.describe/set/unset` 仍保持固定源语义。
 
-Store 使用 `0700` 目录、`0600` 文档和同目录临时文件原子替换。进程内 mutex 只保护一个 Store 实例；当前没有 watcher、`credentials/updated` 或跨进程 writer lock。完整边界和进入条件见[22 Credentials 与 API Key 管理](./22-credentials-and-api-key-management.md)。
+LiveStore 使用 `0700` 目录、`0600` 文档和同目录临时文件原子替换。进程内 mutex 只保护一个 LiveStore 实例；当前没有 watcher、`credentials/updated` 或跨进程 writer lock。完整边界和进入条件见[22 Credentials 与 API Key 管理](./22-credentials-and-api-key-management.md)。
 
 ## 15. 依赖准入与升级
 
@@ -371,4 +371,4 @@ Store 使用 `0700` 目录、`0600` 文档和同目录临时文件原子替换�
 | 复用现有 LLM API 再加 Harness wrapper | 两个公共身份长期并存，无法证明 model-visible parity |
 | 把 ACP/MCP SDK 类型作为领域模型 | 让外部协议拥有 Agent、Session、Tool 边界 |
 | 只实现 Typert Gateway 而不实现 Connection/API Proxy | Typert 只覆盖部分 auxiliary endpoint，不能让现有客户端完成 Agent 会话 |
-| 把 local credential 文件实现做成独立 Plugin/Factory | local 只是 `credentials.Store` adapter；独立 Factory 会复制 Provider identity、优先级和 Service ownership |
+| 把 local credential 文件实现做成独立 Plugin/Factory | local 只是 `credentials.LiveStore` adapter；独立 Factory 会复制 Provider identity、优先级和 Service ownership |
