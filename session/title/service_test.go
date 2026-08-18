@@ -60,7 +60,7 @@ func (instance *titleFixturePlugin) Apply(requestContext context.Context, plugin
 	if _, err := plugin.Provide(pluginScope, sessionprojection.Service, sessionprojection.Registry(projections)); err != nil {
 		return err
 	}
-	_, err = plugin.Provide(pluginScope, session.StoreService, session.Store(storeProvider))
+	_, err = plugin.Provide(pluginScope, session.StoreService, session.LiveStore(storeProvider))
 	return err
 }
 

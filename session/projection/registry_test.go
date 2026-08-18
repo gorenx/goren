@@ -76,7 +76,7 @@ func (instance *projectionFixturePlugin) Apply(requestContext context.Context, p
 	if _, err := plugin.Provide(pluginScope, Service, Registry(projectionRegistry)); err != nil {
 		return err
 	}
-	_, err = plugin.Provide(pluginScope, session.StoreService, session.Store(store))
+	_, err = plugin.Provide(pluginScope, session.StoreService, session.LiveStore(store))
 	return err
 }
 

@@ -54,6 +54,11 @@ type Handle struct {
 	id    uint64
 }
 
+// ID returns the runtime-local plugin identifier.
+func (pluginHandle Handle) ID() uint64 {
+	return pluginHandle.id
+}
+
 type scopeToken struct {
 	parent *scopeToken
 }
@@ -81,11 +86,6 @@ func ScopeLineage(selectedKey ScopeKey) []ScopeKey {
 		lineage[len(tokens)-1-index] = ScopeKey{token: tokens[index]}
 	}
 	return lineage
-}
-
-// ID returns the runtime-local plugin identifier.
-func (pluginHandle Handle) ID() uint64 {
-	return pluginHandle.id
 }
 
 func validateManifest(metadata Manifest) error {

@@ -186,9 +186,13 @@ func onInbox(pluginScope *plugin.Scope, topic plugin.EventKey[InboxNotice, struc
 	if callback == nil {
 		return nil, errors.New("agent: inbox handler is nil")
 	}
-	return plugin.OnNotify(pluginScope, topic, func(requestContext context.Context, notice InboxNotice) error {
-		return callback(requestContext, notice.Subject, notice.Message, notice.Turn)
-	})
+	return plugin.OnNotify(
+		pluginScope,
+		topic,
+		func(requestContext context.Context, notice InboxNotice) error {
+			return callback(requestContext, notice.Subject, notice.Message, notice.Turn)
+		},
+	)
 }
 
 func OnSessionStart(pluginScope *plugin.Scope, callback SessionStartHandler) (plugin.Disposer, error) {
@@ -204,24 +208,44 @@ func OnPreStep(pluginScope *plugin.Scope, callback PreStepHandler) (plugin.Dispo
 	if callback == nil {
 		return nil, errors.New("agent: pre-step handler is nil")
 	}
-	return plugin.OnWaterfall(pluginScope, preStepEvent,
-		func(requestContext context.Context, notice PreStepNotice, downstream plugin.Next[PreStepNotice, PreStepDecision]) (PreStepDecision, error) {
-			return callback(requestContext, notice, func(chainContext context.Context) (PreStepDecision, error) {
-				return downstream(chainContext, notice)
-			})
-		})
+	return plugin.OnWaterfall(
+		pluginScope,
+		preStepEvent,
+		func(
+			requestContext context.Context,
+			notice PreStepNotice,
+			downstream plugin.Next[PreStepNotice, PreStepDecision],
+		) (PreStepDecision, error) {
+			return callback(
+				requestContext, notice,
+				func(chainContext context.Context) (PreStepDecision, error) {
+					return downstream(chainContext, notice)
+				},
+			)
+		},
+	)
 }
 
 func OnRequest(pluginScope *plugin.Scope, callback RequestHandler) (plugin.Disposer, error) {
 	if callback == nil {
 		return nil, errors.New("agent: request handler is nil")
 	}
-	return plugin.OnWaterfall(pluginScope, requestEvent,
-		func(requestContext context.Context, notice RequestNotice, downstream plugin.Next[RequestNotice, llm.CallConfig]) (llm.CallConfig, error) {
-			return callback(requestContext, notice, func(chainContext context.Context) (llm.CallConfig, error) {
-				return downstream(chainContext, notice)
-			})
-		})
+	return plugin.OnWaterfall(
+		pluginScope,
+		requestEvent,
+		func(
+			requestContext context.Context,
+			notice RequestNotice, downstream plugin.Next[RequestNotice, llm.CallConfig],
+		) (llm.CallConfig, error) {
+			return callback(
+				requestContext,
+				notice,
+				func(chainContext context.Context) (llm.CallConfig, error) {
+					return downstream(chainContext, notice)
+				},
+			)
+		},
+	)
 }
 
 func OnRequestError(pluginScope *plugin.Scope, callback RequestErrorHandler) (plugin.Disposer, error) {
@@ -229,11 +253,20 @@ func OnRequestError(pluginScope *plugin.Scope, callback RequestErrorHandler) (pl
 		return nil, errors.New("agent: request-error handler is nil")
 	}
 	return plugin.OnWaterfall(pluginScope, requestErrorEvent,
-		func(requestContext context.Context, notice RequestErrorNotice, downstream plugin.Next[RequestErrorNotice, RequestErrorAction]) (RequestErrorAction, error) {
-			return callback(requestContext, notice, func(chainContext context.Context) (RequestErrorAction, error) {
-				return downstream(chainContext, notice)
-			})
-		})
+		func(
+			requestContext context.Context,
+			notice RequestErrorNotice,
+			downstream plugin.Next[RequestErrorNotice, RequestErrorAction],
+		) (RequestErrorAction, error) {
+			return callback(
+				requestContext,
+				notice,
+				func(chainContext context.Context) (RequestErrorAction, error) {
+					return downstream(chainContext, notice)
+				},
+			)
+		},
+	)
 }
 
 func OnTurnStopping(pluginScope *plugin.Scope, callback TurnStoppingHandler) (plugin.Disposer, error) {

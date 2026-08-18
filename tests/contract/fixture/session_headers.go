@@ -12,7 +12,7 @@ import (
 
 // SessionHeaderSource merges live and persisted immutable headers for Workspace tests.
 type SessionHeaderSource struct {
-	Sessions    session.Store
+	Sessions    session.LiveStore
 	Persistence sesspersist.Persistence
 }
 

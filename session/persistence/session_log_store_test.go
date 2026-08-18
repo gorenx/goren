@@ -110,7 +110,7 @@ func (testSessionProvider) Apply(requestContext context.Context, pluginScope *pl
 	}); err != nil {
 		return err
 	}
-	_, err = plugin.Provide(pluginScope, session.StoreService, session.Store(store))
+	_, err = plugin.Provide(pluginScope, session.StoreService, session.LiveStore(store))
 	return err
 }
 
@@ -149,7 +149,7 @@ func (instance testPersistenceProvider) Apply(requestContext context.Context, pl
 }
 
 type testProbe struct {
-	body func(context.Context, *plugin.Scope, session.Store, sesspersist.Persistence) error
+	body func(context.Context, *plugin.Scope, session.LiveStore, sesspersist.Persistence) error
 }
 
 func (testProbe) Manifest() plugin.Manifest {
@@ -182,7 +182,7 @@ func TestSessionLogStorePersistsAnOpenTurnAndRepairsItOnColdLoad(t *testing.T) {
 	if _, err := firstRuntime.Load(requestContext, testProbe{body: func(
 		operationContext context.Context,
 		pluginScope *plugin.Scope,
-		store session.Store,
+		store session.LiveStore,
 		_ sesspersist.Persistence,
 	) error {
 		identifier := session.SessionID("cold-recovery")
@@ -212,7 +212,7 @@ func TestSessionLogStorePersistsAnOpenTurnAndRepairsItOnColdLoad(t *testing.T) {
 	if _, err := secondRuntime.Load(requestContext, testProbe{body: func(
 		operationContext context.Context,
 		_ *plugin.Scope,
-		_ session.Store,
+		_ session.LiveStore,
 		durability sesspersist.Persistence,
 	) error {
 		loaded, err := durability.Load(operationContext, "cold-recovery")

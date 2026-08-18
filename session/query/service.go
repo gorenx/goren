@@ -32,7 +32,7 @@ type Config struct {
 // and its cursor always refer to one derived generation.
 type Service struct {
 	mutex       sync.Mutex
-	sessions    session.Store
+	sessions    session.LiveStore
 	persistence sesspersist.Persistence
 	index       Index
 	settings    Config
@@ -43,7 +43,7 @@ type Service struct {
 // providing plugin scope.
 func New(
 	pluginScope *plugin.Scope,
-	sessions session.Store,
+	sessions session.LiveStore,
 	persistence sesspersist.Persistence,
 	derivedIndex Index,
 	settings Config,

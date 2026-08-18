@@ -44,8 +44,10 @@ type Runtime struct {
 // NewRuntime creates an empty plugin runtime.
 func NewRuntime() *Runtime {
 	return &Runtime{
-		providers: make(map[string]*pluginRecord), definitions: make(map[string]ServiceRef),
-		services: make(map[string]serviceEntry), eventDefs: make(map[string]eventRef),
+		providers:   make(map[string]*pluginRecord),
+		definitions: make(map[string]ServiceRef),
+		services:    make(map[string]serviceEntry),
+		eventDefs:   make(map[string]eventRef),
 	}
 }
 
@@ -143,7 +145,7 @@ func (engine *Runtime) Replace(requestContext context.Context, pluginHandle Hand
 		return errors.New("plugin: replacement must keep the same name and provided services")
 	}
 	engine.mu.Lock()
-	if err := engine.registerDefinitionsLocked(candidateMetadata); err != nil {
+	if err = engine.registerDefinitionsLocked(candidateMetadata); err != nil {
 		engine.mu.Unlock()
 		return err
 	}
@@ -152,13 +154,19 @@ func (engine *Runtime) Replace(requestContext context.Context, pluginHandle Hand
 		return fmt.Errorf("plugin: replacement is missing required services: %v", missing)
 	}
 
-	shadowRecord := &pluginRecord{id: record.id, instance: candidate, metadata: candidateMetadata, state: StateStarting, order: record.order}
+	shadowRecord := &pluginRecord{
+		id:       record.id,
+		instance: candidate,
+		metadata: candidateMetadata,
+		state:    StateStarting,
+		order:    record.order,
+	}
 	shadowScope := newScope(engine, shadowRecord)
-	if err := candidate.Apply(requestContext, shadowScope); err != nil {
+	if err = candidate.Apply(requestContext, shadowScope); err != nil {
 		shadowRecord.state = StateRollingBack
 		return errors.Join(err, shadowScope.dispose(requestContext))
 	}
-	if err := validateContributions(shadowRecord, shadowScope); err != nil {
+	if err = validateContributions(shadowRecord, shadowScope); err != nil {
 		shadowRecord.state = StateRollingBack
 		return errors.Join(err, shadowScope.dispose(requestContext))
 	}
@@ -168,7 +176,10 @@ func (engine *Runtime) Replace(requestContext context.Context, pluginHandle Hand
 	engine.mu.Lock()
 	for serviceName, contribution := range shadowScope.services {
 		engine.services[serviceName] = serviceEntry{
-			definition: contribution.ref, value: contribution.value, provider: record, owner: contribution,
+			definition: contribution.ref,
+			value:      contribution.value,
+			provider:   record,
+			owner:      contribution,
 		}
 	}
 	record.instance = candidate
@@ -321,7 +332,10 @@ func (engine *Runtime) activate(requestContext context.Context, record *pluginRe
 	pluginScope.mu.Unlock()
 	for serviceName, contribution := range pluginScope.services {
 		engine.services[serviceName] = serviceEntry{
-			definition: contribution.ref, value: contribution.value, provider: record, owner: contribution,
+			definition: contribution.ref,
+			value:      contribution.value,
+			provider:   record,
+			owner:      contribution,
 		}
 	}
 	engine.mu.Unlock()
@@ -365,7 +379,10 @@ func (engine *Runtime) publishService(requestContext context.Context, record *pl
 		return fmt.Errorf("plugin: service %q is already active", contribution.ref.name)
 	}
 	engine.services[contribution.ref.name] = serviceEntry{
-		definition: contribution.ref, value: contribution.value, provider: record, owner: contribution,
+		definition: contribution.ref,
+		value:      contribution.value,
+		provider:   record,
+		owner:      contribution,
 	}
 	engine.mu.Unlock()
 	_ = engine.reconcile(requestContext)

@@ -176,7 +176,13 @@ func (pending *Inbox) Splice(target InboxTarget, start int, deleteCount int, ins
 	return pending.mutateLocked(target, start, deleteCount, inserted, true)
 }
 
-func (pending *Inbox) mutateLocked(target InboxTarget, start int, deleteCount int, inserted []llm.UserMessage, discardRemoved bool) ([]llm.UserMessage, error) {
+func (pending *Inbox) mutateLocked(
+	target InboxTarget,
+	start int,
+	deleteCount int,
+	inserted []llm.UserMessage,
+	discardRemoved bool,
+) ([]llm.UserMessage, error) {
 	pending.stateMu.RLock()
 	queue, err := pending.targetLocked(target)
 	if err != nil {
@@ -216,7 +222,7 @@ func (pending *Inbox) mutateLocked(target InboxTarget, start int, deleteCount in
 		return nil, err
 	}
 	var durable InboxSplice
-	if err := json.Unmarshal(committed.Data, &durable); err != nil {
+	if err = json.Unmarshal(committed.Data, &durable); err != nil {
 		return nil, fmt.Errorf("agent: decode committed Inbox splice: %w", err)
 	}
 	removed, err := pending.apply(durable)

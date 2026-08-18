@@ -11,9 +11,9 @@ import (
 	"github.com/gorenx/goren/plugin"
 )
 
-// Store owns live Session membership and publication lifecycle. Persistence is
+// LiveStore owns live Session membership and publication lifecycle. Persistence is
 // deliberately absent; adapters observe EventAppended and FlushRequested.
-type Store interface {
+type LiveStore interface {
 	Create(context.Context, *plugin.Scope, *SessionID, CreateOptions) (*Session, error)
 	Prepare(*SessionID, CreateOptions) (*Session, error)
 	Enter(*Session) (plugin.Disposer, error)
@@ -24,9 +24,9 @@ type Store interface {
 }
 
 // StoreService is the canonical Service Definition for the source `sessions` key.
-var StoreService = plugin.DefineService[Store]("sessions")
+var StoreService = plugin.DefineService[LiveStore]("sessions")
 
-// LifecycleNotice identifies one Session entering or leaving the live Store.
+// LifecycleNotice identifies one Session entering or leaving the live LiveStore.
 type LifecycleNotice struct {
 	Session *Session
 }
@@ -101,7 +101,7 @@ type MemoryStoreOptions struct {
 	ObserverError func(error)
 }
 
-// MemoryStore is the in-memory Provider for Store.
+// MemoryStore is the in-memory Provider for LiveStore.
 type MemoryStore struct {
 	mu            sync.RWMutex
 	entries       map[SessionID]*storeEntry

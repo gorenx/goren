@@ -33,7 +33,7 @@ var Service = plugin.DefineService[Loop](ServiceName)
 // Dependencies are the source Agent Loop's five required services.
 type Dependencies struct {
 	Agents       agent.Registry
-	Sessions     session.Store
+	Sessions     session.LiveStore
 	LLM          llm.LlmRuntime
 	Tools        tools.ToolRuntime
 	SystemPrompt systemprompt.SystemPrompt
@@ -47,7 +47,7 @@ type RuntimeOptions struct {
 type loopService struct {
 	sourceScope *plugin.Scope
 	agents      agent.Registry
-	sessions    session.Store
+	sessions    session.LiveStore
 	llm         llm.LlmRuntime
 	tools       tools.ToolRuntime
 	prompts     systemprompt.SystemPrompt
@@ -79,21 +79,33 @@ func New(
 		reporter = func(error) {}
 	}
 	owner := &loopService{
-		sourceScope: sourceScope, agents: ports.Agents, sessions: ports.Sessions,
-		llm: ports.LLM, tools: ports.Tools, prompts: ports.SystemPrompt,
-		config: settings, reporter: reporter, accepting: true, live: make(map[*agentLifecycle]struct{}),
+		sourceScope: sourceScope,
+		agents:      ports.Agents,
+		sessions:    ports.Sessions,
+		llm:         ports.LLM,
+		tools:       ports.Tools,
+		prompts:     ports.SystemPrompt,
+		config:      settings,
+		reporter:    reporter,
+		accepting:   true,
+		live:        make(map[*agentLifecycle]struct{}),
 	}
-	if err := sourceScope.Effect(requestContext, "agentLoop.transactions()", func(context.Context) (plugin.Disposer, error) {
-		return owner.close, nil
-	}); err != nil {
+	err := sourceScope.Effect(
+		requestContext,
+		"agentLoop.transactions()",
+		func(context.Context) (plugin.Disposer, error) {
+			return owner.close, nil
+		},
+	)
+	if err != nil {
 		return nil, err
 	}
-	if _, err := ports.Agents.SetFactory(requestContext, sourceScope, owner); err != nil {
+	if _, err = ports.Agents.SetFactory(requestContext, sourceScope, owner); err != nil {
 		return nil, err
 	}
 	for _, declaration := range settings.ConfiguredAgents() {
 		if declaration.ResumeSessionID != "" {
-			if _, err := owner.Resume(
+			if _, err = owner.Resume(
 				requestContext, sourceScope, declaration.ResumeSessionID, declaration.AgentOptions(),
 			); err != nil {
 				return nil, fmt.Errorf("agentloop: resume configured agent %q: %w", declaration.ID, err)
@@ -113,7 +125,8 @@ func New(
 			workingDirectory := declaration.CWD
 			metadata.CWD = &workingDirectory
 		}
-		if _, err := owner.Create(requestContext, sourceScope, identifier, declaration.AgentOptions(), metadata); err != nil {
+		_, err = owner.Create(requestContext, sourceScope, identifier, declaration.AgentOptions(), metadata)
+		if err != nil {
 			return nil, fmt.Errorf("agentloop: start configured agent %q: %w", declaration.ID, err)
 		}
 	}
@@ -132,9 +145,15 @@ func (owner *loopService) Create(
 	loopOptions agent.Options,
 	metadata session.Metadata,
 ) (agent.Handle, error) {
-	return owner.CreateAgent(requestContext, ownerScope, agent.CreateOptions{
-		SessionID: identifier, Metadata: metadata, AgentOptions: loopOptions,
-	})
+	return owner.CreateAgent(
+		requestContext,
+		ownerScope,
+		agent.CreateOptions{
+			SessionID:    identifier,
+			Metadata:     metadata,
+			AgentOptions: loopOptions,
+		},
+	)
 }
 
 // Resume is the direct source-compatible durable-session entry point.
@@ -144,9 +163,14 @@ func (owner *loopService) Resume(
 	identifier session.SessionID,
 	loopOptions agent.Options,
 ) (agent.Handle, error) {
-	return owner.ResumeAgent(requestContext, ownerScope, agent.ResumeOptions{
-		SessionID: identifier, AgentOptions: loopOptions,
-	})
+	return owner.ResumeAgent(
+		requestContext,
+		ownerScope,
+		agent.ResumeOptions{
+			SessionID:    identifier,
+			AgentOptions: loopOptions,
+		},
+	)
 }
 
 // CreateAgent prepares unpublished resources, applies setup, then publishes Session and Agent in order.
@@ -175,7 +199,12 @@ func (owner *loopService) CreateAgent(
 		return agent.Handle{}, err
 	}
 	return owner.setupAndPublish(
-		requestContext, ownerScope, conversation, createOptions.AgentOptions, createOptions.Setup, agent.SessionStartup,
+		requestContext,
+		ownerScope,
+		conversation,
+		createOptions.AgentOptions,
+		createOptions.Setup,
+		agent.SessionStartup,
 	)
 }
 
@@ -247,7 +276,7 @@ func (owner *loopService) setupAndPublish(
 	fail := func(cause error) (agent.Handle, error) {
 		return agent.Handle{}, errors.Join(cause, ownedRelease(requestContext))
 	}
-	if err := owner.installVariables(requestContext, agentScope, subject); err != nil {
+	if err = owner.installVariables(requestContext, agentScope, subject); err != nil {
 		return fail(err)
 	}
 	if setup != nil {
@@ -261,14 +290,14 @@ func (owner *loopService) setupAndPublish(
 			}
 		}
 	}
-	if err := requestContext.Err(); err != nil {
+	if err = requestContext.Err(); err != nil {
 		return fail(err)
 	}
 	detachSession, err := owner.sessions.Enter(conversation)
 	if err != nil {
 		return fail(err)
 	}
-	if err := lifecycle.attachSession(requestContext, detachSession); err != nil {
+	if err = lifecycle.attachSession(requestContext, detachSession); err != nil {
 		return fail(err)
 	}
 	initiator, _ := agent.InitiatorFrom(requestContext)
@@ -276,25 +305,25 @@ func (owner *loopService) setupAndPublish(
 	if err != nil {
 		return fail(err)
 	}
-	if err := lifecycle.attachAgent(requestContext, detachAgent); err != nil {
+	if err = lifecycle.attachAgent(requestContext, detachAgent); err != nil {
 		return fail(err)
 	}
-	if err := owner.sessions.Announce(requestContext, conversation); err != nil {
+	if err = owner.sessions.Announce(requestContext, conversation); err != nil {
 		return fail(err)
 	}
-	if err := lifecycle.assertActive(); err != nil {
+	if err = lifecycle.assertActive(); err != nil {
 		return fail(err)
 	}
-	if err := owner.agents.Announce(requestContext, subject); err != nil {
+	if err = owner.agents.Announce(requestContext, subject); err != nil {
 		return fail(err)
 	}
-	if err := lifecycle.assertActive(); err != nil {
+	if err = lifecycle.assertActive(); err != nil {
 		return fail(err)
 	}
 	if observerErr := agent.EmitSessionStart(requestContext, owner.sourceScope, subject, startSource); observerErr != nil {
 		owner.report(fmt.Errorf("agentloop: Agent %q session-start observer: %w", subject.ID(), observerErr))
 	}
-	if err := lifecycle.assertActive(); err != nil {
+	if err = lifecycle.assertActive(); err != nil {
 		return fail(err)
 	}
 	return agent.Handle{Subject: subject, Release: ownedRelease}, nil

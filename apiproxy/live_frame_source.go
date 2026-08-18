@@ -14,7 +14,7 @@ import (
 // LiveFrameDependencies are the source-owned state required to produce
 // Session and Host downlink frames.
 type LiveFrameDependencies struct {
-	Sessions    session.Store
+	Sessions    session.LiveStore
 	Projections sessionprojection.Registry
 }
 
@@ -26,7 +26,7 @@ type LiveFrameOptions struct {
 // LiveFrameSource owns Session lifecycle observers and both connection-level
 // downlink feeds. It does not activate Agents or implement unary Session APIs.
 type LiveFrameSource struct {
-	sessions    session.Store
+	sessions    session.LiveStore
 	projections sessionprojection.Registry
 	hub         *liveFrameHub
 }

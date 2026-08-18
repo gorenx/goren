@@ -101,7 +101,7 @@ func (provider *agentLoopContractProvider) Apply(requestContext context.Context,
 			return provideErr
 		},
 		func() error {
-			_, provideErr := plugin.Provide(providerScope, session.StoreService, session.Store(sessionStore))
+			_, provideErr := plugin.Provide(providerScope, session.StoreService, session.LiveStore(sessionStore))
 			return provideErr
 		},
 		func() error {

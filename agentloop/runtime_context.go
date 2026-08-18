@@ -32,12 +32,14 @@ func newRuntimeContextProjection(agentScope *plugin.Scope, conversation *session
 	}
 	projection := &runtimeContextProjection{}
 	projection.restore(conversation)
-	_, err := session.OnEvent(agentScope, func(_ context.Context, subject *session.Session, committed session.Event) error {
-		if subject == conversation {
-			projection.accept(committed)
-		}
-		return nil
-	})
+	_, err := session.OnEvent(agentScope,
+		func(_ context.Context, subject *session.Session, committed session.Event) error {
+			if subject == conversation {
+				projection.accept(committed)
+			}
+			return nil
+		},
+	)
 	if err != nil {
 		return nil, err
 	}
