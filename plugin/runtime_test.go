@@ -464,6 +464,40 @@ func TestReplaceReactivatesResolvedOptionalDependents(t *testing.T) {
 	}
 }
 
+func TestMountReactivatesPreviouslyAbsentOptionalConsumer(t *testing.T) {
+	t.Parallel()
+	consumer := &optionalClockConsumer{}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	if _, err := runtimeEngine.Start(
+		context.Background(),
+		consumer,
+	); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if consumer.applies != 1 || consumer.selected != nil {
+		t.Fatalf(
+			"initial optional resolution = (applies %d, selected %#v)",
+			consumer.applies,
+			consumer.selected,
+		)
+	}
+	provider := &clockProvider{
+		value: "mounted",
+	}
+	if _, err := runtimeEngine.Mount(
+		context.Background(),
+		provider,
+	); err != nil {
+		t.Fatalf("mount provider: %v", err)
+	}
+	if consumer.applies != 2 {
+		t.Fatalf("optional consumer Apply calls = %d, want 2", consumer.applies)
+	}
+	if consumer.selected == nil || consumer.selected.Value() != "mounted" {
+		t.Fatal("optional consumer did not resolve the mounted provider")
+	}
+}
+
 func TestLifetimeIsCancelledBeforeDispose(t *testing.T) {
 	t.Parallel()
 	cancellationObserved := make(chan struct{}, 1)
