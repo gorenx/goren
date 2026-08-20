@@ -25,8 +25,8 @@ func TestFactoryCreatesSystemPromptPlugin(t *testing.T) {
 	if !matches {
 		t.Fatal("created Plugin does not implement Assembler")
 	}
-	if _, matches := created.(systemprompt.Contributions); !matches {
-		t.Fatal("created Plugin does not implement Contributions")
+	if _, matches := created.(systemprompt.PromptRegistry); !matches {
+		t.Fatal("created Plugin does not implement PromptRegistry")
 	}
 	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
 	if _, err := runtimeEngine.Start(context.Background(), created); err != nil {

@@ -114,36 +114,34 @@ func assembleLayers(
 
 	collectedSchemas := make([]llm.ToolSchema, 0)
 	knownNames := make(map[string]struct{})
-	for _, layer := range layers {
-		for _, entry := range layer.toolProviders {
-			providerResult, err := entry.provider.ResolveTools(
-				requestContext,
-				assemblyContext,
+	for _, entry := range mergeToolProviders(layers) {
+		providerResult, err := entry.provider.ResolveTools(
+			requestContext,
+			assemblyContext,
+		)
+		if err != nil {
+			return PromptAssembly{}, nil, false, fmt.Errorf(
+				"systemprompt: resolve tool provider %q: %w",
+				entry.name,
+				err,
 			)
-			if err != nil {
-				return PromptAssembly{}, nil, false, fmt.Errorf(
-					"systemprompt: resolve tool provider %q: %w",
-					entry.name,
-					err,
-				)
+		}
+		for _, schema := range providerResult.Schemas {
+			detached, detachErr := detachToolSchema(schema)
+			if detachErr != nil {
+				return PromptAssembly{}, nil, false, detachErr
 			}
-			for _, schema := range providerResult.Schemas {
-				detached, detachErr := detachToolSchema(schema)
-				if detachErr != nil {
-					return PromptAssembly{}, nil, false, detachErr
-				}
-				collectedSchemas = append(collectedSchemas, detached)
+			collectedSchemas = append(collectedSchemas, detached)
+		}
+		acceptedNames := providerResult.KnownNames
+		if acceptedNames == nil {
+			acceptedNames = make([]string, len(providerResult.Schemas))
+			for index, schema := range providerResult.Schemas {
+				acceptedNames[index] = schema.Name
 			}
-			acceptedNames := providerResult.KnownNames
-			if acceptedNames == nil {
-				acceptedNames = make([]string, len(providerResult.Schemas))
-				for index, schema := range providerResult.Schemas {
-					acceptedNames[index] = schema.Name
-				}
-			}
-			for _, name := range acceptedNames {
-				knownNames[name] = struct{}{}
-			}
+		}
+		for _, name := range acceptedNames {
+			knownNames[name] = struct{}{}
 		}
 	}
 	orderedSchemas, err := orderToolSchemas(
@@ -202,6 +200,27 @@ func mergeContexts(layers []promptLayerSnapshot) []PromptContext {
 	sort.SliceStable(merged, func(leftIndex int, rightIndex int) bool {
 		return merged[leftIndex].Order < merged[rightIndex].Order
 	})
+	return merged
+}
+
+func mergeToolProviders(layers []promptLayerSnapshot) []namedToolProvider {
+	names := make([]string, 0)
+	byName := make(map[string]ToolProvider)
+	for _, layer := range layers {
+		for _, entry := range layer.toolProviders {
+			if _, exists := byName[entry.name]; !exists {
+				names = append(names, entry.name)
+			}
+			byName[entry.name] = entry.provider
+		}
+	}
+	merged := make([]namedToolProvider, 0, len(names))
+	for _, name := range names {
+		merged = append(merged, namedToolProvider{
+			name:     name,
+			provider: byName[name],
+		})
+	}
 	return merged
 }
 
