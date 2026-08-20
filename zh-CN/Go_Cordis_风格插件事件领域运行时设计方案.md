@@ -77,7 +77,7 @@ Service 使用具备业务含义的 interface；Event、Waterfall input/output �
 | Middleware | Waterfall 中的命名对象 | 主业务 owner |
 | Action | 一个可执行的下游动作；可以是 Runtime chain step 或最内层业务动作 | Middleware 策略 |
 | Event | owner 提交后发布的 typed fact | 历史存储、前置决策 |
-| Observer | 监听某一 Event 类型的 Plugin | Event 持久化 |
+| Observer | 通过 Manifest 监听一个或多个 Event 类型的 Plugin | Event 持久化 |
 | Catalog | 已编译 Factory 的名称索引 | Plugin 启动 |
 | Factory | 拥有一个 Plugin 的具名配置、严格解码、校验和构造 | Runtime mount |
 
@@ -103,7 +103,7 @@ Plugin 不负责注册和撤销 Service、Observer、Middleware。Runtime 根据
 Runtime 负责：
 
 - 批量接纳并校验 Manifest；
-- 校验 Plugin 是否实现声明的 Service、Observer 和 Middleware；
+- 校验 Plugin 是否实现声明的 Service 和统一 EventObserver，以及 Waterfall contribution 是否持有有效 Middleware；
 - 建立 Scope 与 Service 依赖关系；
 - 按依赖拓扑激活 Fiber；
 - 自动发布和撤销 Runtime 贡献；
@@ -176,8 +176,8 @@ Manifest 是完整声明：
 - Provides：Runtime 自动把 Plugin 对象作为 Service Provider；
 - Requires：Provider 不可用时阻止 Apply；
 - Optional：Apply 时取得可见 Provider snapshot，不阻止启动；
-- Events：Runtime 自动把 Plugin 绑定为对应 EventObserver；
-- Waterfalls：Runtime 自动把 Plugin 绑定为对应 WaterfallMiddleware。
+- Events：Runtime 把每个声明的 Event 类型绑定到同一个 Plugin 级 EventObserver 入口；
+- Waterfalls：Runtime 绑定 Plugin 在 contribution 中明确给出的 WaterfallMiddleware 对象。
 
 Manifest 返回后，Plugin 不再执行 Provide、Observe、Use 等注册动作。
 
@@ -185,9 +185,9 @@ Manifest 返回后，Plugin 不再执行 Provide、Observe、Use 等注册动作
 
     plugin.ServiceOf[Clock]()
     plugin.EventOf[CounterAdvanced]()
-    plugin.WaterfallOf[Request, Response]()
+    plugin.WaterfallOf[Request, Response](middleware)
 
-ServiceOf、EventOf、WaterfallOf 只创建类型描述，不创建 Runtime Definition，也不持有注册状态。
+ServiceOf 和 EventOf 创建类型描述；WaterfallOf 同时携带 Plugin 拥有的 Middleware 对象。它们都不创建 Runtime Definition，也不持有注册状态。
 
 内部使用 reflect.TypeFor[T] 建立 Go 类型身份，原因是删除全局 Definition 后，Provider 和 Consumer 只能通过共同的业务类型取得同一个键。反射仅用于类型键和校验：
 
@@ -263,13 +263,29 @@ Event 自己提供稳定名称和投递策略：
         return plugin.DeliveryOrdered
     }
 
-Observer Plugin 实现：
+Observer Plugin 只实现一个统一入口：
 
-    type EventObserver[E plugin.Event] interface {
-        ObserveEvent(context.Context, E) error
+    type EventObserver interface {
+        ObserveEvent(context.Context, Event) error
     }
 
-并在 Manifest.Events 声明 EventOf[E]。Runtime 校验接口并自动建立 Subscription。
+一个 Plugin 可以在 Manifest.Events 中声明多个 `EventOf[E]()`。Runtime 校验 Plugin 实现了 EventObserver，再把每个声明类型绑定到同一入口；未声明的 Event 不会送达，同一 Plugin 重复声明同一 Event 类型会在 admission 时失败。
+
+Plugin 在统一入口中只做类型分派，真实业务处理保持为具名方法：
+
+    func (observer *ProjectionPlugin) ObserveEvent(
+        requestContext context.Context,
+        fact plugin.Event,
+    ) error {
+        switch typedFact := fact.(type) {
+        case CounterAdvanced:
+            return observer.onCounterAdvanced(requestContext, typedFact)
+        case CounterReset:
+            return observer.onCounterReset(requestContext, typedFact)
+        default:
+            return fmt.Errorf("unsupported Event %q", fact.EventName())
+        }
+    }
 
 事实 owner 在逻辑提交后发布：
 
@@ -291,7 +307,7 @@ DeliveryOrdered 顺序调用并返回首个错误；DeliveryParallel 并行调�
         Intercept(context.Context, I, WaterfallAction[I, O]) (O, error)
     }
 
-Middleware Plugin 在 Manifest.Waterfalls 声明 WaterfallOf[I, O]，Runtime 自动绑定。动作 owner 主动调用：
+Plugin 在 Manifest.Waterfalls 声明 `WaterfallOf[I, O](middleware)`，Runtime 绑定该 Plugin 拥有的具名 Middleware 对象。Middleware 可以就是 Plugin 本身，也可以是 Plugin 内部的独立策略对象。动作 owner 主动调用：
 
     plugin.Run(requestContext, serviceOwner, input, terminal)
 
@@ -411,11 +427,10 @@ plugin 是一个模块，不把核心责任拆成与 plugin 平级的目录：
       service.go
       event.go
       waterfall.go
-      configuration/
       factory/
       example/
 
-核心 Runtime、Fiber、Scope、Effect 和 Registry 保留在同一个 plugin 包内，只按文件划分职责。configuration 和 factory 因依赖方向不同成为子包；example 只展示 plugin 公共 API。
+核心 Runtime、Fiber、Scope、Effect 和 Registry 保留在同一个 plugin 包内，只按文件划分职责。factory 因为是配置解码和实例构造边界而作为子包；example 只展示 plugin 公共 API。
 
 ## 10. 如何实现一个 Plugin
 
@@ -432,8 +447,8 @@ plugin 是一个模块，不把核心责任拆成与 plugin 平级的目录：
 
 - 提供 Service：实现 owner-defined Service interface，并声明 Provides；
 - 依赖 Service：声明 Requires/Optional，在 Apply 中 Require/Resolve；
-- 监听 Event：实现 EventObserver[E]，并声明 Events；
-- 扩展 Waterfall：实现 WaterfallMiddleware[I, O]，并声明 Waterfalls；
+- 监听 Event：实现统一 EventObserver，并通过多个 EventOf[E]() 声明接受的 Events；
+- 扩展 Waterfall：实现或持有 WaterfallMiddleware[I, O]，并通过 WaterfallOf[I, O](middleware) 声明 Waterfalls；
 - 发布 Event：在 owner-defined commit 后调用 Publish；
 - 运行 Waterfall：在明确扩展点调用 Run；
 - 子生命周期：由 composition root 使用 MountChild。
@@ -467,6 +482,7 @@ Factory 负责把 raw config 严格解码为自己拥有的 Config，应用默�
 - I13：业务 Service interface 不暴露 Base、Fiber、Scope 或 Runtime；
 - I14：公共泛型不使用 any 或 interface{}；
 - I15：不存在 Context、Definition、Provide、Observe、Use、Registration 兼容路径。
+- I16：一个 Plugin 只有一个 EventObserver 入口，可显式声明多个 Event 类型，但不能重复声明同一类型；
 
 ## 12. 当前验收边界
 
@@ -483,7 +499,7 @@ example 必须覆盖：
 
 - Service 直接由 Plugin 对象提供；
 - Scope Service 继承和覆盖；
-- Service owner 发布 Event、Observer 自动绑定；
-- Waterfall 自动绑定和洋葱顺序。
+- Service owner 发布 Event、Observer 声明一个或多个监听类型；
+- Plugin 声明其拥有的 Waterfall Middleware 和洋葱顺序。
 
 完成 Plugin 契约确认后，再按领域逐个迁移 Goren 其他模块，不增加过渡性适配代码。

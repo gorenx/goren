@@ -37,7 +37,9 @@ flowchart RL
     Contributions --> Dispose[Plugin Dispose]
 ```
 
-Plugin 对象嵌入 Base，并实现 Manifest、Apply 和幂等 Dispose。对象可以按需同时实现业务 Service interface、EventObserver 或 WaterfallMiddleware，不创建只负责 Runtime 转发的包装 Plugin。
+Plugin 对象嵌入 Base，并实现 Manifest、Apply 和幂等 Dispose。对象可以按需同时实现业务 Service interface、统一 EventObserver 或 WaterfallMiddleware，也可以在 Manifest 中声明自己持有的 WaterfallMiddleware 策略对象；不创建只负责 Runtime 转发的包装 Plugin。
+
+一个监听事件的 Plugin 只实现一个 `ObserveEvent(context.Context, Event)` 入口，并在 Manifest 中通过多个 `EventOf[E]()` 声明它真正接受的 Event 类型。Runtime 只投递这些显式声明的类型；同一 Plugin 重复声明同一 Event 类型会在接纳阶段失败。Plugin 在统一入口中使用 type switch 分派到自己的具名业务方法。
 
 Runtime 根据 Manifest 自动注册贡献。插件作者不接收 Context，不调用 Define、Provide、Observe、Use，也不保存 Registration 或 disposer。
 
@@ -50,8 +52,8 @@ Runtime 根据 Manifest 自动注册贡献。插件作者不接收 Context，不
 
 - [Service](example/service_test.go)：Plugin 对象直接实现并提供业务 Service；
 - [Scope 继承](example/scope_inheritance_test.go)：Child Fiber 继承并覆盖祖先 Service；
-- [Service 与 Event](example/service_event_test.go)：Service owner 发布事实，Observer Plugin 自动绑定；
-- [Waterfall](example/waterfall_test.go)：Middleware Plugin 自动绑定并执行洋葱链。
+- [Service 与 Event](example/service_event_test.go)：Service owner 发布事实，Observer Plugin 通过 Manifest 声明监听类型；
+- [Waterfall](example/waterfall_test.go)：Plugin 声明持有的 Middleware 并执行洋葱链。
 
 ## 生命周期与失败
 
