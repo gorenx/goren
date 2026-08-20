@@ -138,6 +138,9 @@ type GenerateOptions struct {
 	Purpose   CallPurpose
 }
 
+// RuntimeWaterfallInput marks GenerateOptions as the LLM streaming extension input.
+func (GenerateOptions) RuntimeWaterfallInput() {}
+
 // ModelDiscovery resolves candidate metadata for a draft endpoint.
 type ModelDiscovery interface {
 	Discover(context.Context, ModelDiscoveryRequest) ([]DiscoveredModel, error)
