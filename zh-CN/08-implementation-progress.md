@@ -240,7 +240,7 @@ interaction owner registers stable rpcId + decoder
 | S6-D05 | 能力 | LSP | Deferred | 当前主会话不依赖 |
 | S6-D06 | 能力 | Sandbox | Deferred | 当前主会话不依赖 |
 | S6-D07 | 能力 | Guard | Deferred | 当前主会话不依赖 |
-| S6-D08 | Credentials | Provider/Manager/LiveStore、local owner-only JSON、DeepSeek 请求时解析与 Host API | Completed | Contract Verified：`credentialsFactory` 提供能力，local 只实现 `LiveStore`；环境优先且只读，`credentials.describe` 不含值，固定源 Client differential 已通过 |
+| S6-D08 | Credentials | Provider/Manager/LiveStore、local owner-only JSON、DeepSeek 请求时解析与 Host API | Completed | Contract Verified：`credentials/factory.Factory` 构造能力，local 只实现 `LiveStore`；环境优先且只读，`credentials.describe` 不含值，固定源 Client differential 已通过 |
 | S6-D09 | 能力 | Attachment | Deferred | 当前主会话不依赖；Tools 只保留已被 image content 消费的稳定 `ImageAttachmentRef` metadata contract |
 | S6-D10 | 能力 | Spill | Deferred | 当前主会话不依赖 |
 | S6-D11 | 能力 | Settings Provider、typed namespace、file persistence 与 mutation API | Deferred | 当前只有既有 API absent-provider 分支；完整 Web profile onboarding 不作为主流程依赖 |
@@ -381,13 +381,14 @@ interaction owner registers stable rpcId + decoder
 | RetryPolicy 默认值、tagged union、safe range 与 detached snapshot | `llm/retry_policy_test.go` |
 | LLM Retry normal/always、budget、Retry-After/backoff、durable history、取消与 drain | `llmretry/consumer_test.go`、`llmretry/policy_test.go`、`llmretry/history_test.go` |
 | StreamChunk 增量组装、first-close 和 max-token tool-call 处理 | `llm/assembler_test.go` |
-| DeepSeek typed config、环境优先级和 immutable snapshot | `internal/llmdeepseek/config_test.go` |
-| DeepSeek message/request serialization 与 image/reasoning/stop 语义 | `internal/llmdeepseek/serialize_test.go` |
-| DeepSeek SSE framing、translation、usage、finish、empty/malformed/timeout | `internal/llmdeepseek/stream_test.go` |
-| DeepSeek HTTP headers、metadata、错误分类、credential、cancel、中途失败与可复用 response recordings | `internal/llmdeepseek/adapter_test.go`、`internal/llmdeepseek/testdata/recordings/` |
+| DeepSeek typed config、环境优先级和 immutable snapshot | `internal/llm/deepseek/config_test.go` |
+| DeepSeek message/request serialization 与 image/reasoning/stop 语义 | `internal/llm/deepseek/serialize_test.go` |
+| DeepSeek SSE framing、translation、usage、finish、empty/malformed/timeout | `internal/llm/deepseek/stream_test.go` |
+| DeepSeek HTTP headers、metadata、错误分类、credential、cancel、中途失败与可复用 response recordings | `internal/llm/deepseek/adapter_test.go`、`internal/llm/deepseek/testdata/recordings/` |
+| DeepSeek Factory strict config、Service settlement、owned route/directory、partial Apply rollback 与 lazy identity | `internal/llm/deepseek/plugin_test.go` |
 | Credentials precedence、local owner-only JSON、atomic write 与 value-free description | `credentials/local/store_test.go`、`apiproxy/credentials_gateway_test.go` |
 | 固定源 `WebApiClient.credentials` 经真实 Go Host 完成 describe/set/unset | `TestPinnedSourceCredentialsWebApiClientUsesGoProvider` |
-| anonymous Harness user identity 的持久化与损坏恢复 | `internal/anonymoususerid/store_test.go` |
+| anonymous Harness user identity 的持久化与损坏恢复 | `internal/llm/deepseek/anonymoususerid/store_test.go` |
 | 固定源与 Go 的 DeepSeek request、stream assembly 和 retry default 一致 | `TestPinnedSourceLLMDeepSeekMatchesGo` |
 | 固定源与 Go 的 provider-routed retry delay、schedule/start、chain 与最终成功一致 | `TestPinnedSourceLLMRetryMatchesGo` |
 | Agent Registry publication、rollback、reentrant detach、ownership 与顺序 | `agent/registry_test.go` |

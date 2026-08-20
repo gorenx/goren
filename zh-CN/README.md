@@ -40,8 +40,10 @@
 - [`apiproxy/session/README.zh-CN.md`](../apiproxy/session/README.zh-CN.md)：Session API façade、读取/生命周期/模型/对话/Search 用例与 Agent activation 状态。
 - [`internal/assembly/README.zh-CN.md`](../internal/assembly/README.zh-CN.md)：Factory Catalog、typed config、依赖结算与 composition rollback。
 - [`workspace/README.zh-CN.md`](../workspace/README.zh-CN.md)：Workspace Registry、Session accounting、SQLite adapter 与 API/Host 交互。
+- [`llm/README.zh-CN.md`](../llm/README.zh-CN.md)：provider-neutral LLM Runtime、typed Service/Event/Waterfall、Adapter registration 与流归一化。
+- [`llm/factory/README.zh-CN.md`](../llm/factory/README.zh-CN.md)：LLM 领域 typed config、严格构造与 Assembly 注册边界。
 - [`llmretry/README.zh-CN.md`](../llmretry/README.zh-CN.md)：默认 RetryPolicy Consumer 的职责、normal/always 决策、durable retry events、历史投影和取消/卸载流程。
-- [`internal/llmdeepseek/README.zh-CN.md`](../internal/llmdeepseek/README.zh-CN.md)：DeepSeek direct Provider adapter 的 typed config、lazy request、HTTP/SSE、流转换、错误/取消和 response recordings。
+- [`internal/llm/deepseek/README.zh-CN.md`](../internal/llm/deepseek/README.zh-CN.md)：DeepSeek direct Provider adapter 的 typed config、lazy request、HTTP/SSE、流转换、错误/取消和 response recordings。
 - [`web/README.zh-CN.md`](../web/README.zh-CN.md)：内嵌主会话 UI、浏览器状态对象、Host RPC/WebSocket/respond 交互与边界。
 - [`credentials/README.zh-CN.md`](../credentials/README.zh-CN.md)：Credentials 能力、Manager precedence、storage-only LiveStore 与 local owner-only 文件实现。
 
