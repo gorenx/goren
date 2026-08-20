@@ -1,4 +1,4 @@
-package llmdeepseek
+package deepseek
 
 import (
 	"encoding/json"
@@ -21,7 +21,10 @@ func SerializeRequest(requestOptions llm.GenerateOptions, defaults RequestDefaul
 	}
 	if requestOptions.System != nil {
 		wireMessages = append([]wireMessage{
-			wireSystemMessage{Role: "system", Content: *requestOptions.System},
+			wireSystemMessage{
+				Role:    "system",
+				Content: *requestOptions.System,
+			},
 		}, wireMessages...)
 	}
 	thinking, err := resolveThinking(requestOptions, defaults)
@@ -36,18 +39,26 @@ func SerializeRequest(requestOptions llm.GenerateOptions, defaults RequestDefaul
 		wireTools = append(wireTools, wireTool{
 			Type: "function",
 			Function: wireToolDefinition{
-				Name: schema.Name, Description: schema.Description,
-				Parameters: append(json.RawMessage(nil), schema.Parameters...),
+				Name:        schema.Name,
+				Description: schema.Description,
+				Parameters:  append(json.RawMessage(nil), schema.Parameters...),
 			},
 		})
 	}
 	request := wireRequest{
-		Model: requestOptions.Model, Messages: wireMessages, Stream: true,
-		StreamOptions: wireStreamOptions{IncludeUsage: true},
-		Temperature:   requestOptions.Temperature, MaxTokens: requestOptions.MaxTokens,
+		Model:    requestOptions.Model,
+		Messages: wireMessages,
+		Stream:   true,
+		StreamOptions: wireStreamOptions{
+			IncludeUsage: true,
+		},
+		Temperature: requestOptions.Temperature,
+		MaxTokens:   requestOptions.MaxTokens,
 	}
 	if thinking.thinking != nil {
-		request.Thinking = &wireThinking{Type: *thinking.thinking}
+		request.Thinking = &wireThinking{
+			Type: *thinking.thinking,
+		}
 	}
 	request.ReasoningEffort = thinking.effort
 	if len(wireTools) > 0 {
@@ -62,7 +73,9 @@ func SerializeRequest(requestOptions llm.GenerateOptions, defaults RequestDefaul
 
 func resolveThinking(requestOptions llm.GenerateOptions, defaults RequestDefaults) (resolvedThinking, error) {
 	if requestOptions.Purpose == llm.PurposeSessionTitle {
-		return resolvedThinking{thinking: thinkingPointer(ThinkingDisabled)}, nil
+		return resolvedThinking{
+			thinking: thinkingPointer(ThinkingDisabled),
+		}, nil
 	}
 	effort := defaults.ReasoningEffort
 	if requestOptions.ReasoningEffort != "" {
@@ -86,13 +99,20 @@ func resolveThinking(requestOptions llm.GenerateOptions, defaults RequestDefault
 	if effort != nil {
 		switch *effort {
 		case ReasoningOff:
-			return resolvedThinking{thinking: thinkingPointer(ThinkingDisabled)}, nil
+			return resolvedThinking{
+				thinking: thinkingPointer(ThinkingDisabled),
+			}, nil
 		case ReasoningHigh, ReasoningMax:
 			wireEffort := *effort
-			return resolvedThinking{thinking: thinkingPointer(ThinkingEnabled), effort: &wireEffort}, nil
+			return resolvedThinking{
+				thinking: thinkingPointer(ThinkingEnabled),
+				effort:   &wireEffort,
+			}, nil
 		}
 	}
-	return resolvedThinking{thinking: cloneThinking(defaults.Thinking)}, nil
+	return resolvedThinking{
+		thinking: cloneThinking(defaults.Thinking),
+	}, nil
 }
 
 func thinkingPointer(value ThinkingMode) *ThinkingMode { return &value }

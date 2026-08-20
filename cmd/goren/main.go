@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/gorenx/goren/internal/assembly"
-	"github.com/gorenx/goren/internal/llmdeepseek"
+	"github.com/gorenx/goren/internal/llm/deepseek"
 	"github.com/gorenx/goren/plugin"
 )
 
@@ -70,7 +70,7 @@ func main() {
 	credentialPath := filepath.Join(filepath.Dir(paths.sessionDatabase), ".credentials.json")
 	fmt.Fprintf(os.Stdout, "Goren Agent started\n  Web: http://%s\n  Workspace: %s\n  Data: %s\n  Session DB: %s\n  Workspace DB: %s\n  Model: %s / %s\n  Credentials: %s (environment %s takes precedence)\n",
 		settings.address, workingDirectory, paths.dataDirectory, paths.sessionDatabase, paths.workspaceDatabase,
-		llmdeepseek.ProviderRoute, llmdeepseek.DefaultModelID, credentialPath, llmdeepseek.DefaultAPIKeyEnv,
+		deepseek.ProviderRoute, deepseek.DefaultModelID, credentialPath, deepseek.DefaultAPIKeyEnv,
 	)
 	<-lifecycle.Done()
 	closeContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)

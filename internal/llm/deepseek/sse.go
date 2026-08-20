@@ -1,4 +1,4 @@
-package llmdeepseek
+package deepseek
 
 import (
 	"bufio"
@@ -119,7 +119,10 @@ func (streamState *ssePayloadStream) readLine(requestContext context.Context) (s
 	resultChannel := make(chan lineResult, 1)
 	go func() {
 		line, err := streamState.reader.ReadString('\n')
-		resultChannel <- lineResult{line: line, err: err}
+		resultChannel <- lineResult{
+			line: line,
+			err:  err,
+		}
 	}()
 	timer := time.NewTimer(streamState.idleTimeout)
 	defer timer.Stop()

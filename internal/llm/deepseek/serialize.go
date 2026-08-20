@@ -1,4 +1,4 @@
-package llmdeepseek
+package deepseek
 
 import (
 	"fmt"
@@ -25,7 +25,10 @@ func SerializeMessages(conversation []llm.Message) ([]wireMessage, error) {
 		}
 		switch entry.ConversationRole() {
 		case llm.RoleSystem:
-			wireMessages = append(wireMessages, wireSystemMessage{Role: "system", Content: flattenText(content)})
+			wireMessages = append(wireMessages, wireSystemMessage{
+				Role:    "system",
+				Content: flattenText(content),
+			})
 		case llm.RoleAssistant:
 			wireMessages = append(wireMessages, serializeAssistant(content))
 		case llm.RoleUser:
@@ -47,11 +50,18 @@ func serializeAssistant(content []llm.ContentBlock) wireAssistantMessage {
 			continue
 		}
 		toolCalls = append(toolCalls, wireToolCall{
-			ID: string(call.ID), Type: "function",
-			Function: wireToolFunction{Name: call.Name, Arguments: call.Arguments},
+			ID:   string(call.ID),
+			Type: "function",
+			Function: wireToolFunction{
+				Name:      call.Name,
+				Arguments: call.Arguments,
+			},
 		})
 	}
-	result := wireAssistantMessage{Role: "assistant", Content: stringPointer(visibleText)}
+	result := wireAssistantMessage{
+		Role:    "assistant",
+		Content: stringPointer(visibleText),
+	}
 	if len(toolCalls) > 0 {
 		result.ToolCalls = toolCalls
 		if reasoningText != "" {
@@ -72,7 +82,10 @@ func serializeUser(content []llm.ContentBlock) []wireMessage {
 	visibleText := flattenText(content)
 	wireMessages := make([]wireMessage, 0, len(toolResults)+1)
 	if visibleText != "" || len(toolResults) == 0 {
-		wireMessages = append(wireMessages, wireUserMessage{Role: "user", Content: visibleText})
+		wireMessages = append(wireMessages, wireUserMessage{
+			Role:    "user",
+			Content: visibleText,
+		})
 	}
 	for _, result := range toolResults {
 		output := flattenText(result.Content)
@@ -80,7 +93,9 @@ func serializeUser(content []llm.ContentBlock) []wireMessage {
 			output = emptyToolOutput
 		}
 		wireMessages = append(wireMessages, wireToolMessage{
-			Role: "tool", ToolCallID: string(result.ToolCallID), Content: output,
+			Role:       "tool",
+			ToolCallID: string(result.ToolCallID),
+			Content:    output,
 		})
 	}
 	return wireMessages

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorenx/goren/internal/llmdeepseek"
+	"github.com/gorenx/goren/internal/llm/deepseek"
 	"github.com/gorenx/goren/llm"
 )
 
@@ -27,6 +27,29 @@ type llmContractObservation struct {
 	Chunks       []llm.StreamChunk      `json:"chunks"`
 	Assembled    llmAssemblyObservation `json:"assembled"`
 	RetryDefault llm.RetryPolicy        `json:"retryDefault"`
+}
+
+type contractConnectionSource struct {
+	configuration deepseek.ConnectionOptions
+}
+
+func (source contractConnectionSource) CurrentConnection() (deepseek.ConnectionOptions, error) {
+	return source.configuration.Snapshot(), nil
+}
+
+type contractAPIKeyResolver struct{}
+
+func (contractAPIKeyResolver) ResolveAPIKey(
+	context.Context,
+	deepseek.ConnectionOptions,
+) (string, error) {
+	return "key", nil
+}
+
+type contractUserIDProvider struct{}
+
+func (contractUserIDProvider) UserID() (string, error) {
+	return "00000000-0000-4000-8000-000000000001", nil
 }
 
 func TestPinnedSourceLLMDeepSeekMatchesGo(t *testing.T) {
@@ -51,22 +74,22 @@ func TestPinnedSourceLLMDeepSeekMatchesGo(t *testing.T) {
 			llm.ToolResultBlock{Type: "tool-result", ToolCallID: "call-1", Content: []llm.ContentBlock{}},
 		}),
 	}
-	wireMessages, err := llmdeepseek.SerializeMessages(conversation)
+	wireMessages, err := deepseek.SerializeMessages(conversation)
 	if err != nil {
 		t.Fatal(err)
 	}
 	emptyStop := []string{}
 	requestOptions := llm.GenerateOptions{
 		CallConfig: llm.CallConfig{
-			Provider: llmdeepseek.ProviderRoute, Model: "deepseek-v4-flash",
+			Provider: deepseek.ProviderRoute, Model: "deepseek-v4-flash",
 			ReasoningEffort: "max", Stop: emptyStop,
 		},
 		Messages: conversation, System: contractString("system"),
 		Tools: []llm.ToolSchema{{Name: "lookup", Description: "Lookup", Parameters: json.RawMessage(`{"type":"object"}`)}},
 	}
-	high := llmdeepseek.ReasoningHigh
-	enabled := llmdeepseek.ThinkingEnabled
-	wireRequest, err := llmdeepseek.SerializeRequest(requestOptions, llmdeepseek.RequestDefaults{
+	high := deepseek.ReasoningHigh
+	enabled := deepseek.ThinkingEnabled
+	wireRequest, err := deepseek.SerializeRequest(requestOptions, deepseek.RequestDefaults{
 		Thinking: &enabled, ReasoningEffort: &high,
 	})
 	if err != nil {
@@ -86,14 +109,18 @@ func TestPinnedSourceLLMDeepSeekMatchesGo(t *testing.T) {
 	}))
 	defer testServer.Close()
 	baseURL := testServer.URL
-	connection, err := llmdeepseek.ResolveOptions(llmdeepseek.Config{BaseURL: &baseURL}, llmdeepseek.Environment{})
+	connection, err := deepseek.ResolveOptions(deepseek.Config{
+		BaseURL: &baseURL,
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	backend, err := llmdeepseek.NewAdapter(llmdeepseek.AdapterOptions{
-		CurrentOptions: func() (llmdeepseek.ConnectionOptions, error) { return connection.Snapshot(), nil },
-		ResolveAPIKey:  func(context.Context, llmdeepseek.ConnectionOptions) (string, error) { return "key", nil },
-		ResolveUserID:  func() (string, error) { return "00000000-0000-4000-8000-000000000001", nil },
+	backend, err := deepseek.NewAdapter(deepseek.AdapterDependencies{
+		Connections: contractConnectionSource{
+			configuration: connection,
+		},
+		Credentials: contractAPIKeyResolver{},
+		Identity:    contractUserIDProvider{},
 	})
 	if err != nil {
 		t.Fatal(err)

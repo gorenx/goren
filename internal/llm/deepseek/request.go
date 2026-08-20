@@ -1,4 +1,4 @@
-package llmdeepseek
+package deepseek
 
 import (
 	"bytes"
@@ -29,11 +29,11 @@ func (backend *Adapter) openStream(
 	cancelOperation context.CancelFunc,
 	requestOptions llm.GenerateOptions,
 ) (llm.ChunkStream, string, error) {
-	connection, err := backend.currentOptions()
+	connection, err := backend.connections.CurrentConnection()
 	if err != nil {
 		return nil, "", err
 	}
-	apiKey, err := backend.resolveAPIKey(requestContext, connection)
+	apiKey, err := backend.credentials.ResolveAPIKey(requestContext, connection)
 	if err != nil {
 		return nil, "", err
 	}
@@ -41,11 +41,11 @@ func (backend *Adapter) openStream(
 	if err != nil {
 		return nil, "", err
 	}
-	userID, err := backend.resolveUserID()
+	identityValue, err := backend.identity.UserID()
 	if err != nil {
 		return nil, "", err
 	}
-	if userID == "" {
+	if identityValue == "" {
 		return nil, "", errors.New("llm-deepseek: anonymous user id is empty")
 	}
 	wireValue, err := SerializeRequest(requestOptions, connection.Defaults)
@@ -67,7 +67,7 @@ func (backend *Adapter) openStream(
 	httpRequest.Header.Set("content-type", "application/json")
 	httpRequest.Header.Set("accept", "text/event-stream")
 	httpRequest.Header.Set("user-agent", userAgent(backend.version))
-	httpRequest.Header.Set("x-deepseek-harness-user-id", userID)
+	httpRequest.Header.Set("x-deepseek-harness-user-id", identityValue)
 	if requestOptions.SessionID != "" {
 		httpRequest.Header.Set("x-deepseek-harness-session-id", requestOptions.SessionID)
 	}
@@ -115,8 +115,11 @@ func (backend *Adapter) doRequest(
 ) (*http.Response, error) {
 	resultChannel := make(chan responseResult)
 	go func() {
-		response, err := backend.requestSender.Do(httpRequest)
-		result := responseResult{response: response, err: err}
+		response, err := backend.requests.Do(httpRequest)
+		result := responseResult{
+			response: response,
+			err:      err,
+		}
 		select {
 		case resultChannel <- result:
 		case <-operationContext.Done():
@@ -136,7 +139,9 @@ func (backend *Adapter) doRequest(
 			return nil, llm.MustLlmError(
 				fmt.Sprintf("DeepSeek API request to %s failed", baseURL),
 				"TRANSPORT",
-				llm.LlmErrorOptions{Cause: result.err},
+				llm.LlmErrorOptions{
+					Cause: result.err,
+				},
 			)
 		}
 		if result.response == nil {
@@ -177,7 +182,13 @@ func normalizeAPIKey(rawValue string, credentialRef string) (string, error) {
 }
 
 func abortedError(cause error) error {
-	return llm.MustLlmError("DeepSeek request aborted by caller", "ABORTED", llm.LlmErrorOptions{Cause: cause})
+	return llm.MustLlmError(
+		"DeepSeek request aborted by caller",
+		"ABORTED",
+		llm.LlmErrorOptions{
+			Cause: cause,
+		},
+	)
 }
 
 func userAgent(version string) string {

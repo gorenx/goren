@@ -1,4 +1,4 @@
-package llmdeepseek
+package deepseek
 
 import (
 	"context"
@@ -64,14 +64,16 @@ func TestSSEParserIdleTimeoutClosesBody(t *testing.T) {
 
 func TestTranslateAssemblesReasoningTextToolsUsageAndFinish(t *testing.T) {
 	t.Parallel()
-	payloads := &slicePayloadStream{payloads: []string{
-		`{"choices":[{"delta":{"reasoning_content":""}}]}`,
-		`{"choices":[{"delta":{"reasoning_content":"think"}}]}`,
-		`{"choices":[{"delta":{"content":"answer"}}]}`,
-		`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"lookup","arguments":"{\"q\":"}}]}}]}`,
-		`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"x\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":4,"prompt_cache_hit_tokens":7,"completion_tokens_details":{"reasoning_tokens":2}}}`,
-		donePayload,
-	}}
+	payloads := &slicePayloadStream{
+		payloads: []string{
+			`{"choices":[{"delta":{"reasoning_content":""}}]}`,
+			`{"choices":[{"delta":{"reasoning_content":"think"}}]}`,
+			`{"choices":[{"delta":{"content":"answer"}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"lookup","arguments":"{\"q\":"}}]}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"x\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":4,"prompt_cache_hit_tokens":7,"completion_tokens_details":{"reasoning_tokens":2}}}`,
+			donePayload,
+		},
+	}
 	chunkFlow, err := translatePayloads(payloads)
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +109,9 @@ func TestTranslateAssemblesReasoningTextToolsUsageAndFinish(t *testing.T) {
 
 func TestTranslateClassifiesEmptyAndMalformedResponses(t *testing.T) {
 	t.Parallel()
-	chunkFlow, err := translatePayloads(&slicePayloadStream{payloads: []string{donePayload}})
+	chunkFlow, err := translatePayloads(&slicePayloadStream{
+		payloads: []string{donePayload},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +125,9 @@ func TestTranslateClassifiesEmptyAndMalformedResponses(t *testing.T) {
 		t.Fatalf("empty response finish = %#v", finish)
 	}
 
-	malformed, err := translatePayloads(&slicePayloadStream{payloads: []string{"{bad"}})
+	malformed, err := translatePayloads(&slicePayloadStream{
+		payloads: []string{"{bad"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

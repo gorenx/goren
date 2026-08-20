@@ -1,4 +1,4 @@
-package llmdeepseek
+package deepseek
 
 import "encoding/json"
 

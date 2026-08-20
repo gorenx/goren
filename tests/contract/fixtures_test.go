@@ -14,7 +14,7 @@ import (
 	"github.com/gorenx/goren/agentloop"
 	"github.com/gorenx/goren/apiproxy"
 	"github.com/gorenx/goren/connection"
-	"github.com/gorenx/goren/internal/llmdeepseek"
+	"github.com/gorenx/goren/internal/llm/deepseek"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/llmretry"
 	"github.com/gorenx/goren/session"
@@ -205,7 +205,7 @@ func TestPinnedManifestMatchesGoSurface(t *testing.T) {
 	llmSurface := manifestDocument.Included.LLM
 	if llmSurface.Service != llm.ServiceName ||
 		!slices.Equal(llmSurface.Events, []string{llm.AdaptersUpdatedEventName, llm.StreamEventName}) ||
-		llmSurface.ProviderRoute != llmdeepseek.ProviderRoute ||
+		llmSurface.ProviderRoute != deepseek.ProviderRoute ||
 		!slices.Equal(llmSurface.DefaultModels, []string{"deepseek-v4-flash", "deepseek-v4-pro"}) ||
 		!slices.Equal(llmSurface.ContentTypes, []string{"text", "reasoning", "image", "tool-call", "tool-result"}) ||
 		!slices.Equal(llmSurface.StreamChunkTypes, []string{

@@ -1,4 +1,4 @@
-package llmdeepseek
+package deepseek
 
 import (
 	"encoding/json"
@@ -7,14 +7,22 @@ import (
 	"testing"
 )
 
+type environmentFixture struct {
+	values map[string]string
+}
+
+func (fixture environmentFixture) Lookup(variableName string) (string, bool) {
+	value, found := fixture.values[variableName]
+	return value, found
+}
+
 func TestResolveOptionsDefaultsAndEnvironmentPrecedence(t *testing.T) {
 	t.Parallel()
-	connection, err := ResolveOptions(Config{}, Environment{LookupEnv: func(name string) (string, bool) {
-		if name == BaseURLEnv {
-			return "https://gateway.example", true
-		}
-		return "", false
-	}})
+	connection, err := ResolveOptions(Config{}, environmentFixture{
+		values: map[string]string{
+			BaseURLEnv: "https://gateway.example",
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,9 +32,13 @@ func TestResolveOptionsDefaultsAndEnvironmentPrecedence(t *testing.T) {
 		t.Fatalf("resolved defaults = %#v", connection)
 	}
 	explicit := "https://configured.example"
-	connection, err = ResolveOptions(Config{BaseURL: &explicit}, Environment{LookupEnv: func(string) (string, bool) {
-		return "https://ignored.example", true
-	}})
+	connection, err = ResolveOptions(Config{
+		BaseURL: &explicit,
+	}, environmentFixture{
+		values: map[string]string{
+			BaseURLEnv: "https://ignored.example",
+		},
+	})
 	if err != nil || connection.BaseURL != explicit {
 		t.Fatalf("explicit endpoint = (%#v, %v)", connection, err)
 	}
@@ -38,7 +50,7 @@ func TestConfigPreservesCatalogOmissionAndRejectsInvalidShapes(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"models":[{"id":"fallback"},{"id":"named","name":"Named"}]}`), &settings); err != nil {
 		t.Fatal(err)
 	}
-	connection, err := ResolveOptions(settings, Environment{})
+	connection, err := ResolveOptions(settings, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,15 +63,51 @@ func TestConfigPreservesCatalogOmissionAndRejectsInvalidShapes(t *testing.T) {
 		raw   string
 		want  string
 	}{
-		{label: "unknown top-level", raw: `{"extra":true}`, want: "unknown field"},
-		{label: "unknown catalog", raw: `{"models":[{"id":"m","extra":true}]}`, want: "unknown field"},
-		{label: "null catalog name", raw: `{"models":[{"id":"m","name":null}]}`, want: "must not be null"},
-		{label: "empty catalog name", raw: `{"models":[{"id":"m","name":""}]}`, want: "empty name"},
-		{label: "fractional context", raw: `{"models":[{"id":"m","contextWindow":1.5}]}`, want: "invalid catalog model contextWindow"},
-		{label: "duplicate model", raw: `{"models":[{"id":"m"},{"id":"m"}]}`, want: "duplicate catalog model"},
-		{label: "disabled high", raw: `{"thinking":"disabled","reasoningEffort":"high"}`, want: "only reasoningEffort off"},
-		{label: "unsafe max tokens", raw: `{"maxTokens":9007199254740992}`, want: "positive safe integer"},
-		{label: "null retry", raw: `{"retryPolicy":null}`, want: "must not be null"},
+		{
+			label: "unknown top-level",
+			raw:   `{"extra":true}`,
+			want:  "unknown field",
+		},
+		{
+			label: "unknown catalog",
+			raw:   `{"models":[{"id":"m","extra":true}]}`,
+			want:  "unknown field",
+		},
+		{
+			label: "null catalog name",
+			raw:   `{"models":[{"id":"m","name":null}]}`,
+			want:  "must not be null",
+		},
+		{
+			label: "empty catalog name",
+			raw:   `{"models":[{"id":"m","name":""}]}`,
+			want:  "empty name",
+		},
+		{
+			label: "fractional context",
+			raw:   `{"models":[{"id":"m","contextWindow":1.5}]}`,
+			want:  "invalid catalog model contextWindow",
+		},
+		{
+			label: "duplicate model",
+			raw:   `{"models":[{"id":"m"},{"id":"m"}]}`,
+			want:  "duplicate catalog model",
+		},
+		{
+			label: "disabled high",
+			raw:   `{"thinking":"disabled","reasoningEffort":"high"}`,
+			want:  "only reasoningEffort off",
+		},
+		{
+			label: "unsafe max tokens",
+			raw:   `{"maxTokens":9007199254740992}`,
+			want:  "positive safe integer",
+		},
+		{
+			label: "null retry",
+			raw:   `{"retryPolicy":null}`,
+			want:  "must not be null",
+		},
 	}
 	for _, testCase := range tests {
 		testCase := testCase
@@ -68,7 +116,7 @@ func TestConfigPreservesCatalogOmissionAndRejectsInvalidShapes(t *testing.T) {
 			var candidate Config
 			decodeErr := json.Unmarshal([]byte(testCase.raw), &candidate)
 			if decodeErr == nil {
-				_, decodeErr = ResolveOptions(candidate, Environment{})
+				_, decodeErr = ResolveOptions(candidate, nil)
 			}
 			if decodeErr == nil || !strings.Contains(decodeErr.Error(), testCase.want) {
 				t.Fatalf("error = %v, want containing %q", decodeErr, testCase.want)
@@ -79,7 +127,7 @@ func TestConfigPreservesCatalogOmissionAndRejectsInvalidShapes(t *testing.T) {
 
 func TestConnectionSnapshotDetachesMutableConfiguration(t *testing.T) {
 	t.Parallel()
-	connection, err := ResolveOptions(Config{}, Environment{})
+	connection, err := ResolveOptions(Config{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

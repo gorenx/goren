@@ -1,4 +1,4 @@
-package llmdeepseek
+package deepseek
 
 import (
 	"context"
@@ -8,11 +8,14 @@ import (
 )
 
 func (backend *Adapter) DescribeProvider(providerRoute string) (llm.ProviderInfo, error) {
-	return llm.ProviderInfo{ID: providerRoute, Name: "DeepSeek"}, nil
+	return llm.ProviderInfo{
+		ID:   providerRoute,
+		Name: "DeepSeek",
+	}, nil
 }
 
 func (backend *Adapter) ProviderRetryPolicy(string) (llm.RetryPolicy, error) {
-	connection, err := backend.currentOptions()
+	connection, err := backend.connections.CurrentConnection()
 	if err != nil {
 		return nil, err
 	}
@@ -26,7 +29,7 @@ func (backend *Adapter) ListModels(requestContext context.Context, providerRoute
 	if err := requestContext.Err(); err != nil {
 		return nil, err
 	}
-	connection, err := backend.currentOptions()
+	connection, err := backend.connections.CurrentConnection()
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +44,7 @@ func (backend *Adapter) ResolveModel(requestContext context.Context, providerRou
 	if err := requestContext.Err(); err != nil {
 		return llm.ResolvedModelInfo{}, err
 	}
-	connection, err := backend.currentOptions()
+	connection, err := backend.connections.CurrentConnection()
 	if err != nil {
 		return llm.ResolvedModelInfo{}, err
 	}
@@ -58,7 +61,9 @@ func (backend *Adapter) ResolveModel(requestContext context.Context, providerRou
 	maximumTokens := connection.MaxTokens
 	if configured == nil {
 		resolved.ModelInfo = llm.ModelInfo{
-			Provider: providerRoute, ID: modelID, Name: modelID,
+			Provider:        providerRoute,
+			ID:              modelID,
+			Name:            modelID,
 			InputModalities: []llm.ModelModality{llm.ModalityText},
 		}
 	} else {
@@ -70,7 +75,9 @@ func (backend *Adapter) ResolveModel(requestContext context.Context, providerRou
 			maximumTokens = *configured.MaxTokens
 		}
 	}
-	resolved.Context = &llm.ModelContext{ContextWindow: contextWindow}
+	resolved.Context = &llm.ModelContext{
+		ContextWindow: contextWindow,
+	}
 	resolved.DefaultMaxTokens = intPointer(maximumTokens)
 	resolved.Reasoning = reasoningInfo(connection.Defaults)
 	return resolved, nil
@@ -86,7 +93,10 @@ func modelInfo(providerRoute string, catalogEntry CatalogModel) llm.ModelInfo {
 		description = *catalogEntry.Description
 	}
 	return llm.ModelInfo{
-		Provider: providerRoute, ID: catalogEntry.ID, Name: modelName, Description: description,
+		Provider:        providerRoute,
+		ID:              catalogEntry.ID,
+		Name:            modelName,
+		Description:     description,
 		InputModalities: []llm.ModelModality{llm.ModalityText},
 	}
 }
@@ -94,7 +104,12 @@ func modelInfo(providerRoute string, catalogEntry CatalogModel) llm.ModelInfo {
 func reasoningInfo(defaults RequestDefaults) *llm.ModelReasoningInfo {
 	if defaults.Thinking != nil && *defaults.Thinking == ThinkingDisabled {
 		return &llm.ModelReasoningInfo{
-			Efforts:       []llm.ReasoningEffortInfo{{ID: llm.ReasoningEffortID(ReasoningOff), Name: "Off"}},
+			Efforts: []llm.ReasoningEffortInfo{
+				{
+					ID:   llm.ReasoningEffortID(ReasoningOff),
+					Name: "Off",
+				},
+			},
 			DefaultEffort: llm.ReasoningEffortID(ReasoningOff),
 		}
 	}
@@ -104,9 +119,18 @@ func reasoningInfo(defaults RequestDefaults) *llm.ModelReasoningInfo {
 	}
 	return &llm.ModelReasoningInfo{
 		Efforts: []llm.ReasoningEffortInfo{
-			{ID: llm.ReasoningEffortID(ReasoningOff), Name: "Off"},
-			{ID: llm.ReasoningEffortID(ReasoningHigh), Name: "High"},
-			{ID: llm.ReasoningEffortID(ReasoningMax), Name: "Max"},
+			{
+				ID:   llm.ReasoningEffortID(ReasoningOff),
+				Name: "Off",
+			},
+			{
+				ID:   llm.ReasoningEffortID(ReasoningHigh),
+				Name: "High",
+			},
+			{
+				ID:   llm.ReasoningEffortID(ReasoningMax),
+				Name: "Max",
+			},
 		},
 		DefaultEffort: defaultEffort,
 	}

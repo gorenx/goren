@@ -9,8 +9,8 @@ import (
 	"sync"
 
 	"github.com/gorenx/goren/credentials"
-	"github.com/gorenx/goren/internal/anonymoususerid"
-	"github.com/gorenx/goren/internal/llmdeepseek"
+	"github.com/gorenx/goren/internal/llm/deepseek"
+	"github.com/gorenx/goren/internal/llm/deepseek/anonymoususerid"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 )
@@ -22,22 +22,22 @@ type deepSeekFactory struct {
 
 func (deepSeekFactory) Name() string { return DeepSeekFactoryName }
 
-func (factory deepSeekFactory) DecodeConfig(rawConfig json.RawMessage) (llmdeepseek.ConnectionOptions, error) {
-	settings, err := plugin.DecodeStrictConfig[llmdeepseek.Config](rawConfig, nil)
+func (factory deepSeekFactory) DecodeConfig(rawConfig json.RawMessage) (deepseek.ConnectionOptions, error) {
+	settings, err := plugin.DecodeStrictConfig[deepseek.Config](rawConfig, nil)
 	if err != nil {
-		return llmdeepseek.ConnectionOptions{}, err
+		return deepseek.ConnectionOptions{}, err
 	}
-	return llmdeepseek.ResolveOptions(settings, llmdeepseek.Environment{LookupEnv: factory.lookupEnv})
+	return deepseek.ResolveOptions(settings, deepseek.Environment{LookupEnv: factory.lookupEnv})
 }
 
-func (factory deepSeekFactory) New(_ context.Context, connection llmdeepseek.ConnectionOptions) (plugin.Plugin, error) {
+func (factory deepSeekFactory) New(_ context.Context, connection deepseek.ConnectionOptions) (plugin.Plugin, error) {
 	return &deepSeekPlugin{
 		connection: connection.Snapshot(), lookupEnv: factory.lookupEnv, userHome: factory.userHome,
 	}, nil
 }
 
 type deepSeekPlugin struct {
-	connection llmdeepseek.ConnectionOptions
+	connection deepseek.ConnectionOptions
 	lookupEnv  func(string) (string, bool)
 	userHome   func() (string, error)
 }
@@ -73,11 +73,11 @@ func (instance *deepSeekPlugin) Apply(requestContext context.Context, pluginScop
 		}
 		return identityStore.Value()
 	}
-	backend, err := llmdeepseek.NewAdapter(llmdeepseek.AdapterOptions{
-		CurrentOptions: func() (llmdeepseek.ConnectionOptions, error) {
+	backend, err := deepseek.NewAdapter(deepseek.AdapterOptions{
+		CurrentOptions: func() (deepseek.ConnectionOptions, error) {
 			return instance.connection.Snapshot(), nil
 		},
-		ResolveAPIKey: func(resolveContext context.Context, connection llmdeepseek.ConnectionOptions) (string, error) {
+		ResolveAPIKey: func(resolveContext context.Context, connection deepseek.ConnectionOptions) (string, error) {
 			ref, refErr := credentials.NewRef(connection.APIKeyEnv)
 			if refErr != nil {
 				return "", refErr
@@ -92,7 +92,7 @@ func (instance *deepSeekPlugin) Apply(requestContext context.Context, pluginScop
 			return "", llm.MustLlmError(
 				fmt.Sprintf(
 					"llm-deepseek: no API key for provider route %q; configure %s in Web Settings or export it in the launching environment",
-					llmdeepseek.ProviderRoute, connection.APIKeyEnv,
+					deepseek.ProviderRoute, connection.APIKeyEnv,
 				),
 				"MISSING_CREDENTIAL",
 			)
@@ -103,11 +103,11 @@ func (instance *deepSeekPlugin) Apply(requestContext context.Context, pluginScop
 		return err
 	}
 	if _, err := llmService.RegisterConfigurableProviders(requestContext, pluginScope, []llm.ConfigurableProvider{{
-		Provider: llmdeepseek.ProviderRoute, DisplayName: "DeepSeek",
-		SettingsNS: llmdeepseek.SettingsNamespace, SettingsPath: []string{},
+		Provider: deepseek.ProviderRoute, DisplayName: "DeepSeek",
+		SettingsNS: deepseek.SettingsNamespace, SettingsPath: []string{},
 	}}); err != nil {
 		return err
 	}
-	_, err = llmService.RegisterAdapter(requestContext, pluginScope, []string{llmdeepseek.ProviderRoute}, backend)
+	_, err = llmService.RegisterAdapter(requestContext, pluginScope, []string{deepseek.ProviderRoute}, backend)
 	return err
 }
