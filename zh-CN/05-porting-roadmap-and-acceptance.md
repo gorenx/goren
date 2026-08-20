@@ -120,7 +120,7 @@ Existing TypeScript Client
 
 ### Go 交付
 
-- `plugin` 公共 package：Plugin、Factory、Manifest、Scope、Disposer 和 typed keys；
+- `plugin` 公共 package：Plugin、Factory、Manifest、Context、Scope 和 typed Definition；Effect/release 仅属于 Runtime 私有实现；
 - Service dependency graph、typed Event modes、effect rollback、replacement 和 shutdown；
 - Factory Catalog 与静态 composition root；
 - 首期 Go typed config 和 strict validation；

@@ -21,7 +21,7 @@
 | --- | --- | --- | --- | --- |
 | 阶段 0：基线与 Contract Freeze | In Progress | 12 Completed / 1 In Progress / 1 Planned | Contract Verified | 补齐其余 included surface mapping 与 NOTICE/provenance 决策 |
 | 阶段 1：Connection Host Carrier | Completed | 19 Completed | Contract Verified | Gate 已完成，后续扩展随新增 included surface 进入 |
-| 阶段 2：Plugin Runtime | Completed | 12 Completed | Go Verified | Gate 已完成；后续能力通过既有 Factory/Service/Event seam 进入 |
+| 阶段 2：Plugin Runtime | In Progress | Plugin 底座已验证 / 业务模块迁移中 | Go Verified | 新 `plugin/...` 已通过包内检查；旧业务调用方正一次性迁移到 `Plugin.Apply/Dispose`、typed Definition、Waterfall 与 Event 契约 |
 | 阶段 3：Session/Agent slice | Completed | 16 Completed | Contract Verified | 全部交付与 Gate 已闭合；cold persistence/resume 仍由阶段 5 拥有 |
 | 阶段 4：LLM Contract | Completed | 13 Completed | Environment Verified | Runtime、DeepSeek adapter、response recordings、Agent attempt loop、默认 retry Consumer 与真实 Provider smoke 均已完成 |
 | 阶段 5：Session 持久化 | Completed | 17 Completed | Contract Verified | SQLite facts、cold recovery/API/Agent resume、turn-end checkpoint、prepared LRU 与 suffix seek 已闭环 |
@@ -136,15 +136,15 @@ interaction owner registers stable rpcId + decoder
 
 | ID | 类别 | 子目标 | 执行状态 | 证据或缺口 |
 | --- | --- | --- | --- | --- |
-| S2-D01 | 交付 | Plugin、Factory、Manifest、Scope、Disposer 和 typed keys | Completed | Go Verified：`plugin` 提供静态 interface、泛型自由函数、opaque Child Scope/lineage 与 LIFO ownership |
-| S2-D02 | 交付 | Service graph、typed Event modes、rollback、replacement 和 shutdown | Completed | Go Verified：waiting settlement、live withdraw/re-provide、五种 Event mode、scoped waterfall、shadow replacement 与 dependent-first shutdown 已覆盖；callback 保留精确泛型类型 |
+| S2-D01 | 交付 | Plugin `Apply/Dispose`、Factory、Manifest、Context、Scope 和 typed Definition | Completed | Go Verified：`plugin` 不公开 Effect/Disposer；提供语义泛型约束、opaque Child Scope/lineage 与 Runtime 私有 LIFO effect ownership |
+| S2-D02 | 交付 | Service graph、typed Event、typed Waterfall、rollback、replacement 和 shutdown | Completed | Go Verified：`plugin` 包内覆盖 waiting settlement、withdraw/re-provide、三种 Event delivery、scoped Waterfall、shadow replacement 与 dependent-first shutdown |
 | S2-D03 | 交付 | Factory Catalog 与静态 composition root | Completed | Go Verified：`cmd/goren -> internal/assembly -> Catalog -> Runtime`，入口不再直接拼装 Echo/API Proxy |
 | S2-D04 | 交付 | 首期 typed config 与 strict validation | Completed | Go Verified：owner config 拒绝 duplicate/unknown/type/range/combination 与多值输入，类型擦除止于 Factory Catalog；System Prompt 和 Tools 保留各自的 omitted/empty/null/default 语义 |
-| S2-D06 | 交付 | lifecycle diagnostics 和 leak-oriented tests | Completed | Go Verified：`PluginStatus` 暴露状态/effect/error；rollback、unload、replacement、shutdown 后 effect/contribution 清空 |
+| S2-D06 | 交付 | lifecycle diagnostics 和 leak-oriented tests | Completed | Go Verified：`FiberStatus` 暴露状态/effect/error；Apply failure 调用 Plugin Dispose，registration 先于 Plugin lifecycle 释放，unload 后 effect/contribution 清空 |
 | S2-G01 | Gate | Service 缺失、重复、启动失败、卸载和替换有测试 | Completed | Go Verified：`plugin/runtime_test.go` |
-| S2-G02 | Gate | Event modes 的顺序与错误语义有 fixture | Completed | Go Verified：`plugin/events_test.go` 覆盖 emit/parallel/serial/bail/waterfall 及 global/ancestor/exact scope admission |
-| S2-G03 | Gate | Plugin 启动失败不遗留 contribution 或资源 | Completed | Go Verified：LIFO rollback 与 composition occupied-listener rollback 后 Runtime 无 declaration |
-| S2-G04 | Gate | listener 与 handler registration 由 effect 拥有且可撤销 | Completed | Go Verified：Event listener、Child Scope、System Prompt contribution、Tool/restriction/guard、Service 和 API Proxy Service scope 均有精确 disposer |
+| S2-G02 | Gate | Event delivery 与 Waterfall 顺序和错误语义有 fixture | Completed | Go Verified：`plugin/event_test.go`、`plugin/waterfall_test.go` 覆盖 delivery、洋葱顺序、one-shot Proceed 和 Scope admission |
+| S2-G03 | Gate | Plugin 启动失败不遗留 contribution 或资源 | Completed | Go Verified：`plugin/runtime_test.go` 覆盖 registration 零发布、私有 effect LIFO 以及 partial Apply failure 后调用幂等 Plugin Dispose |
+| S2-G04 | Gate | registration 与 Child Plugin 由 Fiber effect 拥有且可撤销 | In Progress | Go Verified：Service、Waterfall、Event 和 Child Plugin 已完成；System Prompt、Tools、API Proxy 等业务调用方仍需迁移到新的 Plugin lifecycle 契约 |
 | S2-G05 | Gate | Excluded/Deferred 能力不进入 Catalog 或依赖闭包 | Completed | Go Verified：shipped Catalog 只新增自有 `@gorenx/dsh-web`；SQLite adapter 没有独立 Factory/Service，源 Web/client runtime、SDK、Code Mode、ACP/MCP factory 仍未注册 |
 | S2-G06 | Gate | `!!js`、未知字段、类型错误和无效组合严格失败 | Completed | Go Verified：generic、Connection、API Proxy、LLM/DeepSeek、System Prompt 与 Tools Factory config fixtures |
 

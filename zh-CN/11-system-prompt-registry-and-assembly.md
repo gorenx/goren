@@ -62,11 +62,12 @@ Go 不复制 Cordis context extension、WeakMap、declaration merging 或 TypeSc
 
 ```go
 type SystemPrompt interface {
-    Section(context.Context, *plugin.Scope, PromptSection) (plugin.Disposer, error)
-    Context(context.Context, *plugin.Scope, PromptContext) (plugin.Disposer, error)
-    SuppressRuntimeContext(context.Context, *plugin.Scope) (plugin.Disposer, error)
-    Tools(context.Context, *plugin.Scope, ToolProvider) (plugin.Disposer, error)
-    Variable(context.Context, *plugin.Scope, string, VariableProvider) (plugin.Disposer, error)
+    Section(context.Context, *plugin.Scope, PromptSection) error
+    Context(context.Context, *plugin.Scope, PromptContext) error
+    SuppressRuntimeContext(context.Context, *plugin.Scope) error
+    Tools(context.Context, *plugin.Scope, ToolProvider) error
+    Variable(context.Context, *plugin.Scope, string, VariableProvider) error
+    RemoveScope(context.Context, *plugin.Scope) error
     Assemble(context.Context, AssembleContext) (PromptAssembly, error)
 }
 ```
@@ -75,7 +76,7 @@ type SystemPrompt interface {
 
 ## 5. Scope overlay 与可见性
 
-Root Plugin Scope 的 `ScopeKey` 是 global zero key。`Scope.Child(label)` 创建新的 opaque identity 并记录 parent link；Child Scope 继承所属 Plugin 已声明的 Service dependency，但不能提供 root Service。Child disposer 或 parent teardown 会按 effect 顺序释放其全部 contribution。
+Root Plugin Scope 的 `ScopeKey` 是 global zero key。`Context.ChildScope(label)` 创建新的 opaque identity 并记录 parent link；Child Scope 继承所属 Plugin 已声明的 Service dependency，但不能提供 root Service。Plugin `Dispose` 调用幂等 `RemoveScope` 删除该 owner 的全部 contribution；需要更短生命周期时使用 Child Plugin，而不是公开单项 cleanup handle。
 
 System Prompt 读取视图为：
 
@@ -106,10 +107,10 @@ validate named input/provider
   -> mutate exact promptStore layer
   -> plugin.Own(caller Scope, undo)
   -> emit system-prompt/change
-  -> return idempotent disposer
+  -> return success
 ```
 
-若 `plugin.Own` 失败，立即撤销 mutation。若首次 change listener 失败，调用 disposer 回滚 contribution，且不发布第二个伪 change。正常 disposer 先精确删除本次 registration、回收空 scoped layer，再发布 change。相同 callback 注册两次仍是两个 anonymous contribution，并拥有独立 disposer。
+若首次 change listener 失败，注册方法立即回滚本次 mutation，且不发布第二个伪 change。正常停止由贡献 Plugin 的 `Dispose` 调用 `RemoveScope`：先精确删除该 Scope 的全部 registration、回收空 scoped layer，再发布 change。相同 provider 注册两次仍是两个 anonymous contribution，但生命周期统一属于其 Plugin/Child Plugin owner。
 
 `PromptSection`/`PromptContext.Order` 必须是有限数；variable name 必须匹配 `^[a-z][a-z0-9_]*$`；nil provider 在修改 LiveStore 前失败。重复验证不下沉到每个内部层：外部形态由 facade 校验，LiveStore 只维护 uniqueness 和 ownership invariant。
 

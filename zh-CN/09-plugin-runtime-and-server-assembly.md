@@ -10,12 +10,12 @@
 
 | 源 owner / symbol | Go owner | 保留的职责 |
 | --- | --- | --- |
-| `vendor/cordis/src/registry.ts` 的 `Plugin`、`RegistryService` | `plugin.Plugin`、`Factory[C]`、`Catalog` | 静态 Factory 注册、Plugin 创建和实例跟踪 |
-| `vendor/cordis/src/fiber.ts` 的 `Fiber`、`effect`、`FiberState` | `plugin.Runtime`、`Scope`、`Disposer`、`State` | dependency settlement、effect ownership、rollback、unload |
-| `vendor/cordis/src/reflect.ts` 的 `provide`、`notify` | `ServiceKey[T]`、`Provide`、`Require` | Service Definition、唯一 Provider、Consumer 重启 |
-| `vendor/cordis/src/events.ts` | `EventKey[P,R]` 与五种 typed dispatch | listener ownership、顺序、bail 与 middleware control |
-| `vendor/cordis/src/context.ts` | `Scope` | Plugin instance 的资源与 contribution owner |
-| `packages/core/scope/src/index.ts`、`store.ts` | `Scope.Child`、`ScopeKey`、`ScopeLineage` | opaque child identity、祖先链、effect ownership 与 scoped event admission |
+| `vendor/cordis/src/registry.ts` 的 `Plugin`、`RegistryService` | `plugin.Plugin`、`plugin/factory.Configurator`、`Factory`、`Catalog` | 静态 Factory 注册、Plugin 创建和实例跟踪 |
+| `vendor/cordis/src/fiber.ts` 的 `Fiber`、`effect`、`FiberState` | `plugin.Runtime`、`FiberStatus`、Runtime 私有 Effect | dependency settlement、effect ownership、rollback、unload |
+| `vendor/cordis/src/reflect.ts` 的 `provide`、`notify` | `ServiceDefinition[S]` 的 `Provide`、`Require` | Service Definition、唯一 Provider、Consumer 重启 |
+| `vendor/cordis/src/events.ts` | `EventDefinition[E]`、`WaterfallDefinition[I,O]` | Observer ownership、fact delivery 与 middleware control |
+| `vendor/cordis/src/context.ts` | `plugin.Context`、`Scope` | Plugin instance 的 Runtime interaction 与可见性 |
+| `packages/core/scope/src/index.ts`、`store.ts` | `Context.ChildScope`、`LoadChild`、`ScopeKey`、`ScopeLineage` | opaque child identity、祖先链、child lifecycle 与 scoped event admission |
 | `packages/host/apiproxy` | `internal/assembly` 的 API Proxy Plugin | 提供 `apiProxy` Service |
 | `packages/client/connection` 的 Host half | `internal/assembly` 的 Connection Plugin | 消费 `apiProxy`，挂载 HTTP/WebSocket carrier |
 | `packages/core/system-prompt` | `internal/assembly` 的 System Prompt Plugin | 提供 `systemPrompt` Service |
@@ -40,10 +40,11 @@ Go 不复制 Proxy property lookup、decorator、declaration merging、npm modul
 
 `plugin` 是公开扩展 contract，拥有：
 
-- `Plugin`、`Manifest`、`Factory[C]`、`Catalog`；
+- `Plugin`、`Manifest`、`Context`、Service/Event/Waterfall Definition；
+- `plugin/configuration` 与 `plugin/factory` 子包中的构造边界；
 - `Runtime` 的 Plugin declaration、Service graph settlement、replacement 与 shutdown；
-- 每次 `Apply` 的 `Scope`、LIFO effect stack 和 diagnostics；
-- owner-defined `ServiceKey[T]`、`EventKey[P,R]` 与 typed 注册/dispatch；
+- 每次 `Apply`/`Dispose` 的 `Scope`、私有 LIFO effect stack 和 diagnostics；
+- owner-defined `ServiceDefinition[S]`、`EventDefinition[E]`、`WaterfallDefinition[I,O]` 与 typed 注册/dispatch；
 - JSON Factory 边界的 strict typed decode helper。
 
 `plugin` 不拥有 HTTP、Agent turn、Session Event、Tool policy、LLM wire、存储事务或具体 Provider config。它只协调已经由各能力 owner 定义的 contract。
@@ -66,7 +67,7 @@ Go 不复制 Proxy property lookup、decorator、declaration merging、npm modul
 
 ## 3. Service Definition 与依赖结算
 
-每项 Service 由 owner package 创建并导出唯一 `ServiceKey[T]`。key 包含 canonical source name 和私有 token；`T` 通常是能力 interface。Manifest 使用擦除后的 `ServiceRef` 声明 `Provides`、`Requires` 与 `Optional`，业务调用仍通过 `Provide[T]` / `Require[T]` 保持静态类型。
+每项 Service 由 owner package创建并导出唯一 `ServiceDefinition[S]`。Definition 包含 canonical source name 和私有 token；`S` 是嵌入 `plugin.Service` 的能力 interface。Manifest 使用擦除后的 `ServiceRef` 声明 `Provides`、`Requires` 与 `Optional`，业务调用通过 Definition 的 `Provide`/`Require` 保持静态类型。
 
 ```text
 Consumer Load
@@ -84,30 +85,28 @@ Provider Load
 
 依赖结算不使用 declaration 文件顺序。一个 canonical Service name 只能关联一个 owner key，并只能有一个已声明 Provider；同名 key 被重新创建、重复 Provider 或已声明 Service 未实际提供都会在激活前后相应边界失败，不执行 last-write-wins。
 
-active Service 的 disposer 被显式调用时，Runtime 先停止直接与传递 Consumer，再撤回 Registry entry；Provider Plugin 可以在同一 active Scope 重新 `Provide`，Runtime 随后重新激活等待的 Consumer。Plugin unload 使用相同的 dependent-first 规则，但最终移除 Provider declaration。
+Provider Fiber 因 unload、dependency change 或 replacement 停止时，Runtime 先停止直接与传递 Consumer，再由 Provider Fiber 的私有 registration effect 撤回 Service；仍保留的 Consumer declaration 回到 Waiting，并在新 Provider active 后重新激活。Go API 不向插件公开单项 Service registration cleanup。
 
 ## 4. Scope、effect 与失败回滚
 
-每次 `Plugin.Apply` 获得一个独立 Scope。`Provide`、Event listener 和 `Scope.Effect` 都在该 Scope 中登记 disposer；外部资源由 Effect setup 立即获取，setup 成功必须返回非空 disposer。
+每次 `Plugin.Apply` 获得一个独立 Context 和 Root Scope。Runtime 在调用 `Apply` 前先登记调用该 Plugin `Dispose` 的 lifecycle effect；`Provide`、Waterfall Middleware、Event Observer 和 Child Plugin 也形成当前 Fiber 的私有 Effect。registration Effect 在 Mount commit 前保持不可见，插件作者不创建 Effect，也不接触 registration cleanup。
 
 ```text
 Apply
-  -> acquire effect A
   -> provide Service
-  -> acquire effect B
+  -> start and retain Plugin-owned resource
   -> failure
   -> rolling-back
-  -> dispose B
   -> withdraw pending Service
-  -> dispose A
+  -> Plugin.Dispose partial resource
   -> failed
 ```
 
-disposer 幂等、接受 cleanup context，并严格按登记逆序运行。候选 Scope 在 `Apply` 与 contribution invariant 全部成功前不进入全局 Service/Event view，因此启动失败不会留下 route、listener、goroutine 或 Service。`PluginStatus` 暴露 ID、canonical name、State、live effect label 和最后一次 lifecycle error，不暴露锁、内部表或业务对象。
+Plugin `Dispose` 必须幂等、接受 cleanup context，并等待自身 owned operation 停止；Runtime 的私有 release 操作严格按登记逆序运行。候选 Scope 在 `Apply` 与 contribution invariant 全部成功前不进入全局 Service/Event view，因此启动失败不会留下 route、listener、goroutine 或 Service。`FiberStatus` 暴露 ID、canonical name、State、live effect label 和最后一次 lifecycle error，不暴露锁、内部表或业务对象。
 
-Scope 进入 `stopping` 后，listener 不会一次性提前消失；每个 listener 直到自己的 disposer 执行才停止参与 dispatch。这样同一 Scope 中排在 listener 之后登记的业务 effect 可以在 LIFO teardown 时发布最终 disposed/flush edge，然后再注销 listener。未激活的 rollback Scope 仍不会进入全局 Event view。
+Fiber 进入 `stopping` 后不再参与新的 Service 解析、Waterfall snapshot 或 Event snapshot；随后私有 Effect stack 按 LIFO 执行，每个 registration release 从 Registry 移除自己的精确 entry，最后调用 Plugin `Dispose`。未激活的 rollback Fiber 从未进入全局 Service/Waterfall/Event view。
 
-Root Plugin Scope 的 `Target()` 是 global zero key。`Scope.Child(label)` 生成 opaque key 并记录 parent lineage；Child 继承所属 Plugin 已声明的 Service dependency，但不能提供 root Service。Child 本身是 parent-owned effect，支持提前释放，parent teardown 也会按 LIFO 释放其嵌套 effect。scoped event 读取同一 lineage：global、祖先和 exact listener 可见，sibling 与 descendant listener 不可见。
+Root Plugin Scope 的 `Target()` 是 global zero key。`Context.ChildScope(label)` 生成 opaque key 并记录 parent lineage；普通 Child Scope 与当前 Fiber 同寿命，只改变可见性，不能提供 root Service。需要独立生命周期时使用 `Context.LoadChild`；Child Plugin 形成 Child Fiber，并作为 Effect 加入父 Fiber stack。scoped event 读取同一 lineage：global、祖先和 exact listener 可见，sibling 与 descendant listener 不可见。
 
 ## 5. Replacement 与 shutdown
 
@@ -124,38 +123,30 @@ active(old)
   -> restart dependents against candidate
 ```
 
-候选失败只回滚候选，旧 Plugin 与 Consumer 保持 active。候选提交后旧 disposer failure 会作为 replacement error 返回，但不能把已经发布的新实例伪装成未生效。
+候选失败只撤回候选 registration 并调用候选 `Dispose`，旧 Plugin 与 Consumer 保持 active。候选提交后旧 Plugin `Dispose` failure 会作为 replacement error 返回，但不能把已经发布的新实例伪装成未生效。
 
-Runtime shutdown 禁止新 Load，按依赖图的反向方向停止 Consumer 后停止 Provider；无依赖关系时按 declaration 逆序回收。Connection Plugin disposer 取消 Echo lifecycle、等待 HTTP/WebSocket cleanup，并在调用方 cleanup deadline 到期时强制关闭 listener/downlink。
+Runtime shutdown 禁止新 Load，按依赖图的反向方向停止 Consumer 后停止 Provider；无依赖关系时按 declaration 逆序回收。Connection Plugin 的 `Dispose` 取消 Echo lifecycle、等待 HTTP/WebSocket cleanup，并在调用方 cleanup deadline 到期时强制关闭 listener/downlink。
 
-## 6. Typed Event modes
+## 6. Typed Event 与 Waterfall
 
-`EventKey[P,R]` 固定 canonical name、dispatch mode 与 owner token。payload/result type 由 key 的泛型参数确定；`EventHandler[P,R]` 是三种 handler named function type 的封闭编译期集合。Go 的 union type set 只能作为泛型约束，不能作为可调用的运行时值，因此 Runtime 不伪造一个统一 `Invoke` 方法。`typedEventSubscription[P,R,H]` 保留具体 callback；异构订阅只通过 `eventSubscription` 共享 lifecycle metadata，dispatch 恢复精确泛型订阅类型。callback 不经过 `any` 或反射。
+Event 与 Waterfall 是两个独立机制，不再通过 mode 枚举和 callback union 混成一个 Registry。
 
-| Mode | Go handler 与控制语义 |
-| --- | --- |
-| `emit` | 同步按 listener 注册顺序全部执行，聚合 error，不短路 |
-| `parallel` | 全部启动、等待全部结束，再聚合 error |
-| `serial` | 顺序执行，首个 `Decision.Bail=true` 或 error 停止 |
-| `bail` | 同步顺序决策，首个 `Decision.Bail=true` 或 error 停止 |
-| `waterfall` | outer-to-inner middleware；只有调用 `Next` 才进入下游/terminal |
+`EventDefinition[E Event]` 固定 canonical name、owner token 与 delivery policy。`EventObserver[E]` 是命名对象，通过 `ObserveEvent(context.Context, E) error` 接收已经发生的 fact。`DeliveryOrdered` 按 registration 顺序执行并聚合错误；`DeliveryParallel` 并发执行后聚合错误；`DeliveryBestEffort` 通过 Runtime reporter 隔离 Observer failure。Event 没有返回决策值，也不承担前置修改或短路。
 
-`Decision.Bail` 与 `Value` 分离，因为 `false`、`0`、空字符串等零值可能是合法的最终拒绝或选择；`Bail=false` 才表示当前 listener 不作决定。listener 是 Scope-owned effect，手动 disposer 或 Plugin unload 后不再参与 dispatch。
+`WaterfallDefinition[I WaterfallInput, O WaterfallOutput]` 固定一个可拦截动作。命名 `WaterfallMiddleware[I,O]` 通过 `Intercept` 包裹 `WaterfallNext[I,O]`；owner 提供 `WaterfallTerminal[I,O]` 执行真实 Workflow。每次调用先取得 root-to-current Middleware snapshot，再在锁外运行洋葱链；一个 `WaterfallNext` 对同一次调用只能 `Proceed` 一次。
 
-需要先改变状态再发通知的 owner 可在 commit 前通过 `CaptureEmitFrom` 固定 `EmitSnapshot`，commit 后再调用 `Dispatch`。这样 listener 的并发注册/卸载不会改变一次已经开始的 publication；snapshot 仍保存精确 `NotifyHandler[P]`，不引入反射或无类型 callback。
-
-`EmitFrom(sourceScope, key, payload)` 从长期 Service 的 Scope 找到 Runtime 并通知全部存活 listener；`EmitScopedFrom(sourceScope, key, selectedKey, payload)` 仍从同一 Service Scope 找 Runtime，但只通知 global、`selectedKey` 祖先和 exact listener。Tools 因而用前者发布可能影响所有 Agent view 的 `tools/change`，用后者发布只属于一次 Agent scope 的 `tools/result`。`sourceScope` 表示事件发布者所在 Runtime，`selectedKey` 表示本次业务 view，不是两个 Service 实例。
+Event 和 Waterfall registration 都是 Fiber 私有 Effect，Plugin 停止后不再进入新 snapshot。Publish/Run 的 `sourceScope` 表示发布者或调用者所在 Runtime 与可见性位置；global、ancestor、exact、sibling 和 descendant 的 admission 统一使用 `ScopeLineage`，不创建第二套作用域模型。
 
 ## 7. Factory Catalog 与 typed config
 
-`Factory[C]` 的能力 owner 定义命名配置 `C`、strict decoder、cross-field validation 与构造函数。Catalog 只保存已注册的 decoder/constructor closure；`json.RawMessage` 在 `Catalog.Create` 后不再进入 Plugin。
+构造边界位于 `plugin/configuration` 与 `plugin/factory` 子包。能力 owner 定义嵌入 `configuration.Input` 的命名配置，`Configurator.Configure(Document)` 负责 strict decode、cross-field validation 并返回已经配置完成的 `Factory`；`Factory.Create` 只构造 Plugin。Catalog 只注册和查找 Configurator，不读取配置、不创建 Plugin，也不进入 Runtime 核心。
 
 当前 strict JSON 边界分别负责：
 
 1. token scan 拒绝任意层级 duplicate key；
 2. `encoding/json.Decoder.DisallowUnknownFields` 完成 typed decode；
 3. owner validator 检查空值、范围与字段组合；
-4. `Factory.New` 只接收已经通过上述步骤的具体类型。
+4. Configurator 只把已经通过上述步骤的具体类型放入 configured Factory。
 
 前两步不是重复验证：duplicate key 在标准 typed decode 中会被静默覆盖，必须由结构扫描单独拒绝；typed decode 则负责字段形态、Go 类型和未知字段。非 JSON 的 `!!js`、脚本表达式和多 JSON value 在入口直接失败，不进入 Factory 或 Runtime。
 
@@ -255,7 +246,7 @@ cmd/goren
        -> Require(apiProxy/webFrontend)
        -> NewHTTPHost with browser fallback handler
        -> pre-bind TCP listener
-       -> Effect starts Echo Serve
+       -> Connection Plugin.Apply starts Echo Serve
        -> Provide(webServer)
   -> fixed TypeScript client can call HTTP/WebSocket contract
   -> browser can open the embedded main-conversation UI
@@ -269,4 +260,4 @@ cmd/goren
 
 LLM Runtime 与 DeepSeek Provider 的本地职责、调用链和失败边界见[13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)。
 
-新能力进入 shipped composition 时必须同时提供 canonical Factory name、owner-defined typed config、Manifest dependencies、全部 effect disposer、失败 rollback 测试和 Excluded/Deferred 审计。Storage、Agent、Session 或 Tool 业务不能放入 assembly Factory 以绕开其能力 owner。
+新能力进入 shipped composition 时必须同时提供 canonical Factory name、owner-defined typed config、Manifest dependencies、幂等 Plugin `Dispose`、失败 rollback 测试和 Excluded/Deferred 审计。Storage、Agent、Session 或 Tool 业务不能放入 assembly Factory 以绕开其能力 owner。

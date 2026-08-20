@@ -44,12 +44,13 @@
 
 ## 3. D-02：Plugin Runtime
 
-采用[02 Go 运行时架构与插件模型](./02-runtime-architecture-and-plugin-model.md)中的 `Plugin`、`Factory`、`Scope` 与 `Disposer`：
+采用[02 Go 运行时架构与插件模型](./02-runtime-architecture-and-plugin-model.md)中的 `Plugin`、`Factory`、`Context` 与 `Scope`：
 
 - Factory 在 composition root 静态注册；
 - deployment config 只能实例化 Catalog 中已有 Factory；
 - Runtime 只通过 owner-defined Service/Event key 连接插件；
-- 所有注册、goroutine、进程、文件监听和连接都是可撤销 effect；
+- Runtime 私有地把 Plugin lifecycle、框架 registration 和 Child Plugin 记录为可撤销 effect；
+- Plugin 通过同一对象的 `Apply`/`Dispose` 拥有 goroutine、进程、文件监听和连接；
 - replacement 在 shadow scope 验证后原子切换；
 - public extension contract 不暴露 Runtime 内部锁、map 或依赖图。
 
@@ -159,7 +160,7 @@ Session Query 的默认 `Index` 同样使用 `modernc.org/sqlite`，但拥有独
 
 Prepared Session ready cache 采用 [`github.com/hashicorp/golang-lru/v2`](https://github.com/hashicorp/golang-lru) 的 generic fixed-capacity LRU。它只负责 ready entry 的容量与 recency；`preparedSessions` 状态对象在外层原子协调 ready cache 与 exclusive reservation。reserved Session 先移出 LRU，durable revision 由 `SessionLogStore` 校验，因此第三方库不拥有 identity、repair 或 publication policy。
 
-Go 实现不照搬 TypeScript 的函数式编排形态。长期持有状态和不变量的能力使用明确 struct 与 method，例如 `SessionLogStore` 和 `DurableRegistry`；跨模块替换点使用消费方拥有的 interface，例如 `Persistence`、Session `Backend` 与 Workspace `Backend`。函数值只用于事件 listener、时钟、ID 生成和 disposer 等天然 callback 边界，不用闭包表代替领域对象，也不把 SQLite 选择编码成运行时函数链。
+Go 实现不照搬 TypeScript 的函数式编排形态。长期持有状态和不变量的能力使用明确 struct 与 method，例如 `SessionLogStore` 和 `DurableRegistry`；跨模块替换点使用消费方拥有的 interface，例如 `Persistence`、Session `Backend` 与 Workspace `Backend`。函数值只用于事件 listener、时钟、ID 生成和 Runtime 内部 release 等天然 callback 边界，不用闭包表代替领域对象，也不把 SQLite 选择编码成运行时函数链。
 
 Projection 的业务语义仍位于 Projection/Application owner：它决定哪些 Event 产生哪些 mutation、字段如何解释以及一个 use case 需要哪些操作原子完成。任何 SQLite adapter 都只执行这些已决定的 mutation/query 和调用方要求的 transaction，不在 SQL trigger、生成 query wrapper 或 row mapper 中隐藏业务状态机。
 
@@ -184,7 +185,7 @@ sqlc 使用规则：
 - 监听目标文件时同时 watch parent directory，以处理编辑器的 rename-and-replace；
 - debounce、rescan 和内容 diff 位于能力 owner；
 - overflow、目录消失和权限变化触发有界全量重扫；
-- watcher 必须绑定 Plugin disposer。
+- watcher 必须由 Plugin 对象拥有并在 `Dispose` 中停止。
 
 事件不能被视为可靠变更日志；最终状态总是由重新读取和校验确认。
 

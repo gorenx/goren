@@ -166,30 +166,31 @@ Typert 不是 Protocol Plane 的必要入口。固定源基线中只有部分 au
 
 ## 4. Plugin interface
 
-目标 API 由三个层次组成：Factory 创建实例，Plugin 挂载行为，Runtime 拥有 effect。以下是语义草图，不锁定最终 Go 字段布局：
+目标 API 由三个层次组成：Factory 创建实例，Plugin 拥有自身生命周期，Runtime/Fiber 私有地拥有 effect。以下是语义草图，不锁定私有 Go 字段布局：
 
 ```go
 type Plugin interface {
 	Manifest() Manifest
-	Apply(context.Context, *Scope) error
+	Apply(context.Context, *Context) error
+	Dispose(context.Context) error
 }
 
-type Factory[C any] interface {
+type Configurator interface {
 	Name() string
-	DecodeConfig(json.RawMessage) (C, error)
-	New(context.Context, C) (Plugin, error)
+	Configure(configuration.Document) (Factory, error)
 }
 
-func RegisterFactory[C any](registry *Catalog, implementation Factory[C]) error
-
-type Disposer func(context.Context) error
+type Factory interface {
+	Name() string
+	Create(context.Context) (Plugin, error)
+}
 ```
 
 `Factory.Name()` 使用源实现 canonical plugin name，例如 `@deepseek-ai/dsh-agent`。Go import path 不需要模仿 npm scope，但 deployment config 中的 `name` 保持一致，使源职责和 Go 配置可追踪。
 
-`Plugin.Apply` 不返回裸 Service，也不负责把自身加入全局 Registry。它通过 `Scope` 注册 effect；Runtime 在 `Apply` 返回后一次性发布成功状态。若 `Apply` 失败，Scope 立即按逆序执行本次获得的 disposer。
+`Plugin.Apply` 不返回裸 Service，也不负责把自身加入全局 Registry。它通过 typed Definition 和当前 `Context` 登记 contribution；Runtime 在 `Apply` 返回后一次性发布成功状态。Plugin 对象直接拥有它启动的数据库、listener、worker 等资源，并由幂等 `Dispose` 释放。若 `Apply` 失败，Runtime 先撤销暂存 registration，再调用该 Plugin 的 `Dispose`。
 
-每个 Factory 的类型参数 `C` 是该能力 owner 定义的命名配置类型。`DecodeConfig` 必须拒绝未知字段、错误类型与无效组合；`New` 只接收已经校验的 `C`。Catalog 为保存不同 `C` 的 Factory 可以在内部擦除类型，但裸 `json.RawMessage` 只能存在于入站解码/注册边界，不能进入 Plugin 业务逻辑。默认值、环境变量解析、平台选择和派生值由显式 Go 函数完成。
+每个 Configurator 严格把 `configuration.Document` 解码为能力 owner 定义的命名配置，并拒绝未知字段、错误类型与无效组合；返回的 configured Factory 只保存已经校验的 typed 配置和对象依赖。Catalog 只注册和查找 Configurator，不擦除或执行构造流程。默认值、环境变量解析、平台选择和派生值由显式 Go 函数完成。
 
 ### 4.1 为什么不用标准库 `plugin`
 
@@ -199,13 +200,18 @@ Go 标准库 `plugin` 只支持部分平台、不能卸载、race detector 支�
 
 ## 5. Service Registry
 
-每项 Service Definition 声明一个稳定 key 和 Go interface。Go 不支持带独立类型参数的方法，因此 typed registry 使用泛型自由函数，而不是 `Scope.Get(key) any` 后让调用者反射：
+每项 Service Definition 声明一个稳定 identity 和 Go interface。Definition 的泛型参数使用具有业务含义的 `Service` 约束，不通过 `Scope.Get(key) any` 或反射取得业务对象：
 
 ```go
-type ServiceKey[T any] struct { /* opaque */ }
+type Service interface {
+	RuntimeService()
+}
 
-func Provide[T any](pluginScope *Scope, key ServiceKey[T], instance T) (Disposer, error)
-func Require[T any](pluginScope *Scope, key ServiceKey[T]) (T, bool)
+type ServiceDefinition[S Service] struct { /* opaque */ }
+
+func DefineService[S Service](canonicalName string) ServiceDefinition[S]
+func (definition ServiceDefinition[S]) Provide(*Context, S) error
+func (definition ServiceDefinition[S]) Require(*Context) (S, error)
 ```
 
 关键规则：
@@ -215,26 +221,18 @@ func Require[T any](pluginScope *Scope, key ServiceKey[T]) (T, bool)
 - Consumer 声明 required 与 optional dependencies；required Service 未就绪时等待，不靠文件顺序；
 - Service 撤回后，依赖它的 Plugin 先停止，再停止 Provider；
 - 若未来纳入 Typert Remote，Typert lookup 不得缓存业务对象；每次调用读取 live Service；
-- 只有所有者包创建 `ServiceKey[T]`，其他包导入 key，不能用相同字符串重建一个不兼容类型。
+- 只有所有者包创建 `ServiceDefinition[S]`，其他包导入 Definition，不能用相同字符串重建另一个 identity。
 
 ## 6. Typed Event Registry
 
-源 Cordis 的 declaration merging 在 Go 中映射为 owner-defined typed key：
+源 Cordis 的 declaration merging 在 Go 中映射为 owner-defined typed Definition，并把 Event 与 Waterfall 分开：
 
 ```go
-type EventKey[P, R any] struct { /* name + mode + owner token */ }
-type Waterfall[P, R any] func(context.Context, P, Next[P, R]) (R, error)
+type EventDefinition[E Event] struct { /* name + policy + owner token */ }
+type WaterfallDefinition[I WaterfallInput, O WaterfallOutput] struct { /* owner token */ }
 ```
 
-注册和 dispatch 同样使用泛型自由函数。Event key 持有私有、非零大小的 owner token，并通过泛型固定 payload/result type；相同字符串若由其他调用者重新创建，或以不同 mode 再次注册，Runtime 在启动期失败。`EventHandler[P,R]` 是 `NotifyHandler[P] | DecisionHandler[P,R] | WaterfallHandler[P,R]` 的封闭编译期约束，而不是可作为值保存的运行时 union interface。每个订阅保留精确泛型 handler，异构表只共享 lifecycle metadata；dispatch 按 key 恢复精确订阅类型。callback 不存入 `any`，也不使用 `reflect.Type` 或 `invoke(any)`。
-
-| 源模式 | Go 语义 |
-| --- | --- |
-| `emit` | 同步按注册顺序通知；非 veto；listener failure 被 owner 规定的 containment policy 处理 |
-| `parallel` | 启动所有 listener，等待全部完成并聚合错误 |
-| `serial` | 按顺序等待；首个明确 bail 结果停止 |
-| `bail` | 同步首个 bail 结果停止，仅用于需要同步决策的事件 |
-| `waterfall` | outer-to-inner middleware；只有调用 `next` 才委托下游 |
+Event Definition 持有私有、非零大小的 owner token，并通过泛型固定 fact type；Observer 是实现 `ObserveEvent` 的命名对象。Delivery policy 只负责 ordered、parallel 或 best-effort fact notification，不返回业务决策。Waterfall 则由命名 Middleware 的 `Intercept`、one-shot `Proceed` 和 owner Terminal 表达洋葱包裹、短路与结果改写。两者的 typed 值不存入 `any`，也不使用反射调用。
 
 `waterfall` 不能用一个共享可变对象加普通 `emit` 模拟，因为这样无法表达短路、返回值包装和 listener 顺序。`agent/pre-step`、`agent/request`、`llm/stream`、`tools/pre-execute`、`tools/execute`、`tools/post-execute` 必须保留 waterfall 语义。
 
@@ -242,15 +240,16 @@ type Waterfall[P, R any] func(context.Context, P, Next[P, R]) (R, error)
 
 ### 7.1 Effect Tree
 
-每个 Plugin instance 有独立 Scope 和 LIFO disposer stack。以下操作必须通过 effect 完成：
+每个 Plugin activation 对应一个 Fiber 和统一的私有 LIFO Effect stack。以下操作必须通过该 ownership 完成：
 
 - 提供 Service；
 - 注册 Event listener；
 - 注册 LLM adapter、Tool、Prompt section、Provider 或 policy；
+- 加载 Child Plugin；
 - 启动 goroutine、timer、watcher、subprocess、PTY、数据库连接或网络连接；
 - 创建临时文件或占用外部资源。
 
-Disposer 必须幂等、接受 shutdown context，并等待其 owned operation 停止。Runtime 不以 process exit 代替 cleanup。
+Effect 不作为公共接口暴露。Plugin 对象通过 `Apply` 启动并保存自身资源，通过幂等 `Dispose` 接受 shutdown context、等待 owned operation 停止；Service/Event/Waterfall registration 和 Child Plugin 则由 Runtime 自动生成私有 release 操作。Runtime 不以 process exit 代替 cleanup。
 
 ### 7.2 Plugin 状态
 
@@ -279,7 +278,7 @@ active --replacement--> starting(candidate) -> commit -> stopping(old)
 
 ## 8. Scope 与 isolation
 
-每次 Plugin `Apply` 获得 Root Plugin Scope；其 `Target()` 是 global zero key。`Scope.Child(label)` 创建 effect-owned Child Scope 和 opaque `ScopeKey`，记录 parent lineage，并继承所属 Plugin 已声明的 Service dependency。Child 不能提供 root Service；显式 disposer 或 parent teardown 会释放其全部注册。
+每次 Plugin `Apply` 获得 Root Plugin Scope；其 `Target()` 是 global zero key。`Context.ChildScope(label)` 创建与当前 Fiber 同寿命的可见性分支和 opaque `ScopeKey`，记录 parent lineage，并继承所属 Plugin 已声明的 Service dependency。普通 Child Scope 不能提供 root Service，也不成为生命周期 owner；需要提前停止时由 `Context.LoadChild` 创建 Child Fiber，并通过 Child Plugin Effect 与 Handle 管理整棵子树。
 
 System Prompt 与 Tools 已是 Child Scope 的真实 Consumer：前者以 global、远祖先到近 scope 的 named shadow 组装 Prompt，后者用同一 lineage 计算 Tool shadow、restriction、guard 与 scoped execution/result event；两者的 scope-filtered listener 都只接受 global、祖先和 exact scope，排除 sibling 与 descendant。Agent Provider 后续直接使用这一 primitive 挂载 preset Prompt、Tools、Model selection 和局部 policy，不能另建第二套 Registry。具体规则分别由[11 System Prompt Registry 与 Assembly 模块设计](./11-system-prompt-registry-and-assembly.md)和[12 Tools Registry 与执行流水线模块设计](./12-tools-registry-and-execution-pipeline.md)拥有。
 
@@ -366,6 +365,6 @@ Runtime 为每个包保留 source 中 `./invariant` 的设计意图，但 Go 不
 - Tool Registry 中的 definition 与执行 owner 同时存在；
 - Adapter route 与 provider metadata 一致；
 - active Plugin 的 required Services 全部可解析；
-- disposer 完成后 Registry 不再含该 owner 的 contribution。
+- Plugin `Dispose` 完成后 Registry 不再含该 owner 的 contribution。
 
 仅检查方法“存在”或固定纯示例没有价值。Invariant failure 是编程错误，不能降级为 warning。

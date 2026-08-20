@@ -74,9 +74,10 @@ type OutputRenderer interface {
 }
 
 type ToolRuntime interface {
-    Register(context.Context, *plugin.Scope, ToolDefinition) (plugin.Disposer, error)
-    Restrict(context.Context, *plugin.Scope, ToolRestriction) (plugin.Disposer, error)
-    Guard(*plugin.Scope, ToolGuard) (plugin.Disposer, error)
+    Register(context.Context, *plugin.Scope, ToolDefinition) error
+    Restrict(context.Context, *plugin.Scope, ToolRestriction) error
+    Guard(*plugin.Scope, ToolGuard) error
+    RemoveScope(context.Context, *plugin.Scope) error
     Get(string, plugin.ScopeKey) (ToolDefinition, bool)
     Schemas(plugin.ScopeKey) []llm.ToolSchema
     ExecutionMode(ToolExecutionInput) ToolExecutionMode
@@ -134,10 +135,10 @@ validate name/output/timeout
   -> mutate exact toolStore layer
   -> plugin.Own(caller Scope, undo)
   -> EmitFrom(tools/change)
-  -> return idempotent disposer
+  -> return success
 ```
 
-同一 exact layer 重名失败，近层同名允许作为 scoped shadow；`run_code` 始终禁止注册。若 `plugin.Own` 或首次 change observer 失败，mutation 回滚且不留下半注册 Tool。正常 disposer 精确删除本次 record、回收空 layer，再发布一次 change。Guard 是 execution policy，不改变模型可见 schema，因此注册/撤销不发 `tools/change`。
+同一 exact layer 重名失败，近层同名允许作为 scoped shadow；`run_code` 始终禁止注册。若首次 change observer 失败，mutation 回滚且不留下半注册 Tool。贡献 Plugin 的 `Dispose` 调用幂等 `RemoveScope`，精确删除该 Scope 的全部 record、回收空 layer，再发布一次 change。需要更短生命周期时使用 Child Plugin。Guard 是 execution policy，不改变模型可见 schema，因此注册/撤销不发 `tools/change`。
 
 Definition 在进入 LiveStore 前复制 schema bytes 并保留 behavior interface；`Get` 和 `Schemas` 再次 detach 公开 JSON。调用方修改原 Definition 或返回 schema 都不能改变 Registry state。
 
