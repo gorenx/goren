@@ -26,30 +26,39 @@ type WorkspaceGateway struct {
 	mutation  sync.Mutex
 }
 
-// NewWorkspaceGateway installs post-commit Workspace observers.
+// NewWorkspaceGateway constructs the Workspace API adapter. The owning API
+// Proxy Plugin declares and routes post-commit Workspace Events.
 func NewWorkspaceGateway(
-	requestContext context.Context,
-	pluginScope *plugin.Scope,
 	registry workspace.Registry,
 	publisher HostFramePublisher,
 ) (*WorkspaceGateway, error) {
-	if requestContext == nil || pluginScope == nil || registry == nil || publisher == nil {
+	if registry == nil || publisher == nil {
 		return nil, errors.New("apiproxy: Workspace Gateway dependencies are incomplete")
 	}
-	owner := &WorkspaceGateway{registry: registry, publisher: publisher}
-	if _, err := workspace.OnChanged(pluginScope, owner.observeChanged); err != nil {
-		return nil, err
+	return &WorkspaceGateway{
+		registry:  registry,
+		publisher: publisher,
+	}, nil
+}
+
+// ObserveEvent projects the Workspace Events declared by the owning API Proxy
+// Plugin.
+func (owner *WorkspaceGateway) ObserveEvent(
+	requestContext context.Context,
+	fact plugin.Event,
+) error {
+	switch observed := fact.(type) {
+	case workspace.ChangedNotice:
+		return owner.observeChanged(requestContext, observed.WorkspaceState)
+	case workspace.RemovedNotice:
+		return owner.observeRemoved(requestContext, observed.ID)
+	case workspace.OrderChangedNotice:
+		return owner.observeOrderChanged(requestContext, observed.WorkspaceIDs)
+	case workspace.ArchivedSessionsChangedNotice:
+		return owner.observeArchivedChanged(requestContext, observed.SessionIDs)
+	default:
+		return nil
 	}
-	if _, err := workspace.OnRemoved(pluginScope, owner.observeRemoved); err != nil {
-		return nil, err
-	}
-	if _, err := workspace.OnOrderChanged(pluginScope, owner.observeOrderChanged); err != nil {
-		return nil, err
-	}
-	if _, err := workspace.OnArchivedSessionsChanged(pluginScope, owner.observeArchivedChanged); err != nil {
-		return nil, err
-	}
-	return owner, requestContext.Err()
 }
 
 func (owner *WorkspaceGateway) List(

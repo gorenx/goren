@@ -273,35 +273,37 @@ type SessionSearchAPI interface {
 }
 
 // RegisterSessionAPI installs every currently included session method.
-func RegisterSessionAPI(methods *Catalog, service SessionAPI, searchService SessionSearchAPI) error {
+func RegisterSessionAPI(methods *Catalog, sessionMethods SessionAPI, searchMethods SessionSearchAPI) error {
 	registrations := []func() error{
-		func() error { return RegisterUnary(methods, SessionListMethod, DecodeSessionListRequest, service.List) },
 		func() error {
-			return RegisterUnary(methods, SessionSearchMethod, DecodeSessionSearchRequest, searchService.Search)
+			return RegisterUnary(methods, SessionListMethod, DecodeSessionListRequest, sessionMethods.List)
 		},
 		func() error {
-			return RegisterUnary(methods, SessionCreateMethod, DecodeSessionCreateRequest, service.Create)
+			return RegisterUnary(methods, SessionSearchMethod, DecodeSessionSearchRequest, searchMethods.Search)
 		},
 		func() error {
-			return RegisterUnary(methods, SessionRenameMethod, DecodeSessionRenameRequest, service.Rename)
+			return RegisterUnary(methods, SessionCreateMethod, DecodeSessionCreateRequest, sessionMethods.Create)
 		},
 		func() error {
-			return RegisterUnary(methods, SessionHistoryMethod, DecodeSessionHistoryRequest, service.History)
+			return RegisterUnary(methods, SessionRenameMethod, DecodeSessionRenameRequest, sessionMethods.Rename)
 		},
 		func() error {
-			return RegisterUnary(methods, SessionModelsMethod, DecodeSessionModelsRequest, service.Models)
+			return RegisterUnary(methods, SessionHistoryMethod, DecodeSessionHistoryRequest, sessionMethods.History)
 		},
 		func() error {
-			return RegisterUnary(methods, SessionSelectModelMethod, DecodeSessionSelectModelRequest, service.SelectModel)
+			return RegisterUnary(methods, SessionModelsMethod, DecodeSessionModelsRequest, sessionMethods.Models)
 		},
 		func() error {
-			return RegisterUnary(methods, SessionPromptMethod, DecodeSessionPromptRequest, service.Prompt)
+			return RegisterUnary(methods, SessionSelectModelMethod, DecodeSessionSelectModelRequest, sessionMethods.SelectModel)
 		},
 		func() error {
-			return RegisterUnary(methods, SessionUpdateQueueMethod, DecodeSessionUpdateQueueRequest, service.UpdateQueue)
+			return RegisterUnary(methods, SessionPromptMethod, DecodeSessionPromptRequest, sessionMethods.Prompt)
 		},
 		func() error {
-			return RegisterUnary(methods, SessionCancelMethod, DecodeSessionCancelRequest, service.Cancel)
+			return RegisterUnary(methods, SessionUpdateQueueMethod, DecodeSessionUpdateQueueRequest, sessionMethods.UpdateQueue)
+		},
+		func() error {
+			return RegisterUnary(methods, SessionCancelMethod, DecodeSessionCancelRequest, sessionMethods.Cancel)
 		},
 	}
 	for _, register := range registrations {

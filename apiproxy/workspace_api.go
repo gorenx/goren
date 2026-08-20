@@ -102,33 +102,33 @@ type WorkspaceAPI interface {
 }
 
 // RegisterWorkspaceAPI installs the complete pinned workspace.* method set.
-func RegisterWorkspaceAPI(methods *Catalog, service WorkspaceAPI) error {
+func RegisterWorkspaceAPI(methods *Catalog, workspaceMethods WorkspaceAPI) error {
 	registrations := []func() error{
 		func() error {
-			return RegisterUnary(methods, WorkspaceListMethod, DecodeWorkspaceListRequest, service.List)
+			return RegisterUnary(methods, WorkspaceListMethod, DecodeWorkspaceListRequest, workspaceMethods.List)
 		},
 		func() error {
-			return RegisterUnary(methods, WorkspaceCreateMethod, DecodeWorkspaceCreateRequest, service.Create)
+			return RegisterUnary(methods, WorkspaceCreateMethod, DecodeWorkspaceCreateRequest, workspaceMethods.Create)
 		},
 		func() error {
-			return RegisterUnary(methods, WorkspaceRenameMethod, DecodeWorkspaceRenameRequest, service.Rename)
+			return RegisterUnary(methods, WorkspaceRenameMethod, DecodeWorkspaceRenameRequest, workspaceMethods.Rename)
 		},
 		func() error {
-			return RegisterUnary(methods, WorkspaceDeleteMethod, DecodeWorkspaceDeleteRequest, service.Delete)
+			return RegisterUnary(methods, WorkspaceDeleteMethod, DecodeWorkspaceDeleteRequest, workspaceMethods.Delete)
 		},
 		func() error {
-			return RegisterUnary(methods, WorkspaceInsertBeforeMethod, DecodeWorkspaceInsertBeforeRequest, service.InsertBefore)
+			return RegisterUnary(methods, WorkspaceInsertBeforeMethod, DecodeWorkspaceInsertBeforeRequest, workspaceMethods.InsertBefore)
 		},
 		func() error {
 			return RegisterUnary(
 				methods, WorkspaceInsertSessionBeforeMethod,
-				DecodeWorkspaceInsertSessionBeforeRequest, service.InsertSessionBefore,
+				DecodeWorkspaceInsertSessionBeforeRequest, workspaceMethods.InsertSessionBefore,
 			)
 		},
 		func() error {
 			return RegisterUnary(
 				methods, WorkspaceArchiveSessionMethod,
-				DecodeWorkspaceArchiveSessionRequest, service.ArchiveSession,
+				DecodeWorkspaceArchiveSessionRequest, workspaceMethods.ArchiveSession,
 			)
 		},
 	}

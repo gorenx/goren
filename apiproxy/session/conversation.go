@@ -31,7 +31,7 @@ func (flow *sessionConversation) Prompt(
 	if refused != nil {
 		return api.Fail[api.SessionPromptValue](*refused), nil
 	}
-	selectionRef, err := flow.access.runtimeSessions.Selection(subject)
+	selectionRef, err := flow.access.runtimeSessions.Selection(requestContext, subject)
 	if err != nil {
 		return api.Outcome[api.SessionPromptValue]{}, err
 	}

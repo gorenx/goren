@@ -8,7 +8,6 @@ import (
 	"github.com/gorenx/goren/agentdefaultmodel"
 	api "github.com/gorenx/goren/apiproxy"
 	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	sesspersist "github.com/gorenx/goren/session/persistence"
 	sessionprojection "github.com/gorenx/goren/session/projection"
@@ -47,12 +46,11 @@ type Gateway struct {
 // NewGateway creates the typed unary Session API implementation.
 func NewGateway(
 	requestContext context.Context,
-	sourceScope *plugin.Scope,
 	ports Dependencies,
 	settings Options,
 ) (*Gateway, error) {
-	if requestContext == nil || sourceScope == nil {
-		return nil, errors.New("apiproxy/session: Gateway Context and Scope are required")
+	if requestContext == nil {
+		return nil, errors.New("apiproxy/session: Gateway Context is required")
 	}
 	if ports.Agents == nil || ports.Sessions == nil || ports.Persistence == nil || ports.LLM == nil ||
 		ports.Defaults == nil || ports.Projections == nil || ports.Titles == nil ||
@@ -70,9 +68,12 @@ func NewGateway(
 	if err != nil {
 		return nil, err
 	}
-	runtimeSessions, err := NewAgentSessions(sourceScope, AgentSessionDependencies{
-		Agents: ports.Agents, Sessions: ports.Sessions, Persistence: ports.Persistence,
-		Defaults: ports.Defaults, Directories: ports.Directories,
+	runtimeSessions, err := NewAgentSessions(AgentSessionDependencies{
+		Agents:      ports.Agents,
+		Sessions:    ports.Sessions,
+		Persistence: ports.Persistence,
+		Defaults:    ports.Defaults,
+		Directories: ports.Directories,
 	})
 	if err != nil {
 		return nil, err
@@ -80,17 +81,28 @@ func NewGateway(
 	access := &sessionAccess{runtimeSessions: runtimeSessions}
 	owner := &Gateway{
 		reader: &sessionReader{
-			agents: ports.Agents, sessions: ports.Sessions,
-			persistence: ports.Persistence, projections: ports.Projections,
+			agents:      ports.Agents,
+			sessions:    ports.Sessions,
+			persistence: ports.Persistence,
+			projections: ports.Projections,
 		},
 		lifecycle: &sessionLifecycle{
-			access: access, titles: ports.Titles, workspaces: ports.Workspaces,
-			workingDirectory: settings.WorkingDirectory, newSessionID: newSessionID,
+			access:           access,
+			titles:           ports.Titles,
+			workspaces:       ports.Workspaces,
+			workingDirectory: settings.WorkingDirectory,
+			newSessionID:     newSessionID,
 		},
 		modelUseCases: &sessionModels{
-			access: access, runtime: ports.LLM, directory: modelDirectory, defaults: ports.Defaults,
+			access:    access,
+			runtime:   ports.LLM,
+			directory: modelDirectory,
+			defaults:  ports.Defaults,
 		},
-		conversationUseCases: &sessionConversation{access: access, runtime: ports.LLM},
+		conversationUseCases: &sessionConversation{
+			access:  access,
+			runtime: ports.LLM,
+		},
 	}
 	if err := requestContext.Err(); err != nil {
 		return nil, err

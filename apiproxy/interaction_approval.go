@@ -9,6 +9,7 @@ import (
 	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/plugin"
 )
 
 type pendingApproval struct {
@@ -22,45 +23,51 @@ type pendingApproval struct {
 	settlement interactionSettlement
 }
 
-func (owner *InteractionGateway) answerApproval(
+// ResolveApproval implements the API Proxy Plugin's approval Waterfall step.
+func (owner *InteractionGateway) ResolveApproval(
 	requestContext context.Context,
-	decisionRequest approval.Request,
-	downstream approval.RequestNext,
-) (approval.Outcome, error) {
+	input approval.DecisionRequest,
+	downstream plugin.WaterfallAction[approval.DecisionRequest, approval.Decision],
+) (approval.Decision, error) {
+	decisionRequest := input.Request
 	if requestContext.Err() != nil {
-		return approval.OutcomeCancelled, nil
+		return approval.Decision{
+			Outcome: approval.OutcomeCancelled,
+		}, nil
 	}
 	if decisionRequest.Subject == nil || decisionRequest.Subject.SessionValue() == nil {
-		return downstream(requestContext)
+		return downstream.Execute(requestContext, input)
 	}
 
 	owner.mu.Lock()
 	if owner.closed {
 		owner.mu.Unlock()
-		return approval.OutcomeCancelled, nil
+		return approval.Decision{
+			Outcome: approval.OutcomeCancelled,
+		}, nil
 	}
 	requestID, found, err := owner.unclaimedApprovalID(decisionRequest)
 	if err != nil {
 		owner.mu.Unlock()
-		return approval.OutcomeUnavailable, err
+		return approval.Decision{}, err
 	}
 	if !found {
 		owner.mu.Unlock()
-		return downstream(requestContext)
+		return downstream.Execute(requestContext, input)
 	}
 	correlationID, err := owner.newRPC()
 	if err != nil {
 		owner.mu.Unlock()
-		return approval.OutcomeUnavailable, fmt.Errorf("apiproxy: mint approval rpcId: %w", err)
+		return approval.Decision{}, fmt.Errorf("apiproxy: mint approval rpcId: %w", err)
 	}
-	conversationID := SessionID(decisionRequest.Subject.ID())
+	conversationID := SessionID(decisionRequest.Subject.SessionValue().ID())
 	waiting, err := RegisterPendingResponse(owner.methods, correlationID,
 		func(result connection.RPCResult) (approval.Outcome, bool) {
 			return decodeApprovalResponse(result, conversationID, requestID)
 		})
 	if err != nil {
 		owner.mu.Unlock()
-		return approval.OutcomeUnavailable, err
+		return approval.Decision{}, err
 	}
 	entry := &pendingApproval{
 		rpcID: correlationID, sessionID: conversationID, requestID: requestID,
@@ -75,21 +82,31 @@ func (owner *InteractionGateway) answerApproval(
 		waiting.Withdraw(publishErr)
 		entry.settlement.complete(nil)
 		owner.mu.Unlock()
-		return approval.OutcomeUnavailable, publishErr
+		return approval.Decision{}, publishErr
 	}
 	owner.mu.Unlock()
 
 	decisionOutcome, waitErr := waiting.Wait(requestContext)
 	if waitErr != nil {
+		if errors.Is(context.Cause(requestContext), plugin.ErrPluginNotActive) {
+			<-entry.settlement.done
+			return approval.Decision{
+				Outcome: approval.OutcomeCancelled,
+			}, nil
+		}
 		entry.finish(owner, approval.OutcomeCancelled)
 		if errors.Is(waitErr, context.Canceled) || errors.Is(waitErr, context.DeadlineExceeded) ||
 			errors.Is(waitErr, errInteractionGatewayClosed) {
-			return approval.OutcomeCancelled, nil
+			return approval.Decision{
+				Outcome: approval.OutcomeCancelled,
+			}, nil
 		}
-		return approval.OutcomeUnavailable, waitErr
+		return approval.Decision{}, waitErr
 	}
 	entry.finish(owner, decisionOutcome)
-	return decisionOutcome, nil
+	return approval.Decision{
+		Outcome: decisionOutcome,
+	}, nil
 }
 
 func (owner *InteractionGateway) unclaimedApprovalID(

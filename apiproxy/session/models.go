@@ -24,7 +24,7 @@ func (selectionFlow *sessionModels) Models(requestContext context.Context, call 
 	if refused != nil {
 		return api.Fail[api.SessionModelsValue](*refused), nil
 	}
-	selectionRef, err := selectionFlow.access.runtimeSessions.Selection(subject)
+	selectionRef, err := selectionFlow.access.runtimeSessions.Selection(requestContext, subject)
 	if err != nil {
 		return api.Outcome[api.SessionModelsValue]{}, err
 	}
@@ -81,7 +81,7 @@ func (selectionFlow *sessionModels) SelectModel(requestContext context.Context, 
 			)), nil
 		}
 	}
-	selectionRef, err := selectionFlow.access.runtimeSessions.Selection(subject)
+	selectionRef, err := selectionFlow.access.runtimeSessions.Selection(requestContext, subject)
 	if err != nil {
 		return api.Outcome[api.SessionSelectModelValue]{}, err
 	}
