@@ -1,130 +1,142 @@
 package tools
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
-	"sync/atomic"
+	"fmt"
 
 	"github.com/gorenx/goren/internal/jsonvalue"
 	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/systemprompt"
 )
 
-// toolRegistry is the Tools service facade. It validates capability calls,
-// binds contributions to plugin lifecycles, and delegates mutable state and
-// execution to their dedicated components.
-type toolRegistry struct {
-	sourceScope *plugin.Scope
-	store       *toolStore
-	approvals   ApprovalResolver
-	reporter    ResultObserverReporter
+type registryLayerSource interface {
+	toolLayers() []toolLayerSnapshot
 }
 
-// New creates one scope-aware Tools registry and contributes its model-facing
-// schema provider to System Prompt for the lifetime of sourceScope.
-func New(
-	requestContext context.Context,
-	sourceScope *plugin.Scope,
-	promptService systemprompt.SystemPrompt,
-	approvalCapability ApprovalResolver,
-	reporter ResultObserverReporter,
-	settings ValidatedConfig,
-) (ToolRuntime, error) {
-	if sourceScope == nil {
-		return nil, errors.New("tools: source scope is nil")
-	}
-	if promptService == nil {
-		return nil, errors.New("tools: system prompt service is nil")
-	}
-	if settings.mode != PresentationNative || settings.maxParallelSubCalls < 1 {
-		return nil, errors.New("tools: configuration was not validated")
-	}
-	owner := &toolRegistry{
-		sourceScope: sourceScope,
-		store:       newToolStore(),
-		approvals:   approvalCapability,
-		reporter:    reporter,
-	}
-	_, err := promptService.Tools(requestContext, sourceScope,
-		func(_ context.Context, assemblyContext systemprompt.AssembleContext) (systemprompt.ToolProviderResult, error) {
-			return owner.promptTools(assemblyContext.Scope), nil
-		})
-	if err != nil {
-		return nil, err
-	}
-	return owner, nil
+// registry owns one exact layer of Tool definitions and policies. It has no
+// Plugin lifecycle and never executes a Tool; Service publishes its mutations
+// and Runtime consumes its read view.
+type registry struct {
+	root   bool
+	store  *toolStore
+	parent registryLayerSource
 }
 
-func (owner *toolRegistry) Register(requestContext context.Context, ownerScope *plugin.Scope, definition ToolDefinition) (plugin.Disposer, error) {
-	if ownerScope == nil {
-		return nil, errors.New("tools: registration owner scope is nil")
+func newRegistry(root bool) *registry {
+	return &registry{
+		root:  root,
+		store: newToolStore(),
 	}
-	entry, err := compileDefinition(definition)
-	if err != nil {
-		return nil, err
-	}
-	undo, err := owner.store.addTool(ownerScope.Target(), entry)
-	if err != nil {
-		return nil, err
-	}
-	return owner.ownMutation(requestContext, ownerScope, "tools.register()", undo, true)
 }
 
-func (owner *toolRegistry) Restrict(requestContext context.Context, ownerScope *plugin.Scope, restriction ToolRestriction) (plugin.Disposer, error) {
-	if ownerScope == nil {
-		return nil, errors.New("tools: restriction owner scope is nil")
+func (catalog *registry) attachParent(parent registryLayerSource) error {
+	if catalog.root {
+		return errors.New("tools: root Registry cannot have a parent")
 	}
-	selectedKey := ownerScope.Target()
-	if selectedKey.IsGlobal() {
-		return nil, errors.New("tools: restrict requires a child scope")
+	if parent == nil {
+		return errors.New("tools: child Registry requires a parent")
+	}
+	catalog.parent = parent
+	return nil
+}
+
+func (catalog *registry) clear() {
+	catalog.parent = nil
+	catalog.store.clear()
+}
+
+func (catalog *registry) compileTool(definition ToolDefinition) (*registeredTool, error) {
+	return compileDefinition(definition)
+}
+
+func (catalog *registry) addTool(entry *registeredTool) error {
+	return catalog.store.addTool(entry)
+}
+
+func (catalog *registry) removeTool(name string) (*registeredTool, int, bool) {
+	return catalog.store.removeTool(name)
+}
+
+func (catalog *registry) restoreTool(entry *registeredTool, entryIndex int) error {
+	return catalog.store.restoreTool(entry, entryIndex)
+}
+
+func (catalog *registry) compileRestriction(restriction ToolRestriction) (compiledRestriction, error) {
+	if catalog.root {
+		return compiledRestriction{}, errors.New(
+			"tools: restrictions require a child Registry layer",
+		)
 	}
 	if restriction.Allow == nil && restriction.Deny == nil {
-		return nil, errors.New("tools: restrict requires allow and/or deny")
+		return compiledRestriction{}, errors.New(
+			"tools: restriction requires allow and/or deny",
+		)
 	}
-	resolved := owner.store.view(selectedKey)
-	compiled, err := compileRestriction(restriction, resolved.restrictableName)
-	if err != nil {
-		return nil, err
-	}
-	undo := owner.store.addRestriction(selectedKey, compiled)
-	return owner.ownMutation(requestContext, ownerScope, "tools.restrict()", undo, true)
+	return compileRestriction(
+		restriction,
+		catalog.view().restrictableName,
+	)
 }
 
-func (owner *toolRegistry) Guard(ownerScope *plugin.Scope, policy ToolGuard) (plugin.Disposer, error) {
-	if ownerScope == nil {
-		return nil, errors.New("tools: guard owner scope is nil")
-	}
+func (catalog *registry) addRestriction(name string, restriction compiledRestriction) error {
+	return catalog.store.addRestriction(name, restriction)
+}
+
+func (catalog *registry) removeRestriction(name string) (compiledRestriction, int, bool) {
+	return catalog.store.removeRestriction(name)
+}
+
+func (catalog *registry) restoreRestriction(
+	name string,
+	restriction compiledRestriction,
+	entryIndex int,
+) error {
+	return catalog.store.restoreRestriction(name, restriction, entryIndex)
+}
+
+func (catalog *registry) addGuard(name string, policy ToolGuard) error {
 	if policy == nil {
-		return nil, errors.New("tools: guard policy is nil")
+		return fmt.Errorf("tools: guard %q policy is nil", name)
 	}
-	undo := owner.store.addGuard(ownerScope.Target(), policy)
-	return owner.ownMutation(context.Background(), ownerScope, "tools.guard()", undo, false)
+	return catalog.store.addGuard(name, policy)
 }
 
-func (owner *toolRegistry) Get(name string, selectedKey plugin.ScopeKey) (ToolDefinition, bool) {
-	entry, found := owner.store.view(selectedKey).visible[name]
+func (catalog *registry) removeGuard(name string) {
+	catalog.store.removeGuard(name)
+}
+
+func (catalog *registry) find(name string) (*registeredTool, bool) {
+	entry, found := catalog.view().visible[name]
+	return entry, found
+}
+
+func (catalog *registry) lookupDefinition(name string) (ToolDefinition, bool) {
+	entry, found := catalog.find(name)
 	if !found {
 		return ToolDefinition{}, false
 	}
 	return cloneDefinition(entry.definition), true
 }
 
-func (owner *toolRegistry) Schemas(selectedKey plugin.ScopeKey) []llm.ToolSchema {
-	return owner.promptTools(selectedKey).Schemas
+func (catalog *registry) schemas() []llm.ToolSchema {
+	return catalog.promptTools().Schemas
 }
 
-func (owner *toolRegistry) ExecutionMode(input ToolExecutionInput) ToolExecutionMode {
+func (catalog *registry) executionMode(input ToolExecutionInput) ToolExecutionMode {
 	arguments, err := jsonvalue.Clone(input.Arguments)
 	if err != nil {
 		return ExecutionExclusive
 	}
-	entry, found := owner.store.view(input.Scope).visible[input.Name]
+	entry, found := catalog.find(input.Name)
 	if !found || entry.definition.ConcurrencyBehavior == nil {
 		return ExecutionExclusive
 	}
-	if err := validateSchemaValue(entry.parameterSchema, arguments, "arguments"); err != nil {
+	if err := validateSchemaValue(
+		entry.parameterSchema,
+		arguments,
+		"arguments",
+	); err != nil {
 		return ExecutionExclusive
 	}
 	if concurrencySafe(entry.definition.ConcurrencyBehavior, arguments) {
@@ -133,8 +145,8 @@ func (owner *toolRegistry) ExecutionMode(input ToolExecutionInput) ToolExecution
 	return ExecutionExclusive
 }
 
-func (owner *toolRegistry) promptTools(selectedKey plugin.ScopeKey) systemprompt.ToolProviderResult {
-	resolved := owner.store.view(selectedKey)
+func (catalog *registry) promptTools() systemprompt.ToolProviderResult {
+	resolved := catalog.view()
 	projections := make([]llm.ToolSchema, 0, len(resolved.order))
 	for _, name := range resolved.order {
 		entry := resolved.visible[name]
@@ -142,38 +154,46 @@ func (owner *toolRegistry) promptTools(selectedKey plugin.ScopeKey) systemprompt
 			continue
 		}
 		projections = append(projections, llm.ToolSchema{
-			Name: entry.definition.Name, Description: entry.definition.Description,
-			Parameters: append(json.RawMessage(nil), entry.definition.Parameters...),
+			Name:        entry.definition.Name,
+			Description: entry.definition.Description,
+			Parameters: append(
+				json.RawMessage(nil),
+				entry.definition.Parameters...,
+			),
 		})
 	}
-	return systemprompt.ToolProviderResult{Schemas: projections, KnownNames: sortedNames(resolved.knownNames)}
+	return systemprompt.ToolProviderResult{
+		Schemas:    projections,
+		KnownNames: sortedNames(resolved.knownNames),
+	}
 }
 
-func (owner *toolRegistry) ownMutation(
-	requestContext context.Context,
-	ownerScope *plugin.Scope,
-	label string,
-	undo func(),
-	notifyChange bool,
-) (plugin.Disposer, error) {
-	var initializing atomic.Bool
-	initializing.Store(true)
-	release, err := plugin.Own(ownerScope, label, func(closeContext context.Context) error {
-		undo()
-		if initializing.Load() || !notifyChange {
-			return nil
-		}
-		return plugin.EmitFrom(closeContext, owner.sourceScope, changeEvent, struct{}{})
-	})
-	if err != nil {
-		undo()
-		return nil, err
+func (catalog *registry) view() toolView {
+	return resolveToolView(catalog.toolLayers())
+}
+
+func (catalog *registry) toolLayers() []toolLayerSnapshot {
+	layers := make([]toolLayerSnapshot, 0)
+	if catalog.parent != nil {
+		layers = append(layers, catalog.parent.toolLayers()...)
 	}
-	if notifyChange {
-		if err := plugin.EmitFrom(requestContext, owner.sourceScope, changeEvent, struct{}{}); err != nil {
-			return nil, errors.Join(err, release(requestContext))
+	return append(layers, catalog.store.snapshot())
+}
+
+func (catalog *registry) guards() []ToolGuard {
+	return guardPolicies(catalog.toolLayers())
+}
+
+func concurrencySafe(
+	classifier ConcurrencyClassifier,
+	arguments json.RawMessage,
+) (safe bool) {
+	defer func() {
+		if recover() != nil {
+			safe = false
 		}
-	}
-	initializing.Store(false)
-	return release, nil
+	}()
+	return classifier.ConcurrencySafe(
+		append(json.RawMessage(nil), arguments...),
+	)
 }

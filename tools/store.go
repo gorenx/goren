@@ -2,62 +2,83 @@ package tools
 
 import (
 	"fmt"
-	"slices"
 	"sort"
 	"sync"
-
-	"github.com/gorenx/goren/plugin"
 )
 
-type toolRecord struct {
-	name   string
-	entry  *registeredTool
-	active bool
-}
-
 type toolTable struct {
-	byName map[string]*toolRecord
-	names  []string
+	byName map[string]*registeredTool
+	order  []string
 }
 
-func (storage *toolTable) add(entry *registeredTool, duplicateDetail string) (*toolRecord, error) {
-	if storage.byName == nil {
-		storage.byName = make(map[string]*toolRecord)
+func (table *toolTable) add(entry *registeredTool) error {
+	if table.byName == nil {
+		table.byName = make(map[string]*registeredTool)
 	}
-	if _, exists := storage.byName[entry.registrationName]; exists {
-		return nil, fmt.Errorf("%s", duplicateDetail)
+	if _, exists := table.byName[entry.registrationName]; exists {
+		return fmt.Errorf(
+			"tools: tool %q is already registered in this layer",
+			entry.registrationName,
+		)
 	}
-	record := &toolRecord{name: entry.registrationName, entry: entry, active: true}
-	storage.byName[record.name] = record
-	storage.names = append(storage.names, record.name)
-	return record, nil
+	table.byName[entry.registrationName] = entry
+	table.order = append(table.order, entry.registrationName)
+	return nil
 }
 
-func (storage *toolTable) remove(record *toolRecord) {
-	if record == nil || !record.active || storage.byName[record.name] != record {
-		return
+func (table *toolTable) remove(name string) (*registeredTool, int, bool) {
+	entry := table.byName[name]
+	if entry == nil {
+		return nil, 0, false
 	}
-	record.active = false
-	delete(storage.byName, record.name)
-	storage.names = slices.DeleteFunc(storage.names, func(candidate string) bool { return candidate == record.name })
-	if len(storage.byName) == 0 {
-		storage.byName = nil
-		storage.names = nil
-	}
-}
-
-func (storage *toolTable) entries() []*registeredTool {
-	definitions := make([]*registeredTool, 0, len(storage.names))
-	for _, name := range storage.names {
-		record := storage.byName[name]
-		if record != nil && record.active {
-			definitions = append(definitions, record.entry)
+	delete(table.byName, name)
+	entryIndex := -1
+	for index, candidate := range table.order {
+		if candidate == name {
+			entryIndex = index
+			break
 		}
 	}
-	return definitions
+	if entryIndex >= 0 {
+		table.order = append(
+			table.order[:entryIndex],
+			table.order[entryIndex+1:]...,
+		)
+	}
+	if len(table.byName) == 0 {
+		table.byName = nil
+		table.order = nil
+	}
+	return entry, entryIndex, true
 }
 
-func (storage *toolTable) empty() bool { return len(storage.byName) == 0 }
+func (table *toolTable) restore(entry *registeredTool, entryIndex int) error {
+	if err := table.add(entry); err != nil {
+		return err
+	}
+	lastIndex := len(table.order) - 1
+	if entryIndex < 0 || entryIndex >= lastIndex {
+		return nil
+	}
+	copy(table.order[entryIndex+1:], table.order[entryIndex:lastIndex])
+	table.order[entryIndex] = entry.registrationName
+	return nil
+}
+
+func (table *toolTable) entries() []*registeredTool {
+	orderedEntries := make([]*registeredTool, 0, len(table.order))
+	for _, name := range table.order {
+		if entry := table.byName[name]; entry != nil {
+			orderedEntries = append(orderedEntries, entry)
+		}
+	}
+	return orderedEntries
+}
+
+func (table *toolTable) clear() {
+	table.byName = nil
+	table.order = nil
+}
 
 type compiledRestriction struct {
 	allow map[string]struct{}
@@ -76,35 +97,20 @@ func (filter compiledRestriction) admits(name string) bool {
 	return true
 }
 
-type restrictionRecord struct {
-	identity uint64
-	filter   compiledRestriction
-	active   bool
+type restrictionEntry struct {
+	name   string
+	filter compiledRestriction
 }
 
-type guardRecord struct {
-	identity uint64
-	policy   ToolGuard
-	active   bool
+type guardEntry struct {
+	name   string
+	policy ToolGuard
 }
 
-type toolLayer struct {
-	tools        toolTable
-	restrictions []*restrictionRecord
-	guards       []*guardRecord
-}
-
-func (layer *toolLayer) empty() bool {
-	return layer.tools.empty() && len(layer.restrictions) == 0 && len(layer.guards) == 0
-}
-
-func (layer *toolLayer) admits(name string) bool {
-	for _, record := range layer.restrictions {
-		if record.active && !record.filter.admits(name) {
-			return false
-		}
-	}
-	return true
+type toolLayerSnapshot struct {
+	tools        []*registeredTool
+	restrictions []compiledRestriction
+	guards       []ToolGuard
 }
 
 type toolView struct {
@@ -115,187 +121,244 @@ type toolView struct {
 }
 
 type toolStore struct {
-	mu     sync.Mutex
-	global toolLayer
-	scoped map[plugin.ScopeKey]*toolLayer
-	nextID uint64
+	mutex sync.RWMutex
+	tools toolTable
+
+	restrictions     map[string]compiledRestriction
+	restrictionOrder []string
+	guards           map[string]ToolGuard
+	guardOrder       []string
 }
 
 func newToolStore() *toolStore {
-	return &toolStore{scoped: make(map[plugin.ScopeKey]*toolLayer)}
+	return &toolStore{}
 }
 
-func (storage *toolStore) addTool(selectedKey plugin.ScopeKey, entry *registeredTool) (func(), error) {
-	storage.mu.Lock()
-	layer := storage.layerLocked(selectedKey)
-	detail := duplicateToolMessage(selectedKey, entry.registrationName)
-	record, err := layer.tools.add(entry, detail)
-	storage.mu.Unlock()
-	if err != nil {
-		return nil, err
-	}
-	return func() {
-		storage.mu.Lock()
-		layer.tools.remove(record)
-		storage.pruneLocked(selectedKey)
-		storage.mu.Unlock()
-	}, nil
+func (storage *toolStore) addTool(entry *registeredTool) error {
+	storage.mutex.Lock()
+	defer storage.mutex.Unlock()
+	return storage.tools.add(entry)
 }
 
-func (storage *toolStore) addRestriction(selectedKey plugin.ScopeKey, filter compiledRestriction) func() {
-	storage.mu.Lock()
-	storage.nextID++
-	layer := storage.layerLocked(selectedKey)
-	record := &restrictionRecord{identity: storage.nextID, filter: filter, active: true}
-	layer.restrictions = append(layer.restrictions, record)
-	storage.mu.Unlock()
-	return func() {
-		storage.mu.Lock()
-		if record.active {
-			record.active = false
-			layer.restrictions = slices.DeleteFunc(layer.restrictions, func(candidate *restrictionRecord) bool {
-				return candidate == record
-			})
-		}
-		storage.pruneLocked(selectedKey)
-		storage.mu.Unlock()
-	}
+func (storage *toolStore) removeTool(
+	name string,
+) (*registeredTool, int, bool) {
+	storage.mutex.Lock()
+	defer storage.mutex.Unlock()
+	return storage.tools.remove(name)
 }
 
-func (storage *toolStore) addGuard(selectedKey plugin.ScopeKey, policy ToolGuard) func() {
-	storage.mu.Lock()
-	storage.nextID++
-	layer := storage.layerLocked(selectedKey)
-	record := &guardRecord{identity: storage.nextID, policy: policy, active: true}
-	layer.guards = append(layer.guards, record)
-	storage.mu.Unlock()
-	return func() {
-		storage.mu.Lock()
-		if record.active {
-			record.active = false
-			layer.guards = slices.DeleteFunc(layer.guards, func(candidate *guardRecord) bool { return candidate == record })
-		}
-		storage.pruneLocked(selectedKey)
-		storage.mu.Unlock()
-	}
+func (storage *toolStore) restoreTool(
+	entry *registeredTool,
+	entryIndex int,
+) error {
+	storage.mutex.Lock()
+	defer storage.mutex.Unlock()
+	return storage.tools.restore(entry, entryIndex)
 }
 
-func (storage *toolStore) view(selectedKey plugin.ScopeKey) toolView {
-	storage.mu.Lock()
-	defer storage.mu.Unlock()
-	layers, own := storage.layersLocked(selectedKey)
-	inherited := make(map[string]*registeredTool)
-	order := make([]string, 0)
-	retain := func(entry *registeredTool) {
-		name := entry.registrationName
-		if _, exists := inherited[name]; !exists {
-			order = append(order, name)
-		}
-		inherited[name] = entry
+func (storage *toolStore) addRestriction(
+	name string,
+	filter compiledRestriction,
+) error {
+	storage.mutex.Lock()
+	defer storage.mutex.Unlock()
+	if storage.restrictions == nil {
+		storage.restrictions = make(map[string]compiledRestriction)
 	}
-	for _, entry := range storage.global.tools.entries() {
-		retain(entry)
+	if _, exists := storage.restrictions[name]; exists {
+		return fmt.Errorf(
+			"tools: restriction %q is already registered in this layer",
+			name,
+		)
 	}
-	for _, layer := range layers {
-		if layer == own {
-			continue
-		}
-		for _, entry := range layer.tools.entries() {
-			retain(entry)
-		}
+	storage.restrictions[name] = filter
+	storage.restrictionOrder = append(storage.restrictionOrder, name)
+	return nil
+}
+
+func (storage *toolStore) removeRestriction(
+	name string,
+) (compiledRestriction, int, bool) {
+	storage.mutex.Lock()
+	defer storage.mutex.Unlock()
+	filter, found := storage.restrictions[name]
+	if !found {
+		return compiledRestriction{}, 0, false
 	}
+	delete(storage.restrictions, name)
+	entryIndex := removeOrderedName(&storage.restrictionOrder, name)
+	if len(storage.restrictions) == 0 {
+		storage.restrictions = nil
+		storage.restrictionOrder = nil
+	}
+	return filter, entryIndex, true
+}
+
+func (storage *toolStore) restoreRestriction(
+	name string,
+	filter compiledRestriction,
+	entryIndex int,
+) error {
+	storage.mutex.Lock()
+	defer storage.mutex.Unlock()
+	if storage.restrictions == nil {
+		storage.restrictions = make(map[string]compiledRestriction)
+	}
+	if _, exists := storage.restrictions[name]; exists {
+		return fmt.Errorf(
+			"tools: restriction %q is already registered in this layer",
+			name,
+		)
+	}
+	storage.restrictions[name] = filter
+	insertOrderedName(&storage.restrictionOrder, name, entryIndex)
+	return nil
+}
+
+func (storage *toolStore) addGuard(name string, policy ToolGuard) error {
+	storage.mutex.Lock()
+	defer storage.mutex.Unlock()
+	if storage.guards == nil {
+		storage.guards = make(map[string]ToolGuard)
+	}
+	if _, exists := storage.guards[name]; exists {
+		return fmt.Errorf(
+			"tools: guard %q is already registered in this layer",
+			name,
+		)
+	}
+	storage.guards[name] = policy
+	storage.guardOrder = append(storage.guardOrder, name)
+	return nil
+}
+
+func (storage *toolStore) removeGuard(name string) bool {
+	storage.mutex.Lock()
+	defer storage.mutex.Unlock()
+	if _, found := storage.guards[name]; !found {
+		return false
+	}
+	delete(storage.guards, name)
+	removeOrderedName(&storage.guardOrder, name)
+	if len(storage.guards) == 0 {
+		storage.guards = nil
+		storage.guardOrder = nil
+	}
+	return true
+}
+
+func (storage *toolStore) snapshot() toolLayerSnapshot {
+	storage.mutex.RLock()
+	defer storage.mutex.RUnlock()
+	layer := toolLayerSnapshot{
+		tools:        storage.tools.entries(),
+		restrictions: make([]compiledRestriction, 0, len(storage.restrictionOrder)),
+		guards:       make([]ToolGuard, 0, len(storage.guardOrder)),
+	}
+	for _, name := range storage.restrictionOrder {
+		layer.restrictions = append(
+			layer.restrictions,
+			storage.restrictions[name],
+		)
+	}
+	for _, name := range storage.guardOrder {
+		layer.guards = append(layer.guards, storage.guards[name])
+	}
+	return layer
+}
+
+func (storage *toolStore) clear() {
+	storage.mutex.Lock()
+	storage.tools.clear()
+	storage.restrictions = nil
+	storage.restrictionOrder = nil
+	storage.guards = nil
+	storage.guardOrder = nil
+	storage.mutex.Unlock()
+}
+
+func resolveToolView(layers []toolLayerSnapshot) toolView {
 	resolved := toolView{
-		visible: make(map[string]*registeredTool), knownNames: make(map[string]struct{}),
-		restrictableName: make(map[string]struct{}), order: make([]string, 0, len(order)),
+		visible:          make(map[string]*registeredTool),
+		order:            make([]string, 0),
+		knownNames:       make(map[string]struct{}),
+		restrictableName: make(map[string]struct{}),
 	}
-	for _, name := range order {
-		resolved.knownNames[name] = struct{}{}
-		resolved.restrictableName[name] = struct{}{}
-		admitted := true
-		for _, layer := range layers {
-			if !layer.admits(name) {
-				admitted = false
-				break
+	if len(layers) == 0 {
+		return resolved
+	}
+	ownIndex := len(layers) - 1
+	for layerIndex, layer := range layers {
+		if layerIndex == ownIndex {
+			for priorIndex := 0; priorIndex < ownIndex; priorIndex++ {
+				for _, entry := range layers[priorIndex].tools {
+					resolved.restrictableName[entry.registrationName] = struct{}{}
+				}
 			}
 		}
-		if admitted {
-			resolved.visible[name] = inherited[name]
-			resolved.order = append(resolved.order, name)
+		for _, filter := range layer.restrictions {
+			resolved.order = removeDeniedTools(
+				resolved.order,
+				resolved.visible,
+				filter,
+			)
 		}
-	}
-	if own != nil {
-		for _, entry := range own.tools.entries() {
+		for _, entry := range layer.tools {
 			name := entry.registrationName
+			resolved.knownNames[name] = struct{}{}
 			if _, exists := resolved.visible[name]; !exists {
 				resolved.order = append(resolved.order, name)
 			}
-			resolved.knownNames[name] = struct{}{}
 			resolved.visible[name] = entry
 		}
 	}
 	return resolved
 }
 
-func (storage *toolStore) guards(selectedKey plugin.ScopeKey) []ToolGuard {
-	storage.mu.Lock()
-	defer storage.mu.Unlock()
-	policies := make([]ToolGuard, 0)
-	for _, record := range storage.global.guards {
-		if record.active {
-			policies = append(policies, record.policy)
+func removeDeniedTools(
+	order []string,
+	visible map[string]*registeredTool,
+	filter compiledRestriction,
+) []string {
+	retainedOrder := order[:0]
+	for _, name := range order {
+		if filter.admits(name) {
+			retainedOrder = append(retainedOrder, name)
+			continue
 		}
+		delete(visible, name)
 	}
-	layers, _ := storage.layersLocked(selectedKey)
+	return retainedOrder
+}
+
+func guardPolicies(layers []toolLayerSnapshot) []ToolGuard {
+	policies := make([]ToolGuard, 0)
 	for _, layer := range layers {
-		for _, record := range layer.guards {
-			if record.active {
-				policies = append(policies, record.policy)
-			}
-		}
+		policies = append(policies, layer.guards...)
 	}
 	return policies
 }
 
-func (storage *toolStore) layerLocked(selectedKey plugin.ScopeKey) *toolLayer {
-	if selectedKey.IsGlobal() {
-		return &storage.global
-	}
-	layer := storage.scoped[selectedKey]
-	if layer == nil {
-		layer = &toolLayer{}
-		storage.scoped[selectedKey] = layer
-	}
-	return layer
-}
-
-func (storage *toolStore) layersLocked(selectedKey plugin.ScopeKey) ([]*toolLayer, *toolLayer) {
-	layers := make([]*toolLayer, 0)
-	var own *toolLayer
-	for _, lineageKey := range plugin.ScopeLineage(selectedKey) {
-		if layer := storage.scoped[lineageKey]; layer != nil {
-			layers = append(layers, layer)
-			if lineageKey == selectedKey {
-				own = layer
-			}
+func removeOrderedName(order *[]string, name string) int {
+	for index, candidate := range *order {
+		if candidate != name {
+			continue
 		}
+		*order = append((*order)[:index], (*order)[index+1:]...)
+		return index
 	}
-	return layers, own
+	return -1
 }
 
-func (storage *toolStore) pruneLocked(selectedKey plugin.ScopeKey) {
-	if selectedKey.IsGlobal() {
+func insertOrderedName(order *[]string, name string, entryIndex int) {
+	if entryIndex < 0 || entryIndex >= len(*order) {
+		*order = append(*order, name)
 		return
 	}
-	if layer := storage.scoped[selectedKey]; layer != nil && layer.empty() {
-		delete(storage.scoped, selectedKey)
-	}
-}
-
-func duplicateToolMessage(selectedKey plugin.ScopeKey, name string) string {
-	if selectedKey.IsGlobal() {
-		return fmt.Sprintf("tools: tool %q is already registered (for a per-agent variant, register through that agent's scope instead)", name)
-	}
-	return fmt.Sprintf("tools: tool %q is already registered in this scope", name)
+	*order = append(*order, "")
+	copy((*order)[entryIndex+1:], (*order)[entryIndex:])
+	(*order)[entryIndex] = name
 }
 
 func sortedNames(names map[string]struct{}) []string {

@@ -1,165 +1,104 @@
 package tools
 
-import (
-	"context"
-	"errors"
-	"fmt"
+import "github.com/gorenx/goren/plugin"
 
-	"github.com/gorenx/goren/plugin"
-)
-
-// PreExecuteNext delegates to the remaining pre-dispatch policy chain.
-type PreExecuteNext func(context.Context) (PreToolDecision, error)
-
-// PreExecuteHandler may allow, deny, or request approval for one call.
-type PreExecuteHandler func(context.Context, ToolExecution, PreExecuteNext) (PreToolDecision, error)
-
-// ExecuteNext delegates to the remaining around-dispatch chain. The supplied
-// context becomes the next wrapper's context and is fused with caller
-// cancellation before the tool body runs.
-type ExecuteNext func(context.Context) (ToolExecutionResult, error)
-
-// ExecuteHandler wraps dispatch for timeout, retry, metrics, or interception.
-type ExecuteHandler func(context.Context, ToolExecution, ExecuteNext) (ToolExecutionResult, error)
-
-// PostExecuteNext delegates to the remaining post-dispatch policy chain.
-type PostExecuteNext func(context.Context) (PostToolDecision, error)
-
-// PostExecuteHandler may accept, replace one projection, or block an outcome.
-type PostExecuteHandler func(context.Context, ToolExecution, ToolResultSnapshot, PostExecuteNext) (PostToolDecision, error)
-
-// ResultHandler observes one detached authoritative final outcome.
-type ResultHandler func(context.Context, ToolExecution, ToolResultSnapshot) error
-
-// ChangeHandler observes registry visibility changes.
-type ChangeHandler func(context.Context) error
-
-type postExecutePayload struct {
-	execution ToolExecution
-	snapshot  ToolResultSnapshot
+// PreExecuteRequest is the immutable input of the pre-dispatch policy
+// Waterfall. Middleware may decide, deny, ask, or delegate.
+type PreExecuteRequest struct {
+	plugin.WaterfallInputBase
+	toolCall ToolExecution
 }
 
-type resultPayload struct {
-	execution ToolExecution
-	snapshot  ToolResultSnapshot
+// Execution returns a detached view of the call being considered.
+func (input PreExecuteRequest) Execution() ToolExecution {
+	return cloneExecution(input.toolCall)
 }
 
-var (
-	preExecuteEvent  = plugin.DefineEvent[ToolExecution, PreToolDecision](PreExecuteEventName, plugin.ModeWaterfall)
-	executeEvent     = plugin.DefineEvent[ToolExecution, ToolExecutionResult](ExecuteEventName, plugin.ModeWaterfall)
-	postExecuteEvent = plugin.DefineEvent[postExecutePayload, PostToolDecision](PostExecuteEventName, plugin.ModeWaterfall)
-	resultEvent      = plugin.DefineEvent[resultPayload, struct{}](ResultEventName, plugin.ModeEmit)
-	changeEvent      = plugin.DefineEvent[struct{}, struct{}](ChangeEventName, plugin.ModeEmit)
-)
-
-// OnPreExecute registers a scope-owned pre-dispatch policy wrapper.
-func OnPreExecute(pluginScope *plugin.Scope, callback PreExecuteHandler) (plugin.Disposer, error) {
-	if callback == nil {
-		return nil, errors.New("tools: pre-execute handler is nil")
-	}
-	return plugin.OnWaterfall(pluginScope, preExecuteEvent,
-		func(requestContext context.Context, execution ToolExecution, downstream plugin.Next[ToolExecution, PreToolDecision]) (PreToolDecision, error) {
-			return invokePreHandler(callback, requestContext, execution, func(chainContext context.Context) (PreToolDecision, error) {
-				return downstream(chainContext, execution)
-			})
-		})
+// PreExecuteOutcome is the typed pre-dispatch policy result.
+type PreExecuteOutcome struct {
+	plugin.WaterfallOutputBase
+	Decision PreToolDecision
 }
 
-// OnExecute registers a scope-owned around-dispatch wrapper.
-func OnExecute(pluginScope *plugin.Scope, callback ExecuteHandler) (plugin.Disposer, error) {
-	if callback == nil {
-		return nil, errors.New("tools: execute handler is nil")
-	}
-	return plugin.OnWaterfall(pluginScope, executeEvent,
-		func(requestContext context.Context, execution ToolExecution, downstream plugin.Next[ToolExecution, ToolExecutionResult]) (ToolExecutionResult, error) {
-			return invokeExecuteHandler(callback, requestContext, execution, func(chainContext context.Context) (ToolExecutionResult, error) {
-				return downstream(chainContext, execution)
-			})
-		})
+// ExecuteRequest is the immutable input of the around-dispatch Waterfall.
+// Middleware may replace only the context passed to the downstream Action.
+type ExecuteRequest struct {
+	plugin.WaterfallInputBase
+	toolCall ToolExecution
 }
 
-// OnPostExecute registers a scope-owned post-dispatch policy wrapper.
-func OnPostExecute(pluginScope *plugin.Scope, callback PostExecuteHandler) (plugin.Disposer, error) {
-	if callback == nil {
-		return nil, errors.New("tools: post-execute handler is nil")
-	}
-	return plugin.OnWaterfall(pluginScope, postExecuteEvent,
-		func(requestContext context.Context, payload postExecutePayload, downstream plugin.Next[postExecutePayload, PostToolDecision]) (PostToolDecision, error) {
-			return invokePostHandler(callback, requestContext, payload.execution, payload.snapshot,
-				func(chainContext context.Context) (PostToolDecision, error) {
-					return downstream(chainContext, payload)
-				})
-		})
+// Execution returns a detached view of the call being dispatched.
+func (input ExecuteRequest) Execution() ToolExecution {
+	return cloneExecution(input.toolCall)
 }
 
-// OnResult registers a scope-filtered final-outcome observer.
-func OnResult(pluginScope *plugin.Scope, callback ResultHandler) (plugin.Disposer, error) {
-	if callback == nil {
-		return nil, errors.New("tools: result handler is nil")
-	}
-	return plugin.OnNotify(pluginScope, resultEvent, func(requestContext context.Context, payload resultPayload) error {
-		return invokeResultHandler(callback, requestContext, payload.execution, payload.snapshot)
-	})
+// ExecuteOutcome is the typed around-dispatch result.
+type ExecuteOutcome struct {
+	plugin.WaterfallOutputBase
+	Result ToolExecutionResult
 }
 
-// OnChange registers an unfiltered registry-change observer.
-func OnChange(pluginScope *plugin.Scope, callback ChangeHandler) (plugin.Disposer, error) {
-	if callback == nil {
-		return nil, errors.New("tools: change handler is nil")
-	}
-	return plugin.OnNotify(pluginScope, changeEvent, func(requestContext context.Context, _ struct{}) error {
-		return invokeChangeHandler(callback, requestContext)
-	})
+// PostExecuteRequest contains the immutable execution and detached result seen
+// by post-dispatch policy.
+type PostExecuteRequest struct {
+	plugin.WaterfallInputBase
+	toolCall   ToolExecution
+	resultView ToolResultSnapshot
 }
 
-func invokePreHandler(
-	callback PreExecuteHandler,
-	requestContext context.Context,
-	execution ToolExecution,
-	downstream PreExecuteNext,
-) (decision PreToolDecision, invokeErr error) {
-	defer containHandlerPanic("pre-execute", &invokeErr)
-	return callback(requestContext, execution, downstream)
+// Execution returns a detached view of the completed call.
+func (input PostExecuteRequest) Execution() ToolExecution {
+	return cloneExecution(input.toolCall)
 }
 
-func invokeExecuteHandler(
-	callback ExecuteHandler,
-	requestContext context.Context,
-	execution ToolExecution,
-	downstream ExecuteNext,
-) (outcome ToolExecutionResult, invokeErr error) {
-	defer containHandlerPanic("execute", &invokeErr)
-	return callback(requestContext, execution, downstream)
+// Result returns the read-only detached outcome snapshot.
+func (input PostExecuteRequest) Result() ToolResultSnapshot {
+	return input.resultView
 }
 
-func invokePostHandler(
-	callback PostExecuteHandler,
-	requestContext context.Context,
-	execution ToolExecution,
-	snapshot ToolResultSnapshot,
-	downstream PostExecuteNext,
-) (decision PostToolDecision, invokeErr error) {
-	defer containHandlerPanic("post-execute", &invokeErr)
-	return callback(requestContext, execution, snapshot, downstream)
+// PostExecuteOutcome is the typed post-dispatch policy result.
+type PostExecuteOutcome struct {
+	plugin.WaterfallOutputBase
+	Decision PostToolDecision
 }
 
-func invokeResultHandler(
-	callback ResultHandler,
-	requestContext context.Context,
-	execution ToolExecution,
-	snapshot ToolResultSnapshot,
-) (invokeErr error) {
-	defer containHandlerPanic("result", &invokeErr)
-	return callback(requestContext, execution, snapshot)
+// ExecutionCompleted is the final, immutable tools/result Runtime Event.
+type ExecutionCompleted struct {
+	toolCall   ToolExecution
+	resultView ToolResultSnapshot
 }
 
-func invokeChangeHandler(callback ChangeHandler, requestContext context.Context) (invokeErr error) {
-	defer containHandlerPanic("change", &invokeErr)
-	return callback(requestContext)
+// EventName returns the canonical Harness Event name.
+func (ExecutionCompleted) EventName() string {
+	return ResultEventName
 }
 
-func containHandlerPanic(label string, invokeErr *error) {
-	if panicValue := recover(); panicValue != nil {
-		*invokeErr = fmt.Errorf("tools: %s handler panicked: %v", label, panicValue)
-	}
+// EventDelivery contains observer failures outside the authoritative Tool
+// outcome while reporting them through Runtime's EventFailureReporter.
+func (ExecutionCompleted) EventDelivery() plugin.DeliveryPolicy {
+	return plugin.DeliveryBestEffort
+}
+
+// Execution returns a detached view of the final call.
+func (completed ExecutionCompleted) Execution() ToolExecution {
+	return cloneExecution(completed.toolCall)
+}
+
+// Result returns the read-only final outcome snapshot.
+func (completed ExecutionCompleted) Result() ToolResultSnapshot {
+	return completed.resultView
+}
+
+// RegistryChanged reports a successful Tool definition or restriction change.
+type RegistryChanged struct{}
+
+// EventName returns the canonical Harness Event name.
+func (RegistryChanged) EventName() string {
+	return ChangeEventName
+}
+
+// EventDelivery keeps registry mutation and notification ordered. A failed
+// observer rejects the mutation so callers never observe a silent partial add.
+func (RegistryChanged) EventDelivery() plugin.DeliveryPolicy {
+	return plugin.DeliveryOrdered
 }
