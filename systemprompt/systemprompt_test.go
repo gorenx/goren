@@ -807,3 +807,84 @@ func TestSystemPromptConfigCanDisableBuiltins(t *testing.T) {
 		t.Fatalf("disabled builtins assembly = %#v", assembled)
 	}
 }
+
+func TestToolProviderInChildLayerShadowsSameNamedParentProvider(t *testing.T) {
+	t.Parallel()
+	runtimeEngine, prompts, promptHandle := mountPrompt(
+		t,
+		systemprompt.Config{},
+		systemprompt.RegistryOptions{},
+	)
+	t.Cleanup(func() {
+		if err := runtimeEngine.Shutdown(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	requestContext := context.Background()
+	rootCalls := 0
+	if err := prompts.AddToolProvider(
+		requestContext,
+		"shared",
+		systemprompt.ToolProviderFunc(func(
+			context.Context,
+			systemprompt.AssembleContext,
+		) (systemprompt.ToolProviderResult, error) {
+			rootCalls++
+			return systemprompt.ToolProviderResult{
+				Schemas: []llm.ToolSchema{
+					{
+						Name:       "root-tool",
+						Parameters: json.RawMessage(`{}`),
+					},
+				},
+			}, nil
+		}),
+	); err != nil {
+		t.Fatal(err)
+	}
+	overlay := systemprompt.NewOverlay(systemprompt.RegistryOptions{})
+	if _, err := runtimeEngine.MountChild(
+		requestContext,
+		promptHandle,
+		overlay,
+	); err != nil {
+		t.Fatal(err)
+	}
+	overlayCalls := 0
+	if err := overlay.AddToolProvider(
+		requestContext,
+		"shared",
+		systemprompt.ToolProviderFunc(func(
+			context.Context,
+			systemprompt.AssembleContext,
+		) (systemprompt.ToolProviderResult, error) {
+			overlayCalls++
+			return systemprompt.ToolProviderResult{
+				Schemas: []llm.ToolSchema{
+					{
+						Name:       "child-tool",
+						Parameters: json.RawMessage(`{}`),
+					},
+				},
+			}, nil
+		}),
+	); err != nil {
+		t.Fatal(err)
+	}
+	assembled, err := overlay.Assemble(
+		requestContext,
+		systemprompt.AssembleContext{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rootCalls != 0 || overlayCalls != 1 || len(assembled.Tools) != 1 ||
+		assembled.Tools[0].Name != "child-tool" {
+		t.Fatalf(
+			"calls = (%d, %d), tools = %#v",
+			rootCalls,
+			overlayCalls,
+			assembled.Tools,
+		)
+	}
+}

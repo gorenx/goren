@@ -21,7 +21,7 @@ type Service struct {
 	root            bool
 	defaultPolicy   Policy
 	parent          Approval
-	prompts         systemprompt.Contributions
+	prompts         systemprompt.PromptRegistry
 	promptInstalled bool
 }
 
@@ -46,7 +46,7 @@ func NewOverlay() *Service {
 // Approval required by an overlay.
 func (owner *Service) Manifest() plugin.Manifest {
 	requiredServices := []plugin.ServiceType{
-		plugin.ServiceOf[systemprompt.Contributions](),
+		plugin.ServiceOf[systemprompt.PromptRegistry](),
 	}
 	if !owner.root {
 		requiredServices = append(
@@ -79,7 +79,7 @@ func (owner *Service) Apply(requestContext context.Context) error {
 		}
 		owner.parent = parent
 	}
-	prompts, err := plugin.Require[systemprompt.Contributions](owner)
+	prompts, err := plugin.Require[systemprompt.PromptRegistry](owner)
 	if err != nil {
 		return err
 	}

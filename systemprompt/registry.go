@@ -80,7 +80,7 @@ func (owner *Registry) Manifest() plugin.Manifest {
 		Name: owner.name,
 		Provides: []plugin.ServiceType{
 			plugin.ServiceOf[Assembler](),
-			plugin.ServiceOf[Contributions](),
+			plugin.ServiceOf[PromptRegistry](),
 		},
 		Requires:   requiredServices,
 		Waterfalls: waterfalls,

@@ -192,10 +192,10 @@ type Assembler interface {
 	Assemble(context.Context, AssembleContext) (PromptAssembly, error)
 }
 
-// Contributions is the mutation capability consumed by Plugins that own
+// PromptRegistry is the mutation capability consumed by Plugins that own
 // prompt sections, context, variables, or tool presentation. It changes only
 // the exact Registry layer resolved for that Plugin.
-type Contributions interface {
+type PromptRegistry interface {
 	plugin.Service
 	AddSection(context.Context, PromptSection) error
 	RemoveSection(context.Context, string) error
@@ -210,9 +210,9 @@ type Contributions interface {
 }
 
 // SystemPrompt is the complete provider contract implemented by Registry.
-// Consumers should depend on Assembler or Contributions rather than this
+// Consumers should depend on Assembler or PromptRegistry rather than this
 // composite interface.
 type SystemPrompt interface {
 	Assembler
-	Contributions
+	PromptRegistry
 }
