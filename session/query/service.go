@@ -31,7 +31,9 @@ type Config struct {
 // serializes observation, index reconciliation, and query execution so a page
 // and its cursor always refer to one derived generation.
 type Service struct {
+	plugin.Base
 	mutex       sync.Mutex
+	opener      IndexOpener
 	sessions    session.LiveStore
 	persistence sesspersist.Persistence
 	index       Index
@@ -39,17 +41,13 @@ type Service struct {
 	instance    string
 }
 
-// New constructs Session Query and binds the derived index lifecycle to the
-// providing plugin scope.
+// New constructs the Session Query Service Plugin without opening its Index.
 func New(
-	pluginScope *plugin.Scope,
-	sessions session.LiveStore,
-	persistence sesspersist.Persistence,
-	derivedIndex Index,
+	opener IndexOpener,
 	settings Config,
 ) (*Service, error) {
-	if pluginScope == nil || sessions == nil || derivedIndex == nil {
-		return nil, errors.New("session query: Scope, Session Store, and Index are required")
+	if opener == nil {
+		return nil, errors.New("session query: IndexOpener is required")
 	}
 	resolved, err := ValidateConfig(settings)
 	if err != nil {
@@ -60,13 +58,56 @@ func New(
 		return nil, fmt.Errorf("session query: create service identity: %w", err)
 	}
 	owner := &Service{
-		sessions: sessions, persistence: persistence, index: derivedIndex,
-		settings: resolved, instance: identity,
-	}
-	if _, err := plugin.Own(pluginScope, "sessionQuery.close()", owner.Close); err != nil {
-		return nil, err
+		opener:   opener,
+		settings: resolved,
+		instance: identity,
 	}
 	return owner, nil
+}
+
+// Manifest declares the Query Service and its source dependencies.
+func (*Service) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: PluginName,
+		Provides: []plugin.ServiceType{
+			plugin.ServiceOf[QueryService](),
+		},
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[session.LiveStore](),
+			plugin.ServiceOf[sesspersist.Persistence](),
+		},
+	}
+}
+
+// Apply resolves source Services and acquires the disposable Index.
+func (owner *Service) Apply(requestContext context.Context) error {
+	if err := requestContext.Err(); err != nil {
+		return err
+	}
+	sessions, err := plugin.Require[session.LiveStore](owner)
+	if err != nil {
+		return err
+	}
+	persistence, err := plugin.Require[sesspersist.Persistence](owner)
+	if err != nil {
+		return err
+	}
+	derivedIndex, err := owner.opener.OpenIndex(requestContext)
+	if err != nil {
+		return err
+	}
+	if derivedIndex == nil {
+		return errors.New("session query: IndexOpener returned nil Index")
+	}
+	owner.sessions = sessions
+	owner.persistence = persistence
+	owner.index = derivedIndex
+	return nil
+}
+
+// Dispose waits behind active operations and closes the owned Index.
+func (owner *Service) Dispose(closeContext context.Context) error {
+	return owner.Close(closeContext)
 }
 
 // ValidateConfig resolves defaults and rejects invalid provider-independent
@@ -224,6 +265,9 @@ func (owner *Service) SearchEvents(
 func (owner *Service) Close(closeContext context.Context) error {
 	owner.mutex.Lock()
 	defer owner.mutex.Unlock()
+	if owner.index == nil {
+		return nil
+	}
 	return owner.index.Close(closeContext)
 }
 
