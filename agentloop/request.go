@@ -46,7 +46,7 @@ func (subject *ReactLoopAgent) executeStep(
 		if attempt.prepared != nil {
 			stream, err = attempt.prepared.Stream(requestContext, attempt.options)
 		} else {
-			stream, err = subject.owner.llm.Stream(requestContext, attempt.options)
+			stream, err = subject.models.Stream(requestContext, attempt.options)
 		}
 		if err != nil {
 			return nil, err
@@ -90,14 +90,21 @@ func (subject *ReactLoopAgent) executeStep(
 				retryPolicy = attempt.prepared.RetryPolicyValue()
 			}
 			action, resolveErr := agent.ResolveRequestError(
-				requestContext, subject.owner.sourceScope,
+				requestContext,
 				agent.RequestErrorNotice{
-					Subject: subject, Turn: turn, Step: step, Provider: attempt.options.Provider,
-					Failure: failure, RetryPolicy: retryPolicy,
+					Subject:     subject,
+					Turn:        turn,
+					Step:        step,
+					Provider:    attempt.options.Provider,
+					Failure:     failure,
+					RetryPolicy: retryPolicy,
 				},
-				func(context.Context) (agent.RequestErrorAction, error) {
+				agent.RequestErrorActionFunc(func(
+					context.Context,
+					agent.RequestErrorNotice,
+				) (agent.RequestErrorAction, error) {
 					return agent.RequestErrorAction{}, nil
-				},
+				}),
 			)
 			if resolveErr != nil {
 				return nil, resolveErr
@@ -173,11 +180,22 @@ func (subject *ReactLoopAgent) buildRequest(
 	if subject.requestHeaderLogged && headerFound {
 		seedConfig = requestProposal(persistedHeader)
 	}
-	proposed, err := agent.ResolveRequest(requestContext, subject.owner.sourceScope, agent.RequestNotice{
-		Subject: subject, Turn: turn, Step: step,
-	}, func(context.Context) (llm.CallConfig, error) {
-		return llm.CloneCallConfig(seedConfig), nil
-	})
+	proposed, err := agent.ResolveRequest(
+		requestContext,
+		agent.RequestNotice{
+			Subject: subject,
+			Turn:    turn,
+			Step:    step,
+		},
+		agent.RequestActionFunc(func(
+			context.Context,
+			agent.RequestNotice,
+		) (agent.RequestResolution, error) {
+			return agent.RequestResolution{
+				Config: llm.CloneCallConfig(seedConfig),
+			}, nil
+		}),
+	)
 	if err != nil {
 		return requestAttempt{}, err
 	}
@@ -192,7 +210,7 @@ func (subject *ReactLoopAgent) buildRequest(
 	}
 	var preparedCall llm.PreparedLlmCall
 	effective := proposed
-	preparedCall, err = subject.owner.llm.PrepareCall(requestContext, proposed)
+	preparedCall, err = subject.models.PrepareCall(requestContext, proposed)
 	if err != nil {
 		var llmProblem *llm.LlmError
 		if !errors.As(err, &llmProblem) || llmProblem.Code() != "NO_ADAPTER" {
