@@ -21,13 +21,12 @@ type ModelSelection struct {
 // explicitly selects a model for the Agent.
 type ModelSelectionSource func() (ModelSelection, bool, error)
 
-// ModelSelectionRef couples mutable next-step selection to the value captured
-// for the current prompt assembly.
-// TODO： optimize name, "current" is the model selection that is about to take effect, assembled is now selected
+// ModelSelectionRef couples the requested next-step selection to the effective
+// selection captured by the most recent prompt assembly.
 type ModelSelectionRef struct {
 	mu        sync.RWMutex
-	current   *ModelSelection
-	assembled *ModelSelection
+	requested *ModelSelection
+	effective *ModelSelection
 	source    ModelSelectionSource
 }
 
@@ -40,15 +39,14 @@ func NewModelSelectionRef(source ModelSelectionSource) *ModelSelectionRef {
 // SetCurrent changes selection for the next step that enters prompt assembly.
 func (selection *ModelSelectionRef) SetCurrent(selected *ModelSelection) {
 	selection.mu.Lock()
-	selection.current = cloneSelection(selected)
+	selection.requested = cloneSelection(selected)
 	selection.mu.Unlock()
 }
 
 // Current returns the explicit next-step selection or resolves its live fallback.
-// TODO: bool should be remove
 func (selection *ModelSelectionRef) Current() (ModelSelection, bool, error) {
 	selection.mu.RLock()
-	selected := cloneSelection(selection.current)
+	selected := cloneSelection(selection.requested)
 	source := selection.source
 	selection.mu.RUnlock()
 	if selected != nil {
@@ -64,82 +62,124 @@ func (selection *ModelSelectionRef) Current() (ModelSelection, bool, error) {
 func (selection *ModelSelectionRef) Assembled() (ModelSelection, bool) {
 	selection.mu.RLock()
 	defer selection.mu.RUnlock()
-	if selection.assembled == nil {
+	if selection.effective == nil {
 		return ModelSelection{}, false
 	}
-	return *selection.assembled, true
+	return *selection.effective, true
 }
 
-// InstallModelSelection keeps System Prompt variables and request routing on
+// ModelSelectionPlugin keeps System Prompt variables and request routing on
 // one step-consistent selection snapshot.
-func InstallModelSelection(agentScope *plugin.Scope, selection *ModelSelectionRef) (plugin.Disposer, error) {
-	if agentScope == nil || selection == nil {
-		return nil, errors.New("agent: model selection Scope and reference are required")
+type ModelSelectionPlugin struct {
+	plugin.Base
+	selection *ModelSelectionRef
+	prompt    promptSelectionMiddleware
+	request   requestSelectionMiddleware
+}
+
+// NewModelSelectionPlugin constructs the two scoped Waterfall bindings owned
+// by one model-selection lifecycle.
+func NewModelSelectionPlugin(selection *ModelSelectionRef) (*ModelSelectionPlugin, error) {
+	if selection == nil {
+		return nil, errors.New("agent: model selection reference is required")
 	}
-	// TODO: restructure
-	releaseAssembly, err := systemprompt.OnAssemble(
-		agentScope,
-		func(requestContext context.Context,
-			_ *systemprompt.PromptAssembly,
-			_ systemprompt.AssembleContext,
-			downstream systemprompt.AssembleNext,
-		) (systemprompt.PromptAssembly, error) {
-			selected, found, selectionErr := selection.Current()
-			if selectionErr != nil {
-				return systemprompt.PromptAssembly{}, selectionErr
-			}
-			resolvedPrompt, resolveErr := downstream(requestContext)
-			if resolveErr != nil {
-				return systemprompt.PromptAssembly{}, resolveErr
-			}
-			selection.mu.Lock()
-			if found {
-				selection.assembled = cloneSelection(&selected)
-			} else {
-				selection.assembled = nil
-			}
-			selection.mu.Unlock()
-			if !found {
-				return resolvedPrompt, nil
-			}
-			if resolvedPrompt.Variables == nil {
-				resolvedPrompt.Variables = make(map[string]systemprompt.VariableValue)
-			}
-			resolvedPrompt.Variables["provider"] = systemprompt.VariableValue{Value: selected.Provider, Defined: true}
-			resolvedPrompt.Variables["model"] = systemprompt.VariableValue{Value: selected.Model, Defined: true}
-			return resolvedPrompt, nil
+	owner := &ModelSelectionPlugin{
+		selection: selection,
+	}
+	owner.prompt.selection = selection
+	owner.request.selection = selection
+	return owner, nil
+}
+
+// Manifest declares prompt assembly and request routing Middleware.
+func (owner *ModelSelectionPlugin) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "@deepseek-ai/dsh-agent/model-selection",
+		Waterfalls: []plugin.WaterfallMiddlewareBinding{
+			plugin.WaterfallOf(&owner.prompt),
+			plugin.WaterfallOf(&owner.request),
 		},
-	)
-	if err != nil {
-		return nil, err
 	}
-	releaseRequest, err := OnRequest(
-		agentScope,
-		func(
-			requestContext context.Context,
-			_ RequestNotice,
-			downstream RequestNext,
-		) (llm.CallConfig, error) {
-			resolved, resolveErr := downstream(requestContext)
-			if resolveErr != nil {
-				return llm.CallConfig{}, resolveErr
-			}
-			selected, found := selection.Assembled()
-			if !found {
-				return resolved, nil
-			}
-			resolved.Provider = selected.Provider
-			resolved.Model = selected.Model
-			resolved.ReasoningEffort = selected.ReasoningEffort
-			return resolved, nil
-		},
-	)
-	if err != nil {
-		return nil, errors.Join(err, releaseAssembly(context.Background()))
+}
+
+// Apply validates startup cancellation before Middleware publication.
+func (*ModelSelectionPlugin) Apply(requestContext context.Context) error {
+	return requestContext.Err()
+}
+
+// Dispose clears the last step snapshot without changing the live selection.
+func (owner *ModelSelectionPlugin) Dispose(context.Context) error {
+	owner.selection.mu.Lock()
+	owner.selection.effective = nil
+	owner.selection.mu.Unlock()
+	return nil
+}
+
+type promptSelectionMiddleware struct {
+	selection *ModelSelectionRef
+}
+
+func (middleware *promptSelectionMiddleware) Intercept(
+	requestContext context.Context,
+	input systemprompt.AssembleRequest,
+	downstream plugin.WaterfallAction[
+		systemprompt.AssembleRequest,
+		systemprompt.PromptAssembly,
+	],
+) (systemprompt.PromptAssembly, error) {
+	selected, found, selectionErr := middleware.selection.Current()
+	if selectionErr != nil {
+		return systemprompt.PromptAssembly{}, selectionErr
 	}
-	return func(closeContext context.Context) error {
-		return errors.Join(releaseRequest(closeContext), releaseAssembly(closeContext))
-	}, nil
+	resolvedPrompt, resolveErr := downstream.Execute(requestContext, input)
+	if resolveErr != nil {
+		return systemprompt.PromptAssembly{}, resolveErr
+	}
+	middleware.selection.mu.Lock()
+	if found {
+		middleware.selection.effective = cloneSelection(&selected)
+	} else {
+		middleware.selection.effective = nil
+	}
+	middleware.selection.mu.Unlock()
+	if !found {
+		return resolvedPrompt, nil
+	}
+	if resolvedPrompt.Variables == nil {
+		resolvedPrompt.Variables = make(map[string]systemprompt.VariableValue)
+	}
+	resolvedPrompt.Variables["provider"] = systemprompt.VariableValue{
+		Value:   selected.Provider,
+		Defined: true,
+	}
+	resolvedPrompt.Variables["model"] = systemprompt.VariableValue{
+		Value:   selected.Model,
+		Defined: true,
+	}
+	return resolvedPrompt, nil
+}
+
+type requestSelectionMiddleware struct {
+	selection *ModelSelectionRef
+}
+
+func (middleware *requestSelectionMiddleware) Intercept(
+	requestContext context.Context,
+	input RequestNotice,
+	downstream plugin.WaterfallAction[RequestNotice, RequestResolution],
+) (RequestResolution, error) {
+	resolved, resolveErr := downstream.Execute(requestContext, input)
+	if resolveErr != nil {
+		return RequestResolution{}, resolveErr
+	}
+	selected, found := middleware.selection.Assembled()
+	if !found {
+		return resolved, nil
+	}
+	resolved.Config.Provider = selected.Provider
+	resolved.Config.Model = selected.Model
+	resolved.Config.ReasoningEffort = selected.ReasoningEffort
+	return resolved, nil
 }
 
 func cloneSelection(source *ModelSelection) *ModelSelection {

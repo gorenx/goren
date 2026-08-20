@@ -12,6 +12,7 @@ import (
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/systemprompt"
+	"github.com/gorenx/goren/tools"
 )
 
 type activityKind uint8
@@ -36,13 +37,20 @@ type activityState struct {
 // ReactLoopAgent is the concrete default Agent driver. Session is its durable
 // source of truth; this object owns only live coordination and projections.
 type ReactLoopAgent struct {
-	owner        *loopService
+	plugin.Base
+	owner        *LoopPlugin
 	identifier   session.SessionID
 	options      agent.Options
 	conversation *session.Session
 	pending      *agent.Inbox
-	agentScope   *plugin.Scope
 	projection   *runtimeContextProjection
+	lifecycle    *agentLifecycle
+	children     []plugin.ChildPlugin
+	agents       agent.Registry
+	sessions     session.LiveStore
+	models       llm.LlmRuntime
+	toolRuntime  tools.ToolRuntime
+	prompts      systemprompt.Assembler
 
 	mu                  sync.Mutex
 	activity            activityState
@@ -52,13 +60,12 @@ type ReactLoopAgent struct {
 }
 
 func newReactLoopAgent(
-	owner *loopService,
+	owner *LoopPlugin,
 	conversation *session.Session,
 	loopOptions agent.Options,
-	agentScope *plugin.Scope,
 ) (*ReactLoopAgent, error) {
-	if owner == nil || conversation == nil || agentScope == nil {
-		return nil, errors.New("agentloop: Agent owner, Session, and Scope are required")
+	if owner == nil || conversation == nil {
+		return nil, errors.New("agentloop: Agent owner and Session are required")
 	}
 	lastTurn, err := restoreLastTurn(conversation)
 	if err != nil {
@@ -71,20 +78,92 @@ func newReactLoopAgent(
 		identifier:   conversation.ID(),
 		options:      cloneAgentOptions(loopOptions),
 		conversation: conversation,
-		agentScope:   agentScope,
-		activity:     activityState{kind: activityIdle, lastTurn: lastTurn}, activityDone: closedActivity,
+		activity: activityState{
+			kind:     activityIdle,
+			lastTurn: lastTurn,
+		},
+		activityDone: closedActivity,
 	}
 	pending, err := agent.NewInbox(conversation, inboxEventBridge{subject: subject})
 	if err != nil {
 		return nil, err
 	}
 	subject.pending = pending
-	projection, err := newRuntimeContextProjection(agentScope, conversation)
+	projection, err := newRuntimeContextProjection(conversation)
 	if err != nil {
 		return nil, err
 	}
 	subject.projection = projection
 	return subject, nil
+}
+
+// Manifest provides the exact scoped Agent Service and declares every runtime
+// capability used by the driver.
+func (subject *ReactLoopAgent) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: PluginName + "/react-loop-agent",
+		Provides: []plugin.ServiceType{
+			plugin.ServiceOf[agent.Agent](),
+		},
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[agent.Registry](),
+			plugin.ServiceOf[session.LiveStore](),
+			plugin.ServiceOf[llm.LlmRuntime](),
+			plugin.ServiceOf[tools.ToolRuntime](),
+			plugin.ServiceOf[systemprompt.Assembler](),
+		},
+		Children: append([]plugin.ChildPlugin(nil), subject.children...),
+	}
+}
+
+// Apply resolves the exact Agent Scope overlays before publication.
+func (subject *ReactLoopAgent) Apply(requestContext context.Context) error {
+	if err := requestContext.Err(); err != nil {
+		return err
+	}
+	agents, err := plugin.Require[agent.Registry](subject)
+	if err != nil {
+		return err
+	}
+	sessions, err := plugin.Require[session.LiveStore](subject)
+	if err != nil {
+		return err
+	}
+	models, err := plugin.Require[llm.LlmRuntime](subject)
+	if err != nil {
+		return err
+	}
+	toolRuntime, err := plugin.Require[tools.ToolRuntime](subject)
+	if err != nil {
+		return err
+	}
+	prompts, err := plugin.Require[systemprompt.Assembler](subject)
+	if err != nil {
+		return err
+	}
+	subject.agents = agents
+	subject.sessions = sessions
+	subject.models = models
+	subject.toolRuntime = toolRuntime
+	subject.prompts = prompts
+	return requestContext.Err()
+}
+
+// Dispose stops live Agent work. The separate membership Plugin owns Registry
+// and Session publication because it starts only after the complete tree is
+// ready and stops before ordinary children.
+func (subject *ReactLoopAgent) Dispose(closeContext context.Context) error {
+	subject.beginDispose()
+	idleErr := subject.WhenIdle(closeContext)
+	subject.agents = nil
+	subject.sessions = nil
+	subject.models = nil
+	subject.toolRuntime = nil
+	subject.prompts = nil
+	if subject.lifecycle != nil {
+		subject.lifecycle.markTreeStopped()
+	}
+	return idleErr
 }
 
 func (subject *ReactLoopAgent) ID() session.SessionID { return subject.identifier }
@@ -96,8 +175,6 @@ func (subject *ReactLoopAgent) OptionsValue() agent.Options {
 func (subject *ReactLoopAgent) SessionValue() *session.Session { return subject.conversation }
 
 func (subject *ReactLoopAgent) InboxValue() *agent.Inbox { return subject.pending }
-
-func (subject *ReactLoopAgent) ScopeValue() *plugin.Scope { return subject.agentScope }
 
 func (subject *ReactLoopAgent) StatusValue() agent.Status {
 	subject.mu.Lock()
@@ -338,8 +415,8 @@ func (subject *ReactLoopAgent) prepareStep(
 	if err != nil {
 		return preparedStep{}, err
 	}
-	assembled, err := subject.owner.prompts.Assemble(requestContext, systemprompt.AssembleContext{
-		Scope: subject.agentScope.Target(), Session: subject.conversation,
+	assembled, err := subject.prompts.Assemble(requestContext, systemprompt.AssembleContext{
+		Session: subject.conversation,
 	})
 	if err != nil {
 		return preparedStep{}, err
@@ -356,11 +433,24 @@ func (subject *ReactLoopAgent) prepareStep(
 	if present {
 		candidates = append(candidates, projected)
 	}
-	decision, err := agent.ResolvePreStep(requestContext, subject.owner.sourceScope, agent.PreStepNotice{
-		Subject: subject, Messages: candidates, Turn: turn, Step: step,
-	}, func(context.Context) (agent.PreStepDecision, error) {
-		return agent.PreStepDecision{Kind: agent.PreStepEnter, Messages: candidates}, nil
-	})
+	decision, err := agent.ResolvePreStep(
+		requestContext,
+		agent.PreStepNotice{
+			Subject:  subject,
+			Messages: candidates,
+			Turn:     turn,
+			Step:     step,
+		},
+		agent.PreStepActionFunc(func(
+			context.Context,
+			agent.PreStepNotice,
+		) (agent.PreStepDecision, error) {
+			return agent.PreStepDecision{
+				Kind:     agent.PreStepEnter,
+				Messages: candidates,
+			}, nil
+		}),
+	)
 	if err != nil {
 		return preparedStep{}, err
 	}
@@ -467,7 +557,14 @@ func (subject *ReactLoopAgent) runTurn(requestContext context.Context) (bool, er
 			}
 		}
 		if ending != nil && len(subject.pending.NextStep()) == 0 {
-			if err := agent.DispatchTurnStopping(requestContext, subject.owner.sourceScope, subject, turn); err != nil {
+			if err := plugin.Publish(
+				requestContext,
+				subject,
+				agent.TurnStopping{
+					Subject: subject,
+					Turn:    turn,
+				},
+			); err != nil {
 				operationErr = err
 				ending = session.TurnError{Error: failureFromError(err)}
 				subject.reportError(requestContext, err)
@@ -496,7 +593,10 @@ func (subject *ReactLoopAgent) runTurn(requestContext context.Context) (bool, er
 	// still owns that boundary, so its cancellation must not cancel the
 	// durability barrier that records the aborted outcome.
 	durabilityContext := context.WithoutCancel(requestContext)
-	if _, err := subject.owner.sessions.Flush(durabilityContext, subject.conversation); err != nil {
+	if err := subject.sessions.Flush(
+		durabilityContext,
+		subject.conversation,
+	); err != nil {
 		operationErr = errors.Join(operationErr, err)
 		subject.reportError(requestContext, fmt.Errorf("agentloop: flush Session %q after turn %d: %w", subject.identifier, turn, err))
 	}
@@ -562,7 +662,20 @@ func (subject *ReactLoopAgent) durableCancelCause() session.TurnCancelCause {
 }
 
 func (subject *ReactLoopAgent) emitStatus(destination agent.Status) {
-	if err := agent.EmitStatus(context.Background(), subject.owner.sourceScope, subject, destination); err != nil {
+	subject.mu.Lock()
+	disposed := subject.disposed
+	subject.mu.Unlock()
+	if disposed {
+		return
+	}
+	if err := plugin.Publish(
+		context.Background(),
+		subject,
+		agent.StatusChanged{
+			Subject: subject,
+			Status:  destination,
+		},
+	); err != nil {
 		subject.owner.report(fmt.Errorf("agentloop: Agent %q status observer: %w", subject.identifier, err))
 	}
 }
@@ -575,9 +688,16 @@ func (subject *ReactLoopAgent) reportError(requestContext context.Context, probl
 	if requestContext == nil {
 		requestContext = context.Background()
 	}
-	if err := agent.EmitError(requestContext, subject.owner.sourceScope, agent.ErrorNotice{
-		Subject: subject, Turn: turn, Step: step, Err: problem,
-	}); err != nil {
+	if err := plugin.Publish(
+		requestContext,
+		subject,
+		agent.AgentError{
+			Subject: subject,
+			Turn:    turn,
+			Step:    step,
+			Err:     problem,
+		},
+	); err != nil {
 		subject.owner.report(fmt.Errorf("agentloop: Agent %q error observer: %w", subject.identifier, err))
 	}
 }
@@ -587,19 +707,41 @@ type inboxEventBridge struct {
 }
 
 func (bridge inboxEventBridge) Inserted(input llm.UserMessage) {
-	if err := agent.EmitInboxInserted(context.Background(), bridge.subject.owner.sourceScope, bridge.subject, input); err != nil {
+	if err := plugin.Publish(
+		context.Background(),
+		bridge.subject,
+		agent.InboxInserted{
+			Subject: bridge.subject,
+			Message: input,
+		},
+	); err != nil {
 		bridge.subject.owner.report(err)
 	}
 }
 
 func (bridge inboxEventBridge) Discarded(input llm.UserMessage) {
-	if err := agent.EmitInboxDiscarded(context.Background(), bridge.subject.owner.sourceScope, bridge.subject, input); err != nil {
+	if err := plugin.Publish(
+		context.Background(),
+		bridge.subject,
+		agent.InboxDiscarded{
+			Subject: bridge.subject,
+			Message: input,
+		},
+	); err != nil {
 		bridge.subject.owner.report(err)
 	}
 }
 
 func (bridge inboxEventBridge) Claimed(input llm.UserMessage, turn int64) {
-	if err := agent.EmitInboxClaimed(context.Background(), bridge.subject.owner.sourceScope, bridge.subject, input, turn); err != nil {
+	if err := plugin.Publish(
+		context.Background(),
+		bridge.subject,
+		agent.InboxClaimed{
+			Subject: bridge.subject,
+			Message: input,
+			Turn:    turn,
+		},
+	); err != nil {
 		bridge.subject.owner.report(err)
 	}
 }

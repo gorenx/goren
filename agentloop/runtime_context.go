@@ -1,13 +1,11 @@
 package agentloop
 
 import (
-	"context"
 	"errors"
 	"slices"
 	"sync"
 
 	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
 
@@ -26,23 +24,14 @@ type runtimeContextProjection struct {
 	text        string
 }
 
-func newRuntimeContextProjection(agentScope *plugin.Scope, conversation *session.Session) (*runtimeContextProjection, error) {
-	if agentScope == nil || conversation == nil {
-		return nil, errors.New("agentloop: runtime-context Scope and Session are required")
+func newRuntimeContextProjection(
+	conversation *session.Session,
+) (*runtimeContextProjection, error) {
+	if conversation == nil {
+		return nil, errors.New("agentloop: runtime-context Session is required")
 	}
 	projection := &runtimeContextProjection{}
 	projection.restore(conversation)
-	_, err := session.OnEvent(agentScope,
-		func(_ context.Context, subject *session.Session, committed session.Event) error {
-			if subject == conversation {
-				projection.accept(committed)
-			}
-			return nil
-		},
-	)
-	if err != nil {
-		return nil, err
-	}
 	return projection, nil
 }
 

@@ -11,276 +11,365 @@ import (
 	"github.com/gorenx/goren/session"
 )
 
-type factorySlot struct {
-	target Factory
-}
-
 type registryEntry struct {
 	id      session.SessionID
 	subject Agent
 	owner   Agent
 
-	mu              sync.Mutex
-	announced       bool
-	announcing      bool
-	detachRequested bool
-	entered         bool
+	mutex         sync.Mutex
+	announced     bool
+	announcing    bool
+	removePending bool
+	entered       bool
 }
 
-type registryService struct {
-	mu          sync.RWMutex
-	entries     map[session.SessionID]*registryEntry
-	order       []session.SessionID
-	creator     *factorySlot
-	sourceScope *plugin.Scope
-	reporter    func(error)
-}
-
-// RegistryOptions supplies observer containment without changing lifecycle semantics.
+// RegistryOptions supplies observer containment without changing lifecycle
+// semantics.
 type RegistryOptions struct {
 	ObserverError func(error)
 }
 
-// NewRegistry creates an empty Agent service bound to its Provider Scope.
-func NewRegistry(sourceScope *plugin.Scope, settings RegistryOptions) (Registry, error) {
-	if sourceScope == nil {
-		return nil, errors.New("agent: Registry source scope is nil")
-	}
+// Registry tracks live Agent membership and delegates construction to the
+// currently attached Agent Loop Factory.
+type Registry interface {
+	plugin.Service
+	AttachFactory(Factory) error
+	DetachFactory(Factory)
+	Create(context.Context, CreateOptions) (Handle, error)
+	Resume(context.Context, ResumeOptions) (Handle, error)
+	Enter(Agent, Agent) error
+	Announce(context.Context, Agent) error
+	Remove(context.Context, Agent) error
+	Get(session.SessionID) (Agent, bool)
+	Contains(Agent) bool
+	IsOwnedBy(session.SessionID, Agent) bool
+	List() []Agent
+	Roots() []Agent
+}
+
+// RegistryPlugin is the canonical Agent Registry Service Plugin.
+type RegistryPlugin struct {
+	plugin.Base
+	mutex    sync.RWMutex
+	entries  map[session.SessionID]*registryEntry
+	order    []session.SessionID
+	factory  Factory
+	reporter func(error)
+}
+
+// NewRegistry constructs an empty Agent Registry Plugin.
+func NewRegistry(settings RegistryOptions) *RegistryPlugin {
 	reporter := settings.ObserverError
 	if reporter == nil {
 		reporter = func(error) {}
 	}
-	return &registryService{
-		entries: make(map[session.SessionID]*registryEntry), sourceScope: sourceScope, reporter: reporter,
-	}, nil
+	return &RegistryPlugin{
+		entries:  make(map[session.SessionID]*registryEntry),
+		reporter: reporter,
+	}
 }
 
-func (agents *registryService) SetFactory(
-	requestContext context.Context,
-	ownerScope *plugin.Scope,
-	creator Factory,
-) (plugin.Disposer, error) {
-	if ownerScope == nil || creator == nil {
-		return nil, errors.New("agent: factory owner scope and implementation are required")
+// Manifest provides the canonical Agent Registry Service.
+func (*RegistryPlugin) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: PluginName,
+		Provides: []plugin.ServiceType{
+			plugin.ServiceOf[Registry](),
+		},
 	}
-	slot := &factorySlot{target: creator}
-	agents.mu.Lock()
-	if agents.creator != nil {
-		agents.mu.Unlock()
-		return nil, errors.New("agent: an Agent factory is already registered")
-	}
-	agents.creator = slot
-	agents.mu.Unlock()
-	release, err := plugin.Own(ownerScope, "agents.setFactory()", func(context.Context) error {
-		agents.mu.Lock()
-		if agents.creator == slot {
-			agents.creator = nil
-		}
-		agents.mu.Unlock()
-		return nil
-	})
-	if err != nil {
-		agents.mu.Lock()
-		if agents.creator == slot {
-			agents.creator = nil
-		}
-		agents.mu.Unlock()
-		return nil, err
-	}
-	if err := requestContext.Err(); err != nil {
-		return nil, errors.Join(err, release(context.Background()))
-	}
-	return release, nil
 }
 
-func (agents *registryService) Create(
-	requestContext context.Context,
-	ownerScope *plugin.Scope,
-	settings CreateOptions,
-) (Handle, error) {
-	if ownerScope == nil {
-		return Handle{}, errors.New("agent: create owner scope is nil")
-	}
-	agents.mu.RLock()
-	slot := agents.creator
-	agents.mu.RUnlock()
-	if slot == nil {
-		return Handle{}, errors.New("agent: no Agent factory registered; load an Agent Loop plugin")
-	}
-	return slot.target.CreateAgent(requestContext, ownerScope, settings)
+// Apply validates startup cancellation before Registry publication.
+func (*RegistryPlugin) Apply(requestContext context.Context) error {
+	return requestContext.Err()
 }
 
-func (agents *registryService) Resume(
-	requestContext context.Context,
-	ownerScope *plugin.Scope,
-	settings ResumeOptions,
-) (Handle, error) {
-	if ownerScope == nil {
-		return Handle{}, errors.New("agent: resume owner scope is nil")
-	}
-	agents.mu.RLock()
-	slot := agents.creator
-	agents.mu.RUnlock()
-	if slot == nil {
-		return Handle{}, errors.New("agent: no Agent factory registered; load an Agent Loop plugin")
-	}
-	return slot.target.ResumeAgent(requestContext, ownerScope, settings)
-}
-
-func (agents *registryService) Register(
-	requestContext context.Context,
-	ownerScope *plugin.Scope,
-	subject Agent,
-	owner Agent,
-) (plugin.Disposer, error) {
-	if ownerScope == nil {
-		return nil, errors.New("agent: register owner scope is nil")
-	}
-	releaseEntry, err := agents.Enter(subject, owner)
-	if err != nil {
-		return nil, err
-	}
-	releaseOwned, err := plugin.Own(ownerScope, "agents.register()", releaseEntry)
-	if err != nil {
-		return nil, errors.Join(err, releaseEntry(requestContext))
-	}
-	if err := agents.Announce(requestContext, subject); err != nil {
-		return nil, errors.Join(err, releaseOwned(requestContext))
-	}
-	return releaseOwned, nil
-}
-
-func (agents *registryService) Enter(subject Agent, owner Agent) (plugin.Disposer, error) {
-	if subject == nil || subject.SessionValue() == nil || subject.ScopeValue() == nil {
-		return nil, errors.New("agent: Agent, Session, and Scope are required")
-	}
-	identifier := subject.ID()
-	if identifier == "" {
-		return nil, errors.New("agent: Agent id is empty")
-	}
-	if identifier != subject.SessionValue().ID() {
-		return nil, fmt.Errorf("agent: Agent id %q does not match Session id %q", identifier, subject.SessionValue().ID())
-	}
-	if subject.ScopeValue().Target().IsGlobal() {
-		return nil, errors.New("agent: Agent scope must be a child Scope")
-	}
-	if owner != nil && owner.ScopeValue() == nil {
-		return nil, errors.New("agent: owning Agent scope is nil")
-	}
-	entry := &registryEntry{id: identifier, subject: subject, owner: owner, entered: true}
-	agents.mu.Lock()
-	if _, exists := agents.entries[identifier]; exists {
-		agents.mu.Unlock()
-		return nil, fmt.Errorf("agent: Agent %q is already registered", identifier)
-	}
-	agents.entries[identifier] = entry
-	agents.order = append(agents.order, identifier)
-	agents.mu.Unlock()
-
-	return func(closeContext context.Context) error {
-		entry.mu.Lock()
-		if !entry.entered {
-			entry.mu.Unlock()
-			return nil
-		}
-		entry.entered = false
-		if entry.announcing {
-			entry.detachRequested = true
-			entry.mu.Unlock()
-			return nil
-		}
-		entry.mu.Unlock()
-		return agents.detach(closeContext, entry)
-	}, nil
-}
-
-func (agents *registryService) Announce(requestContext context.Context, subject Agent) error {
-	if subject == nil {
-		return errors.New("agent: announce subject is nil")
-	}
-	agents.mu.RLock()
-	entry := agents.entries[subject.ID()]
-	agents.mu.RUnlock()
-	if entry == nil || entry.subject.ScopeValue() != subject.ScopeValue() || entry.subject.SessionValue() != subject.SessionValue() {
-		return fmt.Errorf("agent: Agent %q is not live in this Registry", subject.ID())
-	}
-	entry.mu.Lock()
-	if !entry.entered {
-		entry.mu.Unlock()
-		return fmt.Errorf("agent: Agent %q is no longer live in this Registry", subject.ID())
-	}
-	if entry.announced || entry.announcing {
-		entry.mu.Unlock()
-		return fmt.Errorf("agent: Agent %q was already announced", subject.ID())
-	}
-	entry.announced = true
-	entry.announcing = true
-	entry.mu.Unlock()
-
-	dispatchErr := emitScoped(requestContext, agents.sourceScope, subject, createdEvent, LifecycleNotice{Subject: subject})
-	entry.mu.Lock()
-	entry.announcing = false
-	detachRequested := entry.detachRequested
-	entry.mu.Unlock()
-	if detachRequested {
-		dispatchErr = errors.Join(dispatchErr, agents.detach(requestContext, entry))
-	}
-	return dispatchErr
-}
-
-func (agents *registryService) detach(closeContext context.Context, entry *registryEntry) error {
-	agents.mu.Lock()
-	if agents.entries[entry.id] != entry {
-		agents.mu.Unlock()
-		return nil
-	}
-	delete(agents.entries, entry.id)
-	agents.order = slices.DeleteFunc(agents.order, func(identifier session.SessionID) bool {
-		return identifier == entry.id
-	})
-	agents.mu.Unlock()
-	entry.mu.Lock()
-	entry.detachRequested = false
-	announced := entry.announced
-	entry.mu.Unlock()
-	if !announced {
-		return nil
-	}
-	if err := emitScoped(closeContext, agents.sourceScope, entry.subject, disposedEvent, LifecycleNotice{Subject: entry.subject}); err != nil {
-		agents.reporter(fmt.Errorf("agent: Agent %q disposed observers: %w", entry.id, err))
+// Dispose rejects dangling Agent membership after Agent Loop dependents stop.
+func (agents *RegistryPlugin) Dispose(context.Context) error {
+	agents.mutex.Lock()
+	dangling := len(agents.entries)
+	agents.entries = make(map[session.SessionID]*registryEntry)
+	agents.order = nil
+	agents.factory = nil
+	agents.mutex.Unlock()
+	if dangling != 0 {
+		return fmt.Errorf(
+			"agent: Registry stopped with %d live Agent lifecycle(s)",
+			dangling,
+		)
 	}
 	return nil
 }
 
-func (agents *registryService) Get(identifier session.SessionID) (Agent, bool) {
-	agents.mu.RLock()
+// AttachFactory installs the exact active Agent Loop Factory.
+func (agents *RegistryPlugin) AttachFactory(agentFactory Factory) error {
+	if agentFactory == nil || agentFactory.RuntimePlugin() == nil {
+		return errors.New("agent: Agent factory Plugin is required")
+	}
+	agents.mutex.Lock()
+	defer agents.mutex.Unlock()
+	if agents.factory != nil {
+		return errors.New("agent: an Agent factory is already attached")
+	}
+	agents.factory = agentFactory
+	return nil
+}
+
+// DetachFactory removes only the exact Factory that was attached.
+func (agents *RegistryPlugin) DetachFactory(agentFactory Factory) {
+	if agentFactory == nil || agentFactory.RuntimePlugin() == nil {
+		return
+	}
+	agents.mutex.Lock()
+	if agents.factory != nil &&
+		agents.factory.RuntimePlugin() == agentFactory.RuntimePlugin() {
+		agents.factory = nil
+	}
+	agents.mutex.Unlock()
+}
+
+// Create delegates fresh Agent construction to the attached Factory.
+func (agents *RegistryPlugin) Create(
+	requestContext context.Context,
+	settings CreateOptions,
+) (Handle, error) {
+	agents.mutex.RLock()
+	agentFactory := agents.factory
+	agents.mutex.RUnlock()
+	if agentFactory == nil {
+		return Handle{}, errors.New(
+			"agent: no Agent factory attached; mount an Agent Loop Plugin",
+		)
+	}
+	return agentFactory.CreateAgent(requestContext, settings)
+}
+
+// Resume delegates durable Agent restoration to the attached Factory.
+func (agents *RegistryPlugin) Resume(
+	requestContext context.Context,
+	settings ResumeOptions,
+) (Handle, error) {
+	agents.mutex.RLock()
+	agentFactory := agents.factory
+	agents.mutex.RUnlock()
+	if agentFactory == nil {
+		return Handle{}, errors.New(
+			"agent: no Agent factory attached; mount an Agent Loop Plugin",
+		)
+	}
+	return agentFactory.ResumeAgent(requestContext, settings)
+}
+
+// Enter reserves live membership without announcing creation.
+func (agents *RegistryPlugin) Enter(subject Agent, owner Agent) error {
+	if subject == nil || subject.RuntimePlugin() == nil ||
+		subject.SessionValue() == nil {
+		return errors.New("agent: Agent Plugin and Session are required")
+	}
+	identifier := subject.ID()
+	if identifier == "" {
+		return errors.New("agent: Agent id is empty")
+	}
+	if identifier != subject.SessionValue().ID() {
+		return fmt.Errorf(
+			"agent: Agent id %q does not match Session id %q",
+			identifier,
+			subject.SessionValue().ID(),
+		)
+	}
+	if owner != nil && !agents.Contains(owner) {
+		return errors.New("agent: owning Agent is not live in this Registry")
+	}
+	entry := &registryEntry{
+		id:      identifier,
+		subject: subject,
+		owner:   owner,
+		entered: true,
+	}
+	agents.mutex.Lock()
+	if _, exists := agents.entries[identifier]; exists {
+		agents.mutex.Unlock()
+		return fmt.Errorf("agent: Agent %q is already registered", identifier)
+	}
+	agents.entries[identifier] = entry
+	agents.order = append(agents.order, identifier)
+	agents.mutex.Unlock()
+	return nil
+}
+
+// Announce publishes the vetoable Agent creation edge exactly once.
+func (agents *RegistryPlugin) Announce(
+	requestContext context.Context,
+	subject Agent,
+) error {
+	entry, err := agents.liveEntry(subject)
+	if err != nil {
+		return err
+	}
+	entry.mutex.Lock()
+	if !entry.entered {
+		entry.mutex.Unlock()
+		return fmt.Errorf("agent: Agent %q is no longer live", subject.ID())
+	}
+	if entry.announced || entry.announcing {
+		entry.mutex.Unlock()
+		return fmt.Errorf("agent: Agent %q was already announced", subject.ID())
+	}
+	entry.announced = true
+	entry.announcing = true
+	entry.mutex.Unlock()
+
+	dispatchErr := plugin.Publish(
+		requestContext,
+		subject,
+		Created{
+			Subject: subject,
+		},
+	)
+	entry.mutex.Lock()
+	entry.announcing = false
+	removePending := entry.removePending
+	entry.mutex.Unlock()
+	if removePending {
+		dispatchErr = errors.Join(
+			dispatchErr,
+			agents.removeEntry(requestContext, entry),
+		)
+	}
+	return dispatchErr
+}
+
+// Remove deletes and announces only the exact live Agent instance.
+func (agents *RegistryPlugin) Remove(
+	requestContext context.Context,
+	subject Agent,
+) error {
+	entry, err := agents.liveEntry(subject)
+	if err != nil {
+		return nil
+	}
+	entry.mutex.Lock()
+	if !entry.entered {
+		entry.mutex.Unlock()
+		return nil
+	}
+	entry.entered = false
+	if entry.announcing {
+		entry.removePending = true
+		entry.mutex.Unlock()
+		return nil
+	}
+	entry.mutex.Unlock()
+	return agents.removeEntry(requestContext, entry)
+}
+
+func (agents *RegistryPlugin) removeEntry(
+	requestContext context.Context,
+	entry *registryEntry,
+) error {
+	agents.mutex.Lock()
+	if agents.entries[entry.id] != entry {
+		agents.mutex.Unlock()
+		return nil
+	}
+	delete(agents.entries, entry.id)
+	agents.order = slices.DeleteFunc(
+		agents.order,
+		func(identifier session.SessionID) bool {
+			return identifier == entry.id
+		},
+	)
+	agents.mutex.Unlock()
+	entry.mutex.Lock()
+	entry.removePending = false
+	announced := entry.announced
+	entry.mutex.Unlock()
+	if !announced {
+		return nil
+	}
+	dispatchErr := plugin.Publish(
+		requestContext,
+		entry.subject,
+		Disposed{
+			Subject: entry.subject,
+		},
+	)
+	if errors.Is(dispatchErr, plugin.ErrPluginNotActive) ||
+		errors.Is(dispatchErr, plugin.ErrPluginNotBound) {
+		dispatchErr = plugin.Publish(
+			requestContext,
+			agents,
+			Disposed{
+				Subject: entry.subject,
+			},
+		)
+	}
+	if dispatchErr != nil {
+		agents.report(fmt.Errorf(
+			"agent: Agent %q disposed observers: %w",
+			entry.id,
+			dispatchErr,
+		))
+	}
+	return nil
+}
+
+func (agents *RegistryPlugin) liveEntry(subject Agent) (*registryEntry, error) {
+	if subject == nil {
+		return nil, errors.New("agent: Agent subject is nil")
+	}
+	agents.mutex.RLock()
+	entry := agents.entries[subject.ID()]
+	agents.mutex.RUnlock()
+	if entry == nil || !sameAgentInstance(entry.subject, subject) {
+		return nil, fmt.Errorf(
+			"agent: Agent %q is not live in this Registry",
+			subject.ID(),
+		)
+	}
+	return entry, nil
+}
+
+// Get returns the live Agent registered for identifier.
+func (agents *RegistryPlugin) Get(identifier session.SessionID) (Agent, bool) {
+	agents.mutex.RLock()
 	entry := agents.entries[identifier]
-	agents.mu.RUnlock()
+	agents.mutex.RUnlock()
 	if entry == nil {
 		return nil, false
 	}
 	return entry.subject, true
 }
 
-func (agents *registryService) IsOwnedBy(identifier session.SessionID, owner Agent) bool {
+// Contains reports whether subject is the exact live Agent instance.
+func (agents *RegistryPlugin) Contains(subject Agent) bool {
+	if subject == nil {
+		return false
+	}
+	agents.mutex.RLock()
+	entry := agents.entries[subject.ID()]
+	agents.mutex.RUnlock()
+	return entry != nil && sameAgentInstance(entry.subject, subject)
+}
+
+// IsOwnedBy reports exact live runtime ownership captured at Enter.
+func (agents *RegistryPlugin) IsOwnedBy(
+	identifier session.SessionID,
+	owner Agent,
+) bool {
 	if owner == nil {
 		return false
 	}
-	agents.mu.RLock()
+	agents.mutex.RLock()
 	entry := agents.entries[identifier]
-	agents.mu.RUnlock()
-	if entry == nil || entry.owner == nil {
-		return false
-	}
-	if entry.owner.ScopeValue() == nil || owner.ScopeValue() == nil {
-		return false
-	}
-	return entry.owner.ScopeValue().Target() == owner.ScopeValue().Target()
+	agents.mutex.RUnlock()
+	return entry != nil && sameAgentInstance(entry.owner, owner)
 }
 
-func (agents *registryService) List() []Agent {
-	agents.mu.RLock()
-	defer agents.mu.RUnlock()
+// List returns live Agents in registration order.
+func (agents *RegistryPlugin) List() []Agent {
+	agents.mutex.RLock()
+	defer agents.mutex.RUnlock()
 	result := make([]Agent, 0, len(agents.order))
 	for _, identifier := range agents.order {
 		if entry := agents.entries[identifier]; entry != nil {
@@ -290,9 +379,10 @@ func (agents *registryService) List() []Agent {
 	return result
 }
 
-func (agents *registryService) Roots() []Agent {
-	agents.mu.RLock()
-	defer agents.mu.RUnlock()
+// Roots returns live Agents without an owning Agent.
+func (agents *RegistryPlugin) Roots() []Agent {
+	agents.mutex.RLock()
+	defer agents.mutex.RUnlock()
 	result := make([]Agent, 0, len(agents.order))
 	for _, identifier := range agents.order {
 		if entry := agents.entries[identifier]; entry != nil && entry.owner == nil {
@@ -300,4 +390,16 @@ func (agents *registryService) Roots() []Agent {
 		}
 	}
 	return result
+}
+
+func (agents *RegistryPlugin) report(problem error) {
+	defer func() { _ = recover() }()
+	agents.reporter(problem)
+}
+
+func sameAgentInstance(leftSubject Agent, rightSubject Agent) bool {
+	return leftSubject != nil && rightSubject != nil &&
+		leftSubject.ID() == rightSubject.ID() &&
+		leftSubject.SessionValue() == rightSubject.SessionValue() &&
+		leftSubject.RuntimePlugin() == rightSubject.RuntimePlugin()
 }

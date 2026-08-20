@@ -51,8 +51,10 @@ func (subject *ReactLoopAgent) executeToolCalls(
 		plannedCalls[index] = plannedToolCall{
 			block: block,
 			input: tools.ToolExecutionInput{
-				CallID: block.ID, Name: block.Name, Arguments: arguments,
-				Scope: subject.agentScope.Target(), Subject: subject,
+				CallID:    block.ID,
+				Name:      block.Name,
+				Arguments: arguments,
+				Subject:   subject,
 			},
 		}
 	}
@@ -60,7 +62,7 @@ func (subject *ReactLoopAgent) executeToolCalls(
 	concluded := false
 	for nextIndex < len(plannedCalls) {
 		first := plannedCalls[nextIndex]
-		mode := subject.owner.tools.ExecutionMode(first.input)
+		mode := subject.toolRuntime.ExecutionMode(first.input)
 		group := plannedCalls[nextIndex : nextIndex+1]
 		if mode == tools.ExecutionParallel {
 			group = plannedCalls[nextIndex:]
@@ -90,7 +92,7 @@ func (subject *ReactLoopAgent) runToolGroup(
 	group []plannedToolCall,
 	mode tools.ToolExecutionMode,
 ) (toolGroupOutcome, error) {
-	scheduler := subject.owner.tools.Scheduler()
+	scheduler := subject.toolRuntime.Scheduler()
 	if scheduler == nil {
 		return toolGroupOutcome{}, errors.New("agentloop: Tools runtime returned a nil scheduler")
 	}
@@ -184,7 +186,7 @@ func (subject *ReactLoopAgent) runToolGroup(
 	fillPool := func() error {
 		for !aborted && nextToStart < len(group) && len(inFlight) < subject.owner.MaxParallelToolCalls() {
 			if nextToStart > 0 && mode == tools.ExecutionParallel &&
-				subject.owner.tools.ExecutionMode(group[nextToStart].input) != tools.ExecutionParallel {
+				subject.toolRuntime.ExecutionMode(group[nextToStart].input) != tools.ExecutionParallel {
 				break
 			}
 			if err := startCall(nextToStart); err != nil {

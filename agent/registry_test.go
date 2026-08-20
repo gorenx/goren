@@ -12,132 +12,180 @@ import (
 	"github.com/gorenx/goren/session"
 )
 
-type registryPlugin struct {
-	ready func(agentcore.Registry, *plugin.Scope) error
-}
-
-func (registryPlugin) Manifest() plugin.Manifest {
-	return plugin.Manifest{Name: "agent-registry-fixture", Provides: []plugin.ServiceRef{agentcore.Service.Ref()}}
-}
-
-func (instance registryPlugin) Apply(_ context.Context, pluginScope *plugin.Scope) error {
-	serviceValue, err := agentcore.NewRegistry(pluginScope, agentcore.RegistryOptions{})
-	if err != nil {
-		return err
-	}
-	if _, err := plugin.Provide(pluginScope, agentcore.Service, serviceValue); err != nil {
-		return err
-	}
-	if instance.ready != nil {
-		return instance.ready(serviceValue, pluginScope)
-	}
-	return nil
-}
-
 type fakeAgent struct {
+	plugin.Base
 	identifier   session.SessionID
 	conversation *session.Session
-	pending      *agentcore.Inbox
-	agentScope   *plugin.Scope
 	status       agentcore.Status
 }
 
-func (subject *fakeAgent) ID() session.SessionID                         { return subject.identifier }
-func (*fakeAgent) OptionsValue() agentcore.Options                       { return agentcore.Options{} }
-func (subject *fakeAgent) SessionValue() *session.Session                { return subject.conversation }
-func (subject *fakeAgent) InboxValue() *agentcore.Inbox                  { return subject.pending }
-func (subject *fakeAgent) StatusValue() agentcore.Status                 { return subject.status }
-func (subject *fakeAgent) ScopeValue() *plugin.Scope                     { return subject.agentScope }
-func (*fakeAgent) Cancel(agentcore.CancelCause, agentcore.CancelOptions) {}
-func (*fakeAgent) WhenIdle(context.Context) error                        { return nil }
-func (*fakeAgent) RunMaintenance(requestContext context.Context, task agentcore.MaintenanceTask) error {
+func (subject *fakeAgent) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "test-agent:" + string(subject.identifier),
+		Provides: []plugin.ServiceType{
+			plugin.ServiceOf[agentcore.Agent](),
+		},
+	}
+}
+
+func (*fakeAgent) Apply(context.Context) error   { return nil }
+func (*fakeAgent) Dispose(context.Context) error { return nil }
+func (subject *fakeAgent) ID() session.SessionID { return subject.identifier }
+func (*fakeAgent) OptionsValue() agentcore.Options {
+	return agentcore.Options{}
+}
+func (subject *fakeAgent) SessionValue() *session.Session { return subject.conversation }
+func (*fakeAgent) InboxValue() *agentcore.Inbox           { return nil }
+func (subject *fakeAgent) StatusValue() agentcore.Status  { return subject.status }
+func (*fakeAgent) Cancel(agentcore.CancelCause, agentcore.CancelOptions) {
+}
+func (*fakeAgent) WhenIdle(context.Context) error { return nil }
+func (*fakeAgent) RunMaintenance(
+	requestContext context.Context,
+	task agentcore.MaintenanceTask,
+) error {
 	return task.Run(requestContext)
 }
-func (*fakeAgent) Send(llm.UserMessage, agentcore.InboxTarget, bool) error { return nil }
-func (*fakeAgent) Followup(llm.UserMessage) error                          { return nil }
-func (*fakeAgent) Steer(llm.UserMessage) error                             { return nil }
-func (*fakeAgent) Inject(llm.UserMessage) error                            { return nil }
-
-func mountRegistry(t *testing.T, ready func(agentcore.Registry, *plugin.Scope) error) (*plugin.Runtime, agentcore.Registry, *plugin.Scope) {
-	t.Helper()
-	engine := plugin.NewRuntime()
-	var serviceValue agentcore.Registry
-	var providerScope *plugin.Scope
-	_, err := engine.Load(context.Background(), registryPlugin{ready: func(available agentcore.Registry, pluginScope *plugin.Scope) error {
-		serviceValue = available
-		providerScope = pluginScope
-		if ready != nil {
-			return ready(available, pluginScope)
-		}
-		return nil
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return engine, serviceValue, providerScope
+func (*fakeAgent) Send(llm.UserMessage, agentcore.InboxTarget, bool) error {
+	return nil
 }
+func (*fakeAgent) Followup(llm.UserMessage) error { return nil }
+func (*fakeAgent) Steer(llm.UserMessage) error    { return nil }
+func (*fakeAgent) Inject(llm.UserMessage) error   { return nil }
 
-func newFakeAgent(t *testing.T, providerScope *plugin.Scope, identifier session.SessionID) (*fakeAgent, plugin.Disposer) {
+func newFakeAgent(t *testing.T, identifier session.SessionID) *fakeAgent {
 	t.Helper()
-	agentScope, releaseScope, err := providerScope.Child(string(identifier))
-	if err != nil {
-		t.Fatal(err)
-	}
 	conversation, err := session.New(identifier, session.CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &fakeAgent{identifier: identifier, conversation: conversation, agentScope: agentScope, status: agentcore.StatusIdle}, releaseScope
+	return &fakeAgent{
+		identifier:   identifier,
+		conversation: conversation,
+		status:       agentcore.StatusIdle,
+	}
+}
+
+func startRegistry(
+	t *testing.T,
+	plugins ...plugin.Plugin,
+) (*plugin.Runtime, *agentcore.RegistryPlugin, plugin.Handle) {
+	t.Helper()
+	registry := agentcore.NewRegistry(agentcore.RegistryOptions{})
+	instances := append([]plugin.Plugin{registry}, plugins...)
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	handles, err := runtimeEngine.Start(context.Background(), instances...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runtimeEngine, registry, handles[0]
+}
+
+func mountFakeAgent(
+	t *testing.T,
+	runtimeEngine *plugin.Runtime,
+	parent plugin.Handle,
+	identifier session.SessionID,
+) (*fakeAgent, plugin.Handle) {
+	t.Helper()
+	subject := newFakeAgent(t, identifier)
+	handle, err := runtimeEngine.MountScopedChild(
+		context.Background(),
+		parent,
+		subject,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return subject, handle
+}
+
+type lifecycleObserver struct {
+	plugin.Base
+	name     string
+	created  func(agentcore.Agent) error
+	disposed func(agentcore.Agent) error
+}
+
+func (observer *lifecycleObserver) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: observer.name,
+		Events: []plugin.EventSubscription{
+			plugin.EventOf[agentcore.Created](),
+			plugin.EventOf[agentcore.Disposed](),
+		},
+	}
+}
+
+func (*lifecycleObserver) Apply(context.Context) error   { return nil }
+func (*lifecycleObserver) Dispose(context.Context) error { return nil }
+func (observer *lifecycleObserver) ObserveEvent(
+	_ context.Context,
+	fact plugin.Event,
+) error {
+	switch notice := fact.(type) {
+	case agentcore.Created:
+		if observer.created != nil {
+			return observer.created(notice.Subject)
+		}
+	case agentcore.Disposed:
+		if observer.disposed != nil {
+			return observer.disposed(notice.Subject)
+		}
+	}
+	return nil
 }
 
 func TestRegistryPublishesExactLifecycleAndRuntimeOwnership(t *testing.T) {
 	t.Parallel()
-	lifecycle := []string{}
-	_, serviceValue, providerScope := mountRegistry(t, func(_ agentcore.Registry, pluginScope *plugin.Scope) error {
-		if _, err := agentcore.OnCreated(pluginScope, func(_ context.Context, subject agentcore.Agent) error {
+	lifecycle := make([]string, 0)
+	observer := &lifecycleObserver{
+		name: "lifecycle-observer",
+		created: func(subject agentcore.Agent) error {
 			lifecycle = append(lifecycle, "created:"+string(subject.ID()))
 			return nil
-		}); err != nil {
-			return err
-		}
-		_, err := agentcore.OnDisposed(pluginScope, func(_ context.Context, subject agentcore.Agent) error {
+		},
+		disposed: func(subject agentcore.Agent) error {
 			lifecycle = append(lifecycle, "disposed:"+string(subject.ID()))
 			return nil
-		})
-		return err
-	})
-	root, _ := newFakeAgent(t, providerScope, "root")
-	child, _ := newFakeAgent(t, providerScope, "child")
-	detachRoot, err := serviceValue.Enter(root, nil)
-	if err != nil {
+		},
+	}
+	runtimeEngine, registry, registryHandle := startRegistry(t, observer)
+	root, _ := mountFakeAgent(t, runtimeEngine, registryHandle, "root")
+	child, _ := mountFakeAgent(t, runtimeEngine, registryHandle, "child")
+	if err := registry.Enter(root, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := serviceValue.Announce(context.Background(), root); err != nil {
+	if err := registry.Announce(context.Background(), root); err != nil {
 		t.Fatal(err)
 	}
-	detachChild, err := serviceValue.Enter(child, root)
-	if err != nil {
+	if err := registry.Enter(child, root); err != nil {
 		t.Fatal(err)
 	}
-	if err := serviceValue.Announce(context.Background(), child); err != nil {
+	if err := registry.Announce(context.Background(), child); err != nil {
 		t.Fatal(err)
 	}
-	if !serviceValue.IsOwnedBy("child", root) || serviceValue.IsOwnedBy("root", root) {
+	if !registry.IsOwnedBy("child", root) || registry.IsOwnedBy("root", root) {
 		t.Fatal("runtime ownership projection is incorrect")
 	}
-	if got := serviceValue.List(); !reflect.DeepEqual(got, []agentcore.Agent{root, child}) {
+	if got := registry.List(); !reflect.DeepEqual(got, []agentcore.Agent{root, child}) {
 		t.Fatalf("list = %#v", got)
 	}
-	if got := serviceValue.Roots(); !reflect.DeepEqual(got, []agentcore.Agent{root}) {
+	if got := registry.Roots(); !reflect.DeepEqual(got, []agentcore.Agent{root}) {
 		t.Fatalf("roots = %#v", got)
 	}
-	if err := detachChild(context.Background()); err != nil {
+	if err := registry.Remove(context.Background(), child); err != nil {
 		t.Fatal(err)
 	}
-	if err := detachRoot(context.Background()); err != nil {
+	if err := registry.Remove(context.Background(), root); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"created:root", "created:child", "disposed:child", "disposed:root"}
+	want := []string{
+		"created:root",
+		"created:child",
+		"disposed:child",
+		"disposed:root",
+	}
 	if !reflect.DeepEqual(lifecycle, want) {
 		t.Fatalf("lifecycle = %#v, want %#v", lifecycle, want)
 	}
@@ -145,79 +193,90 @@ func TestRegistryPublishesExactLifecycleAndRuntimeOwnership(t *testing.T) {
 
 func TestRegistryCreationFailureRollsBackAndPairsDisposal(t *testing.T) {
 	t.Parallel()
-	lifecycle := []string{}
-	_, serviceValue, providerScope := mountRegistry(t, func(_ agentcore.Registry, pluginScope *plugin.Scope) error {
-		if _, err := agentcore.OnCreated(pluginScope, func(_ context.Context, subject agentcore.Agent) error {
+	lifecycle := make([]string, 0)
+	observer := &lifecycleObserver{
+		name: "veto-observer",
+		created: func(subject agentcore.Agent) error {
 			lifecycle = append(lifecycle, "created:"+string(subject.ID()))
 			return errors.New("creation veto")
-		}); err != nil {
-			return err
-		}
-		_, err := agentcore.OnDisposed(pluginScope, func(_ context.Context, subject agentcore.Agent) error {
+		},
+		disposed: func(subject agentcore.Agent) error {
 			lifecycle = append(lifecycle, "disposed:"+string(subject.ID()))
 			return nil
-		})
-		return err
-	})
-	subject, _ := newFakeAgent(t, providerScope, "vetoed")
-	if _, err := serviceValue.Register(context.Background(), providerScope, subject, nil); err == nil {
+		},
+	}
+	runtimeEngine, registry, registryHandle := startRegistry(t, observer)
+	subject, _ := mountFakeAgent(t, runtimeEngine, registryHandle, "vetoed")
+	if err := registry.Enter(subject, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Announce(context.Background(), subject); err == nil {
 		t.Fatal("creation veto was ignored")
 	}
-	if _, found := serviceValue.Get("vetoed"); found {
+	if err := registry.Remove(context.Background(), subject); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := registry.Get("vetoed"); found {
 		t.Fatal("vetoed Agent remained live")
 	}
-	if want := []string{"created:vetoed", "disposed:vetoed"}; !reflect.DeepEqual(lifecycle, want) {
+	want := []string{
+		"created:vetoed",
+		"disposed:vetoed",
+	}
+	if !reflect.DeepEqual(lifecycle, want) {
 		t.Fatalf("lifecycle = %#v, want %#v", lifecycle, want)
 	}
 }
 
-func TestRegistryDefersReentrantDetachUntilCreationDispatchCompletes(t *testing.T) {
+func TestRegistryDefersReentrantRemovalUntilCreationDispatchCompletes(t *testing.T) {
 	t.Parallel()
-	order := []string{}
-	var detach plugin.Disposer
-	var observed agentcore.Registry
+	order := make([]string, 0)
+	var registry *agentcore.RegistryPlugin
 	var expected *fakeAgent
-	_, serviceValue, providerScope := mountRegistry(t, func(available agentcore.Registry, pluginScope *plugin.Scope) error {
-		observed = available
-		if _, err := agentcore.OnCreated(pluginScope, func(_ context.Context, subject agentcore.Agent) error {
-			_, liveBefore := observed.Get(subject.ID())
+	first := &lifecycleObserver{
+		name: "first-created-observer",
+		created: func(subject agentcore.Agent) error {
+			_, liveBefore := registry.Get(subject.ID())
 			order = append(order, "first:"+fmtBool(liveBefore))
-			if err := detach(context.Background()); err != nil {
+			if err := registry.Remove(context.Background(), subject); err != nil {
 				return err
 			}
-			_, liveAfter := observed.Get(subject.ID())
+			_, liveAfter := registry.Get(subject.ID())
 			order = append(order, "after:"+fmtBool(liveAfter))
 			return nil
-		}); err != nil {
-			return err
-		}
-		if _, err := agentcore.OnCreated(pluginScope, func(_ context.Context, subject agentcore.Agent) error {
-			order = append(order, "second:"+fmtBool(subject == expected))
-			return nil
-		}); err != nil {
-			return err
-		}
-		_, err := agentcore.OnDisposed(pluginScope, func(context.Context, agentcore.Agent) error {
+		},
+		disposed: func(agentcore.Agent) error {
 			order = append(order, "disposed")
 			return nil
-		})
-		return err
-	})
-	expected, _ = newFakeAgent(t, providerScope, "reentrant")
-	var err error
-	detach, err = serviceValue.Enter(expected, nil)
-	if err != nil {
+		},
+	}
+	second := &lifecycleObserver{
+		name: "second-created-observer",
+		created: func(subject agentcore.Agent) error {
+			order = append(order, "second:"+fmtBool(subject == expected))
+			return nil
+		},
+	}
+	runtimeEngine, available, registryHandle := startRegistry(t, first, second)
+	registry = available
+	expected, _ = mountFakeAgent(t, runtimeEngine, registryHandle, "reentrant")
+	if err := registry.Enter(expected, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := serviceValue.Announce(context.Background(), expected); err != nil {
+	if err := registry.Announce(context.Background(), expected); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"first:true", "after:true", "second:true", "disposed"}
+	want := []string{
+		"first:true",
+		"after:true",
+		"second:true",
+		"disposed",
+	}
 	if !reflect.DeepEqual(order, want) {
 		t.Fatalf("order = %#v, want %#v", order, want)
 	}
-	if _, found := serviceValue.Get("reentrant"); found {
-		t.Fatal("reentrant detach did not remove Agent")
+	if _, found := registry.Get("reentrant"); found {
+		t.Fatal("reentrant removal did not remove Agent")
 	}
 }
 

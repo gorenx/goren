@@ -14,6 +14,8 @@ import (
 )
 
 const (
+	// PluginName is the canonical Harness Agent Loop Plugin name.
+	PluginName = "@deepseek-ai/dsh-agent-loop"
 	// ServiceName is the canonical Cordis service name.
 	ServiceName = "agentLoop"
 	// DefaultMaxParallelToolCalls is the source deployment-wide scheduler cap.
