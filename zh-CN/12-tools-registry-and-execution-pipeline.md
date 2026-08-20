@@ -2,251 +2,244 @@
 
 状态：Accepted
 
-本文拥有 `tools` 的 Tool Definition、scope-aware Registry、restriction/guard、执行流水线、结果物化和 System Prompt 投影边界。通用 Plugin Scope、typed Event 和 effect 生命周期由[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)拥有；模型 content block 和 `ToolSchema` 词汇由[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)拥有；当前实施状态与验证证据只见[08 实施进度](./08-implementation-progress.md)。
+本文拥有 `tools` 的 Tool Definition、Root Registry + Child Overlay、restriction/guard、执行流水线、结果物化和 System Prompt 投影边界。Plugin 的 Service Definition、父子可见性、typed Event、Waterfall 和生命周期由[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)拥有；模型 content block 和 `ToolSchema` 词汇由[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)拥有；代码近邻说明见[`tools/README.zh-CN.md`](../tools/README.zh-CN.md)；当前完成度和验证证据只见[08 实施进度](./08-implementation-progress.md)。
 
-## 1. 固定源与职责映射
+## 1. 设计目标与固定源
 
 固定源基线：`47f943859bef60e4160492346772ded9b24f765a`。
 
-| 源 owner / symbol | Go owner | 保留职责 |
-| --- | --- | --- |
-| `packages/core/tools/src/index.ts` 的 `ToolRuntime` | `tools.ToolRuntime`、`toolRegistry` | Tool 注册、scope view、schema 投影、执行与结果通知 |
-| 同文件的 `ToolLayer`、`ToolView`、`ToolRestriction` | `toolStore`、`toolView`、`compiledRestriction` | global/scoped contribution、shadow、继承过滤与 own-layer exemption |
-| `tools/pre-execute`、`tools/execute`、`tools/post-execute` | `OnPreExecute`、`OnExecute`、`OnPostExecute` | pre policy、around dispatch 与 post policy waterfall |
-| `tools/result`、`tools/change` | `OnResult`、`OnChange` | scope-filtered final result 与 unfiltered registry change |
-| `packages/core/tools/src/schema.ts` | `schema.go`、`jsonschema/v6` | 参数/输出 schema 编译和运行时校验 |
-| `packages/llm/llm/src/types.ts` 的 content block | `llm.ContentBlock` 及 core block types | Tool model-facing content 和 detached clone |
-| `packages/attachment/attachment/src/types.ts` 的 `ImageAttachmentRef` | `attachment.ImageAttachmentRef` | image block 引用的 durable metadata owner |
-| `packages/core/system-prompt/src/index.ts` 的 Tool provider seam | `systemprompt.ToolProvider` | 当前 scope 可见 schema 和 pre-restriction known-name 投影 |
+Tools 的目标是提供一套可被 Plugin 扩展、被 Agent Loop 调度、又不泄漏 Registry 内部状态的通用 Native Tool 运行时：
 
-Go 不复制 Cordis context extension、WeakMap、JavaScript `unknown` 对象、对象冻结或 union object 判别方式。它们分别映射为显式 interface、opaque token、`json.RawMessage` 协议值、detached snapshot 和封闭 Go interface。Web presentation 的 `presentCall`/`presentResult`、Tools Code Mode 生成 SDK 及 Code Runtime bridge 属于排除范围，不并入 Native Tool 核心。
+- 保留 DeepSeek Harness `packages/core/tools/src/index.ts` 的 Tool Definition、分层可见性、policy Waterfall、执行结果和事件语义；
+- 用 Go 的静态类型、具名对象和方法表达职责，不复制 TypeScript closure、对象冻结或 Cordis context extension；
+- 让具体 Tool Plugin 只提供业务定义和行为，不创建第二套 Registry、scheduler 或事件分发器；
+- 让 Agent Loop 只编排 Turn、并发和 Session commit，不接管 Tool schema、policy 或结果规范化；
+- 启动、卸载和失败回滚由 Plugin Runtime 驱动，不在 Tools 内创建第二套 effect/lifecycle 框架。
+
+源职责映射如下：
+
+| 固定源 owner / symbol | Go owner | 保留职责 |
+| --- | --- | --- |
+| `ToolRuntime`、`ToolLayer`、`ToolView` | `tools.Service`、`registry`、`toolStore` | 服务能力、layer lineage、shadow、restriction 和 schema view |
+| `tools/pre-execute` | `PreExecuteRequest` / `PreExecuteOutcome` | allow、deny、ask 和 approval 前置策略 |
+| `tools/execute` | `ExecuteRequest` / `ExecuteOutcome` | around-dispatch、context 包装和短路结果 |
+| `tools/post-execute` | `PostExecuteRequest` / `PostExecuteOutcome` | accept、replace content/value 和 block |
+| `tools/result`、`tools/change` | `ExecutionCompleted`、`RegistryChanged` | 最终结果通知与 Registry 变更通知 |
+| `schema.ts` | `schema.go`、`jsonschema/v6` | 参数/output schema 编译和执行期校验 |
+| System Prompt Tool provider seam | `systemprompt.ToolProvider` | 当前 layer 可见 schema 与 known-name 投影 |
 
 ## 2. 职责与非职责
 
 `tools` 拥有：
 
-- canonical `tools` Service Definition 和 typed Factory config；
-- Tool name/description、输入/output schema、executor、renderer、presentation metadata、finalizer、timeout metadata 和 concurrency classifier；
-- global、祖先和 selected scope 的可见性、shadow、restriction 与 guard；
-- pre/execute/post waterfall、取消语义、输出校验、结果物化和 final notification；
-- 只向 System Prompt 投影 `name`、`description`、`parameters`；
-- `UNKNOWN_TOOL`、`INVALID_ARGS`、`INVALID_TOOL_OUTPUT`、`ABORTED` 与 `ABORTED_BEFORE_DISPATCH` 的稳定分类。
+- Tool name、description、参数/output schema、Executor、renderer、presentation metadata projector、finalizer、timeout metadata 和 concurrency classifier；
+- Root layer、ancestor layer 与 exact overlay layer 的 Tool 可见性、shadow、restriction 和 guard；
+- `tools/pre-execute`、`tools/execute`、`tools/post-execute` Waterfall 的业务输入、输出和 terminal；
+- 调用取消融合、输入/output 校验、结果规范化、additional context 顺序和最终快照；
+- `UNKNOWN_TOOL`、`INVALID_ARGS`、`INVALID_TOOL_OUTPUT`、`ABORTED` 与 `ABORTED_BEFORE_DISPATCH` 的稳定分类；
+- 向 System Prompt 只投影 `name`、`description` 和 `parameters`。
 
 `tools` 不拥有：
 
-- Agent turn/step 调度、Session append、interaction routing 或 approval UI；
-- filesystem、shell、PTY、LSP、sandbox 等具体能力的业务实现；
+- Agent Turn、Step、批量并发、Session append、durable commit 或 interaction routing；
+- filesystem、shell、数据库、用户问答等具体 Tool 业务；
+- Approval 的策略、审计、UI 或 transport；
 - LLM provider、stream、retry 或模型选择；
-- Web 卡片、浏览器 presentation、SDK 生成或 Typert；
-- JSONL、SQLite、sqlc 或其他业务数据存储。
+- 通用自愈、跨 Tool 重放和业务补偿；
+- Web 卡片、生成 SDK、Code Runtime 或 Typert。
 
-默认 composition 已提供 Approval；`AskDecision` 调用其 capability，并在 Service 或交互通道缺失、取消、失败时稳定退化为拒绝，不能把不可达解释成允许。Approval policy/audit 和 transport 闭环由[17](./17-approval-user-questions-and-interaction-gateway.md)拥有。Tool timeout 只作为定义 metadata 保留；具体 timeout policy 通过 `tools/execute` wrapper 进入，不硬编码进 Registry。
+Tools 的恢复边界是把单次调用稳定物化为成功或失败结果，不自行重试。timeout、retry、metrics 等 around-dispatch 行为通过 `tools/execute` Waterfall 接入；跨调用恢复和重新调度由 Agent Loop 或更上层 use case 决定。
 
-## 3. 包内职责划分
+## 3. 包边界与包内职责
 
-`tools` 不是一个 Registry 文件同时拥有全部状态和流程：
+Tools 的包边界采用[04 Go 技术架构决策与技术选型](./04-go-technology-decisions.md)中的 D-15。当前实现由一个 `tools` 领域包、一个 `tools/factory` 入站构造适配器，以及领域外的具体 Tool Plugin 组成。
 
-| 文件 / 组件 | 单一职责 |
+包内使用具名对象分离职责：
+
+| 组件 | 职责 |
 | --- | --- |
-| `registry.go` / `toolRegistry` | Service facade、注册调用校验、effect ownership、System Prompt provider 和 change publication |
-| `store.go` / `toolStore` | 锁保护的 global/scoped Tool、restriction、guard 状态和 immutable membership view |
-| `runtime.go` | pre/guard/dispatch/post/finalize/result 的执行流水线与 cancellation fusion |
-| `schema.go` | Definition snapshot、JSON Schema 编译和输入/输出 validation |
-| `result.go` | success/failure clone、stable error result 和 read-only `ToolResultSnapshot` |
-| `events.go` | typed callback contract、Event key、scope dispatch adapter 和 callback panic containment |
-| `restriction.go` | allow/deny 编译、reserved/unknown/duplicate name 校验 |
-| `config.go` | typed config 的 omission/null/default/cross-field 语义 |
-| `types.go` | owner 公共 Definition、execution、policy 和 Service contract |
+| `Service` | Plugin 生命周期、依赖解析、能力 facade、System Prompt provider 和 change publication |
+| `registry` | 当前 layer 与 ancestor lineage 的组合、可见性查询和 mutation 规则 |
+| `toolStore` | 锁保护的 exact-layer Tool、restriction、guard 及快照 |
+| `executionRuntime` | `Prepare -> Dispatch -> Finalize/Finish` 一次性状态机 |
+| `policyEngine` | pre-execute、Approval 解析和 monotonic guard |
+| `dispatcher` | execute Waterfall、取消融合、Executor、schema 校验和成功结果规范化 |
+| `resultProcessor` | post-execute、finalizer、最终快照和 `tools/result` 发布 |
 
-共享锁只属于 `toolStore`。schema 编译发生在注册 mutation 之前；executor、renderer、policy、observer 和 finalizer 均不在 LiveStore lock 内运行。Registry facade 不解析工具业务参数，LiveStore 不调用 Plugin 或用户 callback。
+Store 不调用 Plugin、Executor 或用户策略。Service 不实现执行阶段细节；`executionRuntime` 不拥有 Plugin 装卸或 System Prompt 注册。
 
-## 4. 公共 contract 与动态 JSON 边界
+## 4. Root Registry 与 Child Overlay
 
-插件行为使用具体 interface，而不是 `any` callback：
+Root 与 Child Overlay 都是正常的 `tools.Service` Plugin 实例：
+
+- root 由 `tools.New(validatedConfig)` 创建，拥有根 layer；
+- overlay 由 `tools.NewOverlay()` 创建，挂载在需要隔离的父 Plugin 之下；
+- overlay 在 `Apply` 中要求最近的 ancestor `ToolRuntime`，只读取其 layer snapshots，再追加自己的 exact layer；
+- overlay 提供新的 `ToolRuntime`、`ToolCatalog` 和 `PolicyRegistry`，其子 Plugin 自动解析最近的能力，不需要业务对象持有 Plugin Context；
+- overlay 卸载只清理自己的 layer；ancestor 和 sibling 不受影响。
+
+可见视图按 root 到 exact overlay 的顺序计算：
+
+1. ancestor Tool 先进入视图，近层同名 Tool shadow 远层 Tool；
+2. 每层 restriction 只过滤此前继承的 Tool；
+3. exact layer 自己的 Tool 在 restriction 后加入，因此不被本层 restriction 过滤；
+4. `knownNames` 保留 lineage 中出现过的 Tool name，供 System Prompt 判断预限制能力；
+5. schema 保持稳定注册顺序；被过滤项不占可见位置，同名 shadow 保留原位置。
+
+Restriction 只能添加到 overlay。`Allow` 的非 nil 空 slice 表示有意隐藏全部 inherited Tool，不等于 omitted；restriction 不能引用 `run_code`、未知 inherited Tool 或只存在于 exact layer 的 Tool。Guard 可以存在于 root 或 overlay，并按 root 到 exact layer 的顺序单调拒绝。
+
+## 5. 公共能力契约
+
+`Service` 同时提供三个面向不同消费者的能力：
 
 ```go
-type Executor interface {
-    Execute(json.RawMessage, ToolRunContext) (json.RawMessage, error)
-}
-
-type OutputRenderer interface {
-    Render(json.RawMessage, json.RawMessage) ([]llm.ContentBlock, error)
-}
-
 type ToolRuntime interface {
-    Register(context.Context, *plugin.Scope, ToolDefinition) error
-    Restrict(context.Context, *plugin.Scope, ToolRestriction) error
-    Guard(*plugin.Scope, ToolGuard) error
-    RemoveScope(context.Context, *plugin.Scope) error
-    Get(string, plugin.ScopeKey) (ToolDefinition, bool)
-    Schemas(plugin.ScopeKey) []llm.ToolSchema
+    plugin.Service
+    Get(string) (ToolDefinition, bool)
+    Schemas() []llm.ToolSchema
     ExecutionMode(ToolExecutionInput) ToolExecutionMode
     Scheduler() ToolExecutionScheduler
     Execute(context.Context, ToolExecutionInput) ToolExecutionResult
 }
+
+type ToolCatalog interface {
+    plugin.Service
+    AddTool(context.Context, ToolDefinition) error
+    RemoveTool(context.Context, string) error
+}
+
+type PolicyRegistry interface {
+    plugin.Service
+    AddRestriction(context.Context, string, ToolRestriction) error
+    RemoveRestriction(context.Context, string) error
+    AddGuard(context.Context, string, ToolGuard) error
+    RemoveGuard(context.Context, string) error
+}
 ```
 
-`json.RawMessage` 只表示 Tool contract 本身允许任意 JSON shape 的参数、canonical value、schema 和 presentation metadata。内部 contribution table、callback、decision 和 result 不用 `any`；success/failure、pre decision 和 post decision 都是封闭 interface。`ToolExecution.ArgumentsJSON` 与 `ToolResultSnapshot` 的 accessor 每次返回 detached copy，policy 或 observer 不能通过共享 byte slice 改写下游执行。
+`ToolRuntime` 是 Agent Loop 的读取与执行边界；`ToolCatalog` 是具体 Tool Plugin 的定义变更边界；`PolicyRegistry` 是 visibility/policy Plugin 的变更边界。消费者不依赖 `Service`、`registry` 或 `toolStore` 的具体实现。
 
-`ToolExecutionScheduler` 是 Tools 提供给 Agent Loop 的 staged capability，不是第二个 Tool executor。`Prepare`、`Dispatch`、`Finalize` 的 `error` 只表示无法形成规范结果的内部 scheduler failure；Tool body、policy、schema、取消和 unknown Tool 等预期失败仍返回封闭 `ToolExecutionResult`，由 Agent Loop 按模型顺序提交。`Finish` 是同步且 total 的最终物化边界。
+`ToolExecutionScheduler` 由 `ToolRuntime.Scheduler()` 返回，实际 owner 是私有 `executionRuntime`。`Service` 不把 `Prepare`、`Dispatch`、`Finalize`、`Finish` 摊平成自己的方法，避免生命周期 facade 同时成为执行状态机。
 
-`llm.ContentBlock` 是 merge-extensible behavior interface，当前 core variant 为 `text`、`reasoning`、`image`、`tool-call` 与 `tool-result`。`image` 中的 durable reference 仍由 `attachment` owner 定义；引入这个被实际消费的 metadata contract 不等于 Attachment upload/storage Service 已实现。
+Tool 行为使用有业务含义的 interface：`Executor`、`OutputRenderer`、`PresentationProjector`、`ContentFinalizer`、`ConcurrencyClassifier` 和 `ToolGuard`。对应 `Func` 类型只是无状态函数的可选适配器，不是主要对象模型。
 
-## 5. Typed config 与 presentation 边界
+`json.RawMessage` 只用于 Tool contract 本来允许任意 JSON shape 的参数、canonical value、schema 和 presentation metadata。Registry state、decision、execution state 和 result 不使用 `any`。
 
-`Config` 保留源字段 `mode` 和 `maxParallelSubCalls`，strict decode 区分 omitted 与显式 `null`：
+## 6. 具体 Tool Plugin 的实现方式
 
-- omitted `mode` 默认 `native`；
-- omitted `maxParallelSubCalls` 默认 `10`；
-- 显式 `null`、未知字段、错误类型和小于 `1` 的 limit 失败；
-- 当前 included surface 只接受 `native`；
-- `code`/`both` 明确报告需要 Code Runtime bridge，不静默退化为 Native。
+具体 Tool 不需要实现 `ToolRuntime`，也不需要显式调用 `plugin.Define`。它本身是一个普通 Plugin：
 
-Code Mode 会生成模型调用用 SDK，并需要 `run_code` transport、Code Runtime 和 sub-dispatch log。项目已经排除 SDK，因此不复制该路径；`run_code` 名称仍无条件保留，防止未来重新纳入时与普通 Tool identity 冲突。Native mode 只把每个可见 Tool 的 schema 直接交给模型。
+1. `Manifest` 要求 `ToolCatalog`，以及该 Tool 真正需要的其他能力；
+2. `Apply` 构造完整 `ToolDefinition` 并调用 `AddTool`；
+3. `Dispose` 使用同一 name 调用 `RemoveTool`；
+4. 业务执行对象实现 `Executor`；只有需要自定义投影、finalizer、并发分类时才实现相应可选接口；
+5. 需要 restriction 或 guard 时再要求 `PolicyRegistry`，不能把所有插件强制成 policy Plugin。
 
-## 6. `sourceScope`、`selectedKey` 与 scope view
+Plugin Runtime 保证依赖就绪后才调用 `Apply`，并在启动失败、替换或卸载时调用 `Dispose`。具体 Tool Plugin 必须把注册和撤销成对实现；Tools Service 不猜测哪个业务对象应该被自动注册。
 
-`sourceScope` 是创建长期 Tools Service 的 Plugin Scope，用来找到所属 `plugin.Runtime` 并发布事件；`selectedKey` 是一次查询、assembly、执行或通知所属的 Agent/Child Scope identity。两者不能互换。
+## 7. 注册、撤销与 System Prompt
 
-```text
-Tools Plugin sourceScope
-├─ Agent A Child Scope -> selectedKey A
-└─ Agent B Child Scope -> selectedKey B
-```
-
-`toolStore.view(selectedKey)` 按以下顺序计算：
-
-1. 从 global 开始，依次合并 farthest ancestor 到 nearest ancestor，同名项由近层 shadow；
-2. lineage 上全部 restriction 交集过滤 inherited entries；
-3. selected scope 自己注册的 Tool 最后覆盖同名 inherited 项且不受这些 restriction 过滤；若该名字此前仍可见则保留其位置，否则追加到剩余 inherited 项之后；
-4. `knownNames` 保留 restriction 前的能力名，`restrictableName` 只包含 inherited 名；
-5. schema 顺序跟随固定 registration position：被过滤的 inherited 项不占位置，own shadow 保留仍可见同名项的位置，其他 own Tool 按注册顺序追加。
-
-Restriction 只能注册到 Child Scope；global restriction 会遮蔽所有 Agent，因此直接失败。`allow` 的非 nil 空集合表示有意隐藏全部 inherited Tool，不等价于 omitted。restriction 不能引用 `run_code`、未知或 exact-own-only Tool。ancestor contribution 对更深 descendant 是 inherited，因此可以被 descendant restriction 约束。
-
-## 7. 注册与撤销事务
-
-Tool 注册执行：
+Tool 注册流程：
 
 ```text
-validate name/output/timeout
+validate active layer and definition
   -> lossless clone parameter/output schema
   -> compile and cache both schemas
-  -> mutate exact toolStore layer
-  -> plugin.Own(caller Scope, undo)
-  -> EmitFrom(tools/change)
-  -> return success
+  -> add exact-layer definition
+  -> publish ordered tools/change
 ```
 
-同一 exact layer 重名失败，近层同名允许作为 scoped shadow；`run_code` 始终禁止注册。若首次 change observer 失败，mutation 回滚且不留下半注册 Tool。贡献 Plugin 的 `Dispose` 调用幂等 `RemoveScope`，精确删除该 Scope 的全部 record、回收空 layer，再发布一次 change。需要更短生命周期时使用 Child Plugin。Guard 是 execution policy，不改变模型可见 schema，因此注册/撤销不发 `tools/change`。
+同一 exact layer 重名失败，近层同名允许 shadow ancestor；`run_code` 始终保留。新增 Tool 或 restriction 时，`tools/change` observer 失败会回滚刚才的新增。撤销以生命周期清理为优先：Tool/restriction 已删除后，即使通知失败也不恢复，错误返回给调用方；幂等重试不会留下停止插件的贡献。Guard 不改变 schema，因此增删 guard 不发布 `tools/change`。
 
-Definition 在进入 LiveStore 前复制 schema bytes 并保留 behavior interface；`Get` 和 `Schemas` 再次 detach 公开 JSON。调用方修改原 Definition 或返回 schema 都不能改变 Registry state。
+Definition 在写入 Store 前复制 schema bytes 并保留 behavior interface；`Get`、`Schemas` 和 observer accessor 再次返回 detached data。调用方不能通过原 Definition 或返回值改写 Registry。
 
-## 8. Schema 与 lossless JSON
+Tools Service 在 `Apply` 中把自己注册为 System Prompt 的 Tool provider，在 `Dispose` 中撤销。System Prompt 不缓存第二份 Catalog；每次 assembly 都读取当前 layer 的 live view。Tools 不调用 `RenderPrompt`，System Prompt 不读取 Executor、output schema 或 guard。
 
-Tool parameter schema 必须是 lossless JSON object schema并声明 `type: "object"`；output schema 可以描述任意 JSON value。两者在注册时由 `jsonschema/v6` 编译并缓存，执行期不重复编译。
+## 8. Typed config、schema 与 lossless JSON
 
-共享 `internal/jsonvalue` 只负责同进程边界的 lossless JSON validation/clone，拒绝：
+root Factory 严格解码 owner-defined `Config`：未知字段、显式 `null`、错误类型和小于 `1` 的 `maxParallelSubCalls` 都失败。`mode` omitted 时默认 `native`；`code` 和 `both` 因 Code Runtime 未纳入而明确失败，不静默退化。
 
-- duplicate object key；
-- negative zero、non-finite 或无法表示的 number；
-- malformed JSON 和多个 trailing value。
+`maxParallelSubCalls` 是固定源 Code Mode sub-dispatch 的配置。Native-only 模式只验证并保留该字段，不把它误用成 Agent Loop 顶层 Tool 并发限制。
 
-这不是 schema validation 的重复实现：lossless validator 回答“能否形成稳定 JSON snapshot”，JSON Schema 回答“该 snapshot 是否满足 Tool contract”。该 helper 同时取代 Session 中原先重复的 lossless scanner，但不拥有 Session 或 Tool 业务规则。
+参数 schema 必须是声明 `type: "object"` 的 JSON object schema；output schema 可以描述任意 JSON value。两者注册时编译，执行时复用。
 
-## 9. 执行流水线
+`internal/jsonvalue` 负责 lossless JSON validation/clone，拒绝 duplicate object key、negative zero、non-finite/无法稳定表示的 number、malformed JSON 和 trailing value。它回答“能否形成稳定 JSON snapshot”；JSON Schema 回答“snapshot 是否满足 Tool contract”，两者职责不同。
+
+## 9. 执行状态机与核心流程
+
+普通调用使用 `ToolRuntime.Execute`。Agent Loop 为了保持 policy 和 Session commit 的模型顺序，同时只重叠允许并发的 Tool body，使用 `ToolExecutionScheduler`：
 
 ```text
-ToolRuntime.Execute(input)
-  -> snapshot visible definition/finalizer
-  -> mint ToolExecution token + rootCallId
-  -> lossless snapshot arguments
-  -> caller pre-dispatch cancellation check
-  -> scoped tools/pre-execute waterfall (default allow)
-  -> approval fallback + monotonic guards
-  -> scoped tools/execute waterfall
-       -> fuse wrapper context with original caller cancellation
-       -> input schema validation
-       -> Executor
-       -> output schema validation
-       -> Native content render
-       -> top-level presentation metadata projection
-  -> normalize around-wrapper-authored result
-  -> scoped tools/post-execute waterfall (default accept)
-  -> definition-owned finalizer exactly once
-  -> lossless result materialization
-  -> EmitScopedFrom(tools/result)
-  -> detached return result
+Prepare (ordered)
+  -> snapshot visible definition and finalizer
+  -> create immutable ToolExecution identity and arguments
+  -> pre-execute Waterfall
+  -> Approval and guards
+  -> ScheduledDispatch | ScheduledPostResult | ScheduledFinalResult
+
+Dispatch (only this stage may overlap)
+  -> execute Waterfall
+  -> fuse wrapper Context with caller cancellation
+  -> validate arguments
+  -> Executor
+  -> validate canonical value
+  -> render content and optional top-level presentation metadata
+
+Finalize (ordered, result needs post)
+  -> post-execute Waterfall
+  -> cancellation convergence
+  -> definition-owned finalizer
+  -> materialize result and publish tools/result
+
+Finish (ordered, terminal prepared result)
+  -> definition-owned finalizer
+  -> materialize result and publish tools/result
 ```
 
-`pre-execute` 的 `AllowDecision`、`DenyDecision`、`AskDecision` 是封闭决策；handler 不允许重写已经 materialize 的 call identity/arguments。Guard 只可能拒绝，按 global、远祖先到近 scope 顺序执行；后注册 policy 不能把既有拒绝变回允许。
+每个 prepared execution 是一次性状态机令牌：`Dispatch` 只能消费 `ScheduledDispatch` 一次，`Finalize` 只能消费 post-ready 状态一次，`Finish` 只能消费 final-ready 状态一次。错误顺序或重复调用属于 scheduler failure，不能重复执行 Tool body、finalizer 或结果事件。
 
-`execute` 是 around-dispatch waterfall。wrapper 可以用新的 `context.Context` 调用 `Next` 实现 timeout、retry 或 metrics，但 terminal 会把原 caller cancellation 重新 fuse 进去，wrapper 不能用 `context.Background()` 脱离调用方取消。wrapper 可短路并返回 authored success/failure；authored success 必须通过当前 Tool output schema 重新校验和 renderer，不信任 wrapper 提供的 content/meta。
+`Prepare`、`Dispatch`、`Finalize` 的 `error` 表示 scheduler contract 无法继续；unknown Tool、schema、policy、Executor 和取消等预期失败仍是 `ToolExecutionResult`。`Finish` 没有 error 通道，是 total boundary，会把 nil、非法或错误阶段物化为失败结果。
 
-`post-execute` 接收 read-only snapshot，可 `Accept`、只替换 content、只替换成功 value 或 `Block`。替换 value 会重新执行 output validation/render；failed result 不能替换 value；`Block` 只产生失败和 feedback，不保留成功 value。
+## 10. Waterfall、结果与 Turn 信号
 
-## 10. 取消、失败与 quiescence
+`pre-execute` 使用封闭的 `AllowDecision`、`DenyDecision`、`AskDecision`。Ask 通过可选 Approval capability 解析；缺少 Approval 或 Subject 时 fail closed。Guard 只可能拒绝，后续 guard 不能恢复允许。
 
-取消结果由 body 是否已开始决定：
+`execute` 是 onion around-dispatch。Middleware 可以替换传给下游的 Context，或短路并返回公开 success/failure。来自 Tool terminal 的成功使用私有 read-only canonical wrapper 暴露给 Middleware；Middleware 返回的公开 success 必须重新经过当前 output schema 和 renderer，不能伪造 content、meta 或 turn marker。
 
-- body 前取消：`AbortError / ABORTED_BEFORE_DISPATCH`；
-- body 已调用且最终成功时取消：等待 Executor 返回后改为 `AbortError / ABORTED`；
-- body 已返回结构化失败时即使同时取消，也保留 Tool 自己的失败；
-- wrapper short-circuit success 在 caller 已取消时按 body 未调用处理；
-- 初始即取消绕过 policy；pre 后取消仍进入 post policy，与固定源顺序一致。
+`post-execute` 接收 detached `ToolResultSnapshot`，可以 accept、replace content、replace successful value 或 block。replace value 必须重新校验和 render；failed result 不能替换 value。
 
-Go 无法硬杀同进程函数；Executor 必须观察 `ToolRunContext.Context` 并在返回前让 owned goroutine/I/O 达到 quiescence。Registry 不因 caller 取消提前遗弃正在运行的 body。wrapper context 和 caller context 的 fusion 同时处理已经取消与注册后取消的 race。
+additional context 的顺序固定为：Tool body `DeferContext`、execute wrapper、post policy。Agent Loop 只能在对应 Tool result durable commit 后把这些消息加入下一 Step，维持 model call/result 邻接。
 
-用户 callback panic 在它所属边界转为 failure：executor、renderer、projector、guard、policy handler 和 finalizer 均不能击穿 Runtime。result observer error/panic 被聚合并交给可选 `ResultObserverReporter`，不能改变已经 materialize 的 authoritative outcome。
+`ToolRunContext.ConcludeTurn()` 只在 Executor 正在执行时记录信号，失败结果永远不携带它。最终成功结果通过兼容字段 `ConcludesTurn` 保存信号，并通过 `ConcludesAgentTurn()` 读取。Tools 只产生信号；Agent Loop 必须先提交 Tool result 和 Session event，再结束当前 Turn。它不表示停止 Plugin、Runtime 或 Session。
 
-## 11. Result、finalizer 与 turn marker
+## 11. Event、取消与失败语义
 
-成功结果包含 canonical `Value`、model-facing `Content`、可选 top-level `Meta` 和 `ConcludesTurn`；失败结果包含 `ToolFailure`、content 和可选 meta，永远没有成功 value。nested execution 不生成 top-level presentation metadata。
+Tools 使用 Plugin Runtime 的统一 Event 分发：
 
-`ToolRunContext.ConcludeTurn` 只对成功结果生效。definition-owned finalizer 在每次 normalized outcome 上恰好执行一次，包括 pre/execute/post failure；它只可选择替换 content，不能修改 value、failure、meta、call identity 或 turn marker。finalizer panic/非法 content 形成普通 failure，不二次调用 finalizer。
+| Event | Delivery | 可见性与失败语义 |
+| --- | --- | --- |
+| `RegistryChanged` / `tools/change` | `DeliveryOrdered` | 从发布 Service 所在 Plugin layer 向 ancestor observers 发布；新增失败回滚，撤销失败保留清理结果 |
+| `ExecutionCompleted` / `tools/result` | `DeliveryBestEffort` | 从执行 Service 所在 layer 向 ancestor observers 并行发布；失败交给 Runtime reporter，不替换 Tool result |
 
-`ToolResultSnapshot` 只暴露 detached accessor。`tools/result` observer 看到的是最终物化快照；observer 失败被 contain，返回给 caller 的结果不与 observer 持有的 slice/bytes 共享。
+pre/execute/post Waterfall 同样由发布 Service 的 Plugin layer 决定可见链，按 root 到当前 layer 组装 onion；sibling 和 descendant Plugin 不参与。Tools 不保存事件历史，也不实现 Event Sourcing。
 
-## 12. Event 可见性
+取消结果由 body 是否开始决定：
 
-Tools 使用两种 emit：
+- body 前取消为 `ABORTED_BEFORE_DISPATCH`；
+- body 已开始、最终仍成功时等待 body 收敛，再变为 `ABORTED`；
+- body 已形成结构化失败时保留业务失败；
+- wrapper short-circuit success 在 caller 已取消时按 body 未开始处理。
 
-| 事件 | 发布 API | 可见范围 | 原因 |
-| --- | --- | --- | --- |
-| `tools/change` | `plugin.EmitFrom` | 所有存活 listener | global mutation 可能改变任意 Agent 的下一次 assembly |
-| `tools/result` | `plugin.EmitScopedFrom` | global + selectedKey ancestors + exact scope | 一个 Agent 的执行结果不能泄漏给 sibling Agent |
+Go 不能强杀同进程函数。Executor 必须观察 `ToolRunContext.Context`，并在返回前让自己拥有的 goroutine、I/O 或子任务达到 quiescence。Executor、renderer、projector、guard、Waterfall Middleware 和 finalizer 的 panic 都在所属边界转为失败，不能击穿 Runtime。
 
-`EmitFrom` 和 `EmitScopedFrom` 都是同步 `emit`，差异只在 subscriber filter。`From` 表示从长期 Service 的 `sourceScope` 找 Runtime；`selectedKey` 只表示本次事件属于哪个 scope view。
+## 12. 排除项与 Consumer 边界
 
-pre/execute/post waterfall 也使用 selected scope：global、祖先和 exact listener 参与，sibling 与 descendant listener 排除。outer-to-inner 顺序仍由 Plugin Runtime 的全局 registration ordinal 决定。
-
-## 13. System Prompt 与 assembly 交互
-
-Tools Factory canonical name 为 `@deepseek-ai/dsh-tools`，Manifest `Requires(systemPrompt)`、`Provides(tools)`。启动流程为：
-
-```text
-System Prompt Provider -> Provide(systemPrompt)
-Tools Provider waits/resolves systemPrompt
-  -> New(toolStore + toolRegistry)
-  -> systemPrompt.Tools(scope-owned provider)
-  -> Provide(tools)
-
-每次 prompt assembly(scope)
-  -> Tool provider calls toolStore.view(scope)
-  -> returns visible Schemas + pre-restriction KnownNames
-  -> System Prompt owns configured toolOrder
-```
-
-Tools 不调用 `RenderPrompt`，System Prompt 不读取 executor/output schema/guard。schema 出现在 prompt 与实际 execution lookup 使用同一个 `toolStore.view`，避免“模型看到一个工具，但执行走另一套可见性规则”。
-
-## 14. 排除项与后续 Consumer 进入
-
-当前 Native Tools 能力已经完整提供 Definition、Registry、policy waterfall、执行、结果和 System Prompt 投影。以下职责不属于本模块当前 included surface：
+当前 included surface 是 Native Tools。以下不属于本模块：
 
 - Code Mode 的 `run_code`、生成 TypeScript/Python SDK、Code Runtime 和 sub-dispatch log；
 - Web `presentCall`/`presentResult` 和卡片模型；
-- Approval policy/audit、UserQuestions 与交互 transport（由[17](./17-approval-user-questions-and-interaction-gateway.md)拥有）；
-- Agent Loop 的批量并发编排、additional context 入队与 Session event commit；
-- filesystem/shell 等具体 Tool plugin。
+- Approval policy/audit、UserQuestions 与交互 transport，由[17 Approval、UserQuestions 与 Interaction Gateway](./17-approval-user-questions-and-interaction-gateway.md)拥有；
+- Agent Loop 的批量并发、additional context admission、Session event 和 durable commit，由[15 Agent Loop 与请求驱动模块设计](./15-agent-loop-and-request-driver.md)拥有；
+- filesystem、shell 等具体 Tool Plugin。
 
-Agent Loop 作为 Consumer 使用 `ExecutionMode` 和 `ToolExecutionScheduler`：Tools owner 顺序执行 `Prepare`、`Finalize`、`Finish`，只有 `Dispatch`/body 可由 Agent Loop 重叠；结果中的 `ConcludesTurn` 和 `AdditionalContextMessages` 由 Agent Loop 在 durable `tool/result` 之后消费。批量算法和 Session event 顺序由[15 Agent Loop 与请求驱动模块设计](./15-agent-loop-and-request-driver.md)拥有，Tools 不建立第二套 driver 或 Inbox。
+Agent Loop 消费 `ExecutionMode` 和 `ToolExecutionScheduler`，但不直接读取 Registry state。Tools 提供单次调用的规范结果和 Turn 信号，但不创建第二套 driver、Inbox、Session log 或自愈调度器。

@@ -25,6 +25,7 @@
 | D-12 | 不使用标准库 `plugin`、CGO SQLite、Node.js runtime、嵌入式脚本引擎或浏览器依赖 | Accepted |
 | D-13 | Web 源码使用 React、TypeScript、Vite 与 Tailwind CSS；Go 只内嵌生产构建 | Accepted |
 | D-14 | Credentials 使用 Manager/LiveStore 分层；默认 local LiveStore 使用标准库 JSON owner-only 文档 | Accepted |
+| D-15 | Tools 保持一个领域包，以具名对象分离 Registry、执行和结果职责；Factory 作为入站构造适配器单独成包 | Accepted |
 
 `Accepted` 表示架构方向已经确定，不代表代码已经实现；`Proposed` 必须在首次引入依赖的代码提交中完成版本与 license 复核；`Deferred` 表示当前目标不依赖该能力，不能预先引入依赖或创建占位实现。
 
@@ -44,14 +45,14 @@
 
 ## 3. D-02：Plugin Runtime
 
-采用[02 Go 运行时架构与插件模型](./02-runtime-architecture-and-plugin-model.md)中的 `Plugin`、`Factory`、`Context` 与 `Scope`：
+采用[02 Go 运行时架构与插件模型](./02-runtime-architecture-and-plugin-model.md)中的 `Plugin`、静态 `Factory`、typed Service、typed Event 和 typed Waterfall：
 
 - Factory 在 composition root 静态注册；
 - deployment config 只能实例化 Catalog 中已有 Factory；
-- Runtime 只通过 owner-defined Service/Event key 连接插件；
-- Runtime 私有地把 Plugin lifecycle、框架 registration 和 Child Plugin 记录为可撤销 effect；
-- Plugin 通过同一对象的 `Apply`/`Dispose` 拥有 goroutine、进程、文件监听和连接；
-- replacement 在 shadow scope 验证后原子切换；
+- Runtime 通过 owner-defined Service type、Event type 和 Waterfall input/output type 连接 Plugin；
+- Runtime 私有拥有父子 layer、依赖图、Fiber 和框架贡献，不把 Plugin Context 暴露给业务 Service；
+- Plugin 通过同一对象的 `Apply`/`Dispose` 注册和撤销业务贡献，并拥有 goroutine、进程、文件监听和连接；
+- replacement 先准备 contract-compatible candidate，再切换 Runtime contributions；
 - public extension contract 不暴露 Runtime 内部锁、map 或依赖图。
 
 拒绝标准库 `plugin`，原因包括平台限制、不可卸载、toolchain/依赖一致性要求和 race detector 限制。也不默认引入进程外 Plugin RPC，因为这会创造一套新的公共协议、版本和故障模型。
@@ -340,7 +341,32 @@ Credentials capability 与存储格式分离。`credentials.Provider` 是上游�
 
 LiveStore 使用 `0700` 目录、`0600` 文档和同目录临时文件原子替换。进程内 mutex 只保护一个 LiveStore 实例；当前没有 watcher、`credentials/updated` 或跨进程 writer lock。完整边界和进入条件见[22 Credentials 与 API Key 管理](./22-credentials-and-api-key-management.md)。
 
-## 15. 依赖准入与升级
+## 15. D-15：Tools 包边界
+
+### 15.1 背景
+
+Tools 同时包含分层 Registry、visibility policy、执行调度和结果物化。按技术步骤把它们分别拆成 `registry`、`runtime`、`policy`、`result` 子包，会把同一 Tool identity、definition snapshot、layer lineage 和结果不变量变成跨包协议，并迫使私有状态公开。反过来，把配置 strict decode 和具体 filesystem/shell Tool 也塞入 `tools`，又会让基础领域依赖入站配置和具体业务实现。
+
+### 15.2 决策
+
+- Registry、visibility、execution pipeline 和 result materialization 保持在一个 `tools` 领域包内；
+- 包内通过 `Service`、`registry`、`toolStore`、`executionRuntime`、`policyEngine`、`dispatcher` 和 `resultProcessor` 等具名对象分离职责；
+- `tools/factory` 单独成包，只负责 raw config strict decode、owner validation 和 root Plugin 构造；
+- filesystem、shell、用户问答等具体 Tool 各自属于自己的能力包，通过 `ToolCatalog` 注册，不成为 `tools` 子包；
+- 不为“自愈”建立 Tools 子域；单次调用规范失败属于 Tools，跨调用 retry、replay 和补偿属于 Agent Loop 或相应 use case owner。
+
+### 15.3 被拒绝的方案
+
+- **按处理阶段拆多个子包**：增加循环依赖风险和公开中间状态，不能形成独立生命周期或替换边界；
+- **把所有 Tool 实现放入 `tools` 子包**：让基础运行时拥有具体业务能力，并使依赖方向反转；
+- **把 Factory 留在领域包**：让 raw JSON 擦除边界与已验证的领域配置、Plugin 生命周期耦合；
+- **新增通用 self-healing manager**：无法定义统一的幂等、重试和补偿语义，会侵入 Agent/Session 的 use case 决策。
+
+### 15.4 后果与复审条件
+
+`tools` 包会包含多个文件和私有协作者，但公共边界仍只有 `ToolRuntime`、`ToolExecutionScheduler`、`ToolCatalog`、`PolicyRegistry` 及其领域类型。只有出现独立依赖方向、独立生命周期、需要强制的可见性边界，或可替换实现时才重新评估子包；文件长度或技术步骤名称本身不是拆包依据。
+
+## 16. 依赖准入与升级
 
 每个第三方依赖的首次代码提交必须记录：
 
@@ -355,7 +381,7 @@ LiveStore 使用 `0700` 目录、`0600` 文档和同目录临时文件原子替�
 
 依赖升级不得与无关功能混合。协议 SDK 升级后必须重跑对应跨语言 fixture；storage、PTY、watcher 和 sandbox 升级必须重跑平台/故障测试。
 
-## 16. 被拒绝的方案
+## 17. 被拒绝的方案
 
 | 方案 | 拒绝原因 |
 | --- | --- |
