@@ -17,9 +17,10 @@ type clock interface {
 
 type clockProvider struct {
 	plugin.Base
-	value     string
-	order     *[]string
-	disposals int
+	value        string
+	order        *[]string
+	applications int
+	disposals    int
 }
 
 func (provider *clockProvider) Manifest() plugin.Manifest {
@@ -32,6 +33,7 @@ func (provider *clockProvider) Manifest() plugin.Manifest {
 }
 
 func (provider *clockProvider) Apply(context.Context) error {
+	provider.applications++
 	if provider.order != nil {
 		*provider.order = append(*provider.order, "clock:apply")
 	}
@@ -147,6 +149,33 @@ type optionalClockConsumer struct {
 	plugin.Base
 	selected clock
 	applies  int
+}
+
+type failingClockReplacement struct {
+	plugin.Base
+	disposals int
+}
+
+func (*failingClockReplacement) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "clock",
+		Provides: []plugin.ServiceType{
+			plugin.ServiceOf[clock](),
+		},
+	}
+}
+
+func (*failingClockReplacement) Apply(context.Context) error {
+	return errors.New("replacement apply failed")
+}
+
+func (replacement *failingClockReplacement) Dispose(context.Context) error {
+	replacement.disposals++
+	return nil
+}
+
+func (*failingClockReplacement) Value() string {
+	return "unavailable"
 }
 
 func (*optionalClockConsumer) Manifest() plugin.Manifest {
@@ -323,7 +352,7 @@ func TestChildScopeInheritsAndOverridesService(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 	inherited := &clockConsumer{}
-	if _, err := runtimeEngine.MountChild(
+	if _, err := runtimeEngine.MountScopedChild(
 		context.Background(),
 		rootHandles[0],
 		inherited,
@@ -337,7 +366,7 @@ func TestChildScopeInheritsAndOverridesService(t *testing.T) {
 	override := &clockProvider{
 		value: "child",
 	}
-	overrideHandle, err := runtimeEngine.MountChild(
+	overrideHandle, err := runtimeEngine.MountScopedChild(
 		context.Background(),
 		rootHandles[0],
 		override,
@@ -346,7 +375,7 @@ func TestChildScopeInheritsAndOverridesService(t *testing.T) {
 		t.Fatalf("mount override: %v", err)
 	}
 	overridden := &clockConsumer{}
-	if _, err := runtimeEngine.MountChild(
+	if _, err := runtimeEngine.MountScopedChild(
 		context.Background(),
 		overrideHandle,
 		overridden,
@@ -355,6 +384,115 @@ func TestChildScopeInheritsAndOverridesService(t *testing.T) {
 	}
 	if overridden.selected.Value() != "child" {
 		t.Fatalf("overridden Service = %q", overridden.selected.Value())
+	}
+}
+
+func TestChildFiberSharesParentScope(t *testing.T) {
+	t.Parallel()
+	rootProvider := &clockProvider{
+		value: "root",
+	}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	rootHandles, err := runtimeEngine.Start(context.Background(), rootProvider)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	duplicateProvider := &clockProvider{
+		value: "duplicate",
+	}
+	if _, err := runtimeEngine.MountChild(
+		context.Background(),
+		rootHandles[0],
+		duplicateProvider,
+	); !errors.Is(err, plugin.ErrServiceConflict) {
+		t.Fatalf("same-Scope duplicate Service error = %v", err)
+	}
+	if duplicateProvider.applications != 0 || duplicateProvider.disposals != 0 {
+		t.Fatalf(
+			"conflicting provider lifecycle = (Apply %d, Dispose %d), want (0, 0)",
+			duplicateProvider.applications,
+			duplicateProvider.disposals,
+		)
+	}
+	consumer := &clockConsumer{}
+	if _, err := runtimeEngine.MountChild(
+		context.Background(),
+		rootHandles[0],
+		consumer,
+	); err != nil {
+		t.Fatalf("mount same-Scope consumer: %v", err)
+	}
+	if consumer.selected != rootProvider {
+		t.Fatal("same-Scope child did not resolve the parent Service")
+	}
+}
+
+func TestActivePluginOwnsDynamicChildTree(t *testing.T) {
+	t.Parallel()
+	rootProvider := &clockProvider{
+		value: "root",
+	}
+	parent := &eventPublisherPlugin{
+		name: "dynamic-parent",
+	}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	rootHandles, err := runtimeEngine.Start(
+		context.Background(),
+		rootProvider,
+		parent,
+	)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	scopedProvider := &clockProvider{
+		value: "scoped",
+	}
+	scopedHandle, err := plugin.MountScopedChild(
+		context.Background(),
+		parent,
+		scopedProvider,
+	)
+	if err != nil {
+		t.Fatalf("mount owned scoped child: %v", err)
+	}
+	consumer := &clockConsumer{}
+	consumerHandle, err := plugin.MountChild(
+		context.Background(),
+		scopedProvider,
+		consumer,
+	)
+	if err != nil {
+		t.Fatalf("mount owned same-Scope child: %v", err)
+	}
+	if consumer.selected != scopedProvider || consumer.selected.Value() != "scoped" {
+		t.Fatal("owned same-Scope child did not resolve the scoped Service")
+	}
+	if err := plugin.UnloadChild(
+		context.Background(),
+		parent,
+		consumerHandle,
+	); err == nil || !strings.Contains(err.Error(), "not a direct child") {
+		t.Fatalf("unload unrelated descendant error = %v", err)
+	}
+	if err := plugin.UnloadChild(
+		context.Background(),
+		parent,
+		rootHandles[0],
+	); err == nil || !strings.Contains(err.Error(), "not a direct child") {
+		t.Fatalf("unload unrelated root error = %v", err)
+	}
+	if err := plugin.UnloadChild(
+		context.Background(),
+		parent,
+		scopedHandle,
+	); err != nil {
+		t.Fatalf("unload owned scoped child: %v", err)
+	}
+	if consumer.selected != nil {
+		t.Fatal("owned descendant was not disposed with its parent")
+	}
+	if scopedProvider.disposals != 1 {
+		t.Fatalf("scoped Provider Dispose calls = %d, want 1", scopedProvider.disposals)
 	}
 }
 
@@ -371,7 +509,7 @@ func TestChildPluginDecoratesAncestorService(t *testing.T) {
 	decorator := &clockDecorator{
 		prefix: "child:",
 	}
-	decoratorHandle, err := runtimeEngine.MountChild(
+	decoratorHandle, err := runtimeEngine.MountScopedChild(
 		context.Background(),
 		rootHandles[0],
 		decorator,
@@ -380,7 +518,7 @@ func TestChildPluginDecoratesAncestorService(t *testing.T) {
 		t.Fatalf("mount decorator: %v", err)
 	}
 	consumer := &clockConsumer{}
-	if _, err := runtimeEngine.MountChild(
+	if _, err := runtimeEngine.MountScopedChild(
 		context.Background(),
 		decoratorHandle,
 		consumer,
@@ -428,6 +566,40 @@ func TestReplaceReactivatesHardDependents(t *testing.T) {
 	}
 	if firstProvider.disposals != 1 {
 		t.Fatalf("previous provider Dispose calls = %d, want 1", firstProvider.disposals)
+	}
+}
+
+func TestFailedReplacementKeepsCurrentFiberAndDependentsActive(t *testing.T) {
+	t.Parallel()
+	provider := &clockProvider{
+		value: "current",
+	}
+	consumer := &clockConsumer{}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	handles, err := runtimeEngine.Start(
+		context.Background(),
+		provider,
+		consumer,
+	)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	replacement := &failingClockReplacement{}
+	if err := runtimeEngine.Replace(
+		context.Background(),
+		handles[0],
+		replacement,
+	); err == nil || !strings.Contains(err.Error(), "replacement apply failed") {
+		t.Fatalf("replace error = %v", err)
+	}
+	if replacement.disposals != 1 {
+		t.Fatalf("replacement Dispose calls = %d, want 1", replacement.disposals)
+	}
+	if provider.disposals != 0 {
+		t.Fatalf("current provider Dispose calls = %d, want 0", provider.disposals)
+	}
+	if consumer.applies != 1 || consumer.selected != provider {
+		t.Fatal("failed replacement disturbed the active dependent")
 	}
 }
 

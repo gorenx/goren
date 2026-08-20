@@ -25,7 +25,7 @@ type trimMiddleware struct {
 func (middleware *trimMiddleware) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "trim",
-		Waterfalls: []plugin.WaterfallContribution{
+		Waterfalls: []plugin.WaterfallMiddlewareBinding{
 			plugin.WaterfallOf[messageInput, messageOutput](middleware),
 		},
 	}

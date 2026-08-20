@@ -65,8 +65,8 @@ func (WaterfallOutputBase) RuntimeWaterfallOutput() {}
 // Base is the opaque activation anchor embedded by every Plugin. It does not
 // expose Scope, registries, or lifecycle mutation to business methods.
 type Base struct {
-	mutex      sync.RWMutex
-	activation *activation
+	mutex sync.RWMutex
+	fiber *fiber
 }
 
 // RuntimePlugin returns the embedded activation anchor.
@@ -78,38 +78,38 @@ func (pluginBase *Base) RuntimePlugin() *Base {
 // implemented directly by a Plugin that embeds Base.
 func (*Base) RuntimeService() {}
 
-func (pluginBase *Base) attach(selectedActivation *activation) error {
+func (pluginBase *Base) attach(running *fiber) error {
 	if pluginBase == nil {
 		return errors.New("plugin: Plugin returned a nil Base")
 	}
 	pluginBase.mutex.Lock()
 	defer pluginBase.mutex.Unlock()
-	if pluginBase.activation != nil {
+	if pluginBase.fiber != nil {
 		return errors.New("plugin: Plugin instance is already mounted")
 	}
-	pluginBase.activation = selectedActivation
+	pluginBase.fiber = running
 	return nil
 }
 
-func (pluginBase *Base) detach(selectedActivation *activation) {
+func (pluginBase *Base) detach(running *fiber) {
 	if pluginBase == nil {
 		return
 	}
 	pluginBase.mutex.Lock()
-	if pluginBase.activation == selectedActivation {
-		pluginBase.activation = nil
+	if pluginBase.fiber == running {
+		pluginBase.fiber = nil
 	}
 	pluginBase.mutex.Unlock()
 }
 
-func (pluginBase *Base) currentActivation() *activation {
+func (pluginBase *Base) currentFiber() *fiber {
 	if pluginBase == nil {
 		return nil
 	}
 	pluginBase.mutex.RLock()
-	selectedActivation := pluginBase.activation
+	running := pluginBase.fiber
 	pluginBase.mutex.RUnlock()
-	return selectedActivation
+	return running
 }
 
 // Plugin is one statically linked runtime participant. Apply acquires the
@@ -137,23 +137,23 @@ type EventSubscription interface {
 	bindEventObserver(Plugin) (EventObserver, error)
 }
 
-// WaterfallContribution declares one Middleware owned by the Plugin for one
+// WaterfallMiddlewareBinding declares one Middleware owned by the Plugin for one
 // typed operation.
-type WaterfallContribution interface {
+type WaterfallMiddlewareBinding interface {
 	Name() string
 	waterfallReference() (waterfallRef, error)
 	waterfallMiddleware() (waterfallInvoker, error)
 }
 
-// Manifest is the complete declarative contribution and dependency contract
-// of one Plugin instance.
+// Manifest is the complete declarative binding and dependency contract of one
+// Plugin instance.
 type Manifest struct {
 	Name       string
 	Provides   []ServiceType
 	Requires   []ServiceType
 	Optional   []ServiceType
 	Events     []EventSubscription
-	Waterfalls []WaterfallContribution
+	Waterfalls []WaterfallMiddlewareBinding
 }
 
 type serviceRef struct {
@@ -181,28 +181,28 @@ type waterfallRef struct {
 	name   string
 }
 
-type serviceOffer struct {
+type providedServiceSpec struct {
 	reference  serviceRef
 	capability Service
 }
 
-type eventOffer struct {
+type eventSubscriptionSpec struct {
 	reference eventRef
 	observer  EventObserver
 }
 
-type waterfallOffer struct {
+type waterfallMiddlewareSpec struct {
 	reference waterfallRef
 	invoker   waterfallInvoker
 }
 
 type manifestSpec struct {
 	name       string
-	provides   []serviceOffer
+	provides   []providedServiceSpec
 	requires   []serviceRef
 	optional   []serviceRef
-	events     []eventOffer
-	waterfalls []waterfallOffer
+	events     []eventSubscriptionSpec
+	waterfalls []waterfallMiddlewareSpec
 }
 
 func normalizeManifest(pluginInstance Plugin) (manifestSpec, error) {
@@ -238,7 +238,7 @@ func normalizeManifest(pluginInstance Plugin) (manifestSpec, error) {
 				reference.name,
 			)
 		}
-		normalized.provides = append(normalized.provides, serviceOffer{
+		normalized.provides = append(normalized.provides, providedServiceSpec{
 			reference:  reference,
 			capability: capability,
 		})
@@ -301,7 +301,7 @@ func normalizeManifest(pluginInstance Plugin) (manifestSpec, error) {
 			)
 		}
 		seenEvents[reference.key] = struct{}{}
-		normalized.events = append(normalized.events, eventOffer{
+		normalized.events = append(normalized.events, eventSubscriptionSpec{
 			reference: reference,
 			observer:  observer,
 		})
@@ -311,14 +311,14 @@ func normalizeManifest(pluginInstance Plugin) (manifestSpec, error) {
 	for _, declaredWaterfall := range metadata.Waterfalls {
 		if declaredWaterfall == nil {
 			return manifestSpec{}, fmt.Errorf(
-				"plugin: %s declares an invalid Waterfall contribution",
+				"plugin: %s declares an invalid Waterfall Middleware binding",
 				metadata.Name,
 			)
 		}
 		reference, err := declaredWaterfall.waterfallReference()
 		if err != nil {
 			return manifestSpec{}, fmt.Errorf(
-				"plugin: %s Waterfall contribution: %w",
+				"plugin: %s Waterfall Middleware binding: %w",
 				metadata.Name,
 				err,
 			)
@@ -344,7 +344,7 @@ func normalizeManifest(pluginInstance Plugin) (manifestSpec, error) {
 			)
 		}
 		seenWaterfalls[selectedKey] = struct{}{}
-		normalized.waterfalls = append(normalized.waterfalls, waterfallOffer{
+		normalized.waterfalls = append(normalized.waterfalls, waterfallMiddlewareSpec{
 			reference: reference,
 			invoker:   invoker,
 		})
@@ -425,7 +425,7 @@ func sameManifestContract(leftSpec manifestSpec, rightSpec manifestSpec) bool {
 	return true
 }
 
-func sameServiceSet(leftOffers []serviceOffer, rightOffers []serviceOffer) bool {
+func sameServiceSet(leftOffers []providedServiceSpec, rightOffers []providedServiceSpec) bool {
 	if len(leftOffers) != len(rightOffers) {
 		return false
 	}
@@ -456,7 +456,7 @@ func sameServiceRefs(leftRefs []serviceRef, rightRefs []serviceRef) bool {
 	return true
 }
 
-func sameEventSet(leftOffers []eventOffer, rightOffers []eventOffer) bool {
+func sameEventSet(leftOffers []eventSubscriptionSpec, rightOffers []eventSubscriptionSpec) bool {
 	if len(leftOffers) != len(rightOffers) {
 		return false
 	}
@@ -477,7 +477,7 @@ func sameEventSet(leftOffers []eventOffer, rightOffers []eventOffer) bool {
 	return true
 }
 
-func sameWaterfallSet(leftOffers []waterfallOffer, rightOffers []waterfallOffer) bool {
+func sameWaterfallSet(leftOffers []waterfallMiddlewareSpec, rightOffers []waterfallMiddlewareSpec) bool {
 	if len(leftOffers) != len(rightOffers) {
 		return false
 	}
@@ -545,12 +545,22 @@ type Handle struct {
 	id    uint64
 }
 
+func handleOf(runtimeEngine *Runtime, mounted *pluginMount) Handle {
+	if runtimeEngine == nil || mounted == nil {
+		return Handle{}
+	}
+	return Handle{
+		owner: runtimeEngine,
+		id:    mounted.handleID,
+	}
+}
+
 // ID returns the Runtime-local mount identity.
 func (pluginHandle Handle) ID() uint64 {
 	return pluginHandle.id
 }
 
-// FiberStatus is an immutable lifecycle and contribution diagnostic.
+// FiberStatus is an immutable lifecycle and binding diagnostic.
 type FiberStatus struct {
 	HandleID     uint64
 	FiberID      FiberID
@@ -560,7 +570,6 @@ type FiberStatus struct {
 	Services     []ServiceBindingStatus
 	Waterfalls   []WaterfallBindingStatus
 	Events       []EventSubscriptionStatus
-	Effects      []string
 	Missing      []string
 	Error        error
 }
@@ -578,13 +587,13 @@ type ServiceBindingStatus struct {
 	Scope   ScopeKey
 }
 
-// WaterfallBindingStatus describes one Middleware contribution.
+// WaterfallBindingStatus describes one published Middleware binding.
 type WaterfallBindingStatus struct {
 	Waterfall string
 	Scope     ScopeKey
 }
 
-// EventSubscriptionStatus describes one Observer contribution.
+// EventSubscriptionStatus describes one published Observer subscription.
 type EventSubscriptionStatus struct {
 	Event string
 	Scope ScopeKey

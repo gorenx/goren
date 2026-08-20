@@ -102,7 +102,7 @@ func TestEventRoutesFromCurrentScopeToRoot(t *testing.T) {
 		name:  "child-observer",
 		order: &order,
 	}
-	childObserverHandle, err := runtimeEngine.MountChild(
+	childObserverHandle, err := runtimeEngine.MountScopedChild(
 		context.Background(),
 		handles[1],
 		childObserver,
@@ -113,7 +113,7 @@ func TestEventRoutesFromCurrentScopeToRoot(t *testing.T) {
 	childPublisher := &eventPublisherPlugin{
 		name: "child-publisher",
 	}
-	if _, err := runtimeEngine.MountChild(
+	if _, err := runtimeEngine.MountScopedChild(
 		context.Background(),
 		childObserverHandle,
 		childPublisher,
@@ -130,6 +130,42 @@ func TestEventRoutesFromCurrentScopeToRoot(t *testing.T) {
 		t.Fatalf("publish: %v", err)
 	}
 	if got := strings.Join(order, ","); got != "child-observer,root-observer" {
+		t.Fatalf("observer order = %q", got)
+	}
+}
+
+func TestEventObserverInChildFiberSharesPublisherScope(t *testing.T) {
+	t.Parallel()
+	order := make([]string, 0)
+	publisher := &eventPublisherPlugin{
+		name: "same-scope-publisher",
+	}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	handles, err := runtimeEngine.Start(context.Background(), publisher)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	observer := &eventObserverPlugin{
+		name:  "same-scope-observer",
+		order: &order,
+	}
+	if _, err := runtimeEngine.MountChild(
+		context.Background(),
+		handles[0],
+		observer,
+	); err != nil {
+		t.Fatalf("mount same-Scope observer: %v", err)
+	}
+	if err := plugin.Publish(
+		context.Background(),
+		publisher,
+		advanced{
+			Value: 1,
+		},
+	); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if got := strings.Join(order, ","); got != "same-scope-observer" {
 		t.Fatalf("observer order = %q", got)
 	}
 }
@@ -325,6 +361,7 @@ func (bestEffortFact) EventDelivery() plugin.DeliveryPolicy {
 
 type failingObserver struct {
 	plugin.Base
+	applications int
 }
 
 func (observer *failingObserver) Manifest() plugin.Manifest {
@@ -336,7 +373,8 @@ func (observer *failingObserver) Manifest() plugin.Manifest {
 	}
 }
 
-func (*failingObserver) Apply(context.Context) error {
+func (observer *failingObserver) Apply(context.Context) error {
+	observer.applications++
 	return nil
 }
 
@@ -454,10 +492,14 @@ func TestBestEffortEventContainsAndReportsObserverPanic(t *testing.T) {
 func TestBestEffortObserverRequiresFailureReporter(t *testing.T) {
 	t.Parallel()
 	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	observer := &failingObserver{}
 	if _, err := runtimeEngine.Start(
 		context.Background(),
-		&failingObserver{},
+		observer,
 	); err == nil || !strings.Contains(err.Error(), "EventFailureReporter") {
 		t.Fatalf("Start error = %v", err)
+	}
+	if observer.applications != 0 {
+		t.Fatalf("Apply calls = %d, want 0", observer.applications)
 	}
 }

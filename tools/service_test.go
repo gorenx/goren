@@ -213,7 +213,7 @@ func TestRegistryLayersRestrictionShadowingAndPromptProjection(t *testing.T) {
 	}
 
 	promptOverlay := systemprompt.NewOverlay(systemprompt.RegistryOptions{})
-	promptOverlayHandle, err := state.runtimeEngine.MountChild(
+	promptOverlayHandle, err := state.runtimeEngine.MountScopedChild(
 		requestContext,
 		state.promptHandle,
 		promptOverlay,
@@ -222,7 +222,7 @@ func TestRegistryLayersRestrictionShadowingAndPromptProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	toolOverlay := tools.NewOverlay()
-	if _, err := state.runtimeEngine.MountChild(
+	if _, err := state.runtimeEngine.MountScopedChild(
 		requestContext,
 		promptOverlayHandle,
 		toolOverlay,
@@ -380,7 +380,7 @@ func TestAncestorRestrictionDoesNotFilterSameLayerToolsInDescendant(t *testing.T
 		}
 	}
 	firstPrompt := systemprompt.NewOverlay(systemprompt.RegistryOptions{})
-	firstPromptHandle, err := state.runtimeEngine.MountChild(
+	firstPromptHandle, err := state.runtimeEngine.MountScopedChild(
 		requestContext,
 		state.promptHandle,
 		firstPrompt,
@@ -389,7 +389,7 @@ func TestAncestorRestrictionDoesNotFilterSameLayerToolsInDescendant(t *testing.T
 		t.Fatal(err)
 	}
 	firstTools := tools.NewOverlay()
-	firstToolsHandle, err := state.runtimeEngine.MountChild(
+	firstToolsHandle, err := state.runtimeEngine.MountScopedChild(
 		requestContext,
 		firstPromptHandle,
 		firstTools,
@@ -419,7 +419,7 @@ func TestAncestorRestrictionDoesNotFilterSameLayerToolsInDescendant(t *testing.T
 		t.Fatal(err)
 	}
 	secondPrompt := systemprompt.NewOverlay(systemprompt.RegistryOptions{})
-	secondPromptHandle, err := state.runtimeEngine.MountChild(
+	secondPromptHandle, err := state.runtimeEngine.MountScopedChild(
 		requestContext,
 		firstToolsHandle,
 		secondPrompt,
@@ -428,7 +428,7 @@ func TestAncestorRestrictionDoesNotFilterSameLayerToolsInDescendant(t *testing.T
 		t.Fatal(err)
 	}
 	secondTools := tools.NewOverlay()
-	if _, err := state.runtimeEngine.MountChild(
+	if _, err := state.runtimeEngine.MountScopedChild(
 		requestContext,
 		secondPromptHandle,
 		secondTools,

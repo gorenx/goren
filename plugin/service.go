@@ -88,22 +88,21 @@ func (registry *serviceRegistry) resolve(
 // only while Runtime is invoking owner.Apply.
 func Require[S Service](owner Plugin) (S, error) {
 	var unavailable S
-	selectedActivation, err := activationOf(owner)
+	ownerFiber, err := fiberOf(owner)
 	if err != nil {
 		return unavailable, err
 	}
 	reference := ServiceOf[S]().serviceReference()
-	runtimeEngine := selectedActivation.runtime
-	runtimeEngine.state.RLock()
-	defer runtimeEngine.state.RUnlock()
-	ownerFiber := selectedActivation.fiber
+	runtimeEngine := ownerFiber.runtime
+	runtimeEngine.view.RLock()
+	defer runtimeEngine.view.RUnlock()
 	if ownerFiber == nil || ownerFiber.state != FiberStarting {
 		return unavailable, ErrDependencyResolutionClosed
 	}
-	if !containsService(ownerFiber.manifest.requires, reference.key) {
+	if !containsService(ownerFiber.target.manifest.requires, reference.key) {
 		return unavailable, fmt.Errorf(
 			"plugin: %s did not declare required Service %q",
-			ownerFiber.manifest.name,
+			ownerFiber.target.manifest.name,
 			reference.name,
 		)
 	}
@@ -129,17 +128,16 @@ func Require[S Service](owner Plugin) (S, error) {
 // only while Runtime is invoking owner.Apply.
 func Resolve[S Service](owner Plugin) (S, bool) {
 	var unavailable S
-	selectedActivation, err := activationOf(owner)
+	ownerFiber, err := fiberOf(owner)
 	if err != nil {
 		return unavailable, false
 	}
 	reference := ServiceOf[S]().serviceReference()
-	runtimeEngine := selectedActivation.runtime
-	runtimeEngine.state.RLock()
-	defer runtimeEngine.state.RUnlock()
-	ownerFiber := selectedActivation.fiber
+	runtimeEngine := ownerFiber.runtime
+	runtimeEngine.view.RLock()
+	defer runtimeEngine.view.RUnlock()
 	if ownerFiber == nil || ownerFiber.state != FiberStarting ||
-		!containsService(ownerFiber.manifest.optional, reference.key) {
+		!containsService(ownerFiber.target.manifest.optional, reference.key) {
 		return unavailable, false
 	}
 	dependency := ownerFiber.dependencies[reference.key]

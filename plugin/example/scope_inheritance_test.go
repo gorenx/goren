@@ -19,7 +19,7 @@ func Example_scopeInheritance() {
 	defer runtimeEngine.Shutdown(context.Background())
 
 	inheritedEndpoint := &greetingEndpoint{}
-	if _, err := runtimeEngine.MountChild(
+	if _, err := runtimeEngine.MountScopedChild(
 		context.Background(),
 		rootHandles[0],
 		inheritedEndpoint,
@@ -30,7 +30,7 @@ func Example_scopeInheritance() {
 	childService := &greetingPlugin{
 		prefix: "child",
 	}
-	childHandle, err := runtimeEngine.MountChild(
+	childHandle, err := runtimeEngine.MountScopedChild(
 		context.Background(),
 		rootHandles[0],
 		childService,
@@ -39,7 +39,7 @@ func Example_scopeInheritance() {
 		panic(err)
 	}
 	overriddenEndpoint := &greetingEndpoint{}
-	if _, err := runtimeEngine.MountChild(
+	if _, err := runtimeEngine.MountScopedChild(
 		context.Background(),
 		childHandle,
 		overriddenEndpoint,

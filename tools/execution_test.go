@@ -27,7 +27,7 @@ type waterfallPlugin[
 func (owner *waterfallPlugin[I, O]) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: owner.name,
-		Waterfalls: []plugin.WaterfallContribution{
+		Waterfalls: []plugin.WaterfallMiddlewareBinding{
 			plugin.WaterfallOf[I, O](owner),
 		},
 	}

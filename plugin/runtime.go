@@ -12,54 +12,39 @@ type RuntimeSettings struct {
 	EventFailures EventFailureReporter
 }
 
-// Runtime owns Plugin lifecycle, Scope visibility, dependency settlement, and
-// all reversible Service, Event, and Waterfall contributions.
+// Runtime is the serialized command facade for one isolated Plugin system.
+// Its collaborators own topology, dispatch bindings, dependency queries, and
+// cross-Fiber activation ordering respectively.
 type Runtime struct {
 	operations sync.Mutex
-	state      sync.RWMutex
+	view       sync.RWMutex
 
-	rootScope  *scope
-	mounts     []*mountedPlugin
-	byHandle   map[uint64]*mountedPlugin
-	services   *serviceRegistry
-	events     *eventRegistry
-	waterfalls *waterfallRegistry
+	mounts       *mountTree
+	bindings     *runtimeBindings
+	dependencies *dependencyGraph
+	activations  *activationCoordinator
 
-	eventFailures EventFailureReporter
-	nextHandle    uint64
-	nextFiber     FiberID
-	nextOrdinal   uint64
-	started       bool
-	closed        bool
-}
-
-type activation struct {
-	runtime  *Runtime
-	fiber    *fiber
-	lifetime context.Context
-}
-
-type mountedPlugin struct {
-	handleID uint64
-	parent   *mountedPlugin
-	children []*mountedPlugin
-	scope    *scope
-	instance Plugin
-	manifest manifestSpec
-	current  *fiber
-	removed  bool
+	started bool
+	closed  bool
 }
 
 // NewRuntime creates one isolated Plugin Runtime.
 func NewRuntime(settings RuntimeSettings) *Runtime {
-	return &Runtime{
-		rootScope:     newRootScope(),
-		byHandle:      make(map[uint64]*mountedPlugin),
-		services:      newServiceRegistry(),
-		events:        newEventRegistry(),
-		waterfalls:    newWaterfallRegistry(),
-		eventFailures: settings.EventFailures,
+	runtimeEngine := &Runtime{
+		mounts:   newMountTree(),
+		bindings: newRuntimeBindings(settings.EventFailures),
 	}
+	runtimeEngine.dependencies = newDependencyGraph(
+		runtimeEngine,
+		runtimeEngine.mounts,
+		runtimeEngine.bindings.services,
+	)
+	runtimeEngine.activations = newActivationCoordinator(
+		runtimeEngine,
+		runtimeEngine.mounts,
+		runtimeEngine.dependencies,
+	)
+	return runtimeEngine
 }
 
 // Start atomically admits the complete static Plugin set and returns only when
@@ -83,23 +68,43 @@ func (runtimeEngine *Runtime) Start(
 		return nil, errors.New("plugin: Start requires at least one Plugin")
 	}
 
-	startIndex := len(runtimeEngine.mounts)
+	startIndex := runtimeEngine.mounts.length()
 	handles := make([]Handle, 0, len(instances))
 	for _, pluginInstance := range instances {
-		mounted, err := runtimeEngine.admit(pluginInstance, nil)
+		target, err := newPluginTarget(pluginInstance)
+		if err == nil {
+			err = runtimeEngine.bindings.validateAdmission(target)
+		}
 		if err != nil {
-			rollbackErr := runtimeEngine.rollbackFrom(startContext, startIndex)
+			rollbackErr := runtimeEngine.activations.rollbackMounts(
+				startContext,
+				runtimeEngine.mounts.from(startIndex),
+			)
 			return nil, errors.Join(err, rollbackErr)
 		}
-		handles = append(handles, Handle{
-			owner: runtimeEngine,
-			id:    mounted.handleID,
-		})
+		mounted, err := runtimeEngine.mounts.admit(
+			target,
+			nil,
+			mountAtRootScope,
+		)
+		if err != nil {
+			rollbackErr := runtimeEngine.activations.rollbackMounts(
+				startContext,
+				runtimeEngine.mounts.from(startIndex),
+			)
+			return nil, errors.Join(err, rollbackErr)
+		}
+		runtimeEngine.activations.attach(mounted)
+		handles = append(handles, handleOf(runtimeEngine, mounted))
 	}
-	settleErr := runtimeEngine.reconcile(startContext)
-	readinessErr := runtimeEngine.readinessError(runtimeEngine.mounts[startIndex:])
+	startedMounts := runtimeEngine.mounts.from(startIndex)
+	settleErr := runtimeEngine.activations.converge(startContext)
+	readinessErr := runtimeEngine.dependencies.readiness(startedMounts)
 	if startErr := errors.Join(settleErr, readinessErr); startErr != nil {
-		rollbackErr := runtimeEngine.rollbackFrom(startContext, startIndex)
+		rollbackErr := runtimeEngine.activations.rollbackMounts(
+			startContext,
+			startedMounts,
+		)
 		return nil, errors.Join(startErr, rollbackErr)
 	}
 	runtimeEngine.started = true
@@ -111,22 +116,101 @@ func (runtimeEngine *Runtime) Mount(
 	mountContext context.Context,
 	pluginInstance Plugin,
 ) (Handle, error) {
-	return runtimeEngine.mount(mountContext, Handle{}, pluginInstance)
+	return runtimeEngine.mount(
+		mountContext,
+		Handle{},
+		pluginInstance,
+		mountAtRootScope,
+	)
 }
 
-// MountChild adds a Plugin in a child Scope owned by parent.
+// MountChild adds a child Fiber that inherits its parent's Scope.
 func (runtimeEngine *Runtime) MountChild(
 	mountContext context.Context,
 	parent Handle,
 	pluginInstance Plugin,
 ) (Handle, error) {
-	return runtimeEngine.mount(mountContext, parent, pluginInstance)
+	return runtimeEngine.mount(
+		mountContext,
+		parent,
+		pluginInstance,
+		mountInParentScope,
+	)
+}
+
+// MountScopedChild adds a child Fiber in a new Scope below its parent.
+func (runtimeEngine *Runtime) MountScopedChild(
+	mountContext context.Context,
+	parent Handle,
+	pluginInstance Plugin,
+) (Handle, error) {
+	return runtimeEngine.mount(
+		mountContext,
+		parent,
+		pluginInstance,
+		mountInChildScope,
+	)
+}
+
+// MountChild adds child as an owned Fiber in activeParent's current Scope.
+func MountChild(
+	mountContext context.Context,
+	activeParent Plugin,
+	child Plugin,
+) (Handle, error) {
+	parentFiber, err := activeFiberOf(activeParent)
+	if err != nil {
+		return Handle{}, err
+	}
+	return parentFiber.runtime.mount(
+		mountContext,
+		handleOf(parentFiber.runtime, parentFiber.mount),
+		child,
+		mountInParentScope,
+	)
+}
+
+// MountScopedChild adds child as an owned Fiber in a new Scope below
+// activeParent's Scope.
+func MountScopedChild(
+	mountContext context.Context,
+	activeParent Plugin,
+	child Plugin,
+) (Handle, error) {
+	parentFiber, err := activeFiberOf(activeParent)
+	if err != nil {
+		return Handle{}, err
+	}
+	return parentFiber.runtime.mount(
+		mountContext,
+		handleOf(parentFiber.runtime, parentFiber.mount),
+		child,
+		mountInChildScope,
+	)
+}
+
+// UnloadChild stops one direct child previously mounted by activeParent.
+func UnloadChild(
+	stopContext context.Context,
+	activeParent Plugin,
+	child Handle,
+) error {
+	parentFiber, err := activeFiberOf(activeParent)
+	if err != nil {
+		return err
+	}
+	return parentFiber.runtime.unloadChild(
+		stopContext,
+		handleOf(parentFiber.runtime, parentFiber.mount),
+		child,
+	)
 }
 
 func (runtimeEngine *Runtime) mount(
 	mountContext context.Context,
 	parent Handle,
 	pluginInstance Plugin,
+	placement scopePlacement,
 ) (Handle, error) {
 	if runtimeEngine == nil {
 		return Handle{}, errors.New("plugin: mount through nil Runtime")
@@ -140,35 +224,60 @@ func (runtimeEngine *Runtime) mount(
 		return Handle{}, errors.New("plugin: Runtime must Start before Mount")
 	}
 
-	var parentMount *mountedPlugin
-	if parent.owner != nil || parent.id != 0 {
-		if parent.owner != runtimeEngine {
-			return Handle{}, errors.New("plugin: parent Handle belongs to another Runtime")
-		}
-		parentMount = runtimeEngine.byHandle[parent.id]
-		if parentMount == nil || parentMount.removed || parentMount.current == nil ||
-			parentMount.current.state != FiberActive {
-			return Handle{}, errors.New("plugin: parent Plugin is not active")
-		}
-	}
-	mounted, err := runtimeEngine.admit(pluginInstance, parentMount)
+	parentMount, err := runtimeEngine.resolveParentMount(parent, placement)
 	if err != nil {
 		return Handle{}, err
 	}
-	settleErr := runtimeEngine.reconcile(mountContext)
-	readinessErr := runtimeEngine.readinessError([]*mountedPlugin{mounted})
+	target, err := newPluginTarget(pluginInstance)
+	if err == nil {
+		err = runtimeEngine.bindings.validateAdmission(target)
+	}
+	if err != nil {
+		return Handle{}, err
+	}
+	mounted, err := runtimeEngine.mounts.admit(
+		target,
+		parentMount,
+		placement,
+	)
+	if err != nil {
+		return Handle{}, err
+	}
+	runtimeEngine.activations.attach(mounted)
+	settleErr := runtimeEngine.activations.converge(mountContext)
+	readinessErr := runtimeEngine.dependencies.readiness([]*pluginMount{mounted})
 	if mountErr := errors.Join(settleErr, readinessErr); mountErr != nil {
-		rollbackErr := runtimeEngine.removeMounted(
+		rollbackErr := runtimeEngine.activations.removeMount(
 			mountContext,
 			mounted,
 		)
-		_ = runtimeEngine.reconcile(mountContext)
-		return Handle{}, errors.Join(mountErr, rollbackErr)
+		reconcileErr := runtimeEngine.activations.converge(mountContext)
+		return Handle{}, errors.Join(mountErr, rollbackErr, reconcileErr)
 	}
-	return Handle{
-		owner: runtimeEngine,
-		id:    mounted.handleID,
-	}, nil
+	return handleOf(runtimeEngine, mounted), nil
+}
+
+func (runtimeEngine *Runtime) resolveParentMount(
+	parent Handle,
+	placement scopePlacement,
+) (*pluginMount, error) {
+	if placement == mountAtRootScope {
+		if parent.owner != nil || parent.id != 0 {
+			return nil, errors.New("plugin: root mount cannot have a parent Handle")
+		}
+		return nil, nil
+	}
+	mounted, err := runtimeEngine.lookup(parent)
+	if err != nil {
+		return nil, err
+	}
+	runtimeEngine.view.RLock()
+	active := mounted.current != nil && mounted.current.state == FiberActive
+	runtimeEngine.view.RUnlock()
+	if !active {
+		return nil, errors.New("plugin: parent Plugin is not active")
+	}
+	return mounted, nil
 }
 
 // Unload stops the selected Plugin, its owned child tree, and hard dependents.
@@ -186,20 +295,39 @@ func (runtimeEngine *Runtime) Unload(
 	if err != nil {
 		return err
 	}
-	runtimeEngine.markRemovedTree(mounted)
-	stopErr := runtimeEngine.stopFiberWithDependents(
-		stopContext,
-		mounted.current,
-		make(map[*fiber]struct{}),
-	)
-	runtimeEngine.deleteMountTree(mounted)
-	runtimeEngine.prepareStopped()
-	settleErr := runtimeEngine.reconcile(stopContext)
+	stopErr := runtimeEngine.activations.removeMount(stopContext, mounted)
+	settleErr := runtimeEngine.activations.converge(stopContext)
+	return errors.Join(stopErr, settleErr)
+}
+
+func (runtimeEngine *Runtime) unloadChild(
+	stopContext context.Context,
+	parent Handle,
+	child Handle,
+) error {
+	if runtimeEngine == nil {
+		return errors.New("plugin: unload child through nil Runtime")
+	}
+	runtimeEngine.operations.Lock()
+	defer runtimeEngine.operations.Unlock()
+	parentMount, err := runtimeEngine.lookup(parent)
+	if err != nil {
+		return err
+	}
+	childMount, err := runtimeEngine.lookup(child)
+	if err != nil {
+		return err
+	}
+	if childMount.parent != parentMount {
+		return errors.New("plugin: Handle is not a direct child of the owning Plugin")
+	}
+	stopErr := runtimeEngine.activations.removeMount(stopContext, childMount)
+	settleErr := runtimeEngine.activations.converge(stopContext)
 	return errors.Join(stopErr, settleErr)
 }
 
 // Replace prepares a contract-compatible candidate while the current Plugin
-// remains active, then swaps Runtime contributions and reactivates dependents.
+// remains active, then swaps Runtime bindings and reactivates dependents.
 func (runtimeEngine *Runtime) Replace(
 	replaceContext context.Context,
 	pluginHandle Handle,
@@ -214,68 +342,18 @@ func (runtimeEngine *Runtime) Replace(
 	if err != nil {
 		return err
 	}
-	candidateManifest, err := normalizeManifest(candidate)
+	target, err := newPluginTarget(candidate)
+	if err == nil {
+		err = runtimeEngine.bindings.validateAdmission(target)
+	}
 	if err != nil {
 		return err
 	}
-	if !sameManifestContract(mounted.manifest, candidateManifest) {
-		return errors.New("plugin: replacement changes the mounted Plugin contract")
-	}
-	candidateFiber := runtimeEngine.newFiber(
+	return runtimeEngine.activations.replace(
+		replaceContext,
 		mounted,
-		candidate,
-		candidateManifest,
+		target,
 	)
-	dependencies, missing, blocked := runtimeEngine.resolveDependencies(mounted)
-	if len(missing) != 0 || blocked {
-		return errors.New("plugin: replacement dependencies are unavailable")
-	}
-	if err := runtimeEngine.prepareFiber(
-		replaceContext,
-		candidateFiber,
-		dependencies,
-	); err != nil {
-		return err
-	}
-
-	previousFiber := mounted.current
-	stopErr := runtimeEngine.stopDependents(
-		replaceContext,
-		previousFiber,
-		make(map[*fiber]struct{}),
-	)
-	runtimeEngine.state.Lock()
-	runtimeEngine.withdrawContributionsLocked(previousFiber)
-	if publicationErr := runtimeEngine.publishContributionsLocked(candidateFiber); publicationErr != nil {
-		runtimeEngine.publishExistingContributionsLocked(previousFiber)
-		runtimeEngine.state.Unlock()
-		rollbackErr := runtimeEngine.rollbackPrepared(
-			replaceContext,
-			candidateFiber,
-			publicationErr,
-		)
-		runtimeEngine.prepareStopped()
-		_ = runtimeEngine.reconcile(replaceContext)
-		return errors.Join(stopErr, publicationErr, rollbackErr)
-	}
-	previousFiber.state = FiberStopping
-	candidateFiber.state = FiberActive
-	mounted.instance = candidate
-	mounted.manifest = candidateManifest
-	mounted.current = candidateFiber
-	runtimeEngine.state.Unlock()
-
-	previousFiber.cancel(ErrPluginNotActive)
-	disposeErr := previousFiber.effects.release(replaceContext)
-	previousFiber.instance.RuntimePlugin().detach(previousFiber.activation)
-	runtimeEngine.state.Lock()
-	previousFiber.state = FiberStopped
-	previousFiber.lastErr = disposeErr
-	runtimeEngine.state.Unlock()
-
-	runtimeEngine.prepareStopped()
-	settleErr := runtimeEngine.reconcile(replaceContext)
-	return errors.Join(stopErr, disposeErr, settleErr)
 }
 
 // Shutdown closes admission and stops all Plugins in dependency-safe order.
@@ -289,24 +367,7 @@ func (runtimeEngine *Runtime) Shutdown(stopContext context.Context) error {
 		return nil
 	}
 	runtimeEngine.closed = true
-	for _, mounted := range runtimeEngine.mounts {
-		mounted.removed = true
-	}
-	var shutdownErr error
-	visited := make(map[*fiber]struct{})
-	for mountIndex := len(runtimeEngine.mounts) - 1; mountIndex >= 0; mountIndex-- {
-		shutdownErr = errors.Join(
-			shutdownErr,
-			runtimeEngine.stopFiberWithDependents(
-				stopContext,
-				runtimeEngine.mounts[mountIndex].current,
-				visited,
-			),
-		)
-	}
-	runtimeEngine.mounts = nil
-	runtimeEngine.byHandle = make(map[uint64]*mountedPlugin)
-	return shutdownErr
+	return runtimeEngine.activations.shutdown(stopContext)
 }
 
 // Status returns immutable diagnostics for one mounted Plugin.
@@ -316,16 +377,14 @@ func (runtimeEngine *Runtime) Status(pluginHandle Handle) (FiberStatus, error) {
 	}
 	runtimeEngine.operations.Lock()
 	defer runtimeEngine.operations.Unlock()
-	runtimeEngine.state.RLock()
-	defer runtimeEngine.state.RUnlock()
-	if pluginHandle.owner != runtimeEngine {
-		return FiberStatus{}, errors.New("plugin: Handle belongs to another Runtime")
+	mounted, err := runtimeEngine.lookup(pluginHandle)
+	if err != nil {
+		return FiberStatus{}, err
 	}
-	mounted := runtimeEngine.byHandle[pluginHandle.id]
-	if mounted == nil || mounted.removed {
-		return FiberStatus{}, errors.New("plugin: Handle is not mounted")
-	}
-	return statusOf(mounted), nil
+	runtimeEngine.view.RLock()
+	diagnostics := statusOf(mounted)
+	runtimeEngine.view.RUnlock()
+	return diagnostics, nil
 }
 
 // Statuses returns diagnostics in mount order.
@@ -335,10 +394,10 @@ func (runtimeEngine *Runtime) Statuses() []FiberStatus {
 	}
 	runtimeEngine.operations.Lock()
 	defer runtimeEngine.operations.Unlock()
-	runtimeEngine.state.RLock()
-	defer runtimeEngine.state.RUnlock()
-	snapshots := make([]FiberStatus, 0, len(runtimeEngine.mounts))
-	for _, mounted := range runtimeEngine.mounts {
+	runtimeEngine.view.RLock()
+	defer runtimeEngine.view.RUnlock()
+	snapshots := make([]FiberStatus, 0, runtimeEngine.mounts.length())
+	for _, mounted := range runtimeEngine.mounts.all() {
 		if !mounted.removed {
 			snapshots = append(snapshots, statusOf(mounted))
 		}
@@ -346,42 +405,40 @@ func (runtimeEngine *Runtime) Statuses() []FiberStatus {
 	return snapshots
 }
 
-func (runtimeEngine *Runtime) lookup(pluginHandle Handle) (*mountedPlugin, error) {
+func (runtimeEngine *Runtime) lookup(pluginHandle Handle) (*pluginMount, error) {
 	if pluginHandle.owner != runtimeEngine {
 		return nil, errors.New("plugin: Handle belongs to another Runtime")
 	}
-	mounted := runtimeEngine.byHandle[pluginHandle.id]
-	if mounted == nil || mounted.removed {
+	mounted, found := runtimeEngine.mounts.lookup(pluginHandle.id)
+	if !found {
 		return nil, errors.New("plugin: Handle is not mounted")
 	}
 	return mounted, nil
 }
 
-func activationOf(owner Plugin) (*activation, error) {
+func fiberOf(owner Plugin) (*fiber, error) {
 	if owner == nil || owner.RuntimePlugin() == nil {
 		return nil, ErrPluginNotBound
 	}
-	selectedActivation := owner.RuntimePlugin().currentActivation()
-	if selectedActivation == nil || selectedActivation.runtime == nil ||
-		selectedActivation.fiber == nil {
+	running := owner.RuntimePlugin().currentFiber()
+	if running == nil || running.runtime == nil || running.mount == nil {
 		return nil, ErrPluginNotBound
 	}
-	return selectedActivation, nil
+	return running, nil
 }
 
-func activeActivationOf(owner Plugin) (*activation, error) {
-	selectedActivation, err := activationOf(owner)
+func activeFiberOf(owner Plugin) (*fiber, error) {
+	running, err := fiberOf(owner)
 	if err != nil {
 		return nil, err
 	}
-	runtimeEngine := selectedActivation.runtime
-	runtimeEngine.state.RLock()
-	active := selectedActivation.fiber.state == FiberActive
-	runtimeEngine.state.RUnlock()
+	running.runtime.view.RLock()
+	active := running.state == FiberActive
+	running.runtime.view.RUnlock()
 	if !active {
 		return nil, ErrPluginNotActive
 	}
-	return selectedActivation, nil
+	return running, nil
 }
 
 var closedLifetime = func() context.Context {
@@ -392,65 +449,84 @@ var closedLifetime = func() context.Context {
 
 // Lifetime returns the current Plugin activation lifetime.
 func Lifetime(owner Plugin) context.Context {
-	selectedActivation, err := activationOf(owner)
-	if err != nil || selectedActivation.lifetime == nil {
+	running, err := fiberOf(owner)
+	if err != nil {
 		return closedLifetime
 	}
-	return selectedActivation.lifetime
+	running.runtime.view.RLock()
+	fiberLifetime := running.lifetime
+	running.runtime.view.RUnlock()
+	if fiberLifetime == nil {
+		return closedLifetime
+	}
+	return fiberLifetime
 }
 
-func statusOf(mounted *mountedPlugin) FiberStatus {
+// Runtime.view must be read-locked by the caller.
+func statusOf(mounted *pluginMount) FiberStatus {
 	ownerFiber := mounted.current
 	if ownerFiber == nil {
 		return FiberStatus{
 			HandleID: mounted.handleID,
-			Name:     mounted.manifest.name,
+			Name:     mounted.target.manifest.name,
 			State:    FiberStopped,
 		}
 	}
 	diagnostics := FiberStatus{
 		HandleID: mounted.handleID,
 		FiberID:  ownerFiber.id,
-		Name:     ownerFiber.manifest.name,
+		Name:     ownerFiber.target.manifest.name,
 		State:    ownerFiber.state,
 		Missing:  append([]string(nil), ownerFiber.missing...),
-		Error:    ownerFiber.lastErr,
-		Effects:  ownerFiber.effects.labels(),
+		Error:    ownerFiber.lastError,
 	}
-	dependencyKeys := make([]string, 0, len(ownerFiber.dependencies))
+	dependencyNames := make([]string, 0, len(ownerFiber.dependencies))
 	dependencyByName := make(map[string]*serviceDependency)
 	for _, dependency := range ownerFiber.dependencies {
-		dependencyKeys = append(dependencyKeys, dependency.reference.name)
+		dependencyNames = append(dependencyNames, dependency.reference.name)
 		dependencyByName[dependency.reference.name] = dependency
 	}
-	sort.Strings(dependencyKeys)
-	for _, dependencyName := range dependencyKeys {
+	sort.Strings(dependencyNames)
+	for _, dependencyName := range dependencyNames {
 		dependency := dependencyByName[dependencyName]
-		diagnostics.Dependencies = append(diagnostics.Dependencies, ServiceDependencyStatus{
-			Service:         dependency.reference.name,
-			ProviderFiberID: dependency.binding.owner.id,
-			Optional:        dependency.optional,
-		})
+		diagnostics.Dependencies = append(
+			diagnostics.Dependencies,
+			ServiceDependencyStatus{
+				Service:         dependency.reference.name,
+				ProviderFiberID: dependency.binding.owner.id,
+				Optional:        dependency.optional,
+			},
+		)
 	}
-	if ownerFiber.state == FiberActive {
-		for _, offer := range ownerFiber.manifest.provides {
-			diagnostics.Services = append(diagnostics.Services, ServiceBindingStatus{
-				Service: offer.reference.name,
+	if ownerFiber.state != FiberActive {
+		return diagnostics
+	}
+	for _, serviceDeclaration := range ownerFiber.target.manifest.provides {
+		diagnostics.Services = append(
+			diagnostics.Services,
+			ServiceBindingStatus{
+				Service: serviceDeclaration.reference.name,
 				Scope:   ownerFiber.scope.key,
-			})
-		}
-		for _, offer := range ownerFiber.manifest.events {
-			diagnostics.Events = append(diagnostics.Events, EventSubscriptionStatus{
-				Event: offer.reference.name,
+			},
+		)
+	}
+	for _, eventDeclaration := range ownerFiber.target.manifest.events {
+		diagnostics.Events = append(
+			diagnostics.Events,
+			EventSubscriptionStatus{
+				Event: eventDeclaration.reference.name,
 				Scope: ownerFiber.scope.key,
-			})
-		}
-		for _, offer := range ownerFiber.manifest.waterfalls {
-			diagnostics.Waterfalls = append(diagnostics.Waterfalls, WaterfallBindingStatus{
-				Waterfall: offer.reference.name,
+			},
+		)
+	}
+	for _, waterfallDeclaration := range ownerFiber.target.manifest.waterfalls {
+		diagnostics.Waterfalls = append(
+			diagnostics.Waterfalls,
+			WaterfallBindingStatus{
+				Waterfall: waterfallDeclaration.reference.name,
 				Scope:     ownerFiber.scope.key,
-			})
-		}
+			},
+		)
 	}
 	return diagnostics
 }

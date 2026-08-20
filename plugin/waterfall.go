@@ -20,20 +20,20 @@ type WaterfallMiddleware[I WaterfallInput, O WaterfallOutput] interface {
 	Intercept(context.Context, I, WaterfallAction[I, O]) (O, error)
 }
 
-type typedWaterfallContribution[I WaterfallInput, O WaterfallOutput] struct {
+type typedWaterfallMiddlewareBinding[I WaterfallInput, O WaterfallOutput] struct {
 	middleware WaterfallMiddleware[I, O]
 }
 
 // WaterfallOf declares one Middleware object owned by the Plugin Manifest.
 func WaterfallOf[I WaterfallInput, O WaterfallOutput](
 	middleware WaterfallMiddleware[I, O],
-) WaterfallContribution {
-	return typedWaterfallContribution[I, O]{
+) WaterfallMiddlewareBinding {
+	return typedWaterfallMiddlewareBinding[I, O]{
 		middleware: middleware,
 	}
 }
 
-func (typedWaterfallContribution[I, O]) Name() string {
+func (typedWaterfallMiddlewareBinding[I, O]) Name() string {
 	reference, err := waterfallReferenceOf[I, O]()
 	if err != nil {
 		return ""
@@ -41,16 +41,16 @@ func (typedWaterfallContribution[I, O]) Name() string {
 	return reference.name
 }
 
-func (typedWaterfallContribution[I, O]) waterfallReference() (waterfallRef, error) {
+func (typedWaterfallMiddlewareBinding[I, O]) waterfallReference() (waterfallRef, error) {
 	return waterfallReferenceOf[I, O]()
 }
 
-func (typedContribution typedWaterfallContribution[I, O]) waterfallMiddleware() (waterfallInvoker, error) {
-	if typedContribution.middleware == nil {
+func (typedBinding typedWaterfallMiddlewareBinding[I, O]) waterfallMiddleware() (waterfallInvoker, error) {
+	if typedBinding.middleware == nil {
 		return nil, errors.New("Plugin declared a nil WaterfallMiddleware")
 	}
 	return waterfallInvokerOf[I, O]{
-		middleware: typedContribution.middleware,
+		middleware: typedBinding.middleware,
 	}, nil
 }
 
@@ -250,21 +250,21 @@ func Run[
 	if terminal == nil {
 		return output, errors.New("plugin: Waterfall terminal is nil")
 	}
-	selectedActivation, err := activeActivationOf(source)
+	sourceFiber, err := activeFiberOf(source)
 	if err != nil {
 		return output, err
 	}
-	runtimeEngine := selectedActivation.runtime
-	runtimeEngine.state.RLock()
-	if selectedActivation.fiber.state != FiberActive {
-		runtimeEngine.state.RUnlock()
+	runtimeEngine := sourceFiber.runtime
+	runtimeEngine.view.RLock()
+	if sourceFiber.state != FiberActive {
+		runtimeEngine.view.RUnlock()
 		return output, ErrPluginNotActive
 	}
 	middleware, err := snapshotWaterfall[I, O](
-		runtimeEngine.waterfalls,
-		selectedActivation.fiber.scope,
+		runtimeEngine.bindings.waterfalls,
+		sourceFiber.scope,
 	)
-	runtimeEngine.state.RUnlock()
+	runtimeEngine.view.RUnlock()
 	if err != nil {
 		return output, err
 	}
