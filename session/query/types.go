@@ -11,6 +11,8 @@ import (
 )
 
 const (
+	PluginName = "@deepseek-ai/dsh-session-query"
+
 	// ServiceName is the canonical plugin service identity.
 	ServiceName = "sessionQuery"
 
@@ -222,6 +224,7 @@ type EventSearchPage struct {
 // QueryService is the stable capability consumed by API, export, and future
 // Session query consumers. Concrete SQLite mechanics remain behind Index.
 type QueryService interface {
+	plugin.Service
 	ListSessions(context.Context) ([]SessionRecord, error)
 	ReadSession(context.Context, session.SessionID) (LogSnapshot, error)
 	FilterSessions(context.Context, SessionConstraints) ([]SessionRecord, error)
@@ -237,9 +240,6 @@ type QueryService interface {
 	SearchSessions(context.Context, SearchSessionsRequest) (SessionSearchPage, error)
 	SearchEvents(context.Context, SearchEventsRequest) (EventSearchPage, error)
 }
-
-// ServiceKey is the canonical Session Query service definition.
-var ServiceKey = plugin.DefineService[QueryService](ServiceName)
 
 // Document is one semantic, surface-aware projection stored in the derived
 // index. It contains no persistence row or wire representation.
@@ -310,4 +310,9 @@ type Index interface {
 	SearchSessions(context.Context, IndexedSearchRequest) ([]SessionHit, error)
 	SearchEvents(context.Context, IndexedEventSearchRequest) (session.Header, []EventHit, error)
 	Close(context.Context) error
+}
+
+// IndexOpener acquires one configured disposable Index during Plugin Apply.
+type IndexOpener interface {
+	OpenIndex(context.Context) (Index, error)
 }
