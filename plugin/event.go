@@ -333,13 +333,19 @@ func Publish[E Event](
 		participants = append(participants, observer.owner)
 	}
 	releaseCalls, admitted := acquireFiberCalls(participants...)
+	callContext, releaseContext := runtimeEngine.invocationContext(
+		requestContext,
+		participants...,
+	)
 	runtimeEngine.view.RUnlock()
 	if !admitted {
+		releaseContext()
 		return ErrPluginNotActive
 	}
 	defer releaseCalls()
+	defer releaseContext()
 	return runtimeEngine.bindings.events.deliver(
-		runtimeEngine.callbackContext(requestContext),
+		callContext,
 		fact,
 		reference,
 		observers,

@@ -5,9 +5,42 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gorenx/goren/plugin"
 )
+
+type shutdownBlockingMiddleware struct {
+	plugin.Base
+	started chan struct{}
+}
+
+func (owner *shutdownBlockingMiddleware) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "shutdown-blocking-waterfall",
+		Waterfalls: []plugin.WaterfallMiddlewareBinding{
+			plugin.WaterfallOf[formatInput, formatOutput](owner),
+		},
+	}
+}
+
+func (*shutdownBlockingMiddleware) Apply(context.Context) error {
+	return nil
+}
+
+func (*shutdownBlockingMiddleware) Dispose(context.Context) error {
+	return nil
+}
+
+func (owner *shutdownBlockingMiddleware) Intercept(
+	requestContext context.Context,
+	_ formatInput,
+	_ plugin.WaterfallAction[formatInput, formatOutput],
+) (formatOutput, error) {
+	close(owner.started)
+	<-requestContext.Done()
+	return formatOutput{}, context.Cause(requestContext)
+}
 
 type formatInput struct {
 	plugin.WaterfallInputBase
@@ -266,5 +299,64 @@ func TestWaterfallContainsMiddlewarePanic(t *testing.T) {
 	)
 	if err == nil || !strings.Contains(err.Error(), "broken Middleware") {
 		t.Fatalf("run error = %v", err)
+	}
+}
+
+func TestShutdownCancelsAdmittedWaterfallBeforeDrainingCalls(t *testing.T) {
+	t.Parallel()
+	lifecycleMiddleware := &shutdownBlockingMiddleware{
+		started: make(chan struct{}),
+	}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	handles, err := runtimeEngine.Start(context.Background(), lifecycleMiddleware)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	source := &eventPublisherPlugin{
+		name: "shutdown-waterfall-source",
+	}
+	if _, err = runtimeEngine.MountScopedChild(
+		context.Background(),
+		handles[0],
+		source,
+	); err != nil {
+		t.Fatalf("mount source: %v", err)
+	}
+
+	runDone := make(chan error, 1)
+	go func() {
+		_, runErr := plugin.Run(
+			context.Background(),
+			source,
+			formatInput{},
+			formatAction{},
+		)
+		runDone <- runErr
+	}()
+	select {
+	case <-lifecycleMiddleware.started:
+	case <-time.After(time.Second):
+		t.Fatal("waterfall did not start")
+	}
+
+	shutdownDone := make(chan error, 1)
+	go func() {
+		shutdownDone <- runtimeEngine.Shutdown(context.Background())
+	}()
+	select {
+	case shutdownErr := <-shutdownDone:
+		if shutdownErr != nil {
+			t.Fatalf("shutdown: %v", shutdownErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("shutdown did not drain the cancelled waterfall")
+	}
+	select {
+	case runErr := <-runDone:
+		if !errors.Is(runErr, plugin.ErrPluginNotActive) {
+			t.Fatalf("run error = %v, want ErrPluginNotActive", runErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waterfall did not return after shutdown")
 	}
 }

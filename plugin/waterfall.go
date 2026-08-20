@@ -323,17 +323,23 @@ func Run[
 		participants = append(participants, invocation.owner)
 	}
 	releaseCalls, admitted := acquireFiberCalls(participants...)
+	callContext, releaseContext := runtimeEngine.invocationContext(
+		requestContext,
+		participants...,
+	)
 	runtimeEngine.view.RUnlock()
 	if !admitted {
+		releaseContext()
 		return output, ErrPluginNotActive
 	}
 	defer releaseCalls()
+	defer releaseContext()
 	firstStep := &waterfallStep[I, O]{
 		middleware: middleware,
 		terminal:   terminal,
 	}
 	return firstStep.Execute(
-		runtimeEngine.callbackContext(requestContext),
+		callContext,
 		input,
 	)
 }
