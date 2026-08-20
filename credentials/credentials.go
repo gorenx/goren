@@ -5,13 +5,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"regexp"
 
 	"github.com/gorenx/goren/plugin"
 )
 
 var referencePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// PluginName is the canonical Harness Credentials plugin name.
+const PluginName = "@deepseek-ai/dsh-credentials"
 
 // Ref identifies one credential without carrying its value.
 type Ref string
@@ -41,15 +43,16 @@ type Info struct {
 // Provider resolves and mutates credential references. Consumers resolve once
 // per operation so a committed rotation affects the next operation immediately.
 type Provider interface {
+	plugin.Service
 	Resolve(context.Context, Ref) (Resolved, bool, error)
 	Describe(context.Context, Ref) (Info, error)
 	Set(context.Context, Ref, string) error
 	Unset(context.Context, Ref) error
 }
 
-// Store is the storage-only port consumed by Manager. It assigns no
+// LiveStore is the storage-only port consumed by Manager. It assigns no
 // precedence and never consults the process environment.
-type Store interface {
+type LiveStore interface {
 	Load(context.Context, Ref) (string, bool, error)
 	Save(context.Context, Ref, string) error
 	Delete(context.Context, Ref) error
@@ -57,26 +60,49 @@ type Store interface {
 }
 
 // Environment supplies the read-only launch layer outside typed config.
-type Environment struct {
-	LookupEnv func(string) (string, bool)
+type Environment interface {
+	Lookup(string) (string, bool)
 }
 
 // Manager owns credential precedence and mutation semantics independently of storage.
 type Manager struct {
-	store     Store
-	lookupEnv func(string) (string, bool)
+	plugin.Base
+	store       LiveStore
+	environment Environment
 }
 
 // NewManager constructs the Credentials capability over one credential store.
-func NewManager(storage Store, platform Environment) (*Manager, error) {
+func NewManager(storage LiveStore, platform Environment) (*Manager, error) {
 	if storage == nil {
 		return nil, errors.New("credentials: store is required")
 	}
-	lookup := platform.LookupEnv
-	if lookup == nil {
-		lookup = os.LookupEnv
+	if platform == nil {
+		return nil, errors.New("credentials: environment is required")
 	}
-	return &Manager{store: storage, lookupEnv: lookup}, nil
+	return &Manager{
+		store:       storage,
+		environment: platform,
+	}, nil
+}
+
+// Manifest declares Manager as the canonical Credentials provider.
+func (*Manager) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: PluginName,
+		Provides: []plugin.ServiceType{
+			plugin.ServiceOf[Provider](),
+		},
+	}
+}
+
+// Apply validates startup cancellation before the provider becomes active.
+func (*Manager) Apply(requestContext context.Context) error {
+	return requestContext.Err()
+}
+
+// Dispose is idempotent because Manager owns no long-running resource.
+func (*Manager) Dispose(context.Context) error {
+	return nil
 }
 
 // Resolve applies launching-environment precedence before managed storage.
@@ -133,9 +159,6 @@ func (owner *Manager) Unset(requestContext context.Context, credentialRef Ref) e
 }
 
 func (owner *Manager) inherited(credentialRef Ref) (string, bool) {
-	value, found := owner.lookupEnv(string(credentialRef))
+	value, found := owner.environment.Lookup(string(credentialRef))
 	return value, found && value != ""
 }
-
-// Service is the canonical plugin capability implemented by credential providers.
-var Service = plugin.DefineService[Provider]("credentials")

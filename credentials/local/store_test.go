@@ -12,15 +12,24 @@ import (
 	credentialslocal "github.com/gorenx/goren/credentials/local"
 )
 
+type environmentFixture struct {
+	values map[string]string
+}
+
+func (environment environmentFixture) Lookup(name string) (string, bool) {
+	value, found := environment.values[name]
+	return value, found
+}
+
 func TestManagerPersistsAndRemovesCredentialWithoutExposingItInDescription(t *testing.T) {
 	t.Parallel()
 	documentPath := filepath.Join(t.TempDir(), ".credentials.json")
-	storage, err := credentialslocal.NewStore(credentialslocal.Config{Path: documentPath})
+	storage, err := credentialslocal.NewLiveStore(credentialslocal.Config{Path: documentPath})
 	if err != nil {
 		t.Fatal(err)
 	}
-	credentialManager, err := credentials.NewManager(storage, credentials.Environment{
-		LookupEnv: func(string) (string, bool) { return "", false },
+	credentialManager, err := credentials.NewManager(storage, environmentFixture{
+		values: map[string]string{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -54,12 +63,12 @@ func TestManagerPersistsAndRemovesCredentialWithoutExposingItInDescription(t *te
 	if runtime.GOOS != "windows" && fileInfo.Mode().Perm() != 0o600 {
 		t.Fatalf("document mode = %04o", fileInfo.Mode().Perm())
 	}
-	reloadedStorage, err := credentialslocal.NewStore(credentialslocal.Config{Path: documentPath})
+	reloadedStorage, err := credentialslocal.NewLiveStore(credentialslocal.Config{Path: documentPath})
 	if err != nil {
 		t.Fatal(err)
 	}
-	reloadedManager, err := credentials.NewManager(reloadedStorage, credentials.Environment{
-		LookupEnv: func(string) (string, bool) { return "", false },
+	reloadedManager, err := credentials.NewManager(reloadedStorage, environmentFixture{
+		values: map[string]string{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -78,16 +87,13 @@ func TestManagerPersistsAndRemovesCredentialWithoutExposingItInDescription(t *te
 func TestManagerTreatsLaunchingEnvironmentAsReadOnlyWinningLayer(t *testing.T) {
 	t.Parallel()
 	documentPath := filepath.Join(t.TempDir(), ".credentials.json")
-	storage, err := credentialslocal.NewStore(credentialslocal.Config{Path: documentPath})
+	storage, err := credentialslocal.NewLiveStore(credentialslocal.Config{Path: documentPath})
 	if err != nil {
 		t.Fatal(err)
 	}
-	credentialManager, err := credentials.NewManager(storage, credentials.Environment{
-		LookupEnv: func(name string) (string, bool) {
-			if name == "DEEPSEEK_API_KEY" {
-				return "environment-test-value", true
-			}
-			return "", false
+	credentialManager, err := credentials.NewManager(storage, environmentFixture{
+		values: map[string]string{
+			"DEEPSEEK_API_KEY": "environment-test-value",
 		},
 	})
 	if err != nil {

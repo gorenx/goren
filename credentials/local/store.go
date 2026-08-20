@@ -21,9 +21,9 @@ type Config struct {
 	Path string `json:"path"`
 }
 
-// Store stores credential values in one owner-only JSON document. It owns
+// LiveStore stores credential values in one owner-only JSON document. It owns
 // only file I/O; precedence and writability rules belong to credentials.Manager.
-type Store struct {
+type LiveStore struct {
 	path string
 	mu   sync.Mutex
 }
@@ -36,12 +36,12 @@ func ValidateConfig(settings Config) error {
 	return nil
 }
 
-// NewStore constructs the adapter and validates any existing document.
-func NewStore(settings Config) (*Store, error) {
+// NewLiveStore constructs the adapter and validates any existing document.
+func NewLiveStore(settings Config) (*LiveStore, error) {
 	if err := ValidateConfig(settings); err != nil {
 		return nil, err
 	}
-	storage := &Store{path: filepath.Clean(settings.Path)}
+	storage := &LiveStore{path: filepath.Clean(settings.Path)}
 	if _, err := storage.read(); err != nil {
 		return nil, err
 	}
@@ -49,10 +49,10 @@ func NewStore(settings Config) (*Store, error) {
 }
 
 // Source returns the stable label used in value-free credential metadata.
-func (*Store) Source() string { return "file" }
+func (*LiveStore) Source() string { return "file" }
 
 // Load reads one stored value from the latest committed document.
-func (storage *Store) Load(requestContext context.Context, ref credentials.Ref) (string, bool, error) {
+func (storage *LiveStore) Load(requestContext context.Context, ref credentials.Ref) (string, bool, error) {
 	if err := requestContext.Err(); err != nil {
 		return "", false, err
 	}
@@ -67,7 +67,7 @@ func (storage *Store) Load(requestContext context.Context, ref credentials.Ref) 
 }
 
 // Save atomically commits one non-empty value.
-func (storage *Store) Save(requestContext context.Context, ref credentials.Ref, value string) error {
+func (storage *LiveStore) Save(requestContext context.Context, ref credentials.Ref, value string) error {
 	if value == "" {
 		return errors.New("credentials local: storage value must be non-empty")
 	}
@@ -85,7 +85,7 @@ func (storage *Store) Save(requestContext context.Context, ref credentials.Ref, 
 }
 
 // Delete atomically removes one value and is idempotent when absent.
-func (storage *Store) Delete(requestContext context.Context, ref credentials.Ref) error {
+func (storage *LiveStore) Delete(requestContext context.Context, ref credentials.Ref) error {
 	storage.mu.Lock()
 	defer storage.mu.Unlock()
 	if err := requestContext.Err(); err != nil {
@@ -103,9 +103,9 @@ func (storage *Store) Delete(requestContext context.Context, ref credentials.Ref
 }
 
 // Path returns the managed document path for startup diagnostics.
-func (storage *Store) Path() string { return storage.path }
+func (storage *LiveStore) Path() string { return storage.path }
 
-func (storage *Store) read() (map[credentials.Ref]string, error) {
+func (storage *LiveStore) read() (map[credentials.Ref]string, error) {
 	fileInfo, statErr := os.Stat(storage.path)
 	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
 		return nil, fmt.Errorf("credentials local: inspect document: %w", statErr)
@@ -123,7 +123,7 @@ func (storage *Store) read() (map[credentials.Ref]string, error) {
 	return decodeDocument(encoded)
 }
 
-func (storage *Store) write(values map[credentials.Ref]string) error {
+func (storage *LiveStore) write(values map[credentials.Ref]string) error {
 	directory := filepath.Dir(storage.path)
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return fmt.Errorf("credentials local: create directory: %w", err)

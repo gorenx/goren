@@ -16,19 +16,21 @@ import (
 	connectionhost "github.com/gorenx/goren/internal/connection"
 )
 
+type contractEnvironment struct{}
+
+func (contractEnvironment) Lookup(string) (string, bool) {
+	return "", false
+}
+
 func TestPinnedSourceCredentialsWebApiClientUsesGoProvider(t *testing.T) {
 	repositoryRoot, sourceRoot := contractPaths(t)
-	storage, err := credentialslocal.NewStore(
+	storage, err := credentialslocal.NewLiveStore(
 		credentialslocal.Config{Path: filepath.Join(t.TempDir(), ".credentials.json")},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	credentialManager, err := credentials.NewManager(storage, credentials.Environment{
-		LookupEnv: func(string) (string, bool) {
-			return "", false
-		},
-	})
+	credentialManager, err := credentials.NewManager(storage, contractEnvironment{})
 	if err != nil {
 		t.Fatal(err)
 	}
