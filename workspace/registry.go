@@ -15,83 +15,155 @@ import (
 
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
+	sesspersist "github.com/gorenx/goren/session/persistence"
 )
 
 // DurableRegistry is the in-process owner of Workspace business state. Every
 // mutation is serialized, committed through Backend, then published as a
 // post-commit domain event.
 type DurableRegistry struct {
+	plugin.Base
 	mu                    sync.RWMutex
-	sourceScope           *plugin.Scope
+	opener                BackendOpener
 	repository            Backend
 	headers               SessionHeaders
-	clock                 func() time.Time
-	newID                 func() (ID, error)
-	observerError         func(error)
+	timeSource            TimeSource
+	identifierGenerator   IDGenerator
 	entries               map[ID]StoredWorkspace
 	workspaceIDs          []ID
 	archivedSessionIDs    []session.SessionID
 	canonicalSessionPaths map[session.SessionID]string
 }
 
-// NewRegistry loads, validates, and when necessary bootstraps the durable
-// Workspace registry from existing Session headers.
+type systemTimeSource struct{}
+
+func (systemTimeSource) CurrentTime() time.Time {
+	return time.Now()
+}
+
+type randomIDGenerator struct{}
+
+func (randomIDGenerator) NewWorkspaceID() (ID, error) {
+	return mintID()
+}
+
+// NewRegistry constructs the Workspace Service Plugin without opening storage.
 func NewRegistry(
-	requestContext context.Context,
-	sourceScope *plugin.Scope,
-	repository Backend,
-	headers SessionHeaders,
+	opener BackendOpener,
 	options RegistryOptions,
 ) (*DurableRegistry, error) {
-	if requestContext == nil || sourceScope == nil || repository == nil || headers == nil {
-		return nil, errors.New("workspace: Registry dependencies are incomplete")
+	if opener == nil {
+		return nil, errors.New("workspace: BackendOpener is required")
 	}
-	clock := options.Clock
-	if clock == nil {
-		clock = time.Now
+	selectedTimeSource := options.TimeSource
+	if selectedTimeSource == nil {
+		selectedTimeSource = systemTimeSource{}
 	}
-	newID := options.NewID
-	if newID == nil {
-		newID = mintID
+	identifierGenerator := options.IDGenerator
+	if identifierGenerator == nil {
+		identifierGenerator = randomIDGenerator{}
 	}
-	reporter := options.ObserverError
-	if reporter == nil {
-		reporter = func(error) {}
+	return &DurableRegistry{
+		opener:                opener,
+		headers:               options.SessionHeads,
+		timeSource:            selectedTimeSource,
+		identifierGenerator:   identifierGenerator,
+		entries:               make(map[ID]StoredWorkspace),
+		canonicalSessionPaths: make(map[session.SessionID]string),
+	}, nil
+}
+
+// Manifest declares Workspace ownership and Session source dependencies.
+func (owner *DurableRegistry) Manifest() plugin.Manifest {
+	requiredServices := []plugin.ServiceType(nil)
+	if owner.headers == nil {
+		requiredServices = []plugin.ServiceType{
+			plugin.ServiceOf[session.LiveStore](),
+			plugin.ServiceOf[sesspersist.Persistence](),
+		}
 	}
-	owner := &DurableRegistry{
-		sourceScope: sourceScope, repository: repository, headers: headers,
-		clock: clock, newID: newID, observerError: reporter,
-		entries: make(map[ID]StoredWorkspace), canonicalSessionPaths: make(map[session.SessionID]string),
+	return plugin.Manifest{
+		Name: PluginName,
+		Provides: []plugin.ServiceType{
+			plugin.ServiceOf[Registry](),
+		},
+		Requires: requiredServices,
 	}
+}
+
+// Apply acquires storage and loads or bootstraps durable Workspace state.
+func (owner *DurableRegistry) Apply(requestContext context.Context) error {
+	if err := requestContext.Err(); err != nil {
+		return err
+	}
+	if owner.headers == nil {
+		sessions, err := plugin.Require[session.LiveStore](owner)
+		if err != nil {
+			return err
+		}
+		persistence, err := plugin.Require[sesspersist.Persistence](owner)
+		if err != nil {
+			return err
+		}
+		owner.headers = &sessionHeaderSource{
+			sessions:    sessions,
+			persistence: persistence,
+		}
+	}
+	repository, err := owner.opener.OpenBackend(requestContext)
+	if err != nil {
+		return err
+	}
+	if repository == nil {
+		return errors.New("workspace: BackendOpener returned nil Backend")
+	}
+	owner.repository = repository
+	if err := owner.initialize(requestContext); err != nil {
+		return errors.Join(err, repository.Close(requestContext))
+	}
+	return requestContext.Err()
+}
+
+// Dispose closes the owned Workspace Backend.
+func (owner *DurableRegistry) Dispose(closeContext context.Context) error {
+	if owner.repository == nil {
+		return nil
+	}
+	return owner.repository.Close(closeContext)
+}
+
+func (owner *DurableRegistry) initialize(requestContext context.Context) error {
+	repository := owner.repository
+	headers := owner.headers
 	stored, err := repository.Load(requestContext)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if err := validateDurableState(stored); err != nil {
-		return nil, err
+		return err
 	}
 	var availableHeaders []session.Header
 	if !stored.Initialized || len(stored.Records) != 0 {
 		availableHeaders, err = headers.List(requestContext)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		owner.indexHeaders(availableHeaders)
 	}
 	if !stored.Initialized {
 		stored, err = owner.bootstrap(stored, availableHeaders)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if err := validateDurableState(stored); err != nil {
-			return nil, err
+			return err
 		}
 		if err := repository.Initialize(requestContext, stored); err != nil {
-			return nil, err
+			return err
 		}
 	}
 	owner.install(stored)
-	return owner, nil
+	return nil
 }
 
 // Create registers or resolves an existing canonical directory. Repeated
@@ -111,7 +183,7 @@ func (owner *DurableRegistry) Create(
 			return &entity{owner: owner, identifier: identifier}, false, nil
 		}
 	}
-	identifier, err := owner.newID()
+	identifier, err := owner.identifierGenerator.NewWorkspaceID()
 	if err != nil {
 		owner.mu.Unlock()
 		return nil, false, err
@@ -124,7 +196,7 @@ func (owner *DurableRegistry) Create(
 		owner.mu.Unlock()
 		return nil, false, fmt.Errorf("workspace: generated duplicate ID %q", identifier)
 	}
-	now := owner.clock().UTC()
+	now := owner.timeSource.CurrentTime().UTC()
 	record := StoredWorkspace{
 		ID: identifier, Path: canonical, Title: filepath.Base(canonical),
 		SessionIDs: []session.SessionID{}, CreatedAt: now, UpdatedAt: now,
@@ -314,7 +386,7 @@ func (owner *DurableRegistry) setTitle(
 		return nil
 	}
 	record.Title = title
-	record.UpdatedAt = owner.clock().UTC()
+	record.UpdatedAt = owner.timeSource.CurrentTime().UTC()
 	if err := owner.repository.Update(requestContext, cloneRecord(record)); err != nil {
 		owner.mu.Unlock()
 		return err
@@ -380,7 +452,7 @@ func (owner *DurableRegistry) attachSession(
 	} else {
 		record.SessionIDs = append([]session.SessionID{sessionID}, record.SessionIDs...)
 	}
-	record.UpdatedAt = owner.clock().UTC()
+	record.UpdatedAt = owner.timeSource.CurrentTime().UTC()
 	if err := owner.repository.Update(requestContext, cloneRecord(record)); err != nil {
 		owner.mu.Unlock()
 		return err
@@ -429,7 +501,7 @@ func (owner *DurableRegistry) insertSessionBefore(
 		return nil
 	}
 	record.SessionIDs = nextIDs
-	record.UpdatedAt = owner.clock().UTC()
+	record.UpdatedAt = owner.timeSource.CurrentTime().UTC()
 	if err := owner.repository.Update(requestContext, cloneRecord(record)); err != nil {
 		owner.mu.Unlock()
 		return err
@@ -461,7 +533,7 @@ func (owner *DurableRegistry) detachSession(
 		owner.mu.Unlock()
 		return nil
 	}
-	record.UpdatedAt = owner.clock().UTC()
+	record.UpdatedAt = owner.timeSource.CurrentTime().UTC()
 	if err := owner.repository.Update(requestContext, cloneRecord(record)); err != nil {
 		owner.mu.Unlock()
 		return err
@@ -561,7 +633,7 @@ func (owner *DurableRegistry) bootstrap(
 			if len(sessionIDs) == 0 {
 				continue
 			}
-			identifier, err := owner.newID()
+			identifier, err := owner.identifierGenerator.NewWorkspaceID()
 			if err != nil {
 				return StoredRegistry{}, err
 			}
@@ -596,7 +668,7 @@ func (owner *DurableRegistry) bootstrap(
 		}
 		if !slices.Equal(record.SessionIDs, sessionIDs) {
 			record.SessionIDs = sessionIDs
-			record.UpdatedAt = owner.clock().UTC()
+			record.UpdatedAt = owner.timeSource.CurrentTime().UTC()
 		}
 		for _, sessionID := range historical {
 			accounted[sessionID] = record.ID
@@ -750,33 +822,41 @@ func cloneSessionID(source *session.SessionID) *session.SessionID {
 }
 
 func (owner *DurableRegistry) publishChanged(requestContext context.Context, state WorkspaceState) {
-	owner.publish("changed", func() error {
-		return plugin.EmitFrom(requestContext, owner.sourceScope, changedTopic, ChangedNotice{WorkspaceState: cloneState(state)})
-	})
+	_ = plugin.Publish(
+		requestContext,
+		owner,
+		ChangedNotice{
+			WorkspaceState: cloneState(state),
+		},
+	)
 }
 
 func (owner *DurableRegistry) publishRemoved(requestContext context.Context, identifier ID) {
-	owner.publish("removed", func() error {
-		return plugin.EmitFrom(requestContext, owner.sourceScope, removedTopic, RemovedNotice{ID: identifier})
-	})
+	_ = plugin.Publish(
+		requestContext,
+		owner,
+		RemovedNotice{
+			ID: identifier,
+		},
+	)
 }
 
 func (owner *DurableRegistry) publishOrder(requestContext context.Context, identifiers []ID) {
-	owner.publish("order-changed", func() error {
-		return plugin.EmitFrom(requestContext, owner.sourceScope, orderTopic,
-			OrderChangedNotice{WorkspaceIDs: append([]ID(nil), identifiers...)})
-	})
+	_ = plugin.Publish(
+		requestContext,
+		owner,
+		OrderChangedNotice{
+			WorkspaceIDs: append([]ID(nil), identifiers...),
+		},
+	)
 }
 
 func (owner *DurableRegistry) publishArchived(requestContext context.Context, identifiers []session.SessionID) {
-	owner.publish("archived-sessions-changed", func() error {
-		return plugin.EmitFrom(requestContext, owner.sourceScope, archiveTopic,
-			ArchivedSessionsChangedNotice{SessionIDs: append([]session.SessionID(nil), identifiers...)})
-	})
-}
-
-func (owner *DurableRegistry) publish(name string, operation func() error) {
-	if err := operation(); err != nil {
-		owner.observerError(fmt.Errorf("workspace: %s observer: %w", name, err))
-	}
+	_ = plugin.Publish(
+		requestContext,
+		owner,
+		ArchivedSessionsChangedNotice{
+			SessionIDs: append([]session.SessionID(nil), identifiers...),
+		},
+	)
 }

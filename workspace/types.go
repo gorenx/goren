@@ -74,6 +74,7 @@ type Workspace interface {
 
 // Registry owns Workspace identity, durable order, and Session accounting.
 type Registry interface {
+	plugin.Service
 	Create(context.Context, string) (Workspace, bool, error)
 	Get(ID) (Workspace, bool)
 	List() []Workspace
@@ -83,8 +84,38 @@ type Registry interface {
 	ArchiveSession(context.Context, session.SessionID) error
 }
 
-// Service is the canonical Workspace Registry service definition.
-var Service = plugin.DefineService[Registry]("workspaceRegistry")
+const PluginName = "@deepseek-ai/dsh-workspace"
+
+// BackendOpener acquires one configured Workspace Backend during Plugin Apply.
+type BackendOpener interface {
+	OpenBackend(context.Context) (Backend, error)
+}
+
+// TimeSource supplies mutation timestamps.
+type TimeSource interface {
+	CurrentTime() time.Time
+}
+
+// TimeSourceFunc adapts a stateless time function to TimeSource.
+type TimeSourceFunc func() time.Time
+
+// CurrentTime returns the adapted timestamp.
+func (operation TimeSourceFunc) CurrentTime() time.Time {
+	return operation()
+}
+
+// IDGenerator mints stable Workspace identities.
+type IDGenerator interface {
+	NewWorkspaceID() (ID, error)
+}
+
+// IDGeneratorFunc adapts a stateless identity function to IDGenerator.
+type IDGeneratorFunc func() (ID, error)
+
+// NewWorkspaceID invokes the adapted identity generator.
+func (operation IDGeneratorFunc) NewWorkspaceID() (ID, error) {
+	return operation()
+}
 
 // Status reports whether a registered project directory is usable now.
 type Status string
@@ -96,7 +127,7 @@ const (
 
 // RegistryOptions supplies process dependencies and deterministic test seams.
 type RegistryOptions struct {
-	Clock         func() time.Time
-	NewID         func() (ID, error)
-	ObserverError func(error)
+	TimeSource   TimeSource
+	IDGenerator  IDGenerator
+	SessionHeads SessionHeaders
 }

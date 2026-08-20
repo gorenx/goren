@@ -74,26 +74,36 @@ func (source *headerSource) List(context.Context) ([]session.Header, error) {
 	return result, nil
 }
 
-type registryProvider struct {
-	storage  workspace.Backend
-	headers  workspace.SessionHeaders
-	options  workspace.RegistryOptions
-	registry workspace.Registry
+type workspaceBackendOpener struct {
+	storage workspace.Backend
 }
 
-func (*registryProvider) Manifest() plugin.Manifest {
-	return plugin.Manifest{Name: "workspace-registry-test-provider"}
+func (opener workspaceBackendOpener) OpenBackend(context.Context) (workspace.Backend, error) {
+	return opener.storage, nil
 }
 
-func (provider *registryProvider) Apply(requestContext context.Context, pluginScope *plugin.Scope) error {
+func startRegistry(
+	testingContext *testing.T,
+	storage workspace.Backend,
+	headers workspace.SessionHeaders,
+	options workspace.RegistryOptions,
+) (*plugin.Runtime, *workspace.DurableRegistry) {
+	testingContext.Helper()
+	options.SessionHeads = headers
 	registry, err := workspace.NewRegistry(
-		requestContext, pluginScope, provider.storage, provider.headers, provider.options,
+		workspaceBackendOpener{
+			storage: storage,
+		},
+		options,
 	)
 	if err != nil {
-		return err
+		testingContext.Fatal(err)
 	}
-	provider.registry = registry
-	return nil
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	if _, err := runtimeEngine.Start(context.Background(), registry); err != nil {
+		testingContext.Fatal(err)
+	}
+	return runtimeEngine, registry
 }
 
 func TestRegistryPersistsCanonicalWorkspacesAndSessionAccounting(t *testing.T) {
@@ -113,12 +123,14 @@ func TestRegistryPersistsCanonicalWorkspacesAndSessionAccounting(t *testing.T) {
 	identifiers := []workspace.ID{"workspace-1", "workspace-2"}
 	identifierIndex := 0
 	options := workspace.RegistryOptions{
-		Clock: func() time.Time { return time.Unix(10, 0) },
-		NewID: func() (workspace.ID, error) {
+		TimeSource: workspace.TimeSourceFunc(func() time.Time {
+			return time.Unix(10, 0)
+		}),
+		IDGenerator: workspace.IDGeneratorFunc(func() (workspace.ID, error) {
 			identifier := identifiers[identifierIndex]
 			identifierIndex++
 			return identifier, nil
-		},
+		}),
 	}
 	storage, err := workspaceSqlite.Open(requestContext, workspaceSqlite.Config{
 		Path: databasePath, JournalMode: workspaceSqlite.JournalWAL,
@@ -126,23 +138,19 @@ func TestRegistryPersistsCanonicalWorkspacesAndSessionAccounting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider := &registryProvider{storage: storage, headers: headers, options: options}
-	engine := plugin.NewRuntime()
-	if _, err := engine.Load(requestContext, provider); err != nil {
-		t.Fatal(err)
-	}
-	if listed := provider.registry.List(); len(listed) != 0 {
+	engine, registry := startRegistry(t, storage, headers, options)
+	if listed := registry.List(); len(listed) != 0 {
 		t.Fatalf("initial workspaces = %#v", listed)
 	}
-	first, created, err := provider.registry.Create(requestContext, firstPath+"/../first")
+	first, created, err := registry.Create(requestContext, firstPath+"/../first")
 	if err != nil || !created {
 		t.Fatalf("create first = (%v, %t, %v)", first, created, err)
 	}
-	repeated, created, err := provider.registry.Create(requestContext, firstPath)
+	repeated, created, err := registry.Create(requestContext, firstPath)
 	if err != nil || created || repeated.Snapshot().ID != first.Snapshot().ID {
 		t.Fatalf("repeat first = (%#v, %t, %v)", repeated.Snapshot(), created, err)
 	}
-	second, created, err := provider.registry.Create(requestContext, secondPath)
+	second, created, err := registry.Create(requestContext, secondPath)
 	if err != nil || !created {
 		t.Fatalf("create second = (%v, %t, %v)", second, created, err)
 	}
@@ -169,14 +177,14 @@ func TestRegistryPersistsCanonicalWorkspacesAndSessionAccounting(t *testing.T) {
 		t.Fatal(err)
 	}
 	beforeWorkspace := first.Snapshot().ID
-	order, err := provider.registry.InsertBefore(requestContext, second.Snapshot().ID, &beforeWorkspace)
+	order, err := registry.InsertBefore(requestContext, second.Snapshot().ID, &beforeWorkspace)
 	if err != nil || !reflect.DeepEqual(order, []workspace.ID{"workspace-2", "workspace-1"}) {
 		t.Fatalf("workspace order = %#v, error = %v", order, err)
 	}
-	if err := provider.registry.ArchiveSession(requestContext, "session-1"); err != nil {
+	if err := registry.ArchiveSession(requestContext, "session-1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := provider.registry.ArchiveSession(requestContext, "missing"); err == nil {
+	if err := registry.ArchiveSession(requestContext, "missing"); err == nil {
 		t.Fatal("unknown Session was archived")
 	} else {
 		var unknown *workspace.UnknownSessionError
@@ -198,17 +206,13 @@ func TestRegistryPersistsCanonicalWorkspacesAndSessionAccounting(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close(requestContext)
-	restarted := &registryProvider{storage: reopened, headers: headers, options: options}
-	restartEngine := plugin.NewRuntime()
-	if _, err := restartEngine.Load(requestContext, restarted); err != nil {
-		t.Fatal(err)
-	}
+	restartEngine, restarted := startRegistry(t, reopened, headers, options)
 	defer restartEngine.Shutdown(requestContext)
-	listed := restarted.registry.List()
+	listed := restarted.List()
 	if len(listed) != 2 || listed[0].Snapshot().ID != "workspace-2" || listed[1].Snapshot().Title != "Primary" {
 		t.Fatalf("restarted workspaces = %#v", workspaceStates(listed))
 	}
-	if got := restarted.registry.ArchivedSessionIDs(); !reflect.DeepEqual(got, []session.SessionID{"session-1"}) {
+	if got := restarted.ArchivedSessionIDs(); !reflect.DeepEqual(got, []session.SessionID{"session-1"}) {
 		t.Fatalf("restarted archive set = %#v", got)
 	}
 }
@@ -233,17 +237,18 @@ func TestRegistryRejectsMismatchedSessionCWD(t *testing.T) {
 	}
 	defer storage.Close(requestContext)
 	headers := &headerSource{byID: map[session.SessionID]session.Header{}}
-	provider := &registryProvider{
-		storage: storage,
-		headers: headers,
-		options: workspace.RegistryOptions{NewID: func() (workspace.ID, error) { return "workspace-1", nil }},
-	}
-	engine := plugin.NewRuntime()
-	if _, err := engine.Load(requestContext, provider); err != nil {
-		t.Fatal(err)
-	}
+	engine, registry := startRegistry(
+		t,
+		storage,
+		headers,
+		workspace.RegistryOptions{
+			IDGenerator: workspace.IDGeneratorFunc(func() (workspace.ID, error) {
+				return "workspace-1", nil
+			}),
+		},
+	)
 	defer engine.Shutdown(requestContext)
-	subject, _, err := provider.registry.Create(requestContext, workspacePath)
+	subject, _, err := registry.Create(requestContext, workspacePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,14 +283,10 @@ func TestRegistryDoesNotReadHeadersAfterInitializedEmptyBootstrap(t *testing.T) 
 	}); err != nil {
 		t.Fatal(err)
 	}
-	engine := plugin.NewRuntime()
-	provider := &registryProvider{storage: storage, headers: unavailableHeaderSource{}}
-	if _, err := engine.Load(requestContext, provider); err != nil {
-		t.Fatal(err)
-	}
+	engine, registry := startRegistry(t, storage, unavailableHeaderSource{}, workspace.RegistryOptions{})
 	defer engine.Shutdown(requestContext)
-	if len(provider.registry.List()) != 0 {
-		t.Fatalf("initialized empty Workspaces = %#v", workspaceStates(provider.registry.List()))
+	if len(registry.List()) != 0 {
+		t.Fatalf("initialized empty Workspaces = %#v", workspaceStates(registry.List()))
 	}
 }
 
@@ -310,16 +311,18 @@ func TestRegistrySerializesConcurrentSessionAccountingAtCommit(t *testing.T) {
 	source := newConcurrentHeaderSource(session.Header{
 		Version: session.FormatVersion, ID: "session-1", CreatedAt: 1, CWD: &canonicalPath,
 	})
-	provider := &registryProvider{
-		storage: storage, headers: source,
-		options: workspace.RegistryOptions{NewID: func() (workspace.ID, error) { return "workspace-1", nil }},
-	}
-	engine := plugin.NewRuntime()
-	if _, err := engine.Load(requestContext, provider); err != nil {
-		t.Fatal(err)
-	}
+	engine, registry := startRegistry(
+		t,
+		storage,
+		source,
+		workspace.RegistryOptions{
+			IDGenerator: workspace.IDGeneratorFunc(func() (workspace.ID, error) {
+				return "workspace-1", nil
+			}),
+		},
+	)
 	defer engine.Shutdown(requestContext)
-	subject, _, err := provider.registry.Create(requestContext, canonicalPath)
+	subject, _, err := registry.Create(requestContext, canonicalPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,21 +395,22 @@ func TestRegistryBootstrapMatchesHistoricalSessionAndWorkspaceOrder(t *testing.T
 		"b":     {Version: session.FormatVersion, ID: "b", CreatedAt: 5_000, CWD: &pathB},
 		"c":     {Version: session.FormatVersion, ID: "c", CreatedAt: 6_000, CWD: &pathC},
 	}}
-	provider := &registryProvider{
-		storage: storage,
-		headers: headers,
-		options: workspace.RegistryOptions{
-			Clock: func() time.Time { return time.UnixMilli(7_000).UTC() },
-			NewID: func() (workspace.ID, error) { return "workspace-c", nil },
+	engine, registry := startRegistry(
+		t,
+		storage,
+		headers,
+		workspace.RegistryOptions{
+			TimeSource: workspace.TimeSourceFunc(func() time.Time {
+				return time.UnixMilli(7_000).UTC()
+			}),
+			IDGenerator: workspace.IDGeneratorFunc(func() (workspace.ID, error) {
+				return "workspace-c", nil
+			}),
 		},
-	}
-	engine := plugin.NewRuntime()
-	if _, err := engine.Load(requestContext, provider); err != nil {
-		t.Fatal(err)
-	}
+	)
 	defer engine.Shutdown(requestContext)
 
-	listed := workspaceStates(provider.registry.List())
+	listed := workspaceStates(registry.List())
 	if len(listed) != 3 {
 		t.Fatalf("bootstrapped Workspaces = %#v", listed)
 	}
