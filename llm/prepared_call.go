@@ -8,7 +8,7 @@ import (
 // preparedCallState is the immutable adapter/model snapshot for one dispatch.
 // Its mutex protects the single-use transition, not model or route discovery.
 type preparedCallState struct {
-	owner           *runtimeService
+	owner           *Runtime
 	route           *adapterRoute
 	config          CallConfig
 	policy          RetryPolicy
@@ -19,7 +19,7 @@ type preparedCallState struct {
 	dispatched bool
 }
 
-func (owner *runtimeService) PrepareCall(requestContext context.Context, proposed CallConfig) (PreparedLlmCall, error) {
+func (owner *Runtime) PrepareCall(requestContext context.Context, proposed CallConfig) (PreparedLlmCall, error) {
 	record, err := owner.routeFor(proposed.Provider)
 	if err != nil {
 		return nil, err

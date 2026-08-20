@@ -2,59 +2,70 @@ package llm
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
-
-	"github.com/gorenx/goren/plugin"
 )
 
 type discoveryEntry struct {
 	backend ModelDiscovery
 }
 
-func (owner *runtimeService) RegisterModelDiscovery(
-	ownerScope *plugin.Scope,
+type discoveryRegistration struct {
+	owner      *Runtime
+	settingsNS string
+	record     *discoveryEntry
+	disposed   bool
+}
+
+func (owner *Runtime) RegisterModelDiscovery(
 	settingsNS string,
 	backend ModelDiscovery,
-) (plugin.Disposer, error) {
-	if ownerScope == nil {
-		return nil, errors.New("llm: model discovery owner scope is nil")
-	}
+) (ModelDiscoveryRegistration, error) {
 	if strings.TrimSpace(settingsNS) == "" {
 		return nil, MustLlmError("model discovery needs a non-empty settings namespace", "INVALID_DISCOVERY")
 	}
 	if backend == nil {
 		return nil, MustLlmError("model discovery callback is nil", "INVALID_DISCOVERY")
 	}
-	record := &discoveryEntry{backend: backend}
+	record := &discoveryEntry{
+		backend: backend,
+	}
 	owner.mu.Lock()
+	if owner.closed {
+		owner.mu.Unlock()
+		return nil, MustLlmError("the LLM Runtime is closed", "REGISTRATION_DISPOSED")
+	}
 	if owner.discoveries[settingsNS] != nil {
 		owner.mu.Unlock()
 		return nil, MustLlmError(fmt.Sprintf("model discovery for %q is already registered", settingsNS), "DUPLICATE_DISCOVERY")
 	}
 	owner.discoveries[settingsNS] = record
 	owner.mu.Unlock()
-	ownedRelease, err := plugin.Own(ownerScope, "llm.registerModelDiscovery()", func(context.Context) error {
-		owner.mu.Lock()
-		if owner.discoveries[settingsNS] == record {
-			delete(owner.discoveries, settingsNS)
-		}
-		owner.mu.Unlock()
-		return nil
-	})
-	if err != nil {
-		owner.mu.Lock()
-		if owner.discoveries[settingsNS] == record {
-			delete(owner.discoveries, settingsNS)
-		}
-		owner.mu.Unlock()
-		return nil, err
-	}
-	return ownedRelease, nil
+	return &discoveryRegistration{
+		owner:      owner,
+		settingsNS: settingsNS,
+		record:     record,
+	}, nil
 }
 
-func (owner *runtimeService) DiscoverModels(
+func (registration *discoveryRegistration) Release(context.Context) error {
+	if registration == nil || registration.owner == nil {
+		return nil
+	}
+	registration.owner.mu.Lock()
+	if registration.disposed {
+		registration.owner.mu.Unlock()
+		return nil
+	}
+	registration.disposed = true
+	if registration.owner.discoveries[registration.settingsNS] == registration.record {
+		delete(registration.owner.discoveries, registration.settingsNS)
+	}
+	registration.owner.mu.Unlock()
+	return nil
+}
+
+func (owner *Runtime) DiscoverModels(
 	requestContext context.Context,
 	settingsNS string,
 	request ModelDiscoveryRequest,

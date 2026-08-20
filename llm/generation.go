@@ -19,11 +19,11 @@ type normalizedChunkStream struct {
 	closed     bool
 }
 
-func (owner *runtimeService) Stream(requestContext context.Context, options GenerateOptions) (ChunkStream, error) {
+func (owner *Runtime) Stream(requestContext context.Context, options GenerateOptions) (ChunkStream, error) {
 	return owner.streamWithRoute(requestContext, options, nil, nil)
 }
 
-func (owner *runtimeService) streamWithRoute(
+func (owner *Runtime) streamWithRoute(
 	requestContext context.Context,
 	options GenerateOptions,
 	record *adapterRoute,
@@ -33,18 +33,47 @@ func (owner *runtimeService) streamWithRoute(
 	if err != nil {
 		return nil, err
 	}
-	return plugin.WaterfallFrom(
+	result, err := plugin.Run(
 		requestContext,
-		owner.sourceScope,
-		StreamEvent,
+		owner,
 		detached,
-		func(chainContext context.Context, request GenerateOptions) (ChunkStream, error) {
-			return owner.adapterBoundary(chainContext, request, record, preparedConfig)
+		streamTerminal{
+			owner:          owner,
+			record:         record,
+			preparedConfig: preparedConfig,
 		},
 	)
+	if err != nil {
+		return nil, err
+	}
+	if result.Stream == nil {
+		return nil, errors.New("llm: stream Waterfall returned a nil stream")
+	}
+	return result.Stream, nil
 }
 
-func (owner *runtimeService) adapterBoundary(
+type streamTerminal struct {
+	owner          *Runtime
+	record         *adapterRoute
+	preparedConfig *CallConfig
+}
+
+func (terminal streamTerminal) Execute(
+	requestContext context.Context,
+	options GenerateOptions,
+) (StreamOutput, error) {
+	generatedChunks, err := terminal.owner.adapterBoundary(
+		requestContext,
+		options,
+		terminal.record,
+		terminal.preparedConfig,
+	)
+	return StreamOutput{
+		Stream: generatedChunks,
+	}, err
+}
+
+func (owner *Runtime) adapterBoundary(
 	requestContext context.Context,
 	options GenerateOptions,
 	record *adapterRoute,
@@ -89,10 +118,12 @@ func (owner *runtimeService) adapterBoundary(
 	if upstream == nil {
 		return newTerminalStream(requestContext, errors.New("llm: adapter returned a nil stream"))
 	}
-	return &normalizedChunkStream{upstream: upstream}, nil
+	return &normalizedChunkStream{
+		upstream: upstream,
+	}, nil
 }
 
-func (owner *runtimeService) forAdapter(options GenerateOptions, backend Adapter) (GenerateOptions, error) {
+func (owner *Runtime) forAdapter(options GenerateOptions, backend Adapter) (GenerateOptions, error) {
 	changed := false
 	conversation := make([]Message, len(options.Messages))
 	for index, entry := range options.Messages {
@@ -128,7 +159,7 @@ func (owner *runtimeService) forAdapter(options GenerateOptions, backend Adapter
 	return options, nil
 }
 
-func (owner *runtimeService) routeFor(providerRoute string) (*adapterRoute, error) {
+func (owner *Runtime) routeFor(providerRoute string) (*adapterRoute, error) {
 	owner.mu.RLock()
 	record := owner.routes[providerRoute]
 	owner.mu.RUnlock()
@@ -140,11 +171,22 @@ func (owner *runtimeService) routeFor(providerRoute string) (*adapterRoute, erro
 
 func newTerminalStream(requestContext context.Context, problem error) (ChunkStream, error) {
 	failureSnapshot := normalizeLlmFailure(problem)
-	var reason FinishReason = ErrorFinish{Kind: "error", Failure: failureSnapshot}
-	if requestContext.Err() != nil || failureSnapshot.Code == "ABORTED" {
-		reason = AbortedFinish{Kind: "aborted", Failure: failureSnapshot}
+	var reason FinishReason = ErrorFinish{
+		Kind:    "error",
+		Failure: failureSnapshot,
 	}
-	return NewSliceStream([]StreamChunk{FinishChunk{Type: "finish", Reason: reason}})
+	if requestContext.Err() != nil || failureSnapshot.Code == "ABORTED" {
+		reason = AbortedFinish{
+			Kind:    "aborted",
+			Failure: failureSnapshot,
+		}
+	}
+	return NewSliceStream([]StreamChunk{
+		FinishChunk{
+			Type:   "finish",
+			Reason: reason,
+		},
+	})
 }
 
 func (flow *normalizedChunkStream) Next(requestContext context.Context) (StreamChunk, bool, error) {

@@ -11,7 +11,7 @@ type resolvedCall struct {
 	context *ModelContext
 }
 
-func (owner *runtimeService) RetryPolicyFor(providerRoute string) (RetryPolicy, error) {
+func (owner *Runtime) RetryPolicyFor(providerRoute string) (RetryPolicy, error) {
 	record, err := owner.routeFor(providerRoute)
 	if err != nil {
 		return nil, err
@@ -19,7 +19,7 @@ func (owner *runtimeService) RetryPolicyFor(providerRoute string) (RetryPolicy, 
 	return record.policy.CloneRetryPolicy(), nil
 }
 
-func (owner *runtimeService) ListModels(requestContext context.Context, providerRoute string) ([]ModelInfo, error) {
+func (owner *Runtime) ListModels(requestContext context.Context, providerRoute string) ([]ModelInfo, error) {
 	record, err := owner.routeFor(providerRoute)
 	if err != nil {
 		return nil, err
@@ -48,7 +48,7 @@ func (owner *runtimeService) ListModels(requestContext context.Context, provider
 	return result, nil
 }
 
-func (owner *runtimeService) ResolveModelInfo(
+func (owner *Runtime) ResolveModelInfo(
 	requestContext context.Context,
 	providerRoute string,
 	modelID string,
@@ -60,7 +60,7 @@ func (owner *runtimeService) ResolveModelInfo(
 	return owner.resolveModelFor(requestContext, record, modelID)
 }
 
-func (owner *runtimeService) resolveModelFor(
+func (owner *Runtime) resolveModelFor(
 	requestContext context.Context,
 	record *adapterRoute,
 	modelID string,
@@ -141,7 +141,7 @@ func (owner *runtimeService) resolveModelFor(
 	return resolved, nil
 }
 
-func (owner *runtimeService) ResolveCallConfig(requestContext context.Context, proposed CallConfig) (CallConfig, error) {
+func (owner *Runtime) ResolveCallConfig(requestContext context.Context, proposed CallConfig) (CallConfig, error) {
 	record, err := owner.routeFor(proposed.Provider)
 	if err != nil {
 		return CallConfig{}, err
@@ -153,7 +153,7 @@ func (owner *runtimeService) ResolveCallConfig(requestContext context.Context, p
 	return cloneCallConfig(resolved.config), nil
 }
 
-func (owner *runtimeService) resolveCallFor(
+func (owner *Runtime) resolveCallFor(
 	requestContext context.Context,
 	record *adapterRoute,
 	proposed CallConfig,
