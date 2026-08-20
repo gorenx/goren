@@ -9,6 +9,47 @@ import (
 	"sync/atomic"
 )
 
+// WaterfallInput marks an owner-defined interceptable operation input.
+type WaterfallInput interface {
+	RuntimeWaterfallInput()
+}
+
+// WaterfallInputBase supplies the WaterfallInput marker by embedding.
+type WaterfallInputBase struct{}
+
+// RuntimeWaterfallInput implements WaterfallInput.
+func (WaterfallInputBase) RuntimeWaterfallInput() {}
+
+// WaterfallOutput marks an owner-defined interceptable operation output.
+type WaterfallOutput interface {
+	RuntimeWaterfallOutput()
+}
+
+// WaterfallOutputBase supplies the WaterfallOutput marker by embedding.
+type WaterfallOutputBase struct{}
+
+// RuntimeWaterfallOutput implements WaterfallOutput.
+func (WaterfallOutputBase) RuntimeWaterfallOutput() {}
+
+// WaterfallMiddlewareBinding declares one Middleware owned by the Plugin for
+// one typed operation.
+type WaterfallMiddlewareBinding interface {
+	Name() string
+	waterfallReference() (waterfallRef, error)
+	waterfallMiddleware() (waterfallInvoker, error)
+}
+
+type waterfallRef struct {
+	input  reflect.Type
+	output reflect.Type
+	name   string
+}
+
+type waterfallMiddlewareSpec struct {
+	reference waterfallRef
+	invoker   waterfallInvoker
+}
+
 // WaterfallAction is one executable downstream operation. The business
 // terminal and each Runtime-assembled Middleware step implement the same role.
 type WaterfallAction[I WaterfallInput, O WaterfallOutput] interface {
@@ -101,6 +142,11 @@ type waterfallBinding struct {
 	ordinal   uint64
 }
 
+type waterfallInvocation[I WaterfallInput, O WaterfallOutput] struct {
+	middleware WaterfallMiddleware[I, O]
+	owner      *fiber
+}
+
 type waterfallRegistry struct {
 	bindings map[waterfallKey][]*waterfallBinding
 }
@@ -146,13 +192,13 @@ func snapshotWaterfall[
 ](
 	registry *waterfallRegistry,
 	sourceScope *scope,
-) ([]WaterfallMiddleware[I, O], error) {
+) ([]waterfallInvocation[I, O], error) {
 	selectedKey := waterfallKey{
 		input:  reflect.TypeFor[I](),
 		output: reflect.TypeFor[O](),
 	}
 	lineage := scopePath(sourceScope)
-	middleware := make([]WaterfallMiddleware[I, O], 0)
+	middleware := make([]waterfallInvocation[I, O], 0)
 	for scopeIndex := len(lineage) - 1; scopeIndex >= 0; scopeIndex-- {
 		selectedScope := lineage[scopeIndex]
 		selectedBindings := make([]*waterfallBinding, 0)
@@ -171,14 +217,17 @@ func snapshotWaterfall[
 			if !matches {
 				return nil, errors.New("plugin: Waterfall has an incompatible Middleware")
 			}
-			middleware = append(middleware, typedInvoker.middleware)
+			middleware = append(middleware, waterfallInvocation[I, O]{
+				middleware: typedInvoker.middleware,
+				owner:      binding.owner,
+			})
 		}
 	}
 	return middleware, nil
 }
 
 type waterfallStep[I WaterfallInput, O WaterfallOutput] struct {
-	middleware []WaterfallMiddleware[I, O]
+	middleware []waterfallInvocation[I, O]
 	terminal   WaterfallAction[I, O]
 	index      int
 	proceeded  atomic.Bool
@@ -203,7 +252,7 @@ func (step *waterfallStep[I, O]) Execute(
 	return invokeWaterfallMiddleware(
 		requestContext,
 		input,
-		step.middleware[step.index],
+		step.middleware[step.index].middleware,
 		downstream,
 	)
 }
@@ -264,13 +313,27 @@ func Run[
 		runtimeEngine.bindings.waterfalls,
 		sourceFiber.scope,
 	)
-	runtimeEngine.view.RUnlock()
 	if err != nil {
+		runtimeEngine.view.RUnlock()
 		return output, err
 	}
+	participants := make([]*fiber, 0, len(middleware)+1)
+	participants = append(participants, sourceFiber)
+	for _, invocation := range middleware {
+		participants = append(participants, invocation.owner)
+	}
+	releaseCalls, admitted := acquireFiberCalls(participants...)
+	runtimeEngine.view.RUnlock()
+	if !admitted {
+		return output, ErrPluginNotActive
+	}
+	defer releaseCalls()
 	firstStep := &waterfallStep[I, O]{
 		middleware: middleware,
 		terminal:   terminal,
 	}
-	return firstStep.Execute(requestContext, input)
+	return firstStep.Execute(
+		runtimeEngine.callbackContext(requestContext),
+		input,
+	)
 }

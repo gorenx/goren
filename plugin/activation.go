@@ -37,6 +37,7 @@ func (coordinator *activationCoordinator) attach(mounted *pluginMount) *fiber {
 		scope:        mounted.scope,
 		state:        FiberWaiting,
 		dependencies: make(dependencySnapshot),
+		calls:        newFiberCallGate(),
 	}
 	mounted.current = running
 	return running
@@ -55,11 +56,13 @@ func (coordinator *activationCoordinator) newFiberCandidate(
 		scope:        mounted.scope,
 		state:        FiberWaiting,
 		dependencies: make(dependencySnapshot),
+		calls:        newFiberCallGate(),
 	}
 }
 
 func (coordinator *activationCoordinator) converge(
 	reconcileContext context.Context,
+	phase ActivationPhase,
 ) error {
 	coordinator.prepareStopped()
 	refreshedOptional := make(map[*pluginMount]struct{})
@@ -67,7 +70,8 @@ func (coordinator *activationCoordinator) converge(
 		progress := false
 		for _, mounted := range coordinator.mounts.all() {
 			running := mounted.current
-			if mounted.removed || running == nil || running.state != FiberWaiting {
+			if mounted.removed || mounted.phase != phase || running == nil ||
+				running.state != FiberWaiting {
 				continue
 			}
 			resolution := coordinator.graph.resolve(mounted, mounted.target)
@@ -161,7 +165,9 @@ func (coordinator *activationCoordinator) stopDependents(
 		return nil
 	}
 	var stopErr error
-	for _, dependent := range coordinator.graph.directDependents(provider) {
+	for _, dependent := range stopFiberOrder(
+		coordinator.graph.directDependents(provider),
+	) {
 		stopErr = errors.Join(
 			stopErr,
 			coordinator.stopFiberWithDependents(
@@ -171,7 +177,7 @@ func (coordinator *activationCoordinator) stopDependents(
 			),
 		)
 	}
-	for _, childMount := range provider.mount.children {
+	for _, childMount := range stopMountOrder(provider.mount.children) {
 		if childMount.current == nil {
 			continue
 		}
@@ -212,7 +218,8 @@ func (coordinator *activationCoordinator) rollbackMounts(
 	rollbackContext context.Context,
 	mounts []*pluginMount,
 ) error {
-	for _, mounted := range mounts {
+	roots := selectedMountRoots(mounts)
+	for _, mounted := range roots {
 		coordinator.mounts.markRemoved(mounted)
 	}
 	var rollbackErr error
@@ -227,11 +234,29 @@ func (coordinator *activationCoordinator) rollbackMounts(
 			),
 		)
 	}
-	for _, mounted := range mounts {
-		coordinator.mounts.deleteTree(mounted)
-	}
+	coordinator.mounts.deleteRoots(roots)
 	coordinator.prepareStopped()
 	return rollbackErr
+}
+
+func selectedMountRoots(mounts []*pluginMount) []*pluginMount {
+	selected := make(map[*pluginMount]struct{}, len(mounts))
+	for _, mounted := range mounts {
+		if mounted != nil {
+			selected[mounted] = struct{}{}
+		}
+	}
+	roots := make([]*pluginMount, 0)
+	for _, mounted := range mounts {
+		if mounted == nil {
+			continue
+		}
+		if _, parentSelected := selected[mounted.parent]; parentSelected {
+			continue
+		}
+		roots = append(roots, mounted)
+	}
+	return roots
 }
 
 func (coordinator *activationCoordinator) removeMount(
@@ -270,55 +295,30 @@ func (coordinator *activationCoordinator) shutdown(
 	return shutdownErr
 }
 
-func (coordinator *activationCoordinator) replace(
-	replaceContext context.Context,
-	mounted *pluginMount,
-	target pluginTarget,
-) error {
-	if !sameManifestContract(mounted.target.manifest, target.manifest) {
-		return errors.New("plugin: replacement changes the mounted Plugin contract")
+func stopMountOrder(mounts []*pluginMount) []*pluginMount {
+	ordered := make([]*pluginMount, 0, len(mounts))
+	for _, phase := range []ActivationPhase{ActivationCommit, ActivationMain} {
+		for mountIndex := len(mounts) - 1; mountIndex >= 0; mountIndex-- {
+			mounted := mounts[mountIndex]
+			if mounted != nil && mounted.phase == phase {
+				ordered = append(ordered, mounted)
+			}
+		}
 	}
-	resolution := coordinator.graph.resolve(mounted, target)
-	if !resolution.ready() {
-		return fmt.Errorf(
-			"plugin: replacement dependencies are unavailable: %v",
-			resolution.missingNames(),
-		)
-	}
-	candidate := coordinator.newFiberCandidate(mounted, target)
-	applyErr := candidate.prepare(replaceContext, resolution)
-	if applyErr != nil {
-		rollbackErr := candidate.rollback(replaceContext, applyErr)
-		return errors.Join(applyErr, rollbackErr)
-	}
+	return ordered
+}
 
-	previous := mounted.current
-	stopErr := coordinator.stopDependents(
-		replaceContext,
-		previous,
-		make(map[*fiber]struct{}),
-	)
-	coordinator.runtime.view.Lock()
-	coordinator.runtime.bindings.withdraw(previous.bindings)
-	published, publicationErr := coordinator.runtime.bindings.publish(candidate)
-	if publicationErr != nil {
-		coordinator.runtime.bindings.restore(previous.bindings)
-		coordinator.runtime.view.Unlock()
-		rollbackErr := candidate.rollback(replaceContext, publicationErr)
-		coordinator.prepareStopped()
-		settleErr := coordinator.converge(replaceContext)
-		return errors.Join(stopErr, publicationErr, rollbackErr, settleErr)
+func stopFiberOrder(fibers []*fiber) []*fiber {
+	ordered := make([]*fiber, 0, len(fibers))
+	for _, phase := range []ActivationPhase{ActivationCommit, ActivationMain} {
+		for fiberIndex := len(fibers) - 1; fiberIndex >= 0; fiberIndex-- {
+			running := fibers[fiberIndex]
+			if running != nil && running.mount != nil && running.mount.phase == phase {
+				ordered = append(ordered, running)
+			}
+		}
 	}
-	previous.state = FiberStopping
-	candidate.activate(published)
-	mounted.target = target
-	mounted.current = candidate
-	coordinator.runtime.view.Unlock()
-
-	disposeErr := previous.stop(replaceContext)
-	coordinator.prepareStopped()
-	settleErr := coordinator.converge(replaceContext)
-	return errors.Join(stopErr, disposeErr, settleErr)
+	return ordered
 }
 
 func (coordinator *activationCoordinator) prepareStopped() {

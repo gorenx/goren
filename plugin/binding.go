@@ -1,6 +1,9 @@
 package plugin
 
-import "fmt"
+import (
+	"fmt"
+	"reflect"
+)
 
 // activationBindings are the exact registry records published by one Fiber.
 // Withdrawal is identity-based and idempotent.
@@ -29,6 +32,58 @@ func newRuntimeBindings(eventFailures EventFailureReporter) *runtimeBindings {
 
 func (bindings *runtimeBindings) validateAdmission(target pluginTarget) error {
 	return bindings.events.validateDeliveryRequirements(target.manifest.events)
+}
+
+// validateMountAdmission checks one complete topology batch before any Plugin
+// receives Apply. Runtime.view must be read-locked by the caller.
+func (bindings *runtimeBindings) validateMountAdmission(
+	mounts []*pluginMount,
+) error {
+	services := make(map[serviceBindingKey]string, len(bindings.services.bindings))
+	for bindingKey, existing := range bindings.services.bindings {
+		services[bindingKey] = existing.reference.name
+	}
+	events := make(map[reflect.Type]eventRef)
+	for eventType, existingBindings := range bindings.events.registry.bindings {
+		if len(existingBindings) != 0 {
+			events[eventType] = existingBindings[0].reference
+		}
+	}
+	for _, mounted := range mounts {
+		if mounted == nil {
+			continue
+		}
+		bindingSpec := mounted.target.manifest
+		if err := bindings.validateAdmission(mounted.target); err != nil {
+			return err
+		}
+		for _, serviceDeclaration := range bindingSpec.provides {
+			bindingKey := serviceBindingKey{
+				scope:       mounted.scope,
+				serviceType: serviceDeclaration.reference.key,
+			}
+			if _, conflict := services[bindingKey]; conflict {
+				return fmt.Errorf(
+					"%w: %s",
+					ErrServiceConflict,
+					serviceDeclaration.reference.name,
+				)
+			}
+			services[bindingKey] = serviceDeclaration.reference.name
+		}
+		for _, eventDeclaration := range bindingSpec.events {
+			existing, found := events[eventDeclaration.reference.key]
+			if found && (existing.name != eventDeclaration.reference.name ||
+				existing.policy != eventDeclaration.reference.policy) {
+				return fmt.Errorf(
+					"plugin: Event type %q has inconsistent metadata",
+					namedTypeName(eventDeclaration.reference.key),
+				)
+			}
+			events[eventDeclaration.reference.key] = eventDeclaration.reference
+		}
+	}
+	return nil
 }
 
 func (bindings *runtimeBindings) publish(
