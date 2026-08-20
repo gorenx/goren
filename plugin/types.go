@@ -129,20 +129,20 @@ type ServiceType interface {
 	bindService(Plugin) (Service, bool)
 }
 
-// EventSubscription declares that the Plugin implements EventObserver for one
-// Event type.
+// EventSubscription declares one Event type routed to the Plugin's unified
+// EventObserver entry point.
 type EventSubscription interface {
 	Name() string
 	eventReference() (eventRef, error)
-	bindEventObserver(Plugin) (eventInvoker, error)
+	bindEventObserver(Plugin) (EventObserver, error)
 }
 
-// WaterfallContribution declares that the Plugin implements Middleware for one
+// WaterfallContribution declares one Middleware owned by the Plugin for one
 // typed operation.
 type WaterfallContribution interface {
 	Name() string
 	waterfallReference() (waterfallRef, error)
-	bindWaterfallMiddleware(Plugin) (waterfallInvoker, error)
+	waterfallMiddleware() (waterfallInvoker, error)
 }
 
 // Manifest is the complete declarative contribution and dependency contract
@@ -188,7 +188,7 @@ type serviceOffer struct {
 
 type eventOffer struct {
 	reference eventRef
-	invoker   eventInvoker
+	observer  EventObserver
 }
 
 type waterfallOffer struct {
@@ -291,7 +291,7 @@ func normalizeManifest(pluginInstance Plugin) (manifestSpec, error) {
 				reference.name,
 			)
 		}
-		invoker, err := declaredEvent.bindEventObserver(pluginInstance)
+		observer, err := declaredEvent.bindEventObserver(pluginInstance)
 		if err != nil {
 			return manifestSpec{}, fmt.Errorf(
 				"plugin: %s Event %q: %w",
@@ -303,7 +303,7 @@ func normalizeManifest(pluginInstance Plugin) (manifestSpec, error) {
 		seenEvents[reference.key] = struct{}{}
 		normalized.events = append(normalized.events, eventOffer{
 			reference: reference,
-			invoker:   invoker,
+			observer:  observer,
 		})
 	}
 
@@ -334,7 +334,7 @@ func normalizeManifest(pluginInstance Plugin) (manifestSpec, error) {
 				reference.name,
 			)
 		}
-		invoker, err := declaredWaterfall.bindWaterfallMiddleware(pluginInstance)
+		invoker, err := declaredWaterfall.waterfallMiddleware()
 		if err != nil {
 			return manifestSpec{}, fmt.Errorf(
 				"plugin: %s Waterfall %q: %w",

@@ -341,7 +341,7 @@ func (runtimeEngine *Runtime) publishContributionsLocked(ownerFiber *fiber) erro
 		runtimeEngine.nextOrdinal++
 		selectedBinding := &eventBinding{
 			reference: offer.reference,
-			invoker:   offer.invoker,
+			observer:  offer.observer,
 			owner:     ownerFiber,
 			scope:     ownerFiber.scope,
 			ordinal:   runtimeEngine.nextOrdinal,

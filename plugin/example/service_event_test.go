@@ -19,6 +19,23 @@ func (greetingUsed) EventDelivery() plugin.DeliveryPolicy {
 	return plugin.DeliveryOrdered
 }
 
+func (serviceOwner *greetingPlugin) GreetAndPublish(
+	requestContext context.Context,
+	name string,
+) (string, error) {
+	message := serviceOwner.Greet(name)
+	if err := plugin.Publish(
+		requestContext,
+		serviceOwner,
+		greetingUsed{
+			Name: name,
+		},
+	); err != nil {
+		return "", err
+	}
+	return message, nil
+}
+
 type greetingListener struct {
 	plugin.Base
 	names []string
@@ -42,9 +59,20 @@ func (*greetingListener) Dispose(context.Context) error {
 }
 
 func (listener *greetingListener) ObserveEvent(
-	_ context.Context,
-	fact greetingUsed,
+	requestContext context.Context,
+	fact plugin.Event,
 ) error {
+	if err := requestContext.Err(); err != nil {
+		return err
+	}
+	usedGreeting, matches := fact.(greetingUsed)
+	if !matches {
+		return fmt.Errorf("greeting listener: unsupported Event %q", fact.EventName())
+	}
+	return listener.observeGreetingUsed(usedGreeting)
+}
+
+func (listener *greetingListener) observeGreetingUsed(fact greetingUsed) error {
 	listener.names = append(listener.names, fact.Name)
 	return nil
 }
@@ -64,16 +92,14 @@ func Example_servicePublishesEvent() {
 	}
 	defer runtimeEngine.Shutdown(context.Background())
 
-	fmt.Println(serviceOwner.Greet("event"))
-	if err := plugin.Publish(
+	message, err := serviceOwner.GreetAndPublish(
 		context.Background(),
-		serviceOwner,
-		greetingUsed{
-			Name: "event",
-		},
-	); err != nil {
+		"event",
+	)
+	if err != nil {
 		panic(err)
 	}
+	fmt.Println(message)
 	fmt.Println(listener.names)
 	// Output:
 	// hello, event

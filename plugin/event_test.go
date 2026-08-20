@@ -3,6 +3,7 @@ package plugin_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -46,9 +47,15 @@ func (*eventObserverPlugin) Dispose(context.Context) error {
 }
 
 func (observer *eventObserverPlugin) ObserveEvent(
-	_ context.Context,
-	_ advanced,
+	requestContext context.Context,
+	fact plugin.Event,
 ) error {
+	if err := requestContext.Err(); err != nil {
+		return err
+	}
+	if _, matches := fact.(advanced); !matches {
+		return errors.New("event observer received an undeclared Event")
+	}
 	*observer.order = append(*observer.order, observer.name)
 	return nil
 }
@@ -127,6 +134,185 @@ func TestEventRoutesFromCurrentScopeToRoot(t *testing.T) {
 	}
 }
 
+type reset struct {
+	Reason string
+}
+
+func (reset) EventName() string {
+	return "counter/reset"
+}
+
+func (reset) EventDelivery() plugin.DeliveryPolicy {
+	return plugin.DeliveryOrdered
+}
+
+type ignored struct{}
+
+func (ignored) EventName() string {
+	return "counter/ignored"
+}
+
+func (ignored) EventDelivery() plugin.DeliveryPolicy {
+	return plugin.DeliveryOrdered
+}
+
+type multiEventObserverPlugin struct {
+	plugin.Base
+	events    []string
+	duplicate bool
+}
+
+func (observer *multiEventObserverPlugin) Manifest() plugin.Manifest {
+	subscriptions := []plugin.EventSubscription{
+		plugin.EventOf[advanced](),
+		plugin.EventOf[reset](),
+	}
+	if observer.duplicate {
+		subscriptions = append(subscriptions, plugin.EventOf[advanced]())
+	}
+	return plugin.Manifest{
+		Name:   "multi-event-observer",
+		Events: subscriptions,
+	}
+}
+
+func (*multiEventObserverPlugin) Apply(context.Context) error {
+	return nil
+}
+
+func (*multiEventObserverPlugin) Dispose(context.Context) error {
+	return nil
+}
+
+func (observer *multiEventObserverPlugin) ObserveEvent(
+	requestContext context.Context,
+	fact plugin.Event,
+) error {
+	if err := requestContext.Err(); err != nil {
+		return err
+	}
+	switch typedFact := fact.(type) {
+	case advanced:
+		observer.events = append(observer.events, fmt.Sprintf("advanced:%d", typedFact.Value))
+		return nil
+	case reset:
+		observer.events = append(observer.events, "reset:"+typedFact.Reason)
+		return nil
+	default:
+		return fmt.Errorf("unsupported Event %q", fact.EventName())
+	}
+}
+
+func TestPluginObservesMultipleDeclaredEventTypesThroughOneEntryPoint(t *testing.T) {
+	t.Parallel()
+	observer := &multiEventObserverPlugin{}
+	publisher := &eventPublisherPlugin{
+		name: "multi-event-publisher",
+	}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	handles, err := runtimeEngine.Start(context.Background(), observer, publisher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plugin.Publish(
+		context.Background(),
+		publisher,
+		advanced{
+			Value: 7,
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := plugin.Publish(
+		context.Background(),
+		publisher,
+		reset{
+			Reason: "manual",
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := plugin.Publish(
+		context.Background(),
+		publisher,
+		ignored{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(observer.events, ","); got != "advanced:7,reset:manual" {
+		t.Fatalf("observed Events = %q", got)
+	}
+	if err := runtimeEngine.Unload(context.Background(), handles[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := plugin.Publish(
+		context.Background(),
+		publisher,
+		advanced{
+			Value: 8,
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := plugin.Publish(
+		context.Background(),
+		publisher,
+		reset{
+			Reason: "after-unload",
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(observer.events, ","); got != "advanced:7,reset:manual" {
+		t.Fatalf("observed Events after unload = %q", got)
+	}
+}
+
+func TestPluginRejectsDuplicateEventTypeDeclaration(t *testing.T) {
+	t.Parallel()
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	if _, err := runtimeEngine.Start(
+		context.Background(),
+		&multiEventObserverPlugin{
+			duplicate: true,
+		},
+	); err == nil || !strings.Contains(err.Error(), "more than once") {
+		t.Fatalf("Start error = %v", err)
+	}
+}
+
+type eventDeclarationOnlyPlugin struct {
+	plugin.Base
+}
+
+func (*eventDeclarationOnlyPlugin) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "event-declaration-only",
+		Events: []plugin.EventSubscription{
+			plugin.EventOf[advanced](),
+		},
+	}
+}
+
+func (*eventDeclarationOnlyPlugin) Apply(context.Context) error {
+	return nil
+}
+
+func (*eventDeclarationOnlyPlugin) Dispose(context.Context) error {
+	return nil
+}
+
+func TestPluginDeclaringEventsMustImplementUnifiedObserver(t *testing.T) {
+	t.Parallel()
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	if _, err := runtimeEngine.Start(
+		context.Background(),
+		&eventDeclarationOnlyPlugin{},
+	); err == nil || !strings.Contains(err.Error(), "does not implement EventObserver") {
+		t.Fatalf("Start error = %v", err)
+	}
+}
+
 type bestEffortFact struct{}
 
 func (bestEffortFact) EventName() string {
@@ -141,7 +327,7 @@ type failingObserver struct {
 	plugin.Base
 }
 
-func (*failingObserver) Manifest() plugin.Manifest {
+func (observer *failingObserver) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "failing-observer",
 		Events: []plugin.EventSubscription{
@@ -158,7 +344,7 @@ func (*failingObserver) Dispose(context.Context) error {
 	return nil
 }
 
-func (*failingObserver) ObserveEvent(context.Context, bestEffortFact) error {
+func (*failingObserver) ObserveEvent(context.Context, plugin.Event) error {
 	return errors.New("observer failed")
 }
 

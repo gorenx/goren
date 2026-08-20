@@ -19,11 +19,17 @@ type WaterfallMiddleware[I WaterfallInput, O WaterfallOutput] interface {
 	Intercept(context.Context, I, WaterfallAction[I, O]) (O, error)
 }
 
-type typedWaterfallContribution[I WaterfallInput, O WaterfallOutput] struct{}
+type typedWaterfallContribution[I WaterfallInput, O WaterfallOutput] struct {
+	middleware WaterfallMiddleware[I, O]
+}
 
-// WaterfallOf declares that a Plugin implements WaterfallMiddleware[I, O].
-func WaterfallOf[I WaterfallInput, O WaterfallOutput]() WaterfallContribution {
-	return typedWaterfallContribution[I, O]{}
+// WaterfallOf declares one Middleware object owned by the Plugin Manifest.
+func WaterfallOf[I WaterfallInput, O WaterfallOutput](
+	middleware WaterfallMiddleware[I, O],
+) WaterfallContribution {
+	return typedWaterfallContribution[I, O]{
+		middleware: middleware,
+	}
 }
 
 func (typedWaterfallContribution[I, O]) Name() string {
@@ -38,15 +44,12 @@ func (typedWaterfallContribution[I, O]) waterfallReference() (waterfallRef, erro
 	return waterfallReferenceOf[I, O]()
 }
 
-func (typedWaterfallContribution[I, O]) bindWaterfallMiddleware(
-	pluginInstance Plugin,
-) (waterfallInvoker, error) {
-	middleware, matches := pluginInstance.(WaterfallMiddleware[I, O])
-	if !matches {
-		return nil, errors.New("Plugin does not implement the declared WaterfallMiddleware")
+func (typedContribution typedWaterfallContribution[I, O]) waterfallMiddleware() (waterfallInvoker, error) {
+	if typedContribution.middleware == nil {
+		return nil, errors.New("Plugin declared a nil WaterfallMiddleware")
 	}
 	return waterfallInvokerOf[I, O]{
-		middleware: middleware,
+		middleware: typedContribution.middleware,
 	}, nil
 }
 
