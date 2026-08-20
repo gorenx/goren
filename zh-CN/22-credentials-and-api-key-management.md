@@ -46,7 +46,7 @@ flowchart TD
     Manager -->|read-only precedence| Env[launch environment]
     Manager -->|credentials.LiveStore| Local[credentials/local.LiveStore]
     Local --> File[.credentials.json]
-    Factory[credentialsFactory] --> Manager
+    Factory[credentials/factory.Factory] --> Manager
     Factory --> Local
 ```
 
@@ -56,11 +56,11 @@ flowchart TD
 - `credentials.Manager` 是有状态规则对象，拥有 precedence、writability 和 mutation semantics；
 - `credentials.LiveStore` 是 Manager 消费的 storage-only port，不读取环境、不决定优先级；
 - `credentials/local.LiveStore` 是一个具体存储实现，不是 Plugin，也不提供 Service；
-- `credentialsFactory` 是 composition root Factory，选择 local LiveStore、构造 Manager 并提供 `credentials.Service`；
+- `credentials/factory.Factory` 是领域内 composition root，选择 local LiveStore 并构造直接提供 `credentials.Provider` 的 Manager Plugin；
 - `apiproxy.CredentialProvider` 是 API Proxy 消费方拥有的窄接口，故意没有 `Resolve`，因此 Host API Gateway 无法读取 secret；
 - DeepSeek Plugin 消费完整 `credentials.Provider`，但 Adapter 的公共 contract 仍只接收 request-scoped resolver。
 
-这解释了为什么 Factory 叫 `credentialsFactory`，而不是 `credentialsLocalFactory`；也解释了为什么 `LiveStore` 不能与 `Provider` 合并。前者是可替换的持久化端口，后者是包含业务规则的运行时能力。
+这也解释了为什么 Factory 位于独立的 `credentials/factory` 组合根，而不在 `credentials/local`：`LiveStore` 是可替换的持久化端口，`Provider` 是包含业务规则的运行时能力，local adapter 不应决定完整 Plugin 组合。
 
 ## 4. 解析与写入语义
 
@@ -141,7 +141,7 @@ Web 启动时读取 credential metadata。缺失且可写时打开 API Key dialo
 ## 8. 生命周期、失败与扩展规则
 
 - Plugin apply 只有在 LiveStore 和 Manager 创建成功后才提供 Service；失败由 Runtime composition 回滚；
-- DeepSeek Plugin 和 API Proxy Plugin 都声明需要 `credentials.Service`，避免运行期碰到未装配能力才打补丁；
+- DeepSeek Plugin 和 API Proxy Plugin 都通过 `ServiceOf[credentials.Provider]()` 声明依赖，避免运行期碰到未装配能力才打补丁；
 - 启动信息只打印凭据文件路径和环境变量名，不打印 configured value；
 - 新 LiveStore 实现只实现 `credentials.LiveStore`，不得复制 Manager 的 precedence 或 Host API；
 - 新 Credentials Provider 若具有不同业务语义，应实现 `credentials.Provider` 并由 Factory 显式选择，不能把多个 provider 塞进 local LiveStore；

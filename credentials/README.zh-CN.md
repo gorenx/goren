@@ -10,7 +10,7 @@
 - `LiveStore` 是 `Manager` 消费的 storage-only port，只执行 `Load`、`Save`、`Delete`；
 - `local.LiveStore` 把引用和值保存到 owner-only JSON 文档。
 
-本模块不拥有 DeepSeek HTTP、Host RPC、浏览器组件、Settings namespace、Session、日志或 Plugin composition。`credentialsFactory` 位于 composition root；不存在 `credentialsLocalFactory`，local LiveStore 也不是独立 Plugin 或 Service。
+本模块不拥有 DeepSeek HTTP、Host RPC、浏览器组件、Settings namespace、Session 或日志。`credentials/factory` 是领域内组合根，选择 local LiveStore 并构造 Manager；`credentials/local` 只做存储，不是独立 Plugin 或 Service。
 
 ## 工作原理
 
@@ -20,7 +20,7 @@ flowchart LR
     Manager -->|environment lookup| Env[launch environment]
     Manager -->|credentials.LiveStore| LiveStore[credentials/local.LiveStore]
     LiveStore --> File[owner-only .credentials.json]
-    Factory[credentialsFactory] --> Manager
+    Factory[credentials/factory.Factory] --> Manager
     Factory --> LiveStore
 ```
 
@@ -39,7 +39,7 @@ JSON 是 Goren local LiveStore 的部署格式，不是 Host 协议。源 Harnes
 ## 生命周期和失败边界
 
 - Factory 在创建 Plugin 前严格校验 local 绝对路径并构造 LiveStore、Manager；
-- Plugin 只提供 canonical `credentials.Service`，卸载由 Scope 撤回 Service；
+- Manager 直接作为 Plugin 提供 `credentials.Provider`，卸载由 Runtime 撤回 typed Service；
 - context 取消在文件操作前返回，不产生业务成功；
 - 空值必须使用 `Unset`，不能作为已配置 Key 保存；
 - JSON 损坏、非法引用、空值或权限过宽都会失败，不以空 LiveStore 覆盖原文档；
