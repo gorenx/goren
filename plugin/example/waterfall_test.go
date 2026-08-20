@@ -22,11 +22,11 @@ type trimMiddleware struct {
 	plugin.Base
 }
 
-func (*trimMiddleware) Manifest() plugin.Manifest {
+func (middleware *trimMiddleware) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "trim",
 		Waterfalls: []plugin.WaterfallContribution{
-			plugin.WaterfallOf[messageInput, messageOutput](),
+			plugin.WaterfallOf[messageInput, messageOutput](middleware),
 		},
 	}
 }

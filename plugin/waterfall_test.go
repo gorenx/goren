@@ -29,7 +29,7 @@ func (middleware *formatMiddleware) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: middleware.name,
 		Waterfalls: []plugin.WaterfallContribution{
-			plugin.WaterfallOf[formatInput, formatOutput](),
+			plugin.WaterfallOf[formatInput, formatOutput](middleware),
 		},
 	}
 }
@@ -127,11 +127,11 @@ type doubleExecuteMiddleware struct {
 	secondErr error
 }
 
-func (*doubleExecuteMiddleware) Manifest() plugin.Manifest {
+func (middleware *doubleExecuteMiddleware) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "double-proceed",
 		Waterfalls: []plugin.WaterfallContribution{
-			plugin.WaterfallOf[formatInput, formatOutput](),
+			plugin.WaterfallOf[formatInput, formatOutput](middleware),
 		},
 	}
 }

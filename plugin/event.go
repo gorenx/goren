@@ -22,9 +22,10 @@ const (
 	DeliveryBestEffort
 )
 
-// EventObserver observes one committed fact.
-type EventObserver[E Event] interface {
-	ObserveEvent(context.Context, E) error
+// EventObserver is the single event entry point of a Plugin. Runtime invokes
+// it only for Event types declared by that Plugin's Manifest.
+type EventObserver interface {
+	ObserveEvent(context.Context, Event) error
 }
 
 // EventFailure describes one best-effort Observer failure.
@@ -40,7 +41,8 @@ type EventFailureReporter interface {
 
 type typedEventSubscription[E Event] struct{}
 
-// EventOf declares that a Plugin implements EventObserver[E].
+// EventOf declares that a Plugin observes one Event type through its unified
+// EventObserver entry point.
 func EventOf[E Event]() EventSubscription {
 	return typedEventSubscription[E]{}
 }
@@ -59,14 +61,12 @@ func (typedEventSubscription[E]) eventReference() (eventRef, error) {
 
 func (typedEventSubscription[E]) bindEventObserver(
 	pluginInstance Plugin,
-) (eventInvoker, error) {
-	observer, matches := pluginInstance.(EventObserver[E])
+) (EventObserver, error) {
+	observer, matches := pluginInstance.(EventObserver)
 	if !matches {
-		return nil, errors.New("Plugin does not implement the declared EventObserver")
+		return nil, errors.New("Plugin does not implement EventObserver")
 	}
-	return eventInvokerOf[E]{
-		observer: observer,
-	}, nil
+	return observer, nil
 }
 
 func eventReferenceOf[E Event]() (reference eventRef, referenceErr error) {
@@ -105,25 +105,9 @@ func validateDeliveryPolicy(policy DeliveryPolicy) error {
 	}
 }
 
-type eventInvoker interface {
-	invoke(context.Context, Event) error
-}
-
-type eventInvokerOf[E Event] struct {
-	observer EventObserver[E]
-}
-
-func (invoker eventInvokerOf[E]) invoke(requestContext context.Context, fact Event) error {
-	typedFact, matches := fact.(E)
-	if !matches {
-		return errors.New("plugin: Event has an incompatible fact type")
-	}
-	return invoker.observer.ObserveEvent(requestContext, typedFact)
-}
-
 type eventBinding struct {
 	reference eventRef
-	invoker   eventInvoker
+	observer  EventObserver
 	owner     *fiber
 	scope     *scope
 	ordinal   uint64
@@ -163,9 +147,9 @@ func (registry *eventRegistry) remove(binding *eventBinding) {
 func (registry *eventRegistry) snapshot(
 	reference eventRef,
 	sourceScope *scope,
-) []eventInvoker {
+) []EventObserver {
 	lineage := scopePath(sourceScope)
-	invokers := make([]eventInvoker, 0)
+	observers := make([]EventObserver, 0)
 	for _, selectedScope := range lineage {
 		selectedBindings := make([]*eventBinding, 0)
 		for _, binding := range registry.bindings[reference.key] {
@@ -179,10 +163,10 @@ func (registry *eventRegistry) snapshot(
 			return selectedBindings[leftIndex].ordinal < selectedBindings[rightIndex].ordinal
 		})
 		for _, binding := range selectedBindings {
-			invokers = append(invokers, binding.invoker)
+			observers = append(observers, binding.observer)
 		}
 	}
-	return invokers
+	return observers
 }
 
 // Publish delivers fact from the active source Plugin to matching Observers in
@@ -209,7 +193,7 @@ func Publish[E Event](
 		runtimeEngine.state.RUnlock()
 		return ErrPluginNotActive
 	}
-	invokers := runtimeEngine.events.snapshot(
+	observers := runtimeEngine.events.snapshot(
 		reference,
 		selectedActivation.fiber.scope,
 	)
@@ -217,19 +201,19 @@ func Publish[E Event](
 
 	switch reference.policy {
 	case DeliveryOrdered:
-		for _, invoker := range invokers {
-			if err := invoker.invoke(requestContext, fact); err != nil {
+		for _, observer := range observers {
+			if err := observer.ObserveEvent(requestContext, fact); err != nil {
 				return err
 			}
 		}
 		return nil
 	case DeliveryParallel:
-		return invokeEventParallel(requestContext, fact, invokers, nil)
+		return observeEventParallel(requestContext, fact, observers, nil)
 	case DeliveryBestEffort:
-		return invokeEventParallel(
+		return observeEventParallel(
 			requestContext,
 			fact,
-			invokers,
+			observers,
 			func(observerErr error) {
 				if runtimeEngine.eventFailures == nil {
 					return
@@ -248,22 +232,22 @@ func Publish[E Event](
 	}
 }
 
-func invokeEventParallel(
+func observeEventParallel(
 	requestContext context.Context,
 	fact Event,
-	invokers []eventInvoker,
+	observers []EventObserver,
 	reportFailure func(error),
 ) error {
-	failures := make([]error, len(invokers))
-	var observers sync.WaitGroup
-	observers.Add(len(invokers))
-	for invokerIndex, selectedInvoker := range invokers {
-		go func(selectedIndex int, observer eventInvoker) {
-			defer observers.Done()
-			failures[selectedIndex] = observer.invoke(requestContext, fact)
-		}(invokerIndex, selectedInvoker)
+	failures := make([]error, len(observers))
+	var deliveries sync.WaitGroup
+	deliveries.Add(len(observers))
+	for observerIndex, selectedObserver := range observers {
+		go func(selectedIndex int, observer EventObserver) {
+			defer deliveries.Done()
+			failures[selectedIndex] = observer.ObserveEvent(requestContext, fact)
+		}(observerIndex, selectedObserver)
 	}
-	observers.Wait()
+	deliveries.Wait()
 	if reportFailure != nil {
 		for _, observerErr := range failures {
 			if observerErr != nil {
