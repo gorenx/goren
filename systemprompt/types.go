@@ -11,13 +11,16 @@ import (
 )
 
 const (
-	// ServiceName is the canonical Cordis service name.
-	ServiceName = "systemPrompt"
-	// AssembleEventName is the canonical scoped assembly waterfall event.
+	// PluginName is the canonical Harness System Prompt Plugin name.
+	PluginName = "@deepseek-ai/dsh-system-prompt"
+	// OverlayPluginName identifies a child System Prompt layer.
+	OverlayPluginName = "@deepseek-ai/dsh-system-prompt/overlay"
+	// AssembleEventName retains the canonical source name of the assembly
+	// waterfall for compatibility evidence and diagnostics.
 	AssembleEventName = "system-prompt/assemble"
-	// ChangeEventName is the canonical unfiltered registry-change event.
+	// ChangeEventName is the canonical registry-change Event name.
 	ChangeEventName = "system-prompt/change"
-	// PersonaSection is the deployment persona slot that a scoped preset may shadow.
+	// PersonaSection is the deployment persona slot that a child layer may shadow.
 	PersonaSection = "deployment:persona"
 	// PersonaOrder is the canonical order of the deployment persona slot.
 	PersonaOrder = 0
@@ -46,10 +49,10 @@ type ValidatedConfig struct {
 	toolOrder              []string
 }
 
-// AssembleContext selects the contribution and listener scope for one
-// assembly. Cancellation and deadlines travel through context.Context.
+// AssembleContext contains business data available while one prompt is
+// assembled. Runtime Scope selection is owned by the concrete SystemPrompt
+// Plugin instance resolved for the caller and is deliberately absent here.
 type AssembleContext struct {
-	Scope   plugin.ScopeKey
 	Session *session.Session
 }
 
@@ -67,11 +70,14 @@ func (content StaticText) ResolveText(context.Context, AssembleContext) (string,
 	return string(content), nil
 }
 
-// TextFunc adapts a function to TextProvider.
+// TextFunc adapts a stateless function to TextProvider.
 type TextFunc func(context.Context, AssembleContext) (string, error)
 
-// ResolveText invokes the function.
-func (operation TextFunc) ResolveText(requestContext context.Context, assemblyContext AssembleContext) (string, error) {
+// ResolveText invokes the adapted function.
+func (operation TextFunc) ResolveText(
+	requestContext context.Context,
+	assemblyContext AssembleContext,
+) (string, error) {
 	return operation(requestContext, assemblyContext)
 }
 
@@ -110,7 +116,20 @@ type VariableValue struct {
 }
 
 // VariableProvider resolves one prompt variable for each assembly.
-type VariableProvider func(context.Context, AssembleContext) (VariableValue, error)
+type VariableProvider interface {
+	ResolveVariable(context.Context, AssembleContext) (VariableValue, error)
+}
+
+// VariableProviderFunc adapts a stateless function to VariableProvider.
+type VariableProviderFunc func(context.Context, AssembleContext) (VariableValue, error)
+
+// ResolveVariable invokes the adapted function.
+func (operation VariableProviderFunc) ResolveVariable(
+	requestContext context.Context,
+	assemblyContext AssembleContext,
+) (VariableValue, error) {
+	return operation(requestContext, assemblyContext)
+}
 
 // ToolProviderResult contains schemas visible in this assembly and the
 // pre-restriction name universe used to validate configured tool order.
@@ -120,69 +139,80 @@ type ToolProviderResult struct {
 }
 
 // ToolProvider resolves model-visible tool schemas for each assembly.
-type ToolProvider func(context.Context, AssembleContext) (ToolProviderResult, error)
+type ToolProvider interface {
+	ResolveTools(context.Context, AssembleContext) (ToolProviderResult, error)
+}
 
-// PromptAssembly is the complete, still-unrendered model-input snapshot.
+// ToolProviderFunc adapts a stateless function to ToolProvider.
+type ToolProviderFunc func(context.Context, AssembleContext) (ToolProviderResult, error)
+
+// ResolveTools invokes the adapted function.
+func (operation ToolProviderFunc) ResolveTools(
+	requestContext context.Context,
+	assemblyContext AssembleContext,
+) (ToolProviderResult, error) {
+	return operation(requestContext, assemblyContext)
+}
+
+// AssembleRequest is the typed input of the System Prompt assembly waterfall.
+type AssembleRequest struct {
+	plugin.WaterfallInputBase
+	Context AssembleContext
+}
+
+// PromptAssembly is the complete, still-unrendered model-input snapshot and
+// the typed output of the System Prompt assembly waterfall.
 type PromptAssembly struct {
+	plugin.WaterfallOutputBase
 	Sections  []AssembledSection
 	Contexts  []AssembledContext
 	Tools     []llm.ToolSchema
 	Variables map[string]VariableValue
 }
 
-// AssembleNext delegates to the next assembly listener.
-type AssembleNext func(context.Context) (PromptAssembly, error)
+// Changed reports that one System Prompt layer changed after a successful
+// add or removal. It is unfiltered at the domain level; Runtime Scope routing
+// still follows the publishing layer's ancestry.
+type Changed struct{}
 
-// AssembleHandler may transform or short-circuit one scoped assembly.
-type AssembleHandler func(context.Context, *PromptAssembly, AssembleContext, AssembleNext) (PromptAssembly, error)
+// EventName returns the canonical Harness Event name.
+func (Changed) EventName() string {
+	return ChangeEventName
+}
 
-// ChangeHandler observes any registration or disposal change. Change events
-// are unfiltered because a global registration can affect every scope.
-type ChangeHandler func(context.Context) error
+// EventDelivery preserves synchronous failure propagation so a failed add can
+// be rolled back before it becomes observable.
+func (Changed) EventDelivery() plugin.DeliveryPolicy {
+	return plugin.DeliveryOrdered
+}
 
-// SystemPrompt is the provider-owned registry and assembly capability.
-type SystemPrompt interface {
-	Section(context.Context, *plugin.Scope, PromptSection) (plugin.Disposer, error)
-	Context(context.Context, *plugin.Scope, PromptContext) (plugin.Disposer, error)
-	SuppressRuntimeContext(context.Context, *plugin.Scope) (plugin.Disposer, error)
-	Tools(context.Context, *plugin.Scope, ToolProvider) (plugin.Disposer, error)
-	Variable(context.Context, *plugin.Scope, string, VariableProvider) (plugin.Disposer, error)
+// Assembler is the read-only System Prompt capability consumed by Agent Loop.
+type Assembler interface {
+	plugin.Service
 	Assemble(context.Context, AssembleContext) (PromptAssembly, error)
 }
 
-// Service is the canonical System Prompt service definition.
-var Service = plugin.DefineService[SystemPrompt](ServiceName)
-
-type assemblePayload struct {
-	assembled       *PromptAssembly
-	assemblyContext AssembleContext
+// Contributions is the mutation capability consumed by Plugins that own
+// prompt sections, context, variables, or tool presentation. It changes only
+// the exact Registry layer resolved for that Plugin.
+type Contributions interface {
+	plugin.Service
+	AddSection(context.Context, PromptSection) error
+	RemoveSection(context.Context, string) error
+	AddContext(context.Context, PromptContext) error
+	RemoveContext(context.Context, string) error
+	AddRuntimeContextSuppressor(context.Context, string) error
+	RemoveRuntimeContextSuppressor(context.Context, string) error
+	AddToolProvider(context.Context, string, ToolProvider) error
+	RemoveToolProvider(context.Context, string) error
+	AddVariable(context.Context, string, VariableProvider) error
+	RemoveVariable(context.Context, string) error
 }
 
-var (
-	assembleEvent = plugin.DefineEvent[assemblePayload, PromptAssembly](AssembleEventName, plugin.ModeWaterfall)
-	changeEvent   = plugin.DefineEvent[struct{}, struct{}](ChangeEventName, plugin.ModeEmit)
-)
-
-// OnAssemble registers one scope-owned assembly waterfall listener.
-func OnAssemble(pluginScope *plugin.Scope, callback AssembleHandler) (plugin.Disposer, error) {
-	if callback == nil {
-		return nil, errNilAssembleHandler
-	}
-	return plugin.OnWaterfall(pluginScope, assembleEvent,
-		func(requestContext context.Context, payload assemblePayload, downstream plugin.Next[assemblePayload, PromptAssembly]) (PromptAssembly, error) {
-			return callback(requestContext, payload.assembled, payload.assemblyContext,
-				func(chainContext context.Context) (PromptAssembly, error) {
-					return downstream(chainContext, payload)
-				})
-		})
-}
-
-// OnChange registers one scope-owned unfiltered registry-change listener.
-func OnChange(pluginScope *plugin.Scope, callback ChangeHandler) (plugin.Disposer, error) {
-	if callback == nil {
-		return nil, errNilChangeHandler
-	}
-	return plugin.OnNotify(pluginScope, changeEvent, func(requestContext context.Context, _ struct{}) error {
-		return callback(requestContext)
-	})
+// SystemPrompt is the complete provider contract implemented by Registry.
+// Consumers should depend on Assembler or Contributions rather than this
+// composite interface.
+type SystemPrompt interface {
+	Assembler
+	Contributions
 }

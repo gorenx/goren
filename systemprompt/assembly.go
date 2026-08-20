@@ -5,40 +5,50 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/plugin"
 )
 
-// promptAssembler resolves one immutable provider-membership snapshot. It
-// owns assembly ordering and post-waterfall invariants, not registry mutation.
-type promptAssembler struct {
-	sourceScope *plugin.Scope
-	store       *promptStore
-	toolOrder   []string
+type assemblyAction struct {
+	assembled PromptAssembly
 }
 
-func newPromptAssembler(sourceScope *plugin.Scope, store *promptStore, toolOrder []string) promptAssembler {
-	return promptAssembler{sourceScope: sourceScope, store: store, toolOrder: slices.Clone(toolOrder)}
+func (action *assemblyAction) Execute(
+	context.Context,
+	AssembleRequest,
+) (PromptAssembly, error) {
+	return cloneAssembly(action.assembled), nil
 }
 
-func (assembler promptAssembler) assemble(requestContext context.Context, assemblyContext AssembleContext) (PromptAssembly, error) {
-	state := assembler.store.capture(assemblyContext.Scope)
+func assembleLayers(
+	requestContext context.Context,
+	assemblyContext AssembleContext,
+	layers []promptLayerSnapshot,
+	toolOrder []string,
+) (PromptAssembly, *AssembledSection, bool, error) {
 	variables := make(map[string]VariableValue)
-	for _, providerLayer := range state.variableProviders {
-		for _, item := range providerLayer {
-			resolved, err := item.retained(requestContext, assemblyContext)
+	for _, layer := range layers {
+		for _, entry := range layer.variables {
+			resolved, err := entry.provider.ResolveVariable(
+				requestContext,
+				assemblyContext,
+			)
 			if err != nil {
-				return PromptAssembly{}, fmt.Errorf("systemprompt: resolve prompt variable %q: %w", item.name, err)
+				return PromptAssembly{}, nil, false, fmt.Errorf(
+					"systemprompt: resolve prompt variable %q: %w",
+					entry.name,
+					err,
+				)
 			}
-			variables[item.name] = resolved
+			variables[entry.name] = resolved
 		}
 	}
 
-	assembledSections := make([]AssembledSection, 0, len(state.sections))
+	sections := mergeSections(layers)
 	completeDefinitions := make([]PromptSection, 0, 1)
-	for _, definition := range state.sections {
+	for _, definition := range sections {
 		if definition.Complete {
 			completeDefinitions = append(completeDefinitions, definition)
 		}
@@ -48,15 +58,29 @@ func (assembler promptAssembler) assemble(requestContext context.Context, assemb
 		for index, definition := range completeDefinitions {
 			names[index] = fmt.Sprintf("%q", definition.Name)
 		}
-		return PromptAssembly{}, fmt.Errorf("systemprompt: multiple complete prompt sections are active: %s", strings.Join(names, ", "))
+		return PromptAssembly{}, nil, false, fmt.Errorf(
+			"systemprompt: multiple complete prompt sections are active: %s",
+			strings.Join(names, ", "),
+		)
 	}
+	assembledSections := make([]AssembledSection, 0, len(sections))
 	var completeSection *AssembledSection
-	for _, definition := range state.sections {
-		resolvedText, err := definition.Text.ResolveText(requestContext, assemblyContext)
+	for _, definition := range sections {
+		resolvedText, err := definition.Text.ResolveText(
+			requestContext,
+			assemblyContext,
+		)
 		if err != nil {
-			return PromptAssembly{}, fmt.Errorf("systemprompt: resolve prompt section %q: %w", definition.Name, err)
+			return PromptAssembly{}, nil, false, fmt.Errorf(
+				"systemprompt: resolve prompt section %q: %w",
+				definition.Name,
+				err,
+			)
 		}
-		assembledEntry := AssembledSection{Name: definition.Name, Text: resolvedText}
+		assembledEntry := AssembledSection{
+			Name: definition.Name,
+			Text: resolvedText,
+		}
 		assembledSections = append(assembledSections, assembledEntry)
 		if definition.Complete {
 			retained := assembledEntry
@@ -64,69 +88,130 @@ func (assembler promptAssembler) assemble(requestContext context.Context, assemb
 		}
 	}
 
-	assembledContexts := make([]AssembledContext, 0, len(state.contexts))
-	if !state.contextSuppressed {
-		for _, definition := range state.contexts {
-			resolvedText, err := definition.Text.ResolveText(requestContext, assemblyContext)
+	suppressed := contextSuppressed(layers)
+	assembledContexts := make([]AssembledContext, 0)
+	if !suppressed {
+		contexts := mergeContexts(layers)
+		assembledContexts = make([]AssembledContext, 0, len(contexts))
+		for _, definition := range contexts {
+			resolvedText, err := definition.Text.ResolveText(
+				requestContext,
+				assemblyContext,
+			)
 			if err != nil {
-				return PromptAssembly{}, fmt.Errorf("systemprompt: resolve prompt context %q: %w", definition.Name, err)
+				return PromptAssembly{}, nil, false, fmt.Errorf(
+					"systemprompt: resolve prompt context %q: %w",
+					definition.Name,
+					err,
+				)
 			}
-			assembledContexts = append(assembledContexts, AssembledContext{Name: definition.Name, Text: resolvedText})
+			assembledContexts = append(assembledContexts, AssembledContext{
+				Name: definition.Name,
+				Text: resolvedText,
+			})
 		}
 	}
 
 	collectedSchemas := make([]llm.ToolSchema, 0)
 	knownNames := make(map[string]struct{})
-	for _, callback := range state.toolProviders {
-		providerResult, err := callback(requestContext, assemblyContext)
-		if err != nil {
-			return PromptAssembly{}, fmt.Errorf("systemprompt: resolve tool provider: %w", err)
-		}
-		for _, schema := range providerResult.Schemas {
-			detached, detachErr := detachToolSchema(schema)
-			if detachErr != nil {
-				return PromptAssembly{}, detachErr
+	for _, layer := range layers {
+		for _, entry := range layer.toolProviders {
+			providerResult, err := entry.provider.ResolveTools(
+				requestContext,
+				assemblyContext,
+			)
+			if err != nil {
+				return PromptAssembly{}, nil, false, fmt.Errorf(
+					"systemprompt: resolve tool provider %q: %w",
+					entry.name,
+					err,
+				)
 			}
-			collectedSchemas = append(collectedSchemas, detached)
-		}
-		acceptedNames := providerResult.KnownNames
-		if acceptedNames == nil {
-			acceptedNames = make([]string, len(providerResult.Schemas))
-			for index, schema := range providerResult.Schemas {
-				acceptedNames[index] = schema.Name
+			for _, schema := range providerResult.Schemas {
+				detached, detachErr := detachToolSchema(schema)
+				if detachErr != nil {
+					return PromptAssembly{}, nil, false, detachErr
+				}
+				collectedSchemas = append(collectedSchemas, detached)
 			}
-		}
-		for _, name := range acceptedNames {
-			knownNames[name] = struct{}{}
+			acceptedNames := providerResult.KnownNames
+			if acceptedNames == nil {
+				acceptedNames = make([]string, len(providerResult.Schemas))
+				for index, schema := range providerResult.Schemas {
+					acceptedNames[index] = schema.Name
+				}
+			}
+			for _, name := range acceptedNames {
+				knownNames[name] = struct{}{}
+			}
 		}
 	}
-	orderedSchemas, err := orderToolSchemas(collectedSchemas, assembler.toolOrder, knownNames)
+	orderedSchemas, err := orderToolSchemas(
+		collectedSchemas,
+		toolOrder,
+		knownNames,
+	)
 	if err != nil {
-		return PromptAssembly{}, err
+		return PromptAssembly{}, nil, false, err
 	}
 
-	assembled := PromptAssembly{
-		Sections: assembledSections, Contexts: assembledContexts, Tools: orderedSchemas, Variables: variables,
+	return PromptAssembly{
+		Sections:  assembledSections,
+		Contexts:  assembledContexts,
+		Tools:     orderedSchemas,
+		Variables: variables,
+	}, completeSection, suppressed, nil
+}
+
+func mergeSections(layers []promptLayerSnapshot) []PromptSection {
+	names := make([]string, 0)
+	byName := make(map[string]PromptSection)
+	for _, layer := range layers {
+		for _, definition := range layer.sections {
+			if _, exists := byName[definition.Name]; !exists {
+				names = append(names, definition.Name)
+			}
+			byName[definition.Name] = definition
+		}
 	}
-	payload := assemblePayload{assembled: &assembled, assemblyContext: assemblyContext}
-	transformed, err := plugin.WaterfallScopedFrom(requestContext, assembler.sourceScope, assemblyContext.Scope,
-		assembleEvent, payload, func(context.Context, assemblePayload) (PromptAssembly, error) {
-			return cloneAssembly(assembled), nil
-		})
-	if err != nil {
-		return PromptAssembly{}, err
+	merged := make([]PromptSection, 0, len(names))
+	for _, name := range names {
+		merged = append(merged, byName[name])
 	}
-	if err := validateAssembly(transformed); err != nil {
-		return PromptAssembly{}, err
+	sort.SliceStable(merged, func(leftIndex int, rightIndex int) bool {
+		return merged[leftIndex].Order < merged[rightIndex].Order
+	})
+	return merged
+}
+
+func mergeContexts(layers []promptLayerSnapshot) []PromptContext {
+	names := make([]string, 0)
+	byName := make(map[string]PromptContext)
+	for _, layer := range layers {
+		for _, definition := range layer.contexts {
+			if _, exists := byName[definition.Name]; !exists {
+				names = append(names, definition.Name)
+			}
+			byName[definition.Name] = definition
+		}
 	}
-	transformed = cloneAssembly(transformed)
-	if completeSection != nil {
-		transformed.Sections = []AssembledSection{*completeSection}
+	merged := make([]PromptContext, 0, len(names))
+	for _, name := range names {
+		merged = append(merged, byName[name])
 	}
-	if state.contextSuppressed {
-		transformed.Contexts = []AssembledContext{}
+	sort.SliceStable(merged, func(leftIndex int, rightIndex int) bool {
+		return merged[leftIndex].Order < merged[rightIndex].Order
+	})
+	return merged
+}
+
+func contextSuppressed(layers []promptLayerSnapshot) bool {
+	for _, layer := range layers {
+		if layer.contextSuppressed {
+			return true
+		}
 	}
-	return transformed, nil
+	return false
 }
 
 func validateAssembly(assembled PromptAssembly) error {
@@ -136,7 +221,10 @@ func validateAssembly(assembled PromptAssembly) error {
 			return errors.New("systemprompt: assembled section names must be non-empty")
 		}
 		if _, exists := sectionNames[entry.Name]; exists {
-			return fmt.Errorf("systemprompt: assembled section name %q is duplicated", entry.Name)
+			return fmt.Errorf(
+				"systemprompt: assembled section name %q is duplicated",
+				entry.Name,
+			)
 		}
 		sectionNames[entry.Name] = struct{}{}
 	}
@@ -146,7 +234,10 @@ func validateAssembly(assembled PromptAssembly) error {
 			return errors.New("systemprompt: assembled context names must be non-empty")
 		}
 		if _, exists := contextNames[entry.Name]; exists {
-			return fmt.Errorf("systemprompt: assembled context name %q is duplicated", entry.Name)
+			return fmt.Errorf(
+				"systemprompt: assembled context name %q is duplicated",
+				entry.Name,
+			)
 		}
 		contextNames[entry.Name] = struct{}{}
 	}
@@ -157,7 +248,10 @@ func validateAssembly(assembled PromptAssembly) error {
 	}
 	for name := range assembled.Variables {
 		if !variableNamePattern.MatchString(name) {
-			return fmt.Errorf("systemprompt: assembled variable name %q is invalid", name)
+			return fmt.Errorf(
+				"systemprompt: assembled variable name %q is invalid",
+				name,
+			)
 		}
 	}
 	return nil
@@ -172,7 +266,9 @@ func cloneAssembly(assembled PromptAssembly) PromptAssembly {
 	}
 	for index, schema := range assembled.Tools {
 		detached.Tools[index] = llm.ToolSchema{
-			Name: schema.Name, Description: schema.Description, Parameters: slices.Clone(schema.Parameters),
+			Name:        schema.Name,
+			Description: schema.Description,
+			Parameters:  slices.Clone(schema.Parameters),
 		}
 	}
 	for name, retained := range assembled.Variables {

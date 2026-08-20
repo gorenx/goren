@@ -4,318 +4,238 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"sort"
 	"sync"
-
-	"github.com/gorenx/goren/plugin"
 )
 
-type namedContribution interface {
-	PromptSection | PromptContext | VariableProvider
-}
-
-type anonymousContribution interface {
-	struct{} | ToolProvider
-}
-
-type namedRecord[T namedContribution] struct {
+type namedVariableProvider struct {
 	name     string
-	retained T
-	active   bool
+	provider VariableProvider
 }
 
-type namedTable[T namedContribution] struct {
-	byName map[string]*namedRecord[T]
-	names  []string
-}
-
-func (storage *namedTable[T]) add(name string, retained T, duplicateDetail string) (*namedRecord[T], error) {
-	if storage.byName == nil {
-		storage.byName = make(map[string]*namedRecord[T])
-	}
-	if _, exists := storage.byName[name]; exists {
-		return nil, errors.New(duplicateDetail)
-	}
-	record := &namedRecord[T]{name: name, retained: retained, active: true}
-	storage.byName[name] = record
-	storage.names = append(storage.names, name)
-	return record, nil
-}
-
-func (storage *namedTable[T]) remove(record *namedRecord[T]) {
-	if record == nil || !record.active || storage.byName[record.name] != record {
-		return
-	}
-	record.active = false
-	delete(storage.byName, record.name)
-	storage.names = slices.DeleteFunc(storage.names, func(candidate string) bool { return candidate == record.name })
-	if len(storage.byName) == 0 {
-		storage.byName = nil
-		storage.names = nil
-	}
-}
-
-func (storage *namedTable[T]) entries() []namedItem[T] {
-	items := make([]namedItem[T], 0, len(storage.names))
-	for _, name := range storage.names {
-		record := storage.byName[name]
-		if record != nil && record.active {
-			items = append(items, namedItem[T]{name: name, retained: record.retained})
-		}
-	}
-	return items
-}
-
-func (storage *namedTable[T]) empty() bool {
-	return len(storage.byName) == 0
-}
-
-type namedItem[T namedContribution] struct {
+type namedToolProvider struct {
 	name     string
-	retained T
+	provider ToolProvider
 }
 
-type anonymousRecord[T anonymousContribution] struct {
-	id       uint64
-	retained T
-	active   bool
-}
-
-type anonymousTable[T anonymousContribution] struct {
-	byID  map[uint64]*anonymousRecord[T]
-	order []uint64
-}
-
-func (storage *anonymousTable[T]) add(identity uint64, retained T) *anonymousRecord[T] {
-	if storage.byID == nil {
-		storage.byID = make(map[uint64]*anonymousRecord[T])
-	}
-	record := &anonymousRecord[T]{id: identity, retained: retained, active: true}
-	storage.byID[identity] = record
-	storage.order = append(storage.order, identity)
-	return record
-}
-
-func (storage *anonymousTable[T]) remove(record *anonymousRecord[T]) {
-	if record == nil || !record.active || storage.byID[record.id] != record {
-		return
-	}
-	record.active = false
-	delete(storage.byID, record.id)
-	storage.order = slices.DeleteFunc(storage.order, func(candidate uint64) bool { return candidate == record.id })
-	if len(storage.byID) == 0 {
-		storage.byID = nil
-		storage.order = nil
-	}
-}
-
-func (storage *anonymousTable[T]) values() []T {
-	retainedValues := make([]T, 0, len(storage.order))
-	for _, identity := range storage.order {
-		record := storage.byID[identity]
-		if record != nil && record.active {
-			retainedValues = append(retainedValues, record.retained)
-		}
-	}
-	return retainedValues
-}
-
-func (storage *anonymousTable[T]) empty() bool {
-	return len(storage.byID) == 0
-}
-
-type promptLayer struct {
-	sections    namedTable[PromptSection]
-	contexts    namedTable[PromptContext]
-	variables   namedTable[VariableProvider]
-	suppressors anonymousTable[struct{}]
-	providers   anonymousTable[ToolProvider]
-}
-
-func (layer *promptLayer) empty() bool {
-	return layer.sections.empty() && layer.contexts.empty() && layer.variables.empty() &&
-		layer.suppressors.empty() && layer.providers.empty()
-}
-
-type promptSnapshot struct {
+type promptLayerSnapshot struct {
 	sections          []PromptSection
 	contexts          []PromptContext
-	variableProviders [][]namedItem[VariableProvider]
-	toolProviders     []ToolProvider
+	variables         []namedVariableProvider
+	toolProviders     []namedToolProvider
 	contextSuppressed bool
 }
 
-// promptStore owns mutable global/scoped contribution state. Provider
-// evaluation never runs while its lock is held; capture returns a membership
-// snapshot consumed by promptAssembler.
+// promptStore owns one exact System Prompt layer. Parent/child composition is
+// performed by Registry, so this object never sees Plugin Scope identities.
 type promptStore struct {
-	mu     sync.Mutex
-	global promptLayer
-	scoped map[plugin.ScopeKey]*promptLayer
-	nextID uint64
+	mutex sync.RWMutex
+
+	sections      map[string]PromptSection
+	sectionOrder  []string
+	contexts      map[string]PromptContext
+	contextOrder  []string
+	variables     map[string]VariableProvider
+	variableOrder []string
+	toolProviders map[string]ToolProvider
+	toolOrder     []string
+	suppressors   map[string]struct{}
 }
 
 func newPromptStore() *promptStore {
-	return &promptStore{scoped: make(map[plugin.ScopeKey]*promptLayer)}
-}
-
-func (storage *promptStore) addSection(selectedKey plugin.ScopeKey, definition PromptSection) (func(), error) {
-	storage.mu.Lock()
-	layer := storage.layerLocked(selectedKey)
-	record, err := layer.sections.add(definition.Name, definition, duplicateMessage(selectedKey, "section", definition.Name))
-	storage.mu.Unlock()
-	if err != nil {
-		return nil, err
-	}
-	return func() {
-		storage.mu.Lock()
-		layer.sections.remove(record)
-		storage.pruneLocked(selectedKey)
-		storage.mu.Unlock()
-	}, nil
-}
-
-func (storage *promptStore) addContext(selectedKey plugin.ScopeKey, definition PromptContext) (func(), error) {
-	storage.mu.Lock()
-	layer := storage.layerLocked(selectedKey)
-	record, err := layer.contexts.add(definition.Name, definition, duplicateMessage(selectedKey, "context", definition.Name))
-	storage.mu.Unlock()
-	if err != nil {
-		return nil, err
-	}
-	return func() {
-		storage.mu.Lock()
-		layer.contexts.remove(record)
-		storage.pruneLocked(selectedKey)
-		storage.mu.Unlock()
-	}, nil
-}
-
-func (storage *promptStore) addSuppressor(selectedKey plugin.ScopeKey) func() {
-	storage.mu.Lock()
-	storage.nextID++
-	layer := storage.layerLocked(selectedKey)
-	record := layer.suppressors.add(storage.nextID, struct{}{})
-	storage.mu.Unlock()
-	return func() {
-		storage.mu.Lock()
-		layer.suppressors.remove(record)
-		storage.pruneLocked(selectedKey)
-		storage.mu.Unlock()
+	return &promptStore{
+		sections:      make(map[string]PromptSection),
+		contexts:      make(map[string]PromptContext),
+		variables:     make(map[string]VariableProvider),
+		toolProviders: make(map[string]ToolProvider),
+		suppressors:   make(map[string]struct{}),
 	}
 }
 
-func (storage *promptStore) addToolProvider(selectedKey plugin.ScopeKey, callback ToolProvider) func() {
-	storage.mu.Lock()
-	storage.nextID++
-	layer := storage.layerLocked(selectedKey)
-	record := layer.providers.add(storage.nextID, callback)
-	storage.mu.Unlock()
-	return func() {
-		storage.mu.Lock()
-		layer.providers.remove(record)
-		storage.pruneLocked(selectedKey)
-		storage.mu.Unlock()
+func (storage *promptStore) addSection(definition PromptSection) error {
+	storage.mutex.Lock()
+	defer storage.mutex.Unlock()
+	if _, exists := storage.sections[definition.Name]; exists {
+		return fmt.Errorf(
+			"systemprompt: prompt section %q is already registered in this layer",
+			definition.Name,
+		)
 	}
+	storage.sections[definition.Name] = definition
+	storage.sectionOrder = append(storage.sectionOrder, definition.Name)
+	return nil
 }
 
-func (storage *promptStore) addVariable(selectedKey plugin.ScopeKey, name string, callback VariableProvider) (func(), error) {
-	storage.mu.Lock()
-	layer := storage.layerLocked(selectedKey)
-	record, err := layer.variables.add(name, callback, duplicateMessage(selectedKey, "variable", name))
-	storage.mu.Unlock()
-	if err != nil {
-		return nil, err
+func (storage *promptStore) removeSection(name string) bool {
+	storage.mutex.Lock()
+	defer storage.mutex.Unlock()
+	if _, exists := storage.sections[name]; !exists {
+		return false
 	}
-	return func() {
-		storage.mu.Lock()
-		layer.variables.remove(record)
-		storage.pruneLocked(selectedKey)
-		storage.mu.Unlock()
-	}, nil
+	delete(storage.sections, name)
+	storage.sectionOrder = removeName(storage.sectionOrder, name)
+	return true
 }
 
-func (storage *promptStore) capture(selectedKey plugin.ScopeKey) promptSnapshot {
-	storage.mu.Lock()
-	defer storage.mu.Unlock()
-	layers := make([]*promptLayer, 0)
-	for _, lineageKey := range plugin.ScopeLineage(selectedKey) {
-		if layer := storage.scoped[lineageKey]; layer != nil {
-			layers = append(layers, layer)
+func (storage *promptStore) addContext(definition PromptContext) error {
+	storage.mutex.Lock()
+	defer storage.mutex.Unlock()
+	if _, exists := storage.contexts[definition.Name]; exists {
+		return fmt.Errorf(
+			"systemprompt: prompt context %q is already registered in this layer",
+			definition.Name,
+		)
+	}
+	storage.contexts[definition.Name] = definition
+	storage.contextOrder = append(storage.contextOrder, definition.Name)
+	return nil
+}
+
+func (storage *promptStore) removeContext(name string) bool {
+	storage.mutex.Lock()
+	defer storage.mutex.Unlock()
+	if _, exists := storage.contexts[name]; !exists {
+		return false
+	}
+	delete(storage.contexts, name)
+	storage.contextOrder = removeName(storage.contextOrder, name)
+	return true
+}
+
+func (storage *promptStore) addVariable(name string, provider VariableProvider) error {
+	storage.mutex.Lock()
+	defer storage.mutex.Unlock()
+	if _, exists := storage.variables[name]; exists {
+		return fmt.Errorf(
+			"systemprompt: prompt variable %q is already registered in this layer",
+			name,
+		)
+	}
+	storage.variables[name] = provider
+	storage.variableOrder = append(storage.variableOrder, name)
+	return nil
+}
+
+func (storage *promptStore) removeVariable(name string) bool {
+	storage.mutex.Lock()
+	defer storage.mutex.Unlock()
+	if _, exists := storage.variables[name]; !exists {
+		return false
+	}
+	delete(storage.variables, name)
+	storage.variableOrder = removeName(storage.variableOrder, name)
+	return true
+}
+
+func (storage *promptStore) addToolProvider(name string, provider ToolProvider) error {
+	storage.mutex.Lock()
+	defer storage.mutex.Unlock()
+	if _, exists := storage.toolProviders[name]; exists {
+		return fmt.Errorf(
+			"systemprompt: tool provider %q is already registered in this layer",
+			name,
+		)
+	}
+	storage.toolProviders[name] = provider
+	storage.toolOrder = append(storage.toolOrder, name)
+	return nil
+}
+
+func (storage *promptStore) removeToolProvider(name string) bool {
+	storage.mutex.Lock()
+	defer storage.mutex.Unlock()
+	if _, exists := storage.toolProviders[name]; !exists {
+		return false
+	}
+	delete(storage.toolProviders, name)
+	storage.toolOrder = removeName(storage.toolOrder, name)
+	return true
+}
+
+func (storage *promptStore) addSuppressor(name string) error {
+	storage.mutex.Lock()
+	defer storage.mutex.Unlock()
+	if _, exists := storage.suppressors[name]; exists {
+		return fmt.Errorf(
+			"systemprompt: runtime-context suppressor %q is already registered in this layer",
+			name,
+		)
+	}
+	storage.suppressors[name] = struct{}{}
+	return nil
+}
+
+func (storage *promptStore) removeSuppressor(name string) bool {
+	storage.mutex.Lock()
+	defer storage.mutex.Unlock()
+	if _, exists := storage.suppressors[name]; !exists {
+		return false
+	}
+	delete(storage.suppressors, name)
+	return true
+}
+
+func (storage *promptStore) capture() promptLayerSnapshot {
+	storage.mutex.RLock()
+	defer storage.mutex.RUnlock()
+	snapshot := promptLayerSnapshot{
+		sections:          make([]PromptSection, 0, len(storage.sections)),
+		contexts:          make([]PromptContext, 0, len(storage.contexts)),
+		variables:         make([]namedVariableProvider, 0, len(storage.variables)),
+		toolProviders:     make([]namedToolProvider, 0, len(storage.toolProviders)),
+		contextSuppressed: len(storage.suppressors) != 0,
+	}
+	for _, name := range storage.sectionOrder {
+		if definition, exists := storage.sections[name]; exists {
+			snapshot.sections = append(snapshot.sections, definition)
 		}
 	}
-	state := promptSnapshot{
-		sections: mergeNamed(storage.global.sections.entries(), layers, func(layer *promptLayer) []namedItem[PromptSection] {
-			return layer.sections.entries()
-		}),
-		contexts: mergeNamed(storage.global.contexts.entries(), layers, func(layer *promptLayer) []namedItem[PromptContext] {
-			return layer.contexts.entries()
-		}),
-		variableProviders: make([][]namedItem[VariableProvider], 0, len(layers)+1),
-		toolProviders:     storage.global.providers.values(),
-		contextSuppressed: !storage.global.suppressors.empty(),
-	}
-	state.variableProviders = append(state.variableProviders, storage.global.variables.entries())
-	for _, layer := range layers {
-		state.variableProviders = append(state.variableProviders, layer.variables.entries())
-		state.toolProviders = append(state.toolProviders, layer.providers.values()...)
-		state.contextSuppressed = state.contextSuppressed || !layer.suppressors.empty()
-	}
-	sort.SliceStable(state.sections, func(leftIndex int, rightIndex int) bool {
-		return state.sections[leftIndex].Order < state.sections[rightIndex].Order
-	})
-	sort.SliceStable(state.contexts, func(leftIndex int, rightIndex int) bool {
-		return state.contexts[leftIndex].Order < state.contexts[rightIndex].Order
-	})
-	return state
-}
-
-func (storage *promptStore) layerLocked(selectedKey plugin.ScopeKey) *promptLayer {
-	if selectedKey.IsGlobal() {
-		return &storage.global
-	}
-	layer := storage.scoped[selectedKey]
-	if layer == nil {
-		layer = &promptLayer{}
-		storage.scoped[selectedKey] = layer
-	}
-	return layer
-}
-
-func (storage *promptStore) pruneLocked(selectedKey plugin.ScopeKey) {
-	if selectedKey.IsGlobal() {
-		return
-	}
-	if layer := storage.scoped[selectedKey]; layer != nil && layer.empty() {
-		delete(storage.scoped, selectedKey)
-	}
-}
-
-func duplicateMessage(selectedKey plugin.ScopeKey, kind string, name string) string {
-	if selectedKey.IsGlobal() {
-		return fmt.Sprintf("systemprompt: prompt %s %q is already registered (for a per-agent override, register through that agent's scope instead)", kind, name)
-	}
-	return fmt.Sprintf("systemprompt: prompt %s %q is already registered in this scope", kind, name)
-}
-
-func mergeNamed[T namedContribution](globalEntries []namedItem[T], layers []*promptLayer, pick func(*promptLayer) []namedItem[T]) []T {
-	names := make([]string, 0, len(globalEntries))
-	byName := make(map[string]T)
-	for _, item := range globalEntries {
-		names = append(names, item.name)
-		byName[item.name] = item.retained
-	}
-	for _, layer := range layers {
-		for _, item := range pick(layer) {
-			if _, exists := byName[item.name]; !exists {
-				names = append(names, item.name)
-			}
-			byName[item.name] = item.retained
+	for _, name := range storage.contextOrder {
+		if definition, exists := storage.contexts[name]; exists {
+			snapshot.contexts = append(snapshot.contexts, definition)
 		}
 	}
-	merged := make([]T, 0, len(names))
-	for _, name := range names {
-		merged = append(merged, byName[name])
+	for _, name := range storage.variableOrder {
+		if provider, exists := storage.variables[name]; exists {
+			snapshot.variables = append(snapshot.variables, namedVariableProvider{
+				name:     name,
+				provider: provider,
+			})
+		}
 	}
-	return merged
+	for _, name := range storage.toolOrder {
+		if provider, exists := storage.toolProviders[name]; exists {
+			snapshot.toolProviders = append(snapshot.toolProviders, namedToolProvider{
+				name:     name,
+				provider: provider,
+			})
+		}
+	}
+	return snapshot
+}
+
+func (storage *promptStore) clear() {
+	storage.mutex.Lock()
+	storage.sections = make(map[string]PromptSection)
+	storage.sectionOrder = nil
+	storage.contexts = make(map[string]PromptContext)
+	storage.contextOrder = nil
+	storage.variables = make(map[string]VariableProvider)
+	storage.variableOrder = nil
+	storage.toolProviders = make(map[string]ToolProvider)
+	storage.toolOrder = nil
+	storage.suppressors = make(map[string]struct{})
+	storage.mutex.Unlock()
+}
+
+func removeName(names []string, selectedName string) []string {
+	return slices.DeleteFunc(names, func(candidate string) bool {
+		return candidate == selectedName
+	})
+}
+
+func validateEntryName(kind string, name string) error {
+	if name == "" {
+		return errors.New("systemprompt: " + kind + " name must be non-empty")
+	}
+	return nil
 }
