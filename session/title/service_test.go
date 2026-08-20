@@ -14,71 +14,109 @@ import (
 	sessionprojection "github.com/gorenx/goren/session/projection"
 )
 
-var titleFixtureConfig = Config{FallbackMaxWords: 5, FallbackMaxBytes: 40, MaxTitleBytes: 80}
-
-type titleFixturePlugin struct {
-	titles      *LogService
-	projections *sessionprojection.DriveRegistry
-	store       *session.MemoryStore
-	scope       *plugin.Scope
+var titleFixtureConfig = Config{
+	FallbackMaxWords: 5,
+	FallbackMaxBytes: 40,
+	MaxTitleBytes:    80,
 }
 
-func (*titleFixturePlugin) Manifest() plugin.Manifest {
+type titleFailureReporter struct{}
+
+func (titleFailureReporter) ReportEventFailure(context.Context, plugin.EventFailure) {}
+
+func (titleFailureReporter) ReportPostCommitFailure(session.PostCommitFailure) {}
+
+func (titleFailureReporter) ReportAsyncFailure(AsyncFailure) {}
+
+type titleProjectionObserver struct {
+	plugin.Base
+	changes chan sessionprojection.Change
+}
+
+func (*titleProjectionObserver) Manifest() plugin.Manifest {
 	return plugin.Manifest{
-		Name: "fixture-session-title",
-		Provides: []plugin.ServiceRef{
-			Service.Ref(), sessionprojection.Service.Ref(), session.StoreService.Ref(),
+		Name: "fixture-session-title-projection-observer",
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[sessionprojection.Registry](),
+		},
+		Events: []plugin.EventSubscription{
+			plugin.EventOf[sessionprojection.ProjectionChanged](),
 		},
 	}
 }
 
-func (instance *titleFixturePlugin) Apply(requestContext context.Context, pluginScope *plugin.Scope) error {
-	projections, err := sessionprojection.NewDriveRegistry(pluginScope)
-	if err != nil {
-		return err
-	}
-	storeProvider, err := session.NewMemoryStore(pluginScope, session.MemoryStoreOptions{})
-	if err != nil {
-		return err
-	}
-	if err := pluginScope.Effect(requestContext, "sessions", func(context.Context) (plugin.Disposer, error) {
-		return storeProvider.Close, nil
-	}); err != nil {
-		return err
-	}
-	titles, err := NewLogService(pluginScope, storeProvider, projections, titleFixtureConfig, Options{})
-	if err != nil {
-		return err
-	}
-	instance.titles = titles
-	instance.projections = projections
-	instance.store = storeProvider
-	instance.scope = pluginScope
-	if _, err := plugin.Provide(pluginScope, Service, TitleService(titles)); err != nil {
-		return err
-	}
-	if _, err := plugin.Provide(pluginScope, sessionprojection.Service, sessionprojection.Registry(projections)); err != nil {
-		return err
-	}
-	_, err = plugin.Provide(pluginScope, session.StoreService, session.LiveStore(storeProvider))
+func (observer *titleProjectionObserver) Apply(context.Context) error {
+	_, err := plugin.Require[sessionprojection.Registry](observer)
 	return err
 }
 
-type titleFixtureProvider struct {
-	identifier ProviderID
-	mode       AutomaticMode
-	generate   func(context.Context, ProviderRequest) (ProviderResult, error)
+func (*titleProjectionObserver) Dispose(context.Context) error {
+	return nil
 }
 
-func (implementation titleFixtureProvider) ID() ProviderID { return implementation.identifier }
+func (observer *titleProjectionObserver) ObserveEvent(
+	_ context.Context,
+	fact plugin.Event,
+) error {
+	projectionChange, matches := fact.(sessionprojection.ProjectionChanged)
+	if matches && projectionChange.Change.Key == ProjectionKey {
+		observer.changes <- projectionChange.Change
+	}
+	return nil
+}
 
-func (implementation titleFixtureProvider) AutomaticMode() AutomaticMode { return implementation.mode }
+type titleFixture struct {
+	store       *session.MemoryStore
+	titles      *LogService
+	projections *sessionprojection.DriveRegistry
+	changes     <-chan sessionprojection.Change
+}
 
-func (implementation titleFixtureProvider) Generate(
-	requestContext context.Context,
-	request ProviderRequest,
-) (ProviderResult, error) {
-	return implementation.generate(requestContext, request)
+func newTitleFixture(testingContext *testing.T) titleFixture {
+	testingContext.Helper()
+	reporter := titleFailureReporter{}
+	store, err := session.NewMemoryStore(
+		session.MemoryStoreOptions{
+			PostCommitFailures: reporter,
+		},
+	)
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	projections := sessionprojection.NewDriveRegistry()
+	titles, err := NewLogService(titleFixtureConfig, reporter)
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	changes := make(chan sessionprojection.Change, 8)
+	observer := &titleProjectionObserver{
+		changes: changes,
+	}
+	runtimeEngine := plugin.NewRuntime(
+		plugin.RuntimeSettings{
+			EventFailures: reporter,
+		},
+	)
+	if _, err := runtimeEngine.Start(
+		context.Background(),
+		observer,
+		titles,
+		projections,
+		store,
+	); err != nil {
+		testingContext.Fatal(err)
+	}
+	testingContext.Cleanup(func() {
+		if err := runtimeEngine.Shutdown(context.Background()); err != nil {
+			testingContext.Error(err)
+		}
+	})
+	return titleFixture{
+		store:       store,
+		titles:      titles,
+		projections: projections,
+		changes:     changes,
+	}
 }
 
 func TestNormalizeAndFallbackSessionTitle(t *testing.T) {
@@ -108,9 +146,15 @@ func TestNormalizeAndFallbackSessionTitle(t *testing.T) {
 
 func TestEventDataKeepsUserMessageSeqsAsJSONArray(t *testing.T) {
 	t.Parallel()
-	wireValue, err := json.Marshal(EventData{
-		Title: "Named", MessageSeqs: []int64{}, Source: UserSource{Kind: "user"},
-	})
+	wireValue, err := json.Marshal(
+		EventData{
+			Title:       "Named",
+			MessageSeqs: []int64{},
+			Source: UserSource{
+				Kind: "user",
+			},
+		},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +162,10 @@ func TestEventDataKeepsUserMessageSeqsAsJSONArray(t *testing.T) {
 		t.Fatalf("user title event = %s, want an empty JSON array", wireValue)
 	}
 	var decoded EventData
-	if err := json.Unmarshal([]byte(`{"title":"Named","messageSeqs":null,"source":{"kind":"user"}}`), &decoded); err == nil {
+	if err := json.Unmarshal(
+		[]byte(`{"title":"Named","messageSeqs":null,"source":{"kind":"user"}}`),
+		&decoded,
+	); err == nil {
 		t.Fatal("null messageSeqs was accepted")
 	}
 }
@@ -126,35 +173,22 @@ func TestEventDataKeepsUserMessageSeqsAsJSONArray(t *testing.T) {
 func TestLogServiceFallbackRenameAndProjection(t *testing.T) {
 	t.Parallel()
 	requestContext := context.Background()
-	engine := plugin.NewRuntime()
-	host := &titleFixturePlugin{}
-	providerHandle, err := engine.Load(requestContext, host)
+	fixture := newTitleFixture(t)
+	handle, err := fixture.store.Create(requestContext, nil, session.CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = engine.Unload(requestContext, providerHandle) })
-	conversation, err := host.store.Create(requestContext, host.scope, nil, session.CreateOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	initial, err := host.projections.Snapshot(conversation)
+	conversation := handle.Session()
+	initial, err := fixture.projections.Snapshot(conversation)
 	if err != nil || string(initial.Values[ProjectionKey]) != "null" {
 		t.Fatalf("initial title projection = (%#v, %v)", initial, err)
 	}
-	changes := make(chan sessionprojection.Change, 4)
-	if _, err := host.projections.OnChanged(host.scope, sessionprojection.ChangeListenerFunc(func(projectionChange sessionprojection.Change) {
-		if projectionChange.Key == ProjectionKey {
-			changes <- projectionChange
-		}
-	})); err != nil {
-		t.Fatal(err)
-	}
 	promptSeq := appendTitleFixtureHuman(t, conversation, "Original prompt text")
-	fallbackChange := receiveTitleChange(t, changes)
+	fallbackChange := receiveTitleChange(t, fixture.changes)
 	if string(fallbackChange.Value) != `"Original prompt text"` {
 		t.Fatalf("fallback projection = %s", fallbackChange.Value)
 	}
-	fallback, err := host.titles.Get(conversation)
+	fallback, err := fixture.titles.Get(conversation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,18 +197,20 @@ func TestLogServiceFallbackRenameAndProjection(t *testing.T) {
 		t.Fatalf("fallback snapshot = %#v", fallback)
 	}
 
-	accepted, err := host.titles.Rename(conversation, "  Hand\tpicked   name  ")
+	accepted, err := fixture.titles.Rename(conversation, "  Hand\tpicked   name  ")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if accepted.Title != "Hand picked name" || accepted.Source.SourceKind() != "user" || len(accepted.MessageSeqs) != 0 {
+	if accepted.Title != "Hand picked name" || accepted.Source.SourceKind() != "user" ||
+		len(accepted.MessageSeqs) != 0 {
 		t.Fatalf("renamed snapshot = %#v", accepted)
 	}
-	renameChange := receiveTitleChange(t, changes)
-	if renameChange.Seq != accepted.EventSeq || string(renameChange.Value) != `"Hand picked name"` {
+	renameChange := receiveTitleChange(t, fixture.changes)
+	if renameChange.Seq != accepted.EventSeq ||
+		string(renameChange.Value) != `"Hand picked name"` {
 		t.Fatalf("rename projection = %#v", renameChange)
 	}
-	if _, err := host.titles.Rename(conversation, " \x1b[31m "); err == nil {
+	if _, err := fixture.titles.Rename(conversation, " \x1b[31m "); err == nil {
 		t.Fatal("control-only rename succeeded")
 	} else {
 		var invalid *SessionTitleInvalidError
@@ -187,48 +223,57 @@ func TestLogServiceFallbackRenameAndProjection(t *testing.T) {
 func TestLogServiceRenameSupersedesActiveProvider(t *testing.T) {
 	t.Parallel()
 	requestContext := context.Background()
-	engine := plugin.NewRuntime()
-	host := &titleFixturePlugin{}
-	providerHandle, err := engine.Load(requestContext, host)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = engine.Unload(requestContext, providerHandle) })
+	fixture := newTitleFixture(t)
 	started := make(chan ProviderRequest, 1)
 	aborted := make(chan struct{}, 1)
 	implementation := titleFixtureProvider{
-		identifier: "fixture-provider", mode: AutomaticAllPrompts,
-		generate: func(callContext context.Context, request ProviderRequest) (ProviderResult, error) {
+		identifier: "fixture-provider",
+		mode:       AutomaticAllPrompts,
+		generate: func(
+			callContext context.Context,
+			request ProviderRequest,
+		) (ProviderResult, error) {
 			started <- request
 			<-callContext.Done()
 			aborted <- struct{}{}
 			return ProviderResult{}, callContext.Err()
 		},
 	}
-	if _, err := host.titles.Register(host.scope, implementation); err != nil {
+	if _, err := fixture.titles.Register(implementation); err != nil {
 		t.Fatal(err)
 	}
-	conversation, err := host.store.Create(requestContext, host.scope, nil, session.CreateOptions{})
+	handle, err := fixture.store.Create(requestContext, nil, session.CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	conversation := handle.Session()
 	promptSeq := appendTitleFixtureHuman(t, conversation, "Prompt that triggers generation")
-	if _, err := session.Append(conversation, session.RequestHeaderSet, session.RequestHeaderSnapshot{
-		Header: session.EpochHeader{Config: llm.CallConfig{Provider: "main-route", Model: "chat-model"}},
-		Reason: session.RequestHeaderChange,
-	}); err != nil {
+	if _, err := session.Append(
+		conversation,
+		session.RequestHeaderSet,
+		session.RequestHeaderSnapshot{
+			Header: session.EpochHeader{
+				Config: llm.CallConfig{
+					Provider: "main-route",
+					Model:    "chat-model",
+				},
+			},
+			Reason: session.RequestHeaderChange,
+		},
+	); err != nil {
 		t.Fatal(err)
 	}
 	select {
 	case request := <-started:
-		if len(request.Messages) != 1 || request.Messages[0].Seq != promptSeq || request.Route == nil ||
-			request.Route.Provider != "main-route" || request.Route.Model != "chat-model" {
+		if len(request.Messages) != 1 || request.Messages[0].Seq != promptSeq ||
+			request.Route == nil || request.Route.Provider != "main-route" ||
+			request.Route.Model != "chat-model" {
 			t.Fatalf("provider request = %#v", request)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("title provider did not start")
 	}
-	accepted, err := host.titles.Rename(conversation, "User wins")
+	accepted, err := fixture.titles.Rename(conversation, "User wins")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +282,7 @@ func TestLogServiceRenameSupersedesActiveProvider(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("active title provider was not canceled")
 	}
-	latest, err := host.titles.Get(conversation)
+	latest, err := fixture.titles.Get(conversation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,68 +294,100 @@ func TestLogServiceRenameSupersedesActiveProvider(t *testing.T) {
 func TestLogServiceFallbackRefreshUnpinsUserTitle(t *testing.T) {
 	t.Parallel()
 	requestContext := context.Background()
-	engine := plugin.NewRuntime()
-	host := &titleFixturePlugin{}
-	providerHandle, err := engine.Load(requestContext, host)
+	fixture := newTitleFixture(t)
+	handle, err := fixture.store.Create(requestContext, nil, session.CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = engine.Unload(requestContext, providerHandle) })
-	conversation, err := host.store.Create(requestContext, host.scope, nil, session.CreateOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	changes := make(chan sessionprojection.Change, 4)
-	if _, err := host.projections.OnChanged(host.scope, sessionprojection.ChangeListenerFunc(func(projectionChange sessionprojection.Change) {
-		if projectionChange.Key == ProjectionKey {
-			changes <- projectionChange
-		}
-	})); err != nil {
-		t.Fatal(err)
-	}
+	conversation := handle.Session()
 	appendTitleFixtureHuman(t, conversation, "Derivable prompt words")
-	receiveTitleChange(t, changes)
-	if _, err := host.titles.Rename(conversation, "Pinned without provider"); err != nil {
+	receiveTitleChange(t, fixture.changes)
+	if _, err := fixture.titles.Rename(conversation, "Pinned without provider"); err != nil {
 		t.Fatal(err)
 	}
-	receiveTitleChange(t, changes)
-	refreshed, err := host.titles.Refresh(requestContext, conversation)
+	receiveTitleChange(t, fixture.changes)
+	refreshed, err := fixture.titles.Refresh(requestContext, conversation)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if refreshed == nil || refreshed.Title != "Derivable prompt words" || refreshed.Source.SourceKind() != "fallback" {
+	if refreshed == nil || refreshed.Title != "Derivable prompt words" ||
+		refreshed.Source.SourceKind() != "fallback" {
 		t.Fatalf("refreshed title = %#v", refreshed)
 	}
 }
 
-func appendTitleFixtureHuman(t *testing.T, conversation *session.Session, text string) int64 {
-	t.Helper()
-	messageValue, err := llm.NewUserMessage(llm.UserMessageInput{
-		Content: []llm.ContentBlock{llm.NewTextBlock(text)}, Source: llm.UserMessageSource{Kind: "user"},
-	})
+type titleFixtureProvider struct {
+	identifier ProviderID
+	mode       AutomaticMode
+	generate   func(context.Context, ProviderRequest) (ProviderResult, error)
+}
+
+func (implementation titleFixtureProvider) ID() ProviderID {
+	return implementation.identifier
+}
+
+func (implementation titleFixtureProvider) AutomaticMode() AutomaticMode {
+	return implementation.mode
+}
+
+func (implementation titleFixtureProvider) Generate(
+	requestContext context.Context,
+	request ProviderRequest,
+) (ProviderResult, error) {
+	return implementation.generate(requestContext, request)
+}
+
+func appendTitleFixtureHuman(
+	testingContext *testing.T,
+	conversation *session.Session,
+	text string,
+) int64 {
+	testingContext.Helper()
+	messageValue, err := llm.NewUserMessage(
+		llm.UserMessageInput{
+			Content: []llm.ContentBlock{
+				llm.NewTextBlock(text),
+			},
+			Source: llm.UserMessageSource{
+				Kind: "user",
+			},
+		},
+	)
 	if err != nil {
-		t.Fatal(err)
+		testingContext.Fatal(err)
 	}
-	committed, err := session.AppendSurface(conversation, session.UserMessageAdded, messageValue, session.SurfaceIntent{
-		Operation: session.SurfaceAppend(),
-	})
+	committed, err := session.AppendSurface(
+		conversation,
+		session.UserMessageAdded,
+		messageValue,
+		session.SurfaceIntent{
+			Operation: session.SurfaceAppend(),
+		},
+	)
 	if err != nil {
-		t.Fatal(err)
+		testingContext.Fatal(err)
 	}
 	return committed.Seq
 }
 
-func receiveTitleChange(t *testing.T, changes <-chan sessionprojection.Change) sessionprojection.Change {
-	t.Helper()
+func receiveTitleChange(
+	testingContext *testing.T,
+	changes <-chan sessionprojection.Change,
+) sessionprojection.Change {
+	testingContext.Helper()
 	select {
 	case projectionChange := <-changes:
 		var titleValue string
 		if err := json.Unmarshal(projectionChange.Value, &titleValue); err != nil {
-			t.Fatalf("title projection JSON = %s: %v", projectionChange.Value, err)
+			testingContext.Fatalf(
+				"title projection JSON = %s: %v",
+				projectionChange.Value,
+				err,
+			)
 		}
 		return projectionChange
 	case <-time.After(2 * time.Second):
-		t.Fatal("title projection change did not arrive")
+		testingContext.Fatal("title projection change did not arrive")
 		return sessionprojection.Change{}
 	}
 }

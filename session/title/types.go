@@ -16,13 +16,11 @@ import (
 )
 
 const (
+	PluginName     = "@deepseek-ai/dsh-session-title"
 	ServiceName    = "sessionTitle"
 	TitleEventName = "session/title"
 	ProjectionKey  = "title"
 )
-
-// Service is the canonical session-title capability identity.
-var Service = plugin.DefineService[TitleService](ServiceName)
 
 // TitleSet is the private typed identity of the log-only session/title event.
 var TitleSet = session.DefineEvent[EventData](TitleEventName)
@@ -210,12 +208,18 @@ func (problem *SessionTitleInvalidError) Error() string {
 	return problem.Message
 }
 
+// ProviderHandle owns one optional title Provider registration.
+type ProviderHandle interface {
+	Release(context.Context) error
+}
+
 // TitleService is the log-backed title read/write and provider-registration contract.
 type TitleService interface {
+	plugin.Service
 	Get(*session.Session) (*Snapshot, error)
 	Rename(*session.Session, string) (*Snapshot, error)
 	Refresh(context.Context, *session.Session) (*Snapshot, error)
-	Register(*plugin.Scope, Provider) (plugin.Disposer, error)
+	Register(Provider) (ProviderHandle, error)
 }
 
 func validateEventData(payload EventData) error {

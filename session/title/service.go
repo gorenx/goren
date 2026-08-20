@@ -13,9 +13,15 @@ import (
 	sessionprojection "github.com/gorenx/goren/session/projection"
 )
 
-// Options supplies contained asynchronous error reporting.
-type Options struct {
-	ReportError func(error)
+// AsyncFailure identifies contained title work outside a caller-owned request.
+type AsyncFailure struct {
+	SessionID session.SessionID
+	Error     error
+}
+
+// AsyncFailureReporter receives contained automatic-title failures.
+type AsyncFailureReporter interface {
+	ReportAsyncFailure(AsyncFailure)
 }
 
 type providerRegistration struct {
@@ -52,10 +58,12 @@ type titleWorkState struct {
 
 // LogService is the source-aligned in-process TitleService provider.
 type LogService struct {
+	plugin.Base
 	store       session.LiveStore
 	projections sessionprojection.Registry
 	settings    Config
-	reportError func(error)
+	reporter    AsyncFailureReporter
+	unitHandle  sessionprojection.UnitHandle
 
 	mu           sync.Mutex
 	closed       bool
@@ -66,46 +74,129 @@ type LogService struct {
 	inFlight     sync.WaitGroup
 }
 
-// NewLogService installs the title projection and automatic scheduling hooks.
+// NewLogService constructs the Session Title Service Plugin.
 func NewLogService(
-	pluginScope *plugin.Scope,
-	store session.LiveStore,
-	projections sessionprojection.Registry,
 	settings Config,
-	serviceOptions Options,
+	reporter AsyncFailureReporter,
 ) (*LogService, error) {
-	if pluginScope == nil || store == nil || projections == nil {
-		return nil, errors.New("sessiontitle: Scope, Store, and Projection Registry are required")
-	}
 	validated, err := settings.Validate()
 	if err != nil {
 		return nil, err
 	}
-	reporter := serviceOptions.ReportError
 	if reporter == nil {
-		reporter = func(error) {}
+		return nil, errors.New("sessiontitle: asynchronous failure reporter is required")
 	}
 	lifetime, cancel := context.WithCancelCause(context.Background())
-	owner := &LogService{
-		store: store, projections: projections, settings: validated, reportError: reporter,
-		lifetime: lifetime, cancel: cancel, work: make(map[*session.Session]*titleWorkState),
+	return &LogService{
+		settings: validated,
+		reporter: reporter,
+		lifetime: lifetime,
+		cancel:   cancel,
+		work:     make(map[*session.Session]*titleWorkState),
+	}, nil
+}
+
+// Manifest declares the title Service, Session events, and optional LLM seam.
+func (owner *LogService) Manifest() plugin.Manifest {
+	requiredServices := []plugin.ServiceType{
+		plugin.ServiceOf[session.LiveStore](),
+		plugin.ServiceOf[sessionprojection.Registry](),
 	}
-	if _, err := projections.Register(pluginScope, titleProjectionUnit{}); err != nil {
-		return nil, err
+	waterfalls := []plugin.WaterfallContribution(nil)
+	if owner.settings.LLM != nil {
+		requiredServices = append(
+			requiredServices,
+			plugin.ServiceOf[llm.LlmRuntime](),
+		)
+		waterfalls = append(
+			waterfalls,
+			plugin.WaterfallOf[llm.GenerateOptions, llm.StreamOutput](owner),
+		)
 	}
-	if _, err := session.OnEvent(pluginScope, owner.observeEvent); err != nil {
-		return nil, err
+	return plugin.Manifest{
+		Name: PluginName,
+		Provides: []plugin.ServiceType{
+			plugin.ServiceOf[TitleService](),
+		},
+		Requires: requiredServices,
+		Events: []plugin.EventSubscription{
+			plugin.EventOf[session.SessionEventAppended](),
+			plugin.EventOf[session.SessionDisposed](),
+		},
+		Waterfalls: waterfalls,
 	}
-	if _, err := plugin.OnWaterfall(pluginScope, llm.StreamEvent, owner.observeStream); err != nil {
-		return nil, err
+}
+
+// Apply resolves dependencies and installs the owned projection and optional Provider.
+func (owner *LogService) Apply(requestContext context.Context) error {
+	if err := requestContext.Err(); err != nil {
+		return err
 	}
-	if _, err := session.OnDisposed(pluginScope, owner.observeDisposed); err != nil {
-		return nil, err
+	store, err := plugin.Require[session.LiveStore](owner)
+	if err != nil {
+		return err
 	}
-	if _, err := plugin.Own(pluginScope, "sessionTitle lifecycle", owner.close); err != nil {
-		return nil, err
+	projections, err := plugin.Require[sessionprojection.Registry](owner)
+	if err != nil {
+		return err
 	}
-	return owner, nil
+	unitHandle, err := projections.Register(titleProjectionUnit{})
+	if err != nil {
+		return err
+	}
+	owner.store = store
+	owner.projections = projections
+	owner.unitHandle = unitHandle
+	if owner.settings.LLM == nil {
+		return nil
+	}
+	modelRuntime, err := plugin.Require[llm.LlmRuntime](owner)
+	if err != nil {
+		_ = unitHandle.Release(requestContext)
+		owner.unitHandle = nil
+		return err
+	}
+	implementation, err := NewConfiguredLLMProvider(modelRuntime, *owner.settings.LLM)
+	if err != nil {
+		_ = unitHandle.Release(requestContext)
+		owner.unitHandle = nil
+		return err
+	}
+	if _, err := owner.Register(implementation); err != nil {
+		_ = unitHandle.Release(requestContext)
+		owner.unitHandle = nil
+		return err
+	}
+	return nil
+}
+
+// Dispose cancels automatic work and releases the owned projection Unit.
+func (owner *LogService) Dispose(closeContext context.Context) error {
+	closeErr := owner.close(closeContext)
+	if owner.unitHandle != nil {
+		closeErr = errors.Join(closeErr, owner.unitHandle.Release(closeContext))
+		owner.unitHandle = nil
+	}
+	return closeErr
+}
+
+// ObserveEvent routes declared Session event types through one entry point.
+func (owner *LogService) ObserveEvent(
+	requestContext context.Context,
+	fact plugin.Event,
+) error {
+	switch observed := fact.(type) {
+	case session.SessionEventAppended:
+		return owner.observeEvent(
+			requestContext,
+			observed.Conversation,
+			observed.Committed,
+		)
+	case session.SessionDisposed:
+		return owner.observeDisposed(requestContext, observed.Conversation)
+	default:
+		return nil
+	}
 }
 
 // Get reads the latest title solely from the Session log.
@@ -200,10 +291,10 @@ func (owner *LogService) Refresh(requestContext context.Context, conversation *s
 	return owner.runTrackedProvider(conversation, work, route)
 }
 
-// Register installs the sole optional title provider for the owner Scope.
-func (owner *LogService) Register(ownerScope *plugin.Scope, implementation Provider) (plugin.Disposer, error) {
-	if ownerScope == nil || implementation == nil {
-		return nil, errors.New("sessiontitle: provider Scope and implementation are required")
+// Register installs the sole optional title Provider.
+func (owner *LogService) Register(implementation Provider) (ProviderHandle, error) {
+	if implementation == nil {
+		return nil, errors.New("sessiontitle: Provider is required")
 	}
 	identifier := implementation.ID()
 	mode := implementation.AutomaticMode()
@@ -226,14 +317,36 @@ func (owner *LogService) Register(ownerScope *plugin.Scope, implementation Provi
 	}
 	owner.registration = registration
 	owner.mu.Unlock()
-	release, err := plugin.Own(ownerScope, "sessionTitle.register()", func(closeContext context.Context) error {
-		return owner.disposeRegistration(closeContext, registration)
-	})
-	if err != nil {
-		_ = owner.disposeRegistration(context.Background(), registration)
-		return nil, err
+	return &providerHandle{
+		owner:        owner,
+		registration: registration,
+	}, nil
+}
+
+type providerHandle struct {
+	mutex        sync.Mutex
+	released     bool
+	owner        *LogService
+	registration *providerRegistration
+}
+
+func (handleState *providerHandle) Release(closeContext context.Context) error {
+	if handleState == nil {
+		return nil
 	}
-	return release, nil
+	handleState.mutex.Lock()
+	defer handleState.mutex.Unlock()
+	if handleState.released {
+		return nil
+	}
+	if err := handleState.owner.disposeRegistration(
+		closeContext,
+		handleState.registration,
+	); err != nil {
+		return err
+	}
+	handleState.released = true
+	return nil
 }
 
 func (owner *LogService) observeEvent(
@@ -301,7 +414,7 @@ func (owner *LogService) onUserMessage(
 		owner.deferTask(func() {
 			if _, fallbackErr := owner.ensureFallback(owner.lifetime, conversation); fallbackErr != nil &&
 				!errors.Is(fallbackErr, context.Canceled) {
-				owner.reportError(fmt.Errorf("sessiontitle: session %q fallback: %w", conversation.ID(), fallbackErr))
+				owner.reportAsync(conversation.ID(), fallbackErr)
 			}
 		})
 	})
@@ -338,13 +451,14 @@ func (owner *LogService) onRequestHeader(
 	})
 }
 
-func (owner *LogService) observeStream(
+// Intercept observes main LLM requests before downstream dispatch.
+func (owner *LogService) Intercept(
 	requestContext context.Context,
 	generationOptions llm.GenerateOptions,
-	downstream plugin.Next[llm.GenerateOptions, llm.ChunkStream],
-) (llm.ChunkStream, error) {
+	downstream plugin.WaterfallAction[llm.GenerateOptions, llm.StreamOutput],
+) (llm.StreamOutput, error) {
 	owner.onMainRequest(generationOptions)
-	return downstream(requestContext, generationOptions)
+	return downstream.Execute(requestContext, generationOptions)
 }
 
 func (owner *LogService) onMainRequest(generationOptions llm.GenerateOptions) {
@@ -405,7 +519,7 @@ func (owner *LogService) startPending(
 		func() {
 			if _, err := owner.runTrackedProvider(conversation, work, &route); err != nil &&
 				!errors.Is(err, context.Canceled) {
-				owner.reportError(fmt.Errorf("sessiontitle: session %q automatic provider: %w", conversation.ID(), err))
+				owner.reportAsync(conversation.ID(), err)
 			}
 		},
 	) {
@@ -685,6 +799,9 @@ func (owner *LogService) disposeRegistration(
 	closeContext context.Context,
 	registration *providerRegistration,
 ) error {
+	if closeContext == nil {
+		closeContext = context.Background()
+	}
 	owner.mu.Lock()
 	if owner.registration != registration {
 		owner.mu.Unlock()
@@ -712,13 +829,14 @@ func (owner *LogService) disposeRegistration(
 }
 
 func (owner *LogService) close(closeContext context.Context) error {
-	owner.mu.Lock()
-	if owner.closed {
-		owner.mu.Unlock()
-		return nil
+	if closeContext == nil {
+		closeContext = context.Background()
 	}
-	owner.closed = true
-	owner.cancel(errors.New("session-title service disposed"))
+	owner.mu.Lock()
+	if !owner.closed {
+		owner.closed = true
+		owner.cancel(errors.New("session-title service disposed"))
+	}
 	registration := owner.registration
 	if registration != nil {
 		registration.closing = true
@@ -743,6 +861,19 @@ func (owner *LogService) close(closeContext context.Context) error {
 	clear(owner.work)
 	owner.mu.Unlock()
 	return nil
+}
+
+func (owner *LogService) reportAsync(identifier session.SessionID, problem error) {
+	defer func() { _ = recover() }()
+	owner.reporter.ReportAsyncFailure(
+		AsyncFailure{
+			SessionID: identifier,
+			Error: fmt.Errorf(
+				"session title automatic work failed: %w",
+				problem,
+			),
+		},
+	)
 }
 
 func waitGroup(requestContext context.Context, group *sync.WaitGroup) error {
