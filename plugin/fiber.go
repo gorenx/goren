@@ -175,7 +175,7 @@ func (runtimeEngine *Runtime) resolveDependencies(
 			}
 			continue
 		}
-		if runtimeEngine.declaredProvider(reference, mounted.scope) != nil {
+		if runtimeEngine.declaredProvider(reference, mounted.scope, mounted) != nil {
 			blocked = true
 			continue
 		}
@@ -203,10 +203,11 @@ func (runtimeEngine *Runtime) resolveDependencies(
 func (runtimeEngine *Runtime) declaredProvider(
 	reference serviceRef,
 	sourceScope *scope,
+	excludedMount *mountedPlugin,
 ) *mountedPlugin {
 	for selectedScope := sourceScope; selectedScope != nil; selectedScope = selectedScope.parent {
 		for _, mounted := range runtimeEngine.mounts {
-			if mounted.removed || mounted.scope != selectedScope {
+			if mounted == excludedMount || mounted.removed || mounted.scope != selectedScope {
 				continue
 			}
 			for _, offer := range mounted.manifest.provides {

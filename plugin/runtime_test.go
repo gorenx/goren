@@ -57,6 +57,42 @@ type clockConsumer struct {
 	applies  int
 }
 
+type clockDecorator struct {
+	plugin.Base
+	upstream clock
+	prefix   string
+}
+
+func (*clockDecorator) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "clock-decorator",
+		Provides: []plugin.ServiceType{
+			plugin.ServiceOf[clock](),
+		},
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[clock](),
+		},
+	}
+}
+
+func (decorator *clockDecorator) Apply(context.Context) error {
+	upstream, err := plugin.Require[clock](decorator)
+	if err != nil {
+		return err
+	}
+	decorator.upstream = upstream
+	return nil
+}
+
+func (decorator *clockDecorator) Dispose(context.Context) error {
+	decorator.upstream = nil
+	return nil
+}
+
+func (decorator *clockDecorator) Value() string {
+	return decorator.prefix + decorator.upstream.Value()
+}
+
 func (consumer *clockConsumer) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "clock-consumer",
@@ -319,6 +355,43 @@ func TestChildScopeInheritsAndOverridesService(t *testing.T) {
 	}
 	if overridden.selected.Value() != "child" {
 		t.Fatalf("overridden Service = %q", overridden.selected.Value())
+	}
+}
+
+func TestChildPluginDecoratesAncestorService(t *testing.T) {
+	t.Parallel()
+	rootProvider := &clockProvider{
+		value: "root",
+	}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	rootHandles, err := runtimeEngine.Start(context.Background(), rootProvider)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	decorator := &clockDecorator{
+		prefix: "child:",
+	}
+	decoratorHandle, err := runtimeEngine.MountChild(
+		context.Background(),
+		rootHandles[0],
+		decorator,
+	)
+	if err != nil {
+		t.Fatalf("mount decorator: %v", err)
+	}
+	consumer := &clockConsumer{}
+	if _, err := runtimeEngine.MountChild(
+		context.Background(),
+		decoratorHandle,
+		consumer,
+	); err != nil {
+		t.Fatalf("mount consumer: %v", err)
+	}
+	if decorator.upstream != rootProvider {
+		t.Fatal("decorator did not resolve the ancestor provider")
+	}
+	if consumer.selected != decorator || consumer.selected.Value() != "child:root" {
+		t.Fatalf("decorated Service = %q", consumer.selected.Value())
 	}
 }
 

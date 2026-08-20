@@ -375,6 +375,13 @@ func normalizeServiceType(
 		)
 	}
 	if previousGroup, exists := seen[reference.key]; exists {
+		// A child Plugin may decorate an ancestor Service by requiring the
+		// visible provider while declaring itself as the provider for its exact
+		// Scope. The dependency is resolved before this Plugin is published.
+		if previousGroup == "provides" && groupName == "requires" {
+			seen[reference.key] = groupName
+			return reference, nil
+		}
 		return serviceRef{}, fmt.Errorf(
 			"plugin: %s declares Service %q in both %s and %s",
 			pluginName,
