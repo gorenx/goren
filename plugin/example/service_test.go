@@ -7,120 +7,81 @@ import (
 	"github.com/gorenx/goren/plugin"
 )
 
-type clockService interface {
+type greeting interface {
 	plugin.Service
-	Now() string
+	Greet(string) string
 }
 
-// namedClockService demonstrates Go interface embedding. It extends the
-// clockService contract without introducing a class hierarchy.
-type namedClockService interface {
-	clockService
-	Name() string
+type greetingPlugin struct {
+	plugin.Base
+	prefix string
 }
 
-var clockServiceDefinition = plugin.DefineService[namedClockService]("example/clock")
-
-type fixedClock struct {
-	fixedTime string
-}
-
-func (clock fixedClock) Now() string {
-	return clock.fixedTime
-}
-
-// clockServiceObject uses struct embedding for implementation reuse and embeds
-// ServiceBase to satisfy plugin.Service. Go embedding is composition, not
-// implementation inheritance.
-type clockServiceObject struct {
-	plugin.ServiceBase
-	fixedClock
-	name string
-}
-
-func (owner *clockServiceObject) Name() string {
-	return owner.name
-}
-
-type clockProviderPlugin struct{}
-
-func (*clockProviderPlugin) Manifest() plugin.Manifest {
+func (*greetingPlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
-		Name: "example-clock-provider",
-		Provides: []plugin.ServiceDefinition{
-			clockServiceDefinition,
+		Name: "greeting",
+		Provides: []plugin.ServiceType{
+			plugin.ServiceOf[greeting](),
 		},
 	}
 }
 
-func (*clockProviderPlugin) Apply(
-	_ context.Context,
-	pluginContext *plugin.Context,
-) error {
-	return clockServiceDefinition.Provide(
-		pluginContext,
-		&clockServiceObject{
-			fixedClock: fixedClock{
-				fixedTime: "10:00",
-			},
-			name: "primary",
-		},
-	)
-}
-
-func (*clockProviderPlugin) Dispose(context.Context) error {
+func (*greetingPlugin) Apply(context.Context) error {
 	return nil
 }
 
-type clockConsumerPlugin struct {
-	valueOutput *string
+func (*greetingPlugin) Dispose(context.Context) error {
+	return nil
 }
 
-func (*clockConsumerPlugin) Manifest() plugin.Manifest {
+func (serviceOwner *greetingPlugin) Greet(name string) string {
+	return serviceOwner.prefix + ", " + name
+}
+
+type greetingEndpoint struct {
+	plugin.Base
+	greetings greeting
+}
+
+func (*greetingEndpoint) Manifest() plugin.Manifest {
 	return plugin.Manifest{
-		Name: "example-clock-consumer",
-		Requires: []plugin.ServiceDefinition{
-			clockServiceDefinition,
+		Name: "greeting-endpoint",
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[greeting](),
 		},
 	}
 }
 
-func (instance *clockConsumerPlugin) Apply(
-	_ context.Context,
-	pluginContext *plugin.Context,
-) error {
-	providedClock, err := clockServiceDefinition.Require(pluginContext)
+func (endpoint *greetingEndpoint) Apply(context.Context) error {
+	greetings, err := plugin.Require[greeting](endpoint)
 	if err != nil {
 		return err
 	}
-	*instance.valueOutput = providedClock.Name() + "=" + providedClock.Now()
+	endpoint.greetings = greetings
 	return nil
 }
 
-func (*clockConsumerPlugin) Dispose(context.Context) error {
+func (endpoint *greetingEndpoint) Dispose(context.Context) error {
+	endpoint.greetings = nil
 	return nil
 }
 
 func Example_service() {
-	observedValue := ""
+	serviceOwner := &greetingPlugin{
+		prefix: "hello",
+	}
+	endpoint := &greetingEndpoint{}
 	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
-	if _, err := runtimeEngine.Load(context.Background(), &clockProviderPlugin{}); err != nil {
-		panic(err)
-	}
-	if _, err := runtimeEngine.Load(
+	_, err := runtimeEngine.Start(
 		context.Background(),
-		&clockConsumerPlugin{
-			valueOutput: &observedValue,
-		},
-	); err != nil {
+		endpoint,
+		serviceOwner,
+	)
+	if err != nil {
 		panic(err)
 	}
+	defer runtimeEngine.Shutdown(context.Background())
 
-	fmt.Println(observedValue)
-	if err := runtimeEngine.Shutdown(context.Background()); err != nil {
-		panic(err)
-	}
-
-	// Output:
-	// primary=10:00
+	fmt.Println(endpoint.greetings.Greet("Goren"))
+	// Output: hello, Goren
 }

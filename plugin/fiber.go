@@ -4,873 +4,687 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 )
 
-// pluginDeclaration is the stable Runtime identity returned as a Handle. Its
-// current Fiber may change after dependency loss or replacement.
-type pluginDeclaration struct {
-	id            uint64
-	instance      Plugin
-	manifest      manifestSpec
-	current       *fiber
-	parent        *pluginDeclaration
-	parentFiberID FiberID
-	parentScope   *Scope
-	children      map[uint64]*pluginDeclaration
-	state         FiberState
-	lastFiberID   FiberID
-	missing       []string
-	lastErr       error
-	removed       bool
-	ownerEffect   *fiberEffect
-}
-
-type resolvedServiceDependency struct {
-	reference serviceRef
-	binding   serviceBinding
-	provider  *fiber
-	optional  bool
-}
-
-// fiber is one concrete Plugin activation attempt. It owns the lifetime,
-// Context, root Scope, private effect stack, and resolved Service dependency
-// snapshot for that attempt.
 type fiber struct {
-	id            FiberID
-	declaration   *pluginDeclaration
-	instance      Plugin
-	manifest      manifestSpec
-	state         FiberState
-	rootScope     *Scope
-	pluginContext *Context
-	lifetime      context.Context
-	cancel        context.CancelCauseFunc
-	dependencies  map[*serviceToken]resolvedServiceDependency
-	effects       *fiberEffectStack
-	lastErr       error
-	order         uint64
+	id           FiberID
+	mount        *mountedPlugin
+	instance     Plugin
+	manifest     manifestSpec
+	scope        *scope
+	state        FiberState
+	dependencies map[reflect.Type]*serviceDependency
+	missing      []string
+	lifetime     context.Context
+	cancel       context.CancelCauseFunc
+	activation   *activation
+	effects      effectStack
+	services     []*serviceBinding
+	events       []*eventBinding
+	waterfalls   []*waterfallBinding
+	lastErr      error
 }
 
-func (ownerFiber *fiber) disposePlugin(disposeContext context.Context) error {
-	if ownerFiber == nil || ownerFiber.instance == nil {
-		return nil
-	}
-	return invokePluginDispose(disposeContext, ownerFiber.instance)
-}
-
-// fiberSupervisor owns declarations, dependency settlement, activation,
-// replacement, and parent-child stop ordering. Runtime.operations serializes
-// its mutations; Runtime.state protects Registry visibility and Fiber state.
-type fiberSupervisor struct {
-	runtime      *Runtime
-	nextHandleID uint64
-	nextFiberID  FiberID
-	nextOrder    uint64
-	declarations []*pluginDeclaration
-	byHandle     map[uint64]*pluginDeclaration
-	dependents   map[FiberID]map[FiberID]*fiber
-	closed       bool
-}
-
-func newFiberSupervisor(runtimeEngine *Runtime) *fiberSupervisor {
-	return &fiberSupervisor{
-		runtime:    runtimeEngine,
-		byHandle:   make(map[uint64]*pluginDeclaration),
-		dependents: make(map[FiberID]map[FiberID]*fiber),
-	}
-}
-
-func (supervisor *fiberSupervisor) newFiber(
-	declaration *pluginDeclaration,
-	instance Plugin,
+func (runtimeEngine *Runtime) newFiber(
+	mounted *mountedPlugin,
+	pluginInstance Plugin,
 	metadata manifestSpec,
 ) *fiber {
-	supervisor.nextFiberID++
-	supervisor.nextOrder++
-	parentLifetime := context.Background()
-	if declaration != nil && declaration.parentScope != nil &&
-		declaration.parentScope.ownerFiber != nil {
-		parentLifetime = declaration.parentScope.ownerFiber.lifetime
-	}
-	fiberLifetime, cancelLifetime := context.WithCancelCause(parentLifetime)
+	runtimeEngine.nextFiber++
 	return &fiber{
-		id:           supervisor.nextFiberID,
-		declaration:  declaration,
-		instance:     instance,
+		id:           runtimeEngine.nextFiber,
+		mount:        mounted,
+		instance:     pluginInstance,
 		manifest:     metadata,
+		scope:        mounted.scope,
 		state:        FiberWaiting,
-		lifetime:     fiberLifetime,
-		cancel:       cancelLifetime,
-		dependencies: make(map[*serviceToken]resolvedServiceDependency),
-		effects:      newFiberEffectStack(),
-		order:        supervisor.nextOrder,
+		dependencies: make(map[reflect.Type]*serviceDependency),
 	}
 }
 
-func (supervisor *fiberSupervisor) load(
-	loadContext context.Context,
-	parentFiber *fiber,
-	parentScope *Scope,
-	instance Plugin,
-) (Handle, error) {
-	supervisor.runtime.operations.Lock()
-	defer supervisor.runtime.operations.Unlock()
-	return supervisor.loadLocked(loadContext, parentFiber, parentScope, instance)
-}
-
-func (supervisor *fiberSupervisor) loadLocked(
-	loadContext context.Context,
-	parentFiber *fiber,
-	parentScope *Scope,
-	instance Plugin,
-) (Handle, error) {
-	if supervisor.closed {
-		return Handle{}, errors.New("plugin: Runtime is shut down")
+func (runtimeEngine *Runtime) admit(
+	pluginInstance Plugin,
+	parentMount *mountedPlugin,
+) (*mountedPlugin, error) {
+	metadata, err := normalizeManifest(pluginInstance)
+	if err != nil {
+		return nil, err
 	}
-	if instance == nil {
-		return Handle{}, errors.New("plugin: cannot load nil Plugin")
-	}
-	if parentFiber != nil {
-		if !supervisor.parentAcceptsMount(parentFiber, parentScope, FiberActive) {
-			return Handle{}, ErrPluginNotActive
+	if runtimeEngine.eventFailures == nil {
+		for _, offer := range metadata.events {
+			if offer.reference.policy == DeliveryBestEffort {
+				return nil, fmt.Errorf(
+					"plugin: Event %q requires an EventFailureReporter for best-effort delivery",
+					offer.reference.name,
+				)
+			}
 		}
 	}
-	declaration, pluginHandle, err := supervisor.admitPlugin(
-		parentFiber,
-		parentScope,
-		instance,
-	)
-	if err != nil {
-		return Handle{}, err
+	selectedScope := runtimeEngine.rootScope
+	if parentMount != nil {
+		selectedScope = newChildScope(parentMount.scope)
 	}
-	if parentFiber != nil {
-		parentFiber.effects.entries = append(
-			parentFiber.effects.entries,
-			supervisor.ownMountedPlugin(parentFiber, parentScope, declaration),
-		)
-	}
-	reconcileErr := supervisor.reconcile(loadContext)
-	if declaration.state == FiberFailed {
-		return pluginHandle, errors.Join(declaration.lastErr, reconcileErr)
-	}
-	return pluginHandle, reconcileErr
-}
-
-func (supervisor *fiberSupervisor) mountDuringApply(
-	mountContext context.Context,
-	parentContext *Context,
-	instance Plugin,
-) (Handle, error) {
-	transaction := parentContext.transaction
-	if transaction == nil || transaction.state != mountOpen ||
-		transaction.fiber != parentContext.ownerFiber ||
-		!supervisor.parentAcceptsMount(
-			parentContext.ownerFiber,
-			parentContext.scope,
-			FiberStarting,
-		) {
-		if transaction != nil && transaction.state == mountOpen {
-			return Handle{}, transaction.recordFailure(ErrPluginNotActive)
+	for _, existingMount := range runtimeEngine.mounts {
+		if existingMount.removed || existingMount.scope != selectedScope {
+			continue
 		}
-		return Handle{}, ErrPluginNotActive
+		for _, existingOffer := range existingMount.manifest.provides {
+			for _, candidateOffer := range metadata.provides {
+				if existingOffer.reference.key == candidateOffer.reference.key {
+					return nil, fmt.Errorf(
+						"%w: %s",
+						ErrServiceConflict,
+						candidateOffer.reference.name,
+					)
+				}
+			}
+		}
 	}
-	if supervisor.closed {
-		return Handle{}, transaction.recordFailure(errors.New("plugin: Runtime is shut down"))
+	runtimeEngine.nextHandle++
+	mounted := &mountedPlugin{
+		handleID: runtimeEngine.nextHandle,
+		parent:   parentMount,
+		scope:    selectedScope,
+		instance: pluginInstance,
+		manifest: metadata,
 	}
-	if instance == nil {
-		return Handle{}, transaction.recordFailure(errors.New("plugin: cannot mount nil Plugin"))
-	}
-	declaration, pluginHandle, err := supervisor.admitPlugin(
-		parentContext.ownerFiber,
-		parentContext.scope,
-		instance,
+	mounted.current = runtimeEngine.newFiber(
+		mounted,
+		pluginInstance,
+		metadata,
 	)
-	if err != nil {
-		return Handle{}, transaction.recordFailure(err)
+	if parentMount != nil {
+		parentMount.children = append(parentMount.children, mounted)
 	}
-	transaction.effects = append(
-		transaction.effects,
-		supervisor.ownMountedPlugin(
-			parentContext.ownerFiber,
-			parentContext.scope,
-			declaration,
-		),
-	)
-
-	missing := supervisor.missingRequiredServices(declaration)
-	declaration.missing = missing
-	if len(missing) != 0 {
-		return pluginHandle, nil
-	}
-	activationErr := supervisor.activate(mountContext, declaration)
-	if activationErr != nil {
-		return pluginHandle, transaction.recordFailure(activationErr)
-	}
-	return pluginHandle, nil
+	runtimeEngine.mounts = append(runtimeEngine.mounts, mounted)
+	runtimeEngine.byHandle[mounted.handleID] = mounted
+	return mounted, nil
 }
 
-func (supervisor *fiberSupervisor) admitPlugin(
-	parentFiber *fiber,
-	parentScope *Scope,
-	instance Plugin,
-) (*pluginDeclaration, Handle, error) {
-	metadata, err := pluginManifest(instance)
-	if err != nil {
-		return nil, Handle{}, err
-	}
-	supervisor.runtime.state.Lock()
-	err = supervisor.runtime.services.admitManifest(metadata)
-	supervisor.runtime.state.Unlock()
-	if err != nil {
-		return nil, Handle{}, err
-	}
-
-	supervisor.nextHandleID++
-	declaration := &pluginDeclaration{
-		id:          supervisor.nextHandleID,
-		instance:    instance,
-		manifest:    metadata,
-		parentScope: parentScope,
-		children:    make(map[uint64]*pluginDeclaration),
-		state:       FiberWaiting,
-	}
-	if parentFiber != nil {
-		declaration.parent = parentFiber.declaration
-		declaration.parentFiberID = parentFiber.id
-		declaration.parent.children[declaration.id] = declaration
-	}
-	supervisor.declarations = append(supervisor.declarations, declaration)
-	supervisor.byHandle[declaration.id] = declaration
-	pluginHandle := Handle{
-		owner: supervisor.runtime,
-		id:    declaration.id,
-	}
-	return declaration, pluginHandle, nil
-}
-
-func (supervisor *fiberSupervisor) parentAcceptsMount(
-	parentFiber *fiber,
-	parentScope *Scope,
-	expectedState FiberState,
-) bool {
-	if parentFiber == nil || parentScope == nil || parentScope.isClosed() ||
-		parentScope.ownerFiber != parentFiber || parentFiber.declaration == nil {
-		return false
-	}
-	supervisor.runtime.state.RLock()
-	currentState := parentFiber.state
-	supervisor.runtime.state.RUnlock()
-	if currentState != expectedState {
-		return false
-	}
-	return expectedState == FiberStarting ||
-		parentFiber.declaration.current == parentFiber
-}
-
-func (supervisor *fiberSupervisor) ownMountedPlugin(
-	parentFiber *fiber,
-	parentScope *Scope,
-	declaration *pluginDeclaration,
-) *fiberEffect {
-	ownership := &fiberEffect{
-		runtime: supervisor.runtime,
-		fiber:   parentFiber,
-		scope:   parentScope,
-		label:   "plugin:" + declaration.manifest.Name,
-		state:   fiberEffectActive,
-	}
-	ownership.release = func(releaseContext context.Context) error {
-		return supervisor.disposeDeclaration(releaseContext, declaration)
-	}
-	declaration.ownerEffect = ownership
-	return ownership
-}
-
-func (supervisor *fiberSupervisor) reconcile(
-	settlementContext context.Context,
-) error {
-	var settlementErr error
+func (runtimeEngine *Runtime) reconcile(reconcileContext context.Context) error {
+	runtimeEngine.prepareStopped()
 	for {
-		changed := false
-		for _, declaration := range supervisor.declarations {
-			if declaration.removed || declaration.state != FiberActive || declaration.current == nil {
+		progress := false
+		for _, mounted := range runtimeEngine.mounts {
+			if mounted.removed || mounted.current == nil ||
+				mounted.current.state != FiberWaiting {
 				continue
 			}
-			if !supervisor.dependenciesChanged(declaration.current) {
+			dependencies, missing, blocked := runtimeEngine.resolveDependencies(mounted)
+			runtimeEngine.state.Lock()
+			mounted.current.missing = missing
+			runtimeEngine.state.Unlock()
+			if len(missing) != 0 || blocked {
 				continue
 			}
-			stopErr := supervisor.stopForDependencyChange(settlementContext, declaration.current)
-			settlementErr = errors.Join(settlementErr, stopErr)
-			changed = true
-			break
-		}
-		if changed {
-			continue
-		}
-
-		for _, declaration := range supervisor.declarations {
-			if declaration.removed || declaration.state != FiberWaiting ||
-				!supervisor.parentReady(declaration) {
-				continue
+			if err := runtimeEngine.prepareFiber(
+				reconcileContext,
+				mounted.current,
+				dependencies,
+			); err != nil {
+				return err
 			}
-			missing := supervisor.missingRequiredServices(declaration)
-			declaration.missing = missing
-			if len(missing) != 0 {
-				continue
+			runtimeEngine.state.Lock()
+			publicationErr := runtimeEngine.publishContributionsLocked(mounted.current)
+			if publicationErr == nil {
+				mounted.current.state = FiberActive
 			}
-			activationErr := supervisor.activate(settlementContext, declaration)
-			settlementErr = errors.Join(settlementErr, activationErr)
-			changed = true
-			break
+			runtimeEngine.state.Unlock()
+			if publicationErr != nil {
+				rollbackErr := runtimeEngine.rollbackPrepared(
+					reconcileContext,
+					mounted.current,
+					publicationErr,
+				)
+				return errors.Join(publicationErr, rollbackErr)
+			}
+			progress = true
 		}
-		if !changed {
-			return settlementErr
+		if !progress {
+			return nil
 		}
 	}
 }
 
-func (supervisor *fiberSupervisor) activate(
-	applyContext context.Context,
-	declaration *pluginDeclaration,
-) error {
-	ownerFiber := supervisor.newFiber(declaration, declaration.instance, declaration.manifest)
-	ownerFiber.rootScope = newFiberRootScope(
-		supervisor.runtime,
-		ownerFiber,
-		declaration.parentScope,
-	)
-	ownerFiber.rootScope.label = declaration.manifest.Name
-	missing := supervisor.resolveDependencies(ownerFiber)
-	if len(missing) != 0 {
-		ownerFiber.cancel(ErrServiceUnavailable)
-		ownerFiber.rootScope.closeTree()
-		declaration.missing = missing
-		return nil
-	}
+func (runtimeEngine *Runtime) resolveDependencies(
+	mounted *mountedPlugin,
+) (map[reflect.Type]*serviceDependency, []string, bool) {
+	dependencies := make(map[reflect.Type]*serviceDependency)
+	missing := make([]string, 0)
+	blocked := false
 
-	transaction := newMountTransaction(supervisor.runtime, ownerFiber, applyContext)
-	ownerFiber.pluginContext = newPluginContext(
-		supervisor.runtime,
-		ownerFiber,
-		ownerFiber.rootScope,
-		ownerFiber.lifetime,
-		transaction,
-	)
-	declaration.current = ownerFiber
-	declaration.lastFiberID = ownerFiber.id
-	declaration.state = FiberStarting
-	supervisor.setFiberState(ownerFiber, FiberStarting)
-
-	applyErr := applyPlugin(applyContext, ownerFiber.instance, ownerFiber.pluginContext)
-	if applyErr == nil {
-		applyErr = transaction.commit()
-	} else {
-		applyErr = errors.Join(applyErr, transaction.rollback(applyContext))
+	runtimeEngine.state.RLock()
+	defer runtimeEngine.state.RUnlock()
+	if mounted.parent != nil {
+		if mounted.parent.removed || mounted.parent.current == nil ||
+			mounted.parent.current.state != FiberActive {
+			blocked = true
+		}
 	}
-	if applyErr != nil {
-		ownerFiber.cancel(applyErr)
-		ownerFiber.rootScope.closeTree()
-		ownerFiber.lastErr = applyErr
-		declaration.lastErr = applyErr
-		declaration.missing = nil
-		declaration.state = FiberFailed
-		supervisor.setFiberState(ownerFiber, FiberFailed)
-		return fmt.Errorf("plugin: activate %s: %w", declaration.manifest.Name, applyErr)
-	}
-
-	declaration.lastErr = nil
-	declaration.missing = nil
-	declaration.state = FiberActive
-	supervisor.setFiberState(ownerFiber, FiberActive)
-	supervisor.attachDependencies(ownerFiber)
-	return nil
-}
-
-func (supervisor *fiberSupervisor) unload(
-	stopContext context.Context,
-	pluginHandle Handle,
-) error {
-	supervisor.runtime.operations.Lock()
-	defer supervisor.runtime.operations.Unlock()
-	declaration, err := supervisor.findDeclaration(pluginHandle)
-	if err != nil {
-		return err
-	}
-	stopErr := supervisor.disposeDeclaration(stopContext, declaration)
-	return errors.Join(stopErr, supervisor.reconcile(stopContext))
-}
-
-func (supervisor *fiberSupervisor) disposeDeclaration(
-	stopContext context.Context,
-	declaration *pluginDeclaration,
-) error {
-	if declaration == nil || declaration.removed {
-		return nil
-	}
-	declaration.removed = true
-	var stopErr error
-	if declaration.current != nil {
-		stopErr = supervisor.stopFiber(stopContext, declaration.current, FiberStopped)
-	}
-	declaration.current = nil
-	declaration.state = FiberStopped
-	declaration.missing = nil
-	declaration.lastErr = stopErr
-	if declaration.parent != nil {
-		delete(declaration.parent.children, declaration.id)
-	}
-	if declaration.ownerEffect != nil {
-		declaration.ownerEffect.state = fiberEffectDisposed
-	}
-	return stopErr
-}
-
-func (supervisor *fiberSupervisor) stopFiber(
-	stopContext context.Context,
-	ownerFiber *fiber,
-	finalState FiberState,
-) error {
-	if ownerFiber == nil || ownerFiber.state == FiberStopping || ownerFiber.state == FiberStopped {
-		return nil
-	}
-	supervisor.setFiberState(ownerFiber, FiberStopping)
-	var stopErr error
-	stopErr = errors.Join(stopErr, supervisor.stopDependents(stopContext, ownerFiber))
-
-	ownerFiber.cancel(ErrContextClosed)
-	ownerFiber.rootScope.closeTree()
-	stopErr = errors.Join(stopErr, releaseFiberEffects(stopContext, ownerFiber.effects.entries))
-	supervisor.detachDependencies(ownerFiber)
-	supervisor.setFiberState(ownerFiber, finalState)
-	ownerFiber.lastErr = stopErr
-	return stopErr
-}
-
-func (supervisor *fiberSupervisor) replace(
-	replaceContext context.Context,
-	pluginHandle Handle,
-	candidate Plugin,
-) error {
-	supervisor.runtime.operations.Lock()
-	defer supervisor.runtime.operations.Unlock()
-	declaration, err := supervisor.findDeclaration(pluginHandle)
-	if err != nil {
-		return err
-	}
-	if declaration.removed || declaration.state != FiberActive || declaration.current == nil {
-		return ErrPluginNotActive
-	}
-	if candidate == nil {
-		return errors.New("plugin: cannot replace with nil Plugin")
-	}
-	candidateManifest, err := pluginManifest(candidate)
-	if err != nil {
-		return err
-	}
-	if candidateManifest.Name != declaration.manifest.Name {
-		return fmt.Errorf(
-			"plugin: replacement name %q does not match %q",
-			candidateManifest.Name,
-			declaration.manifest.Name,
+	for _, reference := range mounted.manifest.requires {
+		binding, available := runtimeEngine.services.resolve(
+			reference,
+			mounted.scope,
 		)
-	}
-	if !sameServiceDefinitions(candidateManifest.Provides, declaration.manifest.Provides) {
-		return errors.New("plugin: replacement must preserve the provided Service set")
-	}
-	supervisor.runtime.state.Lock()
-	err = supervisor.runtime.services.admitManifest(candidateManifest)
-	supervisor.runtime.state.Unlock()
-	if err != nil {
-		return err
-	}
-
-	previousFiber := declaration.current
-	candidateFiber := supervisor.newFiber(declaration, candidate, candidateManifest)
-	candidateFiber.rootScope = newReplacementRootScope(
-		supervisor.runtime,
-		candidateFiber,
-		previousFiber.rootScope,
-	)
-	missing := supervisor.resolveDependencies(candidateFiber)
-	if len(missing) != 0 {
-		candidateFiber.cancel(ErrServiceUnavailable)
-		candidateFiber.rootScope.closeTree()
-		return fmt.Errorf("%w: %v", ErrServiceUnavailable, missing)
-	}
-
-	candidateTransaction := newMountTransaction(supervisor.runtime, candidateFiber, replaceContext)
-	replacement := &replacementTransaction{
-		previous:  previousFiber,
-		candidate: candidateFiber,
-	}
-	candidateTransaction.replacement = replacement
-	candidateFiber.pluginContext = newPluginContext(
-		supervisor.runtime,
-		candidateFiber,
-		candidateFiber.rootScope,
-		candidateFiber.lifetime,
-		candidateTransaction,
-	)
-	supervisor.setFiberState(candidateFiber, FiberStarting)
-	applyErr := applyPlugin(replaceContext, candidate, candidateFiber.pluginContext)
-	if applyErr != nil {
-		applyErr = errors.Join(applyErr, candidateTransaction.rollback(replaceContext))
-		candidateFiber.cancel(applyErr)
-		candidateFiber.rootScope.closeTree()
-		supervisor.setFiberState(candidateFiber, FiberFailed)
-		declaration.lastErr = applyErr
-		return fmt.Errorf("plugin: prepare replacement %s: %w", candidateManifest.Name, applyErr)
-	}
-
-	dependentStopErr := supervisor.stopDependents(replaceContext, previousFiber)
-	commitErr := candidateTransaction.commit()
-	if commitErr != nil {
-		candidateFiber.cancel(commitErr)
-		candidateFiber.rootScope.closeTree()
-		supervisor.setFiberState(candidateFiber, FiberFailed)
-		reconcileErr := supervisor.reconcile(replaceContext)
-		declaration.lastErr = commitErr
-		return errors.Join(commitErr, dependentStopErr, reconcileErr)
-	}
-
-	declaration.instance = candidate
-	declaration.manifest = candidateManifest
-	declaration.current = candidateFiber
-	declaration.lastFiberID = candidateFiber.id
-	declaration.lastErr = nil
-	declaration.missing = nil
-	declaration.state = FiberActive
-	supervisor.setFiberState(candidateFiber, FiberActive)
-	supervisor.attachDependencies(candidateFiber)
-
-	previousFiber.cancel(ErrContextClosed)
-	previousFiber.rootScope.closeTree()
-	retireErr := releaseFiberEffects(replaceContext, previousFiber.effects.entries)
-	supervisor.detachDependencies(previousFiber)
-	supervisor.setFiberState(previousFiber, FiberStopped)
-	replacementErr := errors.Join(
-		dependentStopErr,
-		retireErr,
-		supervisor.reconcile(replaceContext),
-	)
-	declaration.lastErr = replacementErr
-	return replacementErr
-}
-
-func (supervisor *fiberSupervisor) shutdown(
-	stopContext context.Context,
-) error {
-	supervisor.runtime.operations.Lock()
-	defer supervisor.runtime.operations.Unlock()
-	if supervisor.closed {
-		return nil
-	}
-	supervisor.closed = true
-	var shutdownErr error
-	for declarationIndex := len(supervisor.declarations) - 1; declarationIndex >= 0; declarationIndex-- {
-		declaration := supervisor.declarations[declarationIndex]
-		if declaration.removed {
+		if available {
+			dependencies[reference.key] = &serviceDependency{
+				reference: reference,
+				binding:   binding,
+			}
 			continue
 		}
-		declaration.removed = true
-		if declaration.current != nil {
-			shutdownErr = errors.Join(
-				shutdownErr,
-				supervisor.stopFiber(stopContext, declaration.current, FiberStopped),
-			)
-		}
-		declaration.current = nil
-		declaration.state = FiberStopped
-	}
-	return shutdownErr
-}
-
-func (supervisor *fiberSupervisor) status(
-	pluginHandle Handle,
-) (FiberStatus, error) {
-	supervisor.runtime.operations.Lock()
-	defer supervisor.runtime.operations.Unlock()
-	declaration, err := supervisor.findDeclaration(pluginHandle)
-	if err != nil {
-		return FiberStatus{}, err
-	}
-	return supervisor.statusLocked(declaration), nil
-}
-
-func (supervisor *fiberSupervisor) statuses() []FiberStatus {
-	supervisor.runtime.operations.Lock()
-	defer supervisor.runtime.operations.Unlock()
-	snapshots := make([]FiberStatus, 0, len(supervisor.declarations))
-	for _, declaration := range supervisor.declarations {
-		snapshots = append(snapshots, supervisor.statusLocked(declaration))
-	}
-	return snapshots
-}
-
-func (supervisor *fiberSupervisor) findDeclaration(pluginHandle Handle) (*pluginDeclaration, error) {
-	if pluginHandle.owner != supervisor.runtime || pluginHandle.id == 0 {
-		return nil, errors.New("plugin: Handle does not belong to this Runtime")
-	}
-	declaration, exists := supervisor.byHandle[pluginHandle.id]
-	if !exists {
-		return nil, errors.New("plugin: unknown Handle")
-	}
-	return declaration, nil
-}
-
-func (supervisor *fiberSupervisor) parentReady(declaration *pluginDeclaration) bool {
-	if declaration.parent == nil {
-		return true
-	}
-	return !declaration.parent.removed &&
-		declaration.parent.state == FiberActive &&
-		declaration.parent.current != nil &&
-		declaration.parent.current.id == declaration.parentFiberID
-}
-
-func (supervisor *fiberSupervisor) missingRequiredServices(
-	declaration *pluginDeclaration,
-) []string {
-	probeScope := declaration.parentScope
-	if probeScope == nil {
-		probeScope = &Scope{
-			runtime: supervisor.runtime,
-		}
-	}
-	missing := make([]string, 0)
-	supervisor.runtime.state.RLock()
-	for _, requiredRef := range declaration.manifest.Requires {
-		if _, exists := supervisor.runtime.services.resolve(requiredRef, probeScope); !exists {
-			missing = append(missing, requiredRef.name)
-		}
-	}
-	supervisor.runtime.state.RUnlock()
-	sort.Strings(missing)
-	return missing
-}
-
-func (supervisor *fiberSupervisor) resolveDependencies(ownerFiber *fiber) []string {
-	missing := make([]string, 0)
-	supervisor.runtime.state.RLock()
-	for _, requiredRef := range ownerFiber.manifest.Requires {
-		binding, exists := supervisor.runtime.services.resolve(requiredRef, ownerFiber.rootScope)
-		if !exists || bindingOwner(binding) == nil {
-			missing = append(missing, requiredRef.name)
+		if runtimeEngine.declaredProvider(reference, mounted.scope) != nil {
+			blocked = true
 			continue
 		}
-		ownerFiber.dependencies[requiredRef.token] = resolvedServiceDependency{
-			reference: requiredRef,
+		missing = append(missing, reference.name)
+	}
+	for _, reference := range mounted.manifest.optional {
+		binding, available := runtimeEngine.services.resolve(
+			reference,
+			mounted.scope,
+		)
+		if !available {
+			continue
+		}
+		dependencies[reference.key] = &serviceDependency{
+			reference: reference,
 			binding:   binding,
-			provider:  bindingOwner(binding),
-		}
-	}
-	for _, optionalRef := range ownerFiber.manifest.Optional {
-		binding, exists := supervisor.runtime.services.resolve(optionalRef, ownerFiber.rootScope)
-		if !exists || bindingOwner(binding) == nil {
-			continue
-		}
-		ownerFiber.dependencies[optionalRef.token] = resolvedServiceDependency{
-			reference: optionalRef,
-			binding:   binding,
-			provider:  bindingOwner(binding),
 			optional:  true,
 		}
 	}
-	supervisor.runtime.state.RUnlock()
 	sort.Strings(missing)
-	return missing
+	return dependencies, missing, blocked
 }
 
-func (supervisor *fiberSupervisor) dependenciesChanged(ownerFiber *fiber) bool {
-	supervisor.runtime.state.RLock()
-	defer supervisor.runtime.state.RUnlock()
-	for _, requiredRef := range ownerFiber.manifest.Requires {
-		binding, exists := supervisor.runtime.services.resolve(requiredRef, ownerFiber.rootScope)
-		dependency, recorded := ownerFiber.dependencies[requiredRef.token]
-		if !exists || !recorded || dependency.binding != binding {
-			return true
+// Runtime.state must be read-locked by the caller.
+func (runtimeEngine *Runtime) declaredProvider(
+	reference serviceRef,
+	sourceScope *scope,
+) *mountedPlugin {
+	for selectedScope := sourceScope; selectedScope != nil; selectedScope = selectedScope.parent {
+		for _, mounted := range runtimeEngine.mounts {
+			if mounted.removed || mounted.scope != selectedScope {
+				continue
+			}
+			for _, offer := range mounted.manifest.provides {
+				if offer.reference.key == reference.key {
+					return mounted
+				}
+			}
 		}
 	}
-	for _, optionalRef := range ownerFiber.manifest.Optional {
-		binding, exists := supervisor.runtime.services.resolve(optionalRef, ownerFiber.rootScope)
-		dependency, recorded := ownerFiber.dependencies[optionalRef.token]
-		if exists != recorded || (exists && dependency.binding != binding) {
-			return true
-		}
-	}
-	return false
+	return nil
 }
 
-func (supervisor *fiberSupervisor) attachDependencies(ownerFiber *fiber) {
-	for _, dependency := range ownerFiber.dependencies {
-		if dependency.provider == nil {
-			continue
-		}
-		consumers := supervisor.dependents[dependency.provider.id]
-		if consumers == nil {
-			consumers = make(map[FiberID]*fiber)
-			supervisor.dependents[dependency.provider.id] = consumers
-		}
-		consumers[ownerFiber.id] = ownerFiber
-	}
-}
-
-func (supervisor *fiberSupervisor) detachDependencies(ownerFiber *fiber) {
-	for _, dependency := range ownerFiber.dependencies {
-		if dependency.provider == nil {
-			continue
-		}
-		consumers := supervisor.dependents[dependency.provider.id]
-		delete(consumers, ownerFiber.id)
-		if len(consumers) == 0 {
-			delete(supervisor.dependents, dependency.provider.id)
-		}
-	}
-	delete(supervisor.dependents, ownerFiber.id)
-}
-
-func (supervisor *fiberSupervisor) stopDependents(
-	stopContext context.Context,
-	providerFiber *fiber,
-) error {
-	consumers := make([]*fiber, 0, len(supervisor.dependents[providerFiber.id]))
-	for _, consumerFiber := range supervisor.dependents[providerFiber.id] {
-		consumers = append(consumers, consumerFiber)
-	}
-	sort.Slice(consumers, func(leftIndex int, rightIndex int) bool {
-		return consumers[leftIndex].order > consumers[rightIndex].order
-	})
-	var stopErr error
-	for _, consumerFiber := range consumers {
-		stopErr = errors.Join(
-			stopErr,
-			supervisor.stopForDependencyChange(stopContext, consumerFiber),
-		)
-	}
-	return stopErr
-}
-
-func (supervisor *fiberSupervisor) stopForDependencyChange(
-	stopContext context.Context,
+func (runtimeEngine *Runtime) prepareFiber(
+	applyContext context.Context,
 	ownerFiber *fiber,
+	dependencies map[reflect.Type]*serviceDependency,
 ) error {
-	declaration := ownerFiber.declaration
-	stopErr := supervisor.stopFiber(stopContext, ownerFiber, FiberStopped)
-	if declaration != nil && !declaration.removed && declaration.current == ownerFiber {
-		declaration.current = nil
-		declaration.state = FiberWaiting
-		declaration.lastErr = stopErr
-		declaration.missing = supervisor.missingRequiredServices(declaration)
+	fiberLifetime, cancelLifetime := context.WithCancelCause(context.Background())
+	selectedActivation := &activation{
+		runtime:  runtimeEngine,
+		fiber:    ownerFiber,
+		lifetime: fiberLifetime,
 	}
-	return stopErr
+	if err := ownerFiber.instance.RuntimePlugin().attach(selectedActivation); err != nil {
+		runtimeEngine.state.Lock()
+		ownerFiber.state = FiberFailed
+		ownerFiber.lastErr = err
+		runtimeEngine.state.Unlock()
+		cancelLifetime(err)
+		return err
+	}
+	ownerFiber.lifetime = fiberLifetime
+	ownerFiber.cancel = cancelLifetime
+	ownerFiber.activation = selectedActivation
+	ownerFiber.dependencies = dependencies
+	ownerFiber.missing = nil
+	ownerFiber.effects.add(
+		"plugin:"+ownerFiber.manifest.name,
+		ownerFiber.instance.Dispose,
+	)
+	runtimeEngine.state.Lock()
+	ownerFiber.state = FiberStarting
+	runtimeEngine.state.Unlock()
+
+	applyErr := ownerFiber.instance.Apply(applyContext)
+	if applyErr == nil {
+		return nil
+	}
+	rollbackErr := runtimeEngine.rollbackPrepared(
+		applyContext,
+		ownerFiber,
+		applyErr,
+	)
+	return errors.Join(applyErr, rollbackErr)
 }
 
-func (supervisor *fiberSupervisor) setFiberState(ownerFiber *fiber, nextState FiberState) {
-	supervisor.runtime.state.Lock()
-	ownerFiber.state = nextState
-	supervisor.runtime.state.Unlock()
+func (runtimeEngine *Runtime) rollbackPrepared(
+	rollbackContext context.Context,
+	ownerFiber *fiber,
+	failure error,
+) error {
+	runtimeEngine.state.Lock()
+	ownerFiber.state = FiberRollingBack
+	runtimeEngine.withdrawContributionsLocked(ownerFiber)
+	runtimeEngine.state.Unlock()
+	if ownerFiber.cancel != nil {
+		ownerFiber.cancel(failure)
+	}
+	cleanupErr := ownerFiber.effects.release(rollbackContext)
+	ownerFiber.instance.RuntimePlugin().detach(ownerFiber.activation)
+	runtimeEngine.state.Lock()
+	ownerFiber.state = FiberFailed
+	ownerFiber.lastErr = errors.Join(failure, cleanupErr)
+	runtimeEngine.state.Unlock()
+	return cleanupErr
 }
 
-func (supervisor *fiberSupervisor) statusLocked(declaration *pluginDeclaration) FiberStatus {
-	statusView := FiberStatus{
-		HandleID: declaration.id,
-		FiberID:  declaration.lastFiberID,
-		Name:     declaration.manifest.Name,
-		State:    declaration.state,
-		Missing:  append([]string(nil), declaration.missing...),
-		Error:    declaration.lastErr,
+// Runtime.state must be write-locked by the caller.
+func (runtimeEngine *Runtime) publishContributionsLocked(ownerFiber *fiber) error {
+	for _, offer := range ownerFiber.manifest.provides {
+		bindingKey := serviceBindingKey{
+			scope:       ownerFiber.scope,
+			serviceType: offer.reference.key,
+		}
+		existingBinding := runtimeEngine.services.bindings[bindingKey]
+		if existingBinding != nil && existingBinding.owner != ownerFiber {
+			return fmt.Errorf(
+				"%w: %s",
+				ErrServiceConflict,
+				offer.reference.name,
+			)
+		}
 	}
-	ownerFiber := declaration.current
-	if ownerFiber == nil {
-		return statusView
+	for _, offer := range ownerFiber.manifest.events {
+		for _, existingBinding := range runtimeEngine.events.bindings[offer.reference.key] {
+			if existingBinding.reference.name != offer.reference.name ||
+				existingBinding.reference.policy != offer.reference.policy {
+				return fmt.Errorf(
+					"plugin: Event type %q has inconsistent metadata",
+					namedTypeName(offer.reference.key),
+				)
+			}
+		}
 	}
-	statusView.Effects = ownerFiber.effects.labels()
-	for _, dependency := range ownerFiber.dependencies {
-		statusView.Dependencies = append(
-			statusView.Dependencies,
-			ServiceDependencyStatus{
-				Service:         dependency.reference.name,
-				ProviderFiberID: dependency.provider.id,
-				Optional:        dependency.optional,
+
+	for _, offer := range ownerFiber.manifest.provides {
+		selectedBinding := &serviceBinding{
+			reference:  offer.reference,
+			capability: offer.capability,
+			owner:      ownerFiber,
+			scope:      ownerFiber.scope,
+		}
+		bindingKey := serviceBindingKey{
+			scope:       ownerFiber.scope,
+			serviceType: offer.reference.key,
+		}
+		runtimeEngine.services.bindings[bindingKey] = selectedBinding
+		ownerFiber.services = append(ownerFiber.services, selectedBinding)
+		ownerFiber.effects.add(
+			"service:"+offer.reference.name,
+			func(context.Context) error {
+				runtimeEngine.state.Lock()
+				if runtimeEngine.services.bindings[bindingKey] == selectedBinding {
+					delete(runtimeEngine.services.bindings, bindingKey)
+				}
+				runtimeEngine.state.Unlock()
+				return nil
 			},
 		)
 	}
-	for _, ownership := range ownerFiber.effects.entries {
-		if ownership.registration == nil || ownership.state != fiberEffectActive {
-			continue
+	for _, offer := range ownerFiber.manifest.events {
+		runtimeEngine.nextOrdinal++
+		selectedBinding := &eventBinding{
+			reference: offer.reference,
+			invoker:   offer.invoker,
+			owner:     ownerFiber,
+			scope:     ownerFiber.scope,
+			ordinal:   runtimeEngine.nextOrdinal,
 		}
-		entryView := ownership.registration.diagnostic()
-		switch entryView.kind {
-		case runtimeEntryService:
-			statusView.Services = append(
-				statusView.Services,
-				ServiceBindingStatus{
-					Service: entryView.name,
-					Scope:   ownership.scope.target,
-				},
-			)
-		case runtimeEntryWaterfall:
-			statusView.Waterfalls = append(
-				statusView.Waterfalls,
-				WaterfallBindingStatus{
-					Waterfall: entryView.name,
-					Scope:     ownership.scope.target,
-				},
-			)
-		case runtimeEntryEvent:
-			statusView.Events = append(
-				statusView.Events,
-				EventSubscriptionStatus{
-					Event: entryView.name,
-					Scope: ownership.scope.target,
-				},
-			)
+		runtimeEngine.events.add(selectedBinding)
+		ownerFiber.events = append(ownerFiber.events, selectedBinding)
+		ownerFiber.effects.add(
+			"event:"+offer.reference.name,
+			func(context.Context) error {
+				runtimeEngine.state.Lock()
+				runtimeEngine.events.remove(selectedBinding)
+				runtimeEngine.state.Unlock()
+				return nil
+			},
+		)
+	}
+	for _, offer := range ownerFiber.manifest.waterfalls {
+		runtimeEngine.nextOrdinal++
+		selectedBinding := &waterfallBinding{
+			reference: offer.reference,
+			invoker:   offer.invoker,
+			owner:     ownerFiber,
+			scope:     ownerFiber.scope,
+			ordinal:   runtimeEngine.nextOrdinal,
+		}
+		runtimeEngine.waterfalls.add(selectedBinding)
+		ownerFiber.waterfalls = append(ownerFiber.waterfalls, selectedBinding)
+		ownerFiber.effects.add(
+			"waterfall:"+offer.reference.name,
+			func(context.Context) error {
+				runtimeEngine.state.Lock()
+				runtimeEngine.waterfalls.remove(selectedBinding)
+				runtimeEngine.state.Unlock()
+				return nil
+			},
+		)
+	}
+	return nil
+}
+
+// Runtime.state must be write-locked by the caller.
+func (runtimeEngine *Runtime) withdrawContributionsLocked(ownerFiber *fiber) {
+	if ownerFiber == nil {
+		return
+	}
+	for _, selectedBinding := range ownerFiber.services {
+		bindingKey := serviceBindingKey{
+			scope:       selectedBinding.scope,
+			serviceType: selectedBinding.reference.key,
+		}
+		if runtimeEngine.services.bindings[bindingKey] == selectedBinding {
+			delete(runtimeEngine.services.bindings, bindingKey)
 		}
 	}
-	sort.Slice(statusView.Dependencies, func(leftIndex int, rightIndex int) bool {
-		return statusView.Dependencies[leftIndex].Service < statusView.Dependencies[rightIndex].Service
-	})
-	return statusView
+	for _, selectedBinding := range ownerFiber.events {
+		runtimeEngine.events.remove(selectedBinding)
+	}
+	for _, selectedBinding := range ownerFiber.waterfalls {
+		runtimeEngine.waterfalls.remove(selectedBinding)
+	}
 }
 
-func pluginManifest(instance Plugin) (metadata manifestSpec, manifestErr error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			manifestErr = fmt.Errorf("plugin: Manifest panicked: %v", recovered)
-		}
-	}()
-	return normalizeManifest(instance.Manifest())
+// Runtime.state must be write-locked by the caller.
+func (runtimeEngine *Runtime) publishExistingContributionsLocked(ownerFiber *fiber) {
+	if ownerFiber == nil {
+		return
+	}
+	for _, selectedBinding := range ownerFiber.services {
+		runtimeEngine.services.bindings[serviceBindingKey{
+			scope:       selectedBinding.scope,
+			serviceType: selectedBinding.reference.key,
+		}] = selectedBinding
+	}
+	for _, selectedBinding := range ownerFiber.events {
+		runtimeEngine.events.add(selectedBinding)
+	}
+	for _, selectedBinding := range ownerFiber.waterfalls {
+		runtimeEngine.waterfalls.add(selectedBinding)
+	}
 }
 
-func applyPlugin(
-	applyContext context.Context,
-	instance Plugin,
-	pluginContext *Context,
-) (applyErr error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			applyErr = fmt.Errorf("plugin: Apply panicked: %v", recovered)
-		}
-	}()
-	return instance.Apply(applyContext, pluginContext)
-}
-
-func invokePluginDispose(
-	disposeContext context.Context,
-	instance Plugin,
-) (disposeErr error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			disposeErr = fmt.Errorf("plugin: Dispose panicked: %v", recovered)
-		}
-	}()
-	return instance.Dispose(disposeContext)
-}
-
-func bindingOwner(binding serviceBinding) *fiber {
-	if binding == nil {
+func (runtimeEngine *Runtime) stopDependents(
+	stopContext context.Context,
+	providerFiber *fiber,
+	visited map[*fiber]struct{},
+) error {
+	if providerFiber == nil {
 		return nil
 	}
-	return binding.entryOwner()
+	var stopErr error
+	for _, dependentFiber := range runtimeEngine.directDependents(providerFiber) {
+		stopErr = errors.Join(
+			stopErr,
+			runtimeEngine.stopFiberWithDependents(
+				stopContext,
+				dependentFiber,
+				visited,
+			),
+		)
+	}
+	for _, childMount := range providerFiber.mount.children {
+		if childMount.removed || childMount.current == nil {
+			continue
+		}
+		stopErr = errors.Join(
+			stopErr,
+			runtimeEngine.stopFiberWithDependents(
+				stopContext,
+				childMount.current,
+				visited,
+			),
+		)
+	}
+	return stopErr
+}
+
+func (runtimeEngine *Runtime) stopFiberWithDependents(
+	stopContext context.Context,
+	ownerFiber *fiber,
+	visited map[*fiber]struct{},
+) error {
+	if ownerFiber == nil {
+		return nil
+	}
+	if _, exists := visited[ownerFiber]; exists {
+		return nil
+	}
+	visited[ownerFiber] = struct{}{}
+	dependentErr := runtimeEngine.stopDependents(
+		stopContext,
+		ownerFiber,
+		visited,
+	)
+	disposeErr := runtimeEngine.disposeFiber(stopContext, ownerFiber)
+	return errors.Join(dependentErr, disposeErr)
+}
+
+func (runtimeEngine *Runtime) directDependents(providerFiber *fiber) []*fiber {
+	dependents := make([]*fiber, 0)
+	runtimeEngine.state.RLock()
+	for _, mounted := range runtimeEngine.mounts {
+		candidateFiber := mounted.current
+		if candidateFiber == nil ||
+			candidateFiber.state != FiberActive || candidateFiber == providerFiber {
+			continue
+		}
+		for _, dependency := range candidateFiber.dependencies {
+			if dependency.binding == nil || dependency.binding.owner != providerFiber {
+				continue
+			}
+			dependents = append(dependents, candidateFiber)
+			break
+		}
+	}
+	runtimeEngine.state.RUnlock()
+	return dependents
+}
+
+func (runtimeEngine *Runtime) disposeFiber(
+	disposeContext context.Context,
+	ownerFiber *fiber,
+) error {
+	if ownerFiber == nil {
+		return nil
+	}
+	runtimeEngine.state.Lock()
+	switch ownerFiber.state {
+	case FiberStopped:
+		runtimeEngine.state.Unlock()
+		return nil
+	case FiberWaiting:
+		ownerFiber.state = FiberStopped
+		runtimeEngine.state.Unlock()
+		return nil
+	case FiberFailed:
+		ownerFiber.state = FiberStopped
+		runtimeEngine.state.Unlock()
+		return ownerFiber.lastErr
+	default:
+		ownerFiber.state = FiberStopping
+	}
+	runtimeEngine.state.Unlock()
+	if ownerFiber.cancel != nil {
+		ownerFiber.cancel(ErrPluginNotActive)
+	}
+	disposeErr := ownerFiber.effects.release(disposeContext)
+	ownerFiber.instance.RuntimePlugin().detach(ownerFiber.activation)
+	runtimeEngine.state.Lock()
+	ownerFiber.state = FiberStopped
+	ownerFiber.lastErr = disposeErr
+	runtimeEngine.state.Unlock()
+	return disposeErr
+}
+
+func (runtimeEngine *Runtime) prepareStopped() {
+	for _, mounted := range runtimeEngine.mounts {
+		if mounted.removed {
+			continue
+		}
+		if mounted.current == nil || mounted.current.state == FiberStopped {
+			mounted.current = runtimeEngine.newFiber(
+				mounted,
+				mounted.instance,
+				mounted.manifest,
+			)
+		}
+	}
+}
+
+func (runtimeEngine *Runtime) readinessError(mounts []*mountedPlugin) error {
+	var readinessErr error
+	for _, mounted := range mounts {
+		if mounted.removed || mounted.current == nil {
+			continue
+		}
+		ownerFiber := mounted.current
+		if ownerFiber.state == FiberActive {
+			continue
+		}
+		switch ownerFiber.state {
+		case FiberWaiting:
+			reason := "dependency cycle"
+			if len(ownerFiber.missing) != 0 {
+				reason = fmt.Sprintf(
+					"missing required Services: %v",
+					ownerFiber.missing,
+				)
+			}
+			readinessErr = errors.Join(
+				readinessErr,
+				fmt.Errorf(
+					"plugin: start %s: %s",
+					ownerFiber.manifest.name,
+					reason,
+				),
+			)
+		case FiberFailed:
+			readinessErr = errors.Join(readinessErr, ownerFiber.lastErr)
+		default:
+			readinessErr = errors.Join(
+				readinessErr,
+				fmt.Errorf(
+					"plugin: start %s stopped in state %s",
+					ownerFiber.manifest.name,
+					ownerFiber.state,
+				),
+			)
+		}
+	}
+	return readinessErr
+}
+
+func (runtimeEngine *Runtime) rollbackFrom(
+	rollbackContext context.Context,
+	startIndex int,
+) error {
+	if startIndex < 0 || startIndex > len(runtimeEngine.mounts) {
+		return nil
+	}
+	rollbackMounts := append(
+		[]*mountedPlugin(nil),
+		runtimeEngine.mounts[startIndex:]...,
+	)
+	for _, mounted := range rollbackMounts {
+		runtimeEngine.markRemovedTree(mounted)
+	}
+	var rollbackErr error
+	visited := make(map[*fiber]struct{})
+	for mountIndex := len(rollbackMounts) - 1; mountIndex >= 0; mountIndex-- {
+		rollbackErr = errors.Join(
+			rollbackErr,
+			runtimeEngine.stopFiberWithDependents(
+				rollbackContext,
+				rollbackMounts[mountIndex].current,
+				visited,
+			),
+		)
+	}
+	for _, mounted := range rollbackMounts {
+		runtimeEngine.deleteMountTree(mounted)
+	}
+	runtimeEngine.prepareStopped()
+	return rollbackErr
+}
+
+func (runtimeEngine *Runtime) removeMounted(
+	removeContext context.Context,
+	mounted *mountedPlugin,
+) error {
+	runtimeEngine.markRemovedTree(mounted)
+	stopErr := runtimeEngine.stopFiberWithDependents(
+		removeContext,
+		mounted.current,
+		make(map[*fiber]struct{}),
+	)
+	runtimeEngine.deleteMountTree(mounted)
+	runtimeEngine.prepareStopped()
+	return stopErr
+}
+
+func (runtimeEngine *Runtime) markRemovedTree(mounted *mountedPlugin) {
+	if mounted == nil || mounted.removed {
+		return
+	}
+	mounted.removed = true
+	for _, childMount := range mounted.children {
+		runtimeEngine.markRemovedTree(childMount)
+	}
+}
+
+func (runtimeEngine *Runtime) deleteMountTree(mounted *mountedPlugin) {
+	if mounted == nil {
+		return
+	}
+	removeSet := make(map[*mountedPlugin]struct{})
+	var collect func(*mountedPlugin)
+	collect = func(selectedMount *mountedPlugin) {
+		if selectedMount == nil {
+			return
+		}
+		removeSet[selectedMount] = struct{}{}
+		for _, childMount := range selectedMount.children {
+			collect(childMount)
+		}
+	}
+	collect(mounted)
+	for selectedMount := range removeSet {
+		delete(runtimeEngine.byHandle, selectedMount.handleID)
+	}
+	filtered := runtimeEngine.mounts[:0]
+	for _, candidateMount := range runtimeEngine.mounts {
+		if _, removed := removeSet[candidateMount]; !removed {
+			filtered = append(filtered, candidateMount)
+		}
+	}
+	runtimeEngine.mounts = filtered
+	if mounted.parent != nil {
+		children := mounted.parent.children[:0]
+		for _, childMount := range mounted.parent.children {
+			if _, removed := removeSet[childMount]; !removed {
+				children = append(children, childMount)
+			}
+		}
+		mounted.parent.children = children
+	}
 }

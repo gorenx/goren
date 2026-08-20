@@ -3,109 +3,81 @@ package example_test
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/gorenx/goren/plugin"
 )
 
-type formatInput struct {
+type messageInput struct {
 	plugin.WaterfallInputBase
 	Text string
 }
 
-type formatOutput struct {
+type messageOutput struct {
 	plugin.WaterfallOutputBase
 	Text string
 }
 
-var formatWaterfallDefinition = plugin.DefineWaterfall[formatInput, formatOutput](
-	"example/format",
-)
-
-type formatMiddleware struct{}
-
-func (*formatMiddleware) Intercept(
-	requestContext context.Context,
-	input formatInput,
-	next plugin.WaterfallNext[formatInput, formatOutput],
-) (formatOutput, error) {
-	input.Text = "[" + input.Text + "]"
-	return next.Proceed(requestContext, input)
+type trimMiddleware struct {
+	plugin.Base
 }
 
-type formatTerminal struct{}
-
-func (*formatTerminal) Execute(
-	_ context.Context,
-	input formatInput,
-) (formatOutput, error) {
-	return formatOutput{
-		Text: input.Text,
-	}, nil
-}
-
-type waterfallCaller struct {
-	sourceScope *plugin.Scope
-}
-
-func (caller *waterfallCaller) Run(
-	requestContext context.Context,
-	text string,
-) (string, error) {
-	output, err := formatWaterfallDefinition.Run(
-		requestContext,
-		caller.sourceScope,
-		formatInput{
-			Text: text,
-		},
-		&formatTerminal{},
-	)
-	return output.Text, err
-}
-
-type waterfallPlugin struct {
-	callerObject *waterfallCaller
-}
-
-func (*waterfallPlugin) Manifest() plugin.Manifest {
+func (*trimMiddleware) Manifest() plugin.Manifest {
 	return plugin.Manifest{
-		Name: "example-waterfall",
+		Name: "trim",
+		Waterfalls: []plugin.WaterfallContribution{
+			plugin.WaterfallOf[messageInput, messageOutput](),
+		},
 	}
 }
 
-func (instance *waterfallPlugin) Apply(
-	_ context.Context,
-	pluginContext *plugin.Context,
-) error {
-	instance.callerObject.sourceScope = pluginContext.Scope()
-	return formatWaterfallDefinition.Use(pluginContext, &formatMiddleware{})
-}
-
-func (instance *waterfallPlugin) Dispose(context.Context) error {
-	instance.callerObject.sourceScope = nil
+func (*trimMiddleware) Apply(context.Context) error {
 	return nil
 }
 
+func (*trimMiddleware) Dispose(context.Context) error {
+	return nil
+}
+
+func (*trimMiddleware) Intercept(
+	requestContext context.Context,
+	input messageInput,
+	downstream plugin.WaterfallAction[messageInput, messageOutput],
+) (messageOutput, error) {
+	input.Text = strings.TrimSpace(input.Text)
+	return downstream.Execute(requestContext, input)
+}
+
+type uppercaseAction struct{}
+
+func (uppercaseAction) Execute(
+	_ context.Context,
+	input messageInput,
+) (messageOutput, error) {
+	return messageOutput{
+		Text: strings.ToUpper(input.Text),
+	}, nil
+}
+
 func Example_waterfall() {
-	callerObject := &waterfallCaller{}
+	middleware := &trimMiddleware{}
 	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
-	if _, err := runtimeEngine.Load(
-		context.Background(),
-		&waterfallPlugin{
-			callerObject: callerObject,
-		},
-	); err != nil {
+	if _, err := runtimeEngine.Start(context.Background(), middleware); err != nil {
 		panic(err)
 	}
+	defer runtimeEngine.Shutdown(context.Background())
 
-	formattedText, err := callerObject.Run(context.Background(), "hello")
+	output, err := plugin.Run(
+		context.Background(),
+		middleware,
+		messageInput{
+			Text: "  goren  ",
+		},
+		uppercaseAction{},
+	)
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println(formattedText)
-	if err := runtimeEngine.Shutdown(context.Background()); err != nil {
-		panic(err)
-	}
-
-	// Output:
-	// [hello]
+	fmt.Println(output.Text)
+	// Output: GOREN
 }

@@ -55,26 +55,27 @@ func (configuredFactoryFixture) Name() string {
 
 func (fixture configuredFactoryFixture) Create(context.Context) (plugin.Plugin, error) {
 	fixture.createCalls.Add(1)
-	return pluginFixture{
+	return &pluginFixture{
 		address: fixture.settings.Address,
 	}, nil
 }
 
 type pluginFixture struct {
+	plugin.Base
 	address string
 }
 
-func (pluginFixture) Manifest() plugin.Manifest {
+func (*pluginFixture) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "@deepseek-ai/fixture",
 	}
 }
 
-func (pluginFixture) Apply(context.Context, *plugin.Context) error {
+func (*pluginFixture) Apply(context.Context) error {
 	return nil
 }
 
-func (pluginFixture) Dispose(context.Context) error {
+func (*pluginFixture) Dispose(context.Context) error {
 	return nil
 }
 

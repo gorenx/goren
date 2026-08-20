@@ -1,100 +1,219 @@
-package plugin
+package plugin_test
 
 import (
 	"context"
-	"reflect"
+	"errors"
+	"strings"
+	"sync"
 	"testing"
+
+	"github.com/gorenx/goren/plugin"
 )
 
-type runtimeTestEvent struct {
-	EventBase
-	Value string
+type advanced struct {
+	Value int
 }
 
-var runtimeTestEventDefinition = DefineEvent[runtimeTestEvent](
-	"test/event",
-	DeliveryOrdered,
-)
+func (advanced) EventName() string {
+	return "counter/advanced"
+}
 
-type runtimeTestObserver struct {
+func (advanced) EventDelivery() plugin.DeliveryPolicy {
+	return plugin.DeliveryOrdered
+}
+
+type eventObserverPlugin struct {
+	plugin.Base
 	name  string
-	trace *[]string
+	order *[]string
 }
 
-func (observer *runtimeTestObserver) ObserveEvent(
-	_ context.Context,
-	_ runtimeTestEvent,
-) error {
-	if observer.trace != nil {
-		*observer.trace = append(*observer.trace, observer.name)
+func (observer *eventObserverPlugin) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: observer.name,
+		Events: []plugin.EventSubscription{
+			plugin.EventOf[advanced](),
+		},
 	}
+}
+
+func (*eventObserverPlugin) Apply(context.Context) error {
 	return nil
 }
 
-func TestEventRoutesCurrentScopeToRoot(t *testing.T) {
+func (*eventObserverPlugin) Dispose(context.Context) error {
+	return nil
+}
+
+func (observer *eventObserverPlugin) ObserveEvent(
+	_ context.Context,
+	_ advanced,
+) error {
+	*observer.order = append(*observer.order, observer.name)
+	return nil
+}
+
+type eventPublisherPlugin struct {
+	plugin.Base
+	name string
+}
+
+func (publisher *eventPublisherPlugin) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: publisher.name,
+	}
+}
+
+func (*eventPublisherPlugin) Apply(context.Context) error {
+	return nil
+}
+
+func (*eventPublisherPlugin) Dispose(context.Context) error {
+	return nil
+}
+
+func TestEventRoutesFromCurrentScopeToRoot(t *testing.T) {
 	t.Parallel()
-	runtimeEngine := NewRuntime(RuntimeSettings{})
-	trace := make([]string, 0)
-	var rootScope *Scope
-	var tenantScope *Scope
-	_, err := runtimeEngine.Load(
+	order := make([]string, 0)
+	rootObserver := &eventObserverPlugin{
+		name:  "root-observer",
+		order: &order,
+	}
+	rootPublisher := &eventPublisherPlugin{
+		name: "root-publisher",
+	}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	handles, err := runtimeEngine.Start(
 		context.Background(),
-		&runtimeTestPlugin{
-			metadata: Manifest{
-				Name: "event-observers",
-			},
-			applyOperation: func(_ context.Context, pluginContext *Context) error {
-				rootScope = pluginContext.Scope()
-				if observeErr := runtimeTestEventDefinition.Observe(
-					pluginContext,
-					&runtimeTestObserver{
-						name:  "root",
-						trace: &trace,
-					},
-				); observeErr != nil {
-					return observeErr
-				}
-				childContext, childErr := pluginContext.ChildScope("tenant")
-				if childErr != nil {
-					return childErr
-				}
-				tenantScope = childContext.Scope()
-				return runtimeTestEventDefinition.Observe(
-					childContext,
-					&runtimeTestObserver{
-						name:  "child",
-						trace: &trace,
-					},
-				)
-			},
-		},
+		rootObserver,
+		rootPublisher,
 	)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("start: %v", err)
 	}
-	if err := runtimeTestEventDefinition.Publish(
+	childObserver := &eventObserverPlugin{
+		name:  "child-observer",
+		order: &order,
+	}
+	childObserverHandle, err := runtimeEngine.MountChild(
 		context.Background(),
-		tenantScope,
-		runtimeTestEvent{
-			Value: "child",
+		handles[1],
+		childObserver,
+	)
+	if err != nil {
+		t.Fatalf("mount child observer: %v", err)
+	}
+	childPublisher := &eventPublisherPlugin{
+		name: "child-publisher",
+	}
+	if _, err := runtimeEngine.MountChild(
+		context.Background(),
+		childObserverHandle,
+		childPublisher,
+	); err != nil {
+		t.Fatalf("mount child publisher: %v", err)
+	}
+	if err := plugin.Publish(
+		context.Background(),
+		childPublisher,
+		advanced{
+			Value: 1,
 		},
 	); err != nil {
-		t.Fatal(err)
+		t.Fatalf("publish: %v", err)
 	}
-	if !reflect.DeepEqual(trace, []string{"child", "root"}) {
-		t.Fatalf("child Event trace = %v", trace)
+	if got := strings.Join(order, ","); got != "child-observer,root-observer" {
+		t.Fatalf("observer order = %q", got)
 	}
-	trace = trace[:0]
-	if err := runtimeTestEventDefinition.Publish(
-		context.Background(),
-		rootScope,
-		runtimeTestEvent{
-			Value: "root",
+}
+
+type bestEffortFact struct{}
+
+func (bestEffortFact) EventName() string {
+	return "best-effort"
+}
+
+func (bestEffortFact) EventDelivery() plugin.DeliveryPolicy {
+	return plugin.DeliveryBestEffort
+}
+
+type failingObserver struct {
+	plugin.Base
+}
+
+func (*failingObserver) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "failing-observer",
+		Events: []plugin.EventSubscription{
+			plugin.EventOf[bestEffortFact](),
 		},
-	); err != nil {
-		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(trace, []string{"root"}) {
-		t.Fatalf("root Event leaked into child Scope: %v", trace)
+}
+
+func (*failingObserver) Apply(context.Context) error {
+	return nil
+}
+
+func (*failingObserver) Dispose(context.Context) error {
+	return nil
+}
+
+func (*failingObserver) ObserveEvent(context.Context, bestEffortFact) error {
+	return errors.New("observer failed")
+}
+
+type failureReporter struct {
+	mutex    sync.Mutex
+	failures []plugin.EventFailure
+}
+
+func (reporter *failureReporter) ReportEventFailure(
+	_ context.Context,
+	failure plugin.EventFailure,
+) {
+	reporter.mutex.Lock()
+	reporter.failures = append(reporter.failures, failure)
+	reporter.mutex.Unlock()
+}
+
+func TestBestEffortEventReportsAndSuppressesObserverFailure(t *testing.T) {
+	t.Parallel()
+	reporter := &failureReporter{}
+	observer := &failingObserver{}
+	publisher := &eventPublisherPlugin{
+		name: "best-effort-publisher",
+	}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{
+		EventFailures: reporter,
+	})
+	if _, err := runtimeEngine.Start(
+		context.Background(),
+		observer,
+		publisher,
+	); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := plugin.Publish(
+		context.Background(),
+		publisher,
+		bestEffortFact{},
+	); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	reporter.mutex.Lock()
+	defer reporter.mutex.Unlock()
+	if len(reporter.failures) != 1 {
+		t.Fatalf("reported failures = %d, want 1", len(reporter.failures))
+	}
+}
+
+func TestBestEffortObserverRequiresFailureReporter(t *testing.T) {
+	t.Parallel()
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	if _, err := runtimeEngine.Start(
+		context.Background(),
+		&failingObserver{},
+	); err == nil || !strings.Contains(err.Error(), "EventFailureReporter") {
+		t.Fatalf("Start error = %v", err)
 	}
 }

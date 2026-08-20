@@ -4,322 +4,273 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
 )
 
-// DeliveryPolicy controls only fact-delivery mechanics. It never gives Event
-// observers veto or result-transformation semantics.
+// DeliveryPolicy controls fact delivery mechanics only.
 type DeliveryPolicy uint8
 
 const (
+	// DeliveryOrdered invokes matching Observers sequentially.
 	DeliveryOrdered DeliveryPolicy = iota
+	// DeliveryParallel invokes matching Observers concurrently and joins errors.
 	DeliveryParallel
+	// DeliveryBestEffort reports Observer failures and returns success.
 	DeliveryBestEffort
 )
 
-type eventToken struct {
-	marker byte
-}
-
-type eventRef struct {
-	name   string
-	policy DeliveryPolicy
-	token  *eventToken
-}
-
-func (definitionRef eventRef) sameDefinition(otherRef eventRef) bool {
-	return definitionRef.name == otherRef.name &&
-		definitionRef.policy == otherRef.policy &&
-		definitionRef.token == otherRef.token
-}
-
-// EventObserver observes one fact after its owner has logically committed it.
+// EventObserver observes one committed fact.
 type EventObserver[E Event] interface {
-	ObserveEvent(requestContext context.Context, fact E) error
+	ObserveEvent(context.Context, E) error
 }
 
-// EventFailure describes one best-effort observer failure.
+// EventFailure describes one best-effort Observer failure.
 type EventFailure struct {
 	EventName string
 	Error     error
 }
 
-// EventFailureReporter receives failures from best-effort Event delivery.
+// EventFailureReporter receives failures suppressed by DeliveryBestEffort.
 type EventFailureReporter interface {
-	ReportEventFailure(requestContext context.Context, failure EventFailure)
+	ReportEventFailure(context.Context, EventFailure)
 }
 
-// EventDefinition is the owner-defined typed identity and delivery policy of
-// one fact stream.
-type EventDefinition[E Event] struct {
-	ref eventRef
+type typedEventSubscription[E Event] struct{}
+
+// EventOf declares that a Plugin implements EventObserver[E].
+func EventOf[E Event]() EventSubscription {
+	return typedEventSubscription[E]{}
 }
 
-// DefineEvent creates one canonical typed Event definition.
-func DefineEvent[E Event](
-	canonicalName string,
-	policy DeliveryPolicy,
-) EventDefinition[E] {
-	if strings.TrimSpace(canonicalName) == "" || canonicalName != strings.TrimSpace(canonicalName) {
-		panic("plugin: Event name must be non-empty and trimmed")
+func (typedEventSubscription[E]) Name() string {
+	reference, err := eventReferenceOf[E]()
+	if err != nil {
+		return namedTypeName(reflect.TypeFor[E]())
 	}
+	return reference.name
+}
+
+func (typedEventSubscription[E]) eventReference() (eventRef, error) {
+	return eventReferenceOf[E]()
+}
+
+func (typedEventSubscription[E]) bindEventObserver(
+	pluginInstance Plugin,
+) (eventInvoker, error) {
+	observer, matches := pluginInstance.(EventObserver[E])
+	if !matches {
+		return nil, errors.New("Plugin does not implement the declared EventObserver")
+	}
+	return eventInvokerOf[E]{
+		observer: observer,
+	}, nil
+}
+
+func eventReferenceOf[E Event]() (reference eventRef, referenceErr error) {
+	selectedType := reflect.TypeFor[E]()
+	if selectedType == nil || selectedType.Kind() != reflect.Struct || selectedType.Name() == "" {
+		return eventRef{}, errors.New("Event must be a named struct value")
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			reference = eventRef{}
+			referenceErr = fmt.Errorf("Event metadata panicked: %v", recovered)
+		}
+	}()
+	var fact E
+	eventName := fact.EventName()
+	if strings.TrimSpace(eventName) == "" || eventName != strings.TrimSpace(eventName) {
+		return eventRef{}, errors.New("Event name must be non-empty and trimmed")
+	}
+	policy := fact.EventDelivery()
+	if err := validateDeliveryPolicy(policy); err != nil {
+		return eventRef{}, err
+	}
+	return eventRef{
+		key:    selectedType,
+		name:   eventName,
+		policy: policy,
+	}, nil
+}
+
+func validateDeliveryPolicy(policy DeliveryPolicy) error {
 	switch policy {
 	case DeliveryOrdered, DeliveryParallel, DeliveryBestEffort:
+		return nil
 	default:
-		panic("plugin: unsupported Event delivery policy")
-	}
-	return EventDefinition[E]{
-		ref: eventRef{
-			name:   canonicalName,
-			policy: policy,
-			token:  &eventToken{},
-		},
+		return errors.New("unsupported Event delivery policy")
 	}
 }
 
-// Name returns the canonical Event name.
-func (definition EventDefinition[E]) Name() string {
-	return definition.ref.name
+type eventInvoker interface {
+	invoke(context.Context, Event) error
 }
 
-// Observe installs one Fiber-owned Observer subscription.
-func (definition EventDefinition[E]) Observe(
-	pluginContext *Context,
-	observer EventObserver[E],
-) error {
-	if pluginContext == nil {
-		return errors.New("plugin: observe Event through nil Context")
-	}
-	subscription := &eventSubscriptionOf[E]{
-		definition: definition,
-		observer:   observer,
-	}
-	return pluginContext.register(subscription)
+type eventInvokerOf[E Event] struct {
+	observer EventObserver[E]
 }
 
-// Publish snapshots the observers admitted by sourceScope and delivers one
-// already committed fact according to the Definition policy.
-func (definition EventDefinition[E]) Publish(
+func (invoker eventInvokerOf[E]) invoke(requestContext context.Context, fact Event) error {
+	typedFact, matches := fact.(E)
+	if !matches {
+		return errors.New("plugin: Event has an incompatible fact type")
+	}
+	return invoker.observer.ObserveEvent(requestContext, typedFact)
+}
+
+type eventBinding struct {
+	reference eventRef
+	invoker   eventInvoker
+	owner     *fiber
+	scope     *scope
+	ordinal   uint64
+}
+
+type eventRegistry struct {
+	bindings map[reflect.Type][]*eventBinding
+}
+
+func newEventRegistry() *eventRegistry {
+	return &eventRegistry{
+		bindings: make(map[reflect.Type][]*eventBinding),
+	}
+}
+
+func (registry *eventRegistry) add(binding *eventBinding) {
+	registry.bindings[binding.reference.key] = append(
+		registry.bindings[binding.reference.key],
+		binding,
+	)
+}
+
+func (registry *eventRegistry) remove(binding *eventBinding) {
+	candidates := registry.bindings[binding.reference.key]
+	for candidateIndex, candidate := range candidates {
+		if candidate != binding {
+			continue
+		}
+		registry.bindings[binding.reference.key] = append(
+			candidates[:candidateIndex],
+			candidates[candidateIndex+1:]...,
+		)
+		break
+	}
+}
+
+func (registry *eventRegistry) snapshot(
+	reference eventRef,
+	sourceScope *scope,
+) []eventInvoker {
+	lineage := scopePath(sourceScope)
+	invokers := make([]eventInvoker, 0)
+	for _, selectedScope := range lineage {
+		selectedBindings := make([]*eventBinding, 0)
+		for _, binding := range registry.bindings[reference.key] {
+			if binding.scope != selectedScope || binding.owner == nil ||
+				binding.owner.state != FiberActive {
+				continue
+			}
+			selectedBindings = append(selectedBindings, binding)
+		}
+		sort.Slice(selectedBindings, func(leftIndex int, rightIndex int) bool {
+			return selectedBindings[leftIndex].ordinal < selectedBindings[rightIndex].ordinal
+		})
+		for _, binding := range selectedBindings {
+			invokers = append(invokers, binding.invoker)
+		}
+	}
+	return invokers
+}
+
+// Publish delivers fact from the active source Plugin to matching Observers in
+// the source Scope and its ancestors.
+func Publish[E Event](
 	requestContext context.Context,
-	sourceScope *Scope,
+	source Plugin,
 	fact E,
 ) error {
-	if sourceScope == nil || sourceScope.runtime == nil || sourceScope.isClosed() {
-		return errors.New("plugin: publish Event through nil Scope")
-	}
-	observers, err := snapshotEvent(definition, sourceScope)
+	selectedActivation, err := activeActivationOf(source)
 	if err != nil {
 		return err
 	}
-	switch definition.ref.policy {
+	reference, err := eventReferenceOf[E]()
+	if err != nil {
+		return fmt.Errorf("plugin: publish Event: %w", err)
+	}
+	if fact.EventName() != reference.name || fact.EventDelivery() != reference.policy {
+		return errors.New("plugin: Event metadata must be constant for one Go type")
+	}
+	runtimeEngine := selectedActivation.runtime
+	runtimeEngine.state.RLock()
+	if selectedActivation.fiber.state != FiberActive {
+		runtimeEngine.state.RUnlock()
+		return ErrPluginNotActive
+	}
+	invokers := runtimeEngine.events.snapshot(
+		reference,
+		selectedActivation.fiber.scope,
+	)
+	runtimeEngine.state.RUnlock()
+
+	switch reference.policy {
 	case DeliveryOrdered:
-		var deliveryErr error
-		for _, observer := range observers {
-			deliveryErr = errors.Join(deliveryErr, observeEvent(requestContext, observer, fact))
-		}
-		return deliveryErr
-	case DeliveryParallel:
-		failures := make([]error, len(observers))
-		var deliveryGroup sync.WaitGroup
-		deliveryGroup.Add(len(observers))
-		for observerIndex, observer := range observers {
-			go func(selectedIndex int, selectedObserver EventObserver[E]) {
-				defer deliveryGroup.Done()
-				failures[selectedIndex] = observeEvent(requestContext, selectedObserver, fact)
-			}(observerIndex, observer)
-		}
-		deliveryGroup.Wait()
-		return errors.Join(failures...)
-	case DeliveryBestEffort:
-		for _, observer := range observers {
-			observerErr := observeEvent(requestContext, observer, fact)
-			if observerErr == nil || sourceScope.runtime.eventFailures == nil {
-				continue
+		for _, invoker := range invokers {
+			if err := invoker.invoke(requestContext, fact); err != nil {
+				return err
 			}
-			sourceScope.runtime.eventFailures.ReportEventFailure(
-				requestContext,
-				EventFailure{
-					EventName: definition.ref.name,
-					Error:     observerErr,
-				},
-			)
 		}
 		return nil
+	case DeliveryParallel:
+		return invokeEventParallel(requestContext, fact, invokers, nil)
+	case DeliveryBestEffort:
+		return invokeEventParallel(
+			requestContext,
+			fact,
+			invokers,
+			func(observerErr error) {
+				if runtimeEngine.eventFailures == nil {
+					return
+				}
+				runtimeEngine.eventFailures.ReportEventFailure(
+					requestContext,
+					EventFailure{
+						EventName: reference.name,
+						Error:     observerErr,
+					},
+				)
+			},
+		)
 	default:
 		return errors.New("plugin: unsupported Event delivery policy")
 	}
 }
 
-func observeEvent[E Event](
+func invokeEventParallel(
 	requestContext context.Context,
-	observer EventObserver[E],
-	fact E,
-) (observerErr error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			observerErr = fmt.Errorf("plugin: Event observer panicked: %v", recovered)
-		}
-	}()
-	return observer.ObserveEvent(requestContext, fact)
-}
-
-type eventSubscription interface {
-	runtimeEntry
-	eventDefinitionRef() eventRef
-}
-
-type eventSubscriptionOf[E Event] struct {
-	definition EventDefinition[E]
-	observer   EventObserver[E]
-	ordinal    uint64
-	owner      *fiberEffect
-}
-
-func (subscription *eventSubscriptionOf[E]) eventDefinitionRef() eventRef {
-	return subscription.definition.ref
-}
-
-func (subscription *eventSubscriptionOf[E]) Label() string {
-	return "observe:" + subscription.definition.ref.name
-}
-
-func (subscription *eventSubscriptionOf[E]) validateEntry(ownership *fiberEffect) error {
-	registry := ownership.runtime.events
-	if existingRef, exists := registry.definitions[subscription.definition.ref.name]; exists &&
-		!existingRef.sameDefinition(subscription.definition.ref) {
-		return fmt.Errorf(
-			"plugin: Event %q was recreated with a different definition",
-			subscription.definition.ref.name,
-		)
+	fact Event,
+	invokers []eventInvoker,
+	reportFailure func(error),
+) error {
+	failures := make([]error, len(invokers))
+	var observers sync.WaitGroup
+	observers.Add(len(invokers))
+	for invokerIndex, selectedInvoker := range invokers {
+		go func(selectedIndex int, observer eventInvoker) {
+			defer observers.Done()
+			failures[selectedIndex] = observer.invoke(requestContext, fact)
+		}(invokerIndex, selectedInvoker)
 	}
-	if existingBucket, exists := registry.buckets[subscription.definition.ref.name]; exists {
-		if _, matches := existingBucket.(*eventBucketOf[E]); !matches {
-			return fmt.Errorf(
-				"plugin: Event %q has an incompatible typed bucket",
-				subscription.definition.ref.name,
-			)
-		}
-	}
-	return nil
-}
-
-func (subscription *eventSubscriptionOf[E]) publishEntry(ownership *fiberEffect) {
-	registry := ownership.runtime.events
-	registry.definitions[subscription.definition.ref.name] = subscription.definition.ref
-	typedBucket, exists := registry.buckets[subscription.definition.ref.name].(*eventBucketOf[E])
-	if !exists {
-		typedBucket = &eventBucketOf[E]{
-			definition: subscription.definition,
-		}
-		registry.buckets[subscription.definition.ref.name] = typedBucket
-	}
-	if subscription.ordinal == 0 {
-		registry.nextOrdinal++
-		subscription.ordinal = registry.nextOrdinal
-	}
-	subscription.owner = ownership
-	typedBucket.subscriptions = append(typedBucket.subscriptions, subscription)
-}
-
-func (subscription *eventSubscriptionOf[E]) withdrawEntry(ownership *fiberEffect) {
-	registry := ownership.runtime.events
-	typedBucket, exists := registry.buckets[subscription.definition.ref.name].(*eventBucketOf[E])
-	if !exists {
-		return
-	}
-	for subscriptionIndex, registeredSubscription := range typedBucket.subscriptions {
-		if registeredSubscription != subscription {
-			continue
-		}
-		typedBucket.subscriptions = append(
-			typedBucket.subscriptions[:subscriptionIndex],
-			typedBucket.subscriptions[subscriptionIndex+1:]...,
-		)
-		break
-	}
-	subscription.owner = nil
-}
-
-func (subscription *eventSubscriptionOf[E]) diagnostic() runtimeEntryDiagnostic {
-	return runtimeEntryDiagnostic{
-		kind: runtimeEntryEvent,
-		name: subscription.definition.ref.name,
-	}
-}
-
-type eventBucket interface {
-	eventDefinitionRef() eventRef
-}
-
-type eventBucketOf[E Event] struct {
-	definition    EventDefinition[E]
-	subscriptions []*eventSubscriptionOf[E]
-}
-
-func (bucket *eventBucketOf[E]) eventDefinitionRef() eventRef {
-	return bucket.definition.ref
-}
-
-// eventRegistry owns typed Observer buckets and subscription order.
-// Runtime.state protects its fields; snapshots escape before external calls.
-type eventRegistry struct {
-	definitions map[string]eventRef
-	buckets     map[string]eventBucket
-	nextOrdinal uint64
-}
-
-func newEventRegistry() *eventRegistry {
-	return &eventRegistry{
-		definitions: make(map[string]eventRef),
-		buckets:     make(map[string]eventBucket),
-	}
-}
-
-func snapshotEvent[E Event](
-	definition EventDefinition[E],
-	sourceScope *Scope,
-) ([]EventObserver[E], error) {
-	runtimeEngine := sourceScope.runtime
-	runtimeEngine.state.RLock()
-	defer runtimeEngine.state.RUnlock()
-	if existingRef, exists := runtimeEngine.events.definitions[definition.ref.name]; exists &&
-		!existingRef.sameDefinition(definition.ref) {
-		return nil, fmt.Errorf(
-			"plugin: Event %q does not match its registered definition",
-			definition.ref.name,
-		)
-	}
-	existingBucket, exists := runtimeEngine.events.buckets[definition.ref.name]
-	if !exists {
-		return nil, nil
-	}
-	typedBucket, matches := existingBucket.(*eventBucketOf[E])
-	if !matches {
-		return nil, fmt.Errorf(
-			"plugin: Event %q has an incompatible typed bucket",
-			definition.ref.name,
-		)
-	}
-	lineage := scopePath(sourceScope)
-	snapshot := make([]EventObserver[E], 0, len(typedBucket.subscriptions))
-	for _, selectedScope := range lineage {
-		selectedSubscriptions := make([]*eventSubscriptionOf[E], 0)
-		for _, subscription := range typedBucket.subscriptions {
-			if subscription.owner == nil || subscription.owner.state != fiberEffectActive ||
-				subscription.owner.fiber.state != FiberActive ||
-				subscription.owner.scope.target != selectedScope.target {
-				continue
+	observers.Wait()
+	if reportFailure != nil {
+		for _, observerErr := range failures {
+			if observerErr != nil {
+				reportFailure(observerErr)
 			}
-			selectedSubscriptions = append(selectedSubscriptions, subscription)
 		}
-		sort.Slice(selectedSubscriptions, func(leftIndex int, rightIndex int) bool {
-			return selectedSubscriptions[leftIndex].ordinal < selectedSubscriptions[rightIndex].ordinal
-		})
-		for _, subscription := range selectedSubscriptions {
-			snapshot = append(snapshot, subscription.observer)
-		}
+		return nil
 	}
-	return snapshot, nil
+	return errors.Join(failures...)
 }
