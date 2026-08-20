@@ -10,7 +10,10 @@
 | `lifecycle.go` | Runtime tree Handle 的 caller-facing lifecycle |
 | `membership.go` | Commit 阶段的 Agent/Session membership 和发布/撤销顺序 |
 | `variables.go` | Agent-scope 的 provider、model 与 cwd Prompt variable Plugin |
-| `agent.go` | concrete Agent activity、Inbox wake/cancel、Turn/Step driver 与 idle convergence |
+| `agent.go` | `ReactLoopAgent` 能力、根 Plugin lifecycle、只读身份与执行委派 |
+| `driver.go` | 唯一 live execution owner：activity、wake/cancel、maintenance 与 idle convergence |
+| `turn.go` | Turn/Step 状态推进、prompt preparation、Session fact 与 durability boundary |
+| `events.go` | status/error/Inbox Event 到 Runtime publisher 的领域桥接 |
 | `request.go` | request waterfall、exact LLM route、header/context facts 与模型 attempt |
 | `tool_calls.go` | bounded Tool body concurrency、barrier、model-order finalize 与 failure drain |
 | `runtime_context.go` | System Prompt runtime context 的 Session surface 投影 |
@@ -81,6 +84,7 @@ sequenceDiagram
 ## 状态、失败与取消
 
 - 每个 Agent 同时只有一个 `idle`、`maintenance` 或 `running` activity；`WhenIdle` 跟随已经锁存的 successor work，不能观察到伪空闲窗口。
+- `ReactLoopAgent` 不再直接保存 activity mutex、turn/step position、cancel function 或 request header 状态；这些可变执行不变量只由 `agentDriver` 持有。它对外实现 `agent.Agent`，并把命令委派给同一个 driver，不在 facade 中复制流程。
 - `ReactLoopAgent` 自身就是一次 `MountScopedChild` 的根 Plugin。`LoopPlugin` 不逐个调用 `MountChild`，也不手工拼接 Scope；Runtime 根据它的 Manifest 校验并构造完整子树，业务扩展在 publication 之前全部完成激活。
 - `agentMembership` 是 Agent Loop 业务生命周期 Plugin，不是 plugin framework 概念。它只在 Main 子树全部 ready 后进入 Commit；停机时又先于 Main 节点撤销 Registry membership。
 - `Followup`、`Steer` 与 `Inject` 只写入 Inbox 并按各自 target 唤醒；driver 在 boundary claim，不为每条输入建立独立 goroutine。
