@@ -1,63 +1,67 @@
 package factory_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/gorenx/goren/plugin"
-	"github.com/gorenx/goren/plugin/configuration"
 	"github.com/gorenx/goren/plugin/factory"
 )
 
 type configFixture struct {
-	configuration.InputBase
 	Address string `json:"address"`
 }
 
-type configuratorFixture struct {
-	configureCalls *atomic.Int64
-	createCalls    *atomic.Int64
+type factoryFixture struct {
+	pluginConstructions *atomic.Int64
 }
 
-func (configuratorFixture) Name() string {
+func (factoryFixture) Name() string {
 	return "@deepseek-ai/fixture"
 }
 
-func (fixture configuratorFixture) Configure(
-	sourceDocument configuration.Document,
-) (factory.Factory, error) {
-	fixture.configureCalls.Add(1)
-	settings, err := configuration.DecodeJSON[configFixture](sourceDocument)
+func (fixture factoryFixture) Create(
+	createContext context.Context,
+	rawConfig json.RawMessage,
+) (plugin.Plugin, error) {
+	if err := createContext.Err(); err != nil {
+		return nil, err
+	}
+	settings, err := decodeConfig(rawConfig)
 	if err != nil {
 		return nil, err
 	}
 	if !strings.HasPrefix(settings.Address, "127.0.0.1:") {
 		return nil, errors.New("address must be loopback")
 	}
-	return configuredFactoryFixture{
-		settings:    settings,
-		createCalls: fixture.createCalls,
-	}, nil
-}
-
-type configuredFactoryFixture struct {
-	settings    configFixture
-	createCalls *atomic.Int64
-}
-
-func (configuredFactoryFixture) Name() string {
-	return "@deepseek-ai/fixture"
-}
-
-func (fixture configuredFactoryFixture) Create(context.Context) (plugin.Plugin, error) {
-	fixture.createCalls.Add(1)
+	fixture.pluginConstructions.Add(1)
 	return &pluginFixture{
-		address: fixture.settings.Address,
+		address: settings.Address,
 	}, nil
+}
+
+func decodeConfig(rawConfig json.RawMessage) (configFixture, error) {
+	var settings configFixture
+	decoder := json.NewDecoder(bytes.NewReader(rawConfig))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&settings); err != nil {
+		return configFixture{}, err
+	}
+	var trailingValue json.RawMessage
+	if err := decoder.Decode(&trailingValue); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return configFixture{}, errors.New("configuration contains multiple JSON values")
+		}
+		return configFixture{}, err
+	}
+	return settings, nil
 }
 
 type pluginFixture struct {
@@ -79,91 +83,90 @@ func (*pluginFixture) Dispose(context.Context) error {
 	return nil
 }
 
-func TestCatalogOnlyRegistersAndFindsConfigurators(t *testing.T) {
+func TestCatalogOnlyRegistersAndFindsFactories(t *testing.T) {
 	t.Parallel()
-	var configureCalls atomic.Int64
-	var createCalls atomic.Int64
+	var pluginConstructions atomic.Int64
 	directory := factory.NewCatalog()
-	candidate := configuratorFixture{
-		configureCalls: &configureCalls,
-		createCalls:    &createCalls,
+	candidate := factoryFixture{
+		pluginConstructions: &pluginConstructions,
 	}
 	if err := directory.Register(candidate); err != nil {
 		t.Fatal(err)
 	}
 	if err := directory.Register(candidate); err == nil {
-		t.Fatal("duplicate Configurator registration succeeded")
+		t.Fatal("duplicate Factory registration succeeded")
 	}
 	if got := directory.Names(); !reflect.DeepEqual(got, []string{"@deepseek-ai/fixture"}) {
-		t.Fatalf("Configurator names = %#v", got)
+		t.Fatalf("Factory names = %#v", got)
 	}
 	selected, err := directory.Lookup("@deepseek-ai/fixture")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if configureCalls.Load() != 0 || createCalls.Load() != 0 {
-		t.Fatalf("Catalog executed workflow: configure=%d create=%d", configureCalls.Load(), createCalls.Load())
+	if pluginConstructions.Load() != 0 {
+		t.Fatalf("Catalog constructed %d Plugins", pluginConstructions.Load())
 	}
 	if selected.Name() != candidate.Name() {
-		t.Fatalf("selected Configurator name = %q", selected.Name())
+		t.Fatalf("selected Factory name = %q", selected.Name())
 	}
 	if _, err := directory.Lookup("@deepseek-ai/excluded"); err == nil {
-		t.Fatal("unregistered Configurator lookup succeeded")
+		t.Fatal("unregistered Factory lookup succeeded")
 	}
 }
 
-func TestConfigurationAndPluginConstructionAreSeparateStages(t *testing.T) {
+func TestFactoryOwnsTypedConfigurationAndPluginConstruction(t *testing.T) {
 	t.Parallel()
-	var configureCalls atomic.Int64
-	var createCalls atomic.Int64
-	configurator := configuratorFixture{
-		configureCalls: &configureCalls,
-		createCalls:    &createCalls,
+	var pluginConstructions atomic.Int64
+	candidate := factoryFixture{
+		pluginConstructions: &pluginConstructions,
 	}
-	sourceDocument, err := configuration.NewDocument(
-		[]byte(`{"address":"127.0.0.1:3080"}`),
+	instance, err := candidate.Create(
+		context.Background(),
+		json.RawMessage(`{"address":"127.0.0.1:3080"}`),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	configuredFactory, err := configurator.Configure(sourceDocument)
-	if err != nil {
-		t.Fatal(err)
+	if pluginConstructions.Load() != 1 {
+		t.Fatalf("Plugin constructions = %d", pluginConstructions.Load())
 	}
-	if configureCalls.Load() != 1 || createCalls.Load() != 0 {
-		t.Fatalf("after Configure: configure=%d create=%d", configureCalls.Load(), createCalls.Load())
-	}
-	instance, err := configuredFactory.Create(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if configureCalls.Load() != 1 || createCalls.Load() != 1 {
-		t.Fatalf("after Create: configure=%d create=%d", configureCalls.Load(), createCalls.Load())
-	}
-	if instance.Manifest().Name != configuredFactory.Name() {
-		t.Fatalf("Plugin name = %q, Factory name = %q", instance.Manifest().Name, configuredFactory.Name())
+	if instance.Manifest().Name != candidate.Name() {
+		t.Fatalf("Plugin name = %q, Factory name = %q", instance.Manifest().Name, candidate.Name())
 	}
 }
 
-func TestConfiguratorRejectsOwnerInvalidConfigurationBeforeFactoryCreation(t *testing.T) {
+func TestFactoryRejectsInvalidConfigurationBeforePluginConstruction(t *testing.T) {
 	t.Parallel()
-	var configureCalls atomic.Int64
-	var createCalls atomic.Int64
-	configurator := configuratorFixture{
-		configureCalls: &configureCalls,
-		createCalls:    &createCalls,
-	}
-	sourceDocument, err := configuration.NewDocument(
-		[]byte(`{"address":"0.0.0.0:3080"}`),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = configurator.Configure(sourceDocument); err == nil ||
-		!strings.Contains(err.Error(), "address must be loopback") {
-		t.Fatalf("Configure error = %v", err)
-	}
-	if createCalls.Load() != 0 {
-		t.Fatalf("invalid configuration created %d Plugins", createCalls.Load())
+	for _, testCase := range []struct {
+		label       string
+		rawConfig   json.RawMessage
+		wantMessage string
+	}{
+		{
+			label:       "unknown field",
+			rawConfig:   json.RawMessage(`{"address":"127.0.0.1:3080","extra":true}`),
+			wantMessage: "unknown field",
+		},
+		{
+			label:       "owner validation",
+			rawConfig:   json.RawMessage(`{"address":"0.0.0.0:3080"}`),
+			wantMessage: "address must be loopback",
+		},
+	} {
+		selectedCase := testCase
+		t.Run(selectedCase.label, func(t *testing.T) {
+			t.Parallel()
+			var pluginConstructions atomic.Int64
+			candidate := factoryFixture{
+				pluginConstructions: &pluginConstructions,
+			}
+			if _, err := candidate.Create(context.Background(), selectedCase.rawConfig); err == nil ||
+				!strings.Contains(err.Error(), selectedCase.wantMessage) {
+				t.Fatalf("Create error = %v, want containing %q", err, selectedCase.wantMessage)
+			}
+			if pluginConstructions.Load() != 0 {
+				t.Fatalf("invalid configuration constructed %d Plugins", pluginConstructions.Load())
+			}
+		})
 	}
 }
