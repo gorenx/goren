@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"time"
 
 	"github.com/gorenx/goren/llm"
 )
@@ -21,7 +20,7 @@ type Session struct {
 	firstLiveSeq int64
 	entries      []Event
 	view         surfaceState
-	clock        func() time.Time
+	timeSource   TimeSource
 	attachment   *storeEntry
 
 	headerFold        *EpochHeader
@@ -35,18 +34,21 @@ type Session struct {
 
 // New creates a detached Session and snapshots the borrowed seed.
 func New(identifier SessionID, options CreateOptions) (*Session, error) {
-	return newWithClock(identifier, options, time.Now)
+	return newWithClock(identifier, options, systemTimeSource{})
 }
 
-func newWithClock(identifier SessionID, options CreateOptions, clock func() time.Time) (*Session, error) {
-	if clock == nil {
-		return nil, errors.New("session: clock is nil")
+func newWithClock(identifier SessionID, options CreateOptions, temporalSource TimeSource) (*Session, error) {
+	if temporalSource == nil {
+		return nil, errors.New("session: time source is nil")
 	}
-	headerSnapshot, err := buildHeader(identifier, options.Metadata, clock)
+	headerSnapshot, err := buildHeader(identifier, options.Metadata, temporalSource)
 	if err != nil {
 		return nil, err
 	}
-	conversation := &Session{header: headerSnapshot, clock: clock}
+	conversation := &Session{
+		header:     headerSnapshot,
+		timeSource: temporalSource,
+	}
 	for index, source := range options.Seed {
 		candidate := cloneEvent(source)
 		if err := validateSeedEvent(candidate, int64(index)); err != nil {
@@ -297,7 +299,7 @@ func serializeProducerAppend(conversation *Session, operation func() (Event, err
 func (conversation *Session) appendCandidate(candidate Event) (Event, error) {
 	conversation.mu.Lock()
 	candidate.Seq = int64(len(conversation.entries))
-	candidate.Time = conversation.clock().UnixMilli()
+	candidate.Time = conversation.timeSource.CurrentTime().UnixMilli()
 	if !isSafeNonNegative(candidate.Seq) || !isSafeInteger(candidate.Time) {
 		conversation.mu.Unlock()
 		return Event{}, errors.New("session: seq and time must be safe integers")

@@ -11,149 +11,167 @@ import (
 	"github.com/gorenx/goren/plugin"
 )
 
+const (
+	PluginName               = "@deepseek-ai/dsh-session"
+	SessionCreatedEventName  = "session/created"
+	SessionDisposedEventName = "session/disposed"
+	SessionAppendedEventName = "session/event"
+	SessionFlushEventName    = "session/flush"
+)
+
 // LiveStore owns live Session membership and publication lifecycle. Persistence is
 // deliberately absent; adapters observe EventAppended and FlushRequested.
 type LiveStore interface {
-	Create(context.Context, *plugin.Scope, *SessionID, CreateOptions) (*Session, error)
+	plugin.Service
+	Create(context.Context, *SessionID, CreateOptions) (SessionHandle, error)
 	Prepare(*SessionID, CreateOptions) (*Session, error)
-	Enter(*Session) (plugin.Disposer, error)
+	Enter(*Session) (SessionHandle, error)
 	Announce(context.Context, *Session) error
-	Flush(context.Context, *Session) (bool, error)
+	Flush(context.Context, *Session) error
 	Get(SessionID) (*Session, bool)
 	List() []*Session
 }
 
-// StoreService is the canonical Service Definition for the source `sessions` key.
-var StoreService = plugin.DefineService[LiveStore]("sessions")
-
-// LifecycleNotice identifies one Session entering or leaving the live LiveStore.
-type LifecycleNotice struct {
-	Session *Session
+// SessionHandle owns one live Session membership.
+type SessionHandle interface {
+	Session() *Session
+	Release(context.Context) error
 }
 
-// AppendNotice carries the exact Session Event that has already committed.
-type AppendNotice struct {
-	Session *Session
-	Event   Event
+// SessionCreated is the vetoable publication edge after a Session enters the Store.
+type SessionCreated struct {
+	Conversation *Session
 }
 
-var (
-	createdTopic  = plugin.DefineEvent[LifecycleNotice, struct{}]("session/created", plugin.ModeSerial)
-	disposedTopic = plugin.DefineEvent[LifecycleNotice, struct{}]("session/disposed", plugin.ModeEmit)
-	appendedTopic = plugin.DefineEvent[AppendNotice, struct{}]("session/event", plugin.ModeEmit)
-	flushTopic    = plugin.DefineEvent[LifecycleNotice, struct{}]("session/flush", plugin.ModeParallel)
-)
-
-// LifecycleListener observes creation, disposal, or flush of one Session.
-type LifecycleListener func(context.Context, *Session) error
-
-// AppendListener observes one already committed Event.
-type AppendListener func(context.Context, *Session, Event) error
-
-// OnCreated registers a scope-owned creation listener. Returning an error
-// vetoes announcement and makes the caller roll back the entered Session.
-func OnCreated(pluginScope *plugin.Scope, callback LifecycleListener) (plugin.Disposer, error) {
-	if callback == nil {
-		return nil, errors.New("session: created listener is nil")
-	}
-	return plugin.OnDecision(pluginScope, createdTopic,
-		func(requestContext context.Context, notice LifecycleNotice) (plugin.Decision[struct{}], error) {
-			return plugin.Decision[struct{}]{}, callback(requestContext, notice.Session)
-		})
+func (SessionCreated) EventName() string { return SessionCreatedEventName }
+func (SessionCreated) EventDelivery() plugin.DeliveryPolicy {
+	return plugin.DeliveryOrdered
 }
 
-// OnDisposed registers a scope-owned post-removal observer.
-func OnDisposed(pluginScope *plugin.Scope, callback LifecycleListener) (plugin.Disposer, error) {
-	if callback == nil {
-		return nil, errors.New("session: disposed listener is nil")
-	}
-	return plugin.OnNotify(
-		pluginScope, disposedTopic,
-		func(requestContext context.Context, notice LifecycleNotice) error {
-			return callback(requestContext, notice.Session)
-		},
-	)
+// SessionDisposed announces post-removal cleanup as a contained notification.
+type SessionDisposed struct {
+	Conversation *Session
 }
 
-// OnEvent registers a scope-owned post-commit append observer.
-func OnEvent(pluginScope *plugin.Scope, callback AppendListener) (plugin.Disposer, error) {
-	if callback == nil {
-		return nil, errors.New("session: event listener is nil")
-	}
-	return plugin.OnNotify(pluginScope, appendedTopic, func(requestContext context.Context, notice AppendNotice) error {
-		return callback(requestContext, notice.Session, cloneEvent(notice.Event))
-	})
+func (SessionDisposed) EventName() string { return SessionDisposedEventName }
+func (SessionDisposed) EventDelivery() plugin.DeliveryPolicy {
+	return plugin.DeliveryBestEffort
 }
 
-// OnFlush registers a scope-owned awaited durability listener.
-func OnFlush(pluginScope *plugin.Scope, callback LifecycleListener) (plugin.Disposer, error) {
-	if callback == nil {
-		return nil, errors.New("session: flush listener is nil")
-	}
-	return plugin.OnNotify(pluginScope, flushTopic, func(requestContext context.Context, notice LifecycleNotice) error {
-		return callback(requestContext, notice.Session)
-	})
+// SessionEventAppended carries the exact Session Event that has already committed.
+type SessionEventAppended struct {
+	Conversation *Session
+	Committed    Event
 }
 
-// MemoryStoreOptions supplies process dependencies without adding persistence policy.
+func (SessionEventAppended) EventName() string { return SessionAppendedEventName }
+func (SessionEventAppended) EventDelivery() plugin.DeliveryPolicy {
+	return plugin.DeliveryBestEffort
+}
+
+// SessionFlushRequested asks every durability observer to reach its checkpoint.
+type SessionFlushRequested struct {
+	Conversation *Session
+}
+
+func (SessionFlushRequested) EventName() string { return SessionFlushEventName }
+func (SessionFlushRequested) EventDelivery() plugin.DeliveryPolicy {
+	return plugin.DeliveryParallel
+}
+
+// TimeSource supplies timestamps without coupling the Store to process globals.
+type TimeSource interface {
+	CurrentTime() time.Time
+}
+
+// PostCommitFailure identifies deferred work that failed after an Event commit.
+type PostCommitFailure struct {
+	SessionID SessionID
+	Error     error
+}
+
+// PostCommitFailureReporter receives failures that cannot roll back a committed Event.
+type PostCommitFailureReporter interface {
+	ReportPostCommitFailure(PostCommitFailure)
+}
+
+// MemoryStoreOptions supplies technical collaborators without adding persistence policy.
 type MemoryStoreOptions struct {
-	Clock         func() time.Time
-	ObserverError func(error)
+	TimeSource         TimeSource
+	PostCommitFailures PostCommitFailureReporter
 }
 
 // MemoryStore is the in-memory Provider for LiveStore.
 type MemoryStore struct {
+	plugin.Base
 	mu            sync.RWMutex
 	entries       map[SessionID]*storeEntry
 	order         []SessionID
 	counter       uint64
-	sourceScope   *plugin.Scope
-	clock         func() time.Time
-	observerError func(error)
+	timeSource    TimeSource
+	failureReport PostCommitFailureReporter
 }
 
-// NewMemoryStore constructs an empty provider bound to the publishing plugin scope.
-func NewMemoryStore(sourceScope *plugin.Scope, options MemoryStoreOptions) (*MemoryStore, error) {
-	if sourceScope == nil {
-		return nil, errors.New("session: MemoryStore source scope is nil")
+type systemTimeSource struct{}
+
+func (systemTimeSource) CurrentTime() time.Time {
+	return time.Now()
+}
+
+// NewMemoryStore constructs an empty Session Service Plugin.
+func NewMemoryStore(options MemoryStoreOptions) (*MemoryStore, error) {
+	selectedTimeSource := options.TimeSource
+	if selectedTimeSource == nil {
+		selectedTimeSource = systemTimeSource{}
 	}
-	clock := options.Clock
-	if clock == nil {
-		clock = time.Now
-	}
-	reporter := options.ObserverError
-	if reporter == nil {
-		reporter = func(error) {}
+	if options.PostCommitFailures == nil {
+		return nil, errors.New("session: post-commit failure reporter is required")
 	}
 	return &MemoryStore{
-		entries: make(map[SessionID]*storeEntry), sourceScope: sourceScope,
-		clock: clock, observerError: reporter,
+		entries:       make(map[SessionID]*storeEntry),
+		timeSource:    selectedTimeSource,
+		failureReport: options.PostCommitFailures,
 	}, nil
 }
 
-// Create performs prepare, enter, and announce as one caller-scope effect.
-func (registry *MemoryStore) Create(requestContext context.Context, ownerScope *plugin.Scope, identifier *SessionID, options CreateOptions) (*Session, error) {
-	if ownerScope == nil {
-		return nil, errors.New("session: create owner scope is nil")
+// Manifest declares the canonical Session Store Service.
+func (*MemoryStore) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: PluginName,
+		Provides: []plugin.ServiceType{
+			plugin.ServiceOf[LiveStore](),
+		},
 	}
+}
+
+// Apply validates startup cancellation before Store publication.
+func (*MemoryStore) Apply(requestContext context.Context) error {
+	return requestContext.Err()
+}
+
+// Dispose releases every live Session in reverse entry order.
+func (registry *MemoryStore) Dispose(closeContext context.Context) error {
+	return registry.Close(closeContext)
+}
+
+// Create performs prepare, enter, and announce as one owned registration.
+func (registry *MemoryStore) Create(
+	requestContext context.Context,
+	identifier *SessionID,
+	options CreateOptions,
+) (SessionHandle, error) {
 	conversation, err := registry.Prepare(identifier, options)
 	if err != nil {
 		return nil, err
 	}
-	err = ownerScope.Effect(requestContext, "sessions.create()", func(effectContext context.Context) (plugin.Disposer, error) {
-		release, enterErr := registry.Enter(conversation)
-		if enterErr != nil {
-			return nil, enterErr
-		}
-		if announceErr := registry.Announce(effectContext, conversation); announceErr != nil {
-			return nil, errors.Join(announceErr, release(effectContext))
-		}
-		return release, nil
-	})
+	handle, err := registry.Enter(conversation)
 	if err != nil {
 		return nil, err
 	}
-	return conversation, nil
+	if err := registry.Announce(requestContext, conversation); err != nil {
+		return nil, errors.Join(err, handle.Release(requestContext))
+	}
+	return handle, nil
 }
 
 // Prepare validates and constructs a detached unpublished Session.
@@ -176,11 +194,11 @@ func (registry *MemoryStore) Prepare(identifier *SessionID, options CreateOption
 	if duplicate {
 		return nil, fmt.Errorf("session: %q already exists", resolved)
 	}
-	return newWithClock(resolved, options, registry.clock)
+	return newWithClock(resolved, options, registry.timeSource)
 }
 
 // Enter publishes membership and append hooks, but does not announce creation.
-func (registry *MemoryStore) Enter(conversation *Session) (plugin.Disposer, error) {
+func (registry *MemoryStore) Enter(conversation *Session) (SessionHandle, error) {
 	if conversation == nil {
 		return nil, errors.New("session: cannot enter nil Session")
 	}
@@ -203,9 +221,8 @@ func (registry *MemoryStore) Enter(conversation *Session) (plugin.Disposer, erro
 	registry.mu.Unlock()
 	conversation.mu.Unlock()
 
-	return func(closeContext context.Context) error {
-		entry.detach(closeContext)
-		return nil
+	return &memorySessionHandle{
+		entry: entry,
 	}, nil
 }
 
@@ -229,13 +246,18 @@ func (registry *MemoryStore) Announce(requestContext context.Context, conversati
 	return dispatchErr
 }
 
-// Flush awaits every registered durability listener for a live Session.
-func (registry *MemoryStore) Flush(requestContext context.Context, conversation *Session) (bool, error) {
+// Flush awaits every registered durability observer for a live Session.
+func (registry *MemoryStore) Flush(requestContext context.Context, conversation *Session) error {
 	if _, err := registry.liveEntry(conversation); err != nil {
-		return false, err
+		return err
 	}
-	listenerCount, err := plugin.ParallelFrom(requestContext, registry.sourceScope, flushTopic, LifecycleNotice{Session: conversation})
-	return listenerCount != 0, err
+	return plugin.Publish(
+		requestContext,
+		registry,
+		SessionFlushRequested{
+			Conversation: conversation,
+		},
+	)
 }
 
 // Get looks up one live Session.
@@ -308,18 +330,44 @@ func (registry *MemoryStore) removeEntry(entry *storeEntry) {
 }
 
 func (registry *MemoryStore) publishDisposed(requestContext context.Context, conversation *Session) {
-	if err := safelyDispatch(func() error {
-		return plugin.EmitFrom(requestContext, registry.sourceScope, disposedTopic, LifecycleNotice{Session: conversation})
-	}); err != nil {
-		registry.observerError(fmt.Errorf("session %q disposed observer: %w", conversation.ID(), err))
-	}
+	_ = plugin.Publish(
+		requestContext,
+		registry,
+		SessionDisposed{
+			Conversation: conversation,
+		},
+	)
 }
 
 func (registry *MemoryStore) publishCreated(requestContext context.Context, conversation *Session) error {
 	return safelyDispatch(func() error {
-		_, err := plugin.SerialFrom(requestContext, registry.sourceScope, createdTopic, LifecycleNotice{Session: conversation})
-		return err
+		return plugin.Publish(
+			requestContext,
+			registry,
+			SessionCreated{
+				Conversation: conversation,
+			},
+		)
 	})
+}
+
+type memorySessionHandle struct {
+	entry *storeEntry
+}
+
+func (handleState *memorySessionHandle) Session() *Session {
+	if handleState == nil || handleState.entry == nil {
+		return nil
+	}
+	return handleState.entry.conversation
+}
+
+func (handleState *memorySessionHandle) Release(closeContext context.Context) error {
+	if handleState == nil || handleState.entry == nil {
+		return nil
+	}
+	handleState.entry.detach(closeContext)
+	return nil
 }
 
 type storeEntry struct {
@@ -351,28 +399,30 @@ func (entry *storeEntry) beginAppend() (func(Event), error) {
 	}
 	entry.appending = true
 	entry.mu.Unlock()
-	captured, err := plugin.CaptureEmitFrom(entry.owner.sourceScope, appendedTopic)
-	if err != nil {
-		entry.finishAppend()
-		return nil, err
-	}
 	return func(committed Event) {
-		deferred := entry.publishAppend(captured, committed)
+		deferred := entry.publishAppend(committed)
 		entry.finishAppend()
 		if err := deferred.run(); err != nil {
-			entry.owner.observerError(fmt.Errorf("session %q deferred event work: %w", entry.conversation.ID(), err))
+			entry.owner.failureReport.ReportPostCommitFailure(
+				PostCommitFailure{
+					SessionID: entry.conversation.ID(),
+					Error:     err,
+				},
+			)
 		}
 	}, nil
 }
 
-func (entry *storeEntry) publishAppend(captured plugin.EmitSnapshot[AppendNotice], committed Event) *afterEventQueue {
+func (entry *storeEntry) publishAppend(committed Event) *afterEventQueue {
 	deferred := &afterEventQueue{}
-	notice := AppendNotice{Session: entry.conversation, Event: cloneEvent(committed)}
-	if err := safelyDispatch(func() error {
-		return captured.Dispatch(deferred.context(), notice)
-	}); err != nil {
-		entry.owner.observerError(fmt.Errorf("session %q event observer: %w", entry.conversation.ID(), err))
-	}
+	_ = plugin.Publish(
+		deferred.context(),
+		entry.owner,
+		SessionEventAppended{
+			Conversation: entry.conversation,
+			Committed:    cloneEvent(committed),
+		},
+	)
 	return deferred
 }
 
