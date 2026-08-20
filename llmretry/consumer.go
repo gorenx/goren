@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math"
 	mathrand "math/rand/v2"
-	"sync"
 	"time"
 
 	"github.com/gorenx/goren/agent"
@@ -15,6 +14,9 @@ import (
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
+
+// PluginName is the canonical Harness Plugin name.
+const PluginName = "@deepseek-ai/dsh-llm-retry"
 
 // RuntimeOptions supplies non-serializable process hooks for deterministic
 // tests and contained diagnostic reporting.
@@ -24,30 +26,18 @@ type RuntimeOptions struct {
 	ObserverError func(error)
 }
 
-type retryConsumer struct {
-	lifetime       context.Context
-	cancelLifetime context.CancelFunc
-	randomSample   func() float64
-	mintID         func() (RetryID, error)
-	report         func(error)
+// Plugin owns the provider-routed request-error Middleware. Runtime owns its
+// dispatch admission, lifetime cancellation, and quiescent teardown.
+type Plugin struct {
+	plugin.Base
 
-	mu              sync.Mutex
-	closed          bool
-	active          sync.WaitGroup
-	releaseListener plugin.Disposer
+	randomSample func() float64
+	mintID       func() (RetryID, error)
+	report       func(error)
 }
 
-// Install registers the default provider-routed request recovery listener and
-// owns cancellation plus quiescent teardown in pluginScope.
-func Install(
-	requestContext context.Context,
-	pluginScope *plugin.Scope,
-	options RuntimeOptions,
-) (plugin.Disposer, error) {
-	if requestContext == nil || pluginScope == nil {
-		return nil, errors.New("llm-retry: Context and Scope are required")
-	}
-	lifetime, cancelLifetime := context.WithCancel(context.Background())
+// New constructs an inactive provider-routed retry Plugin.
+func New(options RuntimeOptions) *Plugin {
 	randomSample := options.Random
 	if randomSample == nil {
 		randomSample = mathrand.Float64
@@ -60,74 +50,58 @@ func Install(
 	if reporter == nil {
 		reporter = func(error) {}
 	}
-	owner := &retryConsumer{
-		lifetime: lifetime, cancelLifetime: cancelLifetime,
-		randomSample: randomSample, mintID: mintID, report: reporter,
+	return &Plugin{
+		randomSample: randomSample,
+		mintID:       mintID,
+		report:       reporter,
 	}
-	releaseListener, err := agent.OnRequestError(pluginScope, owner.handle)
-	if err != nil {
-		cancelLifetime()
-		return nil, err
-	}
-	owner.releaseListener = releaseListener
-	releaseAll, err := plugin.Own(pluginScope, "llm-retry: abort and drain active recovery", owner.close)
-	if err != nil {
-		cancelLifetime()
-		return nil, errors.Join(err, releaseListener(requestContext))
-	}
-	return releaseAll, nil
 }
 
-func (owner *retryConsumer) handle(
+// Manifest declares the source-compatible Agent Registry lifecycle dependency
+// and request-error Middleware binding.
+func (owner *Plugin) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: PluginName,
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[agent.Registry](),
+		},
+		Waterfalls: []plugin.WaterfallMiddlewareBinding{
+			plugin.WaterfallOf(owner),
+		},
+	}
+}
+
+// Apply validates startup cancellation before Middleware publication.
+func (*Plugin) Apply(requestContext context.Context) error {
+	return requestContext.Err()
+}
+
+// Dispose is empty because Runtime cancels Lifetime and drains admitted
+// Middleware invocations before calling it.
+func (*Plugin) Dispose(context.Context) error {
+	return nil
+}
+
+// Intercept executes provider-routed request recovery around downstream
+// Middleware.
+func (owner *Plugin) Intercept(
 	requestContext context.Context,
 	notice agent.RequestErrorNotice,
-	downstream agent.RequestErrorNext,
+	downstream plugin.WaterfallAction[agent.RequestErrorNotice, agent.RequestErrorAction],
 ) (agent.RequestErrorAction, error) {
-	if !owner.begin() {
-		return agent.RequestErrorAction{}, nil
-	}
-	defer owner.active.Done()
 	return owner.resolve(requestContext, notice, downstream)
 }
 
-func (owner *retryConsumer) begin() bool {
-	owner.mu.Lock()
-	defer owner.mu.Unlock()
-	if owner.closed {
-		return false
-	}
-	owner.active.Add(1)
-	return true
-}
-
-func (owner *retryConsumer) close(closeContext context.Context) error {
-	owner.mu.Lock()
-	if owner.closed {
-		owner.mu.Unlock()
-		return nil
-	}
-	owner.closed = true
-	releaseListener := owner.releaseListener
-	owner.cancelLifetime()
-	owner.mu.Unlock()
-	var releaseErr error
-	if releaseListener != nil {
-		releaseErr = releaseListener(closeContext)
-	}
-	owner.active.Wait()
-	return releaseErr
-}
-
-func (owner *retryConsumer) resolve(
+func (owner *Plugin) resolve(
 	requestContext context.Context,
 	notice agent.RequestErrorNotice,
-	downstream agent.RequestErrorNext,
+	downstream plugin.WaterfallAction[agent.RequestErrorNotice, agent.RequestErrorAction],
 ) (agent.RequestErrorAction, error) {
 	if requestContext == nil || downstream == nil {
 		return agent.RequestErrorAction{}, errors.New("llm-retry: Context and downstream recovery are required")
 	}
 	if notice.RetryPolicy == nil {
-		return downstream(requestContext)
+		return downstream.Execute(requestContext, notice)
 	}
 	if notice.Subject == nil || notice.Subject.SessionValue() == nil {
 		return agent.RequestErrorAction{}, errors.New("llm-retry: request-error Agent and Session are required")
@@ -139,7 +113,7 @@ func (owner *retryConsumer) resolve(
 		if owner.cancelled(requestContext) {
 			return agent.RequestErrorAction{}, nil
 		}
-		action, downstreamErr := downstream(requestContext)
+		action, downstreamErr := downstream.Execute(requestContext, notice)
 		if owner.cancelled(requestContext) {
 			return agent.RequestErrorAction{}, nil
 		}
@@ -158,16 +132,16 @@ func (owner *retryConsumer) resolve(
 		return agent.RequestErrorAction{}, errors.New("llm-retry: unsupported retry policy implementation")
 	}
 	if !retryable(normalPolicy, notice.Failure.Code) {
-		return downstream(requestContext)
+		return downstream.Execute(requestContext, notice)
 	}
 	return owner.schedule(requestContext, notice, normalPolicy, downstream)
 }
 
-func (owner *retryConsumer) schedule(
+func (owner *Plugin) schedule(
 	requestContext context.Context,
 	notice agent.RequestErrorNotice,
 	resolved llm.RetryPolicy,
-	downstream agent.RequestErrorNext,
+	downstream plugin.WaterfallAction[agent.RequestErrorNotice, agent.RequestErrorAction],
 ) (agent.RequestErrorAction, error) {
 	conversation := notice.Subject.SessionValue()
 	projection, err := analyzeHistory(conversation.Events())
@@ -196,7 +170,7 @@ func (owner *retryConsumer) schedule(
 		chainID = facts.chainID
 	}
 	if bounded, normal := resolved.(llm.NormalRetryPolicy); normal && previousRetry >= bounded.MaxRetries {
-		return downstream(requestContext)
+		return downstream.Execute(requestContext, notice)
 	}
 	retryNumber := previousRetry + 1
 	if chainID == "" {
@@ -213,14 +187,14 @@ func (owner *retryConsumer) schedule(
 		return agent.RequestErrorAction{}, err
 	}
 	if delegate {
-		return downstream(requestContext)
+		return downstream.Execute(requestContext, notice)
 	}
 	return owner.backoff(
 		requestContext, conversation, notice, resolved, policyIdentity, retryNumber, chainID, delayMS, projection,
 	)
 }
 
-func (owner *retryConsumer) selectDelay(
+func (owner *Plugin) selectDelay(
 	problem llm.LlmFailure,
 	resolved llm.RetryPolicy,
 	retryNumber int64,
@@ -239,7 +213,7 @@ func (owner *retryConsumer) selectDelay(
 	return delayMS, false, err
 }
 
-func (owner *retryConsumer) backoff(
+func (owner *Plugin) backoff(
 	requestContext context.Context,
 	conversation *session.Session,
 	notice agent.RequestErrorNotice,
@@ -250,13 +224,7 @@ func (owner *retryConsumer) backoff(
 	delayMS float64,
 	projection *historyProjection,
 ) (agent.RequestErrorAction, error) {
-	delayContext, cancelDelay := context.WithCancel(requestContext)
-	stopLifetime := context.AfterFunc(owner.lifetime, cancelDelay)
-	defer func() {
-		stopLifetime()
-		cancelDelay()
-	}()
-	if delayContext.Err() != nil {
+	if requestContext.Err() != nil {
 		return agent.RequestErrorAction{}, nil
 	}
 
@@ -283,11 +251,11 @@ func (owner *retryConsumer) backoff(
 	if _, err := session.AppendSerialized(conversation, retryScheduledEvent, record); err != nil {
 		return agent.RequestErrorAction{}, err
 	}
-	if delayContext.Err() != nil {
+	if requestContext.Err() != nil {
 		return agent.RequestErrorAction{}, nil
 	}
-	completed := waitDelay(delayContext, delayMS)
-	if !completed || delayContext.Err() != nil {
+	completed := waitDelay(requestContext, delayMS)
+	if !completed || requestContext.Err() != nil {
 		return agent.RequestErrorAction{}, nil
 	}
 	transition := RetryStarted{RetryID: chainID, Turn: notice.Turn, Step: notice.Step, Retry: retryNumber}
@@ -304,8 +272,8 @@ func (owner *retryConsumer) backoff(
 	return agent.RequestErrorAction{Retry: true}, nil
 }
 
-func (owner *retryConsumer) cancelled(requestContext context.Context) bool {
-	return requestContext.Err() != nil || owner.lifetime.Err() != nil
+func (owner *Plugin) cancelled(requestContext context.Context) bool {
+	return requestContext.Err() != nil
 }
 
 func waitDelay(requestContext context.Context, delayMS float64) bool {
