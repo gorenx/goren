@@ -15,6 +15,14 @@ type fixturePayload struct {
 	Items []string `json:"items"`
 }
 
+type fixedTimeSource struct {
+	current time.Time
+}
+
+func (source fixedTimeSource) CurrentTime() time.Time {
+	return source.current
+}
+
 type negativeZeroPayload struct{}
 
 func (negativeZeroPayload) MarshalJSON() ([]byte, error) {
@@ -26,7 +34,13 @@ var fixtureEventKey = DefineEvent[fixturePayload]("fixture/event")
 func TestAppendSnapshotsPayloadAndEventViews(t *testing.T) {
 	t.Parallel()
 	fixedTime := time.UnixMilli(1_723_700_000_123)
-	conversation, err := newWithClock("session-a", CreateOptions{}, func() time.Time { return fixedTime })
+	conversation, err := newWithClock(
+		"session-a",
+		CreateOptions{},
+		fixedTimeSource{
+			current: fixedTime,
+		},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -12,151 +12,219 @@ import (
 	"github.com/gorenx/goren/plugin"
 )
 
-type storeProviderPlugin struct {
-	registry *MemoryStore
-	reporter func(error)
+type failureRecorder struct {
+	mu       sync.Mutex
+	failures []error
 }
 
-func (instance *storeProviderPlugin) Manifest() plugin.Manifest {
-	return plugin.Manifest{Name: "fixture-session-provider", Provides: []plugin.ServiceRef{StoreService.Ref()}}
+func (recorder *failureRecorder) ReportEventFailure(
+	_ context.Context,
+	failure plugin.EventFailure,
+) {
+	recorder.mu.Lock()
+	recorder.failures = append(recorder.failures, failure.Error)
+	recorder.mu.Unlock()
 }
 
-func (instance *storeProviderPlugin) Apply(requestContext context.Context, pluginScope *plugin.Scope) error {
-	registry, err := NewMemoryStore(pluginScope, MemoryStoreOptions{ObserverError: instance.reporter})
+func (recorder *failureRecorder) ReportPostCommitFailure(failure PostCommitFailure) {
+	recorder.mu.Lock()
+	recorder.failures = append(recorder.failures, failure.Error)
+	recorder.mu.Unlock()
+}
+
+func (recorder *failureRecorder) recordedFailures() []error {
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	return append([]error(nil), recorder.failures...)
+}
+
+type storeObserverPlugin struct {
+	plugin.Base
+	name       string
+	store      LiveStore
+	onCreated  func(context.Context, *Session) error
+	onDisposed func(context.Context, *Session) error
+	onAppended func(context.Context, *Session, Event) error
+	onFlush    func(context.Context, *Session) error
+}
+
+func (observer *storeObserverPlugin) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: observer.name,
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[LiveStore](),
+		},
+		Events: []plugin.EventSubscription{
+			plugin.EventOf[SessionCreated](),
+			plugin.EventOf[SessionDisposed](),
+			plugin.EventOf[SessionEventAppended](),
+			plugin.EventOf[SessionFlushRequested](),
+		},
+	}
+}
+
+func (observer *storeObserverPlugin) Apply(context.Context) error {
+	store, err := plugin.Require[LiveStore](observer)
 	if err != nil {
 		return err
 	}
-	instance.registry = registry
-	if err := pluginScope.Effect(requestContext, "sessions", func(context.Context) (plugin.Disposer, error) {
-		return registry.Close, nil
-	}); err != nil {
-		return err
-	}
-	_, err = plugin.Provide(pluginScope, StoreService, LiveStore(registry))
-	return err
+	observer.store = store
+	return nil
 }
 
-type storeConsumerPlugin struct {
-	name  string
-	body  func(*plugin.Scope, LiveStore) error
-	scope *plugin.Scope
+func (*storeObserverPlugin) Dispose(context.Context) error {
+	return nil
 }
 
-func (instance *storeConsumerPlugin) Manifest() plugin.Manifest {
-	return plugin.Manifest{Name: instance.name, Requires: []plugin.ServiceRef{StoreService.Ref()}}
+func (observer *storeObserverPlugin) ObserveEvent(
+	requestContext context.Context,
+	fact plugin.Event,
+) error {
+	switch observed := fact.(type) {
+	case SessionCreated:
+		if observer.onCreated != nil {
+			return observer.onCreated(requestContext, observed.Conversation)
+		}
+	case SessionDisposed:
+		if observer.onDisposed != nil {
+			return observer.onDisposed(requestContext, observed.Conversation)
+		}
+	case SessionEventAppended:
+		if observer.onAppended != nil {
+			return observer.onAppended(
+				requestContext,
+				observed.Conversation,
+				observed.Committed,
+			)
+		}
+	case SessionFlushRequested:
+		if observer.onFlush != nil {
+			return observer.onFlush(requestContext, observed.Conversation)
+		}
+	}
+	return nil
 }
 
-func (instance *storeConsumerPlugin) Apply(_ context.Context, pluginScope *plugin.Scope) error {
-	service, found := plugin.Require(pluginScope, StoreService)
-	if !found {
-		return errors.New("fixture: sessions service missing")
+func newStoreFixture(
+	testingContext *testing.T,
+	recorder *failureRecorder,
+	observer *storeObserverPlugin,
+) *MemoryStore {
+	testingContext.Helper()
+	store, err := NewMemoryStore(
+		MemoryStoreOptions{
+			PostCommitFailures: recorder,
+		},
+	)
+	if err != nil {
+		testingContext.Fatal(err)
 	}
-	instance.scope = pluginScope
-	if instance.body == nil {
-		return nil
+	runtimeEngine := plugin.NewRuntime(
+		plugin.RuntimeSettings{
+			EventFailures: recorder,
+		},
+	)
+	if _, err := runtimeEngine.Start(
+		context.Background(),
+		observer,
+		store,
+	); err != nil {
+		testingContext.Fatal(err)
 	}
-	return instance.body(pluginScope, service)
+	testingContext.Cleanup(func() {
+		if err := runtimeEngine.Shutdown(context.Background()); err != nil {
+			testingContext.Error(err)
+		}
+	})
+	return store
 }
 
 func TestStoreLifecyclePublishesCommittedEventsAndFlush(t *testing.T) {
 	t.Parallel()
 	requestContext := context.Background()
-	engine := plugin.NewRuntime()
+	recorder := &failureRecorder{}
 	calls := []string{}
-	consumer := &storeConsumerPlugin{name: "fixture-session-consumer"}
-	consumer.body = func(pluginScope *plugin.Scope, _ LiveStore) error {
-		if _, err := OnCreated(pluginScope, func(context.Context, *Session) error {
+	observer := &storeObserverPlugin{
+		name: "fixture-session-observer",
+		onCreated: func(context.Context, *Session) error {
 			calls = append(calls, "created")
 			return nil
-		}); err != nil {
-			return err
-		}
-		if _, err := OnEvent(pluginScope, func(_ context.Context, activeSession *Session, committed Event) error {
+		},
+		onAppended: func(_ context.Context, activeSession *Session, committed Event) error {
 			if activeSession.Seq() != committed.Seq+1 {
 				return errors.New("event was published before commit")
 			}
 			calls = append(calls, "event")
 			return nil
-		}); err != nil {
-			return err
-		}
-		if _, err := OnFlush(pluginScope, func(context.Context, *Session) error {
+		},
+		onFlush: func(context.Context, *Session) error {
 			calls = append(calls, "flush")
 			return nil
-		}); err != nil {
-			return err
-		}
-		_, err := OnDisposed(pluginScope, func(context.Context, *Session) error {
+		},
+		onDisposed: func(context.Context, *Session) error {
 			calls = append(calls, "disposed")
 			return nil
-		})
-		return err
+		},
 	}
-	consumerHandle, err := engine.Load(requestContext, consumer)
+	store := newStoreFixture(t, recorder, observer)
+	handle, err := store.Create(requestContext, nil, CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider := &storeProviderPlugin{}
-	if _, err := engine.Load(requestContext, provider); err != nil {
+	conversation := handle.Session()
+	if _, err := Append(
+		conversation,
+		fixtureEventKey,
+		fixturePayload{
+			Items: []string{"value"},
+		},
+	); err != nil {
 		t.Fatal(err)
 	}
-	conversation, err := provider.registry.Create(requestContext, consumer.scope, nil, CreateOptions{})
-	if err != nil {
+	if err := store.Flush(requestContext, conversation); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Append(conversation, fixtureEventKey, fixturePayload{Items: []string{"value"}}); err != nil {
+	if err := handle.Release(requestContext); err != nil {
 		t.Fatal(err)
 	}
-	participated, err := provider.registry.Flush(requestContext, conversation)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !participated {
-		t.Fatal("flush did not report its registered listener")
-	}
-	if err := engine.Unload(requestContext, consumerHandle); err != nil {
-		t.Fatal(err)
-	}
-	if _, found := provider.registry.Get(conversation.ID()); found {
-		t.Fatal("Session remained live after owner scope unload")
+	if _, found := store.Get(conversation.ID()); found {
+		t.Fatal("Session remained live after handle release")
 	}
 	if want := []string{"created", "event", "flush", "disposed"}; !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls = %#v, want %#v", calls, want)
+	}
+	if failures := recorder.recordedFailures(); len(failures) != 0 {
+		t.Fatalf("failures = %#v", failures)
 	}
 }
 
 func TestCreationFailureRollsBackWithPairedDisposal(t *testing.T) {
 	t.Parallel()
 	requestContext := context.Background()
-	engine := plugin.NewRuntime()
+	recorder := &failureRecorder{}
 	sentinel := errors.New("creation veto")
 	calls := []string{}
-	consumer := &storeConsumerPlugin{name: "fixture-veto-consumer"}
-	consumer.body = func(pluginScope *plugin.Scope, _ LiveStore) error {
-		if _, err := OnCreated(pluginScope, func(context.Context, *Session) error {
+	observer := &storeObserverPlugin{
+		name: "fixture-veto-observer",
+		onCreated: func(context.Context, *Session) error {
 			calls = append(calls, "created")
 			return sentinel
-		}); err != nil {
-			return err
-		}
-		_, err := OnDisposed(pluginScope, func(context.Context, *Session) error {
+		},
+		onDisposed: func(context.Context, *Session) error {
 			calls = append(calls, "disposed")
 			return nil
-		})
-		return err
+		},
 	}
-	if _, err := engine.Load(requestContext, consumer); err != nil {
-		t.Fatal(err)
-	}
-	provider := &storeProviderPlugin{}
-	if _, err := engine.Load(requestContext, provider); err != nil {
-		t.Fatal(err)
-	}
+	store := newStoreFixture(t, recorder, observer)
 	identifier := SessionID("vetoed")
-	if _, err := provider.registry.Create(requestContext, consumer.scope, &identifier, CreateOptions{}); !errors.Is(err, sentinel) {
+	if _, err := store.Create(
+		requestContext,
+		&identifier,
+		CreateOptions{},
+	); !errors.Is(err, sentinel) {
 		t.Fatalf("create error = %v", err)
 	}
-	if _, found := provider.registry.Get(identifier); found {
+	if _, found := store.Get(identifier); found {
 		t.Fatal("vetoed Session remained in Store")
 	}
 	if want := []string{"created", "disposed"}; !reflect.DeepEqual(calls, want) {
@@ -167,85 +235,82 @@ func TestCreationFailureRollsBackWithPairedDisposal(t *testing.T) {
 func TestAppendObserverFailureIsContainedAndReentryRejected(t *testing.T) {
 	t.Parallel()
 	requestContext := context.Background()
-	engine := plugin.NewRuntime()
-	var reportsMu sync.Mutex
-	reports := []error{}
-	provider := &storeProviderPlugin{reporter: func(observerErr error) {
-		reportsMu.Lock()
-		reports = append(reports, observerErr)
-		reportsMu.Unlock()
-	}}
-	consumer := &storeConsumerPlugin{name: "fixture-reentrant-consumer"}
-	consumer.body = func(pluginScope *plugin.Scope, _ LiveStore) error {
-		_, err := OnEvent(pluginScope, func(_ context.Context, activeSession *Session, _ Event) error {
-			_, appendErr := Append(activeSession, fixtureEventKey, fixturePayload{Items: []string{"nested"}})
+	recorder := &failureRecorder{}
+	observer := &storeObserverPlugin{
+		name: "fixture-reentrant-observer",
+		onAppended: func(_ context.Context, activeSession *Session, _ Event) error {
+			_, appendErr := Append(
+				activeSession,
+				fixtureEventKey,
+				fixturePayload{
+					Items: []string{"nested"},
+				},
+			)
 			if appendErr == nil || !strings.Contains(appendErr.Error(), "cannot reenter") {
 				return errors.New("nested append was not rejected")
 			}
 			return errors.New("observer failure")
-		})
-		return err
+		},
 	}
-	if _, err := engine.Load(requestContext, consumer); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := engine.Load(requestContext, provider); err != nil {
-		t.Fatal(err)
-	}
-	conversation, err := provider.registry.Create(requestContext, consumer.scope, nil, CreateOptions{})
+	store := newStoreFixture(t, recorder, observer)
+	handle, err := store.Create(requestContext, nil, CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	committed, err := Append(conversation, fixtureEventKey, fixturePayload{Items: []string{"outer"}})
+	conversation := handle.Session()
+	committed, err := Append(
+		conversation,
+		fixtureEventKey,
+		fixturePayload{
+			Items: []string{"outer"},
+		},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if committed.Seq != 0 || conversation.Seq() != 1 {
 		t.Fatalf("committed seq = %d, next seq = %d", committed.Seq, conversation.Seq())
 	}
-	reportsMu.Lock()
-	defer reportsMu.Unlock()
-	if len(reports) != 1 || !strings.Contains(reports[0].Error(), "observer failure") {
-		t.Fatalf("observer reports = %#v", reports)
+	failures := recorder.recordedFailures()
+	if len(failures) != 1 || !strings.Contains(failures[0].Error(), "observer failure") {
+		t.Fatalf("observer failures = %#v", failures)
 	}
 }
 
 func TestSerializedAppendsWaitForActivePublication(t *testing.T) {
 	t.Parallel()
 	requestContext := context.Background()
-	engine := plugin.NewRuntime()
+	recorder := &failureRecorder{}
 	publicationStarted := make(chan struct{})
 	releasePublication := make(chan struct{})
 	var firstPublication sync.Once
-	consumer := &storeConsumerPlugin{name: "fixture-serialized-producer-consumer"}
-	consumer.body = func(pluginScope *plugin.Scope, _ LiveStore) error {
-		_, err := OnEvent(pluginScope, func(_ context.Context, _ *Session, _ Event) error {
+	observer := &storeObserverPlugin{
+		name: "fixture-serialized-observer",
+		onAppended: func(context.Context, *Session, Event) error {
 			firstPublication.Do(func() {
 				close(publicationStarted)
 				<-releasePublication
 			})
 			return nil
-		})
-		return err
+		},
 	}
-	if _, err := engine.Load(requestContext, consumer); err != nil {
-		t.Fatal(err)
-	}
-	provider := &storeProviderPlugin{}
-	if _, err := engine.Load(requestContext, provider); err != nil {
-		t.Fatal(err)
-	}
-	conversation, err := provider.registry.Create(requestContext, consumer.scope, nil, CreateOptions{})
+	store := newStoreFixture(t, recorder, observer)
+	handle, err := store.Create(requestContext, nil, CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	conversation := handle.Session()
 
 	firstDone := make(chan struct{})
 	var firstCommitted Event
 	var firstErr error
 	go func() {
 		firstCommitted, firstErr = AppendSerialized(
-			conversation, fixtureEventKey, fixturePayload{Items: []string{"first"}},
+			conversation,
+			fixtureEventKey,
+			fixturePayload{
+				Items: []string{"first"},
+			},
 		)
 		close(firstDone)
 	}()
@@ -256,7 +321,11 @@ func TestSerializedAppendsWaitForActivePublication(t *testing.T) {
 	var secondErr error
 	go func() {
 		secondCommitted, secondErr = AppendSerialized(
-			conversation, fixtureEventKey, fixturePayload{Items: []string{"second"}},
+			conversation,
+			fixtureEventKey,
+			fixturePayload{
+				Items: []string{"second"},
+			},
 		)
 		close(secondDone)
 	}()
@@ -275,7 +344,9 @@ func TestSerializedAppendsWaitForActivePublication(t *testing.T) {
 	if firstCommitted.Seq != 0 || secondCommitted.Seq != 1 || conversation.Seq() != 2 {
 		t.Fatalf(
 			"serialized seqs = (%d, %d), next seq = %d",
-			firstCommitted.Seq, secondCommitted.Seq, conversation.Seq(),
+			firstCommitted.Seq,
+			secondCommitted.Seq,
+			conversation.Seq(),
 		)
 	}
 }
