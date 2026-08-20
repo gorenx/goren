@@ -178,3 +178,54 @@ func TestWaterfallRejectsSecondExecute(t *testing.T) {
 		t.Fatalf("second Execute error = %v", middleware.secondErr)
 	}
 }
+
+type panickingWaterfallMiddleware struct {
+	plugin.Base
+}
+
+func (owner *panickingWaterfallMiddleware) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "panicking-waterfall",
+		Waterfalls: []plugin.WaterfallContribution{
+			plugin.WaterfallOf[formatInput, formatOutput](
+				owner,
+			),
+		},
+	}
+}
+
+func (*panickingWaterfallMiddleware) Apply(context.Context) error {
+	return nil
+}
+
+func (*panickingWaterfallMiddleware) Dispose(context.Context) error {
+	return nil
+}
+
+func (*panickingWaterfallMiddleware) Intercept(
+	context.Context,
+	formatInput,
+	plugin.WaterfallAction[formatInput, formatOutput],
+) (formatOutput, error) {
+	panic("broken Middleware")
+}
+
+func TestWaterfallContainsMiddlewarePanic(t *testing.T) {
+	t.Parallel()
+	middleware := &panickingWaterfallMiddleware{}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	if _, err := runtimeEngine.Start(context.Background(), middleware); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	_, err := plugin.Run(
+		context.Background(),
+		middleware,
+		formatInput{},
+		formatAction{
+			order: &[]string{},
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "broken Middleware") {
+		t.Fatalf("run error = %v", err)
+	}
+}

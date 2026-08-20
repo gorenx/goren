@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"sort"
 	"sync/atomic"
@@ -199,11 +200,40 @@ func (step *waterfallStep[I, O]) Execute(
 		terminal:   step.terminal,
 		index:      step.index + 1,
 	}
-	return step.middleware[step.index].Intercept(
+	return invokeWaterfallMiddleware(
 		requestContext,
 		input,
+		step.middleware[step.index],
 		downstream,
 	)
+}
+
+func invokeWaterfallMiddleware[
+	I WaterfallInput,
+	O WaterfallOutput,
+](
+	requestContext context.Context,
+	input I,
+	middleware WaterfallMiddleware[I, O],
+	downstream WaterfallAction[I, O],
+) (output O, middlewareErr error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			switch failure := recovered.(type) {
+			case error:
+				middlewareErr = fmt.Errorf(
+					"plugin: Waterfall Middleware panicked: %w",
+					failure,
+				)
+			default:
+				middlewareErr = fmt.Errorf(
+					"plugin: Waterfall Middleware panicked: %v",
+					failure,
+				)
+			}
+		}
+	}()
+	return middleware.Intercept(requestContext, input, downstream)
 }
 
 // Run executes the typed onion chain visible from source around terminal.
