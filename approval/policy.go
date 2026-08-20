@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 )
@@ -45,7 +44,10 @@ func appendPolicy(conversation *session.Session, selectedPolicy Policy, source *
 	if source != nil && *source != PolicySourceDelegation {
 		return errors.New("approval: policy source must be delegation")
 	}
-	_, err := session.AppendSerialized(conversation, PolicyEvent, PolicyChanged{Policy: selectedPolicy, Source: source})
+	_, err := session.AppendSerialized(conversation, PolicyEvent, PolicyChanged{
+		Policy: selectedPolicy,
+		Source: source,
+	})
 	return err
 }
 
@@ -54,11 +56,13 @@ func policyNotice(previous Policy, selectedPolicy Policy) (llm.UserMessage, erro
 		Content: []llm.ContentBlock{llm.NewTextBlock(fmt.Sprintf(
 			"The approval policy changed from %q to %q (changed by the user).", previous, selectedPolicy,
 		))},
-		Source: llm.PluginMessageSource{Plugin: "user-approval"},
+		Source: llm.PluginMessageSource{
+			Plugin: "user-approval",
+		},
 	})
 }
 
-func (owner *approvalService) EffectivePolicy(conversation *session.Session) (Policy, error) {
+func (owner *Service) EffectivePolicy(conversation *session.Session) (Policy, error) {
 	selectedPolicy, found, err := effectiveOverride(conversation)
 	if err != nil {
 		return "", err
@@ -66,16 +70,22 @@ func (owner *approvalService) EffectivePolicy(conversation *session.Session) (Po
 	if found {
 		return selectedPolicy, nil
 	}
+	if owner.parent != nil {
+		return owner.parent.EffectivePolicy(conversation)
+	}
 	return owner.defaultPolicy, nil
 }
 
-func (*approvalService) OverrideOf(conversation *session.Session) (Policy, bool, error) {
+func (*Service) OverrideOf(conversation *session.Session) (Policy, bool, error) {
 	return effectiveOverride(conversation)
 }
 
-func (owner *approvalService) SetPolicy(requestContext context.Context, agentSubject agent.Agent, selectedPolicy Policy) error {
+func (owner *Service) SetPolicy(requestContext context.Context, agentSubject Subject, selectedPolicy Policy) error {
 	if requestContext == nil || agentSubject == nil || agentSubject.SessionValue() == nil {
-		return errors.New("approval: Context, Agent, and Session are required")
+		return errors.New("approval: Context, Subject, and Session are required")
+	}
+	if err := requestContext.Err(); err != nil {
+		return err
 	}
 	previous, err := owner.EffectivePolicy(agentSubject.SessionValue())
 	if err != nil {
