@@ -65,8 +65,10 @@ func compileDefinition(definition ToolDefinition) (*registeredTool, error) {
 	retained.Parameters = parameters
 	retained.Output.Schema = output
 	return &registeredTool{
-		definition: retained, parameterSchema: parameterValidator,
-		outputSchema: outputValidator, registrationName: definition.Name,
+		definition:       retained,
+		parameterSchema:  parameterValidator,
+		outputSchema:     outputValidator,
+		registrationName: definition.Name,
 	}, nil
 }
 

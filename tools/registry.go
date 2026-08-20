@@ -54,12 +54,8 @@ func (catalog *registry) addTool(entry *registeredTool) error {
 	return catalog.store.addTool(entry)
 }
 
-func (catalog *registry) removeTool(name string) (*registeredTool, int, bool) {
+func (catalog *registry) removeTool(name string) bool {
 	return catalog.store.removeTool(name)
-}
-
-func (catalog *registry) restoreTool(entry *registeredTool, entryIndex int) error {
-	return catalog.store.restoreTool(entry, entryIndex)
 }
 
 func (catalog *registry) compileRestriction(restriction ToolRestriction) (compiledRestriction, error) {
@@ -83,16 +79,8 @@ func (catalog *registry) addRestriction(name string, restriction compiledRestric
 	return catalog.store.addRestriction(name, restriction)
 }
 
-func (catalog *registry) removeRestriction(name string) (compiledRestriction, int, bool) {
+func (catalog *registry) removeRestriction(name string) bool {
 	return catalog.store.removeRestriction(name)
-}
-
-func (catalog *registry) restoreRestriction(
-	name string,
-	restriction compiledRestriction,
-	entryIndex int,
-) error {
-	return catalog.store.restoreRestriction(name, restriction, entryIndex)
 }
 
 func (catalog *registry) addGuard(name string, policy ToolGuard) error {

@@ -98,7 +98,8 @@ func (RegistryChanged) EventName() string {
 }
 
 // EventDelivery keeps registry mutation and notification ordered. A failed
-// observer rejects the mutation so callers never observe a silent partial add.
+// observer rejects an add; lifecycle removals remain removed and report the
+// notification failure to their caller.
 func (RegistryChanged) EventDelivery() plugin.DeliveryPolicy {
 	return plugin.DeliveryOrdered
 }

@@ -20,9 +20,7 @@ type ToolFailure struct {
 
 // ToolExecutionResult is the closed success/failure outcome union.
 type ToolExecutionResult interface {
-	Failed() bool
-	ContentBlocks() []llm.ContentBlock
-	AdditionalContextMessages() []llm.UserMessage
+	ToolResultSnapshot
 	cloneResult() (ToolExecutionResult, error)
 }
 
@@ -45,7 +43,6 @@ type ToolExecutionSuccess struct {
 	Meta               json.RawMessage
 	AdditionalContexts []llm.UserMessage
 	ConcludesTurn      bool
-	owner              *toolExecutionToken
 }
 
 // Failed reports false.
@@ -67,6 +64,32 @@ func (outcome *ToolExecutionSuccess) AdditionalContextMessages() []llm.UserMessa
 	}
 	detached, _ := cloneUserMessages(outcome.AdditionalContexts)
 	return detached
+}
+
+// SuccessValue returns a detached canonical value.
+func (outcome *ToolExecutionSuccess) SuccessValue() (json.RawMessage, bool) {
+	if outcome == nil {
+		return nil, false
+	}
+	return append(json.RawMessage(nil), outcome.Value...), true
+}
+
+// FailureDetail reports that a successful result has no failure.
+func (*ToolExecutionSuccess) FailureDetail() (ToolFailure, bool) {
+	return ToolFailure{}, false
+}
+
+// PresentationMeta returns detached tool-private presentation metadata.
+func (outcome *ToolExecutionSuccess) PresentationMeta() json.RawMessage {
+	if outcome == nil {
+		return nil
+	}
+	return append(json.RawMessage(nil), outcome.Meta...)
+}
+
+// ConcludesAgentTurn reports whether this success terminates the current turn.
+func (outcome *ToolExecutionSuccess) ConcludesAgentTurn() bool {
+	return outcome != nil && outcome.ConcludesTurn
 }
 
 // ToolExecutionFailure is a normalized error and its model-facing content.
@@ -96,4 +119,67 @@ func (outcome *ToolExecutionFailure) AdditionalContextMessages() []llm.UserMessa
 	}
 	detached, _ := cloneUserMessages(outcome.AdditionalContexts)
 	return detached
+}
+
+// SuccessValue reports that a failed result has no successful value.
+func (*ToolExecutionFailure) SuccessValue() (json.RawMessage, bool) {
+	return nil, false
+}
+
+// FailureDetail returns a detached structured failure.
+func (outcome *ToolExecutionFailure) FailureDetail() (ToolFailure, bool) {
+	if outcome == nil {
+		return ToolFailure{}, false
+	}
+	retained := outcome.Error
+	if retained.Info != nil {
+		detachedInfo := *retained.Info
+		retained.Info = &detachedInfo
+	}
+	return retained, true
+}
+
+// PresentationMeta returns detached tool-private presentation metadata.
+func (outcome *ToolExecutionFailure) PresentationMeta() json.RawMessage {
+	if outcome == nil {
+		return nil
+	}
+	return append(json.RawMessage(nil), outcome.Meta...)
+}
+
+// ConcludesAgentTurn reports false for every failed result.
+func (*ToolExecutionFailure) ConcludesAgentTurn() bool { return false }
+
+// canonicalToolExecutionSuccess is the immutable terminal result visible to
+// execute Middleware. Returning it unchanged preserves the already-normalized
+// projection; authored public successes are normalized again.
+type canonicalToolExecutionSuccess struct {
+	executionToken *toolExecutionToken
+	normalized     *ToolExecutionSuccess
+}
+
+func (*canonicalToolExecutionSuccess) Failed() bool { return false }
+
+func (outcome *canonicalToolExecutionSuccess) ContentBlocks() []llm.ContentBlock {
+	return outcome.normalized.ContentBlocks()
+}
+
+func (outcome *canonicalToolExecutionSuccess) SuccessValue() (json.RawMessage, bool) {
+	return outcome.normalized.SuccessValue()
+}
+
+func (*canonicalToolExecutionSuccess) FailureDetail() (ToolFailure, bool) {
+	return ToolFailure{}, false
+}
+
+func (outcome *canonicalToolExecutionSuccess) PresentationMeta() json.RawMessage {
+	return outcome.normalized.PresentationMeta()
+}
+
+func (outcome *canonicalToolExecutionSuccess) AdditionalContextMessages() []llm.UserMessage {
+	return outcome.normalized.AdditionalContextMessages()
+}
+
+func (outcome *canonicalToolExecutionSuccess) ConcludesAgentTurn() bool {
+	return outcome.normalized.ConcludesAgentTurn()
 }

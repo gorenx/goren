@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/llm"
@@ -28,6 +29,7 @@ type Service struct {
 	root            bool
 	settings        ValidatedConfig
 	registry        *registry
+	runtimeMutex    sync.RWMutex
 	runtime         *executionRuntime
 	prompts         systemprompt.PromptRegistry
 	promptInstalled bool
@@ -103,7 +105,7 @@ func (owner *Service) Apply(requestContext context.Context) error {
 		}
 	}
 	approvals, _ := plugin.Resolve[approval.Approval](owner)
-	owner.runtime = newRuntime(owner, owner.registry, approvals)
+	stagedRuntime := newRuntime(owner, owner.registry, approvals)
 	prompts, err := plugin.Require[systemprompt.PromptRegistry](owner)
 	if err != nil {
 		return err
@@ -117,12 +119,18 @@ func (owner *Service) Apply(requestContext context.Context) error {
 		return err
 	}
 	owner.promptInstalled = true
+	owner.runtimeMutex.Lock()
+	owner.runtime = stagedRuntime
+	owner.runtimeMutex.Unlock()
 	return nil
 }
 
 // Dispose removes the schema provider and releases this exact layer after all
 // dependent Plugins have stopped.
 func (owner *Service) Dispose(closeContext context.Context) error {
+	owner.runtimeMutex.Lock()
+	owner.runtime = nil
+	owner.runtimeMutex.Unlock()
 	var disposeErr error
 	if owner.promptInstalled && owner.prompts != nil {
 		disposeErr = owner.prompts.RemoveToolProvider(
@@ -132,7 +140,6 @@ func (owner *Service) Dispose(closeContext context.Context) error {
 	}
 	owner.promptInstalled = false
 	owner.prompts = nil
-	owner.runtime = nil
 	owner.registry.clear()
 	return disposeErr
 }
@@ -143,6 +150,9 @@ func (owner *Service) AddTool(
 	definition ToolDefinition,
 ) error {
 	if err := validateMutationContext(requestContext); err != nil {
+		return err
+	}
+	if err := owner.requireActive(); err != nil {
 		return err
 	}
 	entry, err := owner.registry.compileTool(definition)
@@ -167,17 +177,14 @@ func (owner *Service) RemoveTool(
 	if err := validateMutation(requestContext, "tool", name); err != nil {
 		return err
 	}
-	entry, entryIndex, found := owner.registry.removeTool(name)
+	if err := owner.requireActive(); err != nil {
+		return err
+	}
+	found := owner.registry.removeTool(name)
 	if !found {
 		return nil
 	}
-	if err := owner.publishChanged(requestContext); err != nil {
-		return errors.Join(
-			err,
-			owner.registry.restoreTool(entry, entryIndex),
-		)
-	}
-	return nil
+	return owner.publishChanged(requestContext)
 }
 
 // AddRestriction adds one named inherited-capability filter to this exact
@@ -188,6 +195,9 @@ func (owner *Service) AddRestriction(
 	restriction ToolRestriction,
 ) error {
 	if err := validateMutation(requestContext, "restriction", name); err != nil {
+		return err
+	}
+	if err := owner.requireActive(); err != nil {
 		return err
 	}
 	compiled, err := owner.registry.compileRestriction(restriction)
@@ -212,17 +222,14 @@ func (owner *Service) RemoveRestriction(
 	if err := validateMutation(requestContext, "restriction", name); err != nil {
 		return err
 	}
-	restriction, entryIndex, found := owner.registry.removeRestriction(name)
+	if err := owner.requireActive(); err != nil {
+		return err
+	}
+	found := owner.registry.removeRestriction(name)
 	if !found {
 		return nil
 	}
-	if err := owner.publishChanged(requestContext); err != nil {
-		return errors.Join(
-			err,
-			owner.registry.restoreRestriction(name, restriction, entryIndex),
-		)
-	}
-	return nil
+	return owner.publishChanged(requestContext)
 }
 
 // AddGuard adds one named monotonic execution policy to this exact layer.
@@ -234,6 +241,11 @@ func (owner *Service) AddGuard(
 	if err := validateMutation(requestContext, "guard", name); err != nil {
 		return err
 	}
+	owner.runtimeMutex.RLock()
+	defer owner.runtimeMutex.RUnlock()
+	if owner.runtime == nil {
+		return plugin.ErrPluginNotActive
+	}
 	return owner.registry.addGuard(name, policy)
 }
 
@@ -244,6 +256,11 @@ func (owner *Service) RemoveGuard(
 ) error {
 	if err := validateMutation(requestContext, "guard", name); err != nil {
 		return err
+	}
+	owner.runtimeMutex.RLock()
+	defer owner.runtimeMutex.RUnlock()
+	if owner.runtime == nil {
+		return plugin.ErrPluginNotActive
 	}
 	owner.registry.removeGuard(name)
 	return nil
@@ -269,51 +286,20 @@ func (owner *Service) Execute(
 	requestContext context.Context,
 	input ToolExecutionInput,
 ) ToolExecutionResult {
-	if owner.runtime == nil {
+	stagedRuntime := owner.executionRuntime()
+	if stagedRuntime == nil {
 		return errorResult(plugin.ErrPluginNotActive)
 	}
-	return owner.runtime.Execute(requestContext, input)
+	return stagedRuntime.Execute(requestContext, input)
 }
 
-// Prepare runs the ordered pre-dispatch stage without starting the Tool body.
-func (owner *Service) Prepare(
-	requestContext context.Context,
-	input ToolExecutionInput,
-) (ScheduledToolPreparation, error) {
-	if owner.runtime == nil {
-		return ScheduledToolPreparation{}, plugin.ErrPluginNotActive
+// Scheduler returns the focused staged execution capability used by Agent Loop.
+func (owner *Service) Scheduler() ToolExecutionScheduler {
+	stagedRuntime := owner.executionRuntime()
+	if stagedRuntime == nil {
+		return nil
 	}
-	return owner.runtime.Prepare(requestContext, input)
-}
-
-// Dispatch runs the around-dispatch chain and Tool body.
-func (owner *Service) Dispatch(toolCall ToolExecution) (ScheduledToolDispatch, error) {
-	if owner.runtime == nil {
-		return ScheduledToolDispatch{}, plugin.ErrPluginNotActive
-	}
-	return owner.runtime.Dispatch(toolCall)
-}
-
-// Finalize applies ordered post-execute policy and final materialization.
-func (owner *Service) Finalize(
-	toolCall ToolExecution,
-	outcome ToolExecutionResult,
-) (ToolExecutionResult, error) {
-	if owner.runtime == nil {
-		return nil, plugin.ErrPluginNotActive
-	}
-	return owner.runtime.Finalize(toolCall, outcome)
-}
-
-// Finish materializes a terminal staged result without post-execute policy.
-func (owner *Service) Finish(
-	toolCall ToolExecution,
-	outcome ToolExecutionResult,
-) ToolExecutionResult {
-	if owner.runtime == nil {
-		return errorResult(plugin.ErrPluginNotActive)
-	}
-	return owner.runtime.Finish(toolCall, outcome)
+	return stagedRuntime
 }
 
 // ResolveTools implements System Prompt's model-facing ToolProvider contract.
@@ -329,6 +315,20 @@ func (owner *Service) ResolveTools(
 
 func (owner *Service) toolLayers() []toolLayerSnapshot {
 	return owner.registry.toolLayers()
+}
+
+func (owner *Service) executionRuntime() *executionRuntime {
+	owner.runtimeMutex.RLock()
+	stagedRuntime := owner.runtime
+	owner.runtimeMutex.RUnlock()
+	return stagedRuntime
+}
+
+func (owner *Service) requireActive() error {
+	if owner.executionRuntime() == nil {
+		return plugin.ErrPluginNotActive
+	}
+	return nil
 }
 
 func (owner *Service) publishChanged(requestContext context.Context) error {

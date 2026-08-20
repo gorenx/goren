@@ -78,6 +78,26 @@ func resultText(
 	return textBlock.Text
 }
 
+func toolContextMessage(
+	testingContext *testing.T,
+	textValue string,
+	pluginName string,
+) llm.UserMessage {
+	testingContext.Helper()
+	message, err := llm.NewUserMessage(llm.UserMessageInput{
+		Content: []llm.ContentBlock{
+			llm.NewTextBlock(textValue),
+		},
+		Source: llm.PluginMessageSource{
+			Plugin: pluginName,
+		},
+	})
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	return message
+}
+
 func TestExecutionPipelineOrderAndDetachedResultEvent(t *testing.T) {
 	var orderMutex sync.Mutex
 	steps := make([]string, 0)
@@ -250,6 +270,264 @@ func TestExecutionPipelineOrderAndDetachedResultEvent(t *testing.T) {
 	}
 	if !reflect.DeepEqual(steps, want) {
 		t.Fatalf("pipeline order = %#v, want %#v", steps, want)
+	}
+}
+
+func TestExecuteMiddlewareReceivesReadOnlyCanonicalSuccess(t *testing.T) {
+	mutation := &waterfallPlugin[
+		tools.ExecuteRequest,
+		tools.ExecuteOutcome,
+	]{
+		name: "mutate-canonical-success",
+		middleware: waterfallFunc[
+			tools.ExecuteRequest,
+			tools.ExecuteOutcome,
+		](func(
+			requestContext context.Context,
+			input tools.ExecuteRequest,
+			downstream plugin.WaterfallAction[
+				tools.ExecuteRequest,
+				tools.ExecuteOutcome,
+			],
+		) (tools.ExecuteOutcome, error) {
+			outcome, err := downstream.Execute(requestContext, input)
+			if err != nil {
+				return tools.ExecuteOutcome{}, err
+			}
+			if _, mutable := outcome.Result.(*tools.ToolExecutionSuccess); mutable {
+				return tools.ExecuteOutcome{}, errors.New(
+					"canonical success exposed mutable result fields",
+				)
+			}
+			return outcome, nil
+		}),
+	}
+	state := newToolsFixture(t, mutation)
+	if err := state.service.AddTool(
+		context.Background(),
+		objectTool(
+			"sealed",
+			"",
+			tools.ExecutorFunc(passThroughBody),
+		),
+	); err != nil {
+		t.Fatal(err)
+	}
+	outcome := state.service.Execute(
+		context.Background(),
+		tools.ToolExecutionInput{
+			CallID:    "sealed-1",
+			Name:      "sealed",
+			Arguments: json.RawMessage(`{"value":"original"}`),
+		},
+	)
+	succeeded, matches := outcome.(*tools.ToolExecutionSuccess)
+	if !matches || string(succeeded.Value) != `{"value":"original"}` ||
+		resultText(t, outcome) != `{"value":"original"}` || succeeded.ConcludesTurn {
+		t.Fatalf("canonical result was mutated: %#v", outcome)
+	}
+}
+
+func TestDeferredContextsPrecedeExecuteAndPostContexts(t *testing.T) {
+	deferred := toolContextMessage(t, "deferred", "tool")
+	wrapper := toolContextMessage(t, "wrapper", "wrapper")
+	post := toolContextMessage(t, "post", "post")
+	executePolicy := &waterfallPlugin[
+		tools.ExecuteRequest,
+		tools.ExecuteOutcome,
+	]{
+		name: "append-execute-context",
+		middleware: waterfallFunc[
+			tools.ExecuteRequest,
+			tools.ExecuteOutcome,
+		](func(
+			requestContext context.Context,
+			input tools.ExecuteRequest,
+			downstream plugin.WaterfallAction[
+				tools.ExecuteRequest,
+				tools.ExecuteOutcome,
+			],
+		) (tools.ExecuteOutcome, error) {
+			outcome, err := downstream.Execute(requestContext, input)
+			if err != nil {
+				return tools.ExecuteOutcome{}, err
+			}
+			value, succeeded := outcome.Result.SuccessValue()
+			if !succeeded {
+				return tools.ExecuteOutcome{}, errors.New("expected success value")
+			}
+			return tools.ExecuteOutcome{
+				Result: &tools.ToolExecutionSuccess{
+					Value: value,
+					AdditionalContexts: []llm.UserMessage{
+						wrapper,
+					},
+				},
+			}, nil
+		}),
+	}
+	postPolicy := &waterfallPlugin[
+		tools.PostExecuteRequest,
+		tools.PostExecuteOutcome,
+	]{
+		name: "append-post-context",
+		middleware: waterfallFunc[
+			tools.PostExecuteRequest,
+			tools.PostExecuteOutcome,
+		](func(
+			context.Context,
+			tools.PostExecuteRequest,
+			plugin.WaterfallAction[
+				tools.PostExecuteRequest,
+				tools.PostExecuteOutcome,
+			],
+		) (tools.PostExecuteOutcome, error) {
+			return tools.PostExecuteOutcome{
+				Decision: tools.AcceptDecision{
+					AdditionalContexts: []llm.UserMessage{
+						post,
+					},
+				},
+			}, nil
+		}),
+	}
+	state := newToolsFixture(t, executePolicy, postPolicy)
+	if err := state.service.AddTool(
+		context.Background(),
+		objectTool(
+			"contexts",
+			"",
+			tools.ExecutorFunc(func(
+				arguments json.RawMessage,
+				runContext tools.ToolRunContext,
+			) (json.RawMessage, error) {
+				runContext.DeferContext(deferred)
+				return arguments, nil
+			}),
+		),
+	); err != nil {
+		t.Fatal(err)
+	}
+	outcome := state.service.Execute(
+		context.Background(),
+		tools.ToolExecutionInput{
+			CallID:    "contexts-1",
+			Name:      "contexts",
+			Arguments: json.RawMessage(`{}`),
+		},
+	)
+	contexts := outcome.AdditionalContextMessages()
+	actualIDs := make([]llm.MessageID, 0, len(contexts))
+	for _, message := range contexts {
+		actualIDs = append(actualIDs, message.StableID())
+	}
+	wantIDs := []llm.MessageID{
+		deferred.StableID(),
+		wrapper.StableID(),
+		post.StableID(),
+	}
+	if !reflect.DeepEqual(actualIDs, wantIDs) {
+		t.Fatalf("context order = %#v, want %#v", actualIDs, wantIDs)
+	}
+}
+
+func TestFinishMaterializesNilStagedResult(t *testing.T) {
+	state := newToolsFixture(t)
+	if err := state.service.AddTool(
+		context.Background(),
+		objectTool(
+			"staged",
+			"",
+			tools.ExecutorFunc(passThroughBody),
+		),
+	); err != nil {
+		t.Fatal(err)
+	}
+	scheduler := state.service.Scheduler()
+	preparation, err := scheduler.Prepare(
+		context.Background(),
+		tools.ToolExecutionInput{
+			CallID:    "",
+			Name:      "staged",
+			Arguments: json.RawMessage(`{}`),
+		},
+	)
+	if err != nil || preparation.Stage != tools.ScheduledFinalResult {
+		t.Fatalf("preparation = %#v, error = %v", preparation, err)
+	}
+	outcome := scheduler.Finish(preparation.Execution, nil)
+	if !outcome.Failed() || !strings.Contains(resultText(t, outcome), "staged result is nil") {
+		t.Fatalf("nil staged result = %#v", outcome)
+	}
+}
+
+func TestSchedulerConsumesEachPreparedStageOnce(t *testing.T) {
+	var bodyCalls atomic.Int32
+	var finalizerCalls atomic.Int32
+	definition := objectTool(
+		"single-use-stage",
+		"",
+		tools.ExecutorFunc(func(
+			arguments json.RawMessage,
+			_ tools.ToolRunContext,
+		) (json.RawMessage, error) {
+			bodyCalls.Add(1)
+			return arguments, nil
+		}),
+	)
+	definition.FinalizeContent = tools.ContentFinalizerFunc(func(
+		tools.ToolExecution,
+		tools.ToolResultSnapshot,
+	) ([]llm.ContentBlock, bool) {
+		finalizerCalls.Add(1)
+		return nil, false
+	})
+	state := newToolsFixture(t)
+	if err := state.service.AddTool(
+		context.Background(),
+		definition,
+	); err != nil {
+		t.Fatal(err)
+	}
+	scheduler := state.service.Scheduler()
+	preparation, err := scheduler.Prepare(
+		context.Background(),
+		tools.ToolExecutionInput{
+			CallID:    "single-use-1",
+			Name:      "single-use-stage",
+			Arguments: json.RawMessage(`{}`),
+		},
+	)
+	if err != nil || preparation.Stage != tools.ScheduledDispatch {
+		t.Fatalf("preparation = %#v, error = %v", preparation, err)
+	}
+	dispatched, err := scheduler.Dispatch(preparation.Execution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := scheduler.Dispatch(preparation.Execution); err == nil ||
+		!strings.Contains(err.Error(), "not prepared for dispatch") {
+		t.Fatalf("second Dispatch error = %v", err)
+	}
+	finalOutcome, err := scheduler.Finalize(
+		preparation.Execution,
+		dispatched.Result,
+	)
+	if err != nil || finalOutcome.Failed() {
+		t.Fatalf("final outcome = %#v, error = %v", finalOutcome, err)
+	}
+	if _, err := scheduler.Finalize(
+		preparation.Execution,
+		dispatched.Result,
+	); err == nil || !strings.Contains(err.Error(), "not prepared") {
+		t.Fatalf("second Finalize error = %v", err)
+	}
+	if bodyCalls.Load() != 1 || finalizerCalls.Load() != 1 {
+		t.Fatalf(
+			"body calls = %d, finalizer calls = %d",
+			bodyCalls.Load(),
+			finalizerCalls.Load(),
+		)
 	}
 }
 

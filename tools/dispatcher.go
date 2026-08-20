@@ -50,16 +50,16 @@ func (bodyDispatcher *dispatcher) dispatch(
 	if err != nil {
 		return nil, err
 	}
-	bodyInvoked, _, deferredContexts := state.executionOutcome()
-	normalized, err = appendAdditionalContexts(
+	stateSnapshot := state.snapshot()
+	normalized, err = prependAdditionalContexts(
 		normalized,
-		deferredContexts,
+		stateSnapshot.deferredContexts,
 	)
 	if err != nil {
 		return nil, err
 	}
 	if requestContext.Err() != nil && !normalized.Failed() {
-		return abortedResult(bodyInvoked, normalized), nil
+		return abortedResult(stateSnapshot.bodyInvoked, normalized), nil
 	}
 	return normalized, nil
 }
@@ -141,11 +141,10 @@ func (bodyDispatcher *dispatcher) executeBody(
 	if err != nil {
 		return errorResult(err), nil
 	}
-	_, concludesTurn, _ := state.executionOutcome()
-	if succeeded, matches := outcome.(*ToolExecutionSuccess); matches && concludesTurn {
-		succeeded.ConcludesTurn = true
-	}
-	return outcome, nil
+	return &canonicalToolExecutionSuccess{
+		executionToken: toolCall.Token.token,
+		normalized:     outcome.(*ToolExecutionSuccess),
+	}, nil
 }
 
 func (bodyDispatcher *dispatcher) normalize(
@@ -156,26 +155,21 @@ func (bodyDispatcher *dispatcher) normalize(
 	if candidate == nil {
 		return nil, errors.New("tools: execute handler returned a nil result")
 	}
-	if succeeded, matches := candidate.(*ToolExecutionSuccess); matches {
-		if succeeded.owner == toolCall.Token.token {
-			return succeeded.cloneResult()
+	if canonical, matches := candidate.(*canonicalToolExecutionSuccess); matches {
+		if canonical.executionToken == toolCall.Token.token {
+			return canonical.cloneResult()
 		}
-		if entry == nil {
-			return nil, &ToolNotFoundError{
-				Name: toolCall.Name,
-			}
-		}
-		normalized, err := bodyDispatcher.success(
+		return bodyDispatcher.normalizeAuthoredSuccess(
 			toolCall,
 			entry,
-			succeeded.Value,
+			canonical.normalized,
 		)
-		if err != nil {
-			return nil, err
-		}
-		return appendAdditionalContexts(
-			normalized,
-			succeeded.AdditionalContexts,
+	}
+	if succeeded, matches := candidate.(*ToolExecutionSuccess); matches {
+		return bodyDispatcher.normalizeAuthoredSuccess(
+			toolCall,
+			entry,
+			succeeded,
 		)
 	}
 	if failedOutcome, matches := candidate.(*ToolExecutionFailure); matches {
@@ -184,6 +178,33 @@ func (bodyDispatcher *dispatcher) normalize(
 	return nil, fmt.Errorf(
 		"tools: unsupported execution result %T",
 		candidate,
+	)
+}
+
+func (bodyDispatcher *dispatcher) normalizeAuthoredSuccess(
+	toolCall ToolExecution,
+	entry *registeredTool,
+	authored *ToolExecutionSuccess,
+) (ToolExecutionResult, error) {
+	if authored == nil {
+		return nil, errors.New("tools: execute handler returned a nil success")
+	}
+	if entry == nil {
+		return nil, &ToolNotFoundError{
+			Name: toolCall.Name,
+		}
+	}
+	normalized, err := bodyDispatcher.success(
+		toolCall,
+		entry,
+		authored.Value,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return appendAdditionalContexts(
+		normalized,
+		authored.AdditionalContexts,
 	)
 }
 
@@ -242,11 +263,12 @@ func (bodyDispatcher *dispatcher) success(
 			)
 		}
 	}
+	stateSnapshot := toolCall.state.snapshot()
 	return &ToolExecutionSuccess{
-		Value:   value,
-		Content: content,
-		Meta:    meta,
-		owner:   toolCall.Token.token,
+		Value:         value,
+		Content:       content,
+		Meta:          meta,
+		ConcludesTurn: stateSnapshot.concludesTurn,
 	}, nil
 }
 
