@@ -42,7 +42,7 @@ func NewOverlay() *Service {
 	}
 }
 
-// Manifest declares Approval, System Prompt contribution, and the ancestor
+// Manifest declares Approval, System Prompt bindings, and the ancestor
 // Approval required by an overlay.
 func (owner *Service) Manifest() plugin.Manifest {
 	requiredServices := []plugin.ServiceType{
@@ -116,7 +116,7 @@ func (owner *Service) Apply(requestContext context.Context) error {
 }
 
 // Dispose removes the prompt entry owned by this Plugin. Runtime has already
-// hidden its Service contribution.
+// hidden its Service binding.
 func (owner *Service) Dispose(closeContext context.Context) error {
 	var disposeErr error
 	if owner.promptInstalled && owner.prompts != nil {

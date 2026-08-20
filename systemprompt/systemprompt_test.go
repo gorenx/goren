@@ -233,7 +233,7 @@ func TestSystemPromptOverlayShadowsAncestorLayer(t *testing.T) {
 		t.Fatal(err)
 	}
 	overlay := systemprompt.NewOverlay(systemprompt.RegistryOptions{})
-	overlayHandle, err := runtimeEngine.MountChild(
+	overlayHandle, err := runtimeEngine.MountScopedChild(
 		requestContext,
 		rootHandle,
 		overlay,
@@ -843,7 +843,7 @@ func TestToolProviderInChildLayerShadowsSameNamedParentProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	overlay := systemprompt.NewOverlay(systemprompt.RegistryOptions{})
-	if _, err := runtimeEngine.MountChild(
+	if _, err := runtimeEngine.MountScopedChild(
 		requestContext,
 		promptHandle,
 		overlay,

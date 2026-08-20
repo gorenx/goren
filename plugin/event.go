@@ -169,36 +169,81 @@ func (registry *eventRegistry) snapshot(
 	return observers
 }
 
-// Publish delivers fact from the active source Plugin to matching Observers in
-// the source Scope and its ancestors.
-func Publish[E Event](
-	requestContext context.Context,
-	source Plugin,
-	fact E,
-) error {
-	selectedActivation, err := activeActivationOf(source)
-	if err != nil {
-		return err
-	}
-	reference, err := eventReferenceOf[E]()
-	if err != nil {
-		return fmt.Errorf("plugin: publish Event: %w", err)
-	}
-	if fact.EventName() != reference.name || fact.EventDelivery() != reference.policy {
-		return errors.New("plugin: Event metadata must be constant for one Go type")
-	}
-	runtimeEngine := selectedActivation.runtime
-	runtimeEngine.state.RLock()
-	if selectedActivation.fiber.state != FiberActive {
-		runtimeEngine.state.RUnlock()
-		return ErrPluginNotActive
-	}
-	observers := runtimeEngine.events.snapshot(
-		reference,
-		selectedActivation.fiber.scope,
-	)
-	runtimeEngine.state.RUnlock()
+// eventDispatcher owns Event subscriptions, delivery policy execution, and
+// best-effort failure reporting. Runtime.view guards its registry operations;
+// delivery runs after the caller releases that lock.
+type eventDispatcher struct {
+	registry *eventRegistry
+	failures EventFailureReporter
+}
 
+func newEventDispatcher(failures EventFailureReporter) *eventDispatcher {
+	return &eventDispatcher{
+		registry: newEventRegistry(),
+		failures: failures,
+	}
+}
+
+func (dispatcher *eventDispatcher) validateDeliveryRequirements(
+	subscriptions []eventSubscriptionSpec,
+) error {
+	if dispatcher.failures != nil {
+		return nil
+	}
+	for _, subscription := range subscriptions {
+		if subscription.reference.policy == DeliveryBestEffort {
+			return fmt.Errorf(
+				"plugin: Event %q requires an EventFailureReporter for best-effort delivery",
+				subscription.reference.name,
+			)
+		}
+	}
+	return nil
+}
+
+// Runtime.view must be locked by the caller.
+func (dispatcher *eventDispatcher) validateMetadata(
+	subscriptions []eventSubscriptionSpec,
+) error {
+	for _, subscription := range subscriptions {
+		for _, existingBinding := range dispatcher.registry.bindings[subscription.reference.key] {
+			if existingBinding.reference.name == subscription.reference.name &&
+				existingBinding.reference.policy == subscription.reference.policy {
+				continue
+			}
+			return fmt.Errorf(
+				"plugin: Event type %q has inconsistent metadata",
+				namedTypeName(subscription.reference.key),
+			)
+		}
+	}
+	return nil
+}
+
+// Runtime.view must be write-locked by the caller.
+func (dispatcher *eventDispatcher) subscribe(binding *eventBinding) {
+	dispatcher.registry.add(binding)
+}
+
+// Runtime.view must be write-locked by the caller.
+func (dispatcher *eventDispatcher) unsubscribe(binding *eventBinding) {
+	dispatcher.registry.remove(binding)
+}
+
+// Runtime.view must be read-locked by the caller.
+func (dispatcher *eventDispatcher) snapshotObservers(
+	reference eventRef,
+	sourceScope *scope,
+) []EventObserver {
+	return dispatcher.registry.snapshot(reference, sourceScope)
+}
+
+func (dispatcher *eventDispatcher) deliver(
+	requestContext context.Context,
+	fact Event,
+	reference eventRef,
+	observers []EventObserver,
+) error {
 	switch reference.policy {
 	case DeliveryOrdered:
 		for _, observer := range observers {
@@ -215,10 +260,7 @@ func Publish[E Event](
 			fact,
 			observers,
 			func(observerErr error) {
-				if runtimeEngine.eventFailures == nil {
-					return
-				}
-				runtimeEngine.eventFailures.ReportEventFailure(
+				dispatcher.failures.ReportEventFailure(
 					requestContext,
 					EventFailure{
 						EventName: reference.name,
@@ -230,6 +272,43 @@ func Publish[E Event](
 	default:
 		return errors.New("plugin: unsupported Event delivery policy")
 	}
+}
+
+// Publish delivers fact from the active source Plugin to matching Observers in
+// the source Scope and its ancestors.
+func Publish[E Event](
+	requestContext context.Context,
+	source Plugin,
+	fact E,
+) error {
+	sourceFiber, err := activeFiberOf(source)
+	if err != nil {
+		return err
+	}
+	reference, err := eventReferenceOf[E]()
+	if err != nil {
+		return fmt.Errorf("plugin: publish Event: %w", err)
+	}
+	if fact.EventName() != reference.name || fact.EventDelivery() != reference.policy {
+		return errors.New("plugin: Event metadata must be constant for one Go type")
+	}
+	runtimeEngine := sourceFiber.runtime
+	runtimeEngine.view.RLock()
+	if sourceFiber.state != FiberActive {
+		runtimeEngine.view.RUnlock()
+		return ErrPluginNotActive
+	}
+	observers := runtimeEngine.bindings.events.snapshotObservers(
+		reference,
+		sourceFiber.scope,
+	)
+	runtimeEngine.view.RUnlock()
+	return runtimeEngine.bindings.events.deliver(
+		requestContext,
+		fact,
+		reference,
+		observers,
+	)
 }
 
 func observeEventParallel(

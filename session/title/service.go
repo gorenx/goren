@@ -102,7 +102,7 @@ func (owner *LogService) Manifest() plugin.Manifest {
 		plugin.ServiceOf[session.LiveStore](),
 		plugin.ServiceOf[sessionprojection.Registry](),
 	}
-	waterfalls := []plugin.WaterfallContribution(nil)
+	waterfalls := []plugin.WaterfallMiddlewareBinding(nil)
 	if owner.settings.LLM != nil {
 		requiredServices = append(
 			requiredServices,

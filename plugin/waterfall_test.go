@@ -28,7 +28,7 @@ type formatMiddleware struct {
 func (middleware *formatMiddleware) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: middleware.name,
-		Waterfalls: []plugin.WaterfallContribution{
+		Waterfalls: []plugin.WaterfallMiddlewareBinding{
 			plugin.WaterfallOf[formatInput, formatOutput](middleware),
 		},
 	}
@@ -83,7 +83,7 @@ func TestWaterfallRunsRootToCurrentAsOnion(t *testing.T) {
 		name:  "child",
 		order: &order,
 	}
-	childHandle, err := runtimeEngine.MountChild(
+	childHandle, err := runtimeEngine.MountScopedChild(
 		context.Background(),
 		rootHandles[0],
 		childMiddleware,
@@ -94,7 +94,7 @@ func TestWaterfallRunsRootToCurrentAsOnion(t *testing.T) {
 	source := &eventPublisherPlugin{
 		name: "waterfall-source",
 	}
-	if _, err := runtimeEngine.MountChild(
+	if _, err := runtimeEngine.MountScopedChild(
 		context.Background(),
 		childHandle,
 		source,
@@ -122,6 +122,45 @@ func TestWaterfallRunsRootToCurrentAsOnion(t *testing.T) {
 	}
 }
 
+func TestWaterfallMiddlewareInChildFiberSharesSourceScope(t *testing.T) {
+	t.Parallel()
+	order := make([]string, 0)
+	source := &eventPublisherPlugin{
+		name: "same-scope-waterfall-source",
+	}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	handles, err := runtimeEngine.Start(context.Background(), source)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	middleware := &formatMiddleware{
+		name:  "same-scope",
+		order: &order,
+	}
+	if _, err := runtimeEngine.MountChild(
+		context.Background(),
+		handles[0],
+		middleware,
+	); err != nil {
+		t.Fatalf("mount same-Scope Middleware: %v", err)
+	}
+	if _, err := plugin.Run(
+		context.Background(),
+		source,
+		formatInput{
+			Value: "value",
+		},
+		formatAction{
+			order: &order,
+		},
+	); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := strings.Join(order, ","); got != "same-scope:before,action,same-scope:after" {
+		t.Fatalf("waterfall order = %q", got)
+	}
+}
+
 type doubleExecuteMiddleware struct {
 	plugin.Base
 	secondErr error
@@ -130,7 +169,7 @@ type doubleExecuteMiddleware struct {
 func (middleware *doubleExecuteMiddleware) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "double-proceed",
-		Waterfalls: []plugin.WaterfallContribution{
+		Waterfalls: []plugin.WaterfallMiddlewareBinding{
 			plugin.WaterfallOf[formatInput, formatOutput](middleware),
 		},
 	}
@@ -186,7 +225,7 @@ type panickingWaterfallMiddleware struct {
 func (owner *panickingWaterfallMiddleware) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "panicking-waterfall",
-		Waterfalls: []plugin.WaterfallContribution{
+		Waterfalls: []plugin.WaterfallMiddlewareBinding{
 			plugin.WaterfallOf[formatInput, formatOutput](
 				owner,
 			),

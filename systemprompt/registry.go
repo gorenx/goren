@@ -70,9 +70,9 @@ func (owner *Registry) Manifest() plugin.Manifest {
 			plugin.ServiceOf[Assembler](),
 		}
 	}
-	waterfalls := []plugin.WaterfallContribution(nil)
+	waterfalls := []plugin.WaterfallMiddlewareBinding(nil)
 	if owner.middleware != nil {
-		waterfalls = []plugin.WaterfallContribution{
+		waterfalls = []plugin.WaterfallMiddlewareBinding{
 			plugin.WaterfallOf[AssembleRequest, PromptAssembly](owner.middleware),
 		}
 	}

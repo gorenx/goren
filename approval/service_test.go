@@ -36,7 +36,7 @@ type answererPlugin struct {
 func (owner *answererPlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: owner.name,
-		Waterfalls: []plugin.WaterfallContribution{
+		Waterfalls: []plugin.WaterfallMiddlewareBinding{
 			plugin.WaterfallOf[
 				approval.DecisionRequest,
 				approval.Decision,
@@ -169,7 +169,7 @@ func (state *approvalFixture) mountOverlay(
 ) *approval.Service {
 	testingContext.Helper()
 	promptOverlay := systemprompt.NewOverlay(systemprompt.RegistryOptions{})
-	promptOverlayHandle, err := state.runtimeEngine.MountChild(
+	promptOverlayHandle, err := state.runtimeEngine.MountScopedChild(
 		context.Background(),
 		state.promptHandle,
 		promptOverlay,
@@ -179,7 +179,7 @@ func (state *approvalFixture) mountOverlay(
 	}
 	parentHandle := promptOverlayHandle
 	if middleware != nil {
-		answererHandle, mountErr := state.runtimeEngine.MountChild(
+		answererHandle, mountErr := state.runtimeEngine.MountScopedChild(
 			context.Background(),
 			promptOverlayHandle,
 			&answererPlugin{
@@ -193,7 +193,7 @@ func (state *approvalFixture) mountOverlay(
 		parentHandle = answererHandle
 	}
 	approvalOverlay := approval.NewOverlay()
-	if _, err := state.runtimeEngine.MountChild(
+	if _, err := state.runtimeEngine.MountScopedChild(
 		context.Background(),
 		parentHandle,
 		approvalOverlay,

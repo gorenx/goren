@@ -207,7 +207,7 @@ func TestPinnedSourceSystemPromptMatchesGo(t *testing.T) {
 			},
 		},
 	})
-	overlayHandle, err := runtimeEngine.MountChild(
+	overlayHandle, err := runtimeEngine.MountScopedChild(
 		requestContext,
 		handles[0],
 		overlay,

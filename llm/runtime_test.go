@@ -59,7 +59,7 @@ type waterfallOwnerPlugin struct {
 func (instance *waterfallOwnerPlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: instance.pluginName,
-		Waterfalls: []plugin.WaterfallContribution{
+		Waterfalls: []plugin.WaterfallMiddlewareBinding{
 			plugin.WaterfallOf[llm.GenerateOptions, llm.StreamOutput](instance),
 		},
 	}
