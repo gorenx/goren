@@ -1,4 +1,4 @@
-package llmdeepseek
+package deepseek
 
 import (
 	"context"
@@ -40,7 +40,10 @@ func translatePayloads(upstream payloadStream) (llm.ChunkStream, error) {
 	if upstream == nil {
 		return nil, fmt.Errorf("llm-deepseek: payload stream is nil")
 	}
-	return &translatedStream{upstream: upstream, toolBlocks: make(map[int]*openBlock)}, nil
+	return &translatedStream{
+		upstream:   upstream,
+		toolBlocks: make(map[int]*openBlock),
+	}, nil
 }
 
 func (streamState *translatedStream) Next(requestContext context.Context) (llm.StreamChunk, bool, error) {
@@ -82,23 +85,36 @@ func (streamState *translatedStream) accept(payload string) error {
 	if payload == donePayload {
 		for _, block := range streamState.order {
 			streamState.queue = append(streamState.queue, llm.BlockEndChunk{
-				Type: "block-end", Index: block.index, Block: closeTranslatedBlock(block),
+				Type:  "block-end",
+				Index: block.index,
+				Block: closeTranslatedBlock(block),
 			})
 		}
 		if streamState.pendingUsage != nil {
-			streamState.queue = append(streamState.queue, llm.UsageChunk{Type: "usage", Usage: *streamState.pendingUsage})
+			streamState.queue = append(streamState.queue, llm.UsageChunk{
+				Type:  "usage",
+				Usage: *streamState.pendingUsage,
+			})
 		}
 		finish := streamState.pendingFinish
 		if finish == nil {
-			finish = llm.StopFinish{Kind: "stop"}
+			finish = llm.StopFinish{
+				Kind: "stop",
+			}
 		}
 		if finish.ReasonKind() == "stop" && len(streamState.order) == 0 {
-			finish = llm.ErrorFinish{Kind: "error", Failure: llm.LlmFailure{
-				Message: "model returned a completed response with no content",
-				Code:    llm.EmptyResponseCode,
-			}}
+			finish = llm.ErrorFinish{
+				Kind: "error",
+				Failure: llm.LlmFailure{
+					Message: "model returned a completed response with no content",
+					Code:    llm.EmptyResponseCode,
+				},
+			}
 		}
-		streamState.queue = append(streamState.queue, llm.FinishChunk{Type: "finish", Reason: finish})
+		streamState.queue = append(streamState.queue, llm.FinishChunk{
+			Type:   "finish",
+			Reason: finish,
+		})
 		streamState.done = true
 		_ = streamState.upstream.Close(context.Background())
 		return nil
@@ -134,24 +150,32 @@ func (streamState *translatedStream) acceptDelta(delta wireDelta) {
 		if streamState.reasoningBlock == nil {
 			streamState.reasoningBlock = streamState.open("reasoning")
 			streamState.queue = append(streamState.queue, llm.BlockStartChunk{
-				Type: "block-start", Index: streamState.reasoningBlock.index, BlockType: "reasoning",
+				Type:      "block-start",
+				Index:     streamState.reasoningBlock.index,
+				BlockType: "reasoning",
 			})
 		}
 		streamState.reasoningBlock.text += *delta.ReasoningContent
 		streamState.queue = append(streamState.queue, llm.ReasoningDeltaChunk{
-			Type: "reasoning-delta", Index: streamState.reasoningBlock.index, Text: *delta.ReasoningContent,
+			Type:  "reasoning-delta",
+			Index: streamState.reasoningBlock.index,
+			Text:  *delta.ReasoningContent,
 		})
 	}
 	if delta.Content != nil && *delta.Content != "" {
 		if streamState.textBlock == nil {
 			streamState.textBlock = streamState.open("text")
 			streamState.queue = append(streamState.queue, llm.BlockStartChunk{
-				Type: "block-start", Index: streamState.textBlock.index, BlockType: "text",
+				Type:      "block-start",
+				Index:     streamState.textBlock.index,
+				BlockType: "text",
 			})
 		}
 		streamState.textBlock.text += *delta.Content
 		streamState.queue = append(streamState.queue, llm.TextDeltaChunk{
-			Type: "text-delta", Index: streamState.textBlock.index, Text: *delta.Content,
+			Type:  "text-delta",
+			Index: streamState.textBlock.index,
+			Text:  *delta.Content,
 		})
 	}
 	for _, callDelta := range delta.ToolCalls {
@@ -160,7 +184,9 @@ func (streamState *translatedStream) acceptDelta(delta wireDelta) {
 			block = streamState.open("tool-call")
 			streamState.toolBlocks[callDelta.Index] = block
 			streamState.queue = append(streamState.queue, llm.BlockStartChunk{
-				Type: "block-start", Index: block.index, BlockType: "tool-call",
+				Type:      "block-start",
+				Index:     block.index,
+				BlockType: "tool-call",
 			})
 		}
 		if callDelta.ID != nil {
@@ -169,8 +195,8 @@ func (streamState *translatedStream) acceptDelta(delta wireDelta) {
 		fragment := ""
 		if callDelta.Function != nil {
 			if callDelta.Function.Name != nil {
-				name := *callDelta.Function.Name
-				block.name = &name
+				toolName := *callDelta.Function.Name
+				block.name = &toolName
 			}
 			if callDelta.Function.Arguments != nil {
 				fragment = *callDelta.Function.Arguments
@@ -178,14 +204,20 @@ func (streamState *translatedStream) acceptDelta(delta wireDelta) {
 		}
 		block.text += fragment
 		streamState.queue = append(streamState.queue, llm.ToolCallDeltaChunk{
-			Type: "tool-call-delta", Index: block.index, ID: block.callID,
-			Name: cloneString(block.name), ArgumentsDelta: fragment,
+			Type:           "tool-call-delta",
+			Index:          block.index,
+			ID:             block.callID,
+			Name:           cloneString(block.name),
+			ArgumentsDelta: fragment,
 		})
 	}
 }
 
 func (streamState *translatedStream) open(kind string) *openBlock {
-	block := &openBlock{index: streamState.nextIndex, kind: kind}
+	block := &openBlock{
+		index: streamState.nextIndex,
+		kind:  kind,
+	}
 	streamState.nextIndex++
 	streamState.order = append(streamState.order, block)
 	return block
@@ -194,15 +226,26 @@ func (streamState *translatedStream) open(kind string) *openBlock {
 func closeTranslatedBlock(block *openBlock) llm.ContentBlock {
 	switch block.kind {
 	case "text":
-		return llm.TextBlock{Type: "text", Text: block.text}
-	case "reasoning":
-		return llm.ReasoningBlock{Type: "reasoning", Text: block.text}
-	default:
-		name := ""
-		if block.name != nil {
-			name = *block.name
+		return llm.TextBlock{
+			Type: "text",
+			Text: block.text,
 		}
-		return llm.ToolCallBlock{Type: "tool-call", ID: block.callID, Name: name, Arguments: block.text}
+	case "reasoning":
+		return llm.ReasoningBlock{
+			Type: "reasoning",
+			Text: block.text,
+		}
+	default:
+		toolName := ""
+		if block.name != nil {
+			toolName = *block.name
+		}
+		return llm.ToolCallBlock{
+			Type:      "tool-call",
+			ID:        block.callID,
+			Name:      toolName,
+			Arguments: block.text,
+		}
 	}
 }
 

@@ -17,6 +17,13 @@ const FileName = ".anonymous-user-id"
 
 var uuidPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
+// Environment supplies the process-derived locations used by the Harness
+// installation identity.
+type Environment interface {
+	Lookup(string) (string, bool)
+	UserHomeDir() (string, error)
+}
+
 type Store struct {
 	filePath string
 
@@ -25,24 +32,23 @@ type Store struct {
 }
 
 // New resolves the identity file from DSH_HOME, falling back to ~/.dsh.
-func New(lookupEnv func(string) (string, bool), userHome func() (string, error)) (*Store, error) {
-	if lookupEnv == nil {
-		lookupEnv = os.LookupEnv
-	}
-	if userHome == nil {
-		userHome = os.UserHomeDir
+func New(platform Environment) (*Store, error) {
+	if platform == nil {
+		return nil, errors.New("anonymous user id: environment is required")
 	}
 	harnessHome := ""
-	if configuredHome, found := lookupEnv("DSH_HOME"); found && configuredHome != "" {
+	if configuredHome, found := platform.Lookup("DSH_HOME"); found && configuredHome != "" {
 		harnessHome = configuredHome
 	} else {
-		resolvedHome, err := userHome()
+		resolvedHome, err := platform.UserHomeDir()
 		if err != nil {
 			return nil, err
 		}
 		harnessHome = filepath.Join(resolvedHome, ".dsh")
 	}
-	return &Store{filePath: filepath.Join(harnessHome, FileName)}, nil
+	return &Store{
+		filePath: filepath.Join(harnessHome, FileName),
+	}, nil
 }
 
 // Value returns a process-stable UUID, persisting it on a best-effort basis.

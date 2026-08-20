@@ -1,5 +1,5 @@
 // Package llmdeepseek implements the direct DeepSeek chat-completions provider adapter.
-package llmdeepseek
+package deepseek
 
 import (
 	"time"
@@ -76,53 +76,54 @@ type ConnectionOptions struct {
 	RetryPolicy          llm.RetryPolicy
 }
 
-// Environment supplies the trusted launch layer consulted by static config resolution.
-type Environment struct {
-	LookupEnv func(string) (string, bool)
+// LaunchEnvironment supplies the trusted launch layer consulted by static
+// DeepSeek configuration resolution.
+type LaunchEnvironment interface {
+	Lookup(string) (string, bool)
 }
 
 // Snapshot returns a detached request-generation value.
-func (source ConnectionOptions) Snapshot() ConnectionOptions {
-	detached := source
+func (connection ConnectionOptions) Snapshot() ConnectionOptions {
+	detached := connection
 	detached.Defaults = RequestDefaults{
-		Thinking:        cloneThinking(source.Defaults.Thinking),
-		ReasoningEffort: cloneReasoningEffort(source.Defaults.ReasoningEffort),
+		Thinking:        cloneThinking(connection.Defaults.Thinking),
+		ReasoningEffort: cloneReasoningEffort(connection.Defaults.ReasoningEffort),
 	}
-	detached.Models = make([]CatalogModel, len(source.Models))
-	for index, catalogEntry := range source.Models {
+	detached.Models = make([]CatalogModel, len(connection.Models))
+	for index, catalogEntry := range connection.Models {
 		detached.Models[index] = catalogEntry
 		detached.Models[index].Name = cloneString(catalogEntry.Name)
 		detached.Models[index].Description = cloneString(catalogEntry.Description)
 		detached.Models[index].ContextWindow = cloneInt(catalogEntry.ContextWindow)
 		detached.Models[index].MaxTokens = cloneInt(catalogEntry.MaxTokens)
 	}
-	if source.RetryPolicy != nil {
-		detached.RetryPolicy = source.RetryPolicy.CloneRetryPolicy()
+	if connection.RetryPolicy != nil {
+		detached.RetryPolicy = connection.RetryPolicy.CloneRetryPolicy()
 	}
 	return detached
 }
 
-func cloneThinking(source *ThinkingMode) *ThinkingMode {
-	if source == nil {
+func cloneThinking(original *ThinkingMode) *ThinkingMode {
+	if original == nil {
 		return nil
 	}
-	value := *source
+	value := *original
 	return &value
 }
 
-func cloneReasoningEffort(source *ReasoningEffort) *ReasoningEffort {
-	if source == nil {
+func cloneReasoningEffort(original *ReasoningEffort) *ReasoningEffort {
+	if original == nil {
 		return nil
 	}
-	value := *source
+	value := *original
 	return &value
 }
 
-func cloneInt(source *int) *int {
-	if source == nil {
+func cloneInt(original *int) *int {
+	if original == nil {
 		return nil
 	}
-	value := *source
+	value := *original
 	return &value
 }
 
@@ -130,10 +131,10 @@ func intPointer(value int) *int { return &value }
 
 func stringPointer(value string) *string { return &value }
 
-func cloneString(source *string) *string {
-	if source == nil {
+func cloneString(original *string) *string {
+	if original == nil {
 		return nil
 	}
-	value := *source
+	value := *original
 	return &value
 }

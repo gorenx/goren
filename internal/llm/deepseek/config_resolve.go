@@ -1,4 +1,4 @@
-package llmdeepseek
+package deepseek
 
 import (
 	"errors"
@@ -12,7 +12,7 @@ import (
 )
 
 // ResolveOptions validates one whole connection generation atomically.
-func ResolveOptions(settings Config, launchEnvironment Environment) (ConnectionOptions, error) {
+func ResolveOptions(settings Config, launchSource LaunchEnvironment) (ConnectionOptions, error) {
 	if settings.Thinking != nil {
 		if *settings.Thinking != ThinkingEnabled && *settings.Thinking != ThinkingDisabled {
 			return ConnectionOptions{}, errors.New("llm-deepseek: thinking must be enabled or disabled")
@@ -39,8 +39,8 @@ func ResolveOptions(settings Config, launchEnvironment Environment) (ConnectionO
 	baseURL := ""
 	if settings.BaseURL != nil {
 		baseURL = *settings.BaseURL
-	} else if launchEnvironment.LookupEnv != nil {
-		baseURL, _ = launchEnvironment.LookupEnv(BaseURLEnv)
+	} else if launchSource != nil {
+		baseURL, _ = launchSource.Lookup(BaseURLEnv)
 	}
 	if baseURL == "" {
 		baseURL = PublicBaseURL
@@ -78,17 +78,32 @@ func ResolveOptions(settings Config, launchEnvironment Environment) (ConnectionO
 		return ConnectionOptions{}, err
 	}
 	return ConnectionOptions{
-		APIKeyEnv: credentialRef, BaseURL: baseURL,
-		Defaults:  RequestDefaults{Thinking: cloneThinking(settings.Thinking), ReasoningEffort: cloneReasoningEffort(settings.ReasoningEffort)},
-		MaxTokens: maximumTokens, DefaultContextWindow: contextWindow, Models: modelCatalog,
-		StreamIdleTimeout: time.Duration(idleMilliseconds * float64(time.Millisecond)), RetryPolicy: policy,
+		APIKeyEnv: credentialRef,
+		BaseURL:   baseURL,
+		Defaults: RequestDefaults{
+			Thinking:        cloneThinking(settings.Thinking),
+			ReasoningEffort: cloneReasoningEffort(settings.ReasoningEffort),
+		},
+		MaxTokens:            maximumTokens,
+		DefaultContextWindow: contextWindow,
+		Models:               modelCatalog,
+		StreamIdleTimeout:    time.Duration(idleMilliseconds * float64(time.Millisecond)),
+		RetryPolicy:          policy,
 	}, nil
 }
 
 func resolveModels(configured *[]CatalogModel) ([]CatalogModel, error) {
 	models := []CatalogModel{
-		{ID: DefaultModelID, Name: stringPointer("DeepSeek-V4-Flash"), ContextWindow: intPointer(DefaultContextWindow)},
-		{ID: "deepseek-v4-pro", Name: stringPointer("DeepSeek-V4-Pro"), ContextWindow: intPointer(DefaultContextWindow)},
+		{
+			ID:            DefaultModelID,
+			Name:          stringPointer("DeepSeek-V4-Flash"),
+			ContextWindow: intPointer(DefaultContextWindow),
+		},
+		{
+			ID:            "deepseek-v4-pro",
+			Name:          stringPointer("DeepSeek-V4-Pro"),
+			ContextWindow: intPointer(DefaultContextWindow),
+		},
 	}
 	if configured != nil {
 		models = slices.Clone(*configured)

@@ -1,4 +1,4 @@
-package llmdeepseek
+package deepseek
 
 import (
 	"context"
@@ -19,6 +19,45 @@ type requestSenderFunc func(*http.Request) (*http.Response, error)
 
 func (operation requestSenderFunc) Do(request *http.Request) (*http.Response, error) {
 	return operation(request)
+}
+
+type connectionSourceFixture struct {
+	connection ConnectionOptions
+	calls      *atomic.Int32
+}
+
+func (fixture connectionSourceFixture) CurrentConnection() (ConnectionOptions, error) {
+	if fixture.calls != nil {
+		fixture.calls.Add(1)
+	}
+	return fixture.connection.Snapshot(), nil
+}
+
+type apiKeyResolverFixture struct {
+	value string
+}
+
+func (resolver apiKeyResolverFixture) ResolveAPIKey(
+	context.Context,
+	ConnectionOptions,
+) (string, error) {
+	return resolver.value, nil
+}
+
+type userIDProviderFixture struct {
+	value string
+}
+
+func (provider userIDProviderFixture) UserID() (string, error) {
+	return provider.value, nil
+}
+
+type clockFixture struct {
+	value time.Time
+}
+
+func (sourceClock clockFixture) Now() time.Time {
+	return sourceClock.value
 }
 
 type faultBody struct {
@@ -60,26 +99,38 @@ func TestAdapterStreamsRequestAndPublishesModelCapabilities(t *testing.T) {
 	defer server.Close()
 
 	high := ReasoningHigh
-	settings := Config{BaseURL: stringPointer(server.URL), ReasoningEffort: &high}
-	connection, err := ResolveOptions(settings, Environment{})
+	settings := Config{
+		BaseURL:         stringPointer(server.URL),
+		ReasoningEffort: &high,
+	}
+	connection, err := ResolveOptions(settings, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var resolutionCount atomic.Int32
-	backend, err := NewAdapter(AdapterOptions{
-		CurrentOptions: func() (ConnectionOptions, error) {
-			resolutionCount.Add(1)
-			return connection.Snapshot(), nil
+	backend, err := NewAdapter(AdapterDependencies{
+		Connections: connectionSourceFixture{
+			connection: connection,
+			calls:      &resolutionCount,
 		},
-		ResolveAPIKey: func(context.Context, ConnectionOptions) (string, error) { return " test-key ", nil },
-		ResolveUserID: func() (string, error) { return "00000000-0000-4000-8000-000000000001", nil },
+		Credentials: apiKeyResolverFixture{
+			value: " test-key ",
+		},
+		Identity: userIDProviderFixture{
+			value: "00000000-0000-4000-8000-000000000001",
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	chunkFlow, err := backend.Stream(context.Background(), llm.GenerateOptions{
-		CallConfig: llm.CallConfig{Provider: ProviderRoute, Model: "deepseek-v4-flash", ReasoningEffort: "high"},
-		SessionID:  "session-1", Purpose: llm.PurposeCompaction,
+		CallConfig: llm.CallConfig{
+			Provider:        ProviderRoute,
+			Model:           "deepseek-v4-flash",
+			ReasoningEffort: "high",
+		},
+		SessionID: "session-1",
+		Purpose:   llm.PurposeCompaction,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -127,14 +178,18 @@ func TestAdapterStreamsRequestAndPublishesModelCapabilities(t *testing.T) {
 
 func TestAdapterHTTPFailureCarriesStructuredFacts(t *testing.T) {
 	t.Parallel()
-	now := time.Date(2027, 1, 15, 12, 0, 0, 0, time.UTC)
+	currentTime := time.Date(2027, 1, 15, 12, 0, 0, 0, time.UTC)
 	recording := loadHTTPRecording(t, "rate-limit.http")
 	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, _ *http.Request) {
 		replayHTTPRecording(responseWriter, recording)
 	}))
 	defer server.Close()
-	backend := mustAdapter(t, server.URL, 0, func() string { return "key" }, now)
-	chunkFlow, err := backend.Stream(context.Background(), llm.GenerateOptions{CallConfig: llm.CallConfig{Model: "m"}})
+	backend := mustAdapter(t, server.URL, 0, "key", currentTime)
+	chunkFlow, err := backend.Stream(context.Background(), llm.GenerateOptions{
+		CallConfig: llm.CallConfig{
+			Model: "m",
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,13 +212,43 @@ func TestHTTPErrorCodeClassification(t *testing.T) {
 		detail *wireErrorDetail
 		want   string
 	}{
-		{status: 401, want: "AUTH"},
-		{status: 429, want: "RATE_LIMIT"},
-		{status: 429, detail: &wireErrorDetail{Code: "insufficient_quota"}, want: llm.QuotaExceededCode},
-		{status: 400, detail: &wireErrorDetail{Message: "request too large for model context"}, want: llm.ContextWindowExceededCode},
-		{status: 400, detail: &wireErrorDetail{Message: "temperature exceeds maximum allowed value"}, want: "INVALID_REQUEST"},
-		{status: 503, want: "SERVER"},
-		{status: 418, want: "HTTP_418"},
+		{
+			status: 401,
+			want:   "AUTH",
+		},
+		{
+			status: 429,
+			want:   "RATE_LIMIT",
+		},
+		{
+			status: 429,
+			detail: &wireErrorDetail{
+				Code: "insufficient_quota",
+			},
+			want: llm.QuotaExceededCode,
+		},
+		{
+			status: 400,
+			detail: &wireErrorDetail{
+				Message: "request too large for model context",
+			},
+			want: llm.ContextWindowExceededCode,
+		},
+		{
+			status: 400,
+			detail: &wireErrorDetail{
+				Message: "temperature exceeds maximum allowed value",
+			},
+			want: "INVALID_REQUEST",
+		},
+		{
+			status: 503,
+			want:   "SERVER",
+		},
+		{
+			status: 418,
+			want:   "HTTP_418",
+		},
 	}
 	for _, testCase := range tests {
 		if got := HTTPErrorCode(testCase.status, testCase.detail); got != testCase.want {
@@ -180,8 +265,12 @@ func TestAdapterRejectsUnsendableKeyBeforeIO(t *testing.T) {
 	}))
 	defer server.Close()
 	secret := "sk-😀supersecret"
-	backend := mustAdapter(t, server.URL, 0, func() string { return secret }, time.Now())
-	chunkFlow, err := backend.Stream(context.Background(), llm.GenerateOptions{CallConfig: llm.CallConfig{Model: "m"}})
+	backend := mustAdapter(t, server.URL, 0, secret, time.Now())
+	chunkFlow, err := backend.Stream(context.Background(), llm.GenerateOptions{
+		CallConfig: llm.CallConfig{
+			Model: "m",
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,8 +293,12 @@ func TestAdapterClassifiesCancellationAndIdleTimeout(t *testing.T) {
 		<-request.Context().Done()
 	}))
 	defer server.Close()
-	backend := mustAdapter(t, server.URL, 20*time.Millisecond, func() string { return "key" }, time.Now())
-	chunkFlow, err := backend.Stream(context.Background(), llm.GenerateOptions{CallConfig: llm.CallConfig{Model: "m"}})
+	backend := mustAdapter(t, server.URL, 20*time.Millisecond, "key", time.Now())
+	chunkFlow, err := backend.Stream(context.Background(), llm.GenerateOptions{
+		CallConfig: llm.CallConfig{
+			Model: "m",
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +310,11 @@ func TestAdapterClassifiesCancellationAndIdleTimeout(t *testing.T) {
 
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	chunkFlow, err = backend.Stream(context.Background(), llm.GenerateOptions{CallConfig: llm.CallConfig{Model: "m"}})
+	chunkFlow, err = backend.Stream(context.Background(), llm.GenerateOptions{
+		CallConfig: llm.CallConfig{
+			Model: "m",
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,17 +327,27 @@ func TestAdapterClassifiesCancellationAndIdleTimeout(t *testing.T) {
 func TestAdapterClassifiesMidStreamReadFailureAsTransportAndTerminates(t *testing.T) {
 	t.Parallel()
 	baseURL := "https://gateway.example/path"
-	connection, err := ResolveOptions(Config{BaseURL: &baseURL}, Environment{})
+	connection, err := ResolveOptions(Config{
+		BaseURL: &baseURL,
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	recording := loadHTTPRecording(t, "partial-transport.http")
-	bodyState := &faultBody{content: recording.body}
-	backend, err := NewAdapter(AdapterOptions{
-		CurrentOptions: func() (ConnectionOptions, error) { return connection.Snapshot(), nil },
-		ResolveAPIKey:  func(context.Context, ConnectionOptions) (string, error) { return "key", nil },
-		ResolveUserID:  func() (string, error) { return "00000000-0000-4000-8000-000000000001", nil },
-		RequestSender: requestSenderFunc(func(*http.Request) (*http.Response, error) {
+	bodyState := &faultBody{
+		content: recording.body,
+	}
+	backend, err := NewAdapter(AdapterDependencies{
+		Connections: connectionSourceFixture{
+			connection: connection,
+		},
+		Credentials: apiKeyResolverFixture{
+			value: "key",
+		},
+		Identity: userIDProviderFixture{
+			value: "00000000-0000-4000-8000-000000000001",
+		},
+		Requests: requestSenderFunc(func(*http.Request) (*http.Response, error) {
 			return &http.Response{
 				StatusCode: recording.statusCode,
 				Header:     recording.header.Clone(),
@@ -251,7 +358,11 @@ func TestAdapterClassifiesMidStreamReadFailureAsTransportAndTerminates(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	chunkFlow, err := backend.Stream(context.Background(), llm.GenerateOptions{CallConfig: llm.CallConfig{Model: "m"}})
+	chunkFlow, err := backend.Stream(context.Background(), llm.GenerateOptions{
+		CallConfig: llm.CallConfig{
+			Model: "m",
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +384,7 @@ func TestAdapterClassifiesMidStreamReadFailureAsTransportAndTerminates(t *testin
 
 func TestAdapterMetadataIsDetached(t *testing.T) {
 	t.Parallel()
-	backend := mustAdapter(t, "http://127.0.0.1:1", 0, func() string { return "key" }, time.Now())
+	backend := mustAdapter(t, "http://127.0.0.1:1", 0, "key", time.Now())
 	first, err := backend.ListModels(context.Background(), ProviderRoute)
 	if err != nil {
 		t.Fatal(err)
@@ -288,22 +399,32 @@ func TestAdapterMetadataIsDetached(t *testing.T) {
 	}
 }
 
-func mustAdapter(t *testing.T, baseURL string, idleTimeout time.Duration, key func() string, now time.Time) *Adapter {
+func mustAdapter(t *testing.T, baseURL string, idleTimeout time.Duration, key string, currentTime time.Time) *Adapter {
 	t.Helper()
-	settings := Config{BaseURL: stringPointer(baseURL)}
+	settings := Config{
+		BaseURL: stringPointer(baseURL),
+	}
 	if idleTimeout > 0 {
 		milliseconds := float64(idleTimeout) / float64(time.Millisecond)
 		settings.StreamIdleTimeoutMS = &milliseconds
 	}
-	connection, err := ResolveOptions(settings, Environment{})
+	connection, err := ResolveOptions(settings, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	backend, err := NewAdapter(AdapterOptions{
-		CurrentOptions: func() (ConnectionOptions, error) { return connection.Snapshot(), nil },
-		ResolveAPIKey:  func(context.Context, ConnectionOptions) (string, error) { return key(), nil },
-		ResolveUserID:  func() (string, error) { return "00000000-0000-4000-8000-000000000001", nil },
-		Now:            func() time.Time { return now },
+	backend, err := NewAdapter(AdapterDependencies{
+		Connections: connectionSourceFixture{
+			connection: connection,
+		},
+		Credentials: apiKeyResolverFixture{
+			value: key,
+		},
+		Identity: userIDProviderFixture{
+			value: "00000000-0000-4000-8000-000000000001",
+		},
+		Clock: clockFixture{
+			value: currentTime,
+		},
 	})
 	if err != nil {
 		t.Fatal(err)

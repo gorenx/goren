@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 
 	credentialslocal "github.com/gorenx/goren/credentials/local"
-	"github.com/gorenx/goren/internal/llmdeepseek"
+	"github.com/gorenx/goren/internal/llm/deepseek"
 	"github.com/gorenx/goren/plugin"
 	sesspersist "github.com/gorenx/goren/session/persistence"
 	querysqlite "github.com/gorenx/goren/session/query/sqlite"
@@ -160,7 +160,7 @@ func DefaultSpecs(
 		return nil, err
 	}
 	defaultModelRaw, err := json.Marshal(AgentDefaultModelConfig{
-		Provider: llmdeepseek.ProviderRoute, Model: llmdeepseek.DefaultModelID,
+		Provider: deepseek.ProviderRoute, Model: deepseek.DefaultModelID,
 	})
 	if err != nil {
 		return nil, err

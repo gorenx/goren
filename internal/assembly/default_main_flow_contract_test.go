@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorenx/goren/internal/llmdeepseek"
+	"github.com/gorenx/goren/internal/llm/deepseek"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	contractfixture "github.com/gorenx/goren/tests/contract/fixture"
@@ -124,7 +124,7 @@ func TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter(t *
 	factoryCatalog, err := NewCatalog(Environment{
 		WorkingDirectory: workingDirectory,
 		LookupEnv: func(environmentName string) (string, bool) {
-			if environmentName == llmdeepseek.DefaultAPIKeyEnv {
+			if environmentName == deepseek.DefaultAPIKeyEnv {
 				return "contract-key", true
 			}
 			return "", false
@@ -144,7 +144,7 @@ func TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter(t *
 		t.Fatal(err)
 	}
 	baseURL := deepSeekServer.URL
-	deepSeekConfig, err := json.Marshal(llmdeepseek.Config{BaseURL: &baseURL})
+	deepSeekConfig, err := json.Marshal(deepseek.Config{BaseURL: &baseURL})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter(t *
 		t.Fatalf("decode fixed TypeScript observation: %v; output = %s", err, output)
 	}
 	if observation.SessionID != "default-main-flow-contract" ||
-		observation.Model.Provider != llmdeepseek.ProviderRoute ||
+		observation.Model.Provider != deepseek.ProviderRoute ||
 		observation.Model.Model != "deepseek-v4-flash" ||
 		!observation.Routable || !observation.Accepted || !observation.Idle {
 		t.Fatalf("main flow observation = %#v", observation)

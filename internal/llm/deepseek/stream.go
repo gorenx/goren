@@ -1,4 +1,4 @@
-package llmdeepseek
+package deepseek
 
 import (
 	"context"
@@ -96,7 +96,10 @@ func (streamState *deepSeekStream) normalizeStreamError(requestContext context.C
 	}
 	return llm.MustLlmError(
 		fmt.Sprintf("DeepSeek API stream from %s failed", streamState.baseURL),
-		"TRANSPORT", llm.LlmErrorOptions{Cause: err},
+		"TRANSPORT",
+		llm.LlmErrorOptions{
+			Cause: err,
+		},
 	)
 }
 

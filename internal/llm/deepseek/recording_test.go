@@ -1,4 +1,4 @@
-package llmdeepseek
+package deepseek
 
 import (
 	"bufio"
@@ -44,9 +44,9 @@ func loadHTTPRecording(testingContext *testing.T, fixtureName string) httpRecord
 }
 
 func replayHTTPRecording(responseWriter http.ResponseWriter, recording httpRecording) {
-	for name, values := range recording.header {
+	for headerName, values := range recording.header {
 		for _, value := range values {
-			responseWriter.Header().Add(name, value)
+			responseWriter.Header().Add(headerName, value)
 		}
 	}
 	responseWriter.WriteHeader(recording.statusCode)

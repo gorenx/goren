@@ -1,4 +1,4 @@
-package llmdeepseek
+package deepseek
 
 import (
 	"encoding/json"
@@ -41,7 +41,7 @@ func (backend *Adapter) httpFailure(response *http.Response) error {
 			}
 		}
 	}
-	retryAfter := providerRetryAfterMS(response.Header.Get("retry-after"), backend.now())
+	retryAfter := providerRetryAfterMS(response.Header.Get("retry-after"), backend.clock.Now())
 	requestID := response.Header.Get("x-request-id")
 	if requestID == "" {
 		requestID = response.Header.Get("x-deepseek-request-id")
@@ -52,7 +52,7 @@ func (backend *Adapter) httpFailure(response *http.Response) error {
 	})
 }
 
-func providerRetryAfterMS(rawValue string, now time.Time) *float64 {
+func providerRetryAfterMS(rawValue string, currentTime time.Time) *float64 {
 	if rawValue == "" {
 		return nil
 	}
@@ -68,7 +68,7 @@ func providerRetryAfterMS(rawValue string, now time.Time) *float64 {
 	if err != nil {
 		return nil
 	}
-	delay := float64(deadline.Sub(now).Milliseconds())
+	delay := float64(deadline.Sub(currentTime).Milliseconds())
 	if delay <= 0 {
 		return nil
 	}

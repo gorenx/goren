@@ -1,4 +1,4 @@
-package llmdeepseek
+package deepseek
 
 import (
 	"strings"
@@ -10,16 +10,25 @@ import (
 func MapFinishReason(reason string) llm.FinishReason {
 	switch reason {
 	case "stop":
-		return llm.StopFinish{Kind: "stop"}
+		return llm.StopFinish{
+			Kind: "stop",
+		}
 	case "tool_calls":
-		return llm.ToolCallsFinish{Kind: "tool-calls"}
+		return llm.ToolCallsFinish{
+			Kind: "tool-calls",
+		}
 	case "length":
-		return llm.MaxTokensFinish{Kind: "max-tokens"}
+		return llm.MaxTokensFinish{
+			Kind: "max-tokens",
+		}
 	default:
-		return llm.ErrorFinish{Kind: "error", Failure: llm.LlmFailure{
-			Message: "model stopped: " + reason,
-			Code:    strings.ToUpper(reason),
-		}}
+		return llm.ErrorFinish{
+			Kind: "error",
+			Failure: llm.LlmFailure{
+				Message: "model stopped: " + reason,
+				Code:    strings.ToUpper(reason),
+			},
+		}
 	}
 }
 

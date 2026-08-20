@@ -6,16 +6,29 @@ import (
 	"testing"
 )
 
+type environmentFixture struct {
+	values map[string]string
+	home   string
+}
+
+func (platform environmentFixture) Lookup(variableName string) (string, bool) {
+	configuredValue, found := platform.values[variableName]
+	return configuredValue, found
+}
+
+func (platform environmentFixture) UserHomeDir() (string, error) {
+	return platform.home, nil
+}
+
 func TestStorePersistsPerHarnessHome(t *testing.T) {
 	t.Parallel()
 	harnessHome := t.TempDir()
-	lookupEnv := func(name string) (string, bool) {
-		if name == "DSH_HOME" {
-			return harnessHome, true
-		}
-		return "", false
+	platform := environmentFixture{
+		values: map[string]string{
+			"DSH_HOME": harnessHome,
+		},
 	}
-	firstStore, err := New(lookupEnv, nil)
+	firstStore, err := New(platform)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -23,7 +36,7 @@ func TestStorePersistsPerHarnessHome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondStore, err := New(lookupEnv, nil)
+	secondStore, err := New(platform)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +62,11 @@ func TestStoreReplacesCorruptIdentity(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(harnessHome, FileName), []byte("corrupt\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	storage, err := New(func(string) (string, bool) { return harnessHome, true }, nil)
+	storage, err := New(environmentFixture{
+		values: map[string]string{
+			"DSH_HOME": harnessHome,
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
