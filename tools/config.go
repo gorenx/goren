@@ -51,7 +51,10 @@ func ValidateConfig(settings Config) (ValidatedConfig, error) {
 		}
 		return ValidatedConfig{}, fmt.Errorf("tools: presentation mode %q requires the Code Runtime bridge", modeSetting)
 	}
-	return ValidatedConfig{mode: modeSetting, maxParallelSubCalls: subCallLimit}, nil
+	return ValidatedConfig{
+		mode:                modeSetting,
+		maxParallelSubCalls: subCallLimit,
+	}, nil
 }
 
 type configWire struct {

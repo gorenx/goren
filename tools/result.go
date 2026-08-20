@@ -31,8 +31,12 @@ func (outcome *ToolExecutionSuccess) cloneResult() (ToolExecutionResult, error) 
 		return nil, fmt.Errorf("tools: invalid additional context: %w", err)
 	}
 	return &ToolExecutionSuccess{
-		Value: value, Content: content, Meta: meta, AdditionalContexts: additionalContexts,
-		ConcludesTurn: outcome.ConcludesTurn, owner: outcome.owner,
+		Value:              value,
+		Content:            content,
+		Meta:               meta,
+		AdditionalContexts: additionalContexts,
+		ConcludesTurn:      outcome.ConcludesTurn,
+		owner:              outcome.owner,
 	}, nil
 }
 
@@ -61,7 +65,10 @@ func (outcome *ToolExecutionFailure) cloneResult() (ToolExecutionResult, error) 
 		return nil, fmt.Errorf("tools: invalid additional context: %w", err)
 	}
 	return &ToolExecutionFailure{
-		Error: retainedError, Content: content, Meta: meta, AdditionalContexts: additionalContexts,
+		Error:              retainedError,
+		Content:            content,
+		Meta:               meta,
+		AdditionalContexts: additionalContexts,
 	}, nil
 }
 
@@ -80,10 +87,16 @@ func errorResult(cause error) *ToolExecutionFailure {
 	var coded CodedError
 	var info *ToolErrorInfo
 	if errors.As(cause, &coded) {
-		info = &ToolErrorInfo{Name: coded.ToolErrorName(), Code: coded.ToolErrorCode()}
+		info = &ToolErrorInfo{
+			Name: coded.ToolErrorName(),
+			Code: coded.ToolErrorCode(),
+		}
 	}
 	return &ToolExecutionFailure{
-		Error:   ToolFailure{Message: message, Info: info},
+		Error: ToolFailure{
+			Message: message,
+			Info:    info,
+		},
 		Content: []llm.ContentBlock{llm.NewTextBlock("Error: " + message)},
 	}
 }
@@ -95,9 +108,15 @@ func abortedResult(bodyInvoked bool, prior ...ToolExecutionResult) *ToolExecutio
 	}
 	var outcome *ToolExecutionFailure
 	if bodyInvoked {
-		outcome = errorResult(&abortError{message: "tool call aborted", code: ToolAborted})
+		outcome = errorResult(&abortError{
+			message: "tool call aborted",
+			code:    ToolAborted,
+		})
 	} else {
-		outcome = errorResult(&abortError{message: "tool call aborted before dispatch", code: ToolAbortedBeforeDispatch})
+		outcome = errorResult(&abortError{
+			message: "tool call aborted before dispatch",
+			code:    ToolAbortedBeforeDispatch,
+		})
 	}
 	outcome.AdditionalContexts = additionalContexts
 	return outcome
@@ -125,13 +144,18 @@ func replaceResultContent(outcome ToolExecutionResult, content []llm.ContentBloc
 	switch retained := outcome.(type) {
 	case *ToolExecutionSuccess:
 		return &ToolExecutionSuccess{
-			Value: retained.Value, Content: content, Meta: retained.Meta,
+			Value:              retained.Value,
+			Content:            content,
+			Meta:               retained.Meta,
 			AdditionalContexts: retained.AdditionalContexts,
-			ConcludesTurn:      retained.ConcludesTurn, owner: retained.owner,
+			ConcludesTurn:      retained.ConcludesTurn,
+			owner:              retained.owner,
 		}
 	case *ToolExecutionFailure:
 		return &ToolExecutionFailure{
-			Error: retained.Error, Content: content, Meta: retained.Meta,
+			Error:              retained.Error,
+			Content:            content,
+			Meta:               retained.Meta,
 			AdditionalContexts: retained.AdditionalContexts,
 		}
 	default:
@@ -155,62 +179,62 @@ func newResultSnapshot(outcome ToolExecutionResult) (ToolResultSnapshot, error) 
 	if err != nil {
 		return nil, err
 	}
-	snapshot := &resultSnapshot{failed: detached.Failed()}
+	resultView := &resultSnapshot{failed: detached.Failed()}
 	switch retained := detached.(type) {
 	case *ToolExecutionSuccess:
-		snapshot.content = retained.Content
-		snapshot.value = retained.Value
-		snapshot.meta = retained.Meta
-		snapshot.additionalContexts = retained.AdditionalContexts
-		snapshot.concludesTurn = retained.ConcludesTurn
+		resultView.content = retained.Content
+		resultView.value = retained.Value
+		resultView.meta = retained.Meta
+		resultView.additionalContexts = retained.AdditionalContexts
+		resultView.concludesTurn = retained.ConcludesTurn
 	case *ToolExecutionFailure:
-		snapshot.content = retained.Content
-		snapshot.failure = retained.Error
-		snapshot.hasFailure = true
-		snapshot.meta = retained.Meta
-		snapshot.additionalContexts = retained.AdditionalContexts
+		resultView.content = retained.Content
+		resultView.failure = retained.Error
+		resultView.hasFailure = true
+		resultView.meta = retained.Meta
+		resultView.additionalContexts = retained.AdditionalContexts
 	default:
 		return nil, errors.New("tools: unsupported result implementation")
 	}
-	return snapshot, nil
+	return resultView, nil
 }
 
-func (snapshot *resultSnapshot) Failed() bool { return snapshot.failed }
+func (resultView *resultSnapshot) Failed() bool { return resultView.failed }
 
-func (snapshot *resultSnapshot) ContentBlocks() []llm.ContentBlock {
-	detached, _ := llm.CloneContentBlocks(snapshot.content)
+func (resultView *resultSnapshot) ContentBlocks() []llm.ContentBlock {
+	detached, _ := llm.CloneContentBlocks(resultView.content)
 	return detached
 }
 
-func (snapshot *resultSnapshot) SuccessValue() (json.RawMessage, bool) {
-	if snapshot.failed {
+func (resultView *resultSnapshot) SuccessValue() (json.RawMessage, bool) {
+	if resultView.failed {
 		return nil, false
 	}
-	return append(json.RawMessage(nil), snapshot.value...), true
+	return append(json.RawMessage(nil), resultView.value...), true
 }
 
-func (snapshot *resultSnapshot) FailureDetail() (ToolFailure, bool) {
-	if !snapshot.hasFailure {
+func (resultView *resultSnapshot) FailureDetail() (ToolFailure, bool) {
+	if !resultView.hasFailure {
 		return ToolFailure{}, false
 	}
-	detail := snapshot.failure
-	if snapshot.failure.Info != nil {
-		retainedInfo := *snapshot.failure.Info
+	detail := resultView.failure
+	if resultView.failure.Info != nil {
+		retainedInfo := *resultView.failure.Info
 		detail.Info = &retainedInfo
 	}
 	return detail, true
 }
 
-func (snapshot *resultSnapshot) PresentationMeta() json.RawMessage {
-	return append(json.RawMessage(nil), snapshot.meta...)
+func (resultView *resultSnapshot) PresentationMeta() json.RawMessage {
+	return append(json.RawMessage(nil), resultView.meta...)
 }
 
-func (snapshot *resultSnapshot) AdditionalContextMessages() []llm.UserMessage {
-	detached, _ := cloneUserMessages(snapshot.additionalContexts)
+func (resultView *resultSnapshot) AdditionalContextMessages() []llm.UserMessage {
+	detached, _ := cloneUserMessages(resultView.additionalContexts)
 	return detached
 }
 
-func (snapshot *resultSnapshot) ConcludesAgentTurn() bool { return snapshot.concludesTurn }
+func (resultView *resultSnapshot) ConcludesAgentTurn() bool { return resultView.concludesTurn }
 
 func cloneUserMessages(source []llm.UserMessage) ([]llm.UserMessage, error) {
 	if source == nil {
