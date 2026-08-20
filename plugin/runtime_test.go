@@ -1,365 +1,850 @@
-package plugin_test
+package plugin
 
 import (
 	"context"
 	"errors"
 	"reflect"
+	"sync/atomic"
 	"testing"
-
-	"github.com/gorenx/goren/plugin"
 )
 
-type textService interface {
-	Text() string
+type runtimeTestService interface {
+	Service
+	Value() string
 }
 
-type textValue string
-
-func (providedValue textValue) Text() string {
-	return string(providedValue)
+type runtimeTestServiceObject struct {
+	ServiceBase
+	value string
 }
 
-var textServiceKey = plugin.DefineService[textService]("contract.text")
-
-type fixturePlugin struct {
-	metadata plugin.Manifest
-	body     func(context.Context, *plugin.Scope) error
+func (owner *runtimeTestServiceObject) Value() string {
+	return owner.value
 }
 
-func (instance fixturePlugin) Manifest() plugin.Manifest {
+var runtimeTestServiceDefinition = DefineService[runtimeTestService]("test/runtime-service")
+
+type runtimeTestPlugin struct {
+	metadata         Manifest
+	applyOperation   func(context.Context, *Context) error
+	disposeOperation func(context.Context) error
+}
+
+func (instance *runtimeTestPlugin) Manifest() Manifest {
 	return instance.metadata
 }
 
-func (instance fixturePlugin) Apply(requestContext context.Context, pluginScope *plugin.Scope) error {
-	return instance.body(requestContext, pluginScope)
+func (instance *runtimeTestPlugin) Apply(
+	applyContext context.Context,
+	pluginContext *Context,
+) error {
+	if instance.applyOperation == nil {
+		return nil
+	}
+	return instance.applyOperation(applyContext, pluginContext)
 }
 
-func TestRuntimeWaitsForRequiredServiceAndRestartsConsumer(t *testing.T) {
+func (instance *runtimeTestPlugin) Dispose(disposeContext context.Context) error {
+	if instance.disposeOperation == nil {
+		return nil
+	}
+	return instance.disposeOperation(disposeContext)
+}
+
+func TestDefinitionsUseDistinctStableIdentity(t *testing.T) {
 	t.Parallel()
-	requestContext := context.Background()
-	engine := plugin.NewRuntime()
-	transitions := []string{}
-	consumerStarts := 0
-	consumer := fixturePlugin{
-		metadata: plugin.Manifest{Name: "consumer", Requires: []plugin.ServiceRef{textServiceKey.Ref()}},
-		body: func(_ context.Context, pluginScope *plugin.Scope) error {
-			dependency, found := plugin.Require(pluginScope, textServiceKey)
-			if !found {
-				return errors.New("required service missing during Apply")
-			}
-			consumerStarts++
-			captured := dependency.Text()
-			transitions = append(transitions, "consumer.start:"+captured)
-			return pluginScope.Effect(requestContext, "consumer", func(context.Context) (plugin.Disposer, error) {
-				return func(context.Context) error {
-					transitions = append(transitions, "consumer.stop:"+captured)
-					return nil
-				}, nil
-			})
+	firstService := DefineService[runtimeTestService]("test/same-name")
+	secondService := DefineService[runtimeTestService]("test/same-name")
+	serviceCopy := firstService
+	if firstService.ref.token == secondService.ref.token ||
+		firstService.ref.sameDefinition(secondService.ref) {
+		t.Fatal("separately defined Services share identity")
+	}
+	if !firstService.ref.sameDefinition(serviceCopy.ref) {
+		t.Fatal("a copied Service Definition lost its identity")
+	}
+
+	firstWaterfall := DefineWaterfall[runtimeTestInput, runtimeTestOutput]("test/same-waterfall")
+	secondWaterfall := DefineWaterfall[runtimeTestInput, runtimeTestOutput]("test/same-waterfall")
+	if firstWaterfall.ref.token == secondWaterfall.ref.token ||
+		firstWaterfall.ref.sameDefinition(secondWaterfall.ref) {
+		t.Fatal("separately defined Waterfalls share identity")
+	}
+
+	firstEvent := DefineEvent[runtimeTestEvent]("test/same-event", DeliveryOrdered)
+	secondEvent := DefineEvent[runtimeTestEvent]("test/same-event", DeliveryOrdered)
+	if firstEvent.ref.token == secondEvent.ref.token || firstEvent.ref.sameDefinition(secondEvent.ref) {
+		t.Fatal("separately defined Events share identity")
+	}
+}
+
+func TestRuntimeWaitsForRequiredServiceAndReactivatesConsumer(t *testing.T) {
+	t.Parallel()
+	runtimeEngine := NewRuntime(RuntimeSettings{})
+	var applyCount atomic.Int32
+	var disposeCount atomic.Int32
+	consumer := &runtimeTestPlugin{
+		metadata: Manifest{
+			Name:     "test-consumer",
+			Requires: []ServiceDefinition{runtimeTestServiceDefinition},
 		},
-	}
-	consumerHandle, err := engine.Load(requestContext, consumer)
-	if err != nil {
-		t.Fatal(err)
-	}
-	consumerStatus, err := engine.Status(consumerHandle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if consumerStatus.State != plugin.StateWaiting || consumerStarts != 0 {
-		t.Fatalf("waiting consumer = (%s, %d starts)", consumerStatus.State, consumerStarts)
-	}
-
-	providerV1 := newTextProvider("provider-v1", "v1", &transitions)
-	providerHandle, err := engine.Load(requestContext, providerV1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	consumerStatus, err = engine.Status(consumerHandle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if consumerStatus.State != plugin.StateActive || consumerStarts != 1 {
-		t.Fatalf("active consumer = (%s, %d starts)", consumerStatus.State, consumerStarts)
-	}
-
-	duplicate := newTextProvider("duplicate", "duplicate", &transitions)
-	if _, err := engine.Load(requestContext, duplicate); err == nil {
-		t.Fatal("duplicate provider load succeeded")
-	}
-	if err := engine.Unload(requestContext, providerHandle); err != nil {
-		t.Fatal(err)
-	}
-	consumerStatus, err = engine.Status(consumerHandle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if consumerStatus.State != plugin.StateWaiting {
-		t.Fatalf("consumer state after provider unload = %s", consumerStatus.State)
-	}
-
-	if _, err := engine.Load(requestContext, newTextProvider("provider-v2", "v2", &transitions)); err != nil {
-		t.Fatal(err)
-	}
-	if consumerStarts != 2 {
-		t.Fatalf("consumer starts = %d, want 2", consumerStarts)
-	}
-	want := []string{
-		"provider.start:v1", "consumer.start:v1", "consumer.stop:v1", "provider.stop:v1",
-		"provider.start:v2", "consumer.start:v2",
-	}
-	if !reflect.DeepEqual(transitions, want) {
-		t.Fatalf("transitions = %#v, want %#v", transitions, want)
-	}
-}
-
-func TestRuntimeRollsBackFailedApplyInLIFOOrder(t *testing.T) {
-	t.Parallel()
-	requestContext := context.Background()
-	engine := plugin.NewRuntime()
-	releases := []string{}
-	broken := fixturePlugin{
-		metadata: plugin.Manifest{Name: "broken", Provides: []plugin.ServiceRef{textServiceKey.Ref()}},
-		body: func(_ context.Context, pluginScope *plugin.Scope) error {
-			if _, err := plugin.Provide(pluginScope, textServiceKey, textService(textValue("broken"))); err != nil {
+		applyOperation: func(_ context.Context, pluginContext *Context) error {
+			providedService, err := runtimeTestServiceDefinition.Require(pluginContext)
+			if err != nil {
 				return err
 			}
-			for _, label := range []string{"first", "second"} {
-				captured := label
-				if err := pluginScope.Effect(requestContext, captured, func(context.Context) (plugin.Disposer, error) {
-					return func(context.Context) error {
-						releases = append(releases, captured)
-						return nil
-					}, nil
-				}); err != nil {
-					return err
-				}
+			if providedService.Value() == "" {
+				return errors.New("empty Service value")
 			}
-			return errors.New("startup failed")
+			applyCount.Add(1)
+			return nil
+		},
+		disposeOperation: func(context.Context) error {
+			disposeCount.Add(1)
+			return nil
 		},
 	}
-	brokenHandle, err := engine.Load(requestContext, broken)
-	if err == nil || err.Error() != "startup failed" {
-		t.Fatalf("load error = %v", err)
+	consumerHandle, err := runtimeEngine.Load(context.Background(), consumer)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(releases, []string{"second", "first"}) {
-		t.Fatalf("release order = %#v", releases)
+	consumerStatus, err := runtimeEngine.Status(consumerHandle)
+	if err != nil {
+		t.Fatal(err)
 	}
-	brokenStatus, statusErr := engine.Status(brokenHandle)
+	if consumerStatus.State != FiberWaiting || applyCount.Load() != 0 || disposeCount.Load() != 0 {
+		t.Fatalf("consumer started without dependency: %+v", consumerStatus)
+	}
+
+	providerHandle, err := runtimeEngine.Load(
+		context.Background(),
+		newRuntimeTestProvider("v1"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumerStatus, err = runtimeEngine.Status(consumerHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if consumerStatus.State != FiberActive || applyCount.Load() != 1 ||
+		len(consumerStatus.Dependencies) != 1 {
+		t.Fatalf("consumer did not activate with its resolved dependency: %+v", consumerStatus)
+	}
+
+	if err := runtimeEngine.Unload(context.Background(), providerHandle); err != nil {
+		t.Fatal(err)
+	}
+	consumerStatus, err = runtimeEngine.Status(consumerHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if consumerStatus.State != FiberWaiting || disposeCount.Load() != 1 ||
+		!reflect.DeepEqual(consumerStatus.Missing, []string{runtimeTestServiceDefinition.Name()}) {
+		t.Fatalf("consumer did not return to Waiting: %+v", consumerStatus)
+	}
+
+	if _, err := runtimeEngine.Load(context.Background(), newRuntimeTestProvider("v2")); err != nil {
+		t.Fatal(err)
+	}
+	if applyCount.Load() != 2 || disposeCount.Load() != 1 {
+		t.Fatalf(
+			"consumer lifecycle counts = apply %d, dispose %d; want apply 2, dispose 1",
+			applyCount.Load(),
+			disposeCount.Load(),
+		)
+	}
+}
+
+func TestServiceProviderMustUseFiberRootScope(t *testing.T) {
+	t.Parallel()
+	runtimeEngine := NewRuntime(RuntimeSettings{})
+	invalidProvider := &runtimeTestPlugin{
+		metadata: Manifest{
+			Name:     "invalid-provider",
+			Provides: []ServiceDefinition{runtimeTestServiceDefinition},
+		},
+		applyOperation: func(_ context.Context, pluginContext *Context) error {
+			childContext, err := pluginContext.ChildScope("child")
+			if err != nil {
+				return err
+			}
+			return runtimeTestServiceDefinition.Provide(
+				childContext,
+				&runtimeTestServiceObject{
+					value: "invalid",
+				},
+			)
+		},
+	}
+	pluginHandle, err := runtimeEngine.Load(context.Background(), invalidProvider)
+	if err == nil {
+		t.Fatal("provider mounted from an ordinary Child Scope")
+	}
+	pluginStatus, statusErr := runtimeEngine.Status(pluginHandle)
 	if statusErr != nil {
 		t.Fatal(statusErr)
 	}
-	if brokenStatus.State != plugin.StateFailed || len(brokenStatus.Effects) != 0 {
-		t.Fatalf("failed status = %#v", brokenStatus)
-	}
-	if err := engine.Unload(requestContext, brokenHandle); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := engine.Load(requestContext, newTextProvider("healthy", "ok", &releases)); err != nil {
-		t.Fatalf("service leaked from failed activation: %v", err)
+	if pluginStatus.State != FiberFailed || len(pluginStatus.Services) != 0 {
+		t.Fatalf("invalid provider left visible state: %+v", pluginStatus)
 	}
 }
 
-func TestRuntimeReplacementKeepsLastKnownGoodAndRestartsDependents(t *testing.T) {
+func TestRegistrationsCloseAfterApply(t *testing.T) {
 	t.Parallel()
-	requestContext := context.Background()
-	engine := plugin.NewRuntime()
-	transitions := []string{}
-	providerHandle, err := engine.Load(requestContext, newTextProvider("provider", "v1", &transitions))
+	runtimeEngine := NewRuntime(RuntimeSettings{})
+	var retainedContext *Context
+	pluginHandle, err := runtimeEngine.Load(
+		context.Background(),
+		&runtimeTestPlugin{
+			metadata: Manifest{
+				Name: "retained-context",
+			},
+			applyOperation: func(_ context.Context, pluginContext *Context) error {
+				retainedContext = pluginContext
+				return nil
+			},
+		},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	consumer := fixturePlugin{
-		metadata: plugin.Manifest{Name: "consumer", Requires: []plugin.ServiceRef{textServiceKey.Ref()}},
-		body: func(_ context.Context, pluginScope *plugin.Scope) error {
-			dependency, found := plugin.Require(pluginScope, textServiceKey)
-			if !found {
-				return errors.New("required service missing")
-			}
-			captured := dependency.Text()
-			transitions = append(transitions, "consumer.start:"+captured)
-			return pluginScope.Effect(requestContext, "consumer", func(context.Context) (plugin.Disposer, error) {
-				return func(context.Context) error {
-					transitions = append(transitions, "consumer.stop:"+captured)
-					return nil
-				}, nil
-			})
+	if pluginHandle.ID() == 0 || retainedContext == nil {
+		t.Fatal("plugin did not activate")
+	}
+	registrationErr := runtimeTestEventDefinition.Observe(
+		retainedContext,
+		&runtimeTestObserver{},
+	)
+	if !errors.Is(registrationErr, ErrRegistrationClosed) {
+		t.Fatalf("registration error = %v, want %v", registrationErr, ErrRegistrationClosed)
+	}
+	if _, childErr := retainedContext.Mount(
+		context.Background(),
+		&runtimeTestPlugin{
+			metadata: Manifest{
+				Name: "active-child",
+			},
 		},
-	}
-	if _, err := engine.Load(requestContext, consumer); err != nil {
-		t.Fatal(err)
-	}
-
-	failedCandidate := newTextProvider("provider", "bad", &transitions).(fixturePlugin)
-	failedBody := failedCandidate.body
-	failedCandidate.body = func(requestContext context.Context, pluginScope *plugin.Scope) error {
-		if err := failedBody(requestContext, pluginScope); err != nil {
-			return err
-		}
-		return errors.New("candidate failed")
-	}
-	if err := engine.Replace(requestContext, providerHandle, failedCandidate); err == nil {
-		t.Fatal("failed replacement succeeded")
-	}
-	activeValue, found := currentText(engine, requestContext)
-	if !found || activeValue != "v1" {
-		t.Fatalf("last-known-good service = %q, %t", activeValue, found)
-	}
-
-	if err := engine.Replace(requestContext, providerHandle, newTextProvider("provider", "v2", &transitions)); err != nil {
-		t.Fatal(err)
-	}
-	activeValue, found = currentText(engine, requestContext)
-	if !found || activeValue != "v2" {
-		t.Fatalf("replacement service = %q, %t", activeValue, found)
-	}
-	want := []string{
-		"provider.start:v1", "consumer.start:v1",
-		"provider.start:bad", "provider.stop:bad",
-		"provider.start:v2", "consumer.stop:v1", "provider.stop:v1", "consumer.start:v2",
-	}
-	if !reflect.DeepEqual(transitions, want) {
-		t.Fatalf("transitions = %#v, want %#v", transitions, want)
+	); childErr != nil {
+		t.Fatalf("active parent could not load child: %v", childErr)
 	}
 }
 
-func TestRuntimeShutdownIsDependentFirst(t *testing.T) {
+func TestFiberEffectsReleaseInReverseOrder(t *testing.T) {
 	t.Parallel()
-	requestContext := context.Background()
-	engine := plugin.NewRuntime()
-	transitions := []string{}
-	if _, err := engine.Load(requestContext, newTextProvider("provider", "v1", &transitions)); err != nil {
-		t.Fatal(err)
-	}
-	consumer := fixturePlugin{
-		metadata: plugin.Manifest{Name: "consumer", Requires: []plugin.ServiceRef{textServiceKey.Ref()}},
-		body: func(_ context.Context, pluginScope *plugin.Scope) error {
-			transitions = append(transitions, "consumer.start")
-			return pluginScope.Effect(requestContext, "consumer", func(context.Context) (plugin.Disposer, error) {
-				return func(context.Context) error {
-					transitions = append(transitions, "consumer.stop")
-					return nil
-				}, nil
-			})
+	trace := make([]string, 0)
+	entries := []*fiberEffect{
+		{
+			label: "first",
+			release: func(context.Context) error {
+				trace = append(trace, "first")
+				return nil
+			},
+			state: fiberEffectActive,
+		},
+		{
+			label: "second",
+			release: func(context.Context) error {
+				trace = append(trace, "second")
+				return nil
+			},
+			state: fiberEffectActive,
 		},
 	}
-	if _, err := engine.Load(requestContext, consumer); err != nil {
+	if err := releaseFiberEffects(context.Background(), entries); err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.Shutdown(requestContext); err != nil {
+	if !reflect.DeepEqual(trace, []string{"second", "first"}) {
+		t.Fatalf("effect release trace = %v", trace)
+	}
+	if err := releaseFiberEffects(context.Background(), entries); err != nil {
 		t.Fatal(err)
 	}
-	wantSuffix := []string{"consumer.stop", "provider.stop:v1"}
-	if !reflect.DeepEqual(transitions[len(transitions)-2:], wantSuffix) {
-		t.Fatalf("shutdown suffix = %#v", transitions)
-	}
-	if _, err := engine.Load(requestContext, consumer); err == nil {
-		t.Fatal("load after shutdown succeeded")
+	if !reflect.DeepEqual(trace, []string{"second", "first"}) {
+		t.Fatalf("effect release was not idempotent: %v", trace)
 	}
 }
 
-func TestProvidedServiceDisposerUpdatesLiveDependencyGraph(t *testing.T) {
+func TestApplyFailureDisposesPartiallyStartedPlugin(t *testing.T) {
 	t.Parallel()
-	requestContext := context.Background()
-	engine := plugin.NewRuntime()
-	transitions := []string{}
-	var providerScope *plugin.Scope
-	var withdraw plugin.Disposer
-	provider := fixturePlugin{
-		metadata: plugin.Manifest{Name: "dynamic-provider", Provides: []plugin.ServiceRef{textServiceKey.Ref()}},
-		body: func(_ context.Context, pluginScope *plugin.Scope) error {
-			providerScope = pluginScope
-			var err error
-			withdraw, err = plugin.Provide(pluginScope, textServiceKey, textService(textValue("v1")))
-			return err
+	runtimeEngine := NewRuntime(RuntimeSettings{})
+	trace := make([]string, 0, 2)
+	pluginHandle, err := runtimeEngine.Load(
+		context.Background(),
+		&runtimeTestPlugin{
+			metadata: Manifest{
+				Name: "partial-startup",
+			},
+			applyOperation: func(context.Context, *Context) error {
+				trace = append(trace, "apply")
+				return errors.New("startup failed")
+			},
+			disposeOperation: func(context.Context) error {
+				trace = append(trace, "dispose")
+				return nil
+			},
 		},
+	)
+	if err == nil {
+		t.Fatal("failed Apply unexpectedly activated")
 	}
-	if _, err := engine.Load(requestContext, provider); err != nil {
-		t.Fatal(err)
+	if !reflect.DeepEqual(
+		trace,
+		[]string{"apply", "dispose"},
+	) {
+		t.Fatalf("plugin lifecycle trace = %v", trace)
 	}
-	consumerHandle, err := engine.Load(requestContext, fixturePlugin{
-		metadata: plugin.Manifest{Name: "dynamic-consumer", Requires: []plugin.ServiceRef{textServiceKey.Ref()}},
-		body: func(_ context.Context, pluginScope *plugin.Scope) error {
-			dependency, found := plugin.Require(pluginScope, textServiceKey)
-			if !found {
-				return errors.New("dynamic service missing")
-			}
-			captured := dependency.Text()
-			transitions = append(transitions, "start:"+captured)
-			return pluginScope.Effect(requestContext, "consumer", func(context.Context) (plugin.Disposer, error) {
-				return func(context.Context) error {
-					transitions = append(transitions, "stop:"+captured)
-					return nil
-				}, nil
-			})
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
+	pluginStatus, statusErr := runtimeEngine.Status(pluginHandle)
+	if statusErr != nil {
+		t.Fatal(statusErr)
 	}
-	if err := withdraw(requestContext); err != nil {
-		t.Fatal(err)
-	}
-	consumerStatus, err := engine.Status(consumerHandle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if consumerStatus.State != plugin.StateWaiting {
-		t.Fatalf("consumer after withdrawal = %s", consumerStatus.State)
-	}
-	if _, err := plugin.Provide(providerScope, textServiceKey, textService(textValue("v2"))); err != nil {
-		t.Fatal(err)
-	}
-	consumerStatus, err = engine.Status(consumerHandle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if consumerStatus.State != plugin.StateActive {
-		t.Fatalf("consumer after re-provide = %s", consumerStatus.State)
-	}
-	want := []string{"start:v1", "stop:v1", "start:v2"}
-	if !reflect.DeepEqual(transitions, want) {
-		t.Fatalf("transitions = %#v, want %#v", transitions, want)
+	if pluginStatus.State != FiberFailed || len(pluginStatus.Effects) != 0 {
+		t.Fatalf("failed activation retained effects: %+v", pluginStatus)
 	}
 }
 
-func newTextProvider(providerName string, providedValue textValue, transitions *[]string) plugin.Plugin {
-	return fixturePlugin{
-		metadata: plugin.Manifest{Name: providerName, Provides: []plugin.ServiceRef{textServiceKey.Ref()}},
-		body: func(requestContext context.Context, pluginScope *plugin.Scope) error {
-			*transitions = append(*transitions, "provider.start:"+providedValue.Text())
-			if _, err := plugin.Provide(pluginScope, textServiceKey, textService(providedValue)); err != nil {
-				return err
-			}
-			return pluginScope.Effect(requestContext, "provider", func(context.Context) (plugin.Disposer, error) {
-				return func(context.Context) error {
-					*transitions = append(*transitions, "provider.stop:"+providedValue.Text())
-					return nil
-				}, nil
-			})
+func TestPluginDisposeRunsAfterRegistrationsAreWithdrawn(t *testing.T) {
+	t.Parallel()
+	runtimeEngine := NewRuntime(RuntimeSettings{})
+	var ownerContext *Context
+	registrationsWithdrawn := false
+	pluginHandle, err := runtimeEngine.Load(
+		context.Background(),
+		&runtimeTestPlugin{
+			metadata: Manifest{
+				Name: "dispose-order",
+				Provides: []ServiceDefinition{
+					runtimeTestServiceDefinition,
+				},
+			},
+			applyOperation: func(_ context.Context, pluginContext *Context) error {
+				ownerContext = pluginContext
+				return runtimeTestServiceDefinition.Provide(
+					pluginContext,
+					&runtimeTestServiceObject{
+						value: "active",
+					},
+				)
+			},
+			disposeOperation: func(context.Context) error {
+				for _, ownedEffect := range ownerContext.ownerFiber.effects.entries {
+					if ownedEffect.registration != nil &&
+						ownedEffect.state == fiberEffectActive {
+						return errors.New("Plugin.Dispose ran before registration withdrawal")
+					}
+				}
+				registrationsWithdrawn = true
+				return nil
+			},
 		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pluginHandle.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !registrationsWithdrawn {
+		t.Fatal("Plugin.Dispose was not called")
 	}
 }
 
-func currentText(engine *plugin.Runtime, requestContext context.Context) (string, bool) {
-	value := ""
-	found := false
-	probe := fixturePlugin{
-		metadata: plugin.Manifest{Name: "probe", Optional: []plugin.ServiceRef{textServiceKey.Ref()}},
-		body:     func(context.Context, *plugin.Scope) error { return nil },
-	}
-	probe.body = func(_ context.Context, pluginScope *plugin.Scope) error {
-		dependency, available := plugin.Require(pluginScope, textServiceKey)
-		if available {
-			value = dependency.Text()
-			found = true
-		}
-		return nil
-	}
-	probeHandle, err := engine.Load(requestContext, probe)
+func TestRegistrationsShareFiberEffectOwnership(t *testing.T) {
+	t.Parallel()
+	runtimeEngine := NewRuntime(RuntimeSettings{})
+	pluginHandle, err := runtimeEngine.Load(
+		context.Background(),
+		&runtimeTestPlugin{
+			metadata: Manifest{
+				Name: "owned-registrations",
+				Provides: []ServiceDefinition{
+					runtimeTestServiceDefinition,
+				},
+			},
+			applyOperation: func(_ context.Context, pluginContext *Context) error {
+				if provideErr := runtimeTestServiceDefinition.Provide(
+					pluginContext,
+					&runtimeTestServiceObject{
+						value: "owned",
+					},
+				); provideErr != nil {
+					return provideErr
+				}
+				if useErr := runtimeTestWaterfallDefinition.Use(
+					pluginContext,
+					&runtimeTestMiddleware{
+						name:  "owned",
+						trace: &[]string{},
+					},
+				); useErr != nil {
+					return useErr
+				}
+				return runtimeTestEventDefinition.Observe(
+					pluginContext,
+					&runtimeTestObserver{},
+				)
+			},
+		},
+	)
 	if err != nil {
-		return "", false
+		t.Fatal(err)
 	}
-	_ = engine.Unload(requestContext, probeHandle)
-	return value, found
+	statusView, err := runtimeEngine.Status(pluginHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedLabels := []string{
+		"plugin:owned-registrations",
+		"provide:test/runtime-service",
+		"waterfall:test/waterfall",
+		"observe:test/event",
+	}
+	if !reflect.DeepEqual(statusView.Effects, expectedLabels) ||
+		len(statusView.Services) != 1 || len(statusView.Waterfalls) != 1 || len(statusView.Events) != 1 {
+		t.Fatalf("registrations do not share Fiber effect ownership: %+v", statusView)
+	}
+	if err := pluginHandle.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	statusView, err = runtimeEngine.Status(pluginHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if statusView.State != FiberStopped || len(statusView.Effects) != 0 {
+		t.Fatalf("stopped Fiber retained effects: %+v", statusView)
+	}
+}
+
+func TestMountedPluginIsOwnedByParentFiberEffect(t *testing.T) {
+	t.Parallel()
+	runtimeEngine := NewRuntime(RuntimeSettings{})
+	var retainedContext *Context
+	parentHandle, err := runtimeEngine.Load(
+		context.Background(),
+		&runtimeTestPlugin{
+			metadata: Manifest{
+				Name: "parent-effect-owner",
+			},
+			applyOperation: func(_ context.Context, pluginContext *Context) error {
+				retainedContext = pluginContext
+				return nil
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childHandle, err := retainedContext.Mount(
+		context.Background(),
+		&runtimeTestPlugin{
+			metadata: Manifest{
+				Name: "owned-child",
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentStatus, err := runtimeEngine.Status(parentHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(
+		parentStatus.Effects,
+		[]string{"plugin:parent-effect-owner", "plugin:owned-child"},
+	) {
+		t.Fatalf("parent does not own Child Plugin as an Effect: %+v", parentStatus)
+	}
+	if err := parentHandle.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	childStatus, err := runtimeEngine.Status(childHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if childStatus.State != FiberStopped {
+		t.Fatalf("Child Plugin outlived parent Fiber: %+v", childStatus)
+	}
+}
+
+func TestPluginCanMountChildDuringApply(t *testing.T) {
+	t.Parallel()
+	runtimeEngine := NewRuntime(RuntimeSettings{})
+	trace := make([]string, 0, 5)
+	var childHandle Handle
+	parentHandle, err := runtimeEngine.Load(
+		context.Background(),
+		&runtimeTestPlugin{
+			metadata: Manifest{
+				Name: "apply-mount-parent",
+			},
+			applyOperation: func(
+				applyContext context.Context,
+				pluginContext *Context,
+			) error {
+				trace = append(trace, "parent-apply")
+				var mountErr error
+				childHandle, mountErr = pluginContext.Mount(
+					applyContext,
+					&runtimeTestPlugin{
+						metadata: Manifest{
+							Name: "apply-mounted-child",
+						},
+						applyOperation: func(context.Context, *Context) error {
+							trace = append(trace, "child-apply")
+							return nil
+						},
+						disposeOperation: func(context.Context) error {
+							trace = append(trace, "child-dispose")
+							return nil
+						},
+					},
+				)
+				trace = append(trace, "parent-applied")
+				return mountErr
+			},
+			disposeOperation: func(context.Context) error {
+				trace = append(trace, "parent-dispose")
+				return nil
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(
+		trace,
+		[]string{"parent-apply", "child-apply", "parent-applied"},
+	) {
+		t.Fatalf("Apply mount trace = %v", trace)
+	}
+	childStatus, err := runtimeEngine.Status(childHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if childStatus.State != FiberActive {
+		t.Fatalf("mounted child did not activate: %+v", childStatus)
+	}
+	if err := parentHandle.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(
+		trace,
+		[]string{
+			"parent-apply",
+			"child-apply",
+			"parent-applied",
+			"child-dispose",
+			"parent-dispose",
+		},
+	) {
+		t.Fatalf("mounted lifecycle trace = %v", trace)
+	}
+}
+
+func TestMountedChildWaitsForParentServiceCommit(t *testing.T) {
+	t.Parallel()
+	runtimeEngine := NewRuntime(RuntimeSettings{})
+	observedValue := ""
+	var childHandle Handle
+	_, err := runtimeEngine.Load(
+		context.Background(),
+		&runtimeTestPlugin{
+			metadata: Manifest{
+				Name: "staged-service-parent",
+				Provides: []ServiceDefinition{
+					runtimeTestServiceDefinition,
+				},
+			},
+			applyOperation: func(
+				applyContext context.Context,
+				pluginContext *Context,
+			) error {
+				if provideErr := runtimeTestServiceDefinition.Provide(
+					pluginContext,
+					&runtimeTestServiceObject{
+						value: "parent",
+					},
+				); provideErr != nil {
+					return provideErr
+				}
+				var mountErr error
+				childHandle, mountErr = pluginContext.Mount(
+					applyContext,
+					&runtimeTestPlugin{
+						metadata: Manifest{
+							Name: "staged-service-child",
+							Requires: []ServiceDefinition{
+								runtimeTestServiceDefinition,
+							},
+						},
+						applyOperation: func(_ context.Context, childContext *Context) error {
+							providedService, requireErr := runtimeTestServiceDefinition.Require(childContext)
+							if requireErr != nil {
+								return requireErr
+							}
+							observedValue = providedService.Value()
+							return nil
+						},
+					},
+				)
+				return mountErr
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childStatus, err := runtimeEngine.Status(childHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if childStatus.State != FiberActive || observedValue != "parent" {
+		t.Fatalf(
+			"child did not settle after parent Service commit: status=%+v value=%q",
+			childStatus,
+			observedValue,
+		)
+	}
+}
+
+func TestIgnoredMountFailureRollsBackParentApply(t *testing.T) {
+	t.Parallel()
+	runtimeEngine := NewRuntime(RuntimeSettings{})
+	trace := make([]string, 0, 3)
+	var childHandle Handle
+	parentHandle, err := runtimeEngine.Load(
+		context.Background(),
+		&runtimeTestPlugin{
+			metadata: Manifest{
+				Name: "failed-mount-parent",
+			},
+			applyOperation: func(
+				applyContext context.Context,
+				pluginContext *Context,
+			) error {
+				childHandle, _ = pluginContext.Mount(
+					applyContext,
+					&runtimeTestPlugin{
+						metadata: Manifest{
+							Name: "failed-mounted-child",
+						},
+						applyOperation: func(context.Context, *Context) error {
+							trace = append(trace, "child-apply")
+							return errors.New("child startup failed")
+						},
+						disposeOperation: func(context.Context) error {
+							trace = append(trace, "child-dispose")
+							return nil
+						},
+					},
+				)
+				return nil
+			},
+			disposeOperation: func(context.Context) error {
+				trace = append(trace, "parent-dispose")
+				return nil
+			},
+		},
+	)
+	if err == nil {
+		t.Fatal("ignored child startup failure committed the parent")
+	}
+	parentStatus, statusErr := runtimeEngine.Status(parentHandle)
+	if statusErr != nil {
+		t.Fatal(statusErr)
+	}
+	childStatus, statusErr := runtimeEngine.Status(childHandle)
+	if statusErr != nil {
+		t.Fatal(statusErr)
+	}
+	if parentStatus.State != FiberFailed || childStatus.State != FiberStopped {
+		t.Fatalf("failed mount states: parent=%+v child=%+v", parentStatus, childStatus)
+	}
+	if !reflect.DeepEqual(
+		trace,
+		[]string{"child-apply", "child-dispose", "parent-dispose"},
+	) {
+		t.Fatalf("failed mount rollback trace = %v", trace)
+	}
+}
+
+func TestFailedReplacementKeepsLastKnownGoodFiber(t *testing.T) {
+	t.Parallel()
+	runtimeEngine := NewRuntime(RuntimeSettings{})
+	providerHandle, err := runtimeEngine.Load(
+		context.Background(),
+		newRuntimeTestProvider("v1"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := runtimeEngine.Status(providerHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacementErr := runtimeEngine.Replace(
+		context.Background(),
+		providerHandle,
+		&runtimeTestPlugin{
+			metadata: Manifest{
+				Name:     "test-provider",
+				Provides: []ServiceDefinition{runtimeTestServiceDefinition},
+			},
+			applyOperation: func(context.Context, *Context) error {
+				return errors.New("candidate failed")
+			},
+		},
+	)
+	if replacementErr == nil {
+		t.Fatal("failed replacement returned nil error")
+	}
+	after, err := runtimeEngine.Status(providerHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != FiberActive || after.FiberID != before.FiberID || len(after.Services) != 1 {
+		t.Fatalf("last-known-good Fiber was not preserved: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestReplacementCanMountChildDuringApply(t *testing.T) {
+	t.Parallel()
+	runtimeEngine := NewRuntime(RuntimeSettings{})
+	parentHandle, err := runtimeEngine.Load(
+		context.Background(),
+		&runtimeTestPlugin{
+			metadata: Manifest{
+				Name: "replacement-mount-parent",
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var childHandle Handle
+	replacementErr := runtimeEngine.Replace(
+		context.Background(),
+		parentHandle,
+		&runtimeTestPlugin{
+			metadata: Manifest{
+				Name: "replacement-mount-parent",
+			},
+			applyOperation: func(
+				applyContext context.Context,
+				pluginContext *Context,
+			) error {
+				var mountErr error
+				childHandle, mountErr = pluginContext.Mount(
+					applyContext,
+					&runtimeTestPlugin{
+						metadata: Manifest{
+							Name: "replacement-mounted-child",
+						},
+					},
+				)
+				return mountErr
+			},
+		},
+	)
+	if replacementErr != nil {
+		t.Fatal(replacementErr)
+	}
+	childStatus, err := runtimeEngine.Status(childHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if childStatus.State != FiberActive {
+		t.Fatalf("replacement child did not activate: %+v", childStatus)
+	}
+	if err := parentHandle.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	childStatus, err = runtimeEngine.Status(childHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if childStatus.State != FiberStopped {
+		t.Fatalf("replacement child outlived parent: %+v", childStatus)
+	}
+}
+
+func TestSuccessfulReplacementReactivatesResolvedConsumers(t *testing.T) {
+	t.Parallel()
+	runtimeEngine := NewRuntime(RuntimeSettings{})
+	providerHandle, err := runtimeEngine.Load(
+		context.Background(),
+		newRuntimeTestProvider("v1"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := make([]string, 0)
+	consumerHandle, err := runtimeEngine.Load(
+		context.Background(),
+		&runtimeTestPlugin{
+			metadata: Manifest{
+				Name:     "replacement-consumer",
+				Requires: []ServiceDefinition{runtimeTestServiceDefinition},
+			},
+			applyOperation: func(_ context.Context, pluginContext *Context) error {
+				providedService, requireErr := runtimeTestServiceDefinition.Require(pluginContext)
+				if requireErr != nil {
+					return requireErr
+				}
+				values = append(values, providedService.Value())
+				return nil
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := runtimeEngine.Status(providerHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtimeEngine.Replace(
+		context.Background(),
+		providerHandle,
+		newRuntimeTestProvider("v2"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	after, err := runtimeEngine.Status(providerHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumerStatus, err := runtimeEngine.Status(consumerHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.FiberID == after.FiberID || after.State != FiberActive ||
+		consumerStatus.State != FiberActive || !reflect.DeepEqual(values, []string{"v1", "v2"}) {
+		t.Fatalf(
+			"replacement did not atomically rebind: before=%+v after=%+v consumer=%+v values=%v",
+			before,
+			after,
+			consumerStatus,
+			values,
+		)
+	}
+}
+
+func newRuntimeTestProvider(serviceValue string) *runtimeTestPlugin {
+	return &runtimeTestPlugin{
+		metadata: Manifest{
+			Name:     "test-provider",
+			Provides: []ServiceDefinition{runtimeTestServiceDefinition},
+		},
+		applyOperation: func(_ context.Context, pluginContext *Context) error {
+			return runtimeTestServiceDefinition.Provide(
+				pluginContext,
+				&runtimeTestServiceObject{
+					value: serviceValue,
+				},
+			)
+		},
+	}
 }

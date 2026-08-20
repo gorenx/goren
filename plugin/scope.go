@@ -3,333 +3,263 @@ package plugin
 import (
 	"context"
 	"errors"
-	"fmt"
-	"slices"
 	"strings"
 	"sync"
 )
 
-type serviceContribution struct {
-	ref   ServiceRef
-	value any
-	owned bool
+var closedLifetime = func() context.Context {
+	closedContext, cancelLifetime := context.WithCancelCause(context.Background())
+	cancelLifetime(ErrContextClosed)
+	return closedContext
+}()
+
+// Context is the restricted Runtime handle of one Fiber at one Scope. It is
+// intentionally not a context.Context and exposes neither configuration nor a
+// string-based service locator.
+type Context struct {
+	runtime     *Runtime
+	ownerFiber  *fiber
+	scope       *Scope
+	lifetime    context.Context
+	transaction *mountTransaction
 }
 
-// eventListenerState retains listener ownership and routing metadata. Its
-// ordinal is the Runtime-wide registration sequence used to recover a
-// deterministic order after collecting listeners from multiple plugin
-// Scopes; it is neither a Session event seq nor a priority.
-type eventListenerState struct {
-	ref     eventRef
-	owned   bool
-	ordinal uint64
-	target  ScopeKey
+func newPluginContext(
+	runtimeEngine *Runtime,
+	ownerFiber *fiber,
+	ownerScope *Scope,
+	fiberLifetime context.Context,
+	transaction *mountTransaction,
+) *Context {
+	return &Context{
+		runtime:     runtimeEngine,
+		ownerFiber:  ownerFiber,
+		scope:       ownerScope,
+		lifetime:    fiberLifetime,
+		transaction: transaction,
+	}
 }
 
-type eventSubscription interface {
-	listenerState() *eventListenerState
+// Lifetime returns a Context cancelled when this Fiber begins stopping.
+func (pluginContext *Context) Lifetime() context.Context {
+	if pluginContext == nil || pluginContext.lifetime == nil {
+		return closedLifetime
+	}
+	return pluginContext.lifetime
 }
 
-type typedEventSubscription[P, R any, H EventHandler[P, R]] struct {
-	metadata eventListenerState
-	callback H
+// FiberID returns the identity of the current activation attempt.
+func (pluginContext *Context) FiberID() FiberID {
+	if pluginContext == nil || pluginContext.ownerFiber == nil {
+		return 0
+	}
+	return pluginContext.ownerFiber.id
 }
 
-func (listener *typedEventSubscription[P, R, H]) listenerState() *eventListenerState {
-	return &listener.metadata
+// Scope returns the current visibility and routing Scope.
+func (pluginContext *Context) Scope() *Scope {
+	if pluginContext == nil {
+		return nil
+	}
+	return pluginContext.scope
 }
 
-type ownedEffect struct {
-	label    string
-	release  Disposer
-	released bool
+func (pluginContext *Context) register(entry runtimeEntry) error {
+	if pluginContext == nil || pluginContext.runtime == nil || pluginContext.ownerFiber == nil {
+		return ErrContextClosed
+	}
+	if pluginContext.scope == nil || pluginContext.scope.isClosed() {
+		return ErrContextClosed
+	}
+	if pluginContext.transaction != nil && pluginContext.transaction.state == mountOpen {
+		return pluginContext.transaction.stageEntry(pluginContext.scope, entry)
+	}
+	return ErrRegistrationClosed
 }
 
-// Scope owns all contributions and cleanup effects created by one Apply call.
-// A scope is private until Runtime atomically activates it.
-type Scope struct {
-	owner         *Runtime
-	record        *pluginRecord
-	mu            sync.Mutex
-	services      map[string]*serviceContribution
-	subscriptions []eventSubscription
-	effects       []*ownedEffect
-	closed        bool
-	activated     bool
-	disposing     bool
-	parent        *Scope
-	target        ScopeKey
-	children      map[string]*Scope
-}
-
-func newScope(owner *Runtime, record *pluginRecord) *Scope {
-	return &Scope{
-		owner:    owner,
-		record:   record,
-		services: make(map[string]*serviceContribution),
+// ChildScope creates a visibility branch with the same Fiber lifetime.
+func (pluginContext *Context) ChildScope(scopeLabel string) (*Context, error) {
+	if pluginContext == nil || pluginContext.runtime == nil ||
+		pluginContext.ownerFiber == nil || pluginContext.scope == nil {
+		return nil, ErrContextClosed
+	}
+	trimmedLabel := strings.TrimSpace(scopeLabel)
+	if trimmedLabel == "" || trimmedLabel != scopeLabel {
+		return nil, errors.New("plugin: Scope label must be non-empty and trimmed")
+	}
+	parentScope := pluginContext.scope
+	parentScope.mutex.Lock()
+	defer parentScope.mutex.Unlock()
+	if parentScope.closed {
+		return nil, ErrContextClosed
+	}
+	if _, exists := parentScope.children[scopeLabel]; exists {
+		return nil, errors.New("plugin: duplicate child Scope label")
+	}
+	createdScope := &Scope{
+		runtime:    pluginContext.runtime,
+		ownerFiber: pluginContext.ownerFiber,
+		parent:     parentScope,
+		target: ScopeKey{
+			token: &scopeToken{
+				parent: parentScope.target.token,
+				depth:  parentScope.depth() + 1,
+			},
+		},
+		label:    scopeLabel,
 		children: make(map[string]*Scope),
 	}
+	parentScope.children[scopeLabel] = createdScope
+	return newPluginContext(
+		pluginContext.runtime,
+		pluginContext.ownerFiber,
+		createdScope,
+		pluginContext.lifetime,
+		pluginContext.transaction,
+	), nil
 }
 
-// Target returns the child-scope identity used by scoped capability
-// registries. Root plugin scopes return the global zero key.
-func (pluginScope *Scope) Target() ScopeKey {
-	if pluginScope == nil {
+// Mount attaches instance at the current Scope. The mounted Plugin receives
+// its own Fiber, and the current Fiber owns that entire child lifecycle.
+func (pluginContext *Context) Mount(
+	mountContext context.Context,
+	instance Plugin,
+) (Handle, error) {
+	if pluginContext == nil || pluginContext.runtime == nil || pluginContext.ownerFiber == nil {
+		return Handle{}, ErrContextClosed
+	}
+	if pluginContext.scope == nil || pluginContext.scope.isClosed() {
+		if pluginContext.transaction != nil && pluginContext.transaction.state == mountOpen {
+			return Handle{}, pluginContext.transaction.recordFailure(ErrContextClosed)
+		}
+		return Handle{}, ErrContextClosed
+	}
+	if pluginContext.transaction != nil && pluginContext.transaction.state == mountOpen {
+		return pluginContext.runtime.supervisor.mountDuringApply(
+			mountContext,
+			pluginContext,
+			instance,
+		)
+	}
+	pluginContext.runtime.state.RLock()
+	active := pluginContext.ownerFiber.state == FiberActive
+	pluginContext.runtime.state.RUnlock()
+	if !active {
+		return Handle{}, ErrPluginNotActive
+	}
+	return pluginContext.runtime.supervisor.load(
+		mountContext,
+		pluginContext.ownerFiber,
+		pluginContext.scope,
+		instance,
+	)
+}
+
+// Scope is a visibility and routing node. The Fiber, not Scope, owns visible
+// Registry entries and Plugin lifecycle.
+type Scope struct {
+	runtime    *Runtime
+	ownerFiber *fiber
+	parent     *Scope
+	target     ScopeKey
+	label      string
+	mutex      sync.RWMutex
+	children   map[string]*Scope
+	closed     bool
+}
+
+func newFiberRootScope(
+	runtimeEngine *Runtime,
+	ownerFiber *fiber,
+	parentScope *Scope,
+) *Scope {
+	routingKey := ScopeKey{}
+	if parentScope != nil {
+		parentToken := parentScope.target.token
+		scopeDepth := 1
+		if parentToken != nil {
+			scopeDepth = parentToken.depth + 1
+		}
+		routingKey = ScopeKey{
+			token: &scopeToken{
+				parent: parentToken,
+				depth:  scopeDepth,
+			},
+		}
+	}
+	return &Scope{
+		runtime:    runtimeEngine,
+		ownerFiber: ownerFiber,
+		parent:     parentScope,
+		target:     routingKey,
+		children:   make(map[string]*Scope),
+	}
+}
+
+func newReplacementRootScope(
+	runtimeEngine *Runtime,
+	ownerFiber *fiber,
+	previousScope *Scope,
+) *Scope {
+	return &Scope{
+		runtime:    runtimeEngine,
+		ownerFiber: ownerFiber,
+		parent:     previousScope.parent,
+		target:     previousScope.target,
+		label:      previousScope.label,
+		children:   make(map[string]*Scope),
+	}
+}
+
+// Target returns the opaque routing identity of this Scope.
+func (ownerScope *Scope) Target() ScopeKey {
+	if ownerScope == nil {
 		return ScopeKey{}
 	}
-	return pluginScope.target
+	return ownerScope.target
 }
 
-// Child creates an effect-owned child Scope with a new opaque identity. The
-// returned disposer may end it early; parent teardown also disposes it.
-func (pluginScope *Scope) Child(label string) (*Scope, Disposer, error) {
-	if pluginScope == nil {
-		return nil, nil, errors.New("plugin: create child from nil scope")
+func (ownerScope *Scope) depth() int {
+	if ownerScope == nil || ownerScope.target.token == nil {
+		return 0
 	}
-	if strings.TrimSpace(label) == "" || label != strings.TrimSpace(label) {
-		return nil, nil, errors.New("plugin: child scope label must be non-empty and trimmed")
-	}
-	pluginScope.mu.Lock()
-	if pluginScope.closed {
-		pluginScope.mu.Unlock()
-		return nil, nil, errors.New("plugin: scope is closed")
-	}
-	if _, exists := pluginScope.children[label]; exists {
-		pluginScope.mu.Unlock()
-		return nil, nil, fmt.Errorf("plugin: child scope %q already exists", label)
-	}
-	descendant := &Scope{
-		owner: pluginScope.owner, record: pluginScope.record,
-		services: make(map[string]*serviceContribution), children: make(map[string]*Scope),
-		parent: pluginScope, target: ScopeKey{token: &scopeToken{parent: pluginScope.target.token}},
-		activated: pluginScope.activated,
-	}
-	pluginScope.children[label] = descendant
-	pluginScope.mu.Unlock()
-
-	releaseChild := func(closeContext context.Context) error {
-		cleanupErr := descendant.dispose(closeContext)
-		pluginScope.mu.Lock()
-		if pluginScope.children[label] == descendant {
-			delete(pluginScope.children, label)
-		}
-		pluginScope.mu.Unlock()
-		return cleanupErr
-	}
-	ownedRelease, err := pluginScope.own("scope:"+label, releaseChild)
-	if err != nil {
-		return nil, nil, errors.Join(err, releaseChild(context.Background()))
-	}
-	return descendant, ownedRelease, nil
+	return ownerScope.target.token.depth
 }
 
-// Own records an already-acquired resource in a Scope and returns its
-// idempotent early-release capability.
-func Own(pluginScope *Scope, label string, release Disposer) (Disposer, error) {
-	if pluginScope == nil {
-		return nil, errors.New("plugin: own effect on nil scope")
+func (ownerScope *Scope) isClosed() bool {
+	if ownerScope == nil {
+		return true
 	}
-	return pluginScope.own(label, release)
+	ownerScope.mutex.RLock()
+	closed := ownerScope.closed
+	ownerScope.mutex.RUnlock()
+	return closed
 }
 
-// Effect acquires a resource immediately and records its disposer in this
-// scope. If setup fails, no empty effect is retained.
-func (pluginScope *Scope) Effect(
-	requestContext context.Context,
-	label string,
-	setup func(context.Context) (Disposer, error),
-) error {
-	if setup == nil {
-		return errors.New("plugin: effect setup is nil")
+func scopePath(sourceScope *Scope) []*Scope {
+	lineage := make([]*Scope, 0)
+	for currentScope := sourceScope; currentScope != nil; currentScope = currentScope.parent {
+		lineage = append(lineage, currentScope)
 	}
-	release, err := setup(requestContext)
-	if err != nil {
-		return err
-	}
-	if release == nil {
-		return errors.New("plugin: effect setup returned a nil disposer")
-	}
-	_, err = pluginScope.own(label, release)
-	if err != nil {
-		return errors.Join(err, release(requestContext))
-	}
-	return nil
+	return lineage
 }
 
-func (pluginScope *Scope) own(label string, release Disposer) (Disposer, error) {
-	if release == nil {
-		return nil, errors.New("plugin: disposer is nil")
+func (ownerScope *Scope) closeTree() {
+	if ownerScope == nil {
+		return
 	}
-	pluginScope.mu.Lock()
-	defer pluginScope.mu.Unlock()
-	if pluginScope.closed {
-		return nil, errors.New("plugin: scope is closed")
+	ownerScope.mutex.Lock()
+	if ownerScope.closed {
+		ownerScope.mutex.Unlock()
+		return
 	}
-	effectEntry := &ownedEffect{label: label, release: release}
-	pluginScope.effects = append(pluginScope.effects, effectEntry)
-	return func(closeContext context.Context) error {
-		pluginScope.mu.Lock()
-		if effectEntry.released {
-			pluginScope.mu.Unlock()
-			return nil
-		}
-		effectEntry.released = true
-		pluginScope.mu.Unlock()
-		return effectEntry.release(closeContext)
-	}, nil
-}
-
-func (pluginScope *Scope) provide(definition ServiceRef, value any) (Disposer, error) {
-	if err := definition.validate(); err != nil {
-		return nil, err
+	ownerScope.closed = true
+	children := make([]*Scope, 0, len(ownerScope.children))
+	for _, nestedScope := range ownerScope.children {
+		children = append(children, nestedScope)
 	}
-	if pluginScope.parent != nil {
-		return nil, errors.New("plugin: child scopes cannot provide root services")
+	ownerScope.mutex.Unlock()
+	for _, nestedScope := range children {
+		nestedScope.closeTree()
 	}
-	if !containsRef(pluginScope.record.metadata.Provides, definition) {
-		return nil, fmt.Errorf("plugin: %s did not declare provided service %q", pluginScope.record.metadata.Name, definition.name)
-	}
-	pluginScope.mu.Lock()
-	if pluginScope.closed {
-		pluginScope.mu.Unlock()
-		return nil, errors.New("plugin: scope is closed")
-	}
-	if _, exists := pluginScope.services[definition.name]; exists {
-		pluginScope.mu.Unlock()
-		return nil, fmt.Errorf("plugin: %s provided service %q twice", pluginScope.record.metadata.Name, definition.name)
-	}
-	contribution := &serviceContribution{ref: definition, value: value, owned: true}
-	pluginScope.services[definition.name] = contribution
-	pluginScope.mu.Unlock()
-
-	release, err := pluginScope.own(
-		"provide:"+definition.name,
-		func(disposeContext context.Context) error {
-			pluginScope.mu.Lock()
-			withdrawLive := pluginScope.activated && !pluginScope.disposing
-			if contribution.owned {
-				delete(pluginScope.services, definition.name)
-				contribution.owned = false
-			}
-			pluginScope.mu.Unlock()
-			if withdrawLive {
-				return pluginScope.owner.withdrawService(disposeContext, pluginScope.record, definition, contribution)
-			}
-			return nil
-		},
-	)
-	if err != nil {
-		pluginScope.mu.Lock()
-		delete(pluginScope.services, definition.name)
-		pluginScope.mu.Unlock()
-		return nil, err
-	}
-	pluginScope.mu.Lock()
-	publishLive := pluginScope.activated && !pluginScope.disposing
-	pluginScope.mu.Unlock()
-	if publishLive {
-		if err := pluginScope.owner.publishService(context.Background(), pluginScope.record, contribution); err != nil {
-			return nil, errors.Join(err, release(context.Background()))
-		}
-	}
-	return release, nil
-}
-
-func (pluginScope *Scope) require(definition ServiceRef) (any, bool) {
-	if !containsRef(pluginScope.record.metadata.Requires, definition) && !containsRef(pluginScope.record.metadata.Optional, definition) {
-		panic(fmt.Sprintf("plugin: %s did not declare service dependency %q", pluginScope.record.metadata.Name, definition.name))
-	}
-	return pluginScope.owner.resolveService(definition)
-}
-
-func (pluginScope *Scope) addSubscription(listener eventSubscription) (Disposer, error) {
-	pluginScope.mu.Lock()
-	if pluginScope.closed {
-		pluginScope.mu.Unlock()
-		return nil, errors.New("plugin: scope is closed")
-	}
-	listenerMetadata := listener.listenerState()
-	listenerMetadata.owned = true
-	listenerMetadata.target = pluginScope.target
-	pluginScope.mu.Unlock()
-
-	registryScope := pluginScope.root()
-	registryScope.mu.Lock()
-	registryScope.subscriptions = append(registryScope.subscriptions, listener)
-	registryScope.mu.Unlock()
-	release, err := pluginScope.own("listen:"+listenerMetadata.ref.name, func(context.Context) error {
-		registryScope.mu.Lock()
-		defer registryScope.mu.Unlock()
-		listenerMetadata.owned = false
-		registryScope.subscriptions = slices.DeleteFunc(registryScope.subscriptions, func(candidate eventSubscription) bool {
-			return candidate == listener
-		})
-		return nil
-	})
-	if err != nil {
-		registryScope.mu.Lock()
-		listenerMetadata.owned = false
-		registryScope.subscriptions = slices.DeleteFunc(registryScope.subscriptions, func(candidate eventSubscription) bool {
-			return candidate == listener
-		})
-		registryScope.mu.Unlock()
-		return nil, err
-	}
-	return release, nil
-}
-
-func (pluginScope *Scope) root() *Scope {
-	rootScope := pluginScope
-	for rootScope.parent != nil {
-		rootScope = rootScope.parent
-	}
-	return rootScope
-}
-
-func (pluginScope *Scope) dispose(closeContext context.Context) error {
-	pluginScope.mu.Lock()
-	if pluginScope.closed {
-		pluginScope.mu.Unlock()
-		return nil
-	}
-	pluginScope.closed = true
-	pluginScope.disposing = true
-	pluginScope.activated = false
-	effects := append([]*ownedEffect(nil), pluginScope.effects...)
-	pluginScope.mu.Unlock()
-
-	var cleanupErr error
-	for index := len(effects) - 1; index >= 0; index-- {
-		effectEntry := effects[index]
-		pluginScope.mu.Lock()
-		if effectEntry.released {
-			pluginScope.mu.Unlock()
-			continue
-		}
-		effectEntry.released = true
-		pluginScope.mu.Unlock()
-		cleanupErr = errors.Join(cleanupErr, effectEntry.release(closeContext))
-	}
-	return cleanupErr
-}
-
-func (pluginScope *Scope) effectLabels() []string {
-	pluginScope.mu.Lock()
-	defer pluginScope.mu.Unlock()
-	labels := make([]string, 0, len(pluginScope.effects))
-	for _, effectEntry := range pluginScope.effects {
-		if !effectEntry.released {
-			labels = append(labels, effectEntry.label)
-		}
-	}
-	return labels
-}
-
-func containsRef(refs []ServiceRef, targetRef ServiceRef) bool {
-	for _, definition := range refs {
-		if definition.sameDefinition(targetRef) {
-			return true
-		}
-	}
-	return false
 }
