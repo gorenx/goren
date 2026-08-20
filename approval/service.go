@@ -11,47 +11,97 @@ import (
 	"github.com/gorenx/goren/systemprompt"
 )
 
-// RuntimeOptions supplies injectable identity generation for deterministic tests.
-type RuntimeOptions struct {
-	NewRequestID func() (RequestID, error)
+const policyContextName = "approval:policy"
+
+// Service owns approval policy, paired durable audit events, and the answerer
+// Waterfall for one Runtime Scope.
+type Service struct {
+	plugin.Base
+	name            string
+	root            bool
+	defaultPolicy   Policy
+	parent          Approval
+	prompts         systemprompt.Contributions
+	promptInstalled bool
 }
 
-type approvalService struct {
-	sourceScope   *plugin.Scope
-	defaultPolicy Policy
-	newRequestID  func() (RequestID, error)
+// New constructs the root Approval Plugin from validated configuration.
+func New(settings ValidatedConfig) *Service {
+	return &Service{
+		name:          PluginName,
+		root:          true,
+		defaultPolicy: settings.policy,
+	}
 }
 
-// New creates the Approval service and contributes its cache-safe policy context.
-func New(
-	requestContext context.Context,
-	sourceScope *plugin.Scope,
-	promptService systemprompt.SystemPrompt,
-	settings ValidatedConfig,
-	options RuntimeOptions,
-) (Approval, error) {
-	if requestContext == nil || sourceScope == nil || promptService == nil {
-		return nil, errors.New("approval: Context, Scope, and System Prompt are required")
+// NewOverlay constructs a child Approval layer. It inherits policy from the
+// nearest ancestor and starts answerer Waterfalls from its child Scope.
+func NewOverlay() *Service {
+	return &Service{
+		name: OverlayPluginName,
 	}
-	if !validPolicy(settings.policy) {
-		return nil, errors.New("approval: configuration was not validated")
+}
+
+// Manifest declares Approval, System Prompt contribution, and the ancestor
+// Approval required by an overlay.
+func (owner *Service) Manifest() plugin.Manifest {
+	requiredServices := []plugin.ServiceType{
+		plugin.ServiceOf[systemprompt.Contributions](),
 	}
-	newRequestID := options.NewRequestID
-	if newRequestID == nil {
-		newRequestID = mintRequestID
+	if !owner.root {
+		requiredServices = append(
+			requiredServices,
+			plugin.ServiceOf[Approval](),
+		)
 	}
-	owner := &approvalService{
-		sourceScope: sourceScope, defaultPolicy: settings.policy, newRequestID: newRequestID,
+	return plugin.Manifest{
+		Name: owner.name,
+		Provides: []plugin.ServiceType{
+			plugin.ServiceOf[Approval](),
+		},
+		Requires: requiredServices,
 	}
-	if _, err := promptService.Context(requestContext, sourceScope, systemprompt.PromptContext{
-		Name: "approval:policy", Order: 115,
-		Text: systemprompt.TextFunc(func(_ context.Context, assemblyContext systemprompt.AssembleContext) (string, error) {
+}
+
+// Apply resolves dependencies and installs the policy context owned by this
+// exact Approval layer.
+func (owner *Service) Apply(requestContext context.Context) error {
+	if err := requestContext.Err(); err != nil {
+		return err
+	}
+	if !validPolicy(owner.defaultPolicy) && owner.root {
+		return errors.New("approval: configuration was not validated")
+	}
+	if !owner.root {
+		parent, err := plugin.Require[Approval](owner)
+		if err != nil {
+			return err
+		}
+		owner.parent = parent
+	}
+	prompts, err := plugin.Require[systemprompt.Contributions](owner)
+	if err != nil {
+		return err
+	}
+	owner.prompts = prompts
+	if err := prompts.AddContext(requestContext, systemprompt.PromptContext{
+		Name:  policyContextName,
+		Order: 115,
+		Text: systemprompt.TextFunc(func(
+			providerContext context.Context,
+			assemblyContext systemprompt.AssembleContext,
+		) (string, error) {
+			if err := providerContext.Err(); err != nil {
+				return "", err
+			}
 			if assemblyContext.Session == nil {
 				return "", nil
 			}
-			selectedPolicy, err := owner.EffectivePolicy(assemblyContext.Session)
-			if err != nil {
-				return "", err
+			selectedPolicy, policyErr := owner.EffectivePolicy(
+				assemblyContext.Session,
+			)
+			if policyErr != nil {
+				return "", policyErr
 			}
 			if selectedPolicy == PolicyNever {
 				return neverPolicyText, nil
@@ -59,20 +109,41 @@ func New(
 			return askPolicyText, nil
 		}),
 	}); err != nil {
-		return nil, err
+		return err
 	}
-	return owner, nil
+	owner.promptInstalled = true
+	return nil
 }
 
-func (owner *approvalService) Request(requestContext context.Context, decisionRequest Request) (Outcome, error) {
-	if requestContext == nil || decisionRequest.Subject == nil || decisionRequest.Subject.SessionValue() == nil {
-		return "", errors.New("approval: Context, Agent, and Session are required")
+// Dispose removes the prompt entry owned by this Plugin. Runtime has already
+// hidden its Service contribution.
+func (owner *Service) Dispose(closeContext context.Context) error {
+	var disposeErr error
+	if owner.promptInstalled && owner.prompts != nil {
+		disposeErr = owner.prompts.RemoveContext(closeContext, policyContextName)
 	}
-	conversation := decisionRequest.Subject.SessionValue()
+	owner.promptInstalled = false
+	owner.prompts = nil
+	owner.parent = nil
+	return disposeErr
+}
+
+// Request writes the paired audit events around one policy/answerer decision.
+func (owner *Service) Request(
+	requestContext context.Context,
+	decisionInput Request,
+) (Outcome, error) {
+	if requestContext == nil || decisionInput.Subject == nil ||
+		decisionInput.Subject.SessionValue() == nil {
+		return "", errors.New("approval: Context, Subject, and Session are required")
+	}
+	conversation := decisionInput.Subject.SessionValue()
 	if !hasOpenTurn(conversation.Events()) {
-		return "", errors.New("approval: request outside an open turn; audit events must be turn-enclosed")
+		return "", errors.New(
+			"approval: request outside an open turn; audit events must be turn-enclosed",
+		)
 	}
-	identifier, err := owner.newRequestID()
+	identifier, err := mintRequestID()
 	if err != nil {
 		return "", fmt.Errorf("approval: mint request id: %w", err)
 	}
@@ -80,21 +151,30 @@ func (owner *approvalService) Request(requestContext context.Context, decisionRe
 		return "", errors.New("approval: minted request id is empty")
 	}
 	if _, err := session.AppendSerialized(conversation, AskedEvent, Asked{
-		ID: identifier, ToolName: decisionRequest.ToolName,
-		CallID: cloneCallID(decisionRequest.CallID), Reason: cloneString(decisionRequest.Reason),
+		ID:       identifier,
+		ToolName: decisionInput.ToolName,
+		CallID:   cloneCallID(decisionInput.CallID),
+		Reason:   cloneString(decisionInput.Reason),
 	}); err != nil {
 		return "", err
 	}
-	decisionOutcome := owner.decide(requestContext, decisionRequest, conversation)
-	if _, err := session.AppendSerialized(conversation, DecidedEvent, Decided{ID: identifier, Outcome: decisionOutcome}); err != nil {
+	decisionOutcome := owner.decide(
+		requestContext,
+		decisionInput,
+		conversation,
+	)
+	if _, err := session.AppendSerialized(conversation, DecidedEvent, Decided{
+		ID:      identifier,
+		Outcome: decisionOutcome,
+	}); err != nil {
 		return "", err
 	}
 	return decisionOutcome, nil
 }
 
-func (owner *approvalService) decide(
+func (owner *Service) decide(
 	requestContext context.Context,
-	decisionRequest Request,
+	decisionInput Request,
 	conversation *session.Session,
 ) Outcome {
 	if requestContext.Err() != nil {
@@ -113,11 +193,18 @@ func (owner *approvalService) decide(
 	}
 	settled := make(chan result, 1)
 	go func() {
-		decisionOutcome, dispatchErr := plugin.WaterfallScopedFrom(
-			requestContext, owner.sourceScope, decisionRequest.Subject.ScopeValue().Target(), requestEvent, decisionRequest,
-			func(context.Context, Request) (Outcome, error) { return OutcomeUnavailable, nil },
+		resolvedDecision, dispatchErr := plugin.Run(
+			requestContext,
+			owner,
+			DecisionRequest{
+				Request: decisionInput,
+			},
+			decisionTerminal{},
 		)
-		settled <- result{outcome: decisionOutcome, err: dispatchErr}
+		settled <- result{
+			outcome: resolvedDecision.Outcome,
+			err:     dispatchErr,
+		}
 	}()
 	select {
 	case <-requestContext.Done():
@@ -128,6 +215,17 @@ func (owner *approvalService) decide(
 		}
 		return completed.outcome
 	}
+}
+
+type decisionTerminal struct{}
+
+func (decisionTerminal) Execute(
+	context.Context,
+	DecisionRequest,
+) (Decision, error) {
+	return Decision{
+		Outcome: OutcomeUnavailable,
+	}, nil
 }
 
 func hasOpenTurn(entries []session.Event) bool {
@@ -151,6 +249,10 @@ func mintRequestID() (RequestID, error) {
 	raw[8] = (raw[8] & 0x3f) | 0x80
 	return RequestID(fmt.Sprintf(
 		"%08x-%04x-%04x-%04x-%012x",
-		raw[0:4], raw[4:6], raw[6:8], raw[8:10], raw[10:16],
+		raw[0:4],
+		raw[4:6],
+		raw[6:8],
+		raw[8:10],
+		raw[10:16],
 	)), nil
 }
