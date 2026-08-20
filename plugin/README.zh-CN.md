@@ -7,12 +7,14 @@ plugin 是 Goren 的 typed Plugin 运行时底座，负责 Plugin/Fiber 生命�
 本包负责：
 
 - 接收已构造的静态 Plugin；
-- 校验 Manifest 与对象实现是否一致；
+- 递归读取 `Manifest.Children`，在 Runtime 准入前构造完整声明树；
+- 校验完整树的对象身份、循环、Scope placement、Manifest 与对象实现；
 - 按 required Service 依赖激活 Fiber；
-- 自动发布和撤销 Service、Event、Waterfall contribution；
+- 自动发布和撤销 Service、Event、Waterfall binding；
 - 实现 Service 最近 Provider、Event current-to-root、Waterfall root-to-current 路由；
-- 管理 Child Fiber、replacement、dependent-first stop 和 diagnostics；
-- 通过 Runtime 私有 Effect stack 统一回滚。
+- 管理 Child Fiber、完整 Main 子树 replacement、dependent-first stop 和 diagnostics；
+- 在 Runtime 内部管理 Event/Waterfall 调用准入与排空；
+- 对失败的完整挂载批次执行依赖安全的逆序回滚。
 
 本包不读取配置、不查询 Catalog、不构造业务 Plugin，不拥有业务事务、Event Store、HTTP、数据库或 Goren 业务模型。factory 子包属于构造边界，不进入 Runtime 核心流程。
 
@@ -22,26 +24,36 @@ plugin 是 Goren 的 typed Plugin 运行时底座，负责 Plugin/Fiber 生命�
 flowchart LR
     Source[raw config] --> Factory[Factory strict decode validate]
     Factory --> Instance[Plugin instance]
-    Instance --> Manifest[Manifest validation]
-    Manifest --> Settlement[Service settlement]
-    Settlement --> Apply[Plugin Apply]
-    Apply --> Publish[Runtime publishes contributions]
-    Publish --> Active[Active Fiber]
+    Instance --> Tree[plugin recursively snapshots Manifest tree]
+    Tree --> Validate[validate complete topology and bindings]
+    Validate --> Main[activate all Main Fibers]
+    Main --> Ready{all Main active?}
+    Ready -->|yes| Commit[activate Commit Fibers]
+    Ready -->|no| Rollback[rollback complete tree]
+    Commit --> Active[return root Handle]
 ```
 
 ```mermaid
 flowchart RL
-    Stop[Unload Replace Shutdown] --> Dependents[stop dependents and children]
-    Dependents --> Lifetime[cancel lifetime]
-    Lifetime --> Contributions[withdraw Waterfall Event Service]
-    Contributions --> Dispose[Plugin Dispose]
+    Stop[Unload Shutdown] --> Admission[close Event and Waterfall admission]
+    Admission --> Drain[wait admitted calls]
+    Drain --> Commit[dispose Commit Fibers first]
+    Commit --> Dependents[dispose dependents and children]
+    Dependents --> Lifetime[cancel lifetime and withdraw bindings]
+    Lifetime --> Dispose[Plugin Dispose]
 ```
 
 Plugin 对象嵌入 Base，并实现 Manifest、Apply 和幂等 Dispose。对象可以按需同时实现业务 Service interface、统一 EventObserver 或 WaterfallMiddleware，也可以在 Manifest 中声明自己持有的 WaterfallMiddleware 策略对象；不创建只负责 Runtime 转发的包装 Plugin。
 
+组合型 Plugin 创建并持有自己的子 Plugin 实例，通过 `Manifest.Children` 声明 `SameScope` 或 `NestedScope` 关系。调用方只把根 Plugin 交给 `Start`、`Mount`、`MountChild` 或 `MountScopedChild`；公开 API 不暴露 Tree 或 Tree Builder。plugin 包对每个实例只读取一次 Manifest，完成整棵树校验后才进入 Runtime 准入。
+
+普通子节点使用 `ActivationMain`。只有必须等整棵普通树就绪后才能执行、且卸载时必须先撤销的外部可见生命周期，才使用 `ActivationCommit`。Commit Plugin 不能提供 Service，避免普通依赖反向依赖提交阶段。包含 Commit 节点的子树不允许 `Replace`，因为框架无法原子回滚任意外部副作用；不含 Commit 的 Main 子树必须保持逐节点 Manifest、顺序、Scope placement 和子拓扑契约，Runtime 会先在私有 Service 视图中准备完整候选树，再一次性切换 binding。
+
 一个监听事件的 Plugin 只实现一个 `ObserveEvent(context.Context, Event)` 入口，并在 Manifest 中通过多个 `EventOf[E]()` 声明它真正接受的 Event 类型。Runtime 只投递这些显式声明的类型；同一 Plugin 重复声明同一 Event 类型会在接纳阶段失败。Plugin 在统一入口中使用 type switch 分派到自己的具名业务方法。
 
-Runtime 根据 Manifest 自动注册贡献。插件作者不接收 Context，不调用 Define、Provide、Observe、Use，也不保存 Registration 或 disposer。
+Runtime 根据 Manifest 自动注册 binding。插件作者不接收暴露 Scope 或注册表的 Runtime Context 对象，不调用 Define、Provide、Observe、Use，也不保存 Registration 或 disposer。
+
+Plugin 的 `Apply`、`Dispose`、Event Observer 和 Waterfall 调用不能同步修改同一个 Runtime 的拓扑；Runtime 返回 `ErrTopologyMutation`，而不是等待形成重入死锁。普通业务调用可以在回调返回后发起动态挂载。Event 和 Waterfall 的调用租约完全由 Runtime 私有管理，业务 Plugin 不调用显式准入或排空方法。
 
 ## 子包
 
@@ -57,6 +69,6 @@ Runtime 根据 Manifest 自动注册贡献。插件作者不接收 Context，不
 
 ## 生命周期与失败
 
-Runtime.Start 先接纳完整静态集合，再按 Service 依赖结算；所有 Plugin Active 后才成功。Apply 或贡献发布失败会取消 lifetime、撤销贡献、调用 Dispose，并回滚本批已经激活的 Plugin。
+Runtime.Start 先构造并校验所有根 Plugin 的完整声明树，再按 Service 依赖激活 Main Fiber；只有全部 Main Fiber Active 后才执行 Commit Fiber。Apply 或 binding 发布失败会取消 lifetime、撤销 binding、调用 Dispose，并回滚本批完整树。
 
-Event 和 Waterfall 只在 Registry 锁内取得快照，调用 Observer、Middleware、Action 或 reporter 前释放锁。Runtime 在 Dispose 前取消 plugin.Lifetime(instance)，使后台任务能够先退出。
+Event 和 Waterfall 在 Runtime view 内同时取得路由快照和 Fiber 调用租约，随后释放 view 再调用 Observer、Middleware、Action 或 reporter。Unload、Replace 和 Shutdown 先撤销 binding、关闭新调用准入并等待已准入调用结束，再执行 Dispose。Runtime 在 Dispose 前取消 `plugin.Lifetime(instance)`，使后台任务能够先退出。
