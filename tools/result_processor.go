@@ -142,9 +142,15 @@ func (processor *resultProcessor) finish(
 	outcome ToolExecutionResult,
 	finalizer ContentFinalizer,
 ) ToolExecutionResult {
-	finalOutcome, err := outcome.cloneResult()
-	if err != nil {
-		finalOutcome = errorResult(err)
+	var finalOutcome ToolExecutionResult
+	if outcome == nil {
+		finalOutcome = errorResult(errors.New("tools: staged result is nil"))
+	} else {
+		var err error
+		finalOutcome, err = outcome.cloneResult()
+		if err != nil {
+			finalOutcome = errorResult(err)
+		}
 	}
 	if finalizer != nil {
 		content, replace, finalizeErr := invokeFinalizer(

@@ -93,6 +93,25 @@ type scheduledExecutionState struct {
 	finalizer      ContentFinalizer
 
 	mu               sync.Mutex
+	phase            scheduledExecutionPhase
+	bodyInvoked      bool
+	concludesTurn    bool
+	deferredContexts []llm.UserMessage
+}
+
+type scheduledExecutionPhase uint8
+
+const (
+	executionUnprepared scheduledExecutionPhase = iota
+	executionPreparedForDispatch
+	executionDispatching
+	executionPreparedForPost
+	executionPreparedForFinish
+	executionFinalizing
+	executionCompleted
+)
+
+type executionStateSnapshot struct {
 	bodyInvoked      bool
 	concludesTurn    bool
 	deferredContexts []llm.UserMessage
@@ -114,27 +133,108 @@ func newScheduledExecutionState(
 
 func (state *scheduledExecutionState) deferContext(message llm.UserMessage) {
 	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.phase != executionDispatching {
+		return
+	}
 	state.deferredContexts = append(state.deferredContexts, message)
-	state.mu.Unlock()
 }
 
 func (state *scheduledExecutionState) concludeTurn() {
 	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.phase != executionDispatching {
+		return
+	}
 	state.concludesTurn = true
-	state.mu.Unlock()
 }
 
 func (state *scheduledExecutionState) markBodyInvoked() {
 	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.phase != executionDispatching {
+		return
+	}
 	state.bodyInvoked = true
-	state.mu.Unlock()
 }
 
-func (state *scheduledExecutionState) executionOutcome() (bool, bool, []llm.UserMessage) {
+func (state *scheduledExecutionState) snapshot() executionStateSnapshot {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	deferred, _ := cloneUserMessages(state.deferredContexts)
-	return state.bodyInvoked, state.concludesTurn, deferred
+	return executionStateSnapshot{
+		bodyInvoked:      state.bodyInvoked,
+		concludesTurn:    state.concludesTurn,
+		deferredContexts: deferred,
+	}
+}
+
+func (state *scheduledExecutionState) prepareForDispatch() {
+	state.mu.Lock()
+	state.phase = executionPreparedForDispatch
+	state.mu.Unlock()
+}
+
+func (state *scheduledExecutionState) prepareForPost() {
+	state.mu.Lock()
+	state.phase = executionPreparedForPost
+	state.mu.Unlock()
+}
+
+func (state *scheduledExecutionState) prepareForFinish() {
+	state.mu.Lock()
+	state.phase = executionPreparedForFinish
+	state.mu.Unlock()
+}
+
+func (state *scheduledExecutionState) beginDispatch() error {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.phase != executionPreparedForDispatch {
+		return errors.New("tools: execution is not prepared for dispatch")
+	}
+	state.phase = executionDispatching
+	return nil
+}
+
+func (state *scheduledExecutionState) completeDispatch() {
+	state.mu.Lock()
+	if state.phase == executionDispatching {
+		state.phase = executionPreparedForPost
+	}
+	state.mu.Unlock()
+}
+
+func (state *scheduledExecutionState) beginFinalize() error {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.phase != executionPreparedForPost {
+		return errors.New(
+			"tools: execution is not prepared for post-execute finalization",
+		)
+	}
+	state.phase = executionFinalizing
+	return nil
+}
+
+func (state *scheduledExecutionState) beginFinish() error {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.phase != executionPreparedForFinish {
+		return errors.New(
+			"tools: execution is not prepared for terminal finalization",
+		)
+	}
+	state.phase = executionFinalizing
+	return nil
+}
+
+func (state *scheduledExecutionState) completeFinalization() {
+	state.mu.Lock()
+	if state.phase == executionFinalizing {
+		state.phase = executionCompleted
+	}
+	state.mu.Unlock()
 }
 
 func createExecution(input ToolExecutionInput) (ToolExecution, error) {
@@ -217,8 +317,7 @@ type ScheduledToolPreparation struct {
 
 // ScheduledToolDispatch is one settled overlapping dispatch outcome.
 type ScheduledToolDispatch struct {
-	NeedsPost bool
-	Result    ToolExecutionResult
+	Result ToolExecutionResult
 }
 
 // ToolExecutionScheduler separates ordered policy/finalization from the only

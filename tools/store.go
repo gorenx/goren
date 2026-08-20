@@ -26,43 +26,26 @@ func (table *toolTable) add(entry *registeredTool) error {
 	return nil
 }
 
-func (table *toolTable) remove(name string) (*registeredTool, int, bool) {
+func (table *toolTable) remove(name string) bool {
 	entry := table.byName[name]
 	if entry == nil {
-		return nil, 0, false
+		return false
 	}
 	delete(table.byName, name)
-	entryIndex := -1
 	for index, candidate := range table.order {
 		if candidate == name {
-			entryIndex = index
+			table.order = append(
+				table.order[:index],
+				table.order[index+1:]...,
+			)
 			break
 		}
-	}
-	if entryIndex >= 0 {
-		table.order = append(
-			table.order[:entryIndex],
-			table.order[entryIndex+1:]...,
-		)
 	}
 	if len(table.byName) == 0 {
 		table.byName = nil
 		table.order = nil
 	}
-	return entry, entryIndex, true
-}
-
-func (table *toolTable) restore(entry *registeredTool, entryIndex int) error {
-	if err := table.add(entry); err != nil {
-		return err
-	}
-	lastIndex := len(table.order) - 1
-	if entryIndex < 0 || entryIndex >= lastIndex {
-		return nil
-	}
-	copy(table.order[entryIndex+1:], table.order[entryIndex:lastIndex])
-	table.order[entryIndex] = entry.registrationName
-	return nil
+	return true
 }
 
 func (table *toolTable) entries() []*registeredTool {
@@ -95,16 +78,6 @@ func (filter compiledRestriction) admits(name string) bool {
 		return false
 	}
 	return true
-}
-
-type restrictionEntry struct {
-	name   string
-	filter compiledRestriction
-}
-
-type guardEntry struct {
-	name   string
-	policy ToolGuard
 }
 
 type toolLayerSnapshot struct {
@@ -142,19 +115,10 @@ func (storage *toolStore) addTool(entry *registeredTool) error {
 
 func (storage *toolStore) removeTool(
 	name string,
-) (*registeredTool, int, bool) {
+) bool {
 	storage.mutex.Lock()
 	defer storage.mutex.Unlock()
 	return storage.tools.remove(name)
-}
-
-func (storage *toolStore) restoreTool(
-	entry *registeredTool,
-	entryIndex int,
-) error {
-	storage.mutex.Lock()
-	defer storage.mutex.Unlock()
-	return storage.tools.restore(entry, entryIndex)
 }
 
 func (storage *toolStore) addRestriction(
@@ -179,41 +143,20 @@ func (storage *toolStore) addRestriction(
 
 func (storage *toolStore) removeRestriction(
 	name string,
-) (compiledRestriction, int, bool) {
+) bool {
 	storage.mutex.Lock()
 	defer storage.mutex.Unlock()
-	filter, found := storage.restrictions[name]
+	_, found := storage.restrictions[name]
 	if !found {
-		return compiledRestriction{}, 0, false
+		return false
 	}
 	delete(storage.restrictions, name)
-	entryIndex := removeOrderedName(&storage.restrictionOrder, name)
+	removeOrderedName(&storage.restrictionOrder, name)
 	if len(storage.restrictions) == 0 {
 		storage.restrictions = nil
 		storage.restrictionOrder = nil
 	}
-	return filter, entryIndex, true
-}
-
-func (storage *toolStore) restoreRestriction(
-	name string,
-	filter compiledRestriction,
-	entryIndex int,
-) error {
-	storage.mutex.Lock()
-	defer storage.mutex.Unlock()
-	if storage.restrictions == nil {
-		storage.restrictions = make(map[string]compiledRestriction)
-	}
-	if _, exists := storage.restrictions[name]; exists {
-		return fmt.Errorf(
-			"tools: restriction %q is already registered in this layer",
-			name,
-		)
-	}
-	storage.restrictions[name] = filter
-	insertOrderedName(&storage.restrictionOrder, name, entryIndex)
-	return nil
+	return true
 }
 
 func (storage *toolStore) addGuard(name string, policy ToolGuard) error {
@@ -340,25 +283,14 @@ func guardPolicies(layers []toolLayerSnapshot) []ToolGuard {
 	return policies
 }
 
-func removeOrderedName(order *[]string, name string) int {
+func removeOrderedName(order *[]string, name string) {
 	for index, candidate := range *order {
 		if candidate != name {
 			continue
 		}
 		*order = append((*order)[:index], (*order)[index+1:]...)
-		return index
-	}
-	return -1
-}
-
-func insertOrderedName(order *[]string, name string, entryIndex int) {
-	if entryIndex < 0 || entryIndex >= len(*order) {
-		*order = append(*order, name)
 		return
 	}
-	*order = append(*order, "")
-	copy((*order)[entryIndex+1:], (*order)[entryIndex:])
-	(*order)[entryIndex] = name
 }
 
 func sortedNames(names map[string]struct{}) []string {

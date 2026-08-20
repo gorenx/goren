@@ -36,8 +36,14 @@ func (outcome *ToolExecutionSuccess) cloneResult() (ToolExecutionResult, error) 
 		Meta:               meta,
 		AdditionalContexts: additionalContexts,
 		ConcludesTurn:      outcome.ConcludesTurn,
-		owner:              outcome.owner,
 	}, nil
+}
+
+func (outcome *canonicalToolExecutionSuccess) cloneResult() (ToolExecutionResult, error) {
+	if outcome == nil || outcome.normalized == nil {
+		return nil, errors.New("tools: nil canonical success result")
+	}
+	return outcome.normalized.cloneResult()
 }
 
 func (outcome *ToolExecutionFailure) cloneResult() (ToolExecutionResult, error) {
@@ -149,7 +155,6 @@ func replaceResultContent(outcome ToolExecutionResult, content []llm.ContentBloc
 			Meta:               retained.Meta,
 			AdditionalContexts: retained.AdditionalContexts,
 			ConcludesTurn:      retained.ConcludesTurn,
-			owner:              retained.owner,
 		}
 	case *ToolExecutionFailure:
 		return &ToolExecutionFailure{
@@ -265,6 +270,35 @@ func appendAdditionalContexts(outcome ToolExecutionResult, additions []llm.UserM
 		retained.AdditionalContexts = append(retained.AdditionalContexts, additionalContexts...)
 	case *ToolExecutionFailure:
 		retained.AdditionalContexts = append(retained.AdditionalContexts, additionalContexts...)
+	default:
+		return nil, errors.New("tools: unsupported result implementation")
+	}
+	return detached, nil
+}
+
+func prependAdditionalContexts(
+	outcome ToolExecutionResult,
+	additions []llm.UserMessage,
+) (ToolExecutionResult, error) {
+	detached, err := outcome.cloneResult()
+	if err != nil {
+		return nil, err
+	}
+	additionalContexts, err := cloneUserMessages(additions)
+	if err != nil {
+		return nil, err
+	}
+	switch retained := detached.(type) {
+	case *ToolExecutionSuccess:
+		retained.AdditionalContexts = append(
+			additionalContexts,
+			retained.AdditionalContexts...,
+		)
+	case *ToolExecutionFailure:
+		retained.AdditionalContexts = append(
+			additionalContexts,
+			retained.AdditionalContexts...,
+		)
 	default:
 		return nil, errors.New("tools: unsupported result implementation")
 	}

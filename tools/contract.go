@@ -38,10 +38,10 @@ const (
 // capability consumed by Agent Loop.
 type ToolRuntime interface {
 	plugin.Service
-	ToolExecutionScheduler
 	Get(string) (ToolDefinition, bool)
 	Schemas() []llm.ToolSchema
 	ExecutionMode(ToolExecutionInput) ToolExecutionMode
+	Scheduler() ToolExecutionScheduler
 	Execute(context.Context, ToolExecutionInput) ToolExecutionResult
 }
 

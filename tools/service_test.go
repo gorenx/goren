@@ -6,6 +6,7 @@ import (
 	"errors"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gorenx/goren/llm"
@@ -161,6 +162,21 @@ func TestServiceExposesFocusedCapabilities(t *testing.T) {
 	if _, matches := any(service).(tools.PolicyRegistry); !matches {
 		t.Fatal("Service does not implement PolicyRegistry")
 	}
+	if _, matches := any(service).(tools.ToolExecutionScheduler); matches {
+		t.Fatal("Service exposes staged scheduling outside Scheduler")
+	}
+	if service.Scheduler() != nil {
+		t.Fatal("inactive Service returned a Scheduler")
+	}
+	if err := service.AddGuard(
+		context.Background(),
+		"inactive",
+		tools.ToolGuardFunc(func(tools.ToolExecution) (string, bool) {
+			return "", false
+		}),
+	); !errors.Is(err, plugin.ErrPluginNotActive) {
+		t.Fatalf("inactive AddGuard error = %v", err)
+	}
 	serviceManifest := service.Manifest()
 	actual := make([]string, 0, len(serviceManifest.Provides))
 	for _, provided := range serviceManifest.Provides {
@@ -303,6 +319,44 @@ func TestRegistryChangeFailureRollsBackMutation(t *testing.T) {
 	}
 	if _, found := state.service.Get("rolled-back"); found {
 		t.Fatal("failed Registry mutation leaked")
+	}
+}
+
+func TestRegistryRemovalSurvivesChangeObserverFailure(t *testing.T) {
+	failure := errors.New("change observer failed during removal")
+	var notifications atomic.Int32
+	observer := &eventObserverPlugin{
+		name: "fail-tool-removal-change",
+		subscriptions: []plugin.EventSubscription{
+			plugin.EventOf[tools.RegistryChanged](),
+		},
+		observe: func(context.Context, plugin.Event) error {
+			if notifications.Add(1) == 2 {
+				return failure
+			}
+			return nil
+		},
+	}
+	state := newToolsFixture(t, observer)
+	if err := state.service.AddTool(
+		context.Background(),
+		objectTool(
+			"removed-despite-observer",
+			"",
+			tools.ExecutorFunc(passThroughBody),
+		),
+	); err != nil {
+		t.Fatal(err)
+	}
+	err := state.service.RemoveTool(
+		context.Background(),
+		"removed-despite-observer",
+	)
+	if !errors.Is(err, failure) {
+		t.Fatalf("RemoveTool error = %v", err)
+	}
+	if _, found := state.service.Get("removed-despite-observer"); found {
+		t.Fatal("failed removal notification restored a stopped contribution")
 	}
 }
 

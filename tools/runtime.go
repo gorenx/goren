@@ -56,20 +56,14 @@ func (coordinator *executionRuntime) Execute(
 		if dispatchErr != nil {
 			return errorResult(dispatchErr)
 		}
-		if dispatched.NeedsPost {
-			finalOutcome, finalizeErr := coordinator.Finalize(
-				preparation.Execution,
-				dispatched.Result,
-			)
-			if finalizeErr != nil {
-				return errorResult(finalizeErr)
-			}
-			return finalOutcome
-		}
-		return coordinator.Finish(
+		finalOutcome, finalizeErr := coordinator.Finalize(
 			preparation.Execution,
 			dispatched.Result,
 		)
+		if finalizeErr != nil {
+			return errorResult(finalizeErr)
+		}
+		return finalOutcome
 	case ScheduledPostResult:
 		finalOutcome, finalizeErr := coordinator.Finalize(
 			preparation.Execution,
@@ -151,6 +145,7 @@ func (coordinator *executionRuntime) Prepare(
 	if requestContext.Err() != nil {
 		return postPreparation(toolCall, abortedResult(false)), nil
 	}
+	toolCall.state.prepareForDispatch()
 	return ScheduledToolPreparation{
 		Stage:     ScheduledDispatch,
 		Execution: toolCall,
@@ -163,10 +158,12 @@ func (coordinator *executionRuntime) Dispatch(
 ) (ScheduledToolDispatch, error) {
 	state, err := coordinator.executionState(toolCall)
 	if err != nil {
-		return ScheduledToolDispatch{
-			Result: errorResult(err),
-		}, nil
+		return ScheduledToolDispatch{}, err
 	}
+	if err := state.beginDispatch(); err != nil {
+		return ScheduledToolDispatch{}, err
+	}
+	defer state.completeDispatch()
 	outcome, err := coordinator.dispatcher.dispatch(
 		state.requestContext,
 		toolCall,
@@ -178,8 +175,7 @@ func (coordinator *executionRuntime) Dispatch(
 		}, nil
 	}
 	return ScheduledToolDispatch{
-		NeedsPost: true,
-		Result:    outcome,
+		Result: outcome,
 	}, nil
 }
 
@@ -191,8 +187,12 @@ func (coordinator *executionRuntime) Finalize(
 ) (ToolExecutionResult, error) {
 	state, err := coordinator.executionState(toolCall)
 	if err != nil {
-		return errorResult(err), nil
+		return nil, err
 	}
+	if err := state.beginFinalize(); err != nil {
+		return nil, err
+	}
+	defer state.completeFinalization()
 	postOutcome, err := coordinator.results.post(
 		state.requestContext,
 		toolCall,
@@ -207,9 +207,12 @@ func (coordinator *executionRuntime) Finalize(
 			state.finalizer,
 		), nil
 	}
-	bodyInvoked, _, _ := state.executionOutcome()
+	stateSnapshot := state.snapshot()
 	if state.requestContext.Err() != nil && !postOutcome.Failed() {
-		postOutcome = abortedResult(bodyInvoked, postOutcome)
+		postOutcome = abortedResult(
+			stateSnapshot.bodyInvoked,
+			postOutcome,
+		)
 	}
 	return coordinator.results.finish(
 		state.requestContext,
@@ -228,6 +231,10 @@ func (coordinator *executionRuntime) Finish(
 	if err != nil {
 		return errorResult(err)
 	}
+	if err := state.beginFinish(); err != nil {
+		return errorResult(err)
+	}
+	defer state.completeFinalization()
 	return coordinator.results.finish(
 		state.requestContext,
 		toolCall,
@@ -253,6 +260,7 @@ func finalPreparation(
 	toolCall ToolExecution,
 	outcome ToolExecutionResult,
 ) ScheduledToolPreparation {
+	toolCall.state.prepareForFinish()
 	return ScheduledToolPreparation{
 		Stage:     ScheduledFinalResult,
 		Execution: toolCall,
@@ -264,6 +272,7 @@ func postPreparation(
 	toolCall ToolExecution,
 	outcome ToolExecutionResult,
 ) ScheduledToolPreparation {
+	toolCall.state.prepareForPost()
 	return ScheduledToolPreparation{
 		Stage:     ScheduledPostResult,
 		Execution: toolCall,

@@ -162,7 +162,9 @@ func (subject *ReactLoopAgent) runToolGroup(
 					return
 				}
 				settlement.slot = &settledToolSlot{
-					execution: preparation.Execution, outcome: dispatched.Result, needsPost: dispatched.NeedsPost,
+					execution: preparation.Execution,
+					outcome:   dispatched.Result,
+					needsPost: true,
 				}
 			}()
 		case tools.ScheduledPostResult:

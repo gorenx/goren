@@ -281,6 +281,62 @@ func TestPostPolicyCanReplaceValueOrBlock(t *testing.T) {
 	}
 }
 
+func TestPostValueReplacementPreservesTurnConclusion(t *testing.T) {
+	policy := &waterfallPlugin[
+		tools.PostExecuteRequest,
+		tools.PostExecuteOutcome,
+	]{
+		name: "replace-concluding-value",
+		middleware: waterfallFunc[
+			tools.PostExecuteRequest,
+			tools.PostExecuteOutcome,
+		](func(
+			context.Context,
+			tools.PostExecuteRequest,
+			plugin.WaterfallAction[
+				tools.PostExecuteRequest,
+				tools.PostExecuteOutcome,
+			],
+		) (tools.PostExecuteOutcome, error) {
+			return tools.PostExecuteOutcome{
+				Decision: tools.ReplaceValueDecision{
+					Value: json.RawMessage(`{"replacement":true}`),
+				},
+			}, nil
+		}),
+	}
+	state := newToolsFixture(t, policy)
+	if err := state.service.AddTool(
+		context.Background(),
+		objectTool(
+			"concluding",
+			"",
+			tools.ExecutorFunc(func(
+				arguments json.RawMessage,
+				runContext tools.ToolRunContext,
+			) (json.RawMessage, error) {
+				runContext.ConcludeTurn()
+				return arguments, nil
+			}),
+		),
+	); err != nil {
+		t.Fatal(err)
+	}
+	outcome := state.service.Execute(
+		context.Background(),
+		tools.ToolExecutionInput{
+			CallID:    "concluding-1",
+			Name:      "concluding",
+			Arguments: json.RawMessage(`{"original":true}`),
+		},
+	)
+	succeeded, matches := outcome.(*tools.ToolExecutionSuccess)
+	if !matches || !succeeded.ConcludesTurn ||
+		string(succeeded.Value) != `{"replacement":true}` {
+		t.Fatalf("replacement outcome = %#v", outcome)
+	}
+}
+
 func TestBestEffortResultFailureDoesNotReplaceToolOutcome(t *testing.T) {
 	observerFailure := errors.New("observer failed")
 	observer := &eventObserverPlugin{
