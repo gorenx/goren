@@ -348,6 +348,31 @@ func (*failingObserver) ObserveEvent(context.Context, plugin.Event) error {
 	return errors.New("observer failed")
 }
 
+type panickingObserver struct {
+	plugin.Base
+}
+
+func (*panickingObserver) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "panicking-observer",
+		Events: []plugin.EventSubscription{
+			plugin.EventOf[bestEffortFact](),
+		},
+	}
+}
+
+func (*panickingObserver) Apply(context.Context) error {
+	return nil
+}
+
+func (*panickingObserver) Dispose(context.Context) error {
+	return nil
+}
+
+func (*panickingObserver) ObserveEvent(context.Context, plugin.Event) error {
+	panic("observer panic")
+}
+
 type failureReporter struct {
 	mutex    sync.Mutex
 	failures []plugin.EventFailure
@@ -390,6 +415,39 @@ func TestBestEffortEventReportsAndSuppressesObserverFailure(t *testing.T) {
 	defer reporter.mutex.Unlock()
 	if len(reporter.failures) != 1 {
 		t.Fatalf("reported failures = %d, want 1", len(reporter.failures))
+	}
+}
+
+func TestBestEffortEventContainsAndReportsObserverPanic(t *testing.T) {
+	t.Parallel()
+	reporter := &failureReporter{}
+	publisher := &eventPublisherPlugin{
+		name: "best-effort-panic-publisher",
+	}
+	runtimeEngine := plugin.NewRuntime(
+		plugin.RuntimeSettings{
+			EventFailures: reporter,
+		},
+	)
+	if _, err := runtimeEngine.Start(
+		context.Background(),
+		&panickingObserver{},
+		publisher,
+	); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := plugin.Publish(
+		context.Background(),
+		publisher,
+		bestEffortFact{},
+	); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	reporter.mutex.Lock()
+	defer reporter.mutex.Unlock()
+	if len(reporter.failures) != 1 ||
+		!strings.Contains(reporter.failures[0].Error.Error(), "observer panic") {
+		t.Fatalf("reported failures = %#v", reporter.failures)
 	}
 }
 

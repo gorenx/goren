@@ -202,7 +202,7 @@ func Publish[E Event](
 	switch reference.policy {
 	case DeliveryOrdered:
 		for _, observer := range observers {
-			if err := observer.ObserveEvent(requestContext, fact); err != nil {
+			if err := invokeEventObserver(requestContext, fact, observer); err != nil {
 				return err
 			}
 		}
@@ -244,7 +244,7 @@ func observeEventParallel(
 	for observerIndex, selectedObserver := range observers {
 		go func(selectedIndex int, observer EventObserver) {
 			defer deliveries.Done()
-			failures[selectedIndex] = observer.ObserveEvent(requestContext, fact)
+			failures[selectedIndex] = invokeEventObserver(requestContext, fact, observer)
 		}(observerIndex, selectedObserver)
 	}
 	deliveries.Wait()
@@ -257,4 +257,22 @@ func observeEventParallel(
 		return nil
 	}
 	return errors.Join(failures...)
+}
+
+func invokeEventObserver(
+	requestContext context.Context,
+	fact Event,
+	observer EventObserver,
+) (observerErr error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			switch failure := recovered.(type) {
+			case error:
+				observerErr = fmt.Errorf("plugin: Event observer panicked: %w", failure)
+			default:
+				observerErr = fmt.Errorf("plugin: Event observer panicked: %v", failure)
+			}
+		}
+	}()
+	return observer.ObserveEvent(requestContext, fact)
 }
