@@ -11,6 +11,9 @@ import (
 
 const ServiceName = "userQuestions"
 
+// PluginName is the canonical Harness Plugin name.
+const PluginName = "@deepseek-ai/dsh-user-questions"
+
 // Option is one selectable user-facing answer.
 type Option struct {
 	Label       string  `json:"label"`
@@ -62,28 +65,12 @@ type Provider interface {
 	Ask(context.Context, Request) (Answer, error)
 }
 
-// AgentRegistryResolver performs the source-compatible live lookup of the
-// optional Agent registry when an ask supplies a calling Agent.
-type AgentRegistryResolver interface {
-	ResolveAgentRegistry() (agent.Registry, bool)
-}
-
-// AgentRegistryResolverFunc adapts one live registry lookup.
-type AgentRegistryResolverFunc func() (agent.Registry, bool)
-
-// ResolveAgentRegistry invokes the adapted lookup.
-func (operation AgentRegistryResolverFunc) ResolveAgentRegistry() (agent.Registry, bool) {
-	return operation()
-}
-
 // UserQuestions is the provider-owned question capability.
 type UserQuestions interface {
-	RegisterProvider(context.Context, *plugin.Scope, Provider) (plugin.Disposer, error)
+	plugin.Service
+	RegisterProvider(Provider) (*ProviderHandle, error)
 	Ask(context.Context, Request) (Answer, error)
 }
-
-// Service is the canonical User Questions service definition.
-var Service = plugin.DefineService[UserQuestions](ServiceName)
 
 func cloneQuestions(entries []Question) []Question {
 	if entries == nil {
@@ -112,7 +99,9 @@ func cloneQuestions(entries []Question) []Question {
 }
 
 func cloneAnswer(source Answer) Answer {
-	detached := Answer{Answers: make([]AnswerItem, len(source.Answers))}
+	detached := Answer{
+		Answers: make([]AnswerItem, len(source.Answers)),
+	}
 	if source.Answers == nil {
 		detached.Answers = nil
 	}
