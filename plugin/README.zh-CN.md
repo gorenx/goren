@@ -1,48 +1,61 @@
 # Plugin Runtime
 
-`plugin` 是 Goren 的 typed Plugin 运行时底座，拥有 Plugin/Fiber 生命周期、Scope 路由、Service 依赖结算、Waterfall 洋葱扩展、Event 事实分发、Effect 回滚和 Replacement。详细框架语义见[Go Cordis 风格通用 Plugin 事件领域框架设计](../zh-CN/Go_Cordis_风格插件事件领域运行时设计方案.md)，Goren 端的模块归属见[09 Plugin Runtime 与 Server Assembly](../zh-CN/09-plugin-runtime-and-server-assembly.md)，实施状态只以[08 实施进度](../zh-CN/08-implementation-progress.md)为准。
+plugin 是 Goren 的 typed Plugin 运行时底座，负责 Plugin/Fiber 生命周期、Scope 可见性、Service 依赖、Waterfall 洋葱扩展、Event 事实分发和逆序回滚。总体设计见[Go Cordis 风格通用 Plugin 事件领域框架设计](../zh-CN/Go_Cordis_风格插件事件领域运行时设计方案.md)，实施状态以[08 实施进度](../zh-CN/08-implementation-progress.md)为准。
 
-## 职责边界
+## 职责
 
 本包负责：
 
-- 加载静态链接的 `Plugin`，按 typed Service hard/optional 依赖启动 Fiber；
-- 用 Mount Transaction 原子发布 Service、Waterfall、Event registration；
-- 用 Scope 实现 Service 最近 Provider、Waterfall root-to-current 和 Event current-to-root 路由；
-- 在 Provider 丢失、卸载、关闭和替换时按实际依赖图停止 Consumer；
-- 用一个 Runtime 私有的 Fiber Effect stack 统一回收 Plugin lifecycle、registration 和 Child Plugin，并提供不可变状态诊断。
+- 接收已构造的静态 Plugin；
+- 校验 Manifest 与对象实现是否一致；
+- 按 required Service 依赖激活 Fiber；
+- 自动发布和撤销 Service、Event、Waterfall contribution；
+- 实现 Service 最近 Provider、Event current-to-root、Waterfall root-to-current 路由；
+- 管理 Child Fiber、replacement、dependent-first stop 和 diagnostics；
+- 通过 Runtime 私有 Effect stack 统一回滚。
 
-本包不读取配置、不查 Catalog、不构造业务 Plugin，不拥有领域事务、Event Store、HTTP、数据库或 Goren 业务模型。`configuration` 与 `factory` 子包属于构造边界，不进入 Runtime 核心流程。
+本包不读取配置、不查询 Catalog、不构造业务 Plugin，不拥有业务事务、Event Store、HTTP、数据库或 Goren 业务模型。configuration 与 factory 子包属于构造边界，不进入 Runtime 核心流程。
 
-## 运行模型
+## 运行流程
 
 ```mermaid
 flowchart LR
-    Configuration[typed configuration] --> Factory[optional Factory]
-    Factory --> Plugin[Plugin instance]
-    Plugin --> Runtime[Runtime declaration]
-    Runtime --> Settlement[Service settlement]
-    Settlement --> Fiber[Fiber Apply]
-    Fiber --> Mount[Mount Transaction]
-    Mount --> Effect[unified Effect stack]
-    Effect --> Lifecycle[Plugin Dispose]
-    Effect --> Service[Service Binding withdrawal]
-    Effect --> Waterfall[Middleware withdrawal]
-    Effect --> Event[Observer withdrawal]
-    Effect --> Child[Child Plugin stop]
+    Config[typed config] --> Factory[Factory]
+    Factory --> Instance[Plugin instance]
+    Instance --> Manifest[Manifest validation]
+    Manifest --> Settlement[Service settlement]
+    Settlement --> Apply[Plugin Apply]
+    Apply --> Publish[Runtime publishes contributions]
+    Publish --> Active[Active Fiber]
 ```
 
-插件统一实现 `Manifest`、`Apply` 与幂等 `Dispose`。Service Provider、Service Consumer、Waterfall Middleware 和 Event Observer 按需使用，不要求每个插件实现全部角色；没有自身资源的插件让 `Dispose` 直接返回 `nil`。
+```mermaid
+flowchart RL
+    Stop[Unload Replace Shutdown] --> Dependents[stop dependents and children]
+    Dependents --> Lifetime[cancel lifetime]
+    Lifetime --> Contributions[withdraw Waterfall Event Service]
+    Contributions --> Dispose[Plugin Dispose]
+```
 
-以下示例集中在 `example` 子目录，彼此独立且只依赖 `plugin` 的公开 API：
+Plugin 对象嵌入 Base，并实现 Manifest、Apply 和幂等 Dispose。对象可以按需同时实现业务 Service interface、EventObserver 或 WaterfallMiddleware，不创建只负责 Runtime 转发的包装 Plugin。
 
-- [Service](example/service_test.go)：定义、提供并获取 typed Service，同时展示 Go 接口嵌入和结构体组合；
-- [Scope Service 继承](example/scope_inheritance_test.go)：Child Fiber 继承祖先 Provider，并由最近 Provider 覆盖；
-- [Service 与 Event](example/service_event_test.go)：Service 完成状态变更后发布 Event，独立 Listener Plugin 注册 Observer；
-- [Waterfall](example/waterfall_test.go)：登记 Middleware 并执行洋葱链。
+Runtime 根据 Manifest 自动注册贡献。插件作者不接收 Context，不调用 Define、Provide、Observe、Use，也不保存 Registration 或 disposer。
+
+## 子包
+
+- configuration：不可变配置 Document 与严格 typed JSON 解码；
+- factory：Configurator、Factory 和静态 Catalog；
+- example：只使用 plugin 公共 API 的独立示例。
+
+## 示例
+
+- [Service](example/service_test.go)：Plugin 对象直接实现并提供业务 Service；
+- [Scope 继承](example/scope_inheritance_test.go)：Child Fiber 继承并覆盖祖先 Service；
+- [Service 与 Event](example/service_event_test.go)：Service owner 发布事实，Observer Plugin 自动绑定；
+- [Waterfall](example/waterfall_test.go)：Middleware Plugin 自动绑定并执行洋葱链。
 
 ## 生命周期与失败
 
-hard Service 不可用时 declaration 保持 Waiting，不调用 `Apply` 或 `Dispose`。Runtime 在 `Apply` 前先登记 Plugin lifecycle effect，`Apply` 期间的 registration 保持暂存；任一步失败都会零发布、撤销 registration，并调用 Plugin `Dispose` 清理部分启动状态。`Apply` 返回后注册关闭，动态缩短生命周期必须使用 Active Fiber 加载的 Child Plugin。Child Plugin 本身进入父 Fiber 私有 effect stack；Fiber 停止时先停止实际 Consumer、取消 lifetime，再逆序撤销 registration，最后调用 Plugin `Dispose`。
+Runtime.Start 先接纳完整静态集合，再按 Service 依赖结算；所有 Plugin Active 后才成功。Apply 或贡献发布失败会取消 lifetime、撤销贡献、调用 Dispose，并回滚本批已经激活的 Plugin。
 
-Waterfall 和 Event 分发只在 Registry 锁内取得快照，执行 Middleware、Terminal、Observer 或 Plugin 代码前必须释放锁。调用方取消通过请求 `context.Context` 传播，后台资源通过 `Context.Lifetime()` 传播；无效 Context 返回已经取消的 lifetime，不会产生孤儿任务。
+Event 和 Waterfall 只在 Registry 锁内取得快照，调用 Observer、Middleware、Action 或 reporter 前释放锁。Runtime 在 Dispose 前取消 plugin.Lifetime(instance)，使后台任务能够先退出。
