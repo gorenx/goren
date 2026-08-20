@@ -102,3 +102,45 @@ func acquireFiberCalls(fibers ...*fiber) (func(), bool) {
 		}
 	}, true
 }
+
+// invocationContext links one admitted dispatch to every participating Fiber
+// lifetime. Runtime cancellation can therefore release long-running handlers
+// before their call gates are drained and Dispose is invoked.
+//
+// Caller holds Runtime.view while participant lifetimes are captured.
+func (runtimeEngine *Runtime) invocationContext(
+	requestContext context.Context,
+	participants ...*fiber,
+) (context.Context, func()) {
+	callContext, cancelInvocation := context.WithCancelCause(
+		runtimeEngine.callbackContext(requestContext),
+	)
+	stopCallbacks := make([]func() bool, 0, len(participants))
+	seen := make(map[*fiber]struct{}, len(participants))
+	for _, running := range participants {
+		if running == nil || running.lifetime == nil {
+			continue
+		}
+		if _, duplicate := seen[running]; duplicate {
+			continue
+		}
+		seen[running] = struct{}{}
+		fiberLifetime := running.lifetime
+		stopCallbacks = append(
+			stopCallbacks,
+			context.AfterFunc(fiberLifetime, func() {
+				cause := context.Cause(fiberLifetime)
+				if cause == nil {
+					cause = ErrPluginNotActive
+				}
+				cancelInvocation(cause)
+			}),
+		)
+	}
+	return callContext, func() {
+		for _, stopCallback := range stopCallbacks {
+			stopCallback()
+		}
+		cancelInvocation(context.Canceled)
+	}
+}
