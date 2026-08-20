@@ -54,34 +54,27 @@ type installedSelection struct {
 // AgentSessions serializes activation per Session and owns the model-selection
 // reference installed into each API-addressable ordinary Agent.
 type AgentSessions struct {
-	sourceScope *plugin.Scope
 	agents      agent.Registry
 	sessions    session.LiveStore
 	persistence sesspersist.Persistence
 	defaults    agentdefaultmodel.DefaultModel
 	directories DirectoryProvisioner
 
-	creationMutex sync.Mutex
-	creations     map[session.SessionID]*creationResult
-	selectionMu   sync.Mutex
-	selections    map[session.SessionID]installedSelection
+	creationMutex       sync.Mutex
+	creations           map[session.SessionID]*creationResult
+	selectionMountMutex sync.Mutex
+	selectionMu         sync.Mutex
+	selections          map[session.SessionID]installedSelection
 }
 
-// NewAgentSessions creates the state owner and installs selection cleanup on
-// the source Scope.
-func NewAgentSessions(
-	sourceScope *plugin.Scope,
-	ports AgentSessionDependencies,
-) (*AgentSessions, error) {
-	if sourceScope == nil {
-		return nil, errors.New("apiproxy/session: Scope is required")
-	}
+// NewAgentSessions creates the state owner. Each model-selection entry is
+// owned by an Agent child Plugin and removes itself during Agent teardown.
+func NewAgentSessions(ports AgentSessionDependencies) (*AgentSessions, error) {
 	if ports.Agents == nil || ports.Sessions == nil || ports.Persistence == nil ||
 		ports.Defaults == nil || ports.Directories == nil {
 		return nil, errors.New("apiproxy/session: Agent Session dependencies are incomplete")
 	}
 	owner := &AgentSessions{
-		sourceScope: sourceScope,
 		agents:      ports.Agents,
 		sessions:    ports.Sessions,
 		persistence: ports.Persistence,
@@ -89,9 +82,6 @@ func NewAgentSessions(
 		directories: ports.Directories,
 		creations:   make(map[session.SessionID]*creationResult),
 		selections:  make(map[session.SessionID]installedSelection),
-	}
-	if _, err := agent.OnDisposed(sourceScope, owner.observeAgentDisposed); err != nil {
-		return nil, err
 	}
 	return owner, nil
 }
@@ -166,12 +156,24 @@ func (owner *AgentSessions) Ordinary(
 	return subject, nil
 }
 
-// Selection returns the stateful model selection installed in an Agent Scope.
-func (owner *AgentSessions) Selection(subject agent.Agent) (*agent.ModelSelectionRef, error) {
+// Selection returns the stateful model selection installed in the Agent's
+// private Plugin tree, mounting it atomically when adopting an existing Agent.
+func (owner *AgentSessions) Selection(
+	requestContext context.Context,
+	subject agent.Agent,
+) (*agent.ModelSelectionRef, error) {
+	if requestContext == nil || subject == nil {
+		return nil, errors.New(
+			"apiproxy/session: Context and Agent are required for model selection",
+		)
+	}
+	owner.selectionMountMutex.Lock()
+	defer owner.selectionMountMutex.Unlock()
 	identifier := subject.ID()
 	owner.selectionMu.Lock()
-	defer owner.selectionMu.Unlock()
-	if installed, found := owner.selections[identifier]; found && installed.subject == subject {
+	installed, found := owner.selections[identifier]
+	owner.selectionMu.Unlock()
+	if found && sameAgent(installed.subject, subject) {
 		return installed.ref, nil
 	}
 	selectionRef := agent.NewModelSelectionRef(
@@ -179,10 +181,13 @@ func (owner *AgentSessions) Selection(subject agent.Agent) (*agent.ModelSelectio
 			return owner.loggedOrDefaultSelection(subject.SessionValue())
 		},
 	)
-	if _, err := agent.InstallModelSelection(subject.ScopeValue(), selectionRef); err != nil {
+	extension, err := newSelectionExtension(owner, selectionRef)
+	if err != nil {
 		return nil, err
 	}
-	owner.selections[identifier] = installedSelection{subject: subject, ref: selectionRef}
+	if _, err = plugin.MountChild(requestContext, subject, extension); err != nil {
+		return nil, err
+	}
 	return selectionRef, nil
 }
 
@@ -231,17 +236,22 @@ func (owner *AgentSessions) createOrAdopt(
 		selected := owner.defaults.CurrentSelection()
 		return selected, selected.Provider != "" && selected.Model != "", nil
 	})
-	setup := agent.SetupFunc(func(_ context.Context, agentScope *plugin.Scope) (agent.SetupCommit, error) {
-		_, err := agent.InstallModelSelection(agentScope, selectionRef)
+	extension, err := newSelectionExtension(owner, selectionRef)
+	if err != nil {
 		return nil, err
-	})
-	handle, err := owner.agents.Create(requestContext, owner.sourceScope, agent.CreateOptions{
+	}
+	handle, err := owner.agents.Create(requestContext, agent.CreateOptions{
 		SessionID: identifier,
-		Metadata:  session.Metadata{CWD: &workingDirectory},
-		AgentOptions: agent.Options{
-			Provider: defaultSelection.Provider, Model: defaultSelection.Model,
+		Metadata: session.Metadata{
+			CWD: &workingDirectory,
 		},
-		Setup: setup,
+		AgentOptions: agent.Options{
+			Provider: defaultSelection.Provider,
+			Model:    defaultSelection.Model,
+		},
+		Extensions: []plugin.Plugin{
+			extension,
+		},
 	})
 	if err != nil {
 		if subject, found := owner.agents.Get(identifier); found {
@@ -249,9 +259,6 @@ func (owner *AgentSessions) createOrAdopt(
 		}
 		return nil, err
 	}
-	owner.selectionMu.Lock()
-	owner.selections[identifier] = installedSelection{subject: handle.Subject, ref: selectionRef}
-	owner.selectionMu.Unlock()
 	return handle.Subject, nil
 }
 
@@ -291,12 +298,16 @@ func (owner *AgentSessions) resumeCold(
 		}
 		return owner.loggedOrDefaultSelection(conversation)
 	})
-	setup := agent.SetupFunc(func(_ context.Context, agentScope *plugin.Scope) (agent.SetupCommit, error) {
-		_, err := agent.InstallModelSelection(agentScope, selectionRef)
+	extension, err := newSelectionExtension(owner, selectionRef)
+	if err != nil {
 		return nil, err
-	})
-	handle, err := owner.agents.Resume(requestContext, owner.sourceScope, agent.ResumeOptions{
-		SessionID: identifier, AgentOptions: loopOptions, Setup: setup,
+	}
+	handle, err := owner.agents.Resume(requestContext, agent.ResumeOptions{
+		SessionID:    identifier,
+		AgentOptions: loopOptions,
+		Extensions: []plugin.Plugin{
+			extension,
+		},
 	})
 	if err != nil {
 		if subject, found := owner.agents.Get(identifier); found {
@@ -304,9 +315,6 @@ func (owner *AgentSessions) resumeCold(
 		}
 		return nil, err
 	}
-	owner.selectionMu.Lock()
-	owner.selections[identifier] = installedSelection{subject: handle.Subject, ref: selectionRef}
-	owner.selectionMu.Unlock()
 	return handle.Subject, nil
 }
 
@@ -362,22 +370,63 @@ func (owner *AgentSessions) loggedOrDefaultSelection(
 	return agent.ModelSelection{}, false, nil
 }
 
-func (owner *AgentSessions) observeAgentDisposed(_ context.Context, subject agent.Agent) error {
+func (owner *AgentSessions) installSelection(
+	subject agent.Agent,
+	selectionRef *agent.ModelSelectionRef,
+) error {
+	if subject == nil || selectionRef == nil {
+		return errors.New("apiproxy/session: model selection binding is incomplete")
+	}
 	owner.selectionMu.Lock()
-	if installed, found := owner.selections[subject.ID()]; found && installed.subject == subject {
+	defer owner.selectionMu.Unlock()
+	if installed, found := owner.selections[subject.ID()]; found {
+		if sameAgent(installed.subject, subject) && installed.ref == selectionRef {
+			return nil
+		}
+		return fmt.Errorf(
+			"apiproxy/session: Agent %q already has a model selection binding",
+			subject.ID(),
+		)
+	}
+	owner.selections[subject.ID()] = installedSelection{
+		subject: subject,
+		ref:     selectionRef,
+	}
+	return nil
+}
+
+func (owner *AgentSessions) removeSelection(
+	subject agent.Agent,
+	selectionRef *agent.ModelSelectionRef,
+) {
+	if subject == nil || selectionRef == nil {
+		return
+	}
+	owner.selectionMu.Lock()
+	installed, found := owner.selections[subject.ID()]
+	if found && sameAgent(installed.subject, subject) && installed.ref == selectionRef {
 		delete(owner.selections, subject.ID())
 	}
 	owner.selectionMu.Unlock()
-	return nil
+}
+
+func sameAgent(leftSubject agent.Agent, rightSubject agent.Agent) bool {
+	return leftSubject != nil &&
+		rightSubject != nil &&
+		leftSubject.RuntimePlugin() != nil &&
+		leftSubject.RuntimePlugin() == rightSubject.RuntimePlugin()
 }
 
 func metadataFromHeader(header session.Header) session.Metadata {
 	createdAt := header.CreatedAt
 	return session.Metadata{
-		CreatedAt: &createdAt, CWD: cloneStringPointer(header.CWD),
-		ParentSession: cloneSessionIDPointer(header.ParentSession), SeedLength: cloneInt64Pointer(header.SeedLength),
-		Origin: header.Origin, DelegationDepth: cloneInt64Pointer(header.DelegationDepth),
-		AgentPreset: cloneStringPointer(header.AgentPreset),
+		CreatedAt:       &createdAt,
+		CWD:             cloneStringPointer(header.CWD),
+		ParentSession:   cloneSessionIDPointer(header.ParentSession),
+		SeedLength:      cloneInt64Pointer(header.SeedLength),
+		Origin:          header.Origin,
+		DelegationDepth: cloneInt64Pointer(header.DelegationDepth),
+		AgentPreset:     cloneStringPointer(header.AgentPreset),
 	}
 }
 

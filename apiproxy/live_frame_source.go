@@ -31,17 +31,12 @@ type LiveFrameSource struct {
 	hub         *liveFrameHub
 }
 
-// NewLiveFrameSource installs source-owned observers and returns the downlink
-// state object.
+// NewLiveFrameSource constructs the downlink state object. The owning API
+// Proxy Plugin declares and routes all observed Events.
 func NewLiveFrameSource(
-	requestContext context.Context,
-	sourceScope *plugin.Scope,
 	ports LiveFrameDependencies,
 	settings LiveFrameOptions,
 ) (*LiveFrameSource, error) {
-	if requestContext == nil || sourceScope == nil {
-		return nil, errors.New("apiproxy: Live Frame Source Context and Scope are required")
-	}
 	if ports.Sessions == nil || ports.Projections == nil {
 		return nil, errors.New("apiproxy: Live Frame Source dependencies are incomplete")
 	}
@@ -50,47 +45,54 @@ func NewLiveFrameSource(
 		newRPC = mintFrameRPCID
 	}
 	owner := &LiveFrameSource{
-		sessions: ports.Sessions, projections: ports.Projections,
-		hub: newLiveFrameHub(newRPC),
-	}
-	if err := owner.installObservers(sourceScope); err != nil {
-		return nil, err
-	}
-	if _, err := plugin.Own(sourceScope, "apiProxy.liveFrameSource()", owner.close); err != nil {
-		return nil, err
-	}
-	if err := requestContext.Err(); err != nil {
-		return nil, err
+		sessions:    ports.Sessions,
+		projections: ports.Projections,
+		hub:         newLiveFrameHub(newRPC),
 	}
 	return owner, nil
 }
 
-func (owner *LiveFrameSource) installObservers(sourceScope *plugin.Scope) error {
-	if _, err := session.OnEvent(sourceScope, owner.observeSessionEvent); err != nil {
-		return err
-	}
-	if _, err := session.OnCreated(sourceScope, owner.observeSessionCreated); err != nil {
-		return err
-	}
-	if _, err := session.OnDisposed(sourceScope, owner.observeSessionDisposed); err != nil {
-		return err
-	}
-	if _, err := agent.OnStatus(sourceScope, owner.observeAgentStatus); err != nil {
-		return err
-	}
-	if _, err := agent.OnError(sourceScope, owner.observeAgentError); err != nil {
-		return err
-	}
-	_, err := owner.projections.OnChanged(
-		sourceScope,
-		sessionprojection.ChangeListenerFunc(owner.observeProjectionChange),
-	)
-	return err
+// Close terminates both downlink feeds and all current subscribers.
+func (owner *LiveFrameSource) Close() {
+	owner.hub.close()
 }
 
-func (owner *LiveFrameSource) close(context.Context) error {
-	owner.hub.close()
-	return nil
+// ObserveEvent projects every Event declared by the owning API Proxy Plugin.
+func (owner *LiveFrameSource) ObserveEvent(
+	requestContext context.Context,
+	fact plugin.Event,
+) error {
+	switch observed := fact.(type) {
+	case session.SessionEventAppended:
+		return owner.observeSessionEvent(
+			requestContext,
+			observed.Conversation,
+			observed.Committed,
+		)
+	case session.SessionCreated:
+		return owner.observeSessionCreated(
+			requestContext,
+			observed.Conversation,
+		)
+	case session.SessionDisposed:
+		return owner.observeSessionDisposed(
+			requestContext,
+			observed.Conversation,
+		)
+	case agent.StatusChanged:
+		return owner.observeAgentStatus(
+			requestContext,
+			observed.Subject,
+			observed.Status,
+		)
+	case agent.AgentError:
+		return owner.observeAgentError(requestContext, observed)
+	case sessionprojection.ProjectionChanged:
+		owner.observeProjectionChange(observed.Change)
+		return nil
+	default:
+		return nil
+	}
 }
 
 // Mux streams per-session baselines and later committed changes.
@@ -172,6 +174,6 @@ func (owner *LiveFrameSource) observeAgentStatus(
 	return owner.hub.agentStatus(subject.ID(), status == agent.StatusRunning)
 }
 
-func (owner *LiveFrameSource) observeAgentError(_ context.Context, notice agent.ErrorNotice) error {
+func (owner *LiveFrameSource) observeAgentError(_ context.Context, notice agent.AgentError) error {
 	return owner.hub.agentError(notice.Subject.ID(), notice.Err)
 }
