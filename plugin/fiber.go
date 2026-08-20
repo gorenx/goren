@@ -105,6 +105,7 @@ func (runtimeEngine *Runtime) admit(
 
 func (runtimeEngine *Runtime) reconcile(reconcileContext context.Context) error {
 	runtimeEngine.prepareStopped()
+	refreshedOptional := make(map[*mountedPlugin]struct{})
 	for {
 		progress := false
 		for _, mounted := range runtimeEngine.mounts {
@@ -142,10 +143,66 @@ func (runtimeEngine *Runtime) reconcile(reconcileContext context.Context) error 
 			}
 			progress = true
 		}
+		staleOptional := runtimeEngine.staleOptionalConsumers()
+		if len(staleOptional) != 0 {
+			visited := make(map[*fiber]struct{})
+			var refreshErr error
+			for _, ownerFiber := range staleOptional {
+				if _, repeated := refreshedOptional[ownerFiber.mount]; repeated {
+					return fmt.Errorf(
+						"plugin: optional Service dependency cycle while reactivating %s",
+						ownerFiber.manifest.name,
+					)
+				}
+				refreshedOptional[ownerFiber.mount] = struct{}{}
+				refreshErr = errors.Join(
+					refreshErr,
+					runtimeEngine.stopFiberWithDependents(
+						reconcileContext,
+						ownerFiber,
+						visited,
+					),
+				)
+			}
+			runtimeEngine.prepareStopped()
+			if refreshErr != nil {
+				return refreshErr
+			}
+			progress = true
+		}
 		if !progress {
 			return nil
 		}
 	}
+}
+
+func (runtimeEngine *Runtime) staleOptionalConsumers() []*fiber {
+	runtimeEngine.state.RLock()
+	defer runtimeEngine.state.RUnlock()
+	stale := make([]*fiber, 0)
+	for _, mounted := range runtimeEngine.mounts {
+		ownerFiber := mounted.current
+		if mounted.removed || ownerFiber == nil ||
+			ownerFiber.state != FiberActive {
+			continue
+		}
+		for _, reference := range ownerFiber.manifest.optional {
+			resolved, _ := runtimeEngine.services.resolve(
+				reference,
+				ownerFiber.scope,
+			)
+			current := ownerFiber.dependencies[reference.key]
+			if current == nil && resolved == nil {
+				continue
+			}
+			if current != nil && current.binding == resolved {
+				continue
+			}
+			stale = append(stale, ownerFiber)
+			break
+		}
+	}
+	return stale
 }
 
 func (runtimeEngine *Runtime) resolveDependencies(
