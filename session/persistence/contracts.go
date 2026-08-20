@@ -42,6 +42,7 @@ type RawArtifact struct {
 // not observe whether its SessionLogStore uses a JSONL, SQLite, or other
 // Backend adapter.
 type Persistence interface {
+	plugin.Service
 	Locate(session.Header) (Location, bool)
 	SupportsRawArtifacts() bool
 	ReadRaw(context.Context, session.SessionID) (RawArtifact, bool, error)
@@ -55,8 +56,25 @@ type Persistence interface {
 	ListSnapshots(context.Context) ([]Snapshot, error)
 }
 
-// Service is the canonical persistence Service Definition.
-var Service = plugin.DefineService[Persistence]("sessionPersistence")
+const PluginName = "@deepseek-ai/dsh-session-persistence"
+
+// BackendOpener acquires one configured storage Backend during Plugin Apply.
+type BackendOpener interface {
+	OpenBackend(context.Context) (Backend, error)
+}
+
+// BackgroundWriteFailure identifies one failed asynchronous durability batch.
+type BackgroundWriteFailure struct {
+	BackendName string
+	SessionID   session.SessionID
+	Error       error
+}
+
+// BackgroundWriteFailureReporter receives failures outside a caller-owned
+// flush boundary.
+type BackgroundWriteFailureReporter interface {
+	ReportBackgroundWriteFailure(BackgroundWriteFailure)
+}
 
 // RepairMarker is opaque backend state required to remove a torn physical tail.
 type RepairMarker interface {

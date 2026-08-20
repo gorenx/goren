@@ -2,19 +2,26 @@ package session
 
 import "sync"
 
+// PreparationLease owns provider state reserved for one unpublished Session.
+type PreparationLease interface {
+	Release()
+}
+
 // Preparation owns one exact unpublished Session returned by a persistence
 // provider. Release is idempotent; publication may consume the provider state
 // first, in which case the callback becomes a no-op.
 type Preparation struct {
 	conversation *Session
-	cleanup      func()
+	lease        PreparationLease
 	once         sync.Once
 }
 
-// NewPreparation wraps an unpublished Session and an optional provider-state
-// release callback.
-func NewPreparation(conversation *Session, cleanup func()) *Preparation {
-	return &Preparation{conversation: conversation, cleanup: cleanup}
+// NewPreparation associates an unpublished Session with its provider lease.
+func NewPreparation(conversation *Session, lease PreparationLease) *Preparation {
+	return &Preparation{
+		conversation: conversation,
+		lease:        lease,
+	}
 }
 
 // UnpublishedSession returns the exact Session that must be published.
@@ -31,8 +38,8 @@ func (owned *Preparation) Dispose() {
 		return
 	}
 	owned.once.Do(func() {
-		if owned.cleanup != nil {
-			owned.cleanup()
+		if owned.lease != nil {
+			owned.lease.Release()
 		}
 	})
 }

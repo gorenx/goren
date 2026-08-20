@@ -21,7 +21,7 @@ const (
 type SessionLogStoreOptions struct {
 	WriteBatchMaxDelay       time.Duration
 	PreparedSessionCacheSize int
-	ObserverError            func(error)
+	BackgroundWriteFailures  BackgroundWriteFailureReporter
 }
 
 type durableState struct {
@@ -40,11 +40,12 @@ type liveSessionState struct {
 // writes per Session, validates cold logs, and applies recovery decisions while
 // delegating physical storage to Backend.
 type SessionLogStore struct {
-	sourceScope *plugin.Scope
-	sessions    session.LiveStore
-	storage     Backend
-	delay       time.Duration
-	reporter    func(error)
+	plugin.Base
+	opener   BackendOpener
+	sessions session.LiveStore
+	storage  Backend
+	delay    time.Duration
+	reporter BackgroundWriteFailureReporter
 
 	closeMutex   sync.Mutex
 	closed       bool
@@ -57,16 +58,14 @@ type SessionLogStore struct {
 	operations   *sessionGates
 }
 
-// NewSessionLogStore installs the live Session write path around a storage-only Backend.
+// NewSessionLogStore constructs the durable Session Service Plugin without
+// acquiring the configured Backend.
 func NewSessionLogStore(
-	requestContext context.Context,
-	sourceScope *plugin.Scope,
-	sessions session.LiveStore,
-	storage Backend,
+	opener BackendOpener,
 	settings SessionLogStoreOptions,
 ) (*SessionLogStore, error) {
-	if requestContext == nil || sourceScope == nil || sessions == nil || storage == nil {
-		return nil, errors.New("session persistence: Context, Scope, Session Store, and Backend are required")
+	if opener == nil {
+		return nil, errors.New("session persistence: BackendOpener is required")
 	}
 	delay := settings.WriteBatchMaxDelay
 	if delay == 0 {
@@ -86,38 +85,93 @@ func NewSessionLogStore(
 	if err != nil {
 		return nil, fmt.Errorf("session persistence: create prepared Session cache: %w", err)
 	}
-	reporter := settings.ObserverError
-	if reporter == nil {
-		reporter = func(error) {}
+	if settings.BackgroundWriteFailures == nil {
+		return nil, errors.New("session persistence: background write failure reporter is required")
 	}
 	owner := &SessionLogStore{
-		sourceScope: sourceScope, sessions: sessions, storage: storage, delay: delay, reporter: reporter,
-		durable: newDurableSessions(), writes: newLiveWrites(), preparations: preparations,
-		operations: newSessionGates(), closeDone: make(chan struct{}),
+		opener:       opener,
+		delay:        delay,
+		reporter:     settings.BackgroundWriteFailures,
+		durable:      newDurableSessions(),
+		writes:       newLiveWrites(),
+		preparations: preparations,
+		operations:   newSessionGates(),
+		closeDone:    make(chan struct{}),
 	}
-	// Register the final drain before listeners. Scope teardown is LIFO, so
-	// listener admission closes before pending writes drain and storage closes.
-	if _, err := plugin.Own(sourceScope, storage.BackendName()+" write path", owner.close); err != nil {
-		return nil, err
+	return owner, nil
+}
+
+// Manifest declares durable Session Service ownership and observed lifecycle.
+func (*SessionLogStore) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: PluginName,
+		Provides: []plugin.ServiceType{
+			plugin.ServiceOf[Persistence](),
+		},
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[session.LiveStore](),
+		},
+		Events: []plugin.EventSubscription{
+			plugin.EventOf[session.SessionCreated](),
+			plugin.EventOf[session.SessionEventAppended](),
+			plugin.EventOf[session.SessionFlushRequested](),
+			plugin.EventOf[session.SessionDisposed](),
+		},
 	}
-	if _, err := session.OnCreated(sourceScope, owner.onCreated); err != nil {
-		return nil, err
+}
+
+// Apply acquires the Backend and attaches any Sessions already live.
+func (owner *SessionLogStore) Apply(requestContext context.Context) error {
+	if err := requestContext.Err(); err != nil {
+		return err
 	}
-	if _, err := session.OnEvent(sourceScope, owner.onEvent); err != nil {
-		return nil, err
+	sessions, err := plugin.Require[session.LiveStore](owner)
+	if err != nil {
+		return err
 	}
-	if _, err := session.OnFlush(sourceScope, owner.onFlush); err != nil {
-		return nil, err
+	storage, err := owner.opener.OpenBackend(requestContext)
+	if err != nil {
+		return err
 	}
-	if _, err := session.OnDisposed(sourceScope, owner.onDisposed); err != nil {
-		return nil, err
+	if storage == nil {
+		return errors.New("session persistence: BackendOpener returned nil Backend")
 	}
+	owner.sessions = sessions
+	owner.storage = storage
 	for _, conversation := range sessions.List() {
 		if err := owner.onCreated(requestContext, conversation); err != nil {
-			return nil, err
+			return errors.Join(err, owner.close(requestContext))
 		}
 	}
-	return owner, requestContext.Err()
+	return requestContext.Err()
+}
+
+// Dispose stops admission, drains pending writes, and closes the Backend.
+func (owner *SessionLogStore) Dispose(closeContext context.Context) error {
+	return owner.close(closeContext)
+}
+
+// ObserveEvent routes declared Session events through one entry point.
+func (owner *SessionLogStore) ObserveEvent(
+	requestContext context.Context,
+	fact plugin.Event,
+) error {
+	switch observed := fact.(type) {
+	case session.SessionCreated:
+		return owner.onCreated(requestContext, observed.Conversation)
+	case session.SessionEventAppended:
+		return owner.onEvent(
+			requestContext,
+			observed.Conversation,
+			observed.Committed,
+		)
+	case session.SessionFlushRequested:
+		return owner.onFlush(requestContext, observed.Conversation)
+	case session.SessionDisposed:
+		return owner.onDisposed(requestContext, observed.Conversation)
+	default:
+		return nil
+	}
 }
 
 func (owner *SessionLogStore) Locate(metadata session.Header) (Location, bool) {
@@ -143,11 +197,11 @@ func (owner *SessionLogStore) Create(requestContext context.Context, metadata se
 	if err := validateDetachedHeader(metadata.ID, metadata); err != nil {
 		return err
 	}
-	release, err := owner.operations.Acquire(requestContext, metadata.ID)
+	releaseGate, err := owner.operations.Acquire(requestContext, metadata.ID)
 	if err != nil {
 		return err
 	}
-	defer release()
+	defer releaseGate()
 	_, tracked := owner.durable.Get(metadata.ID)
 	prepared := owner.preparations.Has(metadata.ID)
 	if tracked || prepared {
@@ -169,11 +223,11 @@ func (owner *SessionLogStore) Append(requestContext context.Context, identifier 
 		return errors.New("session persistence: append Context is nil")
 	}
 	batch := snapshotEvents(entries)
-	release, err := owner.operations.Acquire(requestContext, identifier)
+	releaseGate, err := owner.operations.Acquire(requestContext, identifier)
 	if err != nil {
 		return err
 	}
-	defer release()
+	defer releaseGate()
 	return owner.appendCore(requestContext, identifier, batch)
 }
 
@@ -182,43 +236,45 @@ func (owner *SessionLogStore) Prepare(requestContext context.Context, identifier
 		return nil, errors.New("session persistence: prepare Context is nil")
 	}
 	for {
-		release, err := owner.operations.Acquire(requestContext, identifier)
+		releaseGate, err := owner.operations.Acquire(requestContext, identifier)
 		if err != nil {
 			return nil, err
 		}
 		if _, found := owner.sessions.Get(identifier); found {
-			release()
+			releaseGate()
 			return nil, fmt.Errorf("session persistence: cannot prepare live session %q", identifier)
 		}
 		if owner.preparations.IsReserved(identifier) {
-			release()
+			releaseGate()
 			return nil, fmt.Errorf("session persistence: session %q already has an unpublished preparation", identifier)
 		}
 		source, err := owner.preparedSourceFor(requestContext, identifier, false)
 		if err != nil {
-			release()
+			releaseGate()
 			return nil, err
 		}
 		stable, err := owner.commitPreparedSource(requestContext, source)
 		if err != nil {
-			release()
+			releaseGate()
 			return nil, err
 		}
 		if !stable {
-			release()
+			releaseGate()
 			continue
 		}
 		reservation, err := owner.preparations.Reserve(source)
 		if err != nil {
-			release()
+			releaseGate()
 			return nil, err
 		}
-		release()
-		return session.NewPreparation(source.conversation, func() {
-			owner.preparations.ReturnReservation(
-				reservation, source.conversation.Seq() == source.sessionLength,
-			)
-		}), nil
+		releaseGate()
+		return session.NewPreparation(
+			source.conversation,
+			&preparedReservationLease{
+				pool:        owner.preparations,
+				reservation: reservation,
+			},
+		), nil
 	}
 }
 
@@ -244,17 +300,17 @@ func (owner *SessionLogStore) Load(requestContext context.Context, identifier se
 		return Inspection{Header: conversation.Header(), Events: entries}, nil
 	}
 	for {
-		release, err := owner.operations.Acquire(requestContext, identifier)
+		releaseGate, err := owner.operations.Acquire(requestContext, identifier)
 		if err != nil {
 			return Inspection{}, err
 		}
 		source, err := owner.preparedSourceFor(requestContext, identifier, false)
 		if err != nil {
-			release()
+			releaseGate()
 			return Inspection{}, err
 		}
 		stable, err := owner.commitPreparedSource(requestContext, source)
-		release()
+		releaseGate()
 		if err != nil {
 			return Inspection{}, err
 		}
@@ -272,11 +328,11 @@ func (owner *SessionLogStore) Inspect(requestContext context.Context, identifier
 	if conversation, found := owner.sessions.Get(identifier); found {
 		return Inspection{Header: conversation.Header(), Events: conversation.Events()}, nil
 	}
-	release, err := owner.operations.Acquire(requestContext, identifier)
+	releaseGate, err := owner.operations.Acquire(requestContext, identifier)
 	if err != nil {
 		return Inspection{}, err
 	}
-	defer release()
+	defer releaseGate()
 	source, err := owner.preparedSourceFor(requestContext, identifier, true)
 	if err != nil {
 		return Inspection{}, err
@@ -291,11 +347,11 @@ func (owner *SessionLogStore) ReadFrom(requestContext context.Context, identifie
 	if fromSeq < 0 {
 		return Inspection{}, errors.New("session persistence: fromSeq must be non-negative")
 	}
-	release, err := owner.operations.Acquire(requestContext, identifier)
+	releaseGate, err := owner.operations.Acquire(requestContext, identifier)
 	if err != nil {
 		return Inspection{}, err
 	}
-	defer release()
+	defer releaseGate()
 	stored, found, err := owner.storage.LoadStoredFrom(requestContext, identifier, fromSeq)
 	if err != nil {
 		return Inspection{}, err
@@ -346,11 +402,11 @@ func (owner *SessionLogStore) onCreated(requestContext context.Context, conversa
 		return errors.New("session persistence: created Session is nil")
 	}
 	identifier := conversation.ID()
-	release, err := owner.operations.Acquire(requestContext, identifier)
+	releaseGate, err := owner.operations.Acquire(requestContext, identifier)
 	if err != nil {
 		return err
 	}
-	defer release()
+	defer releaseGate()
 	seed := conversation.Events()
 	metadata := conversation.Header()
 
@@ -466,29 +522,59 @@ func (owner *SessionLogStore) onDisposed(requestContext context.Context, convers
 	if err := live.writes.flush(requestContext); err != nil {
 		return err
 	}
-	release, err := owner.operations.Acquire(requestContext, conversation.ID())
+	releaseGate, err := owner.operations.Acquire(requestContext, conversation.ID())
 	if err != nil {
 		return err
 	}
 	owner.writes.Delete(conversation)
 	owner.durable.DeleteOwned(conversation.ID(), conversation)
-	release()
+	releaseGate()
 	return nil
 }
 
 func (owner *SessionLogStore) installLive(conversation *session.Session) {
-	identifier := conversation.ID()
-	writes := newLiveWriter(owner.delay, func(requestContext context.Context, entries []session.Event) error {
-		release, err := owner.operations.Acquire(requestContext, identifier)
-		if err != nil {
-			return err
-		}
-		defer release()
-		return owner.appendLiveBatch(requestContext, identifier, entries)
-	}, func(problem error) {
-		owner.safeReport(fmt.Errorf("%s: background write for session %q failed; events retained: %w", owner.storage.BackendName(), identifier, problem))
-	})
-	owner.writes.Put(conversation, &liveSessionState{conversation: conversation, writes: writes})
+	writes := newLiveWriter(
+		owner.delay,
+		&sessionWriteTarget{
+			owner:      owner,
+			identifier: conversation.ID(),
+		},
+	)
+	owner.writes.Put(
+		conversation,
+		&liveSessionState{
+			conversation: conversation,
+			writes:       writes,
+		},
+	)
+}
+
+type sessionWriteTarget struct {
+	owner      *SessionLogStore
+	identifier session.SessionID
+}
+
+func (target *sessionWriteTarget) WriteBatch(
+	requestContext context.Context,
+	entries []session.Event,
+) error {
+	releaseGate, err := target.owner.operations.Acquire(
+		requestContext,
+		target.identifier,
+	)
+	if err != nil {
+		return err
+	}
+	defer releaseGate()
+	return target.owner.appendLiveBatch(
+		requestContext,
+		target.identifier,
+		entries,
+	)
+}
+
+func (target *sessionWriteTarget) ReportBackgroundFailure(problem error) {
+	target.owner.safeReport(target.identifier, problem)
 }
 
 func (owner *SessionLogStore) appendLiveBatch(requestContext context.Context, identifier session.SessionID, entries []session.Event) error {
@@ -662,7 +748,9 @@ func (owner *SessionLogStore) close(closeContext context.Context) error {
 		closeErr = errors.Join(closeErr, live.writes.flush(closeContext))
 	}
 	owner.operations.Close()
-	closeErr = errors.Join(closeErr, owner.storage.Close(closeContext))
+	if owner.storage != nil {
+		closeErr = errors.Join(closeErr, owner.storage.Close(closeContext))
+	}
 	owner.closeMutex.Lock()
 	owner.closeErr = closeErr
 	owner.closed = true
@@ -672,9 +760,22 @@ func (owner *SessionLogStore) close(closeContext context.Context) error {
 	return closeErr
 }
 
-func (owner *SessionLogStore) safeReport(problem error) {
+func (owner *SessionLogStore) safeReport(identifier session.SessionID, problem error) {
 	defer func() { _ = recover() }()
-	owner.reporter(problem)
+	backendName := "unavailable"
+	if owner.storage != nil {
+		backendName = owner.storage.BackendName()
+	}
+	owner.reporter.ReportBackgroundWriteFailure(
+		BackgroundWriteFailure{
+			BackendName: backendName,
+			SessionID:   identifier,
+			Error: fmt.Errorf(
+				"background write failed; events retained: %w",
+				problem,
+			),
+		},
+	)
 }
 
 func validateDetachedHeader(identifier session.SessionID, metadata session.Header) error {
