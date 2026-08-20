@@ -3,7 +3,6 @@ package plugin
 import (
 	"context"
 	"errors"
-	"sort"
 	"sync"
 )
 
@@ -16,7 +15,7 @@ type RuntimeSettings struct {
 // Its collaborators own topology, dispatch bindings, dependency queries, and
 // cross-Fiber activation ordering respectively.
 type Runtime struct {
-	operations sync.Mutex
+	operations chan struct{}
 	view       sync.RWMutex
 
 	mounts       *mountTree
@@ -31,9 +30,11 @@ type Runtime struct {
 // NewRuntime creates one isolated Plugin Runtime.
 func NewRuntime(settings RuntimeSettings) *Runtime {
 	runtimeEngine := &Runtime{
-		mounts:   newMountTree(),
-		bindings: newRuntimeBindings(settings.EventFailures),
+		operations: make(chan struct{}, 1),
+		mounts:     newMountTree(),
+		bindings:   newRuntimeBindings(settings.EventFailures),
 	}
+	runtimeEngine.operations <- struct{}{}
 	runtimeEngine.dependencies = newDependencyGraph(
 		runtimeEngine,
 		runtimeEngine.mounts,
@@ -56,51 +57,46 @@ func (runtimeEngine *Runtime) Start(
 	if runtimeEngine == nil {
 		return nil, errors.New("plugin: start through nil Runtime")
 	}
-	runtimeEngine.operations.Lock()
-	defer runtimeEngine.operations.Unlock()
+	if len(instances) == 0 {
+		return nil, errors.New("plugin: Start requires at least one Plugin")
+	}
+	forest, err := buildPluginForest(instances)
+	if err != nil {
+		return nil, err
+	}
+	if err = runtimeEngine.beginOperation(startContext); err != nil {
+		return nil, err
+	}
+	defer runtimeEngine.endOperation()
 	if runtimeEngine.closed {
 		return nil, errors.New("plugin: Runtime is shut down")
 	}
 	if runtimeEngine.started {
 		return nil, errors.New("plugin: Runtime has already started")
 	}
-	if len(instances) == 0 {
-		return nil, errors.New("plugin: Start requires at least one Plugin")
+	handles := make([]Handle, 0, len(forest.roots))
+	rootMounts, startedMounts, admissionErr := runtimeEngine.mounts.admitDeclarations(
+		forest.roots,
+		nil,
+		mountAtRootScope,
+	)
+	if admissionErr != nil {
+		return nil, admissionErr
 	}
-
-	startIndex := runtimeEngine.mounts.length()
-	handles := make([]Handle, 0, len(instances))
-	for _, pluginInstance := range instances {
-		target, err := newPluginTarget(pluginInstance)
-		if err == nil {
-			err = runtimeEngine.bindings.validateAdmission(target)
-		}
-		if err != nil {
-			rollbackErr := runtimeEngine.activations.rollbackMounts(
-				startContext,
-				runtimeEngine.mounts.from(startIndex),
-			)
-			return nil, errors.Join(err, rollbackErr)
-		}
-		mounted, err := runtimeEngine.mounts.admit(
-			target,
-			nil,
-			mountAtRootScope,
-		)
-		if err != nil {
-			rollbackErr := runtimeEngine.activations.rollbackMounts(
-				startContext,
-				runtimeEngine.mounts.from(startIndex),
-			)
-			return nil, errors.Join(err, rollbackErr)
-		}
-		runtimeEngine.activations.attach(mounted)
+	for _, mounted := range rootMounts {
 		handles = append(handles, handleOf(runtimeEngine, mounted))
 	}
-	startedMounts := runtimeEngine.mounts.from(startIndex)
-	settleErr := runtimeEngine.activations.converge(startContext)
-	readinessErr := runtimeEngine.dependencies.readiness(startedMounts)
-	if startErr := errors.Join(settleErr, readinessErr); startErr != nil {
+	runtimeEngine.view.RLock()
+	admissionErr = runtimeEngine.bindings.validateMountAdmission(startedMounts)
+	runtimeEngine.view.RUnlock()
+	if admissionErr != nil {
+		runtimeEngine.discardMountRoots(rootMounts)
+		return nil, admissionErr
+	}
+	for _, mounted := range startedMounts {
+		runtimeEngine.activations.attach(mounted)
+	}
+	if startErr := runtimeEngine.activateMountBatch(startContext, startedMounts); startErr != nil {
 		rollbackErr := runtimeEngine.activations.rollbackMounts(
 			startContext,
 			startedMounts,
@@ -215,8 +211,14 @@ func (runtimeEngine *Runtime) mount(
 	if runtimeEngine == nil {
 		return Handle{}, errors.New("plugin: mount through nil Runtime")
 	}
-	runtimeEngine.operations.Lock()
-	defer runtimeEngine.operations.Unlock()
+	forest, err := buildPluginForest([]Plugin{pluginInstance})
+	if err != nil {
+		return Handle{}, err
+	}
+	if err = runtimeEngine.beginOperation(mountContext); err != nil {
+		return Handle{}, err
+	}
+	defer runtimeEngine.endOperation()
 	if runtimeEngine.closed {
 		return Handle{}, errors.New("plugin: Runtime is shut down")
 	}
@@ -228,30 +230,31 @@ func (runtimeEngine *Runtime) mount(
 	if err != nil {
 		return Handle{}, err
 	}
-	target, err := newPluginTarget(pluginInstance)
-	if err == nil {
-		err = runtimeEngine.bindings.validateAdmission(target)
-	}
-	if err != nil {
-		return Handle{}, err
-	}
-	mounted, err := runtimeEngine.mounts.admit(
-		target,
+	roots, admitted, err := runtimeEngine.mounts.admitDeclarations(
+		forest.roots,
 		parentMount,
 		placement,
 	)
 	if err != nil {
 		return Handle{}, err
 	}
-	runtimeEngine.activations.attach(mounted)
-	settleErr := runtimeEngine.activations.converge(mountContext)
-	readinessErr := runtimeEngine.dependencies.readiness([]*pluginMount{mounted})
-	if mountErr := errors.Join(settleErr, readinessErr); mountErr != nil {
+	mounted := roots[0]
+	runtimeEngine.view.RLock()
+	admissionErr := runtimeEngine.bindings.validateMountAdmission(admitted)
+	runtimeEngine.view.RUnlock()
+	if admissionErr != nil {
+		runtimeEngine.mounts.deleteTree(mounted)
+		return Handle{}, admissionErr
+	}
+	for _, selectedMount := range admitted {
+		runtimeEngine.activations.attach(selectedMount)
+	}
+	if mountErr := runtimeEngine.activateMountBatch(mountContext, admitted); mountErr != nil {
 		rollbackErr := runtimeEngine.activations.removeMount(
 			mountContext,
 			mounted,
 		)
-		reconcileErr := runtimeEngine.activations.converge(mountContext)
+		reconcileErr := runtimeEngine.reconcile(mountContext)
 		return Handle{}, errors.Join(mountErr, rollbackErr, reconcileErr)
 	}
 	return handleOf(runtimeEngine, mounted), nil
@@ -289,14 +292,16 @@ func (runtimeEngine *Runtime) Unload(
 	if runtimeEngine == nil {
 		return errors.New("plugin: unload through nil Runtime")
 	}
-	runtimeEngine.operations.Lock()
-	defer runtimeEngine.operations.Unlock()
+	if err := runtimeEngine.beginOperation(stopContext); err != nil {
+		return err
+	}
+	defer runtimeEngine.endOperation()
 	mounted, err := runtimeEngine.lookup(pluginHandle)
 	if err != nil {
 		return err
 	}
 	stopErr := runtimeEngine.activations.removeMount(stopContext, mounted)
-	settleErr := runtimeEngine.activations.converge(stopContext)
+	settleErr := runtimeEngine.reconcile(stopContext)
 	return errors.Join(stopErr, settleErr)
 }
 
@@ -308,8 +313,10 @@ func (runtimeEngine *Runtime) unloadChild(
 	if runtimeEngine == nil {
 		return errors.New("plugin: unload child through nil Runtime")
 	}
-	runtimeEngine.operations.Lock()
-	defer runtimeEngine.operations.Unlock()
+	if err := runtimeEngine.beginOperation(stopContext); err != nil {
+		return err
+	}
+	defer runtimeEngine.endOperation()
 	parentMount, err := runtimeEngine.lookup(parent)
 	if err != nil {
 		return err
@@ -322,7 +329,7 @@ func (runtimeEngine *Runtime) unloadChild(
 		return errors.New("plugin: Handle is not a direct child of the owning Plugin")
 	}
 	stopErr := runtimeEngine.activations.removeMount(stopContext, childMount)
-	settleErr := runtimeEngine.activations.converge(stopContext)
+	settleErr := runtimeEngine.reconcile(stopContext)
 	return errors.Join(stopErr, settleErr)
 }
 
@@ -336,24 +343,28 @@ func (runtimeEngine *Runtime) Replace(
 	if runtimeEngine == nil {
 		return errors.New("plugin: replace through nil Runtime")
 	}
-	runtimeEngine.operations.Lock()
-	defer runtimeEngine.operations.Unlock()
+	forest, err := buildPluginForest([]Plugin{candidate})
+	if err != nil {
+		return err
+	}
+	if err = runtimeEngine.beginOperation(replaceContext); err != nil {
+		return err
+	}
+	defer runtimeEngine.endOperation()
 	mounted, err := runtimeEngine.lookup(pluginHandle)
 	if err != nil {
 		return err
 	}
-	target, err := newPluginTarget(candidate)
-	if err == nil {
-		err = runtimeEngine.bindings.validateAdmission(target)
-	}
+	declaration := forest.roots[0]
+	replacement, err := newSubtreeReplacement(
+		runtimeEngine,
+		mounted,
+		declaration,
+	)
 	if err != nil {
 		return err
 	}
-	return runtimeEngine.activations.replace(
-		replaceContext,
-		mounted,
-		target,
-	)
+	return replacement.execute(replaceContext)
 }
 
 // Shutdown closes admission and stops all Plugins in dependency-safe order.
@@ -361,48 +372,15 @@ func (runtimeEngine *Runtime) Shutdown(stopContext context.Context) error {
 	if runtimeEngine == nil {
 		return nil
 	}
-	runtimeEngine.operations.Lock()
-	defer runtimeEngine.operations.Unlock()
+	if err := runtimeEngine.beginOperation(stopContext); err != nil {
+		return err
+	}
+	defer runtimeEngine.endOperation()
 	if runtimeEngine.closed {
 		return nil
 	}
 	runtimeEngine.closed = true
 	return runtimeEngine.activations.shutdown(stopContext)
-}
-
-// Status returns immutable diagnostics for one mounted Plugin.
-func (runtimeEngine *Runtime) Status(pluginHandle Handle) (FiberStatus, error) {
-	if runtimeEngine == nil {
-		return FiberStatus{}, errors.New("plugin: status through nil Runtime")
-	}
-	runtimeEngine.operations.Lock()
-	defer runtimeEngine.operations.Unlock()
-	mounted, err := runtimeEngine.lookup(pluginHandle)
-	if err != nil {
-		return FiberStatus{}, err
-	}
-	runtimeEngine.view.RLock()
-	diagnostics := statusOf(mounted)
-	runtimeEngine.view.RUnlock()
-	return diagnostics, nil
-}
-
-// Statuses returns diagnostics in mount order.
-func (runtimeEngine *Runtime) Statuses() []FiberStatus {
-	if runtimeEngine == nil {
-		return nil
-	}
-	runtimeEngine.operations.Lock()
-	defer runtimeEngine.operations.Unlock()
-	runtimeEngine.view.RLock()
-	defer runtimeEngine.view.RUnlock()
-	snapshots := make([]FiberStatus, 0, runtimeEngine.mounts.length())
-	for _, mounted := range runtimeEngine.mounts.all() {
-		if !mounted.removed {
-			snapshots = append(snapshots, statusOf(mounted))
-		}
-	}
-	return snapshots
 }
 
 func (runtimeEngine *Runtime) lookup(pluginHandle Handle) (*pluginMount, error) {
@@ -414,119 +392,4 @@ func (runtimeEngine *Runtime) lookup(pluginHandle Handle) (*pluginMount, error) 
 		return nil, errors.New("plugin: Handle is not mounted")
 	}
 	return mounted, nil
-}
-
-func fiberOf(owner Plugin) (*fiber, error) {
-	if owner == nil || owner.RuntimePlugin() == nil {
-		return nil, ErrPluginNotBound
-	}
-	running := owner.RuntimePlugin().currentFiber()
-	if running == nil || running.runtime == nil || running.mount == nil {
-		return nil, ErrPluginNotBound
-	}
-	return running, nil
-}
-
-func activeFiberOf(owner Plugin) (*fiber, error) {
-	running, err := fiberOf(owner)
-	if err != nil {
-		return nil, err
-	}
-	running.runtime.view.RLock()
-	active := running.state == FiberActive
-	running.runtime.view.RUnlock()
-	if !active {
-		return nil, ErrPluginNotActive
-	}
-	return running, nil
-}
-
-var closedLifetime = func() context.Context {
-	closedContext, cancelLifetime := context.WithCancelCause(context.Background())
-	cancelLifetime(ErrPluginNotBound)
-	return closedContext
-}()
-
-// Lifetime returns the current Plugin activation lifetime.
-func Lifetime(owner Plugin) context.Context {
-	running, err := fiberOf(owner)
-	if err != nil {
-		return closedLifetime
-	}
-	running.runtime.view.RLock()
-	fiberLifetime := running.lifetime
-	running.runtime.view.RUnlock()
-	if fiberLifetime == nil {
-		return closedLifetime
-	}
-	return fiberLifetime
-}
-
-// Runtime.view must be read-locked by the caller.
-func statusOf(mounted *pluginMount) FiberStatus {
-	ownerFiber := mounted.current
-	if ownerFiber == nil {
-		return FiberStatus{
-			HandleID: mounted.handleID,
-			Name:     mounted.target.manifest.name,
-			State:    FiberStopped,
-		}
-	}
-	diagnostics := FiberStatus{
-		HandleID: mounted.handleID,
-		FiberID:  ownerFiber.id,
-		Name:     ownerFiber.target.manifest.name,
-		State:    ownerFiber.state,
-		Missing:  append([]string(nil), ownerFiber.missing...),
-		Error:    ownerFiber.lastError,
-	}
-	dependencyNames := make([]string, 0, len(ownerFiber.dependencies))
-	dependencyByName := make(map[string]*serviceDependency)
-	for _, dependency := range ownerFiber.dependencies {
-		dependencyNames = append(dependencyNames, dependency.reference.name)
-		dependencyByName[dependency.reference.name] = dependency
-	}
-	sort.Strings(dependencyNames)
-	for _, dependencyName := range dependencyNames {
-		dependency := dependencyByName[dependencyName]
-		diagnostics.Dependencies = append(
-			diagnostics.Dependencies,
-			ServiceDependencyStatus{
-				Service:         dependency.reference.name,
-				ProviderFiberID: dependency.binding.owner.id,
-				Optional:        dependency.optional,
-			},
-		)
-	}
-	if ownerFiber.state != FiberActive {
-		return diagnostics
-	}
-	for _, serviceDeclaration := range ownerFiber.target.manifest.provides {
-		diagnostics.Services = append(
-			diagnostics.Services,
-			ServiceBindingStatus{
-				Service: serviceDeclaration.reference.name,
-				Scope:   ownerFiber.scope.key,
-			},
-		)
-	}
-	for _, eventDeclaration := range ownerFiber.target.manifest.events {
-		diagnostics.Events = append(
-			diagnostics.Events,
-			EventSubscriptionStatus{
-				Event: eventDeclaration.reference.name,
-				Scope: ownerFiber.scope.key,
-			},
-		)
-	}
-	for _, waterfallDeclaration := range ownerFiber.target.manifest.waterfalls {
-		diagnostics.Waterfalls = append(
-			diagnostics.Waterfalls,
-			WaterfallBindingStatus{
-				Waterfall: waterfallDeclaration.reference.name,
-				Scope:     ownerFiber.scope.key,
-			},
-		)
-	}
-	return diagnostics
 }

@@ -20,6 +20,7 @@ type fiber struct {
 	lifetime     context.Context
 	cancel       context.CancelCauseFunc
 	bindings     activationBindings
+	calls        *fiberCallGate
 	attached     bool
 	lastError    error
 }
@@ -42,16 +43,21 @@ func (running *fiber) prepare(
 	running.cancel = cancelLifetime
 	running.dependencies = resolution.selected
 	running.missing = nil
+	running.lastError = nil
 	running.attached = true
 	running.state = FiberStarting
 	running.runtime.view.Unlock()
-	return invokePluginApply(applyContext, running.target.instance)
+	return invokePluginApply(
+		running.runtime.callbackContext(applyContext),
+		running.target.instance,
+	)
 }
 
 // activate publishes one prepared Fiber into the dispatch view. Caller holds
 // Runtime.view for the complete binding-and-state transaction.
 func (running *fiber) activate(published activationBindings) {
 	running.bindings = published
+	running.calls.open()
 	running.state = FiberActive
 }
 
@@ -62,6 +68,7 @@ func (running *fiber) rollback(
 	running.runtime.view.Lock()
 	running.state = FiberRollingBack
 	running.runtime.bindings.withdraw(running.bindings)
+	running.calls.close()
 	running.runtime.view.Unlock()
 
 	cleanupErr := running.release(rollbackContext, failure)
@@ -93,15 +100,23 @@ func (running *fiber) stop(stopContext context.Context) error {
 	default:
 		running.state = FiberStopping
 		running.runtime.bindings.withdraw(running.bindings)
+		running.calls.close()
 	}
 	running.runtime.view.Unlock()
 
+	if running.cancel != nil {
+		running.cancel(ErrPluginNotActive)
+	}
+	drainErr := running.calls.wait(stopContext)
+	if drainErr != nil {
+		_ = running.calls.wait(context.Background())
+	}
 	disposeErr := running.release(stopContext, ErrPluginNotActive)
 	running.runtime.view.Lock()
 	running.state = FiberStopped
 	running.lastError = disposeErr
 	running.runtime.view.Unlock()
-	return disposeErr
+	return errors.Join(drainErr, disposeErr)
 }
 
 func (running *fiber) release(
@@ -115,7 +130,10 @@ func (running *fiber) release(
 	if running.cancel != nil {
 		running.cancel(cause)
 	}
-	disposeErr := invokePluginDispose(releaseContext, running.target.instance)
+	disposeErr := invokePluginDispose(
+		running.runtime.callbackContext(releaseContext),
+		running.target.instance,
+	)
 	running.target.instance.RuntimePlugin().detach(running)
 	return disposeErr
 }

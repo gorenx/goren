@@ -158,12 +158,15 @@ func (graph *dependencyGraph) directDependents(provider *fiber) []*fiber {
 	return dependents
 }
 
-func (graph *dependencyGraph) readiness(mounts []*pluginMount) error {
+func (graph *dependencyGraph) readiness(
+	mounts []*pluginMount,
+	phase ActivationPhase,
+) error {
 	graph.runtime.view.RLock()
 	defer graph.runtime.view.RUnlock()
 	var readinessErr error
 	for _, mounted := range mounts {
-		if mounted.removed || mounted.current == nil {
+		if mounted.removed || mounted.phase != phase || mounted.current == nil {
 			continue
 		}
 		running := mounted.current

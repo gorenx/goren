@@ -1,9 +1,45 @@
 package plugin
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 )
+
+// Service marks a business capability offered through the Runtime. Provider
+// interfaces embed Service and add their domain methods.
+type Service interface {
+	RuntimeService()
+}
+
+// RuntimeService allows a business interface embedding Service to be
+// implemented directly by a Plugin that embeds Base.
+func (*Base) RuntimeService() {}
+
+// ServiceType is a type-derived Service contract used only by Manifest.
+type ServiceType interface {
+	Name() string
+	serviceReference() serviceRef
+	bindService(Plugin) (Service, bool)
+}
+
+type serviceRef struct {
+	key  reflect.Type
+	name string
+}
+
+func (reference serviceRef) validate() error {
+	if reference.key == nil || reference.key.Kind() != reflect.Interface ||
+		reference.key.Name() == "" || reference.name == "" {
+		return errors.New("Service contract must be a named interface")
+	}
+	return nil
+}
+
+type providedServiceSpec struct {
+	reference  serviceRef
+	capability Service
+}
 
 type typedServiceType[S Service] struct {
 	reference serviceRef

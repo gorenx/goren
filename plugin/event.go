@@ -10,6 +10,31 @@ import (
 	"sync"
 )
 
+// Event is an owner-defined fact and its stable delivery contract.
+type Event interface {
+	EventName() string
+	EventDelivery() DeliveryPolicy
+}
+
+// EventSubscription declares one Event type routed to the Plugin's unified
+// EventObserver entry point.
+type EventSubscription interface {
+	Name() string
+	eventReference() (eventRef, error)
+	bindEventObserver(Plugin) (EventObserver, error)
+}
+
+type eventRef struct {
+	key    reflect.Type
+	name   string
+	policy DeliveryPolicy
+}
+
+type eventSubscriptionSpec struct {
+	reference eventRef
+	observer  EventObserver
+}
+
 // DeliveryPolicy controls fact delivery mechanics only.
 type DeliveryPolicy uint8
 
@@ -147,9 +172,9 @@ func (registry *eventRegistry) remove(binding *eventBinding) {
 func (registry *eventRegistry) snapshot(
 	reference eventRef,
 	sourceScope *scope,
-) []EventObserver {
+) []*eventBinding {
 	lineage := scopePath(sourceScope)
-	observers := make([]EventObserver, 0)
+	observers := make([]*eventBinding, 0)
 	for _, selectedScope := range lineage {
 		selectedBindings := make([]*eventBinding, 0)
 		for _, binding := range registry.bindings[reference.key] {
@@ -163,7 +188,7 @@ func (registry *eventRegistry) snapshot(
 			return selectedBindings[leftIndex].ordinal < selectedBindings[rightIndex].ordinal
 		})
 		for _, binding := range selectedBindings {
-			observers = append(observers, binding.observer)
+			observers = append(observers, binding)
 		}
 	}
 	return observers
@@ -234,7 +259,7 @@ func (dispatcher *eventDispatcher) unsubscribe(binding *eventBinding) {
 func (dispatcher *eventDispatcher) snapshotObservers(
 	reference eventRef,
 	sourceScope *scope,
-) []EventObserver {
+) []*eventBinding {
 	return dispatcher.registry.snapshot(reference, sourceScope)
 }
 
@@ -242,12 +267,12 @@ func (dispatcher *eventDispatcher) deliver(
 	requestContext context.Context,
 	fact Event,
 	reference eventRef,
-	observers []EventObserver,
+	observers []*eventBinding,
 ) error {
 	switch reference.policy {
 	case DeliveryOrdered:
 		for _, observer := range observers {
-			if err := invokeEventObserver(requestContext, fact, observer); err != nil {
+			if err := invokeEventObserver(requestContext, fact, observer.observer); err != nil {
 				return err
 			}
 		}
@@ -302,9 +327,19 @@ func Publish[E Event](
 		reference,
 		sourceFiber.scope,
 	)
+	participants := make([]*fiber, 0, len(observers)+1)
+	participants = append(participants, sourceFiber)
+	for _, observer := range observers {
+		participants = append(participants, observer.owner)
+	}
+	releaseCalls, admitted := acquireFiberCalls(participants...)
 	runtimeEngine.view.RUnlock()
+	if !admitted {
+		return ErrPluginNotActive
+	}
+	defer releaseCalls()
 	return runtimeEngine.bindings.events.deliver(
-		requestContext,
+		runtimeEngine.callbackContext(requestContext),
 		fact,
 		reference,
 		observers,
@@ -314,16 +349,20 @@ func Publish[E Event](
 func observeEventParallel(
 	requestContext context.Context,
 	fact Event,
-	observers []EventObserver,
+	observers []*eventBinding,
 	reportFailure func(error),
 ) error {
 	failures := make([]error, len(observers))
 	var deliveries sync.WaitGroup
 	deliveries.Add(len(observers))
 	for observerIndex, selectedObserver := range observers {
-		go func(selectedIndex int, observer EventObserver) {
+		go func(selectedIndex int, observer *eventBinding) {
 			defer deliveries.Done()
-			failures[selectedIndex] = invokeEventObserver(requestContext, fact, observer)
+			failures[selectedIndex] = invokeEventObserver(
+				requestContext,
+				fact,
+				observer.observer,
+			)
 		}(observerIndex, selectedObserver)
 	}
 	deliveries.Wait()
