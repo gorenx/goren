@@ -27,36 +27,75 @@ type registration struct {
 // DriveRegistry is the in-process Registry provider. It stores only derived,
 // rebuildable state; durable Session events remain the source of truth.
 type DriveRegistry struct {
+	plugin.Base
 	mu            sync.Mutex
 	registrations map[string]*registration
 	order         []string
-	listeners     map[uint64]ChangeListener
-	nextListener  uint64
 }
 
-// NewDriveRegistry subscribes once to Session commits and disposal.
-func NewDriveRegistry(pluginScope *plugin.Scope) (*DriveRegistry, error) {
-	if pluginScope == nil {
-		return nil, errors.New("sessionprojection: plugin Scope is nil")
-	}
-	owner := &DriveRegistry{
+// NewDriveRegistry constructs the Session projection Service Plugin.
+func NewDriveRegistry() *DriveRegistry {
+	return &DriveRegistry{
 		registrations: make(map[string]*registration),
-		listeners:     make(map[uint64]ChangeListener),
 	}
-	if _, err := session.OnEvent(pluginScope, owner.observeEvent); err != nil {
-		return nil, err
+}
+
+// Manifest declares the projection Service and Session events it observes.
+func (*DriveRegistry) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: PluginName,
+		Provides: []plugin.ServiceType{
+			plugin.ServiceOf[Registry](),
+		},
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[session.LiveStore](),
+		},
+		Events: []plugin.EventSubscription{
+			plugin.EventOf[session.SessionEventAppended](),
+			plugin.EventOf[session.SessionDisposed](),
+		},
 	}
-	if _, err := session.OnDisposed(pluginScope, owner.observeDisposed); err != nil {
-		return nil, err
+}
+
+// Apply confirms the required Session Store dependency is active.
+func (owner *DriveRegistry) Apply(requestContext context.Context) error {
+	if err := requestContext.Err(); err != nil {
+		return err
 	}
-	return owner, nil
+	_, err := plugin.Require[session.LiveStore](owner)
+	return err
+}
+
+// Dispose drops all rebuildable projection state and registrations.
+func (owner *DriveRegistry) Dispose(context.Context) error {
+	owner.mu.Lock()
+	owner.registrations = make(map[string]*registration)
+	owner.order = nil
+	owner.mu.Unlock()
+	return nil
+}
+
+// ObserveEvent routes the declared Session event types through one entry point.
+func (owner *DriveRegistry) ObserveEvent(
+	requestContext context.Context,
+	fact plugin.Event,
+) error {
+	switch observed := fact.(type) {
+	case session.SessionEventAppended:
+		return owner.observeEvent(
+			requestContext,
+			observed.Conversation,
+			observed.Committed,
+		)
+	case session.SessionDisposed:
+		return owner.observeDisposed(requestContext, observed.Conversation)
+	default:
+		return nil
+	}
 }
 
 // Register installs or reference-counts one domain projection definition.
-func (owner *DriveRegistry) Register(ownerScope *plugin.Scope, projectionUnit Unit) (plugin.Disposer, error) {
-	if ownerScope == nil {
-		return nil, errors.New("sessionprojection: registration Scope is nil")
-	}
+func (owner *DriveRegistry) Register(projectionUnit Unit) (UnitHandle, error) {
 	if projectionUnit == nil {
 		return nil, errors.New("sessionprojection: projection Unit is nil")
 	}
@@ -89,44 +128,10 @@ func (owner *DriveRegistry) Register(ownerScope *plugin.Scope, projectionUnit Un
 	}
 	owner.mu.Unlock()
 
-	release, err := plugin.Own(ownerScope, "sessionProjections.register("+projectionKey+")", func(context.Context) error {
-		owner.unregister(projectionKey)
-		return nil
-	})
-	if err != nil {
-		owner.unregister(projectionKey)
-		return nil, err
-	}
-	return release, nil
-}
-
-// OnChanged registers a scope-owned whole-value change consumer.
-func (owner *DriveRegistry) OnChanged(ownerScope *plugin.Scope, listener ChangeListener) (plugin.Disposer, error) {
-	if ownerScope == nil {
-		return nil, errors.New("sessionprojection: listener Scope is nil")
-	}
-	if listener == nil {
-		return nil, errors.New("sessionprojection: ChangeListener is nil")
-	}
-	owner.mu.Lock()
-	owner.nextListener++
-	identifier := owner.nextListener
-	owner.listeners[identifier] = listener
-	owner.mu.Unlock()
-
-	release, err := plugin.Own(ownerScope, "sessionProjections.onChanged()", func(context.Context) error {
-		owner.mu.Lock()
-		delete(owner.listeners, identifier)
-		owner.mu.Unlock()
-		return nil
-	})
-	if err != nil {
-		owner.mu.Lock()
-		delete(owner.listeners, identifier)
-		owner.mu.Unlock()
-		return nil, err
-	}
-	return release, nil
+	return &unitHandle{
+		owner: owner,
+		key:   projectionKey,
+	}, nil
 }
 
 // Snapshot folds missing cells lazily and serves one validated current cut.
@@ -183,7 +188,11 @@ func (owner *DriveRegistry) Checkpoint(conversation *session.Session) (Checkpoin
 	return rows, nil
 }
 
-func (owner *DriveRegistry) observeEvent(_ context.Context, conversation *session.Session, committed session.Event) error {
+func (owner *DriveRegistry) observeEvent(
+	requestContext context.Context,
+	conversation *session.Session,
+	committed session.Event,
+) error {
 	owner.mu.Lock()
 	changes := make([]Change, 0)
 	for _, projectionKey := range owner.order {
@@ -224,11 +233,16 @@ func (owner *DriveRegistry) observeEvent(_ context.Context, conversation *sessio
 			Session: conversation, Key: projectionKey, Value: view, Seq: committed.Seq,
 		})
 	}
-	listeners := owner.listenerSnapshotLocked()
 	owner.mu.Unlock()
 	for _, projectionChange := range changes {
-		for _, listener := range listeners {
-			listener.ProjectionChanged(cloneChange(projectionChange))
+		if err := plugin.Publish(
+			requestContext,
+			owner,
+			ProjectionChanged{
+				Change: cloneChange(projectionChange),
+			},
+		); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -295,14 +309,20 @@ func (owner *DriveRegistry) cellFor(
 	return cell, nil
 }
 
-func (owner *DriveRegistry) listenerSnapshotLocked() []ChangeListener {
-	listeners := make([]ChangeListener, 0, len(owner.listeners))
-	for identifier := uint64(1); identifier <= owner.nextListener; identifier++ {
-		if listener := owner.listeners[identifier]; listener != nil {
-			listeners = append(listeners, listener)
-		}
+type unitHandle struct {
+	once  sync.Once
+	owner *DriveRegistry
+	key   string
+}
+
+func (handleState *unitHandle) Release(context.Context) error {
+	if handleState == nil {
+		return nil
 	}
-	return listeners
+	handleState.once.Do(func() {
+		handleState.owner.unregister(handleState.key)
+	})
+	return nil
 }
 
 func buildCell(projectionUnit Unit, events []session.Event) (unitCell, error) {
