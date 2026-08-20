@@ -12,42 +12,48 @@ import (
 	"github.com/gorenx/goren/tools"
 )
 
-// ReactLoopAgent is the concrete Agent capability and the root Plugin of one
-// scoped Agent tree. agentDriver exclusively owns live execution state.
+// ReactLoopAgent is the concrete Agent capability Plugin inside one private
+// scoped tree. It delegates live execution to named collaborators.
 type ReactLoopAgent struct {
 	plugin.Base
-	owner        *LoopPlugin
-	identifier   session.SessionID
-	options      agent.Options
-	conversation *session.Session
-	pending      *agent.Inbox
-	driver       *agentDriver
-	lifecycle    *agentLifecycle
-	children     []plugin.ChildPlugin
+	identifier           session.SessionID
+	options              agent.Options
+	conversation         *session.Session
+	pending              *agent.Inbox
+	loop                 *loop
+	maxParallelToolCalls int
+	lifecycle            *agentLifecycle
 }
 
 func newReactLoopAgent(
-	owner *LoopPlugin,
 	conversation *session.Session,
 	loopOptions agent.Options,
+	maxParallelToolCalls int,
+	failures observerFailureReporter,
 ) (*ReactLoopAgent, error) {
-	if owner == nil || conversation == nil {
-		return nil, errors.New("agentloop: Agent owner and Session are required")
+	if conversation == nil {
+		return nil, errors.New("agentloop: Agent Session is required")
+	}
+	if maxParallelToolCalls < 1 {
+		return nil, errors.New(
+			"agentloop: Agent Tool concurrency must be positive",
+		)
 	}
 	lastTurn, err := restoreLastTurn(conversation)
 	if err != nil {
 		return nil, err
 	}
 	subject := &ReactLoopAgent{
-		owner:        owner,
-		identifier:   conversation.ID(),
-		options:      cloneAgentOptions(loopOptions),
-		conversation: conversation,
+		identifier:           conversation.ID(),
+		options:              cloneAgentOptions(loopOptions),
+		conversation:         conversation,
+		maxParallelToolCalls: maxParallelToolCalls,
 	}
+	events := newAgentEventPublisher(subject, failures)
 	pending, err := agent.NewInbox(
 		conversation,
 		inboxEventBridge{
-			subject: subject,
+			events: events,
 		},
 	)
 	if err != nil {
@@ -58,12 +64,22 @@ func newReactLoopAgent(
 		return nil, err
 	}
 	subject.pending = pending
-	subject.driver = newAgentDriver(subject, pending, projection, lastTurn)
+	machine, err := newLoop(
+		subject,
+		pending,
+		projection,
+		events,
+		lastTurn,
+	)
+	if err != nil {
+		return nil, err
+	}
+	subject.loop = machine
 	return subject, nil
 }
 
 // Manifest provides the exact scoped Agent Service and declares every runtime
-// capability used by its driver and child Plugins.
+// capability used by its private loop.
 func (subject *ReactLoopAgent) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: PluginName + "/react-loop-agent",
@@ -76,7 +92,6 @@ func (subject *ReactLoopAgent) Manifest() plugin.Manifest {
 			plugin.ServiceOf[tools.ToolRuntime](),
 			plugin.ServiceOf[systemprompt.Assembler](),
 		},
-		Children: append([]plugin.ChildPlugin(nil), subject.children...),
 	}
 }
 
@@ -101,19 +116,20 @@ func (subject *ReactLoopAgent) Apply(requestContext context.Context) error {
 	if err != nil {
 		return err
 	}
-	return subject.driver.activate(
+	return subject.loop.activate(
 		requestContext,
 		sessions,
 		models,
 		toolRuntime,
 		prompts,
+		subject.maxParallelToolCalls,
 	)
 }
 
 // Dispose stops live execution. agentMembership separately owns externally
 // visible Agent and Session membership.
 func (subject *ReactLoopAgent) Dispose(closeContext context.Context) error {
-	disposeErr := subject.driver.dispose(closeContext)
+	disposeErr := subject.loop.dispose(closeContext)
 	if subject.lifecycle != nil {
 		subject.lifecycle.markTreeStopped()
 	}
@@ -133,7 +149,7 @@ func (subject *ReactLoopAgent) SessionValue() *session.Session {
 func (subject *ReactLoopAgent) InboxValue() *agent.Inbox { return subject.pending }
 
 func (subject *ReactLoopAgent) StatusValue() agent.Status {
-	return subject.driver.status()
+	return subject.loop.status()
 }
 
 func (subject *ReactLoopAgent) Send(
@@ -141,37 +157,37 @@ func (subject *ReactLoopAgent) Send(
 	target agent.InboxTarget,
 	wakeup bool,
 ) error {
-	return subject.driver.send(input, target, wakeup)
+	return subject.loop.send(input, target, wakeup)
 }
 
 func (subject *ReactLoopAgent) Followup(input llm.UserMessage) error {
-	return subject.driver.send(input, agent.NextTurn, true)
+	return subject.loop.send(input, agent.NextTurn, true)
 }
 
 func (subject *ReactLoopAgent) Steer(input llm.UserMessage) error {
-	return subject.driver.send(input, agent.NextStep, true)
+	return subject.loop.send(input, agent.NextStep, true)
 }
 
 func (subject *ReactLoopAgent) Inject(input llm.UserMessage) error {
-	return subject.driver.send(input, agent.NextStep, false)
+	return subject.loop.send(input, agent.NextStep, false)
 }
 
 func (subject *ReactLoopAgent) Cancel(
 	cause agent.CancelCause,
 	options agent.CancelOptions,
 ) {
-	subject.driver.cancel(cause, options)
+	subject.loop.cancel(cause, options)
 }
 
 func (subject *ReactLoopAgent) WhenIdle(requestContext context.Context) error {
-	return subject.driver.whenIdle(requestContext)
+	return subject.loop.whenIdle(requestContext)
 }
 
 func (subject *ReactLoopAgent) RunMaintenance(
 	requestContext context.Context,
 	task agent.MaintenanceTask,
 ) error {
-	return subject.driver.runMaintenance(requestContext, task)
+	return subject.loop.runMaintenance(requestContext, task)
 }
 
 func cloneAgentOptions(source agent.Options) agent.Options {

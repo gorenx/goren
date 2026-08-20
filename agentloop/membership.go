@@ -11,12 +11,14 @@ import (
 	"github.com/gorenx/goren/session"
 )
 
-// agentMembership owns the externally visible Agent and Session membership.
-// Its commit activation guarantees the ordinary Agent Plugin tree is ready
-// before either Registry announces it.
+// agentMembership owns externally visible Agent and Session membership. Its
+// Commit activation guarantees the ordinary Agent Plugin Tree is ready before
+// either Registry announces it.
 type agentMembership struct {
 	plugin.Base
-	owner       *LoopPlugin
+	lifecycles  *agentLifecycles
+	router      *runtimeContextRouter
+	failures    observerFailureReporter
 	lifecycle   *agentLifecycle
 	subject     *ReactLoopAgent
 	startSource agent.SessionStartSource
@@ -26,6 +28,7 @@ type agentMembership struct {
 	agents        agent.Registry
 	sessionHandle session.SessionHandle
 	tracked       bool
+	routed        bool
 	registered    bool
 	closing       bool
 	closed        chan struct{}
@@ -33,14 +36,18 @@ type agentMembership struct {
 }
 
 func newAgentMembership(
-	owner *LoopPlugin,
+	lifecycles *agentLifecycles,
+	router *runtimeContextRouter,
+	failures observerFailureReporter,
 	lifecycle *agentLifecycle,
 	subject *ReactLoopAgent,
 	startSource agent.SessionStartSource,
 	initiator agent.Agent,
 ) *agentMembership {
 	return &agentMembership{
-		owner:       owner,
+		lifecycles:  lifecycles,
+		router:      router,
+		failures:    failures,
 		lifecycle:   lifecycle,
 		subject:     subject,
 		startSource: startSource,
@@ -59,7 +66,9 @@ func (*agentMembership) Manifest() plugin.Manifest {
 	}
 }
 
-func (membership *agentMembership) Apply(requestContext context.Context) error {
+func (membership *agentMembership) Apply(
+	requestContext context.Context,
+) error {
 	agents, err := plugin.Require[agent.Registry](membership)
 	if err != nil {
 		return err
@@ -68,12 +77,22 @@ func (membership *agentMembership) Apply(requestContext context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err = membership.owner.track(membership.lifecycle); err != nil {
+	if err = membership.lifecycles.track(membership.lifecycle); err != nil {
 		return err
 	}
 	membership.mutex.Lock()
 	membership.agents = agents
 	membership.tracked = true
+	membership.mutex.Unlock()
+
+	if err = membership.router.register(
+		membership.subject.conversation,
+		membership.subject.loop.runtimeContextView(),
+	); err != nil {
+		return err
+	}
+	membership.mutex.Lock()
+	membership.routed = true
 	membership.mutex.Unlock()
 
 	sessionHandle, err := sessions.Enter(membership.subject.conversation)
@@ -89,7 +108,13 @@ func (membership *agentMembership) Apply(requestContext context.Context) error {
 	membership.mutex.Lock()
 	membership.registered = true
 	membership.mutex.Unlock()
-	if err = sessions.Announce(requestContext, membership.subject.conversation); err != nil {
+	if err = membership.subject.loop.beginServing(); err != nil {
+		return err
+	}
+	if err = sessions.Announce(
+		requestContext,
+		membership.subject.conversation,
+	); err != nil {
 		return err
 	}
 	if err = agents.Announce(requestContext, membership.subject); err != nil {
@@ -103,7 +128,7 @@ func (membership *agentMembership) Apply(requestContext context.Context) error {
 			Source:  membership.startSource,
 		},
 	); observerErr != nil {
-		membership.owner.report(fmt.Errorf(
+		membership.failures.report(fmt.Errorf(
 			"agentloop: Agent %q session-start observer: %w",
 			membership.subject.ID(),
 			observerErr,
@@ -112,7 +137,9 @@ func (membership *agentMembership) Apply(requestContext context.Context) error {
 	return requestContext.Err()
 }
 
-func (membership *agentMembership) Dispose(closeContext context.Context) error {
+func (membership *agentMembership) Dispose(
+	closeContext context.Context,
+) error {
 	if closeContext == nil {
 		closeContext = context.Background()
 	}
@@ -120,35 +147,50 @@ func (membership *agentMembership) Dispose(closeContext context.Context) error {
 	if membership.closing {
 		closed := membership.closed
 		membership.mutex.Unlock()
-		<-closed
-		membership.mutex.Lock()
-		closeErr := membership.closeErr
-		membership.mutex.Unlock()
-		return closeErr
+		select {
+		case <-closed:
+			membership.mutex.Lock()
+			closeErr := membership.closeErr
+			membership.mutex.Unlock()
+			return closeErr
+		case <-closeContext.Done():
+			return context.Cause(closeContext)
+		}
 	}
 	membership.closing = true
 	agents := membership.agents
 	sessionHandle := membership.sessionHandle
 	tracked := membership.tracked
+	routed := membership.routed
 	registered := membership.registered
 	membership.mutex.Unlock()
 
-	membership.subject.driver.beginDispose()
-	closeErr := membership.subject.WhenIdle(context.Background())
+	membership.subject.loop.beginDispose()
+	// Already-started Tool bodies may hold dependencies from the Agent Tree.
+	// Their drain is structural teardown and cannot be abandoned on caller
+	// cancellation without making the remaining Runtime shutdown unsafe.
+	drainContext := context.WithoutCancel(closeContext)
+	closeErr := membership.subject.WhenIdle(drainContext)
 	if registered && agents != nil {
 		closeErr = errors.Join(
 			closeErr,
-			agents.Remove(closeContext, membership.subject),
+			agents.Remove(drainContext, membership.subject),
+		)
+	}
+	if routed {
+		membership.router.remove(
+			membership.subject.conversation,
+			membership.subject.loop.runtimeContextView(),
 		)
 	}
 	if sessionHandle != nil {
 		closeErr = errors.Join(
 			closeErr,
-			sessionHandle.Release(closeContext),
+			sessionHandle.Release(drainContext),
 		)
 	}
 	if tracked {
-		membership.owner.forget(membership.lifecycle)
+		membership.lifecycles.forget(membership.lifecycle)
 	}
 	membership.mutex.Lock()
 	membership.closeErr = closeErr

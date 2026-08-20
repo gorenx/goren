@@ -9,85 +9,138 @@ import (
 	"github.com/gorenx/goren/plugin"
 )
 
-func (driver *agentDriver) emitStatus(destination agent.Status) {
-	driver.mutex.Lock()
-	disposed := driver.disposed
-	driver.mutex.Unlock()
-	if disposed {
+// observerFailureReporter contains failures that occur after a live fact has
+// committed and can no longer be rolled back.
+type observerFailureReporter struct {
+	reportOperation func(error)
+}
+
+func newObserverFailureReporter(
+	reportOperation func(error),
+) observerFailureReporter {
+	if reportOperation == nil {
+		reportOperation = func(error) {}
+	}
+	return observerFailureReporter{
+		reportOperation: reportOperation,
+	}
+}
+
+func (reporter observerFailureReporter) report(problem error) {
+	if problem == nil {
 		return
 	}
+	defer func() {
+		_ = recover()
+	}()
+	reporter.reportOperation(problem)
+}
+
+// agentEventPublisher owns Agent-scoped live notification publication. It
+// does not own activity state or decide Turn outcomes.
+type agentEventPublisher struct {
+	subject  *ReactLoopAgent
+	failures observerFailureReporter
+}
+
+func newAgentEventPublisher(
+	subject *ReactLoopAgent,
+	failures observerFailureReporter,
+) *agentEventPublisher {
+	return &agentEventPublisher{
+		subject:  subject,
+		failures: failures,
+	}
+}
+
+func (publisher *agentEventPublisher) reportFailure(problem error) {
+	publisher.failures.report(problem)
+}
+
+func (publisher *agentEventPublisher) publishStatus(destination agent.Status) {
 	if err := plugin.Publish(
 		context.Background(),
-		driver.subject,
+		publisher.subject,
 		agent.StatusChanged{
-			Subject: driver.subject,
+			Subject: publisher.subject,
 			Status:  destination,
 		},
 	); err != nil {
-		driver.subject.owner.report(fmt.Errorf(
+		publisher.reportFailure(fmt.Errorf(
 			"agentloop: Agent %q status observer: %w",
-			driver.subject.identifier,
+			publisher.subject.identifier,
 			err,
 		))
 	}
 }
 
-func (driver *agentDriver) reportError(
+func (publisher *agentEventPublisher) publishError(
 	requestContext context.Context,
+	position activityPosition,
 	problem error,
 ) {
-	driver.mutex.Lock()
-	turn := driver.activity.turn
-	step := driver.activity.step
-	driver.mutex.Unlock()
 	if requestContext == nil {
 		requestContext = context.Background()
 	}
 	if err := plugin.Publish(
 		requestContext,
-		driver.subject,
+		publisher.subject,
 		agent.AgentError{
-			Subject: driver.subject,
-			Turn:    turn,
-			Step:    step,
+			Subject: publisher.subject,
+			Turn:    position.turn,
+			Step:    position.step,
 			Err:     problem,
 		},
 	); err != nil {
-		driver.subject.owner.report(fmt.Errorf(
+		publisher.reportFailure(fmt.Errorf(
 			"agentloop: Agent %q error observer: %w",
-			driver.subject.identifier,
+			publisher.subject.identifier,
 			err,
 		))
 	}
 }
 
+func (publisher *agentEventPublisher) publishTurnStopping(
+	requestContext context.Context,
+	turn int64,
+) error {
+	return plugin.Publish(
+		requestContext,
+		publisher.subject,
+		agent.TurnStopping{
+			Subject: publisher.subject,
+			Turn:    turn,
+		},
+	)
+}
+
 type inboxEventBridge struct {
-	subject *ReactLoopAgent
+	events *agentEventPublisher
 }
 
 func (bridge inboxEventBridge) Inserted(input llm.UserMessage) {
 	if err := plugin.Publish(
 		context.Background(),
-		bridge.subject,
+		bridge.events.subject,
 		agent.InboxInserted{
-			Subject: bridge.subject,
+			Subject: bridge.events.subject,
 			Message: input,
 		},
 	); err != nil {
-		bridge.subject.owner.report(err)
+		bridge.events.reportFailure(err)
 	}
 }
 
 func (bridge inboxEventBridge) Discarded(input llm.UserMessage) {
 	if err := plugin.Publish(
 		context.Background(),
-		bridge.subject,
+		bridge.events.subject,
 		agent.InboxDiscarded{
-			Subject: bridge.subject,
+			Subject: bridge.events.subject,
 			Message: input,
 		},
 	); err != nil {
-		bridge.subject.owner.report(err)
+		bridge.events.reportFailure(err)
 	}
 }
 
@@ -97,14 +150,14 @@ func (bridge inboxEventBridge) Claimed(
 ) {
 	if err := plugin.Publish(
 		context.Background(),
-		bridge.subject,
+		bridge.events.subject,
 		agent.InboxClaimed{
-			Subject: bridge.subject,
+			Subject: bridge.events.subject,
 			Message: input,
 			Turn:    turn,
 		},
 	); err != nil {
-		bridge.subject.owner.report(err)
+		bridge.events.reportFailure(err)
 	}
 }
 
