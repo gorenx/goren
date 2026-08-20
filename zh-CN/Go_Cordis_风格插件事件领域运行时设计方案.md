@@ -78,8 +78,8 @@ Service 使用具备业务含义的 interface；Event、Waterfall input/output �
 | Action | 一个可执行的下游动作；可以是 Runtime chain step 或最内层业务动作 | Middleware 策略 |
 | Event | owner 提交后发布的 typed fact | 历史存储、前置决策 |
 | Observer | 监听某一 Event 类型的 Plugin | Event 持久化 |
-| Catalog | 已编译 Configurator 的名称索引 | Plugin 启动 |
-| Factory | 已完成配置校验的 Plugin 构造对象 | Runtime mount |
+| Catalog | 已编译 Factory 的名称索引 | Plugin 启动 |
+| Factory | 拥有一个 Plugin 的具名配置、严格解码、校验和构造 | Runtime mount |
 
 不再使用 Service Definition、Event Definition、Waterfall Definition、Registration、Consumer handle 和 Plugin Context 等术语。
 
@@ -115,19 +115,27 @@ Runtime 负责：
 
 Runtime 不读取配置、不访问 Catalog、不构造业务 Plugin，也不调用普通 Service 业务方法。
 
-### 5.3 Catalog、Configurator 与 Factory
+### 5.3 Catalog 与 Factory
 
 配置来源、Catalog 和 Runtime 是三条独立责任链：
 
     configuration source
-      -> configuration.Document
       -> Catalog.Lookup
-      -> Configurator.Configure
-      -> Factory.Create
+      -> Factory.Create(raw JSON)
       -> Plugin instance
       -> Runtime.Start
 
-Catalog 只负责名称唯一性和查找。Configurator 严格解码 owner-defined config 并校验。Factory 只创建 Plugin。Runtime 只接收已经构造完成的 Plugin。
+Catalog 只负责 Factory 名称唯一性和查找。每个 Factory 拥有自己的具名 Config，负责严格解码、默认值、校验和 Plugin 构造；原始配置只能存在于配置入口和 Factory 构造边界。Plugin 只接收已校验的具名配置，Runtime 只接收已经构造完成的 Plugin。
+
+    type Factory interface {
+        Name() string
+        Create(context.Context, json.RawMessage) (Plugin, error)
+    }
+
+    func NewCatalog() *Catalog
+    func (*Catalog) Register(Factory) error
+    func (*Catalog) Lookup(string) (Factory, error)
+    func (*Catalog) Names() []string
 
 ## 6. 公共代码契约
 
@@ -440,7 +448,7 @@ Plugin 不读取 raw config。它只接收已校验的命名配置：
         Address string
     }
 
-Configurator 负责 strict decode、默认值和 Validate；Factory 负责 New Plugin。Runtime 看不到配置。
+Factory 负责把 raw config 严格解码为自己拥有的 Config，应用默认值、执行 Validate 并创建 Plugin。Plugin 看不到 raw config，Runtime 看不到任何配置。
 
 ## 11. 不变量
 

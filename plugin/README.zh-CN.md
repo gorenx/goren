@@ -14,13 +14,13 @@ plugin 是 Goren 的 typed Plugin 运行时底座，负责 Plugin/Fiber 生命�
 - 管理 Child Fiber、replacement、dependent-first stop 和 diagnostics；
 - 通过 Runtime 私有 Effect stack 统一回滚。
 
-本包不读取配置、不查询 Catalog、不构造业务 Plugin，不拥有业务事务、Event Store、HTTP、数据库或 Goren 业务模型。configuration 与 factory 子包属于构造边界，不进入 Runtime 核心流程。
+本包不读取配置、不查询 Catalog、不构造业务 Plugin，不拥有业务事务、Event Store、HTTP、数据库或 Goren 业务模型。factory 子包属于构造边界，不进入 Runtime 核心流程。
 
 ## 运行流程
 
 ```mermaid
 flowchart LR
-    Config[typed config] --> Factory[Factory]
+    Source[raw config] --> Factory[Factory strict decode validate]
     Factory --> Instance[Plugin instance]
     Instance --> Manifest[Manifest validation]
     Manifest --> Settlement[Service settlement]
@@ -43,8 +43,7 @@ Runtime 根据 Manifest 自动注册贡献。插件作者不接收 Context，不
 
 ## 子包
 
-- configuration：不可变配置 Document 与严格 typed JSON 解码；
-- factory：Configurator、Factory 和静态 Catalog；
+- factory：拥有具名配置、严格解码、校验与 Plugin 构造的 Factory，以及静态 Catalog；
 - example：只使用 plugin 公共 API 的独立示例。
 
 ## 示例
