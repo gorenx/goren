@@ -11,7 +11,7 @@ import (
 // agentLifecycle is the caller-facing owner of one Runtime-managed Agent tree.
 // Agent membership itself belongs to agentMembership.
 type agentLifecycle struct {
-	owner *LoopPlugin
+	mountOwner *Plugin
 
 	mutex       sync.Mutex
 	rootHandle  plugin.Handle
@@ -22,10 +22,10 @@ type agentLifecycle struct {
 	closeErr    error
 }
 
-func newAgentLifecycle(owner *LoopPlugin) *agentLifecycle {
+func newAgentLifecycle(mountOwner *Plugin) *agentLifecycle {
 	return &agentLifecycle{
-		owner:  owner,
-		closed: make(chan struct{}),
+		mountOwner: mountOwner,
+		closed:     make(chan struct{}),
 	}
 }
 
@@ -77,7 +77,7 @@ func (lifecycle *agentLifecycle) Dispose(closeContext context.Context) error {
 		} else {
 			closeErr = plugin.UnloadChild(
 				closeContext,
-				lifecycle.owner,
+				lifecycle.mountOwner,
 				rootHandle,
 			)
 			if closeErr != nil {

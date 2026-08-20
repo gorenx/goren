@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -137,7 +138,7 @@ type harnessFixture struct {
 	sessions      *session.MemoryStore
 	models        *llm.Runtime
 	toolCatalog   tools.ToolCatalog
-	loopPlugin    *agentloop.LoopPlugin
+	loopPlugin    *agentloop.Plugin
 	backend       *scriptedAdapter
 	lifecycle     *lifecycleObserver
 }
@@ -146,16 +147,27 @@ func newHarnessFixture(
 	t *testing.T,
 	responses [][]llm.StreamChunk,
 ) *harnessFixture {
+	return newHarnessFixtureWithSettings(
+		t,
+		responses,
+		agentloop.Settings{
+			MaxParallelToolCalls: agentloop.DefaultMaxParallelToolCalls,
+		},
+	)
+}
+
+func newHarnessFixtureWithSettings(
+	t *testing.T,
+	responses [][]llm.StreamChunk,
+	loopSettings agentloop.Settings,
+	rootExtensions ...plugin.Plugin,
+) *harnessFixture {
 	t.Helper()
 	promptSettings, err := systemprompt.ValidateConfig(systemprompt.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	toolSettings, err := tools.ValidateConfig(tools.Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	loopSettings, err := agentloop.ValidateConfig(agentloop.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,15 +195,19 @@ func newHarnessFixture(
 	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{
 		EventFailures: eventFailureSink{},
 	})
-	if _, err = runtimeEngine.Start(
-		context.Background(),
+	rootPlugins := []plugin.Plugin{
 		lifecycle,
 		agentRegistry,
 		sessionStore,
 		modelRuntime,
 		promptRuntime,
 		toolService,
-		loopPlugin,
+	}
+	rootPlugins = append(rootPlugins, rootExtensions...)
+	rootPlugins = append(rootPlugins, loopPlugin)
+	if _, err = runtimeEngine.Start(
+		context.Background(),
+		rootPlugins...,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -308,10 +324,178 @@ func TestLoopPublishesDrivesAndDisposesOneAgentLifecycle(t *testing.T) {
 	}
 }
 
+func TestConfiguredAgentsStartAfterRuntimeAndOwnDetachedMetadata(t *testing.T) {
+	createdAt := int64(42)
+	workingDirectory := t.TempDir()
+	expectedWorkingDirectory := workingDirectory
+	parentSession := session.SessionID("parent-session")
+	seedLength := int64(0)
+	delegationDepth := int64(1)
+	agentPreset := "default"
+	state := newHarnessFixtureWithSettings(
+		t,
+		nil,
+		agentloop.Settings{
+			MaxParallelToolCalls: agentloop.DefaultMaxParallelToolCalls,
+			StartupAgents: []agentloop.StartupAgent{
+				{
+					Label:     "configured",
+					SessionID: "configured-session",
+					Metadata: session.Metadata{
+						CreatedAt:       &createdAt,
+						CWD:             &workingDirectory,
+						ParentSession:   &parentSession,
+						SeedLength:      &seedLength,
+						Origin:          session.OriginSubagent,
+						DelegationDepth: &delegationDepth,
+						AgentPreset:     &agentPreset,
+					},
+				},
+			},
+		},
+	)
+	createdAt = 99
+	workingDirectory = "/mutated"
+	parentSession = "mutated-parent"
+	seedLength = 99
+	delegationDepth = 99
+	agentPreset = "mutated"
+	if _, found := state.agents.Get("configured-session"); found {
+		t.Fatal("configured Agent started before Runtime.Start returned")
+	}
+	handles, err := state.loopPlugin.StartConfiguredAgents(
+		context.Background(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(handles) != 1 {
+		t.Fatalf("configured Agent count = %d, want 1", len(handles))
+	}
+	defer func() {
+		if disposeErr := handles[0].Dispose(context.Background()); disposeErr != nil {
+			t.Error(disposeErr)
+		}
+	}()
+	header := handles[0].Subject.SessionValue().Header()
+	if header.CreatedAt != 42 || header.CWD == nil ||
+		*header.CWD != expectedWorkingDirectory || header.ParentSession == nil ||
+		*header.ParentSession != "parent-session" ||
+		header.SeedLength == nil || *header.SeedLength != 0 ||
+		header.DelegationDepth == nil || *header.DelegationDepth != 1 ||
+		header.AgentPreset == nil || *header.AgentPreset != "default" {
+		t.Fatalf("configured Session header = %#v", header)
+	}
+	if _, err = state.loopPlugin.StartConfiguredAgents(
+		context.Background(),
+	); err == nil || !strings.Contains(err.Error(), "already started") {
+		t.Fatalf("second configured startup error = %v", err)
+	}
+}
+
+func TestConfiguredAgentFailureRollsBackEarlierStartup(t *testing.T) {
+	state := newHarnessFixtureWithSettings(
+		t,
+		nil,
+		agentloop.Settings{
+			MaxParallelToolCalls: agentloop.DefaultMaxParallelToolCalls,
+			StartupAgents: []agentloop.StartupAgent{
+				{
+					Label:     "first",
+					SessionID: "configured-first",
+				},
+				{
+					Label:     "collision",
+					SessionID: "already-live",
+				},
+			},
+		},
+	)
+	existing := createTestAgent(t, state, "already-live")
+	defer func() {
+		if disposeErr := existing.Dispose(context.Background()); disposeErr != nil {
+			t.Error(disposeErr)
+		}
+	}()
+	_, err := state.loopPlugin.StartConfiguredAgents(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "already-live") {
+		t.Fatalf("configured startup error = %v", err)
+	}
+	if _, found := state.agents.Get("configured-first"); found {
+		t.Fatal("earlier configured Agent survived transaction rollback")
+	}
+	if _, found := state.sessions.Get("configured-first"); found {
+		t.Fatal("earlier configured Session survived transaction rollback")
+	}
+	if retained, found := state.agents.Get("already-live"); !found || retained != existing.Subject {
+		t.Fatal("startup rollback removed the pre-existing Agent")
+	}
+}
+
 type requestExtension struct {
 	plugin.Base
 	subject  agent.Agent
 	disposed bool
+}
+
+type prePublicationExtension struct {
+	plugin.Base
+	sendErr error
+}
+
+func (*prePublicationExtension) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "agentloop-test-pre-publication-extension",
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[agent.Agent](),
+		},
+	}
+}
+
+func (extension *prePublicationExtension) Apply(
+	requestContext context.Context,
+) error {
+	subject, err := plugin.Require[agent.Agent](extension)
+	if err != nil {
+		return err
+	}
+	extension.sendErr = subject.Followup(userMessageValue("too early"))
+	return requestContext.Err()
+}
+
+func (*prePublicationExtension) Dispose(context.Context) error {
+	return nil
+}
+
+func TestAgentRejectsWorkBeforeCommitPublication(t *testing.T) {
+	state := newHarnessFixture(t, nil)
+	extension := &prePublicationExtension{}
+	handleState, err := state.agents.Create(
+		context.Background(),
+		agent.CreateOptions{
+			SessionID: "pre-publication-admission",
+			AgentOptions: agent.Options{
+				Provider: "mock",
+				Model:    "model",
+			},
+			Extensions: []plugin.Plugin{
+				extension,
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if extension.sendErr == nil ||
+		!strings.Contains(extension.sendErr.Error(), "not live") {
+		t.Fatalf("pre-publication Followup error = %v", extension.sendErr)
+	}
+	if handleState.Subject.InboxValue().HasPending() {
+		t.Fatal("pre-publication Followup mutated the Agent Inbox")
+	}
+	if err = handleState.Dispose(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (extension *requestExtension) Manifest() plugin.Manifest {
@@ -414,6 +598,72 @@ func TestAgentExtensionResolvesExactAgentAndWaterfall(t *testing.T) {
 	}
 }
 
+type toolExecutionExtension struct {
+	plugin.Base
+	invocations atomic.Int64
+}
+
+func (extension *toolExecutionExtension) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "agentloop-test-tool-execution-extension",
+		Waterfalls: []plugin.WaterfallMiddlewareBinding{
+			plugin.WaterfallOf(extension),
+		},
+	}
+}
+
+func (*toolExecutionExtension) Apply(requestContext context.Context) error {
+	return requestContext.Err()
+}
+
+func (*toolExecutionExtension) Dispose(context.Context) error {
+	return nil
+}
+
+func (extension *toolExecutionExtension) Intercept(
+	requestContext context.Context,
+	request tools.ExecuteRequest,
+	downstream plugin.WaterfallAction[
+		tools.ExecuteRequest,
+		tools.ExecuteOutcome,
+	],
+) (tools.ExecuteOutcome, error) {
+	extension.invocations.Add(1)
+	return downstream.Execute(requestContext, request)
+}
+
+func TestAgentExtensionInterceptsItsScopedToolRuntime(t *testing.T) {
+	state := newHarnessFixture(t, modelResponses())
+	registerEchoTool(t, state)
+	extension := &toolExecutionExtension{}
+	handleState, err := state.agents.Create(
+		context.Background(),
+		agent.CreateOptions{
+			SessionID: "scoped-tool-extension",
+			AgentOptions: agent.Options{
+				Provider: "mock",
+				Model:    "model",
+			},
+			Extensions: []plugin.Plugin{
+				extension,
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = handleState.Subject.Followup(userMessage(t, "use tool")); err != nil {
+		t.Fatal(err)
+	}
+	waitForIdle(t, handleState.Subject)
+	if got := extension.invocations.Load(); got != 1 {
+		t.Fatalf("scoped Tool execution interception count = %d, want 1", got)
+	}
+	if err = handleState.Dispose(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 type failingAgentExtension struct {
 	plugin.Base
 	applied  bool
@@ -479,14 +729,15 @@ func TestFailedExtensionNeverPublishesPartialAgentTree(t *testing.T) {
 
 func TestRuntimeShutdownRetiresLiveAgentBeforeRootServices(t *testing.T) {
 	state := newHarnessFixture(t, nil)
-	handleState, err := state.loopPlugin.Create(
+	handleState, err := state.agents.Create(
 		context.Background(),
-		"shutdown-agent",
-		agent.Options{
-			Provider: "mock",
-			Model:    "model",
+		agent.CreateOptions{
+			SessionID: "shutdown-agent",
+			AgentOptions: agent.Options{
+				Provider: "mock",
+				Model:    "model",
+			},
 		},
-		session.Metadata{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -503,15 +754,16 @@ func TestRuntimeShutdownRetiresLiveAgentBeforeRootServices(t *testing.T) {
 	if err = handleState.Dispose(context.Background()); err != nil {
 		t.Fatalf("post-shutdown Handle disposal is not idempotent: %v", err)
 	}
-	if _, err = state.loopPlugin.Create(
+	if _, err = state.agents.Create(
 		context.Background(),
-		"after-shutdown",
-		agent.Options{
-			Provider: "mock",
-			Model:    "model",
+		agent.CreateOptions{
+			SessionID: "after-shutdown",
+			AgentOptions: agent.Options{
+				Provider: "mock",
+				Model:    "model",
+			},
 		},
-		session.Metadata{},
-	); err == nil || !strings.Contains(err.Error(), "not active") {
+	); err == nil || !strings.Contains(err.Error(), "no Agent factory") {
 		t.Fatalf("post-shutdown Create error = %v", err)
 	}
 	want := []string{
@@ -523,6 +775,326 @@ func TestRuntimeShutdownRetiresLiveAgentBeforeRootServices(t *testing.T) {
 	}
 	if got := state.lifecycle.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("shutdown lifecycle = %#v, want %#v", got, want)
+	}
+}
+
+type flushBarrier struct {
+	plugin.Base
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (*flushBarrier) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "agentloop-test-flush-barrier",
+		Events: []plugin.EventSubscription{
+			plugin.EventOf[session.SessionFlushRequested](),
+		},
+	}
+}
+
+func (*flushBarrier) Apply(requestContext context.Context) error {
+	return requestContext.Err()
+}
+
+func (*flushBarrier) Dispose(context.Context) error {
+	return nil
+}
+
+func (barrier *flushBarrier) ObserveEvent(
+	requestContext context.Context,
+	fact plugin.Event,
+) error {
+	if _, matches := fact.(session.SessionFlushRequested); !matches {
+		return nil
+	}
+	barrier.once.Do(func() {
+		close(barrier.started)
+	})
+	select {
+	case <-barrier.release:
+		return nil
+	case <-requestContext.Done():
+		return context.Cause(requestContext)
+	}
+}
+
+func TestTurnFlushCompletesBeforeAgentBecomesIdle(t *testing.T) {
+	barrier := &flushBarrier{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	state := newHarnessFixtureWithSettings(
+		t,
+		[][]llm.StreamChunk{
+			{
+				llm.BlockEndChunk{
+					Index: 0,
+					Block: llm.NewTextBlock("done"),
+				},
+				llm.FinishChunk{
+					Reason: llm.StopFinish{},
+				},
+			},
+		},
+		agentloop.Settings{
+			MaxParallelToolCalls: agentloop.DefaultMaxParallelToolCalls,
+		},
+		barrier,
+	)
+	handleState, err := state.agents.Create(
+		context.Background(),
+		agent.CreateOptions{
+			SessionID: "flush-before-idle",
+			AgentOptions: agent.Options{
+				Provider: "mock",
+				Model:    "model",
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			close(barrier.release)
+		}
+		if disposeErr := handleState.Dispose(context.Background()); disposeErr != nil {
+			t.Error(disposeErr)
+		}
+	}()
+	if err = handleState.Subject.Followup(userMessage(t, "flush")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-barrier.started:
+	case <-time.After(time.Second):
+		t.Fatal("Session flush did not start")
+	}
+	idle := make(chan error, 1)
+	go func() {
+		idle <- handleState.Subject.WhenIdle(context.Background())
+	}()
+	select {
+	case idleErr := <-idle:
+		t.Fatalf("Agent became idle before flush completed: %v", idleErr)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(barrier.release)
+	released = true
+	select {
+	case idleErr := <-idle:
+		if idleErr != nil {
+			t.Fatal(idleErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Agent did not become idle after flush completed")
+	}
+	if ending := lastTurnEnd(t, handleState.Subject.SessionValue()); ending.Kind != "completed" {
+		t.Fatalf("turn ending = %#v", ending)
+	}
+}
+
+type parallelToolControl struct {
+	firstStarted  chan struct{}
+	secondSettled chan struct{}
+	releaseFirst  chan struct{}
+	mutex         sync.Mutex
+	settled       []llm.CallID
+}
+
+func (control *parallelToolControl) run(
+	_ json.RawMessage,
+	runContext tools.ToolRunContext,
+) (json.RawMessage, error) {
+	callID := runContext.Execution.CallID
+	switch callID {
+	case "call-1":
+		close(control.firstStarted)
+		<-control.releaseFirst
+	case "call-2":
+		close(control.secondSettled)
+	}
+	control.mutex.Lock()
+	control.settled = append(control.settled, callID)
+	control.mutex.Unlock()
+	runContext.DeferContext(userMessageValue("context-" + string(callID)))
+	return json.RawMessage(`{"callId":"` + string(callID) + `"}`), nil
+}
+
+func (control *parallelToolControl) settledOrder() []llm.CallID {
+	control.mutex.Lock()
+	defer control.mutex.Unlock()
+	return append([]llm.CallID(nil), control.settled...)
+}
+
+func TestParallelToolBodiesCommitResultsAndContextInModelOrder(t *testing.T) {
+	state := newHarnessFixture(t, [][]llm.StreamChunk{
+		toolCallResponse("call-1", "call-2"),
+		{
+			llm.BlockEndChunk{
+				Index: 0,
+				Block: llm.NewTextBlock("done"),
+			},
+			llm.FinishChunk{
+				Reason: llm.StopFinish{},
+			},
+		},
+	})
+	control := &parallelToolControl{
+		firstStarted:  make(chan struct{}),
+		secondSettled: make(chan struct{}),
+		releaseFirst:  make(chan struct{}),
+	}
+	registerParallelTool(t, state, control.run)
+	handleState := createTestAgent(t, state, "parallel-order")
+	defer func() {
+		if disposeErr := handleState.Dispose(context.Background()); disposeErr != nil {
+			t.Error(disposeErr)
+		}
+	}()
+	if err := handleState.Subject.Followup(userMessage(t, "parallel")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-control.secondSettled:
+	case <-time.After(time.Second):
+		t.Fatal("second Tool body did not settle")
+	}
+	select {
+	case <-control.firstStarted:
+	default:
+		t.Fatal("first Tool body was not started")
+	}
+	close(control.releaseFirst)
+	waitForIdle(t, handleState.Subject)
+	if settled := control.settledOrder(); !reflect.DeepEqual(
+		settled,
+		[]llm.CallID{"call-2", "call-1"},
+	) {
+		t.Fatalf("Tool body settlement = %#v", settled)
+	}
+	requests := state.backend.snapshots()
+	if len(requests) != 2 {
+		t.Fatalf("model request count = %d", len(requests))
+	}
+	wantTail := []string{
+		`{"callId":"call-1"}`,
+		`{"callId":"call-2"}`,
+		"context-call-1",
+		"context-call-2",
+	}
+	got := messageTexts(requests[1].Messages)
+	if len(got) < len(wantTail) || !reflect.DeepEqual(
+		got[len(got)-len(wantTail):],
+		wantTail,
+	) {
+		t.Fatalf("ordered result/context tail = %#v, want %#v", got, wantTail)
+	}
+}
+
+func TestMaintenanceWakeKeepsWhenIdleBehindSuccessorTurn(t *testing.T) {
+	state := newHarnessFixture(t, [][]llm.StreamChunk{
+		{
+			llm.BlockEndChunk{
+				Index: 0,
+				Block: llm.NewTextBlock("done"),
+			},
+			llm.FinishChunk{
+				Reason: llm.StopFinish{},
+			},
+		},
+	})
+	handleState := createTestAgent(t, state, "maintenance-wake")
+	defer func() {
+		if disposeErr := handleState.Dispose(context.Background()); disposeErr != nil {
+			t.Error(disposeErr)
+		}
+	}()
+	maintenanceStarted := make(chan struct{})
+	releaseMaintenance := make(chan struct{})
+	maintenanceDone := make(chan error, 1)
+	go func() {
+		maintenanceDone <- handleState.Subject.RunMaintenance(
+			context.Background(),
+			agent.MaintenanceFunc(func(context.Context) error {
+				close(maintenanceStarted)
+				<-releaseMaintenance
+				return nil
+			}),
+		)
+	}()
+	select {
+	case <-maintenanceStarted:
+	case <-time.After(time.Second):
+		t.Fatal("maintenance did not start")
+	}
+	if err := handleState.Subject.Followup(userMessage(t, "queued")); err != nil {
+		t.Fatal(err)
+	}
+	idle := make(chan error, 1)
+	go func() {
+		idle <- handleState.Subject.WhenIdle(context.Background())
+	}()
+	if requests := state.backend.snapshots(); len(requests) != 0 {
+		t.Fatalf("model ran during maintenance: %d request(s)", len(requests))
+	}
+	close(releaseMaintenance)
+	if err := <-maintenanceDone; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case idleErr := <-idle:
+		if idleErr != nil {
+			t.Fatal(idleErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WhenIdle did not include the latched successor Turn")
+	}
+	if requests := state.backend.snapshots(); len(requests) != 1 {
+		t.Fatalf("model request count = %d, want 1", len(requests))
+	}
+}
+
+func TestFirstCancelCauseSurvivesDisposal(t *testing.T) {
+	state := newHarnessFixture(t, [][]llm.StreamChunk{
+		toolCallResponse("call-1"),
+	})
+	toolStarted := make(chan struct{})
+	registerParallelTool(t, state, func(
+		_ json.RawMessage,
+		runContext tools.ToolRunContext,
+	) (json.RawMessage, error) {
+		close(toolStarted)
+		<-runContext.Context.Done()
+		return json.RawMessage(`{"cancelled":true}`), nil
+	})
+	handleState := createTestAgent(t, state, "cancel-dispose")
+	if err := handleState.Subject.Followup(userMessage(t, "cancel")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-toolStarted:
+	case <-time.After(time.Second):
+		t.Fatal("Tool body did not start")
+	}
+	handleState.Subject.Cancel(
+		agent.HookCancel{
+			Reason: "first-cause",
+		},
+		agent.CancelOptions{
+			KeepInbox: true,
+		},
+	)
+	if err := handleState.Dispose(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ending := lastTurnEnd(t, handleState.Subject.SessionValue())
+	if ending.Kind != "aborted" || ending.Reason == nil ||
+		ending.Reason.Kind != "hook" || ending.Reason.Reason != "first-cause" {
+		t.Fatalf("turn ending = %#v", ending)
 	}
 }
 
@@ -718,8 +1290,118 @@ func userMessage(t *testing.T, content string) llm.UserMessage {
 type turnEndObservation struct {
 	Kind   string `json:"kind"`
 	Reason *struct {
-		Kind string `json:"kind"`
+		Kind   string `json:"kind"`
+		Reason string `json:"reason,omitempty"`
 	} `json:"reason,omitempty"`
+}
+
+func createTestAgent(
+	t *testing.T,
+	state *harnessFixture,
+	identifier session.SessionID,
+) agent.Handle {
+	t.Helper()
+	handleState, err := state.agents.Create(
+		context.Background(),
+		agent.CreateOptions{
+			SessionID: identifier,
+			AgentOptions: agent.Options{
+				Provider: "mock",
+				Model:    "model",
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handleState
+}
+
+func waitForIdle(t *testing.T, subject agent.Agent) {
+	t.Helper()
+	waitContext, cancelWait := context.WithTimeout(
+		context.Background(),
+		time.Second,
+	)
+	defer cancelWait()
+	if err := subject.WhenIdle(waitContext); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func userMessageValue(content string) llm.UserMessage {
+	message, err := llm.NewUserMessage(llm.UserMessageInput{
+		Content: []llm.ContentBlock{
+			llm.NewTextBlock(content),
+		},
+		Source: llm.UserMessageSource{},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return message
+}
+
+func toolCallResponse(callIDs ...llm.CallID) []llm.StreamChunk {
+	response := make([]llm.StreamChunk, 0, len(callIDs)+1)
+	for index, callID := range callIDs {
+		response = append(
+			response,
+			llm.BlockEndChunk{
+				Index: index,
+				Block: llm.ToolCallBlock{
+					ID:        callID,
+					Name:      "parallel",
+					Arguments: `{"value":true}`,
+				},
+			},
+		)
+	}
+	return append(
+		response,
+		llm.FinishChunk{
+			Reason: llm.ToolCallsFinish{},
+		},
+	)
+}
+
+func registerParallelTool(
+	t *testing.T,
+	state *harnessFixture,
+	toolBody func(
+		json.RawMessage,
+		tools.ToolRunContext,
+	) (json.RawMessage, error),
+) {
+	t.Helper()
+	err := state.toolCatalog.AddTool(
+		context.Background(),
+		tools.ToolDefinition{
+			Name:        "parallel",
+			Description: "test parallel scheduling",
+			Parameters:  json.RawMessage(`{"type":"object"}`),
+			Output: tools.ToolOutputDefinition{
+				Schema: json.RawMessage(`{"type":"object"}`),
+				Renderer: tools.OutputRendererFunc(func(
+					_ json.RawMessage,
+					value json.RawMessage,
+				) ([]llm.ContentBlock, error) {
+					return []llm.ContentBlock{
+						llm.NewTextBlock(string(value)),
+					}, nil
+				}),
+			},
+			Executor: tools.ExecutorFunc(toolBody),
+			ConcurrencyBehavior: tools.ConcurrencyClassifierFunc(func(
+				json.RawMessage,
+			) bool {
+				return true
+			}),
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 func lastTurnEnd(

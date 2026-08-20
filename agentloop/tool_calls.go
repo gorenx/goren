@@ -13,6 +13,39 @@ import (
 	"github.com/gorenx/goren/tools"
 )
 
+// toolCallExecutor owns one step's bounded Tool-call scheduling, started-call
+// drain, and model-order result commit.
+type toolCallExecutor struct {
+	subject              *ReactLoopAgent
+	pending              *agent.Inbox
+	toolRuntime          tools.ToolRuntime
+	maxParallelToolCalls int
+}
+
+func newToolCallExecutor(
+	subject *ReactLoopAgent,
+	pending *agent.Inbox,
+	toolRuntime tools.ToolRuntime,
+	maxParallelToolCalls int,
+) (*toolCallExecutor, error) {
+	if subject == nil || pending == nil || toolRuntime == nil {
+		return nil, errors.New("agentloop: Tool-call dependencies are incomplete")
+	}
+	if maxParallelToolCalls < 1 {
+		return nil, errors.New("agentloop: Tool-call concurrency must be positive")
+	}
+	return &toolCallExecutor{
+		subject:              subject,
+		pending:              pending,
+		toolRuntime:          toolRuntime,
+		maxParallelToolCalls: maxParallelToolCalls,
+	}, nil
+}
+
+func (executor *toolCallExecutor) deactivate() {
+	executor.toolRuntime = nil
+}
+
 type plannedToolCall struct {
 	block llm.ToolCallBlock
 	input tools.ToolExecutionInput
@@ -36,7 +69,7 @@ type dispatchSettlement struct {
 	err   error
 }
 
-func (driver *agentDriver) executeToolCalls(
+func (executor *toolCallExecutor) execute(
 	requestContext context.Context,
 	turn int64,
 	step int64,
@@ -54,7 +87,7 @@ func (driver *agentDriver) executeToolCalls(
 				CallID:    block.ID,
 				Name:      block.Name,
 				Arguments: arguments,
-				Subject:   driver.subject,
+				Subject:   executor.subject,
 			},
 		}
 	}
@@ -62,12 +95,18 @@ func (driver *agentDriver) executeToolCalls(
 	concluded := false
 	for nextIndex < len(plannedCalls) {
 		first := plannedCalls[nextIndex]
-		mode := driver.toolRuntime.ExecutionMode(first.input)
+		mode := executor.toolRuntime.ExecutionMode(first.input)
 		group := plannedCalls[nextIndex : nextIndex+1]
 		if mode == tools.ExecutionParallel {
 			group = plannedCalls[nextIndex:]
 		}
-		outcome, err := driver.runToolGroup(requestContext, turn, step, group, mode)
+		outcome, err := executor.runToolGroup(
+			requestContext,
+			turn,
+			step,
+			group,
+			mode,
+		)
 		if err != nil {
 			return concluded, err
 		}
@@ -75,7 +114,7 @@ func (driver *agentDriver) executeToolCalls(
 		concluded = concluded || outcome.concluded
 		if outcome.aborted {
 			for _, skipped := range plannedCalls[nextIndex:] {
-				if err := driver.appendSkippedToolCall(turn, step, skipped.block); err != nil {
+				if err := executor.appendSkippedToolCall(turn, step, skipped.block); err != nil {
 					return concluded, err
 				}
 			}
@@ -85,15 +124,15 @@ func (driver *agentDriver) executeToolCalls(
 	return concluded, nil
 }
 
-func (driver *agentDriver) runToolGroup(
+func (executor *toolCallExecutor) runToolGroup(
 	requestContext context.Context,
 	turn int64,
 	step int64,
 	group []plannedToolCall,
 	mode tools.ToolExecutionMode,
 ) (toolGroupOutcome, error) {
-	scheduler := driver.toolRuntime.Scheduler()
-	if scheduler == nil {
+	executionScheduler := executor.toolRuntime.Scheduler()
+	if executionScheduler == nil {
 		return toolGroupOutcome{}, errors.New("agentloop: Tools runtime returned a nil scheduler")
 	}
 	slots := make([]*settledToolSlot, len(group))
@@ -115,18 +154,30 @@ func (driver *agentDriver) runToolGroup(
 			finalOutcome := slot.outcome
 			if slot.needsPost {
 				var finalizeErr error
-				finalOutcome, finalizeErr = scheduler.Finalize(slot.execution, slot.outcome)
+				finalOutcome, finalizeErr = executionScheduler.Finalize(
+					slot.execution,
+					slot.outcome,
+				)
 				if finalizeErr != nil {
 					return finalizeErr
 				}
 			} else {
-				finalOutcome = scheduler.Finish(slot.execution, slot.outcome)
+				finalOutcome = executionScheduler.Finish(
+					slot.execution,
+					slot.outcome,
+				)
 			}
-			if err := driver.appendToolResult(turn, step, group[committed].block, finalOutcome, callSequences[committed]); err != nil {
+			if err := executor.appendToolResult(
+				turn,
+				step,
+				group[committed].block,
+				finalOutcome,
+				callSequences[committed],
+			); err != nil {
 				return err
 			}
 			for _, additionalContext := range finalOutcome.AdditionalContextMessages() {
-				if err := driver.pending.Append(agent.NextStep, additionalContext); err != nil {
+				if err := executor.pending.Append(agent.NextStep, additionalContext); err != nil {
 					return err
 				}
 			}
@@ -137,13 +188,16 @@ func (driver *agentDriver) runToolGroup(
 	}
 
 	startCall := func(index int) error {
-		callSequence, err := driver.appendToolCall(turn, step, group[index].block)
+		callSequence, err := executor.appendToolCall(turn, step, group[index].block)
 		if err != nil {
 			return err
 		}
 		callSequences[index] = callSequence
 		started++
-		preparation, err := scheduler.Prepare(requestContext, group[index].input)
+		preparation, err := executionScheduler.Prepare(
+			requestContext,
+			group[index].input,
+		)
 		if err != nil {
 			return err
 		}
@@ -151,14 +205,18 @@ func (driver *agentDriver) runToolGroup(
 		case tools.ScheduledDispatch:
 			inFlight[index] = struct{}{}
 			go func() {
-				settlement := dispatchSettlement{index: index}
+				settlement := dispatchSettlement{
+					index: index,
+				}
 				defer func() {
 					if panicValue := recover(); panicValue != nil {
 						settlement.err = fmt.Errorf("agentloop: tool scheduler dispatch panicked: %v", panicValue)
 					}
 					settled <- settlement
 				}()
-				dispatched, dispatchErr := scheduler.Dispatch(preparation.Execution)
+				dispatched, dispatchErr := executionScheduler.Dispatch(
+					preparation.Execution,
+				)
 				if dispatchErr != nil {
 					settlement.err = dispatchErr
 					return
@@ -171,11 +229,14 @@ func (driver *agentDriver) runToolGroup(
 			}()
 		case tools.ScheduledPostResult:
 			slots[index] = &settledToolSlot{
-				execution: preparation.Execution, outcome: preparation.Result, needsPost: true,
+				execution: preparation.Execution,
+				outcome:   preparation.Result,
+				needsPost: true,
 			}
 		case tools.ScheduledFinalResult:
 			slots[index] = &settledToolSlot{
-				execution: preparation.Execution, outcome: preparation.Result,
+				execution: preparation.Execution,
+				outcome:   preparation.Result,
 			}
 		default:
 			return fmt.Errorf("agentloop: unsupported tool preparation stage %q", preparation.Stage)
@@ -184,9 +245,10 @@ func (driver *agentDriver) runToolGroup(
 	}
 
 	fillPool := func() error {
-		for !aborted && nextToStart < len(group) && len(inFlight) < driver.subject.owner.MaxParallelToolCalls() {
+		for !aborted && nextToStart < len(group) &&
+			len(inFlight) < executor.maxParallelToolCalls {
 			if nextToStart > 0 && mode == tools.ExecutionParallel &&
-				driver.toolRuntime.ExecutionMode(group[nextToStart].input) != tools.ExecutionParallel {
+				executor.toolRuntime.ExecutionMode(group[nextToStart].input) != tools.ExecutionParallel {
 				break
 			}
 			if err := startCall(nextToStart); err != nil {
@@ -230,7 +292,7 @@ func (driver *agentDriver) runToolGroup(
 	}
 	if aborted {
 		for _, skipped := range group[started:] {
-			if err := driver.appendSkippedToolCall(turn, step, skipped.block); err != nil {
+			if err := executor.appendSkippedToolCall(turn, step, skipped.block); err != nil {
 				return toolGroupOutcome{}, err
 			}
 		}
@@ -264,15 +326,31 @@ func parseToolArguments(rawValue string) (json.RawMessage, error) {
 	return json.RawMessage(encoded), nil
 }
 
-func (driver *agentDriver) appendToolCall(turn int64, step int64, block llm.ToolCallBlock) (int64, error) {
-	committed, err := session.AppendSerialized(driver.subject.conversation, session.ToolCalled, session.ToolCall{
-		Turn: turn, Step: step, CallID: block.ID, Name: block.Name, Arguments: block.Arguments,
-	})
+func (executor *toolCallExecutor) appendToolCall(
+	turn int64,
+	step int64,
+	block llm.ToolCallBlock,
+) (int64, error) {
+	committed, err := session.AppendSerialized(
+		executor.subject.conversation,
+		session.ToolCalled,
+		session.ToolCall{
+			Turn:      turn,
+			Step:      step,
+			CallID:    block.ID,
+			Name:      block.Name,
+			Arguments: block.Arguments,
+		},
+	)
 	return committed.Seq, err
 }
 
-func (driver *agentDriver) appendSkippedToolCall(turn int64, step int64, block llm.ToolCallBlock) error {
-	callSequence, err := driver.appendToolCall(turn, step, block)
+func (executor *toolCallExecutor) appendSkippedToolCall(
+	turn int64,
+	step int64,
+	block llm.ToolCallBlock,
+) error {
+	callSequence, err := executor.appendToolCall(turn, step, block)
 	if err != nil {
 		return err
 	}
@@ -284,12 +362,14 @@ func (driver *agentDriver) appendSkippedToolCall(turn int64, step int64, block l
 				Code: tools.ToolAbortedBeforeDispatch,
 			},
 		},
-		Content: []llm.ContentBlock{llm.NewTextBlock("Error: tool call aborted before dispatch")},
+		Content: []llm.ContentBlock{
+			llm.NewTextBlock("Error: tool call aborted before dispatch"),
+		},
 	}
-	return driver.appendToolResult(turn, step, block, failure, callSequence)
+	return executor.appendToolResult(turn, step, block, failure, callSequence)
 }
 
-func (driver *agentDriver) appendToolResult(
+func (executor *toolCallExecutor) appendToolResult(
 	turn int64,
 	step int64,
 	block llm.ToolCallBlock,
@@ -300,13 +380,18 @@ func (driver *agentDriver) appendToolResult(
 		return errors.New("agentloop: Tool scheduler returned a nil result")
 	}
 	toolReply, err := llm.NewToolResultMessage(llm.ToolResultMessageInput{
-		CallID: block.ID, Content: outcome.ContentBlocks(), IsError: outcome.Failed(),
+		CallID:  block.ID,
+		Content: outcome.ContentBlocks(),
+		IsError: outcome.Failed(),
 	})
 	if err != nil {
 		return err
 	}
 	payload := session.ToolResult{
-		Turn: turn, Step: step, Message: toolReply, Meta: outcomeMeta(outcome),
+		Turn:    turn,
+		Step:    step,
+		Message: toolReply,
+		Meta:    outcomeMeta(outcome),
 	}
 	if failure, present := outcomeFailure(outcome); present && failure.Info != nil {
 		payload.Error = &session.ToolErrorInfo{
@@ -315,9 +400,15 @@ func (driver *agentDriver) appendToolResult(
 		}
 	}
 	provenance := []int64{callSequence}
-	_, err = session.AppendSurfaceSerialized(driver.subject.conversation, session.ToolResultAdded, payload, session.SurfaceIntent{
-		Operation: session.SurfaceAppend(), SourceEventSeqs: &provenance,
-	})
+	_, err = session.AppendSurfaceSerialized(
+		executor.subject.conversation,
+		session.ToolResultAdded,
+		payload,
+		session.SurfaceIntent{
+			Operation:       session.SurfaceAppend(),
+			SourceEventSeqs: &provenance,
+		},
+	)
 	return err
 }
 

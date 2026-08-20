@@ -7,10 +7,96 @@ import (
 
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/systemprompt"
+	"github.com/gorenx/goren/tools"
 )
+
+// turnRunner owns the durable Turn/Step state machine. Activity admission,
+// model request execution, and Tool scheduling belong to its collaborators.
+type turnRunner struct {
+	subject    *ReactLoopAgent
+	activity   *activityCoordinator
+	pending    *agent.Inbox
+	projection *runtimeContextProjection
+	events     *agentEventPublisher
+
+	sessions session.LiveStore
+	prompts  systemprompt.Assembler
+	requests *modelRequester
+}
+
+func newTurnRunner(
+	subject *ReactLoopAgent,
+	activity *activityCoordinator,
+	pending *agent.Inbox,
+	projection *runtimeContextProjection,
+	events *agentEventPublisher,
+) *turnRunner {
+	return &turnRunner{
+		subject:    subject,
+		activity:   activity,
+		pending:    pending,
+		projection: projection,
+		events:     events,
+	}
+}
+
+func (runner *turnRunner) activate(
+	requestContext context.Context,
+	sessions session.LiveStore,
+	models llm.LlmRuntime,
+	toolRuntime tools.ToolRuntime,
+	prompts systemprompt.Assembler,
+	maxParallelToolCalls int,
+) error {
+	if requestContext == nil {
+		return errors.New("agentloop: Turn runner activation Context is nil")
+	}
+	if err := requestContext.Err(); err != nil {
+		return err
+	}
+	if sessions == nil || models == nil || toolRuntime == nil || prompts == nil {
+		return errors.New("agentloop: Turn runner dependencies are incomplete")
+	}
+	toolCalls, err := newToolCallExecutor(
+		runner.subject,
+		runner.pending,
+		toolRuntime,
+		maxParallelToolCalls,
+	)
+	if err != nil {
+		return err
+	}
+	runner.sessions = sessions
+	runner.prompts = prompts
+	runner.requests = newModelRequester(
+		runner.subject,
+		models,
+		toolCalls,
+	)
+	return requestContext.Err()
+}
+
+func (runner *turnRunner) deactivate() {
+	if runner.requests != nil {
+		runner.requests.deactivate()
+	}
+	runner.requests = nil
+	runner.sessions = nil
+	runner.prompts = nil
+}
+
+func (runner *turnRunner) reportError(
+	requestContext context.Context,
+	problem error,
+) {
+	runner.events.publishError(
+		requestContext,
+		runner.activity.snapshotPosition(),
+		problem,
+	)
+}
 
 type preparedStep struct {
 	rejected bool
@@ -18,7 +104,7 @@ type preparedStep struct {
 	assembly systemprompt.PromptAssembly
 }
 
-func (driver *agentDriver) prepareStep(
+func (runner *turnRunner) prepareStep(
 	requestContext context.Context,
 	target agent.InboxTarget,
 	turn int64,
@@ -27,14 +113,14 @@ func (driver *agentDriver) prepareStep(
 	if err := contextFailure(requestContext); err != nil {
 		return preparedStep{}, err
 	}
-	claimedMessages, err := driver.pending.Claim(target, turn)
+	claimedMessages, err := runner.pending.Claim(target, turn)
 	if err != nil {
 		return preparedStep{}, err
 	}
-	assembled, err := driver.prompts.Assemble(
+	assembled, err := runner.prompts.Assemble(
 		requestContext,
 		systemprompt.AssembleContext{
-			Session: driver.subject.conversation,
+			Session: runner.subject.conversation,
 		},
 	)
 	if err != nil {
@@ -44,7 +130,7 @@ func (driver *agentDriver) prepareStep(
 	if err != nil {
 		return preparedStep{}, err
 	}
-	projected, present, err := driver.projection.project(
+	projected, present, err := runner.projection.project(
 		systemprompt.JoinContextSections(sections),
 		sections,
 	)
@@ -58,7 +144,7 @@ func (driver *agentDriver) prepareStep(
 	decision, err := agent.ResolvePreStep(
 		requestContext,
 		agent.PreStepNotice{
-			Subject:  driver.subject,
+			Subject:  runner.subject,
 			Messages: candidates,
 			Turn:     turn,
 			Step:     step,
@@ -101,36 +187,32 @@ func (driver *agentDriver) prepareStep(
 	}
 }
 
-func (driver *agentDriver) runTurn(
+func (runner *turnRunner) runTurn(
 	requestContext context.Context,
 ) (bool, error) {
 	if err := contextFailure(requestContext); err != nil {
 		return false, err
 	}
-	driver.mutex.Lock()
-	turn := driver.activity.turn + 1
-	driver.mutex.Unlock()
+	turn := runner.activity.proposedTurn()
 	if turn <= 0 || turn > maxSafeInteger {
 		problem := fmt.Errorf(
 			"agentloop: Agent %q turn exceeds the safe integer range",
-			driver.subject.identifier,
+			runner.subject.identifier,
 		)
-		driver.reportError(requestContext, problem)
+		runner.reportError(requestContext, problem)
 		return false, problem
 	}
 	if _, err := session.AppendSerialized(
-		driver.subject.conversation,
+		runner.subject.conversation,
 		session.TurnStarted,
 		session.TurnStart{
 			Turn: turn,
 		},
 	); err != nil {
-		driver.reportError(requestContext, err)
+		runner.reportError(requestContext, err)
 		return false, err
 	}
-	driver.mutex.Lock()
-	driver.activity.turn = turn
-	driver.mutex.Unlock()
+	runner.activity.acceptTurn(turn)
 
 	var ending session.TurnEndReason
 	var operationErr error
@@ -139,15 +221,12 @@ func (driver *agentDriver) runTurn(
 		if err := contextFailure(requestContext); err != nil {
 			operationErr = err
 			ending = session.TurnAborted{
-				Reason: driver.durableCancelCause(),
+				Reason: runner.activity.durableCancelCause(),
 			}
 			break
 		}
-		driver.mutex.Lock()
-		step := driver.activity.step + 1
-		priorStep := driver.activity.step
-		driver.mutex.Unlock()
-		prepared, err := driver.prepareStep(
+		step, priorStep := runner.activity.proposedStep()
+		prepared, err := runner.prepareStep(
 			requestContext,
 			target,
 			turn,
@@ -157,13 +236,13 @@ func (driver *agentDriver) runTurn(
 			operationErr = err
 			if requestContext.Err() != nil {
 				ending = session.TurnAborted{
-					Reason: driver.durableCancelCause(),
+					Reason: runner.activity.durableCancelCause(),
 				}
 			} else {
 				ending = session.TurnError{
 					Error: failureFromError(err),
 				}
-				driver.reportError(requestContext, err)
+				runner.reportError(requestContext, err)
 			}
 			break
 		}
@@ -179,7 +258,7 @@ func (driver *agentDriver) runTurn(
 			break
 		}
 		if _, err := session.AppendSerialized(
-			driver.subject.conversation,
+			runner.subject.conversation,
 			session.StepStarted,
 			session.StepPosition{
 				Turn: turn,
@@ -190,16 +269,14 @@ func (driver *agentDriver) runTurn(
 			ending = session.TurnError{
 				Error: failureFromError(err),
 			}
-			driver.reportError(requestContext, err)
+			runner.reportError(requestContext, err)
 			break
 		}
-		driver.mutex.Lock()
-		driver.activity.step = step
-		driver.mutex.Unlock()
-		stepErr := driver.appendStepMessages(prepared.messages)
+		runner.activity.acceptStep(step)
+		stepErr := runner.appendStepMessages(prepared.messages)
 		var stepEnding session.TurnEndReason
 		if stepErr == nil {
-			stepEnding, stepErr = driver.executeStep(
+			stepEnding, stepErr = runner.requests.executeStep(
 				requestContext,
 				turn,
 				step,
@@ -207,7 +284,7 @@ func (driver *agentDriver) runTurn(
 			)
 		}
 		_, endErr := session.AppendSerialized(
-			driver.subject.conversation,
+			runner.subject.conversation,
 			session.StepEnded,
 			session.StepPosition{
 				Turn: turn,
@@ -218,13 +295,13 @@ func (driver *agentDriver) runTurn(
 			operationErr = errors.Join(stepErr, endErr)
 			if requestContext.Err() != nil {
 				ending = session.TurnAborted{
-					Reason: driver.durableCancelCause(),
+					Reason: runner.activity.durableCancelCause(),
 				}
 			} else {
 				ending = session.TurnError{
 					Error: failureFromError(operationErr),
 				}
-				driver.reportError(requestContext, operationErr)
+				runner.reportError(requestContext, operationErr)
 			}
 			break
 		}
@@ -233,31 +310,27 @@ func (driver *agentDriver) runTurn(
 				(session.TurnMaxTokens{}).TurnEndKind()) {
 			ending = stepEnding
 		}
-		if ending != nil && len(driver.pending.NextStep()) == 0 {
-			if err := plugin.Publish(
+		if ending != nil && len(runner.pending.NextStep()) == 0 {
+			if err := runner.events.publishTurnStopping(
 				requestContext,
-				driver.subject,
-				agent.TurnStopping{
-					Subject: driver.subject,
-					Turn:    turn,
-				},
+				turn,
 			); err != nil {
 				operationErr = err
 				ending = session.TurnError{
 					Error: failureFromError(err),
 				}
-				driver.reportError(requestContext, err)
+				runner.reportError(requestContext, err)
 				break
 			}
 			if err := contextFailure(requestContext); err != nil {
 				operationErr = err
 				ending = session.TurnAborted{
-					Reason: driver.durableCancelCause(),
+					Reason: runner.activity.durableCancelCause(),
 				}
 				break
 			}
 		}
-		if ending != nil && len(driver.pending.NextStep()) == 0 {
+		if ending != nil && len(runner.pending.NextStep()) == 0 {
 			break
 		}
 		target = agent.NextStep
@@ -271,7 +344,7 @@ func (driver *agentDriver) runTurn(
 		}
 	}
 	if _, err := session.AppendSerialized(
-		driver.subject.conversation,
+		runner.subject.conversation,
 		session.TurnEnded,
 		session.TurnEnd{
 			Turn:   turn,
@@ -279,19 +352,19 @@ func (driver *agentDriver) runTurn(
 		},
 	); err != nil {
 		operationErr = errors.Join(operationErr, err)
-		driver.reportError(requestContext, err)
+		runner.reportError(requestContext, err)
 	}
 	// A committed turn/end remains this Turn's durability boundary even when
 	// the active Turn Context was canceled.
 	durabilityContext := context.WithoutCancel(requestContext)
-	if err := driver.sessions.Flush(
+	if err := runner.sessions.Flush(
 		durabilityContext,
-		driver.subject.conversation,
+		runner.subject.conversation,
 	); err != nil {
 		operationErr = errors.Join(operationErr, err)
-		driver.reportError(requestContext, fmt.Errorf(
+		runner.reportError(requestContext, fmt.Errorf(
 			"agentloop: flush Session %q after turn %d: %w",
-			driver.subject.identifier,
+			runner.subject.identifier,
 			turn,
 			err,
 		))
@@ -299,18 +372,18 @@ func (driver *agentDriver) runTurn(
 	if operationErr != nil {
 		return false, operationErr
 	}
-	if !driver.pending.HasPending() {
+	if !runner.pending.HasPending() {
 		return false, nil
 	}
-	return driver.renewTurnContext(requestContext)
+	return runner.activity.renewTurnContext(requestContext)
 }
 
-func (driver *agentDriver) appendStepMessages(
+func (runner *turnRunner) appendStepMessages(
 	messages []llm.UserMessage,
 ) error {
 	for _, message := range messages {
 		if _, err := session.AppendSurfaceSerialized(
-			driver.subject.conversation,
+			runner.subject.conversation,
 			session.UserMessageAdded,
 			message,
 			session.SurfaceIntent{
