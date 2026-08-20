@@ -48,29 +48,39 @@ func TestPluginLegacyRuntimeSymbolsAreAbsent(t *testing.T) {
 	t.Parallel()
 	fileSet, sources := parsePluginProduction(t)
 	forbidden := map[string]struct{}{
-		"Bail":             {},
-		"DecisionHandler":  {},
-		"Disposer":         {},
-		"DisposeFunc":      {},
-		"Effect":           {},
-		"EffectFunc":       {},
-		"EventKey":         {},
-		"EventMode":        {},
-		"ModeBail":         {},
-		"ModeSerial":       {},
-		"ModeWaterfall":    {},
-		"Next":             {},
-		"NotifyHandler":    {},
-		"OnDecision":       {},
-		"OnNotify":         {},
-		"OnWaterfall":      {},
-		"Provide":          {},
-		"RegisterFactory":  {},
-		"Require":          {},
-		"Resolve":          {},
-		"ServiceKey":       {},
-		"ServiceRef":       {},
-		"WaterfallHandler": {},
+		"Bail":                         {},
+		"Context":                      {},
+		"DecisionHandler":              {},
+		"DefineEvent":                  {},
+		"DefineService":                {},
+		"DefineWaterfall":              {},
+		"Disposer":                     {},
+		"DisposeFunc":                  {},
+		"Effect":                       {},
+		"EffectFunc":                   {},
+		"EventDefinition":              {},
+		"EventKey":                     {},
+		"EventMode":                    {},
+		"ModeBail":                     {},
+		"ModeSerial":                   {},
+		"ModeWaterfall":                {},
+		"Next":                         {},
+		"NotifyHandler":                {},
+		"OnDecision":                   {},
+		"OnNotify":                     {},
+		"OnWaterfall":                  {},
+		"Provide":                      {},
+		"Registration":                 {},
+		"RegisterFactory":              {},
+		"ServiceDefinition":            {},
+		"ServiceKey":                   {},
+		"ServiceRef":                   {},
+		"TypedServiceDefinition":       {},
+		"ErrWaterfallAlreadyProceeded": {},
+		"WaterfallDefinition":          {},
+		"WaterfallHandler":             {},
+		"WaterfallNext":                {},
+		"WaterfallTerminal":            {},
 	}
 	findings := make([]string, 0)
 	for _, source := range sources {
@@ -102,12 +112,14 @@ func TestPluginLegacyRuntimeSymbolsAreAbsent(t *testing.T) {
 	t.Fatalf("legacy Plugin Runtime symbols remain:\n%s", strings.Join(findings, "\n"))
 }
 
-func TestPluginContextDoesNotExposeLegacyLifecycleMethods(t *testing.T) {
+func TestPluginRuntimeDoesNotExposeLegacyLifecycleMethods(t *testing.T) {
 	t.Parallel()
 	fileSet, sources := parsePluginProduction(t)
 	forbidden := map[string]struct{}{
 		"Effect":    {},
+		"Load":      {},
 		"LoadChild": {},
+		"Stop":      {},
 	}
 	findings := make([]string, 0)
 	for _, source := range sources {
@@ -150,6 +162,46 @@ func TestPluginRuntimeDoesNotImportBusinessOwners(t *testing.T) {
 	}
 	sort.Strings(findings)
 	t.Fatalf("plugin must not import business owners:\n%s", strings.Join(findings, "\n"))
+}
+
+func TestPluginReflectionIsLimitedToTypeIdentity(t *testing.T) {
+	t.Parallel()
+	fileSet, sources := parsePluginProduction(t)
+	allowed := map[string]struct{}{
+		"Interface": {},
+		"Struct":    {},
+		"Type":      {},
+		"TypeFor":   {},
+	}
+	findings := make([]string, 0)
+	for _, source := range sources {
+		ast.Inspect(source.tree, func(node ast.Node) bool {
+			selector, ok := node.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			packageName, ok := selector.X.(*ast.Ident)
+			if !ok || packageName.Name != "reflect" {
+				return true
+			}
+			if _, permitted := allowed[selector.Sel.Name]; permitted {
+				return true
+			}
+			findings = append(
+				findings,
+				fileSet.Position(selector.Sel.Pos()).String()+":"+selector.Sel.Name,
+			)
+			return true
+		})
+	}
+	if len(findings) == 0 {
+		return
+	}
+	sort.Strings(findings)
+	t.Fatalf(
+		"plugin reflection must be limited to type identity:\n%s",
+		strings.Join(findings, "\n"),
+	)
 }
 
 func TestPluginExportedStructsDoNotStoreFunctions(t *testing.T) {

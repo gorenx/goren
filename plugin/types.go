@@ -1,111 +1,499 @@
-// Package plugin provides the typed service, Waterfall, Event, and lifecycle
-// contracts used to assemble Goren from statically linked Go plugins.
+// Package plugin provides a statically linked, scoped Plugin Runtime with
+// typed Services, Events, and Waterfalls.
 package plugin
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
+	"sync"
 )
 
 var (
-	// ErrServiceUnavailable reports a violated hard-dependency invariant or an
-	// unavailable optional Service.
+	// ErrServiceUnavailable reports that a declared Service dependency has no
+	// active provider visible from the Plugin's Scope.
 	ErrServiceUnavailable = errors.New("plugin: service is unavailable")
-	// ErrServiceConflict reports two active providers for the same Service in
-	// one exact Scope.
+	// ErrServiceConflict reports multiple Service providers in one exact Scope.
 	ErrServiceConflict = errors.New("plugin: service provider conflicts with an active provider")
-	// ErrContextClosed reports an operation attempted through a stopped Fiber.
-	ErrContextClosed = errors.New("plugin: runtime context is closed")
-	// ErrRegistrationClosed reports a registration attempted after the current
-	// Plugin.Apply mount transaction has closed.
-	ErrRegistrationClosed = errors.New("plugin: registration is only allowed during Plugin.Apply")
-	// ErrDependencyResolutionClosed reports Service dependency resolution after
-	// the current Plugin.Apply activation snapshot has closed.
+	// ErrPluginNotBound reports use of a Plugin that is not mounted.
+	ErrPluginNotBound = errors.New("plugin: Plugin is not bound to a Runtime")
+	// ErrPluginNotActive reports an operation that requires an active Plugin.
+	ErrPluginNotActive = errors.New("plugin: Plugin is not active")
+	// ErrDependencyResolutionClosed reports dependency resolution outside Apply.
 	ErrDependencyResolutionClosed = errors.New("plugin: Service dependencies are only resolved during Plugin.Apply")
-	// ErrPluginNotActive reports a lifecycle operation attempted through a
-	// Context whose Fiber is neither applying nor active.
-	ErrPluginNotActive = errors.New("plugin: child plugins require an active parent Fiber")
-	// ErrWaterfallAlreadyProceeded reports a Middleware invoking its downstream
-	// chain more than once for one invocation.
-	ErrWaterfallAlreadyProceeded = errors.New("plugin: Waterfall already proceeded")
+	// ErrWaterfallAlreadyExecuted reports a Middleware executing the same
+	// downstream Action more than once during one call.
+	ErrWaterfallAlreadyExecuted = errors.New("plugin: Waterfall Action already executed")
 )
 
-// Service marks an owner-defined long-lived business capability. Provider
-// interfaces embed Service; DTOs, primitives, and functions do not satisfy it.
+// Service marks a business capability offered through the Runtime. Provider
+// interfaces embed Service and add their domain methods.
 type Service interface {
 	RuntimeService()
 }
 
-// ServiceBase lets a concrete provider satisfy Service by embedding it.
-type ServiceBase struct{}
-
-// RuntimeService implements Service.
-func (ServiceBase) RuntimeService() {}
-
-// Event marks an owner-defined fact that has already occurred.
+// Event is an owner-defined fact and its stable delivery contract.
 type Event interface {
-	PluginEvent()
+	EventName() string
+	EventDelivery() DeliveryPolicy
 }
 
-// EventBase lets a named fact type satisfy Event by embedding it.
-type EventBase struct{}
-
-// PluginEvent implements Event.
-func (EventBase) PluginEvent() {}
-
-// WaterfallInput marks an owner-defined input of one interceptable operation.
+// WaterfallInput marks an owner-defined interceptable operation input.
 type WaterfallInput interface {
 	RuntimeWaterfallInput()
 }
 
-// WaterfallInputBase lets a named input satisfy WaterfallInput by embedding it.
+// WaterfallInputBase supplies the WaterfallInput marker by embedding.
 type WaterfallInputBase struct{}
 
 // RuntimeWaterfallInput implements WaterfallInput.
 func (WaterfallInputBase) RuntimeWaterfallInput() {}
 
-// WaterfallOutput marks an owner-defined output of one interceptable operation.
+// WaterfallOutput marks an owner-defined interceptable operation output.
 type WaterfallOutput interface {
 	RuntimeWaterfallOutput()
 }
 
-// WaterfallOutputBase lets a named output satisfy WaterfallOutput by embedding it.
+// WaterfallOutputBase supplies the WaterfallOutput marker by embedding.
 type WaterfallOutputBase struct{}
 
 // RuntimeWaterfallOutput implements WaterfallOutput.
 func (WaterfallOutputBase) RuntimeWaterfallOutput() {}
 
-// Plugin is one statically linked module and the lifecycle owner of its
-// activation-local resources. Runtime may call Apply and Dispose repeatedly in
-// sequential dependency settlement cycles; Dispose must be idempotent and
-// restore the Plugin to an inactive state even after a partial Apply failure.
-type Plugin interface {
-	Manifest() Manifest
-	Apply(applyContext context.Context, pluginContext *Context) error
-	Dispose(disposeContext context.Context) error
+// Base is the opaque activation anchor embedded by every Plugin. It does not
+// expose Scope, registries, or lifecycle mutation to business methods.
+type Base struct {
+	mutex      sync.RWMutex
+	activation *activation
 }
 
-// Manifest declares a Plugin's stable identity and Service dependencies.
+// RuntimePlugin returns the embedded activation anchor.
+func (pluginBase *Base) RuntimePlugin() *Base {
+	return pluginBase
+}
+
+// RuntimeService allows a business interface embedding Service to be
+// implemented directly by a Plugin that embeds Base.
+func (*Base) RuntimeService() {}
+
+func (pluginBase *Base) attach(selectedActivation *activation) error {
+	if pluginBase == nil {
+		return errors.New("plugin: Plugin returned a nil Base")
+	}
+	pluginBase.mutex.Lock()
+	defer pluginBase.mutex.Unlock()
+	if pluginBase.activation != nil {
+		return errors.New("plugin: Plugin instance is already mounted")
+	}
+	pluginBase.activation = selectedActivation
+	return nil
+}
+
+func (pluginBase *Base) detach(selectedActivation *activation) {
+	if pluginBase == nil {
+		return
+	}
+	pluginBase.mutex.Lock()
+	if pluginBase.activation == selectedActivation {
+		pluginBase.activation = nil
+	}
+	pluginBase.mutex.Unlock()
+}
+
+func (pluginBase *Base) currentActivation() *activation {
+	if pluginBase == nil {
+		return nil
+	}
+	pluginBase.mutex.RLock()
+	selectedActivation := pluginBase.activation
+	pluginBase.mutex.RUnlock()
+	return selectedActivation
+}
+
+// Plugin is one statically linked runtime participant. Apply acquires the
+// Plugin's own resources after Runtime has resolved its declared dependencies.
+// Dispose must be idempotent and tolerate a partially completed Apply.
+type Plugin interface {
+	RuntimePlugin() *Base
+	Manifest() Manifest
+	Apply(context.Context) error
+	Dispose(context.Context) error
+}
+
+// ServiceType is a type-derived Service contract used only by Manifest.
+type ServiceType interface {
+	Name() string
+	serviceReference() serviceRef
+	bindService(Plugin) (Service, bool)
+}
+
+// EventSubscription declares that the Plugin implements EventObserver for one
+// Event type.
+type EventSubscription interface {
+	Name() string
+	eventReference() (eventRef, error)
+	bindEventObserver(Plugin) (eventInvoker, error)
+}
+
+// WaterfallContribution declares that the Plugin implements Middleware for one
+// typed operation.
+type WaterfallContribution interface {
+	Name() string
+	waterfallReference() (waterfallRef, error)
+	bindWaterfallMiddleware(Plugin) (waterfallInvoker, error)
+}
+
+// Manifest is the complete declarative contribution and dependency contract
+// of one Plugin instance.
 type Manifest struct {
-	Name     string
-	Provides []ServiceDefinition
-	Requires []ServiceDefinition
-	Optional []ServiceDefinition
+	Name       string
+	Provides   []ServiceType
+	Requires   []ServiceType
+	Optional   []ServiceType
+	Events     []EventSubscription
+	Waterfalls []WaterfallContribution
+}
+
+type serviceRef struct {
+	key  reflect.Type
+	name string
+}
+
+func (reference serviceRef) validate() error {
+	if reference.key == nil || reference.key.Kind() != reflect.Interface ||
+		reference.key.Name() == "" || reference.name == "" {
+		return errors.New("Service contract must be a named interface")
+	}
+	return nil
+}
+
+type eventRef struct {
+	key    reflect.Type
+	name   string
+	policy DeliveryPolicy
+}
+
+type waterfallRef struct {
+	input  reflect.Type
+	output reflect.Type
+	name   string
+}
+
+type serviceOffer struct {
+	reference  serviceRef
+	capability Service
+}
+
+type eventOffer struct {
+	reference eventRef
+	invoker   eventInvoker
+}
+
+type waterfallOffer struct {
+	reference waterfallRef
+	invoker   waterfallInvoker
 }
 
 type manifestSpec struct {
-	Name     string
-	Provides []serviceRef
-	Requires []serviceRef
-	Optional []serviceRef
+	name       string
+	provides   []serviceOffer
+	requires   []serviceRef
+	optional   []serviceRef
+	events     []eventOffer
+	waterfalls []waterfallOffer
 }
 
-// FiberID identifies one concrete Plugin activation attempt inside a Runtime.
+func normalizeManifest(pluginInstance Plugin) (manifestSpec, error) {
+	if pluginInstance == nil {
+		return manifestSpec{}, errors.New("plugin: cannot mount nil Plugin")
+	}
+	if pluginInstance.RuntimePlugin() == nil {
+		return manifestSpec{}, errors.New("plugin: Plugin returned a nil Base")
+	}
+	metadata := pluginInstance.Manifest()
+	if strings.TrimSpace(metadata.Name) == "" || metadata.Name != strings.TrimSpace(metadata.Name) {
+		return manifestSpec{}, errors.New("plugin: manifest name must be non-empty and trimmed")
+	}
+	normalized := manifestSpec{
+		name: metadata.Name,
+	}
+	seenServices := make(map[reflect.Type]string)
+	for _, declaredService := range metadata.Provides {
+		reference, err := normalizeServiceType(
+			metadata.Name,
+			"provides",
+			declaredService,
+			seenServices,
+		)
+		if err != nil {
+			return manifestSpec{}, err
+		}
+		capability, matches := declaredService.bindService(pluginInstance)
+		if !matches || capability == nil {
+			return manifestSpec{}, fmt.Errorf(
+				"plugin: %s declares provided Service %q but does not implement it",
+				metadata.Name,
+				reference.name,
+			)
+		}
+		normalized.provides = append(normalized.provides, serviceOffer{
+			reference:  reference,
+			capability: capability,
+		})
+	}
+	for _, declaredService := range metadata.Requires {
+		reference, err := normalizeServiceType(
+			metadata.Name,
+			"requires",
+			declaredService,
+			seenServices,
+		)
+		if err != nil {
+			return manifestSpec{}, err
+		}
+		normalized.requires = append(normalized.requires, reference)
+	}
+	for _, declaredService := range metadata.Optional {
+		reference, err := normalizeServiceType(
+			metadata.Name,
+			"optional",
+			declaredService,
+			seenServices,
+		)
+		if err != nil {
+			return manifestSpec{}, err
+		}
+		normalized.optional = append(normalized.optional, reference)
+	}
+
+	seenEvents := make(map[reflect.Type]struct{})
+	for _, declaredEvent := range metadata.Events {
+		if declaredEvent == nil {
+			return manifestSpec{}, fmt.Errorf(
+				"plugin: %s declares an invalid Event subscription",
+				metadata.Name,
+			)
+		}
+		reference, err := declaredEvent.eventReference()
+		if err != nil {
+			return manifestSpec{}, fmt.Errorf(
+				"plugin: %s Event subscription: %w",
+				metadata.Name,
+				err,
+			)
+		}
+		if _, exists := seenEvents[reference.key]; exists {
+			return manifestSpec{}, fmt.Errorf(
+				"plugin: %s declares Event %q more than once",
+				metadata.Name,
+				reference.name,
+			)
+		}
+		invoker, err := declaredEvent.bindEventObserver(pluginInstance)
+		if err != nil {
+			return manifestSpec{}, fmt.Errorf(
+				"plugin: %s Event %q: %w",
+				metadata.Name,
+				reference.name,
+				err,
+			)
+		}
+		seenEvents[reference.key] = struct{}{}
+		normalized.events = append(normalized.events, eventOffer{
+			reference: reference,
+			invoker:   invoker,
+		})
+	}
+
+	seenWaterfalls := make(map[waterfallKey]struct{})
+	for _, declaredWaterfall := range metadata.Waterfalls {
+		if declaredWaterfall == nil {
+			return manifestSpec{}, fmt.Errorf(
+				"plugin: %s declares an invalid Waterfall contribution",
+				metadata.Name,
+			)
+		}
+		reference, err := declaredWaterfall.waterfallReference()
+		if err != nil {
+			return manifestSpec{}, fmt.Errorf(
+				"plugin: %s Waterfall contribution: %w",
+				metadata.Name,
+				err,
+			)
+		}
+		selectedKey := waterfallKey{
+			input:  reference.input,
+			output: reference.output,
+		}
+		if _, exists := seenWaterfalls[selectedKey]; exists {
+			return manifestSpec{}, fmt.Errorf(
+				"plugin: %s declares Waterfall %q more than once",
+				metadata.Name,
+				reference.name,
+			)
+		}
+		invoker, err := declaredWaterfall.bindWaterfallMiddleware(pluginInstance)
+		if err != nil {
+			return manifestSpec{}, fmt.Errorf(
+				"plugin: %s Waterfall %q: %w",
+				metadata.Name,
+				reference.name,
+				err,
+			)
+		}
+		seenWaterfalls[selectedKey] = struct{}{}
+		normalized.waterfalls = append(normalized.waterfalls, waterfallOffer{
+			reference: reference,
+			invoker:   invoker,
+		})
+	}
+	return normalized, nil
+}
+
+func normalizeServiceType(
+	pluginName string,
+	groupName string,
+	declaredService ServiceType,
+	seen map[reflect.Type]string,
+) (serviceRef, error) {
+	if declaredService == nil {
+		return serviceRef{}, fmt.Errorf(
+			"plugin: %s %s: invalid Service type",
+			pluginName,
+			groupName,
+		)
+	}
+	reference := declaredService.serviceReference()
+	if err := reference.validate(); err != nil {
+		return serviceRef{}, fmt.Errorf(
+			"plugin: %s %s: %w",
+			pluginName,
+			groupName,
+			err,
+		)
+	}
+	if previousGroup, exists := seen[reference.key]; exists {
+		return serviceRef{}, fmt.Errorf(
+			"plugin: %s declares Service %q in both %s and %s",
+			pluginName,
+			reference.name,
+			previousGroup,
+			groupName,
+		)
+	}
+	seen[reference.key] = groupName
+	return reference, nil
+}
+
+func namedTypeName(selectedType reflect.Type) string {
+	if selectedType == nil {
+		return ""
+	}
+	if selectedType.PkgPath() == "" {
+		return selectedType.String()
+	}
+	return selectedType.PkgPath() + "." + selectedType.Name()
+}
+
+func containsService(references []serviceRef, selectedKey reflect.Type) bool {
+	for _, reference := range references {
+		if reference.key == selectedKey {
+			return true
+		}
+	}
+	return false
+}
+
+func sameManifestContract(leftSpec manifestSpec, rightSpec manifestSpec) bool {
+	if leftSpec.name != rightSpec.name ||
+		!sameServiceSet(leftSpec.provides, rightSpec.provides) ||
+		!sameServiceRefs(leftSpec.requires, rightSpec.requires) ||
+		!sameServiceRefs(leftSpec.optional, rightSpec.optional) ||
+		!sameEventSet(leftSpec.events, rightSpec.events) ||
+		!sameWaterfallSet(leftSpec.waterfalls, rightSpec.waterfalls) {
+		return false
+	}
+	return true
+}
+
+func sameServiceSet(leftOffers []serviceOffer, rightOffers []serviceOffer) bool {
+	if len(leftOffers) != len(rightOffers) {
+		return false
+	}
+	for _, leftOffer := range leftOffers {
+		found := false
+		for _, rightOffer := range rightOffers {
+			if leftOffer.reference.key == rightOffer.reference.key {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func sameServiceRefs(leftRefs []serviceRef, rightRefs []serviceRef) bool {
+	if len(leftRefs) != len(rightRefs) {
+		return false
+	}
+	for _, leftRef := range leftRefs {
+		if !containsService(rightRefs, leftRef.key) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameEventSet(leftOffers []eventOffer, rightOffers []eventOffer) bool {
+	if len(leftOffers) != len(rightOffers) {
+		return false
+	}
+	for _, leftOffer := range leftOffers {
+		found := false
+		for _, rightOffer := range rightOffers {
+			if leftOffer.reference.key == rightOffer.reference.key &&
+				leftOffer.reference.name == rightOffer.reference.name &&
+				leftOffer.reference.policy == rightOffer.reference.policy {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func sameWaterfallSet(leftOffers []waterfallOffer, rightOffers []waterfallOffer) bool {
+	if len(leftOffers) != len(rightOffers) {
+		return false
+	}
+	for _, leftOffer := range leftOffers {
+		found := false
+		for _, rightOffer := range rightOffers {
+			if leftOffer.reference.input == rightOffer.reference.input &&
+				leftOffer.reference.output == rightOffer.reference.output {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// FiberID identifies one concrete activation attempt.
 type FiberID uint64
 
-// FiberState is the externally observable lifecycle state of one Fiber.
+// FiberState is one externally observable lifecycle state.
 type FiberState string
 
 const (
@@ -118,8 +506,44 @@ const (
 	FiberFailed      FiberState = "failed"
 )
 
-// FiberStatus is an immutable diagnostics view of one mounted Plugin and its
-// current activation attempt.
+// ScopeKey is an opaque comparable routing identity. Its zero value is root.
+type ScopeKey struct {
+	token *scopeToken
+}
+
+// IsGlobal reports whether this is the Runtime root Scope.
+func (selectedKey ScopeKey) IsGlobal() bool {
+	return selectedKey.token == nil
+}
+
+// ScopeLineage returns child Scope keys from the farthest ancestor to the
+// selected key. The root Scope is omitted.
+func ScopeLineage(selectedKey ScopeKey) []ScopeKey {
+	tokens := make([]*scopeToken, 0)
+	for selectedToken := selectedKey.token; selectedToken != nil; selectedToken = selectedToken.parent {
+		tokens = append(tokens, selectedToken)
+	}
+	lineage := make([]ScopeKey, len(tokens))
+	for tokenIndex := range tokens {
+		lineage[len(tokens)-1-tokenIndex] = ScopeKey{
+			token: tokens[tokenIndex],
+		}
+	}
+	return lineage
+}
+
+// Handle identifies one mounted Plugin. Runtime owns unloading.
+type Handle struct {
+	owner *Runtime
+	id    uint64
+}
+
+// ID returns the Runtime-local mount identity.
+func (pluginHandle Handle) ID() uint64 {
+	return pluginHandle.id
+}
+
+// FiberStatus is an immutable lifecycle and contribution diagnostic.
 type FiberStatus struct {
 	HandleID     uint64
 	FiberID      FiberID
@@ -134,180 +558,27 @@ type FiberStatus struct {
 	Error        error
 }
 
-// ServiceDependencyStatus describes the concrete provider selected for one
-// active Fiber dependency snapshot.
+// ServiceDependencyStatus describes one resolved activation dependency.
 type ServiceDependencyStatus struct {
 	Service         string
 	ProviderFiberID FiberID
 	Optional        bool
 }
 
-// ServiceBindingStatus describes one active Service binding owned by a Fiber.
+// ServiceBindingStatus describes one provided Service.
 type ServiceBindingStatus struct {
 	Service string
 	Scope   ScopeKey
 }
 
-// WaterfallBindingStatus describes one active Middleware binding.
+// WaterfallBindingStatus describes one Middleware contribution.
 type WaterfallBindingStatus struct {
 	Waterfall string
 	Scope     ScopeKey
 }
 
-// EventSubscriptionStatus describes one active Observer subscription.
+// EventSubscriptionStatus describes one Observer contribution.
 type EventSubscriptionStatus struct {
 	Event string
 	Scope ScopeKey
-}
-
-// Handle identifies one mounted Plugin. A Handle can explicitly stop a
-// dynamically mounted subtree before its owning Fiber stops.
-type Handle struct {
-	owner *Runtime
-	id    uint64
-}
-
-// ID returns the Runtime-local mount identifier.
-func (pluginHandle Handle) ID() uint64 {
-	return pluginHandle.id
-}
-
-// Stop stops the mounted Plugin and its owned Fiber tree.
-func (pluginHandle Handle) Stop(stopContext context.Context) error {
-	if pluginHandle.owner == nil {
-		return errors.New("plugin: stop through invalid Handle")
-	}
-	return pluginHandle.owner.Unload(stopContext, pluginHandle)
-}
-
-type scopeToken struct {
-	parent *scopeToken
-	depth  int
-}
-
-// ScopeKey is an opaque comparable routing identity. Its zero value denotes
-// the Runtime root scope.
-type ScopeKey struct {
-	token *scopeToken
-}
-
-// IsGlobal reports whether the key identifies the Runtime root scope.
-func (selectedKey ScopeKey) IsGlobal() bool {
-	return selectedKey.token == nil
-}
-
-// ScopeLineage returns child keys from the farthest ancestor to selectedKey.
-// Root ownership is intentionally omitted.
-func ScopeLineage(selectedKey ScopeKey) []ScopeKey {
-	tokens := make([]*scopeToken, 0)
-	for currentToken := selectedKey.token; currentToken != nil; currentToken = currentToken.parent {
-		tokens = append(tokens, currentToken)
-	}
-	lineage := make([]ScopeKey, len(tokens))
-	for tokenIndex := range tokens {
-		lineage[len(tokens)-1-tokenIndex] = ScopeKey{
-			token: tokens[tokenIndex],
-		}
-	}
-	return lineage
-}
-
-func normalizeManifest(metadata Manifest) (manifestSpec, error) {
-	if strings.TrimSpace(metadata.Name) == "" || metadata.Name != strings.TrimSpace(metadata.Name) {
-		return manifestSpec{}, errors.New("plugin: manifest name must be non-empty and trimmed")
-	}
-	seen := make(map[string]string)
-	providedRefs, err := normalizeServiceDefinitions(
-		metadata.Name,
-		"provides",
-		metadata.Provides,
-		seen,
-	)
-	if err != nil {
-		return manifestSpec{}, err
-	}
-	requiredRefs, err := normalizeServiceDefinitions(
-		metadata.Name,
-		"requires",
-		metadata.Requires,
-		seen,
-	)
-	if err != nil {
-		return manifestSpec{}, err
-	}
-	optionalRefs, err := normalizeServiceDefinitions(
-		metadata.Name,
-		"optional",
-		metadata.Optional,
-		seen,
-	)
-	if err != nil {
-		return manifestSpec{}, err
-	}
-	return manifestSpec{
-		Name:     metadata.Name,
-		Provides: providedRefs,
-		Requires: requiredRefs,
-		Optional: optionalRefs,
-	}, nil
-}
-
-func normalizeServiceDefinitions(
-	pluginName string,
-	groupName string,
-	definitions []ServiceDefinition,
-	seen map[string]string,
-) ([]serviceRef, error) {
-	references := make([]serviceRef, 0, len(definitions))
-	for _, declaredService := range definitions {
-		if declaredService == nil {
-			return nil, fmt.Errorf(
-				"plugin: %s %s: invalid Service definition",
-				pluginName,
-				groupName,
-			)
-		}
-		definitionRef := declaredService.serviceReference()
-		if err := definitionRef.validate(); err != nil {
-			return nil, fmt.Errorf(
-				"plugin: %s %s: %w",
-				pluginName,
-				groupName,
-				err,
-			)
-		}
-		if previousGroup, exists := seen[definitionRef.name]; exists {
-			return nil, fmt.Errorf(
-				"plugin: %s declares service %q in both %s and %s",
-				pluginName,
-				definitionRef.name,
-				previousGroup,
-				groupName,
-			)
-		}
-		seen[definitionRef.name] = groupName
-		references = append(references, definitionRef)
-	}
-	return references, nil
-}
-
-func manifestContains(references []serviceRef, expectedRef serviceRef) bool {
-	for _, candidateRef := range references {
-		if candidateRef.sameDefinition(expectedRef) {
-			return true
-		}
-	}
-	return false
-}
-
-func sameServiceDefinitions(leftRefs []serviceRef, rightRefs []serviceRef) bool {
-	if len(leftRefs) != len(rightRefs) {
-		return false
-	}
-	for _, leftRef := range leftRefs {
-		if !manifestContains(rightRefs, leftRef) {
-			return false
-		}
-	}
-	return true
 }

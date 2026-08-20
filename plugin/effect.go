@@ -6,83 +6,72 @@ import (
 	"fmt"
 )
 
-type fiberEffectState uint8
+type effectState uint8
 
 const (
-	fiberEffectStaged fiberEffectState = iota
-	fiberEffectActive
-	fiberEffectWithdrawn
-	fiberEffectDisposed
+	effectActive effectState = iota
+	effectReleased
 )
 
-// fiberEffect is Runtime's private ownership record for one reversible side
-// effect of a Plugin activation. Plugin authors never create or dispose it.
-type fiberEffect struct {
-	runtime      *Runtime
-	fiber        *fiber
-	scope        *Scope
-	label        string
-	release      func(context.Context) error
-	registration runtimeEntry
-	state        fiberEffectState
+// effect is Runtime's private ownership record. Plugin authors neither create
+// effects nor receive disposer handles.
+type effect struct {
+	label   string
+	release func(context.Context) error
+	state   effectState
 }
 
-type fiberEffectStack struct {
-	entries []*fiberEffect
+type effectStack struct {
+	entries []*effect
 }
 
-func newFiberEffectStack() *fiberEffectStack {
-	return &fiberEffectStack{}
+func (stack *effectStack) add(label string, releaseAction func(context.Context) error) {
+	stack.entries = append(stack.entries, &effect{
+		label:   label,
+		release: releaseAction,
+		state:   effectActive,
+	})
 }
 
-func (stack *fiberEffectStack) labels() []string {
+func (stack *effectStack) labels() []string {
 	effectLabels := make([]string, 0, len(stack.entries))
 	for _, ownedEffect := range stack.entries {
-		if ownedEffect.state == fiberEffectActive {
+		if ownedEffect.state == effectActive {
 			effectLabels = append(effectLabels, ownedEffect.label)
 		}
 	}
 	return effectLabels
 }
 
-func (ownedEffect *fiberEffect) withdrawRegistration(context.Context) error {
-	if ownedEffect == nil || ownedEffect.registration == nil ||
-		ownedEffect.state != fiberEffectActive {
-		return nil
-	}
-	ownedEffect.runtime.state.Lock()
-	if ownedEffect.state == fiberEffectActive {
-		ownedEffect.registration.withdrawEntry(ownedEffect)
-		ownedEffect.state = fiberEffectWithdrawn
-	}
-	ownedEffect.runtime.state.Unlock()
-	return nil
-}
-
-func releaseFiberEffects(releaseContext context.Context, entries []*fiberEffect) error {
+func (stack *effectStack) release(releaseContext context.Context) error {
 	var releaseErr error
-	for entryIndex := len(entries) - 1; entryIndex >= 0; entryIndex-- {
+	for effectIndex := len(stack.entries) - 1; effectIndex >= 0; effectIndex-- {
 		releaseErr = errors.Join(
 			releaseErr,
-			releaseFiberEffect(releaseContext, entries[entryIndex]),
+			releaseEffect(releaseContext, stack.entries[effectIndex]),
 		)
 	}
+	stack.entries = nil
 	return releaseErr
 }
 
-func releaseFiberEffect(
+func releaseEffect(
 	releaseContext context.Context,
-	ownedEffect *fiberEffect,
+	ownedEffect *effect,
 ) (releaseErr error) {
-	if ownedEffect == nil || ownedEffect.state == fiberEffectDisposed {
+	if ownedEffect == nil || ownedEffect.state == effectReleased {
 		return nil
 	}
+	ownedEffect.state = effectReleased
 	defer func() {
-		ownedEffect.state = fiberEffectDisposed
 		if recovered := recover(); recovered != nil {
 			releaseErr = errors.Join(
 				releaseErr,
-				fmt.Errorf("plugin: release effect %q panicked: %v", ownedEffect.label, recovered),
+				fmt.Errorf(
+					"plugin: release effect %q panicked: %v",
+					ownedEffect.label,
+					recovered,
+				),
 			)
 		}
 	}()

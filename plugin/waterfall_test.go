@@ -1,158 +1,180 @@
-package plugin
+package plugin_test
 
 import (
 	"context"
 	"errors"
-	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/gorenx/goren/plugin"
 )
 
-type runtimeTestInput struct {
-	WaterfallInputBase
+type formatInput struct {
+	plugin.WaterfallInputBase
 	Value string
 }
 
-type runtimeTestOutput struct {
-	WaterfallOutputBase
+type formatOutput struct {
+	plugin.WaterfallOutputBase
 	Value string
 }
 
-var runtimeTestWaterfallDefinition = DefineWaterfall[runtimeTestInput, runtimeTestOutput](
-	"test/waterfall",
-)
-
-type runtimeTestMiddleware struct {
+type formatMiddleware struct {
+	plugin.Base
 	name  string
-	trace *[]string
+	order *[]string
 }
 
-func (middleware *runtimeTestMiddleware) Intercept(
+func (middleware *formatMiddleware) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: middleware.name,
+		Waterfalls: []plugin.WaterfallContribution{
+			plugin.WaterfallOf[formatInput, formatOutput](),
+		},
+	}
+}
+
+func (*formatMiddleware) Apply(context.Context) error {
+	return nil
+}
+
+func (*formatMiddleware) Dispose(context.Context) error {
+	return nil
+}
+
+func (middleware *formatMiddleware) Intercept(
 	requestContext context.Context,
-	input runtimeTestInput,
-	next WaterfallNext[runtimeTestInput, runtimeTestOutput],
-) (runtimeTestOutput, error) {
-	*middleware.trace = append(*middleware.trace, middleware.name+":before")
-	output, err := next.Proceed(requestContext, input)
-	*middleware.trace = append(*middleware.trace, middleware.name+":after")
+	input formatInput,
+	downstream plugin.WaterfallAction[formatInput, formatOutput],
+) (formatOutput, error) {
+	*middleware.order = append(*middleware.order, middleware.name+":before")
+	output, err := downstream.Execute(requestContext, input)
+	*middleware.order = append(*middleware.order, middleware.name+":after")
 	return output, err
 }
 
-type runtimeTestTerminal struct {
-	trace *[]string
+type formatAction struct {
+	order *[]string
 }
 
-func (terminal *runtimeTestTerminal) Execute(
+func (action formatAction) Execute(
 	_ context.Context,
-	input runtimeTestInput,
-) (runtimeTestOutput, error) {
-	*terminal.trace = append(*terminal.trace, "terminal")
-	return runtimeTestOutput{
+	input formatInput,
+) (formatOutput, error) {
+	*action.order = append(*action.order, "action")
+	return formatOutput{
 		Value: input.Value,
 	}, nil
 }
 
-type runtimeDoubleProceedMiddleware struct{}
-
-func (*runtimeDoubleProceedMiddleware) Intercept(
-	requestContext context.Context,
-	input runtimeTestInput,
-	next WaterfallNext[runtimeTestInput, runtimeTestOutput],
-) (runtimeTestOutput, error) {
-	if _, err := next.Proceed(requestContext, input); err != nil {
-		return runtimeTestOutput{}, err
-	}
-	return next.Proceed(requestContext, input)
-}
-
-func TestWaterfallRunsRootToCurrentAsOneShotOnion(t *testing.T) {
+func TestWaterfallRunsRootToCurrentAsOnion(t *testing.T) {
 	t.Parallel()
-	runtimeEngine := NewRuntime(RuntimeSettings{})
-	trace := make([]string, 0)
-	var sourceScope *Scope
-	if _, err := runtimeEngine.Load(
-		context.Background(),
-		&runtimeTestPlugin{
-			metadata: Manifest{
-				Name: "scoped-waterfall",
-			},
-			applyOperation: func(_ context.Context, pluginContext *Context) error {
-				if useErr := runtimeTestWaterfallDefinition.Use(
-					pluginContext,
-					&runtimeTestMiddleware{
-						name:  "outer",
-						trace: &trace,
-					},
-				); useErr != nil {
-					return useErr
-				}
-				childContext, childErr := pluginContext.ChildScope("request")
-				if childErr != nil {
-					return childErr
-				}
-				sourceScope = childContext.Scope()
-				return runtimeTestWaterfallDefinition.Use(
-					childContext,
-					&runtimeTestMiddleware{
-						name:  "inner",
-						trace: &trace,
-					},
-				)
-			},
-		},
-	); err != nil {
-		t.Fatal(err)
+	order := make([]string, 0)
+	rootMiddleware := &formatMiddleware{
+		name:  "root",
+		order: &order,
 	}
-	output, err := runtimeTestWaterfallDefinition.Run(
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	rootHandles, err := runtimeEngine.Start(context.Background(), rootMiddleware)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	childMiddleware := &formatMiddleware{
+		name:  "child",
+		order: &order,
+	}
+	childHandle, err := runtimeEngine.MountChild(
 		context.Background(),
-		sourceScope,
-		runtimeTestInput{
-			Value: "result",
+		rootHandles[0],
+		childMiddleware,
+	)
+	if err != nil {
+		t.Fatalf("mount child Middleware: %v", err)
+	}
+	source := &eventPublisherPlugin{
+		name: "waterfall-source",
+	}
+	if _, err := runtimeEngine.MountChild(
+		context.Background(),
+		childHandle,
+		source,
+	); err != nil {
+		t.Fatalf("mount source: %v", err)
+	}
+	output, err := plugin.Run(
+		context.Background(),
+		source,
+		formatInput{
+			Value: "value",
 		},
-		&runtimeTestTerminal{
-			trace: &trace,
+		formatAction{
+			order: &order,
 		},
 	)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("run: %v", err)
 	}
-	if output.Value != "result" || !reflect.DeepEqual(
-		trace,
-		[]string{"outer:before", "inner:before", "terminal", "inner:after", "outer:after"},
-	) {
-		t.Fatalf("output=%+v trace=%v", output, trace)
+	if output.Value != "value" {
+		t.Fatalf("output = %q", output.Value)
+	}
+	if got := strings.Join(order, ","); got != "root:before,child:before,action,child:after,root:after" {
+		t.Fatalf("waterfall order = %q", got)
 	}
 }
 
-func TestWaterfallRejectsSecondProceed(t *testing.T) {
+type doubleExecuteMiddleware struct {
+	plugin.Base
+	secondErr error
+}
+
+func (*doubleExecuteMiddleware) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "double-proceed",
+		Waterfalls: []plugin.WaterfallContribution{
+			plugin.WaterfallOf[formatInput, formatOutput](),
+		},
+	}
+}
+
+func (*doubleExecuteMiddleware) Apply(context.Context) error {
+	return nil
+}
+
+func (*doubleExecuteMiddleware) Dispose(context.Context) error {
+	return nil
+}
+
+func (middleware *doubleExecuteMiddleware) Intercept(
+	requestContext context.Context,
+	input formatInput,
+	downstream plugin.WaterfallAction[formatInput, formatOutput],
+) (formatOutput, error) {
+	output, err := downstream.Execute(requestContext, input)
+	if err != nil {
+		return output, err
+	}
+	_, middleware.secondErr = downstream.Execute(requestContext, input)
+	return output, nil
+}
+
+func TestWaterfallRejectsSecondExecute(t *testing.T) {
 	t.Parallel()
-	runtimeEngine := NewRuntime(RuntimeSettings{})
-	var sourceScope *Scope
-	if _, err := runtimeEngine.Load(
+	middleware := &doubleExecuteMiddleware{}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	if _, err := runtimeEngine.Start(context.Background(), middleware); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if _, err := plugin.Run(
 		context.Background(),
-		&runtimeTestPlugin{
-			metadata: Manifest{
-				Name: "double-proceed",
-			},
-			applyOperation: func(_ context.Context, pluginContext *Context) error {
-				sourceScope = pluginContext.Scope()
-				return runtimeTestWaterfallDefinition.Use(
-					pluginContext,
-					&runtimeDoubleProceedMiddleware{},
-				)
-			},
+		middleware,
+		formatInput{},
+		formatAction{
+			order: &[]string{},
 		},
 	); err != nil {
-		t.Fatal(err)
+		t.Fatalf("run: %v", err)
 	}
-	_, err := runtimeTestWaterfallDefinition.Run(
-		context.Background(),
-		sourceScope,
-		runtimeTestInput{},
-		&runtimeTestTerminal{
-			trace: &[]string{},
-		},
-	)
-	if !errors.Is(err, ErrWaterfallAlreadyProceeded) {
-		t.Fatalf("Run error = %v, want %v", err, ErrWaterfallAlreadyProceeded)
+	if !errors.Is(middleware.secondErr, plugin.ErrWaterfallAlreadyExecuted) {
+		t.Fatalf("second Execute error = %v", middleware.secondErr)
 	}
 }

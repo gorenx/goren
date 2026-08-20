@@ -3,284 +3,158 @@ package plugin
 import (
 	"context"
 	"errors"
-	"fmt"
+	"reflect"
 	"sort"
-	"strings"
 	"sync/atomic"
 )
 
-type waterfallToken struct {
-	marker byte
+// WaterfallAction is one executable downstream operation. The business
+// terminal and each Runtime-assembled Middleware step implement the same role.
+type WaterfallAction[I WaterfallInput, O WaterfallOutput] interface {
+	Execute(context.Context, I) (O, error)
 }
 
-// waterfallRef is the private type-erased identity used by Runtime registries.
-type waterfallRef struct {
-	name  string
-	token *waterfallToken
-}
-
-func (definitionRef waterfallRef) sameDefinition(otherRef waterfallRef) bool {
-	return definitionRef.name == otherRef.name && definitionRef.token == otherRef.token
-}
-
-// WaterfallTerminal owns the unintercepted behavior of one operation.
-type WaterfallTerminal[I WaterfallInput, O WaterfallOutput] interface {
-	Execute(requestContext context.Context, input I) (O, error)
-}
-
-// WaterfallNext delegates to the next Middleware or terminal operation.
-type WaterfallNext[I WaterfallInput, O WaterfallOutput] interface {
-	Proceed(requestContext context.Context, input I) (O, error)
-}
-
-// WaterfallMiddleware wraps one owner-defined operation. It may transform the
-// input, short-circuit, or wrap the downstream result and error.
+// WaterfallMiddleware wraps one typed operation.
 type WaterfallMiddleware[I WaterfallInput, O WaterfallOutput] interface {
-	Intercept(
-		requestContext context.Context,
-		input I,
-		next WaterfallNext[I, O],
-	) (O, error)
+	Intercept(context.Context, I, WaterfallAction[I, O]) (O, error)
 }
 
-// WaterfallDefinition is the owner-defined typed identity of one interceptable
-// operation.
-type WaterfallDefinition[I WaterfallInput, O WaterfallOutput] struct {
-	ref waterfallRef
+type typedWaterfallContribution[I WaterfallInput, O WaterfallOutput] struct{}
+
+// WaterfallOf declares that a Plugin implements WaterfallMiddleware[I, O].
+func WaterfallOf[I WaterfallInput, O WaterfallOutput]() WaterfallContribution {
+	return typedWaterfallContribution[I, O]{}
 }
 
-// DefineWaterfall creates one canonical typed Waterfall definition.
-func DefineWaterfall[I WaterfallInput, O WaterfallOutput](
-	canonicalName string,
-) WaterfallDefinition[I, O] {
-	if strings.TrimSpace(canonicalName) == "" || canonicalName != strings.TrimSpace(canonicalName) {
-		panic("plugin: Waterfall name must be non-empty and trimmed")
-	}
-	return WaterfallDefinition[I, O]{
-		ref: waterfallRef{
-			name:  canonicalName,
-			token: &waterfallToken{},
-		},
-	}
-}
-
-// Name returns the canonical Waterfall name.
-func (definition WaterfallDefinition[I, O]) Name() string {
-	return definition.ref.name
-}
-
-// Use installs one Fiber-owned Middleware binding.
-func (definition WaterfallDefinition[I, O]) Use(
-	pluginContext *Context,
-	middleware WaterfallMiddleware[I, O],
-) error {
-	if pluginContext == nil {
-		return errors.New("plugin: use Waterfall through nil Context")
-	}
-	binding := &waterfallBindingOf[I, O]{
-		definition: definition,
-		middleware: middleware,
-	}
-	return pluginContext.register(binding)
-}
-
-// Run snapshots admitted Middleware from root to source Scope and executes the
-// typed onion chain around terminal.
-func (definition WaterfallDefinition[I, O]) Run(
-	requestContext context.Context,
-	sourceScope *Scope,
-	input I,
-	terminal WaterfallTerminal[I, O],
-) (O, error) {
-	var output O
-	if sourceScope == nil || sourceScope.runtime == nil || sourceScope.isClosed() {
-		return output, errors.New("plugin: run Waterfall through nil Scope")
-	}
-	if terminal == nil {
-		return output, errors.New("plugin: Waterfall terminal is nil")
-	}
-	middleware, err := snapshotWaterfall(definition, sourceScope)
+func (typedWaterfallContribution[I, O]) Name() string {
+	reference, err := waterfallReferenceOf[I, O]()
 	if err != nil {
-		return output, err
+		return ""
 	}
-	chain := &waterfallChain[I, O]{
+	return reference.name
+}
+
+func (typedWaterfallContribution[I, O]) waterfallReference() (waterfallRef, error) {
+	return waterfallReferenceOf[I, O]()
+}
+
+func (typedWaterfallContribution[I, O]) bindWaterfallMiddleware(
+	pluginInstance Plugin,
+) (waterfallInvoker, error) {
+	middleware, matches := pluginInstance.(WaterfallMiddleware[I, O])
+	if !matches {
+		return nil, errors.New("Plugin does not implement the declared WaterfallMiddleware")
+	}
+	return waterfallInvokerOf[I, O]{
 		middleware: middleware,
-		terminal:   terminal,
+	}, nil
+}
+
+func waterfallReferenceOf[
+	I WaterfallInput,
+	O WaterfallOutput,
+]() (waterfallRef, error) {
+	inputType := reflect.TypeFor[I]()
+	outputType := reflect.TypeFor[O]()
+	if inputType == nil || inputType.Name() == "" {
+		return waterfallRef{}, errors.New("Waterfall input must be a named type")
 	}
-	return chain.Proceed(requestContext, input)
+	if outputType == nil || outputType.Name() == "" {
+		return waterfallRef{}, errors.New("Waterfall output must be a named type")
+	}
+	return waterfallRef{
+		input:  inputType,
+		output: outputType,
+		name:   namedTypeName(inputType) + " -> " + namedTypeName(outputType),
+	}, nil
 }
 
-type waterfallBinding interface {
-	runtimeEntry
-	waterfallDefinitionRef() waterfallRef
+type waterfallKey struct {
+	input  reflect.Type
+	output reflect.Type
 }
 
-type waterfallBindingOf[I WaterfallInput, O WaterfallOutput] struct {
-	definition WaterfallDefinition[I, O]
+type waterfallInvoker interface {
+	waterfallTypes() waterfallKey
+}
+
+type waterfallInvokerOf[I WaterfallInput, O WaterfallOutput] struct {
 	middleware WaterfallMiddleware[I, O]
-	ordinal    uint64
-	owner      *fiberEffect
 }
 
-func (binding *waterfallBindingOf[I, O]) waterfallDefinitionRef() waterfallRef {
-	return binding.definition.ref
-}
-
-func (binding *waterfallBindingOf[I, O]) Label() string {
-	return "waterfall:" + binding.definition.ref.name
-}
-
-func (binding *waterfallBindingOf[I, O]) validateEntry(ownership *fiberEffect) error {
-	registry := ownership.runtime.waterfalls
-	if existingRef, exists := registry.definitions[binding.definition.ref.name]; exists &&
-		!existingRef.sameDefinition(binding.definition.ref) {
-		return fmt.Errorf(
-			"plugin: Waterfall %q was recreated with a different definition",
-			binding.definition.ref.name,
-		)
-	}
-	if existingBucket, exists := registry.buckets[binding.definition.ref.name]; exists {
-		if _, matches := existingBucket.(*waterfallBucketOf[I, O]); !matches {
-			return fmt.Errorf(
-				"plugin: Waterfall %q has an incompatible typed bucket",
-				binding.definition.ref.name,
-			)
-		}
-	}
-	return nil
-}
-
-func (binding *waterfallBindingOf[I, O]) publishEntry(ownership *fiberEffect) {
-	registry := ownership.runtime.waterfalls
-	registry.definitions[binding.definition.ref.name] = binding.definition.ref
-	typedBucket, exists := registry.buckets[binding.definition.ref.name].(*waterfallBucketOf[I, O])
-	if !exists {
-		typedBucket = &waterfallBucketOf[I, O]{
-			definition: binding.definition,
-		}
-		registry.buckets[binding.definition.ref.name] = typedBucket
-	}
-	if binding.ordinal == 0 {
-		registry.nextOrdinal++
-		binding.ordinal = registry.nextOrdinal
-	}
-	binding.owner = ownership
-	typedBucket.bindings = append(typedBucket.bindings, binding)
-}
-
-func (binding *waterfallBindingOf[I, O]) withdrawEntry(ownership *fiberEffect) {
-	registry := ownership.runtime.waterfalls
-	typedBucket, exists := registry.buckets[binding.definition.ref.name].(*waterfallBucketOf[I, O])
-	if !exists {
-		return
-	}
-	for bindingIndex, registeredBinding := range typedBucket.bindings {
-		if registeredBinding != binding {
-			continue
-		}
-		typedBucket.bindings = append(
-			typedBucket.bindings[:bindingIndex],
-			typedBucket.bindings[bindingIndex+1:]...,
-		)
-		break
-	}
-	binding.owner = nil
-}
-
-func (binding *waterfallBindingOf[I, O]) diagnostic() runtimeEntryDiagnostic {
-	return runtimeEntryDiagnostic{
-		kind: runtimeEntryWaterfall,
-		name: binding.definition.ref.name,
+func (waterfallInvokerOf[I, O]) waterfallTypes() waterfallKey {
+	return waterfallKey{
+		input:  reflect.TypeFor[I](),
+		output: reflect.TypeFor[O](),
 	}
 }
 
-type waterfallBucket interface {
-	waterfallDefinitionRef() waterfallRef
+type waterfallBinding struct {
+	reference waterfallRef
+	invoker   waterfallInvoker
+	owner     *fiber
+	scope     *scope
+	ordinal   uint64
 }
 
-type waterfallBucketOf[I WaterfallInput, O WaterfallOutput] struct {
-	definition WaterfallDefinition[I, O]
-	bindings   []*waterfallBindingOf[I, O]
-}
-
-func (bucket *waterfallBucketOf[I, O]) waterfallDefinitionRef() waterfallRef {
-	return bucket.definition.ref
-}
-
-// waterfallRegistry owns typed Middleware buckets and registration order.
-// Runtime.state protects its fields; snapshots escape before external calls.
 type waterfallRegistry struct {
-	definitions map[string]waterfallRef
-	buckets     map[string]waterfallBucket
-	nextOrdinal uint64
+	bindings map[waterfallKey][]*waterfallBinding
 }
 
 func newWaterfallRegistry() *waterfallRegistry {
 	return &waterfallRegistry{
-		definitions: make(map[string]waterfallRef),
-		buckets:     make(map[string]waterfallBucket),
+		bindings: make(map[waterfallKey][]*waterfallBinding),
 	}
 }
 
-type waterfallChain[I WaterfallInput, O WaterfallOutput] struct {
-	middleware []WaterfallMiddleware[I, O]
-	terminal   WaterfallTerminal[I, O]
-	index      int
-	proceeded  atomic.Bool
+func (registry *waterfallRegistry) add(binding *waterfallBinding) {
+	selectedKey := waterfallKey{
+		input:  binding.reference.input,
+		output: binding.reference.output,
+	}
+	registry.bindings[selectedKey] = append(
+		registry.bindings[selectedKey],
+		binding,
+	)
 }
 
-func (chain *waterfallChain[I, O]) Proceed(
-	requestContext context.Context,
-	input I,
-) (O, error) {
-	var output O
-	if !chain.proceeded.CompareAndSwap(false, true) {
-		return output, ErrWaterfallAlreadyProceeded
+func (registry *waterfallRegistry) remove(binding *waterfallBinding) {
+	selectedKey := waterfallKey{
+		input:  binding.reference.input,
+		output: binding.reference.output,
 	}
-	if chain.index >= len(chain.middleware) {
-		return chain.terminal.Execute(requestContext, input)
+	candidates := registry.bindings[selectedKey]
+	for candidateIndex, candidate := range candidates {
+		if candidate != binding {
+			continue
+		}
+		registry.bindings[selectedKey] = append(
+			candidates[:candidateIndex],
+			candidates[candidateIndex+1:]...,
+		)
+		break
 	}
-	nextChain := &waterfallChain[I, O]{
-		middleware: chain.middleware,
-		terminal:   chain.terminal,
-		index:      chain.index + 1,
-	}
-	return chain.middleware[chain.index].Intercept(requestContext, input, nextChain)
 }
 
-func snapshotWaterfall[I WaterfallInput, O WaterfallOutput](
-	definition WaterfallDefinition[I, O],
-	sourceScope *Scope,
+func snapshotWaterfall[
+	I WaterfallInput,
+	O WaterfallOutput,
+](
+	registry *waterfallRegistry,
+	sourceScope *scope,
 ) ([]WaterfallMiddleware[I, O], error) {
-	runtimeEngine := sourceScope.runtime
-	runtimeEngine.state.RLock()
-	defer runtimeEngine.state.RUnlock()
-	if existingRef, exists := runtimeEngine.waterfalls.definitions[definition.ref.name]; exists &&
-		!existingRef.sameDefinition(definition.ref) {
-		return nil, fmt.Errorf(
-			"plugin: Waterfall %q does not match its registered definition",
-			definition.ref.name,
-		)
-	}
-	existingBucket, exists := runtimeEngine.waterfalls.buckets[definition.ref.name]
-	if !exists {
-		return nil, nil
-	}
-	typedBucket, matches := existingBucket.(*waterfallBucketOf[I, O])
-	if !matches {
-		return nil, fmt.Errorf(
-			"plugin: Waterfall %q has an incompatible typed bucket",
-			definition.ref.name,
-		)
+	selectedKey := waterfallKey{
+		input:  reflect.TypeFor[I](),
+		output: reflect.TypeFor[O](),
 	}
 	lineage := scopePath(sourceScope)
-	snapshot := make([]WaterfallMiddleware[I, O], 0, len(typedBucket.bindings))
+	middleware := make([]WaterfallMiddleware[I, O], 0)
 	for scopeIndex := len(lineage) - 1; scopeIndex >= 0; scopeIndex-- {
-		selectedKey := lineage[scopeIndex].target
-		selectedBindings := make([]*waterfallBindingOf[I, O], 0)
-		for _, binding := range typedBucket.bindings {
-			if binding.owner == nil || binding.owner.state != fiberEffectActive ||
-				binding.owner.fiber.state != FiberActive || binding.owner.scope.target != selectedKey {
+		selectedScope := lineage[scopeIndex]
+		selectedBindings := make([]*waterfallBinding, 0)
+		for _, binding := range registry.bindings[selectedKey] {
+			if binding.scope != selectedScope || binding.owner == nil ||
+				binding.owner.state != FiberActive {
 				continue
 			}
 			selectedBindings = append(selectedBindings, binding)
@@ -289,8 +163,81 @@ func snapshotWaterfall[I WaterfallInput, O WaterfallOutput](
 			return selectedBindings[leftIndex].ordinal < selectedBindings[rightIndex].ordinal
 		})
 		for _, binding := range selectedBindings {
-			snapshot = append(snapshot, binding.middleware)
+			typedInvoker, matches := binding.invoker.(waterfallInvokerOf[I, O])
+			if !matches {
+				return nil, errors.New("plugin: Waterfall has an incompatible Middleware")
+			}
+			middleware = append(middleware, typedInvoker.middleware)
 		}
 	}
-	return snapshot, nil
+	return middleware, nil
+}
+
+type waterfallStep[I WaterfallInput, O WaterfallOutput] struct {
+	middleware []WaterfallMiddleware[I, O]
+	terminal   WaterfallAction[I, O]
+	index      int
+	proceeded  atomic.Bool
+}
+
+func (step *waterfallStep[I, O]) Execute(
+	requestContext context.Context,
+	input I,
+) (O, error) {
+	var output O
+	if !step.proceeded.CompareAndSwap(false, true) {
+		return output, ErrWaterfallAlreadyExecuted
+	}
+	if step.index >= len(step.middleware) {
+		return step.terminal.Execute(requestContext, input)
+	}
+	downstream := &waterfallStep[I, O]{
+		middleware: step.middleware,
+		terminal:   step.terminal,
+		index:      step.index + 1,
+	}
+	return step.middleware[step.index].Intercept(
+		requestContext,
+		input,
+		downstream,
+	)
+}
+
+// Run executes the typed onion chain visible from source around terminal.
+func Run[
+	I WaterfallInput,
+	O WaterfallOutput,
+](
+	requestContext context.Context,
+	source Plugin,
+	input I,
+	terminal WaterfallAction[I, O],
+) (O, error) {
+	var output O
+	if terminal == nil {
+		return output, errors.New("plugin: Waterfall terminal is nil")
+	}
+	selectedActivation, err := activeActivationOf(source)
+	if err != nil {
+		return output, err
+	}
+	runtimeEngine := selectedActivation.runtime
+	runtimeEngine.state.RLock()
+	if selectedActivation.fiber.state != FiberActive {
+		runtimeEngine.state.RUnlock()
+		return output, ErrPluginNotActive
+	}
+	middleware, err := snapshotWaterfall[I, O](
+		runtimeEngine.waterfalls,
+		selectedActivation.fiber.scope,
+	)
+	runtimeEngine.state.RUnlock()
+	if err != nil {
+		return output, err
+	}
+	firstStep := &waterfallStep[I, O]{
+		middleware: middleware,
+		terminal:   terminal,
+	}
+	return firstStep.Execute(requestContext, input)
 }
