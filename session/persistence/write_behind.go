@@ -18,16 +18,22 @@ type liveWriter struct {
 	paused    bool
 	expired   bool
 	delay     time.Duration
-	write     func(context.Context, []session.Event) error
-	report    func(error)
+	target    liveWriteTarget
+}
+
+type liveWriteTarget interface {
+	WriteBatch(context.Context, []session.Event) error
+	ReportBackgroundFailure(error)
 }
 
 func newLiveWriter(
 	delay time.Duration,
-	write func(context.Context, []session.Event) error,
-	report func(error),
+	target liveWriteTarget,
 ) *liveWriter {
-	return &liveWriter{delay: delay, write: write, report: report}
+	return &liveWriter{
+		delay:  delay,
+		target: target,
+	}
 }
 
 func (owner *liveWriter) enqueue(committed session.Event) {
@@ -78,7 +84,7 @@ func (owner *liveWriter) flush(requestContext context.Context) error {
 		batch, done := owner.startWriteLocked()
 		owner.mutex.Unlock()
 
-		writeErr := owner.write(requestContext, batch)
+		writeErr := owner.target.WriteBatch(requestContext, batch)
 		owner.finishWrite(batch, done, writeErr, false)
 		if writeErr != nil {
 			return writeErr
@@ -116,7 +122,7 @@ func (owner *liveWriter) onDeadline() {
 	batch, done := owner.startWriteLocked()
 	owner.mutex.Unlock()
 
-	writeErr := owner.write(context.Background(), batch)
+	writeErr := owner.target.WriteBatch(context.Background(), batch)
 	owner.finishWrite(batch, done, writeErr, true)
 }
 
@@ -158,5 +164,5 @@ func (owner *liveWriter) finishWrite(batch []session.Event, done chan struct{}, 
 
 func (owner *liveWriter) safeReport(problem error) {
 	defer func() { _ = recover() }()
-	owner.report(problem)
+	owner.target.ReportBackgroundFailure(problem)
 }

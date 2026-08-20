@@ -27,6 +27,22 @@ type preparedReservation struct {
 	source       *preparedSource
 }
 
+type preparedReservationLease struct {
+	pool        *preparedSessions
+	reservation *preparedReservation
+}
+
+func (leaseState *preparedReservationLease) Release() {
+	if leaseState == nil || leaseState.pool == nil || leaseState.reservation == nil {
+		return
+	}
+	leaseState.pool.ReturnReservation(
+		leaseState.reservation,
+		leaseState.reservation.source.conversation.Seq() ==
+			leaseState.reservation.source.sessionLength,
+	)
+}
+
 // preparedSessions owns the bounded ready LRU and exclusive unpublished
 // reservations. Reserved objects are removed from the LRU so capacity policy
 // can never evict an active resume candidate.

@@ -12,10 +12,15 @@ import (
 	sesssqlite "github.com/gorenx/goren/session/persistence/sqlite"
 )
 
-type testSessionProvider struct{}
+type persistenceFailureReporter struct{}
 
-func (testSessionProvider) Manifest() plugin.Manifest {
-	return plugin.Manifest{Name: "test-sessions", Provides: []plugin.ServiceRef{session.StoreService.Ref()}}
+func (persistenceFailureReporter) ReportEventFailure(context.Context, plugin.EventFailure) {}
+
+func (persistenceFailureReporter) ReportPostCommitFailure(session.PostCommitFailure) {}
+
+func (persistenceFailureReporter) ReportBackgroundWriteFailure(
+	sesspersist.BackgroundWriteFailure,
+) {
 }
 
 type countingBackend struct {
@@ -63,189 +68,158 @@ func (storage *countingBackend) counts() (int, int, int) {
 	return storage.loads, storage.seeks, storage.revisions
 }
 
-type cacheFixture struct {
-	path        string
-	backend     *countingBackend
-	persistence sesspersist.Persistence
+type sqliteBackendOpener struct {
+	settings sesssqlite.Config
+	counted  bool
+	opened   *countingBackend
 }
 
-func (*cacheFixture) Manifest() plugin.Manifest {
-	return plugin.Manifest{Name: "session-persistence-cache-fixture"}
+func (opener *sqliteBackendOpener) OpenBackend(
+	requestContext context.Context,
+) (sesspersist.Backend, error) {
+	storage, err := sesssqlite.Open(requestContext, opener.settings)
+	if err != nil {
+		return nil, err
+	}
+	if !opener.counted {
+		return storage, nil
+	}
+	opener.opened = &countingBackend{
+		Backend: storage,
+	}
+	return opener.opened, nil
 }
 
-func (fixture *cacheFixture) Apply(requestContext context.Context, pluginScope *plugin.Scope) error {
-	storeProvider, err := session.NewMemoryStore(pluginScope, session.MemoryStoreOptions{})
-	if err != nil {
-		return err
-	}
-	if err := pluginScope.Effect(requestContext, "sessions", func(context.Context) (plugin.Disposer, error) {
-		return storeProvider.Close, nil
-	}); err != nil {
-		return err
-	}
-	storage, err := sesssqlite.Open(requestContext, sesssqlite.Config{Path: fixture.path, JournalMode: sesssqlite.JournalWAL})
-	if err != nil {
-		return err
-	}
-	fixture.backend = &countingBackend{Backend: storage}
-	durability, err := sesspersist.NewSessionLogStore(
-		requestContext, pluginScope, storeProvider, fixture.backend,
-		sesspersist.SessionLogStoreOptions{WriteBatchMaxDelay: time.Hour, PreparedSessionCacheSize: 1},
+type persistenceFixture struct {
+	runtime     *plugin.Runtime
+	store       *session.MemoryStore
+	persistence *sesspersist.SessionLogStore
+	opener      *sqliteBackendOpener
+}
+
+func newPersistenceFixture(
+	testingContext *testing.T,
+	path string,
+	counted bool,
+	cacheSize int,
+) persistenceFixture {
+	testingContext.Helper()
+	reporter := persistenceFailureReporter{}
+	store, err := session.NewMemoryStore(
+		session.MemoryStoreOptions{
+			PostCommitFailures: reporter,
+		},
 	)
 	if err != nil {
-		_ = storage.Close(requestContext)
-		return err
+		testingContext.Fatal(err)
 	}
-	fixture.persistence = durability
-	return nil
-}
-
-func (testSessionProvider) Apply(requestContext context.Context, pluginScope *plugin.Scope) error {
-	store, err := session.NewMemoryStore(pluginScope, session.MemoryStoreOptions{})
-	if err != nil {
-		return err
-	}
-	if err := pluginScope.Effect(requestContext, "test sessions", func(context.Context) (plugin.Disposer, error) {
-		return store.Close, nil
-	}); err != nil {
-		return err
-	}
-	_, err = plugin.Provide(pluginScope, session.StoreService, session.LiveStore(store))
-	return err
-}
-
-type testPersistenceProvider struct {
-	path string
-}
-
-func (testPersistenceProvider) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name: "test-session-persistence", Provides: []plugin.ServiceRef{sesspersist.Service.Ref()},
-		Requires: []plugin.ServiceRef{session.StoreService.Ref()},
-	}
-}
-
-func (instance testPersistenceProvider) Apply(requestContext context.Context, pluginScope *plugin.Scope) error {
-	store, found := plugin.Require(pluginScope, session.StoreService)
-	if !found {
-		return context.Canceled
-	}
-	storage, err := sesssqlite.Open(requestContext, sesssqlite.Config{
-		Path: instance.path, JournalMode: sesssqlite.JournalWAL,
-	})
-	if err != nil {
-		return err
+	opener := &sqliteBackendOpener{
+		settings: sesssqlite.Config{
+			Path:        path,
+			JournalMode: sesssqlite.JournalWAL,
+		},
+		counted: counted,
 	}
 	durability, err := sesspersist.NewSessionLogStore(
-		requestContext, pluginScope, store, storage,
-		sesspersist.SessionLogStoreOptions{WriteBatchMaxDelay: time.Hour},
+		opener,
+		sesspersist.SessionLogStoreOptions{
+			WriteBatchMaxDelay:       time.Hour,
+			PreparedSessionCacheSize: cacheSize,
+			BackgroundWriteFailures:  reporter,
+		},
 	)
 	if err != nil {
-		_ = storage.Close(requestContext)
-		return err
+		testingContext.Fatal(err)
 	}
-	_, err = plugin.Provide(pluginScope, sesspersist.Service, sesspersist.Persistence(durability))
-	return err
+	runtimeEngine := plugin.NewRuntime(
+		plugin.RuntimeSettings{
+			EventFailures: reporter,
+		},
+	)
+	if _, err := runtimeEngine.Start(
+		context.Background(),
+		durability,
+		store,
+	); err != nil {
+		testingContext.Fatal(err)
+	}
+	return persistenceFixture{
+		runtime:     runtimeEngine,
+		store:       store,
+		persistence: durability,
+		opener:      opener,
+	}
 }
 
-type testProbe struct {
-	body func(context.Context, *plugin.Scope, session.LiveStore, sesspersist.Persistence) error
-}
-
-func (testProbe) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name:     "test-persistence-probe",
-		Requires: []plugin.ServiceRef{session.StoreService.Ref(), sesspersist.Service.Ref()},
+func (fixture persistenceFixture) close(testingContext *testing.T) {
+	testingContext.Helper()
+	if err := fixture.runtime.Shutdown(context.Background()); err != nil {
+		testingContext.Fatal(err)
 	}
-}
-
-func (instance testProbe) Apply(requestContext context.Context, pluginScope *plugin.Scope) error {
-	store, sessionsFound := plugin.Require(pluginScope, session.StoreService)
-	durability, persistenceFound := plugin.Require(pluginScope, sesspersist.Service)
-	if !sessionsFound || !persistenceFound {
-		return context.Canceled
-	}
-	return instance.body(requestContext, pluginScope, store, durability)
 }
 
 func TestSessionLogStorePersistsAnOpenTurnAndRepairsItOnColdLoad(t *testing.T) {
 	t.Parallel()
 	requestContext := context.Background()
 	path := t.TempDir() + "/sessions.sqlite"
-	firstRuntime := plugin.NewRuntime()
-	if _, err := firstRuntime.Load(requestContext, testSessionProvider{}); err != nil {
+	first := newPersistenceFixture(t, path, false, 0)
+	identifier := session.SessionID("cold-recovery")
+	handle, err := first.store.Create(
+		requestContext,
+		&identifier,
+		session.CreateOptions{},
+	)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := firstRuntime.Load(requestContext, testPersistenceProvider{path: path}); err != nil {
+	conversation := handle.Session()
+	if _, err := session.Append(
+		conversation,
+		session.TurnStarted,
+		session.TurnStart{
+			Turn: 1,
+		},
+	); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := firstRuntime.Load(requestContext, testProbe{body: func(
-		operationContext context.Context,
-		pluginScope *plugin.Scope,
-		store session.LiveStore,
-		_ sesspersist.Persistence,
-	) error {
-		identifier := session.SessionID("cold-recovery")
-		conversation, err := store.Create(operationContext, pluginScope, &identifier, session.CreateOptions{})
-		if err != nil {
-			return err
-		}
-		if _, err := session.Append(conversation, session.TurnStarted, session.TurnStart{Turn: 1}); err != nil {
-			return err
-		}
-		_, err = store.Flush(operationContext, conversation)
-		return err
-	}}); err != nil {
+	if err := first.store.Flush(requestContext, conversation); err != nil {
 		t.Fatal(err)
 	}
-	if err := firstRuntime.Shutdown(requestContext); err != nil {
-		t.Fatal(err)
-	}
+	first.close(t)
 
-	secondRuntime := plugin.NewRuntime()
-	if _, err := secondRuntime.Load(requestContext, testSessionProvider{}); err != nil {
+	second := newPersistenceFixture(t, path, false, 0)
+	loaded, err := second.persistence.Load(requestContext, identifier)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := secondRuntime.Load(requestContext, testPersistenceProvider{path: path}); err != nil {
+	if len(loaded.Events) != 2 || loaded.Events[0].Type != session.TurnStartEventName ||
+		loaded.Events[1].Type != session.TurnEndEventName {
+		t.Fatalf("cold recovered events = %#v", loaded.Events)
+	}
+	prepared, err := second.persistence.Prepare(requestContext, identifier)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := secondRuntime.Load(requestContext, testProbe{body: func(
-		operationContext context.Context,
-		_ *plugin.Scope,
-		_ session.LiveStore,
-		durability sesspersist.Persistence,
-	) error {
-		loaded, err := durability.Load(operationContext, "cold-recovery")
-		if err != nil {
-			return err
-		}
-		if len(loaded.Events) != 2 || loaded.Events[0].Type != session.TurnStartEventName ||
-			loaded.Events[1].Type != session.TurnEndEventName {
-			t.Fatalf("cold recovered events = %#v", loaded.Events)
-		}
-		prepared, err := durability.Prepare(operationContext, "cold-recovery")
-		if err != nil {
-			return err
-		}
-		defer prepared.Dispose()
-		if prepared.UnpublishedSession().FirstLiveSeq() != 2 || len(prepared.UnpublishedSession().Events()) != 3 ||
-			prepared.UnpublishedSession().Events()[2].Type != session.EndSeedEventName {
-			t.Fatalf("prepared Session = %#v", prepared.UnpublishedSession().Events())
-		}
-		return nil
-	}}); err != nil {
-		t.Fatal(err)
+	defer prepared.Dispose()
+	if prepared.UnpublishedSession().FirstLiveSeq() != 2 ||
+		len(prepared.UnpublishedSession().Events()) != 3 ||
+		prepared.UnpublishedSession().Events()[2].Type != session.EndSeedEventName {
+		t.Fatalf("prepared Session = %#v", prepared.UnpublishedSession().Events())
 	}
-	if err := secondRuntime.Shutdown(requestContext); err != nil {
-		t.Fatal(err)
-	}
+	second.close(t)
 }
 
 func TestSessionLogStoreReusesRevisionCurrentPreparationAndSeeksReadFrom(t *testing.T) {
 	t.Parallel()
 	requestContext := context.Background()
 	path := t.TempDir() + "/sessions.sqlite"
-	storage, err := sesssqlite.Open(requestContext, sesssqlite.Config{Path: path, JournalMode: sesssqlite.JournalWAL})
+	storage, err := sesssqlite.Open(
+		requestContext,
+		sesssqlite.Config{
+			Path:        path,
+			JournalMode: sesssqlite.JournalWAL,
+		},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,13 +231,7 @@ func TestSessionLogStoreReusesRevisionCurrentPreparationAndSeeksReadFrom(t *test
 		t.Fatal(err)
 	}
 
-	engine := plugin.NewRuntime()
-	fixture := &cacheFixture{path: path}
-	handle, err := engine.Load(requestContext, fixture)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = engine.Unload(requestContext, handle) })
+	fixture := newPersistenceFixture(t, path, true, 1)
 	first, err := fixture.persistence.Inspect(requestContext, metadata.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -272,10 +240,17 @@ func TestSessionLogStoreReusesRevisionCurrentPreparationAndSeeksReadFrom(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	loads, seeks, revisions := fixture.backend.counts()
-	if len(first.Events) != 2 || len(second.Events) != 2 || loads != 1 || seeks != 0 || revisions < 1 {
-		t.Fatalf("cached inspections = (%d, %d), backend counts = (%d, %d, %d)",
-			len(first.Events), len(second.Events), loads, seeks, revisions)
+	loads, seeks, revisions := fixture.opener.opened.counts()
+	if len(first.Events) != 2 || len(second.Events) != 2 || loads != 1 || seeks != 0 ||
+		revisions < 1 {
+		t.Fatalf(
+			"cached inspections = (%d, %d), backend counts = (%d, %d, %d)",
+			len(first.Events),
+			len(second.Events),
+			loads,
+			seeks,
+			revisions,
+		)
 	}
 	prepared, err := fixture.persistence.Prepare(requestContext, metadata.ID)
 	if err != nil {
@@ -291,21 +266,30 @@ func TestSessionLogStoreReusesRevisionCurrentPreparationAndSeeksReadFrom(t *test
 		t.Fatal("revision-current prepared Session object was rebuilt")
 	}
 	preparedAgain.Dispose()
-	loads, _, _ = fixture.backend.counts()
+	loads, _, _ = fixture.opener.opened.counts()
 	if loads != 1 {
 		t.Fatalf("prepared cache performed %d full loads, want 1", loads)
 	}
 	external := session.Event{
-		Type: "extension/external", Seq: 2, Time: 3, Data: []byte(`{}`), Ignorable: true,
+		Type:      "extension/external",
+		Seq:       2,
+		Time:      3,
+		Data:      []byte(`{}`),
+		Ignorable: true,
 	}
-	if err := fixture.backend.AppendBatch(requestContext, metadata, []session.Event{external}, true); err != nil {
+	if err := fixture.opener.opened.AppendBatch(
+		requestContext,
+		metadata,
+		[]session.Event{external},
+		true,
+	); err != nil {
 		t.Fatal(err)
 	}
 	refreshed, err := fixture.persistence.Inspect(requestContext, metadata.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	loads, _, _ = fixture.backend.counts()
+	loads, _, _ = fixture.opener.opened.counts()
 	if len(refreshed.Events) != 3 || loads != 2 {
 		t.Fatalf("revision refresh = %#v, full loads = %d", refreshed.Events, loads)
 	}
@@ -313,26 +297,46 @@ func TestSessionLogStoreReusesRevisionCurrentPreparationAndSeeksReadFrom(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	loadsAfterSeek, seeksAfterRead, _ := fixture.backend.counts()
+	loadsAfterSeek, seeksAfterRead, _ := fixture.opener.opened.counts()
 	if len(suffix.Events) != 2 || suffix.Events[0].Seq != 1 || suffix.Events[1].Seq != 2 ||
 		loadsAfterSeek != loads || seeksAfterRead != 1 {
-		t.Fatalf("seek suffix = %#v, backend counts = (%d, %d)", suffix, loadsAfterSeek, seeksAfterRead)
+		t.Fatalf(
+			"seek suffix = %#v, backend counts = (%d, %d)",
+			suffix,
+			loadsAfterSeek,
+			seeksAfterRead,
+		)
 	}
+	fixture.close(t)
 }
 
-func persistenceClosedTurn(t *testing.T, identifier session.SessionID) (session.Header, []session.Event) {
-	t.Helper()
+func persistenceClosedTurn(
+	testingContext *testing.T,
+	identifier session.SessionID,
+) (session.Header, []session.Event) {
+	testingContext.Helper()
 	conversation, err := session.New(identifier, session.CreateOptions{})
 	if err != nil {
-		t.Fatal(err)
+		testingContext.Fatal(err)
 	}
-	if _, err := session.Append(conversation, session.TurnStarted, session.TurnStart{Turn: 1}); err != nil {
-		t.Fatal(err)
+	if _, err := session.Append(
+		conversation,
+		session.TurnStarted,
+		session.TurnStart{
+			Turn: 1,
+		},
+	); err != nil {
+		testingContext.Fatal(err)
 	}
-	if _, err := session.Append(conversation, session.TurnEnded, session.TurnEnd{
-		Turn: 1, Reason: session.TurnCompleted{},
-	}); err != nil {
-		t.Fatal(err)
+	if _, err := session.Append(
+		conversation,
+		session.TurnEnded,
+		session.TurnEnd{
+			Turn:   1,
+			Reason: session.TurnCompleted{},
+		},
+	); err != nil {
+		testingContext.Fatal(err)
 	}
 	return conversation.Header(), conversation.Events()
 }
