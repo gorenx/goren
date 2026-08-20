@@ -133,7 +133,7 @@ func (membership *agentMembership) Dispose(closeContext context.Context) error {
 	registered := membership.registered
 	membership.mutex.Unlock()
 
-	membership.subject.beginDispose()
+	membership.subject.driver.beginDispose()
 	closeErr := membership.subject.WhenIdle(context.Background())
 	if registered && agents != nil {
 		closeErr = errors.Join(

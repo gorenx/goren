@@ -174,8 +174,8 @@ func (owner *LoopPlugin) ObserveEvent(
 		return nil
 	}
 	concrete, matches := subject.(*ReactLoopAgent)
-	if matches && concrete.projection != nil {
-		concrete.projection.accept(appended.Committed)
+	if matches && concrete.driver != nil {
+		concrete.driver.acceptSessionEvent(appended.Committed)
 	}
 	return nil
 }

@@ -16,7 +16,7 @@ type requestAttempt struct {
 	prepared llm.PreparedLlmCall
 }
 
-func (subject *ReactLoopAgent) executeStep(
+func (driver *agentDriver) executeStep(
 	requestContext context.Context,
 	turn int64,
 	step int64,
@@ -30,11 +30,11 @@ func (subject *ReactLoopAgent) executeStep(
 		if err := contextFailure(requestContext); err != nil {
 			return nil, err
 		}
-		boundaryMessages, err := subject.conversation.DeriveMessages()
+		boundaryMessages, err := driver.subject.conversation.DeriveMessages()
 		if err != nil {
 			return nil, err
 		}
-		attempt, err := subject.buildRequest(
+		attempt, err := driver.buildRequest(
 			requestContext, turn, step, prepared.assembly.Tools, systemText, boundaryMessages,
 		)
 		if err != nil {
@@ -46,7 +46,7 @@ func (subject *ReactLoopAgent) executeStep(
 		if attempt.prepared != nil {
 			stream, err = attempt.prepared.Stream(requestContext, attempt.options)
 		} else {
-			stream, err = subject.models.Stream(requestContext, attempt.options)
+			stream, err = driver.models.Stream(requestContext, attempt.options)
 		}
 		if err != nil {
 			return nil, err
@@ -64,7 +64,7 @@ func (subject *ReactLoopAgent) executeStep(
 			if !found {
 				break
 			}
-			committed, appendErr := session.AppendSerialized(subject.conversation, session.AssistantChunked, session.AssistantChunk{
+			committed, appendErr := session.AppendSerialized(driver.subject.conversation, session.AssistantChunked, session.AssistantChunk{
 				Turn: turn, Step: step, Chunk: chunk,
 			})
 			if appendErr != nil {
@@ -92,7 +92,7 @@ func (subject *ReactLoopAgent) executeStep(
 			action, resolveErr := agent.ResolveRequestError(
 				requestContext,
 				agent.RequestErrorNotice{
-					Subject:     subject,
+					Subject:     driver.subject,
 					Turn:        turn,
 					Step:        step,
 					Provider:    attempt.options.Provider,
@@ -132,11 +132,15 @@ func (subject *ReactLoopAgent) executeStep(
 		if err != nil {
 			return nil, err
 		}
-		assembledPayload := session.AssistantMessage{Turn: turn, Step: step, Message: assistantReply}
+		assembledPayload := session.AssistantMessage{
+			Turn:    turn,
+			Step:    step,
+			Message: assistantReply,
+		}
 		if usage, present := assembler.UsageValue(); present {
 			assembledPayload.Usage = &usage
 		}
-		if _, err := session.AppendSurfaceSerialized(subject.conversation, session.AssistantMessaged, assembledPayload, session.SurfaceIntent{
+		if _, err := session.AppendSurfaceSerialized(driver.subject.conversation, session.AssistantMessaged, assembledPayload, session.SurfaceIntent{
 			Operation: session.SurfaceAppend(), SourceEventSeqs: &chunkSequences,
 		}); err != nil {
 			return nil, err
@@ -148,7 +152,7 @@ func (subject *ReactLoopAgent) executeStep(
 		if len(toolCalls) == 0 {
 			return session.TurnCompleted{}, nil
 		}
-		concluded, err := subject.executeToolCalls(requestContext, turn, step, toolCalls)
+		concluded, err := driver.executeToolCalls(requestContext, turn, step, toolCalls)
 		if err != nil {
 			return nil, err
 		}
@@ -159,7 +163,7 @@ func (subject *ReactLoopAgent) executeStep(
 	}
 }
 
-func (subject *ReactLoopAgent) buildRequest(
+func (driver *agentDriver) buildRequest(
 	requestContext context.Context,
 	turn int64,
 	step int64,
@@ -167,23 +171,27 @@ func (subject *ReactLoopAgent) buildRequest(
 	systemText string,
 	boundaryMessages []llm.Message,
 ) (requestAttempt, error) {
-	persistedHeader, headerFound, err := subject.conversation.RequestHeaderValue()
+	persistedHeader, headerFound, err := driver.subject.conversation.RequestHeaderValue()
 	if err != nil {
 		return requestAttempt{}, err
 	}
-	loopOptions := subject.OptionsValue()
-	seedConfig := llm.CallConfig{Provider: loopOptions.Provider, Model: loopOptions.Model, MaxTokens: cloneInt(loopOptions.MaxTokens)}
+	loopOptions := driver.subject.OptionsValue()
+	seedConfig := llm.CallConfig{
+		Provider:  loopOptions.Provider,
+		Model:     loopOptions.Model,
+		MaxTokens: cloneInt(loopOptions.MaxTokens),
+	}
 	if headerFound && persistedHeader.Config.Provider == seedConfig.Provider && persistedHeader.Config.Model == seedConfig.Model &&
 		(persistedHeader.AdapterDefaults == nil || !persistedHeader.AdapterDefaults.ReasoningEffort) {
 		seedConfig.ReasoningEffort = persistedHeader.Config.ReasoningEffort
 	}
-	if subject.requestHeaderLogged && headerFound {
+	if driver.requestHeaderLogged && headerFound {
 		seedConfig = requestProposal(persistedHeader)
 	}
 	proposed, err := agent.ResolveRequest(
 		requestContext,
 		agent.RequestNotice{
-			Subject: subject,
+			Subject: driver.subject,
 			Turn:    turn,
 			Step:    step,
 		},
@@ -205,12 +213,12 @@ func (subject *ReactLoopAgent) buildRequest(
 	if proposed.Provider == "" || proposed.Model == "" {
 		return requestAttempt{}, fmt.Errorf(
 			"agentloop: Agent %q has no provider/model; set Agent Options or supply both through agent/request",
-			subject.identifier,
+			driver.subject.identifier,
 		)
 	}
 	var preparedCall llm.PreparedLlmCall
 	effective := proposed
-	preparedCall, err = subject.models.PrepareCall(requestContext, proposed)
+	preparedCall, err = driver.models.PrepareCall(requestContext, proposed)
 	if err != nil {
 		var llmProblem *llm.LlmError
 		if !errors.As(err, &llmProblem) || llmProblem.Code() != "NO_ADAPTER" {
@@ -223,7 +231,10 @@ func (subject *ReactLoopAgent) buildRequest(
 	if err := contextFailure(requestContext); err != nil {
 		return requestAttempt{}, err
 	}
-	headerSnapshot := session.EpochHeader{Config: effective, Tools: toolSchemas}
+	headerSnapshot := session.EpochHeader{
+		Config: effective,
+		Tools:  toolSchemas,
+	}
 	if preparedCall != nil {
 		defaults := preparedCall.AdapterDefaultsValue()
 		headerSnapshot.AdapterDefaults = &defaults
@@ -232,42 +243,45 @@ func (subject *ReactLoopAgent) buildRequest(
 		headerSnapshot.System = &systemText
 	}
 	headerSnapshot = session.CanonicalEpochHeader(headerSnapshot)
-	baseline, baselineFound, err := subject.conversation.RequestHeaderValue()
+	baseline, baselineFound, err := driver.subject.conversation.RequestHeaderValue()
 	if err != nil {
 		return requestAttempt{}, err
 	}
-	if !subject.requestHeaderLogged {
+	if !driver.requestHeaderLogged {
 		reason := session.RequestHeaderInitial
 		if baselineFound {
 			reason = session.RequestHeaderResume
 		}
-		if _, err := session.AppendSerialized(subject.conversation, session.RequestHeaderSet, session.RequestHeaderSnapshot{
+		if _, err := session.AppendSerialized(driver.subject.conversation, session.RequestHeaderSet, session.RequestHeaderSnapshot{
 			Header: headerSnapshot, Reason: reason,
 		}); err != nil {
 			return requestAttempt{}, err
 		}
-		subject.requestHeaderLogged = true
+		driver.requestHeaderLogged = true
 	} else if !baselineFound || !session.EpochHeaderEqual(baseline, headerSnapshot) {
-		if _, err := session.AppendSerialized(subject.conversation, session.RequestHeaderSet, session.RequestHeaderSnapshot{
+		if _, err := session.AppendSerialized(driver.subject.conversation, session.RequestHeaderSet, session.RequestHeaderSnapshot{
 			Header: headerSnapshot, Reason: session.RequestHeaderChange,
 		}); err != nil {
 			return requestAttempt{}, err
 		}
 	}
 
-	routeContext := session.RequestRouteContext{Provider: effective.Provider, Model: effective.Model}
+	routeContext := session.RequestRouteContext{
+		Provider: effective.Provider,
+		Model:    effective.Model,
+	}
 	if preparedCall != nil {
 		if modelContext, present := preparedCall.ContextValue(); present {
 			contextWindow := modelContext.ContextWindow
 			routeContext.ContextWindow = &contextWindow
 		}
 	}
-	previousContext, contextFound, err := subject.conversation.RequestContextValue()
+	previousContext, contextFound, err := driver.subject.conversation.RequestContextValue()
 	if err != nil {
 		return requestAttempt{}, err
 	}
 	if !contextFound || !sameRequestContext(previousContext, routeContext) {
-		if _, err := session.AppendSerialized(subject.conversation, session.RequestContextSet, routeContext); err != nil {
+		if _, err := session.AppendSerialized(driver.subject.conversation, session.RequestContextSet, routeContext); err != nil {
 			return requestAttempt{}, err
 		}
 	}
@@ -276,13 +290,16 @@ func (subject *ReactLoopAgent) buildRequest(
 	}
 	requestOptions := llm.GenerateOptions{
 		CallConfig: headerSnapshot.Config, Messages: boundaryMessages,
-		System: headerSnapshot.System, Tools: headerSnapshot.Tools, SessionID: string(subject.identifier),
+		System: headerSnapshot.System, Tools: headerSnapshot.Tools, SessionID: string(driver.subject.identifier),
 	}
 	detached, err := llm.CloneGenerateOptions(requestOptions)
 	if err != nil {
 		return requestAttempt{}, err
 	}
-	return requestAttempt{options: detached, prepared: preparedCall}, nil
+	return requestAttempt{
+		options:  detached,
+		prepared: preparedCall,
+	}, nil
 }
 
 func requestProposal(headerSnapshot session.EpochHeader) llm.CallConfig {

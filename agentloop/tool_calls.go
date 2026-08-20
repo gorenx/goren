@@ -36,7 +36,7 @@ type dispatchSettlement struct {
 	err   error
 }
 
-func (subject *ReactLoopAgent) executeToolCalls(
+func (driver *agentDriver) executeToolCalls(
 	requestContext context.Context,
 	turn int64,
 	step int64,
@@ -54,7 +54,7 @@ func (subject *ReactLoopAgent) executeToolCalls(
 				CallID:    block.ID,
 				Name:      block.Name,
 				Arguments: arguments,
-				Subject:   subject,
+				Subject:   driver.subject,
 			},
 		}
 	}
@@ -62,12 +62,12 @@ func (subject *ReactLoopAgent) executeToolCalls(
 	concluded := false
 	for nextIndex < len(plannedCalls) {
 		first := plannedCalls[nextIndex]
-		mode := subject.toolRuntime.ExecutionMode(first.input)
+		mode := driver.toolRuntime.ExecutionMode(first.input)
 		group := plannedCalls[nextIndex : nextIndex+1]
 		if mode == tools.ExecutionParallel {
 			group = plannedCalls[nextIndex:]
 		}
-		outcome, err := subject.runToolGroup(requestContext, turn, step, group, mode)
+		outcome, err := driver.runToolGroup(requestContext, turn, step, group, mode)
 		if err != nil {
 			return concluded, err
 		}
@@ -75,7 +75,7 @@ func (subject *ReactLoopAgent) executeToolCalls(
 		concluded = concluded || outcome.concluded
 		if outcome.aborted {
 			for _, skipped := range plannedCalls[nextIndex:] {
-				if err := subject.appendSkippedToolCall(turn, step, skipped.block); err != nil {
+				if err := driver.appendSkippedToolCall(turn, step, skipped.block); err != nil {
 					return concluded, err
 				}
 			}
@@ -85,14 +85,14 @@ func (subject *ReactLoopAgent) executeToolCalls(
 	return concluded, nil
 }
 
-func (subject *ReactLoopAgent) runToolGroup(
+func (driver *agentDriver) runToolGroup(
 	requestContext context.Context,
 	turn int64,
 	step int64,
 	group []plannedToolCall,
 	mode tools.ToolExecutionMode,
 ) (toolGroupOutcome, error) {
-	scheduler := subject.toolRuntime.Scheduler()
+	scheduler := driver.toolRuntime.Scheduler()
 	if scheduler == nil {
 		return toolGroupOutcome{}, errors.New("agentloop: Tools runtime returned a nil scheduler")
 	}
@@ -122,11 +122,11 @@ func (subject *ReactLoopAgent) runToolGroup(
 			} else {
 				finalOutcome = scheduler.Finish(slot.execution, slot.outcome)
 			}
-			if err := subject.appendToolResult(turn, step, group[committed].block, finalOutcome, callSequences[committed]); err != nil {
+			if err := driver.appendToolResult(turn, step, group[committed].block, finalOutcome, callSequences[committed]); err != nil {
 				return err
 			}
 			for _, additionalContext := range finalOutcome.AdditionalContextMessages() {
-				if err := subject.pending.Append(agent.NextStep, additionalContext); err != nil {
+				if err := driver.pending.Append(agent.NextStep, additionalContext); err != nil {
 					return err
 				}
 			}
@@ -137,7 +137,7 @@ func (subject *ReactLoopAgent) runToolGroup(
 	}
 
 	startCall := func(index int) error {
-		callSequence, err := subject.appendToolCall(turn, step, group[index].block)
+		callSequence, err := driver.appendToolCall(turn, step, group[index].block)
 		if err != nil {
 			return err
 		}
@@ -184,9 +184,9 @@ func (subject *ReactLoopAgent) runToolGroup(
 	}
 
 	fillPool := func() error {
-		for !aborted && nextToStart < len(group) && len(inFlight) < subject.owner.MaxParallelToolCalls() {
+		for !aborted && nextToStart < len(group) && len(inFlight) < driver.subject.owner.MaxParallelToolCalls() {
 			if nextToStart > 0 && mode == tools.ExecutionParallel &&
-				subject.toolRuntime.ExecutionMode(group[nextToStart].input) != tools.ExecutionParallel {
+				driver.toolRuntime.ExecutionMode(group[nextToStart].input) != tools.ExecutionParallel {
 				break
 			}
 			if err := startCall(nextToStart); err != nil {
@@ -230,16 +230,23 @@ func (subject *ReactLoopAgent) runToolGroup(
 	}
 	if aborted {
 		for _, skipped := range group[started:] {
-			if err := subject.appendSkippedToolCall(turn, step, skipped.block); err != nil {
+			if err := driver.appendSkippedToolCall(turn, step, skipped.block); err != nil {
 				return toolGroupOutcome{}, err
 			}
 		}
-		return toolGroupOutcome{consumed: len(group), aborted: true, concluded: concluded}, nil
+		return toolGroupOutcome{
+			consumed:  len(group),
+			aborted:   true,
+			concluded: concluded,
+		}, nil
 	}
 	if committed != started {
 		return toolGroupOutcome{}, errors.New("agentloop: settled tool calls were not committed in model order")
 	}
-	return toolGroupOutcome{consumed: started, concluded: concluded}, nil
+	return toolGroupOutcome{
+		consumed:  started,
+		concluded: concluded,
+	}, nil
 }
 
 func parseToolArguments(rawValue string) (json.RawMessage, error) {
@@ -257,29 +264,32 @@ func parseToolArguments(rawValue string) (json.RawMessage, error) {
 	return json.RawMessage(encoded), nil
 }
 
-func (subject *ReactLoopAgent) appendToolCall(turn int64, step int64, block llm.ToolCallBlock) (int64, error) {
-	committed, err := session.AppendSerialized(subject.conversation, session.ToolCalled, session.ToolCall{
+func (driver *agentDriver) appendToolCall(turn int64, step int64, block llm.ToolCallBlock) (int64, error) {
+	committed, err := session.AppendSerialized(driver.subject.conversation, session.ToolCalled, session.ToolCall{
 		Turn: turn, Step: step, CallID: block.ID, Name: block.Name, Arguments: block.Arguments,
 	})
 	return committed.Seq, err
 }
 
-func (subject *ReactLoopAgent) appendSkippedToolCall(turn int64, step int64, block llm.ToolCallBlock) error {
-	callSequence, err := subject.appendToolCall(turn, step, block)
+func (driver *agentDriver) appendSkippedToolCall(turn int64, step int64, block llm.ToolCallBlock) error {
+	callSequence, err := driver.appendToolCall(turn, step, block)
 	if err != nil {
 		return err
 	}
 	failure := &tools.ToolExecutionFailure{
 		Error: tools.ToolFailure{
 			Message: "tool call aborted before dispatch",
-			Info:    &tools.ToolErrorInfo{Name: "AbortError", Code: tools.ToolAbortedBeforeDispatch},
+			Info: &tools.ToolErrorInfo{
+				Name: "AbortError",
+				Code: tools.ToolAbortedBeforeDispatch,
+			},
 		},
 		Content: []llm.ContentBlock{llm.NewTextBlock("Error: tool call aborted before dispatch")},
 	}
-	return subject.appendToolResult(turn, step, block, failure, callSequence)
+	return driver.appendToolResult(turn, step, block, failure, callSequence)
 }
 
-func (subject *ReactLoopAgent) appendToolResult(
+func (driver *agentDriver) appendToolResult(
 	turn int64,
 	step int64,
 	block llm.ToolCallBlock,
@@ -299,10 +309,13 @@ func (subject *ReactLoopAgent) appendToolResult(
 		Turn: turn, Step: step, Message: toolReply, Meta: outcomeMeta(outcome),
 	}
 	if failure, present := outcomeFailure(outcome); present && failure.Info != nil {
-		payload.Error = &session.ToolErrorInfo{Name: failure.Info.Name, Code: failure.Info.Code}
+		payload.Error = &session.ToolErrorInfo{
+			Name: failure.Info.Name,
+			Code: failure.Info.Code,
+		}
 	}
 	provenance := []int64{callSequence}
-	_, err = session.AppendSurfaceSerialized(subject.conversation, session.ToolResultAdded, payload, session.SurfaceIntent{
+	_, err = session.AppendSurfaceSerialized(driver.subject.conversation, session.ToolResultAdded, payload, session.SurfaceIntent{
 		Operation: session.SurfaceAppend(), SourceEventSeqs: &provenance,
 	})
 	return err

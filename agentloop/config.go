@@ -225,7 +225,10 @@ func ValidateConfig(settings Config) (ValidatedConfig, error) {
 		}
 		exactIdentities[exactIdentity] = entry.ID
 	}
-	return ValidatedConfig{maxParallelToolCalls: parallelLimit, agents: configured}, nil
+	return ValidatedConfig{
+		maxParallelToolCalls: parallelLimit,
+		agents:               configured,
+	}, nil
 }
 
 func cloneConfiguredAgents(entries []ConfiguredAgent) []ConfiguredAgent {
