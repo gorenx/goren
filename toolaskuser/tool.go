@@ -108,30 +108,35 @@ func New(questionService userquestions.UserQuestions) (tools.ToolDefinition, err
 				return []llm.ContentBlock{llm.NewTextBlock(compact.String())}, nil
 			}),
 		},
-		Executor: tools.ExecutorFunc(func(arguments json.RawMessage, runContext tools.ToolRunContext) (json.RawMessage, error) {
-			var decoded input
-			if err := json.Unmarshal(arguments, &decoded); err != nil {
-				return nil, fmt.Errorf("toolaskuser: decode validated arguments: %w", err)
-			}
-			questions := make([]userquestions.Question, len(decoded.Questions))
-			for index, item := range decoded.Questions {
-				questions[index] = userquestions.Question{
-					ID: item.ID, Question: item.Question, Header: cloneString(item.Header),
-					Options: cloneOptions(item.Options), MultiSelect: cloneBool(item.MultiSelect),
+		Executor: tools.ExecutorFunc(
+			func(arguments json.RawMessage, runContext tools.ToolRunContext) (json.RawMessage, error) {
+				var decoded input
+				if err := json.Unmarshal(arguments, &decoded); err != nil {
+					return nil, fmt.Errorf("toolaskuser: decode validated arguments: %w", err)
 				}
-			}
-			answerValue, err := questionService.Ask(runContext.Context, userquestions.Request{
-				Questions: questions, Subject: runContext.Execution.Subject,
-			})
-			if err != nil {
-				return nil, err
-			}
-			encoded, err := json.Marshal(answerValue)
-			if err != nil {
-				return nil, fmt.Errorf("toolaskuser: encode answer: %w", err)
-			}
-			return encoded, nil
-		}),
+				questions := make([]userquestions.Question, len(decoded.Questions))
+				for index, item := range decoded.Questions {
+					questions[index] = userquestions.Question{
+						ID:          item.ID,
+						Question:    item.Question,
+						Header:      cloneString(item.Header),
+						Options:     cloneOptions(item.Options),
+						MultiSelect: cloneBool(item.MultiSelect),
+					}
+				}
+				answerValue, err := questionService.Ask(runContext.Context, userquestions.Request{
+					Questions: questions,
+					Subject:   runContext.Execution.Subject,
+				})
+				if err != nil {
+					return nil, err
+				}
+				encoded, err := json.Marshal(answerValue)
+				if err != nil {
+					return nil, fmt.Errorf("toolaskuser: encode answer: %w", err)
+				}
+				return encoded, nil
+			}),
 	}, nil
 }
 
