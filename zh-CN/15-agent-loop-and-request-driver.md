@@ -10,23 +10,24 @@
 
 | 源路径 / symbol | Go owner | 保留职责 |
 | --- | --- | --- |
-| `packages/core/agent-loop/src/index.ts` 的 `AgentLoop` | `agentloop.Loop`、`loopService`、`internal/assembly` | `agentLoop` Service、Agent Factory、配置与 lifecycle transaction |
-| `packages/core/agent-loop/src/agent.ts` 的 `ReactLoopAgent` | `agentloop.ReactLoopAgent` | live coordination、Turn/Step、cancel、maintenance 和 idle convergence |
+| `packages/core/agent-loop/src/index.ts` 的 `AgentLoop` | `agentloop.Plugin`、`agentloop/factory.Factory`、`agent.Registry` 的 Factory seam | 配置、Agent Factory 与 lifecycle transaction；Go 不暴露无 Consumer 的第二个 Loop Service |
+| `packages/core/agent-loop/src/agent.ts` 的 `ReactLoopAgent` | `agentloop.ReactLoopAgent`、私有 `loop`、`activityCoordinator`、`turnRunner` | 每 Agent 一个执行循环、live coordination、Turn/Step、cancel、maintenance 和 idle convergence |
 | `ReactLoopAgent.buildRequest` | `agentloop/request.go` | request waterfall、exact Adapter resolution、header/context facts 和 stream assembly |
 | `packages/core/agent-loop/src/tool-calls.ts` | `agentloop/tool_calls.go`、`tools.ToolExecutionScheduler` | bounded Tool scheduling、barrier、ordered result/context commit 和 abort drain |
 | `packages/core/agent-loop/src/runtime-context.ts` | `agentloop/runtime_context.go` | 最新 retained runtime-context snapshot 的 durable projection |
 | 源 Agent Loop Session event union | `session/agent_events.go` | Turn/Step/request/chunk/message/Tool fact 和 request/surface folds |
 
-Go 不复制 Cordis `Service` 继承、Fiber、`AbortSignal`、`AsyncLocalStorage`、Schemastery 或 live Settings document。它以 `plugin.Scope`、`context.Context`、typed config 和 capability interface 保留相同职责；这不是把 Agent Loop 改造成 Session、Tools 或 LLM 的第二个 owner。
+Go 不复制 Cordis `Service` 继承、Fiber、`AbortSignal`、`AsyncLocalStorage`、Schemastery 或 live Settings document。它以 Runtime 私有 Scope/Fiber、`context.Context`、typed config 和 capability interface 保留相同职责；这不是把 Agent Loop 改造成 Session、Tools 或 LLM 的第二个 owner。源 `AgentLoop` 的 `maxParallelToolCalls` 和 Factory 行为没有独立 Consumer，因此 Go 根 `Plugin` 直接实现 consumer-owned `agent.Factory`，不发布一个只能被实现自身读取的 `agentLoop` Service。兼容影响限于 Go 扩展 API；Session fact、Agent Event、Tool 顺序、取消和 wire 行为不变。
 
 ## 2. 职责与非职责
 
 `agentloop` 拥有：
 
-- canonical `agentLoop` Service Provider 和 `agents.Factory` 实现；
-- unpublished Agent/Session/Child Scope 的创建、setup、publication 与 reverse teardown；
+- `agent.Registry` 所拥有的 `agent.Factory` 实现，以及根 Plugin 的构造准入与停机排空；
+- unpublished Agent/Session 和完整私有 Plugin Tree 的构造、publication 与 reverse teardown；
+- 每个 `ReactLoopAgent` 独占的私有 loop，以及 activity、Turn、request、Tool-call 协作者；
 - `idle`、`maintenance`、`running` activity coordination，以及 `WhenIdle` convergence；
-- `Followup`、`Steer`、`Inject` 和 `Cancel` 对 Inbox/driver 的组合语义；
+- `Followup`、`Steer`、`Inject` 和 `Cancel` 对 Inbox/loop 的组合语义；
 - Turn/Step boundary、Prompt assembly、`agent/pre-step`、`agent/request`、`agent/request-error` 与 `agent/turn-stopping` 的调用顺序；
 - 只从 Session log 派生模型输入，并记录重建下次请求所需的完整 header/context facts；
 - StreamChunk durable logging、Assistant message assembly、Tool-call scheduling 与最终 Turn reason；
@@ -34,7 +35,7 @@ Go 不复制 Cordis `Service` 继承、Fiber、`AbortSignal`、`AsyncLocalStorag
 
 `agentloop` 不拥有：
 
-- live Registry membership、Inbox mutation contract 或 `agent/*` Event Definition；
+- Registry membership 的数据结构与规则、Inbox mutation contract 或 `agent/*` Event Definition；
 - Session `seq`、surface replacement、JSONL/SQLite/sqlc、load、repair 或 persistence I/O；
 - Prompt section/context/tool-schema registry、Tool policy/body/result semantics或 LLM Adapter route；
 - retry policy 的延时、jitter 和次数决策；这些由[`llmretry`](../llmretry/README.zh-CN.md)负责，Agent Loop 只提供 failed attempt 的 retry seam 并执行明确返回的 retry action；
@@ -43,59 +44,66 @@ Go 不复制 Cordis `Service` 继承、Fiber、`AbortSignal`、`AsyncLocalStorag
 
 ## 3. Service、配置与依赖方向
 
-`agentLoop` Plugin 依赖五个已有 Service：`agents`、`sessions`、`llm`、`tools` 和 `systemPrompt`。它提供 `agentLoop`，并把自身作为唯一 concrete Factory 注册到 `agents`；`agent.Registry` 只依赖自己拥有的 `Factory` interface，不反向导入 `agentloop`。
+根 `agentloop.Plugin` 只依赖 `agent.Registry`、`session.LiveStore`，并可选消费 `session/persistence.Persistence` 以恢复 durable Session；它提供零个 Service，直接把自身作为唯一 concrete `agent.Factory` 附加到 Registry。每个私有 Agent Tree 中的 `ReactLoopAgent` 再消费本 Scope 的 `session.LiveStore`、`llm.LlmRuntime`、`tools.ToolRuntime` 和 `systemprompt.Assembler`。这样根 Factory 不持有一次具体 Agent 的执行依赖，`agent.Registry` 也只依赖自己拥有的 `Factory` interface，不反向导入 `agentloop`。
 
 ```text
 API / compiled Plugin
-  -> agents.Create(ownerScope, CreateOptions)
+  -> agent.Registry.Create(CreateOptions)
   -> consumer-owned agent.Factory seam
-  -> agentloop.loopService
-       -> sessions / llm / tools / systemPrompt
+  -> agentloop.Plugin
+       -> prepare Session + construct complete private agentTree
+       -> plugin.Runtime.MountScopedChild
+            -> scoped sessions / llm / tools / systemPrompt
 ```
 
-配置只接受：
+raw 配置只存在于 `agentloop/factory`，Factory 严格解码、校验并映射为不含 JSON 语义的 `agentloop.Settings`。配置只接受：
 
 - `maxParallelToolCalls`：正整数，omitted 默认 `10`；
 - `agents[]`：`id`、`sessionId`、`provider`、`model`、`maxTokens`、`cwd` 和 `resumeSessionId`。
 
-unknown field、显式 `null`、错误类型、非安全 `maxTokens`、同时设置 `sessionId`/`resumeSessionId` 或重复 exact Session identity 必须在任何 Agent 启动前失败。相同配置 label 不等于相同 identity；未指定 exact identity 的相同 `id` 可以各自生成 `${id}-session-<uuid>`。
+unknown/重复 field、显式 `null`、错误类型、非安全 `maxTokens`、相对 `cwd`、同时设置 `sessionId`/`resumeSessionId` 或重复 exact Session identity 必须在 Plugin 构造前失败。相同配置 label 不等于相同 identity；未指定 exact identity 的相同 `id` 可以各自生成 `${id}-session-<uuid>`。
 
-当前没有 Settings Service，因此并发上限是 Plugin 配置快照，只能通过受控 Plugin replacement 改变。未来纳入 Settings 时可增加 owner-defined live source，但不能让 Agent 或 Tool body解析 raw config。请求 `resumeSessionId` 必须等待真实 Session persistence Provider，不能静默改成 fresh create。
+当前没有 Settings Service，因此并发上限是 Plugin 配置快照，只能通过受控 Plugin replacement 改变。未来纳入 Settings 时可增加 owner-defined live source，但不能让 Agent 或 Tool body 解析 raw config。请求 `resumeSessionId` 必须等待真实 Session persistence Provider，不能静默改成 fresh create。
+
+配置 Agent 是显式的 post-start 事务：composition root 必须在 `plugin.Runtime.Start` 成功后调用 `StartConfiguredAgents`。Runtime 的静态启动事务不接受动态 mount，因此根 Plugin 的 `Apply` 只附加 Factory，不偷偷创建配置 Agent。`StartConfiguredAgents` 只能调用一次；一项失败会逆序销毁本批已经启动的 Agent，随后 composition root 必须停止 Runtime，不能在同一 Plugin 上重跑。
 
 ## 4. Agent 创建与 lifecycle transaction
 
-一次 fresh create 使用同一个 `SessionID` 作为 Agent/Session identity，并按以下顺序执行：
+一次 fresh create 使用同一个 `SessionID` 作为 Agent/Session identity。根 Plugin 先在 Runtime 外构造完整的 `agentTree` 声明，再一次性交给 Runtime：
 
 ```text
 Session LiveStore Prepare（未发布）
-  -> Agent Loop Child Scope
-  -> ReactLoopAgent + Inbox replay + runtime-context projection
-  -> ownerScope owns one memoized lifecycle disposer
-  -> install provider/model/cwd prompt variables
-  -> optional Setup.Apply + SetupCommit.Commit
-  -> Session LiveStore Enter
-  -> Agent Registry Enter
-  -> Session Announce
-  -> Agent Announce
+  -> construct private agentTree
+       -> System Prompt Overlay（Main）
+       -> Tools Overlay（Main）
+       -> provider/model/cwd variables（Main）
+       -> ReactLoopAgent + private loop（Main）
+       -> caller Extensions（Main）
+       -> agentMembership（Commit）
+  -> Runtime.MountScopedChild(agentTree)
+  -> activate all Main children in declaration order
+  -> agentMembership: Session Enter -> Agent Enter
+  -> open exact Agent work admission
+  -> Session Announce -> Agent Announce
   -> agent/session-start(startup)
-  -> return Handle
+  -> attach root Handle and return agent.Handle
 ```
 
-Setup 运行在未发布的 Agent Scope，适合注册 scoped prompt、Tool、guard 或 Agent event listener。任何 setup、commit、collision、announcement 或 liveness 失败都沿同一个 lifecycle disposer 回滚，不发布半完成 Agent。
+Overlay 必须先于 `ReactLoopAgent` 激活，使 Agent 捕获本 Scope 的 Prompt/Tools runtime；扩展随后在同一 Scope 安装 scoped prompt、Tool、guard、Waterfall 或 Agent Event listener，并可依赖 exact `agent.Agent`。Main 阶段只装配依赖，Agent 的 `Followup`、`Steer`、`Inject` 与 maintenance 尚未准入；Commit membership 在 Session/Agent Enter 成功后才开放调用，再执行 Announce。任何 Main extension、Commit、collision、announcement 或 liveness 失败都由 Runtime 沿同一棵树逆序回滚，不发布半完成 Agent。
 
-销毁顺序固定为：拒绝新 work、以 `disposed` cause 取消 active activity、清空当时已存在的 Inbox、等待 driver/maintenance 收敛、释放 Agent Child Scope、从 Agent Registry detach、从 Session LiveStore detach。Tool body 已经开始时必须先 drain；在取消后才完成并被 Tool result 接受的 additional context 仍按 durable 顺序进入 Inbox，但不能触发 disposal 后的新 Turn。
+销毁由 Runtime 逆序执行。Commit membership 先拒绝新 work，以 `disposed` cause 取消 active activity、清空当时已存在的 Inbox并等待 loop/maintenance 收敛，再从 Agent Registry 移除、撤销 runtime-context route、释放 Session membership；之后才释放扩展、`ReactLoopAgent`、变量和 Overlay。Tool body 已经开始时必须先 drain；在取消后才完成并被 Tool result 接受的 additional context 仍按 durable 顺序进入 Inbox，但不能触发 disposal 后的新 Turn。调用方不需要显式调用“准入”或“排空”方法，这些都是根 Plugin、membership 和 Runtime 的内部职责。
 
-Factory、owner Scope 和 returned Handle 是同一 lifecycle 的共同 owner；重复 Dispose 必须幂等。Agent Registry detach 先于 Session detach，且二者只删除 exact lifecycle entry，旧 disposer 不能删除后续同 ID instance。
+Runtime tree Handle 和 returned `agent.Handle` 指向同一 lifecycle；重复 Dispose 必须幂等。根 Plugin 跟踪当前 lifecycle 集合以协调并发构造与全局停机，但不成为第二个 Agent owner。Agent Registry detach 先于 Session detach，且二者只删除 exact lifecycle entry，旧 disposer 不能删除后续同 ID instance。
 
 ## 5. Activity、发送与 idle convergence
 
-每个 concrete Agent 只允许一个 activity：
+每个 concrete Agent 拥有一个私有 `loop`；该对象组合唯一 `activityCoordinator` 与 `turnRunner`，不注册为 Runtime Service，也不形成第二个 Agent identity。每个 Agent 只允许一个 activity：
 
-- `idle`：没有 driver 或 maintenance；
+- `idle`：没有正在运行的 Turn 或 maintenance；
 - `maintenance`：不运行 Turn，对外 Status 仍为 `idle`；
-- `running`：一个 driver 独占 Turn/Step progression，对外 Status 为 `running`。
+- `running`：一个私有 loop 独占 Turn/Step progression，对外 Status 为 `running`。
 
-`Followup` 写入 `next-turn` 并唤醒；`Steer` 写入 `next-step` 并唤醒；`Inject` 只写入 `next-step`。live driver 自己在 step boundary claim 新 steering，不为每个 send 建 goroutine。唤醒落在 maintenance 或已经 aborted 的 activity 时会锁存到 convergence；`WhenIdle` 必须跟随这个 successor activity，不能在两次 logically connected activity 之间的瞬时 idle 提前返回。
+`Followup` 写入 `next-turn` 并唤醒；`Steer` 写入 `next-step` 并唤醒；`Inject` 只写入 `next-step`。私有 loop 在 step boundary claim 新 steering，不为每个 send 建 goroutine。唤醒落在 maintenance 或已经 aborted 的 activity 时会锁存到 convergence；`WhenIdle` 必须跟随这个 successor activity，不能在两次 logically connected activity 之间的瞬时 idle 提前返回。
 
 `Cancel` 默认先清空 Inbox，再取消 active activity；`keepInbox=true` 只取消 activity并保留尚未 claim 的 work。一个 activity 的第一个 typed cause 是 durable authority，后续 user/parent/disposed/hook cancel 不能改写它。取消后到达的 waking input 进入 `next-turn`，避免加入已经 aborted 的 step。
 
@@ -124,7 +132,7 @@ turn/start
 
 `step/start` 只在 pre-step admission 后追加；claimed/rewritten messages 只在 boundary 打开后进入 surface。`step/end` 由 finally-style boundary 保证，即使 request、stream 或 Tool execution 失败也不应留下无故开放的 Step。
 
-`turn/end` 提交后，Agent Loop 只通过 consumer 已持有的 `session.LiveStore.Flush` 发起正常 durability checkpoint，不导入 `Persistence`、SQLite 或 Backend。未配置 durability listener 时它是可观测的 no-op；配置 `SessionLogStore` 时，driver 必须等待 write-behind retained batch 提交后才能成功进入 successor Turn 或 idle convergence。flush failure 进入 `agent/error` 并使当前 driver 失败，不能把尚未确认落盘的边界当作成功完成。
+`turn/end` 提交后，Turn runner 只通过 consumer 已持有的 `session.LiveStore.Flush` 发起正常 durability checkpoint，不直接调用 `Persistence`、SQLite 或 Backend。未配置 durability listener 时它是可观测的 no-op；配置 `SessionLogStore` 时，Turn runner 必须等待 write-behind retained batch 提交后才能成功进入 successor Turn 或 idle convergence。flush failure 进入 `agent/error` 并使当前 loop 失败，不能把尚未确认落盘的边界当作成功完成。
 
 一个 completed/max-tokens step 后若 `next-step` 出现，仍在同一 Turn 继续。`max-tokens` 是该 Turn 的 sticky reason：后续 completed step 不能降级；下一 Turn 重新计算。Tool result 标记 `concludesTurn` 时停止其本来需要的模型 continuation，但已经到达的 steering 仍可要求另一个 Step。
 
@@ -203,7 +211,7 @@ System Prompt 的 contexts 不写入 system header，而是在每个 pre-step as
 ```text
 Connection / session.* API（`apiproxy/session.Gateway` inbound adapter）
   -> agents Registry / Agent live capability
-  -> agentloop driver
+  -> agentloop private loop
   -> Session facts
   -> Mux/Host projection（`apiproxy.LiveFrameSource` outbound projection）
 ```
