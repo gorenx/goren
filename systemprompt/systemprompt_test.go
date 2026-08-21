@@ -37,6 +37,70 @@ func boolPointer(selected bool) *bool {
 	return &selected
 }
 
+func TestPromptHandleCannotRemoveSameNameFromLaterActivation(t *testing.T) {
+	t.Parallel()
+	runtimeEngine, prompts, firstPluginHandle := mountPrompt(
+		t,
+		systemprompt.Config{},
+		systemprompt.RegistryOptions{},
+	)
+	t.Cleanup(func() {
+		if shutdownErr := runtimeEngine.Shutdown(context.Background()); shutdownErr != nil {
+			t.Error(shutdownErr)
+		}
+	})
+	oldHandle, err := prompts.AddSection(
+		context.Background(),
+		systemprompt.PromptSection{
+			Name:  "activation-owned",
+			Order: 10,
+			Text:  systemprompt.StaticText("old activation"),
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = runtimeEngine.Unload(
+		context.Background(),
+		firstPluginHandle,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = runtimeEngine.Mount(context.Background(), prompts); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = prompts.AddSection(
+		context.Background(),
+		systemprompt.PromptSection{
+			Name:  "activation-owned",
+			Order: 10,
+			Text:  systemprompt.StaticText("new activation"),
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err = oldHandle.Unregister(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err = oldHandle.Unregister(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assembled, err := prompts.Assemble(
+		context.Background(),
+		systemprompt.AssembleContext{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	textValue, err := systemprompt.RenderPrompt(assembled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(textValue, "new activation") {
+		t.Fatalf("Prompt after stale-handle removal = %q", textValue)
+	}
+}
+
 func TestSystemPromptAssemblesBuiltinsProvidersAndTools(t *testing.T) {
 	t.Parallel()
 	_, prompts, _ := mountPrompt(
@@ -52,7 +116,7 @@ func TestSystemPromptAssemblesBuiltinsProvidersAndTools(t *testing.T) {
 		systemprompt.RegistryOptions{},
 	)
 	requestContext := context.Background()
-	if err := prompts.AddSection(requestContext, systemprompt.PromptSection{
+	if _, err := prompts.AddSection(requestContext, systemprompt.PromptSection{
 		Name:  "rules",
 		Order: 10,
 		Text:  systemprompt.StaticText("Be precise."),
@@ -60,7 +124,7 @@ func TestSystemPromptAssemblesBuiltinsProvidersAndTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	dynamicCalls := 0
-	if err := prompts.AddSection(requestContext, systemprompt.PromptSection{
+	if _, err := prompts.AddSection(requestContext, systemprompt.PromptSection{
 		Name:  "cwd",
 		Order: 20,
 		Text: systemprompt.TextFunc(func(
@@ -73,14 +137,14 @@ func TestSystemPromptAssemblesBuiltinsProvidersAndTools(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := prompts.AddContext(requestContext, systemprompt.PromptContext{
+	if _, err := prompts.AddContext(requestContext, systemprompt.PromptContext{
 		Name:  "policy",
 		Order: 1,
 		Text:  systemprompt.StaticText("context {{mode}}"),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := prompts.AddVariable(
+	if _, err := prompts.AddVariable(
 		requestContext,
 		"mode",
 		systemprompt.VariableProviderFunc(func(
@@ -96,7 +160,7 @@ func TestSystemPromptAssemblesBuiltinsProvidersAndTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	parameters := json.RawMessage(`{"type":"object"}`)
-	if err := prompts.AddToolProvider(
+	if _, err := prompts.AddToolProvider(
 		requestContext,
 		"tools",
 		systemprompt.ToolProviderFunc(func(
@@ -202,7 +266,7 @@ func TestSystemPromptOverlayShadowsAncestorLayer(t *testing.T) {
 	)
 	requestContext := context.Background()
 	globalTextCalls := 0
-	if err := rootPrompts.AddSection(requestContext, systemprompt.PromptSection{
+	if _, err := rootPrompts.AddSection(requestContext, systemprompt.PromptSection{
 		Name:  "shared",
 		Order: 5,
 		Text: systemprompt.TextFunc(func(
@@ -216,7 +280,7 @@ func TestSystemPromptOverlayShadowsAncestorLayer(t *testing.T) {
 		t.Fatal(err)
 	}
 	globalVariableCalls := 0
-	if err := rootPrompts.AddVariable(
+	if _, err := rootPrompts.AddVariable(
 		requestContext,
 		"mode",
 		systemprompt.VariableProviderFunc(func(
@@ -241,21 +305,21 @@ func TestSystemPromptOverlayShadowsAncestorLayer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := overlay.AddSection(requestContext, systemprompt.PromptSection{
+	if _, err := overlay.AddSection(requestContext, systemprompt.PromptSection{
 		Name:  systemprompt.PersonaSection,
 		Order: systemprompt.PersonaOrder,
 		Text:  systemprompt.StaticText("scoped persona {{mode}}"),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := overlay.AddSection(requestContext, systemprompt.PromptSection{
+	if _, err := overlay.AddSection(requestContext, systemprompt.PromptSection{
 		Name:  "shared",
 		Order: 5,
 		Text:  systemprompt.StaticText("scoped shared"),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := overlay.AddVariable(
+	if _, err := overlay.AddVariable(
 		requestContext,
 		"mode",
 		systemprompt.VariableProviderFunc(func(
@@ -370,7 +434,7 @@ func TestSystemPromptChangedFailureRollsBackAddition(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := prompts.AddSection(
+	if _, err := prompts.AddSection(
 		context.Background(),
 		systemprompt.PromptSection{
 			Name:  "leak",
@@ -457,7 +521,7 @@ func TestSystemPromptCompleteAndSuppressionSurviveWaterfall(t *testing.T) {
 			},
 		},
 	)
-	if err := completePrompts.AddSection(
+	if _, err := completePrompts.AddSection(
 		context.Background(),
 		systemprompt.PromptSection{
 			Name:     "complete",
@@ -495,7 +559,7 @@ func TestSystemPromptCompleteAndSuppressionSurviveWaterfall(t *testing.T) {
 		},
 	)
 	providerCalls := 0
-	if err := suppressedPrompts.AddContext(
+	if _, err := suppressedPrompts.AddContext(
 		context.Background(),
 		systemprompt.PromptContext{
 			Name:  "policy",
@@ -536,7 +600,7 @@ func TestSystemPromptProviderMembershipIsSnapshotted(t *testing.T) {
 	)
 	requestContext := context.Background()
 	added := false
-	if err := prompts.AddToolProvider(
+	if _, err := prompts.AddToolProvider(
 		requestContext,
 		"first",
 		systemprompt.ToolProviderFunc(func(
@@ -545,7 +609,7 @@ func TestSystemPromptProviderMembershipIsSnapshotted(t *testing.T) {
 		) (systemprompt.ToolProviderResult, error) {
 			if !added {
 				added = true
-				if err := prompts.AddToolProvider(
+				if _, err := prompts.AddToolProvider(
 					requestContext,
 					"late",
 					systemprompt.ToolProviderFunc(func(
@@ -644,7 +708,7 @@ func TestSystemPromptValidation(t *testing.T) {
 		systemprompt.Config{},
 		systemprompt.RegistryOptions{},
 	)
-	if err := prompts.AddSection(
+	if _, err := prompts.AddSection(
 		context.Background(),
 		systemprompt.PromptSection{
 			Name:  "nan",
@@ -654,7 +718,7 @@ func TestSystemPromptValidation(t *testing.T) {
 	); err == nil || !strings.Contains(err.Error(), "finite") {
 		t.Fatalf("non-finite section error = %v", err)
 	}
-	if err := prompts.AddVariable(
+	if _, err := prompts.AddVariable(
 		context.Background(),
 		"Bad-Name",
 		systemprompt.VariableProviderFunc(func(
@@ -666,7 +730,7 @@ func TestSystemPromptValidation(t *testing.T) {
 	); err == nil || !strings.Contains(err.Error(), "invalid prompt variable") {
 		t.Fatalf("variable name error = %v", err)
 	}
-	if err := prompts.AddToolProvider(
+	if _, err := prompts.AddToolProvider(
 		context.Background(),
 		"reserved",
 		systemprompt.ToolProviderFunc(func(
@@ -822,7 +886,7 @@ func TestToolProviderInChildLayerShadowsSameNamedParentProvider(t *testing.T) {
 	})
 	requestContext := context.Background()
 	rootCalls := 0
-	if err := prompts.AddToolProvider(
+	if _, err := prompts.AddToolProvider(
 		requestContext,
 		"shared",
 		systemprompt.ToolProviderFunc(func(
@@ -851,7 +915,7 @@ func TestToolProviderInChildLayerShadowsSameNamedParentProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	overlayCalls := 0
-	if err := overlay.AddToolProvider(
+	if _, err := overlay.AddToolProvider(
 		requestContext,
 		"shared",
 		systemprompt.ToolProviderFunc(func(

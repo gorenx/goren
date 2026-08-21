@@ -17,6 +17,25 @@ type namedToolProvider struct {
 	provider ToolProvider
 }
 
+type promptEntryKind uint8
+
+const (
+	promptSectionEntry promptEntryKind = iota + 1
+	promptContextEntry
+	promptVariableEntry
+	promptToolProviderEntry
+	promptSuppressorEntry
+)
+
+type promptEntryKey struct {
+	kind promptEntryKind
+	name string
+}
+
+type promptEntryToken struct {
+	marker byte
+}
+
 type promptLayerSnapshot struct {
 	sections          []PromptSection
 	contexts          []PromptContext
@@ -39,6 +58,7 @@ type promptStore struct {
 	toolProviders map[string]ToolProvider
 	toolOrder     []string
 	suppressors   map[string]struct{}
+	tokens        map[promptEntryKey]*promptEntryToken
 }
 
 func newPromptStore() *promptStore {
@@ -48,27 +68,34 @@ func newPromptStore() *promptStore {
 		variables:     make(map[string]VariableProvider),
 		toolProviders: make(map[string]ToolProvider),
 		suppressors:   make(map[string]struct{}),
+		tokens:        make(map[promptEntryKey]*promptEntryToken),
 	}
 }
 
-func (storage *promptStore) addSection(definition PromptSection) error {
+func (storage *promptStore) addSection(
+	definition PromptSection,
+) (*promptEntryToken, error) {
 	storage.mutex.Lock()
 	defer storage.mutex.Unlock()
 	if _, exists := storage.sections[definition.Name]; exists {
-		return fmt.Errorf(
+		return nil, fmt.Errorf(
 			"systemprompt: prompt section %q is already registered in this layer",
 			definition.Name,
 		)
 	}
+	token := storage.addToken(promptSectionEntry, definition.Name)
 	storage.sections[definition.Name] = definition
 	storage.sectionOrder = append(storage.sectionOrder, definition.Name)
-	return nil
+	return token, nil
 }
 
-func (storage *promptStore) removeSection(name string) bool {
+func (storage *promptStore) removeSection(
+	name string,
+	expected *promptEntryToken,
+) bool {
 	storage.mutex.Lock()
 	defer storage.mutex.Unlock()
-	if _, exists := storage.sections[name]; !exists {
+	if !storage.removeToken(promptSectionEntry, name, expected) {
 		return false
 	}
 	delete(storage.sections, name)
@@ -76,24 +103,30 @@ func (storage *promptStore) removeSection(name string) bool {
 	return true
 }
 
-func (storage *promptStore) addContext(definition PromptContext) error {
+func (storage *promptStore) addContext(
+	definition PromptContext,
+) (*promptEntryToken, error) {
 	storage.mutex.Lock()
 	defer storage.mutex.Unlock()
 	if _, exists := storage.contexts[definition.Name]; exists {
-		return fmt.Errorf(
+		return nil, fmt.Errorf(
 			"systemprompt: prompt context %q is already registered in this layer",
 			definition.Name,
 		)
 	}
+	token := storage.addToken(promptContextEntry, definition.Name)
 	storage.contexts[definition.Name] = definition
 	storage.contextOrder = append(storage.contextOrder, definition.Name)
-	return nil
+	return token, nil
 }
 
-func (storage *promptStore) removeContext(name string) bool {
+func (storage *promptStore) removeContext(
+	name string,
+	expected *promptEntryToken,
+) bool {
 	storage.mutex.Lock()
 	defer storage.mutex.Unlock()
-	if _, exists := storage.contexts[name]; !exists {
+	if !storage.removeToken(promptContextEntry, name, expected) {
 		return false
 	}
 	delete(storage.contexts, name)
@@ -101,24 +134,31 @@ func (storage *promptStore) removeContext(name string) bool {
 	return true
 }
 
-func (storage *promptStore) addVariable(name string, provider VariableProvider) error {
+func (storage *promptStore) addVariable(
+	name string,
+	provider VariableProvider,
+) (*promptEntryToken, error) {
 	storage.mutex.Lock()
 	defer storage.mutex.Unlock()
 	if _, exists := storage.variables[name]; exists {
-		return fmt.Errorf(
+		return nil, fmt.Errorf(
 			"systemprompt: prompt variable %q is already registered in this layer",
 			name,
 		)
 	}
+	token := storage.addToken(promptVariableEntry, name)
 	storage.variables[name] = provider
 	storage.variableOrder = append(storage.variableOrder, name)
-	return nil
+	return token, nil
 }
 
-func (storage *promptStore) removeVariable(name string) bool {
+func (storage *promptStore) removeVariable(
+	name string,
+	expected *promptEntryToken,
+) bool {
 	storage.mutex.Lock()
 	defer storage.mutex.Unlock()
-	if _, exists := storage.variables[name]; !exists {
+	if !storage.removeToken(promptVariableEntry, name, expected) {
 		return false
 	}
 	delete(storage.variables, name)
@@ -126,24 +166,31 @@ func (storage *promptStore) removeVariable(name string) bool {
 	return true
 }
 
-func (storage *promptStore) addToolProvider(name string, provider ToolProvider) error {
+func (storage *promptStore) addToolProvider(
+	name string,
+	provider ToolProvider,
+) (*promptEntryToken, error) {
 	storage.mutex.Lock()
 	defer storage.mutex.Unlock()
 	if _, exists := storage.toolProviders[name]; exists {
-		return fmt.Errorf(
+		return nil, fmt.Errorf(
 			"systemprompt: tool provider %q is already registered in this layer",
 			name,
 		)
 	}
+	token := storage.addToken(promptToolProviderEntry, name)
 	storage.toolProviders[name] = provider
 	storage.toolOrder = append(storage.toolOrder, name)
-	return nil
+	return token, nil
 }
 
-func (storage *promptStore) removeToolProvider(name string) bool {
+func (storage *promptStore) removeToolProvider(
+	name string,
+	expected *promptEntryToken,
+) bool {
 	storage.mutex.Lock()
 	defer storage.mutex.Unlock()
-	if _, exists := storage.toolProviders[name]; !exists {
+	if !storage.removeToken(promptToolProviderEntry, name, expected) {
 		return false
 	}
 	delete(storage.toolProviders, name)
@@ -151,23 +198,29 @@ func (storage *promptStore) removeToolProvider(name string) bool {
 	return true
 }
 
-func (storage *promptStore) addSuppressor(name string) error {
+func (storage *promptStore) addSuppressor(
+	name string,
+) (*promptEntryToken, error) {
 	storage.mutex.Lock()
 	defer storage.mutex.Unlock()
 	if _, exists := storage.suppressors[name]; exists {
-		return fmt.Errorf(
+		return nil, fmt.Errorf(
 			"systemprompt: runtime-context suppressor %q is already registered in this layer",
 			name,
 		)
 	}
+	token := storage.addToken(promptSuppressorEntry, name)
 	storage.suppressors[name] = struct{}{}
-	return nil
+	return token, nil
 }
 
-func (storage *promptStore) removeSuppressor(name string) bool {
+func (storage *promptStore) removeSuppressor(
+	name string,
+	expected *promptEntryToken,
+) bool {
 	storage.mutex.Lock()
 	defer storage.mutex.Unlock()
-	if _, exists := storage.suppressors[name]; !exists {
+	if !storage.removeToken(promptSuppressorEntry, name, expected) {
 		return false
 	}
 	delete(storage.suppressors, name)
@@ -224,7 +277,36 @@ func (storage *promptStore) clear() {
 	storage.toolProviders = make(map[string]ToolProvider)
 	storage.toolOrder = nil
 	storage.suppressors = make(map[string]struct{})
+	storage.tokens = make(map[promptEntryKey]*promptEntryToken)
 	storage.mutex.Unlock()
+}
+
+func (storage *promptStore) addToken(
+	kind promptEntryKind,
+	name string,
+) *promptEntryToken {
+	token := &promptEntryToken{}
+	storage.tokens[promptEntryKey{
+		kind: kind,
+		name: name,
+	}] = token
+	return token
+}
+
+func (storage *promptStore) removeToken(
+	kind promptEntryKind,
+	name string,
+	expected *promptEntryToken,
+) bool {
+	key := promptEntryKey{
+		kind: kind,
+		name: name,
+	}
+	if expected == nil || storage.tokens[key] != expected {
+		return false
+	}
+	delete(storage.tokens, key)
+	return true
 }
 
 func removeName(names []string, selectedName string) []string {

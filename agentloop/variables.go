@@ -12,9 +12,8 @@ import (
 
 type agentVariables struct {
 	plugin.Base
-	entries   []namedAgentVariable
-	prompts   systemprompt.PromptRegistry
-	installed int
+	entries []namedAgentVariable
+	handles []*systemprompt.PromptHandle
 }
 
 type namedAgentVariable struct {
@@ -77,17 +76,23 @@ func (variablesOwner *agentVariables) Apply(
 	if err != nil {
 		return err
 	}
-	variablesOwner.prompts = prompts
 	for entryIndex := range variablesOwner.entries {
 		entry := variablesOwner.entries[entryIndex]
-		if err = prompts.AddVariable(
+		promptHandle, addErr := prompts.AddVariable(
 			requestContext,
 			entry.name,
 			entry.provider,
-		); err != nil {
-			return errors.Join(err, variablesOwner.removeInstalled(requestContext))
+		)
+		if addErr != nil {
+			return errors.Join(
+				addErr,
+				variablesOwner.removeInstalled(requestContext),
+			)
 		}
-		variablesOwner.installed++
+		variablesOwner.handles = append(
+			variablesOwner.handles,
+			promptHandle,
+		)
 	}
 	return requestContext.Err()
 }
@@ -96,24 +101,20 @@ func (variablesOwner *agentVariables) Dispose(
 	closeContext context.Context,
 ) error {
 	disposeErr := variablesOwner.removeInstalled(closeContext)
-	variablesOwner.prompts = nil
 	return disposeErr
 }
 
 func (variablesOwner *agentVariables) removeInstalled(
 	closeContext context.Context,
 ) error {
-	if variablesOwner.prompts == nil {
-		variablesOwner.installed = 0
-		return nil
-	}
 	var removeErr error
-	for variablesOwner.installed > 0 {
-		variablesOwner.installed--
-		entry := variablesOwner.entries[variablesOwner.installed]
+	for len(variablesOwner.handles) > 0 {
+		lastIndex := len(variablesOwner.handles) - 1
+		promptHandle := variablesOwner.handles[lastIndex]
+		variablesOwner.handles = variablesOwner.handles[:lastIndex]
 		removeErr = errors.Join(
 			removeErr,
-			variablesOwner.prompts.RemoveVariable(closeContext, entry.name),
+			promptHandle.Unregister(closeContext),
 		)
 	}
 	return removeErr

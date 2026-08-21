@@ -948,6 +948,10 @@ func TestParallelToolBodiesCommitResultsAndContextInModelOrder(t *testing.T) {
 		secondSettled: make(chan struct{}),
 		releaseFirst:  make(chan struct{}),
 	}
+	var releaseFirst sync.Once
+	defer releaseFirst.Do(func() {
+		close(control.releaseFirst)
+	})
 	registerParallelTool(t, state, control.run)
 	handleState := createTestAgent(t, state, "parallel-order")
 	defer func() {
@@ -965,10 +969,12 @@ func TestParallelToolBodiesCommitResultsAndContextInModelOrder(t *testing.T) {
 	}
 	select {
 	case <-control.firstStarted:
-	default:
+	case <-time.After(time.Second):
 		t.Fatal("first Tool body was not started")
 	}
-	close(control.releaseFirst)
+	releaseFirst.Do(func() {
+		close(control.releaseFirst)
+	})
 	waitForIdle(t, handleState.Subject)
 	if settled := control.settledOrder(); !reflect.DeepEqual(
 		settled,
@@ -1215,7 +1221,7 @@ func TestRequestErrorRetryRepeatsAttemptInsideOneStep(t *testing.T) {
 func registerEchoTool(t *testing.T, state *harnessFixture) {
 	t.Helper()
 	deferredContext := userMessage(t, "tool-context")
-	err := state.toolCatalog.AddTool(
+	_, err := state.toolCatalog.AddTool(
 		context.Background(),
 		tools.ToolDefinition{
 			Name:        "echo",
@@ -1374,7 +1380,7 @@ func registerParallelTool(
 	) (json.RawMessage, error),
 ) {
 	t.Helper()
-	err := state.toolCatalog.AddTool(
+	_, err := state.toolCatalog.AddTool(
 		context.Background(),
 		tools.ToolDefinition{
 			Name:        "parallel",

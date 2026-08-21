@@ -34,6 +34,7 @@ type toolsFixture struct {
 	prompts       *systemprompt.Registry
 	promptHandle  plugin.Handle
 	service       *tools.Service
+	serviceHandle plugin.Handle
 	failures      *eventFailureRecorder
 }
 
@@ -76,6 +77,7 @@ func newToolsFixture(
 		prompts:       prompts,
 		promptHandle:  handles[0],
 		service:       service,
+		serviceHandle: handles[1],
 		failures:      failures,
 	}
 	testingContext.Cleanup(func() {
@@ -84,6 +86,54 @@ func newToolsFixture(
 		}
 	})
 	return state
+}
+
+func TestToolHandleCannotRemoveSameNameFromLaterActivation(t *testing.T) {
+	t.Parallel()
+	state := newToolsFixture(t)
+	oldHandle, err := state.service.AddTool(
+		context.Background(),
+		objectTool(
+			"activation-owned",
+			"old activation",
+			tools.ExecutorFunc(passThroughBody),
+		),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = state.runtimeEngine.Unload(
+		context.Background(),
+		state.serviceHandle,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = state.runtimeEngine.Mount(
+		context.Background(),
+		state.service,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = state.service.AddTool(
+		context.Background(),
+		objectTool(
+			"activation-owned",
+			"new activation",
+			tools.ExecutorFunc(passThroughBody),
+		),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err = oldHandle.Unregister(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err = oldHandle.Unregister(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	definition, found := state.service.Get("activation-owned")
+	if !found || definition.Description != "new activation" {
+		t.Fatalf("Tool after stale-handle removal = (%#v, %t)", definition, found)
+	}
 }
 
 func objectTool(
@@ -168,7 +218,7 @@ func TestServiceExposesFocusedCapabilities(t *testing.T) {
 	if service.Scheduler() != nil {
 		t.Fatal("inactive Service returned a Scheduler")
 	}
-	if err := service.AddGuard(
+	if _, err := service.AddGuard(
 		context.Background(),
 		"inactive",
 		tools.ToolGuardFunc(func(tools.ToolExecution) (string, bool) {
@@ -207,7 +257,7 @@ func TestRegistryLayersRestrictionShadowingAndPromptProjection(t *testing.T) {
 			tools.ExecutorFunc(passThroughBody),
 		),
 	} {
-		if err := state.service.AddTool(requestContext, definition); err != nil {
+		if _, err := state.service.AddTool(requestContext, definition); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -229,7 +279,7 @@ func TestRegistryLayersRestrictionShadowingAndPromptProjection(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := toolOverlay.AddRestriction(
+	if _, err := toolOverlay.AddRestriction(
 		requestContext,
 		"agent-visible",
 		tools.ToolRestriction{
@@ -240,7 +290,7 @@ func TestRegistryLayersRestrictionShadowingAndPromptProjection(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := toolOverlay.AddTool(
+	if _, err := toolOverlay.AddTool(
 		requestContext,
 		objectTool(
 			"beta",
@@ -250,7 +300,7 @@ func TestRegistryLayersRestrictionShadowingAndPromptProjection(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := toolOverlay.AddTool(
+	if _, err := toolOverlay.AddTool(
 		requestContext,
 		objectTool(
 			"gamma",
@@ -306,7 +356,7 @@ func TestRegistryChangeFailureRollsBackMutation(t *testing.T) {
 		},
 	}
 	state := newToolsFixture(t, observer)
-	err := state.service.AddTool(
+	_, err := state.service.AddTool(
 		context.Background(),
 		objectTool(
 			"rolled-back",
@@ -338,25 +388,23 @@ func TestRegistryRemovalSurvivesChangeObserverFailure(t *testing.T) {
 		},
 	}
 	state := newToolsFixture(t, observer)
-	if err := state.service.AddTool(
+	toolHandle, err := state.service.AddTool(
 		context.Background(),
 		objectTool(
 			"removed-despite-observer",
 			"",
 			tools.ExecutorFunc(passThroughBody),
 		),
-	); err != nil {
+	)
+	if err != nil {
 		t.Fatal(err)
 	}
-	err := state.service.RemoveTool(
-		context.Background(),
-		"removed-despite-observer",
-	)
+	err = toolHandle.Unregister(context.Background())
 	if !errors.Is(err, failure) {
-		t.Fatalf("RemoveTool error = %v", err)
+		t.Fatalf("Unregister error = %v", err)
 	}
 	if _, found := state.service.Get("removed-despite-observer"); found {
-		t.Fatal("failed removal notification restored a stopped contribution")
+		t.Fatal("failed removal notification restored the removed Tool")
 	}
 }
 
@@ -375,7 +423,7 @@ func TestAncestorRestrictionDoesNotFilterSameLayerToolsInDescendant(t *testing.T
 			tools.ExecutorFunc(passThroughBody),
 		),
 	} {
-		if err := state.service.AddTool(requestContext, definition); err != nil {
+		if _, err := state.service.AddTool(requestContext, definition); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -397,7 +445,7 @@ func TestAncestorRestrictionDoesNotFilterSameLayerToolsInDescendant(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := firstTools.AddRestriction(
+	if _, err := firstTools.AddRestriction(
 		requestContext,
 		"only-alpha-from-root",
 		tools.ToolRestriction{
@@ -408,7 +456,7 @@ func TestAncestorRestrictionDoesNotFilterSameLayerToolsInDescendant(t *testing.T
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := firstTools.AddTool(
+	if _, err := firstTools.AddTool(
 		requestContext,
 		objectTool(
 			"beta",

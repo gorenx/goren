@@ -49,8 +49,7 @@ type ToolRuntime interface {
 // definitions. It changes only the exact Registry layer resolved by a Plugin.
 type ToolCatalog interface {
 	plugin.Service
-	AddTool(context.Context, ToolDefinition) error
-	RemoveTool(context.Context, string) error
+	AddTool(context.Context, ToolDefinition) (*ToolHandle, error)
 }
 
 // PolicyRegistry is the mutation boundary consumed by Plugins that own Tool
@@ -58,8 +57,6 @@ type ToolCatalog interface {
 // resolved by a Plugin.
 type PolicyRegistry interface {
 	plugin.Service
-	AddRestriction(context.Context, string, ToolRestriction) error
-	RemoveRestriction(context.Context, string) error
-	AddGuard(context.Context, string, ToolGuard) error
-	RemoveGuard(context.Context, string) error
+	AddRestriction(context.Context, string, ToolRestriction) (*RestrictionHandle, error)
+	AddGuard(context.Context, string, ToolGuard) (*GuardHandle, error)
 }

@@ -212,7 +212,7 @@ func TestExecutionPipelineOrderAndDetachedResultEvent(t *testing.T) {
 		postPolicy,
 		observer,
 	)
-	if err := state.service.AddGuard(
+	if _, err := state.service.AddGuard(
 		context.Background(),
 		"record",
 		tools.ToolGuardFunc(func(tools.ToolExecution) (string, bool) {
@@ -242,7 +242,7 @@ func TestExecutionPipelineOrderAndDetachedResultEvent(t *testing.T) {
 			llm.NewTextBlock(string(value)),
 		}, nil
 	})
-	if err := state.service.AddTool(context.Background(), definition); err != nil {
+	if _, err := state.service.AddTool(context.Background(), definition); err != nil {
 		t.Fatal(err)
 	}
 	outcome := state.service.Execute(
@@ -303,7 +303,7 @@ func TestExecuteMiddlewareReceivesReadOnlyCanonicalSuccess(t *testing.T) {
 		}),
 	}
 	state := newToolsFixture(t, mutation)
-	if err := state.service.AddTool(
+	if _, err := state.service.AddTool(
 		context.Background(),
 		objectTool(
 			"sealed",
@@ -392,7 +392,7 @@ func TestDeferredContextsPrecedeExecuteAndPostContexts(t *testing.T) {
 		}),
 	}
 	state := newToolsFixture(t, executePolicy, postPolicy)
-	if err := state.service.AddTool(
+	if _, err := state.service.AddTool(
 		context.Background(),
 		objectTool(
 			"contexts",
@@ -433,7 +433,7 @@ func TestDeferredContextsPrecedeExecuteAndPostContexts(t *testing.T) {
 
 func TestFinishMaterializesNilStagedResult(t *testing.T) {
 	state := newToolsFixture(t)
-	if err := state.service.AddTool(
+	if _, err := state.service.AddTool(
 		context.Background(),
 		objectTool(
 			"staged",
@@ -483,7 +483,7 @@ func TestSchedulerConsumesEachPreparedStageOnce(t *testing.T) {
 		return nil, false
 	})
 	state := newToolsFixture(t)
-	if err := state.service.AddTool(
+	if _, err := state.service.AddTool(
 		context.Background(),
 		definition,
 	); err != nil {
@@ -554,7 +554,7 @@ func TestExecutionFailuresAreCanonical(t *testing.T) {
 			return json.RawMessage(`"wrong"`), nil
 		}),
 	)
-	if err := state.service.AddTool(context.Background(), invalid); err != nil {
+	if _, err := state.service.AddTool(context.Background(), invalid); err != nil {
 		t.Fatal(err)
 	}
 	invalidOutcome := state.service.Execute(
@@ -594,7 +594,7 @@ func TestCallerCancellationSurvivesMiddlewareContextReplacement(t *testing.T) {
 	state := newToolsFixture(t, dispatchPolicy)
 	started := make(chan struct{})
 	settled := make(chan struct{})
-	if err := state.service.AddTool(
+	if _, err := state.service.AddTool(
 		context.Background(),
 		objectTool(
 			"cancellable",
@@ -667,7 +667,7 @@ func TestFinalizerRunsOnceAndClassifierFailsClosed(t *testing.T) {
 	) bool {
 		panic("classifier failure")
 	})
-	if err := state.service.AddTool(context.Background(), definition); err != nil {
+	if _, err := state.service.AddTool(context.Background(), definition); err != nil {
 		t.Fatal(err)
 	}
 	if mode := state.service.ExecutionMode(tools.ToolExecutionInput{

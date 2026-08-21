@@ -17,12 +17,11 @@ const policyContextName = "approval:policy"
 // Waterfall for one Runtime Scope.
 type Service struct {
 	plugin.Base
-	name            string
-	root            bool
-	defaultPolicy   Policy
-	parent          Approval
-	prompts         systemprompt.PromptRegistry
-	promptInstalled bool
+	name          string
+	root          bool
+	defaultPolicy Policy
+	parent        Approval
+	prompt        *systemprompt.PromptHandle
 }
 
 // New constructs the root Approval Plugin from validated configuration.
@@ -83,8 +82,7 @@ func (owner *Service) Apply(requestContext context.Context) error {
 	if err != nil {
 		return err
 	}
-	owner.prompts = prompts
-	if err := prompts.AddContext(requestContext, systemprompt.PromptContext{
+	promptHandle, err := prompts.AddContext(requestContext, systemprompt.PromptContext{
 		Name:  policyContextName,
 		Order: 115,
 		Text: systemprompt.TextFunc(func(
@@ -108,10 +106,11 @@ func (owner *Service) Apply(requestContext context.Context) error {
 			}
 			return askPolicyText, nil
 		}),
-	}); err != nil {
+	})
+	if err != nil {
 		return err
 	}
-	owner.promptInstalled = true
+	owner.prompt = promptHandle
 	return nil
 }
 
@@ -119,11 +118,10 @@ func (owner *Service) Apply(requestContext context.Context) error {
 // hidden its Service binding.
 func (owner *Service) Dispose(closeContext context.Context) error {
 	var disposeErr error
-	if owner.promptInstalled && owner.prompts != nil {
-		disposeErr = owner.prompts.RemoveContext(closeContext, policyContextName)
+	if owner.prompt != nil {
+		disposeErr = owner.prompt.Unregister(closeContext)
 	}
-	owner.promptInstalled = false
-	owner.prompts = nil
+	owner.prompt = nil
 	owner.parent = nil
 	return disposeErr
 }
