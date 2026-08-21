@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
@@ -96,6 +97,22 @@ type fakeAdapter struct {
 	resolved     llm.ResolvedModelInfo
 	policy       llm.RetryPolicy
 	requests     []llm.GenerateOptions
+}
+
+type lifecycleAdapter struct {
+	requestContexts chan context.Context
+}
+
+func (backend *lifecycleAdapter) Stream(
+	requestContext context.Context,
+	_ llm.GenerateOptions,
+) (llm.ChunkStream, error) {
+	backend.requestContexts <- requestContext
+	return llm.NewSliceStream([]llm.StreamChunk{
+		llm.FinishChunk{
+			Reason: llm.StopFinish{},
+		},
+	})
 }
 
 func (backend *fakeAdapter) DescribeProvider(providerRoute string) (llm.ProviderInfo, error) {
@@ -286,6 +303,51 @@ func TestRuntimeRoutesPreparedCallAndCapturesAdapterDefaults(t *testing.T) {
 	}
 	if got := backend.requestSnapshots(); len(got) != 1 || got[0].Model != "unlisted" {
 		t.Fatalf("adapter requests = %#v", got)
+	}
+}
+
+func TestStreamRetainsWaterfallInvocationUntilTerminalChunk(t *testing.T) {
+	t.Parallel()
+	runtimeEngine, serviceValue := bootstrapRuntime(t)
+	backend := &lifecycleAdapter{
+		requestContexts: make(chan context.Context, 1),
+	}
+	loadAdapter(
+		t,
+		runtimeEngine,
+		"lifecycle-adapter",
+		[]string{
+			"lifecycle",
+		},
+		backend,
+	)
+	flow, err := serviceValue.Stream(
+		context.Background(),
+		llm.GenerateOptions{
+			CallConfig: llm.CallConfig{
+				Provider: "lifecycle",
+				Model:    "model",
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapterContext := <-backend.requestContexts
+	if contextErr := adapterContext.Err(); contextErr != nil {
+		t.Fatalf("Adapter Context after Stream returned = %v", contextErr)
+	}
+	entry, available, err := flow.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !available || entry == nil || entry.ChunkType() != "finish" {
+		t.Fatalf("terminal chunk = (%#v, %t)", entry, available)
+	}
+	select {
+	case <-adapterContext.Done():
+	case <-time.After(time.Second):
+		t.Fatal("terminal chunk did not release the Waterfall invocation")
 	}
 }
 

@@ -100,6 +100,20 @@ func (action formatAction) Execute(
 	}, nil
 }
 
+type contextCapturingAction struct {
+	requestContext context.Context
+}
+
+func (action *contextCapturingAction) Execute(
+	requestContext context.Context,
+	input formatInput,
+) (formatOutput, error) {
+	action.requestContext = requestContext
+	return formatOutput{
+		Value: input.Value,
+	}, nil
+}
+
 func TestWaterfallRunsRootToCurrentAsOnion(t *testing.T) {
 	t.Parallel()
 	order := make([]string, 0)
@@ -358,5 +372,59 @@ func TestShutdownCancelsAdmittedWaterfallBeforeDrainingCalls(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("waterfall did not return after shutdown")
+	}
+}
+
+func TestRetainedWaterfallKeepsAdmissionUntilLeaseRelease(t *testing.T) {
+	t.Parallel()
+	source := &eventPublisherPlugin{
+		name: "retained-waterfall-source",
+	}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	if _, err := runtimeEngine.Start(context.Background(), source); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	action := &contextCapturingAction{}
+	output, lease, err := plugin.RunRetained(
+		context.Background(),
+		source,
+		formatInput{
+			Value: "retained",
+		},
+		action,
+	)
+	if err != nil {
+		t.Fatalf("run retained: %v", err)
+	}
+	if output.Value != "retained" || lease == nil {
+		t.Fatalf("retained output = (%#v, %#v)", output, lease)
+	}
+	if contextErr := action.requestContext.Err(); contextErr != nil {
+		t.Fatalf("retained Context before shutdown = %v", contextErr)
+	}
+
+	shutdownDone := make(chan error, 1)
+	go func() {
+		shutdownDone <- runtimeEngine.Shutdown(context.Background())
+	}()
+	select {
+	case <-action.requestContext.Done():
+	case <-time.After(time.Second):
+		t.Fatal("shutdown did not cancel the retained invocation")
+	}
+	select {
+	case shutdownErr := <-shutdownDone:
+		t.Fatalf("shutdown returned before lease release: %v", shutdownErr)
+	case <-time.After(20 * time.Millisecond):
+	}
+	lease.Release()
+	lease.Release()
+	select {
+	case shutdownErr := <-shutdownDone:
+		if shutdownErr != nil {
+			t.Fatalf("shutdown: %v", shutdownErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("shutdown did not drain after lease release")
 	}
 }
