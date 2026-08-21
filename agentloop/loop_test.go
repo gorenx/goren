@@ -1104,6 +1104,45 @@ func TestFirstCancelCauseSurvivesDisposal(t *testing.T) {
 	}
 }
 
+type externalCancelCause struct{}
+
+func (externalCancelCause) CancelKind() string { return "external-extension" }
+
+func TestUnknownCancelCauseUsesHookReason(t *testing.T) {
+	state := newHarnessFixture(t, [][]llm.StreamChunk{
+		toolCallResponse("call-unknown-cause"),
+	})
+	toolStarted := make(chan struct{})
+	registerParallelTool(t, state, func(
+		json.RawMessage,
+		tools.ToolRunContext,
+	) (json.RawMessage, error) {
+		close(toolStarted)
+		return json.RawMessage(`{"cancelled":true}`), nil
+	})
+	handleState := createTestAgent(t, state, "cancel-unknown-cause")
+	if err := handleState.Subject.Followup(userMessage(t, "cancel")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-toolStarted:
+	case <-time.After(time.Second):
+		t.Fatal("Tool body did not start")
+	}
+	handleState.Subject.Cancel(externalCancelCause{}, agent.CancelOptions{
+		KeepInbox: true,
+	})
+	if err := handleState.Dispose(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ending := lastTurnEnd(t, handleState.Subject.SessionValue())
+	if ending.Kind != "aborted" || ending.Reason == nil ||
+		ending.Reason.Kind != "hook" ||
+		ending.Reason.Reason != "external-extension" {
+		t.Fatalf("turn ending = %#v", ending)
+	}
+}
+
 type retryExtension struct {
 	plugin.Base
 	notices chan agent.RequestErrorNotice
