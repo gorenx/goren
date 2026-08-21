@@ -20,4 +20,6 @@ flowchart TD
     Waterfall --> Result[detached PromptAssembly]
 ```
 
-Store 只保护 entry membership；provider 求值和 Waterfall 在锁外执行。每次 assembly 固定 provider snapshot，执行失败返回整体错误，不返回半成品。complete section、suppression、Tool order 和 strict `{{name}}` 插值由本领域 owner 最终校验。
+Store 只保护 entry membership；每个 exact layer 仅在 section、context、variable、Tool provider 或 suppressor 变更时重建不可变注册快照。这个快照不缓存 assembly 业务结果：每一次 assembly 仍在锁外重新执行 provider 求值和 Waterfall，并在返回边界分离最终 `PromptAssembly`。执行失败返回整体错误，不返回半成品。complete section、suppression、Tool order 和 strict `{{name}}` 插值由本领域 owner 最终校验。
+
+一次 assembly 由具名 `assemblyResolver` 持有请求上下文和固定 layer snapshot，分别求值 variable、section、context 和 Tool schema；它产生的 `preparedAssembly` 同时保留 complete/suppression owner policy。Registry 只编排 resolver、Waterfall 和 `preparedAssembly.finalize`，不再解释多个并行返回值。

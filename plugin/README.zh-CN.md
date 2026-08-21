@@ -55,7 +55,7 @@ Runtime 根据 Manifest 自动注册 binding。插件作者不接收暴露 Scope
 
 Plugin 的 `Apply`、`Dispose`、Event Observer 和 Waterfall 调用不能同步修改同一个 Runtime 的拓扑；Runtime 返回 `ErrTopologyMutation`，而不是等待形成重入死锁。普通业务调用可以在回调返回后发起动态挂载。Event 和普通 Waterfall 的调用租约完全由 Runtime 管理，业务 Plugin 不调用显式准入或排空方法。
 
-只有 `ChunkStream` 一类在方法返回后仍继续执行 Plugin 代码的惰性结果使用 `RunRetained`。返回的 `InvocationLease` 由结果 owner 包装并在终态、失败或关闭时自动 `Release`；Release 只结束该次调用，使参与 Fiber 可以排空，不停止 Plugin 或业务资源。当前 LLM Runtime 已在流包装器内部完成这一管理，普通调用方仍使用 `Run`。
+只有 `ChunkStream` 一类在方法返回后仍继续执行 Plugin 代码的惰性结果使用 `RunRetained`。返回的 `InvocationLease` 由结果 owner 包装并在终态、失败或关闭时自动 `Release`；Release 只结束该次调用，使参与 Fiber 可以排空，不停止 Plugin 或业务资源。当前 LLM Runtime 已在流包装器内部完成这一管理；普通调用使用 `Run`，在返回前直接释放准入，不创建可跨越方法边界的 lease。
 
 ## 子包
 
@@ -74,3 +74,5 @@ Plugin 的 `Apply`、`Dispose`、Event Observer 和 Waterfall 调用不能同步
 Runtime.Start 先构造并校验所有根 Plugin 的完整声明树，再按 Service 依赖激活 Main Fiber；只有全部 Main Fiber Active 后才执行 Commit Fiber。Apply 或 binding 发布失败会取消 lifetime、撤销 binding、调用 Dispose，并回滚本批完整树。
 
 Event 和 Waterfall 在 Runtime view 内同时取得路由快照和 Fiber 调用租约，随后释放 view 再调用 Observer、Middleware、Action 或 reporter。Unload、Replace 和 Shutdown 先撤销 binding、关闭新调用准入并等待已准入调用结束，再执行 Dispose。Runtime 在 Dispose 前取消 `plugin.Lifetime(instance)`，使后台任务能够先退出。
+
+`DeliveryParallel` 与 `DeliveryBestEffort` 只在存在多个 Observer 时创建并发投递；零个 Observer 直接完成，单个 Observer 在当前调用中执行。这个快路径不改变错误契约：Parallel 仍向发布方返回 Observer 错误，BestEffort 仍只交给 `EventFailureReporter`，所有调用继续受同一组 Fiber 租约和排空边界保护。

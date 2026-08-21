@@ -100,6 +100,8 @@ Guard 不改变模型可见 schema，因此 `AddGuard` 和 `GuardHandle.Unregist
 
 新增 Tool 或 restriction 时，change observer 失败会回滚新增并向 owner Plugin 返回错误。撤销时以生命周期清理为优先：即使 change observer 失败，已删除的 entry 也不会恢复，错误仍返回给 `Dispose` 供 Runtime 记录。每个 Handle 绑定具体 entry identity；旧 Handle 不能删除后来注册的同名对象。System Prompt 不缓存另一份 Tool Catalog；下一次 assembly 直接读取当前 provider 的 live view。
 
+每个 exact layer 只在 Tool、restriction 或 guard 变更时重建不可变快照；Registry 以整条 parent lineage 的 store identity 与 revision 缓存组合后的 live view。父层或当前层任一 mutation 都会使后续读取重新组合，稳定读取则不会按 Tool 数量重复复制完整 Catalog。返回给外部消费者的 schema 切片仍逐次分离，避免调用方改写 Registry 的内部视图。
+
 ## 执行流程
 
 普通调用使用 `ToolRuntime.Execute`。Agent Loop 为了让 Tool body 并发、而 policy 和 Session 提交仍保持模型顺序，使用 staged scheduler。
