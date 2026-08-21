@@ -149,10 +149,14 @@ func newEventRegistry() *eventRegistry {
 }
 
 func (registry *eventRegistry) add(binding *eventBinding) {
-	registry.bindings[binding.reference.key] = append(
-		registry.bindings[binding.reference.key],
-		binding,
-	)
+	candidates := registry.bindings[binding.reference.key]
+	insertIndex := sort.Search(len(candidates), func(candidateIndex int) bool {
+		return candidates[candidateIndex].ordinal >= binding.ordinal
+	})
+	candidates = append(candidates, nil)
+	copy(candidates[insertIndex+1:], candidates[insertIndex:])
+	candidates[insertIndex] = binding
+	registry.bindings[binding.reference.key] = candidates
 }
 
 func (registry *eventRegistry) remove(binding *eventBinding) {
@@ -173,21 +177,14 @@ func (registry *eventRegistry) snapshot(
 	reference eventRef,
 	sourceScope *scope,
 ) []*eventBinding {
-	lineage := scopePath(sourceScope)
-	observers := make([]*eventBinding, 0)
-	for _, selectedScope := range lineage {
-		selectedBindings := make([]*eventBinding, 0)
-		for _, binding := range registry.bindings[reference.key] {
+	candidates := registry.bindings[reference.key]
+	observers := make([]*eventBinding, 0, len(candidates))
+	for selectedScope := sourceScope; selectedScope != nil; selectedScope = selectedScope.parent {
+		for _, binding := range candidates {
 			if binding.scope != selectedScope || binding.owner == nil ||
 				binding.owner.state != FiberActive {
 				continue
 			}
-			selectedBindings = append(selectedBindings, binding)
-		}
-		sort.Slice(selectedBindings, func(leftIndex int, rightIndex int) bool {
-			return selectedBindings[leftIndex].ordinal < selectedBindings[rightIndex].ordinal
-		})
-		for _, binding := range selectedBindings {
 			observers = append(observers, binding)
 		}
 	}
@@ -332,18 +329,20 @@ func Publish[E Event](
 	for _, observer := range observers {
 		participants = append(participants, observer.owner)
 	}
-	releaseCalls, admitted := acquireFiberCalls(participants...)
 	callContext, releaseContext := runtimeEngine.invocationContext(
 		requestContext,
-		participants...,
 	)
+	admittedCall := &fiberCall{
+		cancel: releaseContext,
+	}
+	releaseCalls, admitted := acquireFiberCalls(admittedCall, participants...)
 	runtimeEngine.view.RUnlock()
 	if !admitted {
-		releaseContext()
+		releaseContext(context.Canceled)
 		return ErrPluginNotActive
 	}
 	defer releaseCalls()
-	defer releaseContext()
+	defer releaseContext(context.Canceled)
 	return runtimeEngine.bindings.events.deliver(
 		callContext,
 		fact,
