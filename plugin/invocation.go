@@ -71,10 +71,7 @@ type fiberCall struct {
 }
 
 func newFiberCallGate() *fiberCallGate {
-	drained := make(chan struct{})
-	close(drained)
 	return &fiberCallGate{
-		drained:       drained,
 		drainedClosed: true,
 	}
 }

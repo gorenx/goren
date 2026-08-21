@@ -15,6 +15,21 @@ type dependencyResolution struct {
 	waiting  bool
 }
 
+func (resolution *dependencyResolution) add(
+	reference serviceRef,
+	binding *serviceBinding,
+	optional bool,
+) {
+	if resolution.selected == nil {
+		resolution.selected = make(dependencySnapshot)
+	}
+	resolution.selected[reference.key] = &serviceDependency{
+		reference: reference,
+		binding:   binding,
+		optional:  optional,
+	}
+}
+
 func (resolution dependencyResolution) ready() bool {
 	return !resolution.waiting && len(resolution.missing) == 0
 }
@@ -32,19 +47,16 @@ func (resolution dependencyResolution) missingNames() []string {
 // protects the Service registry and Fiber states it reads.
 type dependencyGraph struct {
 	runtime    *Runtime
-	mounts     *mountTree
 	services   *serviceRegistry
 	dependents map[*fiber][]*fiber
 }
 
 func newDependencyGraph(
 	runtimeEngine *Runtime,
-	mounts *mountTree,
 	services *serviceRegistry,
 ) *dependencyGraph {
 	return &dependencyGraph{
 		runtime:    runtimeEngine,
-		mounts:     mounts,
 		services:   services,
 		dependents: make(map[*fiber][]*fiber),
 	}
@@ -53,10 +65,9 @@ func newDependencyGraph(
 func (graph *dependencyGraph) resolve(
 	mounted *pluginMount,
 	target pluginTarget,
+	topology []*pluginMount,
 ) dependencyResolution {
-	resolution := dependencyResolution{
-		selected: make(dependencySnapshot),
-	}
+	resolution := dependencyResolution{}
 	graph.runtime.view.RLock()
 	defer graph.runtime.view.RUnlock()
 	if mounted.parent != nil {
@@ -68,13 +79,15 @@ func (graph *dependencyGraph) resolve(
 	for _, reference := range target.manifest.requires {
 		binding, available := graph.services.resolve(reference, mounted.scope)
 		if available {
-			resolution.selected[reference.key] = &serviceDependency{
-				reference: reference,
-				binding:   binding,
-			}
+			resolution.add(reference, binding, false)
 			continue
 		}
-		if graph.declaredProviderLocked(reference, mounted.scope, mounted) != nil {
+		if declaredProviderLocked(
+			reference,
+			mounted.scope,
+			mounted,
+			topology,
+		) != nil {
 			resolution.waiting = true
 			continue
 		}
@@ -85,23 +98,20 @@ func (graph *dependencyGraph) resolve(
 		if !available {
 			continue
 		}
-		resolution.selected[reference.key] = &serviceDependency{
-			reference: reference,
-			binding:   binding,
-			optional:  true,
-		}
+		resolution.add(reference, binding, true)
 	}
 	return resolution
 }
 
 // Runtime.view must be read-locked by the caller.
-func (graph *dependencyGraph) declaredProviderLocked(
+func declaredProviderLocked(
 	reference serviceRef,
 	sourceScope *scope,
 	excludedMount *pluginMount,
+	topology []*pluginMount,
 ) *pluginMount {
 	for selectedScope := sourceScope; selectedScope != nil; selectedScope = selectedScope.parent {
-		for _, mounted := range graph.mounts.all() {
+		for _, mounted := range topology {
 			if mounted == excludedMount || mounted.removed || mounted.scope != selectedScope {
 				continue
 			}
