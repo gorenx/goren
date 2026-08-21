@@ -117,8 +117,7 @@ func newTurnBenchmarkHarness(
 func BenchmarkTurnPrepareEmptyStep(b *testing.B) {
 	state := newTurnBenchmarkHarness(b)
 	b.ReportAllocs()
-	b.ResetTimer()
-	for benchmarkIndex := 0; benchmarkIndex < b.N; benchmarkIndex++ {
+	for b.Loop() {
 		prepared, err := state.runner.prepareStep(
 			context.Background(),
 			agent.NextStep,
@@ -137,8 +136,7 @@ func BenchmarkTurnPrepareEmptyStep(b *testing.B) {
 func BenchmarkTurnRunEmpty(b *testing.B) {
 	state := newTurnBenchmarkHarness(b)
 	b.ReportAllocs()
-	b.ResetTimer()
-	for benchmarkIndex := 0; benchmarkIndex < b.N; benchmarkIndex++ {
+	for b.Loop() {
 		continued, err := state.runner.runTurn(context.Background())
 		if err != nil {
 			b.Fatal(err)
