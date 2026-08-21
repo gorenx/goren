@@ -190,9 +190,7 @@ func (command *subtreeReplacement) resolve(
 	item *replacementItem,
 	includeAllOptional bool,
 ) dependencyResolution {
-	resolution := dependencyResolution{
-		selected: make(dependencySnapshot),
-	}
+	resolution := dependencyResolution{}
 	if item.mounted.parent != nil {
 		if parentItem := command.byMount[item.mounted.parent]; parentItem != nil {
 			if !parentItem.prepared {
@@ -215,10 +213,7 @@ func (command *subtreeReplacement) resolve(
 			item.mounted,
 		)
 		if available {
-			resolution.selected[reference.key] = &serviceDependency{
-				reference: reference,
-				binding:   binding,
-			}
+			resolution.add(reference, binding, false)
 			continue
 		}
 		if waiting {
@@ -237,11 +232,7 @@ func (command *subtreeReplacement) resolve(
 			continue
 		}
 		if available {
-			resolution.selected[reference.key] = &serviceDependency{
-				reference: reference,
-				binding:   binding,
-				optional:  true,
-			}
+			resolution.add(reference, binding, true)
 		}
 	}
 	return resolution

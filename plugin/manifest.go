@@ -76,9 +76,23 @@ func normalizeManifest(
 	normalized := manifestSpec{
 		name: metadata.Name,
 	}
+	serviceCount := len(metadata.Provides) + len(metadata.Requires) + len(metadata.Optional)
 	var seenServices map[reflect.Type]string
-	if len(metadata.Provides)+len(metadata.Requires)+len(metadata.Optional) != 0 {
-		seenServices = make(map[reflect.Type]string)
+	if serviceCount != 0 {
+		seenServices = make(map[reflect.Type]string, serviceCount)
+	}
+	if len(metadata.Provides) != 0 {
+		normalized.provides = make(
+			[]providedServiceSpec,
+			0,
+			len(metadata.Provides),
+		)
+	}
+	if len(metadata.Requires) != 0 {
+		normalized.requires = make([]serviceRef, 0, len(metadata.Requires))
+	}
+	if len(metadata.Optional) != 0 {
+		normalized.optional = make([]serviceRef, 0, len(metadata.Optional))
 	}
 	for _, declaredService := range metadata.Provides {
 		reference, err := normalizeServiceType(
@@ -130,7 +144,12 @@ func normalizeManifest(
 
 	var seenEvents map[reflect.Type]struct{}
 	if len(metadata.Events) != 0 {
-		seenEvents = make(map[reflect.Type]struct{})
+		seenEvents = make(map[reflect.Type]struct{}, len(metadata.Events))
+		normalized.events = make(
+			[]eventSubscriptionSpec,
+			0,
+			len(metadata.Events),
+		)
 	}
 	for _, declaredEvent := range metadata.Events {
 		if declaredEvent == nil {
@@ -172,7 +191,12 @@ func normalizeManifest(
 
 	var seenWaterfalls map[waterfallKey]struct{}
 	if len(metadata.Waterfalls) != 0 {
-		seenWaterfalls = make(map[waterfallKey]struct{})
+		seenWaterfalls = make(map[waterfallKey]struct{}, len(metadata.Waterfalls))
+		normalized.waterfalls = make(
+			[]waterfallMiddlewareSpec,
+			0,
+			len(metadata.Waterfalls),
+		)
 	}
 	for _, declaredWaterfall := range metadata.Waterfalls {
 		if declaredWaterfall == nil {

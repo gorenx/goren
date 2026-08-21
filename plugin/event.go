@@ -324,6 +324,10 @@ func Publish[E Event](
 		reference,
 		sourceFiber.scope,
 	)
+	if len(observers) == 0 {
+		runtimeEngine.view.RUnlock()
+		return nil
+	}
 	participants := make([]*fiber, 0, len(observers)+1)
 	participants = append(participants, sourceFiber)
 	for _, observer := range observers {

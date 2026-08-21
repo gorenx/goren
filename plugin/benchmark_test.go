@@ -92,6 +92,56 @@ func (benchmarkAction) Execute(
 	return benchmarkOutput{}, nil
 }
 
+type benchmarkService interface {
+	plugin.Service
+	Ready() bool
+}
+
+type benchmarkProvider struct {
+	benchmarkPlugin
+}
+
+func (provider *benchmarkProvider) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: provider.name,
+		Provides: []plugin.ServiceType{
+			plugin.ServiceOf[benchmarkService](),
+		},
+	}
+}
+
+func (*benchmarkProvider) Ready() bool {
+	return true
+}
+
+type benchmarkConsumer struct {
+	benchmarkPlugin
+	selected benchmarkService
+}
+
+func (consumer *benchmarkConsumer) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: consumer.name,
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[benchmarkService](),
+		},
+	}
+}
+
+func (consumer *benchmarkConsumer) Apply(context.Context) error {
+	selected, err := plugin.Require[benchmarkService](consumer)
+	if err != nil {
+		return err
+	}
+	consumer.selected = selected
+	return nil
+}
+
+func (consumer *benchmarkConsumer) Dispose(context.Context) error {
+	consumer.selected = nil
+	return nil
+}
+
 func BenchmarkRuntimeLifecycle(b *testing.B) {
 	for _, pluginCount := range []int{1, 16, 64} {
 		b.Run(fmt.Sprintf("plugins=%d", pluginCount), func(b *testing.B) {
@@ -102,8 +152,7 @@ func BenchmarkRuntimeLifecycle(b *testing.B) {
 				})
 			}
 			b.ReportAllocs()
-			b.ResetTimer()
-			for benchmarkIndex := 0; benchmarkIndex < b.N; benchmarkIndex++ {
+			for b.Loop() {
 				runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
 				if _, err := runtimeEngine.Start(context.Background(), instances...); err != nil {
 					b.Fatal(err)
@@ -113,6 +162,56 @@ func BenchmarkRuntimeLifecycle(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+func BenchmarkRuntimeDependencyOrdering(b *testing.B) {
+	for _, pluginCount := range []int{16, 64, 256} {
+		for _, providerFirst := range []bool{true, false} {
+			label := "provider=last"
+			if providerFirst {
+				label = "provider=first"
+			}
+			b.Run(fmt.Sprintf("plugins=%d/%s", pluginCount, label), func(b *testing.B) {
+				provider := &benchmarkProvider{
+					benchmarkPlugin: benchmarkPlugin{
+						name: "provider",
+					},
+				}
+				consumer := &benchmarkConsumer{
+					benchmarkPlugin: benchmarkPlugin{
+						name: "consumer",
+					},
+				}
+				instances := make([]plugin.Plugin, 0, pluginCount)
+				if providerFirst {
+					instances = append(instances, provider, consumer)
+				} else {
+					instances = append(instances, consumer)
+				}
+				for pluginIndex := len(instances); pluginIndex < pluginCount; pluginIndex++ {
+					instances = append(instances, &benchmarkPlugin{
+						name: fmt.Sprintf("plugin-%d", pluginIndex),
+					})
+				}
+				if !providerFirst {
+					instances[len(instances)-1] = provider
+				}
+				b.ReportAllocs()
+				for b.Loop() {
+					runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+					if _, err := runtimeEngine.Start(
+						context.Background(),
+						instances...,
+					); err != nil {
+						b.Fatal(err)
+					}
+					if err := runtimeEngine.Shutdown(context.Background()); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -144,8 +243,7 @@ func BenchmarkPublishOrdered(b *testing.B) {
 			requestContext := context.Background()
 			fact := benchmarkEvent{}
 			b.ReportAllocs()
-			b.ResetTimer()
-			for benchmarkIndex := 0; benchmarkIndex < b.N; benchmarkIndex++ {
+			for b.Loop() {
 				if err := plugin.Publish(requestContext, publisher, fact); err != nil {
 					b.Fatal(err)
 				}
@@ -202,8 +300,7 @@ func BenchmarkPublishOrderedScoped(b *testing.B) {
 			requestContext := context.Background()
 			fact := benchmarkEvent{}
 			b.ReportAllocs()
-			b.ResetTimer()
-			for benchmarkIndex := 0; benchmarkIndex < b.N; benchmarkIndex++ {
+			for b.Loop() {
 				if publishErr := plugin.Publish(requestContext, publisher, fact); publishErr != nil {
 					b.Fatal(publishErr)
 				}
@@ -241,8 +338,7 @@ func BenchmarkRunWaterfall(b *testing.B) {
 			input := benchmarkInput{}
 			terminal := benchmarkAction{}
 			b.ReportAllocs()
-			b.ResetTimer()
-			for benchmarkIndex := 0; benchmarkIndex < b.N; benchmarkIndex++ {
+			for b.Loop() {
 				if _, err := plugin.Run(
 					requestContext,
 					source,
@@ -305,8 +401,7 @@ func BenchmarkRunWaterfallScoped(b *testing.B) {
 			input := benchmarkInput{}
 			terminal := benchmarkAction{}
 			b.ReportAllocs()
-			b.ResetTimer()
-			for benchmarkIndex := 0; benchmarkIndex < b.N; benchmarkIndex++ {
+			for b.Loop() {
 				if _, runErr := plugin.Run(
 					requestContext,
 					source,

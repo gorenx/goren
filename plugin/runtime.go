@@ -37,7 +37,6 @@ func NewRuntime(settings RuntimeSettings) *Runtime {
 	runtimeEngine.operations <- struct{}{}
 	runtimeEngine.dependencies = newDependencyGraph(
 		runtimeEngine,
-		runtimeEngine.mounts,
 		runtimeEngine.bindings.services,
 	)
 	runtimeEngine.activations = newActivationCoordinator(

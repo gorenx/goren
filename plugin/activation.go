@@ -73,7 +73,11 @@ func (coordinator *activationCoordinator) converge(
 				running.state != FiberWaiting {
 				continue
 			}
-			resolution := coordinator.graph.resolve(mounted, mounted.target)
+			resolution := coordinator.graph.resolve(
+				mounted,
+				mounted.target,
+				mounts,
+			)
 			coordinator.runtime.view.Lock()
 			running.missing = resolution.missingNames()
 			coordinator.runtime.view.Unlock()
