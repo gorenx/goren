@@ -6,12 +6,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 
 	"github.com/gorenx/goren/approval"
-	"github.com/gorenx/goren/internal/jsonvalue"
 	"github.com/gorenx/goren/plugin"
 	pluginfactory "github.com/gorenx/goren/plugin/factory"
 )
@@ -35,7 +32,7 @@ func (*Factory) Create(
 	createContext context.Context,
 	rawConfig json.RawMessage,
 ) (plugin.Plugin, error) {
-	if err := createContext.Err(); err != nil {
+	if err := pluginfactory.ValidateCreateContext(createContext); err != nil {
 		return nil, err
 	}
 	settings, err := decodeConfig(rawConfig)
@@ -50,16 +47,11 @@ func (*Factory) Create(
 }
 
 func decodeConfig(rawConfig json.RawMessage) (approval.Config, error) {
-	if err := jsonvalue.Validate(rawConfig); err != nil {
-		return approval.Config{}, fmt.Errorf(
-			"approval factory: invalid configuration: %w",
-			err,
-		)
-	}
-	if !jsonvalue.IsObject(rawConfig) {
-		return approval.Config{}, errors.New(
-			"approval factory: configuration must be a JSON object",
-		)
+	if err := pluginfactory.ValidateObjectConfig(
+		rawConfig,
+		"approval factory",
+	); err != nil {
+		return approval.Config{}, err
 	}
 	var settings approval.Config
 	decoder := json.NewDecoder(bytes.NewReader(rawConfig))
@@ -67,12 +59,6 @@ func decodeConfig(rawConfig json.RawMessage) (approval.Config, error) {
 		return approval.Config{}, fmt.Errorf(
 			"approval factory: decode configuration: %w",
 			err,
-		)
-	}
-	var trailingValue json.RawMessage
-	if err := decoder.Decode(&trailingValue); !errors.Is(err, io.EOF) {
-		return approval.Config{}, errors.New(
-			"approval factory: configuration must contain one JSON value",
 		)
 	}
 	return settings, nil

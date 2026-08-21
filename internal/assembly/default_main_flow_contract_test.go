@@ -129,7 +129,10 @@ func TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter(t *
 			}
 			return "", false
 		},
-		UserHomeDir: func() (string, error) { return identityDirectory, nil },
+		UserHomeDir: func() (string, error) {
+			return identityDirectory, nil
+		},
+		Diagnostics: testDiagnostics(t),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -144,18 +147,33 @@ func TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter(t *
 		t.Fatal(err)
 	}
 	baseURL := deepSeekServer.URL
-	deepSeekConfig, err := json.Marshal(deepseek.Config{BaseURL: &baseURL})
+	deepSeekConfig, err := json.Marshal(deepseek.Config{
+		BaseURL: &baseURL,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for specIndex := range compositionSpecs {
-		if compositionSpecs[specIndex].FactoryName == DeepSeekFactoryName {
+		if compositionSpecs[specIndex].FactoryName == deepseek.PluginName {
 			compositionSpecs[specIndex].Config = deepSeekConfig
 		}
 	}
 
-	runtimeEngine := plugin.NewRuntime()
-	if _, err := Load(context.Background(), runtimeEngine, factoryCatalog, compositionSpecs); err != nil {
+	assembledServer, err := BuildServer(
+		context.Background(),
+		factoryCatalog,
+		compositionSpecs,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{
+		EventFailures: testDiagnostics(t),
+	})
+	if _, err = runtimeEngine.Start(
+		context.Background(),
+		assembledServer,
+	); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -166,17 +184,9 @@ func TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter(t *
 		}
 	})
 
-	serverAddress := ""
-	serverProbe := probePlugin{body: func(_ context.Context, pluginScope *plugin.Scope) error {
-		serverEndpoint, found := plugin.Require(pluginScope, serverServiceKey)
-		if !found {
-			return fmt.Errorf("webServer service is unavailable")
-		}
-		serverAddress = serverEndpoint.Address()
-		return nil
-	}}
-	if _, err := runtimeEngine.Load(context.Background(), serverProbe); err != nil {
-		t.Fatal(err)
+	serverAddress := assembledServer.BoundAddress()
+	if serverAddress == "" {
+		t.Fatal("Connection did not bind after successful Runtime start")
 	}
 	pageResponse, err := http.Get("http://" + serverAddress + "/")
 	if err != nil {

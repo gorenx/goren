@@ -170,7 +170,7 @@ func TestPinnedManifestMatchesGoSurface(t *testing.T) {
 		t.Fatalf("agent surface = %#v", agentSurface)
 	}
 	loopSurface := manifestDocument.Included.AgentLoop
-	if loopSurface.Service != agentloop.ServiceName ||
+	if loopSurface.Service != "agentLoop" ||
 		loopSurface.DefaultMaxParallelToolCalls != agentloop.DefaultMaxParallelToolCalls ||
 		!slices.Equal(loopSurface.SessionEvents, []string{
 			session.TurnStartEventName, session.TurnEndEventName,
@@ -183,7 +183,7 @@ func TestPinnedManifestMatchesGoSurface(t *testing.T) {
 		t.Fatalf("agent loop surface = %#v", loopSurface)
 	}
 	promptSurface := manifestDocument.Included.SystemPrompt
-	if promptSurface.Service != systemprompt.ServiceName ||
+	if promptSurface.Service != "systemPrompt" ||
 		!slices.Equal(promptSurface.Events, []string{systemprompt.AssembleEventName, systemprompt.ChangeEventName}) ||
 		!slices.Equal(promptSurface.BuiltinSections, []string{"harness:identity", systemprompt.PersonaSection}) ||
 		promptSurface.ToolOrderRest != systemprompt.ToolOrderRest {
@@ -364,22 +364,48 @@ func TestGoAgreesWithPinnedSourceVectors(t *testing.T) {
 			"sessionUpdateQueueValue": acceptedByName(t, fixtureData.Suites["sessionUpdateQueueValue"]),
 			"sessionCancelValue":      acceptedByName(t, fixtureData.Suites["sessionCancelValue"]),
 		}
-		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionListValue{Items: []apiproxy.SessionSummary{}}), vectors["sessionListValue"]["empty"])
+		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionListValue{
+			Items: []apiproxy.SessionSummary{},
+		}), vectors["sessionListValue"]["empty"])
 		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionSearchValue{
-			Items: []apiproxy.SessionSearchItem{{SessionID: "session-1", Snippet: "matching text"}}, HasMore: true,
+			Items: []apiproxy.SessionSearchItem{{
+				SessionID: "session-1",
+				Snippet:   "matching text",
+			}},
+			HasMore: true,
 		}), vectors["sessionSearchValue"]["match"])
-		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionCreateValue{SessionID: "session-1"}), vectors["sessionCreateValue"]["minimal"])
-		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionRenameValue{Title: "Named", Seq: 3}), vectors["sessionRenameValue"]["accepted"])
-		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionHistoryValue{Events: []apiproxy.HistoryEntry{}, HasMore: false}), vectors["sessionHistoryValue"]["empty"])
+		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionCreateValue{
+			SessionID: "session-1",
+		}), vectors["sessionCreateValue"]["minimal"])
+		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionRenameValue{
+			Title: "Named",
+			Seq:   3,
+		}), vectors["sessionRenameValue"]["accepted"])
+		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionHistoryValue{
+			Events:  []apiproxy.HistoryEntry{},
+			HasMore: false,
+		}), vectors["sessionHistoryValue"]["empty"])
 		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionModelsValue{
-			Current: apiproxy.ModelSelection{Provider: "p", Model: "m"}, Routable: true,
-			Groups: []apiproxy.ModelProviderGroup{}, Failures: []apiproxy.ModelCatalogFailure{},
+			Current: apiproxy.ModelSelection{
+				Provider: "p",
+				Model:    "m",
+			},
+			Routable: true,
+			Groups:   []apiproxy.ModelProviderGroup{},
+			Failures: []apiproxy.ModelCatalogFailure{},
 		}), vectors["sessionModelsValue"]["empty-directory"])
 		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionSelectModelValue{
-			Selected: apiproxy.ModelSelection{Provider: "p", Model: "m"},
+			Selected: apiproxy.ModelSelection{
+				Provider: "p",
+				Model:    "m",
+			},
 		}), vectors["sessionSelectModelValue"]["canonical"])
-		accepted := apiproxy.AcceptedValue{Accepted: true}
-		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionPromptValue{Accepted: true}), vectors["sessionPromptValue"]["accepted"])
+		accepted := apiproxy.AcceptedValue{
+			Accepted: true,
+		}
+		assertJSONEqual(t, mustMarshal(t, apiproxy.SessionPromptValue{
+			Accepted: true,
+		}), vectors["sessionPromptValue"]["accepted"])
 		assertJSONEqual(t, mustMarshal(t, accepted), vectors["sessionUpdateQueueValue"]["accepted"])
 		assertJSONEqual(t, mustMarshal(t, accepted), vectors["sessionCancelValue"]["accepted"])
 	})
@@ -432,15 +458,20 @@ func TestGoAgreesWithPinnedSourceVectors(t *testing.T) {
 			"workspaceArchiveSessionValue":      acceptedByName(t, fixtureData.Suites["workspaceArchiveSessionValue"]),
 		}
 		view := apiproxy.WorkspaceView{
-			WorkspaceID: "workspace-1", Path: "/workspace", Title: "Workspace",
-			SessionIDs: []apiproxy.SessionID{},
-			CreatedAt:  "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z",
+			WorkspaceID: "workspace-1",
+			Path:        "/workspace",
+			Title:       "Workspace",
+			SessionIDs:  []apiproxy.SessionID{},
+			CreatedAt:   "2026-01-01T00:00:00Z",
+			UpdatedAt:   "2026-01-01T00:00:00Z",
 		}
 		assertJSONEqual(t, mustMarshal(t, apiproxy.WorkspaceListValue{
-			Items: []apiproxy.WorkspaceView{}, ArchivedSessionIDs: []apiproxy.SessionID{},
+			Items:              []apiproxy.WorkspaceView{},
+			ArchivedSessionIDs: []apiproxy.SessionID{},
 		}), vectors["workspaceListValue"]["empty"])
 		assertJSONEqual(t, mustMarshal(t, apiproxy.WorkspaceCreateValue{
-			Workspace: view, Created: true,
+			Workspace: view,
+			Created:   true,
 		}), vectors["workspaceCreateValue"]["created"])
 		assertJSONEqual(t, mustMarshal(t, apiproxy.WorkspaceRenameValue{
 			Workspace: view,
@@ -555,43 +586,108 @@ func muxFrameValues() map[string]apiproxy.MuxFrame {
 		"session/event": apiproxy.SessionEventFrame{
 			SessionID: "session-1",
 			Event: apiproxy.SessionEvent{
-				Type: "turn/start", Seq: 0, Time: 1, Data: json.RawMessage(`{"turn":1}`),
+				Type: "turn/start",
+				Seq:  0,
+				Time: 1,
+				Data: json.RawMessage(`{"turn":1}`),
 			},
 		},
-		"session/subscribed": apiproxy.SessionSubscribedFrame{SessionID: "session-1", LastSeq: -1},
-		"approval/requested": apiproxy.ApprovalRequestedFrame{SessionID: "session-1", ApprovalID: "approval-1", ToolName: "bash"},
-		"approval/resolved":  apiproxy.ApprovalResolvedFrame{SessionID: "session-1", ApprovalID: "approval-1", Outcome: apiproxy.ApprovalAllowedOnce},
-		"question/requested": apiproxy.QuestionRequestedFrame{SessionID: "session-1", Questions: []apiproxy.AskUserQuestionItem{{ID: "question-1", Question: "Continue?"}}},
-		"question/resolved":  apiproxy.QuestionResolvedFrame{SessionID: "session-1", QuestionRPCID: "question-rpc-1", Outcome: apiproxy.QuestionAnswered},
-		"session/queue":      apiproxy.SessionQueueFrame{SessionID: "session-1", Items: []apiproxy.QueuedInboxItem{}},
-		"session/jobs":       apiproxy.SessionJobsFrame{SessionID: "session-1", Jobs: []apiproxy.JobView{}},
-		"session/projection": apiproxy.SessionProjectionFrame{SessionID: "session-1", Key: "todos", Value: json.RawMessage(`null`), Seq: 0},
-		"stream/error":       streamErrorFrame(),
+		"session/subscribed": apiproxy.SessionSubscribedFrame{
+			SessionID: "session-1",
+			LastSeq:   -1,
+		},
+		"approval/requested": apiproxy.ApprovalRequestedFrame{
+			SessionID:  "session-1",
+			ApprovalID: "approval-1",
+			ToolName:   "bash",
+		},
+		"approval/resolved": apiproxy.ApprovalResolvedFrame{
+			SessionID:  "session-1",
+			ApprovalID: "approval-1",
+			Outcome:    apiproxy.ApprovalAllowedOnce,
+		},
+		"question/requested": apiproxy.QuestionRequestedFrame{
+			SessionID: "session-1",
+			Questions: []apiproxy.AskUserQuestionItem{{
+				ID:       "question-1",
+				Question: "Continue?",
+			}},
+		},
+		"question/resolved": apiproxy.QuestionResolvedFrame{
+			SessionID:     "session-1",
+			QuestionRPCID: "question-rpc-1",
+			Outcome:       apiproxy.QuestionAnswered,
+		},
+		"session/queue": apiproxy.SessionQueueFrame{
+			SessionID: "session-1",
+			Items:     []apiproxy.QueuedInboxItem{},
+		},
+		"session/jobs": apiproxy.SessionJobsFrame{
+			SessionID: "session-1",
+			Jobs:      []apiproxy.JobView{},
+		},
+		"session/projection": apiproxy.SessionProjectionFrame{
+			SessionID: "session-1",
+			Key:       "todos",
+			Value:     json.RawMessage(`null`),
+			Seq:       0,
+		},
+		"stream/error": streamErrorFrame(),
 	}
 }
 
 func hostFrameValues() map[string]apiproxy.HostFrame {
 	return map[string]apiproxy.HostFrame{
-		"host/session-added":   apiproxy.HostSessionAddedFrame{SessionID: "session-1", Blank: true},
-		"host/session-removed": apiproxy.HostSessionRemovedFrame{SessionID: "session-1"},
-		"host/session-status":  apiproxy.HostSessionStatusFrame{SessionID: "session-1", Running: true},
-		"host/agent-error":     apiproxy.HostAgentErrorFrame{SessionID: "session-1", Message: "boom"},
-		"host/workspace-changed": apiproxy.HostWorkspaceChangedFrame{Workspace: apiproxy.WorkspaceView{
-			WorkspaceID: "workspace-1", Path: "/workspace", Title: "Workspace", SessionIDs: []apiproxy.SessionID{},
-			CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z",
-		}},
-		"host/workspace-removed":         apiproxy.HostWorkspaceRemovedFrame{WorkspaceID: "workspace-1"},
-		"host/workspace-order-changed":   apiproxy.HostWorkspaceOrderChangedFrame{WorkspaceIDs: []apiproxy.WorkspaceID{}},
-		"host/archived-sessions-changed": apiproxy.HostArchivedSessionsChangedFrame{ArchivedSessionIDs: []apiproxy.SessionID{}},
-		"host/remote-event":              apiproxy.HostRemoteEventFrame{Event: "commands/change", Args: []json.RawMessage{}},
-		"stream/error":                   streamErrorFrame(),
+		"host/session-added": apiproxy.HostSessionAddedFrame{
+			SessionID: "session-1",
+			Blank:     true,
+		},
+		"host/session-removed": apiproxy.HostSessionRemovedFrame{
+			SessionID: "session-1",
+		},
+		"host/session-status": apiproxy.HostSessionStatusFrame{
+			SessionID: "session-1",
+			Running:   true,
+		},
+		"host/agent-error": apiproxy.HostAgentErrorFrame{
+			SessionID: "session-1",
+			Message:   "boom",
+		},
+		"host/workspace-changed": apiproxy.HostWorkspaceChangedFrame{
+			Workspace: apiproxy.WorkspaceView{
+				WorkspaceID: "workspace-1",
+				Path:        "/workspace",
+				Title:       "Workspace",
+				SessionIDs:  []apiproxy.SessionID{},
+				CreatedAt:   "2026-01-01T00:00:00Z",
+				UpdatedAt:   "2026-01-01T00:00:00Z",
+			},
+		},
+		"host/workspace-removed": apiproxy.HostWorkspaceRemovedFrame{
+			WorkspaceID: "workspace-1",
+		},
+		"host/workspace-order-changed": apiproxy.HostWorkspaceOrderChangedFrame{
+			WorkspaceIDs: []apiproxy.WorkspaceID{},
+		},
+		"host/archived-sessions-changed": apiproxy.HostArchivedSessionsChangedFrame{
+			ArchivedSessionIDs: []apiproxy.SessionID{},
+		},
+		"host/remote-event": apiproxy.HostRemoteEventFrame{
+			Event: "commands/change",
+			Args:  []json.RawMessage{},
+		},
+		"stream/error": streamErrorFrame(),
 	}
 }
 
 func streamErrorFrame() apiproxy.StreamErrorFrame {
-	return apiproxy.StreamErrorFrame{Error: connection.RPCError{
-		Code: connection.ErrorInternal, Message: "boom", Details: json.RawMessage(`{}`),
-	}}
+	return apiproxy.StreamErrorFrame{
+		Error: connection.RPCError{
+			Code:    connection.ErrorInternal,
+			Message: "boom",
+			Details: json.RawMessage(`{}`),
+		},
+	}
 }
 
 func encodedMuxFrames(t *testing.T) []string {

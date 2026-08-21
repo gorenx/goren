@@ -31,7 +31,7 @@ func NewRuntime(reporter ObserverFailureReporter) *Runtime {
 	}
 }
 
-// Manifest declares the canonical LLM Service contribution.
+// Manifest declares the canonical LLM Service binding.
 func (*Runtime) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: PluginName,

@@ -65,7 +65,7 @@ type DirectoryRegistrationHandle interface {
 	Release(context.Context) error
 }
 
-// ModelDiscoveryRegistration owns one live model-discovery contribution.
+// ModelDiscoveryRegistration owns one live model-discovery binding.
 type ModelDiscoveryRegistration interface {
 	Release(context.Context) error
 }

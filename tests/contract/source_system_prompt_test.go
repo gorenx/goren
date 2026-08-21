@@ -115,40 +115,40 @@ func TestPinnedSourceSystemPromptMatchesGo(t *testing.T) {
 		validated,
 		systemprompt.RegistryOptions{},
 	)
-	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	runtimeEngine := newContractRuntime(t)
 	handles, err := runtimeEngine.Start(requestContext, rootPrompts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := rootPrompts.AddSection(requestContext, systemprompt.PromptSection{
+	if _, err := rootPrompts.AddSection(requestContext, systemprompt.PromptSection{
 		Name:  "rules",
 		Order: 10,
 		Text:  systemprompt.StaticText("Be precise."),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := rootPrompts.AddSection(requestContext, systemprompt.PromptSection{
+	if _, err := rootPrompts.AddSection(requestContext, systemprompt.PromptSection{
 		Name:  "cwd",
 		Order: 20,
 		Text:  systemprompt.StaticText("cwd: /tmp"),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := rootPrompts.AddContext(requestContext, systemprompt.PromptContext{
+	if _, err := rootPrompts.AddContext(requestContext, systemprompt.PromptContext{
 		Name:  "later",
 		Order: 20,
 		Text:  systemprompt.StaticText("context 2"),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := rootPrompts.AddContext(requestContext, systemprompt.PromptContext{
+	if _, err := rootPrompts.AddContext(requestContext, systemprompt.PromptContext{
 		Name:  "earlier",
 		Order: 10,
 		Text:  systemprompt.StaticText("context {{mode}}"),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := rootPrompts.AddVariable(
+	if _, err := rootPrompts.AddVariable(
 		requestContext,
 		"mode",
 		systemprompt.VariableProviderFunc(func(
@@ -163,7 +163,7 @@ func TestPinnedSourceSystemPromptMatchesGo(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := rootPrompts.AddToolProvider(
+	if _, err := rootPrompts.AddToolProvider(
 		requestContext,
 		"tools",
 		systemprompt.ToolProviderFunc(func(
@@ -215,21 +215,21 @@ func TestPinnedSourceSystemPromptMatchesGo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := overlay.AddSection(requestContext, systemprompt.PromptSection{
+	if _, err := overlay.AddSection(requestContext, systemprompt.PromptSection{
 		Name:  systemprompt.PersonaSection,
 		Order: systemprompt.PersonaOrder,
 		Text:  systemprompt.StaticText("Scoped {{mode}}."),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := overlay.AddSection(requestContext, systemprompt.PromptSection{
+	if _, err := overlay.AddSection(requestContext, systemprompt.PromptSection{
 		Name:  "child",
 		Order: 15,
 		Text:  systemprompt.StaticText("Child section."),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := overlay.AddVariable(
+	if _, err := overlay.AddVariable(
 		requestContext,
 		"mode",
 		systemprompt.VariableProviderFunc(func(
@@ -244,7 +244,7 @@ func TestPinnedSourceSystemPromptMatchesGo(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := overlay.AddToolProvider(
+	if _, err := overlay.AddToolProvider(
 		requestContext,
 		"scoped-tools",
 		systemprompt.ToolProviderFunc(func(
@@ -374,11 +374,11 @@ func contractCompletePrompt(testingContext *testing.T) promptObservation {
 			},
 		},
 	)
-	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	runtimeEngine := newContractRuntime(testingContext)
 	if _, err := runtimeEngine.Start(context.Background(), prompts); err != nil {
 		testingContext.Fatal(err)
 	}
-	if err := prompts.AddSection(
+	if _, err := prompts.AddSection(
 		context.Background(),
 		systemprompt.PromptSection{
 			Name:     "complete",
@@ -414,11 +414,11 @@ func contractSuppressedPrompt(
 			},
 		},
 	)
-	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	runtimeEngine := newContractRuntime(testingContext)
 	if _, err := runtimeEngine.Start(context.Background(), prompts); err != nil {
 		testingContext.Fatal(err)
 	}
-	if err := prompts.AddContext(
+	if _, err := prompts.AddContext(
 		context.Background(),
 		systemprompt.PromptContext{
 			Name:  "policy",

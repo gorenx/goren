@@ -8,7 +8,6 @@ import (
 	"sync"
 
 	"github.com/gorenx/goren/credentials"
-	"github.com/gorenx/goren/internal/jsonvalue"
 	"github.com/gorenx/goren/internal/llm/deepseek/anonymoususerid"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
@@ -50,14 +49,14 @@ func (builder *Factory) Create(
 	createContext context.Context,
 	rawConfig json.RawMessage,
 ) (plugin.Plugin, error) {
-	if err := createContext.Err(); err != nil {
+	if err := pluginfactory.ValidateCreateContext(createContext); err != nil {
 		return nil, err
 	}
-	if err := jsonvalue.Validate(rawConfig); err != nil {
-		return nil, fmt.Errorf("llm-deepseek: invalid configuration: %w", err)
-	}
-	if !jsonvalue.IsObject(rawConfig) {
-		return nil, errors.New("llm-deepseek: configuration must be a JSON object")
+	if err := pluginfactory.ValidateObjectConfig(
+		rawConfig,
+		"llm-deepseek",
+	); err != nil {
+		return nil, err
 	}
 	var settings Config
 	if err := json.Unmarshal(rawConfig, &settings); err != nil {
@@ -74,7 +73,7 @@ func (builder *Factory) Create(
 }
 
 // Plugin owns the DeepSeek Adapter and its LLM directory and route
-// contributions.
+// registrations.
 type Plugin struct {
 	plugin.Base
 	connection      ConnectionOptions
@@ -99,7 +98,7 @@ func (*Plugin) Manifest() plugin.Manifest {
 	}
 }
 
-// Apply constructs the Adapter and publishes its owned LLM contributions.
+// Apply constructs the Adapter and installs its owned LLM registrations.
 func (instance *Plugin) Apply(requestContext context.Context) error {
 	models, err := plugin.Require[llm.LlmRuntime](instance)
 	if err != nil {
@@ -149,7 +148,7 @@ func (instance *Plugin) Apply(requestContext context.Context) error {
 	return nil
 }
 
-// Dispose withdraws Adapter and directory contributions in reverse order.
+// Dispose unregisters Adapter routes and directory entries in reverse order.
 func (instance *Plugin) Dispose(closeContext context.Context) error {
 	var disposeErr error
 	if instance.adapterRegistration != nil {

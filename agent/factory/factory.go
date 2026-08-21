@@ -1,34 +1,34 @@
-// Package factory owns strict configuration and construction of the
-// provider-neutral LLM Runtime Plugin.
+// Package factory owns strict configuration and construction of the Agent
+// Registry Plugin.
 package factory
 
 import (
 	"context"
 	"encoding/json"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/plugin"
 	pluginfactory "github.com/gorenx/goren/plugin/factory"
 )
 
-// Factory constructs the canonical LLM Runtime Plugin.
+// Factory constructs the canonical Agent Registry Plugin.
 type Factory struct {
-	reporter llm.ObserverFailureReporter
+	runtimeOptions agent.RegistryOptions
 }
 
-// New constructs a statically linked LLM Runtime Factory.
-func New(reporter llm.ObserverFailureReporter) *Factory {
+// New constructs a statically linked Factory.
+func New(runtimeOptions agent.RegistryOptions) *Factory {
 	return &Factory{
-		reporter: reporter,
+		runtimeOptions: runtimeOptions,
 	}
 }
 
 // Name returns the canonical Harness Plugin name.
 func (*Factory) Name() string {
-	return llm.PluginName
+	return agent.PluginName
 }
 
-// Create strictly decodes configuration and constructs the LLM Runtime.
+// Create strictly decodes configuration and constructs the Agent Registry.
 func (builder *Factory) Create(
 	createContext context.Context,
 	rawConfig json.RawMessage,
@@ -38,11 +38,11 @@ func (builder *Factory) Create(
 	}
 	if err := pluginfactory.ValidateEmptyConfig(
 		rawConfig,
-		"llm factory",
+		"agent factory",
 	); err != nil {
 		return nil, err
 	}
-	return llm.NewRuntime(builder.reporter), nil
+	return agent.NewRegistry(builder.runtimeOptions), nil
 }
 
 var _ pluginfactory.Factory = (*Factory)(nil)

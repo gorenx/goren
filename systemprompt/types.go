@@ -56,7 +56,7 @@ type AssembleContext struct {
 	Session *session.Session
 }
 
-// TextProvider resolves one section or runtime-context contribution for each
+// TextProvider resolves one section or runtime-context entry for each
 // assembly request.
 type TextProvider interface {
 	ResolveText(context.Context, AssembleContext) (string, error)
@@ -81,7 +81,7 @@ func (operation TextFunc) ResolveText(
 	return operation(requestContext, assemblyContext)
 }
 
-// PromptSection is one named, ordered system-prompt contribution.
+// PromptSection is one named, ordered system-prompt entry.
 type PromptSection struct {
 	Name     string
 	Order    float64
@@ -89,7 +89,7 @@ type PromptSection struct {
 	Complete bool
 }
 
-// PromptContext is one named, ordered dynamic runtime-context contribution.
+// PromptContext is one named, ordered dynamic runtime-context entry.
 type PromptContext struct {
 	Name  string
 	Order float64
@@ -102,7 +102,7 @@ type AssembledSection struct {
 	Text string `json:"text"`
 }
 
-// AssembledContext is one runtime-context contribution after resolution.
+// AssembledContext is one runtime-context entry after resolution.
 type AssembledContext struct {
 	Name string `json:"name"`
 	Text string `json:"text"`

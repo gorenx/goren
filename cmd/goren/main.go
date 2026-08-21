@@ -37,9 +37,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	registry, err := assembly.NewCatalog(assembly.Environment{WorkingDirectory: workingDirectory})
+	failureSink, err := assembly.NewDiagnostics(func(problem error) {
+		fmt.Fprintln(os.Stderr, "contained runtime failure:", problem)
+	})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "create factory catalog:", err)
+		fmt.Fprintln(os.Stderr, "create diagnostics:", err)
 		os.Exit(1)
 	}
 	configDirectory, err := os.UserConfigDir()
@@ -52,8 +54,19 @@ func main() {
 		fmt.Fprintln(os.Stderr, "resolve data storage paths:", err)
 		os.Exit(1)
 	}
-	declarations, err := assembly.DefaultSpecs(
-		settings.address, settings.version, paths.sessionDatabase, paths.workspaceDatabase,
+	directory, err := assembly.NewCatalog(assembly.Environment{
+		WorkingDirectory: workingDirectory,
+		Diagnostics:      failureSink,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "create Factory Catalog:", err)
+		os.Exit(1)
+	}
+	specs, err := assembly.DefaultSpecs(
+		settings.address,
+		settings.version,
+		paths.sessionDatabase,
+		paths.workspaceDatabase,
 	)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "create server composition:", err)
@@ -62,20 +75,37 @@ func main() {
 
 	lifecycle, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	engine := plugin.NewRuntime()
-	if _, err := assembly.Load(lifecycle, engine, registry, declarations); err != nil {
+	assembledServer, err := assembly.BuildServer(lifecycle, directory, specs)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "build server Plugin tree:", err)
+		os.Exit(1)
+	}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{
+		EventFailures: failureSink,
+	})
+	if _, err = runtimeEngine.Start(lifecycle, assembledServer); err != nil {
 		fmt.Fprintln(os.Stderr, "start server composition:", err)
 		os.Exit(1)
 	}
+	boundAddress := assembledServer.BoundAddress()
 	credentialPath := filepath.Join(filepath.Dir(paths.sessionDatabase), ".credentials.json")
-	fmt.Fprintf(os.Stdout, "Goren Agent started\n  Web: http://%s\n  Workspace: %s\n  Data: %s\n  Session DB: %s\n  Workspace DB: %s\n  Model: %s / %s\n  Credentials: %s (environment %s takes precedence)\n",
-		settings.address, workingDirectory, paths.dataDirectory, paths.sessionDatabase, paths.workspaceDatabase,
-		deepseek.ProviderRoute, deepseek.DefaultModelID, credentialPath, deepseek.DefaultAPIKeyEnv,
+	fmt.Fprintf(
+		os.Stdout,
+		"Goren Agent started\n  Web: http://%s\n  Workspace: %s\n  Data: %s\n  Session DB: %s\n  Workspace DB: %s\n  Model: %s / %s\n  Credentials: %s (environment %s takes precedence)\n",
+		boundAddress,
+		workingDirectory,
+		paths.dataDirectory,
+		paths.sessionDatabase,
+		paths.workspaceDatabase,
+		deepseek.ProviderRoute,
+		deepseek.DefaultModelID,
+		credentialPath,
+		deepseek.DefaultAPIKeyEnv,
 	)
 	<-lifecycle.Done()
 	closeContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := engine.Shutdown(closeContext); err != nil {
+	if err := runtimeEngine.Shutdown(closeContext); err != nil {
 		fmt.Fprintln(os.Stderr, "stop server composition:", err)
 		os.Exit(1)
 	}
@@ -89,8 +119,10 @@ func parseConfig() commandConfig {
 	workspaceDatabase := flag.String("workspace-db", "", "SQLite Workspace database path (default: <data-dir>/workspaces.sqlite)")
 	flag.Parse()
 	return commandConfig{
-		address: *address, version: *version,
-		dataDirectory: *dataDirectory, sessionDatabase: *sessionDatabase,
+		address:           *address,
+		version:           *version,
+		dataDirectory:     *dataDirectory,
+		sessionDatabase:   *sessionDatabase,
 		workspaceDatabase: *workspaceDatabase,
 	}
 }
@@ -113,7 +145,8 @@ func (settings commandConfig) resolveStorage(defaultDataDirectory string) (stora
 		return storagePaths{}, fmt.Errorf("Workspace database: %w", err)
 	}
 	return storagePaths{
-		dataDirectory: filepath.Clean(dataDirectory), sessionDatabase: sessionDatabase,
+		dataDirectory:     filepath.Clean(dataDirectory),
+		sessionDatabase:   sessionDatabase,
 		workspaceDatabase: workspaceDatabase,
 	}, nil
 }

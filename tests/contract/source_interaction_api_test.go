@@ -12,157 +12,127 @@ import (
 	"time"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/agentdefaultmodel"
 	"github.com/gorenx/goren/apiproxy"
-	sessionapi "github.com/gorenx/goren/apiproxy/session"
 	"github.com/gorenx/goren/approval"
 	connectionhost "github.com/gorenx/goren/internal/connection"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
-	sesspersist "github.com/gorenx/goren/session/persistence"
-	sesssqlite "github.com/gorenx/goren/session/persistence/sqlite"
 	sessionprojection "github.com/gorenx/goren/session/projection"
-	sessiontitle "github.com/gorenx/goren/session/title"
 	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/tests/contract/fixture"
 	"github.com/gorenx/goren/userquestions"
 )
 
 type interactionAPIContractState struct {
-	pluginScope     *plugin.Scope
-	agents          agent.Registry
-	sessions        session.LiveStore
-	approvalService approval.Approval
-	questionService userquestions.UserQuestions
+	agents          *agent.RegistryPlugin
+	agentsHandle    plugin.Handle
+	sessions        *session.MemoryStore
+	approvalService *approval.Service
+	questionService *userquestions.QuestionService
 	methods         *apiproxy.Catalog
-	sessionGateway  *sessionapi.Gateway
 	downlinks       *apiproxy.LiveFrameSource
 }
 
 type interactionAPIContractProvider struct {
-	state *interactionAPIContractState
+	plugin.Base
+	state     *interactionAPIContractState
+	owner     *apiproxy.InteractionGateway
+	questions *userquestions.ProviderHandle
 }
 
-func (*interactionAPIContractProvider) Manifest() plugin.Manifest {
-	return plugin.Manifest{Name: "interaction-api-contract"}
+func (provider *interactionAPIContractProvider) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "interaction-api-contract",
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[session.LiveStore](),
+			plugin.ServiceOf[sessionprojection.Registry](),
+			plugin.ServiceOf[userquestions.UserQuestions](),
+		},
+		Waterfalls: []plugin.WaterfallMiddlewareBinding{
+			plugin.WaterfallOf[
+				approval.DecisionRequest,
+				approval.Decision,
+			](provider),
+		},
+	}
 }
 
 func (extension *interactionAPIContractProvider) Apply(
 	requestContext context.Context,
-	providerScope *plugin.Scope,
 ) error {
-	agentRegistry, err := agent.NewRegistry(providerScope, agent.RegistryOptions{})
+	sessionStore, err := plugin.Require[session.LiveStore](extension)
 	if err != nil {
 		return err
 	}
-	sessionStore, err := session.NewMemoryStore(providerScope, session.MemoryStoreOptions{})
+	projectionRegistry, err := plugin.Require[sessionprojection.Registry](extension)
 	if err != nil {
 		return err
 	}
-	storage, err := sesssqlite.Open(requestContext, sesssqlite.Config{
-		Path: ":memory:", JournalMode: sesssqlite.JournalWAL,
-	})
-	if err != nil {
-		return err
-	}
-	durability, err := sesspersist.NewSessionLogStore(
-		requestContext, providerScope, sessionStore, storage,
-		sesspersist.SessionLogStoreOptions{WriteBatchMaxDelay: time.Hour},
-	)
-	if err != nil {
-		_ = storage.Close(requestContext)
-		return err
-	}
-	projectionRegistry, err := sessionprojection.NewDriveRegistry(providerScope)
-	if err != nil {
-		return err
-	}
-	titleService, err := sessiontitle.NewLogService(
-		providerScope, sessionStore, projectionRegistry,
-		sessiontitle.Config{FallbackMaxWords: 5, FallbackMaxBytes: 40, MaxTitleBytes: 80},
-		sessiontitle.Options{},
-	)
-	if err != nil {
-		return err
-	}
-	modelRuntime, err := llm.NewRuntime(providerScope, nil)
-	if err != nil {
-		return err
-	}
-	promptSettings, err := systemprompt.ValidateConfig(systemprompt.Config{})
-	if err != nil {
-		return err
-	}
-	promptService, err := systemprompt.New(requestContext, providerScope, promptSettings)
-	if err != nil {
-		return err
-	}
-	approvalSettings, err := approval.ValidateConfig(approval.Config{})
-	if err != nil {
-		return err
-	}
-	approvalService, err := approval.New(
-		requestContext, providerScope, promptService, approvalSettings, approval.RuntimeOptions{},
-	)
-	if err != nil {
-		return err
-	}
-	questionService := userquestions.New(userquestions.AgentRegistryResolverFunc(func() (agent.Registry, bool) {
-		return agentRegistry, true
-	}))
-	defaultSelection, err := agentdefaultmodel.NewStatic(agent.ModelSelection{
-		Provider: "mock", Model: "mock-model",
-	})
-	if err != nil {
-		return err
-	}
-	sessionGateway, err := sessionapi.NewGateway(
-		requestContext,
-		providerScope,
-		sessionapi.Dependencies{
-			Agents: agentRegistry, Sessions: sessionStore, Persistence: durability,
-			LLM: modelRuntime, Defaults: defaultSelection,
-			Projections: projectionRegistry, Titles: titleService,
-			Workspaces: fixture.EmptyWorkspaces{},
-			Directories: sessionapi.DirectoryProvisionerFunc(func(string) error {
-				return nil
-			}),
-		},
-		sessionapi.Options{WorkingDirectory: "/contract-workspace"},
-	)
+	questionService, err := plugin.Require[userquestions.UserQuestions](extension)
 	if err != nil {
 		return err
 	}
 	downlinks, err := apiproxy.NewLiveFrameSource(
-		requestContext,
-		providerScope,
-		apiproxy.LiveFrameDependencies{Sessions: sessionStore, Projections: projectionRegistry},
+		apiproxy.LiveFrameDependencies{
+			Sessions:    sessionStore,
+			Projections: projectionRegistry,
+		},
 		apiproxy.LiveFrameOptions{},
 	)
 	if err != nil {
 		return err
 	}
 	methods := apiproxy.NewCatalog()
-	if _, err := apiproxy.NewInteractionGateway(
-		requestContext,
-		providerScope,
+	owner, err := apiproxy.NewInteractionGateway(
 		apiproxy.InteractionGatewayDependencies{
-			Methods: methods, Frames: downlinks.InteractionBroker(), UserQuestions: questionService,
+			Methods: methods,
+			Frames:  downlinks.InteractionBroker(),
 		},
 		apiproxy.InteractionGatewayOptions{},
-	); err != nil {
+	)
+	if err != nil {
 		return err
 	}
-	extension.state.pluginScope = providerScope
-	extension.state.agents = agentRegistry
-	extension.state.sessions = sessionStore
-	extension.state.approvalService = approvalService
-	extension.state.questionService = questionService
+	providerHandle, err := questionService.RegisterProvider(owner)
+	if err != nil {
+		downlinks.Close()
+		return err
+	}
+	extension.owner = owner
+	extension.questions = providerHandle
 	extension.state.methods = methods
-	extension.state.sessionGateway = sessionGateway
 	extension.state.downlinks = downlinks
-	return nil
+	return requestContext.Err()
+}
+
+func (extension *interactionAPIContractProvider) Dispose(
+	closeContext context.Context,
+) error {
+	if extension.questions != nil {
+		extension.questions.Unregister()
+	}
+	var closeErr error
+	if extension.owner != nil {
+		closeErr = extension.owner.Close(closeContext)
+	}
+	if extension.state.downlinks != nil {
+		extension.state.downlinks.Close()
+	}
+	extension.owner = nil
+	extension.questions = nil
+	return closeErr
+}
+
+func (extension *interactionAPIContractProvider) Intercept(
+	requestContext context.Context,
+	input approval.DecisionRequest,
+	downstream plugin.WaterfallAction[
+		approval.DecisionRequest,
+		approval.Decision,
+	],
+) (approval.Decision, error) {
+	return extension.owner.ResolveApproval(requestContext, input, downstream)
 }
 
 type interactionClientObservation struct {
@@ -190,38 +160,82 @@ type connectionReceipt struct {
 func TestPinnedSourceWebApiClientAnswersGoInteractions(t *testing.T) {
 	repositoryRoot, sourceRoot := contractPaths(t)
 	contractState := &interactionAPIContractState{}
-	engine := plugin.NewRuntime()
-	if _, err := engine.Load(context.Background(), &interactionAPIContractProvider{state: contractState}); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := engine.Shutdown(context.Background()); err != nil {
-			t.Error(err)
-		}
-	})
-
-	agentScope, _, err := contractState.pluginScope.Child("interaction-api-agent")
+	promptSettings, err := systemprompt.ValidateConfig(systemprompt.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	conversationID := session.SessionID("interaction-api-session")
-	workingDirectory := "/contract-workspace"
-	conversation, err := contractState.sessions.Create(
+	approvalSettings, err := approval.ValidateConfig(approval.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentRegistry := agent.NewRegistry(agent.RegistryOptions{})
+	sessionStore, err := session.NewMemoryStore(session.MemoryStoreOptions{
+		PostCommitFailures: contractPostCommitReporter{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	questionService := userquestions.New()
+	contractState.agents = agentRegistry
+	contractState.sessions = sessionStore
+	contractState.approvalService = approval.New(approvalSettings)
+	contractState.questionService = questionService
+	runtimeEngine := newContractRuntime(t)
+	handles, err := runtimeEngine.Start(
 		context.Background(),
-		agentScope,
-		&conversationID,
-		session.CreateOptions{Metadata: session.Metadata{CWD: &workingDirectory}},
+		systemprompt.New(promptSettings, systemprompt.RegistryOptions{}),
+		contractState.approvalService,
+		agentRegistry,
+		sessionStore,
+		sessionprojection.NewDriveRegistry(),
+		questionService,
+		&interactionAPIContractProvider{
+			state: contractState,
+		},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	subject := &fixture.Agent{
-		Identifier: conversationID, Conversation: conversation, AgentScope: agentScope,
-	}
-	if _, err := contractState.agents.Register(context.Background(), agentScope, subject, nil); err != nil {
+	contractState.agentsHandle = handles[2]
+	t.Cleanup(func() {
+		if err := runtimeEngine.Shutdown(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+
+	conversationID := session.SessionID("interaction-api-session")
+	workingDirectory := "/contract-workspace"
+	sessionHandle, err := contractState.sessions.Create(
+		context.Background(),
+		&conversationID,
+		session.CreateOptions{
+			Metadata: session.Metadata{
+				CWD: &workingDirectory,
+			},
+		},
+	)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := session.Append(conversation, session.TurnStarted, session.TurnStart{Turn: 1}); err != nil {
+	conversation := sessionHandle.Session()
+	subject := &fixture.Agent{
+		Identifier:   conversationID,
+		Conversation: conversation,
+		Registry:     agentRegistry,
+	}
+	if _, err = runtimeEngine.MountScopedChild(
+		context.Background(),
+		contractState.agentsHandle,
+		subject,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err = contractState.agents.Enter(subject, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Append(conversation, session.TurnStarted, session.TurnStart{
+		Turn: 1,
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -230,7 +244,10 @@ func TestPinnedSourceWebApiClientAnswersGoInteractions(t *testing.T) {
 	callIdentifier := llm.CallID("interaction-call")
 	go func() {
 		decision, requestErr := contractState.approvalService.Request(context.Background(), approval.Request{
-			Subject: subject, ToolName: "bash", CallID: &callIdentifier, Reason: stringPointer("needs permission"),
+			Subject:  subject,
+			ToolName: "bash",
+			CallID:   &callIdentifier,
+			Reason:   stringPointer("needs permission"),
 		})
 		approvalChannel <- decision
 		approvalErrorChannel <- requestErr
@@ -249,12 +266,19 @@ func TestPinnedSourceWebApiClientAnswersGoInteractions(t *testing.T) {
 	questionChannel := make(chan userquestions.Answer, 1)
 	questionErrorChannel := make(chan error, 1)
 	multiSelect := true
-	options := []userquestions.Option{{Label: "Code"}, {Label: "Docs"}}
+	options := []userquestions.Option{{
+		Label: "Code",
+	}, {
+		Label: "Docs",
+	}}
 	go func() {
 		answerValue, askErr := contractState.questionService.Ask(context.Background(), userquestions.Request{
 			Subject: subject,
 			Questions: []userquestions.Question{{
-				ID: "targets", Question: "Choose targets", Options: &options, MultiSelect: &multiSelect,
+				ID:          "targets",
+				Question:    "Choose targets",
+				Options:     &options,
+				MultiSelect: &multiSelect,
 			}},
 		})
 		questionChannel <- answerValue
@@ -317,9 +341,13 @@ func TestPinnedSourceWebApiClientAnswersGoInteractions(t *testing.T) {
 	}
 	answerValue := <-questionChannel
 	customText := "release notes"
-	wantAnswer := userquestions.Answer{Answers: []userquestions.AnswerItem{{
-		ID: "targets", Selected: []string{"Code", "Docs"}, Custom: &customText,
-	}}}
+	wantAnswer := userquestions.Answer{
+		Answers: []userquestions.AnswerItem{{
+			ID:       "targets",
+			Selected: []string{"Code", "Docs"},
+			Custom:   &customText,
+		}},
+	}
 	if !reflect.DeepEqual(answerValue, wantAnswer) {
 		t.Fatalf("Go question answer = %#v, want %#v", answerValue, wantAnswer)
 	}

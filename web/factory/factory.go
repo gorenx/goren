@@ -1,5 +1,5 @@
-// Package factory owns strict configuration and construction of the User
-// Questions Plugin.
+// Package factory owns strict configuration and construction of the embedded
+// Web frontend Plugin.
 package factory
 
 import (
@@ -8,10 +8,10 @@ import (
 
 	"github.com/gorenx/goren/plugin"
 	pluginfactory "github.com/gorenx/goren/plugin/factory"
-	"github.com/gorenx/goren/userquestions"
+	"github.com/gorenx/goren/web"
 )
 
-// Factory constructs the canonical User Questions Plugin.
+// Factory constructs the embedded frontend Plugin.
 type Factory struct{}
 
 // New constructs a statically linked Factory.
@@ -19,12 +19,12 @@ func New() *Factory {
 	return &Factory{}
 }
 
-// Name returns the canonical Harness Plugin name.
+// Name returns the canonical frontend Plugin name.
 func (*Factory) Name() string {
-	return userquestions.PluginName
+	return web.PluginName
 }
 
-// Create strictly accepts an empty object before constructing the Plugin.
+// Create strictly decodes configuration and constructs the frontend Plugin.
 func (*Factory) Create(
 	createContext context.Context,
 	rawConfig json.RawMessage,
@@ -34,11 +34,11 @@ func (*Factory) Create(
 	}
 	if err := pluginfactory.ValidateEmptyConfig(
 		rawConfig,
-		"userquestions factory",
+		"web factory",
 	); err != nil {
 		return nil, err
 	}
-	return userquestions.New(), nil
+	return web.New(), nil
 }
 
 var _ pluginfactory.Factory = (*Factory)(nil)

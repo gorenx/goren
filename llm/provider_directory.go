@@ -8,7 +8,7 @@ import (
 )
 
 // directoryRegistrationState owns one replaceable configurable-provider
-// contribution independently of executable adapter routes.
+// entry independently of executable adapter routes.
 type directoryRegistrationState struct {
 	owner    *Runtime
 	held     []ConfigurableProvider

@@ -77,23 +77,23 @@ func (requester *modelRequester) executeStep(
 		}
 		assembler := llm.NewBlockAssembler()
 		chunkSequences := make([]int64, 0)
-		var stream llm.ChunkStream
+		var chunkStream llm.ChunkStream
 		if attempt.prepared != nil {
-			stream, err = attempt.prepared.Stream(requestContext, attempt.options)
+			chunkStream, err = attempt.prepared.Stream(requestContext, attempt.options)
 		} else {
-			stream, err = requester.models.Stream(requestContext, attempt.options)
+			chunkStream, err = requester.models.Stream(requestContext, attempt.options)
 		}
 		if err != nil {
 			return nil, err
 		}
 		for {
 			if err := contextFailure(requestContext); err != nil {
-				_ = stream.Close(context.Background())
+				_ = chunkStream.Close(context.Background())
 				return nil, err
 			}
-			chunk, found, nextErr := stream.Next(requestContext)
+			chunk, found, nextErr := chunkStream.Next(requestContext)
 			if nextErr != nil {
-				_ = stream.Close(context.Background())
+				_ = chunkStream.Close(context.Background())
 				return nil, nextErr
 			}
 			if !found {
@@ -109,16 +109,16 @@ func (requester *modelRequester) executeStep(
 				},
 			)
 			if appendErr != nil {
-				_ = stream.Close(context.Background())
+				_ = chunkStream.Close(context.Background())
 				return nil, appendErr
 			}
 			chunkSequences = append(chunkSequences, committed.Seq)
 			if err := assembler.Push(chunk); err != nil {
-				_ = stream.Close(context.Background())
+				_ = chunkStream.Close(context.Background())
 				return nil, err
 			}
 		}
-		if err := stream.Close(context.Background()); err != nil {
+		if err := chunkStream.Close(context.Background()); err != nil {
 			return nil, err
 		}
 		if err := contextFailure(requestContext); err != nil {

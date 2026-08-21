@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	"github.com/gorenx/goren/llm"
 )
 
 type configWire struct {
@@ -125,7 +127,15 @@ func (settings *Config) UnmarshalJSON(encoded []byte) error {
 	return nil
 }
 
-func decodeOptional[T any](rawValue json.RawMessage, fieldName string, destination **T) error {
+type optionalProviderConfigValue interface {
+	string | int | float64 | ThinkingMode | ReasoningEffort | llm.RetryPolicyConfig
+}
+
+func decodeOptional[T optionalProviderConfigValue](
+	rawValue json.RawMessage,
+	fieldName string,
+	destination **T,
+) error {
 	if len(rawValue) == 0 {
 		return nil
 	}
