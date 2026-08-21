@@ -453,7 +453,7 @@ func (coordinator *activityCoordinator) durableCancelCause() session.TurnCancelC
 	case nil, agent.UserCancel:
 		return session.UserCancelCause{}
 	default:
-		return session.LegacyCancelCause{}
+		return session.HookCancelCause{Reason: selected.CancelKind()}
 	}
 }
 
