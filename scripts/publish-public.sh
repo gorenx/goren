@@ -167,7 +167,10 @@ if [[ "$command_name" == "prepare" ]]; then
   git -C "$prepared_repository" remote remove origin
 
   filename_filter=$'lower = filename.lower()\nparts = lower.split(b"/")\nbase = parts[-1]\nif lower.endswith(b".md"): return None\nif lower.startswith(b"zh-cn/") or lower.startswith(b"llm/docs/") or lower.startswith(b".idea/"): return None\nif lower in (b"scripts/publish-public.sh", b"scripts/public-paths.txt"): return None\nif base == b".env" or (base.startswith(b".env.") and base != b".env.example"): return None\nif base in (b".credentials.json", b"sessions.sqlite", b"workspaces.sqlite"): return None\nif b"node_modules" in parts: return None\nreturn filename'
-  git -C "$prepared_repository" filter-repo --force --refs refs/heads/filtered-code --filename-callback "$filename_filter" >/dev/null
+  commit_filter=$'if commit.original_id == b"3857d969aa0744521652dcf5a9e8e69993a3871b":\n    commit.message = b"fix(apiproxy): retain JSON session decoding\\n"'
+  git -C "$prepared_repository" filter-repo --force --refs refs/heads/filtered-code \
+    --filename-callback "$filename_filter" \
+    --commit-callback "$commit_filter" >/dev/null
 
   public_main_before="$(resolve_public_main)"
   printf '%s\n' "$source_commit" >"$prepared_root/source-commit"
