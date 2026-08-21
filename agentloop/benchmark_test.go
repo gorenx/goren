@@ -2,6 +2,7 @@ package agentloop_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/gorenx/goren/agent"
@@ -28,6 +29,28 @@ type benchmarkHarness struct {
 	runtimeEngine *plugin.Runtime
 	agents        *agent.RegistryPlugin
 	adapter       llm.AdapterRegistrationHandle
+}
+
+var benchmarkPreparedSession *session.Session
+
+func BenchmarkAgentSessionPrepare(b *testing.B) {
+	sessions, err := session.NewMemoryStore(session.MemoryStoreOptions{
+		PostCommitFailures: postCommitFailureSink{},
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	identifier := session.SessionID("benchmark-prepare")
+	b.ReportAllocs()
+	for b.Loop() {
+		benchmarkPreparedSession, err = sessions.Prepare(
+			&identifier,
+			session.CreateOptions{},
+		)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
 }
 
 func (state *benchmarkHarness) createAgent(
@@ -188,6 +211,93 @@ func BenchmarkAgentTurnRun(b *testing.B) {
 	}
 }
 
+func BenchmarkAgentTreeMount(b *testing.B) {
+	for _, liveCount := range []int{0, 16, 64} {
+		b.Run(benchmarkLiveAgentLabel(liveCount), func(b *testing.B) {
+			state := newAgentLoopBenchmark(b, 1)
+			retainBenchmarkAgents(b, state, liveCount)
+			b.ReportAllocs()
+			for b.Loop() {
+				handleState := state.createAgent(b)
+				b.StopTimer()
+				if err := handleState.Dispose(context.Background()); err != nil {
+					b.Fatal(err)
+				}
+				b.StartTimer()
+			}
+		})
+	}
+}
+
+func BenchmarkAgentTreeUnmount(b *testing.B) {
+	for _, liveCount := range []int{0, 16, 64} {
+		b.Run(benchmarkLiveAgentLabel(liveCount), func(b *testing.B) {
+			state := newAgentLoopBenchmark(b, 1)
+			retainBenchmarkAgents(b, state, liveCount)
+			b.ReportAllocs()
+			for b.Loop() {
+				b.StopTimer()
+				handleState := state.createAgent(b)
+				b.StartTimer()
+				if err := handleState.Dispose(context.Background()); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkAgentTreeLifecycle(b *testing.B) {
+	for _, liveCount := range []int{0, 16, 64} {
+		b.Run(benchmarkLiveAgentLabel(liveCount), func(b *testing.B) {
+			state := newAgentLoopBenchmark(b, 1)
+			retainBenchmarkAgents(b, state, liveCount)
+			b.ReportAllocs()
+			for b.Loop() {
+				handleState := state.createAgent(b)
+				if err := handleState.Dispose(context.Background()); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func retainBenchmarkAgents(
+	benchmarkState *testing.B,
+	state *benchmarkHarness,
+	count int,
+) {
+	benchmarkState.Helper()
+	handles := make([]agent.Handle, 0, count)
+	for agentIndex := 0; agentIndex < count; agentIndex++ {
+		handleState, err := state.agents.Create(
+			context.Background(),
+			agent.CreateOptions{
+				SessionID: session.SessionID(fmt.Sprintf(
+					"benchmark-live-%d",
+					agentIndex,
+				)),
+				AgentOptions: agent.Options{
+					Provider: "benchmark",
+					Model:    "model",
+				},
+			},
+		)
+		if err != nil {
+			benchmarkState.Fatal(err)
+		}
+		handles = append(handles, handleState)
+	}
+	benchmarkState.Cleanup(func() {
+		for handleIndex := len(handles) - 1; handleIndex >= 0; handleIndex-- {
+			if err := handles[handleIndex].Dispose(context.Background()); err != nil {
+				benchmarkState.Error(err)
+			}
+		}
+	})
+}
+
 func benchmarkChunkLabel(chunkCount int) string {
 	switch chunkCount {
 	case 1:
@@ -199,4 +309,8 @@ func benchmarkChunkLabel(chunkCount int) string {
 	default:
 		panic("unsupported benchmark chunk count")
 	}
+}
+
+func benchmarkLiveAgentLabel(liveCount int) string {
+	return fmt.Sprintf("live=%d", liveCount)
 }

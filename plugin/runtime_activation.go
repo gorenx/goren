@@ -7,14 +7,16 @@ import (
 
 func (runtimeEngine *Runtime) activateMountBatch(
 	requestContext context.Context,
-	mounts []*pluginMount,
+	admitted []*pluginMount,
+	topology []*pluginMount,
 ) error {
 	mainErr := runtimeEngine.activations.converge(
 		requestContext,
 		ActivationMain,
+		topology,
 	)
 	mainReadinessErr := runtimeEngine.dependencies.readiness(
-		mounts,
+		admitted,
 		ActivationMain,
 	)
 	if err := errors.Join(mainErr, mainReadinessErr); err != nil {
@@ -23,18 +25,21 @@ func (runtimeEngine *Runtime) activateMountBatch(
 	commitErr := runtimeEngine.activations.converge(
 		requestContext,
 		ActivationCommit,
+		topology,
 	)
 	commitReadinessErr := runtimeEngine.dependencies.readiness(
-		mounts,
+		admitted,
 		ActivationCommit,
 	)
 	return errors.Join(commitErr, commitReadinessErr)
 }
 
 func (runtimeEngine *Runtime) reconcile(requestContext context.Context) error {
+	topology := runtimeEngine.mounts.all()
 	mainErr := runtimeEngine.activations.converge(
 		requestContext,
 		ActivationMain,
+		topology,
 	)
 	if mainErr != nil {
 		return mainErr
@@ -42,6 +47,7 @@ func (runtimeEngine *Runtime) reconcile(requestContext context.Context) error {
 	return runtimeEngine.activations.converge(
 		requestContext,
 		ActivationCommit,
+		topology,
 	)
 }
 

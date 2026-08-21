@@ -33,6 +33,35 @@ type turnBenchmarkHarness struct {
 	runner        *turnRunner
 }
 
+var benchmarkConstructedAgent *ReactLoopAgent
+
+func BenchmarkAgentConstruct(b *testing.B) {
+	conversation, err := session.New(
+		"agent-construction-benchmark",
+		session.CreateOptions{},
+	)
+	if err != nil {
+		b.Fatal(err)
+	}
+	loopOptions := agent.Options{
+		Provider: "benchmark",
+		Model:    "model",
+	}
+	failures := newObserverFailureReporter(nil)
+	b.ReportAllocs()
+	for b.Loop() {
+		benchmarkConstructedAgent, err = newReactLoopAgent(
+			conversation,
+			loopOptions,
+			DefaultMaxParallelToolCalls,
+			failures,
+		)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func newTurnBenchmarkHarness(
 	benchmarkState *testing.B,
 ) *turnBenchmarkHarness {

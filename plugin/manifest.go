@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 )
+
+var namedTypeNames sync.Map
 
 // ChildPlacement controls the Scope relationship between a Plugin and one of
 // its declaratively owned children.
@@ -73,7 +76,10 @@ func normalizeManifest(
 	normalized := manifestSpec{
 		name: metadata.Name,
 	}
-	seenServices := make(map[reflect.Type]string)
+	var seenServices map[reflect.Type]string
+	if len(metadata.Provides)+len(metadata.Requires)+len(metadata.Optional) != 0 {
+		seenServices = make(map[reflect.Type]string)
+	}
 	for _, declaredService := range metadata.Provides {
 		reference, err := normalizeServiceType(
 			metadata.Name,
@@ -122,7 +128,10 @@ func normalizeManifest(
 		normalized.optional = append(normalized.optional, reference)
 	}
 
-	seenEvents := make(map[reflect.Type]struct{})
+	var seenEvents map[reflect.Type]struct{}
+	if len(metadata.Events) != 0 {
+		seenEvents = make(map[reflect.Type]struct{})
+	}
 	for _, declaredEvent := range metadata.Events {
 		if declaredEvent == nil {
 			return manifestSpec{}, fmt.Errorf(
@@ -161,7 +170,10 @@ func normalizeManifest(
 		})
 	}
 
-	seenWaterfalls := make(map[waterfallKey]struct{})
+	var seenWaterfalls map[waterfallKey]struct{}
+	if len(metadata.Waterfalls) != 0 {
+		seenWaterfalls = make(map[waterfallKey]struct{})
+	}
 	for _, declaredWaterfall := range metadata.Waterfalls {
 		if declaredWaterfall == nil {
 			return manifestSpec{}, fmt.Errorf(
@@ -249,10 +261,17 @@ func namedTypeName(selectedType reflect.Type) string {
 	if selectedType == nil {
 		return ""
 	}
-	if selectedType.PkgPath() == "" {
-		return selectedType.String()
+	if cached, found := namedTypeNames.Load(selectedType); found {
+		return cached.(string)
 	}
-	return selectedType.PkgPath() + "." + selectedType.Name()
+	typeName := selectedType.String()
+	if selectedType.PkgPath() == "" {
+		cached, _ := namedTypeNames.LoadOrStore(selectedType, typeName)
+		return cached.(string)
+	}
+	typeName = selectedType.PkgPath() + "." + selectedType.Name()
+	cached, _ := namedTypeNames.LoadOrStore(selectedType, typeName)
+	return cached.(string)
 }
 
 func containsService(references []serviceRef, selectedKey reflect.Type) bool {

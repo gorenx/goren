@@ -39,16 +39,8 @@ func (bindings *runtimeBindings) validateAdmission(target pluginTarget) error {
 func (bindings *runtimeBindings) validateMountAdmission(
 	mounts []*pluginMount,
 ) error {
-	services := make(map[serviceBindingKey]string, len(bindings.services.bindings))
-	for bindingKey, existing := range bindings.services.bindings {
-		services[bindingKey] = existing.reference.name
-	}
+	services := make(map[serviceBindingKey]string)
 	events := make(map[reflect.Type]eventRef)
-	for eventType, existingBindings := range bindings.events.registry.bindings {
-		if len(existingBindings) != 0 {
-			events[eventType] = existingBindings[0].reference
-		}
-	}
 	for _, mounted := range mounts {
 		if mounted == nil {
 			continue
@@ -62,6 +54,13 @@ func (bindings *runtimeBindings) validateMountAdmission(
 				scope:       mounted.scope,
 				serviceType: serviceDeclaration.reference.key,
 			}
+			if bindings.services.bindings[bindingKey] != nil {
+				return fmt.Errorf(
+					"%w: %s",
+					ErrServiceConflict,
+					serviceDeclaration.reference.name,
+				)
+			}
 			if _, conflict := services[bindingKey]; conflict {
 				return fmt.Errorf(
 					"%w: %s",
@@ -72,6 +71,17 @@ func (bindings *runtimeBindings) validateMountAdmission(
 			services[bindingKey] = serviceDeclaration.reference.name
 		}
 		for _, eventDeclaration := range bindingSpec.events {
+			existingBindings := bindings.events.registry.bindings[eventDeclaration.reference.key]
+			if len(existingBindings) != 0 {
+				existing := existingBindings[0].reference
+				if existing.name != eventDeclaration.reference.name ||
+					existing.policy != eventDeclaration.reference.policy {
+					return fmt.Errorf(
+						"plugin: Event type %q has inconsistent metadata",
+						namedTypeName(eventDeclaration.reference.key),
+					)
+				}
+			}
 			existing, found := events[eventDeclaration.reference.key]
 			if found && (existing.name != eventDeclaration.reference.name ||
 				existing.policy != eventDeclaration.reference.policy) {

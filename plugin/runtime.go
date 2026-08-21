@@ -96,7 +96,11 @@ func (runtimeEngine *Runtime) Start(
 	for _, mounted := range startedMounts {
 		runtimeEngine.activations.attach(mounted)
 	}
-	if startErr := runtimeEngine.activateMountBatch(startContext, startedMounts); startErr != nil {
+	if startErr := runtimeEngine.activateMountBatch(
+		startContext,
+		startedMounts,
+		startedMounts,
+	); startErr != nil {
 		rollbackErr := runtimeEngine.activations.rollbackMounts(
 			startContext,
 			startedMounts,
@@ -249,12 +253,35 @@ func (runtimeEngine *Runtime) mount(
 	for _, selectedMount := range admitted {
 		runtimeEngine.activations.attach(selectedMount)
 	}
-	if mountErr := runtimeEngine.activateMountBatch(mountContext, admitted); mountErr != nil {
-		rollbackErr := runtimeEngine.activations.removeMount(
-			mountContext,
-			mounted,
-		)
-		reconcileErr := runtimeEngine.reconcile(mountContext)
+	// A new child Scope has no existing inhabitants, and its Services are not
+	// visible to ancestors or siblings. Its activation can therefore converge
+	// against the admitted subtree without scanning unrelated Runtime topology.
+	isolated := placement == mountInChildScope
+	topology := admitted
+	if !isolated {
+		topology = runtimeEngine.mounts.all()
+	}
+	if mountErr := runtimeEngine.activateMountBatch(
+		mountContext,
+		admitted,
+		topology,
+	); mountErr != nil {
+		var rollbackErr error
+		if isolated {
+			rollbackErr = runtimeEngine.activations.removeIsolatedMount(
+				mountContext,
+				mounted,
+			)
+		} else {
+			rollbackErr = runtimeEngine.activations.removeMount(
+				mountContext,
+				mounted,
+			)
+		}
+		var reconcileErr error
+		if !isolated {
+			reconcileErr = runtimeEngine.reconcile(mountContext)
+		}
 		return Handle{}, errors.Join(mountErr, rollbackErr, reconcileErr)
 	}
 	return handleOf(runtimeEngine, mounted), nil
@@ -300,7 +327,10 @@ func (runtimeEngine *Runtime) Unload(
 	if err != nil {
 		return err
 	}
-	stopErr := runtimeEngine.activations.removeMount(stopContext, mounted)
+	stopErr := runtimeEngine.activations.removeMount(
+		stopContext,
+		mounted,
+	)
 	settleErr := runtimeEngine.reconcile(stopContext)
 	return errors.Join(stopErr, settleErr)
 }
@@ -328,8 +358,25 @@ func (runtimeEngine *Runtime) unloadChild(
 	if childMount.parent != parentMount {
 		return errors.New("plugin: Handle is not a direct child of the owning Plugin")
 	}
-	stopErr := runtimeEngine.activations.removeMount(stopContext, childMount)
-	settleErr := runtimeEngine.reconcile(stopContext)
+	// Descendant Services cannot be consumed outside their child Scope, so an
+	// owned child-Scope removal cannot leave an external Fiber to reconcile.
+	isolated := childMount.placement == mountInChildScope
+	var stopErr error
+	if isolated {
+		stopErr = runtimeEngine.activations.removeIsolatedMount(
+			stopContext,
+			childMount,
+		)
+	} else {
+		stopErr = runtimeEngine.activations.removeMount(
+			stopContext,
+			childMount,
+		)
+	}
+	var settleErr error
+	if !isolated {
+		settleErr = runtimeEngine.reconcile(stopContext)
+	}
 	return errors.Join(stopErr, settleErr)
 }
 

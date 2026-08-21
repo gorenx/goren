@@ -130,7 +130,6 @@ func (command *subtreeReplacement) execute(requestContext context.Context) error
 		)
 	}
 	disposeErr := command.disposePrevious(requestContext)
-	command.runtime.activations.prepareStopped()
 	settleErr := command.runtime.reconcile(requestContext)
 	return errors.Join(dependentErr, drainErr, disposeErr, settleErr)
 }
@@ -369,10 +368,10 @@ func (command *subtreeReplacement) stopExternalDependents(
 	}
 	var stopErr error
 	for _, item := range command.items {
-		dependents := stopFiberOrder(
+		orderedDependents := stopFiberOrder(
 			command.runtime.dependencies.directDependents(item.previous),
 		)
-		for _, dependent := range dependents {
+		for _, dependent := range orderedDependents {
 			if _, internal := command.oldFibers[dependent]; internal {
 				continue
 			}
@@ -427,6 +426,7 @@ func (command *subtreeReplacement) publishCandidates() error {
 		item.mounted.target = item.declared.target
 		item.mounted.current = item.candidate
 		item.candidate.activate(item.published)
+		command.runtime.dependencies.addConsumer(item.candidate)
 	}
 	return nil
 }
@@ -466,7 +466,6 @@ func (command *subtreeReplacement) restorePrevious(
 	}
 	command.runtime.view.Unlock()
 	rollbackErr := command.rollbackCandidates(requestContext, failure)
-	command.runtime.activations.prepareStopped()
 	settleErr := command.runtime.reconcile(requestContext)
 	return errors.Join(rollbackErr, settleErr)
 }
