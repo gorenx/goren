@@ -7,7 +7,7 @@
 - 使用 React 组件组织左侧会话、中央对话与右侧运行事实布局；
 - 通过 Vite/Tailwind 生成 `dist`，再由 `embed.FS` 提供 `index.html` 和内容哈希的 JS/CSS assets；
 - 展示会话列表、当前会话历史和流式 Agent 输出；
-- 创建、选择 Session，并提交纯文本 prompt；
+- 创建、选择 Session，提交纯文本 prompt，并通过 `session.cancel` 终止当前 Agent Turn；
 - 展示 `question/requested`，通过 `/api/respond` 回答或取消后继续当前 Agent Turn；
 - 读取 value-free credential metadata，并通过 write-only Host API 设置、替换或删除 DeepSeek API Key；
 - 提供中文与英文界面资源，按浏览器语言初始化，并持久化用户手动选择；
@@ -53,7 +53,7 @@ flowchart LR
 
 1. 只有 `source.kind=user` 的 `user/message` 与 role 为 assistant 的 committed `assistant/message` 进入对话展示；plugin runtime-context 与 Tool facts 仍保留在 Session/模型上下文中，但不伪装成用户消息；
 2. `assistant/chunk` 只累积为当前 Session 的临时 draft；
-3. `assistant/message` 或 `turn/end` 清除 draft；
+3. `assistant/message` 用已提交消息替换并清除 draft；取消 Turn 只有 `turn/end` 时，现有 draft 冻结为非流式临时输出，不因停止操作从页面消失；
 4. `host/session-status` 更新会话运行状态；
 5. `host/session-added`/`removed` 触发 `session.list` baseline 刷新。
 
@@ -65,6 +65,7 @@ stateDiagram-v2
     Running --> Running: assistant/chunk
     Running --> Waiting: question/requested
     Waiting --> Running: POST /api/respond accepted
+    Running --> Ready: session.cancel + turn/end
     Running --> Ready: assistant/message + turn/end
     Ready --> Loading: select another Session
     Loading --> Disconnected: HTTP/WS failure
@@ -115,7 +116,9 @@ pnpm run build
 - 两条 WebSocket 独立建立和重连，页面 `beforeunload` 会关闭 owned sockets；
 - 语言切换不重建 `ConversationStore` 或 WebSocket，不改变当前 Session、draft 和 pending Question；
 - WebSocket 断开不调用 `session.cancel`，因此页面刷新不会误取消 Agent；
+- Agent 运行时 Composer 的发送按钮在原位置切换为停止按钮；只有该按钮调用 `session.cancel`，终止当前 Turn 并保留 inbox，不删除 Session；
 - pending Question 使用 requested frame 的原 `rpcId` 回答；断线重连后同一请求可重放，等待期间普通 composer 禁用；
+- Composer 使用受控输入；IME composition 期间 Enter 只确认输入法候选，同步提交门控避免同一次输入生成第二个 prompt；
 - unary failure 和 `stream/error` 只显示错误，不追加伪历史；
 - 当前 UI 不回答 `approval/requested`；Approval 仍只由已有 Host contract 和专用客户端验收。
 
