@@ -318,7 +318,9 @@ func (conversation *Session) appendCandidate(candidate Event) (Event, error) {
 			return Event{}, err
 		}
 	}
-	committed := cloneEvent(candidate)
+	// Append and AppendSurface construct candidate from owner-created snapshots.
+	// Keep that owned value as the log entry and detach only at public boundaries.
+	committed := candidate
 	conversation.entries = append(conversation.entries, committed)
 	applySurface(&conversation.view, transition)
 	conversation.mu.Unlock()

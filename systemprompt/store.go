@@ -47,7 +47,8 @@ type promptLayerSnapshot struct {
 // promptStore owns one exact System Prompt layer. Parent/child composition is
 // performed by Registry, so this object never sees Plugin Scope identities.
 type promptStore struct {
-	mutex sync.RWMutex
+	mutex         sync.RWMutex
+	snapshotValue promptLayerSnapshot
 
 	sections      map[string]PromptSection
 	sectionOrder  []string
@@ -62,7 +63,7 @@ type promptStore struct {
 }
 
 func newPromptStore() *promptStore {
-	return &promptStore{
+	storage := &promptStore{
 		sections:      make(map[string]PromptSection),
 		contexts:      make(map[string]PromptContext),
 		variables:     make(map[string]VariableProvider),
@@ -70,6 +71,8 @@ func newPromptStore() *promptStore {
 		suppressors:   make(map[string]struct{}),
 		tokens:        make(map[promptEntryKey]*promptEntryToken),
 	}
+	storage.rebuildSnapshotLocked()
+	return storage
 }
 
 func (storage *promptStore) addSection(
@@ -86,6 +89,7 @@ func (storage *promptStore) addSection(
 	token := storage.addToken(promptSectionEntry, definition.Name)
 	storage.sections[definition.Name] = definition
 	storage.sectionOrder = append(storage.sectionOrder, definition.Name)
+	storage.rebuildSnapshotLocked()
 	return token, nil
 }
 
@@ -100,6 +104,7 @@ func (storage *promptStore) removeSection(
 	}
 	delete(storage.sections, name)
 	storage.sectionOrder = removeName(storage.sectionOrder, name)
+	storage.rebuildSnapshotLocked()
 	return true
 }
 
@@ -117,6 +122,7 @@ func (storage *promptStore) addContext(
 	token := storage.addToken(promptContextEntry, definition.Name)
 	storage.contexts[definition.Name] = definition
 	storage.contextOrder = append(storage.contextOrder, definition.Name)
+	storage.rebuildSnapshotLocked()
 	return token, nil
 }
 
@@ -131,6 +137,7 @@ func (storage *promptStore) removeContext(
 	}
 	delete(storage.contexts, name)
 	storage.contextOrder = removeName(storage.contextOrder, name)
+	storage.rebuildSnapshotLocked()
 	return true
 }
 
@@ -149,6 +156,7 @@ func (storage *promptStore) addVariable(
 	token := storage.addToken(promptVariableEntry, name)
 	storage.variables[name] = provider
 	storage.variableOrder = append(storage.variableOrder, name)
+	storage.rebuildSnapshotLocked()
 	return token, nil
 }
 
@@ -163,6 +171,7 @@ func (storage *promptStore) removeVariable(
 	}
 	delete(storage.variables, name)
 	storage.variableOrder = removeName(storage.variableOrder, name)
+	storage.rebuildSnapshotLocked()
 	return true
 }
 
@@ -181,6 +190,7 @@ func (storage *promptStore) addToolProvider(
 	token := storage.addToken(promptToolProviderEntry, name)
 	storage.toolProviders[name] = provider
 	storage.toolOrder = append(storage.toolOrder, name)
+	storage.rebuildSnapshotLocked()
 	return token, nil
 }
 
@@ -195,6 +205,7 @@ func (storage *promptStore) removeToolProvider(
 	}
 	delete(storage.toolProviders, name)
 	storage.toolOrder = removeName(storage.toolOrder, name)
+	storage.rebuildSnapshotLocked()
 	return true
 }
 
@@ -211,6 +222,7 @@ func (storage *promptStore) addSuppressor(
 	}
 	token := storage.addToken(promptSuppressorEntry, name)
 	storage.suppressors[name] = struct{}{}
+	storage.rebuildSnapshotLocked()
 	return token, nil
 }
 
@@ -224,13 +236,21 @@ func (storage *promptStore) removeSuppressor(
 		return false
 	}
 	delete(storage.suppressors, name)
+	storage.rebuildSnapshotLocked()
 	return true
 }
 
 func (storage *promptStore) capture() promptLayerSnapshot {
 	storage.mutex.RLock()
-	defer storage.mutex.RUnlock()
-	snapshot := promptLayerSnapshot{
+	snapshot := storage.snapshotValue
+	storage.mutex.RUnlock()
+	return snapshot
+}
+
+// rebuildSnapshotLocked moves immutable registration-view construction to
+// mutation time while keeping provider resolution in every Assemble call.
+func (storage *promptStore) rebuildSnapshotLocked() {
+	storage.snapshotValue = promptLayerSnapshot{
 		sections:          make([]PromptSection, 0, len(storage.sections)),
 		contexts:          make([]PromptContext, 0, len(storage.contexts)),
 		variables:         make([]namedVariableProvider, 0, len(storage.variables)),
@@ -239,31 +259,42 @@ func (storage *promptStore) capture() promptLayerSnapshot {
 	}
 	for _, name := range storage.sectionOrder {
 		if definition, exists := storage.sections[name]; exists {
-			snapshot.sections = append(snapshot.sections, definition)
+			storage.snapshotValue.sections = append(
+				storage.snapshotValue.sections,
+				definition,
+			)
 		}
 	}
 	for _, name := range storage.contextOrder {
 		if definition, exists := storage.contexts[name]; exists {
-			snapshot.contexts = append(snapshot.contexts, definition)
+			storage.snapshotValue.contexts = append(
+				storage.snapshotValue.contexts,
+				definition,
+			)
 		}
 	}
 	for _, name := range storage.variableOrder {
 		if provider, exists := storage.variables[name]; exists {
-			snapshot.variables = append(snapshot.variables, namedVariableProvider{
-				name:     name,
-				provider: provider,
-			})
+			storage.snapshotValue.variables = append(
+				storage.snapshotValue.variables,
+				namedVariableProvider{
+					name:     name,
+					provider: provider,
+				},
+			)
 		}
 	}
 	for _, name := range storage.toolOrder {
 		if provider, exists := storage.toolProviders[name]; exists {
-			snapshot.toolProviders = append(snapshot.toolProviders, namedToolProvider{
-				name:     name,
-				provider: provider,
-			})
+			storage.snapshotValue.toolProviders = append(
+				storage.snapshotValue.toolProviders,
+				namedToolProvider{
+					name:     name,
+					provider: provider,
+				},
+			)
 		}
 	}
-	return snapshot
 }
 
 func (storage *promptStore) clear() {
@@ -278,6 +309,7 @@ func (storage *promptStore) clear() {
 	storage.toolOrder = nil
 	storage.suppressors = make(map[string]struct{})
 	storage.tokens = make(map[promptEntryKey]*promptEntryToken)
+	storage.rebuildSnapshotLocked()
 	storage.mutex.Unlock()
 }
 

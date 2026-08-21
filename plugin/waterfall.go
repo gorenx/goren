@@ -307,17 +307,67 @@ func Run[
 	source Plugin,
 	input I,
 	terminal WaterfallAction[I, O],
-) (O, error) {
-	output, lease, err := RunRetained(
-		requestContext,
-		source,
-		input,
-		terminal,
-	)
-	if lease != nil {
-		lease.Release()
+) (output O, runErr error) {
+	if terminal == nil {
+		return output, errors.New("plugin: Waterfall terminal is nil")
 	}
-	return output, err
+	sourceFiber, err := activeFiberOf(source)
+	if err != nil {
+		return output, err
+	}
+	runtimeEngine := sourceFiber.runtime
+	runtimeEngine.view.RLock()
+	if sourceFiber.state != FiberActive {
+		runtimeEngine.view.RUnlock()
+		return output, ErrPluginNotActive
+	}
+	middleware, err := snapshotWaterfall[I, O](
+		runtimeEngine.bindings.waterfalls,
+		sourceFiber.scope,
+	)
+	if err != nil {
+		runtimeEngine.view.RUnlock()
+		return output, err
+	}
+	callContext, releaseContext := runtimeEngine.invocationContext(
+		requestContext,
+	)
+	admittedCall := &fiberCall{
+		cancel: releaseContext,
+	}
+	var releaseCalls func()
+	var admitted bool
+	if len(middleware) == 0 {
+		releaseCalls, admitted = acquireFiberCalls(
+			admittedCall,
+			sourceFiber,
+		)
+	} else {
+		participants := make([]*fiber, 0, len(middleware)+1)
+		participants = append(participants, sourceFiber)
+		for _, invocation := range middleware {
+			participants = append(participants, invocation.owner)
+		}
+		releaseCalls, admitted = acquireFiberCalls(
+			admittedCall,
+			participants...,
+		)
+	}
+	runtimeEngine.view.RUnlock()
+	if !admitted {
+		releaseContext(context.Canceled)
+		return output, ErrPluginNotActive
+	}
+	defer releaseCalls()
+	defer releaseContext(context.Canceled)
+	if len(middleware) == 0 {
+		return terminal.Execute(callContext, input)
+	}
+	firstStep := &waterfallStep[I, O]{
+		middleware: middleware,
+		terminal:   terminal,
+	}
+	return firstStep.Execute(callContext, input)
 }
 
 // RunRetained executes the visible onion chain and transfers the admitted

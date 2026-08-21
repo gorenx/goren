@@ -12,31 +12,98 @@ import (
 )
 
 type assemblyAction struct {
-	assembled PromptAssembly
+	candidate PromptAssembly
 }
 
 func (action *assemblyAction) Execute(
 	context.Context,
 	AssembleRequest,
 ) (PromptAssembly, error) {
-	return cloneAssembly(action.assembled), nil
+	// assemblyResolver creates an operation-owned value. Middleware may
+	// transform it in place; preparedAssembly finalizes the detached result.
+	return action.candidate, nil
 }
 
-func assembleLayers(
-	requestContext context.Context,
-	assemblyContext AssembleContext,
-	layers []promptLayerSnapshot,
-	toolOrder []string,
-) (PromptAssembly, *AssembledSection, bool, error) {
+// assemblyResolver owns one pre-Waterfall assembly pass. It resolves dynamic
+// providers from a fixed registration snapshot without owning post-Waterfall
+// policy enforcement.
+type assemblyResolver struct {
+	requestContext  context.Context
+	assemblyContext AssembleContext
+	layers          []promptLayerSnapshot
+	toolOrder       []string
+}
+
+type sectionResolution struct {
+	entries         []AssembledSection
+	complete        AssembledSection
+	completePresent bool
+}
+
+type contextResolution struct {
+	entries    []AssembledContext
+	suppressed bool
+}
+
+// preparedAssembly keeps the candidate and the owner rules that must be
+// enforced after middleware returns. Registry no longer coordinates those
+// rules through parallel return values.
+type preparedAssembly struct {
+	candidate PromptAssembly
+	policy    assemblyPolicy
+}
+
+type assemblyPolicy struct {
+	completeSection        AssembledSection
+	completeSectionPresent bool
+	contextsSuppressed     bool
+}
+
+func (resolver *assemblyResolver) resolve() (preparedAssembly, error) {
+	variables, err := resolver.resolveVariables()
+	if err != nil {
+		return preparedAssembly{}, err
+	}
+	sections, err := resolver.resolveSections()
+	if err != nil {
+		return preparedAssembly{}, err
+	}
+	contexts, err := resolver.resolveContexts()
+	if err != nil {
+		return preparedAssembly{}, err
+	}
+	toolSchemas, err := resolver.resolveTools()
+	if err != nil {
+		return preparedAssembly{}, err
+	}
+	return preparedAssembly{
+		candidate: PromptAssembly{
+			Sections:  sections.entries,
+			Contexts:  contexts.entries,
+			Tools:     toolSchemas,
+			Variables: variables,
+		},
+		policy: assemblyPolicy{
+			completeSection:        sections.complete,
+			completeSectionPresent: sections.completePresent,
+			contextsSuppressed:     contexts.suppressed,
+		},
+	}, nil
+}
+
+func (resolver *assemblyResolver) resolveVariables() (
+	map[string]VariableValue,
+	error,
+) {
 	variables := make(map[string]VariableValue)
-	for _, layer := range layers {
+	for _, layer := range resolver.layers {
 		for _, entry := range layer.variables {
 			resolved, err := entry.provider.ResolveVariable(
-				requestContext,
-				assemblyContext,
+				resolver.requestContext,
+				resolver.assemblyContext,
 			)
 			if err != nil {
-				return PromptAssembly{}, nil, false, fmt.Errorf(
+				return nil, fmt.Errorf(
 					"systemprompt: resolve prompt variable %q: %w",
 					entry.name,
 					err,
@@ -45,8 +112,14 @@ func assembleLayers(
 			variables[entry.name] = resolved
 		}
 	}
+	return variables, nil
+}
 
-	sections := mergeSections(layers)
+func (resolver *assemblyResolver) resolveSections() (
+	sectionResolution,
+	error,
+) {
+	sections := mergeSections(resolver.layers)
 	completeDefinitions := make([]PromptSection, 0, 1)
 	for _, definition := range sections {
 		if definition.Complete {
@@ -58,20 +131,22 @@ func assembleLayers(
 		for index, definition := range completeDefinitions {
 			names[index] = fmt.Sprintf("%q", definition.Name)
 		}
-		return PromptAssembly{}, nil, false, fmt.Errorf(
+		return sectionResolution{}, fmt.Errorf(
 			"systemprompt: multiple complete prompt sections are active: %s",
 			strings.Join(names, ", "),
 		)
 	}
 	assembledSections := make([]AssembledSection, 0, len(sections))
-	var completeSection *AssembledSection
+	resolved := sectionResolution{
+		entries: assembledSections,
+	}
 	for _, definition := range sections {
 		resolvedText, err := definition.Text.ResolveText(
-			requestContext,
-			assemblyContext,
+			resolver.requestContext,
+			resolver.assemblyContext,
 		)
 		if err != nil {
-			return PromptAssembly{}, nil, false, fmt.Errorf(
+			return sectionResolution{}, fmt.Errorf(
 				"systemprompt: resolve prompt section %q: %w",
 				definition.Name,
 				err,
@@ -81,46 +156,59 @@ func assembleLayers(
 			Name: definition.Name,
 			Text: resolvedText,
 		}
-		assembledSections = append(assembledSections, assembledEntry)
+		resolved.entries = append(resolved.entries, assembledEntry)
 		if definition.Complete {
-			retained := assembledEntry
-			completeSection = &retained
+			resolved.complete = assembledEntry
+			resolved.completePresent = true
 		}
 	}
+	return resolved, nil
+}
 
-	suppressed := contextSuppressed(layers)
-	assembledContexts := make([]AssembledContext, 0)
-	if !suppressed {
-		contexts := mergeContexts(layers)
-		assembledContexts = make([]AssembledContext, 0, len(contexts))
-		for _, definition := range contexts {
-			resolvedText, err := definition.Text.ResolveText(
-				requestContext,
-				assemblyContext,
-			)
-			if err != nil {
-				return PromptAssembly{}, nil, false, fmt.Errorf(
-					"systemprompt: resolve prompt context %q: %w",
-					definition.Name,
-					err,
-				)
-			}
-			assembledContexts = append(assembledContexts, AssembledContext{
-				Name: definition.Name,
-				Text: resolvedText,
-			})
-		}
+func (resolver *assemblyResolver) resolveContexts() (
+	contextResolution,
+	error,
+) {
+	if contextSuppressed(resolver.layers) {
+		return contextResolution{
+			entries:    []AssembledContext{},
+			suppressed: true,
+		}, nil
 	}
-
-	collectedSchemas := make([]llm.ToolSchema, 0)
-	knownNames := make(map[string]struct{})
-	for _, entry := range mergeToolProviders(layers) {
-		providerResult, err := entry.provider.ResolveTools(
-			requestContext,
-			assemblyContext,
+	contexts := mergeContexts(resolver.layers)
+	resolved := contextResolution{
+		entries: make([]AssembledContext, 0, len(contexts)),
+	}
+	for _, definition := range contexts {
+		resolvedText, err := definition.Text.ResolveText(
+			resolver.requestContext,
+			resolver.assemblyContext,
 		)
 		if err != nil {
-			return PromptAssembly{}, nil, false, fmt.Errorf(
+			return contextResolution{}, fmt.Errorf(
+				"systemprompt: resolve prompt context %q: %w",
+				definition.Name,
+				err,
+			)
+		}
+		resolved.entries = append(resolved.entries, AssembledContext{
+			Name: definition.Name,
+			Text: resolvedText,
+		})
+	}
+	return resolved, nil
+}
+
+func (resolver *assemblyResolver) resolveTools() ([]llm.ToolSchema, error) {
+	collectedSchemas := make([]llm.ToolSchema, 0)
+	knownNames := make(map[string]struct{})
+	for _, entry := range mergeToolProviders(resolver.layers) {
+		providerResult, err := entry.provider.ResolveTools(
+			resolver.requestContext,
+			resolver.assemblyContext,
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
 				"systemprompt: resolve tool provider %q: %w",
 				entry.name,
 				err,
@@ -129,7 +217,7 @@ func assembleLayers(
 		for _, schema := range providerResult.Schemas {
 			detached, detachErr := detachToolSchema(schema)
 			if detachErr != nil {
-				return PromptAssembly{}, nil, false, detachErr
+				return nil, detachErr
 			}
 			collectedSchemas = append(collectedSchemas, detached)
 		}
@@ -146,19 +234,35 @@ func assembleLayers(
 	}
 	orderedSchemas, err := orderToolSchemas(
 		collectedSchemas,
-		toolOrder,
+		resolver.toolOrder,
 		knownNames,
 	)
 	if err != nil {
-		return PromptAssembly{}, nil, false, err
+		return nil, err
 	}
+	return orderedSchemas, nil
+}
 
-	return PromptAssembly{
-		Sections:  assembledSections,
-		Contexts:  assembledContexts,
-		Tools:     orderedSchemas,
-		Variables: variables,
-	}, completeSection, suppressed, nil
+func (prepared preparedAssembly) finalize(
+	transformed PromptAssembly,
+) (PromptAssembly, error) {
+	if err := validateAssembly(transformed); err != nil {
+		return PromptAssembly{}, err
+	}
+	detached := cloneAssembly(transformed)
+	prepared.policy.enforce(&detached)
+	return detached, nil
+}
+
+func (policy assemblyPolicy) enforce(assembled *PromptAssembly) {
+	if policy.completeSectionPresent {
+		assembled.Sections = []AssembledSection{
+			policy.completeSection,
+		}
+	}
+	if policy.contextsSuppressed {
+		assembled.Contexts = []AssembledContext{}
+	}
 }
 
 func mergeSections(layers []promptLayerSnapshot) []PromptSection {

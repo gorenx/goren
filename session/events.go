@@ -202,7 +202,7 @@ func snapshotPayload[D any](payload D) (json.RawMessage, error) {
 	if err := validateLosslessJSON(rawValue); err != nil {
 		return nil, fmt.Errorf("session: event data is not lossless JSON: %w", err)
 	}
-	return append(json.RawMessage(nil), rawValue...), nil
+	return rawValue, nil
 }
 
 func validateLosslessJSON(rawValue []byte) error {
