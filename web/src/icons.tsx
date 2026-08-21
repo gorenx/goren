@@ -43,6 +43,10 @@ export function SendIcon(props: IconProps): React.JSX.Element {
   return <IconFrame {...props}><path d="m5 12 14-7-4.7 14-2.7-5.6L5 12Z" /><path d="m11.6 13.4 3.8-3.8" /></IconFrame>
 }
 
+export function StopIcon(props: IconProps): React.JSX.Element {
+  return <IconFrame {...props}><rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor" stroke="none" /></IconFrame>
+}
+
 export function SparkIcon(props: IconProps): React.JSX.Element {
   return <IconFrame {...props}><path d="m12 3 1.2 4.1L17 9l-3.8 1.9L12 15l-1.2-4.1L7 9l3.8-1.9L12 3Z" /><path d="m18.5 14 .7 2.3 2.3.7-2.3.7-.7 2.3-.7-2.3-2.3-.7 2.3-.7.7-2.3Z" /></IconFrame>
 }
