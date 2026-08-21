@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	agentcore "github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
@@ -18,130 +17,231 @@ import (
 	"github.com/gorenx/goren/systemprompt"
 )
 
-type approvalFixturePlugin struct {
-	settings approval.Config
-	fixture  *approvalFixture
-}
-
 type approvalFixture struct {
-	engine        *plugin.Runtime
-	pluginScope   *plugin.Scope
-	promptService systemprompt.SystemPrompt
-	serviceValue  approval.Approval
+	runtimeEngine *plugin.Runtime
+	prompts       *systemprompt.Registry
+	promptHandle  plugin.Handle
+	service       *approval.Service
 }
 
-func (*approvalFixturePlugin) Manifest() plugin.Manifest {
+type answererPlugin struct {
+	plugin.Base
+	name       string
+	middleware plugin.WaterfallMiddleware[
+		approval.DecisionRequest,
+		approval.Decision,
+	]
+}
+
+func (owner *answererPlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
-		Name: "approval-fixture",
-		Provides: []plugin.ServiceRef{
-			systemprompt.Service.Ref(), approval.Service.Ref(),
+		Name: owner.name,
+		Waterfalls: []plugin.WaterfallMiddlewareBinding{
+			plugin.WaterfallOf[
+				approval.DecisionRequest,
+				approval.Decision,
+			](owner),
 		},
 	}
 }
 
-func (instance *approvalFixturePlugin) Apply(requestContext context.Context, pluginScope *plugin.Scope) error {
-	promptSettings, err := systemprompt.ValidateConfig(systemprompt.Config{})
-	if err != nil {
-		return err
-	}
-	promptService, err := systemprompt.New(requestContext, pluginScope, promptSettings)
-	if err != nil {
-		return err
-	}
-	approvalSettings, err := approval.ValidateConfig(instance.settings)
-	if err != nil {
-		return err
-	}
-	serviceValue, err := approval.New(
-		requestContext, pluginScope, promptService, approvalSettings, approval.RuntimeOptions{},
-	)
-	if err != nil {
-		return err
-	}
-	if _, err := plugin.Provide(pluginScope, systemprompt.Service, promptService); err != nil {
-		return err
-	}
-	if _, err := plugin.Provide(pluginScope, approval.Service, serviceValue); err != nil {
-		return err
-	}
-	instance.fixture.pluginScope = pluginScope
-	instance.fixture.promptService = promptService
-	instance.fixture.serviceValue = serviceValue
+func (*answererPlugin) Apply(context.Context) error {
 	return nil
+}
+
+func (*answererPlugin) Dispose(context.Context) error {
+	return nil
+}
+
+func (owner *answererPlugin) Intercept(
+	requestContext context.Context,
+	input approval.DecisionRequest,
+	downstream plugin.WaterfallAction[
+		approval.DecisionRequest,
+		approval.Decision,
+	],
+) (approval.Decision, error) {
+	return owner.middleware.Intercept(requestContext, input, downstream)
 }
 
 type fakeSubject struct {
-	identifier   session.SessionID
 	conversation *session.Session
-	agentScope   *plugin.Scope
 
-	mu       sync.Mutex
+	mutex    sync.Mutex
 	injected []llm.UserMessage
 }
 
-func (subject *fakeSubject) ID() session.SessionID                           { return subject.identifier }
-func (*fakeSubject) OptionsValue() agentcore.Options                         { return agentcore.Options{} }
-func (subject *fakeSubject) SessionValue() *session.Session                  { return subject.conversation }
-func (*fakeSubject) InboxValue() *agentcore.Inbox                            { return nil }
-func (*fakeSubject) StatusValue() agentcore.Status                           { return agentcore.StatusIdle }
-func (subject *fakeSubject) ScopeValue() *plugin.Scope                       { return subject.agentScope }
-func (*fakeSubject) Cancel(agentcore.CancelCause, agentcore.CancelOptions)   {}
-func (*fakeSubject) WhenIdle(context.Context) error                          { return nil }
-func (*fakeSubject) Send(llm.UserMessage, agentcore.InboxTarget, bool) error { return nil }
-func (*fakeSubject) Followup(llm.UserMessage) error                          { return nil }
-func (*fakeSubject) Steer(llm.UserMessage) error                             { return nil }
-func (subject *fakeSubject) Inject(messageValue llm.UserMessage) error {
-	subject.mu.Lock()
-	subject.injected = append(subject.injected, messageValue)
-	subject.mu.Unlock()
-	return nil
-}
-func (*fakeSubject) RunMaintenance(requestContext context.Context, task agentcore.MaintenanceTask) error {
-	return task.Run(requestContext)
+func (subject *fakeSubject) SessionValue() *session.Session {
+	return subject.conversation
 }
 
-func newApprovalFixture(t *testing.T, settings approval.Config) *approvalFixture {
-	t.Helper()
-	state := &approvalFixture{engine: plugin.NewRuntime()}
-	if _, err := state.engine.Load(context.Background(), &approvalFixturePlugin{settings: settings, fixture: state}); err != nil {
-		t.Fatal(err)
+func (subject *fakeSubject) Inject(messageValue llm.UserMessage) error {
+	subject.mutex.Lock()
+	subject.injected = append(subject.injected, messageValue)
+	subject.mutex.Unlock()
+	return nil
+}
+
+type answererFunc func(
+	context.Context,
+	approval.Request,
+	plugin.WaterfallAction[approval.DecisionRequest, approval.Decision],
+) (approval.Outcome, error)
+
+func (operation answererFunc) Intercept(
+	requestContext context.Context,
+	request approval.DecisionRequest,
+	downstream plugin.WaterfallAction[
+		approval.DecisionRequest,
+		approval.Decision,
+	],
+) (approval.Decision, error) {
+	outcome, err := operation(
+		requestContext,
+		request.Request,
+		downstream,
+	)
+	return approval.Decision{
+		Outcome: outcome,
+	}, err
+}
+
+func newApprovalFixture(
+	testingContext *testing.T,
+	settings approval.Config,
+	middleware plugin.WaterfallMiddleware[
+		approval.DecisionRequest,
+		approval.Decision,
+	],
+) *approvalFixture {
+	testingContext.Helper()
+	promptSettings, err := systemprompt.ValidateConfig(systemprompt.Config{})
+	if err != nil {
+		testingContext.Fatal(err)
 	}
-	t.Cleanup(func() {
-		if err := state.engine.Shutdown(context.Background()); err != nil {
-			t.Error(err)
+	approvalSettings, err := approval.ValidateConfig(settings)
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	prompts := systemprompt.New(
+		promptSettings,
+		systemprompt.RegistryOptions{},
+	)
+	service := approval.New(approvalSettings)
+	plugins := []plugin.Plugin{
+		prompts,
+		service,
+	}
+	if middleware != nil {
+		plugins = append(plugins, &answererPlugin{
+			name:       "root-approval-answerer",
+			middleware: middleware,
+		})
+	}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	handles, err := runtimeEngine.Start(
+		context.Background(),
+		plugins...,
+	)
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	state := &approvalFixture{
+		runtimeEngine: runtimeEngine,
+		prompts:       prompts,
+		promptHandle:  handles[0],
+		service:       service,
+	}
+	testingContext.Cleanup(func() {
+		if err := runtimeEngine.Shutdown(context.Background()); err != nil {
+			testingContext.Error(err)
 		}
 	})
 	return state
 }
 
-func newSubject(t *testing.T, pluginScope *plugin.Scope, identifier session.SessionID) *fakeSubject {
-	t.Helper()
-	agentScope, _, err := pluginScope.Child(string(identifier))
+func (state *approvalFixture) mountOverlay(
+	testingContext *testing.T,
+	middleware plugin.WaterfallMiddleware[
+		approval.DecisionRequest,
+		approval.Decision,
+	],
+) *approval.Service {
+	testingContext.Helper()
+	promptOverlay := systemprompt.NewOverlay(systemprompt.RegistryOptions{})
+	promptOverlayHandle, err := state.runtimeEngine.MountScopedChild(
+		context.Background(),
+		state.promptHandle,
+		promptOverlay,
+	)
 	if err != nil {
-		t.Fatal(err)
+		testingContext.Fatal(err)
 	}
-	conversation, err := session.New(identifier, session.CreateOptions{})
-	if err != nil {
-		t.Fatal(err)
+	parentHandle := promptOverlayHandle
+	if middleware != nil {
+		answererHandle, mountErr := state.runtimeEngine.MountScopedChild(
+			context.Background(),
+			promptOverlayHandle,
+			&answererPlugin{
+				name:       "scoped-approval-answerer",
+				middleware: middleware,
+			},
+		)
+		if mountErr != nil {
+			testingContext.Fatal(mountErr)
+		}
+		parentHandle = answererHandle
 	}
-	return &fakeSubject{identifier: identifier, conversation: conversation, agentScope: agentScope}
+	approvalOverlay := approval.NewOverlay()
+	if _, err := state.runtimeEngine.MountScopedChild(
+		context.Background(),
+		parentHandle,
+		approvalOverlay,
+	); err != nil {
+		testingContext.Fatal(err)
+	}
+	return approvalOverlay
 }
 
-func openTurn(t *testing.T, conversation *session.Session) {
-	t.Helper()
-	if _, err := session.Append(conversation, session.TurnStarted, session.TurnStart{Turn: 1}); err != nil {
-		t.Fatal(err)
+func newSubject(
+	testingContext *testing.T,
+	identifier session.SessionID,
+) *fakeSubject {
+	testingContext.Helper()
+	conversation, err := session.New(identifier, session.CreateOptions{})
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	return &fakeSubject{
+		conversation: conversation,
+	}
+}
+
+func openTurn(testingContext *testing.T, conversation *session.Session) {
+	testingContext.Helper()
+	if _, err := session.Append(
+		conversation,
+		session.TurnStarted,
+		session.TurnStart{
+			Turn: 1,
+		},
+	); err != nil {
+		testingContext.Fatal(err)
 	}
 }
 
 func TestRequestRequiresOpenTurnAndPairsAudit(t *testing.T) {
 	t.Parallel()
-	state := newApprovalFixture(t, approval.Config{})
-	subject := newSubject(t, state.pluginScope, "approval-audit")
+	state := newApprovalFixture(t, approval.Config{}, nil)
+	subject := newSubject(t, "approval-audit")
 
-	if _, err := state.serviceValue.Request(context.Background(), approval.Request{
-		Subject: subject, ToolName: "echo",
-	}); err == nil || !strings.Contains(err.Error(), "outside an open turn") {
+	if _, err := state.service.Request(
+		context.Background(),
+		approval.Request{
+			Subject:  subject,
+			ToolName: "echo",
+		},
+	); err == nil || !strings.Contains(err.Error(), "outside an open turn") {
 		t.Fatalf("idle request error = %v", err)
 	}
 	if len(subject.conversation.Events()) != 0 {
@@ -151,9 +251,15 @@ func TestRequestRequiresOpenTurnAndPairsAudit(t *testing.T) {
 	openTurn(t, subject.conversation)
 	callIdentifier := llm.CallID("call-1")
 	reasonText := "hook says ask"
-	outcome, err := state.serviceValue.Request(context.Background(), approval.Request{
-		Subject: subject, ToolName: "echo", CallID: &callIdentifier, Reason: &reasonText,
-	})
+	outcome, err := state.service.Request(
+		context.Background(),
+		approval.Request{
+			Subject:  subject,
+			ToolName: "echo",
+			CallID:   &callIdentifier,
+			Reason:   &reasonText,
+		},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,10 +267,16 @@ func TestRequestRequiresOpenTurnAndPairsAudit(t *testing.T) {
 		t.Fatalf("outcome = %q", outcome)
 	}
 	entries := subject.conversation.Events()
-	if got := []string{entries[1].Type, entries[2].Type}; !reflect.DeepEqual(got, []string{
-		approval.AskedEventName, approval.DecidedEventName,
-	}) {
-		t.Fatalf("audit event types = %#v", got)
+	actualTypes := []string{
+		entries[1].Type,
+		entries[2].Type,
+	}
+	wantTypes := []string{
+		approval.AskedEventName,
+		approval.DecidedEventName,
+	}
+	if !reflect.DeepEqual(actualTypes, wantTypes) {
+		t.Fatalf("audit event types = %#v", actualTypes)
 	}
 	var asked approval.Asked
 	var decided approval.Decided
@@ -174,53 +286,91 @@ func TestRequestRequiresOpenTurnAndPairsAudit(t *testing.T) {
 	if err := json.Unmarshal(entries[2].Data, &decided); err != nil {
 		t.Fatal(err)
 	}
-	if asked.ID == "" || asked.ToolName != "echo" || asked.CallID == nil || *asked.CallID != callIdentifier ||
-		asked.Reason == nil || *asked.Reason != reasonText || decided.ID != asked.ID || decided.Outcome != outcome {
+	if asked.ID == "" || asked.ToolName != "echo" || asked.CallID == nil ||
+		*asked.CallID != callIdentifier || asked.Reason == nil ||
+		*asked.Reason != reasonText || decided.ID != asked.ID ||
+		decided.Outcome != outcome {
 		t.Fatalf("audit pair = (%#v, %#v)", asked, decided)
 	}
 }
 
-func TestRequestUsesMatchingScopedAnswererAndContainsFailure(t *testing.T) {
+func TestRequestUsesOverlayAnswererAndContainsFailure(t *testing.T) {
 	t.Parallel()
-	state := newApprovalFixture(t, approval.Config{})
-	subject := newSubject(t, state.pluginScope, "approval-scoped")
-	foreign := newSubject(t, state.pluginScope, "approval-foreign")
-	openTurn(t, subject.conversation)
-	heard := []string{}
-	if _, err := approval.OnRequest(state.pluginScope, func(_ context.Context, _ approval.Request, downstream approval.RequestNext) (approval.Outcome, error) {
+	heard := make([]string, 0)
+	state := newApprovalFixture(t, approval.Config{}, answererFunc(func(
+		requestContext context.Context,
+		approvalInput approval.Request,
+		downstream plugin.WaterfallAction[
+			approval.DecisionRequest,
+			approval.Decision,
+		],
+	) (approval.Outcome, error) {
 		heard = append(heard, "global")
-		return downstream(context.Background())
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := approval.OnRequest(subject.agentScope, func(context.Context, approval.Request, approval.RequestNext) (approval.Outcome, error) {
+		decision, err := downstream.Execute(
+			requestContext,
+			approval.DecisionRequest{
+				Request: approvalInput,
+			},
+		)
+		return decision.Outcome, err
+	}))
+	matching := state.mountOverlay(t, answererFunc(func(
+		context.Context,
+		approval.Request,
+		plugin.WaterfallAction[
+			approval.DecisionRequest,
+			approval.Decision,
+		],
+	) (approval.Outcome, error) {
 		heard = append(heard, "matching")
 		return approval.OutcomeAllowedOnce, nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := approval.OnRequest(foreign.agentScope, func(context.Context, approval.Request, approval.RequestNext) (approval.Outcome, error) {
+	}))
+	_ = state.mountOverlay(t, answererFunc(func(
+		context.Context,
+		approval.Request,
+		plugin.WaterfallAction[
+			approval.DecisionRequest,
+			approval.Decision,
+		],
+	) (approval.Outcome, error) {
 		heard = append(heard, "foreign")
 		return approval.OutcomeRejected, nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	outcome, err := state.serviceValue.Request(context.Background(), approval.Request{Subject: subject, ToolName: "echo"})
+	}))
+	subject := newSubject(t, "approval-scoped")
+	openTurn(t, subject.conversation)
+	outcome, err := matching.Request(context.Background(), approval.Request{
+		Subject:  subject,
+		ToolName: "echo",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if outcome != approval.OutcomeAllowedOnce || !reflect.DeepEqual(heard, []string{"global", "matching"}) {
-		t.Fatalf("scoped decision = (%q, %#v)", outcome, heard)
+	if outcome != approval.OutcomeAllowedOnce || !reflect.DeepEqual(
+		heard,
+		[]string{
+			"global",
+			"matching",
+		},
+	) {
+		t.Fatalf("overlay decision = (%q, %#v)", outcome, heard)
 	}
 
-	broken := newSubject(t, state.pluginScope, "approval-broken")
-	openTurn(t, broken.conversation)
-	if _, err := approval.OnRequest(broken.agentScope, func(context.Context, approval.Request, approval.RequestNext) (approval.Outcome, error) {
+	broken := state.mountOverlay(t, answererFunc(func(
+		context.Context,
+		approval.Request,
+		plugin.WaterfallAction[
+			approval.DecisionRequest,
+			approval.Decision,
+		],
+	) (approval.Outcome, error) {
 		return "rogue", errors.New("answerer failed")
-	}); err != nil {
-		t.Fatal(err)
-	}
-	outcome, err = state.serviceValue.Request(context.Background(), approval.Request{Subject: broken, ToolName: "echo"})
+	}))
+	brokenSubject := newSubject(t, "approval-broken")
+	openTurn(t, brokenSubject.conversation)
+	outcome, err = broken.Request(context.Background(), approval.Request{
+		Subject:  brokenSubject,
+		ToolName: "echo",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,35 +381,56 @@ func TestRequestUsesMatchingScopedAnswererAndContainsFailure(t *testing.T) {
 
 func TestPolicyFoldControlsDispatchAndPromptContext(t *testing.T) {
 	t.Parallel()
-	state := newApprovalFixture(t, approval.Config{})
-	subject := newSubject(t, state.pluginScope, "approval-policy")
-	openTurn(t, subject.conversation)
 	answererCalls := 0
-	if _, err := approval.OnRequest(subject.agentScope, func(context.Context, approval.Request, approval.RequestNext) (approval.Outcome, error) {
+	state := newApprovalFixture(t, approval.Config{}, answererFunc(func(
+		context.Context,
+		approval.Request,
+		plugin.WaterfallAction[
+			approval.DecisionRequest,
+			approval.Decision,
+		],
+	) (approval.Outcome, error) {
 		answererCalls++
 		return approval.OutcomeAllowedOnce, nil
-	}); err != nil {
+	}))
+	subject := newSubject(t, "approval-policy")
+	openTurn(t, subject.conversation)
+	if err := state.service.SetPolicy(
+		context.Background(),
+		subject,
+		approval.PolicyNever,
+	); err != nil {
 		t.Fatal(err)
 	}
-	if err := state.serviceValue.SetPolicy(context.Background(), subject, approval.PolicyNever); err != nil {
-		t.Fatal(err)
-	}
-	outcome, err := state.serviceValue.Request(context.Background(), approval.Request{Subject: subject, ToolName: "echo"})
+	outcome, err := state.service.Request(
+		context.Background(),
+		approval.Request{
+			Subject:  subject,
+			ToolName: "echo",
+		},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if outcome != approval.OutcomeRejected || answererCalls != 0 {
-		t.Fatalf("never policy decision = (%q, calls %d)", outcome, answererCalls)
+		t.Fatalf(
+			"never policy decision = (%q, calls %d)",
+			outcome,
+			answererCalls,
+		)
 	}
-	subject.mu.Lock()
+	subject.mutex.Lock()
 	injectedCount := len(subject.injected)
-	subject.mu.Unlock()
+	subject.mutex.Unlock()
 	if injectedCount != 1 {
 		t.Fatalf("injected policy notices = %d", injectedCount)
 	}
-	assembled, err := state.promptService.Assemble(context.Background(), systemprompt.AssembleContext{
-		Scope: subject.agentScope.Target(), Session: subject.conversation,
-	})
+	assembled, err := state.prompts.Assemble(
+		context.Background(),
+		systemprompt.AssembleContext{
+			Session: subject.conversation,
+		},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,10 +438,16 @@ func TestPolicyFoldControlsDispatchAndPromptContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(contextText, "Approval prompts are disabled in this session") {
+	if !strings.Contains(
+		contextText,
+		"Approval prompts are disabled in this session",
+	) {
 		t.Fatalf("policy context = %q", contextText)
 	}
-	bare, err := state.promptService.Assemble(context.Background(), systemprompt.AssembleContext{})
+	bare, err := state.prompts.Assemble(
+		context.Background(),
+		systemprompt.AssembleContext{},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,30 +455,41 @@ func TestPolicyFoldControlsDispatchAndPromptContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(bareText, "Approval policy") || strings.Contains(bareText, "Approval prompts") {
+	if strings.Contains(bareText, "Approval policy") ||
+		strings.Contains(bareText, "Approval prompts") {
 		t.Fatalf("bare context leaked policy = %q", bareText)
 	}
 }
 
 func TestRequestCancellationWinsAndAppendsOneDecision(t *testing.T) {
 	t.Parallel()
-	state := newApprovalFixture(t, approval.Config{})
-	subject := newSubject(t, state.pluginScope, "approval-cancel")
-	openTurn(t, subject.conversation)
 	started := make(chan struct{})
 	releaseAnswer := make(chan struct{})
-	if _, err := approval.OnRequest(subject.agentScope, func(context.Context, approval.Request, approval.RequestNext) (approval.Outcome, error) {
+	state := newApprovalFixture(t, approval.Config{}, answererFunc(func(
+		context.Context,
+		approval.Request,
+		plugin.WaterfallAction[
+			approval.DecisionRequest,
+			approval.Decision,
+		],
+	) (approval.Outcome, error) {
 		close(started)
 		<-releaseAnswer
 		return approval.OutcomeAllowedOnce, nil
-	}); err != nil {
-		t.Fatal(err)
-	}
+	}))
+	subject := newSubject(t, "approval-cancel")
+	openTurn(t, subject.conversation)
 	requestContext, cancelRequest := context.WithCancel(context.Background())
 	settled := make(chan approval.Outcome, 1)
 	failed := make(chan error, 1)
 	go func() {
-		outcome, err := state.serviceValue.Request(requestContext, approval.Request{Subject: subject, ToolName: "echo"})
+		outcome, err := state.service.Request(
+			requestContext,
+			approval.Request{
+				Subject:  subject,
+				ToolName: "echo",
+			},
+		)
 		if err != nil {
 			failed <- err
 			return

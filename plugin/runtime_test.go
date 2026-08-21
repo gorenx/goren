@@ -3,363 +3,781 @@ package plugin_test
 import (
 	"context"
 	"errors"
-	"reflect"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/gorenx/goren/plugin"
 )
 
-type textService interface {
-	Text() string
+type clock interface {
+	plugin.Service
+	Value() string
 }
 
-type textValue string
-
-func (providedValue textValue) Text() string {
-	return string(providedValue)
+type clockProvider struct {
+	plugin.Base
+	value        string
+	order        *[]string
+	applications int
+	disposals    int
 }
 
-var textServiceKey = plugin.DefineService[textService]("contract.text")
-
-type fixturePlugin struct {
-	metadata plugin.Manifest
-	body     func(context.Context, *plugin.Scope) error
+func (provider *clockProvider) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "clock",
+		Provides: []plugin.ServiceType{
+			plugin.ServiceOf[clock](),
+		},
+	}
 }
 
-func (instance fixturePlugin) Manifest() plugin.Manifest {
-	return instance.metadata
+func (provider *clockProvider) Apply(context.Context) error {
+	provider.applications++
+	if provider.order != nil {
+		*provider.order = append(*provider.order, "clock:apply")
+	}
+	return nil
 }
 
-func (instance fixturePlugin) Apply(requestContext context.Context, pluginScope *plugin.Scope) error {
-	return instance.body(requestContext, pluginScope)
+func (provider *clockProvider) Dispose(context.Context) error {
+	provider.disposals++
+	if provider.order != nil {
+		*provider.order = append(*provider.order, "clock:dispose")
+	}
+	return nil
 }
 
-func TestRuntimeWaitsForRequiredServiceAndRestartsConsumer(t *testing.T) {
+func (provider *clockProvider) Value() string {
+	return provider.value
+}
+
+type clockConsumer struct {
+	plugin.Base
+	selected clock
+	order    *[]string
+	applies  int
+}
+
+type clockDecorator struct {
+	plugin.Base
+	upstream clock
+	prefix   string
+}
+
+func (*clockDecorator) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "clock-decorator",
+		Provides: []plugin.ServiceType{
+			plugin.ServiceOf[clock](),
+		},
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[clock](),
+		},
+	}
+}
+
+func (decorator *clockDecorator) Apply(context.Context) error {
+	upstream, err := plugin.Require[clock](decorator)
+	if err != nil {
+		return err
+	}
+	decorator.upstream = upstream
+	return nil
+}
+
+func (decorator *clockDecorator) Dispose(context.Context) error {
+	decorator.upstream = nil
+	return nil
+}
+
+func (decorator *clockDecorator) Value() string {
+	return decorator.prefix + decorator.upstream.Value()
+}
+
+func (consumer *clockConsumer) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "clock-consumer",
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[clock](),
+		},
+	}
+}
+
+func (consumer *clockConsumer) Apply(context.Context) error {
+	selected, err := plugin.Require[clock](consumer)
+	if err != nil {
+		return err
+	}
+	consumer.selected = selected
+	consumer.applies++
+	if consumer.order != nil {
+		*consumer.order = append(*consumer.order, "consumer:apply")
+	}
+	return nil
+}
+
+func (consumer *clockConsumer) Dispose(context.Context) error {
+	consumer.selected = nil
+	if consumer.order != nil {
+		*consumer.order = append(*consumer.order, "consumer:dispose")
+	}
+	return nil
+}
+
+type failingPlugin struct {
+	plugin.Base
+	disposals int
+}
+
+func (*failingPlugin) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "failing",
+	}
+}
+
+func (*failingPlugin) Apply(context.Context) error {
+	return errors.New("apply failed")
+}
+
+func (candidate *failingPlugin) Dispose(context.Context) error {
+	candidate.disposals++
+	return nil
+}
+
+type optionalClockConsumer struct {
+	plugin.Base
+	selected clock
+	applies  int
+}
+
+type failingClockReplacement struct {
+	plugin.Base
+	disposals int
+}
+
+func (*failingClockReplacement) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "clock",
+		Provides: []plugin.ServiceType{
+			plugin.ServiceOf[clock](),
+		},
+	}
+}
+
+func (*failingClockReplacement) Apply(context.Context) error {
+	return errors.New("replacement apply failed")
+}
+
+func (replacement *failingClockReplacement) Dispose(context.Context) error {
+	replacement.disposals++
+	return nil
+}
+
+func (*failingClockReplacement) Value() string {
+	return "unavailable"
+}
+
+func (*optionalClockConsumer) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "optional-clock-consumer",
+		Optional: []plugin.ServiceType{
+			plugin.ServiceOf[clock](),
+		},
+	}
+}
+
+func (consumer *optionalClockConsumer) Apply(context.Context) error {
+	consumer.selected, _ = plugin.Resolve[clock](consumer)
+	consumer.applies++
+	return nil
+}
+
+func (consumer *optionalClockConsumer) Dispose(context.Context) error {
+	consumer.selected = nil
+	return nil
+}
+
+func TestRuntimeDerivesStableServiceIdentityFromGoType(t *testing.T) {
 	t.Parallel()
-	requestContext := context.Background()
-	engine := plugin.NewRuntime()
-	transitions := []string{}
-	consumerStarts := 0
-	consumer := fixturePlugin{
-		metadata: plugin.Manifest{Name: "consumer", Requires: []plugin.ServiceRef{textServiceKey.Ref()}},
-		body: func(_ context.Context, pluginScope *plugin.Scope) error {
-			dependency, found := plugin.Require(pluginScope, textServiceKey)
-			if !found {
-				return errors.New("required service missing during Apply")
-			}
-			consumerStarts++
-			captured := dependency.Text()
-			transitions = append(transitions, "consumer.start:"+captured)
-			return pluginScope.Effect(requestContext, "consumer", func(context.Context) (plugin.Disposer, error) {
-				return func(context.Context) error {
-					transitions = append(transitions, "consumer.stop:"+captured)
-					return nil
-				}, nil
-			})
-		},
+	leftType := plugin.ServiceOf[clock]()
+	rightType := plugin.ServiceOf[clock]()
+	if leftType.Name() != rightType.Name() {
+		t.Fatalf("same Go interface produced different names: %q != %q", leftType.Name(), rightType.Name())
 	}
-	consumerHandle, err := engine.Load(requestContext, consumer)
-	if err != nil {
-		t.Fatal(err)
-	}
-	consumerStatus, err := engine.Status(consumerHandle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if consumerStatus.State != plugin.StateWaiting || consumerStarts != 0 {
-		t.Fatalf("waiting consumer = (%s, %d starts)", consumerStatus.State, consumerStarts)
-	}
-
-	providerV1 := newTextProvider("provider-v1", "v1", &transitions)
-	providerHandle, err := engine.Load(requestContext, providerV1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	consumerStatus, err = engine.Status(consumerHandle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if consumerStatus.State != plugin.StateActive || consumerStarts != 1 {
-		t.Fatalf("active consumer = (%s, %d starts)", consumerStatus.State, consumerStarts)
-	}
-
-	duplicate := newTextProvider("duplicate", "duplicate", &transitions)
-	if _, err := engine.Load(requestContext, duplicate); err == nil {
-		t.Fatal("duplicate provider load succeeded")
-	}
-	if err := engine.Unload(requestContext, providerHandle); err != nil {
-		t.Fatal(err)
-	}
-	consumerStatus, err = engine.Status(consumerHandle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if consumerStatus.State != plugin.StateWaiting {
-		t.Fatalf("consumer state after provider unload = %s", consumerStatus.State)
-	}
-
-	if _, err := engine.Load(requestContext, newTextProvider("provider-v2", "v2", &transitions)); err != nil {
-		t.Fatal(err)
-	}
-	if consumerStarts != 2 {
-		t.Fatalf("consumer starts = %d, want 2", consumerStarts)
-	}
-	want := []string{
-		"provider.start:v1", "consumer.start:v1", "consumer.stop:v1", "provider.stop:v1",
-		"provider.start:v2", "consumer.start:v2",
-	}
-	if !reflect.DeepEqual(transitions, want) {
-		t.Fatalf("transitions = %#v, want %#v", transitions, want)
+	if !strings.Contains(leftType.Name(), ".clock") {
+		t.Fatalf("service name %q does not identify the business interface", leftType.Name())
 	}
 }
 
-func TestRuntimeRollsBackFailedApplyInLIFOOrder(t *testing.T) {
+func TestRuntimeRejectsManifestServiceNotImplementedByPlugin(t *testing.T) {
 	t.Parallel()
-	requestContext := context.Background()
-	engine := plugin.NewRuntime()
-	releases := []string{}
-	broken := fixturePlugin{
-		metadata: plugin.Manifest{Name: "broken", Provides: []plugin.ServiceRef{textServiceKey.Ref()}},
-		body: func(_ context.Context, pluginScope *plugin.Scope) error {
-			if _, err := plugin.Provide(pluginScope, textServiceKey, textService(textValue("broken"))); err != nil {
-				return err
-			}
-			for _, label := range []string{"first", "second"} {
-				captured := label
-				if err := pluginScope.Effect(requestContext, captured, func(context.Context) (plugin.Disposer, error) {
-					return func(context.Context) error {
-						releases = append(releases, captured)
-						return nil
-					}, nil
-				}); err != nil {
-					return err
-				}
-			}
-			return errors.New("startup failed")
-		},
-	}
-	brokenHandle, err := engine.Load(requestContext, broken)
-	if err == nil || err.Error() != "startup failed" {
-		t.Fatalf("load error = %v", err)
-	}
-	if !reflect.DeepEqual(releases, []string{"second", "first"}) {
-		t.Fatalf("release order = %#v", releases)
-	}
-	brokenStatus, statusErr := engine.Status(brokenHandle)
-	if statusErr != nil {
-		t.Fatal(statusErr)
-	}
-	if brokenStatus.State != plugin.StateFailed || len(brokenStatus.Effects) != 0 {
-		t.Fatalf("failed status = %#v", brokenStatus)
-	}
-	if err := engine.Unload(requestContext, brokenHandle); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := engine.Load(requestContext, newTextProvider("healthy", "ok", &releases)); err != nil {
-		t.Fatalf("service leaked from failed activation: %v", err)
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	if _, err := runtimeEngine.Start(
+		context.Background(),
+		&invalidClockProvider{},
+	); err == nil || !strings.Contains(err.Error(), "does not implement") {
+		t.Fatalf("Start error = %v", err)
 	}
 }
 
-func TestRuntimeReplacementKeepsLastKnownGoodAndRestartsDependents(t *testing.T) {
+type invalidClockProvider struct {
+	plugin.Base
+}
+
+func (*invalidClockProvider) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "invalid-clock",
+		Provides: []plugin.ServiceType{
+			plugin.ServiceOf[clock](),
+		},
+	}
+}
+
+func (*invalidClockProvider) Apply(context.Context) error {
+	return nil
+}
+
+func (*invalidClockProvider) Dispose(context.Context) error {
+	return nil
+}
+
+func TestRuntimeStartsProvidersBeforeConsumersWithoutExplicitProvide(t *testing.T) {
 	t.Parallel()
-	requestContext := context.Background()
-	engine := plugin.NewRuntime()
-	transitions := []string{}
-	providerHandle, err := engine.Load(requestContext, newTextProvider("provider", "v1", &transitions))
+	order := make([]string, 0)
+	provider := &clockProvider{
+		value: "root",
+		order: &order,
+	}
+	consumer := &clockConsumer{
+		order: &order,
+	}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	handles, err := runtimeEngine.Start(
+		context.Background(),
+		consumer,
+		provider,
+	)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("start: %v", err)
 	}
-	consumer := fixturePlugin{
-		metadata: plugin.Manifest{Name: "consumer", Requires: []plugin.ServiceRef{textServiceKey.Ref()}},
-		body: func(_ context.Context, pluginScope *plugin.Scope) error {
-			dependency, found := plugin.Require(pluginScope, textServiceKey)
-			if !found {
-				return errors.New("required service missing")
-			}
-			captured := dependency.Text()
-			transitions = append(transitions, "consumer.start:"+captured)
-			return pluginScope.Effect(requestContext, "consumer", func(context.Context) (plugin.Disposer, error) {
-				return func(context.Context) error {
-					transitions = append(transitions, "consumer.stop:"+captured)
-					return nil
-				}, nil
-			})
-		},
+	if len(handles) != 2 {
+		t.Fatalf("got %d handles, want 2", len(handles))
 	}
-	if _, err := engine.Load(requestContext, consumer); err != nil {
-		t.Fatal(err)
+	if consumer.selected == nil || consumer.selected.Value() != "root" {
+		t.Fatal("consumer did not receive the declared Service")
 	}
-
-	failedCandidate := newTextProvider("provider", "bad", &transitions).(fixturePlugin)
-	failedBody := failedCandidate.body
-	failedCandidate.body = func(requestContext context.Context, pluginScope *plugin.Scope) error {
-		if err := failedBody(requestContext, pluginScope); err != nil {
-			return err
-		}
-		return errors.New("candidate failed")
+	if got := strings.Join(order, ","); got != "clock:apply,consumer:apply" {
+		t.Fatalf("activation order = %q", got)
 	}
-	if err := engine.Replace(requestContext, providerHandle, failedCandidate); err == nil {
-		t.Fatal("failed replacement succeeded")
+	if err := runtimeEngine.Shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown: %v", err)
 	}
-	activeValue, found := currentText(engine, requestContext)
-	if !found || activeValue != "v1" {
-		t.Fatalf("last-known-good service = %q, %t", activeValue, found)
-	}
-
-	if err := engine.Replace(requestContext, providerHandle, newTextProvider("provider", "v2", &transitions)); err != nil {
-		t.Fatal(err)
-	}
-	activeValue, found = currentText(engine, requestContext)
-	if !found || activeValue != "v2" {
-		t.Fatalf("replacement service = %q, %t", activeValue, found)
-	}
-	want := []string{
-		"provider.start:v1", "consumer.start:v1",
-		"provider.start:bad", "provider.stop:bad",
-		"provider.start:v2", "consumer.stop:v1", "provider.stop:v1", "consumer.start:v2",
-	}
-	if !reflect.DeepEqual(transitions, want) {
-		t.Fatalf("transitions = %#v, want %#v", transitions, want)
+	if got := strings.Join(order, ","); got != "clock:apply,consumer:apply,consumer:dispose,clock:dispose" {
+		t.Fatalf("shutdown order = %q", got)
 	}
 }
 
-func TestRuntimeShutdownIsDependentFirst(t *testing.T) {
+func TestRuntimeRollsBackFailedStartAndAllowsRetry(t *testing.T) {
 	t.Parallel()
-	requestContext := context.Background()
-	engine := plugin.NewRuntime()
-	transitions := []string{}
-	if _, err := engine.Load(requestContext, newTextProvider("provider", "v1", &transitions)); err != nil {
-		t.Fatal(err)
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	consumer := &clockConsumer{}
+	if _, err := runtimeEngine.Start(context.Background(), consumer); err == nil {
+		t.Fatal("missing dependency Start succeeded")
 	}
-	consumer := fixturePlugin{
-		metadata: plugin.Manifest{Name: "consumer", Requires: []plugin.ServiceRef{textServiceKey.Ref()}},
-		body: func(_ context.Context, pluginScope *plugin.Scope) error {
-			transitions = append(transitions, "consumer.start")
-			return pluginScope.Effect(requestContext, "consumer", func(context.Context) (plugin.Disposer, error) {
-				return func(context.Context) error {
-					transitions = append(transitions, "consumer.stop")
-					return nil
-				}, nil
-			})
-		},
+	provider := &clockProvider{
+		value: "retry",
 	}
-	if _, err := engine.Load(requestContext, consumer); err != nil {
-		t.Fatal(err)
+	if _, err := runtimeEngine.Start(
+		context.Background(),
+		consumer,
+		provider,
+	); err != nil {
+		t.Fatalf("retry Start: %v", err)
 	}
-	if err := engine.Shutdown(requestContext); err != nil {
-		t.Fatal(err)
-	}
-	wantSuffix := []string{"consumer.stop", "provider.stop:v1"}
-	if !reflect.DeepEqual(transitions[len(transitions)-2:], wantSuffix) {
-		t.Fatalf("shutdown suffix = %#v", transitions)
-	}
-	if _, err := engine.Load(requestContext, consumer); err == nil {
-		t.Fatal("load after shutdown succeeded")
+	if consumer.selected == nil || consumer.selected.Value() != "retry" {
+		t.Fatal("retry did not resolve Service")
 	}
 }
 
-func TestProvidedServiceDisposerUpdatesLiveDependencyGraph(t *testing.T) {
+func TestApplyFailureDisposesPartialPluginAndBatch(t *testing.T) {
 	t.Parallel()
-	requestContext := context.Background()
-	engine := plugin.NewRuntime()
-	transitions := []string{}
-	var providerScope *plugin.Scope
-	var withdraw plugin.Disposer
-	provider := fixturePlugin{
-		metadata: plugin.Manifest{Name: "dynamic-provider", Provides: []plugin.ServiceRef{textServiceKey.Ref()}},
-		body: func(_ context.Context, pluginScope *plugin.Scope) error {
-			providerScope = pluginScope
-			var err error
-			withdraw, err = plugin.Provide(pluginScope, textServiceKey, textService(textValue("v1")))
-			return err
-		},
+	order := make([]string, 0)
+	provider := &clockProvider{
+		value: "ready",
+		order: &order,
 	}
-	if _, err := engine.Load(requestContext, provider); err != nil {
-		t.Fatal(err)
+	failing := &failingPlugin{}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	if _, err := runtimeEngine.Start(
+		context.Background(),
+		provider,
+		failing,
+	); err == nil {
+		t.Fatal("failed Apply did not fail Start")
 	}
-	consumerHandle, err := engine.Load(requestContext, fixturePlugin{
-		metadata: plugin.Manifest{Name: "dynamic-consumer", Requires: []plugin.ServiceRef{textServiceKey.Ref()}},
-		body: func(_ context.Context, pluginScope *plugin.Scope) error {
-			dependency, found := plugin.Require(pluginScope, textServiceKey)
-			if !found {
-				return errors.New("dynamic service missing")
-			}
-			captured := dependency.Text()
-			transitions = append(transitions, "start:"+captured)
-			return pluginScope.Effect(requestContext, "consumer", func(context.Context) (plugin.Disposer, error) {
-				return func(context.Context) error {
-					transitions = append(transitions, "stop:"+captured)
-					return nil
-				}, nil
-			})
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
+	if failing.disposals != 1 {
+		t.Fatalf("partial Plugin Dispose calls = %d, want 1", failing.disposals)
 	}
-	if err := withdraw(requestContext); err != nil {
-		t.Fatal(err)
-	}
-	consumerStatus, err := engine.Status(consumerHandle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if consumerStatus.State != plugin.StateWaiting {
-		t.Fatalf("consumer after withdrawal = %s", consumerStatus.State)
-	}
-	if _, err := plugin.Provide(providerScope, textServiceKey, textService(textValue("v2"))); err != nil {
-		t.Fatal(err)
-	}
-	consumerStatus, err = engine.Status(consumerHandle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if consumerStatus.State != plugin.StateActive {
-		t.Fatalf("consumer after re-provide = %s", consumerStatus.State)
-	}
-	want := []string{"start:v1", "stop:v1", "start:v2"}
-	if !reflect.DeepEqual(transitions, want) {
-		t.Fatalf("transitions = %#v, want %#v", transitions, want)
+	if provider.disposals != 1 {
+		t.Fatalf("activated Plugin Dispose calls = %d, want 1", provider.disposals)
 	}
 }
 
-func newTextProvider(providerName string, providedValue textValue, transitions *[]string) plugin.Plugin {
-	return fixturePlugin{
-		metadata: plugin.Manifest{Name: providerName, Provides: []plugin.ServiceRef{textServiceKey.Ref()}},
-		body: func(requestContext context.Context, pluginScope *plugin.Scope) error {
-			*transitions = append(*transitions, "provider.start:"+providedValue.Text())
-			if _, err := plugin.Provide(pluginScope, textServiceKey, textService(providedValue)); err != nil {
-				return err
-			}
-			return pluginScope.Effect(requestContext, "provider", func(context.Context) (plugin.Disposer, error) {
-				return func(context.Context) error {
-					*transitions = append(*transitions, "provider.stop:"+providedValue.Text())
-					return nil
-				}, nil
-			})
-		},
+func TestRequireIsOnlyAvailableDuringApply(t *testing.T) {
+	t.Parallel()
+	provider := &clockProvider{
+		value: "ready",
+	}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	if _, err := runtimeEngine.Start(context.Background(), provider); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if _, err := plugin.Require[clock](provider); !errors.Is(
+		err,
+		plugin.ErrDependencyResolutionClosed,
+	) {
+		t.Fatalf("Require outside Apply error = %v", err)
 	}
 }
 
-func currentText(engine *plugin.Runtime, requestContext context.Context) (string, bool) {
-	value := ""
-	found := false
-	probe := fixturePlugin{
-		metadata: plugin.Manifest{Name: "probe", Optional: []plugin.ServiceRef{textServiceKey.Ref()}},
-		body:     func(context.Context, *plugin.Scope) error { return nil },
+func TestChildScopeInheritsAndOverridesService(t *testing.T) {
+	t.Parallel()
+	rootProvider := &clockProvider{
+		value: "root",
 	}
-	probe.body = func(_ context.Context, pluginScope *plugin.Scope) error {
-		dependency, available := plugin.Require(pluginScope, textServiceKey)
-		if available {
-			value = dependency.Text()
-			found = true
-		}
-		return nil
-	}
-	probeHandle, err := engine.Load(requestContext, probe)
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	rootHandles, err := runtimeEngine.Start(context.Background(), rootProvider)
 	if err != nil {
-		return "", false
+		t.Fatalf("start: %v", err)
 	}
-	_ = engine.Unload(requestContext, probeHandle)
-	return value, found
+	inherited := &clockConsumer{}
+	if _, err := runtimeEngine.MountScopedChild(
+		context.Background(),
+		rootHandles[0],
+		inherited,
+	); err != nil {
+		t.Fatalf("mount inherited consumer: %v", err)
+	}
+	if inherited.selected.Value() != "root" {
+		t.Fatalf("inherited Service = %q", inherited.selected.Value())
+	}
+
+	override := &clockProvider{
+		value: "child",
+	}
+	overrideHandle, err := runtimeEngine.MountScopedChild(
+		context.Background(),
+		rootHandles[0],
+		override,
+	)
+	if err != nil {
+		t.Fatalf("mount override: %v", err)
+	}
+	overridden := &clockConsumer{}
+	if _, err := runtimeEngine.MountScopedChild(
+		context.Background(),
+		overrideHandle,
+		overridden,
+	); err != nil {
+		t.Fatalf("mount overridden consumer: %v", err)
+	}
+	if overridden.selected.Value() != "child" {
+		t.Fatalf("overridden Service = %q", overridden.selected.Value())
+	}
+}
+
+func TestChildFiberSharesParentScope(t *testing.T) {
+	t.Parallel()
+	rootProvider := &clockProvider{
+		value: "root",
+	}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	rootHandles, err := runtimeEngine.Start(context.Background(), rootProvider)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	duplicateProvider := &clockProvider{
+		value: "duplicate",
+	}
+	if _, err := runtimeEngine.MountChild(
+		context.Background(),
+		rootHandles[0],
+		duplicateProvider,
+	); !errors.Is(err, plugin.ErrServiceConflict) {
+		t.Fatalf("same-Scope duplicate Service error = %v", err)
+	}
+	if duplicateProvider.applications != 0 || duplicateProvider.disposals != 0 {
+		t.Fatalf(
+			"conflicting provider lifecycle = (Apply %d, Dispose %d), want (0, 0)",
+			duplicateProvider.applications,
+			duplicateProvider.disposals,
+		)
+	}
+	consumer := &clockConsumer{}
+	if _, err := runtimeEngine.MountChild(
+		context.Background(),
+		rootHandles[0],
+		consumer,
+	); err != nil {
+		t.Fatalf("mount same-Scope consumer: %v", err)
+	}
+	if consumer.selected != rootProvider {
+		t.Fatal("same-Scope child did not resolve the parent Service")
+	}
+}
+
+func TestActivePluginOwnsDynamicChildTree(t *testing.T) {
+	t.Parallel()
+	rootProvider := &clockProvider{
+		value: "root",
+	}
+	parent := &eventPublisherPlugin{
+		name: "dynamic-parent",
+	}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	rootHandles, err := runtimeEngine.Start(
+		context.Background(),
+		rootProvider,
+		parent,
+	)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	scopedProvider := &clockProvider{
+		value: "scoped",
+	}
+	scopedHandle, err := plugin.MountScopedChild(
+		context.Background(),
+		parent,
+		scopedProvider,
+	)
+	if err != nil {
+		t.Fatalf("mount owned scoped child: %v", err)
+	}
+	consumer := &clockConsumer{}
+	consumerHandle, err := plugin.MountChild(
+		context.Background(),
+		scopedProvider,
+		consumer,
+	)
+	if err != nil {
+		t.Fatalf("mount owned same-Scope child: %v", err)
+	}
+	if consumer.selected != scopedProvider || consumer.selected.Value() != "scoped" {
+		t.Fatal("owned same-Scope child did not resolve the scoped Service")
+	}
+	if err := plugin.UnloadChild(
+		context.Background(),
+		parent,
+		consumerHandle,
+	); err == nil || !strings.Contains(err.Error(), "not a direct child") {
+		t.Fatalf("unload unrelated descendant error = %v", err)
+	}
+	if err := plugin.UnloadChild(
+		context.Background(),
+		parent,
+		rootHandles[0],
+	); err == nil || !strings.Contains(err.Error(), "not a direct child") {
+		t.Fatalf("unload unrelated root error = %v", err)
+	}
+	if err := plugin.UnloadChild(
+		context.Background(),
+		parent,
+		scopedHandle,
+	); err != nil {
+		t.Fatalf("unload owned scoped child: %v", err)
+	}
+	if consumer.selected != nil {
+		t.Fatal("owned descendant was not disposed with its parent")
+	}
+	if scopedProvider.disposals != 1 {
+		t.Fatalf("scoped Provider Dispose calls = %d, want 1", scopedProvider.disposals)
+	}
+}
+
+func TestChildPluginDecoratesAncestorService(t *testing.T) {
+	t.Parallel()
+	rootProvider := &clockProvider{
+		value: "root",
+	}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	rootHandles, err := runtimeEngine.Start(context.Background(), rootProvider)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	decorator := &clockDecorator{
+		prefix: "child:",
+	}
+	decoratorHandle, err := runtimeEngine.MountScopedChild(
+		context.Background(),
+		rootHandles[0],
+		decorator,
+	)
+	if err != nil {
+		t.Fatalf("mount decorator: %v", err)
+	}
+	consumer := &clockConsumer{}
+	if _, err := runtimeEngine.MountScopedChild(
+		context.Background(),
+		decoratorHandle,
+		consumer,
+	); err != nil {
+		t.Fatalf("mount consumer: %v", err)
+	}
+	if decorator.upstream != rootProvider {
+		t.Fatal("decorator did not resolve the ancestor provider")
+	}
+	if consumer.selected != decorator || consumer.selected.Value() != "child:root" {
+		t.Fatalf("decorated Service = %q", consumer.selected.Value())
+	}
+}
+
+func TestReplaceReactivatesHardDependents(t *testing.T) {
+	t.Parallel()
+	firstProvider := &clockProvider{
+		value: "v1",
+	}
+	consumer := &clockConsumer{}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	handles, err := runtimeEngine.Start(
+		context.Background(),
+		firstProvider,
+		consumer,
+	)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	replacement := &clockProvider{
+		value: "v2",
+	}
+	if err := runtimeEngine.Replace(
+		context.Background(),
+		handles[0],
+		replacement,
+	); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	if consumer.applies != 2 {
+		t.Fatalf("consumer Apply calls = %d, want 2", consumer.applies)
+	}
+	if consumer.selected == nil || consumer.selected.Value() != "v2" {
+		t.Fatal("consumer retained the replaced provider")
+	}
+	if firstProvider.disposals != 1 {
+		t.Fatalf("previous provider Dispose calls = %d, want 1", firstProvider.disposals)
+	}
+}
+
+func TestFailedReplacementKeepsCurrentFiberAndDependentsActive(t *testing.T) {
+	t.Parallel()
+	provider := &clockProvider{
+		value: "current",
+	}
+	consumer := &clockConsumer{}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	handles, err := runtimeEngine.Start(
+		context.Background(),
+		provider,
+		consumer,
+	)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	replacement := &failingClockReplacement{}
+	if err := runtimeEngine.Replace(
+		context.Background(),
+		handles[0],
+		replacement,
+	); err == nil || !strings.Contains(err.Error(), "replacement apply failed") {
+		t.Fatalf("replace error = %v", err)
+	}
+	if replacement.disposals != 1 {
+		t.Fatalf("replacement Dispose calls = %d, want 1", replacement.disposals)
+	}
+	if provider.disposals != 0 {
+		t.Fatalf("current provider Dispose calls = %d, want 0", provider.disposals)
+	}
+	if consumer.applies != 1 || consumer.selected != provider {
+		t.Fatal("failed replacement disturbed the active dependent")
+	}
+}
+
+func TestReplaceReactivatesResolvedOptionalDependents(t *testing.T) {
+	t.Parallel()
+	firstProvider := &clockProvider{
+		value: "v1",
+	}
+	consumer := &optionalClockConsumer{}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	handles, err := runtimeEngine.Start(
+		context.Background(),
+		firstProvider,
+		consumer,
+	)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	replacement := &clockProvider{
+		value: "v2",
+	}
+	if err := runtimeEngine.Replace(
+		context.Background(),
+		handles[0],
+		replacement,
+	); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	if consumer.applies != 2 {
+		t.Fatalf("optional consumer Apply calls = %d, want 2", consumer.applies)
+	}
+	if consumer.selected == nil || consumer.selected.Value() != "v2" {
+		t.Fatal("optional consumer retained the replaced provider")
+	}
+}
+
+func TestMountReactivatesPreviouslyAbsentOptionalConsumer(t *testing.T) {
+	t.Parallel()
+	consumer := &optionalClockConsumer{}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	if _, err := runtimeEngine.Start(
+		context.Background(),
+		consumer,
+	); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if consumer.applies != 1 || consumer.selected != nil {
+		t.Fatalf(
+			"initial optional resolution = (applies %d, selected %#v)",
+			consumer.applies,
+			consumer.selected,
+		)
+	}
+	provider := &clockProvider{
+		value: "mounted",
+	}
+	if _, err := runtimeEngine.Mount(
+		context.Background(),
+		provider,
+	); err != nil {
+		t.Fatalf("mount provider: %v", err)
+	}
+	if consumer.applies != 2 {
+		t.Fatalf("optional consumer Apply calls = %d, want 2", consumer.applies)
+	}
+	if consumer.selected == nil || consumer.selected.Value() != "mounted" {
+		t.Fatal("optional consumer did not resolve the mounted provider")
+	}
+}
+
+func TestUnloadProviderStopsAndRemountReactivatesHardDependent(t *testing.T) {
+	t.Parallel()
+	provider := &clockProvider{
+		value: "first",
+	}
+	consumer := &clockConsumer{}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	handles, err := runtimeEngine.Start(
+		context.Background(),
+		provider,
+		consumer,
+	)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err = runtimeEngine.Unload(context.Background(), handles[0]); err != nil {
+		t.Fatalf("unload provider: %v", err)
+	}
+	if consumer.selected != nil {
+		t.Fatal("hard dependent retained the unloaded provider")
+	}
+	replacement := &clockProvider{
+		value: "second",
+	}
+	if _, err = runtimeEngine.Mount(context.Background(), replacement); err != nil {
+		t.Fatalf("mount replacement provider: %v", err)
+	}
+	if consumer.applies != 2 || consumer.selected != replacement {
+		t.Fatal("hard dependent did not reactivate against the replacement provider")
+	}
+}
+
+func TestScopedProviderDoesNotRefreshAncestorOptionalConsumer(t *testing.T) {
+	t.Parallel()
+	consumer := &optionalClockConsumer{}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	handles, err := runtimeEngine.Start(context.Background(), consumer)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	provider := &clockProvider{
+		value: "scoped",
+	}
+	scopedHandle, err := runtimeEngine.MountScopedChild(
+		context.Background(),
+		handles[0],
+		provider,
+	)
+	if err != nil {
+		t.Fatalf("mount scoped provider: %v", err)
+	}
+	if consumer.applies != 1 || consumer.selected != nil {
+		t.Fatal("child-Scope provider changed its ancestor optional consumer")
+	}
+	if err = plugin.UnloadChild(
+		context.Background(),
+		consumer,
+		scopedHandle,
+	); err != nil {
+		t.Fatalf("unload scoped provider: %v", err)
+	}
+	if consumer.applies != 1 || consumer.selected != nil {
+		t.Fatal("child-Scope unload changed its ancestor optional consumer")
+	}
+}
+
+func TestLifetimeIsCancelledBeforeDispose(t *testing.T) {
+	t.Parallel()
+	cancellationObserved := make(chan struct{}, 1)
+	lifecycle := &lifetimePlugin{
+		cancellationObserved: cancellationObserved,
+	}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	handles, err := runtimeEngine.Start(context.Background(), lifecycle)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := runtimeEngine.Unload(context.Background(), handles[0]); err != nil {
+		t.Fatalf("unload: %v", err)
+	}
+	select {
+	case <-cancellationObserved:
+	default:
+		t.Fatal("Dispose did not observe a cancelled lifetime")
+	}
+}
+
+type lifetimePlugin struct {
+	plugin.Base
+	cancellationObserved chan<- struct{}
+	once                 sync.Once
+}
+
+func (*lifetimePlugin) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "lifetime",
+	}
+}
+
+func (*lifetimePlugin) Apply(context.Context) error {
+	return nil
+}
+
+func (lifecycle *lifetimePlugin) Dispose(context.Context) error {
+	if plugin.Lifetime(lifecycle).Err() != nil {
+		lifecycle.once.Do(func() {
+			lifecycle.cancellationObserved <- struct{}{}
+		})
+	}
+	return nil
 }

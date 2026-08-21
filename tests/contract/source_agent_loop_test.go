@@ -22,116 +22,84 @@ import (
 
 type agentLoopContractState struct {
 	engine        *plugin.Runtime
-	providerScope *plugin.Scope
-	agents        agent.Registry
-	models        llm.LlmRuntime
-	toolRuntime   tools.ToolRuntime
-	prompts       systemprompt.SystemPrompt
-	loopRuntime   agentloop.Loop
+	agents        *agent.RegistryPlugin
+	sessions      *session.MemoryStore
+	models        *llm.Runtime
+	toolRuntime   *tools.Service
+	prompts       *systemprompt.Registry
+	loopRuntime   *agentloop.Plugin
 	modelAdapter  *agentLoopContractAdapter
-	decorateTools func(tools.ToolRuntime) tools.ToolRuntime
 	parallelLimit int
 }
 
-type agentLoopContractProvider struct {
-	state *agentLoopContractState
+type contractPostCommitReporter struct{}
+
+func (contractPostCommitReporter) ReportPostCommitFailure(
+	session.PostCommitFailure,
+) {
 }
 
-func (*agentLoopContractProvider) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name: "agent-loop-contract",
-		Provides: []plugin.ServiceRef{
-			agent.Service.Ref(), session.StoreService.Ref(), llm.Service.Ref(),
-			systemprompt.Service.Ref(), tools.Service.Ref(), agentloop.Service.Ref(),
-		},
-	}
-}
-
-func (provider *agentLoopContractProvider) Apply(requestContext context.Context, providerScope *plugin.Scope) error {
-	agentRegistry, err := agent.NewRegistry(providerScope, agent.RegistryOptions{})
+func startAgentLoopContractState(
+	testingContext testing.TB,
+	contractState *agentLoopContractState,
+	rootExtensions ...plugin.Plugin,
+) error {
+	agentRegistry := agent.NewRegistry(agent.RegistryOptions{})
+	sessionStore, err := session.NewMemoryStore(session.MemoryStoreOptions{
+		PostCommitFailures: contractPostCommitReporter{},
+	})
 	if err != nil {
 		return err
 	}
-	sessionStore, err := session.NewMemoryStore(providerScope, session.MemoryStoreOptions{})
-	if err != nil {
-		return err
-	}
-	modelRuntime, err := llm.NewRuntime(providerScope, nil)
-	if err != nil {
-		return err
-	}
+	modelRuntime := llm.NewRuntime(nil)
 	promptSettings, err := systemprompt.ValidateConfig(systemprompt.Config{})
 	if err != nil {
 		return err
 	}
-	promptRuntime, err := systemprompt.New(requestContext, providerScope, promptSettings)
-	if err != nil {
-		return err
-	}
+	promptRuntime := systemprompt.New(
+		promptSettings,
+		systemprompt.RegistryOptions{},
+	)
 	toolSettings, err := tools.ValidateConfig(tools.Config{})
 	if err != nil {
 		return err
 	}
-	toolRuntime, err := tools.New(requestContext, providerScope, promptRuntime, nil, nil, toolSettings)
+	toolRuntime := tools.New(toolSettings)
+	parallelLimit := contractState.parallelLimit
+	if parallelLimit == 0 {
+		parallelLimit = agentloop.DefaultMaxParallelToolCalls
+	}
+	loopRuntime, err := agentloop.New(
+		agentloop.Settings{
+			MaxParallelToolCalls: parallelLimit,
+		},
+		agentloop.RuntimeOptions{},
+	)
 	if err != nil {
 		return err
 	}
-	loopConfig := agentloop.Config{}
-	if provider.state.parallelLimit > 0 {
-		loopConfig.MaxParallelToolCalls = &provider.state.parallelLimit
+	contractState.engine = newContractRuntime(testingContext)
+	plugins := []plugin.Plugin{
+		agentRegistry,
+		sessionStore,
+		modelRuntime,
+		promptRuntime,
+		toolRuntime,
+		loopRuntime,
 	}
-	loopSettings, err := agentloop.ValidateConfig(loopConfig)
-	if err != nil {
+	plugins = append(plugins, rootExtensions...)
+	if _, err = contractState.engine.Start(
+		context.Background(),
+		plugins...,
+	); err != nil {
 		return err
 	}
-	loopTools := tools.ToolRuntime(toolRuntime)
-	if provider.state.decorateTools != nil {
-		loopTools = provider.state.decorateTools(toolRuntime)
-	}
-	loopRuntime, err := agentloop.New(requestContext, providerScope, agentloop.Dependencies{
-		Agents: agentRegistry, Sessions: sessionStore, LLM: modelRuntime,
-		Tools: loopTools, SystemPrompt: promptRuntime,
-	}, loopSettings, agentloop.RuntimeOptions{})
-	if err != nil {
-		return err
-	}
-	provideOperations := []func() error{
-		func() error {
-			_, provideErr := plugin.Provide(providerScope, agent.Service, agentRegistry)
-			return provideErr
-		},
-		func() error {
-			_, provideErr := plugin.Provide(providerScope, session.StoreService, session.Store(sessionStore))
-			return provideErr
-		},
-		func() error {
-			_, provideErr := plugin.Provide(providerScope, llm.Service, modelRuntime)
-			return provideErr
-		},
-		func() error {
-			_, provideErr := plugin.Provide(providerScope, systemprompt.Service, promptRuntime)
-			return provideErr
-		},
-		func() error {
-			_, provideErr := plugin.Provide(providerScope, tools.Service, toolRuntime)
-			return provideErr
-		},
-		func() error {
-			_, provideErr := plugin.Provide(providerScope, agentloop.Service, loopRuntime)
-			return provideErr
-		},
-	}
-	for _, provideOperation := range provideOperations {
-		if err := provideOperation(); err != nil {
-			return err
-		}
-	}
-	provider.state.providerScope = providerScope
-	provider.state.agents = agentRegistry
-	provider.state.models = modelRuntime
-	provider.state.toolRuntime = toolRuntime
-	provider.state.prompts = promptRuntime
-	provider.state.loopRuntime = loopRuntime
+	contractState.agents = agentRegistry
+	contractState.sessions = sessionStore
+	contractState.models = modelRuntime
+	contractState.toolRuntime = toolRuntime
+	contractState.prompts = promptRuntime
+	contractState.loopRuntime = loopRuntime
 	return nil
 }
 
@@ -153,15 +121,27 @@ func (backend *agentLoopContractAdapter) Stream(_ context.Context, options llm.G
 	switch requestIndex {
 	case 0:
 		return llm.NewSliceStream([]llm.StreamChunk{
-			llm.BlockEndChunk{Index: 0, Block: llm.ToolCallBlock{
-				ID: "call-1", Name: "echo", Arguments: `{"value":"hello"}`,
-			}},
-			llm.FinishChunk{Reason: llm.ToolCallsFinish{}},
+			llm.BlockEndChunk{
+				Index: 0,
+				Block: llm.ToolCallBlock{
+					ID:        "call-1",
+					Name:      "echo",
+					Arguments: `{"value":"hello"}`,
+				},
+			},
+			llm.FinishChunk{
+				Reason: llm.ToolCallsFinish{},
+			},
 		})
 	case 1:
 		return llm.NewSliceStream([]llm.StreamChunk{
-			llm.BlockEndChunk{Index: 0, Block: llm.NewTextBlock("done")},
-			llm.FinishChunk{Reason: llm.StopFinish{}},
+			llm.BlockEndChunk{
+				Index: 0,
+				Block: llm.NewTextBlock("done"),
+			},
+			llm.FinishChunk{
+				Reason: llm.StopFinish{},
+			},
 		})
 	default:
 		return nil, errors.New("agent-loop contract adapter has no scripted response")
@@ -248,9 +228,9 @@ func TestPinnedSourceAgentLoopMatchesGo(t *testing.T) {
 	}
 
 	contractState := &agentLoopContractState{
-		engine: plugin.NewRuntime(), modelAdapter: &agentLoopContractAdapter{},
+		modelAdapter: &agentLoopContractAdapter{},
 	}
-	if _, err := contractState.engine.Load(context.Background(), &agentLoopContractProvider{state: contractState}); err != nil {
+	if err = startAgentLoopContractState(t, contractState); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -258,34 +238,58 @@ func TestPinnedSourceAgentLoopMatchesGo(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	if _, err := contractState.models.RegisterAdapter(
-		context.Background(), contractState.providerScope, []string{"mock"}, contractState.modelAdapter,
+	if _, err = contractState.models.RegisterAdapter(
+		context.Background(),
+		[]string{
+			"mock",
+		},
+		contractState.modelAdapter,
 	); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := contractState.toolRuntime.Register(context.Background(), contractState.providerScope, tools.ToolDefinition{
-		Name: "echo", Description: "echo one object", Parameters: json.RawMessage(`{"type":"object"}`),
-		Output: tools.ToolOutputDefinition{
-			Schema: json.RawMessage(`{"type":"object"}`),
-			Renderer: tools.OutputRendererFunc(func(_ json.RawMessage, value json.RawMessage) ([]llm.ContentBlock, error) {
-				return []llm.ContentBlock{llm.NewTextBlock(string(value))}, nil
+	if _, err = contractState.toolRuntime.AddTool(
+		context.Background(),
+		tools.ToolDefinition{
+			Name:        "echo",
+			Description: "echo one object",
+			Parameters:  json.RawMessage(`{"type":"object"}`),
+			Output: tools.ToolOutputDefinition{
+				Schema: json.RawMessage(`{"type":"object"}`),
+				Renderer: tools.OutputRendererFunc(func(
+					_ json.RawMessage,
+					value json.RawMessage,
+				) ([]llm.ContentBlock, error) {
+					return []llm.ContentBlock{
+						llm.NewTextBlock(string(value)),
+					}, nil
+				}),
+			},
+			Executor: tools.ExecutorFunc(func(
+				arguments json.RawMessage,
+				_ tools.ToolRunContext,
+			) (json.RawMessage, error) {
+				return append(json.RawMessage(nil), arguments...), nil
 			}),
 		},
-		Executor: tools.ExecutorFunc(func(arguments json.RawMessage, _ tools.ToolRunContext) (json.RawMessage, error) {
-			return append(json.RawMessage(nil), arguments...), nil
-		}),
-	}); err != nil {
+	); err != nil {
 		t.Fatal(err)
 	}
 	userInput, err := llm.NewUserMessage(llm.UserMessageInput{
-		Content: []llm.ContentBlock{llm.NewTextBlock("hello")}, Source: llm.UserMessageSource{},
+		Content: []llm.ContentBlock{llm.NewTextBlock("hello")},
+		Source:  llm.UserMessageSource{},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	handle, err := contractState.loopRuntime.Create(
-		context.Background(), contractState.providerScope, "agent-loop-contract",
-		agent.Options{Provider: "mock", Model: "model"}, session.Metadata{},
+	handle, err := contractState.agents.Create(
+		context.Background(),
+		agent.CreateOptions{
+			SessionID: "agent-loop-contract",
+			AgentOptions: agent.Options{
+				Provider: "mock",
+				Model:    "model",
+			},
+		},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -325,15 +329,22 @@ func TestPinnedSourceAgentLoopMatchesGo(t *testing.T) {
 
 func projectAgentLoopEvent(t *testing.T, event session.Event) agentLoopEventObservation {
 	t.Helper()
-	projected := agentLoopEventObservation{Type: event.Type, Seq: event.Seq, Data: append(json.RawMessage(nil), event.Data...)}
+	projected := agentLoopEventObservation{
+		Type: event.Type,
+		Seq:  event.Seq,
+		Data: append(json.RawMessage(nil), event.Data...),
+	}
 	var err error
 	switch event.Type {
 	case "agent/inbox/spliced":
 		var mutation agent.InboxSplice
 		if err = json.Unmarshal(event.Data, &mutation); err == nil {
 			projected.Data, err = json.Marshal(agentLoopInboxObservation{
-				Target: mutation.Target, Start: mutation.Start, RemovedCount: mutation.RemovedCount,
-				Inserted: projectAgentLoopUserMessages(mutation.Inserted), Outcome: mutation.Outcome,
+				Target:       mutation.Target,
+				Start:        mutation.Start,
+				RemovedCount: mutation.RemovedCount,
+				Inserted:     projectAgentLoopUserMessages(mutation.Inserted),
+				Outcome:      mutation.Outcome,
 			})
 		}
 	case session.UserMessageEventName:
@@ -354,8 +365,10 @@ func projectAgentLoopEvent(t *testing.T, event session.Event) agentLoopEventObse
 			messageValue, err = llm.DecodeMessage(payload.Message)
 			if err == nil {
 				projected.Data, err = json.Marshal(agentLoopMessageEventObservation{
-					Turn: payload.Turn, Step: payload.Step,
-					Message: projectAgentLoopMessage(messageValue), Usage: payload.Usage,
+					Turn:    payload.Turn,
+					Step:    payload.Step,
+					Message: projectAgentLoopMessage(messageValue),
+					Usage:   payload.Usage,
 				})
 			}
 		}
@@ -372,8 +385,11 @@ func projectAgentLoopEvent(t *testing.T, event session.Event) agentLoopEventObse
 			messageValue, err = llm.DecodeMessage(payload.Message)
 			if err == nil {
 				projected.Data, err = json.Marshal(agentLoopMessageEventObservation{
-					Turn: payload.Turn, Step: payload.Step, Message: projectAgentLoopMessage(messageValue),
-					Error: payload.Error, Meta: payload.Meta,
+					Turn:    payload.Turn,
+					Step:    payload.Step,
+					Message: projectAgentLoopMessage(messageValue),
+					Error:   payload.Error,
+					Meta:    payload.Meta,
 				})
 			}
 		}
@@ -386,8 +402,10 @@ func projectAgentLoopEvent(t *testing.T, event session.Event) agentLoopEventObse
 			}
 			projected.Data, err = json.Marshal(agentLoopHeaderEventObservation{
 				Header: agentLoopHeaderObservation{
-					Config: payload.Header.Config, AdapterDefaults: payload.Header.AdapterDefaults,
-					System: payload.Header.System, Tools: toolNames,
+					Config:          payload.Header.Config,
+					AdapterDefaults: payload.Header.AdapterDefaults,
+					System:          payload.Header.System,
+					Tools:           toolNames,
 				},
 				Reason: payload.Reason,
 			})
@@ -405,9 +423,12 @@ func projectAgentLoopRequest(requestSnapshot llm.GenerateOptions) agentLoopReque
 		toolNames[toolIndex] = schema.Name
 	}
 	return agentLoopRequestObservation{
-		Provider: requestSnapshot.Provider, Model: requestSnapshot.Model,
-		System: requestSnapshot.System, Tools: toolNames,
-		Messages: projectAgentLoopMessages(requestSnapshot.Messages), SessionID: requestSnapshot.SessionID,
+		Provider:  requestSnapshot.Provider,
+		Model:     requestSnapshot.Model,
+		System:    requestSnapshot.System,
+		Tools:     toolNames,
+		Messages:  projectAgentLoopMessages(requestSnapshot.Messages),
+		SessionID: requestSnapshot.SessionID,
 	}
 }
 
@@ -429,6 +450,8 @@ func projectAgentLoopMessages(messages []llm.Message) []agentLoopMessageObservat
 
 func projectAgentLoopMessage(messageValue llm.Message) agentLoopMessageObservation {
 	return agentLoopMessageObservation{
-		Role: messageValue.ConversationRole(), Content: messageValue.ContentValue(), Source: messageValue.SourceValue(),
+		Role:    messageValue.ConversationRole(),
+		Content: messageValue.ContentValue(),
+		Source:  messageValue.SourceValue(),
 	}
 }

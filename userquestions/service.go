@@ -14,57 +14,116 @@ type providerSlot struct {
 	target Provider
 }
 
-type questionService struct {
-	agents AgentRegistryResolver
+// ProviderHandle owns one exact UI Provider registration. Unregister is
+// idempotent and cannot remove a later Provider.
+type ProviderHandle struct {
+	once  sync.Once
+	owner *QuestionService
+	slot  *providerSlot
+}
+
+// Unregister releases the exact Provider registration represented by this
+// handle.
+func (binding *ProviderHandle) Unregister() {
+	if binding == nil {
+		return
+	}
+	binding.once.Do(func() {
+		binding.owner.removeProvider(binding.slot)
+	})
+}
+
+// QuestionService owns the single active UI Provider and validates that an
+// Agent-backed ask originates from the exact live root Agent.
+type QuestionService struct {
+	plugin.Base
 
 	mu       sync.RWMutex
+	active   bool
+	agents   agent.Registry
 	provider *providerSlot
 }
 
-// New creates one User Questions service with a live optional Agent-registry lookup.
-func New(agentResolver AgentRegistryResolver) UserQuestions {
-	return &questionService{agents: agentResolver}
+// New constructs an inactive User Questions Plugin.
+func New() *QuestionService {
+	return &QuestionService{}
 }
 
-func (owner *questionService) RegisterProvider(
-	requestContext context.Context,
-	ownerScope *plugin.Scope,
+// Manifest provides UserQuestions and optionally consumes the Agent Registry
+// used to attest Agent-backed requests.
+func (*QuestionService) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: PluginName,
+		Provides: []plugin.ServiceType{
+			plugin.ServiceOf[UserQuestions](),
+		},
+		Optional: []plugin.ServiceType{
+			plugin.ServiceOf[agent.Registry](),
+		},
+	}
+}
+
+// Apply captures the optional Registry dependency before Service publication.
+func (owner *QuestionService) Apply(requestContext context.Context) error {
+	if err := requestContext.Err(); err != nil {
+		return err
+	}
+	agents, found := plugin.Resolve[agent.Registry](owner)
+	owner.mu.Lock()
+	owner.active = true
+	if found {
+		owner.agents = agents
+	} else {
+		owner.agents = nil
+	}
+	owner.mu.Unlock()
+	return nil
+}
+
+// Dispose withdraws the active Provider after dependents have stopped.
+func (owner *QuestionService) Dispose(context.Context) error {
+	owner.mu.Lock()
+	owner.active = false
+	owner.agents = nil
+	owner.provider = nil
+	owner.mu.Unlock()
+	return nil
+}
+
+// RegisterProvider installs the one active UI Provider.
+func (owner *QuestionService) RegisterProvider(
 	answerProvider Provider,
-) (plugin.Disposer, error) {
-	if requestContext == nil || ownerScope == nil || answerProvider == nil {
-		return nil, errors.New("userquestions: Context, provider Scope, and Provider are required")
+) (*ProviderHandle, error) {
+	if answerProvider == nil {
+		return nil, errors.New("userquestions: Provider is required")
 	}
 	slot := &providerSlot{target: answerProvider}
 	owner.mu.Lock()
+	if !owner.active {
+		owner.mu.Unlock()
+		return nil, errors.New("userquestions: service is not active")
+	}
 	if owner.provider != nil {
 		owner.mu.Unlock()
 		return nil, newError("a user-questions provider is already registered", CodeDuplicate)
 	}
 	owner.provider = slot
 	owner.mu.Unlock()
-	release, err := plugin.Own(ownerScope, "userInteraction.registerProvider()", func(context.Context) error {
-		owner.mu.Lock()
-		if owner.provider == slot {
-			owner.provider = nil
-		}
-		owner.mu.Unlock()
-		return nil
-	})
-	if err != nil {
-		owner.mu.Lock()
-		if owner.provider == slot {
-			owner.provider = nil
-		}
-		owner.mu.Unlock()
-		return nil, err
-	}
-	if err := requestContext.Err(); err != nil {
-		return nil, errors.Join(err, release(context.Background()))
-	}
-	return release, nil
+	return &ProviderHandle{
+		owner: owner,
+		slot:  slot,
+	}, nil
 }
 
-func (owner *questionService) Ask(requestContext context.Context, questionRequest Request) (Answer, error) {
+func (owner *QuestionService) removeProvider(slot *providerSlot) {
+	owner.mu.Lock()
+	if owner.provider == slot {
+		owner.provider = nil
+	}
+	owner.mu.Unlock()
+}
+
+func (owner *QuestionService) Ask(requestContext context.Context, questionRequest Request) (Answer, error) {
 	if requestContext == nil {
 		return Answer{}, errors.New("userquestions: Context is nil")
 	}
@@ -86,7 +145,10 @@ func (owner *questionService) Ask(requestContext context.Context, questionReques
 	if slot == nil {
 		return Answer{}, newError("no user-questions provider is registered", CodeNoProvider)
 	}
-	detachedRequest := Request{Questions: cloneQuestions(questionRequest.Questions), Subject: questionRequest.Subject}
+	detachedRequest := Request{
+		Questions: cloneQuestions(questionRequest.Questions),
+		Subject:   questionRequest.Subject,
+	}
 	answerValue, err := slot.target.Ask(requestContext, detachedRequest)
 	if err != nil {
 		return Answer{}, err
@@ -94,18 +156,14 @@ func (owner *questionService) Ask(requestContext context.Context, questionReques
 	return cloneAnswer(answerValue), nil
 }
 
-func (owner *questionService) validateSubject(agentSubject agent.Agent) error {
+func (owner *QuestionService) validateSubject(agentSubject agent.Agent) error {
 	if agentSubject == nil {
 		return nil
 	}
-	if owner.agents == nil {
-		return newError(
-			"human interaction requires the exact live calling agent when an agent is supplied",
-			CodeCallerNotLive,
-		)
-	}
-	agentRegistry, found := owner.agents.ResolveAgentRegistry()
-	if !found || agentRegistry == nil {
+	owner.mu.RLock()
+	agentRegistry := owner.agents
+	owner.mu.RUnlock()
+	if agentRegistry == nil {
 		return newError(
 			"human interaction requires the exact live calling agent when an agent is supplied",
 			CodeCallerNotLive,
@@ -131,10 +189,10 @@ func (owner *questionService) validateSubject(agentSubject agent.Agent) error {
 }
 
 func sameAgent(leftSubject agent.Agent, rightSubject agent.Agent) bool {
-	return leftSubject != nil && rightSubject != nil &&
-		leftSubject.ID() == rightSubject.ID() &&
-		leftSubject.SessionValue() == rightSubject.SessionValue() &&
-		leftSubject.ScopeValue() == rightSubject.ScopeValue()
+	return leftSubject != nil &&
+		rightSubject != nil &&
+		leftSubject.RuntimePlugin() != nil &&
+		leftSubject.RuntimePlugin() == rightSubject.RuntimePlugin()
 }
 
 func validateIntents(questions []Question) error {

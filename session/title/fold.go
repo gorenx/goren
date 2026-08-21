@@ -11,8 +11,8 @@ import (
 
 // UserMessage is one eligible human text message supplied to title providers.
 type UserMessage struct {
-	Seq  int64
-	Text string
+	Seq  int64  `json:"seq"`
+	Text string `json:"text"`
 }
 
 // CollectMessages returns human text-bearing user messages in log order.

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"time"
 )
 
 // FormatVersion is stamped into every Session Header persisted by an adapter.
@@ -15,7 +14,7 @@ const FormatVersion = 0
 
 const maxSafeInteger int64 = 1<<53 - 1
 
-// SessionID identifies one Session in a Store and in persistence artifacts.
+// SessionID identifies one Session in a LiveStore and in persistence artifacts.
 type SessionID string
 
 // Origin classifies how a Session was created for presentation purposes.
@@ -56,8 +55,8 @@ type CreateOptions struct {
 	Metadata Metadata
 }
 
-func buildHeader(identifier SessionID, sessionMetadata Metadata, clock func() time.Time) (Header, error) {
-	createdAt := clock().UnixMilli()
+func buildHeader(identifier SessionID, sessionMetadata Metadata, temporalSource TimeSource) (Header, error) {
+	createdAt := temporalSource.CurrentTime().UnixMilli()
 	if sessionMetadata.CreatedAt != nil {
 		createdAt = *sessionMetadata.CreatedAt
 	}

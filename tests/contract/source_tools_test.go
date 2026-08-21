@@ -15,43 +15,83 @@ import (
 	toolscore "github.com/gorenx/goren/tools"
 )
 
-type toolsContractPlugin struct {
-	ready func(toolscore.ToolRuntime, *plugin.Scope) error
+type contractWaterfallPlugin[
+	I plugin.WaterfallInput,
+	O plugin.WaterfallOutput,
+] struct {
+	plugin.Base
+	name       string
+	middleware plugin.WaterfallMiddleware[I, O]
 }
 
-func (toolsContractPlugin) Manifest() plugin.Manifest {
+func (owner *contractWaterfallPlugin[I, O]) Manifest() plugin.Manifest {
 	return plugin.Manifest{
-		Name: "tools-contract",
-		Provides: []plugin.ServiceRef{
-			systemprompt.Service.Ref(), toolscore.Service.Ref(),
+		Name: owner.name,
+		Waterfalls: []plugin.WaterfallMiddlewareBinding{
+			plugin.WaterfallOf[I, O](owner),
 		},
 	}
 }
 
-func (instance toolsContractPlugin) Apply(requestContext context.Context, pluginScope *plugin.Scope) error {
-	promptSettings, err := systemprompt.ValidateConfig(systemprompt.Config{})
-	if err != nil {
-		return err
+func (*contractWaterfallPlugin[I, O]) Apply(context.Context) error {
+	return nil
+}
+
+func (*contractWaterfallPlugin[I, O]) Dispose(context.Context) error {
+	return nil
+}
+
+func (owner *contractWaterfallPlugin[I, O]) Intercept(
+	requestContext context.Context,
+	input I,
+	downstream plugin.WaterfallAction[I, O],
+) (O, error) {
+	return owner.middleware.Intercept(requestContext, input, downstream)
+}
+
+type contractWaterfallFunc[
+	I plugin.WaterfallInput,
+	O plugin.WaterfallOutput,
+] func(context.Context, I, plugin.WaterfallAction[I, O]) (O, error)
+
+func (operation contractWaterfallFunc[I, O]) Intercept(
+	requestContext context.Context,
+	input I,
+	downstream plugin.WaterfallAction[I, O],
+) (O, error) {
+	return operation(requestContext, input, downstream)
+}
+
+type contractToolResultObserver struct {
+	plugin.Base
+	steps *[]string
+}
+
+func (*contractToolResultObserver) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "tools-contract-result-observer",
+		Events: []plugin.EventSubscription{
+			plugin.EventOf[toolscore.ExecutionCompleted](),
+		},
 	}
-	promptService, err := systemprompt.New(requestContext, pluginScope, promptSettings)
-	if err != nil {
-		return err
+}
+
+func (*contractToolResultObserver) Apply(context.Context) error {
+	return nil
+}
+
+func (*contractToolResultObserver) Dispose(context.Context) error {
+	return nil
+}
+
+func (observer *contractToolResultObserver) ObserveEvent(
+	_ context.Context,
+	fact plugin.Event,
+) error {
+	if _, matches := fact.(toolscore.ExecutionCompleted); matches {
+		*observer.steps = append(*observer.steps, "result")
 	}
-	toolSettings, err := toolscore.ValidateConfig(toolscore.Config{})
-	if err != nil {
-		return err
-	}
-	toolService, err := toolscore.New(requestContext, pluginScope, promptService, nil, nil, toolSettings)
-	if err != nil {
-		return err
-	}
-	if _, err := plugin.Provide(pluginScope, systemprompt.Service, promptService); err != nil {
-		return err
-	}
-	if _, err := plugin.Provide(pluginScope, toolscore.Service, toolService); err != nil {
-		return err
-	}
-	return instance.ready(toolService, pluginScope)
+	return nil
 }
 
 type toolResultObservation struct {
@@ -73,163 +113,312 @@ type toolsContractObservation struct {
 
 func TestPinnedSourceNativeToolsMatchesGo(t *testing.T) {
 	repositoryRoot, sourceRoot := contractPaths(t)
-	commandContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	commandContext, cancel := context.WithTimeout(
+		context.Background(),
+		30*time.Second,
+	)
 	defer cancel()
-	sourceOutput, err := runTypeScript(commandContext, sourceRoot,
-		filepath.Join(repositoryRoot, "tests", "contract", "typescript", "tools-native.ts"),
-		sourceRoot, filepath.Join(repositoryRoot, "contracts", "deepseek-harness", "manifest.json"),
+	sourceOutput, err := runTypeScript(
+		commandContext,
+		sourceRoot,
+		filepath.Join(
+			repositoryRoot,
+			"tests",
+			"contract",
+			"typescript",
+			"tools-native.ts",
+		),
+		sourceRoot,
+		filepath.Join(
+			repositoryRoot,
+			"contracts",
+			"deepseek-harness",
+			"manifest.json",
+		),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	requestContext := context.Background()
-	var toolService toolscore.ToolRuntime
-	var providerScope *plugin.Scope
-	engine := plugin.NewRuntime()
-	if _, err := engine.Load(requestContext, toolsContractPlugin{
-		ready: func(available toolscore.ToolRuntime, pluginScope *plugin.Scope) error {
-			toolService = available
-			providerScope = pluginScope
-			return nil
-		},
-	}); err != nil {
-		t.Fatal(err)
-	}
 	steps := make([]string, 0)
-	if _, err := toolscore.OnPreExecute(providerScope,
-		func(chainContext context.Context, _ toolscore.ToolExecution, downstream toolscore.PreExecuteNext) (toolscore.PreToolDecision, error) {
-			steps = append(steps, "pre-before")
-			decision, err := downstream(chainContext)
-			steps = append(steps, "pre-after")
-			return decision, err
-		}); err != nil {
+	promptSettings, err := systemprompt.ValidateConfig(systemprompt.Config{})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := toolService.Guard(providerScope, toolscore.ToolGuardFunc(
-		func(toolscore.ToolExecution) (string, bool) {
+	toolSettings, err := toolscore.ValidateConfig(toolscore.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	promptService := systemprompt.New(
+		promptSettings,
+		systemprompt.RegistryOptions{},
+	)
+	toolService := toolscore.New(toolSettings)
+	preMiddleware := &contractWaterfallPlugin[
+		toolscore.PreExecuteRequest,
+		toolscore.PreExecuteOutcome,
+	]{
+		name: "tools-contract-pre",
+		middleware: contractWaterfallFunc[
+			toolscore.PreExecuteRequest,
+			toolscore.PreExecuteOutcome,
+		](func(
+			chainContext context.Context,
+			input toolscore.PreExecuteRequest,
+			downstream plugin.WaterfallAction[
+				toolscore.PreExecuteRequest,
+				toolscore.PreExecuteOutcome,
+			],
+		) (toolscore.PreExecuteOutcome, error) {
+			steps = append(steps, "pre-before")
+			outcome, chainErr := downstream.Execute(chainContext, input)
+			steps = append(steps, "pre-after")
+			return outcome, chainErr
+		}),
+	}
+	executeMiddleware := &contractWaterfallPlugin[
+		toolscore.ExecuteRequest,
+		toolscore.ExecuteOutcome,
+	]{
+		name: "tools-contract-execute",
+		middleware: contractWaterfallFunc[
+			toolscore.ExecuteRequest,
+			toolscore.ExecuteOutcome,
+		](func(
+			chainContext context.Context,
+			input toolscore.ExecuteRequest,
+			downstream plugin.WaterfallAction[
+				toolscore.ExecuteRequest,
+				toolscore.ExecuteOutcome,
+			],
+		) (toolscore.ExecuteOutcome, error) {
+			steps = append(steps, "execute-before")
+			outcome, chainErr := downstream.Execute(chainContext, input)
+			steps = append(steps, "execute-after")
+			return outcome, chainErr
+		}),
+	}
+	postMiddleware := &contractWaterfallPlugin[
+		toolscore.PostExecuteRequest,
+		toolscore.PostExecuteOutcome,
+	]{
+		name: "tools-contract-post",
+		middleware: contractWaterfallFunc[
+			toolscore.PostExecuteRequest,
+			toolscore.PostExecuteOutcome,
+		](func(
+			chainContext context.Context,
+			input toolscore.PostExecuteRequest,
+			downstream plugin.WaterfallAction[
+				toolscore.PostExecuteRequest,
+				toolscore.PostExecuteOutcome,
+			],
+		) (toolscore.PostExecuteOutcome, error) {
+			steps = append(steps, "post-before")
+			outcome, chainErr := downstream.Execute(chainContext, input)
+			steps = append(steps, "post-after")
+			return outcome, chainErr
+		}),
+	}
+	runtimeEngine := newContractRuntime(t)
+	handles, err := runtimeEngine.Start(
+		requestContext,
+		promptService,
+		toolService,
+		preMiddleware,
+		executeMiddleware,
+		postMiddleware,
+		&contractToolResultObserver{
+			steps: &steps,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if shutdownErr := runtimeEngine.Shutdown(requestContext); shutdownErr != nil {
+			t.Error(shutdownErr)
+		}
+	}()
+	if _, err = toolService.AddGuard(
+		requestContext,
+		"contract-guard",
+		toolscore.ToolGuardFunc(func(toolscore.ToolExecution) (string, bool) {
 			steps = append(steps, "guard")
 			return "", false
-		})); err != nil {
+		}),
+	); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := toolscore.OnExecute(providerScope,
-		func(chainContext context.Context, _ toolscore.ToolExecution, downstream toolscore.ExecuteNext) (toolscore.ToolExecutionResult, error) {
-			steps = append(steps, "execute-before")
-			outcome, err := downstream(chainContext)
-			steps = append(steps, "execute-after")
-			return outcome, err
-		}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := toolscore.OnPostExecute(providerScope,
-		func(chainContext context.Context, _ toolscore.ToolExecution, _ toolscore.ToolResultSnapshot, downstream toolscore.PostExecuteNext) (toolscore.PostToolDecision, error) {
-			steps = append(steps, "post-before")
-			decision, err := downstream(chainContext)
-			steps = append(steps, "post-after")
-			return decision, err
-		}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := toolscore.OnResult(providerScope,
-		func(context.Context, toolscore.ToolExecution, toolscore.ToolResultSnapshot) error {
-			steps = append(steps, "result")
-			return nil
-		}); err != nil {
-		t.Fatal(err)
-	}
-
 	for _, definition := range []toolscore.ToolDefinition{
 		contractTool("alpha", "global alpha", &steps),
 		contractTool("beta", "global beta", &steps),
 		contractTool("pipeline", "pipeline", &steps),
 	} {
-		if _, err := toolService.Register(requestContext, providerScope, definition); err != nil {
+		if _, err = toolService.AddTool(requestContext, definition); err != nil {
 			t.Fatal(err)
 		}
 	}
-	success := toolService.Execute(requestContext, toolscore.ToolExecutionInput{
-		CallID: "call-1", Name: "pipeline", Arguments: json.RawMessage(`{"value":"ok"}`),
-	})
-	unknown := toolService.Execute(requestContext, toolscore.ToolExecutionInput{
-		CallID: "unknown-1", Name: "absent", Arguments: json.RawMessage(`{}`),
-	})
-	childScope, childRelease, err := providerScope.Child("tools-contract-child")
+	success := toolService.Execute(
+		requestContext,
+		toolscore.ToolExecutionInput{
+			CallID:    "call-1",
+			Name:      "pipeline",
+			Arguments: json.RawMessage(`{"value":"ok"}`),
+		},
+	)
+	unknown := toolService.Execute(
+		requestContext,
+		toolscore.ToolExecutionInput{
+			CallID:    "unknown-1",
+			Name:      "absent",
+			Arguments: json.RawMessage(`{}`),
+		},
+	)
+	promptOverlay := systemprompt.NewOverlay(systemprompt.RegistryOptions{})
+	promptOverlayHandle, err := runtimeEngine.MountScopedChild(
+		requestContext,
+		handles[0],
+		promptOverlay,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := toolService.Restrict(requestContext, childScope,
-		toolscore.ToolRestriction{Allow: []string{"alpha", "pipeline"}}); err != nil {
+	toolOverlay := toolscore.NewOverlay()
+	toolOverlayHandle, err := runtimeEngine.MountChild(
+		requestContext,
+		promptOverlayHandle,
+		toolOverlay,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = toolOverlay.AddRestriction(
+		requestContext,
+		"contract-visible",
+		toolscore.ToolRestriction{
+			Allow: []string{
+				"alpha",
+				"pipeline",
+			},
+		},
+	); err != nil {
 		t.Fatal(err)
 	}
 	for _, definition := range []toolscore.ToolDefinition{
 		contractTool("beta", "scoped beta", &steps),
 		contractTool("gamma", "scoped gamma", &steps),
 	} {
-		if _, err := toolService.Register(requestContext, childScope, definition); err != nil {
+		if _, err = toolOverlay.AddTool(requestContext, definition); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := toolscore.OnPreExecute(childScope,
-		func(chainContext context.Context, execution toolscore.ToolExecution, downstream toolscore.PreExecuteNext) (toolscore.PreToolDecision, error) {
-			if execution.Name == "alpha" {
-				return toolscore.DenyDecision{Reason: "policy denied"}, nil
+	denyMiddleware := &contractWaterfallPlugin[
+		toolscore.PreExecuteRequest,
+		toolscore.PreExecuteOutcome,
+	]{
+		name: "tools-contract-scoped-deny",
+		middleware: contractWaterfallFunc[
+			toolscore.PreExecuteRequest,
+			toolscore.PreExecuteOutcome,
+		](func(
+			chainContext context.Context,
+			input toolscore.PreExecuteRequest,
+			downstream plugin.WaterfallAction[
+				toolscore.PreExecuteRequest,
+				toolscore.PreExecuteOutcome,
+			],
+		) (toolscore.PreExecuteOutcome, error) {
+			if input.Execution().Name == "alpha" {
+				return toolscore.PreExecuteOutcome{
+					Decision: toolscore.DenyDecision{
+						Reason: "policy denied",
+					},
+				}, nil
 			}
-			return downstream(chainContext)
-		}); err != nil {
+			return downstream.Execute(chainContext, input)
+		}),
+	}
+	if _, err = runtimeEngine.MountChild(
+		requestContext,
+		toolOverlayHandle,
+		denyMiddleware,
+	); err != nil {
 		t.Fatal(err)
 	}
-	scopedSchemas := toolService.Schemas(childScope.Target())
-	denied := toolService.Execute(requestContext, toolscore.ToolExecutionInput{
-		CallID: "deny-1", Name: "alpha", Arguments: json.RawMessage(`{}`), Scope: childScope.Target(),
-	})
-	retainedKey := childScope.Target()
-	if err := childRelease(requestContext); err != nil {
+	scopedSchemas := toolOverlay.Schemas()
+	denied := toolOverlay.Execute(
+		requestContext,
+		toolscore.ToolExecutionInput{
+			CallID:    "deny-1",
+			Name:      "alpha",
+			Arguments: json.RawMessage(`{}`),
+		},
+	)
+	if err = runtimeEngine.Unload(requestContext, promptOverlayHandle); err != nil {
 		t.Fatal(err)
 	}
 	assembled := toolsContractObservation{
-		GlobalSchemas: toolService.Schemas(plugin.ScopeKey{}), ScopedSchemas: scopedSchemas,
-		AfterDisposeSchemas: toolService.Schemas(retainedKey),
-		Success:             observeToolResult(t, success), Unknown: observeToolResult(t, unknown),
-		Denied: observeToolResult(t, denied), Steps: steps,
+		GlobalSchemas:       toolService.Schemas(),
+		ScopedSchemas:       scopedSchemas,
+		AfterDisposeSchemas: toolService.Schemas(),
+		Success:             observeToolResult(t, success),
+		Unknown:             observeToolResult(t, unknown),
+		Denied:              observeToolResult(t, denied),
+		Steps:               steps,
 	}
 	goOutput, err := json.Marshal(assembled)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.Shutdown(requestContext); err != nil {
-		t.Fatal(err)
-	}
 	assertJSONEqual(t, goOutput, sourceOutput)
 }
 
-func contractTool(name string, description string, steps *[]string) toolscore.ToolDefinition {
+func contractTool(
+	name string,
+	description string,
+	steps *[]string,
+) toolscore.ToolDefinition {
 	return toolscore.ToolDefinition{
-		Name: name, Description: description,
-		Parameters: json.RawMessage(`{"type":"object"}`),
+		Name:        name,
+		Description: description,
+		Parameters:  json.RawMessage(`{"type":"object"}`),
 		Output: toolscore.ToolOutputDefinition{
 			Schema: json.RawMessage(`{"type":"object"}`),
-			Renderer: toolscore.OutputRendererFunc(
-				func(_ json.RawMessage, value json.RawMessage) ([]llm.ContentBlock, error) {
-					if name == "pipeline" {
-						*steps = append(*steps, "render")
-					}
-					return []llm.ContentBlock{llm.NewTextBlock(string(value))}, nil
-				}),
-		},
-		Executor: toolscore.ExecutorFunc(
-			func(arguments json.RawMessage, _ toolscore.ToolRunContext) (json.RawMessage, error) {
+			Renderer: toolscore.OutputRendererFunc(func(
+				_ json.RawMessage,
+				value json.RawMessage,
+			) ([]llm.ContentBlock, error) {
 				if name == "pipeline" {
-					*steps = append(*steps, "body")
+					*steps = append(*steps, "render")
 				}
-				return arguments, nil
+				return []llm.ContentBlock{
+					llm.NewTextBlock(string(value)),
+				}, nil
 			}),
+		},
+		Executor: toolscore.ExecutorFunc(func(
+			arguments json.RawMessage,
+			_ toolscore.ToolRunContext,
+		) (json.RawMessage, error) {
+			if name == "pipeline" {
+				*steps = append(*steps, "body")
+			}
+			return arguments, nil
+		}),
 	}
 }
 
-func observeToolResult(t *testing.T, outcome toolscore.ToolExecutionResult) toolResultObservation {
+func observeToolResult(
+	t *testing.T,
+	outcome toolscore.ToolExecutionResult,
+) toolResultObservation {
 	t.Helper()
-	retained := toolResultObservation{IsError: outcome.Failed(), Content: outcome.ContentBlocks()}
+	retained := toolResultObservation{
+		IsError: outcome.Failed(),
+		Content: outcome.ContentBlocks(),
+	}
 	switch selected := outcome.(type) {
 	case *toolscore.ToolExecutionSuccess:
 		retained.Value = append(json.RawMessage(nil), selected.Value...)
@@ -237,7 +426,7 @@ func observeToolResult(t *testing.T, outcome toolscore.ToolExecutionResult) tool
 		detail := selected.Error
 		retained.Error = &detail
 	default:
-		t.Fatalf("tool outcome type = %T", outcome)
+		t.Fatalf("Tool outcome type = %T", outcome)
 	}
 	return retained
 }

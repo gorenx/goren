@@ -77,7 +77,7 @@ func (gateway *CredentialsGateway) Unset(
 }
 
 func credentialRejected(ref credentials.Ref, err error) connection.RPCError {
-	return newRPCError(connection.ErrorCredentialRejected, err.Error(), struct {
+	return NewRPCError(connection.ErrorCredentialRejected, err.Error(), struct {
 		Ref string `json:"ref"`
 	}{Ref: string(ref)})
 }

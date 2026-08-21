@@ -15,8 +15,8 @@ type afterEventQueue struct {
 }
 
 // DeferAfterEvent schedules work after the current committed-event
-// publication has completed and Store has released its append reentrancy
-// guard. It is available only from an OnEvent callback.
+// publication has completed and LiveStore has released its append reentrancy
+// guard. It is available only while observing SessionEventAppended.
 func DeferAfterEvent(requestContext context.Context, work func()) error {
 	if requestContext == nil {
 		return errors.New("session: defer after event with nil Context")

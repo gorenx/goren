@@ -30,6 +30,7 @@ void (async () => {
     WebApiClient: new (timeoutMs?: number) => {
       sessions: {
         list(payload: object): Promise<Result<{ items: Array<Record<string, unknown>> }>>
+        search(payload: object): Promise<Result<{ items: Array<{ sessionId: string; snippet: string }>; hasMore: boolean }>>
         create(payload: object): Promise<Result<{ sessionId: string }>>
         rename(payload: object): Promise<Result<{ title: string; seq: number }>>
         history(payload: object): Promise<Result<{
@@ -148,6 +149,7 @@ void (async () => {
     'first idle status',
   )
   const firstHistory = unwrap(await apiClient.sessions.history({ sessionId }))
+  const searched = unwrap(await apiClient.sessions.search({ query: 'first response' }))
 
   const runtimeSession = new Session(sessionId, apiClient, {})
   const renameResult = await runtimeSession.rename('  重命名  ')
@@ -226,6 +228,8 @@ void (async () => {
       && models.routable && models.groups.length === 1 && models.failures.length === 0,
     selected: selected.selected.provider === 'mock' && selected.selected.model === 'mock-model',
     firstPrompt: firstPrompt.accepted,
+    searched: searched.items.some(item => item.sessionId === sessionId && item.snippet.includes('first response'))
+      && searched.hasMore === false,
     fallbackTitle: fallbackFrame.payload.value === 'first'
       && firstHistory.projections?.values.title === 'first',
     renamed: renamed.title === '重命名',

@@ -95,12 +95,23 @@ func TestPinnedSourceRequestReconstructionMatchesGo(t *testing.T) {
 	}
 
 	firstState, firstAdapter := newReconstructionHarness(t, []llm.StreamChunk{
-		llm.BlockEndChunk{Index: 0, Block: llm.NewTextBlock("one")},
-		llm.FinishChunk{Reason: llm.StopFinish{}},
+		llm.BlockEndChunk{
+			Index: 0,
+			Block: llm.NewTextBlock("one"),
+		},
+		llm.FinishChunk{
+			Reason: llm.StopFinish{},
+		},
 	})
-	firstHandle, err := firstState.loopRuntime.Create(
-		context.Background(), firstState.providerScope, "reconstruction-first",
-		agent.Options{Provider: "mock", Model: "model"}, session.Metadata{},
+	firstHandle, err := firstState.agents.Create(
+		context.Background(),
+		agent.CreateOptions{
+			SessionID: "reconstruction-first",
+			AgentOptions: agent.Options{
+				Provider: "mock",
+				Model:    "model",
+			},
+		},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -120,9 +131,12 @@ func TestPinnedSourceRequestReconstructionMatchesGo(t *testing.T) {
 	if len(shadowed) != 2 {
 		t.Fatalf("first surface nodes = %#v", shadowed)
 	}
-	summary := reconstructionUserMessage(t, "[summary of turn 1]", llm.PluginMessageSource{Plugin: "test-compact"})
+	summary := reconstructionUserMessage(t, "[summary of turn 1]", llm.PluginMessageSource{
+		Plugin: "test-compact",
+	})
 	if _, err := session.AppendSurface(firstConversation, session.UserMessageAdded, summary, session.SurfaceIntent{
-		Operation: session.SurfaceReplace(shadowed[0], shadowed[1]), SourceEventSeqs: &shadowed,
+		Operation:       session.SurfaceReplace(shadowed[0], shadowed[1]),
+		SourceEventSeqs: &shadowed,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -134,33 +148,74 @@ func TestPinnedSourceRequestReconstructionMatchesGo(t *testing.T) {
 	firstObservation := observeReconstructionGeneration(t, firstRequests[0], firstConversation)
 
 	resumedState, resumedAdapter := newReconstructionHarness(t, []llm.StreamChunk{
-		llm.BlockEndChunk{Index: 0, Block: llm.NewTextBlock("two")},
-		llm.FinishChunk{Reason: llm.StopFinish{}},
+		llm.BlockEndChunk{
+			Index: 0,
+			Block: llm.NewTextBlock("two"),
+		},
+		llm.FinishChunk{
+			Reason: llm.StopFinish{},
+		},
 	})
-	if _, err := resumedState.prompts.Section(context.Background(), resumedState.providerScope, systemprompt.PromptSection{
-		Name: "extra", Order: 2, Text: systemprompt.StaticText("new guidance"),
-	}); err != nil {
+	if _, err = resumedState.prompts.AddSection(
+		context.Background(),
+		systemprompt.PromptSection{
+			Name:  "extra",
+			Order: 2,
+			Text:  systemprompt.StaticText("new guidance"),
+		},
+	); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := agent.OnRequest(resumedState.providerScope,
-		func(requestContext context.Context, _ agent.RequestNotice, downstream agent.RequestNext) (llm.CallConfig, error) {
-			proposed, resolveErr := downstream(requestContext)
+	requestMiddleware := &contractWaterfallPlugin[
+		agent.RequestNotice,
+		agent.RequestResolution,
+	]{
+		name: "reconstruction-request-policy",
+		middleware: contractWaterfallFunc[
+			agent.RequestNotice,
+			agent.RequestResolution,
+		](func(
+			requestContext context.Context,
+			notice agent.RequestNotice,
+			downstream plugin.WaterfallAction[
+				agent.RequestNotice,
+				agent.RequestResolution,
+			],
+		) (agent.RequestResolution, error) {
+			proposed, resolveErr := downstream.Execute(
+				requestContext,
+				notice,
+			)
 			if resolveErr != nil {
-				return llm.CallConfig{}, resolveErr
+				return agent.RequestResolution{}, resolveErr
 			}
 			temperature := 0.5
 			maxTokens := 99
-			proposed.Temperature = &temperature
-			proposed.MaxTokens = &maxTokens
-			proposed.Stop = []string{"<END>"}
+			proposed.Config.Temperature = &temperature
+			proposed.Config.MaxTokens = &maxTokens
+			proposed.Config.Stop = []string{
+				"<END>",
+			}
 			return proposed, nil
-		}); err != nil {
+		}),
+	}
+	if _, err = resumedState.engine.Mount(
+		context.Background(),
+		requestMiddleware,
+	); err != nil {
 		t.Fatal(err)
 	}
-	resumedHandle, err := resumedState.agents.Create(context.Background(), resumedState.providerScope, agent.CreateOptions{
-		SessionID: "reconstruction-resumed", Seed: forkSeed,
-		AgentOptions: agent.Options{Provider: "mock", Model: "model"},
-	})
+	resumedHandle, err := resumedState.agents.Create(
+		context.Background(),
+		agent.CreateOptions{
+			SessionID: "reconstruction-resumed",
+			Seed:      forkSeed,
+			AgentOptions: agent.Options{
+				Provider: "mock",
+				Model:    "model",
+			},
+		},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,9 +236,11 @@ func TestPinnedSourceRequestReconstructionMatchesGo(t *testing.T) {
 		t, resumedRequests[0], resumedHandle.Subject.SessionValue(),
 	)
 
-	observation := reconstructionObservation{Generations: []reconstructionGenerationObservation{
-		firstObservation, resumedObservation,
-	}}
+	observation := reconstructionObservation{
+		Generations: []reconstructionGenerationObservation{
+			firstObservation, resumedObservation,
+		},
+	}
 	for generationIndex, generation := range observation.Generations {
 		if !reflect.DeepEqual(generation.Request, generation.Rebuilt) {
 			t.Fatalf("generation %d request was not reconstructed: actual=%#v rebuilt=%#v",
@@ -202,13 +259,19 @@ func newReconstructionHarness(
 	response []llm.StreamChunk,
 ) (*agentLoopContractState, *reconstructionAdapter) {
 	t.Helper()
-	backend := &reconstructionAdapter{response: append([]llm.StreamChunk(nil), response...)}
-	state := &agentLoopContractState{engine: plugin.NewRuntime()}
-	if _, err := state.engine.Load(context.Background(), &agentLoopContractProvider{state: state}); err != nil {
+	backend := &reconstructionAdapter{
+		response: append([]llm.StreamChunk(nil), response...),
+	}
+	state := &agentLoopContractState{}
+	if err := startAgentLoopContractState(t, state); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := state.models.RegisterAdapter(
-		context.Background(), state.providerScope, []string{"mock"}, backend,
+		context.Background(),
+		[]string{
+			"mock",
+		},
+		backend,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -243,9 +306,11 @@ func observeReconstructionGeneration(
 		}
 	}
 	return reconstructionGenerationObservation{
-		Request: projectReconstructionRequest(requestSnapshot), Rebuilt: rebuilt,
-		HeaderReasons: headerReasons, RequestContextCount: requestContextCount,
-		ReplaceGeneration: conversation.Surface().ReplaceGeneration,
+		Request:             projectReconstructionRequest(requestSnapshot),
+		Rebuilt:             rebuilt,
+		HeaderReasons:       headerReasons,
+		RequestContextCount: requestContextCount,
+		ReplaceGeneration:   conversation.Surface().ReplaceGeneration,
 	}
 }
 
@@ -266,7 +331,9 @@ func reconstructDispatchRequest(
 		t.Fatalf("Session %q has no dispatch chunk", identifier)
 	}
 	prefix := events[:chunkSequence]
-	rebuiltSession, err := session.New("rebuild-"+identifier, session.CreateOptions{Seed: prefix})
+	rebuiltSession, err := session.New("rebuild-"+identifier, session.CreateOptions{
+		Seed: prefix,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,8 +349,11 @@ func reconstructDispatchRequest(
 		t.Fatal(err)
 	}
 	return projectReconstructionRequest(llm.GenerateOptions{
-		CallConfig: foldedHeader.Config, Messages: rebuiltMessages,
-		System: foldedHeader.System, Tools: foldedHeader.Tools, SessionID: string(identifier),
+		CallConfig: foldedHeader.Config,
+		Messages:   rebuiltMessages,
+		System:     foldedHeader.System,
+		Tools:      foldedHeader.Tools,
+		SessionID:  string(identifier),
 	})
 }
 
@@ -293,19 +363,24 @@ func projectReconstructionRequest(requestSnapshot llm.GenerateOptions) reconstru
 		toolNames[toolIndex] = schema.Name
 	}
 	return reconstructionRequestObservation{
-		Provider: requestSnapshot.Provider, Model: requestSnapshot.Model,
+		Provider:        requestSnapshot.Provider,
+		Model:           requestSnapshot.Model,
 		ReasoningEffort: requestSnapshot.ReasoningEffort,
-		Temperature:     requestSnapshot.Temperature, MaxTokens: requestSnapshot.MaxTokens,
-		Stop: append([]string(nil), requestSnapshot.Stop...), System: requestSnapshot.System,
-		Tools: toolNames, Messages: projectAgentLoopMessages(requestSnapshot.Messages),
-		SessionID: requestSnapshot.SessionID,
+		Temperature:     requestSnapshot.Temperature,
+		MaxTokens:       requestSnapshot.MaxTokens,
+		Stop:            append([]string(nil), requestSnapshot.Stop...),
+		System:          requestSnapshot.System,
+		Tools:           toolNames,
+		Messages:        projectAgentLoopMessages(requestSnapshot.Messages),
+		SessionID:       requestSnapshot.SessionID,
 	}
 }
 
 func reconstructionUserMessage(t *testing.T, text string, origin llm.MessageSource) llm.UserMessage {
 	t.Helper()
 	messageValue, err := llm.NewUserMessage(llm.UserMessageInput{
-		Content: []llm.ContentBlock{llm.NewTextBlock(text)}, Source: origin,
+		Content: []llm.ContentBlock{llm.NewTextBlock(text)},
+		Source:  origin,
 	})
 	if err != nil {
 		t.Fatal(err)

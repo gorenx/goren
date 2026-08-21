@@ -8,8 +8,6 @@ import (
 
 	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/connection"
-	"github.com/gorenx/goren/plugin"
-	"github.com/gorenx/goren/userquestions"
 )
 
 var errInteractionGatewayClosed = errors.New("apiproxy: interaction gateway closed")
@@ -17,9 +15,8 @@ var errInteractionGatewayClosed = errors.New("apiproxy: interaction gateway clos
 // InteractionGatewayDependencies are the response table, mux frame broker,
 // and human-question capability connected by the Host API adapter.
 type InteractionGatewayDependencies struct {
-	Methods       *Catalog
-	Frames        InteractionFrameBroker
-	UserQuestions userquestions.UserQuestions
+	Methods *Catalog
+	Frames  InteractionFrameBroker
 }
 
 // InteractionGatewayOptions supplies process-local identity and contained
@@ -62,18 +59,14 @@ func (settlement *interactionSettlement) complete(operation func()) {
 	})
 }
 
-// NewInteractionGateway installs the source-owned approval answerer and
-// UserQuestions provider for the lifetime of ownerScope.
+// NewInteractionGateway constructs approval and question correlation state.
+// The owning API Proxy Plugin declares the approval Waterfall, registers this
+// object as the User Questions Provider, and owns Close.
 func NewInteractionGateway(
-	requestContext context.Context,
-	ownerScope *plugin.Scope,
 	ports InteractionGatewayDependencies,
 	settings InteractionGatewayOptions,
 ) (*InteractionGateway, error) {
-	if requestContext == nil || ownerScope == nil {
-		return nil, errors.New("apiproxy: Interaction Gateway Context and Scope are required")
-	}
-	if ports.Methods == nil || ports.Frames == nil || ports.UserQuestions == nil {
+	if ports.Methods == nil || ports.Frames == nil {
 		return nil, errors.New("apiproxy: Interaction Gateway dependencies are incomplete")
 	}
 	newRPC := settings.NewRPCID
@@ -85,33 +78,18 @@ func NewInteractionGateway(
 		reportFailure = func(error) {}
 	}
 	owner := &InteractionGateway{
-		methods: ports.Methods, frames: ports.Frames, newRPC: newRPC, reportFailure: reportFailure,
-		approvals: make(map[connection.RPCID]*pendingApproval),
-		questions: make(map[connection.RPCID]*pendingQuestion),
-	}
-
-	releaseQuestions, err := ports.UserQuestions.RegisterProvider(requestContext, ownerScope, owner)
-	if err != nil {
-		return nil, err
-	}
-	releaseApprovals, err := approval.OnRequest(ownerScope, owner.answerApproval)
-	if err != nil {
-		return nil, errors.Join(err, releaseQuestions(context.Background()))
-	}
-	if _, err := plugin.Own(ownerScope, "apiProxy.interactionGateway()", owner.close); err != nil {
-		return nil, errors.Join(
-			err,
-			releaseApprovals(context.Background()),
-			releaseQuestions(context.Background()),
-		)
-	}
-	if err := requestContext.Err(); err != nil {
-		return nil, err
+		methods:       ports.Methods,
+		frames:        ports.Frames,
+		newRPC:        newRPC,
+		reportFailure: reportFailure,
+		approvals:     make(map[connection.RPCID]*pendingApproval),
+		questions:     make(map[connection.RPCID]*pendingQuestion),
 	}
 	return owner, nil
 }
 
-func (owner *InteractionGateway) close(closeContext context.Context) error {
+// Close cancels pending client interactions and waits for their settlement.
+func (owner *InteractionGateway) Close(closeContext context.Context) error {
 	owner.mu.Lock()
 	if owner.closed {
 		owner.mu.Unlock()
@@ -129,14 +107,12 @@ func (owner *InteractionGateway) close(closeContext context.Context) error {
 	owner.mu.Unlock()
 
 	for _, entry := range questionEntries {
-		if entry.waiting.Withdraw(errInteractionGatewayClosed) {
-			entry.finish(owner, QuestionCancelled)
-		}
+		entry.waiting.Withdraw(errInteractionGatewayClosed)
+		entry.finish(owner, QuestionCancelled)
 	}
 	for _, entry := range approvalEntries {
-		if entry.waiting.Withdraw(errInteractionGatewayClosed) {
-			entry.finish(owner, approval.OutcomeCancelled)
-		}
+		entry.waiting.Withdraw(errInteractionGatewayClosed)
+		entry.finish(owner, approval.OutcomeCancelled)
 	}
 	for _, entry := range questionEntries {
 		select {

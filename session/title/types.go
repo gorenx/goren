@@ -16,13 +16,11 @@ import (
 )
 
 const (
+	PluginName     = "@deepseek-ai/dsh-session-title"
 	ServiceName    = "sessionTitle"
 	TitleEventName = "session/title"
 	ProjectionKey  = "title"
 )
-
-// Service is the canonical session-title capability identity.
-var Service = plugin.DefineService[TitleService](ServiceName)
 
 // TitleSet is the private typed identity of the log-only session/title event.
 var TitleSet = session.DefineEvent[EventData](TitleEventName)
@@ -164,11 +162,13 @@ type Snapshot struct {
 	UpdatedAt int64 `json:"updatedAt"`
 }
 
-// Config contains required deterministic fallback and accepted-title limits.
+// Config owns deterministic title behavior and its optional model-backed
+// generation feature.
 type Config struct {
-	FallbackMaxWords int `json:"fallbackMaxWords"`
-	FallbackMaxBytes int `json:"fallbackMaxBytes"`
-	MaxTitleBytes    int `json:"maxTitleBytes"`
+	FallbackMaxWords int        `json:"fallbackMaxWords"`
+	FallbackMaxBytes int        `json:"fallbackMaxBytes"`
+	MaxTitleBytes    int        `json:"maxTitleBytes"`
+	LLM              *LLMConfig `json:"llm,omitempty"`
 }
 
 // Validate resolves and checks typed title configuration.
@@ -184,6 +184,13 @@ func (settings Config) Validate() (Config, error) {
 	}
 	if settings.FallbackMaxBytes > settings.MaxTitleBytes {
 		return Config{}, errors.New("sessiontitle: fallbackMaxBytes must not exceed maxTitleBytes")
+	}
+	if settings.LLM != nil {
+		validatedLLM, err := settings.LLM.Validate()
+		if err != nil {
+			return Config{}, err
+		}
+		settings.LLM = &validatedLLM
 	}
 	return settings, nil
 }
@@ -201,12 +208,18 @@ func (problem *SessionTitleInvalidError) Error() string {
 	return problem.Message
 }
 
+// ProviderHandle owns one optional title Provider registration.
+type ProviderHandle interface {
+	Release(context.Context) error
+}
+
 // TitleService is the log-backed title read/write and provider-registration contract.
 type TitleService interface {
+	plugin.Service
 	Get(*session.Session) (*Snapshot, error)
 	Rename(*session.Session, string) (*Snapshot, error)
 	Refresh(context.Context, *session.Session) (*Snapshot, error)
-	Register(*plugin.Scope, Provider) (plugin.Disposer, error)
+	Register(Provider) (ProviderHandle, error)
 }
 
 func validateEventData(payload EventData) error {

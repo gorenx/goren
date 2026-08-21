@@ -415,6 +415,204 @@
         "input": {}
       }
     ],
+    "sessionSearchRequest": [
+      {
+        "name": "trimmed",
+        "accepted": true,
+        "input": {
+          "query": "  exact phrase  ",
+          "ignored": true
+        },
+        "normalized": {
+          "query": "exact phrase"
+        }
+      },
+      {
+        "name": "empty",
+        "accepted": false,
+        "input": {
+          "query": "   "
+        }
+      },
+      {
+        "name": "nul",
+        "accepted": false,
+        "input": {
+          "query": "bad\u0000query"
+        }
+      },
+      {
+        "name": "too-long-utf16",
+        "accepted": false,
+        "input": {
+          "query": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+        }
+      }
+    ],
+    "sessionSearchValue": [
+      {
+        "name": "empty",
+        "accepted": true,
+        "input": {
+          "items": [],
+          "hasMore": false
+        },
+        "normalized": {
+          "items": [],
+          "hasMore": false
+        }
+      },
+      {
+        "name": "match",
+        "accepted": true,
+        "input": {
+          "items": [
+            {
+              "sessionId": "session-1",
+              "snippet": "matching text"
+            }
+          ],
+          "hasMore": true
+        },
+        "normalized": {
+          "items": [
+            {
+              "sessionId": "session-1",
+              "snippet": "matching text"
+            }
+          ],
+          "hasMore": true
+        }
+      },
+      {
+        "name": "snippet-240-code-points",
+        "accepted": true,
+        "input": {
+          "items": [
+            {
+              "sessionId": "session-1",
+              "snippet": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+            }
+          ],
+          "hasMore": false
+        },
+        "normalized": {
+          "items": [
+            {
+              "sessionId": "session-1",
+              "snippet": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+            }
+          ],
+          "hasMore": false
+        }
+      },
+      {
+        "name": "snippet-too-long",
+        "accepted": false,
+        "input": {
+          "items": [
+            {
+              "sessionId": "session-1",
+              "snippet": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+            }
+          ],
+          "hasMore": false
+        }
+      },
+      {
+        "name": "too-many-items",
+        "accepted": false,
+        "input": {
+          "items": [
+            {
+              "sessionId": "session-0",
+              "snippet": "match"
+            },
+            {
+              "sessionId": "session-1",
+              "snippet": "match"
+            },
+            {
+              "sessionId": "session-2",
+              "snippet": "match"
+            },
+            {
+              "sessionId": "session-3",
+              "snippet": "match"
+            },
+            {
+              "sessionId": "session-4",
+              "snippet": "match"
+            },
+            {
+              "sessionId": "session-5",
+              "snippet": "match"
+            },
+            {
+              "sessionId": "session-6",
+              "snippet": "match"
+            },
+            {
+              "sessionId": "session-7",
+              "snippet": "match"
+            },
+            {
+              "sessionId": "session-8",
+              "snippet": "match"
+            },
+            {
+              "sessionId": "session-9",
+              "snippet": "match"
+            },
+            {
+              "sessionId": "session-10",
+              "snippet": "match"
+            },
+            {
+              "sessionId": "session-11",
+              "snippet": "match"
+            },
+            {
+              "sessionId": "session-12",
+              "snippet": "match"
+            },
+            {
+              "sessionId": "session-13",
+              "snippet": "match"
+            },
+            {
+              "sessionId": "session-14",
+              "snippet": "match"
+            },
+            {
+              "sessionId": "session-15",
+              "snippet": "match"
+            },
+            {
+              "sessionId": "session-16",
+              "snippet": "match"
+            },
+            {
+              "sessionId": "session-17",
+              "snippet": "match"
+            },
+            {
+              "sessionId": "session-18",
+              "snippet": "match"
+            },
+            {
+              "sessionId": "session-19",
+              "snippet": "match"
+            },
+            {
+              "sessionId": "session-20",
+              "snippet": "match"
+            }
+          ],
+          "hasMore": true
+        }
+      }
+    ],
     "sessionCreateRequest": [
       {
         "name": "default",

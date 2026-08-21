@@ -26,30 +26,39 @@ type WorkspaceGateway struct {
 	mutation  sync.Mutex
 }
 
-// NewWorkspaceGateway installs post-commit Workspace observers.
+// NewWorkspaceGateway constructs the Workspace API adapter. The owning API
+// Proxy Plugin declares and routes post-commit Workspace Events.
 func NewWorkspaceGateway(
-	requestContext context.Context,
-	pluginScope *plugin.Scope,
 	registry workspace.Registry,
 	publisher HostFramePublisher,
 ) (*WorkspaceGateway, error) {
-	if requestContext == nil || pluginScope == nil || registry == nil || publisher == nil {
+	if registry == nil || publisher == nil {
 		return nil, errors.New("apiproxy: Workspace Gateway dependencies are incomplete")
 	}
-	owner := &WorkspaceGateway{registry: registry, publisher: publisher}
-	if _, err := workspace.OnChanged(pluginScope, owner.observeChanged); err != nil {
-		return nil, err
+	return &WorkspaceGateway{
+		registry:  registry,
+		publisher: publisher,
+	}, nil
+}
+
+// ObserveEvent projects the Workspace Events declared by the owning API Proxy
+// Plugin.
+func (owner *WorkspaceGateway) ObserveEvent(
+	requestContext context.Context,
+	fact plugin.Event,
+) error {
+	switch observed := fact.(type) {
+	case workspace.ChangedNotice:
+		return owner.observeChanged(requestContext, observed.WorkspaceState)
+	case workspace.RemovedNotice:
+		return owner.observeRemoved(requestContext, observed.ID)
+	case workspace.OrderChangedNotice:
+		return owner.observeOrderChanged(requestContext, observed.WorkspaceIDs)
+	case workspace.ArchivedSessionsChangedNotice:
+		return owner.observeArchivedChanged(requestContext, observed.SessionIDs)
+	default:
+		return nil
 	}
-	if _, err := workspace.OnRemoved(pluginScope, owner.observeRemoved); err != nil {
-		return nil, err
-	}
-	if _, err := workspace.OnOrderChanged(pluginScope, owner.observeOrderChanged); err != nil {
-		return nil, err
-	}
-	if _, err := workspace.OnArchivedSessionsChanged(pluginScope, owner.observeArchivedChanged); err != nil {
-		return nil, err
-	}
-	return owner, requestContext.Err()
 }
 
 func (owner *WorkspaceGateway) List(
@@ -77,7 +86,7 @@ func (owner *WorkspaceGateway) Create(
 	defer owner.mutation.Unlock()
 	subject, created, err := owner.registry.Create(requestContext, call.Payload.Path)
 	if err != nil {
-		return Fail[WorkspaceCreateValue](newRPCError(
+		return Fail[WorkspaceCreateValue](NewRPCError(
 			connection.ErrorWorkspaceInvalidPath,
 			fmt.Sprintf("cannot create a workspace at %q: %v", call.Payload.Path, err),
 			struct {
@@ -105,7 +114,7 @@ func (owner *WorkspaceGateway) Rename(
 		for _, candidate := range owner.registry.List() {
 			candidateState := candidate.Snapshot()
 			if candidateState.ID != identifier && candidateState.Title == title {
-				return Fail[WorkspaceRenameValue](newRPCError(
+				return Fail[WorkspaceRenameValue](NewRPCError(
 					connection.ErrorWorkspaceNameConflict,
 					fmt.Sprintf("workspace name %q is already in use", title),
 					struct {
@@ -186,7 +195,7 @@ func (owner *WorkspaceGateway) InsertSessionBefore(
 	if err != nil {
 		var invalid *workspace.MoveInvalidError
 		if errors.As(err, &invalid) {
-			return Fail[WorkspaceInsertSessionBeforeValue](newRPCError(
+			return Fail[WorkspaceInsertSessionBeforeValue](NewRPCError(
 				connection.ErrorWorkspaceMoveInvalid, invalid.Error(), struct {
 					WorkspaceID     WorkspaceID `json:"workspaceId"`
 					SessionID       SessionID   `json:"sessionId"`
@@ -213,7 +222,7 @@ func (owner *WorkspaceGateway) ArchiveSession(
 	if err := owner.registry.ArchiveSession(requestContext, session.SessionID(call.Payload.SessionID)); err != nil {
 		var unknown *workspace.UnknownSessionError
 		if errors.As(err, &unknown) {
-			return Fail[WorkspaceArchiveSessionValue](newRPCError(
+			return Fail[WorkspaceArchiveSessionValue](NewRPCError(
 				connection.ErrorSessionNotFound, unknown.Error(), struct {
 					SessionID SessionID `json:"sessionId"`
 				}{SessionID: call.Payload.SessionID},

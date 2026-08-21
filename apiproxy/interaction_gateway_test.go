@@ -21,71 +21,103 @@ import (
 )
 
 type interactionFixturePlugin struct {
-	state *interactionFixture
+	plugin.Base
+	state             *interactionFixture
+	owner             *InteractionGateway
+	questions         *userquestions.ProviderHandle
+	stopLifetimeClose func() bool
 }
 
 type interactionFixture struct {
 	engine          *plugin.Runtime
-	pluginScope     *plugin.Scope
-	agents          agentcore.Registry
-	approvalService approval.Approval
-	questionService userquestions.UserQuestions
+	agents          *agentcore.RegistryPlugin
+	agentsHandle    plugin.Handle
+	approvalService *approval.Service
+	questionService *userquestions.QuestionService
 	methods         *Catalog
-	frameHub        *sessionFrameHub
+	frameHub        *liveFrameHub
 
 	rpcMutex sync.Mutex
 	nextRPC  int
 }
 
-func (*interactionFixturePlugin) Manifest() plugin.Manifest {
-	return plugin.Manifest{Name: "api-proxy-interaction-fixture"}
+func (instance *interactionFixturePlugin) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "api-proxy-interaction-fixture",
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[userquestions.UserQuestions](),
+		},
+		Waterfalls: []plugin.WaterfallMiddlewareBinding{
+			plugin.WaterfallOf[approval.DecisionRequest, approval.Decision](instance),
+		},
+	}
 }
 
-func (instance *interactionFixturePlugin) Apply(requestContext context.Context, pluginScope *plugin.Scope) error {
-	promptSettings, err := systemprompt.ValidateConfig(systemprompt.Config{})
+func (instance *interactionFixturePlugin) Apply(requestContext context.Context) error {
+	if err := requestContext.Err(); err != nil {
+		return err
+	}
+	questionService, err := plugin.Require[userquestions.UserQuestions](instance)
 	if err != nil {
 		return err
 	}
-	promptService, err := systemprompt.New(requestContext, pluginScope, promptSettings)
-	if err != nil {
-		return err
-	}
-	approvalSettings, err := approval.ValidateConfig(approval.Config{})
-	if err != nil {
-		return err
-	}
-	approvalService, err := approval.New(
-		requestContext, pluginScope, promptService, approvalSettings, approval.RuntimeOptions{},
+	methods := NewCatalog()
+	frameHub := newLiveFrameHub(instance.state.mintRPC)
+	owner, err := NewInteractionGateway(
+		InteractionGatewayDependencies{
+			Methods: methods,
+			Frames:  frameHub,
+		},
+		InteractionGatewayOptions{
+			NewRPCID: instance.state.mintRPC,
+		},
 	)
 	if err != nil {
 		return err
 	}
-	agentRegistry, err := agentcore.NewRegistry(pluginScope, agentcore.RegistryOptions{})
+	providerHandle, err := questionService.RegisterProvider(owner)
 	if err != nil {
 		return err
 	}
-	questionService := userquestions.New(userquestions.AgentRegistryResolverFunc(func() (agentcore.Registry, bool) {
-		return agentRegistry, true
-	}))
-	methods := NewCatalog()
-	frameHub := newSessionFrameHub(instance.state.mintRPC)
-	if _, err := NewInteractionGateway(
-		requestContext,
-		pluginScope,
-		InteractionGatewayDependencies{
-			Methods: methods, Frames: frameHub, UserQuestions: questionService,
+	instance.owner = owner
+	instance.questions = providerHandle
+	instance.stopLifetimeClose = context.AfterFunc(
+		plugin.Lifetime(instance),
+		func() {
+			_ = owner.Close(context.Background())
 		},
-		InteractionGatewayOptions{NewRPCID: instance.state.mintRPC},
-	); err != nil {
-		return err
-	}
-	instance.state.pluginScope = pluginScope
-	instance.state.agents = agentRegistry
-	instance.state.approvalService = approvalService
-	instance.state.questionService = questionService
+	)
 	instance.state.methods = methods
 	instance.state.frameHub = frameHub
 	return nil
+}
+
+func (instance *interactionFixturePlugin) Dispose(closeContext context.Context) error {
+	if instance.stopLifetimeClose != nil {
+		instance.stopLifetimeClose()
+	}
+	if instance.questions != nil {
+		instance.questions.Unregister()
+	}
+	var closeErr error
+	if instance.owner != nil {
+		closeErr = instance.owner.Close(closeContext)
+	}
+	if instance.state.frameHub != nil {
+		instance.state.frameHub.close()
+	}
+	instance.owner = nil
+	instance.questions = nil
+	instance.stopLifetimeClose = nil
+	return closeErr
+}
+
+func (instance *interactionFixturePlugin) Intercept(
+	requestContext context.Context,
+	input approval.DecisionRequest,
+	downstream plugin.WaterfallAction[approval.DecisionRequest, approval.Decision],
+) (approval.Decision, error) {
+	return instance.owner.ResolveApproval(requestContext, input, downstream)
 }
 
 func (state *interactionFixture) mintRPC() (connection.RPCID, error) {
@@ -96,9 +128,27 @@ func (state *interactionFixture) mintRPC() (connection.RPCID, error) {
 }
 
 type interactionSubject struct {
+	plugin.Base
 	identifier   session.SessionID
 	conversation *session.Session
-	agentScope   *plugin.Scope
+	agents       agentcore.Registry
+}
+
+func (subject *interactionSubject) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "api-proxy-interaction-agent:" + string(subject.identifier),
+		Provides: []plugin.ServiceType{
+			plugin.ServiceOf[agentcore.Agent](),
+		},
+	}
+}
+
+func (*interactionSubject) Apply(requestContext context.Context) error {
+	return requestContext.Err()
+}
+
+func (subject *interactionSubject) Dispose(requestContext context.Context) error {
+	return subject.agents.Remove(requestContext, subject)
 }
 
 func (subject *interactionSubject) ID() session.SessionID { return subject.identifier }
@@ -108,7 +158,6 @@ func (*interactionSubject) OptionsValue() agentcore.Options {
 func (subject *interactionSubject) SessionValue() *session.Session { return subject.conversation }
 func (*interactionSubject) InboxValue() *agentcore.Inbox           { return nil }
 func (*interactionSubject) StatusValue() agentcore.Status          { return agentcore.StatusIdle }
-func (subject *interactionSubject) ScopeValue() *plugin.Scope      { return subject.agentScope }
 func (*interactionSubject) Cancel(agentcore.CancelCause, agentcore.CancelOptions) {
 }
 func (*interactionSubject) WhenIdle(context.Context) error { return nil }
@@ -131,10 +180,38 @@ type capturedMux struct {
 
 func newInteractionFixture(t *testing.T) *interactionFixture {
 	t.Helper()
-	state := &interactionFixture{engine: plugin.NewRuntime()}
-	if _, err := state.engine.Load(context.Background(), &interactionFixturePlugin{state: state}); err != nil {
+	promptSettings, err := systemprompt.ValidateConfig(systemprompt.Config{})
+	if err != nil {
 		t.Fatal(err)
 	}
+	promptService := systemprompt.New(promptSettings, systemprompt.RegistryOptions{})
+	approvalSettings, err := approval.ValidateConfig(approval.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	approvalService := approval.New(approvalSettings)
+	agentRegistry := agentcore.NewRegistry(agentcore.RegistryOptions{})
+	questionService := userquestions.New()
+	state := &interactionFixture{
+		engine:          plugin.NewRuntime(plugin.RuntimeSettings{}),
+		agents:          agentRegistry,
+		approvalService: approvalService,
+		questionService: questionService,
+	}
+	handles, err := state.engine.Start(
+		context.Background(),
+		promptService,
+		approvalService,
+		agentRegistry,
+		questionService,
+		&interactionFixturePlugin{
+			state: state,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.agentsHandle = handles[2]
 	t.Cleanup(func() {
 		if err := state.engine.Shutdown(context.Background()); err != nil {
 			t.Error(err)
@@ -145,16 +222,23 @@ func newInteractionFixture(t *testing.T) *interactionFixture {
 
 func (state *interactionFixture) newSubject(t *testing.T, identifier session.SessionID) *interactionSubject {
 	t.Helper()
-	agentScope, _, err := state.pluginScope.Child(string(identifier))
-	if err != nil {
-		t.Fatal(err)
-	}
 	conversation, err := session.New(identifier, session.CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	subject := &interactionSubject{identifier: identifier, conversation: conversation, agentScope: agentScope}
-	if _, err := state.agents.Register(context.Background(), agentScope, subject, nil); err != nil {
+	subject := &interactionSubject{
+		identifier:   identifier,
+		conversation: conversation,
+		agents:       state.agents,
+	}
+	if _, err = state.engine.MountScopedChild(
+		context.Background(),
+		state.agentsHandle,
+		subject,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.agents.Enter(subject, nil); err != nil {
 		t.Fatal(err)
 	}
 	return subject

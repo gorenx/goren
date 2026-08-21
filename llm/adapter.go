@@ -7,19 +7,24 @@ import (
 )
 
 const (
+	PluginName               = "@deepseek-ai/dsh-llm"
 	ServiceName              = "llm"
 	AdaptersUpdatedEventName = "llm/adapters-updated"
 	StreamEventName          = "llm/stream"
 )
 
-// Service is the canonical provider-neutral LLM capability identity.
-var Service = plugin.DefineService[LlmRuntime](ServiceName)
-
 // AdaptersUpdated announces a committed adapter or configurable-directory change.
-var AdaptersUpdated = plugin.DefineEvent[struct{}, struct{}](AdaptersUpdatedEventName, plugin.ModeEmit)
+type AdaptersUpdated struct{}
 
-// StreamEvent is the middleware seam around every routed model call.
-var StreamEvent = plugin.DefineEvent[GenerateOptions, ChunkStream](StreamEventName, plugin.ModeWaterfall)
+// EventName returns the canonical Harness event name.
+func (AdaptersUpdated) EventName() string {
+	return AdaptersUpdatedEventName
+}
+
+// EventDelivery preserves ordered in-process topology notification.
+func (AdaptersUpdated) EventDelivery() plugin.DeliveryPolicy {
+	return plugin.DeliveryOrdered
+}
 
 // Adapter is the required provider-wire capability. Optional metadata
 // capabilities below provide the source LlmAdapter class defaults without
@@ -60,6 +65,11 @@ type DirectoryRegistrationHandle interface {
 	Release(context.Context) error
 }
 
+// ModelDiscoveryRegistration owns one live model-discovery binding.
+type ModelDiscoveryRegistration interface {
+	Release(context.Context) error
+}
+
 // PreparedLlmCall binds exact-model resolution and a one-shot dispatch to the
 // same adapter registration, preventing a replacement race between logging and I/O.
 type PreparedLlmCall interface {
@@ -72,11 +82,12 @@ type PreparedLlmCall interface {
 
 // LlmRuntime is the provider-owned service contract consumed by Agent and auxiliary calls.
 type LlmRuntime interface {
-	RegisterAdapter(context.Context, *plugin.Scope, []string, Adapter) (AdapterRegistrationHandle, error)
+	plugin.Service
+	RegisterAdapter(context.Context, []string, Adapter) (AdapterRegistrationHandle, error)
 	ListProviders() []ProviderInfo
-	RegisterConfigurableProviders(context.Context, *plugin.Scope, []ConfigurableProvider) (DirectoryRegistrationHandle, error)
+	RegisterConfigurableProviders(context.Context, []ConfigurableProvider) (DirectoryRegistrationHandle, error)
 	ListConfigurableProviders() []ConfigurableProvider
-	RegisterModelDiscovery(*plugin.Scope, string, ModelDiscovery) (plugin.Disposer, error)
+	RegisterModelDiscovery(string, ModelDiscovery) (ModelDiscoveryRegistration, error)
 	DiscoverModels(context.Context, string, ModelDiscoveryRequest) ([]DiscoveredModel, error)
 	RetryPolicyFor(string) (RetryPolicy, error)
 	ListModels(context.Context, string) ([]ModelInfo, error)
@@ -87,4 +98,6 @@ type LlmRuntime interface {
 }
 
 // ObserverFailureReporter receives contained non-invariant topology-listener failures.
-type ObserverFailureReporter func(error)
+type ObserverFailureReporter interface {
+	ReportObserverFailure(error)
+}

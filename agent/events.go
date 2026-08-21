@@ -23,22 +23,69 @@ const (
 	ErrorEventName          = "agent/error"
 )
 
-// LifecycleNotice carries the exact Agent subject of a creation or disposal.
-type LifecycleNotice struct {
+// Created is the vetoable live Agent publication edge.
+type Created struct {
 	Subject Agent
 }
 
-// StatusNotice carries one non-repeating destination state.
-type StatusNotice struct {
+func (Created) EventName() string { return CreatedEventName }
+func (Created) EventDelivery() plugin.DeliveryPolicy {
+	return plugin.DeliveryOrdered
+}
+
+// Disposed announces exact live Agent removal.
+type Disposed struct {
+	Subject Agent
+}
+
+func (Disposed) EventName() string { return DisposedEventName }
+func (Disposed) EventDelivery() plugin.DeliveryPolicy {
+	return plugin.DeliveryOrdered
+}
+
+// StatusChanged carries one non-repeating destination state.
+type StatusChanged struct {
 	Subject Agent
 	Status  Status
 }
 
-// InboxNotice carries one committed live inbox change.
-type InboxNotice struct {
+func (StatusChanged) EventName() string { return StatusEventName }
+func (StatusChanged) EventDelivery() plugin.DeliveryPolicy {
+	return plugin.DeliveryOrdered
+}
+
+// InboxInserted carries one committed live Inbox insertion.
+type InboxInserted struct {
+	Subject Agent
+	Message llm.UserMessage
+}
+
+func (InboxInserted) EventName() string { return InboxInsertedEventName }
+func (InboxInserted) EventDelivery() plugin.DeliveryPolicy {
+	return plugin.DeliveryOrdered
+}
+
+// InboxClaimed carries one committed Inbox claim.
+type InboxClaimed struct {
 	Subject Agent
 	Message llm.UserMessage
 	Turn    int64
+}
+
+func (InboxClaimed) EventName() string { return InboxClaimedEventName }
+func (InboxClaimed) EventDelivery() plugin.DeliveryPolicy {
+	return plugin.DeliveryOrdered
+}
+
+// InboxDiscarded carries one committed Inbox removal without execution.
+type InboxDiscarded struct {
+	Subject Agent
+	Message llm.UserMessage
+}
+
+func (InboxDiscarded) EventName() string { return InboxDiscardedEventName }
+func (InboxDiscarded) EventDelivery() plugin.DeliveryPolicy {
+	return plugin.DeliveryOrdered
 }
 
 // SessionStartSource classifies why an Agent's Session lifecycle began.
@@ -51,10 +98,15 @@ const (
 	SessionCompact SessionStartSource = "compact"
 )
 
-// SessionStartNotice announces the first driving extension point.
-type SessionStartNotice struct {
+// SessionStarted announces the first driving extension point.
+type SessionStarted struct {
 	Subject Agent
 	Source  SessionStartSource
+}
+
+func (SessionStarted) EventName() string { return SessionStartEventName }
+func (SessionStarted) EventDelivery() plugin.DeliveryPolicy {
+	return plugin.DeliveryOrdered
 }
 
 // PreStepKind selects rejection or entry for a proposed model step.
@@ -65,35 +117,39 @@ const (
 	PreStepEnter  PreStepKind = "enter"
 )
 
-// PreStepDecision decides whether and with which messages a step starts.
-type PreStepDecision struct {
-	Kind     PreStepKind
-	Messages []llm.UserMessage
-}
-
-// PreStepNotice describes one proposed step. Cancellation is carried by the
-// dispatch context instead of retained in the payload.
+// PreStepNotice is the typed input of the Agent pre-step Waterfall.
 type PreStepNotice struct {
+	plugin.WaterfallInputBase
 	Subject  Agent
 	Messages []llm.UserMessage
 	Turn     int64
 	Step     int64
 }
 
+// PreStepDecision decides whether and with which messages a step starts.
+type PreStepDecision struct {
+	plugin.WaterfallOutputBase
+	Kind     PreStepKind
+	Messages []llm.UserMessage
+}
+
 // RequestNotice identifies the step whose immutable call config is resolving.
 type RequestNotice struct {
+	plugin.WaterfallInputBase
 	Subject Agent
 	Turn    int64
 	Step    int64
 }
 
-// RequestErrorAction lets one listener own recovery for a failed attempt.
-type RequestErrorAction struct {
-	Retry bool
+// RequestResolution is the typed output of the Agent request Waterfall.
+type RequestResolution struct {
+	plugin.WaterfallOutputBase
+	Config llm.CallConfig
 }
 
-// RequestErrorNotice contains provider-neutral facts for failed-attempt policy.
+// RequestErrorNotice contains provider-neutral failed-attempt policy facts.
 type RequestErrorNotice struct {
+	plugin.WaterfallInputBase
 	Subject     Agent
 	Turn        int64
 	Step        int64
@@ -102,229 +158,120 @@ type RequestErrorNotice struct {
 	RetryPolicy llm.RetryPolicy
 }
 
-// TurnNotice identifies a turn boundary.
-type TurnNotice struct {
+// RequestErrorAction lets one Middleware own recovery for a failed attempt.
+type RequestErrorAction struct {
+	plugin.WaterfallOutputBase
+	Retry bool
+}
+
+// TurnStopping is the ordered turn-boundary Event.
+type TurnStopping struct {
 	Subject Agent
 	Turn    int64
 }
 
-// ErrorNotice is the contained live failure notification.
-type ErrorNotice struct {
+func (TurnStopping) EventName() string { return TurnStoppingEventName }
+func (TurnStopping) EventDelivery() plugin.DeliveryPolicy {
+	return plugin.DeliveryOrdered
+}
+
+// AgentError is a contained live failure notification.
+type AgentError struct {
 	Subject Agent
 	Turn    int64
 	Step    int64
 	Err     error
 }
 
-var (
-	createdEvent        = plugin.DefineEvent[LifecycleNotice, struct{}](CreatedEventName, plugin.ModeEmit)
-	disposedEvent       = plugin.DefineEvent[LifecycleNotice, struct{}](DisposedEventName, plugin.ModeEmit)
-	statusEvent         = plugin.DefineEvent[StatusNotice, struct{}](StatusEventName, plugin.ModeEmit)
-	inboxInsertedEvent  = plugin.DefineEvent[InboxNotice, struct{}](InboxInsertedEventName, plugin.ModeEmit)
-	inboxClaimedEvent   = plugin.DefineEvent[InboxNotice, struct{}](InboxClaimedEventName, plugin.ModeEmit)
-	inboxDiscardedEvent = plugin.DefineEvent[InboxNotice, struct{}](InboxDiscardedEventName, plugin.ModeEmit)
-	sessionStartEvent   = plugin.DefineEvent[SessionStartNotice, struct{}](SessionStartEventName, plugin.ModeEmit)
-	preStepEvent        = plugin.DefineEvent[PreStepNotice, PreStepDecision](PreStepEventName, plugin.ModeWaterfall)
-	requestEvent        = plugin.DefineEvent[RequestNotice, llm.CallConfig](RequestEventName, plugin.ModeWaterfall)
-	requestErrorEvent   = plugin.DefineEvent[RequestErrorNotice, RequestErrorAction](RequestErrorEventName, plugin.ModeWaterfall)
-	turnStoppingEvent   = plugin.DefineEvent[TurnNotice, struct{}](TurnStoppingEventName, plugin.ModeSerial)
-	errorEvent          = plugin.DefineEvent[ErrorNotice, struct{}](ErrorEventName, plugin.ModeEmit)
-)
-
-type LifecycleHandler func(context.Context, Agent) error
-type StatusHandler func(context.Context, Agent, Status) error
-type InboxHandler func(context.Context, Agent, llm.UserMessage, int64) error
-type SessionStartHandler func(context.Context, Agent, SessionStartSource) error
-type PreStepNext func(context.Context) (PreStepDecision, error)
-type PreStepHandler func(context.Context, PreStepNotice, PreStepNext) (PreStepDecision, error)
-type RequestNext func(context.Context) (llm.CallConfig, error)
-type RequestHandler func(context.Context, RequestNotice, RequestNext) (llm.CallConfig, error)
-type RequestErrorNext func(context.Context) (RequestErrorAction, error)
-type RequestErrorHandler func(context.Context, RequestErrorNotice, RequestErrorNext) (RequestErrorAction, error)
-type TurnStoppingHandler func(context.Context, Agent, int64) error
-type ErrorHandler func(context.Context, ErrorNotice) error
-
-func OnCreated(pluginScope *plugin.Scope, callback LifecycleHandler) (plugin.Disposer, error) {
-	return onLifecycle(pluginScope, createdEvent, callback)
+func (AgentError) EventName() string { return ErrorEventName }
+func (AgentError) EventDelivery() plugin.DeliveryPolicy {
+	return plugin.DeliveryOrdered
 }
 
-func OnDisposed(pluginScope *plugin.Scope, callback LifecycleHandler) (plugin.Disposer, error) {
-	return onLifecycle(pluginScope, disposedEvent, callback)
+// PreStepActionFunc adapts a stateless terminal operation.
+type PreStepActionFunc func(context.Context, PreStepNotice) (PreStepDecision, error)
+
+func (operation PreStepActionFunc) Execute(
+	requestContext context.Context,
+	notice PreStepNotice,
+) (PreStepDecision, error) {
+	return operation(requestContext, notice)
 }
 
-func onLifecycle(pluginScope *plugin.Scope, topic plugin.EventKey[LifecycleNotice, struct{}], callback LifecycleHandler) (plugin.Disposer, error) {
-	if callback == nil {
-		return nil, errors.New("agent: lifecycle handler is nil")
+// RequestActionFunc adapts a stateless request terminal operation.
+type RequestActionFunc func(context.Context, RequestNotice) (RequestResolution, error)
+
+func (operation RequestActionFunc) Execute(
+	requestContext context.Context,
+	notice RequestNotice,
+) (RequestResolution, error) {
+	return operation(requestContext, notice)
+}
+
+// RequestErrorActionFunc adapts a stateless recovery terminal operation.
+type RequestErrorActionFunc func(context.Context, RequestErrorNotice) (RequestErrorAction, error)
+
+func (operation RequestErrorActionFunc) Execute(
+	requestContext context.Context,
+	notice RequestErrorNotice,
+) (RequestErrorAction, error) {
+	return operation(requestContext, notice)
+}
+
+// ResolvePreStep runs the scoped pre-step Waterfall around terminal.
+func ResolvePreStep(
+	requestContext context.Context,
+	notice PreStepNotice,
+	terminal plugin.WaterfallAction[PreStepNotice, PreStepDecision],
+) (PreStepDecision, error) {
+	if notice.Subject == nil || terminal == nil {
+		return PreStepDecision{}, errors.New(
+			"agent: pre-step subject or terminal is nil",
+		)
 	}
-	return plugin.OnNotify(pluginScope, topic, func(requestContext context.Context, notice LifecycleNotice) error {
-		return callback(requestContext, notice.Subject)
-	})
-}
-
-func OnStatus(pluginScope *plugin.Scope, callback StatusHandler) (plugin.Disposer, error) {
-	if callback == nil {
-		return nil, errors.New("agent: status handler is nil")
-	}
-	return plugin.OnNotify(pluginScope, statusEvent, func(requestContext context.Context, notice StatusNotice) error {
-		return callback(requestContext, notice.Subject, notice.Status)
-	})
-}
-
-func OnInboxInserted(pluginScope *plugin.Scope, callback InboxHandler) (plugin.Disposer, error) {
-	return onInbox(pluginScope, inboxInsertedEvent, callback)
-}
-
-func OnInboxClaimed(pluginScope *plugin.Scope, callback InboxHandler) (plugin.Disposer, error) {
-	return onInbox(pluginScope, inboxClaimedEvent, callback)
-}
-
-func OnInboxDiscarded(pluginScope *plugin.Scope, callback InboxHandler) (plugin.Disposer, error) {
-	return onInbox(pluginScope, inboxDiscardedEvent, callback)
-}
-
-func onInbox(pluginScope *plugin.Scope, topic plugin.EventKey[InboxNotice, struct{}], callback InboxHandler) (plugin.Disposer, error) {
-	if callback == nil {
-		return nil, errors.New("agent: inbox handler is nil")
-	}
-	return plugin.OnNotify(pluginScope, topic, func(requestContext context.Context, notice InboxNotice) error {
-		return callback(requestContext, notice.Subject, notice.Message, notice.Turn)
-	})
-}
-
-func OnSessionStart(pluginScope *plugin.Scope, callback SessionStartHandler) (plugin.Disposer, error) {
-	if callback == nil {
-		return nil, errors.New("agent: session-start handler is nil")
-	}
-	return plugin.OnNotify(pluginScope, sessionStartEvent, func(requestContext context.Context, notice SessionStartNotice) error {
-		return callback(requestContext, notice.Subject, notice.Source)
-	})
-}
-
-func OnPreStep(pluginScope *plugin.Scope, callback PreStepHandler) (plugin.Disposer, error) {
-	if callback == nil {
-		return nil, errors.New("agent: pre-step handler is nil")
-	}
-	return plugin.OnWaterfall(pluginScope, preStepEvent,
-		func(requestContext context.Context, notice PreStepNotice, downstream plugin.Next[PreStepNotice, PreStepDecision]) (PreStepDecision, error) {
-			return callback(requestContext, notice, func(chainContext context.Context) (PreStepDecision, error) {
-				return downstream(chainContext, notice)
-			})
-		})
-}
-
-func OnRequest(pluginScope *plugin.Scope, callback RequestHandler) (plugin.Disposer, error) {
-	if callback == nil {
-		return nil, errors.New("agent: request handler is nil")
-	}
-	return plugin.OnWaterfall(pluginScope, requestEvent,
-		func(requestContext context.Context, notice RequestNotice, downstream plugin.Next[RequestNotice, llm.CallConfig]) (llm.CallConfig, error) {
-			return callback(requestContext, notice, func(chainContext context.Context) (llm.CallConfig, error) {
-				return downstream(chainContext, notice)
-			})
-		})
-}
-
-func OnRequestError(pluginScope *plugin.Scope, callback RequestErrorHandler) (plugin.Disposer, error) {
-	if callback == nil {
-		return nil, errors.New("agent: request-error handler is nil")
-	}
-	return plugin.OnWaterfall(pluginScope, requestErrorEvent,
-		func(requestContext context.Context, notice RequestErrorNotice, downstream plugin.Next[RequestErrorNotice, RequestErrorAction]) (RequestErrorAction, error) {
-			return callback(requestContext, notice, func(chainContext context.Context) (RequestErrorAction, error) {
-				return downstream(chainContext, notice)
-			})
-		})
-}
-
-func OnTurnStopping(pluginScope *plugin.Scope, callback TurnStoppingHandler) (plugin.Disposer, error) {
-	if callback == nil {
-		return nil, errors.New("agent: turn-stopping handler is nil")
-	}
-	return plugin.OnDecision(pluginScope, turnStoppingEvent,
-		func(requestContext context.Context, notice TurnNotice) (plugin.Decision[struct{}], error) {
-			return plugin.Decision[struct{}]{}, callback(requestContext, notice.Subject, notice.Turn)
-		})
-}
-
-func OnError(pluginScope *plugin.Scope, callback ErrorHandler) (plugin.Disposer, error) {
-	if callback == nil {
-		return nil, errors.New("agent: error handler is nil")
-	}
-	return plugin.OnNotify(pluginScope, errorEvent,
-		func(requestContext context.Context, notice ErrorNotice) error {
-			return callback(requestContext, notice)
-		},
+	return plugin.Run(
+		requestContext,
+		notice.Subject,
+		notice,
+		terminal,
 	)
 }
 
-func emitScoped[P any](requestContext context.Context, sourceScope *plugin.Scope, subject Agent, topic plugin.EventKey[P, struct{}], payload P) error {
-	if subject == nil || subject.ScopeValue() == nil {
-		return errors.New("agent: scoped event subject is nil")
-	}
-	return plugin.EmitScopedFrom(requestContext, sourceScope, subject.ScopeValue().Target(), topic, payload)
-}
-
-func EmitStatus(requestContext context.Context, sourceScope *plugin.Scope, subject Agent, destination Status) error {
-	return emitScoped(requestContext, sourceScope, subject, statusEvent, StatusNotice{Subject: subject, Status: destination})
-}
-
-func EmitInboxInserted(requestContext context.Context, sourceScope *plugin.Scope, subject Agent, message llm.UserMessage) error {
-	return emitScoped(requestContext, sourceScope, subject, inboxInsertedEvent, InboxNotice{Subject: subject, Message: message})
-}
-
-func EmitInboxClaimed(requestContext context.Context, sourceScope *plugin.Scope, subject Agent, message llm.UserMessage, turn int64) error {
-	return emitScoped(requestContext, sourceScope, subject, inboxClaimedEvent, InboxNotice{Subject: subject, Message: message, Turn: turn})
-}
-
-func EmitInboxDiscarded(requestContext context.Context, sourceScope *plugin.Scope, subject Agent, message llm.UserMessage) error {
-	return emitScoped(requestContext, sourceScope, subject, inboxDiscardedEvent, InboxNotice{Subject: subject, Message: message})
-}
-
-func EmitSessionStart(requestContext context.Context, sourceScope *plugin.Scope, subject Agent, source SessionStartSource) error {
-	return emitScoped(requestContext, sourceScope, subject, sessionStartEvent, SessionStartNotice{Subject: subject, Source: source})
-}
-
-func ResolvePreStep(requestContext context.Context, sourceScope *plugin.Scope, notice PreStepNotice, terminal PreStepNext) (PreStepDecision, error) {
+// ResolveRequest runs the scoped request Waterfall around terminal.
+func ResolveRequest(
+	requestContext context.Context,
+	notice RequestNotice,
+	terminal plugin.WaterfallAction[RequestNotice, RequestResolution],
+) (llm.CallConfig, error) {
 	if notice.Subject == nil || terminal == nil {
-		return PreStepDecision{}, errors.New("agent: pre-step subject or terminal is nil")
+		return llm.CallConfig{}, errors.New(
+			"agent: request subject or terminal is nil",
+		)
 	}
-	return plugin.WaterfallScopedFrom(requestContext, sourceScope, notice.Subject.ScopeValue().Target(), preStepEvent, notice,
-		func(chainContext context.Context, _ PreStepNotice) (PreStepDecision, error) {
-			return terminal(chainContext)
-		})
+	resolved, err := plugin.Run(
+		requestContext,
+		notice.Subject,
+		notice,
+		terminal,
+	)
+	return resolved.Config, err
 }
 
-func ResolveRequest(requestContext context.Context, sourceScope *plugin.Scope, notice RequestNotice, terminal RequestNext) (llm.CallConfig, error) {
+// ResolveRequestError runs the scoped recovery Waterfall around terminal.
+func ResolveRequestError(
+	requestContext context.Context,
+	notice RequestErrorNotice,
+	terminal plugin.WaterfallAction[RequestErrorNotice, RequestErrorAction],
+) (RequestErrorAction, error) {
 	if notice.Subject == nil || terminal == nil {
-		return llm.CallConfig{}, errors.New("agent: request subject or terminal is nil")
+		return RequestErrorAction{}, errors.New(
+			"agent: request-error subject or terminal is nil",
+		)
 	}
-	return plugin.WaterfallScopedFrom(requestContext, sourceScope, notice.Subject.ScopeValue().Target(), requestEvent, notice,
-		func(chainContext context.Context, _ RequestNotice) (llm.CallConfig, error) {
-			return terminal(chainContext)
-		})
-}
-
-func ResolveRequestError(requestContext context.Context, sourceScope *plugin.Scope, notice RequestErrorNotice, terminal RequestErrorNext) (RequestErrorAction, error) {
-	if notice.Subject == nil || terminal == nil {
-		return RequestErrorAction{}, errors.New("agent: request-error subject or terminal is nil")
-	}
-	return plugin.WaterfallScopedFrom(requestContext, sourceScope, notice.Subject.ScopeValue().Target(), requestErrorEvent, notice,
-		func(chainContext context.Context, _ RequestErrorNotice) (RequestErrorAction, error) {
-			return terminal(chainContext)
-		})
-}
-
-func DispatchTurnStopping(requestContext context.Context, sourceScope *plugin.Scope, subject Agent, turn int64) error {
-	if subject == nil {
-		return errors.New("agent: turn-stopping subject is nil")
-	}
-	_, err := plugin.SerialScopedFrom(requestContext, sourceScope, subject.ScopeValue().Target(), turnStoppingEvent, TurnNotice{Subject: subject, Turn: turn})
-	return err
-}
-
-func EmitError(requestContext context.Context, sourceScope *plugin.Scope, notice ErrorNotice) error {
-	if notice.Subject == nil {
-		return errors.New("agent: error subject is nil")
-	}
-	return emitScoped(requestContext, sourceScope, notice.Subject, errorEvent, notice)
+	return plugin.Run(
+		requestContext,
+		notice.Subject,
+		notice,
+		terminal,
+	)
 }

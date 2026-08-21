@@ -33,7 +33,7 @@ func (owner *SettingsGateway) Describe(
 	_ Request[SettingsDescribeRequest],
 ) (Outcome[SettingsDescribeValue], error) {
 	if owner.describer == nil {
-		return Fail[SettingsDescribeValue](newRPCError(
+		return Fail[SettingsDescribeValue](NewRPCError(
 			connection.ErrorInternal, settingsAbsentMessage, struct{}{},
 		)), nil
 	}

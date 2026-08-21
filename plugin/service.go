@@ -3,78 +3,186 @@ package plugin
 import (
 	"errors"
 	"fmt"
-	"strings"
+	"reflect"
 )
 
-type serviceToken struct {
-	marker byte
+// Service marks a business capability offered through the Runtime. Provider
+// interfaces embed Service and add their domain methods.
+type Service interface {
+	RuntimeService()
 }
 
-// ServiceKey is an owner-defined typed identity for one service contract.
-// Copy the value exported by the owner package; do not recreate it by name.
-type ServiceKey[T any] struct {
-	ref ServiceRef
+// RuntimeService allows a business interface embedding Service to be
+// implemented directly by a Plugin that embeds Base.
+func (*Base) RuntimeService() {}
+
+// ServiceType is a type-derived Service contract used only by Manifest.
+type ServiceType interface {
+	Name() string
+	serviceReference() serviceRef
+	bindService(Plugin) (Service, bool)
 }
 
-// ServiceRef is the type-erased service identity used by plugin manifests.
-type ServiceRef struct {
-	name  string
-	token *serviceToken
+type serviceRef struct {
+	key  reflect.Type
+	name string
 }
 
-// DefineService creates the canonical key owned by a service-definition package.
-func DefineService[T any](canonicalName string) ServiceKey[T] {
-	if strings.TrimSpace(canonicalName) == "" || canonicalName != strings.TrimSpace(canonicalName) {
-		panic("plugin: service name must be non-empty and trimmed")
-	}
-	return ServiceKey[T]{ref: ServiceRef{
-		name: canonicalName, token: &serviceToken{},
-	}}
-}
-
-// Ref returns the type-erased identity used in a Manifest.
-func (typedKey ServiceKey[T]) Ref() ServiceRef {
-	return typedKey.ref
-}
-
-// Name returns the canonical source-compatible service name.
-func (definition ServiceRef) Name() string {
-	return definition.name
-}
-
-func (definition ServiceRef) validate() error {
-	if definition.token == nil || strings.TrimSpace(definition.name) == "" {
-		return errors.New("invalid service key")
+func (reference serviceRef) validate() error {
+	if reference.key == nil || reference.key.Kind() != reflect.Interface ||
+		reference.key.Name() == "" || reference.name == "" {
+		return errors.New("Service contract must be a named interface")
 	}
 	return nil
 }
 
-func (definition ServiceRef) sameDefinition(otherRef ServiceRef) bool {
-	return definition.name == otherRef.name && definition.token == otherRef.token
+type providedServiceSpec struct {
+	reference  serviceRef
+	capability Service
 }
 
-// Provide contributes an implementation from the owning plugin scope. The
-// service becomes visible only after Apply succeeds and Runtime activates the scope.
-func Provide[T any](pluginScope *Scope, providedKey ServiceKey[T], instance T) (Disposer, error) {
-	if pluginScope == nil {
-		return nil, errors.New("plugin: provide on nil scope")
-	}
-	return pluginScope.provide(providedKey.ref, instance)
+type typedServiceType[S Service] struct {
+	reference serviceRef
 }
 
-// Require resolves a required or optional service declared by the plugin.
-func Require[T any](pluginScope *Scope, dependencyKey ServiceKey[T]) (T, bool) {
-	var zero T
-	if pluginScope == nil {
-		return zero, false
+// ServiceOf derives one Service identity from its named Go interface type.
+// Runtime uses reflection only for this type key; it never invokes business
+// methods through reflection.
+func ServiceOf[S Service]() ServiceType {
+	selectedType := reflect.TypeFor[S]()
+	return typedServiceType[S]{
+		reference: serviceRef{
+			key:  selectedType,
+			name: namedTypeName(selectedType),
+		},
 	}
-	value, found := pluginScope.require(dependencyKey.ref)
-	if !found {
-		return zero, false
+}
+
+// Name returns the fully qualified Go Service interface name.
+func (typedContract typedServiceType[S]) Name() string {
+	return typedContract.reference.name
+}
+
+func (typedContract typedServiceType[S]) serviceReference() serviceRef {
+	return typedContract.reference
+}
+
+func (typedServiceType[S]) bindService(pluginInstance Plugin) (Service, bool) {
+	capability, matches := pluginInstance.(S)
+	if !matches {
+		return nil, false
 	}
-	typedValue, ok := value.(T)
-	if !ok {
-		panic(fmt.Sprintf("plugin: service %q contains incompatible value %T", dependencyKey.ref.name, value))
+	return capability, true
+}
+
+type serviceBindingKey struct {
+	scope       *scope
+	serviceType reflect.Type
+}
+
+type serviceBinding struct {
+	reference  serviceRef
+	capability Service
+	owner      *fiber
+	scope      *scope
+}
+
+type serviceDependency struct {
+	reference serviceRef
+	binding   *serviceBinding
+	optional  bool
+}
+
+type serviceRegistry struct {
+	bindings map[serviceBindingKey]*serviceBinding
+}
+
+func newServiceRegistry() *serviceRegistry {
+	return &serviceRegistry{
+		bindings: make(map[serviceBindingKey]*serviceBinding),
 	}
-	return typedValue, true
+}
+
+func (registry *serviceRegistry) resolve(
+	reference serviceRef,
+	sourceScope *scope,
+) (*serviceBinding, bool) {
+	for selectedScope := sourceScope; selectedScope != nil; selectedScope = selectedScope.parent {
+		bindingKey := serviceBindingKey{
+			scope:       selectedScope,
+			serviceType: reference.key,
+		}
+		binding := registry.bindings[bindingKey]
+		if binding != nil && binding.owner != nil && binding.owner.state == FiberActive {
+			return binding, true
+		}
+	}
+	return nil, false
+}
+
+// Require returns the hard Service dependency declared by owner. It is valid
+// only while Runtime is invoking owner.Apply.
+func Require[S Service](owner Plugin) (S, error) {
+	var unavailable S
+	ownerFiber, err := fiberOf(owner)
+	if err != nil {
+		return unavailable, err
+	}
+	reference := ServiceOf[S]().serviceReference()
+	runtimeEngine := ownerFiber.runtime
+	runtimeEngine.view.RLock()
+	defer runtimeEngine.view.RUnlock()
+	if ownerFiber == nil || ownerFiber.state != FiberStarting {
+		return unavailable, ErrDependencyResolutionClosed
+	}
+	if !containsService(ownerFiber.target.manifest.requires, reference.key) {
+		return unavailable, fmt.Errorf(
+			"plugin: %s did not declare required Service %q",
+			ownerFiber.target.manifest.name,
+			reference.name,
+		)
+	}
+	dependency := ownerFiber.dependencies[reference.key]
+	if dependency == nil || dependency.optional || dependency.binding == nil {
+		return unavailable, fmt.Errorf(
+			"%w: %s",
+			ErrServiceUnavailable,
+			reference.name,
+		)
+	}
+	capability, matches := dependency.binding.capability.(S)
+	if !matches {
+		return unavailable, fmt.Errorf(
+			"plugin: Service %q has an incompatible provider",
+			reference.name,
+		)
+	}
+	return capability, nil
+}
+
+// Resolve returns the optional Service snapshot declared by owner. It is valid
+// only while Runtime is invoking owner.Apply.
+func Resolve[S Service](owner Plugin) (S, bool) {
+	var unavailable S
+	ownerFiber, err := fiberOf(owner)
+	if err != nil {
+		return unavailable, false
+	}
+	reference := ServiceOf[S]().serviceReference()
+	runtimeEngine := ownerFiber.runtime
+	runtimeEngine.view.RLock()
+	defer runtimeEngine.view.RUnlock()
+	if ownerFiber == nil || ownerFiber.state != FiberStarting ||
+		!containsService(ownerFiber.target.manifest.optional, reference.key) {
+		return unavailable, false
+	}
+	dependency := ownerFiber.dependencies[reference.key]
+	if dependency == nil || !dependency.optional || dependency.binding == nil {
+		return unavailable, false
+	}
+	capability, matches := dependency.binding.capability.(S)
+	if !matches {
+		return unavailable, false
+	}
+	return capability, true
 }

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"unicode/utf16"
 
 	"github.com/gorenx/goren/connection"
 )
@@ -18,6 +20,44 @@ func DecodeSessionListRequest(rawPayload json.RawMessage) (SessionListRequest, [
 	}
 	cursor, fieldIssues := optionalStringField(fields, "cursor", false)
 	return SessionListRequest{Cursor: cursor}, fieldIssues
+}
+
+// DecodeSessionSearchRequest validates the source trimmed, non-empty,
+// 500-JavaScript-character query contract.
+func DecodeSessionSearchRequest(rawPayload json.RawMessage) (SessionSearchRequest, []connection.ValidationIssue) {
+	fields, issues := decodeRequestObject(rawPayload)
+	if len(issues) != 0 {
+		return SessionSearchRequest{}, issues
+	}
+	rawQuery, fieldIssues := requiredStringField(fields, "query", false)
+	if len(fieldIssues) != 0 {
+		return SessionSearchRequest{}, fieldIssues
+	}
+	queryText := strings.TrimSpace(rawQuery)
+	if queryText == "" {
+		return SessionSearchRequest{}, []connection.ValidationIssue{{
+			Code: "too_small", Path: []string{"query"}, Message: "Too small: expected string to have >=1 characters",
+		}}
+	}
+	if javaScriptStringLength(queryText) > 500 {
+		return SessionSearchRequest{}, []connection.ValidationIssue{{
+			Code: "too_big", Path: []string{"query"}, Message: "Too big: expected string to have <=500 characters",
+		}}
+	}
+	if strings.ContainsRune(queryText, '\x00') {
+		return SessionSearchRequest{}, []connection.ValidationIssue{{
+			Code: "custom", Path: []string{"query"}, Message: "search query must not contain NUL",
+		}}
+	}
+	return SessionSearchRequest{Query: queryText}, nil
+}
+
+func javaScriptStringLength(textValue string) int {
+	count := 0
+	for _, character := range textValue {
+		count += utf16.RuneLen(character)
+	}
+	return count
 }
 
 // DecodeSessionCreateRequest validates the source session.create payload schema.

@@ -166,7 +166,7 @@ func (origin ToolMessageSource) CloneSource() (MessageSource, error) {
 
 // OpaqueMessageSource preserves a plugin-defined source across durable JSON.
 type OpaqueMessageSource struct {
-	kindName string
+	kindName string // user etc.
 	rawValue json.RawMessage
 }
 
@@ -180,11 +180,11 @@ func NewOpaqueMessageSource(kindName string, rawValue json.RawMessage) (OpaqueMe
 		return OpaqueMessageSource{}, errors.New("llm: opaque message source must be a lossless JSON object")
 	}
 	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(detached, &fields); err != nil {
+	if err = json.Unmarshal(detached, &fields); err != nil {
 		return OpaqueMessageSource{}, err
 	}
 	var encodedKind string
-	if err := json.Unmarshal(fields["kind"], &encodedKind); err != nil || encodedKind != kindName {
+	if err = json.Unmarshal(fields["kind"], &encodedKind); err != nil || encodedKind != kindName {
 		return OpaqueMessageSource{}, errors.New("llm: opaque message source discriminant does not match")
 	}
 	return OpaqueMessageSource{kindName: kindName, rawValue: detached}, nil

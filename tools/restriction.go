@@ -43,7 +43,7 @@ func retainRestrictedNames(destination map[string]struct{}, candidates []string,
 	}
 	if len(unknown) > 0 {
 		slices.Sort(unknown)
-		return fmt.Errorf("tools: restriction names unknown global tools %s; known global tools: %s",
+		return fmt.Errorf("tools: restriction names unknown inherited tools %s; known inherited tools: %s",
 			strings.Join(unknown, ", "), strings.Join(sortedNames(knownNames), ", "))
 	}
 	return nil

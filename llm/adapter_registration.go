@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
-
-	"github.com/gorenx/goren/plugin"
 )
 
 type adapterRoute struct {
@@ -17,26 +15,21 @@ type adapterRoute struct {
 }
 
 type adapterRegistrationState struct {
-	owner    *runtimeService
+	owner    *Runtime
 	backend  Adapter
 	owned    []string
 	disposed bool
-	cleanup  plugin.Disposer
 }
 
 type adapterHandle struct {
 	state *adapterRegistrationState
 }
 
-func (owner *runtimeService) RegisterAdapter(
+func (owner *Runtime) RegisterAdapter(
 	requestContext context.Context,
-	ownerScope *plugin.Scope,
 	providers []string,
 	backend Adapter,
 ) (AdapterRegistrationHandle, error) {
-	if ownerScope == nil {
-		return nil, errors.New("llm: adapter owner scope is nil")
-	}
 	if backend == nil {
 		return nil, errors.New("llm: adapter is nil")
 	}
@@ -51,22 +44,22 @@ func (owner *runtimeService) RegisterAdapter(
 	if err != nil {
 		return nil, err
 	}
-	state := &adapterRegistrationState{owner: owner, backend: backend}
-	ownedRelease, err := plugin.Own(ownerScope, "llm.registerAdapter()", state.releaseOwned)
-	if err != nil {
+	state := &adapterRegistrationState{
+		owner:   owner,
+		backend: backend,
+	}
+	if err := owner.commitRoutes(state, candidates); err != nil {
 		return nil, err
 	}
-	state.cleanup = ownedRelease
-	if err := owner.commitRoutes(state, candidates); err != nil {
-		return nil, errors.Join(err, ownedRelease(requestContext))
-	}
 	if err := owner.publishUpdate(requestContext); err != nil {
-		return nil, errors.Join(err, ownedRelease(requestContext))
+		return nil, errors.Join(err, state.releaseOwned(requestContext))
 	}
-	return &adapterHandle{state: state}, nil
+	return &adapterHandle{
+		state: state,
+	}, nil
 }
 
-func (owner *runtimeService) describeRoutes(providers []string, backend Adapter) ([]adapterRoute, error) {
+func (owner *Runtime) describeRoutes(providers []string, backend Adapter) ([]adapterRoute, error) {
 	unique := make(map[string]struct{}, len(providers))
 	candidates := make([]adapterRoute, 0, len(providers))
 	for _, providerRoute := range providers {
@@ -77,7 +70,10 @@ func (owner *runtimeService) describeRoutes(providers []string, backend Adapter)
 			return nil, MustLlmError(fmt.Sprintf("an adapter for provider %q is already registered", providerRoute), "DUPLICATE_ADAPTER")
 		}
 		unique[providerRoute] = struct{}{}
-		metadata := ProviderInfo{ID: providerRoute, Name: providerRoute}
+		metadata := ProviderInfo{
+			ID:   providerRoute,
+			Name: providerRoute,
+		}
 		if describer, ok := backend.(ProviderDescriber); ok {
 			var err error
 			metadata, err = describer.DescribeProvider(providerRoute)
@@ -107,7 +103,11 @@ func (owner *runtimeService) describeRoutes(providers []string, backend Adapter)
 		if err := validateResolvedPolicy(policy); err != nil {
 			return nil, MustLlmError(fmt.Sprintf("invalid retry policy for provider %q: %v", providerRoute, err), "INVALID_ADAPTER")
 		}
-		candidates = append(candidates, adapterRoute{backend: backend, metadata: metadata, policy: policy})
+		candidates = append(candidates, adapterRoute{
+			backend:  backend,
+			metadata: metadata,
+			policy:   policy,
+		})
 	}
 	return candidates, nil
 }
@@ -135,9 +135,12 @@ func validateResolvedPolicy(policy RetryPolicy) error {
 	}
 }
 
-func (owner *runtimeService) commitRoutes(state *adapterRegistrationState, candidates []adapterRoute) error {
+func (owner *Runtime) commitRoutes(state *adapterRegistrationState, candidates []adapterRoute) error {
 	owner.mu.Lock()
 	defer owner.mu.Unlock()
+	if owner.closed {
+		return MustLlmError("the LLM Runtime is closed", "REGISTRATION_DISPOSED")
+	}
 	if state.disposed {
 		return MustLlmError("a disposed adapter registration cannot replace its routes", "REGISTRATION_DISPOSED")
 	}
@@ -208,8 +211,8 @@ func (handleState *adapterHandle) Replace(requestContext context.Context, provid
 }
 
 func (handleState *adapterHandle) Release(closeContext context.Context) error {
-	if handleState == nil || handleState.state == nil || handleState.state.cleanup == nil {
+	if handleState == nil || handleState.state == nil {
 		return nil
 	}
-	return handleState.state.cleanup(closeContext)
+	return handleState.state.releaseOwned(closeContext)
 }

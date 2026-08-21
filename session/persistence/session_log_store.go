@@ -12,12 +12,16 @@ import (
 	"github.com/gorenx/goren/session"
 )
 
-const DefaultWriteBatchMaxDelay = 200 * time.Millisecond
+const (
+	DefaultWriteBatchMaxDelay   = 200 * time.Millisecond
+	DefaultPreparedSessionCache = 5
+)
 
 // SessionLogStoreOptions contains durable-log policy, not backend configuration.
 type SessionLogStoreOptions struct {
-	WriteBatchMaxDelay time.Duration
-	ObserverError      func(error)
+	WriteBatchMaxDelay       time.Duration
+	PreparedSessionCacheSize int
+	BackgroundWriteFailures  BackgroundWriteFailureReporter
 }
 
 type durableState struct {
@@ -32,47 +36,36 @@ type liveSessionState struct {
 	writes       *liveWriter
 }
 
-type preparedReservation struct {
-	conversation *session.Session
-	cursor       int64
-}
-
-type serialGate struct {
-	token chan struct{}
-	refs  int
-}
-
 // SessionLogStore owns the live-to-durable Session log lifecycle. It serializes
 // writes per Session, validates cold logs, and applies recovery decisions while
 // delegating physical storage to Backend.
 type SessionLogStore struct {
-	sourceScope *plugin.Scope
-	sessions    session.Store
-	storage     Backend
-	delay       time.Duration
-	reporter    func(error)
+	plugin.Base
+	opener   BackendOpener
+	sessions session.LiveStore
+	storage  Backend
+	delay    time.Duration
+	reporter BackgroundWriteFailureReporter
 
-	mutex        sync.Mutex
+	closeMutex   sync.Mutex
 	closed       bool
 	closing      bool
 	closeDone    chan struct{}
 	closeErr     error
-	states       map[session.SessionID]*durableState
-	live         map[*session.Session]*liveSessionState
-	reservations map[session.SessionID]*preparedReservation
-	gates        map[session.SessionID]*serialGate
+	durable      *durableSessions
+	writes       *liveWrites
+	preparations *preparedSessions
+	operations   *sessionGates
 }
 
-// NewSessionLogStore installs the live Session write path around a storage-only Backend.
+// NewSessionLogStore constructs the durable Session Service Plugin without
+// acquiring the configured Backend.
 func NewSessionLogStore(
-	requestContext context.Context,
-	sourceScope *plugin.Scope,
-	sessions session.Store,
-	storage Backend,
+	opener BackendOpener,
 	settings SessionLogStoreOptions,
 ) (*SessionLogStore, error) {
-	if requestContext == nil || sourceScope == nil || sessions == nil || storage == nil {
-		return nil, errors.New("session persistence: Context, Scope, Session Store, and Backend are required")
+	if opener == nil {
+		return nil, errors.New("session persistence: BackendOpener is required")
 	}
 	delay := settings.WriteBatchMaxDelay
 	if delay == 0 {
@@ -81,39 +74,104 @@ func NewSessionLogStore(
 	if delay < time.Millisecond {
 		return nil, errors.New("session persistence: write batch delay must be at least one millisecond")
 	}
-	reporter := settings.ObserverError
-	if reporter == nil {
-		reporter = func(error) {}
+	cacheSize := settings.PreparedSessionCacheSize
+	if cacheSize == 0 {
+		cacheSize = DefaultPreparedSessionCache
+	}
+	if cacheSize < 1 {
+		return nil, errors.New("session persistence: prepared Session cache size must be positive")
+	}
+	preparations, err := newPreparedSessions(cacheSize)
+	if err != nil {
+		return nil, fmt.Errorf("session persistence: create prepared Session cache: %w", err)
+	}
+	if settings.BackgroundWriteFailures == nil {
+		return nil, errors.New("session persistence: background write failure reporter is required")
 	}
 	owner := &SessionLogStore{
-		sourceScope: sourceScope, sessions: sessions, storage: storage, delay: delay, reporter: reporter,
-		states: make(map[session.SessionID]*durableState), live: make(map[*session.Session]*liveSessionState),
-		reservations: make(map[session.SessionID]*preparedReservation), gates: make(map[session.SessionID]*serialGate),
-		closeDone: make(chan struct{}),
+		opener:       opener,
+		delay:        delay,
+		reporter:     settings.BackgroundWriteFailures,
+		durable:      newDurableSessions(),
+		writes:       newLiveWrites(),
+		preparations: preparations,
+		operations:   newSessionGates(),
+		closeDone:    make(chan struct{}),
 	}
-	// Register the final drain before listeners. Scope teardown is LIFO, so
-	// listener admission closes before pending writes drain and storage closes.
-	if _, err := plugin.Own(sourceScope, storage.BackendName()+" write path", owner.close); err != nil {
-		return nil, err
+	return owner, nil
+}
+
+// Manifest declares durable Session Service ownership and observed lifecycle.
+func (*SessionLogStore) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: PluginName,
+		Provides: []plugin.ServiceType{
+			plugin.ServiceOf[Persistence](),
+		},
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[session.LiveStore](),
+		},
+		Events: []plugin.EventSubscription{
+			plugin.EventOf[session.SessionCreated](),
+			plugin.EventOf[session.SessionEventAppended](),
+			plugin.EventOf[session.SessionFlushRequested](),
+			plugin.EventOf[session.SessionDisposed](),
+		},
 	}
-	if _, err := session.OnCreated(sourceScope, owner.onCreated); err != nil {
-		return nil, err
+}
+
+// Apply acquires the Backend and attaches any Sessions already live.
+func (owner *SessionLogStore) Apply(requestContext context.Context) error {
+	if err := requestContext.Err(); err != nil {
+		return err
 	}
-	if _, err := session.OnEvent(sourceScope, owner.onEvent); err != nil {
-		return nil, err
+	sessions, err := plugin.Require[session.LiveStore](owner)
+	if err != nil {
+		return err
 	}
-	if _, err := session.OnFlush(sourceScope, owner.onFlush); err != nil {
-		return nil, err
+	storage, err := owner.opener.OpenBackend(requestContext)
+	if err != nil {
+		return err
 	}
-	if _, err := session.OnDisposed(sourceScope, owner.onDisposed); err != nil {
-		return nil, err
+	if storage == nil {
+		return errors.New("session persistence: BackendOpener returned nil Backend")
 	}
+	owner.sessions = sessions
+	owner.storage = storage
 	for _, conversation := range sessions.List() {
 		if err := owner.onCreated(requestContext, conversation); err != nil {
-			return nil, err
+			return errors.Join(err, owner.close(requestContext))
 		}
 	}
-	return owner, requestContext.Err()
+	return requestContext.Err()
+}
+
+// Dispose stops admission, drains pending writes, and closes the Backend.
+func (owner *SessionLogStore) Dispose(closeContext context.Context) error {
+	return owner.close(closeContext)
+}
+
+// ObserveEvent routes declared Session events through one entry point.
+func (owner *SessionLogStore) ObserveEvent(
+	requestContext context.Context,
+	fact plugin.Event,
+) error {
+	switch observed := fact.(type) {
+	case session.SessionCreated:
+		return owner.onCreated(requestContext, observed.Conversation)
+	case session.SessionEventAppended:
+		return owner.onEvent(
+			requestContext,
+			observed.Conversation,
+			observed.Committed,
+		)
+	case session.SessionFlushRequested:
+		return owner.onFlush(requestContext, observed.Conversation)
+	case session.SessionDisposed:
+		return owner.onDisposed(requestContext, observed.Conversation)
+	default:
+		return nil
+	}
 }
 
 func (owner *SessionLogStore) Locate(metadata session.Header) (Location, bool) {
@@ -139,16 +197,14 @@ func (owner *SessionLogStore) Create(requestContext context.Context, metadata se
 	if err := validateDetachedHeader(metadata.ID, metadata); err != nil {
 		return err
 	}
-	release, err := owner.acquire(requestContext, metadata.ID)
+	releaseGate, err := owner.operations.Acquire(requestContext, metadata.ID)
 	if err != nil {
 		return err
 	}
-	defer release()
-	owner.mutex.Lock()
-	_, tracked := owner.states[metadata.ID]
-	_, reserved := owner.reservations[metadata.ID]
-	owner.mutex.Unlock()
-	if tracked || reserved {
+	defer releaseGate()
+	_, tracked := owner.durable.Get(metadata.ID)
+	prepared := owner.preparations.Has(metadata.ID)
+	if tracked || prepared {
 		return fmt.Errorf("session persistence: session %q already exists", metadata.ID)
 	}
 	_, found, err := owner.storage.LoadStored(requestContext, metadata.ID)
@@ -158,9 +214,7 @@ func (owner *SessionLogStore) Create(requestContext context.Context, metadata se
 	if found {
 		return fmt.Errorf("session persistence: session %q already has a durable log; load it instead", metadata.ID)
 	}
-	owner.mutex.Lock()
-	owner.states[metadata.ID] = &durableState{metadata: metadata}
-	owner.mutex.Unlock()
+	owner.durable.Put(metadata.ID, &durableState{metadata: metadata})
 	return nil
 }
 
@@ -169,11 +223,11 @@ func (owner *SessionLogStore) Append(requestContext context.Context, identifier 
 		return errors.New("session persistence: append Context is nil")
 	}
 	batch := snapshotEvents(entries)
-	release, err := owner.acquire(requestContext, identifier)
+	releaseGate, err := owner.operations.Acquire(requestContext, identifier)
 	if err != nil {
 		return err
 	}
-	defer release()
+	defer releaseGate()
 	return owner.appendCore(requestContext, identifier, batch)
 }
 
@@ -182,50 +236,45 @@ func (owner *SessionLogStore) Prepare(requestContext context.Context, identifier
 		return nil, errors.New("session persistence: prepare Context is nil")
 	}
 	for {
-		release, err := owner.acquire(requestContext, identifier)
+		releaseGate, err := owner.operations.Acquire(requestContext, identifier)
 		if err != nil {
 			return nil, err
 		}
 		if _, found := owner.sessions.Get(identifier); found {
-			release()
+			releaseGate()
 			return nil, fmt.Errorf("session persistence: cannot prepare live session %q", identifier)
 		}
-		owner.mutex.Lock()
-		_, alreadyReserved := owner.reservations[identifier]
-		owner.mutex.Unlock()
-		if alreadyReserved {
-			release()
+		if owner.preparations.IsReserved(identifier) {
+			releaseGate()
 			return nil, fmt.Errorf("session persistence: session %q already has an unpublished preparation", identifier)
 		}
-		loaded, stable, err := owner.loadCold(requestContext, identifier, true)
+		source, err := owner.preparedSourceFor(requestContext, identifier, false)
 		if err != nil {
-			release()
+			releaseGate()
+			return nil, err
+		}
+		stable, err := owner.commitPreparedSource(requestContext, source)
+		if err != nil {
+			releaseGate()
 			return nil, err
 		}
 		if !stable {
-			release()
+			releaseGate()
 			continue
 		}
-		metadata := metadataFromHeader(loaded.Header)
-		conversation, err := owner.sessions.Prepare(&identifier, session.CreateOptions{
-			Seed: loaded.Events, Metadata: metadata,
-		})
+		reservation, err := owner.preparations.Reserve(source)
 		if err != nil {
-			release()
+			releaseGate()
 			return nil, err
 		}
-		reservation := &preparedReservation{conversation: conversation, cursor: int64(len(loaded.Events))}
-		owner.mutex.Lock()
-		owner.reservations[identifier] = reservation
-		owner.mutex.Unlock()
-		release()
-		return session.NewPreparation(conversation, func() {
-			owner.mutex.Lock()
-			if owner.reservations[identifier] == reservation {
-				delete(owner.reservations, identifier)
-			}
-			owner.mutex.Unlock()
-		}), nil
+		releaseGate()
+		return session.NewPreparation(
+			source.conversation,
+			&preparedReservationLease{
+				pool:        owner.preparations,
+				reservation: reservation,
+			},
+		), nil
 	}
 }
 
@@ -251,17 +300,23 @@ func (owner *SessionLogStore) Load(requestContext context.Context, identifier se
 		return Inspection{Header: conversation.Header(), Events: entries}, nil
 	}
 	for {
-		release, err := owner.acquire(requestContext, identifier)
+		releaseGate, err := owner.operations.Acquire(requestContext, identifier)
 		if err != nil {
 			return Inspection{}, err
 		}
-		loaded, stable, err := owner.loadCold(requestContext, identifier, true)
-		release()
+		source, err := owner.preparedSourceFor(requestContext, identifier, false)
+		if err != nil {
+			releaseGate()
+			return Inspection{}, err
+		}
+		stable, err := owner.commitPreparedSource(requestContext, source)
+		releaseGate()
 		if err != nil {
 			return Inspection{}, err
 		}
 		if stable {
-			return loaded, nil
+			owner.preparations.Invalidate(identifier, source)
+			return cloneInspection(source.inspection), nil
 		}
 	}
 }
@@ -273,61 +328,65 @@ func (owner *SessionLogStore) Inspect(requestContext context.Context, identifier
 	if conversation, found := owner.sessions.Get(identifier); found {
 		return Inspection{Header: conversation.Header(), Events: conversation.Events()}, nil
 	}
-	release, err := owner.acquire(requestContext, identifier)
+	releaseGate, err := owner.operations.Acquire(requestContext, identifier)
 	if err != nil {
 		return Inspection{}, err
 	}
-	defer release()
-	stored, found, err := owner.storage.LoadStored(requestContext, identifier)
+	defer releaseGate()
+	source, err := owner.preparedSourceFor(requestContext, identifier, true)
 	if err != nil {
 		return Inspection{}, err
 	}
-	if !found {
-		return Inspection{}, &NotFoundError{ID: identifier}
-	}
-	loaded, err := owner.logicalInspection(identifier, stored)
-	if err != nil {
-		return Inspection{}, err
-	}
-	closers, err := interruptedTurnClosers(loaded.Events)
-	if err != nil {
-		return Inspection{}, owner.corruption(identifier, err)
-	}
-	loaded.Events = append(loaded.Events, closers...)
-	if _, err := inspectStored(loaded.Header, loaded.Events); err != nil {
-		return Inspection{}, owner.normalizeLoadError(identifier, loaded.Header, err)
-	}
-	return loaded, nil
+	return cloneInspection(source.inspection), nil
 }
 
 func (owner *SessionLogStore) ReadFrom(requestContext context.Context, identifier session.SessionID, fromSeq int64) (Inspection, error) {
+	if requestContext == nil {
+		return Inspection{}, errors.New("session persistence: readFrom Context is nil")
+	}
 	if fromSeq < 0 {
 		return Inspection{}, errors.New("session persistence: fromSeq must be non-negative")
 	}
-	release, err := owner.acquire(requestContext, identifier)
+	releaseGate, err := owner.operations.Acquire(requestContext, identifier)
 	if err != nil {
 		return Inspection{}, err
 	}
-	defer release()
-	stored, found, err := owner.storage.LoadStored(requestContext, identifier)
+	defer releaseGate()
+	stored, found, err := owner.storage.LoadStoredFrom(requestContext, identifier, fromSeq)
 	if err != nil {
 		return Inspection{}, err
 	}
 	if !found {
 		return Inspection{}, &NotFoundError{ID: identifier}
 	}
-	loaded, err := owner.logicalInspection(identifier, stored)
-	if err != nil {
-		return Inspection{}, err
+	if stored.Header.ID != identifier {
+		return Inspection{}, owner.corruption(identifier, fmt.Errorf(
+			"stored identity mismatch: requested %q, header contains %q", identifier, stored.Header.ID,
+		))
 	}
-	start := len(loaded.Events)
-	for index, entry := range loaded.Events {
-		if entry.Seq >= fromSeq {
-			start = index
-			break
+	if stored.Header.Version != session.FormatVersion {
+		return Inspection{}, owner.normalizeLoadError(identifier, stored.Header, fmt.Errorf(
+			"unsupported Session format v%d", stored.Header.Version,
+		))
+	}
+	for position, entry := range stored.Events {
+		expected := fromSeq + int64(position)
+		if entry.Seq != expected {
+			return Inspection{}, owner.corruption(identifier, fmt.Errorf(
+				"stored suffix seq mismatch: expected %d, got %d", expected, entry.Seq,
+			))
+		}
+		if !session.IsKnownEventType(entry.Type) && !entry.Ignorable {
+			return Inspection{}, owner.normalizeLoadError(identifier, stored.Header, &UnsupportedFormatError{
+				ID: identifier,
+				Reason: fmt.Sprintf(
+					"session %q contains event type %q at seq %d unknown to this harness and not marked ignorable",
+					identifier, entry.Type, entry.Seq,
+				),
+			})
 		}
 	}
-	return Inspection{Header: loaded.Header, Events: snapshotEvents(loaded.Events[start:])}, nil
+	return Inspection{Header: cloneHeader(stored.Header), Events: snapshotEvents(stored.Events)}, nil
 }
 
 func (owner *SessionLogStore) List(requestContext context.Context) ([]session.Header, error) {
@@ -343,37 +402,35 @@ func (owner *SessionLogStore) onCreated(requestContext context.Context, conversa
 		return errors.New("session persistence: created Session is nil")
 	}
 	identifier := conversation.ID()
-	release, err := owner.acquire(requestContext, identifier)
+	releaseGate, err := owner.operations.Acquire(requestContext, identifier)
 	if err != nil {
 		return err
 	}
-	defer release()
+	defer releaseGate()
 	seed := conversation.Events()
 	metadata := conversation.Header()
 
-	owner.mutex.Lock()
-	reservation := owner.reservations[identifier]
-	tracked := owner.states[identifier]
-	owner.mutex.Unlock()
+	reservation, err := owner.preparations.ReservationFor(conversation)
+	if err != nil {
+		return err
+	}
+	tracked, trackedFound := owner.durable.Get(identifier)
 	if reservation != nil {
-		if reservation.conversation != conversation {
-			return fmt.Errorf("session persistence: persisted state for %q belongs to another unpublished Session", identifier)
+		if err := owner.preparations.Attach(reservation); err != nil {
+			return err
 		}
-		owner.mutex.Lock()
-		delete(owner.reservations, identifier)
-		if tracked == nil {
+		if !trackedFound {
 			tracked = &durableState{metadata: metadata, cursor: reservation.cursor, materialized: true}
-			owner.states[identifier] = tracked
+			owner.durable.Put(identifier, tracked)
 		}
 		tracked.owner = conversation
-		owner.mutex.Unlock()
 		if err := owner.appendCore(requestContext, identifier, seed[reservation.cursor:]); err != nil {
 			return err
 		}
 		owner.installLive(conversation)
 		return nil
 	}
-	if tracked != nil {
+	if trackedFound {
 		if tracked.owner != nil && tracked.owner != conversation {
 			return fmt.Errorf("session persistence: session %q already has a live persistence owner", identifier)
 		}
@@ -423,9 +480,7 @@ func (owner *SessionLogStore) onCreated(requestContext context.Context, conversa
 		tracked = &durableState{
 			metadata: loaded.Header, cursor: int64(len(loaded.Events)), materialized: true, owner: conversation,
 		}
-		owner.mutex.Lock()
-		owner.states[identifier] = tracked
-		owner.mutex.Unlock()
+		owner.durable.Put(identifier, tracked)
 		if err := owner.appendCore(requestContext, identifier, seed[tracked.cursor:]); err != nil {
 			return err
 		}
@@ -434,9 +489,7 @@ func (owner *SessionLogStore) onCreated(requestContext context.Context, conversa
 	}
 
 	tracked = &durableState{metadata: metadata, owner: conversation}
-	owner.mutex.Lock()
-	owner.states[identifier] = tracked
-	owner.mutex.Unlock()
+	owner.durable.Put(identifier, tracked)
 	if err := owner.appendCore(requestContext, identifier, seed); err != nil {
 		return err
 	}
@@ -445,10 +498,8 @@ func (owner *SessionLogStore) onCreated(requestContext context.Context, conversa
 }
 
 func (owner *SessionLogStore) onEvent(_ context.Context, conversation *session.Session, committed session.Event) error {
-	owner.mutex.Lock()
-	live := owner.live[conversation]
-	owner.mutex.Unlock()
-	if live == nil {
+	live, found := owner.writes.Get(conversation)
+	if !found {
 		return fmt.Errorf("session persistence: event for uninitialized session %q", conversation.ID())
 	}
 	live.writes.enqueue(committed)
@@ -456,61 +507,79 @@ func (owner *SessionLogStore) onEvent(_ context.Context, conversation *session.S
 }
 
 func (owner *SessionLogStore) onFlush(requestContext context.Context, conversation *session.Session) error {
-	owner.mutex.Lock()
-	live := owner.live[conversation]
-	owner.mutex.Unlock()
-	if live == nil {
+	live, found := owner.writes.Get(conversation)
+	if !found {
 		return fmt.Errorf("session persistence: flush for uninitialized session %q", conversation.ID())
 	}
 	return live.writes.flush(requestContext)
 }
 
 func (owner *SessionLogStore) onDisposed(requestContext context.Context, conversation *session.Session) error {
-	owner.mutex.Lock()
-	live := owner.live[conversation]
-	owner.mutex.Unlock()
-	if live == nil {
+	live, found := owner.writes.Get(conversation)
+	if !found {
 		return nil
 	}
 	if err := live.writes.flush(requestContext); err != nil {
 		return err
 	}
-	release, err := owner.acquire(requestContext, conversation.ID())
+	releaseGate, err := owner.operations.Acquire(requestContext, conversation.ID())
 	if err != nil {
 		return err
 	}
-	owner.mutex.Lock()
-	delete(owner.live, conversation)
-	if tracked := owner.states[conversation.ID()]; tracked != nil && tracked.owner == conversation {
-		delete(owner.states, conversation.ID())
-	}
-	owner.mutex.Unlock()
-	release()
+	owner.writes.Delete(conversation)
+	owner.durable.DeleteOwned(conversation.ID(), conversation)
+	releaseGate()
 	return nil
 }
 
 func (owner *SessionLogStore) installLive(conversation *session.Session) {
-	identifier := conversation.ID()
-	writes := newLiveWriter(owner.delay, func(requestContext context.Context, entries []session.Event) error {
-		release, err := owner.acquire(requestContext, identifier)
-		if err != nil {
-			return err
-		}
-		defer release()
-		return owner.appendLiveBatch(requestContext, identifier, entries)
-	}, func(problem error) {
-		owner.safeReport(fmt.Errorf("%s: background write for session %q failed; events retained: %w", owner.storage.BackendName(), identifier, problem))
-	})
-	owner.mutex.Lock()
-	owner.live[conversation] = &liveSessionState{conversation: conversation, writes: writes}
-	owner.mutex.Unlock()
+	writes := newLiveWriter(
+		owner.delay,
+		&sessionWriteTarget{
+			owner:      owner,
+			identifier: conversation.ID(),
+		},
+	)
+	owner.writes.Put(
+		conversation,
+		&liveSessionState{
+			conversation: conversation,
+			writes:       writes,
+		},
+	)
+}
+
+type sessionWriteTarget struct {
+	owner      *SessionLogStore
+	identifier session.SessionID
+}
+
+func (target *sessionWriteTarget) WriteBatch(
+	requestContext context.Context,
+	entries []session.Event,
+) error {
+	releaseGate, err := target.owner.operations.Acquire(
+		requestContext,
+		target.identifier,
+	)
+	if err != nil {
+		return err
+	}
+	defer releaseGate()
+	return target.owner.appendLiveBatch(
+		requestContext,
+		target.identifier,
+		entries,
+	)
+}
+
+func (target *sessionWriteTarget) ReportBackgroundFailure(problem error) {
+	target.owner.safeReport(target.identifier, problem)
 }
 
 func (owner *SessionLogStore) appendLiveBatch(requestContext context.Context, identifier session.SessionID, entries []session.Event) error {
-	owner.mutex.Lock()
-	tracked := owner.states[identifier]
-	owner.mutex.Unlock()
-	if tracked == nil {
+	tracked, found := owner.durable.Get(identifier)
+	if !found {
 		return fmt.Errorf("session persistence: session %q lost its durable cursor", identifier)
 	}
 	fresh := make([]session.Event, 0, len(entries))
@@ -526,14 +595,11 @@ func (owner *SessionLogStore) appendCore(requestContext context.Context, identif
 	if len(entries) == 0 {
 		return nil
 	}
-	owner.mutex.Lock()
-	if owner.reservations[identifier] != nil {
-		owner.mutex.Unlock()
-		return fmt.Errorf("session persistence: cannot append session %q while its preparation is reserved", identifier)
+	if err := owner.preparations.AssertWritable(identifier); err != nil {
+		return err
 	}
-	tracked := owner.states[identifier]
-	owner.mutex.Unlock()
-	for tracked == nil {
+	tracked, trackedFound := owner.durable.Get(identifier)
+	for !trackedFound {
 		stored, found, err := owner.storage.LoadStored(requestContext, identifier)
 		if err != nil {
 			return err
@@ -548,13 +614,12 @@ func (owner *SessionLogStore) appendCore(requestContext context.Context, identif
 		if !stable {
 			continue
 		}
-		owner.mutex.Lock()
-		tracked = owner.states[identifier]
-		if tracked == nil {
+		tracked, trackedFound = owner.durable.Get(identifier)
+		if !trackedFound {
 			tracked = &durableState{metadata: loaded.Header, cursor: int64(len(loaded.Events)), materialized: true}
-			owner.states[identifier] = tracked
+			owner.durable.Put(identifier, tracked)
+			trackedFound = true
 		}
-		owner.mutex.Unlock()
 	}
 	for index, entry := range entries {
 		expected := tracked.cursor + int64(index)
@@ -567,22 +632,8 @@ func (owner *SessionLogStore) appendCore(requestContext context.Context, identif
 	}
 	tracked.materialized = true
 	tracked.cursor += int64(len(entries))
+	owner.preparations.Invalidate(identifier, nil)
 	return nil
-}
-
-func (owner *SessionLogStore) loadCold(requestContext context.Context, identifier session.SessionID, commit bool) (Inspection, bool, error) {
-	stored, found, err := owner.storage.LoadStored(requestContext, identifier)
-	if err != nil {
-		return Inspection{}, false, err
-	}
-	if !found {
-		return Inspection{}, false, &NotFoundError{ID: identifier}
-	}
-	if !commit {
-		loaded, err := owner.logicalInspection(identifier, stored)
-		return loaded, true, err
-	}
-	return owner.commitCold(requestContext, identifier, stored)
 }
 
 func (owner *SessionLogStore) commitCold(
@@ -615,14 +666,12 @@ func (owner *SessionLogStore) commitCold(
 		}
 		return Inspection{}, false, nil
 	}
-	owner.mutex.Lock()
-	tracked := owner.states[identifier]
-	if tracked == nil || tracked.owner == nil {
-		owner.states[identifier] = &durableState{
+	tracked, found := owner.durable.Get(identifier)
+	if !found || tracked.owner == nil {
+		owner.durable.Put(identifier, &durableState{
 			metadata: loaded.Header, cursor: int64(len(loaded.Events)), materialized: true,
-		}
+		})
 	}
-	owner.mutex.Unlock()
 	return loaded, true, nil
 }
 
@@ -668,91 +717,65 @@ func (owner *SessionLogStore) corruption(identifier session.SessionID, problem e
 	return &CorruptionError{ID: identifier, Cause: problem}
 }
 
-func (owner *SessionLogStore) acquire(requestContext context.Context, identifier session.SessionID) (func(), error) {
-	if requestContext == nil {
-		return nil, errors.New("session persistence: Context is nil")
-	}
-	owner.mutex.Lock()
-	if owner.closed {
-		owner.mutex.Unlock()
-		return nil, errors.New("session persistence: Session Log Store is closed")
-	}
-	gate := owner.gates[identifier]
-	if gate == nil {
-		gate = &serialGate{token: make(chan struct{}, 1)}
-		gate.token <- struct{}{}
-		owner.gates[identifier] = gate
-	}
-	gate.refs++
-	owner.mutex.Unlock()
-	select {
-	case <-gate.token:
-		return func() {
-			gate.token <- struct{}{}
-			owner.mutex.Lock()
-			gate.refs--
-			if gate.refs == 0 && owner.gates[identifier] == gate {
-				delete(owner.gates, identifier)
-			}
-			owner.mutex.Unlock()
-		}, nil
-	case <-requestContext.Done():
-		owner.mutex.Lock()
-		gate.refs--
-		if gate.refs == 0 && owner.gates[identifier] == gate {
-			delete(owner.gates, identifier)
-		}
-		owner.mutex.Unlock()
-		return nil, context.Cause(requestContext)
-	}
-}
-
 func (owner *SessionLogStore) close(closeContext context.Context) error {
 	if closeContext == nil {
 		closeContext = context.Background()
 	}
-	owner.mutex.Lock()
+	owner.closeMutex.Lock()
 	if owner.closed {
 		closeErr := owner.closeErr
-		owner.mutex.Unlock()
+		owner.closeMutex.Unlock()
 		return closeErr
 	}
 	if owner.closing {
 		done := owner.closeDone
-		owner.mutex.Unlock()
+		owner.closeMutex.Unlock()
 		select {
 		case <-done:
-			owner.mutex.Lock()
+			owner.closeMutex.Lock()
 			closeErr := owner.closeErr
-			owner.mutex.Unlock()
+			owner.closeMutex.Unlock()
 			return closeErr
 		case <-closeContext.Done():
 			return context.Cause(closeContext)
 		}
 	}
 	owner.closing = true
-	liveStates := make([]*liveSessionState, 0, len(owner.live))
-	for _, live := range owner.live {
-		liveStates = append(liveStates, live)
-	}
-	owner.mutex.Unlock()
+	liveStates := owner.writes.Snapshot()
+	owner.closeMutex.Unlock()
 	var closeErr error
 	for _, live := range liveStates {
 		closeErr = errors.Join(closeErr, live.writes.flush(closeContext))
 	}
-	closeErr = errors.Join(closeErr, owner.storage.Close(closeContext))
-	owner.mutex.Lock()
+	owner.operations.Close()
+	if owner.storage != nil {
+		closeErr = errors.Join(closeErr, owner.storage.Close(closeContext))
+	}
+	owner.closeMutex.Lock()
 	owner.closeErr = closeErr
 	owner.closed = true
 	owner.closing = false
 	close(owner.closeDone)
-	owner.mutex.Unlock()
+	owner.closeMutex.Unlock()
 	return closeErr
 }
 
-func (owner *SessionLogStore) safeReport(problem error) {
+func (owner *SessionLogStore) safeReport(identifier session.SessionID, problem error) {
 	defer func() { _ = recover() }()
-	owner.reporter(problem)
+	backendName := "unavailable"
+	if owner.storage != nil {
+		backendName = owner.storage.BackendName()
+	}
+	owner.reporter.ReportBackgroundWriteFailure(
+		BackgroundWriteFailure{
+			BackendName: backendName,
+			SessionID:   identifier,
+			Error: fmt.Errorf(
+				"background write failed; events retained: %w",
+				problem,
+			),
+		},
+	)
 }
 
 func validateDetachedHeader(identifier session.SessionID, metadata session.Header) error {

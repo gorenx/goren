@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"sync"
 	"testing"
 
 	"github.com/gorenx/goren/plugin"
@@ -25,99 +26,173 @@ func (projectionFixtureUnit) InitialState() (json.RawMessage, error) {
 	return json.RawMessage(`null`), nil
 }
 
-func (projectionFixtureUnit) ApplyState(state json.RawMessage, committed session.Event) (Transition, error) {
+func (projectionFixtureUnit) ApplyState(
+	state json.RawMessage,
+	committed session.Event,
+) (Transition, error) {
 	if committed.Type != "fixture/projection-value" {
-		return Transition{State: state}, nil
+		return Transition{
+			State: state,
+		}, nil
 	}
 	var value string
 	if err := json.Unmarshal(committed.Data, &value); err != nil {
 		return Transition{}, err
 	}
 	rawValue, err := json.Marshal(value)
-	return Transition{State: rawValue, Changed: true}, err
+	return Transition{
+		State:   rawValue,
+		Changed: true,
+	}, err
 }
 
 func (projectionFixtureUnit) ViewState(state json.RawMessage) (json.RawMessage, error) {
 	return state, nil
 }
 
-type projectionFixturePlugin struct {
-	registry *DriveRegistry
-	store    *session.MemoryStore
-	scope    *plugin.Scope
+type projectionFailureReporter struct{}
+
+func (projectionFailureReporter) ReportEventFailure(context.Context, plugin.EventFailure) {}
+
+func (projectionFailureReporter) ReportPostCommitFailure(session.PostCommitFailure) {}
+
+type projectionFixtureObserver struct {
+	plugin.Base
+	mu       sync.Mutex
+	registry Registry
+	changes  []Change
 }
 
-func (*projectionFixturePlugin) Manifest() plugin.Manifest {
+func (*projectionFixtureObserver) Manifest() plugin.Manifest {
 	return plugin.Manifest{
-		Name: "fixture-session-projection",
-		Provides: []plugin.ServiceRef{
-			Service.Ref(), session.StoreService.Ref(),
+		Name: "fixture-session-projection-observer",
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[Registry](),
+		},
+		Events: []plugin.EventSubscription{
+			plugin.EventOf[ProjectionChanged](),
 		},
 	}
 }
 
-func (instance *projectionFixturePlugin) Apply(requestContext context.Context, pluginScope *plugin.Scope) error {
-	projectionRegistry, err := NewDriveRegistry(pluginScope)
+func (observer *projectionFixtureObserver) Apply(context.Context) error {
+	projectionService, err := plugin.Require[Registry](observer)
 	if err != nil {
 		return err
 	}
-	store, err := session.NewMemoryStore(pluginScope, session.MemoryStoreOptions{})
+	observer.registry = projectionService
+	return nil
+}
+
+func (*projectionFixtureObserver) Dispose(context.Context) error {
+	return nil
+}
+
+func (observer *projectionFixtureObserver) ObserveEvent(
+	_ context.Context,
+	fact plugin.Event,
+) error {
+	projectionChange, matches := fact.(ProjectionChanged)
+	if !matches {
+		return nil
+	}
+	observer.mu.Lock()
+	observer.changes = append(observer.changes, cloneChange(projectionChange.Change))
+	observer.mu.Unlock()
+	return nil
+}
+
+func (observer *projectionFixtureObserver) observedChanges() []Change {
+	observer.mu.Lock()
+	defer observer.mu.Unlock()
+	return append([]Change(nil), observer.changes...)
+}
+
+type projectionFixture struct {
+	store    *session.MemoryStore
+	registry *DriveRegistry
+	observer *projectionFixtureObserver
+}
+
+func newProjectionFixture(testingContext *testing.T) projectionFixture {
+	testingContext.Helper()
+	reporter := projectionFailureReporter{}
+	store, err := session.NewMemoryStore(
+		session.MemoryStoreOptions{
+			PostCommitFailures: reporter,
+		},
+	)
 	if err != nil {
-		return err
+		testingContext.Fatal(err)
 	}
-	if err := pluginScope.Effect(requestContext, "sessions", func(context.Context) (plugin.Disposer, error) {
-		return store.Close, nil
-	}); err != nil {
-		return err
+	projectionService := NewDriveRegistry()
+	observer := &projectionFixtureObserver{}
+	runtimeEngine := plugin.NewRuntime(
+		plugin.RuntimeSettings{
+			EventFailures: reporter,
+		},
+	)
+	if _, err := runtimeEngine.Start(
+		context.Background(),
+		observer,
+		projectionService,
+		store,
+	); err != nil {
+		testingContext.Fatal(err)
 	}
-	instance.registry = projectionRegistry
-	instance.store = store
-	instance.scope = pluginScope
-	if _, err := plugin.Provide(pluginScope, Service, Registry(projectionRegistry)); err != nil {
-		return err
+	testingContext.Cleanup(func() {
+		if err := runtimeEngine.Shutdown(context.Background()); err != nil {
+			testingContext.Error(err)
+		}
+	})
+	return projectionFixture{
+		store:    store,
+		registry: projectionService,
+		observer: observer,
 	}
-	_, err = plugin.Provide(pluginScope, session.StoreService, session.Store(store))
-	return err
 }
 
 func TestDriveRegistryFoldsLateStateAndPublishesWholeValues(t *testing.T) {
 	t.Parallel()
 	requestContext := context.Background()
-	engine := plugin.NewRuntime()
-	provider := &projectionFixturePlugin{}
-	providerHandle, err := engine.Load(requestContext, provider)
+	fixture := newProjectionFixture(t)
+	handle, err := fixture.store.Create(requestContext, nil, session.CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = engine.Unload(requestContext, providerHandle) })
-	conversation, err := provider.store.Create(requestContext, provider.scope, nil, session.CreateOptions{})
-	if err != nil {
+	conversation := handle.Session()
+	if _, err := session.Append(
+		conversation,
+		projectionFixtureEvent,
+		"before-registration",
+	); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := session.Append(conversation, projectionFixtureEvent, "before-registration"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := provider.registry.Register(provider.scope, projectionFixtureUnit{key: "fixture", version: 1}); err != nil {
+	if _, err := fixture.registry.Register(
+		projectionFixtureUnit{
+			key:     "fixture",
+			version: 1,
+		},
+	); err != nil {
 		t.Fatal(err)
 	}
 
-	initial, err := provider.registry.Snapshot(conversation)
+	initial, err := fixture.registry.Snapshot(conversation)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if initial.AsOfSeq != 0 || string(initial.Values["fixture"]) != `"before-registration"` {
 		t.Fatalf("late snapshot = %#v", initial)
 	}
-	changes := make([]Change, 0)
-	if _, err := provider.registry.OnChanged(provider.scope, ChangeListenerFunc(func(projectionChange Change) {
-		changes = append(changes, projectionChange)
-	})); err != nil {
-		t.Fatal(err)
-	}
-	committed, err := session.Append(conversation, projectionFixtureEvent, "after-registration")
+	committed, err := session.Append(
+		conversation,
+		projectionFixtureEvent,
+		"after-registration",
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes := fixture.observer.observedChanges()
 	if len(changes) != 1 || changes[0].Key != "fixture" || changes[0].Seq != committed.Seq ||
 		string(changes[0].Value) != `"after-registration"` {
 		t.Fatalf("changes = %#v", changes)
@@ -127,39 +202,49 @@ func TestDriveRegistryFoldsLateStateAndPublishesWholeValues(t *testing.T) {
 func TestDriveRegistryReferenceCountsCompatibleUnits(t *testing.T) {
 	t.Parallel()
 	requestContext := context.Background()
-	engine := plugin.NewRuntime()
-	provider := &projectionFixturePlugin{}
-	providerHandle, err := engine.Load(requestContext, provider)
+	fixture := newProjectionFixture(t)
+	firstHandle, err := fixture.registry.Register(
+		projectionFixtureUnit{
+			key:     "fixture",
+			version: 1,
+		},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = engine.Unload(requestContext, providerHandle) })
-	firstRelease, err := provider.registry.Register(provider.scope, projectionFixtureUnit{key: "fixture", version: 1})
+	secondHandle, err := fixture.registry.Register(
+		projectionFixtureUnit{
+			key:     "fixture",
+			version: 1,
+		},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondRelease, err := provider.registry.Register(provider.scope, projectionFixtureUnit{key: "fixture", version: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := provider.registry.Register(provider.scope, projectionFixtureUnit{key: "fixture", version: 2}); err == nil {
+	if _, err := fixture.registry.Register(
+		projectionFixtureUnit{
+			key:     "fixture",
+			version: 2,
+		},
+	); err == nil {
 		t.Fatal("stateVersion mismatch was accepted")
 	}
-	conversation, err := provider.store.Create(requestContext, provider.scope, nil, session.CreateOptions{})
+	handle, err := fixture.store.Create(requestContext, nil, session.CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := firstRelease(requestContext); err != nil {
+	conversation := handle.Session()
+	if err := firstHandle.Release(requestContext); err != nil {
 		t.Fatal(err)
 	}
-	projectionSnapshot, err := provider.registry.Snapshot(conversation)
+	projectionSnapshot, err := fixture.registry.Snapshot(conversation)
 	if err != nil || len(projectionSnapshot.Values) != 1 {
 		t.Fatalf("snapshot after first release = (%#v, %v)", projectionSnapshot, err)
 	}
-	if err := secondRelease(requestContext); err != nil {
+	if err := secondHandle.Release(requestContext); err != nil {
 		t.Fatal(err)
 	}
-	projectionSnapshot, err = provider.registry.Snapshot(conversation)
+	projectionSnapshot, err = fixture.registry.Snapshot(conversation)
 	if err != nil || len(projectionSnapshot.Values) != 0 {
 		t.Fatalf("snapshot after last release = (%#v, %v)", projectionSnapshot, err)
 	}
@@ -168,46 +253,54 @@ func TestDriveRegistryReferenceCountsCompatibleUnits(t *testing.T) {
 func TestDriveRegistryCheckpointRestoreUsesVersionedTail(t *testing.T) {
 	t.Parallel()
 	requestContext := context.Background()
-	engine := plugin.NewRuntime()
-	provider := &projectionFixturePlugin{}
-	providerHandle, err := engine.Load(requestContext, provider)
+	fixture := newProjectionFixture(t)
+	if _, err := fixture.registry.Register(
+		projectionFixtureUnit{
+			key:     "fixture",
+			version: 1,
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := fixture.store.Create(requestContext, nil, session.CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = engine.Unload(requestContext, providerHandle) })
-	if _, err := provider.registry.Register(provider.scope, projectionFixtureUnit{key: "fixture", version: 1}); err != nil {
-		t.Fatal(err)
-	}
-	conversation, err := provider.store.Create(requestContext, provider.scope, nil, session.CreateOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	conversation := handle.Session()
 	if _, err := session.Append(conversation, projectionFixtureEvent, "one"); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := provider.registry.Checkpoint(conversation)
+	rows, err := fixture.registry.Checkpoint(conversation)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := session.Append(conversation, projectionFixtureEvent, "two"); err != nil {
 		t.Fatal(err)
 	}
-	floor := provider.registry.RestoreFloor(rows)
+	floor := fixture.registry.RestoreFloor(rows)
 	if floor == nil || *floor != 0 {
 		t.Fatalf("restore floor = %v", floor)
 	}
-	restored, err := provider.registry.Restore(rows, conversation.Events(), *floor)
+	restored, err := fixture.registry.Restore(rows, conversation.Events(), *floor)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(restored.Snapshot.Values["fixture"]) != `"two"` || restored.Snapshot.AsOfSeq != 1 {
 		t.Fatalf("restored snapshot = %#v", restored.Snapshot)
 	}
-	wantRow := CheckpointRow{Version: 1, Seq: 1, Value: json.RawMessage(`"two"`)}
+	wantRow := CheckpointRow{
+		Version: 1,
+		Seq:     1,
+		Value:   json.RawMessage(`"two"`),
+	}
 	if !reflect.DeepEqual(restored.Checkpoint["fixture"], wantRow) {
 		t.Fatalf("restored row = %#v", restored.Checkpoint["fixture"])
 	}
-	if _, err := provider.registry.Restore(Checkpoint{}, conversation.Events()[1:], 1); err == nil {
+	if _, err := fixture.registry.Restore(
+		Checkpoint{},
+		conversation.Events()[1:],
+		1,
+	); err == nil {
 		t.Fatal("partial restore without a checkpoint succeeded")
 	}
 }

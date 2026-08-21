@@ -20,6 +20,7 @@ import (
 	"github.com/gorenx/goren/agentdefaultmodel"
 	"github.com/gorenx/goren/agentloop"
 	"github.com/gorenx/goren/apiproxy"
+	sessionapi "github.com/gorenx/goren/apiproxy/session"
 	connectionhost "github.com/gorenx/goren/internal/connection"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
@@ -27,16 +28,19 @@ import (
 	sesspersist "github.com/gorenx/goren/session/persistence"
 	sesssqlite "github.com/gorenx/goren/session/persistence/sqlite"
 	sessionprojection "github.com/gorenx/goren/session/projection"
+	sessionquery "github.com/gorenx/goren/session/query"
+	querysqlite "github.com/gorenx/goren/session/query/sqlite"
 	sessiontitle "github.com/gorenx/goren/session/title"
 	"github.com/gorenx/goren/systemprompt"
-	"github.com/gorenx/goren/tests/contract/fixture"
 	"github.com/gorenx/goren/tools"
 	"github.com/gorenx/goren/workspace"
 	workspaceSqlite "github.com/gorenx/goren/workspace/persistence/sqlite"
 )
 
 type sessionAPIContractState struct {
-	gateway          *apiproxy.SessionGateway
+	gateway          *sessionapi.Gateway
+	downlinks        *apiproxy.LiveFrameSource
+	searchGateway    *sessionapi.SearchGateway
 	workspaceGateway *apiproxy.WorkspaceGateway
 	backend          *sessionAPIContractAdapter
 	failures         contractFailureLog
@@ -60,146 +64,325 @@ func (observations *contractFailureLog) collectedErrors() []error {
 }
 
 type sessionAPIContractProvider struct {
+	plugin.Base
 	state *sessionAPIContractState
 }
 
 func (*sessionAPIContractProvider) Manifest() plugin.Manifest {
-	return plugin.Manifest{Name: "session-api-contract"}
+	return plugin.Manifest{
+		Name: "session-api-contract",
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[agent.Registry](),
+			plugin.ServiceOf[agentdefaultmodel.DefaultModel](),
+			plugin.ServiceOf[llm.LlmRuntime](),
+			plugin.ServiceOf[session.LiveStore](),
+			plugin.ServiceOf[sesspersist.Persistence](),
+			plugin.ServiceOf[sessionprojection.Registry](),
+			plugin.ServiceOf[sessionquery.QueryService](),
+			plugin.ServiceOf[sessiontitle.TitleService](),
+			plugin.ServiceOf[workspace.Registry](),
+		},
+		Events: []plugin.EventSubscription{
+			plugin.EventOf[session.SessionEventAppended](),
+			plugin.EventOf[session.SessionCreated](),
+			plugin.EventOf[session.SessionDisposed](),
+			plugin.EventOf[agent.StatusChanged](),
+			plugin.EventOf[agent.AgentError](),
+			plugin.EventOf[sessionprojection.ProjectionChanged](),
+			plugin.EventOf[workspace.ChangedNotice](),
+			plugin.EventOf[workspace.RemovedNotice](),
+			plugin.EventOf[workspace.OrderChangedNotice](),
+			plugin.EventOf[workspace.ArchivedSessionsChangedNotice](),
+		},
+	}
 }
 
-func (extension *sessionAPIContractProvider) Apply(requestContext context.Context, providerScope *plugin.Scope) error {
-	agentRegistry, err := agent.NewRegistry(providerScope, agent.RegistryOptions{
-		ObserverError: extension.state.failures.report,
-	})
+func (extension *sessionAPIContractProvider) Apply(
+	requestContext context.Context,
+) error {
+	agentRegistry, err := plugin.Require[agent.Registry](extension)
 	if err != nil {
 		return err
 	}
-	sessionStore, err := session.NewMemoryStore(providerScope, session.MemoryStoreOptions{
-		ObserverError: extension.state.failures.report,
-	})
+	defaultSelection, err := plugin.Require[agentdefaultmodel.DefaultModel](extension)
 	if err != nil {
 		return err
 	}
-	storage, err := sesssqlite.Open(requestContext, sesssqlite.Config{
-		Path: ":memory:", JournalMode: sesssqlite.JournalWAL,
-	})
+	modelRuntime, err := plugin.Require[llm.LlmRuntime](extension)
 	if err != nil {
 		return err
 	}
-	durability, err := sesspersist.NewSessionLogStore(
-		requestContext, providerScope, sessionStore, storage,
-		sesspersist.SessionLogStoreOptions{
-			WriteBatchMaxDelay: time.Hour,
-			ObserverError:      extension.state.failures.report,
+	sessionStore, err := plugin.Require[session.LiveStore](extension)
+	if err != nil {
+		return err
+	}
+	durability, err := plugin.Require[sesspersist.Persistence](extension)
+	if err != nil {
+		return err
+	}
+	projectionRegistry, err := plugin.Require[sessionprojection.Registry](extension)
+	if err != nil {
+		return err
+	}
+	queries, err := plugin.Require[sessionquery.QueryService](extension)
+	if err != nil {
+		return err
+	}
+	titleService, err := plugin.Require[sessiontitle.TitleService](extension)
+	if err != nil {
+		return err
+	}
+	workspaceRegistry, err := plugin.Require[workspace.Registry](extension)
+	if err != nil {
+		return err
+	}
+	gateway, err := sessionapi.NewGateway(
+		requestContext,
+		sessionapi.Dependencies{
+			Agents:      agentRegistry,
+			Sessions:    sessionStore,
+			Persistence: durability,
+			LLM:         modelRuntime,
+			Defaults:    defaultSelection,
+			Projections: projectionRegistry,
+			Titles:      titleService,
+			Workspaces:  workspaceRegistry,
+			Directories: sessionapi.DirectoryProvisionerFunc(
+				func(string) error {
+					return nil
+				},
+			),
+		},
+		sessionapi.Options{
+			WorkingDirectory: "/contract-workspace",
 		},
 	)
 	if err != nil {
-		_ = storage.Close(requestContext)
 		return err
 	}
-	workspaceStorage, err := workspaceSqlite.Open(requestContext, workspaceSqlite.Config{
-		Path: ":memory:", JournalMode: workspaceSqlite.JournalWAL,
-	})
-	if err != nil {
-		return err
-	}
-	if err := providerScope.Effect(requestContext, "contract.workspaceStorage.close()",
-		func(context.Context) (plugin.Disposer, error) {
-			return workspaceStorage.Close, nil
-		}); err != nil {
-		_ = workspaceStorage.Close(requestContext)
-		return err
-	}
-	workspaceRegistry, err := workspace.NewRegistry(
-		requestContext, providerScope, workspaceStorage,
-		fixture.SessionHeaderSource{Sessions: sessionStore, Persistence: durability},
-		workspace.RegistryOptions{},
+	downlinks, err := apiproxy.NewLiveFrameSource(
+		apiproxy.LiveFrameDependencies{
+			Sessions:    sessionStore,
+			Projections: projectionRegistry,
+		},
+		apiproxy.LiveFrameOptions{},
 	)
 	if err != nil {
 		return err
 	}
-	projectionRegistry, err := sessionprojection.NewDriveRegistry(providerScope)
-	if err != nil {
-		return err
-	}
-	titleService, err := sessiontitle.NewLogService(
-		providerScope,
-		sessionStore,
-		projectionRegistry,
-		sessiontitle.Config{FallbackMaxWords: 5, FallbackMaxBytes: 40, MaxTitleBytes: 80},
-		sessiontitle.Options{ReportError: extension.state.failures.report},
-	)
-	if err != nil {
-		return err
-	}
-	modelRuntime, err := llm.NewRuntime(providerScope, nil)
-	if err != nil {
-		return err
-	}
-	promptSettings, err := systemprompt.ValidateConfig(systemprompt.Config{})
-	if err != nil {
-		return err
-	}
-	promptRuntime, err := systemprompt.New(requestContext, providerScope, promptSettings)
-	if err != nil {
-		return err
-	}
-	toolSettings, err := tools.ValidateConfig(tools.Config{})
-	if err != nil {
-		return err
-	}
-	toolRuntime, err := tools.New(requestContext, providerScope, promptRuntime, nil, nil, toolSettings)
-	if err != nil {
-		return err
-	}
-	loopSettings, err := agentloop.ValidateConfig(agentloop.Config{})
-	if err != nil {
-		return err
-	}
-	if _, err := agentloop.New(requestContext, providerScope, agentloop.Dependencies{
-		Agents: agentRegistry, Sessions: sessionStore, LLM: modelRuntime,
-		Tools: toolRuntime, SystemPrompt: promptRuntime,
-	}, loopSettings, agentloop.RuntimeOptions{ObserverError: extension.state.failures.report}); err != nil {
-		return err
-	}
-	if _, err := agent.OnError(providerScope, func(_ context.Context, notice agent.ErrorNotice) error {
-		extension.state.failures.report(notice.Err)
-		return nil
-	}); err != nil {
-		return err
-	}
-	if _, err := modelRuntime.RegisterAdapter(
-		requestContext, providerScope, []string{"mock"}, extension.state.backend,
-	); err != nil {
-		return err
-	}
-	defaultSelection, err := agentdefaultmodel.NewStatic(agent.ModelSelection{
-		Provider: "mock", Model: "mock-model",
-	})
-	if err != nil {
-		return err
-	}
-	gateway, err := apiproxy.NewSessionGateway(requestContext, providerScope, apiproxy.SessionGatewayDependencies{
-		Agents: agentRegistry, Sessions: sessionStore, Persistence: durability,
-		LLM: modelRuntime, Defaults: defaultSelection,
-		Projections: projectionRegistry, Titles: titleService,
-		Workspaces: workspaceRegistry,
-		Directories: apiproxy.DirectoryProvisionerFunc(func(string) error {
-			return nil
-		}),
-	}, apiproxy.SessionGatewayOptions{WorkingDirectory: "/contract-workspace"})
+	searchGateway, err := sessionapi.NewSearchGateway(queries, gateway)
 	if err != nil {
 		return err
 	}
 	workspaceGateway, err := apiproxy.NewWorkspaceGateway(
-		requestContext, providerScope, workspaceRegistry, gateway,
+		workspaceRegistry,
+		downlinks,
 	)
 	if err != nil {
 		return err
 	}
 	extension.state.gateway = gateway
+	extension.state.downlinks = downlinks
+	extension.state.searchGateway = searchGateway
 	extension.state.workspaceGateway = workspaceGateway
+	return requestContext.Err()
+}
+
+func (extension *sessionAPIContractProvider) Dispose(context.Context) error {
+	if extension.state.downlinks != nil {
+		extension.state.downlinks.Close()
+	}
 	return nil
+}
+
+func (extension *sessionAPIContractProvider) ObserveEvent(
+	requestContext context.Context,
+	fact plugin.Event,
+) error {
+	if notice, matches := fact.(agent.AgentError); matches {
+		extension.state.failures.report(notice.Err)
+	}
+	var frameErr error
+	if extension.state.downlinks != nil {
+		frameErr = extension.state.downlinks.ObserveEvent(requestContext, fact)
+	}
+	var workspaceErr error
+	if extension.state.workspaceGateway != nil {
+		workspaceErr = extension.state.workspaceGateway.ObserveEvent(
+			requestContext,
+			fact,
+		)
+	}
+	return errors.Join(frameErr, workspaceErr)
+}
+
+type contractSessionBackendOpener struct{}
+
+func (contractSessionBackendOpener) OpenBackend(
+	requestContext context.Context,
+) (sesspersist.Backend, error) {
+	return sesssqlite.Open(requestContext, sesssqlite.Config{
+		Path:        ":memory:",
+		JournalMode: sesssqlite.JournalWAL,
+	})
+}
+
+type contractQueryIndexOpener struct{}
+
+func (contractQueryIndexOpener) OpenIndex(
+	requestContext context.Context,
+) (sessionquery.Index, error) {
+	return querysqlite.Open(requestContext, querysqlite.Config{
+		Path: ":memory:",
+	})
+}
+
+type contractWorkspaceBackendOpener struct{}
+
+func (contractWorkspaceBackendOpener) OpenBackend(
+	requestContext context.Context,
+) (workspace.Backend, error) {
+	return workspaceSqlite.Open(requestContext, workspaceSqlite.Config{
+		Path:        ":memory:",
+		JournalMode: workspaceSqlite.JournalWAL,
+	})
+}
+
+func (observations *contractFailureLog) ReportPostCommitFailure(
+	failure session.PostCommitFailure,
+) {
+	observations.report(failure.Error)
+}
+
+func (observations *contractFailureLog) ReportBackgroundWriteFailure(
+	failure sesspersist.BackgroundWriteFailure,
+) {
+	observations.report(failure.Error)
+}
+
+func (observations *contractFailureLog) ReportAsyncFailure(
+	failure sessiontitle.AsyncFailure,
+) {
+	observations.report(failure.Error)
+}
+
+func (observations *contractFailureLog) ReportObserverFailure(problem error) {
+	observations.report(problem)
+}
+
+func startSessionAPIContractState(
+	testingContext testing.TB,
+	contractState *sessionAPIContractState,
+) (*plugin.Runtime, error) {
+	agentRegistry := agent.NewRegistry(agent.RegistryOptions{
+		ObserverError: contractState.failures.report,
+	})
+	sessionStore, err := session.NewMemoryStore(session.MemoryStoreOptions{
+		PostCommitFailures: &contractState.failures,
+	})
+	if err != nil {
+		return nil, err
+	}
+	durability, err := sesspersist.NewSessionLogStore(
+		contractSessionBackendOpener{},
+		sesspersist.SessionLogStoreOptions{
+			WriteBatchMaxDelay:      time.Hour,
+			BackgroundWriteFailures: &contractState.failures,
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	queries, err := sessionquery.New(
+		contractQueryIndexOpener{},
+		sessionquery.Config{},
+	)
+	if err != nil {
+		return nil, err
+	}
+	workspaceRegistry, err := workspace.NewRegistry(
+		contractWorkspaceBackendOpener{},
+		workspace.RegistryOptions{},
+	)
+	if err != nil {
+		return nil, err
+	}
+	projectionRegistry := sessionprojection.NewDriveRegistry()
+	titleService, err := sessiontitle.NewLogService(
+		sessiontitle.Config{
+			FallbackMaxWords: 5,
+			FallbackMaxBytes: 40,
+			MaxTitleBytes:    80,
+		},
+		&contractState.failures,
+	)
+	if err != nil {
+		return nil, err
+	}
+	modelRuntime := llm.NewRuntime(&contractState.failures)
+	promptSettings, err := systemprompt.ValidateConfig(systemprompt.Config{})
+	if err != nil {
+		return nil, err
+	}
+	promptRuntime := systemprompt.New(
+		promptSettings,
+		systemprompt.RegistryOptions{},
+	)
+	toolSettings, err := tools.ValidateConfig(tools.Config{})
+	if err != nil {
+		return nil, err
+	}
+	toolRuntime := tools.New(toolSettings)
+	loopRuntime, err := agentloop.New(
+		agentloop.Settings{
+			MaxParallelToolCalls: agentloop.DefaultMaxParallelToolCalls,
+		},
+		agentloop.RuntimeOptions{
+			ObserverError: contractState.failures.report,
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	defaultSelection, err := agentdefaultmodel.NewStatic(agent.ModelSelection{
+		Provider: "mock",
+		Model:    "mock-model",
+	})
+	if err != nil {
+		return nil, err
+	}
+	runtimeEngine := newContractRuntime(testingContext)
+	if _, err = runtimeEngine.Start(
+		context.Background(),
+		agentRegistry,
+		sessionStore,
+		durability,
+		queries,
+		workspaceRegistry,
+		projectionRegistry,
+		titleService,
+		modelRuntime,
+		promptRuntime,
+		toolRuntime,
+		loopRuntime,
+		defaultSelection,
+		&sessionAPIContractProvider{
+			state: contractState,
+		},
+	); err != nil {
+		return nil, err
+	}
+	if _, err = modelRuntime.RegisterAdapter(
+		context.Background(),
+		[]string{
+			"mock",
+		},
+		contractState.backend,
+	); err != nil {
+		_ = runtimeEngine.Shutdown(context.Background())
+		return nil, err
+	}
+	return runtimeEngine, nil
 }
 
 type sessionAPIContractAdapter struct {
@@ -210,7 +393,10 @@ func (*sessionAPIContractAdapter) DescribeProvider(providerRoute string) (llm.Pr
 	if providerRoute != "mock" {
 		return llm.ProviderInfo{}, fmt.Errorf("unexpected provider route %q", providerRoute)
 	}
-	return llm.ProviderInfo{ID: "mock", Name: "Mock"}, nil
+	return llm.ProviderInfo{
+		ID:   "mock",
+		Name: "Mock",
+	}, nil
 }
 
 func (*sessionAPIContractAdapter) ListModels(
@@ -221,7 +407,9 @@ func (*sessionAPIContractAdapter) ListModels(
 		return nil, fmt.Errorf("unexpected provider route %q", providerRoute)
 	}
 	return []llm.ModelInfo{{
-		Provider: "mock", ID: "mock-model", Name: "Mock Model",
+		Provider:        "mock",
+		ID:              "mock-model",
+		Name:            "Mock Model",
 		InputModalities: []llm.ModelModality{llm.ModalityText},
 	}}, nil
 }
@@ -234,10 +422,14 @@ func (*sessionAPIContractAdapter) ResolveModel(
 	if providerRoute != "mock" || modelID != "mock-model" {
 		return llm.ResolvedModelInfo{}, fmt.Errorf("unexpected model route %q/%q", providerRoute, modelID)
 	}
-	return llm.ResolvedModelInfo{ModelInfo: llm.ModelInfo{
-		Provider: "mock", ID: "mock-model", Name: "Mock Model",
-		InputModalities: []llm.ModelModality{llm.ModalityText},
-	}}, nil
+	return llm.ResolvedModelInfo{
+		ModelInfo: llm.ModelInfo{
+			Provider:        "mock",
+			ID:              "mock-model",
+			Name:            "Mock Model",
+			InputModalities: []llm.ModelModality{llm.ModalityText},
+		},
+	}, nil
 }
 
 func (backend *sessionAPIContractAdapter) Stream(
@@ -247,8 +439,13 @@ func (backend *sessionAPIContractAdapter) Stream(
 	switch backend.callCount.Add(1) {
 	case 1:
 		return llm.NewSliceStream([]llm.StreamChunk{
-			llm.BlockEndChunk{Index: 0, Block: llm.NewTextBlock("first response")},
-			llm.FinishChunk{Reason: llm.StopFinish{}},
+			llm.BlockEndChunk{
+				Index: 0,
+				Block: llm.NewTextBlock("first response"),
+			},
+			llm.FinishChunk{
+				Reason: llm.StopFinish{},
+			},
 		})
 	case 2:
 		return &sessionAPIContractBlockingStream{}, nil
@@ -278,6 +475,7 @@ type sessionAPIClientObservation struct {
 	Models            bool     `json:"models"`
 	Selected          bool     `json:"selected"`
 	FirstPrompt       bool     `json:"firstPrompt"`
+	Searched          bool     `json:"searched"`
 	InitialProjection bool     `json:"initialProjection"`
 	FallbackTitle     bool     `json:"fallbackTitle"`
 	Renamed           bool     `json:"renamed"`
@@ -295,13 +493,15 @@ type sessionAPIClientObservation struct {
 
 func TestPinnedSourceSessionWebApiClientTalksToGoGateway(t *testing.T) {
 	repositoryRoot, sourceRoot := contractPaths(t)
-	contractState := &sessionAPIContractState{backend: &sessionAPIContractAdapter{}}
-	engine := plugin.NewRuntime()
-	if _, err := engine.Load(context.Background(), &sessionAPIContractProvider{state: contractState}); err != nil {
+	contractState := &sessionAPIContractState{
+		backend: &sessionAPIContractAdapter{},
+	}
+	runtimeEngine, err := startSessionAPIContractState(t, contractState)
+	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := engine.Shutdown(context.Background()); err != nil {
+		if err := runtimeEngine.Shutdown(context.Background()); err != nil {
 			t.Error(err)
 		}
 	})
@@ -310,13 +510,13 @@ func TestPinnedSourceSessionWebApiClientTalksToGoGateway(t *testing.T) {
 	}
 
 	methods := apiproxy.NewCatalog()
-	if err := apiproxy.RegisterSessionAPI(methods, contractState.gateway); err != nil {
+	if err := apiproxy.RegisterSessionAPI(methods, contractState.gateway, contractState.searchGateway); err != nil {
 		t.Fatal(err)
 	}
 	if err := apiproxy.RegisterWorkspaceAPI(methods, contractState.workspaceGateway); err != nil {
 		t.Fatal(err)
 	}
-	streams, err := apiproxy.NewEventStreams(contractState.gateway.Mux, contractState.gateway.Host)
+	streams, err := apiproxy.NewEventStreams(contractState.downlinks.Mux, contractState.downlinks.Host)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +554,7 @@ func TestPinnedSourceSessionWebApiClientTalksToGoGateway(t *testing.T) {
 		!observation.EmptyHistory || !observation.InitialProjection || !observation.Models || !observation.Selected {
 		t.Fatalf("Session setup observation = %#v", observation)
 	}
-	if !observation.FirstPrompt || !observation.FallbackTitle || !slices.Contains(observation.FirstHistoryTypes, session.UserMessageEventName) ||
+	if !observation.FirstPrompt || !observation.Searched || !observation.FallbackTitle || !slices.Contains(observation.FirstHistoryTypes, session.UserMessageEventName) ||
 		!slices.Contains(observation.FirstHistoryTypes, session.TurnEndEventName) {
 		t.Fatalf("first turn observation = %#v", observation)
 	}
@@ -400,13 +600,15 @@ type workspaceClientObservation struct {
 
 func TestPinnedSourceWorkspaceWebApiClientTalksToGoGateway(t *testing.T) {
 	repositoryRoot, sourceRoot := contractPaths(t)
-	contractState := &sessionAPIContractState{backend: &sessionAPIContractAdapter{}}
-	engine := plugin.NewRuntime()
-	if _, err := engine.Load(context.Background(), &sessionAPIContractProvider{state: contractState}); err != nil {
+	contractState := &sessionAPIContractState{
+		backend: &sessionAPIContractAdapter{},
+	}
+	runtimeEngine, err := startSessionAPIContractState(t, contractState)
+	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := engine.Shutdown(context.Background()); err != nil {
+		if err := runtimeEngine.Shutdown(context.Background()); err != nil {
 			t.Error(err)
 		}
 	})
@@ -415,13 +617,13 @@ func TestPinnedSourceWorkspaceWebApiClientTalksToGoGateway(t *testing.T) {
 	}
 
 	methods := apiproxy.NewCatalog()
-	if err := apiproxy.RegisterSessionAPI(methods, contractState.gateway); err != nil {
+	if err := apiproxy.RegisterSessionAPI(methods, contractState.gateway, contractState.searchGateway); err != nil {
 		t.Fatal(err)
 	}
 	if err := apiproxy.RegisterWorkspaceAPI(methods, contractState.workspaceGateway); err != nil {
 		t.Fatal(err)
 	}
-	streams, err := apiproxy.NewEventStreams(contractState.gateway.Mux, contractState.gateway.Host)
+	streams, err := apiproxy.NewEventStreams(contractState.downlinks.Mux, contractState.downlinks.Host)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -461,13 +663,27 @@ func TestPinnedSourceWorkspaceWebApiClientTalksToGoGateway(t *testing.T) {
 		t.Fatalf("decode source Workspace client observation: %v; output = %s", err, output)
 	}
 	want := workspaceClientObservation{
-		InitialEmpty: true, Created: true, Repeated: true, Renamed: true, RenameFrame: true,
-		Attached: true, NameConflict: true, Reordered: true, OrderFrame: true,
-		Archived: true, ArchiveFrame: true, ArchiveIdempotent: true,
-		Deleted: true, RegistrationOnlyDelete: true, NotFoundErrors: true,
-		MoveInvalid: true, UnknownSession: true,
-		WorkspaceAndCWDRejected: true, WorkspaceCWD: true,
-		FinalList: true, InvalidPath: true,
+		InitialEmpty:            true,
+		Created:                 true,
+		Repeated:                true,
+		Renamed:                 true,
+		RenameFrame:             true,
+		Attached:                true,
+		NameConflict:            true,
+		Reordered:               true,
+		OrderFrame:              true,
+		Archived:                true,
+		ArchiveFrame:            true,
+		ArchiveIdempotent:       true,
+		Deleted:                 true,
+		RegistrationOnlyDelete:  true,
+		NotFoundErrors:          true,
+		MoveInvalid:             true,
+		UnknownSession:          true,
+		WorkspaceAndCWDRejected: true,
+		WorkspaceCWD:            true,
+		FinalList:               true,
+		InvalidPath:             true,
 	}
 	if observation != want {
 		t.Fatalf("Workspace observation = %#v, want %#v", observation, want)

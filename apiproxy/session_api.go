@@ -3,12 +3,11 @@ package apiproxy
 import (
 	"context"
 	"encoding/json"
-
-	"github.com/gorenx/goren/connection"
 )
 
 const (
 	SessionListMethod        = "session.list"
+	SessionSearchMethod      = "session.search"
 	SessionCreateMethod      = "session.create"
 	SessionRenameMethod      = "session.rename"
 	SessionHistoryMethod     = "session.history"
@@ -46,6 +45,24 @@ type SessionProjectionsBlock struct {
 // SessionListValue is the complete session.list result.
 type SessionListValue struct {
 	Items []SessionSummary `json:"items"`
+}
+
+// SessionSearchRequest contains the normalized literal sidebar query.
+type SessionSearchRequest struct {
+	Query string
+}
+
+// SessionSearchItem contains content-search identity and a bounded plain-text
+// excerpt; display metadata remains owned by session.list.
+type SessionSearchItem struct {
+	SessionID SessionID `json:"sessionId"`
+	Snippet   string    `json:"snippet"`
+}
+
+// SessionSearchValue is one bounded, cursorless sidebar result.
+type SessionSearchValue struct {
+	Items   []SessionSearchItem `json:"items"`
+	HasMore bool                `json:"hasMore"`
 }
 
 // SessionCreateRequest creates or idempotently adopts an ordinary Session.
@@ -235,7 +252,9 @@ type AcceptedValue struct {
 	Accepted bool `json:"accepted"`
 }
 
-// SessionAPI owns typed implementations for the included session.* methods.
+// SessionAPI owns lifecycle, history, model selection, and interaction methods.
+// Content search is a separate capability because it has its own Query and
+// visibility dependencies.
 type SessionAPI interface {
 	List(context.Context, Request[SessionListRequest]) (Outcome[SessionListValue], error)
 	Create(context.Context, Request[SessionCreateRequest]) (Outcome[SessionCreateValue], error)
@@ -248,33 +267,43 @@ type SessionAPI interface {
 	Cancel(context.Context, Request[SessionCancelRequest]) (Outcome[AcceptedValue], error)
 }
 
+// SessionSearchAPI owns only session.search.
+type SessionSearchAPI interface {
+	Search(context.Context, Request[SessionSearchRequest]) (Outcome[SessionSearchValue], error)
+}
+
 // RegisterSessionAPI installs every currently included session method.
-func RegisterSessionAPI(methods *Catalog, service SessionAPI) error {
+func RegisterSessionAPI(methods *Catalog, sessionMethods SessionAPI, searchMethods SessionSearchAPI) error {
 	registrations := []func() error{
-		func() error { return RegisterUnary(methods, SessionListMethod, DecodeSessionListRequest, service.List) },
 		func() error {
-			return RegisterUnary(methods, SessionCreateMethod, DecodeSessionCreateRequest, service.Create)
+			return RegisterUnary(methods, SessionListMethod, DecodeSessionListRequest, sessionMethods.List)
 		},
 		func() error {
-			return RegisterUnary(methods, SessionRenameMethod, DecodeSessionRenameRequest, service.Rename)
+			return RegisterUnary(methods, SessionSearchMethod, DecodeSessionSearchRequest, searchMethods.Search)
 		},
 		func() error {
-			return RegisterUnary(methods, SessionHistoryMethod, DecodeSessionHistoryRequest, service.History)
+			return RegisterUnary(methods, SessionCreateMethod, DecodeSessionCreateRequest, sessionMethods.Create)
 		},
 		func() error {
-			return RegisterUnary(methods, SessionModelsMethod, DecodeSessionModelsRequest, service.Models)
+			return RegisterUnary(methods, SessionRenameMethod, DecodeSessionRenameRequest, sessionMethods.Rename)
 		},
 		func() error {
-			return RegisterUnary(methods, SessionSelectModelMethod, DecodeSessionSelectModelRequest, service.SelectModel)
+			return RegisterUnary(methods, SessionHistoryMethod, DecodeSessionHistoryRequest, sessionMethods.History)
 		},
 		func() error {
-			return RegisterUnary(methods, SessionPromptMethod, DecodeSessionPromptRequest, service.Prompt)
+			return RegisterUnary(methods, SessionModelsMethod, DecodeSessionModelsRequest, sessionMethods.Models)
 		},
 		func() error {
-			return RegisterUnary(methods, SessionUpdateQueueMethod, DecodeSessionUpdateQueueRequest, service.UpdateQueue)
+			return RegisterUnary(methods, SessionSelectModelMethod, DecodeSessionSelectModelRequest, sessionMethods.SelectModel)
 		},
 		func() error {
-			return RegisterUnary(methods, SessionCancelMethod, DecodeSessionCancelRequest, service.Cancel)
+			return RegisterUnary(methods, SessionPromptMethod, DecodeSessionPromptRequest, sessionMethods.Prompt)
+		},
+		func() error {
+			return RegisterUnary(methods, SessionUpdateQueueMethod, DecodeSessionUpdateQueueRequest, sessionMethods.UpdateQueue)
+		},
+		func() error {
+			return RegisterUnary(methods, SessionCancelMethod, DecodeSessionCancelRequest, sessionMethods.Cancel)
 		},
 	}
 	for _, register := range registrations {
@@ -283,12 +312,4 @@ func RegisterSessionAPI(methods *Catalog, service SessionAPI) error {
 		}
 	}
 	return nil
-}
-
-func newRPCError[D any](code connection.RPCErrorCode, message string, details D) connection.RPCError {
-	encoded, err := json.Marshal(details)
-	if err != nil {
-		panic(err)
-	}
-	return connection.RPCError{Code: code, Message: message, Details: encoded}
 }

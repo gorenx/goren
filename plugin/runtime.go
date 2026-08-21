@@ -3,501 +3,439 @@ package plugin
 import (
 	"context"
 	"errors"
-	"fmt"
-	"slices"
 	"sync"
 )
 
-type pluginRecord struct {
-	id          uint64
-	instance    Plugin
-	metadata    Manifest
-	state       State
-	pluginScope *Scope
-	lastErr     error
-	order       uint64
+// RuntimeSettings contains Runtime-owned technical collaborators.
+type RuntimeSettings struct {
+	EventFailures EventFailureReporter
 }
 
-type serviceEntry struct {
-	definition ServiceRef
-	value      any
-	provider   *pluginRecord
-	owner      *serviceContribution
-}
-
-// Runtime coordinates plugin dependency settlement and owns all active scopes.
-// Lifecycle mutations are serialized; service reads and event dispatch may run concurrently.
+// Runtime is the serialized command facade for one isolated Plugin system.
+// Its collaborators own topology, dispatch bindings, dependency queries, and
+// cross-Fiber activation ordering respectively.
 type Runtime struct {
-	operations   sync.Mutex
-	mu           sync.RWMutex
-	nextID       uint64
-	nextOrder    uint64
-	nextListener uint64
-	records      []*pluginRecord
-	providers    map[string]*pluginRecord
-	definitions  map[string]ServiceRef
-	services     map[string]serviceEntry
-	eventDefs    map[string]eventRef
-	closed       bool
+	operations chan struct{}
+	view       sync.RWMutex
+
+	mounts       *mountTree
+	bindings     *runtimeBindings
+	dependencies *dependencyGraph
+	activations  *activationCoordinator
+
+	started bool
+	closed  bool
 }
 
-// NewRuntime creates an empty plugin runtime.
-func NewRuntime() *Runtime {
-	return &Runtime{
-		providers: make(map[string]*pluginRecord), definitions: make(map[string]ServiceRef),
-		services: make(map[string]serviceEntry), eventDefs: make(map[string]eventRef),
+// NewRuntime creates one isolated Plugin Runtime.
+func NewRuntime(settings RuntimeSettings) *Runtime {
+	runtimeEngine := &Runtime{
+		operations: make(chan struct{}, 1),
+		mounts:     newMountTree(),
+		bindings:   newRuntimeBindings(settings.EventFailures),
 	}
+	runtimeEngine.operations <- struct{}{}
+	runtimeEngine.dependencies = newDependencyGraph(
+		runtimeEngine,
+		runtimeEngine.bindings.services,
+	)
+	runtimeEngine.activations = newActivationCoordinator(
+		runtimeEngine,
+		runtimeEngine.mounts,
+		runtimeEngine.dependencies,
+	)
+	return runtimeEngine
 }
 
-// Load declares a plugin and activates every waiting plugin whose required
-// services are now available. Missing dependencies leave the new plugin waiting.
-func (engine *Runtime) Load(requestContext context.Context, instance Plugin) (Handle, error) {
-	if instance == nil {
-		return Handle{}, errors.New("plugin: cannot load nil plugin")
+// Start atomically admits the complete static Plugin set and returns only when
+// every Plugin is active. Failure rolls the whole batch back in reverse order.
+func (runtimeEngine *Runtime) Start(
+	startContext context.Context,
+	instances ...Plugin,
+) ([]Handle, error) {
+	if runtimeEngine == nil {
+		return nil, errors.New("plugin: start through nil Runtime")
 	}
-	metadata := instance.Manifest()
-	if err := validateManifest(metadata); err != nil {
+	if len(instances) == 0 {
+		return nil, errors.New("plugin: Start requires at least one Plugin")
+	}
+	forest, err := buildPluginForest(instances)
+	if err != nil {
+		return nil, err
+	}
+	if err = runtimeEngine.beginOperation(startContext); err != nil {
+		return nil, err
+	}
+	defer runtimeEngine.endOperation()
+	if runtimeEngine.closed {
+		return nil, errors.New("plugin: Runtime is shut down")
+	}
+	if runtimeEngine.started {
+		return nil, errors.New("plugin: Runtime has already started")
+	}
+	handles := make([]Handle, 0, len(forest.roots))
+	rootMounts, startedMounts, admissionErr := runtimeEngine.mounts.admitDeclarations(
+		forest.roots,
+		nil,
+		mountAtRootScope,
+	)
+	if admissionErr != nil {
+		return nil, admissionErr
+	}
+	for _, mounted := range rootMounts {
+		handles = append(handles, handleOf(runtimeEngine, mounted))
+	}
+	runtimeEngine.view.RLock()
+	admissionErr = runtimeEngine.bindings.validateMountAdmission(startedMounts)
+	runtimeEngine.view.RUnlock()
+	if admissionErr != nil {
+		runtimeEngine.discardMountRoots(rootMounts)
+		return nil, admissionErr
+	}
+	for _, mounted := range startedMounts {
+		runtimeEngine.activations.attach(mounted)
+	}
+	if startErr := runtimeEngine.activateMountBatch(
+		startContext,
+		startedMounts,
+		startedMounts,
+	); startErr != nil {
+		rollbackErr := runtimeEngine.activations.rollbackMounts(
+			startContext,
+			startedMounts,
+		)
+		return nil, errors.Join(startErr, rollbackErr)
+	}
+	runtimeEngine.started = true
+	return handles, nil
+}
+
+// Mount adds one root Plugin after Start.
+func (runtimeEngine *Runtime) Mount(
+	mountContext context.Context,
+	pluginInstance Plugin,
+) (Handle, error) {
+	return runtimeEngine.mount(
+		mountContext,
+		Handle{},
+		pluginInstance,
+		mountAtRootScope,
+	)
+}
+
+// MountChild adds a child Fiber that inherits its parent's Scope.
+func (runtimeEngine *Runtime) MountChild(
+	mountContext context.Context,
+	parent Handle,
+	pluginInstance Plugin,
+) (Handle, error) {
+	return runtimeEngine.mount(
+		mountContext,
+		parent,
+		pluginInstance,
+		mountInParentScope,
+	)
+}
+
+// MountScopedChild adds a child Fiber in a new Scope below its parent.
+func (runtimeEngine *Runtime) MountScopedChild(
+	mountContext context.Context,
+	parent Handle,
+	pluginInstance Plugin,
+) (Handle, error) {
+	return runtimeEngine.mount(
+		mountContext,
+		parent,
+		pluginInstance,
+		mountInChildScope,
+	)
+}
+
+// MountChild adds child as an owned Fiber in activeParent's current Scope.
+func MountChild(
+	mountContext context.Context,
+	activeParent Plugin,
+	child Plugin,
+) (Handle, error) {
+	parentFiber, err := activeFiberOf(activeParent)
+	if err != nil {
 		return Handle{}, err
 	}
+	return parentFiber.runtime.mount(
+		mountContext,
+		handleOf(parentFiber.runtime, parentFiber.mount),
+		child,
+		mountInParentScope,
+	)
+}
 
-	engine.operations.Lock()
-	defer engine.operations.Unlock()
-	engine.mu.Lock()
-	if engine.closed {
-		engine.mu.Unlock()
-		return Handle{}, errors.New("plugin: runtime is shut down")
-	}
-	if err := engine.registerDefinitionsLocked(metadata); err != nil {
-		engine.mu.Unlock()
+// MountScopedChild adds child as an owned Fiber in a new Scope below
+// activeParent's Scope.
+func MountScopedChild(
+	mountContext context.Context,
+	activeParent Plugin,
+	child Plugin,
+) (Handle, error) {
+	parentFiber, err := activeFiberOf(activeParent)
+	if err != nil {
 		return Handle{}, err
 	}
-	for _, providedRef := range metadata.Provides {
-		if existing := engine.providers[providedRef.name]; existing != nil {
-			engine.mu.Unlock()
-			return Handle{}, fmt.Errorf("plugin: service %q is already provided by %s", providedRef.name, existing.metadata.Name)
-		}
-	}
-	engine.nextID++
-	record := &pluginRecord{id: engine.nextID, instance: instance, metadata: metadata, state: StateWaiting}
-	engine.records = append(engine.records, record)
-	for _, providedRef := range metadata.Provides {
-		engine.providers[providedRef.name] = record
-	}
-	engine.mu.Unlock()
-
-	reconcileErr := engine.reconcile(requestContext)
-	pluginHandle := Handle{owner: engine, id: record.id}
-	if record.state == StateFailed {
-		return pluginHandle, record.lastErr
-	}
-	return pluginHandle, reconcileErr
+	return parentFiber.runtime.mount(
+		mountContext,
+		handleOf(parentFiber.runtime, parentFiber.mount),
+		child,
+		mountInChildScope,
+	)
 }
 
-// Unload stops active dependents before removing the selected plugin declaration.
-// Dependents remain declared and return to waiting until another provider loads.
-func (engine *Runtime) Unload(closeContext context.Context, pluginHandle Handle) error {
-	engine.operations.Lock()
-	defer engine.operations.Unlock()
-	record, err := engine.resolveHandle(pluginHandle)
+// UnloadChild stops one direct child previously mounted by activeParent.
+func UnloadChild(
+	stopContext context.Context,
+	activeParent Plugin,
+	child Handle,
+) error {
+	parentFiber, err := activeFiberOf(activeParent)
 	if err != nil {
 		return err
 	}
-	stopErr := engine.stopDependents(closeContext, record, make(map[uint64]bool))
-	stopErr = errors.Join(stopErr, engine.stopRecord(closeContext, record, StateStopped))
-
-	engine.mu.Lock()
-	for _, providedRef := range record.metadata.Provides {
-		if engine.providers[providedRef.name] == record {
-			delete(engine.providers, providedRef.name)
-		}
-	}
-	engine.records = slices.DeleteFunc(engine.records, func(candidate *pluginRecord) bool {
-		return candidate == record
-	})
-	engine.mu.Unlock()
-	return stopErr
+	return parentFiber.runtime.unloadChild(
+		stopContext,
+		handleOf(parentFiber.runtime, parentFiber.mount),
+		child,
+	)
 }
 
-// Replace starts a candidate in a shadow scope, swaps its contributions into
-// the existing handle, and only then disposes the former scope. A failed
-// candidate leaves the active plugin untouched.
-func (engine *Runtime) Replace(requestContext context.Context, pluginHandle Handle, candidate Plugin) error {
-	if candidate == nil {
-		return errors.New("plugin: replacement is nil")
+func (runtimeEngine *Runtime) mount(
+	mountContext context.Context,
+	parent Handle,
+	pluginInstance Plugin,
+	placement scopePlacement,
+) (Handle, error) {
+	if runtimeEngine == nil {
+		return Handle{}, errors.New("plugin: mount through nil Runtime")
 	}
-	candidateMetadata := candidate.Manifest()
-	if err := validateManifest(candidateMetadata); err != nil {
-		return err
+	forest, err := buildPluginForest([]Plugin{pluginInstance})
+	if err != nil {
+		return Handle{}, err
+	}
+	if err = runtimeEngine.beginOperation(mountContext); err != nil {
+		return Handle{}, err
+	}
+	defer runtimeEngine.endOperation()
+	if runtimeEngine.closed {
+		return Handle{}, errors.New("plugin: Runtime is shut down")
+	}
+	if !runtimeEngine.started {
+		return Handle{}, errors.New("plugin: Runtime must Start before Mount")
 	}
 
-	engine.operations.Lock()
-	defer engine.operations.Unlock()
-	record, err := engine.resolveHandle(pluginHandle)
+	parentMount, err := runtimeEngine.resolveParentMount(parent, placement)
+	if err != nil {
+		return Handle{}, err
+	}
+	roots, admitted, err := runtimeEngine.mounts.admitDeclarations(
+		forest.roots,
+		parentMount,
+		placement,
+	)
+	if err != nil {
+		return Handle{}, err
+	}
+	mounted := roots[0]
+	runtimeEngine.view.RLock()
+	admissionErr := runtimeEngine.bindings.validateMountAdmission(admitted)
+	runtimeEngine.view.RUnlock()
+	if admissionErr != nil {
+		runtimeEngine.mounts.deleteTree(mounted)
+		return Handle{}, admissionErr
+	}
+	for _, selectedMount := range admitted {
+		runtimeEngine.activations.attach(selectedMount)
+	}
+	// A new child Scope has no existing inhabitants, and its Services are not
+	// visible to ancestors or siblings. Its activation can therefore converge
+	// against the admitted subtree without scanning unrelated Runtime topology.
+	isolated := placement == mountInChildScope
+	topology := admitted
+	if !isolated {
+		topology = runtimeEngine.mounts.all()
+	}
+	if mountErr := runtimeEngine.activateMountBatch(
+		mountContext,
+		admitted,
+		topology,
+	); mountErr != nil {
+		var rollbackErr error
+		if isolated {
+			rollbackErr = runtimeEngine.activations.removeIsolatedMount(
+				mountContext,
+				mounted,
+			)
+		} else {
+			rollbackErr = runtimeEngine.activations.removeMount(
+				mountContext,
+				mounted,
+			)
+		}
+		var reconcileErr error
+		if !isolated {
+			reconcileErr = runtimeEngine.reconcile(mountContext)
+		}
+		return Handle{}, errors.Join(mountErr, rollbackErr, reconcileErr)
+	}
+	return handleOf(runtimeEngine, mounted), nil
+}
+
+func (runtimeEngine *Runtime) resolveParentMount(
+	parent Handle,
+	placement scopePlacement,
+) (*pluginMount, error) {
+	if placement == mountAtRootScope {
+		if parent.owner != nil || parent.id != 0 {
+			return nil, errors.New("plugin: root mount cannot have a parent Handle")
+		}
+		return nil, nil
+	}
+	mounted, err := runtimeEngine.lookup(parent)
+	if err != nil {
+		return nil, err
+	}
+	runtimeEngine.view.RLock()
+	active := mounted.current != nil && mounted.current.state == FiberActive
+	runtimeEngine.view.RUnlock()
+	if !active {
+		return nil, errors.New("plugin: parent Plugin is not active")
+	}
+	return mounted, nil
+}
+
+// Unload stops the selected Plugin, its owned child tree, and hard dependents.
+// Dependents remain mounted and are reconciled against any remaining provider.
+func (runtimeEngine *Runtime) Unload(
+	stopContext context.Context,
+	pluginHandle Handle,
+) error {
+	if runtimeEngine == nil {
+		return errors.New("plugin: unload through nil Runtime")
+	}
+	if err := runtimeEngine.beginOperation(stopContext); err != nil {
+		return err
+	}
+	defer runtimeEngine.endOperation()
+	mounted, err := runtimeEngine.lookup(pluginHandle)
 	if err != nil {
 		return err
 	}
-	if record.state != StateActive {
-		return fmt.Errorf("plugin: %s is %s, not active", record.metadata.Name, record.state)
+	stopErr := runtimeEngine.activations.removeMount(
+		stopContext,
+		mounted,
+	)
+	settleErr := runtimeEngine.reconcile(stopContext)
+	return errors.Join(stopErr, settleErr)
+}
+
+func (runtimeEngine *Runtime) unloadChild(
+	stopContext context.Context,
+	parent Handle,
+	child Handle,
+) error {
+	if runtimeEngine == nil {
+		return errors.New("plugin: unload child through nil Runtime")
 	}
-	if record.metadata.Name != candidateMetadata.Name || !sameRefSet(record.metadata.Provides, candidateMetadata.Provides) {
-		return errors.New("plugin: replacement must keep the same name and provided services")
-	}
-	engine.mu.Lock()
-	if err := engine.registerDefinitionsLocked(candidateMetadata); err != nil {
-		engine.mu.Unlock()
+	if err := runtimeEngine.beginOperation(stopContext); err != nil {
 		return err
 	}
-	engine.mu.Unlock()
-	if missing := engine.missingRequired(candidateMetadata); len(missing) != 0 {
-		return fmt.Errorf("plugin: replacement is missing required services: %v", missing)
-	}
-
-	shadowRecord := &pluginRecord{id: record.id, instance: candidate, metadata: candidateMetadata, state: StateStarting, order: record.order}
-	shadowScope := newScope(engine, shadowRecord)
-	if err := candidate.Apply(requestContext, shadowScope); err != nil {
-		shadowRecord.state = StateRollingBack
-		return errors.Join(err, shadowScope.dispose(requestContext))
-	}
-	if err := validateContributions(shadowRecord, shadowScope); err != nil {
-		shadowRecord.state = StateRollingBack
-		return errors.Join(err, shadowScope.dispose(requestContext))
-	}
-
-	dependentsErr := engine.stopDependents(requestContext, record, make(map[uint64]bool))
-	oldScope := record.pluginScope
-	engine.mu.Lock()
-	for serviceName, contribution := range shadowScope.services {
-		engine.services[serviceName] = serviceEntry{
-			definition: contribution.ref, value: contribution.value, provider: record, owner: contribution,
-		}
-	}
-	record.instance = candidate
-	record.metadata = candidateMetadata
-	record.pluginScope = shadowScope
-	record.lastErr = nil
-	record.state = StateActive
-	shadowScope.mu.Lock()
-	shadowScope.record = record
-	shadowScope.activated = true
-	shadowScope.mu.Unlock()
-	engine.mu.Unlock()
-
-	cleanupErr := oldScope.dispose(requestContext)
-	reconcileErr := engine.reconcile(requestContext)
-	return errors.Join(dependentsErr, cleanupErr, reconcileErr)
-}
-
-// Shutdown unloads every active plugin in dependent-first order and prevents new loads.
-func (engine *Runtime) Shutdown(closeContext context.Context) error {
-	engine.operations.Lock()
-	defer engine.operations.Unlock()
-	engine.mu.Lock()
-	if engine.closed {
-		engine.mu.Unlock()
-		return nil
-	}
-	engine.closed = true
-	records := append([]*pluginRecord(nil), engine.records...)
-	engine.mu.Unlock()
-
-	var shutdownErr error
-	visited := make(map[uint64]bool)
-	for index := len(records) - 1; index >= 0; index-- {
-		record := records[index]
-		shutdownErr = errors.Join(shutdownErr, engine.stopDependents(closeContext, record, visited))
-		shutdownErr = errors.Join(shutdownErr, engine.stopRecord(closeContext, record, StateStopped))
-		visited[record.id] = true
-	}
-	engine.mu.Lock()
-	clear(engine.services)
-	clear(engine.providers)
-	engine.mu.Unlock()
-	return shutdownErr
-}
-
-// Status returns diagnostics for one handle.
-func (engine *Runtime) Status(pluginHandle Handle) (PluginStatus, error) {
-	record, err := engine.resolveHandle(pluginHandle)
+	defer runtimeEngine.endOperation()
+	parentMount, err := runtimeEngine.lookup(parent)
 	if err != nil {
-		return PluginStatus{}, err
+		return err
 	}
-	engine.mu.RLock()
-	view := PluginStatus{ID: record.id, Name: record.metadata.Name, State: record.state, Error: record.lastErr}
-	pluginScope := record.pluginScope
-	engine.mu.RUnlock()
-	if pluginScope != nil {
-		view.Effects = pluginScope.effectLabels()
+	childMount, err := runtimeEngine.lookup(child)
+	if err != nil {
+		return err
 	}
-	return view, nil
-}
-
-// Statuses returns runtime diagnostics in declaration order.
-func (engine *Runtime) Statuses() []PluginStatus {
-	engine.mu.RLock()
-	views := make([]PluginStatus, 0, len(engine.records))
-	scopes := make([]*Scope, 0, len(engine.records))
-	for _, record := range engine.records {
-		views = append(views, PluginStatus{
-			ID: record.id, Name: record.metadata.Name, State: record.state, Error: record.lastErr,
-		})
-		scopes = append(scopes, record.pluginScope)
+	if childMount.parent != parentMount {
+		return errors.New("plugin: Handle is not a direct child of the owning Plugin")
 	}
-	engine.mu.RUnlock()
-	for index, pluginScope := range scopes {
-		if pluginScope != nil {
-			views[index].Effects = pluginScope.effectLabels()
-		}
-	}
-	return views
-}
-
-func (engine *Runtime) reconcile(requestContext context.Context) error {
-	var reconciliationErr error
-	for {
-		progressed := false
-		engine.mu.RLock()
-		records := append([]*pluginRecord(nil), engine.records...)
-		engine.mu.RUnlock()
-		for _, record := range records {
-			if record.state != StateWaiting || len(engine.missingRequired(record.metadata)) != 0 {
-				continue
-			}
-			progressed = true
-			reconciliationErr = errors.Join(reconciliationErr, engine.activate(requestContext, record))
-		}
-		if !progressed {
-			return reconciliationErr
-		}
-	}
-}
-
-func (engine *Runtime) activate(requestContext context.Context, record *pluginRecord) error {
-	engine.mu.Lock()
-	record.state = StateStarting
-	record.lastErr = nil
-	engine.mu.Unlock()
-	pluginScope := newScope(engine, record)
-	if err := record.instance.Apply(requestContext, pluginScope); err != nil {
-		engine.mu.Lock()
-		record.state = StateRollingBack
-		engine.mu.Unlock()
-		rollbackErr := pluginScope.dispose(requestContext)
-		engine.mu.Lock()
-		record.state = StateFailed
-		record.lastErr = errors.Join(err, rollbackErr)
-		engine.mu.Unlock()
-		return record.lastErr
-	}
-	if err := validateContributions(record, pluginScope); err != nil {
-		engine.mu.Lock()
-		record.state = StateRollingBack
-		engine.mu.Unlock()
-		rollbackErr := pluginScope.dispose(requestContext)
-		engine.mu.Lock()
-		record.state = StateFailed
-		record.lastErr = errors.Join(err, rollbackErr)
-		engine.mu.Unlock()
-		return record.lastErr
-	}
-
-	engine.mu.Lock()
-	for serviceName := range pluginScope.services {
-		if existing, exists := engine.services[serviceName]; exists && existing.provider != record {
-			engine.mu.Unlock()
-			rollbackErr := pluginScope.dispose(requestContext)
-			engine.mu.Lock()
-			record.state = StateFailed
-			record.lastErr = errors.Join(fmt.Errorf("plugin: service %q is active", serviceName), rollbackErr)
-			engine.mu.Unlock()
-			return record.lastErr
-		}
-	}
-	engine.nextOrder++
-	record.order = engine.nextOrder
-	record.pluginScope = pluginScope
-	record.state = StateActive
-	pluginScope.mu.Lock()
-	pluginScope.activated = true
-	pluginScope.mu.Unlock()
-	for serviceName, contribution := range pluginScope.services {
-		engine.services[serviceName] = serviceEntry{
-			definition: contribution.ref, value: contribution.value, provider: record, owner: contribution,
-		}
-	}
-	engine.mu.Unlock()
-	return nil
-}
-
-func (engine *Runtime) stopDependents(closeContext context.Context, provider *pluginRecord, visited map[uint64]bool) error {
-	return engine.stopDependentsFor(closeContext, provider, provider.metadata.Provides, visited)
-}
-
-func (engine *Runtime) stopDependentsFor(closeContext context.Context, provider *pluginRecord, providedRefs []ServiceRef, visited map[uint64]bool) error {
-	if visited[provider.id] {
-		return nil
-	}
-	visited[provider.id] = true
-	engine.mu.RLock()
-	records := append([]*pluginRecord(nil), engine.records...)
-	engine.mu.RUnlock()
+	// Descendant Services cannot be consumed outside their child Scope, so an
+	// owned child-Scope removal cannot leave an external Fiber to reconcile.
+	isolated := childMount.placement == mountInChildScope
 	var stopErr error
-	for index := len(records) - 1; index >= 0; index-- {
-		dependent := records[index]
-		if dependent == provider || dependent.state != StateActive || !dependsOn(dependent.metadata, providedRefs) {
-			continue
-		}
-		stopErr = errors.Join(stopErr, engine.stopDependents(closeContext, dependent, visited))
-		stopErr = errors.Join(stopErr, engine.stopRecord(closeContext, dependent, StateWaiting))
+	if isolated {
+		stopErr = runtimeEngine.activations.removeIsolatedMount(
+			stopContext,
+			childMount,
+		)
+	} else {
+		stopErr = runtimeEngine.activations.removeMount(
+			stopContext,
+			childMount,
+		)
 	}
-	return stopErr
+	var settleErr error
+	if !isolated {
+		settleErr = runtimeEngine.reconcile(stopContext)
+	}
+	return errors.Join(stopErr, settleErr)
 }
 
-func (engine *Runtime) publishService(requestContext context.Context, record *pluginRecord, contribution *serviceContribution) error {
-	engine.operations.Lock()
-	defer engine.operations.Unlock()
-	engine.mu.Lock()
-	if engine.closed || record.state != StateActive || engine.providers[contribution.ref.name] != record {
-		engine.mu.Unlock()
-		return fmt.Errorf("plugin: service %q cannot be provided by an inactive scope", contribution.ref.name)
+// Replace prepares a contract-compatible candidate while the current Plugin
+// remains active, then swaps Runtime bindings and reactivates dependents.
+func (runtimeEngine *Runtime) Replace(
+	replaceContext context.Context,
+	pluginHandle Handle,
+	candidate Plugin,
+) error {
+	if runtimeEngine == nil {
+		return errors.New("plugin: replace through nil Runtime")
 	}
-	if _, exists := engine.services[contribution.ref.name]; exists {
-		engine.mu.Unlock()
-		return fmt.Errorf("plugin: service %q is already active", contribution.ref.name)
+	forest, err := buildPluginForest([]Plugin{candidate})
+	if err != nil {
+		return err
 	}
-	engine.services[contribution.ref.name] = serviceEntry{
-		definition: contribution.ref, value: contribution.value, provider: record, owner: contribution,
+	if err = runtimeEngine.beginOperation(replaceContext); err != nil {
+		return err
 	}
-	engine.mu.Unlock()
-	_ = engine.reconcile(requestContext)
-	return nil
+	defer runtimeEngine.endOperation()
+	mounted, err := runtimeEngine.lookup(pluginHandle)
+	if err != nil {
+		return err
+	}
+	declaration := forest.roots[0]
+	replacement, err := newSubtreeReplacement(
+		runtimeEngine,
+		mounted,
+		declaration,
+	)
+	if err != nil {
+		return err
+	}
+	return replacement.execute(replaceContext)
 }
 
-func (engine *Runtime) withdrawService(closeContext context.Context, record *pluginRecord, definition ServiceRef, contribution *serviceContribution) error {
-	engine.operations.Lock()
-	defer engine.operations.Unlock()
-	engine.mu.RLock()
-	entry, exists := engine.services[definition.name]
-	engine.mu.RUnlock()
-	if !exists || entry.provider != record || entry.owner != contribution {
+// Shutdown closes admission and stops all Plugins in dependency-safe order.
+func (runtimeEngine *Runtime) Shutdown(stopContext context.Context) error {
+	if runtimeEngine == nil {
 		return nil
 	}
-	stopErr := engine.stopDependentsFor(closeContext, record, []ServiceRef{definition}, make(map[uint64]bool))
-	engine.mu.Lock()
-	entry, exists = engine.services[definition.name]
-	if exists && entry.provider == record && entry.owner == contribution {
-		delete(engine.services, definition.name)
+	if err := runtimeEngine.beginOperation(stopContext); err != nil {
+		return err
 	}
-	engine.mu.Unlock()
-	return stopErr
-}
-
-func (engine *Runtime) stopRecord(closeContext context.Context, record *pluginRecord, finalState State) error {
-	engine.mu.Lock()
-	if record.state != StateActive && record.state != StateFailed && record.state != StateWaiting {
-		engine.mu.Unlock()
+	defer runtimeEngine.endOperation()
+	if runtimeEngine.closed {
 		return nil
 	}
-	pluginScope := record.pluginScope
-	if pluginScope == nil {
-		record.state = finalState
-		record.lastErr = nil
-		engine.mu.Unlock()
-		return nil
-	}
-	record.state = StateStopping
-	engine.mu.Unlock()
-
-	cleanupErr := pluginScope.dispose(closeContext)
-	engine.mu.Lock()
-	for serviceName, entry := range engine.services {
-		if entry.provider == record {
-			delete(engine.services, serviceName)
-		}
-	}
-	record.pluginScope = nil
-	record.state = finalState
-	record.lastErr = cleanupErr
-	engine.mu.Unlock()
-	return cleanupErr
+	runtimeEngine.closed = true
+	return runtimeEngine.activations.shutdown(stopContext)
 }
 
-func (engine *Runtime) missingRequired(metadata Manifest) []string {
-	engine.mu.RLock()
-	defer engine.mu.RUnlock()
-	missing := make([]string, 0)
-	for _, requiredRef := range metadata.Requires {
-		entry, exists := engine.services[requiredRef.name]
-		if !exists || !entry.definition.sameDefinition(requiredRef) || entry.provider.state != StateActive {
-			missing = append(missing, requiredRef.name)
-		}
+func (runtimeEngine *Runtime) lookup(pluginHandle Handle) (*pluginMount, error) {
+	if pluginHandle.owner != runtimeEngine {
+		return nil, errors.New("plugin: Handle belongs to another Runtime")
 	}
-	return missing
-}
-
-func (engine *Runtime) resolveService(definition ServiceRef) (any, bool) {
-	engine.mu.RLock()
-	defer engine.mu.RUnlock()
-	entry, exists := engine.services[definition.name]
-	if !exists || entry.provider.state != StateActive || !entry.definition.sameDefinition(definition) {
-		return nil, false
+	mounted, found := runtimeEngine.mounts.lookup(pluginHandle.id)
+	if !found {
+		return nil, errors.New("plugin: Handle is not mounted")
 	}
-	return entry.value, true
-}
-
-func (engine *Runtime) resolveHandle(pluginHandle Handle) (*pluginRecord, error) {
-	if pluginHandle.owner != engine || pluginHandle.id == 0 {
-		return nil, errors.New("plugin: handle does not belong to runtime")
-	}
-	engine.mu.RLock()
-	defer engine.mu.RUnlock()
-	for _, record := range engine.records {
-		if record.id == pluginHandle.id {
-			return record, nil
-		}
-	}
-	return nil, errors.New("plugin: handle is no longer loaded")
-}
-
-func (engine *Runtime) registerDefinitionsLocked(metadata Manifest) error {
-	allRefs := append(append(append([]ServiceRef(nil), metadata.Provides...), metadata.Requires...), metadata.Optional...)
-	for _, definition := range allRefs {
-		if existing, exists := engine.definitions[definition.name]; exists && !existing.sameDefinition(definition) {
-			return fmt.Errorf("plugin: service %q was recreated with a different key or type", definition.name)
-		}
-		engine.definitions[definition.name] = definition
-	}
-	return nil
-}
-
-func validateContributions(record *pluginRecord, pluginScope *Scope) error {
-	pluginScope.mu.Lock()
-	defer pluginScope.mu.Unlock()
-	for _, providedRef := range record.metadata.Provides {
-		contribution := pluginScope.services[providedRef.name]
-		if contribution == nil || !contribution.owned {
-			return fmt.Errorf("plugin: %s did not provide declared service %q", record.metadata.Name, providedRef.name)
-		}
-	}
-	return nil
-}
-
-func sameRefSet(left []ServiceRef, right []ServiceRef) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for _, definition := range left {
-		if !containsRef(right, definition) {
-			return false
-		}
-	}
-	return true
-}
-
-func dependsOn(metadata Manifest, provided []ServiceRef) bool {
-	for _, requiredRef := range metadata.Requires {
-		if containsRef(provided, requiredRef) {
-			return true
-		}
-	}
-	return false
+	return mounted, nil
 }

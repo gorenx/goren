@@ -25,8 +25,10 @@ func TestCommandConfigResolvesOneDataDirectoryWithExplicitDatabaseOverrides(t *t
 			wantWorkspace: filepath.Join(defaultDirectory, "workspaces.sqlite"),
 		},
 		{
-			name:          "configured directory",
-			settings:      commandConfig{dataDirectory: configuredDirectory},
+			name: "configured directory",
+			settings: commandConfig{
+				dataDirectory: configuredDirectory,
+			},
 			wantDirectory: configuredDirectory,
 			wantSession:   filepath.Join(configuredDirectory, "sessions.sqlite"),
 			wantWorkspace: filepath.Join(configuredDirectory, "workspaces.sqlite"),
@@ -34,7 +36,8 @@ func TestCommandConfigResolvesOneDataDirectoryWithExplicitDatabaseOverrides(t *t
 		{
 			name: "database overrides",
 			settings: commandConfig{
-				dataDirectory: configuredDirectory, sessionDatabase: overriddenSession,
+				dataDirectory:     configuredDirectory,
+				sessionDatabase:   overriddenSession,
 				workspaceDatabase: overriddenWorkspace,
 			},
 			wantDirectory: configuredDirectory,

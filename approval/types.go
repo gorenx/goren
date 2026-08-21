@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
@@ -26,6 +25,10 @@ const (
 	DecidedEventName = "approval/decided"
 	// PolicyEventName records one durable per-session policy override.
 	PolicyEventName = "approval/policy"
+	// PluginName is the canonical Harness Approval Plugin name.
+	PluginName = "@deepseek-ai/dsh-user-approval"
+	// OverlayPluginName identifies one child Approval policy/answerer layer.
+	OverlayPluginName = "@deepseek-ai/dsh-user-approval/overlay"
 )
 
 // RequestID pairs one asked audit event with exactly one decided event.
@@ -56,10 +59,17 @@ const PolicySourceDelegation PolicySource = "delegation"
 
 // Request is one readonly approval decision borrowed by answerers.
 type Request struct {
-	Subject  agent.Agent
+	Subject  Subject
 	ToolName string
 	CallID   *llm.CallID
 	Reason   *string
+}
+
+// Subject is the Approval-owned view of an active Agent. It exposes only the
+// Session being audited and the inbox operation used by policy changes.
+type Subject interface {
+	SessionValue() *session.Session
+	Inject(llm.UserMessage) error
 }
 
 // Asked is the durable pre-dispatch approval audit payload.
@@ -107,7 +117,9 @@ func ValidateConfig(settings Config) (ValidatedConfig, error) {
 	if !validPolicy(selectedPolicy) {
 		return ValidatedConfig{}, errors.New("approval: policy must be ask or never")
 	}
-	return ValidatedConfig{policy: selectedPolicy}, nil
+	return ValidatedConfig{
+		policy: selectedPolicy,
+	}, nil
 }
 
 // UnmarshalJSON preserves omission while rejecting null and unknown fields.
@@ -141,16 +153,26 @@ func (settings *Config) UnmarshalJSON(encoded []byte) error {
 	return nil
 }
 
+// DecisionRequest is the typed input of the approval answerer Waterfall.
+type DecisionRequest struct {
+	plugin.WaterfallInputBase
+	Request Request
+}
+
+// Decision is the typed output of the approval answerer Waterfall.
+type Decision struct {
+	plugin.WaterfallOutputBase
+	Outcome Outcome
+}
+
 // Approval is the provider-owned policy and decision capability.
 type Approval interface {
+	plugin.Service
 	Request(context.Context, Request) (Outcome, error)
 	EffectivePolicy(*session.Session) (Policy, error)
 	OverrideOf(*session.Session) (Policy, bool, error)
-	SetPolicy(context.Context, agent.Agent, Policy) error
+	SetPolicy(context.Context, Subject, Policy) error
 }
-
-// Service is the canonical Approval service definition.
-var Service = plugin.DefineService[Approval](ServiceName)
 
 func validOutcome(selectedOutcome Outcome) bool {
 	switch selectedOutcome {

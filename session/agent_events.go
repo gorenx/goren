@@ -61,13 +61,6 @@ func (DisposedCancelCause) MarshalJSON() ([]byte, error) {
 	return []byte(`{"kind":"disposed"}`), nil
 }
 
-type LegacyCancelCause struct{}
-
-func (LegacyCancelCause) CancelKind() string { return "legacy" }
-func (LegacyCancelCause) MarshalJSON() ([]byte, error) {
-	return []byte(`{"kind":"legacy"}`), nil
-}
-
 // HookCancelCause retains one extension-owned cancellation reason.
 type HookCancelCause struct {
 	Reason string `json:"reason"`

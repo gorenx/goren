@@ -5,31 +5,24 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-
-	"github.com/gorenx/goren/plugin"
 )
 
 // directoryRegistrationState owns one replaceable configurable-provider
-// contribution independently of executable adapter routes.
+// entry independently of executable adapter routes.
 type directoryRegistrationState struct {
-	owner    *runtimeService
+	owner    *Runtime
 	held     []ConfigurableProvider
 	disposed bool
-	cleanup  plugin.Disposer
 }
 
 type directoryHandle struct {
 	state *directoryRegistrationState
 }
 
-func (owner *runtimeService) RegisterConfigurableProviders(
+func (owner *Runtime) RegisterConfigurableProviders(
 	requestContext context.Context,
-	ownerScope *plugin.Scope,
 	entries []ConfigurableProvider,
 ) (DirectoryRegistrationHandle, error) {
-	if ownerScope == nil {
-		return nil, errors.New("llm: configurable-provider owner scope is nil")
-	}
 	if len(entries) == 0 {
 		return nil, MustLlmError("a configurable-provider registration must declare at least one provider", "INVALID_DIRECTORY")
 	}
@@ -37,19 +30,18 @@ func (owner *runtimeService) RegisterConfigurableProviders(
 	if err != nil {
 		return nil, err
 	}
-	state := &directoryRegistrationState{owner: owner}
-	ownedRelease, err := plugin.Own(ownerScope, "llm.registerConfigurableProviders()", state.releaseOwned)
-	if err != nil {
+	state := &directoryRegistrationState{
+		owner: owner,
+	}
+	if err := owner.commitDirectory(state, candidates); err != nil {
 		return nil, err
 	}
-	state.cleanup = ownedRelease
-	if err := owner.commitDirectory(state, candidates); err != nil {
-		return nil, errors.Join(err, ownedRelease(requestContext))
-	}
 	if err := owner.publishUpdate(requestContext); err != nil {
-		return nil, errors.Join(err, ownedRelease(requestContext))
+		return nil, errors.Join(err, state.releaseOwned(requestContext))
 	}
-	return &directoryHandle{state: state}, nil
+	return &directoryHandle{
+		state: state,
+	}, nil
 }
 
 func validateDirectoryEntries(entries []ConfigurableProvider) ([]ConfigurableProvider, error) {
@@ -75,9 +67,12 @@ func validateDirectoryEntries(entries []ConfigurableProvider) ([]ConfigurablePro
 	return detached, nil
 }
 
-func (owner *runtimeService) commitDirectory(state *directoryRegistrationState, candidates []ConfigurableProvider) error {
+func (owner *Runtime) commitDirectory(state *directoryRegistrationState, candidates []ConfigurableProvider) error {
 	owner.mu.Lock()
 	defer owner.mu.Unlock()
+	if owner.closed {
+		return MustLlmError("the LLM Runtime is closed", "REGISTRATION_DISPOSED")
+	}
 	if state.disposed {
 		return MustLlmError("this configurable-provider registration was disposed", "REGISTRATION_DISPOSED")
 	}
@@ -145,13 +140,13 @@ func (handleState *directoryHandle) Replace(requestContext context.Context, entr
 }
 
 func (handleState *directoryHandle) Release(closeContext context.Context) error {
-	if handleState == nil || handleState.state == nil || handleState.state.cleanup == nil {
+	if handleState == nil || handleState.state == nil {
 		return nil
 	}
-	return handleState.state.cleanup(closeContext)
+	return handleState.state.releaseOwned(closeContext)
 }
 
-func (owner *runtimeService) ListConfigurableProviders() []ConfigurableProvider {
+func (owner *Runtime) ListConfigurableProviders() []ConfigurableProvider {
 	owner.mu.RLock()
 	defer owner.mu.RUnlock()
 	result := make([]ConfigurableProvider, 0, len(owner.directoryOrder))

@@ -3,6 +3,7 @@
 package projection
 
 import (
+	"context"
 	"encoding/json"
 
 	"github.com/gorenx/goren/plugin"
@@ -11,8 +12,10 @@ import (
 
 const ServiceName = "sessionProjections"
 
-// Service is the canonical session-projection capability identity.
-var Service = plugin.DefineService[Registry](ServiceName)
+const (
+	PluginName                 = "@deepseek-ai/dsh-session-projection"
+	ProjectionChangedEventName = "session/projection"
+)
 
 // Transition is one unit's next plain-JSON state. Changed is explicit because
 // Go interfaces do not have TypeScript's Object.is reference-identity gate.
@@ -65,25 +68,29 @@ type Change struct {
 	Seq     int64
 }
 
-// ChangeListener consumes projection changes without exposing an untyped
-// callback payload.
-type ChangeListener interface {
-	ProjectionChanged(Change)
+// ProjectionChanged publishes one committed whole-value projection change.
+type ProjectionChanged struct {
+	Change Change
 }
 
-// ChangeListenerFunc adapts one typed function to ChangeListener.
-type ChangeListenerFunc func(Change)
+func (ProjectionChanged) EventName() string {
+	return ProjectionChangedEventName
+}
 
-// ProjectionChanged invokes the adapted function.
-func (operation ChangeListenerFunc) ProjectionChanged(projectionChange Change) {
-	operation(projectionChange)
+func (ProjectionChanged) EventDelivery() plugin.DeliveryPolicy {
+	return plugin.DeliveryBestEffort
+}
+
+// UnitHandle owns one projection Unit registration.
+type UnitHandle interface {
+	Release(context.Context) error
 }
 
 // Registry owns registrations, per-session folds, snapshots, and cache
 // restore. Domain units own only their pure projection mathematics.
 type Registry interface {
-	Register(*plugin.Scope, Unit) (plugin.Disposer, error)
-	OnChanged(*plugin.Scope, ChangeListener) (plugin.Disposer, error)
+	plugin.Service
+	Register(Unit) (UnitHandle, error)
 	Snapshot(*session.Session) (Snapshot, error)
 	Checkpoint(*session.Session) (Checkpoint, error)
 	RestoreFloor(Checkpoint) *int64

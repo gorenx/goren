@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorenx/goren/internal/llmdeepseek"
+	"github.com/gorenx/goren/internal/llm/deepseek"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	contractfixture "github.com/gorenx/goren/tests/contract/fixture"
@@ -48,13 +48,18 @@ type webUIMainFlowObservation struct {
 type defaultMainFlowDeepSeekRequest struct {
 	Model    string `json:"model"`
 	Stream   bool   `json:"stream"`
-	Messages []struct {
+	Thinking *struct {
+		Type string `json:"type"`
+	} `json:"thinking,omitempty"`
+	MaxTokens *int `json:"max_tokens,omitempty"`
+	Messages  []struct {
 		Role string `json:"role"`
 	} `json:"messages"`
 }
 
 func TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter(t *testing.T) {
-	var requestCount atomic.Int32
+	var mainRequestCount atomic.Int32
+	var titleRequestCount atomic.Int32
 	deepSeekServer := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, httpRequest *http.Request) {
 		defer httpRequest.Body.Close()
 		var received defaultMainFlowDeepSeekRequest
@@ -67,7 +72,17 @@ func TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter(t *
 			http.Error(responseWriter, "unexpected request", http.StatusBadRequest)
 			return
 		}
-		requestNumber := requestCount.Add(1)
+		if received.Thinking != nil && received.Thinking.Type == "disabled" &&
+			received.MaxTokens != nil && *received.MaxTokens == 64 {
+			titleRequestCount.Add(1)
+			responseWriter.Header().Set("content-type", "text/event-stream")
+			responseWriter.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(responseWriter, "data: {\"choices\":[{\"delta\":{\"content\":\"Generated session title\"}}]}\n\n")
+			_, _ = fmt.Fprint(responseWriter, "data: {\"choices\":[{\"delta\":{\"content\":\"\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":4}}\n\n")
+			_, _ = fmt.Fprint(responseWriter, "data: [DONE]\n\n")
+			return
+		}
+		requestNumber := mainRequestCount.Add(1)
 		if requestNumber == 3 {
 			arguments := `{"questions":[{"id":"focus","question":"你想让我重点评价什么？","header":"选择方向","options":[{"label":"架构","description":"关注模块边界和依赖方向。"},{"label":"代码","description":"关注实现质量和测试。"}]}]}`
 			responseWriter.Header().Set("content-type", "text/event-stream")
@@ -109,12 +124,15 @@ func TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter(t *
 	factoryCatalog, err := NewCatalog(Environment{
 		WorkingDirectory: workingDirectory,
 		LookupEnv: func(environmentName string) (string, bool) {
-			if environmentName == llmdeepseek.DefaultAPIKeyEnv {
+			if environmentName == deepseek.DefaultAPIKeyEnv {
 				return "contract-key", true
 			}
 			return "", false
 		},
-		UserHomeDir: func() (string, error) { return identityDirectory, nil },
+		UserHomeDir: func() (string, error) {
+			return identityDirectory, nil
+		},
+		Diagnostics: testDiagnostics(t),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -129,18 +147,33 @@ func TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter(t *
 		t.Fatal(err)
 	}
 	baseURL := deepSeekServer.URL
-	deepSeekConfig, err := json.Marshal(llmdeepseek.Config{BaseURL: &baseURL})
+	deepSeekConfig, err := json.Marshal(deepseek.Config{
+		BaseURL: &baseURL,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for specIndex := range compositionSpecs {
-		if compositionSpecs[specIndex].FactoryName == DeepSeekFactoryName {
+		if compositionSpecs[specIndex].FactoryName == deepseek.PluginName {
 			compositionSpecs[specIndex].Config = deepSeekConfig
 		}
 	}
 
-	runtimeEngine := plugin.NewRuntime()
-	if _, err := Load(context.Background(), runtimeEngine, factoryCatalog, compositionSpecs); err != nil {
+	assembledServer, err := BuildServer(
+		context.Background(),
+		factoryCatalog,
+		compositionSpecs,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{
+		EventFailures: testDiagnostics(t),
+	})
+	if _, err = runtimeEngine.Start(
+		context.Background(),
+		assembledServer,
+	); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -151,17 +184,9 @@ func TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter(t *
 		}
 	})
 
-	serverAddress := ""
-	serverProbe := probePlugin{body: func(_ context.Context, pluginScope *plugin.Scope) error {
-		serverEndpoint, found := plugin.Require(pluginScope, serverServiceKey)
-		if !found {
-			return fmt.Errorf("webServer service is unavailable")
-		}
-		serverAddress = serverEndpoint.Address()
-		return nil
-	}}
-	if _, err := runtimeEngine.Load(context.Background(), serverProbe); err != nil {
-		t.Fatal(err)
+	serverAddress := assembledServer.BoundAddress()
+	if serverAddress == "" {
+		t.Fatal("Connection did not bind after successful Runtime start")
 	}
 	pageResponse, err := http.Get("http://" + serverAddress + "/")
 	if err != nil {
@@ -197,7 +222,7 @@ func TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter(t *
 		t.Fatalf("decode fixed TypeScript observation: %v; output = %s", err, output)
 	}
 	if observation.SessionID != "default-main-flow-contract" ||
-		observation.Model.Provider != llmdeepseek.ProviderRoute ||
+		observation.Model.Provider != deepseek.ProviderRoute ||
 		observation.Model.Model != "deepseek-v4-flash" ||
 		!observation.Routable || !observation.Accepted || !observation.Idle {
 		t.Fatalf("main flow observation = %#v", observation)
@@ -222,7 +247,7 @@ func TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter(t *
 		"hello from the Web UI",
 	)
 	if err != nil {
-		t.Fatalf("embedded Web UI main flow after %d DeepSeek requests: %v", requestCount.Load(), err)
+		t.Fatalf("embedded Web UI main flow after %d main DeepSeek requests: %v", mainRequestCount.Load(), err)
 	}
 	var webObservation webUIMainFlowObservation
 	if err := json.Unmarshal(webOutput, &webObservation); err != nil {
@@ -232,7 +257,10 @@ func TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter(t *
 		!webObservation.QuestionAnswered || !webObservation.RuntimeContextHidden || !webObservation.Localized {
 		t.Fatalf("Web UI observation = %#v", webObservation)
 	}
-	if requestCount.Load() != 4 {
-		t.Fatalf("DeepSeek request count = %d, want 4", requestCount.Load())
+	if mainRequestCount.Load() != 4 || titleRequestCount.Load() != 1 {
+		t.Fatalf(
+			"DeepSeek request counts = main %d title %d, want main 4 title 1",
+			mainRequestCount.Load(), titleRequestCount.Load(),
+		)
 	}
 }
