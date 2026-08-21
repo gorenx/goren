@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/gorenx/goren/internal/jsonvalue"
 	"github.com/gorenx/goren/llm"
@@ -21,6 +22,19 @@ type registry struct {
 	root   bool
 	store  *toolStore
 	parent registryLayerSource
+
+	viewMutex sync.RWMutex
+	viewCache cachedToolView
+}
+
+type cachedToolView struct {
+	layers []toolLayerVersion
+	view   toolView
+}
+
+type toolLayerVersion struct {
+	source   *toolStore
+	revision uint64
 }
 
 func newRegistry(root bool) *registry {
@@ -172,7 +186,50 @@ func (catalog *registry) promptTools() systemprompt.ToolProviderResult {
 }
 
 func (catalog *registry) view() toolView {
-	return resolveToolView(catalog.toolLayers())
+	layers := catalog.toolLayers()
+	versions := toolLayerVersions(layers)
+	catalog.viewMutex.RLock()
+	if sameToolLayerVersions(catalog.viewCache.layers, versions) {
+		resolved := catalog.viewCache.view
+		catalog.viewMutex.RUnlock()
+		return resolved
+	}
+	catalog.viewMutex.RUnlock()
+
+	resolved := resolveToolView(layers)
+	catalog.viewMutex.Lock()
+	catalog.viewCache = cachedToolView{
+		layers: versions,
+		view:   resolved,
+	}
+	catalog.viewMutex.Unlock()
+	return resolved
+}
+
+func toolLayerVersions(layers []toolLayerSnapshot) []toolLayerVersion {
+	versions := make([]toolLayerVersion, len(layers))
+	for layerIndex, layer := range layers {
+		versions[layerIndex] = toolLayerVersion{
+			source:   layer.source,
+			revision: layer.revision,
+		}
+	}
+	return versions
+}
+
+func sameToolLayerVersions(
+	left []toolLayerVersion,
+	right []toolLayerVersion,
+) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for layerIndex, leftLayer := range left {
+		if leftLayer != right[layerIndex] {
+			return false
+		}
+	}
+	return true
 }
 
 func (catalog *registry) toolLayers() []toolLayerSnapshot {

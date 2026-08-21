@@ -92,6 +92,8 @@ func (filter compiledRestriction) admits(name string) bool {
 }
 
 type toolLayerSnapshot struct {
+	source       *toolStore
+	revision     uint64
 	tools        []*registeredTool
 	restrictions []compiledRestriction
 	guards       []ToolGuard
@@ -105,8 +107,10 @@ type toolView struct {
 }
 
 type toolStore struct {
-	mutex sync.RWMutex
-	tools toolTable
+	mutex         sync.RWMutex
+	tools         toolTable
+	revision      uint64
+	snapshotValue toolLayerSnapshot
 
 	restrictions     map[string]*registeredRestriction
 	restrictionOrder []string
@@ -115,13 +119,19 @@ type toolStore struct {
 }
 
 func newToolStore() *toolStore {
-	return &toolStore{}
+	storage := &toolStore{}
+	storage.rebuildSnapshotLocked()
+	return storage
 }
 
 func (storage *toolStore) addTool(entry *registeredTool) error {
 	storage.mutex.Lock()
 	defer storage.mutex.Unlock()
-	return storage.tools.add(entry)
+	if err := storage.tools.add(entry); err != nil {
+		return err
+	}
+	storage.rebuildSnapshotLocked()
+	return nil
 }
 
 func (storage *toolStore) removeTool(
@@ -130,7 +140,11 @@ func (storage *toolStore) removeTool(
 ) bool {
 	storage.mutex.Lock()
 	defer storage.mutex.Unlock()
-	return storage.tools.remove(name, expected)
+	removed := storage.tools.remove(name, expected)
+	if removed {
+		storage.rebuildSnapshotLocked()
+	}
+	return removed
 }
 
 func (storage *toolStore) addRestriction(
@@ -153,6 +167,7 @@ func (storage *toolStore) addRestriction(
 	}
 	storage.restrictions[name] = entry
 	storage.restrictionOrder = append(storage.restrictionOrder, name)
+	storage.rebuildSnapshotLocked()
 	return entry, nil
 }
 
@@ -172,6 +187,7 @@ func (storage *toolStore) removeRestriction(
 		storage.restrictions = nil
 		storage.restrictionOrder = nil
 	}
+	storage.rebuildSnapshotLocked()
 	return true
 }
 
@@ -195,6 +211,7 @@ func (storage *toolStore) addGuard(
 	}
 	storage.guards[name] = entry
 	storage.guardOrder = append(storage.guardOrder, name)
+	storage.rebuildSnapshotLocked()
 	return entry, nil
 }
 
@@ -214,31 +231,45 @@ func (storage *toolStore) removeGuard(
 		storage.guards = nil
 		storage.guardOrder = nil
 	}
+	storage.rebuildSnapshotLocked()
 	return true
 }
 
 func (storage *toolStore) snapshot() toolLayerSnapshot {
 	storage.mutex.RLock()
-	defer storage.mutex.RUnlock()
-	layer := toolLayerSnapshot{
+	layer := storage.snapshotValue
+	storage.mutex.RUnlock()
+	return layer
+}
+
+// rebuildSnapshotLocked moves immutable read-view construction to the much
+// less frequent mutation path. Registered definitions and compiled policies
+// are immutable after admission, so readers may safely share these slices.
+func (storage *toolStore) rebuildSnapshotLocked() {
+	storage.revision++
+	storage.snapshotValue = toolLayerSnapshot{
+		source:       storage,
+		revision:     storage.revision,
 		tools:        storage.tools.entries(),
 		restrictions: make([]compiledRestriction, 0, len(storage.restrictionOrder)),
 		guards:       make([]ToolGuard, 0, len(storage.guardOrder)),
 	}
 	for _, name := range storage.restrictionOrder {
 		if entry := storage.restrictions[name]; entry != nil {
-			layer.restrictions = append(
-				layer.restrictions,
+			storage.snapshotValue.restrictions = append(
+				storage.snapshotValue.restrictions,
 				entry.policy,
 			)
 		}
 	}
 	for _, name := range storage.guardOrder {
 		if entry := storage.guards[name]; entry != nil {
-			layer.guards = append(layer.guards, entry.policy)
+			storage.snapshotValue.guards = append(
+				storage.snapshotValue.guards,
+				entry.policy,
+			)
 		}
 	}
-	return layer
 }
 
 func (storage *toolStore) clear() {
@@ -248,6 +279,7 @@ func (storage *toolStore) clear() {
 	storage.restrictionOrder = nil
 	storage.guards = nil
 	storage.guardOrder = nil
+	storage.rebuildSnapshotLocked()
 	storage.mutex.Unlock()
 }
 
