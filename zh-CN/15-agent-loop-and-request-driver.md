@@ -199,7 +199,7 @@ System Prompt 的 contexts 不写入 system header，而是在每个 pre-step as
 ## 10. 失败、取消与观测
 
 - 非取消失败转为 `TurnError`；`LlmError` 保留 structured failure，其他错误使用稳定 `UNKNOWN` code；
-- active cancellation 转为 `TurnAborted`，并把 user、parent、disposed、hook 或 legacy cause 写入 durable reason；
+- active cancellation 转为 `TurnAborted`，并把 user、parent、disposed 或 hook reason 写入 durable reason；未知的扩展取消类型按 hook reason 保留其 `CancelKind()`，不引入 legacy durable 分支；
 - `turn/end` 提交后通过 `session.LiveStore.Flush` 建立正常完成路径的 durability barrier；Persistence/SQLite 只作为 LiveStore listener 参与；
 - `agent/error` 是 live observer，不代替 `turn/end`；observer failure 由 runtime reporter 包含，不能中断 boundary finalization；
 - `agent/status` 只在 `idle <-> running` 变化时发布，maintenance 不产生伪 running；
