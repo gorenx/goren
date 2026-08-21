@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import type { ConversationSnapshot } from '../types'
 import type { ConversationStore } from '../conversation-store'
-import { SendIcon, SparkIcon } from '../icons'
+import { SendIcon, SparkIcon, StopIcon } from '../icons'
 import { useI18n } from '../i18n'
 
 interface ComposerProps {
@@ -12,8 +12,12 @@ interface ComposerProps {
 export function Composer({ store, snapshot }: ComposerProps): React.JSX.Element {
   const { translate } = useI18n()
   const [draft, setDraft] = useState('')
+  const [cancelling, setCancelling] = useState(false)
   const textarea = useRef<HTMLTextAreaElement>(null)
+  const composing = useRef(false)
+  const submitting = useRef(false)
   const waitingForAnswer = store.currentQuestion() !== undefined
+  const agentRunning = store.currentSession()?.running === true
   const canCompose = snapshot.currentSessionId !== undefined && snapshot.phase !== 'failed' && !waitingForAnswer
 
   useLayoutEffect(() => {
@@ -24,15 +28,28 @@ export function Composer({ store, snapshot }: ComposerProps): React.JSX.Element 
   }, [draft])
 
   const send = async (): Promise<void> => {
-    const text = textarea.current?.value.trim() ?? ''
-    if (text === '' || !canCompose) return
+    const text = draft.trim()
+    if (text === '' || !canCompose || composing.current || submitting.current) return
+    submitting.current = true
     setDraft('')
-    if (textarea.current !== null) textarea.current.value = ''
     try {
       await store.submitPrompt(text)
     } catch {
-      setDraft(text)
-      if (textarea.current !== null) textarea.current.value = text
+      setDraft(currentDraft => currentDraft === '' ? text : currentDraft)
+    } finally {
+      submitting.current = false
+    }
+  }
+
+  const stop = async (): Promise<void> => {
+    if (!agentRunning || cancelling) return
+    setCancelling(true)
+    try {
+      await store.cancelCurrentTurn()
+    } catch {
+      // ConversationStore owns the user-visible failure state.
+    } finally {
+      setCancelling(false)
     }
   }
 
@@ -52,13 +69,16 @@ export function Composer({ store, snapshot }: ComposerProps): React.JSX.Element 
           id="prompt"
           rows={1}
           disabled={!canCompose}
-          defaultValue=""
+          value={draft}
           placeholder={waitingForAnswer ? translate('composer.waitingPlaceholder') : translate('composer.placeholder')}
           autoComplete="off"
           className="composer-input"
-          onInput={event => setDraft(event.currentTarget.value)}
+          onChange={event => setDraft(event.currentTarget.value)}
+          onCompositionStart={() => { composing.current = true }}
+          onCompositionEnd={() => { composing.current = false }}
           onKeyDown={event => {
-            if (event.key === 'Enter' && !event.shiftKey) {
+            const compositionActive = composing.current || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229
+            if (event.key === 'Enter' && !event.shiftKey && !compositionActive) {
               event.preventDefault()
               void send()
             }
@@ -72,9 +92,25 @@ export function Composer({ store, snapshot }: ComposerProps): React.JSX.Element 
             </span>
             <span className="hidden font-mono text-[9px] uppercase tracking-[0.08em] text-caption sm:inline">{translate('composer.enterToSend')}</span>
           </div>
-          <button id="send" type="submit" className="send-button" disabled={!canCompose || draft.trim() === ''} aria-label={translate('composer.send')}>
-            <SendIcon size={18} />
-          </button>
+          {agentRunning
+            ? (
+              <button
+                id="stop-agent"
+                type="button"
+                className="stop-button"
+                disabled={cancelling}
+                aria-label={translate('composer.stop')}
+                title={translate('composer.stop')}
+                onClick={() => void stop()}
+              >
+                <StopIcon size={16} />
+              </button>
+              )
+            : (
+              <button id="send" type="submit" className="send-button" disabled={!canCompose || draft.trim() === ''} aria-label={translate('composer.send')}>
+                <SendIcon size={18} />
+              </button>
+              )}
         </div>
       </form>
       <div id="composer-state" className="mt-2 flex items-center justify-center gap-2 font-mono text-[9px] tracking-[0.08em] text-caption">

@@ -135,7 +135,7 @@ function Message({ row }: { row: MessageRow }): React.JSX.Element {
       </div>
       <div className="message-body">
         {row.reasoning !== '' && (
-          <details className="reasoning" open={row.streaming}>
+          <details className="reasoning" open={row.streaming || row.interrupted === true}>
             <summary>{translate('message.reasoning')}</summary>
             <p>{row.reasoning}</p>
           </details>
