@@ -59,11 +59,3 @@ func newChildScope(parentScope *scope) *scope {
 		},
 	}
 }
-
-func scopePath(sourceScope *scope) []*scope {
-	lineage := make([]*scope, 0)
-	for selectedScope := sourceScope; selectedScope != nil; selectedScope = selectedScope.parent {
-		lineage = append(lineage, selectedScope)
-	}
-	return lineage
-}

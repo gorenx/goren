@@ -15,13 +15,13 @@ type InvocationLease struct {
 type invocationLeaseState struct {
 	requestContext context.Context
 	releaseOnce    sync.Once
-	releaseContext func()
+	releaseContext context.CancelCauseFunc
 	releaseCalls   func()
 }
 
 func newInvocationLease(
 	requestContext context.Context,
-	releaseContext func(),
+	releaseContext context.CancelCauseFunc,
 	releaseCalls func(),
 ) *InvocationLease {
 	return &InvocationLease{
@@ -49,7 +49,7 @@ func (lease *InvocationLease) Release() {
 	}
 	lease.state.releaseOnce.Do(func() {
 		if lease.state.releaseContext != nil {
-			lease.state.releaseContext()
+			lease.state.releaseContext(context.Canceled)
 		}
 		if lease.state.releaseCalls != nil {
 			lease.state.releaseCalls()
@@ -61,9 +61,13 @@ func (lease *InvocationLease) Release() {
 type fiberCallGate struct {
 	mutex         sync.Mutex
 	accepting     bool
-	active        int
+	active        map[*fiberCall]struct{}
 	drained       chan struct{}
 	drainedClosed bool
+}
+
+type fiberCall struct {
+	cancel context.CancelCauseFunc
 }
 
 func newFiberCallGate() *fiberCallGate {
@@ -79,25 +83,27 @@ func (gate *fiberCallGate) open() {
 	gate.mutex.Lock()
 	defer gate.mutex.Unlock()
 	gate.accepting = true
+	gate.active = nil
 	gate.drained = make(chan struct{})
 	gate.drainedClosed = false
 }
 
-func (gate *fiberCallGate) acquire() bool {
+func (gate *fiberCallGate) acquire(admittedCall *fiberCall) bool {
 	gate.mutex.Lock()
 	defer gate.mutex.Unlock()
 	if !gate.accepting {
 		return false
 	}
-	gate.active++
+	if gate.active == nil {
+		gate.active = make(map[*fiberCall]struct{})
+	}
+	gate.active[admittedCall] = struct{}{}
 	return true
 }
 
-func (gate *fiberCallGate) release() {
+func (gate *fiberCallGate) release(admittedCall *fiberCall) {
 	gate.mutex.Lock()
-	if gate.active > 0 {
-		gate.active--
-	}
+	delete(gate.active, admittedCall)
 	gate.closeDrainedLocked()
 	gate.mutex.Unlock()
 }
@@ -105,6 +111,9 @@ func (gate *fiberCallGate) release() {
 func (gate *fiberCallGate) close() {
 	gate.mutex.Lock()
 	gate.accepting = false
+	for admittedCall := range gate.active {
+		admittedCall.cancel(ErrPluginNotActive)
+	}
 	gate.closeDrainedLocked()
 	gate.mutex.Unlock()
 }
@@ -122,77 +131,58 @@ func (gate *fiberCallGate) wait(requestContext context.Context) error {
 }
 
 func (gate *fiberCallGate) closeDrainedLocked() {
-	if gate.accepting || gate.active != 0 || gate.drainedClosed {
+	if gate.accepting || len(gate.active) != 0 || gate.drainedClosed {
 		return
 	}
 	close(gate.drained)
 	gate.drainedClosed = true
 }
 
-func acquireFiberCalls(fibers ...*fiber) (func(), bool) {
-	acquired := make([]*fiber, 0, len(fibers))
-	seen := make(map[*fiber]struct{}, len(fibers))
+func acquireFiberCalls(
+	admittedCall *fiberCall,
+	fibers ...*fiber,
+) (func(), bool) {
+	acquired := fibers[:0]
 	for _, running := range fibers {
 		if running == nil {
 			continue
 		}
-		if _, duplicate := seen[running]; duplicate {
+		if containsFiber(acquired, running) {
 			continue
 		}
-		seen[running] = struct{}{}
-		if running.state != FiberActive || !running.calls.acquire() {
+		if running.state != FiberActive || !running.calls.acquire(admittedCall) {
 			for acquiredIndex := len(acquired) - 1; acquiredIndex >= 0; acquiredIndex-- {
-				acquired[acquiredIndex].calls.release()
+				acquired[acquiredIndex].calls.release(admittedCall)
 			}
-			return func() {}, false
+			return nil, false
 		}
 		acquired = append(acquired, running)
 	}
 	return func() {
 		for acquiredIndex := len(acquired) - 1; acquiredIndex >= 0; acquiredIndex-- {
-			acquired[acquiredIndex].calls.release()
+			acquired[acquiredIndex].calls.release(admittedCall)
 		}
 	}, true
 }
 
-// invocationContext links one admitted dispatch to every participating Fiber
-// lifetime. Runtime cancellation can therefore release long-running handlers
-// before their call gates are drained and Dispose is invoked.
-//
-// Caller holds Runtime.view while participant lifetimes are captured.
+func containsFiber(fibers []*fiber, candidate *fiber) bool {
+	for _, selected := range fibers {
+		if selected == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+// invocationContext creates the shared cancellation context that the caller
+// registers with every participating Fiber call gate before releasing
+// Runtime.view. Closing any one of those gates cancels the dispatch before the
+// gate waits for it to drain.
 func (runtimeEngine *Runtime) invocationContext(
 	requestContext context.Context,
-	participants ...*fiber,
-) (context.Context, func()) {
+) (context.Context, context.CancelCauseFunc) {
 	callContext, cancelInvocation := context.WithCancelCause(
 		runtimeEngine.callbackContext(requestContext),
 	)
-	stopCallbacks := make([]func() bool, 0, len(participants))
-	seen := make(map[*fiber]struct{}, len(participants))
-	for _, running := range participants {
-		if running == nil || running.lifetime == nil {
-			continue
-		}
-		if _, duplicate := seen[running]; duplicate {
-			continue
-		}
-		seen[running] = struct{}{}
-		fiberLifetime := running.lifetime
-		stopCallbacks = append(
-			stopCallbacks,
-			context.AfterFunc(fiberLifetime, func() {
-				cause := context.Cause(fiberLifetime)
-				if cause == nil {
-					cause = ErrPluginNotActive
-				}
-				cancelInvocation(cause)
-			}),
-		)
-	}
-	return callContext, func() {
-		for _, stopCallback := range stopCallbacks {
-			stopCallback()
-		}
-		cancelInvocation(context.Canceled)
-	}
+	return callContext, cancelInvocation
 }

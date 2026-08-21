@@ -162,10 +162,14 @@ func (registry *waterfallRegistry) add(binding *waterfallBinding) {
 		input:  binding.reference.input,
 		output: binding.reference.output,
 	}
-	registry.bindings[selectedKey] = append(
-		registry.bindings[selectedKey],
-		binding,
-	)
+	candidates := registry.bindings[selectedKey]
+	insertIndex := sort.Search(len(candidates), func(candidateIndex int) bool {
+		return candidates[candidateIndex].ordinal >= binding.ordinal
+	})
+	candidates = append(candidates, nil)
+	copy(candidates[insertIndex+1:], candidates[insertIndex:])
+	candidates[insertIndex] = binding
+	registry.bindings[selectedKey] = candidates
 }
 
 func (registry *waterfallRegistry) remove(binding *waterfallBinding) {
@@ -197,31 +201,40 @@ func snapshotWaterfall[
 		input:  reflect.TypeFor[I](),
 		output: reflect.TypeFor[O](),
 	}
-	lineage := scopePath(sourceScope)
-	middleware := make([]waterfallInvocation[I, O], 0)
-	for scopeIndex := len(lineage) - 1; scopeIndex >= 0; scopeIndex-- {
-		selectedScope := lineage[scopeIndex]
-		selectedBindings := make([]*waterfallBinding, 0)
-		for _, binding := range registry.bindings[selectedKey] {
-			if binding.scope != selectedScope || binding.owner == nil ||
-				binding.owner.state != FiberActive {
-				continue
-			}
-			selectedBindings = append(selectedBindings, binding)
+	candidates := registry.bindings[selectedKey]
+	middleware := make([]waterfallInvocation[I, O], 0, len(candidates))
+	return appendWaterfallScope(middleware, candidates, sourceScope)
+}
+
+func appendWaterfallScope[
+	I WaterfallInput,
+	O WaterfallOutput,
+](
+	middleware []waterfallInvocation[I, O],
+	candidates []*waterfallBinding,
+	selectedScope *scope,
+) ([]waterfallInvocation[I, O], error) {
+	if selectedScope == nil {
+		return middleware, nil
+	}
+	var err error
+	middleware, err = appendWaterfallScope(middleware, candidates, selectedScope.parent)
+	if err != nil {
+		return nil, err
+	}
+	for _, binding := range candidates {
+		if binding.scope != selectedScope || binding.owner == nil ||
+			binding.owner.state != FiberActive {
+			continue
 		}
-		sort.Slice(selectedBindings, func(leftIndex int, rightIndex int) bool {
-			return selectedBindings[leftIndex].ordinal < selectedBindings[rightIndex].ordinal
+		typedInvoker, matches := binding.invoker.(waterfallInvokerOf[I, O])
+		if !matches {
+			return nil, errors.New("plugin: Waterfall has an incompatible Middleware")
+		}
+		middleware = append(middleware, waterfallInvocation[I, O]{
+			middleware: typedInvoker.middleware,
+			owner:      binding.owner,
 		})
-		for _, binding := range selectedBindings {
-			typedInvoker, matches := binding.invoker.(waterfallInvokerOf[I, O])
-			if !matches {
-				return nil, errors.New("plugin: Waterfall has an incompatible Middleware")
-			}
-			middleware = append(middleware, waterfallInvocation[I, O]{
-				middleware: typedInvoker.middleware,
-				owner:      binding.owner,
-			})
-		}
 	}
 	return middleware, nil
 }
@@ -346,14 +359,16 @@ func RunRetained[
 	for _, invocation := range middleware {
 		participants = append(participants, invocation.owner)
 	}
-	releaseCalls, admitted := acquireFiberCalls(participants...)
 	callContext, releaseContext := runtimeEngine.invocationContext(
 		requestContext,
-		participants...,
 	)
+	admittedCall := &fiberCall{
+		cancel: releaseContext,
+	}
+	releaseCalls, admitted := acquireFiberCalls(admittedCall, participants...)
 	runtimeEngine.view.RUnlock()
 	if !admitted {
-		releaseContext()
+		releaseContext(context.Canceled)
 		return output, nil, ErrPluginNotActive
 	}
 	lease = newInvocationLease(
