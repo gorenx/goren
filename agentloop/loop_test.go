@@ -1114,11 +1114,12 @@ func TestUnknownCancelCauseUsesHookReason(t *testing.T) {
 	})
 	toolStarted := make(chan struct{})
 	registerParallelTool(t, state, func(
-		json.RawMessage,
-		tools.ToolRunContext,
+		_ json.RawMessage,
+		runContext tools.ToolRunContext,
 	) (json.RawMessage, error) {
 		close(toolStarted)
-		return json.RawMessage(`{"cancelled":true}`), nil
+		<-runContext.Context.Done()
+		return nil, runContext.Context.Err()
 	})
 	handleState := createTestAgent(t, state, "cancel-unknown-cause")
 	if err := handleState.Subject.Followup(userMessage(t, "cancel")); err != nil {
