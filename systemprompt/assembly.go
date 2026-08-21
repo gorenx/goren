@@ -24,6 +24,42 @@ func (action *assemblyAction) Execute(
 	return action.candidate, nil
 }
 
+// preparedAssembly keeps the candidate and the owner rules that must be
+// enforced after middleware returns. Registry no longer coordinates those
+// rules through parallel return values.
+type preparedAssembly struct {
+	candidate PromptAssembly
+	policy    assemblyPolicy
+}
+
+func (prepared preparedAssembly) finalize(
+	transformed PromptAssembly,
+) (PromptAssembly, error) {
+	if err := validateAssembly(transformed); err != nil {
+		return PromptAssembly{}, err
+	}
+	detached := cloneAssembly(transformed)
+	prepared.policy.enforce(&detached)
+	return detached, nil
+}
+
+type assemblyPolicy struct {
+	completeSection        AssembledSection
+	completeSectionPresent bool
+	contextsSuppressed     bool
+}
+
+func (policy assemblyPolicy) enforce(assembled *PromptAssembly) {
+	if policy.completeSectionPresent {
+		assembled.Sections = []AssembledSection{
+			policy.completeSection,
+		}
+	}
+	if policy.contextsSuppressed {
+		assembled.Contexts = []AssembledContext{}
+	}
+}
+
 // assemblyResolver owns one pre-Waterfall assembly pass. It resolves dynamic
 // providers from a fixed registration snapshot without owning post-Waterfall
 // policy enforcement.
@@ -43,20 +79,6 @@ type sectionResolution struct {
 type contextResolution struct {
 	entries    []AssembledContext
 	suppressed bool
-}
-
-// preparedAssembly keeps the candidate and the owner rules that must be
-// enforced after middleware returns. Registry no longer coordinates those
-// rules through parallel return values.
-type preparedAssembly struct {
-	candidate PromptAssembly
-	policy    assemblyPolicy
-}
-
-type assemblyPolicy struct {
-	completeSection        AssembledSection
-	completeSectionPresent bool
-	contextsSuppressed     bool
 }
 
 func (resolver *assemblyResolver) resolve() (preparedAssembly, error) {
@@ -241,28 +263,6 @@ func (resolver *assemblyResolver) resolveTools() ([]llm.ToolSchema, error) {
 		return nil, err
 	}
 	return orderedSchemas, nil
-}
-
-func (prepared preparedAssembly) finalize(
-	transformed PromptAssembly,
-) (PromptAssembly, error) {
-	if err := validateAssembly(transformed); err != nil {
-		return PromptAssembly{}, err
-	}
-	detached := cloneAssembly(transformed)
-	prepared.policy.enforce(&detached)
-	return detached, nil
-}
-
-func (policy assemblyPolicy) enforce(assembled *PromptAssembly) {
-	if policy.completeSectionPresent {
-		assembled.Sections = []AssembledSection{
-			policy.completeSection,
-		}
-	}
-	if policy.contextsSuppressed {
-		assembled.Contexts = []AssembledContext{}
-	}
 }
 
 func mergeSections(layers []promptLayerSnapshot) []PromptSection {
