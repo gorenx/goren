@@ -63,14 +63,7 @@ type promptStore struct {
 }
 
 func newPromptStore() *promptStore {
-	storage := &promptStore{
-		sections:      make(map[string]PromptSection),
-		contexts:      make(map[string]PromptContext),
-		variables:     make(map[string]VariableProvider),
-		toolProviders: make(map[string]ToolProvider),
-		suppressors:   make(map[string]struct{}),
-		tokens:        make(map[promptEntryKey]*promptEntryToken),
-	}
+	storage := &promptStore{}
 	storage.rebuildSnapshotLocked()
 	return storage
 }
@@ -87,6 +80,9 @@ func (storage *promptStore) addSection(
 		)
 	}
 	token := storage.addToken(promptSectionEntry, definition.Name)
+	if storage.sections == nil {
+		storage.sections = make(map[string]PromptSection)
+	}
 	storage.sections[definition.Name] = definition
 	storage.sectionOrder = append(storage.sectionOrder, definition.Name)
 	storage.rebuildSnapshotLocked()
@@ -120,6 +116,9 @@ func (storage *promptStore) addContext(
 		)
 	}
 	token := storage.addToken(promptContextEntry, definition.Name)
+	if storage.contexts == nil {
+		storage.contexts = make(map[string]PromptContext)
+	}
 	storage.contexts[definition.Name] = definition
 	storage.contextOrder = append(storage.contextOrder, definition.Name)
 	storage.rebuildSnapshotLocked()
@@ -154,6 +153,9 @@ func (storage *promptStore) addVariable(
 		)
 	}
 	token := storage.addToken(promptVariableEntry, name)
+	if storage.variables == nil {
+		storage.variables = make(map[string]VariableProvider)
+	}
 	storage.variables[name] = provider
 	storage.variableOrder = append(storage.variableOrder, name)
 	storage.rebuildSnapshotLocked()
@@ -188,6 +190,9 @@ func (storage *promptStore) addToolProvider(
 		)
 	}
 	token := storage.addToken(promptToolProviderEntry, name)
+	if storage.toolProviders == nil {
+		storage.toolProviders = make(map[string]ToolProvider)
+	}
 	storage.toolProviders[name] = provider
 	storage.toolOrder = append(storage.toolOrder, name)
 	storage.rebuildSnapshotLocked()
@@ -221,6 +226,9 @@ func (storage *promptStore) addSuppressor(
 		)
 	}
 	token := storage.addToken(promptSuppressorEntry, name)
+	if storage.suppressors == nil {
+		storage.suppressors = make(map[string]struct{})
+	}
 	storage.suppressors[name] = struct{}{}
 	storage.rebuildSnapshotLocked()
 	return token, nil
@@ -299,16 +307,16 @@ func (storage *promptStore) rebuildSnapshotLocked() {
 
 func (storage *promptStore) clear() {
 	storage.mutex.Lock()
-	storage.sections = make(map[string]PromptSection)
+	storage.sections = nil
 	storage.sectionOrder = nil
-	storage.contexts = make(map[string]PromptContext)
+	storage.contexts = nil
 	storage.contextOrder = nil
-	storage.variables = make(map[string]VariableProvider)
+	storage.variables = nil
 	storage.variableOrder = nil
-	storage.toolProviders = make(map[string]ToolProvider)
+	storage.toolProviders = nil
 	storage.toolOrder = nil
-	storage.suppressors = make(map[string]struct{})
-	storage.tokens = make(map[promptEntryKey]*promptEntryToken)
+	storage.suppressors = nil
+	storage.tokens = nil
 	storage.rebuildSnapshotLocked()
 	storage.mutex.Unlock()
 }
@@ -317,6 +325,9 @@ func (storage *promptStore) addToken(
 	kind promptEntryKind,
 	name string,
 ) *promptEntryToken {
+	if storage.tokens == nil {
+		storage.tokens = make(map[promptEntryKey]*promptEntryToken)
+	}
 	token := &promptEntryToken{}
 	storage.tokens[promptEntryKey{
 		kind: kind,

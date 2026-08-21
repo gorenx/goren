@@ -67,6 +67,7 @@ func (running *fiber) rollback(
 ) error {
 	running.runtime.view.Lock()
 	running.state = FiberRollingBack
+	running.runtime.dependencies.removeConsumer(running)
 	running.runtime.bindings.withdraw(running.bindings)
 	running.calls.close()
 	running.runtime.view.Unlock()
@@ -99,6 +100,7 @@ func (running *fiber) stop(stopContext context.Context) error {
 		return previousError
 	default:
 		running.state = FiberStopping
+		running.runtime.dependencies.removeConsumer(running)
 		running.runtime.bindings.withdraw(running.bindings)
 		running.calls.close()
 	}

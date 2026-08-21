@@ -670,6 +670,72 @@ func TestMountReactivatesPreviouslyAbsentOptionalConsumer(t *testing.T) {
 	}
 }
 
+func TestUnloadProviderStopsAndRemountReactivatesHardDependent(t *testing.T) {
+	t.Parallel()
+	provider := &clockProvider{
+		value: "first",
+	}
+	consumer := &clockConsumer{}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	handles, err := runtimeEngine.Start(
+		context.Background(),
+		provider,
+		consumer,
+	)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err = runtimeEngine.Unload(context.Background(), handles[0]); err != nil {
+		t.Fatalf("unload provider: %v", err)
+	}
+	if consumer.selected != nil {
+		t.Fatal("hard dependent retained the unloaded provider")
+	}
+	replacement := &clockProvider{
+		value: "second",
+	}
+	if _, err = runtimeEngine.Mount(context.Background(), replacement); err != nil {
+		t.Fatalf("mount replacement provider: %v", err)
+	}
+	if consumer.applies != 2 || consumer.selected != replacement {
+		t.Fatal("hard dependent did not reactivate against the replacement provider")
+	}
+}
+
+func TestScopedProviderDoesNotRefreshAncestorOptionalConsumer(t *testing.T) {
+	t.Parallel()
+	consumer := &optionalClockConsumer{}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	handles, err := runtimeEngine.Start(context.Background(), consumer)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	provider := &clockProvider{
+		value: "scoped",
+	}
+	scopedHandle, err := runtimeEngine.MountScopedChild(
+		context.Background(),
+		handles[0],
+		provider,
+	)
+	if err != nil {
+		t.Fatalf("mount scoped provider: %v", err)
+	}
+	if consumer.applies != 1 || consumer.selected != nil {
+		t.Fatal("child-Scope provider changed its ancestor optional consumer")
+	}
+	if err = plugin.UnloadChild(
+		context.Background(),
+		consumer,
+		scopedHandle,
+	); err != nil {
+		t.Fatalf("unload scoped provider: %v", err)
+	}
+	if consumer.applies != 1 || consumer.selected != nil {
+		t.Fatal("child-Scope unload changed its ancestor optional consumer")
+	}
+}
+
 func TestLifetimeIsCancelledBeforeDispose(t *testing.T) {
 	t.Parallel()
 	cancellationObserved := make(chan struct{}, 1)

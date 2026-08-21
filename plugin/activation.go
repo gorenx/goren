@@ -30,14 +30,13 @@ func newActivationCoordinator(
 func (coordinator *activationCoordinator) attach(mounted *pluginMount) *fiber {
 	coordinator.nextFiber++
 	running := &fiber{
-		id:           coordinator.nextFiber,
-		runtime:      coordinator.runtime,
-		mount:        mounted,
-		target:       mounted.target,
-		scope:        mounted.scope,
-		state:        FiberWaiting,
-		dependencies: make(dependencySnapshot),
-		calls:        newFiberCallGate(),
+		id:      coordinator.nextFiber,
+		runtime: coordinator.runtime,
+		mount:   mounted,
+		target:  mounted.target,
+		scope:   mounted.scope,
+		state:   FiberWaiting,
+		calls:   newFiberCallGate(),
 	}
 	mounted.current = running
 	return running
@@ -49,26 +48,26 @@ func (coordinator *activationCoordinator) newFiberCandidate(
 ) *fiber {
 	coordinator.nextFiber++
 	return &fiber{
-		id:           coordinator.nextFiber,
-		runtime:      coordinator.runtime,
-		mount:        mounted,
-		target:       target,
-		scope:        mounted.scope,
-		state:        FiberWaiting,
-		dependencies: make(dependencySnapshot),
-		calls:        newFiberCallGate(),
+		id:      coordinator.nextFiber,
+		runtime: coordinator.runtime,
+		mount:   mounted,
+		target:  target,
+		scope:   mounted.scope,
+		state:   FiberWaiting,
+		calls:   newFiberCallGate(),
 	}
 }
 
 func (coordinator *activationCoordinator) converge(
 	reconcileContext context.Context,
 	phase ActivationPhase,
+	mounts []*pluginMount,
 ) error {
-	coordinator.prepareStopped()
+	coordinator.prepareStopped(mounts)
 	refreshedOptional := make(map[*pluginMount]struct{})
 	for {
 		progress := false
-		for _, mounted := range coordinator.mounts.all() {
+		for _, mounted := range mounts {
 			running := mounted.current
 			if mounted.removed || mounted.phase != phase || running == nil ||
 				running.state != FiberWaiting {
@@ -90,7 +89,7 @@ func (coordinator *activationCoordinator) converge(
 			}
 			progress = true
 		}
-		staleOptional := coordinator.graph.staleOptionalConsumers()
+		staleOptional := coordinator.graph.staleOptionalConsumers(mounts)
 		if len(staleOptional) != 0 {
 			visited := make(map[*fiber]struct{})
 			var refreshErr error
@@ -111,7 +110,7 @@ func (coordinator *activationCoordinator) converge(
 					),
 				)
 			}
-			coordinator.prepareStopped()
+			coordinator.prepareStopped(mounts)
 			if refreshErr != nil {
 				return refreshErr
 			}
@@ -147,6 +146,7 @@ func (coordinator *activationCoordinator) activate(
 	published, publicationErr := coordinator.runtime.bindings.publish(running)
 	if publicationErr == nil {
 		running.activate(published)
+		coordinator.graph.addConsumer(running)
 	}
 	coordinator.runtime.view.Unlock()
 	if publicationErr == nil {
@@ -235,7 +235,7 @@ func (coordinator *activationCoordinator) rollbackMounts(
 		)
 	}
 	coordinator.mounts.deleteRoots(roots)
-	coordinator.prepareStopped()
+	coordinator.prepareStopped(coordinator.mounts.all())
 	return rollbackErr
 }
 
@@ -263,6 +263,22 @@ func (coordinator *activationCoordinator) removeMount(
 	removeContext context.Context,
 	mounted *pluginMount,
 ) error {
+	stopErr := coordinator.removeMountTree(removeContext, mounted)
+	coordinator.prepareStopped(coordinator.mounts.all())
+	return stopErr
+}
+
+func (coordinator *activationCoordinator) removeIsolatedMount(
+	removeContext context.Context,
+	mounted *pluginMount,
+) error {
+	return coordinator.removeMountTree(removeContext, mounted)
+}
+
+func (coordinator *activationCoordinator) removeMountTree(
+	removeContext context.Context,
+	mounted *pluginMount,
+) error {
 	coordinator.mounts.markRemoved(mounted)
 	stopErr := coordinator.stopFiberWithDependents(
 		removeContext,
@@ -270,7 +286,6 @@ func (coordinator *activationCoordinator) removeMount(
 		make(map[*fiber]struct{}),
 	)
 	coordinator.mounts.deleteTree(mounted)
-	coordinator.prepareStopped()
 	return stopErr
 }
 
@@ -321,8 +336,10 @@ func stopFiberOrder(fibers []*fiber) []*fiber {
 	return ordered
 }
 
-func (coordinator *activationCoordinator) prepareStopped() {
-	for _, mounted := range coordinator.mounts.all() {
+func (coordinator *activationCoordinator) prepareStopped(
+	mounts []*pluginMount,
+) {
+	for _, mounted := range mounts {
 		if mounted.removed {
 			continue
 		}

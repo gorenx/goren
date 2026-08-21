@@ -31,9 +31,10 @@ func (resolution dependencyResolution) missingNames() []string {
 // dependencyGraph owns cross-Fiber dependency queries. Runtime's view lock
 // protects the Service registry and Fiber states it reads.
 type dependencyGraph struct {
-	runtime  *Runtime
-	mounts   *mountTree
-	services *serviceRegistry
+	runtime    *Runtime
+	mounts     *mountTree
+	services   *serviceRegistry
+	dependents map[*fiber][]*fiber
 }
 
 func newDependencyGraph(
@@ -42,9 +43,10 @@ func newDependencyGraph(
 	services *serviceRegistry,
 ) *dependencyGraph {
 	return &dependencyGraph{
-		runtime:  runtimeEngine,
-		mounts:   mounts,
-		services: services,
+		runtime:    runtimeEngine,
+		mounts:     mounts,
+		services:   services,
+		dependents: make(map[*fiber][]*fiber),
 	}
 }
 
@@ -113,11 +115,13 @@ func (graph *dependencyGraph) declaredProviderLocked(
 	return nil
 }
 
-func (graph *dependencyGraph) staleOptionalConsumers() []*fiber {
+func (graph *dependencyGraph) staleOptionalConsumers(
+	mounts []*pluginMount,
+) []*fiber {
 	graph.runtime.view.RLock()
 	defer graph.runtime.view.RUnlock()
 	stale := make([]*fiber, 0)
-	for _, mounted := range graph.mounts.all() {
+	for _, mounted := range mounts {
 		running := mounted.current
 		if mounted.removed || running == nil || running.state != FiberActive {
 			continue
@@ -138,23 +142,82 @@ func (graph *dependencyGraph) staleOptionalConsumers() []*fiber {
 	return stale
 }
 
-func (graph *dependencyGraph) directDependents(provider *fiber) []*fiber {
-	dependents := make([]*fiber, 0)
-	graph.runtime.view.RLock()
-	defer graph.runtime.view.RUnlock()
-	for _, mounted := range graph.mounts.all() {
-		candidate := mounted.current
-		if candidate == nil || candidate.state != FiberActive || candidate == provider {
-			continue
-		}
-		for _, dependency := range candidate.dependencies {
-			if dependency.binding == nil || dependency.binding.owner != provider {
+// addConsumer records the active dependency edges for one Fiber. The caller
+// holds Runtime.view for the activation transaction.
+func (graph *dependencyGraph) addConsumer(consumer *fiber) {
+	var providerStorage [8]*fiber
+	providers := uniqueDependencyProviders(
+		consumer,
+		providerStorage[:0],
+	)
+	for _, provider := range providers {
+		graph.dependents[provider] = append(
+			graph.dependents[provider],
+			consumer,
+		)
+	}
+}
+
+// removeConsumer removes every active dependency edge for one Fiber. The
+// caller holds Runtime.view for the stop transaction.
+func (graph *dependencyGraph) removeConsumer(consumer *fiber) {
+	var providerStorage [8]*fiber
+	providers := uniqueDependencyProviders(
+		consumer,
+		providerStorage[:0],
+	)
+	for _, provider := range providers {
+		candidates := graph.dependents[provider]
+		for candidateIndex, candidate := range candidates {
+			if candidate != consumer {
 				continue
 			}
-			dependents = append(dependents, candidate)
+			candidates = append(
+				candidates[:candidateIndex],
+				candidates[candidateIndex+1:]...,
+			)
+			if len(candidates) == 0 {
+				delete(graph.dependents, provider)
+			} else {
+				graph.dependents[provider] = candidates
+			}
 			break
 		}
 	}
+}
+
+func uniqueDependencyProviders(
+	consumer *fiber,
+	providers []*fiber,
+) []*fiber {
+	for _, dependency := range consumer.dependencies {
+		if dependency == nil || dependency.binding == nil ||
+			dependency.binding.owner == nil {
+			continue
+		}
+		provider := dependency.binding.owner
+		duplicate := false
+		for _, selected := range providers {
+			if selected == provider {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			providers = append(providers, provider)
+		}
+	}
+	return providers
+}
+
+func (graph *dependencyGraph) directDependents(provider *fiber) []*fiber {
+	graph.runtime.view.RLock()
+	dependents := append([]*fiber(nil), graph.dependents[provider]...)
+	graph.runtime.view.RUnlock()
+	sort.Slice(dependents, func(leftIndex int, rightIndex int) bool {
+		return dependents[leftIndex].mount.handleID <
+			dependents[rightIndex].mount.handleID
+	})
 	return dependents
 }
 
