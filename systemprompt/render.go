@@ -75,7 +75,7 @@ func interpolate(name string, input string, kind string, variables map[string]Va
 		open := last + relativeOpen
 		groupEnd, referenceName, matched := referenceAt(input[open:])
 		if !matched {
-			if strings.Index(input[open+2:], "}}") >= 0 {
+			if strings.Contains(input[open+2:], "}}") {
 				fragment := input[open:]
 				if len(fragment) > 16 {
 					fragment = fragment[:16]
