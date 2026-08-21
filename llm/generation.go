@@ -33,7 +33,7 @@ func (owner *Runtime) streamWithRoute(
 	if err != nil {
 		return nil, err
 	}
-	result, err := plugin.Run(
+	result, lease, err := plugin.RunRetained(
 		requestContext,
 		owner,
 		detached,
@@ -47,9 +47,10 @@ func (owner *Runtime) streamWithRoute(
 		return nil, err
 	}
 	if result.Stream == nil {
+		lease.Release()
 		return nil, errors.New("llm: stream Waterfall returned a nil stream")
 	}
-	return result.Stream, nil
+	return retainInvocationStream(result.Stream, lease), nil
 }
 
 type streamTerminal struct {

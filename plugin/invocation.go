@@ -5,6 +5,58 @@ import (
 	"sync"
 )
 
+// InvocationLease retains Runtime admission and the linked Fiber lifetimes for
+// an operation whose result continues doing work after its method returns.
+// Release is idempotent.
+type InvocationLease struct {
+	state *invocationLeaseState
+}
+
+type invocationLeaseState struct {
+	requestContext context.Context
+	releaseOnce    sync.Once
+	releaseContext func()
+	releaseCalls   func()
+}
+
+func newInvocationLease(
+	requestContext context.Context,
+	releaseContext func(),
+	releaseCalls func(),
+) *InvocationLease {
+	return &InvocationLease{
+		state: &invocationLeaseState{
+			requestContext: requestContext,
+			releaseContext: releaseContext,
+			releaseCalls:   releaseCalls,
+		},
+	}
+}
+
+// Context is cancelled when the caller or any participating Plugin stops.
+func (lease *InvocationLease) Context() context.Context {
+	if lease == nil || lease.state == nil || lease.state.requestContext == nil {
+		return context.Background()
+	}
+	return lease.state.requestContext
+}
+
+// Release ends the retained invocation and allows participating Fibers to
+// drain. The invocation Context is cancelled before call admission is released.
+func (lease *InvocationLease) Release() {
+	if lease == nil || lease.state == nil {
+		return
+	}
+	lease.state.releaseOnce.Do(func() {
+		if lease.state.releaseContext != nil {
+			lease.state.releaseContext()
+		}
+		if lease.state.releaseCalls != nil {
+			lease.state.releaseCalls()
+		}
+	})
+}
+
 // fiberCallGate is Runtime-private dispatch admission for one active Fiber.
 type fiberCallGate struct {
 	mutex         sync.Mutex

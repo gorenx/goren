@@ -295,19 +295,43 @@ func Run[
 	input I,
 	terminal WaterfallAction[I, O],
 ) (O, error) {
-	var output O
+	output, lease, err := RunRetained(
+		requestContext,
+		source,
+		input,
+		terminal,
+	)
+	if lease != nil {
+		lease.Release()
+	}
+	return output, err
+}
+
+// RunRetained executes the visible onion chain and transfers the admitted
+// invocation to the caller. It is for outputs such as pull streams whose work
+// continues after the Waterfall method returns. The caller must bind the
+// returned lease to that output's terminal and cancellation lifecycle.
+func RunRetained[
+	I WaterfallInput,
+	O WaterfallOutput,
+](
+	requestContext context.Context,
+	source Plugin,
+	input I,
+	terminal WaterfallAction[I, O],
+) (output O, lease *InvocationLease, runErr error) {
 	if terminal == nil {
-		return output, errors.New("plugin: Waterfall terminal is nil")
+		return output, nil, errors.New("plugin: Waterfall terminal is nil")
 	}
 	sourceFiber, err := activeFiberOf(source)
 	if err != nil {
-		return output, err
+		return output, nil, err
 	}
 	runtimeEngine := sourceFiber.runtime
 	runtimeEngine.view.RLock()
 	if sourceFiber.state != FiberActive {
 		runtimeEngine.view.RUnlock()
-		return output, ErrPluginNotActive
+		return output, nil, ErrPluginNotActive
 	}
 	middleware, err := snapshotWaterfall[I, O](
 		runtimeEngine.bindings.waterfalls,
@@ -315,7 +339,7 @@ func Run[
 	)
 	if err != nil {
 		runtimeEngine.view.RUnlock()
-		return output, err
+		return output, nil, err
 	}
 	participants := make([]*fiber, 0, len(middleware)+1)
 	participants = append(participants, sourceFiber)
@@ -330,16 +354,30 @@ func Run[
 	runtimeEngine.view.RUnlock()
 	if !admitted {
 		releaseContext()
-		return output, ErrPluginNotActive
+		return output, nil, ErrPluginNotActive
 	}
-	defer releaseCalls()
-	defer releaseContext()
+	lease = newInvocationLease(
+		callContext,
+		releaseContext,
+		releaseCalls,
+	)
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			lease.Release()
+			panic(recovered)
+		}
+		if runErr != nil {
+			lease.Release()
+			lease = nil
+		}
+	}()
 	firstStep := &waterfallStep[I, O]{
 		middleware: middleware,
 		terminal:   terminal,
 	}
-	return firstStep.Execute(
+	output, runErr = firstStep.Execute(
 		callContext,
 		input,
 	)
+	return output, lease, runErr
 }
