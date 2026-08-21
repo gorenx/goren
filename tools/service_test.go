@@ -344,6 +344,61 @@ func TestRegistryLayersRestrictionShadowingAndPromptProjection(t *testing.T) {
 	}
 }
 
+func TestOverlayReadViewTracksParentMutationsAfterCaching(t *testing.T) {
+	state := newToolsFixture(t)
+	requestContext := context.Background()
+	if _, err := state.service.AddTool(
+		requestContext,
+		objectTool(
+			"initial",
+			"initial root tool",
+			tools.ExecutorFunc(passThroughBody),
+		),
+	); err != nil {
+		t.Fatal(err)
+	}
+	promptOverlay := systemprompt.NewOverlay(systemprompt.RegistryOptions{})
+	promptOverlayHandle, err := state.runtimeEngine.MountScopedChild(
+		requestContext,
+		state.promptHandle,
+		promptOverlay,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolOverlay := tools.NewOverlay()
+	if _, err = state.runtimeEngine.MountScopedChild(
+		requestContext,
+		promptOverlayHandle,
+		toolOverlay,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if schemas := toolOverlay.Schemas(); len(schemas) != 1 || schemas[0].Name != "initial" {
+		t.Fatalf("initial cached schemas = %#v", schemas)
+	}
+	added, err := state.service.AddTool(
+		requestContext,
+		objectTool(
+			"added",
+			"added after child cache",
+			tools.ExecutorFunc(passThroughBody),
+		),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if schemas := toolOverlay.Schemas(); len(schemas) != 2 || schemas[1].Name != "added" {
+		t.Fatalf("schemas after parent add = %#v", schemas)
+	}
+	if err = added.Unregister(requestContext); err != nil {
+		t.Fatal(err)
+	}
+	if schemas := toolOverlay.Schemas(); len(schemas) != 1 || schemas[0].Name != "initial" {
+		t.Fatalf("schemas after parent removal = %#v", schemas)
+	}
+}
+
 func TestRegistryChangeFailureRollsBackMutation(t *testing.T) {
 	failure := errors.New("change rejected")
 	observer := &eventObserverPlugin{
