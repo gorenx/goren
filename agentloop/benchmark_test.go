@@ -143,8 +143,7 @@ func BenchmarkAgentTurnLifecycle(b *testing.B) {
 			state := newAgentLoopBenchmark(b, chunkCount)
 			message := userMessageValue("benchmark input")
 			b.ReportAllocs()
-			b.ResetTimer()
-			for benchmarkIndex := 0; benchmarkIndex < b.N; benchmarkIndex++ {
+			for b.Loop() {
 				handleState := state.createAgent(b)
 				var err error
 				if err = handleState.Subject.Followup(message); err != nil {
@@ -169,8 +168,7 @@ func BenchmarkAgentTurnRun(b *testing.B) {
 			state := newAgentLoopBenchmark(b, chunkCount)
 			message := userMessageValue("benchmark input")
 			b.ReportAllocs()
-			b.ResetTimer()
-			for benchmarkIndex := 0; benchmarkIndex < b.N; benchmarkIndex++ {
+			for b.Loop() {
 				b.StopTimer()
 				handleState := state.createAgent(b)
 				b.StartTimer()

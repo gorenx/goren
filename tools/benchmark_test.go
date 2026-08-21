@@ -84,8 +84,7 @@ func BenchmarkToolRegistryGet(b *testing.B) {
 			service := newToolsBenchmark(b, toolCount)
 			selectedName := fmt.Sprintf("tool-%d", toolCount-1)
 			b.ReportAllocs()
-			b.ResetTimer()
-			for benchmarkIndex := 0; benchmarkIndex < b.N; benchmarkIndex++ {
+			for b.Loop() {
 				definition, found := service.Get(selectedName)
 				if !found {
 					b.Fatal("tool not found")
@@ -101,8 +100,7 @@ func BenchmarkToolRegistrySchemas(b *testing.B) {
 		b.Run(fmt.Sprintf("tools=%d", toolCount), func(b *testing.B) {
 			service := newToolsBenchmark(b, toolCount)
 			b.ReportAllocs()
-			b.ResetTimer()
-			for benchmarkIndex := 0; benchmarkIndex < b.N; benchmarkIndex++ {
+			for b.Loop() {
 				benchmarkSchemas = service.Schemas()
 			}
 		})
@@ -119,8 +117,7 @@ func BenchmarkToolExecutionMode(b *testing.B) {
 				Arguments: json.RawMessage(`{"value":true}`),
 			}
 			b.ReportAllocs()
-			b.ResetTimer()
-			for benchmarkIndex := 0; benchmarkIndex < b.N; benchmarkIndex++ {
+			for b.Loop() {
 				benchmarkMode = service.ExecutionMode(input)
 			}
 		})
@@ -137,8 +134,7 @@ func BenchmarkToolExecute(b *testing.B) {
 				Arguments: json.RawMessage(`{"value":true}`),
 			}
 			b.ReportAllocs()
-			b.ResetTimer()
-			for benchmarkIndex := 0; benchmarkIndex < b.N; benchmarkIndex++ {
+			for b.Loop() {
 				outcome := service.Execute(context.Background(), input)
 				if outcome.Failed() {
 					b.Fatal(outcome.FailureDetail())
