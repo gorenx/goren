@@ -49,6 +49,9 @@ export interface SessionHistoryValue {
 export interface StreamDraft {
   text: string
   reasoning: string
+  streaming: boolean
+  interrupted?: boolean
+  seq?: number
 }
 
 export interface QuestionOption {
@@ -82,6 +85,7 @@ export interface MessageRow {
   text: string
   reasoning: string
   streaming: boolean
+  interrupted?: boolean
   seq?: number
 }
 

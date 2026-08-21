@@ -38,6 +38,7 @@ export class ConversationStore {
   readonly #subscribers = new Set<Subscriber>()
   readonly #api: HarnessAPI
   readonly #translateText: Translator
+  readonly #cancellingSessions = new Set<string>()
   #value = initialSnapshot
   #selectionVersion = 0
   #toastTimer?: number
@@ -165,6 +166,28 @@ export class ConversationStore {
     }
   }
 
+  async cancelCurrentTurn(): Promise<void> {
+    const current = this.currentSession()
+    if (current === undefined || !current.running || this.#cancellingSessions.has(current.sessionId)) return
+    const sessionId = current.sessionId
+    this.#cancellingSessions.add(sessionId)
+    this.#patch({ composerState: 'composer.cancelling' })
+    try {
+      await this.#api.call<unknown>('session.cancel', { sessionId })
+      if (this.currentSession()?.sessionId === sessionId && this.currentSession()?.running === true) {
+        this.#patch({ composerState: 'composer.cancelRequested' })
+      }
+    } catch (error) {
+      if (this.currentSession()?.sessionId === sessionId && this.currentSession()?.running === true) {
+        this.#patch({ composerState: 'composer.agentWorking' })
+      }
+      this.#fail(error)
+      throw error
+    } finally {
+      this.#cancellingSessions.delete(sessionId)
+    }
+  }
+
   currentSession(): SessionSummary | undefined {
     return this.#value.sessions.find(item => item.sessionId === this.#value.currentSessionId)
   }
@@ -183,8 +206,9 @@ export class ConversationStore {
     const sessionId = this.#value.currentSessionId
     const draft = sessionId === undefined ? undefined : this.#value.streams.get(sessionId)
     if (draft !== undefined && (draft.text !== '' || draft.reasoning !== '')) {
-      rows.push({ role: 'assistant', ...draft, streaming: true })
+      rows.push({ role: 'assistant', ...draft })
     }
+    rows.sort((left, right) => (left.seq ?? Number.MAX_SAFE_INTEGER) - (right.seq ?? Number.MAX_SAFE_INTEGER))
     return rows
   }
 
@@ -346,12 +370,19 @@ function applyStreamEvent(
     const chunk = event.data.chunk
     const chunkType = recordString(chunk, 'type')
     const text = recordString(chunk, 'text') ?? ''
-    const draft = { ...(streams.get(sessionId) ?? { text: '', reasoning: '' }) }
+    const current = streams.get(sessionId)
+    const draft = current?.streaming === true
+      ? { ...current, seq: event.seq }
+      : { text: '', reasoning: '', streaming: true, interrupted: false, seq: event.seq }
     if (chunkType === 'text-delta') draft.text += text
     if (chunkType === 'reasoning-delta') draft.reasoning += text
     streams.set(sessionId, draft)
   }
-  if (event.type === 'assistant/message' || event.type === 'turn/end') streams.delete(sessionId)
+  if (event.type === 'assistant/message') streams.delete(sessionId)
+  if (event.type === 'turn/end') {
+    const draft = streams.get(sessionId)
+    if (draft !== undefined) streams.set(sessionId, { ...draft, streaming: false, interrupted: true, seq: event.seq })
+  }
 }
 
 function messageFromEvent(event: SessionEvent): MessageRow | undefined {

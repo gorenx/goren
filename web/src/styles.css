@@ -867,7 +867,8 @@
     cursor: not-allowed;
   }
 
-  .send-button {
+  .send-button,
+  .stop-button {
     display: grid;
     width: 34px;
     height: 34px;
@@ -881,12 +882,25 @@
     transition: background-color 120ms ease, transform 120ms ease, opacity 120ms ease;
   }
 
+  .stop-button {
+    border: 1px solid rgb(15 23 42 / 0.09);
+    background: white;
+    color: #c74f4f;
+  }
+
   .send-button:hover:not(:disabled) {
     background: #5588ee;
     transform: translateY(-1px);
   }
 
-  .send-button:disabled {
+  .stop-button:hover:not(:disabled) {
+    border-color: rgb(199 79 79 / 0.24);
+    background: #fff5f5;
+    transform: translateY(-1px);
+  }
+
+  .send-button:disabled,
+  .stop-button:disabled {
     opacity: 0.32;
     cursor: default;
   }
