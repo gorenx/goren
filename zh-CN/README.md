@@ -1,6 +1,6 @@
 # DeepSeek Harness Go 复刻中文详设
 
-状态：Draft
+状态：Accepted / Implemented（当前主线能力以 `08` 验证状态为准）
 
 本目录是 Goren 当前主线设计的唯一入口。设计以 DeepSeek Harness TypeScript 基线 `47f943859bef60e4160492346772ded9b24f765a` 为源代码证据，首要目标是让现有 TypeScript 客户端与 Go Agent 服务端保持通信协议兼容。默认服务额外内嵌自有的极简主会话 UI；原版完整 Web 产品、SDK 和 Python 不进入实现。
 
@@ -15,7 +15,7 @@
 - [07 API Proxy 模块设计与实现](./07-api-proxy-module.md)：typed method Catalog、Provider 边界、`host.describe` 纵向切片与结果/错误映射。
 - [08 实施进度](./08-implementation-progress.md)：阶段完成度、当前代码/测试证据、验证结果、阻塞项和下一步。
 - [09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)：Goren Server Assembly、源插件映射、Factory Catalog 与 Connection 插件装配。
-- [Go Cordis 风格通用 Plugin 事件领域框架设计](./Go_Cordis_风格插件事件领域运行时设计方案.md)：`plugin` 通用运行时重构的架构目标、Go 类型身份、声明式 Service/Event/Waterfall、Scope、Fiber、Runtime 私有 Effect、`Base` 与 Plugin `Apply/Dispose` 契约。
+- [Go Cordis 风格通用 Plugin 事件领域框架设计](./Go_Cordis_风格插件事件领域运行时设计方案.md)：可复用 Plugin Runtime 的目标、Go 类型身份、Manifest、Service/Event/Waterfall、Scope、调用准入与 `RunRetained` 契约。
 - [10 Session Core 与生命周期模块设计](./10-session-core-and-lifecycle.md)：Header/Event、内存 append-only log、surface、LiveStore 生命周期、订阅与 persistence 边界。
 - [11 System Prompt Registry 与 Assembly 模块设计](./11-system-prompt-registry-and-assembly.md)：scope overlay、注册生命周期、deterministic assembly、tool schema 排序、严格插值与上下游边界。
 - [12 Tools Registry 与执行流水线模块设计](./12-tools-registry-and-execution-pipeline.md)：Tool Definition、Root Registry + Child Overlay、restriction/guard、policy Waterfall、一次性执行状态机、结果物化与 System Prompt 投影。
@@ -39,6 +39,8 @@
 - [`apiproxy/README.zh-CN.md`](../apiproxy/README.zh-CN.md)：typed method adapter、Session/Interaction Gateway、live frame、correlation 与背压。
 - [`apiproxy/session/README.zh-CN.md`](../apiproxy/session/README.zh-CN.md)：Session API façade、读取/生命周期/模型/对话/Search 用例与 Agent activation 状态。
 - [`internal/assembly/README.zh-CN.md`](../internal/assembly/README.zh-CN.md)：Factory Catalog、typed config、依赖结算与 composition rollback。
+- [`internal/connection/README.zh-CN.md`](../internal/connection/README.zh-CN.md)：Connection Host Plugin、Echo carrier、监听端口与 WebSocket 排空。
+- [`systemprompt/README.zh-CN.md`](../systemprompt/README.zh-CN.md)：System Prompt root/overlay、精确 Handle 与 snapshot assembly。
 - [`workspace/README.zh-CN.md`](../workspace/README.zh-CN.md)：Workspace Registry、Session accounting、SQLite adapter 与 API/Host 交互。
 - [`llm/README.zh-CN.md`](../llm/README.zh-CN.md)：provider-neutral LLM Runtime、typed Service/Event/Waterfall、Adapter registration 与流归一化。
 - [`llm/factory/README.zh-CN.md`](../llm/factory/README.zh-CN.md)：LLM 领域 typed config、严格构造与 Assembly 注册边界。

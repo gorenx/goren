@@ -29,8 +29,8 @@ Tools 的失败策略是“封闭并形成规范结果”，不是自行重试�
 | --- | --- | --- |
 | `ToolRuntime` | Agent Loop 或直接执行方 | 查询可见定义/schema、判断并发模式、取得 scheduler、执行完整流水线 |
 | `ToolExecutionScheduler` | Agent Loop | 顺序 `Prepare`，只并发 `Dispatch`，再按模型顺序 `Finalize` 或 `Finish` |
-| `ToolCatalog` | Tool 定义 Plugin | 在当前 Tools layer 增加或撤销具名 Tool |
-| `PolicyRegistry` | Tool policy Plugin | 在当前 layer 增加或撤销 restriction、guard |
+| `ToolCatalog` | Tool 定义 Plugin | 在当前 Tools layer 增加具名 Tool，并返回精确 `ToolHandle` |
+| `PolicyRegistry` | Tool policy Plugin | 增加 restriction、guard，并返回各自的精确 Handle |
 | `Service` | Plugin Runtime | 声明依赖与能力，绑定 System Prompt，创建 Registry 和 execution runtime，负责卸载清理 |
 
 `ToolExecutionScheduler` 不直接由 `Service` 摊平实现。调用方通过 `ToolRuntime.Scheduler()` 取得由 `executionRuntime` 实现的 staged capability，避免生命周期 facade 同时成为第二个状态机 owner。
@@ -71,7 +71,7 @@ flowchart LR
 
 ## 注册与生命周期
 
-Tool 或 policy Plugin 在自己的 `Apply` 中通过 required capability 注册贡献，并在幂等 `Dispose` 中按同名 identity 撤销。Plugin Runtime 在启动失败时仍会调用 `Dispose`，因此部分注册也能收口；Tools Service 最后卸载时会清空本 layer，防止残留引用。
+Tool 或 policy Plugin 在自己的 `Apply` 中通过 required capability 注册业务 entry，保存成功返回的 `ToolHandle`、`RestrictionHandle` 或 `GuardHandle`，并在幂等 `Dispose` 中调用 `Unregister`。Plugin Runtime 在启动失败时仍会调用 `Dispose`，因此部分注册也能收口；Tools Service 最后卸载时会清空本 layer，防止残留引用。
 
 ```mermaid
 sequenceDiagram
@@ -89,16 +89,16 @@ sequenceDiagram
         T->>R: rollback exact mutation
         T-->>P: return error
     else accepted
-        T-->>P: registration active
+    T-->>P: ToolHandle
     end
-    P->>T: RemoveTool during Dispose
-    T->>R: remove exact identity
+    P->>T: handle.Unregister during Dispose
+    T->>R: remove exact entry identity
     T->>E: publish tools/change
 ```
 
-Guard 不改变模型可见 schema，因此 `AddGuard`/`RemoveGuard` 不发布 `tools/change`。Tool 和 restriction mutation 会发布 ordered change。
+Guard 不改变模型可见 schema，因此 `AddGuard` 和 `GuardHandle.Unregister` 不发布 `tools/change`。Tool 和 restriction mutation 会发布 ordered change。
 
-新增 Tool 或 restriction 时，change observer 失败会回滚新增并向贡献 Plugin 返回错误。撤销时以生命周期清理为优先：即使 change observer 失败，已删除的贡献也不会恢复，错误仍返回给 `Dispose` 供 Runtime 记录。System Prompt 不缓存另一份 Tool Catalog；下一次 assembly 直接读取当前 provider 的 live view。
+新增 Tool 或 restriction 时，change observer 失败会回滚新增并向 owner Plugin 返回错误。撤销时以生命周期清理为优先：即使 change observer 失败，已删除的 entry 也不会恢复，错误仍返回给 `Dispose` 供 Runtime 记录。每个 Handle 绑定具体 entry identity；旧 Handle 不能删除后来注册的同名对象。System Prompt 不缓存另一份 Tool Catalog；下一次 assembly 直接读取当前 provider 的 live view。
 
 ## 执行流程
 
@@ -154,4 +154,4 @@ sequenceDiagram
 - `tools/result` 是 best-effort notification；observer 失败交给 Plugin Runtime reporter，不能替换已经形成的 Tool outcome。
 - Go 无法强杀同进程函数。Executor 必须观察 `ToolRunContext.Context`，并在返回前让自己启动的工作达到 quiescence。
 
-具体 Tool Plugin 只需依赖 `ToolCatalog`、构造一个完整 `ToolDefinition`，并成对调用 `AddTool`/`RemoveTool`。若它还需要 restriction 或 guard，再按需依赖 `PolicyRegistry`；不需要实现 Tools Runtime、Registry、scheduler 或事件分发。
+具体 Tool Plugin 只需依赖 `ToolCatalog`、构造一个完整 `ToolDefinition`，在 Apply 中保存 `AddTool` 返回的 Handle，并在 Dispose 中调用 `Unregister`。若它还需要 restriction 或 guard，再按需依赖 `PolicyRegistry` 并分别保存 Handle；不需要实现 Tools Runtime、Registry、scheduler 或事件分发。

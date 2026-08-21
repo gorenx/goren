@@ -37,7 +37,7 @@ flowchart LR
 
 ### Core
 
-`session.DefineEvent[D]` 定义可写入 durable log 的 typed event key；`Append` 先生成 lossless JSON snapshot、规划 surface transition，再原子提交连续 `seq`、`time` 与 Event。它不同于 `plugin.DefineEvent`：后者定义进程内插件 dispatch，不进入 Session log。
+Session 的 durable Event 类型和 Plugin Runtime 的进程内 Event 是两套明确契约：Session Event 由本领域的具名事件定义参与 `Append`，先生成 lossless JSON snapshot、规划 surface transition，再原子提交连续 `seq`、`time` 与 Event；Plugin Event 由 `plugin.EventOf[E]`/`plugin.Publish` 分发，不进入 Session log。Event Sourcing 由 Session/Persistence owner 决定，Plugin Runtime 不保存或重放它。
 
 `Session` 负责 seed、surface 与 detached reads；`MemoryStore` 负责 live membership、attachment、created/event/disposed/flush publication。`DeferAfterEvent` 只允许在 `OnEvent` callback 中登记，用于 publication 完成后追加 follow-up fact，不是通用任务队列。
 

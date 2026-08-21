@@ -53,11 +53,13 @@ Plugin 对象嵌入 Base，并实现 Manifest、Apply 和幂等 Dispose。对象
 
 Runtime 根据 Manifest 自动注册 binding。插件作者不接收暴露 Scope 或注册表的 Runtime Context 对象，不调用 Define、Provide、Observe、Use，也不保存 Registration 或 disposer。
 
-Plugin 的 `Apply`、`Dispose`、Event Observer 和 Waterfall 调用不能同步修改同一个 Runtime 的拓扑；Runtime 返回 `ErrTopologyMutation`，而不是等待形成重入死锁。普通业务调用可以在回调返回后发起动态挂载。Event 和 Waterfall 的调用租约完全由 Runtime 私有管理，业务 Plugin 不调用显式准入或排空方法。
+Plugin 的 `Apply`、`Dispose`、Event Observer 和 Waterfall 调用不能同步修改同一个 Runtime 的拓扑；Runtime 返回 `ErrTopologyMutation`，而不是等待形成重入死锁。普通业务调用可以在回调返回后发起动态挂载。Event 和普通 Waterfall 的调用租约完全由 Runtime 管理，业务 Plugin 不调用显式准入或排空方法。
+
+只有 `ChunkStream` 一类在方法返回后仍继续执行 Plugin 代码的惰性结果使用 `RunRetained`。返回的 `InvocationLease` 由结果 owner 包装并在终态、失败或关闭时自动 `Release`；Release 只结束该次调用，使参与 Fiber 可以排空，不停止 Plugin 或业务资源。当前 LLM Runtime 已在流包装器内部完成这一管理，普通调用方仍使用 `Run`。
 
 ## 子包
 
-- factory：拥有具名配置、严格解码、校验与 Plugin 构造的 Factory，以及静态 Catalog；
+- factory：拥有 Factory/Catalog 公共构造协议与通用 JSON 边界；具名配置、字段解码、校验和 Plugin 构造仍属于各领域 Factory；
 - example：只使用 plugin 公共 API 的独立示例。
 
 ## 示例

@@ -1,263 +1,208 @@
 # 09 Plugin Runtime 与 Server Assembly 模块设计与实现
 
-状态：Accepted
+状态：Accepted / Implemented，2026-08-20 已复核
 
-本文拥有 `plugin` 与 `internal/assembly` 的职责、Go 类型模型、上下游流程和生命周期。全局依赖方向与 Child Scope 使用规则由[02 Go 运行时架构与插件模型](./02-runtime-architecture-and-plugin-model.md)拥有；System Prompt、Tools、Agent Loop、Session API Gateway、Interaction Gateway、Session Projection/Title、Session Persistence 与 Workspace 的消费语义分别由[11](./11-system-prompt-registry-and-assembly.md)、[12](./12-tools-registry-and-execution-pipeline.md)、[15](./15-agent-loop-and-request-driver.md)、[16](./16-session-api-gateway-and-live-frames.md)、[17](./17-approval-user-questions-and-interaction-gateway.md)、[18](./18-session-projection-and-title.md)、[19](./19-session-persistence-and-sqlite.md)和[20](./20-workspace-registry-and-api.md)拥有；当前实施证据只见[08 实施进度](./08-implementation-progress.md)。
+本文拥有 Goren 的 Plugin Runtime、Factory 构造边界和默认 Server composition。通用框架目标与插件开发方式见[Go Cordis 风格通用 Plugin 事件领域框架设计](./Go_Cordis_风格插件事件领域运行时设计方案.md)；当前测试证据见[08 实施进度](./08-implementation-progress.md)。各业务能力的规则仍由自己的模块设计拥有，本文不重新定义 Agent、Session、LLM、Tools 或 wire contract。
 
-## 1. 源职责映射
+## 1. 来源与 Go 取舍
 
-固定源基线：`47f943859bef60e4160492346772ded9b24f765a`。
+固定 DeepSeek Harness 基线是 `47f943859bef60e4160492346772ded9b24f765a`。
 
-| 源 owner / symbol | Go owner | 保留的职责 |
+| 源责任 | Go owner | 保留语义 |
 | --- | --- | --- |
-| `vendor/cordis/src/registry.ts` 的 `Plugin`、`RegistryService` | `plugin.Plugin`、`plugin/factory.Configurator`、`Factory`、`Catalog` | 静态 Factory 注册、Plugin 创建和实例跟踪 |
-| `vendor/cordis/src/fiber.ts` 的 `Fiber`、`effect`、`FiberState` | `plugin.Runtime`、`FiberStatus`、Runtime 私有 Effect | dependency settlement、effect ownership、rollback、unload |
-| `vendor/cordis/src/reflect.ts` 的 `provide`、`notify` | `ServiceDefinition[S]` 的 `Provide`、`Require` | Service Definition、唯一 Provider、Consumer 重启 |
-| `vendor/cordis/src/events.ts` | `EventDefinition[E]`、`WaterfallDefinition[I,O]` | Observer ownership、fact delivery 与 middleware control |
-| `vendor/cordis/src/context.ts` | `plugin.Context`、`Scope` | Plugin instance 的 Runtime interaction 与可见性 |
-| `packages/core/scope/src/index.ts`、`store.ts` | `Context.ChildScope`、`LoadChild`、`ScopeKey`、`ScopeLineage` | opaque child identity、祖先链、child lifecycle 与 scoped event admission |
-| `packages/host/apiproxy` | `internal/assembly` 的 API Proxy Plugin | 提供 `apiProxy` Service |
-| `packages/client/connection` 的 Host half | `internal/assembly` 的 Connection Plugin | 消费 `apiProxy`，挂载 HTTP/WebSocket carrier |
-| `packages/core/system-prompt` | `internal/assembly` 的 System Prompt Plugin | 提供 `systemPrompt` Service |
-| `packages/core/tools` | `internal/assembly` 的 Tools Plugin | 消费 `systemPrompt`，提供 `tools` Service 并注册 schema projection |
-| `packages/core/agent` | `internal/assembly` 的 Agent Plugin | 提供 `agents` Registry Service；具体 Factory 由 Agent Loop 注册 |
-| `packages/core/agent-default-model` | `internal/assembly` 的 Agent Default Model Plugin | 提供 `agentDefaultModel` Service；当前静态 Provider 保留 Settings 缺失时的 source fallback |
-| `packages/core/agent-loop` | `internal/assembly` 的 Agent Loop Plugin | 消费 Agent/Session/LLM/Tools/System Prompt，提供 `agentLoop` 并注册 concrete Factory |
-| `packages/core/llm-retry` | `internal/assembly` 的 LLM Retry Plugin | 消费 Agent request-error seam，安装默认 provider-routed retry Consumer |
-| `packages/session/session-projection` | `internal/assembly` 的 Session Projection Plugin | 提供 `sessionProjections` Registry |
-| `packages/session/session-title` | `internal/assembly` 的 Session Title Plugin | 消费 Session/Projection，提供 log-backed `sessionTitle` |
-| `packages/session/session-persistence` 与 `session-persistence-sqlite` | `internal/assembly` 的 Session Persistence Plugin | 消费 Session LiveStore，内部装配 SQLite Backend，只提供 `sessionPersistence` |
-| `packages/workspace/workspace` 与源 Storage Domain | `internal/assembly` 的 Workspace Plugin | 消费 Session LiveStore/Persistence，内部装配 SQLite Backend，只提供 `workspaceRegistry` |
-| `packages/interaction/user-approval` | `internal/assembly` 的 Approval Plugin | 消费 System Prompt，提供 `approval` Service |
-| `packages/interaction/user-questions` | `internal/assembly` 的 UserQuestions Plugin | 提供 `userQuestions` Service，并可读取 live Agent Registry |
-| `packages/interaction/tool-ask-user` | `internal/assembly` 的 Tool Ask User Plugin | 消费 Tools/UserQuestions 并注册 `ask_user_question` |
+| Cordis Plugin / Registry | `plugin.Plugin`、`plugin.Runtime` | 模块生命周期、依赖结算、动态 mount |
+| Cordis Fiber / effect | Runtime 私有 Fiber、binding、调用 gate | 回滚、dependent-first stop、逆序清理 |
+| Cordis provide / notify | Manifest、`ServiceOf`、`Require`、`Resolve` | Provider/Consumer 分离与依赖重结算 |
+| Cordis events | typed Event 与 Waterfall | 事实通知和洋葱控制分离 |
+| Cordis Context / scope | 私有 mount tree 与 Scope | 继承、覆盖、可见性和子生命周期 |
+| Harness `packages/host/apiproxy` | `apiproxy` 与 `apiproxy/host` | Host API 与事件流能力 |
+| Harness Connection Host | `internal/connection` | Echo HTTP/WebSocket carrier 生命周期 |
+| Harness 各 core package | 对应 Go 领域 package 与 `factory` 子包 | Service、Provider、Consumer 和 canonical name |
 
-Go 不复制 Proxy property lookup、decorator、declaration merging、npm module loader、Profile evaluator 或 `!!js`。这些机制在 Go 中分别由显式 interface、泛型自由函数、静态 Catalog 和 typed config 取代；Service/Provider/Consumer、事件 mode 和 effect 生命周期不因语言变化而合并。
+Go 不复制 Proxy 属性查找、decorator、declaration merging、npm loader、Profile evaluator、`!!js` 或解释性 Context 链。Service 身份来自具名 Go interface；Factory 静态注册；Plugin 对象直接实现能力和生命周期。
 
-## 2. 模块边界
+## 2. 责任边界
 
 ### 2.1 `plugin`
 
-`plugin` 是公开扩展 contract，拥有：
+`plugin` 负责：
 
-- `Plugin`、`Manifest`、`Context`、Service/Event/Waterfall Definition；
-- `plugin/configuration` 与 `plugin/factory` 子包中的构造边界；
-- `Runtime` 的 Plugin declaration、Service graph settlement、replacement 与 shutdown；
-- 每次 `Apply`/`Dispose` 的 `Scope`、私有 LIFO effect stack 和 diagnostics；
-- owner-defined `ServiceDefinition[S]`、`EventDefinition[E]`、`WaterfallDefinition[I,O]` 与 typed 注册/dispatch；
-- JSON Factory 边界的 strict typed decode helper。
+- 读取完整 Plugin 树的 Manifest snapshot；
+- 校验对象身份、循环、子树 placement、phase 和声明接口；
+- 维护 mount tree、Scope、Service graph、Event/Waterfall binding；
+- 按依赖顺序激活、停止、替换和回滚 Fiber；
+- 自动管理 Event、Waterfall 及 retained 调用的准入和排空；
+- 提供不泄漏内部表的 `FiberStatus` 诊断。
 
-`plugin` 不拥有 HTTP、Agent turn、Session Event、Tool policy、LLM wire、存储事务或具体 Provider config。它只协调已经由各能力 owner 定义的 contract。
+`plugin` 不读取配置、不访问 Catalog、不构造业务 Plugin，不拥有 HTTP、Agent turn、Session 事务、Tool policy、LLM wire 或存储。
 
-### 2.2 `internal/assembly`
+### 2.2 各领域 `factory` 子包
 
-`internal/assembly` 是 shipped server composition owner，拥有：
+每个领域 Factory 负责且只负责：
 
-- 当前可实例化 Factory 的白名单；
-- process-derived `Environment` 与 Factory 输入 `PluginSpec`；
-- 当前 included server 的默认 declaration 集合；
-- Session、Session Projection、Session Title、Default Model、System Prompt、Tools、Approval、UserQuestions Provider，LLM Retry/Tool Ask User Consumer、API Proxy Consumer/Provider 与 Connection Consumer Plugin；
-- 多 Plugin 启动失败时的 composition rollback。
+- canonical Plugin 名称；
+- 自己的具名 Config；
+- strict JSON decode、默认值、范围和组合校验；
+- 把已验证设置及显式技术依赖组装为未激活 Plugin。
 
-它不重新解释 HTTP/RPC contract，也不把 Excluded/Deferred capability 注册为占位 Factory。外部扩展通过自定义 composition root 静态加入公开 Factory，而不是修改 Runtime 内部 map。
+Factory 不打开 listener、不启动 goroutine、不 mount Plugin。需要 I/O 的 adapter 以 opener 或配置保存在 Plugin 中，到 `Apply` 才真正获取资源。raw JSON 在 Factory 终止，不进入 Plugin 或 Runtime。
 
-### 2.3 `cmd/goren`
+`plugin/factory.Catalog` 只维护 Factory 名称唯一性和查找。公共配置 helper 只处理所有 Factory 共享的 JSON object、duplicate field、空配置和 Create Context 规则；字段语义仍属于领域 owner。
 
-命令入口只解析首期 CLI typed fields、解析工作目录、创建 Catalog/Runtime、加载 shipped declarations、等待 signal 并触发 bounded shutdown。它不直接注册 API route、创建 Echo、解析 Plugin 私有配置或持有 Service 实例。
+### 2.3 `internal/assembly`
 
-## 3. Service Definition 与依赖结算
+`internal/assembly` 是 Goren 进程的 composition root，只负责：
 
-每项 Service 由 owner package创建并导出唯一 `ServiceDefinition[S]`。Definition 包含 canonical source name 和私有 token；`S` 是嵌入 `plugin.Service` 的能力 interface。Manifest 使用擦除后的 `ServiceRef` 声明 `Provides`、`Requires` 与 `Optional`，业务调用通过 Definition 的 `Provide`/`Require` 保持静态类型。
+- 建立 shipped Factory Catalog；
+- 把进程环境和统一 diagnostics adapter 交给需要它的 Factory；
+- 形成默认 `PluginSpec` 部署声明；
+- 逐项调用 Factory，构造完整且尚未激活的 `Server` Plugin 树；
+- 验证 Factory 名与返回 Plugin 的 `Manifest.Name` 一致；
+- 把 Connection 标记为 commit-phase 外部入口。
 
-```text
-Consumer Load
-  -> Manifest.Requires 尚不可解析
-  -> StateWaiting，不执行 Apply
+它不实现任何领域 Service，不声明替领域管理的生命周期，不读取 Plugin 私有字段，也不直接创建 Echo、SQLite、Agent 或 LLM 业务对象。原来散落在 assembly 的逐领域 `newXPlugin`/`loadX` 构造流程已删除。
 
-Provider Load
-  -> shadow Scope 执行 Apply
-  -> Provide 只写入候选 Scope
-  -> Apply 与 contribution invariant 成功
-  -> Service 原子发布
-  -> Runtime 重新结算 waiting Consumer
-  -> Consumer Apply 读取 typed interface
-```
+### 2.4 `cmd/goren`
 
-依赖结算不使用 declaration 文件顺序。一个 canonical Service name 只能关联一个 owner key，并只能有一个已声明 Provider；同名 key 被重新创建、重复 Provider 或已声明 Service 未实际提供都会在激活前后相应边界失败，不执行 last-write-wins。
-
-Provider Fiber 因 unload、dependency change 或 replacement 停止时，Runtime 先停止直接与传递 Consumer，再由 Provider Fiber 的私有 registration effect 撤回 Service；仍保留的 Consumer declaration 回到 Waiting，并在新 Provider active 后重新激活。Go API 不向插件公开单项 Service registration cleanup。
-
-## 4. Scope、effect 与失败回滚
-
-每次 `Plugin.Apply` 获得一个独立 Context 和 Root Scope。Runtime 在调用 `Apply` 前先登记调用该 Plugin `Dispose` 的 lifecycle effect；`Provide`、Waterfall Middleware、Event Observer 和 Child Plugin 也形成当前 Fiber 的私有 Effect。registration Effect 在 Mount commit 前保持不可见，插件作者不创建 Effect，也不接触 registration cleanup。
+命令入口只解析进程级 flags、解析存储路径和信号，然后执行：
 
 ```text
-Apply
-  -> provide Service
-  -> start and retain Plugin-owned resource
-  -> failure
-  -> rolling-back
-  -> withdraw pending Service
-  -> Plugin.Dispose partial resource
-  -> failed
+NewDiagnostics
+  -> NewCatalog(Environment)
+  -> DefaultSpecs(...)
+  -> BuildServer(context, catalog, specs)
+  -> plugin.NewRuntime(...)
+  -> Runtime.Start(server)
+  -> wait signal
+  -> Runtime.Shutdown(deadline)
 ```
 
-Plugin `Dispose` 必须幂等、接受 cleanup context，并等待自身 owned operation 停止；Runtime 的私有 release 操作严格按登记逆序运行。候选 Scope 在 `Apply` 与 contribution invariant 全部成功前不进入全局 Service/Event view，因此启动失败不会留下 route、listener、goroutine 或 Service。`FiberStatus` 暴露 ID、canonical name、State、live effect label 和最后一次 lifecycle error，不暴露锁、内部表或业务对象。
+入口不注册路由、不解析领域 Config、不持有业务 Service，也不手工安排 Provider 的启动顺序。
 
-Fiber 进入 `stopping` 后不再参与新的 Service 解析、Waterfall snapshot 或 Event snapshot；随后私有 Effect stack 按 LIFO 执行，每个 registration release 从 Registry 移除自己的精确 entry，最后调用 Plugin `Dispose`。未激活的 rollback Fiber 从未进入全局 Service/Waterfall/Event view。
+## 3. Server 是组合 Plugin，不是第二个 Runtime
 
-Root Plugin Scope 的 `Target()` 是 global zero key。`Context.ChildScope(label)` 生成 opaque key 并记录 parent lineage；普通 Child Scope 与当前 Fiber 同寿命，只改变可见性，不能提供 root Service。需要独立生命周期时使用 `Context.LoadChild`；Child Plugin 形成 Child Fiber，并作为 Effect 加入父 Fiber stack。scoped event 读取同一 lineage：global、祖先和 exact listener 可见，sibling 与 descendant listener 不可见。
+`assembly.BuildServer` 在 Runtime 外调用 Factory，返回一个 `*assembly.Server`。Server 只保存 `[]plugin.ChildPlugin` 和可选的 bound endpoint 只读视图；它的 `Apply`/`Dispose` 没有业务行为。
 
-## 5. Replacement 与 shutdown
-
-replacement 必须保持 Plugin canonical name 和 `Provides` 集合，避免把一个 Handle 偷换为不同职责。流程为：
-
-```text
-active(old)
-  -> strict decode + Factory.New(candidate)
-  -> candidate shadow Apply
-  -> candidate invariant success
-  -> stop dependents against old Service
-  -> atomic Service/Event scope swap
-  -> dispose old scope
-  -> restart dependents against candidate
+```mermaid
+flowchart LR
+    Specs[PluginSpec list] --> Lookup[Catalog Lookup]
+    Lookup --> Create[domain Factory Create]
+    Create --> Child[validated Plugin instance]
+    Child --> Server[Server Manifest Children]
+    Server --> Runtime[Runtime Start one root]
 ```
 
-候选失败只撤回候选 registration 并调用候选 `Dispose`，旧 Plugin 与 Consumer 保持 active。候选提交后旧 Plugin `Dispose` failure 会作为 replacement error 返回，但不能把已经发布的新实例伪装成未生效。
+这满足两个边界：
 
-Runtime shutdown 禁止新 Load，按依赖图的反向方向停止 Consumer 后停止 Provider；无依赖关系时按 declaration 逆序回收。Connection Plugin 的 `Dispose` 取消 Echo lifecycle、等待 HTTP/WebSocket cleanup，并在调用方 cleanup deadline 到期时强制关闭 listener/downlink。
+1. Runtime 接收的永远是已构造完成的对象树，不耦合配置或 Catalog；
+2. 业务服务不自行拼 Tree，Goren 的 composition root 负责构造 Server 子树。
 
-## 6. Typed Event 与 Waterfall
+`PluginSpec` 只有 Factory name、raw JSON 和 activation phase。raw JSON 是 assembly 与 Factory 之间的擦除边界，不会穿过 `Factory.Create`。
 
-Event 与 Waterfall 是两个独立机制，不再通过 mode 枚举和 callback union 混成一个 Registry。
+Build 阶段不产生运行时 effect，因此任一配置或构造失败可以直接丢弃整棵候选树；Start 后的资源和 binding 才由 Runtime 统一回滚。
 
-`EventDefinition[E Event]` 固定 canonical name、owner token 与 delivery policy。`EventObserver[E]` 是命名对象，通过 `ObserveEvent(context.Context, E) error` 接收已经发生的 fact。`DeliveryOrdered` 按 registration 顺序执行并聚合错误；`DeliveryParallel` 并发执行后聚合错误；`DeliveryBestEffort` 通过 Runtime reporter 隔离 Observer failure。Event 没有返回决策值，也不承担前置修改或短路。
+## 4. Service 依赖与激活
 
-`WaterfallDefinition[I WaterfallInput, O WaterfallOutput]` 固定一个可拦截动作。命名 `WaterfallMiddleware[I,O]` 通过 `Intercept` 包裹 `WaterfallNext[I,O]`；owner 提供 `WaterfallTerminal[I,O]` 执行真实 Workflow。每次调用先取得 root-to-current Middleware snapshot，再在锁外运行洋葱链；一个 `WaterfallNext` 对同一次调用只能 `Proceed` 一次。
+能力 owner 定义嵌入 `plugin.Service` 的最小业务 interface。Provider Plugin 直接实现 interface，并在 Manifest 声明 `Provides`；Consumer 声明 `Requires` 或 `Optional`，在 Apply 中取得 typed snapshot。
 
-Event 和 Waterfall registration 都是 Fiber 私有 Effect，Plugin 停止后不再进入新 snapshot。Publish/Run 的 `sourceScope` 表示发布者或调用者所在 Runtime 与可见性位置；global、ancestor、exact、sibling 和 descendant 的 admission 统一使用 `ScopeLineage`，不创建第二套作用域模型。
-
-## 7. Factory Catalog 与 typed config
-
-构造边界位于 `plugin/configuration` 与 `plugin/factory` 子包。能力 owner 定义嵌入 `configuration.Input` 的命名配置，`Configurator.Configure(Document)` 负责 strict decode、cross-field validation 并返回已经配置完成的 `Factory`；`Factory.Create` 只构造 Plugin。Catalog 只注册和查找 Configurator，不读取配置、不创建 Plugin，也不进入 Runtime 核心。
-
-当前 strict JSON 边界分别负责：
-
-1. token scan 拒绝任意层级 duplicate key；
-2. `encoding/json.Decoder.DisallowUnknownFields` 完成 typed decode；
-3. owner validator 检查空值、范围与字段组合；
-4. Configurator 只把已经通过上述步骤的具体类型放入 configured Factory。
-
-前两步不是重复验证：duplicate key 在标准 typed decode 中会被静默覆盖，必须由结构扫描单独拒绝；typed decode 则负责字段形态、Go 类型和未知字段。非 JSON 的 `!!js`、脚本表达式和多 JSON value 在入口直接失败，不进入 Factory 或 Runtime。
-
-shipped Catalog 当前只有：
-
-- `@deepseek-ai/dsh-host-apiproxy`；
-- `@deepseek-ai/dsh-client-connection` 的 Host half；
-- `@deepseek-ai/dsh-agent-default-model` 的 deployment default Provider；
-- `@deepseek-ai/dsh-llm` 的 provider-neutral Runtime Provider；
-- `@deepseek-ai/dsh-llm-deepseek` 的 direct DeepSeek Adapter Consumer；
-- `@deepseek-ai/dsh-llm-retry` 的默认 RetryPolicy Consumer；
-- `@deepseek-ai/dsh-session` 的内存 LiveStore Provider；
-- `@deepseek-ai/dsh-session-persistence` 的 `SessionLogStore`，内部装配默认 SQLite fact Backend；
-- `@deepseek-ai/dsh-session-projection` 的内存 Registry Provider；
-- `@deepseek-ai/dsh-session-title` 的 log-backed Title Provider；
-- `@deepseek-ai/dsh-system-prompt` 的 Registry/Assembly Provider；
-- `@deepseek-ai/dsh-tools` 的 Native Registry/Execution Provider；
-- `@deepseek-ai/dsh-agent` 的 live Registry/Inbox contract Provider；
-- `@deepseek-ai/dsh-agent-loop` 的 concrete Agent lifecycle 与 request driver Provider；
-- `@deepseek-ai/dsh-user-approval` 的 policy/audit Provider；
-- `@deepseek-ai/dsh-user-questions` 的 question Provider Registry；
-- `@deepseek-ai/dsh-tool-ask-user` 的 `ask_user_question` Tool Consumer；
-- `@deepseek-ai/dsh-workspace` 的 Registry，内部装配默认 SQLite Workspace Backend；
-- `@gorenx/dsh-web` 的极简内嵌 Web `http.Handler` Provider。
-
-SQLite adapter 不单独注册 Factory，不提供 storage Service，也没有独立 Plugin Scope；Session Persistence 和 Workspace 两个能力插件各自构造并拥有自己的 adapter。Connection Factory 虽然沿用源 npm canonical name，但只实现服务端 Host carrier，不包含 `WebApiClient`、`ConnectionController` 或页面代码；它通过私有 `webFrontend` Service 消费根级 `web.Site`。原版 Web runtime、SDK、Tools Code Mode、ACP、MCP、Typert 与其他 Deferred 能力不在 Catalog 或依赖闭包。
-
-## 8. 当前 server 组合流程
-
-默认 declarations 按 Connection、API Proxy、Tool Ask User、Agent Default Model、LLM Retry、Session Title、Session Projection、Agent Loop、Approval、UserQuestions、Agent、LLM、DeepSeek、System Prompt、Tools、Session、Session Persistence、Workspace、Web 声明。Consumer 故意出现在部分 Provider 之前，以证明 Runtime 按 Service graph 而不是文件顺序工作：
-
-```text
-cmd/goren
-  -> assembly.NewCatalog(Environment{cwd})
-  -> assembly.DefaultSpecs(listen, version, sessionDB, workspaceDB)
-  -> connection Factory.Create
-  -> Connection StateWaiting (requires apiProxy/webFrontend)
-  -> API Proxy StateWaiting (requires agents/agentDefaultModel/llm/sessions/sessionPersistence/sessionProjections/sessionTitle/userQuestions/workspaceRegistry)
-  -> Tool Ask User StateWaiting (requires tools/userQuestions)
-  -> Agent Default Model Factory.Create + Apply
-       -> static deployment selection + Provide(agentDefaultModel)
-  -> LLM Retry StateWaiting (requires agents)
-  -> Session Title StateWaiting (requires sessions/sessionProjections/llm when LLM title is configured)
-  -> Session Projection Factory.Create + Apply
-       -> DriveRegistry + Provide(sessionProjections)
-  -> Agent Loop StateWaiting (requires agents/sessions/llm/tools/systemPrompt)
-  -> Approval StateWaiting (requires systemPrompt)
-  -> UserQuestions Factory.Create + Apply
-       -> live optional Agent resolver + Provide(userQuestions)
-  -> Agent Factory.Create + Apply
-       -> live Registry + Provide(agents)
-  -> Runtime settles LLM Retry
-       -> install provider-routed request retry Consumer
-  -> LLM Factory.Create + Apply
-       -> provider-neutral Runtime + Provide(llm)
-  -> DeepSeek Factory.Create + Apply
-       -> Require(llm)
-       -> register configurable provider + adapter route
-  -> System Prompt Factory.Create + Apply
-       -> promptStore + promptAssembler + built-in sections
-       -> Provide(systemPrompt)
-  -> Runtime settles Approval
-       -> policy/audit Runtime + Provide(approval)
-  -> Tools Factory.Create + Apply
-       -> Require(systemPrompt)
-       -> toolStore + toolRegistry
-       -> register ToolProvider projection with System Prompt
-       -> Provide(tools)
-  -> Runtime settles Tool Ask User
-       -> Require tools/userQuestions
-       -> register ask_user_question Tool
-  -> Session Factory.Create + Apply
-       -> MemoryStore + Provide(sessions)
-  -> Runtime settles Session Persistence
-       -> construct SQLite Backend + SessionLogStore
-       -> Provide(sessionPersistence)
-  -> Runtime settles Workspace
-       -> construct SQLite Backend + DurableRegistry
-       -> Provide(workspaceRegistry)
-  -> Web Factory.Create + Apply
-       -> embedded web.Site + Provide(webFrontend)
-  -> Runtime settles Session Title
-       -> register title projection + event/llm observers
-       -> construct configured First-Prompt or All-Prompts LLMProvider inside the same Plugin
-       -> Provide(sessionTitle)
-  -> Runtime settles Agent Loop
-       -> Require five capability Services
-       -> register concrete Factory with agents
-       -> Provide(agentLoop)
-  -> Runtime settles API Proxy
-       -> Require agents/agentDefaultModel/llm/sessions/sessionPersistence/sessionProjections/sessionTitle/userQuestions/workspaceRegistry
-       -> apiproxy/session Gateway + WorkspaceGateway + host.describe + session.*/workspace.* methods
-       -> InteractionGateway + approval/question pending/respond/replay
-       -> real Mux/Host EventStreams
-       -> Provide(apiProxy)
-  -> Runtime settles Connection
-       -> Require(apiProxy/webFrontend)
-       -> NewHTTPHost with browser fallback handler
-       -> pre-bind TCP listener
-       -> Connection Plugin.Apply starts Echo Serve
-       -> Provide(webServer)
-  -> fixed TypeScript client can call HTTP/WebSocket contract
-  -> browser can open the embedded main-conversation UI
+```mermaid
+flowchart TD
+    Admit[admit complete tree] --> Resolve[resolve nearest Providers by Scope]
+    Resolve --> Missing{required Provider declared}
+    Missing -- waiting --> Later[wait for Provider activation]
+    Missing -- absent --> Fail[start failure]
+    Missing -- active --> Apply[Plugin Apply]
+    Apply --> Publish[atomically publish bindings]
+    Publish --> Reconcile[reconcile waiting Consumers]
 ```
 
-预绑定 listener 让地址占用和权限错误在 Plugin activation 内同步失败，而不是让 goroutine 启动后才产生不可归属的异步错误。`apiProxy` 同时暴露 Connection 所需的 `RPCDispatcher` 与 `EventSource` facet；具体 `apiproxy.Catalog` 和 `EventStreams` 不越过 assembly boundary。
+声明列表只决定 mount ordinal，不决定依赖启动顺序。Provider 不可用时，已声明的 Consumer 等待；整个启动批次最终仍无法满足时，Start 失败并回滚。Provider 卸载或替换时，Runtime 先停止依赖方，再重新结算仍挂载的 Consumer。
 
-## 9. 隔离与后续能力进入
+`Require`/`Resolve` 只在 Runtime 调用该 Plugin `Apply` 时开放；Apply 保存得到的业务 interface，运行期普通调用不再查 Runtime。
 
-当前 Scope 已表达 Plugin instance ownership、effect-owned Child Scope、opaque lineage 和 scoped listener filter；System Prompt、Tools 与 Agent events 已直接复用它完成 overlay、restriction 与 subject isolation，LLM/DeepSeek route contribution 也由 Provider Scope 精确拥有。Agent 的详细边界见[14 Agent Registry、Inbox 与实时事件模块设计](./14-agent-registry-inbox-and-events.md)。当前尚未实现同一 Service 的 label isolation；只有出现真实多实例 resolution Consumer 时才扩展现有 Service resolution，不得另用 `context.Context.Value`、全局 map 或第二套 Registry。
+## 5. Main、Commit 与 Connection
 
-LLM Runtime 与 DeepSeek Provider 的本地职责、调用链和失败边界见[13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)。
+默认业务 Plugin 都属于 `ActivationMain`。Connection 是唯一 `ActivationCommit` Plugin，因为它在 TCP 端口上暴露外部流量：
 
-新能力进入 shipped composition 时必须同时提供 canonical Factory name、owner-defined typed config、Manifest dependencies、幂等 Plugin `Dispose`、失败 rollback 测试和 Excluded/Deferred 审计。Storage、Agent、Session 或 Tool 业务不能放入 assembly Factory 以绕开其能力 owner。
+```mermaid
+flowchart TD
+    Main[activate every Main Plugin] --> Ready{all Main active}
+    Ready -- no --> Rollback[rollback without external endpoint]
+    Ready -- yes --> Bind[Connection Apply pre-binds listener]
+    Bind --> Serve[start Echo for Plugin Lifetime]
+    Serve --> Accept[server accepts requests]
+```
+
+Connection Manifest 依赖 `apiproxy.Service`，启用 Web 时再依赖 `web.Frontend`。它在 Apply 内构造 Echo carrier、同步 `net.Listen`，然后以 `plugin.Lifetime` 启动 Serve。端口占用或权限错误因此属于 activation failure，而不是无 owner 的 goroutine 错误。
+
+停止时 Runtime 先撤销 Connection 的调用资格并取消 lifetime；Connection 等待 Echo 和 WebSocket downlink 清理。调用方 deadline 到期时关闭 listener 和 sockets，并把 deadline、serve 与 cleanup 错误聚合返回。Connection 不提供 Service，避免 Main Consumer 反向依赖 commit phase。
+
+## 6. 调用准入与停机
+
+Event 和 Waterfall dispatch 会把 source Fiber 与所有目标 Fiber 一次性纳入调用 gate。Runtime 在锁内完成 route snapshot 和准入，在锁外调用业务代码。
+
+```mermaid
+flowchart TD
+    Dispatch[snapshot route] --> Admit[admit participating Fibers]
+    Admit --> Invoke[invoke outside Runtime lock]
+    Stop[Unload Replace Shutdown] --> Hide[withdraw bindings close gates]
+    Hide --> Cancel[cancel Fiber lifetime and invocation Context]
+    Cancel --> Drain[wait admitted calls]
+    Invoke --> Release[release admission]
+    Release --> Drain
+    Drain --> Dispose[Plugin Dispose]
+```
+
+普通 `Run` 在调用返回时自动释放。LLM 的惰性 `ChunkStream` 使用 `RunRetained`，并由 `invocationChunkStream` 在流完成、失败或关闭时自动 `Release`。Release 只结束该次调用，不是停机 API。外部不需要、也不能手工执行 Runtime 的调用准入与排空。
+
+生命周期回调或 Event/Waterfall handler 同步修改同一 Runtime 拓扑会返回 `ErrTopologyMutation`。调用方可在回调返回后再发起 mount、replace 或 unload。
+
+## 7. Scope、Child 与 replacement
+
+声明式 Child 由父 Plugin 在 Manifest 中持有。`SameScope` 共享父 Scope；`NestedScope` 创建私有子 Scope。运行期确有动态子生命周期时，才使用 `MountChild`、`MountScopedChild` 与 `UnloadChild`。
+
+Scope 路由规则是：Service 与 Event 从 source 向 root 查找，Waterfall 从 root 向 source组装。最近 Service Provider 覆盖祖先；Event 的 exact/ancestor/global Observer 可见；sibling 和 descendant 不可见。
+
+Replacement 校验完整 Main 子树的名称、Service、Event、Waterfall 与子拓扑契约。候选先在私有 binding 视图准备；失败不影响旧实例，成功才切换 binding 并重新激活依赖方。包含 Commit 节点的子树禁止 replacement。
+
+## 8. 默认 Factory 与部署顺序
+
+shipped Catalog 注册以下静态 Factory：
+
+- Agent、Agent Default Model、Agent Loop；
+- Session、Session Persistence、Session Projection、Session Query、Session Title；
+- LLM、DeepSeek、LLM Retry；
+- System Prompt、Tools、Approval、UserQuestions、Tool Ask User；
+- Workspace、Web、API Proxy、Connection Host。
+
+SQLite adapter 不单独成为 Plugin 或 Factory。Session Persistence 与 Workspace Factory 只把 SQLite opener 放进各自能力 Plugin；数据库在 Plugin Apply 中打开，并由该 Plugin Dispose。
+
+`DefaultSpecs` 当前按业务阅读顺序声明 Main Plugin，最后声明 Web、API Proxy 和 commit-phase Connection。正确性不依赖这个顺序：Runtime 仍按 Service graph 结算。
+
+原版浏览器 Connection runtime、SDK、Tools Code Mode、ACP、MCP、Typert auxiliary endpoint 和脚本配置没有进入 Catalog，也没有占位 Plugin。
+
+## 9. 失败与诊断
+
+- Factory strict decode 失败：没有 Plugin，没有运行时清理；
+- BuildServer 中途失败：未激活对象树直接丢弃；
+- Main Apply 或 binding 校验失败：完整启动批次逆序回滚，不激活 Connection；
+- Commit Apply 失败：先清理部分外部资源，再回滚 Main 树；
+- Event BestEffort、LLM observer、Session post-commit/background write 和 Title async failure：由 `assembly.Diagnostics` 适配到进程 sink，策略仍属于原 owner；
+- Shutdown：先 commit、再 dependent/child、最后 provider，聚合 cleanup error。
+
+`Runtime.Status`/`Statuses` 只暴露 mount/fiber identity、状态、依赖、Service、Event、Waterfall、缺失依赖和最后错误，不暴露 Registry 或业务实例。
+
+## 10. 实现与验证证据
+
+| 行为 | 实现 | 验证 |
+| --- | --- | --- |
+| 完整树准入与回滚 | `plugin/tree.go`、`runtime_activation.go` | `plugin/tree_test.go`、`runtime_test.go` |
+| Service graph | `plugin/dependency.go`、`service.go` | `plugin/runtime_test.go` |
+| Event/Waterfall dispatch | `plugin/event.go`、`waterfall.go` | 对应 package tests 与 `plugin/example` |
+| 调用准入与 retained stream | `plugin/invocation.go`、`llm/runtime_service.go` | Plugin/LLM race tests |
+| Factory strict boundary | `plugin/factory`、各领域 `factory` | Factory tests、`internal/assembly/assembly_test.go` |
+| detached Server composition | `internal/assembly/server.go`、`catalog.go` | assembly tests、默认主链 contract test |
+| Connection commit lifecycle | `internal/connection/plugin.go` | connection 与 assembly tests |
+| 固定源 observable contract | `tests/contract` | `go test -tags=contract` 对固定 Harness checkout |
+
+更细的完成状态和命令证据只在[08 实施进度](./08-implementation-progress.md)维护，避免本文成为第二份进度表。

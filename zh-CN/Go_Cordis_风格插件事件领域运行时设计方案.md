@@ -1,505 +1,306 @@
 # Go Cordis 风格通用 Plugin 事件领域运行时设计方案
 
-状态：Plugin 核心重构已实现，其他领域迁移尚未开始
+状态：Implemented，2026-08-20 已按当前实现复核
 
-## 1. 系统定位
+## 1. 定位与设计目标
 
-本框架是一个面向 Go 服务开发的静态 Plugin Runtime：
+Goren 的 `plugin` 是可独立使用的 Go 服务模块运行时。它组合五项能力：
 
-    Plugin Runtime
-      = Plugin 生命周期
-      + typed Service 依赖
-      + scoped 可见性
-      + Waterfall 洋葱扩展
-      + typed Event 事实分发
-      + 可逆运行时贡献
+```text
+Plugin 生命周期
+  + typed Service 依赖
+  + Scope 可见性
+  + Waterfall 洋葱扩展
+  + typed Event 事实分发
+```
 
-DeepSeek Harness 和 Cordis 只用于核对责任与运行语义，不作为 Go API 和目录结构模板。Go 实现必须利用静态类型、接口和显式对象方法，不能翻译 TypeScript 的 Context 链、对象字面量服务或函数工厂。
+DeepSeek Harness 和 Cordis 只用于核对责任与运行语义，不是 Go API 或目录结构模板。Go 实现采用静态链接、具名类型、接口和对象方法，不翻译 TypeScript 的 Context 链、对象字面量服务、函数工厂或动态 Profile。
 
-Goren 是该框架的首个使用者，但 plugin 包不能依赖 Agent、Session、LLM、Tools、HTTP、数据库等业务或基础设施实现。
+设计目标是：
 
-## 2. 设计目标
+- Plugin 本身就是服务模块对象，不需要 `Define` 或只负责转发的包装 Plugin；
+- Service 方法和应用服务拥有主流程，Waterfall 与 Event 只占据明确扩展点；
+- Runtime 独占 Fiber、Scope、依赖图、binding、调用准入和回滚状态；
+- Service 使用业务 interface，Event 和 Waterfall 输入输出使用具名业务类型；
+- 公共泛型约束使用 `Service`、`Event`、`WaterfallInput`、`WaterfallOutput`，不使用 `any`；
+- 启动、替换或停止失败不会留下可见 Service、Observer 或 Middleware；
+- Goren 业务不能反向侵入通用 `plugin` 包。
 
-### 2.1 Plugin 就是服务模块对象
+本框架不负责动态代码加载、配置文件读取、脚本求值、Event Store、消息队列、RPC、HTTP、数据库或任意方法拦截。
 
-一个对象可以同时实现：
-
-- Plugin 生命周期；
-- 一个或多个业务 Service interface；
-- EventObserver；
-- WaterfallMiddleware。
-
-不为同一个对象额外创建 ProviderPlugin、ModulePlugin、DefinePlugin 或只负责转发的包装类型。
-
-### 2.2 业务主流程保持显式
-
-Service 方法和应用 Workflow 仍然拥有主调用链。Waterfall 只包裹 owner 明确开放的动作，Event 只传播 owner 已经提交的事实。
-
-### 2.3 Runtime 独占运行时状态
-
-Fiber、Scope、依赖快照、Registry、Effect stack 和 contribution publication 全部由 Runtime 管理。Service 对象不接收或保存公开的 Plugin Context、Scope、Registration 或 disposer。
-
-### 2.4 Go 静态类型安全
-
-Service 使用具备业务含义的 interface；Event、Waterfall input/output 使用命名类型。公共泛型约束必须是 Service、Event、WaterfallInput、WaterfallOutput，不能使用 any 或空 interface。
-
-### 2.5 失败可回滚
-
-启动失败必须撤销本次批次已经激活的 Plugin。每个 Fiber 停止时先隐藏其 Runtime 贡献，再调用 Plugin.Dispose，不能留下孤儿 listener、middleware、service binding 或后台任务。
-
-## 3. 非目标
-
-首版不负责：
-
-- Go 标准库 plugin、动态 so、WASM 或远程代码加载；
-- Cordis Profile、JavaScript 配置求值或表达式插值；
-- Event Store、消息队列、跨进程事件和 Event Sourcing 基础设施；
-- 自动拦截任意 Go 方法；
-- 通过字符串或任意类型实现全局 Service Locator；
-- 为旧 Plugin API 保留兼容层；
-- 把 Catalog、配置读取和 Plugin 实例化塞进 Runtime。
-
-## 4. 统一术语
+## 2. 术语与职责
 
 | 术语 | 含义 | 不负责 |
 | --- | --- | --- |
-| Runtime | Plugin 生命周期与贡献协调入口 | 配置读取、业务 Workflow |
-| Plugin | 一个已构造的服务模块实例 | Runtime Registry |
-| Manifest | Plugin 的完整静态贡献和依赖声明 | I/O、动态查找 |
-| Base | Plugin 内嵌的私有激活锚点 | 业务状态、公开 Context |
-| Fiber | Plugin 的一次激活实例 | 领域状态机 |
-| Scope | Service、Event、Waterfall 的可见性边界 | 业务租户模型 |
-| Effect | Runtime 私有的逆序清理记录 | 插件作者 API |
-| Service | Plugin 提供的 typed 同步业务能力 | 远程 RPC |
-| Provider | 实现并声明提供 Service 的 Plugin | Consumer Workflow |
-| Dependency | Manifest 声明的 required 或 optional Service | 任意运行时查找 |
-| Waterfall | owner 主动运行的 typed 洋葱扩展链 | 事实通知 |
-| Middleware | Waterfall 中的命名对象 | 主业务 owner |
-| Action | 一个可执行的下游动作；可以是 Runtime chain step 或最内层业务动作 | Middleware 策略 |
-| Event | owner 提交后发布的 typed fact | 历史存储、前置决策 |
-| Observer | 通过 Manifest 监听一个或多个 Event 类型的 Plugin | Event 持久化 |
-| Catalog | 已编译 Factory 的名称索引 | Plugin 启动 |
-| Factory | 拥有一个 Plugin 的具名配置、严格解码、校验和构造 | Runtime mount |
-
-不再使用 Service Definition、Event Definition、Waterfall Definition、Registration、Consumer handle 和 Plugin Context 等术语。
+| Plugin | 已构造的服务模块实例 | Runtime 内部注册表 |
+| Manifest | 无 I/O 的完整静态声明 | 动态查询或资源启动 |
+| Runtime | 生命周期、依赖和调用协调入口 | 配置读取、Plugin 构造、业务流程 |
+| Fiber | 一个 Plugin 的一次激活 | 领域状态机 |
+| Scope | Service、Event、Waterfall 的可见性边界 | 租户或业务上下文 |
+| Service | Plugin 提供的 typed 同步能力 | 远程协议 |
+| Waterfall | owner 主动运行的 typed 洋葱链 | 事实通知 |
+| Event | 已发生事实的进程内通知 | 持久化、重放、前置决策 |
+| Factory | 一个 Plugin 的严格配置解码、校验与构造边界 | mount 和生命周期 |
+| Catalog | 已静态链接 Factory 的名称目录 | 配置读取、构造、启动 |
+| Handle | Runtime 内某棵已挂载子树的身份 | 自行停止 |
+| InvocationLease | 方法返回后仍继续工作的调用租约 | Plugin 或资源生命周期 |
 
-## 5. 总体责任
+Runtime 内部可以使用 Fiber、binding 和 release stack 等实现概念，但不把 Scope、Registry、disposer 或公开 Plugin Context 交给业务对象。
+
+## 3. 模块边界
+
+```text
+plugin/
+  runtime.go, activation.go, dependency.go   生命周期与依赖结算
+  tree.go, mount.go, scope.go                私有树与可见性
+  binding.go, service.go                     Service binding
+  event.go, waterfall.go                     扩展分发
+  invocation.go                              调用准入与排空
+  diagnostics.go                             只读运行状态
+  factory/                                   构造边界
+  example/                                   公共 API 示例
+```
 
-### 5.1 Plugin
+这些文件属于同一个 `plugin` 模块，不拆成与 `plugin` 平级的 runtime、fiber、event 或 effect 模块。`factory` 是配置擦除与实例构造边界，`example` 只演示库的使用，因此保留为子包。
 
-Plugin 只负责：
+`plugin` 不依赖 Agent、Session、LLM、Tools、HTTP 或数据库。每个业务领域自行实现 Plugin 和 Factory；应用 composition root 只选择 Factory、提供配置并构造根 Plugin。
 
-- 返回确定、无 I/O 的 Manifest；
-- 在 Apply 中取得已声明的依赖并启动自身资源；
-- 在 Dispose 中幂等关闭自身资源；
-- 通过自己的业务方法执行 Workflow；
-- 在逻辑提交后主动 Publish Event；
-- 在明确扩展点主动 Run Waterfall。
+## 4. Plugin 公共契约
 
-Plugin 不负责注册和撤销 Service、Observer、Middleware。Runtime 根据 Manifest 自动完成。
+### 4.1 生命周期
 
-### 5.2 Runtime
+```go
+type Plugin interface {
+    RuntimePlugin() *Base
+    Manifest() Manifest
+    Apply(context.Context) error
+    Dispose(context.Context) error
+}
+```
 
-Runtime 负责：
+每个 Plugin 以指针对象嵌入 `plugin.Base`。`Base` 只是 Runtime 的私有激活锚点，不是业务 Context。
 
-- 批量接纳并校验 Manifest；
-- 校验 Plugin 是否实现声明的 Service 和统一 EventObserver，以及 Waterfall contribution 是否持有有效 Middleware；
-- 建立 Scope 与 Service 依赖关系；
-- 按依赖拓扑激活 Fiber；
-- 自动发布和撤销 Runtime 贡献；
-- 管理 parent/child 生命周期；
-- dependent-first stop；
-- replacement；
-- diagnostics；
-- 逆序回滚和错误聚合。
+`Manifest` 必须确定、无 I/O，Runtime 在构造声明树时只读取一次。`Apply` 在依赖已解析后启动 Plugin 自己的资源；`Dispose` 必须幂等并能清理部分完成的 `Apply`。长期任务观察 `plugin.Lifetime(owner)`，Runtime 会在 `Dispose` 前取消它。
 
-Runtime 不读取配置、不访问 Catalog、不构造业务 Plugin，也不调用普通 Service 业务方法。
+### 4.2 Manifest 与完整树
 
-### 5.3 Catalog 与 Factory
+```go
+type Manifest struct {
+    Name       string
+    Provides   []ServiceType
+    Requires   []ServiceType
+    Optional   []ServiceType
+    Events     []EventSubscription
+    Waterfalls []WaterfallMiddlewareBinding
+    Children   []ChildPlugin
+}
+```
 
-配置来源、Catalog 和 Runtime 是三条独立责任链：
+Manifest 声明全部运行时关系：
 
-    configuration source
-      -> Catalog.Lookup
-      -> Factory.Create(raw JSON)
-      -> Plugin instance
-      -> Runtime.Start
+- `Provides`：Plugin 对象直接实现的 Service；
+- `Requires`：缺失时不能激活的 Service；
+- `Optional`：Apply 时存在则注入、缺失也可激活的 Service；
+- `Events`：送入本 Plugin 统一 `EventObserver` 入口的 Event 类型；
+- `Waterfalls`：本 Plugin 拥有的 Middleware 对象；
+- `Children`：本 Plugin 在进入 Runtime 前已经构造好的子 Plugin。
 
-Catalog 只负责 Factory 名称唯一性和查找。每个 Factory 拥有自己的具名 Config，负责严格解码、默认值、校验和 Plugin 构造；原始配置只能存在于配置入口和 Factory 构造边界。Plugin 只接收已校验的具名配置，Runtime 只接收已经构造完成的 Plugin。
+组合型 Plugin 私有构造自己的子树，通过 `SameScope` 或 `NestedScope` 声明可见性，通过 `ActivationMain` 或 `ActivationCommit` 声明激活阶段。Runtime 不要求业务调用方构造公开 Tree，也不允许 Child 在 `Apply` 中临时补齐静态拓扑。
 
-    type Factory interface {
-        Name() string
-        Create(context.Context, json.RawMessage) (Plugin, error)
-    }
+`ActivationCommit` 只用于必须在全部 Main Plugin 激活后才能暴露的外部入口，例如监听端口。Commit Plugin 不能提供 Service，停止时先于 Main Plugin 撤销。
 
-    func NewCatalog() *Catalog
-    func (*Catalog) Register(Factory) error
-    func (*Catalog) Lookup(string) (Factory, error)
-    func (*Catalog) Names() []string
+### 4.3 Service
 
-## 6. 公共代码契约
+业务能力由 owner package 定义：
 
-### 6.1 Plugin 与 Base
+```go
+type Clock interface {
+    plugin.Service
+    Now() time.Time
+}
+```
 
-    type Plugin interface {
-        RuntimePlugin() *Base
-        Manifest() Manifest
-        Apply(context.Context) error
-        Dispose(context.Context) error
-    }
+Provider Plugin 直接实现该接口，并在 Manifest 中声明 `plugin.ServiceOf[Clock]()`。Consumer 先在 Manifest 声明 `Requires` 或 `Optional`，然后只在 `Apply` 中调用：
 
-    type Base struct {
-        // private activation binding
-    }
+```go
+clock, err := plugin.Require[Clock](consumer)
+optionalClock, ok := plugin.Resolve[Clock](consumer)
+```
 
-每个 Plugin 以指针对象嵌入 Base。Base 只保存 Runtime 私有绑定，不公开 Fiber、Scope 或 Registry。
+`Require`/`Resolve` 不是 Service Locator：只能读取当前 Fiber 已结算且已声明的依赖快照，`Apply` 返回后立即关闭。业务方法使用保存的 Go interface，调用链不再经过 Runtime。
 
-Apply 的 context.Context 只描述本次启动调用。长期后台任务使用：
+Service 身份来自 `reflect.TypeFor[S]()` 对应的具名 interface 类型。这里使用反射是因为删除 Definition 单例后，共同导入业务 interface 的 Provider 和 Consumer 必须得到同一类型键；Runtime 不通过反射调用业务方法、创建 Plugin 或解码业务值。每次创建一个 `key struct{ marker byte }` 只能得到对象身份，反而要求共享 Definition 实例，不适合当前 API。
 
-    plugin.Lifetime(pluginInstance)
+### 4.4 Event
 
-Runtime 在 Dispose 前取消 lifetime。
+Event 是具名 struct，并在零值上提供稳定元数据：
 
-### 6.2 Manifest
+```go
+type CounterAdvanced struct {
+    Value int
+}
 
-    type Manifest struct {
-        Name       string
-        Provides   []ServiceType
-        Requires   []ServiceType
-        Optional   []ServiceType
-        Events     []EventSubscription
-        Waterfalls []WaterfallContribution
-    }
+func (CounterAdvanced) EventName() string {
+    return "counter/advanced"
+}
 
-Manifest 是完整声明：
+func (CounterAdvanced) EventDelivery() plugin.DeliveryPolicy {
+    return plugin.DeliveryOrdered
+}
+```
 
-- Provides：Runtime 自动把 Plugin 对象作为 Service Provider；
-- Requires：Provider 不可用时阻止 Apply；
-- Optional：Apply 时取得可见 Provider snapshot，不阻止启动；
-- Events：Runtime 把每个声明的 Event 类型绑定到同一个 Plugin 级 EventObserver 入口；
-- Waterfalls：Runtime 绑定 Plugin 在 contribution 中明确给出的 WaterfallMiddleware 对象。
+一个监听 Plugin 只实现一个 `ObserveEvent(context.Context, plugin.Event)` 入口，却可以在 Manifest 中声明多个 `plugin.EventOf[E]()`。Runtime 只投递显式声明的类型；Plugin 内用 type switch 转给具名业务方法。每个 Event 类型的名称和投递策略必须恒定。
 
-Manifest 返回后，Plugin 不再执行 Provide、Observe、Use 等注册动作。
+事实 owner 在逻辑提交后调用 `plugin.Publish`。事件从 source Scope 向 root 路由：局部 Observer 先于祖先。`DeliveryOrdered` 顺序执行并返回首个失败；`DeliveryParallel` 并发执行并聚合失败；`DeliveryBestEffort` 报告失败但不让发布者失败，因而 Runtime 必须配置 `EventFailureReporter`。
 
-### 6.3 类型身份
+Event Sourcing 与事件分发是两件事：Session 等业务 owner 可以先向自己的 append-only log 追加事实，再按需发布进程内 Event。Plugin Runtime 不保存、不重放、不 flush Event。
 
-    plugin.ServiceOf[Clock]()
-    plugin.EventOf[CounterAdvanced]()
-    plugin.WaterfallOf[Request, Response](middleware)
+### 4.5 Waterfall
 
-ServiceOf 和 EventOf 创建类型描述；WaterfallOf 同时携带 Plugin 拥有的 Middleware 对象。它们都不创建 Runtime Definition，也不持有注册状态。
+```go
+type WaterfallAction[I WaterfallInput, O WaterfallOutput] interface {
+    Execute(context.Context, I) (O, error)
+}
 
-内部使用 reflect.TypeFor[T] 建立 Go 类型身份，原因是删除全局 Definition 后，Provider 和 Consumer 只能通过共同的业务类型取得同一个键。反射仅用于类型键和校验：
+type WaterfallMiddleware[I WaterfallInput, O WaterfallOutput] interface {
+    Intercept(context.Context, I, WaterfallAction[I, O]) (O, error)
+}
+```
 
-- 不使用 reflect.Value 调用业务方法；
-- 不通过反射创建 Plugin；
-- 不通过反射解码业务值；
-- Registry 中的值仍是 Service、Event 和 typed adapter。
+输入和输出嵌入对应 Base marker，必须是具名业务类型。Plugin 在 Manifest 中用 `WaterfallOf[I, O](middleware)` 声明自己拥有的 Middleware。owner 在明确扩展点调用 `plugin.Run`，由 root 到 source 形成洋葱链。
 
-各机制使用独立私有键：
+最内层业务动作和每一层 Runtime step 都是 `WaterfallAction`，不再拆出 Terminal、Middleware Next、Callback 三套相同协议。每个下游 step 只能执行一次，Middleware 可以改写输入或输出、短路或返回错误。
 
-    serviceKey   = Service interface type
-    eventKey     = Event struct type
-    waterfallKey = input type + output type
+标准顺序是：
 
-### 6.4 Service
+```text
+Service method
+  -> Run Waterfall
+  -> innermost Action 执行业务流程
+  -> owner 完成逻辑提交
+  -> Publish Event
+```
 
-业务 Service interface 嵌入 plugin.Service：
+Waterfall 可以影响动作，Event 只通知已经发生的事实，二者不会自动互相转换。
 
-    type Clock interface {
-        plugin.Service
-        Now() time.Time
-    }
+### 4.6 RunRetained 与 Release
 
-Provider 对象直接实现 Clock 和 Plugin：
+普通 `Run` 在 `Execute` 返回时释放参与调用的 Fiber 准入。对于 `ChunkStream` 一类惰性结果，方法已经返回但读取、取消或关闭仍在调用 Plugin 代码，立即释放会允许 Runtime 提前 Dispose 参与者。
 
-    type ClockPlugin struct {
-        plugin.Base
-    }
+`RunRetained` 因此返回 `InvocationLease`：
 
-    func (*ClockPlugin) Manifest() plugin.Manifest {
-        return plugin.Manifest{
-            Name: "clock",
-            Provides: []plugin.ServiceType{
-                plugin.ServiceOf[Clock](),
-            },
-        }
-    }
+- `lease.Context()` 在调用方或任一参与 Plugin 停止时取消；
+- 结果到达终态、读取失败或显式关闭时，结果包装器调用 `lease.Release()`；
+- `Release` 幂等，只结束这次调用并允许 Fiber 排空，不停止 Plugin、服务、网络连接或业务资源；
+- 普通 Plugin 不需要使用它；当前 LLM Runtime 在流包装器内自动管理，业务调用方看不到租约。
 
-依赖方必须先声明 Requires，再在 Apply 中获取：
+这是惰性调用的生命周期正确性机制，不是新增业务功能。
 
-    func (serviceOwner *Scheduler) Apply(context.Context) error {
-        clock, err := plugin.Require[Clock](serviceOwner)
-        if err != nil {
-            return err
-        }
-        serviceOwner.clock = clock
-        return nil
-    }
+## 5. Runtime 核心流程
 
-Require 不是任意 Service Locator：
+### 5.1 启动
 
-- owner 必须是当前正在 Apply 的 Plugin；
-- Service 必须存在于 Manifest.Requires；
-- 结果来自 Runtime 已解析的当前 Fiber dependency snapshot；
-- Apply 返回后 Require 关闭；
-- 普通业务调用直接进入保存的 Go interface，不经过 Runtime。
+```mermaid
+flowchart TD
+    Root[complete detached Plugin roots] --> Snapshot[snapshot every Manifest once]
+    Snapshot --> Validate[validate identity topology contracts]
+    Validate --> Admit[admit complete batch privately]
+    Admit --> Main[settle dependencies and activate Main Fibers]
+    Main --> Ready{all Main active}
+    Ready -- no --> Rollback[rollback complete batch]
+    Ready -- yes --> Commit[activate Commit Fibers]
+    Commit --> Active[return root Handles]
+```
 
-Optional 使用 plugin.Resolve[S]，且只能解析 Manifest.Optional。
+Runtime 根据 Service 图激活 Provider 和 Consumer，不依赖声明顺序。`Apply` 只在 Fiber 为 `starting` 时取得依赖；成功后 Runtime 原子发布 Service、Event 和 Waterfall binding。任一节点失败，整批按依赖安全的逆序回滚并调用已进入 Apply 的 Plugin `Dispose`。
 
-### 6.5 Event
+### 5.2 动态挂载与替换
 
-Event 自己提供稳定名称和投递策略：
+`Mount` 增加 root Plugin；`MountChild` 在父 Scope 挂载 Child Fiber；`MountScopedChild` 创建一个嵌套 Scope。Plugin 内确有动态子生命周期时，可以使用对应的 package 函数，由 Runtime 验证当前 parent 身份。
 
-    type CounterAdvanced struct {
-        Value int
-    }
+`Replace` 只接受名称、Service、Event、Waterfall 和子树契约兼容的候选 Main 子树。Runtime 在私有视图准备候选，失败时保持旧树；成功时停止依赖方、切换 binding、停止旧树并重新结算依赖。含 Commit 节点的子树不能替换，因为任意外部副作用无法承诺通用原子回滚。
 
-    func (CounterAdvanced) EventName() string {
-        return "counter/advanced"
-    }
+### 5.3 停止、调用准入与排空
 
-    func (CounterAdvanced) EventDelivery() plugin.DeliveryPolicy {
-        return plugin.DeliveryOrdered
-    }
+```mermaid
+flowchart TD
+    Stop[Unload Replace Shutdown] --> Hide[withdraw bindings and close new admission]
+    Hide --> Cancel[cancel Fiber lifetime and admitted invocation contexts]
+    Cancel --> Drain[wait admitted Event Waterfall retained calls]
+    Drain --> Dispose[call Plugin.Dispose]
+    Dispose --> Detach[detach Base and finish Fiber]
+```
 
-Observer Plugin 只实现一个统一入口：
+停止顺序是 dependent-first、child-first；Commit Fiber 先于 Main Fiber。Runtime 在锁内只取得路由快照和调用租约，在锁外调用 Plugin、Observer、Middleware、Action 和 reporter。生命周期回调中同步修改同一个 Runtime 的拓扑会返回 `ErrTopologyMutation`，避免重入死锁。
 
-    type EventObserver interface {
-        ObserveEvent(context.Context, Event) error
-    }
+外部只调用 `Runtime.Unload`、`Replace` 或 `Shutdown`。`Handle` 没有 `Stop`，业务对象也不调用“准入”或“排空”；这些是 Runtime 的自动控制。
 
-一个 Plugin 可以在 Manifest.Events 中声明多个 `EventOf[E]()`。Runtime 校验 Plugin 实现了 EventObserver，再把每个声明类型绑定到同一入口；未声明的 Event 不会送达，同一 Plugin 重复声明同一 Event 类型会在 admission 时失败。
+### 5.4 Scope 路由
 
-Plugin 在统一入口中只做类型分派，真实业务处理保持为具名方法：
-
-    func (observer *ProjectionPlugin) ObserveEvent(
-        requestContext context.Context,
-        fact plugin.Event,
-    ) error {
-        switch typedFact := fact.(type) {
-        case CounterAdvanced:
-            return observer.onCounterAdvanced(requestContext, typedFact)
-        case CounterReset:
-            return observer.onCounterReset(requestContext, typedFact)
-        default:
-            return fmt.Errorf("unsupported Event %q", fact.EventName())
-        }
-    }
-
-事实 owner 在逻辑提交后发布：
-
-    plugin.Publish(requestContext, serviceOwner, CounterAdvanced{
-        Value: value,
-    })
-
-Event 路由从 source Scope 到 root Scope。一次发布先取得 Observer 快照，再在 Runtime 锁外调用 Observer。
-
-DeliveryOrdered 顺序调用并返回首个错误；DeliveryParallel 并行调用并聚合错误；DeliveryBestEffort 并行调用、通过 EventFailureReporter 报告失败并向发布者返回成功。声明 BestEffort Observer 的 Runtime 必须配置 reporter，否则 Plugin admission 失败，不能静默丢失错误。
-
-### 6.6 Waterfall
-
-    type WaterfallAction[I WaterfallInput, O WaterfallOutput] interface {
-        Execute(context.Context, I) (O, error)
-    }
-
-    type WaterfallMiddleware[I WaterfallInput, O WaterfallOutput] interface {
-        Intercept(context.Context, I, WaterfallAction[I, O]) (O, error)
-    }
-
-Plugin 在 Manifest.Waterfalls 声明 `WaterfallOf[I, O](middleware)`，Runtime 绑定该 Plugin 拥有的具名 Middleware 对象。Middleware 可以就是 Plugin 本身，也可以是 Plugin 内部的独立策略对象。动作 owner 主动调用：
-
-    plugin.Run(requestContext, serviceOwner, input, terminal)
-
-Waterfall 从 root Scope 到 source Scope 组装。业务最内层动作与 Runtime 生成的 chain step 实现同一个 WaterfallAction，不为运行位置增加 Terminal 或 Next 接口。每层可以改写 input/output、短路或传播 error；每个 Runtime chain step 只能 Execute 一次。
-
-## 7. 核心流程
-
-### 7.1 Start
-
-    Runtime.Start(all static Plugins)
-      -> normalize every Manifest
-      -> validate declared interfaces
-      -> reject exact-Scope Service conflicts
-      -> admit the whole batch
-      -> resolve required Service graph
-      -> activate providers before dependents
-      -> return only when every Plugin is Active
-
-调用方不需要手工排列 Provider 和依赖方顺序。
-
-### 7.2 Fiber 激活
-
-    create Fiber
-      -> attach private Base activation
-      -> resolve required and optional dependency snapshot
-      -> register Plugin Dispose as first private Effect
-      -> state = Starting
-      -> call Plugin.Apply outside Runtime state lock
-      -> validate contribution publication
-      -> publish Service/Event/Waterfall atomically
-      -> state = Active
-
-Starting Plugin 允许 Require/Resolve 和 Lifetime，不允许 Publish、Run 或作为可见 Provider。
-
-### 7.3 启动失败
-
-    Apply or publication fails
-      -> state = RollingBack
-      -> cancel lifetime
-      -> withdraw staged or published contributions
-      -> call Dispose
-      -> detach Base
-      -> state = Failed
-
-Runtime.Start 的任一 Plugin 失败时，整个静态批次按依赖安全顺序回滚。回滚完成后可以重新调用 Start。
-
-### 7.4 停止
-
-    Unload or Shutdown
-      -> find hard and resolved optional dependents
-      -> stop dependents and child Fibers first
-      -> state = Stopping
-      -> cancel lifetime
-      -> reverse release Effect stack
-           -> Waterfall
-           -> Event
-           -> Service
-           -> Plugin.Dispose
-      -> detach Base
-      -> state = Stopped
-
-Handle 不提供 Stop 方法。生命周期改变统一由 Runtime.Unload、Runtime.Replace 和 Runtime.Shutdown 发起。
-
-### 7.5 Scope
-
-| 机制 | 方向 | 语义 |
+| 机制 | 查找方向 | 规则 |
 | --- | --- | --- |
-| Service | source → root | 最近 Provider 覆盖祖先 |
-| Event | source → root | 局部 Observer 先于祖先 |
-| Waterfall | root → source | 外层默认策略包裹局部策略 |
+| Service | source → root | 最近的 active Provider 覆盖祖先 |
+| Event | source → root | exact、祖先、global；局部先执行 |
+| Waterfall | root → source | 祖先策略在外层，局部策略在内层 |
 
-Runtime.Start 创建 root Plugin。Runtime.MountChild(parentHandle, child) 创建一个真实 Child Fiber 和 Child Scope。Service 不保存 Scope，也不关心自己所在的 Scope。
+Scope 是 Runtime 私有对象。公开 `ScopeKey` 只出现在只读诊断和 lineage 工具中，Service 不保存 Scope，也不关心自己位于哪棵插件子树。
 
-### 7.6 Replacement
+## 6. Factory、Catalog 与 Server Assembly
 
-Replacement 必须保持完整 Manifest contract：
+配置和 Runtime 是两条独立责任链：
 
-- Plugin name；
-- Provides、Requires、Optional；
-- Event subscriptions；
-- Waterfall contributions。
+```text
+deployment config
+  -> Catalog.Lookup(factory name)
+  -> domain Factory.Create(raw JSON)
+  -> validated Plugin instance
+  -> composite Server Manifest.Children
+  -> Runtime.Start(Server)
+```
 
-Runtime 先在旧 Plugin 仍 Active 时准备候选 Plugin。候选 Apply 成功后，Runtime 停止依赖方，原子替换 Registry contribution，再 Dispose 旧 Plugin，并重新激活依赖方。候选失败时旧 Plugin 保持 Active。
+`plugin/factory.Factory` 只有 `Name` 与 `Create`。每个领域 Factory 自己拥有具名 Config、严格字段解码、默认值、组合校验和 Plugin 构造。公共 helper 只检查 JSON object、任意深度 duplicate key、空配置和 Create Context；unknown field、字段类型及业务范围仍由 owner Factory 负责。
 
-## 8. Waterfall、业务提交与 Event
+Catalog 只保证 Factory 名称唯一并提供查找，不读取配置、不创建 Plugin、不 mount，也不进入 Runtime 核心。
 
-标准业务顺序：
+Goren 的 `internal/assembly` 只做进程级编排：注册静态 Factory 白名单、形成 `PluginSpec`、调用 Factory 并构造完整 `Server` 子树。每个 Factory 名必须与返回 Plugin 的 `Manifest.Name` 一致。`cmd/goren` 创建 Catalog、Specs 和 Server 后，只把一个完整 root 交给 Runtime。
 
-    request
-      -> Service method
-      -> Run Waterfall
-      -> innermost Action executes owner Workflow
-      -> owner-defined logical commit
-      -> Publish typed Event
+## 7. 如何实现一个 Plugin
 
-Waterfall 发生在动作完成前，可以拒绝、短路和改写结果。Event 发生在逻辑提交后，只通知事实。
+必须实现：
 
-Event Sourcing 是业务 owner 的状态存储方式，不是第二类 Runtime Event：
+1. 嵌入 `plugin.Base`；
+2. 返回稳定 `Manifest`；
+3. 实现 `Apply`；
+4. 实现幂等 `Dispose`。
 
-    append owner event to authoritative log
-      -> logical commit
-      -> Publish the same typed fact when appropriate
-      -> owner-defined flush if durability is required
+按需实现：
 
-Plugin Runtime 不保存 Event，不提供 replay、projection 或 flush。
+- Service Provider：实现业务 Service interface，并声明 `Provides`；
+- Service Consumer：声明 `Requires`/`Optional`，在 Apply 中 `Require`/`Resolve`；
+- Event Observer：实现统一 `EventObserver`，声明一个或多个 `EventOf[E]()`；
+- Event Publisher：在业务逻辑提交后调用 `Publish`；
+- Waterfall Middleware：实现或持有 Middleware，并声明 `WaterfallOf[I, O]`；
+- Waterfall owner：以具名 Action 调用 `Run`；
+- Composite Plugin：构造 Child 实例并在 `Manifest.Children` 声明；
+- 惰性 Waterfall 输出：仅由能够把租约绑定到结果终态的 owner 使用 `RunRetained`。
 
-## 9. 模块内部组织
+如需从部署配置创建 Plugin，再在 owner 的 `factory` 子包实现 `plugin/factory.Factory`。没有配置的 Plugin 仍必须严格接受且只接受 `{}`。Plugin 本身不接触 `json.RawMessage`。
 
-plugin 是一个模块，不把核心责任拆成与 plugin 平级的目录：
+示例只见 `plugin/example`：Service、Scope 继承、Event 和 Waterfall 可以独立或组合使用，均不是每个 Plugin 的强制接口。
 
-    plugin/
-      types.go
-      runtime.go
-      fiber.go
-      scope.go
-      effect.go
-      service.go
-      event.go
-      waterfall.go
-      factory/
-      example/
+## 8. 实现不变量与证据
 
-核心 Runtime、Fiber、Scope、Effect 和 Registry 保留在同一个 plugin 包内，只按文件划分职责。factory 因为是配置解码和实例构造边界而作为子包；example 只展示 plugin 公共 API。
+- 一个 Plugin 实例同一时刻最多绑定一个 Fiber；
+- Manifest 是完整、稳定、无 I/O 的声明；
+- 同一 exact Scope 和 Service 类型最多一个 active Provider；
+- active Plugin 的 required dependency 都指向 active Provider；
+- `Require`/`Resolve` 只在 Apply 中开放；
+- 非 active Fiber 不参与新 dispatch；
+- Service、Event、Waterfall 使用独立类型键和 Registry；
+- Runtime 不在状态锁内执行用户代码；
+- 停止先撤销可见 binding、取消调用、等待排空，再 Dispose；
+- Event 是通知机制，不是 Event Store；
+- 公共泛型 API 不使用 `any` 或 `interface{}`；
+- 不存在 Context、Definition、Provide、Observe、Use、Registration 兼容路径。
 
-## 10. 如何实现一个 Plugin
-
-### 10.1 必须实现
-
-每个 Plugin：
-
-1. 嵌入 plugin.Base；
-2. 实现 Manifest；
-3. 实现 Apply；
-4. 实现幂等 Dispose。
-
-### 10.2 按需实现
-
-- 提供 Service：实现 owner-defined Service interface，并声明 Provides；
-- 依赖 Service：声明 Requires/Optional，在 Apply 中 Require/Resolve；
-- 监听 Event：实现统一 EventObserver，并通过多个 EventOf[E]() 声明接受的 Events；
-- 扩展 Waterfall：实现或持有 WaterfallMiddleware[I, O]，并通过 WaterfallOf[I, O](middleware) 声明 Waterfalls；
-- 发布 Event：在 owner-defined commit 后调用 Publish；
-- 运行 Waterfall：在明确扩展点调用 Run；
-- 子生命周期：由 composition root 使用 MountChild。
-
-插件不需要实现与自身无关的接口。
-
-### 10.3 配置
-
-Plugin 不读取 raw config。它只接收已校验的命名配置：
-
-    type Config struct {
-        Address string
-    }
-
-Factory 负责把 raw config 严格解码为自己拥有的 Config，应用默认值、执行 Validate 并创建 Plugin。Plugin 看不到 raw config，Runtime 看不到任何配置。
-
-## 11. 不变量
-
-- I1：一个 Plugin 实例同一时刻最多绑定一个 Fiber；
-- I2：Manifest 是确定、无 I/O 的完整声明；
-- I3：同一 exact Scope 和 Service 类型最多一个 Active Provider；
-- I4：Active Plugin 的 required dependencies 全部指向 Active Provider；
-- I5：Require/Resolve 只在 Apply 中开放；
-- I6：Starting、Stopping、Stopped、Failed Fiber 不参与 dispatch；
-- I7：Service、Event、Waterfall 使用独立类型键和 Registry；
-- I8：Runtime 不在状态锁内调用 Plugin、Observer、Middleware、Action 或 reporter；
-- I9：Effect 只属于 Runtime，不进入插件作者 API；
-- I10：停止顺序是 dependent-first、child-first、contribution-first、Dispose-last；
-- I11：Event 是通知机制，不是 Event Store；
-- I12：Waterfall 不自动发布 Event；
-- I13：业务 Service interface 不暴露 Base、Fiber、Scope 或 Runtime；
-- I14：公共泛型不使用 any 或 interface{}；
-- I15：不存在 Context、Definition、Provide、Observe、Use、Registration 兼容路径。
-- I16：一个 Plugin 只有一个 EventObserver 入口，可显式声明多个 Event 类型，但不能重复声明同一类型；
-
-## 12. 当前验收边界
-
-Plugin 底座重构期间允许仓库其他领域暂时无法编译，但以下范围必须独立通过：
-
-    go test ./plugin/...
-    go test -race ./plugin/...
-    go vet ./plugin/...
-    go test ./tests/architecture
-    go build ./plugin/...
-    git diff --check
-
-example 必须覆盖：
-
-- Service 直接由 Plugin 对象提供；
-- Scope Service 继承和覆盖；
-- Service owner 发布 Event、Observer 声明一个或多个监听类型；
-- Plugin 声明其拥有的 Waterfall Middleware 和洋葱顺序。
-
-完成 Plugin 契约确认后，再按领域逐个迁移 Goren 其他模块，不增加过渡性适配代码。
+实现证据位于 `plugin/*.go`、`plugin/*_test.go` 和 `plugin/example/*_test.go`；跨语言行为证据位于 `tests/contract`，全仓状态见[08 实施进度](./08-implementation-progress.md)。Goren 默认组合见[09 Plugin Runtime 与 Server Assembly](./09-plugin-runtime-and-server-assembly.md)。

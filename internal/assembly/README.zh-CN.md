@@ -1,40 +1,46 @@
-# Server Assembly 子模块
+# Server Assembly
 
-`internal/assembly` 是服务端 composition root：把静态链接的 Plugin Factory、typed config 与 consumer/provider dependency 连接起来。权威设计见[`zh-CN/09-plugin-runtime-and-server-assembly.md`](../../zh-CN/09-plugin-runtime-and-server-assembly.md)。
+`internal/assembly` 是 Goren 进程的 composition root。权威边界见[09 Plugin Runtime 与 Server Assembly](../../zh-CN/09-plugin-runtime-and-server-assembly.md)，完成证据见[08 实施进度](../../zh-CN/08-implementation-progress.md)。
 
-## 职责
+## 职责与非职责
 
-- 注册 shipped Factory Catalog；
-- 严格解码每个插件的 typed config；
-- 声明 `Provides/Requires/Optional`；
-- 构造 Provider/Consumer 并通过 Plugin Runtime 结算；
-- 将根级 `web.Site` 作为私有 `webFrontend` Service 接入默认 Connection；
-- 组合默认 server slice，失败时反向卸载本次已声明插件。
+本包负责：
 
-本包不拥有任何 domain 规则、wire codec、存储逻辑或动态脚本 evaluator。`!!js` 与 Typert generator 不进入 composition。
+- 把进程环境适配为各领域 Factory 所需的技术依赖；
+- 注册 shipped、静态链接的 `plugin/factory.Catalog`；
+- 形成默认 `PluginSpec` 部署声明；
+- 通过领域 Factory 构造完整且尚未激活的 `Server` Plugin 树；
+- 把多领域 contained failure 转给一个进程 diagnostics sink；
+- 向 CLI 暴露启动后的 bound address。
 
-## 工作原理
+本包不负责配置字段解码、业务 Service、Plugin 生命周期、依赖结算、Echo route、SQLite I/O、Agent Loop、Session 决策或 LLM Provider 逻辑。每项配置、默认值、验证和实例构造都属于对应领域 Factory；Runtime 自行负责 Start、回滚与 Shutdown。
+
+## 构造流程
 
 ```mermaid
 flowchart TD
-    A[PluginSpec list] --> B[Factory Catalog]
-    B --> C[strict typed config]
-    C --> D[Runtime.Load]
-    D --> E{required services active?}
-    E -- no --> F[waiting]
-    E -- yes --> G[Apply and Provide]
-    G --> H[reconcile dependents]
-    I[any load failure] --> J[unload accepted handles in reverse]
+    CLI[cmd/goren process settings] --> Env[Environment and Diagnostics]
+    Env --> Catalog[NewCatalog registers domain Factories]
+    CLI --> Specs[DefaultSpecs creates PluginSpec values]
+    Catalog --> Build[BuildServer]
+    Specs --> Build
+    Build --> Lookup[Catalog Lookup]
+    Lookup --> Factory[domain Factory Create]
+    Factory --> Tree[Server Manifest Children]
+    Tree --> Runtime[plugin Runtime Start]
 ```
 
-Session Projection 提供 `sessionProjections`；Session Title 消费 `sessions` 与 `sessionProjections` 后提供 `sessionTitle`；Session Persistence 插件消费 `sessions` 并提供 `sessionPersistence`；Workspace 插件消费 `sessions` 与 `sessionPersistence` 并提供 `workspaceRegistry`。Web 插件提供 `webFrontend`，默认 Connection 同时等待它和 `apiProxy`。Agent Loop 和 API Proxy 再按需消费其他 capability。Specs 可以故意乱序，依赖结算不能依赖文件或列表顺序。
+`PluginSpec.Config` 是 assembly 与 Factory 之间唯一的 raw JSON 边界。BuildServer 按 spec 查 Factory、调用 Create，并验证 Factory 名与返回 Plugin 的 `Manifest.Name` 一致。空 Plugin、非法 phase、重复 endpoint 或构造失败都会终止 Build；由于此时没有 Apply，不存在需要 Runtime 回滚的资源。
 
-默认 CLI 的 `--data-dir` 统一指定数据目录，Session 与 Workspace 默认分别使用其中的 `sessions.sqlite` 和 `workspaces.sqlite`；`--session-db`、`--workspace-db` 只作为具体数据库路径覆盖。根级 `Makefile` 的 `make run` 先构建 Web，再以 `DATA_DIR` 启动服务，`DATA_DIR` 默认是当前仓库目录。`SessionPersistenceConfig` 与 `WorkspaceConfig` 属于能力插件的 typed config；对应 Factory 在 composition root 内构造 SQLite `Backend` adapter，再分别连接 `SessionLogStore` 与 `DurableRegistry`。SQLite 不拥有 Factory、Manifest、Service key 或单独插件生命周期，assembly 也不实现存储、recovery 或 Workspace 业务规则。
+`Server` 只拥有拓扑。它通过 `Manifest.Children` 声明所有 Plugin 为同一 Server Scope；Connection 使用 `ActivationCommit`，其余使用 `ActivationMain`。Server 的 Apply/Dispose 不执行领域工作。
 
-## 上下游与生命周期
+## 上下游与失败
 
-- 上游：`cmd/goren` 提供进程环境和 PluginSpec。
-- 下游：`plugin.Runtime` 以及各 package 的构造函数。
-- Factory 只做 config 与 wiring；业务 interface 由 Consumer/Definition package 拥有。
+- 上游：`cmd/goren` 提供工作目录、存储路径、监听地址、版本和进程 failure sink；
+- 下游：`plugin/factory` 与各领域 Factory；构造完成后由 `plugin.Runtime` 接管；
+- Factory Create 失败：Build 返回带 Factory 名的错误；
+- Runtime Start 失败：Runtime 回滚完整 Server 树；
+- contained async failure：`Diagnostics` 只适配错误类型与上下文，不重新决定领域策略；
+- Shutdown：CLI 直接调用 Runtime，assembly 不维护第二套 Handle 列表。
 
-插件 Scope 负责 effect、service 和 listener 释放。Load transaction 中任一 create/load 失败都会反向卸载已经接受的 handle；运行时替换或 shutdown 仍由 Plugin Runtime 按依赖方向停止。
+默认 SQLite adapter 由 Session Persistence 和 Workspace Factory 以 opener 形式放入各自 Plugin，数据库在 Apply 中打开。SQLite 没有独立 Factory、Manifest 或 Service。

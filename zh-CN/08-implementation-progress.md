@@ -136,15 +136,15 @@ interaction owner registers stable rpcId + decoder
 
 | ID | 类别 | 子目标 | 执行状态 | 证据或缺口 |
 | --- | --- | --- | --- | --- |
-| S2-D01 | 交付 | Plugin `Apply/Dispose`、Factory、Manifest、Context、Scope 和 typed Definition | Completed | Go Verified：`plugin` 不公开 Effect/Disposer；提供语义泛型约束、opaque Child Scope/lineage 与 Runtime 私有 LIFO effect ownership |
-| S2-D02 | 交付 | Service graph、typed Event、typed Waterfall、rollback、replacement 和 shutdown | Completed | Go Verified：`plugin` 包内覆盖 waiting settlement、withdraw/re-provide、三种 Event delivery、scoped Waterfall、shadow replacement 与 dependent-first shutdown |
-| S2-D03 | 交付 | Factory Catalog 与静态 composition root | Completed | Go Verified：`cmd/goren -> internal/assembly -> Catalog -> Runtime`，入口不再直接拼装 Echo/API Proxy |
-| S2-D04 | 交付 | 首期 typed config 与 strict validation | Completed | Go Verified：owner config 拒绝 duplicate/unknown/type/range/combination 与多值输入，类型擦除止于 Factory Catalog；System Prompt 和 Tools 保留各自的 omitted/empty/null/default 语义 |
-| S2-D06 | 交付 | lifecycle diagnostics 和 leak-oriented tests | Completed | Go Verified：`FiberStatus` 暴露状态/effect/error；Apply failure 调用 Plugin Dispose，registration 先于 Plugin lifecycle 释放，unload 后 effect/contribution 清空 |
+| S2-D01 | 交付 | Plugin `Apply/Dispose`、Manifest、私有 Scope 和 typed Service/Event/Waterfall | Completed | Go Verified：`plugin` 不公开 Context、Effect、Disposer、Definition 或 Registration；业务泛型使用语义约束，完整 Child tree 由 Manifest 声明 |
+| S2-D02 | 交付 | Service graph、typed Event、typed Waterfall、rollback、replacement、调用排空和 shutdown | Completed | Go Verified：waiting settlement、三种 Event delivery、scoped Waterfall、shadow replacement、retained invocation 与 dependent-first shutdown 均有测试 |
+| S2-D03 | 交付 | Factory Catalog 与静态 composition root | Completed | Go Verified：`cmd/goren -> Catalog/PluginSpec -> BuildServer -> Runtime.Start(Server)`；各领域 Factory 拥有实例化，assembly 只编排 |
+| S2-D04 | 交付 | owner typed config 与 strict validation | Completed | Go Verified：owner Factory 拒绝 duplicate/unknown/type/range/combination 与多值输入，raw JSON 止于 Factory.Create；System Prompt 和 Tools 保留 omitted/empty/null/default 语义 |
+| S2-D06 | 交付 | lifecycle diagnostics 和 leak-oriented tests | Completed | Go Verified：`FiberStatus` 暴露状态、依赖、binding 与错误；Apply failure 调用 Plugin Dispose，停止先撤销 binding、取消调用并排空，再释放 Plugin 资源 |
 | S2-G01 | Gate | Service 缺失、重复、启动失败、卸载和替换有测试 | Completed | Go Verified：`plugin/runtime_test.go` |
-| S2-G02 | Gate | Event delivery 与 Waterfall 顺序和错误语义有 fixture | Completed | Go Verified：`plugin/event_test.go`、`plugin/waterfall_test.go` 覆盖 delivery、洋葱顺序、one-shot Proceed 和 Scope admission |
-| S2-G03 | Gate | Plugin 启动失败不遗留 contribution 或资源 | Completed | Go Verified：`plugin/runtime_test.go` 覆盖 registration 零发布、私有 effect LIFO 以及 partial Apply failure 后调用幂等 Plugin Dispose |
-| S2-G04 | Gate | registration 与 Child Plugin 由 Fiber effect 拥有且可撤销 | In Progress | Go Verified：Service、Waterfall、Event 和 Child Plugin 已完成；System Prompt、Tools、API Proxy 等业务调用方仍需迁移到新的 Plugin lifecycle 契约 |
+| S2-G02 | Gate | Event delivery 与 Waterfall 顺序和错误语义有 fixture | Completed | Go Verified：`plugin/event_test.go`、`plugin/waterfall_test.go` 覆盖 delivery、洋葱顺序、one-shot Execute、Scope admission 与停机排空 |
+| S2-G03 | Gate | Plugin 启动失败不遗留 binding 或资源 | Completed | Go Verified：`plugin/runtime_test.go` 覆盖 binding 零发布以及 partial Apply failure 后调用幂等 Plugin Dispose |
+| S2-G04 | Gate | Runtime binding、领域注册 Handle 与 Child Plugin 均精确可撤销 | Completed | Go Verified：Service/Event/Waterfall/Child 由 Runtime 自动拥有；System Prompt、Tools、LLM、Agent、API Proxy 以 exact idempotent Handle 撤销各自动态 entry；重启测试防止旧 Handle 删除同名新对象；`f2a54a0` |
 | S2-G05 | Gate | Excluded/Deferred 能力不进入 Catalog 或依赖闭包 | Completed | Go Verified：shipped Catalog 只新增自有 `@gorenx/dsh-web`；SQLite adapter 没有独立 Factory/Service，源 Web/client runtime、SDK、Code Mode、ACP/MCP factory 仍未注册 |
 | S2-G06 | Gate | `!!js`、未知字段、类型错误和无效组合严格失败 | Completed | Go Verified：generic、Connection、API Proxy、LLM/DeepSeek、System Prompt 与 Tools Factory config fixtures |
 
@@ -334,16 +334,16 @@ interaction owner registers stable rpcId + decoder
 | 重复连接/断开后的 source、socket 与 pump 回收 | `TestWebSocketRepeatedConnectDisconnectLeavesNoOwnedResources` |
 | 固定源与 Go HTTP success/failure precedence | `TestPinnedSourceHTTPFailuresMatchGoHost` |
 | Service waiting、动态撤回/恢复、失败回滚、替换和 shutdown | `plugin/runtime_test.go` |
-| emit/parallel/serial/bail/waterfall mode | `plugin/events_test.go` |
-| Child Scope 嵌套 ownership、提前释放与 inherited dependency | `plugin/scope_test.go` |
+| ordered/parallel/best-effort Event 与 Waterfall | `plugin/event_test.go`、`plugin/waterfall_test.go` |
+| Child Scope 嵌套 ownership、动态卸载与 inherited dependency | `plugin/runtime_test.go`、`plugin/tree_test.go` |
 | scoped waterfall 的 global/ancestor/exact admission 与 sibling/descendant exclusion | `TestScopedWaterfallAdmitsGlobalAndAncestorListeners` |
 | scoped emit 的 global/ancestor/exact admission 与 sibling/descendant exclusion | `TestScopedEmitAdmitsGlobalAndAncestorListeners` |
-| strict typed config 与 Factory Catalog 边界 | `plugin/catalog_test.go`、`internal/assembly/assembly_test.go` |
+| strict typed config、Factory Catalog 与 detached Server 边界 | `plugin/factory/factory_test.go`、`internal/assembly/assembly_test.go` |
 | Connection Plugin 乱序依赖结算与真实 HTTP 服务 | `TestConnectionCompositionSettlesDependenciesAndServesHostDescribe` |
 | 内嵌 Web 内容哈希、cache policy、SPA fallback 与 API route 隔离 | `web/site_test.go`、`TestFrontendHandlesOnlyUnownedBrowserRoutes` |
 | 默认 composition 经 DeepSeek Adapter 完成固定 Client、UI 会话与 Question continuation | `TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter`、`web-ui-main-flow.ts` |
 | CLI `--data-dir` 默认数据库解析与具体路径覆盖 | `cmd/goren/main_test.go` |
-| composition bind failure 无 declaration/contribution 遗留 | `TestCompositionFailureRollsBackEarlierDeclarations` |
+| Server Build/Runtime Start 失败无 Plugin binding 或 endpoint 遗留 | `internal/assembly/assembly_test.go` |
 | Session payload snapshot、seed 连续性、surface 原子 replace 与负零拒绝 | `session/session_test.go` |
 | Session create/append/flush/dispose、rollback、observer containment、重入拒绝与 publication 后 follow-up append | `session/store_test.go`、`session/title/service_test.go` |
 | 固定源与 Go Session Header/Event/seed/surface 行为一致 | `TestPinnedSourceSessionCoreMatchesGo` |

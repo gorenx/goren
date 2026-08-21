@@ -1,6 +1,6 @@
 # 02 Go 运行时架构与插件模型
 
-状态：Draft
+状态：Accepted / Implemented
 
 本文拥有 Go Runtime 的模块边界、依赖方向、Plugin interface、typed config、Service/Event Registry、Scope、effect 生命周期和服务端组合。哪些源包进入范围由[01 复制范围与兼容基线](./01-porting-scope-and-baseline.md)决定；wire 与 API 兼容规则由[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)拥有。
 
@@ -67,11 +67,13 @@ Go 可以合并只为 TypeScript 构建、声明合并或 npm 发布而存在的
 
 ### 2.1 Composition 与 Plugin Runtime
 
-**拥有**：Factory Catalog、typed config 解码/校验、Plugin 状态、Service 可用性、Scope、effect、settlement 和 shutdown。
+**Composition 拥有**：Factory Catalog、部署配置、静态 Factory 白名单和完整 Server Plugin 树构造。
+
+**Plugin Runtime 拥有**：Plugin 状态、Service 可用性、Scope、binding、调用准入、依赖结算、回滚和 shutdown。
 
 **不拥有**：会话事件、模型消息、Tool 权限、Provider wire、持久化 schema。
 
-独立原因：它的语言是 `Factory / Plugin / Effect / Scope`，变化来自部署和扩展；Agent Execution 的语言是 `Turn / Step / Inbox / Request`，一致性边界也不同。合并会让业务调用依赖动态装载细节，并使 Plugin rollback 与 Turn transaction 混为一体。
+独立原因：composition 的语言是 `Factory / Config / PluginSpec`，Runtime 的语言是 `Plugin / Fiber / Scope / Binding`；Agent Execution 的语言是 `Turn / Step / Inbox / Request`。三者的变化原因和一致性边界不同。合并会让配置读取进入 Runtime，或让 Plugin rollback 与 Turn transaction 混为一体。
 
 ### 2.2 Agent Execution
 
@@ -166,31 +168,27 @@ Typert 不是 Protocol Plane 的必要入口。固定源基线中只有部分 au
 
 ## 4. Plugin interface
 
-目标 API 由三个层次组成：Factory 创建实例，Plugin 拥有自身生命周期，Runtime/Fiber 私有地拥有 effect。以下是语义草图，不锁定私有 Go 字段布局：
+API 分为三个边界：Factory 构造实例，Plugin 拥有自己的资源，Runtime 私有管理 Fiber、Scope 和 binding。
 
 ```go
 type Plugin interface {
-	Manifest() Manifest
-	Apply(context.Context, *Context) error
-	Dispose(context.Context) error
-}
-
-type Configurator interface {
-	Name() string
-	Configure(configuration.Document) (Factory, error)
+    RuntimePlugin() *Base
+    Manifest() Manifest
+    Apply(context.Context) error
+    Dispose(context.Context) error
 }
 
 type Factory interface {
-	Name() string
-	Create(context.Context) (Plugin, error)
+    Name() string
+    Create(context.Context, json.RawMessage) (Plugin, error)
 }
 ```
 
-`Factory.Name()` 使用源实现 canonical plugin name，例如 `@deepseek-ai/dsh-agent`。Go import path 不需要模仿 npm scope，但 deployment config 中的 `name` 保持一致，使源职责和 Go 配置可追踪。
+Plugin 以指针对象嵌入 `Base`，直接实现业务 Service interface。Manifest 完整声明 Service、Event、Waterfall 和 Child Plugin；Runtime 在 Apply 成功后自动发布 binding。Plugin 不接收公开 Runtime Context，不执行 `Provide`、`Observe` 或 `Use`，也不保存 registration/disposer。
 
-`Plugin.Apply` 不返回裸 Service，也不负责把自身加入全局 Registry。它通过 typed Definition 和当前 `Context` 登记 contribution；Runtime 在 `Apply` 返回后一次性发布成功状态。Plugin 对象直接拥有它启动的数据库、listener、worker 等资源，并由幂等 `Dispose` 释放。若 `Apply` 失败，Runtime 先撤销暂存 registration，再调用该 Plugin 的 `Dispose`。
+Plugin 对象拥有自己在 Apply 中打开的数据库、listener、worker 等资源，并由幂等 Dispose 释放；长期工作观察 `plugin.Lifetime(owner)`。若 Apply 失败，Runtime 取消 lifetime、撤销已发布 binding并调用 Dispose。
 
-每个 Configurator 严格把 `configuration.Document` 解码为能力 owner 定义的命名配置，并拒绝未知字段、错误类型与无效组合；返回的 configured Factory 只保存已经校验的 typed 配置和对象依赖。Catalog 只注册和查找 Configurator，不擦除或执行构造流程。默认值、环境变量解析、平台选择和派生值由显式 Go 函数完成。
+每个领域 Factory 使用源 canonical Plugin name，严格把 raw JSON 解码为 owner-defined Config，应用默认值、校验并构造未激活 Plugin。Catalog 只注册和查找 Factory；Runtime 不依赖 Catalog 或配置。
 
 ### 4.1 为什么不用标准库 `plugin`
 
@@ -200,58 +198,25 @@ Go 标准库 `plugin` 只支持部分平台、不能卸载、race detector 支�
 
 ## 5. Service Registry
 
-每项 Service Definition 声明一个稳定 identity 和 Go interface。Definition 的泛型参数使用具有业务含义的 `Service` 约束，不通过 `Scope.Get(key) any` 或反射取得业务对象：
+每项 Service 是嵌入 `plugin.Service` 的具名业务 interface。Provider 和 Consumer 共同导入该 interface，并通过 `ServiceOf[S]()` 得到相同类型身份。反射只建立 `reflect.TypeFor[S]()` 类型键，不调用业务方法。
 
-```go
-type Service interface {
-	RuntimeService()
-}
+Provider 在 Manifest 的 `Provides` 中声明接口并直接实现它。Consumer 在 `Requires` 或 `Optional` 中声明依赖，只能在 Apply 中调用 `Require[S](owner)` 或 `Resolve[S](owner)` 取得已结算 snapshot。Apply 返回后，普通业务调用直接使用保存的 interface。
 
-type ServiceDefinition[S Service] struct { /* opaque */ }
+同一 exact Scope 与 Service 类型最多有一个 active Provider。required Provider 未激活时 Consumer 等待；确定不存在时启动失败。Provider 撤回时 Runtime 先停止依赖方，再停止 Provider，并在其他 Provider 可用后重新结算仍挂载的 Consumer。
 
-func DefineService[S Service](canonicalName string) ServiceDefinition[S]
-func (definition ServiceDefinition[S]) Provide(*Context, S) error
-func (definition ServiceDefinition[S]) Require(*Context) (S, error)
-```
+## 6. Typed Event 与 Waterfall
 
-关键规则：
+Event 与 Waterfall 是不同机制。Event 是 owner 已提交事实的进程内通知：具名 struct 实现稳定 `EventName` 和 `EventDelivery`，Observer Plugin 通过多个 `EventOf[E]()` 声明类型，却只实现一个统一 `ObserveEvent` 入口。Runtime 支持 ordered、parallel 和有 reporter 的 best-effort 投递。
 
-- Service key 的字符串值与源 `ctx` key 对齐，例如 `sessions`、`agents`、`tools`、`llm`；
-- 同一 Scope 中重复 Provider 在激活时失败，不使用 last-write-wins；
-- Consumer 声明 required 与 optional dependencies；required Service 未就绪时等待，不靠文件顺序；
-- Service 撤回后，依赖它的 Plugin 先停止，再停止 Provider；
-- 若未来纳入 Typert Remote，Typert lookup 不得缓存业务对象；每次调用读取 live Service；
-- 只有所有者包创建 `ServiceDefinition[S]`，其他包导入 Definition，不能用相同字符串重建另一个 identity。
+Waterfall 是 owner 主动运行的洋葱扩展点。具名 input/output 实现语义 marker；`WaterfallMiddleware[I,O]` 用 `Intercept` 包裹同一 `WaterfallAction[I,O]`，因此最内层动作和 Runtime chain step 不需要 Terminal/Next 两套接口。每个 step 只能执行一次。
 
-## 6. Typed Event Registry
+公共泛型参数都受 `Event`、`WaterfallInput`、`WaterfallOutput` 等业务约束，不使用 `any`。Event Sourcing 仍由 Session 等业务 owner 的 append-only log 负责，Plugin Runtime 不存储或重放 Event。
 
-源 Cordis 的 declaration merging 在 Go 中映射为 owner-defined typed Definition，并把 Event 与 Waterfall 分开：
+## 7. 生命周期与调用排空
 
-```go
-type EventDefinition[E Event] struct { /* name + policy + owner token */ }
-type WaterfallDefinition[I WaterfallInput, O WaterfallOutput] struct { /* owner token */ }
-```
+每次 Plugin activation 对应一个 Fiber。Runtime 自动拥有 Manifest 声明产生的 Service/Event/Waterfall binding和 Child Fiber；Plugin 对象自行拥有 Apply 中启动的数据库、listener、goroutine、timer、watcher、subprocess 或临时文件，并在 Dispose 中幂等释放。Effect/release stack 是 Runtime 私有实现，不是插件作者接口。
 
-Event Definition 持有私有、非零大小的 owner token，并通过泛型固定 fact type；Observer 是实现 `ObserveEvent` 的命名对象。Delivery policy 只负责 ordered、parallel 或 best-effort fact notification，不返回业务决策。Waterfall 则由命名 Middleware 的 `Intercept`、one-shot `Proceed` 和 owner Terminal 表达洋葱包裹、短路与结果改写。两者的 typed 值不存入 `any`，也不使用反射调用。
-
-`waterfall` 不能用一个共享可变对象加普通 `emit` 模拟，因为这样无法表达短路、返回值包装和 listener 顺序。`agent/pre-step`、`agent/request`、`llm/stream`、`tools/pre-execute`、`tools/execute`、`tools/post-execute` 必须保留 waterfall 语义。
-
-## 7. Effect 与生命周期
-
-### 7.1 Effect Tree
-
-每个 Plugin activation 对应一个 Fiber 和统一的私有 LIFO Effect stack。以下操作必须通过该 ownership 完成：
-
-- 提供 Service；
-- 注册 Event listener；
-- 注册 LLM adapter、Tool、Prompt section、Provider 或 policy；
-- 加载 Child Plugin；
-- 启动 goroutine、timer、watcher、subprocess、PTY、数据库连接或网络连接；
-- 创建临时文件或占用外部资源。
-
-Effect 不作为公共接口暴露。Plugin 对象通过 `Apply` 启动并保存自身资源，通过幂等 `Dispose` 接受 shutdown context、等待 owned operation 停止；Service/Event/Waterfall registration 和 Child Plugin 则由 Runtime 自动生成私有 release 操作。Runtime 不以 process exit 代替 cleanup。
-
-### 7.2 Plugin 状态
+### 7.1 Plugin 状态
 
 ```text
 declared
@@ -267,61 +232,44 @@ active --replacement--> starting(candidate) -> commit -> stopping(old)
 
 候选实例在 shadow Scope 完成配置、依赖与 invariant 检查后才能成为 active。若源语义要求注册期间不能同时存在两个相同 Service，则 Runtime 采用短临界区完成旧/新 owner swap，而不是先卸载旧实例造成空窗。
 
-### 7.3 Shutdown 顺序
+### 7.2 Shutdown 顺序
 
-1. 停止接收新 inbound request；
-2. 取消 Root Context；
-3. 等待 Agent、Tool 及当前已纳入 adapter 的 pending operation 结算；
-4. flush Session 和 telemetry；
-5. 按依赖图的反向顺序卸载 Plugin；
-6. 对仍未停止的资源报告明确失败并返回非零退出码。
+Runtime 先撤销 binding 并关闭 Event/Waterfall 的新调用准入，再取消 Fiber lifetime 和已准入调用的 Context，等待调用排空，最后执行 Dispose 和 detach。停止顺序是 commit-first、dependent-first、child-first。
+
+普通 Waterfall 调用由 `Run` 自动释放。只有方法返回后仍继续工作的惰性结果使用 `RunRetained`；其包装器在终态、错误或关闭时调用幂等 `InvocationLease.Release`。Release 只结束该次调用，不停止 Plugin 或资源。
 
 ## 8. Scope 与 isolation
 
-每次 Plugin `Apply` 获得 Root Plugin Scope；其 `Target()` 是 global zero key。`Context.ChildScope(label)` 创建与当前 Fiber 同寿命的可见性分支和 opaque `ScopeKey`，记录 parent lineage，并继承所属 Plugin 已声明的 Service dependency。普通 Child Scope 不能提供 root Service，也不成为生命周期 owner；需要提前停止时由 `Context.LoadChild` 创建 Child Fiber，并通过 Child Plugin Effect 与 Handle 管理整棵子树。
+组合型 Plugin 在进入 Runtime 前构造 Child 对象，并通过 `Manifest.Children` 声明 `SameScope` 或 `NestedScope`。Runtime 外部只看到 root Plugin；Tree 与 Scope 对象保持私有。确需动态子生命周期时，使用 `MountChild`、`MountScopedChild` 和 `UnloadChild`。
 
-System Prompt 与 Tools 已是 Child Scope 的真实 Consumer：前者以 global、远祖先到近 scope 的 named shadow 组装 Prompt，后者用同一 lineage 计算 Tool shadow、restriction、guard 与 scoped execution/result event；两者的 scope-filtered listener 都只接受 global、祖先和 exact scope，排除 sibling 与 descendant。Agent Provider 后续直接使用这一 primitive 挂载 preset Prompt、Tools、Model selection 和局部 policy，不能另建第二套 Registry。具体规则分别由[11 System Prompt Registry 与 Assembly 模块设计](./11-system-prompt-registry-and-assembly.md)和[12 Tools Registry 与执行流水线模块设计](./12-tools-registry-and-execution-pipeline.md)拥有。
+Service 和 Event 从 source 向 root 查找；Waterfall 从 root 向 source 组装。最近 Service Provider 覆盖祖先，Event/Waterfall 只接纳 exact、ancestor 和 global owner，拒绝 sibling 与 descendant。业务 Service 不保存 Scope，也不关心自己位于哪个 Plugin Context。
 
-当前 Child Scope 只提供 contribution ownership、lineage 和 Event routing，不承诺 `isolate(serviceKey, label)` 的 Service namespace 语义。只有真实 Consumer 需要同一 Service 的多实例 resolution 时才扩展现有 Scope；不得用预设 label 规则推测未来行为。
-
-禁止用 `context.Context.Value` 充当 Service Registry。标准 `context.Context` 只传播 deadline、cancellation 和 request-scoped metadata；Service 与 Plugin ownership 由 `Scope` 表达。
+禁止用 `context.Context.Value` 充当 Service Registry。标准 Context 只传播 deadline、cancellation 和 request metadata。
 
 ## 9. Typed config 与服务端组合
 
-配置流水线固定为：
-
 ```text
 CLI / environment / optional config file
-  -> strict ingress decode
-  -> ServerConfig
-  -> owner-defined Plugin Config
-  -> Validate
-  -> Factory.New
-  -> shadow Scope activation
+  -> process-level typed settings
+  -> PluginSpec
+  -> Catalog.Lookup
+  -> owner Factory strict decode and Create
+  -> detached Server Plugin tree
+  -> Runtime.Start
 ```
 
-ServerConfig 只描述部署选择，例如监听地址、trusted hosts、启用的 Factory、持久化位置和 credential reference。每个 Plugin 的完整配置由其 Factory owner 定义；不得建立包含所有能力可选字段的全局配置对象。
+Factory 名称目录、配置解码和 Plugin Runtime 是独立责任。每个 Plugin 的完整 Config 由其领域 Factory 定义；raw JSON 只存在于 PluginSpec 与 Factory 边界。Catalog 不解码、不创建、不 mount。`internal/assembly.BuildServer` 只调用 Factory并构造 `Server.Manifest.Children`，不实现业务能力。
 
-不同 Factory 的配置在 Catalog 内部可以通过已注册的 decoder/constructor closure 做类型擦除，但类型擦除不能越过创建边界。运行时替换必须重新完成严格解码、默认值计算、校验和 shadow activation，成功后才切换 last-known-good instance。
-
-外部输入规则：
-
-- CLI 与环境变量只在 `internal/config` 转换为 typed fields；
-- 可选 YAML/JSON 文件必须严格解码，未知字段和重复 key 失败；
-- platform-specific 选择由 composition root 或 build-tagged Provider 完成；
-- 派生默认值由显式、可单测的 Go 函数计算；
-- credential 使用引用或受控来源，不进入 config dump；
-- `!!js`、配置模板脚本、`ctx` 配置插值和任意代码执行一律不支持；System Prompt 的 strict `{{name}}` 文本替换是独立业务 contract，见 `11`。
-
-源 Cordis Profile 若需要迁移，必须把每个动态表达式显式翻译成字段、环境变量绑定、默认值函数或 composition 选择。Goren 不承诺直接加载源 Profile，也不提供另一种表达式语言替代 `!!js`。
+未知字段、duplicate key、错误类型、非法范围、多 JSON value 和无效字段组合必须失败。默认值和平台选择由显式 Go 函数处理；credential 使用引用或受控来源。`!!js`、配置脚本、Cordis Profile evaluator 和另一套表达式语言均不支持。
 
 ## 10. Go 包边界
 
 只在实现相应阶段时创建实际包。以下结构以源 Harness 的职责为默认映射，同时去掉 TypeScript/npm 专属层和明确排除项：
 
 ```text
-cmd/goren/               TypeScript-client-compatible Agent server
-plugin/                  public Plugin, Factory, Scope, Service/Event keys
+cmd/goren/               TypeScript-client-compatible Agent server entry
+plugin/                  public Plugin Runtime, Service/Event/Waterfall contracts
+plugin/factory/          statically linked Factory and strict config boundary
 connection/              RPC envelopes, receipts, frame unions and protocol constants
 apiproxy/                included method contracts and core-facing handlers
 session/                 public Session log contract and in-memory service
@@ -330,13 +278,11 @@ agentloop/               default Agent provider
 systemprompt/            prompt assembly service
 tools/                   tool definition, registry, execution pipeline
 llm/                     Harness-compatible LLM service and vocabulary
-<capability>/            public Service Definition
+<capability>/            public Service and Plugin owner
 <capability>/<provider>/ optional reusable Provider plugins
-internal/boot/           CLI/server lifecycle
-internal/config/         strict ingress decode and typed assembly
 internal/connection/     Echo v5 and coder/websocket Host carrier
-internal/assembly/       shipped server composition; optional adapters later
-internal/compat/         source-baseline fixture verification
+internal/assembly/       shipped Factory Catalog and detached Server composition
+tests/contract/          pinned source differential verification
 ```
 
 公开包只承载外部 Plugin 真正需要实现或消费的 extension contract。内置且不承诺复用的 Provider 留在 `internal/`。不创建 `common`、`helpers`、全局 DTO 包或一个包含所有可选字段的通用 Service。
@@ -365,6 +311,6 @@ Runtime 为每个包保留 source 中 `./invariant` 的设计意图，但 Go 不
 - Tool Registry 中的 definition 与执行 owner 同时存在；
 - Adapter route 与 provider metadata 一致；
 - active Plugin 的 required Services 全部可解析；
-- Plugin `Dispose` 完成后 Registry 不再含该 owner 的 contribution。
+- Plugin `Dispose` 完成后 Registry 不再含该 owner 的 binding。
 
 仅检查方法“存在”或固定纯示例没有价值。Invariant failure 是编程错误，不能降级为 warning。

@@ -104,16 +104,13 @@ type ToolRuntime interface {
 
 type ToolCatalog interface {
     plugin.Service
-    AddTool(context.Context, ToolDefinition) error
-    RemoveTool(context.Context, string) error
+    AddTool(context.Context, ToolDefinition) (*ToolHandle, error)
 }
 
 type PolicyRegistry interface {
     plugin.Service
-    AddRestriction(context.Context, string, ToolRestriction) error
-    RemoveRestriction(context.Context, string) error
-    AddGuard(context.Context, string, ToolGuard) error
-    RemoveGuard(context.Context, string) error
+    AddRestriction(context.Context, string, ToolRestriction) (*RestrictionHandle, error)
+    AddGuard(context.Context, string, ToolGuard) (*GuardHandle, error)
 }
 ```
 
@@ -130,12 +127,12 @@ Tool 行为使用有业务含义的 interface：`Executor`、`OutputRenderer`、
 具体 Tool 不需要实现 `ToolRuntime`，也不需要显式调用 `plugin.Define`。它本身是一个普通 Plugin：
 
 1. `Manifest` 要求 `ToolCatalog`，以及该 Tool 真正需要的其他能力；
-2. `Apply` 构造完整 `ToolDefinition` 并调用 `AddTool`；
-3. `Dispose` 使用同一 name 调用 `RemoveTool`；
+2. `Apply` 构造完整 `ToolDefinition`，调用 `AddTool` 并保存返回的 `ToolHandle`；
+3. `Dispose` 调用 `ToolHandle.Unregister`；
 4. 业务执行对象实现 `Executor`；只有需要自定义投影、finalizer、并发分类时才实现相应可选接口；
 5. 需要 restriction 或 guard 时再要求 `PolicyRegistry`，不能把所有插件强制成 policy Plugin。
 
-Plugin Runtime 保证依赖就绪后才调用 `Apply`，并在启动失败、替换或卸载时调用 `Dispose`。具体 Tool Plugin 必须把注册和撤销成对实现；Tools Service 不猜测哪个业务对象应该被自动注册。
+Plugin Runtime 保证依赖就绪后才调用 `Apply`，并在启动失败、替换或卸载时调用 `Dispose`。具体 Tool Plugin 必须保存自己成功取得的 Handle 并在 Dispose 中撤销；Tools Service 不猜测哪个业务对象应该被自动注册。
 
 ## 7. 注册、撤销与 System Prompt
 
@@ -149,11 +146,11 @@ validate active layer and definition
   -> publish ordered tools/change
 ```
 
-同一 exact layer 重名失败，近层同名允许 shadow ancestor；`run_code` 始终保留。新增 Tool 或 restriction 时，`tools/change` observer 失败会回滚刚才的新增。撤销以生命周期清理为优先：Tool/restriction 已删除后，即使通知失败也不恢复，错误返回给调用方；幂等重试不会留下停止插件的贡献。Guard 不改变 schema，因此增删 guard 不发布 `tools/change`。
+同一 exact layer 重名失败，近层同名允许 shadow ancestor；`run_code` 始终保留。新增 Tool 或 restriction 时，`tools/change` observer 失败会回滚刚才的新增。撤销以生命周期清理为优先：Tool/restriction 已删除后，即使通知失败也不恢复，错误返回给调用方；幂等重试不会留下已停止 owner 的旧 entry。Guard 不改变 schema，因此增删 guard 不发布 `tools/change`。
 
 Definition 在写入 Store 前复制 schema bytes 并保留 behavior interface；`Get`、`Schemas` 和 observer accessor 再次返回 detached data。调用方不能通过原 Definition 或返回值改写 Registry。
 
-Tools Service 在 `Apply` 中把自己注册为 System Prompt 的 Tool provider，在 `Dispose` 中撤销。System Prompt 不缓存第二份 Catalog；每次 assembly 都读取当前 layer 的 live view。Tools 不调用 `RenderPrompt`，System Prompt 不读取 Executor、output schema 或 guard。
+Tools Service 在 `Apply` 中把自己注册为 System Prompt 的 Tool provider，并保存 `PromptHandle`，在 `Dispose` 中调用 `Unregister`。System Prompt 不缓存第二份 Catalog；每次 assembly 都读取当前 layer 的 live view。Tools 不调用 `RenderPrompt`，System Prompt 不读取 Executor、output schema 或 guard。
 
 ## 8. Typed config、schema 与 lossless JSON
 

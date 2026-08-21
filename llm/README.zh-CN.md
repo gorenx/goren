@@ -24,7 +24,7 @@ flowchart LR
 
 `PrepareCall` 把 route、effective config、RetryPolicy 和 Adapter registration identity 固定到一次 one-shot 调用；普通 `Stream` 在调用时读取 live route。`GenerateOptions -> StreamOutput` 是 `llm/stream` 的 typed Waterfall 合约。业务中间件只有调用下游 Action 才会进入 Adapter 边界。
 
-Adapter route、目录和 discovery contribution 都有独立 handle，支持 replace/release。重复 route、无效 metadata 或 topology invariant 失败不会产生部分提交。`llm/adapters-updated` 的非 invariant observer 失败由可选 `ObserverFailureReporter` 隔离报告；invariant 失败会回滚当前注册操作。
+Adapter route、目录和 discovery entry 都有独立 handle，支持 replace/release。重复 route、无效 metadata 或 topology invariant 失败不会产生部分提交。`llm/adapters-updated` 的非 invariant observer 失败由可选 `ObserverFailureReporter` 隔离报告；invariant 失败会回滚当前注册操作。
 
 取消只终止当前调用或 stream，不撤销共享注册。`ChunkStream.Close`、terminal chunk 和上游错误都收敛到单一终止边界；Adapter 同步失败或中途错误被归一化为 Harness terminal stream。Plugin 卸载关闭注册变更并清空 Runtime 持有的引用。
 
