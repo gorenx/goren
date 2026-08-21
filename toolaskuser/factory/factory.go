@@ -1,35 +1,31 @@
 // Package factory owns strict configuration and construction of the
-// provider-neutral LLM Runtime Plugin.
+// ask_user_question Tool Plugin.
 package factory
 
 import (
 	"context"
 	"encoding/json"
 
-	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	pluginfactory "github.com/gorenx/goren/plugin/factory"
+	"github.com/gorenx/goren/toolaskuser"
 )
 
-// Factory constructs the canonical LLM Runtime Plugin.
-type Factory struct {
-	reporter llm.ObserverFailureReporter
-}
+// Factory constructs the canonical ask-user Tool Plugin.
+type Factory struct{}
 
-// New constructs a statically linked LLM Runtime Factory.
-func New(reporter llm.ObserverFailureReporter) *Factory {
-	return &Factory{
-		reporter: reporter,
-	}
+// New constructs a statically linked Factory.
+func New() *Factory {
+	return &Factory{}
 }
 
 // Name returns the canonical Harness Plugin name.
 func (*Factory) Name() string {
-	return llm.PluginName
+	return toolaskuser.PluginName
 }
 
-// Create strictly decodes configuration and constructs the LLM Runtime.
-func (builder *Factory) Create(
+// Create strictly decodes configuration and constructs the Tool Plugin.
+func (*Factory) Create(
 	createContext context.Context,
 	rawConfig json.RawMessage,
 ) (plugin.Plugin, error) {
@@ -38,11 +34,11 @@ func (builder *Factory) Create(
 	}
 	if err := pluginfactory.ValidateEmptyConfig(
 		rawConfig,
-		"llm factory",
+		"toolaskuser factory",
 	); err != nil {
 		return nil, err
 	}
-	return llm.NewRuntime(builder.reporter), nil
+	return toolaskuser.New(), nil
 }
 
 var _ pluginfactory.Factory = (*Factory)(nil)

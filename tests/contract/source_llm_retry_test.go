@@ -14,8 +14,6 @@ import (
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/llmretry"
-	"github.com/gorenx/goren/plugin"
-	"github.com/gorenx/goren/session"
 )
 
 type retryContractAdapter struct {
@@ -39,14 +37,23 @@ func (backend *retryContractAdapter) Stream(
 	switch requestNumber {
 	case 1:
 		statusCode := 429
-		return nil, llm.MustLlmError("busy", "RATE_LIMIT", llm.LlmErrorOptions{Status: &statusCode})
+		return nil, llm.MustLlmError("busy", "RATE_LIMIT", llm.LlmErrorOptions{
+			Status: &statusCode,
+		})
 	case 2:
 		retryAfter := 3.0
-		return nil, llm.MustLlmError("retry later", "SERVER", llm.LlmErrorOptions{ProviderRetryAfterMS: &retryAfter})
+		return nil, llm.MustLlmError("retry later", "SERVER", llm.LlmErrorOptions{
+			ProviderRetryAfterMS: &retryAfter,
+		})
 	case 3:
 		return llm.NewSliceStream([]llm.StreamChunk{
-			llm.BlockEndChunk{Index: 0, Block: llm.NewTextBlock("recovered")},
-			llm.FinishChunk{Reason: llm.StopFinish{}},
+			llm.BlockEndChunk{
+				Index: 0,
+				Block: llm.NewTextBlock("recovered"),
+			},
+			llm.FinishChunk{
+				Reason: llm.StopFinish{},
+			},
 		})
 	default:
 		return nil, errors.New("retry contract adapter script exhausted")
@@ -83,8 +90,16 @@ func TestPinnedSourceLLMRetryMatchesGo(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	contractState := &agentLoopContractState{engine: plugin.NewRuntime()}
-	if _, err := contractState.engine.Load(context.Background(), &agentLoopContractProvider{state: contractState}); err != nil {
+	contractState := &agentLoopContractState{}
+	retryPlugin := llmretry.New(llmretry.RuntimeOptions{
+		Random: func() float64 {
+			return 0
+		},
+		NewRetryID: func() (llmretry.RetryID, error) {
+			return "chain-1", nil
+		},
+	})
+	if err = startAgentLoopContractState(t, contractState, retryPlugin); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -92,24 +107,36 @@ func TestPinnedSourceLLMRetryMatchesGo(t *testing.T) {
 			t.Error(shutdownErr)
 		}
 	})
-	if _, err := llmretry.Install(context.Background(), contractState.providerScope, llmretry.RuntimeOptions{
-		Random:     func() float64 { return 0 },
-		NewRetryID: func() (llmretry.RetryID, error) { return "chain-1", nil },
-	}); err != nil {
-		t.Fatal(err)
+	backend := &retryContractAdapter{
+		policy: llm.NormalRetryPolicy{
+			ResolvedRetryBackoff: llm.ResolvedRetryBackoff{
+				InitialDelayMS: 1,
+				MaxDelayMS:     4,
+				JitterRatio:    0.5,
+			},
+			Mode:           llm.RetryNormal,
+			MaxRetries:     2,
+			RetryableCodes: []string{"SERVER", "RATE_LIMIT"},
+		},
 	}
-	backend := &retryContractAdapter{policy: llm.NormalRetryPolicy{
-		ResolvedRetryBackoff: llm.ResolvedRetryBackoff{InitialDelayMS: 1, MaxDelayMS: 4, JitterRatio: 0.5},
-		Mode:                 llm.RetryNormal, MaxRetries: 2, RetryableCodes: []string{"SERVER", "RATE_LIMIT"},
-	}}
-	if _, err := contractState.models.RegisterAdapter(
-		context.Background(), contractState.providerScope, []string{"mock"}, backend,
+	if _, err = contractState.models.RegisterAdapter(
+		context.Background(),
+		[]string{
+			"mock",
+		},
+		backend,
 	); err != nil {
 		t.Fatal(err)
 	}
-	handle, err := contractState.loopRuntime.Create(
-		context.Background(), contractState.providerScope, "retry-contract",
-		agent.Options{Provider: "mock", Model: "model"}, session.Metadata{},
+	handle, err := contractState.agents.Create(
+		context.Background(),
+		agent.CreateOptions{
+			SessionID: "retry-contract",
+			AgentOptions: agent.Options{
+				Provider: "mock",
+				Model:    "model",
+			},
+		},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -120,7 +147,8 @@ func TestPinnedSourceLLMRetryMatchesGo(t *testing.T) {
 		}
 	}()
 	messageValue, err := llm.NewUserMessage(llm.UserMessageInput{
-		Content: []llm.ContentBlock{llm.NewTextBlock("recover")}, Source: llm.UserMessageSource{},
+		Content: []llm.ContentBlock{llm.NewTextBlock("recover")},
+		Source:  llm.UserMessageSource{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -139,7 +167,8 @@ func TestPinnedSourceLLMRetryMatchesGo(t *testing.T) {
 	for _, committed := range conversation.Events() {
 		if committed.Type == llmretry.RetryEventName || committed.Type == llmretry.RetryStartedEventName {
 			retryEvents = append(retryEvents, retryContractEvent{
-				Type: committed.Type, Data: append(json.RawMessage(nil), committed.Data...),
+				Type: committed.Type,
+				Data: append(json.RawMessage(nil), committed.Data...),
 			})
 		}
 	}
@@ -162,7 +191,10 @@ func TestPinnedSourceLLMRetryMatchesGo(t *testing.T) {
 		}
 	}
 	goOutput, err := json.Marshal(retryContractObservation{
-		RetryEvents: retryEvents, RequestCount: backend.requests(), Roles: roles, FinalText: finalText,
+		RetryEvents:  retryEvents,
+		RequestCount: backend.requests(),
+		Roles:        roles,
+		FinalText:    finalText,
 	})
 	if err != nil {
 		t.Fatal(err)

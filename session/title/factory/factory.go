@@ -8,9 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 
-	"github.com/gorenx/goren/internal/jsonvalue"
 	"github.com/gorenx/goren/plugin"
 	pluginfactory "github.com/gorenx/goren/plugin/factory"
 	"github.com/gorenx/goren/session/title"
@@ -43,7 +41,7 @@ func (builder *Factory) Create(
 	createContext context.Context,
 	rawConfig json.RawMessage,
 ) (plugin.Plugin, error) {
-	if err := createContext.Err(); err != nil {
+	if err := pluginfactory.ValidateCreateContext(createContext); err != nil {
 		return nil, err
 	}
 	settings, err := decodeConfig(rawConfig)
@@ -54,16 +52,11 @@ func (builder *Factory) Create(
 }
 
 func decodeConfig(rawConfig json.RawMessage) (title.Config, error) {
-	if err := jsonvalue.Validate(rawConfig); err != nil {
-		return title.Config{}, fmt.Errorf(
-			"session title factory: invalid configuration: %w",
-			err,
-		)
-	}
-	if !jsonvalue.IsObject(rawConfig) {
-		return title.Config{}, errors.New(
-			"session title factory: configuration must be a JSON object",
-		)
+	if err := pluginfactory.ValidateObjectConfig(
+		rawConfig,
+		"session title factory",
+	); err != nil {
+		return title.Config{}, err
 	}
 	var settings title.Config
 	decoder := json.NewDecoder(bytes.NewReader(rawConfig))
@@ -72,12 +65,6 @@ func decodeConfig(rawConfig json.RawMessage) (title.Config, error) {
 		return title.Config{}, fmt.Errorf(
 			"session title factory: decode configuration: %w",
 			err,
-		)
-	}
-	var trailingValue json.RawMessage
-	if err := decoder.Decode(&trailingValue); !errors.Is(err, io.EOF) {
-		return title.Config{}, errors.New(
-			"session title factory: configuration must contain one JSON value",
 		)
 	}
 	validated, err := settings.Validate()

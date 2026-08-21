@@ -6,13 +6,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 
 	"github.com/gorenx/goren/apiproxy"
 	apiproxyhost "github.com/gorenx/goren/apiproxy/host"
-	"github.com/gorenx/goren/internal/jsonvalue"
 	"github.com/gorenx/goren/plugin"
 	pluginfactory "github.com/gorenx/goren/plugin/factory"
 )
@@ -45,7 +42,7 @@ func (builder *Factory) Create(
 	createContext context.Context,
 	rawConfig json.RawMessage,
 ) (plugin.Plugin, error) {
-	if err := createContext.Err(); err != nil {
+	if err := pluginfactory.ValidateCreateContext(createContext); err != nil {
 		return nil, err
 	}
 	settings, err := decodeConfig(rawConfig)
@@ -61,16 +58,11 @@ func (builder *Factory) Create(
 }
 
 func decodeConfig(rawConfig json.RawMessage) (Config, error) {
-	if err := jsonvalue.Validate(rawConfig); err != nil {
-		return Config{}, fmt.Errorf(
-			"apiproxy factory: invalid configuration: %w",
-			err,
-		)
-	}
-	if !jsonvalue.IsObject(rawConfig) {
-		return Config{}, errors.New(
-			"apiproxy factory: configuration must be a JSON object",
-		)
+	if err := pluginfactory.ValidateObjectConfig(
+		rawConfig,
+		"apiproxy factory",
+	); err != nil {
+		return Config{}, err
 	}
 	var settings Config
 	decoder := json.NewDecoder(bytes.NewReader(rawConfig))
@@ -79,12 +71,6 @@ func decodeConfig(rawConfig json.RawMessage) (Config, error) {
 		return Config{}, fmt.Errorf(
 			"apiproxy factory: decode configuration: %w",
 			err,
-		)
-	}
-	var trailingValue json.RawMessage
-	if err := decoder.Decode(&trailingValue); !errors.Is(err, io.EOF) {
-		return Config{}, errors.New(
-			"apiproxy factory: configuration must contain one JSON value",
 		)
 	}
 	return settings, nil

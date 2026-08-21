@@ -8,11 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 
 	"github.com/gorenx/goren/credentials"
 	credentialslocal "github.com/gorenx/goren/credentials/local"
-	"github.com/gorenx/goren/internal/jsonvalue"
 	"github.com/gorenx/goren/plugin"
 	pluginfactory "github.com/gorenx/goren/plugin/factory"
 )
@@ -47,7 +45,7 @@ func (builder *Factory) Create(
 	createContext context.Context,
 	rawConfig json.RawMessage,
 ) (plugin.Plugin, error) {
-	if err := createContext.Err(); err != nil {
+	if err := pluginfactory.ValidateCreateContext(createContext); err != nil {
 		return nil, err
 	}
 	settings, err := decodeConfig(rawConfig)
@@ -62,18 +60,17 @@ func (builder *Factory) Create(
 }
 
 func decodeConfig(rawConfig json.RawMessage) (Config, error) {
-	if err := jsonvalue.Validate(rawConfig); err != nil {
-		return Config{}, fmt.Errorf("credentials factory: invalid configuration: %w", err)
+	if err := pluginfactory.ValidateObjectConfig(
+		rawConfig,
+		"credentials factory",
+	); err != nil {
+		return Config{}, err
 	}
 	var settings Config
 	decoder := json.NewDecoder(bytes.NewReader(rawConfig))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&settings); err != nil {
 		return Config{}, fmt.Errorf("credentials factory: decode configuration: %w", err)
-	}
-	var trailingValue json.RawMessage
-	if err := decoder.Decode(&trailingValue); !errors.Is(err, io.EOF) {
-		return Config{}, errors.New("credentials factory: configuration must contain one JSON value")
 	}
 	if err := credentialslocal.ValidateConfig(settings.Local); err != nil {
 		return Config{}, err

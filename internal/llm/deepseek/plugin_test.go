@@ -56,7 +56,7 @@ func (*conflictingAdapter) Stream(context.Context, llm.GenerateOptions) (llm.Chu
 	return nil, errors.New("not used")
 }
 
-func TestPluginOwnsProviderContributionsAndLazyIdentity(t *testing.T) {
+func TestPluginOwnsProviderRegistrationsAndLazyIdentity(t *testing.T) {
 	t.Parallel()
 	var homeCalls atomic.Int32
 	deployment := platformFixture{
@@ -111,7 +111,7 @@ func TestPluginOwnsProviderContributionsAndLazyIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(modelRuntime.ListProviders()) != 0 || len(modelRuntime.ListConfigurableProviders()) != 0 {
-		t.Fatal("DeepSeek contributions survived Plugin unload")
+		t.Fatal("DeepSeek registrations survived Plugin unload")
 	}
 }
 
@@ -164,7 +164,7 @@ func TestPluginRollsBackDirectoryWhenAdapterRegistrationFails(t *testing.T) {
 		t.Fatal("Mount succeeded despite an occupied DeepSeek route")
 	}
 	if len(modelRuntime.ListConfigurableProviders()) != 0 {
-		t.Fatal("failed Plugin Apply retained its directory contribution")
+		t.Fatal("failed Plugin Apply retained its directory entry")
 	}
 }
 

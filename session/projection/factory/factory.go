@@ -1,5 +1,5 @@
-// Package factory owns strict configuration and construction of the User
-// Questions Plugin.
+// Package factory owns strict configuration and construction of the Session
+// Projection Registry Plugin.
 package factory
 
 import (
@@ -8,10 +8,10 @@ import (
 
 	"github.com/gorenx/goren/plugin"
 	pluginfactory "github.com/gorenx/goren/plugin/factory"
-	"github.com/gorenx/goren/userquestions"
+	"github.com/gorenx/goren/session/projection"
 )
 
-// Factory constructs the canonical User Questions Plugin.
+// Factory constructs the canonical Session Projection Registry Plugin.
 type Factory struct{}
 
 // New constructs a statically linked Factory.
@@ -21,10 +21,10 @@ func New() *Factory {
 
 // Name returns the canonical Harness Plugin name.
 func (*Factory) Name() string {
-	return userquestions.PluginName
+	return projection.PluginName
 }
 
-// Create strictly accepts an empty object before constructing the Plugin.
+// Create strictly decodes configuration and constructs the Registry Plugin.
 func (*Factory) Create(
 	createContext context.Context,
 	rawConfig json.RawMessage,
@@ -34,11 +34,11 @@ func (*Factory) Create(
 	}
 	if err := pluginfactory.ValidateEmptyConfig(
 		rawConfig,
-		"userquestions factory",
+		"session projection factory",
 	); err != nil {
 		return nil, err
 	}
-	return userquestions.New(), nil
+	return projection.NewDriveRegistry(), nil
 }
 
 var _ pluginfactory.Factory = (*Factory)(nil)

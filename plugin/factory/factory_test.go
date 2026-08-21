@@ -31,7 +31,7 @@ func (fixture factoryFixture) Create(
 	createContext context.Context,
 	rawConfig json.RawMessage,
 ) (plugin.Plugin, error) {
-	if err := createContext.Err(); err != nil {
+	if err := factory.ValidateCreateContext(createContext); err != nil {
 		return nil, err
 	}
 	settings, err := decodeConfig(rawConfig)
@@ -166,6 +166,82 @@ func TestFactoryRejectsInvalidConfigurationBeforePluginConstruction(t *testing.T
 			}
 			if pluginConstructions.Load() != 0 {
 				t.Fatalf("invalid configuration constructed %d Plugins", pluginConstructions.Load())
+			}
+		})
+	}
+}
+
+func TestFactoryRejectsNilCreateContextBeforeConstruction(t *testing.T) {
+	t.Parallel()
+	var pluginConstructions atomic.Int64
+	candidate := factoryFixture{
+		pluginConstructions: &pluginConstructions,
+	}
+	if _, err := candidate.Create(
+		nil,
+		json.RawMessage(`{"address":"127.0.0.1:3080"}`),
+	); err == nil || !strings.Contains(err.Error(), "create Context is nil") {
+		t.Fatalf("Create error = %v", err)
+	}
+	if pluginConstructions.Load() != 0 {
+		t.Fatalf(
+			"nil Context constructed %d Plugins",
+			pluginConstructions.Load(),
+		)
+	}
+}
+
+func TestValidateEmptyConfigAcceptsOnlyAnEmptyObject(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name        string
+		rawConfig   json.RawMessage
+		wantMessage string
+	}{
+		{
+			name:      "empty object",
+			rawConfig: json.RawMessage(`{}`),
+		},
+		{
+			name:        "unknown field",
+			rawConfig:   json.RawMessage(`{"mode":"invented"}`),
+			wantMessage: "unknown field",
+		},
+		{
+			name:        "duplicate field",
+			rawConfig:   json.RawMessage(`{"mode":1,"mode":2}`),
+			wantMessage: "duplicate field",
+		},
+		{
+			name:        "null",
+			rawConfig:   json.RawMessage(`null`),
+			wantMessage: "JSON object",
+		},
+		{
+			name:        "trailing value",
+			rawConfig:   json.RawMessage(`{} {}`),
+			wantMessage: "multiple JSON values",
+		},
+	} {
+		selectedCase := testCase
+		t.Run(selectedCase.name, func(t *testing.T) {
+			t.Parallel()
+			err := factory.ValidateEmptyConfig(
+				selectedCase.rawConfig,
+				"fixture factory",
+			)
+			if selectedCase.wantMessage == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), selectedCase.wantMessage) {
+				t.Fatalf(
+					"ValidateEmptyConfig error = %v, want containing %q",
+					err,
+					selectedCase.wantMessage,
+				)
 			}
 		})
 	}

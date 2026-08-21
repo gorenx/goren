@@ -15,9 +15,10 @@ import (
 
 // Agent is the smallest live Agent stand-in needed by interaction contracts.
 type Agent struct {
+	plugin.Base
 	Identifier   session.SessionID
 	Conversation *session.Session
-	AgentScope   *plugin.Scope
+	Registry     agent.Registry
 
 	mu       sync.Mutex
 	injected []llm.UserMessage
@@ -28,7 +29,6 @@ func (*Agent) OptionsValue() agent.Options                         { return agen
 func (subject *Agent) SessionValue() *session.Session              { return subject.Conversation }
 func (*Agent) InboxValue() *agent.Inbox                            { return nil }
 func (*Agent) StatusValue() agent.Status                           { return agent.StatusIdle }
-func (subject *Agent) ScopeValue() *plugin.Scope                   { return subject.AgentScope }
 func (*Agent) Cancel(agent.CancelCause, agent.CancelOptions)       {}
 func (*Agent) WhenIdle(context.Context) error                      { return nil }
 func (*Agent) Followup(llm.UserMessage) error                      { return nil }
@@ -42,6 +42,26 @@ func (subject *Agent) Inject(messageValue llm.UserMessage) error {
 }
 func (*Agent) RunMaintenance(requestContext context.Context, task agent.MaintenanceTask) error {
 	return task.Run(requestContext)
+}
+
+func (subject *Agent) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "contract-agent:" + string(subject.Identifier),
+		Provides: []plugin.ServiceType{
+			plugin.ServiceOf[agent.Agent](),
+		},
+	}
+}
+
+func (*Agent) Apply(requestContext context.Context) error {
+	return requestContext.Err()
+}
+
+func (subject *Agent) Dispose(requestContext context.Context) error {
+	if subject.Registry == nil {
+		return nil
+	}
+	return subject.Registry.Remove(requestContext, subject)
 }
 
 // Injected returns a detached snapshot of policy notices.

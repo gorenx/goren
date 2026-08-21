@@ -1,271 +1,355 @@
-// Package assembly owns the statically linked plugin catalog and shipped
-// server composition. It contains only capabilities included in the current port.
+// Package assembly owns process-level Factory registration, deployment
+// declarations, and construction of the complete Server Plugin tree.
 package assembly
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/gorenx/goren/agent"
+	agentfactory "github.com/gorenx/goren/agent/factory"
+	"github.com/gorenx/goren/agentdefaultmodel"
+	agentdefaultmodelfactory "github.com/gorenx/goren/agentdefaultmodel/factory"
+	"github.com/gorenx/goren/agentloop"
+	agentloopfactory "github.com/gorenx/goren/agentloop/factory"
+	"github.com/gorenx/goren/apiproxy"
+	apiproxyfactory "github.com/gorenx/goren/apiproxy/factory"
+	apiproxyhost "github.com/gorenx/goren/apiproxy/host"
+	"github.com/gorenx/goren/approval"
+	approvalfactory "github.com/gorenx/goren/approval/factory"
+	"github.com/gorenx/goren/credentials"
+	credentialsfactory "github.com/gorenx/goren/credentials/factory"
 	credentialslocal "github.com/gorenx/goren/credentials/local"
+	connectionhost "github.com/gorenx/goren/internal/connection"
+	connectionfactory "github.com/gorenx/goren/internal/connection/factory"
 	"github.com/gorenx/goren/internal/llm/deepseek"
+	"github.com/gorenx/goren/llm"
+	llmfactory "github.com/gorenx/goren/llm/factory"
+	"github.com/gorenx/goren/llmretry"
+	llmretryfactory "github.com/gorenx/goren/llmretry/factory"
 	"github.com/gorenx/goren/plugin"
-	sesspersist "github.com/gorenx/goren/session/persistence"
+	pluginfactory "github.com/gorenx/goren/plugin/factory"
+	"github.com/gorenx/goren/session"
+	sessionfactory "github.com/gorenx/goren/session/factory"
+	"github.com/gorenx/goren/session/persistence"
+	sessionpersistencefactory "github.com/gorenx/goren/session/persistence/factory"
+	"github.com/gorenx/goren/session/projection"
+	sessionprojectionfactory "github.com/gorenx/goren/session/projection/factory"
+	"github.com/gorenx/goren/session/query"
+	sessionqueryfactory "github.com/gorenx/goren/session/query/factory"
 	querysqlite "github.com/gorenx/goren/session/query/sqlite"
-	sessiontitle "github.com/gorenx/goren/session/title"
+	"github.com/gorenx/goren/session/title"
+	sessiontitlefactory "github.com/gorenx/goren/session/title/factory"
+	"github.com/gorenx/goren/systemprompt"
+	systempromptfactory "github.com/gorenx/goren/systemprompt/factory"
+	"github.com/gorenx/goren/toolaskuser"
+	toolaskuserfactory "github.com/gorenx/goren/toolaskuser/factory"
+	"github.com/gorenx/goren/tools"
+	toolsfactory "github.com/gorenx/goren/tools/factory"
+	"github.com/gorenx/goren/userquestions"
+	userquestionsfactory "github.com/gorenx/goren/userquestions/factory"
+	"github.com/gorenx/goren/web"
+	webfactory "github.com/gorenx/goren/web/factory"
+	"github.com/gorenx/goren/workspace"
+	workspacefactory "github.com/gorenx/goren/workspace/factory"
 )
 
-const (
-	AgentFactoryName              = "@deepseek-ai/dsh-agent"
-	AgentDefaultModelFactoryName  = "@deepseek-ai/dsh-agent-default-model"
-	AgentLoopFactoryName          = "@deepseek-ai/dsh-agent-loop"
-	ApprovalFactoryName           = "@deepseek-ai/dsh-user-approval"
-	APIProxyFactoryName           = "@deepseek-ai/dsh-host-apiproxy"
-	ConnectionFactoryName         = "@deepseek-ai/dsh-client-connection"
-	CredentialsFactoryName        = "@deepseek-ai/dsh-credentials"
-	DeepSeekFactoryName           = "@deepseek-ai/dsh-llm-deepseek"
-	LLMFactoryName                = "@deepseek-ai/dsh-llm"
-	LLMRetryFactoryName           = "@deepseek-ai/dsh-llm-retry"
-	SessionFactoryName            = "@deepseek-ai/dsh-session"
-	SessionPersistenceFactoryName = "@deepseek-ai/dsh-session-persistence"
-	SessionProjectionFactoryName  = "@deepseek-ai/dsh-session-projection"
-	SessionQueryFactoryName       = "@deepseek-ai/dsh-session-query"
-	SessionTitleFactoryName       = "@deepseek-ai/dsh-session-title"
-	SystemPromptFactoryName       = "@deepseek-ai/dsh-system-prompt"
-	ToolAskUserFactoryName        = "@deepseek-ai/dsh-tool-ask-user"
-	ToolsFactoryName              = "@deepseek-ai/dsh-tools"
-	UserQuestionsFactoryName      = "@deepseek-ai/dsh-user-questions"
-	WebFrontendFactoryName        = "@gorenx/dsh-web"
-	WorkspaceFactoryName          = "@deepseek-ai/dsh-workspace"
-)
-
-// Environment contains process-derived values that are not deployment config.
+// Environment contains process-derived values and technical policies supplied
+// to domain-owned Factories. It contains no Plugin configuration.
 type Environment struct {
 	WorkingDirectory string
 	LookupEnv        func(string) (string, bool)
 	UserHomeDir      func() (string, error)
 	EnsureDirectory  func(string) error
+	Diagnostics      *Diagnostics
 }
 
-// PluginSpec is one strict factory invocation at the catalog ingress boundary.
+// PluginSpec is one strict Factory invocation and its Server-tree activation
+// phase. Raw configuration ends at the selected domain Factory.
 type PluginSpec struct {
 	FactoryName string
 	Config      json.RawMessage
+	Phase       plugin.ActivationPhase
 }
 
-// NewCatalog registers only the factories included in the current server slice.
-func NewCatalog(platform Environment) (*plugin.Catalog, error) {
-	registry := plugin.NewCatalog()
-	if err := plugin.RegisterFactory(registry, agentFactory{}); err != nil {
-		return nil, err
+// NewCatalog registers the statically linked Factories included in the server.
+// Every Factory is implemented by its owning capability package.
+func NewCatalog(platform Environment) (*pluginfactory.Catalog, error) {
+	if strings.TrimSpace(platform.WorkingDirectory) == "" ||
+		platform.WorkingDirectory != strings.TrimSpace(platform.WorkingDirectory) {
+		return nil, errors.New(
+			"assembly: working directory must be non-empty and trimmed",
+		)
 	}
-	if err := plugin.RegisterFactory(registry, agentDefaultModelFactory{}); err != nil {
-		return nil, err
+	if platform.Diagnostics == nil {
+		return nil, errors.New("assembly: diagnostics are required")
 	}
-	if err := plugin.RegisterFactory(registry, agentLoopFactory{}); err != nil {
-		return nil, err
+	lookupEnvironment := platform.LookupEnv
+	if lookupEnvironment == nil {
+		lookupEnvironment = os.LookupEnv
 	}
-	if err := plugin.RegisterFactory(registry, approvalFactory{}); err != nil {
-		return nil, err
+	resolveHome := platform.UserHomeDir
+	if resolveHome == nil {
+		resolveHome = os.UserHomeDir
 	}
 	ensureDirectory := platform.EnsureDirectory
 	if ensureDirectory == nil {
-		ensureDirectory = func(path string) error { return os.MkdirAll(path, 0o755) }
+		ensureDirectory = func(path string) error {
+			return os.MkdirAll(path, 0o755)
+		}
 	}
-	if err := plugin.RegisterFactory(registry,
-		apiProxyFactory{
-			workingDirectory: platform.WorkingDirectory,
-			ensureDirectory:  ensureDirectory,
-		},
-	); err != nil {
+	hostEnvironment := processEnvironment{
+		lookup:   lookupEnvironment,
+		userHome: resolveHome,
+	}
+	credentialsBuilder, err := credentialsfactory.New(hostEnvironment)
+	if err != nil {
 		return nil, err
 	}
-	if err := plugin.RegisterFactory(registry, connectionFactory{}); err != nil {
+	deepSeekBuilder, err := deepseek.NewFactory(hostEnvironment)
+	if err != nil {
 		return nil, err
 	}
-	lookupEnv := platform.LookupEnv
-	if lookupEnv == nil {
-		lookupEnv = os.LookupEnv
-	}
-	if err := plugin.RegisterFactory(registry, credentialsFactory{lookupEnv: lookupEnv}); err != nil {
+	sessionBuilder, err := sessionfactory.New(platform.Diagnostics)
+	if err != nil {
 		return nil, err
 	}
-	if err := plugin.RegisterFactory(registry, llmFactory{}); err != nil {
+	persistenceBuilder, err := sessionpersistencefactory.New(
+		platform.Diagnostics,
+	)
+	if err != nil {
 		return nil, err
 	}
-	userHome := platform.UserHomeDir
-	if userHome == nil {
-		userHome = os.UserHomeDir
-	}
-	if err := plugin.RegisterFactory(registry, deepSeekFactory{lookupEnv: lookupEnv, userHome: userHome}); err != nil {
+	titleBuilder, err := sessiontitlefactory.New(platform.Diagnostics)
+	if err != nil {
 		return nil, err
 	}
-	if err := plugin.RegisterFactory(registry, llmRetryFactory{}); err != nil {
-		return nil, err
+	factories := []pluginfactory.Factory{
+		agentfactory.New(agent.RegistryOptions{
+			ObserverError: platform.Diagnostics.Report,
+		}),
+		agentdefaultmodelfactory.New(),
+		agentloopfactory.New(agentloop.RuntimeOptions{
+			ObserverError: platform.Diagnostics.Report,
+		}),
+		approvalfactory.New(),
+		apiproxyfactory.New(apiproxyhost.RuntimeOptions{
+			WorkingDirectory: platform.WorkingDirectory,
+			EnsureDirectory:  ensureDirectory,
+			ObserverError:    platform.Diagnostics.Report,
+		}),
+		connectionfactory.New(),
+		credentialsBuilder,
+		llmfactory.New(platform.Diagnostics),
+		deepSeekBuilder,
+		llmretryfactory.New(llmretry.RuntimeOptions{
+			ObserverError: platform.Diagnostics.Report,
+		}),
+		sessionBuilder,
+		persistenceBuilder,
+		sessionprojectionfactory.New(),
+		sessionqueryfactory.New(),
+		titleBuilder,
+		systempromptfactory.New(),
+		toolsfactory.New(),
+		toolaskuserfactory.New(),
+		userquestionsfactory.New(),
+		webfactory.New(),
+		workspacefactory.New(),
 	}
-	if err := plugin.RegisterFactory(registry, sessionFactory{}); err != nil {
-		return nil, err
+	directory := pluginfactory.NewCatalog()
+	for _, builder := range factories {
+		if err = directory.Register(builder); err != nil {
+			return nil, err
+		}
 	}
-	if err := plugin.RegisterFactory(registry, sessionPersistenceFactory{}); err != nil {
-		return nil, err
-	}
-	if err := plugin.RegisterFactory(registry, sessionProjectionFactory{}); err != nil {
-		return nil, err
-	}
-	if err := plugin.RegisterFactory(registry, sessionQueryFactory{}); err != nil {
-		return nil, err
-	}
-	if err := plugin.RegisterFactory(registry, sessionTitleFactory{}); err != nil {
-		return nil, err
-	}
-	if err := plugin.RegisterFactory(registry, systemPromptFactory{}); err != nil {
-		return nil, err
-	}
-	if err := plugin.RegisterFactory(registry, toolsFactory{}); err != nil {
-		return nil, err
-	}
-	if err := plugin.RegisterFactory(registry, toolAskUserFactory{}); err != nil {
-		return nil, err
-	}
-	if err := plugin.RegisterFactory(registry, userQuestionsFactory{}); err != nil {
-		return nil, err
-	}
-	if err := plugin.RegisterFactory(registry, webFrontendFactory{}); err != nil {
-		return nil, err
-	}
-	if err := plugin.RegisterFactory(registry, workspaceFactory{}); err != nil {
-		return nil, err
-	}
-	return registry, nil
+	return directory, nil
 }
 
-// DefaultSpecs builds the current server composition. Consumers are
-// intentionally declared before Session to exercise dependency settlement
-// instead of relying on file order.
+// DefaultSpecs returns the typed default server deployment as strict Factory
+// inputs. Connection is the only commit-phase Plugin because it exposes the
+// process to external requests.
 func DefaultSpecs(
 	listenAddress string,
 	version string,
 	sessionDatabasePath string,
 	workspaceDatabasePath string,
 ) ([]PluginSpec, error) {
-	connectionRaw, err := json.Marshal(ConnectionConfig{ListenAddress: listenAddress, ServeWeb: true})
-	if err != nil {
-		return nil, err
-	}
-	apiProxyRaw, err := json.Marshal(APIProxyConfig{Version: version})
-	if err != nil {
-		return nil, err
-	}
-	defaultModelRaw, err := json.Marshal(AgentDefaultModelConfig{
-		Provider: deepseek.ProviderRoute, Model: deepseek.DefaultModelID,
+	connectionRaw, err := json.Marshal(connectionfactory.Config{
+		ListenAddress: listenAddress,
+		ServeWeb:      true,
 	})
 	if err != nil {
 		return nil, err
 	}
-	persistenceRaw, err := json.Marshal(SessionPersistenceConfig{
-		Path: sessionDatabasePath, JournalMode: "wal",
-		WriteBatchMaxDelayMS:     sesspersist.DefaultWriteBatchMaxDelay.Milliseconds(),
-		PreparedSessionCacheSize: sesspersist.DefaultPreparedSessionCache,
+	apiProxyRaw, err := json.Marshal(apiproxyfactory.Config{
+		Version: version,
 	})
 	if err != nil {
 		return nil, err
 	}
-	queryRaw, err := json.Marshal(SessionQueryConfig{
-		Path:        filepath.Join(filepath.Dir(sessionDatabasePath), "session-query.sqlite"),
+	defaultModelRaw, err := json.Marshal(agentdefaultmodel.Config{
+		Provider: deepseek.ProviderRoute,
+		Model:    deepseek.DefaultModelID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	persistenceRaw, err := json.Marshal(sessionpersistencefactory.Config{
+		Path:                     sessionDatabasePath,
+		JournalMode:              "wal",
+		WriteBatchMaxDelayMS:     persistence.DefaultWriteBatchMaxDelay.Milliseconds(),
+		PreparedSessionCacheSize: persistence.DefaultPreparedSessionCache,
+	})
+	if err != nil {
+		return nil, err
+	}
+	queryRaw, err := json.Marshal(sessionqueryfactory.Config{
+		Path: filepath.Join(
+			filepath.Dir(sessionDatabasePath),
+			"session-query.sqlite",
+		),
 		JournalMode: querysqlite.JournalWAL,
 	})
 	if err != nil {
 		return nil, err
 	}
-	credentialsRaw, err := json.Marshal(CredentialsConfig{
-		Local: credentialslocal.Config{Path: filepath.Join(filepath.Dir(sessionDatabasePath), ".credentials.json")},
+	credentialsRaw, err := json.Marshal(credentialsfactory.Config{
+		Local: credentialslocal.Config{
+			Path: filepath.Join(
+				filepath.Dir(sessionDatabasePath),
+				".credentials.json",
+			),
+		},
 	})
 	if err != nil {
 		return nil, err
 	}
-	workspaceRaw, err := json.Marshal(WorkspaceConfig{
-		Path: workspaceDatabasePath, JournalMode: "wal",
+	workspaceRaw, err := json.Marshal(workspacefactory.Config{
+		Path:        workspaceDatabasePath,
+		JournalMode: "wal",
 	})
 	if err != nil {
 		return nil, err
 	}
-	titleRaw, err := json.Marshal(
-		sessiontitle.Config{
-			FallbackMaxWords: 5,
-			FallbackMaxBytes: 40,
-			MaxTitleBytes:    80,
-			LLM: &sessiontitle.LLMConfig{
-				AutomaticMode:       sessiontitle.AutomaticFirstPrompt,
-				TargetWords:         5,
-				TargetCJKCharacters: 10,
-				MaxInputBytes:       4096,
-				MaxOutputTokens:     64,
-				TimeoutMS:           60000,
-			},
-		})
+	titleRaw, err := json.Marshal(title.Config{
+		FallbackMaxWords: 5,
+		FallbackMaxBytes: 40,
+		MaxTitleBytes:    80,
+		LLM: &title.LLMConfig{
+			AutomaticMode:       title.AutomaticFirstPrompt,
+			TargetWords:         5,
+			TargetCJKCharacters: 10,
+			MaxInputBytes:       4096,
+			MaxOutputTokens:     64,
+			TimeoutMS:           60000,
+		},
+	})
 	if err != nil {
 		return nil, err
 	}
+	emptyConfig := json.RawMessage(`{}`)
 	return []PluginSpec{
-		{FactoryName: ConnectionFactoryName, Config: connectionRaw},
-		{FactoryName: APIProxyFactoryName, Config: apiProxyRaw},
-		{FactoryName: ToolAskUserFactoryName, Config: json.RawMessage(`{}`)},
-		{FactoryName: AgentDefaultModelFactoryName, Config: defaultModelRaw},
-		{FactoryName: LLMRetryFactoryName, Config: json.RawMessage(`{}`)},
-		{FactoryName: SessionTitleFactoryName, Config: titleRaw},
-		{FactoryName: SessionProjectionFactoryName, Config: json.RawMessage(`{}`)},
-		{FactoryName: AgentLoopFactoryName, Config: json.RawMessage(`{}`)},
-		{FactoryName: ApprovalFactoryName, Config: json.RawMessage(`{}`)},
-		{FactoryName: UserQuestionsFactoryName, Config: json.RawMessage(`{}`)},
-		{FactoryName: AgentFactoryName, Config: json.RawMessage(`{}`)},
-		{FactoryName: LLMFactoryName, Config: json.RawMessage(`{}`)},
-		{FactoryName: DeepSeekFactoryName, Config: json.RawMessage(`{}`)},
-		{FactoryName: CredentialsFactoryName, Config: credentialsRaw},
-		{FactoryName: SystemPromptFactoryName, Config: json.RawMessage(`{}`)},
-		{FactoryName: ToolsFactoryName, Config: json.RawMessage(`{}`)},
-		{FactoryName: SessionFactoryName, Config: json.RawMessage(`{}`)},
-		{FactoryName: SessionPersistenceFactoryName, Config: persistenceRaw},
-		{FactoryName: SessionQueryFactoryName, Config: queryRaw},
-		{FactoryName: WorkspaceFactoryName, Config: workspaceRaw},
-		{FactoryName: WebFrontendFactoryName, Config: json.RawMessage(`{}`)},
+		{
+			FactoryName: agent.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: agentdefaultmodel.PluginName,
+			Config:      defaultModelRaw,
+		},
+		{
+			FactoryName: session.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: persistence.PluginName,
+			Config:      persistenceRaw,
+		},
+		{
+			FactoryName: projection.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: query.PluginName,
+			Config:      queryRaw,
+		},
+		{
+			FactoryName: credentials.PluginName,
+			Config:      credentialsRaw,
+		},
+		{
+			FactoryName: llm.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: deepseek.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: systemprompt.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: approval.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: tools.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: userquestions.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: toolaskuser.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: workspace.PluginName,
+			Config:      workspaceRaw,
+		},
+		{
+			FactoryName: title.PluginName,
+			Config:      titleRaw,
+		},
+		{
+			FactoryName: agentloop.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: llmretry.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: web.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: apiproxy.PluginName,
+			Config:      apiProxyRaw,
+		},
+		{
+			FactoryName: connectionhost.PluginName,
+			Config:      connectionRaw,
+			Phase:       plugin.ActivationCommit,
+		},
 	}, nil
 }
 
-// Load creates and loads a composition transaction. A failure unloads every
-// declaration accepted earlier in the same call, leaving no contributions.
-func Load(requestContext context.Context, engine *plugin.Runtime, registry *plugin.Catalog, declarations []PluginSpec) ([]plugin.Handle, error) {
-	if engine == nil {
-		return nil, errors.New("assembly: plugin runtime is nil")
-	}
-	if registry == nil {
-		return nil, errors.New("assembly: factory catalog is nil")
-	}
-	handles := make([]plugin.Handle, 0, len(declarations))
-	for _, declaration := range declarations {
-		instance, err := registry.Create(requestContext, declaration.FactoryName, declaration.Config)
-		if err == nil {
-			var pluginHandle plugin.Handle
-			pluginHandle, err = engine.Load(requestContext, instance)
-			if pluginHandle.ID() != 0 {
-				handles = append(handles, pluginHandle)
-			}
-		}
-		if err == nil {
-			continue
-		}
-		rollbackErr := unloadReverse(requestContext, engine, handles)
-		return nil, errors.Join(fmt.Errorf("assembly: load %s: %w", declaration.FactoryName, err), rollbackErr)
-	}
-	return handles, nil
+type processEnvironment struct {
+	lookup   func(string) (string, bool)
+	userHome func() (string, error)
 }
 
-func unloadReverse(closeContext context.Context, engine *plugin.Runtime, handles []plugin.Handle) error {
-	var rollbackErr error
-	for index := len(handles) - 1; index >= 0; index-- {
-		rollbackErr = errors.Join(rollbackErr, engine.Unload(closeContext, handles[index]))
-	}
-	return rollbackErr
+func (platform processEnvironment) Lookup(environmentName string) (string, bool) {
+	return platform.lookup(environmentName)
+}
+
+func (platform processEnvironment) UserHomeDir() (string, error) {
+	return platform.userHome()
 }

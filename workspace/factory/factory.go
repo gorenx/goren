@@ -8,10 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 
-	"github.com/gorenx/goren/internal/jsonvalue"
 	"github.com/gorenx/goren/plugin"
 	pluginfactory "github.com/gorenx/goren/plugin/factory"
 	"github.com/gorenx/goren/workspace"
@@ -42,7 +40,7 @@ func (*Factory) Create(
 	createContext context.Context,
 	rawConfig json.RawMessage,
 ) (plugin.Plugin, error) {
-	if err := createContext.Err(); err != nil {
+	if err := pluginfactory.ValidateCreateContext(createContext); err != nil {
 		return nil, err
 	}
 	settings, err := decodeConfig(rawConfig)
@@ -71,26 +69,17 @@ func (opener *sqliteBackendOpener) OpenBackend(
 }
 
 func decodeConfig(rawConfig json.RawMessage) (Config, error) {
-	if err := jsonvalue.Validate(rawConfig); err != nil {
-		return Config{}, fmt.Errorf(
-			"workspace factory: invalid configuration: %w",
-			err,
-		)
-	}
-	if !jsonvalue.IsObject(rawConfig) {
-		return Config{}, errors.New("workspace factory: configuration must be a JSON object")
+	if err := pluginfactory.ValidateObjectConfig(
+		rawConfig,
+		"workspace factory",
+	); err != nil {
+		return Config{}, err
 	}
 	var settings Config
 	decoder := json.NewDecoder(bytes.NewReader(rawConfig))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&settings); err != nil {
 		return Config{}, fmt.Errorf("workspace factory: decode configuration: %w", err)
-	}
-	var trailingValue json.RawMessage
-	if err := decoder.Decode(&trailingValue); !errors.Is(err, io.EOF) {
-		return Config{}, errors.New(
-			"workspace factory: configuration must contain one JSON value",
-		)
 	}
 	if strings.TrimSpace(settings.Path) == "" {
 		return Config{}, errors.New("workspace factory: path must be non-empty")

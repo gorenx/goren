@@ -8,11 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 
-	"github.com/gorenx/goren/internal/jsonvalue"
 	"github.com/gorenx/goren/plugin"
 	pluginfactory "github.com/gorenx/goren/plugin/factory"
 	"github.com/gorenx/goren/session/persistence"
@@ -56,7 +54,7 @@ func (builder *Factory) Create(
 	createContext context.Context,
 	rawConfig json.RawMessage,
 ) (plugin.Plugin, error) {
-	if err := createContext.Err(); err != nil {
+	if err := pluginfactory.ValidateCreateContext(createContext); err != nil {
 		return nil, err
 	}
 	settings, err := decodeConfig(rawConfig)
@@ -90,16 +88,11 @@ func (opener *sqliteBackendOpener) OpenBackend(
 }
 
 func decodeConfig(rawConfig json.RawMessage) (Config, error) {
-	if err := jsonvalue.Validate(rawConfig); err != nil {
-		return Config{}, fmt.Errorf(
-			"session persistence factory: invalid configuration: %w",
-			err,
-		)
-	}
-	if !jsonvalue.IsObject(rawConfig) {
-		return Config{}, errors.New(
-			"session persistence factory: configuration must be a JSON object",
-		)
+	if err := pluginfactory.ValidateObjectConfig(
+		rawConfig,
+		"session persistence factory",
+	); err != nil {
+		return Config{}, err
 	}
 	var settings Config
 	decoder := json.NewDecoder(bytes.NewReader(rawConfig))
@@ -108,12 +101,6 @@ func decodeConfig(rawConfig json.RawMessage) (Config, error) {
 		return Config{}, fmt.Errorf(
 			"session persistence factory: decode configuration: %w",
 			err,
-		)
-	}
-	var trailingValue json.RawMessage
-	if err := decoder.Decode(&trailingValue); !errors.Is(err, io.EOF) {
-		return Config{}, errors.New(
-			"session persistence factory: configuration must contain one JSON value",
 		)
 	}
 	if strings.TrimSpace(settings.Path) == "" {
@@ -132,6 +119,13 @@ func decodeConfig(rawConfig json.RawMessage) (Config, error) {
 	if settings.WriteBatchMaxDelayMS < 0 {
 		return Config{}, errors.New(
 			"session persistence factory: writeBatchMaxDelayMs must be a positive integer",
+		)
+	}
+	maximumTimerMilliseconds := int64((1<<63 - 1) / time.Millisecond)
+	if settings.WriteBatchMaxDelayMS > maximumTimerMilliseconds {
+		return Config{}, fmt.Errorf(
+			"session persistence factory: writeBatchMaxDelayMs must not exceed %d",
+			maximumTimerMilliseconds,
 		)
 	}
 	if settings.WriteBatchMaxDelayMS == 0 {
