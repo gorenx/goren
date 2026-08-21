@@ -54,8 +54,11 @@ func (catalog *registry) addTool(entry *registeredTool) error {
 	return catalog.store.addTool(entry)
 }
 
-func (catalog *registry) removeTool(name string) bool {
-	return catalog.store.removeTool(name)
+func (catalog *registry) removeTool(
+	name string,
+	expected *registeredTool,
+) bool {
+	return catalog.store.removeTool(name, expected)
 }
 
 func (catalog *registry) compileRestriction(restriction ToolRestriction) (compiledRestriction, error) {
@@ -75,23 +78,35 @@ func (catalog *registry) compileRestriction(restriction ToolRestriction) (compil
 	)
 }
 
-func (catalog *registry) addRestriction(name string, restriction compiledRestriction) error {
+func (catalog *registry) addRestriction(
+	name string,
+	restriction compiledRestriction,
+) (*registeredRestriction, error) {
 	return catalog.store.addRestriction(name, restriction)
 }
 
-func (catalog *registry) removeRestriction(name string) bool {
-	return catalog.store.removeRestriction(name)
+func (catalog *registry) removeRestriction(
+	name string,
+	expected *registeredRestriction,
+) bool {
+	return catalog.store.removeRestriction(name, expected)
 }
 
-func (catalog *registry) addGuard(name string, policy ToolGuard) error {
+func (catalog *registry) addGuard(
+	name string,
+	policy ToolGuard,
+) (*registeredGuard, error) {
 	if policy == nil {
-		return fmt.Errorf("tools: guard %q policy is nil", name)
+		return nil, fmt.Errorf("tools: guard %q policy is nil", name)
 	}
 	return catalog.store.addGuard(name, policy)
 }
 
-func (catalog *registry) removeGuard(name string) {
-	catalog.store.removeGuard(name)
+func (catalog *registry) removeGuard(
+	name string,
+	expected *registeredGuard,
+) bool {
+	return catalog.store.removeGuard(name, expected)
 }
 
 func (catalog *registry) find(name string) (*registeredTool, bool) {

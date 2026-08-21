@@ -26,9 +26,12 @@ func (table *toolTable) add(entry *registeredTool) error {
 	return nil
 }
 
-func (table *toolTable) remove(name string) bool {
+func (table *toolTable) remove(
+	name string,
+	expected *registeredTool,
+) bool {
 	entry := table.byName[name]
-	if entry == nil {
+	if entry == nil || entry != expected {
 		return false
 	}
 	delete(table.byName, name)
@@ -68,6 +71,14 @@ type compiledRestriction struct {
 	deny  map[string]struct{}
 }
 
+type registeredRestriction struct {
+	policy compiledRestriction
+}
+
+type registeredGuard struct {
+	policy ToolGuard
+}
+
 func (filter compiledRestriction) admits(name string) bool {
 	if filter.allow != nil {
 		if _, exists := filter.allow[name]; !exists {
@@ -97,9 +108,9 @@ type toolStore struct {
 	mutex sync.RWMutex
 	tools toolTable
 
-	restrictions     map[string]compiledRestriction
+	restrictions     map[string]*registeredRestriction
 	restrictionOrder []string
-	guards           map[string]ToolGuard
+	guards           map[string]*registeredGuard
 	guardOrder       []string
 }
 
@@ -115,39 +126,44 @@ func (storage *toolStore) addTool(entry *registeredTool) error {
 
 func (storage *toolStore) removeTool(
 	name string,
+	expected *registeredTool,
 ) bool {
 	storage.mutex.Lock()
 	defer storage.mutex.Unlock()
-	return storage.tools.remove(name)
+	return storage.tools.remove(name, expected)
 }
 
 func (storage *toolStore) addRestriction(
 	name string,
 	filter compiledRestriction,
-) error {
+) (*registeredRestriction, error) {
 	storage.mutex.Lock()
 	defer storage.mutex.Unlock()
 	if storage.restrictions == nil {
-		storage.restrictions = make(map[string]compiledRestriction)
+		storage.restrictions = make(map[string]*registeredRestriction)
 	}
 	if _, exists := storage.restrictions[name]; exists {
-		return fmt.Errorf(
+		return nil, fmt.Errorf(
 			"tools: restriction %q is already registered in this layer",
 			name,
 		)
 	}
-	storage.restrictions[name] = filter
+	entry := &registeredRestriction{
+		policy: filter,
+	}
+	storage.restrictions[name] = entry
 	storage.restrictionOrder = append(storage.restrictionOrder, name)
-	return nil
+	return entry, nil
 }
 
 func (storage *toolStore) removeRestriction(
 	name string,
+	expected *registeredRestriction,
 ) bool {
 	storage.mutex.Lock()
 	defer storage.mutex.Unlock()
-	_, found := storage.restrictions[name]
-	if !found {
+	entry := storage.restrictions[name]
+	if entry == nil || entry != expected {
 		return false
 	}
 	delete(storage.restrictions, name)
@@ -159,27 +175,37 @@ func (storage *toolStore) removeRestriction(
 	return true
 }
 
-func (storage *toolStore) addGuard(name string, policy ToolGuard) error {
+func (storage *toolStore) addGuard(
+	name string,
+	policy ToolGuard,
+) (*registeredGuard, error) {
 	storage.mutex.Lock()
 	defer storage.mutex.Unlock()
 	if storage.guards == nil {
-		storage.guards = make(map[string]ToolGuard)
+		storage.guards = make(map[string]*registeredGuard)
 	}
 	if _, exists := storage.guards[name]; exists {
-		return fmt.Errorf(
+		return nil, fmt.Errorf(
 			"tools: guard %q is already registered in this layer",
 			name,
 		)
 	}
-	storage.guards[name] = policy
+	entry := &registeredGuard{
+		policy: policy,
+	}
+	storage.guards[name] = entry
 	storage.guardOrder = append(storage.guardOrder, name)
-	return nil
+	return entry, nil
 }
 
-func (storage *toolStore) removeGuard(name string) bool {
+func (storage *toolStore) removeGuard(
+	name string,
+	expected *registeredGuard,
+) bool {
 	storage.mutex.Lock()
 	defer storage.mutex.Unlock()
-	if _, found := storage.guards[name]; !found {
+	entry := storage.guards[name]
+	if entry == nil || entry != expected {
 		return false
 	}
 	delete(storage.guards, name)
@@ -200,13 +226,17 @@ func (storage *toolStore) snapshot() toolLayerSnapshot {
 		guards:       make([]ToolGuard, 0, len(storage.guardOrder)),
 	}
 	for _, name := range storage.restrictionOrder {
-		layer.restrictions = append(
-			layer.restrictions,
-			storage.restrictions[name],
-		)
+		if entry := storage.restrictions[name]; entry != nil {
+			layer.restrictions = append(
+				layer.restrictions,
+				entry.policy,
+			)
+		}
 	}
 	for _, name := range storage.guardOrder {
-		layer.guards = append(layer.guards, storage.guards[name])
+		if entry := storage.guards[name]; entry != nil {
+			layer.guards = append(layer.guards, entry.policy)
+		}
 	}
 	return layer
 }

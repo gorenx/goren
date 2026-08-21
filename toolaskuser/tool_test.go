@@ -23,67 +23,19 @@ type schemaNode struct {
 	Items                *schemaNode           `json:"items,omitempty"`
 }
 
-type askUserFixturePlugin struct {
-	fixture *askUserFixture
+type eventFailureSink struct{}
+
+func (eventFailureSink) ReportEventFailure(
+	context.Context,
+	plugin.EventFailure,
+) {
 }
 
 type askUserFixture struct {
 	engine          *plugin.Runtime
-	pluginScope     *plugin.Scope
-	toolService     toolscore.ToolRuntime
-	questionService userquestions.UserQuestions
-	releaseTool     plugin.Disposer
-}
-
-func (*askUserFixturePlugin) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name: "ask-user-tool-fixture",
-		Provides: []plugin.ServiceRef{
-			systemprompt.Service.Ref(), toolscore.Service.Ref(), userquestions.Service.Ref(),
-		},
-	}
-}
-
-func (instance *askUserFixturePlugin) Apply(requestContext context.Context, pluginScope *plugin.Scope) error {
-	promptSettings, err := systemprompt.ValidateConfig(systemprompt.Config{})
-	if err != nil {
-		return err
-	}
-	promptService, err := systemprompt.New(requestContext, pluginScope, promptSettings)
-	if err != nil {
-		return err
-	}
-	toolSettings, err := toolscore.ValidateConfig(toolscore.Config{})
-	if err != nil {
-		return err
-	}
-	toolService, err := toolscore.New(requestContext, pluginScope, promptService, nil, nil, toolSettings)
-	if err != nil {
-		return err
-	}
-	questionService := userquestions.New(nil)
-	definition, err := toolaskuser.New(questionService)
-	if err != nil {
-		return err
-	}
-	releaseTool, err := toolService.Register(requestContext, pluginScope, definition)
-	if err != nil {
-		return err
-	}
-	if _, err := plugin.Provide(pluginScope, systemprompt.Service, promptService); err != nil {
-		return err
-	}
-	if _, err := plugin.Provide(pluginScope, toolscore.Service, toolService); err != nil {
-		return err
-	}
-	if _, err := plugin.Provide(pluginScope, userquestions.Service, questionService); err != nil {
-		return err
-	}
-	instance.fixture.pluginScope = pluginScope
-	instance.fixture.toolService = toolService
-	instance.fixture.questionService = questionService
-	instance.fixture.releaseTool = releaseTool
-	return nil
+	toolService     *toolscore.Service
+	questionService *userquestions.QuestionService
+	toolHandle      plugin.Handle
 }
 
 type providerRecorder struct {
@@ -92,7 +44,10 @@ type providerRecorder struct {
 	answerValue    userquestions.Answer
 }
 
-func (recorder *providerRecorder) Ask(requestContext context.Context, questionRequest userquestions.Request) (userquestions.Answer, error) {
+func (recorder *providerRecorder) Ask(
+	requestContext context.Context,
+	questionRequest userquestions.Request,
+) (userquestions.Answer, error) {
 	recorder.requestContext = requestContext
 	recorder.requestValue = questionRequest
 	return recorder.answerValue, nil
@@ -100,13 +55,36 @@ func (recorder *providerRecorder) Ask(requestContext context.Context, questionRe
 
 func newAskUserFixture(t *testing.T) *askUserFixture {
 	t.Helper()
-	state := &askUserFixture{engine: plugin.NewRuntime()}
-	if _, err := state.engine.Load(context.Background(), &askUserFixturePlugin{fixture: state}); err != nil {
+	promptSettings, err := systemprompt.ValidateConfig(systemprompt.Config{})
+	if err != nil {
 		t.Fatal(err)
 	}
+	toolSettings, err := toolscore.ValidateConfig(toolscore.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &askUserFixture{
+		engine: plugin.NewRuntime(plugin.RuntimeSettings{
+			EventFailures: eventFailureSink{},
+		}),
+		toolService:     toolscore.New(toolSettings),
+		questionService: userquestions.New(),
+	}
+	toolPlugin := toolaskuser.New()
+	handles, err := state.engine.Start(
+		context.Background(),
+		systemprompt.New(promptSettings, systemprompt.RegistryOptions{}),
+		state.toolService,
+		state.questionService,
+		toolPlugin,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.toolHandle = handles[3]
 	t.Cleanup(func() {
-		if err := state.engine.Shutdown(context.Background()); err != nil {
-			t.Error(err)
+		if shutdownErr := state.engine.Shutdown(context.Background()); shutdownErr != nil {
+			t.Error(shutdownErr)
 		}
 	})
 	return state
@@ -118,8 +96,8 @@ func resultText(t *testing.T, outcome toolscore.ToolExecutionResult) string {
 	if len(content) != 1 {
 		t.Fatalf("result content = %#v", content)
 	}
-	textBlock, ok := content[0].(llm.TextBlock)
-	if !ok {
+	textBlock, matches := content[0].(llm.TextBlock)
+	if !matches {
 		t.Fatalf("result content type = %T", content[0])
 	}
 	return textBlock.Text
@@ -128,7 +106,7 @@ func resultText(t *testing.T, outcome toolscore.ToolExecutionResult) string {
 func TestDefinitionMatchesPinnedSchema(t *testing.T) {
 	t.Parallel()
 	state := newAskUserFixture(t)
-	definition, found := state.toolService.Get(toolaskuser.Name, plugin.ScopeKey{})
+	definition, found := state.toolService.Get(toolaskuser.Name)
 	if !found {
 		t.Fatal("ask_user_question is not registered")
 	}
@@ -142,8 +120,9 @@ func TestDefinitionMatchesPinnedSchema(t *testing.T) {
 	questionsNode := parameters.Properties["questions"]
 	itemNode := questionsNode.Items
 	if parameters.Type != "object" || parameters.AdditionalProperties != nil ||
-		!reflect.DeepEqual(parameters.Required, []string{"questions"}) || itemNode == nil ||
-		itemNode.AdditionalProperties == nil || !*itemNode.AdditionalProperties ||
+		!reflect.DeepEqual(parameters.Required, []string{"questions"}) ||
+		itemNode == nil || itemNode.AdditionalProperties == nil ||
+		!*itemNode.AdditionalProperties ||
 		!reflect.DeepEqual(itemNode.Required, []string{"id", "question"}) {
 		t.Fatalf("parameter schema = %#v", parameters)
 	}
@@ -152,13 +131,13 @@ func TestDefinitionMatchesPinnedSchema(t *testing.T) {
 	for fieldName := range itemNode.Properties {
 		gotFields = append(gotFields, fieldName)
 	}
-	// The literal is stable; sorting avoids relying on map iteration.
 	sort.Strings(gotFields)
 	if !reflect.DeepEqual(gotFields, wantFields) {
 		t.Fatalf("question fields = %#v", gotFields)
 	}
 	optionNode := itemNode.Properties["options"].Items
-	if optionNode == nil || optionNode.AdditionalProperties == nil || !*optionNode.AdditionalProperties ||
+	if optionNode == nil || optionNode.AdditionalProperties == nil ||
+		!*optionNode.AdditionalProperties ||
 		!reflect.DeepEqual(optionNode.Required, []string{"label"}) {
 		t.Fatalf("option schema = %#v", optionNode)
 	}
@@ -167,8 +146,9 @@ func TestDefinitionMatchesPinnedSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	answerNode := output.Properties["answers"].Items
-	if output.AdditionalProperties == nil || *output.AdditionalProperties || answerNode == nil ||
-		answerNode.AdditionalProperties == nil || *answerNode.AdditionalProperties ||
+	if output.AdditionalProperties == nil || *output.AdditionalProperties ||
+		answerNode == nil || answerNode.AdditionalProperties == nil ||
+		*answerNode.AdditionalProperties ||
 		!reflect.DeepEqual(answerNode.Required, []string{"id", "selected"}) {
 		t.Fatalf("output schema = %#v", output)
 	}
@@ -178,17 +158,30 @@ func TestExecutionDelegatesAndRendersStructuredAnswer(t *testing.T) {
 	t.Parallel()
 	state := newAskUserFixture(t)
 	customText := "release notes"
-	providerValue := &providerRecorder{answerValue: userquestions.Answer{Answers: []userquestions.AnswerItem{{
-		ID: "targets", Selected: []string{"tests", "docs"}, Custom: &customText,
-	}}}}
-	if _, err := state.questionService.RegisterProvider(context.Background(), state.pluginScope, providerValue); err != nil {
+	providerValue := &providerRecorder{
+		answerValue: userquestions.Answer{
+			Answers: []userquestions.AnswerItem{
+				{
+					ID:       "targets",
+					Selected: []string{"tests", "docs"},
+					Custom:   &customText,
+				},
+			},
+		},
+	}
+	providerHandle, err := state.questionService.RegisterProvider(providerValue)
+	if err != nil {
 		t.Fatal(err)
 	}
+	defer providerHandle.Unregister()
 	contextKey := struct{}{}
 	requestContext := context.WithValue(context.Background(), contextKey, "exact")
-	outcome := state.toolService.Execute(requestContext, toolscore.ToolExecutionInput{
-		CallID: "ask-1", Name: toolaskuser.Name,
-		Arguments: json.RawMessage(`{
+	outcome := state.toolService.Execute(
+		requestContext,
+		toolscore.ToolExecutionInput{
+			CallID: "ask-1",
+			Name:   toolaskuser.Name,
+			Arguments: json.RawMessage(`{
           "questions": [{
             "id": "targets",
             "question": "What should I update?",
@@ -199,7 +192,8 @@ func TestExecutionDelegatesAndRendersStructuredAnswer(t *testing.T) {
           }],
           "ignored": "open root"
         }`),
-	})
+		},
+	)
 	if outcome.Failed() {
 		t.Fatalf("execution failed: %s", resultText(t, outcome))
 	}
@@ -207,9 +201,11 @@ func TestExecutionDelegatesAndRendersStructuredAnswer(t *testing.T) {
 		t.Fatal("tool did not preserve execution context values")
 	}
 	questions := providerValue.requestValue.Questions
-	if len(questions) != 1 || questions[0].Header == nil || *questions[0].Header != "Choose" ||
-		questions[0].MultiSelect == nil || !*questions[0].MultiSelect || questions[0].Options == nil ||
-		len(*questions[0].Options) != 2 || (*questions[0].Options)[0].Label != "tests" {
+	if len(questions) != 1 || questions[0].Header == nil ||
+		*questions[0].Header != "Choose" || questions[0].MultiSelect == nil ||
+		!*questions[0].MultiSelect || questions[0].Options == nil ||
+		len(*questions[0].Options) != 2 ||
+		(*questions[0].Options)[0].Label != "tests" {
 		t.Fatalf("provider request = %#v", providerValue.requestValue)
 	}
 	wantText := `{"answers":[{"id":"targets","selected":["tests","docs"],"custom":"release notes"}]}`
@@ -218,22 +214,27 @@ func TestExecutionDelegatesAndRendersStructuredAnswer(t *testing.T) {
 	}
 }
 
-func TestExecutionPreservesStructuredQuestionErrorAndDisposal(t *testing.T) {
+func TestExecutionPreservesStructuredQuestionErrorAndPluginDisposal(t *testing.T) {
 	t.Parallel()
 	state := newAskUserFixture(t)
-	outcome := state.toolService.Execute(context.Background(), toolscore.ToolExecutionInput{
-		CallID: "ask-no-provider", Name: toolaskuser.Name,
-		Arguments: json.RawMessage(`{"questions":[{"id":"continue","question":"Continue?"}]}`),
-	})
-	failure, ok := outcome.(*toolscore.ToolExecutionFailure)
-	if !ok || failure.Error.Info == nil || failure.Error.Info.Name != "UserQuestionError" ||
+	outcome := state.toolService.Execute(
+		context.Background(),
+		toolscore.ToolExecutionInput{
+			CallID:    "ask-no-provider",
+			Name:      toolaskuser.Name,
+			Arguments: json.RawMessage(`{"questions":[{"id":"continue","question":"Continue?"}]}`),
+		},
+	)
+	failure, matches := outcome.(*toolscore.ToolExecutionFailure)
+	if !matches || failure.Error.Info == nil ||
+		failure.Error.Info.Name != "UserQuestionError" ||
 		failure.Error.Info.Code != userquestions.CodeNoProvider {
 		t.Fatalf("failure = %#v", outcome)
 	}
-	if err := state.releaseTool(context.Background()); err != nil {
+	if err := state.engine.Unload(context.Background(), state.toolHandle); err != nil {
 		t.Fatal(err)
 	}
-	if _, found := state.toolService.Get(toolaskuser.Name, plugin.ScopeKey{}); found {
+	if _, found := state.toolService.Get(toolaskuser.Name); found {
 		t.Fatal("disposed ask_user_question remains registered")
 	}
 }

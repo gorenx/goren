@@ -133,7 +133,7 @@ func TestAskDecisionUsesOptionalApprovalBeforeDispatch(t *testing.T) {
 		askPolicy("needs permission"),
 	)
 	bodyCalls := 0
-	if err := state.service.AddTool(
+	if _, err := state.service.AddTool(
 		context.Background(),
 		objectTool(
 			"danger",
@@ -176,7 +176,7 @@ func TestAskDecisionUsesOptionalApprovalBeforeDispatch(t *testing.T) {
 func TestAskDecisionFailsClosedWithoutApproval(t *testing.T) {
 	state := newToolsFixture(t, askPolicy("needs permission"))
 	bodyCalls := 0
-	if err := state.service.AddTool(
+	if _, err := state.service.AddTool(
 		context.Background(),
 		objectTool(
 			"danger",
@@ -255,7 +255,7 @@ func TestPostPolicyCanReplaceValueOrBlock(t *testing.T) {
 				}),
 			}
 			state := newToolsFixture(t, policy)
-			if err := state.service.AddTool(
+			if _, err := state.service.AddTool(
 				context.Background(),
 				objectTool(
 					"normalized",
@@ -306,7 +306,7 @@ func TestPostValueReplacementPreservesTurnConclusion(t *testing.T) {
 		}),
 	}
 	state := newToolsFixture(t, policy)
-	if err := state.service.AddTool(
+	if _, err := state.service.AddTool(
 		context.Background(),
 		objectTool(
 			"concluding",
@@ -349,7 +349,7 @@ func TestBestEffortResultFailureDoesNotReplaceToolOutcome(t *testing.T) {
 		},
 	}
 	state := newToolsFixture(t, observer)
-	if err := state.service.AddTool(
+	if _, err := state.service.AddTool(
 		context.Background(),
 		objectTool(
 			"observed",

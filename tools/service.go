@@ -25,14 +25,13 @@ type layeredToolRuntime interface {
 // merging their state or responsibilities.
 type Service struct {
 	plugin.Base
-	name            string
-	root            bool
-	settings        ValidatedConfig
-	registry        *registry
-	runtimeMutex    sync.RWMutex
-	runtime         *executionRuntime
-	prompts         systemprompt.PromptRegistry
-	promptInstalled bool
+	name         string
+	root         bool
+	settings     ValidatedConfig
+	registry     *registry
+	runtimeMutex sync.RWMutex
+	runtime      *executionRuntime
+	prompt       *systemprompt.PromptHandle
 }
 
 // New constructs the root Tools Plugin from validated configuration.
@@ -110,15 +109,15 @@ func (owner *Service) Apply(requestContext context.Context) error {
 	if err != nil {
 		return err
 	}
-	owner.prompts = prompts
-	if err := prompts.AddToolProvider(
+	promptHandle, err := prompts.AddToolProvider(
 		requestContext,
 		promptToolProviderName,
 		owner,
-	); err != nil {
+	)
+	if err != nil {
 		return err
 	}
-	owner.promptInstalled = true
+	owner.prompt = promptHandle
 	owner.runtimeMutex.Lock()
 	owner.runtime = stagedRuntime
 	owner.runtimeMutex.Unlock()
@@ -132,14 +131,10 @@ func (owner *Service) Dispose(closeContext context.Context) error {
 	owner.runtime = nil
 	owner.runtimeMutex.Unlock()
 	var disposeErr error
-	if owner.promptInstalled && owner.prompts != nil {
-		disposeErr = owner.prompts.RemoveToolProvider(
-			closeContext,
-			promptToolProviderName,
-		)
+	if owner.prompt != nil {
+		disposeErr = owner.prompt.Unregister(closeContext)
 	}
-	owner.promptInstalled = false
-	owner.prompts = nil
+	owner.prompt = nil
 	owner.registry.clear()
 	return disposeErr
 }
@@ -148,43 +143,42 @@ func (owner *Service) Dispose(closeContext context.Context) error {
 func (owner *Service) AddTool(
 	requestContext context.Context,
 	definition ToolDefinition,
-) error {
+) (*ToolHandle, error) {
 	if err := validateMutationContext(requestContext); err != nil {
-		return err
+		return nil, err
 	}
 	if err := owner.requireActive(); err != nil {
-		return err
+		return nil, err
 	}
 	entry, err := owner.registry.compileTool(definition)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := owner.registry.addTool(entry); err != nil {
-		return err
+		return nil, err
 	}
 	if err := owner.publishChanged(requestContext); err != nil {
-		owner.registry.removeTool(entry.registrationName)
-		return err
+		owner.registry.removeTool(entry.registrationName, entry)
+		return nil, err
 	}
-	return nil
+	return &ToolHandle{
+		owner: owner,
+		entry: entry,
+	}, nil
 }
 
-// RemoveTool removes one definition owned by this exact Registry layer.
-func (owner *Service) RemoveTool(
+func (owner *Service) unregisterTool(
 	requestContext context.Context,
-	name string,
-) error {
-	if err := validateMutation(requestContext, "tool", name); err != nil {
-		return err
+	entry *registeredTool,
+) (bool, error) {
+	if err := validateMutationContext(requestContext); err != nil {
+		return false, err
 	}
-	if err := owner.requireActive(); err != nil {
-		return err
-	}
-	found := owner.registry.removeTool(name)
+	found := owner.registry.removeTool(entry.registrationName, entry)
 	if !found {
-		return nil
+		return true, nil
 	}
-	return owner.publishChanged(requestContext)
+	return true, owner.publishChanged(requestContext)
 }
 
 // AddRestriction adds one named inherited-capability filter to this exact
@@ -193,43 +187,45 @@ func (owner *Service) AddRestriction(
 	requestContext context.Context,
 	name string,
 	restriction ToolRestriction,
-) error {
+) (*RestrictionHandle, error) {
 	if err := validateMutation(requestContext, "restriction", name); err != nil {
-		return err
+		return nil, err
 	}
 	if err := owner.requireActive(); err != nil {
-		return err
+		return nil, err
 	}
 	compiled, err := owner.registry.compileRestriction(restriction)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err := owner.registry.addRestriction(name, compiled); err != nil {
-		return err
+	entry, err := owner.registry.addRestriction(name, compiled)
+	if err != nil {
+		return nil, err
 	}
 	if err := owner.publishChanged(requestContext); err != nil {
-		owner.registry.removeRestriction(name)
-		return err
+		owner.registry.removeRestriction(name, entry)
+		return nil, err
 	}
-	return nil
+	return &RestrictionHandle{
+		owner: owner,
+		name:  name,
+		entry: entry,
+	}, nil
 }
 
-// RemoveRestriction removes one filter owned by this exact Registry layer.
-func (owner *Service) RemoveRestriction(
+func (owner *Service) unregisterRestriction(
 	requestContext context.Context,
 	name string,
-) error {
-	if err := validateMutation(requestContext, "restriction", name); err != nil {
-		return err
+	entry *registeredRestriction,
+) (bool, error) {
+	if err := validateMutationContext(requestContext); err != nil {
+		return false, err
 	}
-	if err := owner.requireActive(); err != nil {
-		return err
-	}
-	found := owner.registry.removeRestriction(name)
+	found := owner.registry.removeRestriction(name, entry)
 	if !found {
-		return nil
+		return true, nil
 	}
-	return owner.publishChanged(requestContext)
+	return true, owner.publishChanged(requestContext)
 }
 
 // AddGuard adds one named monotonic execution policy to this exact layer.
@@ -237,33 +233,38 @@ func (owner *Service) AddGuard(
 	requestContext context.Context,
 	name string,
 	policy ToolGuard,
-) error {
+) (*GuardHandle, error) {
 	if err := validateMutation(requestContext, "guard", name); err != nil {
-		return err
+		return nil, err
 	}
 	owner.runtimeMutex.RLock()
 	defer owner.runtimeMutex.RUnlock()
 	if owner.runtime == nil {
-		return plugin.ErrPluginNotActive
+		return nil, plugin.ErrPluginNotActive
 	}
-	return owner.registry.addGuard(name, policy)
+	entry, err := owner.registry.addGuard(name, policy)
+	if err != nil {
+		return nil, err
+	}
+	return &GuardHandle{
+		owner: owner,
+		name:  name,
+		entry: entry,
+	}, nil
 }
 
-// RemoveGuard removes one policy owned by this exact Registry layer.
-func (owner *Service) RemoveGuard(
+func (owner *Service) unregisterGuard(
 	requestContext context.Context,
 	name string,
-) error {
-	if err := validateMutation(requestContext, "guard", name); err != nil {
-		return err
+	entry *registeredGuard,
+) (bool, error) {
+	if err := validateMutationContext(requestContext); err != nil {
+		return false, err
 	}
 	owner.runtimeMutex.RLock()
 	defer owner.runtimeMutex.RUnlock()
-	if owner.runtime == nil {
-		return plugin.ErrPluginNotActive
-	}
-	owner.registry.removeGuard(name)
-	return nil
+	owner.registry.removeGuard(name, entry)
+	return true, nil
 }
 
 // Get returns the Tool definition visible from this Service layer.

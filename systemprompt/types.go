@@ -197,16 +197,11 @@ type Assembler interface {
 // the exact Registry layer resolved for that Plugin.
 type PromptRegistry interface {
 	plugin.Service
-	AddSection(context.Context, PromptSection) error
-	RemoveSection(context.Context, string) error
-	AddContext(context.Context, PromptContext) error
-	RemoveContext(context.Context, string) error
-	AddRuntimeContextSuppressor(context.Context, string) error
-	RemoveRuntimeContextSuppressor(context.Context, string) error
-	AddToolProvider(context.Context, string, ToolProvider) error
-	RemoveToolProvider(context.Context, string) error
-	AddVariable(context.Context, string, VariableProvider) error
-	RemoveVariable(context.Context, string) error
+	AddSection(context.Context, PromptSection) (*PromptHandle, error)
+	AddContext(context.Context, PromptContext) (*PromptHandle, error)
+	AddRuntimeContextSuppressor(context.Context, string) (*PromptHandle, error)
+	AddToolProvider(context.Context, string, ToolProvider) (*PromptHandle, error)
+	AddVariable(context.Context, string, VariableProvider) (*PromptHandle, error)
 }
 
 // SystemPrompt is the complete provider contract implemented by Registry.
