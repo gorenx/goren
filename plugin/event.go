@@ -357,6 +357,23 @@ func observeEventParallel(
 	observers []*eventBinding,
 	reportFailure func(error),
 ) error {
+	if len(observers) == 0 {
+		return nil
+	}
+	if len(observers) == 1 {
+		observerErr := invokeEventObserver(
+			requestContext,
+			fact,
+			observers[0].observer,
+		)
+		if reportFailure != nil {
+			if observerErr != nil {
+				reportFailure(observerErr)
+			}
+			return nil
+		}
+		return observerErr
+	}
 	failures := make([]error, len(observers))
 	var deliveries sync.WaitGroup
 	deliveries.Add(len(observers))

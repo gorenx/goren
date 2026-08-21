@@ -363,13 +363,13 @@ func (owner *Registry) Assemble(
 	requestContext context.Context,
 	assemblyContext AssembleContext,
 ) (PromptAssembly, error) {
-	layers := owner.promptLayers()
-	assembled, completeSection, suppressed, err := assembleLayers(
-		requestContext,
-		assemblyContext,
-		layers,
-		owner.configuredToolOrder(),
-	)
+	resolver := assemblyResolver{
+		requestContext:  requestContext,
+		assemblyContext: assemblyContext,
+		layers:          owner.promptLayers(),
+		toolOrder:       owner.configuredToolOrder(),
+	}
+	prepared, err := resolver.resolve()
 	if err != nil {
 		return PromptAssembly{}, err
 	}
@@ -381,25 +381,13 @@ func (owner *Registry) Assemble(
 		owner,
 		request,
 		&assemblyAction{
-			assembled: assembled,
+			candidate: prepared.candidate,
 		},
 	)
 	if err != nil {
 		return PromptAssembly{}, err
 	}
-	if err := validateAssembly(transformed); err != nil {
-		return PromptAssembly{}, err
-	}
-	transformed = cloneAssembly(transformed)
-	if completeSection != nil {
-		transformed.Sections = []AssembledSection{
-			*completeSection,
-		}
-	}
-	if suppressed {
-		transformed.Contexts = []AssembledContext{}
-	}
-	return transformed, nil
+	return prepared.finalize(transformed)
 }
 
 func (owner *Registry) promptLayers() []promptLayerSnapshot {

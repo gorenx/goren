@@ -310,7 +310,8 @@ func (runner *turnRunner) runTurn(
 				(session.TurnMaxTokens{}).TurnEndKind()) {
 			ending = stepEnding
 		}
-		if ending != nil && len(runner.pending.NextStep()) == 0 {
+		nextStepEmpty := ending != nil && len(runner.pending.NextStep()) == 0
+		if nextStepEmpty {
 			if err := runner.events.publishTurnStopping(
 				requestContext,
 				turn,
@@ -330,7 +331,7 @@ func (runner *turnRunner) runTurn(
 				break
 			}
 		}
-		if ending != nil && len(runner.pending.NextStep()) == 0 {
+		if nextStepEmpty {
 			break
 		}
 		target = agent.NextStep
