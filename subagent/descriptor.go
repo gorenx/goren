@@ -29,7 +29,7 @@ type OneShotDescriptor struct {
 
 func (OneShotDescriptor) descriptorVariant() {}
 
-// DescriptorVersionValue returns the persisted schema version.
+// DescriptorVersion returns the persisted schema version.
 func (value OneShotDescriptor) DescriptorVersion() int {
 	return value.Version
 }
@@ -59,7 +59,7 @@ type ContinuableDescriptor struct {
 
 func (ContinuableDescriptor) descriptorVariant() {}
 
-// DescriptorVersionValue returns the persisted schema version.
+// DescriptorVersion returns the persisted schema version.
 func (value ContinuableDescriptor) DescriptorVersion() int {
 	return value.Version
 }
