@@ -11,7 +11,7 @@ import (
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/apiproxy"
 	protocol "github.com/gorenx/goren/connection"
-	"github.com/gorenx/goren/internal/llm/deepseek"
+	"github.com/gorenx/goren/llm/deepseek"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )

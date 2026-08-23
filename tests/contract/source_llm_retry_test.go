@@ -13,7 +13,7 @@ import (
 
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/llmretry"
+	"github.com/gorenx/goren/llm/retry"
 )
 
 type retryContractAdapter struct {

@@ -8,8 +8,8 @@ import (
 	"sync"
 
 	"github.com/gorenx/goren/credentials"
-	"github.com/gorenx/goren/internal/llm/deepseek/anonymoususerid"
 	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/llm/deepseek/anonymoususerid"
 	"github.com/gorenx/goren/plugin"
 	pluginfactory "github.com/gorenx/goren/plugin/factory"
 )

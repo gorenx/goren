@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorenx/goren/internal/llm/deepseek"
 	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/llm/deepseek"
 )
 
 type llmAssemblyObservation struct {
