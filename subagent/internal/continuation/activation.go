@@ -36,6 +36,15 @@ type materialization struct {
 	done    chan struct{}
 }
 
+// disposal is one memoized Activation release transaction. Its presence is
+// the admission cutoff; done closes only after child-first release, durable
+// flush, Handle disposal, settlement notice, and lifecycle publication finish.
+type disposal struct {
+	done     chan struct{}
+	children []*Activation
+	err      error
+}
+
 // Activation is one resident epoch of a durable continuable child.
 type Activation struct {
 	childID       session.SessionID
@@ -47,8 +56,7 @@ type Activation struct {
 	accepted      map[llm.MessageID]struct{}
 	wake          chan struct{}
 	runID         subagent.RunID
+	boundary      int64
 	announced     bool
-	closing       bool
-	disposeDone   chan struct{}
-	disposeErr    error
+	disposal      *disposal
 }

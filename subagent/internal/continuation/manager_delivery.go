@@ -42,8 +42,8 @@ func (owner *Manager) Followup(
 	owner.residency.mutex.Lock()
 	epoch := owner.residency.activations[childID]
 	materialized := false
-	if epoch != nil && epoch.closing {
-		done := epoch.disposeDone
+	if epoch != nil && epoch.disposal != nil {
+		done := epoch.disposal.done
 		owner.residency.mutex.Unlock()
 		if done != nil {
 			select {
@@ -127,7 +127,7 @@ func (owner *Manager) Interrupt(
 		return unauthorized("subagent interrupt authority is invalid")
 	}
 	owner.residency.mutex.Lock()
-	closing := epoch.closing
+	closing := epoch.disposal != nil
 	owner.residency.mutex.Unlock()
 	if !closing {
 		epoch.handle.Subject.Cancel(
@@ -156,7 +156,7 @@ func (owner *Manager) ReportFrom(
 	}
 	owner.residency.mutex.Lock()
 	epoch := owner.residency.activations[childAgent.ID()]
-	closing := epoch != nil && epoch.closing
+	closing := epoch != nil && epoch.disposal != nil
 	owner.residency.mutex.Unlock()
 	if epoch == nil || !agent.Same(epoch.handle.Subject, childAgent) {
 		return "", unauthorized(
@@ -238,19 +238,20 @@ func (owner *Manager) submit(
 	if messageErr != nil {
 		return "", messageErr
 	}
+	parentLineage := owner.currentLineage(parentAgent)
 	owner.residency.mutex.Lock()
-	if owner.closingForLocked(epoch.ancestry) {
-		owner.residency.mutex.Unlock()
-		return "", &subagent.Error{
-			Code:    subagent.ErrorDraining,
-			Message: "continuable subagents are draining; the message was not accepted",
-		}
-	}
-	if epoch.closing {
+	if epoch.disposal != nil {
 		owner.residency.mutex.Unlock()
 		return "", &subagent.Error{
 			Code:    subagent.ErrorActivationClosing,
 			Message: fmt.Sprintf("subagent %q Activation is closing", epoch.childID),
+		}
+	}
+	if owner.closingForLocked(parentLineage) {
+		owner.residency.mutex.Unlock()
+		return "", &subagent.Error{
+			Code:    subagent.ErrorDraining,
+			Message: "continuable subagents are draining; the message was not accepted",
 		}
 	}
 	epoch.accepted[messageValue.StableID()] = struct{}{}

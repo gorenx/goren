@@ -119,6 +119,9 @@ func TestContinuableToolPersistsCompletedChildForLaterResume(t *testing.T) {
 	if failures := state.eventFailures.snapshot(); len(failures) != 0 {
 		t.Fatalf("event observer failures = %#v", failures)
 	}
+	if failures := state.observerErrors.snapshot(); len(failures) != 0 {
+		t.Fatalf("contained Subagent failures = %#v", failures)
+	}
 }
 
 func lastUserContentText(messages []llm.Message) string {

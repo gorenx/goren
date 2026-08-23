@@ -28,6 +28,8 @@ type agentRecord struct {
 	cancel       agent.CancelOptions
 	idle         chan struct{}
 	idleOnce     sync.Once
+	statusRead   chan<- struct{}
+	statusResume <-chan struct{}
 }
 
 func (subject *agentRecord) Manifest() plugin.Manifest {
@@ -50,8 +52,20 @@ func (*agentRecord) InboxValue() *agent.Inbox { return nil }
 
 func (subject *agentRecord) StatusValue() agent.Status {
 	subject.mutex.Lock()
-	defer subject.mutex.Unlock()
-	return subject.status
+	currentStatus := subject.status
+	statusRead := subject.statusRead
+	statusResume := subject.statusResume
+	subject.mutex.Unlock()
+	if statusRead != nil {
+		select {
+		case statusRead <- struct{}{}:
+		default:
+		}
+	}
+	if statusResume != nil {
+		<-statusResume
+	}
+	return currentStatus
 }
 
 func (subject *agentRecord) Cancel(
@@ -125,6 +139,16 @@ func (subject *agentRecord) becomeIdle() {
 	subject.idleOnce.Do(func() {
 		close(subject.idle)
 	})
+}
+
+func (subject *agentRecord) pauseStatusRead(
+	observed chan<- struct{},
+	resumeSignal <-chan struct{},
+) {
+	subject.mutex.Lock()
+	subject.statusRead = observed
+	subject.statusResume = resumeSignal
+	subject.mutex.Unlock()
 }
 func (subject *agentRecord) messagesSnapshot() []llm.UserMessage {
 	subject.mutex.Lock()
@@ -313,6 +337,7 @@ type sessionRecord struct {
 	plugin.Base
 	entries  map[session.SessionID]*session.Session
 	flushErr error
+	stored   *persistenceRecord
 }
 
 func (*sessionRecord) Create(
@@ -336,8 +361,20 @@ func (*sessionRecord) Enter(*session.Session) (session.SessionHandle, error) {
 
 func (*sessionRecord) Announce(context.Context, *session.Session) error { return nil }
 
-func (records *sessionRecord) Flush(context.Context, *session.Session) error {
-	return records.flushErr
+func (records *sessionRecord) Flush(
+	_ context.Context,
+	conversation *session.Session,
+) error {
+	if records.flushErr != nil {
+		return records.flushErr
+	}
+	if records.stored != nil {
+		records.stored.inspections[conversation.ID()] = persistence.Inspection{
+			Header: conversation.Header(),
+			Events: conversation.Events(),
+		}
+	}
+	return nil
 }
 
 func (records *sessionRecord) Get(identifier session.SessionID) (*session.Session, bool) {
@@ -462,6 +499,26 @@ type lifecycleRecord struct {
 	started     []subagent.Started
 	ended       []subagent.Ended
 	startedHook func(agent.Agent, subagent.Started)
+	endedHook   func(agent.Agent, subagent.Ended)
+}
+
+type failureRecord struct {
+	mutex    sync.Mutex
+	failures []FinalFlushFailure
+}
+
+func (records *failureRecord) ReportFinalFlushFailure(
+	failure FinalFlushFailure,
+) {
+	records.mutex.Lock()
+	records.failures = append(records.failures, failure)
+	records.mutex.Unlock()
+}
+
+func (records *failureRecord) failuresSnapshot() []FinalFlushFailure {
+	records.mutex.Lock()
+	defer records.mutex.Unlock()
+	return append([]FinalFlushFailure(nil), records.failures...)
 }
 
 func (records *lifecycleRecord) Started(parentAgent agent.Agent, fact subagent.Started) {
@@ -474,10 +531,14 @@ func (records *lifecycleRecord) Started(parentAgent agent.Agent, fact subagent.S
 	}
 }
 
-func (records *lifecycleRecord) Ended(_ agent.Agent, fact subagent.Ended) {
+func (records *lifecycleRecord) Ended(parentAgent agent.Agent, fact subagent.Ended) {
 	records.mutex.Lock()
-	defer records.mutex.Unlock()
 	records.ended = append(records.ended, fact)
+	hook := records.endedHook
+	records.mutex.Unlock()
+	if hook != nil {
+		hook(parentAgent, fact)
+	}
 }
 
 func (records *lifecycleRecord) startedSnapshot() []subagent.Started {
@@ -543,6 +604,7 @@ func TestContinuableFreshLifecycleAndControl(t *testing.T) {
 		},
 		Lifecycle:    lifecycleFacts,
 		ScopeBuilder: scopeBuilderStub{},
+		Failures:     &failureRecord{},
 	})
 	if managerErr != nil {
 		t.Fatal(managerErr)
@@ -743,6 +805,7 @@ func TestFollowupColdResumesPersistedContinuableChild(t *testing.T) {
 		},
 		Lifecycle:    lifecycleFacts,
 		ScopeBuilder: scopeBuilderStub{},
+		Failures:     &failureRecord{},
 	})
 	if managerErr != nil {
 		t.Fatal(managerErr)

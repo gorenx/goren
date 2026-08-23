@@ -88,7 +88,9 @@ func TestDescriptorAndLifecycleVocabulary(t *testing.T) {
 func TestRuntimeProvidesOnlyImplementedCapabilityInterfaces(t *testing.T) {
 	t.Parallel()
 	providedNames := map[string]bool{}
-	for _, capabilityType := range subagentruntime.New().Manifest().Provides {
+	for _, capabilityType := range subagentruntime.New(
+		subagentruntime.RuntimeOptions{},
+	).Manifest().Provides {
 		providedNames[capabilityType.Name()] = true
 	}
 	wantedNames := []string{

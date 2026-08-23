@@ -2,7 +2,6 @@ package continuation
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/gorenx/goren/agent"
@@ -15,7 +14,7 @@ func (owner *Manager) watch(epoch *Activation) {
 	go func() {
 		for {
 			owner.residency.mutex.Lock()
-			if epoch.closing {
+			if epoch.disposal != nil {
 				owner.residency.mutex.Unlock()
 				return
 			}
@@ -43,111 +42,31 @@ func (owner *Manager) watch(epoch *Activation) {
 				return
 			default:
 			}
+			childMutex := owner.lockFor(epoch.childID)
+			childMutex.Lock()
+			childStatus := epoch.handle.Subject.StatusValue()
 			owner.residency.mutex.Lock()
-			settled := !epoch.closing && len(epoch.accepted) == 0 &&
+			settled := epoch.disposal == nil && len(epoch.accepted) == 0 &&
 				len(epoch.ownedChildren) == 0 &&
-				epoch.handle.Subject.StatusValue() == agent.StatusIdle
+				childStatus == agent.StatusIdle
 			owner.residency.mutex.Unlock()
-			if settled {
-				_ = owner.dispose(context.Background(), epoch, subagent.StopCompleted)
-				return
+			if !settled {
+				childMutex.Unlock()
+				continue
 			}
+			transaction, opened := owner.openDisposal(epoch)
+			childMutex.Unlock()
+			if opened {
+				_ = owner.finishDisposal(
+					context.Background(),
+					epoch,
+					transaction,
+					subagent.StopCompleted,
+				)
+			}
+			return
 		}
 	}()
-}
-
-func (owner *Manager) dispose(
-	requestContext context.Context,
-	epoch *Activation,
-	reason subagent.StopReason,
-) error {
-	owner.residency.mutex.Lock()
-	if epoch.closing {
-		done := epoch.disposeDone
-		owner.residency.mutex.Unlock()
-		if done != nil {
-			select {
-			case <-requestContext.Done():
-				return requestContext.Err()
-			case <-done:
-			}
-		}
-		return epoch.disposeErr
-	}
-	epoch.closing = true
-	epoch.disposeDone = make(chan struct{})
-	wake(epoch)
-	children := make([]*Activation, 0, len(epoch.ownedChildren))
-	for childID := range epoch.ownedChildren {
-		if childEpoch := owner.residency.activations[childID]; childEpoch != nil {
-			children = append(children, childEpoch)
-		}
-	}
-	owner.residency.mutex.Unlock()
-
-	epoch.handle.Subject.Cancel(
-		agent.ParentCancel{},
-		agent.CancelOptions{
-			KeepInbox: false,
-		},
-	)
-	failures := make([]error, 0)
-	for _, childEpoch := range children {
-		if disposeErr := owner.dispose(requestContext, childEpoch, subagent.StopAborted); disposeErr != nil {
-			failures = append(failures, disposeErr)
-		}
-	}
-	if idleErr := epoch.handle.Subject.WhenIdle(requestContext); idleErr != nil {
-		failures = append(failures, idleErr)
-	}
-	if owner.dependencies.Persistence != nil {
-		if flushErr := owner.dependencies.Sessions.Flush(
-			context.WithoutCancel(requestContext),
-			epoch.handle.Subject.SessionValue(),
-		); flushErr != nil {
-			failures = append(failures, flushErr)
-		}
-	}
-	lastOutput := lastAssistant(epoch.handle.Subject.SessionValue())
-	if handleErr := epoch.handle.Dispose(context.WithoutCancel(requestContext)); handleErr != nil {
-		failures = append(failures, handleErr)
-	}
-
-	owner.residency.mutex.Lock()
-	epoch.disposeErr = errors.Join(failures...)
-	owner.residency.mutex.Unlock()
-	terminalReason := reason
-	if epoch.disposeErr != nil {
-		terminalReason = subagent.StopError
-	}
-	owner.notifySettlement(epoch, lastOutput, terminalReason)
-	owner.residency.mutex.Lock()
-	if owner.residency.activations[epoch.childID] == epoch {
-		delete(owner.residency.activations, epoch.childID)
-	}
-	for _, candidate := range owner.residency.activations {
-		if _, owned := candidate.ownedChildren[epoch.childID]; owned {
-			delete(candidate.ownedChildren, epoch.childID)
-			wake(candidate)
-		}
-	}
-	close(epoch.disposeDone)
-	owner.residency.mutex.Unlock()
-	parentAgent, found := owner.dependencies.Agents.Get(epoch.parentID)
-	if found && owner.dependencies.Lifecycle != nil {
-		owner.dependencies.Lifecycle.Ended(
-			parentAgent,
-			subagent.Ended{
-				RunID:                epoch.runID,
-				Provider:             epoch.providerName,
-				ID:                   epoch.childID,
-				Local:                true,
-				StopReason:           terminalReason,
-				LastAssistantMessage: lastOutput,
-			},
-		)
-	}
-	return epoch.disposeErr
 }
 
 func (owner *Manager) notifySettlement(
@@ -187,19 +106,6 @@ func (owner *Manager) notifySettlement(
 	} else {
 		_ = parentAgent.Steer(messageValue)
 	}
-}
-
-func lastAssistant(conversation *session.Session) []llm.ContentBlock {
-	messages, deriveErr := conversation.DeriveMessages()
-	if deriveErr != nil {
-		return nil
-	}
-	for index := len(messages) - 1; index >= 0; index-- {
-		if messages[index].ConversationRole() == llm.RoleAssistant {
-			return messages[index].ContentValue()
-		}
-	}
-	return nil
 }
 
 func settlementSummary(

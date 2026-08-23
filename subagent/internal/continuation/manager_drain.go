@@ -223,6 +223,11 @@ func (owner *Manager) closingForLocked(lineage []agent.Agent) bool {
 		return true
 	}
 	for _, member := range lineage {
+		if epoch := owner.residency.activations[member.ID()]; epoch != nil &&
+			agent.Same(epoch.handle.Subject, member) &&
+			epoch.disposal != nil {
+			return true
+		}
 		if closing := owner.residency.closingRoots[member.ID()]; agent.Same(closing, member) {
 			return true
 		}

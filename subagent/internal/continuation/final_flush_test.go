@@ -12,10 +12,11 @@ import (
 	"github.com/gorenx/goren/subagent"
 )
 
-func TestNaturalSettlementMapsTeardownFailureToTerminalError(t *testing.T) {
+func TestFinalFlushFailureIsReportedWithoutRetainingActivation(t *testing.T) {
 	fixture := newManagerFixture(t)
-	fixture.agents.disposeErr = errors.New("handle release failed")
-	childID := session.SessionID("settlement-failure")
+	flushFailure := errors.New("storage unavailable")
+	fixture.sessions.flushErr = flushFailure
+	childID := session.SessionID("flush-failure")
 	startResult, startErr := fixture.manager.Start(
 		context.Background(),
 		subagent.ContinuableStartSpec{
@@ -38,12 +39,6 @@ func TestNaturalSettlementMapsTeardownFailureToTerminalError(t *testing.T) {
 		t.Fatal("child was not published")
 	}
 	fixture.manager.MessageLeftInbox(childAgent, startResult.MessageID)
-	appendAssistantMessage(
-		t,
-		childAgent.SessionValue(),
-		1,
-		"answer that cannot be released cleanly",
-	)
 	childAgent.(*agentRecord).becomeIdle()
 
 	deadline := time.Now().Add(time.Second)
@@ -55,25 +50,16 @@ func TestNaturalSettlementMapsTeardownFailureToTerminalError(t *testing.T) {
 	}
 	terminalFacts := fixture.lifecycle.endedSnapshot()
 	if len(terminalFacts) != 1 ||
-		terminalFacts[0].ID != childID ||
-		terminalFacts[0].StopReason != subagent.StopError ||
-		len(terminalFacts[0].LastAssistantMessage) != 0 {
+		terminalFacts[0].StopReason != subagent.StopCompleted {
 		t.Fatalf("terminal lifecycle = %#v", terminalFacts)
 	}
-	parentMessages := fixture.parent.messagesSnapshot()
-	if len(parentMessages) != 1 {
-		t.Fatalf("parent settlement messages = %d", len(parentMessages))
-	}
-	content := parentMessages[0].ContentValue()
-	if len(content) == 0 ||
-		content[0].(llm.TextBlock).Text !=
-			"Background subagent settlement-failure failed before it finished." {
-		t.Fatalf("settlement content = %#v", content)
-	}
-	if parentMessages[0].SourceValue().SourceKind() != "subagent-settled" {
-		t.Fatalf("settlement source = %#v", parentMessages[0].SourceValue())
+	failures := fixture.failures.failuresSnapshot()
+	if len(failures) != 1 ||
+		failures[0].ChildID != childID ||
+		!errors.Is(failures[0].Error, flushFailure) {
+		t.Fatalf("reported final flush failures = %#v", failures)
 	}
 	if _, found := fixture.agents.Get(childID); found {
-		t.Fatal("failed natural settlement retained the child")
+		t.Fatal("best-effort flush failure retained the child")
 	}
 }

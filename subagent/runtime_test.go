@@ -238,7 +238,7 @@ func newRuntimeFixture(t *testing.T, observe bool) *runtimeFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner := subagentruntime.New()
+	owner := subagentruntime.New(subagentruntime.RuntimeOptions{})
 	services := &serviceConsumer{}
 	parent := &agentFixture{
 		identifier:   conversation.ID(),

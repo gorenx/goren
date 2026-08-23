@@ -35,11 +35,18 @@ type Plugin struct {
 	catalog       *catalog.Service
 	events        *eventPublisher
 	projections   []sessionprojection.UnitHandle
+	report        func(error)
 }
 
 // New constructs an inactive Subagent Plugin and its stable business Services.
-func New() *Plugin {
-	owner := &Plugin{}
+func New(options RuntimeOptions) *Plugin {
+	reporter := options.ObserverError
+	if reporter == nil {
+		reporter = func(error) {}
+	}
+	owner := &Plugin{
+		report: reporter,
+	}
 	owner.events = &eventPublisher{
 		owner: owner,
 	}
@@ -124,6 +131,7 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 			Persistence: sessionPersistence,
 			Providers:   owner.providers,
 			Lifecycle:   owner.events,
+			Failures:    owner,
 			ScopeBuilder: childscope.NewContinuable(
 				approvalService,
 				owner.extensions,

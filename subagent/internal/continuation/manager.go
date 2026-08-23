@@ -38,6 +38,7 @@ type Dependencies struct {
 	Providers    Providers
 	Lifecycle    Lifecycle
 	ScopeBuilder ScopeBuilder
+	Failures     FailureReporter
 }
 
 // Manager owns every process-local continuable Activation.
@@ -52,9 +53,10 @@ func New(dependencySet Dependencies) (*Manager, error) {
 	if dependencySet.Agents == nil || dependencySet.Custody.IsZero() ||
 		dependencySet.Sessions == nil ||
 		dependencySet.Providers == nil ||
-		dependencySet.ScopeBuilder == nil {
+		dependencySet.ScopeBuilder == nil ||
+		dependencySet.Failures == nil {
 		return nil, errors.New(
-			"subagent: continuation requires Agent Registry, Agent Custody, Session LiveStore, Providers, and child Scope builder",
+			"subagent: continuation requires Agent Registry, Agent Custody, Session LiveStore, Providers, child Scope builder, and failure reporter",
 		)
 	}
 	return &Manager{
@@ -87,37 +89,40 @@ func (owner *Manager) AgentDisposed(childAgent agent.Agent) {
 	}
 	epoch := owner.residency.activations[childAgent.ID()]
 	if epoch != nil && agent.Same(epoch.handle.Subject, childAgent) &&
-		!epoch.closing {
-		epoch.closing = true
-		epoch.disposeDone = make(chan struct{})
-		delete(owner.residency.activations, epoch.childID)
-		for _, candidate := range owner.residency.activations {
-			if _, owned := candidate.ownedChildren[epoch.childID]; owned {
-				delete(candidate.ownedChildren, epoch.childID)
-				wake(candidate)
-			}
+		epoch.disposal == nil {
+		transaction := &disposal{
+			done: make(chan struct{}),
 		}
-		close(epoch.disposeDone)
+		epoch.disposal = transaction
+		delete(owner.residency.activations, epoch.childID)
 		externallyDisposed = epoch
 	}
 	owner.residency.mutex.Unlock()
-	if externallyDisposed == nil || owner.dependencies.Lifecycle == nil {
+	if externallyDisposed == nil {
 		return
 	}
 	parentAgent, found := owner.dependencies.Agents.Get(
 		externallyDisposed.parentID,
 	)
-	if !found {
-		return
+	if found && owner.dependencies.Lifecycle != nil {
+		owner.dependencies.Lifecycle.Ended(
+			parentAgent,
+			subagent.Ended{
+				RunID:      externallyDisposed.runID,
+				Provider:   externallyDisposed.providerName,
+				ID:         externallyDisposed.childID,
+				Local:      true,
+				StopReason: subagent.StopAborted,
+			},
+		)
 	}
-	owner.dependencies.Lifecycle.Ended(
-		parentAgent,
-		subagent.Ended{
-			RunID:      externallyDisposed.runID,
-			Provider:   externallyDisposed.providerName,
-			ID:         externallyDisposed.childID,
-			Local:      true,
-			StopReason: subagent.StopAborted,
-		},
-	)
+	owner.residency.mutex.Lock()
+	for _, candidate := range owner.residency.activations {
+		if _, owned := candidate.ownedChildren[externallyDisposed.childID]; owned {
+			delete(candidate.ownedChildren, externallyDisposed.childID)
+			wake(candidate)
+		}
+	}
+	close(externallyDisposed.disposal.done)
+	owner.residency.mutex.Unlock()
 }

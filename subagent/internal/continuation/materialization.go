@@ -162,6 +162,7 @@ func (owner *Manager) publish(
 		accepted:      make(map[llm.MessageID]struct{}),
 		wake:          make(chan struct{}),
 		runID:         runID,
+		boundary:      handle.Subject.SessionValue().Seq(),
 	}
 	owner.residency.mutex.Lock()
 	closing := owner.closingForLocked(epoch.ancestry)

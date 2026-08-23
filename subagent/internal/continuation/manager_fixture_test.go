@@ -16,6 +16,7 @@ type managerFixture struct {
 	sessions    *sessionRecord
 	persistence *persistenceRecord
 	lifecycle   *lifecycleRecord
+	failures    *failureRecord
 }
 
 func newManagerFixture(t *testing.T) *managerFixture {
@@ -42,6 +43,7 @@ func newManagerFixture(t *testing.T) *managerFixture {
 	storedSessions := &persistenceRecord{
 		inspections: make(map[session.SessionID]persistence.Inspection),
 	}
+	liveSessions.stored = storedSessions
 	agentRegistry := &registryRecord{
 		agents: map[session.SessionID]*agentRecord{
 			parentAgent.ID(): parentAgent,
@@ -50,6 +52,7 @@ func newManagerFixture(t *testing.T) *managerFixture {
 		stored:   storedSessions,
 	}
 	lifecycleFacts := &lifecycleRecord{}
+	failureFacts := &failureRecord{}
 	agentCustody, custodyErr := agent.NewCustody(parentAgent)
 	if custodyErr != nil {
 		t.Fatal(custodyErr)
@@ -64,6 +67,7 @@ func newManagerFixture(t *testing.T) *managerFixture {
 		},
 		Lifecycle:    lifecycleFacts,
 		ScopeBuilder: scopeBuilderStub{},
+		Failures:     failureFacts,
 	})
 	if managerErr != nil {
 		t.Fatal(managerErr)
@@ -75,6 +79,7 @@ func newManagerFixture(t *testing.T) *managerFixture {
 		sessions:    liveSessions,
 		persistence: storedSessions,
 		lifecycle:   lifecycleFacts,
+		failures:    failureFacts,
 	}
 }
 
