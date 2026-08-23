@@ -26,15 +26,15 @@
 
 DSH 证据：`packages/subagent/subagent/src/continuation.ts` 的 `dispose()`、`finishDisposal()`。Go 证据：`settlement_delivery_test.go`、`external_disposal_test.go`、`drain_order_test.go`。
 
-## 3. 终态只看最后一个 turn/end
+## 3. 结果投影按最后一个事件猜测
 
-现象：未进入 turn 就被取消的消息可能被旧 `completed` 误报为完成；pre-step failure、refusal、max-tokens 也可能与本次 Activation 的实际输入不对应。冷恢复 epoch 没有新输出时，还可能复用上一 epoch 的 assistant message。
+现象：未进入 step 的尾随 turn 可能覆盖前一轮真正消费输入的终态；one-shot 因此会把已完成结果误报为 blocked/error。空的 usage-only `assistant/message` 会遮蔽更早的非空消息；取消发生在最终 message 提交前时，已经持久化的 text delta 又会被丢弃。冷恢复 epoch 没有新输出时，还可能复用上一 epoch 的 assistant message。
 
-根因：`turn/end` 只描述一轮为何关闭，不描述哪一条 Inbox 输入被该轮消费。消费归属需要结合 Inbox claim/cancel、turn 和 step；旧输出问题则来自读取整份 Session，而不是 Activation 自己的 suffix。
+根因：`turn/end` 只描述一轮为何关闭，不描述哪一条 Inbox 输入被该轮消费；空 assistant message 也不表示此前可见输出失效。one-shot 与 continuable 各自复制日志倒序扫描，把“最后出现的事件”误作“当前子任务结果”，没有复用 Agent 拥有的 consumed-work 语义，也没有共享 DSH 的最终输出选择规则。
 
-解决：核心 `agent` 新增 `ConsumedWork` fold，Session codec 恢复封闭 `TurnEndReason`；continuation 只截取 `boundary` 之后的事件并映射 `StopReason`、提取本 epoch 的最终输出。解析失败或真正 teardown 失败不得发布不可确认的输出。
+解决：核心 `agent` 的 `FoldConsumedWork` 继续唯一负责 Inbox claim/cancel、turn 与 step 的消费归属，one-shot 直接消费该结果，不再自行扫描 `turn/end`。Subagent 内部新增共享 `assistantoutput.Select`：选择最后一个非空 assistant message；没有非空 message 时只拼接 text delta，忽略 reasoning delta 和 tool result。continuation 先按 Activation boundary 截取 suffix，再调用同一选择器。解析失败或真正 teardown 失败不得发布不可确认的输出。
 
-DSH 证据：`packages/core/agent/src/consumed-work.ts` 的 `foldConsumedWork()`、`packages/subagent/subagent/src/lifecycle.ts` 的 `epochStopReason()`。Go 证据：`agent/consumed_work_test.go`、`outcome_test.go`、`output_test.go`、`settlement_outcome_integration_test.go`。
+DSH 证据：`packages/core/agent/src/consumed-work.ts` 的 `foldConsumedWork()`、`packages/subagent/subagent/src/assistant-output.ts` 的 `finalAssistantOutput()`、`packages/subagent/subagent/src/lifecycle.ts` 的 `epochStopReason()`。Go 证据：`agent/consumed_work_test.go`、`agent/consumed_work_contract_test.go`、`subagent/internal/assistantoutput/output_test.go`、`subagent/internal/assistantoutput/source_contract_test.go`、`subagent/internal/inprocess/result_test.go`、`subagent/internal/continuation/output_test.go`、`settlement_outcome_integration_test.go`。带 `contract` tag 的测试在运行时校验 `../deepseek-harness` HEAD 必须等于 feature-local baseline，再直接调用固定源函数比较观测结果。实现提交：`4b19909`。
 
 ## 4. 最终 flush 被误作结构释放失败
 
@@ -64,6 +64,7 @@ go test -race ./...
 go vet ./...
 go build ./...
 git diff --check
+go test -tags contract ./agent ./subagent/internal/assistantoutput
 go test ./subagent/internal/continuation -run '^TestFollowupWaitsForNaturalSettlementAndResumesDurableChild$' -count=100
 go test ./subagent -run '^TestContinuableSettlementReports(MaxTokens|ModelFailure)FromAgentLog$' -count=50
 go test -race ./subagent/internal/continuation -count=20
