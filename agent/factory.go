@@ -14,14 +14,14 @@ type CreateOptions struct {
 	Metadata     session.Metadata
 	Seed         []session.Event
 	AgentOptions Options
-	Setup        Setup
+	Provisioner  Provisioner
 }
 
 // ResumeOptions contains durable identity and unpublished Agent composition.
 type ResumeOptions struct {
 	SessionID    session.SessionID
 	AgentOptions Options
-	Setup        Setup
+	Provisioner  Provisioner
 }
 
 // AgentLifecycle owns teardown of one exact Agent tree.

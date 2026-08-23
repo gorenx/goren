@@ -31,7 +31,7 @@ func TestFactoryCreatesSubagentPlugin(t *testing.T) {
 		plugin.ServiceOf[subagent.ProviderRegistry](),
 		plugin.ServiceOf[subagent.OneShotService](),
 		plugin.ServiceOf[subagent.ContinuableService](),
-		plugin.ServiceOf[subagent.SetupRegistry](),
+		plugin.ServiceOf[subagent.ExtensionRegistry](),
 		plugin.ServiceOf[subagent.Catalog](),
 	} {
 		if !provided[capability.Name()] {

@@ -478,7 +478,7 @@ func TestAgentRejectsWorkBeforeCommitPublication(t *testing.T) {
 				Provider: "mock",
 				Model:    "model",
 			},
-			Setup: agent.MountPlugins(extension),
+			Provisioner: agent.MountPlugins(extension),
 		},
 	)
 	if err != nil {
@@ -552,7 +552,7 @@ func TestAgentExtensionResolvesExactAgentAndWaterfall(t *testing.T) {
 				Provider: "mock",
 				Model:    "base-model",
 			},
-			Setup: agent.MountPlugins(extension),
+			Provisioner: agent.MountPlugins(extension),
 		},
 	)
 	if err != nil {
@@ -640,7 +640,7 @@ func TestAgentExtensionInterceptsItsScopedToolRuntime(t *testing.T) {
 				Provider: "mock",
 				Model:    "model",
 			},
-			Setup: agent.MountPlugins(extension),
+			Provisioner: agent.MountPlugins(extension),
 		},
 	)
 	if err != nil {
@@ -692,7 +692,7 @@ func TestFailedExtensionNeverPublishesPartialAgentTree(t *testing.T) {
 				Provider: "mock",
 				Model:    "model",
 			},
-			Setup: agent.MountPlugins(extension),
+			Provisioner: agent.MountPlugins(extension),
 		},
 	)
 	if err == nil || !strings.Contains(err.Error(), "extension activation failed") {
@@ -1208,7 +1208,7 @@ func TestRequestErrorRetryRepeatsAttemptInsideOneStep(t *testing.T) {
 				Provider: "mock",
 				Model:    "model",
 			},
-			Setup: agent.MountPlugins(extension),
+			Provisioner: agent.MountPlugins(extension),
 		},
 	)
 	if err != nil {

@@ -95,7 +95,7 @@ func TestRuntimeProvidesOnlyImplementedCapabilityInterfaces(t *testing.T) {
 		plugin.ServiceOf[subagent.ProviderRegistry]().Name(),
 		plugin.ServiceOf[subagent.OneShotService]().Name(),
 		plugin.ServiceOf[subagent.ContinuableService]().Name(),
-		plugin.ServiceOf[subagent.SetupRegistry]().Name(),
+		plugin.ServiceOf[subagent.ExtensionRegistry]().Name(),
 		plugin.ServiceOf[subagent.Catalog]().Name(),
 	}
 	for _, wantedName := range wantedNames {

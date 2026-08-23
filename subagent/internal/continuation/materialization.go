@@ -45,7 +45,7 @@ func (owner *Manager) create(
 			Metadata:     metadata,
 			Seed:         seed,
 			AgentOptions: *requestSnapshot.AgentOptions,
-			Setup: owner.dependencies.Composer.Compose(
+			Provisioner: owner.dependencies.Composer.Compose(
 				Composition{
 					ChildID:    childID,
 					ParentID:   requestSnapshot.Parent.ID(),
@@ -125,7 +125,7 @@ func (owner *Manager) resume(
 		agent.ResumeOptions{
 			SessionID:    childID,
 			AgentOptions: childOptions,
-			Setup: owner.dependencies.Composer.Compose(
+			Provisioner: owner.dependencies.Composer.Compose(
 				Composition{
 					ChildID:    childID,
 					ParentID:   parentAgent.ID(),

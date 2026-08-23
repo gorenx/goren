@@ -55,7 +55,7 @@ func newPreparedAgent(
 
 func (prepared *preparedAgent) publish(
 	requestContext context.Context,
-	setup agent.Setup,
+	scopeProvisioner agent.Provisioner,
 	startSource agent.SessionStartSource,
 ) (handle agent.Handle, publishErr error) {
 	defer func() {
@@ -68,15 +68,24 @@ func (prepared *preparedAgent) publish(
 			)
 		}
 	}()
-	if setup != nil {
-		if err := prepared.tree.Own(setup); err != nil {
+	if scopeProvisioner != nil {
+		acquired, err := scopeProvisioner.Provision(
+			requestContext,
+			prepared.tree,
+		)
+		if err != nil {
 			return agent.Handle{}, err
 		}
-		if err := setup.Prepare(requestContext, prepared.tree); err != nil {
-			return agent.Handle{}, err
-		}
-		if err := setup.Commit(); err != nil {
-			return agent.Handle{}, err
+		if acquired != nil {
+			if err = prepared.tree.Own(acquired); err != nil {
+				return agent.Handle{}, errors.Join(
+					err,
+					acquired.Dispose(context.WithoutCancel(requestContext)),
+				)
+			}
+			if err = acquired.Commit(); err != nil {
+				return agent.Handle{}, err
+			}
 		}
 	}
 	initiator, _ := agent.InitiatorFrom(requestContext)

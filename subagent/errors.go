@@ -28,11 +28,12 @@ const (
 	ErrorActivationTeardownFailed ErrorCode = "ACTIVATION_TEARDOWN_FAILED"
 	// ErrorDraining rejects admission below an exact parent teardown cutoff.
 	ErrorDraining ErrorCode = "DRAINING"
-	// ErrorActivationSetupRevoked rejects a provisioning batch invalidated by
-	// concurrent setup removal.
-	ErrorActivationSetupRevoked ErrorCode = "ACTIVATION_SETUP_REVOKED"
-	// ErrorActivationSetupReleaseFailed reports contained setup disposal failures.
-	ErrorActivationSetupReleaseFailed ErrorCode = "ACTIVATION_SETUP_RELEASE_FAILED"
+	// ErrorActivationExtensionRevoked rejects provisioning invalidated by
+	// concurrent Extension removal. Its value preserves the pinned DSH code.
+	ErrorActivationExtensionRevoked ErrorCode = "ACTIVATION_SETUP_REVOKED"
+	// ErrorActivationExtensionReleaseFailed reports contained Extension
+	// disposal failures. Its value preserves the pinned DSH code.
+	ErrorActivationExtensionReleaseFailed ErrorCode = "ACTIVATION_SETUP_RELEASE_FAILED"
 	// ErrorCancelled reports caller cancellation around listing reads.
 	ErrorCancelled ErrorCode = "CANCELLED"
 	// ErrorControlProjectionsUnavailable reports a missing projection registry.

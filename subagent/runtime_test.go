@@ -176,7 +176,7 @@ type serviceConsumer struct {
 	providers     subagent.ProviderRegistry
 	oneShots      subagent.OneShotService
 	continuations subagent.ContinuableService
-	setups        subagent.SetupRegistry
+	extensions    subagent.ExtensionRegistry
 	catalog       subagent.Catalog
 }
 
@@ -187,7 +187,7 @@ func (*serviceConsumer) Manifest() plugin.Manifest {
 			plugin.ServiceOf[subagent.ProviderRegistry](),
 			plugin.ServiceOf[subagent.OneShotService](),
 			plugin.ServiceOf[subagent.ContinuableService](),
-			plugin.ServiceOf[subagent.SetupRegistry](),
+			plugin.ServiceOf[subagent.ExtensionRegistry](),
 			plugin.ServiceOf[subagent.Catalog](),
 		},
 	}
@@ -207,7 +207,7 @@ func (consumer *serviceConsumer) Apply(context.Context) error {
 	if err != nil {
 		return err
 	}
-	consumer.setups, err = plugin.Require[subagent.SetupRegistry](consumer)
+	consumer.extensions, err = plugin.Require[subagent.ExtensionRegistry](consumer)
 	if err != nil {
 		return err
 	}
@@ -219,7 +219,7 @@ func (consumer *serviceConsumer) Dispose(context.Context) error {
 	consumer.providers = nil
 	consumer.oneShots = nil
 	consumer.continuations = nil
-	consumer.setups = nil
+	consumer.extensions = nil
 	consumer.catalog = nil
 	return nil
 }

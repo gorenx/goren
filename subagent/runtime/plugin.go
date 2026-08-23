@@ -17,9 +17,9 @@ import (
 	"github.com/gorenx/goren/subagent/internal/catalog"
 	"github.com/gorenx/goren/subagent/internal/composition"
 	"github.com/gorenx/goren/subagent/internal/continuation"
+	activationextension "github.com/gorenx/goren/subagent/internal/extension"
 	"github.com/gorenx/goren/subagent/internal/oneshot"
 	providerregistry "github.com/gorenx/goren/subagent/internal/provider"
-	setupregistry "github.com/gorenx/goren/subagent/internal/setup"
 )
 
 // Plugin owns Subagent module assembly and activation lifecycle. The published
@@ -30,7 +30,7 @@ type Plugin struct {
 	providers     *providerregistry.Registry
 	oneShots      *oneshot.Service
 	continuations *continuation.Service
-	setups        *setupregistry.Registry
+	extensions    *activationextension.Registry
 	catalog       *catalog.Service
 	events        *eventPublisher
 	projections   []sessionprojection.UnitHandle
@@ -45,7 +45,7 @@ func New() *Plugin {
 	owner.providers = providerregistry.New(owner.events)
 	owner.oneShots = oneshot.New(owner.providers, owner.events)
 	owner.continuations = continuation.NewService()
-	owner.setups = setupregistry.New()
+	owner.extensions = activationextension.New()
 	owner.catalog = catalog.New()
 	return owner
 }
@@ -58,7 +58,7 @@ func (owner *Plugin) Manifest() plugin.Manifest {
 			plugin.NewProvidedService[subagent.ProviderRegistry](owner.providers),
 			plugin.NewProvidedService[subagent.OneShotService](owner.oneShots),
 			plugin.NewProvidedService[subagent.ContinuableService](owner.continuations),
-			plugin.NewProvidedService[subagent.SetupRegistry](owner.setups),
+			plugin.NewProvidedService[subagent.ExtensionRegistry](owner.extensions),
 			plugin.NewProvidedService[subagent.Catalog](owner.catalog),
 		},
 		Optional: []plugin.ServiceType{
@@ -112,7 +112,7 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 			Lifecycle:   owner.events,
 			Composer: composition.New(
 				approvalService,
-				owner.setups,
+				owner.extensions,
 			),
 		},
 	)
@@ -122,8 +122,8 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 	return owner.continuations.Enable(manager)
 }
 
-// Dispose drains continuable Activations before clearing Setup and Provider
-// registrations owned by this activation.
+// Dispose drains continuable Activations before clearing Extension and
+// Provider registrations owned by this activation.
 func (owner *Plugin) Dispose(closeContext context.Context) error {
 	if closeContext == nil {
 		closeContext = context.Background()
@@ -131,24 +131,24 @@ func (owner *Plugin) Dispose(closeContext context.Context) error {
 	rollbackContext := context.WithoutCancel(closeContext)
 	drainErr := owner.continuations.Disable(rollbackContext)
 	owner.catalog.Disable()
-	danglingSetups, setupErr := owner.setups.Clear(rollbackContext)
-	if danglingSetups != 0 {
-		setupErr = errors.Join(
-			setupErr,
+	danglingExtensions, extensionErr := owner.extensions.Clear(rollbackContext)
+	if danglingExtensions != 0 {
+		extensionErr = errors.Join(
+			extensionErr,
 			fmt.Errorf(
-				"subagent: Plugin stopped with %d registered Setup(s)",
-				danglingSetups,
+				"subagent: Plugin stopped with %d registered Extension(s)",
+				danglingExtensions,
 			),
 		)
 	}
 	danglingProviders := owner.providers.Clear()
 	projectionErr := owner.releaseProjections(rollbackContext)
 	if danglingProviders == 0 {
-		return errors.Join(drainErr, setupErr, projectionErr)
+		return errors.Join(drainErr, extensionErr, projectionErr)
 	}
 	return errors.Join(
 		drainErr,
-		setupErr,
+		extensionErr,
 		projectionErr,
 		fmt.Errorf(
 			"subagent: Plugin stopped with %d registered Provider(s)",

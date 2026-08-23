@@ -188,7 +188,7 @@ func (owner *Plugin) CreateAgent(
 	}
 	return prepared.publish(
 		operationContext,
-		options.Setup,
+		options.Provisioner,
 		agent.SessionStartup,
 	)
 }
@@ -240,7 +240,7 @@ func (owner *Plugin) ResumeAgent(
 	}
 	return prepared.publish(
 		operationContext,
-		options.Setup,
+		options.Provisioner,
 		agent.SessionResume,
 	)
 }

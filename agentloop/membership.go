@@ -12,7 +12,7 @@ import (
 )
 
 // agentMembership owns externally visible Agent and Session membership. It is
-// mounted only after Setup commits, so neither Registry can observe a partial
+// mounted only after Provisioning commits, so neither Registry can observe a partial
 // Agent Scope.
 type agentMembership struct {
 	plugin.Base
