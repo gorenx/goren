@@ -1,0 +1,74 @@
+# Subagent 服务端测试问题记录
+
+状态：Resolved Findings
+
+本文记录服务端测试实际暴露的代码问题、根因、结构性修复和复查证据。它不是第二份架构规范；稳定职责仍以[领域设计](./design.zh-CN.md)为准，完成状态仍以[实现进度](./implementation-progress.zh-CN.md)为准。
+
+参考 DeepSeek Harness feature-local commit：`b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`。
+
+## 1. 创建事务提前结束
+
+现象：fresh Start 或 cold Followup 已发布 child，但首条消息尚未被 Inbox 接受时，scoped drain 可能结束等待；调用方随后得到成功，child 却已进入回滚或释放。
+
+根因：`materialization` 只覆盖 Agent Handle publication，没有覆盖 initial prompt acceptance 与失败回滚。创建准入和业务提交不是同一个事务边界。
+
+解决：把 materialization 延长到“publish、首条 Inbox 接受、失败回滚”全部完成；drain 先建立 lineage cutoff，再等待已准入事务结束。实现提交：`a35daa7`。
+
+证据：`subagent/internal/continuation/materialization_drain_test.go` 覆盖 fresh create、cold resume、Inbox 拒绝和 publication 后 drain。
+
+## 2. 自然 settlement 与 Followup 非线性化
+
+现象：watcher 判断 child 已 idle 后、真正关闭准入前，并发 Followup 可能返回接收成功，随后又被旧 Activation 的释放取消。
+
+根因：旧 Activation 用 `closing`、`disposeDone`、`disposeErr` 三份状态描述释放；“判断 settled”和“安装 admission cutoff”之间存在空窗，且自然结束和显式释放没有共享同一事务 owner。
+
+解决：用 memoized `disposal` 表示唯一释放事务；它的存在就是 admission cutoff。watcher 在 per-child 串行边界内完成 settled recheck 和事务安装，所有调用方等待同一个 `done`，完成 terminal publication 和 ownership release 后才允许 cold resume。
+
+DSH 证据：`packages/subagent/subagent/src/continuation.ts` 的 `dispose()`、`finishDisposal()`。Go 证据：`settlement_delivery_test.go`、`external_disposal_test.go`、`drain_order_test.go`。
+
+## 3. 终态只看最后一个 turn/end
+
+现象：未进入 turn 就被取消的消息可能被旧 `completed` 误报为完成；pre-step failure、refusal、max-tokens 也可能与本次 Activation 的实际输入不对应。冷恢复 epoch 没有新输出时，还可能复用上一 epoch 的 assistant message。
+
+根因：`turn/end` 只描述一轮为何关闭，不描述哪一条 Inbox 输入被该轮消费。消费归属需要结合 Inbox claim/cancel、turn 和 step；旧输出问题则来自读取整份 Session，而不是 Activation 自己的 suffix。
+
+解决：核心 `agent` 新增 `ConsumedWork` fold，Session codec 恢复封闭 `TurnEndReason`；continuation 只截取 `boundary` 之后的事件并映射 `StopReason`、提取本 epoch 的最终输出。解析失败或真正 teardown 失败不得发布不可确认的输出。
+
+DSH 证据：`packages/core/agent/src/consumed-work.ts` 的 `foldConsumedWork()`、`packages/subagent/subagent/src/lifecycle.ts` 的 `epochStopReason()`。Go 证据：`agent/consumed_work_test.go`、`outcome_test.go`、`output_test.go`、`settlement_outcome_integration_test.go`。
+
+## 4. 最终 flush 被误作结构释放失败
+
+现象：child 已正常完成，但最终 Session flush 失败时，Go 实现会把终态改成 `error`，并让显式 drain 返回 Activation teardown failure；handle 和 ownership 虽然最终仍会释放，但调用方看到的是结构释放失败。
+
+根因：best-effort durability checkpoint 与 handle/child teardown 共用一个 failure slice，没有区分“冷恢复数据可能陈旧”和“结构释放本身失败”。
+
+解决：continuation 定义 `FinalFlushFailure` 报告端口，runtime 转交进程 Diagnostics。flush 失败保留告警但继续 handle disposal 和 ownership release；只有 child teardown、idle convergence、输出捕获或 handle disposal 失败才覆盖终态。
+
+DSH 证据：`packages/subagent/subagent/src/continuation.ts` 的 `flushFinalState()`。Go 证据：`final_flush_test.go` 和默认 assembly 的 `RuntimeOptions.ObserverError` 装配。
+
+## 5. 外部释放提前开放下一 epoch
+
+现象：外部 Agent disposal 先关闭等待信号、释放父子 ownership，随后才发布 `subagent/end`；并发 cold Followup 或父 Activation settlement 可能让新的 `subagent/start` 或父终态越过旧 child 的 `subagent/end`。
+
+根因：外部释放路径没有遵守 manager-owned disposal 已有的 terminal ordering，且直接修改了多份 residency 状态。
+
+解决：外部释放同样先安装 `disposal` cutoff 并移除可寻址 Activation，再发布 child terminal edge，最后释放 ownership、唤醒父 Activation 并关闭事务。证据：`external_disposal_test.go`。
+
+## 6. 本轮验证
+
+以下服务端验证均通过：
+
+```text
+go test ./...
+go test -race ./...
+go vet ./...
+go build ./...
+git diff --check
+go test ./subagent/internal/continuation -run '^TestFollowupWaitsForNaturalSettlementAndResumesDurableChild$' -count=100
+go test ./subagent -run '^TestContinuableSettlementReports(MaxTokens|ModelFailure)FromAgentLog$' -count=50
+go test -race ./subagent/internal/continuation -count=20
+go test -race ./subagent ./subagent/internal/continuation -count=10
+GOREN_REAL_PROVIDER_TEST=1 go test ./subagent -run '^TestRealProviderForegroundOneShot$' -count=1
+```
+
+真实 Provider 测试从本地 `.env` 注入进程环境；凭据未进入日志、fixture 或 Git。Web 到服务端测试按当前范围暂缓，不属于以上结论。

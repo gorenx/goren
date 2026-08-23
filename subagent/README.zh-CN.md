@@ -9,6 +9,7 @@
 - [领域设计](./docs/design.zh-CN.md)：职责、接口、状态、依赖和关键流程。
 - [术语规范](./docs/terminology.zh-CN.md)：兼容词汇、领域术语和 Go 命名规则。
 - [实现进度](./docs/implementation-progress.zh-CN.md)：已实现、进行中、未实现及验证证据。
+- [服务端测试问题记录](./docs/server-test-findings.zh-CN.md)：测试暴露的问题、根因、结构性修复和复查证据。
 - [DSH 源证据](../zh-CN/subagent/01-source-capability-analysis.md)：固定 feature-local commit 下的源 owner、符号与兼容差异。
 - [全局实施进度](../zh-CN/08-implementation-progress.md)：仓库级证据索引，只记录 Subagent 已进入实现、Jobs/Workflow 仍 deferred。
 
