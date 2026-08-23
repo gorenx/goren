@@ -18,7 +18,7 @@
 | --- | --- |
 | DSH feature-local source | `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e` |
 | Goren 开始实现时 HEAD | `6eeac353b6e55d555530189b1f79f9cd7e70ad9c` |
-| 当前验收代码 HEAD | `1cd6c4e`（主体实现 `eddf35f`） |
+| 当前验收代码 HEAD | `2aa012a`（主体实现 `eddf35f`） |
 | Web 辅助测试代码 HEAD | `9cb505e` |
 | 最后核对日期 | 2026-08-23 |
 | 全局基线是否改变 | 否 |
@@ -39,7 +39,7 @@
 | SA-D10 | interrupt、report、settlement | Go Verified | `internal/continuation/manager_delivery.go`、`manager_settlement.go`、`outcome.go`、`output.go`、`internal/assistantoutput` | 原有 interrupt/report 集成测试继续通过；`agent/consumed_work_contract_test.go` 与 `internal/assistantoutput/source_contract_test.go` 动态调用固定 DSH source，分别验证 consumed-work 和最终输出选择；真实 AgentLoop + SQLite 集成测试验证 completed、max-tokens、model error、部分输出和 parent settlement；teardown failure 不发布不可确认输出。完整 settlement 生命周期尚未达到 Contract Verified |
 | SA-D11 | selected children / descendant drain | Go Verified | `internal/continuation/manager_drain.go`、`activation.go`、`disposal.go` | `manager_test.go` 和 `materialization_drain_test.go` 覆盖 cutoff/barrier/rollback；`drain_order_test.go` 验证嵌套 child-first release；`external_disposal_test.go` 验证 terminal publication 先于 ownership release 和下一 epoch admission |
 | SA-D12 | Activation Extension ordered provisioning 与即时精确撤销 | Go Verified | `extension.go`、`internal/extension`、`internal/childscope`、`runtime/plugin.go` | extension tests 覆盖顺序、partial provision rollback、commit invalidation、自撤销、resident 精确撤销和幂等收敛；childscope tests 覆盖后续 part 失败逆序回滚与 cold-resume persona/tool policy；`b1a4dee` 删除共享模块对 continuation DTO 的反向依赖 |
-| SA-D13 | Catalog live/persistent listing 与 diagnostics | Go Verified | `catalog.go`、`internal/catalog`、`internal/projection`、`runtime/projections.go` | `service_test.go` 覆盖 live-preferred、creation window、cold fold、diagnostic、ordinary traversal、stable preorder、缺失依赖与 cancellation；identity/timing 分职责 contract tests 动态调用固定 DSH projection definitions，比较 last-wins/reset 与计时状态共 6 组观测。Catalog listing 整体尚未达到 Contract Verified |
+| SA-D13 | Catalog live/persistent listing 与 diagnostics | Contract Verified | `catalog.go`、`internal/catalog`、`internal/projection`、`runtime/projections.go` | live、cold、descendants 三个分职责 contract tests 动态调用固定 DSH `listChildren()`/`listDescendants()`，覆盖 live-preferred、creation window、identity last-wins、diagnostic、lifecycle witness、ordinary/one-shot traversal、稳定排序与 cancellation；Go tests 另证四路冷读上限和取消 I/O。可选 projection-cache acceleration 尚未接入，但不是权威读取或结果正确性的前提 |
 | SA-D14 | spawn/fork Provider | Go Verified | `spawn`、`fork`、`internal/inprocess`、`internal/lineage`、`internal/assistantoutput` | fork test 覆盖 balanced completed-turn prefix；`resume_seed_test.go` 覆盖 fork lineage seed 与 child descriptor 的 cold-resume 边界；inprocess 复用 Agent-owned consumed-work 与共享输出选择器，tests 覆盖 activation boundary、尾随未消费 turn、chunk-only partial output、cancel mapping、descriptor append 和 authoritative structured capture；lineage tests 覆盖继承、metadata 与 depth 边界。spawn/fork 完整用例尚未达到 Contract Verified |
 | SA-D15 | Tool/control/report Consumer | Go Verified | `tool`、`control`、`report` | Tool tests 覆盖 foreground、continuable background 与无 Jobs 的 one-shot background rejection；control 集成测试分别覆盖 send/list/interrupt；report Extension 通过 child-scoped Plugin 安装 Tool/Prompt，并由真实 Agent Scope 集成测试验证 delivery、durable source 与撤销/关闭收敛 |
 | SA-D16 | Factory、默认 assembly 与端到端验证 | Go Verified | 各 `factory`、`internal/assembly/catalog.go`、feature-split `*_integration_test.go` | Factory strict config；默认 assembly 把 contained continuation failure 接入进程 Diagnostics；keyless 集成测试按 one-shot、continuable durability/outcome、cold resume、list、interrupt、report 分文件验证；真实 DeepSeek one-shot 验收继续通过；fork Factory 静态注册但不进入默认 deployment |
@@ -55,7 +55,7 @@ go test -race ./...
 go vet ./...
 go build ./...
 git diff --check
-go test -tags contract ./agent ./subagent ./subagent/internal/assistantoutput ./subagent/internal/projection
+go test -tags contract ./agent ./subagent ./subagent/internal/assistantoutput ./subagent/internal/projection ./subagent/internal/catalog
 go test ./subagent/internal/continuation -run '^TestFollowupWaitsForNaturalSettlementAndResumesDurableChild$' -count=100
 go test ./subagent -run '^TestContinuableSettlementReports(MaxTokens|ModelFailure)FromAgentLog$' -count=50
 go test -race ./subagent/internal/continuation -count=20
@@ -68,7 +68,7 @@ GOREN_REAL_PROVIDER_TEST=1 go test ./subagent -run '^TestRealProviderForegroundO
 go test ./web ./tests/architecture
 ```
 
-结果：通过。带 `contract` tag 的测试读取 `subagent/testdata/source-baseline.json`，先校验 `../deepseek-harness` HEAD，再动态执行固定源函数；当前比较 8 组 consumed-work、5 组 assistant-output、8 组 descriptor、3 组 identity projection 和 3 组 timing projection 观测。
+结果：通过。带 `contract` tag 的测试读取 `subagent/testdata/source-baseline.json`，先校验 `../deepseek-harness` HEAD，再动态执行固定源函数；当前比较 8 组 consumed-work、5 组 assistant-output、8 组 descriptor、3 组 identity projection、3 组 timing projection，以及 live/cold/descendants 三组 Catalog 端到端观测。
 
 真实 Provider 命令从本地 `.env` 注入进程环境并由 credential owner 解析 `DEEPSEEK_API_KEY`，执行了一次真实 DeepSeek foreground one-shot；测试缺少显式开关或凭据时自跳过，不属于 keyless 自动化门禁，密钥未写入日志、fixture 或 Git。其余结果证明当前 Go 实现通过全仓测试/race、vet、build、命名架构检查；高重复测试直接覆盖自然 settlement 与 Followup、terminal outcome，完整套件继续覆盖 materialization/drain、interrupt 和 resident report shutdown。
 
@@ -79,7 +79,7 @@ Web owner-local 验证新增 6 个分职责测试文件、18 个用例，覆盖 
 1. Provider registry：顺序、duplicate、added veto rollback、removed containment、exact stale handle、race。
 2. one-shot：所有 capability gate、depth/schema、request detachment、Provider start failure 无 lifecycle、start/end 配对与 observer containment。
 3. continuable：consumed-work 与最终输出选择已增加固定 DSH source 差分；仍需为 settlement ordering、FIFO、terminal publication 和 final flush 增加跨语言差分。当前真实 AgentLoop/SQLite 测试不等同于这些生命周期的 DSH 差分验收。
-4. Catalog：identity/timing projection 已完成固定 DSH source 差分；仍需为 list candidate resolution、live-preferred、cold identity 与 diagnostics 增加差分，并验证可选 projection-cache acceleration；cache 不是权威读取前提。
+4. Catalog：list candidate resolution、live-preferred、cold identity、diagnostics 和 descendants 已完成固定 DSH source 差分；可选 projection-cache acceleration 仍是非权威性能缺口，不阻塞当前结果语义验收。
 5. Provider/Consumer：增加固定 DSH spawn/fork、Tool/control/report fixture 的跨语言差分；当前 descriptor、projection 与 result projection 的局部源差分不能代表完整 Provider/Consumer 契约。
 6. 全量：继续执行 `go test ./...`、`go test -race ./...`、`go vet ./...`、`go build ./...`、`git diff --check`，并补齐固定 DSH source differential fixtures。
 7. Web：当前 owner-local Vitest 已通过；Web 到 Go UI contract 按当前范围暂缓，真实浏览器验收等待可连接的浏览器实例。

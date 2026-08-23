@@ -54,7 +54,17 @@ DSH 证据：`packages/subagent/subagent/src/continuation.ts` 的 `flushFinalSta
 
 解决：外部释放同样先安装 `disposal` cutoff 并移除可寻址 Activation，再发布 child terminal edge，最后释放 ownership、唤醒父 Activation 并关闭事务。证据：`external_disposal_test.go`。
 
-## 6. 本轮验证
+## 6. Catalog 同时间 Session 排序与固定源不同
+
+现象：多个 child 的 `createdAt` 相同时，包含大小写、重音、标点或 Unicode 等价形式的 `SessionId` 在 Go 与 DSH 中顺序不同；即使两个 ID 在 locale collation 下相等，Go 多次枚举还可能得到不同次序。
+
+根因：DSH `packages/subagent/subagent/src/list-children.ts` 的 `compareCorpusRecords()` 使用 `id.localeCompare()`，并依赖 JavaScript `Map` 保留首次插入位置。Go 直接用字符串 `<`，得到 UTF-8 字节序；同时 live-preferred corpus 只有 `map[SessionID]sessionRecord`，在构造候选时已经丢失 persisted/live 合并后的首次插入位置。问题不在展示层：两边 `SessionId` 都允许任意字符串，没有 UUID 或小写约束。
+
+解决：Catalog 在 live-preferred 合并时为每个 ID 保留首次出现的 ordinal，覆盖同 ID 的 persisted/live record 时不改变 ordinal；同一 `createdAt` 的 sibling 使用固定 en-US collation 复现基线运行时的 `localeCompare`，collation 相等时回退到 ordinal。排序仍由 Catalog 拥有，没有把展示规则推入 Session。
+
+证据：`order_test.go` 覆盖 collation、Unicode 等价形式的稳定顺序和 `createdAt` 主键；`live_source_contract_test.go` 动态执行固定源 `listChildren()`，实际暴露旧字节序偏差后验证修复。cold 与 descendants 分别由 `cold_source_contract_test.go`、`descendants_source_contract_test.go` 对比固定源，取消转发和四路冷读上限由独立测试文件覆盖。实现提交：`2aa012a`。
+
+## 7. 本轮验证
 
 以下服务端验证均通过：
 
@@ -64,7 +74,7 @@ go test -race ./...
 go vet ./...
 go build ./...
 git diff --check
-go test -tags contract ./agent ./subagent/internal/assistantoutput
+go test -tags contract ./agent ./subagent ./subagent/internal/assistantoutput ./subagent/internal/projection ./subagent/internal/catalog
 go test ./subagent/internal/continuation -run '^TestFollowupWaitsForNaturalSettlementAndResumesDurableChild$' -count=100
 go test ./subagent -run '^TestContinuableSettlementReports(MaxTokens|ModelFailure)FromAgentLog$' -count=50
 go test -race ./subagent/internal/continuation -count=20
