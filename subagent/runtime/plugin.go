@@ -15,7 +15,7 @@ import (
 	sessionprojection "github.com/gorenx/goren/session/projection"
 	"github.com/gorenx/goren/subagent"
 	"github.com/gorenx/goren/subagent/internal/catalog"
-	"github.com/gorenx/goren/subagent/internal/composition"
+	"github.com/gorenx/goren/subagent/internal/childscope"
 	"github.com/gorenx/goren/subagent/internal/continuation"
 	activationextension "github.com/gorenx/goren/subagent/internal/extension"
 	"github.com/gorenx/goren/subagent/internal/oneshot"
@@ -110,7 +110,7 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 			Persistence: sessionPersistence,
 			Providers:   owner.providers,
 			Lifecycle:   owner.events,
-			Composer: composition.NewContinuable(
+			ScopeBuilder: childscope.NewContinuable(
 				approvalService,
 				owner.extensions,
 			),

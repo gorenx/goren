@@ -8,6 +8,7 @@ import (
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/session/persistence"
 	"github.com/gorenx/goren/subagent"
+	"github.com/gorenx/goren/subagent/internal/childscope"
 )
 
 // Providers resolves the exact currently registered Provider.
@@ -21,29 +22,21 @@ type Lifecycle interface {
 	Ended(agent.Agent, subagent.Ended)
 }
 
-// Composer builds one fresh Agent Provisioner for a materializing Activation.
-// Continuation owns when composition happens; the collaborator owns what the
-// child Scope contains.
-type Composer interface {
-	Compose(Composition) agent.Provisioner
-}
-
-// Composition is the immutable child identity supplied to Composer.
-type Composition struct {
-	ChildID    session.SessionID
-	ParentID   session.SessionID
-	Descriptor subagent.ContinuableDescriptor
-	Fresh      bool
+// ScopeBuilder builds the Provisioner for one continuable child Scope.
+// Continuation owns when provisioning happens; childscope owns what is
+// installed into the unpublished Agent.
+type ScopeBuilder interface {
+	Provisioner(childscope.ContinuableInput) agent.Provisioner
 }
 
 // Dependencies are the owner-supplied capabilities used by Manager.
 type Dependencies struct {
-	Agents      agent.Registry
-	Sessions    session.LiveStore
-	Persistence persistence.Persistence
-	Providers   Providers
-	Lifecycle   Lifecycle
-	Composer    Composer
+	Agents       agent.Registry
+	Sessions     session.LiveStore
+	Persistence  persistence.Persistence
+	Providers    Providers
+	Lifecycle    Lifecycle
+	ScopeBuilder ScopeBuilder
 }
 
 // Manager owns every process-local continuable Activation.
@@ -56,9 +49,9 @@ type Manager struct {
 // available.
 func New(dependencySet Dependencies) (*Manager, error) {
 	if dependencySet.Agents == nil || dependencySet.Sessions == nil ||
-		dependencySet.Providers == nil || dependencySet.Composer == nil {
+		dependencySet.Providers == nil || dependencySet.ScopeBuilder == nil {
 		return nil, errors.New(
-			"subagent: continuation requires Agent Registry, Session LiveStore, Providers, and Composer",
+			"subagent: continuation requires Agent Registry, Session LiveStore, Providers, and child Scope builder",
 		)
 	}
 	return &Manager{

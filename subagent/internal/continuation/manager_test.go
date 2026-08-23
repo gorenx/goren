@@ -12,6 +12,7 @@ import (
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/session/persistence"
 	"github.com/gorenx/goren/subagent"
+	"github.com/gorenx/goren/subagent/internal/childscope"
 )
 
 type agentRecord struct {
@@ -418,9 +419,9 @@ func (records *lifecycleRecord) Ended(_ agent.Agent, fact subagent.Ended) {
 	records.ended = append(records.ended, fact)
 }
 
-type composerStub struct{}
+type scopeBuilderStub struct{}
 
-func (composerStub) Compose(Composition) agent.Provisioner {
+func (scopeBuilderStub) Provisioner(childscope.ContinuableInput) agent.Provisioner {
 	return nil
 }
 
@@ -462,8 +463,8 @@ func TestContinuableFreshLifecycleAndControl(t *testing.T) {
 		Providers: providerSource{
 			candidate: providerRecord{},
 		},
-		Lifecycle: lifecycleFacts,
-		Composer:  composerStub{},
+		Lifecycle:    lifecycleFacts,
+		ScopeBuilder: scopeBuilderStub{},
 	})
 	if managerErr != nil {
 		t.Fatal(managerErr)
@@ -657,8 +658,8 @@ func TestFollowupColdResumesPersistedContinuableChild(t *testing.T) {
 		Providers: providerSource{
 			candidate: providerRecord{},
 		},
-		Lifecycle: lifecycleFacts,
-		Composer:  composerStub{},
+		Lifecycle:    lifecycleFacts,
+		ScopeBuilder: scopeBuilderStub{},
 	})
 	if managerErr != nil {
 		t.Fatal(managerErr)

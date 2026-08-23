@@ -1,39 +1,49 @@
-// Package composition builds the Agent Provisioner for one continuable
-// child without owning continuation admission or residency.
-package composition
+// Package childscope builds the capabilities installed into one unpublished
+// Subagent child Scope without owning Agent creation or child lifecycle.
+package childscope
 
 import (
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/plugin"
-	"github.com/gorenx/goren/subagent/internal/continuation"
+	"github.com/gorenx/goren/session"
+	"github.com/gorenx/goren/subagent"
 	activationextension "github.com/gorenx/goren/subagent/internal/extension"
 	"github.com/gorenx/goren/tools"
 )
 
-// ContinuableComposer owns the deployment capabilities installed in one
+// ContinuableInput contains the resolved facts needed to provision one
 // continuable child Scope.
-type ContinuableComposer struct {
+type ContinuableInput struct {
+	ChildID    session.SessionID
+	ParentID   session.SessionID
+	Descriptor subagent.ContinuableDescriptor
+	Fresh      bool
+}
+
+// ContinuableBuilder owns the deployment capabilities installed in one
+// continuable child Scope.
+type ContinuableBuilder struct {
 	approval   approval.DelegationPolicy
 	extensions *activationextension.Registry
 }
 
-// NewContinuable constructs a continuable child Composer.
+// NewContinuable constructs a continuable child Scope builder.
 func NewContinuable(
 	approvalPolicy approval.DelegationPolicy,
 	extensionRegistry *activationextension.Registry,
-) *ContinuableComposer {
-	return &ContinuableComposer{
+) *ContinuableBuilder {
+	return &ContinuableBuilder{
 		approval:   approvalPolicy,
 		extensions: extensionRegistry,
 	}
 }
 
-// Compose builds a fresh Provisioner for one materialization. Delegation
+// Provisioner builds one Provisioner for a materialization. Delegation
 // approval is seeded only for fresh Sessions; cold resume replays the durable
 // policy.
-func (owner *ContinuableComposer) Compose(
-	input continuation.Composition,
+func (owner *ContinuableBuilder) Provisioner(
+	input ContinuableInput,
 ) agent.Provisioner {
 	if owner == nil {
 		return nil
@@ -67,8 +77,8 @@ func (owner *ContinuableComposer) Compose(
 	}
 }
 
-func (owner *ContinuableComposer) buildPlugins(
-	input continuation.Composition,
+func (owner *ContinuableBuilder) buildPlugins(
+	input ContinuableInput,
 ) []plugin.Plugin {
 	return childPlugins(
 		owner.approval,
@@ -107,5 +117,3 @@ func childPlugins(
 	}
 	return instances
 }
-
-var _ continuation.Composer = (*ContinuableComposer)(nil)

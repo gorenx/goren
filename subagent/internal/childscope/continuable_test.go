@@ -1,4 +1,4 @@
-package composition
+package childscope
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/subagent"
-	"github.com/gorenx/goren/subagent/internal/continuation"
 	"github.com/gorenx/goren/tools"
 )
 
@@ -47,7 +46,7 @@ func (record provisioningRecord) Dispose(context.Context) error {
 	return nil
 }
 
-func TestComposerKeepsDeploymentCompositionOnColdResume(t *testing.T) {
+func TestContinuableBuilderKeepsChildPolicyOnColdResume(t *testing.T) {
 	personaText := "review carefully"
 	owner := NewContinuable(nil, nil)
 	descriptor := subagent.ContinuableDescriptor{
@@ -57,13 +56,13 @@ func TestComposerKeepsDeploymentCompositionOnColdResume(t *testing.T) {
 		},
 	}
 	fresh := owner.buildPlugins(
-		continuation.Composition{
+		ContinuableInput{
 			Descriptor: descriptor,
 			Fresh:      true,
 		},
 	)
 	resumed := owner.buildPlugins(
-		continuation.Composition{
+		ContinuableInput{
 			Descriptor: descriptor,
 			Fresh:      false,
 		},

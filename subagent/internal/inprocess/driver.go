@@ -12,7 +12,7 @@ import (
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
-	"github.com/gorenx/goren/subagent/internal/composition"
+	"github.com/gorenx/goren/subagent/internal/childscope"
 	"github.com/gorenx/goren/subagent/internal/lineage"
 )
 
@@ -23,24 +23,24 @@ type Options struct {
 
 // Driver creates and drives one published local child for exactly one turn.
 type Driver struct {
-	agents   agent.Registry
-	composer *composition.OneShotComposer
+	agents       agent.Registry
+	scopeBuilder *childscope.OneShotBuilder
 }
 
 // New constructs an in-process one-shot Driver.
 func New(
 	agentRegistry agent.Registry,
-	childComposer *composition.OneShotComposer,
+	childScopeBuilder *childscope.OneShotBuilder,
 ) (*Driver, error) {
 	if agentRegistry == nil {
 		return nil, errors.New("subagent: in-process Driver requires Agent Registry")
 	}
-	if childComposer == nil {
-		return nil, errors.New("subagent: in-process Driver requires child Composer")
+	if childScopeBuilder == nil {
+		return nil, errors.New("subagent: in-process Driver requires child Scope builder")
 	}
 	return &Driver{
-		agents:   agentRegistry,
-		composer: childComposer,
+		agents:       agentRegistry,
+		scopeBuilder: childScopeBuilder,
 	}, nil
 }
 
@@ -104,10 +104,12 @@ func (owner *Driver) Start(
 			Metadata:     childLineage.Metadata(boundary),
 			Seed:         seed,
 			AgentOptions: childLineage.AgentOptions(request.AgentOptions),
-			Provisioner: owner.composer.Provisioner(
-				request.Persona,
-				request.ToolFilter,
-				runPlugins...,
+			Provisioner: owner.scopeBuilder.Provisioner(
+				childscope.OneShotInput{
+					Persona:    request.Persona,
+					ToolFilter: request.ToolFilter,
+					Plugins:    runPlugins,
+				},
 			),
 		},
 	)
