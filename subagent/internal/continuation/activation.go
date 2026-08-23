@@ -38,18 +38,17 @@ type materialization struct {
 
 // Activation is one resident epoch of a durable continuable child.
 type Activation struct {
-	childID        session.SessionID
-	parentID       session.SessionID
-	providerName   string
-	handle         agent.Handle
-	ancestry       []agent.Agent
-	ownedChildren  map[session.SessionID]struct{}
-	accepted       map[llm.MessageID]struct{}
-	wake           chan struct{}
-	runID          subagent.RunID
-	announced      bool
-	closing        bool
-	disposeDone    chan struct{}
-	disposeErr     error
-	terminalReason subagent.StopReason
+	childID       session.SessionID
+	parentID      session.SessionID
+	providerName  string
+	handle        agent.Handle
+	ancestry      []agent.Agent
+	ownedChildren map[session.SessionID]struct{}
+	accepted      map[llm.MessageID]struct{}
+	wake          chan struct{}
+	runID         subagent.RunID
+	announced     bool
+	closing       bool
+	disposeDone   chan struct{}
+	disposeErr    error
 }
