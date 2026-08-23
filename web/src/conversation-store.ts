@@ -17,6 +17,8 @@ import type {
 } from './types'
 import { isRecord, recordBoolean, recordString } from './types'
 import type { Locale, Translator } from './i18n'
+import { mergeEvents } from './session-events'
+import { projectStream } from './session-stream'
 
 type Subscriber = () => void
 
@@ -138,8 +140,18 @@ export class ConversationStore {
       const history = await this.#api.call<SessionHistoryValue>('session.history', { sessionId, maxMessages: 100 })
       if (selectionVersion !== this.#selectionVersion) return
       const events = new Map(this.#value.events)
-      events.set(sessionId, (history.events ?? []).map(entry => entry.event))
-      this.#patch({ events, composerState: this.currentSession()?.running ? 'composer.agentWorking' : 'composer.ready' })
+      const sessionEvents = mergeEvents(
+        (history.events ?? []).map(entry => entry.event),
+        this.#value.events.get(sessionId) ?? [],
+      )
+      events.set(sessionId, sessionEvents)
+      const streams = new Map(this.#value.streams)
+      setProjectedStream(streams, sessionId, sessionEvents)
+      this.#patch({
+        events,
+        streams,
+        composerState: this.currentSession()?.running ? 'composer.agentWorking' : 'composer.ready',
+      })
     } catch (error) {
       if (selectionVersion === this.#selectionVersion) this.#fail(error)
     }
@@ -298,14 +310,10 @@ export class ConversationStore {
     const eventValue = payload.event
     if (sessionId === undefined || !isSessionEvent(eventValue)) return
     const events = new Map(this.#value.events)
-    const sessionEvents = [...(events.get(sessionId) ?? [])]
-    if (!sessionEvents.some(event => event.seq === eventValue.seq)) {
-      sessionEvents.push(eventValue)
-      sessionEvents.sort((left, right) => left.seq - right.seq)
-      events.set(sessionId, sessionEvents)
-    }
+    const sessionEvents = mergeEvents(events.get(sessionId) ?? [], [eventValue])
+    events.set(sessionId, sessionEvents)
     const streams = new Map(this.#value.streams)
-    applyStreamEvent(streams, sessionId, eventValue)
+    setProjectedStream(streams, sessionId, sessionEvents)
     this.#patch({ events, streams })
     if (eventValue.type === 'turn/end') {
       this.#patch({ composerState: 'composer.factsSynced' })
@@ -361,28 +369,14 @@ function isSessionEvent(value: unknown): value is SessionEvent {
   return isRecord(value) && typeof value.type === 'string' && typeof value.seq === 'number' && typeof value.time === 'number'
 }
 
-function applyStreamEvent(
+function setProjectedStream(
   streams: Map<string, StreamDraft>,
   sessionId: string,
-  event: SessionEvent,
+  events: readonly SessionEvent[],
 ): void {
-  if (event.type === 'assistant/chunk' && isRecord(event.data) && isRecord(event.data.chunk)) {
-    const chunk = event.data.chunk
-    const chunkType = recordString(chunk, 'type')
-    const text = recordString(chunk, 'text') ?? ''
-    const current = streams.get(sessionId)
-    const draft = current?.streaming === true
-      ? { ...current, seq: event.seq }
-      : { text: '', reasoning: '', streaming: true, interrupted: false, seq: event.seq }
-    if (chunkType === 'text-delta') draft.text += text
-    if (chunkType === 'reasoning-delta') draft.reasoning += text
-    streams.set(sessionId, draft)
-  }
-  if (event.type === 'assistant/message') streams.delete(sessionId)
-  if (event.type === 'turn/end') {
-    const draft = streams.get(sessionId)
-    if (draft !== undefined) streams.set(sessionId, { ...draft, streaming: false, interrupted: true, seq: event.seq })
-  }
+  const draft = projectStream(events)
+  if (draft === undefined) streams.delete(sessionId)
+  else streams.set(sessionId, draft)
 }
 
 function messageFromEvent(event: SessionEvent): MessageRow | undefined {
