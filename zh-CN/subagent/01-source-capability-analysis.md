@@ -1,170 +1,62 @@
-# Subagent 源功能与模块关系
+# DSH Subagent 源证据
 
-状态：Draft
+状态：Source Evidence
 
-分析源：`../deepseek-harness` @ `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`。草案地位与排除范围见[00 范围与阅读顺序](./00-draft-scope-and-reading-order.md)。
+本文只保留 Goren Subagent 设计仍需追溯的源 owner、调用方向和兼容差异。当前 Go 职责与契约见 [`subagent` 领域设计](../../subagent/docs/design.zh-CN.md)，完成状态见[实现进度](../../subagent/docs/implementation-progress.zh-CN.md)。
 
-## 1. 源模块不是同一层
+分析源：`../deepseek-harness` @ `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`。这是一条 feature-local 证据基线，不改变仓库全局固定基线。
+
+## 1. 调用方向
 
 ```mermaid
 flowchart LR
-    TOOL[tool-subagent] --> CORE[subagent Runtime]
-    CONTROL[tool-subagent-control] --> CORE
-    REPORT[tool-subagent-report] --> CORE
-    HOST[host/apiproxy subagents API] --> CORE
-    CORE --> PROVIDER[Continuable Provider]
-    PROVIDER --> SPAWN[subagent-spawn-in-process]
-    PROVIDER --> FORK[subagent-fork-in-process]
-    CORE --> AGENT[Agent Registry and Inbox]
-    CORE --> SESSION[Session LiveStore and Persistence]
-    CORE --> PROJECTION[Session Projection]
-    CORE --> APPROVAL[Approval policy]
-    CORE --> PROMPT[System Prompt]
-    CORE --> TOOLS[Tools]
+    Tool[tool-subagent] --> Core[subagent Runtime]
+    Control[tool-subagent-control] --> Core
+    Report[tool-subagent-report] --> Core
+    Host[host/apiproxy Consumer] --> Core
+    Core --> Provider[spawn / fork Provider]
+    Provider --> Driver[in-process one-shot driver]
+    Core --> Agent[Agent Registry / Inbox]
+    Core --> Session[Session / Persistence]
 ```
 
-调用方向是 Consumer 主动调用 `SubagentRuntime`，Runtime 再调用选中的 Provider 和已有核心能力：
+Consumer 主动调用 Subagent core；core 再选择 Provider 并使用 Agent、Session 等现有能力。Agent Loop 不发现 Subagent，也不拥有父子授权、continuation residency 或 Provider registry。
 
-- `tool-subagent` 根据模型工具输入调用 one-shot `start` 或 continuable `startContinuable`；
-- `send_message` 调用 `followup`，`interrupt_agent` 调用 `interrupt`，`list_agents` 调用 `listDescendants`；
-- 子 Agent 中的 `report` 调用 `reportFrom`；
-- Host API Proxy 调用 `listChildren`、`followup`、`interrupt`，history 则在先验证 catalog 身份后读取 Session；
-- Runtime 调用 Provider 的 `prepareContinuable`，Provider 不反向拥有 Runtime；
-- Runtime 通过 Agent Registry 创建或恢复 Agent，并把消息交给 Agent Inbox。Agent Loop 不主动发现或调度 Subagent。
+## 2. 源 owner 与符号
 
-## 2. Core 拥有的能力
-
-源 owner 位于 `packages/subagent/subagent/src/`。其中 `SubagentRuntime` 和 `SubagentContinuationManager` 是有状态核心，不是纯 contract：
-
-| 源文件 | 主要证据 |
-| --- | --- |
-| `index.ts`、`types.ts` | Service Definition、Provider Registry、公开 request/result、四个 lifecycle event |
-| `continuation.ts` | start/followup/interrupt/report、Activation、ownership、cold resume、settlement、drain |
-| `activation-setup-registry.ts` | setup transaction、即时撤销、安装索引和释放失败 |
-| `child-agent.ts`、`depth.ts` | child options/metadata、depth、delegated policies 和 child composition |
-| `descriptor.ts`、`descriptor-seed.ts` | descriptor v2 strict codec 与 fork own-suffix 边界 |
-| `projection.ts`、`projection-types.ts` | `subagent` / `subagentTiming` projection |
-| `list-children.ts` | live-preferred corpus、projection ladder、diagnostic 与稳定 traversal |
-| `lifecycle.ts`、`assistant-output.ts` | run ID、start/end 配对、epoch stop reason 与最终 assistant output |
-| `run-settlement.ts`、`out-of-process.ts` | one-shot settlement 与外部运行诊断；本项目只分析不实施 |
-
-| 能力 | 源入口 | 所有权语义 |
+| 源包 | 关键符号或文件 | Owner 结论 |
 | --- | --- | --- |
-| Provider 注册 | `registerProvider`、`getProvider`、`list` | 唯一名称、稳定顺序、精确撤销、Provider 生命周期事件 |
-| one-shot 启动 | `start` | 解析 Provider 与能力、启动一次运行并返回 `SubagentRun`；core Runtime 与具体 driver 是两个实施切片 |
-| continuable 启动 | `startContinuable` | 分配 durable child、安装 Activation、把首条消息提交 Inbox |
-| 后续消息 | `followup` | 对 resident child 排队，或从 Persistence 冷恢复后排队 |
-| 中断 | `interrupt` | 校验直接父或 live ancestor 权限，对当前 turn 发出 keep-inbox cancel |
-| 子向父报告 | `reportFrom` | 以精确 live child 为凭证，只投递给其直接父 Agent |
-| 子级安装 | `registerContinuableSetup` | 对每个新 Activation 事务性安装 child-scoped 能力，并支持立即撤销 |
-| 清理 | `drainContinuableChildren`、`drainContinuableDescendants` | 子优先关闭，尝试所有分支并聚合失败 |
-| 目录 | `listChildren`、`listDescendants` | live-preferred、无 Agent 激活的 durable 身份查询 |
+| `packages/subagent/subagent` | `SubagentRuntime`、`SubagentContinuationManager`、`registerProvider` | Provider registry、one-shot admission、continuation、descriptor、catalog 与 lifecycle |
+| `packages/subagent/subagent` | `start`、`startContinuable`、`followup`、`interrupt`、`reportFrom` | one-shot 与 continuable 是不同用例；父子授权和冷恢复属于 core |
+| `packages/subagent/subagent` | `activation-setup-registry.ts` | continuable child-scoped contribution 的有序安装与精确撤销 |
+| `packages/subagent/subagent-in-process-driver` | `startInProcessRun`、`drivePublishedRun` | 本地 one-shot child 创建、一个 turn、结果读取、取消与 Dispose |
+| `packages/subagent/subagent-spawn-in-process` | `SpawnInProcessProvider` | fresh seed；支持 one-shot 与 continuable preparation |
+| `packages/subagent/subagent-fork-in-process` | `ForkInProcessProvider`、`completedTurnPrefix` | 只继承截至最后 `turn/end` 的平衡前缀 |
+| `packages/subagent/tool-subagent` | `apply`、delegation Tool executor | Provider-bound foreground/background 路由，不拥有 child lifecycle |
+| `packages/subagent/tool-subagent-control` | `send_message`、`interrupt_agent`、`list_agents` | continuable Service/Catalog 的模型 Tool Consumer |
+| `packages/subagent/tool-subagent-report` | child-scoped `report` contribution | 只安装到 continuable child，把消息交给 exact direct parent |
 
-Core 还拥有：descriptor v2、projection、委派深度、父子授权、运行期 start/end 配对、最终 assistant output 提取、settlement notice 和 activation epoch。
+## 3. Provider 边界
 
-## 3. Provider 的真实边界
+源 `Provider` 基础能力是 one-shot `start`；`prepareContinuable` 存在时才表示可建立 continuable child。Provider 只贡献运行算法或 detached creation seed：
 
-Provider 不是完整子 Agent runtime。源 Provider 合同包含：
+- core 分配 durable child ID、写 parent Header 与 descriptor；
+- core 拥有 Activation、cold resume、Inbox delivery、settlement 和 drain；
+- Provider 移除只阻止新 Start，不撤销已经发布的 Run 或 Activation；
+- spawn 返回空 seed；fork 返回 balanced completed-turn prefix。
 
-- 唯一 `name`；
-- `inheritsParentContext`，用于 Consumer 描述其上下文语义；
-- one-shot 静态 capabilities：`outputSchema`、`depthLimit`、`toolFilter`、`persona`；
-- one-shot `start`；
-- 可选 `prepareContinuable`，方法存在即表示支持 continuable。
+## 4. Consumer 边界
 
-continuable Provider 只准备 detached creation data，当前关键结果是可选 seed：
+- `tool-subagent` 显式 `run_in_background=false` 走 one-shot；continuable background 返回 durable child ID。
+- source 的 background one-shot 依赖 Jobs。Goren 不实现 Jobs，因此该分支返回明确错误，不改走 continuable。
+- control Tool 不读取 Persistence 或自行推导 authority；`list_agents` 过滤 one-shot。
+- report 是 child-local Tool/Prompt，不是 child 中再次挂载的 host Plugin；report 不结束 child turn。
 
-- spawn 返回空 seed，表示新会话；
-- fork 返回截至最近完整 turn 的平衡前缀；
-- Provider 不创建 Session ID，不写父子 Header，不注册 Agent，不保存 Activation，也不拥有 cold resume；
-- cold resume 只读取 durable descriptor 并恢复 Agent，不再次调用 Provider，因此 Provider 下线不会让已经持久化的 continuable child 失去可恢复性。
+## 5. 已记录差异
 
-Provider 移除只阻止新启动。已被接受的 one-shot run 或 continuable Activation 不被追溯撤销。
+- Goren 使用 Go `agent.Provisioner` / optional `agent.Provisioning` 表达源 Agent setup transaction，不复制 TypeScript callback/object-literal 形态。
+- Goren 的 child Scope 解释位于 `subagent/internal/childscope`，one-shot 与 continuable 使用不同 Builder。
+- fork Factory 静态注册，但默认 deployment 只启用 spawn continuable Tool。固定源中 fork 的 Provider 注释与部分 composition 对 continuable 使用存在漂移，Goren 不据此默认开放 fork continuable Tool。
+- Jobs、background one-shot collection、Code Mode structured capture、Host Subagent API、ACP/Codex/Claude Code/DSH SDK Provider 未纳入当前实现。
 
-## 4. Spawn、Fork 与 in-process driver
-
-### 4.1 Spawn
-
-`subagent-spawn-in-process` 同时支持源 one-shot 和 continuable：
-
-- one-shot 路径委托 `subagent-in-process-driver` 创建并驱动一个临时 child；
-- continuable 路径的 `prepareContinuable` 不继承历史，创建新的 durable child；
-- 首期 Go 迁移建议把 spawn 作为唯一默认 continuable Provider。
-
-### 4.2 Fork
-
-`subagent-fork-in-process` 使用父 Session 中最后一个完整 turn 之前的平衡前缀作为 seed。它仍必须让 Runtime 在 seed 后追加新 descriptor 与委派策略，这样新策略覆盖历史中的旧值。
-
-最新源存在配置漂移：Provider 注释与 `packages/bundle/base/cordis.patch.yml` 把 fork 约束为 one-shot，以免 report Tool/System Prompt 插入在继承历史前破坏 prefix reuse；但 CLI 的 standard/code/cordis preset 仍配置 `backgroundMode: continuable`。在源意图澄清前，Goren 不应默认挂载 fork continuable。
-
-### 4.3 `subagent-in-process-driver`
-
-该模块只建立和驱动“一次性、内进程”的 child：创建临时 Agent、写首轮 descriptor、安装 persona/tool filter/structured-output capture、执行一个 turn、接管取消、收集最终输出并销毁。
-
-它不属于 continuable runtime，因此当前不创建 `subagent/inprocess`。实现 one-shot 行为时，再根据 Go 的公开扩展需求决定 driver 是否需要独立包；若只是 Subagent 内部机制，应位于 `subagent/internal/inprocess`，不能仅因 TypeScript 包是公开 npm package 就预先暴露 Go API。
-
-## 5. one-shot 的完整语义与推迟边界
-
-推迟的是 in-process driver、具体 Provider 和 Consumer 路由，不是 core one-shot 用例。源 one-shot contract 为：
-
-- `SubagentRun`：可 dispose 的单次运行，只产生一次结果，不可 resume、followup 或 steer；
-- `SubagentResult.output`：`ContentBlock[]`；优先取最后一条非空 assistant message，没有时退回累计 assistant text stream，再没有则为空数组；
-- `structured`：Provider 支持 output schema 时的结构化结果；
-- `diagnostic`：安全、可选、最多 4096 UTF-8 bytes 的诊断尾部；
-- `stopReason`：`completed`、`aborted`、`error`、`max-tokens`、`refusal`，并允许扩展；
-- child 级失败通过 `result` 正常 settle 为非 completed stop reason；只有 seam 无法表达的基础设施故障才 reject result；
-- start signal 在发布前要求 Provider 清理 partial resources 后拒绝，发布后继续作为取消剩余 turn work 的 canonical channel；Consumer 无论结果如何都必须 dispose run 并等待静止；
-- background one-shot 通过 Jobs 收集结果，Jobs 不服务 continuable；
-- spawn/fork one-shot 共享 in-process driver，外部进程 Provider 自己实现 `SubagentRun`。
-
-Go 迁移必须保留 core `Run`、`Result`、`Start` admission、capabilities gate、stop reason、one-shot descriptor 和 lifecycle observation。in-process driver、structured capture、Jobs 集成、spawn/fork 的 one-shot 行为和所有外部 one-shot Provider 是独立范围决策。Catalog 必须识别 one-shot durable descriptor，把历史记录展示为 one-shot，而不是把已知事实误报为 corrupt；识别不等于能重新运行。当前完成状态只见[领域实现进度](../../subagent/docs/implementation-progress.zh-CN.md)。
-
-## 6. Tool Consumers
-
-### 6.1 `tool-subagent`
-
-它拥有模型可见的委派入口，而不拥有子 Agent 生命周期。源配置包括 Provider、Tool name、是否允许 background、background mode、Agent options、persona、tool filter 和 max depth。
-
-源路由有一个必须显式处理的分支：即使默认 `backgroundMode` 是 continuable，模型显式传 `run_in_background=false` 仍会走 one-shot。在 driver 行为完成前，默认组合不得挂载该 Tool，也不能把 foreground 静默改成 continuable；one-shot 行为完成后必须按 `Start` contract 正常路由。
-
-Provider added/removed 会使 Tool 相应注册/撤销。Tool schema 文案会根据 `inheritsParentContext` 说明 child 是否继承上下文。
-
-### 6.2 `tool-subagent-control`
-
-- `send_message` 是 `followup` 的薄适配；
-- `interrupt_agent` 是 `interrupt` 的薄适配；
-- `list_agents` 是 `listDescendants` 的展示适配，会过滤 one-shot，并把 live Agent 状态映射为工具结果状态。
-
-它们不应自己读取 Persistence、推导父子关系或恢复 Agent。
-
-### 6.3 `tool-subagent-report`
-
-它通过 continuable setup registry 安装到每个 child Scope，提供 `report` Tool 与配套 System Prompt。报告是可选且可多次调用的中间通信，不会结束 child turn，也不会自动发生。
-
-## 7. Host API Consumer
-
-`packages/host/apiproxy/src/api/subagents.ts` 定义浏览器安全的四个方法：
-
-| 方法 | 核心依赖 | 额外 API Proxy 职责 |
-| --- | --- | --- |
-| `subagents.list` | `listChildren` | 把 core 的 Session-live activity 映射为 Agent sampling activity，并返回 parent availability hint |
-| `subagents.history` | catalog 身份验证 | live snapshot/cold inspect、普通 history 分页与 projection 映射，不激活 Agent |
-| `subagents.prompt` | `followup` | 要求 direct parent live、校验时区和 wire error、返回 accepted message ID |
-| `subagents.interrupt` | `interrupt` | durable parent address 授权；不查 catalog、不恢复 Agent；返回统一 accepted receipt |
-
-这说明 Host API 是 Core 的 Consumer，不应把 transport DTO 放进 `subagent`。是否把这四个方法和对应 Web UI 纳入首期，是待确认的产品范围；若纳入，wire contract 由 API Proxy 所有并需要 TypeScript-to-Go golden fixtures。
-
-## 8. 与其他核心模块的边界
-
-| Owner | Subagent 可以调用 | Subagent 不能接管 |
-| --- | --- | --- |
-| Agent | Create/Resume、Inbox、Cancel、WhenIdle、live ownership | turn/step 驱动、模型请求、Agent 状态机 |
-| Session | Header/Event、LiveStore、Flush | 事件序号、durability、repair、业务 Event codec |
-| Projection | 注册/fold descriptor 与 timing | 全局 projection framework |
-| Tools | child overlay、Tool 注册与限制 | schema 验证、Tool execution pipeline |
-| System Prompt | child context/persona section | prompt 全局装配和顺序规则 |
-| Approval | 为 child 写 delegation-owned `never` policy | approval Event 编码与 effective policy 算法 |
-| LLM | ContentBlock、Message、MessageSource | Provider/Model transport 和生成循环 |
-| Plugin Runtime | Service、Event、Scope、Mount/Dispose | 第二套 locator 或动态模块系统 |
-
-Subagent 的核心价值正是编排这些现有能力之间的委派生命周期；把它拆散到 Tool、Agent Loop 或 API Proxy 会产生多套授权、恢复和清理语义。
+本文不复制 Go 接口、错误表、状态表或测试矩阵；这些信息分别由代码、[领域设计](../../subagent/docs/design.zh-CN.md)和[实现进度](../../subagent/docs/implementation-progress.zh-CN.md)所有。

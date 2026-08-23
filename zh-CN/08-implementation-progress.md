@@ -276,7 +276,7 @@ interaction owner registers stable rpcId + decoder
 | S7-D02 | 能力 | ACP stdio adapter | Deferred | None |
 | S7-D03 | 能力 | MCP Client Bridge | Deferred | None |
 | S7-D04 | 能力 | 最小 Typert endpoint dispatch | Deferred | None：仅在纳入 endpoint 确有依赖时进入 |
-| S7-D05 | 能力 | Jobs、Subagent 与 Workflow | Deferred | None |
+| S7-D05 | 能力 | Jobs、Subagent 与 Workflow | In Progress | Go Verified：Subagent core、spawn/fork in-process Provider、one-shot Driver、continuable lifecycle 与 Tool/control/report Consumer 已实现并通过全仓 race/vet/build；Jobs、background one-shot、Workflow 和 Code Mode structured capture 仍 Deferred |
 | S7-G01 | Gate | 进入任一能力时同步更新范围、contract、技术决策和矩阵 | Deferred | None |
 | S7-G02 | Gate | 不以空 package、空 handler、固定成功或未使用依赖占位 | Deferred | None：当前未创建占位 |
 

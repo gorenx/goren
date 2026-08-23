@@ -4,13 +4,9 @@
 
 ## 1. 范围与证据
 
-本文是 `subagent` 包的局部实现设计，解释代码职责和当前契约，不替代仓库权威范围、路线图或全局实施进度。跨包来源分析见：
+本文是 `subagent` 包的局部实现设计，解释代码职责和当前契约，不替代仓库权威范围、路线图或全局实施进度。固定源 owner 与符号见 [DSH Subagent 源证据](../../zh-CN/subagent/01-source-capability-analysis.md)。
 
-- [源功能与模块关系](../../zh-CN/subagent/01-source-capability-analysis.md)；
-- [Continuable 生命周期与持久化](../../zh-CN/subagent/02-continuable-runtime-and-durability.md)；
-- [Go 架构与契约草案](../../zh-CN/subagent/03-go-architecture-and-contracts.md)。
-
-源参考为 DeepSeek Harness `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e` 的 `packages/subagent/subagent`。最后一次与当前 Go 实现核对：2026-08-23。
+源参考为 DeepSeek Harness `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e` 的 `packages/subagent/subagent`、`subagent-in-process-driver`、`subagent-spawn-in-process`、`subagent-fork-in-process`、`tool-subagent`、`tool-subagent-control` 与 `tool-subagent-report`。最后一次与当前 Go 实现核对：2026-08-23。
 
 ## 2. 职责分解
 
@@ -47,7 +43,7 @@ Provider 不得直接修改 continuation residency，不得持有 continuable ch
 
 ### 2.4 Activation Extension 与 Agent provisioning
 
-`ActivationExtension` 回答“要安装到 continuable child 的能力是什么”。`internal/extension.Registry` 管理有序注册和 exact resident installation；`internal/composition.Composer` 把 delegation policy、persona、Tool restriction 与 Extension 组合成 `agent.Provisioner`。Provisioner 配置未发布 child Scope，并只在需要 publication validation 和 resident cleanup 时返回 `agent.Provisioning`。撤销注册立即卸载它在所有 resident Activation 中产生的精确 installation，而不是按名称删除。
+`ActivationExtension` 回答“要安装到 continuable child 的附加能力是什么”。`internal/extension.Registry` 管理有序注册和 exact resident installation；`internal/childscope` 分别以 `ContinuableBuilder`、`OneShotBuilder` 解释两种策略的 Scope 输入。continuable 组合 delegation policy、persona、Tool restriction 与 Extension；one-shot 组合共享 policy 与 run-local descriptor/structured-output Plugin。两者返回 `agent.Provisioner`，但不拥有 Agent 创建或 child 生命周期。撤销 Extension registration 会卸载它在 resident Activation 中产生的精确 installation，而不是按名称删除。
 
 ## 3. 依赖方向
 
@@ -71,6 +67,9 @@ flowchart TD
     Plugin --> Projections[session/projection.Registry]
     Plugin --> Approval[approval.DelegationPolicy optional]
     Provider -. detached creation data .-> Continue
+    Continue --> ChildScope[internal/childscope]
+    Provider --> InProcess[internal/inprocess]
+    InProcess --> ChildScope
 ```
 
 禁止的方向：
@@ -144,9 +143,9 @@ Provider 返回前仍拥有创建事务，失败必须自行回滚且不产生 s
 - 已决定：one-shot 和 continuable 是同一领域的两种策略、不同 Consumer 接口、不同业务 service 实现，由同一 Plugin 装配和发布。
 - 已决定：continuable 是 Provider 的附加接口能力，不是 `Capabilities.Continuable` 布尔字段。
 - 已决定：根包保留公开契约和值对象；用例按内聚能力进入 `subagent/internal/*`，由 `subagent/runtime` 唯一装配。
-- 已实现但待扩充验证：continuable Manager、child composition 与 Activation Extension 安装/撤销。
+- 已实现但待扩充验证：continuable Manager、child Scope provisioning 与 Activation Extension 安装/撤销。
 - 已实现：Catalog、identity/timing Projection Unit、Subagent Factory 和 core 默认 assembly。
-- 待实现：spawn/fork Provider 与 Tool/control/report Consumer；这些是 core 的上下游切片，不回填到 Runtime 用例对象。
+- 已实现：spawn/fork in-process Provider、one-shot Driver 与 Tool/control/report Consumer；Jobs、background one-shot 和 Code Mode structured capture 不在本版本范围。
 - 待全局确认：把 feature-local DSH 差异并入权威范围、路线图和全局进度索引。
 
 逐项状态和验证命令见[实现进度](./implementation-progress.zh-CN.md)。

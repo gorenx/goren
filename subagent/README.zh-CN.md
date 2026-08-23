@@ -9,8 +9,8 @@
 - [领域设计](./docs/design.zh-CN.md)：职责、接口、状态、依赖和关键流程。
 - [术语规范](./docs/terminology.zh-CN.md)：兼容词汇、领域术语和 Go 命名规则。
 - [实现进度](./docs/implementation-progress.zh-CN.md)：已实现、进行中、未实现及验证证据。
-- [迁移草案](../zh-CN/subagent/00-draft-scope-and-reading-order.md)：源实现分析和跨包迁移方案；在架构确认前不属于权威设计。
-- [全局实施进度](../zh-CN/08-implementation-progress.md)：仓库级证据索引；当前按约定暂不写入 Subagent 进度。
+- [DSH 源证据](../zh-CN/subagent/01-source-capability-analysis.md)：固定 feature-local commit 下的源 owner、符号与兼容差异。
+- [全局实施进度](../zh-CN/08-implementation-progress.md)：仓库级证据索引，只记录 Subagent 已进入实现、Jobs/Workflow 仍 deferred。
 
 ## 领域边界
 
@@ -45,7 +45,7 @@ flowchart LR
     Catalog --> Session
 ```
 
-`subagent` 根包只声明领域公开契约和共享值对象；已实现用例按内聚能力划分为 `internal/provider`、`internal/oneshot`、`internal/continuation`、`internal/composition`、`internal/extension`、`internal/catalog` 和 `internal/projection`。`subagent/runtime.Plugin` 是唯一 Plugin 与装配入口，但不实现这些业务接口；它以 `ProvidedService` 发布各子模块的独立对象，并管理两个 Subagent Projection Unit 的 registration。私有子模块不得各自建立 Plugin 或直接操作 Runtime topology。
+`subagent` 根包只声明领域公开契约和共享值对象；已实现用例按内聚能力划分为 `internal/provider`、`internal/oneshot`、`internal/continuation`、`internal/childscope`、`internal/inprocess`、`internal/lineage`、`internal/extension`、`internal/catalog` 和 `internal/projection`。spawn/fork Provider 与 tool/control/report Consumer 位于领域内独立子模块。`subagent/runtime.Plugin` 是核心 Service 的唯一 Plugin 装配入口，但不实现这些业务接口；具体 Provider 与 Consumer 由各自 Factory 装配。
 
 ## 生命周期与失败
 

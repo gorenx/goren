@@ -36,18 +36,18 @@
 | SA-D09 | followup、cold resume、authority 与 FIFO | Go Verified | `internal/continuation/manager_delivery.go`、`materialization.go` | `manager_test.go` 验证 resident followup、persisted descriptor cold resume 与 exact parent 路由 |
 | SA-D10 | interrupt、report、settlement | Implemented | `internal/continuation/manager_delivery.go`、`manager_settlement.go`、`service_events.go` | focused test 覆盖 `KeepInbox=true` interrupt、quiet report 与 drain terminal edge；自然 settlement failure mapping 仍需补充 |
 | SA-D11 | selected children / descendant drain | Implemented | `internal/continuation/manager_drain.go`、`activation.go` | focused test 覆盖 selected child release 与 scoped admission cutoff；并发 materialization barrier 和多层 child-first 顺序仍需增加定向测试 |
-| SA-D12 | Activation Extension ordered provisioning 与即时精确撤销 | Go Verified | `extension.go`、`internal/extension`、`internal/composition`、`runtime/plugin.go` | extension tests 覆盖顺序、partial provision rollback、commit invalidation、自撤销、resident 精确撤销和幂等收敛；composition tests 覆盖后续 part 失败逆序回滚与 cold-resume persona/tool composition；`dccd2c1` 删除强制空 `Commit/Dispose` |
+| SA-D12 | Activation Extension ordered provisioning 与即时精确撤销 | Go Verified | `extension.go`、`internal/extension`、`internal/childscope`、`runtime/plugin.go` | extension tests 覆盖顺序、partial provision rollback、commit invalidation、自撤销、resident 精确撤销和幂等收敛；childscope tests 覆盖后续 part 失败逆序回滚与 cold-resume persona/tool policy；`b1a4dee` 删除共享模块对 continuation DTO 的反向依赖 |
 | SA-D13 | Catalog live/persistent listing 与 diagnostics | Go Verified | `catalog.go`、`internal/catalog`、`internal/projection`、`runtime/projections.go` | `service_test.go` 覆盖 live-preferred、creation window、cold fold、diagnostic、ordinary traversal、stable preorder、缺失依赖与 cancellation；projection tests 覆盖 last-wins、timing reset 和 damaged checkpoint rejection |
-| SA-D14 | spawn/fork Provider | Planned | 尚未创建实现包 | 不创建占位目录；one-shot driver 也尚未实现 |
-| SA-D15 | Tool/control/report Consumer | Planned | 尚未创建实现包 | 等核心 use case 可用后实施 |
-| SA-D16 | Factory、默认 assembly 与端到端验证 | Go Verified | `factory`、`internal/assembly/catalog.go` | Factory strict empty config tests；assembly contract 验证五个 Service 可解析且默认注册 `subagent` / `subagentTiming` Projection Unit |
+| SA-D14 | spawn/fork Provider | Go Verified | `spawn`、`fork`、`internal/inprocess`、`internal/lineage` | fork test 覆盖 balanced completed-turn prefix；inprocess tests 覆盖 activation boundary、partial output、cancel mapping、descriptor append 和 authoritative structured capture；lineage tests 覆盖继承、metadata 与 depth 边界 |
+| SA-D15 | Tool/control/report Consumer | Go Verified | `tool`、`control`、`report` | Tool tests 覆盖 foreground、continuable background 与无 Jobs 的 one-shot background rejection；control tests 覆盖 exact caller authority、状态投影和 one-shot 过滤；report test 覆盖 exact child/delivery，Extension tests 覆盖 installation/revocation 收敛，assembly 验证 Consumer Plugin 可激活 |
+| SA-D16 | Factory、默认 assembly 与端到端验证 | Go Verified | 各 `factory`、`internal/assembly/catalog.go` | Factory strict config；assembly contract 验证五个 Service、spawn Provider、delegation/control Tool、report Extension 与 `subagent` / `subagentTiming` Projection Unit 可组合；fork Factory 静态注册但不进入默认 deployment |
 
 ## 3. 已执行验证
 
 2026-08-23 当前工作树执行：
 
 ```text
-go fmt ./agent/... ./agentloop/... ./apiproxy/session/... ./subagent/...
+go fmt ./...
 go test ./...
 go test -race ./...
 go vet ./...
@@ -57,7 +57,7 @@ git diff --check
 
 结果：通过。
 
-这只证明当前 Go 实现通过全仓测试、race、vet、build 和命名架构检查，不是 TypeScript/Go compatibility acceptance，也不证明具体 Provider 或 Consumer 已完成。
+这只证明当前 Go 实现通过全仓测试、race、vet、build 和命名架构检查，不是 TypeScript/Go compatibility acceptance。Jobs、background one-shot、Code Mode structured capture 与 Workflow 没有因此进入实现范围。
 
 ## 4. 下一验证门
 
@@ -65,7 +65,7 @@ git diff --check
 2. one-shot：所有 capability gate、depth/schema、request detachment、Provider start failure 无 lifecycle、start/end 配对与 observer containment。
 3. continuable：fresh create、acceptance rollback、resident/cold FIFO、exact authority、cancel/settlement、child-first drain。
 4. Catalog：增加与固定 DSH list/projection fixtures 的差分验证和可选 projection-cache acceleration；cache 不是权威读取前提。
-5. Provider/Consumer：spawn/fork 和 Tool/control/report contract tests。
+5. Provider/Consumer：增加固定 DSH spawn/fork、Tool/control/report fixture 的跨语言差分；当前 Go tests 只证明本地契约。
 6. 全量：继续执行 `go test ./...`、`go test -race ./...`、`go vet ./...`、`go build ./...`、`git diff --check`，并补齐固定 DSH source differential fixtures。
 
 ## 5. 进度维护规则
