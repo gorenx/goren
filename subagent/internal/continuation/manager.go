@@ -32,6 +32,7 @@ type ScopeBuilder interface {
 // Dependencies are the owner-supplied capabilities used by Manager.
 type Dependencies struct {
 	Agents       agent.Registry
+	Custody      agent.Custody
 	Sessions     session.LiveStore
 	Persistence  persistence.Persistence
 	Providers    Providers
@@ -48,10 +49,12 @@ type Manager struct {
 // New constructs a continuation Manager when Agent and Session ownership are
 // available.
 func New(dependencySet Dependencies) (*Manager, error) {
-	if dependencySet.Agents == nil || dependencySet.Sessions == nil ||
-		dependencySet.Providers == nil || dependencySet.ScopeBuilder == nil {
+	if dependencySet.Agents == nil || dependencySet.Custody.IsZero() ||
+		dependencySet.Sessions == nil ||
+		dependencySet.Providers == nil ||
+		dependencySet.ScopeBuilder == nil {
 		return nil, errors.New(
-			"subagent: continuation requires Agent Registry, Session LiveStore, Providers, and child Scope builder",
+			"subagent: continuation requires Agent Registry, Agent Custody, Session LiveStore, Providers, and child Scope builder",
 		)
 	}
 	return &Manager{

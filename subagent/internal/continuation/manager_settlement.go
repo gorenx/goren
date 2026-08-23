@@ -27,12 +27,21 @@ func (owner *Manager) watch(epoch *Activation) {
 				idleResult <- epoch.handle.Subject.WhenIdle(idleContext)
 			}()
 			select {
+			case <-epoch.handle.ClosingSignal():
+				cancelIdle()
+				<-idleResult
+				return
 			case <-wakeSignal:
 				cancelIdle()
 				<-idleResult
 				continue
 			case <-idleResult:
 				cancelIdle()
+			}
+			select {
+			case <-epoch.handle.ClosingSignal():
+				return
+			default:
 			}
 			owner.residency.mutex.Lock()
 			settled := !epoch.closing && len(epoch.accepted) == 0 &&

@@ -110,20 +110,26 @@ type lifecycleObserver struct {
 type factoryRecord struct {
 	createCalls int
 	createErr   error
+	createOwner plugin.Plugin
+	resumeOwner plugin.Plugin
 }
 
 func (builder *factoryRecord) CreateAgent(
-	context.Context,
-	agentcore.CreateOptions,
+	_ context.Context,
+	structuralParent plugin.Plugin,
+	_ agentcore.CreateOptions,
 ) (agentcore.Handle, error) {
 	builder.createCalls++
+	builder.createOwner = structuralParent
 	return agentcore.Handle{}, builder.createErr
 }
 
-func (*factoryRecord) ResumeAgent(
-	context.Context,
-	agentcore.ResumeOptions,
+func (builder *factoryRecord) ResumeAgent(
+	_ context.Context,
+	structuralParent plugin.Plugin,
+	_ agentcore.ResumeOptions,
 ) (agentcore.Handle, error) {
+	builder.resumeOwner = structuralParent
 	return agentcore.Handle{}, nil
 }
 
@@ -163,6 +169,50 @@ func TestRegistryFactoryRegistrationOwnsExactEntry(t *testing.T) {
 		agentcore.CreateOptions{},
 	); err == nil {
 		t.Fatal("Registry retained an unregistered Factory")
+	}
+}
+
+func TestRegistryCarriesStructuralOwnershipOutsideAgentOptions(t *testing.T) {
+	t.Parallel()
+	registry := agentcore.NewRegistry(agentcore.RegistryOptions{})
+	builder := &factoryRecord{}
+	registration, err := registry.RegisterFactory(builder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(registration.Unregister)
+	structuralParent := &lifecycleObserver{
+		name: "creator-owner",
+	}
+	callCustody, err := agentcore.NewCustody(structuralParent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownedContext := callCustody.Bind(context.Background())
+	if _, err = registry.Create(
+		ownedContext,
+		agentcore.CreateOptions{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = registry.Resume(
+		ownedContext,
+		agentcore.ResumeOptions{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if builder.createOwner != structuralParent ||
+		builder.resumeOwner != structuralParent {
+		t.Fatal("Agent owner Context did not preserve its exact structural owner")
+	}
+	if _, err = registry.Create(
+		context.Background(),
+		agentcore.CreateOptions{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if builder.createOwner != nil {
+		t.Fatal("unbound Registry Create inherited a structural owner")
 	}
 }
 

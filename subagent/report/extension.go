@@ -5,67 +5,54 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/gorenx/goren/plugin"
+	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/subagent"
-	"github.com/gorenx/goren/systemprompt"
-	"github.com/gorenx/goren/tools"
 )
 
-const reportPrompt = "Deliver your result with the report tool before you finish: call it once with a self-contained answer. The agent that started you does not automatically receive your transcript, tool output, or reasoning. Report earlier as well whenever a partial finding changes what that agent should do next; reporting never ends your turn."
-
-type extension struct {
-	continuations subagent.ContinuableService
-	delivery      subagent.ReportDelivery
-}
+type extension struct{}
 
 func (contribution *extension) Install(
 	requestContext context.Context,
 	activation subagent.ActivationContext,
 ) (subagent.Installation, error) {
-	if activation.Agent == nil {
-		return nil, errors.New("subagent report: Activation Agent is unavailable")
+	if activation.Scope == nil {
+		return nil, errors.New("subagent report: Activation Scope is unavailable")
 	}
-	toolCatalog, requireErr := plugin.Require[tools.ToolCatalog](activation.Agent)
-	if requireErr != nil {
-		return nil, requireErr
+	installed := &installation{}
+	child := &childPlugin{
+		installation: installed,
 	}
-	prompts, requireErr := plugin.Require[systemprompt.PromptRegistry](activation.Agent)
-	if requireErr != nil {
-		return nil, requireErr
+	mounted, mountErr := activation.Scope.Mount(requestContext, child)
+	if mountErr != nil {
+		return nil, mountErr
 	}
-	promptHandle, addErr := prompts.AddSection(
-		requestContext,
-		systemprompt.PromptSection{
-			Name:  "tool:report",
-			Order: 117,
-			Text:  systemprompt.StaticText(reportPrompt),
-		},
-	)
-	if addErr != nil {
-		return nil, addErr
-	}
-	installed := &installation{
-		promptHandle: promptHandle,
-	}
-	toolHandle, addErr := toolCatalog.AddTool(
-		requestContext,
-		contribution.definition(),
-	)
-	if addErr != nil {
-		rollbackErr := installed.Uninstall(
-			context.WithoutCancel(requestContext),
-		)
-		return nil, errors.Join(addErr, rollbackErr)
-	}
-	installed.toolHandle = toolHandle
+	installed.attach(mounted)
 	return installed, nil
 }
 
+// installation owns the exact mounted child Plugin. The child Plugin marks
+// the installation released during ordinary Agent Scope teardown so a later
+// provisioning cleanup does not attempt a nested Runtime topology change.
 type installation struct {
+	mutex        sync.Mutex
 	once         sync.Once
-	toolHandle   *tools.ToolHandle
-	promptHandle *systemprompt.PromptHandle
-	err          error
+	mounted      agent.Effect
+	released     bool
+	releaseErr   error
+	uninstallErr error
+}
+
+func (installed *installation) attach(mounted agent.Effect) {
+	installed.mutex.Lock()
+	installed.mounted = mounted
+	installed.mutex.Unlock()
+}
+
+func (installed *installation) release(releaseErr error) {
+	installed.mutex.Lock()
+	installed.released = true
+	installed.releaseErr = releaseErr
+	installed.mutex.Unlock()
 }
 
 func (installed *installation) Uninstall(closeContext context.Context) error {
@@ -73,23 +60,38 @@ func (installed *installation) Uninstall(closeContext context.Context) error {
 		return nil
 	}
 	installed.once.Do(func() {
+		installed.mutex.Lock()
+		if installed.released {
+			installed.uninstallErr = installed.releaseErr
+			installed.mutex.Unlock()
+			return
+		}
+		mounted := installed.mounted
+		installed.mutex.Unlock()
+		if mounted == nil {
+			installed.mutex.Lock()
+			installed.uninstallErr = errors.New(
+				"subagent report: child Plugin installation is unavailable",
+			)
+			installed.mutex.Unlock()
+			return
+		}
 		if closeContext == nil {
 			closeContext = context.Background()
 		}
-		if installed.toolHandle != nil {
-			installed.err = errors.Join(
-				installed.err,
-				installed.toolHandle.Unregister(closeContext),
-			)
+		unloadErr := mounted.Dispose(context.WithoutCancel(closeContext))
+		installed.mutex.Lock()
+		if unloadErr != nil {
+			installed.uninstallErr = unloadErr
+		} else {
+			installed.uninstallErr = installed.releaseErr
 		}
-		if installed.promptHandle != nil {
-			installed.err = errors.Join(
-				installed.err,
-				installed.promptHandle.Unregister(closeContext),
-			)
-		}
+		installed.mutex.Unlock()
 	})
-	return installed.err
+	installed.mutex.Lock()
+	uninstallErr := installed.uninstallErr
+	installed.mutex.Unlock()
+	return uninstallErr
 }
 
 var _ subagent.ActivationExtension = (*extension)(nil)

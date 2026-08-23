@@ -16,8 +16,9 @@ import (
 // Membership publication remains a separate creation-transaction stage.
 type agentTree struct {
 	plugin.Base
-	subject  agent.Agent
-	children []plugin.ChildPlugin
+	subject   agent.Agent
+	children  []plugin.ChildPlugin
+	lifecycle *agentLifecycle
 
 	mutex   sync.Mutex
 	effects []agent.Effect
@@ -133,6 +134,9 @@ func (tree *agentTree) Dispose(closeContext context.Context) error {
 	tree.closed = true
 	tree.closing = false
 	tree.mutex.Unlock()
+	if tree.lifecycle != nil {
+		tree.lifecycle.complete(closeErr)
+	}
 	return closeErr
 }
 

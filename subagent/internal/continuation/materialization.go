@@ -30,7 +30,7 @@ func (owner *Manager) create(
 		return nil, contextErr
 	}
 	handle, createErr := owner.dependencies.Agents.Create(
-		initiatedContext,
+		owner.dependencies.Custody.Bind(initiatedContext),
 		agent.CreateOptions{
 			SessionID:    childID,
 			Metadata:     childLineage.Metadata(lineageSeedLength),
@@ -112,7 +112,7 @@ func (owner *Manager) resume(
 		return nil, contextErr
 	}
 	handle, resumeErr := owner.dependencies.Agents.Resume(
-		initiatedContext,
+		owner.dependencies.Custody.Bind(initiatedContext),
 		agent.ResumeOptions{
 			SessionID:    childID,
 			AgentOptions: childOptions,

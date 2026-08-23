@@ -21,6 +21,7 @@ type preparedAgent struct {
 func newPreparedAgent(
 	requestContext context.Context,
 	owner *Plugin,
+	lifecycleOwner plugin.Plugin,
 	conversation *session.Session,
 	loopOptions agent.Options,
 ) (*preparedAgent, error) {
@@ -40,11 +41,19 @@ func newPreparedAgent(
 		return nil, err
 	}
 	tree := newAgentTree(subject, loopOptions)
-	rootHandle, err := plugin.MountScopedChild(requestContext, owner, tree)
+	if lifecycleOwner == nil {
+		lifecycleOwner = owner
+	}
+	rootHandle, err := plugin.MountScopedChild(
+		requestContext,
+		lifecycleOwner,
+		tree,
+	)
 	if err != nil {
 		return nil, err
 	}
-	lifecycle := newAgentLifecycle(owner, rootHandle)
+	lifecycle := newAgentLifecycle(lifecycleOwner, rootHandle)
+	tree.lifecycle = lifecycle
 	return &preparedAgent{
 		owner:     owner,
 		subject:   subject,
@@ -93,6 +102,7 @@ func (prepared *preparedAgent) publish(
 		prepared.owner.runtimeContextEvents,
 		prepared.owner.failures,
 		prepared.subject,
+		prepared.lifecycle,
 		startSource,
 		initiator,
 	)

@@ -14,8 +14,9 @@ const PluginName = "@deepseek-ai/dsh-tool-subagent-report"
 // Plugin registers one Activation Extension for continuable children.
 type Plugin struct {
 	plugin.Base
-	delivery     subagent.ReportDelivery
-	registration subagent.ExtensionRegistration
+	continuations subagent.ContinuableService
+	delivery      subagent.ReportDelivery
+	registration  subagent.ExtensionRegistration
 }
 
 // New validates the report scheduling policy.
@@ -30,10 +31,15 @@ func New(delivery subagent.ReportDelivery) (*Plugin, error) {
 	}, nil
 }
 
-// Manifest declares only the Extension and delivery use-case Services.
-func (*Plugin) Manifest() plugin.Manifest {
+// Manifest publishes the private reporter dependency that ties resident child
+// Plugins to this host Plugin, then declares the Extension and delivery
+// use-case Services.
+func (owner *Plugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: PluginName,
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[reporter](owner),
+		},
 		Requires: []plugin.ServiceType{
 			plugin.ServiceOf[subagent.ExtensionRegistry](),
 			plugin.ServiceOf[subagent.ContinuableService](),
@@ -57,13 +63,10 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 	if requireErr != nil {
 		return requireErr
 	}
-	registration, registerErr := extensions.RegisterExtension(
-		&extension{
-			continuations: continuations,
-			delivery:      owner.delivery,
-		},
-	)
+	owner.continuations = continuations
+	registration, registerErr := extensions.RegisterExtension(&extension{})
 	if registerErr != nil {
+		owner.continuations = nil
 		return registerErr
 	}
 	owner.registration = registration
@@ -77,5 +80,19 @@ func (owner *Plugin) Dispose(closeContext context.Context) error {
 	}
 	unregisterErr := owner.registration.Unregister(closeContext)
 	owner.registration = nil
+	owner.continuations = nil
 	return unregisterErr
 }
+
+type reporter interface {
+	reportRuntime() (subagent.ContinuableService, subagent.ReportDelivery)
+}
+
+func (owner *Plugin) reportRuntime() (
+	subagent.ContinuableService,
+	subagent.ReportDelivery,
+) {
+	return owner.continuations, owner.delivery
+}
+
+var _ reporter = (*Plugin)(nil)

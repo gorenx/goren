@@ -19,7 +19,7 @@ type ExtensionRegistration interface {
 type ActivationContext struct {
 	ChildID    session.SessionID
 	ParentID   session.SessionID
-	Agent      agent.Agent
+	Scope      agent.Scope
 	Descriptor ContinuableDescriptor
 }
 
@@ -29,7 +29,8 @@ type Installation interface {
 }
 
 // ActivationExtension installs one domain contribution into an unpublished
-// continuable child. It is not a Plugin and does not own a Service scope.
+// continuable child Scope. The Extension may mount a child-scoped Plugin but
+// does not itself participate in the Plugin lifecycle.
 type ActivationExtension interface {
 	Install(context.Context, ActivationContext) (Installation, error)
 }

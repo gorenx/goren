@@ -52,9 +52,9 @@ type FactoryRegistration interface {
 }
 
 type factoryRegistration struct {
-	agents *RegistryPlugin
-	entry  *factoryEntry
-	once   sync.Once
+	agents  *RegistryPlugin
+	factory Factory
+	once    sync.Once
 }
 
 func (registration *factoryRegistration) Unregister() {
@@ -62,12 +62,8 @@ func (registration *factoryRegistration) Unregister() {
 		return
 	}
 	registration.once.Do(func() {
-		registration.agents.unregisterFactory(registration.entry)
+		registration.agents.unregisterFactory(registration)
 	})
-}
-
-type factoryEntry struct {
-	factory Factory
 }
 
 // RegistryPlugin is the canonical Agent Registry Service Plugin.
@@ -76,7 +72,7 @@ type RegistryPlugin struct {
 	mutex    sync.RWMutex
 	entries  map[session.SessionID]*registryEntry
 	order    []session.SessionID
-	factory  *factoryEntry
+	factory  *factoryRegistration
 	reporter func(error)
 }
 
@@ -136,19 +132,19 @@ func (agents *RegistryPlugin) RegisterFactory(
 	if agents.factory != nil {
 		return nil, errors.New("agent: an Agent factory is already registered")
 	}
-	entry := &factoryEntry{
+	registration := &factoryRegistration{
+		agents:  agents,
 		factory: agentFactory,
 	}
-	agents.factory = entry
-	return &factoryRegistration{
-		agents: agents,
-		entry:  entry,
-	}, nil
+	agents.factory = registration
+	return registration, nil
 }
 
-func (agents *RegistryPlugin) unregisterFactory(entry *factoryEntry) {
+func (agents *RegistryPlugin) unregisterFactory(
+	registration *factoryRegistration,
+) {
 	agents.mutex.Lock()
-	if agents.factory == entry {
+	if agents.factory == registration {
 		agents.factory = nil
 	}
 	agents.mutex.Unlock()
@@ -160,14 +156,18 @@ func (agents *RegistryPlugin) Create(
 	settings CreateOptions,
 ) (Handle, error) {
 	agents.mutex.RLock()
-	entry := agents.factory
+	registration := agents.factory
 	agents.mutex.RUnlock()
-	if entry == nil {
+	if registration == nil {
 		return Handle{}, errors.New(
 			"agent: no Agent factory attached; mount an Agent Loop Plugin",
 		)
 	}
-	return entry.factory.CreateAgent(requestContext, settings)
+	return registration.factory.CreateAgent(
+		requestContext,
+		custodyFrom(requestContext),
+		settings,
+	)
 }
 
 // Resume delegates durable Agent restoration to the attached Factory.
@@ -176,14 +176,18 @@ func (agents *RegistryPlugin) Resume(
 	settings ResumeOptions,
 ) (Handle, error) {
 	agents.mutex.RLock()
-	entry := agents.factory
+	registration := agents.factory
 	agents.mutex.RUnlock()
-	if entry == nil {
+	if registration == nil {
 		return Handle{}, errors.New(
 			"agent: no Agent factory attached; mount an Agent Loop Plugin",
 		)
 	}
-	return entry.factory.ResumeAgent(requestContext, settings)
+	return registration.factory.ResumeAgent(
+		requestContext,
+		custodyFrom(requestContext),
+		settings,
+	)
 }
 
 // Enter reserves live membership without announcing creation.

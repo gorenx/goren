@@ -147,6 +147,7 @@ func (owner *Plugin) ObserveEvent(
 // CreateAgent prepares, composes, commits, and publishes one fresh Agent.
 func (owner *Plugin) CreateAgent(
 	requestContext context.Context,
+	structuralParent plugin.Plugin,
 	options agent.CreateOptions,
 ) (agent.Handle, error) {
 	operationContext, finishConstruction, err :=
@@ -180,6 +181,7 @@ func (owner *Plugin) CreateAgent(
 	prepared, err := newPreparedAgent(
 		operationContext,
 		owner,
+		structuralParent,
 		conversation,
 		options.AgentOptions,
 	)
@@ -197,6 +199,7 @@ func (owner *Plugin) CreateAgent(
 // Agent tree before publication.
 func (owner *Plugin) ResumeAgent(
 	requestContext context.Context,
+	structuralParent plugin.Plugin,
 	options agent.ResumeOptions,
 ) (agent.Handle, error) {
 	operationContext, finishConstruction, err :=
@@ -232,6 +235,7 @@ func (owner *Plugin) ResumeAgent(
 	prepared, err := newPreparedAgent(
 		operationContext,
 		owner,
+		structuralParent,
 		preparation.UnpublishedSession(),
 		options.AgentOptions,
 	)

@@ -149,6 +149,7 @@ func (records *registryRecord) Create(
 	lifecycleOwner := &agentLifecycle{
 		registry: records,
 		subject:  subject,
+		closing:  make(chan struct{}),
 	}
 	return agent.NewHandle(subject, lifecycleOwner)
 }
@@ -195,6 +196,7 @@ func (records *registryRecord) Resume(
 		&agentLifecycle{
 			registry: records,
 			subject:  subject,
+			closing:  make(chan struct{}),
 		},
 	)
 }
@@ -251,14 +253,23 @@ func (records *registryRecord) Roots() []agent.Agent { return records.List() }
 type agentLifecycle struct {
 	registry *registryRecord
 	subject  *agentRecord
+	closing  chan struct{}
+	once     sync.Once
 }
 
 func (lifecycleOwner *agentLifecycle) Dispose(context.Context) error {
+	lifecycleOwner.once.Do(func() {
+		close(lifecycleOwner.closing)
+	})
 	lifecycleOwner.registry.mutex.Lock()
 	delete(lifecycleOwner.registry.agents, lifecycleOwner.subject.ID())
 	delete(lifecycleOwner.registry.sessions.entries, lifecycleOwner.subject.ID())
 	lifecycleOwner.registry.mutex.Unlock()
 	return nil
+}
+
+func (lifecycleOwner *agentLifecycle) ClosingSignal() <-chan struct{} {
+	return lifecycleOwner.closing
 }
 
 type sessionRecord struct {
@@ -456,8 +467,13 @@ func TestContinuableFreshLifecycleAndControl(t *testing.T) {
 		stored:   storedSessions,
 	}
 	lifecycleFacts := &lifecycleRecord{}
+	agentCustody, custodyErr := agent.NewCustody(parentAgent)
+	if custodyErr != nil {
+		t.Fatal(custodyErr)
+	}
 	owner, managerErr := New(Dependencies{
 		Agents:      agentRegistry,
+		Custody:     agentCustody,
 		Sessions:    liveSessions,
 		Persistence: storedSessions,
 		Providers: providerSource{
@@ -651,8 +667,13 @@ func TestFollowupColdResumesPersistedContinuableChild(t *testing.T) {
 		stored:   storedSessions,
 	}
 	lifecycleFacts := &lifecycleRecord{}
+	agentCustody, custodyErr := agent.NewCustody(parentAgent)
+	if custodyErr != nil {
+		t.Fatal(custodyErr)
+	}
 	owner, managerErr := New(Dependencies{
 		Agents:      agentRegistry,
+		Custody:     agentCustody,
 		Sessions:    liveSessions,
 		Persistence: storedSessions,
 		Providers: providerSource{

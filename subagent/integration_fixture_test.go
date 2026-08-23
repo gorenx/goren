@@ -3,6 +3,7 @@ package subagent_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -47,13 +48,15 @@ func (sink *integrationEventFailureSink) snapshot() []plugin.EventFailure {
 }
 
 type integrationAdapter struct {
-	mutex     sync.Mutex
-	responses [][]llm.StreamChunk
-	requests  []llm.GenerateOptions
+	mutex           sync.Mutex
+	responses       [][]llm.StreamChunk
+	gates           []<-chan struct{}
+	requests        []llm.GenerateOptions
+	requestsChanged chan struct{}
 }
 
 func (backend *integrationAdapter) Stream(
-	_ context.Context,
+	requestContext context.Context,
 	requestOptions llm.GenerateOptions,
 ) (llm.ChunkStream, error) {
 	backend.mutex.Lock()
@@ -69,7 +72,25 @@ func (backend *integrationAdapter) Stream(
 		return nil, errors.New("integration adapter has no scripted response")
 	}
 	response := backend.responses[requestIndex]
+	var gate <-chan struct{}
+	if requestIndex < len(backend.gates) {
+		gate = backend.gates[requestIndex]
+	}
+	requestsChanged := backend.requestsChanged
 	backend.mutex.Unlock()
+	if requestsChanged != nil {
+		select {
+		case requestsChanged <- struct{}{}:
+		default:
+		}
+	}
+	if gate != nil {
+		select {
+		case <-requestContext.Done():
+			return nil, context.Cause(requestContext)
+		case <-gate:
+		}
+	}
 	return llm.NewSliceStream(response)
 }
 
@@ -82,6 +103,29 @@ func (backend *integrationAdapter) snapshots() []llm.GenerateOptions {
 		result = append(result, detached)
 	}
 	return result
+}
+
+func (backend *integrationAdapter) waitForRequests(
+	requestContext context.Context,
+	count int,
+) error {
+	for {
+		backend.mutex.Lock()
+		observed := len(backend.requests)
+		requestsChanged := backend.requestsChanged
+		backend.mutex.Unlock()
+		if observed >= count {
+			return nil
+		}
+		if requestsChanged == nil {
+			return errors.New("integration adapter request notification is unavailable")
+		}
+		select {
+		case <-requestContext.Done():
+			return context.Cause(requestContext)
+		case <-requestsChanged:
+		}
+	}
 }
 
 type subagentLifecycleObserver struct {
@@ -157,10 +201,11 @@ type integrationFixture struct {
 	parentOptions agent.Options
 }
 
-type integrationModel struct {
-	options agent.Options
-	plugins []plugin.Plugin
-	backend *integrationAdapter
+type integrationConfiguration struct {
+	agentOptions agent.Options
+	plugins      []plugin.Plugin
+	backend      *integrationAdapter
+	delegation   subagenttool.Settings
 }
 
 func newIntegrationFixture(
@@ -168,23 +213,29 @@ func newIntegrationFixture(
 	responses [][]llm.StreamChunk,
 ) *integrationFixture {
 	t.Helper()
-	return newIntegrationFixtureWithModel(
+	return newIntegrationFixtureWithConfiguration(
 		t,
-		integrationModel{
-			options: agent.Options{
+		integrationConfiguration{
+			agentOptions: agent.Options{
 				Provider: "mock",
 				Model:    "model",
 			},
 			backend: &integrationAdapter{
 				responses: responses,
 			},
+			delegation: subagenttool.Settings{
+				Provider:              spawn.DefaultProviderName,
+				ToolName:              subagenttool.DefaultToolName,
+				EnableRunInBackground: false,
+				BackgroundMode:        subagenttool.BackgroundOneShot,
+			},
 		},
 	)
 }
 
-func newIntegrationFixtureWithModel(
+func newIntegrationFixtureWithConfiguration(
 	t *testing.T,
-	selectedModel integrationModel,
+	configuration integrationConfiguration,
 ) *integrationFixture {
 	t.Helper()
 	promptSettings, settingsErr := systemprompt.ValidateConfig(systemprompt.Config{})
@@ -221,12 +272,7 @@ func newIntegrationFixtureWithModel(
 	if providerErr != nil {
 		t.Fatal(providerErr)
 	}
-	delegationTool, toolErr := subagenttool.New(subagenttool.Settings{
-		Provider:              spawn.DefaultProviderName,
-		ToolName:              subagenttool.DefaultToolName,
-		EnableRunInBackground: false,
-		BackgroundMode:        subagenttool.BackgroundOneShot,
-	})
+	delegationTool, toolErr := subagenttool.New(configuration.delegation)
 	if toolErr != nil {
 		t.Fatal(toolErr)
 	}
@@ -243,7 +289,7 @@ func newIntegrationFixtureWithModel(
 		sessionStore,
 		modelRuntime,
 	}
-	rootPlugins = append(rootPlugins, selectedModel.plugins...)
+	rootPlugins = append(rootPlugins, configuration.plugins...)
 	rootPlugins = append(
 		rootPlugins,
 		promptRuntime,
@@ -261,14 +307,18 @@ func newIntegrationFixtureWithModel(
 	}
 	t.Cleanup(func() {
 		if shutdownErr := runtimeEngine.Shutdown(context.Background()); shutdownErr != nil {
-			t.Error(shutdownErr)
+			t.Errorf(
+				"Runtime shutdown failed: %v; details: %#v",
+				shutdownErr,
+				flattenIntegrationErrors(shutdownErr),
+			)
 		}
 	})
-	if selectedModel.backend != nil {
+	if configuration.backend != nil {
 		adapterHandle, adapterErr := modelRuntime.RegisterAdapter(
 			context.Background(),
-			[]string{selectedModel.options.Provider},
-			selectedModel.backend,
+			[]string{configuration.agentOptions.Provider},
+			configuration.backend,
 		)
 		if adapterErr != nil {
 			t.Fatal(adapterErr)
@@ -283,11 +333,34 @@ func newIntegrationFixtureWithModel(
 		agents:        agentRegistry,
 		sessions:      sessionStore,
 		toolRuntime:   toolService,
-		backend:       selectedModel.backend,
+		backend:       configuration.backend,
 		lifecycle:     lifecycle,
 		eventFailures: eventFailures,
-		parentOptions: selectedModel.options,
+		parentOptions: configuration.agentOptions,
 	}
+}
+
+func flattenIntegrationErrors(problem error) []string {
+	if problem == nil {
+		return nil
+	}
+	type manyCauses interface {
+		Unwrap() []error
+	}
+	if joined, matches := problem.(manyCauses); matches {
+		flattened := make([]string, 0)
+		for _, cause := range joined.Unwrap() {
+			flattened = append(flattened, flattenIntegrationErrors(cause)...)
+		}
+		return flattened
+	}
+	if cause := errors.Unwrap(problem); cause != nil {
+		return append(
+			[]string{fmt.Sprintf("%T: %v", problem, problem)},
+			flattenIntegrationErrors(cause)...,
+		)
+	}
+	return []string{fmt.Sprintf("%T: %v", problem, problem)}
 }
 
 func (state *integrationFixture) createParent(t *testing.T) agent.Handle {
