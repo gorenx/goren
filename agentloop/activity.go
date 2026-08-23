@@ -70,19 +70,6 @@ func newActivityCoordinator(
 	}
 }
 
-func (coordinator *activityCoordinator) attach(turns *turnRunner) error {
-	if turns == nil {
-		return errors.New("agentloop: activity Turn runner is nil")
-	}
-	coordinator.mutex.Lock()
-	defer coordinator.mutex.Unlock()
-	if coordinator.turns != nil {
-		return errors.New("agentloop: activity Turn runner is already attached")
-	}
-	coordinator.turns = turns
-	return nil
-}
-
 func (coordinator *activityCoordinator) beginServing() error {
 	coordinator.mutex.Lock()
 	defer coordinator.mutex.Unlock()
@@ -453,7 +440,9 @@ func (coordinator *activityCoordinator) durableCancelCause() session.TurnCancelC
 	case nil, agent.UserCancel:
 		return session.UserCancelCause{}
 	default:
-		return session.HookCancelCause{Reason: selected.CancelKind()}
+		return session.HookCancelCause{
+			Reason: selected.CancelKind(),
+		}
 	}
 }
 

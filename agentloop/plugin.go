@@ -23,12 +23,12 @@ type RuntimeOptions struct {
 type Plugin struct {
 	plugin.Base
 	mutex                sync.RWMutex
-	settings             Settings
-	agents               agent.Registry
+	maxParallelToolCalls int
+	factoryRegistration  agent.FactoryRegistration
 	sessions             session.LiveStore
 	persistence          sesspersist.Persistence
 	failures             observerFailureReporter
-	lifecycles           *agentLifecycles
+	admission            *constructionGate
 	runtimeContextEvents *runtimeContextRouter
 	startup              *configuredAgentStarter
 }
@@ -41,9 +41,9 @@ func New(runtimeSettings Settings, policies RuntimeOptions) (*Plugin, error) {
 		return nil, err
 	}
 	return &Plugin{
-		settings:             validated,
+		maxParallelToolCalls: validated.MaxParallelToolCalls,
 		failures:             newObserverFailureReporter(policies.ObserverError),
-		lifecycles:           newAgentLifecycles(),
+		admission:            newConstructionGate(),
 		runtimeContextEvents: newRuntimeContextRouter(),
 		startup: newConfiguredAgentStarter(
 			validated.StartupAgents,
@@ -85,17 +85,20 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 		return err
 	}
 	persistence, _ := plugin.Resolve[sesspersist.Persistence](owner)
-	if err = owner.lifecycles.start(); err != nil {
+	if err = owner.admission.open(); err != nil {
 		return err
 	}
 	owner.mutex.Lock()
-	owner.agents = agents
 	owner.sessions = sessions
 	owner.persistence = persistence
 	owner.mutex.Unlock()
-	if err = agents.AttachFactory(owner); err != nil {
+	registration, err := agents.RegisterFactory(owner)
+	if err != nil {
 		return err
 	}
+	owner.mutex.Lock()
+	owner.factoryRegistration = registration
+	owner.mutex.Unlock()
 	return requestContext.Err()
 }
 
@@ -105,15 +108,15 @@ func (owner *Plugin) Dispose(closeContext context.Context) error {
 		closeContext = context.Background()
 	}
 	drainContext := context.WithoutCancel(closeContext)
-	dangling, drainErr := owner.lifecycles.stopAndWait(drainContext)
+	drainErr := owner.admission.closeAndWait(drainContext)
 	owner.mutex.Lock()
-	agents := owner.agents
-	owner.agents = nil
+	registration := owner.factoryRegistration
+	owner.factoryRegistration = nil
 	owner.sessions = nil
 	owner.persistence = nil
 	owner.mutex.Unlock()
-	if agents != nil {
-		agents.DetachFactory(owner)
+	if registration != nil {
+		registration.Unregister()
 	}
 	if routed := owner.runtimeContextEvents.clear(); routed != 0 {
 		drainErr = errors.Join(
@@ -121,15 +124,6 @@ func (owner *Plugin) Dispose(closeContext context.Context) error {
 			fmt.Errorf(
 				"agentloop: Plugin stopped with %d live runtime-context projection(s)",
 				routed,
-			),
-		)
-	}
-	if dangling != 0 {
-		drainErr = errors.Join(
-			drainErr,
-			fmt.Errorf(
-				"agentloop: Plugin stopped with %d live Agent lifecycle(s)",
-				dangling,
 			),
 		)
 	}
@@ -150,14 +144,13 @@ func (owner *Plugin) ObserveEvent(
 	return nil
 }
 
-// CreateAgent prepares an unpublished Session and mounts one complete Agent
-// tree before its commit-phase membership Plugin publishes it.
+// CreateAgent prepares, composes, commits, and publishes one fresh Agent.
 func (owner *Plugin) CreateAgent(
 	requestContext context.Context,
 	options agent.CreateOptions,
 ) (agent.Handle, error) {
 	operationContext, finishConstruction, err :=
-		owner.lifecycles.beginConstruction(requestContext)
+		owner.admission.begin(requestContext)
 	if err != nil {
 		return agent.Handle{}, err
 	}
@@ -184,11 +177,18 @@ func (owner *Plugin) CreateAgent(
 	if err != nil {
 		return agent.Handle{}, err
 	}
-	return owner.mountAgentTree(
+	prepared, err := newPreparedAgent(
 		operationContext,
+		owner,
 		conversation,
 		options.AgentOptions,
-		options.Extensions,
+	)
+	if err != nil {
+		return agent.Handle{}, err
+	}
+	return prepared.publish(
+		operationContext,
+		options.Setup,
 		agent.SessionStartup,
 	)
 }
@@ -200,7 +200,7 @@ func (owner *Plugin) ResumeAgent(
 	options agent.ResumeOptions,
 ) (agent.Handle, error) {
 	operationContext, finishConstruction, err :=
-		owner.lifecycles.beginConstruction(requestContext)
+		owner.admission.begin(requestContext)
 	if err != nil {
 		return agent.Handle{}, err
 	}
@@ -221,19 +221,26 @@ func (owner *Plugin) ResumeAgent(
 			"agentloop: session persistence is not configured",
 		)
 	}
-	prepared, err := persistence.Prepare(
+	preparation, err := persistence.Prepare(
 		operationContext,
 		options.SessionID,
 	)
 	if err != nil {
 		return agent.Handle{}, err
 	}
-	defer prepared.Dispose()
-	return owner.mountAgentTree(
+	defer preparation.Dispose()
+	prepared, err := newPreparedAgent(
 		operationContext,
-		prepared.UnpublishedSession(),
+		owner,
+		preparation.UnpublishedSession(),
 		options.AgentOptions,
-		options.Extensions,
+	)
+	if err != nil {
+		return agent.Handle{}, err
+	}
+	return prepared.publish(
+		operationContext,
+		options.Setup,
 		agent.SessionResume,
 	)
 }
@@ -266,6 +273,13 @@ func validateAgentOptions(loopOptions agent.Options) error {
 			int64(*loopOptions.MaxTokens) > maxSafeInteger) {
 		return errors.New(
 			"agentloop: Agent maxTokens must be a positive safe integer",
+		)
+	}
+	if loopOptions.SubagentDepth != nil &&
+		(*loopOptions.SubagentDepth < 0 ||
+			*loopOptions.SubagentDepth > maxSafeInteger) {
+		return errors.New(
+			"agentloop: Agent subagentDepth must be a non-negative safe integer",
 		)
 	}
 	return nil

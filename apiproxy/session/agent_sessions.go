@@ -249,9 +249,7 @@ func (owner *AgentSessions) createOrAdopt(
 			Provider: defaultSelection.Provider,
 			Model:    defaultSelection.Model,
 		},
-		Extensions: []plugin.Plugin{
-			extension,
-		},
+		Setup: agent.MountPlugins(extension),
 	})
 	if err != nil {
 		if subject, found := owner.agents.Get(identifier); found {
@@ -305,9 +303,7 @@ func (owner *AgentSessions) resumeCold(
 	handle, err := owner.agents.Resume(requestContext, agent.ResumeOptions{
 		SessionID:    identifier,
 		AgentOptions: loopOptions,
-		Extensions: []plugin.Plugin{
-			extension,
-		},
+		Setup:        agent.MountPlugins(extension),
 	})
 	if err != nil {
 		if subject, found := owner.agents.Get(identifier); found {
@@ -411,10 +407,7 @@ func (owner *AgentSessions) removeSelection(
 }
 
 func sameAgent(leftSubject agent.Agent, rightSubject agent.Agent) bool {
-	return leftSubject != nil &&
-		rightSubject != nil &&
-		leftSubject.RuntimePlugin() != nil &&
-		leftSubject.RuntimePlugin() == rightSubject.RuntimePlugin()
+	return agent.Same(leftSubject, rightSubject)
 }
 
 func metadataFromHeader(header session.Header) session.Metadata {

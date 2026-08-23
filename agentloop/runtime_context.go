@@ -91,13 +91,18 @@ func (projection *runtimeContextProjection) project(current string, sections []l
 	if retained && retainedText == snapshot {
 		return llm.UserMessage{}, false, nil
 	}
-	origin := llm.PluginMessageSource{Plugin: runtimeContextSource}
+	origin := llm.PluginMessageSource{
+		Plugin: runtimeContextSource,
+	}
 	if len(sections) != 0 {
 		origin.Form = llm.ContextSnapshot
 		origin.Sections = slices.Clone(sections)
 	}
 	created, err := llm.NewUserMessage(llm.UserMessageInput{
-		Content: []llm.ContentBlock{llm.NewTextBlock(snapshot)}, Source: origin,
+		Content: []llm.ContentBlock{
+			llm.NewTextBlock(snapshot),
+		},
+		Source: origin,
 	})
 	return created, err == nil, err
 }

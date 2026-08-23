@@ -22,7 +22,6 @@ type ReactLoopAgent struct {
 	pending              *agent.Inbox
 	loop                 *loop
 	maxParallelToolCalls int
-	lifecycle            *agentLifecycle
 }
 
 func newReactLoopAgent(
@@ -129,11 +128,7 @@ func (subject *ReactLoopAgent) Apply(requestContext context.Context) error {
 // Dispose stops live execution. agentMembership separately owns externally
 // visible Agent and Session membership.
 func (subject *ReactLoopAgent) Dispose(closeContext context.Context) error {
-	disposeErr := subject.loop.dispose(closeContext)
-	if subject.lifecycle != nil {
-		subject.lifecycle.markTreeStopped()
-	}
-	return disposeErr
+	return subject.loop.dispose(closeContext)
 }
 
 func (subject *ReactLoopAgent) ID() session.SessionID { return subject.identifier }
@@ -193,5 +188,6 @@ func (subject *ReactLoopAgent) RunMaintenance(
 func cloneAgentOptions(source agent.Options) agent.Options {
 	detached := source
 	detached.MaxTokens = cloneInt(source.MaxTokens)
+	detached.SubagentDepth = cloneInt64(source.SubagentDepth)
 	return detached
 }

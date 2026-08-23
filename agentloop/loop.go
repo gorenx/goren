@@ -42,9 +42,7 @@ func newLoop(
 		projection,
 		events,
 	)
-	if err := activity.attach(turns); err != nil {
-		return nil, err
-	}
+	activity.turns = turns
 	return &loop{
 		activity: activity,
 		turns:    turns,
@@ -80,10 +78,14 @@ func (machine *loop) dispose(closeContext context.Context) error {
 	if machine == nil {
 		return nil
 	}
-	machine.activity.beginDispose()
-	idleErr := machine.activity.whenIdle(closeContext)
+	idleErr := machine.quiesce(closeContext)
 	machine.turns.deactivate()
 	return idleErr
+}
+
+func (machine *loop) quiesce(closeContext context.Context) error {
+	machine.activity.beginDispose()
+	return machine.activity.whenIdle(closeContext)
 }
 
 func (machine *loop) status() agent.Status {
@@ -114,10 +116,6 @@ func (machine *loop) runMaintenance(
 	task agent.MaintenanceTask,
 ) error {
 	return machine.activity.runMaintenance(requestContext, task)
-}
-
-func (machine *loop) beginDispose() {
-	machine.activity.beginDispose()
 }
 
 func (machine *loop) runtimeContextView() *runtimeContextProjection {

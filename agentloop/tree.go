@@ -3,72 +3,59 @@ package agentloop
 import (
 	"context"
 	"errors"
+	"sync"
 
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/plugin"
-	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/tools"
 )
 
-// agentTree is one private ownership root. It creates the Agent Scope and
-// orders scoped overlays before ReactLoopAgent captures its dependencies.
+// agentTree is one Agent's private runtime Scope root. It owns the base runtime
+// Plugins and every effect acquired while composing the unpublished Agent.
+// Membership publication remains a separate creation-transaction stage.
 type agentTree struct {
 	plugin.Base
+	subject  agent.Agent
 	children []plugin.ChildPlugin
+
+	mutex   sync.Mutex
+	effects []agent.Effect
+	closing bool
+	closed  bool
 }
 
 func newAgentTree(
 	subject *ReactLoopAgent,
 	loopOptions agent.Options,
-	extensions []plugin.Plugin,
-	membership *agentMembership,
 ) *agentTree {
-	children := []plugin.ChildPlugin{
-		{
-			Instance:  systemprompt.NewOverlay(systemprompt.RegistryOptions{}),
-			Placement: plugin.SameScope,
-			Phase:     plugin.ActivationMain,
-		},
-		{
-			Instance:  tools.NewOverlay(),
-			Placement: plugin.SameScope,
-			Phase:     plugin.ActivationMain,
-		},
-		{
-			Instance: newAgentVariables(
-				loopOptions,
-				subject.conversation.Header(),
-			),
-			Placement: plugin.SameScope,
-			Phase:     plugin.ActivationMain,
-		},
-		{
-			Instance:  subject,
-			Placement: plugin.SameScope,
-			Phase:     plugin.ActivationMain,
-		},
-	}
-	for _, extension := range extensions {
-		children = append(
-			children,
-			plugin.ChildPlugin{
-				Instance:  extension,
+	return &agentTree{
+		subject: subject,
+		children: []plugin.ChildPlugin{
+			{
+				Instance:  systemprompt.NewOverlay(systemprompt.RegistryOptions{}),
 				Placement: plugin.SameScope,
 				Phase:     plugin.ActivationMain,
 			},
-		)
-	}
-	children = append(
-		children,
-		plugin.ChildPlugin{
-			Instance:  membership,
-			Placement: plugin.SameScope,
-			Phase:     plugin.ActivationCommit,
+			{
+				Instance:  tools.NewOverlay(),
+				Placement: plugin.SameScope,
+				Phase:     plugin.ActivationMain,
+			},
+			{
+				Instance: newAgentVariables(
+					loopOptions,
+					subject.conversation.Header(),
+				),
+				Placement: plugin.SameScope,
+				Phase:     plugin.ActivationMain,
+			},
+			{
+				Instance:  subject,
+				Placement: plugin.SameScope,
+				Phase:     plugin.ActivationMain,
+			},
 		},
-	)
-	return &agentTree{
-		children: children,
 	}
 }
 
@@ -83,65 +70,109 @@ func (*agentTree) Apply(requestContext context.Context) error {
 	return requestContext.Err()
 }
 
-func (*agentTree) Dispose(context.Context) error {
+func (tree *agentTree) AgentValue() agent.Agent {
+	return tree.subject
+}
+
+func (tree *agentTree) Mount(
+	requestContext context.Context,
+	instance plugin.Plugin,
+) (agent.Effect, error) {
+	if tree == nil || instance == nil {
+		return nil, errors.New("agentloop: Agent Scope requires a Plugin")
+	}
+	handle, err := plugin.MountChild(requestContext, tree, instance)
+	if err != nil {
+		return nil, err
+	}
+	return &pluginEffect{
+		parent: tree,
+		handle: handle,
+	}, nil
+}
+
+func (tree *agentTree) Own(effect agent.Effect) error {
+	if tree == nil {
+		return errors.New("agentloop: Agent Scope is unavailable")
+	}
+	if effect == nil {
+		return errors.New("agentloop: Agent Scope Effect is nil")
+	}
+	tree.mutex.Lock()
+	defer tree.mutex.Unlock()
+	if tree.closing || tree.closed {
+		return errors.New("agentloop: Agent Scope is closing")
+	}
+	tree.effects = append(tree.effects, effect)
 	return nil
 }
 
-// mountAgentTree assembles one complete Agent tree before handing the detached
-// declaration to Runtime. Runtime remains responsible for validation,
-// activation ordering, rollback, and eventual reverse teardown.
-func (owner *Plugin) mountAgentTree(
-	requestContext context.Context,
-	conversation *session.Session,
-	loopOptions agent.Options,
-	extensions []plugin.Plugin,
-	startSource agent.SessionStartSource,
-) (agent.Handle, error) {
-	if conversation == nil {
-		return agent.Handle{}, errors.New("agentloop: prepared Session is nil")
+func (tree *agentTree) Dispose(closeContext context.Context) error {
+	if closeContext == nil {
+		closeContext = context.Background()
 	}
-	subject, err := newReactLoopAgent(
-		conversation,
-		loopOptions,
-		owner.settings.MaxParallelToolCalls,
-		owner.failures,
-	)
-	if err != nil {
-		return agent.Handle{}, err
+	tree.mutex.Lock()
+	if tree.closed {
+		tree.mutex.Unlock()
+		return nil
 	}
-	lifecycle := newAgentLifecycle(owner)
-	subject.lifecycle = lifecycle
-	initiator, _ := agent.InitiatorFrom(requestContext)
-	membership := newAgentMembership(
-		owner.lifecycles,
-		owner.runtimeContextEvents,
-		owner.failures,
-		lifecycle,
-		subject,
-		startSource,
-		initiator,
-	)
-	tree := newAgentTree(
-		subject,
-		loopOptions,
-		extensions,
-		membership,
-	)
-	rootHandle, err := plugin.MountScopedChild(
-		requestContext,
-		owner,
-		tree,
-	)
-	if err != nil {
-		return agent.Handle{}, err
+	if tree.closing {
+		tree.mutex.Unlock()
+		return nil
 	}
-	if !lifecycle.attachRoot(rootHandle) {
-		return agent.Handle{}, errors.Join(
-			errors.New(
-				"agentloop: Agent tree stopped before Handle attachment",
-			),
-			lifecycle.Dispose(requestContext),
-		)
+	tree.closing = true
+	effects := append([]agent.Effect(nil), tree.effects...)
+	tree.mutex.Unlock()
+
+	var closeErr error
+	for index := len(effects) - 1; index >= 0; index-- {
+		closeErr = errors.Join(closeErr, effects[index].Dispose(closeContext))
 	}
-	return agent.NewHandle(subject, lifecycle)
+	tree.mutex.Lock()
+	tree.effects = nil
+	tree.closed = true
+	tree.closing = false
+	tree.mutex.Unlock()
+	return closeErr
 }
+
+type pluginEffect struct {
+	mutex  sync.Mutex
+	parent *agentTree
+	handle plugin.Handle
+	closed bool
+}
+
+func (effect *pluginEffect) Dispose(closeContext context.Context) error {
+	if effect == nil {
+		return nil
+	}
+	effect.mutex.Lock()
+	if effect.closed {
+		effect.mutex.Unlock()
+		return nil
+	}
+	effect.closed = true
+	parent := effect.parent
+	handle := effect.handle
+	effect.mutex.Unlock()
+	if parent == nil || handle.ID() == 0 {
+		return nil
+	}
+	if closeContext == nil {
+		closeContext = context.Background()
+	}
+	err := plugin.UnloadChild(
+		context.WithoutCancel(closeContext),
+		parent,
+		handle,
+	)
+	if errors.Is(err, plugin.ErrPluginNotActive) ||
+		errors.Is(err, plugin.ErrPluginNotBound) {
+		return nil
+	}
+	return err
+}
+
+var _ agent.Scope = (*agentTree)(nil)
+var _ agent.Effect = (*pluginEffect)(nil)

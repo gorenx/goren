@@ -37,9 +37,10 @@ const (
 
 // Options contains the provider-neutral configuration applied to one Agent.
 type Options struct {
-	Provider  string
-	Model     string
-	MaxTokens *int
+	Provider      string
+	Model         string
+	MaxTokens     *int
+	SubagentDepth *int64
 }
 
 // MaintenanceTask is one non-turn task that may run only from true idle.
@@ -71,4 +72,14 @@ type Agent interface {
 	Followup(llm.UserMessage) error
 	Steer(llm.UserMessage) error
 	Inject(llm.UserMessage) error
+}
+
+// Same reports whether both values are the exact same process-local Agent
+// instance. Durable Agent IDs may be reused by later resumed instances.
+func Same(leftSubject Agent, rightSubject Agent) bool {
+	return leftSubject != nil &&
+		rightSubject != nil &&
+		leftSubject.ID() == rightSubject.ID() &&
+		leftSubject.RuntimePlugin() != nil &&
+		leftSubject.RuntimePlugin() == rightSubject.RuntimePlugin()
 }

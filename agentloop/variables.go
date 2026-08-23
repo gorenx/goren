@@ -100,8 +100,7 @@ func (variablesOwner *agentVariables) Apply(
 func (variablesOwner *agentVariables) Dispose(
 	closeContext context.Context,
 ) error {
-	disposeErr := variablesOwner.removeInstalled(closeContext)
-	return disposeErr
+	return variablesOwner.removeInstalled(closeContext)
 }
 
 func (variablesOwner *agentVariables) removeInstalled(

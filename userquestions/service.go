@@ -189,10 +189,7 @@ func (owner *QuestionService) validateSubject(agentSubject agent.Agent) error {
 }
 
 func sameAgent(leftSubject agent.Agent, rightSubject agent.Agent) bool {
-	return leftSubject != nil &&
-		rightSubject != nil &&
-		leftSubject.RuntimePlugin() != nil &&
-		leftSubject.RuntimePlugin() == rightSubject.RuntimePlugin()
+	return agent.Same(leftSubject, rightSubject)
 }
 
 func validateIntents(questions []Question) error {

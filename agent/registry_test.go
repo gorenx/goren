@@ -107,6 +107,65 @@ type lifecycleObserver struct {
 	disposed func(agentcore.Agent) error
 }
 
+type factoryRecord struct {
+	createCalls int
+	createErr   error
+}
+
+func (builder *factoryRecord) CreateAgent(
+	context.Context,
+	agentcore.CreateOptions,
+) (agentcore.Handle, error) {
+	builder.createCalls++
+	return agentcore.Handle{}, builder.createErr
+}
+
+func (*factoryRecord) ResumeAgent(
+	context.Context,
+	agentcore.ResumeOptions,
+) (agentcore.Handle, error) {
+	return agentcore.Handle{}, nil
+}
+
+func TestRegistryFactoryRegistrationOwnsExactEntry(t *testing.T) {
+	t.Parallel()
+	registry := agentcore.NewRegistry(agentcore.RegistryOptions{})
+	first := &factoryRecord{}
+	firstRegistration, err := registry.RegisterFactory(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = registry.RegisterFactory(&factoryRecord{}); err == nil {
+		t.Fatal("Registry accepted a second Factory")
+	}
+	firstRegistration.Unregister()
+
+	sentinel := errors.New("second Factory called")
+	second := &factoryRecord{
+		createErr: sentinel,
+	}
+	secondRegistration, err := registry.RegisterFactory(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstRegistration.Unregister()
+	_, err = registry.Create(context.Background(), agentcore.CreateOptions{})
+	if !errors.Is(err, sentinel) || second.createCalls != 1 {
+		t.Fatalf(
+			"Create result = (%d calls, %v), want second Factory",
+			second.createCalls,
+			err,
+		)
+	}
+	secondRegistration.Unregister()
+	if _, err = registry.Create(
+		context.Background(),
+		agentcore.CreateOptions{},
+	); err == nil {
+		t.Fatal("Registry retained an unregistered Factory")
+	}
+}
+
 func (observer *lifecycleObserver) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: observer.name,
