@@ -70,7 +70,7 @@ func (*agentTree) Apply(requestContext context.Context) error {
 	return requestContext.Err()
 }
 
-func (tree *agentTree) AgentValue() agent.Agent {
+func (tree *agentTree) Agent() agent.Agent {
 	return tree.subject
 }
 

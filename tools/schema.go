@@ -18,6 +18,31 @@ type registeredTool struct {
 	registrationName string
 }
 
+// SnapshotObjectSchema validates one lossless object-rooted JSON Schema and
+// returns detached bytes. Subagent and Workflow callers use this owner-defined
+// boundary instead of duplicating Tool schema rules.
+func SnapshotObjectSchema(rawValue json.RawMessage) (json.RawMessage, error) {
+	detached, err := jsonvalue.Clone(rawValue)
+	if err != nil {
+		return nil, fmt.Errorf("tools: object schema is not lossless JSON: %w", err)
+	}
+	if !jsonvalue.IsObject(detached) {
+		return nil, errors.New("tools: object schema must be a JSON object")
+	}
+	var fields map[string]json.RawMessage
+	if err = json.Unmarshal(detached, &fields); err != nil {
+		return nil, fmt.Errorf("tools: object schema: %w", err)
+	}
+	var schemaType string
+	if err = json.Unmarshal(fields["type"], &schemaType); err != nil || schemaType != "object" {
+		return nil, errors.New("tools: object schema must declare type object")
+	}
+	if _, err = compileSchema("object-contract", detached); err != nil {
+		return nil, fmt.Errorf("tools: object schema: %w", err)
+	}
+	return detached, nil
+}
+
 func compileDefinition(definition ToolDefinition) (*registeredTool, error) {
 	if strings.TrimSpace(definition.Name) == "" || definition.Name != strings.TrimSpace(definition.Name) {
 		return nil, errors.New("tools: tool name must be non-empty and trimmed")

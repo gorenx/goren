@@ -51,6 +51,17 @@ func appendPolicy(conversation *session.Session, selectedPolicy Policy, source *
 	return err
 }
 
+// SeedDelegationPolicy pins one unpublished delegated Session to never ask for
+// approval. The event is model-reconstructable and carries delegation rather
+// than user attribution.
+func (*Service) SeedDelegationPolicy(conversation *session.Session) error {
+	if conversation == nil {
+		return errors.New("approval: delegated Session is nil")
+	}
+	source := PolicySourceDelegation
+	return appendPolicy(conversation, PolicyNever, &source)
+}
+
 func policyNotice(previous Policy, selectedPolicy Policy) (llm.UserMessage, error) {
 	return llm.NewUserMessage(llm.UserMessageInput{
 		Content: []llm.ContentBlock{llm.NewTextBlock(fmt.Sprintf(
@@ -80,7 +91,11 @@ func (*Service) OverrideOf(conversation *session.Session) (Policy, bool, error) 
 	return effectiveOverride(conversation)
 }
 
-func (owner *Service) SetPolicy(requestContext context.Context, agentSubject Subject, selectedPolicy Policy) error {
+func (owner *Service) SetPolicy(
+	requestContext context.Context,
+	agentSubject ApprovalTarget,
+	selectedPolicy Policy,
+) error {
 	if requestContext == nil || agentSubject == nil || agentSubject.SessionValue() == nil {
 		return errors.New("approval: Context, Subject, and Session are required")
 	}
