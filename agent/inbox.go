@@ -55,7 +55,10 @@ func NewInbox(conversation *session.Session, notifications InboxNotifications) (
 	if conversation == nil || notifications == nil {
 		return nil, errors.New("agent: Inbox Session and notifications are required")
 	}
-	pending := &Inbox{conversation: conversation, notifications: notifications}
+	pending := &Inbox{
+		conversation:  conversation,
+		notifications: notifications,
+	}
 	start := int64(0)
 	if seedLength := conversation.Header().SeedLength; seedLength != nil {
 		start = *seedLength
@@ -204,7 +207,11 @@ func (pending *Inbox) mutateLocked(
 	if err != nil {
 		return nil, err
 	}
-	mutation := InboxSplice{Target: target, Start: actualStart, Inserted: insertedSnapshot}
+	mutation := InboxSplice{
+		Target:   target,
+		Start:    actualStart,
+		Inserted: insertedSnapshot,
+	}
 	if actualDelete != 0 {
 		mutation.RemovedCount = intPointer(actualDelete)
 		if discardRemoved {
@@ -445,8 +452,11 @@ func (mutation *InboxSplice) UnmarshalJSON(encoded []byte) error {
 		}
 	}
 	*mutation = InboxSplice{
-		Target: target, Start: start,
-		RemovedCount: cloneInt(removedCount), Inserted: inserted, Outcome: outcome,
+		Target:       target,
+		Start:        start,
+		RemovedCount: cloneInt(removedCount),
+		Inserted:     inserted,
+		Outcome:      outcome,
 	}
 	return nil
 }

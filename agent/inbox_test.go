@@ -41,8 +41,15 @@ func (records *inboxRecorder) Claimed(message llm.UserMessage, turn int64) {
 func userMessage(t *testing.T, text string) llm.UserMessage {
 	t.Helper()
 	message, err := llm.NewUserMessage(llm.UserMessageInput{
-		Content: []llm.ContentBlock{llm.TextBlock{Type: "text", Text: text}},
-		Source:  llm.UserMessageSource{Kind: "user"},
+		Content: []llm.ContentBlock{
+			llm.TextBlock{
+				Type: "text",
+				Text: text,
+			},
+		},
+		Source: llm.UserMessageSource{
+			Kind: "user",
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -58,7 +65,9 @@ func TestInboxReplaysAndRejectsInvalidDurableSplices(t *testing.T) {
 	}
 	first := userMessage(t, "first")
 	if _, err := session.Append(conversation, agentcore.InboxSpliced, agentcore.InboxSplice{
-		Target: agentcore.NextTurn, Start: 0, Inserted: []llm.UserMessage{first},
+		Target:   agentcore.NextTurn,
+		Start:    0,
+		Inserted: []llm.UserMessage{first},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +84,9 @@ func TestInboxReplaysAndRejectsInvalidDurableSplices(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := session.Append(broken, agentcore.InboxSpliced, agentcore.InboxSplice{
-		Target: agentcore.NextTurn, Start: 1, Inserted: []llm.UserMessage{},
+		Target:   agentcore.NextTurn,
+		Start:    1,
+		Inserted: []llm.UserMessage{},
 	}); err != nil {
 		t.Fatal(err)
 	}

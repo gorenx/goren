@@ -4,28 +4,27 @@ import (
 	"context"
 	"errors"
 
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
 
-// CreateOptions contains the shared Agent/Session identity and Plugin
-// extensions mounted before publication in the Agent's exact Scope.
+// CreateOptions contains the shared Agent/Session identity and unpublished
+// Agent composition applied before publication.
 type CreateOptions struct {
 	SessionID    session.SessionID
 	Metadata     session.Metadata
 	Seed         []session.Event
 	AgentOptions Options
-	Extensions   []plugin.Plugin
+	Setup        Setup
 }
 
-// ResumeOptions contains durable identity and live-only Plugin extensions.
+// ResumeOptions contains durable identity and unpublished Agent composition.
 type ResumeOptions struct {
 	SessionID    session.SessionID
 	AgentOptions Options
-	Extensions   []plugin.Plugin
+	Setup        Setup
 }
 
-// AgentLifecycle owns one exact Agent activation transaction.
+// AgentLifecycle owns teardown of one exact Agent tree.
 type AgentLifecycle interface {
 	Dispose(context.Context) error
 }
@@ -55,9 +54,8 @@ func (owned Handle) Dispose(closeContext context.Context) error {
 	return owned.Lifecycle.Dispose(closeContext)
 }
 
-// Factory is the Registry-owned seam implemented by Agent Loop.
+// Factory is the Registry-owned construction seam implemented by Agent Loop.
 type Factory interface {
-	plugin.Plugin
 	CreateAgent(context.Context, CreateOptions) (Handle, error)
 	ResumeAgent(context.Context, ResumeOptions) (Handle, error)
 }

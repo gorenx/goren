@@ -25,7 +25,7 @@ func newConfiguredAgentStarter(
 	declarations []StartupAgent,
 ) *configuredAgentStarter {
 	return &configuredAgentStarter{
-		declarations: cloneStartupAgents(declarations),
+		declarations: declarations,
 	}
 }
 
@@ -39,7 +39,7 @@ func (starter *configuredAgentStarter) start(
 	if factory == nil {
 		return nil, errors.New("agentloop: configured startup Factory is nil")
 	}
-	if err := factory.lifecycles.requireAccepting(); err != nil {
+	if err := factory.admission.requireOpen(); err != nil {
 		return nil, err
 	}
 	starter.mutex.Lock()
@@ -50,7 +50,8 @@ func (starter *configuredAgentStarter) start(
 		)
 	}
 	starter.started = true
-	declarations := cloneStartupAgents(starter.declarations)
+	declarations := starter.declarations
+	starter.declarations = nil
 	starter.mutex.Unlock()
 
 	started := make([]agent.Handle, 0, len(declarations))

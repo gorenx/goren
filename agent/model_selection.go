@@ -33,7 +33,9 @@ type ModelSelectionRef struct {
 // NewModelSelectionRef keeps an optional logged/default source live until an
 // explicit SetCurrent selection takes precedence.
 func NewModelSelectionRef(source ModelSelectionSource) *ModelSelectionRef {
-	return &ModelSelectionRef{source: source}
+	return &ModelSelectionRef{
+		source: source,
+	}
 }
 
 // SetCurrent changes selection for the next step that enters prompt assembly.

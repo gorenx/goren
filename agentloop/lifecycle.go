@@ -12,38 +12,23 @@ import (
 // Agent membership itself belongs to agentMembership.
 type agentLifecycle struct {
 	mountOwner *Plugin
+	rootHandle plugin.Handle
 
-	mutex       sync.Mutex
-	rootHandle  plugin.Handle
-	attached    bool
-	treeStopped bool
-	closing     bool
-	closed      chan struct{}
-	closeErr    error
+	mutex    sync.Mutex
+	closing  bool
+	closed   chan struct{}
+	closeErr error
 }
 
-func newAgentLifecycle(mountOwner *Plugin) *agentLifecycle {
+func newAgentLifecycle(
+	mountOwner *Plugin,
+	rootHandle plugin.Handle,
+) *agentLifecycle {
 	return &agentLifecycle{
 		mountOwner: mountOwner,
+		rootHandle: rootHandle,
 		closed:     make(chan struct{}),
 	}
-}
-
-func (lifecycle *agentLifecycle) attachRoot(rootHandle plugin.Handle) bool {
-	lifecycle.mutex.Lock()
-	defer lifecycle.mutex.Unlock()
-	if lifecycle.treeStopped || lifecycle.closing || rootHandle.ID() == 0 {
-		return false
-	}
-	lifecycle.rootHandle = rootHandle
-	lifecycle.attached = true
-	return true
-}
-
-func (lifecycle *agentLifecycle) markTreeStopped() {
-	lifecycle.mutex.Lock()
-	lifecycle.treeStopped = true
-	lifecycle.mutex.Unlock()
 }
 
 func (lifecycle *agentLifecycle) Dispose(closeContext context.Context) error {
@@ -65,30 +50,17 @@ func (lifecycle *agentLifecycle) Dispose(closeContext context.Context) error {
 		}
 	}
 	lifecycle.closing = true
-	stopped := lifecycle.treeStopped
-	attached := lifecycle.attached
 	rootHandle := lifecycle.rootHandle
 	lifecycle.mutex.Unlock()
 
-	var closeErr error
-	if !stopped {
-		if !attached {
-			closeErr = errors.New("agentloop: Agent tree Handle was not attached")
-		} else {
-			closeErr = plugin.UnloadChild(
-				closeContext,
-				lifecycle.mountOwner,
-				rootHandle,
-			)
-			if closeErr != nil {
-				lifecycle.mutex.Lock()
-				stopped = lifecycle.treeStopped
-				lifecycle.mutex.Unlock()
-				if stopped {
-					closeErr = nil
-				}
-			}
-		}
+	closeErr := plugin.UnloadChild(
+		context.WithoutCancel(closeContext),
+		lifecycle.mountOwner,
+		rootHandle,
+	)
+	if errors.Is(closeErr, plugin.ErrPluginNotActive) ||
+		errors.Is(closeErr, plugin.ErrPluginNotBound) {
+		closeErr = nil
 	}
 	lifecycle.mutex.Lock()
 	lifecycle.closeErr = closeErr

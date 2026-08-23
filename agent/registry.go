@@ -33,8 +33,7 @@ type RegistryOptions struct {
 // currently attached Agent Loop Factory.
 type Registry interface {
 	plugin.Service
-	AttachFactory(Factory) error
-	DetachFactory(Factory)
+	RegisterFactory(Factory) (FactoryRegistration, error)
 	Create(context.Context, CreateOptions) (Handle, error)
 	Resume(context.Context, ResumeOptions) (Handle, error)
 	Enter(Agent, Agent) error
@@ -47,13 +46,37 @@ type Registry interface {
 	Roots() []Agent
 }
 
+// FactoryRegistration owns one exact Factory registration.
+type FactoryRegistration interface {
+	Unregister()
+}
+
+type factoryRegistration struct {
+	agents *RegistryPlugin
+	entry  *factoryEntry
+	once   sync.Once
+}
+
+func (registration *factoryRegistration) Unregister() {
+	if registration == nil {
+		return
+	}
+	registration.once.Do(func() {
+		registration.agents.unregisterFactory(registration.entry)
+	})
+}
+
+type factoryEntry struct {
+	factory Factory
+}
+
 // RegistryPlugin is the canonical Agent Registry Service Plugin.
 type RegistryPlugin struct {
 	plugin.Base
 	mutex    sync.RWMutex
 	entries  map[session.SessionID]*registryEntry
 	order    []session.SessionID
-	factory  Factory
+	factory  *factoryEntry
 	reporter func(error)
 }
 
@@ -101,28 +124,31 @@ func (agents *RegistryPlugin) Dispose(context.Context) error {
 	return nil
 }
 
-// AttachFactory installs the exact active Agent Loop Factory.
-func (agents *RegistryPlugin) AttachFactory(agentFactory Factory) error {
-	if agentFactory == nil || agentFactory.RuntimePlugin() == nil {
-		return errors.New("agent: Agent factory Plugin is required")
+// RegisterFactory installs one exact Agent construction provider.
+func (agents *RegistryPlugin) RegisterFactory(
+	agentFactory Factory,
+) (FactoryRegistration, error) {
+	if agentFactory == nil {
+		return nil, errors.New("agent: Agent factory is required")
 	}
 	agents.mutex.Lock()
 	defer agents.mutex.Unlock()
 	if agents.factory != nil {
-		return errors.New("agent: an Agent factory is already attached")
+		return nil, errors.New("agent: an Agent factory is already registered")
 	}
-	agents.factory = agentFactory
-	return nil
+	entry := &factoryEntry{
+		factory: agentFactory,
+	}
+	agents.factory = entry
+	return &factoryRegistration{
+		agents: agents,
+		entry:  entry,
+	}, nil
 }
 
-// DetachFactory removes only the exact Factory that was attached.
-func (agents *RegistryPlugin) DetachFactory(agentFactory Factory) {
-	if agentFactory == nil || agentFactory.RuntimePlugin() == nil {
-		return
-	}
+func (agents *RegistryPlugin) unregisterFactory(entry *factoryEntry) {
 	agents.mutex.Lock()
-	if agents.factory != nil &&
-		agents.factory.RuntimePlugin() == agentFactory.RuntimePlugin() {
+	if agents.factory == entry {
 		agents.factory = nil
 	}
 	agents.mutex.Unlock()
@@ -134,14 +160,14 @@ func (agents *RegistryPlugin) Create(
 	settings CreateOptions,
 ) (Handle, error) {
 	agents.mutex.RLock()
-	agentFactory := agents.factory
+	entry := agents.factory
 	agents.mutex.RUnlock()
-	if agentFactory == nil {
+	if entry == nil {
 		return Handle{}, errors.New(
 			"agent: no Agent factory attached; mount an Agent Loop Plugin",
 		)
 	}
-	return agentFactory.CreateAgent(requestContext, settings)
+	return entry.factory.CreateAgent(requestContext, settings)
 }
 
 // Resume delegates durable Agent restoration to the attached Factory.
@@ -150,14 +176,14 @@ func (agents *RegistryPlugin) Resume(
 	settings ResumeOptions,
 ) (Handle, error) {
 	agents.mutex.RLock()
-	agentFactory := agents.factory
+	entry := agents.factory
 	agents.mutex.RUnlock()
-	if agentFactory == nil {
+	if entry == nil {
 		return Handle{}, errors.New(
 			"agent: no Agent factory attached; mount an Agent Loop Plugin",
 		)
 	}
-	return agentFactory.ResumeAgent(requestContext, settings)
+	return entry.factory.ResumeAgent(requestContext, settings)
 }
 
 // Enter reserves live membership without announcing creation.
@@ -321,7 +347,7 @@ func (agents *RegistryPlugin) liveEntry(subject Agent) (*registryEntry, error) {
 	agents.mutex.RLock()
 	entry := agents.entries[subject.ID()]
 	agents.mutex.RUnlock()
-	if entry == nil || !sameAgentInstance(entry.subject, subject) {
+	if entry == nil || !Same(entry.subject, subject) {
 		return nil, fmt.Errorf(
 			"agent: Agent %q is not live in this Registry",
 			subject.ID(),
@@ -349,7 +375,7 @@ func (agents *RegistryPlugin) Contains(subject Agent) bool {
 	agents.mutex.RLock()
 	entry := agents.entries[subject.ID()]
 	agents.mutex.RUnlock()
-	return entry != nil && sameAgentInstance(entry.subject, subject)
+	return entry != nil && Same(entry.subject, subject)
 }
 
 // IsOwnedBy reports exact live runtime ownership captured at Enter.
@@ -363,7 +389,7 @@ func (agents *RegistryPlugin) IsOwnedBy(
 	agents.mutex.RLock()
 	entry := agents.entries[identifier]
 	agents.mutex.RUnlock()
-	return entry != nil && sameAgentInstance(entry.owner, owner)
+	return entry != nil && Same(entry.owner, owner)
 }
 
 // List returns live Agents in registration order.
@@ -395,11 +421,4 @@ func (agents *RegistryPlugin) Roots() []Agent {
 func (agents *RegistryPlugin) report(problem error) {
 	defer func() { _ = recover() }()
 	agents.reporter(problem)
-}
-
-func sameAgentInstance(leftSubject Agent, rightSubject Agent) bool {
-	return leftSubject != nil && rightSubject != nil &&
-		leftSubject.ID() == rightSubject.ID() &&
-		leftSubject.SessionValue() == rightSubject.SessionValue() &&
-		leftSubject.RuntimePlugin() == rightSubject.RuntimePlugin()
 }

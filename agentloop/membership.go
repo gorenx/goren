@@ -11,15 +11,13 @@ import (
 	"github.com/gorenx/goren/session"
 )
 
-// agentMembership owns externally visible Agent and Session membership. Its
-// Commit activation guarantees the ordinary Agent Plugin Tree is ready before
-// either Registry announces it.
+// agentMembership owns externally visible Agent and Session membership. It is
+// mounted only after Setup commits, so neither Registry can observe a partial
+// Agent Scope.
 type agentMembership struct {
 	plugin.Base
-	lifecycles  *agentLifecycles
 	router      *runtimeContextRouter
 	failures    observerFailureReporter
-	lifecycle   *agentLifecycle
 	subject     *ReactLoopAgent
 	startSource agent.SessionStartSource
 	initiator   agent.Agent
@@ -27,7 +25,6 @@ type agentMembership struct {
 	mutex         sync.Mutex
 	agents        agent.Registry
 	sessionHandle session.SessionHandle
-	tracked       bool
 	routed        bool
 	registered    bool
 	closing       bool
@@ -36,19 +33,15 @@ type agentMembership struct {
 }
 
 func newAgentMembership(
-	lifecycles *agentLifecycles,
 	router *runtimeContextRouter,
 	failures observerFailureReporter,
-	lifecycle *agentLifecycle,
 	subject *ReactLoopAgent,
 	startSource agent.SessionStartSource,
 	initiator agent.Agent,
 ) *agentMembership {
 	return &agentMembership{
-		lifecycles:  lifecycles,
 		router:      router,
 		failures:    failures,
-		lifecycle:   lifecycle,
 		subject:     subject,
 		startSource: startSource,
 		initiator:   initiator,
@@ -77,12 +70,8 @@ func (membership *agentMembership) Apply(
 	if err != nil {
 		return err
 	}
-	if err = membership.lifecycles.track(membership.lifecycle); err != nil {
-		return err
-	}
 	membership.mutex.Lock()
 	membership.agents = agents
-	membership.tracked = true
 	membership.mutex.Unlock()
 
 	if err = membership.router.register(
@@ -160,17 +149,15 @@ func (membership *agentMembership) Dispose(
 	membership.closing = true
 	agents := membership.agents
 	sessionHandle := membership.sessionHandle
-	tracked := membership.tracked
 	routed := membership.routed
 	registered := membership.registered
 	membership.mutex.Unlock()
 
-	membership.subject.loop.beginDispose()
 	// Already-started Tool bodies may hold dependencies from the Agent Tree.
 	// Their drain is structural teardown and cannot be abandoned on caller
 	// cancellation without making the remaining Runtime shutdown unsafe.
 	drainContext := context.WithoutCancel(closeContext)
-	closeErr := membership.subject.WhenIdle(drainContext)
+	closeErr := membership.subject.loop.quiesce(drainContext)
 	if registered && agents != nil {
 		closeErr = errors.Join(
 			closeErr,
@@ -188,9 +175,6 @@ func (membership *agentMembership) Dispose(
 			closeErr,
 			sessionHandle.Release(drainContext),
 		)
-	}
-	if tracked {
-		membership.lifecycles.forget(membership.lifecycle)
 	}
 	membership.mutex.Lock()
 	membership.closeErr = closeErr
