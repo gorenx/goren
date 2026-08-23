@@ -20,7 +20,7 @@ func (setup *setupRecord) Prepare(
 	scope agent.Scope,
 ) error {
 	*setup.order = append(*setup.order, "prepare")
-	if setup.registry.Contains(scope.AgentValue()) {
+	if setup.registry.Contains(scope.Agent()) {
 		return errors.New("Agent was published before Setup.Prepare")
 	}
 	return scope.Own(&effectRecord{

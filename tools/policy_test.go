@@ -65,7 +65,7 @@ func (*approvalProviderPlugin) OverrideOf(
 
 func (*approvalProviderPlugin) SetPolicy(
 	context.Context,
-	approval.Subject,
+	approval.ApprovalTarget,
 	approval.Policy,
 ) error {
 	return nil

@@ -18,7 +18,7 @@ type Effect interface {
 // Setup code may mount scoped Plugins or transfer ordinary effects to it, but
 // must not drive the Agent before Registry.Create or Registry.Resume returns.
 type Scope interface {
-	AgentValue() Agent
+	Agent() Agent
 	Mount(context.Context, plugin.Plugin) (Effect, error)
 	Own(Effect) error
 }
