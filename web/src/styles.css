@@ -1,5 +1,8 @@
 @import '@fontsource-variable/space-grotesk/wght.css';
 @import 'tailwindcss';
+@source not './**/*.test.ts';
+@source not './**/*.test.tsx';
+@source not './test';
 
 @theme {
   --color-canvas: #f7f8fa;
