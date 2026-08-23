@@ -7,13 +7,18 @@ import (
 	"time"
 )
 
-func TestHandleDisposalJoinsStructuralTeardown(t *testing.T) {
+func TestHandleDisposalJoinsClosingTree(t *testing.T) {
 	sentinel := errors.New("structural teardown failed")
 	lifecycle := &agentLifecycle{
 		closing: make(chan struct{}),
 		closed:  make(chan struct{}),
 	}
-	lifecycle.beginStructuralTeardown()
+	if !lifecycle.beginClosing() {
+		t.Fatal("first close did not acquire lifecycle teardown")
+	}
+	if lifecycle.beginClosing() {
+		t.Fatal("second close acquired lifecycle teardown")
+	}
 	select {
 	case <-lifecycle.ClosingSignal():
 	default:

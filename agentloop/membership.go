@@ -136,7 +136,7 @@ func (membership *agentMembership) Dispose(
 		closeContext = context.Background()
 	}
 	if membership.lifecycle != nil {
-		membership.lifecycle.beginStructuralTeardown()
+		membership.lifecycle.beginClosing()
 	}
 	membership.mutex.Lock()
 	if membership.closing {
