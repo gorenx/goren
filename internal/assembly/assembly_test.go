@@ -30,6 +30,7 @@ import (
 	"github.com/gorenx/goren/session/projection"
 	"github.com/gorenx/goren/session/query"
 	"github.com/gorenx/goren/session/title"
+	"github.com/gorenx/goren/subagent"
 	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/toolaskuser"
 	"github.com/gorenx/goren/tools"
@@ -55,6 +56,7 @@ type serviceProbe struct {
 	queries      query.QueryService
 	titles       title.TitleService
 	prompts      systemprompt.Assembler
+	subagents    subagent.Catalog
 	toolRuntime  tools.ToolRuntime
 	questions    userquestions.UserQuestions
 	workspaces   workspace.Registry
@@ -76,6 +78,7 @@ func (*serviceProbe) Manifest() plugin.Manifest {
 			plugin.ServiceOf[query.QueryService](),
 			plugin.ServiceOf[title.TitleService](),
 			plugin.ServiceOf[systemprompt.Assembler](),
+			plugin.ServiceOf[subagent.Catalog](),
 			plugin.ServiceOf[tools.ToolRuntime](),
 			plugin.ServiceOf[userquestions.UserQuestions](),
 			plugin.ServiceOf[workspace.Registry](),
@@ -119,6 +122,9 @@ func (probe *serviceProbe) Apply(requestContext context.Context) error {
 		return err
 	}
 	if probe.prompts, err = plugin.Require[systemprompt.Assembler](probe); err != nil {
+		return err
+	}
+	if probe.subagents, err = plugin.Require[subagent.Catalog](probe); err != nil {
 		return err
 	}
 	if probe.toolRuntime, err = plugin.Require[tools.ToolRuntime](probe); err != nil {
@@ -253,6 +259,7 @@ func TestCatalogContainsOnlyCurrentServerSlice(t *testing.T) {
 		query.PluginName,
 		title.PluginName,
 		systemprompt.PluginName,
+		subagent.PluginName,
 		toolaskuser.PluginName,
 		tools.PluginName,
 		userquestions.PluginName,
@@ -570,6 +577,21 @@ func TestServerTreeStartsCapabilitiesBeforeExposingConnection(t *testing.T) {
 	}
 	if liveAgents := probe.agents.List(); len(liveAgents) != 0 {
 		t.Fatalf("default live Agents = %#v", liveAgents)
+	}
+	projectionSession, err := session.New(
+		"assembly-subagent-projections",
+		session.CreateOptions{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectionSnapshot, err := probe.projections.Snapshot(projectionSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(projectionSnapshot.Values["subagent"]) != "null" ||
+		string(projectionSnapshot.Values["subagentTiming"]) != `{"settledMs":0}` {
+		t.Fatalf("default Subagent projections = %#v", projectionSnapshot.Values)
 	}
 	if got := probe.defaultModel.CurrentSelection(); got.Provider != deepseek.ProviderRoute || got.Model != deepseek.DefaultModelID {
 		t.Fatalf("default model = %#v", got)

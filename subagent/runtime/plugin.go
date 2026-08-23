@@ -12,7 +12,9 @@ import (
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/session/persistence"
+	sessionprojection "github.com/gorenx/goren/session/projection"
 	"github.com/gorenx/goren/subagent"
+	"github.com/gorenx/goren/subagent/internal/catalog"
 	"github.com/gorenx/goren/subagent/internal/composition"
 	"github.com/gorenx/goren/subagent/internal/continuation"
 	"github.com/gorenx/goren/subagent/internal/oneshot"
@@ -29,7 +31,9 @@ type Plugin struct {
 	oneShots      *oneshot.Service
 	continuations *continuation.Service
 	setups        *setupregistry.Registry
+	catalog       *catalog.Service
 	events        *eventPublisher
+	projections   []sessionprojection.UnitHandle
 }
 
 // New constructs an inactive Subagent Plugin and its stable business Services.
@@ -42,6 +46,7 @@ func New() *Plugin {
 	owner.oneShots = oneshot.New(owner.providers, owner.events)
 	owner.continuations = continuation.NewService()
 	owner.setups = setupregistry.New()
+	owner.catalog = catalog.New()
 	return owner
 }
 
@@ -54,12 +59,14 @@ func (owner *Plugin) Manifest() plugin.Manifest {
 			plugin.NewProvidedService[subagent.OneShotService](owner.oneShots),
 			plugin.NewProvidedService[subagent.ContinuableService](owner.continuations),
 			plugin.NewProvidedService[subagent.SetupRegistry](owner.setups),
+			plugin.NewProvidedService[subagent.Catalog](owner.catalog),
 		},
 		Optional: []plugin.ServiceType{
 			plugin.ServiceOf[agent.Registry](),
 			plugin.ServiceOf[session.LiveStore](),
 			plugin.ServiceOf[persistence.Persistence](),
 			plugin.ServiceOf[approval.DelegationPolicy](),
+			plugin.ServiceOf[sessionprojection.Registry](),
 		},
 		Events: []plugin.EventSubscription{
 			plugin.EventOf[agent.InboxClaimed](),
@@ -82,6 +89,17 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 	liveSessions, _ := plugin.Resolve[session.LiveStore](owner)
 	sessionPersistence, _ := plugin.Resolve[persistence.Persistence](owner)
 	approvalService, _ := plugin.Resolve[approval.DelegationPolicy](owner)
+	projectionRegistry, _ := plugin.Resolve[sessionprojection.Registry](owner)
+	if err := owner.registerProjections(projectionRegistry); err != nil {
+		return err
+	}
+	if err := owner.catalog.Enable(
+		liveSessions,
+		sessionPersistence,
+		projectionRegistry,
+	); err != nil {
+		return err
+	}
 	if agentRegistry == nil || liveSessions == nil {
 		return nil
 	}
@@ -112,6 +130,7 @@ func (owner *Plugin) Dispose(closeContext context.Context) error {
 	}
 	rollbackContext := context.WithoutCancel(closeContext)
 	drainErr := owner.continuations.Disable(rollbackContext)
+	owner.catalog.Disable()
 	danglingSetups, setupErr := owner.setups.Clear(rollbackContext)
 	if danglingSetups != 0 {
 		setupErr = errors.Join(
@@ -123,12 +142,14 @@ func (owner *Plugin) Dispose(closeContext context.Context) error {
 		)
 	}
 	danglingProviders := owner.providers.Clear()
+	projectionErr := owner.releaseProjections(rollbackContext)
 	if danglingProviders == 0 {
-		return errors.Join(drainErr, setupErr)
+		return errors.Join(drainErr, setupErr, projectionErr)
 	}
 	return errors.Join(
 		drainErr,
 		setupErr,
+		projectionErr,
 		fmt.Errorf(
 			"subagent: Plugin stopped with %d registered Provider(s)",
 			danglingProviders,

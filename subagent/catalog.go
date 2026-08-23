@@ -35,18 +35,34 @@ type ListEntry interface {
 	SessionID() session.SessionID
 }
 
-// ChildEntry is one descriptor-backed session child.
-type ChildEntry struct {
+// OneShotChildEntry is one descriptor-backed terminal child. Listing exposes
+// only durable presentation identity, never Provider-private creation data.
+type OneShotChildEntry struct {
 	ID          session.SessionID
-	Descriptor  Descriptor
+	Label       *string
 	Activity    Activity
 	HasChildren bool
 }
 
-func (ChildEntry) listEntryVariant() {}
+func (OneShotChildEntry) listEntryVariant() {}
 
 // SessionID returns the durable child identity.
-func (entry ChildEntry) SessionID() session.SessionID {
+func (entry OneShotChildEntry) SessionID() session.SessionID {
+	return entry.ID
+}
+
+// ContinuableChildEntry is one descriptor-backed resumable child.
+type ContinuableChildEntry struct {
+	ID          session.SessionID
+	Label       string
+	Activity    Activity
+	HasChildren bool
+}
+
+func (ContinuableChildEntry) listEntryVariant() {}
+
+// SessionID returns the durable child identity.
+func (entry ContinuableChildEntry) SessionID() session.SessionID {
 	return entry.ID
 }
 

@@ -1,0 +1,60 @@
+package factory_test
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+
+	"github.com/gorenx/goren/plugin"
+	"github.com/gorenx/goren/subagent"
+	subagentfactory "github.com/gorenx/goren/subagent/factory"
+)
+
+func TestFactoryCreatesSubagentPlugin(t *testing.T) {
+	t.Parallel()
+	builder := subagentfactory.New()
+	created, err := builder.Create(
+		context.Background(),
+		json.RawMessage(`{}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Manifest().Name != subagent.PluginName {
+		t.Fatalf("Plugin name = %q", created.Manifest().Name)
+	}
+	provided := make(map[string]bool)
+	for _, specification := range created.Manifest().Provides {
+		provided[specification.Name()] = true
+	}
+	for _, capability := range []plugin.ServiceType{
+		plugin.ServiceOf[subagent.ProviderRegistry](),
+		plugin.ServiceOf[subagent.OneShotService](),
+		plugin.ServiceOf[subagent.ContinuableService](),
+		plugin.ServiceOf[subagent.SetupRegistry](),
+		plugin.ServiceOf[subagent.Catalog](),
+	} {
+		if !provided[capability.Name()] {
+			t.Fatalf("Plugin does not provide %q", capability.Name())
+		}
+	}
+}
+
+func TestFactoryRejectsConfigurationAndCancelledCreation(t *testing.T) {
+	t.Parallel()
+	builder := subagentfactory.New()
+	if _, err := builder.Create(
+		context.Background(),
+		json.RawMessage(`{"unknown":true}`),
+	); err == nil {
+		t.Fatal("unknown configuration succeeded")
+	}
+	cancelledContext, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := builder.Create(
+		cancelledContext,
+		json.RawMessage(`{}`),
+	); err == nil {
+		t.Fatal("cancelled creation succeeded")
+	}
+}
