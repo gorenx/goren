@@ -13,11 +13,15 @@ import (
 )
 
 // Factory constructs the canonical Subagent Runtime Plugin.
-type Factory struct{}
+type Factory struct {
+	runtimeOptions subagentruntime.RuntimeOptions
+}
 
 // New constructs a statically linked Factory.
-func New() *Factory {
-	return &Factory{}
+func New(runtimeOptions subagentruntime.RuntimeOptions) *Factory {
+	return &Factory{
+		runtimeOptions: runtimeOptions,
+	}
 }
 
 // Name returns the canonical Harness Plugin name.
@@ -26,7 +30,7 @@ func (*Factory) Name() string {
 }
 
 // Create validates the empty configuration and constructs an inactive Plugin.
-func (*Factory) Create(
+func (builder *Factory) Create(
 	createContext context.Context,
 	rawConfig json.RawMessage,
 ) (plugin.Plugin, error) {
@@ -39,7 +43,7 @@ func (*Factory) Create(
 	); err != nil {
 		return nil, err
 	}
-	return subagentruntime.New(), nil
+	return subagentruntime.New(builder.runtimeOptions), nil
 }
 
 var _ pluginfactory.Factory = (*Factory)(nil)

@@ -50,6 +50,7 @@ import (
 	subagentforkfactory "github.com/gorenx/goren/subagent/fork/factory"
 	"github.com/gorenx/goren/subagent/report"
 	subagentreportfactory "github.com/gorenx/goren/subagent/report/factory"
+	subagentruntime "github.com/gorenx/goren/subagent/runtime"
 	"github.com/gorenx/goren/subagent/spawn"
 	subagentspawnfactory "github.com/gorenx/goren/subagent/spawn/factory"
 	subagenttool "github.com/gorenx/goren/subagent/tool"
@@ -165,7 +166,9 @@ func NewCatalog(platform Environment) (*pluginfactory.Catalog, error) {
 		sessionqueryfactory.New(),
 		titleBuilder,
 		systempromptfactory.New(),
-		subagentfactory.New(),
+		subagentfactory.New(subagentruntime.RuntimeOptions{
+			ObserverError: platform.Diagnostics.Report,
+		}),
 		subagentspawnfactory.New(),
 		subagentforkfactory.New(),
 		subagenttoolfactory.New(),

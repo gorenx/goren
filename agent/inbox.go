@@ -26,8 +26,10 @@ type InboxSplice struct {
 	Outcome      InboxOutcome      `json:"outcome,omitempty"`
 }
 
+const InboxSplicedEventName = "agent/inbox/spliced"
+
 // InboxSpliced is the canonical Session event definition.
-var InboxSpliced = session.DefineEvent[InboxSplice]("agent/inbox/spliced")
+var InboxSpliced = session.DefineEvent[InboxSplice](InboxSplicedEventName)
 
 // InboxNotifications publishes committed projection changes.
 type InboxNotifications interface {

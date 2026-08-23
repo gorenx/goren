@@ -32,6 +32,23 @@ type integrationEventFailureSink struct {
 	failures []plugin.EventFailure
 }
 
+type integrationObserverFailureSink struct {
+	mutex    sync.Mutex
+	failures []error
+}
+
+func (sink *integrationObserverFailureSink) report(problem error) {
+	sink.mutex.Lock()
+	sink.failures = append(sink.failures, problem)
+	sink.mutex.Unlock()
+}
+
+func (sink *integrationObserverFailureSink) snapshot() []error {
+	sink.mutex.Lock()
+	defer sink.mutex.Unlock()
+	return append([]error(nil), sink.failures...)
+}
+
 func (sink *integrationEventFailureSink) ReportEventFailure(
 	_ context.Context,
 	failure plugin.EventFailure,
@@ -192,13 +209,14 @@ func (observerState *subagentLifecycleObserver) snapshot() (
 }
 
 type integrationFixture struct {
-	agents        *agent.RegistryPlugin
-	sessions      *session.MemoryStore
-	toolRuntime   tools.ToolRuntime
-	backend       *integrationAdapter
-	lifecycle     *subagentLifecycleObserver
-	eventFailures *integrationEventFailureSink
-	parentOptions agent.Options
+	agents         *agent.RegistryPlugin
+	sessions       *session.MemoryStore
+	toolRuntime    tools.ToolRuntime
+	backend        *integrationAdapter
+	lifecycle      *subagentLifecycleObserver
+	eventFailures  *integrationEventFailureSink
+	observerErrors *integrationObserverFailureSink
+	parentOptions  agent.Options
 }
 
 type integrationConfiguration struct {
@@ -280,6 +298,7 @@ func newIntegrationFixtureWithConfiguration(
 		ended: make(chan struct{}, 8),
 	}
 	eventFailures := &integrationEventFailureSink{}
+	observerErrors := &integrationObserverFailureSink{}
 	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{
 		EventFailures: eventFailures,
 	})
@@ -294,7 +313,9 @@ func newIntegrationFixtureWithConfiguration(
 		rootPlugins,
 		promptRuntime,
 		toolService,
-		subagentruntime.New(),
+		subagentruntime.New(subagentruntime.RuntimeOptions{
+			ObserverError: observerErrors.report,
+		}),
 		spawnProvider,
 		delegationTool,
 		loopPlugin,
@@ -330,13 +351,14 @@ func newIntegrationFixtureWithConfiguration(
 		})
 	}
 	return &integrationFixture{
-		agents:        agentRegistry,
-		sessions:      sessionStore,
-		toolRuntime:   toolService,
-		backend:       configuration.backend,
-		lifecycle:     lifecycle,
-		eventFailures: eventFailures,
-		parentOptions: configuration.agentOptions,
+		agents:         agentRegistry,
+		sessions:       sessionStore,
+		toolRuntime:    toolService,
+		backend:        configuration.backend,
+		lifecycle:      lifecycle,
+		eventFailures:  eventFailures,
+		observerErrors: observerErrors,
+		parentOptions:  configuration.agentOptions,
 	}
 }
 
