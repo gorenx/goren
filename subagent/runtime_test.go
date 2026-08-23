@@ -23,8 +23,8 @@ type agentFixture struct {
 func (subject *agentFixture) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "subagent-test-parent:" + string(subject.identifier),
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[agent.Agent](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[agent.Agent](subject),
 		},
 	}
 }
@@ -171,9 +171,56 @@ func (eventFailureSink) ReportEventFailure(
 ) {
 }
 
+type serviceConsumer struct {
+	plugin.Base
+	providers     subagent.ProviderRegistry
+	oneShots      subagent.OneShotService
+	continuations subagent.ContinuableService
+	setups        subagent.SetupRegistry
+}
+
+func (*serviceConsumer) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "subagent-test-consumer",
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[subagent.ProviderRegistry](),
+			plugin.ServiceOf[subagent.OneShotService](),
+			plugin.ServiceOf[subagent.ContinuableService](),
+			plugin.ServiceOf[subagent.SetupRegistry](),
+		},
+	}
+}
+
+func (consumer *serviceConsumer) Apply(context.Context) error {
+	var err error
+	consumer.providers, err = plugin.Require[subagent.ProviderRegistry](consumer)
+	if err != nil {
+		return err
+	}
+	consumer.oneShots, err = plugin.Require[subagent.OneShotService](consumer)
+	if err != nil {
+		return err
+	}
+	consumer.continuations, err = plugin.Require[subagent.ContinuableService](consumer)
+	if err != nil {
+		return err
+	}
+	consumer.setups, err = plugin.Require[subagent.SetupRegistry](consumer)
+	return err
+}
+
+func (consumer *serviceConsumer) Dispose(context.Context) error {
+	consumer.providers = nil
+	consumer.oneShots = nil
+	consumer.continuations = nil
+	consumer.setups = nil
+	return nil
+}
+
 type runtimeFixture struct {
 	engine   *plugin.Runtime
-	owner    *subagentruntime.Runtime
+	plugin   *subagentruntime.Plugin
+	services *serviceConsumer
 	parent   *agentFixture
 	observer *eventObserver
 }
@@ -185,11 +232,12 @@ func newRuntimeFixture(t *testing.T, observe bool) *runtimeFixture {
 		t.Fatal(err)
 	}
 	owner := subagentruntime.New()
+	services := &serviceConsumer{}
 	parent := &agentFixture{
 		identifier:   conversation.ID(),
 		conversation: conversation,
 	}
-	instances := []plugin.Plugin{owner, parent}
+	instances := []plugin.Plugin{owner, services, parent}
 	var observer *eventObserver
 	settings := plugin.RuntimeSettings{}
 	if observe {
@@ -205,7 +253,8 @@ func newRuntimeFixture(t *testing.T, observe bool) *runtimeFixture {
 	}
 	state := &runtimeFixture{
 		engine:   engine,
-		owner:    owner,
+		plugin:   owner,
+		services: services,
 		parent:   parent,
 		observer: observer,
 	}
@@ -231,22 +280,22 @@ func TestProviderRegistryOwnsOrderRollbackAndExactRemoval(t *testing.T) {
 			return nil, errors.New("unused")
 		},
 	}
-	alphaRegistration, err := state.owner.RegisterProvider(context.Background(), alpha)
+	alphaRegistration, err := state.services.providers.RegisterProvider(context.Background(), alpha)
 	if err != nil {
 		t.Fatal(err)
 	}
-	betaRegistration, err := state.owner.RegisterProvider(context.Background(), beta)
+	betaRegistration, err := state.services.providers.RegisterProvider(context.Background(), beta)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if names := state.owner.ListProviders(); len(names) != 2 ||
+	if names := state.services.providers.ListProviders(); len(names) != 2 ||
 		names[0] != "alpha" || names[1] != "beta" {
 		t.Fatalf("provider order = %v", names)
 	}
-	if resolved, found := state.owner.GetProvider("alpha"); !found || resolved != alpha {
+	if resolved, found := state.services.providers.GetProvider("alpha"); !found || resolved != alpha {
 		t.Fatal("registry did not return the exact Provider")
 	}
-	if _, duplicateErr := state.owner.RegisterProvider(context.Background(), alpha); duplicateErr == nil {
+	if _, duplicateErr := state.services.providers.RegisterProvider(context.Background(), alpha); duplicateErr == nil {
 		t.Fatal("duplicate Provider was accepted")
 	}
 	if err = alphaRegistration.Unregister(context.Background()); err != nil {
@@ -255,14 +304,14 @@ func TestProviderRegistryOwnsOrderRollbackAndExactRemoval(t *testing.T) {
 	if err = alphaRegistration.Unregister(context.Background()); err != nil {
 		t.Fatalf("idempotent unregister: %v", err)
 	}
-	replacementRegistration, err := state.owner.RegisterProvider(context.Background(), alpha)
+	replacementRegistration, err := state.services.providers.RegisterProvider(context.Background(), alpha)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err = alphaRegistration.Unregister(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if resolved, found := state.owner.GetProvider("alpha"); !found || resolved != alpha {
+	if resolved, found := state.services.providers.GetProvider("alpha"); !found || resolved != alpha {
 		t.Fatal("stale registration removed a later Provider")
 	}
 	if err = replacementRegistration.Unregister(context.Background()); err != nil {
@@ -283,13 +332,13 @@ func TestProviderAddedFailureRollsBackRegistration(t *testing.T) {
 			return nil, errors.New("unused")
 		},
 	}
-	if _, err := state.owner.RegisterProvider(context.Background(), candidate); !errors.Is(err, sentinel) {
+	if _, err := state.services.providers.RegisterProvider(context.Background(), candidate); !errors.Is(err, sentinel) {
 		t.Fatalf("register error = %v", err)
 	}
-	if _, found := state.owner.GetProvider("rejected"); found {
+	if _, found := state.services.providers.GetProvider("rejected"); found {
 		t.Fatal("vetoed Provider remained visible")
 	}
-	if names := state.owner.ListProviders(); len(names) != 0 {
+	if names := state.services.providers.ListProviders(); len(names) != 0 {
 		t.Fatalf("provider order after rollback = %v", names)
 	}
 }
@@ -319,7 +368,7 @@ func TestOneShotStartSnapshotsRequestAndPairsLifecycle(t *testing.T) {
 			return running, nil
 		},
 	}
-	registration, err := state.owner.RegisterProvider(context.Background(), candidate)
+	registration, err := state.services.providers.RegisterProvider(context.Background(), candidate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +390,7 @@ func TestOneShotStartSnapshotsRequestAndPairsLifecycle(t *testing.T) {
 		MaxDepth:     &depth,
 		Persona:      &persona,
 	}
-	returned, err := state.owner.Start(context.Background(), "complete", request)
+	returned, err := state.services.oneShots.Start(context.Background(), "complete", request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,13 +452,13 @@ func TestOneShotRejectsUnsupportedInputBeforeProviderStart(t *testing.T) {
 			return nil, errors.New("must not start")
 		},
 	}
-	registration, err := state.owner.RegisterProvider(context.Background(), candidate)
+	registration, err := state.services.providers.RegisterProvider(context.Background(), candidate)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer registration.Unregister(context.Background())
 	depth := int64(1)
-	_, err = state.owner.Start(
+	_, err = state.services.oneShots.Start(
 		context.Background(),
 		"weak",
 		subagent.StartRequest{
@@ -435,12 +484,12 @@ func TestOneShotStartupFailureEmitsNoRunLifecycle(t *testing.T) {
 			return nil, sentinel
 		},
 	}
-	registration, err := state.owner.RegisterProvider(context.Background(), candidate)
+	registration, err := state.services.providers.RegisterProvider(context.Background(), candidate)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer registration.Unregister(context.Background())
-	_, err = state.owner.Start(
+	_, err = state.services.oneShots.Start(
 		context.Background(),
 		"failed",
 		subagent.StartRequest{

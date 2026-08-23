@@ -30,8 +30,8 @@ type questionSubject struct {
 func (subject *questionSubject) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "userquestions-test-agent:" + string(subject.identifier),
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[agentcore.Agent](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[agentcore.Agent](subject),
 		},
 	}
 }

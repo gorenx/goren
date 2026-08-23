@@ -115,8 +115,8 @@ func (owner *LogService) Manifest() plugin.Manifest {
 	}
 	return plugin.Manifest{
 		Name: PluginName,
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[TitleService](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[TitleService](owner),
 		},
 		Requires: requiredServices,
 		Events: []plugin.EventSubscription{

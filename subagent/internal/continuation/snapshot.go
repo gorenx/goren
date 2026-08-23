@@ -63,7 +63,7 @@ func (owner *Manager) snapshotStart(
 func (owner *Manager) prepareProvider(
 	providerName string,
 ) (subagent.ContinuableProvider, error) {
-	candidate, found := owner.dependencies.Providers.Get(providerName)
+	candidate, found := owner.dependencies.Providers.GetProvider(providerName)
 	if !found {
 		return nil, &subagent.Error{
 			Code:    subagent.ErrorNoProvider,

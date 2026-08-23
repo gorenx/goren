@@ -137,8 +137,8 @@ type interactionSubject struct {
 func (subject *interactionSubject) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "api-proxy-interaction-agent:" + string(subject.identifier),
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[agentcore.Agent](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[agentcore.Agent](subject),
 		},
 	}
 }

@@ -14,7 +14,7 @@ const maxSafeInteger int64 = 1<<53 - 1
 
 // Providers resolves the exact currently registered Provider.
 type Providers interface {
-	Get(string) (subagent.Provider, bool)
+	GetProvider(string) (subagent.Provider, bool)
 }
 
 // Lifecycle publishes one Activation epoch's paired facts.

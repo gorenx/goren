@@ -32,11 +32,11 @@ func NewRuntime(reporter ObserverFailureReporter) *Runtime {
 }
 
 // Manifest declares the canonical LLM Service binding.
-func (*Runtime) Manifest() plugin.Manifest {
+func (owner *Runtime) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: PluginName,
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[LlmRuntime](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[LlmRuntime](owner),
 		},
 	}
 }

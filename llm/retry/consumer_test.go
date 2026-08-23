@@ -19,11 +19,11 @@ type retrySubjectFixture struct {
 	conversation *session.Session
 }
 
-func (*retrySubjectFixture) Manifest() plugin.Manifest {
+func (subject *retrySubjectFixture) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "llmretry-test-agent",
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[agent.Agent](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[agent.Agent](subject),
 		},
 	}
 }

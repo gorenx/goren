@@ -156,7 +156,7 @@ func manifestOf(pluginInstance Plugin) (metadata Manifest, manifestErr error) {
 		}
 	}()
 	metadata = pluginInstance.Manifest()
-	metadata.Provides = append([]ServiceType(nil), metadata.Provides...)
+	metadata.Provides = append([]ProvidedService(nil), metadata.Provides...)
 	metadata.Requires = append([]ServiceType(nil), metadata.Requires...)
 	metadata.Optional = append([]ServiceType(nil), metadata.Optional...)
 	metadata.Events = append([]EventSubscription(nil), metadata.Events...)

@@ -104,8 +104,8 @@ type benchmarkProvider struct {
 func (provider *benchmarkProvider) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: provider.name,
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[benchmarkService](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[benchmarkService](provider),
 		},
 	}
 }

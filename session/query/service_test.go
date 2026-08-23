@@ -24,11 +24,11 @@ type queryPersistencePlugin struct {
 	revisions map[session.SessionID]sesspersist.Revision
 }
 
-func (*queryPersistencePlugin) Manifest() plugin.Manifest {
+func (owner *queryPersistencePlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "fixture-query-persistence",
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[sesspersist.Persistence](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[sesspersist.Persistence](owner),
 		},
 	}
 }

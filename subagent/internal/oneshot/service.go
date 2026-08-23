@@ -19,7 +19,7 @@ const maxSafeInteger int64 = 1<<53 - 1
 
 // Providers resolves an exact currently registered Provider.
 type Providers interface {
-	Get(string) (subagent.Provider, bool)
+	GetProvider(string) (subagent.Provider, bool)
 }
 
 // Lifecycle publishes paired one-shot lifecycle facts.
@@ -54,7 +54,7 @@ func (serviceOwner *Service) Start(
 	if requestErr := requestContext.Err(); requestErr != nil {
 		return nil, requestErr
 	}
-	candidate, found := serviceOwner.providers.Get(selectedName)
+	candidate, found := serviceOwner.providers.GetProvider(selectedName)
 	if !found {
 		return nil, &subagent.Error{
 			Code: subagent.ErrorNoProvider,

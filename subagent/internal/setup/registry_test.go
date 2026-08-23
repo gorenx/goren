@@ -48,7 +48,7 @@ func TestRegistryComposesInOrderAndReleasesWithChild(t *testing.T) {
 	order := make([]string, 0)
 	for _, name := range []string{"first", "second"} {
 		name := name
-		if _, registerErr := owner.Register(
+		if _, registerErr := owner.RegisterContinuableSetup(
 			setupRecord{
 				install: func() (subagent.Installation, error) {
 					order = append(order, name)
@@ -83,7 +83,7 @@ func TestRegistryComposesInOrderAndReleasesWithChild(t *testing.T) {
 func TestRegistrationRemovalInvalidatesUnpublishedSetup(t *testing.T) {
 	owner := New()
 	disposals := 0
-	handle, registerErr := owner.Register(
+	handle, registerErr := owner.RegisterContinuableSetup(
 		setupRecord{
 			install: func() (subagent.Installation, error) {
 				return installationRecord{
@@ -125,7 +125,7 @@ func TestContributionCanRemoveItselfDuringInstall(t *testing.T) {
 	owner := New()
 	var handle subagent.SetupRegistration
 	disposals := 0
-	registered, registerErr := owner.Register(
+	registered, registerErr := owner.RegisterContinuableSetup(
 		setupRecord{
 			install: func() (subagent.Installation, error) {
 				if removeErr := handle.Unregister(context.Background()); removeErr != nil {

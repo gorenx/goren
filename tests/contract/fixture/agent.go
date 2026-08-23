@@ -47,8 +47,8 @@ func (*Agent) RunMaintenance(requestContext context.Context, task agent.Maintena
 func (subject *Agent) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "contract-agent:" + string(subject.Identifier),
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[agent.Agent](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[agent.Agent](subject),
 		},
 	}
 }

@@ -135,11 +135,11 @@ func NewMemoryStore(options MemoryStoreOptions) (*MemoryStore, error) {
 }
 
 // Manifest declares the canonical Session Store Service.
-func (*MemoryStore) Manifest() plugin.Manifest {
+func (owner *MemoryStore) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: PluginName,
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[LiveStore](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[LiveStore](owner),
 		},
 	}
 }

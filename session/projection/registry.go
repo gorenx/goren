@@ -41,11 +41,11 @@ func NewDriveRegistry() *DriveRegistry {
 }
 
 // Manifest declares the projection Service and Session events it observes.
-func (*DriveRegistry) Manifest() plugin.Manifest {
+func (owner *DriveRegistry) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: PluginName,
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[Registry](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[Registry](owner),
 		},
 		Requires: []plugin.ServiceType{
 			plugin.ServiceOf[session.LiveStore](),

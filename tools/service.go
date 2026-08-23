@@ -66,10 +66,10 @@ func (owner *Service) Manifest() plugin.Manifest {
 	}
 	return plugin.Manifest{
 		Name: owner.name,
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[ToolRuntime](),
-			plugin.ServiceOf[ToolCatalog](),
-			plugin.ServiceOf[PolicyRegistry](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[ToolRuntime](owner),
+			plugin.NewProvidedService[ToolCatalog](owner),
+			plugin.NewProvidedService[PolicyRegistry](owner),
 		},
 		Requires: requiredServices,
 		Optional: []plugin.ServiceType{

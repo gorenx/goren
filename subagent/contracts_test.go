@@ -56,12 +56,8 @@ func TestContinuableIsAnAdditionalProviderCapability(t *testing.T) {
 }
 
 func TestRuntimeRejectsUnknownOneShotProvider(t *testing.T) {
-	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
-	owner := subagentruntime.New()
-	if _, err := runtimeEngine.Start(context.Background(), owner); err != nil {
-		t.Fatal(err)
-	}
-	_, err := owner.Start(
+	state := newRuntimeFixture(t, false)
+	_, err := state.services.oneShots.Start(
 		context.Background(),
 		"one-shot",
 		subagent.StartRequest{},
@@ -69,9 +65,6 @@ func TestRuntimeRejectsUnknownOneShotProvider(t *testing.T) {
 	var problem *subagent.Error
 	if !errors.As(err, &problem) || problem.Code != subagent.ErrorNoProvider {
 		t.Fatalf("Start error = %v, want NO_PROVIDER", err)
-	}
-	if err = runtimeEngine.Shutdown(context.Background()); err != nil {
-		t.Fatal(err)
 	}
 }
 

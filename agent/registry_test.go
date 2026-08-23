@@ -22,8 +22,8 @@ type fakeAgent struct {
 func (subject *fakeAgent) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "test-agent:" + string(subject.identifier),
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[agentcore.Agent](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[agentcore.Agent](subject),
 		},
 	}
 }
