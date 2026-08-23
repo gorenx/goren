@@ -21,6 +21,7 @@ type agentMembership struct {
 	subject     *ReactLoopAgent
 	startSource agent.SessionStartSource
 	initiator   agent.Agent
+	lifecycle   *agentLifecycle
 
 	mutex         sync.Mutex
 	agents        agent.Registry
@@ -36,6 +37,7 @@ func newAgentMembership(
 	router *runtimeContextRouter,
 	failures observerFailureReporter,
 	subject *ReactLoopAgent,
+	lifecycle *agentLifecycle,
 	startSource agent.SessionStartSource,
 	initiator agent.Agent,
 ) *agentMembership {
@@ -43,6 +45,7 @@ func newAgentMembership(
 		router:      router,
 		failures:    failures,
 		subject:     subject,
+		lifecycle:   lifecycle,
 		startSource: startSource,
 		initiator:   initiator,
 		closed:      make(chan struct{}),
@@ -131,6 +134,9 @@ func (membership *agentMembership) Dispose(
 ) error {
 	if closeContext == nil {
 		closeContext = context.Background()
+	}
+	if membership.lifecycle != nil {
+		membership.lifecycle.beginStructuralTeardown()
 	}
 	membership.mutex.Lock()
 	if membership.closing {

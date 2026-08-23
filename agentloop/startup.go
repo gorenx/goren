@@ -69,6 +69,7 @@ func (starter *configuredAgentStarter) start(
 		if declaration.Resume {
 			handleState, err := factory.ResumeAgent(
 				requestContext,
+				nil,
 				agent.ResumeOptions{
 					SessionID:    declaration.SessionID,
 					AgentOptions: declaration.AgentOptions,
@@ -94,6 +95,7 @@ func (starter *configuredAgentStarter) start(
 		}
 		handleState, err := factory.CreateAgent(
 			requestContext,
+			nil,
 			agent.CreateOptions{
 				SessionID:    identifier,
 				Metadata:     cloneSessionMetadata(declaration.Metadata),

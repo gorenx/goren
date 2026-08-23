@@ -52,7 +52,7 @@ func (owner *Provisioner) Provision(
 	activation := subagent.ActivationContext{
 		ChildID:    owner.input.ChildID,
 		ParentID:   owner.input.ParentID,
-		Agent:      scope.Agent(),
+		Scope:      scope,
 		Descriptor: owner.input.Descriptor,
 	}
 	for _, record := range registrations {

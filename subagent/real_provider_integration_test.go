@@ -16,6 +16,7 @@ import (
 	"github.com/gorenx/goren/llm/deepseek"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/subagent"
+	"github.com/gorenx/goren/subagent/spawn"
 	subagenttool "github.com/gorenx/goren/subagent/tool"
 	"github.com/gorenx/goren/tools"
 )
@@ -79,10 +80,10 @@ func TestRealProviderForegroundOneShot(t *testing.T) {
 		t.Fatal(providerErr)
 	}
 	maxTokens := 64
-	state := newIntegrationFixtureWithModel(
+	state := newIntegrationFixtureWithConfiguration(
 		t,
-		integrationModel{
-			options: agent.Options{
+		integrationConfiguration{
+			agentOptions: agent.Options{
 				Provider:  deepseek.ProviderRoute,
 				Model:     deepseek.DefaultModelID,
 				MaxTokens: &maxTokens,
@@ -90,6 +91,12 @@ func TestRealProviderForegroundOneShot(t *testing.T) {
 			plugins: []plugin.Plugin{
 				credentialManager,
 				providerPlugin,
+			},
+			delegation: subagenttool.Settings{
+				Provider:              spawn.DefaultProviderName,
+				ToolName:              subagenttool.DefaultToolName,
+				EnableRunInBackground: false,
+				BackgroundMode:        subagenttool.BackgroundOneShot,
 			},
 		},
 	)

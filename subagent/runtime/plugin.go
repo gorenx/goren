@@ -30,6 +30,7 @@ type Plugin struct {
 	providers     *providerregistry.Registry
 	oneShots      *oneshot.Service
 	continuations *continuation.Service
+	activations   *activationOwner
 	extensions    *activationextension.Registry
 	catalog       *catalog.Service
 	events        *eventPublisher
@@ -45,6 +46,7 @@ func New() *Plugin {
 	owner.providers = providerregistry.New(owner.events)
 	owner.oneShots = oneshot.New(owner.providers, owner.events)
 	owner.continuations = continuation.NewService()
+	owner.activations = &activationOwner{}
 	owner.extensions = activationextension.New()
 	owner.catalog = catalog.New()
 	return owner
@@ -54,6 +56,13 @@ func New() *Plugin {
 func (owner *Plugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: subagent.PluginName,
+		Children: []plugin.ChildPlugin{
+			{
+				Instance:  owner.activations,
+				Placement: plugin.SameScope,
+				Phase:     plugin.ActivationMain,
+			},
+		},
 		Provides: []plugin.ProvidedService{
 			plugin.NewProvidedService[subagent.ProviderRegistry](owner.providers),
 			plugin.NewProvidedService[subagent.OneShotService](owner.oneShots),
@@ -103,9 +112,14 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 	if agentRegistry == nil || liveSessions == nil {
 		return nil
 	}
+	activationCustody, err := agent.NewCustody(owner.activations)
+	if err != nil {
+		return err
+	}
 	manager, err := continuation.New(
 		continuation.Dependencies{
 			Agents:      agentRegistry,
+			Custody:     activationCustody,
 			Sessions:    liveSessions,
 			Persistence: sessionPersistence,
 			Providers:   owner.providers,

@@ -17,7 +17,7 @@ func TestReportUsesExactChildAndConfiguredDelivery(t *testing.T) {
 	t.Parallel()
 	childAgent := newReportAgent(t, "child")
 	continuations := &reportContinuation{}
-	contribution := &extension{
+	contribution := &childPlugin{
 		continuations: continuations,
 		delivery:      subagent.ReportQuiet,
 	}

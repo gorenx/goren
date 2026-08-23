@@ -32,7 +32,7 @@ type reportArguments struct {
 	Output string `json:"output"`
 }
 
-func (contribution *extension) definition() tools.ToolDefinition {
+func (child *childPlugin) definition() tools.ToolDefinition {
 	return tools.ToolDefinition{
 		Name:        "report",
 		Description: "Report selected self-contained content to the agent that started you. Reporting does not finish your work and only your direct parent receives it.",
@@ -56,11 +56,11 @@ func (contribution *extension) definition() tools.ToolDefinition {
 				}, nil
 			}),
 		},
-		Executor: tools.ExecutorFunc(contribution.execute),
+		Executor: tools.ExecutorFunc(child.execute),
 	}
 }
 
-func (contribution *extension) execute(
+func (child *childPlugin) execute(
 	rawArguments json.RawMessage,
 	runContext tools.ToolRunContext,
 ) (json.RawMessage, error) {
@@ -72,14 +72,14 @@ func (contribution *extension) execute(
 	if decodeErr := json.Unmarshal(rawArguments, &request); decodeErr != nil {
 		return nil, decodeErr
 	}
-	messageID, reportErr := contribution.continuations.ReportFrom(
+	messageID, reportErr := child.continuations.ReportFrom(
 		runContext.Context,
 		childAgent,
 		[]llm.ContentBlock{
 			llm.NewTextBlock(request.Output),
 		},
 		subagent.ReportOptions{
-			Delivery: contribution.delivery,
+			Delivery: child.delivery,
 		},
 	)
 	if reportErr != nil {
