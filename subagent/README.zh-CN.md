@@ -16,7 +16,7 @@
 
 `subagent` 拥有：
 
-- `ProviderRegistry`、`OneShotService`、`ContinuableService`、`SetupRegistry` 和 `Catalog` 五个面向不同 Consumer 的能力；
+- `ProviderRegistry`、`OneShotService`、`ContinuableService`、`ExtensionRegistry` 和 `Catalog` 五个面向不同 Consumer 的能力；
 - one-shot `Run` 的发布边界和 `subagent/start`、`subagent/end` 生命周期；
 - continuable child 的 durable identity、Activation residency、冷恢复、续投授权、report、interrupt 和 child-first drain；
 - `subagent/descriptor` 的严格 codec、父子 MessageSource 和稳定错误码。
@@ -41,11 +41,11 @@ flowchart LR
     Continue --> Provider
     Continue --> Agent[agent.Registry / Agent Inbox]
     Continue --> Session[session.LiveStore / Persistence]
-    Continue --> Setup[SetupRegistry]
+    Continue --> Extension[ExtensionRegistry]
     Catalog --> Session
 ```
 
-`subagent` 根包只声明领域公开契约和共享值对象；已实现用例按内聚能力划分为 `internal/provider`、`internal/oneshot`、`internal/continuation`、`internal/composition`、`internal/setup`、`internal/catalog` 和 `internal/projection`。`subagent/runtime.Plugin` 是唯一 Plugin 与装配入口，但不实现这些业务接口；它以 `ProvidedService` 发布各子模块的独立对象，并管理两个 Subagent Projection Unit 的 registration。私有子模块不得各自建立 Plugin 或直接操作 Runtime topology。
+`subagent` 根包只声明领域公开契约和共享值对象；已实现用例按内聚能力划分为 `internal/provider`、`internal/oneshot`、`internal/continuation`、`internal/composition`、`internal/extension`、`internal/catalog` 和 `internal/projection`。`subagent/runtime.Plugin` 是唯一 Plugin 与装配入口，但不实现这些业务接口；它以 `ProvidedService` 发布各子模块的独立对象，并管理两个 Subagent Projection Unit 的 registration。私有子模块不得各自建立 Plugin 或直接操作 Runtime topology。
 
 ## 生命周期与失败
 

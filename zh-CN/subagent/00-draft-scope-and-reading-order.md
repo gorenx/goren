@@ -41,7 +41,7 @@ b150a551b8d465e31e418e1b2eaf5e79bbb7d28e
 2. [02 Continuable 生命周期与持久化语义](./02-continuable-runtime-and-durability.md)：描述创建、续投、恢复、中断、报告、settlement、drain 和查询契约。
 3. [03 Go 架构、接口与契约](./03-go-architecture-and-contracts.md)：提出包边界、命名对象、Provider/Consumer 接口、事件、错误和配置。
 4. [04 实施、验证与待决项](./04-implementation-and-verification-plan.md)：给出可独立验收的切片、测试矩阵和必须先确认的问题。
-5. [05 Agent 创建事务与 Setup 边界](./05-agent-creation-transaction.md)：固定 Subagent 组合进入 Agent publication 前的实际 Go seam。
+5. [05 Agent 创建事务与 Provisioning 边界](./05-agent-creation-transaction.md)：固定 Subagent 组合进入 Agent publication 前的实际 Go seam。
 
 ## 4. 当前核心判断
 
@@ -58,7 +58,7 @@ one-shot 与 continuable 是 Subagent 的两种执行策略，不是两个独立
 ## 5. 草案约束
 
 - 保留 DSH canonical 名称、事件名、错误码、descriptor 字段和可观察顺序；
-- Go 用有状态命名对象表达 Runtime、ContinuationManager、Activation 和 Setup Registry，不翻译 TypeScript 闭包链；
+- Go 用有状态命名对象表达 Runtime、ContinuationManager、Activation、Provisioning 和 Extension Registry，不翻译 TypeScript 闭包链；
 - Service/Provider 等接口声明与 Runtime 用例实现在文件上分离，但仍属于同一个 `subagent` 包和同一领域职责，不建立 `internal/subagent` 形式的第二个领域包；
 - Provider 与 Consumer 通过最小接口连接，Agent、Session、Tools、Approval、LLM 继续拥有各自契约；
 - 任何已接受消息必须能从 Session log 重建，process-local Activation 不是事实来源；

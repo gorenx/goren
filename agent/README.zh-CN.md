@@ -9,7 +9,7 @@
 | `agent.go` | `Agent` 能力、状态、Inbox target 与 maintenance 契约 |
 | `factory.go` | Registry 消费侧的 Factory、Create/Resume 参数和调用方 Handle |
 | `registry.go` | live Agent membership、创建委派、initiator ownership 与生命周期发布 |
-| `setup.go` | 未发布 Agent 的 `Setup`、`Scope`、exact `Effect` 与 Plugin 组合适配器 |
+| `provisioning.go` | 未发布 Agent 的 `Provisioner`、可选 `Provisioning`、`Scope`、exact `Effect` 与 Plugin 组合适配器 |
 | `inbox.go` | 从 append-only Session log 重建并提交 next-turn / next-step 消息 |
 | `events.go` | Agent 领域 Event、Waterfall 输入输出和调用入口 |
 | `model_selection.go` | prompt assembly 与 LLM request 之间的单步模型选择快照 |
@@ -24,7 +24,8 @@ sequenceDiagram
     participant Caller as Caller
     participant Registry as agent.Registry
     participant Factory as agent.Factory
-    participant Setup as agent.Setup
+    participant Provisioner as agent.Provisioner
+    participant Provisioning as optional agent.Provisioning
     participant Scope as agent.Scope
     participant Runtime as plugin.Runtime
     participant Membership as Agent membership
@@ -35,16 +36,17 @@ sequenceDiagram
     Factory->>Session: prepare unpublished Session
     Factory->>Runtime: mount private Agent Scope root
     Runtime-->>Factory: active unpublished Scope
-    Factory->>Setup: Prepare(ctx, Scope)
-    Setup->>Scope: Mount / Own exact effects
-    Factory->>Setup: Commit()
+    Factory->>Provisioner: Provision(ctx, Scope)
+    Provisioner->>Scope: Mount / Own exact effects
+    Provisioner-->>Factory: optional Provisioning
+    Factory->>Provisioning: Commit()
     Factory->>Runtime: mount membership
     Membership->>Session: enter and announce Session
     Membership->>Registry: enter and announce Agent
     Factory-->>Caller: Agent Handle
 ```
 
-`Setup` 由调用方为每次 Create/Resume 提供一个新实例；Agent Loop 消费它，但不实现它。`Scope` 由 concrete Agent Provider 实现，负责把 Plugin 或普通 `Effect` 纳入同一结构生命周期。`Setup.Commit` 成功后才能挂载 membership，因此 Prepare、Commit 或 publication 任一步失败都不会返回可见 Agent。
+调用方通过 `Provisioner` 配置未发布 Scope，Agent Loop 消费它但不实现它。`Scope` 由 concrete Agent Provider 实现，负责把 Plugin 或普通 `Effect` 纳入同一结构生命周期。若配置还需要发布边界复核或 resident 生命周期，则 `Provisioner` 返回一次调用独占的 `Provisioning`；没有剩余事务时返回 nil。`Provisioning.Commit` 成功后才能挂载 membership，因此 Provision、Commit 或 publication 任一步失败都不会返回可见 Agent。
 
 Registry 的 `Enter` 只保留 exact Agent instance 和 initiator ownership；`Announce` 才发布 `agent/created`。调用方释放 `Handle` 时，Agent tree 先停止 work、移除 membership，再逆序释放 Scope effect 和 Plugin 子树。创建请求被取消时，业务准备停止，但已取得的结构资源使用非取消上下文完整回滚，不能留下不可见的挂载树。
 

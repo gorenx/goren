@@ -9,7 +9,7 @@
 一个 continuable child 同时具有两层身份：
 
 - durable child Session：Header、descriptor、消息和策略 Event 是事实来源，可跨进程驻留周期恢复；
-- process-local Activation：某一时刻至多一个，持有 live Agent Handle、父子 ownership、监听器和已安装 setup。
+- process-local Activation：某一时刻至多一个，持有 live Agent Handle、父子 ownership、监听器和已安装 Extension。
 
 Activation 是一个 residency epoch，不是第二份 Session。它可以处理多个 FIFO turn；冷恢复会产生新的 Activation 和新的 lifecycle run ID，但 child Session ID、descriptor 和历史保持不变。
 
@@ -102,10 +102,10 @@ sequenceDiagram
 4. descriptor 和新委派策略追加在 seed 后，保证新值覆盖 seed 中的旧值；
 5. 在 per-child lock 内再次检查重复 ID 和调用方指定 ID 对应的持久化快照；
 6. 以 `agent.WithInitiator` 让 Agent Registry 记录精确父 Agent ownership；
-7. child extensions、setup 和监听器全部成功后才发布 Activation；
+7. child Provisioning、Extension 和监听器全部成功后才发布 Activation；
 8. 初始消息被 Inbox 接受后才向 Consumer 暴露 ID。
 
-接受前任何失败都必须逆序撤销 setup、监听器、ownership、Agent Handle 和 Session membership，并且不返回可被误用的 child/message ID。
+接受前任何失败都必须逆序撤销 Provisioning、监听器、ownership、Agent Handle 和 Session membership，并且不返回可被误用的 child/message ID。
 
 `subagent/start` 的边界早于 Inbox acceptance：Agent 已 publication、Activation 已 resident 后立即发布 start，确保任何 turn 运行前 observer 已看见 epoch。若随后初始 Inbox admission 失败，Runtime 仍 Dispose 该 resident Activation 并发布配对的 end，但启动调用不返回 child/message ID，也不发送 settlement notice。
 
@@ -158,14 +158,14 @@ Goren 的 `llm.MessageSource` 支持未知 kind 的 lossless opaque decode。首
 
 报告可以为零次或多次，不自动生成，不结束 child turn。父 Agent 不 live 时返回 `PARENT_UNAVAILABLE`，不能把报告暂存到一个没有明确 delivery 语义的旁路队列。
 
-## 7. Setup registry
+## 7. Activation Extension registry
 
-Continuable setup 是有序、同步决定、事务性安装的 child-scoped contribution：
+DSH 把这条 seam 称为 continuable setup；Go contract 用 `ActivationExtension` 表示 child-scoped contribution，用 `Provisioning` 表示 publication transaction：
 
 - 创建 Activation 时按注册顺序安装；
 - 任一安装失败，逆序回滚此前安装并阻止 Activation 发布；
-- 新注册的 setup 只影响后续 Activation，不追装已有 child；
-- 撤销 setup 先关闭注册，再立即卸载所有 resident installation；
+- 新注册的 Extension 只影响后续 Activation，不追装已有 child；
+- 撤销 Extension 先关闭注册，再立即卸载所有 resident installation；
 - 若撤销与 child 构建并发，构建事务必须检测 generation 已失效并回滚，不能发布带已撤销能力的 Activation；
 - disposer 是精确、幂等对象，不能按名称误删后来注册的实例。
 

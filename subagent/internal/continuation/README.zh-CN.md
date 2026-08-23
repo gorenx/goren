@@ -2,7 +2,7 @@
 
 本包拥有 continuable child 的创建与冷恢复、exact parent authorization、唯一 Inbox 投递、Activation residency、interrupt、report、settlement 和 child-first drain。Session log 是 durable truth；`Activation` 只表示一个进程内驻留 epoch。
 
-稳定的 `Service` 实现 `ContinuableService`，并在 Plugin activation 期间启用一个 `Manager`；缺少可选 Agent Registry 或 Session LiveStore 时，Service 保持可解析但 continuable 操作返回稳定 unavailable 错误。`Manager` 通过 consumer-owned ports 使用 Agent Registry、Session LiveStore、Persistence、Provider Registry、`Composer` 与生命周期发布器。它不实现 Agent Loop、Provider 算法、持久化 I/O，也不拥有 Setup registration、child composition 或 Catalog。
+稳定的 `Service` 实现 `ContinuableService`，并在 Plugin activation 期间启用一个 `Manager`；缺少可选 Agent Registry 或 Session LiveStore 时，Service 保持可解析但 continuable 操作返回稳定 unavailable 错误。`Manager` 通过 consumer-owned ports 使用 Agent Registry、Session LiveStore、Persistence、Provider Registry、`Composer` 与生命周期发布器。它不实现 Agent Loop、Provider 算法、持久化 I/O，也不拥有 Extension registration、child composition 或 Catalog。
 
 | 文件 | 职责 |
 | --- | --- |

@@ -73,19 +73,19 @@ Agent ID 必须与其 Session ID 完全相同。Registry 的 authoritative colli
 
 ```text
 Factory prepares Session + Agent Child Scope
-  -> optional Setup.Apply(unpublished scope)
+  -> optional Provisioner.Provision(unpublished scope)
+  -> Provisioning.Commit（若存在）
   -> Registry.Enter(agent, owner)
        -> validate Agent / Session / Child Scope
        -> reject same-id collision
        -> return exact detach capability
-  -> SetupCommit.Commit（若存在）
   -> Registry.Announce(agent)
        -> mark announcement begun
        -> scoped agent/created
   -> start Agent Loop
 ```
 
-`Enter` 与 `Announce` 分离是 publication transaction 的一部分：setup 可以在 Agent 对外可见前安装 scoped prompt、tool、model selection 或 policy contribution；创建事件不能观察半成品。普通 `Register` 组合 `Enter`、Scope-owned disposer 与 `Announce`，announcement 失败时回滚 live entry。
+`Enter` 与 `Announce` 分离是 publication transaction 的一部分：Provisioner 可以在 Agent 对外可见前安装 scoped prompt、tool、model selection 或 policy contribution；需要精确发布复核时返回可选 Provisioning。创建事件不能观察半成品。普通 `Register` 组合 `Enter`、Scope-owned disposer 与 `Announce`，announcement 失败时回滚 live entry。
 
 detach 捕获 exact entry identity，旧 disposer 不能删除未来同 ID lifecycle。若 created listener 在同步 dispatch 内请求 detach，Registry 延迟到全部 created listener 返回后再移除，确保同一次公告的 listener 都看到相同 live entry；只要 created publication 已开始，后续移除就发布 paired `agent/disposed`。未 announce 的 entry 回滚时不伪造 disposal。
 

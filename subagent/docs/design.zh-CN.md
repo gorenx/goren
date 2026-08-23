@@ -23,7 +23,7 @@
 | `ProviderRegistry` | 注册、查找和列举 Provider | `provider.go`、`internal/provider` |
 | `OneShotService` | 启动一个 holder-owned `Run` | `one_shot.go`、`internal/oneshot` |
 | `ContinuableService` | 创建、续投、报告、中断和清理 durable child | `continuable.go`、`internal/continuation` |
-| `SetupRegistry` | 为每个 continuable Activation 组合 Plugin | `setup.go`、`internal/setup` |
+| `ExtensionRegistry` | 注册并撤销 continuable Activation 的 child-scoped 扩展 | `extension.go`、`internal/extension` |
 | `Catalog` | 不 resume Agent 地列举 durable child | `catalog.go`、`internal/catalog` |
 
 接口和数据声明与用例实现分文件，是为了阅读和依赖审计；它们仍属于一个领域。`types.go` 不作为所有声明的收容处。Plugin 不通过转发方法实现上述接口；Consumer 解析到的是对应子模块对象。
@@ -45,9 +45,9 @@ Provider 不得直接修改 continuation residency，不得持有 continuable ch
 
 `activation` 表示一个 child 在当前进程中的一次 residency epoch。它持有 exact `agent.Handle` 和 epoch `RunID`，但 durable identity 来自 Session Header 与第一个 `subagent/descriptor` event。
 
-### 2.4 Setup
+### 2.4 Activation Extension 与 Agent provisioning
 
-`Setup` 回答“要安装的贡献是什么”。`internal/setup.Registry` 管理有序注册、每次 materialization 的 fresh `agent.Setup` 和 exact resident installation；`internal/composition.Composer` 把 delegation policy、persona、Tool restriction 与注册贡献装入未发布 child Scope。撤销注册立即卸载它在所有 resident Activation 中产生的精确安装，而不是按名称删除。
+`ActivationExtension` 回答“要安装到 continuable child 的能力是什么”。`internal/extension.Registry` 管理有序注册和 exact resident installation；`internal/composition.Composer` 把 delegation policy、persona、Tool restriction 与 Extension 组合成 `agent.Provisioner`。Provisioner 配置未发布 child Scope，并只在需要 publication validation 和 resident cleanup 时返回 `agent.Provisioning`。撤销注册立即卸载它在所有 resident Activation 中产生的精确 installation，而不是按名称删除。
 
 ## 3. 依赖方向
 
@@ -58,10 +58,12 @@ flowchart TD
     Plugin[runtime.Plugin] -->|ProvidedService| Registry
     Plugin -->|ProvidedService| OneShot[internal/oneshot.Service]
     Plugin -->|ProvidedService| Continue[internal/continuation.Service]
+    Plugin -->|ProvidedService| Extension[internal/extension.Registry]
     Plugin -->|ProvidedService| Catalog[internal/catalog.Service]
     Contract --> Registry
     Contract --> OneShot
     Contract --> Continue
+    Contract --> Extension
     Contract --> Catalog
     Plugin --> Agent[agent.Registry and Agent]
     Plugin --> Live[session.LiveStore]
@@ -77,7 +79,7 @@ flowchart TD
 - core 依赖 spawn、fork、Tool 或 delivery adapter 的具体实现；
 - Echo、API Proxy wire struct、数据库 driver 或旧 `llm/docs` 类型进入领域契约；
 - 在顶层 `internal/subagent` 或各私有子模块复制 Plugin 装配入口；
-- 把 Provider、one-shot、continuation、setup 和 catalog 再按 DTO/service/mapper 技术层平铺。
+- 把 Provider、one-shot、continuation、extension 和 catalog 再按 DTO/service/mapper 技术层平铺。
 
 ## 4. 公开边界与不变量
 
@@ -101,7 +103,7 @@ Provider 返回前仍拥有创建事务，失败必须自行回滚且不产生 s
 
 ### 4.3 Continuable admission
 
-目标流程是：预检 Provider 附加能力与依赖，保留 child ID，构造 descriptor/seed/policy，创建未发布 Agent，安装 Setup，接受 initial prompt，再提交发布。任何 prompt 接受前失败都不得返回 IDs，并释放整个 child transaction。
+目标流程是：预检 Provider 附加能力与依赖，保留 child ID，构造 descriptor/seed/policy，通过 Provisioner 配置未发布 Agent，并在 Provisioning commit 后发布 Agent Handle；随后由同一 continuable transaction 接受 initial prompt。任何 prompt 接受前失败都不得返回 IDs，并释放已经取得的 Handle 和整个 child transaction。
 
 `Followup` 验证传入的是 registry 中 exact live direct parent。resident child 直接进入其唯一 Inbox；cold child 先从 persistence resume，再由同一 Inbox 接受。MessageSource 只做 durable attribution，不是 authority credential。
 
@@ -124,7 +126,7 @@ Provider 返回前仍拥有创建事务，失败必须自行回滚且不产生 s
 | Parent/child relation | Session Header + descriptor | durable | direct parent 不由 MessageSource 推断 |
 | Activation map | `internal/continuation.Manager` | 进程内 | 每个 child 至多一个 resident epoch |
 | Inbox queue | `agent.Inbox` | durable projection | 所有 accepted continuable 消息共享 FIFO |
-| Setup registration/installations | setup registry | 进程内 | ordered snapshot；exact installation 撤销 |
+| Extension registrations/installations | extension registry | 进程内 | ordered snapshot；exact installation 撤销 |
 | Run lifecycle | one-shot Service / continuation Manager | observe-only | 每个 accepted `RunID` 恰好 start 后 end |
 
 ## 6. 失败与取消
@@ -142,7 +144,7 @@ Provider 返回前仍拥有创建事务，失败必须自行回滚且不产生 s
 - 已决定：one-shot 和 continuable 是同一领域的两种策略、不同 Consumer 接口、不同业务 service 实现，由同一 Plugin 装配和发布。
 - 已决定：continuable 是 Provider 的附加接口能力，不是 `Capabilities.Continuable` 布尔字段。
 - 已决定：根包保留公开契约和值对象；用例按内聚能力进入 `subagent/internal/*`，由 `subagent/runtime` 唯一装配。
-- 已实现但待扩充验证：continuable Manager、child composition 与 Setup 安装/撤销。
+- 已实现但待扩充验证：continuable Manager、child composition 与 Activation Extension 安装/撤销。
 - 已实现：Catalog、identity/timing Projection Unit、Subagent Factory 和 core 默认 assembly。
 - 待实现：spawn/fork Provider 与 Tool/control/report Consumer；这些是 core 的上下游切片，不回填到 Runtime 用例对象。
 - 待全局确认：把 feature-local DSH 差异并入权威范围、路线图和全局进度索引。

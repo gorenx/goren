@@ -9,7 +9,7 @@
 全局固定基线是 `47f943859bef60e4160492346772ded9b24f765a`，本草案分析的是最新 `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`。实施前先生成 feature-local 差异表，至少逐项归类：
 
 - core API、descriptor version、projection schema 与 stable error；
-- continuation cleanup、setup revocation、cold resume 与 drain 修复；
+- continuation cleanup、Extension revocation、cold resume 与 drain 修复；
 - report delivery 和 settlement notice；
 - Host `subagents.*` contract；
 - fork Provider 与 preset/bundle composition 漂移；
@@ -37,7 +37,7 @@
 - [Agent](../14-agent-registry-inbox-and-events.md)：`agent.Options.SubagentDepth` validation、copy 与 resume 传播（结构与 owner-local tests 已建立）；
 - [Approval](../17-approval-user-questions-and-interaction-gateway.md)：owner-owned `SeedDelegationPolicy`；
 - LLM：Subagent typed MessageSource 的注册/codec 方案；
-- Agent Setup：`agent.Setup`/`agent.Scope`/exact `agent.Effect` 和 publication 前 Prepare/Commit/rollback（基础 seam 已建立；resident registration 撤销由 D5 验证）。
+- Agent provisioning：`agent.Provisioner`/可选 `agent.Provisioning`/`agent.Scope`/exact `agent.Effect` 和 publication 前 Provision/Commit/rollback（基础 seam 已建立；resident registration 撤销由 D5 验证）。
 
 验收：每个前置能力有 owner-local test；尚未创建的 Subagent 不迫使 Agent Loop 加 feature branch。
 
@@ -77,18 +77,18 @@
 - settlement notice、best-effort Flush、exact Handle dispose；
 - scoped/global child-first drain 和聚合错误。
 
-验收：成功边界严格为 Inbox acceptance；接受前失败不泄漏 ID/Agent/Session/setup；接受后请求取消不撤销工作；同 child 的 deliver/resume/close 线性化。
+验收：成功边界严格为 Inbox acceptance；接受前失败不泄漏 ID/Agent/Session/Provisioning；接受后请求取消不撤销工作；同 child 的 deliver/resume/close 线性化。
 
 ### D5：child composition 与 report
 
 实现：
 
-- `activationSetupRegistry`、per-creation Setup、构建批次与 resident installation 索引；
+- `extension.Registry`、per-creation Provisioner/Provisioning、构建批次与 resident installation 索引；
 - delegation prompt、persona 和 Tool restriction overlays；
 - approval delegation seed；
-- `subagent/report` setup、Tool 与 `next-step`/`quiet` delivery。
+- `subagent/report` Activation Extension、Tool 与 `next-step`/`quiet` delivery。
 
-验收：安装失败完整回滚；撤销立即卸载 resident setup；构建/撤销竞态不能发布失效安装；report 只从 exact live child 发给 direct live parent。
+验收：安装失败完整回滚；撤销立即卸载 resident installation；构建/撤销竞态不能发布失效安装；report 只从 exact live child 发给 direct live parent。
 
 ### D6：模型 Tool Consumers
 
@@ -143,18 +143,18 @@ Core 不依赖本切片。未纳入时，Tool 驱动的 Subagent 仍是完整核
 | --- | --- |
 | Descriptor | v2 两种 variant；缺失/null/unknown；seed 中旧 descriptor 被 own suffix 覆盖；lossless fixture round trip |
 | Provider | 顺序、duplicate、added veto rollback、removed containment、exact/idempotent disposer、并发 register/unregister |
-| Start | depth、ID collision、Provider failure、setup failure、Agent create failure、Inbox reject、每阶段逆序回滚 |
+| Start | depth、ID collision、Provider failure、provisioning/Extension failure、Agent create failure、Inbox reject、每阶段逆序回滚 |
 | Followup | running enqueue、waiting wake、cold inspect/resume、non-resumable、provider absent still resumes、acceptance/cancel race |
 | Authority | exact direct parent、live ancestor、self/sibling/stale instance/非祖先拒绝；provenance 不授权 |
 | Interrupt | keep inbox、fire-and-return、claimed work 不重排、absent/idle no-op、不 cold resume |
-| Setup | 有序安装、部分失败、立即撤销、构建期撤销、later registration 不追装、release failure aggregation |
+| Extension | 有序安装、部分失败、立即撤销、构建期撤销、later registration 不追装、release failure aggregation |
 | Report | exact child、direct parent、parent absent、next-step vs quiet、多次报告、不结束 turn |
 | Settlement | idle + no child gate、final assistant output、notice before ownership release、flush failure still dispose、run ID 配对 |
 | Drain | 深层 child-first、多个 branch、单 branch failure 不短路、聚合错误、draining 拒绝新 admission |
 | Listing | live/cold 优先、创建窗口、省略 vs diagnostic、稳定排序、deep iterative traversal、ordinary/one-shot intermediate、取消 |
 | Tool | strict config、provider lifecycle、schema 文案、maxDepth、one-shot/continuable 精确路由、控制工具只做薄映射 |
 
-并发测试必须包含 `go test -race`，尤其覆盖 per-child lock、settlement/followup、setup revoke/build、provider replacement 与 nested drain。
+并发测试必须包含 `go test -race`，尤其覆盖 per-child lock、settlement/followup、Extension revoke/build、provider replacement 与 nested drain。
 
 ## 4. Compatibility fixtures
 
@@ -213,7 +213,7 @@ git diff --check
 | Q5 | Agent Preset composition | 等真实 composition contract，不只复制名称 | child 的 tools/prompt/provider 组合不一致 |
 | Q6 | projection cache | 首期 live snapshot + cold inspect；以后只做性能优化 | 提前引入重复 read model 和 invalidation |
 | Q7 | 多进程 Activation lease | 首期明确 process-local ownership，不宣称跨进程互斥 | 两个 Host 同时 cold resume 同一 child |
-| Q8 | setup immediate revocation seam | D1 用 spike/contract test 证明 exact child unload | report/tool 已撤销但 resident child 仍可调用 |
+| Q8 | Extension immediate revocation seam | D1 用 spike/contract test 证明 exact child unload | report/tool 已撤销但 resident child 仍可调用 |
 | Q9 | one-shot descriptor 的只读支持 | decoder/catalog 支持，execution 不支持 | 历史合法 child 被错误标为 corrupt |
 
 ## 8. 完成定义
@@ -223,7 +223,7 @@ git diff --check
 - durable continuable spawn 能从模型 Tool 启动、续投、报告、中断、settle 和 cold resume；
 - nested child ownership 与 child-first drain 在 race test 下成立；
 - accepted work、descriptor、policy和消息可由 Session log 重建；
-- Provider/setup/tool 所有副作用有精确幂等 disposer；
+- Provider/Extension/tool 所有副作用有精确幂等 disposer；
 - listing 不激活 Agent，并对损坏/不支持/暂不可用给出稳定分类；
 - one-shot 行为、fork、Host、sandbox/preset 等未完成项被明确标注，不存在 silent fallback；
 - compatibility fixtures 指向确定的 DSH commit 和 Go test；

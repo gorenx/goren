@@ -14,21 +14,21 @@ subagent/runtime/         唯一 Runtime Plugin 与私有能力装配
 subagent/internal/provider/      Provider 注册、顺序与精确撤销
 subagent/internal/oneshot/       one-shot admission 与 lifecycle
 subagent/internal/continuation/  Activation、恢复、投递、settlement、drain
-subagent/internal/setup/         Setup 注册、安装与撤销
+subagent/internal/extension/     Activation Extension 注册、安装与撤销
 subagent/internal/catalog/       durable child 查询
 subagent/factory/         核心 Runtime 的 typed Factory
 subagent/spawn/           fresh continuable Provider Plugin
 subagent/fork/            fork seed Provider Plugin；首期不进入默认组合
 subagent/tool/            模型委派 Tool Consumer
 subagent/control/         send_message / interrupt_agent / list_agents Consumer
-subagent/report/          child-scoped report setup Consumer
+subagent/report/          child-scoped report Extension Consumer
 ```
 
 边界理由：
 
 - 根 `subagent` 只按概念声明接口和值对象，不设置聚合所有声明的 `types.go`；
 - `subagent/runtime.Runtime` 是唯一 Plugin 和 Service Provider；私有子模块只实现内聚用例，不嵌入 `plugin.Base`，不直接发布 Service；
-- Provider、one-shot、continuation、setup 和 catalog 按业务能力拆分，不再以 DTO/service/mapper 技术层拆分；
+- Provider、one-shot、continuation、extension 和 catalog 按业务能力拆分，不再以 DTO/service/mapper 技术层拆分；
 - spawn/fork 是可替换 Provider，不进入 core 条件分支；
 - Tool packages 是 Consumer，不拥有 continuation；
 - Factory 只负责严格 config decode、validation 和 construction；
@@ -65,18 +65,18 @@ flowchart TD
 
 | 现有位置 | 可复用能力 | Subagent 仍需补足 |
 | --- | --- | --- |
-| `agent/registry.go`、`agent/factory.go`、`agent/setup.go` | exact Create/Resume Handle、live Get/List、owner membership、unpublished `Setup`/`Scope` | ContinuationManager、setup registry 和 per-child admission lock |
+| `agent/registry.go`、`agent/factory.go`、`agent/provisioning.go` | exact Create/Resume Handle、live Get/List、owner membership、unpublished `Provisioner`/`Provisioning`/`Scope` | ContinuationManager、Extension registry 和 per-child admission lock |
 | `agent/initiator.go` | `WithInitiator` 把 exact parent 传给 Registry ownership | start/resume 必须统一使用该 context |
 | `agent/agent.go`、`agent/inbox.go` | Followup/Steer/Inject、Cancel、WhenIdle、唯一 FIFO queue；结构骨架已补 `Options.SubagentDepth` 的 copy/validation | depth 计算与 child 创建行为 |
 | `session/types.go`、`session/store.go` | Parent/Origin/SeedLength/DelegationDepth/AgentPreset、LiveStore/Flush | descriptor Event 与 Subagent projection |
 | `session/persistence/contracts.go` | Inspect/ListSnapshots 和 backend-neutral durable log | Subagent cold-resume/read-model policy |
 | `session/projection/` | live/detached projection Registry | 可选 projection cache 不是首期前置 |
-| `tools/`、`systemprompt/` | Tool/Policy/Restriction、prompt overlay 与精确 handle | Subagent Consumer packages 与 setup composition |
+| `tools/`、`systemprompt/` | Tool/Policy/Restriction、prompt overlay 与精确 handle | Subagent Consumer packages 与 child provisioning composition |
 | `approval/` | durable policy、`PolicyNever`、`PolicySourceDelegation` | owner-owned delegation seed 方法 |
 | `llm/message_source.go` | merge-extensible typed/opaque MessageSource | 三种 typed Subagent source |
-| `plugin/` | typed Service/Event、Scope、MountChild/UnloadChild、rollback | Subagent setup registration 与 resident installation 索引 |
+| `plugin/` | typed Service/Event、Scope、MountChild/UnloadChild、rollback | Subagent Extension registration 与 resident installation 索引 |
 
-Agent Loop 已在 Agent publication 前调用 `CreateOptions.Setup`，并把 `agentTree` 作为 `agent.Scope` 交给 Setup；Prepare/Commit/publication 失败都会回滚未发布 child。完整调用链见[05 Agent 创建事务与 Setup 边界](./05-agent-creation-transaction.md)。Subagent 不应另建 Agent constructor 或绕过 Registry。
+Agent Loop 已在 Agent publication 前调用 `CreateOptions.Provisioner`，并把 `agentTree` 作为 `agent.Scope` 交给 Provisioner；Provision/Commit/publication 失败都会回滚未发布 child。完整调用链见[05 Agent 创建事务与 Provisioning 边界](./05-agent-creation-transaction.md)。Subagent 不应另建 Agent constructor 或绕过 Registry。
 
 ## 3. 核心命名对象
 
@@ -87,9 +87,9 @@ Agent Loop 已在 Agent publication 前调用 `CreateOptions.Setup`，并把 `ag
 | `oneshot.Service` | one-shot validation、Run publication 与 terminal observation | Provider registry mutation、continuable child |
 | `continuation.Manager` | per-child lock、resident Activation、parent ownership、admission/settlement/drain | durable Session facts、模型循环 |
 | `activation` | exact Agent Handle、epoch run ID、parent/ancestry snapshot、owned children、closing 状态 | 可独立持久化的业务状态机 |
-| `activationSetupRegistry` | 有序 registrations、构建批次和 resident installations；为每次创建产生一个 fresh `agent.Setup` | Tool/System Prompt 的业务规则、Agent publication |
+| `extension.Registry` | 有序 registrations 和 resident installations；为每次创建提供 fresh `agent.Provisioner` | Tool/System Prompt 的业务规则、Agent publication |
 | `ProviderRegistration` | 一个精确 Provider 注册的幂等撤销权 | 按名称删除后来实例 |
-| `SetupRegistration` | 一个精确 setup 注册和 resident installations 的幂等撤销权 | Activation 本身的 Dispose |
+| `ExtensionRegistration` | 一个精确 Extension 注册和 resident installations 的幂等撤销权 | Activation 本身的 Dispose |
 
 所有跨 await 的 Start 数据先形成 immutable snapshot。Manager 不持有调用方的可变 request、Parent Agent options 指针或 Provider config 指针。
 
@@ -120,9 +120,9 @@ type ContinuableService interface {
 	DrainContinuableDescendants(context.Context, []agent.Agent) error
 }
 
-type SetupRegistry interface {
+type ExtensionRegistry interface {
 	plugin.Service
-	RegisterContinuableSetup(Setup) (SetupRegistration, error)
+	RegisterExtension(ActivationExtension) (ExtensionRegistration, error)
 }
 
 type Catalog interface {
@@ -135,7 +135,7 @@ type Catalog interface {
 说明：
 
 - `Runtime` 是实现上述接口并嵌入 `plugin.Base` 的唯一有状态 Plugin；`internal/*` 模块是同一领域内的职责对象，不是第二套 Runtime 或 Service Provider；
-- one-shot Tool 只依赖 `OneShotService`，continuable Tool/control 只依赖 `ContinuableService`，Provider Plugin 只依赖 `ProviderRegistry`，report installer 只依赖 `SetupRegistry`，Host/控制列表只依赖 `Catalog`；
+- one-shot Tool 只依赖 `OneShotService`，continuable Tool/control 只依赖 `ContinuableService`，Provider Plugin 只依赖 `ProviderRegistry`，report installer 只依赖 `ExtensionRegistry`，Host/控制列表只依赖 `Catalog`；
 - `Catalog` 同时读取两种 descriptor，因为“列举 durable child identity”是独立只读用例，不是某一种执行策略；
 - `context.Context` 替代 AbortSignal，并作为 operation 参数传入，不能存入 durable request；
 - `Interrupt` 是同步 admission + fire-and-return，不为形式一致强加无意义的等待；Consumer 在调用前检查自己的 context；
@@ -284,13 +284,13 @@ type DiagnosticEntry struct {
 - core `Activity` 是瞬时 read-model 字段：Session 在 LiveStore 为 `running`，只在 Persistence 为 `inactive`，不写入 durable descriptor；Host wire 可再映射为 Agent sampling activity，Tool status 也由 Consumer 映射；
 - API Proxy 若纳入，自行映射为 wire union，不能直接 JSON marshal Go domain interface。
 
-## 8. Setup contract 与 child composition
+## 8. Provisioning contract 与 child composition
 
-Agent 创建侧的通用 contract 已固定为 `agent.Setup`、`agent.Scope` 和 exact `agent.Effect`；详细职责、顺序和回滚见[05 Agent 创建事务与 Setup 边界](./05-agent-creation-transaction.md)。Subagent 的 `activationSetupRegistry` 负责把有序领域 registrations 变成每次 Create/Resume 独占的 fresh Setup，并保留 registration 到 resident installation 的 exact 索引。
+Agent 创建侧的通用 contract 已固定为 `agent.Provisioner`、可选 `agent.Provisioning`、`agent.Scope` 和 exact `agent.Effect`；详细职责、顺序和回滚见[05 Agent 创建事务与 Provisioning 边界](./05-agent-creation-transaction.md)。Subagent 的 `extension.Registry` 负责把有序 `ActivationExtension` registrations 变成每次 Create/Resume 的 fresh Provisioner，并保留 registration 到 resident installation 的 exact 索引。
 
-撤销 registration 时必须先阻止新安装，再释放它在所有 resident Activation 中产生的 exact `agent.Effect`。若撤销发生在 Prepare 与 Commit 之间，该 Setup 的 `Commit` 返回 `ACTIVATION_SETUP_REVOKED`，由 Agent 创建事务统一回滚。新注册不追装到已 resident child。
+撤销 registration 时必须先阻止新安装，再释放它在所有 resident Activation 中产生的 exact installation。若撤销发生在 Provision 与 Commit 之间，该 Provisioning 的 `Commit` 返回兼容码 `ACTIVATION_SETUP_REVOKED`，由 Agent 创建事务统一回滚。新注册不追装到已 resident child。
 
-首期 child composition 包括：delegation prompt、persona overlay、tool restriction、report setup 和 approval delegation policy。每一项由原 owner 提供 Plugin 或方法，Subagent 只排序和装配。
+首期 child composition 包括：delegation prompt、persona overlay、tool restriction、report Extension 和 approval delegation policy。每一项由原 owner 提供 Plugin、Extension 或方法，Subagent 只排序和装配。
 
 ## 9. Approval、sandbox 与 Agent options
 

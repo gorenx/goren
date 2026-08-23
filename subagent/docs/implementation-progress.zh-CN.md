@@ -36,7 +36,7 @@
 | SA-D09 | followup、cold resume、authority 与 FIFO | Go Verified | `internal/continuation/manager_delivery.go`、`materialization.go` | `manager_test.go` 验证 resident followup、persisted descriptor cold resume 与 exact parent 路由 |
 | SA-D10 | interrupt、report、settlement | Implemented | `internal/continuation/manager_delivery.go`、`manager_settlement.go`、`service_events.go` | focused test 覆盖 `KeepInbox=true` interrupt、quiet report 与 drain terminal edge；自然 settlement failure mapping 仍需补充 |
 | SA-D11 | selected children / descendant drain | Implemented | `internal/continuation/manager_drain.go`、`activation.go` | focused test 覆盖 selected child release 与 scoped admission cutoff；并发 materialization barrier 和多层 child-first 顺序仍需增加定向测试 |
-| SA-D12 | Setup ordered composition 与即时精确撤销 | Go Verified | `internal/setup`、`internal/composition`、`runtime/plugin.go` | setup tests 覆盖顺序、撤销、commit invalidation、自撤销和幂等收敛；composition tests 覆盖 partial Prepare rollback 与 cold-resume persona/tool composition |
+| SA-D12 | Activation Extension ordered provisioning 与即时精确撤销 | Go Verified | `extension.go`、`internal/extension`、`internal/composition`、`runtime/plugin.go` | extension tests 覆盖顺序、partial provision rollback、commit invalidation、自撤销、resident 精确撤销和幂等收敛；composition tests 覆盖后续 part 失败逆序回滚与 cold-resume persona/tool composition；`dccd2c1` 删除强制空 `Commit/Dispose` |
 | SA-D13 | Catalog live/persistent listing 与 diagnostics | Go Verified | `catalog.go`、`internal/catalog`、`internal/projection`、`runtime/projections.go` | `service_test.go` 覆盖 live-preferred、creation window、cold fold、diagnostic、ordinary traversal、stable preorder、缺失依赖与 cancellation；projection tests 覆盖 last-wins、timing reset 和 damaged checkpoint rejection |
 | SA-D14 | spawn/fork Provider | Planned | 尚未创建实现包 | 不创建占位目录；one-shot driver 也尚未实现 |
 | SA-D15 | Tool/control/report Consumer | Planned | 尚未创建实现包 | 等核心 use case 可用后实施 |
@@ -47,7 +47,7 @@
 2026-08-23 当前工作树执行：
 
 ```text
-go fmt ./subagent/... ./internal/assembly/...
+go fmt ./agent/... ./agentloop/... ./apiproxy/session/... ./subagent/...
 go test ./...
 go test -race ./...
 go vet ./...

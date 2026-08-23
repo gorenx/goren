@@ -8,7 +8,7 @@
 | --- | --- |
 | `plugin.go` | 根 Agent Loop Plugin、Factory 实现与 Create/Resume 用例入口 |
 | `factory/` | raw JSON 的严格解码、配置校验、默认值和根 Plugin 构造 |
-| `prepared_agent.go` | active 但未发布的 Agent 创建事务及 Setup/publish 顺序 |
+| `prepared_agent.go` | active 但未发布的 Agent 创建事务及 Provision/publish 顺序 |
 | `tree.go` | 私有 Agent Scope root、基础 Plugin 和组合期 effect ownership |
 | `construction.go` | 根 Plugin 的创建准入与停机时 in-flight join |
 | `agent.go` | `ReactLoopAgent` 能力 Plugin 与对私有 loop 的命令委派 |
@@ -17,7 +17,7 @@
 | `turn.go` | Turn/Step 状态机、Prompt preparation、Session fact 与 durability boundary |
 | `request.go` | request waterfall、LLM route、header/context fact 与模型 attempt |
 | `tool_calls.go` | bounded Tool body concurrency、barrier、model-order commit 与 failure drain |
-| `membership.go` | Setup 提交后的 Agent/Session publication 与 teardown |
+| `membership.go` | Provisioning 提交后的 Agent/Session publication 与 teardown |
 | `lifecycle.go` | caller Handle 对一棵 exact Runtime tree 的销毁权 |
 | `runtime_context.go`、`runtime_context_router.go` | Session surface 的运行时上下文投影与精确路由 |
 | `events.go` | Agent/Inbox 实时事件发布和 post-commit observer failure containment |
@@ -39,8 +39,9 @@ flowchart TD
     Runtime --> Vars[Agent Variables]
     Runtime --> Agent[ReactLoopAgent]
     Runtime --> Scope[agent.Scope]
-    Scope --> Setup[caller agent.Setup]
-    Setup --> Membership[agentMembership publication]
+    Scope --> Provisioner[caller agent.Provisioner]
+    Provisioner --> Provisioning[optional agent.Provisioning]
+    Provisioning --> Membership[agentMembership publication]
     Agent --> Loop[one private loop]
     Loop --> Activity[activityCoordinator]
     Loop --> Turn[turnRunner]
@@ -59,7 +60,8 @@ sequenceDiagram
     participant Root as agentloop.Plugin
     participant Runtime as plugin.Runtime
     participant Scope as agentTree Scope
-    participant Setup as caller agent.Setup
+    participant Provisioner as caller agent.Provisioner
+    participant Provisioning as optional agent.Provisioning
     participant Membership as agentMembership
 
     Caller->>Registry: Create or Resume
@@ -67,9 +69,10 @@ sequenceDiagram
     Root->>Root: prepare unpublished Session and ReactLoopAgent
     Root->>Runtime: MountScopedChild(agentTree)
     Runtime->>Scope: overlays -> variables -> Agent
-    Root->>Setup: Prepare(ctx, Scope)
-    Setup->>Scope: Mount / Own exact effects
-    Root->>Setup: Commit()
+    Root->>Provisioner: Provision(ctx, Scope)
+    Provisioner->>Scope: Mount / Own exact effects
+    Provisioner-->>Root: optional Provisioning
+    Root->>Provisioning: Commit()
     Root->>Scope: Mount agentMembership
     Membership->>Registry: Enter Session and Agent
     Membership->>Scope: open Agent work admission
@@ -82,9 +85,9 @@ sequenceDiagram
     Runtime->>Scope: reverse Dispose
 ```
 
-`newPreparedAgent` 先创建 ReactLoopAgent 并把 `agentTree` 挂入 Runtime；此时基础 Overlay 与 Agent 已 active，但 Registry 和 Session 都不可见。Overlay 必须先于 `ReactLoopAgent` 激活，使 Agent 捕获本 Scope 的 System Prompt 与 Tools runtime。随后调用方的 `Setup` 在同一 Scope 中准备并提交贡献，最后才挂载 `agentMembership`、开放 work 并完成 Enter/Announce。
+`newPreparedAgent` 先创建 ReactLoopAgent 并把 `agentTree` 挂入 Runtime；此时基础 Overlay 与 Agent 已 active，但 Registry 和 Session 都不可见。Overlay 必须先于 `ReactLoopAgent` 激活，使 Agent 捕获本 Scope 的 System Prompt 与 Tools runtime。随后调用方的 `Provisioner` 配置同一 Scope；若返回 `Provisioning`，Agent Loop 先把它交给 tree、再执行 publication commit，最后才挂载 `agentMembership`、开放 work 并完成 Enter/Announce。
 
-Agent Loop 不实现 `agent.Setup`：它是 Setup 的用例协调者和 `agent.Scope` provider。Subagent、测试或其他调用方分别提供自己的 Setup；若 Agent Loop 同时实现 Setup，就会把“创建事务所有者”和“领域贡献提供者”重新混在一个对象里。
+Agent Loop 不实现 `agent.Provisioner`：它是 provisioning 的用例协调者和 `agent.Scope` provider。Subagent、测试或其他调用方分别提供自己的 Provisioner；若 Agent Loop 同时实现 Provisioner，就会把“创建事务所有者”和“领域贡献提供者”重新混在一个对象里。
 
 创建失败时 `preparedAgent` 用非取消上下文卸载整棵树，保证取消不会中断结构回滚。`constructionGate` 只管理根 Plugin 是否接受新创建以及停机时等待多少个 Create/Resume；它不保存 live Agent 集合。live membership 由 Agent Registry 拥有，结构 teardown 由 Runtime tree 和 caller Handle 拥有。
 
@@ -100,8 +103,8 @@ Agent Loop 不实现 `agent.Setup`：它是 Setup 的用例协调者和 `agent.S
 - 第一个 typed cancel cause 是 durable authority。销毁会停止新 work、取消当前 activity、清空 Inbox，并在释放扩展和依赖前等待已启动 Tool body 与 durability boundary 收敛。
 - Event observer failure 不回滚已提交事实；它通过 `RuntimeOptions.ObserverError` 汇报。Session、Prompt、LLM、Tool scheduler 或 flush 的 contract error 则进入 Agent/Turn 失败路径。
 
-## Setup 组合规则
+## Provisioning 组合规则
 
-调用方通过 `agent.CreateOptions.Setup` 或 `agent.ResumeOptions.Setup` 提供 fresh Setup。Setup 可用 `Scope.Mount` 安装 Plugin，或用 `Scope.Own` 转移普通 effect；`agent.MountPlugins` 只是无状态的便捷适配器。Setup 可以依赖 `Scope.Agent()` 返回的 exact Agent，但不能驱动未发布 Agent，也不能接管 loop、Registry membership 或 Session durable decision。
+调用方通过 `agent.CreateOptions.Provisioner` 或 `agent.ResumeOptions.Provisioner` 配置 Scope。Provisioner 可用 `Scope.Mount` 安装 Plugin，或用 `Scope.Own` 转移普通 effect；失败前未转移的资源必须自行回滚。只有需要 publication validation 或跨 residency 持有资源时才返回 `Provisioning`，普通 `agent.MountPlugins` 完成结构挂载后返回 nil。Provisioner 可以依赖 `Scope.Agent()` 返回的 exact Agent，但不能驱动未发布 Agent，也不能接管 loop、Registry membership 或 Session durable decision。
 
 Retry、Guard、Approval、Subagent、Workflow 和 compaction 必须沿已有 owner-defined Service/Event/Waterfall seam 接入。若能力要求 Agent Loop 认识数据库表、Echo frame、Provider credential 或页面状态，应先修正依赖方向。

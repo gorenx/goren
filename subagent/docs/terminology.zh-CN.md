@@ -51,7 +51,9 @@
 | authority | 获准对 live child 执行 followup、interrupt、report 或 drain 的精确身份 | MessageSource 或仅相同 Session ID 的陈旧对象 |
 | Settlement | Activation 在无待处理工作且 Agent idle 后形成 terminal edge、parent notice 和资源释放的过程 | 一条普通 report；one-shot Result 本身 |
 | drain | 关闭指定父树 admission，等待已进入事务并 child-first 释放 resident Activation | 删除 Session history |
-| Setup | 为未发布 continuable Activation 构建一个 Plugin 贡献的对象 | 全局 Service locator 或 child Runtime |
+| Provisioner | 配置一个 active 但未发布的 Agent Scope 的对象 | Agent Loop、Plugin phase 或 resident lifecycle |
+| Provisioning | Provisioner 返回的一次配置事务，负责 publication commit 与后续释放 | 所有 Provisioner 都必须制造的空生命周期对象 |
+| ActivationExtension | 安装到 continuable Activation 的可选 child-scoped 能力 | 全局 Service locator、Agent Provisioner 或 child Runtime |
 | Catalog | 不创建、不 resume Agent 的 durable child 查询能力 | Activation registry 的别名 |
 | MessageSource | 写入消息的 durable attribution | 权限凭证 |
 
@@ -78,7 +80,7 @@ Catalog 的 `ActivityRunning` 当前表示 Session 在 LiveStore；它不是“�
 3. 名称需要连续叠加多个概念才能成立时，先检查类型是否混合职责，并优先拆分。
 4. 接口按 Consumer 能力命名：`OneShotService` 与 `ContinuableService` 分开；不要用一个 `Service` 暴露所有模式。
 5. 值对象按身份命名：`ReportSource`、`SettlementSource`；wire `kind` 仍保留兼容 token。
-6. `Setup` 已在 `subagent` 领域上下文内，不需要重复前缀成 `ContinuableSubagentActivationSetupContribution`。
+6. 不再用 `Setup` 同时表示 Agent 配置事务和 Subagent 扩展；分别使用 `Provisioner`/`Provisioning` 与 `ActivationExtension`。
 7. 不使用 `types.go` 集中收容所有声明；文件按 `provider`、`one_shot`、`continuable`、`descriptor` 等概念组织。
 8. 变量、参数、receiver 和 named return 不得与包内函数或类型名发生仅大小写不同的复用。
 9. 子模块按内聚业务能力命名；不按 DTO、service、mapper、storage 等技术处理阶段切目录。
