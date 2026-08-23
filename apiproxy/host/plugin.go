@@ -82,8 +82,8 @@ func New(deploymentSettings Settings, options RuntimeOptions) (*Plugin, error) {
 func (owner *Plugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: apiproxy.PluginName,
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[apiproxy.Service](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[apiproxy.Service](owner),
 		},
 		Requires: []plugin.ServiceType{
 			plugin.ServiceOf[agent.Registry](),

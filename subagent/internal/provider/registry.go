@@ -46,8 +46,8 @@ func New(eventTarget Events) *Registry {
 	}
 }
 
-// Register publishes one exact named Provider.
-func (registryOwner *Registry) Register(
+// RegisterProvider publishes one exact named Provider.
+func (registryOwner *Registry) RegisterProvider(
 	requestContext context.Context,
 	candidate subagent.Provider,
 ) (subagent.ProviderRegistration, error) {
@@ -94,8 +94,8 @@ func (registryOwner *Registry) Register(
 	}, nil
 }
 
-// Get returns the exact Provider registered under name.
-func (registryOwner *Registry) Get(name string) (subagent.Provider, bool) {
+// GetProvider returns the exact Provider registered under name.
+func (registryOwner *Registry) GetProvider(name string) (subagent.Provider, bool) {
 	registryOwner.mutex.RLock()
 	record, found := registryOwner.providers[name]
 	registryOwner.mutex.RUnlock()
@@ -105,8 +105,8 @@ func (registryOwner *Registry) Get(name string) (subagent.Provider, bool) {
 	return record.provider, true
 }
 
-// List returns Provider names in successful registration order.
-func (registryOwner *Registry) List() []string {
+// ListProviders returns Provider names in successful registration order.
+func (registryOwner *Registry) ListProviders() []string {
 	registryOwner.mutex.RLock()
 	names := append([]string(nil), registryOwner.order...)
 	registryOwner.mutex.RUnlock()

@@ -24,11 +24,11 @@ type approvalProviderPlugin struct {
 	lastRequest approval.Request
 }
 
-func (*approvalProviderPlugin) Manifest() plugin.Manifest {
+func (owner *approvalProviderPlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "approval-provider",
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[approval.Approval](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[approval.Approval](owner),
 		},
 	}
 }

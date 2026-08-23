@@ -84,8 +84,8 @@ func (owner *DurableRegistry) Manifest() plugin.Manifest {
 	}
 	return plugin.Manifest{
 		Name: PluginName,
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[Registry](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[Registry](owner),
 		},
 		Requires: requiredServices,
 	}

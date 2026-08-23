@@ -401,7 +401,7 @@ type providerSource struct {
 	candidate subagent.Provider
 }
 
-func (records providerSource) Get(providerName string) (subagent.Provider, bool) {
+func (records providerSource) GetProvider(providerName string) (subagent.Provider, bool) {
 	return records.candidate, providerName == records.candidate.Name()
 }
 

@@ -55,9 +55,9 @@ func (owner *Service) Manifest() plugin.Manifest {
 	}
 	return plugin.Manifest{
 		Name: owner.name,
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[Approval](),
-			plugin.ServiceOf[DelegationPolicy](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[Approval](owner),
+			plugin.NewProvidedService[DelegationPolicy](owner),
 		},
 		Requires: requiredServices,
 	}

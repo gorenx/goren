@@ -46,7 +46,7 @@ type ChildPlugin struct {
 // without performing effects.
 type Manifest struct {
 	Name       string
-	Provides   []ServiceType
+	Provides   []ProvidedService
 	Requires   []ServiceType
 	Optional   []ServiceType
 	Events     []EventSubscription
@@ -56,7 +56,7 @@ type Manifest struct {
 
 type manifestSpec struct {
 	name       string
-	provides   []providedServiceSpec
+	provides   []ProvidedService
 	requires   []serviceRef
 	optional   []serviceRef
 	events     []eventSubscriptionSpec
@@ -83,7 +83,7 @@ func normalizeManifest(
 	}
 	if len(metadata.Provides) != 0 {
 		normalized.provides = make(
-			[]providedServiceSpec,
+			[]ProvidedService,
 			0,
 			len(metadata.Provides),
 		)
@@ -94,27 +94,26 @@ func normalizeManifest(
 	if len(metadata.Optional) != 0 {
 		normalized.optional = make([]serviceRef, 0, len(metadata.Optional))
 	}
-	for _, declaredService := range metadata.Provides {
-		reference, err := normalizeServiceType(
+	for _, provided := range metadata.Provides {
+		reference, err := normalizeServiceRef(
 			metadata.Name,
 			"provides",
-			declaredService,
+			provided.reference,
 			seenServices,
 		)
 		if err != nil {
 			return manifestSpec{}, err
 		}
-		capability, matches := declaredService.bindService(pluginInstance)
-		if !matches || capability == nil {
+		if provided.capability == nil {
 			return manifestSpec{}, fmt.Errorf(
-				"plugin: %s declares provided Service %q but does not implement it",
+				"plugin: %s provides Service %q with a nil implementation",
 				metadata.Name,
 				reference.name,
 			)
 		}
-		normalized.provides = append(normalized.provides, providedServiceSpec{
+		normalized.provides = append(normalized.provides, ProvidedService{
 			reference:  reference,
-			capability: capability,
+			capability: provided.capability,
 		})
 	}
 	for _, declaredService := range metadata.Requires {
@@ -255,7 +254,20 @@ func normalizeServiceType(
 			groupName,
 		)
 	}
-	reference := declaredService.serviceReference()
+	return normalizeServiceRef(
+		pluginName,
+		groupName,
+		declaredService.serviceReference(),
+		seen,
+	)
+}
+
+func normalizeServiceRef(
+	pluginName string,
+	groupName string,
+	reference serviceRef,
+	seen map[reflect.Type]string,
+) (serviceRef, error) {
 	if err := reference.validate(); err != nil {
 		return serviceRef{}, fmt.Errorf(
 			"plugin: %s %s: %w",
@@ -316,7 +328,7 @@ func sameManifestContract(leftSpec manifestSpec, rightSpec manifestSpec) bool {
 		sameWaterfallSet(leftSpec.waterfalls, rightSpec.waterfalls)
 }
 
-func sameServiceSet(leftOffers []providedServiceSpec, rightOffers []providedServiceSpec) bool {
+func sameServiceSet(leftOffers []ProvidedService, rightOffers []ProvidedService) bool {
 	if len(leftOffers) != len(rightOffers) {
 		return false
 	}

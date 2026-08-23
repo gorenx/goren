@@ -42,8 +42,9 @@ func New() *Registry {
 	return &Registry{}
 }
 
-// Register adds one contribution after every previously registered Setup.
-func (owner *Registry) Register(
+// RegisterContinuableSetup adds one contribution after every previously
+// registered Setup.
+func (owner *Registry) RegisterContinuableSetup(
 	contribution subagent.Setup,
 ) (subagent.SetupRegistration, error) {
 	if contribution == nil || nilInterface(contribution) {

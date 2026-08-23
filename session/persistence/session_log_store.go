@@ -102,11 +102,11 @@ func NewSessionLogStore(
 }
 
 // Manifest declares durable Session Service ownership and observed lifecycle.
-func (*SessionLogStore) Manifest() plugin.Manifest {
+func (owner *SessionLogStore) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: PluginName,
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[Persistence](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[Persistence](owner),
 		},
 		Requires: []plugin.ServiceType{
 			plugin.ServiceOf[session.LiveStore](),

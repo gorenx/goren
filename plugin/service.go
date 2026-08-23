@@ -6,21 +6,16 @@ import (
 	"reflect"
 )
 
-// Service marks a business capability offered through the Runtime. Provider
-// interfaces embed Service and add their domain methods.
-type Service interface {
-	RuntimeService()
-}
-
-// RuntimeService allows a business interface embedding Service to be
-// implemented directly by a Plugin that embeds Base.
-func (*Base) RuntimeService() {}
+// Service is embedded by business capability interfaces to identify their
+// architectural role. Runtime validates that ServiceOf and NewProvidedService
+// select a named interface; implementations need no marker method or base
+// struct.
+type Service interface{}
 
 // ServiceType is a type-derived Service contract used only by Manifest.
 type ServiceType interface {
 	Name() string
 	serviceReference() serviceRef
-	bindService(Plugin) (Service, bool)
 }
 
 type serviceRef struct {
@@ -36,7 +31,10 @@ func (reference serviceRef) validate() error {
 	return nil
 }
 
-type providedServiceSpec struct {
+// ProvidedService binds one Service contract to the implementation published
+// by a Plugin. The Plugin owns the binding lifecycle but need not implement the
+// business capability itself.
+type ProvidedService struct {
 	reference  serviceRef
 	capability Service
 }
@@ -67,12 +65,19 @@ func (typedContract typedServiceType[S]) serviceReference() serviceRef {
 	return typedContract.reference
 }
 
-func (typedServiceType[S]) bindService(pluginInstance Plugin) (Service, bool) {
-	capability, matches := pluginInstance.(S)
-	if !matches {
-		return nil, false
+// NewProvidedService binds a named Service interface to one implementation
+// object. The implementation must not be a typed nil.
+func NewProvidedService[S Service](capability S) ProvidedService {
+	reference := ServiceOf[S]().serviceReference()
+	return ProvidedService{
+		reference:  reference,
+		capability: capability,
 	}
-	return capability, true
+}
+
+// Name returns the fully qualified Go Service interface name.
+func (provided ProvidedService) Name() string {
+	return provided.reference.name
 }
 
 type serviceBindingKey struct {

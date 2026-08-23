@@ -82,8 +82,8 @@ func newReactLoopAgent(
 func (subject *ReactLoopAgent) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: PluginName + "/react-loop-agent",
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[agent.Agent](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[agent.Agent](subject),
 		},
 		Requires: []plugin.ServiceType{
 			plugin.ServiceOf[session.LiveStore](),

@@ -49,11 +49,11 @@ func New() *Site {
 }
 
 // Manifest provides the embedded browser frontend capability.
-func (*Site) Manifest() plugin.Manifest {
+func (owner *Site) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: PluginName,
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[Frontend](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[Frontend](owner),
 		},
 	}
 }

@@ -51,11 +51,11 @@ func New() *QuestionService {
 
 // Manifest provides UserQuestions and optionally consumes the Agent Registry
 // used to attest Agent-backed requests.
-func (*QuestionService) Manifest() plugin.Manifest {
+func (owner *QuestionService) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: PluginName,
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[UserQuestions](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[UserQuestions](owner),
 		},
 		Optional: []plugin.ServiceType{
 			plugin.ServiceOf[agent.Registry](),

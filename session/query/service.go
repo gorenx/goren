@@ -66,11 +66,11 @@ func New(
 }
 
 // Manifest declares the Query Service and its source dependencies.
-func (*Service) Manifest() plugin.Manifest {
+func (owner *Service) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: PluginName,
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[QueryService](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[QueryService](owner),
 		},
 		Requires: []plugin.ServiceType{
 			plugin.ServiceOf[session.LiveStore](),

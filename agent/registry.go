@@ -93,11 +93,11 @@ func NewRegistry(settings RegistryOptions) *RegistryPlugin {
 }
 
 // Manifest provides the canonical Agent Registry Service.
-func (*RegistryPlugin) Manifest() plugin.Manifest {
+func (owner *RegistryPlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: PluginName,
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[Registry](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[Registry](owner),
 		},
 	}
 }
