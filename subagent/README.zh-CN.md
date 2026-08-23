@@ -45,7 +45,7 @@ flowchart LR
     Catalog --> Session
 ```
 
-`subagent` 根包只声明领域公开契约和共享值对象；已实现用例按内聚能力划分为 `internal/provider`、`internal/oneshot`、`internal/continuation`、`internal/composition` 和 `internal/setup`。`subagent/runtime.Plugin` 是唯一 Plugin 与装配入口，但不实现这些业务接口；它以 `ProvidedService` 发布各子模块的独立对象。私有子模块不得各自建立 Plugin 或直接操作 Runtime topology。Catalog 只有 contract，尚未建立实现子模块，也未发布。
+`subagent` 根包只声明领域公开契约和共享值对象；已实现用例按内聚能力划分为 `internal/provider`、`internal/oneshot`、`internal/continuation`、`internal/composition`、`internal/setup`、`internal/catalog` 和 `internal/projection`。`subagent/runtime.Plugin` 是唯一 Plugin 与装配入口，但不实现这些业务接口；它以 `ProvidedService` 发布各子模块的独立对象，并管理两个 Subagent Projection Unit 的 registration。私有子模块不得各自建立 Plugin 或直接操作 Runtime topology。
 
 ## 生命周期与失败
 

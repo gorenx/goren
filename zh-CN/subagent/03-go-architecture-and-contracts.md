@@ -254,9 +254,16 @@ type ListEntry interface {
 	SessionID() session.SessionID
 }
 
-type ChildEntry struct {
+type OneShotChildEntry struct {
 	ID          session.SessionID
-	Descriptor  Descriptor
+	Label       *string
+	Activity    Activity
+	HasChildren bool
+}
+
+type ContinuableChildEntry struct {
+	ID          session.SessionID
+	Label       string
 	Activity    Activity
 	HasChildren bool
 }
@@ -272,6 +279,7 @@ type DiagnosticEntry struct {
 - event name 固定 `subagent/descriptor`，version 固定 2；
 - 必填、缺失、null、未知 mode 和未知 version 按源 fold 语义处理；未知 version 不抛 schema error，但当前 listing 会归为 `corrupt`；
 - 支持读取 one-shot identity，但首期不把它判为 resumable；
+- child row 只暴露 projection-owned mode/label，不返回完整 descriptor 中的 Provider-private 创建数据；
 - `DescendantListEntry` 组合 `ListEntry`、durable parent ID 和相对 depth；
 - core `Activity` 是瞬时 read-model 字段：Session 在 LiveStore 为 `running`，只在 Persistence 为 `inactive`，不写入 durable descriptor；Host wire 可再映射为 Agent sampling activity，Tool status 也由 Consumer 映射；
 - API Proxy 若纳入，自行映射为 wire union，不能直接 JSON marshal Go domain interface。

@@ -32,22 +32,23 @@
 | SA-D05 | object output schema detached validation | Go Verified | `tools/schema.go`、`internal/oneshot/service.go` | `tools` schema tests及 one-shot focused test 尚需补齐组合路径 |
 | SA-D06 | Provider 注册、顺序、exact unregister 与 veto rollback | Go Verified | `internal/provider/registry.go`、`runtime/events.go` | `runtime_test.go` 覆盖 duplicate、顺序、observer rollback、幂等撤销和同名重注册；并发 race 随全量 race gate 验证 |
 | SA-D07 | one-shot Start validation、snapshot、Run publication 与 lifecycle | Go Verified | `internal/oneshot/service.go`、`runtime/events.go` | `runtime_test.go` 覆盖 capability gate、request detachment、startup failure 无 lifecycle、start/end identity；schema failure、result failure和无效 Run 仍需扩充 |
-| SA-D08 | continuable fresh create 与 initial prompt transaction | Go Verified | `internal/continuation/start.go`、`materialization.go` | `manager_test.go` 验证 descriptor seed、depth/options、initial Inbox acceptance 和 lifecycle start |
-| SA-D09 | followup、cold resume、authority 与 FIFO | Go Verified | `internal/continuation/delivery.go`、`materialization.go` | `manager_test.go` 验证 resident followup、persisted descriptor cold resume 与 exact parent 路由 |
-| SA-D10 | interrupt、report、settlement | Implemented | `internal/continuation/delivery.go`、`settlement.go`、`events.go` | focused test 覆盖 `KeepInbox=true` interrupt、quiet report 与 drain terminal edge；自然 settlement failure mapping 仍需补充 |
-| SA-D11 | selected children / descendant drain | Implemented | `internal/continuation/drain.go`、`activation.go` | focused test 覆盖 selected child release 与 scoped admission cutoff；并发 materialization barrier 和多层 child-first 顺序仍需增加定向测试 |
+| SA-D08 | continuable fresh create 与 initial prompt transaction | Go Verified | `internal/continuation/manager_start.go`、`materialization.go` | `manager_test.go` 验证 descriptor seed、depth/options、initial Inbox acceptance 和 lifecycle start |
+| SA-D09 | followup、cold resume、authority 与 FIFO | Go Verified | `internal/continuation/manager_delivery.go`、`materialization.go` | `manager_test.go` 验证 resident followup、persisted descriptor cold resume 与 exact parent 路由 |
+| SA-D10 | interrupt、report、settlement | Implemented | `internal/continuation/manager_delivery.go`、`manager_settlement.go`、`service_events.go` | focused test 覆盖 `KeepInbox=true` interrupt、quiet report 与 drain terminal edge；自然 settlement failure mapping 仍需补充 |
+| SA-D11 | selected children / descendant drain | Implemented | `internal/continuation/manager_drain.go`、`activation.go` | focused test 覆盖 selected child release 与 scoped admission cutoff；并发 materialization barrier 和多层 child-first 顺序仍需增加定向测试 |
 | SA-D12 | Setup ordered composition 与即时精确撤销 | Go Verified | `internal/setup`、`internal/composition`、`runtime/plugin.go` | setup tests 覆盖顺序、撤销、commit invalidation、自撤销和幂等收敛；composition tests 覆盖 partial Prepare rollback 与 cold-resume persona/tool composition |
-| SA-D13 | Catalog live/persistent listing 与 diagnostics | Planned | `catalog.go` | contract 已有，listing/projection 行为尚未实现 |
+| SA-D13 | Catalog live/persistent listing 与 diagnostics | Go Verified | `catalog.go`、`internal/catalog`、`internal/projection`、`runtime/projections.go` | `service_test.go` 覆盖 live-preferred、creation window、cold fold、diagnostic、ordinary traversal、stable preorder、缺失依赖与 cancellation；projection tests 覆盖 last-wins、timing reset 和 damaged checkpoint rejection |
 | SA-D14 | spawn/fork Provider | Planned | 尚未创建实现包 | 不创建占位目录；one-shot driver 也尚未实现 |
 | SA-D15 | Tool/control/report Consumer | Planned | 尚未创建实现包 | 等核心 use case 可用后实施 |
-| SA-D16 | Factory、默认 assembly 与端到端验证 | Planned | 尚未创建实现包 | Subagent Plugin 当前不进入默认组合 |
+| SA-D16 | Factory、默认 assembly 与端到端验证 | Go Verified | `factory`、`internal/assembly/catalog.go` | Factory strict empty config tests；assembly contract 验证五个 Service 可解析且默认注册 `subagent` / `subagentTiming` Projection Unit |
 
 ## 3. 已执行验证
 
 2026-08-23 当前工作树执行：
 
 ```text
-gofmt -w agent agentloop approval tools subagent
+go fmt ./subagent/... ./internal/assembly/...
+go test ./...
 go test -race ./...
 go vet ./...
 go build ./...
@@ -56,16 +57,16 @@ git diff --check
 
 结果：通过。
 
-这只证明当前 Go 实现通过全仓测试、race、vet、build 和命名架构检查，不是 TypeScript/Go compatibility acceptance，也不证明 Catalog、具体 Provider、Consumer 或默认 assembly 已完成。
+这只证明当前 Go 实现通过全仓测试、race、vet、build 和命名架构检查，不是 TypeScript/Go compatibility acceptance，也不证明具体 Provider 或 Consumer 已完成。
 
 ## 4. 下一验证门
 
 1. Provider registry：顺序、duplicate、added veto rollback、removed containment、exact stale handle、race。
 2. one-shot：所有 capability gate、depth/schema、request detachment、Provider start failure 无 lifecycle、start/end 配对与 observer containment。
 3. continuable：fresh create、acceptance rollback、resident/cold FIFO、exact authority、cancel/settlement、child-first drain。
-4. Catalog：live-preferred corpus、projection fold、diagnostic containment、stable preorder、cancellation。
+4. Catalog：增加与固定 DSH list/projection fixtures 的差分验证和可选 projection-cache acceleration；cache 不是权威读取前提。
 5. Provider/Consumer：spawn/fork 和 Tool/control/report contract tests。
-6. 全量：`go test ./...`、`go test -race ./...`、`go vet ./...`、`go build ./...`、`git diff --check`，以及固定 DSH source differential fixtures。
+6. 全量：继续执行 `go test ./...`、`go test -race ./...`、`go vet ./...`、`go build ./...`、`git diff --check`，并补齐固定 DSH source differential fixtures。
 
 ## 5. 进度维护规则
 

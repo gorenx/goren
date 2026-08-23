@@ -16,7 +16,7 @@
 
 ### 2.1 Plugin 与业务 Service
 
-`runtime.Plugin` 是唯一装配和 Plugin 生命周期 owner，但不是 Subagent 用例实现。它解析外部依赖、控制模块启停、适配 Event bus，并以 `ProvidedService` 发布四个独立业务对象。one-shot 与 continuable 仍是不同 Consumer 接口：
+`runtime.Plugin` 是唯一装配和 Plugin 生命周期 owner，但不是 Subagent 用例实现。它解析外部依赖、控制模块启停、注册 Projection Unit、适配 Event bus，并以 `ProvidedService` 发布五个独立业务对象。one-shot 与 continuable 仍是不同 Consumer 接口：
 
 | 能力 | Consumer 意图 | 主要实现文件 |
 | --- | --- | --- |
@@ -24,7 +24,7 @@
 | `OneShotService` | 启动一个 holder-owned `Run` | `one_shot.go`、`internal/oneshot` |
 | `ContinuableService` | 创建、续投、报告、中断和清理 durable child | `continuable.go`、`internal/continuation` |
 | `SetupRegistry` | 为每个 continuable Activation 组合 Plugin | `setup.go`、`internal/setup` |
-| `Catalog` | 不 resume Agent 地列举 durable child | `catalog.go`、后续 listing 行为文件 |
+| `Catalog` | 不 resume Agent 地列举 durable child | `catalog.go`、`internal/catalog` |
 
 接口和数据声明与用例实现分文件，是为了阅读和依赖审计；它们仍属于一个领域。`types.go` 不作为所有声明的收容处。Plugin 不通过转发方法实现上述接口；Consumer 解析到的是对应子模块对象。
 
@@ -58,12 +58,15 @@ flowchart TD
     Plugin[runtime.Plugin] -->|ProvidedService| Registry
     Plugin -->|ProvidedService| OneShot[internal/oneshot.Service]
     Plugin -->|ProvidedService| Continue[internal/continuation.Service]
+    Plugin -->|ProvidedService| Catalog[internal/catalog.Service]
     Contract --> Registry
     Contract --> OneShot
     Contract --> Continue
+    Contract --> Catalog
     Plugin --> Agent[agent.Registry and Agent]
     Plugin --> Live[session.LiveStore]
     Plugin --> Persistence[session/persistence.Persistence]
+    Plugin --> Projections[session/projection.Registry]
     Plugin --> Approval[approval.DelegationPolicy optional]
     Provider -. detached creation data .-> Continue
 ```
@@ -110,7 +113,7 @@ Provider 返回前仍拥有创建事务，失败必须自行回滚且不产生 s
 
 ### 4.5 Catalog
 
-`Catalog` 读取 live Session 与可选 persistence，使用 descriptor projection/fold 分类，但不调用 `agent.Registry.Resume`。普通 Session 和 one-shot child 仍可作为 traversal node，以发现其下层 continuable descendants。每个候选的损坏或暂时读取失败成为 contained diagnostic，不应让整个列表丢失。
+`Catalog` 读取 live Session 与可选 persistence，使用 `subagent` identity projection 分类，但不调用 `agent.Registry.Resume`。普通 Session 和 one-shot child 仍可作为 traversal node，以发现其下层 continuable descendants。live Session 优先于同 ID 的 persisted header；cold inspection 受固定并发上限约束并校验 lifecycle witness。每个候选的损坏或暂时读取失败成为 contained diagnostic，不应让整个列表丢失。列表只暴露 mode、label、activity 和 `hasChildren`，不返回完整 descriptor 的 Provider-private 创建参数。
 
 ## 5. Owned state
 
@@ -140,7 +143,8 @@ Provider 返回前仍拥有创建事务，失败必须自行回滚且不产生 s
 - 已决定：continuable 是 Provider 的附加接口能力，不是 `Capabilities.Continuable` 布尔字段。
 - 已决定：根包保留公开契约和值对象；用例按内聚能力进入 `subagent/internal/*`，由 `subagent/runtime` 唯一装配。
 - 已实现但待扩充验证：continuable Manager、child composition 与 Setup 安装/撤销。
-- 待实现：Catalog、spawn/fork Provider、Tool/control/report Consumer 和默认 assembly。
+- 已实现：Catalog、identity/timing Projection Unit、Subagent Factory 和 core 默认 assembly。
+- 待实现：spawn/fork Provider 与 Tool/control/report Consumer；这些是 core 的上下游切片，不回填到 Runtime 用例对象。
 - 待全局确认：把 feature-local DSH 差异并入权威范围、路线图和全局进度索引。
 
 逐项状态和验证命令见[实现进度](./implementation-progress.zh-CN.md)。

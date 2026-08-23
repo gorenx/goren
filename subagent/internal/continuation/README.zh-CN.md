@@ -9,11 +9,11 @@
 | `service.go`、`service_api.go`、`service_events.go` | 稳定 capability、Manager 启停、Consumer API 与 Agent Event 入口 |
 | `manager.go` | 依赖端口与进程内 continuation coordinator |
 | `activation.go` | `residency`、Activation 与 materialization 状态所有权 |
-| `start.go`、`materialization.go` | fresh Start、cold resume 与 Handle publication |
-| `delivery.go` | Followup、Interrupt、Report 与 Inbox acceptance |
-| `settlement.go` | idle convergence、settlement notice 和 exact Handle teardown |
-| `drain.go` | scoped/global cutoff、materialization barrier 与 child-first drain |
-| `snapshot.go` | request/descriptor snapshot、depth/options 和 identity helpers |
+| `manager_start.go`、`materialization.go` | fresh Start、cold resume 与 Handle publication |
+| `manager_delivery.go` | Followup、Interrupt、Report 与 Inbox acceptance |
+| `manager_settlement.go` | idle convergence、settlement notice 和 exact Handle teardown |
+| `manager_drain.go` | scoped/global cutoff、materialization barrier 与 child-first drain |
+| `manager_snapshot.go` | request/descriptor snapshot、depth/options 和 identity helpers |
 
 ```mermaid
 flowchart LR
