@@ -42,7 +42,7 @@ type Setup interface {
 }
 
 type Scope interface {
-	AgentValue() Agent
+	Agent() Agent
 	Mount(context.Context, plugin.Plugin) (Effect, error)
 	Own(Effect) error
 }

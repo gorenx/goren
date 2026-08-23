@@ -148,7 +148,7 @@ type Catalog interface {
 ```go
 type Provider interface {
 	Name() string
-	CapabilitiesValue() Capabilities
+	Capabilities() Capabilities
 	InheritsParentContext() bool
 	Start(context.Context, ResolvedStartRequest) (Run, error)
 }
@@ -230,7 +230,7 @@ type AncestorInterruptAuthority struct {
 ```go
 type Descriptor interface {
 	descriptorVariant()
-	DescriptorVersionValue() int
+	DescriptorVersion() int
 	DescriptorMode() Mode
 	ProviderName() string
 }

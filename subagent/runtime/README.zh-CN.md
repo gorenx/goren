@@ -1,0 +1,22 @@
+# Subagent Runtime
+
+本包是 Subagent 领域唯一的 Plugin 装配入口。`Plugin` 只负责 Manifest、依赖解析、模块启停和 Event bus 适配；它的 Fiber 决定 Service binding 的 Scope 可见性及发布/撤销时点。`ProviderRegistry`、`OneShotService`、`ContinuableService` 与 `SetupRegistry` 分别由 `subagent/internal/*` 的独立对象实现，各自拥有业务状态与不变量，再由 Plugin 以 `ProvidedService` 发布。
+
+本包不实现 Provider 注册规则、one-shot/continuable 用例、Agent Loop、Session 持久化或 Host 协议，也不得为未完成用例提前发布 Service。Catalog 未实现，因此不进入 Manifest。
+
+```mermaid
+flowchart LR
+    Consumer --> Contracts[subagent narrow interfaces]
+    Plugin[runtime.Plugin] -->|publishes| Provider[internal/provider.Registry]
+    Plugin -->|publishes| OneShot[internal/oneshot.Service]
+    Plugin -->|publishes| Continuation[internal/continuation.Service]
+    Plugin -->|publishes| Setup[internal/setup.Registry]
+    Contracts --> Provider
+    Contracts --> OneShot
+    Contracts --> Continuation
+    Contracts --> Setup
+    Plugin --> Events[Plugin Event adapter]
+    Plugin --> Composition[internal/composition]
+```
+
+跨包合同见[领域设计](../docs/design.zh-CN.md)，实现证据见[进度](../docs/implementation-progress.zh-CN.md)。

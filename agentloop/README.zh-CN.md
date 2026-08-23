@@ -102,6 +102,6 @@ Agent Loop 不实现 `agent.Setup`：它是 Setup 的用例协调者和 `agent.S
 
 ## Setup 组合规则
 
-调用方通过 `agent.CreateOptions.Setup` 或 `agent.ResumeOptions.Setup` 提供 fresh Setup。Setup 可用 `Scope.Mount` 安装 Plugin，或用 `Scope.Own` 转移普通 effect；`agent.MountPlugins` 只是无状态的便捷适配器。Setup 可以依赖 `Scope.AgentValue()` 返回的 exact Agent，但不能驱动未发布 Agent，也不能接管 loop、Registry membership 或 Session durable decision。
+调用方通过 `agent.CreateOptions.Setup` 或 `agent.ResumeOptions.Setup` 提供 fresh Setup。Setup 可用 `Scope.Mount` 安装 Plugin，或用 `Scope.Own` 转移普通 effect；`agent.MountPlugins` 只是无状态的便捷适配器。Setup 可以依赖 `Scope.Agent()` 返回的 exact Agent，但不能驱动未发布 Agent，也不能接管 loop、Registry membership 或 Session durable decision。
 
 Retry、Guard、Approval、Subagent、Workflow 和 compaction 必须沿已有 owner-defined Service/Event/Waterfall seam 接入。若能力要求 Agent Loop 认识数据库表、Echo frame、Provider credential 或页面状态，应先修正依赖方向。

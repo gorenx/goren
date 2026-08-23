@@ -10,7 +10,7 @@ plugin 是 Goren 的 typed Plugin 运行时底座，负责 Plugin/Fiber 生命�
 - 递归读取 `Manifest.Children`，在 Runtime 准入前构造完整声明树；
 - 校验完整树的对象身份、循环、Scope placement、Manifest 与对象实现；
 - 按 required Service 依赖激活 Fiber；
-- 自动发布和撤销 Service、Event、Waterfall binding；
+- 自动发布和撤销 `ProvidedService`、Event、Waterfall binding；
 - 实现 Service 最近 Provider、Event current-to-root、Waterfall root-to-current 路由；
 - 管理 Child Fiber、完整 Main 子树 replacement、dependent-first stop 和 diagnostics；
 - 在 Runtime 内部管理 Event/Waterfall 调用准入与排空；
@@ -43,7 +43,7 @@ flowchart RL
     Lifetime --> Dispose[Plugin Dispose]
 ```
 
-Plugin 对象嵌入 Base，并实现 Manifest、Apply 和幂等 Dispose。对象可以按需同时实现业务 Service interface、统一 EventObserver 或 WaterfallMiddleware，也可以在 Manifest 中声明自己持有的 WaterfallMiddleware 策略对象；不创建只负责 Runtime 转发的包装 Plugin。
+Plugin 对象嵌入 `Base`，并实现 `Manifest`、`Apply` 和幂等 `Dispose`。`Manifest.Provides` 使用 `NewProvidedService[S](implementation)` 显式绑定命名 Service 接口与实现对象。Plugin 的 Fiber 决定 binding 在哪个 Scope 何时发布、撤销；implementation 拥有业务状态与不变量，且不要求实现 Plugin。只有两类职责确实属于同一对象时，才把 Plugin 自身作为 implementation；装配型 Plugin 应发布独立 service 对象，不能靠转发方法伪装成业务 Service。
 
 组合型 Plugin 创建并持有自己的子 Plugin 实例，通过 `Manifest.Children` 声明 `SameScope` 或 `NestedScope` 关系。调用方只把根 Plugin 交给 `Start`、`Mount`、`MountChild` 或 `MountScopedChild`；公开 API 不暴露 Tree 或 Tree Builder。plugin 包对每个实例只读取一次 Manifest，完成整棵树校验后才进入 Runtime 准入。
 
@@ -51,7 +51,7 @@ Plugin 对象嵌入 Base，并实现 Manifest、Apply 和幂等 Dispose。对象
 
 一个监听事件的 Plugin 只实现一个 `ObserveEvent(context.Context, Event)` 入口，并在 Manifest 中通过多个 `EventOf[E]()` 声明它真正接受的 Event 类型。Runtime 只投递这些显式声明的类型；同一 Plugin 重复声明同一 Event 类型会在接纳阶段失败。Plugin 在统一入口中使用 type switch 分派到自己的具名业务方法。
 
-Runtime 根据 Manifest 自动注册 binding。插件作者不接收暴露 Scope 或注册表的 Runtime Context 对象，不调用 Define、Provide、Observe、Use，也不保存 Registration 或 disposer。
+Runtime 根据 Manifest 自动注册 binding。插件作者不接收暴露 Scope 或注册表的 Runtime Context 对象，不调用 Define、Observe、Use，也不保存 Registration 或 disposer。`ProvidedService` 是声明快照，不是调用期注册句柄。
 
 Plugin 的 `Apply`、`Dispose`、Event Observer 和 Waterfall 调用不能同步修改同一个 Runtime 的拓扑；Runtime 返回 `ErrTopologyMutation`，而不是等待形成重入死锁。普通业务调用可以在回调返回后发起动态挂载。Event 和普通 Waterfall 的调用租约完全由 Runtime 管理，业务 Plugin 不调用显式准入或排空方法。
 
@@ -64,7 +64,7 @@ Plugin 的 `Apply`、`Dispose`、Event Observer 和 Waterfall 调用不能同步
 
 ## 示例
 
-- [Service](example/service_test.go)：Plugin 对象直接实现并提供业务 Service；
+- [Service](example/service_test.go)：Plugin 用 `ProvidedService` 显式发布业务实现；
 - [Scope 继承](example/scope_inheritance_test.go)：Child Fiber 继承并覆盖祖先 Service；
 - [Service 与 Event](example/service_event_test.go)：Service owner 发布事实，Observer Plugin 通过 Manifest 声明监听类型；
 - [Waterfall](example/waterfall_test.go)：Plugin 声明持有的 Middleware 并执行洋葱链。
