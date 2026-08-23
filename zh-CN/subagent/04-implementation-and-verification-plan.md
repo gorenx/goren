@@ -2,7 +2,7 @@
 
 状态：Draft
 
-本文把[Go 候选架构](./03-go-architecture-and-contracts.md)拆成可验证切片，并保留尚未接受的产品与架构选择。当前只产出设计文档，没有创建 Subagent 生产包，也不更新[08 实施进度](../08-implementation-progress.md)。
+本文把[Go 候选架构](./03-go-architecture-and-contracts.md)拆成可验证切片，并保留尚未接受的产品与架构选择。本文不随每个代码切片更新；逐项代码事实只见[领域实现进度](../../subagent/docs/implementation-progress.zh-CN.md)。在一个可验收版本完成前，Subagent 不进入默认组合，也不更新[08 实施进度](../08-implementation-progress.md)。
 
 ## 1. 迁移前兼容差异
 
@@ -28,16 +28,16 @@
 - `47f9438..b150a55` Subagent 差异表；
 - one-shot、Host API、fork、sandbox/preset 的范围决策记录。
 
-验收：每个 compatibility claim 同时指向 DSH symbol/fixture 和预定 Go owner/test，不开始生产代码。
+验收：每个 compatibility claim 同时指向 DSH symbol/fixture 和实际 Go owner/test；接口或局部实现不被误报为整条行为完成。
 
 ### D1：前置 owner contract
 
 改动：
 
-- [Agent](../14-agent-registry-inbox-and-events.md)：`agent.Options.SubagentDepth` validation、copy 与 resume 传播；
+- [Agent](../14-agent-registry-inbox-and-events.md)：`agent.Options.SubagentDepth` validation、copy 与 resume 传播（结构与 owner-local tests 已建立）；
 - [Approval](../17-approval-user-questions-and-interaction-gateway.md)：owner-owned `SeedDelegationPolicy`；
 - LLM：Subagent typed MessageSource 的注册/codec 方案；
-- Agent Extension：验证 setup host 能取得并即时卸载 exact child handle。
+- Agent Setup：`agent.Setup`/`agent.Scope`/exact `agent.Effect` 和 publication 前 Prepare/Commit/rollback（基础 seam 已建立；resident registration 撤销由 D5 验证）。
 
 验收：每个前置能力有 owner-local test；尚未创建的 Subagent 不迫使 Agent Loop 加 feature branch。
 
@@ -83,7 +83,7 @@
 
 实现：
 
-- `ActivationSetupRegistry`、`setupHost`、registration generation；
+- `activationSetupRegistry`、per-creation Setup、构建批次与 resident installation 索引；
 - delegation prompt、persona 和 Tool restriction overlays；
 - approval delegation seed；
 - `subagent/report` setup、Tool 与 `next-step`/`quiet` delivery。
@@ -94,12 +94,12 @@
 
 实现：
 
-- `subagent/tool` 的 continuable background-only slice；
+- `subagent/tool` 的 one-shot/continuable 策略路由；
 - `send_message`、`interrupt_agent`、`list_agents`；
 - Provider add/remove 驱动 Tool registration；
 - typed config 和稳定错误展示。
 
-验收：`run_in_background=false` 明确失败为 deferred one-shot，不 silent reroute；Tool Consumer 不直接读取 Persistence 或构造 Activation。
+验收：`run_in_background=false` 路由 one-shot `Start`，continuable background 路由 `StartContinuable`，不 silent reroute；Tool Consumer 不直接读取 Persistence 或构造 Activation。
 
 ### D7：Host API（条件切片）
 
@@ -125,11 +125,11 @@ Core 不依赖本切片。未纳入时，Tool 驱动的 Subagent 仍是完整核
 
 在结论前允许实现实验 Provider test，不允许默认启用或宣称与最新源 preset 一致。
 
-### D9：one-shot（推迟）
+### D9：one-shot 行为
 
-未来独立设计和实施：
+核心切片包含 `Capabilities`、`Run`、`Result`、stop reason、`Start`、Provider base `Start`、capability/depth/schema validation、detached request、Run publication 与 lifecycle observer。独立后续切片包含：
 
-- `Capabilities`、`Run`、`Result`、stop reason、diagnostic bound；
+- diagnostic bound、result failure/invalid Run 的完整测试；
 - in-process driver 与 structured output capture；
 - spawn/fork one-shot 路径；
 - background Jobs settlement；
@@ -152,7 +152,7 @@ Core 不依赖本切片。未纳入时，Tool 驱动的 Subagent 仍是完整核
 | Settlement | idle + no child gate、final assistant output、notice before ownership release、flush failure still dispose、run ID 配对 |
 | Drain | 深层 child-first、多个 branch、单 branch failure 不短路、聚合错误、draining 拒绝新 admission |
 | Listing | live/cold 优先、创建窗口、省略 vs diagnostic、稳定排序、deep iterative traversal、ordinary/one-shot intermediate、取消 |
-| Tool | strict config、provider lifecycle、schema 文案、maxDepth、foreground deferred、控制工具只做薄映射 |
+| Tool | strict config、provider lifecycle、schema 文案、maxDepth、one-shot/continuable 精确路由、控制工具只做薄映射 |
 
 并发测试必须包含 `go test -race`，尤其覆盖 per-child lock、settlement/followup、setup revoke/build、provider replacement 与 nested drain。
 
@@ -181,7 +181,7 @@ Go 测试需要区分：
 - `subagent` core 不依赖 spawn/fork/tool/control/report/API Proxy/Echo；
 - API Proxy 是唯一 wire DTO owner；
 - 被排除 Provider 包不存在；
-- one-shot 推迟期间不存在空 `Run`/driver/Jobs 兼容层；
+- one-shot contract 可以先存在，但 Runtime 明确返回 pending、未进入默认组合；不存在伪成功 `Run`、空 driver 或 Jobs compatibility layer；
 - Runtime/Manager/Registry 是命名对象，不以 closure/object-literal service 替代；
 - keyed struct literal 一行一个字段，标识符不与 type/function 发生大小写无关碰撞。
 
@@ -208,7 +208,7 @@ git diff --check
 | --- | --- | --- | --- |
 | Q1 | 首期是否纳入 Host `subagents.*` 与 Web 控制面 | Core/Tool 先独立；Host 作为 D7 显式选择 | 协议范围被静默扩大，或核心被 UI 阻塞 |
 | Q2 | fork continuable 是否受支持/默认启用 | 源配置漂移解决前只默认 spawn | prefix reuse 和 report/prompt 顺序不一致 |
-| Q3 | one-shot 推迟时 Tool foreground 怎么处理 | schema 可保留字段时明确返回 unsupported；也可经 fixture 评审后暂时不暴露字段 | silent reroute 改变模型可观察语义 |
+| Q3 | one-shot 行为完成前 Tool foreground 怎么处理 | 整个 Tool Plugin 不进入默认组合；行为完成后严格路由 `Start` | pending 路径被误当生产能力，或 silent reroute 改变语义 |
 | Q4 | sandbox 委派 | 等 sandbox owner contract | 不受控 effect 或虚假继承声明 |
 | Q5 | Agent Preset composition | 等真实 composition contract，不只复制名称 | child 的 tools/prompt/provider 组合不一致 |
 | Q6 | projection cache | 首期 live snapshot + cold inspect；以后只做性能优化 | 提前引入重复 read model 和 invalidation |
@@ -225,6 +225,6 @@ git diff --check
 - accepted work、descriptor、policy和消息可由 Session log 重建；
 - Provider/setup/tool 所有副作用有精确幂等 disposer；
 - listing 不激活 Agent，并对损坏/不支持/暂不可用给出稳定分类；
-- one-shot、fork、Host、sandbox/preset 等未完成项被明确标注，不存在 silent fallback；
+- one-shot 行为、fork、Host、sandbox/preset 等未完成项被明确标注，不存在 silent fallback；
 - compatibility fixtures 指向确定的 DSH commit 和 Go test；
 - 权威范围、架构索引、路线图和实施进度已在最终确认后统一更新。

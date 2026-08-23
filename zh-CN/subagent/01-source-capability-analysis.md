@@ -51,7 +51,7 @@ flowchart LR
 | 能力 | 源入口 | 所有权语义 |
 | --- | --- | --- |
 | Provider 注册 | `registerProvider`、`getProvider`、`list` | 唯一名称、稳定顺序、精确撤销、Provider 生命周期事件 |
-| one-shot 启动 | `start` | 解析 Provider 与能力、启动一次运行并返回 `SubagentRun`；本项目推迟实现 |
+| one-shot 启动 | `start` | 解析 Provider 与能力、启动一次运行并返回 `SubagentRun`；core Runtime 与具体 driver 是两个实施切片 |
 | continuable 启动 | `startContinuable` | 分配 durable child、安装 Activation、把首条消息提交 Inbox |
 | 后续消息 | `followup` | 对 resident child 排队，或从 Persistence 冷恢复后排队 |
 | 中断 | `interrupt` | 校验直接父或 live ancestor 权限，对当前 turn 发出 keep-inbox cancel |
@@ -101,11 +101,11 @@ Provider 移除只阻止新启动。已被接受的 one-shot run 或 continuable
 
 该模块只建立和驱动“一次性、内进程”的 child：创建临时 Agent、写首轮 descriptor、安装 persona/tool filter/structured-output capture、执行一个 turn、接管取消、收集最终输出并销毁。
 
-它不属于 continuable core，因此首期不需要创建 `subagent/inprocess`。将来恢复 one-shot 时，再根据 Go 的公开扩展需求决定 driver 是公开包还是 `internal` 实现；不能仅因 TypeScript 包是公开 npm package 就预先暴露 Go API。
+它不属于 continuable runtime，因此当前不创建 `subagent/inprocess`。实现 one-shot 行为时，再根据 Go 的公开扩展需求决定 driver 是否需要独立包；若只是 Subagent 内部机制，应位于 `subagent/internal/inprocess`，不能仅因 TypeScript 包是公开 npm package 就预先暴露 Go API。
 
 ## 5. one-shot 的完整语义与推迟边界
 
-推迟的是执行，不是分析。源 one-shot contract 为：
+推迟的是 in-process driver、具体 Provider 和 Consumer 路由，不是 core one-shot 用例。源 one-shot contract 为：
 
 - `SubagentRun`：可 dispose 的单次运行，只产生一次结果，不可 resume、followup 或 steer；
 - `SubagentResult.output`：`ContentBlock[]`；优先取最后一条非空 assistant message，没有时退回累计 assistant text stream，再没有则为空数组；
@@ -117,7 +117,7 @@ Provider 移除只阻止新启动。已被接受的 one-shot run 或 continuable
 - background one-shot 通过 Jobs 收集结果，Jobs 不服务 continuable；
 - spawn/fork one-shot 共享 in-process driver，外部进程 Provider 自己实现 `SubagentRun`。
 
-首期不实现：`SubagentRun`、`SubagentResult`、one-shot `start`、in-process driver、structured capture、Jobs 集成和所有外部 one-shot Provider。core descriptor decoder仍建议识别 one-shot durable descriptor，使目录能够把历史记录正确展示为 one-shot，而不是把已知事实误报为 corrupt；识别不等于能重新运行。
+Go 迁移必须保留 core `Run`、`Result`、`Start` admission、capabilities gate、stop reason、one-shot descriptor 和 lifecycle observation。in-process driver、structured capture、Jobs 集成、spawn/fork 的 one-shot 行为和所有外部 one-shot Provider 是独立范围决策。Catalog 必须识别 one-shot durable descriptor，把历史记录展示为 one-shot，而不是把已知事实误报为 corrupt；识别不等于能重新运行。当前完成状态只见[领域实现进度](../../subagent/docs/implementation-progress.zh-CN.md)。
 
 ## 6. Tool Consumers
 
@@ -125,7 +125,7 @@ Provider 移除只阻止新启动。已被接受的 one-shot run 或 continuable
 
 它拥有模型可见的委派入口，而不拥有子 Agent 生命周期。源配置包括 Provider、Tool name、是否允许 background、background mode、Agent options、persona、tool filter 和 max depth。
 
-源路由有一个首期必须显式处理的分支：即使默认 `backgroundMode` 是 continuable，模型显式传 `run_in_background=false` 仍会走 one-shot。由于 one-shot 推迟，Go 首期必须让默认组合显式选择 continuable，并对 `run_in_background=false` 返回稳定的“不支持”错误；不能静默改成 continuable，也不能调用空实现。
+源路由有一个必须显式处理的分支：即使默认 `backgroundMode` 是 continuable，模型显式传 `run_in_background=false` 仍会走 one-shot。在 driver 行为完成前，默认组合不得挂载该 Tool，也不能把 foreground 静默改成 continuable；one-shot 行为完成后必须按 `Start` contract 正常路由。
 
 Provider added/removed 会使 Tool 相应注册/撤销。Tool schema 文案会根据 `inheritsParentContext` 说明 child 是否继承上下文。
 

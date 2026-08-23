@@ -1,6 +1,6 @@
 # Agent 领域
 
-`agent/` 定义 live Agent 能力、Agent Registry、durable Inbox 投影与 Agent-scope 扩展契约。权威领域设计见[14 Agent Registry、Inbox 与实时事件模块设计](../zh-CN/14-agent-registry-inbox-and-events.md)，Turn/Step 驱动由[15 Agent Loop 与请求驱动模块设计](../zh-CN/15-agent-loop-and-request-driver.md)拥有；实施状态与验证证据只见[08 实施进度](../zh-CN/08-implementation-progress.md)。
+`agent/` 定义 live Agent 能力、Agent Registry、durable Inbox 投影与未发布 Agent 的组合契约。权威领域设计见[14 Agent Registry、Inbox 与实时事件模块设计](../zh-CN/14-agent-registry-inbox-and-events.md)，Turn/Step 驱动由[15 Agent Loop 与请求驱动模块设计](../zh-CN/15-agent-loop-and-request-driver.md)拥有；实施状态与验证证据只见[08 实施进度](../zh-CN/08-implementation-progress.md)。
 
 ## 职责边界
 
@@ -9,6 +9,7 @@
 | `agent.go` | `Agent` 能力、状态、Inbox target 与 maintenance 契约 |
 | `factory.go` | Registry 消费侧的 Factory、Create/Resume 参数和调用方 Handle |
 | `registry.go` | live Agent membership、创建委派、initiator ownership 与生命周期发布 |
+| `setup.go` | 未发布 Agent 的 `Setup`、`Scope`、exact `Effect` 与 Plugin 组合适配器 |
 | `inbox.go` | 从 append-only Session log 重建并提交 next-turn / next-step 消息 |
 | `events.go` | Agent 领域 Event、Waterfall 输入输出和调用入口 |
 | `model_selection.go` | prompt assembly 与 LLM request 之间的单步模型选择快照 |
@@ -23,23 +24,31 @@ sequenceDiagram
     participant Caller as Caller
     participant Registry as agent.Registry
     participant Factory as agent.Factory
+    participant Setup as agent.Setup
+    participant Scope as agent.Scope
     participant Runtime as plugin.Runtime
-    participant Membership as agentMembership
+    participant Membership as Agent membership
     participant Session as session.LiveStore
 
     Caller->>Registry: Create / Resume
     Registry->>Factory: CreateAgent / ResumeAgent
     Factory->>Session: prepare unpublished Session
-    Factory->>Runtime: mount ReactLoopAgent as complete tree root
-    Runtime->>Runtime: activate Main nodes
-    Runtime->>Membership: activate Commit node
+    Factory->>Runtime: mount private Agent Scope root
+    Runtime-->>Factory: active unpublished Scope
+    Factory->>Setup: Prepare(ctx, Scope)
+    Setup->>Scope: Mount / Own exact effects
+    Factory->>Setup: Commit()
+    Factory->>Runtime: mount membership
     Membership->>Session: enter and announce Session
     Membership->>Registry: enter and announce Agent
-    Runtime-->>Factory: tree Handle
     Factory-->>Caller: Agent Handle
 ```
 
-Registry 的 `Enter` 只保留 exact Agent instance 和 initiator ownership；`Announce` 才发布 `agent/created`。完整 Plugin 子树任一 Main 节点失败时，Commit 节点不会执行，因此 Agent 与 Session 都不可见。调用方释放 `Handle` 时由 Runtime 先停止 Commit membership，再逆序停止 ordinary Plugin 节点；Registry 删除 exact instance 后发布 `agent/disposed`。
+`Setup` 由调用方为每次 Create/Resume 提供一个新实例；Agent Loop 消费它，但不实现它。`Scope` 由 concrete Agent Provider 实现，负责把 Plugin 或普通 `Effect` 纳入同一结构生命周期。`Setup.Commit` 成功后才能挂载 membership，因此 Prepare、Commit 或 publication 任一步失败都不会返回可见 Agent。
+
+Registry 的 `Enter` 只保留 exact Agent instance 和 initiator ownership；`Announce` 才发布 `agent/created`。调用方释放 `Handle` 时，Agent tree 先停止 work、移除 membership，再逆序释放 Scope effect 和 Plugin 子树。创建请求被取消时，业务准备停止，但已取得的结构资源使用非取消上下文完整回滚，不能留下不可见的挂载树。
+
+`Agent.ID()` 是 durable Session identity；`agent.Same` 判断两个接口是否指向同一个进程内 Agent 实例。它不引入第二个 `InstanceID`。Factory 注册同样由 Registry 返回的 exact `FactoryRegistration` 撤销，不要求 Factory 假装成 Plugin。
 
 ## Event 与 Waterfall
 
