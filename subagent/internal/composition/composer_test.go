@@ -12,24 +12,38 @@ import (
 	"github.com/gorenx/goren/tools"
 )
 
-type setupRecord struct {
-	name       string
-	order      *[]string
-	prepareErr error
+type provisionerRecord struct {
+	name         string
+	order        *[]string
+	provisionErr error
 }
 
-func (setup setupRecord) Prepare(context.Context, agent.Scope) error {
-	*setup.order = append(*setup.order, "prepare:"+setup.name)
-	return setup.prepareErr
+func (record provisionerRecord) Provision(
+	context.Context,
+	agent.Scope,
+) (agent.Provisioning, error) {
+	*record.order = append(*record.order, "provision:"+record.name)
+	if record.provisionErr != nil {
+		return nil, record.provisionErr
+	}
+	return provisioningRecord{
+		name:  record.name,
+		order: record.order,
+	}, nil
 }
 
-func (setup setupRecord) Commit() error {
-	*setup.order = append(*setup.order, "commit:"+setup.name)
+type provisioningRecord struct {
+	name  string
+	order *[]string
+}
+
+func (record provisioningRecord) Commit() error {
+	*record.order = append(*record.order, "commit:"+record.name)
 	return nil
 }
 
-func (setup setupRecord) Dispose(context.Context) error {
-	*setup.order = append(*setup.order, "dispose:"+setup.name)
+func (record provisioningRecord) Dispose(context.Context) error {
+	*record.order = append(*record.order, "dispose:"+record.name)
 	return nil
 }
 
@@ -69,32 +83,29 @@ func TestComposerKeepsDeploymentCompositionOnColdResume(t *testing.T) {
 	}
 }
 
-func TestCompositionDisposesPartiallyPreparedPart(t *testing.T) {
+func TestCompositionDisposesProvisioningWhenLaterPartFails(t *testing.T) {
 	order := make([]string, 0)
-	sentinel := errors.New("prepare failed")
-	setup := &composition{
-		parts: []agent.Setup{
-			setupRecord{
+	sentinel := errors.New("provision failed")
+	configured := &provisioner{
+		parts: []agent.Provisioner{
+			provisionerRecord{
 				name:  "first",
 				order: &order,
 			},
-			setupRecord{
-				name:       "second",
-				order:      &order,
-				prepareErr: sentinel,
+			provisionerRecord{
+				name:         "second",
+				order:        &order,
+				provisionErr: sentinel,
 			},
 		},
 	}
-	if prepareErr := setup.Prepare(context.Background(), nil); !errors.Is(prepareErr, sentinel) {
-		t.Fatalf("Prepare error = %v", prepareErr)
-	}
-	if closeErr := setup.Dispose(context.Background()); closeErr != nil {
-		t.Fatal(closeErr)
+	acquired, provisionErr := configured.Provision(context.Background(), nil)
+	if acquired != nil || !errors.Is(provisionErr, sentinel) {
+		t.Fatalf("Provision = (%v, %v), want nil and sentinel", acquired, provisionErr)
 	}
 	wanted := []string{
-		"prepare:first",
-		"prepare:second",
-		"dispose:second",
+		"provision:first",
+		"provision:second",
 		"dispose:first",
 	}
 	if !reflect.DeepEqual(order, wanted) {
@@ -102,4 +113,5 @@ func TestCompositionDisposesPartiallyPreparedPart(t *testing.T) {
 	}
 }
 
-var _ agent.Setup = setupRecord{}
+var _ agent.Provisioner = provisionerRecord{}
+var _ agent.Provisioning = provisioningRecord{}

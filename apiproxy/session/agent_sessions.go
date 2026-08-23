@@ -249,7 +249,7 @@ func (owner *AgentSessions) createOrAdopt(
 			Provider: defaultSelection.Provider,
 			Model:    defaultSelection.Model,
 		},
-		Setup: agent.MountPlugins(extension),
+		Provisioner: agent.MountPlugins(extension),
 	})
 	if err != nil {
 		if subject, found := owner.agents.Get(identifier); found {
@@ -303,7 +303,7 @@ func (owner *AgentSessions) resumeCold(
 	handle, err := owner.agents.Resume(requestContext, agent.ResumeOptions{
 		SessionID:    identifier,
 		AgentOptions: loopOptions,
-		Setup:        agent.MountPlugins(extension),
+		Provisioner:  agent.MountPlugins(extension),
 	})
 	if err != nil {
 		if subject, found := owner.agents.Get(identifier); found {

@@ -23,11 +23,11 @@ type Lifecycle interface {
 	Ended(agent.Agent, subagent.Ended)
 }
 
-// Composer builds one fresh Agent Setup for a materializing Activation.
+// Composer builds one fresh Agent Provisioner for a materializing Activation.
 // Continuation owns when composition happens; the collaborator owns what the
 // child Scope contains.
 type Composer interface {
-	Compose(Composition) agent.Setup
+	Compose(Composition) agent.Provisioner
 }
 
 // Composition is the immutable child identity supplied to Composer.

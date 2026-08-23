@@ -420,7 +420,7 @@ func (records *lifecycleRecord) Ended(_ agent.Agent, fact subagent.Ended) {
 
 type composerStub struct{}
 
-func (composerStub) Compose(Composition) agent.Setup {
+func (composerStub) Compose(Composition) agent.Provisioner {
 	return nil
 }
 
