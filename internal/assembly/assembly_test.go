@@ -31,6 +31,11 @@ import (
 	"github.com/gorenx/goren/session/query"
 	"github.com/gorenx/goren/session/title"
 	"github.com/gorenx/goren/subagent"
+	"github.com/gorenx/goren/subagent/control"
+	"github.com/gorenx/goren/subagent/fork"
+	"github.com/gorenx/goren/subagent/report"
+	"github.com/gorenx/goren/subagent/spawn"
+	subagenttool "github.com/gorenx/goren/subagent/tool"
 	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/toolaskuser"
 	"github.com/gorenx/goren/tools"
@@ -260,6 +265,11 @@ func TestCatalogContainsOnlyCurrentServerSlice(t *testing.T) {
 		title.PluginName,
 		systemprompt.PluginName,
 		subagent.PluginName,
+		spawn.PluginName,
+		fork.PluginName,
+		subagenttool.PluginName,
+		control.PluginName,
+		report.PluginName,
 		toolaskuser.PluginName,
 		tools.PluginName,
 		userquestions.PluginName,
@@ -607,11 +617,24 @@ func TestServerTreeStartsCapabilitiesBeforeExposingConnection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if promptText != "You are an AI agent powered by DeepSeek Harness." {
+	wantPrompt := "You are an AI agent powered by DeepSeek Harness.\n\n" +
+		"Use subagent in the background by default. Start independent delegations together and continue useful work while they run. Set `run_in_background: false` only when your next action depends on that subagent's result."
+	if promptText != wantPrompt {
 		t.Fatalf("default System Prompt = %q", promptText)
 	}
 	toolSchemas := probe.toolRuntime.Schemas()
-	if len(toolSchemas) != 1 || toolSchemas[0].Name != toolaskuser.Name {
+	toolNames := make([]string, len(toolSchemas))
+	for index, schema := range toolSchemas {
+		toolNames[index] = schema.Name
+	}
+	wantToolNames := []string{
+		toolaskuser.Name,
+		subagenttool.DefaultToolName,
+		"send_message",
+		"interrupt_agent",
+		"list_agents",
+	}
+	if !reflect.DeepEqual(toolNames, wantToolNames) {
 		t.Fatalf("default Tool schemas = %#v", toolSchemas)
 	}
 	wantProviders := []llm.ProviderInfo{

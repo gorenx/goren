@@ -620,7 +620,7 @@ func TestFollowupColdResumesPersistedContinuableChild(t *testing.T) {
 		session.CreateOptions{
 			Seed: seed,
 			Metadata: session.Metadata{
-				ParentSession:   sessionIDPointer(parentAgent.ID()),
+				ParentSession:   sessionIDReference(parentAgent.ID()),
 				Origin:          session.OriginSubagent,
 				DelegationDepth: &depth,
 			},
@@ -696,6 +696,11 @@ func TestFollowupColdResumesPersistedContinuableChild(t *testing.T) {
 }
 
 var _ agent.Agent = (*agentRecord)(nil)
+
+func sessionIDReference(value session.SessionID) *session.SessionID {
+	return &value
+}
+
 var _ agent.Registry = (*registryRecord)(nil)
 var _ session.LiveStore = (*sessionRecord)(nil)
 var _ persistence.Persistence = (*persistenceRecord)(nil)

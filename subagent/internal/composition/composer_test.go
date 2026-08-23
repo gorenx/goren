@@ -49,7 +49,7 @@ func (record provisioningRecord) Dispose(context.Context) error {
 
 func TestComposerKeepsDeploymentCompositionOnColdResume(t *testing.T) {
 	personaText := "review carefully"
-	owner := New(nil, nil)
+	owner := NewContinuable(nil, nil)
 	descriptor := subagent.ContinuableDescriptor{
 		Persona: &personaText,
 		ToolFilter: &tools.ToolRestriction{

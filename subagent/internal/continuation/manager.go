@@ -10,8 +10,6 @@ import (
 	"github.com/gorenx/goren/subagent"
 )
 
-const maxSafeInteger int64 = 1<<53 - 1
-
 // Providers resolves the exact currently registered Provider.
 type Providers interface {
 	GetProvider(string) (subagent.Provider, bool)

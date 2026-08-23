@@ -8,14 +8,16 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
+	"github.com/gorenx/goren/subagent/internal/lineage"
 )
 
 func (owner *Manager) create(
 	requestContext context.Context,
 	childID session.SessionID,
 	providerName string,
-	identity subagent.ContinuableDescriptor,
+	descriptor subagent.ContinuableDescriptor,
 	requestSnapshot subagent.ContinuableRequest,
+	childLineage lineage.Lineage,
 	seed []session.Event,
 	lineageSeedLength int64,
 ) (*Activation, error) {
@@ -26,30 +28,18 @@ func (owner *Manager) create(
 	if contextErr != nil {
 		return nil, contextErr
 	}
-	parentHeader := requestSnapshot.Parent.SessionValue().Header()
-	childDepth := *requestSnapshot.AgentOptions.SubagentDepth
-	metadata := session.Metadata{
-		CWD:             parentHeader.CWD,
-		ParentSession:   sessionIDPointer(requestSnapshot.Parent.ID()),
-		Origin:          session.OriginSubagent,
-		DelegationDepth: int64Pointer(childDepth),
-		AgentPreset:     parentHeader.AgentPreset,
-	}
-	if lineageSeedLength > 0 {
-		metadata.SeedLength = int64Pointer(lineageSeedLength)
-	}
 	handle, createErr := owner.dependencies.Agents.Create(
 		initiatedContext,
 		agent.CreateOptions{
 			SessionID:    childID,
-			Metadata:     metadata,
+			Metadata:     childLineage.Metadata(lineageSeedLength),
 			Seed:         seed,
 			AgentOptions: *requestSnapshot.AgentOptions,
 			Provisioner: owner.dependencies.Composer.Compose(
 				Composition{
 					ChildID:    childID,
 					ParentID:   requestSnapshot.Parent.ID(),
-					Descriptor: identity,
+					Descriptor: descriptor,
 					Fresh:      true,
 				},
 			),

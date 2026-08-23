@@ -110,7 +110,7 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 			Persistence: sessionPersistence,
 			Providers:   owner.providers,
 			Lifecycle:   owner.events,
-			Composer: composition.New(
+			Composer: composition.NewContinuable(
 				approvalService,
 				owner.extensions,
 			),

@@ -8,20 +8,22 @@ import (
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/subagent/internal/continuation"
 	activationextension "github.com/gorenx/goren/subagent/internal/extension"
+	"github.com/gorenx/goren/tools"
 )
 
-// Composer owns the deployment capabilities installed in a child Scope.
-type Composer struct {
+// ContinuableComposer owns the deployment capabilities installed in one
+// continuable child Scope.
+type ContinuableComposer struct {
 	approval   approval.DelegationPolicy
 	extensions *activationextension.Registry
 }
 
-// New constructs a child Composer from optional owner-defined capabilities.
-func New(
+// NewContinuable constructs a continuable child Composer.
+func NewContinuable(
 	approvalPolicy approval.DelegationPolicy,
 	extensionRegistry *activationextension.Registry,
-) *Composer {
-	return &Composer{
+) *ContinuableComposer {
+	return &ContinuableComposer{
 		approval:   approvalPolicy,
 		extensions: extensionRegistry,
 	}
@@ -30,7 +32,7 @@ func New(
 // Compose builds a fresh Provisioner for one materialization. Delegation
 // approval is seeded only for fresh Sessions; cold resume replays the durable
 // policy.
-func (owner *Composer) Compose(
+func (owner *ContinuableComposer) Compose(
 	input continuation.Composition,
 ) agent.Provisioner {
 	if owner == nil {
@@ -65,31 +67,45 @@ func (owner *Composer) Compose(
 	}
 }
 
-func (owner *Composer) buildPlugins(
+func (owner *ContinuableComposer) buildPlugins(
 	input continuation.Composition,
 ) []plugin.Plugin {
+	return childPlugins(
+		owner.approval,
+		input.Fresh,
+		input.Descriptor.Persona,
+		input.Descriptor.ToolFilter,
+	)
+}
+
+func childPlugins(
+	approvalPolicy approval.DelegationPolicy,
+	fresh bool,
+	personaText *string,
+	toolFilter *tools.ToolRestriction,
+) []plugin.Plugin {
 	instances := make([]plugin.Plugin, 0, 3)
-	if owner.approval != nil && input.Fresh {
+	if approvalPolicy != nil && fresh {
 		instances = append(
 			instances,
 			&delegationPolicy{
-				policy: owner.approval,
+				policy: approvalPolicy,
 			},
 		)
 	}
-	if input.Descriptor.Persona != nil {
+	if personaText != nil {
 		instances = append(
 			instances,
-			newPersona(*input.Descriptor.Persona),
+			newPersona(*personaText),
 		)
 	}
-	if input.Descriptor.ToolFilter != nil {
+	if toolFilter != nil {
 		instances = append(
 			instances,
-			newToolRestriction(*input.Descriptor.ToolFilter),
+			newToolRestriction(*toolFilter),
 		)
 	}
 	return instances
 }
 
-var _ continuation.Composer = (*Composer)(nil)
+var _ continuation.Composer = (*ContinuableComposer)(nil)
