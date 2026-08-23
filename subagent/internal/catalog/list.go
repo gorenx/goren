@@ -2,15 +2,15 @@ package catalog
 
 import (
 	"context"
-	"sort"
 
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 )
 
 type sessionRecord struct {
-	header session.Header
-	live   *session.Session
+	header  session.Header
+	live    *session.Session
+	ordinal int
 }
 
 type listing struct {
@@ -42,7 +42,7 @@ func (owner *Service) ListChildren(
 			candidates = append(candidates, candidate)
 		}
 	}
-	sortRecords(candidates)
+	newSiblingOrder().sort(candidates)
 	return resolveRows(requestContext, candidates, prepared)
 }
 
@@ -99,9 +99,17 @@ func (owner *Service) prepare(requestContext context.Context) (listing, error) {
 		}
 	}
 	corpus := make(map[session.SessionID]sessionRecord, len(persisted))
+	nextOrdinal := 0
 	for _, header := range persisted {
+		ordinal := nextOrdinal
+		if current, found := corpus[header.ID]; found {
+			ordinal = current.ordinal
+		} else {
+			nextOrdinal++
+		}
 		corpus[header.ID] = sessionRecord{
-			header: header,
+			header:  header,
+			ordinal: ordinal,
 		}
 	}
 	for _, conversation := range dependencySet.sessions.List() {
@@ -109,9 +117,16 @@ func (owner *Service) prepare(requestContext context.Context) (listing, error) {
 			continue
 		}
 		header := conversation.Header()
+		ordinal := nextOrdinal
+		if current, found := corpus[header.ID]; found {
+			ordinal = current.ordinal
+		} else {
+			nextOrdinal++
+		}
 		corpus[header.ID] = sessionRecord{
-			header: header,
-			live:   conversation,
+			header:  header,
+			live:    conversation,
+			ordinal: ordinal,
 		}
 	}
 	parents := make(map[session.SessionID]struct{})
@@ -140,8 +155,9 @@ func descendantRecords(
 		parentID := *candidate.header.ParentSession
 		children[parentID] = append(children[parentID], candidate)
 	}
+	ordering := newSiblingOrder()
 	for parentID := range children {
-		sortRecords(children[parentID])
+		ordering.sort(children[parentID])
 	}
 	stack := make([]positioned, 0)
 	direct := children[rootID]
@@ -178,15 +194,4 @@ func descendantRecords(
 		}
 	}
 	return result
-}
-
-func sortRecords(records []sessionRecord) {
-	sort.SliceStable(records, func(leftIndex int, rightIndex int) bool {
-		left := records[leftIndex].header
-		right := records[rightIndex].header
-		if left.CreatedAt != right.CreatedAt {
-			return left.CreatedAt < right.CreatedAt
-		}
-		return left.ID < right.ID
-	})
 }
