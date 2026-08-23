@@ -17,7 +17,6 @@ type agentLifecycle struct {
 	mutex          sync.Mutex
 	closingStarted bool
 	closing        chan struct{}
-	closingOnce    sync.Once
 	closed         chan struct{}
 	closedOnce     sync.Once
 	closeErr       error
@@ -39,10 +38,8 @@ func (lifecycle *agentLifecycle) Dispose(closeContext context.Context) error {
 	if closeContext == nil {
 		closeContext = context.Background()
 	}
-	lifecycle.mutex.Lock()
-	if lifecycle.closingStarted {
+	if !lifecycle.beginClosing() {
 		closed := lifecycle.closed
-		lifecycle.mutex.Unlock()
 		select {
 		case <-closed:
 			lifecycle.mutex.Lock()
@@ -53,12 +50,7 @@ func (lifecycle *agentLifecycle) Dispose(closeContext context.Context) error {
 			return context.Cause(closeContext)
 		}
 	}
-	lifecycle.closingStarted = true
-	lifecycle.closingOnce.Do(func() {
-		close(lifecycle.closing)
-	})
 	rootHandle := lifecycle.rootHandle
-	lifecycle.mutex.Unlock()
 
 	closeErr := plugin.UnloadChild(
 		context.WithoutCancel(closeContext),
@@ -73,18 +65,18 @@ func (lifecycle *agentLifecycle) Dispose(closeContext context.Context) error {
 	return closeErr
 }
 
-func (lifecycle *agentLifecycle) beginStructuralTeardown() {
+func (lifecycle *agentLifecycle) beginClosing() bool {
 	if lifecycle == nil {
-		return
+		return false
 	}
 	lifecycle.mutex.Lock()
-	if !lifecycle.closingStarted {
-		lifecycle.closingStarted = true
-		lifecycle.closingOnce.Do(func() {
-			close(lifecycle.closing)
-		})
+	defer lifecycle.mutex.Unlock()
+	if lifecycle.closingStarted {
+		return false
 	}
-	lifecycle.mutex.Unlock()
+	lifecycle.closingStarted = true
+	close(lifecycle.closing)
+	return true
 }
 
 func (lifecycle *agentLifecycle) ClosingSignal() <-chan struct{} {
