@@ -44,7 +44,16 @@ import (
 	"github.com/gorenx/goren/session/title"
 	sessiontitlefactory "github.com/gorenx/goren/session/title/factory"
 	"github.com/gorenx/goren/subagent"
+	subagentcontrol "github.com/gorenx/goren/subagent/control"
+	subagentcontrolfactory "github.com/gorenx/goren/subagent/control/factory"
 	subagentfactory "github.com/gorenx/goren/subagent/factory"
+	subagentforkfactory "github.com/gorenx/goren/subagent/fork/factory"
+	"github.com/gorenx/goren/subagent/report"
+	subagentreportfactory "github.com/gorenx/goren/subagent/report/factory"
+	"github.com/gorenx/goren/subagent/spawn"
+	subagentspawnfactory "github.com/gorenx/goren/subagent/spawn/factory"
+	subagenttool "github.com/gorenx/goren/subagent/tool"
+	subagenttoolfactory "github.com/gorenx/goren/subagent/tool/factory"
 	"github.com/gorenx/goren/systemprompt"
 	systempromptfactory "github.com/gorenx/goren/systemprompt/factory"
 	"github.com/gorenx/goren/toolaskuser"
@@ -157,6 +166,11 @@ func NewCatalog(platform Environment) (*pluginfactory.Catalog, error) {
 		titleBuilder,
 		systempromptfactory.New(),
 		subagentfactory.New(),
+		subagentspawnfactory.New(),
+		subagentforkfactory.New(),
+		subagenttoolfactory.New(),
+		subagentcontrolfactory.New(),
+		subagentreportfactory.New(),
 		toolsfactory.New(),
 		toolaskuserfactory.New(),
 		userquestionsfactory.New(),
@@ -254,6 +268,24 @@ func DefaultSpecs(
 	if err != nil {
 		return nil, err
 	}
+	subagentToolRaw, err := json.Marshal(subagenttoolfactory.Config{
+		Provider:              spawn.DefaultProviderName,
+		ToolName:              subagenttool.DefaultToolName,
+		EnableRunInBackground: true,
+		BackgroundMode:        subagenttool.BackgroundContinuable,
+		MaxDepth: subagenttoolfactory.DepthLimit{
+			Value: 3,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	reportRaw, err := json.Marshal(subagentreportfactory.Config{
+		ReportDelivery: subagent.ReportNextStep,
+	})
+	if err != nil {
+		return nil, err
+	}
 	emptyConfig := json.RawMessage(`{}`)
 	return []PluginSpec{
 		{
@@ -279,6 +311,22 @@ func DefaultSpecs(
 		{
 			FactoryName: subagent.PluginName,
 			Config:      emptyConfig,
+		},
+		{
+			FactoryName: spawn.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: subagenttool.PluginName,
+			Config:      subagentToolRaw,
+		},
+		{
+			FactoryName: subagentcontrol.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: report.PluginName,
+			Config:      reportRaw,
 		},
 		{
 			FactoryName: query.PluginName,

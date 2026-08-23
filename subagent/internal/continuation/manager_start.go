@@ -7,6 +7,7 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
+	"github.com/gorenx/goren/subagent/internal/lineage"
 )
 
 // Start creates one durable child Activation and accepts its initial prompt.
@@ -23,9 +24,32 @@ func (owner *Manager) Start(
 			Message: "continuable subagents require Session persistence",
 		}
 	}
-	requestSnapshot, identity, snapshotErr := owner.snapshotStart(startSpec)
+	requestSnapshot, snapshotErr := snapshotRequest(startSpec.Request)
 	if snapshotErr != nil {
 		return subagent.ContinuableStart{}, snapshotErr
+	}
+	if requestSnapshot.Parent == nil ||
+		!owner.dependencies.Agents.Contains(requestSnapshot.Parent) {
+		return subagent.ContinuableStart{}, unauthorized(
+			"continuable Start requires the exact live parent Agent",
+		)
+	}
+	childLineage, lineageErr := lineage.From(
+		requestSnapshot.Parent,
+		requestSnapshot.MaxDepth,
+	)
+	if lineageErr != nil {
+		return subagent.ContinuableStart{}, lineageErr
+	}
+	resolvedOptions := childLineage.AgentOptions(requestSnapshot.AgentOptions)
+	requestSnapshot.AgentOptions = &resolvedOptions
+	descriptor, descriptorErr := continuableDescriptor(
+		startSpec.Provider,
+		startSpec.Label,
+		requestSnapshot,
+	)
+	if descriptorErr != nil {
+		return subagent.ContinuableStart{}, descriptorErr
 	}
 	childID := session.SessionID("")
 	if startSpec.ChildID == nil {
@@ -61,7 +85,7 @@ func (owner *Manager) Start(
 	if prepareErr != nil {
 		return subagent.ContinuableStart{}, prepareErr
 	}
-	seed, seedErr := descriptorSeed(childID, prepared.Seed, identity)
+	seed, seedErr := descriptorSeed(childID, prepared.Seed, descriptor)
 	if seedErr != nil {
 		return subagent.ContinuableStart{}, seedErr
 	}
@@ -89,8 +113,9 @@ func (owner *Manager) Start(
 		requestContext,
 		childID,
 		startSpec.Provider,
-		identity,
+		descriptor,
 		requestSnapshot,
+		childLineage,
 		seed,
 		int64(len(prepared.Seed)),
 	)
