@@ -18,6 +18,7 @@
 | --- | --- |
 | DSH feature-local source | `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e` |
 | Goren 开始实现时 HEAD | `6eeac353b6e55d555530189b1f79f9cd7e70ad9c` |
+| 当前验收代码 HEAD | `972e044`（主体实现 `eddf35f`） |
 | 最后核对日期 | 2026-08-23 |
 | 全局基线是否改变 | 否 |
 
@@ -33,14 +34,14 @@
 | SA-D06 | Provider 注册、顺序、exact unregister 与 veto rollback | Go Verified | `internal/provider/registry.go`、`runtime/events.go` | `runtime_test.go` 覆盖 duplicate、顺序、observer rollback、幂等撤销和同名重注册；并发 race 随全量 race gate 验证 |
 | SA-D07 | one-shot Start validation、snapshot、Run publication 与 lifecycle | Go Verified | `internal/oneshot/service.go`、`runtime/events.go` | `runtime_test.go` 覆盖 capability gate、request detachment、startup failure 无 lifecycle、start/end identity；`one_shot_integration_test.go` 验证实际 Run 终态与配对 Event；schema failure、result failure和无效 Run 仍需扩充 |
 | SA-D08 | continuable fresh create 与 initial prompt transaction | Go Verified | `internal/continuation/manager_start.go`、`materialization.go` | `manager_test.go` 验证 descriptor seed、depth/options、initial Inbox acceptance 和 lifecycle start |
-| SA-D09 | followup、cold resume、authority 与 FIFO | Go Verified | `internal/continuation/manager_delivery.go`、`materialization.go` | `manager_test.go` 验证 resident followup、persisted descriptor cold resume 与 exact parent 路由 |
-| SA-D10 | interrupt、report、settlement | Implemented | `internal/continuation/manager_delivery.go`、`manager_settlement.go`、`service_events.go` | focused test 覆盖 `KeepInbox=true` interrupt、quiet report 与 drain terminal edge；自然 settlement failure mapping 仍需补充 |
+| SA-D09 | followup、cold resume、authority 与 FIFO | Go Verified | `internal/continuation/manager_delivery.go`、`materialization.go` | `manager_test.go` 验证 resident followup、persisted descriptor cold resume 与 exact parent 路由；`control_integration_test.go` 验证 `send_message` 从持久化 Session 冷恢复同一 child |
+| SA-D10 | interrupt、report、settlement | Go Verified | `internal/continuation/manager_delivery.go`、`manager_settlement.go`、`service_events.go` | `interrupt_agent_integration_test.go` 验证取消当前 turn、保留已接受 Inbox 且不自动恢复；`report_integration_test.go` 验证 child-selected report、source attribution、parent delivery 与 live-child shutdown；自然 settlement failure mapping 仍需补充 |
 | SA-D11 | selected children / descendant drain | Implemented | `internal/continuation/manager_drain.go`、`activation.go` | focused test 覆盖 selected child release 与 scoped admission cutoff；并发 materialization barrier 和多层 child-first 顺序仍需增加定向测试 |
 | SA-D12 | Activation Extension ordered provisioning 与即时精确撤销 | Go Verified | `extension.go`、`internal/extension`、`internal/childscope`、`runtime/plugin.go` | extension tests 覆盖顺序、partial provision rollback、commit invalidation、自撤销、resident 精确撤销和幂等收敛；childscope tests 覆盖后续 part 失败逆序回滚与 cold-resume persona/tool policy；`b1a4dee` 删除共享模块对 continuation DTO 的反向依赖 |
 | SA-D13 | Catalog live/persistent listing 与 diagnostics | Go Verified | `catalog.go`、`internal/catalog`、`internal/projection`、`runtime/projections.go` | `service_test.go` 覆盖 live-preferred、creation window、cold fold、diagnostic、ordinary traversal、stable preorder、缺失依赖与 cancellation；projection tests 覆盖 last-wins、timing reset 和 damaged checkpoint rejection |
 | SA-D14 | spawn/fork Provider | Go Verified | `spawn`、`fork`、`internal/inprocess`、`internal/lineage` | fork test 覆盖 balanced completed-turn prefix；inprocess tests 覆盖 activation boundary、partial output、cancel mapping、descriptor append 和 authoritative structured capture；lineage tests 覆盖继承、metadata 与 depth 边界 |
-| SA-D15 | Tool/control/report Consumer | Go Verified | `tool`、`control`、`report` | Tool tests 覆盖 foreground、continuable background 与无 Jobs 的 one-shot background rejection；`one_shot_integration_test.go` 从真实 Tool Runtime 进入 spawn Provider 和 child AgentLoop；control tests 覆盖 exact caller authority、状态投影和 one-shot 过滤；report test 覆盖 exact child/delivery，Extension tests 覆盖 installation/revocation 收敛，assembly 验证 Consumer Plugin 可激活 |
-| SA-D16 | Factory、默认 assembly 与端到端验证 | Go Verified | 各 `factory`、`internal/assembly/catalog.go`、`integration_fixture_test.go` | Factory strict config；assembly contract 验证五个 Service、spawn Provider、delegation/control Tool、report Extension 与 `subagent` / `subagentTiming` Projection Unit 可组合；keyless 集成测试验证 `Tool → OneShotService → spawn → Agent Registry → AgentLoop → Session → Dispose`；`real_provider_integration_test.go` 另以显式开关完成 DeepSeek 真请求验收；fork Factory 静态注册但不进入默认 deployment |
+| SA-D15 | Tool/control/report Consumer | Go Verified | `tool`、`control`、`report` | Tool tests 覆盖 foreground、continuable background 与无 Jobs 的 one-shot background rejection；control 集成测试分别覆盖 send/list/interrupt；report Extension 通过 child-scoped Plugin 安装 Tool/Prompt，并由真实 Agent Scope 集成测试验证 delivery、durable source 与撤销/关闭收敛 |
+| SA-D16 | Factory、默认 assembly 与端到端验证 | Go Verified | 各 `factory`、`internal/assembly/catalog.go`、feature-split `*_integration_test.go` | Factory strict config；assembly contract 验证五个 Service、spawn Provider、delegation/control Tool、report Extension 与 Projection Unit 可组合；keyless 集成测试按 one-shot、continuable durability、cold resume、list、interrupt、report 分文件验证；`real_provider_integration_test.go` 以显式开关完成 DeepSeek 真请求验收；fork Factory 静态注册但不进入默认 deployment |
 
 ## 3. 已执行验证
 
@@ -49,22 +50,25 @@
 ```text
 go fmt ./...
 go test ./...
-go test -race ./plugin ./tools ./subagent
+go test -race ./...
 go vet ./...
 go build ./...
 git diff --check
-GOREN_REAL_PROVIDER_TEST=1 go test ./subagent -run '^TestRealProviderForegroundOneShot$' -count=1 -v
+go test ./agent ./agentloop ./subagent/report ./subagent/internal/extension ./subagent/internal/continuation ./subagent -count=50
+go test ./subagent -run '^TestInterruptAgentCancelsCurrentTurnAndKeepsQueuedFollowup$' -count=500
+go test ./subagent -run '^TestReportExtensionReleasesResidentInstallationDuringRuntimeShutdown$' -count=100
+GOREN_REAL_PROVIDER_TEST=1 go test ./subagent -run '^TestRealProviderForegroundOneShot$' -count=1
 ```
 
 结果：通过。
 
-最后一项从本地进程环境解析 `DEEPSEEK_API_KEY`，执行了一次真实 DeepSeek foreground one-shot；测试缺少显式开关或凭据时自跳过，不属于 keyless 自动化门禁。其余结果证明当前 Go 实现通过全仓测试、目标包 race、vet、build 和命名架构检查，不是 TypeScript/Go compatibility acceptance。Jobs、background one-shot、Code Mode structured capture 与 Workflow 没有因此进入实现范围。
+最后一项从本地 `.env` 注入进程环境并由 credential owner 解析 `DEEPSEEK_API_KEY`，执行了一次真实 DeepSeek foreground one-shot；测试缺少显式开关或凭据时自跳过，不属于 keyless 自动化门禁，密钥未写入日志、fixture 或 Git。其余结果证明当前 Go 实现通过全仓测试/race、vet、build、命名架构检查，并重复覆盖 interrupt 与 resident report shutdown 竞态；这仍不是 TypeScript/Go compatibility acceptance。Jobs、background one-shot、Code Mode structured capture 与 Workflow 没有因此进入实现范围。
 
 ## 4. 下一验证门
 
 1. Provider registry：顺序、duplicate、added veto rollback、removed containment、exact stale handle、race。
 2. one-shot：所有 capability gate、depth/schema、request detachment、Provider start failure 无 lifecycle、start/end 配对与 observer containment。
-3. continuable：fresh create、acceptance rollback、resident/cold FIFO、exact authority、cancel/settlement、child-first drain。
+3. continuable：补充 acceptance rollback、自然 settlement failure mapping、并发 materialization barrier 和多层 child-first drain 的定向集成测试。
 4. Catalog：增加与固定 DSH list/projection fixtures 的差分验证和可选 projection-cache acceleration；cache 不是权威读取前提。
 5. Provider/Consumer：增加固定 DSH spawn/fork、Tool/control/report fixture 的跨语言差分；当前 Go tests 只证明本地契约。
 6. 全量：继续执行 `go test ./...`、`go test -race ./...`、`go vet ./...`、`go build ./...`、`git diff --check`，并补齐固定 DSH source differential fixtures。

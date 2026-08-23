@@ -52,6 +52,7 @@ flowchart LR
 - Provider 注册先检查名称唯一性，再发布 `subagent/provider-added`；有序 observer 拒绝时回滚注册。精确 registration 撤销后发布 best-effort `subagent/provider-removed`。
 - one-shot `Start` 在 Provider 成功发布 `Run` 后才返回；启动失败不产生运行生命周期。返回后由 holder 负责 `Run.Dispose`，Runtime 观察 terminal result 并保证 start 先于 end。
 - continuable 以 Session log 为事实来源。Activation 只是一个进程内驻留周期，不是可持久化业务事实。
+- Continuation Manager 判断 Activation 何时结束，只持有 Registry 返回的 exact `agent.Handle`；真正的 Agent tree 回收由 Agent Runtime lifecycle 执行。private activation owner 通过 `agent.Custody` 托管 resident child，使 Subagent 卸载时先结构回收 child，再停用领域 Service。
 - `context.Context` 只取消接受前的操作或等待；已被 Inbox 接受的消息不因调用方随后取消而撤回。
 - `Interrupt` 是发出取消后立即返回，不等待 Agent idle；是否保留 Inbox 由 Agent cancel contract 决定。
 - drain 阻止目标父树继续 admission，等待已进入的创建事务，再按 child-first 顺序释放 resident handle。

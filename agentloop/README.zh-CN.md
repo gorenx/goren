@@ -18,7 +18,7 @@
 | `request.go` | request waterfall、LLM route、header/context fact 与模型 attempt |
 | `tool_calls.go` | bounded Tool body concurrency、barrier、model-order commit 与 failure drain |
 | `membership.go` | Provisioning 提交后的 Agent/Session publication 与 teardown |
-| `lifecycle.go` | caller Handle 对一棵 exact Runtime tree 的销毁权 |
+| `lifecycle.go` | caller Handle 对一棵 exact Runtime tree 的销毁权与关闭通知 |
 | `runtime_context.go`、`runtime_context_router.go` | Session surface 的运行时上下文投影与精确路由 |
 | `events.go` | Agent/Inbox 实时事件发布和 post-commit observer failure containment |
 | `variables.go` | Agent Scope 的 provider、model 与 cwd Prompt variable Plugin |
@@ -32,7 +32,9 @@
 flowchart TD
     API[调用方] --> Registry[agent.Registry]
     Registry --> Root[agentloop.Plugin as agent.Factory]
-    Root --> Build[挂载 private agentTree]
+    Root --> Build[构造 private agentTree]
+    Registry --> Custody[optional agent.Custody]
+    Custody --> Build
     Build --> Runtime[plugin.Runtime.MountScopedChild]
     Runtime --> Prompt[System Prompt Overlay]
     Runtime --> Tools[Tools Overlay]
@@ -49,7 +51,7 @@ flowchart TD
     Request --> Calls[toolCallExecutor]
 ```
 
-根 `Plugin` 只负责全局 Factory 生命周期、Session runtime-context Event 路由和 Agent 树所有权，不提供第二个 `Loop` Service。执行能力只存在于具体 `ReactLoopAgent`；`loop`、activity、Turn、request 与 Tool scheduler 都是该 Agent 私有对象。
+根 `Plugin` 只负责全局 Factory 生命周期、Session runtime-context Event 路由和无显式 Custody 的 Agent 树所有权，不提供第二个 `Loop` Service。调用绑定 `agent.Custody` 时，Factory 把 Agent tree 挂到该结构 owner 下，但创建事务、membership 和执行循环仍由 Agent Loop 实现。执行能力只存在于具体 `ReactLoopAgent`；`loop`、activity、Turn、request 与 Tool scheduler 都是该 Agent 私有对象。
 
 ## 创建、发布与销毁
 
@@ -67,7 +69,7 @@ sequenceDiagram
     Caller->>Registry: Create or Resume
     Registry->>Root: agent.Factory call
     Root->>Root: prepare unpublished Session and ReactLoopAgent
-    Root->>Runtime: MountScopedChild(agentTree)
+    Root->>Runtime: MountScopedChild(agentTree, Custody or Root)
     Runtime->>Scope: overlays -> variables -> Agent
     Root->>Provisioner: Provision(ctx, Scope)
     Provisioner->>Scope: Mount / Own exact effects
@@ -81,6 +83,7 @@ sequenceDiagram
     Root-->>Caller: agent.Handle
     Caller->>Root: Handle.Dispose
     Root->>Runtime: UnloadChild
+    Runtime-->>Caller: close Handle.ClosingSignal
     Runtime->>Membership: stop admission, drain loop, remove membership
     Runtime->>Scope: reverse Dispose
 ```
@@ -89,7 +92,7 @@ sequenceDiagram
 
 Agent Loop 不实现 `agent.Provisioner`：它是 provisioning 的用例协调者和 `agent.Scope` provider。Subagent、测试或其他调用方分别提供自己的 Provisioner；若 Agent Loop 同时实现 Provisioner，就会把“创建事务所有者”和“领域贡献提供者”重新混在一个对象里。
 
-创建失败时 `preparedAgent` 用非取消上下文卸载整棵树，保证取消不会中断结构回滚。`constructionGate` 只管理根 Plugin 是否接受新创建以及停机时等待多少个 Create/Resume；它不保存 live Agent 集合。live membership 由 Agent Registry 拥有，结构 teardown 由 Runtime tree 和 caller Handle 拥有。
+创建失败时 `preparedAgent` 用非取消上下文卸载整棵树，保证取消不会中断结构回滚。`constructionGate` 只管理根 Plugin 是否接受新创建以及停机时等待多少个 Create/Resume；它不保存 live Agent 集合。live membership 由 Agent Registry 拥有，结构 teardown 由 Runtime tree 和 exact caller Handle 收敛；任一方先开始都会关闭同一个 `ClosingSignal`，另一方只 join，不再发起竞争性的 topology mutation。
 
 配置声明只能在 `plugin.Runtime.Start` 返回后通过 `StartConfiguredAgents` 启动，因为 Runtime 在静态启动事务中不接受动态 mount。该调用是一锤子启动事务；任一声明失败会逆序销毁本批次已创建 Agent，失败后不能对同一 Plugin 重跑。
 
