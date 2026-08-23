@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorenx/goren/internal/llm/deepseek"
+	"github.com/gorenx/goren/llm/deepseek"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	contractfixture "github.com/gorenx/goren/tests/contract/fixture"

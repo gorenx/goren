@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/credentials"
-	"github.com/gorenx/goren/internal/llm/deepseek"
 	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/llm/deepseek"
 	"github.com/gorenx/goren/plugin"
 )
 

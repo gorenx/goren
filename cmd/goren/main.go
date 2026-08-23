@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/gorenx/goren/internal/assembly"
-	"github.com/gorenx/goren/internal/llm/deepseek"
+	"github.com/gorenx/goren/llm/deepseek"
 	"github.com/gorenx/goren/plugin"
 )
 
