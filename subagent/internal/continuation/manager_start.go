@@ -109,6 +109,7 @@ func (owner *Manager) Start(
 	if admissionErr != nil {
 		return subagent.ContinuableStart{}, admissionErr
 	}
+	defer owner.finishMaterialization(building)
 	epoch, materializeErr := owner.create(
 		requestContext,
 		childID,
@@ -119,7 +120,6 @@ func (owner *Manager) Start(
 		seed,
 		int64(len(prepared.Seed)),
 	)
-	owner.finishMaterialization(building)
 	if materializeErr != nil {
 		return subagent.ContinuableStart{}, materializeErr
 	}

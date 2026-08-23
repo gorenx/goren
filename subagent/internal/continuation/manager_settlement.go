@@ -75,7 +75,6 @@ func (owner *Manager) dispose(
 		return epoch.disposeErr
 	}
 	epoch.closing = true
-	epoch.terminalReason = reason
 	epoch.disposeDone = make(chan struct{})
 	wake(epoch)
 	children := make([]*Activation, 0, len(epoch.ownedChildren))
@@ -117,7 +116,11 @@ func (owner *Manager) dispose(
 	owner.residency.mutex.Lock()
 	epoch.disposeErr = errors.Join(failures...)
 	owner.residency.mutex.Unlock()
-	owner.notifySettlement(epoch, lastOutput)
+	terminalReason := reason
+	if epoch.disposeErr != nil {
+		terminalReason = subagent.StopError
+	}
+	owner.notifySettlement(epoch, lastOutput, terminalReason)
 	owner.residency.mutex.Lock()
 	if owner.residency.activations[epoch.childID] == epoch {
 		delete(owner.residency.activations, epoch.childID)
@@ -132,10 +135,6 @@ func (owner *Manager) dispose(
 	owner.residency.mutex.Unlock()
 	parentAgent, found := owner.dependencies.Agents.Get(epoch.parentID)
 	if found && owner.dependencies.Lifecycle != nil {
-		endReason := reason
-		if epoch.disposeErr != nil {
-			endReason = subagent.StopError
-		}
 		owner.dependencies.Lifecycle.Ended(
 			parentAgent,
 			subagent.Ended{
@@ -143,7 +142,7 @@ func (owner *Manager) dispose(
 				Provider:             epoch.providerName,
 				ID:                   epoch.childID,
 				Local:                true,
-				StopReason:           endReason,
+				StopReason:           terminalReason,
 				LastAssistantMessage: lastOutput,
 			},
 		)
@@ -154,6 +153,7 @@ func (owner *Manager) dispose(
 func (owner *Manager) notifySettlement(
 	epoch *Activation,
 	lastOutput []llm.ContentBlock,
+	reason subagent.StopReason,
 ) {
 	if !epoch.announced {
 		return
@@ -162,7 +162,7 @@ func (owner *Manager) notifySettlement(
 	if !found {
 		return
 	}
-	summary := settlementSummary(epoch.childID, epoch.terminalReason)
+	summary := settlementSummary(epoch.childID, reason)
 	content := []llm.ContentBlock{
 		llm.NewTextBlock(summary),
 	}

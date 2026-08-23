@@ -17,12 +17,14 @@ import (
 
 type agentRecord struct {
 	plugin.Base
+	mutex        sync.Mutex
 	identifier   session.SessionID
 	conversation *session.Session
 	options      agent.Options
 	status       agent.Status
 	messages     []llm.UserMessage
 	injected     []llm.UserMessage
+	followupErr  error
 	cancel       agent.CancelOptions
 	idle         chan struct{}
 	idleOnce     sync.Once
@@ -46,14 +48,20 @@ func (subject *agentRecord) SessionValue() *session.Session { return subject.con
 
 func (*agentRecord) InboxValue() *agent.Inbox { return nil }
 
-func (subject *agentRecord) StatusValue() agent.Status { return subject.status }
+func (subject *agentRecord) StatusValue() agent.Status {
+	subject.mutex.Lock()
+	defer subject.mutex.Unlock()
+	return subject.status
+}
 
 func (subject *agentRecord) Cancel(
 	_ agent.CancelCause,
 	options agent.CancelOptions,
 ) {
+	subject.mutex.Lock()
 	subject.cancel = options
 	subject.status = agent.StatusIdle
+	subject.mutex.Unlock()
 	subject.idleOnce.Do(func() {
 		close(subject.idle)
 	})
@@ -80,31 +88,58 @@ func (subject *agentRecord) Send(
 	_ agent.InboxTarget,
 	_ bool,
 ) error {
+	subject.mutex.Lock()
+	defer subject.mutex.Unlock()
 	subject.messages = append(subject.messages, messageValue)
 	return nil
 }
 
 func (subject *agentRecord) Followup(messageValue llm.UserMessage) error {
+	subject.mutex.Lock()
+	defer subject.mutex.Unlock()
+	if subject.followupErr != nil {
+		return subject.followupErr
+	}
 	subject.messages = append(subject.messages, messageValue)
 	return nil
 }
 
 func (subject *agentRecord) Steer(messageValue llm.UserMessage) error {
+	subject.mutex.Lock()
+	defer subject.mutex.Unlock()
 	subject.messages = append(subject.messages, messageValue)
 	return nil
 }
 
 func (subject *agentRecord) Inject(messageValue llm.UserMessage) error {
+	subject.mutex.Lock()
+	defer subject.mutex.Unlock()
 	subject.injected = append(subject.injected, messageValue)
 	return nil
 }
 
+func (subject *agentRecord) becomeIdle() {
+	subject.mutex.Lock()
+	subject.status = agent.StatusIdle
+	subject.mutex.Unlock()
+	subject.idleOnce.Do(func() {
+		close(subject.idle)
+	})
+}
+func (subject *agentRecord) messagesSnapshot() []llm.UserMessage {
+	subject.mutex.Lock()
+	defer subject.mutex.Unlock()
+	return append([]llm.UserMessage(nil), subject.messages...)
+}
+
 type registryRecord struct {
 	plugin.Base
-	mutex    sync.Mutex
-	agents   map[session.SessionID]*agentRecord
-	sessions *sessionRecord
-	stored   *persistenceRecord
+	mutex       sync.Mutex
+	agents      map[session.SessionID]*agentRecord
+	sessions    *sessionRecord
+	stored      *persistenceRecord
+	disposeErr  error
+	followupErr error
 }
 
 func (*registryRecord) RegisterFactory(
@@ -137,6 +172,7 @@ func (records *registryRecord) Create(
 		options:      options.AgentOptions,
 		status:       agent.StatusRunning,
 		idle:         make(chan struct{}),
+		followupErr:  records.followupErr,
 	}
 	records.mutex.Lock()
 	if records.agents[options.SessionID] != nil {
@@ -186,6 +222,7 @@ func (records *registryRecord) Resume(
 		options:      options.AgentOptions,
 		status:       agent.StatusRunning,
 		idle:         make(chan struct{}),
+		followupErr:  records.followupErr,
 	}
 	records.mutex.Lock()
 	records.agents[options.SessionID] = subject
@@ -265,7 +302,7 @@ func (lifecycleOwner *agentLifecycle) Dispose(context.Context) error {
 	delete(lifecycleOwner.registry.agents, lifecycleOwner.subject.ID())
 	delete(lifecycleOwner.registry.sessions.entries, lifecycleOwner.subject.ID())
 	lifecycleOwner.registry.mutex.Unlock()
-	return nil
+	return lifecycleOwner.registry.disposeErr
 }
 
 func (lifecycleOwner *agentLifecycle) ClosingSignal() <-chan struct{} {
@@ -274,7 +311,8 @@ func (lifecycleOwner *agentLifecycle) ClosingSignal() <-chan struct{} {
 
 type sessionRecord struct {
 	plugin.Base
-	entries map[session.SessionID]*session.Session
+	entries  map[session.SessionID]*session.Session
+	flushErr error
 }
 
 func (*sessionRecord) Create(
@@ -298,7 +336,9 @@ func (*sessionRecord) Enter(*session.Session) (session.SessionHandle, error) {
 
 func (*sessionRecord) Announce(context.Context, *session.Session) error { return nil }
 
-func (*sessionRecord) Flush(context.Context, *session.Session) error { return nil }
+func (records *sessionRecord) Flush(context.Context, *session.Session) error {
+	return records.flushErr
+}
 
 func (records *sessionRecord) Get(identifier session.SessionID) (*session.Session, bool) {
 	conversation := records.entries[identifier]
@@ -418,16 +458,38 @@ func (records providerSource) GetProvider(providerName string) (subagent.Provide
 }
 
 type lifecycleRecord struct {
-	started []subagent.Started
-	ended   []subagent.Ended
+	mutex       sync.Mutex
+	started     []subagent.Started
+	ended       []subagent.Ended
+	startedHook func(agent.Agent, subagent.Started)
 }
 
-func (records *lifecycleRecord) Started(_ agent.Agent, fact subagent.Started) {
+func (records *lifecycleRecord) Started(parentAgent agent.Agent, fact subagent.Started) {
+	records.mutex.Lock()
 	records.started = append(records.started, fact)
+	hook := records.startedHook
+	records.mutex.Unlock()
+	if hook != nil {
+		hook(parentAgent, fact)
+	}
 }
 
 func (records *lifecycleRecord) Ended(_ agent.Agent, fact subagent.Ended) {
+	records.mutex.Lock()
+	defer records.mutex.Unlock()
 	records.ended = append(records.ended, fact)
+}
+
+func (records *lifecycleRecord) startedSnapshot() []subagent.Started {
+	records.mutex.Lock()
+	defer records.mutex.Unlock()
+	return append([]subagent.Started(nil), records.started...)
+}
+
+func (records *lifecycleRecord) endedSnapshot() []subagent.Ended {
+	records.mutex.Lock()
+	defer records.mutex.Unlock()
+	return append([]subagent.Ended(nil), records.ended...)
 }
 
 type scopeBuilderStub struct{}

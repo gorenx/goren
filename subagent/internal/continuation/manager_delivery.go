@@ -61,12 +61,12 @@ func (owner *Manager) Followup(
 		if admissionErr != nil {
 			return "", admissionErr
 		}
+		defer owner.finishMaterialization(building)
 		resumed, resumeErr := owner.resume(
 			requestContext,
 			parentAgent,
 			childID,
 		)
-		owner.finishMaterialization(building)
 		if resumeErr != nil {
 			return "", resumeErr
 		}
@@ -239,7 +239,14 @@ func (owner *Manager) submit(
 		return "", messageErr
 	}
 	owner.residency.mutex.Lock()
-	if epoch.closing || owner.residency.draining {
+	if owner.closingForLocked(epoch.ancestry) {
+		owner.residency.mutex.Unlock()
+		return "", &subagent.Error{
+			Code:    subagent.ErrorDraining,
+			Message: "continuable subagents are draining; the message was not accepted",
+		}
+	}
+	if epoch.closing {
 		owner.residency.mutex.Unlock()
 		return "", &subagent.Error{
 			Code:    subagent.ErrorActivationClosing,

@@ -89,7 +89,6 @@ func (owner *Manager) AgentDisposed(childAgent agent.Agent) {
 	if epoch != nil && agent.Same(epoch.handle.Subject, childAgent) &&
 		!epoch.closing {
 		epoch.closing = true
-		epoch.terminalReason = subagent.StopAborted
 		epoch.disposeDone = make(chan struct{})
 		delete(owner.residency.activations, epoch.childID)
 		for _, candidate := range owner.residency.activations {
