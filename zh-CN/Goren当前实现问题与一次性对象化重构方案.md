@@ -166,7 +166,7 @@ Cordis 的 effect 是 Fiber 对插件 callback、service、listener 和 Child Pl
 | `tools` | `ExecutorFunc`、`OutputRendererFunc`、`ContentFinalizerFunc`、`ToolGuardFunc`、`ApprovalResolverFunc` 等 | 已有 interface 被 Func adapter 重新退化成匿名行为，Tool Runtime 又混合 registry、policy、execution、result assembly |
 | `approval` / `userquestions` | Request waterfall callback、ID generator 函数字段、`AgentRegistryResolverFunc` | 决策请求、Provider directory 和可选能力读取缺少命名协调器 |
 | `llmretry` | Random、NewRetryID、ObserverError 函数字段 | 重试协调器的外部来源没有 consumer-owned Port |
-| `llm` / `internal/llmdeepseek` | `ModelDiscoveryFunc`、Observer reporter、CurrentOptions/ResolveAPIKey/ResolveUserID/Now 函数字段 | Provider adapter 的配置、凭证、身份和时钟来源被闭包装配 |
+| `llm` / `llm/deepseek` | `ModelDiscoveryFunc`、Observer reporter、CurrentOptions/ResolveAPIKey/ResolveUserID/Now 函数字段 | Provider adapter 的配置、凭证、身份和时钟来源被闭包装配 |
 | `apiproxy` | generic handler、`pendingEntry` 的 `decode/complete` 回调、EventStreams handler、stream queue `emit func` | method dispatch、pending correlation 和 downlink stream 没有独立对象生命周期 |
 | `workspace` / `credentials` | Clock、NewID、ObserverError、LookupEnv 函数字段 | 可替换基础设施来源不是显式 Port |
 | `internal/assembly` | 多个 Factory/Plugin 保存 env、filesystem、resolver closure，`apiProxyPlugin.Apply` 过程很长 | 组合根知道过多局部流程，并用闭包代替 owner-defined adapter |
@@ -739,7 +739,7 @@ AgentLoop.ToolBatchScheduler
 - `userquestions.QuestionService` 负责 validation 和调用当前 Provider；`ProviderDirectory` 负责唯一 provider registration；`AgentRegistryResolverFunc` 改为 `AgentDirectorySource`。
 - `llmretry.RetryCoordinator` 负责一次 failed attempt 的 policy、history、delay、cancel 和 retry event；Random、RetryID、FailureReporter 全部是 consumer-owned interface。
 
-### 6.8 `llm` 与 `internal/llmdeepseek`
+### 6.8 `llm` 与 `llm/deepseek`
 
 LLM 继续拥有所有已实现 adapter 的注册与路由，`Model.API`/provider route 选择实现；其他领域不得操作 Registry。
 
@@ -925,7 +925,7 @@ go build ./plugin/...
 按 `credentials -> llm -> session` 顺序迁移。每个 owner 在适配新 Plugin 契约的同时完成自身对象化，不先写临时 adapter、以后再重构第二次：
 
 - `credentials`：保留 Manager/LiveStore ownership，删除长期函数字段；
-- `llm`：完成 Adapter、ProviderDirectory、GenerationService、stream/result 对象边界，并同步 `internal/llmdeepseek`；
+- `llm`：完成 Adapter、ProviderDirectory、GenerationService、stream/result 对象边界，并同步 `llm/deepseek`；
 - `session`：完成 Session、Store、publication、append、flush 和 stream object 边界。
 
 每完成一个 owner，运行该 owner 的 focused test、race、vet 和 build，并重复运行所有先前已绿色 owner。阶段结束时至少保证：

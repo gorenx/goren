@@ -2,7 +2,9 @@
 
 `llmretry` 是 DeepSeek Harness `@deepseek-ai/dsh-llm-retry` 的 Go 对应模块。它监听一次模型请求失败后的 `agent/request-error` waterfall，根据该请求已经绑定的 Provider `RetryPolicy` 决定是否等待并请求 Agent Loop 重试。
 
-本模块只拥有“执行重试策略”这一段责任。`llm` 拥有策略类型和 Provider 配置，`agentloop` 拥有模型请求 attempt 及真正的重复调用，`session` 拥有事件日志。跨模块稳定契约分别见[Harness LLM Runtime 与 DeepSeek Provider](../zh-CN/13-harness-llm-runtime-and-deepseek-provider.md)和[Agent Loop 与请求驱动](../zh-CN/15-agent-loop-and-request-driver.md)，实施证据只见[实施进度](../zh-CN/08-implementation-progress.md)。
+Go import path 是 `github.com/gorenx/goren/llm/retry`，package identifier 保留既有 `llmretry`，canonical Plugin 名、事件名和持久化字段均不因目录归位而改变。
+
+本模块只拥有“执行重试策略”这一段责任。`llm` 拥有策略类型和 Provider 配置，`agentloop` 拥有模型请求 attempt 及真正的重复调用，`session` 拥有事件日志。跨模块稳定契约分别见[Harness LLM Runtime 与 DeepSeek Provider](../../zh-CN/13-harness-llm-runtime-and-deepseek-provider.md)和[Agent Loop 与请求驱动](../../zh-CN/15-agent-loop-and-request-driver.md)，实施证据只见[实施进度](../../zh-CN/08-implementation-progress.md)。
 
 ## 1. 源实现映射
 

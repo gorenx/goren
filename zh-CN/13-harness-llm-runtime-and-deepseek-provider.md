@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有 Harness-compatible `llm` Service、Adapter Registry、模型路由、流归一化、增量组装、retry policy contract，以及 DeepSeek direct provider 的配置、wire 转换、SSE 与错误映射。Message、content block、StreamChunk 和 finish 的公共协议词汇由[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)拥有；Plugin Service/Event、Scope 与 effect 生命周期由[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)拥有；默认 policy 的执行、durable retry facts 和等待生命周期见[`llmretry` 模块说明](../llmretry/README.zh-CN.md)；当前实施状态和验证证据只见[08 实施进度](./08-implementation-progress.md)。
+本文拥有 Harness-compatible `llm` Service、Adapter Registry、模型路由、流归一化、增量组装、retry policy contract，以及 DeepSeek direct provider 的配置、wire 转换、SSE 与错误映射。Message、content block、StreamChunk 和 finish 的公共协议词汇由[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)拥有；Plugin Service/Event、Scope 与 effect 生命周期由[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)拥有；默认 policy 的执行、durable retry facts 和等待生命周期见[`llmretry` 模块说明](../llm/retry/README.zh-CN.md)；当前实施状态和验证证据只见[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 固定源与职责映射
 
@@ -16,13 +16,19 @@
 | `packages/core/llm/src/index.ts` 的 adapter registration | `llm/adapter_registration.go` 的 `AdapterRegistrationHandle`、`adapterRegistrationState` | 多 route 原子注册、replace、release 与 effect ownership |
 | `llm/stream` | `llm.GenerateOptions` -> `llm.StreamOutput` Waterfall | 每次模型调用外层的 typed waterfall |
 | 源 retry policy schema/defaults | `llm.RetryPolicy`、`ResolveRetryPolicy` | normal/always union、默认 retryable code 与 backoff snapshot |
-| `packages/llm/llm-retry` | `llmretry` | 独立 Consumer 执行 provider policy、记录 retry facts 并把 retry action 交回 Agent Loop |
+| `packages/llm/llm-retry` | `llm/retry`（package `llmretry`） | 独立 Consumer 执行 provider policy、记录 retry facts 并把 retry action 交回 Agent Loop |
 | 源 assistant stream assembly | `llm.BlockAssembler` | 按 block index 增量组装 text、reasoning、tool-call、usage、finish 与 replay state |
-| `packages/llm/llm-deepseek` | `internal/llm/deepseek` | DeepSeek typed config、chat-completions serialization、HTTP/SSE、translation 和 vendor error mapping |
-| 源 anonymous user id helper | `internal/llm/deepseek/anonymoususerid` | Harness installation identity 的读取、校验和持久化 |
-| `bundle/base` 的 LLM declarations | `llm/factory.Factory`、`internal/llm/deepseek.Factory` | `llm` Runtime 与 DeepSeek Provider Plugin 的 typed config、构造和生命周期 |
+| `packages/llm/llm-deepseek` | `llm/deepseek` | DeepSeek typed config、chat-completions serialization、HTTP/SSE、translation 和 vendor error mapping |
+| 源 anonymous user id helper | `llm/deepseek/anonymoususerid` | Harness installation identity 的读取、校验和持久化 |
+| `bundle/base` 的 LLM declarations | `llm/factory.Factory`、`llm/deepseek.Factory` | `llm` Runtime 与 DeepSeek Provider Plugin 的 typed config、构造和生命周期 |
 
 Go 不复制 TypeScript class inheritance、declaration merging、fetch implementation 或 schema code generation。公共扩展点以 capability interface 表达，异构 route 只保存 `llm.Adapter`；Message、StreamChunk、FinishReason 和 ContentBlock 使用封闭 core interface，并为未知 extension 保留显式 opaque variant，不使用 `any` 或反射执行 callback。
+
+### 1.1 Go 包路径与兼容影响
+
+内置 LLM Plugin 按 source-aligned capability 归位到 `llm` owner 下：DeepSeek Provider 使用公开 import path `github.com/gorenx/goren/llm/deepseek`，默认 Retry Consumer 使用 `github.com/gorenx/goren/llm/retry`。公开 DeepSeek 包允许 composition root 或其他编译期装配直接注册其 typed Factory，但 vendor wire DTO、transport 细节和错误 vocabulary 仍由该包独占，不成为 provider-neutral `llm` contract。
+
+这次调整只改变 Go import path：旧 `github.com/gorenx/goren/llmretry` 调用方迁移到 `github.com/gorenx/goren/llm/retry`，package identifier 仍为 `llmretry`；仓库内旧 `internal/llm/deepseek` 调用方迁移到 `llm/deepseek`。不保留平行 wrapper 或第二条注册路径。TypeScript Client 协议、canonical Plugin 名、配置 JSON、Provider route、事件名、持久化字段和运行时语义均不改变。
 
 ## 2. 职责与非职责
 
@@ -43,7 +49,7 @@ Go 不复制 TypeScript class inheritance、declaration merging、fetch implemen
 - System Prompt section、Tool registry、Connection HTTP 入站或客户端状态；
 - JSONL、SQLite/sqlc 或 model catalog 的长期持久化。
 
-`internal/llm/deepseek` 只拥有一个 direct DeepSeek route 的 outbound protocol adapter，代码近邻的工作原理和上下游流程见[`internal/llm/deepseek/README.zh-CN.md`](../internal/llm/deepseek/README.zh-CN.md)。它不向 Agent 暴露 wire DTO，不建立“通用 OpenAI-compatible SDK”公共层，也不把 Provider 的 transport/error vocabulary 泄漏进 `llm` contract。
+`llm/deepseek` 只拥有一个 direct DeepSeek route 的 outbound protocol adapter，代码近邻的工作原理和上下游流程见[`llm/deepseek/README.zh-CN.md`](../llm/deepseek/README.zh-CN.md)。它不向 Agent 暴露 wire DTO，不建立“通用 OpenAI-compatible SDK”公共层，也不把 Provider 的 transport/error vocabulary 泄漏进 `llm` contract。
 
 ## 3. 包内职责划分
 
@@ -71,28 +77,28 @@ Go 不复制 TypeScript class inheritance、declaration merging、fetch implemen
 | `llm/retry_policy.go` | retry tagged union、默认值、范围校验与 detached snapshot |
 | `llm/retry_policy_codec.go` | retry typed config 的 omission 与严格 tagged-union JSON codec |
 | `llm/assembler.go` | provider-neutral 增量 block assembly |
-| `internal/llm/deepseek/config.go` | owner config、connection snapshot 与枚举值 |
-| `internal/llm/deepseek/config_codec.go` | omission/null 与 strict config JSON codec |
-| `internal/llm/deepseek/config_resolve.go` | 默认值、环境派生、模型目录校验与 atomic resolution |
-| `internal/llm/deepseek/serialize.go` | Harness Message 到 DeepSeek wire message 的单向映射 |
-| `internal/llm/deepseek/request_serialization.go` | 完整 chat-completions request、Tool schema 与 thinking resolution |
-| `internal/llm/deepseek/wire.go` | DeepSeek 私有 request/response wire DTO |
-| `internal/llm/deepseek/sse.go` | SSE framing、idle timeout、`[DONE]` 与 body lifecycle |
-| `internal/llm/deepseek/translate.go` | DeepSeek payload 到 Harness StreamChunk 的流状态机 |
-| `internal/llm/deepseek/response_mapping.go` | finish reason 与 token usage 的纯映射 |
-| `internal/llm/deepseek/adapter.go` | Adapter 构造、依赖和 lazy Stream 入口 |
-| `internal/llm/deepseek/plugin.go` | DeepSeek typed Factory、Service 依赖、Provider entry 与 reverse-order Dispose |
-| `internal/llm/deepseek/model_catalog.go` | Provider metadata、retry snapshot 与 model capability |
-| `internal/llm/deepseek/stream.go` | 单次 lazy stream 的初始化、取消与 terminal lifecycle |
-| `internal/llm/deepseek/request.go` | credential/identity resolution、HTTP request/header/send 与 SSE bridge |
-| `internal/llm/deepseek/http_error.go` | HTTP/provider failure、retry-after 与稳定 Harness error code |
-| `internal/llm/deepseek/anonymoususerid/store.go` | installation identity 文件边界，不承担 LLM 或配置职责 |
+| `llm/deepseek/config.go` | owner config、connection snapshot 与枚举值 |
+| `llm/deepseek/config_codec.go` | omission/null 与 strict config JSON codec |
+| `llm/deepseek/config_resolve.go` | 默认值、环境派生、模型目录校验与 atomic resolution |
+| `llm/deepseek/serialize.go` | Harness Message 到 DeepSeek wire message 的单向映射 |
+| `llm/deepseek/request_serialization.go` | 完整 chat-completions request、Tool schema 与 thinking resolution |
+| `llm/deepseek/wire.go` | DeepSeek 私有 request/response wire DTO |
+| `llm/deepseek/sse.go` | SSE framing、idle timeout、`[DONE]` 与 body lifecycle |
+| `llm/deepseek/translate.go` | DeepSeek payload 到 Harness StreamChunk 的流状态机 |
+| `llm/deepseek/response_mapping.go` | finish reason 与 token usage 的纯映射 |
+| `llm/deepseek/adapter.go` | Adapter 构造、依赖和 lazy Stream 入口 |
+| `llm/deepseek/plugin.go` | DeepSeek typed Factory、Service 依赖、Provider entry 与 reverse-order Dispose |
+| `llm/deepseek/model_catalog.go` | Provider metadata、retry snapshot 与 model capability |
+| `llm/deepseek/stream.go` | 单次 lazy stream 的初始化、取消与 terminal lifecycle |
+| `llm/deepseek/request.go` | credential/identity resolution、HTTP request/header/send 与 SSE bridge |
+| `llm/deepseek/http_error.go` | HTTP/provider failure、retry-after 与稳定 Harness error code |
+| `llm/deepseek/anonymoususerid/store.go` | installation identity 文件边界，不承担 LLM 或配置职责 |
 | `apiproxy/llm_api.go` | `llm.providers`、`llm.models` wire DTO、API interface 与 typed registration |
 | `apiproxy/llm_gateway.go` | 持有 consumer-owned `LLMDirectory`，投影 provider topology 与共享 model catalog |
 
 Registry 锁只保护 entry membership 和 route 快照。Adapter、model discovery、observer、waterfall 和网络 I/O 都不在 Registry lock 内运行。DeepSeek parser、translator 与 BlockAssembler 分离：parser 只理解 SSE，translator 只理解 provider payload，assembler 只理解 Harness StreamChunk。
 
-上述文件划分按责任对象组织。判别 union 中多个 struct 仍可同处一个文件，因为它们共同组成一个 contract family；codec、registration lifecycle、network request 和 error mapping 等独立变化原因不得再混入该文件。公共 contract 与 Runtime 保持在根 `llm` 包；仅将依赖根 contract 的构造边界放入 `llm/factory`，将仓库私有内置 Provider 放入 `internal/llm/deepseek`，两者都只能单向依赖 `llm`，不得建立反向 facade。
+上述文件划分按责任对象组织。判别 union 中多个 struct 仍可同处一个文件，因为它们共同组成一个 contract family；codec、registration lifecycle、network request 和 error mapping 等独立变化原因不得再混入该文件。公共 contract 与 Runtime 保持在根 `llm` 包；依赖根 contract 的构造边界放入 `llm/factory`，capability-owned 的内置 Provider 和 Retry Plugin 分别放入 `llm/deepseek` 与 `llm/retry`。它们都只能单向依赖 `llm`，不得建立反向 facade，也不得把具体 Provider 类型变成其他 Provider 的依赖。
 
 ## 4. 公共 Service 与扩展边界
 
@@ -167,7 +173,7 @@ Agent / auxiliary consumer
   -> llm.PrepareCall 或 llm.Stream
   -> llm/stream waterfall
   -> route + exact model resolution
-  -> internal/llm/deepseek.Adapter.Stream
+  -> llm/deepseek.Adapter.Stream
   -> first ChunkStream.Next snapshots config and resolves credential/user id
   -> SerializeRequest
   -> POST {baseURL}/chat/completions
@@ -206,7 +212,7 @@ DeepSeek prompt token 是累计值；`prompt_cache_hit_tokens` 或 `prompt_token
 
 DeepSeek Adapter 把 HTTP/provider/transport 事实映射成 `LlmError`：`AUTH`、`QUOTA`、`RATE_LIMIT`、`CONTEXT_WINDOW_EXCEEDED`、`INVALID_REQUEST`、`SERVER`、`TIMEOUT`、`TRANSPORT`、`EMPTY_RESPONSE`、`INVALID_CREDENTIAL` 等。HTTP status、provider retry-after 和 request ID 是结构化字段，不需要 Agent 解析错误字符串。
 
-`RetryPolicy` 由 Adapter registration 捕获并向 Agent request owner 暴露。默认 normal policy 是两次 retry、500ms 初始 delay、10s 上限、0.1 jitter，retryable code 为 `EMPTY_RESPONSE`、`RATE_LIMIT`、`SERVER`、`TIMEOUT`、`TRANSPORT`。`always` 表示持续到成功或取消。`llm` 定义并校验 policy，不自行启动跨请求 retry loop；独立 [`llmretry` Consumer](../llmretry/README.zh-CN.md) 负责 delay/jitter/attempt、durable schedule/start facts 和取消，Agent Loop 只执行 `agent/request-error` 明确返回的 retry action，具体 attempt boundary 见[15 Agent Loop 与请求驱动模块设计](./15-agent-loop-and-request-driver.md)。
+`RetryPolicy` 由 Adapter registration 捕获并向 Agent request owner 暴露。默认 normal policy 是两次 retry、500ms 初始 delay、10s 上限、0.1 jitter，retryable code 为 `EMPTY_RESPONSE`、`RATE_LIMIT`、`SERVER`、`TIMEOUT`、`TRANSPORT`。`always` 表示持续到成功或取消。`llm` 定义并校验 policy，不自行启动跨请求 retry loop；独立 [`llmretry` Consumer](../llm/retry/README.zh-CN.md) 负责 delay/jitter/attempt、durable schedule/start facts 和取消，Agent Loop 只执行 `agent/request-error` 明确返回的 retry action，具体 attempt boundary 见[15 Agent Loop 与请求驱动模块设计](./15-agent-loop-and-request-driver.md)。
 
 调用方 context、单次 `Next` context 和显式 `Close` 都可取消 owned request。取消不得撤销共享 Adapter registration、LLM Service 或其他 Agent 的请求。Adapter replacement 和 Plugin unload 只撤回 route entry；已取得的 prepared call 仍绑定原 registration identity。
 
@@ -225,7 +231,7 @@ credentials/factory.Factory
   -> NewManager
   -> Manager Manifest Provides ServiceOf[credentials.Provider]
 
-internal/llm/deepseek.Factory
+llm/deepseek.Factory
   -> strict decode deepseek.Config
   -> immutable ConnectionOptions
   -> DeepSeek Plugin Apply

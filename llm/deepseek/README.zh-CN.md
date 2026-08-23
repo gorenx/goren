@@ -1,8 +1,8 @@
 # DeepSeek Provider Plugin
 
-`internal/llm/deepseek` 是 LLM 领域内置的 DeepSeek Harness `@deepseek-ai/dsh-llm-deepseek` Provider。它直接实现 Plugin 与 Adapter：Factory 负责严格配置和实例化，Plugin 负责取得 LLM/Credentials Service、发布 route 与配置目录，并在卸载时释放全部贡献；Adapter 把 provider-neutral `llm.GenerateOptions` 转换为 DeepSeek chat-completions 请求，再把 HTTP/SSE 响应归一化为 Harness `llm.StreamChunk`。
+`llm/deepseek` 是 LLM 领域公开、静态链接的内置 DeepSeek Harness `@deepseek-ai/dsh-llm-deepseek` Provider 包。它直接实现 Plugin 与 Adapter：Factory 负责严格配置和实例化，Plugin 负责取得 LLM/Credentials Service、发布 route 与配置目录，并在卸载时释放全部贡献；Adapter 把 provider-neutral `llm.GenerateOptions` 转换为 DeepSeek chat-completions 请求，再把 HTTP/SSE 响应归一化为 Harness `llm.StreamChunk`。
 
-该包是仓库私有 outbound Provider，不是第二套 LLM Runtime，也不是通用 OpenAI-compatible SDK。公共 LLM contract、Adapter Registry 和 RetryPolicy 类型由[`llm`](../../../llm/README.zh-CN.md)拥有；默认重试执行由[`llmretry`](../../../llmretry/README.zh-CN.md)拥有。跨模块稳定设计见[Harness LLM Runtime 与 DeepSeek Provider](../../../zh-CN/13-harness-llm-runtime-and-deepseek-provider.md)，实施证据只见[实施进度](../../../zh-CN/08-implementation-progress.md)。
+该公开路径用于编译期注册、Provider 配置和定向复用，不把 DeepSeek wire vocabulary 提升为共享领域 contract，也不是第二套 LLM Runtime 或通用 OpenAI-compatible SDK。其他 Provider 仍应实现 `llm.Adapter` 等 owner-defined contract，不能依赖本包的 concrete transport。公共 LLM contract、Adapter Registry 和 RetryPolicy 类型由[`llm`](../README.zh-CN.md)拥有；默认重试执行由[`llmretry`](../retry/README.zh-CN.md)拥有。跨模块稳定设计见[Harness LLM Runtime 与 DeepSeek Provider](../../zh-CN/13-harness-llm-runtime-and-deepseek-provider.md)，实施证据只见[实施进度](../../zh-CN/08-implementation-progress.md)。
 
 ## 1. 源实现映射
 
@@ -90,7 +90,7 @@ Assembly 只注册 statically linked Factory 并按服务配置选择实例。De
 
 ## 5. 配置与请求 generation
 
-配置只保存 credential reference，不保存明文 API key。主要字段包括 `apiKeyEnv`、`baseURL`、`thinking`、`reasoningEffort`、`maxTokens`、`defaultContextWindow`、`models`、`streamIdleTimeoutMs` 和 `retryPolicy`。默认引用是 `DEEPSEEK_API_KEY`，由 Plugin 取得的 Credentials Provider 在每次请求开始时解析；默认 base URL 是 `https://api.deepseek.com`。Credentials precedence、LiveStore 与 Host API 由[22 Credentials 与 API Key 管理](../../../zh-CN/22-credentials-and-api-key-management.md)拥有。
+配置只保存 credential reference，不保存明文 API key。主要字段包括 `apiKeyEnv`、`baseURL`、`thinking`、`reasoningEffort`、`maxTokens`、`defaultContextWindow`、`models`、`streamIdleTimeoutMs` 和 `retryPolicy`。默认引用是 `DEEPSEEK_API_KEY`，由 Plugin 取得的 Credentials Provider 在每次请求开始时解析；默认 base URL 是 `https://api.deepseek.com`。Credentials precedence、LiveStore 与 Host API 由[22 Credentials 与 API Key 管理](../../zh-CN/22-credentials-and-api-key-management.md)拥有。
 
 ```mermaid
 sequenceDiagram

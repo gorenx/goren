@@ -30,13 +30,12 @@ The existing `llm` package predates this direction. Reuse correct transport or a
 - `zh-CN/NN-*.md` contains the ordered authoritative Harness port design.
 - `zh-CN/memory-design/` is isolated historical design. Do not read or cite it for Harness work unless the task explicitly targets it.
 - `zh-CN/assets/` stores images referenced by Chinese documentation.
-- `llm/docs/zh-CN/` describes the pre-port implementation and is migration evidence, not the target API.
 
 Every cohesive implemented capability package must add or update a colocated `README.zh-CN.md`. For now, do not add package-local English `README.md` files. The package README explains the package's responsibilities and non-responsibilities, operating model, upstream/downstream interactions, lifecycle, and failure/cancellation behavior, and uses Mermaid for interaction or process diagrams. It links to the owning `zh-CN/NN-*.md` documents for cross-package contracts and to `zh-CN/08-implementation-progress.md` for implementation evidence instead of creating a second source of truth. Add these READMEs only to real implemented packages, not placeholders, small ownerless helper directories, generated code, or test-only directories.
 
 Write detailed design in Simplified Chinese. Preserve canonical TypeScript public names, event names, wire fields, configuration keys, and established domain terms. Update `zh-CN/README.md` whenever an authoritative design document changes responsibility or order. Link to the owning document instead of duplicating contracts. Keep unresolved choices explicit; do not turn proposals into accepted behavior silently.
 
-Use `cmd/` for executable entry points, public root packages only for real extension contracts, and `internal/` for repository-private runtime, assembly, and adapters. Keep colocated `*_test.go` files and package-local `testdata/`. Do not create placeholder package trees.
+Use `cmd/` for executable entry points. Public root packages are limited to real extension contracts and capability-owned, statically linked Plugin or Provider packages intended for composition. Keep repository-private runtime, assembly, and non-Plugin carrier or storage adapters under `internal/`. A public Provider package does not make its vendor wire DTO or transport details shared domain contracts. Keep colocated `*_test.go` files and package-local `testdata/`. Do not create placeholder package trees.
 
 Keep package behavior tests colocated with their owner. Put repository-wide architecture and policy checks in `tests/architecture/` so they remain outside production packages while still running under `go test ./...`.
 
