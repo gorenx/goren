@@ -64,6 +64,60 @@ func TestReadResultPreservesPartialOutputAndCancellation(t *testing.T) {
 	}
 }
 
+func TestReadResultUsesTextChunksWhenCancellationPreventsMessageCommit(t *testing.T) {
+	t.Parallel()
+	childSession, err := session.New("partial-child", session.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendTurnStart(t, childSession, 1)
+	appendStepStart(t, childSession, 1)
+	if _, err = session.AppendSerialized(
+		childSession,
+		session.AssistantChunked,
+		session.AssistantChunk{
+			Turn: 1,
+			Step: 1,
+			Chunk: llm.TextDeltaChunk{
+				Index: 0,
+				Text:  "partial answer",
+			},
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	appendTurnEnd(t, childSession, 1, session.TurnInterrupted{})
+
+	result, err := readResult(childSession, 0, true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.StopReason != subagent.StopAborted ||
+		visibleContent(result.Output) != "partial answer" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestReadResultIgnoresLaterTurnThatConsumedNoWork(t *testing.T) {
+	t.Parallel()
+	childSession, err := session.New("no-op-child", session.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendCompletedTurn(t, childSession, 1, "completed answer")
+	appendTurnStart(t, childSession, 2)
+	appendTurnEnd(t, childSession, 2, session.TurnBlocked{})
+
+	result, err := readResult(childSession, 0, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.StopReason != subagent.StopCompleted ||
+		visibleContent(result.Output) != "completed answer" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 func appendCompletedTurn(
 	t *testing.T,
 	conversation *session.Session,
@@ -82,25 +136,8 @@ func appendTurn(
 	reason session.TurnEndReason,
 ) {
 	t.Helper()
-	if _, err := session.AppendSerialized(
-		conversation,
-		session.TurnStarted,
-		session.TurnStart{
-			Turn: turn,
-		},
-	); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := session.AppendSerialized(
-		conversation,
-		session.StepStarted,
-		session.StepPosition{
-			Turn: turn,
-			Step: 1,
-		},
-	); err != nil {
-		t.Fatal(err)
-	}
+	appendTurnStart(t, conversation, turn)
+	appendStepStart(t, conversation, turn)
 	messageValue, err := llm.NewAssistantMessage(llm.AssistantMessageInput{
 		Content: []llm.ContentBlock{
 			llm.NewTextBlock(text),
@@ -137,7 +174,52 @@ func appendTurn(
 	); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = session.AppendSerialized(
+	appendTurnEnd(t, conversation, turn, reason)
+}
+
+func appendTurnStart(
+	t *testing.T,
+	conversation *session.Session,
+	turn int64,
+) {
+	t.Helper()
+	if _, err := session.AppendSerialized(
+		conversation,
+		session.TurnStarted,
+		session.TurnStart{
+			Turn: turn,
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func appendStepStart(
+	t *testing.T,
+	conversation *session.Session,
+	turn int64,
+) {
+	t.Helper()
+	if _, err := session.AppendSerialized(
+		conversation,
+		session.StepStarted,
+		session.StepPosition{
+			Turn: turn,
+			Step: 1,
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func appendTurnEnd(
+	t *testing.T,
+	conversation *session.Session,
+	turn int64,
+	reason session.TurnEndReason,
+) {
+	t.Helper()
+	if _, err := session.AppendSerialized(
 		conversation,
 		session.TurnEnded,
 		session.TurnEnd{

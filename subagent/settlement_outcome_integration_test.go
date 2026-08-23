@@ -27,6 +27,7 @@ func TestContinuableSettlementReportsMaxTokensFromAgentLog(t *testing.T) {
 		},
 		subagent.StopMaxTokens,
 		"ran out of room before it finished",
+		"partial answer",
 	)
 }
 
@@ -45,6 +46,7 @@ func TestContinuableSettlementReportsModelFailureFromAgentLog(t *testing.T) {
 		},
 		subagent.StopError,
 		"failed before it finished",
+		"",
 	)
 }
 
@@ -53,6 +55,7 @@ func assertContinuableSettlementOutcome(
 	childResponse []llm.StreamChunk,
 	expected subagent.StopReason,
 	settlementText string,
+	settlementOutput string,
 ) {
 	t.Helper()
 	state, durability, backend := newContinuableIntegrationFixture(
@@ -100,6 +103,9 @@ func assertContinuableSettlementOutcome(
 	parentInput := lastUserContentText(requests[1].Messages)
 	if !strings.Contains(parentInput, settlementText) {
 		t.Fatalf("parent settlement notice = %q", parentInput)
+	}
+	if settlementOutput != "" && !strings.Contains(parentInput, settlementOutput) {
+		t.Fatalf("parent settlement output = %q", parentInput)
 	}
 	if failures := durability.failures.snapshot(); len(failures) != 0 {
 		t.Fatalf("background persistence failures = %#v", failures)
