@@ -240,10 +240,11 @@ func appendWaterfallScope[
 }
 
 type waterfallStep[I WaterfallInput, O WaterfallOutput] struct {
-	middleware []waterfallInvocation[I, O]
-	terminal   WaterfallAction[I, O]
-	index      int
-	proceeded  atomic.Bool
+	middleware      []waterfallInvocation[I, O]
+	terminal        WaterfallAction[I, O]
+	terminalRuntime *Runtime
+	index           int
+	proceeded       atomic.Bool
 }
 
 func (step *waterfallStep[I, O]) Execute(
@@ -255,12 +256,19 @@ func (step *waterfallStep[I, O]) Execute(
 		return output, ErrWaterfallAlreadyExecuted
 	}
 	if step.index >= len(step.middleware) {
-		return step.terminal.Execute(requestContext, input)
+		return step.terminal.Execute(
+			waterfallTerminalContext{
+				Context: requestContext,
+				runtime: step.terminalRuntime,
+			},
+			input,
+		)
 	}
 	downstream := &waterfallStep[I, O]{
-		middleware: step.middleware,
-		terminal:   step.terminal,
-		index:      step.index + 1,
+		middleware:      step.middleware,
+		terminal:        step.terminal,
+		terminalRuntime: step.terminalRuntime,
+		index:           step.index + 1,
 	}
 	return invokeWaterfallMiddleware(
 		requestContext,
@@ -268,6 +276,26 @@ func (step *waterfallStep[I, O]) Execute(
 		step.middleware[step.index].middleware,
 		downstream,
 	)
+}
+
+// waterfallTerminalContext preserves cancellation and values selected by the
+// Middleware chain while restoring the caller's topology-mutation boundary.
+// The Runtime owns Middleware invocation; the terminal owns the business
+// operation. A terminal reached from an existing Plugin callback remains
+// guarded, while an ordinary caller does not inherit the Waterfall guard.
+type waterfallTerminalContext struct {
+	context.Context
+	runtime *Runtime
+}
+
+func (terminalContext waterfallTerminalContext) Value(key any) any {
+	if _, matches := key.(runtimeCallbackKey); matches {
+		if terminalContext.runtime == nil {
+			return nil
+		}
+		return terminalContext.runtime
+	}
+	return terminalContext.Context.Value(key)
 }
 
 func invokeWaterfallMiddleware[
@@ -316,6 +344,7 @@ func Run[
 		return output, err
 	}
 	runtimeEngine := sourceFiber.runtime
+	terminalRuntime, _ := requestContext.Value(runtimeCallbackKey{}).(*Runtime)
 	runtimeEngine.view.RLock()
 	if sourceFiber.state != FiberActive {
 		runtimeEngine.view.RUnlock()
@@ -361,11 +390,18 @@ func Run[
 	defer releaseCalls()
 	defer releaseContext(context.Canceled)
 	if len(middleware) == 0 {
-		return terminal.Execute(callContext, input)
+		return terminal.Execute(
+			waterfallTerminalContext{
+				Context: callContext,
+				runtime: terminalRuntime,
+			},
+			input,
+		)
 	}
 	firstStep := &waterfallStep[I, O]{
-		middleware: middleware,
-		terminal:   terminal,
+		middleware:      middleware,
+		terminal:        terminal,
+		terminalRuntime: terminalRuntime,
 	}
 	return firstStep.Execute(callContext, input)
 }
@@ -391,6 +427,7 @@ func RunRetained[
 		return output, nil, err
 	}
 	runtimeEngine := sourceFiber.runtime
+	terminalRuntime, _ := requestContext.Value(runtimeCallbackKey{}).(*Runtime)
 	runtimeEngine.view.RLock()
 	if sourceFiber.state != FiberActive {
 		runtimeEngine.view.RUnlock()
@@ -437,8 +474,9 @@ func RunRetained[
 		}
 	}()
 	firstStep := &waterfallStep[I, O]{
-		middleware: middleware,
-		terminal:   terminal,
+		middleware:      middleware,
+		terminal:        terminal,
+		terminalRuntime: terminalRuntime,
 	}
 	output, runErr = firstStep.Execute(
 		callContext,
