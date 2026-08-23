@@ -11,7 +11,7 @@ import (
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
-	"github.com/gorenx/goren/subagent/internal/composition"
+	"github.com/gorenx/goren/subagent/internal/childscope"
 	"github.com/gorenx/goren/subagent/internal/inprocess"
 )
 
@@ -67,7 +67,7 @@ func (owner *Provider) Apply(requestContext context.Context) error {
 	delegationPolicy, _ := plugin.Resolve[approval.DelegationPolicy](owner)
 	driver, driverErr := inprocess.New(
 		agents,
-		composition.NewOneShot(delegationPolicy),
+		childscope.NewOneShot(delegationPolicy),
 	)
 	if driverErr != nil {
 		return driverErr

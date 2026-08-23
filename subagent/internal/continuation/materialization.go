@@ -8,6 +8,7 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
+	"github.com/gorenx/goren/subagent/internal/childscope"
 	"github.com/gorenx/goren/subagent/internal/lineage"
 )
 
@@ -35,8 +36,8 @@ func (owner *Manager) create(
 			Metadata:     childLineage.Metadata(lineageSeedLength),
 			Seed:         seed,
 			AgentOptions: *requestSnapshot.AgentOptions,
-			Provisioner: owner.dependencies.Composer.Compose(
-				Composition{
+			Provisioner: owner.dependencies.ScopeBuilder.Provisioner(
+				childscope.ContinuableInput{
 					ChildID:    childID,
 					ParentID:   requestSnapshot.Parent.ID(),
 					Descriptor: descriptor,
@@ -115,8 +116,8 @@ func (owner *Manager) resume(
 		agent.ResumeOptions{
 			SessionID:    childID,
 			AgentOptions: childOptions,
-			Provisioner: owner.dependencies.Composer.Compose(
-				Composition{
+			Provisioner: owner.dependencies.ScopeBuilder.Provisioner(
+				childscope.ContinuableInput{
 					ChildID:    childID,
 					ParentID:   parentAgent.ID(),
 					Descriptor: continuableIdentity,
