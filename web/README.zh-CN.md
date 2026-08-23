@@ -1,6 +1,6 @@
 # Web 主会话 UI
 
-`web` 提供随 Go 二进制内嵌的 React 主会话 UI。源码使用 TypeScript、Vite 和 Tailwind CSS 构建；Go 运行时只内嵌 `dist`，不依赖 Node.js。它是主会话的入站适配器，不是 Session、Agent 或 LLM 的业务 owner。跨模块能力范围由[21 Web Agent 主会话闭环与能力边界](../zh-CN/21-web-agent-main-flow.md)拥有，当前完成度与验证证据见[08 实施进度](../zh-CN/08-implementation-progress.md)。
+`web` 提供随 Go 二进制内嵌的 React 主会话 UI。源码使用 TypeScript、Vite 和 Tailwind CSS 构建；Go 运行时只内嵌 `dist`，不依赖 Node.js。它是主会话的入站适配器，不是 Session、Agent 或 LLM 的业务 owner。跨模块能力范围由[21 Web Agent 主会话闭环与能力边界](../zh-CN/21-web-agent-main-flow.md)拥有，当前完成度与验证证据见[08 实施进度](../zh-CN/08-implementation-progress.md)，本轮测试暴露的问题见[Web 自有测试问题记录](./docs/test-findings.zh-CN.md)。
 
 ## 职责
 
@@ -49,7 +49,7 @@ flowchart LR
 
 ## 会话与流式状态
 
-选择 Session 后总是调用 `session.history`，不会把当前 DOM 当成事实来源。`session/event` 按 `seq` 去重并排序：
+选择 Session 后总是调用 `session.history`，不会把当前 DOM 当成事实来源。History baseline 与请求期间已经到达的实时事件按 `seq` 合并、去重和排序，stream draft 只从这份 Session event window 投影：
 
 1. 只有 `source.kind=user` 的 `user/message` 与 role 为 assistant 的 committed `assistant/message` 进入对话展示；plugin runtime-context 与 Tool facts 仍保留在 Session/模型上下文中，但不伪装成用户消息；
 2. `assistant/chunk` 只累积为当前 Session 的临时 draft；
@@ -103,10 +103,11 @@ sequenceDiagram
 ```sh
 cd web
 pnpm install --frozen-lockfile
+pnpm run test
 pnpm run build
 ```
 
-`dist` 必须随源码提交，使 `go build` 和 `go test` 不需要现场安装 Node.js。修改前端后由 `pnpm run build` 同时执行 TypeScript 检查并刷新内嵌产物。`index.html` 使用 `no-cache`，每次加载都会确认入口；Vite 为 JS/CSS 生成内容哈希路径，Host 只对这些不可变路径发送长期缓存。不得重新使用固定 `/app.js` 配合正 `max-age`，否则服务升级后浏览器会继续运行旧协议 adapter。
+`pnpm run test` 是 Web owner-local 的 Vitest/JSDOM 验证，不等同于 Web 到 Go 服务端 contract 或真实浏览器验收。`dist` 必须随源码提交，使 `go build` 和 `go test` 不需要现场安装 Node.js。修改前端后由 `pnpm run build` 同时执行 TypeScript 检查并刷新内嵌产物。Tailwind source boundary 排除测试文件，避免测试标识符生成生产 utility。`index.html` 使用 `no-cache`，每次加载都会确认入口；Vite 为 JS/CSS 生成内容哈希路径，Host 只对这些不可变路径发送长期缓存。不得重新使用固定 `/app.js` 配合正 `max-age`，否则服务升级后浏览器会继续运行旧协议 adapter。
 
 仓库根执行 `make run` 会先完成上述 Web 构建，再以 `--data-dir "$(CURDIR)"` 启动 Go 服务；可通过 `make run DATA_DIR=/absolute/path` 覆盖数据目录。
 

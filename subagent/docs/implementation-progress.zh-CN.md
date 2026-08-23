@@ -19,6 +19,7 @@
 | DSH feature-local source | `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e` |
 | Goren 开始实现时 HEAD | `6eeac353b6e55d555530189b1f79f9cd7e70ad9c` |
 | 当前验收代码 HEAD | `19aa87d`（主体实现 `eddf35f`） |
+| Web 辅助测试代码 HEAD | `9cb505e` |
 | 最后核对日期 | 2026-08-23 |
 | 全局基线是否改变 | 否 |
 
@@ -59,11 +60,18 @@ go test ./subagent -run '^TestContinuableSettlementReports(MaxTokens|ModelFailur
 go test -race ./subagent/internal/continuation -count=20
 go test -race ./subagent ./subagent/internal/continuation -count=10
 GOREN_REAL_PROVIDER_TEST=1 go test ./subagent -run '^TestRealProviderForegroundOneShot$' -count=1
+(cd web && pnpm install --frozen-lockfile)
+(cd web && pnpm run test)
+(cd web && pnpm run typecheck)
+(cd web && pnpm run build)
+go test ./web ./tests/architecture
 ```
 
 结果：通过。
 
-最后一项从本地 `.env` 注入进程环境并由 credential owner 解析 `DEEPSEEK_API_KEY`，执行了一次真实 DeepSeek foreground one-shot；测试缺少显式开关或凭据时自跳过，不属于 keyless 自动化门禁，密钥未写入日志、fixture 或 Git。其余结果证明当前 Go 实现通过全仓测试/race、vet、build、命名架构检查；高重复测试直接覆盖自然 settlement 与 Followup、terminal outcome，完整套件继续覆盖 materialization/drain、interrupt 和 resident report shutdown。这仍不是 TypeScript/Go compatibility acceptance。问题、根因和修复证据另见[服务端测试问题记录](./server-test-findings.zh-CN.md)。Jobs、background one-shot、Code Mode structured capture 与 Workflow 没有因此进入实现范围。
+真实 Provider 命令从本地 `.env` 注入进程环境并由 credential owner 解析 `DEEPSEEK_API_KEY`，执行了一次真实 DeepSeek foreground one-shot；测试缺少显式开关或凭据时自跳过，不属于 keyless 自动化门禁，密钥未写入日志、fixture 或 Git。其余结果证明当前 Go 实现通过全仓测试/race、vet、build、命名架构检查；高重复测试直接覆盖自然 settlement 与 Followup、terminal outcome，完整套件继续覆盖 materialization/drain、interrupt 和 resident report shutdown。
+
+Web owner-local 验证新增 6 个分职责测试文件、18 个用例，覆盖 RPC/Question、受控 Composer、Session event 去重、history/live 合并和 stream projection；问题、根因和修复见[Web 自有测试问题记录](../../web/docs/test-findings.zh-CN.md)。该层仍不是 Web 到 Go 服务端、真实浏览器或 TypeScript/Go compatibility acceptance。服务端问题记录见[服务端测试问题记录](./server-test-findings.zh-CN.md)。Jobs、background one-shot、Code Mode structured capture 与 Workflow 没有因此进入实现范围。
 
 ## 4. 下一验证门
 
@@ -73,6 +81,7 @@ GOREN_REAL_PROVIDER_TEST=1 go test ./subagent -run '^TestRealProviderForegroundO
 4. Catalog：增加与固定 DSH list/projection fixtures 的差分验证和可选 projection-cache acceleration；cache 不是权威读取前提。
 5. Provider/Consumer：增加固定 DSH spawn/fork、Tool/control/report fixture 的跨语言差分；当前 Go tests 只证明本地契约。
 6. 全量：继续执行 `go test ./...`、`go test -race ./...`、`go vet ./...`、`go build ./...`、`git diff --check`，并补齐固定 DSH source differential fixtures。
+7. Web：当前 owner-local Vitest 已通过；Web 到 Go UI contract 按当前范围暂缓，真实浏览器验收等待可连接的浏览器实例。
 
 ## 5. 进度维护规则
 
