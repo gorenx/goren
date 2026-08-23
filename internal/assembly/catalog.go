@@ -43,6 +43,8 @@ import (
 	querysqlite "github.com/gorenx/goren/session/query/sqlite"
 	"github.com/gorenx/goren/session/title"
 	sessiontitlefactory "github.com/gorenx/goren/session/title/factory"
+	"github.com/gorenx/goren/subagent"
+	subagentfactory "github.com/gorenx/goren/subagent/factory"
 	"github.com/gorenx/goren/systemprompt"
 	systempromptfactory "github.com/gorenx/goren/systemprompt/factory"
 	"github.com/gorenx/goren/toolaskuser"
@@ -154,6 +156,7 @@ func NewCatalog(platform Environment) (*pluginfactory.Catalog, error) {
 		sessionqueryfactory.New(),
 		titleBuilder,
 		systempromptfactory.New(),
+		subagentfactory.New(),
 		toolsfactory.New(),
 		toolaskuserfactory.New(),
 		userquestionsfactory.New(),
@@ -271,6 +274,10 @@ func DefaultSpecs(
 		},
 		{
 			FactoryName: projection.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: subagent.PluginName,
 			Config:      emptyConfig,
 		},
 		{

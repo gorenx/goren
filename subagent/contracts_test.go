@@ -96,18 +96,11 @@ func TestRuntimeProvidesOnlyImplementedCapabilityInterfaces(t *testing.T) {
 		plugin.ServiceOf[subagent.OneShotService]().Name(),
 		plugin.ServiceOf[subagent.ContinuableService]().Name(),
 		plugin.ServiceOf[subagent.SetupRegistry]().Name(),
+		plugin.ServiceOf[subagent.Catalog]().Name(),
 	}
 	for _, wantedName := range wantedNames {
 		if !providedNames[wantedName] {
 			t.Fatalf("Runtime does not provide %q", wantedName)
-		}
-	}
-	deferredNames := []string{
-		plugin.ServiceOf[subagent.Catalog]().Name(),
-	}
-	for _, deferredName := range deferredNames {
-		if providedNames[deferredName] {
-			t.Fatalf("Runtime advertises unfinished capability %q", deferredName)
 		}
 	}
 }
