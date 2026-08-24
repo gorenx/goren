@@ -19,7 +19,7 @@ type agentRecord struct {
 	plugin.Base
 	mutex        sync.Mutex
 	identifier   session.SessionID
-	conversation *session.Session
+	conversation session.Context
 	options      agent.Options
 	status       agent.Status
 	messages     []llm.UserMessage
@@ -46,7 +46,7 @@ func (subject *agentRecord) ID() session.SessionID { return subject.identifier }
 
 func (subject *agentRecord) OptionsValue() agent.Options { return subject.options }
 
-func (subject *agentRecord) SessionValue() *session.Session { return subject.conversation }
+func (subject *agentRecord) SessionValue() session.Context { return subject.conversation }
 
 func (*agentRecord) InboxValue() *agent.Inbox { return nil }
 
@@ -335,7 +335,7 @@ func (lifecycleOwner *agentLifecycle) ClosingSignal() <-chan struct{} {
 
 type sessionRecord struct {
 	plugin.Base
-	entries  map[session.SessionID]*session.Session
+	entries  map[session.SessionID]session.Context
 	flushErr error
 	stored   *persistenceRecord
 }
@@ -344,26 +344,26 @@ func (*sessionRecord) Create(
 	context.Context,
 	*session.SessionID,
 	session.CreateOptions,
-) (session.SessionHandle, error) {
+) (session.Handle, error) {
 	return nil, errors.New("unused")
 }
 
 func (*sessionRecord) Prepare(
 	*session.SessionID,
 	session.CreateOptions,
-) (*session.Session, error) {
+) (session.Context, error) {
 	return nil, errors.New("unused")
 }
 
-func (*sessionRecord) Enter(*session.Session) (session.SessionHandle, error) {
+func (*sessionRecord) Enter(session.Context) (session.Handle, error) {
 	return nil, errors.New("unused")
 }
 
-func (*sessionRecord) Announce(context.Context, *session.Session) error { return nil }
+func (*sessionRecord) Announce(context.Context, session.Context) error { return nil }
 
 func (records *sessionRecord) Flush(
 	_ context.Context,
-	conversation *session.Session,
+	conversation session.Context,
 ) error {
 	if records.flushErr != nil {
 		return records.flushErr
@@ -377,13 +377,13 @@ func (records *sessionRecord) Flush(
 	return nil
 }
 
-func (records *sessionRecord) Get(identifier session.SessionID) (*session.Session, bool) {
+func (records *sessionRecord) Get(identifier session.SessionID) (session.Context, bool) {
 	conversation := records.entries[identifier]
 	return conversation, conversation != nil
 }
 
-func (records *sessionRecord) List() []*session.Session {
-	result := make([]*session.Session, 0, len(records.entries))
+func (records *sessionRecord) List() []session.Context {
+	result := make([]session.Context, 0, len(records.entries))
 	for _, conversation := range records.entries {
 		result = append(result, conversation)
 	}
@@ -575,7 +575,7 @@ func TestContinuableFreshLifecycleAndControl(t *testing.T) {
 		idle:   make(chan struct{}),
 	}
 	liveSessions := &sessionRecord{
-		entries: map[session.SessionID]*session.Session{
+		entries: map[session.SessionID]session.Context{
 			"parent": parentSession,
 		},
 	}
@@ -779,7 +779,7 @@ func TestFollowupColdResumesPersistedContinuableChild(t *testing.T) {
 		},
 	}
 	liveSessions := &sessionRecord{
-		entries: map[session.SessionID]*session.Session{
+		entries: map[session.SessionID]session.Context{
 			"parent": parentSession,
 		},
 	}

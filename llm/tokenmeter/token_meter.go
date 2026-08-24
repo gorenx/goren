@@ -15,7 +15,7 @@ import (
 // only owns its Runtime publication and lifecycle.
 type TokenMeter struct {
 	mutex sync.Mutex
-	folds map[*session.Session]*replayState
+	folds map[session.Context]*replayState
 }
 
 type replayStep struct {
@@ -41,13 +41,13 @@ type replayState struct {
 
 func newTokenMeter() *TokenMeter {
 	return &TokenMeter{
-		folds: make(map[*session.Session]*replayState),
+		folds: make(map[session.Context]*replayState),
 	}
 }
 
 func (owner *TokenMeter) release() {
 	owner.mutex.Lock()
-	owner.folds = make(map[*session.Session]*replayState)
+	owner.folds = make(map[session.Context]*replayState)
 	owner.mutex.Unlock()
 }
 
@@ -56,7 +56,7 @@ func (owner *TokenMeter) observeEvent(
 	fact plugin.Event,
 ) error {
 	switch observed := fact.(type) {
-	case session.SessionEventAppended:
+	case session.EventAppended:
 		owner.mutex.Lock()
 		_, allocated := owner.folds[observed.Conversation]
 		if !allocated {
@@ -66,7 +66,7 @@ func (owner *TokenMeter) observeEvent(
 		err := owner.syncLocked(requestContext, observed.Conversation)
 		owner.mutex.Unlock()
 		return err
-	case session.SessionDisposed:
+	case session.Disposed:
 		owner.mutex.Lock()
 		delete(owner.folds, observed.Conversation)
 		owner.mutex.Unlock()
@@ -77,7 +77,7 @@ func (owner *TokenMeter) observeEvent(
 // Measure will fold durable request and Surface facts into one measurement.
 func (owner *TokenMeter) Measure(
 	requestContext context.Context,
-	conversation *session.Session,
+	conversation session.Context,
 	requestHeader *session.EpochHeader,
 ) (Measurement, error) {
 	if requestContext == nil {
@@ -144,7 +144,7 @@ func (*TokenMeter) EstimateMessage(messageValue llm.Message) (int64, error) {
 
 func (owner *TokenMeter) syncLocked(
 	requestContext context.Context,
-	conversation *session.Session,
+	conversation session.Context,
 ) error {
 	entries := conversation.Events()
 	fold := owner.folds[conversation]

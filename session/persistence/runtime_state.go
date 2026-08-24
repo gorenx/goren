@@ -33,7 +33,7 @@ func (registry *durableSessions) Put(identifier session.SessionID, entry *durabl
 	registry.mutex.Unlock()
 }
 
-func (registry *durableSessions) DeleteOwned(identifier session.SessionID, conversation *session.Session) {
+func (registry *durableSessions) DeleteOwned(identifier session.SessionID, conversation session.Context) {
 	registry.mutex.Lock()
 	if entry := registry.entries[identifier]; entry != nil && entry.owner == conversation {
 		delete(registry.entries, identifier)
@@ -44,27 +44,27 @@ func (registry *durableSessions) DeleteOwned(identifier session.SessionID, conve
 // liveWrites owns write-behind controllers by exact live Session lifecycle.
 type liveWrites struct {
 	mutex   sync.Mutex
-	entries map[*session.Session]*liveSessionState
+	entries map[session.Context]*liveSessionState
 }
 
 func newLiveWrites() *liveWrites {
-	return &liveWrites{entries: make(map[*session.Session]*liveSessionState)}
+	return &liveWrites{entries: make(map[session.Context]*liveSessionState)}
 }
 
-func (registry *liveWrites) Get(conversation *session.Session) (*liveSessionState, bool) {
+func (registry *liveWrites) Get(conversation session.Context) (*liveSessionState, bool) {
 	registry.mutex.Lock()
 	entry, found := registry.entries[conversation]
 	registry.mutex.Unlock()
 	return entry, found
 }
 
-func (registry *liveWrites) Put(conversation *session.Session, entry *liveSessionState) {
+func (registry *liveWrites) Put(conversation session.Context, entry *liveSessionState) {
 	registry.mutex.Lock()
 	registry.entries[conversation] = entry
 	registry.mutex.Unlock()
 }
 
-func (registry *liveWrites) Delete(conversation *session.Session) {
+func (registry *liveWrites) Delete(conversation session.Context) {
 	registry.mutex.Lock()
 	delete(registry.entries, conversation)
 	registry.mutex.Unlock()

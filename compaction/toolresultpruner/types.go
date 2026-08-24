@@ -53,5 +53,5 @@ type Pruner interface {
 	plugin.Service
 	MeasureContent([]llm.ContentBlock) (int, error)
 	PruneContent([]llm.ContentBlock) ([]llm.ContentBlock, bool, error)
-	PruneSession(context.Context, *session.Session) (Result, error)
+	PruneSession(context.Context, session.Context) (Result, error)
 }

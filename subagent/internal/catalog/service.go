@@ -15,7 +15,7 @@ import (
 
 // Sessions is the live listing capability consumed by Catalog.
 type Sessions interface {
-	List() []*session.Session
+	List() []session.Context
 }
 
 // Persistence is the optional cold listing capability consumed by Catalog.
@@ -26,7 +26,7 @@ type Persistence interface {
 
 // Projections is the identity fold capability consumed by Catalog.
 type Projections interface {
-	Snapshot(*session.Session) (sessionprojection.Snapshot, error)
+	Snapshot(session.Context) (sessionprojection.Snapshot, error)
 	Restore(
 		sessionprojection.Checkpoint,
 		[]session.Event,

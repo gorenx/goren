@@ -1,6 +1,7 @@
 package inprocess
 
 import (
+	"context"
 	"testing"
 
 	"github.com/gorenx/goren/llm"
@@ -72,19 +73,22 @@ func TestReadResultUsesTextChunksWhenCancellationPreventsMessageCommit(t *testin
 	}
 	appendTurnStart(t, childSession, 1)
 	appendStepStart(t, childSession, 1)
-	if _, err = session.AppendSerialized(
-		childSession,
-		session.AssistantChunked,
-		session.AssistantChunk{
-			Turn: 1,
-			Step: 1,
-			Chunk: llm.TextDeltaChunk{
-				Index: 0,
-				Text:  "partial answer",
-			},
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.AssistantChunked,
+			session.AssistantChunk{
+				Turn: 1,
+				Step: 1,
+				Chunk: llm.TextDeltaChunk{
+					Index: 0,
+					Text:  "partial answer",
+				},
+			})
+		if err == nil {
+			_, err = childSession.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	appendTurnEnd(t, childSession, 1, session.TurnInterrupted{})
 
@@ -120,7 +124,7 @@ func TestReadResultIgnoresLaterTurnThatConsumedNoWork(t *testing.T) {
 
 func appendCompletedTurn(
 	t *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	turn int64,
 	text string,
 ) {
@@ -130,7 +134,7 @@ func appendCompletedTurn(
 
 func appendTurn(
 	t *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	turn int64,
 	text string,
 	reason session.TurnEndReason,
@@ -150,84 +154,113 @@ func appendTurn(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = session.AppendSurfaceSerialized(
-		conversation,
-		session.AssistantMessaged,
-		session.AssistantMessage{
-			Turn:    turn,
-			Step:    1,
-			Message: messageValue,
-		},
-		session.SurfaceIntent{
-			Operation: session.SurfaceAppend(),
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewSurfaceEventDraft(session.AssistantMessaged,
+			session.AssistantMessage{
+				Turn:    turn,
+				Step:    1,
+				Message: messageValue,
+			},
+			session.SurfaceIntent{
+				Operation: session.SurfaceAppend(),
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		if _, err = committedEvent, writeErr; err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err = session.AppendSerialized(
-		conversation,
-		session.StepEnded,
-		session.StepPosition{
-			Turn: turn,
-			Step: 1,
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewEventDraft(session.StepEnded,
+			session.StepPosition{
+				Turn: turn,
+				Step: 1,
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		if _, err = committedEvent, writeErr; err != nil {
+			t.Fatal(err)
+		}
 	}
 	appendTurnEnd(t, conversation, turn, reason)
 }
 
 func appendTurnStart(
 	t *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	turn int64,
 ) {
 	t.Helper()
-	if _, err := session.AppendSerialized(
-		conversation,
-		session.TurnStarted,
-		session.TurnStart{
-			Turn: turn,
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.TurnStarted,
+			session.TurnStart{
+				Turn: turn,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
 func appendStepStart(
 	t *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	turn int64,
 ) {
 	t.Helper()
-	if _, err := session.AppendSerialized(
-		conversation,
-		session.StepStarted,
-		session.StepPosition{
-			Turn: turn,
-			Step: 1,
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.StepStarted,
+			session.StepPosition{
+				Turn: turn,
+				Step: 1,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
 func appendTurnEnd(
 	t *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	turn int64,
 	reason session.TurnEndReason,
 ) {
 	t.Helper()
-	if _, err := session.AppendSerialized(
-		conversation,
-		session.TurnEnded,
-		session.TurnEnd{
-			Turn:   turn,
-			Reason: reason,
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.TurnEnded,
+			session.TurnEnd{
+				Turn:   turn,
+				Reason: reason,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

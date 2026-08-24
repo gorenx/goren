@@ -20,7 +20,7 @@ type automaticCompaction struct {
 	report func(error)
 
 	mutex            sync.Mutex
-	overflowSequence map[*session.Session]overflowRecovery
+	overflowSequence map[session.Context]overflowRecovery
 	warnedTargets    map[string]struct{}
 }
 
@@ -31,7 +31,7 @@ type overflowRecovery struct {
 
 func (automation *automaticCompaction) release() {
 	automation.mutex.Lock()
-	automation.overflowSequence = make(map[*session.Session]overflowRecovery)
+	automation.overflowSequence = make(map[session.Context]overflowRecovery)
 	automation.warnedTargets = make(map[string]struct{})
 	automation.mutex.Unlock()
 }
@@ -45,7 +45,7 @@ func (automation *automaticCompaction) observeEvent(
 		if observed.Subject != nil && observed.Status == agent.StatusIdle {
 			automation.resetAgent(observed.Subject)
 		}
-	case session.SessionEventAppended:
+	case session.EventAppended:
 		if observed.Conversation != nil &&
 			observed.Committed.Type == session.AssistantMessageEventName {
 			automation.resetSession(observed.Conversation)
@@ -177,7 +177,7 @@ func (automation *automaticCompaction) resetAgent(subject agent.Agent) {
 }
 
 func (automation *automaticCompaction) resetSession(
-	conversation *session.Session,
+	conversation session.Context,
 ) {
 	automation.mutex.Lock()
 	delete(automation.overflowSequence, conversation)

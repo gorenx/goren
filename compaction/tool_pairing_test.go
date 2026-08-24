@@ -1,6 +1,7 @@
 package compaction
 
 import (
+	"context"
 	"testing"
 
 	"github.com/gorenx/goren/llm"
@@ -28,19 +29,32 @@ func TestToolPairingBalanceUsesCurrentSurfacePositions(t *testing.T) {
 		t.Fatal(err)
 	}
 	emptySources := []int64{}
-	assistantEntry, err := session.AppendSurface(
-		conversation,
-		session.AssistantMessaged,
-		session.AssistantMessage{
-			Turn:    1,
-			Step:    1,
-			Message: assistantValue,
-		},
-		session.SurfaceIntent{
-			Operation:       session.SurfaceAppend(),
-			SourceEventSeqs: &emptySources,
-		},
-	)
+	assistantEntry, err := session.Event{}, error(nil)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewSurfaceEventDraft(session.AssistantMessaged,
+			session.AssistantMessage{
+				Turn:    1,
+				Step:    1,
+				Message: assistantValue,
+			},
+			session.SurfaceIntent{
+				Operation:       session.SurfaceAppend(),
+				SourceEventSeqs: &emptySources,
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		assistantEntry = committedEvent
+		err = writeErr
+	}
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,18 +67,31 @@ func TestToolPairingBalanceUsesCurrentSurfacePositions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resultEntry, err := session.AppendSurface(
-		conversation,
-		session.ToolResultAdded,
-		session.ToolResult{
-			Turn:    1,
-			Step:    1,
-			Message: resultValue,
-		},
-		session.SurfaceIntent{
-			Operation: session.SurfaceAppend(),
-		},
-	)
+	resultEntry, err := session.Event{}, error(nil)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewSurfaceEventDraft(session.ToolResultAdded,
+			session.ToolResult{
+				Turn:    1,
+				Step:    1,
+				Message: resultValue,
+			},
+			session.SurfaceIntent{
+				Operation: session.SurfaceAppend(),
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		resultEntry = committedEvent
+		err = writeErr
+	}
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,15 +104,28 @@ func TestToolPairingBalanceUsesCurrentSurfacePositions(t *testing.T) {
 
 	replacement := mustCompactionUserMessage(t, "summary")
 	replacedSeqs := []int64{beforeSeq}
-	replacementEntry, err := session.AppendSurface(
-		conversation,
-		session.UserMessageAdded,
-		replacement,
-		session.SurfaceIntent{
-			Operation:       session.SurfaceReplace(beforeSeq, beforeSeq),
-			SourceEventSeqs: &replacedSeqs,
-		},
-	)
+	replacementEntry, err := session.Event{}, error(nil)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewSurfaceEventDraft(session.UserMessageAdded,
+			replacement,
+			session.SurfaceIntent{
+				Operation:       session.SurfaceReplace(beforeSeq, beforeSeq),
+				SourceEventSeqs: &replacedSeqs,
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		replacementEntry = committedEvent
+		err = writeErr
+	}
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,18 +143,31 @@ func TestToolPairingBalanceRejectsOrphanResultAndAbsentSequence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resultEntry, err := session.AppendSurface(
-		conversation,
-		session.ToolResultAdded,
-		session.ToolResult{
-			Turn:    1,
-			Step:    1,
-			Message: resultValue,
-		},
-		session.SurfaceIntent{
-			Operation: session.SurfaceAppend(),
-		},
-	)
+	resultEntry, err := session.Event{}, error(nil)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewSurfaceEventDraft(session.ToolResultAdded,
+			session.ToolResult{
+				Turn:    1,
+				Step:    1,
+				Message: resultValue,
+			},
+			session.SurfaceIntent{
+				Operation: session.SurfaceAppend(),
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		resultEntry = committedEvent
+		err = writeErr
+	}
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +184,7 @@ func TestToolPairingBalanceRejectsOrphanResultAndAbsentSequence(t *testing.T) {
 
 func assertToolPairingCut(
 	testingContext *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	sequence int64,
 	wantBefore bool,
 	wantAfter bool,
@@ -160,7 +213,7 @@ func assertToolPairingCut(
 func newCompactionSession(
 	testingContext *testing.T,
 	identifier session.SessionID,
-) *session.Session {
+) session.Context {
 	testingContext.Helper()
 	conversation, err := session.New(identifier, session.CreateOptions{})
 	if err != nil {
@@ -171,19 +224,32 @@ func newCompactionSession(
 
 func appendCompactionUser(
 	testingContext *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	textValue string,
 ) int64 {
 	testingContext.Helper()
 	messageValue := mustCompactionUserMessage(testingContext, textValue)
-	committed, err := session.AppendSurface(
-		conversation,
-		session.UserMessageAdded,
-		messageValue,
-		session.SurfaceIntent{
-			Operation: session.SurfaceAppend(),
-		},
-	)
+	committed, err := session.Event{}, error(nil)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewSurfaceEventDraft(session.UserMessageAdded,
+			messageValue,
+			session.SurfaceIntent{
+				Operation: session.SurfaceAppend(),
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		committed = committedEvent
+		err = writeErr
+	}
+
 	if err != nil {
 		testingContext.Fatal(err)
 	}

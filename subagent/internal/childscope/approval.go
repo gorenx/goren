@@ -24,13 +24,13 @@ func (*delegationPolicy) Manifest() plugin.Manifest {
 	}
 }
 
-func (policy *delegationPolicy) Apply(context.Context) error {
+func (policy *delegationPolicy) Apply(requestContext context.Context) error {
 	childAgent, found := plugin.Resolve[agent.Agent](policy)
 	if !found {
 		return errors.New("subagent: delegated child Agent is unavailable")
 	}
 	policy.child = childAgent
-	return policy.policy.SeedDelegationPolicy(childAgent.SessionValue())
+	return policy.policy.SeedDelegationPolicy(requestContext, childAgent.SessionValue())
 }
 
 func (policy *delegationPolicy) Dispose(context.Context) error {

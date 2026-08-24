@@ -135,11 +135,11 @@ func (implementation *ToolResultPruner) PruneContent(
 	return prunedBlocks, true, nil
 }
 
-// PruneSession appends each shadow price and replacement in one serialized
-// synchronous pass. Replacements committed before a later error remain valid.
+// PruneSession builds all shadow-price and replacement events from the Snapshot
+// visible at the FIFO head and commits the complete batch atomically.
 func (implementation *ToolResultPruner) PruneSession(
 	requestContext context.Context,
-	conversation *session.Session,
+	conversation session.Context,
 ) (Result, error) {
 	if requestContext == nil {
 		return Result{}, errors.New("toolresultpruner: Context is nil")
@@ -153,108 +153,123 @@ func (implementation *ToolResultPruner) PruneSession(
 	if err := requestContext.Err(); err != nil {
 		return Result{}, err
 	}
+	plan := &pruningPlan{
+		pruner: implementation,
+	}
+	if _, err := conversation.Commit(requestContext, plan); err != nil {
+		return Result{}, err
+	}
+	return plan.result, nil
+}
+
+type pruningPlan struct {
+	pruner *ToolResultPruner
+	result Result
+}
+
+func (plan *pruningPlan) Build(
+	requestContext context.Context,
+	currentSnapshot session.Snapshot,
+) ([]session.EventDraft, error) {
+	candidates := make([]session.Event, 0)
+	for _, sequence := range currentSnapshot.Surface.Nodes {
+		if sequence < 0 || sequence >= int64(len(currentSnapshot.Events)) ||
+			currentSnapshot.Events[sequence].Seq != sequence {
+			return nil, fmt.Errorf(
+				"toolresultpruner: Surface seq %d has no matching Event",
+				sequence,
+			)
+		}
+		candidate := currentSnapshot.Events[sequence]
+		if candidate.Type == session.ToolResultEventName {
+			candidates = append(candidates, candidate)
+		}
+	}
+	drafts := make([]session.EventDraft, 0, len(candidates)*2)
 	outcome := Result{}
-	err := session.SerializeProducer(
-		conversation,
-		func() error {
-			entries, surface := conversation.ReadCut()
-			candidates := make([]session.Event, 0)
-			for _, sequence := range surface.Nodes {
-				if sequence < 0 || sequence >= int64(len(entries)) ||
-					entries[sequence].Seq != sequence {
-					return fmt.Errorf(
-						"toolresultpruner: Surface seq %d has no matching Event",
-						sequence,
-					)
-				}
-				candidate := entries[sequence]
-				if candidate.Type == session.ToolResultEventName {
-					candidates = append(candidates, candidate)
-				}
-			}
-			for _, candidate := range candidates {
-				if contextErr := requestContext.Err(); contextErr != nil {
-					return contextErr
-				}
-				facts, factsErr := decodeToolResultCandidate(candidate)
-				if factsErr != nil {
-					return factsErr
-				}
-				blocks := facts.message.ContentValue()
-				if len(blocks) != 1 {
-					return fmt.Errorf(
-						"toolresultpruner: tool/result at seq %d has invalid content",
-						candidate.Seq,
-					)
-				}
-				blockValue, valid := blocks[0].(llm.ToolResultBlock)
-				if !valid {
-					return fmt.Errorf(
-						"toolresultpruner: tool/result at seq %d has another block type",
-						candidate.Seq,
-					)
-				}
-				prunedContent, changed, pruneErr := implementation.PruneContent(
-					blockValue.Content,
-				)
-				if pruneErr != nil {
-					return pruneErr
-				}
-				if !changed {
-					continue
-				}
-				charsBefore, measureErr := implementation.MeasureContent(blockValue.Content)
-				if measureErr != nil {
-					return measureErr
-				}
-				charsAfter, measureErr := implementation.MeasureContent(prunedContent)
-				if measureErr != nil {
-					return measureErr
-				}
-				shadowedTokens, priceErr := implementation.meter.EstimateMessage(facts.message)
-				if priceErr != nil {
-					return priceErr
-				}
-				if shadowedTokens < 0 || shadowedTokens > 1<<53-1 {
-					return errors.New(
-						"toolresultpruner: Token Meter returned an invalid shadow price",
-					)
-				}
-				if _, appendErr := session.Append(
-					conversation,
-					compaction.PruneEvent,
-					compaction.Prune{
-						ShadowedRange: compaction.SurfaceRange{
-							Start: candidate.Seq,
-							End:   candidate.Seq,
-						},
-						ShadowedSeqs:       []int64{candidate.Seq},
-						ShadowedTokenCount: shadowedTokens,
-					},
-				); appendErr != nil {
-					return appendErr
-				}
-				replacement, appendErr := session.AppendToolResultContentReplacement(
-					conversation,
-					candidate.Seq,
-					prunedContent,
-				)
-				if appendErr != nil {
-					return appendErr
-				}
-				outcome.Pruned = append(outcome.Pruned, Entry{
-					OriginalSeq:    candidate.Seq,
-					ReplacementSeq: replacement.Seq,
-					CallID:         blockValue.ToolCallID,
-					CharsBefore:    charsBefore,
-					CharsAfter:     charsAfter,
-				})
-				outcome.CharsRemoved += charsBefore - charsAfter
-			}
-			return nil
-		},
-	)
-	return outcome, err
+	nextSequence := currentSnapshot.Barrier.NextSeq
+	for _, candidate := range candidates {
+		if requestContext.Err() != nil {
+			return nil, context.Cause(requestContext)
+		}
+		facts, err := decodeToolResultCandidate(candidate)
+		if err != nil {
+			return nil, err
+		}
+		blocks := facts.message.ContentValue()
+		if len(blocks) != 1 {
+			return nil, fmt.Errorf(
+				"toolresultpruner: tool/result at seq %d has invalid content",
+				candidate.Seq,
+			)
+		}
+		blockValue, valid := blocks[0].(llm.ToolResultBlock)
+		if !valid {
+			return nil, fmt.Errorf(
+				"toolresultpruner: tool/result at seq %d has another block type",
+				candidate.Seq,
+			)
+		}
+		prunedContent, changed, err := plan.pruner.PruneContent(
+			blockValue.Content,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if !changed {
+			continue
+		}
+		charsBefore, err := plan.pruner.MeasureContent(blockValue.Content)
+		if err != nil {
+			return nil, err
+		}
+		charsAfter, err := plan.pruner.MeasureContent(prunedContent)
+		if err != nil {
+			return nil, err
+		}
+		shadowedTokens, err := plan.pruner.meter.EstimateMessage(facts.message)
+		if err != nil {
+			return nil, err
+		}
+		if shadowedTokens < 0 || shadowedTokens > 1<<53-1 {
+			return nil, errors.New(
+				"toolresultpruner: Token Meter returned an invalid shadow price",
+			)
+		}
+		pruneDraft, err := session.NewEventDraft(
+			compaction.PruneEvent,
+			compaction.Prune{
+				ShadowedRange: compaction.SurfaceRange{
+					Start: candidate.Seq,
+					End:   candidate.Seq,
+				},
+				ShadowedSeqs:       []int64{candidate.Seq},
+				ShadowedTokenCount: shadowedTokens,
+			},
+		)
+		if err != nil {
+			return nil, err
+		}
+		replacementDraft, err := session.NewToolResultContentReplacementDraft(
+			candidate,
+			prunedContent,
+		)
+		if err != nil {
+			return nil, err
+		}
+		drafts = append(drafts, pruneDraft, replacementDraft)
+		outcome.Pruned = append(outcome.Pruned, Entry{
+			OriginalSeq:    candidate.Seq,
+			ReplacementSeq: nextSequence + 1,
+			CallID:         blockValue.ToolCallID,
+			CharsBefore:    charsBefore,
+			CharsAfter:     charsAfter,
+		})
+		outcome.CharsRemoved += charsBefore - charsAfter
+		nextSequence += 2
+	}
+	plan.result = outcome
+	return drafts, nil
 }
 
 type toolResultFacts struct {

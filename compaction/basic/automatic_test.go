@@ -133,7 +133,7 @@ func TestAutomaticOverflowFailureRetriesAfterPrunerProgress(t *testing.T) {
 	prunerValue := &prunerStub{
 		prune: func(
 			_ context.Context,
-			current *session.Session,
+			current session.Context,
 		) (toolresultpruner.Result, error) {
 			before := current.Surface()
 			replacement, err := llm.NewUserMessage(llm.UserMessageInput{
@@ -150,18 +150,25 @@ func TestAutomaticOverflowFailureRetriesAfterPrunerProgress(t *testing.T) {
 			sources := []int64{
 				before.Nodes[0],
 			}
-			_, err = session.AppendSurfaceSerialized(
-				current,
-				session.UserMessageAdded,
-				replacement,
-				session.SurfaceIntent{
-					Operation: session.SurfaceReplace(
-						before.Nodes[0],
-						before.Nodes[0],
-					),
-					SourceEventSeqs: &sources,
-				},
-			)
+			{
+				var writeErr error
+				draft, draftErr := session.NewSurfaceEventDraft(session.UserMessageAdded,
+					replacement,
+					session.SurfaceIntent{
+						Operation: session.SurfaceReplace(
+							before.Nodes[0],
+							before.Nodes[0],
+						),
+						SourceEventSeqs: &sources,
+					})
+				writeErr = draftErr
+				if draftErr == nil {
+					_, commitErr := current.Commit(context.Background(), session.Batch(draft))
+					writeErr = commitErr
+				}
+				err = writeErr
+			}
+
 			return toolresultpruner.Result{}, err
 		},
 	}
@@ -224,7 +231,7 @@ func TestAutomaticOverflowCancellationWinsOverPrunerProgress(t *testing.T) {
 	prunerValue := &prunerStub{
 		prune: func(
 			_ context.Context,
-			current *session.Session,
+			current session.Context,
 		) (toolresultpruner.Result, error) {
 			before := current.Surface()
 			replacement, err := llm.NewUserMessage(llm.UserMessageInput{
@@ -241,18 +248,25 @@ func TestAutomaticOverflowCancellationWinsOverPrunerProgress(t *testing.T) {
 			sources := []int64{
 				before.Nodes[0],
 			}
-			_, err = session.AppendSurfaceSerialized(
-				current,
-				session.UserMessageAdded,
-				replacement,
-				session.SurfaceIntent{
-					Operation: session.SurfaceReplace(
-						before.Nodes[0],
-						before.Nodes[0],
-					),
-					SourceEventSeqs: &sources,
-				},
-			)
+			{
+				var writeErr error
+				draft, draftErr := session.NewSurfaceEventDraft(session.UserMessageAdded,
+					replacement,
+					session.SurfaceIntent{
+						Operation: session.SurfaceReplace(
+							before.Nodes[0],
+							before.Nodes[0],
+						),
+						SourceEventSeqs: &sources,
+					})
+				writeErr = draftErr
+				if draftErr == nil {
+					_, commitErr := current.Commit(context.Background(), session.Batch(draft))
+					writeErr = commitErr
+				}
+				err = writeErr
+			}
+
 			return toolresultpruner.Result{}, err
 		},
 	}
@@ -331,24 +345,37 @@ func TestAutomaticOverflowStateResetsOnAssistantSuccessAndIdle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	committed, err := session.AppendSurfaceSerialized(
-		conversation,
-		session.AssistantMessaged,
-		session.AssistantMessage{
-			Turn:    3,
-			Step:    1,
-			Message: assistantOutput,
-		},
-		session.SurfaceIntent{
-			Operation: session.SurfaceAppend(),
-		},
-	)
+	committed, err := session.Event{}, error(nil)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewSurfaceEventDraft(session.AssistantMessaged,
+			session.AssistantMessage{
+				Turn:    3,
+				Step:    1,
+				Message: assistantOutput,
+			},
+			session.SurfaceIntent{
+				Operation: session.SurfaceAppend(),
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		committed = committedEvent
+		err = writeErr
+	}
+
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := automation.observeEvent(
 		context.Background(),
-		session.SessionEventAppended{
+		session.EventAppended{
 			Conversation: conversation,
 			Committed:    committed,
 		},
@@ -425,7 +452,7 @@ func newAutomaticFixture(
 	return &automaticCompaction{
 		engine:           implementation,
 		report:           reporter,
-		overflowSequence: make(map[*session.Session]overflowRecovery),
+		overflowSequence: make(map[session.Context]overflowRecovery),
 		warnedTargets:    make(map[string]struct{}),
 	}
 }

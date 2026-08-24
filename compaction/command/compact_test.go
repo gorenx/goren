@@ -55,7 +55,7 @@ func (*commandCompactionStub) CompactRegion(
 
 type compactAgentFixture struct {
 	plugin.Base
-	conversation *session.Session
+	conversation session.Context
 }
 
 func (subject *compactAgentFixture) Manifest() plugin.Manifest {
@@ -79,7 +79,7 @@ func (subject *compactAgentFixture) ID() session.SessionID {
 
 func (*compactAgentFixture) OptionsValue() agent.Options { return agent.Options{} }
 
-func (subject *compactAgentFixture) SessionValue() *session.Session {
+func (subject *compactAgentFixture) SessionValue() session.Context {
 	return subject.conversation
 }
 

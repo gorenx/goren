@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"testing"
 
 	"github.com/gorenx/goren/llm"
@@ -179,7 +180,7 @@ func TestFoldConsumedWorkRejectsDamagedTurnEnd(t *testing.T) {
 	}
 }
 
-func consumedWorkSession(t *testing.T, identifier session.SessionID) *session.Session {
+func consumedWorkSession(t *testing.T, identifier session.SessionID) session.Context {
 	t.Helper()
 	conversation, err := session.New(
 		identifier,
@@ -205,41 +206,47 @@ func consumedMessage(t *testing.T, text string) llm.UserMessage {
 	return messageValue
 }
 
-func appendAccepted(t *testing.T, conversation *session.Session, text string) {
+func appendAccepted(t *testing.T, conversation session.Context, text string) {
 	t.Helper()
-	if _, err := session.Append(
-		conversation,
-		InboxSpliced,
-		InboxSplice{
-			Target:   NextTurn,
-			Start:    0,
-			Inserted: []llm.UserMessage{consumedMessage(t, text)},
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(InboxSpliced,
+			InboxSplice{
+				Target:   NextTurn,
+				Start:    0,
+				Inserted: []llm.UserMessage{consumedMessage(t, text)},
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
-func appendClaim(t *testing.T, conversation *session.Session) {
+func appendClaim(t *testing.T, conversation session.Context) {
 	t.Helper()
 	removedCount := 1
-	if _, err := session.Append(
-		conversation,
-		InboxSpliced,
-		InboxSplice{
-			Target:       NextTurn,
-			Start:        0,
-			RemovedCount: &removedCount,
-			Inserted:     []llm.UserMessage{},
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(InboxSpliced,
+			InboxSplice{
+				Target:       NextTurn,
+				Start:        0,
+				RemovedCount: &removedCount,
+				Inserted:     []llm.UserMessage{},
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
 func appendCancellation(
 	t *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	inserted []llm.UserMessage,
 ) {
 	t.Helper()
@@ -247,75 +254,87 @@ func appendCancellation(
 		inserted = []llm.UserMessage{}
 	}
 	removedCount := 1
-	if _, err := session.Append(
-		conversation,
-		InboxSpliced,
-		InboxSplice{
-			Target:       NextTurn,
-			Start:        0,
-			RemovedCount: &removedCount,
-			Inserted:     inserted,
-			Outcome:      InboxCanceled,
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(InboxSpliced,
+			InboxSplice{
+				Target:       NextTurn,
+				Start:        0,
+				RemovedCount: &removedCount,
+				Inserted:     inserted,
+				Outcome:      InboxCanceled,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
 func appendSteppedTurn(
 	t *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	turnNumber int64,
 	turnEnding session.TurnEndReason,
 ) {
 	t.Helper()
 	appendTurnStart(t, conversation, turnNumber)
 	appendClaim(t, conversation)
-	if _, err := session.Append(
-		conversation,
-		session.StepStarted,
-		session.StepPosition{
-			Turn: turnNumber,
-			Step: 1,
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.StepStarted,
+			session.StepPosition{
+				Turn: turnNumber,
+				Step: 1,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	appendTurnEnd(t, conversation, turnNumber, turnEnding)
 }
 
 func appendTurnStart(
 	t *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	turnNumber int64,
 ) {
 	t.Helper()
-	if _, err := session.Append(
-		conversation,
-		session.TurnStarted,
-		session.TurnStart{
-			Turn: turnNumber,
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.TurnStarted,
+			session.TurnStart{
+				Turn: turnNumber,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
 func appendTurnEnd(
 	t *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	turnNumber int64,
 	turnEnding session.TurnEndReason,
 ) {
 	t.Helper()
-	if _, err := session.Append(
-		conversation,
-		session.TurnEnded,
-		session.TurnEnd{
-			Turn:   turnNumber,
-			Reason: turnEnding,
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.TurnEnded,
+			session.TurnEnd{
+				Turn:   turnNumber,
+				Reason: turnEnding,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 }

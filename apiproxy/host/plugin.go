@@ -101,9 +101,9 @@ func (owner *Plugin) Manifest() plugin.Manifest {
 			plugin.ServiceOf[credentials.Provider](),
 		},
 		Events: []plugin.EventSubscription{
-			plugin.EventOf[session.SessionEventAppended](),
-			plugin.EventOf[session.SessionCreated](),
-			plugin.EventOf[session.SessionDisposed](),
+			plugin.EventOf[session.EventAppended](),
+			plugin.EventOf[session.Created](),
+			plugin.EventOf[session.Disposed](),
 			plugin.EventOf[agent.StatusChanged](),
 			plugin.EventOf[agent.AgentError](),
 			plugin.EventOf[sessionprojection.ProjectionChanged](),

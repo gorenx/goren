@@ -25,7 +25,7 @@ type runtimeContextProjection struct {
 }
 
 func newRuntimeContextProjection(
-	conversation *session.Session,
+	conversation session.Context,
 ) (*runtimeContextProjection, error) {
 	if conversation == nil {
 		return nil, errors.New("agentloop: runtime-context Session is required")
@@ -35,7 +35,7 @@ func newRuntimeContextProjection(
 	return projection, nil
 }
 
-func (projection *runtimeContextProjection) restore(conversation *session.Session) {
+func (projection *runtimeContextProjection) restore(conversation session.Context) {
 	visible := make(map[int64]struct{})
 	for _, sequence := range conversation.Surface().Nodes {
 		visible[sequence] = struct{}{}

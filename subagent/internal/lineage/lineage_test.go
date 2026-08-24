@@ -13,7 +13,7 @@ import (
 
 type parentRecord struct {
 	plugin.Base
-	conversation *session.Session
+	conversation session.Context
 	options      agent.Options
 }
 
@@ -31,7 +31,7 @@ func (subject *parentRecord) ID() session.SessionID { return subject.conversatio
 
 func (subject *parentRecord) OptionsValue() agent.Options { return subject.options }
 
-func (subject *parentRecord) SessionValue() *session.Session { return subject.conversation }
+func (subject *parentRecord) SessionValue() session.Context { return subject.conversation }
 
 func (*parentRecord) InboxValue() *agent.Inbox { return nil }
 

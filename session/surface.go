@@ -10,6 +10,42 @@ import (
 	"github.com/gorenx/goren/llm"
 )
 
+// NewToolResultContentReplacementDraft preserves the complete original Event
+// data and prepares a replacement that changes only the nested result content.
+func NewToolResultContentReplacementDraft(
+	original Event,
+	content []llm.ContentBlock,
+) (EventDraft, error) {
+	if original.Type != ToolResultEventName {
+		return EventDraft{}, errors.New(
+			"session: tool/result content replacement must target tool/result",
+		)
+	}
+	detachedContent, err := llm.CloneContentBlocks(content)
+	if err != nil {
+		return EventDraft{}, err
+	}
+	encodedContent, err := json.Marshal(detachedContent)
+	if err != nil {
+		return EventDraft{}, err
+	}
+	rewrittenData, err := replaceToolResultContentData(
+		original.Data,
+		encodedContent,
+	)
+	if err != nil {
+		return EventDraft{}, err
+	}
+	sources := []int64{original.Seq}
+	operation := SurfaceReplace(original.Seq, original.Seq)
+	return EventDraft{
+		eventType:        ToolResultEventName,
+		data:             rewrittenData,
+		sourceEventSeqs:  &sources,
+		surfaceOperation: &operation,
+	}, nil
+}
+
 // Surface is a detached view of the ordered model-visible event sequences.
 type Surface struct {
 	Nodes             []int64
@@ -21,59 +57,67 @@ type surfaceState struct {
 	replaceGeneration uint64
 }
 
-type surfacePlan struct {
+type surfaceTransition struct {
 	appendNode int64
 	replace    bool
 	startIndex int
 	endIndex   int
 }
 
-func planSurface(state surfaceState, candidate Event, entries []Event) (surfacePlan, error) {
+func planSurface(
+	state surfaceState,
+	candidate Event,
+	entries []Event,
+	pending []Event,
+) (surfaceTransition, error) {
 	_, eligible := surfaceEventTypes[candidate.Type]
 	if !eligible {
 		if candidate.SurfaceOp != nil || candidate.SourceEventSeqs != nil {
-			return surfacePlan{}, fmt.Errorf("session: event %q is not surface-eligible", candidate.Type)
+			return surfaceTransition{}, fmt.Errorf("session: event %q is not surface-eligible", candidate.Type)
 		}
-		return surfacePlan{appendNode: -1}, nil
+		return surfaceTransition{appendNode: -1}, nil
 	}
 	if candidate.SurfaceOp == nil {
-		return surfacePlan{}, fmt.Errorf("session: event %q requires surfaceOp", candidate.Type)
+		return surfaceTransition{}, fmt.Errorf("session: event %q requires surfaceOp", candidate.Type)
 	}
 	operation := *candidate.SurfaceOp
 	switch operation.Kind {
 	case SurfaceOperationAppend:
 		if err := validateProvenance(candidate, nil); err != nil {
-			return surfacePlan{}, err
+			return surfaceTransition{}, err
 		}
-		return surfacePlan{appendNode: candidate.Seq}, nil
+		return surfaceTransition{appendNode: candidate.Seq}, nil
 	case SurfaceOperationReplace:
 		startIndex := slices.Index(state.nodes, operation.Start)
 		if startIndex < 0 {
-			return surfacePlan{}, fmt.Errorf("session: surface replace start seq %d not found", operation.Start)
+			return surfaceTransition{}, fmt.Errorf("session: surface replace start seq %d not found", operation.Start)
 		}
 		endIndex := slices.Index(state.nodes, operation.End)
 		if endIndex < 0 {
-			return surfacePlan{}, fmt.Errorf("session: surface replace end seq %d not found", operation.End)
+			return surfaceTransition{}, fmt.Errorf("session: surface replace end seq %d not found", operation.End)
 		}
 		if startIndex > endIndex {
-			return surfacePlan{}, errors.New("session: surface replace start is after end")
+			return surfaceTransition{}, errors.New("session: surface replace start is after end")
 		}
 		shadowed := state.nodes[startIndex : endIndex+1]
 		if err := validateProvenance(candidate, shadowed); err != nil {
-			return surfacePlan{}, err
+			return surfaceTransition{}, err
 		}
-		if err := validateToolResultRewrite(candidate, shadowed, entries); err != nil {
-			return surfacePlan{}, err
+		if err := validateToolResultRewrite(candidate, shadowed, entries, pending); err != nil {
+			return surfaceTransition{}, err
 		}
-		return surfacePlan{
-			appendNode: candidate.Seq, replace: true, startIndex: startIndex, endIndex: endIndex,
+		return surfaceTransition{
+			appendNode: candidate.Seq,
+			replace:    true,
+			startIndex: startIndex,
+			endIndex:   endIndex,
 		}, nil
 	default:
-		return surfacePlan{}, fmt.Errorf("session: unsupported surface operation %q", operation.Kind)
+		return surfaceTransition{}, fmt.Errorf("session: unsupported surface operation %q", operation.Kind)
 	}
 }
 
-func applySurface(state *surfaceState, transition surfacePlan) {
+func applySurface(state *surfaceState, transition surfaceTransition) {
 	if transition.appendNode < 0 {
 		return
 	}
@@ -115,7 +159,12 @@ func validateProvenance(candidate Event, shadowed []int64) error {
 	return nil
 }
 
-func validateToolResultRewrite(candidate Event, shadowed []int64, entries []Event) error {
+func validateToolResultRewrite(
+	candidate Event,
+	shadowed []int64,
+	entries []Event,
+	pending []Event,
+) error {
 	if candidate.Type != "tool/result" || candidate.SurfaceOp == nil || candidate.SurfaceOp.Kind != SurfaceOperationReplace {
 		return nil
 	}
@@ -123,10 +172,11 @@ func validateToolResultRewrite(candidate Event, shadowed []int64, entries []Even
 		return errors.New("session: tool/result replacement must rewrite exactly one surface node")
 	}
 	originalSeq := shadowed[0]
-	if originalSeq < 0 || originalSeq >= int64(len(entries)) || entries[originalSeq].Type != "tool/result" {
+	original, found := priorEvent(entries, pending, originalSeq)
+	if !found || original.Type != "tool/result" {
 		return errors.New("session: tool/result replacement must target tool/result")
 	}
-	originalShape, err := toolResultShape(entries[originalSeq].Data)
+	originalShape, err := toolResultShape(original.Data)
 	if err != nil {
 		return err
 	}
@@ -140,52 +190,18 @@ func validateToolResultRewrite(candidate Event, shadowed []int64, entries []Even
 	return nil
 }
 
-// AppendToolResultContentReplacement preserves the complete original Event
-// data and appends a replacement that changes only the nested result content.
-// Call it inside SerializeProducer when another Event must remain adjacent.
-func AppendToolResultContentReplacement(
-	conversation *Session,
-	originalSeq int64,
-	content []llm.ContentBlock,
-) (Event, error) {
-	if conversation == nil {
-		return Event{}, errors.New("session: replace tool result on nil Session")
+func priorEvent(entries []Event, pending []Event, sequence int64) (Event, bool) {
+	if sequence < 0 {
+		return Event{}, false
 	}
-	detachedContent, err := llm.CloneContentBlocks(content)
-	if err != nil {
-		return Event{}, err
+	if sequence < int64(len(entries)) {
+		return entries[sequence], true
 	}
-	encodedContent, err := json.Marshal(detachedContent)
-	if err != nil {
-		return Event{}, err
+	pendingIndex := sequence - int64(len(entries))
+	if pendingIndex < 0 || pendingIndex >= int64(len(pending)) {
+		return Event{}, false
 	}
-	conversation.mu.RLock()
-	if originalSeq < 0 || originalSeq >= int64(len(conversation.entries)) {
-		conversation.mu.RUnlock()
-		return Event{}, fmt.Errorf(
-			"session: tool/result replacement source seq %d not found",
-			originalSeq,
-		)
-	}
-	originalEvent := cloneEvent(conversation.entries[originalSeq])
-	conversation.mu.RUnlock()
-	if originalEvent.Type != ToolResultEventName {
-		return Event{}, errors.New(
-			"session: tool/result content replacement must target tool/result",
-		)
-	}
-	rewrittenData, err := replaceToolResultContentData(originalEvent.Data, encodedContent)
-	if err != nil {
-		return Event{}, err
-	}
-	sources := []int64{originalSeq}
-	operation := SurfaceReplace(originalSeq, originalSeq)
-	return conversation.appendCandidate(Event{
-		Type:            ToolResultEventName,
-		Data:            rewrittenData,
-		SourceEventSeqs: &sources,
-		SurfaceOp:       &operation,
-	})
+	return pending[pendingIndex], true
 }
 
 func replaceToolResultContentData(

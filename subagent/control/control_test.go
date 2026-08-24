@@ -208,7 +208,7 @@ type controlAgent struct {
 	plugin.Base
 	id      session.SessionID
 	status  agent.Status
-	session *session.Session
+	session session.Context
 }
 
 func newControlAgent(
@@ -237,7 +237,7 @@ func (*controlAgent) Apply(context.Context) error                   { return nil
 func (*controlAgent) Dispose(context.Context) error                 { return nil }
 func (subject *controlAgent) ID() session.SessionID                 { return subject.id }
 func (*controlAgent) OptionsValue() agent.Options                   { return agent.Options{} }
-func (subject *controlAgent) SessionValue() *session.Session        { return subject.session }
+func (subject *controlAgent) SessionValue() session.Context         { return subject.session }
 func (*controlAgent) InboxValue() *agent.Inbox                      { return nil }
 func (subject *controlAgent) StatusValue() agent.Status             { return subject.status }
 func (*controlAgent) Cancel(agent.CancelCause, agent.CancelOptions) {}

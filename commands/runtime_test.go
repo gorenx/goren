@@ -17,7 +17,7 @@ import (
 
 type commandAgentFixture struct {
 	plugin.Base
-	conversation *session.Session
+	conversation session.Context
 }
 
 func (subject *commandAgentFixture) Manifest() plugin.Manifest {
@@ -41,7 +41,7 @@ func (subject *commandAgentFixture) ID() session.SessionID {
 
 func (*commandAgentFixture) OptionsValue() agent.Options { return agent.Options{} }
 
-func (subject *commandAgentFixture) SessionValue() *session.Session {
+func (subject *commandAgentFixture) SessionValue() session.Context {
 	return subject.conversation
 }
 

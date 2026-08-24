@@ -399,7 +399,7 @@ func (owner *Service) observeCorpus(requestContext context.Context) (map[session
 	return desired, nil
 }
 
-func liveRevision(conversation *session.Session, entries []session.Event) string {
+func liveRevision(conversation session.Context, entries []session.Event) string {
 	last := session.Event{Seq: -1}
 	if len(entries) != 0 {
 		last = entries[len(entries)-1]

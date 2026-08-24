@@ -31,12 +31,22 @@ func TestColdResumeReadsFirstDescriptorFromChildSuffix(t *testing.T) {
 	if createErr != nil {
 		t.Fatal(createErr)
 	}
-	if _, appendErr := session.AppendSerialized(
-		ancestorConversation,
-		subagent.DescriptorEvent,
-		ancestorData,
-	); appendErr != nil {
-		t.Fatal(appendErr)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewEventDraft(subagent.DescriptorEvent,
+			ancestorData)
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := ancestorConversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		if _, appendErr := committedEvent, writeErr; appendErr != nil {
+			t.Fatal(appendErr)
+		}
 	}
 	providerSeed := ancestorConversation.Events()
 	childIdentity := subagent.ContinuableDescriptor{

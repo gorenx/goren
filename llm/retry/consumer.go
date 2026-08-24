@@ -215,7 +215,7 @@ func (owner *Plugin) selectDelay(
 
 func (owner *Plugin) backoff(
 	requestContext context.Context,
-	conversation *session.Session,
+	conversation session.Context,
 	notice agent.RequestErrorNotice,
 	resolved llm.RetryPolicy,
 	policyIdentity string,
@@ -248,7 +248,11 @@ func (owner *Plugin) backoff(
 	if err := projection.addRetry(record); err != nil {
 		return agent.RequestErrorAction{}, err
 	}
-	if _, err := session.AppendSerialized(conversation, retryScheduledEvent, record); err != nil {
+	scheduledDraft, err := session.NewEventDraft(retryScheduledEvent, record)
+	if err != nil {
+		return agent.RequestErrorAction{}, err
+	}
+	if _, err := conversation.Commit(requestContext, session.Batch(scheduledDraft)); err != nil {
 		return agent.RequestErrorAction{}, err
 	}
 	if requestContext.Err() != nil {
@@ -266,7 +270,11 @@ func (owner *Plugin) backoff(
 	if err := latestProjection.addStarted(transition); err != nil {
 		return agent.RequestErrorAction{}, err
 	}
-	if _, err := session.AppendSerialized(conversation, retryStartedEvent, transition); err != nil {
+	startedDraft, err := session.NewEventDraft(retryStartedEvent, transition)
+	if err != nil {
+		return agent.RequestErrorAction{}, err
+	}
+	if _, err := conversation.Commit(requestContext, session.Batch(startedDraft)); err != nil {
 		return agent.RequestErrorAction{}, err
 	}
 	return agent.RequestErrorAction{Retry: true}, nil

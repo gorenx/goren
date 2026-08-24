@@ -1,6 +1,7 @@
 package continuation
 
 import (
+	"context"
 	"testing"
 
 	"github.com/gorenx/goren/agent"
@@ -116,18 +117,28 @@ func TestEpochStopReasonReportsUnrunCancellation(t *testing.T) {
 		t.Fatal(createErr)
 	}
 	removedCount := 1
-	if _, appendErr := session.Append(
-		conversation,
-		agent.InboxSpliced,
-		agent.InboxSplice{
-			Target:       agent.NextTurn,
-			Start:        0,
-			RemovedCount: &removedCount,
-			Inserted:     []llm.UserMessage{},
-			Outcome:      agent.InboxCanceled,
-		},
-	); appendErr != nil {
-		t.Fatal(appendErr)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewEventDraft(agent.InboxSpliced,
+			agent.InboxSplice{
+				Target:       agent.NextTurn,
+				Start:        0,
+				RemovedCount: &removedCount,
+				Inserted:     []llm.UserMessage{},
+				Outcome:      agent.InboxCanceled,
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		if _, appendErr := committedEvent, writeErr; appendErr != nil {
+			t.Fatal(appendErr)
+		}
 	}
 
 	actual := epochStopReason(
@@ -142,51 +153,91 @@ func TestEpochStopReasonReportsUnrunCancellation(t *testing.T) {
 
 func appendConsumedTurn(
 	t *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	turnNumber int64,
 	turnEnding session.TurnEndReason,
 ) {
 	t.Helper()
-	if _, appendErr := session.Append(
-		conversation,
-		session.TurnStarted,
-		session.TurnStart{
-			Turn: turnNumber,
-		},
-	); appendErr != nil {
-		t.Fatal(appendErr)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewEventDraft(session.TurnStarted,
+			session.TurnStart{
+				Turn: turnNumber,
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		if _, appendErr := committedEvent, writeErr; appendErr != nil {
+			t.Fatal(appendErr)
+		}
 	}
 	removedCount := 1
-	if _, appendErr := session.Append(
-		conversation,
-		agent.InboxSpliced,
-		agent.InboxSplice{
-			Target:       agent.NextTurn,
-			Start:        0,
-			RemovedCount: &removedCount,
-			Inserted:     []llm.UserMessage{},
-		},
-	); appendErr != nil {
-		t.Fatal(appendErr)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewEventDraft(agent.InboxSpliced,
+			agent.InboxSplice{
+				Target:       agent.NextTurn,
+				Start:        0,
+				RemovedCount: &removedCount,
+				Inserted:     []llm.UserMessage{},
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		if _, appendErr := committedEvent, writeErr; appendErr != nil {
+			t.Fatal(appendErr)
+		}
 	}
-	if _, appendErr := session.Append(
-		conversation,
-		session.StepStarted,
-		session.StepPosition{
-			Turn: turnNumber,
-			Step: 1,
-		},
-	); appendErr != nil {
-		t.Fatal(appendErr)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewEventDraft(session.StepStarted,
+			session.StepPosition{
+				Turn: turnNumber,
+				Step: 1,
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		if _, appendErr := committedEvent, writeErr; appendErr != nil {
+			t.Fatal(appendErr)
+		}
 	}
-	if _, appendErr := session.Append(
-		conversation,
-		session.TurnEnded,
-		session.TurnEnd{
-			Turn:   turnNumber,
-			Reason: turnEnding,
-		},
-	); appendErr != nil {
-		t.Fatal(appendErr)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewEventDraft(session.TurnEnded,
+			session.TurnEnd{
+				Turn:   turnNumber,
+				Reason: turnEnding,
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		if _, appendErr := committedEvent, writeErr; appendErr != nil {
+			t.Fatal(appendErr)
+		}
 	}
 }

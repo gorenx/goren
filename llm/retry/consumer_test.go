@@ -16,7 +16,7 @@ import (
 
 type retrySubjectFixture struct {
 	plugin.Base
-	conversation *session.Session
+	conversation session.Context
 }
 
 func (subject *retrySubjectFixture) Manifest() plugin.Manifest {
@@ -44,7 +44,7 @@ func (*retrySubjectFixture) OptionsValue() agent.Options {
 	return agent.Options{}
 }
 
-func (subject *retrySubjectFixture) SessionValue() *session.Session {
+func (subject *retrySubjectFixture) SessionValue() session.Context {
 	return subject.conversation
 }
 
@@ -93,7 +93,7 @@ type retryFixture struct {
 
 func newRetryFixture(
 	t *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	options RuntimeOptions,
 ) *retryFixture {
 	t.Helper()
@@ -584,7 +584,7 @@ func alwaysNotice() agent.RequestErrorNotice {
 	}
 }
 
-func waitForScheduledRetry(t *testing.T, conversation *session.Session) {
+func waitForScheduledRetry(t *testing.T, conversation session.Context) {
 	t.Helper()
 	deadline := time.NewTimer(time.Second)
 	defer deadline.Stop()
@@ -602,11 +602,11 @@ func waitForScheduledRetry(t *testing.T, conversation *session.Session) {
 	}
 }
 
-func countRetryEvents(conversation *session.Session) int {
+func countRetryEvents(conversation session.Context) int {
 	return countEventType(conversation, RetryEventName)
 }
 
-func countEventType(conversation *session.Session, eventType string) int {
+func countEventType(conversation session.Context, eventType string) int {
 	count := 0
 	for _, committed := range conversation.Events() {
 		if committed.Type == eventType {

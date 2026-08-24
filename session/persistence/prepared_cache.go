@@ -14,32 +14,27 @@ import (
 // one durable generation; repair fields remain persistence policy.
 type preparedSource struct {
 	inspection    Inspection
-	conversation  *session.Session
+	conversation  session.Context
 	revision      Revision
 	marker        RepairMarker
 	closers       []session.Event
 	sessionLength int64
 }
 
-type preparedReservation struct {
-	conversation *session.Session
+type reservation struct {
+	pool         *preparedSessions
+	conversation session.Context
 	cursor       int64
 	source       *preparedSource
 }
 
-type preparedReservationLease struct {
-	pool        *preparedSessions
-	reservation *preparedReservation
-}
-
-func (leaseState *preparedReservationLease) Release() {
-	if leaseState == nil || leaseState.pool == nil || leaseState.reservation == nil {
+func (held *reservation) Release() {
+	if held == nil || held.pool == nil {
 		return
 	}
-	leaseState.pool.ReturnReservation(
-		leaseState.reservation,
-		leaseState.reservation.source.conversation.Seq() ==
-			leaseState.reservation.source.sessionLength,
+	held.pool.returnReservation(
+		held,
+		held.source.conversation.Seq() == held.source.sessionLength,
 	)
 }
 
@@ -49,7 +44,7 @@ func (leaseState *preparedReservationLease) Release() {
 type preparedSessions struct {
 	mutex        sync.Mutex
 	ready        *lru.Cache[session.SessionID, *preparedSource]
-	reservations map[session.SessionID]*preparedReservation
+	reservations map[session.SessionID]*reservation
 }
 
 func newPreparedSessions(capacity int) (*preparedSessions, error) {
@@ -58,7 +53,8 @@ func newPreparedSessions(capacity int) (*preparedSessions, error) {
 		return nil, err
 	}
 	return &preparedSessions{
-		ready: ready, reservations: make(map[session.SessionID]*preparedReservation),
+		ready:        ready,
+		reservations: make(map[session.SessionID]*reservation),
 	}, nil
 }
 
@@ -74,9 +70,9 @@ func (pool *preparedSessions) Observe(
 	identifier session.SessionID,
 ) (*preparedSource, bool, bool) {
 	pool.mutex.Lock()
-	if reservation := pool.reservations[identifier]; reservation != nil {
+	if held := pool.reservations[identifier]; held != nil {
 		pool.mutex.Unlock()
-		return reservation.source, true, true
+		return held.source, true, true
 	}
 	source, found := pool.ready.Get(identifier)
 	pool.mutex.Unlock()
@@ -89,7 +85,7 @@ func (pool *preparedSessions) Store(source *preparedSource) {
 	pool.mutex.Unlock()
 }
 
-func (pool *preparedSessions) Reserve(source *preparedSource) (*preparedReservation, error) {
+func (pool *preparedSessions) Reserve(source *preparedSource) (*reservation, error) {
 	identifier := source.inspection.Header.ID
 	pool.mutex.Lock()
 	defer pool.mutex.Unlock()
@@ -101,22 +97,25 @@ func (pool *preparedSessions) Reserve(source *preparedSource) (*preparedReservat
 		return nil, fmt.Errorf("session persistence: prepared source for %q is no longer ready", identifier)
 	}
 	pool.ready.Remove(identifier)
-	reservation := &preparedReservation{
-		conversation: source.conversation, cursor: int64(len(source.inspection.Events)), source: source,
+	held := &reservation{
+		pool:         pool,
+		conversation: source.conversation,
+		cursor:       int64(len(source.inspection.Events)),
+		source:       source,
 	}
-	pool.reservations[identifier] = reservation
-	return reservation, nil
+	pool.reservations[identifier] = held
+	return held, nil
 }
 
 func (pool *preparedSessions) ReservationFor(
-	conversation *session.Session,
-) (*preparedReservation, error) {
+	conversation session.Context,
+) (*reservation, error) {
 	identifier := conversation.ID()
 	pool.mutex.Lock()
 	defer pool.mutex.Unlock()
-	if reservation := pool.reservations[identifier]; reservation != nil {
-		if reservation.conversation == conversation {
-			return reservation, nil
+	if held := pool.reservations[identifier]; held != nil {
+		if held.conversation == conversation {
+			return held, nil
 		}
 		return nil, fmt.Errorf(
 			"session persistence: persisted state for %q belongs to another unpublished Session", identifier,
@@ -130,27 +129,27 @@ func (pool *preparedSessions) ReservationFor(
 	return nil, nil
 }
 
-func (pool *preparedSessions) Attach(reservation *preparedReservation) error {
-	identifier := reservation.conversation.ID()
+func (pool *preparedSessions) Attach(held *reservation) error {
+	identifier := held.conversation.ID()
 	pool.mutex.Lock()
 	defer pool.mutex.Unlock()
-	if pool.reservations[identifier] != reservation {
+	if pool.reservations[identifier] != held {
 		return fmt.Errorf("session persistence: session %q preparation is no longer reserved", identifier)
 	}
 	delete(pool.reservations, identifier)
 	return nil
 }
 
-func (pool *preparedSessions) ReturnReservation(reservation *preparedReservation, reusable bool) {
-	identifier := reservation.conversation.ID()
+func (pool *preparedSessions) returnReservation(held *reservation, reusable bool) {
+	identifier := held.conversation.ID()
 	pool.mutex.Lock()
-	if pool.reservations[identifier] != reservation {
+	if pool.reservations[identifier] != held {
 		pool.mutex.Unlock()
 		return
 	}
 	delete(pool.reservations, identifier)
 	if reusable {
-		pool.ready.Add(identifier, reservation.source)
+		pool.ready.Add(identifier, held.source)
 	}
 	pool.mutex.Unlock()
 }
@@ -257,10 +256,10 @@ func (owner *SessionLogStore) loadPreparedSource(
 	if _, err := conversation.DeriveMessages(); err != nil {
 		return nil, owner.normalizeLoadError(identifier, stored.Header, err)
 	}
-	if _, _, err := conversation.RequestHeaderValue(); err != nil {
+	if _, err := session.LatestRequestHeader(conversation.Events()); err != nil {
 		return nil, owner.normalizeLoadError(identifier, stored.Header, err)
 	}
-	if _, _, err := conversation.RequestContextValue(); err != nil {
+	if _, err := session.LatestRequestContext(conversation.Events()); err != nil {
 		return nil, owner.normalizeLoadError(identifier, stored.Header, err)
 	}
 	source := &preparedSource{

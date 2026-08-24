@@ -161,12 +161,15 @@ func TestDriveRegistryFoldsLateStateAndPublishesWholeValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	conversation := handle.Session()
-	if _, err := session.Append(
-		conversation,
-		projectionFixtureEvent,
-		"before-registration",
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(projectionFixtureEvent,
+			"before-registration")
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := fixture.registry.Register(
 		projectionFixtureUnit{
@@ -184,14 +187,16 @@ func TestDriveRegistryFoldsLateStateAndPublishesWholeValues(t *testing.T) {
 	if initial.AsOfSeq != 0 || string(initial.Values["fixture"]) != `"before-registration"` {
 		t.Fatalf("late snapshot = %#v", initial)
 	}
-	committed, err := session.Append(
-		conversation,
-		projectionFixtureEvent,
-		"after-registration",
-	)
+	draft, err := session.NewEventDraft(projectionFixtureEvent,
+		"after-registration")
 	if err != nil {
 		t.Fatal(err)
 	}
+	receipt, err := conversation.Commit(context.Background(), session.Batch(draft))
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed := receipt.Events[0]
 	changes := fixture.observer.observedChanges()
 	if len(changes) != 1 || changes[0].Key != "fixture" || changes[0].Seq != committed.Seq ||
 		string(changes[0].Value) != `"after-registration"` {
@@ -267,15 +272,27 @@ func TestDriveRegistryCheckpointRestoreUsesVersionedTail(t *testing.T) {
 		t.Fatal(err)
 	}
 	conversation := handle.Session()
-	if _, err := session.Append(conversation, projectionFixtureEvent, "one"); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(projectionFixtureEvent, "one")
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	rows, err := fixture.registry.Checkpoint(conversation)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := session.Append(conversation, projectionFixtureEvent, "two"); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(projectionFixtureEvent, "two")
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	floor := fixture.registry.RestoreFloor(rows)
 	if floor == nil || *floor != 0 {

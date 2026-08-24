@@ -31,39 +31,45 @@ func TestCompletedTurnPrefixExcludesInflightTurn(t *testing.T) {
 
 func appendTurnBoundary(
 	t *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	turn int64,
 	completed bool,
 ) {
 	t.Helper()
-	if _, err := session.AppendSerialized(
-		conversation,
-		session.TurnStarted,
-		session.TurnStart{
-			Turn: turn,
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.TurnStarted,
+			session.TurnStart{
+				Turn: turn,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	if !completed {
 		return
 	}
-	if _, err := session.AppendSerialized(
-		conversation,
-		session.TurnEnded,
-		session.TurnEnd{
-			Turn:   turn,
-			Reason: session.TurnCompleted{},
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.TurnEnded,
+			session.TurnEnd{
+				Turn:   turn,
+				Reason: session.TurnCompleted{},
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
 type forkAgent struct {
 	plugin.Base
 	id      session.SessionID
-	session *session.Session
+	session session.Context
 }
 
 func (*forkAgent) Manifest() plugin.Manifest {
@@ -75,7 +81,7 @@ func (*forkAgent) Apply(context.Context) error                   { return nil }
 func (*forkAgent) Dispose(context.Context) error                 { return nil }
 func (subject *forkAgent) ID() session.SessionID                 { return subject.id }
 func (*forkAgent) OptionsValue() agent.Options                   { return agent.Options{} }
-func (subject *forkAgent) SessionValue() *session.Session        { return subject.session }
+func (subject *forkAgent) SessionValue() session.Context         { return subject.session }
 func (*forkAgent) InboxValue() *agent.Inbox                      { return nil }
 func (*forkAgent) StatusValue() agent.Status                     { return agent.StatusIdle }
 func (*forkAgent) Cancel(agent.CancelCause, agent.CancelOptions) {}

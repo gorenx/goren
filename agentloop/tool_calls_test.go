@@ -200,7 +200,7 @@ func TestSchedulerFailureStopsReplenishmentAndDrainsStartedDispatch(t *testing.T
 
 func internalToolEventSummary(
 	t *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 ) ([]llm.CallID, int) {
 	t.Helper()
 	callIDs := make([]llm.CallID, 0)

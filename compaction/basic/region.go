@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"reflect"
 
 	"github.com/gorenx/goren/compaction"
 	"github.com/gorenx/goren/llm"
@@ -74,6 +73,73 @@ type transactionFailure struct {
 	err   error
 }
 
+type startPlan struct {
+	requested       surfaceSelection
+	compactionID    compaction.ID
+	standalone      bool
+	sourceCommandID *string
+	selected        surfaceSelection
+	startEvent      session.Event
+	lifecycle       compaction.Start
+}
+
+func (plan *startPlan) Build(
+	_ context.Context,
+	snapshot session.Snapshot,
+) ([]session.EventDraft, error) {
+	selected, err := validateSurfaceRegionSnapshot(
+		snapshot,
+		plan.requested.start,
+		plan.requested.end,
+	)
+	if err != nil {
+		return nil, err
+	}
+	logState, err := compaction.InspectLog(snapshot.Events)
+	if err != nil {
+		return nil, err
+	}
+	if logState.Attempt != nil {
+		return nil, &compaction.ManualError{
+			Code: compaction.ManualErrorBusy,
+			Message: "compaction: compaction already in progress; " +
+				"the Session compaction lock is already active",
+		}
+	}
+	var turnOwner *int64
+	if plan.standalone {
+		if logState.OpenTurn != nil {
+			return nil, &compaction.ManualError{
+				Code:    compaction.ManualErrorBusy,
+				Message: "manual compaction: the Session already has an open turn",
+			}
+		}
+	} else {
+		if logState.OpenTurn == nil {
+			return nil, errors.New(
+				"compactRegion: no open turn; automatic compaction events must be enclosed in a turn",
+			)
+		}
+		ownerValue := *logState.OpenTurn
+		turnOwner = &ownerValue
+	}
+	lifecycle := compaction.Start{
+		CompactionID:    plan.compactionID,
+		SourceCommandID: cloneString(plan.sourceCommandID),
+		Turn:            cloneInt64(turnOwner),
+	}
+	draft, err := session.NewEventDraft(compaction.StartEvent, lifecycle)
+	if err != nil {
+		return nil, err
+	}
+	plan.selected = selected
+	plan.startEvent = session.Event{
+		Seq: snapshot.Barrier.NextSeq,
+	}
+	plan.lifecycle = lifecycle
+	return []session.EventDraft{draft}, nil
+}
+
 type transactionStage string
 
 const (
@@ -101,7 +167,7 @@ func (problem *surfaceChangedError) Unwrap() error {
 }
 
 func selectCompactableRange(
-	conversation *session.Session,
+	conversation session.Context,
 	measurement tokenmeter.Measurement,
 	retainTokens int64,
 ) (*surfaceSelection, error) {
@@ -115,7 +181,8 @@ func selectCompactableRange(
 	if len(pricedNodes) == 0 {
 		return nil, nil
 	}
-	_, surface := conversation.ReadCut()
+	snapshot := conversation.Snapshot()
+	surface := snapshot.Surface
 	if len(surface.Nodes) != len(pricedNodes) {
 		return nil, errors.New(
 			"compaction: token-meter Surface does not match the current Session Surface",
@@ -181,63 +248,19 @@ func (coordinator *regionCompactor) compactSurfaceRegion(
 	if err != nil {
 		return compaction.Result{}, err
 	}
-	var selected surfaceSelection
-	var startEvent session.Event
-	var turnOwner *int64
-	var lifecycle compaction.Start
-	err = session.SerializeProducer(ownerContext.Session, func() error {
-		validated, validateErr := validateSurfaceRegion(
-			ownerContext.Session,
-			requested.start,
-			requested.end,
-		)
-		if validateErr != nil {
-			return validateErr
-		}
-		logState, inspectErr := compaction.InspectLog(ownerContext.Session.Events())
-		if inspectErr != nil {
-			return inspectErr
-		}
-		if logState.Attempt != nil {
-			return &compaction.ManualError{
-				Code: compaction.ManualErrorBusy,
-				Message: "compaction: compaction already in progress; " +
-					"the Session compaction lock is already active",
-			}
-		}
-		if settings.standalone {
-			if logState.OpenTurn != nil {
-				return &compaction.ManualError{
-					Code:    compaction.ManualErrorBusy,
-					Message: "manual compaction: the Session already has an open turn",
-				}
-			}
-			turnOwner = nil
-		} else {
-			if logState.OpenTurn == nil {
-				return errors.New(
-					"compactRegion: no open turn; automatic compaction events must be enclosed in a turn",
-				)
-			}
-			ownerValue := *logState.OpenTurn
-			turnOwner = &ownerValue
-		}
-		selected = validated
-		lifecycle = compaction.Start{
-			CompactionID:    compactionID,
-			SourceCommandID: cloneString(settings.sourceCommandID),
-			Turn:            cloneInt64(turnOwner),
-		}
-		startEvent, validateErr = session.Append(
-			ownerContext.Session,
-			compaction.StartEvent,
-			lifecycle,
-		)
-		return validateErr
-	})
+	plan := &startPlan{
+		requested:       requested,
+		compactionID:    compactionID,
+		standalone:      settings.standalone,
+		sourceCommandID: cloneString(settings.sourceCommandID),
+	}
+	_, err = ownerContext.Session.Commit(requestContext, plan)
 	if err != nil {
 		return compaction.Result{}, err
 	}
+	selected := plan.selected
+	startEvent := plan.startEvent
+	lifecycle := plan.lifecycle
 
 	prepared, err := coordinator.prepareCompaction(
 		requestContext,
@@ -323,11 +346,22 @@ func (coordinator *regionCompactor) compactSurfaceRegion(
 }
 
 func validateSurfaceRegion(
-	conversation *session.Session,
+	conversation session.Context,
 	start int64,
 	end int64,
 ) (surfaceSelection, error) {
-	_, surface := conversation.ReadCut()
+	if conversation == nil {
+		return surfaceSelection{}, errors.New("compactRegion: Session is nil")
+	}
+	return validateSurfaceRegionSnapshot(conversation.Snapshot(), start, end)
+}
+
+func validateSurfaceRegionSnapshot(
+	snapshot session.Snapshot,
+	start int64,
+	end int64,
+) (surfaceSelection, error) {
+	surface := snapshot.Surface
 	startIndex := indexOfSequence(surface.Nodes, start)
 	if startIndex < 0 {
 		return surfaceSelection{}, fmt.Errorf(
@@ -351,8 +385,8 @@ func validateSurfaceRegion(
 			endIndex,
 		)
 	}
-	balancedBefore, err := compaction.ToolPairingBalancedBefore(
-		conversation,
+	balancedBefore, err := compaction.ToolPairingBalancedBeforeSnapshot(
+		snapshot,
 		start,
 	)
 	if err != nil {
@@ -364,8 +398,8 @@ func validateSurfaceRegion(
 			start,
 		)
 	}
-	balancedAfter, err := compaction.ToolPairingBalancedAfter(
-		conversation,
+	balancedAfter, err := compaction.ToolPairingBalancedAfterSnapshot(
+		snapshot,
 		end,
 	)
 	if err != nil {
@@ -388,7 +422,7 @@ func validateSurfaceRegion(
 
 func (coordinator *regionCompactor) prepareCompaction(
 	requestContext context.Context,
-	conversation *session.Session,
+	conversation session.Context,
 	selected surfaceSelection,
 ) (preparedCompaction, error) {
 	measurement, err := coordinator.meter.Measure(
@@ -494,169 +528,200 @@ func (coordinator *regionCompactor) summarizeCompaction(
 
 func (coordinator *regionCompactor) commitCompaction(
 	requestContext context.Context,
-	conversation *session.Session,
+	conversation session.Context,
 	startEvent session.Event,
 	lifecycle compaction.Start,
 	settings transactionOptions,
 	summarized summarizedCompaction,
 ) (compaction.Result, bool, *transactionFailure) {
-	var outcome compaction.Result
-	closed := false
-	var failure *transactionFailure
-	serializedErr := session.SerializeProducer(conversation, func() error {
-		if err := contextFailure(requestContext); err != nil {
-			failure = &transactionFailure{
-				stage: transactionSummary,
-				err:   err,
-			}
-			closed, failure = closeFailedAttempt(
-				conversation,
-				lifecycle,
-				failure,
-			)
-			return nil
-		}
-		stabilityErr := coordinator.assertStable(
-			requestContext,
-			conversation,
-			summarized.preparedCompaction,
-			settings.selectedStable,
-		)
-		if stabilityErr != nil {
-			failure = &transactionFailure{
-				stage: transactionSummary,
-				err:   stabilityErr,
-			}
-			closed, failure = closeFailedAttempt(
-				conversation,
-				lifecycle,
-				failure,
-			)
-			return nil
-		}
-		summarySnapshot, err := llm.CloneContentBlocks(
-			summarized.generated.summary,
-		)
-		if err != nil {
-			failure = &transactionFailure{
-				stage: transactionCommit,
-				err:   err,
-			}
-			closed, failure = closeFailedAttempt(
-				conversation,
-				lifecycle,
-				failure,
-			)
-			return nil
-		}
-		summaryEvent, err := session.Append(
-			conversation,
-			compaction.SummaryEvent,
-			compaction.Summary{
-				CompactionID:    lifecycle.CompactionID,
-				SourceCommandID: cloneString(lifecycle.SourceCommandID),
-				Summary:         summarySnapshot,
-				RawOutput:       summarized.generated.rawOutput,
-				LLMStreamCall:   summarized.generated.llmStreamCall,
-				ShadowedRange: compaction.SurfaceRange{
-					Start: summarized.start,
-					End:   summarized.end,
-				},
-				ShadowedSeqs:       append([]int64(nil), summarized.shadowedSeqs...),
-				ShadowedTokenCount: summarized.shadowedTokenCount,
-				Provider:           summarized.generated.provider,
-				Model:              summarized.generated.model,
-				MaxTokens:          cloneInt(summarized.generated.maxTokens),
-				Usage:              cloneUsage(summarized.generated.usage),
-			},
-		)
-		if err != nil {
-			failure = &transactionFailure{
-				stage: transactionCommit,
-				err:   err,
-			}
-			closed, failure = closeFailedAttempt(
-				conversation,
-				lifecycle,
-				failure,
-			)
-			return nil
-		}
-		sources := append(
-			[]int64{startEvent.Seq, summaryEvent.Seq},
-			summarized.shadowedSeqs...,
-		)
-		_, err = session.AppendSurface(
-			conversation,
-			session.UserMessageAdded,
-			summarized.checkpoint,
-			session.SurfaceIntent{
-				Operation:       session.SurfaceReplace(summarized.start, summarized.end),
-				SourceEventSeqs: &sources,
-			},
-		)
-		if err != nil {
-			failure = &transactionFailure{
-				stage: transactionCommit,
-				err:   err,
-			}
-			closed, failure = closeFailedAttempt(
-				conversation,
-				lifecycle,
-				failure,
-			)
-			return nil
-		}
-		endEvent, err := session.Append(
-			conversation,
-			compaction.EndEvent,
-			compaction.End{
-				CompactionID:    lifecycle.CompactionID,
-				SourceCommandID: cloneString(lifecycle.SourceCommandID),
-				Turn:            cloneInt64(lifecycle.Turn),
-			},
-		)
-		if err != nil {
-			failure = &transactionFailure{
-				stage: transactionCommit,
-				err:   err,
-			}
-			return err
-		}
-		closed = true
-		outcome = compaction.Result{
-			CompactionID:    lifecycle.CompactionID,
-			SourceCommandID: cloneString(lifecycle.SourceCommandID),
-			StartSeq:        startEvent.Seq,
-			SummarySeq:      summaryEvent.Seq,
-			EndSeq:          endEvent.Seq,
-			Summary:         summarySnapshot,
-			ShadowedRange: compaction.SurfaceRange{
-				Start: summarized.start,
-				End:   summarized.end,
-			},
-			ShadowedSeqs:       append([]int64(nil), summarized.shadowedSeqs...),
-			ShadowedTokenCount: summarized.shadowedTokenCount,
-		}
-		return nil
-	})
-	if serializedErr != nil && failure == nil {
-		failure = &transactionFailure{
-			stage: transactionCommit,
-			err:   serializedErr,
-		}
+	plan := &completionPlan{
+		operationContext: requestContext,
+		startEvent:       startEvent,
+		lifecycle:        lifecycle,
+		selectedStable:   settings.selectedStable,
+		summarized:       summarized,
 	}
-	return outcome, closed, failure
+	_, executeErr := conversation.Commit(
+		context.WithoutCancel(requestContext),
+		plan,
+	)
+	if executeErr != nil {
+		failure := plan.failure
+		if failure == nil {
+			failure = &transactionFailure{
+				stage: transactionCommit,
+				err:   executeErr,
+			}
+		}
+		return compaction.Result{}, false, failure
+	}
+	return plan.result, true, plan.failure
 }
 
-func closeFailedAttempt(
-	conversation *session.Session,
+type completionPlan struct {
+	operationContext context.Context
+	startEvent       session.Event
+	lifecycle        compaction.Start
+	selectedStable   bool
+	summarized       summarizedCompaction
+	result           compaction.Result
+	failure          *transactionFailure
+}
+
+func (plan *completionPlan) Build(
+	_ context.Context,
+	snapshot session.Snapshot,
+) ([]session.EventDraft, error) {
+	if err := contextFailure(plan.operationContext); err != nil {
+		plan.failure = &transactionFailure{
+			stage: transactionSummary,
+			err:   err,
+		}
+		return plan.buildFailure()
+	}
+	if err := assertStableSnapshot(
+		snapshot,
+		plan.summarized.preparedCompaction,
+		plan.selectedStable,
+	); err != nil {
+		plan.failure = &transactionFailure{
+			stage: transactionSummary,
+			err:   err,
+		}
+		return plan.buildFailure()
+	}
+	summarySnapshot, err := llm.CloneContentBlocks(
+		plan.summarized.generated.summary,
+	)
+	if err != nil {
+		plan.failure = &transactionFailure{
+			stage: transactionCommit,
+			err:   err,
+		}
+		return plan.buildFailure()
+	}
+	summaryDraft, err := session.NewEventDraft(
+		compaction.SummaryEvent,
+		compaction.Summary{
+			CompactionID:    plan.lifecycle.CompactionID,
+			SourceCommandID: cloneString(plan.lifecycle.SourceCommandID),
+			Summary:         summarySnapshot,
+			RawOutput:       plan.summarized.generated.rawOutput,
+			LLMStreamCall:   plan.summarized.generated.llmStreamCall,
+			ShadowedRange: compaction.SurfaceRange{
+				Start: plan.summarized.start,
+				End:   plan.summarized.end,
+			},
+			ShadowedSeqs: append(
+				[]int64(nil),
+				plan.summarized.shadowedSeqs...,
+			),
+			ShadowedTokenCount: plan.summarized.shadowedTokenCount,
+			Provider:           plan.summarized.generated.provider,
+			Model:              plan.summarized.generated.model,
+			MaxTokens:          cloneInt(plan.summarized.generated.maxTokens),
+			Usage:              cloneUsage(plan.summarized.generated.usage),
+		},
+	)
+	if err != nil {
+		plan.failure = &transactionFailure{
+			stage: transactionCommit,
+			err:   err,
+		}
+		return plan.buildFailure()
+	}
+	summarySequence := snapshot.Barrier.NextSeq
+	sources := append(
+		[]int64{plan.startEvent.Seq, summarySequence},
+		plan.summarized.shadowedSeqs...,
+	)
+	replacementDraft, err := session.NewSurfaceEventDraft(
+		session.UserMessageAdded,
+		plan.summarized.checkpoint,
+		session.SurfaceIntent{
+			Operation: session.SurfaceReplace(
+				plan.summarized.start,
+				plan.summarized.end,
+			),
+			SourceEventSeqs: &sources,
+		},
+	)
+	if err != nil {
+		plan.failure = &transactionFailure{
+			stage: transactionCommit,
+			err:   err,
+		}
+		return plan.buildFailure()
+	}
+	endDraft, err := session.NewEventDraft(
+		compaction.EndEvent,
+		compaction.End{
+			CompactionID:    plan.lifecycle.CompactionID,
+			SourceCommandID: cloneString(plan.lifecycle.SourceCommandID),
+			Turn:            cloneInt64(plan.lifecycle.Turn),
+		},
+	)
+	if err != nil {
+		plan.failure = &transactionFailure{
+			stage: transactionCommit,
+			err:   err,
+		}
+		return plan.buildFailure()
+	}
+	plan.result = compaction.Result{
+		CompactionID:    plan.lifecycle.CompactionID,
+		SourceCommandID: cloneString(plan.lifecycle.SourceCommandID),
+		StartSeq:        plan.startEvent.Seq,
+		SummarySeq:      summarySequence,
+		EndSeq:          summarySequence + 2,
+		Summary:         summarySnapshot,
+		ShadowedRange: compaction.SurfaceRange{
+			Start: plan.summarized.start,
+			End:   plan.summarized.end,
+		},
+		ShadowedSeqs: append(
+			[]int64(nil),
+			plan.summarized.shadowedSeqs...,
+		),
+		ShadowedTokenCount: plan.summarized.shadowedTokenCount,
+	}
+	return []session.EventDraft{
+		summaryDraft,
+		replacementDraft,
+		endDraft,
+	}, nil
+}
+
+func (plan *completionPlan) buildFailure() ([]session.EventDraft, error) {
+	detail := plan.failure.err.Error()
+	draft, err := session.NewEventDraft(
+		compaction.EndEvent,
+		compaction.End{
+			CompactionID:    plan.lifecycle.CompactionID,
+			SourceCommandID: cloneString(plan.lifecycle.SourceCommandID),
+			Turn:            cloneInt64(plan.lifecycle.Turn),
+			Error:           &detail,
+		},
+	)
+	if err != nil {
+		plan.failure = &transactionFailure{
+			stage: transactionCommit,
+			err:   err,
+		}
+		return nil, err
+	}
+	return []session.EventDraft{draft}, nil
+}
+
+func (coordinator *regionCompactor) failTransaction(
+	requestContext context.Context,
+	conversation session.Context,
 	lifecycle compaction.Start,
-	failure *transactionFailure,
-) (bool, *transactionFailure) {
+	settings transactionOptions,
+	failure transactionFailure,
+) (compaction.Result, error) {
 	detail := failure.err.Error()
-	_, err := session.Append(
-		conversation,
+	draft, closeErr := session.NewEventDraft(
 		compaction.EndEvent,
 		compaction.End{
 			CompactionID:    lifecycle.CompactionID,
@@ -665,32 +730,15 @@ func closeFailedAttempt(
 			Error:           &detail,
 		},
 	)
-	if err == nil {
-		return true, failure
-	}
-	return false, &transactionFailure{
-		stage: transactionCommit,
-		err:   err,
-	}
-}
-
-func (coordinator *regionCompactor) failTransaction(
-	requestContext context.Context,
-	conversation *session.Session,
-	lifecycle compaction.Start,
-	settings transactionOptions,
-	failure transactionFailure,
-) (compaction.Result, error) {
 	closed := false
-	selectedFailure := &failure
-	closeErr := session.SerializeProducer(conversation, func() error {
-		closed, selectedFailure = closeFailedAttempt(
-			conversation,
-			lifecycle,
-			selectedFailure,
+	if closeErr == nil {
+		_, closeErr = conversation.Commit(
+			context.WithoutCancel(requestContext),
+			session.Batch(draft),
 		)
-		return nil
-	})
+		closed = closeErr == nil
+	}
+	selectedFailure := &failure
 	if closeErr != nil {
 		selectedFailure = &transactionFailure{
 			stage: transactionCommit,
@@ -716,30 +764,28 @@ func (coordinator *regionCompactor) failTransaction(
 	return compaction.Result{}, errors.New("compaction-basic: failed transaction lost its failure")
 }
 
-func (coordinator *regionCompactor) assertStable(
-	requestContext context.Context,
-	conversation *session.Session,
+func assertStableSnapshot(
+	snapshot session.Snapshot,
 	prepared preparedCompaction,
 	selectedOnly bool,
 ) error {
 	if !selectedOnly {
-		current, err := coordinator.meter.Measure(
-			requestContext,
-			conversation,
-			nil,
-		)
-		if err != nil {
-			return err
-		}
-		if !reflect.DeepEqual(current.Nodes, prepared.measurement.Nodes) {
+		if len(snapshot.Surface.Nodes) != len(prepared.measurement.Nodes) {
 			return &surfaceChangedError{
 				message: "compaction: Session Surface changed during summarization",
 			}
 		}
+		for index, sequence := range snapshot.Surface.Nodes {
+			if sequence != prepared.measurement.Nodes[index].Seq {
+				return &surfaceChangedError{
+					message: "compaction: Session Surface changed during summarization",
+				}
+			}
+		}
 		return nil
 	}
-	currentSelection, err := validateSurfaceRegion(
-		conversation,
+	currentSelection, err := validateSurfaceRegionSnapshot(
+		snapshot,
 		prepared.start,
 		prepared.end,
 	)
@@ -749,36 +795,47 @@ func (coordinator *regionCompactor) assertStable(
 			cause:   err,
 		}
 	}
-	if !reflect.DeepEqual(currentSelection.shadowedSeqs, prepared.shadowedSeqs) {
+	if !equalSequences(currentSelection.shadowedSeqs, prepared.shadowedSeqs) {
 		return &surfaceChangedError{
 			message: "compaction: selected span changed during summarization",
 		}
 	}
-	current, err := coordinator.meter.Measure(
-		requestContext,
-		conversation,
-		nil,
-	)
-	if err != nil {
-		return err
-	}
 	if currentSelection.startIndex < 0 ||
-		currentSelection.endIndex >= len(current.Nodes) {
+		currentSelection.endIndex >= len(snapshot.Surface.Nodes) {
 		return &surfaceChangedError{
 			message: "compaction: selected span was rewritten during summarization",
 		}
 	}
-	measured := current.Nodes[currentSelection.startIndex : currentSelection.endIndex+1]
-	if !reflect.DeepEqual(measured, prepared.selectedNodes) {
+	measured := snapshot.Surface.Nodes[currentSelection.startIndex : currentSelection.endIndex+1]
+	if len(measured) != len(prepared.selectedNodes) {
 		return &surfaceChangedError{
 			message: "compaction: selected span was rewritten during summarization",
+		}
+	}
+	for index, sequence := range measured {
+		if sequence != prepared.selectedNodes[index].Seq {
+			return &surfaceChangedError{
+				message: "compaction: selected span was rewritten during summarization",
+			}
 		}
 	}
 	return nil
 }
 
+func equalSequences(first []int64, second []int64) bool {
+	if len(first) != len(second) {
+		return false
+	}
+	for index, sequence := range first {
+		if sequence != second[index] {
+			return false
+		}
+	}
+	return true
+}
+
 func assertNoActiveCompaction(
-	conversation *session.Session,
+	conversation session.Context,
 	stage string,
 ) error {
 	logState, err := compaction.InspectLog(conversation.Events())

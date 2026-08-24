@@ -61,24 +61,44 @@ func TestDefaultCompositionListsHistoryAndResumesAColdSQLiteSession(t *testing.T
 		t.Fatal(err)
 	}
 	conversation := firstHandle.Subject.SessionValue()
-	if _, err = session.Append(
-		conversation,
-		session.TurnStarted,
-		session.TurnStart{
-			Turn: 1,
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewEventDraft(session.TurnStarted,
+			session.TurnStart{
+				Turn: 1,
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		if _, err = committedEvent, writeErr; err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err = session.Append(
-		conversation,
-		session.TurnEnded,
-		session.TurnEnd{
-			Turn:   1,
-			Reason: session.TurnCompleted{},
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewEventDraft(session.TurnEnded,
+			session.TurnEnd{
+				Turn:   1,
+				Reason: session.TurnCompleted{},
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		if _, err = committedEvent, writeErr; err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err = firstProbe.sessions.Flush(requestContext, conversation); err != nil {
 		t.Fatal(err)

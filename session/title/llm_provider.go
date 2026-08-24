@@ -207,8 +207,7 @@ func (implementation *LLMProvider) Generate(
 		System:    &systemInstruction,
 		SessionID: string(request.Session.ID()), Purpose: llm.PurposeSessionTitle,
 	}
-	if _, err := session.AppendSerialized(
-		request.Session,
+	requestDraft, err := session.NewEventDraft(
 		TitleLLMRequest,
 		LLMRequestEventData{
 			TitleProvider: implementation.identifier,
@@ -216,7 +215,11 @@ func (implementation *LLMProvider) Generate(
 			Route:         route, System: systemInstruction,
 			Messages: []llm.Message{messageValue}, MaxTokens: maxOutputTokens,
 		},
-	); err != nil {
+	)
+	if err != nil {
+		return ProviderResult{}, err
+	}
+	if _, err := request.Session.Commit(requestContext, session.Batch(requestDraft)); err != nil {
 		return ProviderResult{}, err
 	}
 

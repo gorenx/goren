@@ -93,7 +93,7 @@ func TestPinnedSourceLiveChildrenMatchGo(t *testing.T) {
 		"e\u0301-tie",
 		"é-tie",
 	}
-	ordered := make([]*session.Session, 0, len(orderedIDs))
+	ordered := make([]session.Context, 0, len(orderedIDs))
 	for _, identifier := range orderedIDs {
 		ordered = append(
 			ordered,
@@ -110,7 +110,7 @@ func TestPinnedSourceLiveChildrenMatchGo(t *testing.T) {
 			),
 		)
 	}
-	conversations := []*session.Session{
+	conversations := []session.Context{
 		ordinary,
 		creationWindow,
 		tieB,

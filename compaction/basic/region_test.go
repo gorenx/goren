@@ -31,28 +31,31 @@ func TestCompactRegionCommitsReplayableLLMCheckpoint(t *testing.T) {
 	)
 	conversation := conversationFixture(t, 3, strings.Repeat("history ", 20))
 	systemPrompt := "conversation system"
-	if _, err := session.Append(
-		conversation,
-		session.RequestHeaderSet,
-		session.RequestHeaderSnapshot{
-			Header: session.EpochHeader{
-				Config: llm.CallConfig{
-					Provider: fixtureProvider,
-					Model:    fixtureModel,
-				},
-				System: &systemPrompt,
-				Tools: []llm.ToolSchema{
-					{
-						Name:        "lookup",
-						Description: "lookup data",
-						Parameters:  []byte(`{"type":"object"}`),
+	{
+		draft, err := session.NewEventDraft(session.RequestHeaderSet,
+			session.RequestHeaderSnapshot{
+				Header: session.EpochHeader{
+					Config: llm.CallConfig{
+						Provider: fixtureProvider,
+						Model:    fixtureModel,
+					},
+					System: &systemPrompt,
+					Tools: []llm.ToolSchema{
+						{
+							Name:        "lookup",
+							Description: "lookup data",
+							Parameters:  []byte(`{"type":"object"}`),
+						},
 					},
 				},
-			},
-			Reason: session.RequestHeaderResume,
-		},
-	); err != nil {
-		t.Fatal(err)
+				Reason: session.RequestHeaderResume,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	before := conversation.Surface()
 	outcome, err := implementation.CompactRegion(
@@ -227,15 +230,18 @@ func TestCompactRegionRejectsConcurrentSurfaceChange(t *testing.T) {
 		if err != nil {
 			panic(err)
 		}
-		if _, err := session.AppendSurfaceSerialized(
-			conversation,
-			session.UserMessageAdded,
-			injected,
-			session.SurfaceIntent{
-				Operation: session.SurfaceAppend(),
-			},
-		); err != nil {
-			panic(err)
+		{
+			draft, err := session.NewSurfaceEventDraft(session.UserMessageAdded,
+				injected,
+				session.SurfaceIntent{
+					Operation: session.SurfaceAppend(),
+				})
+			if err == nil {
+				_, err = conversation.Commit(context.Background(), session.Batch(draft))
+			}
+			if err != nil {
+				panic(err)
+			}
 		}
 	}
 	implementation := newBoundCompaction(
@@ -282,15 +288,18 @@ func TestCompactNowUsesAgentMaintenanceAndFlushesClosedAttempt(t *testing.T) {
 		nil,
 	)
 	conversation := conversationFixture(t, 3, "manual history")
-	if _, err := session.Append(
-		conversation,
-		session.TurnEnded,
-		session.TurnEnd{
-			Turn:   4,
-			Reason: session.TurnCompleted{},
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.TurnEnded,
+			session.TurnEnd{
+				Turn:   4,
+				Reason: session.TurnCompleted{},
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	commandID := "command-1"
 	outcome, err := implementation.CompactNow(
@@ -323,15 +332,18 @@ func TestCompactNowUsesAgentMaintenanceAndFlushesClosedAttempt(t *testing.T) {
 func TestCompactNowAllowsChangesOutsideSelectedSpan(t *testing.T) {
 	t.Parallel()
 	conversation := conversationFixture(t, 3, "manual stable span")
-	if _, err := session.Append(
-		conversation,
-		session.TurnEnded,
-		session.TurnEnd{
-			Turn:   4,
-			Reason: session.TurnCompleted{},
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.TurnEnded,
+			session.TurnEnd{
+				Turn:   4,
+				Reason: session.TurnCompleted{},
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	runtimeValue := newRuntimeStub("manual checkpoint", 1_000)
 	injectedSeq := int64(-1)
@@ -345,14 +357,27 @@ func TestCompactNowAllowsChangesOutsideSelectedSpan(t *testing.T) {
 		if err != nil {
 			panic(err)
 		}
-		committed, err := session.AppendSurfaceSerialized(
-			conversation,
-			session.UserMessageAdded,
-			injected,
-			session.SurfaceIntent{
-				Operation: session.SurfaceAppend(),
-			},
-		)
+		committed, err := session.Event{}, error(nil)
+		{
+			var committedEvent session.Event
+			var writeErr error
+			draft, draftErr := session.NewSurfaceEventDraft(session.UserMessageAdded,
+				injected,
+				session.SurfaceIntent{
+					Operation: session.SurfaceAppend(),
+				})
+			writeErr = draftErr
+			if draftErr == nil {
+				receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+				writeErr = commitErr
+				if commitErr == nil {
+					committedEvent = receipt.Events[0]
+				}
+			}
+			committed = committedEvent
+			err = writeErr
+		}
+
 		if err != nil {
 			panic(err)
 		}
@@ -486,15 +511,18 @@ func TestCompactNowDoesNotReportSuccessWhenClosingMarkerFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	populateConversationFixture(t, conversation, 2, "closing marker")
-	if _, err := session.Append(
-		conversation,
-		session.TurnEnded,
-		session.TurnEnd{
-			Turn:   3,
-			Reason: session.TurnCompleted{},
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.TurnEnded,
+			session.TurnEnd{
+				Turn:   3,
+				Reason: session.TurnCompleted{},
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	runtimeValue := newRuntimeStub("small checkpoint", 1_000)
 	runtimeValue.beforeCall = timeSource.arm
@@ -562,15 +590,18 @@ func TestCompactNowClassifiesBusyAndPersistenceFailure(t *testing.T) {
 	}
 
 	persistenceConversation := conversationFixture(t, 2, "persistence")
-	if _, err := session.Append(
-		persistenceConversation,
-		session.TurnEnded,
-		session.TurnEnd{
-			Turn:   3,
-			Reason: session.TurnCompleted{},
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.TurnEnded,
+			session.TurnEnd{
+				Turn:   3,
+				Reason: session.TurnCompleted{},
+			})
+		if err == nil {
+			_, err = persistenceConversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	storeValue.flushError = errors.New("disk unavailable")
 	_, err = implementation.CompactNow(
@@ -611,18 +642,21 @@ func closedConversationFixture(
 	testingContext *testing.T,
 	closedTurns int,
 	text string,
-) *session.Session {
+) session.Context {
 	testingContext.Helper()
 	conversation := conversationFixture(testingContext, closedTurns, text)
-	if _, err := session.Append(
-		conversation,
-		session.TurnEnded,
-		session.TurnEnd{
-			Turn:   int64(closedTurns + 1),
-			Reason: session.TurnCompleted{},
-		},
-	); err != nil {
-		testingContext.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.TurnEnded,
+			session.TurnEnd{
+				Turn:   int64(closedTurns + 1),
+				Reason: session.TurnCompleted{},
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			testingContext.Fatal(err)
+		}
 	}
 	return conversation
 }

@@ -75,6 +75,6 @@ type ContextBreakdownProjection struct {
 // Meter is the singleton replay measurement Service.
 type Meter interface {
 	plugin.Service
-	Measure(context.Context, *session.Session, *session.EpochHeader) (Measurement, error)
+	Measure(context.Context, session.Context, *session.EpochHeader) (Measurement, error)
 	EstimateMessage(llm.Message) (int64, error)
 }

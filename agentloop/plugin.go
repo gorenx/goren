@@ -65,7 +65,7 @@ func (*Plugin) Manifest() plugin.Manifest {
 			plugin.ServiceOf[sesspersist.Persistence](),
 		},
 		Events: []plugin.EventSubscription{
-			plugin.EventOf[session.SessionEventAppended](),
+			plugin.EventOf[session.EventAppended](),
 		},
 	}
 }
@@ -136,7 +136,7 @@ func (owner *Plugin) ObserveEvent(
 	_ context.Context,
 	fact plugin.Event,
 ) error {
-	appended, matches := fact.(session.SessionEventAppended)
+	appended, matches := fact.(session.EventAppended)
 	if !matches {
 		return nil
 	}

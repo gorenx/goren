@@ -19,14 +19,14 @@ const fixtureProvider = "fixture-provider"
 const fixtureModel = "fixture-model"
 
 type meterStub struct {
-	measure       func(context.Context, *session.Session, *session.EpochHeader) (tokenmeter.Measurement, error)
+	measure       func(context.Context, session.Context, *session.EpochHeader) (tokenmeter.Measurement, error)
 	estimate      int64
 	estimateError error
 }
 
 func (stub *meterStub) Measure(
 	requestContext context.Context,
-	conversation *session.Session,
+	conversation session.Context,
 	header *session.EpochHeader,
 ) (tokenmeter.Measurement, error) {
 	if stub.measure != nil {
@@ -46,11 +46,12 @@ func (stub *meterStub) EstimateMessage(llm.Message) (int64, error) {
 }
 
 func pricedSurface(
-	conversation *session.Session,
+	conversation session.Context,
 	perNode int64,
 	envelope int64,
 ) tokenmeter.Measurement {
-	_, surface := conversation.ReadCut()
+	snapshot := conversation.Snapshot()
+	surface := snapshot.Surface
 	nodes := make([]tokenmeter.SurfaceNode, len(surface.Nodes))
 	surfaceTokens := int64(0)
 	for nodeIndex, sequence := range surface.Nodes {
@@ -145,7 +146,7 @@ type liveStoreStub struct {
 
 func (stub *liveStoreStub) Flush(
 	requestContext context.Context,
-	conversation *session.Session,
+	conversation session.Context,
 ) error {
 	if requestContext == nil || conversation == nil {
 		return errors.New("fixture: flush inputs are required")
@@ -165,13 +166,13 @@ func (stub *liveStoreStub) flushCount() int {
 type prunerStub struct {
 	toolresultpruner.Pruner
 
-	prune func(context.Context, *session.Session) (toolresultpruner.Result, error)
+	prune func(context.Context, session.Context) (toolresultpruner.Result, error)
 	calls int
 }
 
 func (stub *prunerStub) PruneSession(
 	requestContext context.Context,
-	conversation *session.Session,
+	conversation session.Context,
 ) (toolresultpruner.Result, error) {
 	stub.calls++
 	if stub.prune == nil {
@@ -210,7 +211,7 @@ type agentStub struct {
 	agent.Agent
 	base         plugin.Base
 	identifier   session.SessionID
-	conversation *session.Session
+	conversation session.Context
 	options      agent.Options
 	maintenance  *maintenanceStub
 }
@@ -223,7 +224,7 @@ func (stub *agentStub) ID() session.SessionID {
 	return stub.identifier
 }
 
-func (stub *agentStub) SessionValue() *session.Session {
+func (stub *agentStub) SessionValue() session.Context {
 	return stub.conversation
 }
 
@@ -293,7 +294,7 @@ func conversationFixture(
 	testingContext *testing.T,
 	closedTurns int,
 	text string,
-) *session.Session {
+) session.Context {
 	testingContext.Helper()
 	conversation, err := session.New(
 		session.SessionID(fmt.Sprintf("compaction-%d", closedTurns)),
@@ -313,20 +314,23 @@ func conversationFixture(
 
 func populateConversationFixture(
 	testingContext *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	closedTurns int,
 	text string,
 ) {
 	testingContext.Helper()
 	for turn := 1; turn <= closedTurns; turn++ {
-		if _, err := session.Append(
-			conversation,
-			session.TurnStarted,
-			session.TurnStart{
-				Turn: int64(turn),
-			},
-		); err != nil {
-			testingContext.Fatal(err)
+		{
+			draft, err := session.NewEventDraft(session.TurnStarted,
+				session.TurnStart{
+					Turn: int64(turn),
+				})
+			if err == nil {
+				_, err = conversation.Commit(context.Background(), session.Batch(draft))
+			}
+			if err != nil {
+				testingContext.Fatal(err)
+			}
 		}
 		userInput, err := llm.NewUserMessage(llm.UserMessageInput{
 			Content: []llm.ContentBlock{
@@ -337,31 +341,37 @@ func populateConversationFixture(
 		if err != nil {
 			testingContext.Fatal(err)
 		}
-		if _, err := session.AppendSurface(
-			conversation,
-			session.UserMessageAdded,
-			userInput,
-			session.SurfaceIntent{
-				Operation: session.SurfaceAppend(),
-			},
-		); err != nil {
-			testingContext.Fatal(err)
+		{
+			draft, err := session.NewSurfaceEventDraft(session.UserMessageAdded,
+				userInput,
+				session.SurfaceIntent{
+					Operation: session.SurfaceAppend(),
+				})
+			if err == nil {
+				_, err = conversation.Commit(context.Background(), session.Batch(draft))
+			}
+			if err != nil {
+				testingContext.Fatal(err)
+			}
 		}
 		if turn == 1 {
-			if _, err := session.Append(
-				conversation,
-				session.RequestHeaderSet,
-				session.RequestHeaderSnapshot{
-					Header: session.EpochHeader{
-						Config: llm.CallConfig{
-							Provider: fixtureProvider,
-							Model:    fixtureModel,
+			{
+				draft, err := session.NewEventDraft(session.RequestHeaderSet,
+					session.RequestHeaderSnapshot{
+						Header: session.EpochHeader{
+							Config: llm.CallConfig{
+								Provider: fixtureProvider,
+								Model:    fixtureModel,
+							},
 						},
-					},
-					Reason: session.RequestHeaderInitial,
-				},
-			); err != nil {
-				testingContext.Fatal(err)
+						Reason: session.RequestHeaderInitial,
+					})
+				if err == nil {
+					_, err = conversation.Commit(context.Background(), session.Batch(draft))
+				}
+				if err != nil {
+					testingContext.Fatal(err)
+				}
 			}
 		}
 		assistantOutput, err := llm.NewAssistantMessage(llm.AssistantMessageInput{
@@ -376,39 +386,48 @@ func populateConversationFixture(
 		if err != nil {
 			testingContext.Fatal(err)
 		}
-		if _, err := session.AppendSurface(
-			conversation,
-			session.AssistantMessaged,
-			session.AssistantMessage{
-				Turn:    int64(turn),
-				Step:    1,
-				Message: assistantOutput,
-			},
-			session.SurfaceIntent{
-				Operation: session.SurfaceAppend(),
-			},
-		); err != nil {
-			testingContext.Fatal(err)
+		{
+			draft, err := session.NewSurfaceEventDraft(session.AssistantMessaged,
+				session.AssistantMessage{
+					Turn:    int64(turn),
+					Step:    1,
+					Message: assistantOutput,
+				},
+				session.SurfaceIntent{
+					Operation: session.SurfaceAppend(),
+				})
+			if err == nil {
+				_, err = conversation.Commit(context.Background(), session.Batch(draft))
+			}
+			if err != nil {
+				testingContext.Fatal(err)
+			}
 		}
-		if _, err := session.Append(
-			conversation,
-			session.TurnEnded,
-			session.TurnEnd{
-				Turn:   int64(turn),
-				Reason: session.TurnCompleted{},
-			},
-		); err != nil {
-			testingContext.Fatal(err)
+		{
+			draft, err := session.NewEventDraft(session.TurnEnded,
+				session.TurnEnd{
+					Turn:   int64(turn),
+					Reason: session.TurnCompleted{},
+				})
+			if err == nil {
+				_, err = conversation.Commit(context.Background(), session.Batch(draft))
+			}
+			if err != nil {
+				testingContext.Fatal(err)
+			}
 		}
 	}
-	if _, err := session.Append(
-		conversation,
-		session.TurnStarted,
-		session.TurnStart{
-			Turn: int64(closedTurns + 1),
-		},
-	); err != nil {
-		testingContext.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.TurnStarted,
+			session.TurnStart{
+				Turn: int64(closedTurns + 1),
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			testingContext.Fatal(err)
+		}
 	}
 }
 

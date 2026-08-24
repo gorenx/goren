@@ -106,7 +106,7 @@ func (*reportContinuation) DrainContinuableDescendants(
 type reportAgent struct {
 	plugin.Base
 	id      session.SessionID
-	session *session.Session
+	session session.Context
 }
 
 func newReportAgent(t *testing.T, identifier session.SessionID) *reportAgent {
@@ -130,7 +130,7 @@ func (*reportAgent) Apply(context.Context) error                   { return nil 
 func (*reportAgent) Dispose(context.Context) error                 { return nil }
 func (subject *reportAgent) ID() session.SessionID                 { return subject.id }
 func (*reportAgent) OptionsValue() agent.Options                   { return agent.Options{} }
-func (subject *reportAgent) SessionValue() *session.Session        { return subject.session }
+func (subject *reportAgent) SessionValue() session.Context         { return subject.session }
 func (*reportAgent) InboxValue() *agent.Inbox                      { return nil }
 func (*reportAgent) StatusValue() agent.Status                     { return agent.StatusIdle }
 func (*reportAgent) Cancel(agent.CancelCause, agent.CancelOptions) {}

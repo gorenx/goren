@@ -9,7 +9,7 @@ import (
 
 type sessionRecord struct {
 	header  session.Header
-	live    *session.Session
+	live    session.Context
 	ordinal int
 }
 

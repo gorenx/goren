@@ -60,10 +60,16 @@ func (appender *descriptorAppender) Intercept(
 	if snapshotErr != nil {
 		return agent.PreStepDecision{}, snapshotErr
 	}
-	if _, appendErr := session.AppendSerialized(
-		notice.Subject.SessionValue(),
+	draft, appendErr := session.NewEventDraft(
 		subagent.DescriptorEvent,
 		descriptorData,
+	)
+	if appendErr != nil {
+		return agent.PreStepDecision{}, appendErr
+	}
+	if _, appendErr := notice.Subject.SessionValue().Commit(
+		requestContext,
+		session.Batch(draft),
 	); appendErr != nil {
 		return agent.PreStepDecision{}, appendErr
 	}

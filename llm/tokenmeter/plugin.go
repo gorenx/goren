@@ -35,8 +35,8 @@ func (owner *Plugin) Manifest() plugin.Manifest {
 			plugin.ServiceOf[sessionprojection.Registry](),
 		},
 		Events: []plugin.EventSubscription{
-			plugin.EventOf[session.SessionEventAppended](),
-			plugin.EventOf[session.SessionDisposed](),
+			plugin.EventOf[session.EventAppended](),
+			plugin.EventOf[session.Disposed](),
 		},
 	}
 }

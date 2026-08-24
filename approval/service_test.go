@@ -65,13 +65,13 @@ func (owner *answererPlugin) Intercept(
 }
 
 type fakeSubject struct {
-	conversation *session.Session
+	conversation session.Context
 
 	mutex    sync.Mutex
 	injected []llm.UserMessage
 }
 
-func (subject *fakeSubject) SessionValue() *session.Session {
+func (subject *fakeSubject) SessionValue() session.Context {
 	return subject.conversation
 }
 
@@ -217,16 +217,19 @@ func newSubject(
 	}
 }
 
-func openTurn(testingContext *testing.T, conversation *session.Session) {
+func openTurn(testingContext *testing.T, conversation session.Context) {
 	testingContext.Helper()
-	if _, err := session.Append(
-		conversation,
-		session.TurnStarted,
-		session.TurnStart{
-			Turn: 1,
-		},
-	); err != nil {
-		testingContext.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.TurnStarted,
+			session.TurnStart{
+				Turn: 1,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			testingContext.Fatal(err)
+		}
 	}
 }
 

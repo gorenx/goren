@@ -9,7 +9,7 @@ import (
 // epochStopReason maps Agent-owned consumed-work accounting for one Activation
 // suffix into the Subagent lifecycle vocabulary.
 func epochStopReason(
-	conversation *session.Session,
+	conversation session.Context,
 	boundary int64,
 	fallback subagent.StopReason,
 ) subagent.StopReason {

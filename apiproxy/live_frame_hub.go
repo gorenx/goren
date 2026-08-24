@@ -107,7 +107,7 @@ func newLiveFrameHub(newRPC func() (connection.RPCID, error)) *liveFrameHub {
 
 func (hub *liveFrameHub) openMux(
 	requestContext context.Context,
-	conversations []*session.Session,
+	conversations []session.Context,
 	emit func(StreamRequest[MuxFrame]) error,
 ) error {
 	subscriber := &muxSubscriber{
@@ -231,7 +231,7 @@ func (hub *liveFrameHub) sessionEvent(
 	return dispatchErr
 }
 
-func (hub *liveFrameHub) sessionCreated(conversation *session.Session) error {
+func (hub *liveFrameHub) sessionCreated(conversation session.Context) error {
 	header := conversation.Header()
 	events := conversation.Events()
 	lastSeq := int64(-1)

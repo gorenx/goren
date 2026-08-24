@@ -17,7 +17,7 @@ import (
 // Agent implementations satisfy it without making Tools depend on Agent's
 // lifecycle, inbox, or runtime-scope contracts.
 type ExecutionSubject interface {
-	SessionValue() *session.Session
+	SessionValue() session.Context
 	Inject(llm.UserMessage) error
 }
 

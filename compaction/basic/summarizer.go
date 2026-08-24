@@ -91,14 +91,14 @@ func (summarizer *llmSummarizer) release() {
 }
 
 func buildSummarizationInput(
-	conversation *session.Session,
+	conversation session.Context,
 	shadowedSeqs []int64,
 ) (summarizationInput, error) {
-	headerValue, found, err := conversation.RequestHeaderValue()
+	entries := conversation.Events()
+	headerValue, err := session.LatestRequestHeader(entries)
 	if err != nil {
 		return summarizationInput{}, err
 	}
-	entries := conversation.Events()
 	messages := make([]llm.Message, 0, len(shadowedSeqs))
 	for _, sequence := range shadowedSeqs {
 		if sequence < 0 || sequence >= int64(len(entries)) ||
@@ -123,7 +123,7 @@ func buildSummarizationInput(
 	input := summarizationInput{
 		messages: detachedMessages,
 	}
-	if found {
+	if headerValue != nil {
 		if headerValue.System != nil {
 			promptValue := *headerValue.System
 			input.system = &promptValue

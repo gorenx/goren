@@ -13,19 +13,19 @@ import (
 // Service.
 type runtimeContextRouter struct {
 	mutex       sync.RWMutex
-	projections map[*session.Session]*runtimeContextProjection
+	projections map[session.Context]*runtimeContextProjection
 }
 
 func newRuntimeContextRouter() *runtimeContextRouter {
 	return &runtimeContextRouter{
 		projections: make(
-			map[*session.Session]*runtimeContextProjection,
+			map[session.Context]*runtimeContextProjection,
 		),
 	}
 }
 
 func (router *runtimeContextRouter) register(
-	conversation *session.Session,
+	conversation session.Context,
 	projection *runtimeContextProjection,
 ) error {
 	if conversation == nil || projection == nil {
@@ -46,7 +46,7 @@ func (router *runtimeContextRouter) register(
 }
 
 func (router *runtimeContextRouter) remove(
-	conversation *session.Session,
+	conversation session.Context,
 	projection *runtimeContextProjection,
 ) {
 	if conversation == nil || projection == nil {
@@ -60,7 +60,7 @@ func (router *runtimeContextRouter) remove(
 }
 
 func (router *runtimeContextRouter) accept(
-	appended session.SessionEventAppended,
+	appended session.EventAppended,
 ) {
 	if appended.Conversation == nil {
 		return
@@ -77,7 +77,7 @@ func (router *runtimeContextRouter) clear() int {
 	router.mutex.Lock()
 	dangling := len(router.projections)
 	router.projections = make(
-		map[*session.Session]*runtimeContextProjection,
+		map[session.Context]*runtimeContextProjection,
 	)
 	router.mutex.Unlock()
 	return dangling

@@ -148,7 +148,7 @@ func (noEventFailures) ReportEventFailure(
 type runtimeAgent struct {
 	plugin.Base
 	id      session.SessionID
-	session *session.Session
+	session session.Context
 }
 
 func (subject *runtimeAgent) Manifest() plugin.Manifest {
@@ -163,7 +163,7 @@ func (*runtimeAgent) Apply(context.Context) error                   { return nil
 func (*runtimeAgent) Dispose(context.Context) error                 { return nil }
 func (subject *runtimeAgent) ID() session.SessionID                 { return subject.id }
 func (*runtimeAgent) OptionsValue() agent.Options                   { return agent.Options{} }
-func (subject *runtimeAgent) SessionValue() *session.Session        { return subject.session }
+func (subject *runtimeAgent) SessionValue() session.Context         { return subject.session }
 func (*runtimeAgent) InboxValue() *agent.Inbox                      { return nil }
 func (*runtimeAgent) StatusValue() agent.Status                     { return agent.StatusIdle }
 func (*runtimeAgent) Cancel(agent.CancelCause, agent.CancelOptions) {}

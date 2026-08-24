@@ -137,7 +137,7 @@ func newContractCatalogSession(
 	createdAt int64,
 	origin session.Origin,
 	descriptors ...subagent.Descriptor,
-) *session.Session {
+) session.Context {
 	t.Helper()
 	conversation, createErr := session.New(
 		identifier,
@@ -160,12 +160,22 @@ func newContractCatalogSession(
 		if snapshotErr != nil {
 			t.Fatal(snapshotErr)
 		}
-		if _, appendErr := session.Append(
-			conversation,
-			subagent.DescriptorEvent,
-			descriptorData,
-		); appendErr != nil {
-			t.Fatal(appendErr)
+		{
+			var committedEvent session.Event
+			var writeErr error
+			draft, draftErr := session.NewEventDraft(subagent.DescriptorEvent,
+				descriptorData)
+			writeErr = draftErr
+			if draftErr == nil {
+				receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+				writeErr = commitErr
+				if commitErr == nil {
+					committedEvent = receipt.Events[0]
+				}
+			}
+			if _, appendErr := committedEvent, writeErr; appendErr != nil {
+				t.Fatal(appendErr)
+			}
 		}
 	}
 	return conversation
