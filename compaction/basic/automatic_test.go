@@ -448,13 +448,13 @@ func TestAutomaticOverflowIgnoresNonCanonicalFailure(t *testing.T) {
 func newAutomaticFixture(
 	implementation *Compaction,
 	reporter func(error),
-) *automaticCompaction {
-	return &automaticCompaction{
-		engine:           implementation,
-		report:           reporter,
-		overflowSequence: make(map[session.Context]overflowRecovery),
-		warnedTargets:    make(map[string]struct{}),
-	}
+) *automationController {
+	controller := newAutomationController(
+		implementation,
+		implementation.catalog,
+		reporter,
+	)
+	return &controller
 }
 
 var _ tokenmeter.Meter = (*meterStub)(nil)

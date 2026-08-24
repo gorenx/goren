@@ -96,6 +96,25 @@ func TestToolPairingBalanceUsesCurrentSurfacePositions(t *testing.T) {
 		t.Fatal(err)
 	}
 	afterSeq := appendCompactionUser(t, conversation, "after")
+	boundaries, err := BuildToolPairingBoundaries(conversation.Snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeAssistant, err := boundaries.CutBefore(assistantEntry.Seq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterAssistant, err := boundaries.CutAfter(assistantEntry.Seq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !beforeAssistant || afterAssistant {
+		t.Fatalf(
+			"indexed assistant cuts = (%t, %t), want (true, false)",
+			beforeAssistant,
+			afterAssistant,
+		)
+	}
 
 	assertToolPairingCut(t, conversation, beforeSeq, true, true)
 	assertToolPairingCut(t, conversation, assistantEntry.Seq, true, false)

@@ -109,6 +109,39 @@ func (problem *TargetPressureConfigError) Error() string {
 	return problem.Message
 }
 
+// policyCatalog is the immutable policy snapshot shared by the Provider's
+// Runtime automation and Compaction implementation. It owns route resolution;
+// neither collaborator reads configuration through the other.
+type policyCatalog struct {
+	settings ResolvedConfig
+}
+
+func newPolicyCatalog(settings ResolvedConfig) *policyCatalog {
+	return &policyCatalog{
+		settings: cloneResolvedConfig(settings),
+	}
+}
+
+func (catalog *policyCatalog) automaticEnabled() bool {
+	return catalog.settings.Auto
+}
+
+func (catalog *policyCatalog) resolve(selectedTarget RouteTarget) ResolvedTargetPolicy {
+	return ResolveTargetPolicy(catalog.settings, selectedTarget)
+}
+
+func (catalog *policyCatalog) defaults() ResolvedTargetPolicy {
+	return ResolvedTargetPolicy{
+		ThresholdRatio:        catalog.settings.ThresholdRatio,
+		Retention:             cloneRetention(catalog.settings.Retention),
+		SummarizationProvider: catalog.settings.SummarizationProvider,
+		SummarizationModel:    catalog.settings.SummarizationModel,
+		MaxTokens:             catalog.settings.MaxTokens,
+		CompactionRetries:     catalog.settings.CompactionRetries,
+		MaxOverflowRetries:    catalog.settings.MaxOverflowRetries,
+	}
+}
+
 // ResolveConfig validates construction fields and applies source defaults.
 func ResolveConfig(settings Config) (ResolvedConfig, error) {
 	threshold := defaultThresholdRatio

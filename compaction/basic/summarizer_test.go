@@ -118,11 +118,11 @@ func TestLLMSummarizerRejectsUnsafeOrIncompleteOutput(t *testing.T) {
 				chunks:    testCase.chunks,
 				nilStream: testCase.nilStream,
 			}
-			summarizer := newLLMSummarizer(ResolvedConfig{
+			summarizer := newLLMSummarizer(newPolicyCatalog(ResolvedConfig{
 				SummarizationProvider: fixtureProvider,
 				SummarizationModel:    fixtureModel,
 				MaxTokens:             100,
-			})
+			}))
 			summarizer.bind(runtimeValue)
 			t.Cleanup(summarizer.release)
 			_, err = summarizer.summarize(
@@ -162,7 +162,7 @@ func TestLLMSummarizerUsesExactRouteOverride(t *testing.T) {
 	}
 	conversation := conversationFixture(t, 1, "route")
 	runtimeValue := newRuntimeStub("checkpoint", 1_000)
-	summarizer := newLLMSummarizer(resolved)
+	summarizer := newLLMSummarizer(newPolicyCatalog(resolved))
 	summarizer.bind(runtimeValue)
 	t.Cleanup(summarizer.release)
 	result, err := summarizer.summarize(

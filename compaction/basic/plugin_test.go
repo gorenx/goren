@@ -24,7 +24,14 @@ func TestProviderDeclaresSeparatedArchitecture(t *testing.T) {
 	if _, mixed := any(owner).(compaction.Engine); mixed {
 		t.Fatal("Plugin must not implement the Compaction business Service")
 	}
-	_, err = owner.implementation.CompactIfNeeded(
+	if owner.automation.engine != owner.engine {
+		t.Fatal("Runtime automation must invoke the published Engine")
+	}
+	if owner.automation.catalog != owner.catalog ||
+		owner.engine.catalog != owner.catalog {
+		t.Fatal("Plugin, automation, and Compaction must share one policy catalog")
+	}
+	_, err = owner.engine.CompactIfNeeded(
 		context.Background(),
 		compaction.AgentContext{},
 		compaction.TriggerPressure,

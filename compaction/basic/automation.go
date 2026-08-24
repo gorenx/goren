@@ -13,15 +13,30 @@ import (
 	"github.com/gorenx/goren/session"
 )
 
-// automaticCompaction owns cross-hook overflow recovery state. The Engine
-// remains free of Event and Waterfall lifecycle state.
-type automaticCompaction struct {
-	engine *Compaction
-	report func(error)
+// automationController owns the Runtime hooks and cross-hook overflow recovery
+// state that invoke Compaction. It does not implement compaction transactions.
+type automationController struct {
+	engine  compaction.Engine
+	catalog *policyCatalog
+	report  func(error)
 
 	mutex            sync.Mutex
 	overflowSequence map[session.Context]overflowRecovery
 	warnedTargets    map[string]struct{}
+}
+
+func newAutomationController(
+	engine compaction.Engine,
+	catalog *policyCatalog,
+	reporter func(error),
+) automationController {
+	return automationController{
+		engine:           engine,
+		catalog:          catalog,
+		report:           reporter,
+		overflowSequence: make(map[session.Context]overflowRecovery),
+		warnedTargets:    make(map[string]struct{}),
+	}
 }
 
 type overflowRecovery struct {
@@ -29,32 +44,32 @@ type overflowRecovery struct {
 	retries int
 }
 
-func (automation *automaticCompaction) release() {
-	automation.mutex.Lock()
-	automation.overflowSequence = make(map[session.Context]overflowRecovery)
-	automation.warnedTargets = make(map[string]struct{})
-	automation.mutex.Unlock()
+func (controller *automationController) release() {
+	controller.mutex.Lock()
+	controller.overflowSequence = make(map[session.Context]overflowRecovery)
+	controller.warnedTargets = make(map[string]struct{})
+	controller.mutex.Unlock()
 }
 
-func (automation *automaticCompaction) observeEvent(
+func (controller *automationController) observeEvent(
 	_ context.Context,
 	fact plugin.Event,
 ) error {
 	switch observed := fact.(type) {
 	case agent.StatusChanged:
 		if observed.Subject != nil && observed.Status == agent.StatusIdle {
-			automation.resetAgent(observed.Subject)
+			controller.resetAgent(observed.Subject)
 		}
 	case session.EventAppended:
 		if observed.Conversation != nil &&
 			observed.Committed.Type == session.AssistantMessageEventName {
-			automation.resetSession(observed.Conversation)
+			controller.resetSession(observed.Conversation)
 		}
 	}
 	return nil
 }
 
-func (automation *automaticCompaction) interceptPressure(
+func (controller *automationController) interceptPressure(
 	requestContext context.Context,
 	notice agent.PreStepNotice,
 	downstream plugin.WaterfallAction[agent.PreStepNotice, agent.PreStepDecision],
@@ -68,13 +83,13 @@ func (automation *automaticCompaction) interceptPressure(
 		notice.Subject == nil {
 		return downstream.Execute(requestContext, notice)
 	}
-	_, err := automation.engine.CompactIfNeeded(
+	_, err := controller.engine.CompactIfNeeded(
 		requestContext,
 		agentContext(notice.Subject),
 		compaction.TriggerPressure,
 	)
-	if err != nil && automation.shouldReportPressure(err) {
-		automation.report(fmt.Errorf(
+	if err != nil && controller.shouldReportPressure(err) {
+		controller.report(fmt.Errorf(
 			"compaction-basic: step compaction failed; continuing the turn: %w",
 			err,
 		))
@@ -82,7 +97,7 @@ func (automation *automaticCompaction) interceptPressure(
 	return downstream.Execute(requestContext, notice)
 }
 
-func (automation *automaticCompaction) interceptOverflow(
+func (controller *automationController) interceptOverflow(
 	requestContext context.Context,
 	notice agent.RequestErrorNotice,
 	downstream plugin.WaterfallAction[agent.RequestErrorNotice, agent.RequestErrorAction],
@@ -100,7 +115,7 @@ func (automation *automaticCompaction) interceptOverflow(
 	conversation := notice.Subject.SessionValue()
 	selectedTarget, found, err := routedTarget(conversation)
 	if err != nil {
-		automation.report(fmt.Errorf(
+		controller.report(fmt.Errorf(
 			"compaction-basic: inspect overflow route: %w",
 			err,
 		))
@@ -109,23 +124,20 @@ func (automation *automaticCompaction) interceptOverflow(
 	if !found {
 		return downstream.Execute(requestContext, notice)
 	}
-	targetPolicy := ResolveTargetPolicy(
-		automation.engine.policy,
-		selectedTarget,
-	)
-	retries := automation.retryCount(notice.Subject)
+	targetPolicy := controller.catalog.resolve(selectedTarget)
+	retries := controller.retryCount(notice.Subject)
 	if retries >= targetPolicy.MaxOverflowRetries {
 		return downstream.Execute(requestContext, notice)
 	}
 	beforeGeneration := conversation.Surface().ReplaceGeneration
-	_, recoveryErr := automation.engine.CompactIfNeeded(
+	_, recoveryErr := controller.engine.CompactIfNeeded(
 		requestContext,
 		agentContext(notice.Subject),
 		compaction.TriggerContextOverflow,
 	)
 	afterGeneration := conversation.Surface().ReplaceGeneration
 	if recoveryErr != nil {
-		automation.report(fmt.Errorf(
+		controller.report(fmt.Errorf(
 			"compaction-basic: context-overflow compaction failed: %w",
 			recoveryErr,
 		))
@@ -133,19 +145,19 @@ func (automation *automaticCompaction) interceptOverflow(
 	if requestContext.Err() != nil || afterGeneration <= beforeGeneration {
 		return downstream.Execute(requestContext, notice)
 	}
-	automation.recordRetry(notice.Subject, retries+1)
+	controller.recordRetry(notice.Subject, retries+1)
 	return agent.RequestErrorAction{
 		Retry: true,
 	}, nil
 }
 
-func (automation *automaticCompaction) retryCount(subject agent.Agent) int {
+func (controller *automationController) retryCount(subject agent.Agent) int {
 	conversation := subject.SessionValue()
-	automation.mutex.Lock()
-	defer automation.mutex.Unlock()
-	current, found := automation.overflowSequence[conversation]
+	controller.mutex.Lock()
+	defer controller.mutex.Unlock()
+	current, found := controller.overflowSequence[conversation]
 	if !found || !agent.Same(current.subject, subject) {
-		automation.overflowSequence[conversation] = overflowRecovery{
+		controller.overflowSequence[conversation] = overflowRecovery{
 			subject: subject,
 		}
 		return 0
@@ -153,48 +165,48 @@ func (automation *automaticCompaction) retryCount(subject agent.Agent) int {
 	return current.retries
 }
 
-func (automation *automaticCompaction) recordRetry(
+func (controller *automationController) recordRetry(
 	subject agent.Agent,
 	retries int,
 ) {
 	conversation := subject.SessionValue()
-	automation.mutex.Lock()
-	automation.overflowSequence[conversation] = overflowRecovery{
+	controller.mutex.Lock()
+	controller.overflowSequence[conversation] = overflowRecovery{
 		subject: subject,
 		retries: retries,
 	}
-	automation.mutex.Unlock()
+	controller.mutex.Unlock()
 }
 
-func (automation *automaticCompaction) resetAgent(subject agent.Agent) {
+func (controller *automationController) resetAgent(subject agent.Agent) {
 	conversation := subject.SessionValue()
-	automation.mutex.Lock()
-	current, found := automation.overflowSequence[conversation]
+	controller.mutex.Lock()
+	current, found := controller.overflowSequence[conversation]
 	if found && agent.Same(current.subject, subject) {
-		delete(automation.overflowSequence, conversation)
+		delete(controller.overflowSequence, conversation)
 	}
-	automation.mutex.Unlock()
+	controller.mutex.Unlock()
 }
 
-func (automation *automaticCompaction) resetSession(
+func (controller *automationController) resetSession(
 	conversation session.Context,
 ) {
-	automation.mutex.Lock()
-	delete(automation.overflowSequence, conversation)
-	automation.mutex.Unlock()
+	controller.mutex.Lock()
+	delete(controller.overflowSequence, conversation)
+	controller.mutex.Unlock()
 }
 
-func (automation *automaticCompaction) shouldReportPressure(problem error) bool {
+func (controller *automationController) shouldReportPressure(problem error) bool {
 	var targetProblem *TargetPressureConfigError
 	if !errors.As(problem, &targetProblem) {
 		return true
 	}
-	automation.mutex.Lock()
-	defer automation.mutex.Unlock()
-	if _, reported := automation.warnedTargets[targetProblem.TargetKey]; reported {
+	controller.mutex.Lock()
+	defer controller.mutex.Unlock()
+	if _, reported := controller.warnedTargets[targetProblem.TargetKey]; reported {
 		return false
 	}
-	automation.warnedTargets[targetProblem.TargetKey] = struct{}{}
+	controller.warnedTargets[targetProblem.TargetKey] = struct{}{}
 	return true
 }
 

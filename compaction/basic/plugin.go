@@ -25,10 +25,11 @@ type RuntimeOptions struct {
 type Plugin struct {
 	plugin.Base
 
-	implementation Compaction
-	automatic      automaticCompaction
-	pressure       pressureMiddleware
-	overflow       overflowMiddleware
+	catalog    *policyCatalog
+	engine     *Compaction
+	automation automationController
+	pressure   pressureMiddleware
+	overflow   overflowMiddleware
 }
 
 // New constructs an inactive Basic Compaction Provider.
@@ -37,17 +38,18 @@ func New(settings ResolvedConfig, policies RuntimeOptions) *Plugin {
 	if reporter == nil {
 		reporter = func(error) {}
 	}
+	catalog := newPolicyCatalog(settings)
 	owner := &Plugin{
-		implementation: *newCompaction(settings),
-		automatic: automaticCompaction{
-			report:           reporter,
-			overflowSequence: make(map[session.Context]overflowRecovery),
-			warnedTargets:    make(map[string]struct{}),
-		},
+		catalog: catalog,
+		engine:  newCompaction(catalog),
 	}
-	owner.automatic.engine = &owner.implementation
-	owner.pressure.automatic = &owner.automatic
-	owner.overflow.automatic = &owner.automatic
+	owner.automation = newAutomationController(
+		owner.engine,
+		catalog,
+		reporter,
+	)
+	owner.pressure.controller = &owner.automation
+	owner.overflow.controller = &owner.automation
 	return owner
 }
 
@@ -55,7 +57,7 @@ func New(settings ResolvedConfig, policies RuntimeOptions) *Plugin {
 func (owner *Plugin) Manifest() plugin.Manifest {
 	waterfalls := []plugin.WaterfallMiddlewareBinding(nil)
 	events := []plugin.EventSubscription(nil)
-	if owner.implementation.automatic() {
+	if owner.catalog.automaticEnabled() {
 		waterfalls = []plugin.WaterfallMiddlewareBinding{
 			plugin.WaterfallOf(&owner.pressure),
 			plugin.WaterfallOf(&owner.overflow),
@@ -68,7 +70,7 @@ func (owner *Plugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: PluginName,
 		Provides: []plugin.ProvidedService{
-			plugin.NewProvidedService[compaction.Engine](&owner.implementation),
+			plugin.NewProvidedService[compaction.Engine](owner.engine),
 		},
 		Requires: []plugin.ServiceType{
 			plugin.ServiceOf[llm.LlmRuntime](),
@@ -101,7 +103,7 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 		return err
 	}
 	pruner, _ := plugin.Resolve[toolresultpruner.Pruner](owner)
-	owner.implementation.bind(
+	owner.engine.bind(
 		llmRuntime,
 		sessions,
 		meter,
@@ -112,18 +114,18 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 
 // Dispose drops resolved capability snapshots after Runtime has withdrawn and drained hooks.
 func (owner *Plugin) Dispose(context.Context) error {
-	owner.automatic.release()
-	owner.implementation.release()
+	owner.automation.release()
+	owner.engine.release()
 	return nil
 }
 
 // ObserveEvent will reset overflow recovery state on success and idle boundaries.
 func (owner *Plugin) ObserveEvent(requestContext context.Context, fact plugin.Event) error {
-	return owner.automatic.observeEvent(requestContext, fact)
+	return owner.automation.observeEvent(requestContext, fact)
 }
 
 type pressureMiddleware struct {
-	automatic *automaticCompaction
+	controller *automationController
 }
 
 func (middleware *pressureMiddleware) Intercept(
@@ -131,7 +133,7 @@ func (middleware *pressureMiddleware) Intercept(
 	notice agent.PreStepNotice,
 	downstream plugin.WaterfallAction[agent.PreStepNotice, agent.PreStepDecision],
 ) (agent.PreStepDecision, error) {
-	return middleware.automatic.interceptPressure(
+	return middleware.controller.interceptPressure(
 		requestContext,
 		notice,
 		downstream,
@@ -139,7 +141,7 @@ func (middleware *pressureMiddleware) Intercept(
 }
 
 type overflowMiddleware struct {
-	automatic *automaticCompaction
+	controller *automationController
 }
 
 func (middleware *overflowMiddleware) Intercept(
@@ -147,7 +149,7 @@ func (middleware *overflowMiddleware) Intercept(
 	notice agent.RequestErrorNotice,
 	downstream plugin.WaterfallAction[agent.RequestErrorNotice, agent.RequestErrorAction],
 ) (agent.RequestErrorAction, error) {
-	return middleware.automatic.interceptOverflow(
+	return middleware.controller.interceptOverflow(
 		requestContext,
 		notice,
 		downstream,

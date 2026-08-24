@@ -117,6 +117,36 @@ func TestResolveTargetPolicyMergesExactRoute(t *testing.T) {
 	}
 }
 
+func TestPolicyCatalogOwnsResolvedSnapshot(t *testing.T) {
+	t.Parallel()
+	maximum := 2048
+	settings := ResolvedConfig{
+		MaxTokens: defaultMaxTokens,
+		Auto:      true,
+		ModelPolicies: []ModelPolicyConfig{
+			{
+				Provider: "deepseek",
+				Model:    "chat",
+				PolicyConfig: PolicyConfig{
+					MaxTokens: &maximum,
+				},
+			},
+		},
+	}
+	catalog := newPolicyCatalog(settings)
+	settings.Auto = false
+	settings.ModelPolicies[0].Provider = "mutated"
+	maximum = 4096
+
+	targetPolicy := catalog.resolve(RouteTarget{
+		Provider: "deepseek",
+		Model:    "chat",
+	})
+	if !catalog.automaticEnabled() || targetPolicy.MaxTokens != 2048 {
+		t.Fatalf("policy catalog aliases construction input: %#v", targetPolicy)
+	}
+}
+
 func TestResolveCompactSpecUsesModelCapacity(t *testing.T) {
 	t.Parallel()
 	ratio := 0.125
