@@ -1,0 +1,350 @@
+package assembly
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/compaction"
+	"github.com/gorenx/goren/compaction/basic"
+	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/llm/deepseek"
+	"github.com/gorenx/goren/plugin"
+	"github.com/gorenx/goren/session"
+	"github.com/gorenx/goren/session/title"
+)
+
+func TestDefaultCompositionCompactsPressureThroughAgentLoop(t *testing.T) {
+	var mainRequests atomic.Int32
+	var compactRequests atomic.Int32
+	providerServer := httptest.NewServer(http.HandlerFunc(
+		func(responseWriter http.ResponseWriter, httpRequest *http.Request) {
+			defer httpRequest.Body.Close()
+			if httpRequest.Header.Get("x-deepseek-harness-compact") == "1" {
+				compactRequests.Add(1)
+				writeCompactionFixtureSSE(
+					responseWriter,
+					"small durable checkpoint",
+					200,
+				)
+				return
+			}
+			requestNumber := mainRequests.Add(1)
+			inputTokens := int64(4_500)
+			if requestNumber >= 2 {
+				inputTokens = 9_000
+			}
+			writeCompactionFixtureSSE(
+				responseWriter,
+				"main response",
+				inputTokens,
+			)
+		},
+	))
+	defer providerServer.Close()
+
+	runtimeEngine, serviceView := startCompactionFixtureComposition(
+		t,
+		providerServer.URL,
+		12_500,
+		basic.Config{},
+		t.TempDir(),
+	)
+	defer shutdownCompactionFixtureComposition(t, runtimeEngine)
+	handle := createCompactionFixtureAgent(t, serviceView, "pressure-agent")
+	defer disposeCompactionFixtureAgent(t, handle)
+
+	sendCompactionFixturePrompt(
+		t,
+		handle.Subject,
+		strings.Repeat("first pressure history ", 800),
+	)
+	firstMeasurement, err := serviceView.meter.Measure(
+		context.Background(),
+		handle.Subject.SessionValue(),
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstMeasurement.TotalTokens >= 10_000 {
+		t.Fatalf(
+			"first pressure measurement = %d, want below threshold",
+			firstMeasurement.TotalTokens,
+		)
+	}
+	sendCompactionFixturePrompt(
+		t,
+		handle.Subject,
+		strings.Repeat("second pressure history ", 800),
+	)
+	secondMeasurement, err := serviceView.meter.Measure(
+		context.Background(),
+		handle.Subject.SessionValue(),
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondMeasurement.TotalTokens < 10_000 {
+		t.Fatalf(
+			"second pressure measurement = %d, want at least threshold",
+			secondMeasurement.TotalTokens,
+		)
+	}
+	sendCompactionFixturePrompt(t, handle.Subject, "continue after pressure")
+
+	entries := handle.Subject.SessionValue().Events()
+	assertCompactionFixtureTransaction(t, entries)
+	if mainRequests.Load() != 3 || compactRequests.Load() != 1 {
+		t.Fatalf(
+			"pressure request counts = main %d, compact %d",
+			mainRequests.Load(),
+			compactRequests.Load(),
+		)
+	}
+}
+
+func startCompactionFixtureComposition(
+	testingContext *testing.T,
+	baseURL string,
+	contextWindow int,
+	compactionConfig basic.Config,
+	dataDirectory string,
+) (*plugin.Runtime, *serviceProbe) {
+	testingContext.Helper()
+	identityDirectory := testingContext.TempDir()
+	directory, err := NewCatalog(Environment{
+		WorkingDirectory: testingContext.TempDir(),
+		LookupEnv: func(environmentName string) (string, bool) {
+			if environmentName == deepseek.DefaultAPIKeyEnv {
+				return "compaction-contract-key", true
+			}
+			return "", false
+		},
+		UserHomeDir: func() (string, error) {
+			return identityDirectory, nil
+		},
+		Diagnostics: testDiagnostics(testingContext),
+	})
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	specs, err := DefaultSpecs(
+		"127.0.0.1:0",
+		"compaction-e2e",
+		filepath.Join(dataDirectory, "sessions.sqlite"),
+		filepath.Join(dataDirectory, "workspaces.sqlite"),
+	)
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	modelName := "Compaction Fixture Model"
+	models := []deepseek.CatalogModel{
+		{
+			ID:            deepseek.DefaultModelID,
+			Name:          &modelName,
+			ContextWindow: &contextWindow,
+		},
+	}
+	deepSeekConfig, err := json.Marshal(deepseek.Config{
+		BaseURL: &baseURL,
+		Models:  &models,
+	})
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	compactionRaw, err := json.Marshal(compactionConfig)
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	titleRaw, err := json.Marshal(title.Config{
+		FallbackMaxWords: 5,
+		FallbackMaxBytes: 40,
+		MaxTitleBytes:    80,
+	})
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	for specIndex := range specs {
+		switch specs[specIndex].FactoryName {
+		case deepseek.PluginName:
+			specs[specIndex].Config = deepSeekConfig
+		case basic.PluginName:
+			specs[specIndex].Config = compactionRaw
+		case title.PluginName:
+			specs[specIndex].Config = titleRaw
+		}
+	}
+	serviceView, specs := addProbe(testingContext, directory, specs)
+	assembledServer, err := BuildServer(context.Background(), directory, specs)
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{
+		EventFailures: testDiagnostics(testingContext),
+	})
+	if _, err = runtimeEngine.Start(context.Background(), assembledServer); err != nil {
+		testingContext.Fatal(err)
+	}
+	resolved, err := serviceView.models.ResolveModelInfo(
+		context.Background(),
+		deepseek.ProviderRoute,
+		deepseek.DefaultModelID,
+	)
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	if resolved.Context == nil ||
+		resolved.Context.ContextWindow != contextWindow {
+		testingContext.Fatalf(
+			"resolved fixture model context = %#v, want %d",
+			resolved.Context,
+			contextWindow,
+		)
+	}
+	return runtimeEngine, serviceView
+}
+
+func createCompactionFixtureAgent(
+	testingContext *testing.T,
+	serviceView *serviceProbe,
+	identifier session.SessionID,
+) agent.Handle {
+	testingContext.Helper()
+	handle, err := serviceView.agents.Create(
+		context.Background(),
+		agent.CreateOptions{
+			SessionID: identifier,
+			AgentOptions: agent.Options{
+				Provider: deepseek.ProviderRoute,
+				Model:    deepseek.DefaultModelID,
+			},
+		},
+	)
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	return handle
+}
+
+func sendCompactionFixturePrompt(
+	testingContext *testing.T,
+	subject agent.Agent,
+	textValue string,
+) {
+	testingContext.Helper()
+	messageValue, err := llm.NewUserMessage(llm.UserMessageInput{
+		Content: []llm.ContentBlock{
+			llm.NewTextBlock(textValue),
+		},
+		Source: llm.UserMessageSource{},
+	})
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	if err := subject.Followup(messageValue); err != nil {
+		testingContext.Fatal(err)
+	}
+	waitContext, cancelWait := context.WithTimeout(
+		context.Background(),
+		10*time.Second,
+	)
+	defer cancelWait()
+	if err := subject.WhenIdle(waitContext); err != nil {
+		testingContext.Fatal(err)
+	}
+}
+
+func disposeCompactionFixtureAgent(
+	testingContext *testing.T,
+	handle agent.Handle,
+) {
+	testingContext.Helper()
+	closeContext, cancelClose := context.WithTimeout(
+		context.Background(),
+		5*time.Second,
+	)
+	defer cancelClose()
+	if err := handle.Dispose(closeContext); err != nil {
+		testingContext.Errorf("dispose compaction Agent: %v", err)
+	}
+}
+
+func shutdownCompactionFixtureComposition(
+	testingContext *testing.T,
+	runtimeEngine *plugin.Runtime,
+) {
+	testingContext.Helper()
+	closeContext, cancelClose := context.WithTimeout(
+		context.Background(),
+		5*time.Second,
+	)
+	defer cancelClose()
+	if err := runtimeEngine.Shutdown(closeContext); err != nil {
+		testingContext.Errorf("shutdown compaction composition: %v", err)
+	}
+}
+
+func assertCompactionFixtureTransaction(
+	testingContext *testing.T,
+	entries []session.Event,
+) {
+	testingContext.Helper()
+	state, err := compaction.InspectLog(entries)
+	if err != nil || state.Attempt != nil {
+		testingContext.Fatalf("compaction log state = %#v, error = %v", state, err)
+	}
+	startIndex := -1
+	summaryIndex := -1
+	endIndex := -1
+	for entryIndex, entry := range entries {
+		switch entry.Type {
+		case compaction.StartEventName:
+			startIndex = entryIndex
+		case compaction.SummaryEventName:
+			summaryIndex = entryIndex
+		case compaction.EndEventName:
+			endIndex = entryIndex
+		}
+	}
+	if startIndex < 0 || summaryIndex != startIndex+1 ||
+		summaryIndex+1 >= len(entries) ||
+		entries[summaryIndex+1].Type != session.UserMessageEventName ||
+		endIndex != summaryIndex+2 {
+		testingContext.Fatalf(
+			"compaction transaction positions = start %d, summary %d, end %d",
+			startIndex,
+			summaryIndex,
+			endIndex,
+		)
+	}
+}
+
+func writeCompactionFixtureSSE(
+	responseWriter http.ResponseWriter,
+	textValue string,
+	inputTokens int64,
+) {
+	responseWriter.Header().Set("content-type", "text/event-stream")
+	responseWriter.WriteHeader(http.StatusOK)
+	_, _ = fmt.Fprintf(
+		responseWriter,
+		"data: {\"choices\":[{\"delta\":{\"content\":%q}}]}\n\n",
+		textValue,
+	)
+	_, _ = fmt.Fprintf(
+		responseWriter,
+		"data: {\"choices\":[{\"delta\":{\"content\":\"\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":%d,\"completion_tokens\":4}}\n\n",
+		inputTokens,
+	)
+	_, _ = fmt.Fprint(responseWriter, "data: [DONE]\n\n")
+}
