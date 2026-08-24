@@ -1,6 +1,6 @@
 # 25 Context Compaction 实现进度
 
-状态：Session 写协调迁移 Completed；Real-provider Environment Verification 未执行
+状态：Completed；Real-provider Environment Verified
 更新时间：2026-08-24
 
 本文是 Context Compaction 的专用实现进度、证据等级和验收 Gate 记录。[24 Context Compaction 设计](./24-context-compaction.md)拥有架构、上下游契约、事件与交互流程；[08 实施进度](./08-implementation-progress.md)只保留一条 Compaction 总体状态并链接本文。
@@ -14,13 +14,13 @@ Compaction 已按[Session Core](../session/docs/design.zh-CN.md)迁移到唯一 
 - **执行状态**：`Completed`、`In Progress`、`Deferred` 或 `Excluded`。
 - **证据等级**：`Implemented`、`Go Verified`、`Contract Verified` 或 `Environment Verified`。
 - `Completed` 表示当前准入范围内的实现已闭环；当前范围包含 `/compact` 所需的 Commands 全局 Registry、两个 Remote endpoints 与独立 Consumer，不包含完整 Commands/Attachment/Typert 能力。
-- 真实 Provider smoke 已有自跳过验收用例，但当前环境没有执行带 credential 的分支；因此只能记为 `Implemented`，不能记为 `Environment Verified`。
+- 真实 Provider smoke 保持与 keyless suite 隔离并在无 credential 时自跳过；2026-08-24 已显式加载本地 `.env`，通过真实 DeepSeek Provider 验收，credential 未输出或提交。
 
 ## 2. 总体状态
 
 | 能力 | 执行状态 | 当前证据 | 剩余验收 |
 | --- | --- | --- | --- |
-| Compaction Definition + Token Meter + Pruner + Basic Provider + 默认自动装配 | In Progress | Contract Verified | Session 迁移及 race/E2E 已完成；只剩 real-provider smoke |
+| Compaction Definition + Token Meter + Pruner + Basic Provider + 默认自动装配 | Completed | Environment Verified | 当前准入范围无剩余 Gate |
 | Engine 人工 `CompactNow` | Completed | Go Verified | start/completion plan、atomic batch 与 ordered flush barrier 已验证 |
 | Commands 最小 slice + `/compact` Consumer | Completed | Go Verified | command facts 已迁移为固定 `Batch`，E2E 随全仓测试通过 |
 
@@ -90,7 +90,7 @@ Compaction 已按[Session Core](../session/docs/design.zh-CN.md)迁移到唯一 
 | CMP-G08 | summary 失败、取消与 close failure 不伪成功 | Completed | Go Verified：summarizer/region/overflow cancellation tests |
 | CMP-G09 | SQLite cold resume 可重建 checkpoint、lock、Meter 和 Projection | Completed | Go Verified：Runtime close/restart + `AgentRegistry.Resume` E2E |
 | CMP-G10a | 默认装配无 credential 可运行 | Completed | Go Verified：`TestDefaultCompositionStartsCompactionWithoutCredential` |
-| CMP-G10b | 真实 Provider 压缩 smoke | In Progress | Implemented：隔离用例会在无 credential 时 self-skip；当前未获得 Environment Verified 证据 |
+| CMP-G10b | 真实 Provider 压缩 smoke | Completed | Environment Verified：显式加载本地 `.env` 后，`TestRealProviderCompactsOneRegion` 通过真实 DeepSeek Provider 生成 summary 并完成 Surface replacement；credential 未输出或提交 |
 | CMP-G11 | 依赖方向、canonical names、Factory disposer 和无平行 runtime | Completed | Go Verified：`tests/architecture`、Catalog/assembly tests |
 | CMP-G12 | package README、Session Core、`24`、`25`、`08` 与索引一致 | Completed | Contract Verified：已按最终 `Commit` / `WritePlan` / FIFO baton 契约校准，并通过本地 Markdown 链接检查 |
 | CMP-G13 | `/compact` 真实 HTTP success/failure/cancel 闭环 | Completed | Go Verified：正常路径的嵌套顺序、取消路径的独立收敛、HTTP 200 Remote error、Provider cancel、lock close 与 persistence |
@@ -105,10 +105,11 @@ Session 写协调迁移后已执行的验证包括：
 - `go test ./tests/architecture -count=1`；
 - `go vet ./...` 与 `go build ./...`；
 - keyless default composition acceptance；
+- `GOREN_REAL_PROVIDER_TEST=1 go test ./internal/assembly -run '^TestRealProviderCompactsOneRegion$' -count=1 -v`，显式加载本地 `.env` 后通过真实 DeepSeek Provider；
 - Web `pnpm install --frozen-lockfile`、现有 Vitest 和生产构建；这些只验证 Web 自身，不作为 `/compact` Remote 的必要证据。
 
-真实 Provider 用例 `TestRealProviderCompactsOneRegion` 已实现，但本次只观察到无 credential 自跳过，不宣称真实 DeepSeek 环境已通过。
+真实 Provider 用例仍在无 credential 时自跳过；上述隔离命令已实际进入带 credential 分支并完成压缩，密钥没有进入日志、fixture 或提交。
 
 ## 8. 剩余工作
 
-1. 在隔离、有 DeepSeek credential 的环境执行 real-provider smoke，将 `CMP-G10b` 的证据从 `Implemented` 升为 `Environment Verified`。
+当前准入范围没有剩余验证项。

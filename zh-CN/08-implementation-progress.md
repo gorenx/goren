@@ -261,7 +261,7 @@ interaction owner registers stable rpcId + decoder
 | S6-Q09 | Session Query | `session_search` / `session_event_search` Agent Tool | Deferred | Query Service 已提供稳定消费边界；Tool 的 workspace visibility、schema 与 execution policy 尚未纳入 |
 | S6-D18 | 能力 | Session Fork | Excluded | 用户明确不实现；不注册 method、Factory、Service 或占位 |
 | S6-D19 | 能力 | 其他经 capability matrix 纳入的服务端能力 | Deferred | 当前主会话不依赖 |
-| S6-D20 | 能力 | Context Compaction 总体 | Completed | Go Verified：Definition、Token Meter、Tool Result Pruner、Basic Provider、Commands Registry、`/compact` Remote/Consumer 与默认装配已闭环，pressure/overflow、人工 success/failure/cancel、事件顺序和 SQLite cold resume 已验证；real-provider smoke 未取得当前环境证据。设计见[24](./24-context-compaction.md)，专用矩阵见[25](./25-context-compaction-implementation-progress.md) |
+| S6-D20 | 能力 | Context Compaction 总体 | Completed | Environment Verified：Definition、Token Meter、Tool Result Pruner、Basic Provider、Commands Registry、`/compact` Remote/Consumer 与默认装配已闭环；pressure/overflow、人工 success/failure/cancel、事件顺序、SQLite cold resume 和真实 DeepSeek region compaction 均已验证。设计见[24](./24-context-compaction.md)，专用矩阵见[25](./25-context-compaction-implementation-progress.md) |
 | S6-G01 | Gate | 确认真实 Consumer 后才进入实现 | Deferred | 扩大当前目标时重新启用 |
 | S6-G02 | Gate | 保留源 Definition、Provider 和 Consumer owner | Deferred | 扩大当前目标时重新启用 |
 | S6-G03 | Gate | effect-time enforcement 归 permission/guard/sandbox owner | Deferred | 扩大当前目标时重新启用 |
