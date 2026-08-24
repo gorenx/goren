@@ -39,7 +39,9 @@ flowchart LR
 
 Session 的 durable Event 类型和 Plugin Runtime 的进程内 Event 是两套明确契约：Session Event 由本领域的具名事件定义参与 `Append`，先生成 lossless JSON snapshot、规划 surface transition，再原子提交连续 `seq`、`time` 与 Event；Plugin Event 由 `plugin.EventOf[E]`/`plugin.Publish` 分发，不进入 Session log。Event Sourcing 由 Session/Persistence owner 决定，Plugin Runtime 不保存或重放它。
 
-`Session` 负责 seed、surface 与 detached reads；`MemoryStore` 负责 live membership、attachment、created/event/disposed/flush publication。Typed append 生成的 JSON 和 provenance 在进入 log 前已由 Session owner 独占，因此 log 直接保留该快照；只在返回值、Event publication 和读取这些对外边界产生 detached copy，既不暴露 committed history，也不在内部提交路径重复拷贝。`DeferAfterEvent` 只允许在 `OnEvent` callback 中登记，用于 publication 完成后追加 follow-up fact，不是通用任务队列。
+`Session` 负责 seed、surface 与 detached reads；`MemoryStore` 负责 live membership、attachment、created/event/disposed/flush publication。Typed append 生成的 JSON 和 provenance 在进入 log 前已由 Session owner 独占，因此 log 直接保留该快照；只在返回值、Event publication 和读取这些对外边界产生 detached copy，既不暴露 committed history，也不在内部提交路径重复拷贝。`ReadCut` 从同一 committed revision 返回 Event log 与 Surface，供按位置校验的 Consumer 使用。`DeferAfterEvent` 只允许在 `OnEvent` callback 中登记，用于 publication 完成后追加 follow-up fact，不是通用任务队列。
+
+独立 producer 通过 `AppendSerialized`/`AppendSurfaceSerialized` 进入 Session-owned 排序边界。需要连续提交多个 Event 的同步 use case 使用 `SerializeProducer`，并在 callback 内调用 `Append`/`AppendSurface`；其他 serialized producer 不能中途插入。callback 不得执行 LLM、网络、文件 I/O 或其他异步工作，mutex 也不向 Consumer 暴露。
 
 ### Persistence 与 SQLite
 

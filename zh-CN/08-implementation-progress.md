@@ -1,9 +1,9 @@
 # 08 实施进度
 
 状态：In Progress
-更新时间：2026-08-15
+更新时间：2026-08-24
 
-本文是 DeepSeek Harness Go 复刻实施状态、验证证据、阻塞项和下一步的唯一记录。全局范围与 Gate 由[05 复制路线图与验收](./05-porting-roadmap-and-acceptance.md)拥有，当前 Web Agent 交付闭包由[21 Web Agent 主会话闭环与能力边界](./21-web-agent-main-flow.md)拥有；模块职责与设计分别由[06 Connection Host 模块设计与实现](./06-connection-host-module.md)、[07 API Proxy 模块设计与实现](./07-api-proxy-module.md)、[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)、[10 Session Core 与生命周期模块设计](./10-session-core-and-lifecycle.md)、[11 System Prompt Registry 与 Assembly 模块设计](./11-system-prompt-registry-and-assembly.md)、[12 Tools Registry 与执行流水线模块设计](./12-tools-registry-and-execution-pipeline.md)、[13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)、[14 Agent Registry、Inbox 与实时事件模块设计](./14-agent-registry-inbox-and-events.md)、[15 Agent Loop 与请求驱动模块设计](./15-agent-loop-and-request-driver.md)、[16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)、[17 Approval、UserQuestions 与 Interaction Gateway](./17-approval-user-questions-and-interaction-gateway.md)、[18 Session Projection 与 Session Title 模块设计](./18-session-projection-and-title.md)、[19 Session Persistence 与 SQLite 事实存储设计](./19-session-persistence-and-sqlite.md)、[20 Workspace Registry、SQLite 与 API Gateway](./20-workspace-registry-and-api.md)、[22 Credentials 与 API Key 管理](./22-credentials-and-api-key-management.md)和[23 Session Query 与 Search](./23-session-query-and-search.md)拥有；代码近邻说明由各领域模块 `README.zh-CN.md` 持有。本文不重新定义协议或架构。
+本文是 DeepSeek Harness Go 复刻全仓阶段汇总、验证证据、阻塞项和下一步的总体记录。全局范围与 Gate 由[05 复制路线图与验收](./05-porting-roadmap-and-acceptance.md)拥有，当前 Web Agent 交付闭包由[21 Web Agent 主会话闭环与能力边界](./21-web-agent-main-flow.md)拥有；模块职责与设计分别由[06 Connection Host 模块设计与实现](./06-connection-host-module.md)、[07 API Proxy 模块设计与实现](./07-api-proxy-module.md)、[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)、[10 Session Core 与生命周期模块设计](./10-session-core-and-lifecycle.md)、[11 System Prompt Registry 与 Assembly 模块设计](./11-system-prompt-registry-and-assembly.md)、[12 Tools Registry 与执行流水线模块设计](./12-tools-registry-and-execution-pipeline.md)、[13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)、[14 Agent Registry、Inbox 与实时事件模块设计](./14-agent-registry-inbox-and-events.md)、[15 Agent Loop 与请求驱动模块设计](./15-agent-loop-and-request-driver.md)、[16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)、[17 Approval、UserQuestions 与 Interaction Gateway](./17-approval-user-questions-and-interaction-gateway.md)、[18 Session Projection 与 Session Title 模块设计](./18-session-projection-and-title.md)、[19 Session Persistence 与 SQLite 事实存储设计](./19-session-persistence-and-sqlite.md)、[20 Workspace Registry、SQLite 与 API Gateway](./20-workspace-registry-and-api.md)、[22 Credentials 与 API Key 管理](./22-credentials-and-api-key-management.md)、[23 Session Query 与 Search](./23-session-query-and-search.md)和[24 Context Compaction](./24-context-compaction.md)拥有；Compaction 的子项进度和 Gate 单独由[25 Context Compaction 实现进度](./25-context-compaction-implementation-progress.md)拥有，本文只保留其总体状态。代码近邻说明由各领域模块 `README.zh-CN.md` 持有。本文不重新定义协议或架构。
 
 ## 1. 进度记录规则
 
@@ -25,7 +25,7 @@
 | 阶段 3：Session/Agent slice | Completed | 16 Completed | Contract Verified | 全部交付与 Gate 已闭合；cold persistence/resume 仍由阶段 5 拥有 |
 | 阶段 4：LLM Contract | Completed | 13 Completed | Environment Verified | Runtime、DeepSeek adapter、response recordings、Agent attempt loop、默认 retry Consumer 与真实 Provider smoke 均已完成 |
 | 阶段 5：Session 持久化 | Completed | 17 Completed | Contract Verified | SQLite facts、cold recovery/API/Agent resume、turn-end checkpoint、prepared LRU 与 suffix seek 已闭环 |
-| 阶段 6：客户端能力扩展 | Deferred | 29 Completed / 19 Deferred / 1 Excluded | Contract Verified | Session Query/Search 已完成；Fork 明确排除，export、Query Tool 与其余页面/管理能力保持冻结 |
+| 阶段 6：客户端能力扩展 | In Progress | 31 Completed / 19 Deferred / 1 Excluded | Contract Verified | 已准入的服务端能力已闭环；Fork 明确排除，export、Query Tool 与其余页面/管理能力保持冻结 |
 | 阶段 7：Deferred 能力 | Deferred | 7 Deferred | None | 不创建 package、handler 或依赖占位 |
 | 阶段 8：Parity Hardening | In Progress | 1 Completed / 4 In Progress / 10 Planned | Environment Verified | 默认 UI/Provider 主流程已有环境证据，完整发布验收仍未完成 |
 
@@ -261,6 +261,7 @@ interaction owner registers stable rpcId + decoder
 | S6-Q09 | Session Query | `session_search` / `session_event_search` Agent Tool | Deferred | Query Service 已提供稳定消费边界；Tool 的 workspace visibility、schema 与 execution policy 尚未纳入 |
 | S6-D18 | 能力 | Session Fork | Excluded | 用户明确不实现；不注册 method、Factory、Service 或占位 |
 | S6-D19 | 能力 | 其他经 capability matrix 纳入的服务端能力 | Deferred | 当前主会话不依赖 |
+| S6-D20 | 能力 | Context Compaction 总体 | Completed | Contract Verified：Definition、Token Meter、Tool Result Pruner、Basic Provider、人工 `CompactNow` 和默认自动装配已闭环，pressure/overflow/cancellation、TypeScript vectors 与 SQLite cold resume 已验证；`/compact` Consumer 仍属 Commands Deferred，real-provider smoke 未取得当前环境证据。设计见[24](./24-context-compaction.md)，专用矩阵见[25](./25-context-compaction-implementation-progress.md) |
 | S6-G01 | Gate | 确认真实 Consumer 后才进入实现 | Deferred | 扩大当前目标时重新启用 |
 | S6-G02 | Gate | 保留源 Definition、Provider 和 Consumer owner | Deferred | 扩大当前目标时重新启用 |
 | S6-G03 | Gate | effect-time enforcement 归 permission/guard/sandbox owner | Deferred | 扩大当前目标时重新启用 |

@@ -76,7 +76,7 @@ Goren 保留源系统可观察的行为和职责边界，同时用 typed Go conf
 | MCP 与 ACP | MCP Client Bridge 与 ACP Agent Adapter | **暂缓** |
 | Job、Workflow 与 Subagent | Local Job、Worker Workflow、进程内/外 Subagent 与控制工具 | **暂缓** |
 | Goal、Plan、TODO 与 Skill | Goal Driver、Plan Mode、TODO Tool 与 Filesystem Skill | **暂缓** |
-| Context Compaction | Basic Compaction、Tool Result Pruning、Checkpoint 与 Compact Command | **暂缓** |
+| Context Compaction | Basic Compaction、Tool Result Pruning、Checkpoint 与 Compact Command | **后端与自动路径已完成：** Token Meter、Pruner、Basic Provider、默认装配、overflow retry/cancellation 和 SQLite cold resume 已验证；`/compact` Command Consumer 仍暂缓，真实 Provider smoke 未在当前环境执行 |
 | Hook 与 Extension | Codex/Claude Hook，以及 Cordis Host/Client/Tool/UI Extension | **暂缓** |
 | Headless 与 SDK | Headless Bundle，以及 TypeScript、Python SDK Surface | **暂缓** |
 | Code Runtime 与 E2B | Worker-thread Code Execution，以及 E2B 文件系统/子进程 Adapter | **暂缓；**代码执行不是产品中心 |

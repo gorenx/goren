@@ -30,6 +30,8 @@
 - [21 Web Agent 主会话闭环与能力边界](./21-web-agent-main-flow.md)：极简内嵌 Web UI、Question 回答与固定 TypeScript Client 到 Go Agent Loop 的纵向能力矩阵、排除面、依赖方向与分层验收。
 - [22 Credentials 与 API Key 管理](./22-credentials-and-api-key-management.md)：Credentials Provider/Manager/LiveStore 边界、local JSON LiveStore、Host write-only API、DeepSeek 请求时解析与 Web API Key 设置。
 - [23 Session Query 与 Search](./23-session-query-and-search.md)：live-preferred corpus、exact read/filter/trace、语义文档、可重建 SQLite FTS5 index、cursor 与 `session.search`。
+- [24 Context Compaction](./24-context-compaction.md)：Compaction Service Definition / Provider / Consumer、Token Meter、Surface replacement 事务、自动压力与 overflow recovery、Tool Result Pruning 及上下游交互。
+- [25 Context Compaction 实现进度](./25-context-compaction-implementation-progress.md)：Compaction 专用依赖就绪度、交付矩阵、验收 Gate、实施切片和阻塞项；`08` 只保留总体状态。
 
 ## 模块内运行说明
 
@@ -46,6 +48,10 @@
 - [`llm/factory/README.zh-CN.md`](../llm/factory/README.zh-CN.md)：LLM 领域 typed config、严格构造与 Assembly 注册边界。
 - [`llm/retry/README.zh-CN.md`](../llm/retry/README.zh-CN.md)：默认 RetryPolicy Consumer 的职责、normal/always 决策、durable retry events、历史投影和取消/卸载流程。
 - [`llm/deepseek/README.zh-CN.md`](../llm/deepseek/README.zh-CN.md)：DeepSeek direct Provider adapter 的 typed config、lazy request、HTTP/SSE、流转换、错误/取消和 response recordings。
+- [`llm/tokenmeter/README.zh-CN.md`](../llm/tokenmeter/README.zh-CN.md)：单例 replay Token Meter 的 Service 边界、固定 estimator、usage anchor、三个 Projection 与 Consumer 交互。
+- [`compaction/README.zh-CN.md`](../compaction/README.zh-CN.md)：Compaction Service Definition、事件、checkpoint provenance、结果和人工失败分类。
+- [`compaction/basic/README.zh-CN.md`](../compaction/basic/README.zh-CN.md)：Basic Provider 的 Plugin/业务分离、自动策略、区间事务、overflow retry 和人工 maintenance。
+- [`compaction/toolresultpruner/README.zh-CN.md`](../compaction/toolresultpruner/README.zh-CN.md)：可选无模型 Pruner、Unicode budget、Token Meter 依赖和 Surface replacement 边界。
 - [`web/README.zh-CN.md`](../web/README.zh-CN.md)：内嵌主会话 UI、浏览器状态对象、Host RPC/WebSocket/respond 交互与边界。
 - [`credentials/README.zh-CN.md`](../credentials/README.zh-CN.md)：Credentials 能力、Manager precedence、storage-only LiveStore 与 local owner-only 文件实现。
 
@@ -53,8 +59,8 @@
 
 ## 权威关系
 
-- 本目录 `01`–`05` 拥有全局设计，`06`、`07`、`09`–`23` 拥有已进入实现的稳定 Harness 模块设计；`Go_Cordis_风格插件事件领域运行时设计方案.md` 单独拥有可复用 Plugin Runtime 的重构目标与插件作者契约，`08` 单独拥有日期性实施进度与证据。
-- 子模块 `README.zh-CN.md` 解释贴近代码的职责、工作原理和交互流程；跨模块契约仍由本目录对应编号文档拥有，实施证据仍只由 `08` 拥有。
+- 本目录 `01`–`05` 拥有全局设计，`06`、`07`、`09`–`24` 拥有已进入实现的稳定 Harness 模块设计；`Go_Cordis_风格插件事件领域运行时设计方案.md` 单独拥有可复用 Plugin Runtime 的重构目标与插件作者契约。`08` 拥有全仓总体实施状态与公共验证证据，`25` 单独拥有 Compaction 的子项进度和 Gate，`08` 只引用其总体状态。
+- 子模块 `README.zh-CN.md` 解释贴近代码的职责、工作原理和交互流程；跨模块契约仍由本目录对应编号文档拥有。全仓公共实施证据由 `08` 拥有，Compaction 专项子项证据由 `25` 拥有并向 `08` 汇总。
 - 根目录 `README.md` 与 `README.zh-CN.md` 只说明项目背景。
 - TypeScript 的行为证据来自固定 commit；源仓库后续变化不会自动成为 Go 需求。
 - Go 代码证明当前实现，跨语言 fixtures 和测试证明兼容性；设计状态不能代替实现或验收证据。
@@ -68,9 +74,9 @@
 - 详设使用简体中文，两位数字文件名和一级标题表达阅读顺序。
 - 公共名、事件名、JSON 字段、配置键和既有领域术语保持 TypeScript 的 canonical form。
 - 一个事实只在拥有该职责的文档中定义，其他文档只链接。
-- 实施完成度、验证命令、阻塞项和下一步只更新 `08`，不得散落到路线图或模块设计文档。
+- 全仓阶段汇总、公共验证命令、阻塞项和下一步只更新 `08`；Compaction 的子项完成度、专项 Gate 和切片顺序只更新 `25`，`08` 仅保留一条总体状态。模块设计文档不重复日期性进度。
 - 只为已经出现真实职责与代码边界的模块增加实现文档；不为规划目录或空 package 建文档占位。
-- 模块文档至少记录职责/非职责、源 owner、依赖方向、上下游流程、生命周期、失败/取消语义、验证所有权和后续能力进入规则；代码/测试证据与实施缺口只写入 `08`。
+- 模块文档至少记录职责/非职责、源 owner、依赖方向、上下游流程、生命周期、失败/取消语义、验证所有权和后续能力进入规则；代码/测试证据与实施缺口写入其进度 owner，默认是 `08`，Compaction 专项为 `25`。
 - 已实现的独立子模块在代码旁维护 `README.zh-CN.md`，流程与交互图使用 Mermaid；暂不增加子模块英文 README，也不为 helper、generated 或 test-only 目录批量创建模板文档。
 - 未确认的行为保留为显式未决事项，不写成已经实现或已经验证。
 - 新增、删除、重命名、重排文档或改变文档职责时同步更新本索引。

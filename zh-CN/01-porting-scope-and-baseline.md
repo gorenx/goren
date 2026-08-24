@@ -1,7 +1,7 @@
 # 01 复制范围与兼容基线
 
 状态：Draft
-基线核对日期：2026-08-14
+基线核对日期：2026-08-24
 
 本文拥有 Goren 复制 DeepSeek Harness 的目标、需求、纳入范围、排除范围、兼容基线和全局不变量。首要目标是 TypeScript 客户端与 Go Agent 服务端通信协议兼容。运行时结构见[02 Go 运行时架构与插件模型](./02-runtime-architecture-and-plugin-model.md)，具体协议见[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)，实施阶段见[05 复制路线图与验收](./05-porting-roadmap-and-acceptance.md)，当前交付闭包见[21 Web Agent 主会话闭环与能力边界](./21-web-agent-main-flow.md)。
 
@@ -17,6 +17,30 @@ Goren 的当前主线不是设计一个新的 Agent 产品，也不是按 TypeSc
 - 本地只读参考：`../deepseek-harness`
 
 源仓库后续提交不会自动成为需求。升级基线必须先生成差异清单，区分协议变化、行为修复、TypeScript 专属机制和排除范围，再修改本文的基线。
+
+### 1.1 Context Compaction 专项基线例外
+
+按用户指定，Context Compaction 专项使用本地参考仓库当前 `origin/master` 的最新提交：
+
+- commit：[`b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`](https://github.com/deepseek-ai/deepseek-harness/tree/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e)；
+- tag：`dsh-v0.1.1-rc.2`；
+- 核对时间：2026-08-24；
+- 源 owner：`packages/compaction/compaction`、`compaction-basic`、`compaction-tool-result-pruner`、`command-compact` 与 `packages/llm/token-meter`；
+- Goren owner 和具体契约见[24 Context Compaction](./24-context-compaction.md)。
+
+这是 capability-scoped exception，不改变 Connection、API Proxy、Agent、Session、Tools、LLM Provider 等其余能力的 `47f9438` 全仓基线。`command-compact` 随专项源一起分析，但 Commands 尚未进入当前实现闭包，因此仍是 Deferred，不因基线准入而创建占位实现。
+
+`47f9438..b150a55` 在上述源 owner 中的差异已分类：
+
+| 分类 | 差异与处理 |
+| --- | --- |
+| Compaction 业务与持久化契约 | `compaction`、`compaction-basic` 和 `compaction-tool-result-pruner` 的运行时代码无变化；Go 以 `b150a55` 的现存 symbol、测试和 README 为准 |
+| Token Meter 行为 | 核心 `measure`/estimator 未改变；`tokenUsage`、`contextPressure`、`contextBreakdown` 改为新版 Session Projection 的 state/wire 分离 contract，并继续通过可选 `sessionProjections` 注入注册 |
+| Command Consumer | `/compact` 测试适配 Commands 新增 attachments 参数；Commands 与 Composer image attachment 不进入当前 Compaction 实现切片 |
+| TypeScript 专属机制 | Cordis `ctx.inject`、declaration merging、Zod state schema 和 `satisfies` 不复制；Go 使用 optional Service、owner-defined projection Unit/视图类型和严格 codec 表达相同可观察职责 |
+| 非行为变化 | package version、中文 README 链接和发布元数据变化不单独移植 |
+
+后续若要把其他能力升级到 `b150a55`，仍必须单独生成差异清单并修改本文；不得从本例外推导全仓升级。
 
 ## 2. 术语
 

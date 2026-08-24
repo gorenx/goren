@@ -1,6 +1,6 @@
 # Token Meter
 
-状态：核心计量、replay fold 和三个可选 Projection 已实现并通过包级测试；尚未进入默认装配。`compaction/basic` 与 `compaction/toolresultpruner` 已声明并绑定 `tokenmeter.Meter`，但两者的业务算法仍在实现中，当前还没有生产调用。
+状态：核心计量、replay fold 和三个可选 Projection 已实现；已进入默认 composition。`compaction/basic` 在 pressure/overflow/manual 策略中主动调用 `Meter.Measure`，`compaction/toolresultpruner` 使用 `EstimateMessage` 为被替换的 Tool result 记录 shadow price。
 
 本包拥有 Host 级单例 `tokenmeter.Meter` Service。它把 append-only Session log、当前 Surface、最近一次模型 usage 和当前 request header 归一为同一口径的 token 压力快照，供 Compaction 等压力敏感的 Consumer 使用。
 
@@ -50,8 +50,8 @@ flowchart LR
     TP -->|publish Meter| TM
     TP -->|adapt SessionEventAppended<br/>SessionDisposed| TM
 
-    BASIC[compaction/basic] -->|Measure<br/>已绑定，业务调用待实现| TM
-    PRUNER[toolresultpruner] -->|Meter dependency<br/>已绑定，业务调用待实现| TM
+    BASIC[compaction/basic] -->|Measure pressure / overflow / manual| TM
+    PRUNER[toolresultpruner] -->|Estimate original result| TM
     OTHER[其他压力 Consumer] -->|Measure / EstimateMessage| TM
 
     TP -->|optional register 3 Units| REG[session/projection.Registry]
@@ -70,12 +70,12 @@ flowchart LR
 | --- | --- | --- | --- |
 | Plugin Runtime | Runtime 装载 `tokenmeter.Plugin`，Plugin 发布内部 `TokenMeter` | `plugin.Manifest`、`Apply`、`Dispose` | 已实现 |
 | Session | Session commit 后由 Runtime 把 `SessionEventAppended` 交给 Plugin；Plugin 转发给 `TokenMeter` | append-only Event、Surface operation、Session dispose | 已实现 |
-| `compaction/basic` | Basic Provider 从 Runtime 获取 `Meter`，压缩策略应主动调用 `Measure` | `Meter.Measure` | 依赖声明和绑定已实现；业务调用待实现 |
-| `compaction/toolresultpruner` | Pruner 从 Runtime 获取 `Meter` | `Meter` | 依赖声明和绑定已实现；裁剪业务待实现 |
+| `compaction/basic` | Basic Provider 从 Runtime 获取 `Meter`，压缩策略主动调用 `Measure` | `Meter.Measure` | 已实现并默认启用 |
+| `compaction/toolresultpruner` | Pruner 从 Runtime 获取 `Meter`，为原 Tool result 计算 shadow price | `Meter.EstimateMessage` | 已实现并默认启用 |
 | 其他同步 Consumer | Consumer 主动调用 `Measure` 或 `EstimateMessage` | `Meter` | 扩展契约已实现 |
 | Session Projection Registry | Token Meter Plugin 在 `Apply` 时注册三个 Unit；Registry 主动把 committed Event 折叠进 Unit | `session/projection.Unit` | 已实现，可选依赖 |
 | Query/UI | Query/UI 通过 Registry snapshot/checkpoint 读取 Projection | `tokenUsage`、`contextPressure`、`contextBreakdown` JSON value | Projection 已实现；仓库当前没有生产 UI Consumer |
-| Compaction Event | Basic/Pruner 在 replacement 前写入 summary/prune shadow price；Projection Unit 消费它 | `compaction/summary`、`compaction/prune` | Unit 消费已实现；生产写入流程待实现 |
+| Compaction Event | Basic/Pruner 在 replacement 前写入 summary/prune shadow price；Projection Unit 消费它 | `compaction/summary`、`compaction/prune` | 生产与消费两端均已实现 |
 
 `TokenMeter` 核心与 Projection Registry 是两条并行消费链：前者保留 positional Surface nodes，能直接计算 replace 删除的旧节点价格；后者为了让 checkpoint 保持有界，不保存所有节点，因此通过紧邻 replacement 的 `shadowedTokenCount` 扣除旧区间。
 
@@ -258,4 +258,4 @@ stateDiagram-v2
 - Plugin 注册、回滚和释放：`plugin.go`、`plugin_test.go`；
 - strict 空配置 Factory：`factory/factory.go`、`factory/factory_test.go`。
 
-当前已验证：`go test ./llm/tokenmeter ./session ./compaction ./tests/architecture`、`go test -race ./llm/tokenmeter ./session`、`go vet ./llm/tokenmeter ./session ./compaction`、`go build ./llm/tokenmeter/... ./compaction`。这些检查证明 Token Meter 包级行为和相关 contract 通过，不代表尚未实现的 Basic Compaction、Tool Result Pruner 或默认装配已经完成。
+当前证据包括 Token Meter 包级/race 测试、Compaction 与 Pruner 集成测试、默认 AgentLoop pressure/overflow/cancellation 验收以及 SQLite cold resume。具体命令与证据等级只由[25 Context Compaction 实现进度](../../zh-CN/25-context-compaction-implementation-progress.md)维护。

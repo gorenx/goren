@@ -128,7 +128,7 @@ Event 进入内存日志并完成 surface transition 后就是 Session 语义上
 
 `session/event` listener 在原 append 的同步 publication 尚未结束时再次 append 会明确失败，避免事件顺序取决于 callback 嵌套。确实需要追加 follow-up fact 的 listener 可调用 `DeferAfterEvent`：它只在当前 event callback context 内接受任务，等全部 listener 返回且 append guard 释放后再按登记顺序执行；每项 panic 独立包含并交给 observer reporter。它用于复制 TypeScript microtask 的 publication 时序，不是 sleep、重试、goroutine pool 或通用 scheduler。
 
-不同 Session 不共享 append lock。当前同一 Session 的并发 append 在 publication window 内也拒绝，由 Agent loop 维持单 writer；未来若出现真实多 writer 需求，应在 Session owner 增加明确 queue，而不是让 storage adapter 排序。
+不同 Session 不共享 producer lock。同一 Session 的独立 producer 使用 `AppendSerialized`/`AppendSurfaceSerialized`；需要 `fact -> replacement` 等多 Event 连续提交时，使用 `SerializeProducer` 包裹一个短同步 callback，callback 内直接调用 `Append`/`AppendSurface`。该边界只保证 serialized producer 不交错，不是回滚事务：较早 Event 已提交后，较晚 append 失败不会删除前者。不得在 callback 内执行 LLM、网络、文件 I/O 或其他长时工作；排序权属于 Session，不下沉到 storage adapter。
 
 ## 6. LiveStore 生命周期
 

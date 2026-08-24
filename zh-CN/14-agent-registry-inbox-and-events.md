@@ -177,7 +177,7 @@ System Prompt waterfall 在进入 downstream 前读取 `Current()`，只有 down
 - created listener error vetoes普通 `Register` publication 并触发 paired rollback；disposed observer error 由 Registry reporter 包含，不能复活已删除 entry。
 - Inbox durable payload 无效会使 replay 或 mutation 失败；业务层不能跳过损坏 Event 后继续运行。
 - `CancelCause` 区分 user、parent、disposed 与 hook intent，`CancelOptions.KeepInbox` 决定 pending work 是否保留；真正的 active operation 和状态转换由 Agent Loop 拥有。
-- `WhenIdle` 和 maintenance 不由 Registry 猜测；具体 Agent 必须确保 maintenance 只在 true idle 执行。
+- `WhenIdle` 和 maintenance 不由 Registry 猜测；具体 Agent 必须确保 `RunMaintenance(ctx, operation)` 只在 live/accepting/true-idle 状态执行，并在 operation 返回后恢复 activity。这是 Agent 对一个同步 use case 的直接 admission，不定义宽泛 MaintenanceTask/MaintenanceRunner 抽象。
 
 ## 10. 上下游与后续能力进入
 

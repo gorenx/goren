@@ -62,6 +62,12 @@ Registry 的 `Enter` 只保留 exact Agent instance 和 initiator ownership；`A
 - `PreStepNotice -> PreStepDecision`、`RequestNotice -> RequestResolution` 和 `RequestErrorNotice -> RequestErrorAction` 是三个独立 Waterfall 契约。Middleware 属于业务 Plugin 的 Manifest，Agent Loop 只调用 typed terminal。
 - Event 不保存历史。需要恢复的模型可见输入和 Inbox 状态必须来自 append-only Session log，不能依赖进程内监听结果。
 
+## Maintenance 边界
+
+`RunMaintenance(ctx, operation)` 是 Agent 自己的窄 use-case admission，不是通用 Task/Runner 框架。调用者直接传入一个同步 operation；具体 Agent 只在 live、accepting、true idle 且没有 wake request 时切换到 maintenance activity，并传入由该 activity 拥有的 Context。
+
+maintenance 期间 Turn driver 不会同时执行；新 Inbox work 可以设置 wake request，在 operation 返回、activity 恢复 idle 后由 AgentLoop 启动。caller cancellation、Agent dispose 和 operation error 使用原有 Context/error 边界收敛，Registry 不介入也不重试。当前 Compaction `CompactNow` 是该 seam 的直接 Consumer。
+
 ## 失败与取消
 
 - Factory 未挂载、Agent id 冲突、Session/Agent announcement 被拒绝或子树激活失败都会让创建失败；已进入的 membership 按逆序回滚。
