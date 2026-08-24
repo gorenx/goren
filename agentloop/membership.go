@@ -28,6 +28,7 @@ type agentMembership struct {
 	sessionHandle session.SessionHandle
 	routed        bool
 	registered    bool
+	published     bool
 	closing       bool
 	closed        chan struct{}
 	closeErr      error
@@ -126,7 +127,13 @@ func (membership *agentMembership) Apply(
 			observerErr,
 		))
 	}
-	return requestContext.Err()
+	if err := requestContext.Err(); err != nil {
+		return err
+	}
+	membership.mutex.Lock()
+	membership.published = true
+	membership.mutex.Unlock()
+	return nil
 }
 
 func (membership *agentMembership) Dispose(
@@ -135,10 +142,11 @@ func (membership *agentMembership) Dispose(
 	if closeContext == nil {
 		closeContext = context.Background()
 	}
-	if membership.lifecycle != nil {
+	membership.mutex.Lock()
+	published := membership.published
+	if published && membership.lifecycle != nil {
 		membership.lifecycle.beginClosing()
 	}
-	membership.mutex.Lock()
 	if membership.closing {
 		closed := membership.closed
 		membership.mutex.Unlock()
