@@ -57,6 +57,7 @@ func TestDefaultCompositionCompactsPressureThroughAgentLoop(t *testing.T) {
 		12_500,
 		basic.Config{},
 		t.TempDir(),
+		testDiagnostics(t),
 	)
 	defer shutdownCompactionFixtureComposition(t, runtimeEngine)
 	handle := createCompactionFixtureAgent(t, serviceView, "pressure-agent")
@@ -154,6 +155,7 @@ func TestDefaultCompositionRetriesOverflowAfterSurfaceReplacement(t *testing.T) 
 			},
 		},
 		t.TempDir(),
+		testDiagnostics(t),
 	)
 	defer shutdownCompactionFixtureComposition(t, runtimeEngine)
 	handle := createCompactionFixtureAgent(t, serviceView, "overflow-agent")
@@ -193,12 +195,147 @@ func TestDefaultCompositionRetriesOverflowAfterSurfaceReplacement(t *testing.T) 
 	}
 }
 
+func TestDefaultCompositionNeverRetriesOverflowAfterCancellation(t *testing.T) {
+	var mainRequests atomic.Int32
+	var compactRequests atomic.Int32
+	compactStarted := make(chan struct{})
+	compactCancelled := make(chan struct{})
+	providerServer := httptest.NewServer(http.HandlerFunc(
+		func(responseWriter http.ResponseWriter, httpRequest *http.Request) {
+			defer httpRequest.Body.Close()
+			if httpRequest.Header.Get("x-deepseek-harness-compact") == "1" {
+				compactRequests.Add(1)
+				responseWriter.Header().Set("content-type", "text/event-stream")
+				responseWriter.WriteHeader(http.StatusOK)
+				_, _ = fmt.Fprint(
+					responseWriter,
+					"data: {\"choices\":[{\"delta\":{\"content\":\"partial summary\"}}]}\n\n",
+				)
+				if flusher, supported := responseWriter.(http.Flusher); supported {
+					flusher.Flush()
+				}
+				close(compactStarted)
+				<-httpRequest.Context().Done()
+				close(compactCancelled)
+				return
+			}
+			requestNumber := mainRequests.Add(1)
+			if requestNumber == 2 {
+				responseWriter.Header().Set("content-type", "application/json")
+				responseWriter.WriteHeader(http.StatusBadRequest)
+				_, _ = fmt.Fprint(
+					responseWriter,
+					`{"error":{"message":"request too large for model context"}}`,
+				)
+				return
+			}
+			writeCompactionFixtureSSE(responseWriter, "main response", 5_000)
+		},
+	))
+	defer providerServer.Close()
+
+	diagnosticProblems := make(chan error, 4)
+	diagnosticSink, err := NewDiagnostics(func(problem error) {
+		diagnosticProblems <- problem
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thresholdRatio := float64(1)
+	runtimeEngine, serviceView := startCompactionFixtureComposition(
+		t,
+		providerServer.URL,
+		12_500,
+		basic.Config{
+			PolicyConfig: basic.PolicyConfig{
+				ThresholdRatio: &thresholdRatio,
+			},
+		},
+		t.TempDir(),
+		diagnosticSink,
+	)
+	defer shutdownCompactionFixtureComposition(t, runtimeEngine)
+	handle := createCompactionFixtureAgent(
+		t,
+		serviceView,
+		"cancelled-overflow-agent",
+	)
+	defer disposeCompactionFixtureAgent(t, handle)
+
+	sendCompactionFixturePrompt(
+		t,
+		handle.Subject,
+		strings.Repeat("overflow cancellation history ", 100),
+	)
+	beforeGeneration := handle.Subject.SessionValue().Surface().ReplaceGeneration
+	if err := handle.Subject.Followup(compactionFixtureUserMessage(
+		t,
+		"cancel the overflow recovery",
+	)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-compactStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("overflow compaction stream did not start")
+	}
+	handle.Subject.Cancel(
+		agent.UserCancel{},
+		agent.CancelOptions{
+			KeepInbox: true,
+		},
+	)
+	waitCompactionFixtureAgentIdle(t, handle.Subject)
+	select {
+	case <-compactCancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled summary stream remained open")
+	}
+
+	conversation := handle.Subject.SessionValue()
+	afterGeneration := conversation.Surface().ReplaceGeneration
+	if afterGeneration != beforeGeneration {
+		t.Fatalf(
+			"cancelled overflow replacement generation = %d, want %d",
+			afterGeneration,
+			beforeGeneration,
+		)
+	}
+	if mainRequests.Load() != 2 || compactRequests.Load() != 1 {
+		t.Fatalf(
+			"cancelled overflow request counts = main %d, compact %d",
+			mainRequests.Load(),
+			compactRequests.Load(),
+		)
+	}
+	entries := conversation.Events()
+	state, inspectErr := compaction.InspectLog(entries)
+	if inspectErr != nil || state.Attempt != nil {
+		t.Fatalf("cancelled compaction state = %#v, error = %v", state, inspectErr)
+	}
+	if kind := latestCompactionFixtureTurnEndKind(t, entries); kind != "aborted" {
+		t.Fatalf("cancelled overflow turn end kind = %q", kind)
+	}
+	select {
+	case problem := <-diagnosticProblems:
+		if !strings.Contains(
+			problem.Error(),
+			"context-overflow compaction failed",
+		) {
+			t.Fatalf("cancelled overflow diagnostic = %v", problem)
+		}
+	default:
+		t.Fatal("cancelled overflow failure was not reported")
+	}
+}
+
 func startCompactionFixtureComposition(
 	testingContext *testing.T,
 	baseURL string,
 	contextWindow int,
 	compactionConfig basic.Config,
 	dataDirectory string,
+	diagnosticSink *Diagnostics,
 ) (*plugin.Runtime, *serviceProbe) {
 	testingContext.Helper()
 	identityDirectory := testingContext.TempDir()
@@ -213,7 +350,7 @@ func startCompactionFixtureComposition(
 		UserHomeDir: func() (string, error) {
 			return identityDirectory, nil
 		},
-		Diagnostics: testDiagnostics(testingContext),
+		Diagnostics: diagnosticSink,
 	})
 	if err != nil {
 		testingContext.Fatal(err)
@@ -270,7 +407,7 @@ func startCompactionFixtureComposition(
 		testingContext.Fatal(err)
 	}
 	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{
-		EventFailures: testDiagnostics(testingContext),
+		EventFailures: diagnosticSink,
 	})
 	if _, err = runtimeEngine.Start(context.Background(), assembledServer); err != nil {
 		testingContext.Fatal(err)
@@ -322,6 +459,20 @@ func sendCompactionFixturePrompt(
 	textValue string,
 ) {
 	testingContext.Helper()
+	if err := subject.Followup(compactionFixtureUserMessage(
+		testingContext,
+		textValue,
+	)); err != nil {
+		testingContext.Fatal(err)
+	}
+	waitCompactionFixtureAgentIdle(testingContext, subject)
+}
+
+func compactionFixtureUserMessage(
+	testingContext *testing.T,
+	textValue string,
+) llm.UserMessage {
+	testingContext.Helper()
 	messageValue, err := llm.NewUserMessage(llm.UserMessageInput{
 		Content: []llm.ContentBlock{
 			llm.NewTextBlock(textValue),
@@ -331,9 +482,14 @@ func sendCompactionFixturePrompt(
 	if err != nil {
 		testingContext.Fatal(err)
 	}
-	if err := subject.Followup(messageValue); err != nil {
-		testingContext.Fatal(err)
-	}
+	return messageValue
+}
+
+func waitCompactionFixtureAgentIdle(
+	testingContext *testing.T,
+	subject agent.Agent,
+) {
+	testingContext.Helper()
 	waitContext, cancelWait := context.WithTimeout(
 		context.Background(),
 		10*time.Second,
