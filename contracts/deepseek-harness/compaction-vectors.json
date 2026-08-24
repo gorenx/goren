@@ -1,0 +1,275 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "commit": "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e",
+    "version": "0.1.1-rc.2"
+  },
+  "basicConfig": [
+    {
+      "name": "defaults",
+      "input": {},
+      "target": {
+        "provider": "deepseek-official",
+        "model": "deepseek-v4-pro"
+      },
+      "contextWindow": 10000,
+      "resolved": {
+        "thresholdRatio": 0.8,
+        "retainRatio": 0.16,
+        "summarizationProvider": "",
+        "summarizationModel": "",
+        "maxTokens": 8192,
+        "compactionRetries": 1,
+        "maxOverflowRetries": 1,
+        "modelPolicies": [],
+        "auto": true
+      },
+      "compactSpec": {
+        "target": {
+          "provider": "deepseek-official",
+          "model": "deepseek-v4-pro"
+        },
+        "contextWindow": 10000,
+        "thresholdRatio": 0.8,
+        "thresholdTokens": 8000,
+        "retainTokens": 1600,
+        "summarizationProvider": "",
+        "summarizationModel": "",
+        "maxTokens": 8192,
+        "compactionRetries": 1,
+        "maxOverflowRetries": 1
+      }
+    },
+    {
+      "name": "exact-model-policy",
+      "input": {
+        "thresholdRatio": 0.75,
+        "retainTokens": 128,
+        "summarizationProvider": "summary-default",
+        "summarizationModel": "summary-default-model",
+        "maxTokens": 2048,
+        "compactionRetries": 2,
+        "maxOverflowRetries": 3,
+        "auto": false,
+        "modelPolicies": [
+          {
+            "provider": "routed-provider",
+            "model": "routed-model",
+            "thresholdRatio": 0.5,
+            "retainRatio": 0.1,
+            "summarizationProvider": "summary-routed",
+            "summarizationModel": "summary-routed-model",
+            "maxTokens": 1024,
+            "compactionRetries": 0,
+            "maxOverflowRetries": 0
+          }
+        ]
+      },
+      "target": {
+        "provider": "routed-provider",
+        "model": "routed-model"
+      },
+      "contextWindow": 4096,
+      "resolved": {
+        "thresholdRatio": 0.75,
+        "retainTokens": 128,
+        "summarizationProvider": "summary-default",
+        "summarizationModel": "summary-default-model",
+        "maxTokens": 2048,
+        "compactionRetries": 2,
+        "maxOverflowRetries": 3,
+        "modelPolicies": [
+          {
+            "provider": "routed-provider",
+            "model": "routed-model",
+            "thresholdRatio": 0.5,
+            "retainRatio": 0.1,
+            "summarizationProvider": "summary-routed",
+            "summarizationModel": "summary-routed-model",
+            "maxTokens": 1024,
+            "compactionRetries": 0,
+            "maxOverflowRetries": 0
+          }
+        ],
+        "auto": false
+      },
+      "compactSpec": {
+        "target": {
+          "provider": "routed-provider",
+          "model": "routed-model"
+        },
+        "contextWindow": 4096,
+        "thresholdRatio": 0.5,
+        "thresholdTokens": 2048,
+        "retainTokens": 409,
+        "summarizationProvider": "summary-routed",
+        "summarizationModel": "summary-routed-model",
+        "maxTokens": 1024,
+        "compactionRetries": 0,
+        "maxOverflowRetries": 0
+      }
+    }
+  ],
+  "prunerConfig": [
+    {
+      "name": "defaults",
+      "input": {},
+      "resolved": {
+        "thresholdChars": 8192,
+        "headChars": 4096,
+        "tailChars": 1024
+      }
+    },
+    {
+      "name": "custom-unicode-budget",
+      "input": {
+        "thresholdChars": 100,
+        "headChars": 20,
+        "tailChars": 10
+      },
+      "resolved": {
+        "thresholdChars": 100,
+        "headChars": 20,
+        "tailChars": 10
+      }
+    }
+  ],
+  "pruneMarker": {
+    "value": "\n\n[... tool result middle pruned ...]\n\n",
+    "codePoints": 39
+  },
+  "checkpointSource": {
+    "kind": "plugin",
+    "plugin": "compact",
+    "compactionId": "compact-fixture",
+    "sourceCommandId": "command-fixture"
+  },
+  "events": [
+    {
+      "type": "compaction/start",
+      "seq": 1,
+      "data": {
+        "compactionId": "compact-fixture",
+        "sourceCommandId": "command-fixture",
+        "turn": null
+      }
+    },
+    {
+      "type": "compaction/summary",
+      "seq": 2,
+      "data": {
+        "compactionId": "compact-fixture",
+        "sourceCommandId": "command-fixture",
+        "summary": [
+          {
+            "type": "text",
+            "text": "durable checkpoint"
+          }
+        ],
+        "rawOutput": [
+          {
+            "type": "reasoning",
+            "text": "private summary reasoning"
+          },
+          {
+            "type": "text",
+            "text": "durable checkpoint"
+          }
+        ],
+        "llmStreamCall": true,
+        "shadowedRange": {
+          "start": 0,
+          "end": 0
+        },
+        "shadowedSeqs": [
+          0
+        ],
+        "shadowedTokenCount": 9,
+        "provider": "summary-provider",
+        "model": "summary-model",
+        "maxTokens": 512,
+        "usage": {
+          "inputTokens": 40,
+          "outputTokens": 5,
+          "cacheReadTokens": 3,
+          "cacheWriteTokens": 2,
+          "reasoningTokens": 1
+        }
+      }
+    },
+    {
+      "type": "user/message",
+      "seq": 3,
+      "data": {
+        "content": [
+          {
+            "type": "text",
+            "text": "durable checkpoint"
+          }
+        ],
+        "source": {
+          "kind": "plugin",
+          "plugin": "compact",
+          "compactionId": "compact-fixture",
+          "sourceCommandId": "command-fixture"
+        },
+        "role": "user",
+        "id": "checkpoint-message-fixture"
+      },
+      "sourceEventSeqs": [
+        1,
+        2,
+        0
+      ],
+      "surfaceOp": {
+        "op": "replace",
+        "start": 0,
+        "end": 0
+      }
+    },
+    {
+      "type": "compaction/end",
+      "seq": 4,
+      "data": {
+        "compactionId": "compact-fixture",
+        "sourceCommandId": "command-fixture",
+        "turn": null
+      }
+    },
+    {
+      "type": "compaction/prune",
+      "seq": 5,
+      "data": {
+        "shadowedRange": {
+          "start": 3,
+          "end": 3
+        },
+        "shadowedSeqs": [
+          3
+        ],
+        "shadowedTokenCount": 7
+      }
+    }
+  ],
+  "result": {
+    "compactionId": "compact-fixture",
+    "sourceCommandId": "command-fixture",
+    "startSeq": 1,
+    "summarySeq": 2,
+    "endSeq": 4,
+    "summary": [
+      {
+        "type": "text",
+        "text": "durable checkpoint"
+      }
+    ],
+    "shadowedRange": {
+      "start": 0,
+      "end": 0
+    },
+    "shadowedSeqs": [
+      0
+    ],
+    "shadowedTokenCount": 9
+  }
+}
