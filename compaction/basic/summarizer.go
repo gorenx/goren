@@ -72,13 +72,13 @@ type summaryResult struct {
 // llmSummarizer owns the auxiliary LLM protocol, route selection, stream
 // assembly, and safe text projection. It does not mutate the Session.
 type llmSummarizer struct {
-	policy     ResolvedConfig
+	catalog    *policyCatalog
 	llmRuntime llm.LlmRuntime
 }
 
-func newLLMSummarizer(settings ResolvedConfig) llmSummarizer {
+func newLLMSummarizer(catalog *policyCatalog) llmSummarizer {
 	return llmSummarizer{
-		policy: cloneResolvedConfig(settings),
+		catalog: catalog,
 	}
 }
 
@@ -91,10 +91,10 @@ func (summarizer *llmSummarizer) release() {
 }
 
 func buildSummarizationInput(
-	conversation session.Context,
+	snapshot session.Snapshot,
 	shadowedSeqs []int64,
 ) (summarizationInput, error) {
-	entries := conversation.Events()
+	entries := snapshot.Events
 	headerValue, err := session.LatestRequestHeader(entries)
 	if err != nil {
 		return summarizationInput{}, err
@@ -144,16 +144,9 @@ func (summarizer *llmSummarizer) summarize(
 	if err != nil {
 		return summaryResult{}, err
 	}
-	targetPolicy := ResolvedTargetPolicy{
-		SummarizationProvider: summarizer.policy.SummarizationProvider,
-		SummarizationModel:    summarizer.policy.SummarizationModel,
-		MaxTokens:             summarizer.policy.MaxTokens,
-	}
+	targetPolicy := summarizer.catalog.defaults()
 	if targetFound {
-		targetPolicy = ResolveTargetPolicy(
-			summarizer.policy,
-			conversationTarget,
-		)
+		targetPolicy = summarizer.catalog.resolve(conversationTarget)
 	}
 	selectedTarget := RouteTarget{}
 	if targetPolicy.SummarizationProvider != "" {

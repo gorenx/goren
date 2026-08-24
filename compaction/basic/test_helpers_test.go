@@ -284,7 +284,8 @@ func newBoundCompaction(
 	if err != nil {
 		testingContext.Fatal(err)
 	}
-	implementation := newCompaction(resolved)
+	policies := newPolicyCatalog(resolved)
+	implementation := newCompaction(policies)
 	implementation.bind(runtimeValue, storeValue, meterValue, prunerValue)
 	testingContext.Cleanup(implementation.release)
 	return implementation

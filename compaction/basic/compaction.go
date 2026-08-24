@@ -16,19 +16,18 @@ import (
 // Runtime Scope. Automatic hook state, region transactions, and auxiliary LLM
 // protocol handling belong to dedicated collaborators in the same package.
 type Compaction struct {
-	policy     ResolvedConfig
+	catalog    *policyCatalog
 	llmRuntime llm.LlmRuntime
 	sessions   session.LiveStore
 	meter      tokenmeter.Meter
 	pruner     toolresultpruner.Pruner
-	regions    regionCompactor
+	compactor  regionCompactor
 }
 
-func newCompaction(settings ResolvedConfig) *Compaction {
-	policySnapshot := cloneResolvedConfig(settings)
+func newCompaction(catalog *policyCatalog) *Compaction {
 	return &Compaction{
-		policy:  policySnapshot,
-		regions: newRegionCompactor(policySnapshot),
+		catalog:   catalog,
+		compactor: newRegionCompactor(catalog),
 	}
 }
 
@@ -42,19 +41,15 @@ func (implementation *Compaction) bind(
 	implementation.sessions = sessions
 	implementation.meter = meter
 	implementation.pruner = pruner
-	implementation.regions.bind(llmRuntime, meter)
+	implementation.compactor.bind(llmRuntime, meter)
 }
 
 func (implementation *Compaction) release() {
-	implementation.regions.release()
+	implementation.compactor.release()
 	implementation.pruner = nil
 	implementation.meter = nil
 	implementation.sessions = nil
 	implementation.llmRuntime = nil
-}
-
-func (implementation *Compaction) automatic() bool {
-	return implementation.policy.Auto
 }
 
 // CompactIfNeeded applies routed pressure or canonical context-overflow policy.
@@ -114,18 +109,23 @@ func (implementation *Compaction) compactOverflow(
 	if err != nil {
 		return nil, err
 	}
-	selectedRange, err := selectCompactableRange(
+	reading, err := readSurface(
+		requestContext,
 		ownerContext.Session,
-		measurement,
-		0,
+		implementation.meter,
+		&measurement,
 	)
+	if err != nil {
+		return nil, err
+	}
+	selectedRange, err := selectRange(reading, 0)
 	if err != nil || selectedRange == nil {
 		return nil, err
 	}
 	outcome, err := implementation.CompactRegion(
 		requestContext,
-		selectedRange.start,
-		selectedRange.end,
+		selectedRange.Start,
+		selectedRange.End,
 		ownerContext,
 	)
 	if err != nil {
@@ -163,7 +163,7 @@ func (implementation *Compaction) compactPressure(
 				"; configure contextWindow on that adapter model",
 		}
 	}
-	targetPolicy := ResolveTargetPolicy(implementation.policy, selectedTarget)
+	targetPolicy := implementation.catalog.resolve(selectedTarget)
 	compactSpec, err := ResolveCompactSpec(
 		targetPolicy,
 		modelInfo.Context.ContextWindow,
@@ -187,10 +187,18 @@ func (implementation *Compaction) compactPressure(
 	}
 
 	var latest *compaction.Result
-	for attempt := 0; attempt <= compactSpec.CompactionRetries; attempt++ {
-		selectedRange, rangeErr := selectCompactableRange(
+	for retryIndex := 0; retryIndex <= compactSpec.CompactionRetries; retryIndex++ {
+		reading, readingErr := readSurface(
+			requestContext,
 			ownerContext.Session,
-			measurement,
+			implementation.meter,
+			&measurement,
+		)
+		if readingErr != nil {
+			return nil, readingErr
+		}
+		selectedRange, rangeErr := selectRange(
+			reading,
 			compactSpec.RetainTokens,
 		)
 		if rangeErr != nil {
@@ -204,8 +212,8 @@ func (implementation *Compaction) compactPressure(
 		}
 		outcome, compactErr := implementation.CompactRegion(
 			requestContext,
-			selectedRange.start,
-			selectedRange.end,
+			selectedRange.Start,
+			selectedRange.End,
 			ownerContext,
 		)
 		if compactErr != nil {
@@ -232,57 +240,6 @@ func (implementation *Compaction) compactPressure(
 	)
 }
 
-// CompactNow reserves idle Agent maintenance and commits one standalone
-// compaction bracket followed by a persistence checkpoint.
-func (implementation *Compaction) CompactNow(
-	requestContext context.Context,
-	subject compaction.ManualAgentContext,
-	sourceCommandID *string,
-) (*compaction.Result, error) {
-	if subject == nil {
-		return nil, errors.New("compaction-basic: manual Agent is nil")
-	}
-	options := subject.OptionsValue()
-	ownerContext := compaction.AgentContext{
-		Session:  subject.SessionValue(),
-		Provider: options.Provider,
-		Model:    options.Model,
-	}
-	if err := implementation.validateOperation(
-		requestContext,
-		ownerContext,
-	); err != nil {
-		return nil, err
-	}
-	if sourceCommandID != nil && *sourceCommandID == "" {
-		return nil, errors.New("compaction-basic: sourceCommandId is empty")
-	}
-	execution := &manualCompaction{
-		implementation:  implementation,
-		ownerContext:    ownerContext,
-		sourceCommandID: cloneString(sourceCommandID),
-		callerContext:   requestContext,
-	}
-	maintenanceErr := subject.RunMaintenance(
-		requestContext,
-		execution.execute,
-	)
-	if !execution.ran {
-		return nil, &compaction.ManualError{
-			Code:    compaction.ManualErrorBusy,
-			Message: "manual compaction requires an idle agent with no waking queued work",
-			Cause:   maintenanceErr,
-		}
-	}
-	if execution.err != nil {
-		return nil, execution.err
-	}
-	if maintenanceErr != nil {
-		return nil, maintenanceErr
-	}
-	return execution.outcome, nil
-}
-
 // CompactRegion compacts one inclusive current-Surface span inside the open
 // Agent turn.
 func (implementation *Compaction) CompactRegion(
@@ -294,14 +251,13 @@ func (implementation *Compaction) CompactRegion(
 	if err := implementation.validateOperation(requestContext, ownerContext); err != nil {
 		return compaction.Result{}, err
 	}
-	return implementation.regions.compactSurfaceRegion(
+	return implementation.compactor.compactTurn(
 		requestContext,
 		ownerContext,
-		surfaceSelection{
-			start: start,
-			end:   end,
+		compaction.SurfaceRange{
+			Start: start,
+			End:   end,
 		},
-		transactionOptions{},
 	)
 }
 
@@ -358,69 +314,22 @@ func routedTarget(
 	}, true, nil
 }
 
-type manualCompaction struct {
-	implementation  *Compaction
-	ownerContext    compaction.AgentContext
-	sourceCommandID *string
-	callerContext   context.Context
-	ran             bool
-	outcome         *compaction.Result
-	err             error
-}
-
-func (execution *manualCompaction) execute(operationContext context.Context) error {
-	execution.ran = true
-	measurement, err := execution.implementation.meter.Measure(
-		operationContext,
-		execution.ownerContext.Session,
-		nil,
-	)
-	if err != nil {
-		return execution.finish(operationContext, nil, err)
-	}
-	selectedRange, err := selectCompactableRange(
-		execution.ownerContext.Session,
-		measurement,
-		0,
-	)
-	if err != nil || selectedRange == nil {
-		return execution.finish(operationContext, nil, err)
-	}
-	outcome, err := execution.implementation.regions.compactSurfaceRegion(
-		operationContext,
-		execution.ownerContext,
-		*selectedRange,
-		transactionOptions{
-			standalone:      true,
-			selectedStable:  true,
-			sourceCommandID: cloneString(execution.sourceCommandID),
-			flush: func(flushContext context.Context) error {
-				return execution.implementation.sessions.Flush(
-					flushContext,
-					execution.ownerContext.Session,
-				)
-			},
-		},
-	)
-	return execution.finish(operationContext, &outcome, err)
-}
-
-func (execution *manualCompaction) finish(
-	operationContext context.Context,
-	outcome *compaction.Result,
-	problem error,
+func assertNoActiveCompaction(
+	conversation session.Context,
+	stage string,
 ) error {
-	callerCause := context.Cause(execution.callerContext)
-	operationCause := context.Cause(operationContext)
-	if problem != nil && callerCause != nil && operationCause != nil &&
-		errors.Is(operationCause, callerCause) {
-		problem = callerCause
+	logState, err := compaction.InspectLog(conversation.Events())
+	if err != nil {
+		return err
 	}
-	if problem == nil {
-		execution.outcome = outcome
+	if logState.Attempt == nil {
+		return nil
 	}
-	execution.err = problem
-	return execution.err
+	return &compaction.ManualError{
+		Code: compaction.ManualErrorBusy,
+		Message: stage + ": compaction already in progress; " +
+			"the Session compaction lock is already active",
+	}
 }
 
 var _ compaction.Engine = (*Compaction)(nil)
