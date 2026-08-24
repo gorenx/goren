@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -329,6 +331,189 @@ func TestDefaultCompositionNeverRetriesOverflowAfterCancellation(t *testing.T) {
 	}
 }
 
+func TestDefaultCompositionRestoresCompactionAcrossSQLiteRestart(t *testing.T) {
+	var mainRequests atomic.Int32
+	var compactRequests atomic.Int32
+	requestBodies := make(chan string, 8)
+	providerServer := httptest.NewServer(http.HandlerFunc(
+		func(responseWriter http.ResponseWriter, httpRequest *http.Request) {
+			defer httpRequest.Body.Close()
+			if httpRequest.Header.Get("x-deepseek-harness-compact") == "1" {
+				compactRequests.Add(1)
+				writeCompactionFixtureSSE(
+					responseWriter,
+					"cold restart checkpoint",
+					200,
+				)
+				return
+			}
+			bodyValue, err := io.ReadAll(httpRequest.Body)
+			if err != nil {
+				http.Error(responseWriter, err.Error(), http.StatusBadRequest)
+				return
+			}
+			requestBodies <- string(bodyValue)
+			requestNumber := mainRequests.Add(1)
+			inputTokens := int64(4_500)
+			if requestNumber >= 2 {
+				inputTokens = 9_000
+			}
+			writeCompactionFixtureSSE(
+				responseWriter,
+				"main response",
+				inputTokens,
+			)
+		},
+	))
+	defer providerServer.Close()
+
+	dataDirectory := t.TempDir()
+	diagnosticSink := testDiagnostics(t)
+	firstRuntime, firstServices := startCompactionFixtureComposition(
+		t,
+		providerServer.URL,
+		12_500,
+		basic.Config{},
+		dataDirectory,
+		diagnosticSink,
+	)
+	firstHandle := createCompactionFixtureAgent(
+		t,
+		firstServices,
+		"cold-compaction-agent",
+	)
+	firstPayload := strings.Repeat("first pressure history ", 800)
+	sendCompactionFixturePrompt(t, firstHandle.Subject, firstPayload)
+	waitCompactionFixtureRequestBody(t, requestBodies)
+	sendCompactionFixturePrompt(
+		t,
+		firstHandle.Subject,
+		strings.Repeat("second pressure history ", 800),
+	)
+	waitCompactionFixtureRequestBody(t, requestBodies)
+	sendCompactionFixturePrompt(t, firstHandle.Subject, "commit the checkpoint")
+	compactedRequest := waitCompactionFixtureRequestBody(t, requestBodies)
+	if !strings.Contains(compactedRequest, "cold restart checkpoint") ||
+		strings.Contains(compactedRequest, firstPayload) {
+		t.Fatalf("request after compaction did not use the checkpoint surface")
+	}
+
+	firstConversation := firstHandle.Subject.SessionValue()
+	firstEntries := firstConversation.Events()
+	assertCompactionFixtureTransaction(t, firstEntries)
+	firstSurface := firstConversation.Surface()
+	firstMeasurement, err := firstServices.meter.Measure(
+		context.Background(),
+		firstConversation,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstProjection, err := firstServices.projections.Snapshot(firstConversation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = firstServices.sessions.Flush(context.Background(), firstConversation); err != nil {
+		t.Fatal(err)
+	}
+	disposeCompactionFixtureAgent(t, firstHandle)
+	shutdownCompactionFixtureComposition(t, firstRuntime)
+
+	thresholdRatio := float64(1)
+	secondRuntime, secondServices := startCompactionFixtureComposition(
+		t,
+		providerServer.URL,
+		12_500,
+		basic.Config{
+			PolicyConfig: basic.PolicyConfig{
+				ThresholdRatio: &thresholdRatio,
+			},
+		},
+		dataDirectory,
+		diagnosticSink,
+	)
+	defer shutdownCompactionFixtureComposition(t, secondRuntime)
+	secondHandle := resumeCompactionFixtureAgent(
+		t,
+		secondServices,
+		"cold-compaction-agent",
+	)
+	defer disposeCompactionFixtureAgent(t, secondHandle)
+	resumedConversation := secondHandle.Subject.SessionValue()
+	resumedEntries := resumedConversation.Events()
+	if resumedConversation.FirstLiveSeq() != int64(len(firstEntries)) ||
+		len(resumedEntries) != len(firstEntries)+1 ||
+		resumedEntries[len(resumedEntries)-1].Type != session.EndSeedEventName {
+		t.Fatalf(
+			"resumed compaction log = firstLive %d, entries %d",
+			resumedConversation.FirstLiveSeq(),
+			len(resumedEntries),
+		)
+	}
+	resumedState, err := compaction.InspectLog(resumedEntries)
+	if err != nil || resumedState.Attempt != nil {
+		t.Fatalf("resumed compaction state = %#v, error = %v", resumedState, err)
+	}
+	if resumedSurface := resumedConversation.Surface(); !reflect.DeepEqual(resumedSurface, firstSurface) {
+		t.Fatalf(
+			"resumed Surface = %#v, want %#v",
+			resumedSurface,
+			firstSurface,
+		)
+	}
+	resumedMeasurement, err := secondServices.meter.Measure(
+		context.Background(),
+		resumedConversation,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumedMeasurement.LogRevision != int64(len(resumedEntries)) {
+		t.Fatalf(
+			"resumed Token Meter revision = %d, want %d",
+			resumedMeasurement.LogRevision,
+			len(resumedEntries),
+		)
+	}
+	firstMeasurement.LogRevision = 0
+	resumedMeasurement.LogRevision = 0
+	if !reflect.DeepEqual(resumedMeasurement, firstMeasurement) {
+		t.Fatalf(
+			"resumed Token Meter = %#v, want %#v",
+			resumedMeasurement,
+			firstMeasurement,
+		)
+	}
+	resumedProjection, err := secondServices.projections.Snapshot(resumedConversation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(resumedProjection.Values, firstProjection.Values) {
+		t.Fatalf(
+			"resumed Token Meter projections = %#v, want %#v",
+			resumedProjection.Values,
+			firstProjection.Values,
+		)
+	}
+
+	sendCompactionFixturePrompt(t, secondHandle.Subject, "continue after restart")
+	resumedRequest := waitCompactionFixtureRequestBody(t, requestBodies)
+	if !strings.Contains(resumedRequest, "cold restart checkpoint") ||
+		strings.Contains(resumedRequest, firstPayload) {
+		t.Fatal("cold-resumed request did not reconstruct the checkpoint surface")
+	}
+	if mainRequests.Load() != 4 || compactRequests.Load() != 1 {
+		t.Fatalf(
+			"cold restart request counts = main %d, compact %d",
+			mainRequests.Load(),
+			compactRequests.Load(),
+		)
+	}
+	assertCompactionFixtureTransaction(t, resumedConversation.Events())
+}
+
 func startCompactionFixtureComposition(
 	testingContext *testing.T,
 	baseURL string,
@@ -453,6 +638,28 @@ func createCompactionFixtureAgent(
 	return handle
 }
 
+func resumeCompactionFixtureAgent(
+	testingContext *testing.T,
+	serviceView *serviceProbe,
+	identifier session.SessionID,
+) agent.Handle {
+	testingContext.Helper()
+	handle, err := serviceView.agents.Resume(
+		context.Background(),
+		agent.ResumeOptions{
+			SessionID: identifier,
+			AgentOptions: agent.Options{
+				Provider: deepseek.ProviderRoute,
+				Model:    deepseek.DefaultModelID,
+			},
+		},
+	)
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	return handle
+}
+
 func sendCompactionFixturePrompt(
 	testingContext *testing.T,
 	subject agent.Agent,
@@ -497,6 +704,20 @@ func waitCompactionFixtureAgentIdle(
 	defer cancelWait()
 	if err := subject.WhenIdle(waitContext); err != nil {
 		testingContext.Fatal(err)
+	}
+}
+
+func waitCompactionFixtureRequestBody(
+	testingContext *testing.T,
+	requestBodies <-chan string,
+) string {
+	testingContext.Helper()
+	select {
+	case bodyValue := <-requestBodies:
+		return bodyValue
+	case <-time.After(5 * time.Second):
+		testingContext.Fatal("model request body was not observed")
+		return ""
 	}
 }
 
