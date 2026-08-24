@@ -242,7 +242,7 @@ func (*controlAgent) InboxValue() *agent.Inbox                      { return nil
 func (subject *controlAgent) StatusValue() agent.Status             { return subject.status }
 func (*controlAgent) Cancel(agent.CancelCause, agent.CancelOptions) {}
 func (*controlAgent) WhenIdle(context.Context) error                { return nil }
-func (*controlAgent) RunMaintenance(context.Context, agent.MaintenanceTask) error {
+func (*controlAgent) RunMaintenance(context.Context, func(context.Context) error) error {
 	return nil
 }
 func (*controlAgent) Send(llm.UserMessage, agent.InboxTarget, bool) error { return nil }

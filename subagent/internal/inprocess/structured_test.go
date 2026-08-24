@@ -168,7 +168,7 @@ func (*runtimeAgent) InboxValue() *agent.Inbox                      { return nil
 func (*runtimeAgent) StatusValue() agent.Status                     { return agent.StatusIdle }
 func (*runtimeAgent) Cancel(agent.CancelCause, agent.CancelOptions) {}
 func (*runtimeAgent) WhenIdle(context.Context) error                { return nil }
-func (*runtimeAgent) RunMaintenance(context.Context, agent.MaintenanceTask) error {
+func (*runtimeAgent) RunMaintenance(context.Context, func(context.Context) error) error {
 	return nil
 }
 func (*runtimeAgent) Send(llm.UserMessage, agent.InboxTarget, bool) error { return nil }

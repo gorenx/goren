@@ -17,12 +17,16 @@ import (
 	"github.com/gorenx/goren/agentloop"
 	"github.com/gorenx/goren/apiproxy"
 	"github.com/gorenx/goren/approval"
+	"github.com/gorenx/goren/compaction"
+	"github.com/gorenx/goren/compaction/basic"
+	"github.com/gorenx/goren/compaction/toolresultpruner"
 	protocol "github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/credentials"
 	connectionhost "github.com/gorenx/goren/internal/connection"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/llm/deepseek"
 	"github.com/gorenx/goren/llm/retry"
+	"github.com/gorenx/goren/llm/tokenmeter"
 	"github.com/gorenx/goren/plugin"
 	pluginfactory "github.com/gorenx/goren/plugin/factory"
 	"github.com/gorenx/goren/session"
@@ -55,6 +59,9 @@ type serviceProbe struct {
 	apiProxy     apiproxy.Service
 	credentials  credentials.Provider
 	models       llm.LlmRuntime
+	compactor    compaction.Engine
+	meter        tokenmeter.Meter
+	pruner       toolresultpruner.Pruner
 	sessions     session.LiveStore
 	durability   persistence.Persistence
 	projections  projection.Registry
@@ -77,6 +84,9 @@ func (*serviceProbe) Manifest() plugin.Manifest {
 			plugin.ServiceOf[apiproxy.Service](),
 			plugin.ServiceOf[credentials.Provider](),
 			plugin.ServiceOf[llm.LlmRuntime](),
+			plugin.ServiceOf[compaction.Engine](),
+			plugin.ServiceOf[tokenmeter.Meter](),
+			plugin.ServiceOf[toolresultpruner.Pruner](),
 			plugin.ServiceOf[session.LiveStore](),
 			plugin.ServiceOf[persistence.Persistence](),
 			plugin.ServiceOf[projection.Registry](),
@@ -109,6 +119,15 @@ func (probe *serviceProbe) Apply(requestContext context.Context) error {
 		return err
 	}
 	if probe.models, err = plugin.Require[llm.LlmRuntime](probe); err != nil {
+		return err
+	}
+	if probe.compactor, err = plugin.Require[compaction.Engine](probe); err != nil {
+		return err
+	}
+	if probe.meter, err = plugin.Require[tokenmeter.Meter](probe); err != nil {
+		return err
+	}
+	if probe.pruner, err = plugin.Require[toolresultpruner.Pruner](probe); err != nil {
 		return err
 	}
 	if probe.sessions, err = plugin.Require[session.LiveStore](probe); err != nil {
@@ -253,11 +272,14 @@ func TestCatalogContainsOnlyCurrentServerSlice(t *testing.T) {
 		agentloop.PluginName,
 		apiproxy.PluginName,
 		approval.PluginName,
+		basic.PluginName,
+		toolresultpruner.PluginName,
 		connectionhost.PluginName,
 		credentials.PluginName,
 		deepseek.PluginName,
 		llm.PluginName,
 		llmretry.PluginName,
+		tokenmeter.PluginName,
 		session.PluginName,
 		persistence.PluginName,
 		projection.PluginName,

@@ -43,18 +43,6 @@ type Options struct {
 	SubagentDepth *int64
 }
 
-// MaintenanceTask is one non-turn task that may run only from true idle.
-type MaintenanceTask interface {
-	Run(context.Context) error
-}
-
-// MaintenanceFunc adapts a naturally stateless operation to MaintenanceTask.
-type MaintenanceFunc func(context.Context) error
-
-func (operation MaintenanceFunc) Run(requestContext context.Context) error {
-	return operation(requestContext)
-}
-
 // Agent is both a scoped runtime Plugin and the live business capability
 // returned by Registry. Consumers do not receive its Fiber or Scope.
 type Agent interface {
@@ -67,7 +55,7 @@ type Agent interface {
 	StatusValue() Status
 	Cancel(CancelCause, CancelOptions)
 	WhenIdle(context.Context) error
-	RunMaintenance(context.Context, MaintenanceTask) error
+	RunMaintenance(context.Context, func(context.Context) error) error
 	Send(llm.UserMessage, InboxTarget, bool) error
 	Followup(llm.UserMessage) error
 	Steer(llm.UserMessage) error

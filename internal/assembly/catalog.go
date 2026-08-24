@@ -20,6 +20,10 @@ import (
 	apiproxyhost "github.com/gorenx/goren/apiproxy/host"
 	"github.com/gorenx/goren/approval"
 	approvalfactory "github.com/gorenx/goren/approval/factory"
+	"github.com/gorenx/goren/compaction/basic"
+	compactionbasicfactory "github.com/gorenx/goren/compaction/basic/factory"
+	"github.com/gorenx/goren/compaction/toolresultpruner"
+	toolresultprunerfactory "github.com/gorenx/goren/compaction/toolresultpruner/factory"
 	"github.com/gorenx/goren/credentials"
 	credentialsfactory "github.com/gorenx/goren/credentials/factory"
 	credentialslocal "github.com/gorenx/goren/credentials/local"
@@ -30,6 +34,8 @@ import (
 	llmfactory "github.com/gorenx/goren/llm/factory"
 	"github.com/gorenx/goren/llm/retry"
 	llmretryfactory "github.com/gorenx/goren/llm/retry/factory"
+	"github.com/gorenx/goren/llm/tokenmeter"
+	tokenmeterfactory "github.com/gorenx/goren/llm/tokenmeter/factory"
 	"github.com/gorenx/goren/plugin"
 	pluginfactory "github.com/gorenx/goren/plugin/factory"
 	"github.com/gorenx/goren/session"
@@ -158,6 +164,11 @@ func NewCatalog(platform Environment) (*pluginfactory.Catalog, error) {
 		llmfactory.New(platform.Diagnostics),
 		deepSeekBuilder,
 		llmretryfactory.New(llmretry.RuntimeOptions{
+			ObserverError: platform.Diagnostics.Report,
+		}),
+		tokenmeterfactory.New(),
+		toolresultprunerfactory.New(),
+		compactionbasicfactory.New(basic.RuntimeOptions{
 			ObserverError: platform.Diagnostics.Report,
 		}),
 		sessionBuilder,
@@ -381,6 +392,18 @@ func DefaultSpecs(
 		},
 		{
 			FactoryName: llmretry.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: tokenmeter.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: toolresultpruner.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: basic.PluginName,
 			Config:      emptyConfig,
 		},
 		{

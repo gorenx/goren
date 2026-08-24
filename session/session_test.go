@@ -71,6 +71,81 @@ func TestAppendSnapshotsPayloadAndEventViews(t *testing.T) {
 	}
 }
 
+func TestSerializeProducerKeepsMultiEventGroupAdjacent(t *testing.T) {
+	t.Parallel()
+	conversation, err := New("serialized-group", CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstCommitted := make(chan struct{})
+	releaseGroup := make(chan struct{})
+	groupDone := make(chan error, 1)
+	go func() {
+		groupDone <- SerializeProducer(conversation, func() error {
+			if _, appendErr := Append(
+				conversation,
+				fixtureEventKey,
+				fixturePayload{
+					Items: []string{"group-first"},
+				},
+			); appendErr != nil {
+				return appendErr
+			}
+			close(firstCommitted)
+			<-releaseGroup
+			_, appendErr := Append(
+				conversation,
+				fixtureEventKey,
+				fixturePayload{
+					Items: []string{"group-second"},
+				},
+			)
+			return appendErr
+		})
+	}()
+	<-firstCommitted
+
+	outsideDone := make(chan error, 1)
+	go func() {
+		_, appendErr := AppendSerialized(
+			conversation,
+			fixtureEventKey,
+			fixturePayload{
+				Items: []string{"outside"},
+			},
+		)
+		outsideDone <- appendErr
+	}()
+	select {
+	case appendErr := <-outsideDone:
+		t.Fatalf("outside producer interleaved with active group: %v", appendErr)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseGroup)
+	if groupErr := <-groupDone; groupErr != nil {
+		t.Fatal(groupErr)
+	}
+	if appendErr := <-outsideDone; appendErr != nil {
+		t.Fatal(appendErr)
+	}
+
+	entries := conversation.Events()
+	if len(entries) != 3 {
+		t.Fatalf("event count = %d", len(entries))
+	}
+	wantItems := []string{"group-first", "group-second", "outside"}
+	for index, entry := range entries {
+		var body fixturePayload
+		if decodeErr := json.Unmarshal(entry.Data, &body); decodeErr != nil {
+			t.Fatal(decodeErr)
+		}
+		if !reflect.DeepEqual(body.Items, []string{wantItems[index]}) {
+			t.Fatalf("event %d items = %#v", index, body.Items)
+		}
+	}
+}
+
 func TestSeedIsContiguousAndEndsWithLifecycleMarker(t *testing.T) {
 	t.Parallel()
 	seed := []Event{{Type: "fixture/seed", Seq: 0, Time: 10, Data: json.RawMessage(`{"value":1}`)}}

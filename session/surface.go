@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+
+	"github.com/gorenx/goren/llm"
 )
 
 // Surface is a detached view of the ordered model-visible event sequences.
@@ -136,6 +138,93 @@ func validateToolResultRewrite(candidate Event, shadowed []int64, entries []Even
 		return errors.New("session: tool/result replacement may change only result content")
 	}
 	return nil
+}
+
+// AppendToolResultContentReplacement preserves the complete original Event
+// data and appends a replacement that changes only the nested result content.
+// Call it inside SerializeProducer when another Event must remain adjacent.
+func AppendToolResultContentReplacement(
+	conversation *Session,
+	originalSeq int64,
+	content []llm.ContentBlock,
+) (Event, error) {
+	if conversation == nil {
+		return Event{}, errors.New("session: replace tool result on nil Session")
+	}
+	detachedContent, err := llm.CloneContentBlocks(content)
+	if err != nil {
+		return Event{}, err
+	}
+	encodedContent, err := json.Marshal(detachedContent)
+	if err != nil {
+		return Event{}, err
+	}
+	conversation.mu.RLock()
+	if originalSeq < 0 || originalSeq >= int64(len(conversation.entries)) {
+		conversation.mu.RUnlock()
+		return Event{}, fmt.Errorf(
+			"session: tool/result replacement source seq %d not found",
+			originalSeq,
+		)
+	}
+	originalEvent := cloneEvent(conversation.entries[originalSeq])
+	conversation.mu.RUnlock()
+	if originalEvent.Type != ToolResultEventName {
+		return Event{}, errors.New(
+			"session: tool/result content replacement must target tool/result",
+		)
+	}
+	rewrittenData, err := replaceToolResultContentData(originalEvent.Data, encodedContent)
+	if err != nil {
+		return Event{}, err
+	}
+	sources := []int64{originalSeq}
+	operation := SurfaceReplace(originalSeq, originalSeq)
+	return conversation.appendCandidate(Event{
+		Type:            ToolResultEventName,
+		Data:            rewrittenData,
+		SourceEventSeqs: &sources,
+		SurfaceOp:       &operation,
+	})
+}
+
+func replaceToolResultContentData(
+	rawValue json.RawMessage,
+	encodedContent json.RawMessage,
+) (json.RawMessage, error) {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(rawValue, &payload); err != nil {
+		return nil, errors.New("session: tool/result data must be an object")
+	}
+	var messageFields map[string]json.RawMessage
+	if err := json.Unmarshal(payload["message"], &messageFields); err != nil {
+		return nil, errors.New("session: tool/result message must be an object")
+	}
+	var messageContent []json.RawMessage
+	if err := json.Unmarshal(messageFields["content"], &messageContent); err != nil ||
+		len(messageContent) != 1 {
+		return nil, errors.New(
+			"session: tool/result message must contain one result block",
+		)
+	}
+	var blockFields map[string]json.RawMessage
+	if err := json.Unmarshal(messageContent[0], &blockFields); err != nil {
+		return nil, errors.New("session: tool/result block must be an object")
+	}
+	blockFields["content"] = append(json.RawMessage(nil), encodedContent...)
+	rewrittenBlock, err := json.Marshal(blockFields)
+	if err != nil {
+		return nil, err
+	}
+	messageFields["content"], err = json.Marshal([]json.RawMessage{rewrittenBlock})
+	if err != nil {
+		return nil, err
+	}
+	payload["message"], err = json.Marshal(messageFields)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(payload)
 }
 
 func toolResultShape(rawValue json.RawMessage) ([]byte, error) {

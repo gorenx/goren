@@ -167,8 +167,8 @@ func (*interactionSubject) Send(llm.UserMessage, agentcore.InboxTarget, bool) er
 func (*interactionSubject) Followup(llm.UserMessage) error { return nil }
 func (*interactionSubject) Steer(llm.UserMessage) error    { return nil }
 func (*interactionSubject) Inject(llm.UserMessage) error   { return nil }
-func (*interactionSubject) RunMaintenance(requestContext context.Context, task agentcore.MaintenanceTask) error {
-	return task.Run(requestContext)
+func (*interactionSubject) RunMaintenance(requestContext context.Context, operation func(context.Context) error) error {
+	return operation(requestContext)
 }
 
 type capturedMux struct {
