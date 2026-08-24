@@ -53,7 +53,7 @@ type ValidatedConfig struct {
 // assembled. Runtime Scope selection is owned by the concrete SystemPrompt
 // Plugin instance resolved for the caller and is deliberately absent here.
 type AssembleContext struct {
-	Session *session.Session
+	Session session.Context
 }
 
 // TextProvider resolves one section or runtime-context entry for each

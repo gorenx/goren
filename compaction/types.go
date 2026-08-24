@@ -80,7 +80,7 @@ type SurfaceRange struct {
 
 // AgentContext is the minimal provider-neutral Agent snapshot Compaction uses.
 type AgentContext struct {
-	Session  *session.Session
+	Session  session.Context
 	Provider string
 	Model    string
 }
@@ -89,7 +89,7 @@ type AgentContext struct {
 // The real Agent capability satisfies it directly; Compaction does not require
 // an adapter or reconstruct a second maintenance owner.
 type ManualAgentContext interface {
-	SessionValue() *session.Session
+	SessionValue() session.Context
 	OptionsValue() agent.Options
 	RunMaintenance(context.Context, func(context.Context) error) error
 }

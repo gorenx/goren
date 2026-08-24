@@ -1,6 +1,7 @@
 package agent_test
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"sync"
@@ -64,12 +65,18 @@ func TestInboxReplaysAndRejectsInvalidDurableSplices(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := userMessage(t, "first")
-	if _, err := session.Append(conversation, agentcore.InboxSpliced, agentcore.InboxSplice{
-		Target:   agentcore.NextTurn,
-		Start:    0,
-		Inserted: []llm.UserMessage{first},
-	}); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(agentcore.InboxSpliced, agentcore.InboxSplice{
+			Target:   agentcore.NextTurn,
+			Start:    0,
+			Inserted: []llm.UserMessage{first},
+		})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	pending, err := agentcore.NewInbox(conversation, &inboxRecorder{})
 	if err != nil {
@@ -83,12 +90,18 @@ func TestInboxReplaysAndRejectsInvalidDurableSplices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := session.Append(broken, agentcore.InboxSpliced, agentcore.InboxSplice{
-		Target:   agentcore.NextTurn,
-		Start:    1,
-		Inserted: []llm.UserMessage{},
-	}); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(agentcore.InboxSpliced, agentcore.InboxSplice{
+			Target:   agentcore.NextTurn,
+			Start:    1,
+			Inserted: []llm.UserMessage{},
+		})
+		if err == nil {
+			_, err = broken.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := agentcore.NewInbox(broken, &inboxRecorder{}); err == nil {
 		t.Fatal("invalid persisted splice was accepted")

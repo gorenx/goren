@@ -1,6 +1,7 @@
 package compaction
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -94,12 +95,12 @@ func TestInspectLogRejectsInvalidLifecycleRelationships(t *testing.T) {
 	failureText := "failed"
 	testCases := []struct {
 		name      string
-		populate  func(*testing.T, *session.Session)
+		populate  func(*testing.T, session.Context)
 		wantError string
 	}{
 		{
 			name: "numbered start outside turn",
-			populate: func(testingContext *testing.T, conversation *session.Session) {
+			populate: func(testingContext *testing.T, conversation session.Context) {
 				appendCompactionStart(
 					testingContext,
 					conversation,
@@ -112,7 +113,7 @@ func TestInspectLogRejectsInvalidLifecycleRelationships(t *testing.T) {
 		},
 		{
 			name: "standalone start inside turn",
-			populate: func(testingContext *testing.T, conversation *session.Session) {
+			populate: func(testingContext *testing.T, conversation session.Context) {
 				appendTurnStart(testingContext, conversation, 1)
 				appendCompactionStart(testingContext, conversation, testCompactionID, nil, nil)
 			},
@@ -120,7 +121,7 @@ func TestInspectLogRejectsInvalidLifecycleRelationships(t *testing.T) {
 		},
 		{
 			name: "nested start",
-			populate: func(testingContext *testing.T, conversation *session.Session) {
+			populate: func(testingContext *testing.T, conversation session.Context) {
 				appendTurnStart(testingContext, conversation, 1)
 				appendCompactionStart(
 					testingContext,
@@ -141,7 +142,7 @@ func TestInspectLogRejectsInvalidLifecycleRelationships(t *testing.T) {
 		},
 		{
 			name: "summary without start",
-			populate: func(testingContext *testing.T, conversation *session.Session) {
+			populate: func(testingContext *testing.T, conversation session.Context) {
 				appendCompactionSummary(
 					testingContext,
 					conversation,
@@ -154,7 +155,7 @@ func TestInspectLogRejectsInvalidLifecycleRelationships(t *testing.T) {
 		},
 		{
 			name: "summary id mismatch",
-			populate: func(testingContext *testing.T, conversation *session.Session) {
+			populate: func(testingContext *testing.T, conversation session.Context) {
 				appendTurnStart(testingContext, conversation, 1)
 				appendCompactionStart(
 					testingContext,
@@ -175,7 +176,7 @@ func TestInspectLogRejectsInvalidLifecycleRelationships(t *testing.T) {
 		},
 		{
 			name: "summary command mismatch",
-			populate: func(testingContext *testing.T, conversation *session.Session) {
+			populate: func(testingContext *testing.T, conversation session.Context) {
 				appendTurnStart(testingContext, conversation, 1)
 				appendCompactionStart(
 					testingContext,
@@ -196,7 +197,7 @@ func TestInspectLogRejectsInvalidLifecycleRelationships(t *testing.T) {
 		},
 		{
 			name: "repeated summary",
-			populate: func(testingContext *testing.T, conversation *session.Session) {
+			populate: func(testingContext *testing.T, conversation session.Context) {
 				appendTurnStart(testingContext, conversation, 1)
 				appendCompactionStart(
 					testingContext,
@@ -224,7 +225,7 @@ func TestInspectLogRejectsInvalidLifecycleRelationships(t *testing.T) {
 		},
 		{
 			name: "empty shadow set",
-			populate: func(testingContext *testing.T, conversation *session.Session) {
+			populate: func(testingContext *testing.T, conversation session.Context) {
 				appendTurnStart(testingContext, conversation, 1)
 				appendCompactionStart(
 					testingContext,
@@ -245,7 +246,7 @@ func TestInspectLogRejectsInvalidLifecycleRelationships(t *testing.T) {
 		},
 		{
 			name: "wrong shadow endpoints",
-			populate: func(testingContext *testing.T, conversation *session.Session) {
+			populate: func(testingContext *testing.T, conversation session.Context) {
 				appendTurnStart(testingContext, conversation, 1)
 				appendCompactionStart(
 					testingContext,
@@ -254,22 +255,25 @@ func TestInspectLogRejectsInvalidLifecycleRelationships(t *testing.T) {
 					nil,
 					pointerToTurn(1),
 				)
-				if _, err := session.Append(
-					conversation,
-					SummaryEvent,
-					validSummaryValue(testCompactionID, nil, []int64{1, 2}, SurfaceRange{
-						Start: 1,
-						End:   3,
-					}),
-				); err != nil {
-					testingContext.Fatal(err)
+				{
+					draft, err := session.NewEventDraft(SummaryEvent,
+						validSummaryValue(testCompactionID, nil, []int64{1, 2}, SurfaceRange{
+							Start: 1,
+							End:   3,
+						}))
+					if err == nil {
+						_, err = conversation.Commit(context.Background(), session.Batch(draft))
+					}
+					if err != nil {
+						testingContext.Fatal(err)
+					}
 				}
 			},
 			wantError: "shadowedRange must match",
 		},
 		{
 			name: "end wrong owner",
-			populate: func(testingContext *testing.T, conversation *session.Session) {
+			populate: func(testingContext *testing.T, conversation session.Context) {
 				appendTurnStart(testingContext, conversation, 1)
 				appendCompactionStart(
 					testingContext,
@@ -291,7 +295,7 @@ func TestInspectLogRejectsInvalidLifecycleRelationships(t *testing.T) {
 		},
 		{
 			name: "successful end without summary",
-			populate: func(testingContext *testing.T, conversation *session.Session) {
+			populate: func(testingContext *testing.T, conversation session.Context) {
 				appendTurnStart(testingContext, conversation, 1)
 				appendCompactionStart(
 					testingContext,
@@ -313,7 +317,7 @@ func TestInspectLogRejectsInvalidLifecycleRelationships(t *testing.T) {
 		},
 		{
 			name: "turn boundary crosses numbered attempt",
-			populate: func(testingContext *testing.T, conversation *session.Session) {
+			populate: func(testingContext *testing.T, conversation session.Context) {
 				appendTurnStart(testingContext, conversation, 1)
 				appendCompactionStart(
 					testingContext,
@@ -386,65 +390,72 @@ func TestInspectLogEndSeedClearsOnlyInheritedOpenAttempt(t *testing.T) {
 
 func appendTurnStart(
 	testingContext *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	turnValue int64,
 ) {
 	testingContext.Helper()
-	if _, err := session.Append(
-		conversation,
-		session.TurnStarted,
-		session.TurnStart{
-			Turn: turnValue,
-		},
-	); err != nil {
-		testingContext.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.TurnStarted,
+			session.TurnStart{
+				Turn: turnValue,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			testingContext.Fatal(err)
+		}
 	}
 }
 
 func appendTurnEnd(
 	testingContext *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	turnValue int64,
 ) {
 	testingContext.Helper()
-	if _, err := session.Append(
-		conversation,
-		session.TurnEnded,
-		session.TurnEnd{
-			Turn:   turnValue,
-			Reason: session.TurnCompleted{},
-		},
-	); err != nil {
-		testingContext.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.TurnEnded,
+			session.TurnEnd{
+				Turn:   turnValue,
+				Reason: session.TurnCompleted{},
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			testingContext.Fatal(err)
+		}
 	}
 }
 
 func appendCompactionStart(
 	testingContext *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	compactionID ID,
 	sourceCommandID *string,
 	turnValue *int64,
 ) int64 {
 	testingContext.Helper()
-	committed, err := session.Append(
-		conversation,
-		StartEvent,
+	draft, err := session.NewEventDraft(StartEvent,
 		Start{
 			CompactionID:    compactionID,
 			SourceCommandID: sourceCommandID,
 			Turn:            turnValue,
-		},
-	)
+		})
 	if err != nil {
 		testingContext.Fatal(err)
 	}
-	return committed.Seq
+	receipt, err := conversation.Commit(context.Background(), session.Batch(draft))
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	return receipt.Events[0].Seq
 }
 
 func appendCompactionSummary(
 	testingContext *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	compactionID ID,
 	sourceCommandID *string,
 	shadowedSeqs []int64,
@@ -457,12 +468,15 @@ func appendCompactionSummary(
 			End:   shadowedSeqs[len(shadowedSeqs)-1],
 		}
 	}
-	if _, err := session.Append(
-		conversation,
-		SummaryEvent,
-		validSummaryValue(compactionID, sourceCommandID, shadowedSeqs, rangeValue),
-	); err != nil {
-		testingContext.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(SummaryEvent,
+			validSummaryValue(compactionID, sourceCommandID, shadowedSeqs, rangeValue))
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			testingContext.Fatal(err)
+		}
 	}
 }
 
@@ -488,30 +502,33 @@ func validSummaryValue(
 
 func appendCompactionEnd(
 	testingContext *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	compactionID ID,
 	sourceCommandID *string,
 	turnValue *int64,
 	failureText *string,
 ) {
 	testingContext.Helper()
-	if _, err := session.Append(
-		conversation,
-		EndEvent,
-		End{
-			CompactionID:    compactionID,
-			SourceCommandID: sourceCommandID,
-			Turn:            turnValue,
-			Error:           failureText,
-		},
-	); err != nil {
-		testingContext.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(EndEvent,
+			End{
+				CompactionID:    compactionID,
+				SourceCommandID: sourceCommandID,
+				Turn:            turnValue,
+				Error:           failureText,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			testingContext.Fatal(err)
+		}
 	}
 }
 
 func appendCheckpointReplacement(
 	testingContext *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	originalSeq int64,
 	compactionID ID,
 	sourceCommandID *string,
@@ -531,22 +548,25 @@ func appendCheckpointReplacement(
 		testingContext.Fatal(err)
 	}
 	sources := []int64{originalSeq}
-	if _, err := session.AppendSurface(
-		conversation,
-		session.UserMessageAdded,
-		messageValue,
-		session.SurfaceIntent{
-			Operation:       session.SurfaceReplace(originalSeq, originalSeq),
-			SourceEventSeqs: &sources,
-		},
-	); err != nil {
-		testingContext.Fatal(err)
+	{
+		draft, err := session.NewSurfaceEventDraft(session.UserMessageAdded,
+			messageValue,
+			session.SurfaceIntent{
+				Operation:       session.SurfaceReplace(originalSeq, originalSeq),
+				SourceEventSeqs: &sources,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			testingContext.Fatal(err)
+		}
 	}
 }
 
 func assertInspectionError(
 	testingContext *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	wantError string,
 ) {
 	testingContext.Helper()

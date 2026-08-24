@@ -1,6 +1,7 @@
 package continuation
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -58,11 +59,14 @@ func descriptorSeed(
 	if snapshotErr != nil {
 		return nil, snapshotErr
 	}
-	if _, appendErr := session.AppendSerialized(
-		staged,
+	draft, appendErr := session.NewEventDraft(
 		subagent.DescriptorEvent,
 		descriptorData,
-	); appendErr != nil {
+	)
+	if appendErr != nil {
+		return nil, appendErr
+	}
+	if _, appendErr := staged.Commit(context.Background(), session.Batch(draft)); appendErr != nil {
 		return nil, appendErr
 	}
 	return staged.Events(), nil

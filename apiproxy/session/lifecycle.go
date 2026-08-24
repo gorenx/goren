@@ -25,7 +25,11 @@ func (flow *sessionLifecycle) Rename(requestContext context.Context, call api.Re
 	if refused != nil {
 		return api.Fail[api.SessionRenameValue](*refused), nil
 	}
-	accepted, err := flow.titles.Rename(subject.SessionValue(), call.Payload.Title)
+	accepted, err := flow.titles.Rename(
+		requestContext,
+		subject.SessionValue(),
+		call.Payload.Title,
+	)
 	if err != nil {
 		var invalid *sessiontitle.SessionTitleInvalidError
 		if errors.As(err, &invalid) {

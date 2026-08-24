@@ -18,8 +18,8 @@ type OpenAttempt struct {
 	Summarized      bool
 }
 
-// LogState is the current turn and compaction owner reconstructed at one log
-// cut. Session events remain the source of truth.
+// LogState is the current turn and compaction owner reconstructed from one log
+// prefix. Session events remain the source of truth.
 type LogState struct {
 	OpenTurn *int64
 	Attempt  *OpenAttempt

@@ -52,13 +52,13 @@ func (provider *approvalProviderPlugin) Request(
 }
 
 func (*approvalProviderPlugin) EffectivePolicy(
-	*session.Session,
+	session.Context,
 ) (approval.Policy, error) {
 	return approval.PolicyAsk, nil
 }
 
 func (*approvalProviderPlugin) OverrideOf(
-	*session.Session,
+	session.Context,
 ) (approval.Policy, bool, error) {
 	return "", false, nil
 }
@@ -72,10 +72,10 @@ func (*approvalProviderPlugin) SetPolicy(
 }
 
 type executionSubject struct {
-	conversation *session.Session
+	conversation session.Context
 }
 
-func (subject *executionSubject) SessionValue() *session.Session {
+func (subject *executionSubject) SessionValue() session.Context {
 	return subject.conversation
 }
 

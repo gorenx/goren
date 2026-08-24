@@ -203,13 +203,17 @@ func (runner *turnRunner) runTurn(
 		runner.reportError(requestContext, problem)
 		return false, problem
 	}
-	if _, err := session.AppendSerialized(
-		runner.subject.conversation,
+	turnDraft, err := session.NewEventDraft(
 		session.TurnStarted,
 		session.TurnStart{
 			Turn: turn,
 		},
-	); err != nil {
+	)
+	if err != nil {
+		runner.reportError(requestContext, err)
+		return false, err
+	}
+	if _, err := runner.subject.conversation.Commit(requestContext, session.Batch(turnDraft)); err != nil {
 		runner.reportError(requestContext, err)
 		return false, err
 	}
@@ -258,14 +262,22 @@ func (runner *turnRunner) runTurn(
 			ending = session.TurnCompleted{}
 			break
 		}
-		if _, err := session.AppendSerialized(
-			runner.subject.conversation,
+		stepDraft, err := session.NewEventDraft(
 			session.StepStarted,
 			session.StepPosition{
 				Turn: turn,
 				Step: step,
 			},
-		); err != nil {
+		)
+		if err != nil {
+			operationErr = err
+			ending = session.TurnError{
+				Error: failureFromError(err),
+			}
+			runner.reportError(requestContext, err)
+			break
+		}
+		if _, err := runner.subject.conversation.Commit(requestContext, session.Batch(stepDraft)); err != nil {
 			operationErr = err
 			ending = session.TurnError{
 				Error: failureFromError(err),
@@ -274,7 +286,7 @@ func (runner *turnRunner) runTurn(
 			break
 		}
 		runner.activity.acceptStep(step)
-		stepErr := runner.appendStepMessages(prepared.messages)
+		stepErr := runner.appendStepMessages(requestContext, prepared.messages)
 		var stepEnding session.TurnEndReason
 		if stepErr == nil {
 			stepEnding, stepErr = runner.requests.executeStep(
@@ -284,14 +296,19 @@ func (runner *turnRunner) runTurn(
 				prepared,
 			)
 		}
-		_, endErr := session.AppendSerialized(
-			runner.subject.conversation,
+		stepEndDraft, endErr := session.NewEventDraft(
 			session.StepEnded,
 			session.StepPosition{
 				Turn: turn,
 				Step: step,
 			},
 		)
+		if endErr == nil {
+			_, endErr = runner.subject.conversation.Commit(
+				requestContext,
+				session.Batch(stepEndDraft),
+			)
+		}
 		if stepErr != nil || endErr != nil {
 			operationErr = errors.Join(stepErr, endErr)
 			if requestContext.Err() != nil {
@@ -345,14 +362,20 @@ func (runner *turnRunner) runTurn(
 			},
 		}
 	}
-	if _, err := session.AppendSerialized(
-		runner.subject.conversation,
+	turnEndDraft, err := session.NewEventDraft(
 		session.TurnEnded,
 		session.TurnEnd{
 			Turn:   turn,
 			Reason: ending,
 		},
-	); err != nil {
+	)
+	if err == nil {
+		_, err = runner.subject.conversation.Commit(
+			context.WithoutCancel(requestContext),
+			session.Batch(turnEndDraft),
+		)
+	}
+	if err != nil {
 		operationErr = errors.Join(operationErr, err)
 		runner.reportError(requestContext, err)
 	}
@@ -381,17 +404,21 @@ func (runner *turnRunner) runTurn(
 }
 
 func (runner *turnRunner) appendStepMessages(
+	requestContext context.Context,
 	messages []llm.UserMessage,
 ) error {
 	for _, message := range messages {
-		if _, err := session.AppendSurfaceSerialized(
-			runner.subject.conversation,
+		draft, err := session.NewSurfaceEventDraft(
 			session.UserMessageAdded,
 			message,
 			session.SurfaceIntent{
 				Operation: session.SurfaceAppend(),
 			},
-		); err != nil {
+		)
+		if err != nil {
+			return err
+		}
+		if _, err := runner.subject.conversation.Commit(requestContext, session.Batch(draft)); err != nil {
 			return err
 		}
 	}
@@ -434,7 +461,7 @@ func cloneUserMessages(entries []llm.UserMessage) ([]llm.UserMessage, error) {
 	return detached, nil
 }
 
-func restoreLastTurn(conversation *session.Session) (int64, error) {
+func restoreLastTurn(conversation session.Context) (int64, error) {
 	entries := conversation.Events()
 	for index := len(entries) - 1; index >= 0; index-- {
 		if entries[index].Type != session.TurnStartEventName {

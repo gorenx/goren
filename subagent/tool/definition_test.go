@@ -218,7 +218,7 @@ func (*continuationRecord) DrainContinuableDescendants(
 type toolAgent struct {
 	plugin.Base
 	id      session.SessionID
-	session *session.Session
+	session session.Context
 }
 
 func newToolAgent(t *testing.T, identifier session.SessionID) *toolAgent {
@@ -242,7 +242,7 @@ func (*toolAgent) Apply(context.Context) error                   { return nil }
 func (*toolAgent) Dispose(context.Context) error                 { return nil }
 func (subject *toolAgent) ID() session.SessionID                 { return subject.id }
 func (*toolAgent) OptionsValue() agent.Options                   { return agent.Options{} }
-func (subject *toolAgent) SessionValue() *session.Session        { return subject.session }
+func (subject *toolAgent) SessionValue() session.Context         { return subject.session }
 func (*toolAgent) InboxValue() *agent.Inbox                      { return nil }
 func (*toolAgent) StatusValue() agent.Status                     { return agent.StatusIdle }
 func (*toolAgent) Cancel(agent.CancelCause, agent.CancelOptions) {}

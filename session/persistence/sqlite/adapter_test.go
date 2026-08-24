@@ -101,13 +101,25 @@ func closedTurnLog(t *testing.T, identifier session.SessionID) (session.Header, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := session.Append(conversation, session.TurnStarted, session.TurnStart{Turn: 1}); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.TurnStarted, session.TurnStart{Turn: 1})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err := session.Append(conversation, session.TurnEnded, session.TurnEnd{
-		Turn: 1, Reason: session.TurnCompleted{},
-	}); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.TurnEnded, session.TurnEnd{
+			Turn: 1, Reason: session.TurnCompleted{},
+		})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	return conversation.Header(), conversation.Events()
 }

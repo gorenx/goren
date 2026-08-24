@@ -1,6 +1,7 @@
 package llmretry
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -17,18 +18,36 @@ func TestValidateHistoryRestoresOneRetryChain(t *testing.T) {
 		PolicyKey: "policy", Retry: 1, MaxRetries: 2, DelayMS: 10,
 		Failure: llm.LlmFailure{Message: "busy", Code: "SERVER"},
 	}
-	if _, err := session.Append(conversation, retryScheduledEvent, RetryRecord(first)); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(retryScheduledEvent, RetryRecord(first))
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err := session.Append(conversation, retryStartedEvent, RetryStarted{
-		RetryID: "chain-1", Turn: 1, Step: 1, Retry: 1,
-	}); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(retryStartedEvent, RetryStarted{
+			RetryID: "chain-1", Turn: 1, Step: 1, Retry: 1,
+		})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	second := first
 	second.Retry = 2
-	if _, err := session.Append(conversation, retryScheduledEvent, RetryRecord(second)); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(retryScheduledEvent, RetryRecord(second))
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := ValidateHistory(conversation.Events()); err != nil {
 		t.Fatal(err)
@@ -141,23 +160,41 @@ func TestDecodeRetryRecordPreservesUnionAndRejectsMalformedFailure(t *testing.T)
 	}
 }
 
-func openRetrySession(t *testing.T, providerRoute string) *session.Session {
+func openRetrySession(t *testing.T, providerRoute string) session.Context {
 	t.Helper()
 	conversation, err := session.New(session.SessionID("retry-fixture"), session.CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := session.Append(conversation, session.TurnStarted, session.TurnStart{Turn: 1}); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.TurnStarted, session.TurnStart{Turn: 1})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err := session.Append(conversation, session.StepStarted, session.StepPosition{Turn: 1, Step: 1}); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.StepStarted, session.StepPosition{Turn: 1, Step: 1})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err := session.Append(conversation, session.RequestHeaderSet, session.RequestHeaderSnapshot{
-		Header: session.EpochHeader{Config: llm.CallConfig{Provider: providerRoute, Model: "model"}},
-		Reason: session.RequestHeaderInitial,
-	}); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.RequestHeaderSet, session.RequestHeaderSnapshot{
+			Header: session.EpochHeader{Config: llm.CallConfig{Provider: providerRoute, Model: "model"}},
+			Reason: session.RequestHeaderInitial,
+		})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	return conversation
 }

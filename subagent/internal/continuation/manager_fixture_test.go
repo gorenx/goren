@@ -36,7 +36,7 @@ func newManagerFixture(t *testing.T) *managerFixture {
 		idle:   make(chan struct{}),
 	}
 	liveSessions := &sessionRecord{
-		entries: map[session.SessionID]*session.Session{
+		entries: map[session.SessionID]session.Context{
 			parentAgent.ID(): parentSession,
 		},
 	}

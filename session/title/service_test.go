@@ -197,7 +197,11 @@ func TestLogServiceFallbackRenameAndProjection(t *testing.T) {
 		t.Fatalf("fallback snapshot = %#v", fallback)
 	}
 
-	accepted, err := fixture.titles.Rename(conversation, "  Hand\tpicked   name  ")
+	accepted, err := fixture.titles.Rename(
+		requestContext,
+		conversation,
+		"  Hand\tpicked   name  ",
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +214,11 @@ func TestLogServiceFallbackRenameAndProjection(t *testing.T) {
 		string(renameChange.Value) != `"Hand picked name"` {
 		t.Fatalf("rename projection = %#v", renameChange)
 	}
-	if _, err := fixture.titles.Rename(conversation, " \x1b[31m "); err == nil {
+	if _, err := fixture.titles.Rename(
+		requestContext,
+		conversation,
+		" \x1b[31m ",
+	); err == nil {
 		t.Fatal("control-only rename succeeded")
 	} else {
 		var invalid *SessionTitleInvalidError
@@ -248,20 +256,23 @@ func TestLogServiceRenameSupersedesActiveProvider(t *testing.T) {
 	}
 	conversation := handle.Session()
 	promptSeq := appendTitleFixtureHuman(t, conversation, "Prompt that triggers generation")
-	if _, err := session.Append(
-		conversation,
-		session.RequestHeaderSet,
-		session.RequestHeaderSnapshot{
-			Header: session.EpochHeader{
-				Config: llm.CallConfig{
-					Provider: "main-route",
-					Model:    "chat-model",
+	{
+		draft, err := session.NewEventDraft(session.RequestHeaderSet,
+			session.RequestHeaderSnapshot{
+				Header: session.EpochHeader{
+					Config: llm.CallConfig{
+						Provider: "main-route",
+						Model:    "chat-model",
+					},
 				},
-			},
-			Reason: session.RequestHeaderChange,
-		},
-	); err != nil {
-		t.Fatal(err)
+				Reason: session.RequestHeaderChange,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	select {
 	case request := <-started:
@@ -273,7 +284,11 @@ func TestLogServiceRenameSupersedesActiveProvider(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("title provider did not start")
 	}
-	accepted, err := fixture.titles.Rename(conversation, "User wins")
+	accepted, err := fixture.titles.Rename(
+		requestContext,
+		conversation,
+		"User wins",
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +317,11 @@ func TestLogServiceFallbackRefreshUnpinsUserTitle(t *testing.T) {
 	conversation := handle.Session()
 	appendTitleFixtureHuman(t, conversation, "Derivable prompt words")
 	receiveTitleChange(t, fixture.changes)
-	if _, err := fixture.titles.Rename(conversation, "Pinned without provider"); err != nil {
+	if _, err := fixture.titles.Rename(
+		requestContext,
+		conversation,
+		"Pinned without provider",
+	); err != nil {
 		t.Fatal(err)
 	}
 	receiveTitleChange(t, fixture.changes)
@@ -339,7 +358,7 @@ func (implementation titleFixtureProvider) Generate(
 
 func appendTitleFixtureHuman(
 	testingContext *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	text string,
 ) int64 {
 	testingContext.Helper()
@@ -356,14 +375,27 @@ func appendTitleFixtureHuman(
 	if err != nil {
 		testingContext.Fatal(err)
 	}
-	committed, err := session.AppendSurface(
-		conversation,
-		session.UserMessageAdded,
-		messageValue,
-		session.SurfaceIntent{
-			Operation: session.SurfaceAppend(),
-		},
-	)
+	committed, err := session.Event{}, error(nil)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewSurfaceEventDraft(session.UserMessageAdded,
+			messageValue,
+			session.SurfaceIntent{
+				Operation: session.SurfaceAppend(),
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		committed = committedEvent
+		err = writeErr
+	}
+
 	if err != nil {
 		testingContext.Fatal(err)
 	}

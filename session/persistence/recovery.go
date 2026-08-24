@@ -89,10 +89,10 @@ func inspectStored(metadata session.Header, entries []session.Event) (Inspection
 	if _, err := conversation.DeriveMessages(); err != nil {
 		return Inspection{}, err
 	}
-	if _, _, err := conversation.RequestHeaderValue(); err != nil {
+	if _, err := session.LatestRequestHeader(conversation.Events()); err != nil {
 		return Inspection{}, err
 	}
-	if _, _, err := conversation.RequestContextValue(); err != nil {
+	if _, err := session.LatestRequestContext(conversation.Events()); err != nil {
 		return Inspection{}, err
 	}
 	return Inspection{Header: conversation.Header(), Events: snapshotEvents(entries)}, nil

@@ -50,7 +50,7 @@ type Agent interface {
 	plugin.Service
 	ID() session.SessionID
 	OptionsValue() Options
-	SessionValue() *session.Session
+	SessionValue() session.Context
 	InboxValue() *Inbox
 	StatusValue() Status
 	Cancel(CancelCause, CancelOptions)

@@ -83,11 +83,11 @@ func (*lifecycleObserver) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "agentloop-test-lifecycle-observer",
 		Events: []plugin.EventSubscription{
-			plugin.EventOf[session.SessionCreated](),
+			plugin.EventOf[session.Created](),
 			plugin.EventOf[agent.Created](),
 			plugin.EventOf[agent.SessionStarted](),
 			plugin.EventOf[agent.Disposed](),
-			plugin.EventOf[session.SessionDisposed](),
+			plugin.EventOf[session.Disposed](),
 		},
 	}
 }
@@ -106,16 +106,16 @@ func (observerState *lifecycleObserver) ObserveEvent(
 ) error {
 	entry := ""
 	switch fact.(type) {
-	case session.SessionCreated:
-		entry = session.SessionCreatedEventName
+	case session.Created:
+		entry = session.CreatedEventName
 	case agent.Created:
 		entry = agent.CreatedEventName
 	case agent.SessionStarted:
 		entry = agent.SessionStartEventName
 	case agent.Disposed:
 		entry = agent.DisposedEventName
-	case session.SessionDisposed:
-		entry = session.SessionDisposedEventName
+	case session.Disposed:
+		entry = session.DisposedEventName
 	}
 	if entry == "" {
 		return nil
@@ -298,7 +298,7 @@ func TestLoopPublishesDrivesAndDisposesOneAgentLifecycle(t *testing.T) {
 		t.Fatalf("second request messages = %#v", got)
 	}
 	wantPublished := []string{
-		session.SessionCreatedEventName,
+		session.CreatedEventName,
 		agent.CreatedEventName,
 		agent.SessionStartEventName,
 	}
@@ -317,7 +317,7 @@ func TestLoopPublishesDrivesAndDisposesOneAgentLifecycle(t *testing.T) {
 	wantComplete := append(
 		wantPublished,
 		agent.DisposedEventName,
-		session.SessionDisposedEventName,
+		session.DisposedEventName,
 	)
 	if got := state.lifecycle.snapshot(); !reflect.DeepEqual(got, wantComplete) {
 		t.Fatalf("complete lifecycle = %#v, want %#v", got, wantComplete)
@@ -759,11 +759,11 @@ func TestRuntimeShutdownRetiresLiveAgentBeforeRootServices(t *testing.T) {
 		t.Fatalf("post-shutdown Create error = %v", err)
 	}
 	want := []string{
-		session.SessionCreatedEventName,
+		session.CreatedEventName,
 		agent.CreatedEventName,
 		agent.SessionStartEventName,
 		agent.DisposedEventName,
-		session.SessionDisposedEventName,
+		session.DisposedEventName,
 	}
 	if got := state.lifecycle.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("shutdown lifecycle = %#v, want %#v", got, want)
@@ -781,7 +781,7 @@ func (*flushBarrier) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "agentloop-test-flush-barrier",
 		Events: []plugin.EventSubscription{
-			plugin.EventOf[session.SessionFlushRequested](),
+			plugin.EventOf[session.FlushRequested](),
 		},
 	}
 }
@@ -798,7 +798,7 @@ func (barrier *flushBarrier) ObserveEvent(
 	requestContext context.Context,
 	fact plugin.Event,
 ) error {
-	if _, matches := fact.(session.SessionFlushRequested); !matches {
+	if _, matches := fact.(session.FlushRequested); !matches {
 		return nil
 	}
 	barrier.once.Do(func() {
@@ -1442,7 +1442,7 @@ func registerParallelTool(
 
 func lastTurnEnd(
 	t *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 ) turnEndObservation {
 	t.Helper()
 	events := conversation.Events()

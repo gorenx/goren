@@ -25,7 +25,7 @@ type agentMembership struct {
 
 	mutex         sync.Mutex
 	agents        agent.Registry
-	sessionHandle session.SessionHandle
+	sessionHandle session.Handle
 	routed        bool
 	registered    bool
 	published     bool

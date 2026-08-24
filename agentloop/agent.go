@@ -18,14 +18,14 @@ type ReactLoopAgent struct {
 	plugin.Base
 	identifier           session.SessionID
 	options              agent.Options
-	conversation         *session.Session
+	conversation         session.Context
 	pending              *agent.Inbox
 	loop                 *loop
 	maxParallelToolCalls int
 }
 
 func newReactLoopAgent(
-	conversation *session.Session,
+	conversation session.Context,
 	loopOptions agent.Options,
 	maxParallelToolCalls int,
 	failures observerFailureReporter,
@@ -137,7 +137,7 @@ func (subject *ReactLoopAgent) OptionsValue() agent.Options {
 	return cloneAgentOptions(subject.options)
 }
 
-func (subject *ReactLoopAgent) SessionValue() *session.Session {
+func (subject *ReactLoopAgent) SessionValue() session.Context {
 	return subject.conversation
 }
 

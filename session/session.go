@@ -11,33 +11,39 @@ import (
 
 var endSeedEvent = EventKey[struct{}]{name: endSeedEventType}
 
-// Session is an in-memory append-only event log. It contains no persistence,
+// log is one in-memory append-only Session log. It contains no persistence,
 // transport, model, or Tool execution logic.
-type Session struct {
+type log struct {
 	mu           sync.RWMutex
-	producerMu   sync.Mutex
 	header       Header
 	firstLiveSeq int64
 	entries      []Event
 	view         surfaceState
 	timeSource   TimeSource
-	attachment   *storeEntry
 
-	headerFold        *EpochHeader
-	headerFoldSeq     int
-	contextFold       *RequestRouteContext
-	contextFoldSeq    int
 	derived           []llm.Message
 	derivedNodes      int
 	derivedGeneration uint64
 }
 
 // New creates a detached Session and snapshots the borrowed seed.
-func New(identifier SessionID, options CreateOptions) (*Session, error) {
-	return newWithClock(identifier, options, systemTimeSource{})
+func New(identifier SessionID, options CreateOptions) (Context, error) {
+	return newContextWithClock(identifier, options, systemTimeSource{})
 }
 
-func newWithClock(identifier SessionID, options CreateOptions, temporalSource TimeSource) (*Session, error) {
+func newContextWithClock(
+	identifier SessionID,
+	options CreateOptions,
+	temporalSource TimeSource,
+) (*coordinator, error) {
+	sessionLog, err := newWithClock(identifier, options, temporalSource)
+	if err != nil {
+		return nil, err
+	}
+	return newCoordinator(sessionLog), nil
+}
+
+func newWithClock(identifier SessionID, options CreateOptions, temporalSource TimeSource) (*log, error) {
 	if temporalSource == nil {
 		return nil, errors.New("session: time source is nil")
 	}
@@ -45,7 +51,7 @@ func newWithClock(identifier SessionID, options CreateOptions, temporalSource Ti
 	if err != nil {
 		return nil, err
 	}
-	conversation := &Session{
+	conversation := &log{
 		header:     headerSnapshot,
 		timeSource: temporalSource,
 	}
@@ -54,7 +60,12 @@ func newWithClock(identifier SessionID, options CreateOptions, temporalSource Ti
 		if err := validateSeedEvent(candidate, int64(index)); err != nil {
 			return nil, fmt.Errorf("session: invalid seed event at index %d: %w", index, err)
 		}
-		transition, transitionErr := planSurface(conversation.view, candidate, conversation.entries)
+		transition, transitionErr := planSurface(
+			conversation.view,
+			candidate,
+			conversation.entries,
+			nil,
+		)
 		if transitionErr != nil {
 			return nil, fmt.Errorf("session: invalid seed event at index %d: %w", index, transitionErr)
 		}
@@ -63,7 +74,14 @@ func newWithClock(identifier SessionID, options CreateOptions, temporalSource Ti
 	}
 	conversation.firstLiveSeq = int64(len(conversation.entries))
 	if len(options.Seed) != 0 && conversation.entries[len(conversation.entries)-1].Type != endSeedEventType {
-		if _, err := Append(conversation, endSeedEvent, struct{}{}, AppendOptions{}); err != nil {
+		rawValue, snapshotErr := snapshotPayload(struct{}{})
+		if snapshotErr != nil {
+			return nil, snapshotErr
+		}
+		if _, err := conversation.commitBatch([]EventDraft{{
+			eventType: endSeedEventType,
+			data:      rawValue,
+		}}); err != nil {
 			return nil, err
 		}
 	}
@@ -71,7 +89,7 @@ func newWithClock(identifier SessionID, options CreateOptions, temporalSource Ti
 }
 
 // Header returns a detached copy of immutable Session metadata.
-func (conversation *Session) Header() Header {
+func (conversation *log) Header() Header {
 	if conversation == nil {
 		return Header{}
 	}
@@ -81,12 +99,12 @@ func (conversation *Session) Header() Header {
 }
 
 // ID returns the durable Session identity.
-func (conversation *Session) ID() SessionID {
+func (conversation *log) ID() SessionID {
 	return conversation.Header().ID
 }
 
 // FirstLiveSeq returns the constructor seed length before any end-seed marker.
-func (conversation *Session) FirstLiveSeq() int64 {
+func (conversation *log) FirstLiveSeq() int64 {
 	if conversation == nil {
 		return 0
 	}
@@ -96,7 +114,7 @@ func (conversation *Session) FirstLiveSeq() int64 {
 }
 
 // Seq returns the next event sequence number.
-func (conversation *Session) Seq() int64 {
+func (conversation *log) Seq() int64 {
 	if conversation == nil {
 		return 0
 	}
@@ -106,21 +124,21 @@ func (conversation *Session) Seq() int64 {
 }
 
 // Events returns a detached snapshot. Later appends do not grow the returned slice.
-func (conversation *Session) Events() []Event {
+func (conversation *log) Events() []Event {
 	if conversation == nil {
 		return nil
 	}
 	conversation.mu.RLock()
 	defer conversation.mu.RUnlock()
-	snapshot := make([]Event, len(conversation.entries))
+	detached := make([]Event, len(conversation.entries))
 	for index, source := range conversation.entries {
-		snapshot[index] = cloneEvent(source)
+		detached[index] = cloneEvent(source)
 	}
-	return snapshot
+	return detached
 }
 
 // Surface returns a detached snapshot of the current model-visible sequences.
-func (conversation *Session) Surface() Surface {
+func (conversation *log) Surface() Surface {
 	if conversation == nil {
 		return Surface{}
 	}
@@ -134,91 +152,51 @@ func (conversation *Session) Surface() Surface {
 	}
 }
 
-// ReadCut returns the append-only log and Surface from the same committed
-// revision. Consumers that validate positional relationships must use this
-// instead of composing separate Events and Surface reads.
-func (conversation *Session) ReadCut() ([]Event, Surface) {
+// Snapshot returns the append-only log, Surface, and barrier from the same
+// committed revision. Consumers that validate positional relationships use it
+// instead of composing separate reads.
+func (conversation *log) Snapshot() Snapshot {
 	if conversation == nil {
-		return nil, Surface{}
+		return Snapshot{}
 	}
+	return conversation.snapshot()
+}
+
+func (conversation *log) currentBarrier() WriteBarrier {
 	conversation.mu.RLock()
-	defer conversation.mu.RUnlock()
-	entries := make([]Event, len(conversation.entries))
-	for index, source := range conversation.entries {
-		entries[index] = cloneEvent(source)
+	barrier := WriteBarrier{
+		SessionID: conversation.header.ID,
+		NextSeq:   int64(len(conversation.entries)),
 	}
-	nodes := append([]int64(nil), conversation.view.nodes...)
-	return entries, Surface{
-		Nodes:             nodes,
+	conversation.mu.RUnlock()
+	return barrier
+}
+
+func (conversation *log) snapshot() Snapshot {
+	conversation.mu.RLock()
+	entries := make([]Event, len(conversation.entries))
+	for index, committed := range conversation.entries {
+		entries[index] = cloneEvent(committed)
+	}
+	viewSnapshot := Surface{
+		Nodes:             append([]int64(nil), conversation.view.nodes...),
 		ReplaceGeneration: conversation.view.replaceGeneration,
 	}
-}
-
-// RequestHeaderValue returns the canonical header in force after the latest
-// request/header event. Each committed event is folded at most once.
-func (conversation *Session) RequestHeaderValue() (EpochHeader, bool, error) {
-	if conversation == nil {
-		return EpochHeader{}, false, errors.New("session: request header from nil Session")
+	barrier := WriteBarrier{
+		SessionID: conversation.header.ID,
+		NextSeq:   int64(len(conversation.entries)),
 	}
-	conversation.mu.Lock()
-	defer conversation.mu.Unlock()
-	for index := conversation.headerFoldSeq; index < len(conversation.entries); index++ {
-		entry := conversation.entries[index]
-		if entry.Type != RequestHeaderEventName {
-			conversation.headerFoldSeq = index + 1
-			continue
-		}
-		var snapshot RequestHeaderSnapshot
-		if err := decodeSessionPayload(entry.Data, &snapshot); err != nil {
-			return EpochHeader{}, false, fmt.Errorf("session: invalid request/header at seq %d: %w", entry.Seq, err)
-		}
-		canonical := CanonicalEpochHeader(snapshot.Header)
-		conversation.headerFold = &canonical
-		conversation.headerFoldSeq = index + 1
+	conversation.mu.RUnlock()
+	return Snapshot{
+		Events:  entries,
+		Surface: viewSnapshot,
+		Barrier: barrier,
 	}
-	if conversation.headerFold == nil {
-		return EpochHeader{}, false, nil
-	}
-	return CanonicalEpochHeader(*conversation.headerFold), true, nil
-}
-
-// RequestContextValue returns the latest resolved provider/model capacity metadata.
-func (conversation *Session) RequestContextValue() (RequestRouteContext, bool, error) {
-	if conversation == nil {
-		return RequestRouteContext{}, false, errors.New("session: request context from nil Session")
-	}
-	conversation.mu.Lock()
-	defer conversation.mu.Unlock()
-	for index := conversation.contextFoldSeq; index < len(conversation.entries); index++ {
-		entry := conversation.entries[index]
-		if entry.Type != RequestContextEventName {
-			conversation.contextFoldSeq = index + 1
-			continue
-		}
-		var snapshot RequestRouteContext
-		if err := decodeSessionPayload(entry.Data, &snapshot); err != nil {
-			return RequestRouteContext{}, false, fmt.Errorf("session: invalid request/context at seq %d: %w", entry.Seq, err)
-		}
-		if snapshot.Provider == "" || snapshot.Model == "" ||
-			(snapshot.ContextWindow != nil && *snapshot.ContextWindow <= 0) {
-			return RequestRouteContext{}, false, fmt.Errorf("session: invalid request/context at seq %d", entry.Seq)
-		}
-		contextSnapshot := snapshot
-		contextSnapshot.ContextWindow = cloneInt(snapshot.ContextWindow)
-		conversation.contextFold = &contextSnapshot
-		conversation.contextFoldSeq = index + 1
-	}
-	if conversation.contextFold == nil {
-		return RequestRouteContext{}, false, nil
-	}
-	result := *conversation.contextFold
-	result.ContextWindow = cloneInt(conversation.contextFold.ContextWindow)
-	return result, true, nil
 }
 
 // DeriveMessages projects the current surface into provider-neutral history.
 // Non-surface events and empty assistant anchors never enter the result.
-func (conversation *Session) DeriveMessages() ([]llm.Message, error) {
+func (conversation *log) DeriveMessages() ([]llm.Message, error) {
 	if conversation == nil {
 		return nil, errors.New("session: derive messages from nil Session")
 	}
@@ -249,123 +227,71 @@ func (conversation *Session) DeriveMessages() ([]llm.Message, error) {
 	return llm.CloneMessages(cached)
 }
 
-// Append snapshots and commits one typed non-surface event.
-func Append[D any](conversation *Session, definition EventKey[D], payload D, options ...AppendOptions) (Event, error) {
-	if conversation == nil {
-		return Event{}, errors.New("session: append to nil Session")
-	}
-	if definition.name == "" {
-		return Event{}, errors.New("session: append with invalid event key")
-	}
-	settings, err := oneAppendOptions(options)
-	if err != nil {
-		return Event{}, err
-	}
-	rawValue, err := snapshotPayload(payload)
-	if err != nil {
-		return Event{}, err
-	}
-	return conversation.appendCandidate(Event{Type: definition.name, Data: rawValue, Ignorable: settings.Ignorable})
-}
-
-// AppendSerialized commits one non-surface event as an independent runtime
-// producer. It preserves the source harness's synchronous append/publication
-// boundary while serializing Go goroutines that would be turns of the same
-// JavaScript event loop. An OnEvent callback must use Append directly when it
-// deliberately verifies the reentry guard, or DeferAfterEvent before appending.
-func AppendSerialized[D any](conversation *Session, definition EventKey[D], payload D, options ...AppendOptions) (Event, error) {
-	return serializeProducerAppend(conversation, func() (Event, error) {
-		return Append(conversation, definition, payload, options...)
-	})
-}
-
-// AppendSurface snapshots and commits one typed message-producing event.
-func AppendSurface[D any](conversation *Session, definition SurfaceEventKey[D], payload D, intent SurfaceIntent) (Event, error) {
-	if conversation == nil {
-		return Event{}, errors.New("session: append to nil Session")
-	}
-	if definition.name == "" {
-		return Event{}, errors.New("session: append with invalid surface event key")
-	}
-	rawValue, err := snapshotPayload(payload)
-	if err != nil {
-		return Event{}, err
-	}
-	operation := intent.Operation
-	provenance := cloneSequences(intent.SourceEventSeqs)
-	return conversation.appendCandidate(Event{
-		Type: definition.name, Data: rawValue, SourceEventSeqs: provenance,
-		SurfaceOp: &operation, Ignorable: intent.Ignorable,
-	})
-}
-
-// AppendSurfaceSerialized is the surface-event counterpart of
-// AppendSerialized for independent runtime producers.
-func AppendSurfaceSerialized[D any](conversation *Session, definition SurfaceEventKey[D], payload D, intent SurfaceIntent) (Event, error) {
-	return serializeProducerAppend(conversation, func() (Event, error) {
-		return AppendSurface(conversation, definition, payload, intent)
-	})
-}
-
-// SerializeProducer runs one synchronous producer operation without allowing
-// another goroutine's serialized producer to interleave. The callback may use
-// Append and AppendSurface multiple times; it must not perform asynchronous or
-// external work while holding this short-lived ordering boundary.
-func SerializeProducer(conversation *Session, operation func() error) error {
-	if conversation == nil {
-		return errors.New("session: serialize producer on nil Session")
-	}
-	if operation == nil {
-		return errors.New("session: serialized producer operation is nil")
-	}
-	conversation.producerMu.Lock()
-	defer conversation.producerMu.Unlock()
-	return operation()
-}
-
-func serializeProducerAppend(conversation *Session, operation func() (Event, error)) (Event, error) {
-	var committed Event
-	err := SerializeProducer(conversation, func() error {
-		var appendErr error
-		committed, appendErr = operation()
-		return appendErr
-	})
-	return committed, err
-}
-
-func (conversation *Session) appendCandidate(candidate Event) (Event, error) {
+func (conversation *log) commitBatch(drafts []EventDraft) ([]Event, error) {
 	conversation.mu.Lock()
-	candidate.Seq = int64(len(conversation.entries))
-	candidate.Time = conversation.timeSource.CurrentTime().UnixMilli()
-	if !isSafeNonNegative(candidate.Seq) || !isSafeInteger(candidate.Time) {
-		conversation.mu.Unlock()
-		return Event{}, errors.New("session: seq and time must be safe integers")
-	}
-	transition, err := planSurface(conversation.view, candidate, conversation.entries)
-	if err != nil {
-		conversation.mu.Unlock()
-		return Event{}, err
-	}
-	owner := conversation.attachment
-	var notify func(Event)
-	if owner != nil {
-		notify, err = owner.beginAppend()
-		if err != nil {
-			conversation.mu.Unlock()
-			return Event{}, err
+	defer conversation.mu.Unlock()
+
+	surfaceDrafts := 0
+	for _, draft := range drafts {
+		if _, eligible := surfaceEventTypes[draft.eventType]; eligible {
+			surfaceDrafts++
 		}
 	}
-	// Append and AppendSurface construct candidate from owner-created snapshots.
-	// Keep that owned value as the log entry and detach only at public boundaries.
-	committed := candidate
-	conversation.entries = append(conversation.entries, committed)
-	applySurface(&conversation.view, transition)
-	conversation.mu.Unlock()
-
-	if notify != nil {
-		notify(committed)
+	multipleSurfaceChanges := surfaceDrafts > 1
+	plannedView := conversation.view
+	if multipleSurfaceChanges {
+		plannedView.nodes = append([]int64(nil), conversation.view.nodes...)
 	}
-	return cloneEvent(committed), nil
+	singleTransition := surfaceTransition{
+		appendNode: -1,
+	}
+	committed := make([]Event, 0, len(drafts))
+	for index, draft := range drafts {
+		if err := validateEventDraft(draft); err != nil {
+			return nil, fmt.Errorf("session: invalid EventDraft at index %d: %w", index, err)
+		}
+		candidate := Event{
+			Type:            draft.eventType,
+			Data:            append(json.RawMessage(nil), draft.data...),
+			SourceEventSeqs: cloneSequences(draft.sourceEventSeqs),
+			Ignorable:       draft.ignorable,
+		}
+		if draft.surfaceOperation != nil {
+			operation := *draft.surfaceOperation
+			candidate.SurfaceOp = &operation
+		}
+		candidate.Seq = int64(len(conversation.entries) + len(committed))
+		candidate.Time = conversation.timeSource.CurrentTime().UnixMilli()
+		if !isSafeNonNegative(candidate.Seq) || !isSafeInteger(candidate.Time) {
+			return nil, errors.New("session: seq and time must be safe integers")
+		}
+		transition, err := planSurface(
+			plannedView,
+			candidate,
+			conversation.entries,
+			committed,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if multipleSurfaceChanges {
+			applySurface(&plannedView, transition)
+		} else if transition.appendNode >= 0 {
+			singleTransition = transition
+		}
+		committed = append(committed, candidate)
+	}
+	conversation.entries = append(conversation.entries, committed...)
+	if multipleSurfaceChanges {
+		conversation.view = plannedView
+	} else {
+		applySurface(&conversation.view, singleTransition)
+	}
+	detached := make([]Event, len(committed))
+	for index, entry := range committed {
+		detached[index] = cloneEvent(entry)
+	}
+	return detached, nil
 }
 
 func validateSeedEvent(candidate Event, expectedSeq int64) error {
@@ -392,12 +318,12 @@ func validateSeedEvent(candidate Event, expectedSeq int64) error {
 	return nil
 }
 
-func oneAppendOptions(options []AppendOptions) (AppendOptions, error) {
+func oneEventOptions(options []EventOptions) (EventOptions, error) {
 	if len(options) > 1 {
-		return AppendOptions{}, errors.New("session: append accepts at most one AppendOptions value")
+		return EventOptions{}, errors.New("session: NewEventDraft accepts at most one EventOptions value")
 	}
 	if len(options) == 0 {
-		return AppendOptions{}, nil
+		return EventOptions{}, nil
 	}
 	return options[0], nil
 }
@@ -406,8 +332,8 @@ func cloneSequences(source *[]int64) *[]int64 {
 	if source == nil {
 		return nil
 	}
-	snapshot := append([]int64(nil), (*source)...)
-	return &snapshot
+	detached := append([]int64(nil), (*source)...)
+	return &detached
 }
 
 func isSafeInteger(value int64) bool {

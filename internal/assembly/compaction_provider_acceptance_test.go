@@ -133,27 +133,50 @@ func TestRealProviderCompactsOneRegion(t *testing.T) {
 	handle := createCompactionFixtureAgent(t, serviceView, "real-compaction-agent")
 	defer disposeCompactionFixtureAgent(t, handle)
 	conversation := handle.Subject.SessionValue()
-	if _, err = session.Append(
-		conversation,
-		session.TurnStarted,
-		session.TurnStart{
-			Turn: 1,
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewEventDraft(session.TurnStarted,
+			session.TurnStart{
+				Turn: 1,
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		if _, err = committedEvent, writeErr; err != nil {
+			t.Fatal(err)
+		}
 	}
 	firstMessage := compactionFixtureUserMessage(
 		t,
 		strings.Repeat("first durable real-provider history ", 1200),
 	)
-	firstEvent, err := session.AppendSurface(
-		conversation,
-		session.UserMessageAdded,
-		firstMessage,
-		session.SurfaceIntent{
-			Operation: session.SurfaceAppend(),
-		},
-	)
+	firstEvent, err := session.Event{}, error(nil)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewSurfaceEventDraft(session.UserMessageAdded,
+			firstMessage,
+			session.SurfaceIntent{
+				Operation: session.SurfaceAppend(),
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		firstEvent = committedEvent
+		err = writeErr
+	}
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,14 +184,27 @@ func TestRealProviderCompactsOneRegion(t *testing.T) {
 		t,
 		strings.Repeat("second durable real-provider history ", 1200),
 	)
-	secondEvent, err := session.AppendSurface(
-		conversation,
-		session.UserMessageAdded,
-		secondMessage,
-		session.SurfaceIntent{
-			Operation: session.SurfaceAppend(),
-		},
-	)
+	secondEvent, err := session.Event{}, error(nil)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewSurfaceEventDraft(session.UserMessageAdded,
+			secondMessage,
+			session.SurfaceIntent{
+				Operation: session.SurfaceAppend(),
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		secondEvent = committedEvent
+		err = writeErr
+	}
+
 	if err != nil {
 		t.Fatal(err)
 	}

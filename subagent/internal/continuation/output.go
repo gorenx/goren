@@ -10,7 +10,7 @@ import (
 )
 
 func lastAssistant(
-	conversation *session.Session,
+	conversation session.Context,
 	boundary int64,
 ) ([]llm.ContentBlock, error) {
 	if conversation == nil {

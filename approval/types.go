@@ -68,7 +68,7 @@ type Request struct {
 // ApprovalTarget is the Approval-owned view of an active Agent. It exposes
 // only the Session being audited and the inbox operation used by policy changes.
 type ApprovalTarget interface {
-	SessionValue() *session.Session
+	SessionValue() session.Context
 	Inject(llm.UserMessage) error
 }
 
@@ -169,8 +169,8 @@ type Decision struct {
 type Approval interface {
 	plugin.Service
 	Request(context.Context, Request) (Outcome, error)
-	EffectivePolicy(*session.Session) (Policy, error)
-	OverrideOf(*session.Session) (Policy, bool, error)
+	EffectivePolicy(session.Context) (Policy, error)
+	OverrideOf(session.Context) (Policy, bool, error)
 	SetPolicy(context.Context, ApprovalTarget, Policy) error
 }
 
@@ -178,7 +178,7 @@ type Approval interface {
 // unpublished delegated Session.
 type DelegationPolicy interface {
 	plugin.Service
-	SeedDelegationPolicy(*session.Session) error
+	SeedDelegationPolicy(context.Context, session.Context) error
 }
 
 func validOutcome(selectedOutcome Outcome) bool {

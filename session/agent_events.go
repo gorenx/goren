@@ -1,11 +1,8 @@
 package session
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 
 	"github.com/gorenx/goren/llm"
 )
@@ -71,7 +68,10 @@ func (cause HookCancelCause) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		Kind   string `json:"kind"`
 		Reason string `json:"reason"`
-	}{Kind: "hook", Reason: cause.Reason})
+	}{
+		Kind:   "hook",
+		Reason: cause.Reason,
+	})
 }
 
 // TurnEndReason is the closed core reason union stored by Agent Loop.
@@ -120,7 +120,10 @@ func (outcome TurnAborted) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		Kind   string          `json:"kind"`
 		Reason TurnCancelCause `json:"reason"`
-	}{Kind: "aborted", Reason: outcome.Reason})
+	}{
+		Kind:   "aborted",
+		Reason: outcome.Reason,
+	})
 }
 
 // TurnError records one structured provider-neutral failure.
@@ -136,7 +139,10 @@ func (outcome TurnError) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		Kind  string         `json:"kind"`
 		Error llm.LlmFailure `json:"error"`
-	}{Kind: "error", Error: outcome.Error})
+	}{
+		Kind:  "error",
+		Error: outcome.Error,
+	})
 }
 
 // TurnEnd closes one durable Agent turn.
@@ -227,154 +233,3 @@ var (
 	RequestHeaderSet  = DefineEvent[RequestHeaderSnapshot](RequestHeaderEventName)
 	RequestContextSet = DefineEvent[RequestRouteContext](RequestContextEventName)
 )
-
-// CanonicalEpochHeader detaches a request header and removes empty optional fields.
-func CanonicalEpochHeader(inputSnapshot EpochHeader) EpochHeader {
-	canonical := EpochHeader{Config: llm.CloneCallConfig(inputSnapshot.Config)}
-	if inputSnapshot.AdapterDefaults != nil &&
-		(inputSnapshot.AdapterDefaults.ReasoningEffort || inputSnapshot.AdapterDefaults.MaxTokens) {
-		defaultsSnapshot := *inputSnapshot.AdapterDefaults
-		canonical.AdapterDefaults = &defaultsSnapshot
-	}
-	if inputSnapshot.System != nil && *inputSnapshot.System != "" {
-		promptSnapshot := *inputSnapshot.System
-		canonical.System = &promptSnapshot
-	}
-	if len(inputSnapshot.Tools) != 0 {
-		canonical.Tools = cloneToolSchemas(inputSnapshot.Tools)
-	}
-	return canonical
-}
-
-// EpochHeaderEqual compares canonical request headers, including ordered schemas.
-func EpochHeaderEqual(left EpochHeader, right EpochHeader) bool {
-	leftCanonical := CanonicalEpochHeader(left)
-	rightCanonical := CanonicalEpochHeader(right)
-	if !llm.CallConfigEqual(leftCanonical.Config, rightCanonical.Config) ||
-		!sameAdapterDefaults(leftCanonical.AdapterDefaults, rightCanonical.AdapterDefaults) ||
-		!sameOptionalString(leftCanonical.System, rightCanonical.System) || len(leftCanonical.Tools) != len(rightCanonical.Tools) {
-		return false
-	}
-	for index := range leftCanonical.Tools {
-		leftSchema := leftCanonical.Tools[index]
-		rightSchema := rightCanonical.Tools[index]
-		if leftSchema.Name != rightSchema.Name || leftSchema.Description != rightSchema.Description ||
-			!bytes.Equal(leftSchema.Parameters, rightSchema.Parameters) {
-			return false
-		}
-	}
-	return true
-}
-
-func cloneToolSchemas(entries []llm.ToolSchema) []llm.ToolSchema {
-	detached := make([]llm.ToolSchema, len(entries))
-	for index, entry := range entries {
-		detached[index] = entry
-		detached[index].Parameters = append(json.RawMessage(nil), entry.Parameters...)
-	}
-	return detached
-}
-
-func sameAdapterDefaults(left *llm.CallConfigAdapterDefaults, right *llm.CallConfigAdapterDefaults) bool {
-	if left == nil || right == nil {
-		return left == nil && right == nil
-	}
-	return *left == *right
-}
-
-func sameOptionalString(left *string, right *string) bool {
-	if left == nil || right == nil {
-		return left == nil && right == nil
-	}
-	return *left == *right
-}
-
-func decodeSessionPayload[T any](rawValue json.RawMessage, target *T) error {
-	decoder := json.NewDecoder(bytes.NewReader(rawValue))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return err
-	}
-	var trailing json.RawMessage
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return errors.New("session: event payload contains multiple JSON values")
-		}
-		return err
-	}
-	return nil
-}
-
-func cloneInt(source *int) *int {
-	if source == nil {
-		return nil
-	}
-	copyValue := *source
-	return &copyValue
-}
-
-func decodeDerivedMessage(entry Event) (llm.Message, error) {
-	switch entry.Type {
-	case UserMessageEventName:
-		return llm.DecodeUserMessage(entry.Data)
-	case AssistantMessageEventName:
-		var wireValue struct {
-			Turn    int64           `json:"turn"`
-			Step    int64           `json:"step"`
-			Message json.RawMessage `json:"message"`
-			Usage   json.RawMessage `json:"usage,omitempty"`
-		}
-		if err := decodeSessionPayload(entry.Data, &wireValue); err != nil {
-			return nil, err
-		}
-		messageValue, err := llm.DecodeMessage(wireValue.Message)
-		if err != nil {
-			return nil, err
-		}
-		typedMessage, ok := messageValue.(llm.AssistantMessage)
-		if !ok {
-			return nil, errors.New("session: assistant/message contains a non-assistant message")
-		}
-		if len(typedMessage.ContentValue()) == 0 {
-			return nil, nil
-		}
-		return typedMessage, nil
-	case ToolResultEventName:
-		var wireValue struct {
-			Message json.RawMessage `json:"message"`
-		}
-		// Tool result data is merge-extensible. Projection needs only the owned
-		// message field and must not discard or reject provider/plugin metadata.
-		if err := json.Unmarshal(entry.Data, &wireValue); err != nil {
-			return nil, err
-		}
-		messageValue, err := llm.DecodeMessage(wireValue.Message)
-		if err != nil {
-			return nil, err
-		}
-		typedMessage, ok := messageValue.(llm.ToolResultMessage)
-		if !ok {
-			return nil, errors.New("session: tool/result contains a non-tool-result message")
-		}
-		return typedMessage, nil
-	default:
-		return nil, nil
-	}
-}
-
-// DeriveEventMessage projects one detached Session event through the same
-// owner-defined mapping used by Surface reconstruction. Non-message events and
-// empty assistant anchors return nil without an error.
-func DeriveEventMessage(entry Event) (llm.Message, error) {
-	return decodeDerivedMessage(cloneEvent(entry))
-}
-
-func validatePosition(turn int64, step int64) error {
-	if !isSafeNonNegative(turn) || turn == 0 {
-		return fmt.Errorf("session: turn must be a positive safe integer, got %d", turn)
-	}
-	if !isSafeNonNegative(step) || step == 0 {
-		return fmt.Errorf("session: step must be a positive safe integer, got %d", step)
-	}
-	return nil
-}

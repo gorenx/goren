@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,12 +49,12 @@ type Inbox struct {
 	operationMu   sync.Mutex
 	stateMu       sync.RWMutex
 	state         inboxState
-	conversation  *session.Session
+	conversation  session.Context
 	notifications InboxNotifications
 }
 
 // NewInbox reconstructs pending work after the durable inherited seed boundary.
-func NewInbox(conversation *session.Session, notifications InboxNotifications) (*Inbox, error) {
+func NewInbox(conversation session.Context, notifications InboxNotifications) (*Inbox, error) {
 	if conversation == nil || notifications == nil {
 		return nil, errors.New("agent: Inbox Session and notifications are required")
 	}
@@ -226,10 +227,15 @@ func (pending *Inbox) mutateLocked(
 	if err != nil {
 		return nil, err
 	}
-	committed, err := session.AppendSerialized(pending.conversation, InboxSpliced, mutation)
+	draft, err := session.NewEventDraft(InboxSpliced, mutation)
 	if err != nil {
 		return nil, err
 	}
+	result, err := pending.conversation.Commit(context.Background(), session.Batch(draft))
+	if err != nil {
+		return nil, err
+	}
+	committed := result.Events[0]
 	var durable InboxSplice
 	if err = json.Unmarshal(committed.Data, &durable); err != nil {
 		return nil, fmt.Errorf("agent: decode committed Inbox splice: %w", err)

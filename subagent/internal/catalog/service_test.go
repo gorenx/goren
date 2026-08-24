@@ -14,11 +14,11 @@ import (
 )
 
 type sessionList struct {
-	conversations []*session.Session
+	conversations []session.Context
 }
 
-func (source sessionList) List() []*session.Session {
-	return append([]*session.Session(nil), source.conversations...)
+func (source sessionList) List() []session.Context {
+	return append([]session.Context(nil), source.conversations...)
 }
 
 type persistenceView struct {
@@ -121,7 +121,7 @@ func TestListChildrenUsesLivePreferredProjectionBackedCorpus(t *testing.T) {
 	catalogService := New()
 	if err := catalogService.Enable(
 		sessionList{
-			conversations: []*session.Session{
+			conversations: []session.Context{
 				creationWindow,
 				liveContinuable,
 			},
@@ -264,7 +264,7 @@ func newCatalogSession(
 	parentID session.SessionID,
 	createdAt int64,
 	descriptor subagent.Descriptor,
-) *session.Session {
+) session.Context {
 	t.Helper()
 	conversation, err := session.New(
 		identifier,
@@ -286,12 +286,22 @@ func newCatalogSession(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = session.Append(
-		conversation,
-		subagent.DescriptorEvent,
-		descriptorData,
-	); err != nil {
-		t.Fatal(err)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewEventDraft(subagent.DescriptorEvent,
+			descriptorData)
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		if _, err = committedEvent, writeErr; err != nil {
+			t.Fatal(err)
+		}
 	}
 	return conversation
 }
@@ -305,7 +315,7 @@ func projectionRegistry(t *testing.T) *sessionprojection.DriveRegistry {
 	return registry
 }
 
-func inspectionOf(conversation *session.Session) sessionpersistence.Inspection {
+func inspectionOf(conversation session.Context) sessionpersistence.Inspection {
 	return sessionpersistence.Inspection{
 		Header: conversation.Header(),
 		Events: conversation.Events(),

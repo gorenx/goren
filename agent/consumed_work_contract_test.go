@@ -61,11 +61,11 @@ func TestPinnedSourceConsumedWorkMatchesGo(t *testing.T) {
 		t.Fatal(decodeErr)
 	}
 	goObservations := []consumedWorkContractObservation{
-		observeConsumedWork(t, "latest-stepped", func(conversation *session.Session) {
+		observeConsumedWork(t, "latest-stepped", func(conversation session.Context) {
 			appendContractSteppedTurn(t, conversation, 1, session.TurnCompleted{})
 			appendContractSteppedTurn(t, conversation, 2, session.TurnMaxTokens{})
 		}),
-		observeConsumedWork(t, "claimed-pre-step-error", func(conversation *session.Session) {
+		observeConsumedWork(t, "claimed-pre-step-error", func(conversation session.Context) {
 			appendContractSteppedTurn(t, conversation, 1, session.TurnCompleted{})
 			appendContractTurnStart(t, conversation, 2)
 			appendContractClaim(t, conversation)
@@ -76,27 +76,27 @@ func TestPinnedSourceConsumedWorkMatchesGo(t *testing.T) {
 				},
 			})
 		}),
-		observeConsumedWork(t, "unclaimed-later-turns", func(conversation *session.Session) {
+		observeConsumedWork(t, "unclaimed-later-turns", func(conversation session.Context) {
 			appendContractSteppedTurn(t, conversation, 1, session.TurnCompleted{})
 			appendContractTurnStart(t, conversation, 2)
 			appendContractTurnEnd(t, conversation, 2, session.TurnBlocked{})
 		}),
-		observeConsumedWork(t, "completed-empty-claim", func(conversation *session.Session) {
+		observeConsumedWork(t, "completed-empty-claim", func(conversation session.Context) {
 			appendContractSteppedTurn(t, conversation, 1, session.TurnCompleted{})
 			appendContractTurnStart(t, conversation, 2)
 			appendContractClaim(t, conversation)
 			appendContractTurnEnd(t, conversation, 2, session.TurnCompleted{})
 		}),
-		observeConsumedWork(t, "mid-turn-suffix", func(conversation *session.Session) {
+		observeConsumedWork(t, "mid-turn-suffix", func(conversation session.Context) {
 			appendContractClaim(t, conversation)
 			appendContractTurnEnd(t, conversation, 2, session.TurnAborted{
 				Reason: session.UserCancelCause{},
 			})
 		}),
-		observeConsumedWork(t, "dropped-unrun", func(conversation *session.Session) {
+		observeConsumedWork(t, "dropped-unrun", func(conversation session.Context) {
 			appendContractCancellation(t, conversation, nil)
 		}),
-		observeConsumedWork(t, "replacement-stays-pending", func(conversation *session.Session) {
+		observeConsumedWork(t, "replacement-stays-pending", func(conversation session.Context) {
 			appendContractCancellation(
 				t,
 				conversation,
@@ -105,7 +105,7 @@ func TestPinnedSourceConsumedWorkMatchesGo(t *testing.T) {
 				},
 			)
 		}),
-		observeConsumedWork(t, "later-turn-absorbs-drop", func(conversation *session.Session) {
+		observeConsumedWork(t, "later-turn-absorbs-drop", func(conversation session.Context) {
 			appendContractCancellation(t, conversation, nil)
 			appendContractSteppedTurn(t, conversation, 1, session.TurnCompleted{})
 		}),
@@ -122,7 +122,7 @@ func TestPinnedSourceConsumedWorkMatchesGo(t *testing.T) {
 func observeConsumedWork(
 	t *testing.T,
 	name string,
-	buildEvents func(*session.Session),
+	buildEvents func(session.Context),
 ) consumedWorkContractObservation {
 	t.Helper()
 	conversation, createErr := session.New(
@@ -152,85 +152,125 @@ func observeConsumedWork(
 
 func appendContractSteppedTurn(
 	t *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	turnNumber int64,
 	ending session.TurnEndReason,
 ) {
 	t.Helper()
 	appendContractTurnStart(t, conversation, turnNumber)
 	appendContractClaim(t, conversation)
-	if _, appendErr := session.Append(
-		conversation,
-		session.StepStarted,
-		session.StepPosition{
-			Turn: turnNumber,
-			Step: 1,
-		},
-	); appendErr != nil {
-		t.Fatal(appendErr)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewEventDraft(session.StepStarted,
+			session.StepPosition{
+				Turn: turnNumber,
+				Step: 1,
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		if _, appendErr := committedEvent, writeErr; appendErr != nil {
+			t.Fatal(appendErr)
+		}
 	}
 	appendContractTurnEnd(t, conversation, turnNumber, ending)
 }
 
 func appendContractTurnStart(
 	t *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	turnNumber int64,
 ) {
 	t.Helper()
-	if _, appendErr := session.Append(
-		conversation,
-		session.TurnStarted,
-		session.TurnStart{
-			Turn: turnNumber,
-		},
-	); appendErr != nil {
-		t.Fatal(appendErr)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewEventDraft(session.TurnStarted,
+			session.TurnStart{
+				Turn: turnNumber,
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		if _, appendErr := committedEvent, writeErr; appendErr != nil {
+			t.Fatal(appendErr)
+		}
 	}
 }
 
 func appendContractTurnEnd(
 	t *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	turnNumber int64,
 	ending session.TurnEndReason,
 ) {
 	t.Helper()
-	if _, appendErr := session.Append(
-		conversation,
-		session.TurnEnded,
-		session.TurnEnd{
-			Turn:   turnNumber,
-			Reason: ending,
-		},
-	); appendErr != nil {
-		t.Fatal(appendErr)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewEventDraft(session.TurnEnded,
+			session.TurnEnd{
+				Turn:   turnNumber,
+				Reason: ending,
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		if _, appendErr := committedEvent, writeErr; appendErr != nil {
+			t.Fatal(appendErr)
+		}
 	}
 }
 
 func appendContractClaim(
 	t *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 ) {
 	t.Helper()
 	removedCount := 1
-	if _, appendErr := session.Append(
-		conversation,
-		agentcore.InboxSpliced,
-		agentcore.InboxSplice{
-			Target:       agentcore.NextTurn,
-			Start:        0,
-			RemovedCount: &removedCount,
-			Inserted:     []llm.UserMessage{},
-		},
-	); appendErr != nil {
-		t.Fatal(appendErr)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewEventDraft(agentcore.InboxSpliced,
+			agentcore.InboxSplice{
+				Target:       agentcore.NextTurn,
+				Start:        0,
+				RemovedCount: &removedCount,
+				Inserted:     []llm.UserMessage{},
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		if _, appendErr := committedEvent, writeErr; appendErr != nil {
+			t.Fatal(appendErr)
+		}
 	}
 }
 
 func appendContractCancellation(
 	t *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	replacementMessages []llm.UserMessage,
 ) {
 	t.Helper()
@@ -238,18 +278,28 @@ func appendContractCancellation(
 		replacementMessages = []llm.UserMessage{}
 	}
 	removedCount := 1
-	if _, appendErr := session.Append(
-		conversation,
-		agentcore.InboxSpliced,
-		agentcore.InboxSplice{
-			Target:       agentcore.NextTurn,
-			Start:        0,
-			RemovedCount: &removedCount,
-			Inserted:     replacementMessages,
-			Outcome:      agentcore.InboxCanceled,
-		},
-	); appendErr != nil {
-		t.Fatal(appendErr)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewEventDraft(agentcore.InboxSpliced,
+			agentcore.InboxSplice{
+				Target:       agentcore.NextTurn,
+				Start:        0,
+				RemovedCount: &removedCount,
+				Inserted:     replacementMessages,
+				Outcome:      agentcore.InboxCanceled,
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		if _, appendErr := committedEvent, writeErr; appendErr != nil {
+			t.Fatal(appendErr)
+		}
 	}
 }
 

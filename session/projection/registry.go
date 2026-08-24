@@ -20,7 +20,7 @@ type unitCell struct {
 
 type registration struct {
 	projectionUnit Unit
-	cells          map[*session.Session]unitCell
+	cells          map[session.Context]unitCell
 	refs           int
 }
 
@@ -51,8 +51,8 @@ func (owner *DriveRegistry) Manifest() plugin.Manifest {
 			plugin.ServiceOf[session.LiveStore](),
 		},
 		Events: []plugin.EventSubscription{
-			plugin.EventOf[session.SessionEventAppended](),
-			plugin.EventOf[session.SessionDisposed](),
+			plugin.EventOf[session.EventAppended](),
+			plugin.EventOf[session.Disposed](),
 		},
 	}
 }
@@ -81,13 +81,13 @@ func (owner *DriveRegistry) ObserveEvent(
 	fact plugin.Event,
 ) error {
 	switch observed := fact.(type) {
-	case session.SessionEventAppended:
+	case session.EventAppended:
 		return owner.observeEvent(
 			requestContext,
 			observed.Conversation,
 			observed.Committed,
 		)
-	case session.SessionDisposed:
+	case session.Disposed:
 		return owner.observeDisposed(requestContext, observed.Conversation)
 	default:
 		return nil
@@ -113,7 +113,7 @@ func (owner *DriveRegistry) Register(projectionUnit Unit) (UnitHandle, error) {
 	if existing == nil {
 		owner.registrations[projectionKey] = &registration{
 			projectionUnit: projectionUnit,
-			cells:          make(map[*session.Session]unitCell),
+			cells:          make(map[session.Context]unitCell),
 			refs:           1,
 		}
 		owner.order = append(owner.order, projectionKey)
@@ -134,8 +134,8 @@ func (owner *DriveRegistry) Register(projectionUnit Unit) (UnitHandle, error) {
 	}, nil
 }
 
-// Snapshot folds missing cells lazily and serves one validated current cut.
-func (owner *DriveRegistry) Snapshot(conversation *session.Session) (Snapshot, error) {
+// Snapshot folds missing cells lazily and serves one validated current state.
+func (owner *DriveRegistry) Snapshot(conversation session.Context) (Snapshot, error) {
 	if conversation == nil {
 		return Snapshot{}, errors.New("sessionprojection: snapshot Session is nil")
 	}
@@ -162,7 +162,7 @@ func (owner *DriveRegistry) Snapshot(conversation *session.Session) (Snapshot, e
 }
 
 // Checkpoint returns detached rebuildable state for every registered unit.
-func (owner *DriveRegistry) Checkpoint(conversation *session.Session) (Checkpoint, error) {
+func (owner *DriveRegistry) Checkpoint(conversation session.Context) (Checkpoint, error) {
 	if conversation == nil {
 		return nil, errors.New("sessionprojection: checkpoint Session is nil")
 	}
@@ -190,7 +190,7 @@ func (owner *DriveRegistry) Checkpoint(conversation *session.Session) (Checkpoin
 
 func (owner *DriveRegistry) observeEvent(
 	requestContext context.Context,
-	conversation *session.Session,
+	conversation session.Context,
 	committed session.Event,
 ) error {
 	owner.mu.Lock()
@@ -248,7 +248,7 @@ func (owner *DriveRegistry) observeEvent(
 	return nil
 }
 
-func (owner *DriveRegistry) observeDisposed(_ context.Context, conversation *session.Session) error {
+func (owner *DriveRegistry) observeDisposed(_ context.Context, conversation session.Context) error {
 	owner.mu.Lock()
 	for _, entry := range owner.registrations {
 		delete(entry.cells, conversation)
@@ -279,7 +279,7 @@ func (owner *DriveRegistry) unregister(projectionKey string) {
 
 func (owner *DriveRegistry) cellFor(
 	entry *registration,
-	conversation *session.Session,
+	conversation session.Context,
 	events []session.Event,
 ) (unitCell, error) {
 	cell, found := entry.cells[conversation]

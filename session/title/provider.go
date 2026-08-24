@@ -17,7 +17,7 @@ const (
 // ProviderRequest is one immutable title-generation revision. Cancellation is
 // carried by the Generate context rather than stored in this value.
 type ProviderRequest struct {
-	Session  *session.Session
+	Session  session.Context
 	Messages []UserMessage
 	Route    *ModelProvenance
 }

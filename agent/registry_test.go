@@ -15,7 +15,7 @@ import (
 type fakeAgent struct {
 	plugin.Base
 	identifier   session.SessionID
-	conversation *session.Session
+	conversation session.Context
 	status       agentcore.Status
 }
 
@@ -34,9 +34,9 @@ func (subject *fakeAgent) ID() session.SessionID { return subject.identifier }
 func (*fakeAgent) OptionsValue() agentcore.Options {
 	return agentcore.Options{}
 }
-func (subject *fakeAgent) SessionValue() *session.Session { return subject.conversation }
-func (*fakeAgent) InboxValue() *agentcore.Inbox           { return nil }
-func (subject *fakeAgent) StatusValue() agentcore.Status  { return subject.status }
+func (subject *fakeAgent) SessionValue() session.Context { return subject.conversation }
+func (*fakeAgent) InboxValue() *agentcore.Inbox          { return nil }
+func (subject *fakeAgent) StatusValue() agentcore.Status { return subject.status }
 func (*fakeAgent) Cancel(agentcore.CancelCause, agentcore.CancelOptions) {
 }
 func (*fakeAgent) WhenIdle(context.Context) error { return nil }

@@ -17,6 +17,12 @@ type failureRecorder struct {
 	failures []error
 }
 
+type panickingPostCommitReporter struct{}
+
+func (panickingPostCommitReporter) ReportPostCommitFailure(PostCommitFailure) {
+	panic("fixture reporter panic")
+}
+
 func (recorder *failureRecorder) ReportEventFailure(
 	_ context.Context,
 	failure plugin.EventFailure,
@@ -42,10 +48,10 @@ type storeObserverPlugin struct {
 	plugin.Base
 	name       string
 	store      LiveStore
-	onCreated  func(context.Context, *Session) error
-	onDisposed func(context.Context, *Session) error
-	onAppended func(context.Context, *Session, Event) error
-	onFlush    func(context.Context, *Session) error
+	onCreated  func(context.Context, Context) error
+	onDisposed func(context.Context, Context) error
+	onAppended func(context.Context, Context, Event) error
+	onFlush    func(context.Context, Context) error
 }
 
 func (observer *storeObserverPlugin) Manifest() plugin.Manifest {
@@ -55,10 +61,10 @@ func (observer *storeObserverPlugin) Manifest() plugin.Manifest {
 			plugin.ServiceOf[LiveStore](),
 		},
 		Events: []plugin.EventSubscription{
-			plugin.EventOf[SessionCreated](),
-			plugin.EventOf[SessionDisposed](),
-			plugin.EventOf[SessionEventAppended](),
-			plugin.EventOf[SessionFlushRequested](),
+			plugin.EventOf[Created](),
+			plugin.EventOf[Disposed](),
+			plugin.EventOf[EventAppended](),
+			plugin.EventOf[FlushRequested](),
 		},
 	}
 }
@@ -81,15 +87,15 @@ func (observer *storeObserverPlugin) ObserveEvent(
 	fact plugin.Event,
 ) error {
 	switch observed := fact.(type) {
-	case SessionCreated:
+	case Created:
 		if observer.onCreated != nil {
 			return observer.onCreated(requestContext, observed.Conversation)
 		}
-	case SessionDisposed:
+	case Disposed:
 		if observer.onDisposed != nil {
 			return observer.onDisposed(requestContext, observed.Conversation)
 		}
-	case SessionEventAppended:
+	case EventAppended:
 		if observer.onAppended != nil {
 			return observer.onAppended(
 				requestContext,
@@ -97,7 +103,7 @@ func (observer *storeObserverPlugin) ObserveEvent(
 				observed.Committed,
 			)
 		}
-	case SessionFlushRequested:
+	case FlushRequested:
 		if observer.onFlush != nil {
 			return observer.onFlush(requestContext, observed.Conversation)
 		}
@@ -146,55 +152,108 @@ func TestStoreLifecyclePublishesCommittedEventsAndFlush(t *testing.T) {
 	calls := []string{}
 	observer := &storeObserverPlugin{
 		name: "fixture-session-observer",
-		onCreated: func(context.Context, *Session) error {
+		onCreated: func(context.Context, Context) error {
 			calls = append(calls, "created")
 			return nil
 		},
-		onAppended: func(_ context.Context, activeSession *Session, committed Event) error {
+		onAppended: func(_ context.Context, activeSession Context, committed Event) error {
 			if activeSession.Seq() != committed.Seq+1 {
 				return errors.New("event was published before commit")
 			}
 			calls = append(calls, "event")
 			return nil
 		},
-		onFlush: func(context.Context, *Session) error {
+		onFlush: func(context.Context, Context) error {
 			calls = append(calls, "flush")
 			return nil
 		},
-		onDisposed: func(context.Context, *Session) error {
+		onDisposed: func(context.Context, Context) error {
 			calls = append(calls, "disposed")
 			return nil
 		},
 	}
 	store := newStoreFixture(t, recorder, observer)
-	handle, err := store.Create(requestContext, nil, CreateOptions{})
+	membership, err := store.Create(requestContext, nil, CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	conversation := handle.Session()
-	if _, err := Append(
-		conversation,
-		fixtureEventKey,
-		fixturePayload{
-			Items: []string{"value"},
-		},
-	); err != nil {
+	conversation := membership.Session()
+	if _, err := commitFixtureEvent(context.Background(), conversation, "value"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Flush(requestContext, conversation); err != nil {
 		t.Fatal(err)
 	}
-	if err := handle.Release(requestContext); err != nil {
+	if err := membership.Release(requestContext); err != nil {
 		t.Fatal(err)
 	}
 	if _, found := store.Get(conversation.ID()); found {
-		t.Fatal("Session remained live after handle release")
+		t.Fatal("Session remained live after membership release")
 	}
-	if want := []string{"created", "event", "flush", "disposed"}; !reflect.DeepEqual(calls, want) {
+	if want := []string{"created", "event", "flush", "flush", "disposed"}; !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls = %#v, want %#v", calls, want)
 	}
 	if failures := recorder.recordedFailures(); len(failures) != 0 {
 		t.Fatalf("failures = %#v", failures)
+	}
+}
+
+func TestConcurrentReleaseSharesOneFinalFlush(t *testing.T) {
+	t.Parallel()
+	recorder := &failureRecorder{}
+	flushStarted := make(chan struct{})
+	releaseFlush := make(chan struct{})
+	var flushOnce sync.Once
+	flushCount := 0
+	var flushMutex sync.Mutex
+	observer := &storeObserverPlugin{
+		name: "fixture-concurrent-release-observer",
+		onFlush: func(context.Context, Context) error {
+			flushMutex.Lock()
+			flushCount++
+			flushMutex.Unlock()
+			flushOnce.Do(func() {
+				close(flushStarted)
+			})
+			<-releaseFlush
+			return nil
+		},
+	}
+	store := newStoreFixture(t, recorder, observer)
+	membership, err := store.Create(context.Background(), nil, CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- membership.Release(context.Background())
+	}()
+	<-flushStarted
+
+	waitContext, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := membership.Release(waitContext); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("concurrent release error = %v", err)
+	}
+	flushMutex.Lock()
+	observedFlushes := flushCount
+	flushMutex.Unlock()
+	if observedFlushes != 1 {
+		t.Fatalf("concurrent releases started %d final flushes", observedFlushes)
+	}
+
+	close(releaseFlush)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := membership.Release(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	flushMutex.Lock()
+	observedFlushes = flushCount
+	flushMutex.Unlock()
+	if observedFlushes != 1 {
+		t.Fatalf("repeated release started %d final flushes", observedFlushes)
 	}
 }
 
@@ -206,11 +265,11 @@ func TestCreationFailureRollsBackWithPairedDisposal(t *testing.T) {
 	calls := []string{}
 	observer := &storeObserverPlugin{
 		name: "fixture-veto-observer",
-		onCreated: func(context.Context, *Session) error {
+		onCreated: func(context.Context, Context) error {
 			calls = append(calls, "created")
 			return sentinel
 		},
-		onDisposed: func(context.Context, *Session) error {
+		onDisposed: func(context.Context, Context) error {
 			calls = append(calls, "disposed")
 			return nil
 		},
@@ -232,39 +291,67 @@ func TestCreationFailureRollsBackWithPairedDisposal(t *testing.T) {
 	}
 }
 
+func TestCreationRollbackDetachesWhenFinalFlushFails(t *testing.T) {
+	t.Parallel()
+	requestContext, cancel := context.WithCancel(context.Background())
+	recorder := &failureRecorder{}
+	creationFailure := errors.New("creation veto")
+	flushFailure := errors.New("rollback flush failed")
+	observer := &storeObserverPlugin{
+		name: "fixture-rollback-observer",
+		onCreated: func(context.Context, Context) error {
+			cancel()
+			return creationFailure
+		},
+		onFlush: func(context.Context, Context) error {
+			return flushFailure
+		},
+	}
+	store := newStoreFixture(t, recorder, observer)
+	identifier := SessionID("rollback-flush-failure")
+	_, err := store.Create(
+		requestContext,
+		&identifier,
+		CreateOptions{},
+	)
+	if !errors.Is(err, creationFailure) || !errors.Is(err, flushFailure) {
+		t.Fatalf("create error = %v", err)
+	}
+	if _, found := store.Get(identifier); found {
+		t.Fatal("vetoed Session remained in Store after rollback flush failure")
+	}
+}
+
 func TestAppendObserverFailureIsContainedAndReentryRejected(t *testing.T) {
 	t.Parallel()
 	requestContext := context.Background()
 	recorder := &failureRecorder{}
 	observer := &storeObserverPlugin{
 		name: "fixture-reentrant-observer",
-		onAppended: func(_ context.Context, activeSession *Session, _ Event) error {
-			_, appendErr := Append(
-				activeSession,
+		onAppended: func(publicationContext context.Context, activeSession Context, _ Event) error {
+			draft, err := NewEventDraft(
 				fixtureEventKey,
 				fixturePayload{
 					Items: []string{"nested"},
 				},
 			)
-			if appendErr == nil || !strings.Contains(appendErr.Error(), "cannot reenter") {
+			if err != nil {
+				return err
+			}
+			_, appendErr := activeSession.Commit(publicationContext, Batch(draft))
+			if !errors.Is(appendErr, ErrWriteReentry) {
 				return errors.New("nested append was not rejected")
 			}
 			return errors.New("observer failure")
 		},
 	}
 	store := newStoreFixture(t, recorder, observer)
-	handle, err := store.Create(requestContext, nil, CreateOptions{})
+	membership, err := store.Create(requestContext, nil, CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	conversation := handle.Session()
-	committed, err := Append(
-		conversation,
-		fixtureEventKey,
-		fixturePayload{
-			Items: []string{"outer"},
-		},
-	)
+	conversation := membership.Session()
+	committed, err := commitFixtureEvent(context.Background(), conversation, "outer")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +364,36 @@ func TestAppendObserverFailureIsContainedAndReentryRejected(t *testing.T) {
 	}
 }
 
-func TestSerializedAppendsWaitForActivePublication(t *testing.T) {
+func TestPostCommitReporterPanicDoesNotChangeCommitResult(t *testing.T) {
+	t.Parallel()
+	store, err := NewMemoryStore(
+		MemoryStoreOptions{
+			PostCommitFailures: panickingPostCommitReporter{},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := store.Prepare(nil, CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	membership, err := store.Enter(conversation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := commitFixtureEvent(context.Background(), conversation, "committed"); err != nil {
+		t.Fatalf("post-commit reporter panic changed Commit result: %v", err)
+	}
+	if conversation.Seq() != 1 {
+		t.Fatalf("next seq = %d", conversation.Seq())
+	}
+	if err := membership.Release(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCommitWaitsForActivePublication(t *testing.T) {
 	t.Parallel()
 	requestContext := context.Background()
 	recorder := &failureRecorder{}
@@ -285,8 +401,8 @@ func TestSerializedAppendsWaitForActivePublication(t *testing.T) {
 	releasePublication := make(chan struct{})
 	var firstPublication sync.Once
 	observer := &storeObserverPlugin{
-		name: "fixture-serialized-observer",
-		onAppended: func(context.Context, *Session, Event) error {
+		name: "fixture-ordered-observer",
+		onAppended: func(context.Context, Context, Event) error {
 			firstPublication.Do(func() {
 				close(publicationStarted)
 				<-releasePublication
@@ -295,22 +411,20 @@ func TestSerializedAppendsWaitForActivePublication(t *testing.T) {
 		},
 	}
 	store := newStoreFixture(t, recorder, observer)
-	handle, err := store.Create(requestContext, nil, CreateOptions{})
+	membership, err := store.Create(requestContext, nil, CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	conversation := handle.Session()
+	conversation := membership.Session()
 
 	firstDone := make(chan struct{})
 	var firstCommitted Event
 	var firstErr error
 	go func() {
-		firstCommitted, firstErr = AppendSerialized(
+		firstCommitted, firstErr = commitFixtureEvent(
+			context.Background(),
 			conversation,
-			fixtureEventKey,
-			fixturePayload{
-				Items: []string{"first"},
-			},
+			"first",
 		)
 		close(firstDone)
 	}()
@@ -320,12 +434,10 @@ func TestSerializedAppendsWaitForActivePublication(t *testing.T) {
 	var secondCommitted Event
 	var secondErr error
 	go func() {
-		secondCommitted, secondErr = AppendSerialized(
+		secondCommitted, secondErr = commitFixtureEvent(
+			context.Background(),
 			conversation,
-			fixtureEventKey,
-			fixturePayload{
-				Items: []string{"second"},
-			},
+			"second",
 		)
 		close(secondDone)
 	}()
@@ -339,11 +451,11 @@ func TestSerializedAppendsWaitForActivePublication(t *testing.T) {
 	<-firstDone
 	<-secondDone
 	if firstErr != nil || secondErr != nil {
-		t.Fatalf("serialized append errors = (%v, %v)", firstErr, secondErr)
+		t.Fatalf("commit errors = (%v, %v)", firstErr, secondErr)
 	}
 	if firstCommitted.Seq != 0 || secondCommitted.Seq != 1 || conversation.Seq() != 2 {
 		t.Fatalf(
-			"serialized seqs = (%d, %d), next seq = %d",
+			"committed seqs = (%d, %d), next seq = %d",
 			firstCommitted.Seq,
 			secondCommitted.Seq,
 			conversation.Seq(),

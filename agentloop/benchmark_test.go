@@ -31,7 +31,7 @@ type benchmarkHarness struct {
 	adapter       llm.AdapterRegistrationHandle
 }
 
-var benchmarkPreparedSession *session.Session
+var benchmarkPreparedSession session.Context
 
 func BenchmarkAgentSessionPrepare(b *testing.B) {
 	sessions, err := session.NewMemoryStore(session.MemoryStoreOptions{

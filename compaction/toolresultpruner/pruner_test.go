@@ -22,7 +22,7 @@ type pricingStub struct {
 
 func (*pricingStub) Measure(
 	context.Context,
-	*session.Session,
+	session.Context,
 	*session.EpochHeader,
 ) (tokenmeter.Measurement, error) {
 	return tokenmeter.Measurement{}, nil
@@ -250,7 +250,7 @@ func TestPruneSessionCommitsShadowPriceAndReplacementAdjacently(t *testing.T) {
 	}
 }
 
-func TestPruneSessionReturnsCommittedPartialSuccessOnLaterFailure(t *testing.T) {
+func TestPruneSessionCommitsNothingWhenPlanBuildFails(t *testing.T) {
 	t.Parallel()
 	conversation := newPrunerSession(t, "prune-partial")
 	appendToolResultFixture(
@@ -279,15 +279,17 @@ func TestPruneSessionReturnsCommittedPartialSuccessOnLaterFailure(t *testing.T) 
 		HeadChars:      pointerToInt(4),
 		TailChars:      pointerToInt(3),
 	})
+	before := conversation.Snapshot()
 	outcome, err := implementation.PruneSession(context.Background(), conversation)
 	if err == nil || !strings.Contains(err.Error(), "price failed") {
 		t.Fatalf("prune error = %v", err)
 	}
-	if len(outcome.Pruned) != 1 || outcome.Pruned[0].CallID != "call-a" {
-		t.Fatalf("partial outcome = %#v", outcome)
+	if len(outcome.Pruned) != 0 || outcome.CharsRemoved != 0 {
+		t.Fatalf("failed pruning result = %#v", outcome)
 	}
-	if conversation.Surface().ReplaceGeneration != 1 {
-		t.Fatalf("replace generation = %d", conversation.Surface().ReplaceGeneration)
+	after := conversation.Snapshot()
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("Session changed after failed plan: before = %#v, after = %#v", before, after)
 	}
 }
 
@@ -382,7 +384,7 @@ func newPrunerFixture(
 func newPrunerSession(
 	testingContext *testing.T,
 	identifier session.SessionID,
-) *session.Session {
+) session.Context {
 	testingContext.Helper()
 	conversation, err := session.New(identifier, session.CreateOptions{})
 	if err != nil {
@@ -393,7 +395,7 @@ func newPrunerSession(
 
 func appendToolResultFixture(
 	testingContext *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	callID llm.CallID,
 	content []llm.ContentBlock,
 	isError bool,
@@ -409,20 +411,33 @@ func appendToolResultFixture(
 	if err != nil {
 		testingContext.Fatal(err)
 	}
-	committed, err := session.AppendSurface(
-		conversation,
-		session.ToolResultAdded,
-		session.ToolResult{
-			Turn:    1,
-			Step:    1,
-			Message: messageValue,
-			Error:   errorInfo,
-			Meta:    metadata,
-		},
-		session.SurfaceIntent{
-			Operation: session.SurfaceAppend(),
-		},
-	)
+	committed, err := session.Event{}, error(nil)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewSurfaceEventDraft(session.ToolResultAdded,
+			session.ToolResult{
+				Turn:    1,
+				Step:    1,
+				Message: messageValue,
+				Error:   errorInfo,
+				Meta:    metadata,
+			},
+			session.SurfaceIntent{
+				Operation: session.SurfaceAppend(),
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		committed = committedEvent
+		err = writeErr
+	}
+
 	if err != nil {
 		testingContext.Fatal(err)
 	}

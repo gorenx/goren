@@ -19,7 +19,7 @@ func TestCompactIfNeededSkipsWithoutDurableRoute(t *testing.T) {
 	meterValue := &meterStub{
 		measure: func(
 			context.Context,
-			*session.Session,
+			session.Context,
 			*session.EpochHeader,
 		) (tokenmeter.Measurement, error) {
 			measureCalls++
@@ -62,7 +62,7 @@ func TestPressurePrunesOnlyAfterThresholdAndRemeasures(t *testing.T) {
 	meterValue := &meterStub{
 		measure: func(
 			_ context.Context,
-			current *session.Session,
+			current session.Context,
 			_ *session.EpochHeader,
 		) (tokenmeter.Measurement, error) {
 			measureCalls++
@@ -76,7 +76,7 @@ func TestPressurePrunesOnlyAfterThresholdAndRemeasures(t *testing.T) {
 	prunerValue := &prunerStub{
 		prune: func(
 			context.Context,
-			*session.Session,
+			session.Context,
 		) (toolresultpruner.Result, error) {
 			pruned = true
 			return toolresultpruner.Result{}, nil
@@ -206,7 +206,7 @@ func TestOverflowPrunesBeforeForcedCompaction(t *testing.T) {
 	prunerValue := &prunerStub{
 		prune: func(
 			context.Context,
-			*session.Session,
+			session.Context,
 		) (toolresultpruner.Result, error) {
 			pruneCalls++
 			return toolresultpruner.Result{}, nil
@@ -274,7 +274,7 @@ func TestPressureReportsFailureAfterBoundedAttempts(t *testing.T) {
 	meterValue := &meterStub{
 		measure: func(
 			_ context.Context,
-			current *session.Session,
+			current session.Context,
 			_ *session.EpochHeader,
 		) (tokenmeter.Measurement, error) {
 			measurement := pricedSurface(current, 100, 0)
@@ -316,7 +316,7 @@ func TestPrunerFailureDoesNotStartCompaction(t *testing.T) {
 	prunerValue := &prunerStub{
 		prune: func(
 			context.Context,
-			*session.Session,
+			session.Context,
 		) (toolresultpruner.Result, error) {
 			return toolresultpruner.Result{}, want
 		},
@@ -357,15 +357,18 @@ func TestPressureRechecksCompactionLockAfterResolvingCapacity(t *testing.T) {
 	conversation := conversationFixture(t, 2, strings.Repeat("pressure ", 20))
 	runtimeValue := newRuntimeStub("unused", 1_000)
 	runtimeValue.beforeResolve = func() {
-		if _, err := session.AppendSerialized(
-			conversation,
-			compaction.StartEvent,
-			compaction.Start{
-				CompactionID: "concurrent-compaction",
-				Turn:         int64Pointer(3),
-			},
-		); err != nil {
-			panic(err)
+		{
+			draft, err := session.NewEventDraft(compaction.StartEvent,
+				compaction.Start{
+					CompactionID: "concurrent-compaction",
+					Turn:         int64Pointer(3),
+				})
+			if err == nil {
+				_, err = conversation.Commit(context.Background(), session.Batch(draft))
+			}
+			if err != nil {
+				panic(err)
+			}
 		}
 	}
 	prunerValue := &prunerStub{}

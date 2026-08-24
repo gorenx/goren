@@ -1,6 +1,7 @@
 package persistence
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -14,11 +15,23 @@ func TestInterruptedTurnClosersPreserveUnknownToolOutcomeSemantics(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := session.Append(conversation, session.TurnStarted, session.TurnStart{Turn: 1}); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.TurnStarted, session.TurnStart{Turn: 1})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err := session.Append(conversation, session.StepStarted, session.StepPosition{Turn: 1, Step: 1}); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.StepStarted, session.StepPosition{Turn: 1, Step: 1})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	assistantMessage, err := llm.NewAssistantMessage(llm.AssistantMessageInput{
 		Content: []llm.ContentBlock{llm.ToolCallBlock{
@@ -29,16 +42,36 @@ func TestInterruptedTurnClosersPreserveUnknownToolOutcomeSemantics(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := session.AppendSurface(
-		conversation, session.AssistantMessaged,
-		session.AssistantMessage{Turn: 1, Step: 1, Message: assistantMessage},
-		session.SurfaceIntent{Operation: session.SurfaceAppend()},
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewSurfaceEventDraft(session.AssistantMessaged,
+			session.AssistantMessage{Turn: 1, Step: 1, Message: assistantMessage},
+			session.SurfaceIntent{Operation: session.SurfaceAppend()})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
-	toolCall, err := session.Append(conversation, session.ToolCalled, session.ToolCall{
-		Turn: 1, Step: 1, CallID: "call-1", Name: "probe", Arguments: `{}`,
-	})
+	toolCall, err := session.Event{}, error(nil)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewEventDraft(session.ToolCalled, session.ToolCall{
+			Turn: 1, Step: 1, CallID: "call-1", Name: "probe", Arguments: `{}`,
+		})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		toolCall = committedEvent
+		err = writeErr
+	}
+
 	if err != nil {
 		t.Fatal(err)
 	}

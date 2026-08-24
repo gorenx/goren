@@ -166,7 +166,7 @@ func TestPinnedSourceColdChildrenMatchGo(t *testing.T) {
 	catalogService := New()
 	if enableErr := catalogService.Enable(
 		sessionList{
-			conversations: []*session.Session{
+			conversations: []session.Context{
 				live,
 			},
 		},

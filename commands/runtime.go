@@ -200,11 +200,15 @@ func (owner *CommandRuntime) Execute(
 		rawInput := parsedValue.RawInput
 		runValue.Args = &rawInput
 	}
-	if _, err := session.AppendSerialized(
-		subject.SessionValue(),
+	runDraft, err := session.NewEventDraft(
 		RunEvent,
 		runValue,
-	); err != nil {
+	)
+	if err != nil {
+		entry.end()
+		return nil, err
+	}
+	if _, err := subject.SessionValue().Commit(requestContext, session.Batch(runDraft)); err != nil {
 		entry.end()
 		return nil, err
 	}
@@ -216,7 +220,7 @@ func (owner *CommandRuntime) Execute(
 			Text: &message,
 		}
 		entry.end()
-		return owner.settle(subject.SessionValue(), identifier, outcome)
+		return owner.settle(requestContext, subject.SessionValue(), identifier, outcome)
 	}
 
 	completed := make(chan handlerOutcome, 1)
@@ -242,6 +246,7 @@ func (owner *CommandRuntime) Execute(
 	case operation := <-completed:
 		if cancelErr := requestContext.Err(); cancelErr != nil {
 			owner.settleThrown(
+				requestContext,
 				subject.SessionValue(),
 				parsedValue.Name,
 				identifier,
@@ -250,17 +255,17 @@ func (owner *CommandRuntime) Execute(
 			return nil, cancelErr
 		}
 		if operation.err != nil {
-			owner.settleThrown(subject.SessionValue(), parsedValue.Name, identifier, operation.err)
+			owner.settleThrown(requestContext, subject.SessionValue(), parsedValue.Name, identifier, operation.err)
 			return nil, operation.err
 		}
 		if err := validateResult(operation.result); err != nil {
-			owner.settleThrown(subject.SessionValue(), parsedValue.Name, identifier, err)
+			owner.settleThrown(requestContext, subject.SessionValue(), parsedValue.Name, identifier, err)
 			return nil, err
 		}
-		return owner.settle(subject.SessionValue(), identifier, operation.result)
+		return owner.settle(requestContext, subject.SessionValue(), identifier, operation.result)
 	case <-requestContext.Done():
 		cancelErr := requestContext.Err()
-		owner.settleThrown(subject.SessionValue(), parsedValue.Name, identifier, cancelErr)
+		owner.settleThrown(requestContext, subject.SessionValue(), parsedValue.Name, identifier, cancelErr)
 		return nil, cancelErr
 	}
 }
@@ -279,23 +284,24 @@ func invokeHandler(
 }
 
 func (owner *CommandRuntime) settle(
-	conversation *session.Session,
+	requestContext context.Context,
+	conversation session.Context,
 	identifier ID,
 	outcome Result,
 ) (*Execution, error) {
-	err := session.SerializeProducer(conversation, func() error {
-		if validateErr := validateSourceEvent(conversation, outcome); validateErr != nil {
-			return validateErr
-		}
-		_, appendErr := session.Append(conversation, DoneEvent, Done{
-			CommandID:      identifier,
-			Kind:           outcome.Kind,
-			Text:           cloneString(outcome.Text),
-			SourceEventSeq: cloneInt64(outcome.SourceEventSeq),
-		})
-		return appendErr
+	if err := validateSourceEvent(conversation.Events(), outcome); err != nil {
+		return nil, err
+	}
+	doneDraft, err := session.NewEventDraft(DoneEvent, Done{
+		CommandID:      identifier,
+		Kind:           outcome.Kind,
+		Text:           cloneString(outcome.Text),
+		SourceEventSeq: cloneInt64(outcome.SourceEventSeq),
 	})
 	if err != nil {
+		return nil, err
+	}
+	if _, err := conversation.Commit(context.WithoutCancel(requestContext), session.Batch(doneDraft)); err != nil {
 		return nil, err
 	}
 	return &Execution{
@@ -305,21 +311,25 @@ func (owner *CommandRuntime) settle(
 }
 
 func (owner *CommandRuntime) settleThrown(
-	conversation *session.Session,
+	requestContext context.Context,
+	conversation session.Context,
 	nameValue string,
 	identifier ID,
 	failure error,
 ) {
 	message := failure.Error()
-	if _, err := session.AppendSerialized(
-		conversation,
+	doneDraft, err := session.NewEventDraft(
 		DoneEvent,
 		Done{
 			CommandID: identifier,
 			Kind:      ResultError,
 			Text:      &message,
 		},
-	); err != nil {
+	)
+	if err == nil {
+		_, err = conversation.Commit(context.WithoutCancel(requestContext), session.Batch(doneDraft))
+	}
+	if err != nil {
 		owner.reportFailure(fmt.Errorf(
 			"commands: command %q command/done append failed: %w",
 			nameValue,
@@ -434,11 +444,11 @@ func validateResult(outcome Result) error {
 	}
 }
 
-func validateSourceEvent(conversation *session.Session, outcome Result) error {
+func validateSourceEvent(events []session.Event, outcome Result) error {
 	if outcome.SourceEventSeq == nil {
 		return nil
 	}
-	for _, entry := range conversation.Events() {
+	for _, entry := range events {
 		if entry.Seq != *outcome.SourceEventSeq {
 			continue
 		}

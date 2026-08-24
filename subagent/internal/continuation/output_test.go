@@ -1,6 +1,7 @@
 package continuation
 
 import (
+	"context"
 	"testing"
 
 	"github.com/gorenx/goren/llm"
@@ -68,7 +69,7 @@ func TestLastAssistantFallsBackToCurrentActivationTextChunks(t *testing.T) {
 
 func appendAssistantMessage(
 	t *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	turnNumber int64,
 	text string,
 ) {
@@ -87,41 +88,61 @@ func appendAssistantMessage(
 	if messageErr != nil {
 		t.Fatal(messageErr)
 	}
-	if _, appendErr := session.AppendSurface(
-		conversation,
-		session.AssistantMessaged,
-		session.AssistantMessage{
-			Turn:    turnNumber,
-			Step:    1,
-			Message: messageValue,
-		},
-		session.SurfaceIntent{
-			Operation: session.SurfaceAppend(),
-		},
-	); appendErr != nil {
-		t.Fatal(appendErr)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewSurfaceEventDraft(session.AssistantMessaged,
+			session.AssistantMessage{
+				Turn:    turnNumber,
+				Step:    1,
+				Message: messageValue,
+			},
+			session.SurfaceIntent{
+				Operation: session.SurfaceAppend(),
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		if _, appendErr := committedEvent, writeErr; appendErr != nil {
+			t.Fatal(appendErr)
+		}
 	}
 }
 
 func appendAssistantChunk(
 	t *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	turnNumber int64,
 	text string,
 ) {
 	t.Helper()
-	if _, appendErr := session.AppendSerialized(
-		conversation,
-		session.AssistantChunked,
-		session.AssistantChunk{
-			Turn: turnNumber,
-			Step: 1,
-			Chunk: llm.TextDeltaChunk{
-				Index: 0,
-				Text:  text,
-			},
-		},
-	); appendErr != nil {
-		t.Fatal(appendErr)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewEventDraft(session.AssistantChunked,
+			session.AssistantChunk{
+				Turn: turnNumber,
+				Step: 1,
+				Chunk: llm.TextDeltaChunk{
+					Index: 0,
+					Text:  text,
+				},
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		if _, appendErr := committedEvent, writeErr; appendErr != nil {
+			t.Fatal(appendErr)
+		}
 	}
 }

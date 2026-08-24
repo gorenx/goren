@@ -17,7 +17,7 @@ import (
 type agentFixture struct {
 	plugin.Base
 	identifier   session.SessionID
-	conversation *session.Session
+	conversation session.Context
 }
 
 func (subject *agentFixture) Manifest() plugin.Manifest {
@@ -33,7 +33,7 @@ func (*agentFixture) Apply(context.Context) error   { return nil }
 func (*agentFixture) Dispose(context.Context) error { return nil }
 func (subject *agentFixture) ID() session.SessionID { return subject.identifier }
 func (*agentFixture) OptionsValue() agent.Options   { return agent.Options{} }
-func (subject *agentFixture) SessionValue() *session.Session {
+func (subject *agentFixture) SessionValue() session.Context {
 	return subject.conversation
 }
 func (*agentFixture) InboxValue() *agent.Inbox                      { return nil }

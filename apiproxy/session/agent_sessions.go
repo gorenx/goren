@@ -283,9 +283,9 @@ func (owner *AgentSessions) resumeCold(
 		loopOptions.Provider = selected.Provider
 		loopOptions.Model = selected.Model
 	}
-	if requestHeader, found, headerErr := transient.RequestHeaderValue(); headerErr != nil {
+	if requestHeader, headerErr := session.LatestRequestHeader(transient.Events()); headerErr != nil {
 		return nil, headerErr
-	} else if found && requestHeader.Config.MaxTokens != nil {
+	} else if requestHeader != nil && requestHeader.Config.MaxTokens != nil {
 		tokenLimit := *requestHeader.Config.MaxTokens
 		loopOptions.MaxTokens = &tokenLimit
 	}
@@ -346,13 +346,13 @@ func (owner *AgentSessions) hasLiveParent(subject agent.Agent, header session.He
 }
 
 func (owner *AgentSessions) loggedOrDefaultSelection(
-	conversation *session.Session,
+	conversation session.Context,
 ) (agent.ModelSelection, bool, error) {
-	header, found, err := conversation.RequestHeaderValue()
+	header, err := session.LatestRequestHeader(conversation.Events())
 	if err != nil {
 		return agent.ModelSelection{}, false, err
 	}
-	if found {
+	if header != nil {
 		return agent.ModelSelection{
 			Provider:        header.Config.Provider,
 			Model:           header.Config.Model,

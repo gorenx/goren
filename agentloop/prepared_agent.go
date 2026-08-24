@@ -22,7 +22,7 @@ func newPreparedAgent(
 	requestContext context.Context,
 	owner *Plugin,
 	lifecycleOwner plugin.Plugin,
-	conversation *session.Session,
+	conversation session.Context,
 	loopOptions agent.Options,
 ) (*preparedAgent, error) {
 	if owner == nil {

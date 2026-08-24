@@ -23,7 +23,7 @@ type questionsFixture struct {
 type questionSubject struct {
 	plugin.Base
 	identifier   session.SessionID
-	conversation *session.Session
+	conversation session.Context
 	registry     agentcore.Registry
 }
 
@@ -55,7 +55,7 @@ func (*questionSubject) OptionsValue() agentcore.Options {
 	return agentcore.Options{}
 }
 
-func (subject *questionSubject) SessionValue() *session.Session {
+func (subject *questionSubject) SessionValue() session.Context {
 	return subject.conversation
 }
 

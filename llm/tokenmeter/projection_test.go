@@ -45,15 +45,18 @@ func TestTokenUsageProjectionReplacesSameStepSample(t *testing.T) {
 	t.Parallel()
 	projections := registeredProjectionFixture(t)
 	conversation := newConversation(t, "usage-projection")
-	if _, err := session.Append(
-		conversation,
-		session.StepStarted,
-		session.StepPosition{
-			Turn: 1,
-			Step: 1,
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.StepStarted,
+			session.StepPosition{
+				Turn: 1,
+				Step: 1,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	firstUsage := llm.TokenUsage{
 		InputTokens:  10,
@@ -105,27 +108,33 @@ func TestPressureAndBreakdownTrackSurfaceAndMeteredCompaction(t *testing.T) {
 	projections := registeredProjectionFixture(t)
 	conversation := newConversation(t, "surface-projections")
 	contextWindow := 64_000
-	if _, err := session.Append(
-		conversation,
-		session.RequestContextSet,
-		session.RequestRouteContext{
-			Provider:      "mock",
-			Model:         "model-a",
-			ContextWindow: &contextWindow,
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.RequestContextSet,
+			session.RequestRouteContext{
+				Provider:      "mock",
+				Model:         "model-a",
+				ContextWindow: &contextWindow,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	firstSeq := appendUser(t, conversation, "abcd")
-	if _, err := session.Append(
-		conversation,
-		session.StepStarted,
-		session.StepPosition{
-			Turn: 1,
-			Step: 1,
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.StepStarted,
+			session.StepPosition{
+				Turn: 1,
+				Step: 1,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	usageValue := llm.TokenUsage{
 		InputTokens:  100,
@@ -140,15 +149,18 @@ func TestPressureAndBreakdownTrackSurfaceAndMeteredCompaction(t *testing.T) {
 		nil,
 		&emptySources,
 	)
-	if _, err := session.Append(
-		conversation,
-		session.StepEnded,
-		session.StepPosition{
-			Turn: 1,
-			Step: 1,
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.StepEnded,
+			session.StepPosition{
+				Turn: 1,
+				Step: 1,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	lastSeq := appendUser(t, conversation, "a follow-up that grows the surface")
 
@@ -176,23 +188,26 @@ func TestPressureAndBreakdownTrackSurfaceAndMeteredCompaction(t *testing.T) {
 		lastSeq,
 	)
 	transactionID := compaction.ID("projection-compaction")
-	if _, err := session.Append(
-		conversation,
-		compaction.SummaryEvent,
-		compaction.Summary{
-			CompactionID: transactionID,
-			Summary:      []llm.ContentBlock{llm.NewTextBlock("summary")},
-			ShadowedRange: compaction.SurfaceRange{
-				Start: firstSeq,
-				End:   lastSeq,
-			},
-			ShadowedSeqs:       shadowedSeqs,
-			ShadowedTokenCount: shadowedTokens,
-			Provider:           "mock",
-			Model:              "model-a",
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(compaction.SummaryEvent,
+			compaction.Summary{
+				CompactionID: transactionID,
+				Summary:      []llm.ContentBlock{llm.NewTextBlock("summary")},
+				ShadowedRange: compaction.SurfaceRange{
+					Start: firstSeq,
+					End:   lastSeq,
+				},
+				ShadowedSeqs:       shadowedSeqs,
+				ShadowedTokenCount: shadowedTokens,
+				Provider:           "mock",
+				Model:              "model-a",
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	replacement, err := llm.NewUserMessage(llm.UserMessageInput{
 		Content: []llm.ContentBlock{
@@ -205,16 +220,19 @@ func TestPressureAndBreakdownTrackSurfaceAndMeteredCompaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := session.AppendSurface(
-		conversation,
-		session.UserMessageAdded,
-		replacement,
-		session.SurfaceIntent{
-			Operation:       session.SurfaceReplace(firstSeq, lastSeq),
-			SourceEventSeqs: &shadowedSeqs,
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewSurfaceEventDraft(session.UserMessageAdded,
+			replacement,
+			session.SurfaceIntent{
+				Operation:       session.SurfaceReplace(firstSeq, lastSeq),
+				SourceEventSeqs: &shadowedSeqs,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	after, err := projections.Snapshot(conversation)
@@ -249,19 +267,22 @@ func TestSurfaceProjectionRejectsAdjacentMismatchedClaim(t *testing.T) {
 	conversation := newConversation(t, "mismatched-claim")
 	firstSeq := appendUser(t, conversation, "first")
 	lastSeq := appendUser(t, conversation, "last")
-	if _, err := session.Append(
-		conversation,
-		compaction.PruneEvent,
-		compaction.Prune{
-			ShadowedRange: compaction.SurfaceRange{
-				Start: firstSeq,
-				End:   firstSeq,
-			},
-			ShadowedSeqs:       []int64{firstSeq},
-			ShadowedTokenCount: 1,
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(compaction.PruneEvent,
+			compaction.Prune{
+				ShadowedRange: compaction.SurfaceRange{
+					Start: firstSeq,
+					End:   firstSeq,
+				},
+				ShadowedSeqs:       []int64{firstSeq},
+				ShadowedTokenCount: 1,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	replacement := mustUserMessage(
 		t,
@@ -270,16 +291,19 @@ func TestSurfaceProjectionRejectsAdjacentMismatchedClaim(t *testing.T) {
 		},
 	)
 	sources := []int64{firstSeq, lastSeq}
-	if _, err := session.AppendSurface(
-		conversation,
-		session.UserMessageAdded,
-		replacement,
-		session.SurfaceIntent{
-			Operation:       session.SurfaceReplace(firstSeq, lastSeq),
-			SourceEventSeqs: &sources,
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewSurfaceEventDraft(session.UserMessageAdded,
+			replacement,
+			session.SurfaceIntent{
+				Operation:       session.SurfaceReplace(firstSeq, lastSeq),
+				SourceEventSeqs: &sources,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := projections.Snapshot(conversation); err == nil ||
 		!strings.Contains(err.Error(), "no adjacent shadow price") {
@@ -349,22 +373,25 @@ func registeredProjectionFixture(testingContext *testing.T) *sessionprojection.D
 
 func appendUsageChunk(
 	testingContext *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	usageValue llm.TokenUsage,
 ) {
 	testingContext.Helper()
-	if _, err := session.Append(
-		conversation,
-		session.AssistantChunked,
-		session.AssistantChunk{
-			Turn: 1,
-			Step: 1,
-			Chunk: llm.UsageChunk{
-				Usage: usageValue,
-			},
-		},
-	); err != nil {
-		testingContext.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.AssistantChunked,
+			session.AssistantChunk{
+				Turn: 1,
+				Step: 1,
+				Chunk: llm.UsageChunk{
+					Usage: usageValue,
+				},
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			testingContext.Fatal(err)
+		}
 	}
 }
 

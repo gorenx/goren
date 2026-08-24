@@ -365,7 +365,7 @@ func createLiveSession(
 	fixture *queryFixture,
 	identifier session.SessionID,
 	createdAt int64,
-) *session.Session {
+) session.Context {
 	testingContext.Helper()
 	handle, err := fixture.store.Create(
 		context.Background(),
@@ -384,7 +384,7 @@ func createLiveSession(
 
 func appendUser(
 	testingContext *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	textValue string,
 	operation session.SurfaceOperation,
 	sources *[]int64,
@@ -403,22 +403,25 @@ func appendUser(
 	if err != nil {
 		testingContext.Fatal(err)
 	}
-	if _, err := session.AppendSurface(
-		conversation,
-		session.UserMessageAdded,
-		messageValue,
-		session.SurfaceIntent{
-			Operation:       operation,
-			SourceEventSeqs: sources,
-		},
-	); err != nil {
-		testingContext.Fatal(err)
+	{
+		draft, err := session.NewSurfaceEventDraft(session.UserMessageAdded,
+			messageValue,
+			session.SurfaceIntent{
+				Operation:       operation,
+				SourceEventSeqs: sources,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			testingContext.Fatal(err)
+		}
 	}
 }
 
 func appendAssistant(
 	testingContext *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	textValue string,
 	operation session.SurfaceOperation,
 ) {
@@ -437,18 +440,21 @@ func appendAssistant(
 	if err != nil {
 		testingContext.Fatal(err)
 	}
-	if _, err := session.AppendSurface(
-		conversation,
-		session.AssistantMessaged,
-		session.AssistantMessage{
-			Turn:    1,
-			Step:    1,
-			Message: messageValue,
-		},
-		session.SurfaceIntent{
-			Operation: operation,
-		},
-	); err != nil {
-		testingContext.Fatal(err)
+	{
+		draft, err := session.NewSurfaceEventDraft(session.AssistantMessaged,
+			session.AssistantMessage{
+				Turn:    1,
+				Step:    1,
+				Message: messageValue,
+			},
+			session.SurfaceIntent{
+				Operation: operation,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			testingContext.Fatal(err)
+		}
 	}
 }

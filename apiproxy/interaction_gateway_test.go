@@ -130,7 +130,7 @@ func (state *interactionFixture) mintRPC() (connection.RPCID, error) {
 type interactionSubject struct {
 	plugin.Base
 	identifier   session.SessionID
-	conversation *session.Session
+	conversation session.Context
 	agents       agentcore.Registry
 }
 
@@ -155,9 +155,9 @@ func (subject *interactionSubject) ID() session.SessionID { return subject.ident
 func (*interactionSubject) OptionsValue() agentcore.Options {
 	return agentcore.Options{}
 }
-func (subject *interactionSubject) SessionValue() *session.Session { return subject.conversation }
-func (*interactionSubject) InboxValue() *agentcore.Inbox           { return nil }
-func (*interactionSubject) StatusValue() agentcore.Status          { return agentcore.StatusIdle }
+func (subject *interactionSubject) SessionValue() session.Context { return subject.conversation }
+func (*interactionSubject) InboxValue() *agentcore.Inbox          { return nil }
+func (*interactionSubject) StatusValue() agentcore.Status         { return agentcore.StatusIdle }
 func (*interactionSubject) Cancel(agentcore.CancelCause, agentcore.CancelOptions) {
 }
 func (*interactionSubject) WhenIdle(context.Context) error { return nil }
@@ -244,7 +244,7 @@ func (state *interactionFixture) newSubject(t *testing.T, identifier session.Ses
 	return subject
 }
 
-func (state *interactionFixture) openMux(t *testing.T, conversations ...*session.Session) *capturedMux {
+func (state *interactionFixture) openMux(t *testing.T, conversations ...session.Context) *capturedMux {
 	t.Helper()
 	streamContext, cancelStream := context.WithCancel(context.Background())
 	stream := &capturedMux{
@@ -305,8 +305,14 @@ func successfulClientResponse(t *testing.T, correlationID connection.RPCID, valu
 func TestApprovalInteractionRoundTripValidationAndReconnectReplay(t *testing.T) {
 	state := newInteractionFixture(t)
 	subject := state.newSubject(t, "approval-session")
-	if _, err := session.Append(subject.conversation, session.TurnStarted, session.TurnStart{Turn: 1}); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.TurnStarted, session.TurnStart{Turn: 1})
+		if err == nil {
+			_, err = subject.conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	firstMux := state.openMux(t, subject.conversation)
 	decisionChannel := make(chan approval.Outcome, 1)
@@ -371,8 +377,14 @@ func TestApprovalInteractionRoundTripValidationAndReconnectReplay(t *testing.T) 
 func TestApprovalInteractionPairsParallelCallAuditAndCancels(t *testing.T) {
 	state := newInteractionFixture(t)
 	subject := state.newSubject(t, "parallel-approval")
-	if _, err := session.Append(subject.conversation, session.TurnStarted, session.TurnStart{Turn: 1}); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.TurnStarted, session.TurnStart{Turn: 1})
+		if err == nil {
+			_, err = subject.conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	stream := state.openMux(t, subject.conversation)
 	callA := llm.CallID("call-a")
@@ -530,8 +542,14 @@ func TestQuestionInteractionValidatesAnswersAndClientCancellation(t *testing.T) 
 func TestInteractionGatewayShutdownSettlesPendingApprovalAndQuestion(t *testing.T) {
 	state := newInteractionFixture(t)
 	subject := state.newSubject(t, "interaction-shutdown")
-	if _, err := session.Append(subject.conversation, session.TurnStarted, session.TurnStart{Turn: 1}); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.TurnStarted, session.TurnStart{Turn: 1})
+		if err == nil {
+			_, err = subject.conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	stream := state.openMux(t, subject.conversation)
 	approvalChannel := make(chan approval.Outcome, 1)

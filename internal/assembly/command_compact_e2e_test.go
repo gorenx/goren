@@ -543,7 +543,7 @@ func waitCommandSignal(
 
 func waitCommandCancellationLifecycle(
 	testingContext *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	startIndex int,
 ) []session.Event {
 	testingContext.Helper()

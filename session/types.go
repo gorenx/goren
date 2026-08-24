@@ -61,10 +61,15 @@ func buildHeader(identifier SessionID, sessionMetadata Metadata, temporalSource 
 		createdAt = *sessionMetadata.CreatedAt
 	}
 	candidate := Header{
-		Version: FormatVersion, ID: identifier, CreatedAt: createdAt,
-		CWD: cloneString(sessionMetadata.CWD), ParentSession: cloneSessionID(sessionMetadata.ParentSession),
-		SeedLength: cloneInt64(sessionMetadata.SeedLength), Origin: sessionMetadata.Origin,
-		DelegationDepth: cloneInt64(sessionMetadata.DelegationDepth), AgentPreset: cloneString(sessionMetadata.AgentPreset),
+		Version:         FormatVersion,
+		ID:              identifier,
+		CreatedAt:       createdAt,
+		CWD:             cloneString(sessionMetadata.CWD),
+		ParentSession:   cloneSessionID(sessionMetadata.ParentSession),
+		SeedLength:      cloneInt64(sessionMetadata.SeedLength),
+		Origin:          sessionMetadata.Origin,
+		DelegationDepth: cloneInt64(sessionMetadata.DelegationDepth),
+		AgentPreset:     cloneString(sessionMetadata.AgentPreset),
 	}
 	if err := validateHeader(identifier, candidate); err != nil {
 		return Header{}, err
@@ -102,35 +107,35 @@ func isSafeNonNegative(value int64) bool {
 }
 
 func cloneHeader(source Header) Header {
-	snapshot := source
-	snapshot.CWD = cloneString(source.CWD)
-	snapshot.ParentSession = cloneSessionID(source.ParentSession)
-	snapshot.SeedLength = cloneInt64(source.SeedLength)
-	snapshot.DelegationDepth = cloneInt64(source.DelegationDepth)
-	snapshot.AgentPreset = cloneString(source.AgentPreset)
-	return snapshot
+	detached := source
+	detached.CWD = cloneString(source.CWD)
+	detached.ParentSession = cloneSessionID(source.ParentSession)
+	detached.SeedLength = cloneInt64(source.SeedLength)
+	detached.DelegationDepth = cloneInt64(source.DelegationDepth)
+	detached.AgentPreset = cloneString(source.AgentPreset)
+	return detached
 }
 
 func cloneSessionID(source *SessionID) *SessionID {
 	if source == nil {
 		return nil
 	}
-	snapshot := *source
-	return &snapshot
+	detached := *source
+	return &detached
 }
 
 func cloneInt64(source *int64) *int64 {
 	if source == nil {
 		return nil
 	}
-	snapshot := *source
-	return &snapshot
+	detached := *source
+	return &detached
 }
 
 func cloneString(source *string) *string {
 	if source == nil {
 		return nil
 	}
-	snapshot := *source
-	return &snapshot
+	detached := *source
+	return &detached
 }

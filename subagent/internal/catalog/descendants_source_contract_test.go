@@ -70,7 +70,7 @@ func TestPinnedSourceDescendantTraversalMatchesGo(t *testing.T) {
 	catalogService := New()
 	if enableErr := catalogService.Enable(
 		sessionList{
-			conversations: []*session.Session{
+			conversations: []session.Context{
 				branchA,
 				ordinary,
 				oneShot,

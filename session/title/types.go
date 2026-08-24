@@ -216,9 +216,9 @@ type ProviderHandle interface {
 // TitleService is the log-backed title read/write and provider-registration contract.
 type TitleService interface {
 	plugin.Service
-	Get(*session.Session) (*Snapshot, error)
-	Rename(*session.Session, string) (*Snapshot, error)
-	Refresh(context.Context, *session.Session) (*Snapshot, error)
+	Get(session.Context) (*Snapshot, error)
+	Rename(context.Context, session.Context, string) (*Snapshot, error)
+	Refresh(context.Context, session.Context) (*Snapshot, error)
 	Register(Provider) (ProviderHandle, error)
 }
 

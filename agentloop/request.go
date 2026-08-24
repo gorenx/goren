@@ -99,8 +99,7 @@ func (requester *modelRequester) executeStep(
 			if !found {
 				break
 			}
-			committed, appendErr := session.AppendSerialized(
-				requester.subject.conversation,
+			chunkDraft, appendErr := session.NewEventDraft(
 				session.AssistantChunked,
 				session.AssistantChunk{
 					Turn:  turn,
@@ -112,6 +111,15 @@ func (requester *modelRequester) executeStep(
 				_ = chunkStream.Close(context.Background())
 				return nil, appendErr
 			}
+			result, appendErr := requester.subject.conversation.Commit(
+				requestContext,
+				session.Batch(chunkDraft),
+			)
+			if appendErr != nil {
+				_ = chunkStream.Close(context.Background())
+				return nil, appendErr
+			}
+			committed := result.Events[0]
 			chunkSequences = append(chunkSequences, committed.Seq)
 			if err := assembler.Push(chunk); err != nil {
 				_ = chunkStream.Close(context.Background())
@@ -182,15 +190,18 @@ func (requester *modelRequester) executeStep(
 		if usage, present := assembler.UsageValue(); present {
 			assembledPayload.Usage = &usage
 		}
-		if _, err := session.AppendSurfaceSerialized(
-			requester.subject.conversation,
+		messageDraft, err := session.NewSurfaceEventDraft(
 			session.AssistantMessaged,
 			assembledPayload,
 			session.SurfaceIntent{
 				Operation:       session.SurfaceAppend(),
 				SourceEventSeqs: &chunkSequences,
 			},
-		); err != nil {
+		)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := requester.subject.conversation.Commit(requestContext, session.Batch(messageDraft)); err != nil {
 			return nil, err
 		}
 		if finishReason.ReasonKind() == "max-tokens" {
@@ -224,10 +235,13 @@ func (requester *modelRequester) buildRequest(
 	systemText string,
 	boundaryMessages []llm.Message,
 ) (requestAttempt, error) {
-	persistedHeader, headerFound, err := requester.subject.conversation.RequestHeaderValue()
+	persistedHeader, err := session.LatestRequestHeader(
+		requester.subject.conversation.Events(),
+	)
 	if err != nil {
 		return requestAttempt{}, err
 	}
+	headerFound := persistedHeader != nil
 	loopOptions := requester.subject.OptionsValue()
 	seedConfig := llm.CallConfig{
 		Provider:  loopOptions.Provider,
@@ -239,7 +253,7 @@ func (requester *modelRequester) buildRequest(
 		seedConfig.ReasoningEffort = persistedHeader.Config.ReasoningEffort
 	}
 	if requester.requestHeaderLogged && headerFound {
-		seedConfig = requestProposal(persistedHeader)
+		seedConfig = requestProposal(*persistedHeader)
 	}
 	proposed, err := agent.ResolveRequest(
 		requestContext,
@@ -296,35 +310,44 @@ func (requester *modelRequester) buildRequest(
 		headerSnapshot.System = &systemText
 	}
 	headerSnapshot = session.CanonicalEpochHeader(headerSnapshot)
-	baseline, baselineFound, err := requester.subject.conversation.RequestHeaderValue()
+	baseline, err := session.LatestRequestHeader(
+		requester.subject.conversation.Events(),
+	)
 	if err != nil {
 		return requestAttempt{}, err
 	}
+	baselineFound := baseline != nil
 	if !requester.requestHeaderLogged {
 		reason := session.RequestHeaderInitial
 		if baselineFound {
 			reason = session.RequestHeaderResume
 		}
-		if _, err := session.AppendSerialized(
-			requester.subject.conversation,
+		headerDraft, err := session.NewEventDraft(
 			session.RequestHeaderSet,
 			session.RequestHeaderSnapshot{
 				Header: headerSnapshot,
 				Reason: reason,
 			},
-		); err != nil {
+		)
+		if err != nil {
+			return requestAttempt{}, err
+		}
+		if _, err := requester.subject.conversation.Commit(requestContext, session.Batch(headerDraft)); err != nil {
 			return requestAttempt{}, err
 		}
 		requester.requestHeaderLogged = true
-	} else if !baselineFound || !session.EpochHeaderEqual(baseline, headerSnapshot) {
-		if _, err := session.AppendSerialized(
-			requester.subject.conversation,
+	} else if !baselineFound || !session.EpochHeaderEqual(*baseline, headerSnapshot) {
+		headerDraft, err := session.NewEventDraft(
 			session.RequestHeaderSet,
 			session.RequestHeaderSnapshot{
 				Header: headerSnapshot,
 				Reason: session.RequestHeaderChange,
 			},
-		); err != nil {
+		)
+		if err != nil {
+			return requestAttempt{}, err
+		}
+		if _, err := requester.subject.conversation.Commit(requestContext, session.Batch(headerDraft)); err != nil {
 			return requestAttempt{}, err
 		}
 	}
@@ -339,16 +362,22 @@ func (requester *modelRequester) buildRequest(
 			routeContext.ContextWindow = &contextWindow
 		}
 	}
-	previousContext, contextFound, err := requester.subject.conversation.RequestContextValue()
+	previousContext, err := session.LatestRequestContext(
+		requester.subject.conversation.Events(),
+	)
 	if err != nil {
 		return requestAttempt{}, err
 	}
-	if !contextFound || !sameRequestContext(previousContext, routeContext) {
-		if _, err := session.AppendSerialized(
-			requester.subject.conversation,
+	contextFound := previousContext != nil
+	if !contextFound || !sameRequestContext(*previousContext, routeContext) {
+		contextDraft, err := session.NewEventDraft(
 			session.RequestContextSet,
 			routeContext,
-		); err != nil {
+		)
+		if err != nil {
+			return requestAttempt{}, err
+		}
+		if _, err := requester.subject.conversation.Commit(requestContext, session.Batch(contextDraft)); err != nil {
 			return requestAttempt{}, err
 		}
 	}

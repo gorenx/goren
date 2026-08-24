@@ -28,11 +28,11 @@ type durableState struct {
 	metadata     session.Header
 	cursor       int64
 	materialized bool
-	owner        *session.Session
+	owner        session.Context
 }
 
 type liveSessionState struct {
-	conversation *session.Session
+	conversation session.Context
 	writes       *liveWriter
 }
 
@@ -112,10 +112,10 @@ func (owner *SessionLogStore) Manifest() plugin.Manifest {
 			plugin.ServiceOf[session.LiveStore](),
 		},
 		Events: []plugin.EventSubscription{
-			plugin.EventOf[session.SessionCreated](),
-			plugin.EventOf[session.SessionEventAppended](),
-			plugin.EventOf[session.SessionFlushRequested](),
-			plugin.EventOf[session.SessionDisposed](),
+			plugin.EventOf[session.Created](),
+			plugin.EventOf[session.EventAppended](),
+			plugin.EventOf[session.FlushRequested](),
+			plugin.EventOf[session.Disposed](),
 		},
 	}
 }
@@ -157,17 +157,21 @@ func (owner *SessionLogStore) ObserveEvent(
 	fact plugin.Event,
 ) error {
 	switch observed := fact.(type) {
-	case session.SessionCreated:
+	case session.Created:
 		return owner.onCreated(requestContext, observed.Conversation)
-	case session.SessionEventAppended:
+	case session.EventAppended:
 		return owner.onEvent(
 			requestContext,
 			observed.Conversation,
 			observed.Committed,
 		)
-	case session.SessionFlushRequested:
-		return owner.onFlush(requestContext, observed.Conversation)
-	case session.SessionDisposed:
+	case session.FlushRequested:
+		return owner.onFlush(
+			requestContext,
+			observed.Conversation,
+			observed.Barrier,
+		)
+	case session.Disposed:
 		return owner.onDisposed(requestContext, observed.Conversation)
 	default:
 		return nil
@@ -262,7 +266,7 @@ func (owner *SessionLogStore) Prepare(requestContext context.Context, identifier
 			releaseGate()
 			continue
 		}
-		reservation, err := owner.preparations.Reserve(source)
+		held, err := owner.preparations.Reserve(source)
 		if err != nil {
 			releaseGate()
 			return nil, err
@@ -270,10 +274,7 @@ func (owner *SessionLogStore) Prepare(requestContext context.Context, identifier
 		releaseGate()
 		return session.NewPreparation(
 			source.conversation,
-			&preparedReservationLease{
-				pool:        owner.preparations,
-				reservation: reservation,
-			},
+			held,
 		), nil
 	}
 }
@@ -283,7 +284,7 @@ func (owner *SessionLogStore) Load(requestContext context.Context, identifier se
 		return Inspection{}, errors.New("session persistence: load Context is nil")
 	}
 	if conversation, found := owner.sessions.Get(identifier); found {
-		if err := owner.onFlush(requestContext, conversation); err != nil {
+		if err := owner.sessions.Flush(requestContext, conversation); err != nil {
 			return Inspection{}, err
 		}
 		entries := conversation.Events()
@@ -397,7 +398,7 @@ func (owner *SessionLogStore) ListSnapshots(requestContext context.Context) ([]S
 	return owner.storage.ListStoredSnapshots(requestContext)
 }
 
-func (owner *SessionLogStore) onCreated(requestContext context.Context, conversation *session.Session) error {
+func (owner *SessionLogStore) onCreated(requestContext context.Context, conversation session.Context) error {
 	if conversation == nil {
 		return errors.New("session persistence: created Session is nil")
 	}
@@ -410,21 +411,25 @@ func (owner *SessionLogStore) onCreated(requestContext context.Context, conversa
 	seed := conversation.Events()
 	metadata := conversation.Header()
 
-	reservation, err := owner.preparations.ReservationFor(conversation)
+	held, err := owner.preparations.ReservationFor(conversation)
 	if err != nil {
 		return err
 	}
 	tracked, trackedFound := owner.durable.Get(identifier)
-	if reservation != nil {
-		if err := owner.preparations.Attach(reservation); err != nil {
+	if held != nil {
+		if err := owner.preparations.Attach(held); err != nil {
 			return err
 		}
 		if !trackedFound {
-			tracked = &durableState{metadata: metadata, cursor: reservation.cursor, materialized: true}
+			tracked = &durableState{
+				metadata:     metadata,
+				cursor:       held.cursor,
+				materialized: true,
+			}
 			owner.durable.Put(identifier, tracked)
 		}
 		tracked.owner = conversation
-		if err := owner.appendCore(requestContext, identifier, seed[reservation.cursor:]); err != nil {
+		if err := owner.appendCore(requestContext, identifier, seed[held.cursor:]); err != nil {
 			return err
 		}
 		owner.installLive(conversation)
@@ -497,7 +502,7 @@ func (owner *SessionLogStore) onCreated(requestContext context.Context, conversa
 	return nil
 }
 
-func (owner *SessionLogStore) onEvent(_ context.Context, conversation *session.Session, committed session.Event) error {
+func (owner *SessionLogStore) onEvent(_ context.Context, conversation session.Context, committed session.Event) error {
 	live, found := owner.writes.Get(conversation)
 	if !found {
 		return fmt.Errorf("session persistence: event for uninitialized session %q", conversation.ID())
@@ -506,15 +511,47 @@ func (owner *SessionLogStore) onEvent(_ context.Context, conversation *session.S
 	return nil
 }
 
-func (owner *SessionLogStore) onFlush(requestContext context.Context, conversation *session.Session) error {
+func (owner *SessionLogStore) onFlush(
+	requestContext context.Context,
+	conversation session.Context,
+	barrier session.WriteBarrier,
+) error {
+	if barrier.SessionID != conversation.ID() {
+		return fmt.Errorf(
+			"session persistence: flush barrier belongs to %q, not %q",
+			barrier.SessionID,
+			conversation.ID(),
+		)
+	}
 	live, found := owner.writes.Get(conversation)
 	if !found {
 		return fmt.Errorf("session persistence: flush for uninitialized session %q", conversation.ID())
 	}
-	return live.writes.flush(requestContext)
+	if err := live.writes.flush(requestContext); err != nil {
+		return err
+	}
+	releaseGate, err := owner.operations.Acquire(requestContext, conversation.ID())
+	if err != nil {
+		return err
+	}
+	defer releaseGate()
+	tracked, found := owner.durable.Get(conversation.ID())
+	if !found || tracked.cursor < barrier.NextSeq {
+		cursor := int64(-1)
+		if found {
+			cursor = tracked.cursor
+		}
+		return fmt.Errorf(
+			"session persistence: flush for %q reached seq %d, requires %d",
+			conversation.ID(),
+			cursor,
+			barrier.NextSeq,
+		)
+	}
+	return nil
 }
 
-func (owner *SessionLogStore) onDisposed(requestContext context.Context, conversation *session.Session) error {
+func (owner *SessionLogStore) onDisposed(requestContext context.Context, conversation session.Context) error {
 	live, found := owner.writes.Get(conversation)
 	if !found {
 		return nil
@@ -532,7 +569,7 @@ func (owner *SessionLogStore) onDisposed(requestContext context.Context, convers
 	return nil
 }
 
-func (owner *SessionLogStore) installLive(conversation *session.Session) {
+func (owner *SessionLogStore) installLive(conversation session.Context) {
 	writes := newLiveWriter(
 		owner.delay,
 		&sessionWriteTarget{

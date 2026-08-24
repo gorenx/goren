@@ -41,7 +41,7 @@ func New(settings ResolvedConfig, policies RuntimeOptions) *Plugin {
 		implementation: *newCompaction(settings),
 		automatic: automaticCompaction{
 			report:           reporter,
-			overflowSequence: make(map[*session.Session]overflowRecovery),
+			overflowSequence: make(map[session.Context]overflowRecovery),
 			warnedTargets:    make(map[string]struct{}),
 		},
 	}
@@ -62,7 +62,7 @@ func (owner *Plugin) Manifest() plugin.Manifest {
 		}
 		events = []plugin.EventSubscription{
 			plugin.EventOf[agent.StatusChanged](),
-			plugin.EventOf[session.SessionEventAppended](),
+			plugin.EventOf[session.EventAppended](),
 		}
 	}
 	return plugin.Manifest{

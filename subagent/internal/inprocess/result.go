@@ -10,7 +10,7 @@ import (
 )
 
 func readResult(
-	conversation *session.Session,
+	conversation session.Context,
 	boundary int64,
 	cancelled bool,
 	structured *structuredCapture,

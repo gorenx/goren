@@ -307,7 +307,7 @@ func (implementation *Compaction) CompactRegion(
 
 func (implementation *Compaction) pruneAndMeasure(
 	requestContext context.Context,
-	conversation *session.Session,
+	conversation session.Context,
 	current tokenmeter.Measurement,
 ) (tokenmeter.Measurement, error) {
 	if implementation.pruner == nil {
@@ -343,10 +343,10 @@ func (implementation *Compaction) validateOperation(
 }
 
 func routedTarget(
-	conversation *session.Session,
+	conversation session.Context,
 ) (RouteTarget, bool, error) {
-	headerValue, found, err := conversation.RequestHeaderValue()
-	if err != nil || !found {
+	headerValue, err := session.LatestRequestHeader(conversation.Events())
+	if err != nil || headerValue == nil {
 		return RouteTarget{}, false, err
 	}
 	if headerValue.Config.Provider == "" || headerValue.Config.Model == "" {

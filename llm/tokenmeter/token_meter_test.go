@@ -56,15 +56,18 @@ func TestTokenMeterPricesHeaderAndRequestOverrideWithoutChangingSurface(t *testi
 			Parameters:  []byte(`{"type":"object"}`),
 		},
 	}
-	if _, err := session.Append(
-		conversation,
-		session.RequestHeaderSet,
-		session.RequestHeaderSnapshot{
-			Header: headerValue,
-			Reason: session.RequestHeaderInitial,
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.RequestHeaderSet,
+			session.RequestHeaderSnapshot{
+				Header: headerValue,
+				Reason: session.RequestHeaderInitial,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	meterService := newTokenMeter()
 	logged, err := meterService.Measure(context.Background(), conversation, nil)
@@ -176,20 +179,23 @@ func TestTokenMeterRejectsMalformedStepTransactionally(t *testing.T) {
 	conversation := newConversation(t, "bad-step")
 	assistantValue := newAssistantMessage(t, "bad")
 	emptySources := []int64{}
-	if _, err := session.AppendSurface(
-		conversation,
-		session.AssistantMessaged,
-		session.AssistantMessage{
-			Turn:    1,
-			Step:    1,
-			Message: assistantValue,
-		},
-		session.SurfaceIntent{
-			Operation:       session.SurfaceAppend(),
-			SourceEventSeqs: &emptySources,
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewSurfaceEventDraft(session.AssistantMessaged,
+			session.AssistantMessage{
+				Turn:    1,
+				Step:    1,
+				Message: assistantValue,
+			},
+			session.SurfaceIntent{
+				Operation:       session.SurfaceAppend(),
+				SourceEventSeqs: &emptySources,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	meterService := newTokenMeter()
 	for attempt := 0; attempt < 2; attempt++ {
@@ -288,12 +294,12 @@ func TestTokenMeterRejectsOverlappingAndMismatchedStepBoundaries(t *testing.T) {
 	t.Parallel()
 	testCases := []struct {
 		name      string
-		populate  func(*testing.T, *session.Session)
+		populate  func(*testing.T, session.Context)
 		wantError string
 	}{
 		{
 			name: "overlapping-start",
-			populate: func(testingContext *testing.T, conversation *session.Session) {
+			populate: func(testingContext *testing.T, conversation session.Context) {
 				for _, position := range []session.StepPosition{
 					{
 						Turn: 1,
@@ -304,12 +310,15 @@ func TestTokenMeterRejectsOverlappingAndMismatchedStepBoundaries(t *testing.T) {
 						Step: 2,
 					},
 				} {
-					if _, err := session.Append(
-						conversation,
-						session.StepStarted,
-						position,
-					); err != nil {
-						testingContext.Fatal(err)
+					{
+						draft, err := session.NewEventDraft(session.StepStarted,
+							position)
+						if err == nil {
+							_, err = conversation.Commit(context.Background(), session.Batch(draft))
+						}
+						if err != nil {
+							testingContext.Fatal(err)
+						}
 					}
 				}
 			},
@@ -317,26 +326,32 @@ func TestTokenMeterRejectsOverlappingAndMismatchedStepBoundaries(t *testing.T) {
 		},
 		{
 			name: "mismatched-end",
-			populate: func(testingContext *testing.T, conversation *session.Session) {
-				if _, err := session.Append(
-					conversation,
-					session.StepStarted,
-					session.StepPosition{
-						Turn: 1,
-						Step: 1,
-					},
-				); err != nil {
-					testingContext.Fatal(err)
+			populate: func(testingContext *testing.T, conversation session.Context) {
+				{
+					draft, err := session.NewEventDraft(session.StepStarted,
+						session.StepPosition{
+							Turn: 1,
+							Step: 1,
+						})
+					if err == nil {
+						_, err = conversation.Commit(context.Background(), session.Batch(draft))
+					}
+					if err != nil {
+						testingContext.Fatal(err)
+					}
 				}
-				if _, err := session.Append(
-					conversation,
-					session.StepEnded,
-					session.StepPosition{
-						Turn: 1,
-						Step: 2,
-					},
-				); err != nil {
-					testingContext.Fatal(err)
+				{
+					draft, err := session.NewEventDraft(session.StepEnded,
+						session.StepPosition{
+							Turn: 1,
+							Step: 2,
+						})
+					if err == nil {
+						_, err = conversation.Commit(context.Background(), session.Batch(draft))
+					}
+					if err != nil {
+						testingContext.Fatal(err)
+					}
 				}
 			},
 			wantError: "has no matching step/start event",
@@ -370,7 +385,7 @@ func TestTokenMeterEagerlyAdvancesOnlyAllocatedFoldsAndDisposesThem(t *testing.T
 	unreadEvent := appendUser(t, unread, "unread event")
 	if err := meterService.observeEvent(
 		context.Background(),
-		session.SessionEventAppended{
+		session.EventAppended{
 			Conversation: allocated,
 			Committed:    allocated.Events()[allocatedEvent],
 		},
@@ -379,7 +394,7 @@ func TestTokenMeterEagerlyAdvancesOnlyAllocatedFoldsAndDisposesThem(t *testing.T
 	}
 	if err := meterService.observeEvent(
 		context.Background(),
-		session.SessionEventAppended{
+		session.EventAppended{
 			Conversation: unread,
 			Committed:    unread.Events()[unreadEvent],
 		},
@@ -394,7 +409,7 @@ func TestTokenMeterEagerlyAdvancesOnlyAllocatedFoldsAndDisposesThem(t *testing.T
 	}
 	if err := meterService.observeEvent(
 		context.Background(),
-		session.SessionDisposed{
+		session.Disposed{
 			Conversation: allocated,
 		},
 	); err != nil {
@@ -405,7 +420,7 @@ func TestTokenMeterEagerlyAdvancesOnlyAllocatedFoldsAndDisposesThem(t *testing.T
 	}
 }
 
-func newConversation(testingContext *testing.T, identifier session.SessionID) *session.Session {
+func newConversation(testingContext *testing.T, identifier session.SessionID) session.Context {
 	testingContext.Helper()
 	conversation, err := session.New(identifier, session.CreateOptions{})
 	if err != nil {
@@ -425,7 +440,7 @@ func fixtureHeader(modelID string) session.EpochHeader {
 
 func appendUser(
 	testingContext *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	textValue string,
 ) int64 {
 	testingContext.Helper()
@@ -435,48 +450,55 @@ func appendUser(
 			llm.NewTextBlock(textValue),
 		},
 	)
-	committed, err := session.AppendSurface(
-		conversation,
-		session.UserMessageAdded,
+	draft, err := session.NewSurfaceEventDraft(session.UserMessageAdded,
 		messageValue,
 		session.SurfaceIntent{
 			Operation: session.SurfaceAppend(),
-		},
-	)
+		})
 	if err != nil {
 		testingContext.Fatal(err)
 	}
-	return committed.Seq
+	receipt, err := conversation.Commit(context.Background(), session.Batch(draft))
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	return receipt.Events[0].Seq
 }
 
 func appendSuccessfulCall(
 	testingContext *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	headerValue session.EpochHeader,
 	providerText string,
 	durableText string,
 	usageValue *llm.TokenUsage,
 ) {
 	testingContext.Helper()
-	if _, err := session.Append(
-		conversation,
-		session.StepStarted,
-		session.StepPosition{
-			Turn: 1,
-			Step: 1,
-		},
-	); err != nil {
-		testingContext.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.StepStarted,
+			session.StepPosition{
+				Turn: 1,
+				Step: 1,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			testingContext.Fatal(err)
+		}
 	}
-	if _, err := session.Append(
-		conversation,
-		session.RequestHeaderSet,
-		session.RequestHeaderSnapshot{
-			Header: headerValue,
-			Reason: session.RequestHeaderInitial,
-		},
-	); err != nil {
-		testingContext.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.RequestHeaderSet,
+			session.RequestHeaderSnapshot{
+				Header: headerValue,
+				Reason: session.RequestHeaderInitial,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			testingContext.Fatal(err)
+		}
 	}
 	sources := make([]int64, 0, 3)
 	chunks := []llm.StreamChunk{
@@ -494,15 +516,28 @@ func appendSuccessfulCall(
 		},
 	}
 	for _, chunkValue := range chunks {
-		committed, err := session.Append(
-			conversation,
-			session.AssistantChunked,
-			session.AssistantChunk{
-				Turn:  1,
-				Step:  1,
-				Chunk: chunkValue,
-			},
-		)
+		committed, err := session.Event{}, error(nil)
+		{
+			var committedEvent session.Event
+			var writeErr error
+			draft, draftErr := session.NewEventDraft(session.AssistantChunked,
+				session.AssistantChunk{
+					Turn:  1,
+					Step:  1,
+					Chunk: chunkValue,
+				})
+			writeErr = draftErr
+			if draftErr == nil {
+				receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+				writeErr = commitErr
+				if commitErr == nil {
+					committedEvent = receipt.Events[0]
+				}
+			}
+			committed = committedEvent
+			err = writeErr
+		}
+
 		if err != nil {
 			testingContext.Fatal(err)
 		}
@@ -515,46 +550,55 @@ func appendSuccessfulCall(
 		usageValue,
 		&sources,
 	)
-	if _, err := session.Append(
-		conversation,
-		session.StepEnded,
-		session.StepPosition{
-			Turn: 1,
-			Step: 1,
-		},
-	); err != nil {
-		testingContext.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.StepEnded,
+			session.StepPosition{
+				Turn: 1,
+				Step: 1,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			testingContext.Fatal(err)
+		}
 	}
 }
 
 func appendCallWithProvenance(
 	testingContext *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	headerValue session.EpochHeader,
 	durableText string,
 	usageValue *llm.TokenUsage,
 	sourceSeqs *[]int64,
 ) {
 	testingContext.Helper()
-	if _, err := session.Append(
-		conversation,
-		session.StepStarted,
-		session.StepPosition{
-			Turn: 1,
-			Step: 1,
-		},
-	); err != nil {
-		testingContext.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.StepStarted,
+			session.StepPosition{
+				Turn: 1,
+				Step: 1,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			testingContext.Fatal(err)
+		}
 	}
-	if _, err := session.Append(
-		conversation,
-		session.RequestHeaderSet,
-		session.RequestHeaderSnapshot{
-			Header: headerValue,
-			Reason: session.RequestHeaderInitial,
-		},
-	); err != nil {
-		testingContext.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.RequestHeaderSet,
+			session.RequestHeaderSnapshot{
+				Header: headerValue,
+				Reason: session.RequestHeaderInitial,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			testingContext.Fatal(err)
+		}
 	}
 	appendAssistantWithSources(
 		testingContext,
@@ -563,41 +607,57 @@ func appendCallWithProvenance(
 		usageValue,
 		sourceSeqs,
 	)
-	if _, err := session.Append(
-		conversation,
-		session.StepEnded,
-		session.StepPosition{
-			Turn: 1,
-			Step: 1,
-		},
-	); err != nil {
-		testingContext.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.StepEnded,
+			session.StepPosition{
+				Turn: 1,
+				Step: 1,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			testingContext.Fatal(err)
+		}
 	}
 }
 
 func appendAssistantWithSources(
 	testingContext *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	textValue string,
 	usageValue *llm.TokenUsage,
 	sourceSeqs *[]int64,
 ) int64 {
 	testingContext.Helper()
 	assistantValue := newAssistantMessage(testingContext, textValue)
-	committed, err := session.AppendSurface(
-		conversation,
-		session.AssistantMessaged,
-		session.AssistantMessage{
-			Turn:    1,
-			Step:    1,
-			Message: assistantValue,
-			Usage:   usageValue,
-		},
-		session.SurfaceIntent{
-			Operation:       session.SurfaceAppend(),
-			SourceEventSeqs: sourceSeqs,
-		},
-	)
+	committed, err := session.Event{}, error(nil)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewSurfaceEventDraft(session.AssistantMessaged,
+			session.AssistantMessage{
+				Turn:    1,
+				Step:    1,
+				Message: assistantValue,
+				Usage:   usageValue,
+			},
+			session.SurfaceIntent{
+				Operation:       session.SurfaceAppend(),
+				SourceEventSeqs: sourceSeqs,
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		committed = committedEvent
+		err = writeErr
+	}
+
 	if err != nil {
 		testingContext.Fatal(err)
 	}
