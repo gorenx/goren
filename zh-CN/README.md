@@ -30,7 +30,7 @@
 - [21 Web Agent 主会话闭环与能力边界](./21-web-agent-main-flow.md)：极简内嵌 Web UI、Question 回答与固定 TypeScript Client 到 Go Agent Loop 的纵向能力矩阵、排除面、依赖方向与分层验收。
 - [22 Credentials 与 API Key 管理](./22-credentials-and-api-key-management.md)：Credentials Provider/Manager/LiveStore 边界、local JSON LiveStore、Host write-only API、DeepSeek 请求时解析与 Web API Key 设置。
 - [23 Session Query 与 Search](./23-session-query-and-search.md)：live-preferred corpus、exact read/filter/trace、语义文档、可重建 SQLite FTS5 index、cursor 与 `session.search`。
-- [24 Context Compaction](./24-context-compaction.md)：Compaction Service Definition / Provider / Consumer、Token Meter、Surface replacement 事务、自动压力与 overflow recovery、Tool Result Pruning 及上下游交互。
+- [24 Context Compaction](./24-context-compaction.md)：Compaction Service Definition / Provider / Consumer、Plugin automation 与 Engine 分工、Token Meter、Surface replacement 事务的 ownership/stability 规则、自动压力与 overflow recovery、Tool Result Pruning 及上下游交互。
 - [25 Context Compaction 实现进度](./25-context-compaction-implementation-progress.md)：Compaction 专用依赖就绪度、交付矩阵、验收 Gate、实施切片和阻塞项；`08` 只保留总体状态。
 
 ## 模块内运行说明

@@ -50,12 +50,12 @@ Compaction 已按[Session Core](../session/docs/design.zh-CN.md)迁移到唯一 
 | CMP-B01 | strict typed config、默认策略和 exact route override | Completed | Contract Verified：source defaults、model policy 与 Go config cases |
 | CMP-B02 | head range、priced tail 与 tool-pair safe boundary | Completed | Go Verified：positional selection、retention 与并发变更拒绝 |
 | CMP-B03 | reconstructable summarization prefix 与 direct `PurposeCompaction` stream | Completed | Go Verified：header/tools/messages/prompt、route override、raw output 和 usage |
-| CMP-B04 | start/prepare/summarize/revalidate/summary/replace/end 区间事务 | Completed | Go Verified：`startPlan` 在 FIFO 头部校验；`completionPlan` 原子提交 summary/replacement/end 或单个 failure end；region tests 覆盖成功、Surface 变化、失败与关闭 |
+| CMP-B04 | start/prepare/summarize/revalidate/summary/replace/end 区间事务 | Completed | Go Verified：`attemptOpening` 在 FIFO 头部取得 durable lock；attempt ownership 与 completion stability 独立组合 current-turn/standalone lifecycle 和 whole-Surface/selected-region 校验；`attemptCompletion` 原子提交 summary/replacement/end 或单个 failure end；region tests 覆盖成功、Surface 变化、失败与关闭 |
 | CMP-B05 | checkpoint 安全与严格缩小 | Completed | Go Verified：拒绝 error/aborted/max-tokens/empty/image/non-shrinking output |
 | CMP-B06 | `agent/pre-step` pressure Consumer | Completed | Go Verified：no-op、prune/remeasure、有界重试和失败隔离 |
 | CMP-B07 | `agent/request-error` overflow recovery | Completed | Go Verified：canonical code、generation-backed retry、budget 与原 failure 保留 |
 | CMP-B08 | overflow retry sequence reset 与 cancellation | Completed | Go Verified：assistant success/idle reset，cancellation 优先于 pruner progress |
-| CMP-B09 | Plugin/业务对象分离、Factory 与 effect lifecycle | Completed | Go Verified：`Plugin` 不实现 `Engine`，依赖绑定与释放受测 |
+| CMP-B09 | Plugin/业务对象分离、Factory 与 effect lifecycle | Completed | Go Verified：`Plugin` 不实现 `Engine`；Plugin、automation 和 Compaction 共享一个不可变 policy catalog；automation 只依赖公开 Engine；依赖绑定与释放受测 |
 
 ## 5. Tool Result Pruner、人工入口与默认装配
 

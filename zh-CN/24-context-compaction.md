@@ -57,8 +57,8 @@ Go 保留源项目的职责边界和 canonical capability/event/config 名，不
 
 ```mermaid
 flowchart LR
-    AL[Agent Loop] -->|agent/pre-step pressure| CE[compaction Engine]
-    AL -->|agent/request-error overflow| CE
+    AL[Agent Loop] -->|agent hook or event| AUTO[Basic automationController]
+    AUTO -->|CompactIfNeeded| CE[compaction Engine]
     CLIENT[TypeScript Client] -->|commands/execute| API[API Proxy Remote]
     API --> CMD[commands Registry]
     CMD --> CC[compaction/command Compact]
@@ -74,6 +74,9 @@ flowchart LR
     PR --> S
 
     BP[compaction/basic Plugin] -->|publish and bind| BASIC[Compaction object]
+    BP --> POLICY[policyCatalog]
+    POLICY --> AUTO
+    POLICY --> BASIC
     BASIC -. implements .-> CE
     S --> LOG[(Append-only Event Log)]
     S --> SURF[Current Surface]
@@ -95,11 +98,11 @@ flowchart LR
 
 每个 Provider 包内都区分 Runtime Plugin 与业务实现对象：
 
-- `basic.Plugin` 只声明依赖、发布 `compaction.Engine`、注册 Waterfall/Event effect，并在 `Apply`/`Dispose` 绑定或释放依赖；`basic.Compaction` 拥有 policy 和 use-case orchestration，`automaticCompaction` 拥有跨 hook overflow 状态，`regionCompactor` 与 `llmSummarizer` 分别拥有区间事务和辅助 LLM protocol；
+- `basic.Plugin` 只声明依赖、发布 `compaction.Engine`、注册 Waterfall/Event effect，并在 `Apply`/`Dispose` 绑定或释放依赖；它创建唯一只读 `policyCatalog` 和稳定的 `*Compaction`。`basic.Compaction` 拥有三个 use case 的编排，`automationController` 只通过公开 Engine 持有跨 hook overflow 状态，`regionCompactor` 与 `llmSummarizer` 分别拥有区间事务和辅助 LLM protocol；
 - `toolresultpruner.Plugin` 发布 `ToolResultPruner`，后者拥有字符裁剪和 Session replacement 业务；
 - `tokenmeter.Plugin` 发布 `TokenMeter`，后者拥有 estimator 与 per-Session replay fold；
 - `commands.Plugin` 发布 `CommandRuntime`，后者拥有 Registry、direct execution 与 command lifecycle；`compaction/command.Plugin` 只持有注册 effect，内部 `Compact` 拥有参数校验和 Engine 结果映射；
-- middleware 和统一 Event observer 是 Plugin Runtime 要求的 adapter，只转发到业务对象，不保存第二份业务状态。
+- middleware 和统一 Event observer 是 Plugin Runtime 要求的 adapter，只转发到 `automationController`；Controller 不依赖具体 `*Compaction`，也不能读取其内部字段。
 
 因此 Plugin 不实现 `Engine`、`Pruner`、`Meter` 或具体命令业务。Runtime 发布的是其内部业务对象；工厂仍只构造 Plugin，composition root 不直接组装业务依赖。
 
@@ -367,16 +370,20 @@ sequenceDiagram
     participant C as Compaction Transaction
     participant S as Session
     participant M as Token Meter
+    participant O as attemptOwnership
+    participant V as completionStability
     participant R as LLM Runtime
     participant F as LiveStore Flush
 
-    C->>S: Commit startPlan
-    S->>S: Build(latest Snapshot) + atomic start batch
-    C->>M: Measure selected positional nodes
+    C->>S: Commit attemptOpening
+    S->>O: begin(latest LogState)
+    O-->>S: current-turn or standalone lifecycle
+    S->>S: atomic compaction/start
+    C->>M: read revision-aligned Surface baseline
     C->>R: summarize reconstructed prefix
     R-->>C: complete safe summary or failure
-    C->>S: Commit completionPlan
-    S->>S: Build(latest Snapshot) + revalidate stability
+    C->>S: Commit attemptCompletion
+    S->>V: check(latest Snapshot, baseline)
     alt summary valid and smaller
         S->>S: atomic Batch(summary, replacement, end)
     else failure before close
@@ -388,7 +395,7 @@ sequenceDiagram
     end
 ```
 
-入口和提交阶段分别使用短时 `WritePlan.Build`；LLM 请求位于两者之间，不能占有 Session coordinator。`compaction/start/end` 是持久化生命周期事实，不是跨 LLM 调用的排他锁：人工 summarization 等待期间，独立 idle injection 可以出现在 marker 中间，completion plan 到达 FIFO 头部后会重新校验并只替换原选中 span。
+入口和提交阶段分别使用短时 `WritePlan.Build`；LLM 请求位于两者之间，不能占有 Session coordinator。事务规则按真实变化轴组合：`attemptOwnership` 只负责 current-turn 或 standalone lifecycle，`completionStability` 只负责 whole Surface 或 selected region 的完成校验；automatic/manual 只是调用入口，不再作为混合事务策略。`compaction/start/end` 是持久化生命周期事实，不是跨 LLM 调用的排他锁：人工 summarization 等待期间，独立 idle injection 可以出现在 marker 中间，`attemptCompletion` 到达 FIFO 头部后会重新校验并只替换原选中 span。Token Meter 与摘要输入通过同 revision 的 `surfaceReading` 建立 baseline，不再跨多个 Session 读视图拼接。
 
 ### 11.1 `/compact` 正常完成交互
 
@@ -447,8 +454,8 @@ Pruner 不保存被裁剪文本的外置副本；完整原 Event 只存在 appen
 
 ## 13. 生命周期、失败与取消
 
-- Basic Plugin 注册并持有 `agent/pre-step`、`agent/request-error`、`agent/status` 和 `session/event` effect，Dispose 时逆序撤销；内部 Compaction 对象持有业务状态；
-- 每 Agent overflow retry 计数属于 Engine instance，不写入 Session；成功 assistant 或 idle 清理；
+- Basic Plugin 注册并持有 `agent/pre-step`、`agent/request-error`、`agent/status` 和 `session/event` effect，Dispose 时逆序撤销；内部 Compaction 对象只持有业务 use case 依赖；
+- 每 Agent overflow retry 计数属于 Plugin 侧 `automationController`，不写入 Session，也不进入 Engine；成功 assistant 或 idle 清理；
 - Token Meter 的 per-Session fold 必须并发安全，并在 Session 不再可达时允许回收；
 - summarization cancellation 关闭 stream、停止接收 chunk，并进入一次 close attempt；
 - 自动 compaction 的无 durable mutation failure 只 warning 并继续；已发生 prune replacement 时继续使用新 Surface；

@@ -8,8 +8,13 @@
 
 ```mermaid
 flowchart LR
-    PLUGIN[Basic Plugin] -->|bind and publish| BASIC[Compaction business object]
-    PLUGIN --> AGENT[agent hooks and events]
+    PLUGIN[Basic Plugin] -->|publish and bind| BASIC[Compaction business object]
+    PLUGIN --> AUTO[automationController]
+    PLUGIN --> POLICY[policyCatalog]
+    POLICY --> AUTO
+    POLICY --> BASIC
+    AUTO -->|compaction.Engine| BASIC
+    AUTO --> AGENT[agent hooks and events]
     BASIC --> LLM[llm.LlmRuntime]
     BASIC --> STORE[session.LiveStore]
     BASIC --> METER[tokenmeter.Meter]
@@ -17,7 +22,7 @@ flowchart LR
     BASIC -. implements .-> ENGINE[compaction.Engine]
 ```
 
-`Plugin` 只拥有 Runtime 生命周期：声明依赖与 effect、在 `Apply` 时绑定依赖、发布 Service、在 `Dispose` 时释放 capability snapshot。`Compaction` 是业务 use case owner，拥有 policy 与人工调度，并实现 `compaction.Engine`。`automaticCompaction` 拥有跨 hook 的 overflow retry sequence；`pressureMiddleware`、`overflowMiddleware` 和 Plugin Event observer 只是 Runtime adapter，不再保留第二份策略或事务状态。
+`Plugin` 只拥有 Runtime 生命周期与组装：创建唯一只读 `policyCatalog` 和稳定的 `*Compaction`，声明依赖与 effect、在 `Apply` 时绑定依赖、发布 Service、在 `Dispose` 时释放 capability snapshot。`Compaction` 是三个压缩 use case 的业务实现并独占 `compaction.Engine` 身份。`automationController` 只通过该 Engine 处理 hook、overflow retry sequence 和告警去重；它不依赖具体 `*Compaction`，也不读取 Compaction 字段。
 
 ## 生命周期
 
@@ -32,11 +37,13 @@ flowchart LR
 ```mermaid
 sequenceDiagram
     participant L as AgentLoop
-    participant A as automaticCompaction
+    participant A as automationController
     participant C as Compaction
     participant M as Token Meter
     participant P as Optional Pruner
     participant R as regionCompactor
+    participant O as attemptOwnership
+    participant V as completionStability
     participant LLM as LLM Runtime
     participant S as Session
 
@@ -48,16 +55,19 @@ sequenceDiagram
         C->>M: remeasure
     end
     C->>R: compact selected Surface region
-    R->>S: Commit startPlan
-    S->>S: Build(latest Snapshot) + atomic start
+    R->>S: Commit attemptOpening
+    S->>O: begin(latest LogState)
+    O-->>S: current-turn or standalone lifecycle
+    S->>S: atomic compaction/start
     R->>LLM: Stream(purpose=compaction)
     LLM-->>R: safe completed summary
-    R->>S: Commit completionPlan
-    S->>S: Build(latest Snapshot) + atomic summary/replacement/end
+    R->>S: Commit attemptCompletion
+    S->>V: check(latest Snapshot, baseline)
+    S->>S: atomic summary/replacement/end or failure end
     A-->>L: continue or generation-backed retry
 ```
 
-`Compaction` 负责 threshold/route/retained-tail policy 与 manual use case；`automaticCompaction` 只拥有跨 hook 的 overflow retry sequence；`regionCompactor` 拥有长事务；`llmSummarizer` 拥有辅助 LLM protocol。这些命名对象共享同一个 Provider 配置，不重复存储业务状态。
+`policyCatalog` 是配置决策的唯一所有者，由 Plugin、`automationController` 和 `Compaction` 共享同一不可变快照。`Compaction` 负责编排 threshold、route、retained-tail、强制区间与人工维护用例；`regionCompactor` 编排一次区间事务；`llmSummarizer` 拥有辅助 LLM protocol。事务不再用 automatic/manual 标签混合规则：`attemptOwnership` 只决定 current-turn 或 standalone lifecycle，`completionStability` 只决定 whole Surface 或 selected region 校验，具体入口组合二者。`surfaceReading` 只接受 `Measurement.LogRevision` 与 `Snapshot.Barrier.NextSeq` 相同的读视图，摘要 baseline 不再混用多个 Session revision。
 
 ## 失败、取消与人工路径
 
