@@ -235,11 +235,12 @@ func (coordinator *activityCoordinator) runMaintenance(
 			coordinator.subject.identifier,
 		)
 	}
-	if coordinator.state.kind != activityIdle {
+	if coordinator.state.kind != activityIdle ||
+		coordinator.state.wakeRequested {
 		coordinator.mutex.Unlock()
 		cancelActivity(nil)
 		return fmt.Errorf(
-			"agentloop: Agent %q already has active work",
+			"agentloop: Agent %q already has active or queued work",
 			coordinator.subject.identifier,
 		)
 	}
