@@ -13,6 +13,7 @@ import (
 	"github.com/gorenx/goren/apiproxy"
 	sessionapi "github.com/gorenx/goren/apiproxy/session"
 	"github.com/gorenx/goren/approval"
+	"github.com/gorenx/goren/commands"
 	"github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/credentials"
 	"github.com/gorenx/goren/llm"
@@ -88,6 +89,7 @@ func (owner *Plugin) Manifest() plugin.Manifest {
 		Requires: []plugin.ServiceType{
 			plugin.ServiceOf[agent.Registry](),
 			plugin.ServiceOf[agentdefaultmodel.DefaultModel](),
+			plugin.ServiceOf[commands.Registry](),
 			plugin.ServiceOf[llm.LlmRuntime](),
 			plugin.ServiceOf[session.LiveStore](),
 			plugin.ServiceOf[sesspersist.Persistence](),
@@ -127,6 +129,10 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 		return err
 	}
 	defaults, err := plugin.Require[agentdefaultmodel.DefaultModel](owner)
+	if err != nil {
+		return err
+	}
+	commandRegistry, err := plugin.Require[commands.Registry](owner)
 	if err != nil {
 		return err
 	}
@@ -209,6 +215,7 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 		methods,
 		sessionGateway,
 		queries,
+		commandRegistry,
 		models,
 		credentialProvider,
 		agents,

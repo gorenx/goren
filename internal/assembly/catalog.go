@@ -20,8 +20,12 @@ import (
 	apiproxyhost "github.com/gorenx/goren/apiproxy/host"
 	"github.com/gorenx/goren/approval"
 	approvalfactory "github.com/gorenx/goren/approval/factory"
+	"github.com/gorenx/goren/commands"
+	commandsfactory "github.com/gorenx/goren/commands/factory"
 	"github.com/gorenx/goren/compaction/basic"
 	compactionbasicfactory "github.com/gorenx/goren/compaction/basic/factory"
+	compactioncommand "github.com/gorenx/goren/compaction/command"
+	compactioncommandfactory "github.com/gorenx/goren/compaction/command/factory"
 	"github.com/gorenx/goren/compaction/toolresultpruner"
 	toolresultprunerfactory "github.com/gorenx/goren/compaction/toolresultpruner/factory"
 	"github.com/gorenx/goren/credentials"
@@ -154,6 +158,9 @@ func NewCatalog(platform Environment) (*pluginfactory.Catalog, error) {
 			ObserverError: platform.Diagnostics.Report,
 		}),
 		approvalfactory.New(),
+		commandsfactory.New(commands.RuntimeOptions{
+			ObserverError: platform.Diagnostics.Report,
+		}),
 		apiproxyfactory.New(apiproxyhost.RuntimeOptions{
 			WorkingDirectory: platform.WorkingDirectory,
 			EnsureDirectory:  ensureDirectory,
@@ -171,6 +178,7 @@ func NewCatalog(platform Environment) (*pluginfactory.Catalog, error) {
 		compactionbasicfactory.New(basic.RuntimeOptions{
 			ObserverError: platform.Diagnostics.Report,
 		}),
+		compactioncommandfactory.New(),
 		sessionBuilder,
 		persistenceBuilder,
 		sessionprojectionfactory.New(),
@@ -367,6 +375,10 @@ func DefaultSpecs(
 			Config:      emptyConfig,
 		},
 		{
+			FactoryName: commands.PluginName,
+			Config:      emptyConfig,
+		},
+		{
 			FactoryName: tools.PluginName,
 			Config:      emptyConfig,
 		},
@@ -404,6 +416,10 @@ func DefaultSpecs(
 		},
 		{
 			FactoryName: basic.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: compactioncommand.PluginName,
 			Config:      emptyConfig,
 		},
 		{

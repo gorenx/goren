@@ -7,6 +7,7 @@ import (
 	"github.com/gorenx/goren/agentdefaultmodel"
 	"github.com/gorenx/goren/apiproxy"
 	sessionapi "github.com/gorenx/goren/apiproxy/session"
+	"github.com/gorenx/goren/commands"
 	"github.com/gorenx/goren/credentials"
 	"github.com/gorenx/goren/llm"
 	sessionquery "github.com/gorenx/goren/session/query"
@@ -16,6 +17,7 @@ func registerMethods(
 	methods *apiproxy.Catalog,
 	sessions *sessionapi.Gateway,
 	queries sessionquery.QueryService,
+	commandRegistry commands.Registry,
 	models llm.LlmRuntime,
 	credentialProvider credentials.Provider,
 	agents agent.Registry,
@@ -68,6 +70,16 @@ func registerMethods(
 		return err
 	}
 	if err = apiproxy.RegisterSessionAPI(methods, sessions, searchGateway); err != nil {
+		return err
+	}
+	commandAdapter, err := apiproxy.NewCommandsGateway(
+		commandRegistry,
+		sessions,
+	)
+	if err != nil {
+		return err
+	}
+	if err = apiproxy.RegisterCommandsAPI(methods, commandAdapter); err != nil {
 		return err
 	}
 	return nil
