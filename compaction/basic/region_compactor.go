@@ -184,50 +184,6 @@ func (owner *regionCompactor) compactIdle(
 	)
 }
 
-func (owner *regionCompactor) close(
-	requestContext context.Context,
-	conversation session.Context,
-	lifecycle compaction.Start,
-	failure attemptError,
-) regionAttempt {
-	detail := failure.cause.Error()
-	draft, err := session.NewEventDraft(
-		compaction.EndEvent,
-		compaction.End{
-			CompactionID:    lifecycle.CompactionID,
-			SourceCommandID: cloneString(lifecycle.SourceCommandID),
-			Turn:            cloneInt64(lifecycle.Turn),
-			Error:           &detail,
-		},
-	)
-	if err != nil {
-		return regionAttempt{
-			problem: &attemptError{
-				stage: commitStage,
-				cause: err,
-			},
-		}
-	}
-	receipt, commitErr := conversation.Commit(
-		context.WithoutCancel(requestContext),
-		session.Batch(draft),
-	)
-	closed := receiptClosesAttempt(receipt)
-	if commitErr != nil {
-		return regionAttempt{
-			closed: closed,
-			problem: &attemptError{
-				stage: commitStage,
-				cause: commitErr,
-			},
-		}
-	}
-	return regionAttempt{
-		closed:  closed,
-		problem: &failure,
-	}
-}
-
 func (owner *regionCompactor) compact(
 	requestContext context.Context,
 	ownerContext compaction.AgentContext,
