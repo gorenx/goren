@@ -135,7 +135,7 @@ func (*reportAgent) InboxValue() *agent.Inbox                      { return nil 
 func (*reportAgent) StatusValue() agent.Status                     { return agent.StatusIdle }
 func (*reportAgent) Cancel(agent.CancelCause, agent.CancelOptions) {}
 func (*reportAgent) WhenIdle(context.Context) error                { return nil }
-func (*reportAgent) RunMaintenance(context.Context, agent.MaintenanceTask) error {
+func (*reportAgent) RunMaintenance(context.Context, func(context.Context) error) error {
 	return nil
 }
 func (*reportAgent) Send(llm.UserMessage, agent.InboxTarget, bool) error { return nil }

@@ -64,9 +64,9 @@ func (*retrySubjectFixture) WhenIdle(context.Context) error {
 
 func (*retrySubjectFixture) RunMaintenance(
 	requestContext context.Context,
-	task agent.MaintenanceTask,
+	operation func(context.Context) error,
 ) error {
-	return task.Run(requestContext)
+	return operation(requestContext)
 }
 
 func (*retrySubjectFixture) Send(llm.UserMessage, agent.InboxTarget, bool) error {

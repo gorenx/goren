@@ -227,10 +227,26 @@ func decodeMessageSource(rawValue json.RawMessage) (MessageSource, error) {
 		return NewOpaqueMessageSource(header.Kind, rawValue)
 	case "plugin":
 		var origin PluginMessageSource
-		if err := decodeStrict(rawValue, &origin); err != nil {
+		if err := decodeStrict(rawValue, &origin); err == nil {
+			return origin.CloneSource()
+		}
+		// MessageSourceMap also permits plugin-owned source variants. Preserve a
+		// variant without core form fields losslessly; known form variants remain
+		// strict so an extension cannot hide malformed snapshot/notice data.
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(rawValue, &fields); err != nil {
 			return nil, err
 		}
-		return origin.CloneSource()
+		var pluginName string
+		if err := json.Unmarshal(fields["plugin"], &pluginName); err != nil || pluginName == "" {
+			return nil, errors.New("llm: plugin message source needs a plugin name")
+		}
+		for _, coreField := range []string{"form", "sections", "summary"} {
+			if _, present := fields[coreField]; present {
+				return nil, fmt.Errorf("llm: invalid plugin message source field %q", coreField)
+			}
+		}
+		return NewOpaqueMessageSource(header.Kind, rawValue)
 	case "model":
 		var origin ModelMessageSource
 		if err := decodeStrict(rawValue, &origin); err != nil {

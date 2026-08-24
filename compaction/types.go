@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
@@ -84,20 +85,13 @@ type AgentContext struct {
 	Model    string
 }
 
-// MaintenanceTask is one explicit non-turn compaction operation.
-type MaintenanceTask interface {
-	Run(context.Context) error
-}
-
-// MaintenanceRunner serializes explicit compaction against Agent turns.
-type MaintenanceRunner interface {
-	RunMaintenance(context.Context, MaintenanceTask) error
-}
-
-// ManualAgentContext adds the live maintenance owner required by CompactNow.
-type ManualAgentContext struct {
-	AgentContext
-	Maintenance MaintenanceRunner
+// ManualAgentContext is the minimal live Agent view required by CompactNow.
+// The real Agent capability satisfies it directly; Compaction does not require
+// an adapter or reconstruct a second maintenance owner.
+type ManualAgentContext interface {
+	SessionValue() *session.Session
+	OptionsValue() agent.Options
+	RunMaintenance(context.Context, func(context.Context) error) error
 }
 
 // Result records one successful durable compaction transaction.

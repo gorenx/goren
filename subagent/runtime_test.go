@@ -42,9 +42,9 @@ func (*agentFixture) Cancel(agent.CancelCause, agent.CancelOptions) {}
 func (*agentFixture) WhenIdle(context.Context) error                { return nil }
 func (*agentFixture) RunMaintenance(
 	requestContext context.Context,
-	task agent.MaintenanceTask,
+	operation func(context.Context) error,
 ) error {
-	return task.Run(requestContext)
+	return operation(requestContext)
 }
 func (*agentFixture) Send(llm.UserMessage, agent.InboxTarget, bool) error {
 	return nil

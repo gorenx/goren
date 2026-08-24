@@ -1017,11 +1017,11 @@ func TestMaintenanceWakeKeepsWhenIdleBehindSuccessorTurn(t *testing.T) {
 	go func() {
 		maintenanceDone <- handleState.Subject.RunMaintenance(
 			context.Background(),
-			agent.MaintenanceFunc(func(context.Context) error {
+			func(context.Context) error {
 				close(maintenanceStarted)
 				<-releaseMaintenance
 				return nil
-			}),
+			},
 		)
 	}()
 	select {

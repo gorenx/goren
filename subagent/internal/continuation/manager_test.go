@@ -92,9 +92,9 @@ func (subject *agentRecord) WhenIdle(requestContext context.Context) error {
 
 func (*agentRecord) RunMaintenance(
 	requestContext context.Context,
-	task agent.MaintenanceTask,
+	operation func(context.Context) error,
 ) error {
-	return task.Run(requestContext)
+	return operation(requestContext)
 }
 
 func (subject *agentRecord) Send(

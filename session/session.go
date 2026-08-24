@@ -134,6 +134,26 @@ func (conversation *Session) Surface() Surface {
 	}
 }
 
+// ReadCut returns the append-only log and Surface from the same committed
+// revision. Consumers that validate positional relationships must use this
+// instead of composing separate Events and Surface reads.
+func (conversation *Session) ReadCut() ([]Event, Surface) {
+	if conversation == nil {
+		return nil, Surface{}
+	}
+	conversation.mu.RLock()
+	defer conversation.mu.RUnlock()
+	entries := make([]Event, len(conversation.entries))
+	for index, source := range conversation.entries {
+		entries[index] = cloneEvent(source)
+	}
+	nodes := append([]int64(nil), conversation.view.nodes...)
+	return entries, Surface{
+		Nodes:             nodes,
+		ReplaceGeneration: conversation.view.replaceGeneration,
+	}
+}
+
 // RequestHeaderValue returns the canonical header in force after the latest
 // request/header event. Each committed event is folded at most once.
 func (conversation *Session) RequestHeaderValue() (EpochHeader, bool, error) {
@@ -287,13 +307,30 @@ func AppendSurfaceSerialized[D any](conversation *Session, definition SurfaceEve
 	})
 }
 
-func serializeProducerAppend(conversation *Session, operation func() (Event, error)) (Event, error) {
+// SerializeProducer runs one synchronous producer operation without allowing
+// another goroutine's serialized producer to interleave. The callback may use
+// Append and AppendSurface multiple times; it must not perform asynchronous or
+// external work while holding this short-lived ordering boundary.
+func SerializeProducer(conversation *Session, operation func() error) error {
 	if conversation == nil {
-		return Event{}, errors.New("session: append to nil Session")
+		return errors.New("session: serialize producer on nil Session")
+	}
+	if operation == nil {
+		return errors.New("session: serialized producer operation is nil")
 	}
 	conversation.producerMu.Lock()
 	defer conversation.producerMu.Unlock()
 	return operation()
+}
+
+func serializeProducerAppend(conversation *Session, operation func() (Event, error)) (Event, error) {
+	var committed Event
+	err := SerializeProducer(conversation, func() error {
+		var appendErr error
+		committed, appendErr = operation()
+		return appendErr
+	})
+	return committed, err
 }
 
 func (conversation *Session) appendCandidate(candidate Event) (Event, error) {

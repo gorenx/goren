@@ -42,9 +42,9 @@ func (*fakeAgent) Cancel(agentcore.CancelCause, agentcore.CancelOptions) {
 func (*fakeAgent) WhenIdle(context.Context) error { return nil }
 func (*fakeAgent) RunMaintenance(
 	requestContext context.Context,
-	task agentcore.MaintenanceTask,
+	operation func(context.Context) error,
 ) error {
-	return task.Run(requestContext)
+	return operation(requestContext)
 }
 func (*fakeAgent) Send(llm.UserMessage, agentcore.InboxTarget, bool) error {
 	return nil

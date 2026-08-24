@@ -40,8 +40,8 @@ func (subject *Agent) Inject(messageValue llm.UserMessage) error {
 	subject.mu.Unlock()
 	return nil
 }
-func (*Agent) RunMaintenance(requestContext context.Context, task agent.MaintenanceTask) error {
-	return task.Run(requestContext)
+func (*Agent) RunMaintenance(requestContext context.Context, operation func(context.Context) error) error {
+	return operation(requestContext)
 }
 
 func (subject *Agent) Manifest() plugin.Manifest {

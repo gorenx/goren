@@ -180,9 +180,9 @@ func (subject *ReactLoopAgent) WhenIdle(requestContext context.Context) error {
 
 func (subject *ReactLoopAgent) RunMaintenance(
 	requestContext context.Context,
-	task agent.MaintenanceTask,
+	operation func(context.Context) error,
 ) error {
-	return subject.loop.runMaintenance(requestContext, task)
+	return subject.loop.runMaintenance(requestContext, operation)
 }
 
 func cloneAgentOptions(source agent.Options) agent.Options {

@@ -43,9 +43,9 @@ func (*parentRecord) WhenIdle(context.Context) error { return nil }
 
 func (*parentRecord) RunMaintenance(
 	requestContext context.Context,
-	task agent.MaintenanceTask,
+	operation func(context.Context) error,
 ) error {
-	return task.Run(requestContext)
+	return operation(requestContext)
 }
 
 func (*parentRecord) Send(llm.UserMessage, agent.InboxTarget, bool) error { return nil }

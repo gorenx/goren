@@ -341,13 +341,11 @@ func decodeDerivedMessage(entry Event) (llm.Message, error) {
 		return typedMessage, nil
 	case ToolResultEventName:
 		var wireValue struct {
-			Turn    int64           `json:"turn"`
-			Step    int64           `json:"step"`
 			Message json.RawMessage `json:"message"`
-			Error   json.RawMessage `json:"error,omitempty"`
-			Meta    json.RawMessage `json:"meta,omitempty"`
 		}
-		if err := decodeSessionPayload(entry.Data, &wireValue); err != nil {
+		// Tool result data is merge-extensible. Projection needs only the owned
+		// message field and must not discard or reject provider/plugin metadata.
+		if err := json.Unmarshal(entry.Data, &wireValue); err != nil {
 			return nil, err
 		}
 		messageValue, err := llm.DecodeMessage(wireValue.Message)

@@ -113,9 +113,9 @@ func (machine *loop) whenIdle(requestContext context.Context) error {
 
 func (machine *loop) runMaintenance(
 	requestContext context.Context,
-	task agent.MaintenanceTask,
+	operation func(context.Context) error,
 ) error {
-	return machine.activity.runMaintenance(requestContext, task)
+	return machine.activity.runMaintenance(requestContext, operation)
 }
 
 func (machine *loop) runtimeContextView() *runtimeContextProjection {

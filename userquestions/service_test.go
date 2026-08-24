@@ -91,9 +91,9 @@ func (*questionSubject) Inject(llm.UserMessage) error {
 
 func (*questionSubject) RunMaintenance(
 	requestContext context.Context,
-	task agentcore.MaintenanceTask,
+	operation func(context.Context) error,
 ) error {
-	return task.Run(requestContext)
+	return operation(requestContext)
 }
 
 type recordingProvider struct {

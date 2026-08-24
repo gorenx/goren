@@ -217,11 +217,11 @@ func (coordinator *activityCoordinator) whenIdle(
 
 func (coordinator *activityCoordinator) runMaintenance(
 	requestContext context.Context,
-	task agent.MaintenanceTask,
-) (taskErr error) {
-	if requestContext == nil || task == nil {
+	operation func(context.Context) error,
+) error {
+	if requestContext == nil || operation == nil {
 		return errors.New(
-			"agentloop: maintenance Context and task are required",
+			"agentloop: maintenance Context and operation are required",
 		)
 	}
 	operationContext, cancelActivity := context.WithCancelCause(requestContext)
@@ -256,7 +256,7 @@ func (coordinator *activityCoordinator) runMaintenance(
 		cancelActivity(nil)
 		coordinator.finishActivity(done, lastTurn, false)
 	}()
-	return task.Run(operationContext)
+	return operation(operationContext)
 }
 
 func (coordinator *activityCoordinator) wake(wakingAfterAbort bool) error {
