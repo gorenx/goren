@@ -113,6 +113,86 @@ func TestDefaultCompositionCompactsPressureThroughAgentLoop(t *testing.T) {
 	}
 }
 
+func TestDefaultCompositionRetriesOverflowAfterSurfaceReplacement(t *testing.T) {
+	var mainRequests atomic.Int32
+	var compactRequests atomic.Int32
+	providerServer := httptest.NewServer(http.HandlerFunc(
+		func(responseWriter http.ResponseWriter, httpRequest *http.Request) {
+			defer httpRequest.Body.Close()
+			if httpRequest.Header.Get("x-deepseek-harness-compact") == "1" {
+				compactRequests.Add(1)
+				writeCompactionFixtureSSE(
+					responseWriter,
+					"overflow recovery checkpoint",
+					200,
+				)
+				return
+			}
+			requestNumber := mainRequests.Add(1)
+			if requestNumber == 2 {
+				responseWriter.Header().Set("content-type", "application/json")
+				responseWriter.WriteHeader(http.StatusBadRequest)
+				_, _ = fmt.Fprint(
+					responseWriter,
+					`{"error":{"message":"request too large for model context"}}`,
+				)
+				return
+			}
+			writeCompactionFixtureSSE(responseWriter, "main response", 5_000)
+		},
+	))
+	defer providerServer.Close()
+
+	thresholdRatio := float64(1)
+	runtimeEngine, serviceView := startCompactionFixtureComposition(
+		t,
+		providerServer.URL,
+		12_500,
+		basic.Config{
+			PolicyConfig: basic.PolicyConfig{
+				ThresholdRatio: &thresholdRatio,
+			},
+		},
+		t.TempDir(),
+	)
+	defer shutdownCompactionFixtureComposition(t, runtimeEngine)
+	handle := createCompactionFixtureAgent(t, serviceView, "overflow-agent")
+	defer disposeCompactionFixtureAgent(t, handle)
+
+	sendCompactionFixturePrompt(
+		t,
+		handle.Subject,
+		strings.Repeat("overflow history that must remain shrinkable ", 100),
+	)
+	beforeGeneration := handle.Subject.SessionValue().Surface().ReplaceGeneration
+	sendCompactionFixturePrompt(
+		t,
+		handle.Subject,
+		"the provider rejects this request once",
+	)
+	afterGeneration := handle.Subject.SessionValue().Surface().ReplaceGeneration
+
+	entries := handle.Subject.SessionValue().Events()
+	assertCompactionFixtureTransaction(t, entries)
+	if afterGeneration <= beforeGeneration {
+		t.Fatalf(
+			"overflow replacement generation = %d, want greater than %d",
+			afterGeneration,
+			beforeGeneration,
+		)
+	}
+	if mainRequests.Load() != 3 || compactRequests.Load() != 1 {
+		t.Fatalf(
+			"overflow request counts = main %d, compact %d",
+			mainRequests.Load(),
+			compactRequests.Load(),
+		)
+	}
+	if kind := latestCompactionFixtureTurnEndKind(t, entries); kind != "completed" {
+		t.Fatalf("overflow recovery turn end kind = %q", kind)
+	}
+}
+
 func startCompactionFixtureComposition(
 	testingContext *testing.T,
 	baseURL string,
@@ -327,6 +407,25 @@ func assertCompactionFixtureTransaction(
 			endIndex,
 		)
 	}
+}
+
+func latestCompactionFixtureTurnEndKind(
+	testingContext *testing.T,
+	entries []session.Event,
+) string {
+	testingContext.Helper()
+	for entryIndex := len(entries) - 1; entryIndex >= 0; entryIndex-- {
+		if entries[entryIndex].Type != session.TurnEndEventName {
+			continue
+		}
+		var ending session.TurnEnd
+		if err := json.Unmarshal(entries[entryIndex].Data, &ending); err != nil {
+			testingContext.Fatal(err)
+		}
+		return ending.Reason.TurnEndKind()
+	}
+	testingContext.Fatal("turn/end event is absent")
+	return ""
 }
 
 func writeCompactionFixtureSSE(
