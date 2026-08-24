@@ -391,7 +391,7 @@ TypeScript DSH SDK 的 newline JSON-RPC、Python SDK、`initialize`、`session/p
 
 ## 10. 兼容证据
 
-契约资产与固定源基线绑定，但不把 TypeScript schema 或客户端实现带入 Go 运行时或测试运行时：
+契约资产与固定源基线绑定，但不把 TypeScript schema 或客户端实现带入 Go 运行时或当前普通 Go 兼容验收：
 
 ```text
 contracts/deepseek-harness/
@@ -412,7 +412,7 @@ internal/assembly/
 
 `manifest.json` 是机器可读的范围与 provenance owner：记录源 commit/version/license/toolchain、HTTP/WS path、message/receipt/frame 判别集合、当前 unary method、privileged method、Excluded 和 Deferred 能力。源 commit 改变时必须显式更新该文件和全部向量，不能自动追随相邻 checkout。
 
-`vectors.json` 和 `compaction-vectors.json` 是固定源契约样本，不是 embedding，也不生成 Go 类型或生产代码。新的兼容用例优先直接写在 owner package 的 Go 表驱动测试中；只有已有且仍被普通 Go 测试消费的 committed vector 才保留。固定源 checkout 只用于人工核对 provenance、symbol、descriptor 和 observable semantics，不在验证过程中执行 TypeScript。
+`vectors.json` 和 `compaction-vectors.json` 是固定源契约样本，不是 embedding，也不生成 Go 类型或生产代码。新的兼容用例优先直接写在 owner package 的 Go 表驱动测试中；已有资产只有在被当前 Go 测试消费时才构成当前验证证据，单独存在不计为通过。固定源 checkout 用于人工核对 provenance、symbol、descriptor 和 observable semantics；当前普通 Go 验收不执行 TypeScript。
 
 普通 `go test ./...` 覆盖以下链路，不需要 Node、源依赖安装或 TypeScript runner：
 
@@ -430,7 +430,7 @@ Package-local provider recordings
   -> 比较 request、stream chunks、usage、terminal 与错误分类
 ```
 
-测试不导入或运行上游 schema、`WebApiClient`、`ConnectionController`。这不改变“客户端实现不复制”的范围，也不降低逐字段契约要求：每个兼容声明仍必须记录固定源 commit、owner/symbol 和对应 Go implementation/test 位置。
+当前普通 Go 兼容测试不导入或运行上游 schema、`WebApiClient`、`ConnectionController`。这不改变“客户端实现不复制”的范围，也不降低逐字段契约要求：每个兼容声明仍必须记录固定源 commit、owner/symbol 和对应 Go implementation/test 位置。Web 包自己的 Vitest 属于 UI component verification，不作为 Host 协议兼容证据。
 
 验收包含：
 
