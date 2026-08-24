@@ -87,7 +87,7 @@ func NewHTTPHost(settings HTTPConfig, dispatch RPCDispatcher, streams EventSourc
 	engine.GET(connection.MuxEventsPath, downlinks.muxHandler())
 	engine.GET(connection.HostEventsPath, downlinks.hostHandler())
 	engine.POST(connection.RespondPath, respondHandler(dispatch, maxBodyBytes))
-	engine.POST(connection.APIPath+"/:method", unaryHandler(dispatch, maxBodyBytes))
+	engine.POST(connection.APIPath+"/*", unaryHandler(dispatch, maxBodyBytes))
 	if settings.Frontend != nil {
 		engine.RouteNotFound("/*", echo.WrapHandler(settings.Frontend))
 	}
@@ -133,7 +133,7 @@ func (carrier *HTTPHost) ServeHTTP(writer http.ResponseWriter, httpRequest *http
 
 func unaryHandler(dispatch RPCDispatcher, maxBodyBytes int64) echo.HandlerFunc {
 	return func(echoContext *echo.Context) error {
-		method := echoContext.Param("method")
+		method := echoContext.Param("*")
 		if echoContext.Request().URL.EscapedPath() != connection.APIPath+"/"+method {
 			return writePlain(echoContext, http.StatusNotFound, "not found")
 		}
