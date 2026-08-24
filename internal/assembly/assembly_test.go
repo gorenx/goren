@@ -17,8 +17,10 @@ import (
 	"github.com/gorenx/goren/agentloop"
 	"github.com/gorenx/goren/apiproxy"
 	"github.com/gorenx/goren/approval"
+	"github.com/gorenx/goren/commands"
 	"github.com/gorenx/goren/compaction"
 	"github.com/gorenx/goren/compaction/basic"
+	compactioncommand "github.com/gorenx/goren/compaction/command"
 	"github.com/gorenx/goren/compaction/toolresultpruner"
 	protocol "github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/credentials"
@@ -57,6 +59,7 @@ type serviceProbe struct {
 	defaultModel agentdefaultmodel.DefaultModel
 	approvals    approval.Approval
 	apiProxy     apiproxy.Service
+	commandPlane commands.Registry
 	credentials  credentials.Provider
 	models       llm.LlmRuntime
 	compactor    compaction.Engine
@@ -82,6 +85,7 @@ func (*serviceProbe) Manifest() plugin.Manifest {
 			plugin.ServiceOf[agentdefaultmodel.DefaultModel](),
 			plugin.ServiceOf[approval.Approval](),
 			plugin.ServiceOf[apiproxy.Service](),
+			plugin.ServiceOf[commands.Registry](),
 			plugin.ServiceOf[credentials.Provider](),
 			plugin.ServiceOf[llm.LlmRuntime](),
 			plugin.ServiceOf[compaction.Engine](),
@@ -113,6 +117,9 @@ func (probe *serviceProbe) Apply(requestContext context.Context) error {
 		return err
 	}
 	if probe.apiProxy, err = plugin.Require[apiproxy.Service](probe); err != nil {
+		return err
+	}
+	if probe.commandPlane, err = plugin.Require[commands.Registry](probe); err != nil {
 		return err
 	}
 	if probe.credentials, err = plugin.Require[credentials.Provider](probe); err != nil {
@@ -272,7 +279,9 @@ func TestCatalogContainsOnlyCurrentServerSlice(t *testing.T) {
 		agentloop.PluginName,
 		apiproxy.PluginName,
 		approval.PluginName,
+		commands.PluginName,
 		basic.PluginName,
+		compactioncommand.PluginName,
 		toolresultpruner.PluginName,
 		connectionhost.PluginName,
 		credentials.PluginName,

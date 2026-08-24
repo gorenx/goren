@@ -53,7 +53,7 @@ func TestDefaultCompositionCompactsPressureThroughAgentLoop(t *testing.T) {
 	))
 	defer providerServer.Close()
 
-	runtimeEngine, serviceView := startCompactionFixtureComposition(
+	runtimeEngine, serviceView, _ := startCompactionFixtureComposition(
 		t,
 		providerServer.URL,
 		12_500,
@@ -147,7 +147,7 @@ func TestDefaultCompositionRetriesOverflowAfterSurfaceReplacement(t *testing.T) 
 	defer providerServer.Close()
 
 	thresholdRatio := float64(1)
-	runtimeEngine, serviceView := startCompactionFixtureComposition(
+	runtimeEngine, serviceView, _ := startCompactionFixtureComposition(
 		t,
 		providerServer.URL,
 		12_500,
@@ -244,7 +244,7 @@ func TestDefaultCompositionNeverRetriesOverflowAfterCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	thresholdRatio := float64(1)
-	runtimeEngine, serviceView := startCompactionFixtureComposition(
+	runtimeEngine, serviceView, _ := startCompactionFixtureComposition(
 		t,
 		providerServer.URL,
 		12_500,
@@ -369,7 +369,7 @@ func TestDefaultCompositionRestoresCompactionAcrossSQLiteRestart(t *testing.T) {
 
 	dataDirectory := t.TempDir()
 	diagnosticSink := testDiagnostics(t)
-	firstRuntime, firstServices := startCompactionFixtureComposition(
+	firstRuntime, firstServices, _ := startCompactionFixtureComposition(
 		t,
 		providerServer.URL,
 		12_500,
@@ -421,7 +421,7 @@ func TestDefaultCompositionRestoresCompactionAcrossSQLiteRestart(t *testing.T) {
 	shutdownCompactionFixtureComposition(t, firstRuntime)
 
 	thresholdRatio := float64(1)
-	secondRuntime, secondServices := startCompactionFixtureComposition(
+	secondRuntime, secondServices, _ := startCompactionFixtureComposition(
 		t,
 		providerServer.URL,
 		12_500,
@@ -521,7 +521,7 @@ func startCompactionFixtureComposition(
 	compactionConfig basic.Config,
 	dataDirectory string,
 	diagnosticSink *Diagnostics,
-) (*plugin.Runtime, *serviceProbe) {
+) (*plugin.Runtime, *serviceProbe, *Server) {
 	testingContext.Helper()
 	identityDirectory := testingContext.TempDir()
 	directory, err := NewCatalog(Environment{
@@ -613,7 +613,7 @@ func startCompactionFixtureComposition(
 			contextWindow,
 		)
 	}
-	return runtimeEngine, serviceView
+	return runtimeEngine, serviceView, assembledServer
 }
 
 func createCompactionFixtureAgent(

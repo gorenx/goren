@@ -7,6 +7,7 @@ import (
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentdefaultmodel"
 	api "github.com/gorenx/goren/apiproxy"
+	"github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 	sesspersist "github.com/gorenx/goren/session/persistence"
@@ -177,4 +178,16 @@ func (owner *Gateway) Cancel(
 	call api.Request[api.SessionCancelRequest],
 ) (api.Outcome[api.AcceptedValue], error) {
 	return owner.conversationUseCases.Cancel(requestContext, call)
+}
+
+// ResolveOrdinaryAgent resolves an API-addressable ordinary Agent while
+// preserving cold resume and subagent ownership behavior.
+func (owner *Gateway) ResolveOrdinaryAgent(
+	requestContext context.Context,
+	identifier api.SessionID,
+) (agent.Agent, *connection.RPCError) {
+	return owner.conversationUseCases.access.ordinaryAgent(
+		requestContext,
+		identifier,
+	)
 }
