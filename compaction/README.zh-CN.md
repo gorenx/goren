@@ -23,7 +23,7 @@ flowchart LR
     AUTO[Agent hook Consumer] --> ENGINE[compaction.Engine]
     COMMAND[compaction/command Consumer] --> ENGINE
     BASIC[compaction/basic Provider] -. implements .-> ENGINE
-    ENGINE --> SESSION[session.Session]
+    ENGINE --> SESSION[session.Context]
     ENGINE --> LLM[llm vocabulary]
 ```
 

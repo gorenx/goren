@@ -4,7 +4,7 @@
 
 本文拥有 Goren 的 Context Compaction 能力边界、Service Definition / Provider / Consumer 分工、Token Meter 依赖、`compaction/*` 持久化事实、Surface replacement 事务、自动压力与 context-overflow 恢复流程、Tool Result Pruning 以及 `/compact` Commands Consumer。实施明细和验收 Gate 只见[25 Context Compaction 实现进度](./25-context-compaction-implementation-progress.md)；全仓总体状态仍由[08 实施进度](./08-implementation-progress.md)汇总。
 
-Session append-only log、Surface 与 LiveStore 生命周期由[10 Session Core 与生命周期](./10-session-core-and-lifecycle.md)拥有；Tools post-execute 与 Tool result 物化由[12 Tools Registry 与执行流水线](./12-tools-registry-and-execution-pipeline.md)拥有；LLM request、stream、usage 与 model capacity 由[13 Harness LLM Runtime 与 DeepSeek Provider](./13-harness-llm-runtime-and-deepseek-provider.md)拥有；Agent maintenance、`agent/pre-step` 和 `agent/request-error` 分别由[14](./14-agent-registry-inbox-and-events.md)和[15](./15-agent-loop-and-request-driver.md)拥有。本文只定义这些能力如何被 Compaction 消费，不转移其所有权。
+Session append-only log、Surface 与 LiveStore 生命周期由[10 Session Core 与生命周期](../session/docs/design.zh-CN.md)拥有；Tools post-execute 与 Tool result 物化由[12 Tools Registry 与执行流水线](./12-tools-registry-and-execution-pipeline.md)拥有；LLM request、stream、usage 与 model capacity 由[13 Harness LLM Runtime 与 DeepSeek Provider](./13-harness-llm-runtime-and-deepseek-provider.md)拥有；Agent maintenance、`agent/pre-step` 和 `agent/request-error` 分别由[14](./14-agent-registry-inbox-and-events.md)和[15](./15-agent-loop-and-request-driver.md)拥有。本文只定义这些能力如何被 Compaction 消费，不转移其所有权。
 
 ## 1. 源证据与基线约束
 
@@ -68,7 +68,7 @@ flowchart LR
     CE -->|optional pruneSession| PR[Tool Result Pruner]
     CE -->|direct purpose=compaction call| LLM[llm.LlmRuntime]
     CE --> AG[agent.Agent maintenance/context]
-    CE --> S[session.Session]
+    CE --> S[session.Context]
     CE --> LS[session.LiveStore Flush]
     PR --> TM
     PR --> S
@@ -108,7 +108,7 @@ flowchart LR
 Token Meter、Compaction、Pruner 不折叠为一个包，原因是：
 
 - **Actor**：Token Meter 是任意压力 Consumer 的同步读服务；Compaction 由 Agent hook 或人工命令触发；Pruner 由 Compaction Provider 选择调用；
-- **一致性**：Meter 只折叠日志；Compaction 拥有跨异步 LLM 调用的长事务；Pruner 每个 replacement 是独立、同步、可部分成功的短事务；
+- **一致性**：Meter 只折叠日志；Compaction 拥有跨异步 LLM 调用并以 start/end facts 闭合的业务事务；Pruner 在 FIFO 头部计算一次 pass 的全部 replacement，并把完整 pass 作为一个原子 Session batch；
 - **外部依赖**：只有 Basic Compaction 依赖 LLM；Pruner 无模型；Meter 核心只依赖 Session log 和 LLM vocabulary，并可选注册 Session projection Unit；
 - **变化原因**：模型压力估算、摘要策略、字符裁剪策略分别演进。
 
@@ -197,9 +197,9 @@ Session 提供三类保证：
 
 1. append-only Event seq 与严格 payload codec；
 2. 按当前位置解释的 Surface append/replace；
-3. 对独立 producer 的同步串行化。
+3. 固定 `Batch` 与状态相关 `WritePlan` 通过唯一 `Commit` 进入同一个 FIFO，并以完整 batch 原子提交。
 
-Session 通过 `SerializeProducer` 拥有多 Event 同步 producer 串行化：callback 内可以完成校验和连续追加，因此 `summary -> replacement -> end` 以及 `prune -> replacement` 不会被其他 producer 插入。mutex 不暴露给 Compaction，LLM 请求也不会跨该同步边界持锁。
+Compaction 不因为“事件数量多”就实现自定义 plan。`summary -> replacement -> end` 的 replacement provenance 依赖 summary 将获得的 `Seq`，Pruner 又必须在 request 真正到达 FIFO 头部时扫描最新 Surface 并确定候选，因此这两个 use case 实现 `WritePlan.Build(context.Context, session.Snapshot)`，一次返回完整 drafts。Session 在临时 log/Surface 上验证全部 draft 后原子提交；Session mutex 和 queue 不暴露给 Compaction，LLM summarization 始终在 coordinator 外执行。完整调用契约由[Session Core 设计](../session/docs/design.zh-CN.md)拥有。
 
 ### 5.4 Agent 与 LiveStore
 
@@ -217,7 +217,7 @@ Pruner 读取当前 Surface 的稳定 snapshot，只处理超预算 `tool/result
 - 非文本 block 原位置保留；切片不能拆分 UTF-16 surrogate pair，但可以拆分 grapheme cluster；
 - replacement 保留原 Event 的全部字段，只改 result content；
 - 每个 replacement 前同步追加一个 `compaction/prune` shadow-price fact；
-- 一次 pass 中较早 replacement 已成功、较晚 replacement 失败时，不回滚前者；
+- 一次 pass 的全部 `prune -> replacement` drafts 原子提交；任一候选构造或 Surface 校验失败时整批不提交；
 - 第二次执行必须幂等，不再重写已经落入预算的内容。
 
 ## 6. 公共 Service 与结果契约
@@ -370,18 +370,17 @@ sequenceDiagram
     participant R as LLM Runtime
     participant F as LiveStore Flush
 
-    C->>S: serialized validate lock/turn/span
-    C->>S: append compaction/start
+    C->>S: Commit startPlan
+    S->>S: Build(latest Snapshot) + atomic start batch
     C->>M: Measure selected positional nodes
     C->>R: summarize reconstructed prefix
     R-->>C: complete safe summary or failure
-    C->>S: serialized revalidate stability
+    C->>S: Commit completionPlan
+    S->>S: Build(latest Snapshot) + revalidate stability
     alt summary valid and smaller
-        C->>S: append compaction/summary
-        C->>S: append replacement user/message
-        C->>S: append compaction/end
+        S->>S: atomic Batch(summary, replacement, end)
     else failure before close
-        C->>S: one append compaction/end(error) attempt
+        S->>S: atomic Batch(compaction/end(error))
     end
     opt manual closed attempt
         C->>F: Flush(session)
@@ -389,7 +388,7 @@ sequenceDiagram
     end
 ```
 
-入口和提交阶段使用短同步 producer serialization；LLM 请求位于两者之间，不能持有 Session producer lock。`compaction/start/end` 是锁时间点，不是排他容器：人工 summarization 等待期间，独立的 idle injection 可以出现在 marker 中间，人工提交只替换原选中 span。
+入口和提交阶段分别使用短时 `WritePlan.Build`；LLM 请求位于两者之间，不能占有 Session coordinator。`compaction/start/end` 是持久化生命周期事实，不是跨 LLM 调用的排他锁：人工 summarization 等待期间，独立 idle injection 可以出现在 marker 中间，completion plan 到达 FIFO 头部后会重新校验并只替换原选中 span。
 
 ### 11.1 `/compact` 正常完成交互
 
@@ -431,13 +430,15 @@ sequenceDiagram
     participant S as Session
 
     C->>P: PruneSession(session)
-    P->>S: snapshot current Surface
-    loop each oversized tool/result in snapshot order
+    P->>S: Commit pruningPlan
+    S->>P: Build with latest Snapshot
+    loop each oversized tool/result in Snapshot order
         P->>P: retain head + marker + tail
         P->>M: price original node
-        P->>S: serialized append compaction/prune
-        P->>S: append replacement tool/result
+        P->>P: build prune + replacement drafts
     end
+    P->>S: return complete drafts
+    S->>S: atomic batch commit
     P-->>C: replacements + charsRemoved
     C->>M: remeasure current pressure
 ```
@@ -457,12 +458,12 @@ Pruner 不保存被裁剪文本的外置副本；完整原 Event 只存在 appen
 - crash 后 unmatched start 由 log fold 检测；早于最新 `session/end-seed` 的 unmatched start 是旧 lifecycle 证据，不阻塞当前 Session；
 - Provider usage、raw output、错误链和配置快照不得包含 credential。
 
-## 14. 已落地的公共前置
+## 14. 公共前置依赖
 
-下列前置已由各自 owner 实现，Basic Provider 不再保留私有替代路径：
+下列前置由各自 owner 提供，Basic Provider 不保留私有替代路径；实施状态与验证证据只见[25](./25-context-compaction-implementation-progress.md)：
 
 1. `llm` 对 merge-extensible plugin MessageSource 的 lossless decode，已知 form 仍 strict；
-2. Session-owned `SerializeProducer` 多 Event 同步串行化；
+2. Session-owned `Context.Commit` 唯一写入口、固定 `Batch` 与状态相关 `WritePlan`；
 3. 单例 replay Token Meter、固定 estimator 和三个可选 Projection Unit；
 4. Compaction EventKey、cold replay invariant、tool pairing 和 checkpoint source codec；
 5. 基于 `b150a55` 源 descriptor、event/config/result shape 编写的 Go golden 与表驱动契约用例；
@@ -476,7 +477,7 @@ Pruner 不保存被裁剪文本的外置副本；完整原 Event 只存在 appen
 - `session` 包测试拥有同步事件组相邻性、replacement provenance 和并发 producer；
 - `compaction` 包测试拥有 Event codec、checkpoint source、tool pairing 和 log invariant；
 - `compaction/basic` 包测试拥有策略、区间、summarizer、自动/overflow/manual transaction；
-- `compaction/toolresultpruner` 包测试拥有 Unicode budget、字段保留、幂等和部分成功；
+- `compaction/toolresultpruner` 包测试拥有 Unicode budget、字段保留、幂等和整批失败不提交；
 - `commands` 与 `compaction/command` 包测试拥有命令 lifecycle、参数、结果映射、取消和卸载；
 - `apiproxy` 包测试拥有 `commands/list`、`commands/execute` 的 Remote wrapper、字段规范化、absent result 和 RPC error；
 - `internal/assembly` Go E2E 拥有真实 HTTP carrier、DeepSeek SSE oracle、持久化事件顺序、失败和取消链；

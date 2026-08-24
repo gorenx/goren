@@ -46,9 +46,9 @@ flowchart LR
         TM[tokenmeter.TokenMeter]
     end
 
-    SESSION[session.Session<br/>Event log + Surface] -->|Events / committed notifications| TM
+    SESSION[session.Context<br/>Event log + Surface] -->|Events / committed notifications| TM
     TP -->|publish Meter| TM
-    TP -->|adapt SessionEventAppended<br/>SessionDisposed| TM
+    TP -->|adapt EventAppended<br/>Disposed| TM
 
     BASIC[compaction/basic] -->|Measure pressure / overflow / manual| TM
     PRUNER[toolresultpruner] -->|Estimate original result| TM
@@ -69,7 +69,7 @@ flowchart LR
 | 模块 | 谁主动调用谁 | 使用的契约 | 当前状态 |
 | --- | --- | --- | --- |
 | Plugin Runtime | Runtime 装载 `tokenmeter.Plugin`，Plugin 发布内部 `TokenMeter` | `plugin.Manifest`、`Apply`、`Dispose` | 已实现 |
-| Session | Session commit 后由 Runtime 把 `SessionEventAppended` 交给 Plugin；Plugin 转发给 `TokenMeter` | append-only Event、Surface operation、Session dispose | 已实现 |
+| Session | Session commit 后由 Runtime 把 `EventAppended` 交给 Plugin；Plugin 转发给 `TokenMeter` | append-only Event、Surface operation、Session dispose | 已实现 |
 | `compaction/basic` | Basic Provider 从 Runtime 获取 `Meter`，压缩策略主动调用 `Measure` | `Meter.Measure` | 已实现并默认启用 |
 | `compaction/toolresultpruner` | Pruner 从 Runtime 获取 `Meter`，为原 Tool result 计算 shadow price | `Meter.EstimateMessage` | 已实现并默认启用 |
 | 其他同步 Consumer | Consumer 主动调用 `Measure` 或 `EstimateMessage` | `Meter` | 扩展契约已实现 |
@@ -84,7 +84,7 @@ flowchart LR
 ### 4.1 `Measure`
 
 ```go
-Measure(context.Context, *session.Session, *session.EpochHeader) (Measurement, error)
+Measure(context.Context, session.Context, *session.EpochHeader) (Measurement, error)
 ```
 
 输入：
@@ -228,7 +228,7 @@ stateDiagram-v2
     Constructed --> Active: Runtime publish Meter
     Active --> Active: Apply 注册可选 Projection Units
     Active --> Active: committed Event 增量推进已分配 fold
-    Active --> Active: SessionDisposed 删除对应 fold
+    Active --> Active: Disposed 删除对应 fold
     Active --> Disposed: Dispose 逆序释放 Unit handle 并清空 folds
     Disposed --> [*]
 ```

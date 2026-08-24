@@ -23,7 +23,7 @@ flowchart LR
     CLIENT[TypeScript Client] -->|commands/list or commands/execute| API[apiproxy CommandsGateway]
     API --> REG[commands.CommandRuntime]
     PLUGIN[Command Consumer Plugin] -->|Register Definition| REG
-    REG -->|command/run and command/done| SESSION[session.Session]
+    REG -->|fixed Batch commits| SESSION[session.Context]
     REG -->|Invocation| BUSINESS[Consumer business object]
     BUSINESS --> CAP[Consumer-owned downstream capability]
 ```
@@ -46,13 +46,13 @@ sequenceDiagram
     alt 语法非法或名称未注册
         R-->>A: absent result
     else 已解析且已准入
-        R->>S: AppendSerialized command/run
+        R->>S: Commit Batch(command/run)
         alt 不接受非空 image batch
-            R->>S: command/done(error)
+            R->>S: Commit Batch(command/done error)
         else 正常调用
             R->>H: Invocation(commandId, agent, rawInput)
             H-->>R: Result or error
-            R->>S: serialized command/done
+            R->>S: Commit Batch(command/done)
         end
         R-->>A: paired Execution or invocation error
     end
@@ -60,7 +60,7 @@ sequenceDiagram
 
 `command/run` 必须在 handler 之前提交；只有成功解析并命中已注册命令才写入。`command/done` 使用相同 `commandId`，成功结果可携带 `sourceEventSeq`。未识别命令返回 absent，不伪造空对象或持久化事件。当前组合未提供 image admission，因此任何非空 image batch 都在具体 handler 前形成稳定的 command error result。
 
-Session append 由 Session 自己串行化。`CommandRuntime` 不持有 Session mutex，也不把 handler 的异步工作包进同步 producer 临界区；结束事件在 handler settle 后重新进入 Session producer 边界，避免与 Compaction 等其他 producer 交错重入。
+两个事实都通过 Session 的唯一 `Context.Commit` 提交固定 `Batch`。`CommandRuntime` 不持有 Session mutex，也不把 handler 的异步工作放进 `WritePlan.Build`；`command/run` 提交后 coordinator 立即释放，`command/done` 在 handler settle 后作为新的 request 重新准入。其他 producer 可以在两者之间合法提交，配对关系只由 `commandId` 表达。
 
 ## Plugin、取消与卸载
 

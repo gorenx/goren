@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有 Workspace Registry、Workspace entity、历史 Session Header bootstrap、storage-only Backend、SQLite/sqlc adapter、七个 `workspace.*` method、四类 Host frame，以及 `session.create({workspaceId})` 的集成语义。通用 RPC 与 frame union 由[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)和[07 API Proxy 模块设计与实现](./07-api-proxy-module.md)拥有；Session Header/Event 与 Persistence 分别由[10](./10-session-core-and-lifecycle.md)和[19](./19-session-persistence-and-sqlite.md)拥有；当前实施状态与证据只见[08 实施进度](./08-implementation-progress.md)。
+本文拥有 Workspace Registry、Workspace entity、历史 Session Header bootstrap、storage-only Backend、SQLite/sqlc adapter、七个 `workspace.*` method、四类 Host frame，以及 `session.create({workspaceId})` 的集成语义。通用 RPC 与 frame union 由[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)和[07 API Proxy 模块设计与实现](./07-api-proxy-module.md)拥有；Session Header/Event 与 Persistence 分别由[10](../session/docs/design.zh-CN.md)和[19](./19-session-persistence-and-sqlite.md)拥有；当前实施状态与证据只见[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 固定源与职责映射
 

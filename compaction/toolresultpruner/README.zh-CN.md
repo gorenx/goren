@@ -10,10 +10,10 @@
 flowchart LR
     BASIC[compaction/basic] --> PRUNER[Pruner Service]
     PRUNER --> METER[tokenmeter.Meter]
-    PRUNER --> SESSION[session.Session Surface]
+    PRUNER --> SESSION[session.Context Snapshot]
 ```
 
-本包拥有 Unicode code-point budget、head/marker/tail 形状、`compaction/prune` shadow price 和单个 `tool/result` replacement。Session 继续拥有 append 顺序、Surface mutation 和“replacement 只能改变 result content”的 invariant；Token Meter 拥有 token price。
+本包拥有 Unicode code-point budget、head/marker/tail 形状、`compaction/prune` shadow price、`tool/result` replacement 以及一次 pruning pass 的 `WritePlan`。Session 继续拥有 FIFO、atomic batch、Surface mutation 和“replacement 只能改变 result content”的 invariant；Token Meter 拥有 token price。
 
 ## 配置与生命周期
 
@@ -29,17 +29,20 @@ sequenceDiagram
     participant S as Session
 
     B->>P: PruneSession(ctx, session)
-    P->>S: ReadCut
-    loop snapshot 中每个超预算 tool/result
+    P->>S: Commit pruningPlan
+    S->>P: Build(latest Snapshot)
+    loop Snapshot 中每个超预算 tool/result
         P->>P: code-point head + marker + tail
         P->>M: EstimateMessage(original)
-        P->>S: SerializeProducer(prune fact + replacement)
+        P->>P: build prune + replacement drafts
     end
+    P->>S: return complete drafts
+    S->>S: atomic batch commit
     P-->>B: replacements + charsRemoved
 ```
 
 - 只统计 text block 的 Unicode code point，通过 Go rune 切分避免拆开 surrogate pair；非文本 block 原位保留；
 - replacement 由 Session owner 校验，保留 Tool result 的 call ID、status、source 和扩展字段，只改 content；
-- `compaction/prune` shadow price 与 replacement 在同一 `SerializeProducer` callback 中相邻提交；
-- 整个 pass 在一次 producer serialization 内扫描，每个候选的 fact/replacement pair 立即 append；较晚候选失败时返回错误，不回滚较早的有效 replacement；
+- `compaction/prune` shadow price 与 replacement 在同一个有序 draft slice 中相邻；
+- `pruningPlan.Build` 在 request 到达 FIFO 头部后扫描最新 `Snapshot`，一次返回整个 pass 的 drafts；任一候选构造或 Surface 校验失败时整批不提交；
 - 二次 pass 忽略已落入预算的结果，不产生重复 replacement；取消会在处理下一候选前收敛。

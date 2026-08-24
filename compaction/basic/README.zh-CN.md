@@ -48,10 +48,12 @@ sequenceDiagram
         C->>M: remeasure
     end
     C->>R: compact selected Surface region
-    R->>S: serialized validate + compaction/start
+    R->>S: Commit startPlan
+    S->>S: Build(latest Snapshot) + atomic start
     R->>LLM: Stream(purpose=compaction)
     LLM-->>R: safe completed summary
-    R->>S: serialized revalidate + summary + replacement + end
+    R->>S: Commit completionPlan
+    S->>S: Build(latest Snapshot) + atomic summary/replacement/end
     A-->>L: continue or generation-backed retry
 ```
 

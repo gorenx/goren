@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有 live-preferred Session corpus、精确读取/过滤/关系追踪、语义文档提取、可重建 SQLite FTS5 index、cursor generation 与 `session.search` 的 Query 侧语义。浏览器 method 的可见性和 wire 映射由[16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)拥有；durable facts、revision 与 recovery 由[19 Session Persistence 与 SQLite 事实存储设计](./19-session-persistence-and-sqlite.md)拥有；Header/Event/surface invariant 由[10 Session Core 与生命周期](./10-session-core-and-lifecycle.md)拥有；实施证据只见[08 实施进度](./08-implementation-progress.md)。
+本文拥有 live-preferred Session corpus、精确读取/过滤/关系追踪、语义文档提取、可重建 SQLite FTS5 index、cursor generation 与 `session.search` 的 Query 侧语义。浏览器 method 的可见性和 wire 映射由[16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)拥有；durable facts、revision 与 recovery 由[19 Session Persistence 与 SQLite 事实存储设计](./19-session-persistence-and-sqlite.md)拥有；Header/Event/surface invariant 由[10 Session Core 与生命周期](../session/docs/design.zh-CN.md)拥有；实施证据只见[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 固定源与职责映射
 

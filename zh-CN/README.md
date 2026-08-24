@@ -16,7 +16,7 @@
 - [08 实施进度](./08-implementation-progress.md)：阶段完成度、当前代码/测试证据、验证结果、阻塞项和下一步。
 - [09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)：Goren Server Assembly、源插件映射、Factory Catalog 与 Connection 插件装配。
 - [Go Cordis 风格通用 Plugin 事件领域框架设计](./Go_Cordis_风格插件事件领域运行时设计方案.md)：可复用 Plugin Runtime 的目标、Go 类型身份、Manifest、Service/Event/Waterfall、Scope、调用准入与 `RunRetained` 契约。
-- [10 Session Core 与生命周期模块设计](./10-session-core-and-lifecycle.md)：Header/Event、内存 append-only log、surface、LiveStore 生命周期、订阅与 persistence 边界。
+- [Session Core、唯一写协调与生命周期设计](../session/docs/design.zh-CN.md)：`Context`、EventDraft、唯一 `Commit`、固定 `Batch`、状态相关 `WritePlan`、每 Session FIFO baton、原子 batch、Surface、LiveStore 与 durability barrier。
 - [11 System Prompt Registry 与 Assembly 模块设计](./11-system-prompt-registry-and-assembly.md)：scope overlay、注册生命周期、deterministic assembly、tool schema 排序、严格插值与上下游边界。
 - [12 Tools Registry 与执行流水线模块设计](./12-tools-registry-and-execution-pipeline.md)：Tool Definition、Root Registry + Child Overlay、restriction/guard、policy Waterfall、一次性执行状态机、结果物化与 System Prompt 投影。
 - [13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)：provider-neutral LLM Service、Adapter Registry、模型路由、流组装、RetryPolicy，以及 DeepSeek typed config、HTTP/SSE 和错误映射。
@@ -36,7 +36,7 @@
 ## 模块内运行说明
 
 - [`plugin/README.zh-CN.md`](../plugin/README.zh-CN.md)：Plugin Runtime 职责边界、依赖结算、Scope 路由、统一 Fiber Effect 生命周期与按需 API 示例。
-- [`session/README.zh-CN.md`](../session/README.zh-CN.md)：Session append-only log、LiveStore、publication、`DeferAfterEvent` 与生命周期。
+- [`session/README.zh-CN.md`](../session/README.zh-CN.md)：Session append-only log、唯一写协调器、LiveStore、publication 与生命周期。
 - [`agentloop/README.zh-CN.md`](../agentloop/README.zh-CN.md)：Agent driver、Turn/Step、请求/Tool 调度、durability checkpoint 与 idle convergence。
 - [`apiproxy/README.zh-CN.md`](../apiproxy/README.zh-CN.md)：typed method adapter、Session/Interaction Gateway、live frame、correlation 与背压。
 - [`apiproxy/session/README.zh-CN.md`](../apiproxy/session/README.zh-CN.md)：Session API façade、读取/生命周期/模型/对话/Search 用例与 Agent activation 状态。
@@ -61,7 +61,7 @@
 
 ## 权威关系
 
-- 本目录 `01`–`05` 拥有全局设计，`06`、`07`、`09`–`24` 拥有已进入实现的稳定 Harness 模块设计；`Go_Cordis_风格插件事件领域运行时设计方案.md` 单独拥有可复用 Plugin Runtime 的重构目标与插件作者契约。`08` 拥有全仓总体实施状态与公共验证证据，`25` 单独拥有 Compaction 的子项进度和 Gate，`08` 只引用其总体状态。
+- 本目录 `01`–`05` 拥有全局设计，`06`、`07`、`09`–`24` 拥有已进入实现的 Harness 模块设计；其中 `10` 单独拥有 Session 唯一写协调、调用契约和生命周期，不再维护平行 Session 重构文档；`Go_Cordis_风格插件事件领域运行时设计方案.md` 单独拥有可复用 Plugin Runtime 的重构目标与插件作者契约。`08` 拥有全仓总体实施状态与公共验证证据，`25` 单独拥有 Compaction 的子项进度和 Gate，`08` 只引用其总体状态。
 - 子模块 `README.zh-CN.md` 解释贴近代码的职责、工作原理和交互流程；跨模块契约仍由本目录对应编号文档拥有。全仓公共实施证据由 `08` 拥有，Compaction 专项子项证据由 `25` 拥有并向 `08` 汇总。
 - 根目录 `README.md` 与 `README.zh-CN.md` 只说明项目背景。
 - TypeScript 的行为证据来自固定 commit；源仓库后续变化不会自动成为 Go 需求。

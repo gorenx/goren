@@ -53,7 +53,7 @@ Session 是追加写事件日志，不是可被原地修改的会话对象。持
 - 所有模型可见消息必须可由日志重建；模型可见但未落日志、或已落日志但请求未包含，均视为兼容缺陷。
 - Header `createdAt` 与 Event `time` 都保持 Unix epoch milliseconds number，并限制在 JavaScript safe integer 范围。
 
-Header、Event、surface、append commit 与 flush 的唯一详细设计见[10 Session Core 与生命周期模块设计](./10-session-core-and-lifecycle.md)。
+Header、Event、Surface、唯一写协调、commit 与 flush 的详细设计只见[10 Session Core、唯一写协调与生命周期](../session/docs/design.zh-CN.md)。
 
 核心 turn 顺序保持为：
 

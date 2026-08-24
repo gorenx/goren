@@ -93,7 +93,7 @@ live Registry、durable Inbox、Agent-scoped event、initiator attribution 与 m
 
 独立原因：Session 同时被 Agent、持久化、projection 和 API Proxy 消费，且 append 的串行一致性与后台 projection 不同。把 storage driver 放入 Session core 会阻止替换并污染 replay。
 
-已进入实现的 Header/Event、内存 log、surface 和 LiveStore 生命周期由[10 Session Core 与生命周期模块设计](./10-session-core-and-lifecycle.md)拥有；cold repair 由[19 Session Persistence 与 SQLite 事实存储设计](./19-session-persistence-and-sqlite.md)拥有。fork 与派生查询仍按各自 use case 边界进入。
+已进入实现的 Header/Event、内存 log、surface 和 LiveStore 生命周期由[10 Session Core 与生命周期模块设计](../session/docs/design.zh-CN.md)拥有；cold repair 由[19 Session Persistence 与 SQLite 事实存储设计](./19-session-persistence-and-sqlite.md)拥有。fork 与派生查询仍按各自 use case 边界进入。
 
 ### 2.4 Storage Adapter
 

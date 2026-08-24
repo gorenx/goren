@@ -3,7 +3,7 @@
 状态：In Progress
 更新时间：2026-08-24
 
-本文是 DeepSeek Harness Go 复刻全仓阶段汇总、验证证据、阻塞项和下一步的总体记录。全局范围与 Gate 由[05 复制路线图与验收](./05-porting-roadmap-and-acceptance.md)拥有，当前 Web Agent 交付闭包由[21 Web Agent 主会话闭环与能力边界](./21-web-agent-main-flow.md)拥有；模块职责与设计分别由[06 Connection Host 模块设计与实现](./06-connection-host-module.md)、[07 API Proxy 模块设计与实现](./07-api-proxy-module.md)、[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)、[10 Session Core 与生命周期模块设计](./10-session-core-and-lifecycle.md)、[11 System Prompt Registry 与 Assembly 模块设计](./11-system-prompt-registry-and-assembly.md)、[12 Tools Registry 与执行流水线模块设计](./12-tools-registry-and-execution-pipeline.md)、[13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)、[14 Agent Registry、Inbox 与实时事件模块设计](./14-agent-registry-inbox-and-events.md)、[15 Agent Loop 与请求驱动模块设计](./15-agent-loop-and-request-driver.md)、[16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)、[17 Approval、UserQuestions 与 Interaction Gateway](./17-approval-user-questions-and-interaction-gateway.md)、[18 Session Projection 与 Session Title 模块设计](./18-session-projection-and-title.md)、[19 Session Persistence 与 SQLite 事实存储设计](./19-session-persistence-and-sqlite.md)、[20 Workspace Registry、SQLite 与 API Gateway](./20-workspace-registry-and-api.md)、[22 Credentials 与 API Key 管理](./22-credentials-and-api-key-management.md)、[23 Session Query 与 Search](./23-session-query-and-search.md)和[24 Context Compaction](./24-context-compaction.md)拥有；Compaction 的子项进度和 Gate 单独由[25 Context Compaction 实现进度](./25-context-compaction-implementation-progress.md)拥有，本文只保留其总体状态。代码近邻说明由各领域模块 `README.zh-CN.md` 持有。本文不重新定义协议或架构。
+本文是 DeepSeek Harness Go 复刻全仓阶段汇总、验证证据、阻塞项和下一步的总体记录。全局范围与 Gate 由[05 复制路线图与验收](./05-porting-roadmap-and-acceptance.md)拥有，当前 Web Agent 交付闭包由[21 Web Agent 主会话闭环与能力边界](./21-web-agent-main-flow.md)拥有；模块职责与设计分别由[06 Connection Host 模块设计与实现](./06-connection-host-module.md)、[07 API Proxy 模块设计与实现](./07-api-proxy-module.md)、[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)、[10 Session Core、唯一写协调与生命周期](../session/docs/design.zh-CN.md)、[11 System Prompt Registry 与 Assembly 模块设计](./11-system-prompt-registry-and-assembly.md)、[12 Tools Registry 与执行流水线模块设计](./12-tools-registry-and-execution-pipeline.md)、[13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)、[14 Agent Registry、Inbox 与实时事件模块设计](./14-agent-registry-inbox-and-events.md)、[15 Agent Loop 与请求驱动模块设计](./15-agent-loop-and-request-driver.md)、[16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)、[17 Approval、UserQuestions 与 Interaction Gateway](./17-approval-user-questions-and-interaction-gateway.md)、[18 Session Projection 与 Session Title 模块设计](./18-session-projection-and-title.md)、[19 Session Persistence 与 SQLite 事实存储设计](./19-session-persistence-and-sqlite.md)、[20 Workspace Registry、SQLite 与 API Gateway](./20-workspace-registry-and-api.md)、[22 Credentials 与 API Key 管理](./22-credentials-and-api-key-management.md)、[23 Session Query 与 Search](./23-session-query-and-search.md)和[24 Context Compaction](./24-context-compaction.md)拥有；Compaction 的子项进度和 Gate 单独由[25 Context Compaction 实现进度](./25-context-compaction-implementation-progress.md)拥有，本文只保留其总体状态。代码近邻说明由各领域模块 `README.zh-CN.md` 持有。本文不重新定义协议或架构。
 
 ## 1. 进度记录规则
 
@@ -22,14 +22,14 @@
 | 阶段 0：基线与 Contract Freeze | In Progress | 12 Completed / 1 In Progress / 1 Planned | Contract Verified | 补齐其余 included surface mapping 与 NOTICE/provenance 决策 |
 | 阶段 1：Connection Host Carrier | Completed | 19 Completed | Contract Verified | Gate 已完成，后续扩展随新增 included surface 进入 |
 | 阶段 2：Plugin Runtime | In Progress | Plugin 底座已验证 / 业务模块迁移中 | Go Verified | 新 `plugin/...` 已通过包内检查；旧业务调用方正一次性迁移到 `Plugin.Apply/Dispose`、typed Definition、Waterfall 与 Event 契约 |
-| 阶段 3：Session/Agent slice | Completed | 16 Completed | Contract Verified | 全部交付与 Gate 已闭合；cold persistence/resume 仍由阶段 5 拥有 |
+| 阶段 3：Session/Agent slice | Completed | Session 唯一写协调与既有 Agent slice 均完成 | Contract Verified | 保持 wire/Event parity，后续新增能力按 owner 进入 |
 | 阶段 4：LLM Contract | Completed | 13 Completed | Environment Verified | Runtime、DeepSeek adapter、response recordings、Agent attempt loop、默认 retry Consumer 与真实 Provider smoke 均已完成 |
-| 阶段 5：Session 持久化 | Completed | 17 Completed | Contract Verified | SQLite facts、cold recovery/API/Agent resume、turn-end checkpoint、prepared LRU 与 suffix seek 已闭环 |
+| 阶段 5：Session 持久化 | Completed | Persistence、prepared cache 与 ordered barrier 均完成 | Contract Verified | 后续只按新 Backend 或能力需求扩展 |
 | 阶段 6：客户端能力扩展 | In Progress | 31 Completed / 19 Deferred / 1 Excluded | Contract Verified | 已准入的服务端能力已闭环；Fork 明确排除，export、Query Tool 与其余页面/管理能力保持冻结 |
 | 阶段 7：Deferred 能力 | Deferred | 7 Deferred | None | 不创建 package、handler 或依赖占位 |
 | 阶段 8：Parity Hardening | In Progress | 1 Completed / 4 In Progress / 10 Planned | Environment Verified | 默认 UI/Provider 主流程已有环境证据，完整发布验收仍未完成 |
 
-当前 Connection slice、Credentials、Session core、System Prompt、Native Tools、Agent Inbox、Agent Loop、Session API Gateway、Session Projection、Session Title/Rename、Session Persistence/SQLite、Session Query/Search、Workspace Registry/API、Approval/UserQuestions/Interaction Gateway 与 LLM/DeepSeek contract 达到 `Contract Verified`：固定 TypeScript schema 与 Go envelope/frame 已交叉校验，固定上游 `WebApiClient` 已通过真实 Go HTTP/WebSocket 完成 credential describe/set/unset 与主会话 create/list/search/history/model/prompt、`turn/end`、queue、cancel、rename、respond、reconnect；SQLite 重启后 cold list/history/create(resume) 也已有 Go E2E。默认 `DefaultSpecs` 已内嵌主会话 UI 和 local Credentials LiveStore，并经离线 DeepSeek oracle 与真实 DeepSeek endpoint 完成对话、会话切换和历史恢复。正常 Agent 轮次在 committed `turn/end` 后等待 `session.LiveStore.Flush`，再进入 successor/idle convergence；用户取消产生的 aborted `turn/end` 使用不继承该 Turn cancellation 的 durability barrier。原版完整 Web 产品、Settings Provider、Agent Preset composition 与其他页面能力不属于当前闭包。
+Session 唯一写协调已完成全调用链迁移：其他领域只持有 `session.Context`，所有写入通过唯一 `Commit(context.Context, WritePlan)`；固定事实使用 `Batch`，状态相关 use case 在 FIFO 头部基于 `Snapshot` 构造完整 drafts，并由包内 `log` 原子提交。旧 raw/serialized append、`ExecuteWrite`、`WriteContext`、after-event admission 和兼容 wrapper 已删除。迁移后的全仓 test、race、vet、build 与 architecture checks 均重新通过；wire/Event envelope 未因本次重构改变。
 
 ### 2.1 当前 Web Agent 主流程状态矩阵
 
@@ -152,7 +152,7 @@ interaction owner registers stable rpcId + decoder
 
 | ID | 类别 | 子目标 | 执行状态 | 证据或缺口 |
 | --- | --- | --- | --- | --- |
-| S3-D01 | 交付 | in-memory append-only Session | Completed | Contract Verified：Header/Event、普通 append、seed marker 与 surface 已同固定源交叉验证；Go Verified：lossless snapshot、连续 `seq`、LiveStore lifecycle/flush |
+| S3-D01 | 交付 | in-memory append-only Session 与唯一写协调器 | Completed | Go Verified：`session.Context` 是唯一外部 capability；`Commit`、`Batch`、`WritePlan.Build`、FIFO baton、atomic batch、publication reentry、seal 与 ordered barrier 均有当前测试并通过全仓 race suite |
 | S3-D02 | 交付 | System Prompt registry 与 snapshot assembly | Completed | Contract Verified：固定源与 Go 的 built-ins、global/scoped shadow、provider snapshot、suppression、complete、tool order、strict interpolation 与失败一致；Go Verified：typed config、change rollback、post-waterfall invariant 与 assembly detachment |
 | S3-D03 | 交付 | Tool definition、registry、executor 和 policy Waterfall | Completed | Contract Verified：固定源与 Go 的 Native config、root/overlay shadow/restriction、pre/execute/post policy、result/failure、cancellation 和 finalizer 一致；Go Verified：typed behavior interface、schema cache、guard、detached canonical result、ordered context、一次性 scheduler stage、observer containment 与 System Prompt projection；`5d88b3d` |
 | S3-D04 | 交付 | Agent registry、inbox、scope 与实时事件 | Completed | Contract Verified：固定源与 Go 的 durable Inbox mutation/event/list/notification 顺序一致；Go Verified：Registry publication/rollback、runtime ownership、scoped event、initiator 与 model selection snapshot |
@@ -195,13 +195,13 @@ interaction owner registers stable rpcId + decoder
 | --- | --- | --- | --- | --- |
 | S5-D01 | 交付 | backend-neutral `Persistence`、`SessionLogStore` 与 storage-only `Backend` | Completed | Go Verified：有状态 `SessionLogStore` 实现完整服务、per-ID gate 与 reservation；SQLite adapter 只实现存储 port |
 | S5-D02 | 交付 | SQLite/sqlc Session fact Backend | Completed | Go Verified：schema/query/config/generated code 位于 `session/persistence/sqlite`，默认使用 `modernc.org/sqlite` |
-| S5-D03 | 交付 | write-behind、显式 flush、dispose/shutdown drain | Completed | Go Verified：失败 batch 保留、取消等待与最终 drain 由 `write_behind_test.go` 覆盖 |
+| S5-D03 | 交付 | write-behind、ordered barrier flush、dispose/shutdown drain | Completed | Go Verified：`LiveStore.Flush` 经 Session FIFO 取得 `WriteBarrier`；Persistence 验证 durable cursor 达到 `NextSeq`，write-behind 失败保留 batch，Release/Close seal、drain、flush 后 detach |
 | S5-D04 | 交付 | cold validation、torn-tail 与开放 Turn/Step/Tool recovery | Completed | Go Verified：`SessionLogStore` 与 recovery tests 覆盖 repair planning/commit |
 | S5-D05 | 交付 | cold `session.list/history/create(resume)` 与 Agent publication handoff | Completed | Contract Verified：默认 composition 重启 E2E 完成 list、history 和 exact Session resume |
 | S5-D06 | 交付 | reconnect baseline、pending replay 和 queue snapshot | Completed | Contract Verified：subscribed/high-water、stable interaction replay 与 queue snapshot 已覆盖；live callback 不作为 durable fact |
 | S5-D07 | 优化 | source-style bounded prepared cache 与 revision reuse | Completed | Go Verified：`preparedSessions` 使用固定容量 generic LRU；ready source 命中验证 durable revision，reservation 移出 LRU 并保持 exact unpublished Session identity，外部 revision 改变触发 reload |
 | S5-D08 | 优化 | `ReadFrom` 使用 Backend seek 而非完整 prefix scan | Completed | Go Verified：`SessionLogStore.ReadFrom` 直接调用 `Backend.LoadStoredFrom`；SQLite 在一个只读事务中读取 Header/revision/suffix 并拒绝 torn marker，计数 Backend 证明不触发 full load |
-| S5-D09 | 交付 | request/turn 完成边界的显式 durability checkpoint | Completed | Go Verified：`TestTurnFlushCompletesBeforeAgentBecomesIdle` 证明 Agent 在 committed `turn/end` 后等待 `session.LiveStore.Flush`，且 flush 结束前不进入 idle；取消场景证明 aborted outcome 的最终 durability Context 仍可用 |
+| S5-D09 | 交付 | request/turn 完成边界的显式 durability checkpoint | Completed | Go Verified：normal/cancel turn-end 均通过 `LiveStore.Flush` 等待 committed-prefix barrier，idle 不越过 durability checkpoint |
 | S5-G01 | Gate | Header/首批 Event/seq/revision transaction 原子 | Completed | Go Verified：`TestAdapterMaterializesHeaderAndBatchAtomically` |
 | S5-G02 | Gate | torn tail、未知事件和开放状态 repair 不变量 | Completed | Go Verified：`TestAdapterMarksAndRepairsOnlyATornTail`、`SessionLogStore`/recovery tests |
 | S5-G03 | Gate | 背景写失败与取消不丢 batch、不伪成功 | Completed | Go Verified：`TestLiveWriterRetainsFailedBackgroundBatchForExplicitFlush`、`TestLiveWriterFlushCanCancelWhileBackgroundWriteRemainsOwned` |
@@ -388,7 +388,7 @@ interaction owner registers stable rpcId + decoder
 
 ## 13. 当前验证结果
 
-本次补齐 Session Query/Search、prepared Session LRU、revision reuse、SQLite suffix seek、Gateway 职责拆分和取消后的 durability boundary；Session Fork 明确排除，export 与 Agent Query Tool 保持 Deferred。当前在 Go 1.26.6、`darwin/arm64` 执行并通过：
+本次进一步完成 Session 唯一写协调重构、全调用方迁移、atomic batch、ordered barrier 与设计文档收敛；Session Fork 明确排除，export 与 Agent Query Tool 保持 Deferred。当前在 Go 1.26.6、`darwin/arm64` 执行并通过：
 
 - `sqlc generate -f session/persistence/sqlite/sqlc.yaml`
 - `sqlc generate -f session/query/sqlite/sqlc.yaml`

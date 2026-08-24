@@ -1,6 +1,6 @@
 # Session 领域模块
 
-`session/` 集中承载 Session core 及其 persistence、projection、title、query 能力。Core 权威设计见[10 Session Core 与生命周期](../zh-CN/10-session-core-and-lifecycle.md)，Projection/Title 见[18](../zh-CN/18-session-projection-and-title.md)，Persistence/SQLite 见[19](../zh-CN/19-session-persistence-and-sqlite.md)，Query/Search 见[23](../zh-CN/23-session-query-and-search.md)。本目录只保留这一份代码近邻 README。
+`session/` 集中承载 Session core 及其 persistence、projection、title、query 能力。Core 权威设计见[Session Core、唯一写协调与生命周期](./docs/design.zh-CN.md)，全仓实施状态见[08](../zh-CN/08-implementation-progress.md)；Projection/Title 见[18](../zh-CN/18-session-projection-and-title.md)，Persistence/SQLite 见[19](../zh-CN/19-session-persistence-and-sqlite.md)，Query/Search 见[23](../zh-CN/23-session-query-and-search.md)。本 README 只提供代码近邻导航，不复制 Core 契约。
 
 ## 目录与职责
 
@@ -20,7 +20,7 @@ Go 调用方对 Persistence 使用较短的 `sesspersist`，对其 SQLite adapte
 
 ```mermaid
 flowchart LR
-    A[Agent or Application] -->|typed Append| B[Session Core]
+    A[Agent or Application] -->|Commit Batch or state-dependent WritePlan| B[Session Core]
     B -->|committed session/event| C[SessionLogStore]
     C -->|storage-only Backend calls| D[(SQLite facts)]
     B -->|committed session/event| E[Projection Registry]
@@ -37,17 +37,17 @@ flowchart LR
 
 ### Core
 
-Session 的 durable Event 类型和 Plugin Runtime 的进程内 Event 是两套明确契约：Session Event 由本领域的具名事件定义参与 `Append`，先生成 lossless JSON snapshot、规划 surface transition，再原子提交连续 `seq`、`time` 与 Event；Plugin Event 由 `plugin.EventOf[E]`/`plugin.Publish` 分发，不进入 Session log。Event Sourcing 由 Session/Persistence owner 决定，Plugin Runtime 不保存或重放它。
+Session 的 durable Event 类型和 Plugin Runtime 的进程内 Event 是两套明确契约：Session Event 由具名 event key 构造 `EventDraft`，再由唯一 `Commit(context.Context, WritePlan)` 边界分配连续 `seq/time` 并规划 Surface transition；Plugin Event 由 `plugin.EventOf[E]` / `plugin.Publish` 分发，不进入 Session log。Event Sourcing 由 Session/Persistence owner 决定，Plugin Runtime 不保存或重放它。
 
-`Session` 负责 seed、surface 与 detached reads；`MemoryStore` 负责 live membership、attachment、created/event/disposed/flush publication。Typed append 生成的 JSON 和 provenance 在进入 log 前已由 Session owner 独占，因此 log 直接保留该快照；只在返回值、Event publication 和读取这些对外边界产生 detached copy，既不暴露 committed history，也不在内部提交路径重复拷贝。`ReadCut` 从同一 committed revision 返回 Event log 与 Surface，供按位置校验的 Consumer 使用。`DeferAfterEvent` 只允许在 `OnEvent` callback 中登记，用于 publication 完成后追加 follow-up fact，不是通用任务队列。
+其他领域只持有 `session.Context`，不能取得具体 coordinator 或 log。包内私有 `log` 负责 seed、append-only Event、Surface 与 detached reads；私有 coordinator 负责唯一 FIFO 和 publication port；`registration` 独占单个 live membership 的 announce/release 状态；`MemoryStore` 只管理 registration 集合、注册顺序和 Store 级 created/event/disposed/flush 分发。`Snapshot` 从同一 committed revision 返回 Event log、Surface 与 durability barrier，供按位置校验的 Consumer 使用。
 
-独立 producer 通过 `AppendSerialized`/`AppendSurfaceSerialized` 进入 Session-owned 排序边界。需要连续提交多个 Event 的同步 use case 使用 `SerializeProducer`，并在 callback 内调用 `Append`/`AppendSurface`；其他 serialized producer 不能中途插入。callback 不得执行 LLM、网络、文件 I/O 或其他异步工作，mutex 也不向 Consumer 暴露。
+普通 producer 用 `session.Batch(drafts...)` 创建固定 plan，再调用 `Context.Commit`。只有完整 drafts 无法在 admission 前确定、必须基于 FIFO 头部最新 `Snapshot` 计算的业务 use case 才实现 `WritePlan.Build`；一个 use case 实现一次，不是每个 Event 实现。`Build` 一次返回完整 batch，`log` 只暂存本次新 Event，并在必要时复制 Surface nodes 来验证全部 transition，成功后原子 append；它不会为每次固定写复制完整历史，也不存在 request-local Event FIFO 或部分 batch。LLM、Tool、网络、文件和数据库 I/O 必须在 coordinator 外执行。
 
 ### Persistence 与 SQLite
 
 `session.LiveStore` 只回答当前进程有哪些 live Session；`session/persistence.Persistence` 回答跨进程事实、cold inspection、恢复与 resume preparation。具体 `SessionLogStore` 是有状态 Go 对象：监听 `OnCreated`、`OnEvent`、`OnFlush`、`OnDisposed`，编排 write-behind、load 与 repair；durable cursor、live writer、prepared LRU/reservation 和 per-ID gate 分别由内部状态对象拥有，`Backend` 只映射 records、revision、repair marker 和事务。
 
-正常 Agent Turn 在提交 `turn/end` 后调用 `session.LiveStore.Flush`。LiveStore 只发布并等待 `session/flush`；`SessionLogStore` 作为 durability participant 将 retained batch 提交给 Backend。这样 Agent Loop 不认识 SQLite，而 idle 表示该正常 Turn 已越过配置中的持久化边界。
+正常 Agent Turn 在提交 `turn/end` 后调用 `session.LiveStore.Flush`。LiveStore 先从 Session coordinator 取得 ordered `WriteBarrier`，再发布并等待 `session/flush`；`SessionLogStore` 作为 durability participant 至少将该 prefix 的 retained facts 提交给 Backend。这样 Agent Loop 不认识 SQLite，Session coordinator 不等待数据库 I/O，而 idle 表示该正常 Turn 已越过配置中的持久化边界。
 
 SQLite adapter 使用以下领域内结构：
 
@@ -83,7 +83,7 @@ session/query/sqlite/
 
 Projection `Registry` 只驱动 domain-owned `Unit`，不理解具体 state；`Changed` 显式控制 whole-value change，checkpoint 是可重建缓存而非事实。Title Service 把 fallback、Provider 或 user rename 统一追加为 `session/title`，以日志中的最新合法事件作为真相，再由 title unit 投影给 API Proxy。
 
-Fallback 通过 `DeferAfterEvent` 在原 user event publication 后追加。Rename 会 supersede 自动生成并 pin；Refresh 明确解除 pin。First-Prompt 与 All-Prompts 是同一个 Session Title 插件内由 typed config 选择的 `LLMProvider` 策略对象，不是独立插件。该对象经 `LLMStreamer` 消费 provider-neutral LLM runtime，在分发前追加 `session/title-llm-request`，并负责输入/输出预算、超时、流组装与文本校验；`LogService` 仍拥有 revision、取消、迟到结果拒绝和最终 `session/title` 事实。
+Fallback observer 先返回，再由 Title Service 自己拥有的生命周期任务通过正常 `Commit` 重新准入；Session 不提供 after-event 写入口。Rename 会 supersede 自动生成并 pin；Refresh 明确解除 pin。First-Prompt 与 All-Prompts 是同一个 Session Title 插件内由 typed config 选择的 `LLMProvider` 策略对象，不是独立插件。该对象经 `LLMStreamer` 消费 provider-neutral LLM runtime，在分发前提交 `session/title-llm-request`，并负责输入/输出预算、超时、流组装与文本校验；`LogService` 仍拥有 revision、取消、迟到结果拒绝和最终 `session/title` 事实。
 
 ## 上下游与依赖方向
 
@@ -96,7 +96,7 @@ JSONL 与 SQLite 是同一 `Backend` port 的可替换事实存储方案，不�
 
 ## 生命周期、错误与取消
 
-Core `Create` 由 Prepare、Enter、Announce 组成；created listener 可 veto 并触发 rollback。Event commit 后 observer error 被包含和报告，不回滚事实。publication 期间直接重入 append 会拒绝，deferred queue 在 guard 释放后按登记顺序运行。
+Core `Create` 由 Prepare、Enter、Announce 组成；created listener 可 veto 并触发 rollback。Event commit 后 observer error 被包含和报告，不回滚事实。publication 期间同步重入同一 Session 会拒绝。Release/Close 由 `registration` 先 seal/drain 写队列，再 flush final barrier、从 `MemoryStore` 删除 exact registration、detach exact publisher 并发布 disposed；Store 不修改 registration 的内部生命周期字段，coordinator 也不清理 Store membership。
 
 Persistence 对同一 Session ID 的 load/append/repair 串行化。write-behind 失败保留未提交 batch；显式 flush、dispose 和插件关闭会等待 drain。Scope teardown 先停止 listener admission，再 drain writer，最后关闭 Backend。未知 required event、非连续 seq、Header 不一致或不可解释状态明确失败；是否删除 torn tail、追加哪些 recovery facts只由 `SessionLogStore` 决定。
 

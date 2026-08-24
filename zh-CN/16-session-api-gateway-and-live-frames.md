@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有浏览器可达的 `session.*` API adapter、`agentDefaultModel`、Session/Agent 到 Mux/Host frame 的投影，以及这些边界的生命周期和失败语义。通用 method Catalog、RPC outcome 与 pending response 由[07 API Proxy 模块设计与实现](./07-api-proxy-module.md)拥有；Approval/Question 交互及其 pending replay 由[17](./17-approval-user-questions-and-interaction-gateway.md)拥有；Session Projection 与 Title 事实/调度由[18](./18-session-projection-and-title.md)拥有；Session Query 与可重建索引由[23](./23-session-query-and-search.md)拥有；Session 事实、Agent capability 和 Turn/Step 驱动分别由[10](./10-session-core-and-lifecycle.md)、[14](./14-agent-registry-inbox-and-events.md)和[15](./15-agent-loop-and-request-driver.md)拥有；当前实施状态与验证证据只见[08 实施进度](./08-implementation-progress.md)。
+本文拥有浏览器可达的 `session.*` API adapter、`agentDefaultModel`、Session/Agent 到 Mux/Host frame 的投影，以及这些边界的生命周期和失败语义。通用 method Catalog、RPC outcome 与 pending response 由[07 API Proxy 模块设计与实现](./07-api-proxy-module.md)拥有；Approval/Question 交互及其 pending replay 由[17](./17-approval-user-questions-and-interaction-gateway.md)拥有；Session Projection 与 Title 事实/调度由[18](./18-session-projection-and-title.md)拥有；Session Query 与可重建索引由[23](./23-session-query-and-search.md)拥有；Session 事实、Agent capability 和 Turn/Step 驱动分别由[10](../session/docs/design.zh-CN.md)、[14](./14-agent-registry-inbox-and-events.md)和[15](./15-agent-loop-and-request-driver.md)拥有；当前实施状态与验证证据只见[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 固定源与职责映射
 

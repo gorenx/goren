@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有 `agentloop` Provider 的 concrete Agent 构造、生命周期事务、Turn/Step 状态机、请求重建、模型流消费、失败 attempt 重试边界、Tool-call 调度和动态 runtime context 投影。live Agent contract、Registry、Inbox 和 `agent/*` Event Definition 由[14 Agent Registry、Inbox 与实时事件模块设计](./14-agent-registry-inbox-and-events.md)拥有；Session facts/surface 由[10 Session Core 与生命周期模块设计](./10-session-core-and-lifecycle.md)拥有；System Prompt、Tools 与 LLM 的 Provider 职责分别见[11](./11-system-prompt-registry-and-assembly.md)、[12](./12-tools-registry-and-execution-pipeline.md)和[13](./13-harness-llm-runtime-and-deepseek-provider.md)；默认 policy 的执行与等待生命周期见[`llmretry` 模块说明](../llm/retry/README.zh-CN.md)。当前实施状态、验证证据和剩余缺口只见[08 实施进度](./08-implementation-progress.md)。
+本文拥有 `agentloop` Provider 的 concrete Agent 构造、生命周期事务、Turn/Step 状态机、请求重建、模型流消费、失败 attempt 重试边界、Tool-call 调度和动态 runtime context 投影。live Agent contract、Registry、Inbox 和 `agent/*` Event Definition 由[14 Agent Registry、Inbox 与实时事件模块设计](./14-agent-registry-inbox-and-events.md)拥有；Session facts/surface 由[10 Session Core 与生命周期模块设计](../session/docs/design.zh-CN.md)拥有；System Prompt、Tools 与 LLM 的 Provider 职责分别见[11](./11-system-prompt-registry-and-assembly.md)、[12](./12-tools-registry-and-execution-pipeline.md)和[13](./13-harness-llm-runtime-and-deepseek-provider.md)；默认 policy 的执行与等待生命周期见[`llmretry` 模块说明](../llm/retry/README.zh-CN.md)。当前实施状态、验证证据和剩余缺口只见[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 固定源与职责映射
 

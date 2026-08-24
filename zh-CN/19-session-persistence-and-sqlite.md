@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有 durable Session facts、cold inspection/load、resume preparation、recovery 编排、write-behind 与 SQLite/sqlc storage adapter 的跨模块设计。Session core 的 Header/Event/surface/live LiveStore 由[10](./10-session-core-and-lifecycle.md)拥有；Agent resume 与 API 映射分别由[15](./15-agent-loop-and-request-driver.md)和[16](./16-session-api-gateway-and-live-frames.md)拥有；Projection/Title 由[18](./18-session-projection-and-title.md)拥有；实施状态与验证证据只见[08](./08-implementation-progress.md)。
+本文拥有 durable Session facts、cold inspection/load、resume preparation、recovery 编排、write-behind 与 SQLite/sqlc storage adapter 的跨模块设计。Session core 的 Header/Event/surface/live LiveStore 由[10](../session/docs/design.zh-CN.md)拥有；Agent resume 与 API 映射分别由[15](./15-agent-loop-and-request-driver.md)和[16](./16-session-api-gateway-and-live-frames.md)拥有；Projection/Title 由[18](./18-session-projection-and-title.md)拥有；实施状态与验证证据只见[08](./08-implementation-progress.md)。
 
 ## 1. 固定源基线
 
@@ -49,7 +49,7 @@ Plugin Runtime 只解析 Session Persistence capability：Factory 解码 `Sessio
 
 | 抽象 | 回答的问题 | 生命周期 | 数据 |
 | --- | --- | --- | --- |
-| `session.LiveStore` | 当前进程有哪些已 attached 的 live Session？ | Plugin Scope / Session attachment | `*session.Session`、live membership、created/event/flush/disposed |
+| `session.LiveStore` | 当前进程有哪些已 attached 的 live Session？ | Plugin Scope / Session attachment | `session.Context`、live membership、created/event/flush/disposed |
 | `Persistence` | 跨进程有哪些 durable Session？如何检查、修复并恢复？ | durability plugin | detached Header/Event logical view、preparation |
 | `Backend` | 如何原子读取或写入物理 records？ | `SessionLogStore` | stored prefix/suffix、revision、repair marker |
 
@@ -75,25 +75,30 @@ Plugin Runtime 只解析 Session Persistence capability：Factory 解码 `Sessio
 ```mermaid
 sequenceDiagram
     participant U as Agent/Application
-    participant S as session.LiveStore
+    participant S as Session
+    participant L as session.LiveStore
     participant C as SessionLogStore
     participant W as per-Session Writer
     participant B as Backend
-    U->>S: Append typed fact
-    S->>S: commit seq/time/surface
+    U->>S: Commit EventDraft
+    S->>S: coordinator commits seq/time/surface
     S-->>C: session/event
     C->>W: enqueue detached Event
     W->>B: AppendBatch on delay/batch boundary
-    U->>S: Flush after committed turn/end
-    S->>C: session/flush
-    C->>W: flush and await
+    U->>L: Flush after committed turn/end
+    L->>S: acquire ordered WriteBarrier
+    S-->>L: {sessionId, nextSeq}
+    L->>C: session/flush(barrier)
+    C->>W: flush through barrier and await
     W->>B: commit retained batch
     B-->>U: durable boundary acknowledged
 ```
 
 Event 在进入 persistence listener 前已是 committed fact，因此 storage failure 不能倒转 Session memory。write-behind 必须保留失败 batch、保持原顺序并让显式 flush 报错；不能推进 durable cursor 或伪报成功。第一次 materialization 的 Header 和首批 Events 必须处于同一 Backend transaction。
 
-正常 Agent driver 在追加 `turn/end` 后调用 `session.LiveStore.Flush`，并在它完成后才成功进入 successor Turn 或 idle convergence。Agent Loop 不直接调用 `Persistence` 或 SQLite；LiveStore 通过 `session/flush` 并行等待全部 durability participant，`SessionLogStore` 再把该 Session 的 retained batch 提交给 Backend。用户取消当前 Turn 时，已提交的 aborted `turn/end` 仍必须越过 durability barrier，因此该最终屏障保留 Context value 但不继承 Turn cancellation。其他显式 flush 的调用方取消或 Backend failure 仍必须返回错误，未落盘 batch 由 writer 保留，供后续 flush、dispose 或 shutdown drain。
+正常 Agent driver 在提交 `turn/end` 后调用 `session.LiveStore.Flush`，并在它完成后才成功进入 successor Turn 或 idle convergence。LiveStore 先通过 Session coordinator 取得 ordered `WriteBarrier`，确保该 prefix 的 Event publication 已完成，再以 `session/flush` 并行等待 durability participant。`SessionLogStore` 必须至少把 `Seq < barrier.NextSeq` 的 retained facts 提交给 Backend；可以顺带提交更晚事实，但不能用“当前 pending 已空”替代指定 prefix 校验。Agent Loop 不直接调用 `Persistence` 或 SQLite。
+
+用户取消当前 Turn 时，已提交的 aborted `turn/end` 仍必须越过 durability barrier，因此最终屏障保留 Context value 但不继承 Turn cancellation。其他显式 flush 的调用方取消或 Backend failure 仍返回错误；未落盘 batch 由 writer 保留，供后续 flush、dispose 或 shutdown drain。Session coordinator 不等待 Backend I/O。
 
 每个 Session ID 有独立串行 gate，不同 Session 可并行。同一 live Session 只有一个 writer owner；duplicate listener、不同 seed prefix、CWD 冲突或 durable identity collision 明确失败。
 
