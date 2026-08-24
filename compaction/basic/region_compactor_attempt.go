@@ -38,6 +38,8 @@ func (problem *attemptError) Unwrap() error {
 	return problem.cause
 }
 
+// regionAttempt retains close state independently from success so standalone
+// maintenance can flush every durably closed attempt, including failures.
 type regionAttempt struct {
 	result  *compaction.Result
 	closed  bool
