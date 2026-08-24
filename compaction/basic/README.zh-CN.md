@@ -63,4 +63,4 @@ sequenceDiagram
 - overflow 只处理 canonical `CONTEXT_WINDOW_EXCEEDED`，且只在 `ReplaceGeneration` 前进、未取消和 retry budget 未用尽时返回 retry；
 - summary 的 error、aborted、`max-tokens`、空文本、image output 和不缩小结果都不会形成成功 checkpoint；
 - `CompactNow` 直接通过 Agent `RunMaintenance` 取得空闲 admission，只校验 selected span 稳定，attempt 闭合后执行 `LiveStore.Flush`；
-- `/compact` Command Consumer 未实现；这是 Commands capability 的 Deferred 工作，不是 Engine 或 Basic Provider 的 TODO。
+- `/compact` 已由独立 [`compaction/command`](../command/README.zh-CN.md) Consumer 实现；本包只提供 backend-neutral `CompactNow`，不解析命令或依赖 Commands/API Proxy。

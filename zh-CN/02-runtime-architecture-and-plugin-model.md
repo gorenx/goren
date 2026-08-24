@@ -282,7 +282,7 @@ llm/                     Harness-compatible LLM service and vocabulary
 <capability>/<provider>/ optional reusable Provider plugins
 internal/connection/     Echo v5 and coder/websocket Host carrier
 internal/assembly/       shipped Factory Catalog and detached Server composition
-tests/contract/          pinned source differential verification
+tests/architecture/      repository-wide dependency and policy verification
 ```
 
 公开包只承载外部 Plugin 真正需要实现或消费的 extension contract。内置且不承诺复用的 Provider 留在 `internal/`。不创建 `common`、`helpers`、全局 DTO 包或一个包含所有可选字段的通用 Service。

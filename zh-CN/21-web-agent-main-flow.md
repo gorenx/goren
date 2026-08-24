@@ -155,12 +155,12 @@ sequenceDiagram
 ## 7. 验收层级
 
 1. **Go component**：`web.Site` 的 hashed assets、cache policy、SPA fallback、API 排除和 Connection handler delegation 通过 Go test。
-2. **Host contract**：固定源 `WebApiClient` 经默认 `DefaultSpecs`、DeepSeek Adapter 和离线 HTTP oracle完成 `turn/end`。
-3. **UI contract**：`web-ui-main-flow.ts` 在 JSDOM 中加载真实内嵌页面，完成中英文切换与偏好写入、发送、回复、新建会话、切回、历史恢复、Question 回答到 Agent continuation，并确认 plugin runtime-context 不显示为用户消息；API Key dialog 当前以 TypeScript build 与 Host Credentials contract 分层验证。
-4. **Provider environment**：显式加载 `.env` 后，同一 UI contract 调用真实 `https://api.deepseek.com` 并完成主流程。
+2. **Host contract**：Go integration test 经默认 `DefaultSpecs`、真实 HTTP/WebSocket carrier、DeepSeek Adapter 和离线 HTTP oracle完成 `turn/end`。
+3. **UI component**：`web/src/*.test.ts(x)` 在 JSDOM 中覆盖 store、stream、Composer 与 Question Card；TypeScript typecheck 和生产构建验证静态集成，但不冒充完整浏览器主流程。
+4. **Provider environment**：显式加载 `.env` 后，默认服务调用真实 `https://api.deepseek.com` 并完成主流程。
 5. **Visual browser**：只验证真实浏览器的布局、键盘和视觉行为；不能替代前四层，目前也不扩大业务能力范围。
 
-较低层级不能替代较高层级；JSDOM 的 UI contract 不等同真实浏览器视觉验收，离线 DeepSeek oracle 也不等同真实 Provider。
+较低层级不能替代较高层级；JSDOM component tests 不等同完整浏览器主流程或视觉验收，离线 DeepSeek oracle 也不等同真实 Provider。
 
 ## 8. 扩展门槛
 

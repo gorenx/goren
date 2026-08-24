@@ -23,9 +23,9 @@ Goren 保留源系统可观察的行为和职责边界，同时用 typed Go conf
 | Host 传输 | HTTP RPC，以及 Mux、Host 两条 WebSocket 事件流 | **已实现：** 兼容的 `/api`、`/api/respond`、Mux 与 Host 载体 |
 | RPC 协议 | 有类型的 Client/Server Request、Response、Receipt、Error 与取消语义 | **已实现：** 纳入范围的信封与错误语义已和固定 TypeScript 源码完成契约验证 |
 | API 发现与分发 | `host.describe` 与插件贡献的 Method | **已实现：** 类型化 Catalog、解码、分发及稳定的业务失败/技术失败边界 |
-| 实时 Frame | Session、Interaction、Workspace、Status、Error 与 Remote Frame Union | **部分实现：** 已纳入 Session、Interaction、Workspace、Status 与 Error Frame；Remote execution 暂缓 |
+| 实时 Frame | Session、Interaction、Workspace、Status、Error 与 Remote Frame Union | **部分实现：** 已纳入 Session、Interaction、Workspace、Status 与 Error Frame；只准入 Commands 的两个 Remote unary endpoint，通用 Remote execution 暂缓 |
 | 插件事件 | Decision、Notification 与 Waterfall 扩展点 | **已实现：** 类型化 Go Handler `interface` 与 Scoped publication |
-| 类型生成 | Typert Schema、生成式 Client 与 Host Gateway 类型 | **已替换：** 协议兼容的 Go 类型与固定跨语言契约 fixture；不复制 Typert 生成 |
+| 类型生成 | Typert Schema、生成式 Client 与 Host Gateway 类型 | **已替换：** 协议兼容的 Go 类型、Go golden 与表驱动契约用例；不复制 Typert 生成 |
 | 动态配置 | Schemastery 与支持 JavaScript 的配置路径 | **已替换：** typed Go config；不支持 `!!js` evaluator |
 
 ### Agent、LLM 与工具
@@ -76,7 +76,7 @@ Goren 保留源系统可观察的行为和职责边界，同时用 typed Go conf
 | MCP 与 ACP | MCP Client Bridge 与 ACP Agent Adapter | **暂缓** |
 | Job、Workflow 与 Subagent | Local Job、Worker Workflow、进程内/外 Subagent 与控制工具 | **暂缓** |
 | Goal、Plan、TODO 与 Skill | Goal Driver、Plan Mode、TODO Tool 与 Filesystem Skill | **暂缓** |
-| Context Compaction | Basic Compaction、Tool Result Pruning、Checkpoint 与 Compact Command | **后端与自动路径已完成：** Token Meter、Pruner、Basic Provider、默认装配、overflow retry/cancellation 和 SQLite cold resume 已验证；`/compact` Command Consumer 仍暂缓，真实 Provider smoke 未在当前环境执行 |
+| Context Compaction | Basic Compaction、Tool Result Pruning、Checkpoint 与 Compact Command | **已实现：** Token Meter、Pruner、Basic Provider、自动 pressure/overflow、Commands Registry、`/compact` Remote/Consumer、取消和 SQLite cold resume 已由 Go 测试验证；真实 Provider smoke 未在当前环境执行 |
 | Hook 与 Extension | Codex/Claude Hook，以及 Cordis Host/Client/Tool/UI Extension | **暂缓** |
 | Headless 与 SDK | Headless Bundle，以及 TypeScript、Python SDK Surface | **暂缓** |
 | Code Runtime 与 E2B | Worker-thread Code Execution，以及 E2B 文件系统/子进程 Adapter | **暂缓；**代码执行不是产品中心 |

@@ -34,6 +34,8 @@ flowchart TD
 
 `Server` 只拥有拓扑。它通过 `Manifest.Children` 声明所有 Plugin 为同一 Server Scope；Connection 使用 `ActivationCommit`，其余使用 `ActivationMain`。Server 的 Apply/Dispose 不执行领域工作。
 
+默认拓扑在 Token Meter、Tool Result Pruner 和 Basic Compaction Provider 之后装配 Commands Registry 与 `compaction/command` Consumer，并在 API Proxy 激活前满足其 Commands 依赖。Assembly 只声明 Factory 顺序；命令注册和 Engine 绑定仍由各自 Plugin 的 `Apply` 拥有。
+
 ## 上下游与失败
 
 - 上游：`cmd/goren` 提供工作目录、存储路径、监听地址、版本和进程 failure sink；

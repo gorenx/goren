@@ -1,8 +1,8 @@
 # 24 Context Compaction 设计
 
-状态：Implemented（`/compact` Command Consumer 仍 Deferred）
+状态：Implemented（自动路径与 `/compact` 人工路径均已进入默认 composition）
 
-本文拥有 Goren 的 Context Compaction 能力边界、Service Definition / Provider / Consumer 分工、Token Meter 依赖、`compaction/*` 持久化事实、Surface replacement 事务、自动压力与 context-overflow 恢复流程、Tool Result Pruning 以及未来 `/compact` Consumer 的目标设计。实施明细和验收 Gate 只见[25 Context Compaction 实现进度](./25-context-compaction-implementation-progress.md)；全仓总体状态仍由[08 实施进度](./08-implementation-progress.md)汇总。
+本文拥有 Goren 的 Context Compaction 能力边界、Service Definition / Provider / Consumer 分工、Token Meter 依赖、`compaction/*` 持久化事实、Surface replacement 事务、自动压力与 context-overflow 恢复流程、Tool Result Pruning 以及 `/compact` Commands Consumer。实施明细和验收 Gate 只见[25 Context Compaction 实现进度](./25-context-compaction-implementation-progress.md)；全仓总体状态仍由[08 实施进度](./08-implementation-progress.md)汇总。
 
 Session append-only log、Surface 与 LiveStore 生命周期由[10 Session Core 与生命周期](./10-session-core-and-lifecycle.md)拥有；Tools post-execute 与 Tool result 物化由[12 Tools Registry 与执行流水线](./12-tools-registry-and-execution-pipeline.md)拥有；LLM request、stream、usage 与 model capacity 由[13 Harness LLM Runtime 与 DeepSeek Provider](./13-harness-llm-runtime-and-deepseek-provider.md)拥有；Agent maintenance、`agent/pre-step` 和 `agent/request-error` 分别由[14](./14-agent-registry-inbox-and-events.md)和[15](./15-agent-loop-and-request-driver.md)拥有。本文只定义这些能力如何被 Compaction 消费，不转移其所有权。
 
@@ -24,7 +24,8 @@ Session append-only log、Surface 与 LiveStore 生命周期由[10 Session Core 
 | `packages/compaction/compaction` | Service Definition、事件、结果、checkpoint source、tool pairing | `compaction` |
 | `packages/compaction/compaction-basic` | 模型支持的基础 Provider、策略、区间事务、summarizer | `compaction/basic` |
 | `packages/compaction/compaction-tool-result-pruner` | 可选无模型 Tool Result Pruner Service | `compaction/toolresultpruner` |
-| `packages/compaction/command-compact` | 人工 `/compact` Consumer | `compaction/command`，Commands 进入范围后再实现 |
+| `packages/compaction/command-compact` | 人工 `/compact` Consumer | `compaction/command` |
+| `packages/commands` | Command Registry、direct execution、`command/*` lifecycle | `commands` |
 | `packages/llm/token-meter` | 单例 replay Token Meter | `llm/tokenmeter` |
 
 Go 保留源项目的职责边界和 canonical capability/event/config 名，不复制 TypeScript declaration merging、abstract class、AbortSignal 或闭包式事务实现。状态、事务和生命周期由命名 struct 与方法拥有；Waterfall 只保留为 AgentLoop 调用 Compaction policy 的扩展入口。
@@ -40,7 +41,7 @@ Go 保留源项目的职责边界和 canonical capability/event/config 名，不
 - 所有模型可见输入都能从 append-only Session log 重建；
 - 记录 summarization 的 provider、model、usage、原始输出和 shadowed provenance；
 - 支持取消、并发 Surface 变化、部分提交、持久化失败和进程崩溃后的可检测状态；
-- 为未来 `/compact` 提供 backend-neutral 的人工 Consumer seam。
+- 通过 Commands Remote 与全局 `/compact` Consumer 提供 backend-neutral 的人工压缩入口。
 
 ### 2.2 非目标
 
@@ -49,7 +50,7 @@ Go 保留源项目的职责边界和 canonical capability/event/config 名，不
 - 不保证精确 tokenizer 计数；固定 Token Meter 是一致的压力近似，不是计费记录；
 - 不压缩 system prompt、Tool schema 或不能拆分的单一消息；这些部分单独超限时 Surface compaction 无法修复；
 - 不把 Spill 纳入本文。Spill 是 Tool result durable admission 前的外置存储与预览策略，与历史 Surface compaction 是不同能力；
-- Commands 未进入范围前不创建 `/compact` handler 或占位 package；
+- 不实现 Agent scoped command shadowing、`commands-change` 或 image attachment admission；当前只准入 `/compact` 所需的全局 Registry 与 Remote slice；
 - 不为 Compaction 创建第二套 LLM runtime、Session store、事件总线或全局 Context Manager。
 
 ## 3. 架构与依赖方向
@@ -58,7 +59,10 @@ Go 保留源项目的职责边界和 canonical capability/event/config 名，不
 flowchart LR
     AL[Agent Loop] -->|agent/pre-step pressure| CE[compaction Engine]
     AL -->|agent/request-error overflow| CE
-    CMD[Future /compact Consumer] -->|compactNow| CE
+    CLIENT[TypeScript Client] -->|commands/execute| API[API Proxy Remote]
+    API --> CMD[commands Registry]
+    CMD --> CC[compaction/command Compact]
+    CC -->|CompactNow| CE
 
     CE --> TM[llm/tokenmeter Meter]
     CE -->|optional pruneSession| PR[Tool Result Pruner]
@@ -85,6 +89,7 @@ flowchart LR
 - Session 拥有事件顺序、Surface mutation 和多 producer 串行化；Compaction 不能直接操作 Session mutex 或 persistence Backend；
 - summarization 直接调用 `llm.LlmRuntime`，不伪装成 Agent Step，也不经过 AgentLoop request driver；
 - 手工路径通过 `Agent.RunMaintenance` 与 Turn admission 串行，并通过 `session.LiveStore.Flush` 建立 durability checkpoint。
+- API Proxy 只负责 Commands Remote 的 `{args:{...}}` wire anti-corruption 和 ordinary Agent 解析；命令 Registry 拥有 `command/run`/`command/done`，`compaction/command` 只拥有 `/compact` 业务映射。
 
 ### 3.1 Plugin 生命周期与业务对象分离
 
@@ -93,9 +98,10 @@ flowchart LR
 - `basic.Plugin` 只声明依赖、发布 `compaction.Engine`、注册 Waterfall/Event effect，并在 `Apply`/`Dispose` 绑定或释放依赖；`basic.Compaction` 拥有 policy 和 use-case orchestration，`automaticCompaction` 拥有跨 hook overflow 状态，`regionCompactor` 与 `llmSummarizer` 分别拥有区间事务和辅助 LLM protocol；
 - `toolresultpruner.Plugin` 发布 `ToolResultPruner`，后者拥有字符裁剪和 Session replacement 业务；
 - `tokenmeter.Plugin` 发布 `TokenMeter`，后者拥有 estimator 与 per-Session replay fold；
+- `commands.Plugin` 发布 `CommandRuntime`，后者拥有 Registry、direct execution 与 command lifecycle；`compaction/command.Plugin` 只持有注册 effect，内部 `Compact` 拥有参数校验和 Engine 结果映射；
 - middleware 和统一 Event observer 是 Plugin Runtime 要求的 adapter，只转发到业务对象，不保存第二份业务状态。
 
-因此 Plugin 不实现 `Engine`、`Pruner` 或 `Meter`。Runtime 发布的是其内部业务对象；工厂仍只构造 Plugin，composition root 不直接组装业务依赖。
+因此 Plugin 不实现 `Engine`、`Pruner`、`Meter` 或具体命令业务。Runtime 发布的是其内部业务对象；工厂仍只构造 Plugin，composition root 不直接组装业务依赖。
 
 ### 3.2 独立边界依据
 
@@ -139,7 +145,7 @@ Token Meter、Compaction、Pruner 不折叠为一个包，原因是：
 - Pruner 已落地而 summary 后续失败时，已发生的 Surface 前进仍可作为一次 retry 证据；
 - cancellation 后不得 retry；成功 assistant message 或 Agent 回到 idle 会清空该 Agent 的 overflow retry 计数。
 
-### 4.3 未来 `/compact` 人工入口
+### 4.3 `/compact` 人工入口
 
 **调用者**：Commands capability 的 `/compact` Consumer。
 
@@ -150,7 +156,8 @@ Token Meter、Compaction、Pruner 不折叠为一个包，原因是：
 - 必须通过 `Agent.RunMaintenance` 在 Turn 之间取得 admission；
 - 无安全区间时不写 `compaction/start`，返回稳定 no-op 文案；
 - 成功或已关闭的失败 attempt 在释放 maintenance admission 前执行 `LiveStore.Flush`；
-- Commands capability 未实现前，本入口保持 Deferred。
+- `command/run` 在调用 handler 前提交，因此只要产生 `compaction/start`，它一定晚于 `command/run`；正常 settle 时 `command/done` 晚于 `compaction/end` 和 flush，取消时 Commands 可以先写 `command/done(error)` 并结束 Remote 等待，Compaction handler 随后独立完成 `compaction/end(error)`；成功结果的 `sourceEventSeq` 指向 `compaction/summary`；
+- request cancellation 既终止 Remote 等待，也传给 Compaction 完成 attempt close/flush；Consumer 卸载先停止新准入，再等待已准入 handler 排空。
 
 ## 5. 下游能力契约
 
@@ -384,6 +391,36 @@ sequenceDiagram
 
 入口和提交阶段使用短同步 producer serialization；LLM 请求位于两者之间，不能持有 Session producer lock。`compaction/start/end` 是锁时间点，不是排他容器：人工 summarization 等待期间，独立的 idle injection 可以出现在 marker 中间，人工提交只替换原选中 span。
 
+### 11.1 `/compact` 正常完成交互
+
+```mermaid
+sequenceDiagram
+    participant U as TypeScript Client
+    participant H as Connection Host
+    participant A as CommandsGateway
+    participant C as CommandRuntime
+    participant X as compaction/command Compact
+    participant E as compaction.Engine
+    participant S as Session
+
+    U->>H: POST /api/commands/execute
+    H->>A: Remote {args:{agentId,line,images}}
+    A->>C: Execute(ordinary Agent, line)
+    C->>S: command/run(commandId)
+    C->>X: Invocation(commandId, agent, rawInput)
+    X->>E: CompactNow(agent, sourceCommandId)
+    E->>S: compaction/start
+    E->>S: summary + checkpoint replacement + end + Flush
+    E-->>X: result, no-op or ManualError
+    X-->>C: direct command Result
+    C->>S: command/done(commandId, sourceEventSeq?)
+    C-->>A: Execution
+    A-->>H: Remote RpcResult
+    H-->>U: HTTP 200 response envelope
+```
+
+`commands/list` 和 `commands/execute` 是当前唯一准入的 Typert Remote endpoints。Connection 的 `/api/*` carrier 只传递多段 method；Remote payload 校验、ordinary Agent fence 和业务错误映射属于 API Proxy。未识别命令返回成功但缺少 `value` 字段，与 JSON `null` 不同。
+
 ## 12. Tool Result Pruning 流程
 
 ```mermaid
@@ -415,6 +452,8 @@ Pruner 不保存被裁剪文本的外置副本；完整原 Event 只存在 appen
 - summarization cancellation 关闭 stream、停止接收 chunk，并进入一次 close attempt；
 - 自动 compaction 的无 durable mutation failure 只 warning 并继续；已发生 prune replacement 时继续使用新 Surface；
 - manual failure 明确区分 no-op、busy、changed、summary、commit 和 persistence；
+- Commands cancellation 以 `command/done(error)` 立即收敛 Remote 等待，已启动的 Compaction handler 继续使用同一取消 context 完成 `compaction/end(error)` 和必要的 flush；取消分支不规定两个 end event 的相对顺序；
+- `compaction/command` Dispose 先撤销注册，再等待已经准入的 handler，最后释放 Engine 引用；
 - crash 后 unmatched start 由 log fold 检测；早于最新 `session/end-seed` 的 unmatched start 是旧 lifecycle 证据，不阻塞当前 Session；
 - Provider usage、raw output、错误链和配置快照不得包含 credential。
 
@@ -426,8 +465,8 @@ Pruner 不保存被裁剪文本的外置副本；完整原 Event 只存在 appen
 2. Session-owned `SerializeProducer` 多 Event 同步串行化；
 3. 单例 replay Token Meter、固定 estimator 和三个可选 Projection Unit；
 4. Compaction EventKey、cold replay invariant、tool pairing 和 checkpoint source codec；
-5. 从 `b150a55` 可重复生成的 TypeScript config/event/result/checkpoint vectors；
-6. 默认 composition 的 Factory 注册、启用顺序与 keyless 启动验证。
+5. 基于 `b150a55` 源 descriptor、event/config/result shape 编写的 Go golden 与表驱动契约用例；
+6. Commands Registry、Remote adapter、`/compact` Consumer 与默认 composition 的 Factory 注册和 keyless 启动验证。
 
 详细代码与测试证据见[25](./25-context-compaction-implementation-progress.md)。
 
@@ -438,9 +477,11 @@ Pruner 不保存被裁剪文本的外置副本；完整原 Event 只存在 appen
 - `compaction` 包测试拥有 Event codec、checkpoint source、tool pairing 和 log invariant；
 - `compaction/basic` 包测试拥有策略、区间、summarizer、自动/overflow/manual transaction；
 - `compaction/toolresultpruner` 包测试拥有 Unicode budget、字段保留、幂等和部分成功；
-- `tests/contract` 拥有最新 TypeScript 到 Go 的 event/config/result differential；
+- `commands` 与 `compaction/command` 包测试拥有命令 lifecycle、参数、结果映射、取消和卸载；
+- `apiproxy` 包测试拥有 `commands/list`、`commands/execute` 的 Remote wrapper、字段规范化、absent result 和 RPC error；
+- `internal/assembly` Go E2E 拥有真实 HTTP carrier、DeepSeek SSE oracle、持久化事件顺序、失败和取消链；
 - `tests/architecture` 拥有依赖方向、Factory/Service canonical name 和禁止平行 LLM/Session runtime；
-- real-provider compaction smoke 必须自跳过且与 keyless contract suite 分离。
+- real-provider compaction smoke 必须自跳过且与 keyless Go suite 分离。
 
 详细 Gate、状态和证据见[25 Context Compaction 实现进度](./25-context-compaction-implementation-progress.md)。
 
@@ -454,6 +495,6 @@ Pruner 不保存被裁剪文本的外置副本；完整原 Event 只存在 appen
 
 Token Meter、Tool Result Pruner 和 Basic Provider 已注册到 Factory Catalog 并进入 Goren `DefaultSpecs`。默认 composition 先发布 Meter 与 Pruner，再发布 Basic Engine；缺失 required capability 时启动失败并按 Runtime 规则逆序回滚，不走 silent fallback。
 
-### 16.3 `/compact` Consumer
+### 16.3 `/compact` Consumer（已决）
 
-Commands 当前不在已实现闭包。Engine 已支持自动入口与人工 `CompactNow`；只有真实 Commands Service、command lifecycle 和 adapter 进入范围后，才实现 `compaction/command`。
+Commands 的全局 Registry、`command/run`/`command/done`、`commands/list`/`commands/execute` Remote adapter 与 `compaction/command` 已进入默认 composition。当前只准入 `/compact` 需要的 slice；Agent scoped shadowing、Command change notification 和 Attachment admission 仍不从该决定推导进入范围。

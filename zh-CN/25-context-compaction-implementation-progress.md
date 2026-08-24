@@ -11,7 +11,7 @@
 
 - **执行状态**：`Completed`、`In Progress`、`Deferred` 或 `Excluded`。
 - **证据等级**：`Implemented`、`Go Verified`、`Contract Verified` 或 `Environment Verified`。
-- `Completed` 表示当前准入范围内的实现已闭环；`/compact` 属于尚未准入的 Commands Consumer，单独 `Deferred`，不把已实现的 Engine 退回骨架状态。
+- `Completed` 表示当前准入范围内的实现已闭环；当前范围包含 `/compact` 所需的 Commands 全局 Registry、两个 Remote endpoints 与独立 Consumer，不包含完整 Commands/Attachment/Typert 能力。
 - 真实 Provider smoke 已有自跳过验收用例，但当前环境没有执行带 credential 的分支；因此只能记为 `Implemented`，不能记为 `Environment Verified`。
 
 ## 2. 总体状态
@@ -19,8 +19,8 @@
 | 能力 | 执行状态 | 当前证据 | 剩余验收 |
 | --- | --- | --- | --- |
 | Compaction Definition + Token Meter + Pruner + Basic Provider + 默认自动装配 | Completed | Contract Verified | 在有 DeepSeek credential 的隔离环境执行 real-provider smoke |
-| Engine 人工 `CompactNow` | Completed | Go Verified | Commands 准入后由独立 Consumer 调用 |
-| `/compact` Command Consumer | Deferred | None | Commands capability、command lifecycle 与 adapter 进入范围 |
+| Engine 人工 `CompactNow` | Completed | Go Verified | 已由独立 `/compact` Consumer 调用 |
+| Commands 最小 slice + `/compact` Consumer | Completed | Go Verified | 在有 DeepSeek credential 的隔离环境执行 real-provider smoke |
 
 ## 3. 公共前置与 Token Meter
 
@@ -29,7 +29,7 @@
 | CMP-D00 | `47f9438..b150a55` 专项差异分类与 scoped baseline | Completed | `01` 记录源 owner、行为差异、TS 专属机制和排除项 |
 | CMP-D01 | merge-extensible plugin MessageSource lossless decode | Completed | Go Verified：已知 core form strict，Compaction source round-trip 保真 |
 | CMP-D02 | Session-owned 多 Event producer serialization | Completed | Go Verified：`SerializeProducer` 相邻性和并发 producer 测试 |
-| CMP-D03 | `b150a55` TypeScript config/event/result/checkpoint vectors | Completed | Contract Verified：`generate-compaction-vectors.ts` 可重复生成，Go 消费 fixture |
+| CMP-D03 | `b150a55` config/event/result/checkpoint shape | Completed | Contract Verified：基于固定源 symbol 与 descriptor 的 Go golden/表驱动用例 |
 | CMP-T01 | 固定 estimator 与 `EstimateMessage` | Completed | Go Verified：UTF-16 code-unit、role/block/tool schema 开销与 safe integer |
 | CMP-T02 | request header、Step、Surface、assistant provenance 的 replay fold | Completed | Go Verified：incremental replay、malformed transaction 拒绝和 dispose |
 | CMP-T03 | usage anchor、canonical envelope match 与 signed Surface delta | Completed | Go Verified：usage undercut fallback、replace delta 和 detached snapshot |
@@ -41,11 +41,11 @@
 | ID | 子目标 | 状态 | 证据 |
 | --- | --- | --- | --- |
 | CMP-C01 | `Engine`、trigger、result 与 manual failure contract | Completed | Go Verified：provider-neutral interface 与 compile-time Provider assertion |
-| CMP-C02 | `start`、`summary`、`end`、`prune` 严格 codec | Completed | Contract Verified：merge extension、malformed payload 和 source vectors |
-| CMP-C03 | `CheckpointSource` 与 durable round-trip | Completed | Contract Verified：typed construction、opaque restore 识别和 TypeScript vector |
+| CMP-C02 | `start`、`summary`、`end`、`prune` 严格 codec | Completed | Contract Verified：merge extension、malformed payload 和 Go golden cases |
+| CMP-C03 | `CheckpointSource` 与 durable round-trip | Completed | Contract Verified：typed construction、opaque restore 识别和 Go round-trip cases |
 | CMP-C04 | positional tool-call/result pairing | Completed | Go Verified：非单调 seq Surface、orphan result 与 absent sequence |
 | CMP-C05 | cold replay invariant 与 durable lock | Completed | Go Verified：owner/identity/adjacency、failed/open attempt 和 end-seed 清理 |
-| CMP-B01 | strict typed config、默认策略和 exact route override | Completed | Contract Verified：source defaults、model policy 与 compact spec vectors |
+| CMP-B01 | strict typed config、默认策略和 exact route override | Completed | Contract Verified：source defaults、model policy 与 Go config cases |
 | CMP-B02 | head range、priced tail 与 tool-pair safe boundary | Completed | Go Verified：positional selection、retention 与并发变更拒绝 |
 | CMP-B03 | reconstructable summarization prefix 与 direct `PurposeCompaction` stream | Completed | Go Verified：header/tools/messages/prompt、route override、raw output 和 usage |
 | CMP-B04 | start/prepare/summarize/revalidate/summary/replace/end 区间事务 | Completed | Go Verified：同步提交、失败 close、orphan lock 保留和 replayable checkpoint |
@@ -60,16 +60,18 @@
 | ID | 子目标 | 状态 | 证据 |
 | --- | --- | --- | --- |
 | CMP-P01 | Unicode code-point measure 与 head/marker/tail prune | Completed | Go Verified：默认 `8192/4096/1024`、rune-safe slicing 和缩小不变式 |
-| CMP-P02 | rich block 顺序和 strict config | Completed | Contract Verified：非文本 block 原位保留，source marker/config vector 一致 |
+| CMP-P02 | rich block 顺序和 strict config | Completed | Contract Verified：非文本 block 原位保留，source marker/config Go cases 一致 |
 | CMP-P03 | stable Surface scan、shadow price 与相邻 replacement | Completed | Go Verified：`SerializeProducer` 内提交 prune fact + replacement |
 | CMP-P04 | Tool result 字段保留 | Completed | Go Verified：只改 content，merge-extended data 保真 |
 | CMP-P05 | 部分成功、幂等、Plugin/业务分离 | Completed | Go Verified：较早 replacement 不回滚，二次 pass no-op，Plugin 不实现 `Pruner` |
 | CMP-M01 | `CompactNow` 通过 Agent maintenance 执行 | Completed | Go Verified：idle admission、latched successor wake 优先、busy/cancelled/changed/summary/commit/persistence 分类 |
 | CMP-M02 | selected-span stability、standalone bracket 与 explicit flush | Completed | Go Verified：区间外 mutation 允许，区间内 rewrite 拒绝，闭合后 Flush |
-| CMP-M03 | `/compact` 无参数 Command Consumer | Deferred | Commands capability 未准入；不创建占位 package |
+| CMP-M03 | `/compact` 无参数 Command Consumer | Completed | Go Verified：独立 `Compact` 业务对象、manual result mapping 与 `sourceCommandId` |
+| CMP-M04 | Commands Registry 与 `command/run`/`command/done` | Completed | Go Verified：解析、全局注册、direct execution、配对、取消、panic 与 drainage |
+| CMP-M05 | `commands/list`/`commands/execute` Remote adapter | Completed | Go Verified：descriptor wrapper、ordinary Agent fence、absent value、image schema 与 RPC error |
 | CMP-A01 | Catalog 注册 Token Meter、Pruner 和 Basic Factory | Completed | Go Verified：Catalog 和 strict Factory tests |
 | CMP-A02 | `DefaultSpecs` 启用自动 Compaction | Completed | Go Verified：keyless composition 发布 Meter/Pruner/Engine |
-| CMP-A03 | 默认 `/compact` Consumer | Deferred | 依赖 `CMP-M03` |
+| CMP-A03 | 默认 Commands 与 `/compact` Consumer | Completed | Go Verified：Factory Catalog、DefaultSpecs、Service publication 与注册可见性 |
 
 ## 6. 验收 Gate
 
@@ -77,7 +79,7 @@
 | --- | --- | --- | --- |
 | CMP-G00 | 专项源基线和 owner mapping | Completed | Source Verified：`01`、`24` |
 | CMP-G01 | Token Meter append/replace/header/usage/corrupt-log 覆盖 | Completed | Go Verified：包级与 race 测试 |
-| CMP-G02 | Event/config/result/checkpoint TypeScript differential | Completed | Contract Verified：已提交 vector + contract-tag regeneration |
+| CMP-G02 | Event/config/result/checkpoint 固定源契约 | Completed | Contract Verified：Go golden、strict codec、round-trip 与 malformed cases |
 | CMP-G03 | 默认 AgentLoop pressure 低阈值 no-op 与高压缩 | Completed | Go Verified：`TestDefaultCompositionCompactsPressureThroughAgentLoop` |
 | CMP-G04 | overflow 的 generation retry 与 cancellation 收敛 | Completed | Go Verified：默认 composition 的 retry/cancel E2E |
 | CMP-G05 | tool pairing、非单调 seq 和 shrink invariant | Completed | Go Verified：Definition/region table tests |
@@ -89,21 +91,22 @@
 | CMP-G10b | 真实 Provider 压缩 smoke | In Progress | Implemented：隔离用例会在无 credential 时 self-skip；当前未获得 Environment Verified 证据 |
 | CMP-G11 | 依赖方向、canonical names、Factory disposer 和无平行 runtime | Completed | Go Verified：`tests/architecture`、Catalog/assembly tests |
 | CMP-G12 | package README、`24`、`25`、`08` 与索引一致 | Completed | 相对 Markdown 链接校验与 `git diff --check` 通过 |
+| CMP-G13 | `/compact` 真实 HTTP success/failure/cancel 闭环 | Completed | Go Verified：正常路径的嵌套顺序、取消路径的独立收敛、HTTP 200 Remote error、Provider cancel、lock close 与 persistence |
 
 ## 7. 已执行验证与环境边界
 
 已执行的验证包括：
 
 - `go test ./... -count=1`；
-- Compaction pressure、overflow、cancellation 和 SQLite cold resume 的 focused race tests；
-- `go test -tags=contract ./tests/contract -run TestPinnedCompactionSourceGeneratesCommittedVectors`；
+- `go test -race ./... -count=1`；
+- Compaction pressure、overflow、Commands cancellation 和 SQLite cold resume 的 focused repeated tests；
 - `go test ./tests/architecture -count=1`；
+- `go vet ./...` 与 `go build ./...`；
 - keyless default composition acceptance；
-- `go vet` 和 `go build` 的相关检查。
+- Web `pnpm install --frozen-lockfile`、现有 Vitest 和生产构建；这些只验证 Web 自身，不作为 `/compact` Remote 的必要证据。
 
 真实 Provider 用例 `TestRealProviderCompactsOneRegion` 已实现，但本次只观察到无 credential 自跳过，不宣称真实 DeepSeek 环境已通过。
 
 ## 8. 剩余工作
 
 1. 在隔离、有 DeepSeek credential 的环境执行 real-provider smoke，将 `CMP-G10b` 的证据从 `Implemented` 升为 `Environment Verified`。
-2. Commands capability 未来准入时，以独立 Consumer 实现 `/compact`；复用现有 `Engine.CompactNow`，不把 command parsing 放进 Basic Provider。

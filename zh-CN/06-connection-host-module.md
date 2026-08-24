@@ -66,7 +66,7 @@ TypeScript Client
 ## 4. 一元请求流程
 
 ```text
-POST /api/<method>
+POST /api/<method...>
   -> trust fence
   -> canonical path 与 privileged loopback policy
   -> media type / body budget / JSON syntax
@@ -77,6 +77,8 @@ POST /api/<method>
   -> ServerResponse echoes rpcId
 ```
 
+Echo route 使用 `/api/*` 捕获完整 canonical method，因此 `host.describe` 与 `commands/list` 这类单段、斜杠多段名称都原样交给 dispatcher；Connection 不按路径段解释业务命名。
+
 错误分层保持源语义：
 
 - Host/Origin 不可信：Connection 返回 `403`，下游不执行；
@@ -85,7 +87,7 @@ POST /api/<method>
 - body 不是 JSON：Connection 返回 `400`；
 - 普通 `POST /api/<unknown>` 仍先执行 media type 与 JSON carrier validation，因此依次可能返回 `415`、`400` 或在 body 可读后返回 `404`；
 - envelope、path/method 或 method payload 错误：返回 HTTP `200` 的 `bad-request`；
-- Provider 返回技术错误或 panic：返回 HTTP `500`；
+- 普通 unary Provider 返回技术错误或 panic：返回 HTTP `500`；selected Typert Remote 的 decoder/handler/cancellation failure 已由 API Proxy 编码成 RpcResult，因此仍是 HTTP `200`；
 - 业务拒绝：仍返回 HTTP `200` 的 `RpcResult` failure。
 
 ## 5. WebSocket 下行流程与生命周期

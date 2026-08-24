@@ -303,4 +303,4 @@ Goren 的 `internal/assembly` 只做进程级编排：注册静态 Factory 白�
 - 公共泛型 API 不使用 `any` 或 `interface{}`；
 - 不存在 Context、Definition、Provide、Observe、Use、Registration 兼容路径。
 
-实现证据位于 `plugin/*.go`、`plugin/*_test.go` 和 `plugin/example/*_test.go`；跨语言行为证据位于 `tests/contract`，全仓状态见[08 实施进度](./08-implementation-progress.md)。Goren 默认组合见[09 Plugin Runtime 与 Server Assembly](./09-plugin-runtime-and-server-assembly.md)。
+实现证据位于 `plugin/*.go`、`plugin/*_test.go` 和 `plugin/example/*_test.go`；固定源行为由各 owner package 的 Go golden/表驱动测试及 `internal/assembly` 真实 carrier E2E 验证，全仓状态见[08 实施进度](./08-implementation-progress.md)。Goren 默认组合见[09 Plugin Runtime 与 Server Assembly](./09-plugin-runtime-and-server-assembly.md)。

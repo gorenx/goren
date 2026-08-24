@@ -54,6 +54,8 @@ canonical method
 
 Catalog 只允许一个 owner 注册同一 canonical method。Catalog 支持并发读取；注册发生在 listener 启动前，后续 Plugin Runtime 若支持 replacement，必须通过 Scope/effect 建立新的原子切换机制，不能直接在 live map 上覆盖。
 
+`RegisterRemoteUnary` 是当前只供已准入 Typert Remote endpoint 使用的窄注册入口。它允许 method 含 `/`，让 decoder 自己拥有 `{args:{...}}` boundary failure，并把 decoder panic、handler error、response encoding error 和 cancellation 映射为 HTTP `200` 内的 canonical RPC failure。`Outcome.Absent` 表示成功但省略 `value`，不能编码成 JSON `null`。普通 `RegisterUnary` 的技术错误仍交给 Connection 形成 HTTP `500`，两类语义不混用。
+
 同一 Catalog 还持有运行期 pending correlation table，但不把不同 interaction 擦成通用业务模型。interaction owner 使用 `RegisterPendingResponse[V]` 为稳定 `rpcId` 注册自己的 `ResponseDecoder[V]`，并通过 `PendingResponse[V]` 等待或撤回；异构只存在于表的内部路由点。
 
 ## 4. 上下游交互
@@ -138,6 +140,8 @@ API Proxy 不缓存或推导这些状态，也不使用固定成功结果冒充�
 
 `CredentialsGateway` 纳入 `credentials.describe`、`credentials.set` 与 `credentials.unset`。它只持有不含 `Resolve` 的 consumer-owned `CredentialProvider`：浏览器可以读取 `configured/source/writable` metadata 并单向提交新 value，但 Gateway 在类型上没有读取 secret 的能力。引用 schema、Provider 拒绝与 write-only response 由[22](./22-credentials-and-api-key-management.md)拥有。
 
+`CommandsGateway` 纳入 `commands/list` 与 `commands/execute`。它持有 `commands.Registry` 和 consumer-owned `CommandAgentResolver`，只负责 Remote `{args:{...}}` 到 ordinary Agent/Commands use case 的映射；Registry、`command/run`/`command/done` 和 `/compact` Consumer 由[24](./24-context-compaction.md)拥有。未识别命令返回 absent `value`；必需 `images` 数组会按源 descriptor 解码，但当前没有 Attachment admission，非空 batch 由 Commands 在 handler 前拒绝。
+
 ## 8. `/api/respond` pending 生命周期
 
 ```text
@@ -169,13 +173,13 @@ POST /api/respond
 
 ## 9. 具体 API 模块进入规则
 
-`host.describe`、当前 `agentPreset.list` absent-roster projection 与 `settings.describe` absent-provider projection 仍由本文拥有；已进入的 `llm.providers` 与 `llm.models` 由[13](./13-harness-llm-runtime-and-deepseek-provider.md)拥有，`session.*` module 由[16](./16-session-api-gateway-and-live-frames.md)拥有，Approval/Question carrier adapter 由[17](./17-approval-user-questions-and-interaction-gateway.md)拥有，七个 `workspace.*` method、四个 Host frame 与 `session.create({workspaceId})` 由[20](./20-workspace-registry-and-api.md)拥有，`credentials.*` 由[22](./22-credentials-and-api-key-management.md)拥有。每增加一个其他 API 模块，必须同时提供：
+`host.describe`、当前 `agentPreset.list` absent-roster projection 与 `settings.describe` absent-provider projection 仍由本文拥有；已进入的 `llm.providers` 与 `llm.models` 由[13](./13-harness-llm-runtime-and-deepseek-provider.md)拥有，`session.*` module 由[16](./16-session-api-gateway-and-live-frames.md)拥有，Approval/Question carrier adapter 由[17](./17-approval-user-questions-and-interaction-gateway.md)拥有，七个 `workspace.*` method、四个 Host frame 与 `session.create({workspaceId})` 由[20](./20-workspace-registry-and-api.md)拥有，`credentials.*` 由[22](./22-credentials-and-api-key-management.md)拥有，`commands/list` 与 `commands/execute` 由[24](./24-context-compaction.md)拥有。每增加一个其他 API 模块，必须同时提供：
 
 1. 固定源 method/schema/Provider owner；
 2. owner-defined request、response 与 error details 类型；
 3. 一条 typed Catalog 注册；
 4. success、payload rejection、business failure、technical failure 与 cancellation test；
-5. 对应 TypeScript-to-Go fixture 或 differential test；
+5. 基于固定源 descriptor/observable semantics 的 Go golden 或表驱动契约测试；
 6. 本模块文档的上下游、生命周期或 pending 规则变化。
 
 不得为尚未进入范围的 method 预注册空 handler、固定成功结果或通用 `map[string]any` route。

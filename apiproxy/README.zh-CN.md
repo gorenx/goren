@@ -1,11 +1,12 @@
 # API Proxy 子模块
 
-`apiproxy` 是浏览器 wire 与 Go application/domain capability 之间的 anti-corruption boundary。权威设计见[`zh-CN/07-api-proxy-module.md`](../zh-CN/07-api-proxy-module.md)、[`zh-CN/13-harness-llm-runtime-and-deepseek-provider.md`](../zh-CN/13-harness-llm-runtime-and-deepseek-provider.md)、[`zh-CN/16-session-api-gateway-and-live-frames.md`](../zh-CN/16-session-api-gateway-and-live-frames.md)、[`zh-CN/17-approval-user-questions-and-interaction-gateway.md`](../zh-CN/17-approval-user-questions-and-interaction-gateway.md)、[`zh-CN/20-workspace-registry-and-api.md`](../zh-CN/20-workspace-registry-and-api.md)与[`zh-CN/22-credentials-and-api-key-management.md`](../zh-CN/22-credentials-and-api-key-management.md)。
+`apiproxy` 是浏览器 wire 与 Go application/domain capability 之间的 anti-corruption boundary。权威设计见[`zh-CN/07-api-proxy-module.md`](../zh-CN/07-api-proxy-module.md)、[`zh-CN/13-harness-llm-runtime-and-deepseek-provider.md`](../zh-CN/13-harness-llm-runtime-and-deepseek-provider.md)、[`zh-CN/16-session-api-gateway-and-live-frames.md`](../zh-CN/16-session-api-gateway-and-live-frames.md)、[`zh-CN/17-approval-user-questions-and-interaction-gateway.md`](../zh-CN/17-approval-user-questions-and-interaction-gateway.md)、[`zh-CN/20-workspace-registry-and-api.md`](../zh-CN/20-workspace-registry-and-api.md)、[`zh-CN/22-credentials-and-api-key-management.md`](../zh-CN/22-credentials-and-api-key-management.md)与[`zh-CN/24-context-compaction.md`](../zh-CN/24-context-compaction.md)。
 
 ## 职责
 
 - method-owned request decoder、typed `Outcome` 和 canonical RPC error；
-- `host.describe` 与当前纳入的 `agentPreset.list`、`settings.describe`、`credentials.*`、`llm.providers`、`llm.models`、`session.*`、`workspace.*` handlers；
+- `host.describe` 与当前纳入的 `agentPreset.list`、`settings.describe`、`credentials.*`、`llm.providers`、`llm.models`、`session.*`、`workspace.*`、`commands/list`、`commands/execute` handlers；
+- selected Typert Remote 的 `{args:{...}}` decoder、HTTP 200 内 RPC failure 和 absent `value` 结果；
 - `LLMGateway` 对 configurable provider directory、active route 和 model catalog 的 Host wire 投影；
 - `apiproxy/session.Gateway` 实现 unary `session.*` façade，把读取、生命周期、模型和对话分别委派给独立状态对象；
 - Session/Agent/Workspace/interaction facts 到 Mux/Host frame 的 projection；
@@ -20,7 +21,7 @@
 flowchart LR
     A[TypeScript Client] --> B[Connection Host]
     B --> C[Catalog decoder]
-    C --> D[LLM / Session / Workspace / Interaction Gateway]
+    C --> D[LLM / Session / Workspace / Interaction / Commands Gateway]
     D --> E[capability-owned state object]
     E --> G[consumer-owned domain capability]
     G --> E
@@ -46,10 +47,12 @@ Workspace Gateway 将七个 `workspace.*` method 映射到 `workspace.Registry`/
 
 `CredentialsGateway` 持有不包含 `Resolve` 的窄 `CredentialProvider`。`credentials.describe` 只投影 `configured/source/writable`；`credentials.set` 是秘密值唯一经过 Host wire 的方向，成功响应为空；`credentials.unset` 幂等删除托管值。Gateway 不读取 LiveStore，也没有取得 secret 的接口。
 
+`CommandsGateway` 持有 `commands.Registry` 和 consumer-owned `CommandAgentResolver`。它只解析固定 Remote descriptor 的 `{args:{agentId}}` 与 `{args:{agentId,line,images}}`，并通过 Session Gateway 的 ordinary Agent fence 取得目标；Registry 自己拥有命令解析、生命周期和执行。未命中命令返回缺少 `value` 的成功 RpcResult；Remote payload、调用 panic、技术错误和 cancellation 都按源 Remote 语义留在 HTTP 200 的 RPC envelope 内。
+
 ## 上下游
 
 - 上游：Connection dispatcher/event source、TypeScript wire requests。
-- 下游：`apiproxy/session.Gateway`、Agent Registry、Session LiveStore、SessionPersistence、Workspace Registry、Credentials Provider、LLM、DefaultModel、SessionProjection、SessionTitle、Approval/UserQuestions。
+- 下游：`apiproxy/session.Gateway`、Commands Registry、Agent Registry、Session LiveStore、SessionPersistence、Workspace Registry、Credentials Provider、LLM、DefaultModel、SessionProjection、SessionTitle、Approval/UserQuestions。
 - wire DTO 到此为止；下游包不依赖 RPC/frame 类型。
 
 ## 生命周期、错误、取消与背压

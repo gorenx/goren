@@ -173,13 +173,14 @@ shipped Catalog 注册以下静态 Factory：
 - Session、Session Persistence、Session Projection、Session Query、Session Title；
 - LLM、DeepSeek、LLM Retry；
 - System Prompt、Tools、Approval、UserQuestions、Tool Ask User；
+- Commands、Token Meter、Tool Result Pruner、Basic Compaction、Compact Command；
 - Workspace、Web、API Proxy、Connection Host。
 
 SQLite adapter 不单独成为 Plugin 或 Factory。Session Persistence 与 Workspace Factory 只把 SQLite opener 放进各自能力 Plugin；数据库在 Plugin Apply 中打开，并由该 Plugin Dispose。
 
 `DefaultSpecs` 当前按业务阅读顺序声明 Main Plugin，最后声明 Web、API Proxy 和 commit-phase Connection。正确性不依赖这个顺序：Runtime 仍按 Service graph 结算。
 
-原版浏览器 Connection runtime、SDK、Tools Code Mode、ACP、MCP、Typert auxiliary endpoint 和脚本配置没有进入 Catalog，也没有占位 Plugin。
+原版浏览器 Connection runtime、SDK、Tools Code Mode、ACP、MCP、通用 Typert auxiliary endpoint 和脚本配置没有进入 Catalog，也没有占位 Plugin。`commands/list` 与 `commands/execute` 是 `/compact` 纵向切片明确准入的两个 Remote endpoint，不代表通用 Typert Gateway 已进入。
 
 ## 9. 失败与诊断
 
@@ -203,6 +204,6 @@ SQLite adapter 不单独成为 Plugin 或 Factory。Session Persistence 与 Work
 | Factory strict boundary | `plugin/factory`、各领域 `factory` | Factory tests、`internal/assembly/assembly_test.go` |
 | detached Server composition | `internal/assembly/server.go`、`catalog.go` | assembly tests、默认主链 contract test |
 | Connection commit lifecycle | `internal/connection/plugin.go` | connection 与 assembly tests |
-| 固定源 observable contract | `tests/contract` | `go test -tags=contract` 对固定 Harness checkout |
+| 固定源 observable contract | 各 owner package 与 `internal/assembly` | 普通 Go golden、表驱动与真实 carrier E2E |
 
 更细的完成状态和命令证据只在[08 实施进度](./08-implementation-progress.md)维护，避免本文成为第二份进度表。

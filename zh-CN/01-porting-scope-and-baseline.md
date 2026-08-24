@@ -28,7 +28,7 @@ Goren 的当前主线不是设计一个新的 Agent 产品，也不是按 TypeSc
 - 源 owner：`packages/compaction/compaction`、`compaction-basic`、`compaction-tool-result-pruner`、`command-compact` 与 `packages/llm/token-meter`；
 - Goren owner 和具体契约见[24 Context Compaction](./24-context-compaction.md)。
 
-这是 capability-scoped exception，不改变 Connection、API Proxy、Agent、Session、Tools、LLM Provider 等其余能力的 `47f9438` 全仓基线。`command-compact` 随专项源一起分析，但 Commands 尚未进入当前实现闭包，因此仍是 Deferred，不因基线准入而创建占位实现。
+这是 capability-scoped exception，不改变 Connection、Agent、Session、Tools、LLM Provider 等其余能力的 `47f9438` 全仓基线。为完成 `command-compact`，本例外同时准入它直接依赖的 Commands 最小纵向切片：全局 Registry、`command/run`/`command/done`、`commands/list`/`commands/execute` Remote descriptor、API Proxy adapter 与多段 `/api/*` carrier。它不等于准入完整 Typert Host Gateway、Agent scoped shadowing、`commands-change` 或 Attachment admission。
 
 `47f9438..b150a55` 在上述源 owner 中的差异已分类：
 
@@ -36,7 +36,7 @@ Goren 的当前主线不是设计一个新的 Agent 产品，也不是按 TypeSc
 | --- | --- |
 | Compaction 业务与持久化契约 | `compaction`、`compaction-basic` 和 `compaction-tool-result-pruner` 的运行时代码无变化；Go 以 `b150a55` 的现存 symbol、测试和 README 为准 |
 | Token Meter 行为 | 核心 `measure`/estimator 未改变；`tokenUsage`、`contextPressure`、`contextBreakdown` 改为新版 Session Projection 的 state/wire 分离 contract，并继续通过可选 `sessionProjections` 注入注册 |
-| Command Consumer | `/compact` 测试适配 Commands 新增 attachments 参数；Commands 与 Composer image attachment 不进入当前 Compaction 实现切片 |
+| Command Consumer | `/compact` 使用 Commands 新增的 `images` 参数 shape；当前 Remote 必须接收并校验必需数组，但默认组合没有 Attachment admission，因此非空 batch 在 handler 前形成明确 command error result |
 | TypeScript 专属机制 | Cordis `ctx.inject`、declaration merging、Zod state schema 和 `satisfies` 不复制；Go 使用 optional Service、owner-defined projection Unit/视图类型和严格 codec 表达相同可观察职责 |
 | 非行为变化 | package version、中文 README 链接和发布元数据变化不单独移植 |
 
@@ -137,10 +137,10 @@ Headless 是不启动 Client Connection 的一次性 CLI adapter：读取一个 
 
 - Connection Host carrier：复制 `/api` HTTP unary、`rpcId` 关联、`RpcResult`/`RpcReceipt`、两条 WebSocket downlink、取消、body limit 与 Host/Origin trust fence。
 - API Proxy contract：保留纳入方法的 canonical method、payload/result schema、错误码与 frame union；Go handler 直接调用核心 Service。
-- 当前兼容切片包含 `host.describe`、`credentials.describe/set/unset`、十个主流程 `session.*` method（含 `session.search`）、七个 `workspace.*`、`events.mux`、`events.host`、`respond`，以及它们依赖的 Session/Workspace/approval/question frame。Session Fork 明确排除；`session.attachment` 仍未纳入。
+- 当前兼容切片包含 `host.describe`、`credentials.describe/set/unset`、十个主流程 `session.*` method（含 `session.search`）、七个 `workspace.*`、`commands/list`、`commands/execute`、`events.mux`、`events.host`、`respond`，以及它们依赖的 Session/Workspace/approval/question frame。Commands 只准入全局 `/compact` 所需 slice；Session Fork 明确排除，`session.attachment` 仍未纳入。
 - Workspace 只纳入服务端 Registry、SQLite adapter、Session accounting 与协议/API；不复制浏览器 Workspace manager、目录选择 UI 或项目文件索引。
 - 根级 `web` 包提供仓库自有的主会话 UI，只消费既有 Host API/Frame，包含 DeepSeek API Key 设置但不拥有 Credentials precedence/存储、Session、Agent、LLM 或持久化业务逻辑。
-- TypeScript Client 代码不复制，但源 Client contract tests 作为 Go Server 的外部兼容验收方。
+- TypeScript Client 代码不复制；固定源 symbol、descriptor 和 observable semantics 作为需求证据，Go golden、表驱动和真实 carrier 集成测试作为实现验收。
 
 默认 Connection Server composition 同端口提供 `/api`、WebSocket 与内嵌 UI 静态资源。该 UI 只用于主会话，不等同原版 DeepSeek Harness Web 产品；Deferred Headless composition 若实现，仍不监听端口。
 
@@ -148,7 +148,7 @@ Headless 是不启动 Client Connection 的一次性 CLI adapter：读取一个 
 
 - Headless CLI；
 - ACP Server 与 MCP Client Bridge；
-- Typert Host Gateway；只有纳入 endpoint 在固定源基线中由 Typert Remote 拥有时，才实现该 endpoint 所需的最小 descriptor 与 Host dispatch；
+- 完整 Typert Host Gateway；当前只实现已纳入的 `commands/list`、`commands/execute` 所需最小 Remote descriptor 与 Host dispatch；
 - Subagent、完整 Settings、扩展 Credentials Provider/watcher/event、Goals、Remote extension 等非核心客户端功能；
 - Codex/Claude Code/ACP subagent、Workflow、Schedule 等编排能力。
 

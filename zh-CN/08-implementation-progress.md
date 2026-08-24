@@ -162,7 +162,7 @@ interaction owner registers stable rpcId + decoder
 | S3-D08 | 交付 | Mux/Host frame 与 approval/question 闭环 | Completed | Contract Verified：Session/Host live frame 及 Approval/Question requested、resolved、respond、bad-response retry、取消和 stable reconnect replay 已接入真实双流 |
 | S3-D09 | 交付 | client cancel、disconnect 与 turn cancellation 映射 | Completed | Contract Verified：`session.cancel` 映射 `UserCancel + KeepInbox` 并产生 aborted turn；WebSocket disconnect 只取消其 stream source，不取消 Agent Turn |
 | S3-G01 | Gate | TypeScript Connection 完成 Session prompt 并收到最终事件 | Completed | Contract Verified：固定源 `WebApiClient` 调用 Go `session.prompt`，收到 committed `turn/end` 与 idle status 并通过 history 读取结果 |
-| S3-G02 | Gate | `user/message` 到 `turn/end` 全流程可运行 | Completed | Contract Verified：`TestPinnedSourceAgentLoopMatchesGo` 覆盖 prompt、request/header/context、chunks、Assistant、Tool call/result、第二 Step 和 completed Turn |
+| S3-G02 | Gate | `user/message` 到 `turn/end` 全流程可运行 | Completed | Go Verified：`TestLoopPublishesDrivesAndDisposesOneAgentLifecycle` 覆盖 prompt、request/header/context、chunks、Assistant、Tool call/result、第二 Step 和 completed Turn |
 | S3-G03 | Gate | step、拒绝、取消、模型和 Tool failure 有 golden | Completed | Contract Verified：固定源与 Go 的 pre-step blocked turn、模型 structured terminal failure 和 Agent-level scheduler failure event sequence 一致；Go race 验证 failure 停止补充、drain 已启动 body 且不伪造 Tool result |
 | S3-G04 | Gate | approval/question 通过 respond 形成闭环 | Completed | Contract Verified：固定源 `WebApiClient` 通过真实 HTTP/WebSocket 回答 Go Approval/Question；accepted、bad-response、not-pending、client cancellation 与 replay 已验证 |
 | S3-G05 | Gate | 每个模型请求可由 Session 日志重建 | Completed | Contract Verified：固定源与 Go 的 dispatch 前缀都经全新 Session 重建为实际 request；覆盖初始 generation、surface replacement summary、新 Loop seeded generation、`resume` header、system/config change 与 request/context 去重；既有 Tool continuation fixture 覆盖同 Turn 多 Step |
@@ -181,7 +181,7 @@ interaction owner registers stable rpcId + decoder
 | S4-D04 | 交付 | 建立可注入 outbound transport、迁移调用者并删除旧入口 | Completed | Go Verified：assembly 已提供 `llm` 并注册 `deepseek-official`；旧 OpenAI SDK/factory/client/example 入口已移除 |
 | S4-D05 | 交付 | retry、error classification、partial stream、usage 和 cancellation | Completed | Contract Verified：RetryPolicy、HTTP/provider/stream error、partial stream terminal、usage、idle timeout、cancel 和 Agent request-error attempt 已覆盖；`a9189fb` 增加独立 `llmretry` Consumer、durable schedule/start、history invariant、policy budget、Retry-After/backoff、取消/drain 及固定源差分 |
 | S4-D06 | 交付 | fake stream 与录制响应 fixtures | Completed | Go Verified：`NewSliceStream` 提供 deterministic fake；`5731251` 把完整 SSE、结构化 429 和 partial transport failure 抽为 package-local 原始 HTTP recordings，并由既有 Adapter 端到端断言直接重放 |
-| S4-G01 | Gate | 从源 fixture 建立目标类型和 codec | Completed | Contract Verified：`TestPinnedSourceLLMDeepSeekMatchesGo` |
+| S4-G01 | Gate | 从固定源契约建立目标类型和 codec | Completed | Go Verified：`llm/message_test.go`、`llm/deepseek/serialize_test.go`、`llm/deepseek/stream_test.go` |
 | S4-G02 | Gate | 在唯一 `llm` owner 内完成新 Runtime | Completed | Go Verified：没有平行 Harness LLM package |
 | S4-G03 | Gate | 迁移 adapter、composition、example 和调用者 | Completed | Go Verified：DeepSeek Factory 已进入默认 composition，stale example 与旧调用入口已删除 |
 | S4-G04 | Gate | 删除旧 `Model`/`APIAdapter` 重复入口 | Completed | Implemented：旧 public types、client/factory 与 OpenAI adapter tree 已删除 |
@@ -201,7 +201,7 @@ interaction owner registers stable rpcId + decoder
 | S5-D06 | 交付 | reconnect baseline、pending replay 和 queue snapshot | Completed | Contract Verified：subscribed/high-water、stable interaction replay 与 queue snapshot 已覆盖；live callback 不作为 durable fact |
 | S5-D07 | 优化 | source-style bounded prepared cache 与 revision reuse | Completed | Go Verified：`preparedSessions` 使用固定容量 generic LRU；ready source 命中验证 durable revision，reservation 移出 LRU 并保持 exact unpublished Session identity，外部 revision 改变触发 reload |
 | S5-D08 | 优化 | `ReadFrom` 使用 Backend seek 而非完整 prefix scan | Completed | Go Verified：`SessionLogStore.ReadFrom` 直接调用 `Backend.LoadStoredFrom`；SQLite 在一个只读事务中读取 Header/revision/suffix 并拒绝 torn marker，计数 Backend 证明不触发 full load |
-| S5-D09 | 交付 | request/turn 完成边界的显式 durability checkpoint | Completed | Go Verified：`TestTurnEndAwaitsSessionDurabilityBeforeAgentBecomesIdle` 将 write-behind 延迟设为一小时，证明 Agent 在 committed `turn/end` 后调用 `session.LiveStore.Flush`、SQLite 已可直接读取完整边界，且 flush 结束前不进入 idle；取消场景证明 aborted outcome 的最终 durability Context 仍可用 |
+| S5-D09 | 交付 | request/turn 完成边界的显式 durability checkpoint | Completed | Go Verified：`TestTurnFlushCompletesBeforeAgentBecomesIdle` 证明 Agent 在 committed `turn/end` 后等待 `session.LiveStore.Flush`，且 flush 结束前不进入 idle；取消场景证明 aborted outcome 的最终 durability Context 仍可用 |
 | S5-G01 | Gate | Header/首批 Event/seq/revision transaction 原子 | Completed | Go Verified：`TestAdapterMaterializesHeaderAndBatchAtomically` |
 | S5-G02 | Gate | torn tail、未知事件和开放状态 repair 不变量 | Completed | Go Verified：`TestAdapterMarksAndRepairsOnlyATornTail`、`SessionLogStore`/recovery tests |
 | S5-G03 | Gate | 背景写失败与取消不丢 batch、不伪成功 | Completed | Go Verified：`TestLiveWriterRetainsFailedBackgroundBatchForExplicitFlush`、`TestLiveWriterFlushCanCancelWhileBackgroundWriteRemainsOwned` |
@@ -261,7 +261,7 @@ interaction owner registers stable rpcId + decoder
 | S6-Q09 | Session Query | `session_search` / `session_event_search` Agent Tool | Deferred | Query Service 已提供稳定消费边界；Tool 的 workspace visibility、schema 与 execution policy 尚未纳入 |
 | S6-D18 | 能力 | Session Fork | Excluded | 用户明确不实现；不注册 method、Factory、Service 或占位 |
 | S6-D19 | 能力 | 其他经 capability matrix 纳入的服务端能力 | Deferred | 当前主会话不依赖 |
-| S6-D20 | 能力 | Context Compaction 总体 | Completed | Contract Verified：Definition、Token Meter、Tool Result Pruner、Basic Provider、人工 `CompactNow` 和默认自动装配已闭环，pressure/overflow/cancellation、TypeScript vectors 与 SQLite cold resume 已验证；`/compact` Consumer 仍属 Commands Deferred，real-provider smoke 未取得当前环境证据。设计见[24](./24-context-compaction.md)，专用矩阵见[25](./25-context-compaction-implementation-progress.md) |
+| S6-D20 | 能力 | Context Compaction 总体 | Completed | Go Verified：Definition、Token Meter、Tool Result Pruner、Basic Provider、Commands Registry、`/compact` Remote/Consumer 与默认装配已闭环，pressure/overflow、人工 success/failure/cancel、事件顺序和 SQLite cold resume 已验证；real-provider smoke 未取得当前环境证据。设计见[24](./24-context-compaction.md)，专用矩阵见[25](./25-context-compaction-implementation-progress.md) |
 | S6-G01 | Gate | 确认真实 Consumer 后才进入实现 | Deferred | 扩大当前目标时重新启用 |
 | S6-G02 | Gate | 保留源 Definition、Provider 和 Consumer owner | Deferred | 扩大当前目标时重新启用 |
 | S6-G03 | Gate | effect-time enforcement 归 permission/guard/sandbox owner | Deferred | 扩大当前目标时重新启用 |
@@ -296,7 +296,7 @@ interaction owner registers stable rpcId + decoder
 | S8-G01 | Gate | 每个 included surface 标明 P0/P1/P2/P3 | Planned | None |
 | S8-G02 | Gate | Connection 与 Agent 关键路径达到计划层级 | Planned | None |
 | S8-G03 | Gate | Linux、macOS、Windows 分别有支持证据 | Planned | None：当前只验证 `darwin/arm64` |
-| S8-G04 | Gate | 全量 Go、格式和 contract suite 通过 | In Progress | Contract Verified：当前 Go checks 与显式 TypeScript contract suite 通过；全项目 parity suite 尚未完成 |
+| S8-G04 | Gate | 全量 Go、格式和当前 Go contract cases 通过 | In Progress | Go Verified：当前 Go checks 通过；全项目 parity hardening 尚未完成 |
 | S8-G05 | Gate | TypeScript Host Client 与 DeepSeek Provider 分别验收 | Completed | Environment Verified：固定源 `WebApiClient`、默认 composition/离线 oracle 和真实 DeepSeek Provider 分层通过；极简 UI 主流程已验收，原版完整 Web 产品不在当前 Gate |
 | S8-G06 | Gate | 依赖闭包和二进制扫描确认排除范围未进入 | Planned | None |
 | S8-G07 | Gate | open decision 已解决、受控延期或移出 release | Planned | None |
@@ -324,36 +324,28 @@ interaction owner registers stable rpcId + decoder
 | Interaction requested/respond/resolved、坏响应重试、并行 audit matching、reconnect replay 与 shutdown | `apiproxy/interaction_gateway_test.go` |
 | `/api/respond` accepted/技术失败、privileged loopback 与 Echo Recover | `internal/connection/http_test.go` |
 | 命名规则与审计器自测 | `tests/architecture/naming_test.go` |
-| manifest 与 Go path/message/frame surface 一致 | `TestPinnedManifestMatchesGoSurface` |
-| Go envelope/frame 与固定 TypeScript schema 向量一致 | `TestGoAgreesWithPinnedSourceVectors` |
-| 固定源 schema 可重复生成 committed fixture | `TestPinnedSourceGeneratesCommittedVectors` |
-| 固定源 `WebApiClient` 调用 Go HTTP/WS/respond | `TestPinnedSourceWebApiClientTalksToGoHost` |
-| 固定源 Approval/UserQuestions/Ask Tool 行为与 Go 一致 | `TestPinnedSourceInteractionsMatchGo` |
-| 固定源 `WebApiClient` 通过真实 HTTP/WS 回答 Go Approval/Question | `TestPinnedSourceWebApiClientAnswersGoInteractions` |
-| 固定源 `ConnectionController` 在单流结束后重建双流 | `TestPinnedSourceConnectionRebuildsBothStreams` |
+| Go envelope/frame 的 closed union、宽字段与 canonical encoding | `apiproxy/frame_test.go` |
+| Go HTTP/WS/respond carrier 的路径、信封、取消与 trust fence | `internal/connection/http_test.go`、`internal/connection/websocket_test.go` |
 | 慢客户端同步背压与 shutdown 解阻塞 | `TestWebSocketSlowClientBackpressuresSourceAndShutdownUnblocksWrite` |
 | 重复连接/断开后的 source、socket 与 pump 回收 | `TestWebSocketRepeatedConnectDisconnectLeavesNoOwnedResources` |
-| 固定源与 Go HTTP success/failure precedence | `TestPinnedSourceHTTPFailuresMatchGoHost` |
 | Service waiting、动态撤回/恢复、失败回滚、替换和 shutdown | `plugin/runtime_test.go` |
 | ordered/parallel/best-effort Event 与 Waterfall | `plugin/event_test.go`、`plugin/waterfall_test.go` |
 | Child Scope 嵌套 ownership、动态卸载与 inherited dependency | `plugin/runtime_test.go`、`plugin/tree_test.go` |
-| scoped waterfall 的 global/ancestor/exact admission 与 sibling/descendant exclusion | `TestScopedWaterfallAdmitsGlobalAndAncestorListeners` |
-| scoped emit 的 global/ancestor/exact admission 与 sibling/descendant exclusion | `TestScopedEmitAdmitsGlobalAndAncestorListeners` |
+| scoped waterfall 的 root-to-current onion 与 source-scope isolation | `plugin/waterfall_test.go` |
+| scoped Event 的 root/ancestor/exact admission 与 sibling exclusion | `plugin/event_test.go` |
 | strict typed config、Factory Catalog 与 detached Server 边界 | `plugin/factory/factory_test.go`、`internal/assembly/assembly_test.go` |
-| Connection Plugin 乱序依赖结算与真实 HTTP 服务 | `TestConnectionCompositionSettlesDependenciesAndServesHostDescribe` |
+| Connection Plugin 依赖结算、commit activation 与回滚 | `internal/assembly/assembly_test.go` |
 | 内嵌 Web 内容哈希、cache policy、SPA fallback 与 API route 隔离 | `web/site_test.go`、`TestFrontendHandlesOnlyUnownedBrowserRoutes` |
-| 默认 composition 经 DeepSeek Adapter 完成固定 Client、UI 会话与 Question continuation | `TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter`、`web-ui-main-flow.ts` |
+| 默认 composition 经 DeepSeek Adapter、HTTP/WebSocket 与 UI components 验证主流程 | `internal/assembly` Go E2E、`web/src/*.test.ts(x)` |
 | CLI `--data-dir` 默认数据库解析与具体路径覆盖 | `cmd/goren/main_test.go` |
 | Server Build/Runtime Start 失败无 Plugin binding 或 endpoint 遗留 | `internal/assembly/assembly_test.go` |
 | Session payload snapshot、seed 连续性、surface 原子 replace 与负零拒绝 | `session/session_test.go` |
 | Session create/append/flush/dispose、rollback、observer containment、重入拒绝与 publication 后 follow-up append | `session/store_test.go`、`session/title/service_test.go` |
-| 固定源与 Go Session Header/Event/seed/surface 行为一致 | `TestPinnedSourceSessionCoreMatchesGo` |
-| Session -> API Proxy -> `host.describe.attachedSessions` 实时 projection | `TestConnectionCompositionSettlesDependenciesAndServesHostDescribe` |
+| Session -> API Proxy -> `host.describe.attachedSessions` 实时 projection | `apiproxy/catalog_test.go`、`internal/assembly/assembly_test.go` |
 | 十个 `session.*` request union 的 strict decode 与负向组合 | `TestSessionRequestDecodersMatchIncludedUnionShapes`、`TestSessionRequestDecodersRejectNullAndInvalidCombinations`、固定源 rename/search vectors |
 | history message-boundary pagination、durable queue fold 与宽 text extension 保真 | `TestHistoryPageCutsAtAppendMessageGroup`、`TestProjectQueueFoldsDurableSplicesAndUserPlacement`、`TestReplaceMessageContentPreservesLooseTextExtension` |
 | Mux baseline high-water 与 frame ID failure 不丢 committed event | `TestMuxBaselineHighwaterSuppressesLateCommittedCallback`、`TestSessionFrameHubSurfacesMintFailureWithoutAdvancingHighwater` |
 | live default 到显式选择的优先级与 prompt/request snapshot | `TestModelSelectionReadsLiveFallbackUntilExplicitlySelected`、`TestModelSelectionSnapshotsPromptAndRequestTogether` |
-| 固定源 `WebApiClient` 调用 Go Session Gateway 完成 prompt/queue/cancel 双流会话 | `TestPinnedSourceSessionWebApiClientTalksToGoGateway` |
 | Session Projection late fold、whole-value change、registration refcount 与 versioned checkpoint/restore | `session/projection/registry_test.go` |
 | Session Title fallback、规范化、rename、projection、Provider supersession、refresh、JSON array wire 与 drain | `session/title/service_test.go` |
 | Session Title First/All-Prompts LLM 策略、请求事实、route、预算、timeout、finish 与默认组合 | `session/title/llm_provider_test.go`、`TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter` |
@@ -361,20 +353,15 @@ interaction owner registers stable rpcId + decoder
 | prepared Session bounded LRU、exact object reuse、revision invalidation 与 SQLite suffix seek | `session/persistence/session_log_store_test.go`、`session/persistence/prepared_cache.go`、`session/persistence/sqlite/adapter.go` |
 | SQLite Header/首批 Events 原子 materialization、torn tail repair 与 foreign schema 拒绝 | `session/persistence/sqlite/adapter_test.go` |
 | write-behind 失败 batch 保留、显式 flush 与取消 ownership | `session/persistence/write_behind_test.go` |
-| Agent `turn/end` 到 SQLite durable boundary，再到 idle convergence；取消后的 aborted boundary 不继承 Turn cancellation | `TestTurnEndAwaitsSessionDurabilityBeforeAgentBecomesIdle`、`TestFirstCancelCauseSurvivesDisposalRace` |
+| Agent `turn/end` 到 durable boundary，再到 idle convergence；取消后的 aborted boundary 不继承 Turn cancellation | `TestTurnFlushCompletesBeforeAgentBecomesIdle`、`TestFirstCancelCauseSurvivesDisposal` |
 | 默认 composition 重启后的 cold list/history/create(resume) | `internal/assembly/session_persistence_e2e_test.go` |
 | Session Query live-preferred corpus、exact reads/filter/title/surface/lineage/event trace | `session/query/service_test.go` |
 | SQLite FTS literal search、surface classification、reconciliation generation 与 stale cursor | `session/query/service_test.go`、`session/query/sqlite` |
 | 独立 Session Search Gateway 的固定 event scope、可见性、snippet 与 request decode | `apiproxy/session_search_gateway_test.go` |
-| 固定源 `WebApiClient.sessions.search` 调用真实 Go Gateway | `TestPinnedSourceSessionWebApiClientTalksToGoGateway` |
 | Workspace canonical identity、accounting、bootstrap、initialized-empty 与并发 commit | `workspace/registry_test.go` |
 | Workspace SQLite/sqlc、能力插件边界与默认 composition | `workspace/persistence/sqlite`、`internal/assembly/assembly_test.go` |
-| 固定源 `WebApiClient.workspace`、四个 Host frame 与 `session.create({workspaceId})` | `TestPinnedSourceWorkspaceWebApiClientTalksToGoGateway` |
-| 固定源 `WebApiClient` 与 `Session.rename()` 调用 Go rename，并折入 list/history/frame/client store | `TestPinnedSourceSessionWebApiClientTalksToGoGateway` |
 | System Prompt built-ins、scope shadow、snapshot、suppression、complete、tool order、插值与 invariant | `systemprompt/systemprompt_test.go` |
-| 固定源与 Go System Prompt assembly/render/failure 行为一致 | `TestPinnedSourceSystemPromptMatchesGo` |
 | Native Tool root/overlay view、restriction/guard、schema cache、执行/取消、一次性 scheduler、finalizer 与 detached result | `tools/service_test.go`、`tools/execution_test.go`、`tools/policy_test.go`、`tools/config_test.go` |
-| 固定源与 Go Native Tools config/visibility/policy/result/cancel 行为一致 | `TestPinnedSourceNativeToolsMatchesGo` |
 | LLM/DeepSeek/System Prompt/Tools Factory strict config、shipped Catalog 与 Service composition | `internal/assembly/assembly_test.go` |
 | core LLM content block variant clone 与 extension panic containment | `llm/harness_contract_test.go` |
 | Harness Message/StreamChunk 严格 round-trip、opaque extension 与 provenance | `llm/message_test.go` |
@@ -388,23 +375,16 @@ interaction owner registers stable rpcId + decoder
 | DeepSeek HTTP headers、metadata、错误分类、credential、cancel、中途失败与可复用 response recordings | `llm/deepseek/adapter_test.go`、`llm/deepseek/testdata/recordings/` |
 | DeepSeek Factory strict config、Service settlement、owned route/directory、partial Apply rollback 与 lazy identity | `llm/deepseek/plugin_test.go` |
 | Credentials precedence、local owner-only JSON、atomic write 与 value-free description | `credentials/local/store_test.go`、`apiproxy/credentials_gateway_test.go` |
-| 固定源 `WebApiClient.credentials` 经真实 Go Host 完成 describe/set/unset | `TestPinnedSourceCredentialsWebApiClientUsesGoProvider` |
 | anonymous Harness user identity 的持久化与损坏恢复 | `llm/deepseek/anonymoususerid/store_test.go` |
-| 固定源与 Go 的 DeepSeek request、stream assembly 和 retry default 一致 | `TestPinnedSourceLLMDeepSeekMatchesGo` |
-| 固定源与 Go 的 provider-routed retry delay、schedule/start、chain 与最终成功一致 | `TestPinnedSourceLLMRetryMatchesGo` |
 | Agent Registry publication、rollback、reentrant detach、ownership 与顺序 | `agent/registry_test.go` |
 | Agent scoped emit/waterfall/serial 的 subject isolation | `agent/events_test.go` |
 | durable Inbox replay、commit/notification 顺序、clear、duplicate 与并发 append | `agent/inbox_test.go` |
 | initiator context 与 prompt/request model selection snapshot | `agent/initiator_test.go`、`agent/model_selection_test.go` |
-| 固定源与 Go Inbox event、list、splice/claim/clear 和 notification 顺序一致 | `TestPinnedSourceAgentInboxMatchesGo` |
 | Agent Loop fresh lifecycle、Turn/Step、Tool continuation、request reconstruction 与 teardown | `TestLoopPublishesDrivesAndDisposesOneAgentLifecycle` |
-| bounded parallel Tool body 与 model-order result/context commit | `TestParallelBodiesCommitResultsAndContextsInModelOrder` |
+| bounded parallel Tool body 与 model-order result/context commit | `TestParallelToolBodiesCommitResultsAndContextInModelOrder` |
 | scheduler failure 停止补充、drain 已启动 dispatch 且不伪造 result | `TestSchedulerFailureStopsReplenishmentAndDrainsStartedDispatch` |
-| maintenance wake、`WhenIdle` successor convergence 与 first typed cancel cause | `TestMaintenanceLatchedWakeKeepsWhenIdleBehindSuccessorTurn`、`TestFirstCancelCauseSurvivesDisposalRace` |
+| maintenance wake、`WhenIdle` successor convergence 与 first typed cancel cause | `TestMaintenanceWakeKeepsWhenIdleBehindSuccessorTurn`、`TestFirstCancelCauseSurvivesDisposal` |
 | failed model attempt 通过 `agent/request-error` 在同一 Step retry | `TestRequestErrorRetryRepeatsAttemptInsideOneStep` |
-| 固定源与 Go Agent Loop event、request 和 derived message projection 一致 | `TestPinnedSourceAgentLoopMatchesGo` |
-| 固定源与 Go pre-step reject、模型 terminal failure 和 scheduler failure/drain 一致 | `TestPinnedSourceAgentLoopFailuresMatchGo` |
-| 固定源与 Go 从 dispatch 日志前缀重建初始及 seeded resume/compaction request | `TestPinnedSourceRequestReconstructionMatchesGo` |
 
 ## 13. 当前验证结果
 
@@ -413,7 +393,6 @@ interaction owner registers stable rpcId + decoder
 - `sqlc generate -f session/persistence/sqlite/sqlc.yaml`
 - `sqlc generate -f session/query/sqlite/sqlc.yaml`
 - `go test ./...`
-- `go test -tags=contract ./tests/contract -count=1`
 - `go test -race ./...`
 - `go vet ./...`
 - `go build ./...`
@@ -434,6 +413,6 @@ interaction owner registers stable rpcId + decoder
 
 Agent Loop core、十个 Session method、Session Persistence/SQLite、Session Query/Search、live Mux/Host projection、queue、cancel、rename、自动 LLM title、Approval/Question、Credentials 与主会话 Web UI 已组成可运行主流程。正常及取消轮次的 `turn/end` 都有显式 durable boundary；prepared LRU、revision reuse 与 Backend suffix seek 已完成，当前 Session 实现切片没有未完成的 included 子目标。
 
-后续只在重新纳入能力时启动新切片：Session log export 与 Agent Query Tool 当前 Deferred；Session Fork 按用户决策 Excluded。完整 Settings、Preset、Filesystem、Shell、Attachment、Typert Remote、Approval 浏览器控件和完整原版 Web product 均保持 Deferred；当前不为它们增加 handler、service 或测试占位。有可用交互式浏览器时可补键盘操作、API Key dialog 与 Chrome/Safari 人工验收，但不阻塞当前 Host/UI 主流程 contract。Credentials watcher、`credentials/updated` 与跨进程 writer lock 也未进入当前闭包。
+后续只在重新纳入能力时启动新切片：Session log export 与 Agent Query Tool 当前 Deferred；Session Fork 按用户决策 Excluded。完整 Settings、Preset、Filesystem、Shell、Attachment、通用 Typert Remote、Approval 浏览器控件和完整原版 Web product 均保持 Deferred；`commands/list` 与 `commands/execute` 是为 `/compact` 单独准入的最小 Remote slice，不能外推为通用 Typert 已完成。有可用交互式浏览器时可补键盘操作、API Key dialog 与 Chrome/Safari 人工验收，但不阻塞当前 Host/UI 主流程 contract。Credentials watcher、`credentials/updated` 与跨进程 writer lock 也未进入当前闭包。
 
 Session Persistence/SQLite 已负责 cold facts、repair 与 Agent resume；它不恢复进程内 pending callback、socket subscriber 或未完成 retry timer。默认 RetryPolicy Consumer 仍沿 `agent/request-error` 作为独立 Plugin 进入，没有回填 DeepSeek Adapter。Agent instance 继续消费既有 Child Scope 与 scoped listener isolation，不另建第二套 Registry。

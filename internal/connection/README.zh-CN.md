@@ -4,7 +4,7 @@
 
 ## 职责与非职责
 
-本包负责 Echo v5 HTTP carrier、strict envelope decode、trust fence、错误映射、Mux/Host WebSocket downlink、监听端口和连接排空。`Plugin` 依赖 `apiproxy.Service`，启用页面时再依赖 `web.Frontend`。
+本包负责 Echo v5 HTTP carrier、strict envelope decode、trust fence、错误映射、Mux/Host WebSocket downlink、监听端口和连接排空。`POST /api/*` 接受 `commands/list` 等多段 canonical method，并把完整 method 交给 API Proxy；carrier 不解释 Typert Remote payload。`Plugin` 依赖 `apiproxy.Service`，启用页面时再依赖 `web.Frontend`。
 
 本包不拥有 RPC method 业务、Agent/Session、浏览器连接状态机、Plugin Factory Catalog 或 Web 页面内容。Echo 类型不越过本包。
 

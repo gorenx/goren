@@ -51,6 +51,8 @@
 - [`llm/tokenmeter/README.zh-CN.md`](../llm/tokenmeter/README.zh-CN.md)：单例 replay Token Meter 的 Service 边界、固定 estimator、usage anchor、三个 Projection 与 Consumer 交互。
 - [`compaction/README.zh-CN.md`](../compaction/README.zh-CN.md)：Compaction Service Definition、事件、checkpoint provenance、结果和人工失败分类。
 - [`compaction/basic/README.zh-CN.md`](../compaction/basic/README.zh-CN.md)：Basic Provider 的 Plugin/业务分离、自动策略、区间事务、overflow retry 和人工 maintenance。
+- [`commands/README.zh-CN.md`](../commands/README.zh-CN.md)：Commands Registry、direct execution、持久化 lifecycle、取消与卸载。
+- [`compaction/command/README.zh-CN.md`](../compaction/command/README.zh-CN.md)：`/compact` Consumer 的 Plugin/业务分离、结果映射与端到端交互。
 - [`compaction/toolresultpruner/README.zh-CN.md`](../compaction/toolresultpruner/README.zh-CN.md)：可选无模型 Pruner、Unicode budget、Token Meter 依赖和 Surface replacement 边界。
 - [`web/README.zh-CN.md`](../web/README.zh-CN.md)：内嵌主会话 UI、浏览器状态对象、Host RPC/WebSocket/respond 交互与边界。
 - [`credentials/README.zh-CN.md`](../credentials/README.zh-CN.md)：Credentials 能力、Manager precedence、storage-only LiveStore 与 local owner-only 文件实现。
@@ -63,7 +65,7 @@
 - 子模块 `README.zh-CN.md` 解释贴近代码的职责、工作原理和交互流程；跨模块契约仍由本目录对应编号文档拥有。全仓公共实施证据由 `08` 拥有，Compaction 专项子项证据由 `25` 拥有并向 `08` 汇总。
 - 根目录 `README.md` 与 `README.zh-CN.md` 只说明项目背景。
 - TypeScript 的行为证据来自固定 commit；源仓库后续变化不会自动成为 Go 需求。
-- Go 代码证明当前实现，跨语言 fixtures 和测试证明兼容性；设计状态不能代替实现或验收证据。
+- Go 代码证明当前实现；基于固定源契约的 Go golden、表驱动和真实 carrier 集成测试证明当前兼容性，设计状态不能代替实现或验收证据。
 
 ## 隔离的历史设计
 
