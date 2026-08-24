@@ -313,11 +313,10 @@ func cloneInt(source *int) *int {
 	return &copyValue
 }
 
-func decodeDerivedMessage(entry Event) (llm.Message, bool, error) {
+func decodeDerivedMessage(entry Event) (llm.Message, error) {
 	switch entry.Type {
 	case UserMessageEventName:
-		messageValue, err := llm.DecodeUserMessage(entry.Data)
-		return messageValue, err == nil, err
+		return llm.DecodeUserMessage(entry.Data)
 	case AssistantMessageEventName:
 		var wireValue struct {
 			Turn    int64           `json:"turn"`
@@ -326,20 +325,20 @@ func decodeDerivedMessage(entry Event) (llm.Message, bool, error) {
 			Usage   json.RawMessage `json:"usage,omitempty"`
 		}
 		if err := decodeSessionPayload(entry.Data, &wireValue); err != nil {
-			return nil, false, err
+			return nil, err
 		}
 		messageValue, err := llm.DecodeMessage(wireValue.Message)
 		if err != nil {
-			return nil, false, err
+			return nil, err
 		}
 		typedMessage, ok := messageValue.(llm.AssistantMessage)
 		if !ok {
-			return nil, false, errors.New("session: assistant/message contains a non-assistant message")
+			return nil, errors.New("session: assistant/message contains a non-assistant message")
 		}
 		if len(typedMessage.ContentValue()) == 0 {
-			return nil, false, nil
+			return nil, nil
 		}
-		return typedMessage, true, nil
+		return typedMessage, nil
 	case ToolResultEventName:
 		var wireValue struct {
 			Turn    int64           `json:"turn"`
@@ -349,20 +348,27 @@ func decodeDerivedMessage(entry Event) (llm.Message, bool, error) {
 			Meta    json.RawMessage `json:"meta,omitempty"`
 		}
 		if err := decodeSessionPayload(entry.Data, &wireValue); err != nil {
-			return nil, false, err
+			return nil, err
 		}
 		messageValue, err := llm.DecodeMessage(wireValue.Message)
 		if err != nil {
-			return nil, false, err
+			return nil, err
 		}
 		typedMessage, ok := messageValue.(llm.ToolResultMessage)
 		if !ok {
-			return nil, false, errors.New("session: tool/result contains a non-tool-result message")
+			return nil, errors.New("session: tool/result contains a non-tool-result message")
 		}
-		return typedMessage, true, nil
+		return typedMessage, nil
 	default:
-		return nil, false, nil
+		return nil, nil
 	}
+}
+
+// DeriveEventMessage projects one detached Session event through the same
+// owner-defined mapping used by Surface reconstruction. Non-message events and
+// empty assistant anchors return nil without an error.
+func DeriveEventMessage(entry Event) (llm.Message, error) {
+	return decodeDerivedMessage(cloneEvent(entry))
 }
 
 func validatePosition(turn int64, step int64) error {

@@ -214,12 +214,12 @@ func (conversation *Session) DeriveMessages() ([]llm.Message, error) {
 			conversation.mu.Unlock()
 			return nil, fmt.Errorf("session: surface node %d is outside the event log", sequence)
 		}
-		messageValue, retained, err := decodeDerivedMessage(conversation.entries[sequence])
+		messageValue, err := decodeDerivedMessage(conversation.entries[sequence])
 		if err != nil {
 			conversation.mu.Unlock()
 			return nil, fmt.Errorf("session: derive surface seq %d: %w", sequence, err)
 		}
-		if retained {
+		if messageValue != nil {
 			conversation.derived = append(conversation.derived, messageValue)
 		}
 		conversation.derivedNodes++
