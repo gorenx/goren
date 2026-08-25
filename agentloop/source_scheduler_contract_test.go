@@ -200,12 +200,16 @@ func TestPinnedSourceSchedulerFailureMatchesGo(t *testing.T) {
 		chunks: chunks,
 	}
 	agents := agent.NewRegistry(agent.RegistryOptions{})
+	agentPlugin, err := agent.NewRegistryPlugin(agents)
+	if err != nil {
+		t.Fatal(err)
+	}
 	failures := schedulerContractFailureReporter{
 		testingContext: t,
 	}
-	sessions, err := session.NewMemoryStore(session.MemoryStoreOptions{
+	sessionPlugin, err := session.NewPlugin(session.MemoryStoreOptions{
 		PostCommitFailures: failures,
-	}, sessionEventSinkStub{})
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,8 +241,8 @@ func TestPinnedSourceSchedulerFailureMatchesGo(t *testing.T) {
 	})
 	if _, err = runtimeEngine.Start(
 		context.Background(),
-		agents,
-		sessions,
+		agentPlugin,
+		sessionPlugin,
 		models,
 		prompts,
 		toolRuntime,

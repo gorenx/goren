@@ -19,6 +19,32 @@ type failureRecorder struct {
 
 type panickingPostCommitReporter struct{}
 
+type sessionEventSinkStub struct{}
+
+func (sessionEventSinkStub) Publish(context.Context, plugin.Event) error {
+	return nil
+}
+
+type blockingFlushPublisher struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (publisher *blockingFlushPublisher) Publish(
+	_ context.Context,
+	fact plugin.Event,
+) error {
+	if _, matches := fact.(FlushRequested); !matches {
+		return nil
+	}
+	publisher.once.Do(func() {
+		close(publisher.started)
+	})
+	<-publisher.release
+	return nil
+}
+
 func (panickingPostCommitReporter) ReportPostCommitFailure(PostCommitFailure) {
 	panic("fixture reporter panic")
 }
@@ -115,9 +141,9 @@ func newStoreFixture(
 	testingContext *testing.T,
 	recorder *failureRecorder,
 	observer *storeObserverPlugin,
-) *MemoryStore {
+) *memoryStore {
 	testingContext.Helper()
-	store, err := NewMemoryStore(
+	storePlugin, err := NewPlugin(
 		MemoryStoreOptions{
 			PostCommitFailures: recorder,
 		},
@@ -133,7 +159,7 @@ func newStoreFixture(
 	if _, err := runtimeEngine.Start(
 		context.Background(),
 		observer,
-		store,
+		storePlugin,
 	); err != nil {
 		testingContext.Fatal(err)
 	}
@@ -142,7 +168,7 @@ func newStoreFixture(
 			testingContext.Error(err)
 		}
 	})
-	return store
+	return storePlugin.store
 }
 
 func TestStoreLifecyclePublishesCommittedEventsAndFlush(t *testing.T) {
@@ -257,6 +283,114 @@ func TestConcurrentReleaseSharesOneFinalFlush(t *testing.T) {
 	}
 }
 
+func TestReleaseWaitsForAnnouncementState(t *testing.T) {
+	t.Parallel()
+	recorder := &failureRecorder{}
+	announcementStarted := make(chan struct{})
+	finishAnnouncement := make(chan struct{})
+	observer := &storeObserverPlugin{
+		name: "fixture-announcement-state-observer",
+		onCreated: func(context.Context, Context) error {
+			close(announcementStarted)
+			<-finishAnnouncement
+			return nil
+		},
+	}
+	store := newStoreFixture(t, recorder, observer)
+	conversation, err := store.Prepare(nil, CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	membership, err := store.Enter(conversation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	announcementDone := make(chan error, 1)
+	go func() {
+		announcementDone <- store.Announce(context.Background(), conversation)
+	}()
+	<-announcementStarted
+	releaseDone := make(chan error, 1)
+	go func() {
+		releaseDone <- membership.Release(context.Background())
+	}()
+	select {
+	case err = <-releaseDone:
+		t.Fatalf("Release returned before announcement completed: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(finishAnnouncement)
+	if err = <-announcementDone; err != nil {
+		t.Fatal(err)
+	}
+	if err = <-releaseDone; err != nil {
+		t.Fatal(err)
+	}
+	if _, found := store.Get(conversation.ID()); found {
+		t.Fatal("released Session remained live")
+	}
+}
+
+func TestStoreCloseRejectsPreparationAndEntryBeforeDrain(t *testing.T) {
+	t.Parallel()
+	publisher := &blockingFlushPublisher{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	store, err := newMemoryStore(
+		MemoryStoreOptions{
+			PostCommitFailures: &failureRecorder{},
+		},
+		publisher,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	membership, err := store.Create(
+		context.Background(),
+		nil,
+		CreateOptions{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	detached, err := New("detached-before-close", CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- store.Close(context.Background())
+	}()
+	<-publisher.started
+	if _, err = store.Prepare(nil, CreateOptions{}); err == nil ||
+		!strings.Contains(err.Error(), "not accepting") {
+		t.Fatalf("Prepare during Close error = %v", err)
+	}
+	if _, err = store.Enter(detached); err == nil ||
+		!strings.Contains(err.Error(), "not accepting") {
+		t.Fatalf("Enter during Close error = %v", err)
+	}
+	if _, err = store.Create(
+		context.Background(),
+		nil,
+		CreateOptions{},
+	); err == nil || !strings.Contains(err.Error(), "not accepting") {
+		t.Fatalf("Create during Close error = %v", err)
+	}
+	close(publisher.release)
+	if err = <-closeDone; err != nil {
+		t.Fatal(err)
+	}
+	if _, found := store.Get(membership.Session().ID()); found {
+		t.Fatal("Store Close retained a Session")
+	}
+	if _, err = store.Prepare(nil, CreateOptions{}); err == nil ||
+		!strings.Contains(err.Error(), "not accepting") {
+		t.Fatalf("Prepare after Close error = %v", err)
+	}
+}
+
 func TestCreationFailureRollsBackWithPairedDisposal(t *testing.T) {
 	t.Parallel()
 	requestContext := context.Background()
@@ -366,10 +500,11 @@ func TestAppendObserverFailureIsContainedAndReentryRejected(t *testing.T) {
 
 func TestPostCommitReporterPanicDoesNotChangeCommitResult(t *testing.T) {
 	t.Parallel()
-	store, err := NewMemoryStore(
+	store, err := newMemoryStore(
 		MemoryStoreOptions{
 			PostCommitFailures: panickingPostCommitReporter{},
 		},
+		sessionEventSinkStub{},
 	)
 	if err != nil {
 		t.Fatal(err)

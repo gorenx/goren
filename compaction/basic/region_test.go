@@ -11,8 +11,34 @@ import (
 
 	"github.com/gorenx/goren/compaction"
 	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
+
+type sessionStoreProbe struct {
+	plugin.Base
+	store session.LiveStore
+}
+
+func (*sessionStoreProbe) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "compaction-basic-session-store-probe",
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[session.LiveStore](),
+		},
+	}
+}
+
+func (probe *sessionStoreProbe) Apply(context.Context) error {
+	store, err := plugin.Require[session.LiveStore](probe)
+	if err != nil {
+		return err
+	}
+	probe.store = store
+	return nil
+}
+
+func (*sessionStoreProbe) Dispose(context.Context) error { return nil }
 
 func TestCompactRegionCommitsReplayableLLMCheckpoint(t *testing.T) {
 	t.Parallel()
@@ -495,13 +521,28 @@ func TestCompactNowPreservesCallerCancellationAndClassifiesAgentCancellation(t *
 func TestCompactNowDoesNotReportSuccessWhenClosingMarkerFails(t *testing.T) {
 	t.Parallel()
 	timeSource := &closingFailureClock{}
-	store, err := session.NewMemoryStore(session.MemoryStoreOptions{
+	sessionPlugin, err := session.NewPlugin(session.MemoryStoreOptions{
 		TimeSource:         timeSource,
 		PostCommitFailures: ignoredPostCommitFailures{},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	storeProbe := &sessionStoreProbe{}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	if _, err = runtimeEngine.Start(
+		context.Background(),
+		sessionPlugin,
+		storeProbe,
+	); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if shutdownErr := runtimeEngine.Shutdown(context.Background()); shutdownErr != nil {
+			t.Error(shutdownErr)
+		}
+	})
+	store := storeProbe.store
 	identifier := session.SessionID("closing-marker-failure")
 	conversation, err := store.Prepare(
 		&identifier,

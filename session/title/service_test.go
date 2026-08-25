@@ -22,6 +22,31 @@ var titleFixtureConfig = Config{
 
 type titleFailureReporter struct{}
 
+type sessionStoreProbe struct {
+	plugin.Base
+	store session.LiveStore
+}
+
+func (*sessionStoreProbe) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "session-title-store-probe",
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[session.LiveStore](),
+		},
+	}
+}
+
+func (probe *sessionStoreProbe) Apply(context.Context) error {
+	liveStore, err := plugin.Require[session.LiveStore](probe)
+	if err != nil {
+		return err
+	}
+	probe.store = liveStore
+	return nil
+}
+
+func (*sessionStoreProbe) Dispose(context.Context) error { return nil }
+
 func (titleFailureReporter) ReportEventFailure(context.Context, plugin.EventFailure) {}
 
 func (titleFailureReporter) ReportPostCommitFailure(session.PostCommitFailure) {}
@@ -66,7 +91,7 @@ func (observer *titleProjectionObserver) ObserveEvent(
 }
 
 type titleFixture struct {
-	store       *session.MemoryStore
+	store       session.LiveStore
 	titles      *LogService
 	projections *sessionprojection.DriveRegistry
 	changes     <-chan sessionprojection.Change
@@ -75,7 +100,7 @@ type titleFixture struct {
 func newTitleFixture(testingContext *testing.T) titleFixture {
 	testingContext.Helper()
 	reporter := titleFailureReporter{}
-	store, err := session.NewMemoryStore(
+	sessionPlugin, err := session.NewPlugin(
 		session.MemoryStoreOptions{
 			PostCommitFailures: reporter,
 		},
@@ -92,6 +117,7 @@ func newTitleFixture(testingContext *testing.T) titleFixture {
 	observer := &titleProjectionObserver{
 		changes: changes,
 	}
+	storeProbe := &sessionStoreProbe{}
 	runtimeEngine := plugin.NewRuntime(
 		plugin.RuntimeSettings{
 			EventFailures: reporter,
@@ -102,7 +128,8 @@ func newTitleFixture(testingContext *testing.T) titleFixture {
 		observer,
 		titles,
 		projections,
-		store,
+		sessionPlugin,
+		storeProbe,
 	); err != nil {
 		testingContext.Fatal(err)
 	}
@@ -112,7 +139,7 @@ func newTitleFixture(testingContext *testing.T) titleFixture {
 		}
 	})
 	return titleFixture{
-		store:       store,
+		store:       storeProbe.store,
 		titles:      titles,
 		projections: projections,
 		changes:     changes,

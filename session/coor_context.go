@@ -1,7 +1,6 @@
 package session
 
 import (
-	"context"
 	"sync"
 
 	"github.com/gorenx/goren/llm"
@@ -14,7 +13,7 @@ type coordinator struct {
 	queue requestQueue
 
 	lifecycleMutex sync.RWMutex
-	publisher      publisher
+	membership     *registration
 }
 
 func newCoordinator(sessionLog *log) *coordinator {
@@ -76,31 +75,27 @@ func (owner *coordinator) DeriveMessages() ([]llm.Message, error) {
 	return owner.log.DeriveMessages()
 }
 
-func (owner *coordinator) currentPublisher() publisher {
+func (owner *coordinator) currentMembership() *registration {
 	owner.lifecycleMutex.RLock()
-	current := owner.publisher
+	current := owner.membership
 	owner.lifecycleMutex.RUnlock()
 	return current
 }
 
-func (owner *coordinator) attach(candidate publisher) bool {
+func (owner *coordinator) attach(candidate *registration) bool {
 	owner.lifecycleMutex.Lock()
 	defer owner.lifecycleMutex.Unlock()
-	if owner.publisher != nil {
+	if owner.membership != nil {
 		return false
 	}
-	owner.publisher = candidate
+	owner.membership = candidate
 	return true
 }
 
-func (owner *coordinator) detach(candidate publisher) {
+func (owner *coordinator) detach(candidate *registration) {
 	owner.lifecycleMutex.Lock()
-	if owner.publisher == candidate {
-		owner.publisher = nil
+	if owner.membership == candidate {
+		owner.membership = nil
 	}
 	owner.lifecycleMutex.Unlock()
-}
-
-type publisher interface {
-	publishAppend(context.Context, Event)
 }

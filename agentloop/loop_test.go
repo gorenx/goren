@@ -25,7 +25,7 @@ type postCommitFailureSink struct{}
 
 type sessionStoreProbe struct {
 	plugin.Base
-	store *session.MemoryStore
+	store session.LiveStore
 }
 
 func (*sessionStoreProbe) Manifest() plugin.Manifest {
@@ -42,7 +42,7 @@ func (probe *sessionStoreProbe) Apply(context.Context) error {
 	if err != nil {
 		return err
 	}
-	probe.store = liveStore.(*session.MemoryStore)
+	probe.store = liveStore
 	return nil
 }
 
@@ -172,7 +172,7 @@ func (observerState *lifecycleObserver) snapshot() []string {
 type harnessFixture struct {
 	runtimeEngine *plugin.Runtime
 	agents        *agent.RegistryService
-	sessions      *session.MemoryStore
+	sessions      session.LiveStore
 	models        *llm.Runtime
 	toolCatalog   tools.ToolCatalog
 	loopPlugin    *agentloop.Plugin

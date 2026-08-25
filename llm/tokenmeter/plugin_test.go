@@ -36,7 +36,7 @@ func TestPluginSeparatesLifecycleFromMeterBehavior(t *testing.T) {
 func TestPluginRegistersAndReleasesProjectionUnitsWithItsLifecycle(t *testing.T) {
 	t.Parallel()
 	reporter := tokenMeterFailureReporter{}
-	store, err := session.NewMemoryStore(session.MemoryStoreOptions{
+	sessionPlugin, err := session.NewPlugin(session.MemoryStoreOptions{
 		PostCommitFailures: reporter,
 	})
 	if err != nil {
@@ -51,7 +51,7 @@ func TestPluginRegistersAndReleasesProjectionUnitsWithItsLifecycle(t *testing.T)
 		context.Background(),
 		owner,
 		projections,
-		store,
+		sessionPlugin,
 	)
 	if err != nil {
 		t.Fatal(err)

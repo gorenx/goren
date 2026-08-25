@@ -56,7 +56,7 @@ func (owner *coordinator) executeRequest(
 		reentryKey{},
 		owner,
 	)
-	if current := owner.currentPublisher(); current != nil {
+	if current := owner.currentMembership(); current != nil {
 		for _, entry := range committed {
 			current.publishAppend(publicationContext, entry)
 		}
