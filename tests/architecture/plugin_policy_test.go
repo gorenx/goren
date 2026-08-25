@@ -172,6 +172,7 @@ func TestPluginReflectionIsLimitedToTypeIdentity(t *testing.T) {
 		"Struct":    {},
 		"Type":      {},
 		"TypeFor":   {},
+		"TypeOf":    {},
 	}
 	findings := make([]string, 0)
 	for _, source := range sources {
