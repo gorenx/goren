@@ -142,7 +142,7 @@ func (owner *Manager) resume(
 }
 
 func (owner *Manager) publish(
-	requestContext context.Context,
+	_ context.Context,
 	handle agent.Handle,
 	providerName string,
 	parentAgent agent.Agent,

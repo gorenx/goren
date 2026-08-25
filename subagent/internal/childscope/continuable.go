@@ -8,7 +8,7 @@ import (
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
-	activationextension "github.com/gorenx/goren/subagent/internal/extension"
+	ext "github.com/gorenx/goren/subagent/internal/extension"
 	"github.com/gorenx/goren/tools"
 )
 
@@ -25,13 +25,13 @@ type ContinuableInput struct {
 // continuable child Scope.
 type ContinuableBuilder struct {
 	approval   approval.DelegationPolicy
-	extensions *activationextension.Registry
+	extensions *ext.Registry
 }
 
 // NewContinuable constructs a continuable child Scope builder.
 func NewContinuable(
 	approvalPolicy approval.DelegationPolicy,
-	extensionRegistry *activationextension.Registry,
+	extensionRegistry *ext.Registry,
 ) *ContinuableBuilder {
 	return &ContinuableBuilder{
 		approval:   approvalPolicy,
@@ -59,9 +59,9 @@ func (owner *ContinuableBuilder) Provisioner(
 	if owner.extensions != nil {
 		parts = append(
 			parts,
-			activationextension.NewProvisioner(
+			ext.NewProvisioner(
 				owner.extensions,
-				activationextension.Input{
+				ext.Input{
 					ChildID:    input.ChildID,
 					ParentID:   input.ParentID,
 					Descriptor: input.Descriptor,
