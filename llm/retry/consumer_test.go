@@ -14,6 +14,18 @@ import (
 	"github.com/gorenx/goren/session"
 )
 
+type requestErrorActionFunc func(
+	context.Context,
+	agent.RequestErrorNotice,
+) (agent.RequestErrorAction, error)
+
+func (operation requestErrorActionFunc) Execute(
+	requestContext context.Context,
+	notice agent.RequestErrorNotice,
+) (agent.RequestErrorAction, error) {
+	return operation(requestContext, notice)
+}
+
 type retrySubjectFixture struct {
 	plugin.Base
 	conversation session.Context
@@ -38,6 +50,10 @@ func (*retrySubjectFixture) Dispose(context.Context) error {
 
 func (subject *retrySubjectFixture) ID() session.SessionID {
 	return subject.conversation.ID()
+}
+
+func (subject *retrySubjectFixture) ScopeRuntimeValue() agent.AgentScopeRuntime {
+	return subject
 }
 
 func (*retrySubjectFixture) OptionsValue() agent.Options {
@@ -85,6 +101,49 @@ func (*retrySubjectFixture) Inject(llm.UserMessage) error {
 	return nil
 }
 
+func (subject *retrySubjectFixture) Dispatch(
+	requestContext context.Context,
+	fact agent.RuntimeEvent,
+) error {
+	runtimeFact, matches := fact.(plugin.Event)
+	if !matches {
+		return errors.New("test: RuntimeEvent has no Plugin metadata")
+	}
+	return plugin.PublishEvent(requestContext, subject, runtimeFact)
+}
+
+func (subject *retrySubjectFixture) ResolvePreStep(
+	requestContext context.Context,
+	notice agent.PreStepNotice,
+	terminal agent.PreStepAction,
+) (agent.PreStepDecision, error) {
+	return plugin.Run(requestContext, subject, notice, terminal)
+}
+
+func (subject *retrySubjectFixture) ResolveRequest(
+	requestContext context.Context,
+	notice agent.RequestNotice,
+	terminal agent.RequestAction,
+) (agent.RequestResolution, error) {
+	return plugin.Run(requestContext, subject, notice, terminal)
+}
+
+func (subject *retrySubjectFixture) ResolveRequestError(
+	requestContext context.Context,
+	notice agent.RequestErrorNotice,
+	terminal agent.RequestErrorHandler,
+) (agent.RequestErrorAction, error) {
+	return plugin.Run(requestContext, subject, notice, terminal)
+}
+
+func (*retrySubjectFixture) Provision(context.Context, agent.Provisioner) error {
+	return nil
+}
+
+func (*retrySubjectFixture) Teardown(context.Context) error { return nil }
+
+var _ agent.AgentScopeRuntime = (*retrySubjectFixture)(nil)
+
 type retryFixture struct {
 	engine      *plugin.Runtime
 	retryHandle plugin.Handle
@@ -97,7 +156,6 @@ func newRetryFixture(
 	options RuntimeOptions,
 ) *retryFixture {
 	t.Helper()
-	registry := agent.NewRegistry(agent.RegistryOptions{})
 	retryPlugin := New(options)
 	subject := &retrySubjectFixture{
 		conversation: conversation,
@@ -105,7 +163,6 @@ func newRetryFixture(
 	engine := plugin.NewRuntime(plugin.RuntimeSettings{})
 	handles, err := engine.Start(
 		context.Background(),
-		registry,
 		retryPlugin,
 		subject,
 	)
@@ -114,7 +171,7 @@ func newRetryFixture(
 	}
 	state := &retryFixture{
 		engine:      engine,
-		retryHandle: handles[1],
+		retryHandle: handles[0],
 		subject:     subject,
 	}
 	t.Cleanup(func() {
@@ -128,7 +185,7 @@ func newRetryFixture(
 func (state *retryFixture) resolve(
 	requestContext context.Context,
 	notice agent.RequestErrorNotice,
-	terminal agent.RequestErrorActionFunc,
+	terminal requestErrorActionFunc,
 ) (agent.RequestErrorAction, error) {
 	notice.Subject = state.subject
 	return agent.ResolveRequestError(requestContext, notice, terminal)
@@ -171,7 +228,7 @@ func TestNormalRetryRecordsBudgetAndWaitTransitions(t *testing.T) {
 		RetryPolicy: policy,
 	}
 	downstreamCalls := 0
-	terminal := agent.RequestErrorActionFunc(
+	terminal := requestErrorActionFunc(
 		func(context.Context, agent.RequestErrorNotice) (agent.RequestErrorAction, error) {
 			downstreamCalls++
 			return agent.RequestErrorAction{}, nil
@@ -296,7 +353,7 @@ func TestNormalRetryDelegatesNonTransientAndOverCapRetryAfter(t *testing.T) {
 					Failure:     testCase.failure,
 					RetryPolicy: policy,
 				},
-				agent.RequestErrorActionFunc(
+				requestErrorActionFunc(
 					func(context.Context, agent.RequestErrorNotice) (agent.RequestErrorAction, error) {
 						delegated++
 						return agent.RequestErrorAction{}, nil
@@ -333,7 +390,7 @@ func TestAlwaysRetryGivesDownstreamRecoveryPrecedenceAndContainsFailure(t *testi
 		action, err := state.resolve(
 			context.Background(),
 			alwaysNotice(),
-			agent.RequestErrorActionFunc(
+			requestErrorActionFunc(
 				func(context.Context, agent.RequestErrorNotice) (agent.RequestErrorAction, error) {
 					return agent.RequestErrorAction{
 						Retry: true,
@@ -376,7 +433,7 @@ func TestAlwaysRetryGivesDownstreamRecoveryPrecedenceAndContainsFailure(t *testi
 		action, err := state.resolve(
 			context.Background(),
 			notice,
-			agent.RequestErrorActionFunc(
+			requestErrorActionFunc(
 				func(context.Context, agent.RequestErrorNotice) (agent.RequestErrorAction, error) {
 					return agent.RequestErrorAction{}, errors.New(
 						"specialized recovery failed",
@@ -446,7 +503,7 @@ func TestRuntimeUnloadCancelsBackoffAndWithdrawsMiddleware(t *testing.T) {
 		action, err := state.resolve(
 			context.Background(),
 			notice,
-			agent.RequestErrorActionFunc(
+			requestErrorActionFunc(
 				func(context.Context, agent.RequestErrorNotice) (agent.RequestErrorAction, error) {
 					return agent.RequestErrorAction{}, nil
 				},
@@ -476,7 +533,7 @@ func TestRuntimeUnloadCancelsBackoffAndWithdrawsMiddleware(t *testing.T) {
 	action, err := state.resolve(
 		context.Background(),
 		notice,
-		agent.RequestErrorActionFunc(
+		requestErrorActionFunc(
 			func(context.Context, agent.RequestErrorNotice) (agent.RequestErrorAction, error) {
 				downstreamCalls++
 				return agent.RequestErrorAction{
@@ -513,7 +570,7 @@ func TestRuntimeUnloadWaitsForDelegatedRecovery(t *testing.T) {
 		_, _ = state.resolve(
 			context.Background(),
 			alwaysNotice(),
-			agent.RequestErrorActionFunc(
+			requestErrorActionFunc(
 				func(context.Context, agent.RequestErrorNotice) (agent.RequestErrorAction, error) {
 					close(entered)
 					<-release

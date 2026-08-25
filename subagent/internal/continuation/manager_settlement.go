@@ -47,9 +47,13 @@ func (owner *Manager) watch(epoch *Activation) {
 			childStatus := epoch.handle.Subject.StatusValue()
 			owner.residency.mutex.Lock()
 			settled := epoch.disposal == nil && len(epoch.accepted) == 0 &&
-				len(epoch.ownedChildren) == 0 &&
 				childStatus == agent.StatusIdle
 			owner.residency.mutex.Unlock()
+			if settled {
+				settled = !owner.dependencies.Descendants.HasRuntimeDescendants(
+					epoch.handle.Subject,
+				)
+			}
 			if !settled {
 				childMutex.Unlock()
 				continue

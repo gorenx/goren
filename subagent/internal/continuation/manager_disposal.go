@@ -34,13 +34,7 @@ func (owner *Manager) openDisposal(epoch *Activation) (*disposal, bool) {
 		return epoch.disposal, false
 	}
 	transaction := &disposal{
-		done:     make(chan struct{}),
-		children: make([]*Activation, 0, len(epoch.ownedChildren)),
-	}
-	for childID := range epoch.ownedChildren {
-		if childEpoch := owner.residency.activations[childID]; childEpoch != nil {
-			transaction.children = append(transaction.children, childEpoch)
-		}
+		done: make(chan struct{}),
 	}
 	epoch.disposal = transaction
 	wake(epoch)
@@ -60,15 +54,6 @@ func (owner *Manager) finishDisposal(
 		},
 	)
 	failures := make([]error, 0)
-	for _, childEpoch := range transaction.children {
-		if disposeErr := owner.dispose(
-			requestContext,
-			childEpoch,
-			subagent.StopAborted,
-		); disposeErr != nil {
-			failures = append(failures, disposeErr)
-		}
-	}
 	if idleErr := epoch.handle.Subject.WhenIdle(requestContext); idleErr != nil {
 		failures = append(failures, idleErr)
 	}
@@ -117,10 +102,9 @@ func (owner *Manager) finishDisposal(
 		delete(owner.residency.activations, epoch.childID)
 	}
 	owner.residency.mutex.Unlock()
-	parentAgent, found := owner.dependencies.Agents.Get(epoch.parentID)
-	if found && owner.dependencies.Lifecycle != nil {
+	if epoch.parent != nil && owner.dependencies.Lifecycle != nil {
 		owner.dependencies.Lifecycle.Ended(
-			parentAgent,
+			epoch.parent,
 			subagent.Ended{
 				RunID:                epoch.runID,
 				Provider:             epoch.providerName,
@@ -132,11 +116,8 @@ func (owner *Manager) finishDisposal(
 		)
 	}
 	owner.residency.mutex.Lock()
-	for _, candidate := range owner.residency.activations {
-		if _, owned := candidate.ownedChildren[epoch.childID]; owned {
-			delete(candidate.ownedChildren, epoch.childID)
-			wake(candidate)
-		}
+	if parentEpoch := owner.residency.activations[epoch.parentID]; parentEpoch != nil {
+		wake(parentEpoch)
 	}
 	close(transaction.done)
 	owner.residency.mutex.Unlock()

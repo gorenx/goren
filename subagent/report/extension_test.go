@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agent/scopedplugin"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/subagent"
 	"github.com/gorenx/goren/systemprompt"
@@ -22,10 +23,10 @@ func (record *activationScopeRecord) Agent() agent.Agent {
 	return nil
 }
 
-func (record *activationScopeRecord) Mount(
+func (record *activationScopeRecord) MountPlugin(
 	_ context.Context,
 	instance plugin.Plugin,
-) (agent.Effect, error) {
+) (agent.ScopeResource, error) {
 	record.mounted = instance
 	if record.err != nil {
 		return nil, record.err
@@ -36,7 +37,7 @@ func (record *activationScopeRecord) Mount(
 	return record.effect, nil
 }
 
-func (*activationScopeRecord) Own(agent.Effect) error {
+func (*activationScopeRecord) Own(agent.ScopeResource) error {
 	return nil
 }
 
@@ -123,4 +124,5 @@ func TestReleasedChildDoesNotRequestNestedTopologyMutation(t *testing.T) {
 }
 
 var _ agent.Scope = (*activationScopeRecord)(nil)
-var _ agent.Effect = (*activationEffectRecord)(nil)
+var _ scopedplugin.Scope = (*activationScopeRecord)(nil)
+var _ agent.ScopeResource = (*activationEffectRecord)(nil)

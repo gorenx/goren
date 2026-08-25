@@ -105,11 +105,6 @@ func (owner *Manager) Start(
 	); availabilityErr != nil {
 		return subagent.ContinuableStart{}, availabilityErr
 	}
-	building, admissionErr := owner.beginMaterialization(requestSnapshot.Parent)
-	if admissionErr != nil {
-		return subagent.ContinuableStart{}, admissionErr
-	}
-	defer owner.finishMaterialization(building)
 	epoch, materializeErr := owner.create(
 		requestContext,
 		childID,

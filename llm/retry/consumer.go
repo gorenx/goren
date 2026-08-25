@@ -62,9 +62,6 @@ func New(options RuntimeOptions) *Plugin {
 func (owner *Plugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: PluginName,
-		Requires: []plugin.ServiceType{
-			plugin.ServiceOf[agent.Registry](),
-		},
 		Waterfalls: []plugin.WaterfallMiddlewareBinding{
 			plugin.WaterfallOf(owner),
 		},

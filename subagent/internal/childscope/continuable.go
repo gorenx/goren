@@ -4,6 +4,7 @@ package childscope
 
 import (
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agent/scopedplugin"
 	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
@@ -53,7 +54,7 @@ func (owner *ContinuableBuilder) Provisioner(
 	if len(instances) != 0 {
 		parts = append(
 			parts,
-			agent.MountPlugins(instances...),
+			scopedplugin.MountPlugins(instances...),
 		)
 	}
 	if owner.extensions != nil {

@@ -51,27 +51,26 @@ func newManagerFixture(t *testing.T) *managerFixture {
 		sessions: liveSessions,
 		stored:   storedSessions,
 	}
+	agentRegistry.start(t)
 	lifecycleFacts := &lifecycleRecord{}
 	failureFacts := &failureRecord{}
-	agentCustody, custodyErr := agent.NewCustody(parentAgent)
-	if custodyErr != nil {
-		t.Fatal(custodyErr)
-	}
 	owner, managerErr := New(Dependencies{
-		Agents:      agentRegistry,
-		Custody:     agentCustody,
+		Agents:      agentRegistry.service,
+		Constructor: agentRegistry.service,
+		Descendants: agentRegistry.service,
 		Sessions:    liveSessions,
 		Persistence: storedSessions,
 		Providers: providerSource{
 			candidate: providerRecord{},
 		},
-		Lifecycle:    lifecycleFacts,
-		ScopeBuilder: scopeBuilderStub{},
-		Failures:     failureFacts,
+		Lifecycle: lifecycleFacts,
+		Scopes:    scopeBuilderStub{},
+		Failures:  failureFacts,
 	})
 	if managerErr != nil {
 		t.Fatal(managerErr)
 	}
+	agentRegistry.disposed = owner.AgentDisposed
 	return &managerFixture{
 		manager:     owner,
 		parent:      parentAgent,

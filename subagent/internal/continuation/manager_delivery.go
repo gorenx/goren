@@ -57,11 +57,6 @@ func (owner *Manager) Followup(
 		owner.residency.mutex.Unlock()
 	}
 	if epoch == nil {
-		building, admissionErr := owner.beginMaterialization(parentAgent)
-		if admissionErr != nil {
-			return "", admissionErr
-		}
-		defer owner.finishMaterialization(building)
 		resumed, resumeErr := owner.resume(
 			requestContext,
 			parentAgent,
@@ -109,7 +104,7 @@ func (owner *Manager) Interrupt(
 		if epoch == nil {
 			return nil
 		}
-		if !containsAgent(epoch.ancestry, evidence.Agent) {
+		if !owner.isLiveAncestor(epoch.handle.Subject, evidence.Agent) {
 			return unauthorized(
 				fmt.Sprintf("subagent %q is not a live descendant of Agent %q", targetID, evidence.Agent.ID()),
 			)
@@ -238,7 +233,6 @@ func (owner *Manager) submit(
 	if messageErr != nil {
 		return "", messageErr
 	}
-	parentLineage := owner.currentLineage(parentAgent)
 	owner.residency.mutex.Lock()
 	if epoch.disposal != nil {
 		owner.residency.mutex.Unlock()
@@ -247,7 +241,7 @@ func (owner *Manager) submit(
 			Message: fmt.Sprintf("subagent %q Activation is closing", epoch.childID),
 		}
 	}
-	if owner.closingForLocked(parentLineage) {
+	if owner.residency.draining {
 		owner.residency.mutex.Unlock()
 		return "", &subagent.Error{
 			Code:    subagent.ErrorDraining,
@@ -267,4 +261,30 @@ func (owner *Manager) submit(
 	epoch.announced = true
 	owner.residency.mutex.Unlock()
 	return messageValue.StableID(), nil
+}
+
+func (owner *Manager) isLiveAncestor(
+	childAgent agent.Agent,
+	candidate agent.Agent,
+) bool {
+	if childAgent == nil || candidate == nil {
+		return false
+	}
+	seen := make(map[session.SessionID]struct{})
+	parentID := childAgent.SessionValue().Header().ParentSession
+	for parentID != nil {
+		if _, duplicate := seen[*parentID]; duplicate {
+			return false
+		}
+		seen[*parentID] = struct{}{}
+		ancestor, found := owner.dependencies.Agents.Get(*parentID)
+		if !found {
+			return false
+		}
+		if agent.Same(ancestor, candidate) {
+			return true
+		}
+		parentID = ancestor.SessionValue().Header().ParentSession
+	}
+	return false
 }

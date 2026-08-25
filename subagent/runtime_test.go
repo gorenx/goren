@@ -32,7 +32,10 @@ func (subject *agentFixture) Manifest() plugin.Manifest {
 func (*agentFixture) Apply(context.Context) error   { return nil }
 func (*agentFixture) Dispose(context.Context) error { return nil }
 func (subject *agentFixture) ID() session.SessionID { return subject.identifier }
-func (*agentFixture) OptionsValue() agent.Options   { return agent.Options{} }
+func (subject *agentFixture) ScopeRuntimeValue() agent.AgentScopeRuntime {
+	return subject
+}
+func (*agentFixture) OptionsValue() agent.Options { return agent.Options{} }
 func (subject *agentFixture) SessionValue() session.Context {
 	return subject.conversation
 }
@@ -52,6 +55,49 @@ func (*agentFixture) Send(llm.UserMessage, agent.InboxTarget, bool) error {
 func (*agentFixture) Followup(llm.UserMessage) error { return nil }
 func (*agentFixture) Steer(llm.UserMessage) error    { return nil }
 func (*agentFixture) Inject(llm.UserMessage) error   { return nil }
+
+func (subject *agentFixture) Dispatch(
+	requestContext context.Context,
+	fact agent.RuntimeEvent,
+) error {
+	runtimeFact, matches := fact.(plugin.Event)
+	if !matches {
+		return errors.New("test: RuntimeEvent has no Plugin metadata")
+	}
+	return plugin.PublishEvent(requestContext, subject, runtimeFact)
+}
+
+func (*agentFixture) ResolvePreStep(
+	requestContext context.Context,
+	notice agent.PreStepNotice,
+	terminal agent.PreStepAction,
+) (agent.PreStepDecision, error) {
+	return terminal.Execute(requestContext, notice)
+}
+
+func (*agentFixture) ResolveRequest(
+	requestContext context.Context,
+	notice agent.RequestNotice,
+	terminal agent.RequestAction,
+) (agent.RequestResolution, error) {
+	return terminal.Execute(requestContext, notice)
+}
+
+func (*agentFixture) ResolveRequestError(
+	requestContext context.Context,
+	notice agent.RequestErrorNotice,
+	terminal agent.RequestErrorHandler,
+) (agent.RequestErrorAction, error) {
+	return terminal.Execute(requestContext, notice)
+}
+
+func (*agentFixture) Provision(context.Context, agent.Provisioner) error {
+	return nil
+}
+
+func (*agentFixture) Teardown(context.Context) error { return nil }
+
+var _ agent.AgentScopeRuntime = (*agentFixture)(nil)
 
 type runOutcome struct {
 	result subagent.Result

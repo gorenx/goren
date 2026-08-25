@@ -30,7 +30,6 @@ type Plugin struct {
 	providers     *providerregistry.Registry
 	oneShots      *oneshot.Service
 	continuations *continuation.Service
-	activations   *activationOwner
 	extensions    *activationextension.Registry
 	catalog       *catalog.Service
 	events        *eventPublisher
@@ -53,7 +52,6 @@ func New(options RuntimeOptions) *Plugin {
 	owner.providers = providerregistry.New(owner.events)
 	owner.oneShots = oneshot.New(owner.providers, owner.events)
 	owner.continuations = continuation.NewService()
-	owner.activations = &activationOwner{}
 	owner.extensions = activationextension.New()
 	owner.catalog = catalog.New()
 	return owner
@@ -63,13 +61,6 @@ func New(options RuntimeOptions) *Plugin {
 func (owner *Plugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: subagent.PluginName,
-		Children: []plugin.ChildPlugin{
-			{
-				Instance:  owner.activations,
-				Placement: plugin.SameScope,
-				Phase:     plugin.ActivationMain,
-			},
-		},
 		Provides: []plugin.ProvidedService{
 			plugin.NewProvidedService[subagent.ProviderRegistry](owner.providers),
 			plugin.NewProvidedService[subagent.OneShotService](owner.oneShots),
@@ -79,6 +70,8 @@ func (owner *Plugin) Manifest() plugin.Manifest {
 		},
 		Optional: []plugin.ServiceType{
 			plugin.ServiceOf[agent.Registry](),
+			plugin.ServiceOf[agent.Constructor](),
+			plugin.ServiceOf[agent.DescendantLifecycle](),
 			plugin.ServiceOf[session.LiveStore](),
 			plugin.ServiceOf[persistence.Persistence](),
 			plugin.ServiceOf[approval.DelegationPolicy](),
@@ -102,6 +95,8 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 		return requestErr
 	}
 	agentRegistry, _ := plugin.Resolve[agent.Registry](owner)
+	agentConstructor, _ := plugin.Resolve[agent.Constructor](owner)
+	descendantLifecycle, _ := plugin.Resolve[agent.DescendantLifecycle](owner)
 	liveSessions, _ := plugin.Resolve[session.LiveStore](owner)
 	sessionPersistence, _ := plugin.Resolve[persistence.Persistence](owner)
 	approvalService, _ := plugin.Resolve[approval.DelegationPolicy](owner)
@@ -116,23 +111,21 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 	); err != nil {
 		return err
 	}
-	if agentRegistry == nil || liveSessions == nil {
+	if agentRegistry == nil || agentConstructor == nil ||
+		descendantLifecycle == nil || liveSessions == nil {
 		return nil
-	}
-	activationCustody, err := agent.NewCustody(owner.activations)
-	if err != nil {
-		return err
 	}
 	manager, err := continuation.New(
 		continuation.Dependencies{
 			Agents:      agentRegistry,
-			Custody:     activationCustody,
+			Constructor: agentConstructor,
+			Descendants: descendantLifecycle,
 			Sessions:    liveSessions,
 			Persistence: sessionPersistence,
 			Providers:   owner.providers,
 			Lifecycle:   owner.events,
 			Failures:    owner,
-			ScopeBuilder: childscope.NewContinuable(
+			Scopes: childscope.NewContinuable(
 				approvalService,
 				owner.extensions,
 			),

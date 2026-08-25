@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/subagent"
 )
 
@@ -15,14 +14,7 @@ type scopeRecord struct{}
 
 func (scopeRecord) Agent() agent.Agent { return nil }
 
-func (scopeRecord) Mount(
-	context.Context,
-	plugin.Plugin,
-) (agent.Effect, error) {
-	return nil, errors.New("unused")
-}
-
-func (scopeRecord) Own(agent.Effect) error { return nil }
+func (scopeRecord) Own(agent.ScopeResource) error { return nil }
 
 type extensionRecord struct {
 	install func() (subagent.Installation, error)

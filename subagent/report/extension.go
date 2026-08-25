@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agent/scopedplugin"
 	"github.com/gorenx/goren/subagent"
 )
 
@@ -22,7 +23,11 @@ func (contribution *extension) Install(
 	child := &childPlugin{
 		installation: installed,
 	}
-	mounted, mountErr := activation.Scope.Mount(requestContext, child)
+	mounted, mountErr := scopedplugin.Mount(
+		requestContext,
+		activation.Scope,
+		child,
+	)
 	if mountErr != nil {
 		return nil, mountErr
 	}
@@ -36,13 +41,13 @@ func (contribution *extension) Install(
 type installation struct {
 	mutex        sync.Mutex
 	once         sync.Once
-	mounted      agent.Effect
+	mounted      agent.ScopeResource
 	released     bool
 	releaseErr   error
 	uninstallErr error
 }
 
-func (installed *installation) attach(mounted agent.Effect) {
+func (installed *installation) attach(mounted agent.ScopeResource) {
 	installed.mutex.Lock()
 	installed.mounted = mounted
 	installed.mutex.Unlock()

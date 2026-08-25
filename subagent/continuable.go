@@ -5,7 +5,6 @@ import (
 
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/tools"
 )
@@ -80,7 +79,6 @@ func (AncestorInterruptAuthority) interruptAuthority() {}
 // ContinuableService owns durable child admission, delivery, authorization,
 // residency, and child-first drainage.
 type ContinuableService interface {
-	plugin.Service
 	StartContinuable(context.Context, ContinuableStartSpec) (ContinuableStart, error)
 	Followup(
 		context.Context,

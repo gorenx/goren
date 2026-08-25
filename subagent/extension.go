@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
 
@@ -38,6 +37,5 @@ type ActivationExtension interface {
 // ExtensionRegistry owns deployment extensions installed into unpublished
 // and resident continuable children.
 type ExtensionRegistry interface {
-	plugin.Service
 	RegisterExtension(ActivationExtension) (ExtensionRegistration, error)
 }

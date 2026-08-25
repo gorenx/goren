@@ -31,14 +31,15 @@ type ScopeBuilder interface {
 
 // Dependencies are the owner-supplied capabilities used by Manager.
 type Dependencies struct {
-	Agents       agent.Registry
-	Custody      agent.Custody
-	Sessions     session.LiveStore
-	Persistence  persistence.Persistence
-	Providers    Providers
-	Lifecycle    Lifecycle
-	ScopeBuilder ScopeBuilder
-	Failures     FailureReporter
+	Agents      agent.Registry
+	Constructor agent.Constructor
+	Descendants agent.DescendantLifecycle
+	Sessions    session.LiveStore
+	Persistence persistence.Persistence
+	Providers   Providers
+	Lifecycle   Lifecycle
+	Scopes      ScopeBuilder
+	Failures    FailureReporter
 }
 
 // Manager owns every process-local continuable Activation.
@@ -50,13 +51,13 @@ type Manager struct {
 // New constructs a continuation Manager when Agent and Session ownership are
 // available.
 func New(dependencySet Dependencies) (*Manager, error) {
-	if dependencySet.Agents == nil || dependencySet.Custody.IsZero() ||
-		dependencySet.Sessions == nil ||
+	if dependencySet.Agents == nil || dependencySet.Constructor == nil ||
+		dependencySet.Descendants == nil || dependencySet.Sessions == nil ||
 		dependencySet.Providers == nil ||
-		dependencySet.ScopeBuilder == nil ||
+		dependencySet.Scopes == nil ||
 		dependencySet.Failures == nil {
 		return nil, errors.New(
-			"subagent: continuation requires Agent Registry, Agent Custody, Session LiveStore, Providers, child Scope builder, and failure reporter",
+			"subagent: continuation requires Agent Registry, Constructor, Descendant Lifecycle, Session LiveStore, Providers, child Scope builder, and failure reporter",
 		)
 	}
 	return &Manager{
@@ -84,9 +85,6 @@ func (owner *Manager) MessageLeftInbox(
 func (owner *Manager) AgentDisposed(childAgent agent.Agent) {
 	var externallyDisposed *Activation
 	owner.residency.mutex.Lock()
-	if closingRoot := owner.residency.closingRoots[childAgent.ID()]; agent.Same(closingRoot, childAgent) {
-		delete(owner.residency.closingRoots, childAgent.ID())
-	}
 	epoch := owner.residency.activations[childAgent.ID()]
 	if epoch != nil && agent.Same(epoch.handle.Subject, childAgent) &&
 		epoch.disposal == nil {
@@ -97,16 +95,19 @@ func (owner *Manager) AgentDisposed(childAgent agent.Agent) {
 		delete(owner.residency.activations, epoch.childID)
 		externallyDisposed = epoch
 	}
+	parentID := childAgent.SessionValue().Header().ParentSession
+	if parentID != nil {
+		if parentEpoch := owner.residency.activations[*parentID]; parentEpoch != nil {
+			wake(parentEpoch)
+		}
+	}
 	owner.residency.mutex.Unlock()
 	if externallyDisposed == nil {
 		return
 	}
-	parentAgent, found := owner.dependencies.Agents.Get(
-		externallyDisposed.parentID,
-	)
-	if found && owner.dependencies.Lifecycle != nil {
+	if externallyDisposed.parent != nil && owner.dependencies.Lifecycle != nil {
 		owner.dependencies.Lifecycle.Ended(
-			parentAgent,
+			externallyDisposed.parent,
 			subagent.Ended{
 				RunID:      externallyDisposed.runID,
 				Provider:   externallyDisposed.providerName,
@@ -117,12 +118,6 @@ func (owner *Manager) AgentDisposed(childAgent agent.Agent) {
 		)
 	}
 	owner.residency.mutex.Lock()
-	for _, candidate := range owner.residency.activations {
-		if _, owned := candidate.ownedChildren[externallyDisposed.childID]; owned {
-			delete(candidate.ownedChildren, externallyDisposed.childID)
-			wake(candidate)
-		}
-	}
 	close(externallyDisposed.disposal.done)
 	owner.residency.mutex.Unlock()
 }

@@ -183,7 +183,7 @@ func (*controlRegistry) Create(context.Context, agent.CreateOptions) (agent.Hand
 func (*controlRegistry) Resume(context.Context, agent.ResumeOptions) (agent.Handle, error) {
 	return agent.Handle{}, nil
 }
-func (*controlRegistry) Enter(agent.Agent, agent.Agent) error        { return nil }
+func (*controlRegistry) Enter(agent.Agent) error                     { return nil }
 func (*controlRegistry) Announce(context.Context, agent.Agent) error { return nil }
 func (*controlRegistry) Remove(context.Context, agent.Agent) error   { return nil }
 func (registry *controlRegistry) Get(identifier session.SessionID) (agent.Agent, bool) {
@@ -194,7 +194,6 @@ func (registry *controlRegistry) Contains(subject agent.Agent) bool {
 	entry, found := registry.Get(subject.ID())
 	return found && entry == subject
 }
-func (*controlRegistry) IsOwnedBy(session.SessionID, agent.Agent) bool { return false }
 func (registry *controlRegistry) List() []agent.Agent {
 	result := make([]agent.Agent, 0, len(registry.entries))
 	for _, entry := range registry.entries {
@@ -202,7 +201,15 @@ func (registry *controlRegistry) List() []agent.Agent {
 	}
 	return result
 }
-func (registry *controlRegistry) Roots() []agent.Agent { return registry.List() }
+func (*controlRegistry) Provision(context.Context, agent.Agent, agent.Provisioner) error {
+	return nil
+}
+func (*controlRegistry) HasRuntimeDescendants(agent.Agent) bool { return false }
+func (*controlRegistry) CloseDescendants(context.Context, agent.Agent) error {
+	return nil
+}
+func (*controlRegistry) BeginShutdown()                 {}
+func (*controlRegistry) CloseAll(context.Context) error { return nil }
 
 type controlAgent struct {
 	plugin.Base

@@ -209,8 +209,8 @@ func (observerState *subagentLifecycleObserver) snapshot() (
 }
 
 type integrationFixture struct {
-	agents         *agent.RegistryPlugin
-	sessions       *session.MemoryStore
+	agents         *agent.RegistryService
+	sessions       session.LiveStore
 	toolRuntime    tools.ToolRuntime
 	backend        *integrationAdapter
 	lifecycle      *subagentLifecycleObserver
@@ -218,6 +218,31 @@ type integrationFixture struct {
 	observerErrors *integrationObserverFailureSink
 	parentOptions  agent.Options
 }
+
+type integrationSessionStoreProbe struct {
+	plugin.Base
+	store session.LiveStore
+}
+
+func (*integrationSessionStoreProbe) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "subagent-integration-session-store-probe",
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[session.LiveStore](),
+		},
+	}
+}
+
+func (probe *integrationSessionStoreProbe) Apply(context.Context) error {
+	liveStore, err := plugin.Require[session.LiveStore](probe)
+	if err != nil {
+		return err
+	}
+	probe.store = liveStore
+	return nil
+}
+
+func (*integrationSessionStoreProbe) Dispose(context.Context) error { return nil }
 
 type integrationConfiguration struct {
 	agentOptions agent.Options
@@ -273,20 +298,25 @@ func newIntegrationFixtureWithConfiguration(
 	if loopErr != nil {
 		t.Fatal(loopErr)
 	}
-	sessionStore, storeErr := session.NewMemoryStore(session.MemoryStoreOptions{
+	sessionPlugin, storeErr := session.NewPlugin(session.MemoryStoreOptions{
 		PostCommitFailures: integrationPostCommitFailureSink{},
 	})
 	if storeErr != nil {
 		t.Fatal(storeErr)
 	}
+	storeProbe := &integrationSessionStoreProbe{}
 	agentRegistry := agent.NewRegistry(agent.RegistryOptions{})
+	agentPlugin, registryErr := agent.NewRegistryPlugin(agentRegistry)
+	if registryErr != nil {
+		t.Fatal(registryErr)
+	}
 	modelRuntime := llm.NewRuntime(nil)
 	promptRuntime := systemprompt.New(
 		promptSettings,
 		systemprompt.RegistryOptions{},
 	)
 	toolService := tools.New(toolSettings)
-	spawnProvider, providerErr := spawn.New(spawn.DefaultProviderName)
+	spawnProvider, providerErr := spawn.NewPlugin(spawn.DefaultProviderName)
 	if providerErr != nil {
 		t.Fatal(providerErr)
 	}
@@ -304,8 +334,9 @@ func newIntegrationFixtureWithConfiguration(
 	})
 	rootPlugins := []plugin.Plugin{
 		lifecycle,
-		agentRegistry,
-		sessionStore,
+		agentPlugin,
+		sessionPlugin,
+		storeProbe,
 		modelRuntime,
 	}
 	rootPlugins = append(rootPlugins, configuration.plugins...)
@@ -352,7 +383,7 @@ func newIntegrationFixtureWithConfiguration(
 	}
 	return &integrationFixture{
 		agents:         agentRegistry,
-		sessions:       sessionStore,
+		sessions:       storeProbe.store,
 		toolRuntime:    toolService,
 		backend:        configuration.backend,
 		lifecycle:      lifecycle,

@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
 
@@ -63,7 +62,6 @@ type ProviderRegistration interface {
 
 // ProviderRegistry owns Provider registration, exact lookup, and stable order.
 type ProviderRegistry interface {
-	plugin.Service
 	RegisterProvider(context.Context, Provider) (ProviderRegistration, error)
 	GetProvider(string) (Provider, bool)
 	ListProviders() []string

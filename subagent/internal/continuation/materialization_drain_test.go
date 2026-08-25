@@ -15,8 +15,8 @@ import (
 
 func TestStartRollsBackPublishedMaterializationAtScopedDrainCutoff(t *testing.T) {
 	fixture := newManagerFixture(t)
-	drainResult := drainWhenPublished(t, fixture)
 	childID := session.SessionID("drained-start")
+	drainResult := drainWhenPublished(t, fixture, childID)
 
 	_, startErr := fixture.manager.Start(
 		context.Background(),
@@ -41,7 +41,7 @@ func TestColdFollowupRollsBackPublishedMaterializationAtScopedDrainCutoff(t *tes
 	fixture := newManagerFixture(t)
 	childID := session.SessionID("drained-resume")
 	fixture.storeContinuableChild(t, childID)
-	drainResult := drainWhenPublished(t, fixture)
+	drainResult := drainWhenPublished(t, fixture, childID)
 
 	_, followupErr := fixture.manager.Followup(
 		context.Background(),
@@ -92,6 +92,7 @@ func TestStartRollsBackActivationWhenInitialInboxAcceptanceFails(t *testing.T) {
 func drainWhenPublished(
 	t *testing.T,
 	fixture *managerFixture,
+	childID session.SessionID,
 ) <-chan error {
 	t.Helper()
 	drainResult := make(chan error, 1)
@@ -103,20 +104,17 @@ func drainWhenPublished(
 			)
 		}()
 		deadline := time.Now().Add(time.Second)
-		for {
-			fixture.manager.residency.mutex.Lock()
-			closing := agent.Same(
-				fixture.manager.residency.closingRoots[fixture.parent.ID()],
-				fixture.parent,
-			)
-			fixture.manager.residency.mutex.Unlock()
-			if closing {
-				return
-			}
+		for fixture.agents.closingSignal(childID) == nil {
 			if time.Now().After(deadline) {
-				t.Fatal("scoped drain did not establish its admission cutoff")
+				t.Fatal("child lifecycle signal was not attached")
 			}
 			runtime.Gosched()
+		}
+		select {
+		case <-fixture.agents.closingSignal(childID):
+			return
+		case <-time.After(time.Second):
+			t.Fatal("Agent Registry did not establish descendant teardown cutoff")
 		}
 	}
 	return drainResult

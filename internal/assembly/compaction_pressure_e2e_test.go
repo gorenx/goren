@@ -622,7 +622,7 @@ func createCompactionFixtureAgent(
 	identifier session.SessionID,
 ) agent.Handle {
 	testingContext.Helper()
-	handle, err := serviceView.agents.Create(
+	handle, err := serviceView.constructor.Create(
 		context.Background(),
 		agent.CreateOptions{
 			SessionID: identifier,
@@ -644,7 +644,7 @@ func resumeCompactionFixtureAgent(
 	identifier session.SessionID,
 ) agent.Handle {
 	testingContext.Helper()
-	handle, err := serviceView.agents.Resume(
+	handle, err := serviceView.constructor.Resume(
 		context.Background(),
 		agent.ResumeOptions{
 			SessionID: identifier,

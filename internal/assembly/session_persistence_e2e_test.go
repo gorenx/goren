@@ -44,7 +44,7 @@ func TestDefaultCompositionListsHistoryAndResumesAColdSQLiteSession(t *testing.T
 	if _, err = firstRuntime.Start(requestContext, firstServer); err != nil {
 		t.Fatal(err)
 	}
-	firstHandle, err := firstProbe.agents.Create(
+	firstHandle, err := firstProbe.constructor.Create(
 		requestContext,
 		agent.CreateOptions{
 			SessionID: "durable-session",

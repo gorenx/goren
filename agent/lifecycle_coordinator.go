@@ -10,6 +10,12 @@ import (
 	"github.com/gorenx/goren/session"
 )
 
+// ErrDescendantAdmissionClosed reports that an exact live parent no longer
+// accepts construction of runtime descendants.
+var ErrDescendantAdmissionClosed = errors.New(
+	"agent: runtime parent is not accepting descendants",
+)
+
 // epoch is one exact Agent instance lifetime. Structural lifetime and event
 // publication are explicit state axes because a close may race publication.
 type epoch struct {
@@ -145,9 +151,7 @@ func (coordinator *LifecycleCoordinator) reserve(
 		}
 		if !coordinator.isVisibleLocked(parentEpoch) ||
 			parentEpoch.descendantAdmission != descendantsAccepted {
-			return nil, errors.New(
-				"agent: runtime parent is not accepting descendants",
-			)
+			return nil, ErrDescendantAdmissionClosed
 		}
 	}
 	reserved := &epoch{

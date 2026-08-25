@@ -3,7 +3,6 @@ package subagent
 import (
 	"context"
 
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
 
@@ -89,7 +88,6 @@ type DescendantListEntry struct {
 // Catalog enumerates durable Subagent identities without starting or resuming
 // child Agents. It reports both one-shot and continuable records.
 type Catalog interface {
-	plugin.Service
 	ListChildren(context.Context, session.SessionID) ([]ListEntry, error)
 	ListDescendants(
 		context.Context,
