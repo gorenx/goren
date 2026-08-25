@@ -298,14 +298,15 @@ func (coordinator *activationCoordinator) shutdown(
 ) error {
 	coordinator.mounts.markAllRemoved()
 	allMounts := coordinator.mounts.all()
+	roots := selectedMountRoots(allMounts)
 	var shutdownErr error
 	visited := make(map[*fiber]struct{})
-	for mountIndex := len(allMounts) - 1; mountIndex >= 0; mountIndex-- {
+	for mountIndex := len(roots) - 1; mountIndex >= 0; mountIndex-- {
 		shutdownErr = errors.Join(
 			shutdownErr,
 			coordinator.stopFiberWithDependents(
 				stopContext,
-				allMounts[mountIndex].current,
+				roots[mountIndex].current,
 				visited,
 			),
 		)
