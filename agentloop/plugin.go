@@ -29,7 +29,7 @@ type Plugin struct {
 	startup              *configuredAgentStarter
 	constructor          agent.Constructor
 	factory              *Factory
-	adapter              *factoryAdapter
+	registration         *registrationPlugin
 }
 
 // New constructs an inactive Agent Loop Plugin from validated runtime
@@ -47,8 +47,8 @@ func New(runtimeSettings Settings, policies RuntimeOptions) (*Plugin, error) {
 			validated.StartupAgents,
 		),
 	}
-	owner.adapter = &factoryAdapter{
-		owner: owner,
+	owner.registration = &registrationPlugin{
+		loop: owner,
 	}
 	return owner, nil
 }
@@ -68,7 +68,7 @@ func (owner *Plugin) Manifest() plugin.Manifest {
 		},
 		Children: []plugin.ChildPlugin{
 			{
-				Instance:  owner.adapter,
+				Instance:  owner.registration,
 				Placement: plugin.SameScope,
 				Phase:     plugin.ActivationCommit,
 			},
