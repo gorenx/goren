@@ -2,7 +2,7 @@
 
 状态：Resolved Findings
 
-本文记录服务端测试实际暴露的代码问题、根因、结构性修复和复查证据。它不是第二份架构规范；稳定职责仍以[领域设计](./design.zh-CN.md)为准，完成状态仍以[实现进度](./implementation-progress.zh-CN.md)为准。
+本文记录服务端测试实际暴露的代码问题、根因、结构性修复和复查证据。它不是第二份架构规范；稳定职责仍以[领域设计](./design.zh-CN.md)为准，完成状态仍以[实现进度](../../zh-CN/08-implementation-progress.md)为准。
 
 参考 DeepSeek Harness feature-local commit：`b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`。
 

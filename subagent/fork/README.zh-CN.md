@@ -12,4 +12,4 @@ flowchart LR
 
 Provider registration 与取消语义和 spawn 相同。prefix 是 detached event snapshot；child result 只读取 activation boundary 后的新事件。本包不负责 Session persistence、result mapping、Tool 或 Activation residency。
 
-跨包合同见[领域设计](../docs/design.zh-CN.md)，实现证据见[进度](../docs/implementation-progress.zh-CN.md)。
+跨包合同见[领域设计](../docs/design.zh-CN.md)，实现证据见[进度](../../zh-CN/08-implementation-progress.md)。

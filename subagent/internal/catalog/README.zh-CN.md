@@ -22,4 +22,4 @@ Sibling 先按 `createdAt` 升序，再按固定 en-US collation 比较 `Session
 
 调用取消在全局读取和每个 cold inspection 周围检查，并统一映射为 `CANCELLED`。Persistence 的全局 `List` 失败会终止整个查询；单个 `Inspect` 失败只产生 `unavailable` diagnostic。缺少 Projection Registry 或 LiveStore 分别返回稳定的 control error。
 
-跨包契约见[领域设计](../../docs/design.zh-CN.md)，实现证据见[进度](../../docs/implementation-progress.zh-CN.md)。
+跨包契约见[领域设计](../../docs/design.zh-CN.md)，实现证据见[进度](../../../zh-CN/08-implementation-progress.md)。

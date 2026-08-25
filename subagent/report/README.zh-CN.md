@@ -17,4 +17,4 @@ host Plugin Apply 拥有 Extension registration，并提供 private reporter Ser
 
 Registration 撤销时，exact installation 可立即卸载 resident child Plugin；若 Runtime 已开始结构回收，child Plugin 先标记 installation released，后续清理只 join 结果，不再发起嵌套 topology mutation。`quiet` 只追加消息；`next-step` 还调度 parent 的下一 step。report 不结束 child turn，也不暴露给 one-shot child。
 
-跨包合同见[领域设计](../docs/design.zh-CN.md)，实现证据见[进度](../docs/implementation-progress.zh-CN.md)。
+跨包合同见[领域设计](../docs/design.zh-CN.md)，实现证据见[进度](../../zh-CN/08-implementation-progress.md)。

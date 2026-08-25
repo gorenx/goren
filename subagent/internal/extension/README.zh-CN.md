@@ -21,4 +21,4 @@ sequenceDiagram
     Registry->>Child: Uninstall exact resident installations
 ```
 
-Provision 失败会在返回前释放未转交 Scope 的 partial installations。撤销先关闭 registration，再尝试释放全部 installation；失败聚合为稳定 Subagent error。child teardown 与 registration removal 汇合到同一幂等 installation。跨包 contract 见[领域设计](../../docs/design.zh-CN.md)，实现证据见[进度](../../docs/implementation-progress.zh-CN.md)。
+Provision 失败会在返回前释放未转交 Scope 的 partial installations。撤销先关闭 registration，再尝试释放全部 installation；失败聚合为稳定 Subagent error。child teardown 与 registration removal 汇合到同一幂等 installation。跨包 contract 见[领域设计](../../docs/design.zh-CN.md)，实现证据见[进度](../../../zh-CN/08-implementation-progress.md)。

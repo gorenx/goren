@@ -39,7 +39,7 @@ flowchart LR
 
 Session 的 durable Event 类型和 Plugin Runtime 的进程内 Event 是两套明确契约：Session Event 由具名 event key 构造 `EventDraft`，再由唯一 `Commit(context.Context, WritePlan)` 边界分配连续 `seq/time` 并规划 Surface transition；Plugin Event 由 `plugin.EventOf[E]` / `plugin.Publish` 分发，不进入 Session log。Event Sourcing 由 Session/Persistence owner 决定，Plugin Runtime 不保存或重放它。
 
-其他领域只持有 `session.Context`，不能取得具体 coordinator 或 log。包内私有 `log` 负责 seed、append-only Event、Surface 与 detached reads；私有 coordinator 负责唯一 FIFO 和 publication port；`registration` 独占单个 live membership 的 announce/release 状态；`MemoryStore` 只管理 registration 集合、注册顺序和 Store 级 created/event/disposed/flush 分发。`Snapshot` 从同一 committed revision 返回 Event log、Surface 与 durability barrier，供按位置校验的 Consumer 使用。
+其他领域只持有 `session.Context`，不能取得具体 coordinator 或 log。包内私有 `log` 负责 seed、append-only Event、Surface 与 detached reads；私有 coordinator 负责唯一 FIFO，并直接持有当前 `registration`，不再建立只为转发 append 的接口。`registration` 独占一个 live membership，并用 `entered -> announcing -> live -> releasing -> closed` 单一状态字段表达 announce/release 生命周期；等待通道只表示当前 announce 或 release 操作何时结束，不再承担业务状态。私有 `memoryStore` 管理 registration 集合、注册顺序和 Store 准入，`session.Plugin` 只适配 `LiveStore` Service 发布与 Plugin Event 分发。`Snapshot` 从同一 committed revision 返回 Event log、Surface 与 durability barrier，供按位置校验的 Consumer 使用。
 
 普通 producer 用 `session.Batch(drafts...)` 创建固定 plan，再调用 `Context.Commit`。只有完整 drafts 无法在 admission 前确定、必须基于 FIFO 头部最新 `Snapshot` 计算的业务 use case 才实现 `WritePlan.Build`；一个 use case 实现一次，不是每个 Event 实现。`Build` 一次返回完整 batch，`log` 只暂存本次新 Event，并在必要时复制 Surface nodes 来验证全部 transition，成功后原子 append；它不会为每次固定写复制完整历史，也不存在 request-local Event FIFO 或部分 batch。LLM、Tool、网络、文件和数据库 I/O 必须在 coordinator 外执行。
 
@@ -96,7 +96,9 @@ JSONL 与 SQLite 是同一 `Backend` port 的可替换事实存储方案，不�
 
 ## 生命周期、错误与取消
 
-Core `Create` 由 Prepare、Enter、Announce 组成；created listener 可 veto 并触发 rollback。Event commit 后 observer error 被包含和报告，不回滚事实。publication 期间同步重入同一 Session 会拒绝。Release/Close 由 `registration` 先 seal/drain 写队列，再 flush final barrier、从 `MemoryStore` 删除 exact registration、detach exact publisher 并发布 disposed；Store 不修改 registration 的内部生命周期字段，coordinator 也不清理 Store membership。
+Core `Create` 由 Prepare、Enter、Announce 组成；created listener 可 veto 并触发 rollback。Event commit 后 observer error 被包含和报告，不回滚事实。publication 期间同步重入同一 Session 会拒绝。Release/Close 由 `registration` 先 seal/drain 写队列，再 flush final barrier、从 `memoryStore` 删除 exact registration、detach exact membership，并仅为已经进入 `live` 的 Session 发布 disposed。并发 announce/release 通过同一状态机串行化，第二个调用只等待正在进行的状态迁移。
+
+`memoryStore` 使用 `open -> closing -> closed` 单一状态字段管理 Store 级准入。`Close` 在取得待释放快照前先进入 `closing`，此后 `Prepare` 和 `Enter` 都会拒绝新 Session；已有 registration 按进入顺序逆序释放。关闭失败不会重新开放准入，显式再次 `Close` 可重试尚未完成的释放。`session.Plugin.Dispose` 是进入该关闭流程的 Runtime 适配入口，业务 Store 本身不依赖 Plugin 生命周期。
 
 Persistence 对同一 Session ID 的 load/append/repair 串行化。write-behind 失败保留未提交 batch；显式 flush、dispose 和插件关闭会等待 drain。Scope teardown 先停止 listener admission，再 drain writer，最后关闭 Backend。未知 required event、非连续 seq、Header 不一致或不可解释状态明确失败；是否删除 torn tail、追加哪些 recovery facts只由 `SessionLogStore` 决定。
 

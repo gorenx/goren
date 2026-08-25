@@ -51,6 +51,8 @@ Plugin 对象嵌入 `Base`，并实现 `Manifest`、`Apply` 和幂等 `Dispose`�
 
 一个监听事件的 Plugin 只实现一个 `ObserveEvent(context.Context, Event)` 入口，并在 Manifest 中通过多个 `EventOf[E]()` 声明它真正接受的 Event 类型。Runtime 只投递这些显式声明的类型；同一 Plugin 重复声明同一 Event 类型会在接纳阶段失败。Plugin 在统一入口中使用 type switch 分派到自己的具名业务方法。
 
+普通 Plugin 发布者使用泛型 `Publish`，由静态 Event 类型确定路由。`PublishEvent` 只服务于业务模块私有的动态 Event 发布端口：例如业务 Store 依赖自己拥有的最小发布接口，而 Plugin adapter 在边界处接收 `plugin.Event`。该入口仍校验运行时值必须是具名 struct，并校验 Event 名称与投递策略对同一 Go 类型保持不变；它不是要求每个事件类型增加一个 publish 方法的 Dispatcher。
+
 Runtime 根据 Manifest 自动注册 binding。插件作者不接收暴露 Scope 或注册表的 Runtime Context 对象，不调用 Define、Observe、Use，也不保存 Registration 或 disposer。`ProvidedService` 是声明快照，不是调用期注册句柄。
 
 Plugin 的 `Apply`、`Dispose`、Event Observer 和 Waterfall 调用不能同步修改同一个 Runtime 的拓扑；Runtime 返回 `ErrTopologyMutation`，而不是等待形成重入死锁。普通业务调用可以在回调返回后发起动态挂载。Event 和普通 Waterfall 的调用租约完全由 Runtime 管理，业务 Plugin 不调用显式准入或排空方法。

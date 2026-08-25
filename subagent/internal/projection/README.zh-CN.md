@@ -19,4 +19,4 @@ flowchart LR
 
 两个单元的 state version 都是 `2`。Checkpoint state 和 wire view 使用严格 JSON 解码；未知字段、非法 variant、负 timing 或 malformed state 会使 Registry fold 失败，由上游读取者按自己的隔离策略处理。Identity 采用 last-wins，是因为 fork seed 可能带有 ancestor descriptor，而 child 自己的 descriptor 必须覆盖它。
 
-跨包契约见[领域设计](../../docs/design.zh-CN.md)，实现证据见[进度](../../docs/implementation-progress.zh-CN.md)。
+跨包契约见[领域设计](../../docs/design.zh-CN.md)，实现证据见[进度](../../../zh-CN/08-implementation-progress.md)。

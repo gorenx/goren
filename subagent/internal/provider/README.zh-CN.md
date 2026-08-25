@@ -17,4 +17,4 @@ sequenceDiagram
     Registry->>Events: provider-removed best effort
 ```
 
-跨包合同见[领域设计](../../docs/design.zh-CN.md)，实现证据见[进度](../../docs/implementation-progress.zh-CN.md)。
+跨包合同见[领域设计](../../docs/design.zh-CN.md)，实现证据见[进度](../../../zh-CN/08-implementation-progress.md)。

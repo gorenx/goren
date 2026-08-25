@@ -19,4 +19,4 @@ flowchart LR
 
 任一 Provisioner part 失败时，本包用非取消上下文逆序释放尚未转交的 `agent.Provisioning`；已转交 Scope 的 Plugin effect 由 Agent 创建事务回滚。cold resume 不重复写 durable delegation policy，但会从 descriptor 恢复 persona 与 Tool restriction。
 
-跨包合同见[领域设计](../../docs/design.zh-CN.md)，实现证据见[进度](../../docs/implementation-progress.zh-CN.md)。
+跨包合同见[领域设计](../../docs/design.zh-CN.md)，实现证据见[进度](../../../zh-CN/08-implementation-progress.md)。

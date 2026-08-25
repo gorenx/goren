@@ -2,7 +2,7 @@
 
 状态：Source Evidence
 
-本文只保留 Goren Subagent 设计仍需追溯的源 owner、调用方向和兼容差异。当前 Go 职责与契约见 [`subagent` 领域设计](../../subagent/docs/design.zh-CN.md)，完成状态见[实现进度](../../subagent/docs/implementation-progress.zh-CN.md)。
+本文只保留 Goren Subagent 设计仍需追溯的源 owner、调用方向和兼容差异。当前 Go 职责与契约见 [`subagent` 领域设计](../../subagent/docs/design.zh-CN.md)，完成状态见[实现进度](../08-implementation-progress.md)。
 
 分析源：`../deepseek-harness` @ `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`。这是一条 feature-local 证据基线，不改变仓库全局固定基线。
 
@@ -59,4 +59,4 @@ Consumer 主动调用 Subagent core；core 再选择 Provider 并使用 Agent、
 - fork Factory 静态注册，但默认 deployment 只启用 spawn continuable Tool。固定源中 fork 的 Provider 注释与部分 composition 对 continuable 使用存在漂移，Goren 不据此默认开放 fork continuable Tool。
 - Jobs、background one-shot collection、Code Mode structured capture、Host Subagent API、ACP/Codex/Claude Code/DSH SDK Provider 未纳入当前实现。
 
-本文不复制 Go 接口、错误表、状态表或测试矩阵；这些信息分别由代码、[领域设计](../../subagent/docs/design.zh-CN.md)和[实现进度](../../subagent/docs/implementation-progress.zh-CN.md)所有。
+本文不复制 Go 接口、错误表、状态表或测试矩阵；这些信息分别由代码、[领域设计](../../subagent/docs/design.zh-CN.md)和[实现进度](../08-implementation-progress.md)所有。
