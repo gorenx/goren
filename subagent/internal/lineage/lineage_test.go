@@ -57,7 +57,7 @@ func (*parentRecord) Steer(llm.UserMessage) error { return nil }
 func (*parentRecord) Inject(llm.UserMessage) error { return nil }
 
 func TestFromInheritsParentAndResolvesChildFacts(t *testing.T) {
-	parentAgent := newParent(t, 2, 3)
+	parentAgent := newParent(t, 3)
 	maxDepth := int64(4)
 
 	childLineage, lineageErr := From(parentAgent, &maxDepth)
@@ -77,10 +77,6 @@ func TestFromInheritsParentAndResolvesChildFacts(t *testing.T) {
 	if resolved.MaxTokens == nil || *resolved.MaxTokens != 4096 {
 		t.Fatalf("unexpected max tokens: %#v", resolved.MaxTokens)
 	}
-	if resolved.SubagentDepth == nil || *resolved.SubagentDepth != 4 {
-		t.Fatalf("unexpected child depth: %#v", resolved.SubagentDepth)
-	}
-
 	sessionMetadata := childLineage.Metadata(5)
 	if sessionMetadata.ParentSession == nil || *sessionMetadata.ParentSession != parentAgent.ID() {
 		t.Fatalf("unexpected parent Session: %#v", sessionMetadata.ParentSession)
@@ -103,7 +99,7 @@ func TestFromInheritsParentAndResolvesChildFacts(t *testing.T) {
 }
 
 func TestFromRejectsInvalidDepth(t *testing.T) {
-	parentAgent := newParent(t, 0, 0)
+	parentAgent := newParent(t, 0)
 	negative := int64(-1)
 	unsafe := maxSafeInteger + 1
 	zero := int64(0)
@@ -139,7 +135,7 @@ func TestFromRejectsInvalidDepth(t *testing.T) {
 	}
 }
 
-func newParent(t *testing.T, optionDepth int64, headerDepth int64) agent.Agent {
+func newParent(t *testing.T, headerDepth int64) agent.Agent {
 	t.Helper()
 	parentSession, sessionErr := session.New(
 		"parent",
@@ -157,9 +153,8 @@ func newParent(t *testing.T, optionDepth int64, headerDepth int64) agent.Agent {
 	return &parentRecord{
 		conversation: parentSession,
 		options: agent.Options{
-			Provider:      "deepseek",
-			Model:         "chat",
-			SubagentDepth: int64Pointer(optionDepth),
+			Provider: "deepseek",
+			Model:    "chat",
 		},
 	}
 }

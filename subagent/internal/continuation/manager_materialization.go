@@ -2,6 +2,7 @@ package continuation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/gorenx/goren/agent"
@@ -29,14 +30,14 @@ func (owner *Manager) create(
 	if contextErr != nil {
 		return nil, contextErr
 	}
-	handle, createErr := owner.dependencies.Agents.Create(
-		owner.dependencies.Custody.Bind(initiatedContext),
+	handle, createErr := owner.dependencies.Constructor.Create(
+		initiatedContext,
 		agent.CreateOptions{
 			SessionID:    childID,
 			Metadata:     childLineage.Metadata(lineageSeedLength),
 			Seed:         seed,
 			AgentOptions: *requestSnapshot.AgentOptions,
-			Provisioner: owner.dependencies.ScopeBuilder.Provisioner(
+			Provisioner: owner.dependencies.Scopes.Provisioner(
 				childscope.ContinuableInput{
 					ChildID:    childID,
 					ParentID:   requestSnapshot.Parent.ID(),
@@ -44,9 +45,13 @@ func (owner *Manager) create(
 					Fresh:      true,
 				},
 			),
+			RuntimeParent: requestSnapshot.Parent,
 		},
 	)
 	if createErr != nil {
+		if errors.Is(createErr, agent.ErrDescendantAdmissionClosed) {
+			return nil, descendantAdmissionClosed(childID)
+		}
 		return nil, createErr
 	}
 	return owner.publish(requestContext, handle, providerName, requestSnapshot.Parent)
@@ -103,20 +108,19 @@ func (owner *Manager) resume(
 		}
 	}
 	childOptions := agent.Options{
-		Provider:      stringValue(continuableIdentity.AgentProvider),
-		Model:         stringValue(continuableIdentity.AgentModel),
-		SubagentDepth: inspection.Header.DelegationDepth,
+		Provider: stringValue(continuableIdentity.AgentProvider),
+		Model:    stringValue(continuableIdentity.AgentModel),
 	}
 	initiatedContext, contextErr := agent.WithInitiator(requestContext, parentAgent)
 	if contextErr != nil {
 		return nil, contextErr
 	}
-	handle, resumeErr := owner.dependencies.Agents.Resume(
-		owner.dependencies.Custody.Bind(initiatedContext),
+	handle, resumeErr := owner.dependencies.Constructor.Resume(
+		initiatedContext,
 		agent.ResumeOptions{
 			SessionID:    childID,
 			AgentOptions: childOptions,
-			Provisioner: owner.dependencies.ScopeBuilder.Provisioner(
+			Provisioner: owner.dependencies.Scopes.Provisioner(
 				childscope.ContinuableInput{
 					ChildID:    childID,
 					ParentID:   parentAgent.ID(),
@@ -124,9 +128,13 @@ func (owner *Manager) resume(
 					Fresh:      false,
 				},
 			),
+			RuntimeParent: parentAgent,
 		},
 	)
 	if resumeErr != nil {
+		if errors.Is(resumeErr, agent.ErrDescendantAdmissionClosed) {
+			return nil, descendantAdmissionClosed(childID)
+		}
 		return nil, &subagent.Error{
 			Code:    subagent.ErrorNotResumable,
 			Message: fmt.Sprintf("subagent %q is unavailable", childID),
@@ -153,23 +161,22 @@ func (owner *Manager) publish(
 		return nil, identityErr
 	}
 	epoch := &Activation{
-		childID:       handle.Subject.ID(),
-		parentID:      parentAgent.ID(),
-		providerName:  providerName,
-		handle:        handle,
-		ancestry:      owner.buildLineage(parentAgent, handle.Subject),
-		ownedChildren: make(map[session.SessionID]struct{}),
-		accepted:      make(map[llm.MessageID]struct{}),
-		wake:          make(chan struct{}),
-		runID:         runID,
-		boundary:      handle.Subject.SessionValue().Seq(),
+		childID:      handle.Subject.ID(),
+		parentID:     parentAgent.ID(),
+		parent:       parentAgent,
+		providerName: providerName,
+		handle:       handle,
+		accepted:     make(map[llm.MessageID]struct{}),
+		wake:         make(chan struct{}),
+		runID:        runID,
+		boundary:     handle.Subject.SessionValue().Seq(),
 	}
 	owner.residency.mutex.Lock()
-	closing := owner.closingForLocked(epoch.ancestry)
-	if closing || owner.residency.activations[epoch.childID] != nil {
+	draining := owner.residency.draining
+	if draining || owner.residency.activations[epoch.childID] != nil {
 		owner.residency.mutex.Unlock()
 		_ = handle.Dispose(context.Background())
-		if closing {
+		if draining {
 			return nil, &subagent.Error{
 				Code:    subagent.ErrorDraining,
 				Message: "continuable subagent materialization lost the drain cutoff",
@@ -181,10 +188,6 @@ func (owner *Manager) publish(
 		}
 	}
 	owner.residency.activations[epoch.childID] = epoch
-	if parentEpoch := owner.residency.activations[parentAgent.ID()]; parentEpoch != nil {
-		parentEpoch.ownedChildren[epoch.childID] = struct{}{}
-		wake(parentEpoch)
-	}
 	owner.residency.mutex.Unlock()
 	if owner.dependencies.Lifecycle != nil {
 		owner.dependencies.Lifecycle.Started(
@@ -197,5 +200,23 @@ func (owner *Manager) publish(
 			},
 		)
 	}
+	if !owner.dependencies.Agents.Contains(handle.Subject) {
+		_ = owner.dispose(
+			context.Background(),
+			epoch,
+			subagent.StopAborted,
+		)
+		return nil, descendantAdmissionClosed(epoch.childID)
+	}
 	return epoch, nil
+}
+
+func descendantAdmissionClosed(childID session.SessionID) error {
+	return &subagent.Error{
+		Code: subagent.ErrorDraining,
+		Message: fmt.Sprintf(
+			"subagent %q lost its parent Agent descendant admission",
+			childID,
+		),
+	}
 }

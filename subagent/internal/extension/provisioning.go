@@ -119,4 +119,4 @@ func countErrors(joined error) int {
 }
 
 var _ agent.Provisioning = (*provisioning)(nil)
-var _ agent.Effect = (*effect)(nil)
+var _ agent.ScopeResource = (*effect)(nil)

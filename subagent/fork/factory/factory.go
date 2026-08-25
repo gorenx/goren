@@ -42,7 +42,7 @@ func (*Factory) Create(
 	if decodeErr != nil {
 		return nil, decodeErr
 	}
-	return fork.New(settings.ProviderName)
+	return fork.NewPlugin(settings.ProviderName)
 }
 
 func decodeConfig(rawConfig json.RawMessage) (Config, error) {

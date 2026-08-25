@@ -13,6 +13,30 @@ import (
 	"github.com/gorenx/goren/session"
 )
 
+type preStepActionFunc func(
+	context.Context,
+	agent.PreStepNotice,
+) (agent.PreStepDecision, error)
+
+func (operation preStepActionFunc) Execute(
+	requestContext context.Context,
+	notice agent.PreStepNotice,
+) (agent.PreStepDecision, error) {
+	return operation(requestContext, notice)
+}
+
+type requestErrorActionFunc func(
+	context.Context,
+	agent.RequestErrorNotice,
+) (agent.RequestErrorAction, error)
+
+func (operation requestErrorActionFunc) Execute(
+	requestContext context.Context,
+	notice agent.RequestErrorNotice,
+) (agent.RequestErrorAction, error) {
+	return operation(requestContext, notice)
+}
+
 func TestAutomaticPressureContainsFailureAndDeduplicatesTargetWarning(t *testing.T) {
 	t.Parallel()
 	runtimeValue := newRuntimeStub("checkpoint", 1_000)
@@ -40,7 +64,7 @@ func TestAutomaticPressureContainsFailureAndDeduplicatesTargetWarning(t *testing
 		reported = append(reported, problem)
 	})
 	downstreamCalls := 0
-	downstream := agent.PreStepActionFunc(func(
+	downstream := preStepActionFunc(func(
 		context.Context,
 		agent.PreStepNotice,
 	) (agent.PreStepDecision, error) {
@@ -88,7 +112,7 @@ func TestAutomaticOverflowRetriesOnlyAfterDurableProgressAndHonorsCap(t *testing
 	}
 	automation := newAutomaticFixture(implementation, func(error) {})
 	downstreamCalls := 0
-	downstream := agent.RequestErrorActionFunc(func(
+	downstream := requestErrorActionFunc(func(
 		context.Context,
 		agent.RequestErrorNotice,
 	) (agent.RequestErrorAction, error) {
@@ -200,7 +224,7 @@ func TestAutomaticOverflowFailureRetriesAfterPrunerProgress(t *testing.T) {
 				Code:    llm.ContextWindowExceededCode,
 			},
 		},
-		agent.RequestErrorActionFunc(func(
+		requestErrorActionFunc(func(
 			context.Context,
 			agent.RequestErrorNotice,
 		) (agent.RequestErrorAction, error) {
@@ -296,7 +320,7 @@ func TestAutomaticOverflowCancellationWinsOverPrunerProgress(t *testing.T) {
 				Code:    llm.ContextWindowExceededCode,
 			},
 		},
-		agent.RequestErrorActionFunc(func(
+		requestErrorActionFunc(func(
 			context.Context,
 			agent.RequestErrorNotice,
 		) (agent.RequestErrorAction, error) {
@@ -425,7 +449,7 @@ func TestAutomaticOverflowIgnoresNonCanonicalFailure(t *testing.T) {
 				Code:    "SERVER",
 			},
 		},
-		agent.RequestErrorActionFunc(func(
+		requestErrorActionFunc(func(
 			context.Context,
 			agent.RequestErrorNotice,
 		) (agent.RequestErrorAction, error) {

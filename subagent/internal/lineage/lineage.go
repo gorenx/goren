@@ -34,12 +34,8 @@ func From(parentAgent agent.Agent, maxDepth *int64) (Lineage, error) {
 	}
 	parentDepth := int64(0)
 	parentOptions := parentAgent.OptionsValue()
-	if parentOptions.SubagentDepth != nil {
-		parentDepth = *parentOptions.SubagentDepth
-	}
 	parentHeader := parentAgent.SessionValue().Header()
-	if parentHeader.DelegationDepth != nil &&
-		*parentHeader.DelegationDepth > parentDepth {
+	if parentHeader.DelegationDepth != nil {
 		parentDepth = *parentHeader.DelegationDepth
 	}
 	if parentDepth >= maxSafeInteger {
@@ -63,8 +59,8 @@ func From(parentAgent agent.Agent, maxDepth *int64) (Lineage, error) {
 	}, nil
 }
 
-// AgentOptions overlays explicit child settings onto the exact parent defaults
-// while stamping the resolved lineage depth.
+// AgentOptions overlays explicit child settings onto the exact parent defaults.
+// Delegation depth is durable Session lineage, not an Agent runtime option.
 func (value Lineage) AgentOptions(requested *agent.Options) agent.Options {
 	resolved := value.options
 	resolved.MaxTokens = intPointer(value.options.MaxTokens)
@@ -79,7 +75,6 @@ func (value Lineage) AgentOptions(requested *agent.Options) agent.Options {
 			resolved.MaxTokens = intPointer(requested.MaxTokens)
 		}
 	}
-	resolved.SubagentDepth = int64Pointer(value.depth)
 	return resolved
 }
 

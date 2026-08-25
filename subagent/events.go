@@ -59,6 +59,8 @@ type Started struct {
 	Local    bool
 }
 
+func (Started) AgentScopedRuntimeEvent() {}
+
 // EventName returns StartEventName.
 func (Started) EventName() string {
 	return StartEventName
@@ -78,6 +80,8 @@ type Ended struct {
 	StopReason           StopReason
 	LastAssistantMessage []llm.ContentBlock
 }
+
+func (Ended) AgentScopedRuntimeEvent() {}
 
 // EventName returns EndEventName.
 func (Ended) EventName() string {

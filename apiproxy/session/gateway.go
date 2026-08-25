@@ -19,6 +19,8 @@ import (
 // Dependencies are the domain capabilities consumed by the Session API.
 type Dependencies struct {
 	Agents      agent.Registry
+	Constructor agent.Constructor
+	Scopes      agent.ScopeProvisioning
 	Sessions    session.LiveStore
 	Persistence sesspersist.Persistence
 	LLM         llm.LlmRuntime
@@ -53,7 +55,8 @@ func NewGateway(
 	if requestContext == nil {
 		return nil, errors.New("apiproxy/session: Gateway Context is required")
 	}
-	if ports.Agents == nil || ports.Sessions == nil || ports.Persistence == nil || ports.LLM == nil ||
+	if ports.Agents == nil || ports.Constructor == nil || ports.Scopes == nil ||
+		ports.Sessions == nil || ports.Persistence == nil || ports.LLM == nil ||
 		ports.Defaults == nil || ports.Projections == nil || ports.Titles == nil ||
 		ports.Workspaces == nil || ports.Directories == nil {
 		return nil, errors.New("apiproxy/session: Gateway dependencies are incomplete")
@@ -71,6 +74,8 @@ func NewGateway(
 	}
 	runtimeSessions, err := NewAgentSessions(AgentSessionDependencies{
 		Agents:      ports.Agents,
+		Constructor: ports.Constructor,
+		Scopes:      ports.Scopes,
 		Sessions:    ports.Sessions,
 		Persistence: ports.Persistence,
 		Defaults:    ports.Defaults,

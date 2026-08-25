@@ -24,22 +24,28 @@ type Options struct {
 // Driver creates and drives one published local child for exactly one turn.
 type Driver struct {
 	agents       agent.Registry
+	constructor  agent.Constructor
 	scopeBuilder *childscope.OneShotBuilder
 }
 
 // New constructs an in-process one-shot Driver.
 func New(
 	agentRegistry agent.Registry,
+	agentConstructor agent.Constructor,
 	childScopeBuilder *childscope.OneShotBuilder,
 ) (*Driver, error) {
 	if agentRegistry == nil {
 		return nil, errors.New("subagent: in-process Driver requires Agent Registry")
+	}
+	if agentConstructor == nil {
+		return nil, errors.New("subagent: in-process Driver requires Agent Constructor")
 	}
 	if childScopeBuilder == nil {
 		return nil, errors.New("subagent: in-process Driver requires child Scope builder")
 	}
 	return &Driver{
 		agents:       agentRegistry,
+		constructor:  agentConstructor,
 		scopeBuilder: childScopeBuilder,
 	}, nil
 }
@@ -97,7 +103,7 @@ func (owner *Driver) Start(
 	if contextErr != nil {
 		return nil, contextErr
 	}
-	handle, createErr := owner.agents.Create(
+	handle, createErr := owner.constructor.Create(
 		initiatedContext,
 		agent.CreateOptions{
 			SessionID:    childID,
@@ -111,6 +117,7 @@ func (owner *Driver) Start(
 					Plugins:    runPlugins,
 				},
 			),
+			RuntimeParent: request.Parent,
 		},
 	)
 	if createErr != nil {

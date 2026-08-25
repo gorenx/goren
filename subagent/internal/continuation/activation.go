@@ -13,50 +13,38 @@ import (
 // locks, and scoped/global teardown cutoffs. Manager coordinates use cases
 // against this owner instead of owning each mutable collection independently.
 type residency struct {
-	mutex        sync.Mutex
-	activations  map[session.SessionID]*Activation
-	locks        map[session.SessionID]*sync.Mutex
-	closingRoots map[session.SessionID]agent.Agent
-	building     map[*materialization]struct{}
-	draining     bool
+	mutex       sync.Mutex
+	activations map[session.SessionID]*Activation
+	locks       map[session.SessionID]*sync.Mutex
+	draining    bool
 }
 
 func newResidency() *residency {
 	return &residency{
-		activations:  make(map[session.SessionID]*Activation),
-		locks:        make(map[session.SessionID]*sync.Mutex),
-		closingRoots: make(map[session.SessionID]agent.Agent),
-		building:     make(map[*materialization]struct{}),
+		activations: make(map[session.SessionID]*Activation),
+		locks:       make(map[session.SessionID]*sync.Mutex),
 	}
 }
 
-// materialization is one admitted but not yet resident child transaction.
-type materialization struct {
-	lineage []agent.Agent
-	done    chan struct{}
-}
-
 // disposal is one memoized Activation release transaction. Its presence is
-// the admission cutoff; done closes only after child-first release, durable
-// flush, Handle disposal, settlement notice, and lifecycle publication finish.
+// the admission cutoff; Agent Registry owns descendant ordering while this
+// transaction owns continuation settlement and durable flush semantics.
 type disposal struct {
-	done     chan struct{}
-	children []*Activation
-	err      error
+	done chan struct{}
+	err  error
 }
 
 // Activation is one resident epoch of a durable continuable child.
 type Activation struct {
-	childID       session.SessionID
-	parentID      session.SessionID
-	providerName  string
-	handle        agent.Handle
-	ancestry      []agent.Agent
-	ownedChildren map[session.SessionID]struct{}
-	accepted      map[llm.MessageID]struct{}
-	wake          chan struct{}
-	runID         subagent.RunID
-	boundary      int64
-	announced     bool
-	disposal      *disposal
+	childID      session.SessionID
+	parentID     session.SessionID
+	parent       agent.Agent
+	providerName string
+	handle       agent.Handle
+	accepted     map[llm.MessageID]struct{}
+	wake         chan struct{}
+	runID        subagent.RunID
+	boundary     int64
+	announced    bool
+	disposal     *disposal
 }

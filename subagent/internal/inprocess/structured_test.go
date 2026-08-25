@@ -3,6 +3,7 @@ package inprocess
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/gorenx/goren/agent"
@@ -13,6 +14,17 @@ import (
 	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/tools"
 )
+
+type preStepEnterAction struct{}
+
+func (preStepEnterAction) Execute(
+	context.Context,
+	agent.PreStepNotice,
+) (agent.PreStepDecision, error) {
+	return agent.PreStepDecision{
+		Kind: agent.PreStepEnter,
+	}, nil
+}
 
 func TestScopedRuntimeAppendsDescriptorAndCommitsStructuredOutput(t *testing.T) {
 	t.Parallel()
@@ -31,6 +43,9 @@ func TestScopedRuntimeAppendsDescriptorAndCommitsStructuredOutput(t *testing.T) 
 	childAgent := &runtimeAgent{
 		id:      "child",
 		session: conversation,
+	}
+	childAgent.runtime = &runtimeAgentEffects{
+		source: childAgent,
 	}
 	toolService := tools.New(toolSettings)
 	descriptor := newDescriptorAppender(subagent.OneShotDescriptor{
@@ -89,14 +104,7 @@ func TestScopedRuntimeAppendsDescriptorAndCommitsStructuredOutput(t *testing.T) 
 			Turn:    1,
 			Step:    1,
 		},
-		agent.PreStepActionFunc(func(
-			context.Context,
-			agent.PreStepNotice,
-		) (agent.PreStepDecision, error) {
-			return agent.PreStepDecision{
-				Kind: agent.PreStepEnter,
-			}, nil
-		}),
+		preStepEnterAction{},
 	)
 	if err != nil || decision.Kind != agent.PreStepEnter {
 		t.Fatalf("pre-step = %#v, error=%v", decision, err)
@@ -149,6 +157,7 @@ type runtimeAgent struct {
 	plugin.Base
 	id      session.SessionID
 	session session.Context
+	runtime agent.AgentScopeRuntime
 }
 
 func (subject *runtimeAgent) Manifest() plugin.Manifest {
@@ -175,6 +184,55 @@ func (*runtimeAgent) Send(llm.UserMessage, agent.InboxTarget, bool) error { retu
 func (*runtimeAgent) Followup(llm.UserMessage) error                      { return nil }
 func (*runtimeAgent) Steer(llm.UserMessage) error                         { return nil }
 func (*runtimeAgent) Inject(llm.UserMessage) error                        { return nil }
+func (subject *runtimeAgent) ScopeRuntimeValue() agent.AgentScopeRuntime {
+	return subject.runtime
+}
+
+type runtimeAgentEffects struct {
+	source plugin.Plugin
+}
+
+func (effects *runtimeAgentEffects) Dispatch(
+	requestContext context.Context,
+	fact agent.RuntimeEvent,
+) error {
+	runtimeFact, matches := fact.(plugin.Event)
+	if !matches {
+		return errors.New("test: RuntimeEvent has no Plugin metadata")
+	}
+	return plugin.PublishEvent(requestContext, effects.source, runtimeFact)
+}
+
+func (effects *runtimeAgentEffects) ResolvePreStep(
+	requestContext context.Context,
+	notice agent.PreStepNotice,
+	terminal agent.PreStepAction,
+) (agent.PreStepDecision, error) {
+	return plugin.Run(requestContext, effects.source, notice, terminal)
+}
+
+func (effects *runtimeAgentEffects) ResolveRequest(
+	requestContext context.Context,
+	notice agent.RequestNotice,
+	terminal agent.RequestAction,
+) (agent.RequestResolution, error) {
+	return plugin.Run(requestContext, effects.source, notice, terminal)
+}
+
+func (effects *runtimeAgentEffects) ResolveRequestError(
+	requestContext context.Context,
+	notice agent.RequestErrorNotice,
+	terminal agent.RequestErrorHandler,
+) (agent.RequestErrorAction, error) {
+	return plugin.Run(requestContext, effects.source, notice, terminal)
+}
+
+func (*runtimeAgentEffects) Provision(context.Context, agent.Provisioner) error {
+	return nil
+}
+
+func (*runtimeAgentEffects) Teardown(context.Context) error { return nil }
 
 var _ agent.Agent = (*runtimeAgent)(nil)
+var _ agent.AgentScopeRuntime = (*runtimeAgentEffects)(nil)
 var _ plugin.EventFailureReporter = noEventFailures{}

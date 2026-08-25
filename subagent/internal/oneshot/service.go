@@ -318,7 +318,6 @@ func cloneAgentOptions(source *agent.Options) *agent.Options {
 		maxTokensValue := *source.MaxTokens
 		detached.MaxTokens = &maxTokensValue
 	}
-	detached.SubagentDepth = cloneInt64(source.SubagentDepth)
 	return &detached
 }
 

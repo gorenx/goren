@@ -2,6 +2,7 @@ package childscope
 
 import (
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agent/scopedplugin"
 	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/tools"
@@ -42,5 +43,5 @@ func (owner *OneShotBuilder) Provisioner(input OneShotInput) agent.Provisioner {
 	if len(instances) == 0 {
 		return nil
 	}
-	return agent.MountPlugins(instances...)
+	return scopedplugin.MountPlugins(instances...)
 }

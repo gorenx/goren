@@ -11,7 +11,7 @@ import (
 	"github.com/gorenx/goren/subagent"
 )
 
-func TestExternalDisposalPublishesTerminalBeforeReleasingOwnership(t *testing.T) {
+func TestExternalDisposalWaitsForTerminalPublication(t *testing.T) {
 	fixture := newManagerFixture(t)
 	childID := session.SessionID("owner-child")
 	_, startErr := fixture.manager.Start(
@@ -76,16 +76,9 @@ func TestExternalDisposalPublishesTerminalBeforeReleasingOwnership(t *testing.T)
 
 	fixture.manager.residency.mutex.Lock()
 	epoch := fixture.manager.residency.activations[grandchildID]
-	owned := false
-	if parentEpoch := fixture.manager.residency.activations[childID]; parentEpoch != nil {
-		_, owned = parentEpoch.ownedChildren[grandchildID]
-	}
 	fixture.manager.residency.mutex.Unlock()
 	if epoch != nil {
 		t.Fatal("externally disposed Activation remained addressable")
-	}
-	if !owned {
-		t.Fatal("ownership was released before terminal lifecycle publication")
 	}
 	select {
 	case <-disposed:
@@ -97,12 +90,5 @@ func TestExternalDisposalPublishesTerminalBeforeReleasingOwnership(t *testing.T)
 	case <-disposed:
 	case <-time.After(time.Second):
 		t.Fatal("external disposal did not finish")
-	}
-	fixture.manager.residency.mutex.Lock()
-	parentEpoch := fixture.manager.residency.activations[childID]
-	_, owned = parentEpoch.ownedChildren[grandchildID]
-	fixture.manager.residency.mutex.Unlock()
-	if owned {
-		t.Fatal("ownership remained after terminal lifecycle publication")
 	}
 }

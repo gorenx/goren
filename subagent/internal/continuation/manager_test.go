@@ -157,29 +157,51 @@ func (subject *agentRecord) messagesSnapshot() []llm.UserMessage {
 }
 
 type registryRecord struct {
-	plugin.Base
 	mutex       sync.Mutex
 	agents      map[session.SessionID]*agentRecord
 	sessions    *sessionRecord
 	stored      *persistenceRecord
 	disposeErr  error
 	followupErr error
+	service     *agent.RegistryService
+	closing     map[session.SessionID]<-chan struct{}
+	disposed    func(agent.Agent)
 }
 
-func (*registryRecord) RegisterFactory(
-	agent.Factory,
-) (agent.FactoryRegistration, error) {
-	return factoryRegistrationRecord{}, nil
+func (records *registryRecord) start(t *testing.T) {
+	t.Helper()
+	records.service = agent.NewRegistry(agent.RegistryOptions{})
+	if _, err := records.service.RegisterFactory(records); err != nil {
+		t.Fatal(err)
+	}
+	existing := make([]*agentRecord, 0, len(records.agents))
+	for _, subject := range records.agents {
+		existing = append(existing, subject)
+	}
+	for _, subject := range existing {
+		if _, err := records.service.Create(
+			context.Background(),
+			agent.CreateOptions{
+				SessionID:    subject.ID(),
+				AgentOptions: subject.OptionsValue(),
+			},
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
-type factoryRegistrationRecord struct{}
-
-func (factoryRegistrationRecord) Unregister() {}
-
-func (records *registryRecord) Create(
-	_ context.Context,
+func (records *registryRecord) CreateAgent(
+	requestContext context.Context,
+	reservation agent.Reservation,
 	options agent.CreateOptions,
-) (agent.Handle, error) {
+) error {
+	records.mutex.Lock()
+	subject := records.agents[options.SessionID]
+	records.mutex.Unlock()
+	if subject != nil {
+		return records.attach(requestContext, reservation, subject, options.Provisioner)
+	}
 	conversation, createErr := session.New(
 		options.SessionID,
 		session.CreateOptions{
@@ -188,9 +210,9 @@ func (records *registryRecord) Create(
 		},
 	)
 	if createErr != nil {
-		return agent.Handle{}, createErr
+		return createErr
 	}
-	subject := &agentRecord{
+	subject = &agentRecord{
 		identifier:   options.SessionID,
 		conversation: conversation,
 		options:      options.AgentOptions,
@@ -201,26 +223,22 @@ func (records *registryRecord) Create(
 	records.mutex.Lock()
 	if records.agents[options.SessionID] != nil {
 		records.mutex.Unlock()
-		return agent.Handle{}, errors.New("duplicate")
+		return errors.New("duplicate")
 	}
 	records.agents[options.SessionID] = subject
 	records.sessions.entries[options.SessionID] = conversation
 	records.mutex.Unlock()
-	lifecycleOwner := &agentLifecycle{
-		registry: records,
-		subject:  subject,
-		closing:  make(chan struct{}),
-	}
-	return agent.NewHandle(subject, lifecycleOwner)
+	return records.attach(requestContext, reservation, subject, options.Provisioner)
 }
 
-func (records *registryRecord) Resume(
-	_ context.Context,
+func (records *registryRecord) ResumeAgent(
+	requestContext context.Context,
+	reservation agent.Reservation,
 	options agent.ResumeOptions,
-) (agent.Handle, error) {
+) error {
 	inspection, found := records.stored.inspections[options.SessionID]
 	if !found {
-		return agent.Handle{}, errors.New("missing inspection")
+		return errors.New("missing inspection")
 	}
 	conversation, createErr := session.New(
 		options.SessionID,
@@ -238,7 +256,7 @@ func (records *registryRecord) Resume(
 		},
 	)
 	if createErr != nil {
-		return agent.Handle{}, createErr
+		return createErr
 	}
 	subject := &agentRecord{
 		identifier:   options.SessionID,
@@ -252,86 +270,147 @@ func (records *registryRecord) Resume(
 	records.agents[options.SessionID] = subject
 	records.sessions.entries[options.SessionID] = conversation
 	records.mutex.Unlock()
-	return agent.NewHandle(
-		subject,
-		&agentLifecycle{
-			registry: records,
-			subject:  subject,
-			closing:  make(chan struct{}),
-		},
-	)
+	return records.attach(requestContext, reservation, subject, options.Provisioner)
 }
 
-func (*registryRecord) Enter(agent.Agent, agent.Agent) error { return nil }
-
-func (*registryRecord) Announce(context.Context, agent.Agent) error { return nil }
-
-func (records *registryRecord) Remove(
-	_ context.Context,
-	subject agent.Agent,
+func (records *registryRecord) attach(
+	requestContext context.Context,
+	reservation agent.Reservation,
+	subject *agentRecord,
+	scopeProvisioner agent.Provisioner,
 ) error {
 	records.mutex.Lock()
-	delete(records.agents, subject.ID())
+	if records.closing == nil {
+		records.closing = make(map[session.SessionID]<-chan struct{})
+	}
+	records.closing[subject.ID()] = reservation.ClosingSignal()
 	records.mutex.Unlock()
-	return nil
+	runtime := &registryScopeRuntime{
+		owner:   records,
+		subject: subject,
+	}
+	if _, err := reservation.Attach(subject, runtime); err != nil {
+		return err
+	}
+	if scopeProvisioner == nil {
+		return nil
+	}
+	return runtime.Provision(requestContext, scopeProvisioner)
+}
+
+func (records *registryRecord) closingSignal(
+	identifier session.SessionID,
+) <-chan struct{} {
+	records.mutex.Lock()
+	signal := records.closing[identifier]
+	records.mutex.Unlock()
+	return signal
 }
 
 func (records *registryRecord) Get(identifier session.SessionID) (agent.Agent, bool) {
-	records.mutex.Lock()
-	defer records.mutex.Unlock()
-	subject := records.agents[identifier]
-	return subject, subject != nil
+	return records.service.Get(identifier)
 }
 
 func (records *registryRecord) Contains(subject agent.Agent) bool {
-	if subject == nil {
-		return false
-	}
-	records.mutex.Lock()
-	defer records.mutex.Unlock()
-	return records.agents[subject.ID()] == subject
-}
-
-func (records *registryRecord) IsOwnedBy(
-	identifier session.SessionID,
-	owner agent.Agent,
-) bool {
-	return records.Contains(owner) && records.agents[identifier] != nil
+	return records.service.Contains(subject)
 }
 
 func (records *registryRecord) List() []agent.Agent {
-	records.mutex.Lock()
-	defer records.mutex.Unlock()
-	result := make([]agent.Agent, 0, len(records.agents))
-	for _, subject := range records.agents {
-		result = append(result, subject)
+	return records.service.List()
+}
+
+func (records *registryRecord) HasRuntimeDescendants(parentAgent agent.Agent) bool {
+	return records.service.HasRuntimeDescendants(parentAgent)
+}
+
+func (records *registryRecord) CloseDescendants(
+	closeContext context.Context,
+	parentAgent agent.Agent,
+) error {
+	return records.service.CloseDescendants(closeContext, parentAgent)
+}
+
+type registryScopeRuntime struct {
+	mutex     sync.Mutex
+	owner     *registryRecord
+	subject   *agentRecord
+	resources []agent.ScopeResource
+}
+
+func (runtime *registryScopeRuntime) Dispatch(
+	_ context.Context,
+	fact agent.RuntimeEvent,
+) error {
+	if notice, matches := fact.(agent.Disposed); matches &&
+		runtime.owner.disposed != nil {
+		runtime.owner.disposed(notice.Subject)
 	}
-	return result
+	return nil
 }
 
-func (records *registryRecord) Roots() []agent.Agent { return records.List() }
-
-type agentLifecycle struct {
-	registry *registryRecord
-	subject  *agentRecord
-	closing  chan struct{}
-	once     sync.Once
+func (*registryScopeRuntime) ResolvePreStep(
+	requestContext context.Context,
+	notice agent.PreStepNotice,
+	terminal agent.PreStepAction,
+) (agent.PreStepDecision, error) {
+	return terminal.Execute(requestContext, notice)
 }
 
-func (lifecycleOwner *agentLifecycle) Dispose(context.Context) error {
-	lifecycleOwner.once.Do(func() {
-		close(lifecycleOwner.closing)
-	})
-	lifecycleOwner.registry.mutex.Lock()
-	delete(lifecycleOwner.registry.agents, lifecycleOwner.subject.ID())
-	delete(lifecycleOwner.registry.sessions.entries, lifecycleOwner.subject.ID())
-	lifecycleOwner.registry.mutex.Unlock()
-	return lifecycleOwner.registry.disposeErr
+func (*registryScopeRuntime) ResolveRequest(
+	requestContext context.Context,
+	notice agent.RequestNotice,
+	terminal agent.RequestAction,
+) (agent.RequestResolution, error) {
+	return terminal.Execute(requestContext, notice)
 }
 
-func (lifecycleOwner *agentLifecycle) ClosingSignal() <-chan struct{} {
-	return lifecycleOwner.closing
+func (*registryScopeRuntime) ResolveRequestError(
+	requestContext context.Context,
+	notice agent.RequestErrorNotice,
+	terminal agent.RequestErrorHandler,
+) (agent.RequestErrorAction, error) {
+	return terminal.Execute(requestContext, notice)
 }
+
+func (runtime *registryScopeRuntime) Agent() agent.Agent {
+	return runtime.subject
+}
+
+func (runtime *registryScopeRuntime) Own(resource agent.ScopeResource) error {
+	runtime.mutex.Lock()
+	runtime.resources = append(runtime.resources, resource)
+	runtime.mutex.Unlock()
+	return nil
+}
+
+func (runtime *registryScopeRuntime) Provision(
+	requestContext context.Context,
+	scopeProvisioner agent.Provisioner,
+) error {
+	return agent.ApplyProvisioning(requestContext, runtime, scopeProvisioner)
+}
+
+func (runtime *registryScopeRuntime) Teardown(closeContext context.Context) error {
+	runtime.mutex.Lock()
+	resources := append([]agent.ScopeResource(nil), runtime.resources...)
+	runtime.resources = nil
+	runtime.mutex.Unlock()
+	var closeErr error
+	for index := len(resources) - 1; index >= 0; index-- {
+		closeErr = errors.Join(closeErr, resources[index].Dispose(closeContext))
+	}
+	runtime.owner.mutex.Lock()
+	delete(runtime.owner.agents, runtime.subject.ID())
+	delete(runtime.owner.sessions.entries, runtime.subject.ID())
+	delete(runtime.owner.closing, runtime.subject.ID())
+	disposeErr := runtime.owner.disposeErr
+	runtime.owner.mutex.Unlock()
+	return errors.Join(closeErr, disposeErr)
+}
+
+var _ agent.Factory = (*registryRecord)(nil)
+var _ agent.AgentScopeRuntime = (*registryScopeRuntime)(nil)
+var _ agent.Scope = (*registryScopeRuntime)(nil)
 
 type sessionRecord struct {
 	plugin.Base
@@ -589,26 +668,25 @@ func TestContinuableFreshLifecycleAndControl(t *testing.T) {
 		sessions: liveSessions,
 		stored:   storedSessions,
 	}
+	agentRegistry.start(t)
 	lifecycleFacts := &lifecycleRecord{}
-	agentCustody, custodyErr := agent.NewCustody(parentAgent)
-	if custodyErr != nil {
-		t.Fatal(custodyErr)
-	}
 	owner, managerErr := New(Dependencies{
-		Agents:      agentRegistry,
-		Custody:     agentCustody,
+		Agents:      agentRegistry.service,
+		Constructor: agentRegistry.service,
+		Descendants: agentRegistry.service,
 		Sessions:    liveSessions,
 		Persistence: storedSessions,
 		Providers: providerSource{
 			candidate: providerRecord{},
 		},
-		Lifecycle:    lifecycleFacts,
-		ScopeBuilder: scopeBuilderStub{},
-		Failures:     &failureRecord{},
+		Lifecycle: lifecycleFacts,
+		Scopes:    scopeBuilderStub{},
+		Failures:  &failureRecord{},
 	})
 	if managerErr != nil {
 		t.Fatal(managerErr)
 	}
+	agentRegistry.disposed = owner.AgentDisposed
 	childID := session.SessionID("child")
 	startResult, startErr := owner.Start(
 		context.Background(),
@@ -790,26 +868,25 @@ func TestFollowupColdResumesPersistedContinuableChild(t *testing.T) {
 		sessions: liveSessions,
 		stored:   storedSessions,
 	}
+	agentRegistry.start(t)
 	lifecycleFacts := &lifecycleRecord{}
-	agentCustody, custodyErr := agent.NewCustody(parentAgent)
-	if custodyErr != nil {
-		t.Fatal(custodyErr)
-	}
 	owner, managerErr := New(Dependencies{
-		Agents:      agentRegistry,
-		Custody:     agentCustody,
+		Agents:      agentRegistry.service,
+		Constructor: agentRegistry.service,
+		Descendants: agentRegistry.service,
 		Sessions:    liveSessions,
 		Persistence: storedSessions,
 		Providers: providerSource{
 			candidate: providerRecord{},
 		},
-		Lifecycle:    lifecycleFacts,
-		ScopeBuilder: scopeBuilderStub{},
-		Failures:     &failureRecord{},
+		Lifecycle: lifecycleFacts,
+		Scopes:    scopeBuilderStub{},
+		Failures:  &failureRecord{},
 	})
 	if managerErr != nil {
 		t.Fatal(managerErr)
 	}
+	agentRegistry.disposed = owner.AgentDisposed
 	messageID, followErr := owner.Followup(
 		context.Background(),
 		parentAgent,

@@ -6,7 +6,6 @@ import (
 
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/tools"
 )
@@ -66,6 +65,5 @@ type Run interface {
 
 // OneShotService owns one-shot admission and Run ownership transfer.
 type OneShotService interface {
-	plugin.Service
 	Start(context.Context, string, StartRequest) (Run, error)
 }

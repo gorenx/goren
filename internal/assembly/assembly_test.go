@@ -56,6 +56,7 @@ const invalidFactoryName = "test/invalid-factory"
 type serviceProbe struct {
 	plugin.Base
 	agents       agent.Registry
+	constructor  agent.Constructor
 	defaultModel agentdefaultmodel.DefaultModel
 	approvals    approval.Approval
 	apiProxy     apiproxy.Service
@@ -82,6 +83,7 @@ func (*serviceProbe) Manifest() plugin.Manifest {
 		Name: probeFactoryName,
 		Requires: []plugin.ServiceType{
 			plugin.ServiceOf[agent.Registry](),
+			plugin.ServiceOf[agent.Constructor](),
 			plugin.ServiceOf[agentdefaultmodel.DefaultModel](),
 			plugin.ServiceOf[approval.Approval](),
 			plugin.ServiceOf[apiproxy.Service](),
@@ -108,6 +110,9 @@ func (*serviceProbe) Manifest() plugin.Manifest {
 func (probe *serviceProbe) Apply(requestContext context.Context) error {
 	var err error
 	if probe.agents, err = plugin.Require[agent.Registry](probe); err != nil {
+		return err
+	}
+	if probe.constructor, err = plugin.Require[agent.Constructor](probe); err != nil {
 		return err
 	}
 	if probe.defaultModel, err = plugin.Require[agentdefaultmodel.DefaultModel](probe); err != nil {
@@ -677,7 +682,7 @@ func TestServerTreeStartsCapabilitiesBeforeExposingConnection(t *testing.T) {
 	if got := probe.models.ListProviders(); !reflect.DeepEqual(got, wantProviders) {
 		t.Fatalf("default LLM providers = %#v", got)
 	}
-	handle, err := probe.agents.Create(requestContext, agent.CreateOptions{
+	handle, err := probe.constructor.Create(requestContext, agent.CreateOptions{
 		SessionID: "assembly-agent",
 		AgentOptions: agent.Options{
 			Provider: deepseek.ProviderRoute,

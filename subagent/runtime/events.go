@@ -45,12 +45,12 @@ func (publisher *eventPublisher) Removed(
 
 // Started publishes an accepted Subagent lifecycle fact from the parent Scope.
 func (*eventPublisher) Started(parentAgent agent.Agent, fact subagent.Started) {
-	_ = plugin.Publish(context.Background(), parentAgent, fact)
+	_ = agent.DispatchRuntimeEvent(context.Background(), parentAgent, fact)
 }
 
 // Ended publishes a terminal Subagent lifecycle fact from the parent Scope.
 func (*eventPublisher) Ended(parentAgent agent.Agent, fact subagent.Ended) {
-	_ = plugin.Publish(context.Background(), parentAgent, fact)
+	_ = agent.DispatchRuntimeEvent(context.Background(), parentAgent, fact)
 }
 
 // ObserveEvent adapts Agent Inbox and disposal facts to continuation state.
