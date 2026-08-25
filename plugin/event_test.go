@@ -134,6 +134,59 @@ func TestEventRoutesFromCurrentScopeToRoot(t *testing.T) {
 	}
 }
 
+func TestPublishEventRoutesDynamicallyTypedFact(t *testing.T) {
+	t.Parallel()
+	order := make([]string, 0)
+	observer := &eventObserverPlugin{
+		name:  "dynamic-event-observer",
+		order: &order,
+	}
+	publisher := &eventPublisherPlugin{
+		name: "dynamic-event-publisher",
+	}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	if _, err := runtimeEngine.Start(
+		context.Background(),
+		observer,
+		publisher,
+	); err != nil {
+		t.Fatal(err)
+	}
+	var fact plugin.Event = advanced{
+		Value: 2,
+	}
+	if err := plugin.PublishEvent(
+		context.Background(),
+		publisher,
+		fact,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(order, ","); got != "dynamic-event-observer" {
+		t.Fatalf("observer order = %q", got)
+	}
+}
+
+func TestPublishEventRejectsPointerFact(t *testing.T) {
+	t.Parallel()
+	publisher := &eventPublisherPlugin{
+		name: "dynamic-event-publisher",
+	}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	if _, err := runtimeEngine.Start(context.Background(), publisher); err != nil {
+		t.Fatal(err)
+	}
+	if err := plugin.PublishEvent(
+		context.Background(),
+		publisher,
+		&advanced{
+			Value: 2,
+		},
+	); err == nil || !strings.Contains(err.Error(), "named struct value") {
+		t.Fatalf("PublishEvent error = %v", err)
+	}
+}
+
 func TestEventObserverInChildFiberSharesPublisherScope(t *testing.T) {
 	t.Parallel()
 	order := make([]string, 0)
