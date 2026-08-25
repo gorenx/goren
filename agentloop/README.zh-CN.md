@@ -6,7 +6,8 @@
 
 | 路径 | 职责 |
 | --- | --- |
-| `plugin.go` | 根 Agent Loop Plugin、Factory 注册和停机适配 |
+| `plugin.go` | 根 Agent Loop Plugin、Factory 构造、Session runtime-context Event 路由 |
+| `factory_adapter.go` | commit 阶段的 Factory 注册对象；先于普通 Agent Scope 关闭构造准入 |
 | `factory/` | raw JSON 的严格解码、配置校验、默认值和根 Plugin 构造 |
 | `factory.go` | Create/Resume 构造用例、Session Prepare/恢复及关闭信号跟随 |
 | `prepared_agent.go` | 未发布 Agent 的 Scope 挂载、Provisioning、Session 发布和 Registry Attach 顺序 |
@@ -53,7 +54,7 @@ flowchart TD
     Step --> Calls[toolCallExecutor]
 ```
 
-根 `Plugin` 只负责 Factory 注册、Session runtime-context Event 路由和停机适配，不拥有 Agent 生命周期状态。Agent Registry 负责准入、精确 Agent epoch、运行期父子关系和发布；Agent Loop Factory 负责构造具体 Agent 与私有 Scope。执行能力只存在于具体 `ReactLoopAgent`；loop、activity、Turn、Step、request 与 Tool scheduler 都是该 Agent 私有对象。
+根 `Plugin` 负责组装 Factory 和路由 Session runtime-context Event，不拥有 Agent 生命周期状态，也不调用 Registry `Shutdown`。commit 阶段的 `factoryAdapter` 只管理一个 exact `FactoryRegistration`：普通节点全部启动后才开放构造，在动态 Agent Scope 之前关闭注册。Agent Registry 负责准入、精确 Agent epoch、运行期父子关系、发布与最终关闭；Agent Loop Factory 负责构造具体 Agent 与私有 Scope。执行能力只存在于具体 `ReactLoopAgent`；loop、activity、Turn、Step、request 与 Tool scheduler 都是该 Agent 私有对象。
 
 ## 创建、发布与销毁
 
@@ -92,7 +93,9 @@ sequenceDiagram
 
 Agent Loop 不实现 `agent.Provisioner`：它是 provisioning 的用例协调者和 `agent.Scope` 的 Plugin 适配实现。Subagent、测试或其他调用方分别提供自己的 Provisioner；若 Agent Loop 同时实现 Provisioner，就会把“创建事务所有者”和“领域贡献提供者”重新混在一个对象里。
 
-创建失败时 `preparedAgent` 用非取消上下文回滚 Agent Scope，保证取消不会中断结构释放。创建准入和 in-flight reservation 都由 Agent Registry 的 `LifecycleCoordinator` 管理；Agent Loop 只跟随 `Reservation.ClosingSignal` 取消尚未完成的构造。无论关闭来自 `Handle.Dispose` 还是 Plugin Runtime 的结构销毁，最终都收敛到同一个 Agent `Lifecycle`。
+创建失败时 `preparedAgent` 用非取消上下文回滚 Agent Scope，保证取消不会中断结构释放。进程级创建准入由 `RegistryService` 管理，exact epoch 与 in-flight reservation 由其 `LifecycleCoordinator` 管理；Agent Loop 只跟随 `Reservation.ClosingSignal` 取消尚未完成的构造。无论关闭来自 `Handle.Dispose` 还是 Plugin Runtime 的结构销毁，最终都收敛到同一个 Agent `Lifecycle`。
+
+Plugin Runtime 卸载 Agent Loop 时，先停止 commit 阶段的 `factoryAdapter`。`FactoryRegistration.Close` 原子关闭新的 Create/Resume 准入并取消未完成构造；随后 Runtime 按父子结构停止普通 Agent Scope；最后 `RegistryPlugin.Dispose` 执行 Registry 的幂等 `Shutdown`，兜底关闭没有被结构卸载收敛的 epoch。这个顺序把“注册生命周期”“Agent Scope 结构生命周期”和“Registry 业务生命周期”分开，而不创建第二套 Agent 生命周期接口。
 
 配置声明只能在 `plugin.Runtime.Start` 返回后通过 `StartConfiguredAgents` 启动，因为 Runtime 在静态启动事务中不接受动态 mount。该调用是一锤子启动事务；任一声明失败会逆序销毁本批次已创建 Agent，失败后不能对同一 Plugin 重跑。
 

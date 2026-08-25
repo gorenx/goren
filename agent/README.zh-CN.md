@@ -7,11 +7,15 @@
 | 文件 | 职责 |
 | --- | --- |
 | `agent.go` | `Agent` 能力、状态、Inbox target 与 maintenance 契约 |
-| `factory.go` | Registry 消费侧的 Factory 与 Create/Resume 参数 |
-| `custody.go` | 调用方绑定的 opaque Agent tree 结构托管关系 |
+| `factory.go` | Registry 消费的 `Factory`、`Reservation`、`Lifecycle` 与 Create/Resume 参数 |
 | `handle.go` | exact live Agent、关闭通知与销毁能力 |
-| `registry.go` | live Agent membership、创建委派、initiator ownership 与生命周期发布 |
-| `provisioning.go` | 未发布 Agent 的 `Provisioner`、可选 `Provisioning`、`Scope`、exact `Effect` 与 Plugin 组合适配器 |
+| `registry.go` | Registry 应用服务、Factory 注册、创建/恢复准入及面向消费者的窄接口 |
+| `lifecycle_coordinator.go` | exact Agent epoch、运行期父子关系、可见性、发布与 child-first teardown |
+| `lifecycle_status.go` | Registry 内部的 epoch、发布、子节点准入和关闭状态 |
+| `plugin.go` | 将 Registry 的窄能力发布到 Plugin Runtime，并在所有依赖停止后关闭 Registry |
+| `scope_runtime.go` | Agent 业务到私有运行 Scope 的消费侧端口 |
+| `provisioning.go` | Plugin-neutral 的 `ScopeResource`、`Scope`、`Provisioner` 与 `Provisioning` |
+| `initiator.go` | 同一调用链内的 Agent 因果归属，不表示结构所有权或授权 |
 | `inbox.go` | 从 append-only Session log 重建并提交 next-turn / next-step 消息 |
 | `events.go` | Agent 领域 Event、Waterfall 输入输出和调用入口 |
 | `model_selection.go` | prompt assembly 与 LLM request 之间的单步模型选择快照 |
@@ -27,34 +31,32 @@ sequenceDiagram
     participant Registry as agent.Registry
     participant Factory as agent.Factory
     participant Provisioner as agent.Provisioner
-    participant Provisioning as optional agent.Provisioning
     participant Scope as agent.Scope
     participant Runtime as plugin.Runtime
-    participant Membership as Agent membership
     participant Session as session.LiveStore
 
-    Caller->>Registry: Create / Resume（可绑定 Custody）
-    Registry->>Factory: CreateAgent / ResumeAgent + structural parent
+    Caller->>Registry: Create / Resume（可指定 RuntimeParent）
+    Registry->>Registry: 检查准入并 reserve exact epoch
+    Registry->>Factory: CreateAgent / ResumeAgent(Reservation)
     Factory->>Session: prepare unpublished Session
-    Factory->>Runtime: mount private Agent Scope root below Custody or Agent Loop
+    Factory->>Runtime: mount private Agent Scope below Agent Loop
     Runtime-->>Factory: active unpublished Scope
     Factory->>Provisioner: Provision(ctx, Scope)
-    Provisioner->>Scope: Mount / Own exact effects
-    Provisioner-->>Factory: optional Provisioning
-    Factory->>Provisioning: Commit()
-    Factory->>Runtime: mount membership
-    Membership->>Session: enter and announce Session
-    Membership->>Registry: enter and announce Agent
-    Factory-->>Caller: Agent Handle
+    Provisioner->>Scope: Own exact ScopeResource
+    Factory->>Registry: Reservation.Attach(Agent, AgentScopeRuntime)
+    Factory->>Session: announce Session
+    Factory-->>Registry: construction complete
+    Registry->>Runtime: dispatch agent/created and agent/session-start
+    Registry-->>Caller: Agent Handle
 ```
 
-调用方通过 `Provisioner` 配置未发布 Scope，Agent Loop 消费它但不实现它。`Scope` 由 concrete Agent Provider 实现，负责把 Plugin 或普通 `Effect` 纳入同一结构生命周期。若配置还需要发布边界复核或 resident 生命周期，则 `Provisioner` 返回一次调用独占的 `Provisioning`；没有剩余事务时返回 nil。`Provisioning.Commit` 成功后才能挂载 membership，因此 Provision、Commit 或 publication 任一步失败都不会返回可见 Agent。
+调用方通过 `Provisioner` 配置未发布 Scope，Agent Loop 消费这个接口，并由私有 Scope adapter 实现 `Scope`。业务资源通过 `Scope.Own` 转移结构所有权；需要安装 Plugin 的调用方使用 `agent/scopedplugin` adapter，不把 `plugin.Plugin` 带入 Agent 业务接口。若配置还需要发布边界复核或 resident 生命周期，则 `Provisioner` 返回一次调用独占的 `Provisioning`；没有剩余事务时返回 nil。只有 `Provisioning.Commit`、Session 发布和 Agent 发布都成功，调用方才会取得可见 Agent。
 
-Registry 的 `Enter` 只保留 exact Agent instance 和 initiator ownership；`Announce` 才发布 `agent/created`。普通调用由 Agent Loop Plugin 托管 Agent tree；需要让动态 Agent 随另一个 Plugin 子树先行回收时，Plugin 装配创建 opaque `Custody` 并绑定到 `Create` / `Resume` 调用上下文。业务 Options 和 Consumer 不接触 `plugin.Plugin` 或 Runtime topology。
+Registry 直接拥有 exact Agent epoch 与 `RuntimeParent` 关系，不再通过第二套 Agent tree、membership Plugin 或布尔状态拼装生命周期。调用方释放 `Handle` 时，Registry 先关闭运行期后代和当前 epoch 的工作准入，退休已发布事件，再通过 `AgentScopeRuntime.Teardown` 释放私有 Scope。Runtime 主动卸载 Scope 时，`Lifecycle.BeginTeardown/FinishTeardown` 把同一结构事实回报 Registry；两条入口收敛到同一个 epoch 状态机。
 
-调用方释放 `Handle` 时，Agent tree 先停止 work、移除 membership，再逆序释放 Scope effect 和 Plugin 子树。`Handle.ClosingSignal` 同时覆盖主动释放和 Runtime 结构回收，使持有者停止竞争释放同一棵树。创建请求被取消时，业务准备停止，但已取得的结构资源使用非取消上下文完整回滚，不能留下不可见的挂载树。
+`RegistryService` 自己持有进程级创建准入标志。`Create/Resume` 在同一临界区完成“检查准入、选择 Factory、reserve epoch”，因此 `Shutdown` 或 Factory 关闭后不会出现先取到旧 Factory、再绕过关闭标志的新 reservation。`FactoryRegistration.Close` 是终止型操作：它移除 exact Factory、关闭后续 Create/Resume，并通过 `Reservation.ClosingSignal` 取消仍在 materializing/attached 阶段的构造。`RegistryPlugin.Dispose` 作为业务服务所有者执行最终 `Shutdown`，不要求 Agent Loop 反向关闭 Registry。
 
-`Agent.ID()` 是 durable Session identity；`agent.Same` 判断两个接口是否指向同一个进程内 Agent 实例。它不引入第二个 `InstanceID`。Factory 注册同样由 Registry 返回的 exact `FactoryRegistration` 撤销；Registration 自身就是防止 stale unregister 的身份，不再增加只作指针 token 的 `factoryEntry`。
+`Agent.ID()` 是 durable Session identity；`agent.Same` 判断两个接口是否指向同一个进程内 Agent 实例。它不引入第二个 `InstanceID`。`FactoryRegistration` 自身就是 exact 注册身份，不再增加只作指针 token 的 `factoryEntry`。
 
 ## Event 与 Waterfall
 
@@ -70,6 +72,6 @@ maintenance 期间 Turn driver 不会同时执行；新 Inbox work 可以设置 
 
 ## 失败与取消
 
-- Factory 未挂载、Agent id 冲突、Session/Agent announcement 被拒绝或子树激活失败都会让创建失败；已进入的 membership 按逆序回滚。
+- Factory 未注册、Registry 已关闭准入、Agent id 冲突、Session/Agent announcement 被拒绝或子树激活失败都会让创建失败；未发布 Scope 和 epoch 按结构顺序回滚。
 - best-effort observer failure 由 owner 的 failure reporter 收敛，不能改写已经提交的 Session fact。
 - `CancelCause` 表达业务取消来源；调用 `Cancel` 不等于销毁 Plugin。结构销毁由 Runtime lifecycle 和 `Handle.Dispose` 负责。
