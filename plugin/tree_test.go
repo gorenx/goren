@@ -98,6 +98,59 @@ func TestRuntimeBuildsAndActivatesCompleteDeclaredTree(t *testing.T) {
 	}
 }
 
+func TestRuntimeShutdownStopsCommitChildBeforeDynamicMainChild(t *testing.T) {
+	order := make([]string, 0)
+	mainChild := &treePlugin{
+		name:  "main-child",
+		order: &order,
+	}
+	commitChild := &treePlugin{
+		name:  "commit-child",
+		order: &order,
+	}
+	root := &treePlugin{
+		name:  "root",
+		order: &order,
+		children: []plugin.ChildPlugin{
+			{
+				Instance:  mainChild,
+				Placement: plugin.SameScope,
+				Phase:     plugin.ActivationMain,
+			},
+			{
+				Instance:  commitChild,
+				Placement: plugin.SameScope,
+				Phase:     plugin.ActivationCommit,
+			},
+		},
+	}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	handles, err := runtimeEngine.Start(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dynamicChild := &treePlugin{
+		name:  "dynamic-child",
+		order: &order,
+	}
+	if _, err = runtimeEngine.MountChild(
+		context.Background(),
+		handles[0],
+		dynamicChild,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err = runtimeEngine.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := "root:apply,main-child:apply,commit-child:apply," +
+		"dynamic-child:apply,commit-child:dispose,dynamic-child:dispose," +
+		"main-child:dispose,root:dispose"
+	if got := strings.Join(order, ","); got != want {
+		t.Fatalf("complete lifecycle order = %q, want %q", got, want)
+	}
+}
+
 func TestRuntimeRejectsInvalidDescendantBeforeApply(t *testing.T) {
 	invalid := &treePlugin{
 		name: " invalid ",
