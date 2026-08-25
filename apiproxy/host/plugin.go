@@ -106,7 +106,7 @@ func (owner *Plugin) Manifest() plugin.Manifest {
 			plugin.EventOf[session.Disposed](),
 			plugin.EventOf[agent.StatusChanged](),
 			plugin.EventOf[agent.AgentError](),
-			plugin.EventOf[sessionprojection.ProjectionChanged](),
+			plugin.EventOf[sessionprojection.Changed](),
 			plugin.EventOf[workspace.ChangedNotice](),
 			plugin.EventOf[workspace.RemovedNotice](),
 			plugin.EventOf[workspace.OrderChangedNotice](),

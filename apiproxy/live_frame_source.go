@@ -87,7 +87,7 @@ func (owner *LiveFrameSource) ObserveEvent(
 		)
 	case agent.AgentError:
 		return owner.observeAgentError(requestContext, observed)
-	case sessionprojection.ProjectionChanged:
+	case sessionprojection.Changed:
 		owner.observeProjectionChange(observed.Change)
 		return nil
 	default:
