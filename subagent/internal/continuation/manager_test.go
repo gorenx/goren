@@ -193,14 +193,14 @@ func (records *registryRecord) start(t *testing.T) {
 
 func (records *registryRecord) CreateAgent(
 	requestContext context.Context,
-	reservation agent.Reservation,
+	agentEpoch agent.AgentEpoch,
 	options agent.CreateOptions,
 ) error {
 	records.mutex.Lock()
 	subject := records.agents[options.SessionID]
 	records.mutex.Unlock()
 	if subject != nil {
-		return records.attach(requestContext, reservation, subject, options.Provisioner)
+		return records.attach(requestContext, agentEpoch, subject, options.Provisioner)
 	}
 	conversation, createErr := session.New(
 		options.SessionID,
@@ -228,12 +228,12 @@ func (records *registryRecord) CreateAgent(
 	records.agents[options.SessionID] = subject
 	records.sessions.entries[options.SessionID] = conversation
 	records.mutex.Unlock()
-	return records.attach(requestContext, reservation, subject, options.Provisioner)
+	return records.attach(requestContext, agentEpoch, subject, options.Provisioner)
 }
 
 func (records *registryRecord) ResumeAgent(
 	requestContext context.Context,
-	reservation agent.Reservation,
+	agentEpoch agent.AgentEpoch,
 	options agent.ResumeOptions,
 ) error {
 	inspection, found := records.stored.inspections[options.SessionID]
@@ -270,12 +270,12 @@ func (records *registryRecord) ResumeAgent(
 	records.agents[options.SessionID] = subject
 	records.sessions.entries[options.SessionID] = conversation
 	records.mutex.Unlock()
-	return records.attach(requestContext, reservation, subject, options.Provisioner)
+	return records.attach(requestContext, agentEpoch, subject, options.Provisioner)
 }
 
 func (records *registryRecord) attach(
 	requestContext context.Context,
-	reservation agent.Reservation,
+	agentEpoch agent.AgentEpoch,
 	subject *agentRecord,
 	scopeProvisioner agent.Provisioner,
 ) error {
@@ -283,13 +283,13 @@ func (records *registryRecord) attach(
 	if records.closing == nil {
 		records.closing = make(map[session.SessionID]<-chan struct{})
 	}
-	records.closing[subject.ID()] = reservation.ClosingSignal()
+	records.closing[subject.ID()] = agentEpoch.ClosingSignal()
 	records.mutex.Unlock()
 	runtime := &registryScopeRuntime{
 		owner:   records,
 		subject: subject,
 	}
-	if _, err := reservation.Attach(subject, runtime); err != nil {
+	if _, err := agentEpoch.Attach(subject, runtime); err != nil {
 		return err
 	}
 	if scopeProvisioner == nil {

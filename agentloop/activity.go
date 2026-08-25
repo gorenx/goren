@@ -14,8 +14,12 @@ import (
 type activityKind uint8
 
 const (
+	// activityIdle has no admitted maintenance operation or Turn driver.
 	activityIdle activityKind = iota
+	// activityMaintenance admits one caller-supplied maintenance operation while
+	// normal Turn execution remains excluded.
 	activityMaintenance
+	// activityRunning owns one active Turn driver and its typed cancellation.
 	activityRunning
 )
 

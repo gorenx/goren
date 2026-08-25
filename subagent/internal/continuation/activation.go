@@ -9,18 +9,29 @@ import (
 	"github.com/gorenx/goren/subagent"
 )
 
-// residency owns the process-local continuation forest, per-child admission
-// locks, and scoped/global teardown cutoffs. Manager coordinates use cases
-// against this owner instead of owning each mutable collection independently.
-type residency struct {
+type activationAdmission uint8
+
+const (
+	// activationsAccepted permits new or resumed continuable Activation
+	// publication after the exact runtime parent passes Registry admission.
+	activationsAccepted activationAdmission = iota
+	// activationsDraining permanently rejects new business Activations while
+	// existing Activations settle; Agent descendant teardown remains Registry-owned.
+	activationsDraining
+)
+
+// activationRegistry owns the process-local continuable Activation index,
+// per-child serialization locks, and its single admission state. Runtime
+// Agent parent-child ownership remains in agent.LifecycleCoordinator.
+type activationRegistry struct {
 	mutex       sync.Mutex
 	activations map[session.SessionID]*Activation
 	locks       map[session.SessionID]*sync.Mutex
-	draining    bool
+	admission   activationAdmission
 }
 
-func newResidency() *residency {
-	return &residency{
+func newActivationRegistry() *activationRegistry {
+	return &activationRegistry{
 		activations: make(map[session.SessionID]*Activation),
 		locks:       make(map[session.SessionID]*sync.Mutex),
 	}

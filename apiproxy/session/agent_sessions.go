@@ -223,6 +223,11 @@ func (owner *AgentSessions) createOrAdopt(
 		loaded = *knownInspection
 	}
 	if inspectErr == nil {
+		if loaded.Header.Origin == session.OriginSubagent {
+			return nil, &SubagentOwnershipError{
+				identifier: loaded.Header.ID,
+			}
+		}
 		return owner.resumeCold(requestContext, loaded)
 	}
 	var missing *sesspersist.NotFoundError
@@ -279,9 +284,13 @@ func (owner *AgentSessions) resumeCold(
 	if subject, found := owner.agents.Get(identifier); found {
 		return subject, nil
 	}
-	transient, err := session.New(identifier, session.CreateOptions{
-		Seed: loaded.Events, Metadata: metadataFromHeader(loaded.Header),
-	})
+	transient, err := session.New(
+		identifier,
+		session.CreateOptions{
+			Seed:     loaded.Events,
+			Metadata: metadataFromHeader(loaded.Header),
+		},
+	)
 	if err != nil {
 		return nil, err
 	}

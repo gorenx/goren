@@ -9,7 +9,7 @@ import (
 )
 
 // preparedAgent owns one unpublished Agent construction transaction. The
-// Registry Reservation owns the lifecycle before the Agent is published.
+// Registry AgentEpoch owns the lifecycle before the Agent is published.
 type preparedAgent struct {
 	subject     *ReactLoopAgent
 	preparation scopePreparation
@@ -53,7 +53,7 @@ func newPreparedAgent(
 
 func (prepared *preparedAgent) publish(
 	requestContext context.Context,
-	reservation agent.Reservation,
+	agentEpoch agent.AgentEpoch,
 	scopeProvisioner agent.Provisioner,
 ) (publishErr error) {
 	defer func() {
@@ -89,14 +89,14 @@ func (prepared *preparedAgent) publish(
 	if _, err = scope.MountPlugin(requestContext, binding); err != nil {
 		return err
 	}
-	lifecycle, err := reservation.Attach(
+	epochTeardown, err := agentEpoch.Attach(
 		prepared.subject,
 		prepared.subject.scopeRuntime,
 	)
 	if err != nil {
 		return err
 	}
-	if err = prepared.preparation.BindLifecycle(lifecycle); err != nil {
+	if err = prepared.preparation.BindTeardown(epochTeardown); err != nil {
 		return err
 	}
 	if err = binding.announce(requestContext); err != nil {
@@ -104,8 +104,8 @@ func (prepared *preparedAgent) publish(
 	}
 	_, err = scope.MountPlugin(
 		requestContext,
-		&lifecycleAdapter{
-			lifecycle: lifecycle,
+		&teardownAdapter{
+			teardown: epochTeardown,
 		},
 	)
 	return err

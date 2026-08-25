@@ -12,10 +12,19 @@ import (
 type registrationState uint8
 
 const (
+	// registrationEntered is attached to the Store but has not begun publishing
+	// the Session Created edge.
 	registrationEntered registrationState = iota
+	// registrationAnnouncing has one Created publication in progress; Release
+	// waits for that publication before deciding whether Disposed is required.
 	registrationAnnouncing
+	// registrationLive has completed the Created publication attempt and must
+	// emit the paired Disposed edge when release succeeds.
 	registrationLive
+	// registrationReleasing rejects a second release owner while final write
+	// sealing, flush, exact Store removal, and detachment are in progress.
 	registrationReleasing
+	// registrationClosed is terminal and no longer belongs to the Store.
 	registrationClosed
 )
 

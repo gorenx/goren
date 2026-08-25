@@ -39,12 +39,12 @@ func (owner *Manager) Followup(
 	if admissionErr := owner.assertAdmitting(parentAgent); admissionErr != nil {
 		return "", admissionErr
 	}
-	owner.residency.mutex.Lock()
-	epoch := owner.residency.activations[childID]
+	owner.activations.mutex.Lock()
+	epoch := owner.activations.activations[childID]
 	materialized := false
 	if epoch != nil && epoch.disposal != nil {
 		done := epoch.disposal.done
-		owner.residency.mutex.Unlock()
+		owner.activations.mutex.Unlock()
 		if done != nil {
 			select {
 			case <-requestContext.Done():
@@ -54,7 +54,7 @@ func (owner *Manager) Followup(
 		}
 		epoch = nil
 	} else {
-		owner.residency.mutex.Unlock()
+		owner.activations.mutex.Unlock()
 	}
 	if epoch == nil {
 		resumed, resumeErr := owner.resume(
@@ -89,9 +89,9 @@ func (owner *Manager) Interrupt(
 	targetID session.SessionID,
 	authority subagent.InterruptAuthority,
 ) error {
-	owner.residency.mutex.Lock()
-	epoch := owner.residency.activations[targetID]
-	owner.residency.mutex.Unlock()
+	owner.activations.mutex.Lock()
+	epoch := owner.activations.activations[targetID]
+	owner.activations.mutex.Unlock()
 	switch evidence := authority.(type) {
 	case subagent.AncestorInterruptAuthority:
 		if evidence.Agent == nil ||
@@ -121,9 +121,9 @@ func (owner *Manager) Interrupt(
 	default:
 		return unauthorized("subagent interrupt authority is invalid")
 	}
-	owner.residency.mutex.Lock()
+	owner.activations.mutex.Lock()
 	closing := epoch.disposal != nil
-	owner.residency.mutex.Unlock()
+	owner.activations.mutex.Unlock()
 	if !closing {
 		epoch.handle.Subject.Cancel(
 			agent.ParentCancel{},
@@ -149,10 +149,10 @@ func (owner *Manager) ReportFrom(
 	if admissionErr := owner.assertAdmitting(childAgent); admissionErr != nil {
 		return "", admissionErr
 	}
-	owner.residency.mutex.Lock()
-	epoch := owner.residency.activations[childAgent.ID()]
+	owner.activations.mutex.Lock()
+	epoch := owner.activations.activations[childAgent.ID()]
 	closing := epoch != nil && epoch.disposal != nil
-	owner.residency.mutex.Unlock()
+	owner.activations.mutex.Unlock()
 	if epoch == nil || !agent.Same(epoch.handle.Subject, childAgent) {
 		return "", unauthorized(
 			fmt.Sprintf("Agent %q is not a live continuable subagent", childAgent.ID()),
@@ -233,16 +233,16 @@ func (owner *Manager) submit(
 	if messageErr != nil {
 		return "", messageErr
 	}
-	owner.residency.mutex.Lock()
+	owner.activations.mutex.Lock()
 	if epoch.disposal != nil {
-		owner.residency.mutex.Unlock()
+		owner.activations.mutex.Unlock()
 		return "", &subagent.Error{
 			Code:    subagent.ErrorActivationClosing,
 			Message: fmt.Sprintf("subagent %q Activation is closing", epoch.childID),
 		}
 	}
-	if owner.residency.draining {
-		owner.residency.mutex.Unlock()
+	if owner.activations.admission == activationsDraining {
+		owner.activations.mutex.Unlock()
 		return "", &subagent.Error{
 			Code:    subagent.ErrorDraining,
 			Message: "continuable subagents are draining; the message was not accepted",
@@ -250,16 +250,16 @@ func (owner *Manager) submit(
 	}
 	epoch.accepted[messageValue.StableID()] = struct{}{}
 	wake(epoch)
-	owner.residency.mutex.Unlock()
+	owner.activations.mutex.Unlock()
 	if sendErr := epoch.handle.Subject.Followup(messageValue); sendErr != nil {
-		owner.residency.mutex.Lock()
+		owner.activations.mutex.Lock()
 		delete(epoch.accepted, messageValue.StableID())
-		owner.residency.mutex.Unlock()
+		owner.activations.mutex.Unlock()
 		return "", sendErr
 	}
-	owner.residency.mutex.Lock()
+	owner.activations.mutex.Lock()
 	epoch.announced = true
-	owner.residency.mutex.Unlock()
+	owner.activations.mutex.Unlock()
 	return messageValue.StableID(), nil
 }
 

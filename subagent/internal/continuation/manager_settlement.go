@@ -13,13 +13,13 @@ import (
 func (owner *Manager) watch(epoch *Activation) {
 	go func() {
 		for {
-			owner.residency.mutex.Lock()
+			owner.activations.mutex.Lock()
 			if epoch.disposal != nil {
-				owner.residency.mutex.Unlock()
+				owner.activations.mutex.Unlock()
 				return
 			}
 			wakeSignal := epoch.wake
-			owner.residency.mutex.Unlock()
+			owner.activations.mutex.Unlock()
 			idleContext, cancelIdle := context.WithCancel(context.Background())
 			idleResult := make(chan error, 1)
 			go func() {
@@ -45,10 +45,10 @@ func (owner *Manager) watch(epoch *Activation) {
 			childMutex := owner.lockFor(epoch.childID)
 			childMutex.Lock()
 			childStatus := epoch.handle.Subject.StatusValue()
-			owner.residency.mutex.Lock()
+			owner.activations.mutex.Lock()
 			settled := epoch.disposal == nil && len(epoch.accepted) == 0 &&
 				childStatus == agent.StatusIdle
-			owner.residency.mutex.Unlock()
+			owner.activations.mutex.Unlock()
 			if settled {
 				settled = !owner.dependencies.Descendants.HasRuntimeDescendants(
 					epoch.handle.Subject,

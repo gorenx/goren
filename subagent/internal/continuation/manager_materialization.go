@@ -171,10 +171,10 @@ func (owner *Manager) publish(
 		runID:        runID,
 		boundary:     handle.Subject.SessionValue().Seq(),
 	}
-	owner.residency.mutex.Lock()
-	draining := owner.residency.draining
-	if draining || owner.residency.activations[epoch.childID] != nil {
-		owner.residency.mutex.Unlock()
+	owner.activations.mutex.Lock()
+	draining := owner.activations.admission == activationsDraining
+	if draining || owner.activations.activations[epoch.childID] != nil {
+		owner.activations.mutex.Unlock()
 		_ = handle.Dispose(context.Background())
 		if draining {
 			return nil, &subagent.Error{
@@ -187,8 +187,8 @@ func (owner *Manager) publish(
 			Message: fmt.Sprintf("subagent %q already exists", epoch.childID),
 		}
 	}
-	owner.residency.activations[epoch.childID] = epoch
-	owner.residency.mutex.Unlock()
+	owner.activations.activations[epoch.childID] = epoch
+	owner.activations.mutex.Unlock()
 	if owner.dependencies.Lifecycle != nil {
 		owner.dependencies.Lifecycle.Started(
 			parentAgent,

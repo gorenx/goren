@@ -41,12 +41,12 @@ func newFactory(
 
 func (owner *Factory) CreateAgent(
 	requestContext context.Context,
-	reservation agent.Reservation,
+	agentEpoch agent.AgentEpoch,
 	options agent.CreateOptions,
 ) error {
 	operationContext, finishConstruction, err := owner.begin(
 		requestContext,
-		reservation,
+		agentEpoch,
 	)
 	if err != nil {
 		return err
@@ -82,19 +82,19 @@ func (owner *Factory) CreateAgent(
 	}
 	return prepared.publish(
 		operationContext,
-		reservation,
+		agentEpoch,
 		options.Provisioner,
 	)
 }
 
 func (owner *Factory) ResumeAgent(
 	requestContext context.Context,
-	reservation agent.Reservation,
+	agentEpoch agent.AgentEpoch,
 	options agent.ResumeOptions,
 ) error {
 	operationContext, finishConstruction, err := owner.begin(
 		requestContext,
-		reservation,
+		agentEpoch,
 	)
 	if err != nil {
 		return err
@@ -130,17 +130,17 @@ func (owner *Factory) ResumeAgent(
 	}
 	return prepared.publish(
 		operationContext,
-		reservation,
+		agentEpoch,
 		options.Provisioner,
 	)
 }
 
 func (owner *Factory) begin(
 	requestContext context.Context,
-	reservation agent.Reservation,
+	agentEpoch agent.AgentEpoch,
 ) (context.Context, func(), error) {
-	if reservation == nil {
-		return nil, nil, errors.New("agentloop: Agent Reservation is required")
+	if agentEpoch == nil {
+		return nil, nil, errors.New("agentloop: Agent epoch is required")
 	}
 	if requestContext == nil {
 		return nil, nil, errors.New("agentloop: construction Context is nil")
@@ -151,7 +151,7 @@ func (owner *Factory) begin(
 	go func() {
 		defer close(followingDone)
 		select {
-		case <-reservation.ClosingSignal():
+		case <-agentEpoch.ClosingSignal():
 			cancelFollowed(errors.New("agentloop: Agent construction is closing"))
 		case <-followedContext.Done():
 		}
