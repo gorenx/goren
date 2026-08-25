@@ -109,15 +109,40 @@ func (observer *projectionFixtureObserver) observedChanges() []Change {
 }
 
 type projectionFixture struct {
-	store    *session.MemoryStore
+	store    session.LiveStore
 	registry *DriveRegistry
 	observer *projectionFixtureObserver
 }
 
+type sessionStoreProbe struct {
+	plugin.Base
+	store session.LiveStore
+}
+
+func (*sessionStoreProbe) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "session-projection-store-probe",
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[session.LiveStore](),
+		},
+	}
+}
+
+func (probe *sessionStoreProbe) Apply(context.Context) error {
+	liveStore, err := plugin.Require[session.LiveStore](probe)
+	if err != nil {
+		return err
+	}
+	probe.store = liveStore
+	return nil
+}
+
+func (*sessionStoreProbe) Dispose(context.Context) error { return nil }
+
 func newProjectionFixture(testingContext *testing.T) projectionFixture {
 	testingContext.Helper()
 	reporter := projectionFailureReporter{}
-	store, err := session.NewMemoryStore(
+	sessionPlugin, err := session.NewPlugin(
 		session.MemoryStoreOptions{
 			PostCommitFailures: reporter,
 		},
@@ -127,6 +152,7 @@ func newProjectionFixture(testingContext *testing.T) projectionFixture {
 	}
 	projectionService := NewDriveRegistry()
 	observer := &projectionFixtureObserver{}
+	storeProbe := &sessionStoreProbe{}
 	runtimeEngine := plugin.NewRuntime(
 		plugin.RuntimeSettings{
 			EventFailures: reporter,
@@ -136,7 +162,8 @@ func newProjectionFixture(testingContext *testing.T) projectionFixture {
 		context.Background(),
 		observer,
 		projectionService,
-		store,
+		sessionPlugin,
+		storeProbe,
 	); err != nil {
 		testingContext.Fatal(err)
 	}
@@ -146,7 +173,7 @@ func newProjectionFixture(testingContext *testing.T) projectionFixture {
 		}
 	})
 	return projectionFixture{
-		store:    store,
+		store:    storeProbe.store,
 		registry: projectionService,
 		observer: observer,
 	}

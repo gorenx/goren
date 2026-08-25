@@ -18,15 +18,6 @@ type benchmarkAdapter struct {
 	response []llm.StreamChunk
 }
 
-type benchmarkSessionEvents struct{}
-
-func (benchmarkSessionEvents) Dispatch(
-	context.Context,
-	session.RuntimeEvent,
-) error {
-	return nil
-}
-
 func (backend *benchmarkAdapter) Stream(
 	context.Context,
 	llm.GenerateOptions,
@@ -43,16 +34,32 @@ type benchmarkHarness struct {
 var benchmarkPreparedSession session.Context
 
 func BenchmarkAgentSessionPrepare(b *testing.B) {
-	sessions, err := session.NewMemoryStore(session.MemoryStoreOptions{
+	sessionPlugin, err := session.NewPlugin(session.MemoryStoreOptions{
 		PostCommitFailures: postCommitFailureSink{},
-	}, benchmarkSessionEvents{})
+	})
 	if err != nil {
 		b.Fatal(err)
 	}
+	storeProbe := &sessionStoreProbe{}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{
+		EventFailures: eventFailureSink{},
+	})
+	if _, err = runtimeEngine.Start(
+		context.Background(),
+		sessionPlugin,
+		storeProbe,
+	); err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() {
+		if shutdownErr := runtimeEngine.Shutdown(context.Background()); shutdownErr != nil {
+			b.Error(shutdownErr)
+		}
+	})
 	identifier := session.SessionID("benchmark-prepare")
 	b.ReportAllocs()
 	for b.Loop() {
-		benchmarkPreparedSession, err = sessions.Prepare(
+		benchmarkPreparedSession, err = storeProbe.store.Prepare(
 			&identifier,
 			session.CreateOptions{},
 		)

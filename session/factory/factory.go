@@ -46,7 +46,7 @@ func (builder *Factory) Create(
 	); err != nil {
 		return nil, err
 	}
-	return session.NewMemoryStore(
+	return session.NewPlugin(
 		session.MemoryStoreOptions{
 			PostCommitFailures: builder.postCommitFailures,
 		},

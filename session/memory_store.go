@@ -11,16 +11,34 @@ import (
 	"github.com/gorenx/goren/plugin"
 )
 
-// MemoryStore is the in-memory Provider for LiveStore.
-type MemoryStore struct {
-	plugin.Base
+type eventPublisher interface {
+	Publish(context.Context, plugin.Event) error
+}
+
+type memoryStoreState uint8
+
+const (
+	memoryStoreOpen memoryStoreState = iota
+	memoryStoreClosing
+	memoryStoreClosed
+)
+
+// memoryStore owns live Session membership and lifecycle decisions.
+// Plugin publication and event dispatch are provided by a separate adapter.
+type memoryStore struct {
 	mu            sync.RWMutex
 	registrations map[SessionID]*registration
 	order         []SessionID
 	counter       uint64
 	timeSource    TimeSource
 	failureReport PostCommitFailureReporter
+	publisher     eventPublisher
+	state         memoryStoreState
+	closeDone     chan struct{}
+	closeErr      error
 }
+
+var _ LiveStore = (*memoryStore)(nil)
 
 type systemTimeSource struct{}
 
@@ -28,8 +46,11 @@ func (systemTimeSource) CurrentTime() time.Time {
 	return time.Now()
 }
 
-// NewMemoryStore constructs an empty Session Service Plugin.
-func NewMemoryStore(options MemoryStoreOptions) (*MemoryStore, error) {
+// newMemoryStore constructs the business Store behind the Session Plugin.
+func newMemoryStore(
+	options MemoryStoreOptions,
+	publisher eventPublisher,
+) (*memoryStore, error) {
 	selectedTimeSource := options.TimeSource
 	if selectedTimeSource == nil {
 		selectedTimeSource = systemTimeSource{}
@@ -37,35 +58,20 @@ func NewMemoryStore(options MemoryStoreOptions) (*MemoryStore, error) {
 	if options.PostCommitFailures == nil {
 		return nil, errors.New("session: post-commit failure reporter is required")
 	}
-	return &MemoryStore{
+	if publisher == nil {
+		return nil, errors.New("session: event publisher is required")
+	}
+	return &memoryStore{
 		registrations: make(map[SessionID]*registration),
 		timeSource:    selectedTimeSource,
 		failureReport: options.PostCommitFailures,
+		publisher:     publisher,
+		state:         memoryStoreOpen,
 	}, nil
 }
 
-// Manifest declares the canonical Session Store Service.
-func (owner *MemoryStore) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name: PluginName,
-		Provides: []plugin.ProvidedService{
-			plugin.NewProvidedService[LiveStore](owner),
-		},
-	}
-}
-
-// Apply validates startup cancellation before Store publication.
-func (*MemoryStore) Apply(requestContext context.Context) error {
-	return requestContext.Err()
-}
-
-// Dispose releases every live Session in reverse entry order.
-func (registry *MemoryStore) Dispose(closeContext context.Context) error {
-	return registry.Close(closeContext)
-}
-
 // Create performs prepare, enter, and announce as one owned registration.
-func (registry *MemoryStore) Create(
+func (registry *memoryStore) Create(
 	requestContext context.Context,
 	identifier *SessionID,
 	options CreateOptions,
@@ -89,9 +95,13 @@ func (registry *MemoryStore) Create(
 }
 
 // Prepare validates and constructs a detached unpublished Session.
-func (registry *MemoryStore) Prepare(identifier *SessionID, options CreateOptions) (Context, error) {
+func (registry *memoryStore) Prepare(identifier *SessionID, options CreateOptions) (Context, error) {
 	resolved := SessionID("")
 	registry.mu.Lock()
+	if registry.state != memoryStoreOpen {
+		registry.mu.Unlock()
+		return nil, errors.New("session: Store is not accepting Session preparation")
+	}
 	if identifier == nil {
 		for {
 			registry.counter++
@@ -112,11 +122,11 @@ func (registry *MemoryStore) Prepare(identifier *SessionID, options CreateOption
 }
 
 // Enter publishes membership and append hooks, but does not announce creation.
-func (registry *MemoryStore) Enter(conversation Context) (Handle, error) {
+func (registry *memoryStore) Enter(conversation Context) (Handle, error) {
 	return registry.enter(conversation)
 }
 
-func (registry *MemoryStore) enter(conversation Context) (*registration, error) {
+func (registry *memoryStore) enter(conversation Context) (*registration, error) {
 	if conversation == nil {
 		return nil, errors.New("session: cannot enter nil Session")
 	}
@@ -127,10 +137,14 @@ func (registry *MemoryStore) enter(conversation Context) (*registration, error) 
 	current := &registration{
 		store:        registry,
 		conversation: concrete,
-		live:         true,
+		state:        registrationEntered,
 	}
 	identifier := concrete.ID()
 	registry.mu.Lock()
+	if registry.state != memoryStoreOpen {
+		registry.mu.Unlock()
+		return nil, errors.New("session: Store is not accepting Session entry")
+	}
 	if _, exists := registry.registrations[identifier]; exists {
 		registry.mu.Unlock()
 		return nil, fmt.Errorf("session: %q already exists", identifier)
@@ -147,7 +161,7 @@ func (registry *MemoryStore) enter(conversation Context) (*registration, error) 
 }
 
 // Announce emits the creation edge exactly once for an entered Session.
-func (registry *MemoryStore) Announce(requestContext context.Context, conversation Context) error {
+func (registry *memoryStore) Announce(requestContext context.Context, conversation Context) error {
 	if requestContext == nil {
 		return errors.New("session: announce Context is nil")
 	}
@@ -159,7 +173,7 @@ func (registry *MemoryStore) Announce(requestContext context.Context, conversati
 }
 
 // Flush awaits every registered durability observer for a live Session.
-func (registry *MemoryStore) Flush(requestContext context.Context, conversation Context) error {
+func (registry *memoryStore) Flush(requestContext context.Context, conversation Context) error {
 	entry, err := registry.liveRegistration(conversation)
 	if err != nil {
 		return err
@@ -171,14 +185,13 @@ func (registry *MemoryStore) Flush(requestContext context.Context, conversation 
 	return registry.publishFlush(requestContext, conversation, barrier)
 }
 
-func (registry *MemoryStore) publishFlush(
+func (registry *memoryStore) publishFlush(
 	requestContext context.Context,
 	conversation Context,
 	barrier WriteBarrier,
 ) error {
-	return plugin.Publish(
+	return registry.publisher.Publish(
 		requestContext,
-		registry,
 		FlushRequested{
 			Conversation: conversation,
 			Barrier:      barrier,
@@ -187,7 +200,7 @@ func (registry *MemoryStore) publishFlush(
 }
 
 // Get looks up one live Session.
-func (registry *MemoryStore) Get(identifier SessionID) (Context, bool) {
+func (registry *memoryStore) Get(identifier SessionID) (Context, bool) {
 	registry.mu.RLock()
 	current, found := registry.registrations[identifier]
 	registry.mu.RUnlock()
@@ -198,7 +211,7 @@ func (registry *MemoryStore) Get(identifier SessionID) (Context, bool) {
 }
 
 // List returns live Sessions in entry order.
-func (registry *MemoryStore) List() []Context {
+func (registry *memoryStore) List() []Context {
 	registry.mu.RLock()
 	identifiers := append([]SessionID(nil), registry.order...)
 	copied := make(map[SessionID]*registration, len(registry.registrations))
@@ -218,19 +231,55 @@ func (registry *MemoryStore) List() []Context {
 }
 
 // Close detaches every live Session in reverse entry order.
-func (registry *MemoryStore) Close(closeContext context.Context) error {
-	active := registry.List()
-	var closeErr error
-	for index := len(active) - 1; index >= 0; index-- {
-		entry, err := registry.liveRegistration(active[index])
-		if err == nil {
-			closeErr = errors.Join(closeErr, entry.release(closeContext))
+func (registry *memoryStore) Close(closeContext context.Context) error {
+	if closeContext == nil {
+		return errors.New("session: close Context is nil")
+	}
+	registry.mu.Lock()
+	if registry.state == memoryStoreClosed {
+		registry.mu.Unlock()
+		return nil
+	}
+	if registry.state == memoryStoreClosing && registry.closeDone != nil {
+		done := registry.closeDone
+		registry.mu.Unlock()
+		select {
+		case <-done:
+			registry.mu.RLock()
+			closeErr := registry.closeErr
+			registry.mu.RUnlock()
+			return closeErr
+		case <-closeContext.Done():
+			return context.Cause(closeContext)
 		}
 	}
+	registry.state = memoryStoreClosing
+	done := make(chan struct{})
+	registry.closeDone = done
+	active := make([]*registration, 0, len(registry.order))
+	for _, identifier := range registry.order {
+		if current := registry.registrations[identifier]; current != nil {
+			active = append(active, current)
+		}
+	}
+	registry.mu.Unlock()
+
+	var closeErr error
+	for index := len(active) - 1; index >= 0; index-- {
+		closeErr = errors.Join(closeErr, active[index].release(closeContext))
+	}
+	registry.mu.Lock()
+	registry.closeErr = closeErr
+	registry.closeDone = nil
+	if closeErr == nil {
+		registry.state = memoryStoreClosed
+	}
+	close(done)
+	registry.mu.Unlock()
 	return closeErr
 }
 
-func (registry *MemoryStore) liveRegistration(conversation Context) (*registration, error) {
+func (registry *memoryStore) liveRegistration(conversation Context) (*registration, error) {
 	if conversation == nil {
 		return nil, errors.New("session: nil Session is not live")
 	}
@@ -244,7 +293,7 @@ func (registry *MemoryStore) liveRegistration(conversation Context) (*registrati
 	return current, nil
 }
 
-func (registry *MemoryStore) removeRegistration(current *registration) {
+func (registry *memoryStore) removeRegistration(current *registration) {
 	identifier := current.conversation.ID()
 	registry.mu.Lock()
 	if registry.registrations[identifier] == current {
@@ -256,11 +305,10 @@ func (registry *MemoryStore) removeRegistration(current *registration) {
 	registry.mu.Unlock()
 }
 
-func (registry *MemoryStore) publishDisposed(requestContext context.Context, conversation Context) {
+func (registry *memoryStore) publishDisposed(requestContext context.Context, conversation Context) {
 	_ = safelyDispatch(func() error {
-		return plugin.Publish(
+		return registry.publisher.Publish(
 			requestContext,
-			registry,
 			Disposed{
 				Conversation: conversation,
 			},
@@ -268,11 +316,10 @@ func (registry *MemoryStore) publishDisposed(requestContext context.Context, con
 	})
 }
 
-func (registry *MemoryStore) publishCreated(requestContext context.Context, conversation Context) error {
+func (registry *memoryStore) publishCreated(requestContext context.Context, conversation Context) error {
 	return safelyDispatch(func() error {
-		return plugin.Publish(
+		return registry.publisher.Publish(
 			requestContext,
-			registry,
 			Created{
 				Conversation: conversation,
 			},
@@ -280,7 +327,7 @@ func (registry *MemoryStore) publishCreated(requestContext context.Context, conv
 	})
 }
 
-func (registry *MemoryStore) reportPostCommitFailure(failure PostCommitFailure) {
+func (registry *memoryStore) reportPostCommitFailure(failure PostCommitFailure) {
 	defer func() { _ = recover() }()
 	registry.failureReport.ReportPostCommitFailure(failure)
 }

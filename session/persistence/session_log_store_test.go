@@ -14,6 +14,31 @@ import (
 
 type persistenceFailureReporter struct{}
 
+type sessionStoreProbe struct {
+	plugin.Base
+	store session.LiveStore
+}
+
+func (*sessionStoreProbe) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "session-persistence-store-probe",
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[session.LiveStore](),
+		},
+	}
+}
+
+func (probe *sessionStoreProbe) Apply(context.Context) error {
+	liveStore, err := plugin.Require[session.LiveStore](probe)
+	if err != nil {
+		return err
+	}
+	probe.store = liveStore
+	return nil
+}
+
+func (*sessionStoreProbe) Dispose(context.Context) error { return nil }
+
 func (persistenceFailureReporter) ReportEventFailure(context.Context, plugin.EventFailure) {}
 
 func (persistenceFailureReporter) ReportPostCommitFailure(session.PostCommitFailure) {}
@@ -92,7 +117,7 @@ func (opener *sqliteBackendOpener) OpenBackend(
 
 type persistenceFixture struct {
 	runtime     *plugin.Runtime
-	store       *session.MemoryStore
+	store       session.LiveStore
 	persistence *sesspersist.SessionLogStore
 	opener      *sqliteBackendOpener
 }
@@ -105,7 +130,7 @@ func newPersistenceFixture(
 ) persistenceFixture {
 	testingContext.Helper()
 	reporter := persistenceFailureReporter{}
-	store, err := session.NewMemoryStore(
+	sessionPlugin, err := session.NewPlugin(
 		session.MemoryStoreOptions{
 			PostCommitFailures: reporter,
 		},
@@ -136,16 +161,18 @@ func newPersistenceFixture(
 			EventFailures: reporter,
 		},
 	)
+	storeProbe := &sessionStoreProbe{}
 	if _, err := runtimeEngine.Start(
 		context.Background(),
 		durability,
-		store,
+		sessionPlugin,
+		storeProbe,
 	); err != nil {
 		testingContext.Fatal(err)
 	}
 	return persistenceFixture{
 		runtime:     runtimeEngine,
-		store:       store,
+		store:       storeProbe.store,
 		persistence: durability,
 		opener:      opener,
 	}

@@ -16,6 +16,31 @@ import (
 
 type queryPostCommitFailureSink struct{}
 
+type sessionStoreProbe struct {
+	plugin.Base
+	store session.LiveStore
+}
+
+func (*sessionStoreProbe) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "session-query-store-probe",
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[session.LiveStore](),
+		},
+	}
+}
+
+func (probe *sessionStoreProbe) Apply(context.Context) error {
+	liveStore, err := plugin.Require[session.LiveStore](probe)
+	if err != nil {
+		return err
+	}
+	probe.store = liveStore
+	return nil
+}
+
+func (*sessionStoreProbe) Dispose(context.Context) error { return nil }
+
 func (queryPostCommitFailureSink) ReportPostCommitFailure(session.PostCommitFailure) {}
 
 type queryPersistencePlugin struct {
@@ -139,7 +164,7 @@ func (opener queryIndexOpener) OpenIndex(
 
 type queryFixture struct {
 	persistence *queryPersistencePlugin
-	store       *session.MemoryStore
+	store       session.LiveStore
 	service     *sessionquery.Service
 }
 
@@ -148,7 +173,7 @@ func newQueryFixture(
 	persistence *queryPersistencePlugin,
 ) *queryFixture {
 	testingContext.Helper()
-	store, err := session.NewMemoryStore(
+	sessionPlugin, err := session.NewPlugin(
 		session.MemoryStoreOptions{
 			PostCommitFailures: queryPostCommitFailureSink{},
 		},
@@ -168,11 +193,13 @@ func newQueryFixture(
 		testingContext.Fatal(err)
 	}
 	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	storeProbe := &sessionStoreProbe{}
 	if _, err := runtimeEngine.Start(
 		context.Background(),
 		queryService,
 		persistence,
-		store,
+		sessionPlugin,
+		storeProbe,
 	); err != nil {
 		testingContext.Fatal(err)
 	}
@@ -183,7 +210,7 @@ func newQueryFixture(
 	})
 	return &queryFixture{
 		persistence: persistence,
-		store:       store,
+		store:       storeProbe.store,
 		service:     queryService,
 	}
 }

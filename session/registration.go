@@ -9,17 +9,25 @@ import (
 	"github.com/gorenx/goren/plugin"
 )
 
-// registration owns one Session's membership in MemoryStore.
+type registrationState uint8
+
+const (
+	registrationEntered registrationState = iota
+	registrationAnnouncing
+	registrationLive
+	registrationReleasing
+	registrationClosed
+)
+
+// registration owns one Session membership and its publication-to-release
+// state machine.
 type registration struct {
-	mu              sync.Mutex
-	store           *MemoryStore
-	conversation    *coordinator
-	live            bool
-	announced       bool
-	announcing      bool
-	detachRequested bool
-	releaseComplete bool
-	releaseDone     chan struct{}
+	mu               sync.Mutex
+	store            *memoryStore
+	conversation     *coordinator
+	state            registrationState
+	announcementDone chan struct{}
+	releaseDone      chan struct{}
 }
 
 func (owner *registration) Session() Context {
@@ -39,35 +47,42 @@ func (owner *registration) Release(closeContext context.Context) error {
 func (owner *registration) isLive() bool {
 	owner.mu.Lock()
 	defer owner.mu.Unlock()
-	return owner.live
+	return owner.state != registrationClosed
 }
 
 func (owner *registration) announce(requestContext context.Context) error {
 	owner.mu.Lock()
-	if owner.announced || owner.announcing {
+	if owner.state != registrationEntered {
 		owner.mu.Unlock()
 		return fmt.Errorf("session: %q was already announced", owner.conversation.ID())
 	}
-	owner.announced = true
-	owner.announcing = true
+	done := make(chan struct{})
+	owner.state = registrationAnnouncing
+	owner.announcementDone = done
 	owner.mu.Unlock()
 
 	dispatchErr := owner.store.publishCreated(requestContext, owner.conversation)
-	owner.finishAnnouncement(requestContext)
+	owner.mu.Lock()
+	owner.state = registrationLive
+	owner.announcementDone = nil
+	close(done)
+	owner.mu.Unlock()
 	return dispatchErr
 }
 
-func (owner *registration) publishAppend(requestContext context.Context, committed Event) {
+func (owner *registration) publishAppend(
+	requestContext context.Context,
+	committed Event,
+) {
 	owner.mu.Lock()
-	live := owner.live
+	live := owner.state != registrationClosed
 	owner.mu.Unlock()
 	if !live {
 		return
 	}
 	publishErr := safelyDispatch(func() error {
-		return plugin.Publish(
+		return owner.store.publisher.Publish(
 			requestContext,
-			owner.store,
 			EventAppended{
 				Conversation: owner.conversation,
 				Committed:    cloneEvent(committed),
@@ -90,90 +105,111 @@ func (owner *registration) release(closeContext context.Context) error {
 	}
 	for {
 		owner.mu.Lock()
-		if !owner.live || owner.releaseComplete {
+		switch owner.state {
+		case registrationClosed:
 			owner.mu.Unlock()
 			return nil
-		}
-		if owner.releaseDone != nil {
+		case registrationAnnouncing:
+			done := owner.announcementDone
+			owner.mu.Unlock()
+			if err := waitForRegistration(closeContext, done); err != nil {
+				return err
+			}
+		case registrationReleasing:
 			done := owner.releaseDone
 			owner.mu.Unlock()
-			select {
-			case <-done:
-				continue
-			case <-closeContext.Done():
-				return context.Cause(closeContext)
+			if err := waitForRegistration(closeContext, done); err != nil {
+				return err
 			}
-		}
-		done := make(chan struct{})
-		owner.releaseDone = done
-		owner.mu.Unlock()
+		case registrationEntered, registrationLive:
+			previous := owner.state
+			done := make(chan struct{})
+			owner.state = registrationReleasing
+			owner.releaseDone = done
+			owner.mu.Unlock()
 
-		releaseErr := owner.finishRelease(closeContext)
-		owner.mu.Lock()
-		if releaseErr == nil {
-			owner.releaseComplete = true
+			releaseErr := owner.finishRelease(
+				closeContext,
+				previous,
+			)
+			owner.mu.Lock()
+			if releaseErr == nil {
+				owner.state = registrationClosed
+			} else {
+				owner.state = previous
+			}
+			owner.releaseDone = nil
+			close(done)
+			owner.mu.Unlock()
+			return releaseErr
+		default:
+			owner.mu.Unlock()
+			return errors.New("session: invalid registration state")
 		}
-		owner.releaseDone = nil
-		close(done)
-		owner.mu.Unlock()
-		return releaseErr
 	}
 }
 
-func (owner *registration) finishRelease(closeContext context.Context) error {
+func waitForRegistration(
+	waitContext context.Context,
+	done <-chan struct{},
+) error {
+	select {
+	case <-done:
+		return nil
+	case <-waitContext.Done():
+		return context.Cause(waitContext)
+	}
+}
+
+func (owner *registration) finishRelease(
+	closeContext context.Context,
+	previous registrationState,
+) error {
 	barrier, err := owner.conversation.sealWrites(closeContext)
 	if err != nil {
 		return err
 	}
-	if err := owner.store.publishFlush(closeContext, owner.conversation, barrier); err != nil {
+	if err = owner.store.publishFlush(
+		closeContext,
+		owner.conversation,
+		barrier,
+	); err != nil {
 		if !errors.Is(err, plugin.ErrPluginNotActive) &&
 			!errors.Is(err, plugin.ErrPluginNotBound) {
 			return err
 		}
 	}
-	owner.detach(closeContext)
+	owner.detach(closeContext, previous)
 	return nil
 }
 
 func (owner *registration) rollback(closeContext context.Context) error {
 	releaseErr := owner.release(closeContext)
-	owner.detach(closeContext)
+	if releaseErr != nil {
+		owner.forceDetach(closeContext)
+	}
 	return releaseErr
 }
 
-func (owner *registration) finishAnnouncement(requestContext context.Context) {
+func (owner *registration) forceDetach(closeContext context.Context) {
 	owner.mu.Lock()
-	owner.announcing = false
-	shouldDetach := owner.detachRequested
-	if shouldDetach {
-		owner.live = false
-		owner.detachRequested = false
+	if owner.state == registrationClosed {
+		owner.mu.Unlock()
+		return
 	}
+	previous := owner.state
+	owner.state = registrationClosed
 	owner.mu.Unlock()
-	if shouldDetach {
-		owner.store.removeRegistration(owner)
-		owner.conversation.detach(owner)
-		owner.store.publishDisposed(requestContext, owner.conversation)
-	}
+	owner.detach(closeContext, previous)
 }
 
-func (owner *registration) detach(closeContext context.Context) {
-	owner.mu.Lock()
-	if !owner.live {
-		owner.mu.Unlock()
-		return
-	}
-	if owner.announcing {
-		owner.detachRequested = true
-		owner.mu.Unlock()
-		return
-	}
-	owner.live = false
-	announced := owner.announced
-	owner.mu.Unlock()
+func (owner *registration) detach(
+	closeContext context.Context,
+	previous registrationState,
+) {
 	owner.store.removeRegistration(owner)
 	owner.conversation.detach(owner)
-	if announced {
+	if previous == registrationLive {
 		owner.store.publishDisposed(closeContext, owner.conversation)
 	}
 }
