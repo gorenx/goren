@@ -13,8 +13,8 @@ import (
 const ServiceName = "sessionProjections"
 
 const (
-	PluginName                 = "@deepseek-ai/dsh-session-projection"
-	ProjectionChangedEventName = "session/projection"
+	PluginName       = "@deepseek-ai/dsh-session-projection"
+	ChangedEventName = "session/projection"
 )
 
 // Transition is one unit's next plain-JSON state. Changed is explicit because
@@ -68,16 +68,16 @@ type Change struct {
 	Seq     int64
 }
 
-// ProjectionChanged publishes one committed whole-value projection change.
-type ProjectionChanged struct {
+// Changed publishes one committed whole-value projection change.
+type Changed struct {
 	Change Change
 }
 
-func (ProjectionChanged) EventName() string {
-	return ProjectionChangedEventName
+func (Changed) EventName() string {
+	return ChangedEventName
 }
 
-func (ProjectionChanged) EventDelivery() plugin.DeliveryPolicy {
+func (Changed) EventDelivery() plugin.DeliveryPolicy {
 	return plugin.DeliveryBestEffort
 }
 

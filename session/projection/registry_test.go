@@ -70,7 +70,7 @@ func (*projectionFixtureObserver) Manifest() plugin.Manifest {
 			plugin.ServiceOf[Registry](),
 		},
 		Events: []plugin.EventSubscription{
-			plugin.EventOf[ProjectionChanged](),
+			plugin.EventOf[Changed](),
 		},
 	}
 }
@@ -92,7 +92,7 @@ func (observer *projectionFixtureObserver) ObserveEvent(
 	_ context.Context,
 	fact plugin.Event,
 ) error {
-	projectionChange, matches := fact.(ProjectionChanged)
+	projectionChange, matches := fact.(Changed)
 	if !matches {
 		return nil
 	}

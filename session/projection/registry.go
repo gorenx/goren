@@ -238,7 +238,7 @@ func (owner *DriveRegistry) observeEvent(
 		if err := plugin.Publish(
 			requestContext,
 			owner,
-			ProjectionChanged{
+			Changed{
 				Change: cloneChange(projectionChange),
 			},
 		); err != nil {

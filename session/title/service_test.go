@@ -40,7 +40,7 @@ func (*titleProjectionObserver) Manifest() plugin.Manifest {
 			plugin.ServiceOf[sessionprojection.Registry](),
 		},
 		Events: []plugin.EventSubscription{
-			plugin.EventOf[sessionprojection.ProjectionChanged](),
+			plugin.EventOf[sessionprojection.Changed](),
 		},
 	}
 }
@@ -58,7 +58,7 @@ func (observer *titleProjectionObserver) ObserveEvent(
 	_ context.Context,
 	fact plugin.Event,
 ) error {
-	projectionChange, matches := fact.(sessionprojection.ProjectionChanged)
+	projectionChange, matches := fact.(sessionprojection.Changed)
 	if matches && projectionChange.Change.Key == ProjectionKey {
 		observer.changes <- projectionChange.Change
 	}
