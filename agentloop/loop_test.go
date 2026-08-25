@@ -795,7 +795,7 @@ func TestRuntimeShutdownRetiresLiveAgentBeforeRootServices(t *testing.T) {
 				Model:    "model",
 			},
 		},
-	); err == nil || !strings.Contains(err.Error(), "no Agent factory") {
+	); err == nil || !strings.Contains(err.Error(), "shutting down") {
 		t.Fatalf("post-shutdown Create error = %v", err)
 	}
 	want := []string{
@@ -807,6 +807,86 @@ func TestRuntimeShutdownRetiresLiveAgentBeforeRootServices(t *testing.T) {
 	}
 	if got := state.lifecycle.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("shutdown lifecycle = %#v, want %#v", got, want)
+	}
+}
+
+type shutdownBarrier struct {
+	plugin.Base
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (*shutdownBarrier) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "agentloop-test-shutdown-barrier",
+	}
+}
+
+func (*shutdownBarrier) Apply(requestContext context.Context) error {
+	return requestContext.Err()
+}
+
+func (barrier *shutdownBarrier) Dispose(context.Context) error {
+	barrier.once.Do(func() {
+		close(barrier.entered)
+	})
+	<-barrier.release
+	return nil
+}
+
+func TestRuntimeShutdownClosesConstructionBeforeAgentScopes(t *testing.T) {
+	state := newHarnessFixture(t, nil)
+	barrier := &shutdownBarrier{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			close(barrier.release)
+		})
+	}
+	defer release()
+	if _, err := state.agents.Create(
+		context.Background(),
+		agent.CreateOptions{
+			SessionID: "shutdown-admission",
+			AgentOptions: agent.Options{
+				Provider: "mock",
+				Model:    "model",
+			},
+			Provisioner: scopedplugin.MountPlugins(barrier),
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	shutdownDone := make(chan error, 1)
+	go func() {
+		shutdownDone <- state.runtimeEngine.Shutdown(context.Background())
+	}()
+	select {
+	case <-barrier.entered:
+	case <-time.After(time.Second):
+		t.Fatal("Agent Scope did not begin shutdown")
+	}
+	_, err := state.agents.Create(
+		context.Background(),
+		agent.CreateOptions{
+			SessionID: "during-shutdown",
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "shutting down") {
+		t.Fatalf("Create during Agent Scope shutdown error = %v", err)
+	}
+	release()
+	select {
+	case err = <-shutdownDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Runtime shutdown did not complete")
 	}
 }
 
