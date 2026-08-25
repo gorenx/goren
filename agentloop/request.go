@@ -57,7 +57,7 @@ func (requester *modelRequester) executeStep(
 		return nil, err
 	}
 	for {
-		if err := contextFailure(requestContext); err != nil {
+		if err = contextFailure(requestContext); err != nil {
 			return nil, err
 		}
 		boundaryMessages, err := requester.subject.conversation.DeriveMessages()
@@ -87,7 +87,7 @@ func (requester *modelRequester) executeStep(
 			return nil, err
 		}
 		for {
-			if err := contextFailure(requestContext); err != nil {
+			if err = contextFailure(requestContext); err != nil {
 				_ = chunkStream.Close(context.Background())
 				return nil, err
 			}
@@ -126,10 +126,10 @@ func (requester *modelRequester) executeStep(
 				return nil, err
 			}
 		}
-		if err := chunkStream.Close(context.Background()); err != nil {
+		if err = chunkStream.Close(context.Background()); err != nil {
 			return nil, err
 		}
-		if err := contextFailure(requestContext); err != nil {
+		if err = contextFailure(requestContext); err != nil {
 			return nil, err
 		}
 		finishReason := assembler.FinishValue()
@@ -158,7 +158,7 @@ func (requester *modelRequester) executeStep(
 			if resolveErr != nil {
 				return nil, resolveErr
 			}
-			if err := contextFailure(requestContext); err != nil {
+			if err = contextFailure(requestContext); err != nil {
 				return nil, err
 			}
 			if action.Retry {
@@ -201,7 +201,7 @@ func (requester *modelRequester) executeStep(
 		if err != nil {
 			return nil, err
 		}
-		if _, err := requester.subject.conversation.Commit(requestContext, session.Batch(messageDraft)); err != nil {
+		if _, err = requester.subject.conversation.Commit(requestContext, session.Batch(messageDraft)); err != nil {
 			return nil, err
 		}
 		if finishReason.ReasonKind() == "max-tokens" {
@@ -332,7 +332,7 @@ func (requester *modelRequester) buildRequest(
 		if err != nil {
 			return requestAttempt{}, err
 		}
-		if _, err := requester.subject.conversation.Commit(requestContext, session.Batch(headerDraft)); err != nil {
+		if _, err = requester.subject.conversation.Commit(requestContext, session.Batch(headerDraft)); err != nil {
 			return requestAttempt{}, err
 		}
 		requester.requestHeaderLogged = true
@@ -347,7 +347,7 @@ func (requester *modelRequester) buildRequest(
 		if err != nil {
 			return requestAttempt{}, err
 		}
-		if _, err := requester.subject.conversation.Commit(requestContext, session.Batch(headerDraft)); err != nil {
+		if _, err = requester.subject.conversation.Commit(requestContext, session.Batch(headerDraft)); err != nil {
 			return requestAttempt{}, err
 		}
 	}
@@ -381,7 +381,7 @@ func (requester *modelRequester) buildRequest(
 			return requestAttempt{}, err
 		}
 	}
-	if err := contextFailure(requestContext); err != nil {
+	if err = contextFailure(requestContext); err != nil {
 		return requestAttempt{}, err
 	}
 	requestOptions := llm.GenerateOptions{
