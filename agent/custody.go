@@ -27,14 +27,14 @@ func NewCustody(parent plugin.Plugin) (Custody, error) {
 }
 
 // Bind returns a request Context carrying this exact Agent custody.
-func (binding Custody) Bind(requestContext context.Context) context.Context {
-	if requestContext == nil {
+func (binding Custody) Bind(ctx context.Context) context.Context {
+	if ctx == nil {
 		return nil
 	}
 	if binding.parent == nil {
-		return requestContext
+		return ctx
 	}
-	return context.WithValue(requestContext, custodyContextKey{}, binding)
+	return context.WithValue(ctx, custodyContextKey{}, binding)
 }
 
 // IsZero reports that no structural Agent custody was assigned.
@@ -42,10 +42,10 @@ func (binding Custody) IsZero() bool {
 	return binding.parent == nil
 }
 
-func custodyFrom(requestContext context.Context) plugin.Plugin {
-	if requestContext == nil {
+func custodyFrom(ctx context.Context) plugin.Plugin {
+	if ctx == nil {
 		return nil
 	}
-	binding, _ := requestContext.Value(custodyContextKey{}).(Custody)
+	binding, _ := ctx.Value(custodyContextKey{}).(Custody)
 	return binding.parent
 }
