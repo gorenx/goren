@@ -187,7 +187,7 @@ func TestAgentProvisioningCancellationStillRollsBackTree(t *testing.T) {
 		t.Fatalf("Create error = %v, want canceled", err)
 	}
 	if !configured.transferredDisposed {
-		t.Fatal("failed Provisioner retained an Effect transferred to the Scope")
+		t.Fatal("failed Provisioner retained a resource transferred to the Scope")
 	}
 	if _, found := state.agents.Get("provisioning-canceled"); found {
 		t.Fatal("canceled Agent remained published")
@@ -203,5 +203,5 @@ func TestAgentProvisioningCancellationStillRollsBackTree(t *testing.T) {
 var _ agent.Provisioner = (*provisionerRecord)(nil)
 var _ agent.Provisioner = (*cancelingProvisioner)(nil)
 var _ agent.Provisioning = (*provisioningRecord)(nil)
-var _ agent.Effect = (*effectRecord)(nil)
-var _ agent.Effect = (*flagEffect)(nil)
+var _ agent.ScopeResource = (*effectRecord)(nil)
+var _ agent.ScopeResource = (*flagEffect)(nil)

@@ -16,47 +16,29 @@ type runtimeContextRouter struct {
 	projections map[session.Context]*runtimeContextProjection
 }
 
-func newRuntimeContextRouter() *runtimeContextRouter {
-	return &runtimeContextRouter{
-		projections: make(
-			map[session.Context]*runtimeContextProjection,
-		),
-	}
-}
-
 func (router *runtimeContextRouter) register(
 	conversation session.Context,
 	projection *runtimeContextProjection,
-) error {
+) (*runtimeContextRegistration, error) {
 	if conversation == nil || projection == nil {
-		return errors.New(
+		return nil, errors.New(
 			"agentloop: runtime-context Session and projection are required",
 		)
 	}
 	router.mutex.Lock()
 	defer router.mutex.Unlock()
 	if _, exists := router.projections[conversation]; exists {
-		return fmt.Errorf(
+		return nil, fmt.Errorf(
 			"agentloop: Session %q already has a runtime-context projection",
 			conversation.ID(),
 		)
 	}
 	router.projections[conversation] = projection
-	return nil
-}
-
-func (router *runtimeContextRouter) remove(
-	conversation session.Context,
-	projection *runtimeContextProjection,
-) {
-	if conversation == nil || projection == nil {
-		return
-	}
-	router.mutex.Lock()
-	if router.projections[conversation] == projection {
-		delete(router.projections, conversation)
-	}
-	router.mutex.Unlock()
+	return &runtimeContextRegistration{
+		router:       router,
+		conversation: conversation,
+		projection:   projection,
+	}, nil
 }
 
 func (router *runtimeContextRouter) accept(
@@ -81,4 +63,37 @@ func (router *runtimeContextRouter) clear() int {
 	)
 	router.mutex.Unlock()
 	return dangling
+}
+
+type runtimeContextRegistration struct {
+	once         sync.Once
+	router       *runtimeContextRouter
+	conversation session.Context
+	projection   *runtimeContextProjection
+}
+
+func newRuntimeContextRouter() *runtimeContextRouter {
+	return &runtimeContextRouter{
+		projections: make(
+			map[session.Context]*runtimeContextProjection,
+		),
+	}
+}
+
+func (registration *runtimeContextRegistration) Release() {
+	if registration == nil {
+		return
+	}
+	registration.once.Do(func() {
+		router := registration.router
+		if router == nil || registration.conversation == nil ||
+			registration.projection == nil {
+			return
+		}
+		router.mutex.Lock()
+		if router.projections[registration.conversation] == registration.projection {
+			delete(router.projections, registration.conversation)
+		}
+		router.mutex.Unlock()
+	})
 }

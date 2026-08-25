@@ -27,6 +27,42 @@ func (turnBenchmarkPostCommitFailures) ReportPostCommitFailure(
 ) {
 }
 
+type benchmarkScopeRuntime struct{}
+
+func (benchmarkScopeRuntime) Dispatch(context.Context, agent.RuntimeEvent) error {
+	return nil
+}
+
+func (benchmarkScopeRuntime) ResolvePreStep(
+	requestContext context.Context,
+	notice agent.PreStepNotice,
+	terminal agent.PreStepAction,
+) (agent.PreStepDecision, error) {
+	return terminal.Execute(requestContext, notice)
+}
+
+func (benchmarkScopeRuntime) ResolveRequest(
+	requestContext context.Context,
+	notice agent.RequestNotice,
+	terminal agent.RequestAction,
+) (agent.RequestResolution, error) {
+	return terminal.Execute(requestContext, notice)
+}
+
+func (benchmarkScopeRuntime) ResolveRequestError(
+	requestContext context.Context,
+	notice agent.RequestErrorNotice,
+	terminal agent.RequestErrorHandler,
+) (agent.RequestErrorAction, error) {
+	return terminal.Execute(requestContext, notice)
+}
+
+func (benchmarkScopeRuntime) Provision(context.Context, agent.Provisioner) error {
+	return nil
+}
+
+func (benchmarkScopeRuntime) Teardown(context.Context) error { return nil }
+
 type turnBenchmarkHarness struct {
 	runtimeEngine *plugin.Runtime
 	handleState   agent.Handle
@@ -55,6 +91,7 @@ func BenchmarkAgentConstruct(b *testing.B) {
 			loopOptions,
 			DefaultMaxParallelToolCalls,
 			failures,
+			benchmarkScopeRuntime{},
 		)
 		if err != nil {
 			b.Fatal(err)
@@ -83,13 +120,17 @@ func newTurnBenchmarkHarness(
 	if err != nil {
 		benchmarkState.Fatal(err)
 	}
-	sessions, err := session.NewMemoryStore(session.MemoryStoreOptions{
+	sessionPlugin, err := session.NewPlugin(session.MemoryStoreOptions{
 		PostCommitFailures: turnBenchmarkPostCommitFailures{},
 	})
 	if err != nil {
 		benchmarkState.Fatal(err)
 	}
 	agents := agent.NewRegistry(agent.RegistryOptions{})
+	agentPlugin, err := agent.NewRegistryPlugin(agents)
+	if err != nil {
+		benchmarkState.Fatal(err)
+	}
 	models := llm.NewRuntime(nil)
 	prompts := systemprompt.New(
 		promptSettings,
@@ -101,8 +142,8 @@ func newTurnBenchmarkHarness(
 	})
 	if _, err = runtimeEngine.Start(
 		context.Background(),
-		agents,
-		sessions,
+		agentPlugin,
+		sessionPlugin,
 		models,
 		prompts,
 		toolService,
@@ -147,7 +188,7 @@ func BenchmarkTurnPrepareEmptyStep(b *testing.B) {
 	state := newTurnBenchmarkHarness(b)
 	b.ReportAllocs()
 	for b.Loop() {
-		prepared, err := state.runner.prepareStep(
+		plan, err := state.runner.executor.prepare(
 			context.Background(),
 			agent.NextStep,
 			1,
@@ -156,7 +197,7 @@ func BenchmarkTurnPrepareEmptyStep(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		if prepared.rejected || len(prepared.messages) != 0 {
+		if plan.rejected || plan.hasMessages() {
 			b.Fatal("empty step preparation changed")
 		}
 	}

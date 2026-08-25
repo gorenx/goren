@@ -11,48 +11,19 @@ import (
 	"github.com/gorenx/goren/systemprompt"
 )
 
-// modelRequester owns request reconstruction, LLM attempt execution, and the
-// retry seam for one Agent. It delegates Tool-call scheduling after a complete
-// Assistant message has committed.
-type modelRequester struct {
-	subject             *ReactLoopAgent
-	models              llm.LlmRuntime
-	toolCalls           *toolCallExecutor
-	requestHeaderLogged bool
-}
-
-func newModelRequester(
-	subject *ReactLoopAgent,
-	models llm.LlmRuntime,
-	toolCalls *toolCallExecutor,
-) *modelRequester {
-	return &modelRequester{
-		subject:   subject,
-		models:    models,
-		toolCalls: toolCalls,
-	}
-}
-
-func (requester *modelRequester) deactivate() {
-	if requester.toolCalls != nil {
-		requester.toolCalls.deactivate()
-	}
-	requester.toolCalls = nil
-	requester.models = nil
-}
-
+// requestAttempt is one model call prepared from the durable Step boundary.
 type requestAttempt struct {
 	options  llm.GenerateOptions
 	prepared llm.PreparedLlmCall
 }
 
-func (requester *modelRequester) executeStep(
+func (executor *stepExecutor) executeModel(
 	requestContext context.Context,
-	turn int64,
-	step int64,
-	prepared preparedStep,
+	current *stepPlan,
 ) (session.TurnEndReason, error) {
-	systemText, err := systemprompt.RenderPrompt(prepared.assembly)
+	turn := current.position.Turn
+	number := current.position.Step
+	systemText, err := systemprompt.RenderPrompt(current.assembly)
 	if err != nil {
 		return nil, err
 	}
@@ -60,15 +31,15 @@ func (requester *modelRequester) executeStep(
 		if err = contextFailure(requestContext); err != nil {
 			return nil, err
 		}
-		boundaryMessages, err := requester.subject.conversation.DeriveMessages()
+		boundaryMessages, err := executor.subject.conversation.DeriveMessages()
 		if err != nil {
 			return nil, err
 		}
-		attempt, err := requester.buildRequest(
+		attempt, err := executor.buildRequest(
 			requestContext,
 			turn,
-			step,
-			prepared.assembly.Tools,
+			number,
+			current.assembly.Tools,
 			systemText,
 			boundaryMessages,
 		)
@@ -81,7 +52,7 @@ func (requester *modelRequester) executeStep(
 		if attempt.prepared != nil {
 			chunkStream, err = attempt.prepared.Stream(requestContext, attempt.options)
 		} else {
-			chunkStream, err = requester.models.Stream(requestContext, attempt.options)
+			chunkStream, err = executor.models.Stream(requestContext, attempt.options)
 		}
 		if err != nil {
 			return nil, err
@@ -103,7 +74,7 @@ func (requester *modelRequester) executeStep(
 				session.AssistantChunked,
 				session.AssistantChunk{
 					Turn:  turn,
-					Step:  step,
+					Step:  number,
 					Chunk: chunk,
 				},
 			)
@@ -111,7 +82,7 @@ func (requester *modelRequester) executeStep(
 				_ = chunkStream.Close(context.Background())
 				return nil, appendErr
 			}
-			result, appendErr := requester.subject.conversation.Commit(
+			result, appendErr := executor.subject.conversation.Commit(
 				requestContext,
 				session.Batch(chunkDraft),
 			)
@@ -141,19 +112,14 @@ func (requester *modelRequester) executeStep(
 			action, resolveErr := agent.ResolveRequestError(
 				requestContext,
 				agent.RequestErrorNotice{
-					Subject:     requester.subject,
+					Subject:     executor.subject,
 					Turn:        turn,
-					Step:        step,
+					Step:        number,
 					Provider:    attempt.options.Provider,
 					Failure:     failure,
 					RetryPolicy: retryPolicy,
 				},
-				agent.RequestErrorActionFunc(func(
-					context.Context,
-					agent.RequestErrorNotice,
-				) (agent.RequestErrorAction, error) {
-					return agent.RequestErrorAction{}, nil
-				}),
+				noRetryRequestErrorHandler{},
 			)
 			if resolveErr != nil {
 				return nil, resolveErr
@@ -184,7 +150,7 @@ func (requester *modelRequester) executeStep(
 		}
 		assembledPayload := session.AssistantMessage{
 			Turn:    turn,
-			Step:    step,
+			Step:    number,
 			Message: assistantReply,
 		}
 		if usage, present := assembler.UsageValue(); present {
@@ -201,7 +167,7 @@ func (requester *modelRequester) executeStep(
 		if err != nil {
 			return nil, err
 		}
-		if _, err = requester.subject.conversation.Commit(requestContext, session.Batch(messageDraft)); err != nil {
+		if _, err = executor.subject.conversation.Commit(requestContext, session.Batch(messageDraft)); err != nil {
 			return nil, err
 		}
 		if finishReason.ReasonKind() == "max-tokens" {
@@ -211,10 +177,10 @@ func (requester *modelRequester) executeStep(
 		if len(toolCalls) == 0 {
 			return session.TurnCompleted{}, nil
 		}
-		concluded, err := requester.toolCalls.execute(
+		concluded, err := executor.toolCalls.execute(
 			requestContext,
 			turn,
-			step,
+			number,
 			toolCalls,
 		)
 		if err != nil {
@@ -227,7 +193,7 @@ func (requester *modelRequester) executeStep(
 	}
 }
 
-func (requester *modelRequester) buildRequest(
+func (executor *stepExecutor) buildRequest(
 	requestContext context.Context,
 	turn int64,
 	step int64,
@@ -236,13 +202,13 @@ func (requester *modelRequester) buildRequest(
 	boundaryMessages []llm.Message,
 ) (requestAttempt, error) {
 	persistedHeader, err := session.LatestRequestHeader(
-		requester.subject.conversation.Events(),
+		executor.subject.conversation.Events(),
 	)
 	if err != nil {
 		return requestAttempt{}, err
 	}
 	headerFound := persistedHeader != nil
-	loopOptions := requester.subject.OptionsValue()
+	loopOptions := executor.subject.OptionsValue()
 	seedConfig := llm.CallConfig{
 		Provider:  loopOptions.Provider,
 		Model:     loopOptions.Model,
@@ -252,24 +218,19 @@ func (requester *modelRequester) buildRequest(
 		(persistedHeader.AdapterDefaults == nil || !persistedHeader.AdapterDefaults.ReasoningEffort) {
 		seedConfig.ReasoningEffort = persistedHeader.Config.ReasoningEffort
 	}
-	if requester.requestHeaderLogged && headerFound {
+	if executor.requestHeaderLogged && headerFound {
 		seedConfig = requestProposal(*persistedHeader)
 	}
 	proposed, err := agent.ResolveRequest(
 		requestContext,
 		agent.RequestNotice{
-			Subject: requester.subject,
+			Subject: executor.subject,
 			Turn:    turn,
 			Step:    step,
 		},
-		agent.RequestActionFunc(func(
-			context.Context,
-			agent.RequestNotice,
-		) (agent.RequestResolution, error) {
-			return agent.RequestResolution{
-				Config: llm.CloneCallConfig(seedConfig),
-			}, nil
-		}),
+		requestConfigAction{
+			config: llm.CloneCallConfig(seedConfig),
+		},
 	)
 	if err != nil {
 		return requestAttempt{}, err
@@ -280,12 +241,12 @@ func (requester *modelRequester) buildRequest(
 	if proposed.Provider == "" || proposed.Model == "" {
 		return requestAttempt{}, fmt.Errorf(
 			"agentloop: Agent %q has no provider/model; set Agent Options or supply both through agent/request",
-			requester.subject.identifier,
+			executor.subject.identifier,
 		)
 	}
 	var preparedCall llm.PreparedLlmCall
 	effective := proposed
-	preparedCall, err = requester.models.PrepareCall(requestContext, proposed)
+	preparedCall, err = executor.models.PrepareCall(requestContext, proposed)
 	if err != nil {
 		var llmProblem *llm.LlmError
 		if !errors.As(err, &llmProblem) || llmProblem.Code() != "NO_ADAPTER" {
@@ -311,13 +272,13 @@ func (requester *modelRequester) buildRequest(
 	}
 	headerSnapshot = session.CanonicalEpochHeader(headerSnapshot)
 	baseline, err := session.LatestRequestHeader(
-		requester.subject.conversation.Events(),
+		executor.subject.conversation.Events(),
 	)
 	if err != nil {
 		return requestAttempt{}, err
 	}
 	baselineFound := baseline != nil
-	if !requester.requestHeaderLogged {
+	if !executor.requestHeaderLogged {
 		reason := session.RequestHeaderInitial
 		if baselineFound {
 			reason = session.RequestHeaderResume
@@ -332,10 +293,10 @@ func (requester *modelRequester) buildRequest(
 		if err != nil {
 			return requestAttempt{}, err
 		}
-		if _, err = requester.subject.conversation.Commit(requestContext, session.Batch(headerDraft)); err != nil {
+		if _, err = executor.subject.conversation.Commit(requestContext, session.Batch(headerDraft)); err != nil {
 			return requestAttempt{}, err
 		}
-		requester.requestHeaderLogged = true
+		executor.requestHeaderLogged = true
 	} else if !baselineFound || !session.EpochHeaderEqual(*baseline, headerSnapshot) {
 		headerDraft, err := session.NewEventDraft(
 			session.RequestHeaderSet,
@@ -347,7 +308,7 @@ func (requester *modelRequester) buildRequest(
 		if err != nil {
 			return requestAttempt{}, err
 		}
-		if _, err = requester.subject.conversation.Commit(requestContext, session.Batch(headerDraft)); err != nil {
+		if _, err = executor.subject.conversation.Commit(requestContext, session.Batch(headerDraft)); err != nil {
 			return requestAttempt{}, err
 		}
 	}
@@ -363,7 +324,7 @@ func (requester *modelRequester) buildRequest(
 		}
 	}
 	previousContext, err := session.LatestRequestContext(
-		requester.subject.conversation.Events(),
+		executor.subject.conversation.Events(),
 	)
 	if err != nil {
 		return requestAttempt{}, err
@@ -377,7 +338,7 @@ func (requester *modelRequester) buildRequest(
 		if err != nil {
 			return requestAttempt{}, err
 		}
-		if _, err := requester.subject.conversation.Commit(requestContext, session.Batch(contextDraft)); err != nil {
+		if _, err := executor.subject.conversation.Commit(requestContext, session.Batch(contextDraft)); err != nil {
 			return requestAttempt{}, err
 		}
 	}
@@ -389,7 +350,7 @@ func (requester *modelRequester) buildRequest(
 		Messages:   boundaryMessages,
 		System:     headerSnapshot.System,
 		Tools:      headerSnapshot.Tools,
-		SessionID:  string(requester.subject.identifier),
+		SessionID:  string(executor.subject.identifier),
 	}
 	detached, err := llm.CloneGenerateOptions(requestOptions)
 	if err != nil {
@@ -466,4 +427,26 @@ func assistantToolCalls(reply llm.AssistantMessage) []llm.ToolCallBlock {
 		}
 	}
 	return toolCalls
+}
+
+type noRetryRequestErrorHandler struct{}
+
+func (noRetryRequestErrorHandler) Execute(
+	context.Context,
+	agent.RequestErrorNotice,
+) (agent.RequestErrorAction, error) {
+	return agent.RequestErrorAction{}, nil
+}
+
+type requestConfigAction struct {
+	config llm.CallConfig
+}
+
+func (action requestConfigAction) Execute(
+	context.Context,
+	agent.RequestNotice,
+) (agent.RequestResolution, error) {
+	return agent.RequestResolution{
+		Config: llm.CloneCallConfig(action.config),
+	}, nil
 }

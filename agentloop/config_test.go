@@ -7,42 +7,36 @@ import (
 	"github.com/gorenx/goren/agent"
 )
 
-func TestValidateAgentOptionsSubagentDepth(t *testing.T) {
+func TestValidateAgentOptionsMaxTokens(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name      string
-		depth     int64
+		maxTokens int
 		wantError bool
 	}{
 		{
+			name:      "positive",
+			maxTokens: 1,
+		},
+		{
 			name:      "zero",
-			depth:     0,
-			wantError: false,
-		},
-		{
-			name:      "safe maximum",
-			depth:     maxSafeInteger,
-			wantError: false,
-		},
-		{
-			name:      "negative",
-			depth:     -1,
+			maxTokens: 0,
 			wantError: true,
 		},
 		{
-			name:      "above safe maximum",
-			depth:     maxSafeInteger + 1,
+			name:      "negative",
+			maxTokens: -1,
 			wantError: true,
 		},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
 			validationErr := validateAgentOptions(agent.Options{
-				SubagentDepth: &testCase.depth,
+				MaxTokens: &testCase.maxTokens,
 			})
 			if testCase.wantError {
 				if validationErr == nil ||
-					!strings.Contains(validationErr.Error(), "subagentDepth") {
+					!strings.Contains(validationErr.Error(), "maxTokens") {
 					t.Fatalf("validation error = %v", validationErr)
 				}
 				return
@@ -54,14 +48,14 @@ func TestValidateAgentOptionsSubagentDepth(t *testing.T) {
 	}
 }
 
-func TestCloneAgentOptionsDetachesSubagentDepth(t *testing.T) {
+func TestCloneAgentOptionsDetachesMaxTokens(t *testing.T) {
 	t.Parallel()
-	depthValue := int64(3)
+	maxTokens := 3
 	detached := cloneAgentOptions(agent.Options{
-		SubagentDepth: &depthValue,
+		MaxTokens: &maxTokens,
 	})
-	depthValue = 8
-	if detached.SubagentDepth == nil || *detached.SubagentDepth != 3 {
-		t.Fatalf("detached subagentDepth = %v, want 3", detached.SubagentDepth)
+	maxTokens = 8
+	if detached.MaxTokens == nil || *detached.MaxTokens != 3 {
+		t.Fatalf("detached maxTokens = %v, want 3", detached.MaxTokens)
 	}
 }
