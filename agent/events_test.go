@@ -200,18 +200,15 @@ func TestAgentWaterfallsAndEventsAreScoped(t *testing.T) {
 			Turn:    1,
 			Step:    1,
 		},
-		agentcore.RequestActionFunc(func(
-			context.Context,
-			agentcore.RequestNotice,
-		) (agentcore.RequestResolution, error) {
-			order = append(order, "terminal")
-			return agentcore.RequestResolution{
+		requestResolutionAction{
+			resolution: agentcore.RequestResolution{
 				Config: llm.CallConfig{
 					Provider: "fake",
 					Model:    "base",
 				},
-			}, nil
-		}),
+			},
+			order: &order,
+		},
 	)
 	if err != nil {
 		t.Fatal(err)

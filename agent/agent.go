@@ -4,9 +4,9 @@ package agent
 
 import (
 	"context"
+	"reflect"
 
 	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
 
@@ -37,17 +37,14 @@ const (
 
 // Options contains the provider-neutral configuration applied to one Agent.
 type Options struct {
-	Provider      string
-	Model         string
-	MaxTokens     *int
-	SubagentDepth *int64
+	Provider  string
+	Model     string
+	MaxTokens *int
 }
 
-// Agent is both a scoped runtime Plugin and the live business capability
-// returned by Registry. Consumers do not receive its Fiber or Scope.
+// Agent is the live business capability returned by Registry. Plugin identity
+// and structural Scope ownership remain private to the Agent Loop adapter.
 type Agent interface {
-	plugin.Plugin
-	plugin.Service
 	ID() session.SessionID
 	OptionsValue() Options
 	SessionValue() session.Context
@@ -65,9 +62,13 @@ type Agent interface {
 // Same reports whether both values are the exact same process-local Agent
 // instance. Durable Agent IDs may be reused by later resumed instances.
 func Same(leftSubject Agent, rightSubject Agent) bool {
-	return leftSubject != nil &&
-		rightSubject != nil &&
-		leftSubject.ID() == rightSubject.ID() &&
-		leftSubject.RuntimePlugin() != nil &&
-		leftSubject.RuntimePlugin() == rightSubject.RuntimePlugin()
+	if leftSubject == nil || rightSubject == nil ||
+		leftSubject.ID() != rightSubject.ID() {
+		return false
+	}
+	leftType := reflect.TypeOf(leftSubject)
+	if leftType != reflect.TypeOf(rightSubject) || !leftType.Comparable() {
+		return false
+	}
+	return leftSubject == rightSubject
 }

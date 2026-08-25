@@ -4,24 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"sync"
 
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
-
-type registryEntry struct {
-	id      session.SessionID
-	subject Agent
-	owner   Agent
-
-	mutex         sync.Mutex
-	announced     bool
-	announcing    bool
-	removePending bool
-	entered       bool
-}
 
 // RegistryOptions supplies observer containment without changing lifecycle
 // semantics.
@@ -29,21 +15,36 @@ type RegistryOptions struct {
 	ObserverError func(error)
 }
 
-// Registry tracks live Agent membership and delegates construction to the
-// currently attached Agent Loop Factory.
+// Registry is the read-only view of currently visible exact Agent epochs.
 type Registry interface {
-	plugin.Service
-	RegisterFactory(Factory) (FactoryRegistration, error)
-	Create(context.Context, CreateOptions) (Handle, error)
-	Resume(context.Context, ResumeOptions) (Handle, error)
-	Enter(Agent, Agent) error
-	Announce(context.Context, Agent) error
-	Remove(context.Context, Agent) error
 	Get(session.SessionID) (Agent, bool)
 	Contains(Agent) bool
-	IsOwnedBy(session.SessionID, Agent) bool
 	List() []Agent
-	Roots() []Agent
+}
+
+// Constructor owns fresh Agent creation and durable Agent restoration.
+type Constructor interface {
+	Create(context.Context, CreateOptions) (Handle, error)
+	Resume(context.Context, ResumeOptions) (Handle, error)
+}
+
+// ScopeProvisioning installs one extension transaction into an exact live
+// Agent Scope.
+type ScopeProvisioning interface {
+	Provision(context.Context, Agent, Provisioner) error
+}
+
+// DescendantLifecycle owns managed runtime descendants of an exact Agent.
+type DescendantLifecycle interface {
+	HasRuntimeDescendants(Agent) bool
+	CloseDescendants(context.Context, Agent) error
+}
+
+// RuntimeLifecycle is the narrow integration port used by the Agent Loop
+// Plugin that supplies construction and coordinates process shutdown.
+type RuntimeLifecycle interface {
+	RegisterFactory(Factory) (FactoryRegistration, error)
+	Shutdown(context.Context) error
 }
 
 // FactoryRegistration owns one exact Factory registration.
@@ -52,9 +53,9 @@ type FactoryRegistration interface {
 }
 
 type factoryRegistration struct {
-	agents  *RegistryPlugin
-	factory Factory
-	once    sync.Once
+	registry *RegistryService
+	factory  Factory
+	once     sync.Once
 }
 
 func (registration *factoryRegistration) Unregister() {
@@ -62,367 +63,217 @@ func (registration *factoryRegistration) Unregister() {
 		return
 	}
 	registration.once.Do(func() {
-		registration.agents.unregisterFactory(registration)
+		registration.registry.unregisterFactory(registration)
 	})
 }
 
-// RegistryPlugin is the canonical Agent Registry Service Plugin.
-type RegistryPlugin struct {
-	plugin.Base
-	mutex    sync.RWMutex
-	entries  map[session.SessionID]*registryEntry
-	order    []session.SessionID
-	factory  *factoryRegistration
-	reporter func(error)
+// RegistryService is the single Agent lifecycle application service. It owns
+// Factory routing and delegates all epoch state to LifecycleCoordinator while
+// exposing separate consumer-facing capabilities.
+type RegistryService struct {
+	mutex       sync.RWMutex
+	factory     *factoryRegistration
+	coordinator *LifecycleCoordinator
 }
 
-// NewRegistry constructs an empty Agent Registry Plugin.
-func NewRegistry(settings RegistryOptions) *RegistryPlugin {
+// NewRegistry constructs an empty Agent lifecycle Service.
+func NewRegistry(settings RegistryOptions) *RegistryService {
 	reporter := settings.ObserverError
 	if reporter == nil {
 		reporter = func(error) {}
 	}
-	return &RegistryPlugin{
-		entries:  make(map[session.SessionID]*registryEntry),
-		reporter: reporter,
+	return &RegistryService{
+		coordinator: newLifecycleCoordinator(reporter),
 	}
 }
 
-// Manifest provides the canonical Agent Registry Service.
-func (owner *RegistryPlugin) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name: PluginName,
-		Provides: []plugin.ProvidedService{
-			plugin.NewProvidedService[Registry](owner),
-		},
-	}
-}
-
-// Apply validates startup cancellation before Registry publication.
-func (*RegistryPlugin) Apply(requestContext context.Context) error {
-	return requestContext.Err()
-}
-
-// Dispose rejects dangling Agent membership after Agent Loop dependents stop.
-func (agents *RegistryPlugin) Dispose(context.Context) error {
-	agents.mutex.Lock()
-	dangling := len(agents.entries)
-	agents.entries = make(map[session.SessionID]*registryEntry)
-	agents.order = nil
-	agents.factory = nil
-	agents.mutex.Unlock()
-	if dangling != 0 {
-		return fmt.Errorf(
-			"agent: Registry stopped with %d live Agent lifecycle(s)",
-			dangling,
-		)
-	}
-	return nil
-}
-
-// RegisterFactory installs one exact Agent construction provider.
-func (agents *RegistryPlugin) RegisterFactory(
+// RegisterFactory installs one exact Agent construction implementation.
+func (service *RegistryService) RegisterFactory(
 	agentFactory Factory,
 ) (FactoryRegistration, error) {
 	if agentFactory == nil {
 		return nil, errors.New("agent: Agent factory is required")
 	}
-	agents.mutex.Lock()
-	defer agents.mutex.Unlock()
-	if agents.factory != nil {
+	service.mutex.Lock()
+	defer service.mutex.Unlock()
+	if service.factory != nil {
 		return nil, errors.New("agent: an Agent factory is already registered")
 	}
 	registration := &factoryRegistration{
-		agents:  agents,
-		factory: agentFactory,
+		registry: service,
+		factory:  agentFactory,
 	}
-	agents.factory = registration
+	service.factory = registration
 	return registration, nil
 }
 
-func (agents *RegistryPlugin) unregisterFactory(
+func (service *RegistryService) unregisterFactory(
 	registration *factoryRegistration,
 ) {
-	agents.mutex.Lock()
-	if agents.factory == registration {
-		agents.factory = nil
+	service.mutex.Lock()
+	if service.factory == registration {
+		service.factory = nil
 	}
-	agents.mutex.Unlock()
+	service.mutex.Unlock()
 }
 
-// Create delegates fresh Agent construction to the attached Factory.
-func (agents *RegistryPlugin) Create(
+func (service *RegistryService) registeredFactory() (Factory, error) {
+	service.mutex.RLock()
+	registration := service.factory
+	service.mutex.RUnlock()
+	if registration == nil {
+		return nil, errors.New(
+			"agent: no Agent factory attached; mount an Agent Loop Plugin",
+		)
+	}
+	return registration.factory, nil
+}
+
+// Create constructs, publishes, and commits one fresh exact Agent epoch.
+func (service *RegistryService) Create(
 	requestContext context.Context,
 	settings CreateOptions,
 ) (Handle, error) {
-	agents.mutex.RLock()
-	registration := agents.factory
-	agents.mutex.RUnlock()
-	if registration == nil {
-		return Handle{}, errors.New(
-			"agent: no Agent factory attached; mount an Agent Loop Plugin",
-		)
+	if requestContext == nil {
+		return Handle{}, errors.New("agent: Create Context is nil")
 	}
-	return registration.factory.CreateAgent(
-		requestContext,
-		custodyFrom(requestContext),
-		settings,
+	agentFactory, err := service.registeredFactory()
+	if err != nil {
+		return Handle{}, err
+	}
+	pending, err := service.coordinator.reserve(
+		settings.SessionID,
+		settings.RuntimeParent,
 	)
+	if err != nil {
+		return Handle{}, err
+	}
+	if err = agentFactory.CreateAgent(requestContext, pending, settings); err != nil {
+		closeErr := service.coordinator.abort(
+			context.WithoutCancel(requestContext),
+			pending,
+		)
+		return Handle{}, errors.Join(err, closeErr)
+	}
+	if err = service.coordinator.activate(
+		requestContext,
+		pending,
+		SessionStartup,
+	); err != nil {
+		closeErr := service.coordinator.abort(
+			context.WithoutCancel(requestContext),
+			pending,
+		)
+		return Handle{}, errors.Join(err, closeErr)
+	}
+	return service.coordinator.handle(pending), nil
 }
 
-// Resume delegates durable Agent restoration to the attached Factory.
-func (agents *RegistryPlugin) Resume(
+// Resume reconstructs, publishes, and commits one durable exact Agent epoch.
+func (service *RegistryService) Resume(
 	requestContext context.Context,
 	settings ResumeOptions,
 ) (Handle, error) {
-	agents.mutex.RLock()
-	registration := agents.factory
-	agents.mutex.RUnlock()
-	if registration == nil {
-		return Handle{}, errors.New(
-			"agent: no Agent factory attached; mount an Agent Loop Plugin",
-		)
+	if requestContext == nil {
+		return Handle{}, errors.New("agent: Resume Context is nil")
 	}
-	return registration.factory.ResumeAgent(
-		requestContext,
-		custodyFrom(requestContext),
-		settings,
+	agentFactory, err := service.registeredFactory()
+	if err != nil {
+		return Handle{}, err
+	}
+	pending, err := service.coordinator.reserve(
+		settings.SessionID,
+		settings.RuntimeParent,
 	)
-}
-
-// Enter reserves live membership without announcing creation.
-func (agents *RegistryPlugin) Enter(subject Agent, owner Agent) error {
-	if subject == nil || subject.RuntimePlugin() == nil ||
-		subject.SessionValue() == nil {
-		return errors.New("agent: Agent Plugin and Session are required")
+	if err != nil {
+		return Handle{}, err
 	}
-	identifier := subject.ID()
-	if identifier == "" {
-		return errors.New("agent: Agent id is empty")
-	}
-	if identifier != subject.SessionValue().ID() {
-		return fmt.Errorf(
-			"agent: Agent id %q does not match Session id %q",
-			identifier,
-			subject.SessionValue().ID(),
+	if err = agentFactory.ResumeAgent(requestContext, pending, settings); err != nil {
+		closeErr := service.coordinator.abort(
+			context.WithoutCancel(requestContext),
+			pending,
 		)
+		return Handle{}, errors.Join(err, closeErr)
 	}
-	if owner != nil && !agents.Contains(owner) {
-		return errors.New("agent: owning Agent is not live in this Registry")
+	if err = service.coordinator.activate(
+		requestContext,
+		pending,
+		SessionResume,
+	); err != nil {
+		closeErr := service.coordinator.abort(
+			context.WithoutCancel(requestContext),
+			pending,
+		)
+		return Handle{}, errors.Join(err, closeErr)
 	}
-	entry := &registryEntry{
-		id:      identifier,
-		subject: subject,
-		owner:   owner,
-		entered: true,
-	}
-	agents.mutex.Lock()
-	if _, exists := agents.entries[identifier]; exists {
-		agents.mutex.Unlock()
-		return fmt.Errorf("agent: Agent %q is already registered", identifier)
-	}
-	agents.entries[identifier] = entry
-	agents.order = append(agents.order, identifier)
-	agents.mutex.Unlock()
-	return nil
+	return service.coordinator.handle(pending), nil
 }
 
-// Announce publishes the vetoable Agent creation edge exactly once.
-func (agents *RegistryPlugin) Announce(
+// Get returns the visible exact Agent registered for identifier.
+func (service *RegistryService) Get(identifier session.SessionID) (Agent, bool) {
+	return service.coordinator.liveAgent(identifier)
+}
+
+// Contains reports whether subject is the visible exact Agent epoch.
+func (service *RegistryService) Contains(subject Agent) bool {
+	return service.coordinator.contains(subject)
+}
+
+// List returns visible exact Agents in reservation order.
+func (service *RegistryService) List() []Agent {
+	return service.coordinator.liveAgents()
+}
+
+// Provision applies one extension transaction to an exact live Agent Scope.
+func (service *RegistryService) Provision(
 	requestContext context.Context,
 	subject Agent,
+	source Provisioner,
 ) error {
-	entry, err := agents.liveEntry(subject)
+	if source == nil {
+		return errors.New("agent: Agent Provisioner is nil")
+	}
+	target, err := service.coordinator.epochForAgent(subject)
 	if err != nil {
 		return err
 	}
-	entry.mutex.Lock()
-	if !entry.entered {
-		entry.mutex.Unlock()
-		return fmt.Errorf("agent: Agent %q is no longer live", subject.ID())
+	service.coordinator.mutex.Lock()
+	live := target.phase == epochLive
+	runtime := target.runtime
+	service.coordinator.mutex.Unlock()
+	if !live || runtime == nil {
+		return fmt.Errorf("agent: Agent %q is not accepting Provisioning", subject.ID())
 	}
-	if entry.announced || entry.announcing {
-		entry.mutex.Unlock()
-		return fmt.Errorf("agent: Agent %q was already announced", subject.ID())
-	}
-	entry.announced = true
-	entry.announcing = true
-	entry.mutex.Unlock()
-
-	dispatchErr := plugin.Publish(
-		requestContext,
-		subject,
-		Created{
-			Subject: subject,
-		},
-	)
-	entry.mutex.Lock()
-	entry.announcing = false
-	removePending := entry.removePending
-	entry.mutex.Unlock()
-	if removePending {
-		dispatchErr = errors.Join(
-			dispatchErr,
-			agents.removeEntry(requestContext, entry),
-		)
-	}
-	return dispatchErr
+	return runtime.Provision(requestContext, source)
 }
 
-// Remove deletes and announces only the exact live Agent instance.
-func (agents *RegistryPlugin) Remove(
-	requestContext context.Context,
-	subject Agent,
+// HasRuntimeDescendants reports whether the exact Agent currently owns any
+// managed runtime descendant. Durable Session lineage is not consulted.
+func (service *RegistryService) HasRuntimeDescendants(subject Agent) bool {
+	return service.coordinator.hasDescendants(subject)
+}
+
+// CloseDescendants permanently stops admission below parent and closes every
+// existing exact runtime descendant child-first.
+func (service *RegistryService) CloseDescendants(
+	closeContext context.Context,
+	parent Agent,
 ) error {
-	entry, err := agents.liveEntry(subject)
-	if err != nil {
-		return nil
-	}
-	entry.mutex.Lock()
-	if !entry.entered {
-		entry.mutex.Unlock()
-		return nil
-	}
-	entry.entered = false
-	if entry.announcing {
-		entry.removePending = true
-		entry.mutex.Unlock()
-		return nil
-	}
-	entry.mutex.Unlock()
-	return agents.removeEntry(requestContext, entry)
+	return service.coordinator.closeDescendants(closeContext, parent)
 }
 
-func (agents *RegistryPlugin) removeEntry(
-	requestContext context.Context,
-	entry *registryEntry,
-) error {
-	agents.mutex.Lock()
-	if agents.entries[entry.id] != entry {
-		agents.mutex.Unlock()
-		return nil
-	}
-	delete(agents.entries, entry.id)
-	agents.order = slices.DeleteFunc(
-		agents.order,
-		func(identifier session.SessionID) bool {
-			return identifier == entry.id
-		},
-	)
-	agents.mutex.Unlock()
-	entry.mutex.Lock()
-	entry.removePending = false
-	announced := entry.announced
-	entry.mutex.Unlock()
-	if !announced {
-		return nil
-	}
-	dispatchErr := plugin.Publish(
-		requestContext,
-		entry.subject,
-		Disposed{
-			Subject: entry.subject,
-		},
-	)
-	if errors.Is(dispatchErr, plugin.ErrPluginNotActive) ||
-		errors.Is(dispatchErr, plugin.ErrPluginNotBound) {
-		dispatchErr = plugin.Publish(
-			requestContext,
-			agents,
-			Disposed{
-				Subject: entry.subject,
-			},
-		)
-	}
-	if dispatchErr != nil {
-		agents.report(fmt.Errorf(
-			"agent: Agent %q disposed observers: %w",
-			entry.id,
-			dispatchErr,
-		))
-	}
-	return nil
+// Shutdown stops construction admission and closes every Agent epoch
+// child-first, including reservations whose Factory is still returning.
+func (service *RegistryService) Shutdown(closeContext context.Context) error {
+	return service.coordinator.closeAll(closeContext)
 }
 
-func (agents *RegistryPlugin) liveEntry(subject Agent) (*registryEntry, error) {
-	if subject == nil {
-		return nil, errors.New("agent: Agent subject is nil")
-	}
-	agents.mutex.RLock()
-	entry := agents.entries[subject.ID()]
-	agents.mutex.RUnlock()
-	if entry == nil || !Same(entry.subject, subject) {
-		return nil, fmt.Errorf(
-			"agent: Agent %q is not live in this Registry",
-			subject.ID(),
-		)
-	}
-	return entry, nil
+func (service *RegistryService) assertClosed() error {
+	return service.coordinator.assertClosed()
 }
 
-// Get returns the live Agent registered for identifier.
-func (agents *RegistryPlugin) Get(identifier session.SessionID) (Agent, bool) {
-	agents.mutex.RLock()
-	entry := agents.entries[identifier]
-	agents.mutex.RUnlock()
-	if entry == nil {
-		return nil, false
-	}
-	return entry.subject, true
-}
-
-// Contains reports whether subject is the exact live Agent instance.
-func (agents *RegistryPlugin) Contains(subject Agent) bool {
-	if subject == nil {
-		return false
-	}
-	agents.mutex.RLock()
-	entry := agents.entries[subject.ID()]
-	agents.mutex.RUnlock()
-	return entry != nil && Same(entry.subject, subject)
-}
-
-// IsOwnedBy reports exact live runtime ownership captured at Enter.
-func (agents *RegistryPlugin) IsOwnedBy(
-	identifier session.SessionID,
-	owner Agent,
-) bool {
-	if owner == nil {
-		return false
-	}
-	agents.mutex.RLock()
-	entry := agents.entries[identifier]
-	agents.mutex.RUnlock()
-	return entry != nil && Same(entry.owner, owner)
-}
-
-// List returns live Agents in registration order.
-func (agents *RegistryPlugin) List() []Agent {
-	agents.mutex.RLock()
-	defer agents.mutex.RUnlock()
-	result := make([]Agent, 0, len(agents.order))
-	for _, identifier := range agents.order {
-		if entry := agents.entries[identifier]; entry != nil {
-			result = append(result, entry.subject)
-		}
-	}
-	return result
-}
-
-// Roots returns live Agents without an owning Agent.
-func (agents *RegistryPlugin) Roots() []Agent {
-	agents.mutex.RLock()
-	defer agents.mutex.RUnlock()
-	result := make([]Agent, 0, len(agents.order))
-	for _, identifier := range agents.order {
-		if entry := agents.entries[identifier]; entry != nil && entry.owner == nil {
-			result = append(result, entry.subject)
-		}
-	}
-	return result
-}
-
-func (agents *RegistryPlugin) report(problem error) {
-	defer func() { _ = recover() }()
-	agents.reporter(problem)
-}
+var _ Registry = (*RegistryService)(nil)
+var _ Constructor = (*RegistryService)(nil)
+var _ ScopeProvisioning = (*RegistryService)(nil)
+var _ DescendantLifecycle = (*RegistryService)(nil)
+var _ RuntimeLifecycle = (*RegistryService)(nil)

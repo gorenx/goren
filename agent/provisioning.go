@@ -3,75 +3,55 @@ package agent
 import (
 	"context"
 	"errors"
-	"fmt"
-
-	"github.com/gorenx/goren/plugin"
 )
 
-// Effect is one exact idempotent resource owned by an unpublished Agent Scope.
-// An effect may be disposed early; later Scope teardown must remain safe.
-type Effect interface {
+// ScopeResource is one exact idempotent resource owned by an Agent Scope.
+// It may be disposed early; later Scope teardown must remain safe.
+type ScopeResource interface {
 	Dispose(context.Context) error
 }
 
-// Scope is the composition boundary of one active but unpublished Agent.
-// Provisioners may mount scoped Plugins or transfer ordinary effects to it,
-// but must not drive the Agent before Registry.Create or Registry.Resume
-// returns.
+// Scope is the Plugin-neutral resource boundary of one exact Agent. Concrete
+// adapters may offer additional installation capabilities in their own
+// packages, but Agent business contracts do not accept Plugin instances.
 type Scope interface {
 	Agent() Agent
-	Mount(context.Context, plugin.Plugin) (Effect, error)
-	Own(Effect) error
+	Own(ScopeResource) error
 }
 
-// Provisioner configures one unpublished Agent Scope. It returns nil when all
-// acquired resources have already transferred to the Scope and no publication
-// validation remains. A failed call must release every resource it has not
-// transferred to the Scope.
+// Provisioner configures one unpublished or live Agent Scope. A failed call
+// must release every resource it has not transferred to the Scope.
 type Provisioner interface {
 	Provision(context.Context, Scope) (Provisioning, error)
 }
 
 // Provisioning owns resources that survive successful provisioning. Commit
-// validates the exact publication boundary; Dispose releases the resources
-// when creation rolls back or the Agent leaves residency.
+// validates the publication boundary; Dispose releases the resources during
+// rollback or Agent Scope teardown.
 type Provisioning interface {
-	Effect
+	ScopeResource
 	Commit() error
 }
 
-// MountPlugins returns a Provisioner that mounts every Plugin in declaration
-// order. The Agent tree structurally owns successful mounts, so provisioning
-// produces no additional lifecycle object.
-func MountPlugins(instances ...plugin.Plugin) Provisioner {
-	return &pluginProvisioner{
-		instances: append([]plugin.Plugin(nil), instances...),
-	}
-}
-
-type pluginProvisioner struct {
-	instances []plugin.Plugin
-}
-
-func (owner *pluginProvisioner) Provision(
+// ApplyProvisioning executes the single Agent Scope provisioning transaction
+// used by both construction-time and live extension installation.
+func ApplyProvisioning(
 	requestContext context.Context,
 	target Scope,
-) (Provisioning, error) {
-	if owner == nil {
-		return nil, errors.New("agent: Plugin Provisioner is nil")
+	source Provisioner,
+) error {
+	if target == nil || source == nil {
+		return errors.New("agent: Scope and Provisioner are required")
 	}
-	for index, instance := range owner.instances {
-		if instance == nil {
-			return nil, fmt.Errorf(
-				"agent: mounted Provisioner Plugin is nil at index %d",
-				index,
-			)
-		}
-		if _, err := target.Mount(requestContext, instance); err != nil {
-			return nil, err
-		}
+	acquired, err := source.Provision(requestContext, target)
+	if err != nil || acquired == nil {
+		return err
 	}
-	return nil, nil
+	if err = target.Own(acquired); err != nil {
+		return errors.Join(
+			err,
+			acquired.Dispose(context.WithoutCancel(requestContext)),
+		)
+	}
+	return acquired.Commit()
 }
-
-var _ Provisioner = (*pluginProvisioner)(nil)
