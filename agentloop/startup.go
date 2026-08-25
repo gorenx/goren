@@ -31,16 +31,13 @@ func newConfiguredAgentStarter(
 
 func (starter *configuredAgentStarter) start(
 	requestContext context.Context,
-	factory *Plugin,
+	constructor agent.Constructor,
 ) ([]agent.Handle, error) {
 	if requestContext == nil {
 		return nil, errors.New("agentloop: configured startup Context is nil")
 	}
-	if factory == nil {
-		return nil, errors.New("agentloop: configured startup Factory is nil")
-	}
-	if err := factory.admission.requireOpen(); err != nil {
-		return nil, err
+	if constructor == nil {
+		return nil, errors.New("agentloop: configured startup is unavailable")
 	}
 	starter.mutex.Lock()
 	if starter.started {
@@ -55,7 +52,7 @@ func (starter *configuredAgentStarter) start(
 	starter.mutex.Unlock()
 
 	started := make([]agent.Handle, 0, len(declarations))
-	rollback := func(cause error) ([]agent.Handle, error) {
+	revert := func(cause error) ([]agent.Handle, error) {
 		rollbackContext := context.WithoutCancel(requestContext)
 		for index := len(started) - 1; index >= 0; index-- {
 			cause = errors.Join(
@@ -67,16 +64,15 @@ func (starter *configuredAgentStarter) start(
 	}
 	for _, declaration := range declarations {
 		if declaration.Resume {
-			handleState, err := factory.ResumeAgent(
+			handleState, err := constructor.Resume(
 				requestContext,
-				nil,
 				agent.ResumeOptions{
 					SessionID:    declaration.SessionID,
 					AgentOptions: declaration.AgentOptions,
 				},
 			)
 			if err != nil {
-				return rollback(fmt.Errorf(
+				return revert(fmt.Errorf(
 					"agentloop: resume configured Agent %q: %w",
 					declaration.Label,
 					err,
@@ -90,12 +86,11 @@ func (starter *configuredAgentStarter) start(
 			var err error
 			identifier, err = newConfiguredSessionID(declaration.Label)
 			if err != nil {
-				return rollback(err)
+				return revert(err)
 			}
 		}
-		handleState, err := factory.CreateAgent(
+		handleState, err := constructor.Create(
 			requestContext,
-			nil,
 			agent.CreateOptions{
 				SessionID:    identifier,
 				Metadata:     cloneSessionMetadata(declaration.Metadata),
@@ -103,7 +98,7 @@ func (starter *configuredAgentStarter) start(
 			},
 		)
 		if err != nil {
-			return rollback(fmt.Errorf(
+			return revert(fmt.Errorf(
 				"agentloop: start configured Agent %q: %w",
 				declaration.Label,
 				err,

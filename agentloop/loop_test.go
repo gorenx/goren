@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agent/scopedplugin"
 	"github.com/gorenx/goren/agentloop"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
@@ -21,6 +22,42 @@ import (
 )
 
 type postCommitFailureSink struct{}
+
+type sessionStoreProbe struct {
+	plugin.Base
+	store *session.MemoryStore
+}
+
+func (*sessionStoreProbe) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "agentloop-session-store-probe",
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[session.LiveStore](),
+		},
+	}
+}
+
+func (probe *sessionStoreProbe) Apply(context.Context) error {
+	liveStore, err := plugin.Require[session.LiveStore](probe)
+	if err != nil {
+		return err
+	}
+	probe.store = liveStore.(*session.MemoryStore)
+	return nil
+}
+
+func (*sessionStoreProbe) Dispose(context.Context) error { return nil }
+
+type requestResolutionAction struct {
+	resolution agent.RequestResolution
+}
+
+func (action requestResolutionAction) Execute(
+	context.Context,
+	agent.RequestNotice,
+) (agent.RequestResolution, error) {
+	return action.resolution, nil
+}
 
 func (postCommitFailureSink) ReportPostCommitFailure(
 	session.PostCommitFailure,
@@ -134,7 +171,7 @@ func (observerState *lifecycleObserver) snapshot() []string {
 
 type harnessFixture struct {
 	runtimeEngine *plugin.Runtime
-	agents        *agent.RegistryPlugin
+	agents        *agent.RegistryService
 	sessions      *session.MemoryStore
 	models        *llm.Runtime
 	toolCatalog   tools.ToolCatalog
@@ -178,13 +215,17 @@ func newHarnessFixtureWithSettings(
 	if err != nil {
 		t.Fatal(err)
 	}
-	sessionStore, err := session.NewMemoryStore(session.MemoryStoreOptions{
+	sessionPlugin, err := session.NewPlugin(session.MemoryStoreOptions{
 		PostCommitFailures: postCommitFailureSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	agentRegistry := agent.NewRegistry(agent.RegistryOptions{})
+	agentPlugin, err := agent.NewRegistryPlugin(agentRegistry)
+	if err != nil {
+		t.Fatal(err)
+	}
 	modelRuntime := llm.NewRuntime(nil)
 	promptRuntime := systemprompt.New(
 		promptSettings,
@@ -192,13 +233,15 @@ func newHarnessFixtureWithSettings(
 	)
 	toolService := tools.New(toolSettings)
 	lifecycle := &lifecycleObserver{}
+	storeProbe := &sessionStoreProbe{}
 	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{
 		EventFailures: eventFailureSink{},
 	})
 	rootPlugins := []plugin.Plugin{
 		lifecycle,
-		agentRegistry,
-		sessionStore,
+		agentPlugin,
+		sessionPlugin,
+		storeProbe,
 		modelRuntime,
 		promptRuntime,
 		toolService,
@@ -235,7 +278,7 @@ func newHarnessFixtureWithSettings(
 	return &harnessFixture{
 		runtimeEngine: runtimeEngine,
 		agents:        agentRegistry,
-		sessions:      sessionStore,
+		sessions:      storeProbe.store,
 		models:        modelRuntime,
 		toolCatalog:   toolService,
 		loopPlugin:    loopPlugin,
@@ -478,7 +521,7 @@ func TestAgentRejectsWorkBeforeCommitPublication(t *testing.T) {
 				Provider: "mock",
 				Model:    "model",
 			},
-			Provisioner: agent.MountPlugins(extension),
+			Provisioner: scopedplugin.MountPlugins(extension),
 		},
 	)
 	if err != nil {
@@ -552,7 +595,7 @@ func TestAgentExtensionResolvesExactAgentAndWaterfall(t *testing.T) {
 				Provider: "mock",
 				Model:    "base-model",
 			},
-			Provisioner: agent.MountPlugins(extension),
+			Provisioner: scopedplugin.MountPlugins(extension),
 		},
 	)
 	if err != nil {
@@ -568,17 +611,14 @@ func TestAgentExtensionResolvesExactAgentAndWaterfall(t *testing.T) {
 			Turn:    1,
 			Step:    1,
 		},
-		agent.RequestActionFunc(func(
-			context.Context,
-			agent.RequestNotice,
-		) (agent.RequestResolution, error) {
-			return agent.RequestResolution{
+		requestResolutionAction{
+			resolution: agent.RequestResolution{
 				Config: llm.CallConfig{
 					Provider: "mock",
 					Model:    "base-model",
 				},
-			}, nil
-		}),
+			},
+		},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -640,7 +680,7 @@ func TestAgentExtensionInterceptsItsScopedToolRuntime(t *testing.T) {
 				Provider: "mock",
 				Model:    "model",
 			},
-			Provisioner: agent.MountPlugins(extension),
+			Provisioner: scopedplugin.MountPlugins(extension),
 		},
 	)
 	if err != nil {
@@ -692,7 +732,7 @@ func TestFailedExtensionNeverPublishesPartialAgentTree(t *testing.T) {
 				Provider: "mock",
 				Model:    "model",
 			},
-			Provisioner: agent.MountPlugins(extension),
+			Provisioner: scopedplugin.MountPlugins(extension),
 		},
 	)
 	if err == nil || !strings.Contains(err.Error(), "extension activation failed") {
@@ -1208,7 +1248,7 @@ func TestRequestErrorRetryRepeatsAttemptInsideOneStep(t *testing.T) {
 				Provider: "mock",
 				Model:    "model",
 			},
-			Provisioner: agent.MountPlugins(extension),
+			Provisioner: scopedplugin.MountPlugins(extension),
 		},
 	)
 	if err != nil {
@@ -1232,6 +1272,23 @@ func TestRequestErrorRetryRepeatsAttemptInsideOneStep(t *testing.T) {
 	}
 	if requests := state.backend.snapshots(); len(requests) != 2 {
 		t.Fatalf("model request count = %d, want 2 attempts", len(requests))
+	}
+	stepStarts := 0
+	stepEnds := 0
+	for _, event := range handleState.Subject.SessionValue().Events() {
+		switch event.Type {
+		case session.StepStartEventName:
+			stepStarts++
+		case session.StepEndEventName:
+			stepEnds++
+		}
+	}
+	if stepStarts != 1 || stepEnds != 1 {
+		t.Fatalf(
+			"Step lifecycle = (%d starts, %d ends), want one paired Step",
+			stepStarts,
+			stepEnds,
+		)
 	}
 	select {
 	case notice := <-extension.notices:

@@ -205,7 +205,7 @@ func TestPinnedSourceSchedulerFailureMatchesGo(t *testing.T) {
 	}
 	sessions, err := session.NewMemoryStore(session.MemoryStoreOptions{
 		PostCommitFailures: failures,
-	})
+	}, sessionEventSinkStub{})
 	if err != nil {
 		t.Fatal(err)
 	}
