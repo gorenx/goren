@@ -28,9 +28,8 @@ type Plugin struct {
 	runtimeContextEvents *runtimeContextRouter
 	startup              *configuredAgentStarter
 	constructor          agent.Constructor
-	lifecycle            agent.RuntimeLifecycle
 	factory              *Factory
-	factoryRegistration  agent.FactoryRegistration
+	adapter              *factoryAdapter
 }
 
 // New constructs an inactive Agent Loop Plugin from validated runtime
@@ -40,22 +39,25 @@ func New(runtimeSettings Settings, policies RuntimeOptions) (*Plugin, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Plugin{
+	owner := &Plugin{
 		maxParallelToolCalls: validated.MaxParallelToolCalls,
 		failures:             newObserverFailureReporter(policies.ObserverError),
 		runtimeContextEvents: newRuntimeContextRouter(),
 		startup: newConfiguredAgentStarter(
 			validated.StartupAgents,
 		),
-	}, nil
+	}
+	owner.adapter = &factoryAdapter{
+		owner: owner,
+	}
+	return owner, nil
 }
 
-func (*Plugin) Manifest() plugin.Manifest {
+func (owner *Plugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: PluginName,
 		Requires: []plugin.ServiceType{
 			plugin.ServiceOf[agent.Constructor](),
-			plugin.ServiceOf[agent.RuntimeLifecycle](),
 			plugin.ServiceOf[session.LiveStore](),
 		},
 		Optional: []plugin.ServiceType{
@@ -63,6 +65,13 @@ func (*Plugin) Manifest() plugin.Manifest {
 		},
 		Events: []plugin.EventSubscription{
 			plugin.EventOf[session.EventAppended](),
+		},
+		Children: []plugin.ChildPlugin{
+			{
+				Instance:  owner.adapter,
+				Placement: plugin.SameScope,
+				Phase:     plugin.ActivationCommit,
+			},
 		},
 	}
 }
@@ -72,10 +81,6 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 		return err
 	}
 	constructor, err := plugin.Require[agent.Constructor](owner)
-	if err != nil {
-		return err
-	}
-	lifecycle, err := plugin.Require[agent.RuntimeLifecycle](owner)
 	if err != nil {
 		return err
 	}
@@ -94,43 +99,23 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 			owner: owner,
 		},
 	)
-	registration, err := lifecycle.RegisterFactory(loopFactory)
-	if err != nil {
-		return err
-	}
 	owner.mutex.Lock()
 	owner.constructor = constructor
-	owner.lifecycle = lifecycle
 	owner.factory = loopFactory
-	owner.factoryRegistration = registration
 	owner.mutex.Unlock()
 	return requestContext.Err()
 }
 
-// Dispose orders the business shutdown explicitly: stop admission, close every
-// Agent child-first through the Registry, then detach the Factory adapter.
+// Dispose releases Agent Loop-local projections after the commit-phase Factory
+// adapter and every per-Agent Scope have already stopped.
 func (owner *Plugin) Dispose(closeContext context.Context) error {
 	if closeContext == nil {
 		closeContext = context.Background()
 	}
-	drainContext := context.WithoutCancel(closeContext)
-	owner.mutex.RLock()
-	lifecycle := owner.lifecycle
-	registration := owner.factoryRegistration
-	owner.mutex.RUnlock()
-
 	var closeErr error
-	if lifecycle != nil {
-		closeErr = errors.Join(closeErr, lifecycle.Shutdown(drainContext))
-	}
-	if registration != nil {
-		registration.Unregister()
-	}
 	owner.mutex.Lock()
 	owner.constructor = nil
-	owner.lifecycle = nil
 	owner.factory = nil
-	owner.factoryRegistration = nil
 	owner.mutex.Unlock()
 	if routed := owner.runtimeContextEvents.clear(); routed != 0 {
 		closeErr = errors.Join(
