@@ -18,8 +18,12 @@ type eventPublisher interface {
 type memoryStoreState uint8
 
 const (
+	// memoryStoreOpen accepts detached Session preparation and exact Store entry.
 	memoryStoreOpen memoryStoreState = iota
+	// memoryStoreClosing permanently rejects new preparation and entry while one
+	// Close transaction releases the current registration snapshot.
 	memoryStoreClosing
+	// memoryStoreClosed is terminal after every registration has been released.
 	memoryStoreClosed
 )
 

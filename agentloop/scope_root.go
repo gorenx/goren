@@ -24,7 +24,7 @@ type scopeHost interface {
 // Mount binds that exact Agent and activates its private Scope atomically.
 type scopePreparation interface {
 	Runtime() agent.AgentScopeRuntime
-	BindLifecycle(agent.Lifecycle) error
+	BindTeardown(agent.AgentTeardown) error
 	Mount(context.Context, *ReactLoopAgent) (scopedplugin.Scope, error)
 	Rollback(context.Context) error
 }
@@ -53,10 +53,10 @@ func (preparation *pluginScopePreparation) Runtime() agent.AgentScopeRuntime {
 	return preparation.root
 }
 
-func (preparation *pluginScopePreparation) BindLifecycle(
-	lifecycle agent.Lifecycle,
+func (preparation *pluginScopePreparation) BindTeardown(
+	teardownTarget agent.AgentTeardown,
 ) error {
-	return preparation.root.bindLifecycle(lifecycle)
+	return preparation.root.bindTeardown(teardownTarget)
 }
 
 func (preparation *pluginScopePreparation) Mount(
@@ -111,7 +111,7 @@ type agentScopeRoot struct {
 	disposeErr   error
 	teardownOnce sync.Once
 	teardownErr  error
-	lifecycle    agent.Lifecycle
+	teardown     agent.AgentTeardown
 }
 
 func newAgentScopeRoot(
@@ -140,18 +140,18 @@ func newAgentScopeRoot(
 	}
 }
 
-func (root *agentScopeRoot) bindLifecycle(
-	lifecycle agent.Lifecycle,
+func (root *agentScopeRoot) bindTeardown(
+	teardownTarget agent.AgentTeardown,
 ) error {
-	if root == nil || lifecycle == nil {
-		return errors.New("agentloop: Agent Lifecycle is unavailable")
+	if root == nil || teardownTarget == nil {
+		return errors.New("agentloop: Agent teardown is unavailable")
 	}
 	root.mutex.Lock()
 	defer root.mutex.Unlock()
-	if root.lifecycle != nil {
-		return errors.New("agentloop: Agent Lifecycle is already bound")
+	if root.teardown != nil {
+		return errors.New("agentloop: Agent teardown is already bound")
 	}
-	root.lifecycle = lifecycle
+	root.teardown = teardownTarget
 	return nil
 }
 
@@ -226,8 +226,8 @@ func (root *agentScopeRoot) Dispose(closeContext context.Context) error {
 				subject.shutdown(closeContext),
 			)
 		}
-		if root.lifecycle != nil {
-			root.lifecycle.FinishTeardown(root.disposeErr)
+		if root.teardown != nil {
+			root.teardown.FinishTeardown(root.disposeErr)
 		}
 		close(root.disposeDone)
 	})

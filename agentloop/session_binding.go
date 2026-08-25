@@ -12,8 +12,13 @@ import (
 type sessionPublicationPhase uint8
 
 const (
+	// sessionUnpublished has entered the Session Store but has not started the
+	// Created publication owned by that Store.
 	sessionUnpublished sessionPublicationPhase = iota
+	// sessionPublishing has one synchronous Session Created dispatch in progress.
 	sessionPublishing
+	// sessionPublished records that the Created dispatch completed successfully;
+	// the Session registration itself owns the paired release semantics.
 	sessionPublished
 )
 

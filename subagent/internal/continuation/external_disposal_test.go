@@ -74,9 +74,9 @@ func TestExternalDisposalWaitsForTerminalPublication(t *testing.T) {
 		t.Fatal("external disposal did not publish its terminal lifecycle edge")
 	}
 
-	fixture.manager.residency.mutex.Lock()
-	epoch := fixture.manager.residency.activations[grandchildID]
-	fixture.manager.residency.mutex.Unlock()
+	fixture.manager.activations.mutex.Lock()
+	epoch := fixture.manager.activations.activations[grandchildID]
+	fixture.manager.activations.mutex.Unlock()
 	if epoch != nil {
 		t.Fatal("externally disposed Activation remained addressable")
 	}

@@ -162,9 +162,26 @@ func TestReportExtensionReleasesResidentInstallationDuringRuntimeShutdown(
 	if len(requests) != 1 || !hasToolSchema(requests[0].Tools, "report") {
 		t.Fatalf("resident child tools = %#v", requests)
 	}
-	// The fixture shutdown owns both live Agent Handles. Leaving the request
-	// gated proves child-scoped report effects release through structural Agent
-	// teardown without a nested topology mutation from Subagent.Dispose.
+	// Leaving the request gated proves shutdown cancels live child work rather
+	// than relying on normal settlement before structural Agent teardown.
+	if shutdownErr := state.runtimeEngine.Shutdown(context.Background()); shutdownErr != nil {
+		t.Fatalf(
+			"Runtime shutdown failed: %v; details: %#v",
+			shutdownErr,
+			flattenIntegrationErrors(shutdownErr),
+		)
+	}
+	if len(state.agents.List()) != 0 || len(state.sessions.List()) != 0 {
+		t.Fatalf(
+			"Runtime shutdown retained Agents or Sessions: agents=%d sessions=%d",
+			len(state.agents.List()),
+			len(state.sessions.List()),
+		)
+	}
+	starts, ends := state.lifecycle.snapshot()
+	if len(starts) != 1 || len(ends) != 1 || ends[0].ID != starts[0].ID {
+		t.Fatalf("Subagent shutdown lifecycle: starts=%#v ends=%#v", starts, ends)
+	}
 }
 
 func hasToolSchema(schemas []llm.ToolSchema, selectedName string) bool {

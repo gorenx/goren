@@ -45,7 +45,7 @@ type Dependencies struct {
 // Manager owns every process-local continuable Activation.
 type Manager struct {
 	dependencies Dependencies
-	residency    *residency
+	activations  *activationRegistry
 }
 
 // New constructs a continuation Manager when Agent and Session ownership are
@@ -62,7 +62,7 @@ func New(dependencySet Dependencies) (*Manager, error) {
 	}
 	return &Manager{
 		dependencies: dependencySet,
-		residency:    newResidency(),
+		activations:  newActivationRegistry(),
 	}, nil
 }
 
@@ -71,37 +71,37 @@ func (owner *Manager) MessageLeftInbox(
 	childAgent agent.Agent,
 	messageID llm.MessageID,
 ) {
-	owner.residency.mutex.Lock()
-	epoch := owner.residency.activations[childAgent.ID()]
+	owner.activations.mutex.Lock()
+	epoch := owner.activations.activations[childAgent.ID()]
 	if epoch != nil && agent.Same(epoch.handle.Subject, childAgent) {
 		delete(epoch.accepted, messageID)
 		wake(epoch)
 	}
-	owner.residency.mutex.Unlock()
+	owner.activations.mutex.Unlock()
 }
 
 // AgentDisposed removes the admission cutoff retained for an externally
 // disposed exact Agent. Manager-owned handles normally leave through Dispose.
 func (owner *Manager) AgentDisposed(childAgent agent.Agent) {
 	var externallyDisposed *Activation
-	owner.residency.mutex.Lock()
-	epoch := owner.residency.activations[childAgent.ID()]
+	owner.activations.mutex.Lock()
+	epoch := owner.activations.activations[childAgent.ID()]
 	if epoch != nil && agent.Same(epoch.handle.Subject, childAgent) &&
 		epoch.disposal == nil {
 		transaction := &disposal{
 			done: make(chan struct{}),
 		}
 		epoch.disposal = transaction
-		delete(owner.residency.activations, epoch.childID)
+		delete(owner.activations.activations, epoch.childID)
 		externallyDisposed = epoch
 	}
 	parentID := childAgent.SessionValue().Header().ParentSession
 	if parentID != nil {
-		if parentEpoch := owner.residency.activations[*parentID]; parentEpoch != nil {
+		if parentEpoch := owner.activations.activations[*parentID]; parentEpoch != nil {
 			wake(parentEpoch)
 		}
 	}
-	owner.residency.mutex.Unlock()
+	owner.activations.mutex.Unlock()
 	if externallyDisposed == nil {
 		return
 	}
@@ -117,7 +117,7 @@ func (owner *Manager) AgentDisposed(childAgent agent.Agent) {
 			},
 		)
 	}
-	owner.residency.mutex.Lock()
+	owner.activations.mutex.Lock()
 	close(externallyDisposed.disposal.done)
-	owner.residency.mutex.Unlock()
+	owner.activations.mutex.Unlock()
 }

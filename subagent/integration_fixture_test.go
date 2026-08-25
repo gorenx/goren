@@ -209,6 +209,7 @@ func (observerState *subagentLifecycleObserver) snapshot() (
 }
 
 type integrationFixture struct {
+	runtimeEngine  *plugin.Runtime
 	agents         *agent.RegistryService
 	sessions       session.LiveStore
 	toolRuntime    tools.ToolRuntime
@@ -382,6 +383,7 @@ func newIntegrationFixtureWithConfiguration(
 		})
 	}
 	return &integrationFixture{
+		runtimeEngine:  runtimeEngine,
 		agents:         agentRegistry,
 		sessions:       storeProbe.store,
 		toolRuntime:    toolService,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/gorenx/goren/agent"
@@ -26,18 +27,18 @@ func (owner *Manager) DrainChildren(
 	}
 	targets := make([]*Activation, 0, len(childIDs))
 	seen := make(map[session.SessionID]struct{}, len(childIDs))
-	owner.residency.mutex.Lock()
+	owner.activations.mutex.Lock()
 	for _, childID := range childIDs {
 		if _, duplicate := seen[childID]; duplicate {
 			continue
 		}
 		seen[childID] = struct{}{}
-		epoch := owner.residency.activations[childID]
+		epoch := owner.activations.activations[childID]
 		if epoch == nil {
 			continue
 		}
 		if epoch.parentID != parentAgent.ID() {
-			owner.residency.mutex.Unlock()
+			owner.activations.mutex.Unlock()
 			return unauthorized(
 				fmt.Sprintf(
 					"subagent %q is not a direct child of Agent %q",
@@ -48,7 +49,7 @@ func (owner *Manager) DrainChildren(
 		}
 		targets = append(targets, epoch)
 	}
-	owner.residency.mutex.Unlock()
+	owner.activations.mutex.Unlock()
 	return owner.disposeAll(requestContext, targets)
 }
 
@@ -84,9 +85,9 @@ func (owner *Manager) Drain(requestContext context.Context) error {
 	if contextErr := checkContext(requestContext, "continuation drain"); contextErr != nil {
 		return contextErr
 	}
-	owner.residency.mutex.Lock()
-	owner.residency.draining = true
-	owner.residency.mutex.Unlock()
+	owner.activations.mutex.Lock()
+	owner.activations.admission = activationsDraining
+	owner.activations.mutex.Unlock()
 
 	var closeErr error
 	for _, subject := range owner.dependencies.Agents.List() {
@@ -103,15 +104,15 @@ func (owner *Manager) Drain(requestContext context.Context) error {
 		)
 	}
 
-	owner.residency.mutex.Lock()
-	remaining := make([]*Activation, 0, len(owner.residency.activations))
-	for _, epoch := range owner.residency.activations {
+	owner.activations.mutex.Lock()
+	remaining := make([]*Activation, 0, len(owner.activations.activations))
+	for _, epoch := range owner.activations.activations {
 		remaining = append(remaining, epoch)
 	}
-	owner.residency.mutex.Unlock()
+	owner.activations.mutex.Unlock()
 	return errors.Join(
 		closeErr,
-		owner.disposeAll(requestContext, activationRoots(remaining)),
+		owner.disposeAll(requestContext, settlementOrder(remaining)),
 	)
 }
 
@@ -168,9 +169,9 @@ func (owner *Manager) assertAdmitting(parentAgent agent.Agent) error {
 	if parentAgent == nil || !owner.dependencies.Agents.Contains(parentAgent) {
 		return unauthorized("continuable operation requires the exact live parent Agent")
 	}
-	owner.residency.mutex.Lock()
-	draining := owner.residency.draining
-	owner.residency.mutex.Unlock()
+	owner.activations.mutex.Lock()
+	draining := owner.activations.admission == activationsDraining
+	owner.activations.mutex.Unlock()
 	if draining {
 		return &subagent.Error{
 			Code:    subagent.ErrorDraining,
@@ -181,26 +182,54 @@ func (owner *Manager) assertAdmitting(parentAgent agent.Agent) error {
 }
 
 func (owner *Manager) lockFor(childID session.SessionID) *sync.Mutex {
-	owner.residency.mutex.Lock()
-	defer owner.residency.mutex.Unlock()
-	childMutex := owner.residency.locks[childID]
+	owner.activations.mutex.Lock()
+	defer owner.activations.mutex.Unlock()
+	childMutex := owner.activations.locks[childID]
 	if childMutex == nil {
 		childMutex = &sync.Mutex{}
-		owner.residency.locks[childID] = childMutex
+		owner.activations.locks[childID] = childMutex
 	}
 	return childMutex
 }
 
-func activationRoots(candidates []*Activation) []*Activation {
-	identities := make(map[session.SessionID]struct{}, len(candidates))
+// settlementOrder returns every remaining business Activation descendants
+// first. Agent teardown has already been delegated to the Registry; this
+// ordering only guarantees that observer withdrawal cannot skip terminal
+// settlement for a nested Activation.
+func settlementOrder(candidates []*Activation) []*Activation {
+	byID := make(map[session.SessionID]*Activation, len(candidates))
 	for _, epoch := range candidates {
-		identities[epoch.childID] = struct{}{}
+		byID[epoch.childID] = epoch
 	}
-	rootActivations := make([]*Activation, 0, len(candidates))
-	for _, epoch := range candidates {
-		if _, parentIsCandidate := identities[epoch.parentID]; !parentIsCandidate {
-			rootActivations = append(rootActivations, epoch)
+	sorted := append([]*Activation(nil), candidates...)
+	sort.Slice(sorted, func(leftIndex int, rightIndex int) bool {
+		return sorted[leftIndex].childID < sorted[rightIndex].childID
+	})
+	ordered := make([]*Activation, 0, len(candidates))
+	visited := make(map[*Activation]struct{}, len(candidates))
+	var appendDescendantsFirst func(*Activation)
+	appendDescendantsFirst = func(epoch *Activation) {
+		if epoch == nil {
+			return
+		}
+		if _, found := visited[epoch]; found {
+			return
+		}
+		visited[epoch] = struct{}{}
+		for _, candidate := range sorted {
+			if candidate.parentID == epoch.childID {
+				appendDescendantsFirst(candidate)
+			}
+		}
+		ordered = append(ordered, epoch)
+	}
+	for _, epoch := range sorted {
+		if _, parentIsResident := byID[epoch.parentID]; !parentIsResident {
+			appendDescendantsFirst(epoch)
 		}
 	}
-	return rootActivations
+	for _, epoch := range candidates {
+		appendDescendantsFirst(epoch)
+	}
+	return ordered
 }

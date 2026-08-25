@@ -51,9 +51,12 @@ type FactoryRegistration interface {
 }
 
 type factoryRegistration struct {
-	registry *RegistryService
-	factory  Factory
-	once     sync.Once
+	registry  *RegistryService
+	factory   Factory
+	epochs    map[*epoch]struct{}
+	state     factoryRegistrationState
+	closeDone lifecycleSignal
+	once      sync.Once
 }
 
 func (registration *factoryRegistration) Close() {
@@ -61,7 +64,8 @@ func (registration *factoryRegistration) Close() {
 		return
 	}
 	registration.once.Do(func() {
-		registration.registry.closeFactory(registration)
+		done := registration.registry.closeFactory(registration)
+		<-done
 	})
 }
 
@@ -73,6 +77,30 @@ type RegistryService struct {
 	admission   registryAdmission
 	factory     *factoryRegistration
 	coordinator *LifecycleCoordinator
+	shutdown    lifecycleSignal
+	shutdownErr error
+}
+
+// construction is one Registry-admitted invocation of the currently
+// registered Factory against an exact Agent epoch.
+type construction struct {
+	registry     *RegistryService
+	registration *factoryRegistration
+	factory      Factory
+	epoch        *epoch
+	once         sync.Once
+}
+
+func (admitted *construction) finish() {
+	if admitted == nil || admitted.registry == nil || admitted.registration == nil {
+		return
+	}
+	admitted.once.Do(func() {
+		admitted.registry.finishConstruction(
+			admitted.registration,
+			admitted.epoch,
+		)
+	})
 }
 
 // NewRegistry constructs an empty Agent lifecycle Service.
@@ -84,6 +112,7 @@ func NewRegistry(settings RegistryOptions) *RegistryService {
 	return &RegistryService{
 		admission:   registryAccepting,
 		coordinator: newLifecycleCoordinator(reporter),
+		shutdown:    newLifecycleSignal(),
 	}
 }
 
@@ -103,8 +132,11 @@ func (service *RegistryService) RegisterFactory(
 		return nil, errors.New("agent: an Agent factory is already registered")
 	}
 	registration := &factoryRegistration{
-		registry: service,
-		factory:  agentFactory,
+		registry:  service,
+		factory:   agentFactory,
+		epochs:    make(map[*epoch]struct{}),
+		state:     factoryRegistered,
+		closeDone: newLifecycleSignal(),
 	}
 	service.factory = registration
 	return registration, nil
@@ -112,36 +144,71 @@ func (service *RegistryService) RegisterFactory(
 
 func (service *RegistryService) closeFactory(
 	registration *factoryRegistration,
-) {
+) <-chan struct{} {
 	service.mutex.Lock()
-	if service.factory == registration {
-		service.admission = registryShuttingDown
-		service.factory = nil
-		service.coordinator.cancelConstructions()
+	if registration.state != factoryRegistered {
+		done := registration.closeDone.done
+		service.mutex.Unlock()
+		return done
 	}
+	registration.state = factoryRegistrationClosing
+	if service.factory == registration {
+		service.factory = nil
+	}
+	epochs := make([]*epoch, 0, len(registration.epochs))
+	for target := range registration.epochs {
+		epochs = append(epochs, target)
+	}
+	if len(epochs) == 0 {
+		registration.state = factoryRegistrationClosed
+		registration.closeDone.close()
+	}
+	done := registration.closeDone.done
 	service.mutex.Unlock()
+	service.coordinator.cancelEpochConstructions(epochs)
+	return done
 }
 
-func (service *RegistryService) reserve(
+func (service *RegistryService) beginConstruction(
 	identifier session.SessionID,
 	parent Agent,
-) (Factory, *reservation, error) {
+) (*construction, error) {
 	service.mutex.Lock()
 	defer service.mutex.Unlock()
 	if service.admission != registryAccepting {
-		return nil, nil, errors.New("agent: Agent Registry is shutting down")
+		return nil, errors.New("agent: Agent Registry is shutting down")
 	}
 	registration := service.factory
 	if registration == nil {
-		return nil, nil, errors.New(
+		return nil, errors.New(
 			"agent: no Agent factory attached; mount an Agent Loop Plugin",
 		)
 	}
-	pending, err := service.coordinator.reserve(identifier, parent)
+	target, err := service.coordinator.createEpoch(identifier, parent)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return registration.factory, pending, nil
+	registration.epochs[target] = struct{}{}
+	return &construction{
+		registry:     service,
+		registration: registration,
+		factory:      registration.factory,
+		epoch:        target,
+	}, nil
+}
+
+func (service *RegistryService) finishConstruction(
+	registration *factoryRegistration,
+	target *epoch,
+) {
+	service.mutex.Lock()
+	delete(registration.epochs, target)
+	if registration.state == factoryRegistrationClosing &&
+		len(registration.epochs) == 0 {
+		registration.state = factoryRegistrationClosed
+		registration.closeDone.close()
+	}
+	service.mutex.Unlock()
 }
 
 // Create constructs, publishes, and commits one fresh exact Agent epoch.
@@ -152,32 +219,37 @@ func (service *RegistryService) Create(
 	if requestContext == nil {
 		return Handle{}, errors.New("agent: Create Context is nil")
 	}
-	agentFactory, pending, err := service.reserve(
+	admittedConstruction, err := service.beginConstruction(
 		settings.SessionID,
 		settings.RuntimeParent,
 	)
 	if err != nil {
 		return Handle{}, err
 	}
-	if err = agentFactory.CreateAgent(requestContext, pending, settings); err != nil {
+	defer admittedConstruction.finish()
+	if err = admittedConstruction.factory.CreateAgent(
+		requestContext,
+		admittedConstruction.epoch,
+		settings,
+	); err != nil {
 		closeErr := service.coordinator.abort(
 			context.WithoutCancel(requestContext),
-			pending,
+			admittedConstruction.epoch,
 		)
 		return Handle{}, errors.Join(err, closeErr)
 	}
 	if err = service.coordinator.activate(
 		requestContext,
-		pending,
+		admittedConstruction.epoch,
 		SessionStartup,
 	); err != nil {
 		closeErr := service.coordinator.abort(
 			context.WithoutCancel(requestContext),
-			pending,
+			admittedConstruction.epoch,
 		)
 		return Handle{}, errors.Join(err, closeErr)
 	}
-	return service.coordinator.handle(pending), nil
+	return service.coordinator.handle(admittedConstruction.epoch), nil
 }
 
 // Resume reconstructs, publishes, and commits one durable exact Agent epoch.
@@ -188,32 +260,37 @@ func (service *RegistryService) Resume(
 	if requestContext == nil {
 		return Handle{}, errors.New("agent: Resume Context is nil")
 	}
-	agentFactory, pending, err := service.reserve(
+	admittedConstruction, err := service.beginConstruction(
 		settings.SessionID,
 		settings.RuntimeParent,
 	)
 	if err != nil {
 		return Handle{}, err
 	}
-	if err = agentFactory.ResumeAgent(requestContext, pending, settings); err != nil {
+	defer admittedConstruction.finish()
+	if err = admittedConstruction.factory.ResumeAgent(
+		requestContext,
+		admittedConstruction.epoch,
+		settings,
+	); err != nil {
 		closeErr := service.coordinator.abort(
 			context.WithoutCancel(requestContext),
-			pending,
+			admittedConstruction.epoch,
 		)
 		return Handle{}, errors.Join(err, closeErr)
 	}
 	if err = service.coordinator.activate(
 		requestContext,
-		pending,
+		admittedConstruction.epoch,
 		SessionResume,
 	); err != nil {
 		closeErr := service.coordinator.abort(
 			context.WithoutCancel(requestContext),
-			pending,
+			admittedConstruction.epoch,
 		)
 		return Handle{}, errors.Join(err, closeErr)
 	}
-	return service.coordinator.handle(pending), nil
+	return service.coordinator.handle(admittedConstruction.epoch), nil
 }
 
 // Get returns the visible exact Agent registered for identifier.
@@ -226,7 +303,7 @@ func (service *RegistryService) Contains(subject Agent) bool {
 	return service.coordinator.contains(subject)
 }
 
-// List returns visible exact Agents in reservation order.
+// List returns visible exact Agents in epoch creation order.
 func (service *RegistryService) List() []Agent {
 	return service.coordinator.liveAgents()
 }
@@ -270,12 +347,44 @@ func (service *RegistryService) CloseDescendants(
 }
 
 // Shutdown stops construction admission and closes every Agent epoch
-// child-first, including reservations whose Factory is still returning.
+// child-first, including epochs whose Factory is still returning.
 func (service *RegistryService) Shutdown(closeContext context.Context) error {
+	if closeContext == nil {
+		closeContext = context.Background()
+	}
 	service.mutex.Lock()
-	service.admission = registryShuttingDown
+	switch service.admission {
+	case registryClosed:
+		closeErr := service.shutdownErr
+		service.mutex.Unlock()
+		return closeErr
+	case registryDraining:
+		done := service.shutdown.done
+		service.mutex.Unlock()
+		select {
+		case <-done:
+			service.mutex.RLock()
+			closeErr := service.shutdownErr
+			service.mutex.RUnlock()
+			return closeErr
+		case <-closeContext.Done():
+			return context.Cause(closeContext)
+		}
+	case registryAccepting:
+		service.admission = registryDraining
+		service.factory = nil
+	}
 	service.mutex.Unlock()
-	return service.coordinator.closeAll(closeContext)
+	service.coordinator.cancelConstructions()
+	closeErr := service.coordinator.closeAll(
+		context.WithoutCancel(closeContext),
+	)
+	service.mutex.Lock()
+	service.shutdownErr = closeErr
+	service.admission = registryClosed
+	service.shutdown.close()
+	service.mutex.Unlock()
+	return closeErr
 }
 
 var _ Registry = (*RegistryService)(nil)

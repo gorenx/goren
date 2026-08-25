@@ -112,8 +112,38 @@ func (backend *scriptedAdapter) snapshots() []llm.GenerateOptions {
 
 type lifecycleObserver struct {
 	plugin.Base
-	mutex   sync.Mutex
-	entries []string
+	mutex              sync.Mutex
+	entries            []string
+	disposedAgentIDs   []session.SessionID
+	disposedSessionIDs []session.SessionID
+}
+
+type agentCreatedRejector struct {
+	plugin.Base
+}
+
+func (*agentCreatedRejector) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "agentloop-test-agent-creation-veto",
+		Events: []plugin.EventSubscription{
+			plugin.EventOf[agent.Created](),
+		},
+	}
+}
+
+func (*agentCreatedRejector) Apply(requestContext context.Context) error {
+	return requestContext.Err()
+}
+
+func (*agentCreatedRejector) Dispose(context.Context) error {
+	return nil
+}
+
+func (*agentCreatedRejector) ObserveEvent(
+	context.Context,
+	plugin.Event,
+) error {
+	return errors.New("test: Agent Created listener rejected publication")
 }
 
 func (*lifecycleObserver) Manifest() plugin.Manifest {
@@ -142,7 +172,9 @@ func (observerState *lifecycleObserver) ObserveEvent(
 	fact plugin.Event,
 ) error {
 	entry := ""
-	switch fact.(type) {
+	var disposedAgentID session.SessionID
+	var disposedSessionID session.SessionID
+	switch lifecycleEvent := fact.(type) {
 	case session.Created:
 		entry = session.CreatedEventName
 	case agent.Created:
@@ -151,16 +183,40 @@ func (observerState *lifecycleObserver) ObserveEvent(
 		entry = agent.SessionStartEventName
 	case agent.Disposed:
 		entry = agent.DisposedEventName
+		disposedAgentID = lifecycleEvent.Subject.ID()
 	case session.Disposed:
 		entry = session.DisposedEventName
+		disposedSessionID = lifecycleEvent.Conversation.ID()
 	}
 	if entry == "" {
 		return nil
 	}
 	observerState.mutex.Lock()
 	observerState.entries = append(observerState.entries, entry)
+	if disposedAgentID != "" {
+		observerState.disposedAgentIDs = append(
+			observerState.disposedAgentIDs,
+			disposedAgentID,
+		)
+	}
+	if disposedSessionID != "" {
+		observerState.disposedSessionIDs = append(
+			observerState.disposedSessionIDs,
+			disposedSessionID,
+		)
+	}
 	observerState.mutex.Unlock()
 	return nil
+}
+
+func (observerState *lifecycleObserver) disposedIDs() (
+	[]session.SessionID,
+	[]session.SessionID,
+) {
+	observerState.mutex.Lock()
+	defer observerState.mutex.Unlock()
+	return append([]session.SessionID(nil), observerState.disposedAgentIDs...),
+		append([]session.SessionID(nil), observerState.disposedSessionIDs...)
 }
 
 func (observerState *lifecycleObserver) snapshot() []string {
@@ -176,6 +232,7 @@ type harnessFixture struct {
 	models        *llm.Runtime
 	toolCatalog   tools.ToolCatalog
 	loopPlugin    *agentloop.Plugin
+	loopHandle    plugin.Handle
 	backend       *scriptedAdapter
 	lifecycle     *lifecycleObserver
 }
@@ -248,10 +305,11 @@ func newHarnessFixtureWithSettings(
 	}
 	rootPlugins = append(rootPlugins, rootExtensions...)
 	rootPlugins = append(rootPlugins, loopPlugin)
-	if _, err = runtimeEngine.Start(
+	handles, err := runtimeEngine.Start(
 		context.Background(),
 		rootPlugins...,
-	); err != nil {
+	)
+	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -282,6 +340,7 @@ func newHarnessFixtureWithSettings(
 		models:        modelRuntime,
 		toolCatalog:   toolService,
 		loopPlugin:    loopPlugin,
+		loopHandle:    handles[len(handles)-1],
 		backend:       backend,
 		lifecycle:     lifecycle,
 	}
@@ -364,6 +423,45 @@ func TestLoopPublishesDrivesAndDisposesOneAgentLifecycle(t *testing.T) {
 	)
 	if got := state.lifecycle.snapshot(); !reflect.DeepEqual(got, wantComplete) {
 		t.Fatalf("complete lifecycle = %#v, want %#v", got, wantComplete)
+	}
+}
+
+func TestAgentCreatedListenerErrorPublishesPairedDisposal(t *testing.T) {
+	state := newHarnessFixtureWithSettings(
+		t,
+		nil,
+		agentloop.Settings{
+			MaxParallelToolCalls: agentloop.DefaultMaxParallelToolCalls,
+		},
+		&agentCreatedRejector{},
+	)
+	_, err := state.agents.Create(
+		context.Background(),
+		agent.CreateOptions{
+			SessionID: "vetoed-agent-publication",
+			AgentOptions: agent.Options{
+				Provider: "mock",
+				Model:    "model",
+			},
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "listener rejected publication") {
+		t.Fatalf("Create error = %v", err)
+	}
+	want := []string{
+		session.CreatedEventName,
+		agent.CreatedEventName,
+		agent.DisposedEventName,
+		session.DisposedEventName,
+	}
+	if got := state.lifecycle.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("rejected publication lifecycle = %#v, want %#v", got, want)
+	}
+	if _, found := state.agents.Get("vetoed-agent-publication"); found {
+		t.Fatal("rejected Agent remained registered")
+	}
+	if _, found := state.sessions.Get("vetoed-agent-publication"); found {
+		t.Fatal("rejected Agent Session remained registered")
 	}
 }
 
@@ -810,11 +908,231 @@ func TestRuntimeShutdownRetiresLiveAgentBeforeRootServices(t *testing.T) {
 	}
 }
 
+func TestAgentLoopCanUnloadAndRegisterReplacementFactory(t *testing.T) {
+	state := newHarnessFixture(t, nil)
+	first, err := state.agents.Create(
+		context.Background(),
+		agent.CreateOptions{
+			SessionID: "before-agentloop-replacement",
+			AgentOptions: agent.Options{
+				Provider: "mock",
+				Model:    "model",
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = state.runtimeEngine.Unload(
+		context.Background(),
+		state.loopHandle,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.agents.List()) != 0 || len(state.sessions.List()) != 0 {
+		t.Fatalf(
+			"AgentLoop unload retained Agents or Sessions: agents=%d sessions=%d",
+			len(state.agents.List()),
+			len(state.sessions.List()),
+		)
+	}
+	if err = first.Dispose(context.Background()); err != nil {
+		t.Fatalf("old Handle after AgentLoop unload: %v", err)
+	}
+
+	replacementLoop, err := agentloop.New(
+		agentloop.Settings{
+			MaxParallelToolCalls: agentloop.DefaultMaxParallelToolCalls,
+		},
+		agentloop.RuntimeOptions{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = state.runtimeEngine.Mount(
+		context.Background(),
+		replacementLoop,
+	); err != nil {
+		t.Fatalf("mount replacement AgentLoop: %v", err)
+	}
+	replacement, err := state.agents.Create(
+		context.Background(),
+		agent.CreateOptions{
+			SessionID: "after-agentloop-replacement",
+			AgentOptions: agent.Options{
+				Provider: "mock",
+				Model:    "model",
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("Create through replacement AgentLoop: %v", err)
+	}
+	if err = replacement.Dispose(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRuntimeShutdownRetiresRuntimeDescendantsChildFirst(t *testing.T) {
+	state := newHarnessFixture(t, nil)
+	root, err := state.agents.Create(
+		context.Background(),
+		agent.CreateOptions{
+			SessionID: "shutdown-parent",
+			AgentOptions: agent.Options{
+				Provider: "mock",
+				Model:    "model",
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = state.agents.Create(
+		context.Background(),
+		agent.CreateOptions{
+			SessionID: "shutdown-child",
+			AgentOptions: agent.Options{
+				Provider: "mock",
+				Model:    "model",
+			},
+			RuntimeParent: root.Subject,
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.runtimeEngine.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	agentIDs, sessionIDs := state.lifecycle.disposedIDs()
+	want := []session.SessionID{
+		"shutdown-child",
+		"shutdown-parent",
+	}
+	if !reflect.DeepEqual(agentIDs, want) {
+		t.Fatalf("Agent disposal order = %#v, want %#v", agentIDs, want)
+	}
+	if !reflect.DeepEqual(sessionIDs, want) {
+		t.Fatalf("Session disposal order = %#v, want %#v", sessionIDs, want)
+	}
+	if len(state.agents.List()) != 0 || len(state.sessions.List()) != 0 {
+		t.Fatalf(
+			"Runtime shutdown retained Agents or Sessions: agents=%d sessions=%d",
+			len(state.agents.List()),
+			len(state.sessions.List()),
+		)
+	}
+}
+
 type shutdownBarrier struct {
 	plugin.Base
 	entered chan struct{}
 	release chan struct{}
 	once    sync.Once
+}
+
+type constructionBarrier struct {
+	plugin.Base
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (*constructionBarrier) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "agentloop-test-construction-barrier",
+	}
+}
+
+func (barrier *constructionBarrier) Apply(context.Context) error {
+	barrier.once.Do(func() {
+		close(barrier.entered)
+	})
+	<-barrier.release
+	return nil
+}
+
+func (*constructionBarrier) Dispose(context.Context) error {
+	return nil
+}
+
+func TestSameIDCollisionDoesNotEnterSecondConstruction(t *testing.T) {
+	state := newHarnessFixture(t, nil)
+	baselineStatuses := len(state.runtimeEngine.Statuses())
+	barrier := &constructionBarrier{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			close(barrier.release)
+		})
+	}
+	defer release()
+	created := make(chan agent.Handle, 1)
+	createErrors := make(chan error, 1)
+	go func() {
+		handleState, createErr := state.agents.Create(
+			context.Background(),
+			agent.CreateOptions{
+				SessionID: "construction-collision",
+				AgentOptions: agent.Options{
+					Provider: "mock",
+					Model:    "model",
+				},
+				Provisioner: scopedplugin.MountPlugins(barrier),
+			},
+		)
+		if createErr != nil {
+			createErrors <- createErr
+			return
+		}
+		created <- handleState
+	}()
+	select {
+	case <-barrier.entered:
+	case <-time.After(time.Second):
+		t.Fatal("first construction did not reach its provisioning boundary")
+	}
+	_, err := state.agents.Resume(
+		context.Background(),
+		agent.ResumeOptions{
+			SessionID: "construction-collision",
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "active epoch") {
+		t.Fatalf("colliding Resume error = %v", err)
+	}
+	release()
+	var handleState agent.Handle
+	select {
+	case err = <-createErrors:
+		t.Fatal(err)
+	case handleState = <-created:
+	case <-time.After(time.Second):
+		t.Fatal("first construction did not complete")
+	}
+	if len(state.agents.List()) != 1 || len(state.sessions.List()) != 1 {
+		t.Fatalf(
+			"collision live state: agents=%d sessions=%d",
+			len(state.agents.List()),
+			len(state.sessions.List()),
+		)
+	}
+	if err = handleState.Dispose(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.agents.List()) != 0 || len(state.sessions.List()) != 0 {
+		t.Fatalf(
+			"collision cleanup: agents=%d sessions=%d",
+			len(state.agents.List()),
+			len(state.sessions.List()),
+		)
+	}
+	if statuses := len(state.runtimeEngine.Statuses()); statuses != baselineStatuses {
+		t.Fatalf("collision retained %d Plugin status entries", statuses-baselineStatuses)
+	}
 }
 
 func (*shutdownBarrier) Manifest() plugin.Manifest {
@@ -876,7 +1194,7 @@ func TestRuntimeShutdownClosesConstructionBeforeAgentScopes(t *testing.T) {
 			SessionID: "during-shutdown",
 		},
 	)
-	if err == nil || !strings.Contains(err.Error(), "shutting down") {
+	if err == nil || !strings.Contains(err.Error(), "no Agent factory") {
 		t.Fatalf("Create during Agent Scope shutdown error = %v", err)
 	}
 	release()

@@ -19,9 +19,10 @@ var ErrDescendantAdmissionClosed = errors.New(
 // epoch is one exact Agent instance lifetime. Structural lifetime and event
 // publication are explicit state axes because a close may race publication.
 type epoch struct {
-	id      session.SessionID
-	subject Agent
-	runtime AgentScopeRuntime
+	coordinator *LifecycleCoordinator
+	id          session.SessionID
+	subject     Agent
+	runtime     AgentScopeRuntime
 
 	parent   *epoch
 	children map[*epoch]struct{}
@@ -30,7 +31,7 @@ type epoch struct {
 	publication         publicationPhase
 	descendantAdmission descendantAdmission
 	teardownOrigin      teardownOrigin
-	lifecycle           *lifecycle
+	teardown            *agentTeardown
 
 	construction lifecycleSignal
 	closing      lifecycleSignal
@@ -58,88 +59,83 @@ func newLifecycleCoordinator(report func(error)) *LifecycleCoordinator {
 	}
 }
 
-type reservation struct {
-	coordinator *LifecycleCoordinator
-	epoch       *epoch
-}
-
-func (pending *reservation) ClosingSignal() <-chan struct{} {
-	if pending == nil || pending.epoch == nil {
+func (target *epoch) ClosingSignal() <-chan struct{} {
+	if target == nil {
 		closed := make(chan struct{})
 		close(closed)
 		return closed
 	}
-	return pending.epoch.closing.done
+	return target.closing.done
 }
 
-func (pending *reservation) Attach(
+func (target *epoch) Attach(
 	subject Agent,
 	runtime AgentScopeRuntime,
-) (Lifecycle, error) {
-	if pending == nil || pending.coordinator == nil || pending.epoch == nil {
-		return nil, errors.New("agent: Reservation is unavailable")
+) (AgentTeardown, error) {
+	if target == nil || target.coordinator == nil {
+		return nil, errors.New("agent: Agent epoch is unavailable")
 	}
 	if subject == nil || runtime == nil {
-		return nil, errors.New("agent: Reservation requires an Agent and Agent runtime")
+		return nil, errors.New("agent: Agent epoch requires an Agent and Agent runtime")
 	}
-	if subject.ID() != pending.epoch.id {
+	if subject.ID() != target.id {
 		return nil, fmt.Errorf(
-			"agent: Agent id %q does not match reserved id %q",
+			"agent: Agent id %q does not match epoch id %q",
 			subject.ID(),
-			pending.epoch.id,
+			target.id,
 		)
 	}
-	pending.coordinator.mutex.Lock()
-	defer pending.coordinator.mutex.Unlock()
-	if pending.epoch.phase != epochMaterializing {
+	target.coordinator.mutex.Lock()
+	defer target.coordinator.mutex.Unlock()
+	if target.phase != epochMaterializing {
 		return nil, fmt.Errorf(
 			"agent: Agent %q cannot attach in epoch phase %d",
-			pending.epoch.id,
-			pending.epoch.phase,
+			target.id,
+			target.phase,
 		)
 	}
-	pending.epoch.subject = subject
-	pending.epoch.runtime = runtime
-	pending.epoch.phase = epochAttached
-	return pending.epoch.lifecycle, nil
+	target.subject = subject
+	target.runtime = runtime
+	target.phase = epochAttached
+	return target.teardown, nil
 }
 
-type lifecycle struct {
+type agentTeardown struct {
 	coordinator *LifecycleCoordinator
 	epoch       *epoch
 }
 
-func (instance *lifecycle) BeginTeardown(closeContext context.Context) {
-	if instance == nil || instance.coordinator == nil || instance.epoch == nil {
+func (teardown *agentTeardown) BeginTeardown(closeContext context.Context) {
+	if teardown == nil || teardown.coordinator == nil || teardown.epoch == nil {
 		return
 	}
-	instance.coordinator.runtimeTeardownStarted(
+	teardown.coordinator.runtimeTeardownStarted(
 		closeContext,
-		instance.epoch,
+		teardown.epoch,
 	)
 }
 
-func (instance *lifecycle) FinishTeardown(closeErr error) {
-	if instance == nil || instance.coordinator == nil || instance.epoch == nil {
+func (teardown *agentTeardown) FinishTeardown(closeErr error) {
+	if teardown == nil || teardown.coordinator == nil || teardown.epoch == nil {
 		return
 	}
-	instance.coordinator.runtimeTeardownFinished(
-		instance.epoch,
+	teardown.coordinator.runtimeTeardownFinished(
+		teardown.epoch,
 		closeErr,
 	)
 }
 
-func (coordinator *LifecycleCoordinator) reserve(
+func (coordinator *LifecycleCoordinator) createEpoch(
 	identifier session.SessionID,
 	parent Agent,
-) (*reservation, error) {
+) (*epoch, error) {
 	if identifier == "" {
 		return nil, errors.New("agent: Agent Session id is empty")
 	}
 	coordinator.mutex.Lock()
 	defer coordinator.mutex.Unlock()
 	if _, exists := coordinator.byID[identifier]; exists {
-		return nil, fmt.Errorf("agent: Agent %q is already reserved", identifier)
+		return nil, fmt.Errorf("agent: Agent %q already has an active epoch", identifier)
 	}
 	var parentEpoch *epoch
 	if parent != nil {
@@ -154,7 +150,8 @@ func (coordinator *LifecycleCoordinator) reserve(
 			return nil, ErrDescendantAdmissionClosed
 		}
 	}
-	reserved := &epoch{
+	target := &epoch{
+		coordinator:         coordinator,
 		id:                  identifier,
 		parent:              parentEpoch,
 		children:            make(map[*epoch]struct{}),
@@ -165,27 +162,23 @@ func (coordinator *LifecycleCoordinator) reserve(
 		closing:             newLifecycleSignal(),
 		closed:              newLifecycleSignal(),
 	}
-	reserved.lifecycle = &lifecycle{
+	target.teardown = &agentTeardown{
 		coordinator: coordinator,
-		epoch:       reserved,
+		epoch:       target,
 	}
-	coordinator.byID[identifier] = reserved
-	coordinator.epochs = append(coordinator.epochs, reserved)
+	coordinator.byID[identifier] = target
+	coordinator.epochs = append(coordinator.epochs, target)
 	if parentEpoch != nil {
-		parentEpoch.children[reserved] = struct{}{}
+		parentEpoch.children[target] = struct{}{}
 	}
-	return &reservation{
-		coordinator: coordinator,
-		epoch:       reserved,
-	}, nil
+	return target, nil
 }
 
 func (coordinator *LifecycleCoordinator) activate(
 	requestContext context.Context,
-	pending *reservation,
+	target *epoch,
 	startSource SessionStartSource,
 ) error {
-	target := pending.epoch
 	coordinator.mutex.Lock()
 	if target.phase != epochAttached ||
 		target.publication != publicationUnpublished ||
@@ -210,12 +203,14 @@ func (coordinator *LifecycleCoordinator) activate(
 		},
 	)
 	coordinator.mutex.Lock()
+	// Ordered publication may have reached earlier listeners before a later
+	// listener returns an error and rejects the commit. Once dispatch starts,
+	// treat the edge as published so abort emits the paired Disposed fact.
+	target.publication = publicationPublished
 	if publishErr != nil {
-		target.publication = publicationUnpublished
 		coordinator.mutex.Unlock()
 		return publishErr
 	}
-	target.publication = publicationPublished
 	if target.phase != epochAttached {
 		phase := target.phase
 		coordinator.mutex.Unlock()
@@ -260,9 +255,8 @@ func (coordinator *LifecycleCoordinator) activate(
 
 func (coordinator *LifecycleCoordinator) abort(
 	closeContext context.Context,
-	pending *reservation,
+	target *epoch,
 ) error {
-	target := pending.epoch
 	coordinator.mutex.Lock()
 	target.construction.close()
 	if target.runtime == nil {
@@ -274,27 +268,12 @@ func (coordinator *LifecycleCoordinator) abort(
 	return coordinator.closeExact(closeContext, target)
 }
 
-func (coordinator *LifecycleCoordinator) handle(pending *reservation) Handle {
+func (coordinator *LifecycleCoordinator) handle(target *epoch) Handle {
 	return Handle{
-		Subject:   pending.epoch.subject,
-		lifecycle: pending.epoch.lifecycle,
+		Subject:     target.subject,
+		coordinator: coordinator,
+		epoch:       target,
 	}
-}
-
-func (instance *lifecycle) Dispose(closeContext context.Context) error {
-	if instance == nil || instance.coordinator == nil || instance.epoch == nil {
-		return nil
-	}
-	return instance.coordinator.closeExact(closeContext, instance.epoch)
-}
-
-func (instance *lifecycle) ClosingSignal() <-chan struct{} {
-	if instance == nil || instance.epoch == nil {
-		closed := make(chan struct{})
-		close(closed)
-		return closed
-	}
-	return instance.epoch.closing.done
 }
 
 func (coordinator *LifecycleCoordinator) closeExact(
@@ -331,11 +310,12 @@ func (coordinator *LifecycleCoordinator) closeExact(
 	constructionDone := target.construction.done
 	coordinator.mutex.Unlock()
 
-	select {
-	case <-constructionDone:
-	case <-closeContext.Done():
-		return context.Cause(closeContext)
-	}
+	// Once this caller has claimed the close transaction, cancellation may no
+	// longer abandon the epoch in Closing. Other callers may stop waiting on
+	// their own Context, but the owner must finish descendant drain and runtime
+	// teardown so a later epoch can safely reuse the durable Session id.
+	drainContext := context.WithoutCancel(closeContext)
+	<-constructionDone
 
 	coordinator.mutex.Lock()
 	children := make([]*epoch, 0, len(target.children))
@@ -346,7 +326,6 @@ func (coordinator *LifecycleCoordinator) closeExact(
 	published := target.publication == publicationPublished
 	coordinator.mutex.Unlock()
 
-	drainContext := context.WithoutCancel(closeContext)
 	var closeErr error
 	for index := len(children) - 1; index >= 0; index-- {
 		closeErr = errors.Join(
@@ -478,6 +457,21 @@ func (coordinator *LifecycleCoordinator) cancelConstructions() {
 	}
 }
 
+func (coordinator *LifecycleCoordinator) cancelEpochConstructions(
+	targets []*epoch,
+) {
+	coordinator.mutex.Lock()
+	defer coordinator.mutex.Unlock()
+	for _, target := range targets {
+		if target == nil || target.coordinator != coordinator {
+			continue
+		}
+		if target.phase == epochMaterializing || target.phase == epochAttached {
+			target.closing.close()
+		}
+	}
+}
+
 func (coordinator *LifecycleCoordinator) closeAll(
 	closeContext context.Context,
 ) error {
@@ -598,6 +592,5 @@ func (coordinator *LifecycleCoordinator) reportObserverFailure(problem error) {
 	coordinator.report(problem)
 }
 
-var _ Reservation = (*reservation)(nil)
-var _ Lifecycle = (*lifecycle)(nil)
-var _ managedLifecycle = (*lifecycle)(nil)
+var _ AgentEpoch = (*epoch)(nil)
+var _ AgentTeardown = (*agentTeardown)(nil)

@@ -28,8 +28,8 @@ func (owner *Manager) dispose(
 // openDisposal installs the synchronous admission cutoff without invoking
 // Agent, Session, lifecycle, or Plugin callbacks.
 func (owner *Manager) openDisposal(epoch *Activation) (*disposal, bool) {
-	owner.residency.mutex.Lock()
-	defer owner.residency.mutex.Unlock()
+	owner.activations.mutex.Lock()
+	defer owner.activations.mutex.Unlock()
 	if epoch.disposal != nil {
 		return epoch.disposal, false
 	}
@@ -97,11 +97,11 @@ func (owner *Manager) finishDisposal(
 	}
 	owner.notifySettlement(epoch, lastOutput, terminalReason)
 
-	owner.residency.mutex.Lock()
-	if owner.residency.activations[epoch.childID] == epoch {
-		delete(owner.residency.activations, epoch.childID)
+	owner.activations.mutex.Lock()
+	if owner.activations.activations[epoch.childID] == epoch {
+		delete(owner.activations.activations, epoch.childID)
 	}
-	owner.residency.mutex.Unlock()
+	owner.activations.mutex.Unlock()
 	if epoch.parent != nil && owner.dependencies.Lifecycle != nil {
 		owner.dependencies.Lifecycle.Ended(
 			epoch.parent,
@@ -115,11 +115,11 @@ func (owner *Manager) finishDisposal(
 			},
 		)
 	}
-	owner.residency.mutex.Lock()
-	if parentEpoch := owner.residency.activations[epoch.parentID]; parentEpoch != nil {
+	owner.activations.mutex.Lock()
+	if parentEpoch := owner.activations.activations[epoch.parentID]; parentEpoch != nil {
 		wake(parentEpoch)
 	}
 	close(transaction.done)
-	owner.residency.mutex.Unlock()
+	owner.activations.mutex.Unlock()
 	return transaction.err
 }
