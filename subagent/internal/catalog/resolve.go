@@ -13,11 +13,11 @@ import (
 const coldReadConcurrency = 4
 
 func resolveRows(
-	requestContext context.Context,
+	ctx context.Context,
 	candidates []sessionRecord,
 	prepared listing,
 ) ([]subagent.ListEntry, error) {
-	aligned, err := resolveAligned(requestContext, candidates, prepared)
+	aligned, err := resolveAligned(ctx, candidates, prepared)
 	if err != nil {
 		return nil, err
 	}
@@ -31,7 +31,7 @@ func resolveRows(
 }
 
 func resolveAligned(
-	requestContext context.Context,
+	ctx context.Context,
 	candidates []sessionRecord,
 	prepared listing,
 ) ([]subagent.ListEntry, error) {
@@ -52,7 +52,7 @@ func resolveAligned(
 		rows[index] = resolveLive(candidate, prepared)
 	}
 	if prepared.dependencies.persistence == nil || len(cold) == 0 {
-		return rows, listingContextError(requestContext)
+		return rows, listingContextError(ctx)
 	}
 	jobs := make(chan coldRead)
 	workerCount := min(coldReadConcurrency, len(cold))
@@ -63,7 +63,7 @@ func resolveAligned(
 			defer workers.Done()
 			for job := range jobs {
 				rows[job.index] = resolveCold(
-					requestContext,
+					ctx,
 					job.session,
 					prepared,
 				)
@@ -75,7 +75,7 @@ func resolveAligned(
 	}
 	close(jobs)
 	workers.Wait()
-	return rows, listingContextError(requestContext)
+	return rows, listingContextError(ctx)
 }
 
 func resolveLive(candidate sessionRecord, prepared listing) subagent.ListEntry {

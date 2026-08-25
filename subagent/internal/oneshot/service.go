@@ -43,18 +43,18 @@ func New(providerSource Providers, lifecycleTarget Lifecycle) *Service {
 }
 
 // Start validates and dispatches one one-shot child.
-func (serviceOwner *Service) Start(
-	requestContext context.Context,
+func (svc *Service) Start(
+	ctx context.Context,
 	selectedName string,
 	startInput subagent.StartRequest,
 ) (subagent.Run, error) {
-	if requestContext == nil {
+	if ctx == nil {
 		return nil, errors.New("subagent: one-shot Start context is nil")
 	}
-	if requestErr := requestContext.Err(); requestErr != nil {
+	if requestErr := ctx.Err(); requestErr != nil {
 		return nil, requestErr
 	}
-	candidate, found := serviceOwner.providers.GetProvider(selectedName)
+	candidate, found := svc.providers.GetProvider(selectedName)
 	if !found {
 		return nil, &subagent.Error{
 			Code: subagent.ErrorNoProvider,
@@ -76,7 +76,7 @@ func (serviceOwner *Service) Start(
 	if identityErr != nil {
 		return nil, identityErr
 	}
-	runHandle, startErr := candidate.Start(requestContext, resolved)
+	runHandle, startErr := candidate.Start(ctx, resolved)
 	if startErr != nil {
 		return nil, startErr
 	}
@@ -87,7 +87,7 @@ func (serviceOwner *Service) Start(
 		disposeErr := runHandle.Dispose(context.Background())
 		return nil, errors.Join(validationErr, disposeErr)
 	}
-	serviceOwner.observe(
+	svc.observe(
 		runIdentity,
 		selectedName,
 		resolved.Parent,
@@ -233,7 +233,7 @@ func validateRun(runHandle subagent.Run) error {
 	return nil
 }
 
-func (serviceOwner *Service) observe(
+func (svc *Service) observe(
 	runIdentity subagent.RunID,
 	selectedName string,
 	parentAgent agent.Agent,
@@ -262,12 +262,12 @@ func (serviceOwner *Service) observe(
 				endFact.LastAssistantMessage = outputSnapshot
 			}
 		}
-		if serviceOwner.lifecycle != nil {
-			serviceOwner.lifecycle.Ended(parentAgent, endFact)
+		if svc.lifecycle != nil {
+			svc.lifecycle.Ended(parentAgent, endFact)
 		}
 	}()
-	if serviceOwner.lifecycle != nil {
-		serviceOwner.lifecycle.Started(
+	if svc.lifecycle != nil {
+		svc.lifecycle.Started(
 			parentAgent,
 			subagent.Started{
 				RunID:    runIdentity,
