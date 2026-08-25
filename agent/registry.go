@@ -40,16 +40,14 @@ type DescendantLifecycle interface {
 	CloseDescendants(context.Context, Agent) error
 }
 
-// RuntimeLifecycle is the narrow integration port used by the Agent Loop
-// Plugin that supplies construction and coordinates process shutdown.
-type RuntimeLifecycle interface {
+// FactoryRegistrar accepts the process-wide Agent construction implementation.
+type FactoryRegistrar interface {
 	RegisterFactory(Factory) (FactoryRegistration, error)
-	Shutdown(context.Context) error
 }
 
 // FactoryRegistration owns one exact Factory registration.
 type FactoryRegistration interface {
-	Unregister()
+	Close()
 }
 
 type factoryRegistration struct {
@@ -58,12 +56,12 @@ type factoryRegistration struct {
 	once     sync.Once
 }
 
-func (registration *factoryRegistration) Unregister() {
+func (registration *factoryRegistration) Close() {
 	if registration == nil {
 		return
 	}
 	registration.once.Do(func() {
-		registration.registry.unregisterFactory(registration)
+		registration.registry.closeFactory(registration)
 	})
 }
 
@@ -72,6 +70,7 @@ func (registration *factoryRegistration) Unregister() {
 // exposing separate consumer-facing capabilities.
 type RegistryService struct {
 	mutex       sync.RWMutex
+	admission   registryAdmission
 	factory     *factoryRegistration
 	coordinator *LifecycleCoordinator
 }
@@ -83,6 +82,7 @@ func NewRegistry(settings RegistryOptions) *RegistryService {
 		reporter = func(error) {}
 	}
 	return &RegistryService{
+		admission:   registryAccepting,
 		coordinator: newLifecycleCoordinator(reporter),
 	}
 }
@@ -96,6 +96,9 @@ func (service *RegistryService) RegisterFactory(
 	}
 	service.mutex.Lock()
 	defer service.mutex.Unlock()
+	if service.admission != registryAccepting {
+		return nil, errors.New("agent: Agent Registry is shutting down")
+	}
 	if service.factory != nil {
 		return nil, errors.New("agent: an Agent factory is already registered")
 	}
@@ -107,26 +110,38 @@ func (service *RegistryService) RegisterFactory(
 	return registration, nil
 }
 
-func (service *RegistryService) unregisterFactory(
+func (service *RegistryService) closeFactory(
 	registration *factoryRegistration,
 ) {
 	service.mutex.Lock()
 	if service.factory == registration {
+		service.admission = registryShuttingDown
 		service.factory = nil
+		service.coordinator.cancelConstructions()
 	}
 	service.mutex.Unlock()
 }
 
-func (service *RegistryService) registeredFactory() (Factory, error) {
-	service.mutex.RLock()
+func (service *RegistryService) reserve(
+	identifier session.SessionID,
+	parent Agent,
+) (Factory, *reservation, error) {
+	service.mutex.Lock()
+	defer service.mutex.Unlock()
+	if service.admission != registryAccepting {
+		return nil, nil, errors.New("agent: Agent Registry is shutting down")
+	}
 	registration := service.factory
-	service.mutex.RUnlock()
 	if registration == nil {
-		return nil, errors.New(
+		return nil, nil, errors.New(
 			"agent: no Agent factory attached; mount an Agent Loop Plugin",
 		)
 	}
-	return registration.factory, nil
+	pending, err := service.coordinator.reserve(identifier, parent)
+	if err != nil {
+		return nil, nil, err
+	}
+	return registration.factory, pending, nil
 }
 
 // Create constructs, publishes, and commits one fresh exact Agent epoch.
@@ -137,11 +152,7 @@ func (service *RegistryService) Create(
 	if requestContext == nil {
 		return Handle{}, errors.New("agent: Create Context is nil")
 	}
-	agentFactory, err := service.registeredFactory()
-	if err != nil {
-		return Handle{}, err
-	}
-	pending, err := service.coordinator.reserve(
+	agentFactory, pending, err := service.reserve(
 		settings.SessionID,
 		settings.RuntimeParent,
 	)
@@ -177,11 +188,7 @@ func (service *RegistryService) Resume(
 	if requestContext == nil {
 		return Handle{}, errors.New("agent: Resume Context is nil")
 	}
-	agentFactory, err := service.registeredFactory()
-	if err != nil {
-		return Handle{}, err
-	}
-	pending, err := service.coordinator.reserve(
+	agentFactory, pending, err := service.reserve(
 		settings.SessionID,
 		settings.RuntimeParent,
 	)
@@ -265,15 +272,14 @@ func (service *RegistryService) CloseDescendants(
 // Shutdown stops construction admission and closes every Agent epoch
 // child-first, including reservations whose Factory is still returning.
 func (service *RegistryService) Shutdown(closeContext context.Context) error {
+	service.mutex.Lock()
+	service.admission = registryShuttingDown
+	service.mutex.Unlock()
 	return service.coordinator.closeAll(closeContext)
-}
-
-func (service *RegistryService) assertClosed() error {
-	return service.coordinator.assertClosed()
 }
 
 var _ Registry = (*RegistryService)(nil)
 var _ Constructor = (*RegistryService)(nil)
 var _ ScopeProvisioning = (*RegistryService)(nil)
 var _ DescendantLifecycle = (*RegistryService)(nil)
-var _ RuntimeLifecycle = (*RegistryService)(nil)
+var _ FactoryRegistrar = (*RegistryService)(nil)

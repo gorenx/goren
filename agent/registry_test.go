@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	agentcore "github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/llm"
@@ -176,6 +178,34 @@ type factoryRecord struct {
 	closed      []session.SessionID
 }
 
+type blockingFactory struct {
+	entered chan struct{}
+}
+
+func (builder *blockingFactory) CreateAgent(
+	_ context.Context,
+	reservation agentcore.Reservation,
+	_ agentcore.CreateOptions,
+) error {
+	close(builder.entered)
+	<-reservation.ClosingSignal()
+	return errors.New("test: construction closed")
+}
+
+func (builder *blockingFactory) ResumeAgent(
+	requestContext context.Context,
+	reservation agentcore.Reservation,
+	options agentcore.ResumeOptions,
+) error {
+	return builder.CreateAgent(
+		requestContext,
+		reservation,
+		agentcore.CreateOptions{
+			SessionID: options.SessionID,
+		},
+	)
+}
+
 func (builder *factoryRecord) CreateAgent(
 	_ context.Context,
 	reservation agentcore.Reservation,
@@ -223,33 +253,63 @@ func TestRegistryFactoryRegistrationOwnsExactEntry(t *testing.T) {
 	t.Parallel()
 	registry := agentcore.NewRegistry(agentcore.RegistryOptions{})
 	first := &factoryRecord{}
-	firstRegistration, err := registry.RegisterFactory(first)
+	registration, err := registry.RegisterFactory(first)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err = registry.RegisterFactory(&factoryRecord{}); err == nil {
 		t.Fatal("Registry accepted a second Factory")
 	}
-	firstRegistration.Unregister()
-
-	sentinel := errors.New("second Factory called")
-	second := &factoryRecord{
-		createErr: sentinel,
-	}
-	secondRegistration, err := registry.RegisterFactory(second)
-	if err != nil {
-		t.Fatal(err)
+	registration.Close()
+	registration.Close()
+	if _, err = registry.RegisterFactory(&factoryRecord{}); err == nil ||
+		!strings.Contains(err.Error(), "shutting down") {
+		t.Fatalf("post-close RegisterFactory error = %v", err)
 	}
 	_, err = registry.Create(
 		context.Background(),
 		agentcore.CreateOptions{
-			SessionID: "second",
+			SessionID: "after-factory-close",
 		},
 	)
-	if !errors.Is(err, sentinel) || second.createCalls != 1 {
-		t.Fatalf("Create result = (%d calls, %v)", second.createCalls, err)
+	if err == nil || !strings.Contains(err.Error(), "shutting down") {
+		t.Fatalf("post-close Create error = %v", err)
 	}
-	secondRegistration.Unregister()
+}
+
+func TestFactoryRegistrationCloseCancelsConstruction(t *testing.T) {
+	t.Parallel()
+	registry := agentcore.NewRegistry(agentcore.RegistryOptions{})
+	builder := &blockingFactory{
+		entered: make(chan struct{}),
+	}
+	registration, err := registry.RegisterFactory(builder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createDone := make(chan error, 1)
+	go func() {
+		_, createErr := registry.Create(
+			context.Background(),
+			agentcore.CreateOptions{
+				SessionID: "closing-construction",
+			},
+		)
+		createDone <- createErr
+	}()
+	<-builder.entered
+	registration.Close()
+	select {
+	case err = <-createDone:
+		if err == nil || !strings.Contains(err.Error(), "construction closed") {
+			t.Fatalf("Create error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Factory registration Close did not cancel construction")
+	}
+	if err = registry.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestRegistryOwnsRuntimeParentAndClosesChildFirst(t *testing.T) {
@@ -260,7 +320,7 @@ func TestRegistryOwnsRuntimeParentAndClosesChildFirst(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(registration.Unregister)
+	t.Cleanup(registration.Close)
 	root, err := registry.Create(
 		context.Background(),
 		agentcore.CreateOptions{
@@ -303,7 +363,7 @@ func TestRegistryCloseDescendantsClosesAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(registration.Unregister)
+	t.Cleanup(registration.Close)
 	root, err := registry.Create(
 		context.Background(),
 		agentcore.CreateOptions{

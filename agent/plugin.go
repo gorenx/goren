@@ -33,7 +33,7 @@ func (owner *RegistryPlugin) Manifest() plugin.Manifest {
 			plugin.NewProvidedService[Constructor](owner.service),
 			plugin.NewProvidedService[ScopeProvisioning](owner.service),
 			plugin.NewProvidedService[DescendantLifecycle](owner.service),
-			plugin.NewProvidedService[RuntimeLifecycle](owner.service),
+			plugin.NewProvidedService[FactoryRegistrar](owner.service),
 		},
 	}
 }
@@ -46,9 +46,13 @@ func (*RegistryPlugin) Apply(requestContext context.Context) error {
 	return requestContext.Err()
 }
 
-// Dispose verifies that the Agent Loop dependent already completed shutdown.
-func (owner *RegistryPlugin) Dispose(context.Context) error {
-	return owner.service.assertClosed()
+// Dispose closes the Registry after every dependent Plugin and Agent Scope has
+// stopped. Shutdown remains idempotent for already retired Agent epochs.
+func (owner *RegistryPlugin) Dispose(closeContext context.Context) error {
+	if closeContext == nil {
+		closeContext = context.Background()
+	}
+	return owner.service.Shutdown(context.WithoutCancel(closeContext))
 }
 
 var _ plugin.Plugin = (*RegistryPlugin)(nil)

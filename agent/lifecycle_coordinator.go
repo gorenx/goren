@@ -36,11 +36,10 @@ type epoch struct {
 // publication, and runtime parent-child relation. Plugin topology is an
 // implementation detail of the attached Agent runtime.
 type LifecycleCoordinator struct {
-	mutex     sync.Mutex
-	admission registryAdmission
-	byID      map[session.SessionID]*epoch
-	epochs    []*epoch
-	report    func(error)
+	mutex  sync.Mutex
+	byID   map[session.SessionID]*epoch
+	epochs []*epoch
+	report func(error)
 }
 
 func newLifecycleCoordinator(report func(error)) *LifecycleCoordinator {
@@ -48,9 +47,8 @@ func newLifecycleCoordinator(report func(error)) *LifecycleCoordinator {
 		report = func(error) {}
 	}
 	return &LifecycleCoordinator{
-		admission: registryAccepting,
-		byID:      make(map[session.SessionID]*epoch),
-		report:    report,
+		byID:   make(map[session.SessionID]*epoch),
+		report: report,
 	}
 }
 
@@ -134,9 +132,6 @@ func (coordinator *LifecycleCoordinator) reserve(
 	}
 	coordinator.mutex.Lock()
 	defer coordinator.mutex.Unlock()
-	if coordinator.admission != registryAccepting {
-		return nil, errors.New("agent: Agent lifecycle is shutting down")
-	}
 	if _, exists := coordinator.byID[identifier]; exists {
 		return nil, fmt.Errorf("agent: Agent %q is already reserved", identifier)
 	}
@@ -469,16 +464,19 @@ func (coordinator *LifecycleCoordinator) hasDescendants(parent Agent) bool {
 	return present
 }
 
-func (coordinator *LifecycleCoordinator) beginShutdown() {
+func (coordinator *LifecycleCoordinator) cancelConstructions() {
 	coordinator.mutex.Lock()
-	coordinator.admission = registryShuttingDown
-	coordinator.mutex.Unlock()
+	defer coordinator.mutex.Unlock()
+	for _, target := range coordinator.epochs {
+		if target.phase == epochMaterializing || target.phase == epochAttached {
+			target.closing.close()
+		}
+	}
 }
 
 func (coordinator *LifecycleCoordinator) closeAll(
 	closeContext context.Context,
 ) error {
-	coordinator.beginShutdown()
 	coordinator.mutex.Lock()
 	roots := make([]*epoch, 0)
 	for _, candidate := range coordinator.epochs {
@@ -586,19 +584,6 @@ func (coordinator *LifecycleCoordinator) finishClosedLocked(
 		)
 	}
 	target.closed.close()
-}
-
-func (coordinator *LifecycleCoordinator) assertClosed() error {
-	coordinator.mutex.Lock()
-	dangling := len(coordinator.byID)
-	coordinator.mutex.Unlock()
-	if dangling != 0 {
-		return fmt.Errorf(
-			"agent: Registry stopped with %d live Agent lifecycle(s)",
-			dangling,
-		)
-	}
-	return nil
 }
 
 func (coordinator *LifecycleCoordinator) reportObserverFailure(problem error) {
