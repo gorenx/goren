@@ -15,7 +15,7 @@ func TestPinnedSourceTimingProjectionMatchesGo(t *testing.T) {
 		t,
 		"subagent-timing-projection.ts",
 		[]projectionContractObservation{
-			observeProjection(t, "reset-and-active", TimingUnit{}, []session.Event{
+			observeProjection(t, "reset-and-active", timingUnit{}, []session.Event{
 				projectionContractEvent(session.TurnStartEventName, 0, 100, json.RawMessage(`{}`)),
 				projectionContractEvent(subagent.DescriptorEventName, 1, 110, json.RawMessage(`{}`)),
 				projectionContractEvent(session.TurnEndEventName, 2, 300, json.RawMessage(`{}`)),
@@ -25,12 +25,12 @@ func TestPinnedSourceTimingProjectionMatchesGo(t *testing.T) {
 				projectionContractEvent(session.TurnStartEventName, 6, 10_000, json.RawMessage(`{}`)),
 				projectionContractEvent(session.AssistantChunkEventName, 7, 10_500, json.RawMessage(`{}`)),
 			}),
-			observeProjection(t, "closed-seed", TimingUnit{}, []session.Event{
+			observeProjection(t, "closed-seed", timingUnit{}, []session.Event{
 				projectionContractEvent(session.TurnStartEventName, 0, 100, json.RawMessage(`{}`)),
 				projectionContractEvent(session.TurnEndEventName, 1, 200, json.RawMessage(`{}`)),
 				projectionContractEvent(subagent.DescriptorEventName, 2, 300, json.RawMessage(`{}`)),
 			}),
-			observeProjection(t, "clamps-negative-duration", TimingUnit{}, []session.Event{
+			observeProjection(t, "clamps-negative-duration", timingUnit{}, []session.Event{
 				projectionContractEvent(subagent.DescriptorEventName, 0, 100, json.RawMessage(`{}`)),
 				projectionContractEvent(session.TurnStartEventName, 1, 500, json.RawMessage(`{}`)),
 				projectionContractEvent(session.TurnEndEventName, 2, 400, json.RawMessage(`{}`)),

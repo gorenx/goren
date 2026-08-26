@@ -4,14 +4,12 @@ package subagent
 type ErrorCode string
 
 const (
-	// ErrorDuplicateProvider rejects a second live Provider with the same name.
-	ErrorDuplicateProvider ErrorCode = "DUPLICATE_PROVIDER"
-	// ErrorNoProvider reports an unknown Provider name.
-	ErrorNoProvider ErrorCode = "NO_PROVIDER"
-	// ErrorUnsupportedCapability rejects an input the selected Provider lacks.
-	ErrorUnsupportedCapability ErrorCode = "UNSUPPORTED_CAPABILITY"
-	// ErrorContinuationUnavailable reports a missing continuation manager.
-	ErrorContinuationUnavailable ErrorCode = "CONTINUATION_UNAVAILABLE"
+	// ErrorDuplicateSeedBuilder rejects a second live SeedBuilder with the same
+	// canonical registry name. The value preserves the compatibility code.
+	ErrorDuplicateSeedBuilder ErrorCode = "DUPLICATE_PROVIDER"
+	// ErrorNoSeedBuilder reports an unknown SeedBuilder registry name. The value
+	// preserves the compatibility code.
+	ErrorNoSeedBuilder ErrorCode = "NO_PROVIDER"
 	// ErrorDuplicateChild rejects an already owned durable child identity.
 	ErrorDuplicateChild ErrorCode = "DUPLICATE_CHILD"
 	// ErrorPersistenceUnavailable reports missing durability for cold resume.
@@ -22,18 +20,14 @@ const (
 	ErrorUnauthorized ErrorCode = "UNAUTHORIZED"
 	// ErrorNotResumable reports a child that cannot be reconstructed safely.
 	ErrorNotResumable ErrorCode = "NOT_RESUMABLE"
-	// ErrorActivationClosing rejects admission into a tearing-down Activation.
-	ErrorActivationClosing ErrorCode = "ACTIVATION_CLOSING"
-	// ErrorActivationTeardownFailed reports failure to release an Activation.
-	ErrorActivationTeardownFailed ErrorCode = "ACTIVATION_TEARDOWN_FAILED"
 	// ErrorDraining rejects admission after a module or parent close cutoff.
 	ErrorDraining ErrorCode = "DRAINING"
-	// ErrorActivationExtensionRevoked rejects provisioning invalidated by
+	// ErrorExtensionRevoked rejects provisioning invalidated by
 	// concurrent Extension removal. Its value preserves the pinned DSH code.
-	ErrorActivationExtensionRevoked ErrorCode = "ACTIVATION_SETUP_REVOKED"
-	// ErrorActivationExtensionReleaseFailed reports contained Extension
+	ErrorExtensionRevoked ErrorCode = "ACTIVATION_SETUP_REVOKED"
+	// ErrorExtensionReleaseFailed reports contained Extension
 	// disposal failures. Its value preserves the pinned DSH code.
-	ErrorActivationExtensionReleaseFailed ErrorCode = "ACTIVATION_SETUP_RELEASE_FAILED"
+	ErrorExtensionReleaseFailed ErrorCode = "ACTIVATION_SETUP_RELEASE_FAILED"
 	// ErrorCancelled reports caller cancellation around listing reads.
 	ErrorCancelled ErrorCode = "CANCELLED"
 	// ErrorControlProjectionsUnavailable reports a missing projection registry.

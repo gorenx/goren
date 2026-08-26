@@ -1,8 +1,6 @@
 package subagent_test
 
 import (
-	"context"
-	"errors"
 	"testing"
 
 	"github.com/gorenx/goren/plugin"
@@ -11,60 +9,45 @@ import (
 	subagentruntime "github.com/gorenx/goren/subagent/runtime"
 )
 
-type oneShotProvider struct{}
-
-func (oneShotProvider) Name() string {
-	return "one-shot"
-}
-
-func (oneShotProvider) Capabilities() subagent.Capabilities {
-	return subagent.Capabilities{}
-}
-
-func (oneShotProvider) InheritsParentContext() bool {
-	return false
-}
-
-func (oneShotProvider) Start(
-	context.Context,
-	subagent.ResolvedStartRequest,
-) (subagent.Run, error) {
-	return nil, errors.New("fixture")
-}
-
-type continuableProvider struct {
-	oneShotProvider
-}
-
-func (continuableProvider) PrepareContinuable(
-	context.Context,
-	subagent.ContinuableCreateRequest,
-) (subagent.ContinuableCreateSpec, error) {
-	return subagent.ContinuableCreateSpec{}, nil
-}
-
-func TestContinuableIsAnAdditionalProviderCapability(t *testing.T) {
+func TestStartCommandsKeepImplementationInputsSeparate(t *testing.T) {
 	t.Parallel()
-	var baseProvider subagent.Provider = oneShotProvider{}
-	if _, supported := baseProvider.(subagent.ContinuableProvider); supported {
-		t.Fatal("base one-shot Provider unexpectedly supports continuable creation")
-	}
-	var extendedProvider subagent.Provider = continuableProvider{}
-	if _, supported := extendedProvider.(subagent.ContinuableProvider); !supported {
-		t.Fatal("continuable Provider lost its base one-shot contract")
-	}
-}
-
-func TestRuntimeRejectsUnknownOneShotProvider(t *testing.T) {
-	state := newRuntimeFixture(t, false)
-	_, err := state.services.oneShots.Start(
-		context.Background(),
-		"one-shot",
-		subagent.StartRequest{},
+	label := "terminal"
+	oneShot, err := subagent.NewOneShotStart(
+		subagent.ChildRequest{},
+		subagent.OneShotOptions{
+			SeedBuilder: "spawn",
+			Label:       &label,
+		},
 	)
-	var problem *subagent.Error
-	if !errors.As(err, &problem) || problem.Code != subagent.ErrorNoProvider {
-		t.Fatalf("Start error = %v, want NO_PROVIDER", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childID := session.SessionID("durable-child")
+	continuable, err := subagent.NewContinuableStart(
+		subagent.ChildRequest{},
+		subagent.ContinuableOptions{
+			SeedBuilder: "fork",
+			Label:       "background",
+			ChildID:     &childID,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oneShot.Mode() != subagent.ModeOneShot ||
+		oneShot.RequestedChildID() != nil {
+		t.Fatalf("OneShot command = %#v", oneShot)
+	}
+	if continuable.Mode() != subagent.ModeContinuable ||
+		continuable.RequestedChildID() == nil ||
+		*continuable.RequestedChildID() != childID {
+		t.Fatalf("Continuable command = %#v", continuable)
+	}
+	label = "changed"
+	childID = "changed"
+	if oneShot.Label() == nil || *oneShot.Label() != "terminal" ||
+		*continuable.RequestedChildID() != "durable-child" {
+		t.Fatal("StartCommand retained caller-owned pointers")
 	}
 }
 
@@ -73,19 +56,19 @@ func TestDescriptorAndLifecycleVocabulary(t *testing.T) {
 	if !session.IsKnownEventType(subagent.DescriptorEventName) {
 		t.Fatal("descriptor event type is not registered")
 	}
-	if (subagent.ProviderAdded{}).EventDelivery() != plugin.DeliveryOrdered {
-		t.Fatal("ProviderAdded must remain vetoable")
+	if (subagent.SeedBuilderAdded{}).EventDelivery() != plugin.DeliveryOrdered {
+		t.Fatal("SeedBuilderAdded must remain vetoable")
 	}
-	if (subagent.ProviderRemoved{}).EventDelivery() != plugin.DeliveryBestEffort {
-		t.Fatal("ProviderRemoved must contain observer failures")
+	if (subagent.SeedBuilderRemoved{}).EventDelivery() != plugin.DeliveryBestEffort {
+		t.Fatal("SeedBuilderRemoved must contain observer failures")
 	}
 	if (subagent.Started{}).EventName() != "subagent/start" ||
 		(subagent.Ended{}).EventName() != "subagent/end" {
-		t.Fatal("run lifecycle event names drifted")
+		t.Fatal("execution lifecycle event names drifted")
 	}
 }
 
-func TestRuntimeProvidesOnlyImplementedCapabilityInterfaces(t *testing.T) {
+func TestRuntimeProvidesOnlyPublicBusinessCapabilities(t *testing.T) {
 	t.Parallel()
 	providedNames := map[string]bool{}
 	for _, capabilityType := range subagentruntime.New(
@@ -93,19 +76,17 @@ func TestRuntimeProvidesOnlyImplementedCapabilityInterfaces(t *testing.T) {
 	).Manifest().Provides {
 		providedNames[capabilityType.Name()] = true
 	}
-	wantedNames := []string{
-		plugin.ServiceOf[subagent.ProviderRegistry]().Name(),
-		plugin.ServiceOf[subagent.OneShotService]().Name(),
-		plugin.ServiceOf[subagent.ContinuableService]().Name(),
-		plugin.ServiceOf[subagent.ExtensionRegistry]().Name(),
-		plugin.ServiceOf[subagent.Catalog]().Name(),
+	wantedTypes := []plugin.ServiceType{
+		plugin.ServiceOf[subagent.SeedBuilderRegistry](),
+		plugin.ServiceOf[subagent.Starter](),
+		plugin.ServiceOf[subagent.ChildControl](),
+		plugin.ServiceOf[subagent.ParentReporter](),
+		plugin.ServiceOf[subagent.ExtensionRegistry](),
+		plugin.ServiceOf[subagent.ChildDirectory](),
 	}
-	for _, wantedName := range wantedNames {
-		if !providedNames[wantedName] {
-			t.Fatalf("Runtime does not provide %q", wantedName)
+	for _, wantedType := range wantedTypes {
+		if !providedNames[wantedType.Name()] {
+			t.Fatalf("Runtime does not provide %q", wantedType.Name())
 		}
 	}
 }
-
-var _ subagent.Provider = oneShotProvider{}
-var _ subagent.ContinuableProvider = continuableProvider{}

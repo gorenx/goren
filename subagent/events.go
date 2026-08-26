@@ -7,11 +7,12 @@ import (
 )
 
 const (
-	// ProviderAddedEventName is the vetoable Provider publication edge.
+	// ProviderAddedEventName is the canonical vetoable SeedBuilder publication
+	// event name.
 	ProviderAddedEventName = "subagent/provider-added"
 	// ProviderRemovedEventName announces post-removal cleanup.
 	ProviderRemovedEventName = "subagent/provider-removed"
-	// StartEventName announces one accepted one-shot run or Activation epoch.
+	// StartEventName announces one accepted OneShot or Continuable Execution.
 	StartEventName = "subagent/start"
 	// EndEventName announces the paired terminal lifecycle edge.
 	EndEventName = "subagent/end"
@@ -20,38 +21,39 @@ const (
 // RunID pairs one accepted start edge with exactly one terminal edge.
 type RunID string
 
-// ProviderAdded carries the exact newly registered Provider.
-type ProviderAdded struct {
-	Provider Provider
+// SeedBuilderAdded preserves the canonical event identity while carrying the
+// exact newly registered SeedBuilder.
+type SeedBuilderAdded struct {
+	SeedBuilder SeedBuilder
 }
 
 // EventName returns ProviderAddedEventName.
-func (ProviderAdded) EventName() string {
+func (SeedBuilderAdded) EventName() string {
 	return ProviderAddedEventName
 }
 
 // EventDelivery preserves listener veto and registration rollback.
-func (ProviderAdded) EventDelivery() plugin.DeliveryPolicy {
+func (SeedBuilderAdded) EventDelivery() plugin.DeliveryPolicy {
 	return plugin.DeliveryOrdered
 }
 
-// ProviderRemoved carries the removed Provider name.
-type ProviderRemoved struct {
+// SeedBuilderRemoved carries the removed SeedBuilder name while preserving the
+// canonical event identity.
+type SeedBuilderRemoved struct {
 	Name string
 }
 
 // EventName returns ProviderRemovedEventName.
-func (ProviderRemoved) EventName() string {
+func (SeedBuilderRemoved) EventName() string {
 	return ProviderRemovedEventName
 }
 
 // EventDelivery contains observer failures after removal commits.
-func (ProviderRemoved) EventDelivery() plugin.DeliveryPolicy {
+func (SeedBuilderRemoved) EventDelivery() plugin.DeliveryPolicy {
 	return plugin.DeliveryBestEffort
 }
 
-// Started is observe-only identity for a published one-shot run or Activation
-// residency epoch.
+// Started is observe-only identity for one published Subagent Execution.
 type Started struct {
 	RunID    RunID
 	Provider string

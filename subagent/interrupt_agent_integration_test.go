@@ -9,8 +9,8 @@ import (
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/subagent/control"
-	subagenttool "github.com/gorenx/goren/subagent/tool"
+	"github.com/gorenx/goren/subagent/tools/control"
+	subagentdelegation "github.com/gorenx/goren/subagent/tools/delegation"
 	"github.com/gorenx/goren/tools"
 )
 
@@ -37,7 +37,7 @@ func TestInterruptAgentCancelsCurrentTurnAndKeepsQueuedFollowup(t *testing.T) {
 		tools.ToolExecutionInput{
 			CallID:     "start-interruptible-child",
 			RootCallID: "start-interruptible-child",
-			Name:       subagenttool.DefaultToolName,
+			Name:       subagentdelegation.DefaultToolName,
 			Arguments: json.RawMessage(`{
   "description": "interruptible durable child",
   "prompt": "Begin work that will be interrupted."

@@ -50,16 +50,16 @@ func TestAgentLifecycleBusinessTypesStayOutsidePluginLifecycle(t *testing.T) {
 		{
 			directory: filepath.Join("subagent", "spawn"),
 			packageID: "spawn",
-			typeName:  "Provider",
+			typeName:  "Builder",
 		},
 		{
 			directory: filepath.Join("subagent", "fork"),
 			packageID: "fork",
-			typeName:  "Provider",
+			typeName:  "Builder",
 		},
 		{
-			directory: filepath.Join("subagent", "internal", "provider"),
-			packageID: "provider",
+			directory: filepath.Join("subagent", "internal", "seedbuilder"),
+			packageID: "seedbuilder",
 			typeName:  "Registry",
 		},
 		{
@@ -68,19 +68,14 @@ func TestAgentLifecycleBusinessTypesStayOutsidePluginLifecycle(t *testing.T) {
 			typeName:  "Service",
 		},
 		{
-			directory: filepath.Join("subagent", "internal", "continuation"),
-			packageID: "continuation",
+			directory: filepath.Join("subagent", "internal", "continuable"),
+			packageID: "continuable",
 			typeName:  "Service",
 		},
 		{
-			directory: filepath.Join("subagent", "internal", "continuation"),
-			packageID: "continuation",
-			typeName:  "Manager",
-		},
-		{
-			directory: filepath.Join("subagent", "internal", "continuation"),
-			packageID: "continuation",
-			typeName:  "Activation",
+			directory: filepath.Join("subagent", "internal", "subagents"),
+			packageID: "subagents",
+			typeName:  "Service",
 		},
 		{
 			directory: "userquestions",

@@ -10,8 +10,8 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
-	"github.com/gorenx/goren/subagent/report"
-	subagenttool "github.com/gorenx/goren/subagent/tool"
+	subagentdelegation "github.com/gorenx/goren/subagent/tools/delegation"
+	"github.com/gorenx/goren/subagent/tools/report"
 	"github.com/gorenx/goren/tools"
 )
 
@@ -47,7 +47,7 @@ func TestReportExtensionDeliversChildSelectedContentToParent(t *testing.T) {
 		tools.ToolExecutionInput{
 			CallID:     "start-reporting-child",
 			RootCallID: "start-reporting-child",
-			Name:       subagenttool.DefaultToolName,
+			Name:       subagentdelegation.DefaultToolName,
 			Arguments: json.RawMessage(`{
   "description": "report selected result",
   "prompt": "Report the selected result and then finish."
@@ -138,7 +138,7 @@ func TestReportExtensionReleasesResidentInstallationDuringRuntimeShutdown(
 		tools.ToolExecutionInput{
 			CallID:     "start-resident-report-child",
 			RootCallID: "start-resident-report-child",
-			Name:       subagenttool.DefaultToolName,
+			Name:       subagentdelegation.DefaultToolName,
 			Arguments: json.RawMessage(`{
   "description": "resident report child",
   "prompt": "Remain active until runtime shutdown."
@@ -212,7 +212,7 @@ func TestSubagentPluginUnloadRequestsResidentChildClosure(
 		tools.ToolExecutionInput{
 			CallID:     "start-child-before-subagent-unload",
 			RootCallID: "start-child-before-subagent-unload",
-			Name:       subagenttool.DefaultToolName,
+			Name:       subagentdelegation.DefaultToolName,
 			Arguments: json.RawMessage(`{
   "description": "resident child during Subagent unload",
   "prompt": "Remain active until Subagent unload."

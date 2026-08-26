@@ -10,43 +10,41 @@ import (
 	"github.com/gorenx/goren/subagent"
 )
 
-const TimingKey = "subagentTiming"
+const timingKey = "subagentTiming"
 
-// Interval is one open post-Descriptor turn interval.
-type Interval struct {
+type interval struct {
 	Since   int64 `json:"since"`
 	Through int64 `json:"through"`
 }
 
-// Timing is the durable active-turn timing view.
-type Timing struct {
+type timing struct {
 	SettledMS int64     `json:"settledMs"`
-	Active    *Interval `json:"active,omitempty"`
+	Active    *interval `json:"active,omitempty"`
 }
 
 type timingState struct {
 	SettledMS        int64     `json:"settledMs"`
-	Active           *Interval `json:"active,omitempty"`
+	Active           *interval `json:"active,omitempty"`
 	PendingTurnStart *int64    `json:"pendingTurnStart,omitempty"`
 	DescriptorSeen   bool      `json:"descriptorSeen"`
 }
 
-// TimingUnit folds turn boundaries around the child's own Descriptor.
-type TimingUnit struct{}
+// timingUnit folds turn boundaries around the child's own Descriptor.
+type timingUnit struct{}
 
-func (TimingUnit) Key() string {
-	return TimingKey
+func (timingUnit) Key() string {
+	return timingKey
 }
 
-func (TimingUnit) StateVersion() int64 {
+func (timingUnit) StateVersion() int64 {
 	return 2
 }
 
-func (TimingUnit) InitialState() (json.RawMessage, error) {
+func (timingUnit) InitialState() (json.RawMessage, error) {
 	return json.Marshal(timingState{})
 }
 
-func (TimingUnit) ApplyState(
+func (timingUnit) ApplyState(
 	state json.RawMessage,
 	committed session.Event,
 ) (sessionprojection.Transition, error) {
@@ -61,7 +59,7 @@ func (TimingUnit) ApplyState(
 	switch committed.Type {
 	case session.TurnStartEventName:
 		if next.DescriptorSeen {
-			next.Active = &Interval{
+			next.Active = &interval{
 				Since:   committed.Time,
 				Through: committed.Time,
 			}
@@ -79,7 +77,7 @@ func (TimingUnit) ApplyState(
 			DescriptorSeen: true,
 		}
 		if activeSince != nil {
-			next.Active = &Interval{
+			next.Active = &interval{
 				Since:   *activeSince,
 				Through: committed.Time,
 			}
@@ -109,7 +107,7 @@ func (TimingUnit) ApplyState(
 	}, nil
 }
 
-func (TimingUnit) ViewState(state json.RawMessage) (json.RawMessage, error) {
+func (timingUnit) ViewState(state json.RawMessage) (json.RawMessage, error) {
 	var current timingState
 	if err := decodeJSON(state, &current); err != nil {
 		return nil, err
@@ -117,7 +115,7 @@ func (TimingUnit) ViewState(state json.RawMessage) (json.RawMessage, error) {
 	if err := validateTimingState(current); err != nil {
 		return nil, err
 	}
-	return json.Marshal(Timing{
+	return json.Marshal(timing{
 		SettledMS: current.SettledMS,
 		Active:    cloneInterval(current.Active),
 	})
@@ -142,7 +140,7 @@ func cloneTimingState(source timingState) timingState {
 	}
 }
 
-func cloneInterval(source *Interval) *Interval {
+func cloneInterval(source *interval) *interval {
 	if source == nil {
 		return nil
 	}
@@ -161,4 +159,4 @@ func int64Pointer(value int64) *int64 {
 	return &value
 }
 
-var _ sessionprojection.Unit = TimingUnit{}
+var _ sessionprojection.Unit = timingUnit{}

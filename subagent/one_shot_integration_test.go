@@ -7,10 +7,9 @@ import (
 	"time"
 
 	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 	"github.com/gorenx/goren/subagent/spawn"
-	subagenttool "github.com/gorenx/goren/subagent/tool"
+	subagentdelegation "github.com/gorenx/goren/subagent/tools/delegation"
 	"github.com/gorenx/goren/tools"
 )
 
@@ -35,7 +34,7 @@ func TestForegroundOneShotRunsChildAndReleasesIt(t *testing.T) {
 		tools.ToolExecutionInput{
 			CallID:     "delegate-1",
 			RootCallID: "delegate-1",
-			Name:       subagenttool.DefaultToolName,
+			Name:       subagentdelegation.DefaultToolName,
 			Arguments: json.RawMessage(`{
   "description": "answer delegated question",
   "prompt": "Return the delegated answer."
@@ -70,7 +69,19 @@ func TestForegroundOneShotRunsChildAndReleasesIt(t *testing.T) {
 		result.Output[0].Text != "delegated answer" {
 		t.Fatalf("foreground output = %#v", result.Output)
 	}
-	childID := session.SessionID(result.RunID)
+	eventContext, cancelEventWait := context.WithTimeout(
+		context.Background(),
+		time.Second,
+	)
+	defer cancelEventWait()
+	if eventErr := state.lifecycle.waitForEnd(eventContext); eventErr != nil {
+		t.Fatal(eventErr)
+	}
+	starts, ends := state.lifecycle.snapshot()
+	if len(starts) != 1 || len(ends) != 1 {
+		t.Fatalf("subagent lifecycle counts = %d/%d", len(starts), len(ends))
+	}
+	childID := starts[0].ID
 	if _, childFound := state.agents.Get(childID); childFound {
 		t.Fatal("completed one-shot child remains in Agent Registry")
 	}
@@ -88,22 +99,10 @@ func TestForegroundOneShotRunsChildAndReleasesIt(t *testing.T) {
 	if got := lastUserText(requests[0].Messages); got != "Return the delegated answer." {
 		t.Fatalf("child prompt = %q", got)
 	}
-	eventContext, cancelEventWait := context.WithTimeout(
-		context.Background(),
-		time.Second,
-	)
-	defer cancelEventWait()
-	if eventErr := state.lifecycle.waitForEnd(eventContext); eventErr != nil {
-		t.Fatal(eventErr)
-	}
-	starts, ends := state.lifecycle.snapshot()
-	if len(starts) != 1 || len(ends) != 1 {
-		t.Fatalf("subagent lifecycle counts = %d/%d", len(starts), len(ends))
-	}
-	if string(starts[0].ID) != result.RunID ||
+	if string(starts[0].RunID) != result.RunID ||
 		starts[0].RunID != ends[0].RunID ||
 		starts[0].ID != ends[0].ID ||
-		starts[0].Provider != spawn.DefaultProviderName ||
+		starts[0].Provider != spawn.DefaultSeedBuilderName ||
 		ends[0].StopReason != subagent.StopCompleted {
 		t.Fatalf("subagent lifecycle = %#v / %#v", starts[0], ends[0])
 	}

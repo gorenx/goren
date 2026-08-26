@@ -9,7 +9,7 @@ import (
 
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/subagent"
-	subagenttool "github.com/gorenx/goren/subagent/tool"
+	subagentdelegation "github.com/gorenx/goren/subagent/tools/delegation"
 	"github.com/gorenx/goren/tools"
 )
 
@@ -71,7 +71,7 @@ func assertContinuableSettlementOutcome(
 		tools.ToolExecutionInput{
 			CallID:     "continuable-outcome",
 			RootCallID: "continuable-outcome",
-			Name:       subagenttool.DefaultToolName,
+			Name:       subagentdelegation.DefaultToolName,
 			Arguments: json.RawMessage(`{
   "description": "observe terminal outcome",
   "prompt": "Run the child turn."

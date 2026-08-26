@@ -11,7 +11,7 @@ import (
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 	"github.com/gorenx/goren/subagent/spawn"
-	subagenttool "github.com/gorenx/goren/subagent/tool"
+	subagentdelegation "github.com/gorenx/goren/subagent/tools/delegation"
 	"github.com/gorenx/goren/tools"
 )
 
@@ -29,7 +29,7 @@ func TestContinuableToolPersistsCompletedChildForLaterResume(t *testing.T) {
 		tools.ToolExecutionInput{
 			CallID:     "continuable-1",
 			RootCallID: "continuable-1",
-			Name:       subagenttool.DefaultToolName,
+			Name:       subagentdelegation.DefaultToolName,
 			Arguments: json.RawMessage(`{
   "description": "continue durable work",
   "prompt": "Complete the initial child turn."
@@ -88,7 +88,7 @@ func TestContinuableToolPersistsCompletedChildForLaterResume(t *testing.T) {
 	}
 	continuableDescriptor, continuable := descriptor.(subagent.ContinuableDescriptor)
 	if !descriptorFound || !continuable ||
-		continuableDescriptor.Provider != spawn.DefaultProviderName ||
+		continuableDescriptor.Provider != spawn.DefaultSeedBuilderName ||
 		continuableDescriptor.Label != "continue durable work" {
 		t.Fatalf("durable descriptor = %#v, found=%t", descriptor, descriptorFound)
 	}

@@ -1,375 +1,364 @@
+// Package oneshot owns the complete terminal Subagent use case.
 package oneshot
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/plugin"
+	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
+	"github.com/gorenx/goren/subagent/internal/childrequest"
+	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
+	"github.com/gorenx/goren/subagent/internal/lineage"
 	"github.com/gorenx/goren/tools"
 )
 
-const maxSafeInteger int64 = 1<<53 - 1
-
-// Providers resolves an exact currently registered Provider.
-type Providers interface {
-	GetProvider(string) (subagent.Provider, bool)
+// SeedBuilders resolves the exact registered child seed strategy.
+type SeedBuilders interface {
+	Find(string) (subagent.SeedBuilder, bool)
 }
 
-// Lifecycle publishes paired one-shot lifecycle facts.
+// Lifecycle publishes paired Subagent execution facts.
 type Lifecycle interface {
 	Started(agent.Agent, subagent.Started)
 	Ended(agent.Agent, subagent.Ended)
 }
 
-// Service owns one-shot admission and lifecycle observation.
+// Dependencies contains the capabilities required by OneShot execution.
+type Dependencies struct {
+	Agents       agent.Registry
+	Constructor  agent.Constructor
+	Approval     approval.DelegationPolicy
+	SeedBuilders SeedBuilders
+	Lifecycle    Lifecycle
+	Executions   *sharedexecution.Registry
+}
+
+// Service starts and observes terminal child executions.
 type Service struct {
-	providers Providers
-	lifecycle Lifecycle
+	dependencies Dependencies
 }
 
-// New constructs a one-shot application service.
-func New(providerSource Providers, lifecycleTarget Lifecycle) *Service {
+// Mode identifies the business mode implemented by Service.
+func (*Service) Mode() subagent.Mode {
+	return subagent.ModeOneShot
+}
+
+// New constructs the OneShot application service.
+func New(dependencySet Dependencies) (*Service, error) {
+	if dependencySet.Agents == nil || dependencySet.Constructor == nil ||
+		dependencySet.SeedBuilders == nil ||
+		dependencySet.Executions == nil {
+		return nil, errors.New(
+			"subagent: OneShot requires Agent Registry, Constructor, " +
+				"SeedBuilders, and Execution Registry",
+		)
+	}
 	return &Service{
-		providers: providerSource,
-		lifecycle: lifecycleTarget,
-	}
+		dependencies: dependencySet,
+	}, nil
 }
 
-// Start validates and dispatches one one-shot child.
-func (svc *Service) Start(
-	ctx context.Context,
-	selectedName string,
-	startInput subagent.StartRequest,
-) (subagent.Run, error) {
-	if ctx == nil {
-		return nil, errors.New("subagent: one-shot Start context is nil")
+// Interrupt stops the exact live OneShot execution, if it still exists.
+// Authorization is enforced by the parent Subagent Service before dispatch.
+func (owner *Service) Interrupt(
+	requestContext context.Context,
+	childID session.SessionID,
+) error {
+	if requestContext == nil {
+		return errors.New("subagent: OneShot Interrupt context is nil")
 	}
-	if requestErr := ctx.Err(); requestErr != nil {
-		return nil, requestErr
+	if requestErr := requestContext.Err(); requestErr != nil {
+		return requestErr
 	}
-	candidate, found := svc.providers.GetProvider(selectedName)
-	if !found {
-		return nil, &subagent.Error{
-			Code: subagent.ErrorNoProvider,
-			Message: fmt.Sprintf(
-				"no subagent provider registered for %q",
-				selectedName,
-			),
+	entry, found := owner.dependencies.Executions.Find(childID)
+	if !found || entry.Mode != subagent.ModeOneShot {
+		return nil
+	}
+	entry.Subject.Cancel(
+		agent.ParentCancel{},
+		agent.CancelOptions{
+			KeepInbox: false,
+		},
+	)
+	entry.Execution.Stop(sharedexecution.StopInterrupted)
+	return nil
+}
+
+// Close requests every live OneShot execution to close and waits only until
+// each exact Agent enters Closing. Agent owns structural Scope teardown.
+func (owner *Service) Close(closeContext context.Context) error {
+	if closeContext == nil {
+		closeContext = context.Background()
+	}
+	targets := make([]sharedexecution.Entry, 0)
+	for _, entry := range owner.dependencies.Executions.List() {
+		if entry.Mode != subagent.ModeOneShot {
+			continue
+		}
+		targets = append(targets, entry)
+		entry.Execution.Stop(sharedexecution.StopModule)
+	}
+	return waitForClosing(closeContext, targets)
+}
+
+func waitForClosing(
+	closeContext context.Context,
+	targets []sharedexecution.Entry,
+) error {
+	for _, entry := range targets {
+		select {
+		case <-entry.Closing:
+		case <-closeContext.Done():
+			return context.Cause(closeContext)
 		}
 	}
-	resolved, resolveErr := resolveRequest(
-		selectedName,
-		candidate.Capabilities(),
-		startInput,
-	)
-	if resolveErr != nil {
-		return nil, resolveErr
+	return nil
+}
+
+// Start creates one child, accepts its initial message, and returns the common
+// Execution. The Start Context is not retained after publication.
+func (owner *Service) Start(
+	requestContext context.Context,
+	command subagent.StartCommand,
+) (subagent.Execution, error) {
+	if requestContext == nil {
+		return nil, errors.New("subagent: OneShot Start context is nil")
 	}
-	runIdentity, identityErr := newRunID()
+	if requestErr := requestContext.Err(); requestErr != nil {
+		return nil, requestErr
+	}
+	if command.Mode() != subagent.ModeOneShot {
+		return nil, errors.New("subagent: OneShot received another start mode")
+	}
+	requestSnapshot, snapshotErr := childrequest.Snapshot(command.Request())
+	if snapshotErr != nil {
+		return nil, snapshotErr
+	}
+	if requestSnapshot.Parent == nil ||
+		!owner.dependencies.Agents.Contains(requestSnapshot.Parent) {
+		return nil, &subagent.Error{
+			Code:    subagent.ErrorUnauthorized,
+			Message: "OneShot Start requires the exact live parent Agent",
+		}
+	}
+	if len(requestSnapshot.OutputSchema) != 0 {
+		requestSnapshot.OutputSchema, snapshotErr = tools.SnapshotObjectSchema(
+			requestSnapshot.OutputSchema,
+		)
+		if snapshotErr != nil {
+			return nil, snapshotErr
+		}
+	}
+	childID, identityErr := sharedexecution.NewChildID()
 	if identityErr != nil {
 		return nil, identityErr
 	}
-	runHandle, startErr := candidate.Start(ctx, resolved)
-	if startErr != nil {
-		return nil, startErr
+	runID, identityErr := sharedexecution.NewRunID()
+	if identityErr != nil {
+		return nil, identityErr
 	}
-	if validationErr := validateRun(runHandle); validationErr != nil {
-		if runHandle == nil || nilInterface(runHandle) {
-			return nil, validationErr
-		}
-		disposeErr := runHandle.Dispose(context.Background())
-		return nil, errors.Join(validationErr, disposeErr)
-	}
-	svc.observe(
-		runIdentity,
-		selectedName,
-		resolved.Parent,
-		runHandle,
+	seed, seedErr := owner.buildSeed(
+		requestContext,
+		command.SeedBuilderName(),
+		childID,
+		requestSnapshot.Parent,
 	)
-	return runHandle, nil
-}
-
-func resolveRequest(
-	selectedName string,
-	capabilitySet subagent.Capabilities,
-	startInput subagent.StartRequest,
-) (subagent.ResolvedStartRequest, error) {
-	if startInput.Parent == nil || nilInterface(startInput.Parent) {
-		return subagent.ResolvedStartRequest{}, errors.New(
-			"subagent: one-shot Start requires a parent Agent",
-		)
+	if seedErr != nil {
+		return nil, seedErr
 	}
-	if depthErr := validateMaxDepth(startInput.MaxDepth); depthErr != nil {
-		return subagent.ResolvedStartRequest{}, depthErr
+	childLineage, lineageErr := lineage.From(
+		requestSnapshot.Parent,
+		requestSnapshot.MaxDepth,
+	)
+	if lineageErr != nil {
+		return nil, lineageErr
 	}
-	if capabilityErr := assertCapabilities(
-		selectedName,
-		capabilitySet,
-		startInput,
-	); capabilityErr != nil {
-		return subagent.ResolvedStartRequest{}, capabilityErr
-	}
-	promptSnapshot, cloneErr := llm.CloneContentBlocks(startInput.Prompt)
-	if cloneErr != nil {
-		return subagent.ResolvedStartRequest{}, fmt.Errorf(
-			"subagent: snapshot one-shot prompt: %w",
-			cloneErr,
-		)
-	}
-	agentSnapshot := cloneAgentOptions(startInput.AgentOptions)
-	filterSnapshot, cloneErr := cloneToolRestriction(startInput.ToolFilter)
-	if cloneErr != nil {
-		return subagent.ResolvedStartRequest{}, cloneErr
-	}
-	var schemaSnapshot json.RawMessage
-	if len(startInput.OutputSchema) != 0 {
-		schemaSnapshot, cloneErr = tools.SnapshotObjectSchema(
-			startInput.OutputSchema,
-		)
-		if cloneErr != nil {
-			return subagent.ResolvedStartRequest{}, cloneErr
-		}
-	}
-	identitySnapshot, cloneErr := subagent.SnapshotDescriptor(
+	descriptor := newDescriptorAppender(
 		subagent.OneShotDescriptor{
-			Provider: selectedName,
-			Label:    cloneString(startInput.Label),
+			Provider: command.SeedBuilderName(),
+			Label:    command.Label(),
 		},
 	)
-	if cloneErr != nil {
-		return subagent.ResolvedStartRequest{}, cloneErr
+	childPlugins := []plugin.Plugin{
+		descriptor,
 	}
-	oneShotIdentity, matches := identitySnapshot.DescriptorValue().(subagent.OneShotDescriptor)
-	if !matches {
-		return subagent.ResolvedStartRequest{}, errors.New(
-			"subagent: one-shot descriptor snapshot changed variant",
+	var structured *structuredCapture
+	if len(requestSnapshot.OutputSchema) != 0 {
+		structured = newStructuredCapture(requestSnapshot.OutputSchema)
+		childPlugins = append(childPlugins, structured)
+	}
+	initiatedContext, contextErr := agent.WithInitiator(
+		requestContext,
+		requestSnapshot.Parent,
+	)
+	if contextErr != nil {
+		return nil, contextErr
+	}
+	handle, createErr := owner.dependencies.Constructor.Create(
+		initiatedContext,
+		agent.CreateOptions{
+			SessionID:    childID,
+			Metadata:     childLineage.Metadata(int64(len(seed))),
+			Seed:         seed,
+			AgentOptions: childLineage.AgentOptions(requestSnapshot.AgentOptions),
+			Provisioner: owner.provisioner(
+				scopePolicy{
+					persona:     requestSnapshot.Persona,
+					restriction: requestSnapshot.ToolFilter,
+					plugins:     childPlugins,
+				},
+			),
+			RuntimeParent: requestSnapshot.Parent,
+		},
+	)
+	if createErr != nil {
+		return nil, createErr
+	}
+	prompt, messageErr := llm.NewUserMessage(llm.UserMessageInput{
+		Content: requestSnapshot.Prompt,
+		Source: llm.UserMessageSource{
+			Kind: "user",
+		},
+	})
+	if messageErr != nil {
+		return nil, errors.Join(
+			messageErr,
+			handle.Dispose(context.WithoutCancel(requestContext)),
 		)
 	}
-	return subagent.ResolvedStartRequest{
-		StartRequest: subagent.StartRequest{
-			Label:        cloneString(startInput.Label),
-			Prompt:       promptSnapshot,
-			Parent:       startInput.Parent,
-			AgentOptions: agentSnapshot,
-			OutputSchema: schemaSnapshot,
-			MaxDepth:     cloneInt64(startInput.MaxDepth),
-			ToolFilter:   filterSnapshot,
-			Persona:      cloneString(startInput.Persona),
-		},
-		Descriptor: oneShotIdentity,
-	}, nil
-}
-
-func assertCapabilities(
-	selectedName string,
-	capabilitySet subagent.Capabilities,
-	startInput subagent.StartRequest,
-) error {
-	requirements := []struct {
-		needed    bool
-		supported bool
-		name      string
-	}{
-		{
-			needed:    len(startInput.OutputSchema) != 0,
-			supported: capabilitySet.OutputSchema,
-			name:      "outputSchema",
-		},
-		{
-			needed:    startInput.MaxDepth != nil,
-			supported: capabilitySet.DepthLimit,
-			name:      "depthLimit",
-		},
-		{
-			needed:    startInput.ToolFilter != nil,
-			supported: capabilitySet.ToolFilter,
-			name:      "toolFilter",
-		},
-		{
-			needed:    startInput.Persona != nil,
-			supported: capabilitySet.Persona,
-			name:      "persona",
-		},
-	}
-	for _, requirement := range requirements {
-		if requirement.needed && !requirement.supported {
-			return &subagent.Error{
-				Code: subagent.ErrorUnsupportedCapability,
-				Message: fmt.Sprintf(
-					"subagent provider %q does not support the %q capability",
-					selectedName,
-					requirement.name,
-				),
-			}
-		}
-	}
-	return nil
-}
-
-func validateRun(runHandle subagent.Run) error {
-	if runHandle == nil || nilInterface(runHandle) {
-		return errors.New("subagent: Provider returned a nil Run")
-	}
-	childID := runHandle.ID()
-	if childID == "" {
-		return errors.New("subagent: Provider returned a Run with an empty id")
-	}
-	localChild, local := runHandle.LocalAgent()
-	if !local {
-		return nil
-	}
-	if localChild == nil || nilInterface(localChild) || localChild.ID() != childID {
-		return errors.New(
-			"subagent: Provider returned an inconsistent local Run identity",
+	if followErr := handle.Subject.Followup(prompt); followErr != nil {
+		return nil, errors.Join(
+			followErr,
+			handle.Dispose(context.WithoutCancel(requestContext)),
 		)
 	}
-	return nil
-}
-
-func (svc *Service) observe(
-	runIdentity subagent.RunID,
-	selectedName string,
-	parentAgent agent.Agent,
-	runHandle subagent.Run,
-) {
-	childID := runHandle.ID()
-	_, local := runHandle.LocalAgent()
-	startGate := make(chan struct{})
-	go func() {
-		terminal, resultErr := runHandle.AwaitResult(context.Background())
-		<-startGate
-		endFact := subagent.Ended{
-			RunID:    runIdentity,
-			Provider: selectedName,
-			ID:       childID,
-			Local:    local,
-		}
-		if resultErr != nil {
-			endFact.StopReason = subagent.StopError
-		} else {
-			endFact.StopReason = terminal.StopReason
-			outputSnapshot, cloneErr := llm.CloneContentBlocks(terminal.Output)
-			if cloneErr != nil {
-				endFact.StopReason = subagent.StopError
-			} else {
-				endFact.LastAssistantMessage = outputSnapshot
-			}
-		}
-		if svc.lifecycle != nil {
-			svc.lifecycle.Ended(parentAgent, endFact)
-		}
-	}()
-	if svc.lifecycle != nil {
-		svc.lifecycle.Started(
-			parentAgent,
+	terminator := &executionTerminator{
+		handle:      handle,
+		parent:      requestSnapshot.Parent,
+		seedBuilder: command.SeedBuilderName(),
+		runID:       runID,
+		boundary:    int64(len(seed)),
+		structured:  structured,
+		lifecycle:   owner.dependencies.Lifecycle,
+	}
+	running, executionErr := sharedexecution.New(runID, childID, terminator)
+	if executionErr != nil {
+		return nil, errors.Join(
+			executionErr,
+			handle.Dispose(context.WithoutCancel(requestContext)),
+		)
+	}
+	if activationErr := running.Activate(); activationErr != nil {
+		return nil, errors.Join(
+			activationErr,
+			handle.Dispose(context.WithoutCancel(requestContext)),
+		)
+	}
+	terminator.running = running
+	terminator.executions = owner.dependencies.Executions
+	if publishErr := owner.dependencies.Executions.Publish(
+		sharedexecution.Entry{
+			Execution: running,
+			Mode:      subagent.ModeOneShot,
+			Parent:    requestSnapshot.Parent,
+			Subject:   handle.Subject,
+			Closing:   handle.ClosingSignal(),
+		},
+	); publishErr != nil {
+		return nil, errors.Join(
+			publishErr,
+			handle.Dispose(context.WithoutCancel(requestContext)),
+		)
+	}
+	terminator.published = true
+	if owner.dependencies.Lifecycle != nil {
+		owner.dependencies.Lifecycle.Started(
+			requestSnapshot.Parent,
 			subagent.Started{
-				RunID:    runIdentity,
-				Provider: selectedName,
+				RunID:    runID,
+				Provider: command.SeedBuilderName(),
 				ID:       childID,
-				Local:    local,
+				Local:    true,
 			},
 		)
 	}
-	close(startGate)
+	go watch(running, handle)
+	return running, nil
 }
 
-func newRunID() (subagent.RunID, error) {
-	var randomBytes [16]byte
-	if _, readErr := rand.Read(randomBytes[:]); readErr != nil {
-		return "", fmt.Errorf("subagent: generate RunID: %w", readErr)
+func (owner *Service) buildSeed(
+	requestContext context.Context,
+	name string,
+	childID session.SessionID,
+	parentAgent agent.Agent,
+) ([]session.Event, error) {
+	builder, found := owner.dependencies.SeedBuilders.Find(name)
+	if !found {
+		return nil, &subagent.Error{
+			Code: subagent.ErrorNoSeedBuilder,
+			Message: fmt.Sprintf(
+				"no subagent SeedBuilder registered for %q",
+				name,
+			),
+		}
 	}
-	randomBytes[6] = randomBytes[6]&0x0f | 0x40
-	randomBytes[8] = randomBytes[8]&0x3f | 0x80
-	encoded := make([]byte, 36)
-	hex.Encode(encoded[0:8], randomBytes[0:4])
-	encoded[8] = '-'
-	hex.Encode(encoded[9:13], randomBytes[4:6])
-	encoded[13] = '-'
-	hex.Encode(encoded[14:18], randomBytes[6:8])
-	encoded[18] = '-'
-	hex.Encode(encoded[19:23], randomBytes[8:10])
-	encoded[23] = '-'
-	hex.Encode(encoded[24:36], randomBytes[10:16])
-	return subagent.RunID(encoded), nil
-}
-
-func validateMaxDepth(maxDepth *int64) error {
-	if maxDepth != nil && (*maxDepth < 0 || *maxDepth > maxSafeInteger) {
-		return errors.New(
-			"subagent: maxDepth must be a non-negative safe integer",
-		)
+	parentSession := parentAgent.SessionValue()
+	if parentSession == nil {
+		return nil, errors.New("subagent: parent Session is unavailable")
 	}
-	return nil
+	parentHeader := parentSession.Header()
+	seedValue, seedErr := builder.BuildSeed(
+		requestContext,
+		subagent.SeedRequest{
+			ChildID: childID,
+			Parent: subagent.ParentSnapshot{
+				SessionID: parentHeader.ID,
+				Header:    parentHeader,
+				Events:    parentSession.Events(),
+			},
+		},
+	)
+	if seedErr != nil {
+		return nil, seedErr
+	}
+	return cloneEvents(seedValue.Events), nil
 }
 
-func cloneAgentOptions(source *agent.Options) *agent.Options {
+func watch(running *sharedexecution.Execution, handle agent.Handle) {
+	idleResult := make(chan error, 1)
+	go func() {
+		idleResult <- handle.Subject.WhenIdle(context.Background())
+	}()
+	select {
+	case <-handle.ClosingSignal():
+		running.Stop(sharedexecution.StopExternal)
+	case <-idleResult:
+		running.Stop(sharedexecution.StopNormal)
+	}
+}
+
+func cloneEvents(source []session.Event) []session.Event {
 	if source == nil {
 		return nil
 	}
-	detached := *source
-	if source.MaxTokens != nil {
-		maxTokensValue := *source.MaxTokens
-		detached.MaxTokens = &maxTokensValue
+	detached := make([]session.Event, len(source))
+	for index, eventValue := range source {
+		detached[index] = eventValue
+		detached[index].Data = append([]byte(nil), eventValue.Data...)
+		if eventValue.SourceEventSeqs != nil {
+			sequences := append([]int64(nil), (*eventValue.SourceEventSeqs)...)
+			detached[index].SourceEventSeqs = &sequences
+		}
+		if eventValue.SurfaceOp != nil {
+			operation := *eventValue.SurfaceOp
+			detached[index].SurfaceOp = &operation
+		}
 	}
-	return &detached
-}
-
-func cloneToolRestriction(
-	filterValue *tools.ToolRestriction,
-) (*tools.ToolRestriction, error) {
-	if filterValue == nil {
-		return nil, nil
-	}
-	if filterValue.Allow == nil && filterValue.Deny == nil {
-		return nil, errors.New(
-			"subagent: toolFilter must declare allow and/or deny",
-		)
-	}
-	return &tools.ToolRestriction{
-		Allow: cloneStrings(filterValue.Allow),
-		Deny:  cloneStrings(filterValue.Deny),
-	}, nil
-}
-
-func cloneStrings(source []string) []string {
-	if source == nil {
-		return nil
-	}
-	detached := make([]string, len(source))
-	copy(detached, source)
 	return detached
-}
-
-func cloneString(source *string) *string {
-	if source == nil {
-		return nil
-	}
-	snapshot := *source
-	return &snapshot
-}
-
-func cloneInt64(source *int64) *int64 {
-	if source == nil {
-		return nil
-	}
-	snapshot := *source
-	return &snapshot
-}
-
-func nilInterface(candidate any) bool {
-	reflected := reflect.ValueOf(candidate)
-	switch reflected.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map,
-		reflect.Pointer, reflect.Slice:
-		return reflected.IsNil()
-	default:
-		return false
-	}
 }

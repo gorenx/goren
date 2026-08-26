@@ -15,7 +15,7 @@ func TestPinnedSourceIdentityProjectionMatchesGo(t *testing.T) {
 		t,
 		"subagent-identity-projection.ts",
 		[]projectionContractObservation{
-			observeProjection(t, "last-wins", IdentityUnit{}, []session.Event{
+			observeProjection(t, "last-wins", identityUnit{}, []session.Event{
 				projectionContractEvent(subagent.DescriptorEventName, 2, 100, json.RawMessage(
 					`{"version":2,"mode":"one-shot","provider":"spawn","label":"ancestor"}`,
 				)),
@@ -23,7 +23,7 @@ func TestPinnedSourceIdentityProjectionMatchesGo(t *testing.T) {
 					`{"version":2,"mode":"continuable","provider":"fork","label":"child"}`,
 				)),
 			}),
-			observeProjection(t, "damage-resets", IdentityUnit{}, []session.Event{
+			observeProjection(t, "damage-resets", identityUnit{}, []session.Event{
 				projectionContractEvent(subagent.DescriptorEventName, 2, 100, json.RawMessage(
 					`{"version":2,"mode":"one-shot","provider":"spawn"}`,
 				)),
@@ -31,7 +31,7 @@ func TestPinnedSourceIdentityProjectionMatchesGo(t *testing.T) {
 					`{"version":2,"mode":"continuable"}`,
 				)),
 			}),
-			observeProjection(t, "unsupported-resets", IdentityUnit{}, []session.Event{
+			observeProjection(t, "unsupported-resets", identityUnit{}, []session.Event{
 				projectionContractEvent(subagent.DescriptorEventName, 2, 100, json.RawMessage(
 					`{"version":2,"mode":"one-shot","provider":"spawn"}`,
 				)),

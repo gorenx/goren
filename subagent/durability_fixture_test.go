@@ -15,7 +15,7 @@ import (
 	persistencesqlite "github.com/gorenx/goren/session/persistence/sqlite"
 	sessionprojection "github.com/gorenx/goren/session/projection"
 	"github.com/gorenx/goren/subagent/spawn"
-	subagenttool "github.com/gorenx/goren/subagent/tool"
+	subagentdelegation "github.com/gorenx/goren/subagent/tools/delegation"
 )
 
 type integrationBackgroundWriteFailureSink struct {
@@ -58,11 +58,11 @@ func newContinuableIntegrationFixtureWithAdapter(
 			},
 			plugins: plugins,
 			backend: backend,
-			delegation: subagenttool.Settings{
-				Provider:              spawn.DefaultProviderName,
-				ToolName:              subagenttool.DefaultToolName,
+			delegation: subagentdelegation.Settings{
+				Provider:              spawn.DefaultSeedBuilderName,
+				ToolName:              subagentdelegation.DefaultToolName,
 				EnableRunInBackground: true,
-				BackgroundMode:        subagenttool.BackgroundContinuable,
+				BackgroundMode:        subagentdelegation.BackgroundContinuable,
 			},
 		},
 	)

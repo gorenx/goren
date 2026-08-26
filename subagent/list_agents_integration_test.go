@@ -8,8 +8,8 @@ import (
 
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/subagent/control"
-	subagenttool "github.com/gorenx/goren/subagent/tool"
+	"github.com/gorenx/goren/subagent/tools/control"
+	subagentdelegation "github.com/gorenx/goren/subagent/tools/delegation"
 	"github.com/gorenx/goren/tools"
 )
 
@@ -28,7 +28,7 @@ func TestListAgentsProjectsColdContinuableChild(t *testing.T) {
 		tools.ToolExecutionInput{
 			CallID:     "start-listed-child",
 			RootCallID: "start-listed-child",
-			Name:       subagenttool.DefaultToolName,
+			Name:       subagentdelegation.DefaultToolName,
 			Arguments: json.RawMessage(`{
   "description": "listed durable child",
   "prompt": "Complete this child turn for listing."

@@ -123,7 +123,7 @@ func (data *DescriptorData) UnmarshalJSON(rawValue []byte) error {
 	}
 }
 
-// SnapshotDescriptor validates and detaches one descriptor before Provider
+// SnapshotDescriptor validates and detaches one descriptor before SeedBuilder
 // work or child creation begins.
 func SnapshotDescriptor(source Descriptor) (DescriptorData, error) {
 	var normalized Descriptor
