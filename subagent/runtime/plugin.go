@@ -34,7 +34,7 @@ type Plugin struct {
 	catalog       *catalog.Service
 	events        *eventPublisher
 	projections   []sessionprojection.UnitHandle
-	report        func(error)
+	failures      *failureReporter
 }
 
 // New constructs an inactive Subagent Plugin and its stable business Services.
@@ -43,7 +43,8 @@ func New(options RuntimeOptions) *Plugin {
 	if reporter == nil {
 		reporter = func(error) {}
 	}
-	owner := &Plugin{
+	owner := &Plugin{}
+	owner.failures = &failureReporter{
 		report: reporter,
 	}
 	owner.events = &eventPublisher{
@@ -71,7 +72,7 @@ func (owner *Plugin) Manifest() plugin.Manifest {
 		Optional: []plugin.ServiceType{
 			plugin.ServiceOf[agent.Registry](),
 			plugin.ServiceOf[agent.Constructor](),
-			plugin.ServiceOf[agent.DescendantLifecycle](),
+			plugin.ServiceOf[agent.RuntimeDescendants](),
 			plugin.ServiceOf[session.LiveStore](),
 			plugin.ServiceOf[persistence.Persistence](),
 			plugin.ServiceOf[approval.DelegationPolicy](),
@@ -96,7 +97,7 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 	}
 	agentRegistry, _ := plugin.Resolve[agent.Registry](owner)
 	agentConstructor, _ := plugin.Resolve[agent.Constructor](owner)
-	descendantLifecycle, _ := plugin.Resolve[agent.DescendantLifecycle](owner)
+	runtimeDescendants, _ := plugin.Resolve[agent.RuntimeDescendants](owner)
 	liveSessions, _ := plugin.Resolve[session.LiveStore](owner)
 	sessionPersistence, _ := plugin.Resolve[persistence.Persistence](owner)
 	approvalService, _ := plugin.Resolve[approval.DelegationPolicy](owner)
@@ -112,19 +113,19 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 		return err
 	}
 	if agentRegistry == nil || agentConstructor == nil ||
-		descendantLifecycle == nil || liveSessions == nil {
+		runtimeDescendants == nil || liveSessions == nil {
 		return nil
 	}
 	manager, err := continuation.New(
 		continuation.Dependencies{
 			Agents:      agentRegistry,
 			Constructor: agentConstructor,
-			Descendants: descendantLifecycle,
+			Descendants: runtimeDescendants,
 			Sessions:    liveSessions,
 			Persistence: sessionPersistence,
 			Providers:   owner.providers,
 			Lifecycle:   owner.events,
-			Failures:    owner,
+			Failures:    owner.failures,
 			Scopes: childscope.NewContinuable(
 				approvalService,
 				owner.extensions,
@@ -137,14 +138,14 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 	return owner.continuations.Enable(manager)
 }
 
-// Dispose drains continuable Activations before clearing Extension and
-// Provider registrations owned by this activation.
+// Dispose requests managed close for continuable Activations before clearing
+// Extension and Provider registrations owned by this activation.
 func (owner *Plugin) Dispose(closeContext context.Context) error {
 	if closeContext == nil {
 		closeContext = context.Background()
 	}
 	rollbackContext := context.WithoutCancel(closeContext)
-	drainErr := owner.continuations.Disable(rollbackContext)
+	continuationErr := owner.continuations.Disable(rollbackContext)
 	owner.catalog.Disable()
 	danglingExtensions, extensionErr := owner.extensions.Clear(rollbackContext)
 	if danglingExtensions != 0 {
@@ -159,10 +160,10 @@ func (owner *Plugin) Dispose(closeContext context.Context) error {
 	danglingProviders := owner.providers.Clear()
 	projectionErr := owner.releaseProjections(rollbackContext)
 	if danglingProviders == 0 {
-		return errors.Join(drainErr, extensionErr, projectionErr)
+		return errors.Join(continuationErr, extensionErr, projectionErr)
 	}
 	return errors.Join(
-		drainErr,
+		continuationErr,
 		extensionErr,
 		projectionErr,
 		fmt.Errorf(

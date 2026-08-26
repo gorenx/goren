@@ -75,29 +75,4 @@ func (owner *Service) ReportFrom(
 	)
 }
 
-// DrainContinuableChildren releases selected resident direct-child forests.
-func (owner *Service) DrainContinuableChildren(
-	requestContext context.Context,
-	parentAgent agent.Agent,
-	childIDs []session.SessionID,
-) error {
-	activeManager, err := owner.requireManager()
-	if err != nil {
-		return err
-	}
-	return activeManager.DrainChildren(requestContext, parentAgent, childIDs)
-}
-
-// DrainContinuableDescendants releases descendant forests below exact roots.
-func (owner *Service) DrainContinuableDescendants(
-	requestContext context.Context,
-	parents []agent.Agent,
-) error {
-	activeManager, err := owner.requireManager()
-	if err != nil {
-		return err
-	}
-	return activeManager.DrainDescendants(requestContext, parents)
-}
-
 var _ subagent.ContinuableService = (*Service)(nil)

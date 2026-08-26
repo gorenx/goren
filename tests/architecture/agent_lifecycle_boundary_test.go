@@ -57,9 +57,40 @@ func TestAgentLifecycleBusinessTypesStayOutsidePluginLifecycle(t *testing.T) {
 			packageID: "fork",
 			typeName:  "Provider",
 		},
+		{
+			directory: filepath.Join("subagent", "internal", "provider"),
+			packageID: "provider",
+			typeName:  "Registry",
+		},
+		{
+			directory: filepath.Join("subagent", "internal", "oneshot"),
+			packageID: "oneshot",
+			typeName:  "Service",
+		},
+		{
+			directory: filepath.Join("subagent", "internal", "continuation"),
+			packageID: "continuation",
+			typeName:  "Service",
+		},
+		{
+			directory: filepath.Join("subagent", "internal", "continuation"),
+			packageID: "continuation",
+			typeName:  "Manager",
+		},
+		{
+			directory: filepath.Join("subagent", "internal", "continuation"),
+			packageID: "continuation",
+			typeName:  "Activation",
+		},
+		{
+			directory: "userquestions",
+			packageID: "userquestions",
+			typeName:  "QuestionService",
+		},
 	}
 	forbiddenMethods := map[string]struct{}{
 		"Apply":    {},
+		"Dispose":  {},
 		"Manifest": {},
 	}
 	findings := make([]string, 0)
@@ -121,6 +152,119 @@ func TestAgentLifecycleBusinessTypesStayOutsidePluginLifecycle(t *testing.T) {
 	sort.Strings(findings)
 	t.Fatalf(
 		"Agent lifecycle business objects must stay separate from Plugin lifecycle:\n%s",
+		strings.Join(findings, "\n"),
+	)
+}
+
+func TestAgentScopeRootDelegatesStructuralUnloadToAgentScopes(t *testing.T) {
+	t.Parallel()
+	repositoryPath := repositoryRoot(t)
+	fileSet := token.NewFileSet()
+	sourcesByPackage := parsePackages(t, fileSet, repositoryPath)
+	packageKey := filepath.Join(repositoryPath, "agentloop") + ":agentloop"
+	sources := productionSources(sourcesByPackage[packageKey])
+	rootFound := false
+	scopesFound := false
+	scopesOwnHandle := false
+	scopesUnload := false
+	findings := make([]string, 0)
+	for _, source := range sources {
+		for _, declaration := range source.tree.Decls {
+			switch current := declaration.(type) {
+			case *ast.GenDecl:
+				for _, specification := range current.Specs {
+					typeSpecification, ok := specification.(*ast.TypeSpec)
+					if !ok {
+						continue
+					}
+					structure, ok := typeSpecification.Type.(*ast.StructType)
+					if !ok {
+						continue
+					}
+					switch typeSpecification.Name.Name {
+					case "agentScopeRoot":
+						rootFound = true
+						for _, field := range structure.Fields.List {
+							ast.Inspect(field.Type, func(node ast.Node) bool {
+								selector, ok := node.(*ast.SelectorExpr)
+								packageName, selectedPackage := selectorPackage(selector)
+								if ok && selectedPackage && packageName == "plugin" &&
+									(selector.Sel.Name == "Handle" ||
+										selector.Sel.Name == "Plugin") {
+									findings = append(
+										findings,
+										fileSet.Position(selector.Pos()).String()+
+											": agentScopeRoot owns plugin."+
+											selector.Sel.Name,
+									)
+								}
+								return true
+							})
+						}
+					case "agentScopes":
+						scopesFound = true
+						for _, field := range structure.Fields.List {
+							ast.Inspect(field.Type, func(node ast.Node) bool {
+								selector, ok := node.(*ast.SelectorExpr)
+								packageName, selectedPackage := selectorPackage(selector)
+								if ok && selectedPackage && packageName == "plugin" &&
+									selector.Sel.Name == "Handle" {
+									scopesOwnHandle = true
+								}
+								return true
+							})
+						}
+					}
+				}
+			case *ast.FuncDecl:
+				if current.Recv == nil || len(current.Recv.List) != 1 {
+					continue
+				}
+				receiverName := receiverTypeName(current.Recv.List[0].Type)
+				ast.Inspect(current.Body, func(node ast.Node) bool {
+					call, ok := node.(*ast.CallExpr)
+					if !ok {
+						return true
+					}
+					selector, ok := call.Fun.(*ast.SelectorExpr)
+					packageName, selectedPackage := selectorPackage(selector)
+					if !ok || !selectedPackage || packageName != "plugin" ||
+						selector.Sel.Name != "UnloadChild" {
+						return true
+					}
+					if receiverName == "agentScopeRoot" {
+						findings = append(
+							findings,
+							fileSet.Position(selector.Pos()).String()+
+								": agentScopeRoot unloads itself",
+						)
+					}
+					if receiverName == "agentScopes" && current.Name.Name == "release" {
+						scopesUnload = true
+					}
+					return true
+				})
+			}
+		}
+	}
+	if !rootFound {
+		findings = append(findings, "agentScopeRoot type declaration not found")
+	}
+	if !scopesFound {
+		findings = append(findings, "agentScopes type declaration not found")
+	}
+	if !scopesOwnHandle {
+		findings = append(findings, "agentScopes does not own plugin.Handle")
+	}
+	if !scopesUnload {
+		findings = append(findings, "agentScopes.release does not issue plugin.UnloadChild")
+	}
+	if len(findings) == 0 {
+		return
+	}
+	sort.Strings(findings)
+	t.Fatalf(
+		"Agent Scope structural ownership is invalid:\n%s",
 		strings.Join(findings, "\n"),
 	)
 }
@@ -248,16 +392,23 @@ func TestRemovedAgentLifecycleSymbolsStayAbsent(t *testing.T) {
 		"userquestions",
 	}
 	forbiddenIdentifiers := map[string]struct{}{
-		"BeginShutdown":     {},
-		"CloseAll":          {},
-		"Custody":           {},
-		"HandleTransferred": {},
-		"IsOwnedBy":         {},
-		"Roots":             {},
-		"SubagentDepth":     {},
-		"closingRoots":      {},
-		"custodyFrom":       {},
-		"ownedChildren":     {},
+		"BeginShutdown":               {},
+		"CloseAll":                    {},
+		"CloseDescendants":            {},
+		"Custody":                     {},
+		"DescendantLifecycle":         {},
+		"DrainChildren":               {},
+		"DrainContinuableChildren":    {},
+		"DrainContinuableDescendants": {},
+		"DrainDescendants":            {},
+		"HandleTransferred":           {},
+		"IsOwnedBy":                   {},
+		"Roots":                       {},
+		"SubagentDepth":               {},
+		"closingRoots":                {},
+		"custodyFrom":                 {},
+		"ownedChildren":               {},
+		"questionRegistry":            {},
 	}
 	findings := make([]string, 0)
 	for packageKey, sources := range sourcesByPackage {

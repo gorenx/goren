@@ -303,7 +303,7 @@ func (coordinator *LifecycleCoordinator) closeExact(
 		}
 	default:
 		target.phase = epochClosing
-		target.descendantAdmission = descendantsDraining
+		target.descendantAdmission = descendantsClosing
 		target.teardownOrigin = teardownByCoordinator
 		target.closing.close()
 	}
@@ -312,9 +312,9 @@ func (coordinator *LifecycleCoordinator) closeExact(
 
 	// Once this caller has claimed the close transaction, cancellation may no
 	// longer abandon the epoch in Closing. Other callers may stop waiting on
-	// their own Context, but the owner must finish descendant drain and runtime
+	// their own Context, but the owner must finish descendant closure and runtime
 	// teardown so a later epoch can safely reuse the durable Session id.
-	drainContext := context.WithoutCancel(closeContext)
+	completionContext := context.WithoutCancel(closeContext)
 	<-constructionDone
 
 	coordinator.mutex.Lock()
@@ -330,14 +330,14 @@ func (coordinator *LifecycleCoordinator) closeExact(
 	for index := len(children) - 1; index >= 0; index-- {
 		closeErr = errors.Join(
 			closeErr,
-			coordinator.closeExact(drainContext, children[index]),
+			coordinator.closeExact(completionContext, children[index]),
 		)
 	}
 	if published && runtime != nil {
-		coordinator.retirePublication(drainContext, target)
+		coordinator.retirePublication(completionContext, target)
 	}
 	if runtime != nil {
-		closeErr = errors.Join(closeErr, runtime.Teardown(drainContext))
+		closeErr = errors.Join(closeErr, runtime.Teardown(completionContext))
 	}
 	coordinator.mutex.Lock()
 	coordinator.finishClosedLocked(target, closeErr)
@@ -356,7 +356,7 @@ func (coordinator *LifecycleCoordinator) runtimeTeardownStarted(
 	}
 	if target.phase != epochClosed && target.phase != epochClosing {
 		target.phase = epochClosing
-		target.descendantAdmission = descendantsDraining
+		target.descendantAdmission = descendantsClosing
 		target.teardownOrigin = teardownByRuntime
 		target.closing.close()
 	}
@@ -409,31 +409,6 @@ func (coordinator *LifecycleCoordinator) retirePublication(
 			observerErr,
 		))
 	}
-}
-
-func (coordinator *LifecycleCoordinator) closeDescendants(
-	closeContext context.Context,
-	parent Agent,
-) error {
-	parentEpoch, err := coordinator.epochForAgent(parent)
-	if err != nil {
-		return err
-	}
-	coordinator.mutex.Lock()
-	parentEpoch.descendantAdmission = descendantsDraining
-	children := make([]*epoch, 0, len(parentEpoch.children))
-	for child := range parentEpoch.children {
-		children = append(children, child)
-	}
-	coordinator.mutex.Unlock()
-	var closeErr error
-	for index := len(children) - 1; index >= 0; index-- {
-		closeErr = errors.Join(
-			closeErr,
-			coordinator.closeExact(closeContext, children[index]),
-		)
-	}
-	return closeErr
 }
 
 func (coordinator *LifecycleCoordinator) hasDescendants(parent Agent) bool {

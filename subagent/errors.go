@@ -26,7 +26,7 @@ const (
 	ErrorActivationClosing ErrorCode = "ACTIVATION_CLOSING"
 	// ErrorActivationTeardownFailed reports failure to release an Activation.
 	ErrorActivationTeardownFailed ErrorCode = "ACTIVATION_TEARDOWN_FAILED"
-	// ErrorDraining rejects admission below an exact parent teardown cutoff.
+	// ErrorDraining rejects admission after a module or parent close cutoff.
 	ErrorDraining ErrorCode = "DRAINING"
 	// ErrorActivationExtensionRevoked rejects provisioning invalidated by
 	// concurrent Extension removal. Its value preserves the pinned DSH code.

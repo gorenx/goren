@@ -635,44 +635,6 @@ func TestRegistryOwnsRuntimeParentAndClosesChildFirst(t *testing.T) {
 	}
 }
 
-func TestRegistryCloseDescendantsClosesAdmission(t *testing.T) {
-	t.Parallel()
-	registry := agentcore.NewRegistry(agentcore.RegistryOptions{})
-	builder := &factoryRecord{}
-	registration, err := registry.RegisterFactory(builder)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(registration.Close)
-	root, err := registry.Create(
-		context.Background(),
-		agentcore.CreateOptions{
-			SessionID: "root-admission",
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = registry.CloseDescendants(context.Background(), root.Subject); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = registry.Create(
-		context.Background(),
-		agentcore.CreateOptions{
-			SessionID:     "late-child",
-			RuntimeParent: root.Subject,
-		},
-	); err == nil {
-		t.Fatal("Registry accepted a child after descendant admission closed")
-	}
-	if builder.createCalls != 1 {
-		t.Fatalf("Factory Create calls = %d, want 1", builder.createCalls)
-	}
-	if err = root.Dispose(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestParentClosingBeforeChildReserveDoesNotInvokeFactory(t *testing.T) {
 	t.Parallel()
 	registry := agentcore.NewRegistry(agentcore.RegistryOptions{})

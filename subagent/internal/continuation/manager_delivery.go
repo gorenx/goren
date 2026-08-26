@@ -241,11 +241,11 @@ func (owner *Manager) submit(
 			Message: fmt.Sprintf("subagent %q Activation is closing", epoch.childID),
 		}
 	}
-	if owner.activations.admission == activationsDraining {
+	if owner.activations.admission == activationsClosing {
 		owner.activations.mutex.Unlock()
 		return "", &subagent.Error{
 			Code:    subagent.ErrorDraining,
-			Message: "continuable subagents are draining; the message was not accepted",
+			Message: "continuable subagents are closing; the message was not accepted",
 		}
 	}
 	epoch.accepted[messageValue.StableID()] = struct{}{}

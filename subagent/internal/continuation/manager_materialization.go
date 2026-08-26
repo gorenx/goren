@@ -172,14 +172,14 @@ func (owner *Manager) publish(
 		boundary:     handle.Subject.SessionValue().Seq(),
 	}
 	owner.activations.mutex.Lock()
-	draining := owner.activations.admission == activationsDraining
-	if draining || owner.activations.activations[epoch.childID] != nil {
+	closing := owner.activations.admission == activationsClosing
+	if closing || owner.activations.activations[epoch.childID] != nil {
 		owner.activations.mutex.Unlock()
 		_ = handle.Dispose(context.Background())
-		if draining {
+		if closing {
 			return nil, &subagent.Error{
 				Code:    subagent.ErrorDraining,
-				Message: "continuable subagent materialization lost the drain cutoff",
+				Message: "continuable subagent materialization crossed the module close cutoff",
 			}
 		}
 		return nil, &subagent.Error{

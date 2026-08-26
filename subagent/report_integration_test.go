@@ -184,6 +184,101 @@ func TestReportExtensionReleasesResidentInstallationDuringRuntimeShutdown(
 	}
 }
 
+func TestSubagentPluginUnloadRequestsResidentChildClosure(
+	t *testing.T,
+) {
+	reportPlugin, reportErr := report.New(subagent.ReportQuiet)
+	if reportErr != nil {
+		t.Fatal(reportErr)
+	}
+	requestGate := make(chan struct{})
+	backend := &integrationAdapter{
+		responses: [][]llm.StreamChunk{
+			continuableTextResponse("unreachable while the request is gated"),
+		},
+		gates: []<-chan struct{}{
+			requestGate,
+		},
+		requestsChanged: make(chan struct{}, 1),
+	}
+	state, _ := newContinuableIntegrationFixtureWithAdapter(
+		t,
+		backend,
+		reportPlugin,
+	)
+	parentHandle := state.createParent(t)
+	started := state.toolRuntime.Execute(
+		context.Background(),
+		tools.ToolExecutionInput{
+			CallID:     "start-child-before-subagent-unload",
+			RootCallID: "start-child-before-subagent-unload",
+			Name:       subagenttool.DefaultToolName,
+			Arguments: json.RawMessage(`{
+  "description": "resident child during Subagent unload",
+  "prompt": "Remain active until Subagent unload."
+}`),
+			Subject: parentHandle.Subject,
+		},
+	)
+	if started.Failed() {
+		failure, _ := started.FailureDetail()
+		t.Fatalf("continuable start failed: %#v", failure)
+	}
+	rawStart, found := started.SuccessValue()
+	if !found {
+		t.Fatal("continuable start returned no value")
+	}
+	var startResult struct {
+		SubagentID string `json:"subagentId"`
+	}
+	if decodeErr := json.Unmarshal(rawStart, &startResult); decodeErr != nil {
+		t.Fatal(decodeErr)
+	}
+	waitContext, cancelWait := context.WithTimeout(
+		context.Background(),
+		3*time.Second,
+	)
+	defer cancelWait()
+	if requestErr := backend.waitForRequests(waitContext, 1); requestErr != nil {
+		t.Fatal(requestErr)
+	}
+	if unloadErr := state.runtimeEngine.Unload(
+		context.Background(),
+		state.subagentHandle,
+	); unloadErr != nil {
+		t.Fatalf(
+			"Subagent Plugin unload failed: %v; details: %#v",
+			unloadErr,
+			flattenIntegrationErrors(unloadErr),
+		)
+	}
+	childID := session.SessionID(startResult.SubagentID)
+	closePoll := time.NewTicker(time.Millisecond)
+	defer closePoll.Stop()
+	for {
+		_, agentLive := state.agents.Get(childID)
+		_, sessionLive := state.sessions.Get(childID)
+		if !agentLive && !sessionLive {
+			break
+		}
+		select {
+		case <-waitContext.Done():
+			t.Fatalf(
+				"resident child remained after Subagent Plugin unload: agent=%t session=%t",
+				agentLive,
+				sessionLive,
+			)
+		case <-closePoll.C:
+		}
+	}
+	if !state.agents.Contains(parentHandle.Subject) {
+		t.Fatal("Subagent Plugin unload closed the ordinary parent Agent")
+	}
+	if failures := state.observerErrors.snapshot(); len(failures) != 0 {
+		t.Fatalf("Subagent Plugin unload reported close failures: %#v", failures)
+	}
+}
+
 func hasToolSchema(schemas []llm.ToolSchema, selectedName string) bool {
 	for _, schema := range schemas {
 		if schema.Name == selectedName {

@@ -33,7 +33,7 @@ type ScopeBuilder interface {
 type Dependencies struct {
 	Agents      agent.Registry
 	Constructor agent.Constructor
-	Descendants agent.DescendantLifecycle
+	Descendants agent.RuntimeDescendants
 	Sessions    session.LiveStore
 	Persistence persistence.Persistence
 	Providers   Providers
@@ -57,7 +57,7 @@ func New(dependencySet Dependencies) (*Manager, error) {
 		dependencySet.Scopes == nil ||
 		dependencySet.Failures == nil {
 		return nil, errors.New(
-			"subagent: continuation requires Agent Registry, Constructor, Descendant Lifecycle, Session LiveStore, Providers, child Scope builder, and failure reporter",
+			"subagent: continuation requires Agent Registry, Constructor, runtime descendant observation, Session LiveStore, Providers, child Scope builder, and failure reporter",
 		)
 	}
 	return &Manager{

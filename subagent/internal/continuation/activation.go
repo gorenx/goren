@@ -15,9 +15,9 @@ const (
 	// activationsAccepted permits new or resumed continuable Activation
 	// publication after the exact runtime parent passes Registry admission.
 	activationsAccepted activationAdmission = iota
-	// activationsDraining permanently rejects new business Activations while
-	// existing Activations settle; Agent descendant teardown remains Registry-owned.
-	activationsDraining
+	// activationsClosing permanently rejects new business Activations while
+	// resident Activations enter their managed close operations.
+	activationsClosing
 )
 
 // activationRegistry owns the process-local continuable Activation index,

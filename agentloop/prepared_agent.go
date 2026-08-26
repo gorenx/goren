@@ -22,13 +22,13 @@ func newPreparedAgent(
 	maxParallelToolCalls int,
 	failures observerFailureReporter,
 	router *runtimeContextRouter,
-	scopes scopeHost,
+	scopes agentScopeFactory,
 ) (*preparedAgent, error) {
 	if conversation == nil {
 		return nil, errors.New("agentloop: prepared Session is nil")
 	}
 	if scopes == nil {
-		return nil, errors.New("agentloop: Agent Scope host is unavailable")
+		return nil, errors.New("agentloop: Agent Scope factory is unavailable")
 	}
 	preparation := scopes.Prepare(loopOptions, conversation.Header())
 	if preparation == nil || preparation.Runtime() == nil {

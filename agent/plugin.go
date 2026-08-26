@@ -32,7 +32,7 @@ func (owner *RegistryPlugin) Manifest() plugin.Manifest {
 			plugin.NewProvidedService[Registry](owner.service),
 			plugin.NewProvidedService[Constructor](owner.service),
 			plugin.NewProvidedService[ScopeProvisioning](owner.service),
-			plugin.NewProvidedService[DescendantLifecycle](owner.service),
+			plugin.NewProvidedService[RuntimeDescendants](owner.service),
 			plugin.NewProvidedService[FactoryRegistrar](owner.service),
 		},
 	}

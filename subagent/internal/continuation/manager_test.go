@@ -164,7 +164,6 @@ type registryRecord struct {
 	disposeErr  error
 	followupErr error
 	service     *agent.RegistryService
-	closing     map[session.SessionID]<-chan struct{}
 	disposed    func(agent.Agent)
 }
 
@@ -279,12 +278,6 @@ func (records *registryRecord) attach(
 	subject *agentRecord,
 	scopeProvisioner agent.Provisioner,
 ) error {
-	records.mutex.Lock()
-	if records.closing == nil {
-		records.closing = make(map[session.SessionID]<-chan struct{})
-	}
-	records.closing[subject.ID()] = agentEpoch.ClosingSignal()
-	records.mutex.Unlock()
 	runtime := &registryScopeRuntime{
 		owner:   records,
 		subject: subject,
@@ -296,15 +289,6 @@ func (records *registryRecord) attach(
 		return nil
 	}
 	return runtime.Provision(requestContext, scopeProvisioner)
-}
-
-func (records *registryRecord) closingSignal(
-	identifier session.SessionID,
-) <-chan struct{} {
-	records.mutex.Lock()
-	signal := records.closing[identifier]
-	records.mutex.Unlock()
-	return signal
 }
 
 func (records *registryRecord) Get(identifier session.SessionID) (agent.Agent, bool) {
@@ -321,13 +305,6 @@ func (records *registryRecord) List() []agent.Agent {
 
 func (records *registryRecord) HasRuntimeDescendants(parentAgent agent.Agent) bool {
 	return records.service.HasRuntimeDescendants(parentAgent)
-}
-
-func (records *registryRecord) CloseDescendants(
-	closeContext context.Context,
-	parentAgent agent.Agent,
-) error {
-	return records.service.CloseDescendants(closeContext, parentAgent)
 }
 
 type registryScopeRuntime struct {
@@ -402,7 +379,6 @@ func (runtime *registryScopeRuntime) Teardown(closeContext context.Context) erro
 	runtime.owner.mutex.Lock()
 	delete(runtime.owner.agents, runtime.subject.ID())
 	delete(runtime.owner.sessions.entries, runtime.subject.ID())
-	delete(runtime.owner.closing, runtime.subject.ID())
 	disposeErr := runtime.owner.disposeErr
 	runtime.owner.mutex.Unlock()
 	return errors.Join(closeErr, disposeErr)
@@ -574,11 +550,10 @@ func (records providerSource) GetProvider(providerName string) (subagent.Provide
 }
 
 type lifecycleRecord struct {
-	mutex       sync.Mutex
-	started     []subagent.Started
-	ended       []subagent.Ended
-	startedHook func(agent.Agent, subagent.Started)
-	endedHook   func(agent.Agent, subagent.Ended)
+	mutex     sync.Mutex
+	started   []subagent.Started
+	ended     []subagent.Ended
+	endedHook func(agent.Agent, subagent.Ended)
 }
 
 type failureRecord struct {
@@ -594,6 +569,8 @@ func (records *failureRecord) ReportFinalFlushFailure(
 	records.mutex.Unlock()
 }
 
+func (*failureRecord) ReportCloseFailure(CloseFailure) {}
+
 func (records *failureRecord) failuresSnapshot() []FinalFlushFailure {
 	records.mutex.Lock()
 	defer records.mutex.Unlock()
@@ -603,11 +580,7 @@ func (records *failureRecord) failuresSnapshot() []FinalFlushFailure {
 func (records *lifecycleRecord) Started(parentAgent agent.Agent, fact subagent.Started) {
 	records.mutex.Lock()
 	records.started = append(records.started, fact)
-	hook := records.startedHook
 	records.mutex.Unlock()
-	if hook != nil {
-		hook(parentAgent, fact)
-	}
 }
 
 func (records *lifecycleRecord) Ended(parentAgent agent.Agent, fact subagent.Ended) {
@@ -771,40 +744,6 @@ func TestContinuableFreshLifecycleAndControl(t *testing.T) {
 		parentAgent.injected[0].SourceValue().SourceKind() != "subagent-report" {
 		t.Fatal("report was not quietly attributed to the child")
 	}
-	if drainErr := owner.DrainChildren(
-		context.Background(),
-		parentAgent,
-		[]session.SessionID{childID},
-	); drainErr != nil {
-		t.Fatal(drainErr)
-	}
-	if _, live := agentRegistry.Get(childID); live {
-		t.Fatal("drained child remained live")
-	}
-	if len(lifecycleFacts.ended) != 1 ||
-		lifecycleFacts.ended[0].RunID != lifecycleFacts.started[0].RunID {
-		t.Fatalf("ended facts = %#v", lifecycleFacts.ended)
-	}
-	if drainErr := owner.DrainDescendants(
-		context.Background(),
-		[]agent.Agent{parentAgent},
-	); drainErr != nil {
-		t.Fatal(drainErr)
-	}
-	_, restartErr := owner.Start(
-		context.Background(),
-		subagent.ContinuableStartSpec{
-			Provider: "spawn",
-			Label:    "late",
-			Request: subagent.ContinuableRequest{
-				Parent: parentAgent,
-			},
-		},
-	)
-	var problem *subagent.Error
-	if !errors.As(restartErr, &problem) || problem.Code != subagent.ErrorDraining {
-		t.Fatalf("Start below drained parent = %v", restartErr)
-	}
 }
 
 func TestFollowupColdResumesPersistedContinuableChild(t *testing.T) {
@@ -909,13 +848,6 @@ func TestFollowupColdResumesPersistedContinuableChild(t *testing.T) {
 	}
 	if len(lifecycleFacts.started) != 1 || lifecycleFacts.started[0].ID != childID {
 		t.Fatalf("cold resume lifecycle = %#v", lifecycleFacts.started)
-	}
-	if drainErr := owner.DrainChildren(
-		context.Background(),
-		parentAgent,
-		[]session.SessionID{childID},
-	); drainErr != nil {
-		t.Fatal(drainErr)
 	}
 }
 

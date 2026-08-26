@@ -18,7 +18,7 @@ type Factory struct {
 	persistence          sesspersist.Persistence
 	failures             observerFailureReporter
 	runtimeContextEvents *runtimeContextRouter
-	scopes               scopeHost
+	scopes               agentScopeFactory
 }
 
 func newFactory(
@@ -27,7 +27,7 @@ func newFactory(
 	persistence sesspersist.Persistence,
 	failures observerFailureReporter,
 	runtimeContextEvents *runtimeContextRouter,
-	scopes scopeHost,
+	scopes agentScopeFactory,
 ) *Factory {
 	return &Factory{
 		maxParallelToolCalls: maxParallelToolCalls,
