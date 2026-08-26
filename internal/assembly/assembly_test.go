@@ -34,6 +34,7 @@ import (
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/session/persistence"
 	"github.com/gorenx/goren/session/projection"
+	"github.com/gorenx/goren/session/projectioncache"
 	"github.com/gorenx/goren/session/query"
 	"github.com/gorenx/goren/session/title"
 	"github.com/gorenx/goren/subagent"
@@ -69,6 +70,7 @@ type serviceProbe struct {
 	sessions     session.LiveStore
 	durability   persistence.Persistence
 	projections  projection.Registry
+	checkpoints  projectioncache.Cache
 	queries      query.QueryService
 	titles       title.TitleService
 	prompts      systemprompt.Assembler
@@ -96,6 +98,7 @@ func (*serviceProbe) Manifest() plugin.Manifest {
 			plugin.ServiceOf[session.LiveStore](),
 			plugin.ServiceOf[persistence.Persistence](),
 			plugin.ServiceOf[projection.Registry](),
+			plugin.ServiceOf[projectioncache.Cache](),
 			plugin.ServiceOf[query.QueryService](),
 			plugin.ServiceOf[title.TitleService](),
 			plugin.ServiceOf[systemprompt.Assembler](),
@@ -149,6 +152,9 @@ func (probe *serviceProbe) Apply(requestContext context.Context) error {
 		return err
 	}
 	if probe.projections, err = plugin.Require[projection.Registry](probe); err != nil {
+		return err
+	}
+	if probe.checkpoints, err = plugin.Require[projectioncache.Cache](probe); err != nil {
 		return err
 	}
 	if probe.queries, err = plugin.Require[query.QueryService](probe); err != nil {
@@ -297,6 +303,7 @@ func TestCatalogContainsOnlyCurrentServerSlice(t *testing.T) {
 		session.PluginName,
 		persistence.PluginName,
 		projection.PluginName,
+		projectioncache.PluginName,
 		query.PluginName,
 		title.PluginName,
 		systemprompt.PluginName,

@@ -172,6 +172,7 @@ func TestPinnedSourceColdChildrenMatchGo(t *testing.T) {
 		},
 		durability,
 		projectionRegistry(t),
+		nil,
 	); enableErr != nil {
 		t.Fatal(enableErr)
 	}

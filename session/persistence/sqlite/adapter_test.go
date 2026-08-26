@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/session"
+	sesspersist "github.com/gorenx/goren/session/persistence"
 )
 
 func TestAdapterMaterializesHeaderAndBatchAtomically(t *testing.T) {
@@ -19,12 +20,16 @@ func TestAdapterMaterializesHeaderAndBatchAtomically(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = storage.Close(context.Background()) })
 	metadata, entries := closedTurnLog(t, "atomic-session")
-	if err := storage.AppendBatch(requestContext, metadata, entries, false); err != nil {
+	if err := storage.AppendBatch(requestContext, sesspersist.EventBatch{
+		Header:      metadata,
+		Events:      entries,
+		Materialize: true,
+	}); err != nil {
 		t.Fatal(err)
 	}
-	stored, found, err := storage.LoadStored(requestContext, metadata.ID)
-	if err != nil || !found {
-		t.Fatalf("LoadStored = (%#v, %t, %v)", stored, found, err)
+	stored, err := storage.LoadStored(requestContext, metadata.ID)
+	if err != nil || stored == nil {
+		t.Fatalf("LoadStored = (%#v, %v)", stored, err)
 	}
 	if stored.Header.ID != metadata.ID || len(stored.Events) != 2 || stored.Events[1].Type != session.TurnEndEventName {
 		t.Fatalf("stored prefix = %#v", stored)
@@ -34,12 +39,15 @@ func TestAdapterMaterializesHeaderAndBatchAtomically(t *testing.T) {
 		{Type: "extension/probe", Seq: 2, Time: 3, Data: []byte(`{}`), Ignorable: true},
 		{Type: "extension/duplicate", Seq: 0, Time: 4, Data: []byte(`{}`), Ignorable: true},
 	}
-	if err := storage.AppendBatch(requestContext, metadata, badBatch, true); err == nil {
+	if err := storage.AppendBatch(requestContext, sesspersist.EventBatch{
+		Header: metadata,
+		Events: badBatch,
+	}); err == nil {
 		t.Fatal("batch containing a duplicate seq committed")
 	}
-	afterFailure, found, err := storage.LoadStored(requestContext, metadata.ID)
-	if err != nil || !found {
-		t.Fatalf("LoadStored after rollback = (%#v, %t, %v)", afterFailure, found, err)
+	afterFailure, err := storage.LoadStored(requestContext, metadata.ID)
+	if err != nil || afterFailure == nil {
+		t.Fatalf("LoadStored after rollback = (%#v, %v)", afterFailure, err)
 	}
 	if len(afterFailure.Events) != 2 || afterFailure.Token != before {
 		t.Fatalf("failed transaction changed durable state: %#v", afterFailure)
@@ -55,7 +63,11 @@ func TestAdapterMarksAndRepairsOnlyATornTail(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = storage.Close(context.Background()) })
 	metadata, entries := closedTurnLog(t, "repair-session")
-	if err := storage.AppendBatch(requestContext, metadata, entries, false); err != nil {
+	if err := storage.AppendBatch(requestContext, sesspersist.EventBatch{
+		Header:      metadata,
+		Events:      entries,
+		Materialize: true,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	_, err = storage.database.ExecContext(requestContext, `
@@ -64,16 +76,19 @@ func TestAdapterMarksAndRepairsOnlyATornTail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stored, found, err := storage.LoadStored(requestContext, metadata.ID)
-	if err != nil || !found || len(stored.Events) != 2 || stored.Marker == nil {
-		t.Fatalf("torn LoadStored = (%#v, %t, %v)", stored, found, err)
+	stored, err := storage.LoadStored(requestContext, metadata.ID)
+	if err != nil || stored == nil || len(stored.Events) != 2 || stored.Marker == nil {
+		t.Fatalf("torn LoadStored = (%#v, %v)", stored, err)
 	}
-	if err := storage.CommitRepair(requestContext, metadata, stored.Marker, nil); err != nil {
+	if err := storage.CommitRepair(requestContext, sesspersist.LogRepair{
+		Header: metadata,
+		Marker: stored.Marker,
+	}); err != nil {
 		t.Fatal(err)
 	}
-	repaired, found, err := storage.LoadStored(requestContext, metadata.ID)
-	if err != nil || !found || repaired.Marker != nil || len(repaired.Events) != 2 {
-		t.Fatalf("repaired LoadStored = (%#v, %t, %v)", repaired, found, err)
+	repaired, err := storage.LoadStored(requestContext, metadata.ID)
+	if err != nil || repaired == nil || repaired.Marker != nil || len(repaired.Events) != 2 {
+		t.Fatalf("repaired LoadStored = (%#v, %v)", repaired, err)
 	}
 }
 
@@ -106,46 +121,55 @@ func TestAdapterReadsBoundedEventWindowsBackward(t *testing.T) {
 			Ignorable: true,
 		}
 	}
-	if err := storage.AppendBatch(requestContext, metadata, entries, false); err != nil {
+	if err := storage.AppendBatch(requestContext, sesspersist.EventBatch{
+		Header:      metadata,
+		Events:      entries,
+		Materialize: true,
+	}); err != nil {
 		t.Fatal(err)
 	}
 
-	tail, found, err := storage.LoadStoredEventsBefore(
+	tail, err := storage.LoadStoredEventsBefore(
 		requestContext,
 		metadata.ID,
-		nil,
-		3,
+		sesspersist.EventPage{
+			Limit: 3,
+		},
 	)
-	if err != nil || !found {
-		t.Fatalf("tail window = (%#v, %t, %v)", tail, found, err)
+	if err != nil || tail == nil {
+		t.Fatalf("tail window = (%#v, %v)", tail, err)
 	}
 	if !tail.HasEarlier || eventSequences(tail.Events) != "9,8,7" {
 		t.Fatalf("tail window = %#v", tail)
 	}
 
 	before := int64(7)
-	older, found, err := storage.LoadStoredEventsBefore(
+	older, err := storage.LoadStoredEventsBefore(
 		requestContext,
 		metadata.ID,
-		&before,
-		3,
+		sesspersist.EventPage{
+			BeforeSeq: &before,
+			Limit:     3,
+		},
 	)
-	if err != nil || !found {
-		t.Fatalf("older window = (%#v, %t, %v)", older, found, err)
+	if err != nil || older == nil {
+		t.Fatalf("older window = (%#v, %v)", older, err)
 	}
 	if !older.HasEarlier || eventSequences(older.Events) != "6,5,4" {
 		t.Fatalf("older window = %#v", older)
 	}
 
 	before = 2
-	head, found, err := storage.LoadStoredEventsBefore(
+	head, err := storage.LoadStoredEventsBefore(
 		requestContext,
 		metadata.ID,
-		&before,
-		5,
+		sesspersist.EventPage{
+			BeforeSeq: &before,
+			Limit:     5,
+		},
 	)
-	if err != nil || !found {
-		t.Fatalf("head window = (%#v, %t, %v)", head, found, err)
+	if err != nil || head == nil {
+		t.Fatalf("head window = (%#v, %v)", head, err)
 	}
 	if head.HasEarlier || eventSequences(head.Events) != "1,0" {
 		t.Fatalf("head window = %#v", head)

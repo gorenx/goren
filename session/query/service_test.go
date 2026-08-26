@@ -77,8 +77,8 @@ func (*queryPersistencePlugin) SupportsRawArtifacts() bool {
 func (*queryPersistencePlugin) ReadRaw(
 	context.Context,
 	session.SessionID,
-) (sesspersist.RawArtifact, bool, error) {
-	return sesspersist.RawArtifact{}, false, errors.New("raw artifacts unavailable")
+) (sesspersist.RawArtifact, error) {
+	return sesspersist.RawArtifact{}, errors.New("raw artifacts unavailable")
 }
 
 func (*queryPersistencePlugin) Create(context.Context, session.Header) error {

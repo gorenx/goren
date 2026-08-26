@@ -21,6 +21,7 @@ import (
 	"github.com/gorenx/goren/session"
 	sesspersist "github.com/gorenx/goren/session/persistence"
 	sessionprojection "github.com/gorenx/goren/session/projection"
+	"github.com/gorenx/goren/session/projectioncache"
 	sessionquery "github.com/gorenx/goren/session/query"
 	sessiontitle "github.com/gorenx/goren/session/title"
 	"github.com/gorenx/goren/userquestions"
@@ -54,6 +55,7 @@ type Plugin struct {
 	workspaces        *apiproxy.WorkspaceGateway
 	interactions      *apiproxy.InteractionGateway
 	questions         *userquestions.ProviderHandle
+	listProjection    sessionprojection.UnitHandle
 	stopLifetimeClose func() bool
 }
 
@@ -101,6 +103,9 @@ func (owner *Plugin) Manifest() plugin.Manifest {
 			plugin.ServiceOf[userquestions.UserQuestions](),
 			plugin.ServiceOf[workspace.Registry](),
 			plugin.ServiceOf[credentials.Provider](),
+		},
+		Optional: []plugin.ServiceType{
+			plugin.ServiceOf[projectioncache.Cache](),
 		},
 		Events: []plugin.EventSubscription{
 			plugin.EventOf[session.EventAppended](),
@@ -162,6 +167,7 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 	if err != nil {
 		return err
 	}
+	checkpointCache, _ := plugin.Resolve[projectioncache.Cache](owner)
 	queries, err := plugin.Require[sessionquery.QueryService](owner)
 	if err != nil {
 		return err
@@ -182,6 +188,18 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 	if err != nil {
 		return err
 	}
+	listProjection, err := projections.Register(
+		sessionapi.SessionListMetadataUnit(),
+	)
+	if err != nil {
+		return err
+	}
+	retainListProjection := false
+	defer func() {
+		if !retainListProjection {
+			_ = listProjection.Release(context.WithoutCancel(requestContext))
+		}
+	}()
 
 	sessionGateway, err := sessionapi.NewGateway(
 		requestContext,
@@ -194,6 +212,7 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 			LLM:         models,
 			Defaults:    defaults,
 			Projections: projections,
+			Cache:       checkpointCache,
 			Titles:      titles,
 			Workspaces:  workspaces,
 			Directories: sessionapi.DirectoryProvisionerFunc(
@@ -201,8 +220,9 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 			),
 		},
 		sessionapi.Options{
-			WorkingDirectory: owner.options.WorkingDirectory,
-			NewSessionID:     owner.options.NewSessionID,
+			WorkingDirectory:  owner.options.WorkingDirectory,
+			NewSessionID:      owner.options.NewSessionID,
+			ReportReadFailure: owner.options.ObserverError,
 		},
 	)
 	if err != nil {
@@ -271,6 +291,8 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 	owner.workspaces = workspaceGateway
 	owner.interactions = interactions
 	owner.questions = providerHandle
+	owner.listProjection = listProjection
+	retainListProjection = true
 	owner.stopLifetimeClose = context.AfterFunc(
 		plugin.Lifetime(owner),
 		func() {
@@ -296,14 +318,21 @@ func (owner *Plugin) Dispose(closeContext context.Context) error {
 	if owner.frames != nil {
 		owner.frames.Close()
 	}
+	var projectionErr error
+	if owner.listProjection != nil {
+		projectionErr = owner.listProjection.Release(
+			context.WithoutCancel(closeContext),
+		)
+	}
 	owner.methods = nil
 	owner.streams = nil
 	owner.frames = nil
 	owner.workspaces = nil
 	owner.interactions = nil
 	owner.questions = nil
+	owner.listProjection = nil
 	owner.stopLifetimeClose = nil
-	return closeErr
+	return errors.Join(closeErr, projectionErr)
 }
 
 // ObserveEvent routes only the Event set declared in Manifest.

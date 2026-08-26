@@ -36,7 +36,7 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/llm/deepseek"
 	llmfactory "github.com/gorenx/goren/llm/factory"
-	"github.com/gorenx/goren/llm/retry"
+	llmretry "github.com/gorenx/goren/llm/retry"
 	llmretryfactory "github.com/gorenx/goren/llm/retry/factory"
 	"github.com/gorenx/goren/llm/tokenmeter"
 	tokenmeterfactory "github.com/gorenx/goren/llm/tokenmeter/factory"
@@ -48,6 +48,9 @@ import (
 	sessionpersistencefactory "github.com/gorenx/goren/session/persistence/factory"
 	"github.com/gorenx/goren/session/projection"
 	sessionprojectionfactory "github.com/gorenx/goren/session/projection/factory"
+	"github.com/gorenx/goren/session/projectioncache"
+	sessionprojectioncachefactory "github.com/gorenx/goren/session/projectioncache/factory"
+	projectioncachesqlite "github.com/gorenx/goren/session/projectioncache/sqlite"
 	"github.com/gorenx/goren/session/query"
 	sessionqueryfactory "github.com/gorenx/goren/session/query/factory"
 	querysqlite "github.com/gorenx/goren/session/query/sqlite"
@@ -145,6 +148,12 @@ func NewCatalog(platform Environment) (*pluginfactory.Catalog, error) {
 	if err != nil {
 		return nil, err
 	}
+	projectionCacheBuilder, err := sessionprojectioncachefactory.New(
+		platform.Diagnostics,
+	)
+	if err != nil {
+		return nil, err
+	}
 	titleBuilder, err := sessiontitlefactory.New(platform.Diagnostics)
 	if err != nil {
 		return nil, err
@@ -182,6 +191,7 @@ func NewCatalog(platform Environment) (*pluginfactory.Catalog, error) {
 		sessionBuilder,
 		persistenceBuilder,
 		sessionprojectionfactory.New(),
+		projectionCacheBuilder,
 		sessionqueryfactory.New(),
 		titleBuilder,
 		systempromptfactory.New(),
@@ -246,13 +256,29 @@ func DefaultSpecs(
 	if err != nil {
 		return nil, err
 	}
-	queryRaw, err := json.Marshal(sessionqueryfactory.Config{
-		Path: filepath.Join(
-			filepath.Dir(sessionDatabasePath),
-			"session-query.sqlite",
-		),
-		JournalMode: querysqlite.JournalWAL,
-	})
+	queryRaw, err := json.Marshal(
+		sessionqueryfactory.Config{
+			Path: filepath.Join(
+				filepath.Dir(sessionDatabasePath),
+				"session-query.sqlite",
+			),
+			JournalMode: querysqlite.JournalWAL,
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	projectionCacheRaw, err := json.Marshal(
+		sessionprojectioncachefactory.Config{
+			Path: filepath.Join(
+				filepath.Dir(sessionDatabasePath),
+				"session-projection-cache.sqlite",
+			),
+			JournalMode:      projectioncachesqlite.JournalWAL,
+			WriteEveryEvents: projectioncache.DefaultWriteEveryEvents,
+			WriteIntervalMS:  projectioncache.DefaultWriteInterval.Milliseconds(),
+		},
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -331,6 +357,10 @@ func DefaultSpecs(
 		{
 			FactoryName: projection.PluginName,
 			Config:      emptyConfig,
+		},
+		{
+			FactoryName: projectioncache.PluginName,
+			Config:      projectionCacheRaw,
 		},
 		{
 			FactoryName: subagent.PluginName,

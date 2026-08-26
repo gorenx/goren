@@ -101,6 +101,7 @@ func TestColdReadsUseBoundedConcurrency(t *testing.T) {
 		sessionList{},
 		durability,
 		projectionRegistry(t),
+		nil,
 	); enableErr != nil {
 		t.Fatal(enableErr)
 	}

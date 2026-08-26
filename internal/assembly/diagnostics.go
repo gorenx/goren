@@ -8,6 +8,7 @@ import (
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/session/persistence"
+	"github.com/gorenx/goren/session/projectioncache"
 	"github.com/gorenx/goren/session/title"
 )
 
@@ -71,6 +72,18 @@ func (owner *Diagnostics) ReportBackgroundWriteFailure(
 		"Session %q background write through %s: %w",
 		failure.SessionID,
 		failure.BackendName,
+		failure.Error,
+	))
+}
+
+// ReportProjectionCacheFailure adapts contained checkpoint cache work.
+func (owner *Diagnostics) ReportProjectionCacheFailure(
+	failure projectioncache.Failure,
+) {
+	owner.Report(fmt.Errorf(
+		"Session %q projection cache %s: %w",
+		failure.SessionID,
+		failure.Operation,
 		failure.Error,
 	))
 }
