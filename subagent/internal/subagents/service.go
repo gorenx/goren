@@ -23,25 +23,15 @@ type implementation interface {
 	Close(context.Context) error
 }
 
-// messenger owns delivery to a child that can accept later turns, including
-// resolving a durable but currently inactive child.
-type messenger interface {
-	Send(
+// continuation is the additional lifecycle strategy supported by an
+// implementation whose durable child can be materialized for another message.
+// Resident message delivery does not use this interface; it uses agent.Agent.
+type continuation interface {
+	Resume(
 		context.Context,
 		agent.Agent,
 		session.SessionID,
-		[]llm.ContentBlock,
-		subagent.FollowupOptions,
-	) (llm.MessageID, error)
-}
-
-// reporter owns child-to-parent message delivery.
-type reporter interface {
-	Report(
-		context.Context,
-		agent.Agent,
-		[]llm.ContentBlock,
-		subagent.ReportOptions,
+		llm.UserMessage,
 	) (llm.MessageID, error)
 }
 
@@ -55,7 +45,7 @@ const (
 )
 
 // Service is the single Subagent application service published through the
-// narrow Starter, ChildControl, and ParentReporter capability views.
+// narrow Starter and ChildControl capability views.
 type Service struct {
 	mutex           sync.RWMutex
 	state           admissionState
@@ -64,8 +54,6 @@ type Service struct {
 	executions      *sharedexecution.Registry
 	implementations map[subagent.Mode]implementation
 	closeOrder      []implementation
-	messenger       messenger
-	reporter        reporter
 	closed          chan struct{}
 	closeErr        error
 }
@@ -94,8 +82,6 @@ func (owner *Service) Open(
 	}
 	implementationIndex := make(map[subagent.Mode]implementation, len(implementations))
 	closeOrder := make([]implementation, 0, len(implementations))
-	var messageService messenger
-	var reportService reporter
 	for _, candidate := range implementations {
 		if candidate == nil || candidate.Mode() == "" {
 			return errors.New("subagent: implementation is incomplete")
@@ -108,28 +94,6 @@ func (owner *Service) Open(
 		}
 		implementationIndex[candidate.Mode()] = candidate
 		closeOrder = append(closeOrder, candidate)
-		if candidateMessenger, matches := candidate.(messenger); matches {
-			if messageService != nil {
-				return errors.New(
-					"subagent: multiple implementations provide child messaging",
-				)
-			}
-			messageService = candidateMessenger
-		}
-		if candidateReporter, matches := candidate.(reporter); matches {
-			if reportService != nil {
-				return errors.New(
-					"subagent: multiple implementations provide parent reporting",
-				)
-			}
-			reportService = candidateReporter
-		}
-	}
-	if messageService == nil || reportService == nil {
-		return errors.New(
-			"subagent: implementations must provide child messaging and " +
-				"parent reporting",
-		)
 	}
 	owner.mutex.Lock()
 	defer owner.mutex.Unlock()
@@ -144,8 +108,6 @@ func (owner *Service) Open(
 	owner.executions = executionRegistry
 	owner.implementations = implementationIndex
 	owner.closeOrder = closeOrder
-	owner.messenger = messageService
-	owner.reporter = reportService
 	owner.state = admissionAccepting
 	return nil
 }
@@ -156,15 +118,20 @@ func (owner *Service) Start(
 	requestContext context.Context,
 	command subagent.StartCommand,
 ) (subagent.Execution, error) {
-	candidate, beginErr := owner.beginImplementation(command.Mode())
-	if beginErr != nil {
+	if beginErr := owner.beginCall(); beginErr != nil {
 		return nil, beginErr
 	}
 	defer owner.activeCalls.Done()
+	candidate, resolveErr := owner.implementation(command.Mode())
+	if resolveErr != nil {
+		return nil, resolveErr
+	}
 	return candidate.Start(requestContext, command)
 }
 
-// Send delivers a later turn through the registered child messenger.
+// Send delivers to a resident child through the ordinary Agent interface. If
+// the child is not resident, only the Continuable lifecycle strategy may
+// materialize it and atomically accept the first message of the new epoch.
 func (owner *Service) Send(
 	requestContext context.Context,
 	parentAgent agent.Agent,
@@ -172,17 +139,51 @@ func (owner *Service) Send(
 	content []llm.ContentBlock,
 	options subagent.FollowupOptions,
 ) (llm.MessageID, error) {
-	messageService, beginErr := owner.beginMessenger()
-	if beginErr != nil {
+	if beginErr := owner.beginCall(); beginErr != nil {
 		return "", beginErr
 	}
 	defer owner.activeCalls.Done()
-	return messageService.Send(
+	if requestContext == nil {
+		return "", errors.New("subagent: Send context is nil")
+	}
+	if requestErr := requestContext.Err(); requestErr != nil {
+		return "", requestErr
+	}
+	messageValue, messageErr := llm.NewUserMessage(llm.UserMessageInput{
+		Content: content,
+		Source:  options.Source,
+	})
+	if messageErr != nil {
+		return "", messageErr
+	}
+	entry, found := owner.executions.Find(childID)
+	if found {
+		if authorizationErr := owner.authorizeParent(
+			entry,
+			parentAgent,
+		); authorizationErr != nil {
+			return "", authorizationErr
+		}
+		if submitErr := entry.Subject.Followup(messageValue); submitErr != nil {
+			return "", submitErr
+		}
+		return messageValue.StableID(), nil
+	}
+	candidate, resolveErr := owner.implementation(subagent.ModeContinuable)
+	if resolveErr != nil {
+		return "", resolveErr
+	}
+	resumeStrategy, supported := candidate.(continuation)
+	if !supported {
+		return "", errors.New(
+			"subagent: Continuable implementation does not support resume",
+		)
+	}
+	return resumeStrategy.Resume(
 		requestContext,
 		parentAgent,
 		childID,
-		content,
-		options,
+		messageValue,
 	)
 }
 
@@ -193,51 +194,26 @@ func (owner *Service) Interrupt(
 	childID session.SessionID,
 	authority subagent.InterruptAuthority,
 ) error {
-	executionRegistry, implementationIndex, agentRegistry, beginErr :=
-		owner.beginControl()
-	if beginErr != nil {
+	if beginErr := owner.beginCall(); beginErr != nil {
 		return beginErr
 	}
 	defer owner.activeCalls.Done()
-	entry, found := executionRegistry.Find(childID)
+	entry, found := owner.executions.Find(childID)
 	if !found {
 		return nil
 	}
 	if authorizationErr := authorizeInterrupt(
-		agentRegistry,
+		owner.agents,
 		entry,
 		authority,
 	); authorizationErr != nil {
 		return authorizationErr
 	}
-	candidate, found := implementationIndex[entry.Mode]
-	if !found {
-		return fmt.Errorf(
-			"subagent: live execution has no implementation for mode %q",
-			entry.Mode,
-		)
+	candidate, resolveErr := owner.implementation(entry.Mode)
+	if resolveErr != nil {
+		return resolveErr
 	}
 	return candidate.Interrupt(requestContext, childID)
-}
-
-// Report delivers child content to its direct parent.
-func (owner *Service) Report(
-	requestContext context.Context,
-	childAgent agent.Agent,
-	content []llm.ContentBlock,
-	options subagent.ReportOptions,
-) (llm.MessageID, error) {
-	reportService, beginErr := owner.beginReporter()
-	if beginErr != nil {
-		return "", beginErr
-	}
-	defer owner.activeCalls.Done()
-	return reportService.Report(
-		requestContext,
-		childAgent,
-		content,
-		options,
-	)
 }
 
 // AgentDisposed completes settlement synchronously when Agent owns the
@@ -308,8 +284,6 @@ func (owner *Service) Close(closeContext context.Context) error {
 	owner.executions = nil
 	owner.implementations = nil
 	owner.closeOrder = nil
-	owner.messenger = nil
-	owner.reporter = nil
 	owner.closeErr = closeErr
 	owner.state = admissionClosed
 	close(owner.closed)
@@ -317,64 +291,50 @@ func (owner *Service) Close(closeContext context.Context) error {
 	return closeErr
 }
 
-func (owner *Service) beginImplementation(
+func (owner *Service) beginCall() error {
+	owner.mutex.RLock()
+	defer owner.mutex.RUnlock()
+	if owner.state != admissionAccepting {
+		return unavailable()
+	}
+	owner.activeCalls.Add(1)
+	return nil
+}
+
+func (owner *Service) implementation(
 	selectedMode subagent.Mode,
 ) (implementation, error) {
-	owner.mutex.RLock()
-	defer owner.mutex.RUnlock()
-	if owner.state != admissionAccepting {
-		return nil, unavailable()
-	}
 	candidate, found := owner.implementations[selectedMode]
-	if !found {
-		return nil, fmt.Errorf(
-			"subagent: no implementation registered for mode %q",
-			selectedMode,
-		)
+	if found {
+		return candidate, nil
 	}
-	owner.activeCalls.Add(1)
-	return candidate, nil
-}
-
-func (owner *Service) beginMessenger() (messenger, error) {
-	owner.mutex.RLock()
-	defer owner.mutex.RUnlock()
-	if owner.state != admissionAccepting {
-		return nil, unavailable()
-	}
-	owner.activeCalls.Add(1)
-	return owner.messenger, nil
-}
-
-func (owner *Service) beginReporter() (reporter, error) {
-	owner.mutex.RLock()
-	defer owner.mutex.RUnlock()
-	if owner.state != admissionAccepting {
-		return nil, unavailable()
-	}
-	owner.activeCalls.Add(1)
-	return owner.reporter, nil
-}
-
-func (owner *Service) beginControl() (
-	*sharedexecution.Registry,
-	map[subagent.Mode]implementation,
-	agent.Registry,
-	error,
-) {
-	owner.mutex.RLock()
-	defer owner.mutex.RUnlock()
-	if owner.state != admissionAccepting {
-		return nil, nil, nil, unavailable()
-	}
-	owner.activeCalls.Add(1)
-	return owner.executions, owner.implementations, owner.agents, nil
+	return nil, fmt.Errorf(
+		"subagent: no implementation registered for mode %q",
+		selectedMode,
+	)
 }
 
 func unavailable() error {
 	return &subagent.Error{
 		Code:    subagent.ErrorDraining,
 		Message: "Subagents are closing",
+	}
+}
+
+func (owner *Service) authorizeParent(
+	entry sharedexecution.Entry,
+	parentAgent agent.Agent,
+) error {
+	if parentAgent != nil && owner.agents.Contains(parentAgent) &&
+		agent.Same(entry.Parent, parentAgent) {
+		return nil
+	}
+	return &subagent.Error{
+		Code: subagent.ErrorUnauthorized,
+		Message: fmt.Sprintf(
+			"subagent %q delivery requires its exact live parent Agent",
+			entry.Subject.ID(),
+		),
 	}
 }
 
@@ -429,4 +389,3 @@ func isLiveAncestor(
 
 var _ subagent.Starter = (*Service)(nil)
 var _ subagent.ChildControl = (*Service)(nil)
-var _ subagent.ParentReporter = (*Service)(nil)

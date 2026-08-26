@@ -9,14 +9,13 @@ import (
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/subagent"
 	subagentdelegation "github.com/gorenx/goren/subagent/tools/delegation"
 	"github.com/gorenx/goren/subagent/tools/report"
 	"github.com/gorenx/goren/tools"
 )
 
 func TestReportExtensionDeliversChildSelectedContentToParent(t *testing.T) {
-	reportPlugin, reportErr := report.New(subagent.ReportQuiet)
+	reportPlugin, reportErr := report.New(report.Quiet)
 	if reportErr != nil {
 		t.Fatal(reportErr)
 	}
@@ -104,7 +103,7 @@ func TestReportExtensionDeliversChildSelectedContentToParent(t *testing.T) {
 func TestReportExtensionReleasesResidentInstallationDuringRuntimeShutdown(
 	t *testing.T,
 ) {
-	reportPlugin, reportErr := report.New(subagent.ReportQuiet)
+	reportPlugin, reportErr := report.New(report.Quiet)
 	if reportErr != nil {
 		t.Fatal(reportErr)
 	}
@@ -187,7 +186,7 @@ func TestReportExtensionReleasesResidentInstallationDuringRuntimeShutdown(
 func TestSubagentPluginUnloadRequestsResidentChildClosure(
 	t *testing.T,
 ) {
-	reportPlugin, reportErr := report.New(subagent.ReportQuiet)
+	reportPlugin, reportErr := report.New(report.Quiet)
 	if reportErr != nil {
 		t.Fatal(reportErr)
 	}

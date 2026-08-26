@@ -36,7 +36,7 @@ func (acquired *provisioning) Commit() error {
 	case provisioningInvalid:
 		return &subagent.Error{
 			Code: subagent.ErrorExtensionRevoked,
-			Message: "a Continuable Extension was revoked while " +
+			Message: "a child Extension was revoked while " +
 				"the child was being built; the child was not established",
 		}
 	case provisioningCommitted:

@@ -1,39 +1,49 @@
-// Package report installs the child-scoped continuable Subagent report Tool.
+// Package report installs the child-scoped Subagent report Tool.
 package report
 
 import (
 	"context"
 	"errors"
 
+	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/subagent"
 )
 
 const PluginName = "@deepseek-ai/dsh-tool-subagent-report"
 
-// Plugin registers one child-scoped Extension for Continuable children.
+// Delivery controls how an accepted report schedules the direct parent Agent.
+type Delivery string
+
+const (
+	// Quiet appends without waking an idle parent.
+	Quiet Delivery = "quiet"
+	// NextStep schedules the report for the parent's next model step.
+	NextStep Delivery = "next-step"
+)
+
+// Plugin registers one report Extension for child Agents.
 type Plugin struct {
 	plugin.Base
-	delivery     subagent.ReportDelivery
+	scheduling   Delivery
 	tool         *reportTool
 	registration subagent.ExtensionRegistration
 }
 
 // New validates the report scheduling policy.
-func New(delivery subagent.ReportDelivery) (*Plugin, error) {
-	switch delivery {
-	case subagent.ReportQuiet, subagent.ReportNextStep:
+func New(selectedDelivery Delivery) (*Plugin, error) {
+	switch selectedDelivery {
+	case Quiet, NextStep:
 	default:
 		return nil, errors.New("subagent report: unsupported reportDelivery")
 	}
 	return &Plugin{
-		delivery: delivery,
+		scheduling: selectedDelivery,
 	}, nil
 }
 
-// Manifest publishes the private reporter dependency that ties resident child
-// Plugins to this host Plugin, then declares the Extension and delivery
-// use-case Services.
+// Manifest publishes the private Tool provider inherited by child Scopes and
+// declares the Extension and live Agent dependencies.
 func (owner *Plugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: PluginName,
@@ -42,7 +52,7 @@ func (owner *Plugin) Manifest() plugin.Manifest {
 		},
 		Requires: []plugin.ServiceType{
 			plugin.ServiceOf[subagent.ExtensionRegistry](),
-			plugin.ServiceOf[subagent.ParentReporter](),
+			plugin.ServiceOf[agent.Registry](),
 		},
 	}
 }
@@ -59,11 +69,11 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 	if requireErr != nil {
 		return requireErr
 	}
-	reports, requireErr := plugin.Require[subagent.ParentReporter](owner)
+	agents, requireErr := plugin.Require[agent.Registry](owner)
 	if requireErr != nil {
 		return requireErr
 	}
-	reporting, constructionErr := newReportTool(reports, owner.delivery)
+	reporting, constructionErr := newReportTool(agents, owner.scheduling)
 	if constructionErr != nil {
 		return constructionErr
 	}

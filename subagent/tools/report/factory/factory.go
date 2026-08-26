@@ -9,13 +9,12 @@ import (
 
 	"github.com/gorenx/goren/plugin"
 	pluginfactory "github.com/gorenx/goren/plugin/factory"
-	"github.com/gorenx/goren/subagent"
 	"github.com/gorenx/goren/subagent/tools/report"
 )
 
 // Config selects how accepted reports schedule the direct parent.
 type Config struct {
-	ReportDelivery subagent.ReportDelivery `json:"reportDelivery"`
+	ReportDelivery report.Delivery `json:"reportDelivery"`
 }
 
 // Factory constructs the report Extension Plugin.
@@ -54,7 +53,7 @@ func decodeConfig(rawConfig json.RawMessage) (Config, error) {
 		return Config{}, configErr
 	}
 	settings := Config{
-		ReportDelivery: subagent.ReportNextStep,
+		ReportDelivery: report.NextStep,
 	}
 	decoder := json.NewDecoder(bytes.NewReader(rawConfig))
 	decoder.DisallowUnknownFields()

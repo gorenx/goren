@@ -43,8 +43,11 @@ func (builder *environmentBuilder) Build(
 		instances = append(instances, structured)
 	}
 	return &oneShotEnvironment{
-		provisioner: scopedplugin.MountPlugins(instances...),
-		structured:  structured,
+		childEnvironment: childEnvironment{
+			plugins:    scopedplugin.MountPlugins(instances...),
+			extensions: builder.extensionProvisioner(),
+		},
+		structured: structured,
 	}
 }
 
@@ -75,30 +78,27 @@ func (builder *environmentBuilder) buildContinuable(
 	if len(instances) != 0 {
 		policies = scopedplugin.MountPlugins(instances...)
 	}
-	var extensions agent.Provisioner
-	if builder.extensions != nil {
-		extensions = extensionregistry.NewProvisioner(builder.extensions)
-	}
+	extensions := builder.extensionProvisioner()
 	if policies == nil && extensions == nil {
 		return nil
 	}
-	return &continuableEnvironment{
-		policies:   policies,
+	return &childEnvironment{
+		plugins:    policies,
 		extensions: extensions,
 	}
 }
 
-// oneShotEnvironment is one exact OneShot child's Plugin-backed environment.
-type oneShotEnvironment struct {
-	provisioner agent.Provisioner
-	structured  *structuredOutput
+func (builder *environmentBuilder) extensionProvisioner() agent.Provisioner {
+	if builder.extensions == nil {
+		return nil
+	}
+	return extensionregistry.NewProvisioner(builder.extensions)
 }
 
-func (environment *oneShotEnvironment) Provision(
-	requestContext context.Context,
-	target agent.Scope,
-) (agent.Provisioning, error) {
-	return environment.provisioner.Provision(requestContext, target)
+// oneShotEnvironment is one exact OneShot child's Plugin-backed environment.
+type oneShotEnvironment struct {
+	childEnvironment
+	structured *structuredOutput
 }
 
 func (environment *oneShotEnvironment) StructuredOutput() (
@@ -111,21 +111,21 @@ func (environment *oneShotEnvironment) StructuredOutput() (
 	return environment.structured.Captured(), true
 }
 
-// continuableEnvironment applies child policy before installing
-// Continuable-only Extensions. Policy mounts transfer to the Agent Scope;
-// Extension provisioning remains the publication transaction returned to the
-// Agent constructor.
-type continuableEnvironment struct {
-	policies   agent.Provisioner
+// childEnvironment applies child-local Plugins before installing registered
+// Extensions. Plugin mounts transfer to the Agent Scope; Extension
+// provisioning remains the publication transaction returned to the Agent
+// constructor.
+type childEnvironment struct {
+	plugins    agent.Provisioner
 	extensions agent.Provisioner
 }
 
-func (environment *continuableEnvironment) Provision(
+func (environment *childEnvironment) Provision(
 	requestContext context.Context,
 	target agent.Scope,
 ) (agent.Provisioning, error) {
-	if environment.policies != nil {
-		if _, err := environment.policies.Provision(
+	if environment.plugins != nil {
+		if _, err := environment.plugins.Provision(
 			requestContext,
 			target,
 		); err != nil {
@@ -141,4 +141,4 @@ func (environment *continuableEnvironment) Provision(
 var _ oneshot.EnvironmentBuilder = (*environmentBuilder)(nil)
 var _ continuable.EnvironmentBuilder = (*environmentBuilder)(nil)
 var _ oneshot.ChildEnvironment = (*oneShotEnvironment)(nil)
-var _ agent.Provisioner = (*continuableEnvironment)(nil)
+var _ agent.Provisioner = (*childEnvironment)(nil)

@@ -69,7 +69,6 @@ func (owner *Plugin) Manifest() pluginruntime.Manifest {
 			pluginruntime.NewProvidedService[subagent.SeedBuilderRegistry](owner.builders),
 			pluginruntime.NewProvidedService[subagent.Starter](owner.service),
 			pluginruntime.NewProvidedService[subagent.ChildControl](owner.service),
-			pluginruntime.NewProvidedService[subagent.ParentReporter](owner.service),
 			pluginruntime.NewProvidedService[subagent.ExtensionRegistry](owner.extensions),
 			pluginruntime.NewProvidedService[subagent.ChildDirectory](owner.directory),
 		},

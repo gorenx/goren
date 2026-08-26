@@ -11,27 +11,17 @@ import (
 	"github.com/gorenx/goren/subagent"
 )
 
-// Send accepts one later FIFO message, cold-resuming when necessary.
-func (owner *Service) Send(
+// Resume materializes a durable child and atomically accepts the first message
+// of the new Agent epoch. If another caller made the child resident first, the
+// same slot serializes delivery to that exact Agent.
+func (owner *Service) Resume(
 	requestContext context.Context,
 	parentAgent agent.Agent,
 	childID session.SessionID,
-	content []llm.ContentBlock,
-	options subagent.FollowupOptions,
+	messageValue llm.UserMessage,
 ) (llm.MessageID, error) {
-	if contextErr := checkContext(requestContext, "Continuable Send"); contextErr != nil {
+	if contextErr := checkContext(requestContext, "Continuable Resume"); contextErr != nil {
 		return "", contextErr
-	}
-	contentSnapshot, cloneErr := llm.CloneContentBlocks(content)
-	if cloneErr != nil {
-		return "", cloneErr
-	}
-	if options.Source == nil {
-		return "", errors.New("subagent: Send MessageSource is required")
-	}
-	sourceSnapshot, cloneErr := options.Source.CloneSource()
-	if cloneErr != nil {
-		return "", cloneErr
 	}
 	for {
 		slot := owner.acquireSlot(childID)
@@ -50,15 +40,6 @@ func (owner *Service) Send(
 				return "", waitErr
 			}
 			continue
-		}
-		messageValue, messageErr := llm.NewUserMessage(llm.UserMessageInput{
-			Content: contentSnapshot,
-			Source:  sourceSnapshot,
-		})
-		if messageErr != nil {
-			slot.mutex.Unlock()
-			owner.releaseSlot(childID, slot)
-			return "", messageErr
 		}
 		if current == nil {
 			handle, seedBuilder, resumeErr := owner.resume(
@@ -158,85 +139,3 @@ func (owner *Service) Interrupt(
 	slot.mutex.Unlock()
 	return nil
 }
-
-// Report delivers child content to its exact live direct parent.
-func (owner *Service) Report(
-	requestContext context.Context,
-	childAgent agent.Agent,
-	content []llm.ContentBlock,
-	options subagent.ReportOptions,
-) (llm.MessageID, error) {
-	if contextErr := checkContext(requestContext, "Continuable Report"); contextErr != nil {
-		return "", contextErr
-	}
-	if childAgent == nil {
-		return "", unauthorized("report requires an exact child Agent")
-	}
-	owner.mutex.Lock()
-	slot := owner.slots[childAgent.ID()]
-	owner.mutex.Unlock()
-	if slot == nil {
-		return "", unauthorized(
-			fmt.Sprintf("Agent %q is not a live Subagent", childAgent.ID()),
-		)
-	}
-	slot.mutex.Lock()
-	current := slot.current
-	if current == nil ||
-		!agent.Same(current.terminator.handle.Subject, childAgent) ||
-		current.running.State() != subagent.ExecutionActive {
-		slot.mutex.Unlock()
-		return "", unauthorized(
-			fmt.Sprintf("Agent %q is not an active Subagent", childAgent.ID()),
-		)
-	}
-	parentAgent, found := owner.dependencies.Agents.Get(
-		current.terminator.parent.ID(),
-	)
-	slot.mutex.Unlock()
-	if !found {
-		return "", &subagent.Error{
-			Code:    subagent.ErrorParentUnavailable,
-			Message: "direct parent is not live; report was not delivered",
-		}
-	}
-	contentSnapshot, cloneErr := llm.CloneContentBlocks(content)
-	if cloneErr != nil {
-		return "", cloneErr
-	}
-	framed := append(
-		[]llm.ContentBlock{
-			llm.NewTextBlock(
-				fmt.Sprintf("Background subagent %s reported:", childAgent.ID()),
-			),
-		},
-		contentSnapshot...,
-	)
-	messageValue, messageErr := llm.NewUserMessage(llm.UserMessageInput{
-		Content: framed,
-		Source: subagent.ReportSource{
-			SenderSessionID: childAgent.ID(),
-		},
-	})
-	if messageErr != nil {
-		return "", messageErr
-	}
-	switch options.Delivery {
-	case subagent.ReportQuiet:
-		messageErr = parentAgent.Inject(messageValue)
-	case subagent.ReportNextStep:
-		messageErr = parentAgent.Steer(messageValue)
-	default:
-		return "", errors.New("subagent: unsupported report delivery")
-	}
-	if messageErr != nil {
-		return "", &subagent.Error{
-			Code:    subagent.ErrorParentUnavailable,
-			Message: "direct parent is not live; report was not delivered",
-			Cause:   messageErr,
-		}
-	}
-	return messageValue.StableID(), nil
-}
-
-var _ subagent.ParentReporter = (*Service)(nil)

@@ -13,21 +13,6 @@ type FollowupOptions struct {
 	Source llm.MessageSource
 }
 
-// ReportDelivery controls how an accepted child report schedules its parent.
-type ReportDelivery string
-
-const (
-	// ReportQuiet appends without waking an idle parent.
-	ReportQuiet ReportDelivery = "quiet"
-	// ReportNextStep schedules the report for the parent's next model step.
-	ReportNextStep ReportDelivery = "next-step"
-)
-
-// ReportOptions controls parent scheduling for a child report.
-type ReportOptions struct {
-	Delivery ReportDelivery
-}
-
 // InterruptAuthority is the closed authorization union for interrupting an
 // active child execution.
 type InterruptAuthority interface {
@@ -49,8 +34,9 @@ type AncestorInterruptAuthority struct {
 
 func (AncestorInterruptAuthority) interruptAuthority() {}
 
-// ChildControl sends messages to and interrupts Subagents without exposing
-// their exact Agent Handles.
+// ChildControl sends messages to and interrupts child Agents without exposing
+// their exact Agent Handles. A resident child receives the message through its
+// ordinary Agent Inbox; a durable Continuable child may first be resumed.
 type ChildControl interface {
 	Send(
 		context.Context,
@@ -64,15 +50,4 @@ type ChildControl interface {
 		session.SessionID,
 		InterruptAuthority,
 	) error
-}
-
-// ParentReporter delivers a message from an exact child to its live direct
-// parent.
-type ParentReporter interface {
-	Report(
-		context.Context,
-		agent.Agent,
-		[]llm.ContentBlock,
-		ReportOptions,
-	) (llm.MessageID, error)
 }

@@ -8,11 +8,11 @@ import (
 	"github.com/gorenx/goren/agent"
 )
 
-func TestEnvironmentTransfersOnlyExtensionProvisioning(t *testing.T) {
+func TestChildEnvironmentTransfersOnlyExtensionProvisioning(t *testing.T) {
 	t.Parallel()
 	order := make([]string, 0)
-	configured := &continuableEnvironment{
-		policies: provisionerRecord{
+	configured := &childEnvironment{
+		plugins: provisionerRecord{
 			name:  "policy",
 			order: &order,
 		},
