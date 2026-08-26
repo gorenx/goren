@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/gorenx/goren/session"
@@ -142,6 +143,87 @@ func (owner *Adapter) LoadStoredFrom(
 		)
 	}
 	return sesspersist.StoredSuffix{Header: metadata, Events: entries}, true, nil
+}
+
+func (owner *Adapter) LoadStoredEventsBefore(
+	requestContext context.Context,
+	identifier session.SessionID,
+	beforeSeq *int64,
+	maxEvents int64,
+) (sesspersist.StoredEventWindow, bool, error) {
+	transaction, err := owner.database.BeginTx(requestContext, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return sesspersist.StoredEventWindow{}, false, err
+	}
+	queries := owner.queries.WithTx(transaction)
+	row, err := queries.GetSession(requestContext, string(identifier))
+	if errors.Is(err, sql.ErrNoRows) {
+		_ = transaction.Rollback()
+		return sesspersist.StoredEventWindow{}, false, nil
+	}
+	if err != nil {
+		_ = transaction.Rollback()
+		return sesspersist.StoredEventWindow{}, false, err
+	}
+	queryLimit := maxEvents + 1
+	var eventRows []eventRow
+	if beforeSeq == nil {
+		rows, queryErr := queries.ListLatestEvents(requestContext, dbsql.ListLatestEventsParams{
+			SessionID: string(identifier),
+			Limit:     queryLimit,
+		})
+		if queryErr != nil {
+			_ = transaction.Rollback()
+			return sesspersist.StoredEventWindow{}, false, queryErr
+		}
+		eventRows = latestEventRows(rows)
+	} else {
+		rows, queryErr := queries.ListEventsBefore(requestContext, dbsql.ListEventsBeforeParams{
+			SessionID: string(identifier),
+			Seq:       *beforeSeq,
+			Limit:     queryLimit,
+		})
+		if queryErr != nil {
+			_ = transaction.Rollback()
+			return sesspersist.StoredEventWindow{}, false, queryErr
+		}
+		eventRows = beforeEventRows(rows)
+	}
+	if err := transaction.Commit(); err != nil {
+		return sesspersist.StoredEventWindow{}, false, err
+	}
+	metadata, err := rowToHeader(row)
+	if err != nil {
+		return sesspersist.StoredEventWindow{}, false, err
+	}
+	hasEarlier := int64(len(eventRows)) > maxEvents
+	if hasEarlier {
+		eventRows = eventRows[:maxEvents]
+	}
+	if len(eventRows) == 0 {
+		return sesspersist.StoredEventWindow{
+			Header: metadata,
+			Events: []session.Event{},
+		}, true, nil
+	}
+	ascendingRows := append([]eventRow(nil), eventRows...)
+	slices.Reverse(ascendingRows)
+	entries, marker, err := scanEventRows(ascendingRows, ascendingRows[0].seq)
+	if err != nil {
+		return sesspersist.StoredEventWindow{}, false, err
+	}
+	if marker != nil {
+		return sesspersist.StoredEventWindow{}, false, fmt.Errorf(
+			"session persistence sqlite: invalid stored event window at seq %d",
+			marker.from,
+		)
+	}
+	slices.Reverse(entries)
+	return sesspersist.StoredEventWindow{
+		Header:     metadata,
+		Events:     entries,
+		HasEarlier: hasEarlier,
+	}, true, nil
 }
 
 func (owner *Adapter) AppendBatch(

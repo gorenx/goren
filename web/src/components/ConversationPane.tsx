@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useLayoutEffect, useRef } from 'react'
 import type { ConversationSnapshot, MessageRow } from '../types'
 import type { ConversationStore } from '../conversation-store'
 import { ActivityIcon, GorenMark, KeyIcon } from '../icons'
@@ -17,6 +17,7 @@ export function ConversationPane({ store, snapshot, onOpenCredentials }: Convers
   const current = store.currentSession()
   const rows = store.currentMessages()
   const events = store.currentEvents()
+  const history = store.currentHistory()
   const title = current === undefined ? translate('conversation.new') : store.sessionTitle(current)
   const lastEvent = events.at(-1)
   const durable = current?.running === false && lastEvent?.type === 'turn/end'
@@ -59,7 +60,14 @@ export function ConversationPane({ store, snapshot, onOpenCredentials }: Convers
         <RailItem label="FACTS" value={durable ? translate('conversation.durable', { sequence: lastEvent.seq }) : translate('conversation.events', { count: events.length })} active={durable} />
       </div>
 
-      <MessageList rows={rows} cwd={snapshot.host?.cwd} />
+      <MessageList
+        rows={rows}
+        cwd={snapshot.host?.cwd}
+        sessionId={snapshot.currentSessionId}
+        hasMore={history?.hasMore === true}
+        loadingOlder={history?.loading === true}
+        onLoadOlder={() => void store.loadOlderHistory()}
+      />
       {pendingQuestion !== undefined && <QuestionCard key={pendingQuestion.rpcId} store={store} request={pendingQuestion} />}
       <Composer store={store} snapshot={snapshot} />
     </main>
@@ -76,13 +84,44 @@ function RailItem({ label, value, active }: { label: string; value: string; acti
   )
 }
 
-function MessageList({ rows, cwd }: { rows: readonly MessageRow[]; cwd?: string }): React.JSX.Element {
+function MessageList({
+  rows,
+  cwd,
+  sessionId,
+  hasMore,
+  loadingOlder,
+  onLoadOlder,
+}: {
+  rows: readonly MessageRow[]
+  cwd?: string
+  sessionId?: string
+  hasMore: boolean
+  loadingOlder: boolean
+  onLoadOlder: () => void
+}): React.JSX.Element {
   const { translate } = useI18n()
   const scrollport = useRef<HTMLDivElement>(null)
-  useEffect(() => {
+  const previous = useRef<{ sessionId?: string, firstSeq?: number, lastSeq?: number, height: number } | undefined>(undefined)
+  useLayoutEffect(() => {
     const element = scrollport.current
-    if (element !== null) element.scrollTop = element.scrollHeight
-  }, [rows])
+    if (element === null) return
+    const firstSeq = rows[0]?.seq
+    const lastSeq = rows.at(-1)?.seq
+    const prior = previous.current
+    if (prior === undefined || prior.sessionId !== sessionId) {
+      element.scrollTop = element.scrollHeight
+    } else if (firstSeq !== undefined && prior.firstSeq !== undefined && firstSeq < prior.firstSeq) {
+      element.scrollTop += element.scrollHeight - prior.height
+    } else if (lastSeq !== prior.lastSeq) {
+      element.scrollTop = element.scrollHeight
+    }
+    previous.current = {
+      sessionId,
+      firstSeq,
+      lastSeq,
+      height: element.scrollHeight,
+    }
+  }, [rows, sessionId])
 
   return (
     <section ref={scrollport} id="messages" className="messages" aria-live="polite" aria-label={translate('conversation.content')}>
@@ -90,6 +129,16 @@ function MessageList({ rows, cwd }: { rows: readonly MessageRow[]; cwd?: string 
         ? <EmptyConversation cwd={cwd} />
         : (
           <div className="mx-auto flex w-full max-w-[780px] flex-col gap-7 px-5 pb-10 pt-8 sm:px-8">
+            {hasMore && (
+              <button
+                type="button"
+                className="self-center rounded-full border border-black/10 bg-white px-4 py-2 text-xs font-medium text-secondary shadow-sm disabled:cursor-wait disabled:opacity-60"
+                disabled={loadingOlder}
+                onClick={onLoadOlder}
+              >
+                {translate(loadingOlder ? 'conversation.loadingOlder' : 'conversation.loadOlder')}
+              </button>
+            )}
             {rows.map((row, index) => <Message key={`${row.role}-${String(row.seq ?? index)}`} row={row} />)}
           </div>
         )}

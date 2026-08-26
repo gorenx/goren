@@ -25,6 +25,14 @@ type Inspection struct {
 	Events []session.Event
 }
 
+// EventWindow is one contiguous newest-first event range ending before a
+// caller-selected sequence. HasEarlier reports whether an older range exists.
+type EventWindow struct {
+	Header     session.Header
+	Events     []session.Event
+	HasEarlier bool
+}
+
 // Location identifies a backend-owned per-Session artifact when one exists.
 type Location struct {
 	Kind string
@@ -52,6 +60,7 @@ type Persistence interface {
 	Load(context.Context, session.SessionID) (Inspection, error)
 	Inspect(context.Context, session.SessionID) (Inspection, error)
 	ReadFrom(context.Context, session.SessionID, int64) (Inspection, error)
+	ReadEventsBefore(context.Context, session.SessionID, *int64, int64) (EventWindow, error)
 	List(context.Context) ([]session.Header, error)
 	ListSnapshots(context.Context) ([]Snapshot, error)
 }
@@ -95,6 +104,13 @@ type StoredSuffix struct {
 	Events []session.Event
 }
 
+// StoredEventWindow is a physical bounded read returned newest-first.
+type StoredEventWindow struct {
+	Header     session.Header
+	Events     []session.Event
+	HasEarlier bool
+}
+
 // Backend is the storage-only port. Implementations map rows/files and execute
 // requested transactions; recovery and live Session policy remain above it.
 type Backend interface {
@@ -105,6 +121,7 @@ type Backend interface {
 	LoadStored(context.Context, session.SessionID) (StoredPrefix, bool, error)
 	ReadStoredRevision(context.Context, session.SessionID) (Revision, bool, error)
 	LoadStoredFrom(context.Context, session.SessionID, int64) (StoredSuffix, bool, error)
+	LoadStoredEventsBefore(context.Context, session.SessionID, *int64, int64) (StoredEventWindow, bool, error)
 	AppendBatch(context.Context, session.Header, []session.Event, bool) error
 	CommitRepair(context.Context, session.Header, RepairMarker, []session.Event) error
 	ListStored(context.Context) ([]session.Header, error)

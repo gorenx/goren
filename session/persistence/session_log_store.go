@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"sync"
 	"time"
@@ -388,6 +389,103 @@ func (owner *SessionLogStore) ReadFrom(requestContext context.Context, identifie
 		}
 	}
 	return Inspection{Header: cloneHeader(stored.Header), Events: snapshotEvents(stored.Events)}, nil
+}
+
+// ReadEventsBefore returns at most maxEvents events immediately preceding the
+// exclusive beforeSeq cursor. Nil beforeSeq reads from the durable log tail.
+func (owner *SessionLogStore) ReadEventsBefore(
+	requestContext context.Context,
+	identifier session.SessionID,
+	beforeSeq *int64,
+	maxEvents int64,
+) (EventWindow, error) {
+	if requestContext == nil {
+		return EventWindow{}, errors.New("session persistence: readEventsBefore Context is nil")
+	}
+	if beforeSeq != nil && *beforeSeq < 0 {
+		return EventWindow{}, errors.New("session persistence: beforeSeq must be non-negative")
+	}
+	if maxEvents < 1 {
+		return EventWindow{}, errors.New("session persistence: maxEvents must be positive")
+	}
+	if maxEvents == math.MaxInt64 {
+		return EventWindow{}, errors.New("session persistence: maxEvents is too large")
+	}
+	releaseGate, err := owner.operations.Acquire(requestContext, identifier)
+	if err != nil {
+		return EventWindow{}, err
+	}
+	defer releaseGate()
+	stored, found, err := owner.storage.LoadStoredEventsBefore(
+		requestContext,
+		identifier,
+		beforeSeq,
+		maxEvents,
+	)
+	if err != nil {
+		return EventWindow{}, err
+	}
+	if !found {
+		return EventWindow{}, &NotFoundError{ID: identifier}
+	}
+	if stored.Header.ID != identifier {
+		return EventWindow{}, owner.corruption(identifier, fmt.Errorf(
+			"stored identity mismatch: requested %q, header contains %q",
+			identifier,
+			stored.Header.ID,
+		))
+	}
+	if stored.Header.Version != session.FormatVersion {
+		return EventWindow{}, owner.normalizeLoadError(identifier, stored.Header, fmt.Errorf(
+			"unsupported Session format v%d",
+			stored.Header.Version,
+		))
+	}
+	if err := validateEventWindow(identifier, stored.Events, beforeSeq); err != nil {
+		return EventWindow{}, owner.corruption(identifier, err)
+	}
+	for _, entry := range stored.Events {
+		if !session.IsKnownEventType(entry.Type) && !entry.Ignorable {
+			return EventWindow{}, owner.normalizeLoadError(identifier, stored.Header, &UnsupportedFormatError{
+				ID: identifier,
+				Reason: fmt.Sprintf(
+					"session %q contains event type %q at seq %d unknown to this harness and not marked ignorable",
+					identifier,
+					entry.Type,
+					entry.Seq,
+				),
+			})
+		}
+	}
+	return EventWindow{
+		Header:     cloneHeader(stored.Header),
+		Events:     snapshotEvents(stored.Events),
+		HasEarlier: stored.HasEarlier,
+	}, nil
+}
+
+func validateEventWindow(
+	identifier session.SessionID,
+	entries []session.Event,
+	beforeSeq *int64,
+) error {
+	for index, entry := range entries {
+		if index > 0 && entry.Seq != entries[index-1].Seq-1 {
+			return fmt.Errorf(
+				"stored event window for %q is not contiguous at seq %d",
+				identifier,
+				entry.Seq,
+			)
+		}
+		if beforeSeq != nil && entry.Seq >= *beforeSeq {
+			return fmt.Errorf(
+				"stored event window for %q crossed exclusive beforeSeq %d",
+				identifier,
+				*beforeSeq,
+			)
+		}
+	}
+	return nil
 }
 
 func (owner *SessionLogStore) List(requestContext context.Context) ([]session.Header, error) {

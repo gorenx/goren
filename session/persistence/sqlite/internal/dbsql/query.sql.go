@@ -204,6 +204,61 @@ func (q *Queries) ListEvents(ctx context.Context, sessionID string) ([]ListEvent
 	return items, nil
 }
 
+const listEventsBefore = `-- name: ListEventsBefore :many
+SELECT seq, type, time, data, source_event_seqs, surface_op, ignorable
+FROM events
+WHERE session_id = ? AND seq < ?
+ORDER BY seq DESC
+LIMIT ?
+`
+
+type ListEventsBeforeParams struct {
+	SessionID string
+	Seq       int64
+	Limit     int64
+}
+
+type ListEventsBeforeRow struct {
+	Seq             int64
+	Type            string
+	Time            int64
+	Data            string
+	SourceEventSeqs sql.NullString
+	SurfaceOp       sql.NullString
+	Ignorable       sql.NullInt64
+}
+
+func (q *Queries) ListEventsBefore(ctx context.Context, arg ListEventsBeforeParams) ([]ListEventsBeforeRow, error) {
+	rows, err := q.db.QueryContext(ctx, listEventsBefore, arg.SessionID, arg.Seq, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListEventsBeforeRow{}
+	for rows.Next() {
+		var i ListEventsBeforeRow
+		if err := rows.Scan(
+			&i.Seq,
+			&i.Type,
+			&i.Time,
+			&i.Data,
+			&i.SourceEventSeqs,
+			&i.SurfaceOp,
+			&i.Ignorable,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listEventsFrom = `-- name: ListEventsFrom :many
 SELECT seq, type, time, data, source_event_seqs, surface_op, ignorable
 FROM events
@@ -235,6 +290,60 @@ func (q *Queries) ListEventsFrom(ctx context.Context, arg ListEventsFromParams) 
 	items := []ListEventsFromRow{}
 	for rows.Next() {
 		var i ListEventsFromRow
+		if err := rows.Scan(
+			&i.Seq,
+			&i.Type,
+			&i.Time,
+			&i.Data,
+			&i.SourceEventSeqs,
+			&i.SurfaceOp,
+			&i.Ignorable,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLatestEvents = `-- name: ListLatestEvents :many
+SELECT seq, type, time, data, source_event_seqs, surface_op, ignorable
+FROM events
+WHERE session_id = ?
+ORDER BY seq DESC
+LIMIT ?
+`
+
+type ListLatestEventsParams struct {
+	SessionID string
+	Limit     int64
+}
+
+type ListLatestEventsRow struct {
+	Seq             int64
+	Type            string
+	Time            int64
+	Data            string
+	SourceEventSeqs sql.NullString
+	SurfaceOp       sql.NullString
+	Ignorable       sql.NullInt64
+}
+
+func (q *Queries) ListLatestEvents(ctx context.Context, arg ListLatestEventsParams) ([]ListLatestEventsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listLatestEvents, arg.SessionID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListLatestEventsRow{}
+	for rows.Next() {
+		var i ListLatestEventsRow
 		if err := rows.Scan(
 			&i.Seq,
 			&i.Type,

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/gorenx/goren/agent"
@@ -14,6 +16,8 @@ import (
 )
 
 const defaultHistoryMessages int64 = 50
+
+const historyReadBatchEvents int64 = 512
 
 type sessionReader struct {
 	agents      agent.Registry
@@ -94,37 +98,161 @@ func (view *sessionReader) VisibleSessionIDs(requestContext context.Context) (ma
 func (view *sessionReader) History(requestContext context.Context, call api.Request[api.SessionHistoryRequest]) (api.Outcome[api.SessionHistoryValue], error) {
 	identifier := session.SessionID(call.Payload.SessionID)
 	conversation, found := view.sessions.Get(identifier)
-	var events []session.Event
-	if found {
-		events = conversation.Events()
-	} else {
-		loaded, err := view.persistence.Inspect(requestContext, identifier)
-		if err != nil {
-			var missing *sesspersist.NotFoundError
-			if errors.As(err, &missing) {
-				return api.Fail[api.SessionHistoryValue](sessionNotFoundError(call.Payload.SessionID)), nil
-			}
-			return api.Outcome[api.SessionHistoryValue]{}, err
-		}
-		events = loaded.Events
-	}
 	maxMessages := defaultHistoryMessages
 	if call.Payload.MaxMessages != nil {
 		maxMessages = *call.Payload.MaxMessages
 	}
-	page, hasMore, err := historyPage(events, call.Payload.BeforeSeq, maxMessages)
+	var page []api.HistoryEntry
+	var hasMore bool
+	var err error
+	if found {
+		page, hasMore, err = historyPage(
+			conversation.Events(),
+			call.Payload.BeforeSeq,
+			maxMessages,
+		)
+	} else {
+		page, hasMore, err = view.coldHistoryPage(
+			requestContext,
+			identifier,
+			call.Payload.BeforeSeq,
+			maxMessages,
+		)
+	}
 	if err != nil {
+		var missing *sesspersist.NotFoundError
+		if errors.As(err, &missing) {
+			return api.Fail[api.SessionHistoryValue](sessionNotFoundError(call.Payload.SessionID)), nil
+		}
 		return api.Outcome[api.SessionHistoryValue]{}, err
 	}
 	value := api.SessionHistoryValue{Events: page, HasMore: hasMore}
-	if call.Payload.BeforeSeq == nil {
-		restored, restoreErr := view.projections.Restore(sessionprojection.Checkpoint{}, events, 0)
-		if restoreErr != nil {
-			return api.Outcome[api.SessionHistoryValue]{}, restoreErr
-		}
-		value.Projections = api.ProjectSessionProjections(restored.Snapshot)
+	if call.Payload.BeforeSeq != nil {
+		return api.OK(value), nil
 	}
+	projectionSnapshot, err := view.historyProjections(requestContext, identifier, conversation, found)
+	if err != nil {
+		return api.Outcome[api.SessionHistoryValue]{}, err
+	}
+	value.Projections = api.ProjectSessionProjections(projectionSnapshot)
 	return api.OK(value), nil
+}
+
+func (view *sessionReader) historyProjections(
+	requestContext context.Context,
+	identifier session.SessionID,
+	conversation session.Context,
+	found bool,
+) (sessionprojection.Snapshot, error) {
+	if found {
+		return view.projections.Snapshot(conversation)
+	}
+	loaded, err := view.persistence.Inspect(requestContext, identifier)
+	if err != nil {
+		return sessionprojection.Snapshot{}, err
+	}
+	restored, err := view.projections.Restore(
+		sessionprojection.Checkpoint{},
+		loaded.Events,
+		0,
+	)
+	if err != nil {
+		return sessionprojection.Snapshot{}, err
+	}
+	return restored.Snapshot, nil
+}
+
+func (view *sessionReader) coldHistoryPage(
+	requestContext context.Context,
+	identifier session.SessionID,
+	beforeSeq *int64,
+	maxMessages int64,
+) ([]api.HistoryEntry, bool, error) {
+	if maxMessages < 1 {
+		return nil, false, errors.New("session.history: maxMessages must be positive")
+	}
+	cursor := cloneSequence(beforeSeq)
+	entries := make([]session.Event, 0)
+	messageCount := int64(0)
+	var cut *int64
+	for {
+		window, err := view.persistence.ReadEventsBefore(
+			requestContext,
+			identifier,
+			cursor,
+			historyReadBatchEvents,
+		)
+		if err != nil {
+			return nil, false, err
+		}
+		if len(window.Events) == 0 {
+			break
+		}
+		if err := appendOlderHistoryWindow(&entries, window.Events); err != nil {
+			return nil, false, err
+		}
+		if cut == nil {
+			cut, messageCount = findHistoryCut(window.Events, maxMessages, messageCount)
+		}
+		if cut != nil && entries[len(entries)-1].Seq <= *cut {
+			break
+		}
+		if !window.HasEarlier {
+			break
+		}
+		cursor = sequencePointer(window.Events[len(window.Events)-1].Seq)
+	}
+	if cut != nil {
+		entries = slices.DeleteFunc(entries, func(committed session.Event) bool {
+			return committed.Seq < *cut
+		})
+	}
+	slices.Reverse(entries)
+	projected, err := projectHistoryEntries(entries)
+	if err != nil {
+		return nil, false, err
+	}
+	return projected, cut != nil && *cut > 0, nil
+}
+
+func cloneSequence(sequence *int64) *int64 {
+	if sequence == nil {
+		return nil
+	}
+	return sequencePointer(*sequence)
+}
+
+func sequencePointer(sequence int64) *int64 {
+	return &sequence
+}
+
+func appendOlderHistoryWindow(destination *[]session.Event, older []session.Event) error {
+	if len(*destination) != 0 && (*destination)[len(*destination)-1].Seq-1 != older[0].Seq {
+		return fmt.Errorf(
+			"session.history: discontinuous cold event windows at seq %d",
+			older[0].Seq,
+		)
+	}
+	*destination = append(*destination, older...)
+	return nil
+}
+
+func findHistoryCut(
+	entries []session.Event,
+	maxMessages int64,
+	messageCount int64,
+) (*int64, int64) {
+	for _, committed := range entries {
+		groupStart, counted := historyMessageGroupStart(committed)
+		if !counted {
+			continue
+		}
+		messageCount++
+		if messageCount >= maxMessages {
+			return sequencePointer(groupStart), messageCount
+		}
+	}
+	return nil, messageCount
 }
 
 func summarizeSession(
@@ -171,39 +299,56 @@ func historyPage(events []session.Event, beforeSeq *int64, maxMessages int64) ([
 	count := int64(0)
 	for index := len(window) - 1; index >= 0; index-- {
 		committed := window[index]
-		if (committed.Type != session.UserMessageEventName && committed.Type != session.AssistantMessageEventName) ||
-			committed.SurfaceOp == nil || committed.SurfaceOp.Kind != session.SurfaceOperationAppend {
+		groupStart, counted := historyMessageGroupStart(committed)
+		if !counted {
 			continue
 		}
 		count++
-		groupStart := committed.Seq
-		if committed.SourceEventSeqs != nil && len(*committed.SourceEventSeqs) != 0 {
-			for _, sourceSeq := range *committed.SourceEventSeqs {
-				if sourceSeq < groupStart {
-					groupStart = sourceSeq
-				}
-			}
-		}
 		if count >= maxMessages {
 			cut = groupStart
 			break
 		}
 	}
-	page := make([]api.HistoryEntry, 0, len(window))
+	selected := make([]session.Event, 0, len(window))
 	for _, committed := range window {
 		if committed.Seq < cut {
 			continue
 		}
+		selected = append(selected, committed)
+	}
+	page, err := projectHistoryEntries(selected)
+	if err != nil {
+		return nil, false, err
+	}
+	return page, cut > 0, nil
+}
+
+func historyMessageGroupStart(committed session.Event) (int64, bool) {
+	if (committed.Type != session.UserMessageEventName && committed.Type != session.AssistantMessageEventName) ||
+		committed.SurfaceOp == nil || committed.SurfaceOp.Kind != session.SurfaceOperationAppend {
+		return 0, false
+	}
+	groupStart := committed.Seq
+	if committed.SourceEventSeqs != nil {
+		for _, sourceSeq := range *committed.SourceEventSeqs {
+			if sourceSeq < groupStart {
+				groupStart = sourceSeq
+			}
+		}
+	}
+	return groupStart, true
+}
+
+func projectHistoryEntries(events []session.Event) ([]api.HistoryEntry, error) {
+	page := make([]api.HistoryEntry, 0, len(events))
+	for _, committed := range events {
 		projected, err := api.ProjectSessionEvent(committed)
 		if err != nil {
-			return nil, false, err
+			return nil, err
 		}
 		page = append(page, api.HistoryEntry{Event: projected})
 	}
-	if page == nil {
-		page = []api.HistoryEntry{}
-	}
-	return page, cut > 0, nil
+	return page, nil
 }
 
 func directUserEvent(committed session.Event) bool {
