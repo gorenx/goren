@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/session"
-	sessionpersistence "github.com/gorenx/goren/session/persistence"
-	sessionprojection "github.com/gorenx/goren/session/projection"
+	sesspersist "github.com/gorenx/goren/session/persistence"
+	sessproj "github.com/gorenx/goren/session/projection"
 	"github.com/gorenx/goren/subagent"
 	subagentprojection "github.com/gorenx/goren/subagent/internal/projection"
 )
@@ -23,30 +23,35 @@ func (source sessionList) List() []session.Context {
 
 type persistenceView struct {
 	headers     []session.Header
-	inspections map[session.SessionID]sessionpersistence.Inspection
+	inspections map[session.SessionID]sesspersist.Inspection
 	failures    map[session.SessionID]error
 	listErr     error
 }
 
-func (source *persistenceView) List(context.Context) ([]session.Header, error) {
+func (source *persistenceView) List(
+	context.Context,
+	sesspersist.SessionPage,
+) (sesspersist.HeaderPage, error) {
 	if source.listErr != nil {
-		return nil, source.listErr
+		return sesspersist.HeaderPage{}, source.listErr
 	}
-	return append([]session.Header(nil), source.headers...), nil
+	return sesspersist.HeaderPage{
+		Headers: append([]session.Header(nil), source.headers...),
+	}, nil
 }
 
 func (source *persistenceView) Inspect(
 	_ context.Context,
 	identifier session.SessionID,
-) (sessionpersistence.Inspection, error) {
+) (sesspersist.Inspection, error) {
 	if failure := source.failures[identifier]; failure != nil {
-		return sessionpersistence.Inspection{}, failure
+		return sesspersist.Inspection{}, failure
 	}
 	inspection, found := source.inspections[identifier]
 	if !found {
-		return sessionpersistence.Inspection{}, errors.New("missing inspection")
+		return sesspersist.Inspection{}, errors.New("missing inspection")
 	}
-	return sessionpersistence.Inspection{
+	return sesspersist.Inspection{
 		Header: inspection.Header,
 		Events: append([]session.Event(nil), inspection.Events...),
 	}, nil
@@ -108,7 +113,7 @@ func TestListChildrenUsesLivePreferredProjectionBackedCorpus(t *testing.T) {
 			corrupt.Header(),
 			coldOneShot.Header(),
 		},
-		inspections: map[session.SessionID]sessionpersistence.Inspection{
+		inspections: map[session.SessionID]sesspersist.Inspection{
 			coldOneShot.ID(): inspectionOf(coldOneShot),
 			corrupt.ID():     inspectionOf(corrupt),
 			grandchild.ID():  inspectionOf(grandchild),
@@ -195,7 +200,7 @@ func TestListDescendantsTraversesOrdinaryAndOneShotSessions(t *testing.T) {
 			ordinaryHeader,
 			oneShot.Header(),
 		},
-		inspections: map[session.SessionID]sessionpersistence.Inspection{
+		inspections: map[session.SessionID]sesspersist.Inspection{
 			oneShot.ID():     inspectionOf(oneShot),
 			continuable.ID(): inspectionOf(continuable),
 		},
@@ -308,9 +313,9 @@ func newDirectorySession(
 	return conversation
 }
 
-func projectionRegistry(t *testing.T) *sessionprojection.DriveRegistry {
+func projectionRegistry(t *testing.T) *sessproj.DriveRegistry {
 	t.Helper()
-	registry := sessionprojection.NewDriveRegistry()
+	registry := sessproj.NewDriveRegistry()
 	for _, unit := range subagentprojection.Units() {
 		if _, err := registry.Register(unit); err != nil {
 			t.Fatal(err)
@@ -319,8 +324,8 @@ func projectionRegistry(t *testing.T) *sessionprojection.DriveRegistry {
 	return registry
 }
 
-func inspectionOf(conversation session.Context) sessionpersistence.Inspection {
-	return sessionpersistence.Inspection{
+func inspectionOf(conversation session.Context) sesspersist.Inspection {
+	return sesspersist.Inspection{
 		Header: conversation.Header(),
 		Events: conversation.Events(),
 	}

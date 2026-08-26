@@ -264,11 +264,13 @@ SELECT seq, type, time, data, source_event_seqs, surface_op, ignorable
 FROM events
 WHERE session_id = ? AND seq >= ?
 ORDER BY seq
+LIMIT ?
 `
 
 type ListEventsFromParams struct {
 	SessionID string
 	Seq       int64
+	Limit     int64
 }
 
 type ListEventsFromRow struct {
@@ -282,7 +284,7 @@ type ListEventsFromRow struct {
 }
 
 func (q *Queries) ListEventsFrom(ctx context.Context, arg ListEventsFromParams) ([]ListEventsFromRow, error) {
-	rows, err := q.db.QueryContext(ctx, listEventsFrom, arg.SessionID, arg.Seq)
+	rows, err := q.db.QueryContext(ctx, listEventsFrom, arg.SessionID, arg.Seq, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
@@ -366,14 +368,67 @@ func (q *Queries) ListLatestEvents(ctx context.Context, arg ListLatestEventsPara
 	return items, nil
 }
 
-const listSessions = `-- name: ListSessions :many
+const listLatestSessions = `-- name: ListLatestSessions :many
 SELECT id, version, created_at, cwd, parent_session, seed_length, origin,
        delegation_depth, agent_preset, incarnation, revision
 FROM sessions
+ORDER BY created_at DESC, id ASC
+LIMIT ?1
 `
 
-func (q *Queries) ListSessions(ctx context.Context) ([]Session, error) {
-	rows, err := q.db.QueryContext(ctx, listSessions)
+func (q *Queries) ListLatestSessions(ctx context.Context, queryLimit int64) ([]Session, error) {
+	rows, err := q.db.QueryContext(ctx, listLatestSessions, queryLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Session{}
+	for rows.Next() {
+		var i Session
+		if err := rows.Scan(
+			&i.ID,
+			&i.Version,
+			&i.CreatedAt,
+			&i.Cwd,
+			&i.ParentSession,
+			&i.SeedLength,
+			&i.Origin,
+			&i.DelegationDepth,
+			&i.AgentPreset,
+			&i.Incarnation,
+			&i.Revision,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSessionsAfter = `-- name: ListSessionsAfter :many
+SELECT id, version, created_at, cwd, parent_session, seed_length, origin,
+       delegation_depth, agent_preset, incarnation, revision
+FROM sessions
+WHERE created_at < ?1
+   OR (created_at = ?1 AND id > ?2)
+ORDER BY created_at DESC, id ASC
+LIMIT ?3
+`
+
+type ListSessionsAfterParams struct {
+	CursorCreatedAt int64
+	CursorID        string
+	QueryLimit      int64
+}
+
+func (q *Queries) ListSessionsAfter(ctx context.Context, arg ListSessionsAfterParams) ([]Session, error) {
+	rows, err := q.db.QueryContext(ctx, listSessionsAfter, arg.CursorCreatedAt, arg.CursorID, arg.QueryLimit)
 	if err != nil {
 		return nil, err
 	}

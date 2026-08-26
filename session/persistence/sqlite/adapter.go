@@ -43,10 +43,10 @@ func (owner *Adapter) ReadRaw(context.Context, session.SessionID) (*sesspersist.
 	return nil, errors.New("session persistence sqlite: raw artifacts are unavailable")
 }
 
-func (owner *Adapter) LoadStored(
+func (owner *Adapter) Load(
 	requestContext context.Context,
 	identifier session.SessionID,
-) (*sesspersist.StoredPrefix, error) {
+) (*sesspersist.Log, error) {
 	transaction, err := owner.database.BeginTx(requestContext, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
@@ -77,10 +77,10 @@ func (owner *Adapter) LoadStored(
 	if err != nil {
 		return nil, err
 	}
-	result := sesspersist.StoredPrefix{
-		Header: metadata,
-		Events: entries,
-		Token:  owner.revision(row.Incarnation, row.Revision),
+	result := sesspersist.Log{
+		Header:   metadata,
+		Events:   entries,
+		Revision: owner.revision(row.Incarnation, row.Revision),
 	}
 	if marker != nil {
 		result.Marker = *marker
@@ -88,7 +88,7 @@ func (owner *Adapter) LoadStored(
 	return &result, nil
 }
 
-func (owner *Adapter) ReadStoredRevision(
+func (owner *Adapter) Revision(
 	requestContext context.Context,
 	identifier session.SessionID,
 ) (*sesspersist.Revision, error) {
@@ -103,11 +103,11 @@ func (owner *Adapter) ReadStoredRevision(
 	return &storedRevision, nil
 }
 
-func (owner *Adapter) LoadStoredFrom(
+func (owner *Adapter) ReadEventsFrom(
 	requestContext context.Context,
 	identifier session.SessionID,
-	fromSeq int64,
-) (*sesspersist.StoredSuffix, error) {
+	continuation sesspersist.EventContinuation,
+) (*sesspersist.EventSegment, error) {
 	transaction, err := owner.database.BeginTx(requestContext, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
@@ -123,7 +123,9 @@ func (owner *Adapter) LoadStoredFrom(
 		return nil, err
 	}
 	rows, err := queries.ListEventsFrom(requestContext, dbsql.ListEventsFromParams{
-		SessionID: string(identifier), Seq: fromSeq,
+		SessionID: string(identifier),
+		Seq:       continuation.FromSeq,
+		Limit:     continuation.Limit + 1,
 	})
 	if err != nil {
 		_ = transaction.Rollback()
@@ -136,7 +138,11 @@ func (owner *Adapter) LoadStoredFrom(
 	if err != nil {
 		return nil, err
 	}
-	entries, marker, err := scanEventRows(suffixEventRows(rows), fromSeq)
+	hasMore := int64(len(rows)) > continuation.Limit
+	if hasMore {
+		rows = rows[:continuation.Limit]
+	}
+	entries, marker, err := scanEventRows(suffixEventRows(rows), continuation.FromSeq)
 	if err != nil {
 		return nil, err
 	}
@@ -145,17 +151,19 @@ func (owner *Adapter) LoadStoredFrom(
 			"session persistence sqlite: invalid stored suffix at seq %d", marker.from,
 		)
 	}
-	return &sesspersist.StoredSuffix{
-		Header: metadata,
-		Events: entries,
+	return &sesspersist.EventSegment{
+		Header:   metadata,
+		Revision: owner.revision(row.Incarnation, row.Revision),
+		Events:   entries,
+		HasMore:  hasMore,
 	}, nil
 }
 
-func (owner *Adapter) LoadStoredEventsBefore(
+func (owner *Adapter) ReadEventsBefore(
 	requestContext context.Context,
 	identifier session.SessionID,
 	page sesspersist.EventPage,
-) (*sesspersist.StoredEventWindow, error) {
+) (*sesspersist.EventWindow, error) {
 	transaction, err := owner.database.BeginTx(requestContext, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
@@ -206,7 +214,7 @@ func (owner *Adapter) LoadStoredEventsBefore(
 		eventRows = eventRows[:page.Limit]
 	}
 	if len(eventRows) == 0 {
-		return &sesspersist.StoredEventWindow{
+		return &sesspersist.EventWindow{
 			Header: metadata,
 			Events: []session.Event{},
 		}, nil
@@ -224,7 +232,7 @@ func (owner *Adapter) LoadStoredEventsBefore(
 		)
 	}
 	slices.Reverse(entries)
-	return &sesspersist.StoredEventWindow{
+	return &sesspersist.EventWindow{
 		Header:     metadata,
 		Events:     entries,
 		HasEarlier: hasEarlier,
@@ -321,38 +329,54 @@ func (owner *Adapter) CommitRepair(
 	return transaction.Commit()
 }
 
-func (owner *Adapter) ListStored(requestContext context.Context) ([]session.Header, error) {
-	rows, err := owner.queries.ListSessions(requestContext)
-	if err != nil {
-		return nil, err
+func (owner *Adapter) List(
+	requestContext context.Context,
+	page sesspersist.SessionPage,
+) (sesspersist.SnapshotPage, error) {
+	queryLimit := page.Limit + 1
+	var rows []dbsql.Session
+	var err error
+	if page.Cursor == nil {
+		rows, err = owner.queries.ListLatestSessions(requestContext, queryLimit)
+	} else {
+		rows, err = owner.queries.ListSessionsAfter(
+			requestContext,
+			dbsql.ListSessionsAfterParams{
+				CursorCreatedAt: page.Cursor.CreatedAt,
+				CursorID:        string(page.Cursor.ID),
+				QueryLimit:      queryLimit,
+			},
+		)
 	}
-	result := make([]session.Header, 0, len(rows))
-	for _, row := range rows {
-		metadata, err := rowToHeader(row)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, metadata)
-	}
-	return result, nil
-}
-
-func (owner *Adapter) ListStoredSnapshots(requestContext context.Context) ([]sesspersist.Snapshot, error) {
-	rows, err := owner.queries.ListSessions(requestContext)
 	if err != nil {
-		return nil, err
+		return sesspersist.SnapshotPage{}, err
+	}
+	hasMore := int64(len(rows)) > page.Limit
+	if hasMore {
+		rows = rows[:page.Limit]
 	}
 	result := make([]sesspersist.Snapshot, 0, len(rows))
 	for _, row := range rows {
 		metadata, err := rowToHeader(row)
 		if err != nil {
-			return nil, err
+			return sesspersist.SnapshotPage{}, err
 		}
 		result = append(result, sesspersist.Snapshot{
-			Header: metadata, Revision: owner.revision(row.Incarnation, row.Revision),
+			Header:   metadata,
+			Revision: owner.revision(row.Incarnation, row.Revision),
 		})
 	}
-	return result, nil
+	pageResult := sesspersist.SnapshotPage{
+		Snapshots: result,
+	}
+	if hasMore {
+		last := result[len(result)-1].Header
+		pageResult.NextCursor = &sesspersist.SessionCursor{
+			CreatedAt: last.CreatedAt,
+			ID:        last.ID,
+		}
+	}
+	return pageResult, nil
 }
 
 func (owner *Adapter) Close(closeContext context.Context) error {

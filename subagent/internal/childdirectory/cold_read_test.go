@@ -8,14 +8,14 @@ import (
 	"time"
 
 	"github.com/gorenx/goren/session"
-	sessionpersistence "github.com/gorenx/goren/session/persistence"
+	sesspersist "github.com/gorenx/goren/session/persistence"
 	"github.com/gorenx/goren/subagent"
 )
 
 type gatedPersistence struct {
 	mutex       sync.Mutex
 	headers     []session.Header
-	inspections map[session.SessionID]sessionpersistence.Inspection
+	inspections map[session.SessionID]sesspersist.Inspection
 	gate        <-chan struct{}
 	entered     chan session.SessionID
 	active      int
@@ -23,15 +23,18 @@ type gatedPersistence struct {
 }
 
 func (source *gatedPersistence) List(
-	context.Context,
-) ([]session.Header, error) {
-	return append([]session.Header(nil), source.headers...), nil
+	_ context.Context,
+	_ sesspersist.SessionPage,
+) (sesspersist.HeaderPage, error) {
+	return sesspersist.HeaderPage{
+		Headers: append([]session.Header(nil), source.headers...),
+	}, nil
 }
 
 func (source *gatedPersistence) Inspect(
 	requestContext context.Context,
 	identifier session.SessionID,
-) (sessionpersistence.Inspection, error) {
+) (sesspersist.Inspection, error) {
 	source.mutex.Lock()
 	source.active++
 	if source.active > source.peak {
@@ -42,18 +45,18 @@ func (source *gatedPersistence) Inspect(
 	case source.entered <- identifier:
 	case <-requestContext.Done():
 		source.leave()
-		return sessionpersistence.Inspection{}, context.Cause(requestContext)
+		return sesspersist.Inspection{}, context.Cause(requestContext)
 	}
 	select {
 	case <-source.gate:
 	case <-requestContext.Done():
 		source.leave()
-		return sessionpersistence.Inspection{}, context.Cause(requestContext)
+		return sesspersist.Inspection{}, context.Cause(requestContext)
 	}
 	source.leave()
 	inspection, found := source.inspections[identifier]
 	if !found {
-		return sessionpersistence.Inspection{}, errors.New("missing inspection")
+		return sesspersist.Inspection{}, errors.New("missing inspection")
 	}
 	return inspection, nil
 }
@@ -73,7 +76,7 @@ func (source *gatedPersistence) peakReads() int {
 func TestColdReadsUseBoundedConcurrency(t *testing.T) {
 	rootID := session.SessionID("bounded-root")
 	headers := make([]session.Header, 0, 8)
-	inspections := make(map[session.SessionID]sessionpersistence.Inspection, 8)
+	inspections := make(map[session.SessionID]sesspersist.Inspection, 8)
 	for index := range 8 {
 		identifier := session.SessionID("cold-" + string(rune('a'+index)))
 		conversation := newDirectorySession(

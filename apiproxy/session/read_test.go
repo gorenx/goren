@@ -19,15 +19,14 @@ type windowPersistence struct {
 func (storage *windowPersistence) ReadEventsBefore(
 	_ context.Context,
 	_ session.SessionID,
-	beforeSeq *int64,
-	maxEvents int64,
+	page sesspersist.EventPage,
 ) (sesspersist.EventWindow, error) {
 	storage.reads++
 	end := len(storage.events)
-	if beforeSeq != nil && *beforeSeq < int64(end) {
-		end = int(*beforeSeq)
+	if page.BeforeSeq != nil && *page.BeforeSeq < int64(end) {
+		end = int(*page.BeforeSeq)
 	}
-	start := max(0, end-int(maxEvents))
+	start := max(0, end-int(page.Limit))
 	window := append([]session.Event(nil), storage.events[start:end]...)
 	for left, right := 0, len(window)-1; left < right; left, right = left+1, right-1 {
 		window[left], window[right] = window[right], window[left]

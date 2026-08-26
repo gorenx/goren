@@ -77,6 +77,41 @@ describe('ConversationStore', () => {
     store.dispose()
   })
 
+  it('loads the Session list progressively from the returned cursor', async () => {
+    const older: SessionSummary = {
+      sessionId: 'session-older',
+      updatedAt: 5,
+      running: false,
+      blank: false,
+    }
+    const host = installMockHost({
+      sessionPages: {
+        first: {
+          items: [session],
+          nextCursor: 'older-page',
+        },
+        'older-page': {
+          items: [older],
+        },
+      },
+    })
+    const store = new ConversationStore(translate)
+
+    await store.start()
+    expect(store.snapshot().sessions).toEqual([session])
+    expect(store.snapshot().nextSessionCursor).toBe('older-page')
+
+    await store.loadMoreSessions()
+
+    expect(store.snapshot().sessions).toEqual([session, older])
+    expect(store.snapshot().nextSessionCursor).toBeUndefined()
+    expect(host.calls.filter(call => call.method === 'session.list').map(call => call.payload)).toEqual([
+      { limit: 50 },
+      { cursor: 'older-page', limit: 50 },
+    ])
+    store.dispose()
+  })
+
   it('selects the created session before list and history synchronization finish', async () => {
     let releaseSynchronization: (() => void) | undefined
     const synchronizationWait = new Promise<void>(resolve => {
@@ -381,6 +416,7 @@ interface MockHostOptions {
   historyPages?: Record<string, { events: SessionEvent[], hasMore: boolean }>
   historyWait?: Promise<void>
   listWait?: Promise<void>
+  sessionPages?: Record<string, { items: SessionSummary[], nextCursor?: string }>
 }
 
 function installMockHost(options: MockHostOptions = {}): {
@@ -431,9 +467,8 @@ function installMockHost(options: MockHostOptions = {}): {
       break
     case 'session.list':
       await options.listWait
-      value = {
-        items: sessions,
-      }
+      const listPayload = call.payload as { cursor?: string }
+      value = options.sessionPages?.[listPayload.cursor ?? 'first'] ?? { items: sessions }
       break
     case 'session.create':
       await options.createWait

@@ -6,16 +6,20 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"sort"
 
 	"github.com/gorenx/goren/agent"
 	api "github.com/gorenx/goren/apiproxy"
 	"github.com/gorenx/goren/session"
 	sesspersist "github.com/gorenx/goren/session/persistence"
-	sessionprojection "github.com/gorenx/goren/session/projection"
+	sessproj "github.com/gorenx/goren/session/projection"
 )
 
 const defaultHistoryMessages int64 = 50
+
+const (
+	defaultSessionListPageSize int64 = 50
+	maximumSessionListPageSize int64 = 100
+)
 
 const historyReadBatchEvents int64 = 512
 
@@ -23,13 +27,13 @@ type sessionReader struct {
 	agents        agent.Registry
 	sessions      session.LiveStore
 	persistence   sesspersist.Persistence
-	projections   sessionprojection.Registry
+	projections   sessproj.Registry
 	cache         ProjectionCache
 	reportFailure func(error)
 }
 
 type coldSessionProjection struct {
-	snapshot sessionprojection.Snapshot
+	snapshot sessproj.Snapshot
 	metadata *sessionListMetadataState
 }
 
@@ -38,33 +42,59 @@ type historyWindow struct {
 	hasMore bool
 }
 
-func (view *sessionReader) List(requestContext context.Context, _ api.Request[api.SessionListRequest]) (api.Outcome[api.SessionListValue], error) {
-	items, err := view.visibleSessionSummaries(requestContext)
+type sessionSummaryPage struct {
+	items      []api.SessionSummary
+	nextCursor *sesspersist.SessionCursor
+}
+
+func (view *sessionReader) List(
+	requestContext context.Context,
+	call api.Request[api.SessionListRequest],
+) (api.Outcome[api.SessionListValue], error) {
+	page, err := decodeSessionListPage(call.Payload)
 	if err != nil {
 		return api.Outcome[api.SessionListValue]{}, err
 	}
-	return api.OK(api.SessionListValue{Items: items}), nil
+	summaries, err := view.visibleSessionSummaries(requestContext, page)
+	if err != nil {
+		return api.Outcome[api.SessionListValue]{}, err
+	}
+	nextCursor, err := encodeSessionListCursor(summaries.nextCursor)
+	if err != nil {
+		return api.Outcome[api.SessionListValue]{}, err
+	}
+	return api.OK(api.SessionListValue{
+		Items:      summaries.items,
+		NextCursor: nextCursor,
+	}), nil
 }
 
-func (view *sessionReader) visibleSessionSummaries(requestContext context.Context) ([]api.SessionSummary, error) {
-	items, liveIDs := view.liveSessionSummaries()
-	storedHeaders, err := view.persistence.List(requestContext)
-	if err != nil {
-		return nil, err
+func (view *sessionReader) visibleSessionSummaries(
+	requestContext context.Context,
+	page sesspersist.SessionPage,
+) (sessionSummaryPage, error) {
+	liveItems, liveIDs := view.liveSessionSummaries()
+	items := make([]api.SessionSummary, 0, len(liveItems)+int(page.Limit))
+	if page.Cursor == nil {
+		items = append(items, liveItems...)
 	}
-	for _, header := range storedHeaders {
+	stored, err := view.persistence.List(requestContext, page)
+	if err != nil {
+		return sessionSummaryPage{}, err
+	}
+	for _, header := range stored.Headers {
 		if header.CWD == nil {
 			continue
 		}
 		if _, live := liveIDs[header.ID]; live {
 			continue
 		}
-		items = append(items, view.storedSessionSummary(header))
+		items = append(items, view.storedSessionSummary(requestContext, header))
 	}
-	sort.SliceStable(items, func(leftIndex int, rightIndex int) bool {
-		return items[leftIndex].UpdatedAt > items[rightIndex].UpdatedAt
-	})
-	return items, nil
+	return sessionSummaryPage{
+		items:      items,
+		nextCursor: stored.NextCursor,
+	}, nil
 }
 
 func (view *sessionReader) liveSessionSummaries() (
@@ -85,16 +115,18 @@ func (view *sessionReader) liveSessionSummaries() (
 }
 
 func (view *sessionReader) storedSessionSummary(
+	requestContext context.Context,
 	header session.Header,
 ) api.SessionSummary {
-	projectionState := view.cachedColdSessionProjection(header)
+	projectionState := view.coldSessionProjection(requestContext, header)
 	if conversation, live := view.sessions.Get(header.ID); live {
 		return view.summarizeLiveSession(conversation)
 	}
 	return summarizeColdSession(header, projectionState)
 }
 
-func (view *sessionReader) cachedColdSessionProjection(
+func (view *sessionReader) coldSessionProjection(
+	requestContext context.Context,
 	header session.Header,
 ) coldSessionProjection {
 	if view.cache == nil {
@@ -110,7 +142,16 @@ func (view *sessionReader) cachedColdSessionProjection(
 		return coldSessionProjection{}
 	}
 	if projectionSnapshot == nil {
-		return coldSessionProjection{}
+		restored, restoreErr := view.cache.ColdSnapshot(requestContext, header.ID)
+		if restoreErr != nil {
+			view.reportReadProblem(fmt.Errorf(
+				"apiproxy/session: restore cold summary for %q: %w",
+				header.ID,
+				restoreErr,
+			))
+			return coldSessionProjection{}
+		}
+		projectionSnapshot = &restored
 	}
 	result := coldSessionProjection{
 		snapshot: *projectionSnapshot,
@@ -129,15 +170,27 @@ func (view *sessionReader) cachedColdSessionProjection(
 // VisibleSessionIDs exposes the same authorization boundary as session.list
 // without leaking its wire projection into the Session Search capability.
 func (view *sessionReader) VisibleSessionIDs(requestContext context.Context) (map[session.SessionID]struct{}, error) {
-	visible, err := view.visibleSessionSummaries(requestContext)
-	if err != nil {
-		return nil, err
+	identifiers := make(map[session.SessionID]struct{})
+	var cursor *sesspersist.SessionCursor
+	for {
+		visible, err := view.visibleSessionSummaries(
+			requestContext,
+			sesspersist.SessionPage{
+				Cursor: cursor,
+				Limit:  maximumSessionListPageSize,
+			},
+		)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range visible.items {
+			identifiers[session.SessionID(item.SessionID)] = struct{}{}
+		}
+		if visible.nextCursor == nil {
+			return identifiers, nil
+		}
+		cursor = visible.nextCursor
 	}
-	identifiers := make(map[session.SessionID]struct{}, len(visible))
-	for _, item := range visible {
-		identifiers[session.SessionID(item.SessionID)] = struct{}{}
-	}
-	return identifiers, nil
 }
 
 func (view *sessionReader) History(
@@ -199,7 +252,13 @@ func (view *sessionReader) readHistory(
 	if view.cache != nil {
 		return view.coldHistoryTail(requestContext, identifier, maxMessages)
 	}
-	return view.fullColdHistory(requestContext, identifier, maxMessages)
+	window, err := view.coldHistoryPage(
+		requestContext,
+		identifier,
+		nil,
+		maxMessages,
+	)
+	return historyValue(window, nil), err
 }
 
 func (view *sessionReader) historyBefore(
@@ -263,28 +322,6 @@ func (view *sessionReader) coldHistoryTail(
 	)
 }
 
-func (view *sessionReader) fullColdHistory(
-	requestContext context.Context,
-	identifier session.SessionID,
-	maxMessages int64,
-) (api.SessionHistoryValue, error) {
-	loaded, err := view.persistence.Inspect(requestContext, identifier)
-	if err != nil {
-		return api.SessionHistoryValue{}, err
-	}
-	restored, err := view.projections.Restore(
-		sessionprojection.Checkpoint{},
-		loaded.Events,
-		0,
-	)
-	if err != nil {
-		return api.SessionHistoryValue{}, err
-	}
-	cursor := restored.Snapshot.AsOfSeq + 1
-	window, err := historyPage(loaded.Events, &cursor, maxMessages)
-	return historyValue(window, &restored.Snapshot), err
-}
-
 func (view *sessionReader) coldHistoryPage(
 	requestContext context.Context,
 	identifier session.SessionID,
@@ -302,8 +339,10 @@ func (view *sessionReader) coldHistoryPage(
 		window, err := view.persistence.ReadEventsBefore(
 			requestContext,
 			identifier,
-			cursor,
-			historyReadBatchEvents,
+			sesspersist.EventPage{
+				BeforeSeq: cursor,
+				Limit:     historyReadBatchEvents,
+			},
 		)
 		if err != nil {
 			return historyWindow{}, err
@@ -343,7 +382,7 @@ func (view *sessionReader) coldHistoryPage(
 
 func historyValue(
 	window historyWindow,
-	projectionSnapshot *sessionprojection.Snapshot,
+	projectionSnapshot *sessproj.Snapshot,
 ) api.SessionHistoryValue {
 	value := api.SessionHistoryValue{
 		Events:  window.events,
@@ -399,7 +438,7 @@ func summarizeSession(
 	metadata session.Header,
 	entries []session.Event,
 	running bool,
-	projectionSnapshot sessionprojection.Snapshot,
+	projectionSnapshot sessproj.Snapshot,
 ) api.SessionSummary {
 	blank := true
 	updatedAt := metadata.CreatedAt

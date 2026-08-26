@@ -143,29 +143,34 @@ func (persistenceStub) Inspect(
 	return sesspersist.Inspection{}, errors.New("test: unexpected Inspect")
 }
 
-func (persistenceStub) ReadFrom(
+func (persistenceStub) ReadEventsFrom(
 	context.Context,
 	session.SessionID,
-	int64,
-) (sesspersist.Inspection, error) {
-	return sesspersist.Inspection{}, errors.New("test: unexpected ReadFrom")
+	sesspersist.EventContinuation,
+) (sesspersist.EventSegment, error) {
+	return sesspersist.EventSegment{}, errors.New("test: unexpected ReadEventsFrom")
 }
 
 func (persistenceStub) ReadEventsBefore(
 	context.Context,
 	session.SessionID,
-	*int64,
-	int64,
+	sesspersist.EventPage,
 ) (sesspersist.EventWindow, error) {
 	return sesspersist.EventWindow{}, errors.New("test: unexpected ReadEventsBefore")
 }
 
-func (persistenceStub) List(context.Context) ([]session.Header, error) {
-	return nil, errors.New("test: unexpected List")
+func (persistenceStub) List(
+	context.Context,
+	sesspersist.SessionPage,
+) (sesspersist.HeaderPage, error) {
+	return sesspersist.HeaderPage{}, errors.New("test: unexpected List")
 }
 
-func (persistenceStub) ListSnapshots(context.Context) ([]sesspersist.Snapshot, error) {
-	return nil, errors.New("test: unexpected ListSnapshots")
+func (persistenceStub) ListSnapshots(
+	context.Context,
+	sesspersist.SessionPage,
+) (sesspersist.SnapshotPage, error) {
+	return sesspersist.SnapshotPage{}, errors.New("test: unexpected ListSnapshots")
 }
 
 type defaultModelStub struct{}

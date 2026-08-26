@@ -36,15 +36,28 @@ func (source *sessionHeaderSource) Get(
 func (source *sessionHeaderSource) List(
 	requestContext context.Context,
 ) ([]session.Header, error) {
-	stored, err := source.persistence.List(requestContext)
-	if err != nil {
-		return nil, err
-	}
-	byID := make(map[session.SessionID]session.Header, len(stored))
-	order := make([]session.SessionID, 0, len(stored))
-	for _, header := range stored {
-		byID[header.ID] = header
-		order = append(order, header.ID)
+	byID := make(map[session.SessionID]session.Header)
+	order := make([]session.SessionID, 0)
+	var cursor *sesspersist.SessionCursor
+	for {
+		page, err := source.persistence.List(
+			requestContext,
+			sesspersist.SessionPage{
+				Cursor: cursor,
+				Limit:  256,
+			},
+		)
+		if err != nil {
+			return nil, err
+		}
+		for _, header := range page.Headers {
+			byID[header.ID] = header
+			order = append(order, header.ID)
+		}
+		if page.NextCursor == nil {
+			break
+		}
+		cursor = page.NextCursor
 	}
 	for _, conversation := range source.sessions.List() {
 		header := conversation.Header()

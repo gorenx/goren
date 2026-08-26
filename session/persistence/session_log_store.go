@@ -222,7 +222,7 @@ func (owner *SessionLogStore) Create(requestContext context.Context, metadata se
 	if tracked || prepared {
 		return fmt.Errorf("session persistence: session %q already exists", metadata.ID)
 	}
-	stored, err := owner.storage.LoadStored(requestContext, metadata.ID)
+	stored, err := owner.storage.Load(requestContext, metadata.ID)
 	if err != nil {
 		return err
 	}
@@ -352,44 +352,56 @@ func (owner *SessionLogStore) Inspect(requestContext context.Context, identifier
 	return cloneInspection(source.inspection), nil
 }
 
-func (owner *SessionLogStore) ReadFrom(requestContext context.Context, identifier session.SessionID, fromSeq int64) (Inspection, error) {
+func (owner *SessionLogStore) ReadEventsFrom(
+	requestContext context.Context,
+	identifier session.SessionID,
+	continuation EventContinuation,
+) (EventSegment, error) {
 	if requestContext == nil {
-		return Inspection{}, errors.New("session persistence: readFrom Context is nil")
+		return EventSegment{}, errors.New("session persistence: ReadEventsFrom Context is nil")
 	}
-	if fromSeq < 0 {
-		return Inspection{}, errors.New("session persistence: fromSeq must be non-negative")
+	if continuation.FromSeq < 0 {
+		return EventSegment{}, errors.New("session persistence: event cursor must be non-negative")
+	}
+	if err := validatePageLimit(continuation.Limit); err != nil {
+		return EventSegment{}, err
 	}
 	releaseGate, err := owner.operations.Acquire(requestContext, identifier)
 	if err != nil {
-		return Inspection{}, err
+		return EventSegment{}, err
 	}
 	defer releaseGate()
-	stored, err := owner.storage.LoadStoredFrom(requestContext, identifier, fromSeq)
+	stored, err := owner.storage.ReadEventsFrom(requestContext, identifier, continuation)
 	if err != nil {
-		return Inspection{}, err
+		return EventSegment{}, err
 	}
 	if stored == nil {
-		return Inspection{}, &NotFoundError{ID: identifier}
+		return EventSegment{}, &NotFoundError{ID: identifier}
 	}
 	if stored.Header.ID != identifier {
-		return Inspection{}, owner.corruption(identifier, fmt.Errorf(
+		return EventSegment{}, owner.corruption(identifier, fmt.Errorf(
 			"stored identity mismatch: requested %q, header contains %q", identifier, stored.Header.ID,
 		))
 	}
 	if stored.Header.Version != session.FormatVersion {
-		return Inspection{}, owner.normalizeLoadError(identifier, stored.Header, fmt.Errorf(
+		return EventSegment{}, owner.normalizeLoadError(identifier, stored.Header, fmt.Errorf(
 			"unsupported Session format v%d", stored.Header.Version,
 		))
 	}
+	if int64(len(stored.Events)) > continuation.Limit || stored.HasMore && len(stored.Events) == 0 {
+		return EventSegment{}, owner.corruption(identifier, errors.New(
+			"stored event segment violates its page boundary",
+		))
+	}
 	for position, entry := range stored.Events {
-		expected := fromSeq + int64(position)
+		expected := continuation.FromSeq + int64(position)
 		if entry.Seq != expected {
-			return Inspection{}, owner.corruption(identifier, fmt.Errorf(
+			return EventSegment{}, owner.corruption(identifier, fmt.Errorf(
 				"stored suffix seq mismatch: expected %d, got %d", expected, entry.Seq,
 			))
 		}
 		if !session.IsKnownEventType(entry.Type) && !entry.Ignorable {
-			return Inspection{}, owner.normalizeLoadError(identifier, stored.Header, &UnsupportedFormatError{
+			return EventSegment{}, owner.normalizeLoadError(identifier, stored.Header, &UnsupportedFormatError{
 				ID: identifier,
 				Reason: fmt.Sprintf(
 					"session %q contains event type %q at seq %d unknown to this harness and not marked ignorable",
@@ -398,7 +410,12 @@ func (owner *SessionLogStore) ReadFrom(requestContext context.Context, identifie
 			})
 		}
 	}
-	return Inspection{Header: cloneHeader(stored.Header), Events: snapshotEvents(stored.Events)}, nil
+	return EventSegment{
+		Header:   cloneHeader(stored.Header),
+		Revision: stored.Revision,
+		Events:   snapshotEvents(stored.Events),
+		HasMore:  stored.HasMore,
+	}, nil
 }
 
 // ReadEventsBefore returns at most maxEvents events immediately preceding the
@@ -406,33 +423,26 @@ func (owner *SessionLogStore) ReadFrom(requestContext context.Context, identifie
 func (owner *SessionLogStore) ReadEventsBefore(
 	requestContext context.Context,
 	identifier session.SessionID,
-	beforeSeq *int64,
-	maxEvents int64,
+	page EventPage,
 ) (EventWindow, error) {
 	if requestContext == nil {
 		return EventWindow{}, errors.New("session persistence: readEventsBefore Context is nil")
 	}
-	if beforeSeq != nil && *beforeSeq < 0 {
+	if page.BeforeSeq != nil && *page.BeforeSeq < 0 {
 		return EventWindow{}, errors.New("session persistence: beforeSeq must be non-negative")
 	}
-	if maxEvents < 1 {
-		return EventWindow{}, errors.New("session persistence: maxEvents must be positive")
-	}
-	if maxEvents == math.MaxInt64 {
-		return EventWindow{}, errors.New("session persistence: maxEvents is too large")
+	if err := validatePageLimit(page.Limit); err != nil {
+		return EventWindow{}, err
 	}
 	releaseGate, err := owner.operations.Acquire(requestContext, identifier)
 	if err != nil {
 		return EventWindow{}, err
 	}
 	defer releaseGate()
-	stored, err := owner.storage.LoadStoredEventsBefore(
+	stored, err := owner.storage.ReadEventsBefore(
 		requestContext,
 		identifier,
-		EventPage{
-			BeforeSeq: beforeSeq,
-			Limit:     maxEvents,
-		},
+		page,
 	)
 	if err != nil {
 		return EventWindow{}, err
@@ -453,7 +463,12 @@ func (owner *SessionLogStore) ReadEventsBefore(
 			stored.Header.Version,
 		))
 	}
-	if err := validateEventWindow(identifier, stored.Events, beforeSeq); err != nil {
+	if int64(len(stored.Events)) > page.Limit || stored.HasEarlier && len(stored.Events) == 0 {
+		return EventWindow{}, owner.corruption(identifier, errors.New(
+			"stored event window violates its page boundary",
+		))
+	}
+	if err := validateEventWindow(identifier, stored.Events, page.BeforeSeq); err != nil {
 		return EventWindow{}, owner.corruption(identifier, err)
 	}
 	for _, entry := range stored.Events {
@@ -500,12 +515,108 @@ func validateEventWindow(
 	return nil
 }
 
-func (owner *SessionLogStore) List(requestContext context.Context) ([]session.Header, error) {
-	return owner.storage.ListStored(requestContext)
+func validatePageLimit(limit int64) error {
+	if limit < 1 {
+		return errors.New("session persistence: page limit must be positive")
+	}
+	if limit == math.MaxInt64 {
+		return errors.New("session persistence: page limit is too large")
+	}
+	return nil
 }
 
-func (owner *SessionLogStore) ListSnapshots(requestContext context.Context) ([]Snapshot, error) {
-	return owner.storage.ListStoredSnapshots(requestContext)
+func (owner *SessionLogStore) List(
+	requestContext context.Context,
+	page SessionPage,
+) (HeaderPage, error) {
+	snapshots, err := owner.ListSnapshots(requestContext, page)
+	if err != nil {
+		return HeaderPage{}, err
+	}
+	result := HeaderPage{
+		Headers:    make([]session.Header, len(snapshots.Snapshots)),
+		NextCursor: cloneSessionCursor(snapshots.NextCursor),
+	}
+	for index, storedSnapshot := range snapshots.Snapshots {
+		result.Headers[index] = cloneHeader(storedSnapshot.Header)
+	}
+	return result, nil
+}
+
+func (owner *SessionLogStore) ListSnapshots(
+	requestContext context.Context,
+	page SessionPage,
+) (SnapshotPage, error) {
+	if requestContext == nil {
+		return SnapshotPage{}, errors.New("session persistence: ListSnapshots Context is nil")
+	}
+	if err := validatePageLimit(page.Limit); err != nil {
+		return SnapshotPage{}, err
+	}
+	if page.Cursor != nil && (page.Cursor.CreatedAt < 0 || page.Cursor.ID == "") {
+		return SnapshotPage{}, errors.New("session persistence: Session cursor is invalid")
+	}
+	stored, err := owner.storage.List(requestContext, page)
+	if err != nil {
+		return SnapshotPage{}, err
+	}
+	if err := validateSnapshotPage(page, stored); err != nil {
+		return SnapshotPage{}, err
+	}
+	result := SnapshotPage{
+		Snapshots:  make([]Snapshot, len(stored.Snapshots)),
+		NextCursor: cloneSessionCursor(stored.NextCursor),
+	}
+	for index, storedSnapshot := range stored.Snapshots {
+		result.Snapshots[index] = Snapshot{
+			Header:   cloneHeader(storedSnapshot.Header),
+			Revision: storedSnapshot.Revision,
+		}
+	}
+	return result, nil
+}
+
+func validateSnapshotPage(request SessionPage, result SnapshotPage) error {
+	if int64(len(result.Snapshots)) > request.Limit {
+		return errors.New("session persistence: Backend returned more Sessions than requested")
+	}
+	previous := request.Cursor
+	for _, storedSnapshot := range result.Snapshots {
+		if err := validateDetachedHeader(storedSnapshot.Header.ID, storedSnapshot.Header); err != nil {
+			return err
+		}
+		if previous != nil && !sessionFollows(*previous, storedSnapshot.Header) {
+			return errors.New("session persistence: Backend returned an unordered Session page")
+		}
+		previous = &SessionCursor{
+			CreatedAt: storedSnapshot.Header.CreatedAt,
+			ID:        storedSnapshot.Header.ID,
+		}
+	}
+	if result.NextCursor == nil {
+		return nil
+	}
+	if len(result.Snapshots) == 0 {
+		return errors.New("session persistence: Backend returned a continuation cursor for an empty page")
+	}
+	last := result.Snapshots[len(result.Snapshots)-1].Header
+	if result.NextCursor.CreatedAt != last.CreatedAt || result.NextCursor.ID != last.ID {
+		return errors.New("session persistence: Backend continuation cursor does not match the page tail")
+	}
+	return nil
+}
+
+func sessionFollows(cursor SessionCursor, candidate session.Header) bool {
+	return candidate.CreatedAt < cursor.CreatedAt ||
+		candidate.CreatedAt == cursor.CreatedAt && candidate.ID > cursor.ID
+}
+
+func cloneSessionCursor(cursor *SessionCursor) *SessionCursor {
+	if cursor == nil {
+		return nil
+	}
+	copyValue := *cursor
+	return &copyValue
 }
 
 func (owner *SessionLogStore) onCreated(requestContext context.Context, conversation session.Context) error {
@@ -558,7 +669,7 @@ func (owner *SessionLogStore) onCreated(requestContext context.Context, conversa
 			return fmt.Errorf("session persistence: live seed for %q is shorter than its durable prefix", identifier)
 		}
 		if tracked.cursor != 0 {
-			stored, err := owner.storage.LoadStored(requestContext, identifier)
+			stored, err := owner.storage.Load(requestContext, identifier)
 			if err != nil {
 				return err
 			}
@@ -575,7 +686,7 @@ func (owner *SessionLogStore) onCreated(requestContext context.Context, conversa
 		return nil
 	}
 
-	stored, err := owner.storage.LoadStored(requestContext, identifier)
+	stored, err := owner.storage.Load(requestContext, identifier)
 	if err != nil {
 		return err
 	}
@@ -753,7 +864,7 @@ func (owner *SessionLogStore) appendCore(requestContext context.Context, identif
 	}
 	tracked, trackedFound := owner.durable.Get(identifier)
 	for !trackedFound {
-		stored, err := owner.storage.LoadStored(requestContext, identifier)
+		stored, err := owner.storage.Load(requestContext, identifier)
 		if err != nil {
 			return err
 		}
@@ -799,7 +910,7 @@ func (owner *SessionLogStore) appendCore(requestContext context.Context, identif
 func (owner *SessionLogStore) commitCold(
 	requestContext context.Context,
 	identifier session.SessionID,
-	stored StoredPrefix,
+	stored Log,
 ) (Inspection, bool, error) {
 	loaded, err := owner.logicalInspection(identifier, stored)
 	if err != nil {
@@ -813,11 +924,11 @@ func (owner *SessionLogStore) commitCold(
 	if _, err := inspectStored(loaded.Header, loaded.Events); err != nil {
 		return Inspection{}, false, owner.normalizeLoadError(identifier, loaded.Header, err)
 	}
-	current, err := owner.storage.ReadStoredRevision(requestContext, identifier)
+	current, err := owner.storage.Revision(requestContext, identifier)
 	if err != nil {
 		return Inspection{}, false, err
 	}
-	if current == nil || *current != stored.Token {
+	if current == nil || *current != stored.Revision {
 		return Inspection{}, false, nil
 	}
 	if stored.Marker != nil || len(closers) != 0 {
@@ -842,7 +953,7 @@ func (owner *SessionLogStore) commitCold(
 	return loaded, true, nil
 }
 
-func (owner *SessionLogStore) logicalInspection(identifier session.SessionID, stored StoredPrefix) (Inspection, error) {
+func (owner *SessionLogStore) logicalInspection(identifier session.SessionID, stored Log) (Inspection, error) {
 	if stored.Header.ID != identifier {
 		return Inspection{}, owner.corruption(identifier, fmt.Errorf(
 			"stored identity mismatch: requested %q, header contains %q", identifier, stored.Header.ID,
