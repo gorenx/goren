@@ -3,7 +3,7 @@ package runtime
 import (
 	"fmt"
 
-	"github.com/gorenx/goren/subagent/internal/continuation"
+	"github.com/gorenx/goren/subagent/internal/continuable"
 )
 
 // RuntimeOptions supplies process-owned hooks that are not Plugin config.
@@ -11,14 +11,14 @@ type RuntimeOptions struct {
 	ObserverError func(error)
 }
 
-// failureReporter adapts process-owned diagnostic policy to continuation's
+// failureReporter adapts process-owned diagnostic policy to Continuable's
 // business failure port without making the Plugin a business capability.
 type failureReporter struct {
 	report func(error)
 }
 
 func (reporter *failureReporter) ReportFinalFlushFailure(
-	failure continuation.FinalFlushFailure,
+	failure continuable.FinalFlushFailure,
 ) {
 	reporter.report(fmt.Errorf(
 		"subagent %q best-effort final Session flush; persisted state may be unavailable or stale on resume: %w",
@@ -27,16 +27,4 @@ func (reporter *failureReporter) ReportFinalFlushFailure(
 	))
 }
 
-// ReportCloseFailure reports structural close completion that runs after the
-// Subagent Plugin has already withdrawn its business capabilities.
-func (reporter *failureReporter) ReportCloseFailure(
-	failure continuation.CloseFailure,
-) {
-	reporter.report(fmt.Errorf(
-		"subagent %q managed Agent close failed after Subagent Plugin disposal: %w",
-		failure.ChildID,
-		failure.Error,
-	))
-}
-
-var _ continuation.FailureReporter = (*failureReporter)(nil)
+var _ continuable.FailureReporter = (*failureReporter)(nil)

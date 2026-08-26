@@ -14,9 +14,6 @@ const (
 // Descriptor is the supported durable identity union.
 type Descriptor interface {
 	descriptorVariant()
-	DescriptorVersion() int
-	DescriptorMode() Mode
-	ProviderName() string
 }
 
 // OneShotDescriptor identifies a session-backed terminal run.
@@ -28,21 +25,6 @@ type OneShotDescriptor struct {
 }
 
 func (OneShotDescriptor) descriptorVariant() {}
-
-// DescriptorVersion returns the persisted schema version.
-func (value OneShotDescriptor) DescriptorVersion() int {
-	return value.Version
-}
-
-// DescriptorMode returns ModeOneShot.
-func (OneShotDescriptor) DescriptorMode() Mode {
-	return ModeOneShot
-}
-
-// ProviderName returns the establishing Provider name.
-func (value OneShotDescriptor) ProviderName() string {
-	return value.Provider
-}
 
 // ContinuableDescriptor identifies a resumable child and its cold-resume
 // composition inputs.
@@ -58,18 +40,3 @@ type ContinuableDescriptor struct {
 }
 
 func (ContinuableDescriptor) descriptorVariant() {}
-
-// DescriptorVersion returns the persisted schema version.
-func (value ContinuableDescriptor) DescriptorVersion() int {
-	return value.Version
-}
-
-// DescriptorMode returns ModeContinuable.
-func (ContinuableDescriptor) DescriptorMode() Mode {
-	return ModeContinuable
-}
-
-// ProviderName returns the establishing Provider name.
-func (value ContinuableDescriptor) ProviderName() string {
-	return value.Provider
-}

@@ -29,11 +29,12 @@ func TestFactoryCreatesSubagentPlugin(t *testing.T) {
 		provided[specification.Name()] = true
 	}
 	for _, capability := range []plugin.ServiceType{
-		plugin.ServiceOf[subagent.ProviderRegistry](),
-		plugin.ServiceOf[subagent.OneShotService](),
-		plugin.ServiceOf[subagent.ContinuableService](),
+		plugin.ServiceOf[subagent.SeedBuilderRegistry](),
+		plugin.ServiceOf[subagent.Starter](),
+		plugin.ServiceOf[subagent.ChildControl](),
+		plugin.ServiceOf[subagent.ParentReporter](),
 		plugin.ServiceOf[subagent.ExtensionRegistry](),
-		plugin.ServiceOf[subagent.Catalog](),
+		plugin.ServiceOf[subagent.ChildDirectory](),
 	} {
 		if !provided[capability.Name()] {
 			t.Fatalf("Plugin does not provide %q", capability.Name())

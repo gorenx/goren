@@ -17,13 +17,13 @@ func (scopeRecord) Agent() agent.Agent { return nil }
 func (scopeRecord) Own(agent.ScopeResource) error { return nil }
 
 type extensionRecord struct {
-	install func() (subagent.Installation, error)
+	install func() (subagent.ExtensionInstallation, error)
 }
 
 func (record extensionRecord) Install(
 	context.Context,
-	subagent.ActivationContext,
-) (subagent.Installation, error) {
+	subagent.ExtensionContext,
+) (subagent.ExtensionInstallation, error) {
 	return record.install()
 }
 
@@ -42,7 +42,7 @@ func TestRegistryProvisionsInOrderAndReleasesWithChild(t *testing.T) {
 		name := name
 		if _, registerErr := owner.RegisterExtension(
 			extensionRecord{
-				install: func() (subagent.Installation, error) {
+				install: func() (subagent.ExtensionInstallation, error) {
 					order = append(order, name)
 					return installationRecord{
 						dispose: func() error {
@@ -82,7 +82,7 @@ func TestProvisionFailureRollsBackInstalledExtensions(t *testing.T) {
 	disposals := 0
 	if _, registerErr := owner.RegisterExtension(
 		extensionRecord{
-			install: func() (subagent.Installation, error) {
+			install: func() (subagent.ExtensionInstallation, error) {
 				return installationRecord{
 					dispose: func() error {
 						disposals++
@@ -96,7 +96,7 @@ func TestProvisionFailureRollsBackInstalledExtensions(t *testing.T) {
 	}
 	if _, registerErr := owner.RegisterExtension(
 		extensionRecord{
-			install: func() (subagent.Installation, error) {
+			install: func() (subagent.ExtensionInstallation, error) {
 				return nil, sentinel
 			},
 		},
@@ -132,7 +132,7 @@ func TestRegistrationRemovalInvalidatesUnpublishedProvisioning(t *testing.T) {
 	disposals := 0
 	handle, registerErr := owner.RegisterExtension(
 		extensionRecord{
-			install: func() (subagent.Installation, error) {
+			install: func() (subagent.ExtensionInstallation, error) {
 				return installationRecord{
 					dispose: func() error {
 						disposals++
@@ -158,7 +158,7 @@ func TestRegistrationRemovalInvalidatesUnpublishedProvisioning(t *testing.T) {
 	}
 	var problem *subagent.Error
 	if commitErr := acquired.Commit(); !errors.As(commitErr, &problem) ||
-		problem.Code != subagent.ErrorActivationExtensionRevoked {
+		problem.Code != subagent.ErrorExtensionRevoked {
 		t.Fatalf("Commit error = %v", commitErr)
 	}
 	if disposals != 1 {
@@ -178,7 +178,7 @@ func TestExtensionCanRemoveItselfDuringInstall(t *testing.T) {
 	disposals := 0
 	registered, registerErr := owner.RegisterExtension(
 		extensionRecord{
-			install: func() (subagent.Installation, error) {
+			install: func() (subagent.ExtensionInstallation, error) {
 				if removeErr := handle.Unregister(context.Background()); removeErr != nil {
 					return nil, removeErr
 				}
@@ -216,7 +216,7 @@ func TestRegistrationRemovalAfterCommitRevokesResidentInstallation(t *testing.T)
 	disposals := 0
 	handle, registerErr := owner.RegisterExtension(
 		extensionRecord{
-			install: func() (subagent.Installation, error) {
+			install: func() (subagent.ExtensionInstallation, error) {
 				return installationRecord{
 					dispose: func() error {
 						disposals++
@@ -258,5 +258,5 @@ func TestRegistrationRemovalAfterCommitRevokesResidentInstallation(t *testing.T)
 }
 
 var _ agent.Scope = scopeRecord{}
-var _ subagent.ActivationExtension = extensionRecord{}
-var _ subagent.Installation = installationRecord{}
+var _ subagent.ContinuableExtension = extensionRecord{}
+var _ subagent.ExtensionInstallation = installationRecord{}

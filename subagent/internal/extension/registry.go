@@ -1,5 +1,5 @@
-// Package extension owns continuable Activation Extension registrations,
-// per-Activation installations, rollback, and immediate resident revocation.
+// Package extension owns Continuable Extension registrations, per-Scope
+// installations, rollback, and immediate resident revocation.
 package extension
 
 import (
@@ -13,7 +13,7 @@ import (
 	"github.com/gorenx/goren/subagent"
 )
 
-// Registry owns ordered Activation Extension registrations and their resident
+// Registry owns ordered Continuable Extension registrations and their resident
 // installations.
 type Registry struct {
 	mutex         sync.Mutex
@@ -23,7 +23,7 @@ type Registry struct {
 type registration struct {
 	mutex         sync.Mutex
 	owner         *Registry
-	extension     subagent.ActivationExtension
+	extension     subagent.ContinuableExtension
 	removed       bool
 	installations []*effect
 	closeErr      error
@@ -37,10 +37,10 @@ func New() *Registry {
 // RegisterExtension adds one Extension after every previously registered
 // Extension.
 func (owner *Registry) RegisterExtension(
-	extension subagent.ActivationExtension,
+	extension subagent.ContinuableExtension,
 ) (subagent.ExtensionRegistration, error) {
 	if extension == nil || nilInterface(extension) {
-		return nil, errors.New("subagent: Activation Extension is required")
+		return nil, errors.New("subagent: Continuable Extension is required")
 	}
 	record := &registration{
 		owner:     owner,
@@ -91,7 +91,7 @@ func (record *registration) Unregister(closeContext context.Context) error {
 	closeErr := disposeEffects(closeContext, effects)
 	if closeErr != nil {
 		closeErr = &subagent.Error{
-			Code: subagent.ErrorActivationExtensionReleaseFailed,
+			Code: subagent.ErrorExtensionReleaseFailed,
 			Message: fmt.Sprintf(
 				"continuable Extension removal failed to release %d installation(s)",
 				countErrors(closeErr),

@@ -8,8 +8,8 @@ import (
 
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/subagent/control"
-	subagenttool "github.com/gorenx/goren/subagent/tool"
+	"github.com/gorenx/goren/subagent/tools/control"
+	subagentdelegation "github.com/gorenx/goren/subagent/tools/delegation"
 	"github.com/gorenx/goren/tools"
 )
 
@@ -30,7 +30,7 @@ func TestSendMessageResumesColdContinuableChild(t *testing.T) {
 		tools.ToolExecutionInput{
 			CallID:     "start-cold-child",
 			RootCallID: "start-cold-child",
-			Name:       subagenttool.DefaultToolName,
+			Name:       subagentdelegation.DefaultToolName,
 			Arguments: json.RawMessage(`{
   "description": "resume durable child",
   "prompt": "Complete the initial child turn."
@@ -63,7 +63,7 @@ func TestSendMessageResumesColdContinuableChild(t *testing.T) {
 	defer cancelWait()
 	waitForContinuableSettlement(t, state, parentHandle, waitContext)
 	if _, live := state.agents.Get(childID); live {
-		t.Fatal("first continuable activation did not become cold")
+		t.Fatal("first continuable execution did not become cold")
 	}
 	firstInspection, inspectErr := durability.sessions.Inspect(waitContext, childID)
 	if inspectErr != nil {
@@ -108,7 +108,7 @@ func TestSendMessageResumesColdContinuableChild(t *testing.T) {
 	}
 	waitForContinuableSettlement(t, state, parentHandle, waitContext)
 	if _, live := state.agents.Get(childID); live {
-		t.Fatal("resumed continuable activation did not become cold")
+		t.Fatal("resumed continuable execution did not become cold")
 	}
 	secondInspection, inspectErr := durability.sessions.Inspect(waitContext, childID)
 	if inspectErr != nil {

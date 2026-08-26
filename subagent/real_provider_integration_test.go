@@ -17,7 +17,7 @@ import (
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/subagent"
 	"github.com/gorenx/goren/subagent/spawn"
-	subagenttool "github.com/gorenx/goren/subagent/tool"
+	subagentdelegation "github.com/gorenx/goren/subagent/tools/delegation"
 	"github.com/gorenx/goren/tools"
 )
 
@@ -92,11 +92,11 @@ func TestRealProviderForegroundOneShot(t *testing.T) {
 				credentialManager,
 				providerPlugin,
 			},
-			delegation: subagenttool.Settings{
-				Provider:              spawn.DefaultProviderName,
-				ToolName:              subagenttool.DefaultToolName,
+			delegation: subagentdelegation.Settings{
+				Provider:              spawn.DefaultSeedBuilderName,
+				ToolName:              subagentdelegation.DefaultToolName,
 				EnableRunInBackground: false,
-				BackgroundMode:        subagenttool.BackgroundOneShot,
+				BackgroundMode:        subagentdelegation.BackgroundOneShot,
 			},
 		},
 	)
@@ -111,7 +111,7 @@ func TestRealProviderForegroundOneShot(t *testing.T) {
 		tools.ToolExecutionInput{
 			CallID:     "real-delegate-1",
 			RootCallID: "real-delegate-1",
-			Name:       subagenttool.DefaultToolName,
+			Name:       subagentdelegation.DefaultToolName,
 			Arguments: json.RawMessage(`{
   "description": "verify real provider",
   "prompt": "Reply with exactly GOREN_SUBAGENT_OK and no other text."

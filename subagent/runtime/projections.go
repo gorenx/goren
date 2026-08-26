@@ -14,11 +14,7 @@ func (owner *Plugin) registerProjections(
 	if registry == nil {
 		return nil
 	}
-	units := []sessionprojection.Unit{
-		subagentprojection.TimingUnit{},
-		subagentprojection.IdentityUnit{},
-	}
-	for _, unit := range units {
+	for _, unit := range subagentprojection.Units() {
 		handle, err := registry.Register(unit)
 		if err != nil {
 			return errors.Join(

@@ -22,11 +22,11 @@ type Provisioner struct {
 	input    Input
 }
 
-// NewProvisioner constructs one fresh Agent Provisioner for an Activation.
-func NewProvisioner(owner *Registry, activationInput Input) *Provisioner {
+// NewProvisioner constructs one Agent Provisioner for a Continuable Scope.
+func NewProvisioner(owner *Registry, extensionInput Input) *Provisioner {
 	return &Provisioner{
 		registry: owner,
-		input:    activationInput,
+		input:    extensionInput,
 	}
 }
 
@@ -37,7 +37,7 @@ func (owner *Provisioner) Provision(
 	scope agent.Scope,
 ) (agent.Provisioning, error) {
 	if owner == nil || owner.registry == nil || scope == nil {
-		return nil, errors.New("subagent: Activation Provisioner is unavailable")
+		return nil, errors.New("subagent: Extension Provisioner is unavailable")
 	}
 	owner.registry.mutex.Lock()
 	registrations := append(
@@ -49,7 +49,7 @@ func (owner *Provisioner) Provision(
 		return nil, nil
 	}
 	acquired := &provisioning{}
-	activation := subagent.ActivationContext{
+	extensionContext := subagent.ExtensionContext{
 		ChildID:    owner.input.ChildID,
 		ParentID:   owner.input.ParentID,
 		Scope:      scope,
@@ -64,7 +64,7 @@ func (owner *Provisioner) Provision(
 		}
 		installation, installErr := record.extension.Install(
 			requestContext,
-			activation,
+			extensionContext,
 		)
 		if installErr != nil {
 			return nil, errors.Join(
@@ -74,7 +74,7 @@ func (owner *Provisioner) Provision(
 		}
 		if installation == nil || nilInterface(installation) {
 			return nil, errors.Join(
-				errors.New("subagent: Activation Extension returned a nil Installation"),
+				errors.New("subagent: Continuable Extension returned a nil installation"),
 				acquired.Dispose(context.WithoutCancel(requestContext)),
 			)
 		}

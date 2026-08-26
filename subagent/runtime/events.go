@@ -6,30 +6,31 @@ import (
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/subagent"
+	"github.com/gorenx/goren/subagent/internal/continuable"
 	"github.com/gorenx/goren/subagent/internal/oneshot"
-	providerregistry "github.com/gorenx/goren/subagent/internal/provider"
+	"github.com/gorenx/goren/subagent/internal/seedbuilder"
 )
 
-// eventPublisher adapts Subagent lifecycle ports to the Plugin Event bus.
+// eventPublisher adapts business lifecycle facts to their owning event buses.
 type eventPublisher struct {
 	owner *Plugin
 }
 
-// Added publishes a vetoable Provider registration fact.
+// Added publishes the canonical vetoable registration fact.
 func (publisher *eventPublisher) Added(
 	requestContext context.Context,
-	candidate subagent.Provider,
+	builder subagent.SeedBuilder,
 ) error {
 	return plugin.Publish(
 		requestContext,
 		publisher.owner,
-		subagent.ProviderAdded{
-			Provider: candidate,
+		subagent.SeedBuilderAdded{
+			SeedBuilder: builder,
 		},
 	)
 }
 
-// Removed publishes best-effort Provider cleanup.
+// Removed publishes best-effort registration cleanup.
 func (publisher *eventPublisher) Removed(
 	requestContext context.Context,
 	name string,
@@ -37,44 +38,39 @@ func (publisher *eventPublisher) Removed(
 	_ = plugin.Publish(
 		requestContext,
 		publisher.owner,
-		subagent.ProviderRemoved{
+		subagent.SeedBuilderRemoved{
 			Name: name,
 		},
 	)
 }
 
-// Started publishes an accepted Subagent lifecycle fact from the parent Scope.
+// Started publishes one accepted execution fact in the parent Agent scope.
 func (*eventPublisher) Started(parentAgent agent.Agent, fact subagent.Started) {
 	_ = agent.DispatchRuntimeEvent(context.Background(), parentAgent, fact)
 }
 
-// Ended publishes a terminal Subagent lifecycle fact from the parent Scope.
+// Ended publishes the paired terminal fact in the parent Agent scope.
 func (*eventPublisher) Ended(parentAgent agent.Agent, fact subagent.Ended) {
 	_ = agent.DispatchRuntimeEvent(context.Background(), parentAgent, fact)
 }
 
-// ObserveEvent adapts Agent Inbox and disposal facts to continuation state.
+// ObserveEvent forwards structural Agent closure to the business Service so
+// the same Execution terminal transaction completes before teardown continues.
 func (owner *Plugin) ObserveEvent(
-	_ context.Context,
+	requestContext context.Context,
 	fact plugin.Event,
 ) error {
-	switch notice := fact.(type) {
-	case agent.InboxClaimed:
-		owner.continuations.MessageLeftInbox(
-			notice.Subject,
-			notice.Message.StableID(),
-		)
-	case agent.InboxDiscarded:
-		owner.continuations.MessageLeftInbox(
-			notice.Subject,
-			notice.Message.StableID(),
-		)
-	case agent.Disposed:
-		owner.continuations.AgentDisposed(notice.Subject)
+	disposed, matches := fact.(agent.Disposed)
+	if !matches {
+		return nil
 	}
-	return nil
+	return owner.service.AgentDisposed(
+		context.WithoutCancel(requestContext),
+		disposed.Subject,
+	)
 }
 
-var _ providerregistry.Events = (*eventPublisher)(nil)
+var _ seedbuilder.Events = (*eventPublisher)(nil)
 var _ oneshot.Lifecycle = (*eventPublisher)(nil)
+var _ continuable.Lifecycle = (*eventPublisher)(nil)
 var _ plugin.EventObserver = (*Plugin)(nil)

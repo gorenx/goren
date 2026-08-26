@@ -10,7 +10,7 @@ import (
 	"github.com/gorenx/goren/subagent"
 )
 
-// provisioning owns one Activation's installed Extensions across publication
+// provisioning owns one child Scope's installed Extensions across publication
 // and residency.
 type provisioning struct {
 	mutex       sync.Mutex
@@ -24,12 +24,12 @@ func (acquired *provisioning) Commit() error {
 	acquired.mutex.Lock()
 	defer acquired.mutex.Unlock()
 	if acquired.closed {
-		return errors.New("subagent: Activation Provisioning is closed")
+		return errors.New("subagent: Extension Provisioning is closed")
 	}
 	if acquired.invalidated {
 		return &subagent.Error{
-			Code: subagent.ErrorActivationExtensionRevoked,
-			Message: "a continuable Activation Extension was revoked while " +
+			Code: subagent.ErrorExtensionRevoked,
+			Message: "a Continuable Extension was revoked while " +
 				"the child was being built; the child was not established",
 		}
 	}
@@ -64,7 +64,7 @@ type effect struct {
 	once         sync.Once
 	owner        *provisioning
 	registration *registration
-	installation subagent.Installation
+	installation subagent.ExtensionInstallation
 	err          error
 }
 

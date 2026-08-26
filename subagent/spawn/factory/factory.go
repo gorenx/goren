@@ -1,4 +1,4 @@
-// Package factory owns strict spawn Provider configuration and construction.
+// Package factory owns strict spawn Plugin configuration and construction.
 package factory
 
 import (
@@ -12,12 +12,13 @@ import (
 	"github.com/gorenx/goren/subagent/spawn"
 )
 
-// Config selects the exact Provider registry name.
+// Config preserves the canonical providerName key while selecting the exact
+// SeedBuilder registry name.
 type Config struct {
 	ProviderName string `json:"providerName"`
 }
 
-// Factory constructs the spawn Provider Plugin.
+// Factory constructs the spawn SeedBuilder Plugin.
 type Factory struct{}
 
 // New constructs a statically linked Factory.
@@ -30,7 +31,7 @@ func (*Factory) Name() string {
 	return spawn.PluginName
 }
 
-// Create strictly decodes configuration and constructs the Provider.
+// Create strictly decodes configuration and constructs the Plugin.
 func (*Factory) Create(
 	createContext context.Context,
 	rawConfig json.RawMessage,
@@ -53,7 +54,7 @@ func decodeConfig(rawConfig json.RawMessage) (Config, error) {
 		return Config{}, configErr
 	}
 	settings := Config{
-		ProviderName: spawn.DefaultProviderName,
+		ProviderName: spawn.DefaultSeedBuilderName,
 	}
 	decoder := json.NewDecoder(bytes.NewReader(rawConfig))
 	decoder.DisallowUnknownFields()

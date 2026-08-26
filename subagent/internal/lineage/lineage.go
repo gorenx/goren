@@ -1,5 +1,5 @@
-// Package lineage derives the immutable parent-to-child creation facts shared
-// by one-shot Runs and continuable Activations.
+// Package lineage derives immutable parent-to-child creation facts shared by
+// OneShot and Continuable executions.
 package lineage
 
 import (

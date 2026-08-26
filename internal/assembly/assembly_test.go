@@ -37,11 +37,11 @@ import (
 	"github.com/gorenx/goren/session/query"
 	"github.com/gorenx/goren/session/title"
 	"github.com/gorenx/goren/subagent"
-	"github.com/gorenx/goren/subagent/control"
 	"github.com/gorenx/goren/subagent/fork"
-	"github.com/gorenx/goren/subagent/report"
 	"github.com/gorenx/goren/subagent/spawn"
-	subagenttool "github.com/gorenx/goren/subagent/tool"
+	"github.com/gorenx/goren/subagent/tools/control"
+	subagentdelegation "github.com/gorenx/goren/subagent/tools/delegation"
+	"github.com/gorenx/goren/subagent/tools/report"
 	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/toolaskuser"
 	"github.com/gorenx/goren/tools"
@@ -72,7 +72,7 @@ type serviceProbe struct {
 	queries      query.QueryService
 	titles       title.TitleService
 	prompts      systemprompt.Assembler
-	subagents    subagent.Catalog
+	subagents    subagent.ChildDirectory
 	toolRuntime  tools.ToolRuntime
 	questions    userquestions.UserQuestions
 	workspaces   workspace.Registry
@@ -99,7 +99,7 @@ func (*serviceProbe) Manifest() plugin.Manifest {
 			plugin.ServiceOf[query.QueryService](),
 			plugin.ServiceOf[title.TitleService](),
 			plugin.ServiceOf[systemprompt.Assembler](),
-			plugin.ServiceOf[subagent.Catalog](),
+			plugin.ServiceOf[subagent.ChildDirectory](),
 			plugin.ServiceOf[tools.ToolRuntime](),
 			plugin.ServiceOf[userquestions.UserQuestions](),
 			plugin.ServiceOf[workspace.Registry](),
@@ -160,7 +160,7 @@ func (probe *serviceProbe) Apply(requestContext context.Context) error {
 	if probe.prompts, err = plugin.Require[systemprompt.Assembler](probe); err != nil {
 		return err
 	}
-	if probe.subagents, err = plugin.Require[subagent.Catalog](probe); err != nil {
+	if probe.subagents, err = plugin.Require[subagent.ChildDirectory](probe); err != nil {
 		return err
 	}
 	if probe.toolRuntime, err = plugin.Require[tools.ToolRuntime](probe); err != nil {
@@ -303,7 +303,7 @@ func TestCatalogContainsOnlyCurrentServerSlice(t *testing.T) {
 		subagent.PluginName,
 		spawn.PluginName,
 		fork.PluginName,
-		subagenttool.PluginName,
+		subagentdelegation.PluginName,
 		control.PluginName,
 		report.PluginName,
 		toolaskuser.PluginName,
@@ -665,7 +665,7 @@ func TestServerTreeStartsCapabilitiesBeforeExposingConnection(t *testing.T) {
 	}
 	wantToolNames := []string{
 		toolaskuser.Name,
-		subagenttool.DefaultToolName,
+		subagentdelegation.DefaultToolName,
 		"send_message",
 		"interrupt_agent",
 		"list_agents",

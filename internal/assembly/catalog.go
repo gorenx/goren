@@ -54,17 +54,17 @@ import (
 	"github.com/gorenx/goren/session/title"
 	sessiontitlefactory "github.com/gorenx/goren/session/title/factory"
 	"github.com/gorenx/goren/subagent"
-	subagentcontrol "github.com/gorenx/goren/subagent/control"
-	subagentcontrolfactory "github.com/gorenx/goren/subagent/control/factory"
 	subagentfactory "github.com/gorenx/goren/subagent/factory"
 	subagentforkfactory "github.com/gorenx/goren/subagent/fork/factory"
-	"github.com/gorenx/goren/subagent/report"
-	subagentreportfactory "github.com/gorenx/goren/subagent/report/factory"
 	subagentruntime "github.com/gorenx/goren/subagent/runtime"
 	"github.com/gorenx/goren/subagent/spawn"
 	subagentspawnfactory "github.com/gorenx/goren/subagent/spawn/factory"
-	subagenttool "github.com/gorenx/goren/subagent/tool"
-	subagenttoolfactory "github.com/gorenx/goren/subagent/tool/factory"
+	subagentcontrol "github.com/gorenx/goren/subagent/tools/control"
+	subagentcontrolfactory "github.com/gorenx/goren/subagent/tools/control/factory"
+	subagentdelegation "github.com/gorenx/goren/subagent/tools/delegation"
+	subagentdelegationfactory "github.com/gorenx/goren/subagent/tools/delegation/factory"
+	"github.com/gorenx/goren/subagent/tools/report"
+	subagentreportfactory "github.com/gorenx/goren/subagent/tools/report/factory"
 	"github.com/gorenx/goren/systemprompt"
 	systempromptfactory "github.com/gorenx/goren/systemprompt/factory"
 	"github.com/gorenx/goren/toolaskuser"
@@ -190,7 +190,7 @@ func NewCatalog(platform Environment) (*pluginfactory.Catalog, error) {
 		}),
 		subagentspawnfactory.New(),
 		subagentforkfactory.New(),
-		subagenttoolfactory.New(),
+		subagentdelegationfactory.New(),
 		subagentcontrolfactory.New(),
 		subagentreportfactory.New(),
 		toolsfactory.New(),
@@ -290,12 +290,12 @@ func DefaultSpecs(
 	if err != nil {
 		return nil, err
 	}
-	subagentToolRaw, err := json.Marshal(subagenttoolfactory.Config{
-		Provider:              spawn.DefaultProviderName,
-		ToolName:              subagenttool.DefaultToolName,
+	subagentToolRaw, err := json.Marshal(subagentdelegationfactory.Config{
+		Provider:              spawn.DefaultSeedBuilderName,
+		ToolName:              subagentdelegation.DefaultToolName,
 		EnableRunInBackground: true,
-		BackgroundMode:        subagenttool.BackgroundContinuable,
-		MaxDepth: subagenttoolfactory.DepthLimit{
+		BackgroundMode:        subagentdelegation.BackgroundContinuable,
+		MaxDepth: subagentdelegationfactory.DepthLimit{
 			Value: 3,
 		},
 	})
@@ -339,7 +339,7 @@ func DefaultSpecs(
 			Config:      emptyConfig,
 		},
 		{
-			FactoryName: subagenttool.PluginName,
+			FactoryName: subagentdelegation.PluginName,
 			Config:      subagentToolRaw,
 		},
 		{

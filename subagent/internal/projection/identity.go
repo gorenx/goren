@@ -12,7 +12,7 @@ import (
 	"github.com/gorenx/goren/subagent"
 )
 
-const IdentityKey = "subagent"
+const identityKey = "subagent"
 
 var errInvalidIdentity = errors.New("subagent: invalid identity projection")
 
@@ -37,23 +37,23 @@ type identityWire struct {
 	Seq   int64           `json:"seq"`
 }
 
-// IdentityUnit folds the latest Descriptor identity. Invalid or unsupported
+// identityUnit folds the latest Descriptor identity. Invalid or unsupported
 // Descriptor payloads reset the serializable view to null.
-type IdentityUnit struct{}
+type identityUnit struct{}
 
-func (IdentityUnit) Key() string {
-	return IdentityKey
+func (identityUnit) Key() string {
+	return identityKey
 }
 
-func (IdentityUnit) StateVersion() int64 {
+func (identityUnit) StateVersion() int64 {
 	return 2
 }
 
-func (IdentityUnit) InitialState() (json.RawMessage, error) {
+func (identityUnit) InitialState() (json.RawMessage, error) {
 	return json.Marshal(identityState{})
 }
 
-func (IdentityUnit) ApplyState(
+func (identityUnit) ApplyState(
 	state json.RawMessage,
 	committed session.Event,
 ) (sessionprojection.Transition, error) {
@@ -94,7 +94,7 @@ func (IdentityUnit) ApplyState(
 	}, nil
 }
 
-func (IdentityUnit) ViewState(state json.RawMessage) (json.RawMessage, error) {
+func (identityUnit) ViewState(state json.RawMessage) (json.RawMessage, error) {
 	current, err := decodeIdentityState(state)
 	if err != nil {
 		return nil, err
@@ -105,9 +105,19 @@ func (IdentityUnit) ViewState(state json.RawMessage) (json.RawMessage, error) {
 	return json.Marshal(current.Identity)
 }
 
-// DecodeIdentity decodes one projection value. Null means the fold has no
-// trustworthy Descriptor identity.
-func DecodeIdentity(rawValue json.RawMessage) (Identity, bool, error) {
+// ReadIdentity returns the trustworthy Descriptor identity from one complete
+// projection snapshot. Missing and null values mean no child identity exists.
+func ReadIdentity(
+	values sessionprojection.Values,
+) (Identity, bool, error) {
+	rawValue, found := values[identityKey]
+	if !found {
+		return Identity{}, false, nil
+	}
+	return decodeIdentity(rawValue)
+}
+
+func decodeIdentity(rawValue json.RawMessage) (Identity, bool, error) {
 	if bytes.Equal(bytes.TrimSpace(rawValue), []byte("null")) {
 		return Identity{}, false, nil
 	}
@@ -187,4 +197,4 @@ func stringPointer(value string) *string {
 	return &value
 }
 
-var _ sessionprojection.Unit = IdentityUnit{}
+var _ sessionprojection.Unit = identityUnit{}

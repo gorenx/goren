@@ -9,7 +9,7 @@ import (
 	"github.com/gorenx/goren/subagent"
 )
 
-func TestIdentityUnitUsesLatestTrustworthyDescriptor(t *testing.T) {
+func TestIdentityProjectionUsesLatestTrustworthyDescriptor(t *testing.T) {
 	t.Parallel()
 	oneShotLabel := "research"
 	oneShotData := descriptorData(t, subagent.OneShotDescriptor{
@@ -20,7 +20,7 @@ func TestIdentityUnitUsesLatestTrustworthyDescriptor(t *testing.T) {
 		Provider: "fork",
 		Label:    "review",
 	})
-	unit := IdentityUnit{}
+	unit := identityUnit{}
 	state, err := unit.InitialState()
 	if err != nil {
 		t.Fatal(err)
@@ -39,7 +39,9 @@ func TestIdentityUnitUsesLatestTrustworthyDescriptor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	decodedIdentity, found, err := DecodeIdentity(view)
+	decodedIdentity, found, err := ReadIdentity(map[string]json.RawMessage{
+		identityKey: view,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,14 +66,16 @@ func TestIdentityUnitUsesLatestTrustworthyDescriptor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, found, err = DecodeIdentity(view); err != nil || found {
+	if _, found, err = ReadIdentity(map[string]json.RawMessage{
+		identityKey: view,
+	}); err != nil || found {
 		t.Fatalf("damaged identity = (found %v, error %v), want null", found, err)
 	}
 }
 
-func TestTimingUnitResetsInheritedTurnsAndTracksOwnActivity(t *testing.T) {
+func TestTimingProjectionResetsInheritedTurnsAndTracksOwnActivity(t *testing.T) {
 	t.Parallel()
-	unit := TimingUnit{}
+	unit := timingUnit{}
 	state, err := unit.InitialState()
 	if err != nil {
 		t.Fatal(err)
@@ -97,13 +101,13 @@ func TestTimingUnitResetsInheritedTurnsAndTracksOwnActivity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var decodedTiming Timing
+	var decodedTiming timing
 	if err = json.Unmarshal(view, &decodedTiming); err != nil {
 		t.Fatal(err)
 	}
-	want := Timing{
+	want := timing{
 		SettledMS: 3_100,
-		Active: &Interval{
+		Active: &interval{
 			Since:   10_000,
 			Through: 10_500,
 		},
@@ -115,7 +119,7 @@ func TestTimingUnitResetsInheritedTurnsAndTracksOwnActivity(t *testing.T) {
 
 func TestProjectionViewsRejectDamagedCheckpointState(t *testing.T) {
 	t.Parallel()
-	identityProjection := IdentityUnit{}
+	identityProjection := identityUnit{}
 	for _, damaged := range []json.RawMessage{
 		json.RawMessage(`{"identity":{"mode":"continuable","label":null,"seq":1}}`),
 		json.RawMessage(`{"identity":{"mode":"one-shot","seq":1,"extra":true}}`),
@@ -125,7 +129,7 @@ func TestProjectionViewsRejectDamagedCheckpointState(t *testing.T) {
 			t.Fatalf("identity state %s was accepted", damaged)
 		}
 	}
-	timingProjection := TimingUnit{}
+	timingProjection := timingUnit{}
 	for _, damaged := range []json.RawMessage{
 		json.RawMessage(`{"settledMs":-1,"descriptorSeen":true}`),
 		json.RawMessage(`{"settledMs":0,"descriptorSeen":false,"extra":true}`),

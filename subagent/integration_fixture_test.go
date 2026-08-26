@@ -15,7 +15,7 @@ import (
 	"github.com/gorenx/goren/subagent"
 	subagentruntime "github.com/gorenx/goren/subagent/runtime"
 	"github.com/gorenx/goren/subagent/spawn"
-	subagenttool "github.com/gorenx/goren/subagent/tool"
+	subagentdelegation "github.com/gorenx/goren/subagent/tools/delegation"
 	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/tools"
 )
@@ -250,7 +250,7 @@ type integrationConfiguration struct {
 	agentOptions agent.Options
 	plugins      []plugin.Plugin
 	backend      *integrationAdapter
-	delegation   subagenttool.Settings
+	delegation   subagentdelegation.Settings
 }
 
 func newIntegrationFixture(
@@ -258,6 +258,7 @@ func newIntegrationFixture(
 	responses [][]llm.StreamChunk,
 ) *integrationFixture {
 	t.Helper()
+	durability := newIntegrationDurability(t)
 	return newIntegrationFixtureWithConfiguration(
 		t,
 		integrationConfiguration{
@@ -268,11 +269,12 @@ func newIntegrationFixture(
 			backend: &integrationAdapter{
 				responses: responses,
 			},
-			delegation: subagenttool.Settings{
-				Provider:              spawn.DefaultProviderName,
-				ToolName:              subagenttool.DefaultToolName,
+			plugins: durability.plugins,
+			delegation: subagentdelegation.Settings{
+				Provider:              spawn.DefaultSeedBuilderName,
+				ToolName:              subagentdelegation.DefaultToolName,
 				EnableRunInBackground: false,
-				BackgroundMode:        subagenttool.BackgroundOneShot,
+				BackgroundMode:        subagentdelegation.BackgroundOneShot,
 			},
 		},
 	)
@@ -318,11 +320,11 @@ func newIntegrationFixtureWithConfiguration(
 		systemprompt.RegistryOptions{},
 	)
 	toolService := tools.New(toolSettings)
-	spawnProvider, providerErr := spawn.NewPlugin(spawn.DefaultProviderName)
-	if providerErr != nil {
-		t.Fatal(providerErr)
+	spawnPlugin, pluginErr := spawn.NewPlugin(spawn.DefaultSeedBuilderName)
+	if pluginErr != nil {
+		t.Fatal(pluginErr)
 	}
-	delegationTool, toolErr := subagenttool.New(configuration.delegation)
+	delegationTool, toolErr := subagentdelegation.New(configuration.delegation)
 	if toolErr != nil {
 		t.Fatal(toolErr)
 	}
@@ -354,7 +356,7 @@ func newIntegrationFixtureWithConfiguration(
 	rootPlugins = append(
 		rootPlugins,
 		subagentPlugin,
-		spawnProvider,
+		spawnPlugin,
 		delegationTool,
 		loopPlugin,
 	)
