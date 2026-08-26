@@ -1,6 +1,9 @@
 package agent
 
-import "sync"
+import (
+	"context"
+	"sync"
+)
 
 type epochPhase uint8
 
@@ -103,4 +106,29 @@ func (signal *lifecycleSignal) close() {
 	signal.once.Do(func() {
 		close(signal.done)
 	})
+}
+
+type agentTeardown struct {
+	coordinator *LifecycleCoordinator
+	epoch       *epoch
+}
+
+func (teardown *agentTeardown) BeginTeardown(closeContext context.Context) {
+	if teardown == nil || teardown.coordinator == nil || teardown.epoch == nil {
+		return
+	}
+	teardown.coordinator.runtimeTeardownStarted(
+		closeContext,
+		teardown.epoch,
+	)
+}
+
+func (teardown *agentTeardown) FinishTeardown(closeErr error) {
+	if teardown == nil || teardown.coordinator == nil || teardown.epoch == nil {
+		return
+	}
+	teardown.coordinator.runtimeTeardownFinished(
+		teardown.epoch,
+		closeErr,
+	)
 }

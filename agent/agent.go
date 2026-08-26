@@ -53,7 +53,6 @@ type Agent interface {
 	Cancel(CancelCause, CancelOptions)
 	WhenIdle(context.Context) error
 	RunMaintenance(context.Context, func(context.Context) error) error
-	Send(llm.UserMessage, InboxTarget, bool) error
 	Followup(llm.UserMessage) error
 	Steer(llm.UserMessage) error
 	Inject(llm.UserMessage) error

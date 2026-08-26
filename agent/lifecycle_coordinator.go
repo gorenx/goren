@@ -39,26 +39,6 @@ type epoch struct {
 	closeErr     error
 }
 
-// LifecycleCoordinator owns every exact Agent epoch, Registry membership,
-// publication, and runtime parent-child relation. Plugin topology is an
-// implementation detail of the attached Agent runtime.
-type LifecycleCoordinator struct {
-	mutex  sync.Mutex
-	byID   map[session.SessionID]*epoch
-	epochs []*epoch
-	report func(error)
-}
-
-func newLifecycleCoordinator(report func(error)) *LifecycleCoordinator {
-	if report == nil {
-		report = func(error) {}
-	}
-	return &LifecycleCoordinator{
-		byID:   make(map[session.SessionID]*epoch),
-		report: report,
-	}
-}
-
 func (target *epoch) ClosingSignal() <-chan struct{} {
 	if target == nil {
 		closed := make(chan struct{})
@@ -100,29 +80,24 @@ func (target *epoch) Attach(
 	return target.teardown, nil
 }
 
-type agentTeardown struct {
-	coordinator *LifecycleCoordinator
-	epoch       *epoch
+// LifecycleCoordinator owns every exact Agent epoch, Registry membership,
+// publication, and runtime parent-child relation. Plugin topology is an
+// implementation detail of the attached Agent runtime.
+type LifecycleCoordinator struct {
+	mutex  sync.Mutex
+	byID   map[session.SessionID]*epoch
+	epochs []*epoch
+	report func(error)
 }
 
-func (teardown *agentTeardown) BeginTeardown(closeContext context.Context) {
-	if teardown == nil || teardown.coordinator == nil || teardown.epoch == nil {
-		return
+func newLifecycleCoordinator(report func(error)) *LifecycleCoordinator {
+	if report == nil {
+		report = func(error) {}
 	}
-	teardown.coordinator.runtimeTeardownStarted(
-		closeContext,
-		teardown.epoch,
-	)
-}
-
-func (teardown *agentTeardown) FinishTeardown(closeErr error) {
-	if teardown == nil || teardown.coordinator == nil || teardown.epoch == nil {
-		return
+	return &LifecycleCoordinator{
+		byID:   make(map[session.SessionID]*epoch),
+		report: report,
 	}
-	teardown.coordinator.runtimeTeardownFinished(
-		teardown.epoch,
-		closeErr,
-	)
 }
 
 func (coordinator *LifecycleCoordinator) createEpoch(
