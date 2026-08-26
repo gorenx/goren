@@ -283,10 +283,10 @@ func TestAgentLifecycleBusinessFilesDoNotCallPluginRuntime(t *testing.T) {
 			"construction.go",
 		},
 		filepath.Join(repositoryPath, "subagent", "spawn") + ":spawn": {
-			"provider.go",
+			"builder.go",
 		},
 		filepath.Join(repositoryPath, "subagent", "fork") + ":fork": {
-			"provider.go",
+			"builder.go",
 		},
 	}
 	forbidden := map[string]struct{}{

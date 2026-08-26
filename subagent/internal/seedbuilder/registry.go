@@ -12,17 +12,18 @@ import (
 	"github.com/gorenx/goren/subagent"
 )
 
-// Events publishes SeedBuilder registration facts at the Runtime boundary.
-type Events interface {
-	Added(context.Context, subagent.SeedBuilder) error
-	Removed(context.Context, string)
+// EventPublisher publishes SeedBuilder registration facts at the Runtime
+// boundary.
+type EventPublisher interface {
+	PublishAdded(context.Context, subagent.SeedBuilder) error
+	PublishRemoved(context.Context, string)
 }
 
 // Registry owns exact SeedBuilder registrations and stable lookup order.
 type Registry struct {
-	mutex       sync.RWMutex
-	builders    map[string]*binding
-	eventTarget Events
+	mutex     sync.RWMutex
+	builders  map[string]*binding
+	publisher EventPublisher
 }
 
 type binding struct {
@@ -46,10 +47,10 @@ type registration struct {
 }
 
 // New constructs an empty SeedBuilder Registry.
-func New(eventTarget Events) *Registry {
+func New(publisher EventPublisher) *Registry {
 	return &Registry{
-		builders:    make(map[string]*binding),
-		eventTarget: eventTarget,
+		builders:  make(map[string]*binding),
+		publisher: publisher,
 	}
 }
 
@@ -87,8 +88,8 @@ func (registryOwner *Registry) Register(
 	}
 	registryOwner.builders[registeredName] = record
 	registryOwner.mutex.Unlock()
-	if registryOwner.eventTarget != nil {
-		if publishErr := registryOwner.eventTarget.Added(
+	if registryOwner.publisher != nil {
+		if publishErr := registryOwner.publisher.PublishAdded(
 			requestContext,
 			candidate,
 		); publishErr != nil {
@@ -158,11 +159,11 @@ func (registryOwner *Registry) unregister(
 	}
 	delete(registryOwner.builders, record.name)
 	registryOwner.mutex.Unlock()
-	if registryOwner.eventTarget != nil {
+	if registryOwner.publisher != nil {
 		if requestContext == nil {
 			requestContext = context.Background()
 		}
-		registryOwner.eventTarget.Removed(
+		registryOwner.publisher.PublishRemoved(
 			context.WithoutCancel(requestContext),
 			record.name,
 		)

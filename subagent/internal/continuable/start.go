@@ -9,7 +9,6 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
-	"github.com/gorenx/goren/subagent/internal/childrequest"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
 	"github.com/gorenx/goren/subagent/internal/lineage"
 )
@@ -27,13 +26,14 @@ func (owner *Service) Start(
 			"subagent: Continuable received another start mode",
 		)
 	}
-	requestSnapshot, snapshotErr := childrequest.Snapshot(command.Request())
+	requestSnapshot, snapshotErr := command.Request()
 	if snapshotErr != nil {
 		return nil, snapshotErr
 	}
-	if admissionErr := owner.assertAccepting(requestSnapshot.Parent); admissionErr != nil {
-		return nil, admissionErr
+	if authorizationErr := owner.authorizeParent(requestSnapshot.Parent); authorizationErr != nil {
+		return nil, authorizationErr
 	}
+	seedBuilderName := command.SeedBuilderName()
 	childLineage, lineageErr := lineage.From(
 		requestSnapshot.Parent,
 		requestSnapshot.MaxDepth,
@@ -48,26 +48,27 @@ func (owner *Service) Start(
 		return nil, errors.New("subagent: Continuable label is missing")
 	}
 	descriptor, descriptorErr := continuableDescriptor(
-		command.SeedBuilderName(),
+		seedBuilderName,
 		*label,
 		requestSnapshot,
 	)
 	if descriptorErr != nil {
 		return nil, descriptorErr
 	}
-	childID, childIDErr := requestedChildID(command.RequestedChildID())
+	requestedID := command.RequestedChildID()
+	childID, childIDErr := requestedChildID(requestedID)
 	if childIDErr != nil {
 		return nil, childIDErr
 	}
 	builder, found := owner.dependencies.SeedBuilders.Find(
-		command.SeedBuilderName(),
+		seedBuilderName,
 	)
 	if !found {
 		return nil, &subagent.Error{
 			Code: subagent.ErrorNoSeedBuilder,
 			Message: fmt.Sprintf(
 				"no subagent SeedBuilder registered for %q",
-				command.SeedBuilderName(),
+				seedBuilderName,
 			),
 		}
 	}
@@ -75,22 +76,15 @@ func (owner *Service) Start(
 	if parentSession == nil {
 		return nil, errors.New("subagent: parent Session is unavailable")
 	}
-	parentHeader := parentSession.Header()
 	seedValue, seedErr := builder.BuildSeed(
 		requestContext,
-		subagent.SeedRequest{
-			ChildID: childID,
-			Parent: subagent.ParentSnapshot{
-				SessionID: parentHeader.ID,
-				Header:    parentHeader,
-				Events:    parentSession.Events(),
-			},
-		},
+		parentSession.Events(),
 	)
 	if seedErr != nil {
 		return nil, seedErr
 	}
-	seed, seedErr := descriptorSeed(childID, seedValue.Events, descriptor)
+	builderSeed := seedValue.EventPrefix()
+	seed, seedErr := descriptorSeed(childID, builderSeed, descriptor)
 	if seedErr != nil {
 		return nil, seedErr
 	}
@@ -101,18 +95,24 @@ func (owner *Service) Start(
 	if requestErr := requestContext.Err(); requestErr != nil {
 		return nil, requestErr
 	}
-	if admissionErr := owner.assertAccepting(requestSnapshot.Parent); admissionErr != nil {
-		return nil, admissionErr
+	if authorizationErr := owner.authorizeParent(requestSnapshot.Parent); authorizationErr != nil {
+		return nil, authorizationErr
 	}
 	if slot.current != nil {
 		return nil, duplicateChild(childID)
 	}
 	if availabilityErr := owner.assertAvailable(
-		requestContext,
 		childID,
-		command.RequestedChildID() != nil,
 	); availabilityErr != nil {
 		return nil, availabilityErr
+	}
+	if requestedID != nil {
+		if availabilityErr := owner.assertPersistedAvailable(
+			requestContext,
+			childID,
+		); availabilityErr != nil {
+			return nil, availabilityErr
+		}
 	}
 	handle, createErr := owner.create(
 		requestContext,
@@ -121,7 +121,7 @@ func (owner *Service) Start(
 		requestSnapshot,
 		childLineage,
 		seed,
-		int64(len(seedValue.Events)),
+		int64(len(builderSeed)),
 	)
 	if createErr != nil {
 		return nil, createErr
@@ -147,7 +147,7 @@ func (owner *Service) Start(
 	current, publishErr := owner.publish(
 		handle,
 		requestSnapshot.Parent,
-		command.SeedBuilderName(),
+		seedBuilderName,
 		slot,
 	)
 	if publishErr != nil {
@@ -186,10 +186,8 @@ func (owner *Service) create(
 			AgentOptions: *request.AgentOptions,
 			Provisioner: owner.provisioner(
 				scopePolicy{
-					childID:    childID,
-					parentID:   request.Parent.ID(),
 					descriptor: descriptor,
-					fresh:      true,
+					delegation: owner.dependencies.Approval,
 				},
 			),
 			RuntimeParent: request.Parent,
@@ -268,10 +266,7 @@ func (owner *Service) resume(
 			},
 			Provisioner: owner.provisioner(
 				scopePolicy{
-					childID:    childID,
-					parentID:   parentAgent.ID(),
 					descriptor: descriptor,
-					fresh:      false,
 				},
 			),
 			RuntimeParent: parentAgent,
@@ -337,8 +332,8 @@ func (owner *Service) publish(
 	); publishErr != nil {
 		return nil, publishErr
 	}
-	if owner.dependencies.Lifecycle != nil {
-		owner.dependencies.Lifecycle.Started(
+	if owner.dependencies.Publisher != nil {
+		owner.dependencies.Publisher.PublishStarted(
 			parentAgent,
 			subagent.Started{
 				RunID:    runID,
@@ -352,9 +347,7 @@ func (owner *Service) publish(
 }
 
 func (owner *Service) assertAvailable(
-	requestContext context.Context,
 	childID session.SessionID,
-	checkPersistence bool,
 ) error {
 	if _, found := owner.dependencies.Agents.Get(childID); found {
 		return duplicateChild(childID)
@@ -362,17 +355,22 @@ func (owner *Service) assertAvailable(
 	if _, found := owner.dependencies.Sessions.Get(childID); found {
 		return duplicateChild(childID)
 	}
-	if checkPersistence {
-		snapshots, listErr := owner.dependencies.Persistence.ListSnapshots(
-			requestContext,
-		)
-		if listErr != nil {
-			return listErr
-		}
-		for _, snapshot := range snapshots {
-			if snapshot.Header.ID == childID {
-				return duplicateChild(childID)
-			}
+	return nil
+}
+
+func (owner *Service) assertPersistedAvailable(
+	requestContext context.Context,
+	childID session.SessionID,
+) error {
+	snapshots, listErr := owner.dependencies.Persistence.ListSnapshots(
+		requestContext,
+	)
+	if listErr != nil {
+		return listErr
+	}
+	for _, snapshot := range snapshots {
+		if snapshot.Header.ID == childID {
+			return duplicateChild(childID)
 		}
 	}
 	return nil

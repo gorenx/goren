@@ -14,9 +14,9 @@ type extension struct{}
 
 func (contribution *extension) Install(
 	requestContext context.Context,
-	extensionContext subagent.ExtensionContext,
+	scope agent.Scope,
 ) (subagent.ExtensionInstallation, error) {
-	if extensionContext.Scope == nil {
+	if scope == nil {
 		return nil, errors.New("subagent report: child Scope is unavailable")
 	}
 	installed := &installation{}
@@ -25,7 +25,7 @@ func (contribution *extension) Install(
 	}
 	mounted, mountErr := scopedplugin.Mount(
 		requestContext,
-		extensionContext.Scope,
+		scope,
 		child,
 	)
 	if mountErr != nil {

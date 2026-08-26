@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 )
 
@@ -16,13 +17,13 @@ func (record builderRecord) Name() string {
 	return record.name
 }
 
-func (builderRecord) Policy() subagent.SeedPolicy {
-	return subagent.SeedPolicy{}
+func (builderRecord) ContextPolicy() subagent.ParentContextPolicy {
+	return subagent.NoParentContext
 }
 
 func (builderRecord) BuildSeed(
 	context.Context,
-	subagent.SeedRequest,
+	[]session.Event,
 ) (subagent.SessionSeed, error) {
 	return subagent.SessionSeed{}, nil
 }
@@ -33,7 +34,7 @@ type eventRecord struct {
 	removed  []string
 }
 
-func (record *eventRecord) Added(
+func (record *eventRecord) PublishAdded(
 	_ context.Context,
 	builder subagent.SeedBuilder,
 ) error {
@@ -41,7 +42,7 @@ func (record *eventRecord) Added(
 	return record.addedErr
 }
 
-func (record *eventRecord) Removed(
+func (record *eventRecord) PublishRemoved(
 	_ context.Context,
 	candidateName string,
 ) {

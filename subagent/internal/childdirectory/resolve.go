@@ -188,27 +188,13 @@ func sameLifecycle(left session.Header, right session.Header) bool {
 	return left.Version == right.Version &&
 		left.ID == right.ID &&
 		left.CreatedAt == right.CreatedAt &&
-		sameString(left.CWD, right.CWD) &&
-		sameSessionID(left.ParentSession, right.ParentSession) &&
-		sameInt64(left.SeedLength, right.SeedLength) &&
-		sameInt64(left.DelegationDepth, right.DelegationDepth)
+		sameOptional(left.CWD, right.CWD) &&
+		sameOptional(left.ParentSession, right.ParentSession) &&
+		sameOptional(left.SeedLength, right.SeedLength) &&
+		sameOptional(left.DelegationDepth, right.DelegationDepth)
 }
 
-func sameString(left *string, right *string) bool {
-	if left == nil || right == nil {
-		return left == nil && right == nil
-	}
-	return *left == *right
-}
-
-func sameSessionID(left *session.SessionID, right *session.SessionID) bool {
-	if left == nil || right == nil {
-		return left == nil && right == nil
-	}
-	return *left == *right
-}
-
-func sameInt64(left *int64, right *int64) bool {
+func sameOptional[Value comparable](left *Value, right *Value) bool {
 	if left == nil || right == nil {
 		return left == nil && right == nil
 	}

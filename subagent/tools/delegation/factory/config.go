@@ -39,8 +39,28 @@ type ToolFilter struct {
 
 // DepthLimit is either a numeric recursion cap or provider-managed policy.
 type DepthLimit struct {
-	ProviderManaged bool
-	Value           int64
+	kind  depthLimitKind
+	value int64
+}
+
+type depthLimitKind uint8
+
+const (
+	depthLimitNumeric depthLimitKind = iota
+	depthLimitUnspecified
+)
+
+// NewNumericDepthLimit constructs a validated numeric maxDepth configuration.
+func NewNumericDepthLimit(value int64) (DepthLimit, error) {
+	if value < 0 || value > 1<<53-1 {
+		return DepthLimit{}, errors.New(
+			"subagent tool factory: maxDepth must be a non-negative safe integer",
+		)
+	}
+	return DepthLimit{
+		kind:  depthLimitNumeric,
+		value: value,
+	}, nil
 }
 
 // UnmarshalJSON decodes the canonical number | "provider-managed" union.
@@ -50,7 +70,7 @@ func (limit *DepthLimit) UnmarshalJSON(rawValue []byte) error {
 	}
 	if bytes.Equal(bytes.TrimSpace(rawValue), []byte(`"provider-managed"`)) {
 		*limit = DepthLimit{
-			ProviderManaged: true,
+			kind: depthLimitUnspecified,
 		}
 		return nil
 	}
@@ -63,28 +83,30 @@ func (limit *DepthLimit) UnmarshalJSON(rawValue []byte) error {
 		)
 	}
 	value, parseErr := numeric.Int64()
-	if parseErr != nil || value < 0 || value > 1<<53-1 {
+	if parseErr != nil {
 		return errors.New(
 			"subagent tool factory: maxDepth must be a non-negative safe integer",
 		)
 	}
-	*limit = DepthLimit{
-		Value: value,
+	configuredLimit, numericErr := NewNumericDepthLimit(value)
+	if numericErr != nil {
+		return numericErr
 	}
+	*limit = configuredLimit
 	return nil
 }
 
 // MarshalJSON preserves the canonical number | "provider-managed" union.
 func (limit DepthLimit) MarshalJSON() ([]byte, error) {
-	if limit.ProviderManaged {
+	if limit.kind == depthLimitUnspecified {
 		return []byte(`"provider-managed"`), nil
 	}
-	if limit.Value < 0 || limit.Value > 1<<53-1 {
+	if limit.kind != depthLimitNumeric || limit.value < 0 || limit.value > 1<<53-1 {
 		return nil, errors.New(
-			"subagent tool factory: maxDepth must be a non-negative safe integer",
+			"subagent tool factory: maxDepth state is invalid",
 		)
 	}
-	return json.Marshal(limit.Value)
+	return json.Marshal(limit.value)
 }
 
 func decodeConfig(rawConfig json.RawMessage) (delegation.Settings, error) {
@@ -99,7 +121,8 @@ func decodeConfig(rawConfig json.RawMessage) (delegation.Settings, error) {
 		EnableRunInBackground: true,
 		BackgroundMode:        delegation.BackgroundOneShot,
 		MaxDepth: DepthLimit{
-			Value: 3,
+			kind:  depthLimitNumeric,
+			value: 3,
 		},
 	}
 	decoder := json.NewDecoder(bytes.NewReader(rawConfig))
@@ -139,8 +162,9 @@ func decodeConfig(rawConfig json.RawMessage) (delegation.Settings, error) {
 			)
 		}
 	}
-	if !settings.MaxDepth.ProviderManaged {
-		resolved.MaxDepth = &settings.MaxDepth.Value
+	if settings.MaxDepth.kind == depthLimitNumeric {
+		maxDepth := settings.MaxDepth.value
+		resolved.MaxDepth = &maxDepth
 	}
 	return resolved, nil
 }

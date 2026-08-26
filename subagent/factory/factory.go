@@ -9,18 +9,18 @@ import (
 	"github.com/gorenx/goren/plugin"
 	pluginfactory "github.com/gorenx/goren/plugin/factory"
 	"github.com/gorenx/goren/subagent"
-	subagentruntime "github.com/gorenx/goren/subagent/runtime"
+	subagentplugin "github.com/gorenx/goren/subagent/plugin"
 )
 
 // Factory constructs the canonical Subagent Runtime Plugin.
 type Factory struct {
-	runtimeOptions subagentruntime.RuntimeOptions
+	diagnostics subagentplugin.Diagnostics
 }
 
 // New constructs a statically linked Factory.
-func New(runtimeOptions subagentruntime.RuntimeOptions) *Factory {
+func New(diagnostics subagentplugin.Diagnostics) *Factory {
 	return &Factory{
-		runtimeOptions: runtimeOptions,
+		diagnostics: diagnostics,
 	}
 }
 
@@ -43,7 +43,7 @@ func (builder *Factory) Create(
 	); err != nil {
 		return nil, err
 	}
-	return subagentruntime.New(builder.runtimeOptions), nil
+	return subagentplugin.New(builder.diagnostics), nil
 }
 
 var _ pluginfactory.Factory = (*Factory)(nil)

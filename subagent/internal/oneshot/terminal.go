@@ -7,7 +7,6 @@ import (
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
-	"github.com/gorenx/goren/subagent/internal/assistantoutput"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
 )
 
@@ -20,8 +19,7 @@ type executionTerminator struct {
 	runID       subagent.RunID
 	boundary    int64
 	structured  *structuredCapture
-	lifecycle   Lifecycle
-	published   bool
+	publisher   sharedexecution.EventPublisher
 }
 
 func (terminator *executionTerminator) Terminate(
@@ -51,8 +49,8 @@ func (terminator *executionTerminator) Terminate(
 	if terminalErr != nil {
 		terminalValue.StopReason = subagent.StopError
 	}
-	if terminator.published && terminator.lifecycle != nil {
-		terminator.lifecycle.Ended(
+	if terminator.publisher != nil {
+		terminator.publisher.PublishEnded(
 			terminator.parent,
 			subagent.Ended{
 				RunID:                terminator.runID,
@@ -99,7 +97,7 @@ func readTerminal(
 	if consumedErr != nil {
 		return subagent.Terminal{}, consumedErr
 	}
-	output, outputErr := assistantoutput.Select(ownEvents)
+	output, outputErr := sharedexecution.SelectAssistantOutput(ownEvents)
 	if outputErr != nil {
 		return subagent.Terminal{}, outputErr
 	}

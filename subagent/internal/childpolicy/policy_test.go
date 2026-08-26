@@ -14,15 +14,14 @@ func TestPluginsSeedDelegationOnlyForFreshChild(t *testing.T) {
 	personaText := "review carefully"
 	delegation := &delegationRecord{}
 	selected := PolicySet{
-		Delegation:     delegation,
-		SeedDelegation: true,
-		Persona:        &personaText,
+		Delegation: delegation,
+		Persona:    &personaText,
 		ToolRestriction: &tools.ToolRestriction{
 			Allow: []string{"read"},
 		},
 	}
 	fresh := Plugins(selected)
-	selected.SeedDelegation = false
+	selected.Delegation = nil
 	resumed := Plugins(selected)
 	if len(fresh) != 3 || len(resumed) != 2 {
 		t.Fatalf(

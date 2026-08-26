@@ -8,12 +8,12 @@ import (
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/subagent"
 	subagentfactory "github.com/gorenx/goren/subagent/factory"
-	subagentruntime "github.com/gorenx/goren/subagent/runtime"
+	subagentplugin "github.com/gorenx/goren/subagent/plugin"
 )
 
 func TestFactoryCreatesSubagentPlugin(t *testing.T) {
 	t.Parallel()
-	builder := subagentfactory.New(subagentruntime.RuntimeOptions{})
+	builder := subagentfactory.New(subagentplugin.Diagnostics{})
 	created, err := builder.Create(
 		context.Background(),
 		json.RawMessage(`{}`),
@@ -44,7 +44,7 @@ func TestFactoryCreatesSubagentPlugin(t *testing.T) {
 
 func TestFactoryRejectsConfigurationAndCancelledCreation(t *testing.T) {
 	t.Parallel()
-	builder := subagentfactory.New(subagentruntime.RuntimeOptions{})
+	builder := subagentfactory.New(subagentplugin.Diagnostics{})
 	if _, err := builder.Create(
 		context.Background(),
 		json.RawMessage(`{"unknown":true}`),

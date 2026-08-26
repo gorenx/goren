@@ -2,38 +2,41 @@ package continuable
 
 import (
 	"context"
-	"errors"
 	"reflect"
 	"testing"
 
 	"github.com/gorenx/goren/agent"
 )
 
-func TestCompositeProvisionerRollsBackEarlierParts(t *testing.T) {
+func TestScopeProvisionerTransfersOnlyExtensionProvisioning(t *testing.T) {
 	t.Parallel()
 	order := make([]string, 0)
-	sentinel := errors.New("provision failed")
-	configured := &compositeProvisioner{
-		parts: []agent.Provisioner{
-			provisionerRecord{
-				name:  "first",
-				order: &order,
-			},
-			provisionerRecord{
-				name:         "second",
-				order:        &order,
-				provisionErr: sentinel,
-			},
+	configured := &scopeProvisioner{
+		policies: provisionerRecord{
+			name:  "policy",
+			order: &order,
+		},
+		extensions: provisionerRecord{
+			name:               "extension",
+			order:              &order,
+			returnProvisioning: true,
 		},
 	}
 	acquired, provisionErr := configured.Provision(context.Background(), nil)
-	if acquired != nil || !errors.Is(provisionErr, sentinel) {
-		t.Fatalf("Provision = (%v, %v), want nil and sentinel", acquired, provisionErr)
+	if provisionErr != nil || acquired == nil {
+		t.Fatalf("Provision = (%v, %v), want Extension Provisioning", acquired, provisionErr)
+	}
+	if commitErr := acquired.Commit(); commitErr != nil {
+		t.Fatal(commitErr)
+	}
+	if disposeErr := acquired.Dispose(context.Background()); disposeErr != nil {
+		t.Fatal(disposeErr)
 	}
 	wanted := []string{
-		"provision:first",
-		"provision:second",
-		"dispose:first",
+		"provision:policy",
+		"provision:extension",
+		"commit:extension",
+		"dispose:extension",
 	}
 	if !reflect.DeepEqual(order, wanted) {
 		t.Fatalf("lifecycle = %v, want %v", order, wanted)
@@ -41,9 +44,9 @@ func TestCompositeProvisionerRollsBackEarlierParts(t *testing.T) {
 }
 
 type provisionerRecord struct {
-	name         string
-	order        *[]string
-	provisionErr error
+	name               string
+	order              *[]string
+	returnProvisioning bool
 }
 
 func (record provisionerRecord) Provision(
@@ -51,8 +54,8 @@ func (record provisionerRecord) Provision(
 	agent.Scope,
 ) (agent.Provisioning, error) {
 	*record.order = append(*record.order, "provision:"+record.name)
-	if record.provisionErr != nil {
-		return nil, record.provisionErr
+	if !record.returnProvisioning {
+		return nil, nil
 	}
 	return provisioningRecord{
 		name:  record.name,

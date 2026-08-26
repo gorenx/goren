@@ -12,8 +12,6 @@ const (
 	ErrorNoSeedBuilder ErrorCode = "NO_PROVIDER"
 	// ErrorDuplicateChild rejects an already owned durable child identity.
 	ErrorDuplicateChild ErrorCode = "DUPLICATE_CHILD"
-	// ErrorPersistenceUnavailable reports missing durability for cold resume.
-	ErrorPersistenceUnavailable ErrorCode = "PERSISTENCE_UNAVAILABLE"
 	// ErrorParentUnavailable reports an absent direct parent required for delivery.
 	ErrorParentUnavailable ErrorCode = "PARENT_UNAVAILABLE"
 	// ErrorUnauthorized rejects a stale or unrelated authority identity.

@@ -1,5 +1,4 @@
-// Package assistantoutput selects one subagent epoch's canonical final output.
-package assistantoutput
+package execution
 
 import (
 	"bytes"
@@ -13,9 +12,9 @@ import (
 	"github.com/gorenx/goren/session"
 )
 
-// Select returns the last non-empty assistant message, or accumulated text
-// deltas when no such message was committed.
-func Select(events []session.Event) ([]llm.ContentBlock, error) {
+// SelectAssistantOutput returns the last non-empty assistant message, or
+// accumulated text deltas when no such message was committed.
+func SelectAssistantOutput(events []session.Event) ([]llm.ContentBlock, error) {
 	var message []llm.ContentBlock
 	var partial strings.Builder
 	for _, committed := range events {

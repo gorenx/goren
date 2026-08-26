@@ -12,29 +12,41 @@ import (
 
 // provisioning owns one child Scope's installed Extensions across publication
 // and residency.
+type provisioningState uint8
+
+const (
+	provisioningPending provisioningState = iota
+	provisioningCommitted
+	provisioningInvalid
+	provisioningClosed
+)
+
 type provisioning struct {
-	mutex       sync.Mutex
-	effects     []*effect
-	invalidated bool
-	committed   bool
-	closed      bool
+	mutex   sync.Mutex
+	effects []*effect
+	state   provisioningState
 }
 
 func (acquired *provisioning) Commit() error {
 	acquired.mutex.Lock()
 	defer acquired.mutex.Unlock()
-	if acquired.closed {
+	switch acquired.state {
+	case provisioningClosed:
 		return errors.New("subagent: Extension Provisioning is closed")
-	}
-	if acquired.invalidated {
+	case provisioningInvalid:
 		return &subagent.Error{
 			Code: subagent.ErrorExtensionRevoked,
 			Message: "a Continuable Extension was revoked while " +
 				"the child was being built; the child was not established",
 		}
+	case provisioningCommitted:
+		return nil
+	case provisioningPending:
+		acquired.state = provisioningCommitted
+		return nil
+	default:
+		return errors.New("subagent: Extension Provisioning state is invalid")
 	}
-	acquired.committed = true
-	return nil
 }
 
 func (acquired *provisioning) Dispose(closeContext context.Context) error {
@@ -42,11 +54,11 @@ func (acquired *provisioning) Dispose(closeContext context.Context) error {
 		return nil
 	}
 	acquired.mutex.Lock()
-	if acquired.closed {
+	if acquired.state == provisioningClosed {
 		acquired.mutex.Unlock()
 		return nil
 	}
-	acquired.closed = true
+	acquired.state = provisioningClosed
 	effects := append([]*effect(nil), acquired.effects...)
 	acquired.mutex.Unlock()
 	return disposeEffects(closeContext, effects)
@@ -54,8 +66,8 @@ func (acquired *provisioning) Dispose(closeContext context.Context) error {
 
 func (acquired *provisioning) invalidate() {
 	acquired.mutex.Lock()
-	if !acquired.committed {
-		acquired.invalidated = true
+	if acquired.state == provisioningPending {
+		acquired.state = provisioningInvalid
 	}
 	acquired.mutex.Unlock()
 }
@@ -81,7 +93,7 @@ func (installed *effect) Dispose(closeContext context.Context) error {
 					return candidate == installed
 				},
 			)
-			removed := installed.registration.removed
+			removed := installed.registration.state == registrationRemoved
 			installed.registration.mutex.Unlock()
 			if removed && installed.owner != nil {
 				installed.owner.invalidate()

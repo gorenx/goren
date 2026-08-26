@@ -18,7 +18,6 @@ func (owner *Service) provisioner(policy scopePolicy) agent.Provisioner {
 	instances := childpolicy.Plugins(
 		childpolicy.PolicySet{
 			Delegation:      owner.dependencies.Approval,
-			SeedDelegation:  true,
 			Persona:         policy.persona,
 			ToolRestriction: policy.restriction,
 		},

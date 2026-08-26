@@ -1,5 +1,6 @@
-// Package runtime composes Subagent business objects into the Plugin Runtime.
-package runtime
+// Package plugin implements the Subagent Plugin and composes its business
+// objects into the host Plugin Runtime.
+package plugin
 
 import (
 	"context"
@@ -8,7 +9,7 @@ import (
 
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/approval"
-	"github.com/gorenx/goren/plugin"
+	pluginruntime "github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/session/persistence"
 	sessionprojection "github.com/gorenx/goren/session/projection"
@@ -25,7 +26,7 @@ import (
 // Plugin owns only dependency resolution, capability publication, and the
 // active Subagents business object's structural lifetime.
 type Plugin struct {
-	plugin.Base
+	pluginruntime.Base
 
 	builders    *seedbuilder.Registry
 	service     *subagents.Service
@@ -38,8 +39,8 @@ type Plugin struct {
 }
 
 // New constructs an inactive Plugin and its stable publication adapters.
-func New(options RuntimeOptions) *Plugin {
-	reporter := options.ObserverError
+func New(failureReporting Diagnostics) *Plugin {
+	reporter := failureReporting.ObserverError
 	if reporter == nil {
 		reporter = func(error) {}
 	}
@@ -61,30 +62,30 @@ func New(options RuntimeOptions) *Plugin {
 
 // Manifest publishes narrow business capability views and declares every
 // dependency required to run both Subagent implementations.
-func (owner *Plugin) Manifest() plugin.Manifest {
-	return plugin.Manifest{
+func (owner *Plugin) Manifest() pluginruntime.Manifest {
+	return pluginruntime.Manifest{
 		Name: subagent.PluginName,
-		Provides: []plugin.ProvidedService{
-			plugin.NewProvidedService[subagent.SeedBuilderRegistry](owner.builders),
-			plugin.NewProvidedService[subagent.Starter](owner.service),
-			plugin.NewProvidedService[subagent.ChildControl](owner.service),
-			plugin.NewProvidedService[subagent.ParentReporter](owner.service),
-			plugin.NewProvidedService[subagent.ExtensionRegistry](owner.extensions),
-			plugin.NewProvidedService[subagent.ChildDirectory](owner.directory),
+		Provides: []pluginruntime.ProvidedService{
+			pluginruntime.NewProvidedService[subagent.SeedBuilderRegistry](owner.builders),
+			pluginruntime.NewProvidedService[subagent.Starter](owner.service),
+			pluginruntime.NewProvidedService[subagent.ChildControl](owner.service),
+			pluginruntime.NewProvidedService[subagent.ParentReporter](owner.service),
+			pluginruntime.NewProvidedService[subagent.ExtensionRegistry](owner.extensions),
+			pluginruntime.NewProvidedService[subagent.ChildDirectory](owner.directory),
 		},
-		Requires: []plugin.ServiceType{
-			plugin.ServiceOf[agent.Registry](),
-			plugin.ServiceOf[agent.Constructor](),
-			plugin.ServiceOf[agent.RuntimeDescendants](),
-			plugin.ServiceOf[session.LiveStore](),
-			plugin.ServiceOf[persistence.Persistence](),
+		Requires: []pluginruntime.ServiceType{
+			pluginruntime.ServiceOf[agent.Registry](),
+			pluginruntime.ServiceOf[agent.Constructor](),
+			pluginruntime.ServiceOf[agent.RuntimeDescendants](),
+			pluginruntime.ServiceOf[session.LiveStore](),
+			pluginruntime.ServiceOf[persistence.Persistence](),
 		},
-		Optional: []plugin.ServiceType{
-			plugin.ServiceOf[approval.DelegationPolicy](),
-			plugin.ServiceOf[sessionprojection.Registry](),
+		Optional: []pluginruntime.ServiceType{
+			pluginruntime.ServiceOf[approval.DelegationPolicy](),
+			pluginruntime.ServiceOf[sessionprojection.Registry](),
 		},
-		Events: []plugin.EventSubscription{
-			plugin.EventOf[agent.Disposed](),
+		Events: []pluginruntime.EventSubscription{
+			pluginruntime.EventOf[agent.Disposed](),
 		},
 	}
 }
@@ -97,28 +98,28 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 	if requestErr := requestContext.Err(); requestErr != nil {
 		return requestErr
 	}
-	agentRegistry, err := plugin.Require[agent.Registry](owner)
+	agentRegistry, err := pluginruntime.Require[agent.Registry](owner)
 	if err != nil {
 		return err
 	}
-	agentConstructor, err := plugin.Require[agent.Constructor](owner)
+	agentConstructor, err := pluginruntime.Require[agent.Constructor](owner)
 	if err != nil {
 		return err
 	}
-	runtimeDescendants, err := plugin.Require[agent.RuntimeDescendants](owner)
+	runtimeDescendants, err := pluginruntime.Require[agent.RuntimeDescendants](owner)
 	if err != nil {
 		return err
 	}
-	liveSessions, err := plugin.Require[session.LiveStore](owner)
+	liveSessions, err := pluginruntime.Require[session.LiveStore](owner)
 	if err != nil {
 		return err
 	}
-	sessionPersistence, err := plugin.Require[persistence.Persistence](owner)
+	sessionPersistence, err := pluginruntime.Require[persistence.Persistence](owner)
 	if err != nil {
 		return err
 	}
-	approvalService, _ := plugin.Resolve[approval.DelegationPolicy](owner)
-	projectionRegistry, _ := plugin.Resolve[sessionprojection.Registry](owner)
+	approvalService, _ := pluginruntime.Resolve[approval.DelegationPolicy](owner)
+	projectionRegistry, _ := pluginruntime.Resolve[sessionprojection.Registry](owner)
 	if err := owner.registerProjections(projectionRegistry); err != nil {
 		return err
 	}
@@ -138,7 +139,7 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 			Constructor:  agentConstructor,
 			Approval:     approvalService,
 			SeedBuilders: owner.builders,
-			Lifecycle:    owner.events,
+			Publisher:    owner.events,
 			Executions:   owner.executions,
 		},
 	)
@@ -158,7 +159,7 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 			Persistence:  sessionPersistence,
 			Approval:     approvalService,
 			SeedBuilders: owner.builders,
-			Lifecycle:    owner.events,
+			Publisher:    owner.events,
 			Extensions:   owner.extensions,
 			Failures:     owner.failures,
 			Executions:   owner.executions,
@@ -174,8 +175,6 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 	err = owner.service.Open(
 		agentRegistry,
 		owner.executions,
-		continuableService,
-		continuableService,
 		oneShotService,
 		continuableService,
 	)
@@ -224,4 +223,4 @@ func (owner *Plugin) Dispose(closeContext context.Context) error {
 	)
 }
 
-var _ plugin.Plugin = (*Plugin)(nil)
+var _ pluginruntime.Plugin = (*Plugin)(nil)

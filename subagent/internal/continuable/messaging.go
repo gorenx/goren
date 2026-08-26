@@ -36,10 +36,10 @@ func (owner *Service) Send(
 	for {
 		slot := owner.acquireSlot(childID)
 		slot.mutex.Lock()
-		if admissionErr := owner.assertAccepting(parentAgent); admissionErr != nil {
+		if authorizationErr := owner.authorizeParent(parentAgent); authorizationErr != nil {
 			slot.mutex.Unlock()
 			owner.releaseSlot(childID, slot)
-			return "", admissionErr
+			return "", authorizationErr
 		}
 		current := slot.current
 		if current != nil && current.running.State() != subagent.ExecutionActive {

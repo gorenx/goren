@@ -13,7 +13,7 @@ import (
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
-	subagentruntime "github.com/gorenx/goren/subagent/runtime"
+	subagentplugin "github.com/gorenx/goren/subagent/plugin"
 	"github.com/gorenx/goren/subagent/spawn"
 	subagentdelegation "github.com/gorenx/goren/subagent/tools/delegation"
 	"github.com/gorenx/goren/systemprompt"
@@ -344,7 +344,7 @@ func newIntegrationFixtureWithConfiguration(
 		modelRuntime,
 	}
 	rootPlugins = append(rootPlugins, configuration.plugins...)
-	subagentPlugin := subagentruntime.New(subagentruntime.RuntimeOptions{
+	subagentPlugin := subagentplugin.New(subagentplugin.Diagnostics{
 		ObserverError: observerErrors.report,
 	})
 	rootPlugins = append(

@@ -56,7 +56,7 @@ import (
 	"github.com/gorenx/goren/subagent"
 	subagentfactory "github.com/gorenx/goren/subagent/factory"
 	subagentforkfactory "github.com/gorenx/goren/subagent/fork/factory"
-	subagentruntime "github.com/gorenx/goren/subagent/runtime"
+	subagentplugin "github.com/gorenx/goren/subagent/plugin"
 	"github.com/gorenx/goren/subagent/spawn"
 	subagentspawnfactory "github.com/gorenx/goren/subagent/spawn/factory"
 	subagentcontrol "github.com/gorenx/goren/subagent/tools/control"
@@ -185,7 +185,7 @@ func NewCatalog(platform Environment) (*pluginfactory.Catalog, error) {
 		sessionqueryfactory.New(),
 		titleBuilder,
 		systempromptfactory.New(),
-		subagentfactory.New(subagentruntime.RuntimeOptions{
+		subagentfactory.New(subagentplugin.Diagnostics{
 			ObserverError: platform.Diagnostics.Report,
 		}),
 		subagentspawnfactory.New(),
@@ -290,14 +290,16 @@ func DefaultSpecs(
 	if err != nil {
 		return nil, err
 	}
+	maxSubagentDepth, err := subagentdelegationfactory.NewNumericDepthLimit(3)
+	if err != nil {
+		return nil, err
+	}
 	subagentToolRaw, err := json.Marshal(subagentdelegationfactory.Config{
 		Provider:              spawn.DefaultSeedBuilderName,
 		ToolName:              subagentdelegation.DefaultToolName,
 		EnableRunInBackground: true,
 		BackgroundMode:        subagentdelegation.BackgroundContinuable,
-		MaxDepth: subagentdelegationfactory.DepthLimit{
-			Value: 3,
-		},
+		MaxDepth:              maxSubagentDepth,
 	})
 	if err != nil {
 		return nil, err

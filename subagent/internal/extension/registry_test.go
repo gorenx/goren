@@ -22,7 +22,7 @@ type extensionRecord struct {
 
 func (record extensionRecord) Install(
 	context.Context,
-	subagent.ExtensionContext,
+	agent.Scope,
 ) (subagent.ExtensionInstallation, error) {
 	return record.install()
 }
@@ -56,7 +56,7 @@ func TestRegistryProvisionsInOrderAndReleasesWithChild(t *testing.T) {
 			t.Fatal(registerErr)
 		}
 	}
-	configured := NewProvisioner(owner, Input{})
+	configured := NewProvisioner(owner)
 	acquired, provisionErr := configured.Provision(
 		context.Background(),
 		scopeRecord{},
@@ -103,7 +103,7 @@ func TestProvisionFailureRollsBackInstalledExtensions(t *testing.T) {
 	); registerErr != nil {
 		t.Fatal(registerErr)
 	}
-	configured := NewProvisioner(owner, Input{})
+	configured := NewProvisioner(owner)
 	acquired, provisionErr := configured.Provision(
 		context.Background(),
 		scopeRecord{},
@@ -117,7 +117,7 @@ func TestProvisionFailureRollsBackInstalledExtensions(t *testing.T) {
 }
 
 func TestEmptyRegistryProducesNoProvisioning(t *testing.T) {
-	configured := NewProvisioner(New(), Input{})
+	configured := NewProvisioner(New())
 	acquired, provisionErr := configured.Provision(
 		context.Background(),
 		scopeRecord{},
@@ -145,7 +145,7 @@ func TestRegistrationRemovalInvalidatesUnpublishedProvisioning(t *testing.T) {
 	if registerErr != nil {
 		t.Fatal(registerErr)
 	}
-	configured := NewProvisioner(owner, Input{})
+	configured := NewProvisioner(owner)
 	acquired, provisionErr := configured.Provision(
 		context.Background(),
 		scopeRecord{},
@@ -195,7 +195,7 @@ func TestExtensionCanRemoveItselfDuringInstall(t *testing.T) {
 		t.Fatal(registerErr)
 	}
 	handle = registered
-	configured := NewProvisioner(owner, Input{})
+	configured := NewProvisioner(owner)
 	acquired, provisionErr := configured.Provision(
 		context.Background(),
 		scopeRecord{},
@@ -229,7 +229,7 @@ func TestRegistrationRemovalAfterCommitRevokesResidentInstallation(t *testing.T)
 	if registerErr != nil {
 		t.Fatal(registerErr)
 	}
-	configured := NewProvisioner(owner, Input{})
+	configured := NewProvisioner(owner)
 	acquired, provisionErr := configured.Provision(
 		context.Background(),
 		scopeRecord{},

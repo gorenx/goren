@@ -1,5 +1,5 @@
-// Package execution owns the Subagent execution state machine shared by
-// OneShot and Continuable implementations.
+// Package execution owns the state, current-run index, identities, and final
+// assistant-output rule shared by OneShot and Continuable implementations.
 package execution
 
 import (
@@ -8,24 +8,30 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 )
+
+// EventPublisher publishes the paired facts emitted by both Subagent
+// implementations.
+type EventPublisher interface {
+	PublishStarted(agent.Agent, subagent.Started)
+	PublishEnded(agent.Agent, subagent.Ended)
+}
 
 // StopCause identifies why an implementation requested the common terminal
 // transaction. It is internal input, not a caller-visible terminal result.
 type StopCause string
 
 const (
-	StopNormal       StopCause = "normal-result"
-	StopIdle         StopCause = "idle-settlement"
-	StopInterrupted  StopCause = "interrupt"
-	StopDisposed     StopCause = "dispose"
-	StopAncestor     StopCause = "ancestor-close"
-	StopModule       StopCause = "module-shutdown"
-	StopExternal     StopCause = "external-agent-close"
-	StopStartFailure StopCause = "start-failure"
+	StopNormal      StopCause = "normal-result"
+	StopIdle        StopCause = "idle-settlement"
+	StopInterrupted StopCause = "interrupt"
+	StopDisposed    StopCause = "dispose"
+	StopModule      StopCause = "module-shutdown"
+	StopExternal    StopCause = "external-agent-close"
 )
 
 // Terminator completes the mode-specific physical and durable work for one

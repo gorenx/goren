@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 )
 
@@ -35,17 +36,15 @@ func (owner *Builder) Name() string {
 	return owner.name
 }
 
-// Policy declares that spawn does not copy parent conversation events.
-func (*Builder) Policy() subagent.SeedPolicy {
-	return subagent.SeedPolicy{
-		ParentContext: subagent.NoParentContext,
-	}
+// ContextPolicy declares that spawn does not copy parent conversation events.
+func (*Builder) ContextPolicy() subagent.ParentContextPolicy {
+	return subagent.NoParentContext
 }
 
 // BuildSeed returns an empty detached seed.
 func (*Builder) BuildSeed(
 	requestContext context.Context,
-	_ subagent.SeedRequest,
+	_ []session.Event,
 ) (subagent.SessionSeed, error) {
 	if requestContext == nil {
 		return subagent.SessionSeed{}, errors.New(

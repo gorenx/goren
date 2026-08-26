@@ -8,7 +8,6 @@ import (
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agent/scopedplugin"
 	"github.com/gorenx/goren/plugin"
-	"github.com/gorenx/goren/subagent"
 	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/tools"
 )
@@ -55,9 +54,7 @@ func TestExtensionMountsChildPluginInExecutionScope(t *testing.T) {
 	contribution := &extension{}
 	installed, installErr := contribution.Install(
 		context.Background(),
-		subagent.ExtensionContext{
-			Scope: scope,
-		},
+		scope,
 	)
 	if installErr != nil {
 		t.Fatal(installErr)
@@ -101,9 +98,7 @@ func TestExtensionReturnsChildMountFailure(t *testing.T) {
 	contribution := &extension{}
 	installed, installErr := contribution.Install(
 		context.Background(),
-		subagent.ExtensionContext{
-			Scope: scope,
-		},
+		scope,
 	)
 	if installed != nil || !errors.Is(installErr, sentinel) {
 		t.Fatalf("Install = (%v, %v), want nil and sentinel", installed, installErr)
