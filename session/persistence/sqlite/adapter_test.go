@@ -3,6 +3,8 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/gorenx/goren/session"
@@ -73,6 +75,89 @@ func TestAdapterMarksAndRepairsOnlyATornTail(t *testing.T) {
 	if err != nil || !found || repaired.Marker != nil || len(repaired.Events) != 2 {
 		t.Fatalf("repaired LoadStored = (%#v, %t, %v)", repaired, found, err)
 	}
+}
+
+func TestAdapterReadsBoundedEventWindowsBackward(t *testing.T) {
+	t.Parallel()
+	requestContext := context.Background()
+	storage, err := Open(
+		requestContext,
+		Config{
+			Path:        t.TempDir() + "/sessions.sqlite",
+			JournalMode: JournalWAL,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = storage.Close(context.Background()) })
+	metadata := session.Header{
+		Version:   session.FormatVersion,
+		ID:        "reverse-window",
+		CreatedAt: 1,
+	}
+	entries := make([]session.Event, 10)
+	for sequence := range entries {
+		entries[sequence] = session.Event{
+			Type:      "extension/window",
+			Seq:       int64(sequence),
+			Time:      int64(sequence + 1),
+			Data:      []byte(`{}`),
+			Ignorable: true,
+		}
+	}
+	if err := storage.AppendBatch(requestContext, metadata, entries, false); err != nil {
+		t.Fatal(err)
+	}
+
+	tail, found, err := storage.LoadStoredEventsBefore(
+		requestContext,
+		metadata.ID,
+		nil,
+		3,
+	)
+	if err != nil || !found {
+		t.Fatalf("tail window = (%#v, %t, %v)", tail, found, err)
+	}
+	if !tail.HasEarlier || eventSequences(tail.Events) != "9,8,7" {
+		t.Fatalf("tail window = %#v", tail)
+	}
+
+	before := int64(7)
+	older, found, err := storage.LoadStoredEventsBefore(
+		requestContext,
+		metadata.ID,
+		&before,
+		3,
+	)
+	if err != nil || !found {
+		t.Fatalf("older window = (%#v, %t, %v)", older, found, err)
+	}
+	if !older.HasEarlier || eventSequences(older.Events) != "6,5,4" {
+		t.Fatalf("older window = %#v", older)
+	}
+
+	before = 2
+	head, found, err := storage.LoadStoredEventsBefore(
+		requestContext,
+		metadata.ID,
+		&before,
+		5,
+	)
+	if err != nil || !found {
+		t.Fatalf("head window = (%#v, %t, %v)", head, found, err)
+	}
+	if head.HasEarlier || eventSequences(head.Events) != "1,0" {
+		t.Fatalf("head window = %#v", head)
+	}
+}
+
+func eventSequences(entries []session.Event) string {
+	sequences := make([]string, len(entries))
+	for index, entry := range entries {
+		sequences[index] = fmt.Sprintf("%d", entry.Seq)
+	}
+	return strings.Join(sequences, ",")
 }
 
 func TestOpenRefusesForeignUnversionedDatabase(t *testing.T) {

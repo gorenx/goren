@@ -201,6 +201,81 @@ describe('ConversationStore', () => {
     store.dispose()
   })
 
+  it('drops completed chunks while keeping the unfinished tail', async () => {
+    installMockHost({
+      existingSession: true,
+      historyEvents: [
+        {
+          type: 'assistant/chunk',
+          seq: 1,
+          time: 10,
+          data: { chunk: { type: 'text-delta', text: 'completed draft' } },
+        },
+        {
+          type: 'assistant/message',
+          seq: 2,
+          time: 11,
+          data: {
+            message: {
+              role: 'assistant',
+              content: [{ type: 'text', text: 'completed answer' }],
+            },
+          },
+        },
+        {
+          type: 'assistant/chunk',
+          seq: 3,
+          time: 12,
+          data: { chunk: { type: 'text-delta', text: 'unfinished answer' } },
+        },
+      ],
+    })
+    const store = new ConversationStore(translate)
+
+    await store.start()
+
+    expect(store.currentEvents().map(event => event.seq)).toEqual([2, 3])
+    expect(store.currentMessages().map(message => message.text)).toEqual([
+      'completed answer',
+      'unfinished answer',
+    ])
+    store.dispose()
+  })
+
+  it('loads older history from the raw page cursor', async () => {
+    const host = installMockHost({
+      existingSession: true,
+      historyPages: {
+        tail: {
+          events: [
+            { type: 'assistant/chunk', seq: 20, time: 20 },
+            { type: 'assistant/message', seq: 21, time: 21 },
+          ],
+          hasMore: true,
+        },
+        '20': {
+          events: [{ type: 'user/message', seq: 5, time: 5 }],
+          hasMore: false,
+        },
+      },
+    })
+    const store = new ConversationStore(translate)
+    await store.start()
+
+    expect(store.currentHistory()).toEqual({ beforeSeq: 20, hasMore: true, loading: false })
+
+    await store.loadOlderHistory()
+
+    const historyCalls = host.calls.filter(call => call.method === 'session.history')
+    expect(historyCalls.map(call => call.payload)).toEqual([
+      { sessionId: session.sessionId, maxMessages: 20 },
+      { sessionId: session.sessionId, beforeSeq: 20, maxMessages: 20 },
+    ])
+    expect(store.currentHistory()).toEqual({ beforeSeq: 5, hasMore: false, loading: false })
+    expect(store.currentEvents().map(event => event.seq)).toEqual([5, 21])
+    store.dispose()
+  })
+
   it('keeps a live event that arrives while history is loading', async () => {
     let releaseHistory: (() => void) | undefined
     const historyWait = new Promise<void>(resolve => {
@@ -302,14 +377,21 @@ interface MockHostOptions {
   createFailure?: string
   createWait?: Promise<void>
   historyEvents?: SessionEvent[]
+  historyHasMore?: boolean
+  historyPages?: Record<string, { events: SessionEvent[], hasMore: boolean }>
   historyWait?: Promise<void>
   listWait?: Promise<void>
 }
 
-function installMockHost(options: MockHostOptions = {}): { methods: string[], responses: unknown[] } {
+function installMockHost(options: MockHostOptions = {}): {
+  methods: string[]
+  responses: unknown[]
+  calls: Array<{ method: string, payload: unknown }>
+} {
   let sessions = options.existingSession === true ? [session] : []
   const methods: string[] = []
   const responses: unknown[] = []
+  const calls: Array<{ method: string, payload: unknown }> = []
   vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const path = typeof input === 'string' ? input : input instanceof URL ? input.pathname : new URL(input.url).pathname
     if (!path.startsWith('/api/')) return response({}, 404)
@@ -324,6 +406,7 @@ function installMockHost(options: MockHostOptions = {}): { methods: string[], re
       payload: unknown
     }
     methods.push(call.method)
+    calls.push({ method: call.method, payload: call.payload })
     let value: unknown
     switch (call.method) {
     case 'host.describe':
@@ -379,9 +462,12 @@ function installMockHost(options: MockHostOptions = {}): { methods: string[], re
       break
     case 'session.history':
       await options.historyWait
+      const historyPayload = call.payload as { beforeSeq?: number }
+      const pageKey = historyPayload.beforeSeq === undefined ? 'tail' : String(historyPayload.beforeSeq)
+      const configuredPage = options.historyPages?.[pageKey]
       value = {
-        events: (options.historyEvents ?? []).map(event => ({ event })),
-        hasMore: false,
+        events: (configuredPage?.events ?? options.historyEvents ?? []).map(event => ({ event })),
+        hasMore: configuredPage?.hasMore ?? options.historyHasMore ?? false,
       }
       break
     default:
@@ -395,7 +481,7 @@ function installMockHost(options: MockHostOptions = {}): { methods: string[], re
       },
     })
   }))
-  return { methods, responses }
+  return { methods, responses, calls }
 }
 
 async function waitForMux(): Promise<void> {

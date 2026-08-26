@@ -11,6 +11,7 @@ import type {
   SessionCreateValue,
   SessionEvent,
   SessionHistoryValue,
+  SessionHistoryState,
   SessionListValue,
   SessionSummary,
   StreamDraft,
@@ -26,6 +27,7 @@ const initialSnapshot: ConversationSnapshot = {
   phase: 'booting',
   sessions: [],
   events: new Map(),
+  histories: new Map(),
   streams: new Map(),
   pendingQuestions: new Map(),
   localTitles: new Map(),
@@ -34,6 +36,8 @@ const initialSnapshot: ConversationSnapshot = {
   composerState: 'composer.connecting',
   credentialLoaded: false,
 }
+
+const historyPageMessages = 20
 
 export const DEEPSEEK_CREDENTIAL_REF = 'DEEPSEEK_API_KEY'
 
@@ -179,23 +183,71 @@ export class ConversationStore {
 
   async #readSelectedSession(sessionId: string, selectionVersion: number): Promise<void> {
     try {
-      const history = await this.#api.call<SessionHistoryValue>('session.history', { sessionId, maxMessages: 100 })
+      const history = await this.#api.call<SessionHistoryValue>('session.history', {
+        sessionId,
+        maxMessages: historyPageMessages,
+      })
       if (selectionVersion !== this.#selectionVersion) return
+      const historyEvents = (history.events ?? []).map(entry => entry.event)
       const events = new Map(this.#value.events)
-      const sessionEvents = mergeEvents(
-        (history.events ?? []).map(entry => entry.event),
+      const sessionEvents = compactCompletedChunks(mergeEvents(
+        historyEvents,
         this.#value.events.get(sessionId) ?? [],
-      )
+      ))
       events.set(sessionId, sessionEvents)
+      const histories = new Map(this.#value.histories)
+      histories.set(sessionId, historyState(historyEvents, history.hasMore))
       const streams = new Map(this.#value.streams)
       setProjectedStream(streams, sessionId, sessionEvents)
       this.#patch({
         events,
+        histories,
         streams,
         composerState: this.currentSession()?.running ? 'composer.agentWorking' : 'composer.ready',
       })
     } catch (error) {
       if (selectionVersion === this.#selectionVersion) this.#fail(error)
+    }
+  }
+
+  async loadOlderHistory(): Promise<void> {
+    const sessionId = this.#value.currentSessionId
+    if (sessionId === undefined) return
+    const current = this.#value.histories.get(sessionId)
+    if (current === undefined || !current.hasMore || current.loading || current.beforeSeq === undefined) return
+    const selectionVersion = this.#selectionVersion
+    const histories = new Map(this.#value.histories)
+    histories.set(sessionId, { ...current, loading: true })
+    this.#patch({ histories })
+    try {
+      const history = await this.#api.call<SessionHistoryValue>('session.history', {
+        sessionId,
+        beforeSeq: current.beforeSeq,
+        maxMessages: historyPageMessages,
+      })
+      if (selectionVersion !== this.#selectionVersion || this.#value.currentSessionId !== sessionId) return
+      const olderEvents = (history.events ?? []).map(entry => entry.event)
+      const events = new Map(this.#value.events)
+      const sessionEvents = compactCompletedChunks(mergeEvents(
+        olderEvents,
+        events.get(sessionId) ?? [],
+      ))
+      events.set(sessionId, sessionEvents)
+      const nextHistories = new Map(this.#value.histories)
+      nextHistories.set(sessionId, historyState(
+        olderEvents,
+        olderEvents.length === 0 ? false : history.hasMore,
+        current.beforeSeq,
+      ))
+      const streams = new Map(this.#value.streams)
+      setProjectedStream(streams, sessionId, sessionEvents)
+      this.#patch({ events, histories: nextHistories, streams })
+    } catch (error) {
+      if (selectionVersion !== this.#selectionVersion || this.#value.currentSessionId !== sessionId) return
+      const failedHistories = new Map(this.#value.histories)
+      failedHistories.set(sessionId, { ...current, loading: false })
+      this.#patch({ histories: failedHistories })
+      this.#fail(error)
     }
   }
 
@@ -249,6 +301,11 @@ export class ConversationStore {
   currentEvents(): readonly SessionEvent[] {
     const sessionId = this.#value.currentSessionId
     return sessionId === undefined ? [] : this.#value.events.get(sessionId) ?? []
+  }
+
+  currentHistory(): SessionHistoryState | undefined {
+    const sessionId = this.#value.currentSessionId
+    return sessionId === undefined ? undefined : this.#value.histories.get(sessionId)
   }
 
   currentMessages(): MessageRow[] {
@@ -352,7 +409,7 @@ export class ConversationStore {
     const eventValue = payload.event
     if (sessionId === undefined || !isSessionEvent(eventValue)) return
     const events = new Map(this.#value.events)
-    const sessionEvents = mergeEvents(events.get(sessionId) ?? [], [eventValue])
+    const sessionEvents = compactCompletedChunks(mergeEvents(events.get(sessionId) ?? [], [eventValue]))
     events.set(sessionId, sessionEvents)
     const streams = new Map(this.#value.streams)
     setProjectedStream(streams, sessionId, sessionEvents)
@@ -419,6 +476,29 @@ function setProjectedStream(
   const draft = projectStream(events)
   if (draft === undefined) streams.delete(sessionId)
   else streams.set(sessionId, draft)
+}
+
+function historyState(
+  events: readonly SessionEvent[],
+  hasMore: boolean,
+  fallbackBeforeSeq?: number,
+): SessionHistoryState {
+  return {
+    beforeSeq: events[0]?.seq ?? fallbackBeforeSeq,
+    hasMore,
+    loading: false,
+  }
+}
+
+function compactCompletedChunks(events: readonly SessionEvent[]): SessionEvent[] {
+  let latestCompletedSeq = -1
+  for (const event of events) {
+    if (event.type === 'assistant/message' && event.seq > latestCompletedSeq) {
+      latestCompletedSeq = event.seq
+    }
+  }
+  if (latestCompletedSeq < 0) return [...events]
+  return events.filter(event => event.type !== 'assistant/chunk' || event.seq > latestCompletedSeq)
 }
 
 function prependSession(

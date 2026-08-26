@@ -128,6 +128,15 @@ func (*queryPersistencePlugin) ReadFrom(
 	return sesspersist.Inspection{}, errors.New("fixture does not read suffixes")
 }
 
+func (*queryPersistencePlugin) ReadEventsBefore(
+	context.Context,
+	session.SessionID,
+	*int64,
+	int64,
+) (sesspersist.EventWindow, error) {
+	return sesspersist.EventWindow{}, errors.New("fixture does not read event windows")
+}
+
 func (storage *queryPersistencePlugin) List(context.Context) ([]session.Header, error) {
 	result := make([]session.Header, 0, len(storage.logs))
 	for _, loaded := range storage.logs {

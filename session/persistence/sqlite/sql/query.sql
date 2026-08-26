@@ -27,6 +27,20 @@ FROM events
 WHERE session_id = ? AND seq >= ?
 ORDER BY seq;
 
+-- name: ListLatestEvents :many
+SELECT seq, type, time, data, source_event_seqs, surface_op, ignorable
+FROM events
+WHERE session_id = ?
+ORDER BY seq DESC
+LIMIT ?;
+
+-- name: ListEventsBefore :many
+SELECT seq, type, time, data, source_event_seqs, surface_op, ignorable
+FROM events
+WHERE session_id = ? AND seq < ?
+ORDER BY seq DESC
+LIMIT ?;
+
 -- name: InsertSession :exec
 INSERT INTO sessions (
     id, version, created_at, cwd, parent_session, seed_length, origin,

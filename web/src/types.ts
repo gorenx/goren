@@ -30,6 +30,7 @@ export interface SessionEvent {
   seq: number
   time: number
   data?: unknown
+  sourceEventSeqs?: number[]
 }
 
 export interface SessionListValue {
@@ -44,6 +45,12 @@ export interface SessionHistoryValue {
   events: Array<{ event: SessionEvent }>
   hasMore: boolean
   projections?: SessionProjections
+}
+
+export interface SessionHistoryState {
+  beforeSeq?: number
+  hasMore: boolean
+  loading: boolean
 }
 
 export interface StreamDraft {
@@ -104,6 +111,7 @@ export interface ConversationSnapshot {
   host?: HostDescription
   sessions: readonly SessionSummary[]
   events: ReadonlyMap<string, readonly SessionEvent[]>
+  histories: ReadonlyMap<string, SessionHistoryState>
   streams: ReadonlyMap<string, StreamDraft>
   pendingQuestions: ReadonlyMap<string, PendingQuestionRequest>
   localTitles: ReadonlyMap<string, string>

@@ -157,8 +157,13 @@ func listEventRows(rows []dbsql.ListEventsRow) []eventRow {
 	result := make([]eventRow, len(rows))
 	for index, row := range rows {
 		result[index] = eventRow{
-			seq: row.Seq, typeName: row.Type, timeValue: row.Time, data: row.Data,
-			sourceEventSeqs: row.SourceEventSeqs, surfaceOp: row.SurfaceOp, ignorable: row.Ignorable,
+			seq:             row.Seq,
+			typeName:        row.Type,
+			timeValue:       row.Time,
+			data:            row.Data,
+			sourceEventSeqs: row.SourceEventSeqs,
+			surfaceOp:       row.SurfaceOp,
+			ignorable:       row.Ignorable,
 		}
 	}
 	return result
@@ -168,8 +173,45 @@ func suffixEventRows(rows []dbsql.ListEventsFromRow) []eventRow {
 	result := make([]eventRow, len(rows))
 	for index, row := range rows {
 		result[index] = eventRow{
-			seq: row.Seq, typeName: row.Type, timeValue: row.Time, data: row.Data,
-			sourceEventSeqs: row.SourceEventSeqs, surfaceOp: row.SurfaceOp, ignorable: row.Ignorable,
+			seq:             row.Seq,
+			typeName:        row.Type,
+			timeValue:       row.Time,
+			data:            row.Data,
+			sourceEventSeqs: row.SourceEventSeqs,
+			surfaceOp:       row.SurfaceOp,
+			ignorable:       row.Ignorable,
+		}
+	}
+	return result
+}
+
+func latestEventRows(rows []dbsql.ListLatestEventsRow) []eventRow {
+	result := make([]eventRow, len(rows))
+	for index, row := range rows {
+		result[index] = eventRow{
+			seq:             row.Seq,
+			typeName:        row.Type,
+			timeValue:       row.Time,
+			data:            row.Data,
+			sourceEventSeqs: row.SourceEventSeqs,
+			surfaceOp:       row.SurfaceOp,
+			ignorable:       row.Ignorable,
+		}
+	}
+	return result
+}
+
+func beforeEventRows(rows []dbsql.ListEventsBeforeRow) []eventRow {
+	result := make([]eventRow, len(rows))
+	for index, row := range rows {
+		result[index] = eventRow{
+			seq:             row.Seq,
+			typeName:        row.Type,
+			timeValue:       row.Time,
+			data:            row.Data,
+			sourceEventSeqs: row.SourceEventSeqs,
+			surfaceOp:       row.SurfaceOp,
+			ignorable:       row.Ignorable,
 		}
 	}
 	return result

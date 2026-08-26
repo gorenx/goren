@@ -151,6 +151,15 @@ func (persistenceStub) ReadFrom(
 	return sesspersist.Inspection{}, errors.New("test: unexpected ReadFrom")
 }
 
+func (persistenceStub) ReadEventsBefore(
+	context.Context,
+	session.SessionID,
+	*int64,
+	int64,
+) (sesspersist.EventWindow, error) {
+	return sesspersist.EventWindow{}, errors.New("test: unexpected ReadEventsBefore")
+}
+
 func (persistenceStub) List(context.Context) ([]session.Header, error) {
 	return nil, errors.New("test: unexpected List")
 }

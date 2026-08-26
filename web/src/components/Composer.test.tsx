@@ -18,6 +18,7 @@ const snapshot: ConversationSnapshot = {
   phase: 'ready',
   sessions: [session],
   events: new Map(),
+  histories: new Map(),
   streams: new Map(),
   pendingQuestions: new Map(),
   localTitles: new Map(),
