@@ -35,6 +35,7 @@ export interface SessionEvent {
 
 export interface SessionListValue {
   items: SessionSummary[]
+  nextCursor?: string
 }
 
 export interface SessionCreateValue {
@@ -110,6 +111,8 @@ export interface ConversationSnapshot {
   phase: 'booting' | 'ready' | 'failed'
   host?: HostDescription
   sessions: readonly SessionSummary[]
+  nextSessionCursor?: string
+  loadingMoreSessions: boolean
   events: ReadonlyMap<string, readonly SessionEvent[]>
   histories: ReadonlyMap<string, SessionHistoryState>
   streams: ReadonlyMap<string, StreamDraft>

@@ -8,12 +8,11 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/session"
-	sessionpersistence "github.com/gorenx/goren/session/persistence"
-	sessionprojection "github.com/gorenx/goren/session/projection"
+	sessproj "github.com/gorenx/goren/session/projection"
 )
 
 func TestCachedSnapshotUsesIdentityCompatibleRowsAndMinimumCut(t *testing.T) {
-	registry := sessionprojection.NewDriveRegistry()
+	registry := sessproj.NewDriveRegistry()
 	registerCountingUnit(t, registry, "first", 1)
 	registerCountingUnit(t, registry, "second", 1)
 	conversation := newCacheTestSession(t, "cached", 10, 3)
@@ -53,7 +52,7 @@ func TestCachedSnapshotUsesIdentityCompatibleRowsAndMinimumCut(t *testing.T) {
 }
 
 func TestColdSnapshotRestoresOnlyCheckpointSuffix(t *testing.T) {
-	registry := sessionprojection.NewDriveRegistry()
+	registry := sessproj.NewDriveRegistry()
 	registerCountingUnit(t, registry, "count", 1)
 	conversation := newCacheTestSession(t, "suffix", 20, 4)
 	rows := checkpointAt(t, registry, conversation, 2)
@@ -93,25 +92,44 @@ func TestColdSnapshotRestoresOnlyCheckpointSuffix(t *testing.T) {
 	}
 }
 
+func TestColdSnapshotFoldsMultipleEventPages(t *testing.T) {
+	registry := sessproj.NewDriveRegistry()
+	registerCountingUnit(t, registry, "count", 1)
+	conversation := newCacheTestSession(t, "paged-restore", 25, 1025)
+	source := &cachePersistence{
+		header: conversation.Header(),
+		events: conversation.Events(),
+	}
+	cacheOwner, _ := newCacheForTest(
+		t,
+		registry,
+		source,
+		&cacheLiveStore{},
+		&memoryCheckpointStore{},
+		Config{},
+	)
+	projectionSnapshot, err := cacheOwner.ColdSnapshot(context.Background(), conversation.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projectionSnapshot.AsOfSeq != 1025 || string(projectionSnapshot.Values["count"]) != "1026" {
+		t.Fatalf("snapshot = %#v", projectionSnapshot)
+	}
+	readCalls, windowCalls := source.observations()
+	if !reflect.DeepEqual(readCalls, []int64{0, 512, 1024}) || windowCalls != 0 {
+		t.Fatalf("reads = %v, windows = %d", readCalls, windowCalls)
+	}
+}
+
 func TestColdSnapshotFallsBackAfterShrunkLog(t *testing.T) {
-	registry := sessionprojection.NewDriveRegistry()
+	registry := sessproj.NewDriveRegistry()
 	registerCountingUnit(t, registry, "count", 1)
 	conversation := newCacheTestSession(t, "shrunk", 30, 4)
 	rows := checkpointAt(t, registry, conversation, 3)
 	shortEvents := conversation.Events()[:2]
 	source := &cachePersistence{
 		header: conversation.Header(),
-		readFromResult: func(fromSeq int64) sessionpersistence.Inspection {
-			if fromSeq == 0 {
-				return sessionpersistence.Inspection{
-					Header: conversation.Header(),
-					Events: append([]session.Event(nil), shortEvents...),
-				}
-			}
-			return sessionpersistence.Inspection{
-				Header: conversation.Header(),
-			}
-		},
+		events: append([]session.Event(nil), shortEvents...),
 	}
 	store := &memoryCheckpointStore{
 		loaded: map[session.SessionID]CheckpointRecord{
@@ -143,7 +161,7 @@ func TestColdSnapshotFallsBackAfterShrunkLog(t *testing.T) {
 }
 
 func TestColdSnapshotWithNoUnitsProbesOnlyLatestEvent(t *testing.T) {
-	registry := sessionprojection.NewDriveRegistry()
+	registry := sessproj.NewDriveRegistry()
 	conversation := newCacheTestSession(t, "empty-values", 40, 3)
 	source := &cachePersistence{
 		header: conversation.Header(),
@@ -171,7 +189,7 @@ func TestColdSnapshotWithNoUnitsProbesOnlyLatestEvent(t *testing.T) {
 }
 
 func TestColdSnapshotWriteBackFailureIsContained(t *testing.T) {
-	registry := sessionprojection.NewDriveRegistry()
+	registry := sessproj.NewDriveRegistry()
 	registerCountingUnit(t, registry, "count", 1)
 	conversation := newCacheTestSession(t, "write-back", 50, 2)
 	store := &memoryCheckpointStore{
@@ -199,7 +217,7 @@ func TestColdSnapshotWriteBackFailureIsContained(t *testing.T) {
 }
 
 func TestColdSnapshotReturnsAuthoritativeReadFailure(t *testing.T) {
-	registry := sessionprojection.NewDriveRegistry()
+	registry := sessproj.NewDriveRegistry()
 	registerCountingUnit(t, registry, "count", 1)
 	wanted := errors.New("read failed")
 	cacheOwner, _ := newCacheForTest(
@@ -219,14 +237,14 @@ func TestColdSnapshotReturnsAuthoritativeReadFailure(t *testing.T) {
 }
 
 func TestOpenDropsMalformedCheckpointRecord(t *testing.T) {
-	registry := sessionprojection.NewDriveRegistry()
+	registry := sessproj.NewDriveRegistry()
 	registerCountingUnit(t, registry, "count", 1)
 	conversation := newCacheTestSession(t, "malformed", 60, 1)
 	store := &memoryCheckpointStore{
 		loaded: map[session.SessionID]CheckpointRecord{
 			conversation.ID(): {
 				Identity: identityOf(conversation.Header()),
-				Rows: sessionprojection.Checkpoint{
+				Rows: sessproj.Checkpoint{
 					"count": {
 						Version: 1,
 						Seq:     0,
@@ -257,14 +275,14 @@ func TestOpenDropsMalformedCheckpointRecord(t *testing.T) {
 }
 
 func TestRecordReplacementPreservesRowsFromCurrentlyUnregisteredUnits(t *testing.T) {
-	registry := sessionprojection.NewDriveRegistry()
+	registry := sessproj.NewDriveRegistry()
 	registerCountingUnit(t, registry, "active", 1)
 	conversation := newCacheTestSession(t, "preserve-unregistered", 70, 1)
 	store := &memoryCheckpointStore{
 		loaded: map[session.SessionID]CheckpointRecord{
 			conversation.ID(): {
 				Identity: identityOf(conversation.Header()),
-				Rows: sessionprojection.Checkpoint{
+				Rows: sessproj.Checkpoint{
 					"unregistered": {
 						Version: 3,
 						Seq:     0,
@@ -287,7 +305,7 @@ func TestRecordReplacementPreservesRowsFromCurrentlyUnregisteredUnits(t *testing
 		conversation.ID(),
 		CheckpointRecord{
 			Identity: identityOf(conversation.Header()),
-			Rows: sessionprojection.Checkpoint{
+			Rows: sessproj.Checkpoint{
 				"active": {
 					Version: 1,
 					Seq:     1,
@@ -308,13 +326,13 @@ func TestRecordReplacementPreservesRowsFromCurrentlyUnregisteredUnits(t *testing
 }
 
 func TestRecordReplacementDoesNotRegressAnExistingUnit(t *testing.T) {
-	registry := sessionprojection.NewDriveRegistry()
+	registry := sessproj.NewDriveRegistry()
 	conversation := newCacheTestSession(t, "no-regression", 80, 1)
 	store := &memoryCheckpointStore{
 		loaded: map[session.SessionID]CheckpointRecord{
 			conversation.ID(): {
 				Identity: identityOf(conversation.Header()),
-				Rows: sessionprojection.Checkpoint{
+				Rows: sessproj.Checkpoint{
 					"active": {
 						Version: 1,
 						Seq:     10,
@@ -337,7 +355,7 @@ func TestRecordReplacementDoesNotRegressAnExistingUnit(t *testing.T) {
 		conversation.ID(),
 		CheckpointRecord{
 			Identity: identityOf(conversation.Header()),
-			Rows: sessionprojection.Checkpoint{
+			Rows: sessproj.Checkpoint{
 				"active": {
 					Version: 1,
 					Seq:     5,

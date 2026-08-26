@@ -23,19 +23,19 @@ func (owner *Service) ListSessions(requestContext context.Context) ([]SessionRec
 	}
 	byID := make(map[session.SessionID]SessionRecord)
 	if owner.persistence != nil {
-		snapshots, err := owner.persistence.ListSnapshots(requestContext)
-		if err != nil {
-			return nil, persistenceFailure("list snapshots", err)
-		}
-		for _, snapshot := range snapshots {
+		err := owner.walkSnapshots(requestContext, func(snapshot sesspersist.Snapshot) (bool, error) {
 			if _, duplicate := byID[snapshot.Header.ID]; duplicate {
-				return nil, failure(
+				return false, failure(
 					ErrorSourceConflict,
 					fmt.Sprintf("session query: persistence listed session %q more than once", snapshot.Header.ID),
 					nil,
 				)
 			}
 			byID[snapshot.Header.ID] = SessionRecord{Header: cloneHeader(snapshot.Header), Persisted: true}
+			return true, nil
+		})
+		if err != nil {
+			return nil, persistenceFailure("list snapshots", err)
 		}
 	}
 	for _, conversation := range owner.sessions.List() {
@@ -180,13 +180,15 @@ func (owner *Service) ReadTitleSnapshots(
 		}
 		return results, nil
 	}
-	snapshots, err := owner.persistence.ListSnapshots(requestContext)
+	listed := make(map[session.SessionID]session.Header, len(unresolved))
+	err := owner.walkSnapshots(requestContext, func(snapshot sesspersist.Snapshot) (bool, error) {
+		if _, wanted := seen[snapshot.Header.ID]; wanted {
+			listed[snapshot.Header.ID] = cloneHeader(snapshot.Header)
+		}
+		return len(listed) < len(unresolved), nil
+	})
 	if err != nil {
 		return nil, persistenceFailure("list snapshots", err)
-	}
-	listed := make(map[session.SessionID]session.Header, len(snapshots))
-	for _, snapshot := range snapshots {
-		listed[snapshot.Header.ID] = cloneHeader(snapshot.Header)
 	}
 	jobs := make(chan int)
 	var workers sync.WaitGroup
@@ -474,17 +476,17 @@ func (owner *Service) loadLogical(
 	if owner.persistence == nil {
 		return LogSnapshot{}, sessionNotFound(identifier)
 	}
-	snapshots, err := owner.persistence.ListSnapshots(requestContext)
-	if err != nil {
-		return LogSnapshot{}, persistenceFailure("list snapshots", err)
-	}
 	var listed *session.Header
-	for _, snapshot := range snapshots {
+	err := owner.walkSnapshots(requestContext, func(snapshot sesspersist.Snapshot) (bool, error) {
 		if snapshot.Header.ID == identifier {
 			metadata := cloneHeader(snapshot.Header)
 			listed = &metadata
-			break
+			return false, nil
 		}
+		return true, nil
+	})
+	if err != nil {
+		return LogSnapshot{}, persistenceFailure("list snapshots", err)
 	}
 	if listed == nil {
 		if conversation, found := owner.sessions.Get(identifier); found {
@@ -507,6 +509,40 @@ func (owner *Service) loadLogical(
 		return LogSnapshot{}, sourceConflict(*listed, loaded.Header)
 	}
 	return LogSnapshot{Header: cloneHeader(loaded.Header), Events: cloneEvents(loaded.Events)}, nil
+}
+
+const snapshotPageSize int64 = 256
+
+func (owner *Service) walkSnapshots(
+	requestContext context.Context,
+	visit func(sesspersist.Snapshot) (bool, error),
+) error {
+	var pageCursor *sesspersist.SessionCursor
+	for {
+		page, err := owner.persistence.ListSnapshots(
+			requestContext,
+			sesspersist.SessionPage{
+				Cursor: pageCursor,
+				Limit:  snapshotPageSize,
+			},
+		)
+		if err != nil {
+			return err
+		}
+		for _, snapshot := range page.Snapshots {
+			continued, visitErr := visit(snapshot)
+			if visitErr != nil {
+				return visitErr
+			}
+			if !continued {
+				return nil
+			}
+		}
+		if page.NextCursor == nil {
+			return nil
+		}
+		pageCursor = page.NextCursor
+	}
 }
 
 func validateLogical(metadata session.Header, entries []session.Event) error {

@@ -199,7 +199,7 @@ func (owner *SessionLogStore) preparedSourceFor(
 		if reserved || !verifyRevision {
 			return cached, nil
 		}
-		current, err := owner.storage.ReadStoredRevision(requestContext, identifier)
+		current, err := owner.storage.Revision(requestContext, identifier)
 		if err != nil {
 			return nil, err
 		}
@@ -214,7 +214,7 @@ func (owner *SessionLogStore) loadPreparedSource(
 	requestContext context.Context,
 	identifier session.SessionID,
 ) (*preparedSource, error) {
-	stored, err := owner.storage.LoadStored(requestContext, identifier)
+	stored, err := owner.storage.Load(requestContext, identifier)
 	if err != nil {
 		return nil, err
 	}
@@ -264,7 +264,7 @@ func (owner *SessionLogStore) loadPreparedSource(
 	}
 	source := &preparedSource{
 		inspection:   Inspection{Header: conversation.Header(), Events: snapshotEvents(balanced)},
-		conversation: conversation, revision: stored.Token, marker: stored.Marker,
+		conversation: conversation, revision: stored.Revision, marker: stored.Marker,
 		closers: snapshotEvents(closers), sessionLength: conversation.Seq(),
 	}
 	owner.preparations.Store(source)
@@ -279,7 +279,7 @@ func (owner *SessionLogStore) commitPreparedSource(
 	source *preparedSource,
 ) (bool, error) {
 	identifier := source.inspection.Header.ID
-	current, err := owner.storage.ReadStoredRevision(requestContext, identifier)
+	current, err := owner.storage.Revision(requestContext, identifier)
 	if err != nil {
 		return false, err
 	}

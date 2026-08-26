@@ -120,34 +120,39 @@ func (storage *queryPersistencePlugin) Inspect(
 	return loaded, nil
 }
 
-func (*queryPersistencePlugin) ReadFrom(
+func (*queryPersistencePlugin) ReadEventsFrom(
 	context.Context,
 	session.SessionID,
-	int64,
-) (sesspersist.Inspection, error) {
-	return sesspersist.Inspection{}, errors.New("fixture does not read suffixes")
+	sesspersist.EventContinuation,
+) (sesspersist.EventSegment, error) {
+	return sesspersist.EventSegment{}, errors.New("fixture does not read event segments")
 }
 
 func (*queryPersistencePlugin) ReadEventsBefore(
 	context.Context,
 	session.SessionID,
-	*int64,
-	int64,
+	sesspersist.EventPage,
 ) (sesspersist.EventWindow, error) {
 	return sesspersist.EventWindow{}, errors.New("fixture does not read event windows")
 }
 
-func (storage *queryPersistencePlugin) List(context.Context) ([]session.Header, error) {
+func (storage *queryPersistencePlugin) List(
+	context.Context,
+	sesspersist.SessionPage,
+) (sesspersist.HeaderPage, error) {
 	result := make([]session.Header, 0, len(storage.logs))
 	for _, loaded := range storage.logs {
 		result = append(result, loaded.Header)
 	}
-	return result, nil
+	return sesspersist.HeaderPage{
+		Headers: result,
+	}, nil
 }
 
 func (storage *queryPersistencePlugin) ListSnapshots(
-	context.Context,
-) ([]sesspersist.Snapshot, error) {
+	_ context.Context,
+	_ sesspersist.SessionPage,
+) (sesspersist.SnapshotPage, error) {
 	result := make([]sesspersist.Snapshot, 0, len(storage.logs))
 	for identifier, loaded := range storage.logs {
 		result = append(
@@ -158,7 +163,9 @@ func (storage *queryPersistencePlugin) ListSnapshots(
 			},
 		)
 	}
-	return result, nil
+	return sesspersist.SnapshotPage{
+		Snapshots: result,
+	}, nil
 }
 
 type queryIndexOpener struct {

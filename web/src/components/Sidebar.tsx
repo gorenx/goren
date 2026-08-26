@@ -58,7 +58,17 @@ export function Sidebar({ store, snapshot, collapsed, onToggle }: SidebarProps):
       </button>
 
       {!collapsed && <div className="px-5 pb-2 pt-3 font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-caption">{translate('sidebar.recentSessions')}</div>}
-      <nav id="session-list" className="session-list" aria-label={translate('sidebar.conversationList')}>
+      <nav
+        id="session-list"
+        className="session-list"
+        aria-label={translate('sidebar.conversationList')}
+        onScroll={event => {
+          const list = event.currentTarget
+          if (list.scrollHeight - list.scrollTop - list.clientHeight < 80) {
+            void store.loadMoreSessions()
+          }
+        }}
+      >
         {snapshot.sessions.map(summary => (
           <SessionButton
             key={summary.sessionId}
@@ -70,6 +80,16 @@ export function Sidebar({ store, snapshot, collapsed, onToggle }: SidebarProps):
             onSelect={() => void store.selectSession(summary.sessionId)}
           />
         ))}
+        {!collapsed && snapshot.nextSessionCursor !== undefined && (
+          <button
+            type="button"
+            className="mx-3 my-2 rounded-lg px-3 py-2 text-xs text-secondary hover:bg-black/[0.04] disabled:opacity-60"
+            disabled={snapshot.loadingMoreSessions}
+            onClick={() => void store.loadMoreSessions()}
+          >
+            {translate(snapshot.loadingMoreSessions ? 'sidebar.loadingSessions' : 'sidebar.loadMoreSessions')}
+          </button>
+        )}
       </nav>
 
       <footer className="mt-auto shrink-0 border-t border-black/[0.05] p-4">

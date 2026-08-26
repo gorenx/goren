@@ -33,6 +33,42 @@ type EventWindow struct {
 	HasEarlier bool
 }
 
+// EventSegment is one contiguous oldest-first event page. Revision identifies
+// the durable log version observed by that page so multi-page consumers can
+// reject a projection assembled across different versions.
+type EventSegment struct {
+	Header   session.Header
+	Revision Revision
+	Events   []session.Event
+	HasMore  bool
+}
+
+// SessionCursor identifies the last Session in a newest-first listing page.
+// CreatedAt and ID together provide a stable order when timestamps are equal.
+type SessionCursor struct {
+	CreatedAt int64
+	ID        session.SessionID
+}
+
+// SessionPage requests one bounded page after Cursor. A nil Cursor starts at
+// the newest Session.
+type SessionPage struct {
+	Cursor *SessionCursor
+	Limit  int64
+}
+
+// HeaderPage is one page of durable Session headers.
+type HeaderPage struct {
+	Headers    []session.Header
+	NextCursor *SessionCursor
+}
+
+// SnapshotPage is one page of durable Session headers and revisions.
+type SnapshotPage struct {
+	Snapshots  []Snapshot
+	NextCursor *SessionCursor
+}
+
 // Location identifies a backend-owned per-Session artifact when one exists.
 type Location struct {
 	Kind string
@@ -59,10 +95,10 @@ type Persistence interface {
 	Prepare(ctx context.Context, id session.SessionID) (*session.Preparation, error)
 	Load(ctx context.Context, id session.SessionID) (Inspection, error)
 	Inspect(ctx context.Context, id session.SessionID) (Inspection, error)
-	ReadFrom(ctx context.Context, id session.SessionID, fromSeq int64) (Inspection, error)
-	ReadEventsBefore(ctx context.Context, id session.SessionID, beforeSeq *int64, limit int64) (EventWindow, error)
-	List(ctx context.Context) ([]session.Header, error)
-	ListSnapshots(ctx context.Context) ([]Snapshot, error)
+	ReadEventsFrom(ctx context.Context, id session.SessionID, continuation EventContinuation) (EventSegment, error)
+	ReadEventsBefore(ctx context.Context, id session.SessionID, page EventPage) (EventWindow, error)
+	List(ctx context.Context, page SessionPage) (HeaderPage, error)
+	ListSnapshots(ctx context.Context, page SessionPage) (SnapshotPage, error)
 }
 
 const PluginName = "@deepseek-ai/dsh-session-persistence"
@@ -90,28 +126,23 @@ type RepairMarker interface {
 	PersistenceRepairMarker()
 }
 
-// StoredPrefix is a fresh physical snapshot read by SessionLogStore.
-type StoredPrefix struct {
-	Header session.Header
-	Events []session.Event
-	Token  Revision
-	Marker RepairMarker
+// Log is one fresh physical Session log read by SessionLogStore. Marker is
+// present only when the Backend found a torn tail that recovery may remove.
+type Log struct {
+	Header   session.Header
+	Events   []session.Event
+	Revision Revision
+	Marker   RepairMarker
 }
 
-// StoredSuffix is a seek-capable physical suffix returned without repair.
-type StoredSuffix struct {
-	Header session.Header
-	Events []session.Event
+// EventContinuation requests one oldest-first page beginning at FromSeq.
+type EventContinuation struct {
+	FromSeq int64
+	Limit   int64
 }
 
-// StoredEventWindow is a physical bounded read returned newest-first.
-type StoredEventWindow struct {
-	Header     session.Header
-	Events     []session.Event
-	HasEarlier bool
-}
-
-// EventPage identifies one backward page of stored Session Events.
+// EventPage requests one newest-first page before BeforeSeq. A nil BeforeSeq
+// starts at the durable log tail.
 type EventPage struct {
 	BeforeSeq *int64
 	Limit     int64
@@ -141,14 +172,13 @@ type Backend interface {
 	Locate(metadata session.Header) (Location, bool)
 	SupportsRawArtifacts() bool
 	ReadRaw(ctx context.Context, id session.SessionID) (*RawArtifact, error)
-	LoadStored(ctx context.Context, id session.SessionID) (*StoredPrefix, error)
-	ReadStoredRevision(ctx context.Context, id session.SessionID) (*Revision, error)
-	LoadStoredFrom(ctx context.Context, id session.SessionID, fromSeq int64) (*StoredSuffix, error)
-	LoadStoredEventsBefore(ctx context.Context, id session.SessionID, page EventPage) (*StoredEventWindow, error)
+	Load(ctx context.Context, id session.SessionID) (*Log, error)
+	Revision(ctx context.Context, id session.SessionID) (*Revision, error)
+	ReadEventsFrom(ctx context.Context, id session.SessionID, continuation EventContinuation) (*EventSegment, error)
+	ReadEventsBefore(ctx context.Context, id session.SessionID, page EventPage) (*EventWindow, error)
 	AppendBatch(ctx context.Context, batch EventBatch) error
 	CommitRepair(ctx context.Context, repair LogRepair) error
-	ListStored(ctx context.Context) ([]session.Header, error)
-	ListStoredSnapshots(ctx context.Context) ([]Snapshot, error)
+	List(ctx context.Context, page SessionPage) (SnapshotPage, error)
 	Close(closeContext context.Context) error
 }
 

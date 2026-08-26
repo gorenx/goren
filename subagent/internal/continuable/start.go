@@ -8,6 +8,7 @@ import (
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
+	sesspersist "github.com/gorenx/goren/session/persistence"
 	"github.com/gorenx/goren/subagent"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
 	"github.com/gorenx/goren/subagent/internal/lineage"
@@ -357,18 +358,28 @@ func (owner *Service) assertPersistedAvailable(
 	requestContext context.Context,
 	childID session.SessionID,
 ) error {
-	snapshots, listErr := owner.dependencies.Persistence.ListSnapshots(
-		requestContext,
-	)
-	if listErr != nil {
-		return listErr
-	}
-	for _, snapshot := range snapshots {
-		if snapshot.Header.ID == childID {
-			return duplicateChild(childID)
+	var cursor *sesspersist.SessionCursor
+	for {
+		page, listErr := owner.dependencies.Persistence.ListSnapshots(
+			requestContext,
+			sesspersist.SessionPage{
+				Cursor: cursor,
+				Limit:  256,
+			},
+		)
+		if listErr != nil {
+			return listErr
 		}
+		for _, snapshot := range page.Snapshots {
+			if snapshot.Header.ID == childID {
+				return duplicateChild(childID)
+			}
+		}
+		if page.NextCursor == nil {
+			return nil
+		}
+		cursor = page.NextCursor
 	}
-	return nil
 }
 
 func requestedChildID(

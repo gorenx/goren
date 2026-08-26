@@ -363,13 +363,9 @@ func (owner *Service) observeCorpus(requestContext context.Context) (map[session
 	}
 	desired := make(map[session.SessionID]desiredSource)
 	if owner.persistence != nil {
-		snapshots, err := owner.persistence.ListSnapshots(requestContext)
-		if err != nil {
-			return nil, persistenceFailure("list snapshots", err)
-		}
-		for _, snapshot := range snapshots {
+		err := owner.walkSnapshots(requestContext, func(snapshot sesspersist.Snapshot) (bool, error) {
 			if _, duplicate := desired[snapshot.Header.ID]; duplicate {
-				return nil, failure(
+				return false, failure(
 					ErrorSourceConflict,
 					fmt.Sprintf("session query: persistence listed session %q more than once", snapshot.Header.ID),
 					nil,
@@ -379,6 +375,10 @@ func (owner *Service) observeCorpus(requestContext context.Context) (map[session
 				header: cloneHeader(snapshot.Header), persisted: true,
 				sourceRevision: "persisted:" + string(snapshot.Revision),
 			}
+			return true, nil
+		})
+		if err != nil {
+			return nil, persistenceFailure("list snapshots", err)
 		}
 	}
 	for _, conversation := range owner.sessions.List() {

@@ -18,8 +18,14 @@ func DecodeSessionListRequest(rawPayload json.RawMessage) (SessionListRequest, [
 	if len(issues) != 0 {
 		return SessionListRequest{}, issues
 	}
-	cursor, fieldIssues := optionalStringField(fields, "cursor", false)
-	return SessionListRequest{Cursor: cursor}, fieldIssues
+	cursor, cursorIssues := optionalStringField(fields, "cursor", true)
+	limit, limitIssues := optionalSafeIntegerField(fields, "limit", true)
+	issues = append(issues, cursorIssues...)
+	issues = append(issues, limitIssues...)
+	return SessionListRequest{
+		Cursor: cursor,
+		Limit:  limit,
+	}, issues
 }
 
 // DecodeSessionSearchRequest validates the source trimmed, non-empty,

@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/gorenx/goren/session"
-	sessionpersistence "github.com/gorenx/goren/session/persistence"
+	sesspersist "github.com/gorenx/goren/session/persistence"
 	"github.com/gorenx/goren/subagent"
 )
 
@@ -22,7 +22,8 @@ type cancellationPersistence struct {
 
 func (source *cancellationPersistence) List(
 	requestContext context.Context,
-) ([]session.Header, error) {
+	_ sesspersist.SessionPage,
+) (sesspersist.HeaderPage, error) {
 	source.mutex.Lock()
 	source.listCalls++
 	block := source.blockList
@@ -30,21 +31,23 @@ func (source *cancellationPersistence) List(
 	source.mutex.Unlock()
 	if block {
 		<-requestContext.Done()
-		return nil, context.Cause(requestContext)
+		return sesspersist.HeaderPage{}, context.Cause(requestContext)
 	}
-	return []session.Header{source.header}, nil
+	return sesspersist.HeaderPage{
+		Headers: []session.Header{source.header},
+	}, nil
 }
 
 func (source *cancellationPersistence) Inspect(
 	requestContext context.Context,
 	_ session.SessionID,
-) (sessionpersistence.Inspection, error) {
+) (sesspersist.Inspection, error) {
 	source.mutex.Lock()
 	source.inspectCalls++
 	source.notifyLocked()
 	source.mutex.Unlock()
 	<-requestContext.Done()
-	return sessionpersistence.Inspection{}, context.Cause(requestContext)
+	return sesspersist.Inspection{}, context.Cause(requestContext)
 }
 
 func (source *cancellationPersistence) notifyLocked() {

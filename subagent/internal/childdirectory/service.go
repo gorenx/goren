@@ -8,8 +8,8 @@ import (
 	"sync"
 
 	"github.com/gorenx/goren/session"
-	sessionpersistence "github.com/gorenx/goren/session/persistence"
-	sessionprojection "github.com/gorenx/goren/session/projection"
+	sesspersist "github.com/gorenx/goren/session/persistence"
+	sessproj "github.com/gorenx/goren/session/projection"
 	"github.com/gorenx/goren/subagent"
 )
 
@@ -20,18 +20,18 @@ type Sessions interface {
 
 // Persistence is the optional cold listing capability consumed by ChildDirectory.
 type Persistence interface {
-	List(context.Context) ([]session.Header, error)
-	Inspect(context.Context, session.SessionID) (sessionpersistence.Inspection, error)
+	List(context.Context, sesspersist.SessionPage) (sesspersist.HeaderPage, error)
+	Inspect(context.Context, session.SessionID) (sesspersist.Inspection, error)
 }
 
 // Projections is the identity fold capability consumed by ChildDirectory.
 type Projections interface {
-	Snapshot(session.Context) (sessionprojection.Snapshot, error)
+	Snapshot(session.Context) (sessproj.Snapshot, error)
 	Restore(
-		sessionprojection.Checkpoint,
+		sessproj.Checkpoint,
 		[]session.Event,
 		int64,
-	) (sessionprojection.RestoreResult, error)
+	) (sessproj.RestoreResult, error)
 }
 
 // ProjectionCache is the optional zero-log-I/O checkpoint view consumed by
@@ -39,7 +39,7 @@ type Projections interface {
 type ProjectionCache interface {
 	CachedSnapshot(
 		session.Header,
-	) (*sessionprojection.Snapshot, error)
+	) (*sessproj.Snapshot, error)
 }
 
 type dependencies struct {

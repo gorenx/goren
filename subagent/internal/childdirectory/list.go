@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/gorenx/goren/session"
+	sesspersist "github.com/gorenx/goren/session/persistence"
 	"github.com/gorenx/goren/subagent"
 )
 
@@ -89,13 +90,26 @@ func (owner *Service) prepare(requestContext context.Context) (listing, error) {
 	}
 	persisted := []session.Header(nil)
 	if dependencySet.persistence != nil {
-		var err error
-		persisted, err = dependencySet.persistence.List(requestContext)
-		if requestErr := requestContext.Err(); requestErr != nil {
-			return listing{}, cancelled(requestErr)
-		}
-		if err != nil {
-			return listing{}, err
+		var cursor *sesspersist.SessionCursor
+		for {
+			page, err := dependencySet.persistence.List(
+				requestContext,
+				sesspersist.SessionPage{
+					Cursor: cursor,
+					Limit:  256,
+				},
+			)
+			if requestErr := requestContext.Err(); requestErr != nil {
+				return listing{}, cancelled(requestErr)
+			}
+			if err != nil {
+				return listing{}, err
+			}
+			persisted = append(persisted, page.Headers...)
+			if page.NextCursor == nil {
+				break
+			}
+			cursor = page.NextCursor
 		}
 	}
 	corpus := make(map[session.SessionID]sessionRecord, len(persisted))

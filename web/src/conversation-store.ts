@@ -26,6 +26,7 @@ type Subscriber = () => void
 const initialSnapshot: ConversationSnapshot = {
   phase: 'booting',
   sessions: [],
+  loadingMoreSessions: false,
   events: new Map(),
   histories: new Map(),
   streams: new Map(),
@@ -38,6 +39,7 @@ const initialSnapshot: ConversationSnapshot = {
 }
 
 const historyPageMessages = 20
+const sessionListPageSize = 50
 
 export const DEEPSEEK_CREDENTIAL_REF = 'DEEPSEEK_API_KEY'
 
@@ -48,6 +50,7 @@ export class ConversationStore {
   readonly #cancellingSessions = new Set<string>()
   #value = initialSnapshot
   #selectionVersion = 0
+  #sessionListVersion = 0
   #toastTimer?: number
   #started = false
 
@@ -91,11 +94,44 @@ export class ConversationStore {
   }
 
   async refreshSessions(): Promise<void> {
-    const result = await this.#api.call<SessionListValue>('session.list', {})
+    const listVersion = ++this.#sessionListVersion
+    this.#patch({ loadingMoreSessions: false })
+    const result = await this.#api.call<SessionListValue>('session.list', {
+      limit: sessionListPageSize,
+    })
+    if (listVersion !== this.#sessionListVersion) return
     const sessions = [...(result.items ?? [])]
       .filter(item => item.origin !== 'subagent')
-      .sort((left, right) => right.updatedAt - left.updatedAt)
-    this.#patch({ sessions })
+    this.#patch({
+      sessions,
+      nextSessionCursor: result.nextCursor,
+      loadingMoreSessions: false,
+    })
+  }
+
+  async loadMoreSessions(): Promise<void> {
+    const cursor = this.#value.nextSessionCursor
+    if (cursor === undefined || this.#value.loadingMoreSessions) return
+    const listVersion = this.#sessionListVersion
+    this.#patch({ loadingMoreSessions: true })
+    try {
+      const result = await this.#api.call<SessionListValue>('session.list', {
+        cursor,
+        limit: sessionListPageSize,
+      })
+      if (listVersion !== this.#sessionListVersion) return
+      const appended = (result.items ?? []).filter(item => item.origin !== 'subagent')
+      this.#patch({
+        sessions: appendSessions(this.#value.sessions, appended),
+        nextSessionCursor: result.nextCursor,
+        loadingMoreSessions: false,
+      })
+    } catch (error) {
+      if (listVersion === this.#sessionListVersion) {
+        this.#patch({ loadingMoreSessions: false })
+        this.#fail(error)
+      }
+    }
   }
 
   async refreshCredential(): Promise<void> {
@@ -506,6 +542,14 @@ function prependSession(
   created: SessionSummary,
 ): SessionSummary[] {
   return [created, ...sessions.filter(summary => summary.sessionId !== created.sessionId)]
+}
+
+function appendSessions(
+  sessions: readonly SessionSummary[],
+  appended: readonly SessionSummary[],
+): readonly SessionSummary[] {
+  const known = new Set(sessions.map(summary => summary.sessionId))
+  return [...sessions, ...appended.filter(summary => !known.has(summary.sessionId))]
 }
 
 function messageFromEvent(event: SessionEvent): MessageRow | undefined {

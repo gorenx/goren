@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/gorenx/goren/session"
-	sessionpersistence "github.com/gorenx/goren/session/persistence"
-	sessionprojection "github.com/gorenx/goren/session/projection"
+	sesspersist "github.com/gorenx/goren/session/persistence"
+	sessproj "github.com/gorenx/goren/session/projection"
 )
 
 const cacheTestEventName = "test/session-projection-cache"
@@ -35,13 +35,13 @@ func (countingUnit) InitialState() (json.RawMessage, error) {
 func (unit countingUnit) ApplyState(
 	state json.RawMessage,
 	_ session.Event,
-) (sessionprojection.Transition, error) {
+) (sessproj.Transition, error) {
 	var count int
 	if err := json.Unmarshal(state, &count); err != nil {
-		return sessionprojection.Transition{}, err
+		return sessproj.Transition{}, err
 	}
 	next, err := json.Marshal(count + 1)
-	return sessionprojection.Transition{
+	return sessproj.Transition{
 		State:   next,
 		Changed: unit.changed,
 	}, err
@@ -128,51 +128,60 @@ func (store *memoryCheckpointStore) replacementIDs() []session.SessionID {
 }
 
 type cachePersistence struct {
-	sessionpersistence.Persistence
-	mutex          sync.Mutex
-	header         session.Header
-	events         []session.Event
-	readFromCalls  []int64
-	windowCalls    int
-	readFromResult func(int64) sessionpersistence.Inspection
-	readErr        error
+	sesspersist.Persistence
+	mutex       sync.Mutex
+	header      session.Header
+	events      []session.Event
+	readCalls   []int64
+	windowCalls int
+	readErr     error
 }
 
-func (source *cachePersistence) ReadFrom(
+func (source *cachePersistence) ReadEventsFrom(
 	_ context.Context,
 	_ session.SessionID,
-	fromSeq int64,
-) (sessionpersistence.Inspection, error) {
+	continuation sesspersist.EventContinuation,
+) (sesspersist.EventSegment, error) {
 	source.mutex.Lock()
-	source.readFromCalls = append(source.readFromCalls, fromSeq)
-	custom := source.readFromResult
 	readErr := source.readErr
 	header := source.header
 	events := append([]session.Event(nil), source.events...)
 	source.mutex.Unlock()
 	if readErr != nil {
-		return sessionpersistence.Inspection{}, readErr
+		return sesspersist.EventSegment{}, readErr
 	}
-	if custom != nil {
-		return custom(fromSeq), nil
-	}
+	fromSeq := continuation.FromSeq
+	source.mutex.Lock()
+	source.readCalls = append(source.readCalls, fromSeq)
+	source.mutex.Unlock()
 	if fromSeq >= int64(len(events)) {
 		events = nil
 	} else {
 		events = events[fromSeq:]
 	}
-	return sessionpersistence.Inspection{
-		Header: header,
-		Events: events,
+	hasMore := int64(len(events)) > continuation.Limit
+	if hasMore {
+		events = events[:continuation.Limit]
+	}
+	return sesspersist.EventSegment{
+		Header:   header,
+		Revision: "test-revision",
+		Events:   events,
+		HasMore:  hasMore,
 	}, nil
+}
+
+func (source *cachePersistence) observations() ([]int64, int) {
+	source.mutex.Lock()
+	defer source.mutex.Unlock()
+	return append([]int64(nil), source.readCalls...), source.windowCalls
 }
 
 func (source *cachePersistence) ReadEventsBefore(
 	_ context.Context,
 	_ session.SessionID,
-	_ *int64,
-	_ int64,
-) (sessionpersistence.EventWindow, error) {
+	_ sesspersist.EventPage,
+) (sesspersist.EventWindow, error) {
 	source.mutex.Lock()
 	source.windowCalls++
 	header := source.header
@@ -180,7 +189,7 @@ func (source *cachePersistence) ReadEventsBefore(
 	readErr := source.readErr
 	source.mutex.Unlock()
 	if readErr != nil {
-		return sessionpersistence.EventWindow{}, readErr
+		return sesspersist.EventWindow{}, readErr
 	}
 	if len(events) > 1 {
 		events = events[len(events)-1:]
@@ -188,16 +197,10 @@ func (source *cachePersistence) ReadEventsBefore(
 	if len(events) == 1 {
 		events = []session.Event{events[0]}
 	}
-	return sessionpersistence.EventWindow{
+	return sesspersist.EventWindow{
 		Header: header,
 		Events: events,
 	}, nil
-}
-
-func (source *cachePersistence) observations() ([]int64, int) {
-	source.mutex.Lock()
-	defer source.mutex.Unlock()
-	return append([]int64(nil), source.readFromCalls...), source.windowCalls
 }
 
 type cacheLiveStore struct {
@@ -287,7 +290,7 @@ func newCacheTestSession(
 
 func newCacheForTest(
 	t *testing.T,
-	registry *sessionprojection.DriveRegistry,
+	registry *sessproj.DriveRegistry,
 	source *cachePersistence,
 	live *cacheLiveStore,
 	store *memoryCheckpointStore,
@@ -319,7 +322,7 @@ func newCacheForTest(
 
 func registerCountingUnit(
 	t *testing.T,
-	registry *sessionprojection.DriveRegistry,
+	registry *sessproj.DriveRegistry,
 	projectionKey string,
 	version int64,
 ) {
@@ -335,10 +338,10 @@ func registerCountingUnit(
 
 func checkpointAt(
 	t *testing.T,
-	registry *sessionprojection.DriveRegistry,
+	registry *sessproj.DriveRegistry,
 	conversation session.Context,
 	endExclusive int,
-) sessionprojection.Checkpoint {
+) sessproj.Checkpoint {
 	t.Helper()
 	result, err := registry.Restore(
 		nil,

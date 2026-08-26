@@ -27,14 +27,14 @@ func TestAdapterMaterializesHeaderAndBatchAtomically(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	stored, err := storage.LoadStored(requestContext, metadata.ID)
+	stored, err := storage.Load(requestContext, metadata.ID)
 	if err != nil || stored == nil {
 		t.Fatalf("LoadStored = (%#v, %v)", stored, err)
 	}
 	if stored.Header.ID != metadata.ID || len(stored.Events) != 2 || stored.Events[1].Type != session.TurnEndEventName {
 		t.Fatalf("stored prefix = %#v", stored)
 	}
-	before := stored.Token
+	before := stored.Revision
 	badBatch := []session.Event{
 		{Type: "extension/probe", Seq: 2, Time: 3, Data: []byte(`{}`), Ignorable: true},
 		{Type: "extension/duplicate", Seq: 0, Time: 4, Data: []byte(`{}`), Ignorable: true},
@@ -45,11 +45,11 @@ func TestAdapterMaterializesHeaderAndBatchAtomically(t *testing.T) {
 	}); err == nil {
 		t.Fatal("batch containing a duplicate seq committed")
 	}
-	afterFailure, err := storage.LoadStored(requestContext, metadata.ID)
+	afterFailure, err := storage.Load(requestContext, metadata.ID)
 	if err != nil || afterFailure == nil {
 		t.Fatalf("LoadStored after rollback = (%#v, %v)", afterFailure, err)
 	}
-	if len(afterFailure.Events) != 2 || afterFailure.Token != before {
+	if len(afterFailure.Events) != 2 || afterFailure.Revision != before {
 		t.Fatalf("failed transaction changed durable state: %#v", afterFailure)
 	}
 }
@@ -76,7 +76,7 @@ func TestAdapterMarksAndRepairsOnlyATornTail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stored, err := storage.LoadStored(requestContext, metadata.ID)
+	stored, err := storage.Load(requestContext, metadata.ID)
 	if err != nil || stored == nil || len(stored.Events) != 2 || stored.Marker == nil {
 		t.Fatalf("torn LoadStored = (%#v, %v)", stored, err)
 	}
@@ -86,7 +86,7 @@ func TestAdapterMarksAndRepairsOnlyATornTail(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	repaired, err := storage.LoadStored(requestContext, metadata.ID)
+	repaired, err := storage.Load(requestContext, metadata.ID)
 	if err != nil || repaired == nil || repaired.Marker != nil || len(repaired.Events) != 2 {
 		t.Fatalf("repaired LoadStored = (%#v, %v)", repaired, err)
 	}
@@ -129,7 +129,7 @@ func TestAdapterReadsBoundedEventWindowsBackward(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tail, err := storage.LoadStoredEventsBefore(
+	tail, err := storage.ReadEventsBefore(
 		requestContext,
 		metadata.ID,
 		sesspersist.EventPage{
@@ -144,7 +144,7 @@ func TestAdapterReadsBoundedEventWindowsBackward(t *testing.T) {
 	}
 
 	before := int64(7)
-	older, err := storage.LoadStoredEventsBefore(
+	older, err := storage.ReadEventsBefore(
 		requestContext,
 		metadata.ID,
 		sesspersist.EventPage{
@@ -160,7 +160,7 @@ func TestAdapterReadsBoundedEventWindowsBackward(t *testing.T) {
 	}
 
 	before = 2
-	head, err := storage.LoadStoredEventsBefore(
+	head, err := storage.ReadEventsBefore(
 		requestContext,
 		metadata.ID,
 		sesspersist.EventPage{
@@ -174,6 +174,135 @@ func TestAdapterReadsBoundedEventWindowsBackward(t *testing.T) {
 	if head.HasEarlier || eventSequences(head.Events) != "1,0" {
 		t.Fatalf("head window = %#v", head)
 	}
+}
+
+func TestAdapterReadsBoundedEventSegmentsForward(t *testing.T) {
+	t.Parallel()
+	requestContext := context.Background()
+	storage, err := Open(
+		requestContext,
+		Config{
+			Path:        t.TempDir() + "/sessions.sqlite",
+			JournalMode: JournalWAL,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = storage.Close(context.Background()) })
+	metadata := session.Header{
+		Version:   session.FormatVersion,
+		ID:        "forward-page",
+		CreatedAt: 1,
+	}
+	entries := make([]session.Event, 6)
+	for sequence := range entries {
+		entries[sequence] = session.Event{
+			Type:      "extension/page",
+			Seq:       int64(sequence),
+			Time:      int64(sequence + 1),
+			Data:      []byte(`{}`),
+			Ignorable: true,
+		}
+	}
+	if err := storage.AppendBatch(requestContext, sesspersist.EventBatch{
+		Header:      metadata,
+		Events:      entries,
+		Materialize: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := storage.ReadEventsFrom(
+		requestContext,
+		metadata.ID,
+		sesspersist.EventContinuation{
+			FromSeq: 0,
+			Limit:   2,
+		},
+	)
+	if err != nil || first == nil {
+		t.Fatalf("first page = (%#v, %v)", first, err)
+	}
+	second, err := storage.ReadEventsFrom(
+		requestContext,
+		metadata.ID,
+		sesspersist.EventContinuation{
+			FromSeq: 2,
+			Limit:   4,
+		},
+	)
+	if err != nil || second == nil {
+		t.Fatalf("second page = (%#v, %v)", second, err)
+	}
+	if !first.HasMore || eventSequences(first.Events) != "0,1" ||
+		second.HasMore || eventSequences(second.Events) != "2,3,4,5" ||
+		first.Revision != second.Revision {
+		t.Fatalf("pages = (%#v, %#v)", first, second)
+	}
+}
+
+func TestAdapterListsSessionsWithStableCursor(t *testing.T) {
+	t.Parallel()
+	requestContext := context.Background()
+	storage, err := Open(
+		requestContext,
+		Config{
+			Path:        t.TempDir() + "/sessions.sqlite",
+			JournalMode: JournalWAL,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = storage.Close(context.Background()) })
+	materialize := func(identifier session.SessionID, createdAt int64) {
+		t.Helper()
+		if appendErr := storage.AppendBatch(requestContext, sesspersist.EventBatch{
+			Header: session.Header{
+				Version:   session.FormatVersion,
+				ID:        identifier,
+				CreatedAt: createdAt,
+			},
+			Materialize: true,
+		}); appendErr != nil {
+			t.Fatal(appendErr)
+		}
+	}
+	materialize("session-30", 30)
+	materialize("session-20-a", 20)
+	materialize("session-20-b", 20)
+	materialize("session-10", 10)
+
+	first, err := storage.List(requestContext, sesspersist.SessionPage{Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionIDs(first.Snapshots) != "session-30,session-20-a" || first.NextCursor == nil {
+		t.Fatalf("first page = %#v", first)
+	}
+
+	materialize("session-40", 40)
+	second, err := storage.List(
+		requestContext,
+		sesspersist.SessionPage{
+			Cursor: first.NextCursor,
+			Limit:  2,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionIDs(second.Snapshots) != "session-20-b,session-10" || second.NextCursor != nil {
+		t.Fatalf("second page = %#v", second)
+	}
+}
+
+func sessionIDs(snapshots []sesspersist.Snapshot) string {
+	identifiers := make([]string, len(snapshots))
+	for index, storedSnapshot := range snapshots {
+		identifiers[index] = string(storedSnapshot.Header.ID)
+	}
+	return strings.Join(identifiers, ",")
 }
 
 func eventSequences(entries []session.Event) string {

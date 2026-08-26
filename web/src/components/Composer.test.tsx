@@ -16,7 +16,8 @@ const session: SessionSummary = {
 
 const snapshot: ConversationSnapshot = {
   phase: 'ready',
-  sessions: [session],
+	sessions: [session],
+	loadingMoreSessions: false,
   events: new Map(),
   histories: new Map(),
   streams: new Map(),
