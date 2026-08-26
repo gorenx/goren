@@ -1,6 +1,6 @@
 # Agent 生命周期与运行期父子所有权设计
 
-状态：Final Design，待实施
+状态：Final Design，实现与全量验收已完成
 
 上位方案：[Agent 构造与父子生命周期重构方案](Agent构造与父子生命周期重构方案.md)
 
@@ -35,7 +35,7 @@ child 只是 Agent 在某段运行期关系中的角色：
 
 Agent Lifecycle Coordinator 是 `agent` 模块中的唯一 lifecycle 状态 owner，负责：
 
-- 为 Create/Resume reserve exact epoch；
+- 为 Create/Resume 创建 exact epoch 并登记 in-flight construction；
 - 验证 runtime parent 是 exact 且可接纳 descendant 的 `Publishing` 或 `Live` epoch；
 - 记录 in-flight materialization；
 - 在 publication 前接管 AgentLoop 已构造的单体 teardown；
@@ -44,7 +44,7 @@ Agent Lifecycle Coordinator 是 `agent` 模块中的唯一 lifecycle 状态 owne
 - parent closing admission cutoff；
 - 等待已经接纳的 child materialization；
 - descendant child-first teardown；
-- root close 和 Runtime CloseAll；
+- Registry shutdown 对全部 root epoch 的收敛；
 - 收敛重复 close 与结构兜底。
 
 ### 3.2 非职责
@@ -60,12 +60,14 @@ Coordinator 不负责：
 
 ### 3.3 组织形式
 
-Coordinator 可以是 `RegistryPlugin` 内部的命名 owner，也可以是 `agent` 包内的独立 Service。无论采用哪种形式：
+Coordinator 是 `agent` 包内的普通 Go 业务对象，由 `RegistryService` 持有。它不嵌入 `plugin.Base`，不实现 `Manifest/Apply/Dispose`，也不直接调用 Plugin Runtime。必须满足：
 
 - canonical 实例只能有一个；
 - Registry Create/Resume 必须经过它；
 - managed Handle 必须回到它；
 - Subagent 和 AgentLoop 都不能另建第二套 lifecycle registry。
+
+Agent Registry Plugin adapter 只发布 Registry Service；adapter 不持有 epoch map、parent graph 或 close transaction。Runtime 停止时，AgentLoop 的 commit 阶段 `registrationPlugin` 先关闭 exact Factory registration，取消并等待该注册已经接纳的构造；Agent Scope 随结构顺序停止。所有依赖方停止后，Agent Registry Plugin adapter 调用 `RegistryService.Shutdown`，永久关闭 Registry 准入并兜底收敛剩余 epoch。Agent-scoped event dispatch 由 Agent Scope Plugin adapter 通过 `AgentScopeRuntime` 执行。
 
 ## 4. Epoch identity
 
@@ -76,7 +78,7 @@ Coordinator 可以是 `RegistryPlugin` 内部的命名 owner，也可以是 `age
 - epoch identity；
 - runtime parent epoch；
 - managed lifecycle 状态；
-- Factory publication 前绑定的单体 teardown；
+- Factory publication 前绑定的 `AgentScopeRuntime`，其中只有 Agent-scoped event dispatch 和幂等单体 teardown；
 - admitted child materialization；
 - live children；
 - close transaction 与结果。
@@ -100,29 +102,29 @@ stateDiagram-v2
     Closing --> Closed: teardown completed
 ```
 
-`Materializing` 在尚未 attach exact Agent 时可以直接 abort 并撤销 reservation；一旦完成 lifecycle attach，任何 publication failure 或 close 都必须先进入 `Closing`，通过统一 close transaction 释放 Agent 及其 descendants。
+`Materializing` 在尚未 attach exact Agent 时可以直接 abort 并撤销本次构造；一旦完成 `AgentEpoch.Attach`，任何 publication failure 或 close 都必须先进入 `Closing`，通过统一 close transaction 释放 Agent 及其 descendants。
 
 ### 5.1 Materializing
 
-Registry 已接纳 Create/Resume，Coordinator 已登记 reservation，Factory 尚未成功提交。
+Registry 已接纳 Create/Resume，Coordinator 已创建 exact epoch 并登记 in-flight construction，Factory 尚未成功提交。
 
 此时：
 
 - 对 Registry consumer 不可见；
 - 可能持有 in-flight cancellation；
 - parent close 必须等待或使 commit 失败；
-- 失败只撤销本次 reservation 和 Factory 私有资源。
+- 失败只撤销本次构造登记和 Factory 私有资源。
 
 ### 5.2 Publishing
 
-Factory 已构造 exact Agent、进入必要 membership，并把单体 teardown 绑定到 Coordinator，但 Created 与 SessionStarted publication 尚未全部完成。
+Factory 已构造 exact Agent、进入必要 membership，并把 exact Agent 与 `AgentScopeRuntime` 绑定到 Coordinator，但 Created 与 SessionStarted publication 尚未全部完成。
 
 此时：
 
 - managed Handle 尚未向原调用方返回；
 - exact Agent 已具有 runtime ownership entry；
 - 同步 `agent/created` listener 可以创建 child；
-- 这些 child 从 reserve 起就属于该 parent epoch；
+- 这些 child 从 exact epoch 创建成功起就属于该 parent epoch；
 - 后续 publication veto 必须关闭嵌套 descendants，再回滚 parent。
 
 Publishing 不是持久状态，也不是 Agent activity。它只解决同步 publication 扩展点与 lifecycle ownership 的顺序。
@@ -156,8 +158,8 @@ in-flight materialization、descendants 和本 epoch 的单体 teardown 均已�
 
 单一 lifecycle 枚举不能替代所有并发标志。以下状态与主状态正交：
 
-- materialization reservation 是否已经获得 Factory 结果；
-- parent close 是否正在等待该 reservation；
+- in-flight materialization 是否已经获得 Factory 结果；
+- parent close 是否正在等待该 materialization；
 - close transaction 是否已创建及其 completion；
 - Agent Created/Disposed 是否已经发布；
 - membership announce 期间是否收到 remove request。
@@ -175,7 +177,7 @@ in-flight materialization、descendants 和本 epoch 的单体 teardown 均已�
 
 ### 7.1 建立关系
 
-子 Agent 调用方必须在 Registry Create/Resume 边界显式提供 exact runtime parent。Registry 把它交给 Coordinator reserve，而不是交给 AgentLoop 解释。
+子 Agent 调用方必须在 Registry Create/Resume 边界显式提供 exact runtime parent。Registry 让 Coordinator 在创建 exact epoch 时校验并记录该关系，而不是交给 AgentLoop 解释。
 
 Coordinator 只接受：
 
@@ -184,7 +186,7 @@ Coordinator 只接受：
 - child identity 尚未被另一个 live epoch 占用；
 - 当前调用未超过已有的通用结构约束。
 
-durable lineage、delegation depth 和 Subagent 授权由调用方在 reserve 前完成，Coordinator 不重复解释 Subagent 领域规则。
+durable lineage、delegation depth 和 Subagent 授权由调用方在创建 child epoch 前完成，Coordinator 不重复解释 Subagent 领域规则。
 
 ### 7.2 root
 
@@ -204,8 +206,8 @@ runtime graph：
 
 - 只存在于当前进程；
 - 不持久化；
-- child reserve 时登记受 parent 管理的 materialization，lifecycle attach 或 commit 后形成可关闭的 child edge；
-- child abort 或 Closed 时删除 reservation 或 edge；
+- child epoch 创建时登记受 parent 管理的 materialization，`AgentEpoch.Attach` 或 commit 后形成可关闭的 child edge；
+- child abort 或 Closed 时删除 in-flight construction 或 edge；
 - 新 epoch 不继承旧 edge；
 - 仅用于 lifecycle ordering，不用于 Host 授权。
 
@@ -216,7 +218,7 @@ runtime graph：
 | Initiator | 谁导致了当前调用或 Agent activity | 调用 Context | 单次调用链 |
 | runtime parent | 当前 epoch 由哪个可接纳 descendant 的 exact Agent epoch 拥有 | Agent Lifecycle Coordinator | 当前进程 epoch |
 | durable lineage | 哪个 Session 在业务上委派了该 Subagent Session | Subagent + Session Header | 跨恢复持久 |
-| structural custody | Agent Scope root 挂载在哪里 | Agent Lifecycle Coordinator + Plugin Runtime | 当前进程结构 |
+| structural custody | Agent Scope root 挂载在哪里 | AgentLoop Plugin adapter + Plugin Runtime | 当前进程结构 |
 
 约束：
 
@@ -250,7 +252,7 @@ Lifecycle attach 后、Coordinator commit 前：Registry 与 Coordinator 负责 
 Coordinator commit 后：managed Handle 可见
 ```
 
-`LifecycleAttached` 才是底层 teardown 责任从 AgentLoop 移交给 Coordinator 的边界；成功返回只表示 managed Handle 开始对调用方可见。`HandleTransferred` 没有独立业务含义：Handle 是指向 Coordinator epoch 的关闭能力，不是被搬运的资源所有权，因此不增加同名状态、事件或持久化字段。
+`AgentEpoch.Attach` 成功才是 `AgentScopeRuntime` 调用时机从 AgentLoop Factory 移交给 Coordinator 的边界。AgentLoop 的 `agentScopes` 始终持有真实 Plugin Handle；Agent Scope Plugin 只持有本 Scope effect。成功返回只表示 managed Handle 开始对调用方可见。`HandleTransferred` 没有独立业务含义：Handle 是指向 Coordinator epoch 的关闭能力，不是被搬运的资源所有权，因此不增加同名状态、事件或持久化字段。
 
 ### 9.3 重复引用
 
@@ -265,7 +267,7 @@ Close(epoch, reason)
   -> compare exact epoch
   -> Publishing or Live to Closing
   -> close ClosingSignal
-  -> reject new child reservations
+  -> reject new child construction
   -> wait admitted materialization
   -> snapshot direct live children
   -> close each child recursively
@@ -306,22 +308,22 @@ Agent cancel reason、Inbox preservation 和等待策略由 Agent lifecycle 与 
 
 ### 11.1 close 先发生
 
-parent 已进入 Closing 后，新的 child reserve 立即失败，不调用 Factory。
+parent 已进入 Closing 后，新的 child epoch 创建立即失败，不调用 Factory。
 
-### 11.2 reserve 先发生
+### 11.2 child construction 先被接纳
 
 child 已进入 Materializing 或 Publishing 后 parent 才 Closing：
 
-1. parent close 记录并等待该 reservation；
-2. Factory 失败则撤销 reservation；
+1. parent close 记录并等待该 in-flight construction；
+2. Factory 失败则撤销该构造登记；
 3. child 进入 Publishing 后即纳入 parent ownership；
 4. publication 成功且 commit 仍允许，则 child 转为 Live 后立即进入 parent close；
 5. publication 或 commit 被拒绝，则关闭未暴露 Agent 及其嵌套 descendants；
-6. parent 只在 reservation 和 child teardown 完成后继续自己的单体 teardown。
+6. parent 只在 in-flight construction 和 child teardown 完成后继续自己的单体 teardown。
 
 ### 11.3 同 ID 并发
 
-Coordinator admission 与 Registry membership collision 共同保证同一 Session ID 只有一个 live epoch。旧 reservation、旧 disposer 或旧 Handle 都不能删除或关闭获胜的新 epoch。
+Coordinator admission 与 Registry membership collision 共同保证同一 Session ID 只有一个 live epoch。旧 construction、旧 disposer 或旧 Handle 都不能删除或关闭获胜的新 epoch。
 
 ## 12. Agent activity 与 Subagent state
 
@@ -350,7 +352,7 @@ one-shot、continuable 和 parent-bound 可以使用不同 policy，但共用 Ag
 
 ```text
 one-shot settled and released -> Close
-continuable quiescent -> KeepResident
+ordinary continuable quiescent -> Close
 continuable explicit close -> Close
 parent-bound binding enabled -> KeepResident
 parent-bound binding disabled -> Close
@@ -361,16 +363,16 @@ parent closing 和 Runtime shutdown 是 Agent lifecycle hard boundary，Subagent
 
 ## 13. Structural custody
 
-目标结构不把 child Scope 挂到逻辑 parent 或某个 Subagent 执行模式 owner 下。Agent Lifecycle Coordinator 为所有 Agent Scope root 提供统一 custody：
+目标结构不把 child Scope 挂到逻辑 parent 或某个 Subagent 执行模式 owner 下。`agentloop.Plugin` 持有 `agentScopes`，由这个结构 owner 保存所有 Agent Scope root 的精确 Handle：
 
 ```text
-Agent lifecycle structural owner
+AgentLoop Plugin agentScopes
   -> Agent Scope root A
   -> Agent Scope root B
   -> Agent Scope root C
 ```
 
-runtime parent-child ownership 保存在 Coordinator state：
+runtime parent-child ownership 独立保存在 Coordinator 业务状态：
 
 ```text
 A owns B
@@ -384,22 +386,26 @@ B owns C
 - 让 child-first 关闭由一个 Coordinator 显式执行；
 - 保留 Plugin Runtime 对全部 Agent Scope 的兜底卸载能力。
 
-当前 Context 隐式 `Custody.Bind` 和 `custodyFrom` 在迁移完成后删除。
+Coordinator 不持有 `plugin.Plugin`、Plugin handle 或 Manifest，只持有 consumer-owned `AgentScopeRuntime` 端口。AgentLoop Plugin adapter 也不读取 runtime parent graph；结构 teardown 完成后只通过 exact teardown completion 通知 Coordinator 收敛。
+
+关闭方向必须保持单向：Coordinator 调用 `AgentScopeRuntime.Teardown` 提出 exact Scope 关闭请求；`agentScopeRoot` 把请求交给 AgentLoop 的 `agentScopes`；`agentScopes` 以 AgentLoop Plugin 这个结构父节点的身份命令 Runtime 卸载精确隔离 Scope；Runtime 才递归调用 Scope Plugin 的 `Dispose`。`agentScopeRoot` 不保存父 Plugin/Handle，也不能在自己的 Scope 中直接 Dispose 自己。Subagent 只调用 managed Agent lifecycle，不接触 `agentScopes` 或 Plugin topology。
+
+这条同步链只在 Plugin callback 外执行。单独卸载 Subagent Plugin 时，Subagent Service 启动 managed close 并等待每个 exact Agent 建立 Closing cutoff，然后让当前 Plugin Dispose 返回；Agent close owner 在外层 Runtime 操作结束后继续执行上述结构链。Runtime 整体关闭则反向执行：Runtime 直接结构化卸载 Agent Scope，`AgentTeardown.BeginTeardown/FinishTeardown` 把同一事实回报 Coordinator。两种方向不要求 Plugin Runtime 支持 Dispose 内拓扑重入。
 
 ## 14. Runtime shutdown
 
-目标顺序：
+当前顺序：
 
 ```text
 inbound cutoff
-  -> ordinary and Subagent use cases stop admission
-  -> Lifecycle Coordinator stop epoch admission
-  -> join in-flight materialization
-  -> close roots and descendants child-first
-  -> AgentLoop stop Factory construction admission
-  -> AgentLoop drain raw construction and structural fallback
-  -> Agent Registry verify no live membership
-  -> Session Store and persistence stop
+  -> Plugin Runtime closes Event/Waterfall invocation admission
+  -> AgentLoop commit-phase FactoryRegistration closes and joins admitted construction
+  -> Plugin Runtime structurally unloads Agent Scope subtree
+  -> AgentTeardown retires publication and closes exact epoch
+  -> Subagent Plugin withdraws business admission and requests close for any remaining Activation
+  -> Agent Registry Plugin calls RegistryService.Shutdown for final admission cutoff and epoch fallback
+  -> Session Store business service stops
+  -> Session and persistence Plugin adapters stop
 ```
 
 Factory admission 与 lifecycle admission 是两个不同边界：
@@ -407,7 +413,7 @@ Factory admission 与 lifecycle admission 是两个不同边界：
 - Factory admission 回答“还能否开始物理构造”；
 - lifecycle admission 回答“这个 exact parent epoch 还能否接纳 child”。
 
-Plugin Runtime structural unload 是异常或整体关闭兜底，不代替 Coordinator 的业务 child-first drain。若结构兜底先发生，Coordinator 必须通过 exact lifecycle completion 或 Agent Disposed observation 收敛 entry，不能保留伪 Live 状态。
+Plugin Runtime structural unload 是整体关闭兜底，不代替日常 managed close 的 Coordinator child-first 算法。结构兜底先发生时，teardown adapter 在 Scope root Dispose 前调用 `AgentTeardown.BeginTeardown`，Coordinator 退休 publication；Scope root 完成资源释放后调用 `FinishTeardown`，同一 exact epoch 才进入 Closed，不能保留伪 Live 状态。
 
 ## 15. 持久状态边界
 
@@ -428,7 +434,7 @@ Plugin Runtime structural unload 是异常或整体关闭兜底，不代替 Coor
 - structural custody 和 Plugin installation；
 - per-ID admission locks。
 
-delegation depth 只保留 Session Header 中的 durable 值。目标实现删除 `agent.Options.SubagentDepth`，避免运行选项与 lineage 成为两个事实来源。
+delegation depth 只保留 Session Header 中的 durable 值。当前实现已经删除 `agent.Options.SubagentDepth`，避免运行选项与 lineage 成为两个事实来源。
 
 ## 16. 失败与观察
 

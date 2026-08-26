@@ -81,7 +81,7 @@ Provider 回答“child 如何起步”，core 回答“child 如何活着、被
 Provider 不得：
 
 - 直接写 continuation residency map 或持有 continuable `AgentHandle`；
-- 自行实现父子授权、Inbox、cold resume、settlement 或 descendant drain；
+- 自行实现父子授权、Inbox、cold resume、settlement 或 descendant close；
 - 用 `Capabilities.Continuable` 布尔值替代附加接口能力；
 - 因 Provider 卸载而取消已经发布的 `Run` 或 `Activation`。
 
@@ -95,7 +95,7 @@ Provider 不得：
 | --- | --- | --- |
 | `ProviderRegistry` | 注册、查找和按稳定顺序列举 Provider | `provider.go`、`internal/provider` |
 | `OneShotService` | 验证并启动一个 holder-owned `Run` | `one_shot.go`、`internal/oneshot` |
-| `ContinuableService` | 创建、续投、报告、中断和清理 durable child | `continuable.go`、`internal/continuation` |
+| `ContinuableService` | 创建、续投、报告和中断 durable child | `continuable.go`、`internal/continuation` |
 | `ExtensionRegistry` | 注册并精确撤销 continuable child-scoped 扩展 | `extension.go`、`internal/extension` |
 | `Catalog` | 不 resume Agent 地列举 durable child | `catalog.go`、`internal/catalog` |
 
@@ -109,7 +109,7 @@ Provider 不得：
 - resident Activation、parent cutoff、exact ancestry authority；
 - fresh create 与 cold resume 的同一 publication boundary；
 - Inbox accepted-message accounting；
-- settlement、selected drain 与 descendant drain。
+- settlement，以及模块卸载时 resident Activation 的 managed close 请求。
 
 `Activation` 表示一个 continuable child 在当前进程中的一次 residency epoch。它持有 exact `agent.Handle`、本 epoch 的 `RunID`、accepted messages 和 resident children；durable identity 则来自 Session Header 与第一个 `subagent/descriptor` event。同一个 child 可先后产生多个 Activation，但每个进程中同一 child 同时至多一个 resident epoch。
 
@@ -149,7 +149,7 @@ flowchart LR
     Driver --> Constructor[agent.Constructor]
     Continuable --> Registry
     Continuable --> Constructor
-    Continuable --> Descendants[agent.DescendantLifecycle]
+    Continuable --> Descendants[agent.RuntimeDescendants]
     Continuable --> Inbox[child / parent Inbox]
     Continuable --> Sessions[LiveStore / Persistence]
     Catalog --> Sessions
@@ -290,9 +290,9 @@ sequenceDiagram
 - `report` 只从 exact resident child 发给 exact live direct parent；parent 不在线时失败，不能向 ancestor 广播。
 - settlement notice 由 Runtime 编写，不冒充 child report；parent 不在线时可丢弃，因为 child Session 才是 durable 事实来源。
 
-### 7.3 Settlement、再激活与 drain
+### 7.3 Settlement、再激活与关闭
 
-一个 Activation 同时满足以下条件时进入自动 settlement：Agent 已 idle、accepted-message 集合为空，且 `agent.DescendantLifecycle` 确认该 exact Agent 没有运行期后代。Subagent 不保存第二份 child 集合。accepted 集合在 Inbox claim 或 discard 事件后清除，因此“消息已被 Inbox 接受”与“消息已被 Agent 消费”不会混为一谈。
+一个 Activation 同时满足以下条件时进入自动 settlement：Agent 已 idle、accepted-message 集合为空，且只读 `agent.RuntimeDescendants` 确认该 exact Agent 没有运行期后代。该 capability 由 Agent 模块统一定义；Subagent 不保存第二份 child 集合，也拿不到 descendant close 命令。accepted 集合在 Inbox claim 或 discard 事件后清除，因此“消息已被 Inbox 接受”与“消息已被 Agent 消费”不会混为一谈。
 
 settlement 顺序是：
 
@@ -306,7 +306,7 @@ settlement 顺序是：
 
 settled child 的 Session 和 descriptor 仍然存在。direct parent 后续 `send_message` 会为同一 child identity 创建新的 Activation epoch；新的 epoch 有新的 `RunID` 和 start/end 对，但不是新 child。
 
-`DrainChildren` 只接受 exact live direct parent 和指定 child；`DrainDescendants` 与 Runtime unload 调用 `agent.DescendantLifecycle.CloseDescendants`，由 Agent Registry 先关闭指定父节点的后代准入、等待已经进入的 materialization，再按 child-first 顺序释放。Subagent Runtime 在停用 continuation Service 前等待该调用完成。普通 `Interrupt` 不执行 drain。
+`ContinuableService` 不暴露 selected-child 或 descendant close 命令。自然 settlement 只释放当前 Activation 持有的 exact `agent.Handle`；Subagent Runtime 卸载时关闭模块准入，为每个 resident Activation 发起同样的 managed close，并等待 exact Agent 进入 `Closing`。父 Agent 关闭时，后代准入 cutoff、已接纳 materialization join 和 child-first 顺序全部由 Agent 生命周期传播，Subagent 不枚举父树，也不调用递归关闭接口。普通 `Interrupt` 只取消当前 turn，不释放 Activation。
 
 ## 8. Durable state、进程内状态与查询
 
@@ -342,6 +342,6 @@ Catalog 保留 one-shot 与 continuable 分类，供 UI 或 Host Consumer 使用
 
 以下能力当前不在实现承诺内：Jobs、background one-shot collection、Workflow、Code Mode structured capture、Host Subagent API，以及 ACP、Codex、Claude Code、DSH SDK Provider。`subagent` 目录或源仓库中存在相关名称不代表 Goren 已纳入。
 
-Parent-bound Subagent 也是尚未实现的 Goren extension。其需求与推荐架构分别见[需求文档](./parent-bound-requirements.zh-CN.md)和[技术设计](./parent-bound-design.zh-CN.md)；不得从当前 continuable 的 durable identity、Activation 或 drain 能力推断 parent-bound 已完成。
+Parent-bound Subagent 也是尚未实现的 Goren extension。其需求与推荐架构分别见[需求文档](./parent-bound-requirements.zh-CN.md)和[技术设计](./parent-bound-design.zh-CN.md)；不得从当前 continuable 的 durable identity、Activation 或 managed close 行为推断 parent-bound 已完成。
 
 本文只陈述设计与当前代码语义；每项是否完成、运行过哪些验证、哪些仍 Deferred，以全仓[实施进度](../../zh-CN/08-implementation-progress.md)为准。

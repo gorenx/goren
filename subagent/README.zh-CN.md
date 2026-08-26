@@ -14,9 +14,12 @@
 - [DSH 源证据](../zh-CN/subagent/01-source-capability-analysis.md)：固定 feature-local commit 下的源 owner、符号与兼容差异。
 - [全局实施进度](../zh-CN/08-implementation-progress.md)：仓库级证据索引，只记录 Subagent 已进入实现、Jobs/Workflow 仍 deferred。
 
-### 临时设计文档
+### Proposed 扩展设计
 
-Parent-bound Subagent 仍是待确认的临时设计议题，相关需求和技术草案不属于当前文档集，因此不在这里建立导航。确认前，它们不得作为当前领域设计、兼容基线、实现承诺或现有 one-shot、continuable 和 Activation 行为的解释依据。
+- [Parent-bound Subagent 需求](./docs/parent-bound-requirements.zh-CN.md)：待确认的产品与领域需求，以及仍需决策的 Open Items。
+- [Parent-bound Subagent 技术设计](./docs/parent-bound-design.zh-CN.md)：与最新 Agent lifecycle owner、构造事务、事件路由和持久化边界对齐的建议实现。
+
+这两份文档描述尚未实现的 Goren extension，状态分别为 Draft Requirements 与 Proposed Design。它们不是当前 DeepSeek Harness 兼容证据或实现完成证明；未决项也不得反向改写现有 one-shot、continuable 和 Activation 行为。
 
 ## 领域边界
 
@@ -43,7 +46,7 @@ Subagent 位于调用适配器和 Agent/Session 基础能力之间，是“父 A
 | Process Assembly / Plugin Runtime | Assembly 通过静态 Factory 创建 `runtime.Plugin`；Plugin Runtime 调用其 `Manifest`、`Apply` 和 `Dispose` | Plugin Runtime 拥有 Scope、binding、事件分发和结构化启停；Subagent Runtime 只装配本领域 Service |
 | Tool Consumer | 模型调用 `tool`、`control` 或 child-local `report` Tool；这些适配器再调用 `OneShotService`、`ContinuableService` 或 `Catalog` | Tool schema、渲染和模型交互属于适配层，不能进入核心 Service |
 | Provider Plugin | `spawn`、`fork` 等 Plugin 主动向 `ProviderRegistry` 注册；收到业务请求后，one-shot/continuation Service 再反向调用选中的 Provider | Provider 只决定创建策略和 fresh seed，不拥有 continuable residency |
-| Agent | Subagent 用 `agent.Registry` 校验 exact live Agent，用 `agent.Constructor` 创建或恢复 child，用 `agent.DescendantLifecycle` 关闭运行期后代 | Agent 拥有 exact epoch、`RuntimeParent` 父子关系、Scope、模型循环、状态、Inbox 接受和取消语义 |
+| Agent | Subagent 用 `agent.Registry` 校验 exact live Agent，用 `agent.Constructor` 创建或恢复 child，并通过只读 `agent.RuntimeDescendants` 观察 settlement 条件；关闭本领域 Activation 时只释放 exact `agent.Handle` | Agent 拥有 exact epoch、`RuntimeParent` 父子关系、descendant admission、child-first 关闭、Scope、模型循环、状态、Inbox 接受和取消语义 |
 | Session | Subagent 产生 descriptor、lineage metadata 和 MessageSource，并通过 `LiveStore`、Persistence、Projection 读取 durable child 事实 | Session 拥有 append-only log、序号、flush、存储和恢复 I/O |
 | Approval / Tools / System Prompt | `childscope` 消费授权策略；`tool`、`control`、`report` Plugin 向 Tool Catalog 或 Prompt Registry 安装效果 | 这些上下文提供通用能力，Subagent 只定义委派场景下的使用方式 |
 
@@ -114,7 +117,7 @@ Factory Catalog 静态注册 core、spawn、fork、tool、control、report 的 F
 | `internal/projection` | 折叠 `subagent` identity 与 `subagentTiming` 两个纯 Session Projection，不拥有 Registry 或 checkpoint |
 | `internal/assistantoutput` | one-shot 与 continuable 共用的纯选择算法，从一个 Activation epoch 的事件后缀选择权威最终 assistant output |
 
-`internal/continuation` 内部区分“行为 owner”和“状态容器”：稳定的 `Service` 负责激活期间的 Manager 切换和 API 入口；`Manager` 协调 continuable 用例；`Activation` 记录一个 durable child 的单次进程内驻留 epoch；`residency` 只集中保存 mutex、Activation map、per-child lock 和模块级 draining 状态。runtime parent graph、descendant admission 和关闭顺序不在该容器中，由 `agent.DescendantLifecycle` 统一拥有。
+`internal/continuation` 内部区分“行为 owner”和“状态容器”：稳定的 `Service` 负责激活期间的 Manager 切换和 API 入口；`Manager` 协调 continuable 用例；`Activation` 记录一个 durable child 的单次进程内驻留 epoch；`activationRegistry` 只集中保存 mutex、Activation map、per-child lock 和模块级关闭准入状态。runtime parent graph、descendant admission 和关闭顺序不在该容器中，由 `agent.LifecycleCoordinator` 统一拥有。
 
 ## 关键调用链
 
@@ -130,9 +133,10 @@ Factory Catalog 静态注册 core、spawn、fork、tool、control、report 的 F
 - Provider 注册先检查名称唯一性，再发布 `subagent/provider-added`；有序 observer 拒绝时回滚注册。精确 registration 撤销后发布 best-effort `subagent/provider-removed`。
 - one-shot `Start` 在 Provider 成功发布 `Run` 后才返回；启动失败不产生运行生命周期。返回后由 holder 负责 `Run.Dispose`，Runtime 观察 terminal result 并保证 start 先于 end。
 - continuable 以 Session log 为事实来源。Activation 只是一个进程内驻留周期，不是可持久化业务事实。
-- Continuation Manager 判断 Activation 何时结束，只持有 `agent.Constructor` 返回的 exact `agent.Handle`；运行期父子关系和 child-first 回收由 `agent.DescendantLifecycle` 执行。Activation 仅保存本次 residency、Handle 和 exact parent 事件目的地，不维护第二套父子集合。
+- Continuation Manager 判断 Activation 何时结束，只持有 `agent.Constructor` 返回的 exact `agent.Handle`，并通过 `agent.RuntimeDescendants` 查询是否仍有运行中后代；运行期父子关系和 child-first 回收由 `agent.LifecycleCoordinator` 执行。Activation 仅保存本次 residency、Handle 和 exact parent 事件目的地，不维护第二套父子集合。
 - `context.Context` 只取消接受前的操作或等待；已被 Inbox 接受的消息不因调用方随后取消而撤回。
 - `Interrupt` 是发出取消后立即返回，不等待 Agent idle；是否保留 Inbox 由 Agent cancel contract 决定。
-- drain 阻止目标父树继续 admission，等待已进入的创建事务，再按 child-first 顺序释放 resident handle。
+- Continuation 不提供 selected-child 或 descendant close API。自然 settlement 和模块卸载只释放 Manager 已持有的 exact Handle；parent close 由 Agent 生命周期建立后代准入 cutoff、等待已接纳构造并按 child-first 顺序收敛。
+- 单独卸载 Subagent Plugin 时，`Service.Disable` 先撤销 Manager API 准入，再为每个 resident Activation 启动 managed Agent close，并等待 exact Agent 的 `ClosingSignal`。Plugin Dispose 到此只完成关闭请求移交；Agent Registry 在外层 Plugin Runtime 操作返回后继续关闭 epoch，AgentLoop 的 `agentScopes` 最终卸载 Scope。该路径不修改 Plugin Runtime，也不让 Subagent 接触 Plugin Handle。
 
 精确完成状态和测试证据以[全局实施进度](../zh-CN/08-implementation-progress.md)为准；临时设计文档不得作为现有行为已经实现的证据。

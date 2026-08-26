@@ -11,11 +11,13 @@
 | `factory/` | raw JSON 的严格解码、配置校验、默认值和根 Plugin 构造 |
 | `construction.go` | `Factory` 的 Create/Resume 构造用例、Session Prepare/恢复及关闭信号跟随 |
 | `prepared_agent.go` | 未发布 Agent 的 Scope 挂载、Provisioning、Session 发布和 Registry Attach 顺序 |
-| `scope_root.go` | 私有 Agent Scope、Scope Resource 所有权及 Plugin 适配 |
-| `lifecycle_adapter.go` | 将 Plugin Scope 结构销毁转换为 Agent Lifecycle teardown |
+| `scope_preparation.go` | 未发布 Agent Scope 的构造事务接口与绑定顺序 |
+| `agent_scopes.go` | AgentLoop 拥有的 Agent Scope 集合、精确 Plugin Handle 与卸载命令 |
+| `scope_root.go` | 单个私有 Agent Scope Plugin、Scope Resource 与运行期端口适配 |
+| `teardown_adapter.go` | 将 Plugin Scope 结构销毁转换为 `AgentTeardown` 开始回报 |
 | `session_binding.go` | Session 发布、运行时上下文路由和 Session 释放 |
 | `agent_runtime_adapter.go` | 将 Agent Loop 能力发布到 Agent 私有 Plugin Scope |
-| `agent.go` | `ReactLoopAgent` 能力 Plugin 与对私有 loop 的命令委派 |
+| `agent.go` | `ReactLoopAgent` 业务对象及其对私有 loop 的命令委派 |
 | `loop.go` | 一个 Agent 的单一私有 loop，组合 activity 与 Turn runner |
 | `activity.go` | work 准入、wake/cancel、maintenance 和 idle convergence |
 | `turn.go` | Turn 状态机、Step 迭代、Turn 结束和 Flush boundary |
@@ -63,39 +65,46 @@ sequenceDiagram
     participant Caller as 调用方
     participant Registry as agent.RegistryService
     participant Factory as agentloop.Factory
+    participant Scopes as agentloop.agentScopes
     participant Runtime as plugin.Runtime
     participant Scope as Agent Scope
     participant Provisioner as caller agent.Provisioner
     participant SessionBinding as sessionBinding
 
     Caller->>Registry: Create or Resume
-    Registry->>Registry: reserve
-    Registry->>Factory: CreateAgent or ResumeAgent(Reservation)
+    Registry->>Registry: create exact Agent epoch
+    Registry->>Factory: CreateAgent or ResumeAgent(AgentEpoch)
     Factory->>Factory: prepare unpublished Session and ReactLoopAgent
     Factory->>Runtime: MountScopedChild(Agent Scope)
     Runtime->>Scope: overlays -> variables -> Agent
     Factory->>Provisioner: ApplyProvisioning(ctx, Scope)
     Provisioner->>Scope: Own ScopeResource
     Factory->>Scope: Mount sessionBinding
-    Factory->>Registry: Reservation.Attach(Agent, Scope Runtime)
+    Factory->>Registry: AgentEpoch.Attach(Agent, Scope Runtime)
     Factory->>SessionBinding: announce Session
-    Factory->>Scope: Mount lifecycleAdapter
+    Factory->>Scope: Mount teardownAdapter
     Factory-->>Registry: construction complete
     Registry->>Scope: publish agent/created and agent/session-start
     Registry-->>Caller: agent.Handle
     Caller->>Registry: Handle.Dispose
     Registry->>Registry: close descendants and retire publication
-    Registry->>Runtime: AgentScopeRuntime.Teardown
+    Registry->>Scope: AgentScopeRuntime.Teardown
+    Scope->>Scopes: request exact Scope release
+    Scopes->>Runtime: Unload exact isolated child Scope
     Runtime->>Scope: reverse Dispose
 ```
 
-`newPreparedAgent` 先创建 ReactLoopAgent，再把私有 Agent Scope 挂入 Runtime；此时基础 Overlay 与 Agent 已 active，但 Registry 和 Session 都不可见。Overlay 必须先于 `ReactLoopAgent` 激活，使 Agent 捕获本 Scope 的 System Prompt 与 Tools runtime。随后调用方的 `Provisioner` 配置同一 Scope，`sessionBinding` 完成 Session 发布，`Reservation.Attach` 把 Agent 和 Scope Runtime 交给 Registry。Factory 返回后，Registry 才发布 Agent 生命周期事件并开放正常工作。
+`newPreparedAgent` 先创建 ReactLoopAgent，再把私有 Agent Scope 挂入 Runtime；此时基础 Overlay 与 Agent 已 active，但 Registry 和 Session 都不可见。Overlay 必须先于 `ReactLoopAgent` 激活，使 Agent 捕获本 Scope 的 System Prompt 与 Tools runtime。随后调用方的 `Provisioner` 配置同一 Scope，`sessionBinding` 完成 Session 发布，`AgentEpoch.Attach` 把 Agent 和 Scope Runtime 交给 Registry。Factory 返回后，Registry 才发布 Agent 生命周期事件并开放正常工作。
 
 Agent Loop 不实现 `agent.Provisioner`：它是 provisioning 的用例协调者和 `agent.Scope` 的 Plugin 适配实现。Subagent、测试或其他调用方分别提供自己的 Provisioner；若 Agent Loop 同时实现 Provisioner，就会把“创建事务所有者”和“领域贡献提供者”重新混在一个对象里。
 
-创建失败时 `preparedAgent` 用非取消上下文回滚 Agent Scope，保证取消不会中断结构释放。进程级创建准入由 `RegistryService` 管理，exact epoch 与 in-flight reservation 由其 `LifecycleCoordinator` 管理；Agent Loop 只跟随 `Reservation.ClosingSignal` 取消尚未完成的构造。无论关闭来自 `Handle.Dispose` 还是 Plugin Runtime 的结构销毁，最终都收敛到同一个 Agent `Lifecycle`。
+创建失败时 `preparedAgent` 用非取消上下文回滚 Agent Scope，保证取消不会中断结构释放。进程级创建准入与 exact epoch 由 `RegistryService` 及其 `LifecycleCoordinator` 管理；Agent Loop 只跟随 `AgentEpoch.ClosingSignal` 取消尚未完成的构造。Attach 返回的 `AgentTeardown` 仅供 Scope 回报结构销毁开始和完成；无论关闭来自 `Handle.Dispose` 还是 Plugin Runtime 的结构销毁，最终都收敛到同一个 exact epoch。
 
-Plugin Runtime 卸载 Agent Loop 时，先停止 commit 阶段的 `registrationPlugin`。`FactoryRegistration.Close` 原子关闭新的 Create/Resume 准入并取消未完成构造；随后 Runtime 按父子结构停止普通 Agent Scope；最后 `RegistryPlugin.Dispose` 执行 Registry 的幂等 `Shutdown`，兜底关闭没有被结构卸载收敛的 epoch。这个顺序把“注册生命周期”“Agent Scope 结构生命周期”和“Registry 业务生命周期”分开，而不创建第二套 Agent 生命周期接口。
+`agentScopeRoot` 不保存父 Plugin 或自己的 Plugin Handle，也不从自己的 `Teardown` 中直接 Dispose 自己。`agentloop.Plugin` 持有 `agentScopes`；后者是所有 Agent Scope Handle 的唯一结构 owner。`AgentScopeRuntime.Teardown` 只是把 exact Scope 关闭请求交给 `agentScopes`，由它以 AgentLoop Plugin 的身份命令 Runtime 卸载精确隔离 Scope；随后 Runtime 递归调用 Scope Plugin 的 `Dispose`。Scope Plugin 的 `Dispose` 只释放本 Scope resources、关闭 Agent 并回报 `AgentTeardown.FinishTeardown`。
+
+这条同步卸载链只从 Plugin callback 外的 managed Agent close 进入。若关闭请求来自另一个 Plugin 的 `Dispose`，请求方只等待 exact Agent 建立 Closing cutoff，随后让当前 Runtime 操作返回；Coordinator 再继续进入 `agentScopes`。Runtime 整体关闭时则由 Runtime 直接反向 Dispose Agent Scope，并通过 `AgentTeardown` 回报 Registry。AgentLoop 不要求 Plugin Runtime 开放 Dispose 内拓扑重入。
+
+Plugin Runtime 卸载 Agent Loop 时，先停止 commit 阶段的 `registrationPlugin`。`FactoryRegistration.Close` 从 Registry 移除该 exact Factory，取消并等待由它接纳但尚未完成的构造；既有 live Agent 继续由统一 lifecycle 管理，Registry 也可以接受替代 Factory 注册。Runtime 整体关闭时随后按结构停止 Agent Scope，最后 `RegistryPlugin.Dispose` 执行 Registry 的幂等 `Shutdown`，永久停止创建/恢复准入并兜底收敛全部 epoch。这个顺序把“Factory 注册生命周期”“Agent Scope 结构生命周期”和“Registry 业务生命周期”分开，而不创建第二套 Agent 生命周期接口。
 
 配置声明只能在 `plugin.Runtime.Start` 返回后通过 `StartConfiguredAgents` 启动，因为 Runtime 在静态启动事务中不接受动态 mount。该调用是一锤子启动事务；任一声明失败会逆序销毁本批次已创建 Agent，失败后不能对同一 Plugin 重跑。
 

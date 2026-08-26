@@ -8,13 +8,13 @@
 
 ## 1. 创建事务提前结束
 
-现象：fresh Start 或 cold Followup 已发布 child，但首条消息尚未被 Inbox 接受时，scoped drain 可能结束等待；调用方随后得到成功，child 却已进入回滚或释放。
+现象：旧的 scoped descendant-close 入口可在 fresh Start 或 cold Followup 已发布 child、但首条消息尚未被 Inbox 接受时结束等待；调用方随后得到成功，child 却已进入回滚或释放。
 
 根因：`materialization` 只覆盖 Agent Handle publication，没有覆盖 initial prompt acceptance 与失败回滚。创建准入和业务提交不是同一个事务边界。
 
-解决：把 materialization 延长到“publish、首条 Inbox 接受、失败回滚”全部完成；drain 先建立 lineage cutoff，再等待已准入事务结束。实现提交：`a35daa7`。
+解决：把 materialization 延长到“publish、首条 Inbox 接受、失败回滚”全部完成。后续职责重构又删除了没有生产 Consumer 的 selected-child/descendant close API；parent close 的构造 join 统一由 Agent 生命周期拥有，Subagent 模块卸载只关闭自身准入并释放已经取得的 exact Handle。实现提交：`a35daa7`。
 
-证据：`subagent/internal/continuation/materialization_drain_test.go` 覆盖 fresh create、cold resume、Inbox 拒绝和 publication 后 drain。
+当前证据：`subagent/internal/continuation/materialization_rollback_test.go` 覆盖初始 Inbox 拒绝后的 publication 回滚；Agent 的 parent-close 并发测试覆盖 descendant admission 与已接纳构造收敛。已删除的 scoped close API 不再保留专用测试。
 
 ## 2. 自然 settlement 与 Followup 非线性化
 
@@ -24,7 +24,7 @@
 
 解决：用 memoized `disposal` 表示唯一释放事务；它的存在就是 admission cutoff。watcher 在 per-child 串行边界内完成 settled recheck 和事务安装，所有调用方等待同一个 `done`，完成 terminal publication 和 ownership release 后才允许 cold resume。
 
-DSH 证据：`packages/subagent/subagent/src/continuation.ts` 的 `dispose()`、`finishDisposal()`。Go 证据：`settlement_delivery_test.go`、`external_disposal_test.go`、`drain_order_test.go`。
+DSH 证据：`packages/subagent/subagent/src/continuation.ts` 的 `dispose()`、`finishDisposal()`。Go 证据：`settlement_delivery_test.go`、`external_disposal_test.go`。
 
 ## 3. 结果投影按最后一个事件猜测
 
@@ -38,7 +38,7 @@ DSH 证据：`packages/core/agent/src/consumed-work.ts` 的 `foldConsumedWork()`
 
 ## 4. 最终 flush 被误作结构释放失败
 
-现象：child 已正常完成，但最终 Session flush 失败时，Go 实现会把终态改成 `error`，并让显式 drain 返回 Activation teardown failure；handle 和 ownership 虽然最终仍会释放，但调用方看到的是结构释放失败。
+现象：child 已正常完成，但最终 Session flush 失败时，旧实现会把终态改成 `error`，并把 durability failure 混入 Activation teardown failure；handle 和 ownership 虽然最终仍会释放，观察方看到的却像结构释放失败。
 
 根因：best-effort durability checkpoint 与 handle/child teardown 共用一个 failure slice，没有区分“冷恢复数据可能陈旧”和“结构释放本身失败”。
 

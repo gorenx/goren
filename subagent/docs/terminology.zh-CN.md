@@ -48,9 +48,8 @@
 | Inbox | Agent 拥有的 durable pending-message projection，是 continuable 消息的唯一队列 | Subagent 自建的第二条 queue |
 | direct parent | child Session Header 指向的直接父 Session，live 操作还要匹配 exact Agent identity | 任意 ancestor 或发送 MessageSource 的对象 |
 | ancestor | 沿 durable parent 链位于目标 child 之上的 Agent | 仅 direct parent |
-| authority | 获准对 live child 执行 followup、interrupt、report 或 drain 的精确身份 | MessageSource 或仅相同 Session ID 的陈旧对象 |
+| authority | 获准对 live child 执行 followup、interrupt 或 report 的精确身份 | MessageSource 或仅相同 Session ID 的陈旧对象 |
 | Settlement | Activation 在无待处理工作且 Agent idle 后形成 terminal edge、parent notice 和资源释放的过程 | 一条普通 report；one-shot Result 本身 |
-| drain | 关闭指定父树 admission，等待已进入事务并 child-first 释放 resident Activation | 删除 Session history |
 | Provisioner | 配置一个 active 但未发布的 Agent Scope 的对象 | Agent Loop、Plugin phase 或 resident lifecycle |
 | Provisioning | Provisioner 返回的一次配置事务，负责 publication commit 与后续释放 | 所有 Provisioner 都必须制造的空生命周期对象 |
 | ActivationExtension | 安装到 continuable Activation 的可选 child-scoped 能力 | 全局 Service locator、Agent Provisioner 或 child Runtime |

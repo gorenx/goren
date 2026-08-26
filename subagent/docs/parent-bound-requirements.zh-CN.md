@@ -2,13 +2,15 @@
 
 状态：Draft Requirements
 
-最后讨论：2026-08-24
+最后讨论：2026-08-25
 
 ## 0. 文档边界
 
 本文收敛 parent-bound Subagent 的产品与领域需求，不声明已经实现，也不提前固定 Go 类型、接口签名、持久化字段或目录结构。现有 one-shot、continuable、Provider、Activation 与 Inbox 语义见[领域设计](./design.zh-CN.md)，兼容词汇约束见[术语规范](./terminology.zh-CN.md)。
 
 配套的[技术设计](./parent-bound-design.zh-CN.md)分析当前调用链、架构缺口与推荐实现切片。本文继续拥有“系统必须表现成什么”；技术设计只解释“建议怎样实现”，两者存在冲突时以本文及其 Open Items 为准。
+
+所有 Agent epoch、运行期父子关系、descendant admission、in-flight materialization join 和 child-first close 的 owner，以[Agent 生命周期与运行期父子所有权设计](../../zh-CN/Agent生命周期与运行期父子所有权设计.md)为准。Subagent 只拥有 durable binding、subscription、residency policy、授权与恢复语义，并通过 Agent 的 managed lifecycle 请求关闭；本文不再定义第二套 Subagent lifecycle graph。
 
 已经确认：
 
@@ -97,10 +99,10 @@ flowchart TD
 | Actor | 目标与职责 | 可达边界 | 禁止行为 |
 | --- | --- | --- | --- |
 | 用户 | 与系统主 Agent 协作 | parent 的 Host/UI/API | 直接采用、恢复、投递或回答 child |
-| parent Agent | 拥有并协调多个 children；其正常 Agent/Session 行为产生可观察事实 | 自己的 Session/Inbox、Catalog、interrupt/drain | 枚举订阅者、寻址 child 或为某个 child 定制事件发布 |
+| parent Agent | 拥有并协调多个 children；其正常 Agent/Session 行为产生可观察事实 | 自己的 Session/Inbox、Catalog 与 interrupt；关闭由 Agent lifecycle 传播 | 枚举订阅者、寻址 child 或为某个 child 定制事件发布 |
 | parent-bound child | 监听 exact parent 事件、独立处理任务、维护状态并向 parent 报告 | 自己的 subscription、Session/Inbox；exact parent 的 Inbox；作为 parent 时自己的 direct children | 向上越过 direct parent 联系用户或 ancestor；直接联系 sibling 或任意 recipient |
-| Subagent Runtime | binding、subscription installation、residency、授权、恢复与 child-first drain | Agent、Session、Catalog、Provider 与 event seam | 实现 Agent Loop、让 parent 主动路由指定 child、建立第二条 durable queue 或执行 Session 持久化决策 |
-| Agent Runtime | Agent、Inbox、turn、cancel 与 Handle 生命周期 | 单个 Agent 的运行能力 | 决定 parent-bound 业务关系 |
+| Subagent Runtime | binding、subscription installation、residency policy、授权、恢复与 managed close 请求 | Agent、Session、Catalog、Provider 与 event seam | 持有 runtime parent graph、自行递归 teardown、实现 Agent Loop、让 parent 主动路由指定 child、建立第二条 durable queue 或执行 Session 持久化决策 |
+| Agent Runtime | 所有 exact Agent epoch、runtime parent-child ownership、descendant admission、child-first close、Inbox、turn、cancel 与 managed Handle | Agent Registry、Agent Loop 与 lifecycle ports | 决定 parent-bound binding、subscription 或 residency policy |
 | Session owner | append-only log、Header、LiveStore 与持久化 | owner-defined Session contract | 混合 parent 与 child 的可变状态 |
 | Provider | 首次创建时贡献 spawn/fork creation data | Subagent Provider seam | 持有 binding、恢复、投递或 resident Handle |
 | Host/Interaction Gateway | 用户交互与 carrier correlation | root Agent | 将 child 暴露成普通用户会话 |
@@ -132,9 +134,10 @@ sequenceDiagram
     participant C as Bound children
 
     H->>P: create / resume
-    P->>S: parent lifecycle admitted
+    P->>S: agent/created while parent is Publishing
     S->>S: resolve durable bindings
-    S->>C: create / resume each child
+    S->>C: create / resume with RuntimeParent=P
+    S->>C: install subscription during unpublished provisioning
     C-->>S: resident outcomes
     S-->>P: binding activation outcome
     P-->>H: parent publication outcome
@@ -142,7 +145,9 @@ sequenceDiagram
 
 恢复已有 child 时必须复用其 Session、Inbox 和 durable identity；不能重新调用首次 creation Provider 来替代恢复，也不能在原 child 损坏时静默创建新 child。
 
-每个 child Activation 必须拥有自己的 subscription installation：在 child 被发布为 resident 前安装，只接受 exact direct parent 的事件，并在 child release 前由该 Activation 的 disposer 撤销。installation 可以由能够观察 parent Scope 的 Runtime router 承载，不能假定 child Scope 内的普通 Plugin listener 能向上观察 parent。安装失败属于该 child 的 activation failure，已经获得的 effects 必须逆序回滚。
+每个 child Activation 必须拥有自己的 subscription installation：它必须作为 child construction `Provisioner` 的 effect，在 child `AgentEpoch.Attach` 和 `agent.Created` publication 前完成安装，只接受 exact direct parent 的事件，并在 child release 前由 child Scope resource/disposer 撤销。installation 可以向位于 parent 与 child 实际共同祖先 Scope 的 Runtime router 注册，不能假定 child Scope 内的普通 Plugin listener 能向上观察 parent。安装失败属于该 child 的 activation failure，已经获得的 effects 必须逆序回滚，未发布 child 不得短暂漏收事件。
+
+共同激活发生时 parent 处于 Agent lifecycle 的 `Publishing` epoch，而不是已经对原调用方可见的 `Live` epoch。同步、有序且可 veto 的 `agent.Created` listener 可以在该 parent 下 materialize children；若 required child 失败并 veto parent publication，Agent Lifecycle Coordinator 必须自动关闭本次 publication 中已经接纳的 descendants。Subagent 不自行保存或递归清理这棵运行期树。
 
 全部 children 是否都是 parent Activation publication 的 required dependency，见 Open Item O1。
 
@@ -154,8 +159,9 @@ parent 的正常 Agent 与 Session 行为产生事件，由既有 event owner �
 exact parent performs normal work
   -> publishes Agent / Session event
   -> each bound child subscription independently filters
-  -> accepted event is mapped to that child Inbox.NextTurn
-  -> durable acceptance + child Message ID
+  -> replayable event waits for parent persistence barrier
+  -> accepted event uses Agent-owned NextTurn admission
+  -> child persistence barrier + Message ID
   -> child Agent Loop later claims one turn
 ```
 
@@ -164,9 +170,10 @@ exact parent performs normal work
 - subscription 必须绑定 exact direct parent 与当前 lifecycle epoch；不能接受 sibling、ancestor、陌生 Agent 或陈旧 parent instance 的实时事件；
 - parent 不维护本次事件的 child recipient set，也不调用 child Inbox；
 - 同一 parent event 可被零个、一个或多个 children 的 subscription 独立接受，这属于多订阅者观察，不是 parent 发起 broadcast；
-- subscription 接受且需要模型观察的事件，必须映射成该 child 自己的 `NextTurn` Inbox message；原始实时 event 不得直接成为第二条模型输入路径；
+- subscription 接受且需要模型观察的事件，必须通过 Agent-owned message admission 映射成该 child 自己的 `NextTurn` Inbox message 并唤醒 Agent；原始实时 event、Router 或 Subagent worker 不得直接修改 Inbox 或成为第二条模型输入路径；
 - child 正忙时，已接受消息按 child Inbox FIFO 等待，不 steer 当前 child turn；
-- parent 的事件发布不得同步等待 child 模型 answer；事件发布是否等待各 listener 完成 Inbox durable acceptance，见 Open Item O6；
+- parent 的事件发布不得同步等待 child 模型 answer；`session.EventAppended` 的 best-effort listener 只能作为 catch-up wake，不能证明 handoff 完成。事件发布是否等待各 listener 完成 Inbox durable acceptance，见 Open Item O6；
+- 对选择 durable replay 的 Session event，parent 事件必须先跨过自己的 persistence barrier，child message 才能被声明为 durable；随后 child message 必须跨过 child persistence barrier，才可推进 subscription checkpoint；
 - 一个 child 的过滤、接受、积压或失败不代表其他 children 的结果，也不得阻塞 sibling 的独立处理；
 - event filter、事件到 Inbox message 的映射、去重和重放边界必须由 child-owned subscription 明确定义，不能由 parent 临时指定。
 
@@ -177,9 +184,10 @@ child-to-parent 内容必须进入 exact direct parent 的 `NextStep` Inbox：
 ```text
 exact child
   -> resolve durable direct parent
-  -> parent Inbox.NextStep
+  -> Agent-owned parent NextStep admission
   -> quiet Inject or next-step Steer
-  -> durable acceptance + Message ID
+  -> persistence barrier when durable acceptance is promised
+  -> Message ID
 ```
 
 报告语义：
@@ -188,6 +196,7 @@ exact child
 - MessageSource 记录 child identity，但不授予 authority；
 - parent 用 sender identity 区分多个 children 的报告；
 - report 不结束 child turn，不释放 child，也不表示 parent 已读；
+- report 必须经过 exact live parent 的 Agent-owned admission；Subagent 不直接修改 parent Inbox；若 API 承诺 crash-durable acceptance，返回前还必须完成 parent Session flush；
 - sibling children 不能直接互发内容；需要协作时由 parent 中转；
 - report delivery 默认选择仍见 Open Item O5。
 
@@ -217,16 +226,19 @@ parent 不直接修改 child 内部状态，也不通过 child-specific command 
 
 ### UC7：共同关闭
 
-parent closing 时必须处理全部绑定的 resident children：
+Parent closing 是所有当前 resident Agent descendants 共用的 lifecycle hard boundary，不是 parent-bound residency policy 发明的第二种关闭算法：普通 continuable 如果此时仍 resident，也由 Agent Lifecycle Coordinator 按 child-first 顺序关闭；如果已因 quiescent settlement 而 non-resident，则没有当前 epoch 参与本次关闭。Parent-bound child 因 enabled binding 而预期保持 resident，并比普通 continuable 多出 subscription handoff、report 和 worker 的 quiesce 要求。
 
-1. 对 parent subtree 安装 admission cutoff；
-2. 停止各 child subscription 接受新的 parent event，并拒绝新的 child-to-parent report；
-3. 向所有目标 children 传播取消；
-4. 每棵 child tree 内按 child-first 顺序 drain；
-5. flush 并释放各 child exact Handle；
-6. 所有 required child teardown 收敛后才完成 parent release。
+parent closing 时必须处理全部绑定的 resident children。结构性关闭由 Agent Lifecycle Coordinator 统一执行：
 
-sibling children 可以独立收敛；一个 sibling 不能释放另一个 sibling 的 Handle。是否并行 teardown 是实现期选择，但不能破坏每棵树的 child-first 顺序和错误归属。
+1. parent exact epoch 进入 `Closing`，原子关闭 descendant admission 并固定唯一 close transaction；
+2. Agent-owned quiesce participation 关闭该 parent 的 event handoff、report 和 message admission，并等待已接纳的 in-flight 操作收敛；
+3. Coordinator 等待已接纳的 child materialization，并按 runtime ownership 对全部 descendants 执行 child-first close；
+4. 每个 child teardown 撤销 subscription、停止并 join handoff worker、flush，并释放单体 Agent effects；
+5. 所有 descendant teardown 都已尝试并聚合结果后，才执行 parent 单体 teardown。
+
+sibling children 可以独立收敛；一个 sibling 不能释放另一个 sibling 的 Handle。是否并行 teardown 是实现期选择，但不能破坏每棵树的 child-first 顺序和错误归属。Subagent 的 lifecycle participant 只负责关闭本领域 admission、join worker 和提交 managed close 请求；`agent.Disposed` 只做幂等残余清理，不能作为关闭事务起点。
+
+无论 ordinary 还是 parent-bound，关闭当前 Agent epoch 都不自动删除 durable child Session。parent-bound durable binding 是否删除或禁用只由明确的 binding/delete 用例决定，不能从 parent close 推导。
 
 ### UC8：进程重启后恢复
 
@@ -267,9 +279,9 @@ parent-bound child 需要用户输入、确认或授权时，只能向 parent �
 
 - I6：child resident 时，其 exact direct parent 必须 resident。
 - I7：parent-bound child idle 不触发普通 continuable settlement。
-- I8：parent closing 后，所有 descendant admission 都必须关闭。
+- I8：parent 进入 `Closing` 时，Agent lifecycle 必须原子关闭 descendant admission；同一 cutoff 之后不得再提交新的 report 或 parent-event handoff。
 - I9：parent release 完成时，不得残留任何 bound child resident Activation。
-- I10：每棵 child tree 必须在 parent 之前完成结构释放。
+- I10：每棵 child tree 必须在 parent 之前完成结构释放，且该顺序只由 Agent Lifecycle Coordinator 的 runtime ownership graph 决定。
 - I11：冷恢复复用 durable identity；不得用新 child 静默替换损坏或不可恢复的 child。
 
 ### 5.3 State 与消息
@@ -292,6 +304,8 @@ parent-bound child 需要用户输入、确认或授权时，只能向 parent �
 - I24：任何需要用户参与的事项必须先进入 parent Inbox，由 parent 作出交互决定。
 - I25：`ParentSession` 只证明 durable direct-parent lineage，不能单独证明 parent-bound policy；policy 缺失时必须解释为普通 continuable。
 - I26：subscription installation 由 exact child Activation 拥有，但其事件观察位置必须能够看到 exact parent 的发布 Scope；不得用 child Scope 无法接收的向上监听假装实现。
+- I27：subscription installation 必须在 unpublished child 的 Provisioner 阶段完成，并先于 child `AgentEpoch.Attach` 与 `agent.Created` publication；失败时 child publication 必须整体回滚。
+- I28：对声明 crash-durable 的 replayable handoff，parent event 的 persistence barrier 必须先于 child message 的 persistence barrier，后者又必须先于 checkpoint 推进。
 
 ## 6. Exceptions
 
@@ -306,10 +320,10 @@ parent-bound child 需要用户输入、确认或授权时，只能向 parent �
 | E7 | 多个 siblings 中一个失败 | 失败归属于该 child；是否影响 parent Activation publication 由 required/optional policy 决定 |
 | E8 | 进程异常退出 | 不承诺进程内清理完成；下次从 durable Session、Inbox 和 bindings 恢复 |
 | E9 | child 尝试直接用户交互 | 稳定 delegated-caller/ownership rejection，并要求向 parent report |
-| E10 | final flush 失败 | 不无限保留 resident tree；独立报告 durability failure，具体 parent close outcome 待定 |
+| E10 | parent event、child message 或 final teardown flush 失败 | 不推进相应 durable checkpoint；独立报告 durability failure；关闭仍尝试其余 descendants 和 parent，具体 parent close outcome 待定 |
 | E11 | lifecycle signal 迟到或重复 | 只影响 exact epoch；不得伪造、丢弃或代替 Inbox business message |
 | E12 | child report 引发 parent event，而该 child 又订阅此类 event | 必须由 origin、filter 或去重规则阻断非预期反馈环；精确策略见 O9 |
-| E13 | 实时 parent event 在 child non-resident 或进程中断期间发生 | 不得假称进程内 event bus 已持久化；是否从 Session 重放见 O7 |
+| E13 | parent event 在 child non-resident、best-effort wake 丢失或进程中断期间发生 | live Agent event 可以按声明丢失；replayable Session event 必须由独立 cursor/catch-up 恢复，不能把进程内 event bus 当作持久化证据；最终范围见 O7 |
 | E14 | 旧 continuable descriptor 不含 parent-bound policy | 继续按普通 continuable 恢复并允许 quiescent settlement；不得因升级自动变成 resident child |
 
 ## 7. Non-functional Requirements
@@ -320,10 +334,10 @@ parent-bound child 需要用户输入、确认或授权时，只能向 parent �
 | Startup latency | parent create/resume 成本包含 bound children 的发现和恢复；是否并发以及失败门槛由 O1/O2 决定 |
 | Idle cost | idle resident child 不产生 LLM token 成本，但占用 Agent Scope、Prompt、Tool 和内存资源 |
 | Capacity | children 数量不预设为 1；部署必须能观察数量与资源占用，是否设置上限见 O11 |
-| Durability | binding、Session 与 Inbox 接受必须可跨进程重建；process-local Activation 不属于 durability 证明 |
+| Durability | binding、Session 与 Inbox 接受必须可跨进程重建；process-local Activation 不属于 durability 证明。对 replayable handoff，parent 事件先持久化、child message 后持久化、checkpoint 最后推进 |
 | Ordering | 单个 Inbox 内保持 canonical FIFO；同一 parent event 对多个 subscriptions 的观察、接受和执行不提供跨 child 全局顺序或原子结果 |
 | Isolation | sibling 状态、取消、失败和 teardown 相互隔离；共享 workspace 副作用仍需独立协调策略 |
-| Observability | 能按 parent、child、binding、subscription、parent event identity、Activation epoch 和 Message ID 观察 create/resume、匹配、过滤、Inbox 接受、拒绝、失败与 drain |
+| Observability | 能按 parent、child、binding、subscription、parent event identity、Activation epoch 和 Message ID 观察 create/resume、匹配、过滤、Inbox 接受、拒绝、失败与 close |
 | Retention | parent clear/delete/archive 与 child history 的关系必须在实现前决定，见 O3 |
 | Configuration | 每个 child 可有独立提示词、模型和 Tool policy；热更新边界见 O4 |
 
@@ -339,8 +353,8 @@ parent-bound 是尚未实现的需求，不得把现有 continuable 行为描述
 - 复用 Agent Inbox 作为唯一模型消息路径；
 - 复用 Agent/Session events 作为 parent 事实来源，但不把现有进程内 event dispatch 描述为 durable history；
 - 不复用显式 `Followup` 作为 parent-bound 下行入口，因为 parent-bound 下行由 child subscription 发起观察，而不是 parent 寻址 child；
-- 复用 direct-parent authority、Catalog、MessageSource 和 child-first drain 的既有语义；
-- 扩展 binding discovery、subscription installation、共同 activation、multiple-child lifecycle 与 mandatory user-interaction fence；
+- 复用 direct-parent authority、Catalog、MessageSource，以及 Agent Lifecycle Coordinator 的 runtime parent ownership 和 child-first close；
+- 扩展 binding discovery、construction-time subscription installation、共同 activation、handoff/report quiesce participation 与 mandatory user-interaction fence；
 - Provider 仍只参与首次 creation，不升级为 lifecycle owner。
 
 ## 9. Open Items
@@ -370,15 +384,17 @@ parent-bound 是尚未实现的需求，不得把现有 continuable 行为描述
 2. parent 的正常行为产生一个 Agent/Session event 时，只有 subscription 匹配的 children 各自形成 durable Inbox message；未匹配 children 不改变，event 未携带 recipient。
 3. 多个 children 向 parent report 时，parent Inbox 保留各自 sender identity 和接受顺序。
 4. child idle 后保持 resident，且 idle 期间不产生模型调用。
-5. parent closing 后 subscriptions 不再从新 event 形成 child 工作，新的 child report 被拒绝，所有 child trees 先于 parent 释放。
+5. parent 进入 `Closing` 后，所有当前 resident descendants 无论 ordinary 或 parent-bound 都按同一 Agent lifecycle child-first 关闭；parent-bound 的 subscription handoff 和 report admission 在可线性化 cutoff 后不再提交新工作，已经 non-resident 的普通 continuable durable identity 不受影响。
 6. 进程重启后 parent 恢复原 children，而不是创建替代 identities。
 7. subscription 只接受 exact direct parent 当前 lifecycle 的事件；陈旧 parent instance、sibling、ancestor 和陌生 Agent 的事件不能形成 child Inbox message。
 8. child 无法通过 Session API、question、approval 或 Tool 绕过 parent 触达用户。
 9. lifecycle channel 信号不会出现在模型上下文，也不能替代 durable Inbox message。
 10. 单个 child create/resume/turn/flush 失败的诊断只归属于该 child，并遵循最终选定的 parent Activation publication policy。
 11. 同一 parent event 可被多个匹配 children 独立接受；其中一个 child 的过滤、积压或失败不改变其他 children 的结果。
-12. 重启窗口中的 parent event 按最终选定的 live-only 或 durable replay 语义得到可验证结果，不把进程内 event dispatch 当作持久化证据。
+12. 重启窗口或 best-effort wake 丢失时，parent event 按最终选定的 live-only 或 durable replay 语义得到可验证结果；durable replay 能从 cursor catch up，且 parent event 持久化先于 child message 与 checkpoint。
 13. child report 引发的 parent event 不会在未授权情况下形成无限反馈环。
 14. 升级前创建的 continuable child 不会被误判成 parent-bound，并继续按既有 quiescent settlement 行为运行。
+15. required child 在 parent `agent.Created` publication 中失败并 veto 时，Agent Lifecycle Coordinator 自动关闭已经创建的 sibling/descendant，不残留 Subagent 自建 lifecycle state。
+16. child subscription 在其 `agent.Created` 前已经可观察 exact parent，且 disposer 随 exact child Scope 撤销；不存在先发布 child、后安装监听的丢事件窗口。
 
 本文只有在 Open Items 中影响核心行为的决策得到确认后，才可改为 Locked-in Requirements；在此之前，配套技术设计只能保持 Proposed，不得据此声明实现承诺。

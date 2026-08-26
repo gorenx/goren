@@ -7,7 +7,7 @@
 | 文件 | 职责 |
 | --- | --- |
 | `agent.go` | `Agent` 能力、状态、Inbox target 与 maintenance 契约 |
-| `factory.go` | Registry 消费的 `Factory`、`Reservation`、`Lifecycle` 与 Create/Resume 参数 |
+| `factory.go` | Registry 消费的 `Factory`、`AgentEpoch`、`AgentTeardown` 与 Create/Resume 参数 |
 | `handle.go` | exact live Agent、关闭通知与销毁能力 |
 | `registry.go` | Registry 应用服务、Factory 注册、创建/恢复准入及面向消费者的窄接口 |
 | `lifecycle_coordinator.go` | exact Agent epoch、运行期父子关系、可见性、发布与 child-first teardown |
@@ -36,14 +36,14 @@ sequenceDiagram
     participant Session as session.LiveStore
 
     Caller->>Registry: Create / Resume（可指定 RuntimeParent）
-    Registry->>Registry: 检查准入并 reserve exact epoch
-    Registry->>Factory: CreateAgent / ResumeAgent(Reservation)
+    Registry->>Registry: 检查准入并创建 exact Agent epoch
+    Registry->>Factory: CreateAgent / ResumeAgent(AgentEpoch)
     Factory->>Session: prepare unpublished Session
     Factory->>Runtime: mount private Agent Scope below Agent Loop
     Runtime-->>Factory: active unpublished Scope
     Factory->>Provisioner: Provision(ctx, Scope)
     Provisioner->>Scope: Own exact ScopeResource
-    Factory->>Registry: Reservation.Attach(Agent, AgentScopeRuntime)
+    Factory->>Registry: AgentEpoch.Attach(Agent, AgentScopeRuntime)
     Factory->>Session: announce Session
     Factory-->>Registry: construction complete
     Registry->>Runtime: dispatch agent/created and agent/session-start
@@ -52,9 +52,9 @@ sequenceDiagram
 
 调用方通过 `Provisioner` 配置未发布 Scope，Agent Loop 消费这个接口，并由私有 Scope adapter 实现 `Scope`。业务资源通过 `Scope.Own` 转移结构所有权；需要安装 Plugin 的调用方使用 `agent/scopedplugin` adapter，不把 `plugin.Plugin` 带入 Agent 业务接口。若配置还需要发布边界复核或 resident 生命周期，则 `Provisioner` 返回一次调用独占的 `Provisioning`；没有剩余事务时返回 nil。只有 `Provisioning.Commit`、Session 发布和 Agent 发布都成功，调用方才会取得可见 Agent。
 
-Registry 直接拥有 exact Agent epoch 及其 `RuntimeParent` 父子关系，不再通过第二套父子关系容器、membership Plugin 或布尔状态拼装生命周期。调用方释放 `Handle` 时，Registry 先关闭运行期后代和当前 epoch 的工作准入，退休已发布事件，再通过 `AgentScopeRuntime.Teardown` 释放私有 Scope。Runtime 主动卸载 Scope 时，`Lifecycle.BeginTeardown/FinishTeardown` 把同一结构事实回报 Registry；两条入口收敛到同一个 epoch 状态机。
+Registry 直接拥有 exact Agent epoch 及其 `RuntimeParent` 父子关系，不再通过第二套父子关系容器、membership Plugin 或布尔状态拼装生命周期。调用方释放 `Handle` 时，Registry 先关闭运行期后代和当前 epoch 的工作准入，退休已发布事件，再通过 `AgentScopeRuntime.Teardown` 释放私有 Scope。Runtime 主动卸载 Scope 时，`AgentTeardown.BeginTeardown/FinishTeardown` 把同一结构事实回报 Registry；两条入口收敛到同一个 epoch 状态机。`Handle` 直接引用 exact epoch，不和 `AgentTeardown` 共用第二个 lifecycle wrapper。消费者若只需判断 settlement 条件，使用只读 `RuntimeDescendants`；Agent 不发布“只关闭某个父节点后代”的独立命令，父子收敛始终是 exact Handle 关闭或 Registry shutdown 的内部结果。
 
-`RegistryService` 自己持有进程级创建准入标志。`Create/Resume` 在同一临界区完成“检查准入、选择 Factory、reserve epoch”，因此 `Shutdown` 或 Factory 关闭后不会出现先取到旧 Factory、再绕过关闭标志的新 reservation。`FactoryRegistration.Close` 是终止型操作：它移除 exact Factory、关闭后续 Create/Resume，并通过 `Reservation.ClosingSignal` 取消仍在 materializing/attached 阶段的构造。`RegistryPlugin.Dispose` 作为业务服务所有者执行最终 `Shutdown`，不要求 Agent Loop 反向关闭 Registry。
+`RegistryService` 自己持有进程级创建准入状态。`Create/Resume` 在同一临界区完成“检查 Registry 准入、选择 exact Factory registration、创建 exact Agent epoch”，因此不会先取得失效 Factory 再开始构造。`FactoryRegistration.Close` 只关闭这一条 Factory 注册：先从路由中移除 exact Factory，再通过 `AgentEpoch.ClosingSignal` 取消并等待已经由该注册接纳的构造；它不关闭既有 live Agent，也不永久关闭 Registry，后续可以注册替代 Factory。只有 `RegistryService.Shutdown` 会永久停止 Registry 创建/恢复准入并收敛全部 Agent epoch；`RegistryPlugin.Dispose` 作为业务服务所有者执行该最终关闭。
 
 `Agent.ID()` 是 durable Session identity；`agent.Same` 判断两个接口是否指向同一个进程内 Agent 实例。它不引入第二个 `InstanceID`。`FactoryRegistration` 自身就是 exact 注册身份，不再增加只作指针 token 的 `factoryEntry`。
 
