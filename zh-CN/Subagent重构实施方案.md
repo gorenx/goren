@@ -66,9 +66,9 @@
 
 1. 用 `Mode` 和 closed `StartCommand` 表达合法 OneShot/Continuable 启动 variant；命令构造时校验并复制 `ChildRequest`，不另设 snapshot 包。
 2. 定义 common `Execution`、`ExecutionState`、`Terminal` 和 `Starter`。
-3. 定义 `ChildControl`、`ParentReporter`、`ChildDirectory`。
+3. 定义 `ChildControl`、`ChildDirectory`；report 直接消费 Agent 窄接口，不另建 Subagent 消息 capability。
 4. 把创建输入策略命名为 `SeedBuilder`，保留兼容 provider token。
-5. 把 child-scoped 扩展命名为 `ContinuableExtension`、`ExtensionInstallation`。
+5. 把 child-scoped 扩展命名为 `Extension`、`ExtensionInstallation`，两种实现共用。
 6. 保留 descriptor、event、MessageSource 和 error code 的兼容 shape。
 
 ### 删除
@@ -263,15 +263,15 @@ go test -tags contract ./subagent/internal/childdirectory ./subagent/internal/pr
 
 ### 目标
 
-让共享 child-local policy 与 Continuable 专属扩展分别拥有清晰对象，不建立通用 childscope owner。
+让共享 child-local policy 与 child Extension 分别拥有清晰对象，不建立通用 childscope owner，也不按 OneShot/Continuable 复制 Scope capability。
 
 ### 变更
 
 1. `internal/childpolicy` 只提供 approval、persona 和 Tool restriction Plugin adapter。
 2. OneShot 业务包拥有 `EnvironmentBuilder` 消费端口；`subagent/plugin` 在该端口后组合 descriptor、structured output 与 child policy。
-3. Continuable 业务包拥有区分创建/恢复的 `EnvironmentBuilder` 消费端口；`subagent/plugin` 在该端口后组合 child policy 与 Extension Provisioner。
+3. Continuable 业务包拥有区分创建/恢复的 `EnvironmentBuilder` 消费端口；`subagent/plugin` 在该端口后组合 child policy 与同一个 Extension Provisioner。
 4. `internal/extension.Registry` 负责有序 registration、安装、Commit 复核和 exact uninstall。
-5. report Plugin 注册 `ContinuableExtension`；child Scope 中安装实际 report Tool/Prompt Plugin。
+5. report Plugin 注册 `Extension`；OneShot/Continuable child Scope 中安装同一个 report Tool/Prompt Plugin。
 
 ### 删除
 
@@ -297,7 +297,7 @@ go test -race ./subagent/internal/extension ./subagent/tools/report
 
 1. `tools/delegation` 只创建新 child，调用 `Starter`。
 2. `tools/control` 只包含 send、interrupt、list 三项已有 child 操作。
-3. `tools/report` 只包含 child-to-parent report Tool 和 Continuable Extension adapter。
+3. `tools/report` 只包含 child-to-parent report Tool 和 child Extension adapter；Tool 通过消费端窄 Agent Registry 解析 exact child/parent，再直接调用 parent Agent。
 4. 每个包的 Plugin 只管理 Tool/Prompt/Extension registration。
 5. 每个 Factory 只严格解码 owner-defined typed config 并构造未激活 Plugin。
 

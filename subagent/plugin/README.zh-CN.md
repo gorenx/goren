@@ -1,6 +1,6 @@
 # Subagent Plugin
 
-`plugin.Plugin` 是 Subagent 领域的 Plugin 装配入口。它解析 Agent、Session、Approval 和 Projection 能力，构造普通 Go 业务对象，并发布 `SeedBuilderRegistry`、`Starter`、`ChildControl`、`ParentReporter`、`ExtensionRegistry` 和 `ChildDirectory`。本包不代表或拥有整个 Plugin Runtime。
+`plugin.Plugin` 是 Subagent 领域的 Plugin 装配入口。它解析 Agent、Session、Approval 和 Projection 能力，构造普通 Go 业务对象，并发布 `SeedBuilderRegistry`、`Starter`、`ChildControl`、`ExtensionRegistry` 和 `ChildDirectory`。本包不代表或拥有整个 Plugin Runtime。
 
 ```mermaid
 flowchart TD
@@ -15,7 +15,7 @@ flowchart TD
     Plugin -->|publishes narrow views| Consumers[Tool / Control / Report / Host]
 ```
 
-Apply 顺序是：解析依赖、注册 Projection、启用 ChildDirectory、构造一个 `environmentBuilder`、把它分别作为 OneShot/Continuable 拥有的消费端口实现注入，最后打开统一 Service 准入。Environment Builder 只把 approval、persona、Tool restriction、descriptor、structured output 和 Continuable Extension 翻译为 child-local Plugin/Provisioner；不创建 Agent，不决定 Execution 状态。任一 Apply 步骤失败都会撤销已取得效果。Plugin 不实现 Start、Send、Report、Interrupt、settlement 或目录查询。
+Apply 顺序是：解析依赖、注册 Projection、启用 ChildDirectory、构造一个 `environmentBuilder`、把它分别作为 OneShot/Continuable 拥有的消费端口实现注入，最后打开统一 Service 准入。Environment Builder 只把 approval、persona、Tool restriction、descriptor、structured output 和 child Extension 翻译为 child-local Plugin/Provisioner；不创建 Agent，不决定 Execution 状态。任一 Apply 步骤失败都会撤销已取得效果。Plugin 不实现 Start、Send、Interrupt、settlement 或目录查询，也不发布额外的 parent 消息能力。
 
 Dispose 先调用统一 Service `Close`：关闭新准入、等待已准入调用返回、让 Continuable 与 OneShot 请求其 exact Agent 停止，并只等待 `ClosingSignal`。它不在当前 Plugin topology 操作中递归卸载 child Scope。随后本 Plugin 停用 ChildDirectory、清理 Extension/SeedBuilder registration，并释放 Projection handle。
 

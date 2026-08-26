@@ -10,7 +10,7 @@
 
 - `StartCommand` 构造时校验并复制调用方输入，读取时返回副本，再由 `Starter` 按 `Mode` 选择实现；
 - 用同一个 `Execution` 契约表示 OneShot 或 Continuable 的一次 exact Agent epoch；
-- 为模型 Tool 和 Host Consumer 提供最小的 `ChildControl`、`ParentReporter` 与 `ChildDirectory` 能力；
+- 为模型 Tool 和 Host Consumer 提供最小的 `ChildControl` 与 `ChildDirectory` 能力；
 - 通过 `SeedBuilder` 生成首次创建 child Session 时使用的 detached event prefix；
 - 保存 Subagent descriptor、事件、错误和模型消息来源等领域契约。
 
@@ -21,11 +21,11 @@
 | 文件 | 对象是什么 | 消费者 |
 | --- | --- | --- |
 | `lifecycle.go` | `Mode`、`ChildRequest`、`StartCommand`、`Execution`、`Starter` | delegation Tool、Host use case |
-| `control.go` | 后续消息、中断授权和子向父报告契约 | control、report |
+| `control.go` | 后续消息和中断授权契约 | control |
 | `seed_builder.go` | fresh child Session seed 的构造策略与注册目录 | spawn、fork、runtime |
 | `directory.go` | durable child 的只读查询目录与查询结果 | list_agents、Host/UI |
 | `descriptor*.go` | Session log 中可重建的 Subagent identity | Continuable resume、目录查询 |
-| `extension.go` | Continuable child Scope 的扩展安装契约 | report 等 child-scoped capability |
+| `extension.go` | child Agent Scope 的扩展安装契约 | report 等 child-scoped capability |
 | `events.go` | 固定源兼容的注册与运行事件 | Plugin listener、Tool publication |
 | `message_source.go` | 父子消息进入 Session log 时的来源描述 | Agent Inbox、重建 |
 | `errors.go` | 稳定领域错误码 | 所有 Consumer |
@@ -39,13 +39,13 @@
 | `plugin` | 解析依赖、构造业务对象、发布窄 capability、转接事件、注册 Projection，并把 child-local Plugin 组合实现注入两种执行模式 | Subagent 用例、Plugin Runtime 本身和 Agent 结构关闭策略 |
 | `internal/subagents` | 统一准入、按 `Mode` 路由、公共中断授权、关闭编排 | 枚举 OneShot/Continuable 的公开 API |
 | `internal/oneshot` | OneShot 创建、初始消息、结果选择和终止 | durable resume、后续消息 |
-| `internal/continuable` | Continuable fresh create、cold resume、续投、报告和 settlement | Agent epoch 或 Session durability |
+| `internal/continuable` | Continuable fresh create、cold resume 和 settlement | Agent epoch、普通 live Inbox 投递或 Session durability |
 | `internal/execution` | 两种实现共用的一次执行状态、terminal future 和进程内索引 | Agent phase 镜像或父子树 |
 | `internal/seedbuilder` | SeedBuilder 注册、查找和事件边界 | Agent 创建 |
 | `internal/childdirectory` | live/persisted child 的只读合并查询 | 创建、恢复或控制 child |
 | `internal/childpolicy` | `plugin` 组合层共用的 child-local policy Plugin adapter | OneShot/Continuable 业务策略 |
 | `internal/projection` | Subagent identity/timing Session Projection | Registry、checkpoint 和 Session API |
-| `internal/extension` | Continuable Extension registration 和 installation | Plugin lifecycle 或 Agent creation |
+| `internal/extension` | child Extension registration 和 installation | Plugin lifecycle 或 Agent creation |
 | `tools/delegation` | 创建新 Subagent 的模型委派 Tool 适配 | Subagent 启动状态机 |
 | `tools/control` | 控制和查询已有 child 的三项 Tool 适配 | child lifecycle 与 durable query |
 | `tools/report` | child 向 exact parent 报告的 Tool/Extension 适配 | 父子投递业务 |
@@ -64,12 +64,15 @@ flowchart LR
     OneShot --> Execution[shared Execution]
     Continuable --> Execution
     Control[control Tools] --> ChildControl
+    ChildControl -->|resident Send| ChildAgent[child agent.Agent]
+    ChildControl -->|cold resume| Continuable
     Control --> Directory[ChildDirectory]
-    Report[child report Tool] --> ParentReporter
+    Report[child report Tool] --> Registry[agent.Registry]
+    Registry --> ParentAgent[parent agent.Agent]
     Directory --> Sessions[Session live/persistence/projection]
 ```
 
-`plugin.Plugin` 只做装配。真正的运行方向是 Consumer 调用 `Starter`/`ChildControl`/`ParentReporter`，统一 Service 再调用选中的实现；实现调用 `agent.Constructor` 创建或恢复 exact Agent，并用 `Execution` 汇合 terminal 结果。
+`plugin.Plugin` 只做装配。Consumer 通过 `Starter` 和 `ChildControl` 进入统一 Service；Service 按 `Mode` 选择创建/中断实现，但 resident child 的消息直接调用该 child 的 `agent.Agent` 能力。只有 cold Continuable child 需要 Continuable 实现执行恢复并原子接收新 epoch 的首条消息。child-scoped report Tool 以消费端窄接口查询 live Agent，再直接调用 parent Agent，不经过 Subagent mode Service。
 
 ## 生命周期
 

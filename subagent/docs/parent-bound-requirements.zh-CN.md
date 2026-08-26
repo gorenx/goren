@@ -18,7 +18,7 @@ Parent-bound Subagent 是一个 durable Continuable child，它与 parent Sessio
 - bound child 在 parent idle 时可以继续保留 exact Agent/Execution，而不是按普通 Continuable settlement；
 - child 可以按静态 subscription definition 观察 exact direct parent 的指定事件，并把匹配事实转换为自己的 durable Inbox message；
 - child 保持独立 Session、Inbox、Agent options、persona、Tool policy 和 model context；
-- child 可以通过现有 `ParentReporter` 向 exact direct parent 报告；
+- child 可以通过现有 report Tool 直接向 exact live direct parent Agent 报告；
 - parent 结构关闭时，Agent lifecycle owner 仍按 child-first 顺序关闭 bound children；
 - 进程重启后复用原 child Session、descriptor、Inbox 和 binding，不重新运行 fresh SeedBuilder。
 
@@ -73,7 +73,7 @@ parent 不知道有哪些 children，也不主动为某个 child 调用路由方
 
 ### 5.4 Child report
 
-bound child 复用 `ParentReporter`。report 只送 exact live direct parent；quiet/next-step scheduling 保持现有语义。report message 必须可与 parent event handoff 区分，防止默认 feedback loop。
+bound child 复用现有 report Tool 的 Agent delivery。report 只送 exact live direct parent；quiet/next-step scheduling 保持现有语义。report message 必须可与 parent event handoff 区分，防止默认 feedback loop。
 
 ### 5.5 Idle residency
 

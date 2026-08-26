@@ -44,9 +44,9 @@ Starter.Start / ChildControl.Send
 - exact RuntimeParent 与 Agent child-first close；
 - common Execution terminal transaction；
 - Continuable cold resume 和 direct-parent authority；
-- `ContinuableExtension` 在 unpublished child Scope 安装 exact effects；
+- `Extension` 在 unpublished child Scope 安装 exact effects；
 - `ChildDirectory` 的 live/cold discovery 和 per-candidate diagnostic；
-- `ParentReporter` 的 child-to-parent delivery。
+- report Tool 通过消费端窄 Agent Registry 调用 direct parent Agent 的 delivery。
 
 当前缺少：
 
@@ -147,9 +147,9 @@ parent event committed
 
 是否需要跨 parent/child Session 的原子事务取决于 O5。未确认前不能声称 exactly-once。
 
-### 5.4 ContinuableExtension
+### 5.4 Extension
 
-subscription installation 可通过一个 `ContinuableExtension` 参与 child Agent publication，但 Extension 只负责安装 exact Scope effects；binding discovery、policy 和 worker durability 不能塞进 report Extension 或通用 extension Registry。
+subscription installation 可通过一个 `Extension` 参与 child Agent publication，但 Extension 只负责安装 exact Scope effects；binding discovery、policy 和 worker durability 不能塞进 report Extension 或通用 extension Registry。
 
 ### 5.5 ChildDirectory
 

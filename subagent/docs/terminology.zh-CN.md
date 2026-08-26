@@ -45,14 +45,14 @@
 | Descriptor | `subagent/descriptor` event 表达的 durable Subagent mode 和恢复输入 | process-local Execution state |
 | Settlement | Continuable 在 idle、Inbox empty、无 runtime descendants 时完成当前 Execution 的正常终止事务 | Agent 的结构关闭算法或普通 report |
 | ChildDirectory | 不创建、不恢复 Agent 的 durable child 查询能力 | live Execution Registry 或控制授权 |
-| ContinuableExtension | 在 unpublished continuable Agent Scope 安装 child-scoped contribution 的扩展 | Plugin、Agent Provisioner 或 Subagent implementation |
+| Extension | 在 unpublished child Agent Scope 安装 child-scoped contribution 的扩展 | Plugin、Agent Provisioner 或 Subagent implementation |
 | ExtensionInstallation | 一项 exact child-scoped effect 的幂等卸载权 | Plugin Scope Handle |
 | Provisioner | 配置一个尚未发布 Agent Scope 的对象 | AgentLoop 或 Subagent lifecycle |
 | Provisioning | Provisioner 返回的 publication commit 和 release 事务 | Extension registration |
 | Inbox | Agent 拥有的 durable pending-message projection | Subagent 自建 queue |
 | direct parent | child Header 指向的父 Session；live 操作还需匹配 exact Agent identity | 任意 ancestor 或 MessageSource sender |
 | ancestor | 沿运行父子关系和 durable parent chain 位于 child 之上的 live Agent | 仅 direct parent |
-| authority | 获准执行 Send、Interrupt 或 Report 的 exact caller evidence | 目录快照或仅相同 Session ID 的陈旧对象 |
+| authority | 获准执行 Send 或 Interrupt 的 exact caller evidence；report 由 exact live child Agent 和其 durable parent identity 共同约束 | 目录快照或仅相同 Session ID 的陈旧对象 |
 | ActivityRunning | ChildDirectory 读取时该 child Session 位于 LiveStore | 模型正在生成或 Agent StatusRunning |
 | MessageSource | 写入 Session message 的 durable attribution | 权限凭证 |
 
@@ -96,12 +96,12 @@ Identity projection 使用最新 descriptor，因为 fork seed 可能包含 ance
 
 1. 名称首先回答“这个对象是什么”。
 2. 名称需要叠加多个 owner、步骤或存储概念时，先拆分职责。
-3. 公共接口按 Consumer 能力命名：`Starter`、`ChildControl`、`ParentReporter`、`ChildDirectory`。
+3. 公共接口按 Consumer 能力命名：`Starter`、`ChildControl`、`ChildDirectory`；直接使用 Agent 已有能力时不再包装同义接口。
 4. OneShot/Continuable 是私有 implementation，不发布 `OneShotService` 或 `ContinuableService` capability。
 5. 两种实现共享 `Execution` 状态和 Terminal；不同触发时机留在各自 `Terminator`。
 6. 不使用 Activation 表达 Agent epoch，也不使用 Catalog 表达 child directory。
 7. `Provider` 只用于兼容 token 或 Service Provider/Consumer 架构术语，不作为 Subagent 创建/执行对象名称。
-8. 不用 `Setup` 同时表达 Agent publication transaction 和 Extension；分别使用 `Provisioner`/`Provisioning` 与 `ContinuableExtension`/`ExtensionInstallation`。
+8. 不用 `Setup` 同时表达 Agent publication transaction 和 Extension；分别使用 `Provisioner`/`Provisioning` 与 `Extension`/`ExtensionInstallation`。
 9. 文件按主要对象或内聚职责命名；不使用 broad `types.go`，也不拆成一函数一文件。
 10. 变量、参数、receiver 和 named return 不得与包内函数或类型仅大小写不同。
 

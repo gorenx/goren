@@ -28,6 +28,17 @@
 9. Plugin 与业务对象分离：Plugin 只解析依赖、装配、发布能力、注册事件和管理结构启停。
 10. 重构采用破坏性替换，不保留旧 Provider execution、Run、Activation、Catalog、Continuation Manager 或兼容 wrapper。
 
+### 2.1 本阶段公开 API 影响
+
+本阶段确认 Subagent 是“具有 direct parent 的普通 Agent”，因此做两项破坏性 Go API 收敛：
+
+- 删除 `ParentReporter` 与 `ReportOptions`。它们重复包装了 `agent.Agent.Inject/Steer`，还把 child-to-parent 消息错误绑定到 Continuable implementation。`tools/report` 改为在消费端定义只含 `Get/Contains` 的 live Agent 窄接口，根据当前 child Agent 的 `ParentSession` 解析 direct parent，再调用 parent Agent。只属于 report Plugin 配置的 `ReportDelivery` 同时迁移为 `report.Delivery`，JSON 字段和值保持不变。
+- 将 `ContinuableExtension` 改为 `Extension`。child-scoped capability 属于 Agent Scope，不属于 Continuable 生命周期；OneShot 与 Continuable 现在使用同一个注册、安装和撤销契约。
+
+迁移要求是直接更新所有编译期调用者和 Plugin Manifest：Subagent Plugin 不再发布 `ParentReporter`，report Plugin 改为依赖 `agent.Registry`，Extension 实现改为满足 `subagent.Extension`。不提供 type alias、兼容 Service 或双 publication。
+
+这些变化只影响 Go 内部扩展 API 和 Plugin capability 依赖，不改变 HTTP/WebSocket 协议、Tool 名称与参数、Session Header、descriptor、MessageSource、生命周期事件名或错误码。
+
 ## 3. 统一术语
 
 ### 3.1 SeedBuilder
@@ -89,23 +100,24 @@ Runtime Plugin 与 composition root 装配具体能力
 根包只声明跨包需要的稳定对象：
 
 - `StartCommand`、`Starter`、`Execution`、`Terminal`；
-- `ChildControl`、`ParentReporter`、`ChildDirectory`；
+- `ChildControl`、`ChildDirectory`；
 - `SeedBuilder`、`SeedBuilderRegistry`；
-- `ContinuableExtension`、`ExtensionRegistry`；
+- `Extension`、`ExtensionRegistry`；
 - descriptor、生命周期事件、MessageSource 和错误码。
 
 根包不保存可变运行状态，不实现 Plugin，不导入 runtime adapter。
 
 ### 4.2 应用层：`internal/subagents`
 
-`subagents.Service` 是唯一统一应用入口。它通过 `Starter`、`ChildControl` 和 `ParentReporter` 三个窄 capability view 发布，而不是公开一个包含所有方法的大接口。
+`subagents.Service` 是唯一统一编排入口。它通过 `Starter` 和 `ChildControl` 两个窄 capability view 发布，而不是公开一个包含所有方法的大接口。
 
 它负责：
 
 - 模块准入状态和已准入调用 join；
 - 按 `StartCommand.Mode()` 选择 OneShot 或 Continuable；
 - interrupt 的公共 live Execution 查找与 ancestor/direct-parent 授权；
-- 把 Send 和 Report 委派给能处理 durable child 的 Continuable 实现；
+- resident Send 校验 exact parent 后直接调用 child `agent.Agent.Followup`；
+- child 不 resident 时，只把 cold resume 事务交给 Continuable 实现；
 - 在模块关闭时逆序收敛 mode implementations；
 - 在 `agent/disposed` 到达时把 exact Agent closure 汇合到同一 Execution 停止事务。
 
@@ -127,7 +139,7 @@ Runtime Plugin 与 composition root 装配具体能力
 
 - fresh create 与 cold resume；
 - per-child materialization 串行化；
-- 后续消息、当前 turn interrupt、子向父 report；
+- cold resume 的首条消息、当前 turn interrupt；
 - descriptor/seed boundary 恢复；
 - idle settlement 和父通知；
 - final flush failure 的隔离报告。
@@ -142,7 +154,7 @@ Runtime Plugin 与 composition root 装配具体能力
 | `internal/seedbuilder` | SeedBuilder Registry | 名称唯一性、精确 registration 和兼容事件 |
 | `internal/childpolicy` | child-local policy set | 组装 approval、persona 和 Tool restriction Plugin |
 | `internal/lineage` | child lineage | 推导 parent、depth、cwd、origin、preset、Agent options 和 seed length |
-| `internal/extension` | Continuable Extension Registry | 注册、安装、publication commit 复核和精确撤销 |
+| `internal/extension` | child Extension Registry | 为 OneShot/Continuable 注册、安装、publication commit 复核和精确撤销 |
 | `internal/childdirectory` | ChildDirectory service | 合并 live/cold child，构造目录和 diagnostic |
 | `internal/projection` | Subagent Session Projection units | 折叠 `subagent` identity 和 `subagentTiming` read model |
 
@@ -154,7 +166,7 @@ Runtime Plugin 与 composition root 装配具体能力
 
 - 解析 Agent、Session、Persistence、Approval 和 Projection capability；
 - 构造并连接业务对象；
-- 发布六个窄 capability；
+- 发布五个窄 capability；
 - 注册 Subagent Projection units；
 - 把 SeedBuilder registration facts 发布到 Plugin event bus；
 - 把 Execution lifecycle facts 发布到 parent Agent runtime event scope；
@@ -194,11 +206,11 @@ type Execution interface {
 
 ### 5.3 控制与报告
 
-`ChildControl.Send` 表达 parent 向 durable Continuable child 投递后续消息。cold child 可在该用例中恢复。
+`ChildControl.Send` 表达 parent 向 child Agent 投递后续消息。OneShot 与 Continuable 的 resident epoch 都直接使用 child `agent.Agent.Followup`；统一 Service 不解释 Execution 状态、不等待 `Stopping`，只返回 Agent 的投递错误。只有不存在 resident epoch 的 durable Continuable child 才进入 cold resume。
 
 `ChildControl.Interrupt` 只针对当前 live Execution，授权是 closed union：人类入口提供 direct parent Session ID；Agent 入口提供 exact live ancestor Agent。
 
-`ParentReporter.Report` 只允许 exact live child 向 exact live direct parent 投递。`quiet` 追加消息，`next-step` 请求父 Agent 下一步调度。
+child-to-parent report 不是 Subagent mode capability。report Tool 以消费端窄接口使用 `agent.Registry.Get/Contains`，从 exact child Agent 的 Session Header 读取 direct parent identity，然后调用 parent Agent 的 `Inject` 或 `Steer`。因此 OneShot 与 Continuable 复用同一 Agent 消息能力，不需要 `ParentReporter` 或 mode-specific Report 方法。
 
 ### 5.4 创建输入策略
 
@@ -208,7 +220,7 @@ type Execution interface {
 
 `ChildDirectory` 只有 `ListChildren` 与 `ListDescendants`。查询失败按候选隔离；全局依赖不可用或 Context 取消才使整个调用失败。
 
-`ContinuableExtension` 在未发布 continuable Agent Scope 中安装 child-scoped effect，返回 exact `ExtensionInstallation`。Extension 不参与 Plugin 生命周期，拥有它的 Plugin 只负责注册和注销 Extension。
+`Extension` 在未发布 child Agent Scope 中安装 child-scoped effect，返回 exact `ExtensionInstallation`。OneShot 与 Continuable 都使用同一 Extension 契约。Extension 不参与 Plugin 生命周期，拥有它的 Plugin 只负责注册和注销 Extension。
 
 ## 6. 状态所有权
 
@@ -289,7 +301,7 @@ sequenceDiagram
 
 ### 7.2 Continuable fresh create 与 cold resume
 
-fresh create 与 OneShot 共用 request snapshot、SeedBuilder、lineage、child policy、Agent Constructor 和 common Execution，但 descriptor 与 Continuable Extensions 在 Agent publication 前安装。
+fresh create 与 OneShot 共用 request snapshot、SeedBuilder、lineage、child policy、child Extensions、Agent Constructor 和 common Execution；Continuable 另外在 Agent publication 前安装自己的 descriptor。
 
 cold Send 流程：
 
@@ -299,7 +311,7 @@ cold Send 流程：
 4. 若不存在，Inspect 原 Session，并按 `SeedLength` 跳过继承 seed；
 5. 解析当前 child 自己的 Continuable descriptor；
 6. 调用 `agent.Constructor.Resume`；
-7. 安装 child policy 与当前 Continuable Extensions；
+7. 安装 child policy 与当前 child Extensions；
 8. 接受消息、发布新的 Execution；
 9. 返回 stable Message ID。
 

@@ -27,18 +27,18 @@
 | S0 | 公共契约 | 已实现 | 已验证 | `subagent/lifecycle.go`、`control.go`、`directory.go`、`extension.go`、`contracts_test.go` |
 | S1 | SeedBuilder | 已实现 | 已验证 | `internal/seedbuilder`、`spawn/builder.go`、`fork/builder.go` |
 | S2 | Common Execution | 已实现 | 已验证 | `internal/execution`、统一 Execution state/terminal tests |
-| S3 | OneShot | 已实现 | 已验证 | `internal/oneshot`、`one_shot_integration_test.go` |
+| S3 | OneShot | 已实现 | 已验证 | `internal/oneshot`、OneShot terminal 与 report integration tests |
 | S4 | Continuable | 已实现 | 已验证 | `internal/continuable`、continuable/control/settlement integration tests |
-| S5 | Unified Service | 已实现 | 已验证 | `internal/subagents.Service`、统一准入和 interrupt authorization |
+| S5 | Unified Service | 已实现 | 已验证 | `internal/subagents.Service`、统一准入、resident Agent 投递和 interrupt authorization |
 | S6 | ChildDirectory | 已实现 | 已验证 | `internal/childdirectory`、cold/live/descendant/order tests |
 | S6 | Projection Unit 行为 | 已实现 | 已验证 | `internal/projection` identity/timing tests 与 contract fixtures |
 | S6 | Projection 接口收口 | 已实现 | 已验证 | `projection.Units()`、`projection.ReadIdentity()`；concrete Unit、key 和 codec 均为包内实现 |
 | S7 | Child environment | 已实现 | 已验证 | `internal/childpolicy`、`plugin/environment.go`、`plugin/one_shot_descriptor.go`、`plugin/structured_output.go`、两种模式拥有的 Environment Builder 端口 |
-| S7 | Continuable Extension | 已实现 | 已验证 | `internal/extension`、`tools/report` installation tests |
+| S7 | Child Extension | 已实现 | 已验证 | OneShot/Continuable 共用 `internal/extension`、report installation/integration tests |
 | S8 | Tool adapters | 已实现 | 已验证 | `tools/delegation`、`tools/control`、`tools/report` |
 | S9 | Plugin composition | 已实现 | 已验证 | `plugin.Plugin`、factory、assembly 与 architecture tests |
 | S10 | 文档同步 | 已实现 | 已验证 | 技术方案、实施方案、本矩阵、package README、术语与 deferred parent-bound 文档 |
-| S10 | 全量验收 | 进行中 | 待验证 | focused tests 已通过；full/race/vet/build 需在最终代码后统一运行 |
+| S10 | 全量验收 | 已实现 | 已验证 | `go test ./...`、`go test -race ./...`、`go vet ./...`、`go build ./...`、Markdown link validation、`git diff --check` |
 
 ## 3. 已完成的破坏性删除
 
@@ -53,6 +53,7 @@
 - `internal/identity`；
 - 根级 `subagent/tool`、`subagent/control`、`subagent/report` 旧布局；
 - Continuable Activation、ResidentChild 和 continuation drain/Quiesce 路径。
+- `ParentReporter`、mode implementation 上的 `messenger/reporter` 发现与缓存；
 
 替代结构是：
 
@@ -63,6 +64,8 @@
 - `ChildDirectory` + `internal/childdirectory`；
 - `internal/childpolicy`；
 - `tools/delegation`、`tools/control`、`tools/report`。
+- resident child 消息直接使用 `agent.Agent`，cold resume 只进入 Continuable lifecycle strategy；
+- report Tool 通过消费端窄 Agent Registry 直接调用 parent Agent。
 
 ## 4. 当前已知缺口
 
@@ -98,7 +101,8 @@ git diff --check
 | OneShot auto-release | `internal/oneshot` | `service.go`、`terminal.go` | `one_shot_integration_test.go` | 已验证 |
 | Continuable cold resume | `internal/continuable` | `start.go`、`messaging.go` | `control_integration_test.go` | 已验证 |
 | interrupt keeps queued followup | `internal/continuable` | `messaging.go` | `interrupt_agent_integration_test.go` | 已验证 |
-| child-to-parent report | `internal/continuable` / `tools/report` | `messaging.go`、report Tool | `report_integration_test.go` | 已验证 |
+| resident parent-to-child message | `internal/subagents` / `agent` | `Service.Send`、`agent.Agent.Followup` | `service_test.go`（OneShot/Continuable） | 已验证 |
+| child-to-parent report | `tools/report` / `agent` | report Tool 的 consumer-owned live Agent view 与 `Inject/Steer` | OneShot/Continuable report integration tests | 已验证 |
 | settlement outcome | `internal/continuable` | `settlement.go` | `settlement_outcome_integration_test.go` | 已验证 |
 | single terminal transaction | `internal/execution` | `Stop`/`Wait`/`Result`/`StopAndWait` | `execution_test.go` | 已验证 |
 | bounded cold directory reads | `internal/childdirectory` | `resolve.go` | `cold_read_test.go` | 已验证 |
