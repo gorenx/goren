@@ -15,7 +15,7 @@ flowchart TD
     Plugin -->|publishes narrow views| Consumers[Tool / Control / Report / Host]
 ```
 
-Apply 顺序是：解析依赖、注册 Projection、启用 ChildDirectory、构造两种实现、最后打开统一 Service 准入。任一步失败都会撤销已取得效果。Plugin 不实现 Start、Send、Report、Interrupt、settlement 或目录查询。
+Apply 顺序是：解析依赖、注册 Projection、启用 ChildDirectory、构造一个 `environmentBuilder`、把它分别作为 OneShot/Continuable 拥有的消费端口实现注入，最后打开统一 Service 准入。Environment Builder 只把 approval、persona、Tool restriction、descriptor、structured output 和 Continuable Extension 翻译为 child-local Plugin/Provisioner；不创建 Agent，不决定 Execution 状态。任一 Apply 步骤失败都会撤销已取得效果。Plugin 不实现 Start、Send、Report、Interrupt、settlement 或目录查询。
 
 Dispose 先调用统一 Service `Close`：关闭新准入、等待已准入调用返回、让 Continuable 与 OneShot 请求其 exact Agent 停止，并只等待 `ClosingSignal`。它不在当前 Plugin topology 操作中递归卸载 child Scope。随后本 Plugin 停用 ChildDirectory、清理 Extension/SeedBuilder registration，并释放 Projection handle。
 

@@ -18,4 +18,4 @@ sequenceDiagram
     O->>A: Dispose exact Handle
 ```
 
-本包不拥有 SeedBuilder registration、Continuable cold resume、后续消息或 Plugin publication。结构化输出 capture 和 descriptor appender 是 OneShot 创建事务的一部分，因此与该实现放在同一模块。跨包契约见[技术方案](../../../zh-CN/Subagent架构与生命周期重构技术方案.md)，实现证据见[进度矩阵](../../../zh-CN/Subagent重构进度矩阵.md)。
+本包不拥有 SeedBuilder registration、Continuable cold resume、后续消息或 Plugin publication。它通过自己的 `EnvironmentBuilder` 消费 child-local 环境；descriptor appender、结构化输出 Tool 和 policy Plugin 的具体组合位于 `subagent/plugin`。跨包契约见[技术方案](../../../zh-CN/Subagent架构与生命周期重构技术方案.md)，实现证据见[进度矩阵](../../../zh-CN/Subagent重构进度矩阵.md)。

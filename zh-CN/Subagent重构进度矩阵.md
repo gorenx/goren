@@ -33,7 +33,7 @@
 | S6 | ChildDirectory | 已实现 | 已验证 | `internal/childdirectory`、cold/live/descendant/order tests |
 | S6 | Projection Unit 行为 | 已实现 | 已验证 | `internal/projection` identity/timing tests 与 contract fixtures |
 | S6 | Projection 接口收口 | 已实现 | 已验证 | `projection.Units()`、`projection.ReadIdentity()`；concrete Unit、key 和 codec 均为包内实现 |
-| S7 | Child policy | 已实现 | 已验证 | `internal/childpolicy`、OneShot/Continuable 各自 provisioning |
+| S7 | Child environment | 已实现 | 已验证 | `internal/childpolicy`、`plugin/environment.go`、`plugin/one_shot_descriptor.go`、`plugin/structured_output.go`、两种模式拥有的 Environment Builder 端口 |
 | S7 | Continuable Extension | 已实现 | 已验证 | `internal/extension`、`tools/report` installation tests |
 | S8 | Tool adapters | 已实现 | 已验证 | `tools/delegation`、`tools/control`、`tools/report` |
 | S9 | Plugin composition | 已实现 | 已验证 | `plugin.Plugin`、factory、assembly 与 architecture tests |
@@ -68,7 +68,7 @@
 
 ### 4.1 最终结构审计
 
-Projection 跨包接口和旧实现术语已经收口。最终验收前仍需完成整个 Subagent 模块的导出面、重复 consumer port、重复状态和无调用声明审计。已确认的具体残留是未被当前 Consumer 使用的预留枚举 `DiagnosticUnsupported`；是否删除以最终代码审计结果为准，不把预留声明当成已实现能力。
+Projection 跨包接口、导出面、consumer-owned ports、状态所有权和无调用声明已完成审计。`DiagnosticUnsupported`、`InitialMessageID`、`ParentSnapshot`、`SeedPolicy` 等未被真实 Consumer 使用的预留面已删除；`assistantoutput`、`childrequest` 等无独立状态的小包已并回实际 owner。OneShot/Continuable 只依赖自己拥有的 Environment Builder 端口，不导入 Plugin Runtime 或 child Plugin adapter；该依赖方向由 architecture test 固化。
 
 ### 4.2 Future parent-bound 决策
 
@@ -76,7 +76,7 @@ Parent-bound Subagent 尚未实现。需求和技术草案已经按 common Execu
 
 ### 4.3 全量验证
 
-当前重构期间已经运行并通过 focused Subagent、assembly、architecture tests 和 scoped staticcheck；由于最终结构审计尚未完成，以下全量 Gate 尚不能标记为最终通过：
+当前工作树已运行并通过 focused Subagent、assembly、architecture tests、scoped staticcheck 以及默认全仓 Go Gate：
 
 ```text
 go fmt ./...
@@ -84,9 +84,10 @@ go test ./...
 go test -race ./...
 go vet ./...
 go build ./...
-go test -tags contract ./agent ./subagent ./subagent/internal/execution ./subagent/internal/projection ./subagent/internal/childdirectory
 git diff --check
 ```
+
+`go mod tidy` 单独失败：仓库的 contract-tag tests 导入 `github.com/gorenx/goren/tests/contract/fixture`，但当前工作树不存在 `tests/contract/fixture` 包，Go 因此尝试从模块网络解析并报 `no matching versions for query "latest"`。该失败未修改 `go.mod`/`go.sum`，不属于 Subagent 生产代码回归。Contract-tag 测试属于 DSH 对照，未经明确要求未运行，不把它记录为通过。
 
 ## 5. 验收证据矩阵
 
@@ -99,13 +100,14 @@ git diff --check
 | interrupt keeps queued followup | `internal/continuable` | `messaging.go` | `interrupt_agent_integration_test.go` | 已验证 |
 | child-to-parent report | `internal/continuable` / `tools/report` | `messaging.go`、report Tool | `report_integration_test.go` | 已验证 |
 | settlement outcome | `internal/continuable` | `settlement.go` | `settlement_outcome_integration_test.go` | 已验证 |
-| single terminal transaction | `internal/execution` | `Stop`/`StopAndWait` | `execution_test.go` | 已验证 |
+| single terminal transaction | `internal/execution` | `Stop`/`Wait`/`Result`/`StopAndWait` | `execution_test.go` | 已验证 |
 | bounded cold directory reads | `internal/childdirectory` | `resolve.go` | `cold_read_test.go` | 已验证 |
 | stable child ordering | `internal/childdirectory` | `order.go` | `order_test.go` | 已验证 |
 | descriptor/timing projections | `internal/projection` | `identity.go`、`timing.go` | projection and contract tests | 已验证 |
 | projection 跨包封装 | `internal/projection` | `Units()`、`ReadIdentity()` | projection/directory/runtime focused tests | 已验证 |
 | Plugin/business separation | `plugin` / application modules | package dependency direction | `tests/architecture` | 已验证 |
-| full repository health | repository | final worktree | full Gate | 待验证 |
+| default full repository health | repository | final worktree | test/race/vet/build/diff Gate | 已验证 |
+| dependency tidy | repository contract fixture | `tests/contract/fixture` 需存在 | `go mod tidy` | 被缺失的 contract fixture 阻断 |
 
 ## 6. 本轮文档验证
 
@@ -113,17 +115,16 @@ git diff --check
 
 - Subagent 主文档、局部文档和 package README 共 28 个 Markdown 文件的相对链接检查；检查器忽略 fenced code 与 inline code；
 - `git diff --check`；
-- 当前 Subagent 文档中的已删除包路径检查；旧路径只保留在实施方案和本矩阵的“删除证据”中；
+- 当前 Subagent 文档中的已删除包路径检查；旧路径只保留在明确标注“重构前”或“已删除”的证据中；
 - 当前职责术语检查；`Activation`、`Catalog`、Provider execution 只保留在兼容/删除说明中，不再作为当前对象。
 - `go test ./subagent/... ./internal/assembly ./tests/architecture`；
-- `go run honnef.co/go/tools/cmd/staticcheck@latest ./subagent/... ./internal/assembly ./tests/architecture`。
+- `go run honnef.co/go/tools/cmd/staticcheck@latest ./subagent/... ./tests/architecture`；
+- `go test ./...`、`go test -race ./...`、`go vet ./...`、`go build ./...`、`go fmt ./...`、`git diff --check`。
 
-这些证据只覆盖列出的范围，不代表 race、contract 或全仓构建已经通过。
+这些证据不包含 contract-tag/DSH 对照或真实 Provider 环境验收。
 
 ## 7. 下一步顺序
 
-1. 完成导出面、重复 consumer port、重复状态和无调用声明审计。
-2. 根据审计结果完成最后一轮破坏性清理。
-3. 运行 focused、race、contract 和全仓 Gate。
-4. 根据真实结果更新本矩阵。
-5. 用户确认后再同步全局设计索引与全局实施进度。
+1. Subagent 重构范围已收敛；保持当前破坏性 API，不增加过渡 wrapper。
+2. `tests/contract/fixture` 由仓库级 contract 验收工作恢复；未显式要求时不运行 DSH 对照测试。
+3. 用户确认后再同步全局设计索引与全局实施进度。

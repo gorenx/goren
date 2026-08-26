@@ -36,14 +36,14 @@
 
 | 模块 | 负责 | 不负责 |
 | --- | --- | --- |
-| `plugin` | 解析依赖、构造业务对象、发布窄 capability、转接事件和 Projection registration | Subagent 用例、Plugin Runtime 本身和 Agent 结构关闭策略 |
+| `plugin` | 解析依赖、构造业务对象、发布窄 capability、转接事件、注册 Projection，并把 child-local Plugin 组合实现注入两种执行模式 | Subagent 用例、Plugin Runtime 本身和 Agent 结构关闭策略 |
 | `internal/subagents` | 统一准入、按 `Mode` 路由、公共中断授权、关闭编排 | 枚举 OneShot/Continuable 的公开 API |
 | `internal/oneshot` | OneShot 创建、初始消息、结果选择和终止 | durable resume、后续消息 |
 | `internal/continuable` | Continuable fresh create、cold resume、续投、报告和 settlement | Agent epoch 或 Session durability |
 | `internal/execution` | 两种实现共用的一次执行状态、terminal future 和进程内索引 | Agent phase 镜像或父子树 |
 | `internal/seedbuilder` | SeedBuilder 注册、查找和事件边界 | Agent 创建 |
 | `internal/childdirectory` | live/persisted child 的只读合并查询 | 创建、恢复或控制 child |
-| `internal/childpolicy` | OneShot/Continuable 共用的 child-local policy Plugin | mode-specific Provisioner 组合 |
+| `internal/childpolicy` | `plugin` 组合层共用的 child-local policy Plugin adapter | OneShot/Continuable 业务策略 |
 | `internal/projection` | Subagent identity/timing Session Projection | Registry、checkpoint 和 Session API |
 | `internal/extension` | Continuable Extension registration 和 installation | Plugin lifecycle 或 Agent creation |
 | `tools/delegation` | 创建新 Subagent 的模型委派 Tool 适配 | Subagent 启动状态机 |

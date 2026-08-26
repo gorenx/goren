@@ -32,7 +32,7 @@
 2. `Activate` 只允许把 `Starting` 改为 `Active`。OneShot/Continuable 在 child Agent 已接受本次第一条消息后调用它。
 3. `Stop` 接受停止原因。第一次调用把状态改为 `Stopping`，并异步调用一次 `Terminator.Terminate`；后续调用不会再次执行结束处理。
 4. `Terminate` 返回后，`Execution` 复制并保存 `Terminal`，保存 error，把状态改为 `Stopped`，然后通知所有等待者。
-5. `AwaitTerminal`、`Dispose` 和 `StopAndWait` 都读取同一份已保存结果，不会各自生成结果。
+5. `Wait` 只等待终止事务并返回该事务的 error；`Result` 只读取已保存的 `Terminal`，不等待也不改变状态。
 
 `Execution` 不复制 Agent 自身的运行状态，不保存 Session 事件，不拥有 Agent 的消息队列，也不持有 Agent 创建或恢复所返回的 `agent.Handle`。这些对象由 OneShot 或 Continuable 持有。
 
@@ -124,11 +124,12 @@ stateDiagram-v2
 
 ## 等待、取消与错误传播
 
-- `AwaitTerminal(ctx)` 只等待结果。`ctx` 取消只结束当前等待，不会停止 child Agent 或 `Execution`。
+- `Wait(ctx)` 只等待终止事务。`ctx` 取消只结束当前等待，不会停止 child Agent 或 `Execution`。
+- `Result()` 在 `Stopped` 前返回 `false`；终止后返回可重复读取的 detached `Terminal`，不返回终止 error。
 - `Dispose(ctx)` 请求 `StopDisposed`，然后等待结束结果；它不会删除 Continuable 的 child Session。
 - `StopAndWait(ctx, cause)` 供内部关闭流程使用。它请求停止，并等待同一个结束处理完成。
 - 第一次 `Stop` 启动结束处理后，`Terminator` 使用独立的 `context.Background()`。等待者的 Context 取消不会中断已经开始的资源释放和索引删除。
-- `Terminal` 中的 `Output`、`Structured` 和 `Diagnostic` 在保存和返回时会复制，调用方不能修改其他等待者看到的结果。
+- `Terminal` 中的 `Output`、`Structured` 和 `Diagnostic` 在保存和 `Result` 返回时会复制，调用方不能修改后续读取者看到的结果。
 - `Terminator` 返回的 error 被保存并返回给所有后续等待者。事件监听者错误不通过 `EventPublisher` 返回，因此不进入这个 error。
 - Continuable 的最后一次 Session 刷新失败会交给其失败报告接口，不会覆盖已经计算出的 `Terminal`；本包不负责处理该报告。
 

@@ -11,6 +11,6 @@ flowchart LR
     Reporter --> Parent[direct parent Agent]
 ```
 
-`quiet` 只追加父消息；`next-step` 还请求父 Agent 调度下一步。report 不结束 child turn，也不向祖先广播，不安装到 OneShot child。host Plugin 拥有 extension registration，child Scope 拥有实际 Tool/Prompt effects。
+`quiet` 只追加父消息；`next-step` 还请求父 Agent 调度下一步。report 不结束 child turn，也不向祖先广播，不安装到 OneShot child。host Plugin 拥有 extension registration，child Scope 拥有实际 Tool/Prompt effects。`childPlugin` 只解析依赖并注册 Tool/Prompt；`reportTool` 只负责 schema、参数映射和 `ParentReporter.Report` 调用，不参加 Plugin 生命周期。
 
 跨包契约见[技术方案](../../../zh-CN/Subagent架构与生命周期重构技术方案.md)，实现证据见[进度矩阵](../../../zh-CN/Subagent重构进度矩阵.md)。

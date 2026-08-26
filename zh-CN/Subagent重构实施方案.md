@@ -267,9 +267,9 @@ go test -tags contract ./subagent/internal/childdirectory ./subagent/internal/pr
 
 ### 变更
 
-1. `internal/childpolicy` 只返回 approval、persona 和 Tool restriction Plugins。
-2. OneShot 在自己的 Provisioner 中组合 descriptor、structured capture 与 child policy。
-3. Continuable 在自己的 Provisioner 中组合 descriptor、child policy 与 Extension Provisioner。
+1. `internal/childpolicy` 只提供 approval、persona 和 Tool restriction Plugin adapter。
+2. OneShot 业务包拥有 `EnvironmentBuilder` 消费端口；`subagent/plugin` 在该端口后组合 descriptor、structured output 与 child policy。
+3. Continuable 业务包拥有区分创建/恢复的 `EnvironmentBuilder` 消费端口；`subagent/plugin` 在该端口后组合 child policy 与 Extension Provisioner。
 4. `internal/extension.Registry` 负责有序 registration、安装、Commit 复核和 exact uninstall。
 5. report Plugin 注册 `ContinuableExtension`；child Scope 中安装实际 report Tool/Prompt Plugin。
 

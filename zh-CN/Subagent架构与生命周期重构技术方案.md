@@ -184,12 +184,13 @@ type Execution interface {
     RunID() RunID
     ChildID() session.SessionID
     State() ExecutionState
-	AwaitTerminal(context.Context) (Terminal, error)
-	Dispose(context.Context) error
+    Wait(context.Context) error
+    Result() (Terminal, bool)
+    Dispose(context.Context) error
 }
 ```
 
-`Dispose` 请求并等待同一个 terminal transaction。OneShot 正常结束和 Continuable settlement 都自动释放 exact Handle；调用方无需在正常完成后补做一次资源清理。
+`Wait` 只等待 terminal transaction，`Result` 只读取已保存结果，`Dispose` 请求并等待同一个 terminal transaction。OneShot 正常结束和 Continuable settlement 都自动释放 exact Handle；调用方无需在正常完成后补做一次资源清理。
 
 ### 5.3 控制与报告
 
@@ -380,12 +381,12 @@ Plugin Runtime 拥有 capability binding、event dispatch、Plugin Apply/Dispose
 
 ### 8.5 Tools、Approval 与 Prompt
 
-Tool 包只把模型调用映射到公开 capability。`childpolicy` 把 approval、persona、Tool restriction 转为 child-local Plugin；OneShot/Continuable 各自在自己的 Provisioner 中组合 policy 和 mode-specific Plugin/Extension。
+Tool 包只把模型调用映射到公开 capability。`childpolicy` 把 approval、persona、Tool restriction 转为 child-local Plugin；`subagent/plugin` 在 OneShot/Continuable 各自拥有的 Environment Builder 端口后组合 policy、mode-specific Plugin 和 Extension。两种业务实现只接收 `agent.Provisioner`，不导入 Plugin Runtime 或 child Plugin adapter。
 
 ## 9. `context.Context` 契约
 
 - Start/Send/Report 在业务提交前响应取消；输入在异步边界前 snapshot。
-- `AwaitTerminal` 的 Context 只取消本次等待，不停止 Execution。
+- `Wait` 的 Context 只取消本次等待，不停止 Execution；`Result` 不接收 Context、不等待。
 - `Execution.Dispose` 请求停止并等待同一个 terminal transaction。
 - Interrupt 验证并发出取消后返回，不承诺等待 Agent idle。
 - Close 进入 `closing` 后不重新开放准入；内部结构清理使用不可被调用方提前取消的 completion context，外层 Context 只限制等待。
