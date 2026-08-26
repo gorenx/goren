@@ -1,4 +1,4 @@
-package oneshot
+package plugin
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"sync"
 
 	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/plugin"
+	pluginruntime "github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/tools"
 )
@@ -30,10 +30,10 @@ var structuredResultSchema = json.RawMessage(`{
   "additionalProperties": false
 }`)
 
-// structuredCapture owns the result Tool, prompt, guard, and captured value
+// structuredOutput owns the result Tool, prompt, guard, and captured value
 // installed into one exact OneShot child Scope.
-type structuredCapture struct {
-	plugin.Base
+type structuredOutput struct {
+	pluginruntime.Base
 	mutex        sync.Mutex
 	schema       json.RawMessage
 	staged       map[tools.ToolExecutionToken]json.RawMessage
@@ -43,37 +43,37 @@ type structuredCapture struct {
 	guardHandle  *tools.GuardHandle
 }
 
-func newStructuredCapture(schema json.RawMessage) *structuredCapture {
-	return &structuredCapture{
+func newStructuredOutput(schema json.RawMessage) *structuredOutput {
+	return &structuredOutput{
 		schema: append(json.RawMessage(nil), schema...),
 		staged: make(map[tools.ToolExecutionToken]json.RawMessage),
 	}
 }
 
-func (*structuredCapture) Manifest() plugin.Manifest {
-	return plugin.Manifest{
+func (*structuredOutput) Manifest() pluginruntime.Manifest {
+	return pluginruntime.Manifest{
 		Name: "@goren/subagent/structured-output",
-		Requires: []plugin.ServiceType{
-			plugin.ServiceOf[tools.ToolCatalog](),
-			plugin.ServiceOf[tools.PolicyRegistry](),
-			plugin.ServiceOf[systemprompt.PromptRegistry](),
+		Requires: []pluginruntime.ServiceType{
+			pluginruntime.ServiceOf[tools.ToolCatalog](),
+			pluginruntime.ServiceOf[tools.PolicyRegistry](),
+			pluginruntime.ServiceOf[systemprompt.PromptRegistry](),
 		},
-		Events: []plugin.EventSubscription{
-			plugin.EventOf[tools.ExecutionCompleted](),
+		Events: []pluginruntime.EventSubscription{
+			pluginruntime.EventOf[tools.ExecutionCompleted](),
 		},
 	}
 }
 
-func (capture *structuredCapture) Apply(requestContext context.Context) error {
-	catalog, requireErr := plugin.Require[tools.ToolCatalog](capture)
+func (output *structuredOutput) Apply(requestContext context.Context) error {
+	catalog, requireErr := pluginruntime.Require[tools.ToolCatalog](output)
 	if requireErr != nil {
 		return requireErr
 	}
-	policies, requireErr := plugin.Require[tools.PolicyRegistry](capture)
+	policies, requireErr := pluginruntime.Require[tools.PolicyRegistry](output)
 	if requireErr != nil {
 		return requireErr
 	}
-	prompts, requireErr := plugin.Require[systemprompt.PromptRegistry](capture)
+	prompts, requireErr := pluginruntime.Require[systemprompt.PromptRegistry](output)
 	if requireErr != nil {
 		return requireErr
 	}
@@ -82,7 +82,7 @@ func (capture *structuredCapture) Apply(requestContext context.Context) error {
 		tools.ToolDefinition{
 			Name:        structuredOutputTool,
 			Description: "Report the final structured result exactly once.",
-			Parameters:  capture.schema,
+			Parameters:  output.schema,
 			Output: tools.ToolOutputDefinition{
 				Schema: structuredResultSchema,
 				Renderer: tools.OutputRendererFunc(func(
@@ -94,13 +94,13 @@ func (capture *structuredCapture) Apply(requestContext context.Context) error {
 					}, nil
 				}),
 			},
-			Executor: tools.ExecutorFunc(capture.execute),
+			Executor: tools.ExecutorFunc(output.execute),
 		},
 	)
 	if addErr != nil {
 		return addErr
 	}
-	capture.toolHandle = toolHandle
+	output.toolHandle = toolHandle
 	promptHandle, addErr := prompts.AddSection(
 		requestContext,
 		systemprompt.PromptSection{
@@ -112,112 +112,109 @@ func (capture *structuredCapture) Apply(requestContext context.Context) error {
 	if addErr != nil {
 		return errors.Join(
 			addErr,
-			capture.release(context.WithoutCancel(requestContext)),
+			output.release(context.WithoutCancel(requestContext)),
 		)
 	}
-	capture.promptHandle = promptHandle
+	output.promptHandle = promptHandle
 	guardHandle, addErr := policies.AddGuard(
 		requestContext,
 		structuredOutputTool,
-		tools.ToolGuardFunc(capture.denyAfterCapture),
+		tools.ToolGuardFunc(output.denyAfterCapture),
 	)
 	if addErr != nil {
 		return errors.Join(
 			addErr,
-			capture.release(context.WithoutCancel(requestContext)),
+			output.release(context.WithoutCancel(requestContext)),
 		)
 	}
-	capture.guardHandle = guardHandle
+	output.guardHandle = guardHandle
 	return nil
 }
 
-func (capture *structuredCapture) execute(
+func (output *structuredOutput) execute(
 	arguments json.RawMessage,
 	runContext tools.ToolRunContext,
 ) (json.RawMessage, error) {
-	capture.mutex.Lock()
-	capture.staged[runContext.Execution.Token] = append(
+	output.mutex.Lock()
+	output.staged[runContext.Execution.Token] = append(
 		json.RawMessage(nil),
 		arguments...,
 	)
-	capture.mutex.Unlock()
+	output.mutex.Unlock()
 	runContext.ConcludeTurn()
 	return json.RawMessage(`{"recorded":true}`), nil
 }
 
-func (capture *structuredCapture) denyAfterCapture(
+func (output *structuredOutput) denyAfterCapture(
 	tools.ToolExecution,
 ) (string, bool) {
-	capture.mutex.Lock()
-	defer capture.mutex.Unlock()
-	if capture.captured == nil && len(capture.staged) == 0 {
+	output.mutex.Lock()
+	defer output.mutex.Unlock()
+	if output.captured == nil && len(output.staged) == 0 {
 		return "", false
 	}
 	return "structured output already recorded: the execution is complete", true
 }
 
-func (capture *structuredCapture) ObserveEvent(
+func (output *structuredOutput) ObserveEvent(
 	_ context.Context,
-	fact plugin.Event,
+	fact pluginruntime.Event,
 ) error {
 	completed, matches := fact.(tools.ExecutionCompleted)
 	if !matches || completed.Execution().Name != structuredOutputTool {
 		return nil
 	}
 	executionValue := completed.Execution()
-	capture.mutex.Lock()
-	staged, found := capture.staged[executionValue.Token]
+	output.mutex.Lock()
+	staged, found := output.staged[executionValue.Token]
 	if found {
-		delete(capture.staged, executionValue.Token)
+		delete(output.staged, executionValue.Token)
 	}
 	if found && !completed.Result().Failed() &&
-		executionValue.Parent.IsZero() && capture.captured == nil {
-		capture.captured = append(json.RawMessage(nil), staged...)
+		executionValue.Parent.IsZero() && output.captured == nil {
+		output.captured = append(json.RawMessage(nil), staged...)
 	}
-	capture.mutex.Unlock()
+	output.mutex.Unlock()
 	return nil
 }
 
-func (capture *structuredCapture) Captured() json.RawMessage {
-	if capture == nil {
-		return nil
-	}
-	capture.mutex.Lock()
-	defer capture.mutex.Unlock()
-	return append(json.RawMessage(nil), capture.captured...)
+func (output *structuredOutput) Captured() json.RawMessage {
+	output.mutex.Lock()
+	defer output.mutex.Unlock()
+	return append(json.RawMessage(nil), output.captured...)
 }
 
-func (capture *structuredCapture) Dispose(closeContext context.Context) error {
-	return capture.release(closeContext)
+func (output *structuredOutput) Dispose(closeContext context.Context) error {
+	return output.release(closeContext)
 }
 
-func (capture *structuredCapture) release(closeContext context.Context) error {
+func (output *structuredOutput) release(closeContext context.Context) error {
 	if closeContext == nil {
 		closeContext = context.Background()
 	}
 	var releaseErr error
-	if capture.guardHandle != nil {
+	if output.guardHandle != nil {
 		releaseErr = errors.Join(
 			releaseErr,
-			capture.guardHandle.Unregister(closeContext),
+			output.guardHandle.Unregister(closeContext),
 		)
-		capture.guardHandle = nil
+		output.guardHandle = nil
 	}
-	if capture.promptHandle != nil {
+	if output.promptHandle != nil {
 		releaseErr = errors.Join(
 			releaseErr,
-			capture.promptHandle.Unregister(closeContext),
+			output.promptHandle.Unregister(closeContext),
 		)
-		capture.promptHandle = nil
+		output.promptHandle = nil
 	}
-	if capture.toolHandle != nil {
+	if output.toolHandle != nil {
 		releaseErr = errors.Join(
 			releaseErr,
-			capture.toolHandle.Unregister(closeContext),
+			output.toolHandle.Unregister(closeContext),
 		)
-		capture.toolHandle = nil
+		output.toolHandle = nil
 	}
 	return releaseErr
 }
 
-var _ plugin.EventObserver = (*structuredCapture)(nil)
+var _ pluginruntime.EventObserver = (*structuredOutput)(nil)

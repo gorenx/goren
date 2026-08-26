@@ -120,6 +120,10 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 	}
 	approvalService, _ := pluginruntime.Resolve[approval.DelegationPolicy](owner)
 	projectionRegistry, _ := pluginruntime.Resolve[sessionprojection.Registry](owner)
+	environments := &environmentBuilder{
+		delegation: approvalService,
+		extensions: owner.extensions,
+	}
 	if err := owner.registerProjections(projectionRegistry); err != nil {
 		return err
 	}
@@ -137,8 +141,8 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 		oneshot.Dependencies{
 			Agents:       agentRegistry,
 			Constructor:  agentConstructor,
-			Approval:     approvalService,
 			SeedBuilders: owner.builders,
+			Environments: environments,
 			Publisher:    owner.events,
 			Executions:   owner.executions,
 		},
@@ -157,10 +161,9 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 			Descendants:  runtimeDescendants,
 			Sessions:     liveSessions,
 			Persistence:  sessionPersistence,
-			Approval:     approvalService,
 			SeedBuilders: owner.builders,
 			Publisher:    owner.events,
-			Extensions:   owner.extensions,
+			Environments: environments,
 			Failures:     owner.failures,
 			Executions:   owner.executions,
 		},

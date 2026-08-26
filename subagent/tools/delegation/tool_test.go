@@ -39,7 +39,7 @@ func TestDelegationRoutesForegroundAndContinuableIndependently(t *testing.T) {
 	}
 	adapter, err := newDelegationTool(
 		Settings{
-			Provider:              "spawn",
+			SeedBuilder:           "spawn",
 			ToolName:              "subagent",
 			EnableRunInBackground: true,
 			BackgroundMode:        BackgroundContinuable,
@@ -105,7 +105,7 @@ func TestDelegationRejectsOneShotBackgroundWithoutJobs(t *testing.T) {
 	t.Parallel()
 	adapter, err := newDelegationTool(
 		Settings{
-			Provider:              "spawn",
+			SeedBuilder:           "spawn",
 			ToolName:              "subagent",
 			EnableRunInBackground: true,
 			BackgroundMode:        BackgroundOneShot,
@@ -168,10 +168,12 @@ func (record *executionRecord) State() subagent.ExecutionState {
 	return subagent.ExecutionActive
 }
 
-func (record *executionRecord) AwaitTerminal(
-	context.Context,
-) (subagent.Terminal, error) {
-	return record.terminal, nil
+func (*executionRecord) Wait(context.Context) error {
+	return nil
+}
+
+func (record *executionRecord) Result() (subagent.Terminal, bool) {
+	return record.terminal, true
 }
 
 func (record *executionRecord) Dispose(context.Context) error {

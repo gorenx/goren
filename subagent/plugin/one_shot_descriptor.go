@@ -1,42 +1,37 @@
-package oneshot
+package plugin
 
 import (
 	"context"
 	"sync"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/plugin"
+	pluginruntime "github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 )
 
 // descriptorAppender persists the OneShot descriptor before the first model
-// step enters. It owns only that exact durable contribution.
+// step enters.
 type descriptorAppender struct {
-	plugin.Base
+	pluginruntime.Base
 	mutex      sync.Mutex
 	descriptor subagent.OneShotDescriptor
 	appended   bool
 }
 
-func newDescriptorAppender(
-	descriptor subagent.OneShotDescriptor,
-) *descriptorAppender {
-	return &descriptorAppender{
-		descriptor: descriptor,
-	}
-}
-
-func (appender *descriptorAppender) Manifest() plugin.Manifest {
-	return plugin.Manifest{
+func (appender *descriptorAppender) Manifest() pluginruntime.Manifest {
+	return pluginruntime.Manifest{
 		Name: "@goren/subagent/one-shot-descriptor",
-		Waterfalls: []plugin.WaterfallMiddlewareBinding{
-			plugin.WaterfallOf[agent.PreStepNotice, agent.PreStepDecision](appender),
+		Waterfalls: []pluginruntime.WaterfallMiddlewareBinding{
+			pluginruntime.WaterfallOf[
+				agent.PreStepNotice,
+				agent.PreStepDecision,
+			](appender),
 		},
 	}
 }
 
-func (*descriptorAppender) Apply(requestContext context.Context) error {
+func (appender *descriptorAppender) Apply(requestContext context.Context) error {
 	return requestContext.Err()
 }
 
@@ -47,7 +42,10 @@ func (*descriptorAppender) Dispose(context.Context) error {
 func (appender *descriptorAppender) Intercept(
 	requestContext context.Context,
 	notice agent.PreStepNotice,
-	downstream plugin.WaterfallAction[agent.PreStepNotice, agent.PreStepDecision],
+	downstream pluginruntime.WaterfallAction[
+		agent.PreStepNotice,
+		agent.PreStepDecision,
+	],
 ) (agent.PreStepDecision, error) {
 	decision, decisionErr := downstream.Execute(requestContext, notice)
 	if decisionErr != nil || decision.Kind != agent.PreStepEnter {
@@ -58,7 +56,9 @@ func (appender *descriptorAppender) Intercept(
 	if appender.appended {
 		return decision, nil
 	}
-	descriptorData, snapshotErr := subagent.SnapshotDescriptor(appender.descriptor)
+	descriptorData, snapshotErr := subagent.SnapshotDescriptor(
+		appender.descriptor,
+	)
 	if snapshotErr != nil {
 		return agent.PreStepDecision{}, snapshotErr
 	}
@@ -79,7 +79,7 @@ func (appender *descriptorAppender) Intercept(
 	return decision, nil
 }
 
-var _ plugin.WaterfallMiddleware[
+var _ pluginruntime.WaterfallMiddleware[
 	agent.PreStepNotice,
 	agent.PreStepDecision,
 ] = (*descriptorAppender)(nil)

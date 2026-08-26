@@ -17,11 +17,14 @@ func TestReportUsesExactChildAndConfiguredDelivery(t *testing.T) {
 	t.Parallel()
 	childAgent := newReportAgent(t, "child")
 	reports := &reportRecorder{}
-	contribution := &childPlugin{
-		reports:  reports,
-		delivery: subagent.ReportQuiet,
+	adapter, constructionErr := newReportTool(
+		reports,
+		subagent.ReportQuiet,
+	)
+	if constructionErr != nil {
+		t.Fatal(constructionErr)
 	}
-	value, executeErr := contribution.execute(
+	value, executeErr := adapter.execute(
 		json.RawMessage(`{"output":"review complete"}`),
 		tools.ToolRunContext{
 			Context: context.Background(),

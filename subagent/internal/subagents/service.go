@@ -318,18 +318,18 @@ func (owner *Service) Close(closeContext context.Context) error {
 }
 
 func (owner *Service) beginImplementation(
-	mode subagent.Mode,
+	selectedMode subagent.Mode,
 ) (implementation, error) {
 	owner.mutex.RLock()
 	defer owner.mutex.RUnlock()
 	if owner.state != admissionAccepting {
 		return nil, unavailable()
 	}
-	candidate, found := owner.implementations[mode]
+	candidate, found := owner.implementations[selectedMode]
 	if !found {
 		return nil, fmt.Errorf(
 			"subagent: no implementation registered for mode %q",
-			mode,
+			selectedMode,
 		)
 	}
 	owner.activeCalls.Add(1)

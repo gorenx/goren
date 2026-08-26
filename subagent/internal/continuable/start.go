@@ -184,11 +184,8 @@ func (owner *Service) create(
 			Metadata:     childLineage.Metadata(lineageSeedLength),
 			Seed:         seed,
 			AgentOptions: *request.AgentOptions,
-			Provisioner: owner.provisioner(
-				scopePolicy{
-					descriptor: descriptor,
-					delegation: owner.dependencies.Approval,
-				},
+			Provisioner: owner.dependencies.Environments.BuildForCreation(
+				descriptor,
 			),
 			RuntimeParent: request.Parent,
 		},
@@ -264,10 +261,8 @@ func (owner *Service) resume(
 				Provider: stringValue(descriptor.AgentProvider),
 				Model:    stringValue(descriptor.AgentModel),
 			},
-			Provisioner: owner.provisioner(
-				scopePolicy{
-					descriptor: descriptor,
-				},
+			Provisioner: owner.dependencies.Environments.BuildForResume(
+				descriptor,
 			),
 			RuntimeParent: parentAgent,
 		},

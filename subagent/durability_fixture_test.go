@@ -59,7 +59,7 @@ func newContinuableIntegrationFixtureWithAdapter(
 			plugins: plugins,
 			backend: backend,
 			delegation: subagentdelegation.Settings{
-				Provider:              spawn.DefaultSeedBuilderName,
+				SeedBuilder:           spawn.DefaultSeedBuilderName,
 				ToolName:              subagentdelegation.DefaultToolName,
 				EnableRunInBackground: true,
 				BackgroundMode:        subagentdelegation.BackgroundContinuable,

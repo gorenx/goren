@@ -1,5 +1,5 @@
 // Package factory owns strict configuration and construction of the Subagent
-// Runtime Plugin.
+// Plugin.
 package factory
 
 import (
@@ -12,7 +12,7 @@ import (
 	subagentplugin "github.com/gorenx/goren/subagent/plugin"
 )
 
-// Factory constructs the canonical Subagent Runtime Plugin.
+// Factory constructs the canonical Subagent Plugin.
 type Factory struct {
 	diagnostics subagentplugin.Diagnostics
 }

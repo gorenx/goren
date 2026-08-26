@@ -271,7 +271,7 @@ func newIntegrationFixture(
 			},
 			plugins: durability.plugins,
 			delegation: subagentdelegation.Settings{
-				Provider:              spawn.DefaultSeedBuilderName,
+				SeedBuilder:           spawn.DefaultSeedBuilderName,
 				ToolName:              subagentdelegation.DefaultToolName,
 				EnableRunInBackground: false,
 				BackgroundMode:        subagentdelegation.BackgroundOneShot,

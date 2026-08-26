@@ -170,13 +170,15 @@ const (
 	StopRefusal StopReason = "refusal"
 )
 
-// Execution observes and controls one exact Subagent execution. Dispose ends
-// only this execution; it does not delete a Continuable child Session.
+// Execution observes and controls one exact Subagent execution. Wait only
+// waits for termination; Result only reads an already stored outcome. Dispose
+// ends only this execution and does not delete a Continuable child Session.
 type Execution interface {
 	RunID() RunID
 	ChildID() session.SessionID
 	State() ExecutionState
-	AwaitTerminal(context.Context) (Terminal, error)
+	Wait(context.Context) error
+	Result() (Terminal, bool)
 	Dispose(context.Context) error
 }
 

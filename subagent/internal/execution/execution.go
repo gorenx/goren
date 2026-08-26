@@ -152,28 +152,45 @@ func (running *Execution) State() subagent.ExecutionState {
 	return currentState
 }
 
-// AwaitTerminal waits without changing execution state.
-func (running *Execution) AwaitTerminal(
-	requestContext context.Context,
-) (subagent.Terminal, error) {
+// Wait waits for the terminal transaction without changing execution state.
+func (running *Execution) Wait(requestContext context.Context) error {
 	if running == nil {
-		return subagent.Terminal{}, errors.New("subagent: Execution is nil")
+		return errors.New("subagent: Execution is nil")
 	}
 	if requestContext == nil {
-		return subagent.Terminal{}, errors.New(
-			"subagent: AwaitTerminal context is nil",
-		)
+		return errors.New("subagent: Execution Wait context is nil")
+	}
+	select {
+	case <-running.done:
+		return running.terminationError()
+	default:
 	}
 	select {
 	case <-requestContext.Done():
-		return subagent.Terminal{}, requestContext.Err()
+		return requestContext.Err()
 	case <-running.done:
-		running.mutex.RLock()
-		terminalValue := cloneTerminal(running.terminal.value)
-		terminalErr := running.terminal.err
-		running.mutex.RUnlock()
-		return terminalValue, terminalErr
+		return running.terminationError()
 	}
+}
+
+func (running *Execution) terminationError() error {
+	running.mutex.RLock()
+	defer running.mutex.RUnlock()
+	return running.terminal.err
+}
+
+// Result returns the immutable terminal result after the Execution stops.
+// It never waits and never changes lifecycle state.
+func (running *Execution) Result() (subagent.Terminal, bool) {
+	if running == nil {
+		return subagent.Terminal{}, false
+	}
+	running.mutex.RLock()
+	defer running.mutex.RUnlock()
+	if running.state != subagent.ExecutionStopped {
+		return subagent.Terminal{}, false
+	}
+	return cloneTerminal(running.terminal.value), true
 }
 
 // Dispose requests early termination or joins the existing terminal work.
@@ -195,15 +212,7 @@ func (running *Execution) StopAndWait(
 		closeContext = context.Background()
 	}
 	running.Stop(cause)
-	select {
-	case <-closeContext.Done():
-		return closeContext.Err()
-	case <-running.done:
-		running.mutex.RLock()
-		terminalErr := running.terminal.err
-		running.mutex.RUnlock()
-		return terminalErr
-	}
+	return running.Wait(closeContext)
 }
 
 func cloneTerminal(source subagent.Terminal) subagent.Terminal {

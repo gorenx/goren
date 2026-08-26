@@ -37,7 +37,8 @@ type ToolFilter struct {
 	Deny  *[]string `json:"deny,omitempty"`
 }
 
-// DepthLimit is either a numeric recursion cap or provider-managed policy.
+// DepthLimit is the canonical maxDepth wire value. A number is a local
+// recursion cap; "provider-managed" means this Tool contributes no cap.
 type DepthLimit struct {
 	kind  depthLimitKind
 	value int64
@@ -134,7 +135,7 @@ func decodeConfig(rawConfig json.RawMessage) (delegation.Settings, error) {
 		)
 	}
 	resolved := delegation.Settings{
-		Provider:              settings.Provider,
+		SeedBuilder:           settings.Provider,
 		ToolName:              settings.ToolName,
 		EnableRunInBackground: settings.EnableRunInBackground,
 		BackgroundMode:        settings.BackgroundMode,
