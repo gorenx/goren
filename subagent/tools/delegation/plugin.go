@@ -34,10 +34,9 @@ const (
 )
 
 // Settings contains validated operational policy for one delegation Tool.
-// Provider preserves the canonical configuration key; its value identifies a
-// registered SeedBuilder, not an Agent constructor.
+// SeedBuilder is the exact registered child Session seed strategy.
 type Settings struct {
-	Provider              string
+	SeedBuilder           string
 	ToolName              string
 	EnableRunInBackground bool
 	BackgroundMode        BackgroundMode
@@ -62,9 +61,11 @@ type Plugin struct {
 
 // New validates settings and constructs an inactive Tool Plugin.
 func New(toolSettings Settings) (*Plugin, error) {
-	if strings.TrimSpace(toolSettings.Provider) == "" ||
-		toolSettings.Provider != strings.TrimSpace(toolSettings.Provider) {
-		return nil, errors.New("subagent tool: provider must be non-empty and trimmed")
+	if strings.TrimSpace(toolSettings.SeedBuilder) == "" ||
+		toolSettings.SeedBuilder != strings.TrimSpace(toolSettings.SeedBuilder) {
+		return nil, errors.New(
+			"subagent tool: SeedBuilder name must be non-empty and trimmed",
+		)
 	}
 	if strings.TrimSpace(toolSettings.ToolName) == "" ||
 		toolSettings.ToolName != strings.TrimSpace(toolSettings.ToolName) {
@@ -140,7 +141,7 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 	owner.delegation = delegation
 	owner.toolCatalog = toolCatalog
 	owner.prompts = prompts
-	builder, found := builders.Find(owner.settings.Provider)
+	builder, found := builders.Find(owner.settings.SeedBuilder)
 	var mountErr error
 	if found {
 		mountErr = owner.mount(requestContext, builder)
@@ -158,13 +159,13 @@ func (owner *Plugin) ObserveEvent(
 	defer owner.mutex.Unlock()
 	switch notice := fact.(type) {
 	case subagent.SeedBuilderAdded:
-		if notice.SeedBuilder.Name() != owner.settings.Provider ||
+		if notice.SeedBuilder.Name() != owner.settings.SeedBuilder ||
 			owner.toolHandle != nil {
 			return nil
 		}
 		return owner.mount(requestContext, notice.SeedBuilder)
 	case subagent.SeedBuilderRemoved:
-		if notice.Name != owner.settings.Provider {
+		if notice.Name != owner.settings.SeedBuilder {
 			return nil
 		}
 		return owner.unmount(context.WithoutCancel(requestContext))

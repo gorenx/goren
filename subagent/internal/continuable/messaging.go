@@ -46,7 +46,7 @@ func (owner *Service) Send(
 			running := current.running
 			slot.mutex.Unlock()
 			owner.releaseSlot(childID, slot)
-			if _, waitErr := running.AwaitTerminal(requestContext); waitErr != nil {
+			if waitErr := running.Wait(requestContext); waitErr != nil {
 				return "", waitErr
 			}
 			continue

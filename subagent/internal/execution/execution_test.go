@@ -56,15 +56,21 @@ func TestExecutionUsesOneStateMachineAndOneTerminalTransaction(t *testing.T) {
 	if running.State() != subagent.ExecutionActive {
 		t.Fatalf("active state = %q", running.State())
 	}
+	if _, ready := running.Result(); ready {
+		t.Fatal("Result was available before termination")
+	}
 	running.Stop(StopNormal)
 	running.Stop(StopInterrupted)
 	if running.State() != subagent.ExecutionStopping {
 		t.Fatalf("stopping state = %q", running.State())
 	}
 	close(handler.gate)
-	terminalValue, err := running.AwaitTerminal(context.Background())
-	if err != nil {
-		t.Fatal(err)
+	if waitErr := running.Wait(context.Background()); waitErr != nil {
+		t.Fatal(waitErr)
+	}
+	terminalValue, ready := running.Result()
+	if !ready {
+		t.Fatal("Result was unavailable after Wait")
 	}
 	if terminalValue.StopReason != subagent.StopCompleted ||
 		running.State() != subagent.ExecutionStopped {
@@ -74,6 +80,11 @@ func TestExecutionUsesOneStateMachineAndOneTerminalTransaction(t *testing.T) {
 			running.State(),
 		)
 	}
+	cancelledContext, cancelWait := context.WithCancel(context.Background())
+	cancelWait()
+	if waitErr := running.Wait(cancelledContext); waitErr != nil {
+		t.Fatalf("completed Wait error = %v", waitErr)
+	}
 	handler.mutex.Lock()
 	defer handler.mutex.Unlock()
 	if len(handler.calls) != 1 || handler.calls[0] != StopNormal {
@@ -81,7 +92,7 @@ func TestExecutionUsesOneStateMachineAndOneTerminalTransaction(t *testing.T) {
 	}
 }
 
-func TestAwaitCancellationDoesNotStopExecution(t *testing.T) {
+func TestWaitCancellationDoesNotStopExecution(t *testing.T) {
 	running, err := New(
 		subagent.RunID("run-2"),
 		session.SessionID("child-2"),
@@ -95,9 +106,9 @@ func TestAwaitCancellationDoesNotStopExecution(t *testing.T) {
 	}
 	waitContext, cancelWait := context.WithCancel(context.Background())
 	cancelWait()
-	_, err = running.AwaitTerminal(waitContext)
+	err = running.Wait(waitContext)
 	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("AwaitTerminal error = %v", err)
+		t.Fatalf("Wait error = %v", err)
 	}
 	if running.State() != subagent.ExecutionActive {
 		t.Fatalf("state after canceled wait = %q", running.State())

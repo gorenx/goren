@@ -3,13 +3,12 @@ package oneshot
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
@@ -22,12 +21,33 @@ type SeedBuilders interface {
 	Find(string) (subagent.SeedBuilder, bool)
 }
 
+// ChildEnvironmentOptions describes the child-local behavior required by one
+// OneShot execution without exposing its Plugin implementation.
+type ChildEnvironmentOptions struct {
+	Descriptor   subagent.OneShotDescriptor
+	Persona      *string
+	ToolFilter   *tools.ToolRestriction
+	OutputSchema json.RawMessage
+}
+
+// ChildEnvironment installs child-local behavior and exposes the optional
+// structured result captured by that exact environment.
+type ChildEnvironment interface {
+	agent.Provisioner
+	StructuredOutput() (json.RawMessage, bool)
+}
+
+// EnvironmentBuilder creates the child-local environment consumed by OneShot.
+type EnvironmentBuilder interface {
+	Build(ChildEnvironmentOptions) ChildEnvironment
+}
+
 // Dependencies contains the capabilities required by OneShot execution.
 type Dependencies struct {
 	Agents       agent.Registry
 	Constructor  agent.Constructor
-	Approval     approval.DelegationPolicy
 	SeedBuilders SeedBuilders
+	Environments EnvironmentBuilder
 	Publisher    sharedexecution.EventPublisher
 	Executions   *sharedexecution.Registry
 }
@@ -46,10 +66,11 @@ func (*Service) Mode() subagent.Mode {
 func New(dependencySet Dependencies) (*Service, error) {
 	if dependencySet.Agents == nil || dependencySet.Constructor == nil ||
 		dependencySet.SeedBuilders == nil ||
+		dependencySet.Environments == nil ||
 		dependencySet.Executions == nil {
 		return nil, errors.New(
 			"subagent: OneShot requires Agent Registry, Constructor, " +
-				"SeedBuilders, and Execution Registry",
+				"SeedBuilders, Environment Builder, and Execution Registry",
 		)
 	}
 	return &Service{
@@ -173,19 +194,21 @@ func (owner *Service) Start(
 	if lineageErr != nil {
 		return nil, lineageErr
 	}
-	descriptor := newDescriptorAppender(
-		subagent.OneShotDescriptor{
-			Provider: seedBuilderName,
-			Label:    command.Label(),
+	environment := owner.dependencies.Environments.Build(
+		ChildEnvironmentOptions{
+			Descriptor: subagent.OneShotDescriptor{
+				Provider: seedBuilderName,
+				Label:    command.Label(),
+			},
+			Persona:      requestSnapshot.Persona,
+			ToolFilter:   requestSnapshot.ToolFilter,
+			OutputSchema: requestSnapshot.OutputSchema,
 		},
 	)
-	childPlugins := []plugin.Plugin{
-		descriptor,
-	}
-	var structured *structuredCapture
-	if len(requestSnapshot.OutputSchema) != 0 {
-		structured = newStructuredCapture(requestSnapshot.OutputSchema)
-		childPlugins = append(childPlugins, structured)
+	if environment == nil {
+		return nil, errors.New(
+			"subagent: OneShot Environment Builder returned nil",
+		)
 	}
 	initiatedContext, contextErr := agent.WithInitiator(
 		requestContext,
@@ -197,17 +220,11 @@ func (owner *Service) Start(
 	handle, createErr := owner.dependencies.Constructor.Create(
 		initiatedContext,
 		agent.CreateOptions{
-			SessionID:    childID,
-			Metadata:     childLineage.Metadata(int64(len(seed))),
-			Seed:         seed,
-			AgentOptions: childLineage.AgentOptions(requestSnapshot.AgentOptions),
-			Provisioner: owner.provisioner(
-				scopePolicy{
-					persona:     requestSnapshot.Persona,
-					restriction: requestSnapshot.ToolFilter,
-					plugins:     childPlugins,
-				},
-			),
+			SessionID:     childID,
+			Metadata:      childLineage.Metadata(int64(len(seed))),
+			Seed:          seed,
+			AgentOptions:  childLineage.AgentOptions(requestSnapshot.AgentOptions),
+			Provisioner:   environment,
 			RuntimeParent: requestSnapshot.Parent,
 		},
 	)
@@ -238,7 +255,7 @@ func (owner *Service) Start(
 		seedBuilder: seedBuilderName,
 		runID:       runID,
 		boundary:    int64(len(seed)),
-		structured:  structured,
+		environment: environment,
 		publisher:   owner.dependencies.Publisher,
 	}
 	running, executionErr := sharedexecution.New(runID, childID, terminator)

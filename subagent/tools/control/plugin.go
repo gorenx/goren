@@ -1,4 +1,4 @@
-// Package controltool adapts Subagent control capabilities to model Tools.
+// Package control adapts Subagent control capabilities to model Tools.
 package control
 
 import (

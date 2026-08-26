@@ -65,7 +65,7 @@ func TestExtensionMountsChildPluginInExecutionScope(t *testing.T) {
 	}
 	declaration := child.Manifest()
 	wanted := map[string]bool{
-		plugin.ServiceOf[reporter]().Name():                    false,
+		plugin.ServiceOf[reportToolProvider]().Name():          false,
 		plugin.ServiceOf[tools.ToolCatalog]().Name():           false,
 		plugin.ServiceOf[systemprompt.PromptRegistry]().Name(): false,
 	}

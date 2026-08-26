@@ -8,12 +8,10 @@ import (
 	"sync"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/session/persistence"
 	"github.com/gorenx/goren/subagent"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
-	extensionregistry "github.com/gorenx/goren/subagent/internal/extension"
 )
 
 // SeedBuilders resolves the exact registered child seed strategy.
@@ -32,6 +30,13 @@ type FailureReporter interface {
 	ReportFinalFlushFailure(FinalFlushFailure)
 }
 
+// EnvironmentBuilder supplies Plugin-backed child-local behavior without
+// exposing Plugin types to the Continuable business implementation.
+type EnvironmentBuilder interface {
+	BuildForCreation(subagent.ContinuableDescriptor) agent.Provisioner
+	BuildForResume(subagent.ContinuableDescriptor) agent.Provisioner
+}
+
 // Dependencies contains the capabilities required by Continuable execution.
 type Dependencies struct {
 	Agents       agent.Registry
@@ -39,10 +44,9 @@ type Dependencies struct {
 	Descendants  agent.RuntimeDescendants
 	Sessions     session.LiveStore
 	Persistence  persistence.Persistence
-	Approval     approval.DelegationPolicy
 	SeedBuilders SeedBuilders
 	Publisher    sharedexecution.EventPublisher
-	Extensions   *extensionregistry.Registry
+	Environments EnvironmentBuilder
 	Failures     FailureReporter
 	Executions   *sharedexecution.Registry
 }
@@ -79,12 +83,13 @@ func New(dependencySet Dependencies) (*Service, error) {
 	if dependencySet.Agents == nil || dependencySet.Constructor == nil ||
 		dependencySet.Descendants == nil || dependencySet.Sessions == nil ||
 		dependencySet.Persistence == nil || dependencySet.SeedBuilders == nil ||
+		dependencySet.Environments == nil ||
 		dependencySet.Failures == nil ||
 		dependencySet.Executions == nil {
 		return nil, errors.New(
 			"subagent: Continuable requires Agent Registry, Constructor, " +
 				"runtime descendants, Session LiveStore, persistence, " +
-				"SeedBuilders, failure reporter, and " +
+				"SeedBuilders, Environment Builder, failure reporter, and " +
 				"Execution Registry",
 		)
 	}

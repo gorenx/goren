@@ -18,7 +18,7 @@ type executionTerminator struct {
 	seedBuilder string
 	runID       subagent.RunID
 	boundary    int64
-	structured  *structuredCapture
+	environment ChildEnvironment
 	publisher   sharedexecution.EventPublisher
 }
 
@@ -43,7 +43,7 @@ func (terminator *executionTerminator) Terminate(
 		terminator.handle.Subject.SessionValue(),
 		terminator.boundary,
 		cancelled,
-		terminator.structured,
+		terminator.environment,
 	)
 	terminalErr = errors.Join(terminalErr, resultErr)
 	if terminalErr != nil {
@@ -79,7 +79,7 @@ func readTerminal(
 	conversation session.Context,
 	boundary int64,
 	cancelled bool,
-	structured *structuredCapture,
+	environment ChildEnvironment,
 ) (subagent.Terminal, error) {
 	if conversation == nil {
 		return subagent.Terminal{}, errors.New(
@@ -119,8 +119,8 @@ func readTerminal(
 	if diagnostic != "" {
 		terminalValue.Diagnostic = stringPointer(diagnostic)
 	}
-	if structured != nil {
-		terminalValue.Structured = structured.Captured()
+	if structured, requested := environment.StructuredOutput(); requested {
+		terminalValue.Structured = structured
 		if len(terminalValue.Structured) == 0 &&
 			stopReason == subagent.StopCompleted {
 			terminalValue.StopReason = subagent.StopError

@@ -153,7 +153,7 @@ func (adapter *delegationTool) execute(
 		command, commandErr := subagent.NewContinuableStart(
 			childRequest,
 			subagent.ContinuableOptions{
-				SeedBuilder: adapter.settings.Provider,
+				SeedBuilder: adapter.settings.SeedBuilder,
 				Label:       request.Description,
 			},
 		)
@@ -175,7 +175,7 @@ func (adapter *delegationTool) execute(
 	command, commandErr := subagent.NewOneShotStart(
 		childRequest,
 		subagent.OneShotOptions{
-			SeedBuilder: adapter.settings.Provider,
+			SeedBuilder: adapter.settings.SeedBuilder,
 			Label:       stringPointer(request.Description),
 		},
 	)
@@ -186,15 +186,21 @@ func (adapter *delegationTool) execute(
 	if startErr != nil {
 		return nil, startErr
 	}
-	terminal, terminalErr := execution.AwaitTerminal(runContext.Context)
-	if terminalErr != nil {
+	waitErr := execution.Wait(runContext.Context)
+	if waitErr != nil {
 		if runContext.Context.Err() != nil {
 			return nil, errors.Join(
-				terminalErr,
+				waitErr,
 				execution.Dispose(context.WithoutCancel(runContext.Context)),
 			)
 		}
-		return nil, terminalErr
+		return nil, waitErr
+	}
+	terminal, ready := execution.Result()
+	if !ready {
+		return nil, errors.New(
+			"subagent execution stopped without a terminal result",
+		)
 	}
 	if stopErr := failedTerminal(terminal); stopErr != nil {
 		return nil, stopErr

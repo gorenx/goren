@@ -5,7 +5,6 @@ import (
 	"errors"
 
 	"github.com/gorenx/goren/plugin"
-	"github.com/gorenx/goren/subagent"
 	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/tools"
 )
@@ -14,9 +13,8 @@ const reportPrompt = "Deliver your result with the report tool before you finish
 
 type childPlugin struct {
 	plugin.Base
-	reports      subagent.ParentReporter
-	delivery     subagent.ReportDelivery
 	installation *installation
+	tool         *reportTool
 	toolHandle   *tools.ToolHandle
 	promptHandle *systemprompt.PromptHandle
 }
@@ -25,7 +23,7 @@ func (*childPlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: PluginName + "/child",
 		Requires: []plugin.ServiceType{
-			plugin.ServiceOf[reporter](),
+			plugin.ServiceOf[reportToolProvider](),
 			plugin.ServiceOf[tools.ToolCatalog](),
 			plugin.ServiceOf[systemprompt.PromptRegistry](),
 		},
@@ -33,16 +31,15 @@ func (*childPlugin) Manifest() plugin.Manifest {
 }
 
 func (child *childPlugin) Apply(requestContext context.Context) error {
-	reportOwner, requireErr := plugin.Require[reporter](child)
+	reportOwner, requireErr := plugin.Require[reportToolProvider](child)
 	if requireErr != nil {
 		return requireErr
 	}
-	reports, delivery := reportOwner.reportRuntime()
-	if reports == nil {
+	reporting := reportOwner.Tool()
+	if reporting == nil {
 		return errors.New("subagent report: delivery Service is unavailable")
 	}
-	child.reports = reports
-	child.delivery = delivery
+	child.tool = reporting
 	toolCatalog, requireErr := plugin.Require[tools.ToolCatalog](child)
 	if requireErr != nil {
 		return requireErr
@@ -65,7 +62,7 @@ func (child *childPlugin) Apply(requestContext context.Context) error {
 	child.promptHandle = promptHandle
 	toolHandle, addErr := toolCatalog.AddTool(
 		requestContext,
-		child.definition(),
+		child.tool.definition(),
 	)
 	if addErr != nil {
 		return errors.Join(
@@ -82,7 +79,7 @@ func (child *childPlugin) Dispose(closeContext context.Context) error {
 		closeContext = context.Background()
 	}
 	releaseErr := child.release(context.WithoutCancel(closeContext))
-	child.reports = nil
+	child.tool = nil
 	if child.installation != nil {
 		child.installation.release(releaseErr)
 	}

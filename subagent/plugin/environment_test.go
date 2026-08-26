@@ -1,4 +1,4 @@
-package continuable
+package plugin
 
 import (
 	"context"
@@ -8,10 +8,10 @@ import (
 	"github.com/gorenx/goren/agent"
 )
 
-func TestScopeProvisionerTransfersOnlyExtensionProvisioning(t *testing.T) {
+func TestEnvironmentTransfersOnlyExtensionProvisioning(t *testing.T) {
 	t.Parallel()
 	order := make([]string, 0)
-	configured := &scopeProvisioner{
+	configured := &continuableEnvironment{
 		policies: provisionerRecord{
 			name:  "policy",
 			order: &order,
@@ -24,7 +24,11 @@ func TestScopeProvisionerTransfersOnlyExtensionProvisioning(t *testing.T) {
 	}
 	acquired, provisionErr := configured.Provision(context.Background(), nil)
 	if provisionErr != nil || acquired == nil {
-		t.Fatalf("Provision = (%v, %v), want Extension Provisioning", acquired, provisionErr)
+		t.Fatalf(
+			"Provision = (%v, %v), want Extension Provisioning",
+			acquired,
+			provisionErr,
+		)
 	}
 	if commitErr := acquired.Commit(); commitErr != nil {
 		t.Fatal(commitErr)

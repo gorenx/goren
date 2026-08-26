@@ -32,7 +32,27 @@ type reportArguments struct {
 	Output string `json:"output"`
 }
 
-func (child *childPlugin) definition() tools.ToolDefinition {
+// reportTool translates one model Tool call into ParentReporter delivery. It
+// has no Plugin registration lifecycle.
+type reportTool struct {
+	reports  subagent.ParentReporter
+	delivery subagent.ReportDelivery
+}
+
+func newReportTool(
+	reports subagent.ParentReporter,
+	delivery subagent.ReportDelivery,
+) (*reportTool, error) {
+	if reports == nil {
+		return nil, errors.New("subagent report: ParentReporter is required")
+	}
+	return &reportTool{
+		reports:  reports,
+		delivery: delivery,
+	}, nil
+}
+
+func (adapter *reportTool) definition() tools.ToolDefinition {
 	return tools.ToolDefinition{
 		Name:        "report",
 		Description: "Report selected self-contained content to the agent that started you. Reporting does not finish your work and only your direct parent receives it.",
@@ -56,11 +76,11 @@ func (child *childPlugin) definition() tools.ToolDefinition {
 				}, nil
 			}),
 		},
-		Executor: tools.ExecutorFunc(child.execute),
+		Executor: tools.ExecutorFunc(adapter.execute),
 	}
 }
 
-func (child *childPlugin) execute(
+func (adapter *reportTool) execute(
 	rawArguments json.RawMessage,
 	runContext tools.ToolRunContext,
 ) (json.RawMessage, error) {
@@ -72,14 +92,14 @@ func (child *childPlugin) execute(
 	if decodeErr := json.Unmarshal(rawArguments, &request); decodeErr != nil {
 		return nil, decodeErr
 	}
-	messageID, reportErr := child.reports.Report(
+	messageID, reportErr := adapter.reports.Report(
 		runContext.Context,
 		childAgent,
 		[]llm.ContentBlock{
 			llm.NewTextBlock(request.Output),
 		},
 		subagent.ReportOptions{
-			Delivery: child.delivery,
+			Delivery: adapter.delivery,
 		},
 	)
 	if reportErr != nil {

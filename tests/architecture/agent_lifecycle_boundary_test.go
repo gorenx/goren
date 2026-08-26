@@ -338,6 +338,59 @@ func TestAgentLifecycleBusinessFilesDoNotCallPluginRuntime(t *testing.T) {
 	)
 }
 
+func TestSubagentImplementationsDoNotDependOnPluginAdapters(t *testing.T) {
+	t.Parallel()
+	repositoryPath := repositoryRoot(t)
+	fileSet := token.NewFileSet()
+	sourcesByPackage := parsePackages(t, fileSet, repositoryPath)
+	packageKeys := []string{
+		filepath.Join(
+			repositoryPath,
+			"subagent",
+			"internal",
+			"oneshot",
+		) + ":oneshot",
+		filepath.Join(
+			repositoryPath,
+			"subagent",
+			"internal",
+			"continuable",
+		) + ":continuable",
+	}
+	forbiddenImports := map[string]struct{}{
+		"github.com/gorenx/goren/agent/scopedplugin":            {},
+		"github.com/gorenx/goren/approval":                      {},
+		"github.com/gorenx/goren/plugin":                        {},
+		"github.com/gorenx/goren/subagent/internal/childpolicy": {},
+		"github.com/gorenx/goren/subagent/internal/extension":   {},
+	}
+	findings := make([]string, 0)
+	for _, packageKey := range packageKeys {
+		for _, source := range productionSources(sourcesByPackage[packageKey]) {
+			for _, imported := range source.tree.Imports {
+				importPath, err := strconv.Unquote(imported.Path.Value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, forbidden := forbiddenImports[importPath]; forbidden {
+					findings = append(
+						findings,
+						fileSet.Position(imported.Pos()).String()+": "+importPath,
+					)
+				}
+			}
+		}
+	}
+	if len(findings) == 0 {
+		return
+	}
+	sort.Strings(findings)
+	t.Fatalf(
+		"Subagent mode implementations must consume injected environment ports:\n%s",
+		strings.Join(findings, "\n"),
+	)
+}
+
 func TestSessionCoreDoesNotActivateAgents(t *testing.T) {
 	t.Parallel()
 	repositoryPath := repositoryRoot(t)
