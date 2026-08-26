@@ -15,8 +15,6 @@ import (
 // current live Session generation.
 const EndSeedEventName = "session/end-seed"
 
-const endSeedEventType = EndSeedEventName
-
 type eventTypeRegistry struct {
 	mutex sync.RWMutex
 	names map[string]struct{}
@@ -48,7 +46,7 @@ type SurfaceEventKey[D any] struct {
 // reserved because only Session's surface contract may define them.
 func DefineEvent[D any](canonicalName string) EventKey[D] {
 	validateEventName(canonicalName)
-	if _, reserved := surfaceEventTypes[canonicalName]; reserved || canonicalName == endSeedEventType {
+	if _, reserved := surfaceEventTypes[canonicalName]; reserved || canonicalName == EndSeedEventName {
 		panic(fmt.Sprintf("session: event name %q is owned by the core session contract", canonicalName))
 	}
 	registerKnownEventType(canonicalName)

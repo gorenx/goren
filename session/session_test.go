@@ -173,7 +173,7 @@ func TestSeedIsContiguousAndEndsWithLifecycleMarker(t *testing.T) {
 	if conversation.FirstLiveSeq() != 1 || conversation.Seq() != 2 {
 		t.Fatalf("first live = %d, seq = %d", conversation.FirstLiveSeq(), conversation.Seq())
 	}
-	if entries[1].Type != endSeedEventType || string(entries[1].Data) != "{}" {
+	if entries[1].Type != EndSeedEventName || string(entries[1].Data) != "{}" {
 		t.Fatalf("end-seed entry = %#v", entries[1])
 	}
 	if string(entries[0].Data) != `{"value":1}` {
@@ -183,6 +183,40 @@ func TestSeedIsContiguousAndEndsWithLifecycleMarker(t *testing.T) {
 	badSeed := []Event{{Type: "fixture/seed", Seq: 1, Time: 10, Data: json.RawMessage(`{}`)}}
 	if _, err := New("bad-seed", CreateOptions{Seed: badSeed}); err == nil || !strings.Contains(err.Error(), "not contiguous") {
 		t.Fatalf("non-contiguous seed error = %v", err)
+	}
+}
+
+func TestExplicitEmptySeedMarksLifecycleBoundary(t *testing.T) {
+	t.Parallel()
+	fresh, err := New("fresh-empty", CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Seq() != 0 || len(fresh.Events()) != 0 {
+		t.Fatalf("fresh Session events = %#v", fresh.Events())
+	}
+
+	resumed, err := New("resumed-empty", CreateOptions{
+		Seed: []Event{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumedEvents := resumed.Events()
+	if resumed.FirstLiveSeq() != 0 || resumed.Seq() != 1 ||
+		len(resumedEvents) != 1 || resumedEvents[0].Type != EndSeedEventName {
+		t.Fatalf("resumed Session events = %#v", resumedEvents)
+	}
+
+	reopened, err := New("reopened-empty", CreateOptions{
+		Seed: resumedEvents,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened.FirstLiveSeq() != 1 || reopened.Seq() != 1 ||
+		!reflect.DeepEqual(reopened.Events(), resumedEvents) {
+		t.Fatalf("reopened Session events = %#v", reopened.Events())
 	}
 }
 
