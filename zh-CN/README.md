@@ -25,6 +25,9 @@
 - [16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)：根 wire contract 与 `apiproxy/session` 实现边界、十个 `session.*` method、主/搜索 Gateway、默认模型选择、Mux baseline/live 与 Host edge。
 - [17 Approval、UserQuestions 与 Interaction Gateway](./17-approval-user-questions-and-interaction-gateway.md)：Approval policy/audit、UserQuestions Provider、`ask_user_question` Consumer，以及 requested/respond/resolved/replay 闭环。
 - [18 Session Projection 与 Session Title 模块设计](./18-session-projection-and-title.md)：通用 projection unit/registry/checkpoint、`session/title`、fallback/Provider 调度、rename 与客户端 higher-seq-wins。
+- [Session Projection Cache 最终设计](./SessionProjectionCache最终设计方案.md)：可重建 checkpoint 的职责、数据结构、cold restore、写入与关闭语义，以及 API/Subagent 消费边界。
+- [Session Projection Cache 实施方案](./SessionProjectionCache实施方案.md)：破坏性实施顺序、模块 Gate 与验收边界。
+- [Session Projection Cache 实施进度矩阵](./SessionProjectionCache实施进度矩阵.md)：专项实现状态、代码证据、验证结果与明确未覆盖项。
 - [19 Session Persistence 与 SQLite 事实存储设计](./19-session-persistence-and-sqlite.md)：durable facts、LiveStore/Persistence/Backend 边界、write-behind、cold recovery/resume、SQLite/sqlc schema 与事务。
 - [20 Workspace Registry、SQLite 与 API Gateway](./20-workspace-registry-and-api.md)：Workspace identity/order/accounting、历史 bootstrap、SQLite/sqlc Backend、七个 API、Host frame 与 `session.create({workspaceId})`。
 - [21 Web Agent 主会话闭环与能力边界](./21-web-agent-main-flow.md)：极简内嵌 Web UI、Question 回答与固定 TypeScript Client 到 Go Agent Loop 的纵向能力矩阵、排除面、依赖方向与分层验收。
@@ -37,6 +40,9 @@
 
 - [`plugin/README.zh-CN.md`](../plugin/README.zh-CN.md)：Plugin Runtime 职责边界、依赖结算、Scope 路由、统一 Fiber Effect 生命周期与按需 API 示例。
 - [`session/README.zh-CN.md`](../session/README.zh-CN.md)：Session append-only log、唯一写协调器、LiveStore、publication 与生命周期。
+- [`session/projectioncache/README.zh-CN.md`](../session/projectioncache/README.zh-CN.md)：CheckpointCache 业务职责、cached/cold read、写入调度与关闭排空。
+- [`session/projectioncache/plugin/README.zh-CN.md`](../session/projectioncache/plugin/README.zh-CN.md)：Projection Cache 与 Plugin Runtime 的生命周期适配边界。
+- [`session/projectioncache/sqlite/README.zh-CN.md`](../session/projectioncache/sqlite/README.zh-CN.md)：独立 checkpoint SQLite/sqlc storage adapter。
 - [`agentloop/README.zh-CN.md`](../agentloop/README.zh-CN.md)：Agent driver、Turn/Step、请求/Tool 调度、durability checkpoint 与 idle convergence。
 - [`apiproxy/README.zh-CN.md`](../apiproxy/README.zh-CN.md)：typed method adapter、Session/Interaction Gateway、live frame、correlation 与背压。
 - [`apiproxy/session/README.zh-CN.md`](../apiproxy/session/README.zh-CN.md)：Session API façade、读取/生命周期/模型/对话/Search 用例与 Agent activation 状态。

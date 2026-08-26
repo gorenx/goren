@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有浏览器可达的 `session.*` API adapter、`agentDefaultModel`、Session/Agent 到 Mux/Host frame 的投影，以及这些边界的生命周期和失败语义。通用 method Catalog、RPC outcome 与 pending response 由[07 API Proxy 模块设计与实现](./07-api-proxy-module.md)拥有；Approval/Question 交互及其 pending replay 由[17](./17-approval-user-questions-and-interaction-gateway.md)拥有；Session Projection 与 Title 事实/调度由[18](./18-session-projection-and-title.md)拥有；Session Query 与可重建索引由[23](./23-session-query-and-search.md)拥有；Session 事实、Agent capability 和 Turn/Step 驱动分别由[10](../session/docs/design.zh-CN.md)、[14](./14-agent-registry-inbox-and-events.md)和[15](./15-agent-loop-and-request-driver.md)拥有；当前实施状态与验证证据只见[08 实施进度](./08-implementation-progress.md)。
+本文拥有浏览器可达的 `session.*` API adapter、`agentDefaultModel`、Session/Agent 到 Mux/Host frame 的投影，以及这些边界的生命周期和失败语义。通用 method Catalog、RPC outcome 与 pending response 由[07 API Proxy 模块设计与实现](./07-api-proxy-module.md)拥有；Approval/Question 交互及其 pending replay 由[17](./17-approval-user-questions-and-interaction-gateway.md)拥有；Session Projection 与 Title 事实/调度由[18](./18-session-projection-and-title.md)拥有，可重建 checkpoint 与 cold snapshot 由[Session Projection Cache 最终设计](./SessionProjectionCache最终设计方案.md)拥有；Session Query 与可重建索引由[23](./23-session-query-and-search.md)拥有；Session 事实、Agent capability 和 Turn/Step 驱动分别由[10](../session/docs/design.zh-CN.md)、[14](./14-agent-registry-inbox-and-events.md)和[15](./15-agent-loop-and-request-driver.md)拥有；当前实施状态与验证证据只见[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 固定源与职责映射
 
@@ -49,7 +49,7 @@ Session API Gateway 不拥有：
 | 对象 | 拥有的变化原因 | 直接下游 |
 | --- | --- | --- |
 | `apiproxy/session.Gateway` | `SessionAPI` façade compatibility | 四个 unary capability objects |
-| `sessionReader` | list、history、visibility 的读取与 wire projection | Agent Registry、Session LiveStore、Persistence、Projection Registry |
+| `sessionReader` | list、history、visibility 的读取与 wire projection | Agent Registry、Session LiveStore、Persistence、Projection Registry、Projection Cache |
 | `sessionLifecycle` | create、rename 与 Workspace accounting | `AgentSessions`、Title Service、Workspace Registry |
 | `sessionModels` | model catalog、route validation 与 selection | `AgentSessions`、LLM Runtime、Default Model |
 | `sessionConversation` | prompt、queue mutation 与 cancel | `AgentSessions`、LLM Runtime、Agent capability |
@@ -78,10 +78,10 @@ flowchart LR
 
 | Method | 下游 capability | 核心语义 |
 | --- | --- | --- |
-| `session.list` | Session LiveStore、Agent Registry | 只列 attached 且有 `cwd` 的 Session；`blank` 由是否出现 `turn/start` 决定，`running` 读取 live Agent，`updatedAt` 取最近 direct user message，按新到旧返回 |
+| `session.list` | Session LiveStore、Agent Registry、Projection Cache | 列出 live 与 cold 且有 `cwd` 的 Session；live summary 读 Registry，cold summary 读 API-owned metadata checkpoint，cache miss 时保守地不隐藏 Session；`running` 只读取 live Agent，按新到旧返回 |
 | `session.create` | Directory Provisioner、Agent Registry | 生成或采用指定 ID，确定 `cwd` 并确保目录存在；相同 ID/`cwd` 幂等，subagent、preset 或 `cwd` 不一致时拒绝 |
 | `session.rename` | Agent Registry、Session Title | 只接受 ordinary live Session；把 raw title 交给 Title Service 规范化和 pin，返回 accepted `{title, seq}`；控制字符归一为空时返回 `title-invalid` |
-| `session.history` | Session LiveStore、Session Projection | 不激活或 resume Agent；按 append-origin message 边界向前分页，返回 raw event projection 与 `hasMore`；tail page 携带与同一 event cut 对齐的 projection block |
+| `session.history` | Session LiveStore、Session Projection、Projection Cache | 不激活或 resume Agent；按 append-origin message 边界从日志尾向前分页；cold tail 先取 projection cut 再读取不越过该 cut 的 events，older page 不读 cache；tail page 携带同一 cut 的 projection block |
 | `session.search` | Session Query、Session Visibility | 搜索固定的 current user/assistant message surface；消费 Provider 全局排序页后执行与 `session.list` 相同的可见性校验，返回至多 20 个 Session ID 与 240 Unicode code point snippet |
 | `session.models` | Agent、LLM Runtime | 返回 Session 当前选择和逐 Provider model group；一个 Provider 目录失败不阻断其他 Provider |
 | `session.selectModel` | LLM Runtime、Model Selection、Default Model | 精确解析 provider/model/effort；Session 已含 image 时检查输入模态；更新下一步选择，保存默认选择失败不回滚本次选择 |
@@ -140,7 +140,7 @@ Session event committed
   -> session/projection(sessionId, key, value, causing seq)
 ```
 
-`session.list.items[].projections` 是当前 attached Session 的 snapshot；`session.history.projections` 只出现在没有 `beforeSeq` 的 tail page。History 先取得 detached events，再从这同一份 events 恢复 projection，因而 `asOfSeq` 与响应日志尾一致。older page 不携带 baseline。客户端按 key 保存 `{value, seq}`，只有更高 seq 可覆盖现值；`session.rename` 成功结果与随后 frame 使用同一 title event seq。
+`session.list.items[].projections` 对 live Session 来自 Registry snapshot，对 cold Session 来自 Projection Cache 的当前兼容 rows。`session.history.projections` 只出现在没有 `beforeSeq` 的 tail page：History 先取得 Snapshot cut `E`，再用 exclusive `E+1` cursor 从日志尾向前读取，最终要求页面末尾 event seq 等于 `E`；并发追加不会越过该 cut。older page 不调用 Cache，也不携带 baseline。客户端按 key 保存 `{value, seq}`，只有更高 seq 可覆盖现值；`session.rename` 成功结果与随后 frame 使用同一 title event seq。
 
 纯 frame 的 `rpcId` 在 API Proxy 出口生成。ID 生成失败会通过 observer/reporting 链返回；event frame 未成功生成时不能推进 high-water mark，否则该 subscriber 会永久漏失 committed event。
 
@@ -152,7 +152,7 @@ Host WebSocket 只发送进程级变化：
 - `host/session-status`；
 - `host/session-error`。
 
-Host stream 不重复发送全量 baseline。重连后的 authoritative baseline 由 `session.list` 获取，单 Session 历史由 `session.history` 获取；Mux 通过 `session/subscribed(lastSeq)`、pending interaction replay 和 queue snapshot 重建当前进程内的订阅位置。Gateway 的 list 合并 live LiveStore 与 cold Persistence，history 对 cold Session 使用 validated inspection，create 指定已有 cold identity 时通过 Agent Factory resume。这样 Host edge 不伪装成持久化日志，也不会与 list baseline 形成双重 owner；live replay table 仍不冒充进程重启后的 callback/socket 恢复。
+Host stream 不重复发送全量 baseline。重连后的 authoritative baseline 由 `session.list` 获取，单 Session 历史由 `session.history` 获取；Mux 通过 `session/subscribed(lastSeq)`、pending interaction replay 和 queue snapshot 重建当前进程内的订阅位置。Gateway 的 list 合并 live LiveStore 与 cold Persistence Header，并用 Projection Cache 避免逐 Session 全日志读取；history 对 cold Session 使用 checkpoint + durable suffix 证明 projection cut，再反向读取最近 events；create 指定已有 cold identity 时仍通过 Agent Factory resume。这样 Host edge 不伪装成持久化日志，也不会与 list baseline 形成双重 owner；live replay table 仍不冒充进程重启后的 callback/socket 恢复。
 
 ## 7. 并发、背压、失败与生命周期
 

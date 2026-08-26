@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有通用 Session Projection Registry、`session/title` 事实、标题规范化与自动调度、`title` projection，以及它们进入 `session.*` wire contract 的边界。Session append 与生命周期由[10](../session/docs/design.zh-CN.md)拥有，API 与 frame 映射由[16](./16-session-api-gateway-and-live-frames.md)拥有，实施证据只见[08](./08-implementation-progress.md)。
+本文拥有通用 Session Projection Registry、`session/title` 事实、标题规范化与自动调度、`title` projection，以及它们进入 `session.*` wire contract 的边界。可重建 checkpoint 的内存索引、持久化、写入调度和 cold restore 由[Session Projection Cache 最终设计](./SessionProjectionCache最终设计方案.md)拥有。Session append 与生命周期由[10](../session/docs/design.zh-CN.md)拥有，API 与 frame 映射由[16](./16-session-api-gateway-and-live-frames.md)拥有，实施证据只见[08](./08-implementation-progress.md)。
 
 ## 1. 固定源与职责映射
 
@@ -73,7 +73,7 @@ flowchart LR
 
 `Checkpoint` 只缓存 `{ver, seq, val}`。它可以丢弃、失效或从日志重建，不能成为业务事实。`RestoreFloor` 找出最低可用读取点；`Restore` 只接受连续 suffix，版本不兼容且缺少从 `seq=0` 的事实时拒绝，不能用空 state 伪造恢复成功。
 
-当前内存 Registry 与未来 SQLite/sqlc projection adapter 是不同职责：Registry 决定 fold；adapter 只保存可重建 checkpoint。默认 Session Persistence 插件内部装配的 SQLite adapter 只保存 Header/Event facts，见[19](./19-session-persistence-and-sqlite.md)，不能被描述为 projection store 或独立 SQLite 插件。
+内存 Registry、Projection Cache 与 SQLite/sqlc checkpoint adapter 是三个不同职责：Registry 决定 fold，Cache 决定恢复与写入时机，adapter 只保存可重建 checkpoint。默认 Session Persistence 插件内部装配的 SQLite adapter 只保存 Header/Event facts，见[19](./19-session-persistence-and-sqlite.md)，不能被描述为 projection store；Projection Cache 使用独立数据库和生命周期。
 
 ## 5. `session/title` 事实
 
@@ -129,7 +129,7 @@ sequenceDiagram
 
 `session.rename` 只对 ordinary live Agent Session 生效。成功结果返回规范化 title 与产生事实的 event seq；客户端 `Session.rename()` 可立即用该结果更新本地 `ProjectionValueStore`，随后到达的同 seq frame 是幂等 replay。
 
-`session.list` 的 attached row 可携带当前 projection snapshot；`session.history` 只在 tail page 携带 projection block，older page 不携带。History 使用同一份 event cut detached fold，保证 `events` 与 `projections.asOfSeq` 描述同一日志位置。
+`session.list` 的 live row 使用当前 Registry snapshot，cold row 使用 Projection Cache 中 API-owned `sessionListMetadata` Unit，不逐 Session 全量读取日志。`session.history` 只在 tail page 携带 projection block，older page 不携带；cold tail 先取得 `ColdSnapshot` cut，再按该 cut 从日志尾部向前读取完整 message groups，保证 `events` 与 `projections.asOfSeq` 描述同一日志位置。
 
 ## 8. 失败、取消与生命周期
 
@@ -145,8 +145,9 @@ sequenceDiagram
 
 ```text
 sessiontitle -> sessionprojection -> session
+sessionprojectioncache -> sessionprojection + session persistence
 sessiontitle -> llm event seam
-apiproxy -> sessiontitle + sessionprojection
+apiproxy -> sessiontitle + sessionprojection + sessionprojectioncache
 internal/assembly -> connect providers and consumers
 ```
 

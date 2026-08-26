@@ -70,6 +70,8 @@ Plugin Runtime 只解析 Session Persistence capability：Factory 解码 `Sessio
 
 `Load` 与 `Inspect` 不带 limit，因为它们验证的是完整 Session log 不变量。`session.history` 的 `beforeSeq/maxMessages` 属于 API consumer，不能下推后改变 recovery 或 surface 语义。`ReadFrom` 使用 `Backend.LoadStoredFrom` 直接 seek 物理后缀，但仍验证 Header、format、起始 seq 连续性和 required event type；它不把部分日志伪装成可独立 replay 的完整 Session。
 
+`Persistence` 的方法参数使用 `requestContext`、`identifier`、`metadata`、`fromSeq`、`beforeSeq` 等业务名表达调用契约。`Persistence.ReadRaw` 返回 `(RawArtifact, error)`：Backend 不支持 raw artifact 时返回 capability error，Session 不存在时返回 `NotFoundError`。storage-only `Backend` 的可选读取统一返回指针：非空表示 record 存在，`nil, nil` 表示不存在，`nil, err` 表示 I/O 或映射失败；不再把 `(value, found, error)` 三元组泄漏给每个调用点。`LoadStoredEventsBefore` 的一次分页读取使用 `EventPage`；原子追加和修复分别使用 `EventBatch` 与 `LogRepair`。Context 与 Session ID 仍作为调用边界和目标身份显式传递。
+
 ## 5. 正常写入与 durability
 
 ```mermaid
@@ -148,7 +150,7 @@ Backend 只返回 marker 或 corruption 技术事实。`SessionLogStore` 决定�
 
 ## 7. SQLite/sqlc adapter
 
-SQLite 是当前默认 Session fact Backend，不是插件或 projection cache。JSONL 若后续因 raw artifact、可移植导出或运维需求进入，是可替换 Backend；二者不双写，也不形成“JSONL 真相 + SQLite 影子”的强制架构。独立的 `session/query/sqlite` adapter 仍是可从 facts 重建的查询索引。
+SQLite 是当前默认 Session fact Backend，不是插件或 projection cache。Projection Cache 使用独立的 `session-projection-cache.sqlite` 和 storage-only adapter，完整边界见[Session Projection Cache 最终设计](./SessionProjectionCache最终设计方案.md)。JSONL 若后续因 raw artifact、可移植导出或运维需求进入，是可替换 Backend；二者不双写，也不形成“JSONL 真相 + SQLite 影子”的强制架构。独立的 `session/query/sqlite` adapter 同样只是可从 facts 重建的查询索引。
 
 ### 7.1 目录所有权
 
@@ -186,8 +188,8 @@ sqlc 只生成查询调用；事务边界由 `Backend` method contract 与 `Sess
 
 ## 8. API 与 Agent 集成
 
-- `session.list` 合并 live LiveStore 与 cold Persistence Header，并按 Session ID 去重；
-- `session.history` 对 live Session 读 detached events，对 cold Session 用 `Inspect`，之后才执行 message pagination 与 projection restore；
+- `session.list` 合并 live LiveStore 与 cold Persistence Header，并按 Session ID 去重；cold summary 优先读取 Projection Cache，不为每个 Header 执行完整 `Inspect`；
+- `session.history` 对 live Session 读 detached events；cold tail 先由 Projection Cache 从 checkpoint + suffix 得到日志 cut，再用 `ReadEventsBefore` 从该 cut 向前读取最近完整 message groups；older page 只做反向分页，不读 cache；
 - `session.create` 指定已有 cold identity 时走 `Prepare` 和 Agent Factory resume，不新建同 ID；
 - 其他需要 Agent 的 `session.*` 调用可先恢复 cold Agent，再执行原 use case；
 - Agent Loop 只接收已经 prepared 的 Session，恢复最后 Turn、Inbox、surface/header fold，并在下一次模型请求记录 `request/header(reason=resume)`；

@@ -1,7 +1,7 @@
 # 08 实施进度
 
 状态：In Progress
-更新时间：2026-08-24
+更新时间：2026-08-26
 
 本文是 DeepSeek Harness Go 复刻全仓阶段汇总、验证证据、阻塞项和下一步的总体记录。全局范围与 Gate 由[05 复制路线图与验收](./05-porting-roadmap-and-acceptance.md)拥有，当前 Web Agent 交付闭包由[21 Web Agent 主会话闭环与能力边界](./21-web-agent-main-flow.md)拥有；模块职责与设计分别由[06 Connection Host 模块设计与实现](./06-connection-host-module.md)、[07 API Proxy 模块设计与实现](./07-api-proxy-module.md)、[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)、[10 Session Core、唯一写协调与生命周期](../session/docs/design.zh-CN.md)、[11 System Prompt Registry 与 Assembly 模块设计](./11-system-prompt-registry-and-assembly.md)、[12 Tools Registry 与执行流水线模块设计](./12-tools-registry-and-execution-pipeline.md)、[13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)、[14 Agent Registry、Inbox 与实时事件模块设计](./14-agent-registry-inbox-and-events.md)、[15 Agent Loop 与请求驱动模块设计](./15-agent-loop-and-request-driver.md)、[16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)、[17 Approval、UserQuestions 与 Interaction Gateway](./17-approval-user-questions-and-interaction-gateway.md)、[18 Session Projection 与 Session Title 模块设计](./18-session-projection-and-title.md)、[19 Session Persistence 与 SQLite 事实存储设计](./19-session-persistence-and-sqlite.md)、[20 Workspace Registry、SQLite 与 API Gateway](./20-workspace-registry-and-api.md)、[22 Credentials 与 API Key 管理](./22-credentials-and-api-key-management.md)、[23 Session Query 与 Search](./23-session-query-and-search.md)和[24 Context Compaction](./24-context-compaction.md)拥有；Compaction 的子项进度和 Gate 单独由[25 Context Compaction 实现进度](./25-context-compaction-implementation-progress.md)拥有，本文只保留其总体状态。代码近邻说明由各领域模块 `README.zh-CN.md` 持有。本文不重新定义协议或架构。
 
@@ -202,6 +202,7 @@ interaction owner registers stable rpcId + decoder
 | S5-D07 | 优化 | source-style bounded prepared cache 与 revision reuse | Completed | Go Verified：`preparedSessions` 使用固定容量 generic LRU；ready source 命中验证 durable revision，reservation 移出 LRU 并保持 exact unpublished Session identity，外部 revision 改变触发 reload |
 | S5-D08 | 优化 | `ReadFrom` 使用 Backend seek 而非完整 prefix scan | Completed | Go Verified：`SessionLogStore.ReadFrom` 直接调用 `Backend.LoadStoredFrom`；SQLite 在一个只读事务中读取 Header/revision/suffix 并拒绝 torn marker，计数 Backend 证明不触发 full load |
 | S5-D09 | 交付 | request/turn 完成边界的显式 durability checkpoint | Completed | Go Verified：normal/cancel turn-end 均通过 `LiveStore.Flush` 等待 committed-prefix barrier，idle 不越过 durability checkpoint |
+| S5-D10 | 优化 | Session Projection Cache、独立 SQLite checkpoint store 与 cold read 接入 | Completed | Race Verified：`CheckpointCache`、Factory/Plugin/Assembly、API list/history 与 Subagent ChildDirectory 已闭环；cache 可丢弃且不替代 Session facts，专项证据见[进度矩阵](./SessionProjectionCache实施进度矩阵.md) |
 | S5-G01 | Gate | Header/首批 Event/seq/revision transaction 原子 | Completed | Go Verified：`TestAdapterMaterializesHeaderAndBatchAtomically` |
 | S5-G02 | Gate | torn tail、未知事件和开放状态 repair 不变量 | Completed | Go Verified：`TestAdapterMarksAndRepairsOnlyATornTail`、`SessionLogStore`/recovery tests |
 | S5-G03 | Gate | 背景写失败与取消不丢 batch、不伪成功 | Completed | Go Verified：`TestLiveWriterRetainsFailedBackgroundBatchForExplicitFlush`、`TestLiveWriterFlushCanCancelWhileBackgroundWriteRemainsOwned` |
@@ -347,6 +348,8 @@ interaction owner registers stable rpcId + decoder
 | Mux baseline high-water 与 frame ID failure 不丢 committed event | `TestMuxBaselineHighwaterSuppressesLateCommittedCallback`、`TestSessionFrameHubSurfacesMintFailureWithoutAdvancingHighwater` |
 | live default 到显式选择的优先级与 prompt/request snapshot | `TestModelSelectionReadsLiveFallbackUntilExplicitlySelected`、`TestModelSelectionSnapshotsPromptAndRequestTogether` |
 | Session Projection late fold、whole-value change、registration refcount 与 versioned checkpoint/restore | `session/projection/registry_test.go` |
+| Projection Cache identity/version、suffix/full restore、single-writer、关闭排空与 SQLite replacement | `session/projectioncache`、`session/projectioncache/sqlite` |
+| cold `session.list` cache summary、history cut-first reverse page 与 Subagent cached identity seed gate | `apiproxy/session/list_projection_test.go`、`history_cache_test.go`、`subagent/internal/childdirectory/cache_test.go` |
 | Session Title fallback、规范化、rename、projection、Provider supersession、refresh、JSON array wire 与 drain | `session/title/service_test.go` |
 | Session Title First/All-Prompts LLM 策略、请求事实、route、预算、timeout、finish 与默认组合 | `session/title/llm_provider_test.go`、`TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter` |
 | `SessionLogStore` 的 cold repair、exact preparation reservation 与 live write handoff | `session/persistence/session_log_store_test.go`、`recovery_test.go` |
@@ -392,11 +395,15 @@ interaction owner registers stable rpcId + decoder
 
 - `sqlc generate -f session/persistence/sqlite/sqlc.yaml`
 - `sqlc generate -f session/query/sqlite/sqlc.yaml`
+- `sqlc generate -f session/projectioncache/sqlite/sqlc.yaml`
 - `go test ./...`
 - `go test -race ./...`
 - `go vet ./...`
 - `go build ./...`
 - `git diff --check`
+- `cd web && pnpm run build`
+
+`go mod tidy` 当前会加载 `//go:build contract` 测试，而这些测试仍导入本 checkout 已不存在的 `tests/contract/fixture`，因此该命令未通过。本轮没有用 Projection Cache 内的替代包掩盖这个独立 contract-suite 缺口。
 
 固定源码 `WebApiClient` 已通过真实 HTTP 完成 Credentials describe/set/unset，并通过真实 HTTP/WebSocket 创建/搜索 Session、选择模型、提交 prompt、驱动 Go Agent Loop、接收 `turn/end`、修改 queue、cancel、rename 和 respond。默认 composition contract 使用 deterministic DeepSeek HTTP oracle，在同一进程验证固定 Client 和内嵌 UI；UI 自动化完成发送、回复、新建/选择 Session、history 恢复、Question 回答和 Agent continuation，并断言 plugin runtime-context 不进入用户消息投影。API Key dialog 已通过 TypeScript 检查和生产构建，但尚未单独执行交互式浏览器行为验收。
 
