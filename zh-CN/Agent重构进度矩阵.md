@@ -91,13 +91,13 @@
 
 | ID | 交付项 | 状态 | 证据等级 | 实现证据 |
 | --- | --- | --- | --- | --- |
-| AR-U01 | spawn/fork Provider 与 Plugin adapter 分离 | Completed | Go Verified | [`subagent/spawn/provider.go`](../subagent/spawn/provider.go)、[`subagent/spawn/plugin.go`](../subagent/spawn/plugin.go)、[`subagent/fork/provider.go`](../subagent/fork/provider.go)、[`subagent/fork/plugin.go`](../subagent/fork/plugin.go) |
-| AR-U02 | one-shot 与 continuable 显式传 RuntimeParent | Completed | Go Verified | [`subagent/internal/inprocess/driver.go`](../subagent/internal/inprocess/driver.go)、[`subagent/internal/continuation/manager_materialization.go`](../subagent/internal/continuation/manager_materialization.go) |
-| AR-U03 | Activation 只保存 residency 与 settlement 状态 | Completed | Go Verified | [`subagent/internal/continuation/activation.go`](../subagent/internal/continuation/activation.go) |
-| AR-U04 | runtime parent graph 和 child-first close 归 Agent | Completed | Go Verified | [`agent/lifecycle_coordinator.go`](../agent/lifecycle_coordinator.go)、[`subagent/internal/continuation/manager_settlement.go`](../subagent/internal/continuation/manager_settlement.go) |
-| AR-U05 | Continuation 关闭只释放 exact managed Handle，不暴露 descendant close 命令 | Completed | Go Verified | [`subagent/internal/continuation/manager_disposal.go`](../subagent/internal/continuation/manager_disposal.go)、[`subagent/continuable.go`](../subagent/continuable.go) |
-| AR-U06 | Runtime Plugin 组装独立业务 Service | Completed | Go Verified | [`subagent/runtime/plugin.go`](../subagent/runtime/plugin.go) |
-| AR-U07 | Subagent Plugin unload 建立 resident child Closing cutoff，随后由 Agent lifecycle 收敛 Scope，且不关闭普通 parent | Completed | Race Verified | [`subagent/internal/continuation/manager_close.go`](../subagent/internal/continuation/manager_close.go)、[`subagent/report_integration_test.go`](../subagent/report_integration_test.go) |
+| AR-U01 | spawn/fork Builder 与 Plugin adapter 分离 | Completed | Go Verified | [`subagent/spawn/builder.go`](../subagent/spawn/builder.go)、[`subagent/spawn/plugin.go`](../subagent/spawn/plugin.go)、[`subagent/fork/builder.go`](../subagent/fork/builder.go)、[`subagent/fork/plugin.go`](../subagent/fork/plugin.go) |
+| AR-U02 | OneShot 与 Continuable 显式传入 RuntimeParent | Completed | Go Verified | [`subagent/internal/oneshot/service.go`](../subagent/internal/oneshot/service.go)、[`subagent/internal/continuable/start.go`](../subagent/internal/continuable/start.go) |
+| AR-U03 | OneShot 与 Continuable 共用 Execution 状态与终止事务 | Completed | Go Verified | [`subagent/internal/execution/execution.go`](../subagent/internal/execution/execution.go)、[`subagent/lifecycle.go`](../subagent/lifecycle.go) |
+| AR-U04 | runtime parent graph 和 child-first close 归 Agent | Completed | Go Verified | [`agent/lifecycle_coordinator.go`](../agent/lifecycle_coordinator.go)、[`subagent/internal/continuable/settlement.go`](../subagent/internal/continuable/settlement.go) |
+| AR-U05 | 模式实现只请求 exact Agent Handle 关闭，不暴露 descendant close 命令 | Completed | Go Verified | [`subagent/internal/oneshot/terminal.go`](../subagent/internal/oneshot/terminal.go)、[`subagent/internal/continuable/settlement.go`](../subagent/internal/continuable/settlement.go) |
+| AR-U06 | Subagent Plugin 组装独立业务 Service | Completed | Go Verified | [`subagent/plugin/plugin.go`](../subagent/plugin/plugin.go) |
+| AR-U07 | Subagent Plugin unload 先停止模块准入，再请求已接纳 Execution 收敛，且不关闭普通 parent | Completed | Race Verified | [`subagent/plugin/plugin.go`](../subagent/plugin/plugin.go)、[`subagent/internal/subagents/service.go`](../subagent/internal/subagents/service.go)、[`subagent/report_integration_test.go`](../subagent/report_integration_test.go) |
 | AR-U08 | durable lineage 只有 Session Header 一个深度事实源 | Completed | Go Verified | [`subagent/internal/lineage/lineage.go`](../subagent/internal/lineage/lineage.go) |
 | AR-U09 | 旧 Subagent Agent graph/admission 标识符删除 | Completed | Go Verified | [`tests/architecture/agent_lifecycle_boundary_test.go`](../tests/architecture/agent_lifecycle_boundary_test.go) |
 | AR-U10 | parent-bound 新 residency 能力 | Deferred | Documented | [parent-bound requirements](../subagent/docs/parent-bound-requirements.zh-CN.md) |

@@ -1,87 +1,108 @@
 # Subagent 术语与命名规范
 
-状态：Working Vocabulary
+状态：Current Vocabulary
 
-本文约束 `subagent` 领域文档、Go API、持久化数据和事件中的用词。它不要求 Go 类型逐字翻译 TypeScript 标识符；它要求先分清哪些词是外部兼容契约，哪些词是领域概念，哪些词只是实现名称。
+本文约束当前 Subagent Go API、设计文档、持久化数据和事件中的用词。固定 wire token 与 Go 领域对象必须分开：兼容名称不能随意修改，但也不能反向决定 Go 对象职责。
 
 ## 1. 三类词汇
 
 ### 1.1 兼容词汇
 
-“兼容词汇”是客户端、持久化数据、插件 observer、配置或错误处理能够直接观察并据此分支的 token。它们属于契约，必须与接受的 DeepSeek Harness 基线逐字一致，不能为了 Go 风格改名。
-
-当前包括：
+兼容词汇可被客户端、持久化日志、Plugin observer、配置或错误处理直接观察，必须按固定契约保留：
 
 - 事件名：`subagent/provider-added`、`subagent/provider-removed`、`subagent/start`、`subagent/end`、`subagent/descriptor`；
-- JSON 字段与 discriminant：`version`、`mode`、`provider`、`label`、`agentProvider`、`agentModel`、`persona`、`toolFilter`，以及 `one-shot`、`continuable`；
-- MessageSource wire token：`coordinator`、`subagent-report`、`subagent-settled`；
-- stop reason 和 error code，例如 `completed`、`aborted`、`NO_PROVIDER`、`UNAUTHORIZED`；
-- 纳入范围的配置 key、Provider name 和 Host wire method。
+- descriptor 字段和 discriminant：`version`、`mode`、`provider`、`label`、`agentProvider`、`agentModel`、`persona`、`toolFilter`、`one-shot`、`continuable`；
+- MessageSource token：`coordinator`、`subagent-report`、`subagent-settled`；
+- stop reason、错误码、配置 key、LLM provider name、兼容 `providerName` 值和纳入范围的 Host wire method。
 
-例如 Go 类型叫 `ReportSource`，但它编码后的 `kind` 必须仍是 `subagent-report`。Go 类型名不是 TypeScript 客户端协议；wire token 才是这里的兼容词汇。
+`provider` 字段保存首次创建 child 使用的 SeedBuilder 名称。保留该字段不表示 Go 中仍存在 Provider-owned execution。
 
 ### 1.2 领域术语
 
-领域术语表达稳定业务概念。Go 可以按语言习惯选择简洁名称，但同一概念不能在不同文件中换同义词。
-
-例如 `Provider`、`Run`、`Activation`、`Descriptor`、`Settlement`、`Inbox`、`direct parent`。这些名称应回答对象是什么，而不是罗列它关联谁、经过什么处理或存在哪里。
+领域术语表达稳定业务对象：`SeedBuilder`、`Execution`、`Terminal`、`Descriptor`、`Settlement`、`ChildDirectory`、`Inbox`、`direct parent`。同一概念不得在不同模块中换一套名称。
 
 ### 1.3 实现术语
 
-实现术语只描述 Go 内部机制，例如 `provider.Registry`、`continuation.Manager`、admission lock。它们可以在局部证据充分时调整，但不能改变兼容 token 或悄悄改变领域职责。
+实现术语描述局部机制，例如 `childSlot`、`execution.Registry`、admission state、`Terminator`。它们不能改变 wire token，也不能制造第二个领域 owner。
 
 ## 2. 领域词典
 
 | 术语 | 定义 | 不表示 |
 | --- | --- | --- |
-| Subagent | 由父 Agent 委派并具有独立 Session identity 的子任务执行者 | 一个 Tool DTO 或独立 Agent Loop 实现 |
-| one-shot | Provider 发布 `Run`，caller 等待一个 terminal `Result` 的策略 | 不可观察、无 Session 的函数调用 |
-| continuable | 以 durable child Session 和唯一 Inbox 支持多次消息、冷恢复的策略 | Provider 持有的长连接或 `Run` |
-| Provider | 建立 one-shot Run，并可选贡献 continuable creation data 的扩展者 | Subagent Plugin、Agent Registry 或 persistence adapter |
-| Plugin | 装配并发布 Subagent capability、适配 Plugin 生命周期和事件的对象 | Subagent 用例实现或每个 child 的模型循环 |
-| Run | 已发布 one-shot child 的 holder-owned handle | continuable child 或它的 Activation |
-| Result | one-shot Run 的 terminal outcome | durable Session 的完整事实集合 |
-| Descriptor | child Session 中第一个 `subagent/descriptor` event 表达的 durable Subagent identity | process-local runtime status |
-| Activation | continuable child 在一个进程中的一次 resident epoch，持有 exact Agent Handle | 当前正在对话的 Session；durable 状态机 |
-| resident child | 当前有 Activation、因此在 Agent Registry 中有 live Agent 的 continuable child | 只要 Session 存在就 resident |
-| LiveStore | 当前进程中已加载且尚未释放的 live Session 集合 | 当前被用户选中的会话；当前正在运行模型的 Session |
-| Inbox | Agent 拥有的 durable pending-message projection，是 continuable 消息的唯一队列 | Subagent 自建的第二条 queue |
-| direct parent | child Session Header 指向的直接父 Session，live 操作还要匹配 exact Agent identity | 任意 ancestor 或发送 MessageSource 的对象 |
-| ancestor | 沿 durable parent 链位于目标 child 之上的 Agent | 仅 direct parent |
-| authority | 获准对 live child 执行 followup、interrupt 或 report 的精确身份 | MessageSource 或仅相同 Session ID 的陈旧对象 |
-| Settlement | Activation 在无待处理工作且 Agent idle 后形成 terminal edge、parent notice 和资源释放的过程 | 一条普通 report；one-shot Result 本身 |
-| Provisioner | 配置一个 active 但未发布的 Agent Scope 的对象 | Agent Loop、Plugin phase 或 resident lifecycle |
-| Provisioning | Provisioner 返回的一次配置事务，负责 publication commit 与后续释放 | 所有 Provisioner 都必须制造的空生命周期对象 |
-| ActivationExtension | 安装到 continuable Activation 的可选 child-scoped 能力 | 全局 Service locator、Agent Provisioner 或 child Runtime |
-| Catalog | 不创建、不 resume Agent 的 durable child 查询能力 | Activation registry 的别名 |
-| MessageSource | 写入消息的 durable attribution | 权限凭证 |
+| Subagent | 由父 Agent 委派、具有独立 child Session identity 的任务执行者 | Tool DTO 或独立 AgentLoop |
+| OneShot | 每次 Start 创建一个 fresh child，形成一个 terminal outcome 后自动释放 exact Handle 的实现 | 无 Session 的函数调用 |
+| Continuable | 以 durable child Session 和 Agent Inbox 支持多次消息与 cold resume 的实现 | 长连接或永久 resident Agent |
+| Mode | 选择 OneShot/Continuable implementation 的稳定 discriminant | 生命周期状态 |
+| ChildRequest | 两种实现共同 snapshot 的 caller-owned child 输入 | mode-specific command union |
+| StartCommand | 由合法构造函数生成的 closed OneShot/Continuable 启动命令 | 任意 optional-fields DTO |
+| SeedBuilder | 只为 fresh child 构造 detached Session event prefix 的策略 | Agent factory、Subagent implementation 或 lifecycle owner |
+| SessionSeed | SeedBuilder 返回的 detached event prefix | 完整 child Session 或 Agent |
+| Execution | 一次 Subagent 业务执行；与一个 exact Agent epoch 一一对应 | 第二个 Agent epoch 或 durable child identity |
+| ExecutionState | `Starting/Active/Stopping/Stopped` 的统一业务阶段 | Agent 的 idle/running/closing 状态 |
+| RunID | 配对一次 Execution 的 `subagent/start` 与 `subagent/end` | child Session ID |
+| Terminal | 一次 Execution 的 memoized output、structured value、diagnostic 和 StopReason | Session 的完整事实集合 |
+| durable child | Header、descriptor 与 Session log 定义的持久 child identity | 当前一定有 live Agent |
+| Descriptor | `subagent/descriptor` event 表达的 durable Subagent mode 和恢复输入 | process-local Execution state |
+| Settlement | Continuable 在 idle、Inbox empty、无 runtime descendants 时完成当前 Execution 的正常终止事务 | Agent 的结构关闭算法或普通 report |
+| ChildDirectory | 不创建、不恢复 Agent 的 durable child 查询能力 | live Execution Registry 或控制授权 |
+| ContinuableExtension | 在 unpublished continuable Agent Scope 安装 child-scoped contribution 的扩展 | Plugin、Agent Provisioner 或 Subagent implementation |
+| ExtensionInstallation | 一项 exact child-scoped effect 的幂等卸载权 | Plugin Scope Handle |
+| Provisioner | 配置一个尚未发布 Agent Scope 的对象 | AgentLoop 或 Subagent lifecycle |
+| Provisioning | Provisioner 返回的 publication commit 和 release 事务 | Extension registration |
+| Inbox | Agent 拥有的 durable pending-message projection | Subagent 自建 queue |
+| direct parent | child Header 指向的父 Session；live 操作还需匹配 exact Agent identity | 任意 ancestor 或 MessageSource sender |
+| ancestor | 沿运行父子关系和 durable parent chain 位于 child 之上的 live Agent | 仅 direct parent |
+| authority | 获准执行 Send、Interrupt 或 Report 的 exact caller evidence | 目录快照或仅相同 Session ID 的陈旧对象 |
+| ActivityRunning | ChildDirectory 读取时该 child Session 位于 LiveStore | 模型正在生成或 Agent StatusRunning |
+| MessageSource | 写入 Session message 的 durable attribution | 权限凭证 |
 
-## 3. 容易混淆的契约
+## 3. 关键区别
 
-### 3.1 Activation 与 Descriptor
+### 3.1 Execution 与 Agent epoch
 
-Descriptor 回答“这个 durable child 是什么”，写入 Session 后跨重启存在。Activation 回答“这个 continuable child 此刻是否在本进程驻留，以及谁持有它的 exact Agent Handle”，进程结束即消失。同一个 child 可以先后产生多个 Activation epoch，但只有一个 authoritative descriptor。
+两者是一对一关系，不是两个嵌套 residency 概念：
 
-### 3.2 Live、running 与 active conversation
+- Agent epoch 由 `agent` 拥有，包含 exact Agent、Scope、Inbox、runtime parent 和 AgentLoop；
+- Execution 由 `subagent` 拥有，记录该 epoch 对应的 Subagent RunID、统一状态和 terminal transaction。
 
-`LiveStore` 的 live 只表示 Session 已在当前进程 materialize 且未释放。Agent 可以 idle，Session 仍然 live。UI 当前选中的会话也可能只是一个 durable identity，不能据此推断其在 LiveStore。
+Subagent 不再定义 Activation。需要表达“当前进程中存在 exact Agent”时使用 live Agent/Execution；需要表达持久身份时使用 durable child/Descriptor。
 
-Catalog 的 `ActivityRunning` 当前表示 Session 在 LiveStore；它不是“模型正在生成”。若客户端需要更细的 idle/running sampling，应由 delivery mapping 组合 Agent status，不能污染 durable descriptor。
+### 3.2 Descriptor 与 SeedBuilder
 
-### 3.3 Cancel 与 idle
+SeedBuilder 只在 fresh create 时产生 seed。Descriptor 写入 child Session，保存恢复所需的 Subagent identity 和创建策略名称。
 
-“resident child 接收 `Agent.Cancel(..., KeepInbox=true)`，方法不等待 idle”表示：continuation Service 同步验证 authority 并发出取消信号后立即返回；目标 Agent 可能稍后才观察信号并进入 idle。`KeepInbox=true` 保留尚未被 loop claim 的排队消息，Activation 和 descendants 也不因此自动释放。
+Continuable cold resume 读取 descriptor，但不重新调用 SeedBuilder。descriptor 的 `provider` 字段是兼容字段，语义上指向原 SeedBuilder name。
+
+### 3.3 Live、running 与 active
+
+`LiveStore` 中存在 Session 只说明它已在当前进程加载。Agent 可以 idle，Session 仍然 live。
+
+`ActivityRunning` 是 ChildDirectory 的 Session-level 快照，不等价于 Agent `StatusRunning`。需要展示 Agent idle/running 时，由 delivery adapter 组合 `agent.Registry` 状态，不能污染 durable descriptor。
+
+### 3.4 Interrupt、Dispose 与 Settlement
+
+- Continuable Interrupt 发出当前 turn cancellation，保留尚未 claim 的 Inbox message，并立即返回；它不等待 idle，也不删除 durable child。
+- `Execution.Dispose` 请求并等待当前 Execution 的唯一 terminal transaction。
+- Settlement 是 Continuable 正常触发 Dispose/stop transaction 的一种业务原因。
+- Agent parent close 是结构关闭，由 Agent lifecycle owner 传播；Subagent 只 join exact Execution terminal work。
+
+### 3.5 Projection 与事实源
+
+Projection 是 Session events 的可重建 read model。Registry checkpoint 不是 durable truth。
+
+Identity projection 使用最新 descriptor，因为 fork seed 可能包含 ancestor descriptor。Continuable resume 则按 `Header.SeedLength` 跳过 seed 后读取当前 child descriptor；两者不能仅因都处理 descriptor 就共享同一“first/last”规则。
 
 ## 4. Go 命名规则
 
 1. 名称首先回答“这个对象是什么”。
-2. 同一对象不要把 owner、处理步骤、存储方式和关联对象全部拼进名称。
-3. 名称需要连续叠加多个概念才能成立时，先检查类型是否混合职责，并优先拆分。
-4. 接口按 Consumer 能力命名：`OneShotService` 与 `ContinuableService` 分开；不要用一个 `Service` 暴露所有模式。
-5. 值对象按身份命名：`ReportSource`、`SettlementSource`；wire `kind` 仍保留兼容 token。
-6. 不再用 `Setup` 同时表示 Agent 配置事务和 Subagent 扩展；分别使用 `Provisioner`/`Provisioning` 与 `ActivationExtension`。
-7. 不使用 `types.go` 集中收容所有声明；文件按 `provider`、`one_shot`、`continuable`、`descriptor` 等概念组织。
-8. 变量、参数、receiver 和 named return 不得与包内函数或类型名发生仅大小写不同的复用。
-9. 子模块按内聚业务能力命名；不按 DTO、service、mapper、storage 等技术处理阶段切目录。
+2. 名称需要叠加多个 owner、步骤或存储概念时，先拆分职责。
+3. 公共接口按 Consumer 能力命名：`Starter`、`ChildControl`、`ParentReporter`、`ChildDirectory`。
+4. OneShot/Continuable 是私有 implementation，不发布 `OneShotService` 或 `ContinuableService` capability。
+5. 两种实现共享 `Execution` 状态和 Terminal；不同触发时机留在各自 `Terminator`。
+6. 不使用 Activation 表达 Agent epoch，也不使用 Catalog 表达 child directory。
+7. `Provider` 只用于兼容 token 或 Service Provider/Consumer 架构术语，不作为 Subagent 创建/执行对象名称。
+8. 不用 `Setup` 同时表达 Agent publication transaction 和 Extension；分别使用 `Provisioner`/`Provisioning` 与 `ContinuableExtension`/`ExtensionInstallation`。
+9. 文件按主要对象或内聚职责命名；不使用 broad `types.go`，也不拆成一函数一文件。
+10. 变量、参数、receiver 和 named return 不得与包内函数或类型仅大小写不同。
 
-命名调整不能顺手改变公开 wire、persisted shape 或事件。若要改变公开 Go API，也必须同时更新调用者、测试和本领域文档，并记录兼容影响。
+命名调整不能顺手修改 wire token、persisted shape 或事件。公开契约变化必须同时更新调用者、测试、技术方案和进度证据。

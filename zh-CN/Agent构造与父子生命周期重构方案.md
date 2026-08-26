@@ -101,15 +101,11 @@
 
 这条链路应保留。Registry 同时提供构造入口和 live membership 是 `agent` 能力的一部分，不应让调用方绕过它直接调用 Agent Factory。
 
-### 3.2 子 Agent 生命周期被执行模式分别拥有
+### 3.2 Agent epoch 与 Subagent Execution 必须分层
 
-重构前，one-shot [`inprocess.Driver`](../subagent/internal/inprocess/driver.go) 和 continuable [`continuation.Manager`](../subagent/internal/continuation/manager_materialization.go) 虽然都通过 Registry 创建或恢复 Agent，却分别保存 Handle、closing、children 或 residency 状态：
+`agent.RegistryService` 拥有 Agent epoch、`RuntimeParent` 关系、后代先关闭和 Scope teardown；Subagent 不能再建第二棵父子 Agent 结构。
 
-- one-shot `Run` 持有 Handle 和结果关闭路径；
-- continuable `Activation` 持有 Handle、children 和 disposal；
-- parent-bound 设计还需要处理 parent close participation 与 descendant child-first 收敛。
-
-这些是所有 Agent 都可能需要的运行期生命周期机制，应该归入 `agent`，而不是继续形成多套 Subagent 生命周期。
+Subagent 仍然需要一个与 Agent epoch 不同的 **Execution**：它表示一次由 parent 发起的 Subagent 执行，拥有 `RunID`、公共状态、终止事务和结果。[`execution.Execution`](../subagent/internal/execution/execution.go) 统一 OneShot 与 Continuable 的状态和并发收敛；[`oneshot.Service`](../subagent/internal/oneshot/service.go) 与 [`continuable.Service`](../subagent/internal/continuable/service.go) 只实现各自的创建/恢复、消息和终止策略。它们可以持有 exact Agent Handle 以请求关闭，但 Agent 结构关系和物理 teardown 始终由 `agent` 拥有。
 
 ### 3.3 Initiator、Custody 与 parent 混合
 
@@ -198,7 +194,7 @@ AgentLoop 的职责变化是收窄而非搬迁：它继续“造出并安全停�
 
 现有提案中的 `ChildRuntime`、`ChildLifecycle` 和 `ChildLifecyclePolicy` 不作为目标公共抽象。通用部分归入 `agent`；剩余业务决策统一称为 Subagent residency policy。
 
-Subagent core Service、Manager 和 Provider 是普通 Go 业务对象。`subagent/runtime.Plugin`、spawn/fork Plugin 和 Tool Plugin 只负责依赖解析、注册、事件桥接与模型侧适配；Plugin Dispose 不自行实现 descendant lifecycle。单独卸载 Subagent Plugin 时，Service 只关闭业务准入、启动 managed Agent close 并等待 exact epoch 进入 Closing；Agent Registry 和 AgentLoop 在当前 Runtime 操作返回后完成实际 Scope teardown。
+Subagent core Service、Manager 和 Provider 是普通 Go 业务对象。`subagent/plugin.Plugin`、spawn/fork Plugin 和 Tool Plugin 只负责依赖解析、注册、事件桥接与模型侧适配；Plugin Dispose 不自行实现 descendant lifecycle。单独卸载 Subagent Plugin 时，Service 只关闭业务准入、启动 managed Agent close 并等待 exact epoch 进入 Closing；Agent Registry 和 AgentLoop 在当前 Runtime 操作返回后完成实际 Scope teardown。
 
 ### 4.6 `plugin`
 

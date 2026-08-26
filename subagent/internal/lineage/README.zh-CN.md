@@ -11,6 +11,6 @@ flowchart LR
     Lineage --> Metadata[Session metadata]
 ```
 
-one-shot Driver 与 continuation Manager 共同消费本包，避免各自解释 depth、cwd、parent Session、origin、preset 和 seed length。本包不校验 parent 是否仍在 Registry，也不创建 Session 或 Agent；exact-live authorization 仍由调用用例负责。
+OneShot 与 Continuable 实现共同消费本包，避免各自解释 depth、cwd、parent Session、origin、preset 和 seed length。本包不校验 parent 是否仍在 Registry，也不创建 Session 或 Agent；exact-live authorization 仍由调用用例负责。
 
-跨包合同见[领域设计](../../docs/design.zh-CN.md)，实现证据见[进度](../../../zh-CN/08-implementation-progress.md)。
+跨包合同见[领域设计](../../docs/design.zh-CN.md)，实现证据见[进度矩阵](../../../zh-CN/Subagent重构进度矩阵.md)。

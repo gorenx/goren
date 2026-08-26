@@ -1,16 +1,21 @@
-# One-shot
+# OneShot
 
-本包拥有 one-shot 请求校验与快照、Provider dispatch、Run 一致性检查及成对 lifecycle observation。`Start` 成功返回后 Run 所有权交给 caller；等待 terminal result 的 goroutine 只负责发布 `subagent/end`，不拥有 Agent Loop。
-
-本包不修改 Provider Registry，不处理 continuable Session、Activation Extension 或 catalog。`Service` 本身实现 `OneShotService` 并由 runtime Plugin 发布；生命周期事实通过 Plugin 事件适配器提供的窄端口发布。
+本包是 OneShot Subagent 的具体实现。`Service` 实现统一 Service 私有的 mode implementation 契约：构造 fresh child seed，创建 Agent，接受初始消息，发布 common `Execution`，选择 terminal output，并在 terminal 后自动释放 exact Agent Handle。
 
 ```mermaid
-flowchart LR
-    Plugin[runtime.Plugin] -->|ProvidedService| Service
-    Service -->|resolved request| Provider
-    Provider --> Run
-    Service -->|start/end| Lifecycle
-    Caller -->|Dispose| Run
+sequenceDiagram
+    participant S as subagents.Service
+    participant O as oneshot.Service
+    participant A as agent.Constructor
+    participant E as execution.Execution
+
+    S->>O: Start(one-shot command)
+    O->>A: Create(seed, provisioning)
+    O->>A: Accept initial message
+    O-->>S: Execution
+    A-->>O: terminal Agent events
+    O->>E: settle terminal
+    O->>A: Dispose exact Handle
 ```
 
-跨包合同见[领域设计](../../docs/design.zh-CN.md)，实现证据见[进度](../../../zh-CN/08-implementation-progress.md)。
+本包不拥有 SeedBuilder registration、Continuable cold resume、后续消息或 Plugin publication。结构化输出 capture 和 descriptor appender 是 OneShot 创建事务的一部分，因此与该实现放在同一模块。跨包契约见[技术方案](../../../zh-CN/Subagent架构与生命周期重构技术方案.md)，实现证据见[进度矩阵](../../../zh-CN/Subagent重构进度矩阵.md)。
