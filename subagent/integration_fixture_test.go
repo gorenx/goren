@@ -256,9 +256,15 @@ type integrationConfiguration struct {
 func newIntegrationFixture(
 	t *testing.T,
 	responses [][]llm.StreamChunk,
+	additionalPlugins ...plugin.Plugin,
 ) *integrationFixture {
 	t.Helper()
 	durability := newIntegrationDurability(t)
+	configuredPlugins := append(
+		[]plugin.Plugin(nil),
+		durability.plugins...,
+	)
+	configuredPlugins = append(configuredPlugins, additionalPlugins...)
 	return newIntegrationFixtureWithConfiguration(
 		t,
 		integrationConfiguration{
@@ -269,7 +275,7 @@ func newIntegrationFixture(
 			backend: &integrationAdapter{
 				responses: responses,
 			},
-			plugins: durability.plugins,
+			plugins: configuredPlugins,
 			delegation: subagentdelegation.Settings{
 				SeedBuilder:           spawn.DefaultSeedBuilderName,
 				ToolName:              subagentdelegation.DefaultToolName,

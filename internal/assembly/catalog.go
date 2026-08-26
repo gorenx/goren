@@ -305,7 +305,7 @@ func DefaultSpecs(
 		return nil, err
 	}
 	reportRaw, err := json.Marshal(subagentreportfactory.Config{
-		ReportDelivery: subagent.ReportNextStep,
+		ReportDelivery: report.NextStep,
 	})
 	if err != nil {
 		return nil, err

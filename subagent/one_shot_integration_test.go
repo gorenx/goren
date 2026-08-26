@@ -10,6 +10,7 @@ import (
 	"github.com/gorenx/goren/subagent"
 	"github.com/gorenx/goren/subagent/spawn"
 	subagentdelegation "github.com/gorenx/goren/subagent/tools/delegation"
+	"github.com/gorenx/goren/subagent/tools/report"
 	"github.com/gorenx/goren/tools"
 )
 
@@ -108,6 +109,75 @@ func TestForegroundOneShotRunsChildAndReleasesIt(t *testing.T) {
 	}
 	if failures := state.eventFailures.snapshot(); len(failures) != 0 {
 		t.Fatalf("event observer failures = %#v", failures)
+	}
+}
+
+func TestOneShotChildCanReportThroughItsParentAgent(t *testing.T) {
+	reportPlugin, reportErr := report.New(report.Quiet)
+	if reportErr != nil {
+		t.Fatal(reportErr)
+	}
+	state := newIntegrationFixture(
+		t,
+		[][]llm.StreamChunk{
+			{
+				llm.BlockEndChunk{
+					Index: 0,
+					Block: llm.ToolCallBlock{
+						ID:        "one-shot-report",
+						Name:      "report",
+						Arguments: `{"output":"one-shot progress"}`,
+					},
+				},
+				llm.FinishChunk{
+					Reason: llm.ToolCallsFinish{},
+				},
+			},
+			{
+				llm.BlockEndChunk{
+					Index: 0,
+					Block: llm.NewTextBlock("one-shot final answer"),
+				},
+				llm.FinishChunk{
+					Reason: llm.StopFinish{},
+				},
+			},
+		},
+		reportPlugin,
+	)
+	parentHandle := state.createParent(t)
+	outcome := state.toolRuntime.Execute(
+		context.Background(),
+		tools.ToolExecutionInput{
+			CallID:     "delegate-reporting-one-shot",
+			RootCallID: "delegate-reporting-one-shot",
+			Name:       subagentdelegation.DefaultToolName,
+			Arguments: json.RawMessage(`{
+  "description": "report one-shot progress",
+  "prompt": "Report progress, then return the final answer."
+}`),
+			Subject: parentHandle.Subject,
+		},
+	)
+	if outcome.Failed() {
+		failure, _ := outcome.FailureDetail()
+		t.Fatalf("foreground delegation failed: %#v", failure)
+	}
+	requests := state.backend.snapshots()
+	if len(requests) != 2 || !hasToolSchema(requests[0].Tools, "report") {
+		t.Fatalf("one-shot report requests = %#v", requests)
+	}
+	starts, _ := state.lifecycle.snapshot()
+	pending := parentHandle.Subject.InboxValue().NextStep()
+	if len(starts) != 1 || len(pending) != 1 ||
+		!hasReportSource(
+			[]llm.Message{
+				pending[0],
+			},
+			"one-shot progress",
+			starts[0].ID,
+		) {
+		t.Fatal("parent Session did not retain the OneShot child report")
 	}
 }
 

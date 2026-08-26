@@ -258,5 +258,5 @@ func TestRegistrationRemovalAfterCommitRevokesResidentInstallation(t *testing.T)
 }
 
 var _ agent.Scope = scopeRecord{}
-var _ subagent.ContinuableExtension = extensionRecord{}
+var _ subagent.Extension = extensionRecord{}
 var _ subagent.ExtensionInstallation = installationRecord{}

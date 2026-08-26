@@ -12,7 +12,7 @@ type Provisioner struct {
 	registry *Registry
 }
 
-// NewProvisioner constructs one Agent Provisioner for a Continuable Scope.
+// NewProvisioner constructs one Agent Provisioner for a child Scope.
 func NewProvisioner(owner *Registry) *Provisioner {
 	return &Provisioner{
 		registry: owner,
@@ -57,7 +57,7 @@ func (owner *Provisioner) Provision(
 		}
 		if installation == nil || nilInterface(installation) {
 			return nil, errors.Join(
-				errors.New("subagent: Continuable Extension returned a nil installation"),
+				errors.New("subagent: child Extension returned a nil installation"),
 				acquired.Dispose(context.WithoutCancel(requestContext)),
 			)
 		}

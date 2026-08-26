@@ -99,5 +99,5 @@ func (installed *installation) Uninstall(closeContext context.Context) error {
 	return uninstallErr
 }
 
-var _ subagent.ContinuableExtension = (*extension)(nil)
+var _ subagent.Extension = (*extension)(nil)
 var _ subagent.ExtensionInstallation = (*installation)(nil)

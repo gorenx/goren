@@ -32,7 +32,6 @@ func TestFactoryCreatesSubagentPlugin(t *testing.T) {
 		plugin.ServiceOf[subagent.SeedBuilderRegistry](),
 		plugin.ServiceOf[subagent.Starter](),
 		plugin.ServiceOf[subagent.ChildControl](),
-		plugin.ServiceOf[subagent.ParentReporter](),
 		plugin.ServiceOf[subagent.ExtensionRegistry](),
 		plugin.ServiceOf[subagent.ChildDirectory](),
 	} {

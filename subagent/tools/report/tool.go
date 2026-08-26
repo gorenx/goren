@@ -3,9 +3,11 @@ package report
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 	"github.com/gorenx/goren/tools"
 )
@@ -32,23 +34,29 @@ type reportArguments struct {
 	Output string `json:"output"`
 }
 
-// reportTool translates one model Tool call into ParentReporter delivery. It
-// has no Plugin registration lifecycle.
+// liveAgents is the report use case's read-only view of resident Agents.
+type liveAgents interface {
+	Get(session.SessionID) (agent.Agent, bool)
+	Contains(agent.Agent) bool
+}
+
+// reportTool translates one model Tool call into a direct parent Agent Inbox
+// operation. It has no Plugin registration lifecycle.
 type reportTool struct {
-	reports  subagent.ParentReporter
-	delivery subagent.ReportDelivery
+	agents     liveAgents
+	scheduling Delivery
 }
 
 func newReportTool(
-	reports subagent.ParentReporter,
-	delivery subagent.ReportDelivery,
+	agents liveAgents,
+	selectedDelivery Delivery,
 ) (*reportTool, error) {
-	if reports == nil {
-		return nil, errors.New("subagent report: ParentReporter is required")
+	if agents == nil {
+		return nil, errors.New("subagent report: Agent Registry is required")
 	}
 	return &reportTool{
-		reports:  reports,
-		delivery: delivery,
+		agents:     agents,
+		scheduling: selectedDelivery,
 	}, nil
 }
 
@@ -84,30 +92,80 @@ func (adapter *reportTool) execute(
 	rawArguments json.RawMessage,
 	runContext tools.ToolRunContext,
 ) (json.RawMessage, error) {
+	if runContext.Context == nil {
+		return nil, errors.New("subagent report: Tool context is nil")
+	}
+	if contextErr := runContext.Context.Err(); contextErr != nil {
+		return nil, contextErr
+	}
 	childAgent, matches := runContext.Execution.Subject.(agent.Agent)
 	if !matches || childAgent == nil {
-		return nil, errors.New("report requires a calling continuable Agent")
+		return nil, errors.New("report requires a calling child Agent")
+	}
+	if !adapter.agents.Contains(childAgent) {
+		return nil, &subagent.Error{
+			Code:    subagent.ErrorUnauthorized,
+			Message: "report requires the exact live child Agent",
+		}
 	}
 	var request reportArguments
 	if decodeErr := json.Unmarshal(rawArguments, &request); decodeErr != nil {
 		return nil, decodeErr
 	}
-	messageID, reportErr := adapter.reports.Report(
-		runContext.Context,
-		childAgent,
-		[]llm.ContentBlock{
+	childSession := childAgent.SessionValue()
+	if childSession == nil {
+		return nil, &subagent.Error{
+			Code:    subagent.ErrorUnauthorized,
+			Message: "report requires a child Agent with a direct parent",
+		}
+	}
+	childHeader := childSession.Header()
+	if childHeader.ParentSession == nil {
+		return nil, &subagent.Error{
+			Code:    subagent.ErrorUnauthorized,
+			Message: "report requires a child Agent with a direct parent",
+		}
+	}
+	parentID := *childHeader.ParentSession
+	parentAgent, found := adapter.agents.Get(parentID)
+	if !found {
+		return nil, &subagent.Error{
+			Code:    subagent.ErrorParentUnavailable,
+			Message: "direct parent is not live; report was not delivered",
+		}
+	}
+	messageValue, messageErr := llm.NewUserMessage(llm.UserMessageInput{
+		Content: []llm.ContentBlock{
+			llm.NewTextBlock(
+				fmt.Sprintf("Subagent %s reported:", childAgent.ID()),
+			),
 			llm.NewTextBlock(request.Output),
 		},
-		subagent.ReportOptions{
-			Delivery: adapter.delivery,
+		Source: subagent.ReportSource{
+			SenderSessionID: childAgent.ID(),
 		},
-	)
-	if reportErr != nil {
-		return nil, reportErr
+	})
+	if messageErr != nil {
+		return nil, messageErr
+	}
+	switch adapter.scheduling {
+	case Quiet:
+		messageErr = parentAgent.Inject(messageValue)
+	case NextStep:
+		messageErr = parentAgent.Steer(messageValue)
+	default:
+		return nil, errors.New("subagent report: unsupported delivery")
+	}
+	if messageErr != nil {
+		return nil, &subagent.Error{
+			Code:    subagent.ErrorParentUnavailable,
+			Message: "direct parent is not live; report was not delivered",
+			Cause:   messageErr,
+		}
 	}
 	return json.Marshal(struct {
 		MessageID string `json:"messageId"`
 	}{
-		MessageID: string(messageID),
+		MessageID: string(messageValue.StableID()),
 	})
 }
