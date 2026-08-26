@@ -130,10 +130,16 @@
     transition: border-color 120ms ease, background-color 120ms ease, transform 120ms ease;
   }
 
-  .new-session:hover {
+  .new-session:hover:not(:disabled) {
     border-color: rgb(65 118 230 / 0.28);
     background: white;
     transform: translateY(-1px);
+  }
+
+  .brand-button:disabled,
+  .new-session:disabled {
+    cursor: wait;
+    opacity: 0.62;
   }
 
   .app-grid[data-sidebar-collapsed] .new-session {
@@ -145,7 +151,7 @@
     box-shadow: none;
   }
 
-  .app-grid[data-sidebar-collapsed] .new-session:hover {
+  .app-grid[data-sidebar-collapsed] .new-session:hover:not(:disabled) {
     background: rgb(23 35 58 / 0.06);
     transform: none;
   }

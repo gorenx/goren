@@ -44,10 +44,74 @@ describe('ConversationStore', () => {
       'credentials.describe',
       'session.list',
       'session.create',
-      'session.list',
       'session.history',
+      'session.list',
     ])
 
+    store.dispose()
+  })
+
+  it('shows the new-conversation state immediately and admits only one create request', async () => {
+    let releaseCreate: (() => void) | undefined
+    const createWait = new Promise<void>(resolve => {
+      releaseCreate = resolve
+    })
+    const host = installMockHost({ existingSession: true, createWait })
+    const store = new ConversationStore(translate)
+    await store.start()
+
+    const firstCreate = store.createSession()
+    const duplicateCreate = store.createSession()
+
+    expect(store.snapshot().creatingSession).toBe(true)
+    expect(store.snapshot().currentSessionId).toBeUndefined()
+    expect(store.snapshot().composerState).toBe('composer.creatingSession')
+    expect(host.methods.filter(method => method === 'session.create')).toHaveLength(1)
+
+    releaseCreate?.()
+    await Promise.all([firstCreate, duplicateCreate])
+
+    expect(store.snapshot().creatingSession).toBe(false)
+    expect(store.snapshot().currentSessionId).toBe('session-2')
+    expect(store.snapshot().sessions[0]?.sessionId).toBe('session-2')
+    store.dispose()
+  })
+
+  it('selects the created session before list and history synchronization finish', async () => {
+    let releaseSynchronization: (() => void) | undefined
+    const synchronizationWait = new Promise<void>(resolve => {
+      releaseSynchronization = resolve
+    })
+    const host = installMockHost({
+      historyWait: synchronizationWait,
+      listWait: synchronizationWait,
+    })
+    const store = new ConversationStore(translate)
+
+    const creation = store.createSession()
+    await waitForMethods(host.methods, ['session.create', 'session.history', 'session.list'])
+
+    expect(store.snapshot().currentSessionId).toBe(session.sessionId)
+    expect(store.snapshot().sessions).toEqual([expect.objectContaining({ sessionId: session.sessionId })])
+    expect(store.snapshot().composerState).toBe('composer.ready')
+    expect(store.snapshot().creatingSession).toBe(false)
+
+    releaseSynchronization?.()
+    await creation
+    store.dispose()
+  })
+
+  it('restores the previous selection when Session creation fails', async () => {
+    installMockHost({ existingSession: true, createFailure: 'create rejected' })
+    const store = new ConversationStore(translate)
+    await store.start()
+
+    await store.createSession()
+
+    expect(store.snapshot().creatingSession).toBe(false)
+    expect(store.snapshot().currentSessionId).toBe(session.sessionId)
+    expect(store.snapshot().composerState).toBe('composer.ready')
+    expect(store.snapshot().error).toBe('create rejected')
     store.dispose()
   })
 
@@ -235,12 +299,15 @@ describe('ConversationStore', () => {
 
 interface MockHostOptions {
   existingSession?: boolean
+  createFailure?: string
+  createWait?: Promise<void>
   historyEvents?: SessionEvent[]
   historyWait?: Promise<void>
+  listWait?: Promise<void>
 }
 
 function installMockHost(options: MockHostOptions = {}): { methods: string[], responses: unknown[] } {
-  let created = options.existingSession === true
+  let sessions = options.existingSession === true ? [session] : []
   const methods: string[] = []
   const responses: unknown[] = []
   vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -280,14 +347,34 @@ function installMockHost(options: MockHostOptions = {}): { methods: string[], re
       }
       break
     case 'session.list':
+      await options.listWait
       value = {
-        items: created ? [session] : [],
+        items: sessions,
       }
       break
     case 'session.create':
-      created = true
+      await options.createWait
+      if (options.createFailure !== undefined) {
+        return response({
+          rpcId: call.rpcId,
+          result: {
+            ok: false,
+            error: {
+              message: options.createFailure,
+            },
+          },
+        })
+      }
+      const createdSession = sessions.length === 0
+        ? session
+        : {
+            ...session,
+            sessionId: 'session-2',
+            updatedAt: 20,
+          }
+      sessions = [createdSession, ...sessions]
       value = {
-        sessionId: session.sessionId,
+        sessionId: createdSession.sessionId,
       }
       break
     case 'session.history':
@@ -317,6 +404,14 @@ async function waitForMux(): Promise<void> {
     await Promise.resolve()
   }
   throw new Error('web test: mux downlink was not opened')
+}
+
+async function waitForMethods(methods: readonly string[], expected: readonly string[]): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    if (expected.every(method => methods.includes(method))) return
+    await Promise.resolve()
+  }
+  throw new Error(`web test: methods did not arrive: ${expected.join(', ')}`)
 }
 
 function response(value: unknown, status = 200): Response {

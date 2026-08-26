@@ -108,6 +108,7 @@ export interface ConversationSnapshot {
   pendingQuestions: ReadonlyMap<string, PendingQuestionRequest>
   localTitles: ReadonlyMap<string, string>
   currentSessionId?: string
+  creatingSession: boolean
   onlineDownlinks: number
   composerState: MessageKey
   credentialLoaded: boolean

@@ -12,6 +12,9 @@ interface SidebarProps {
 
 export function Sidebar({ store, snapshot, collapsed, onToggle }: SidebarProps): React.JSX.Element {
   const { activeLanguage, translate } = useI18n()
+  const createLabel = snapshot.creatingSession
+    ? translate('sidebar.creatingConversation')
+    : translate('sidebar.newConversation')
   const connectionLabel = snapshot.onlineDownlinks === 2
     ? translate('sidebar.hostConnected')
     : snapshot.onlineDownlinks === 1 ? translate('sidebar.partiallyConnected') : translate('sidebar.reconnecting')
@@ -21,7 +24,9 @@ export function Sidebar({ store, snapshot, collapsed, onToggle }: SidebarProps):
         <button
           type="button"
           className="brand-button group"
-          aria-label={translate('sidebar.newConversation')}
+          disabled={snapshot.creatingSession}
+          aria-busy={snapshot.creatingSession}
+          aria-label={createLabel}
           onClick={() => void store.createSession()}
         >
           <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-white text-ink shadow-[0_1px_2px_rgba(15,17,21,.08)] ring-1 ring-black/6">
@@ -39,9 +44,17 @@ export function Sidebar({ store, snapshot, collapsed, onToggle }: SidebarProps):
         </button>
       </header>
 
-      <button id="new-session" type="button" className="new-session" onClick={() => void store.createSession()}>
+      <button
+        id="new-session"
+        type="button"
+        className="new-session"
+        disabled={snapshot.creatingSession}
+        aria-busy={snapshot.creatingSession}
+        aria-label={createLabel}
+        onClick={() => void store.createSession()}
+      >
         <PlusIcon size={17} />
-        {!collapsed && <span>{translate('sidebar.newConversation')}</span>}
+        {!collapsed && <span>{createLabel}</span>}
       </button>
 
       {!collapsed && <div className="px-5 pb-2 pt-3 font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-caption">{translate('sidebar.recentSessions')}</div>}

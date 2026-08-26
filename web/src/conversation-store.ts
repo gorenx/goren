@@ -16,7 +16,7 @@ import type {
   StreamDraft,
 } from './types'
 import { isRecord, recordBoolean, recordString } from './types'
-import type { Locale, Translator } from './i18n'
+import type { Locale, MessageKey, Translator } from './i18n'
 import { mergeEvents } from './session-events'
 import { projectStream } from './session-stream'
 
@@ -29,6 +29,7 @@ const initialSnapshot: ConversationSnapshot = {
   streams: new Map(),
   pendingQuestions: new Map(),
   localTitles: new Map(),
+  creatingSession: false,
   onlineDownlinks: 0,
   composerState: 'composer.connecting',
   credentialLoaded: false,
@@ -121,21 +122,62 @@ export class ConversationStore {
   }
 
   async createSession(): Promise<void> {
+    if (this.#value.creatingSession) return
+    const previousSessionId = this.#value.currentSessionId
+    const previousComposerState = this.#value.composerState
+    const creationSelectionVersion = ++this.#selectionVersion
+    this.#patch({
+      currentSessionId: undefined,
+      creatingSession: true,
+      composerState: 'composer.creatingSession',
+    })
+    let created: SessionCreateValue
     try {
       const payload = this.#value.host?.cwd ? { cwd: this.#value.host.cwd } : {}
-      const created = await this.#api.call<SessionCreateValue>('session.create', payload)
-      await this.refreshSessions()
-      await this.selectSession(created.sessionId)
+      created = await this.#api.call<SessionCreateValue>('session.create', payload)
     } catch (error) {
+      if (this.#selectionVersion === creationSelectionVersion) {
+        this.#patch({
+          currentSessionId: previousSessionId,
+          composerState: previousComposerState,
+        })
+      }
+      this.#patch({ creatingSession: false })
       this.#fail(error)
+      return
+    }
+    const sessions = prependSession(this.#value.sessions, {
+      sessionId: created.sessionId,
+      updatedAt: Date.now(),
+      running: false,
+      blank: true,
+      cwd: this.#value.host?.cwd,
+    })
+    this.#patch({ sessions, creatingSession: false })
+    if (this.#selectionVersion === creationSelectionVersion) {
+      const selectionVersion = this.#beginSessionSelection(created.sessionId, 'composer.ready')
+      const select = this.#readSelectedSession(created.sessionId, selectionVersion)
+      const refresh = this.refreshSessions().catch(error => this.#fail(error))
+      await Promise.all([select, refresh])
+    } else {
+      await this.refreshSessions().catch(error => this.#fail(error))
     }
   }
 
   async selectSession(sessionId: string): Promise<void> {
+    const selectionVersion = this.#beginSessionSelection(sessionId, 'composer.readingHistory')
+    await this.#readSelectedSession(sessionId, selectionVersion)
+  }
+
+  #beginSessionSelection(sessionId: string, composerState: MessageKey): number {
     const selectionVersion = ++this.#selectionVersion
     const streams = new Map(this.#value.streams)
     streams.delete(sessionId)
-    this.#patch({ currentSessionId: sessionId, streams, composerState: 'composer.readingHistory' })
+    this.#patch({ currentSessionId: sessionId, streams, composerState })
+    return selectionVersion
+  }
+
+  async #readSelectedSession(sessionId: string, selectionVersion: number): Promise<void> {
     try {
       const history = await this.#api.call<SessionHistoryValue>('session.history', { sessionId, maxMessages: 100 })
       if (selectionVersion !== this.#selectionVersion) return
@@ -377,6 +419,13 @@ function setProjectedStream(
   const draft = projectStream(events)
   if (draft === undefined) streams.delete(sessionId)
   else streams.set(sessionId, draft)
+}
+
+function prependSession(
+  sessions: readonly SessionSummary[],
+  created: SessionSummary,
+): SessionSummary[] {
+  return [created, ...sessions.filter(summary => summary.sessionId !== created.sessionId)]
 }
 
 function messageFromEvent(event: SessionEvent): MessageRow | undefined {
