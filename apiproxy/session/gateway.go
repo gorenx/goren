@@ -26,6 +26,7 @@ type Dependencies struct {
 	LLM         llm.LlmRuntime
 	Defaults    agentdefaultmodel.DefaultModel
 	Projections sessionprojection.Registry
+	Cache       ProjectionCache
 	Titles      sessiontitle.TitleService
 	Workspaces  workspace.Registry
 	Directories DirectoryProvisioner
@@ -33,8 +34,16 @@ type Dependencies struct {
 
 // Options are process values and injectable identity sources.
 type Options struct {
-	WorkingDirectory string
-	NewSessionID     func() (session.SessionID, error)
+	WorkingDirectory  string
+	NewSessionID      func() (session.SessionID, error)
+	ReportReadFailure func(error)
+}
+
+// ProjectionCache is the minimal rebuildable checkpoint capability consumed by
+// Session list and history reads.
+type ProjectionCache interface {
+	CachedSnapshot(session.Header) (*sessionprojection.Snapshot, error)
+	ColdSnapshot(context.Context, session.SessionID) (sessionprojection.Snapshot, error)
 }
 
 // Gateway is the unary session.* facade registered with the wire catalog.
@@ -68,6 +77,10 @@ func NewGateway(
 	if newSessionID == nil {
 		newSessionID = mintSessionID
 	}
+	reportReadFailure := settings.ReportReadFailure
+	if reportReadFailure == nil {
+		reportReadFailure = func(error) {}
+	}
 	modelDirectory, err := api.NewLLMGateway(ports.LLM)
 	if err != nil {
 		return nil, err
@@ -87,10 +100,12 @@ func NewGateway(
 	access := &sessionAccess{runtimeSessions: runtimeSessions}
 	owner := &Gateway{
 		reader: &sessionReader{
-			agents:      ports.Agents,
-			sessions:    ports.Sessions,
-			persistence: ports.Persistence,
-			projections: ports.Projections,
+			agents:        ports.Agents,
+			sessions:      ports.Sessions,
+			persistence:   ports.Persistence,
+			projections:   ports.Projections,
+			cache:         ports.Cache,
+			reportFailure: reportReadFailure,
 		},
 		lifecycle: &sessionLifecycle{
 			access:           access,

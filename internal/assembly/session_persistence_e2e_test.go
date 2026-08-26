@@ -14,6 +14,7 @@ import (
 	"github.com/gorenx/goren/llm/deepseek"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
+	projectioncachesqlite "github.com/gorenx/goren/session/projectioncache/sqlite"
 )
 
 func TestDefaultCompositionListsHistoryAndResumesAColdSQLiteSession(t *testing.T) {
@@ -109,6 +110,27 @@ func TestDefaultCompositionListsHistoryAndResumesAColdSQLiteSession(t *testing.T
 	if err = firstRuntime.Shutdown(requestContext); err != nil {
 		t.Fatal(err)
 	}
+	checkpointStore, err := projectioncachesqlite.Open(
+		requestContext,
+		projectioncachesqlite.Config{
+			Path:        dataDirectory + "/session-projection-cache.sqlite",
+			JournalMode: projectioncachesqlite.JournalWAL,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpointRecords, err := checkpointStore.LoadAll(requestContext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpointRecord, found := checkpointRecords["durable-session"]
+	if !found || checkpointRecord.Rows["sessionListMetadata"].Seq != 1 {
+		t.Fatalf("durable projection checkpoint = %#v", checkpointRecords)
+	}
+	if err := checkpointStore.Close(requestContext); err != nil {
+		t.Fatal(err)
+	}
 
 	secondCatalog := newTestCatalog(t, workingDirectory)
 	secondSpecs, err := DefaultSpecs(
@@ -162,7 +184,8 @@ func TestDefaultCompositionListsHistoryAndResumesAColdSQLiteSession(t *testing.T
 	}
 	if len(history.Events) != 2 ||
 		history.Events[0].Event.Type != session.TurnStartEventName ||
-		history.Events[1].Event.Type != session.TurnEndEventName {
+		history.Events[1].Event.Type != session.TurnEndEventName ||
+		history.Projections == nil || history.Projections.AsOfSeq != 1 {
 		t.Fatalf("cold session.history = %#v", history)
 	}
 	createPayload, err := json.Marshal(struct {

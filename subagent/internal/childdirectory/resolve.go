@@ -108,6 +108,44 @@ func resolveCold(
 	if requestContext.Err() != nil {
 		return nil
 	}
+	if entry, found := cachedColdEntry(candidate, prepared); found {
+		return entry
+	}
+	return restoredColdEntry(requestContext, candidate, prepared)
+}
+
+func cachedColdEntry(
+	candidate sessionRecord,
+	prepared listing,
+) (subagent.ChildEntry, bool) {
+	if prepared.dependencies.cache == nil {
+		return nil, false
+	}
+	projectionSnapshot, err := prepared.dependencies.cache.CachedSnapshot(
+		candidate.header,
+	)
+	if err != nil || projectionSnapshot == nil {
+		return nil, false
+	}
+	identity, found, err := subagentprojection.ReadIdentity(
+		projectionSnapshot.Values,
+	)
+	if err != nil || !found || !identityAfterSeed(identity, candidate.header) {
+		return nil, false
+	}
+	return childEntry(
+		candidate.header.ID,
+		identity,
+		subagent.ActivityInactive,
+		hasChildren(candidate.header.ID, prepared),
+	), true
+}
+
+func restoredColdEntry(
+	requestContext context.Context,
+	candidate sessionRecord,
+	prepared listing,
+) subagent.ChildEntry {
 	inspection, err := prepared.dependencies.persistence.Inspect(
 		requestContext,
 		candidate.header.ID,
@@ -138,6 +176,17 @@ func resolveCold(
 		subagent.ActivityInactive,
 		hasChildren(candidate.header.ID, prepared),
 	)
+}
+
+func identityAfterSeed(
+	identity subagentprojection.Identity,
+	metadata session.Header,
+) bool {
+	seedLength := int64(0)
+	if metadata.SeedLength != nil {
+		seedLength = *metadata.SeedLength
+	}
+	return identity.Seq >= seedLength
 }
 
 func childEntry(

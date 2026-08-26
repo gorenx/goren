@@ -51,12 +51,13 @@ func TestHistoryPageCutsAtAppendMessageGroup(t *testing.T) {
 		{Type: session.AssistantMessageEventName, Seq: 5, Time: 6, Data: json.RawMessage(`{}`), SourceEventSeqs: &sources, SurfaceOp: &appendOperation},
 		{Type: "turn/end", Seq: 6, Time: 7, Data: json.RawMessage(`{}`)},
 	}
-	page, hasMore, err := historyPage(events, nil, 1)
+	window, err := historyPage(events, nil, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hasMore || len(page) != 3 || page[0].Event.Seq != 3 || page[2].Event.Seq != 6 {
-		t.Fatalf("page = %#v, hasMore = %t", page, hasMore)
+	if !window.hasMore || len(window.events) != 3 ||
+		window.events[0].Event.Seq != 3 || window.events[2].Event.Seq != 6 {
+		t.Fatalf("window = %#v", window)
 	}
 }
 
@@ -100,7 +101,7 @@ func TestColdHistoryPageScansBackwardUntilTheWholeMessageGroupIsAvailable(t *tes
 		persistence: storage,
 	}
 
-	page, hasMore, err := reader.coldHistoryPage(
+	window, err := reader.coldHistoryPage(
 		context.Background(),
 		storage.header.ID,
 		nil,
@@ -109,14 +110,15 @@ func TestColdHistoryPageScansBackwardUntilTheWholeMessageGroupIsAvailable(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hasMore || storage.reads != 2 || len(page) != 700 ||
-		page[0].Event.Seq != 400 || page[len(page)-1].Event.Seq != 1099 {
+	if !window.hasMore || storage.reads != 2 || len(window.events) != 700 ||
+		window.events[0].Event.Seq != 400 ||
+		window.events[len(window.events)-1].Event.Seq != 1099 {
 		t.Fatalf(
 			"cold page = (len=%d, first=%d, last=%d, hasMore=%t, reads=%d)",
-			len(page),
-			page[0].Event.Seq,
-			page[len(page)-1].Event.Seq,
-			hasMore,
+			len(window.events),
+			window.events[0].Event.Seq,
+			window.events[len(window.events)-1].Event.Seq,
+			window.hasMore,
 			storage.reads,
 		)
 	}

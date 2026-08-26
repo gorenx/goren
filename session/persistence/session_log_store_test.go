@@ -59,7 +59,7 @@ type countingBackend struct {
 func (storage *countingBackend) LoadStored(
 	requestContext context.Context,
 	identifier session.SessionID,
-) (sesspersist.StoredPrefix, bool, error) {
+) (*sesspersist.StoredPrefix, error) {
 	storage.mutex.Lock()
 	storage.loads++
 	storage.mutex.Unlock()
@@ -69,7 +69,7 @@ func (storage *countingBackend) LoadStored(
 func (storage *countingBackend) ReadStoredRevision(
 	requestContext context.Context,
 	identifier session.SessionID,
-) (sesspersist.Revision, bool, error) {
+) (*sesspersist.Revision, error) {
 	storage.mutex.Lock()
 	storage.revisions++
 	storage.mutex.Unlock()
@@ -80,7 +80,7 @@ func (storage *countingBackend) LoadStoredFrom(
 	requestContext context.Context,
 	identifier session.SessionID,
 	fromSeq int64,
-) (sesspersist.StoredSuffix, bool, error) {
+) (*sesspersist.StoredSuffix, error) {
 	storage.mutex.Lock()
 	storage.seeks++
 	storage.mutex.Unlock()
@@ -254,7 +254,11 @@ func TestSessionLogStoreReusesRevisionCurrentPreparationAndSeeksReadFrom(t *test
 		t.Fatal(err)
 	}
 	metadata, entries := persistenceClosedTurn(t, "cached-session")
-	if err := storage.AppendBatch(requestContext, metadata, entries, false); err != nil {
+	if err := storage.AppendBatch(requestContext, sesspersist.EventBatch{
+		Header:      metadata,
+		Events:      entries,
+		Materialize: true,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := storage.Close(requestContext); err != nil {
@@ -309,9 +313,10 @@ func TestSessionLogStoreReusesRevisionCurrentPreparationAndSeeksReadFrom(t *test
 	}
 	if err := fixture.opener.opened.AppendBatch(
 		requestContext,
-		metadata,
-		[]session.Event{external},
-		true,
+		sesspersist.EventBatch{
+			Header: metadata,
+			Events: []session.Event{external},
+		},
 	); err != nil {
 		t.Fatal(err)
 	}

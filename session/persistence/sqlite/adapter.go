@@ -39,217 +39,220 @@ func (owner *Adapter) Locate(session.Header) (sesspersist.Location, bool) {
 
 func (owner *Adapter) SupportsRawArtifacts() bool { return false }
 
-func (owner *Adapter) ReadRaw(context.Context, session.SessionID) (sesspersist.RawArtifact, bool, error) {
-	return sesspersist.RawArtifact{}, false, errors.New("session persistence sqlite: raw artifacts are unavailable")
+func (owner *Adapter) ReadRaw(context.Context, session.SessionID) (*sesspersist.RawArtifact, error) {
+	return nil, errors.New("session persistence sqlite: raw artifacts are unavailable")
 }
 
 func (owner *Adapter) LoadStored(
 	requestContext context.Context,
 	identifier session.SessionID,
-) (sesspersist.StoredPrefix, bool, error) {
+) (*sesspersist.StoredPrefix, error) {
 	transaction, err := owner.database.BeginTx(requestContext, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return sesspersist.StoredPrefix{}, false, err
+		return nil, err
 	}
 	queries := owner.queries.WithTx(transaction)
 	row, err := queries.GetSession(requestContext, string(identifier))
 	if errors.Is(err, sql.ErrNoRows) {
 		_ = transaction.Rollback()
-		return sesspersist.StoredPrefix{}, false, nil
+		return nil, nil
 	}
 	if err != nil {
 		_ = transaction.Rollback()
-		return sesspersist.StoredPrefix{}, false, err
+		return nil, err
 	}
 	rows, err := queries.ListEvents(requestContext, string(identifier))
 	if err != nil {
 		_ = transaction.Rollback()
-		return sesspersist.StoredPrefix{}, false, err
+		return nil, err
 	}
-	if err := transaction.Commit(); err != nil {
-		return sesspersist.StoredPrefix{}, false, err
+	if err = transaction.Commit(); err != nil {
+		return nil, err
 	}
 	metadata, err := rowToHeader(row)
 	if err != nil {
-		return sesspersist.StoredPrefix{}, false, err
+		return nil, err
 	}
 	entries, marker, err := scanEventRows(listEventRows(rows), 0)
 	if err != nil {
-		return sesspersist.StoredPrefix{}, false, err
+		return nil, err
 	}
 	result := sesspersist.StoredPrefix{
-		Header: metadata, Events: entries, Token: owner.revision(row.Incarnation, row.Revision),
+		Header: metadata,
+		Events: entries,
+		Token:  owner.revision(row.Incarnation, row.Revision),
 	}
 	if marker != nil {
 		result.Marker = *marker
 	}
-	return result, true, nil
+	return &result, nil
 }
 
 func (owner *Adapter) ReadStoredRevision(
 	requestContext context.Context,
 	identifier session.SessionID,
-) (sesspersist.Revision, bool, error) {
+) (*sesspersist.Revision, error) {
 	row, err := owner.queries.GetSessionRevision(requestContext, string(identifier))
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
+		return nil, nil
 	}
 	if err != nil {
-		return "", false, err
+		return nil, err
 	}
-	return owner.revision(row.Incarnation, row.Revision), true, nil
+	storedRevision := owner.revision(row.Incarnation, row.Revision)
+	return &storedRevision, nil
 }
 
 func (owner *Adapter) LoadStoredFrom(
 	requestContext context.Context,
 	identifier session.SessionID,
 	fromSeq int64,
-) (sesspersist.StoredSuffix, bool, error) {
+) (*sesspersist.StoredSuffix, error) {
 	transaction, err := owner.database.BeginTx(requestContext, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return sesspersist.StoredSuffix{}, false, err
+		return nil, err
 	}
 	queries := owner.queries.WithTx(transaction)
 	row, err := queries.GetSession(requestContext, string(identifier))
 	if errors.Is(err, sql.ErrNoRows) {
 		_ = transaction.Rollback()
-		return sesspersist.StoredSuffix{}, false, nil
+		return nil, nil
 	}
 	if err != nil {
 		_ = transaction.Rollback()
-		return sesspersist.StoredSuffix{}, false, err
+		return nil, err
 	}
 	rows, err := queries.ListEventsFrom(requestContext, dbsql.ListEventsFromParams{
 		SessionID: string(identifier), Seq: fromSeq,
 	})
 	if err != nil {
 		_ = transaction.Rollback()
-		return sesspersist.StoredSuffix{}, false, err
+		return nil, err
 	}
 	if err := transaction.Commit(); err != nil {
-		return sesspersist.StoredSuffix{}, false, err
+		return nil, err
 	}
 	metadata, err := rowToHeader(row)
 	if err != nil {
-		return sesspersist.StoredSuffix{}, false, err
+		return nil, err
 	}
 	entries, marker, err := scanEventRows(suffixEventRows(rows), fromSeq)
 	if err != nil {
-		return sesspersist.StoredSuffix{}, false, err
+		return nil, err
 	}
 	if marker != nil {
-		return sesspersist.StoredSuffix{}, false, fmt.Errorf(
+		return nil, fmt.Errorf(
 			"session persistence sqlite: invalid stored suffix at seq %d", marker.from,
 		)
 	}
-	return sesspersist.StoredSuffix{Header: metadata, Events: entries}, true, nil
+	return &sesspersist.StoredSuffix{
+		Header: metadata,
+		Events: entries,
+	}, nil
 }
 
 func (owner *Adapter) LoadStoredEventsBefore(
 	requestContext context.Context,
 	identifier session.SessionID,
-	beforeSeq *int64,
-	maxEvents int64,
-) (sesspersist.StoredEventWindow, bool, error) {
+	page sesspersist.EventPage,
+) (*sesspersist.StoredEventWindow, error) {
 	transaction, err := owner.database.BeginTx(requestContext, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return sesspersist.StoredEventWindow{}, false, err
+		return nil, err
 	}
 	queries := owner.queries.WithTx(transaction)
 	row, err := queries.GetSession(requestContext, string(identifier))
 	if errors.Is(err, sql.ErrNoRows) {
 		_ = transaction.Rollback()
-		return sesspersist.StoredEventWindow{}, false, nil
+		return nil, nil
 	}
 	if err != nil {
 		_ = transaction.Rollback()
-		return sesspersist.StoredEventWindow{}, false, err
+		return nil, err
 	}
-	queryLimit := maxEvents + 1
+	queryLimit := page.Limit + 1
 	var eventRows []eventRow
-	if beforeSeq == nil {
+	if page.BeforeSeq == nil {
 		rows, queryErr := queries.ListLatestEvents(requestContext, dbsql.ListLatestEventsParams{
 			SessionID: string(identifier),
 			Limit:     queryLimit,
 		})
 		if queryErr != nil {
 			_ = transaction.Rollback()
-			return sesspersist.StoredEventWindow{}, false, queryErr
+			return nil, queryErr
 		}
 		eventRows = latestEventRows(rows)
 	} else {
 		rows, queryErr := queries.ListEventsBefore(requestContext, dbsql.ListEventsBeforeParams{
 			SessionID: string(identifier),
-			Seq:       *beforeSeq,
+			Seq:       *page.BeforeSeq,
 			Limit:     queryLimit,
 		})
 		if queryErr != nil {
 			_ = transaction.Rollback()
-			return sesspersist.StoredEventWindow{}, false, queryErr
+			return nil, queryErr
 		}
 		eventRows = beforeEventRows(rows)
 	}
 	if err := transaction.Commit(); err != nil {
-		return sesspersist.StoredEventWindow{}, false, err
+		return nil, err
 	}
 	metadata, err := rowToHeader(row)
 	if err != nil {
-		return sesspersist.StoredEventWindow{}, false, err
+		return nil, err
 	}
-	hasEarlier := int64(len(eventRows)) > maxEvents
+	hasEarlier := int64(len(eventRows)) > page.Limit
 	if hasEarlier {
-		eventRows = eventRows[:maxEvents]
+		eventRows = eventRows[:page.Limit]
 	}
 	if len(eventRows) == 0 {
-		return sesspersist.StoredEventWindow{
+		return &sesspersist.StoredEventWindow{
 			Header: metadata,
 			Events: []session.Event{},
-		}, true, nil
+		}, nil
 	}
 	ascendingRows := append([]eventRow(nil), eventRows...)
 	slices.Reverse(ascendingRows)
 	entries, marker, err := scanEventRows(ascendingRows, ascendingRows[0].seq)
 	if err != nil {
-		return sesspersist.StoredEventWindow{}, false, err
+		return nil, err
 	}
 	if marker != nil {
-		return sesspersist.StoredEventWindow{}, false, fmt.Errorf(
+		return nil, fmt.Errorf(
 			"session persistence sqlite: invalid stored event window at seq %d",
 			marker.from,
 		)
 	}
 	slices.Reverse(entries)
-	return sesspersist.StoredEventWindow{
+	return &sesspersist.StoredEventWindow{
 		Header:     metadata,
 		Events:     entries,
 		HasEarlier: hasEarlier,
-	}, true, nil
+	}, nil
 }
 
 func (owner *Adapter) AppendBatch(
 	requestContext context.Context,
-	metadata session.Header,
-	entries []session.Event,
-	alreadyMaterialized bool,
+	batch sesspersist.EventBatch,
 ) error {
 	transaction, err := owner.database.BeginTx(requestContext, nil)
 	if err != nil {
 		return err
 	}
 	queries := owner.queries.WithTx(transaction)
-	if !alreadyMaterialized {
+	if batch.Materialize {
 		incarnation, err := randomUUID()
 		if err != nil {
 			_ = transaction.Rollback()
 			return err
 		}
-		if err := queries.InsertSession(requestContext, sessionParams(metadata, incarnation)); err != nil {
+		if err := queries.InsertSession(requestContext, sessionParams(batch.Header, incarnation)); err != nil {
 			_ = transaction.Rollback()
 			return err
 		}
 	}
-	for _, entry := range entries {
-		parameters, err := eventParams(metadata.ID, entry)
+	for _, entry := range batch.Events {
+		parameters, err := eventParams(batch.Header.ID, entry)
 		if err != nil {
 			_ = transaction.Rollback()
 			return err
@@ -259,45 +262,43 @@ func (owner *Adapter) AppendBatch(
 			return err
 		}
 	}
-	changed, err := queries.IncrementRevision(requestContext, string(metadata.ID))
+	changed, err := queries.IncrementRevision(requestContext, string(batch.Header.ID))
 	if err != nil || changed != 1 {
 		_ = transaction.Rollback()
 		if err != nil {
 			return err
 		}
-		return fmt.Errorf("session persistence sqlite: session %q disappeared during append", metadata.ID)
+		return fmt.Errorf("session persistence sqlite: session %q disappeared during append", batch.Header.ID)
 	}
 	return transaction.Commit()
 }
 
 func (owner *Adapter) CommitRepair(
 	requestContext context.Context,
-	metadata session.Header,
-	marker sesspersist.RepairMarker,
-	closers []session.Event,
+	repair sesspersist.LogRepair,
 ) error {
 	transaction, err := owner.database.BeginTx(requestContext, nil)
 	if err != nil {
 		return err
 	}
 	queries := owner.queries.WithTx(transaction)
-	mutated := len(closers) != 0
-	if marker != nil {
-		torn, ok := marker.(tornTail)
+	mutated := len(repair.ClosingEvents) != 0
+	if repair.Marker != nil {
+		torn, ok := repair.Marker.(tornTail)
 		if !ok {
 			_ = transaction.Rollback()
 			return errors.New("session persistence sqlite: repair marker belongs to another backend")
 		}
 		if err := queries.DeleteEventsFrom(requestContext, dbsql.DeleteEventsFromParams{
-			SessionID: string(metadata.ID), Seq: torn.from,
+			SessionID: string(repair.Header.ID), Seq: torn.from,
 		}); err != nil {
 			_ = transaction.Rollback()
 			return err
 		}
 		mutated = true
 	}
-	for _, entry := range closers {
-		parameters, err := eventParams(metadata.ID, entry)
+	for _, entry := range repair.ClosingEvents {
+		parameters, err := eventParams(repair.Header.ID, entry)
 		if err != nil {
 			_ = transaction.Rollback()
 			return err
@@ -308,13 +309,13 @@ func (owner *Adapter) CommitRepair(
 		}
 	}
 	if mutated {
-		changed, err := queries.IncrementRevision(requestContext, string(metadata.ID))
+		changed, err := queries.IncrementRevision(requestContext, string(repair.Header.ID))
 		if err != nil || changed != 1 {
 			_ = transaction.Rollback()
 			if err != nil {
 				return err
 			}
-			return fmt.Errorf("session persistence sqlite: session %q disappeared during repair", metadata.ID)
+			return fmt.Errorf("session persistence sqlite: session %q disappeared during repair", repair.Header.ID)
 		}
 	}
 	return transaction.Commit()

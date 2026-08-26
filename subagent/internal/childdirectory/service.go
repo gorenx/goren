@@ -34,10 +34,19 @@ type Projections interface {
 	) (sessionprojection.RestoreResult, error)
 }
 
+// ProjectionCache is the optional zero-log-I/O checkpoint view consumed by
+// cold child resolution.
+type ProjectionCache interface {
+	CachedSnapshot(
+		session.Header,
+	) (*sessionprojection.Snapshot, error)
+}
+
 type dependencies struct {
 	sessions    Sessions
 	persistence Persistence
 	projections Projections
+	cache       ProjectionCache
 }
 
 // Service is the stable ChildDirectory capability published by the Subagent Plugin.
@@ -56,6 +65,7 @@ func (owner *Service) Enable(
 	liveSource Sessions,
 	durabilitySource Persistence,
 	projectionSource Projections,
+	checkpointSource ProjectionCache,
 ) error {
 	owner.mutex.Lock()
 	defer owner.mutex.Unlock()
@@ -66,6 +76,7 @@ func (owner *Service) Enable(
 		sessions:    liveSource,
 		persistence: durabilitySource,
 		projections: projectionSource,
+		cache:       checkpointSource,
 	}
 	return nil
 }

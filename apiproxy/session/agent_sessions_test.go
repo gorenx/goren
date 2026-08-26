@@ -106,8 +106,8 @@ func (persistenceStub) SupportsRawArtifacts() bool {
 func (persistenceStub) ReadRaw(
 	context.Context,
 	session.SessionID,
-) (sesspersist.RawArtifact, bool, error) {
-	return sesspersist.RawArtifact{}, false, errors.New("test: unexpected ReadRaw")
+) (sesspersist.RawArtifact, error) {
+	return sesspersist.RawArtifact{}, errors.New("test: unexpected ReadRaw")
 }
 
 func (persistenceStub) Create(context.Context, session.Header) error {

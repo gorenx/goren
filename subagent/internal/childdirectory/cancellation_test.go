@@ -70,6 +70,7 @@ func TestPreCancelledListingPerformsNoPersistenceRead(t *testing.T) {
 		sessionList{},
 		durability,
 		projectionRegistry(t),
+		nil,
 	); enableErr != nil {
 		t.Fatal(enableErr)
 	}
@@ -93,6 +94,7 @@ func TestCancellationIsForwardedToPersistedListing(t *testing.T) {
 		sessionList{},
 		durability,
 		projectionRegistry(t),
+		nil,
 	); enableErr != nil {
 		t.Fatal(enableErr)
 	}
@@ -127,6 +129,7 @@ func TestCancellationIsForwardedToColdInspection(t *testing.T) {
 		sessionList{},
 		durability,
 		projectionRegistry(t),
+		nil,
 	); enableErr != nil {
 		t.Fatal(enableErr)
 	}

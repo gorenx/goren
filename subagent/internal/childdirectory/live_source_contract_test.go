@@ -128,6 +128,7 @@ func TestPinnedSourceLiveChildrenMatchGo(t *testing.T) {
 		},
 		nil,
 		projectionRegistry(t),
+		nil,
 	); enableErr != nil {
 		t.Fatal(enableErr)
 	}

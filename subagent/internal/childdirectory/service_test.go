@@ -128,6 +128,7 @@ func TestListChildrenUsesLivePreferredProjectionBackedCorpus(t *testing.T) {
 		},
 		durability,
 		projectionSource,
+		nil,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -204,6 +205,7 @@ func TestListDescendantsTraversesOrdinaryAndOneShotSessions(t *testing.T) {
 		sessionList{},
 		durability,
 		projectionRegistry(t),
+		nil,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -241,13 +243,13 @@ func TestListDescendantsTraversesOrdinaryAndOneShotSessions(t *testing.T) {
 func TestChildDirectoryReportsMissingCapabilitiesAndCancellation(t *testing.T) {
 	t.Parallel()
 	directory := New()
-	if err := directory.Enable(sessionList{}, nil, nil); err != nil {
+	if err := directory.Enable(sessionList{}, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	_, err := directory.ListChildren(context.Background(), "root")
 	assertSubagentCode(t, err, subagent.ErrorControlProjectionsUnavailable)
 	directory.Disable()
-	if err = directory.Enable(nil, nil, projectionRegistry(t)); err != nil {
+	if err = directory.Enable(nil, nil, projectionRegistry(t), nil); err != nil {
 		t.Fatal(err)
 	}
 	_, err = directory.ListChildren(context.Background(), "root")

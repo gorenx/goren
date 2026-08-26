@@ -13,6 +13,7 @@ import (
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/session/persistence"
 	sessionprojection "github.com/gorenx/goren/session/projection"
+	"github.com/gorenx/goren/session/projectioncache"
 	"github.com/gorenx/goren/subagent"
 	"github.com/gorenx/goren/subagent/internal/childdirectory"
 	"github.com/gorenx/goren/subagent/internal/continuable"
@@ -82,6 +83,7 @@ func (owner *Plugin) Manifest() pluginruntime.Manifest {
 		Optional: []pluginruntime.ServiceType{
 			pluginruntime.ServiceOf[approval.DelegationPolicy](),
 			pluginruntime.ServiceOf[sessionprojection.Registry](),
+			pluginruntime.ServiceOf[projectioncache.Cache](),
 		},
 		Events: []pluginruntime.EventSubscription{
 			pluginruntime.EventOf[agent.Disposed](),
@@ -119,6 +121,7 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 	}
 	approvalService, _ := pluginruntime.Resolve[approval.DelegationPolicy](owner)
 	projectionRegistry, _ := pluginruntime.Resolve[sessionprojection.Registry](owner)
+	checkpointCache, _ := pluginruntime.Resolve[projectioncache.Cache](owner)
 	environments := &environmentBuilder{
 		delegation: approvalService,
 		extensions: owner.extensions,
@@ -130,6 +133,7 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 		liveSessions,
 		sessionPersistence,
 		projectionRegistry,
+		checkpointCache,
 	); err != nil {
 		return errors.Join(
 			err,

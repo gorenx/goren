@@ -199,11 +199,11 @@ func (owner *SessionLogStore) preparedSourceFor(
 		if reserved || !verifyRevision {
 			return cached, nil
 		}
-		current, exists, err := owner.storage.ReadStoredRevision(requestContext, identifier)
+		current, err := owner.storage.ReadStoredRevision(requestContext, identifier)
 		if err != nil {
 			return nil, err
 		}
-		if exists && current == cached.revision {
+		if current != nil && *current == cached.revision {
 			return cached, nil
 		}
 		owner.preparations.Invalidate(identifier, cached)
@@ -214,11 +214,11 @@ func (owner *SessionLogStore) loadPreparedSource(
 	requestContext context.Context,
 	identifier session.SessionID,
 ) (*preparedSource, error) {
-	stored, found, err := owner.storage.LoadStored(requestContext, identifier)
+	stored, err := owner.storage.LoadStored(requestContext, identifier)
 	if err != nil {
 		return nil, err
 	}
-	if !found {
+	if stored == nil {
 		return nil, &NotFoundError{ID: identifier}
 	}
 	if stored.Header.ID != identifier {
@@ -279,17 +279,22 @@ func (owner *SessionLogStore) commitPreparedSource(
 	source *preparedSource,
 ) (bool, error) {
 	identifier := source.inspection.Header.ID
-	current, found, err := owner.storage.ReadStoredRevision(requestContext, identifier)
+	current, err := owner.storage.ReadStoredRevision(requestContext, identifier)
 	if err != nil {
 		return false, err
 	}
-	if !found || current != source.revision {
+	if current == nil || *current != source.revision {
 		owner.preparations.Invalidate(identifier, source)
 		return false, nil
 	}
 	if source.marker != nil || len(source.closers) != 0 {
 		if err := owner.storage.CommitRepair(
-			requestContext, source.inspection.Header, source.marker, source.closers,
+			requestContext,
+			LogRepair{
+				Header:        source.inspection.Header,
+				Marker:        source.marker,
+				ClosingEvents: source.closers,
+			},
 		); err != nil {
 			return false, err
 		}
