@@ -67,7 +67,7 @@ func (adapter *delegationTool) definition(
 	builder subagent.SeedBuilder,
 ) tools.ToolDefinition {
 	description, promptDescription := seedWording(
-		builder.Policy().ParentContext,
+		builder.ContextPolicy(),
 	)
 	description += adapter.schedulingWording()
 	return tools.ToolDefinition{

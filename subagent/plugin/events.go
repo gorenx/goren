@@ -1,13 +1,12 @@
-package runtime
+package plugin
 
 import (
 	"context"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/plugin"
+	pluginruntime "github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/subagent"
-	"github.com/gorenx/goren/subagent/internal/continuable"
-	"github.com/gorenx/goren/subagent/internal/oneshot"
+	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
 	"github.com/gorenx/goren/subagent/internal/seedbuilder"
 )
 
@@ -17,11 +16,11 @@ type eventPublisher struct {
 }
 
 // Added publishes the canonical vetoable registration fact.
-func (publisher *eventPublisher) Added(
+func (publisher *eventPublisher) PublishAdded(
 	requestContext context.Context,
 	builder subagent.SeedBuilder,
 ) error {
-	return plugin.Publish(
+	return pluginruntime.Publish(
 		requestContext,
 		publisher.owner,
 		subagent.SeedBuilderAdded{
@@ -31,11 +30,11 @@ func (publisher *eventPublisher) Added(
 }
 
 // Removed publishes best-effort registration cleanup.
-func (publisher *eventPublisher) Removed(
+func (publisher *eventPublisher) PublishRemoved(
 	requestContext context.Context,
 	name string,
 ) {
-	_ = plugin.Publish(
+	_ = pluginruntime.Publish(
 		requestContext,
 		publisher.owner,
 		subagent.SeedBuilderRemoved{
@@ -45,12 +44,18 @@ func (publisher *eventPublisher) Removed(
 }
 
 // Started publishes one accepted execution fact in the parent Agent scope.
-func (*eventPublisher) Started(parentAgent agent.Agent, fact subagent.Started) {
+func (*eventPublisher) PublishStarted(
+	parentAgent agent.Agent,
+	fact subagent.Started,
+) {
 	_ = agent.DispatchRuntimeEvent(context.Background(), parentAgent, fact)
 }
 
 // Ended publishes the paired terminal fact in the parent Agent scope.
-func (*eventPublisher) Ended(parentAgent agent.Agent, fact subagent.Ended) {
+func (*eventPublisher) PublishEnded(
+	parentAgent agent.Agent,
+	fact subagent.Ended,
+) {
 	_ = agent.DispatchRuntimeEvent(context.Background(), parentAgent, fact)
 }
 
@@ -58,7 +63,7 @@ func (*eventPublisher) Ended(parentAgent agent.Agent, fact subagent.Ended) {
 // the same Execution terminal transaction completes before teardown continues.
 func (owner *Plugin) ObserveEvent(
 	requestContext context.Context,
-	fact plugin.Event,
+	fact pluginruntime.Event,
 ) error {
 	disposed, matches := fact.(agent.Disposed)
 	if !matches {
@@ -70,7 +75,6 @@ func (owner *Plugin) ObserveEvent(
 	)
 }
 
-var _ seedbuilder.Events = (*eventPublisher)(nil)
-var _ oneshot.Lifecycle = (*eventPublisher)(nil)
-var _ continuable.Lifecycle = (*eventPublisher)(nil)
-var _ plugin.EventObserver = (*Plugin)(nil)
+var _ seedbuilder.EventPublisher = (*eventPublisher)(nil)
+var _ sharedexecution.EventPublisher = (*eventPublisher)(nil)
+var _ pluginruntime.EventObserver = (*Plugin)(nil)

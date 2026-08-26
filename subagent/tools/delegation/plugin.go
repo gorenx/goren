@@ -53,7 +53,6 @@ type Plugin struct {
 	plugin.Base
 	mutex        sync.Mutex
 	settings     Settings
-	builders     subagent.SeedBuilderRegistry
 	delegation   *delegationTool
 	toolCatalog  tools.ToolCatalog
 	prompts      systemprompt.PromptRegistry
@@ -138,7 +137,6 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 		return constructionErr
 	}
 	owner.mutex.Lock()
-	owner.builders = builders
 	owner.delegation = delegation
 	owner.toolCatalog = toolCatalog
 	owner.prompts = prompts
@@ -183,7 +181,6 @@ func (owner *Plugin) Dispose(closeContext context.Context) error {
 	owner.mutex.Lock()
 	defer owner.mutex.Unlock()
 	unmountErr := owner.unmount(context.WithoutCancel(closeContext))
-	owner.builders = nil
 	owner.delegation = nil
 	owner.toolCatalog = nil
 	owner.prompts = nil

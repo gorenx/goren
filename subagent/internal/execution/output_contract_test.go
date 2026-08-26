@@ -1,6 +1,6 @@
 //go:build contract
 
-package assistantoutput
+package execution
 
 import (
 	"context"
@@ -133,7 +133,7 @@ func observeOutput(
 	events []session.Event,
 ) outputContractObservation {
 	t.Helper()
-	selected, selectErr := Select(events)
+	selected, selectErr := SelectAssistantOutput(events)
 	if selectErr != nil {
 		t.Fatal(selectErr)
 	}

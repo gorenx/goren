@@ -16,8 +16,7 @@ const PluginName = "@deepseek-ai/dsh-tool-subagent-control"
 // Plugin owns send_message, interrupt_agent, and list_agents registrations.
 type Plugin struct {
 	plugin.Base
-	controls *controlTools
-	handles  []*tools.ToolHandle
+	handles []*tools.ToolHandle
 }
 
 // New constructs an inactive control Plugin.
@@ -60,7 +59,6 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 	if constructionErr != nil {
 		return constructionErr
 	}
-	owner.controls = controls
 	for _, definition := range controls.definitions() {
 		handle, addErr := toolCatalog.AddTool(requestContext, definition)
 		if addErr != nil {
@@ -78,7 +76,6 @@ func (owner *Plugin) Dispose(closeContext context.Context) error {
 		closeContext = context.Background()
 	}
 	releaseErr := owner.release(context.WithoutCancel(closeContext))
-	owner.controls = nil
 	return releaseErr
 }
 

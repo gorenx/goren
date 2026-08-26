@@ -21,12 +21,6 @@ type SeedBuilders interface {
 	Find(string) (subagent.SeedBuilder, bool)
 }
 
-// Lifecycle publishes paired Subagent execution facts.
-type Lifecycle interface {
-	Started(agent.Agent, subagent.Started)
-	Ended(agent.Agent, subagent.Ended)
-}
-
 // FinalFlushFailure identifies a contained durability failure.
 type FinalFlushFailure struct {
 	ChildID session.SessionID
@@ -47,26 +41,18 @@ type Dependencies struct {
 	Persistence  persistence.Persistence
 	Approval     approval.DelegationPolicy
 	SeedBuilders SeedBuilders
-	Lifecycle    Lifecycle
+	Publisher    sharedexecution.EventPublisher
 	Extensions   *extensionregistry.Registry
 	Failures     FailureReporter
 	Executions   *sharedexecution.Registry
 }
 
-type serviceState uint8
-
-const (
-	serviceAccepting serviceState = iota
-	serviceClosing
-	serviceClosed
-)
-
-// Service owns Continuable admission and the per-child serialization index.
-// Execution phase remains owned by the shared execution object.
+// Service owns Continuable behavior and the per-child serialization index.
+// Module admission belongs to subagents.Service; Execution phase belongs to
+// the shared execution object.
 type Service struct {
 	dependencies Dependencies
 	mutex        sync.Mutex
-	state        serviceState
 	slots        map[session.SessionID]*childSlot
 }
 
@@ -104,7 +90,6 @@ func New(dependencySet Dependencies) (*Service, error) {
 	}
 	return &Service{
 		dependencies: dependencySet,
-		state:        serviceAccepting,
 		slots:        make(map[session.SessionID]*childSlot),
 	}, nil
 }
@@ -116,11 +101,6 @@ func (owner *Service) Close(closeContext context.Context) error {
 		closeContext = context.Background()
 	}
 	owner.mutex.Lock()
-	if owner.state == serviceClosed {
-		owner.mutex.Unlock()
-		return nil
-	}
-	owner.state = serviceClosing
 	slots := make([]*childSlot, 0, len(owner.slots))
 	for _, slot := range owner.slots {
 		slots = append(slots, slot)
@@ -144,26 +124,14 @@ func (owner *Service) Close(closeContext context.Context) error {
 			return context.Cause(closeContext)
 		}
 	}
-	owner.mutex.Lock()
-	owner.state = serviceClosed
-	owner.mutex.Unlock()
 	return nil
 }
 
-func (owner *Service) assertAccepting(parentAgent agent.Agent) error {
+func (owner *Service) authorizeParent(parentAgent agent.Agent) error {
 	if parentAgent == nil || !owner.dependencies.Agents.Contains(parentAgent) {
 		return unauthorized(
 			"Continuable operation requires the exact live parent Agent",
 		)
-	}
-	owner.mutex.Lock()
-	state := owner.state
-	owner.mutex.Unlock()
-	if state != serviceAccepting {
-		return &subagent.Error{
-			Code:    subagent.ErrorDraining,
-			Message: "Continuable Subagents are closing",
-		}
 	}
 	return nil
 }
@@ -186,13 +154,8 @@ func (owner *Service) releaseSlot(
 ) {
 	owner.mutex.Lock()
 	slot.users--
-	slot.mutex.Lock()
-	unused := slot.current == nil
-	slot.mutex.Unlock()
-	if owner.slots[childID] == slot && slot.users == 0 && unused {
-		delete(owner.slots, childID)
-	}
 	owner.mutex.Unlock()
+	owner.removeUnusedSlot(childID, slot)
 }
 
 func (owner *Service) detach(

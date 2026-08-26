@@ -1,4 +1,4 @@
-package runtime
+package plugin
 
 import (
 	"fmt"
@@ -6,8 +6,9 @@ import (
 	"github.com/gorenx/goren/subagent/internal/continuable"
 )
 
-// RuntimeOptions supplies process-owned hooks that are not Plugin config.
-type RuntimeOptions struct {
+// Diagnostics supplies process-owned failure reporting that is not Plugin
+// configuration.
+type Diagnostics struct {
 	ObserverError func(error)
 }
 

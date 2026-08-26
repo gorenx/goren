@@ -65,9 +65,13 @@ func NewOneShotStart(
 	if err := validateSeedBuilderName(options.SeedBuilder); err != nil {
 		return StartCommand{}, err
 	}
+	requestSnapshot, snapshotErr := snapshotChildRequest(input)
+	if snapshotErr != nil {
+		return StartCommand{}, snapshotErr
+	}
 	return StartCommand{
 		mode:        ModeOneShot,
-		request:     input,
+		request:     requestSnapshot,
 		seedBuilder: options.SeedBuilder,
 		label:       cloneOptionalString(options.Label),
 	}, nil
@@ -86,10 +90,14 @@ func NewContinuableStart(
 			"subagent: continuable label must be non-empty",
 		)
 	}
+	requestSnapshot, snapshotErr := snapshotChildRequest(input)
+	if snapshotErr != nil {
+		return StartCommand{}, snapshotErr
+	}
 	labelValue := options.Label
 	return StartCommand{
 		mode:        ModeContinuable,
-		request:     input,
+		request:     requestSnapshot,
 		seedBuilder: options.SeedBuilder,
 		label:       &labelValue,
 		childID:     cloneSessionID(options.ChildID),
@@ -101,10 +109,9 @@ func (command StartCommand) Mode() Mode {
 	return command.mode
 }
 
-// Request returns the caller input. Starter snapshots it before asynchronous
-// work begins.
-func (command StartCommand) Request() ChildRequest {
-	return command.request
+// Request returns a detached copy of the validated child input.
+func (command StartCommand) Request() (ChildRequest, error) {
+	return snapshotChildRequest(command.request)
 }
 
 // SeedBuilderName returns the exact registered seed strategy name.
@@ -197,6 +204,71 @@ func cloneOptionalString(source *string) *string {
 }
 
 func cloneSessionID(source *session.SessionID) *session.SessionID {
+	if source == nil {
+		return nil
+	}
+	detached := *source
+	return &detached
+}
+
+const maxSafeInteger int64 = 1<<53 - 1
+
+func snapshotChildRequest(source ChildRequest) (ChildRequest, error) {
+	if source.MaxDepth != nil &&
+		(*source.MaxDepth < 0 || *source.MaxDepth > maxSafeInteger) {
+		return ChildRequest{}, errors.New(
+			"subagent: maxDepth must be a non-negative safe integer",
+		)
+	}
+	promptSnapshot, cloneErr := llm.CloneContentBlocks(source.Prompt)
+	if cloneErr != nil {
+		return ChildRequest{}, cloneErr
+	}
+	filterSnapshot, snapshotErr := snapshotToolRestriction(source.ToolFilter)
+	if snapshotErr != nil {
+		return ChildRequest{}, snapshotErr
+	}
+	return ChildRequest{
+		Prompt:       promptSnapshot,
+		Parent:       source.Parent,
+		AgentOptions: snapshotAgentOptions(source.AgentOptions),
+		MaxDepth:     cloneInt64(source.MaxDepth),
+		ToolFilter:   filterSnapshot,
+		Persona:      cloneOptionalString(source.Persona),
+		OutputSchema: append(json.RawMessage(nil), source.OutputSchema...),
+	}, nil
+}
+
+func snapshotAgentOptions(source *agent.Options) *agent.Options {
+	if source == nil {
+		return nil
+	}
+	detached := *source
+	if source.MaxTokens != nil {
+		maxTokensValue := *source.MaxTokens
+		detached.MaxTokens = &maxTokensValue
+	}
+	return &detached
+}
+
+func snapshotToolRestriction(
+	filterValue *tools.ToolRestriction,
+) (*tools.ToolRestriction, error) {
+	if filterValue == nil {
+		return nil, nil
+	}
+	if filterValue.Allow == nil && filterValue.Deny == nil {
+		return nil, errors.New(
+			"subagent: toolFilter must declare allow and/or deny",
+		)
+	}
+	return &tools.ToolRestriction{
+		Allow: cloneStrings(filterValue.Allow),
+		Deny:  cloneStrings(filterValue.Deny),
+	}, nil
+}
+
+func cloneInt64(source *int64) *int64 {
 	if source == nil {
 		return nil
 	}

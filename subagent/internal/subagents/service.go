@@ -83,20 +83,19 @@ func New() *Service {
 func (owner *Service) Open(
 	agentRegistry agent.Registry,
 	executionRegistry *sharedexecution.Registry,
-	messageService messenger,
-	reportService reporter,
 	implementations ...implementation,
 ) error {
 	if agentRegistry == nil || executionRegistry == nil ||
-		len(implementations) == 0 || messageService == nil ||
-		reportService == nil {
+		len(implementations) == 0 {
 		return errors.New(
 			"subagent: Service requires Agent Registry, Execution Registry, " +
-				"implementations, messenger, and reporter",
+				"and implementations",
 		)
 	}
 	implementationIndex := make(map[subagent.Mode]implementation, len(implementations))
 	closeOrder := make([]implementation, 0, len(implementations))
+	var messageService messenger
+	var reportService reporter
 	for _, candidate := range implementations {
 		if candidate == nil || candidate.Mode() == "" {
 			return errors.New("subagent: implementation is incomplete")
@@ -109,6 +108,28 @@ func (owner *Service) Open(
 		}
 		implementationIndex[candidate.Mode()] = candidate
 		closeOrder = append(closeOrder, candidate)
+		if candidateMessenger, matches := candidate.(messenger); matches {
+			if messageService != nil {
+				return errors.New(
+					"subagent: multiple implementations provide child messaging",
+				)
+			}
+			messageService = candidateMessenger
+		}
+		if candidateReporter, matches := candidate.(reporter); matches {
+			if reportService != nil {
+				return errors.New(
+					"subagent: multiple implementations provide parent reporting",
+				)
+			}
+			reportService = candidateReporter
+		}
+	}
+	if messageService == nil || reportService == nil {
+		return errors.New(
+			"subagent: implementations must provide child messaging and " +
+				"parent reporting",
+		)
 	}
 	owner.mutex.Lock()
 	defer owner.mutex.Unlock()

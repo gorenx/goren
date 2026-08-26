@@ -12,7 +12,6 @@ import (
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
-	"github.com/gorenx/goren/subagent/internal/childrequest"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
 	"github.com/gorenx/goren/subagent/internal/lineage"
 	"github.com/gorenx/goren/tools"
@@ -23,19 +22,13 @@ type SeedBuilders interface {
 	Find(string) (subagent.SeedBuilder, bool)
 }
 
-// Lifecycle publishes paired Subagent execution facts.
-type Lifecycle interface {
-	Started(agent.Agent, subagent.Started)
-	Ended(agent.Agent, subagent.Ended)
-}
-
 // Dependencies contains the capabilities required by OneShot execution.
 type Dependencies struct {
 	Agents       agent.Registry
 	Constructor  agent.Constructor
 	Approval     approval.DelegationPolicy
 	SeedBuilders SeedBuilders
-	Lifecycle    Lifecycle
+	Publisher    sharedexecution.EventPublisher
 	Executions   *sharedexecution.Registry
 }
 
@@ -136,7 +129,7 @@ func (owner *Service) Start(
 	if command.Mode() != subagent.ModeOneShot {
 		return nil, errors.New("subagent: OneShot received another start mode")
 	}
-	requestSnapshot, snapshotErr := childrequest.Snapshot(command.Request())
+	requestSnapshot, snapshotErr := command.Request()
 	if snapshotErr != nil {
 		return nil, snapshotErr
 	}
@@ -147,6 +140,7 @@ func (owner *Service) Start(
 			Message: "OneShot Start requires the exact live parent Agent",
 		}
 	}
+	seedBuilderName := command.SeedBuilderName()
 	if len(requestSnapshot.OutputSchema) != 0 {
 		requestSnapshot.OutputSchema, snapshotErr = tools.SnapshotObjectSchema(
 			requestSnapshot.OutputSchema,
@@ -165,7 +159,7 @@ func (owner *Service) Start(
 	}
 	seed, seedErr := owner.buildSeed(
 		requestContext,
-		command.SeedBuilderName(),
+		seedBuilderName,
 		childID,
 		requestSnapshot.Parent,
 	)
@@ -181,7 +175,7 @@ func (owner *Service) Start(
 	}
 	descriptor := newDescriptorAppender(
 		subagent.OneShotDescriptor{
-			Provider: command.SeedBuilderName(),
+			Provider: seedBuilderName,
 			Label:    command.Label(),
 		},
 	)
@@ -241,11 +235,11 @@ func (owner *Service) Start(
 	terminator := &executionTerminator{
 		handle:      handle,
 		parent:      requestSnapshot.Parent,
-		seedBuilder: command.SeedBuilderName(),
+		seedBuilder: seedBuilderName,
 		runID:       runID,
 		boundary:    int64(len(seed)),
 		structured:  structured,
-		lifecycle:   owner.dependencies.Lifecycle,
+		publisher:   owner.dependencies.Publisher,
 	}
 	running, executionErr := sharedexecution.New(runID, childID, terminator)
 	if executionErr != nil {
@@ -276,13 +270,12 @@ func (owner *Service) Start(
 			handle.Dispose(context.WithoutCancel(requestContext)),
 		)
 	}
-	terminator.published = true
-	if owner.dependencies.Lifecycle != nil {
-		owner.dependencies.Lifecycle.Started(
+	if owner.dependencies.Publisher != nil {
+		owner.dependencies.Publisher.PublishStarted(
 			requestSnapshot.Parent,
 			subagent.Started{
 				RunID:    runID,
-				Provider: command.SeedBuilderName(),
+				Provider: seedBuilderName,
 				ID:       childID,
 				Local:    true,
 			},
@@ -312,22 +305,14 @@ func (owner *Service) buildSeed(
 	if parentSession == nil {
 		return nil, errors.New("subagent: parent Session is unavailable")
 	}
-	parentHeader := parentSession.Header()
 	seedValue, seedErr := builder.BuildSeed(
 		requestContext,
-		subagent.SeedRequest{
-			ChildID: childID,
-			Parent: subagent.ParentSnapshot{
-				SessionID: parentHeader.ID,
-				Header:    parentHeader,
-				Events:    parentSession.Events(),
-			},
-		},
+		parentSession.Events(),
 	)
 	if seedErr != nil {
 		return nil, seedErr
 	}
-	return cloneEvents(seedValue.Events), nil
+	return seedValue.EventPrefix(), nil
 }
 
 func watch(running *sharedexecution.Execution, handle agent.Handle) {
@@ -341,24 +326,4 @@ func watch(running *sharedexecution.Execution, handle agent.Handle) {
 	case <-idleResult:
 		running.Stop(sharedexecution.StopNormal)
 	}
-}
-
-func cloneEvents(source []session.Event) []session.Event {
-	if source == nil {
-		return nil
-	}
-	detached := make([]session.Event, len(source))
-	for index, eventValue := range source {
-		detached[index] = eventValue
-		detached[index].Data = append([]byte(nil), eventValue.Data...)
-		if eventValue.SourceEventSeqs != nil {
-			sequences := append([]int64(nil), (*eventValue.SourceEventSeqs)...)
-			detached[index].SourceEventSeqs = &sequences
-		}
-		if eventValue.SurfaceOp != nil {
-			operation := *eventValue.SurfaceOp
-			detached[index].SurfaceOp = &operation
-		}
-	}
-	return detached
 }

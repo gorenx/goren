@@ -5,28 +5,17 @@ import (
 	"errors"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/subagent"
 )
-
-// Input is the immutable identity known before an Agent Scope exists.
-type Input struct {
-	ChildID    session.SessionID
-	ParentID   session.SessionID
-	Descriptor subagent.ContinuableDescriptor
-}
 
 // Provisioner installs the Registry's current Extension view into one child.
 type Provisioner struct {
 	registry *Registry
-	input    Input
 }
 
 // NewProvisioner constructs one Agent Provisioner for a Continuable Scope.
-func NewProvisioner(owner *Registry, extensionInput Input) *Provisioner {
+func NewProvisioner(owner *Registry) *Provisioner {
 	return &Provisioner{
 		registry: owner,
-		input:    extensionInput,
 	}
 }
 
@@ -49,22 +38,16 @@ func (owner *Provisioner) Provision(
 		return nil, nil
 	}
 	acquired := &provisioning{}
-	extensionContext := subagent.ExtensionContext{
-		ChildID:    owner.input.ChildID,
-		ParentID:   owner.input.ParentID,
-		Scope:      scope,
-		Descriptor: owner.input.Descriptor,
-	}
 	for _, record := range registrations {
 		record.mutex.Lock()
-		removed := record.removed
+		removed := record.state == registrationRemoved
 		record.mutex.Unlock()
 		if removed {
 			continue
 		}
 		installation, installErr := record.extension.Install(
 			requestContext,
-			extensionContext,
+			scope,
 		)
 		if installErr != nil {
 			return nil, errors.Join(
@@ -85,7 +68,7 @@ func (owner *Provisioner) Provision(
 		}
 		record.mutex.Lock()
 		record.installations = append(record.installations, installed)
-		removed = record.removed
+		removed = record.state == registrationRemoved
 		record.mutex.Unlock()
 		acquired.mutex.Lock()
 		acquired.effects = append(acquired.effects, installed)

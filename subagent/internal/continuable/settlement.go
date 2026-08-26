@@ -9,7 +9,6 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
-	"github.com/gorenx/goren/subagent/internal/assistantoutput"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
 )
 
@@ -119,8 +118,8 @@ func (terminator *executionTerminator) Terminate(
 		terminalValue.Output = nil
 	}
 	terminator.notifyParent(terminalValue)
-	if terminator.owner.dependencies.Lifecycle != nil {
-		terminator.owner.dependencies.Lifecycle.Ended(
+	if terminator.owner.dependencies.Publisher != nil {
+		terminator.owner.dependencies.Publisher.PublishEnded(
 			terminator.parent,
 			subagent.Ended{
 				RunID:                terminator.runID,
@@ -295,7 +294,7 @@ func lastAssistant(
 			suffix = append(suffix, committed)
 		}
 	}
-	return assistantoutput.Select(suffix)
+	return sharedexecution.SelectAssistantOutput(suffix)
 }
 
 var _ sharedexecution.Terminator = (*executionTerminator)(nil)

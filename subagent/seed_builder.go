@@ -10,13 +10,8 @@ import (
 // Session is created for the first time. It does not create or run an Agent.
 type SeedBuilder interface {
 	Name() string
-	Policy() SeedPolicy
-	BuildSeed(context.Context, SeedRequest) (SessionSeed, error)
-}
-
-// SeedPolicy describes the durable input selected by a SeedBuilder.
-type SeedPolicy struct {
-	ParentContext ParentContextPolicy
+	ContextPolicy() ParentContextPolicy
+	BuildSeed(context.Context, []session.Event) (SessionSeed, error)
 }
 
 // ParentContextPolicy identifies which parent events may enter a child seed.
@@ -29,23 +24,41 @@ const (
 	CompletedParentTurns
 )
 
-// SeedRequest contains immutable identities and a detached parent snapshot.
-type SeedRequest struct {
-	ChildID session.SessionID
-	Parent  ParentSnapshot
-}
-
-// ParentSnapshot is the detached parent Session state visible to a
-// SeedBuilder. The live parent Agent is intentionally not exposed.
-type ParentSnapshot struct {
-	SessionID session.SessionID
-	Header    session.Header
-	Events    []session.Event
-}
-
-// SessionSeed is the detached event prefix contributed by a SeedBuilder.
+// SessionSeed is the immutable event prefix contributed by a SeedBuilder.
 type SessionSeed struct {
-	Events []session.Event
+	events []session.Event
+}
+
+// NewSessionSeed snapshots one event prefix.
+func NewSessionSeed(events []session.Event) SessionSeed {
+	return SessionSeed{
+		events: cloneSeedEvents(events),
+	}
+}
+
+// EventPrefix returns a detached copy of the seed events.
+func (seed SessionSeed) EventPrefix() []session.Event {
+	return cloneSeedEvents(seed.events)
+}
+
+func cloneSeedEvents(source []session.Event) []session.Event {
+	if source == nil {
+		return nil
+	}
+	detached := make([]session.Event, len(source))
+	for index, eventValue := range source {
+		detached[index] = eventValue
+		detached[index].Data = append([]byte(nil), eventValue.Data...)
+		if eventValue.SourceEventSeqs != nil {
+			sequences := append([]int64(nil), (*eventValue.SourceEventSeqs)...)
+			detached[index].SourceEventSeqs = &sequences
+		}
+		if eventValue.SurfaceOp != nil {
+			operation := *eventValue.SurfaceOp
+			detached[index].SurfaceOp = &operation
+		}
+	}
+	return detached
 }
 
 // SeedBuilderRegistration owns one exact SeedBuilder registration.

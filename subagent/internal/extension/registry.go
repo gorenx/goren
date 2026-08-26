@@ -20,11 +20,18 @@ type Registry struct {
 	registrations []*registration
 }
 
+type registrationState uint8
+
+const (
+	registrationActive registrationState = iota
+	registrationRemoved
+)
+
 type registration struct {
 	mutex         sync.Mutex
 	owner         *Registry
 	extension     subagent.ContinuableExtension
-	removed       bool
+	state         registrationState
 	installations []*effect
 	closeErr      error
 }
@@ -69,12 +76,12 @@ func (record *registration) Unregister(closeContext context.Context) error {
 		return nil
 	}
 	record.mutex.Lock()
-	if record.removed {
+	if record.state == registrationRemoved {
 		closeErr := record.closeErr
 		record.mutex.Unlock()
 		return closeErr
 	}
-	record.removed = true
+	record.state = registrationRemoved
 	effects := append([]*effect(nil), record.installations...)
 	record.mutex.Unlock()
 

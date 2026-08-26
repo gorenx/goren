@@ -1,4 +1,4 @@
-package assistantoutput
+package execution
 
 import (
 	"encoding/json"
@@ -16,7 +16,7 @@ func TestSelectUsesLastNonEmptyAssistantMessage(t *testing.T) {
 		assistantMessageEvent(t, 3),
 	}
 
-	selected, selectErr := Select(events)
+	selected, selectErr := SelectAssistantOutput(events)
 	if selectErr != nil {
 		t.Fatal(selectErr)
 	}
@@ -38,7 +38,7 @@ func TestSelectPrefersMessageOverAllStreamedText(t *testing.T) {
 		assistantMessageEvent(t, 4),
 	}
 
-	selected, selectErr := Select(events)
+	selected, selectErr := SelectAssistantOutput(events)
 	if selectErr != nil {
 		t.Fatal(selectErr)
 	}
@@ -58,7 +58,7 @@ func TestSelectTreatsReasoningAsNonEmptyMessage(t *testing.T) {
 		}),
 	}
 
-	selected, selectErr := Select(events)
+	selected, selectErr := SelectAssistantOutput(events)
 	if selectErr != nil {
 		t.Fatal(selectErr)
 	}
@@ -94,7 +94,7 @@ func TestSelectFallsBackToTextDeltasOnly(t *testing.T) {
 		assistantMessageEvent(t, 5),
 	}
 
-	selected, selectErr := Select(events)
+	selected, selectErr := SelectAssistantOutput(events)
 	if selectErr != nil {
 		t.Fatal(selectErr)
 	}
@@ -111,7 +111,7 @@ func TestSelectReturnsNoOutputWithoutMessageOrText(t *testing.T) {
 		assistantMessageEvent(t, 2),
 	}
 
-	selected, selectErr := Select(events)
+	selected, selectErr := SelectAssistantOutput(events)
 	if selectErr != nil {
 		t.Fatal(selectErr)
 	}
