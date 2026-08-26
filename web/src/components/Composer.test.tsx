@@ -22,6 +22,7 @@ const snapshot: ConversationSnapshot = {
   pendingQuestions: new Map(),
   localTitles: new Map(),
   currentSessionId: session.sessionId,
+  creatingSession: false,
   onlineDownlinks: 2,
   composerState: 'composer.ready',
   credentialLoaded: true,
