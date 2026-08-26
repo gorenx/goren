@@ -42,9 +42,9 @@ type descendantAdmission uint8
 const (
 	// descendantsAccepted allows new child epochs under this exact parent.
 	descendantsAccepted descendantAdmission = iota
-	// descendantsDraining permanently rejects new child epochs while
-	// admitted and live descendants are joined child-first.
-	descendantsDraining
+	// descendantsClosing permanently rejects new child epochs while admitted
+	// and live descendants are joined child-first.
+	descendantsClosing
 )
 
 type teardownOrigin uint8
@@ -54,7 +54,7 @@ const (
 	// teardown has claimed the epoch close transaction.
 	teardownUnclaimed teardownOrigin = iota
 	// teardownByCoordinator means an exact Handle, parent close, or Registry
-	// shutdown owns descendant drain and invokes the runtime teardown port.
+	// shutdown owns descendant closure and invokes the runtime teardown port.
 	teardownByCoordinator
 	// teardownByRuntime means Plugin Runtime structural disposal began first and
 	// AgentTeardown callbacks report completion to the same Coordinator epoch.

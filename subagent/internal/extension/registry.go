@@ -52,7 +52,7 @@ func (owner *Registry) RegisterExtension(
 	return record, nil
 }
 
-// Clear closes every remaining registration after child Activations drain.
+// Clear closes every remaining registration after child close is requested.
 func (owner *Registry) Clear(closeContext context.Context) (int, error) {
 	owner.mutex.Lock()
 	registrations := append([]*registration(nil), owner.registrations...)

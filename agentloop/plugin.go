@@ -30,6 +30,7 @@ type Plugin struct {
 	constructor          agent.Constructor
 	factory              *Factory
 	registration         *registrationPlugin
+	scopes               *agentScopes
 }
 
 // New constructs an inactive Agent Loop Plugin from validated runtime
@@ -50,6 +51,7 @@ func New(runtimeSettings Settings, policies RuntimeOptions) (*Plugin, error) {
 	owner.registration = &registrationPlugin{
 		loop: owner,
 	}
+	owner.scopes = newAgentScopes(owner)
 	return owner, nil
 }
 
@@ -95,9 +97,7 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 		persistence,
 		owner.failures,
 		owner.runtimeContextEvents,
-		pluginScopeHost{
-			owner: owner,
-		},
+		owner.scopes,
 	)
 	owner.mutex.Lock()
 	owner.constructor = constructor

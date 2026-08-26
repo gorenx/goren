@@ -10,8 +10,16 @@ type FinalFlushFailure struct {
 	Error   error
 }
 
+// CloseFailure identifies a managed Agent close that failed after Plugin
+// disposal had already handed completion to the Agent lifecycle owner.
+type CloseFailure struct {
+	ChildID session.SessionID
+	Error   error
+}
+
 // FailureReporter receives failures that cannot be returned to the caller
 // without changing Subagent lifecycle semantics.
 type FailureReporter interface {
 	ReportFinalFlushFailure(FinalFlushFailure)
+	ReportCloseFailure(CloseFailure)
 }

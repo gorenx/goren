@@ -88,21 +88,6 @@ func (record *reportContinuation) ReportFrom(
 	return "report-message", nil
 }
 
-func (*reportContinuation) DrainContinuableChildren(
-	context.Context,
-	agent.Agent,
-	[]session.SessionID,
-) error {
-	return nil
-}
-
-func (*reportContinuation) DrainContinuableDescendants(
-	context.Context,
-	[]agent.Agent,
-) error {
-	return nil
-}
-
 type reportAgent struct {
 	plugin.Base
 	id      session.SessionID

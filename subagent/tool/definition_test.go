@@ -200,21 +200,6 @@ func (*continuationRecord) ReportFrom(
 	return "", nil
 }
 
-func (*continuationRecord) DrainContinuableChildren(
-	context.Context,
-	agent.Agent,
-	[]session.SessionID,
-) error {
-	return nil
-}
-
-func (*continuationRecord) DrainContinuableDescendants(
-	context.Context,
-	[]agent.Agent,
-) error {
-	return nil
-}
-
 type toolAgent struct {
 	plugin.Base
 	id      session.SessionID

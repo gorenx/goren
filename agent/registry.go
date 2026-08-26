@@ -34,10 +34,11 @@ type ScopeProvisioning interface {
 	Provision(context.Context, Agent, Provisioner) error
 }
 
-// DescendantLifecycle owns managed runtime descendants of an exact Agent.
-type DescendantLifecycle interface {
+// RuntimeDescendants observes the managed runtime descendants of an exact
+// Agent. Closing remains an internal consequence of exact Handle disposal or
+// Registry shutdown rather than a separate consumer command.
+type RuntimeDescendants interface {
 	HasRuntimeDescendants(Agent) bool
-	CloseDescendants(context.Context, Agent) error
 }
 
 // FactoryRegistrar accepts the process-wide Agent construction implementation.
@@ -337,15 +338,6 @@ func (service *RegistryService) HasRuntimeDescendants(subject Agent) bool {
 	return service.coordinator.hasDescendants(subject)
 }
 
-// CloseDescendants permanently stops admission below parent and closes every
-// existing exact runtime descendant child-first.
-func (service *RegistryService) CloseDescendants(
-	closeContext context.Context,
-	parent Agent,
-) error {
-	return service.coordinator.closeDescendants(closeContext, parent)
-}
-
 // Shutdown stops construction admission and closes every Agent epoch
 // child-first, including epochs whose Factory is still returning.
 func (service *RegistryService) Shutdown(closeContext context.Context) error {
@@ -390,5 +382,5 @@ func (service *RegistryService) Shutdown(closeContext context.Context) error {
 var _ Registry = (*RegistryService)(nil)
 var _ Constructor = (*RegistryService)(nil)
 var _ ScopeProvisioning = (*RegistryService)(nil)
-var _ DescendantLifecycle = (*RegistryService)(nil)
+var _ RuntimeDescendants = (*RegistryService)(nil)
 var _ FactoryRegistrar = (*RegistryService)(nil)

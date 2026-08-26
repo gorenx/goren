@@ -77,7 +77,7 @@ type AncestorInterruptAuthority struct {
 func (AncestorInterruptAuthority) interruptAuthority() {}
 
 // ContinuableService owns durable child admission, delivery, authorization,
-// residency, and child-first drainage.
+// residency, and interruption.
 type ContinuableService interface {
 	StartContinuable(context.Context, ContinuableStartSpec) (ContinuableStart, error)
 	Followup(
@@ -94,10 +94,4 @@ type ContinuableService interface {
 		[]llm.ContentBlock,
 		ReportOptions,
 	) (llm.MessageID, error)
-	DrainContinuableChildren(
-		context.Context,
-		agent.Agent,
-		[]session.SessionID,
-	) error
-	DrainContinuableDescendants(context.Context, []agent.Agent) error
 }

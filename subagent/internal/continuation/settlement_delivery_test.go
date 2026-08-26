@@ -107,11 +107,4 @@ func TestFollowupWaitsForNaturalSettlementAndResumesDurableChild(t *testing.T) {
 		terminalFacts[0].StopReason != subagent.StopCompleted {
 		t.Fatalf("settlement epochs = %#v / %#v", startFacts, terminalFacts)
 	}
-	if drainErr := fixture.manager.DrainChildren(
-		context.Background(),
-		fixture.parent,
-		[]session.SessionID{childID},
-	); drainErr != nil {
-		t.Fatal(drainErr)
-	}
 }

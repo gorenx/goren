@@ -13,86 +13,6 @@ import (
 	"github.com/gorenx/goren/tools"
 )
 
-// scopeHost is the Agent Loop consumer port for preparing one private runtime
-// Scope. The Plugin adapter is the only implementation.
-type scopeHost interface {
-	Prepare(agent.Options, session.Header) scopePreparation
-}
-
-// scopePreparation breaks the construction cycle deliberately: the business
-// Agent receives its Scope runtime port before the Plugin adapter is mounted, then
-// Mount binds that exact Agent and activates its private Scope atomically.
-type scopePreparation interface {
-	Runtime() agent.AgentScopeRuntime
-	BindTeardown(agent.AgentTeardown) error
-	Mount(context.Context, *ReactLoopAgent) (scopedplugin.Scope, error)
-	Rollback(context.Context) error
-}
-
-type pluginScopeHost struct {
-	owner *Plugin
-}
-
-func (host pluginScopeHost) Prepare(
-	loopOptions agent.Options,
-	headerSnapshot session.Header,
-) scopePreparation {
-	root := newAgentScopeRoot(loopOptions, headerSnapshot)
-	return &pluginScopePreparation{
-		host: host,
-		root: root,
-	}
-}
-
-type pluginScopePreparation struct {
-	host pluginScopeHost
-	root *agentScopeRoot
-}
-
-func (preparation *pluginScopePreparation) Runtime() agent.AgentScopeRuntime {
-	return preparation.root
-}
-
-func (preparation *pluginScopePreparation) BindTeardown(
-	teardownTarget agent.AgentTeardown,
-) error {
-	return preparation.root.bindTeardown(teardownTarget)
-}
-
-func (preparation *pluginScopePreparation) Mount(
-	requestContext context.Context,
-	subject *ReactLoopAgent,
-) (scopedplugin.Scope, error) {
-	if preparation == nil || preparation.root == nil || preparation.host.owner == nil {
-		return nil, errors.New("agentloop: Agent Scope preparation is unavailable")
-	}
-	if err := preparation.root.bind(subject); err != nil {
-		return nil, err
-	}
-	handle, err := plugin.MountScopedChild(
-		requestContext,
-		preparation.host.owner,
-		preparation.root,
-	)
-	if err != nil {
-		return nil, errors.Join(
-			err,
-			preparation.root.Dispose(context.WithoutCancel(requestContext)),
-		)
-	}
-	preparation.root.recordMount(preparation.host.owner, handle)
-	return preparation.root, nil
-}
-
-func (preparation *pluginScopePreparation) Rollback(
-	closeContext context.Context,
-) error {
-	if preparation == nil || preparation.root == nil {
-		return nil
-	}
-	return preparation.root.Teardown(closeContext)
-}
-
 // agentScopeRoot is the Plugin adapter for one exact Agent. It owns scoped
 // runtime bindings and translates Agent-owned runtime contracts to Plugin
 // Events and Waterfalls; it owns no Agent lifecycle state.
@@ -102,9 +22,7 @@ type agentScopeRoot struct {
 
 	mutex        sync.Mutex
 	subject      *ReactLoopAgent
-	mountOwner   plugin.Plugin
-	mountHandle  plugin.Handle
-	mounted      bool
+	scopes       *agentScopes
 	resources    []agent.ScopeResource
 	disposeOnce  sync.Once
 	disposeDone  chan struct{}
@@ -117,8 +35,10 @@ type agentScopeRoot struct {
 func newAgentScopeRoot(
 	loopOptions agent.Options,
 	headerSnapshot session.Header,
+	scopes *agentScopes,
 ) *agentScopeRoot {
 	return &agentScopeRoot{
+		scopes: scopes,
 		children: []plugin.ChildPlugin{
 			{
 				Instance:  systemprompt.NewOverlay(systemprompt.RegistryOptions{}),
@@ -178,17 +98,6 @@ func (root *agentScopeRoot) bind(subject *ReactLoopAgent) error {
 	return nil
 }
 
-func (root *agentScopeRoot) recordMount(
-	owner plugin.Plugin,
-	handle plugin.Handle,
-) {
-	root.mutex.Lock()
-	root.mountOwner = owner
-	root.mountHandle = handle
-	root.mounted = true
-	root.mutex.Unlock()
-}
-
 func (root *agentScopeRoot) Manifest() plugin.Manifest {
 	root.mutex.Lock()
 	children := append([]plugin.ChildPlugin(nil), root.children...)
@@ -208,6 +117,9 @@ func (root *agentScopeRoot) Dispose(closeContext context.Context) error {
 		closeContext = context.Background()
 	}
 	root.disposeOnce.Do(func() {
+		if root.scopes != nil {
+			root.scopes.forget(root)
+		}
 		root.mutex.Lock()
 		resources := append([]agent.ScopeResource(nil), root.resources...)
 		root.resources = nil
@@ -333,24 +245,11 @@ func (root *agentScopeRoot) Teardown(closeContext context.Context) error {
 		closeContext = context.Background()
 	}
 	root.teardownOnce.Do(func() {
-		root.mutex.Lock()
-		mounted := root.mounted
-		owner := root.mountOwner
-		handle := root.mountHandle
-		root.mutex.Unlock()
-		if !mounted || owner == nil || handle.ID() == 0 {
+		if root.scopes == nil {
 			root.teardownErr = root.Dispose(closeContext)
 			return
 		}
-		root.teardownErr = plugin.UnloadChild(
-			context.WithoutCancel(closeContext),
-			owner,
-			handle,
-		)
-		if errors.Is(root.teardownErr, plugin.ErrPluginNotActive) ||
-			errors.Is(root.teardownErr, plugin.ErrPluginNotBound) {
-			root.teardownErr = nil
-		}
+		root.teardownErr = root.scopes.release(closeContext, root)
 	})
 	return root.teardownErr
 }

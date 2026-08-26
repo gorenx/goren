@@ -155,21 +155,6 @@ func (*controlContinuation) ReportFrom(
 	return "", nil
 }
 
-func (*controlContinuation) DrainContinuableChildren(
-	context.Context,
-	agent.Agent,
-	[]session.SessionID,
-) error {
-	return nil
-}
-
-func (*controlContinuation) DrainContinuableDescendants(
-	context.Context,
-	[]agent.Agent,
-) error {
-	return nil
-}
-
 type controlRegistry struct {
 	entries map[session.SessionID]agent.Agent
 }

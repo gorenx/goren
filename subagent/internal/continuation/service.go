@@ -35,8 +35,9 @@ func (owner *Service) Enable(activeManager *Manager) error {
 	return nil
 }
 
-// Disable closes admission, detaches the current Manager, and drains all
-// resident Activations.
+// Disable closes admission, detaches the current Manager, and waits until each
+// resident Activation has submitted an exact managed close request. Agent
+// lifecycle completes structural teardown after the current Plugin operation.
 func (owner *Service) Disable(closeContext context.Context) error {
 	if closeContext == nil {
 		closeContext = context.Background()
@@ -48,7 +49,7 @@ func (owner *Service) Disable(closeContext context.Context) error {
 	if activeManager == nil {
 		return nil
 	}
-	return activeManager.Drain(context.WithoutCancel(closeContext))
+	return activeManager.RequestClose(context.WithoutCancel(closeContext))
 }
 
 func (owner *Service) requireManager() (*Manager, error) {

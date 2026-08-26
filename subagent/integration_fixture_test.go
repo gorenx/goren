@@ -210,6 +210,7 @@ func (observerState *subagentLifecycleObserver) snapshot() (
 
 type integrationFixture struct {
 	runtimeEngine  *plugin.Runtime
+	subagentHandle plugin.Handle
 	agents         *agent.RegistryService
 	sessions       session.LiveStore
 	toolRuntime    tools.ToolRuntime
@@ -341,21 +342,27 @@ func newIntegrationFixtureWithConfiguration(
 		modelRuntime,
 	}
 	rootPlugins = append(rootPlugins, configuration.plugins...)
+	subagentPlugin := subagentruntime.New(subagentruntime.RuntimeOptions{
+		ObserverError: observerErrors.report,
+	})
 	rootPlugins = append(
 		rootPlugins,
 		promptRuntime,
 		toolService,
-		subagentruntime.New(subagentruntime.RuntimeOptions{
-			ObserverError: observerErrors.report,
-		}),
+	)
+	subagentPluginIndex := len(rootPlugins)
+	rootPlugins = append(
+		rootPlugins,
+		subagentPlugin,
 		spawnProvider,
 		delegationTool,
 		loopPlugin,
 	)
-	if _, startErr := runtimeEngine.Start(
+	handles, startErr := runtimeEngine.Start(
 		context.Background(),
 		rootPlugins...,
-	); startErr != nil {
+	)
+	if startErr != nil {
 		t.Fatal(startErr)
 	}
 	t.Cleanup(func() {
@@ -384,6 +391,7 @@ func newIntegrationFixtureWithConfiguration(
 	}
 	return &integrationFixture{
 		runtimeEngine:  runtimeEngine,
+		subagentHandle: handles[subagentPluginIndex],
 		agents:         agentRegistry,
 		sessions:       storeProbe.store,
 		toolRuntime:    toolService,
