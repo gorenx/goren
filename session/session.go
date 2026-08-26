@@ -9,8 +9,6 @@ import (
 	"github.com/gorenx/goren/llm"
 )
 
-var endSeedEvent = EventKey[struct{}]{name: endSeedEventType}
-
 // log is one in-memory append-only Session log. It contains no persistence,
 // transport, model, or Tool execution logic.
 type log struct {
@@ -73,13 +71,15 @@ func newWithClock(identifier SessionID, options CreateOptions, temporalSource Ti
 		applySurface(&conversation.view, transition)
 	}
 	conversation.firstLiveSeq = int64(len(conversation.entries))
-	if len(options.Seed) != 0 && conversation.entries[len(conversation.entries)-1].Type != endSeedEventType {
+	if options.Seed != nil &&
+		(len(conversation.entries) == 0 ||
+			conversation.entries[len(conversation.entries)-1].Type != EndSeedEventName) {
 		rawValue, snapshotErr := snapshotPayload(struct{}{})
 		if snapshotErr != nil {
 			return nil, snapshotErr
 		}
 		if _, err := conversation.commitBatch([]EventDraft{{
-			eventType: endSeedEventType,
+			eventType: EndSeedEventName,
 			data:      rawValue,
 		}}); err != nil {
 			return nil, err
