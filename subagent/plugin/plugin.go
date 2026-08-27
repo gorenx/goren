@@ -90,6 +90,7 @@ func (owner *Plugin) Manifest() pluginruntime.Manifest {
 		Events: []pluginruntime.EventSubscription{
 			pluginruntime.EventOf[agent.Disposed](),
 			pluginruntime.EventOf[agent.SessionStarted](),
+			pluginruntime.EventOf[session.EventAppended](),
 		},
 	}
 }

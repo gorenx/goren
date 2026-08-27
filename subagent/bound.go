@@ -27,6 +27,9 @@ const (
 	// BoundMaterializationEventName records the result of one Bound child
 	// create or restore attempt separately from its mutable configuration.
 	BoundMaterializationEventName = "subagent/bound-materialization"
+	// BoundCursorEventName records the half-open parent Session prefix already
+	// skipped or durably admitted to one Bound child Inbox.
+	BoundCursorEventName = "subagent/bound-cursor"
 	// BoundEventVersion is the first complete persisted Bound contract.
 	BoundEventVersion = 1
 )
@@ -139,6 +142,29 @@ type BoundMaterializationData struct {
 	ChildSessionID session.SessionID          `json:"childSessionId"`
 	ConfigRevision int64                      `json:"configRevision"`
 	Result         BoundMaterializationResult `json:"result"`
+}
+
+// BoundCursorDisposition classifies why one parent prefix may advance.
+type BoundCursorDisposition string
+
+const (
+	// BoundCursorDelivered means the exact interaction receipt is durable
+	// in the child Session before this parent progress fact commits.
+	BoundCursorDelivered BoundCursorDisposition = "delivered"
+	// BoundCursorSkipped means the completed parent turn contained no
+	// direct user interaction and therefore produced no child message.
+	BoundCursorSkipped BoundCursorDisposition = "skipped"
+)
+
+// BoundCursor is one monotonic per-binding parent interaction cursor. NextSeq
+// is half-open: every parent event before it was handled.
+type BoundCursor struct {
+	Version         int                    `json:"version"`
+	ChildSessionID  session.SessionID      `json:"childSessionId"`
+	PreviousNextSeq int64                  `json:"previousNextSeq"`
+	NextSeq         int64                  `json:"nextSeq"`
+	ThroughTurn     int64                  `json:"throughTurn"`
+	Disposition     BoundCursorDisposition `json:"disposition"`
 }
 
 func (source BoundCreation) MarshalJSON() ([]byte, error) {
@@ -370,6 +396,9 @@ var BoundConfigAppliedEvent = session.DefineEvent[BoundConfigAppliedData](
 )
 var BoundMaterializationEvent = session.DefineEvent[BoundMaterializationData](
 	BoundMaterializationEventName,
+)
+var BoundCursorEvent = session.DefineEvent[BoundCursor](
+	BoundCursorEventName,
 )
 
 var _ json.Marshaler = BoundCreation{}

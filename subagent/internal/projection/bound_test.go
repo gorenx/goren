@@ -1,6 +1,7 @@
 package projection
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 
@@ -200,6 +201,37 @@ func TestBoundProjectionRejectsMaterializationWithoutMatchingConfig(
 	)
 	if err == nil {
 		t.Fatal("Bound projection accepted materialization without config")
+	}
+}
+
+func TestBoundProjectionDoesNotExposeInteractionCursor(t *testing.T) {
+	t.Parallel()
+	unit := boundUnit{}
+	state, err := unit.InitialState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	transition, err := unit.ApplyState(
+		state,
+		boundProjectionEvent(
+			t,
+			subagent.BoundCursorEventName,
+			10,
+			subagent.BoundCursor{
+				Version:         subagent.BoundEventVersion,
+				ChildSessionID:  "child",
+				PreviousNextSeq: 1,
+				NextSeq:         10,
+				ThroughTurn:     2,
+				Disposition:     subagent.BoundCursorDelivered,
+			},
+		),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transition.Changed || !bytes.Equal(transition.State, state) {
+		t.Fatal("Bound interaction cursor entered the public projection")
 	}
 }
 
