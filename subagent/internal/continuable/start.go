@@ -16,16 +16,11 @@ import (
 
 // Start creates one durable child and returns its first common Execution.
 func (owner *Service) Start(
-	requestContext context.Context,
-	command subagent.StartCommand,
+	ctx context.Context,
+	command subagent.ContinuableStartCommand,
 ) (subagent.Execution, error) {
-	if contextErr := checkContext(requestContext, "Continuable Start"); contextErr != nil {
+	if contextErr := checkContext(ctx, "Continuable Start"); contextErr != nil {
 		return nil, contextErr
-	}
-	if command.Mode() != subagent.ModeContinuable {
-		return nil, errors.New(
-			"subagent: Continuable received another start mode",
-		)
 	}
 	requestSnapshot, snapshotErr := command.Request()
 	if snapshotErr != nil {
@@ -44,13 +39,9 @@ func (owner *Service) Start(
 	}
 	resolvedOptions := childLineage.AgentOptions(requestSnapshot.AgentOptions)
 	requestSnapshot.AgentOptions = &resolvedOptions
-	label := command.Label()
-	if label == nil {
-		return nil, errors.New("subagent: Continuable label is missing")
-	}
 	descriptor, descriptorErr := continuableDescriptor(
 		seedBuilderName,
-		*label,
+		command.Label(),
 		requestSnapshot,
 	)
 	if descriptorErr != nil {
@@ -78,7 +69,7 @@ func (owner *Service) Start(
 		return nil, errors.New("subagent: parent Session is unavailable")
 	}
 	seedValue, seedErr := builder.BuildSeed(
-		requestContext,
+		ctx,
 		parentSession.Events(),
 	)
 	if seedErr != nil {
@@ -93,7 +84,7 @@ func (owner *Service) Start(
 	defer owner.releaseSlot(childID, slot)
 	slot.mutex.Lock()
 	defer slot.mutex.Unlock()
-	if requestErr := requestContext.Err(); requestErr != nil {
+	if requestErr := ctx.Err(); requestErr != nil {
 		return nil, requestErr
 	}
 	if authorizationErr := owner.authorizeParent(requestSnapshot.Parent); authorizationErr != nil {
@@ -109,14 +100,14 @@ func (owner *Service) Start(
 	}
 	if requestedID != nil {
 		if availabilityErr := owner.assertPersistedAvailable(
-			requestContext,
+			ctx,
 			childID,
 		); availabilityErr != nil {
 			return nil, availabilityErr
 		}
 	}
 	handle, createErr := owner.create(
-		requestContext,
+		ctx,
 		childID,
 		descriptor,
 		requestSnapshot,
@@ -136,13 +127,13 @@ func (owner *Service) Start(
 	if messageErr != nil {
 		return nil, errors.Join(
 			messageErr,
-			handle.Dispose(context.WithoutCancel(requestContext)),
+			handle.Dispose(context.WithoutCancel(ctx)),
 		)
 	}
 	if submitErr := handle.Subject.Followup(prompt); submitErr != nil {
 		return nil, errors.Join(
 			submitErr,
-			handle.Dispose(context.WithoutCancel(requestContext)),
+			handle.Dispose(context.WithoutCancel(ctx)),
 		)
 	}
 	current, publishErr := owner.publish(
@@ -154,7 +145,7 @@ func (owner *Service) Start(
 	if publishErr != nil {
 		return nil, errors.Join(
 			publishErr,
-			handle.Dispose(context.WithoutCancel(requestContext)),
+			handle.Dispose(context.WithoutCancel(ctx)),
 		)
 	}
 	slot.current = current

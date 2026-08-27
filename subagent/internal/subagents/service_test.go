@@ -28,19 +28,6 @@ func (record *implementationRecord) Mode() subagent.Mode {
 	return record.mode
 }
 
-func (record *implementationRecord) Start(
-	context.Context,
-	subagent.StartCommand,
-) (subagent.Execution, error) {
-	if record.startEntered != nil {
-		close(record.startEntered)
-	}
-	if record.startRelease != nil {
-		<-record.startRelease
-	}
-	return nil, nil
-}
-
 func (*implementationRecord) Interrupt(
 	context.Context,
 	session.SessionID,
@@ -58,12 +45,49 @@ func (record *implementationRecord) Close(context.Context) error {
 	return nil
 }
 
+type oneShotRecord struct {
+	*implementationRecord
+}
+
+func (record *oneShotRecord) Start(
+	_ context.Context,
+	_ subagent.OneShotStartCommand,
+) (subagent.Execution, error) {
+	if record.startEntered != nil {
+		close(record.startEntered)
+	}
+	if record.startRelease != nil {
+		<-record.startRelease
+	}
+	return nil, nil
+}
+
 type continuableRecord struct {
 	*implementationRecord
 	mutex       sync.Mutex
 	resumeCalls int
 	childID     session.SessionID
 	message     llm.UserMessage
+}
+
+func (*continuableRecord) Start(
+	context.Context,
+	subagent.ContinuableStartCommand,
+) (subagent.Execution, error) {
+	return nil, nil
+}
+
+type boundRecord struct {
+	*implementationRecord
+	command subagent.BoundStartCommand
+}
+
+func (record *boundRecord) Start(
+	_ context.Context,
+	command subagent.BoundStartCommand,
+) (subagent.Execution, error) {
+	record.command = command
+	return nil, nil
 }
 
 func (record *continuableRecord) Resume(
@@ -84,14 +108,16 @@ func TestServiceCloseStopsAdmissionAndWaitsForAdmittedStart(t *testing.T) {
 	t.Parallel()
 	closeOrder := make([]subagent.Mode, 0, 2)
 	var closeMutex sync.Mutex
-	oneShot := &implementationRecord{
-		mode:         subagent.ModeOneShot,
-		startEntered: make(chan struct{}),
-		startRelease: make(chan struct{}),
-		closeOrder:   &closeOrder,
-		closeMutex:   &closeMutex,
+	oneShotMode := &oneShotRecord{
+		implementationRecord: &implementationRecord{
+			mode:         subagent.ModeOneShot,
+			startEntered: make(chan struct{}),
+			startRelease: make(chan struct{}),
+			closeOrder:   &closeOrder,
+			closeMutex:   &closeMutex,
+		},
 	}
-	continuable := &continuableRecord{
+	continuableMode := &continuableRecord{
 		implementationRecord: &implementationRecord{
 			mode:       subagent.ModeContinuable,
 			closeOrder: &closeOrder,
@@ -102,8 +128,8 @@ func TestServiceCloseStopsAdmissionAndWaitsForAdmittedStart(t *testing.T) {
 	if err := owner.Open(
 		agent.NewRegistry(agent.RegistryOptions{}),
 		sharedexecution.NewRegistry(),
-		oneShot,
-		continuable,
+		oneShotMode,
+		continuableMode,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +147,7 @@ func TestServiceCloseStopsAdmissionAndWaitsForAdmittedStart(t *testing.T) {
 		_, startErr := owner.Start(context.Background(), command)
 		startDone <- startErr
 	}()
-	<-oneShot.startEntered
+	<-oneShotMode.startEntered
 	closeDone := make(chan error, 1)
 	go func() {
 		closeDone <- owner.Close(context.Background())
@@ -141,7 +167,7 @@ func TestServiceCloseStopsAdmissionAndWaitsForAdmittedStart(t *testing.T) {
 		t.Fatalf("Close returned before admitted Start: %v", closeErr)
 	default:
 	}
-	close(oneShot.startRelease)
+	close(oneShotMode.startRelease)
 	if startErr := <-startDone; startErr != nil {
 		t.Fatal(startErr)
 	}
@@ -157,6 +183,42 @@ func TestServiceCloseStopsAdmissionAndWaitsForAdmittedStart(t *testing.T) {
 	}
 	if !reflect.DeepEqual(actualOrder, wantOrder) {
 		t.Fatalf("close order = %v, want %v", actualOrder, wantOrder)
+	}
+}
+
+func TestServiceStartDispatchesBoundCommand(t *testing.T) {
+	t.Parallel()
+	parentAgent := newServiceAgent(t, "parent", nil)
+	boundImplementation := &boundRecord{
+		implementationRecord: &implementationRecord{
+			mode: subagent.ModeBound,
+		},
+	}
+	owner := New()
+	if openErr := owner.Open(
+		&agentRegistryRecord{
+			entries: map[session.SessionID]agent.Agent{
+				parentAgent.ID(): parentAgent,
+			},
+		},
+		sharedexecution.NewRegistry(),
+		boundImplementation,
+	); openErr != nil {
+		t.Fatal(openErr)
+	}
+	command, commandErr := subagent.NewBoundStart(
+		parentAgent,
+		"bound-child",
+	)
+	if commandErr != nil {
+		t.Fatal(commandErr)
+	}
+	if _, startErr := owner.Start(context.Background(), command); startErr != nil {
+		t.Fatal(startErr)
+	}
+	if boundImplementation.command.Parent() != parentAgent ||
+		boundImplementation.command.ChildID() != "bound-child" {
+		t.Fatalf("dispatched command = %#v", boundImplementation.command)
 	}
 }
 
@@ -184,6 +246,21 @@ func TestServiceOpenRejectsDuplicateImplementationMode(t *testing.T) {
 	)
 	if err == nil || !strings.Contains(err.Error(), "duplicate implementation") {
 		t.Fatalf("Open error = %v", err)
+	}
+}
+
+func TestServiceOpenRejectsIncompleteModeContract(t *testing.T) {
+	t.Parallel()
+	owner := New()
+	openErr := owner.Open(
+		agent.NewRegistry(agent.RegistryOptions{}),
+		sharedexecution.NewRegistry(),
+		&implementationRecord{
+			mode: subagent.ModeContinuable,
+		},
+	)
+	if openErr == nil || !strings.Contains(openErr.Error(), "incomplete") {
+		t.Fatalf("Open error = %v", openErr)
 	}
 }
 
@@ -235,8 +312,10 @@ func TestServiceSendUsesResidentChildAgentForEveryMode(t *testing.T) {
 			if openErr := owner.Open(
 				agents,
 				executions,
-				&implementationRecord{
-					mode: subagent.ModeOneShot,
+				&oneShotRecord{
+					implementationRecord: &implementationRecord{
+						mode: subagent.ModeOneShot,
+					},
 				},
 				&continuableRecord{
 					implementationRecord: &implementationRecord{
@@ -280,7 +359,7 @@ func TestServiceSendUsesContinuableOnlyForColdResume(t *testing.T) {
 			parent.ID(): parent,
 		},
 	}
-	continuable := &continuableRecord{
+	continuableMode := &continuableRecord{
 		implementationRecord: &implementationRecord{
 			mode: subagent.ModeContinuable,
 		},
@@ -289,10 +368,12 @@ func TestServiceSendUsesContinuableOnlyForColdResume(t *testing.T) {
 	if openErr := owner.Open(
 		agents,
 		sharedexecution.NewRegistry(),
-		&implementationRecord{
-			mode: subagent.ModeOneShot,
+		&oneShotRecord{
+			implementationRecord: &implementationRecord{
+				mode: subagent.ModeOneShot,
+			},
 		},
-		continuable,
+		continuableMode,
 	); openErr != nil {
 		t.Fatal(openErr)
 	}
@@ -312,15 +393,15 @@ func TestServiceSendUsesContinuableOnlyForColdResume(t *testing.T) {
 	if sendErr != nil {
 		t.Fatal(sendErr)
 	}
-	continuable.mutex.Lock()
-	defer continuable.mutex.Unlock()
-	if continuable.resumeCalls != 1 || continuable.childID != "cold-child" ||
-		continuable.message.StableID() != messageID {
+	continuableMode.mutex.Lock()
+	defer continuableMode.mutex.Unlock()
+	if continuableMode.resumeCalls != 1 || continuableMode.childID != "cold-child" ||
+		continuableMode.message.StableID() != messageID {
 		t.Fatalf(
 			"cold resume = calls:%d child:%q message:%q, returned:%q",
-			continuable.resumeCalls,
-			continuable.childID,
-			continuable.message.StableID(),
+			continuableMode.resumeCalls,
+			continuableMode.childID,
+			continuableMode.message.StableID(),
 			messageID,
 		)
 	}
@@ -375,8 +456,10 @@ func TestServiceSendReturnsResidentAgentErrorWithoutInterpretingExecutionState(
 	if openErr := owner.Open(
 		agents,
 		executions,
-		&implementationRecord{
-			mode: subagent.ModeOneShot,
+		&oneShotRecord{
+			implementationRecord: &implementationRecord{
+				mode: subagent.ModeOneShot,
+			},
 		},
 		&continuableRecord{
 			implementationRecord: &implementationRecord{

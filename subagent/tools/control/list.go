@@ -151,6 +151,15 @@ func (adapter *controlTools) project(
 			Parent: parentID,
 			Depth:  depth,
 		}, true
+	case subagent.BoundChildEntry:
+		return listEntry{
+			Kind:   "child",
+			ID:     string(row.ID),
+			Label:  row.Label,
+			Status: adapter.status(row.ID),
+			Parent: parentID,
+			Depth:  depth,
+		}, true
 	case subagent.DiagnosticEntry:
 		return listEntry{
 			Kind:   "diagnostic",

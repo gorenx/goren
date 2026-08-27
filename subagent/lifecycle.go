@@ -12,7 +12,7 @@ import (
 	"github.com/gorenx/goren/tools"
 )
 
-// Mode distinguishes the two Subagent implementations in durable descriptors.
+// Mode distinguishes Subagent implementations in durable descriptors.
 type Mode string
 
 const (
@@ -20,6 +20,9 @@ const (
 	ModeOneShot Mode = "one-shot"
 	// ModeContinuable is one durable child conversation with resumable turns.
 	ModeContinuable Mode = "continuable"
+	// ModeBound is one child whose initial start is driven by a durable parent
+	// binding and whose runtime configuration comes from the Bound owner.
+	ModeBound Mode = "bound"
 )
 
 // ChildRequest contains caller-owned inputs shared by both implementations.
@@ -47,30 +50,50 @@ type ContinuableOptions struct {
 	ChildID     *session.SessionID
 }
 
-// StartCommand is a validated closed command for starting either Subagent
-// implementation. Private fields prevent mixed or incomplete variants.
-type StartCommand struct {
-	mode        Mode
+// StartCommand is the closed family of mode-owned start commands. The private
+// marker prevents callers from adding variants while each concrete command
+// keeps only the inputs required by its mode.
+type StartCommand interface {
+	Mode() Mode
+	startCommand()
+}
+
+// OneShotStartCommand contains the validated inputs for one terminal child.
+type OneShotStartCommand struct {
 	request     ChildRequest
 	seedBuilder string
 	label       *string
+}
+
+// ContinuableStartCommand contains the validated inputs for one durable child.
+type ContinuableStartCommand struct {
+	request     ChildRequest
+	seedBuilder string
+	label       string
 	childID     *session.SessionID
+}
+
+// BoundStartCommand identifies one already-bound child to initialize for an
+// exact live parent. Bound-owned creation input and configuration are loaded by
+// the Bound implementation rather than copied into this command.
+type BoundStartCommand struct {
+	parent  agent.Agent
+	childID session.SessionID
 }
 
 // NewOneShotStart constructs a valid OneShot command.
 func NewOneShotStart(
 	input ChildRequest,
 	options OneShotOptions,
-) (StartCommand, error) {
+) (OneShotStartCommand, error) {
 	if err := validateSeedBuilderName(options.SeedBuilder); err != nil {
-		return StartCommand{}, err
+		return OneShotStartCommand{}, err
 	}
 	requestSnapshot, snapshotErr := snapshotChildRequest(input)
 	if snapshotErr != nil {
-		return StartCommand{}, snapshotErr
+		return OneShotStartCommand{}, snapshotErr
 	}
-	return StartCommand{
-		mode:        ModeOneShot,
+	return OneShotStartCommand{
 		request:     requestSnapshot,
 		seedBuilder: options.SeedBuilder,
 		label:       cloneOptionalString(options.Label),
@@ -81,53 +104,115 @@ func NewOneShotStart(
 func NewContinuableStart(
 	input ChildRequest,
 	options ContinuableOptions,
-) (StartCommand, error) {
+) (ContinuableStartCommand, error) {
 	if err := validateSeedBuilderName(options.SeedBuilder); err != nil {
-		return StartCommand{}, err
+		return ContinuableStartCommand{}, err
 	}
 	if strings.TrimSpace(options.Label) == "" {
-		return StartCommand{}, errors.New(
+		return ContinuableStartCommand{}, errors.New(
 			"subagent: continuable label must be non-empty",
 		)
 	}
 	requestSnapshot, snapshotErr := snapshotChildRequest(input)
 	if snapshotErr != nil {
-		return StartCommand{}, snapshotErr
+		return ContinuableStartCommand{}, snapshotErr
 	}
-	labelValue := options.Label
-	return StartCommand{
-		mode:        ModeContinuable,
+	return ContinuableStartCommand{
 		request:     requestSnapshot,
 		seedBuilder: options.SeedBuilder,
-		label:       &labelValue,
+		label:       options.Label,
 		childID:     cloneSessionID(options.ChildID),
 	}, nil
 }
 
-// Mode returns the selected Subagent implementation.
-func (command StartCommand) Mode() Mode {
-	return command.mode
+// NewBoundStart constructs a command for one binding-selected child. The Bound
+// implementation must still verify that the durable binding exists.
+func NewBoundStart(
+	parentAgent agent.Agent,
+	boundChildID session.SessionID,
+) (BoundStartCommand, error) {
+	if parentAgent == nil {
+		return BoundStartCommand{}, errors.New(
+			"subagent: Bound start parent Agent is nil",
+		)
+	}
+	if strings.TrimSpace(string(boundChildID)) == "" ||
+		string(boundChildID) != strings.TrimSpace(string(boundChildID)) {
+		return BoundStartCommand{}, errors.New(
+			"subagent: Bound start child Session ID must be non-empty and trimmed",
+		)
+	}
+	return BoundStartCommand{
+		parent:  parentAgent,
+		childID: boundChildID,
+	}, nil
 }
 
-// Request returns a detached copy of the validated child input.
-func (command StartCommand) Request() (ChildRequest, error) {
+// Mode selects the OneShot implementation.
+func (OneShotStartCommand) Mode() Mode {
+	return ModeOneShot
+}
+
+func (OneShotStartCommand) startCommand() {}
+
+// Request returns a detached copy of the validated OneShot input.
+func (command OneShotStartCommand) Request() (ChildRequest, error) {
 	return snapshotChildRequest(command.request)
 }
 
 // SeedBuilderName returns the exact registered seed strategy name.
-func (command StartCommand) SeedBuilderName() string {
+func (command OneShotStartCommand) SeedBuilderName() string {
 	return command.seedBuilder
 }
 
 // Label returns a detached optional display label.
-func (command StartCommand) Label() *string {
+func (command OneShotStartCommand) Label() *string {
 	return cloneOptionalString(command.label)
+}
+
+// Mode selects the Continuable implementation.
+func (ContinuableStartCommand) Mode() Mode {
+	return ModeContinuable
+}
+
+func (ContinuableStartCommand) startCommand() {}
+
+// Request returns a detached copy of the validated Continuable input.
+func (command ContinuableStartCommand) Request() (ChildRequest, error) {
+	return snapshotChildRequest(command.request)
+}
+
+// SeedBuilderName returns the exact registered seed strategy name.
+func (command ContinuableStartCommand) SeedBuilderName() string {
+	return command.seedBuilder
+}
+
+// Label returns the required Continuable display label.
+func (command ContinuableStartCommand) Label() string {
+	return command.label
 }
 
 // RequestedChildID returns the detached durable identity requested for a
 // Continuable child, when present.
-func (command StartCommand) RequestedChildID() *session.SessionID {
+func (command ContinuableStartCommand) RequestedChildID() *session.SessionID {
 	return cloneSessionID(command.childID)
+}
+
+// Mode selects the Bound implementation.
+func (BoundStartCommand) Mode() Mode {
+	return ModeBound
+}
+
+func (BoundStartCommand) startCommand() {}
+
+// Parent returns the exact live parent that discovered the committed binding.
+func (command BoundStartCommand) Parent() agent.Agent {
+	return command.parent
+}
+
+// ChildID returns the durable child identity stored by the binding.
+func (command BoundStartCommand) ChildID() session.SessionID {
+	return command.childID
 }
 
 // ExecutionState is the single lifecycle vocabulary used by both

@@ -15,6 +15,7 @@ import (
 	sessionprojection "github.com/gorenx/goren/session/projection"
 	"github.com/gorenx/goren/session/projectioncache"
 	"github.com/gorenx/goren/subagent"
+	"github.com/gorenx/goren/subagent/internal/bound"
 	"github.com/gorenx/goren/subagent/internal/childdirectory"
 	"github.com/gorenx/goren/subagent/internal/continuable"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
@@ -178,11 +179,13 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 			owner.releaseProjections(context.WithoutCancel(requestContext)),
 		)
 	}
+	boundService := bound.New()
 	err = owner.service.Open(
 		agentRegistry,
 		owner.executions,
 		oneShotService,
 		continuableService,
+		boundService,
 	)
 	if err != nil {
 		owner.directory.Disable()

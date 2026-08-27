@@ -66,6 +66,21 @@ func (data DescriptorData) MarshalJSON() ([]byte, error) {
 			Persona:       cloneString(identity.Persona),
 			ToolFilter:    wireFilter,
 		})
+	case BoundDescriptor:
+		if identity.Version != DescriptorVersion || identity.Mode != ModeBound {
+			return nil, errors.New("subagent: invalid Bound descriptor identity")
+		}
+		return json.Marshal(struct {
+			Version  int    `json:"version"`
+			Mode     Mode   `json:"mode"`
+			Provider string `json:"provider"`
+			Label    string `json:"label"`
+		}{
+			Version:  DescriptorVersion,
+			Mode:     ModeBound,
+			Provider: identity.Provider,
+			Label:    identity.Label,
+		})
 	case nil:
 		return nil, errors.New("subagent: descriptor value is missing")
 	default:
@@ -116,9 +131,16 @@ func (data *DescriptorData) UnmarshalJSON(rawValue []byte) error {
 		}
 		data.value = identity
 		return nil
+	case ModeBound:
+		identity, decodeErr := decodeBoundDescriptor(fields)
+		if decodeErr != nil {
+			return decodeErr
+		}
+		data.value = identity
+		return nil
 	default:
 		return errors.New(
-			"subagent: persisted descriptor mode must be \"one-shot\" or \"continuable\"",
+			"subagent: persisted descriptor mode must be \"one-shot\", \"continuable\", or \"bound\"",
 		)
 	}
 }
@@ -149,6 +171,13 @@ func SnapshotDescriptor(source Descriptor) (DescriptorData, error) {
 			AgentModel:    cloneString(identity.AgentModel),
 			Persona:       cloneString(identity.Persona),
 			ToolFilter:    filterValue,
+		}
+	case BoundDescriptor:
+		normalized = BoundDescriptor{
+			Version:  DescriptorVersion,
+			Mode:     ModeBound,
+			Provider: identity.Provider,
+			Label:    identity.Label,
 		}
 	case nil:
 		return DescriptorData{}, errors.New("subagent: descriptor is required")
@@ -296,6 +325,33 @@ func decodeContinuableDescriptor(
 		AgentModel:    agentModel,
 		Persona:       personaValue,
 		ToolFilter:    filterValue,
+	}, nil
+}
+
+func decodeBoundDescriptor(
+	fields map[string]json.RawMessage,
+) (BoundDescriptor, error) {
+	if err := rejectUnknownFields(fields, map[string]struct{}{
+		"version":  {},
+		"mode":     {},
+		"provider": {},
+		"label":    {},
+	}); err != nil {
+		return BoundDescriptor{}, err
+	}
+	establishedName, err := requiredString(fields, "provider")
+	if err != nil {
+		return BoundDescriptor{}, err
+	}
+	labelValue, err := requiredString(fields, "label")
+	if err != nil {
+		return BoundDescriptor{}, err
+	}
+	return BoundDescriptor{
+		Version:  DescriptorVersion,
+		Mode:     ModeBound,
+		Provider: establishedName,
+		Label:    labelValue,
 	}, nil
 }
 
@@ -466,6 +522,8 @@ func cloneDescriptor(source Descriptor) Descriptor {
 		identity.Persona = cloneString(identity.Persona)
 		filterValue, _ := cloneToolRestriction(identity.ToolFilter)
 		identity.ToolFilter = filterValue
+		return identity
+	case BoundDescriptor:
 		return identity
 	default:
 		return nil

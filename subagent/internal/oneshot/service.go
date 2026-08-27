@@ -138,17 +138,14 @@ func waitForClosing(
 // Start creates one child, accepts its initial message, and returns the common
 // Execution. The Start Context is not retained after publication.
 func (owner *Service) Start(
-	requestContext context.Context,
-	command subagent.StartCommand,
+	ctx context.Context,
+	command subagent.OneShotStartCommand,
 ) (subagent.Execution, error) {
-	if requestContext == nil {
+	if ctx == nil {
 		return nil, errors.New("subagent: OneShot Start context is nil")
 	}
-	if requestErr := requestContext.Err(); requestErr != nil {
+	if requestErr := ctx.Err(); requestErr != nil {
 		return nil, requestErr
-	}
-	if command.Mode() != subagent.ModeOneShot {
-		return nil, errors.New("subagent: OneShot received another start mode")
 	}
 	requestSnapshot, snapshotErr := command.Request()
 	if snapshotErr != nil {
@@ -179,7 +176,7 @@ func (owner *Service) Start(
 		return nil, identityErr
 	}
 	seed, seedErr := owner.buildSeed(
-		requestContext,
+		ctx,
 		seedBuilderName,
 		childID,
 		requestSnapshot.Parent,
@@ -211,7 +208,7 @@ func (owner *Service) Start(
 		)
 	}
 	initiatedContext, contextErr := agent.WithInitiator(
-		requestContext,
+		ctx,
 		requestSnapshot.Parent,
 	)
 	if contextErr != nil {
@@ -240,13 +237,13 @@ func (owner *Service) Start(
 	if messageErr != nil {
 		return nil, errors.Join(
 			messageErr,
-			handle.Dispose(context.WithoutCancel(requestContext)),
+			handle.Dispose(context.WithoutCancel(ctx)),
 		)
 	}
 	if followErr := handle.Subject.Followup(prompt); followErr != nil {
 		return nil, errors.Join(
 			followErr,
-			handle.Dispose(context.WithoutCancel(requestContext)),
+			handle.Dispose(context.WithoutCancel(ctx)),
 		)
 	}
 	terminator := &executionTerminator{
@@ -262,13 +259,13 @@ func (owner *Service) Start(
 	if executionErr != nil {
 		return nil, errors.Join(
 			executionErr,
-			handle.Dispose(context.WithoutCancel(requestContext)),
+			handle.Dispose(context.WithoutCancel(ctx)),
 		)
 	}
 	if activationErr := running.Activate(); activationErr != nil {
 		return nil, errors.Join(
 			activationErr,
-			handle.Dispose(context.WithoutCancel(requestContext)),
+			handle.Dispose(context.WithoutCancel(ctx)),
 		)
 	}
 	terminator.running = running
@@ -284,7 +281,7 @@ func (owner *Service) Start(
 	); publishErr != nil {
 		return nil, errors.Join(
 			publishErr,
-			handle.Dispose(context.WithoutCancel(requestContext)),
+			handle.Dispose(context.WithoutCancel(ctx)),
 		)
 	}
 	if owner.dependencies.Publisher != nil {

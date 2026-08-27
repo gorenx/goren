@@ -17,6 +17,28 @@ type sessionList struct {
 	conversations []session.Context
 }
 
+func TestChildEntryPreservesBoundIdentity(t *testing.T) {
+	t.Parallel()
+	entry := childEntry(
+		"bound-child",
+		subagentprojection.Identity{
+			Mode:  subagent.ModeBound,
+			Label: stringPointer("resident"),
+		},
+		subagent.ActivityInactive,
+		false,
+	)
+	want := subagent.BoundChildEntry{
+		ID:          "bound-child",
+		Label:       "resident",
+		Activity:    subagent.ActivityInactive,
+		HasChildren: false,
+	}
+	if !reflect.DeepEqual(entry, want) {
+		t.Fatalf("entry = %#v, want %#v", entry, want)
+	}
+}
+
 func (source sessionList) List() []session.Context {
 	return append([]session.Context(nil), source.conversations...)
 }
