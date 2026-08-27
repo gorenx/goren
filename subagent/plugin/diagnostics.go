@@ -50,5 +50,16 @@ func (reporter *failureReporter) ReportBoundFinalFlushFailure(
 	))
 }
 
+func (reporter *failureReporter) ReportBoundInteractionFailure(
+	failure bound.InteractionFailure,
+) {
+	reporter.report(fmt.Errorf(
+		"bound subagent %q could not process parent %q interaction: %w",
+		failure.ChildID,
+		failure.ParentID,
+		failure.Error,
+	))
+}
+
 var _ continuable.FailureReporter = (*failureReporter)(nil)
 var _ bound.FailureReporter = (*failureReporter)(nil)

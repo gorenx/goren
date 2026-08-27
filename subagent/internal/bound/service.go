@@ -32,11 +32,20 @@ type FinalFlushFailure struct {
 	Error   error
 }
 
+// InteractionFailure identifies one contained parent-interaction delivery or
+// recovery failure. The durable cursor remains unchanged on failure.
+type InteractionFailure struct {
+	ParentID session.SessionID
+	ChildID  session.SessionID
+	Error    error
+}
+
 // FailureReporter receives Bound failures that must not veto parent Agent
 // publication.
 type FailureReporter interface {
 	ReportBoundMaterializationFailure(MaterializationFailure)
 	ReportBoundFinalFlushFailure(FinalFlushFailure)
+	ReportBoundInteractionFailure(InteractionFailure)
 }
 
 // Extensions is Bound's consumer-owned view of named child Extensions.
@@ -103,6 +112,9 @@ type Service struct {
 	mutex        sync.Mutex
 	operations   map[operationKey]*operation
 	parents      map[session.SessionID]*operation
+	workers      map[operationKey]*interactionWorker
+	routes       map[session.SessionID]map[session.SessionID]*interactionWorker
+	closing      bool
 }
 
 // New constructs the Bound mode service.
@@ -116,6 +128,8 @@ func New(dependencySet Dependencies) (*Service, error) {
 		dependencies: dependencySet,
 		operations:   make(map[operationKey]*operation),
 		parents:      make(map[session.SessionID]*operation),
+		workers:      make(map[operationKey]*interactionWorker),
+		routes:       make(map[session.SessionID]map[session.SessionID]*interactionWorker),
 	}, nil
 }
 

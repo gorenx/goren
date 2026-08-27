@@ -70,6 +70,14 @@ type bound interface {
 	) (subagent.UpdateBoundConfigResult, error)
 }
 
+type sessionEventObserver interface {
+	SessionEventAppended(session.EventAppended)
+}
+
+type agentDisposalObserver interface {
+	AgentDisposed(context.Context, agent.Agent) error
+}
+
 type admissionState uint8
 
 const (

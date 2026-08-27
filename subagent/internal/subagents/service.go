@@ -207,6 +207,24 @@ func (owner *Service) AgentSessionStarted(
 	return selected.StartBindings(ctx, subject)
 }
 
+// SessionEventAppended forwards the existing post-commit wakeup to Bound
+// without performing Session reads in the Plugin observer call stack.
+func (owner *Service) SessionEventAppended(fact session.EventAppended) {
+	owner.mutex.RLock()
+	if owner.state != admissionAccepting {
+		owner.mutex.RUnlock()
+		return
+	}
+	owner.activeCalls.Add(1)
+	candidate := owner.implementations[subagent.ModeBound]
+	owner.mutex.RUnlock()
+	defer owner.activeCalls.Done()
+	observer, supported := candidate.(sessionEventObserver)
+	if supported {
+		observer.SessionEventAppended(fact)
+	}
+}
+
 // Interrupt performs common live-execution lookup and ancestor authorization,
 // then delegates only the mode-specific interruption behavior.
 func (owner *Service) Interrupt(
@@ -230,11 +248,19 @@ func (owner *Service) AgentDisposed(
 ) error {
 	owner.mutex.RLock()
 	control := owner.control
+	candidate := owner.implementations[subagent.ModeBound]
 	owner.mutex.RUnlock()
-	if control == nil {
-		return nil
+	var disposeErr error
+	if observer, supported := candidate.(agentDisposalObserver); supported {
+		disposeErr = observer.AgentDisposed(ctx, subject)
 	}
-	return control.AgentDisposed(ctx, subject)
+	if control != nil {
+		disposeErr = errors.Join(
+			disposeErr,
+			control.AgentDisposed(ctx, subject),
+		)
+	}
+	return disposeErr
 }
 
 // Close first closes admission, waits for admitted calls to return, and then

@@ -231,6 +231,12 @@ func (owner *Service) startLocked(
 			stopErr,
 		)
 	}
+	owner.ensureInteractionWorker(
+		parentAgent,
+		binding,
+		handle.Subject.SessionValue(),
+		currentOperation,
+	)
 	owner.watch(current)
 	return current.running, nil
 }

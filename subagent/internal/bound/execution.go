@@ -110,11 +110,21 @@ func (owner *Service) Close(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	owner.mutex.Lock()
+	owner.closing = true
+	workers := make([]*interactionWorker, 0, len(owner.workers))
+	for _, worker := range owner.workers {
+		workers = append(workers, worker)
+	}
+	owner.workers = make(map[operationKey]*interactionWorker)
+	owner.routes = make(map[session.SessionID]map[session.SessionID]*interactionWorker)
 	operations := make([]*operation, 0, len(owner.operations))
 	for _, currentOperation := range owner.operations {
 		operations = append(operations, currentOperation)
 	}
 	owner.mutex.Unlock()
+	for _, worker := range workers {
+		worker.Stop()
+	}
 	seen := make(map[*currentExecution]struct{})
 	currentExecutions := make([]*currentExecution, 0, len(operations))
 	for _, currentOperation := range operations {

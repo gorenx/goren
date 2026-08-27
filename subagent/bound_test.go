@@ -83,6 +83,7 @@ func TestBoundEventTypesAreRegistered(t *testing.T) {
 		subagent.BoundConfigEventName,
 		subagent.BoundConfigAppliedEventName,
 		subagent.BoundMaterializationEventName,
+		subagent.BoundCursorEventName,
 	} {
 		if !session.IsKnownEventType(eventType) {
 			t.Fatalf("Bound event type %q is not registered", eventType)

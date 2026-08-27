@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/plugin"
+	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 	subagentfactory "github.com/gorenx/goren/subagent/factory"
 	subagentplugin "github.com/gorenx/goren/subagent/plugin"
@@ -34,10 +35,18 @@ func TestFactoryCreatesSubagentPlugin(t *testing.T) {
 		plugin.ServiceOf[subagent.ChildControl](),
 		plugin.ServiceOf[subagent.ExtensionRegistry](),
 		plugin.ServiceOf[subagent.ChildDirectory](),
+		plugin.ServiceOf[subagent.BoundRegistry](),
 	} {
 		if !provided[capability.Name()] {
 			t.Fatalf("Plugin does not provide %q", capability.Name())
 		}
+	}
+	observed := make(map[string]bool)
+	for _, subscription := range created.Manifest().Events {
+		observed[subscription.Name()] = true
+	}
+	if !observed[session.AppendedEventName] {
+		t.Fatalf("Plugin does not observe %q", session.AppendedEventName)
 	}
 }
 
