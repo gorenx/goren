@@ -7,7 +7,19 @@ import (
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
+	subagentprojection "github.com/gorenx/goren/subagent/internal/projection"
 )
+
+func newAppliedProvisioner(
+	parentID session.SessionID,
+	config subagentprojection.BoundConfig,
+) agent.Provisioner {
+	return &appliedProvisioner{
+		parentID:       parentID,
+		configEventSeq: config.Seq,
+		revision:       config.Revision,
+	}
+}
 
 // appliedProvisioner appends the exact parent config reference while the
 // child Agent is still unpublished. It owns no prompt or Tool composition.
@@ -46,26 +58,4 @@ func (source *appliedProvisioner) Provision(
 	}, nil
 }
 
-type appliedProvisioning struct {
-	ctx          context.Context
-	conversation session.Context
-	draft        session.EventDraft
-}
-
-func (acquired *appliedProvisioning) Commit() error {
-	if acquired == nil || acquired.conversation == nil {
-		return errors.New("subagent: Bound applied config is unavailable")
-	}
-	_, err := acquired.conversation.Commit(
-		acquired.ctx,
-		session.Batch(acquired.draft),
-	)
-	return err
-}
-
-func (*appliedProvisioning) Dispose(context.Context) error {
-	return nil
-}
-
 var _ agent.Provisioner = (*appliedProvisioner)(nil)
-var _ agent.Provisioning = (*appliedProvisioning)(nil)

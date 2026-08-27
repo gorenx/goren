@@ -10,6 +10,13 @@ import (
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
 )
 
+type currentExecution struct {
+	running    *sharedexecution.Execution
+	terminator *executionTerminator
+	operation  *operation
+	revision   int64
+}
+
 func (owner *Service) publish(
 	handle agent.Handle,
 	parentAgent agent.Agent,
@@ -36,9 +43,6 @@ func (owner *Service) publish(
 	if err != nil {
 		return nil, err
 	}
-	if err = running.Activate(); err != nil {
-		return nil, err
-	}
 	current := &currentExecution{
 		running:    running,
 		terminator: terminator,
@@ -47,7 +51,9 @@ func (owner *Service) publish(
 	}
 	terminator.current = current
 	currentOperation.storeCurrent(current)
-	if err = owner.dependencies.Executions.Publish(
+	if err = sharedexecution.Publish(
+		owner.dependencies.Executions,
+		owner.dependencies.Publisher,
 		sharedexecution.Entry{
 			Execution: running,
 			Mode:      subagent.ModeBound,
@@ -55,20 +61,10 @@ func (owner *Service) publish(
 			Subject:   handle.Subject,
 			Closing:   handle.ClosingSignal(),
 		},
+		seedBuilder,
 	); err != nil {
 		currentOperation.clearCurrent(current)
 		return nil, err
-	}
-	if owner.dependencies.Publisher != nil {
-		owner.dependencies.Publisher.PublishStarted(
-			parentAgent,
-			subagent.Started{
-				RunID:    runID,
-				Provider: seedBuilder,
-				ID:       handle.Subject.ID(),
-				Local:    true,
-			},
-		)
 	}
 	return current, nil
 }
