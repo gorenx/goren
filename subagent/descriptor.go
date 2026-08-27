@@ -40,3 +40,14 @@ type ContinuableDescriptor struct {
 }
 
 func (ContinuableDescriptor) descriptorVariant() {}
+
+// BoundDescriptor identifies a child initialized from one durable parent
+// binding. Mutable Bound configuration remains in its owning source.
+type BoundDescriptor struct {
+	Version  int    `json:"version"`
+	Mode     Mode   `json:"mode"`
+	Provider string `json:"provider"`
+	Label    string `json:"label"`
+}
+
+func (BoundDescriptor) descriptorVariant() {}

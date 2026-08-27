@@ -195,19 +195,30 @@ func childEntry(
 	activity subagent.Activity,
 	children bool,
 ) subagent.ChildEntry {
-	if identity.Mode == subagent.ModeOneShot {
+	switch identity.Mode {
+	case subagent.ModeOneShot:
 		return subagent.OneShotChildEntry{
 			ID:          identifier,
 			Label:       cloneString(identity.Label),
 			Activity:    activity,
 			HasChildren: children,
 		}
-	}
-	return subagent.ContinuableChildEntry{
-		ID:          identifier,
-		Label:       *identity.Label,
-		Activity:    activity,
-		HasChildren: children,
+	case subagent.ModeContinuable:
+		return subagent.ContinuableChildEntry{
+			ID:          identifier,
+			Label:       *identity.Label,
+			Activity:    activity,
+			HasChildren: children,
+		}
+	case subagent.ModeBound:
+		return subagent.BoundChildEntry{
+			ID:          identifier,
+			Label:       *identity.Label,
+			Activity:    activity,
+			HasChildren: children,
+		}
+	default:
+		return diagnostic(identifier, subagent.DiagnosticCorrupt)
 	}
 }
 

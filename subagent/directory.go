@@ -52,6 +52,17 @@ type ContinuableChildEntry struct {
 
 func (ContinuableChildEntry) listEntryVariant() {}
 
+// BoundChildEntry is one descriptor-backed child initialized from a durable
+// parent binding.
+type BoundChildEntry struct {
+	ID          session.SessionID
+	Label       string
+	Activity    Activity
+	HasChildren bool
+}
+
+func (BoundChildEntry) listEntryVariant() {}
+
 // DiagnosticEntry contains one per-candidate listing failure.
 type DiagnosticEntry struct {
 	ID     session.SessionID
@@ -68,7 +79,7 @@ type DescendantEntry struct {
 }
 
 // ChildDirectory enumerates durable Subagent identities without starting or resuming
-// child Agents. It reports both one-shot and continuable records.
+// child Agents. It reports OneShot, Continuable, and Bound records.
 type ChildDirectory interface {
 	ListChildren(context.Context, session.SessionID) ([]ChildEntry, error)
 	ListDescendants(

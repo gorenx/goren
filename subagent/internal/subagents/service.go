@@ -14,36 +14,6 @@ import (
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
 )
 
-// implementation is the common lifecycle contract for one Subagent mode.
-// Mode-specific behavior stays behind this consumer-owned boundary.
-type implementation interface {
-	Mode() subagent.Mode
-	Start(context.Context, subagent.StartCommand) (subagent.Execution, error)
-	Interrupt(context.Context, session.SessionID) error
-	Close(context.Context) error
-}
-
-// continuation is the additional lifecycle strategy supported by an
-// implementation whose durable child can be materialized for another message.
-// Resident message delivery does not use this interface; it uses agent.Agent.
-type continuation interface {
-	Resume(
-		context.Context,
-		agent.Agent,
-		session.SessionID,
-		llm.UserMessage,
-	) (llm.MessageID, error)
-}
-
-type admissionState uint8
-
-const (
-	admissionInactive admissionState = iota
-	admissionAccepting
-	admissionClosing
-	admissionClosed
-)
-
 // Service is the single Subagent application service published through the
 // narrow Starter and ChildControl capability views.
 type Service struct {
@@ -86,6 +56,9 @@ func (owner *Service) Open(
 		if candidate == nil || candidate.Mode() == "" {
 			return errors.New("subagent: implementation is incomplete")
 		}
+		if validationErr := validateImplementation(candidate); validationErr != nil {
+			return validationErr
+		}
 		if _, duplicate := implementationIndex[candidate.Mode()]; duplicate {
 			return fmt.Errorf(
 				"subagent: duplicate implementation for mode %q",
@@ -115,18 +88,48 @@ func (owner *Service) Open(
 // Start selects an implementation by the command's stable business mode and
 // always returns the common Execution contract.
 func (owner *Service) Start(
-	requestContext context.Context,
+	ctx context.Context,
 	command subagent.StartCommand,
 ) (subagent.Execution, error) {
 	if beginErr := owner.beginCall(); beginErr != nil {
 		return nil, beginErr
 	}
 	defer owner.activeCalls.Done()
+	if ctx == nil {
+		return nil, errors.New("subagent: Start context is nil")
+	}
+	if requestErr := ctx.Err(); requestErr != nil {
+		return nil, requestErr
+	}
+	if command == nil {
+		return nil, errors.New("subagent: Start command is nil")
+	}
 	candidate, resolveErr := owner.implementation(command.Mode())
 	if resolveErr != nil {
 		return nil, resolveErr
 	}
-	return candidate.Start(requestContext, command)
+	switch typedCommand := command.(type) {
+	case subagent.OneShotStartCommand:
+		selected, supported := candidate.(oneShot)
+		if !supported {
+			return nil, unsupportedStart(command.Mode())
+		}
+		return selected.Start(ctx, typedCommand)
+	case subagent.ContinuableStartCommand:
+		selected, supported := candidate.(continuable)
+		if !supported {
+			return nil, unsupportedStart(command.Mode())
+		}
+		return selected.Start(ctx, typedCommand)
+	case subagent.BoundStartCommand:
+		selected, supported := candidate.(bound)
+		if !supported {
+			return nil, unsupportedStart(command.Mode())
+		}
+		return selected.Start(ctx, typedCommand)
+	default:
+		return nil, unsupportedStart(command.Mode())
+	}
 }
 
 // Send delivers to a resident child through the ordinary Agent interface. If
@@ -173,13 +176,13 @@ func (owner *Service) Send(
 	if resolveErr != nil {
 		return "", resolveErr
 	}
-	resumeStrategy, supported := candidate.(continuation)
+	selected, supported := candidate.(continuable)
 	if !supported {
 		return "", errors.New(
 			"subagent: Continuable implementation does not support resume",
 		)
 	}
-	return resumeStrategy.Resume(
+	return selected.Resume(
 		requestContext,
 		parentAgent,
 		childID,
@@ -319,6 +322,37 @@ func unavailable() error {
 		Code:    subagent.ErrorDraining,
 		Message: "Subagents are closing",
 	}
+}
+
+func unsupportedStart(selectedMode subagent.Mode) error {
+	return fmt.Errorf(
+		"subagent: implementation for mode %q does not accept its StartCommand",
+		selectedMode,
+	)
+}
+
+func validateImplementation(candidate implementation) error {
+	var complete bool
+	switch candidate.Mode() {
+	case subagent.ModeOneShot:
+		_, complete = candidate.(oneShot)
+	case subagent.ModeContinuable:
+		_, complete = candidate.(continuable)
+	case subagent.ModeBound:
+		_, complete = candidate.(bound)
+	default:
+		return fmt.Errorf(
+			"subagent: unsupported implementation mode %q",
+			candidate.Mode(),
+		)
+	}
+	if complete {
+		return nil
+	}
+	return fmt.Errorf(
+		"subagent: implementation for mode %q is incomplete",
+		candidate.Mode(),
+	)
 }
 
 func (owner *Service) authorizeParent(

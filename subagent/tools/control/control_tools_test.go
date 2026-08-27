@@ -86,6 +86,7 @@ func TestListProjectionOmitsOneShotAndUsesLiveRegistryStatus(t *testing.T) {
 	for _, testCase := range []struct {
 		id     session.SessionID
 		status string
+		bound  bool
 	}{
 		{
 			id:     "running",
@@ -99,12 +100,24 @@ func TestListProjectionOmitsOneShotAndUsesLiveRegistryStatus(t *testing.T) {
 			id:     "cold",
 			status: "ready",
 		},
+		{
+			id:     "bound",
+			status: "ready",
+			bound:  true,
+		},
 	} {
-		entry, included := adapter.project(
-			subagent.ContinuableChildEntry{
+		var childEntry subagent.ChildEntry = subagent.ContinuableChildEntry{
+			ID:    testCase.id,
+			Label: "worker",
+		}
+		if testCase.bound {
+			childEntry = subagent.BoundChildEntry{
 				ID:    testCase.id,
 				Label: "worker",
-			},
+			}
+		}
+		entry, included := adapter.project(
+			childEntry,
 			nil,
 			nil,
 		)

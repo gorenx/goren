@@ -46,6 +46,21 @@ func TestSnapshotDescriptorNormalizesAndDetachesVariants(t *testing.T) {
 	if string(continuableRaw) != `{"version":2,"mode":"continuable","provider":"fork","label":"research","toolFilter":{"allow":[]}}` {
 		t.Fatalf("continuable descriptor = %s", continuableRaw)
 	}
+
+	boundData, err := SnapshotDescriptor(BoundDescriptor{
+		Provider: "spawn",
+		Label:    "resident",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	boundRaw, err := json.Marshal(boundData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(boundRaw) != `{"version":2,"mode":"bound","provider":"spawn","label":"resident"}` {
+		t.Fatalf("Bound descriptor = %s", boundRaw)
+	}
 }
 
 func TestFoldDescriptorUsesFirstAuthoritativeEvent(t *testing.T) {

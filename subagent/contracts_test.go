@@ -37,8 +37,7 @@ func TestStartCommandsKeepImplementationInputsSeparate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if oneShot.Mode() != subagent.ModeOneShot ||
-		oneShot.RequestedChildID() != nil {
+	if oneShot.Mode() != subagent.ModeOneShot {
 		t.Fatalf("OneShot command = %#v", oneShot)
 	}
 	if continuable.Mode() != subagent.ModeContinuable ||
