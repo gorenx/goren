@@ -9,13 +9,6 @@ import (
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
 )
 
-type currentExecution struct {
-	running    *sharedexecution.Execution
-	terminator *executionTerminator
-	operation  *operation
-	revision   int64
-}
-
 type executionTerminator struct {
 	owner       *Service
 	current     *currentExecution

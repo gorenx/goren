@@ -1,5 +1,6 @@
-// Package execution owns the state, current-run index, identities, and final
-// assistant-output rule shared by OneShot and Continuable implementations.
+// Package execution owns the state, current-run index, identities, and
+// publication flow shared by Subagent modes. It also owns the final
+// assistant-output rule used by OneShot and Continuable.
 package execution
 
 import (
@@ -14,8 +15,7 @@ import (
 	"github.com/gorenx/goren/subagent"
 )
 
-// EventPublisher publishes the paired facts emitted by both Subagent
-// implementations.
+// EventPublisher publishes the paired facts emitted by Subagent modes.
 type EventPublisher interface {
 	PublishStarted(agent.Agent, subagent.Started)
 	PublishEnded(agent.Agent, subagent.Ended)

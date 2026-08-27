@@ -18,8 +18,8 @@ type Entry struct {
 	Closing   <-chan struct{}
 }
 
-// Registry is the one process-local index shared by both Subagent
-// implementations. Agent Registry remains the owner of exact Agent epochs.
+// Registry is the one process-local index shared by all Subagent modes. Agent
+// Registry remains the owner of exact Agent epochs.
 type Registry struct {
 	mutex   sync.RWMutex
 	entries map[session.SessionID]Entry

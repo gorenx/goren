@@ -9,7 +9,6 @@ import (
 
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/subagent"
 )
 
 type parentInteraction struct {
@@ -235,47 +234,6 @@ func visibleParentContent(
 		}
 	}
 	return filtered
-}
-
-func boundCursor(
-	events []session.Event,
-	childID session.SessionID,
-	floor int64,
-) (int64, error) {
-	if floor < 0 || floor > int64(len(events)) {
-		return 0, errors.New("subagent: invalid Bound cursor floor")
-	}
-	nextSeq := floor
-	for _, committed := range events {
-		if committed.Type != subagent.BoundCursorEventName {
-			continue
-		}
-		var cursor subagent.BoundCursor
-		if err := decodeInteractionJSON(committed.Data, &cursor); err != nil {
-			return 0, fmt.Errorf(
-				"subagent: decode Bound cursor at seq %d: %w",
-				committed.Seq,
-				err,
-			)
-		}
-		if cursor.ChildSessionID != childID {
-			continue
-		}
-		if cursor.Version != subagent.BoundEventVersion ||
-			cursor.PreviousNextSeq != nextSeq ||
-			cursor.NextSeq <= cursor.PreviousNextSeq ||
-			cursor.NextSeq > committed.Seq ||
-			cursor.ThroughTurn <= 0 ||
-			(cursor.Disposition != subagent.BoundCursorDelivered &&
-				cursor.Disposition != subagent.BoundCursorSkipped) {
-			return 0, fmt.Errorf(
-				"subagent: invalid Bound cursor at seq %d",
-				committed.Seq,
-			)
-		}
-		nextSeq = cursor.NextSeq
-	}
-	return nextSeq, nil
 }
 
 func decodeInteractionJSON(rawValue []byte, target any) error {

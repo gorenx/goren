@@ -60,19 +60,6 @@ func (*Service) Mode() subagent.Mode {
 	return subagent.ModeContinuable
 }
 
-type childSlot struct {
-	mutex   sync.Mutex
-	users   int
-	current *currentExecution
-}
-
-type currentExecution struct {
-	running    *sharedexecution.Execution
-	terminator *executionTerminator
-	slot       *childSlot
-	wake       chan struct{}
-}
-
 // New constructs an accepting Continuable Service.
 func New(dependencySet Dependencies) (*Service, error) {
 	if dependencySet.Agents == nil || dependencySet.Constructor == nil ||
@@ -135,58 +122,9 @@ func (owner *Service) authorizeParent(parentAgent agent.Agent) error {
 	return nil
 }
 
-func (owner *Service) acquireSlot(childID session.SessionID) *childSlot {
-	owner.mutex.Lock()
-	slot := owner.slots[childID]
-	if slot == nil {
-		slot = &childSlot{}
-		owner.slots[childID] = slot
+func checkContext(ctx context.Context, operation string) error {
+	if ctx == nil {
+		return errors.New("subagent: " + operation + " context is nil")
 	}
-	slot.users++
-	owner.mutex.Unlock()
-	return slot
-}
-
-func (owner *Service) releaseSlot(
-	childID session.SessionID,
-	slot *childSlot,
-) {
-	owner.mutex.Lock()
-	slot.users--
-	owner.mutex.Unlock()
-	owner.removeUnusedSlot(childID, slot)
-}
-
-func (owner *Service) detach(
-	childID session.SessionID,
-	current *currentExecution,
-) {
-	slot := current.slot
-	slot.mutex.Lock()
-	if slot.current == current {
-		slot.current = nil
-	}
-	slot.mutex.Unlock()
-	owner.removeUnusedSlot(childID, slot)
-}
-
-func (owner *Service) removeUnusedSlot(
-	childID session.SessionID,
-	slot *childSlot,
-) {
-	owner.mutex.Lock()
-	slot.mutex.Lock()
-	unused := slot.current == nil
-	slot.mutex.Unlock()
-	if owner.slots[childID] == slot && slot.users == 0 && unused {
-		delete(owner.slots, childID)
-	}
-	owner.mutex.Unlock()
-}
-
-func unauthorized(message string) error {
-	return &subagent.Error{
-		Code:    subagent.ErrorUnauthorized,
-		Message: message,
-	}
+	return ctx.Err()
 }

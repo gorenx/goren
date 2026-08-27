@@ -73,37 +73,6 @@ type Dependencies struct {
 	Failures         FailureReporter
 }
 
-type operationKey struct {
-	parentID session.SessionID
-	childID  session.SessionID
-}
-
-type operation struct {
-	mutex        sync.Mutex
-	currentMutex sync.Mutex
-	current      *currentExecution
-}
-
-func (owner *operation) loadCurrent() *currentExecution {
-	owner.currentMutex.Lock()
-	defer owner.currentMutex.Unlock()
-	return owner.current
-}
-
-func (owner *operation) storeCurrent(current *currentExecution) {
-	owner.currentMutex.Lock()
-	owner.current = current
-	owner.currentMutex.Unlock()
-}
-
-func (owner *operation) clearCurrent(expected *currentExecution) {
-	owner.currentMutex.Lock()
-	if owner.current == expected {
-		owner.current = nil
-	}
-	owner.currentMutex.Unlock()
-}
-
 // Service owns Bound use cases. One parent lock serializes title allocation;
 // one parent-child lock serializes config replacement, epoch replacement, and
 // message admission for that exact binding.
@@ -134,37 +103,6 @@ func New(dependencySet Dependencies) (*Service, error) {
 // Mode identifies the business mode implemented by Service.
 func (*Service) Mode() subagent.Mode {
 	return subagent.ModeBound
-}
-
-func (owner *Service) childOperation(
-	parentID session.SessionID,
-	childID session.SessionID,
-) *operation {
-	owner.mutex.Lock()
-	defer owner.mutex.Unlock()
-	key := operationKey{
-		parentID: parentID,
-		childID:  childID,
-	}
-	current := owner.operations[key]
-	if current == nil {
-		current = &operation{}
-		owner.operations[key] = current
-	}
-	return current
-}
-
-func (owner *Service) parentOperation(
-	parentID session.SessionID,
-) *operation {
-	owner.mutex.Lock()
-	defer owner.mutex.Unlock()
-	current := owner.parents[parentID]
-	if current == nil {
-		current = &operation{}
-		owner.parents[parentID] = current
-	}
-	return current
 }
 
 func (owner *Service) authorizeParent(parentAgent agent.Agent) error {

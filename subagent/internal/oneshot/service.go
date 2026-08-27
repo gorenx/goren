@@ -223,15 +223,11 @@ func (owner *Service) Start(
 			handle.Dispose(context.WithoutCancel(ctx)),
 		)
 	}
-	if activationErr := running.Activate(); activationErr != nil {
-		return nil, errors.Join(
-			activationErr,
-			handle.Dispose(context.WithoutCancel(ctx)),
-		)
-	}
 	terminator.running = running
 	terminator.executions = owner.dependencies.Executions
-	if publishErr := owner.dependencies.Executions.Publish(
+	if publishErr := sharedexecution.Publish(
+		owner.dependencies.Executions,
+		owner.dependencies.Publisher,
 		sharedexecution.Entry{
 			Execution: running,
 			Mode:      subagent.ModeOneShot,
@@ -239,21 +235,11 @@ func (owner *Service) Start(
 			Subject:   handle.Subject,
 			Closing:   handle.ClosingSignal(),
 		},
+		seedBuilderName,
 	); publishErr != nil {
 		return nil, errors.Join(
 			publishErr,
 			handle.Dispose(context.WithoutCancel(ctx)),
-		)
-	}
-	if owner.dependencies.Publisher != nil {
-		owner.dependencies.Publisher.PublishStarted(
-			requestSnapshot.Parent,
-			subagent.Started{
-				RunID:    runID,
-				Provider: seedBuilderName,
-				ID:       childID,
-				Local:    true,
-			},
 		)
 	}
 	go watch(running, handle)
