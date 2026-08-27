@@ -2,7 +2,7 @@
 
 `subagent` 拥有委派请求、OneShot、Continuable 与 Bound 三种模式的统一生命周期契约，以及 durable child 的查询和父子通信语义。设计导航见[Subagent 领域设计导航](./docs/design.zh-CN.md)，当前完成证据见[08 实施进度](../zh-CN/08-implementation-progress.md)，固定源职责证据见[源能力分析](../zh-CN/subagent/01-source-capability-analysis.md)。
 
-局部文档包括[设计导航](./docs/design.zh-CN.md)和[术语规范](./docs/terminology.zh-CN.md)。Bound 已实现 Mode、专属启动命令、descriptor/projection/listing 和 Plugin 装配骨架；`bound.Service.Start` 仍明确返回未实现错误，binding/config events及projection、child 创建恢复和 parent observer 尚未实现。其[需求](./docs/parent-bound-requirements.zh-CN.md)、[技术设计](./docs/parent-bound-design.zh-CN.md)和[config详设](./docs/bound-config-management.zh-CN.md)不能用于解释当前代码已经具备可运行的 Bound child。
+局部文档包括[设计导航](./docs/design.zh-CN.md)和[术语规范](./docs/terminology.zh-CN.md)。Bound 的需求、调用链和config owner分别由[需求](./docs/parent-bound-requirements.zh-CN.md)、[技术设计](./docs/parent-bound-design.zh-CN.md)和[config详设](./docs/bound-config-management.zh-CN.md)维护；本README只说明包边界，不复制这些契约。
 
 ## 职责边界
 
@@ -40,13 +40,13 @@
 | `internal/subagents` | 统一准入、按具体 `StartCommand` variant 路由、公共中断授权、关闭编排 | 把三个模式合并成大而全的启动参数 |
 | `internal/oneshot` | OneShot 创建、初始消息、结果选择和终止 | durable resume、后续消息 |
 | `internal/continuable` | Continuable fresh create、cold resume 和 settlement | Agent epoch、普通 live Inbox 投递或 Session durability |
-| `internal/bound` | Bound Mode 与启动入口；当前 `Start` 保持 TODO 并返回明确错误 | 尚未实现的 binding/config events及projection和 child 创建恢复 |
+| `internal/bound` | Bound binding/config、create/restore、resident epoch、Send与failure containment | 配置源业务、System Prompt或Tools实现 |
 | `internal/execution` | 三种模式共用的一次执行状态、terminal future 和进程内索引 | Agent phase 镜像或父子树 |
 | `internal/seedbuilder` | SeedBuilder 注册、查找和事件边界 | Agent 创建 |
 | `internal/childdirectory` | live/persisted child 的只读合并查询 | 创建、恢复或控制 child |
 | `internal/childpolicy` | `plugin` 组合层共用的 child-local policy Plugin adapter | OneShot/Continuable 业务策略 |
 | `internal/projection` | Subagent identity/timing Session Projection | Registry、checkpoint 和 Session API |
-| `internal/extension` | child Extension registration 和 installation | Plugin lifecycle 或 Agent creation |
+| `internal/extension` | common/selected child Extension registration、per-Scope installation、rollback和release | Plugin lifecycle、Agent creation或Bound revision |
 | `tools/delegation` | 创建新 Subagent 的模型委派 Tool 适配 | Subagent 启动状态机 |
 | `tools/control` | 控制和查询已有 child 的三项 Tool 适配 | child lifecycle 与 durable query |
 | `tools/report` | child 向 exact parent 报告的 Tool/Extension 适配 | 父子投递业务 |
@@ -65,26 +65,29 @@ flowchart LR
     Continuable --> Constructor
     OneShot --> Execution[shared Execution]
     Continuable --> Execution
-    Bound -. Start TODO .-> Execution
+    Bound --> Constructor
+    Bound --> Execution
     Control[control Tools] --> ChildControl
-    ChildControl -->|resident Send| ChildAgent[child agent.Agent]
-    ChildControl -->|cold resume| Continuable
+    ChildControl -->|resident ordinary Send| ChildAgent[child agent.Agent]
+    ChildControl -->|resident/cold Bound| Bound
+    ChildControl -->|unbound cold resume| Continuable
     Control --> Directory[ChildDirectory]
     Report[child report Tool] --> Registry[agent.Registry]
     Registry --> ParentAgent[parent agent.Agent]
     Directory --> Sessions[Session live/persistence/projection]
 ```
 
-`plugin.Plugin` 只做装配。Consumer 通过 `Starter` 和 `ChildControl` 进入统一 Service；Service 按 `Mode` 选择创建/中断实现，但 resident child 的消息直接调用该 child 的 `agent.Agent` 能力。只有 cold Continuable child 需要 Continuable 实现执行恢复并原子接收新 epoch 的首条消息。child-scoped report Tool 以消费端窄接口查询 live Agent，再直接调用 parent Agent，不经过 Subagent mode Service。
+`plugin.Plugin`只做装配。Consumer通过`Starter`和`ChildControl`进入统一Service；ordinary resident child直接使用Agent Inbox，resident/cold Bound交给Bound owner串行化config与message admission，无binding的cold child才交给Continuable。child-scoped report Tool直接调用exact parent Agent，不经过Mode Service。
 
 ## 生命周期
 
-已发布的 OneShot、Continuable 和未来可运行的 Bound Execution 都经历 `Starting -> Active -> Stopping -> Stopped`。状态属于 `Execution`，不是 Agent 状态的副本；一个 Execution 与一个 exact Agent epoch 一一对应，不再存在额外 Activation 对象。
+已发布的OneShot、Continuable和Bound Execution都经历`Starting -> Active -> Stopping -> Stopped`。状态属于`Execution`，不是Agent状态的副本；一个Execution与一个exact Agent epoch一一对应。
 
 - OneShot 每次 `Start` 创建新 child；terminal 形成后实现自动释放 exact `agent.Handle`，调用方只等待 `Execution`，不再承担第二次 Dispose 义务。
 - Continuable 的 durable child identity 可跨多个 resident epoch。cold child 收到 `Send` 时从 Session log 恢复，形成新的 common `Execution`；seed 只在首次创建时构造。
+- Bound binding与config来自exact parent Session；ordinary idle保留resident epoch，config revision通过exact epoch replacement应用。
 - 普通 interrupt 取消当前 turn，但不等价于删除 durable child。
-- 模块关闭先停止统一 Service 准入并等待已准入调用返回，再让三个模式实现逆序关闭自己持有的资源。OneShot/Continuable 只等待 exact Agent 进入 Closing；当前 Bound 尚无可运行 Execution。Agent 模块继续拥有 child-first 结构关闭和 Scope teardown。
+- 模块关闭先停止统一Service准入并等待已准入调用返回，再让三个Mode逆序关闭自己持有的Execution。Agent模块继续拥有child-first结构关闭和Scope teardown。
 - 收到 `agent/disposed` 时，Subagent 只结算与该 exact Agent 匹配的 Execution，不再次 Dispose 已由 Agent 关闭的 Handle。
 
 所有模型可见输入必须能从 Session log 重建。`ChildDirectory` 是读取时快照，不是投递或恢复承诺；实际 `Send`、`Interrupt` 和 `Report` 会重新校验 exact live Agent 与父子授权。

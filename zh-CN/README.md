@@ -44,7 +44,7 @@
 - [`session/projectioncache/sqlite/README.zh-CN.md`](../session/projectioncache/sqlite/README.zh-CN.md)：独立 checkpoint SQLite/sqlc storage adapter。
 - [`agentloop/README.zh-CN.md`](../agentloop/README.zh-CN.md)：Agent driver、Turn/Step、请求/Tool 调度、durability checkpoint 与 idle convergence。
 - [`subagent/README.zh-CN.md`](../subagent/README.zh-CN.md)：OneShot、Continuable、Bound 三种模式的公共契约、模块边界和当前实现状态。
-- [Bound Config 管理详细设计](../subagent/docs/bound-config-management.zh-CN.md)：Bound config Session event/projection、exact child System Prompt/Tools overlay初始化、`request/header`实际输入记录、resident child安全应用和失败恢复。
+- [Bound Config 管理详细设计](../subagent/docs/bound-config-management.zh-CN.md)：Bound config Session event/projection、Persona与现有System Prompt组合、Tool restriction、通用Extension Registry有名选择及exact Agent epoch replacement。
 - [`apiproxy/README.zh-CN.md`](../apiproxy/README.zh-CN.md)：typed method adapter、Session/Interaction Gateway、live frame、correlation 与背压。
 - [`apiproxy/session/README.zh-CN.md`](../apiproxy/session/README.zh-CN.md)：Session API façade、读取/生命周期/模型/对话/Search 用例与 Agent activation 状态。
 - [`internal/assembly/README.zh-CN.md`](../internal/assembly/README.zh-CN.md)：Factory Catalog、typed config、依赖结算与 composition rollback。

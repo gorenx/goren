@@ -9,14 +9,15 @@ flowchart LR
     Service -->|ModeOneShot| OneShot
     Service -->|ModeContinuable| Continuable
     Service -->|ModeBound| Bound
-    Service -->|resident message| ChildAgent[child agent.Agent]
-    Service -->|cold resume| Continuable
+    Service -->|ordinary resident message| ChildAgent[child agent.Agent]
+    Service -->|resident/cold Bound| Bound
+    Service -->|unbound cold resume| Continuable
 ```
 
-Service 拥有模块级准入状态、已准入调用计数、公共 live Execution lookup、parent/ancestor authorization，以及实现的逆序关闭。`Open` 接收 `Mode -> implementation` 集合，并按 Mode 验证 `oneShot`、`continuable`、`bound` 完整接口；重复、未知或不完整 Mode 都拒绝打开。Continuable 的 `Start` 与 cold `Resume` 在同一个 `continuable` 接口中，不拆成额外 `starter` 或 `continuation` 接口。
+Service拥有模块级准入状态、已准入调用计数和实现的逆序关闭。`childExecutionControl`单独拥有live Execution lookup、Send/Interrupt授权和Agent-disposed路由，避免`Service.Send`承载Mode业务。`Open`接收`Mode -> implementation`集合并验证三个Mode的完整接口。
 
-Bound command 只含 exact live parent 和 binding 已确定的 child Session ID。`bound.Service.Start` 当前返回明确 TODO 错误；本包只验证并完成分派，不读取或猜测 Bound config。
+Bound command只含exact live parent和binding已确定的child Session ID。本包只完成closed command dispatch；binding/config、create/restore和epoch replacement均由Bound owner实现。
 
-resident OneShot 与 Continuable 都是普通 child Agent，`Send` 校验 exact parent 后直接调用 `Entry.Subject.Followup`，不读取或解释 Execution 状态，也不等待 `Stopping`；Agent 如何接受、排队或拒绝消息由 Agent 自己决定，Service 只返回投递错误。找不到 resident Execution 时，Service 才把 durable materialization 交给注册的 Continuable 实现；OneShot 不提供 cold resume。Service 不拥有 mode-specific 创建、恢复事务或 terminal 规则，也不承担 child-to-parent report。
+ordinary resident child在校验exact parent后直接调用`Entry.Subject.Followup`。resident/cold Bound交给Bound，以便config和message admission串行；没有binding的cold child交给Continuable恢复。Service不拥有Mode-specific创建、恢复、terminal或child report规则。
 
 `Close` 先从 accepting 转为 closing，等待已经取得准入的调用返回，再调用实现的 `Close`；重复关闭 join 同一结果。跨包契约见[Subagent 包说明](../../README.zh-CN.md)，实现证据见[08 实施进度](../../../zh-CN/08-implementation-progress.md)。

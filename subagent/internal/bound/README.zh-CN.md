@@ -1,18 +1,17 @@
 # Bound Subagent
 
-本包拥有独立的 `ModeBound` 实现。Bound child 由 parent Session 中已经提交的 binding 识别；上游在 parent Agent 发布后构造 `BoundStartCommand`，统一 `subagents.Service` 再把命令分派给本包。
+本包实现独立`ModeBound`，拥有exact parent Session中的binding/config用例、child create/restore、resident Agent epoch、message admission和failure containment。
 
 ```mermaid
 flowchart LR
-    Parent[parent Agent 已发布] --> Binding[binding projection]
-    Binding --> Command[BoundStartCommand]
-    Command --> Facade[subagents.Service.Start]
-    Facade --> Bound[bound.Service.Start]
-    Bound -. TODO .-> Creation[Bound immutable creation record]
-    Bound -. TODO .-> Config[Parent Session config projection]
-    Bound -. TODO .-> Child[Bound child Agent]
+    Registry[BoundRegistry] --> Bound[bound.Service]
+    Started[agent.SessionStarted] --> Bound
+    Send[ChildControl.Send] --> Bound
+    Bound --> Parent[parent Session events/projection]
+    Bound --> Constructor[agent.Constructor]
+    Bound --> Execution[Execution Registry]
 ```
 
-当前只实现 Mode、命令分派和明确的未实现失败。`Start` 尚未读取 immutable creation record和parent binding/config projections、创建或恢复 child，也不会发布 `Execution`。因此 `Interrupt` 和 `Close` 当前没有可管理的 Bound 运行期资源。调用 Bound `Start` 的 parent publication observer 必须包含该错误，不能使 parent publication 失败。
+`Bind`原子提交binding和config revision 1并Flush，但不创建child。`StartBindings`在parent publication之后逐binding调用`Start`；单child失败写materialization event并进入diagnostics，不否决parent。`UpdateConfig`先持久化完整revision，再用exact Agent epoch replacement更新resident child；cold child保持cold。`Send`与config replacement使用同一parent-child operation lock。
 
-Binding event、初始 prompt和恢复由[Bound Subagent 技术设计](../../docs/parent-bound-design.zh-CN.md)负责；config event/projection、System Prompt/Tools owner边界和运行期安全应用见[Bound Config 管理详细设计](../../docs/bound-config-management.zh-CN.md)；实现状态见[08 实施进度](../../../zh-CN/08-implementation-progress.md)。
+本包不拥有配置源、Plugin dependency lookup、System Prompt或Tools实现，也不注销Extension。完整需求见[Bound需求](../../docs/parent-bound-requirements.zh-CN.md)，方法和调用链见[技术设计](../../docs/parent-bound-design.zh-CN.md)，config组合见[Bound Config管理](../../docs/bound-config-management.zh-CN.md)，实现证据见[08实施进度](../../../zh-CN/08-implementation-progress.md)。

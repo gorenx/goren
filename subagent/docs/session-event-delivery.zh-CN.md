@@ -2,227 +2,272 @@
 
 状态：临时设计草案，尚未并入现有权威文档，尚未实现
 
-本文细化 Subagent 如何订阅 Session event、把通知路由给指定 child、由 Bound 把 `assistant/chunk` 恢复为一条消息，并通过 child Session receipt 推进 cursor。Bound binding、materialization 和 config 仍分别以 [Bound 需求](./parent-bound-requirements.zh-CN.md)、[Bound 技术设计](./parent-bound-design.zh-CN.md)和[Bound Config 管理详细设计](./bound-config-management.zh-CN.md)为准。
+本文细化 Subagent 如何直接订阅 exact Session event、把通知路由给指定 child、由 Bound 把 `assistant/chunk` 恢复为一条消息，并通过 child Session receipt 推进 cursor。Bound binding、materialization 和 config 仍分别以 [Bound 需求](./parent-bound-requirements.zh-CN.md)、[Bound 技术设计](./parent-bound-design.zh-CN.md)和[Bound Config 管理详细设计](./bound-config-management.zh-CN.md)为准。
 
-## 1. 当前事实、目标与缺口
+## 1. 修正后的结论
 
-当前 `session.EventAppended` 是 `DeliveryBestEffort` 的 post-commit Plugin event。它携带 exact `session.Context` 和已经进入内存日志的 `session.Event`，但不表示该 event 已经 Flush，也不保存 subscription、retry 或 cursor。Session Plugin 从 runtime root scope 发布该事件，因此 Plugin scope 不能自动筛选某个 Session；消费端仍必须按 `Conversation.ID()` 路由。
+当前实现由 Session Plugin 把 committed event 发布为 runtime-wide `session.EventAppended`，消费端再按 `Conversation.ID()` 二次路由。这个全局 Plugin event 适合跨 Session 的 runtime observer，但不应成为 Bound 订阅 exact Session 的中转层。
 
-当前 Subagent Plugin 只订阅 `agent.Disposed`。`internal/bound.Service` 仍是明确返回 `ErrStartNotImplemented` 的骨架；代码中没有 Session event route、chunk fold、delivery receipt 或 cursor recovery。
+新设计是：
 
-目标行为是：
-
-1. Subagent Plugin 静态订阅 `session.EventAppended`，只把它交给一个 Subagent-owned dispatcher；
-2. dispatcher 根据 process-local source/target route，把“source 有新 committed prefix”通知指定的 Mode consumer；
-3. Bound consumer 从 durable source prefix 和自己的 cursor 重放，而不是把单条 live event直接变成消息；
-4. Bound 使用 LLM owner 的 `llm.BlockAssembler` 把一个已闭合 step 的 `assistant/chunk` 恢复为完整 content，再构造一条模型可见 child `UserMessage`；
-5. child Inbox 接受该消息后，child Session 中的 durable receipt 推进 delivery cursor；
-6. Plugin notification 丢失、重复、乱序或进程重启都不能改变最终投递结果。
+1. 每个 `session.Context` 拥有一个 Session-owned `EventBus`，Commit 成功后由该 Session 直接发布 committed event；
+2. `bound.Service` 直接订阅 exact source Session，不经过 Subagent Plugin observer，也不需要 runtime-wide Session ID dispatcher；
+3. Bound 根据自己的 binding/config 将 source 通知投递给指定 child；Session EventBus 不理解 Subagent、binding 或 target child；
+4. Bound 同时直接订阅 exact child Session，从 `agent/inbox/spliced` 等 durable child event 确认 acceptance receipt，Flush receipt 后推进 cursor；
+5. EventBus 只是 process-local post-commit notification seam，durable Session log 和 Bound cursor 仍是恢复与去重事实；
+6. Plugin 只在 composition 时构造 Bound Service 并释放其订阅，不转发 Session event、不匹配 event type、不推进 cursor。
 
 这不是固定 DeepSeek Harness 基线中的兼容能力。实现不得把本文的 Planned 行为写成 Harness parity 证据。
 
-## 2. Owner 与非 Owner
+## 2. Owner 与主动调用链
 
 ```mermaid
 flowchart LR
-    SessionPlugin[Session Plugin] -->|session.EventAppended| SubagentPlugin[Subagent Plugin adapter]
-    SubagentPlugin -->|Notify only| Dispatcher[sessionevents.Dispatcher]
-    BoundConfig[Bound config projection] -->|replace routes| Dispatcher
-    Dispatcher -->|source changed| Bound[bound.Service]
-    Dispatcher -->|target child changed| Bound
-    Bound -->|read committed prefix| Source[Source Session]
+    Source[exact source Session] -->|post-commit EventBus| Bound[bound.Service]
+    BoundConfig[Bound config projection] -->|install or replace subscription| Bound
+    Bound -->|read committed prefix| Source
     Bound -->|chunk fold| Assembler[llm.BlockAssembler]
-    Bound -->|Followup with provenance| Child[exact Bound child]
-    Child -->|agent/inbox/spliced| ChildSession[Child Session]
-    ChildSession --> SubagentPlugin
+    Bound -->|Followup with provenance| Child[exact Bound child Agent]
+    Child -->|Commit inbox receipt| ChildSession[exact child Session]
+    ChildSession -->|post-commit EventBus| Bound
     Bound -->|Flush receipt then CAS| Cursor[Bound cursor Store]
+    Plugin[Subagent Plugin composition] -->|construct and dispose| Bound
 ```
 
-`subagent/internal/sessionevents.Dispatcher` 是计划中的进程内路由 owner。它负责 active route registration、按 source Session ID 查找指定 child、source/target 通知合并、每条 route 串行执行，以及 Plugin Dispose 时停止准入和排空已接受工作。
+运行时“谁主动调用谁”如下：
 
-dispatcher 不拥有 durable subscription 定义、event filter、chunk 语义、cursor、dedupe、Agent Inbox 或 Session persistence。它的 route index 可以删除重建，不能成为 binding 或 subscription 真相。
+1. source Session `Commit` 成功后主动向自己的 EventBus 发布 committed event；
+2. source EventBus 主动唤醒 Bound 的 source subscription handler；
+3. Bound 主动从 durable cursor 读取 source Session committed prefix，恢复一条 delivery；
+4. Bound 主动调用 exact child Agent `Followup`；
+5. child Agent Inbox 主动向 child Session Commit acceptance receipt；
+6. child Session EventBus 主动唤醒同一 Bound 的 receipt handler；
+7. Bound 主动校验并 Flush child receipt，然后 CAS 推进自己的 cursor。
 
-`subagent/internal/bound.Service` 负责从 exact parent 的 binding/config projection重建 route，解释自己的 subscription，读取和推进 cursor，把 Session event prefix转换成 child message，并从 child Session receipt完成去重对账。Bound 不重新实现 LLM chunk codec或 block assembly。
+Session 拥有 event publication order、subscriber registration 和 disposer 生命周期。Bound 拥有业务 subscription、source-to-child route、event filter、chunk fold、receipt 和 cursor。Agent 只拥有 Inbox acceptance、turn 消费与 exact epoch。Plugin 只拥有装配与 teardown。
 
-`subagent/plugin.Plugin` 只声明 Event subscription、构造 dispatcher、连接 Bound consumer并释放这些 registration。它不读取 Bound config、不匹配 event type、不构造消息，也不直接推进 cursor。
+## 3. Session EventBus 边界
 
-Session 只拥有 append-only event、Commit、barrier和Flush。Agent只拥有 Inbox acceptance、turn消费与exact epoch。两者都不反向导入 Subagent。
+### 3.1 实例边界
 
-## 3. 两种 subscription 不得混淆
+`EventBus` 属于一个 exact Session，不是 Runtime 全局 bus。订阅时已经由 `session.Context` 确定 Session identity，因此 handler 不再接收全局 `Conversation` 后按 ID 重新分发。
 
-Plugin subscription 与业务 subscription 是两种不同对象：
-
-- Plugin subscription 是 `Manifest.Events` 中静态声明的 `plugin.EventOf[session.EventAppended]()`。它决定 Runtime 把哪一种 Go event交给 Subagent Plugin；生命周期跟随 Plugin Apply/Dispose。
-- Bound subscription 是 exact parent Session config 中的 durable业务规则。它决定哪个 source Session 的哪些语义输出进入哪个 Bound child；生命周期跟随 config revision和binding。
-
-不能为每条 Bound subscription动态 mount一个 Plugin，也不能把 Bound subscription写进 Plugin Manifest。Plugin Runtime 不保存事件历史；重启恢复必须读取 Session log和Bound cursor。
-
-## 4. Dispatcher 边界
-
-以下接口只表达私有责任，不预先冻结为公共 Go API：
+以下只表达责任，不预先冻结为最终公开 Go API：
 
 ```go
-type Route struct {
-	SourceSessionID session.SessionID
-	TargetSessionID session.SessionID
+type EventNotice struct {
+    Committed Event
+    Barrier   WriteBarrier
 }
 
-type Consumer interface {
-	SourceAdvanced(context.Context, Route, session.Context, int64) error
-	TargetAdvanced(context.Context, Route, session.Context, int64) error
+type EventSubscriber interface {
+    SessionEvent(context.Context, EventNotice) error
+}
+
+type EventSubscription interface {
+    Dispose(context.Context) error
+}
+
+type EventBus struct {
+    // private Session-owned state
+}
+
+func (owner *EventBus) Subscribe(
+    subscriber EventSubscriber,
+) (EventSubscription, error)
+```
+
+`session.Context` 提供对自己的 EventBus 的订阅入口；不提供按 Session ID 订阅的全局 registry。`EventNotice.Barrier.NextSeq` 是该 event Commit 后的 committed high-water，不表示已经 Flush。
+
+### 3.2 发布语义
+
+- 只有整个 `WritePlan` 校验并 Commit 成功后才发布；失败 batch 不发布；
+- 同一 batch 的 events 按 `seq` 发布，同一 Session 对一个 subscriber 不并发回调；
+- publication 发生在 Session log mutex 释放之后，subscriber 可以安全读取 detached Snapshot；
+- EventBus 在 Commit 的 post-commit 阶段按 registration order 串行调用 subscriber；Commit 等待短小的通知回调返回，但 subscriber error、panic 或取消不能回滚已 committed event；
+- Bound 的 EventBus handler 只调用 `DeliveryWorker.Notify`，不能在 Commit 调用栈中执行 fold、`Followup`、Flush、cursor CAS 或获取 Bound per-child mutex；
+- 有界 mailbox、dirty high-water、单一 drain worker和 retry 属于 `DeliveryWorker`，不属于 Session EventBus。EventBus 保持通用的 exact-event fan-out，不把自己变成第二条业务队列；
+- disposer 必须幂等，停止新回调准入，并按 close context 等待已准入回调结束。
+
+EventBus 本身不解释 `Event.Type`。若提供 exact event-type filter，它也只能是技术上的 key 匹配，不能承载 Bound 的 subscription schema 或 control-event 规则。
+
+### 3.3 订阅与 catch-up 的竞态
+
+EventBus 不负责重放订阅前的 event。Bound 必须使用“先订阅，再 catch-up”的顺序：
+
+1. 对 exact Session 安装 EventBus subscription；
+2. 读取 detached `Session.Snapshot()` 及其 barrier；
+3. 从 durable `NextSourceSeq` catch-up 到 snapshot barrier；
+4. 处理订阅安装后合并到的更高 high-water。
+
+这个顺序不会丢失“安装订阅与读取 snapshot 之间”的 Commit。重复通知只会造成再次 catch-up，不会造成重复 child message。
+
+## 4. Bound 的订阅与路由
+
+Bound 的每个 resident child 拥有一个具名 subscription owner，而不是全局 `sessionevents.Dispatcher`：
+
+```go
+type DeliveryRoute struct {
+    SourceSession session.Context
+    TargetSession session.Context
+    Child         agent.Agent
+    Subscription  BoundSubscription
+}
+
+type DeliveryWorker struct {
+    // route, source/target handles, dirty high-water and serial state
 }
 ```
 
-`SourceAdvanced` 表示 source Session 已经至少提交到 `throughSeq`；`TargetAdvanced` 表示指定 child Session 已经至少提交到该位置。参数是 wake hint，不是待处理 event payload。Consumer必须重新读取 exact Session snapshot并以 cursor决定工作范围。
+`DeliveryWorker` 拥有两类 Session subscription：
 
-Bound以 target child为registration identity原子替换 routes。一个 config revision只能整体安装或整体撤销该 child 的 route set，旧 disposer 不能删除后来 revision安装的 route。disabled binding没有 source route，但在旧 receipt尚未对账完成前可以保留短暂的 target watch。
+- source subscription：任何新 committed prefix 只标记 source dirty，由 worker 从 cursor 重放；
+- target subscription：只将 child Session 的新 committed prefix 标记为 receipt dirty，由 worker 扫描并验证已插入 message provenance。
 
-dispatcher不为每个 event创建goroutine。它使用有界 worker和按 route 合并的 dirty state；同一 route 正在处理时到达的新通知只提高 high-water。处理失败时保留 dirty state并执行有界退避；进程重启后由 Bound Start 的显式 catch-up补偿 process-local retry state。
+两个 EventBus handler 都只执行 non-blocking `Notify`。worker 的有界 mailbox 合并同一方向的最大 committed high-water；worker 正在处理时到达的新通知只提高 high-water，不为每个 event 创建 goroutine。mailbox 已满时覆盖旧的较低 high-water，而不是阻塞 Session Commit。
 
-Plugin observer只调用 `Notify`。`Notify` 不进入 Bound per-child mutex，不调用 `Session.Flush`，也不等待模型或Agent Inbox；这避免 `Session.Commit -> session.EventAppended -> Bound -> child Session.Commit` 的同步嵌套和 config commit重入死锁。
+Bound config revision 以 target child 为 identity 原子替换整组 `DeliveryWorker`。旧 revision 的 disposer 不能删除新 revision 的订阅。disabled binding 不再保留 source subscription，但在旧 receipt 尚未对账完成前可以保留短暂的 target subscription。
+
+同一 child 的 source fold、receipt reconciliation、config apply、Send 和 cursor CAS 进入 Bound-owned 串行区间。Session EventBus 只提高 dirty high-water，不进入该串行区间长时执行。
 
 ## 5. Bound 的 event-to-message fold
 
 ### 5.1 Processor 边界
 
-Bound subscription不把任意 JSON、脚本表达式或单个 raw event直接暴露给模型。每种可投递语义由编译进仓库、owner-defined的 processor解释：
+Bound subscription 不把任意 JSON、脚本表达式或单个 raw event 直接暴露给模型。每种可投递语义由编译进仓库、owner-defined 的 processor 解释：
 
 ```go
 type ProcessResult struct {
-	SkippedThrough int64
-	Delivery       *Delivery
-	NeedMore       bool
+    SkippedThrough int64
+    Delivery       *Delivery
+    NeedMore       bool
 }
 
 type Delivery struct {
-	FromSeq    int64
-	ThroughSeq int64
-	Content    []agentmessage.ContentBlock
+    FromSeq    int64
+    ThroughSeq int64
+    Content    []agentmessage.ContentBlock
 }
 ```
 
-processor是deterministic、无I/O的策略。它读取从 `NextSourceSeq` 开始的detached source snapshot，返回“可安全跳过到哪里”“形成一条delivery”或“等待更多event”。dispatcher不调用processor；`bound.Service`在per-child串行区间调用它。
+processor 是 deterministic、无 I/O 的策略。它读取从 `NextSourceSeq` 开始的 detached source snapshot，返回“可安全跳过到哪里”“形成一条 delivery”或“等待更多 event”。EventBus 不调用 processor；`bound.Service` 在 per-child 串行区间调用它。
 
-O4 的方向由此收口为：subscription只能引用编译期已知processor及其owner-defined严格配置，不能引用脚本、Goja、`map[string]any`或自由event predicate。processor canonical name与首版静态schema仍需在实现前固定。
+subscription 只能引用编译期已知 processor 及其 owner-defined 严格配置，不能引用脚本、Goja、`map[string]any` 或自由 event predicate。processor canonical name 与首版静态 schema 仍需在实现前固定。
 
 ### 5.2 Assistant message processor
 
-首个内建processor负责把模型stream恢复为消息：
+首个内建 processor 负责把模型 stream 恢复为消息：
 
-1. 从cursor开始按seq读取source Session events；
-2. 按 `(turn, step)` 收集 `assistant/chunk`，使用 `session.AssistantChunk` strict decode和 `llm.DecodeStreamChunk`恢复chunk；
-3. 按原seq把chunk推入 `llm.BlockAssembler`，不能在Bound复制text/tool/reasoning拼装规则；
-4. 遇到有效 `FinishChunk` 时，该chunk闭合当前输出，可以从assembler产生一条delivery；
-5. 遇到 `assistant/message` 时，必须校验其 `SourceEventSeqs` 都指向同一 `(turn, step)` 的早期 `assistant/chunk`，并重放这些chunk；重放结果与committed message不一致时是corrupt source，不能投递或推进cursor；
-6. 如果先前已按 `FinishChunk` 投递，后到的 `assistant/message` 只作为同一fold的闭合/校验事实，不能再产生第二条child message；
-7. 空assistant anchor不投递；Bound control events、Inbox events、request headers和其他未被processor拥有的event只按明确skip规则推进；
-8. 只有chunk而没有finish或`assistant/message`时返回 `NeedMore`，cursor停在该open group之前。
+1. 从 cursor 开始按 seq 读取 source Session events；
+2. 按 `(turn, step)` 收集 `assistant/chunk`，使用 `session.AssistantChunk` strict decode 和 `llm.DecodeStreamChunk` 恢复 chunk；
+3. 按原 seq 把 chunk 推入 `llm.BlockAssembler`，不在 Bound 复制 text/tool/reasoning 拼装规则；
+4. 遇到有效 `FinishChunk` 时闭合当前输出，从 assembler 产生一条 delivery；
+5. 遇到 `assistant/message` 时，校验其 `SourceEventSeqs` 都指向同一 `(turn, step)` 的早期 chunk，并重放这些 chunk；结果与 committed message 不一致时报 corrupt source；
+6. 如果已按 `FinishChunk` 投递，后到的 `assistant/message` 只作为同一 fold 的闭合与校验事实，不产生第二条 child message；
+7. 空 assistant anchor 不投递；Bound control events、Inbox events、request headers 和其他未被 processor 拥有的 event 只按明确 skip 规则推进；
+8. 只有 chunk 而没有 finish 或 `assistant/message` 时返回 `NeedMore`，cursor 停在该 open group 之前。
 
-这样正常流和恢复流使用同一条 `chunk -> BlockAssembler -> message` 路径。是否在永久缺少closure的`step/end`/`turn/end`后投递partial text，仍是会改变模型可见行为的Open决定；未确认前不得静默截断、跳过或制造partial message。
+正常流和恢复流使用同一条 `chunk -> BlockAssembler -> message` 路径。是否在永久缺少 closure 的 terminal boundary 后投递 partial text 仍是 Open 决定；未确认前不得静默截断、跳过或制造 partial message。
 
 ### 5.3 Child message provenance
 
-Bound把delivery包装为一条 `agentmessage.UserMessage` 并调用exact child的 `Followup`。message source必须持久化足够的稳定provenance：
+Bound 把 delivery 包装为一条 `agentmessage.UserMessage` 并调用 exact child 的 `Followup`。message source 必须持久化足够的稳定 provenance：
 
 ```go
 type SessionEventSource struct {
-	Kind            string
-	Form            agentmessage.ContextForm
-	SourceSessionID session.SessionID
-	SubscriptionID  string
-	FromSeq         int64
-	ThroughSeq      int64
+    Kind            string
+    Form            agentmessage.ContextForm
+    SourceSessionID session.SessionID
+    SubscriptionID  string
+    FromSeq         int64
+    ThroughSeq      int64
 }
 ```
 
-canonical `Kind` 在实现时与strict codec fixture一起固定。`Form` 使用relay语义。target child ID来自承载receipt的child Session，不在source中重复；稳定delivery identity由source Session、target child、subscription和half-open seq range共同确定。
+canonical `Kind` 在实现时与 strict codec fixture 一起固定。`Form` 使用 relay 语义。target child ID 来自承载 receipt 的 child Session，不在 source 中重复。稳定 delivery identity 由 source Session、target child、subscription 和 half-open seq range 共同确定。
 
-secrets、raw credential、provider error和整个source event JSON不能复制到provenance。模型只接收processor明确产生的content。
+secrets、raw credential、provider error 和整个 source event JSON 不能复制到 provenance。模型只接收 processor 明确产生的 content。
 
 ## 6. Child receipt 与 cursor
 
-delivery cursor继续使用half-open语义：`NextSourceSeq`之前的source prefix已经被明确skip，或对应delivery已经由child Inbox durable接受。它不是“child已开始turn”或“child已完成处理”的水位。
-
-cursor推进链路是：
+delivery cursor 使用 half-open 语义：`NextSourceSeq` 之前的 source prefix 已被明确 skip，或对应 delivery 已由 child Inbox durable 接受。它不是“child 已开始 turn”或“child 已完成处理”的水位。
 
 ```mermaid
 sequenceDiagram
-    participant P as Subagent Plugin
-    participant D as sessionevents.Dispatcher
-    participant B as bound.Service
-    participant S as source Session
+    participant S as source Session EventBus
+    participant B as bound DeliveryWorker
     participant A as exact Bound child Agent
-    participant C as child Session
+    participant C as child Session EventBus
     participant R as Bound cursor Store
 
-    P->>D: Notify(source EventAppended)
-    D->>B: SourceAdvanced(route, high-water)
-    B->>S: Snapshot from NextSourceSeq
-    B->>B: fold chunks into one Delivery
-    B->>A: Followup(UserMessage with SessionEventSource)
+    S->>B: source committed high-water
+    B->>B: read from cursor and fold chunks
+    B->>A: Followup(UserMessage with provenance)
     A->>C: Commit agent/inbox/spliced insert
-    C-->>P: EventAppended(child, receipt)
-    P->>D: Notify(child EventAppended)
-    D->>B: TargetAdvanced(route, high-water)
-    B->>C: find and validate inserted provenance
+    C->>B: child committed high-water
+    B->>B: find and validate inserted provenance
     B->>C: Flush through receipt barrier
-    B->>R: CAS cursor expected NextSourceSeq -> ThroughSeq + 1
+    B->>R: CAS cursor expected NextSourceSeq to ThroughSeq + 1
 ```
 
-Bound只把child Session中的 `agent/inbox/spliced` inserted message当作acceptance receipt。它必须strict decode `agent.InboxSplice`、验证message source、exact target、binding、subscription和seq range，再等待child Session Flush覆盖该receipt，最后以expected cursor执行单调CAS。
+Bound 只把 child Session 中的 `agent/inbox/spliced` inserted message 当作 acceptance receipt。它必须 strict decode `agent.InboxSplice`、验证 message source、exact target、binding、subscription 和 seq range，再等待 child Session Flush 覆盖该 receipt，最后以 expected cursor 执行单调 CAS。
 
-不能只在 `Agent.Followup` 返回nil后直接写cursor：crash可能发生在child Inbox Commit与cursor write之间。也不能在只收到child post-commit notification时先写cursor：cursor durability不能跑在child receipt durability之前。
+不能只在 `Agent.Followup` 返回 nil 后直接写 cursor；crash 可能发生在 child Inbox Commit 与 cursor write 之间。也不能在只收到 child post-commit notification 时先写 cursor；cursor durability 不能跑在 child receipt durability 之前。
 
-如果crash发生在receipt durable之后、cursor CAS之前，恢复先扫描child Session中相同delivery identity：找到唯一receipt时只补cursor，不再调用 `Followup`。发现多个receipt是invariant failure；找不到receipt才允许重投。child后来claim或discard该消息不回退delivery cursor。
+如果 crash 发生在 receipt durable 之后、cursor CAS 之前，恢复先扫描 child Session 中相同 delivery identity：找到唯一 receipt 时只补 cursor，不再调用 `Followup`。发现多个 receipt 是 invariant failure；找不到 receipt 才允许重投。child 后来 claim 或 discard 该消息不回退 delivery cursor。
 
-若产品需要知道child处理进度，应另建processing watermark并从 `user/message`、`turn/end`等child事实推导；不能改变delivery cursor的去重含义。
+若产品需要知道 child 处理进度，应另建 processing watermark 并从 `user/message`、`turn/end` 等 child 事实推导；不能改变 delivery cursor 的去重含义。
 
-## 7. Route 建立、更新和恢复
+## 7. 建立、更新与恢复
 
-fresh/existing `Bound.Start` 在child publication和新work准入前执行：
+fresh/existing `Bound.Start` 在 child publication 和新 work 准入前执行：
 
-1. 从同一parent projection snapshot读取binding和latest config；
-2. 恢复或创建exact child；
-3. 扫描child durable Session，先对账未推进cursor的receipts；
-4. 为enabled subscriptions安装source route和target watch；
-5. 主动调用一次source catch-up到当前snapshot barrier，不等待新的Plugin event；
-6. 完成latest config apply后才开放普通Send和event delivery。
+1. 从同一 parent projection snapshot 读取 binding 和 latest config；
+2. 恢复或创建 exact child；
+3. 扫描 child durable Session，先对账未推进 cursor 的 receipts；
+4. 为 enabled subscriptions 创建 `DeliveryWorker`，先安装 source Session 和 child Session 两个 EventBus subscription；
+5. 主动 catch-up source 到当前 snapshot barrier，不等待新 live event；
+6. 完成 latest config apply 后才开放普通 Send 和 event delivery。
 
-config revision改变subscriptions时，Bound在per-child串行区间暂停新delivery，Flush config事实，原子替换dispatcher route set，然后按每个subscription的durable cursor catch-up。删除subscription前如何保留或归档cursor属于O7 retention policy，不能由dispatcher静默删除。
+config revision 改变 subscriptions 时，Bound 在 per-child 串行区间暂停新 delivery，Flush config 事实，安装新 `DeliveryWorker` 和两组 Session subscriptions，原子切换 generation，然后 dispose 旧 registration 并按 durable cursor catch-up。删除 subscription 前如何保留或归档 cursor 属于 O7 retention policy，不能由 EventBus 静默删除。
 
-child不resident时，source event仍是durable待处理事实。Bound不建立第二条模型输入队列；cursor保持不变。materialize成功后catch-up再进入existing Agent Inbox path。
+source 或 child 不 resident 时无法对其 process-local EventBus 保留订阅。durable log 仍是待处理事实，cursor 保持不变；Session 重新 materialize 后，Bound 对 exact Context 重新订阅并 catch-up。EventBus 不建立第二条 durable 消息队列。
 
 ## 8. 失败与一致性
 
-- Plugin event重复或乱序：dispatcher只提高route high-water；Bound按Session seq和cursor重放。
-- Plugin event丢失：active route的dirty retry、下一次通知、Bound Start或config update的显式catch-up均可补偿；正确性不依赖notification history。
-- chunk decode、provenance或committed message校验失败：隔离对应subscription，cursor停在失败prefix并报告稳定diagnostic。
-- child Inbox拒绝：不产生receipt，不推进cursor。
-- child receipt Flush失败：不推进cursor；恢复后重新验证durability。
-- cursor CAS失败：重新读取cursor和child receipt；已推进视为幂等成功，冲突或回退拒绝。
-- route replacement与in-flight delivery并发：per-child epoch和registration generation共同校验；旧worker不能向新epoch投递，也不能推进新revision的cursor。
-- shutdown：Plugin先停止dispatcher新通知准入并排空已接受route work，再关闭Bound和其他Mode；dispatcher不直接关闭Agent Scope。
+- EventBus 通知重复、合并或处理延迟：Bound 只提高 dirty high-water，按 Session seq 和 cursor 重放；
+- process crash 或 process-local notification 丢失：`Bound.Start`、Session rematerialization、config update 或后续通知的显式 catch-up 补偿；
+- chunk decode、provenance 或 committed message 校验失败：隔离对应 subscription，cursor 停在失败 prefix 并报告稳定 diagnostic；
+- child Inbox 拒绝：不产生 receipt，不推进 cursor；
+- child receipt Flush 失败：不推进 cursor；恢复后重新验证 durability；
+- cursor CAS 失败：重新读取 cursor 和 child receipt；已推进视为幂等成功，冲突或回退拒绝；
+- subscription replacement 与 in-flight delivery 并发：per-child epoch 和 registration generation 共同校验；旧 worker 不能向新 epoch 投递，也不能推进新 revision 的 cursor；
+- shutdown：Bound 先停止新 work 准入，dispose source/child Session subscriptions，等待已准入 handler 结束，再关闭 child execution；Plugin 只调用 Bound `Close`。
 
-本设计提供的是at-least-once处理尝试与effectively-once child Inbox acceptance，不承诺exactly-once模型调用、Tool副作用或跨Session数据库事务。
+本设计提供 at-least-once 处理尝试与 effectively-once child Inbox acceptance，不承诺 exactly-once 模型调用、Tool 副作用或跨 Session 数据库事务。
 
 ## 9. 实施与验证映射
 
 | 行为 | 计划实现位置 | 必须验证的证据 | 状态 |
 | --- | --- | --- | --- |
-| Plugin静态订阅与薄转接 | `subagent/plugin` | Manifest、Apply/Dispose和observer tests | Planned |
-| source/target route与有界调度 | `subagent/internal/sessionevents` | duplicate/out-of-order、replacement、shutdown race tests | Planned |
-| chunk恢复与message校验 | `subagent/internal/bound` | `llm.BlockAssembler` replay、finish/message duplicate、corrupt provenance tests | Planned |
-| child receipt与cursor CAS | `subagent/internal/bound` + Bound Store adapter | crash-window、Flush-before-cursor、receipt reconciliation tests | Planned |
-| cold/restart catch-up | `subagent/internal/bound` | dropped notification、restart、nonresident child integration tests | Planned |
+| exact Session EventBus 与幂等 disposer | `session` | post-commit order、batch failure、reentry isolation、dispose race tests | Planned |
+| source/child 直接订阅与 generation replacement | `subagent/internal/bound` | subscribe-before-catch-up、replacement、shutdown race tests | Planned |
+| chunk 恢复与 message 校验 | `subagent/internal/bound` | `llm.BlockAssembler` replay、finish/message duplicate、corrupt provenance tests | Planned |
+| child receipt 与 cursor CAS | `subagent/internal/bound` + Bound Store adapter | crash-window、Flush-before-cursor、receipt reconciliation tests | Planned |
+| cold/restart catch-up | `subagent/internal/bound` | dropped notification、restart、nonresident Session integration tests | Planned |
+| Plugin 仅装配 Bound | `subagent/plugin` | Apply/Dispose 不声明 Session append observer 的 architecture test | Planned |
 
-在真实包实现前不创建 `internal/sessionevents` placeholder目录或package README。实现落地后必须增加 colocated `README.zh-CN.md`，并把本表链接到实际 tests和[08 实施进度](../../zh-CN/08-implementation-progress.md)。
+实现 EventBus 时必须先盘点当前 `session.EventAppended` 的 Persistence、Projection、Title 等全局消费者，明确哪些仍需 runtime-wide lifecycle discovery，哪些应迁移到 exact Session subscription。不得为了兼容同一业务消费者而同时经过 Plugin event 和 EventBus 处理一次 append。
+
+在真实包实现前不创建 placeholder 目录或 package README。实现落地后必须增加 colocated `README.zh-CN.md`，并把本表链接到实际 tests 和[08 实施进度](../../zh-CN/08-implementation-progress.md)。
 
 ## 10. 尚未关闭的决定
 
-- O4：首版processor canonical name、subscription严格schema以及除assistant output以外是否准入其他Session语义；
-- O5：cursor Store的CAS接口、receipt扫描索引和SQLite transaction边界；
-- O7：source retention超过cursor、subscription删除和永久poison prefix的repair/隔离策略；
-- open chunk group在terminal boundary后的partial output策略；
-- dispatcher worker数量、退避和队列上限是实现期配置，但超限时是否拒绝新binding属于O11产品限制。
+- O4：首版 processor canonical name、subscription 严格 schema 以及除 assistant output 以外是否准入其他 Session 语义；
+- O5：cursor Store 的 CAS 接口、receipt 扫描索引和 SQLite transaction 边界；
+- O7：source retention 超过 cursor、subscription 删除和永久 poison prefix 的 repair/隔离策略；
+- DeliveryWorker 的有界 mailbox 上限、调度公平性与 retry/diagnostic；
+- Session release 时 EventBus drain 与 Flush/lifecycle event 的最终顺序；
+- open chunk group 在 terminal boundary 后的 partial output 策略。
 
-这些事项没有关闭前，不能以任意event predicate、best-effort cursor write、无限goroutine或跳过损坏prefix代替。
+这些事项没有关闭前，不能以任意 event predicate、best-effort cursor write、无限 goroutine 或跳过损坏 prefix 代替。

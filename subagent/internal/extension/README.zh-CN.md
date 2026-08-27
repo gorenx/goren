@@ -1,6 +1,6 @@
 # Child Extension Registry
 
-本包拥有 `Extension` 的有序 registration，以及每个 unpublished child Agent Scope 的 installation、publication commit 复核和精确撤销。OneShot 与 Continuable 使用同一 Registry 和 Provisioner；生命周期策略不改变 child-scoped capability 的安装契约。
+本包拥有`Extension`的有序registration，以及每个unpublished child Agent Scope的installation、publication commit复核和release。OneShot、Continuable与Bound共享同一Registry；common和selected是registration选择方式，不是新的生命周期Mode。
 
 `Registry` 实现公开 `ExtensionRegistry`。它只保存 Extension registrations 和已经安装的 exact effects；它不决定 Extension 内容，不参与 Plugin lifecycle，也不创建或恢复 Agent。
 
@@ -13,16 +13,16 @@ sequenceDiagram
     participant Provisioning as agent.Provisioning
 
     Owner->>Registry: RegisterExtension
-    Provisioner->>Registry: snapshot registrations
+    Provisioner->>Registry: resolve common或selected registrations
     Provisioner->>Scope: Extension.Install in order
     Scope-->>Provisioning: exact installations
-    Provisioning->>Provisioning: Commit revocation check
+    Provisioning->>Provisioning: Commit installation check
     Owner->>Registry: Unregister
     Registry->>Scope: Uninstall exact installations
 ```
 
 Extension 与当前 exact Agent epoch 一一安装，但不再称为 Activation Extension。Go 使用 `Extension` 表达 child-scoped contribution，使用 `Provisioner`/`Provisioning` 表达 Agent publication transaction。
 
-Install 失败会在返回前释放本次已经取得的 partial installations。registration 撤销先标记 removed，使尚未 Commit 的 Provisioning 失败，再撤销已 resident 的 exact installations。child Scope teardown 与 registration removal 都调用同一个幂等 installation release。
+无名registration进入common集合；`WithExtensionName`注册项只在Bound config按name选择时安装。Install失败会在返回前反序释放本次取得的partial installations。registration removal先标记removed，使尚未Commit的Provisioning失败，再释放该registration的resident installations。Registry不通知Bound，也不决定Agent epoch；当前Plugin shutdown先关闭所有child，再Clear Registry。
 
 跨包契约见[领域设计](../../docs/design.zh-CN.md)，实现证据见[08 实施进度](../../../zh-CN/08-implementation-progress.md)。

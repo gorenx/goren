@@ -15,4 +15,4 @@ flowchart LR
 
 本包不实现 child-to-parent report。report Tool 根据当前 child Agent 的 Session parent identity 查找 exact live parent，再直接使用 parent Agent 的 Inbox 能力；OneShot 与 Continuable 共用该路径。
 
-关闭准入只由统一 `subagents.Service` 负责；它等待已准入调用退出后才调用本 Service 的 `Close`。Continuable `Close` 只停止当前 Executions，并等待 exact Agents 进入 Closing；不维护第二套模块准入状态，不递归关闭 descendants，也不执行 Plugin Scope teardown。创建与恢复分别调用本包拥有的 `EnvironmentBuilder` 端口；policy Plugin 与 Extension Provisioner 的组合位于 `subagent/plugin`。跨包契约见[Subagent 包说明](../../README.zh-CN.md)，实现证据见[08 实施进度](../../../zh-CN/08-implementation-progress.md)。
+关闭准入只由统一`subagents.Service`负责；Continuable `Close`只停止当前Executions，不维护第二套模块准入状态。创建与恢复由本包直接组合Mode-owned Provisioner：fresh安装delegation policy，fresh/cold都组合Persona、Tool restriction和common Extensions。跨包契约见[Subagent包说明](../../README.zh-CN.md)，实现证据见[08实施进度](../../../zh-CN/08-implementation-progress.md)。

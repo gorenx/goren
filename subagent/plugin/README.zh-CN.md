@@ -1,6 +1,6 @@
 # Subagent Plugin
 
-`plugin.Plugin` 是 Subagent 领域的 Plugin 装配入口。它解析 Agent、Session、Approval 和 Projection 能力，构造普通 Go 业务对象，并发布 `SeedBuilderRegistry`、`Starter`、`ChildControl`、`ExtensionRegistry` 和 `ChildDirectory`。本包不代表或拥有整个 Plugin Runtime。
+`plugin.Plugin`是Subagent领域的composition owner。它解析Agent、Session、Approval和Projection能力，构造普通Go业务对象，并发布`SeedBuilderRegistry`、`Starter`、`ChildControl`、`ExtensionRegistry`、`ChildDirectory`和`BoundRegistry`。本包不拥有Subagent用例或Plugin Runtime。
 
 ```mermaid
 flowchart TD
@@ -17,8 +17,8 @@ flowchart TD
     Plugin -->|publishes narrow views| Consumers[Tool / Control / Report / Host]
 ```
 
-Apply 顺序是：解析依赖、注册 Projection、启用 ChildDirectory、构造一个 `environmentBuilder`、把它分别作为 OneShot/Continuable 拥有的消费端口实现注入，构造 Bound 模式骨架，最后打开统一 Service 准入。Bound 当前没有 creation store、binding/config projection或child config application依赖，`Start` 返回明确 TODO 错误。Environment Builder 当前只把 approval、persona、Tool restriction、descriptor、structured output 和 child Extension 翻译为 child-local Plugin/Provisioner；不创建 Agent，不决定 Execution 状态。未来 Bound config application必须继续通过System Prompt和Tools owner API实现，不能把规则移入Plugin。任一 Apply 步骤失败都会撤销已取得效果。Plugin 不实现 Start、Send、Interrupt、settlement 或目录查询，也不发布额外的 parent 消息能力。
+Apply依次解析依赖、注册Projection、启用ChildDirectory、构造OneShot/Continuable/Bound三个Mode Service，并打开统一Service准入。各Mode自己组合child-local Provisioner；Plugin只注入approval、common Extension Provisioner和`boundExtensions`窄adapter，不解释descriptor或Bound config。
 
-Dispose 先调用统一 Service `Close`：关闭新准入、等待已准入调用返回、让 Continuable 与 OneShot 请求其 exact Agent 停止，并只等待 `ClosingSignal`。它不在当前 Plugin topology 操作中递归卸载 child Scope。随后本 Plugin 停用 ChildDirectory、清理 Extension/SeedBuilder registration，并释放 Projection handle。
+Plugin同时观察`agent.SessionStarted`与`agent.Disposed`：前者异步调度parent已有Bound bindings，不能否决parent publication；后者同步完成exact Execution settlement。完整业务调用链只在[Bound技术设计](../docs/parent-bound-design.zh-CN.md)维护。
 
-`agent/disposed` 是本 Plugin 唯一转接给业务 Service 的 Agent 事件，用来结算由 Agent 结构关闭触发的 exact Execution。跨包契约见[Subagent 包说明](../README.zh-CN.md)，实现证据见[08 实施进度](../../zh-CN/08-implementation-progress.md)。
+Dispose先`service.Close`停止三个Mode的Execution，再停用ChildDirectory、`extensions.Clear`、清理SeedBuilder并释放Projection handle。先关child再清Registry，避免把Extension cleanup误当成Bound运行期配置事件。跨包契约见[Subagent包说明](../README.zh-CN.md)，实现证据见[08实施进度](../../zh-CN/08-implementation-progress.md)。
