@@ -44,7 +44,10 @@
 - [`session/projectioncache/sqlite/README.zh-CN.md`](../session/projectioncache/sqlite/README.zh-CN.md)：独立 checkpoint SQLite/sqlc storage adapter。
 - [`agentloop/README.zh-CN.md`](../agentloop/README.zh-CN.md)：Agent driver、Turn/Step、请求/Tool 调度、durability checkpoint 与 idle convergence。
 - [`subagent/README.zh-CN.md`](../subagent/README.zh-CN.md)：OneShot、Continuable、Bound 三种模式的公共契约、模块边界和当前实现状态。
+- [Bound 需求](../subagent/docs/parent-bound-requirements.zh-CN.md)：binding/config、resident epoch与parent interaction delivery的可观察行为和验收场景。
+- [Bound 技术设计](../subagent/docs/parent-bound-design.zh-CN.md)：Bound owner、主动调用链、create/restore、worker与并发一致性。
 - [Bound Config 管理详细设计](../subagent/docs/bound-config-management.zh-CN.md)：Bound config Session event/projection、Persona与现有System Prompt组合、Tool restriction、通用Extension Registry有名选择及exact Agent epoch replacement。
+- [Bound Parent Interaction 投递设计](../subagent/docs/session-event-delivery.zh-CN.md)：现有Session event wakeup、私有fold、child receipt、parent cursor与crash恢复。
 - [`apiproxy/README.zh-CN.md`](../apiproxy/README.zh-CN.md)：typed method adapter、Session/Interaction Gateway、live frame、correlation 与背压。
 - [`apiproxy/session/README.zh-CN.md`](../apiproxy/session/README.zh-CN.md)：Session API façade、读取/生命周期/模型/对话/Search 用例与 Agent activation 状态。
 - [`internal/assembly/README.zh-CN.md`](../internal/assembly/README.zh-CN.md)：Factory Catalog、typed config、依赖结算与 composition rollback。

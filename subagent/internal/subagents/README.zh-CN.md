@@ -9,6 +9,8 @@ flowchart LR
     Service -->|ModeOneShot| OneShot
     Service -->|ModeContinuable| Continuable
     Service -->|ModeBound| Bound
+    SessionEvent[session.EventAppended] --> Service
+    Service -->|wakeup only| Bound
     Service -->|ordinary resident message| ChildAgent[child agent.Agent]
     Service -->|resident/cold Bound| Bound
     Service -->|unbound cold resume| Continuable
@@ -17,6 +19,8 @@ flowchart LR
 Service拥有模块级准入状态、已准入调用计数和实现的逆序关闭。`childExecutionControl`单独拥有live Execution lookup、Send/Interrupt授权和Agent-disposed路由，避免`Service.Send`承载Mode业务。`Open`接收`Mode -> implementation`集合并验证三个Mode的完整接口。
 
 Bound command只含exact live parent和binding已确定的child Session ID。本包只完成closed command dispatch；binding/config、create/restore和epoch replacement均由Bound owner实现。
+
+Plugin观察到现有`session.EventAppended`后调用`Service.SessionEventAppended`。Service只在admission-open期间把fact转给Bound的窄observer接口，不读取Session或解释event payload；Bound内部只对`turn/end`路由worker。`agent.Disposed`先让Bound同步停止exact parent workers，再完成公共Execution settlement。
 
 ordinary resident child在校验exact parent后直接调用`Entry.Subject.Followup`。resident/cold Bound交给Bound，以便config和message admission串行；没有binding的cold child交给Continuable恢复。Service不拥有Mode-specific创建、恢复、terminal或child report规则。
 

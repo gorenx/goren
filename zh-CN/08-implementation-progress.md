@@ -279,7 +279,7 @@ interaction owner registers stable rpcId + decoder
 | S7-D02 | 能力 | ACP stdio adapter | Deferred | None |
 | S7-D03 | 能力 | MCP Client Bridge | Deferred | None |
 | S7-D04 | 能力 | 最小 Typert endpoint dispatch | Deferred | None：仅在纳入 endpoint 确有依赖时进入 |
-| S7-D05 | 能力 | Jobs、Subagent 与 Workflow | In Progress | Go Verified：Subagent core、OneShot、Continuable、Bound binding/config与exact Agent epoch replacement、spawn/fork Provider及Tool/control/report Consumer已实现，并通过全仓test/race/vet/build和architecture checks；Bound O11启动预算仍Open，Jobs、background one-shot、Workflow和Code Mode structured capture仍Deferred |
+| S7-D05 | 能力 | Jobs、Subagent 与 Workflow | In Progress | Race Verified：Subagent core、OneShot、Continuable、Bound binding/config、exact Agent epoch replacement及parent interaction worker已实现；interaction复用`session.EventAppended`wakeup，以child Inbox receipt和parent `subagent/bound-cursor`恢复，不增加Session EventBus或公开projection event；spawn/fork Provider及Tool/control/report Consumer已闭环。Bound O11启动预算仍Open，Jobs、background one-shot、Workflow和Code Mode structured capture仍Deferred |
 | S7-G01 | Gate | 进入任一能力时同步更新范围、contract、技术决策和矩阵 | Deferred | None |
 | S7-G02 | Gate | 不以空 package、空 handler、固定成功或未使用依赖占位 | Deferred | None：当前未创建占位 |
 

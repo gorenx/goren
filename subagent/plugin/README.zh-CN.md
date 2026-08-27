@@ -19,6 +19,6 @@ flowchart TD
 
 Apply依次解析依赖、注册Projection、启用ChildDirectory、构造OneShot/Continuable/Bound三个Mode Service，并打开统一Service准入。各Mode自己组合child-local Provisioner；Plugin只注入approval、common Extension Provisioner和`boundExtensions`窄adapter，不解释descriptor或Bound config。
 
-Plugin同时观察`agent.SessionStarted`与`agent.Disposed`：前者异步调度parent已有Bound bindings，不能否决parent publication；后者同步完成exact Execution settlement。完整业务调用链只在[Bound技术设计](../docs/parent-bound-design.zh-CN.md)维护。
+Plugin同时观察`agent.SessionStarted`、`agent.Disposed`与现有`session.EventAppended`：第一个异步调度parent已有Bound bindings，不能否决parent publication；第二个同步停止exact parent workers并完成Execution settlement；第三个只把committed `turn/end`作为无I/O wakeup转给Bound。Plugin不读取parent log、不调用child Followup、不推进cursor。完整业务调用链只在[Bound技术设计](../docs/parent-bound-design.zh-CN.md)和[Parent Interaction投递设计](../docs/session-event-delivery.zh-CN.md)维护。
 
-Dispose先`service.Close`停止三个Mode的Execution，再停用ChildDirectory、`extensions.Clear`、清理SeedBuilder并释放Projection handle。先关child再清Registry，避免把Extension cleanup误当成Bound运行期配置事件。跨包契约见[Subagent包说明](../README.zh-CN.md)，实现证据见[08实施进度](../../zh-CN/08-implementation-progress.md)。
+Dispose先`service.Close`；Bound在内部先停binding workers再停Execution，随后Plugin停用ChildDirectory、`extensions.Clear`、清理SeedBuilder并释放Projection handle。跨包契约见[Subagent包说明](../README.zh-CN.md)，实现证据见[08实施进度](../../zh-CN/08-implementation-progress.md)。

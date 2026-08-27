@@ -4,7 +4,7 @@
 
 ## 1. 范围
 
-Bound 是独立于 OneShot 和 Continuable 的第三种 Subagent Mode。它表示：exact parent Session 先持久化一个 child binding 和完整配置，随后由 parent Agent 的启动事件或 parent 的后续发送创建、恢复并保持该 child Agent。
+Bound 是独立于 OneShot 和 Continuable 的第三种 Subagent Mode。它表示：exact parent Session 先持久化一个 child binding 和完整配置，随后由 parent Agent 的启动事件或 parent 的后续发送创建、恢复并保持该 child Agent；enabled binding 还持续接收 direct user 与 parent 已完成的交互。
 
 本文只定义 Bound 的可观察行为。接口、数据结构、调用链和职责见[技术设计](./parent-bound-design.zh-CN.md)，配置组合细节见[Bound Config 管理](./bound-config-management.zh-CN.md)。
 
@@ -27,7 +27,15 @@ Bound 是独立于 OneShot 和 Continuable 的第三种 Subagent Mode。它表�
 15. Extension Registry 同时支持无名 common Extension 和有名 selected Extension。每个 binding 可按名称和顺序选择不同 Extension。
 16. 有名 Extension 的注册方或 Registry shutdown 可以注销 registration；Bound 不发起注销，也不为不存在的运行期动态卸载场景定义 callback。
 17. Bound child 只通过显式 report Tool 向 parent report；idle、stop 或 config update 不隐式生成 report。
-18. subscription、cursor、独立 Bound config Store 和原位 replacement API 当前不实现，也不放置空接口。
+18. binding 本身表达 parent-to-child 观察关系；不增加通用 subscription schema、Session-owned EventBus或任意 event predicate。
+19. 只在 `turn/end` 后处理完整 parent turn；只有 source kind 为 `user` 的 `user/message` 使该 turn产生 child delivery。
+20. parent relay 使用 canonical `assistant/message`，过滤 reasoning、tool-call和tool-result；report-only turn不得回灌child。
+21. worker必须先Flush parent source prefix，再产生child effect；child receipt Flush成功后才允许推进parent cursor。
+22. cursor作为exact parent Session中的`subagent/bound-cursor`事件保存，不进入公共Session Projection，也不建立独立cursor Store。
+23. crash发生在child receipt durable之后、parent cursor之前时，恢复只能补cursor，不得再次Followup。
+24. cursor floor必须排除binding建立前的history与fork已继承的parent prefix；落在partial turn中时跳过该partial turn。
+25. `Enabled=false`暂停interaction delivery并保留backlog；再次启用和materialize后主动catch-up。
+26. 独立 Bound config Store和原位replacement API不实现，也不放置空接口。
 
 ## 3. 三种 Mode 的边界
 
@@ -41,7 +49,7 @@ Bound 可以复用 `agent.Constructor`、`Execution`、SeedBuilder、child polic
 
 ## 4. 上下游交互
 
-配置源、Agent lifecycle和`ChildControl`是三个上游入口；Session、projection、Agent Constructor和Extension Registry是下游能力。完整主动调用方向和流程图只在[技术设计第3节](./parent-bound-design.zh-CN.md#3-依赖与主动调用方向)维护。
+配置源、Agent lifecycle、`ChildControl`和现有`session.EventAppended`是上游入口；Session、projection、Agent Constructor和Extension Registry是下游能力。`session.EventAppended`只唤醒Bound worker，不是durable subscription事实。完整主动调用方向和流程图只在[技术设计第3节](./parent-bound-design.zh-CN.md#3-依赖与主动调用方向)维护。
 
 ## 5. 用例需求
 
@@ -82,7 +90,13 @@ caller 必须提供 expected revision。Bound 验证完整 snapshot 与 selected
 
 统一 Service 先查 resident Execution：resident Bound 分派给 `Bound.Send`；不存在 resident Execution 时，先查 exact parent binding，存在则 cold restore Bound，否则交给 Continuable resume。Bound config replacement 与 message admission 使用同一个 parent-child operation lock。
 
-### 5.6 Close、interrupt 与 report
+### 5.6 Parent interaction delivery
+
+每个materialized binding拥有一个Bound worker。worker从durable cursor fold下一条closed parent turn；没有direct user输入的turn只推进`skipped`。需要投递时，worker以稳定parent seq range构造`subagent-delivery` message source，扫描child `agent/inbox/spliced` receipt去重，Flush child后再以Session FIFO head上的expected cursor提交`subagent/bound-cursor`。
+
+完整调用链、filter、floor和crash恢复语义见[Parent Interaction投递设计](./session-event-delivery.zh-CN.md)。
+
+### 5.7 Close、interrupt 与 report
 
 - Interrupt 取消当前 turn但保留 Bound Inbox 和 resident epoch。
 - parent close、child external close或module shutdown结束 exact epoch并完成 Session flush。
@@ -98,6 +112,9 @@ caller 必须提供 expected revision。Bound 验证完整 snapshot 与 selected
 - binding/config/materialization与applied分开投影；
 - child Agent resident状态只存在于进程内Execution Registry，不伪装成durable Session事实；
 - binding/config event不修改Session header。
+- 每个child的cursor只能从derived floor连续前进，不允许回退、跨越或接受重复receipt；
+- child receipt先于对应`delivered` cursor durable；`skipped` cursor只能对应已closed且没有direct user输入的turn；
+- cursor是Bound私有fold事实，不加入公共`subagent-bound` projection value。
 
 ## 7. 失败语义
 
@@ -105,6 +122,9 @@ caller 必须提供 expected revision。Bound 验证完整 snapshot 与 selected
 - parent publication期间单个child create/restore失败：parent继续发布；parent记录failed materialization并报告diagnostics。
 - config revision已durable但resident replacement失败：返回committed result和error；latest revision保留，下一次`Send`或启动可重试。
 - child final Flush失败：不回滚已经结束的epoch，交给diagnostics。
+- parent source Flush失败：不产生新的child effect；child Followup或receipt Flush失败：不推进cursor。
+- cursor Commit或Flush失败：报告diagnostics并在后续catch-up中从child receipt恢复。
+- malformed parent turn、cursor chain或receipt：停止该次catch-up，不猜测或跳过损坏事实。
 - selected Extension在provisioning前不存在：Bind/Update或Start失败；不存在已运行Bound epoch的动态注销callback。
 
 ## 8. 未关闭事项
@@ -121,3 +141,6 @@ O11 的单parent并发启动上限、同步尝试预算和单child超时尚未�
 6. cold Bound `Send`走Bound restore；无binding cold child走Continuable。
 7. selected Extensions按config顺序安装，失败时完整回滚；common与selected职责分离。
 8. malformed config-without-binding和materialization-without-matching-config被projection拒绝。
+9. direct user与parent的完整turn只进入child Inbox一次；reasoning/tool-call和report-only turn不进入child。
+10. child receipt已durable但parent cursor缺失时，恢复只补cursor且不重复Followup。
+11. binding/fork floor不重放既有parent history；disable期间cursor不推进，重新启用后catch-up。
