@@ -23,29 +23,19 @@ func (owner *CheckpointCache) Advance(
 	if owner.state != cacheOpen {
 		return nil
 	}
-	state := owner.writes[conversation]
-	if state == nil {
-		state = &writeState{
-			conversation: conversation,
-			latestSeq:    -1,
-			persistedSeq: -1,
-		}
-		owner.writes[conversation] = state
-	}
+	state := owner.writeStateLocked(conversation)
 	if state.retiring {
 		return nil
 	}
 	state.latestSeq = max(state.latestSeq, committed.Seq)
 	state.generation++
-	state.pending = int(state.generation - state.persistedGen)
+	if committed.Type == session.TurnEndEventName ||
+		state.pendingEvents() >= owner.writeEveryEvents {
+		owner.requestWriteLocked(state)
+		return nil
+	}
 	if state.timer == nil {
 		owner.armTimerLocked(state)
-	}
-	if committed.Type == session.TurnEndEventName {
-		state.force = true
-		owner.requestWriteLocked(state)
-	} else if state.pending >= owner.writeEveryEvents {
-		owner.requestWriteLocked(state)
 	}
 	return nil
 }
@@ -60,21 +50,9 @@ func (owner *CheckpointCache) Retire(conversation session.Context) error {
 	if owner.state != cacheOpen {
 		return nil
 	}
-	state := owner.writes[conversation]
-	if state == nil {
-		state = &writeState{
-			conversation: conversation,
-			latestSeq:    lastSeq(conversation.Events()),
-			persistedSeq: -1,
-		}
-		owner.writes[conversation] = state
-	}
+	state := owner.writeStateLocked(conversation)
+	state.latestSeq = max(state.latestSeq, conversation.Seq()-1)
 	state.retiring = true
-	state.force = true
-	if state.timer != nil {
-		state.timer.Stop()
-		state.timer = nil
-	}
 	owner.requestWriteLocked(state)
 	return nil
 }
@@ -83,17 +61,34 @@ func (owner *CheckpointCache) armTimerLocked(state *writeState) {
 	if owner.state != cacheOpen || state.retiring || state.timer != nil {
 		return
 	}
-	state.timer = time.AfterFunc(owner.writeInterval, func() {
-		owner.mutex.Lock()
-		if state.timer != nil {
-			state.timer = nil
+	state.timer = time.AfterFunc(
+		owner.writeInterval,
+		func() {
+			owner.mutex.Lock()
+			if state.timer != nil {
+				state.timer = nil
+			}
+			if owner.state == cacheOpen && owner.writes[state.conversation] == state {
+				owner.requestWriteLocked(state)
+			}
+			owner.mutex.Unlock()
+		},
+	)
+}
+
+func (owner *CheckpointCache) writeStateLocked(
+	conversation session.Context,
+) *writeState {
+	selected := owner.writes[conversation]
+	if selected == nil {
+		selected = &writeState{
+			conversation: conversation,
+			latestSeq:    -1,
+			persistedSeq: -1,
 		}
-		if owner.state == cacheOpen && owner.writes[state.conversation] == state {
-			state.force = true
-			owner.requestWriteLocked(state)
-		}
-		owner.mutex.Unlock()
-	})
+		owner.writes[conversation] = selected
+	}
+	return selected
 }
 
 func (owner *CheckpointCache) requestWriteLocked(state *writeState) {
@@ -125,7 +120,6 @@ func (owner *CheckpointCache) runWriter(state *writeState) {
 		}
 		targetGeneration := state.generation
 		state.requested = false
-		state.force = false
 		owner.mutex.Unlock()
 
 		cut, err := owner.persistCheckpoint(state.conversation)
@@ -141,12 +135,11 @@ func (owner *CheckpointCache) runWriter(state *writeState) {
 		if err == nil {
 			state.persistedGen = max(state.persistedGen, targetGeneration)
 			state.persistedSeq = max(state.persistedSeq, cut)
-			state.pending = int(state.generation - state.persistedGen)
 		}
 		closing := owner.state != cacheOpen
 		if closing || err != nil {
 			owner.finishWriterLocked(state, state.retiring || closing)
-			if err != nil && !state.retiring && !closing && state.pending != 0 {
+			if err != nil && !state.retiring && !closing && state.pendingEvents() != 0 {
 				owner.armTimerLocked(state)
 			}
 			owner.mutex.Unlock()
@@ -159,7 +152,7 @@ func (owner *CheckpointCache) runWriter(state *writeState) {
 			continue
 		}
 		owner.finishWriterLocked(state, state.retiring)
-		if !state.retiring && state.pending != 0 {
+		if !state.retiring && state.pendingEvents() != 0 {
 			owner.armTimerLocked(state)
 		}
 		owner.mutex.Unlock()
@@ -189,20 +182,21 @@ func (owner *CheckpointCache) persistCheckpoint(
 	if err != nil {
 		return -1, err
 	}
-	cut, err := checkpointCut(rows, conversation.Events())
+	cut, err := checkpointCut(rows, conversation.Seq()-1)
 	if err != nil {
 		return -1, err
 	}
-	if live, found := owner.sessions.Get(conversation.ID()); found && live == conversation {
+	metadata := conversation.Header()
+	if live, found := owner.sessions.Get(metadata.ID); found && live == conversation {
 		if err := owner.sessions.Flush(context.Background(), conversation); err != nil {
 			return -1, err
 		}
 	}
-	record := CheckpointRecord{
-		Identity: identityOf(conversation.Header()),
-		Rows:     rows,
-	}
-	if err := owner.replaceRecord(context.Background(), conversation.ID(), record); err != nil {
+	if err := owner.replaceCheckpoint(
+		context.Background(),
+		metadata,
+		rows,
+	); err != nil {
 		return -1, err
 	}
 	return cut, nil
@@ -210,10 +204,10 @@ func (owner *CheckpointCache) persistCheckpoint(
 
 func checkpointCut(
 	rows sessionprojection.Checkpoint,
-	events []session.Event,
+	emptyCut int64,
 ) (int64, error) {
 	if len(rows) == 0 {
-		return lastSeq(events), nil
+		return emptyCut, nil
 	}
 	var cut int64
 	first := true
@@ -228,11 +222,4 @@ func checkpointCut(
 		}
 	}
 	return cut, nil
-}
-
-func lastSeq(events []session.Event) int64 {
-	if len(events) == 0 {
-		return -1
-	}
-	return events[len(events)-1].Seq
 }

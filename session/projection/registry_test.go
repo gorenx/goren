@@ -3,6 +3,7 @@ package projection
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"sync"
 	"testing"
@@ -11,11 +12,23 @@ import (
 	"github.com/gorenx/goren/session"
 )
 
-var projectionFixtureEvent = session.DefineEvent[string]("fixture/projection-value")
+const projectionFixtureEventName = "fixture/projection-value"
+
+var projectionFixtureEvent = session.DefineEvent[string](projectionFixtureEventName)
 
 type projectionFixtureUnit struct {
 	key     string
 	version int64
+}
+
+type stagedFailureUnit struct {
+	key               string
+	mu                sync.Mutex
+	applyFailureValue string
+	applyFailures     int
+	viewFailureValue  string
+	viewFailures      int
+	unchangedValue    string
 }
 
 func (definition projectionFixtureUnit) Key() string { return definition.key }
@@ -30,7 +43,7 @@ func (projectionFixtureUnit) ApplyState(
 	state json.RawMessage,
 	committed session.Event,
 ) (Transition, error) {
-	if committed.Type != "fixture/projection-value" {
+	if committed.Type != projectionFixtureEventName {
 		return Transition{
 			State: state,
 		}, nil
@@ -48,6 +61,66 @@ func (projectionFixtureUnit) ApplyState(
 
 func (projectionFixtureUnit) ViewState(state json.RawMessage) (json.RawMessage, error) {
 	return state, nil
+}
+
+func (subject *stagedFailureUnit) Key() string {
+	return subject.key
+}
+
+func (*stagedFailureUnit) StateVersion() int64 {
+	return 1
+}
+
+func (*stagedFailureUnit) InitialState() (json.RawMessage, error) {
+	return json.RawMessage(`null`), nil
+}
+
+func (subject *stagedFailureUnit) ApplyState(
+	state json.RawMessage,
+	committed session.Event,
+) (Transition, error) {
+	if committed.Type != projectionFixtureEventName {
+		return Transition{
+			State: state,
+		}, nil
+	}
+	var value string
+	if err := json.Unmarshal(committed.Data, &value); err != nil {
+		return Transition{}, err
+	}
+	subject.mu.Lock()
+	fail := value == subject.applyFailureValue && subject.applyFailures > 0
+	if fail {
+		subject.applyFailures--
+	}
+	subject.mu.Unlock()
+	if fail {
+		return Transition{}, errors.New("injected apply failure")
+	}
+	rawValue, err := json.Marshal(value)
+	return Transition{
+		State:   rawValue,
+		Changed: value != subject.unchangedValue,
+	}, err
+}
+
+func (subject *stagedFailureUnit) ViewState(
+	state json.RawMessage,
+) (json.RawMessage, error) {
+	var value string
+	if err := json.Unmarshal(state, &value); err != nil {
+		return nil, err
+	}
+	subject.mu.Lock()
+	fail := value == subject.viewFailureValue && subject.viewFailures > 0
+	if fail {
+		subject.viewFailures--
+	}
+	subject.mu.Unlock()
+	if fail {
+		return nil, errors.New("injected view failure")
+	}
+	return append(json.RawMessage(nil), state...), nil
 }
 
 type projectionFailureReporter struct{}
@@ -97,7 +170,7 @@ func (observer *projectionFixtureObserver) ObserveEvent(
 		return nil
 	}
 	observer.mu.Lock()
-	observer.changes = append(observer.changes, cloneChange(projectionChange.Change))
+	observer.changes = append(observer.changes, projectionChange.Change)
 	observer.mu.Unlock()
 	return nil
 }
@@ -231,6 +304,98 @@ func TestDriveRegistryFoldsLateStateAndPublishesWholeValues(t *testing.T) {
 	}
 }
 
+func TestDriveRegistryStagesCellsAndCatchesUpAfterApplyFailure(t *testing.T) {
+	t.Parallel()
+	fixture := newProjectionFixture(t)
+	first := &stagedFailureUnit{
+		key:            "first",
+		unchangedValue: "tail",
+	}
+	second := &stagedFailureUnit{
+		key:               "second",
+		applyFailureValue: "retry",
+		applyFailures:     1,
+		unchangedValue:    "tail",
+	}
+	for _, projectionUnit := range []Unit{first, second} {
+		if _, err := fixture.registry.Register(projectionUnit); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handle, err := fixture.store.Create(context.Background(), nil, session.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation := handle.Session()
+	base := commitProjectionFixtureValue(t, conversation, "base")
+	assertProjectionFixtureCells(t, fixture.registry, conversation, base.Seq, `"base"`)
+	if changes := fixture.observer.observedChanges(); len(changes) != 2 {
+		t.Fatalf("base changes = %#v", changes)
+	}
+
+	failed := commitProjectionFixtureValue(t, conversation, "retry")
+	assertProjectionFixtureCells(t, fixture.registry, conversation, base.Seq, `"base"`)
+	if changes := fixture.observer.observedChanges(); len(changes) != 2 {
+		t.Fatalf("changes after failed seq %d = %#v", failed.Seq, changes)
+	}
+
+	recovered := commitProjectionFixtureValue(t, conversation, "tail")
+	assertProjectionFixtureCells(t, fixture.registry, conversation, recovered.Seq, `"tail"`)
+	changes := fixture.observer.observedChanges()
+	if len(changes) != 4 {
+		t.Fatalf("recovered changes = %#v", changes)
+	}
+	for index, projectionKey := range []string{"first", "second"} {
+		observed := changes[index+2]
+		if observed.Key != projectionKey || observed.Seq != recovered.Seq ||
+			string(observed.Value) != `"tail"` {
+			t.Fatalf("recovered change %d = %#v", index, observed)
+		}
+	}
+}
+
+func TestDriveRegistryStagesCellsBeforeValidatingAllViews(t *testing.T) {
+	t.Parallel()
+	fixture := newProjectionFixture(t)
+	first := &stagedFailureUnit{
+		key: "first",
+	}
+	second := &stagedFailureUnit{
+		key:              "second",
+		viewFailureValue: "retry-view",
+		viewFailures:     1,
+	}
+	for _, projectionUnit := range []Unit{first, second} {
+		if _, err := fixture.registry.Register(projectionUnit); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handle, err := fixture.store.Create(context.Background(), nil, session.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation := handle.Session()
+	base := commitProjectionFixtureValue(t, conversation, "base")
+	assertProjectionFixtureCells(t, fixture.registry, conversation, base.Seq, `"base"`)
+
+	failed := commitProjectionFixtureValue(t, conversation, "retry-view")
+	assertProjectionFixtureCells(t, fixture.registry, conversation, base.Seq, `"base"`)
+	if changes := fixture.observer.observedChanges(); len(changes) != 2 {
+		t.Fatalf("changes after failed view at seq %d = %#v", failed.Seq, changes)
+	}
+
+	projectionSnapshot, err := fixture.registry.Snapshot(conversation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projectionSnapshot.AsOfSeq != failed.Seq ||
+		string(projectionSnapshot.Values["first"]) != `"retry-view"` ||
+		string(projectionSnapshot.Values["second"]) != `"retry-view"` {
+		t.Fatalf("recovered snapshot = %#v", projectionSnapshot)
+	}
+	assertProjectionFixtureCells(t, fixture.registry, conversation, failed.Seq, `"retry-view"`)
+}
+
 func TestDriveRegistryReferenceCountsCompatibleUnits(t *testing.T) {
 	t.Parallel()
 	requestContext := context.Background()
@@ -346,5 +511,57 @@ func TestDriveRegistryCheckpointRestoreUsesVersionedTail(t *testing.T) {
 		1,
 	); err == nil {
 		t.Fatal("partial restore without a checkpoint succeeded")
+	}
+}
+
+func commitProjectionFixtureValue(
+	testingContext *testing.T,
+	conversation session.Context,
+	value string,
+) session.Event {
+	testingContext.Helper()
+	draft, err := session.NewEventDraft(projectionFixtureEvent, value)
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	receipt, err := conversation.Commit(context.Background(), session.Batch(draft))
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	if len(receipt.Events) != 1 {
+		testingContext.Fatalf("committed events = %#v", receipt.Events)
+	}
+	return receipt.Events[0]
+}
+
+func assertProjectionFixtureCells(
+	testingContext *testing.T,
+	registryOwner *DriveRegistry,
+	conversation session.Context,
+	wantSeq int64,
+	wantState string,
+) {
+	testingContext.Helper()
+	registryOwner.mu.Lock()
+	defer registryOwner.mu.Unlock()
+	for _, projectionKey := range []string{"first", "second"} {
+		entry := registryOwner.registrations[projectionKey]
+		if entry == nil {
+			testingContext.Fatalf("projection %q is not registered", projectionKey)
+		}
+		cell, found := entry.cells[conversation]
+		if !found {
+			testingContext.Fatalf("projection %q cell is absent", projectionKey)
+		}
+		if cell.observedSeq != wantSeq || string(cell.state) != wantState {
+			testingContext.Fatalf(
+				"projection %q cell = {seq:%d state:%s}, want {seq:%d state:%s}",
+				projectionKey,
+				cell.observedSeq,
+				cell.state,
+				wantSeq,
+				wantState,
+			)
+		}
 	}
 }
