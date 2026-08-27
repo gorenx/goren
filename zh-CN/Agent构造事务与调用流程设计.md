@@ -2,8 +2,6 @@
 
 状态：Final Design，实现与全量验收已完成
 
-上位方案：[Agent 构造与父子生命周期重构方案](Agent构造与父子生命周期重构方案.md)
-
 ## 1. 目标
 
 本文只定义 Agent 的统一创建、恢复、发布、回滚和调用关系。完整 epoch ownership、parent close 和 descendant teardown 见 [Agent 生命周期与运行期父子所有权设计](Agent生命周期与运行期父子所有权设计.md)。
@@ -35,7 +33,7 @@ Session API
 
 ### 2.2 子 Agent
 
-one-shot [`inprocess.Driver`](../subagent/internal/inprocess/driver.go) 与 continuable [`continuation.Manager`](../subagent/internal/continuation/manager_materialization.go) 也通过同一 `agent.Constructor` 创建或恢复 Agent。runtime parent admission 和 managed Handle commit 由 `agent` 统一完成；Initiator 不参与 parent 或结构 owner 推断。
+one-shot [`oneshot.Service`](../subagent/internal/oneshot/service.go) 与 continuable [`continuable.Service`](../subagent/internal/continuable/service.go) 也通过同一 `agent.Constructor` 创建或恢复 Agent。runtime parent admission 和 managed Handle commit 由 `agent` 统一完成；Initiator 不参与 parent 或结构 owner 推断。
 
 ## 3. 构造参与者
 

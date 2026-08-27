@@ -134,7 +134,7 @@ Tool contract 允许任意 JSON shape，因此参数、canonical value、schema 
 
 ## 6. D-05：LLM Runtime
 
-最终边界由两个公共 contract owner 组成：`agentmessage` 拥有 Agent Message、source、content 和 stable correlation identity；`llm` 拥有 provider route、GenerateOptions、ToolSchema、StreamChunk、finish reason、usage、failure 和 retry。两者都以固定 Harness contract 为目标，LLM 单向消费 Agent Message。该物理边界已经落地，设计依据和验证状态见[Agent Message 协议重构设计方案](./AgentMessage协议重构设计方案.md)与[专项进度矩阵](./AgentMessage协议重构进度矩阵.md)。
+最终边界由两个公共 contract owner 组成：`agentmessage` 拥有 Agent Message、source、content 和 stable correlation identity；`llm` 拥有 provider route、GenerateOptions、ToolSchema、StreamChunk、finish reason、usage、failure 和 retry。两者都以固定 Harness contract 为目标，LLM 单向消费 Agent Message。该物理边界已经落地，设计依据见[Agent Message 协议重构设计方案](./AgentMessage协议重构设计方案.md)，验证状态见[08 实施进度](./08-implementation-progress.md)。
 
 技术策略：
 

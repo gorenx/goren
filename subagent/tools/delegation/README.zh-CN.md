@@ -14,4 +14,4 @@ flowchart LR
 
 Factory 仅在 JSON 边界保留 canonical `provider` 字段名，解码后的业务设置统一使用 `SeedBuilder`。`maxDepth` 数值表示由本 Tool 执行的深度上限；`"provider-managed"` 只是 canonical JSON 值，表示本 Tool 不提供数值上限，不代表业务层存在一个 Provider 对象。
 
-本包不实现 SeedBuilder、Execution、Continuable residency 或控制工具。跨包契约见[技术方案](../../../zh-CN/Subagent架构与生命周期重构技术方案.md)，实现证据见[进度矩阵](../../../zh-CN/Subagent重构进度矩阵.md)。
+本包不实现 SeedBuilder、Execution、Continuable residency 或控制工具。跨包契约见[Subagent 包说明](../../README.zh-CN.md)，实现证据见[08 实施进度](../../../zh-CN/08-implementation-progress.md)。

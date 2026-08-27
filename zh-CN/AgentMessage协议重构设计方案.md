@@ -1,6 +1,6 @@
 # Agent Message 协议重构设计方案
 
-状态：Accepted / Not Implemented
+状态：Accepted / Implemented
 
 决策日期：2026-08-27
 
@@ -8,13 +8,12 @@
 
 本文定义 Goren Agent Message 协议的最终 owner、职责边界、依赖方向、兼容性约束和验收标准，回答“重构完成后代码应该是什么”。
 
-- 分阶段修改、破坏性迁移顺序和 Gate 见[Agent Message 协议重构实施方案](./AgentMessage协议重构实施方案.md)。
-- 当前完成状态、代码证据和验证证据见[Agent Message 协议重构进度矩阵](./AgentMessage协议重构进度矩阵.md)。
+- 当前完成状态、代码证据和验证证据见[08 实施进度](./08-implementation-progress.md)。
 - 全仓协议兼容关系见[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)。
 - LLM Runtime、Stream 和 Provider adapter 见[13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)。
 - Agent Inbox、事件与 Agent Loop 分别见[14](./14-agent-registry-inbox-and-events.md)和[15](./15-agent-loop-and-request-driver.md)。
 
-本文只定义稳定目标边界，不重复实施完成比例。该边界已经由真实 `agentmessage` package 落地；当前证据、验证命令和未执行项只见[专项进度矩阵](./AgentMessage协议重构进度矩阵.md)。
+本文只定义稳定目标边界，不重复实施完成比例。该边界已经由真实 `agentmessage` package 落地；当前证据、验证命令和未执行项只见[08 实施进度](./08-implementation-progress.md)。
 
 ## 2. 最终决策
 

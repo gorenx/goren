@@ -2,7 +2,7 @@
 
 `llm` 拥有 provider-neutral 的 Harness LLM Service。`Runtime` 本身就是 Plugin 和 `LlmRuntime` Service provider；它管理 Adapter route、configurable Provider 目录、模型发现、调用准备、`llm/stream` Waterfall、流失败归一化以及拓扑变更事件。稳定跨模块契约见[13 Harness LLM Runtime 与 DeepSeek Provider](../zh-CN/13-harness-llm-runtime-and-deepseek-provider.md)，实现证据只见[08 实施进度](../zh-CN/08-implementation-progress.md)。
 
-Agent 交互 Message、source 和 content contract 由唯一 [`agentmessage`](../agentmessage/README.zh-CN.md) package 拥有；`llm` 只在 `GenerateOptions`、stream block 和 Provider serialization 边界消费这些值。边界依据与迁移证据见[Agent Message 协议重构设计方案](../zh-CN/AgentMessage协议重构设计方案.md)和[专项进度矩阵](../zh-CN/AgentMessage协议重构进度矩阵.md)。
+Agent 交互 Message、source 和 content contract 由唯一 [`agentmessage`](../agentmessage/README.zh-CN.md) package 拥有；`llm` 只在 `GenerateOptions`、stream block 和 Provider serialization 边界消费这些值。边界依据见[Agent Message 协议重构设计方案](../zh-CN/AgentMessage协议重构设计方案.md)，迁移证据见[08 实施进度](../zh-CN/08-implementation-progress.md)。
 
 ## 职责边界
 

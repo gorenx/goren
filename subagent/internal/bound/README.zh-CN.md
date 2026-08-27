@@ -8,10 +8,11 @@ flowchart LR
     Binding --> Command[BoundStartCommand]
     Command --> Facade[subagents.Service.Start]
     Facade --> Bound[bound.Service.Start]
-    Bound -. TODO .-> Source[Bound 创建信息和配置源]
+    Bound -. TODO .-> Creation[Bound immutable creation record]
+    Bound -. TODO .-> Config[Parent Session config projection]
     Bound -. TODO .-> Child[Bound child Agent]
 ```
 
-当前只实现 Mode、命令分派和明确的未实现失败。`Start` 尚未读取配置源、创建或恢复 child，也不会发布 `Execution`。因此 `Interrupt` 和 `Close` 当前没有可管理的 Bound 运行期资源。调用 Bound `Start` 的 parent publication observer 必须包含该错误，不能使 parent publication 失败。
+当前只实现 Mode、命令分派和明确的未实现失败。`Start` 尚未读取 immutable creation record和parent binding/config projections、创建或恢复 child，也不会发布 `Execution`。因此 `Interrupt` 和 `Close` 当前没有可管理的 Bound 运行期资源。调用 Bound `Start` 的 parent publication observer 必须包含该错误，不能使 parent publication 失败。
 
-Binding event、配置源、初始 prompt、恢复和运行期配置应用由 [Bound Subagent 技术设计](../../docs/parent-bound-design.zh-CN.md)负责；实现状态见[进度矩阵](../../../zh-CN/Subagent重构进度矩阵.md)。
+Binding event、初始 prompt和恢复由[Bound Subagent 技术设计](../../docs/parent-bound-design.zh-CN.md)负责；config event/projection、System Prompt/Tools owner边界和运行期安全应用见[Bound Config 管理详细设计](../../docs/bound-config-management.zh-CN.md)；实现状态见[08 实施进度](../../../zh-CN/08-implementation-progress.md)。

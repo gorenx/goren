@@ -1,6 +1,6 @@
 # Bound Subagent 技术设计
 
-状态：进行中；Mode、命令类型族、descriptor/projection/listing 与 Bound Service 骨架已实现，`Bound.Start` 和 binding/config source 仍待实现
+状态：进行中；Mode、命令类型族、descriptor/projection/listing 与 Bound Service 骨架已实现，`Bound.Start` 和 binding/config event projection 仍待实现
 
 > 文件名保留 `parent-bound` 以维持已有链接。类型、Mode 和文中简称统一使用 `Bound`。
 
@@ -10,10 +10,10 @@
 
 当前事实来源：
 
-- OneShot、Continuable 和 common `Execution`：[Subagent 技术方案](../../zh-CN/Subagent架构与生命周期重构技术方案.md)；
+- OneShot、Continuable 和 common `Execution`：[Subagent 包说明](../README.zh-CN.md)；
 - Agent create/resume/publication：[Agent 构造事务](../../zh-CN/Agent构造事务与调用流程设计.md)；
 - Agent exact epoch、runtime parent 和 close：[Agent 生命周期](../../zh-CN/Agent生命周期与运行期父子所有权设计.md)；
-- 当前实现状态：[Subagent 进度矩阵](../../zh-CN/Subagent重构进度矩阵.md)。
+- 当前实现状态：[08 实施进度](../../zh-CN/08-implementation-progress.md)。
 
 本文遵守以下命名约束：
 
@@ -70,7 +70,7 @@ type bound interface {
 }
 ```
 
-`BoundStartCommand` 只携带 exact live parent 和已提交 binding 中的 child Session ID。它不携带 initial prompt、SeedBuilder、Persona、Tool filter 或 Agent options；`bound.Service.Start` 必须从 Bound-owned source 读取这些数据。当前 `Start` 明确返回 `ErrStartNotImplemented`。`Service.Send` 仍只有 resident Agent direct delivery 和 cold Continuable resume，Bound config revision 对 resident Send 的处理尚未实现。
+`BoundStartCommand` 只携带 exact live parent 和已提交 binding 中的 child Session ID。它不携带 initial prompt、SeedBuilder、prompt config、Tool restriction 或 Agent options；`bound.Service.Start` 必须从 immutable creation record 和 exact parent Session projection 读取这些数据。当前 `Start` 明确返回 `ErrStartNotImplemented`。`Service.Send` 仍只有 resident Agent direct delivery 和 cold Continuable resume，Bound config revision 对 resident Send 的处理尚未实现。
 
 ### 2.3 当前 Continuable
 
@@ -132,13 +132,19 @@ flowchart TD
 
     Bound --> Session[session.Context and LiveStore]
     Bound --> Projection[sessionprojection.Registry]
-    Bound --> Store[bound.Store]
+    Bound --> Store[bound creation materialization and cursor Store]
     Bound --> ChildMaterializer[shared child materialization component]
     Continuable --> ChildMaterializer
     ChildMaterializer --> Constructor[agent.Constructor]
+    Constructor --> AgentScope[exact Agent Scope overlays]
     ChildMaterializer --> Executions[common execution.Registry]
     ChildMaterializer --> Seeds[SeedBuilder registry]
-    Bound --> Agent[exact child Agent Inbox]
+    Bound --> Agent[exact child Agent Inbox and RunMaintenance]
+    Bound --> Prompt[System Prompt child config application]
+    Bound --> Tools[Tools child selection application]
+    AgentScope --> Prompt
+    AgentScope --> Tools
+    AgentLoop[AgentLoop step and request] --> RequestHeader[child Session request/header]
     Report[existing report Tool] --> ParentDelivery[child-to-parent delivery port]
     ParentDelivery --> Parent[exact live parent Agent]
 
@@ -152,7 +158,7 @@ flowchart TD
 - `agent`、`session`、`llm` 和 `tools` 不导入 Bound；
 - `bound.Service` 是状态和用例 owner，不实现 Plugin；
 - Plugin adapter 只注册 observer、解析 Service 和释放 registration；
-- 持久化 adapter 只实现 `bound.Store`，不决定 Bind 顺序、materialize retry 或 cursor 推进条件；
+- 持久化 adapter 只实现 creation、materialization state 和 cursor 的 `bound.Store`，不保存 config，也不决定 Bind 顺序、materialize retry 或 cursor 推进条件；
 - Bound 和 Continuable 依赖共享的低层 child materialization 组件，Bound 不依赖 `continuable.Service`；
 - exact runtime parent/children 仍只由 Agent LifecycleCoordinator 管理。
 
@@ -205,14 +211,15 @@ type BoundCreation struct {
 	SeedBuilder     string
 	Label           string
 	InitialPrompt   []llm.ContentBlock
+	AgentOptions    agent.Options
 }
 ```
 
-initial prompt 必须非空。`Bound.Start` 只在 fresh child create 时读取并提交它；恢复已有 child 时不得重复提交。该记录与可变 config、尝试结果和 cursor 分开，避免一次失败改写创建输入。
+initial prompt 必须非空。`AgentOptions` 在 Bind 时根据 exact parent 解析为完整值；它属于 Agent-owned immutable creation input，不再作为可变 Bound config。`Bound.Start` 只在 fresh child create 时读取并提交 initial prompt；恢复已有 child 时不得重复提交。该记录与可变 config、尝试结果和 cursor 分开，避免一次失败改写创建输入。
 
 ### 4.4 BoundConfig
 
-`BoundConfig` 是独立记录，revision 单调递增：
+config 的完整详细设计见[Bound Config 管理详细设计](./bound-config-management.zh-CN.md)。config 不是 `bound.Store` 中的可覆盖记录，而是 exact parent Session 中单调递增的 typed non-surface events；Subagent projection 返回 latest snapshot：
 
 ```go
 type BoundConfig struct {
@@ -220,9 +227,8 @@ type BoundConfig struct {
 	ChildSessionID  session.SessionID
 	Revision        int64
 	Enabled         bool
-	AgentOptions    agent.Options
-	Persona         *string
-	ToolFilter      *tools.ToolRestriction
+	PromptConfig    systemprompt.ChildPromptConfig
+	ToolRestriction *tools.ToolRestriction
 	Subscriptions   []BoundSubscription
 }
 
@@ -232,9 +238,11 @@ type BoundSubscription struct {
 }
 ```
 
+`PromptConfig` 的类型和校验由 System Prompt owner 定义；`ToolRestriction` 的类型、已知 Tool 校验、schema 可见性和执行权限由 Tools owner 定义。Subagent 只组合 owner-owned 值并协调应用，不再拥有 `Persona` 或 `ToolFilter` 语义。
+
 `BoundSubscription` 这里只固定 subscription identity 和 Session event type。O4 关闭后再增加严格类型的 filter 字段；不得先用 `map[string]any`、脚本、Goja 或字符串表达式占位。
 
-每次 config update 必须写完整 snapshot，不允许 adapter 在读取时把若干局部 patch 猜成最终配置。
+每次 config update event 必须写完整 snapshot，不允许 projection 或 adapter 把若干局部 patch 猜成最终配置。初始 Bind 用一个 `session.Batch` 同时 Commit binding event 和 config revision 1 event。
 
 ### 4.5 MaterializationState
 
@@ -250,17 +258,16 @@ const (
 )
 
 type MaterializationState struct {
-	ParentSessionID       session.SessionID
-	ChildSessionID        session.SessionID
-	AttemptCount          int64
-	LastResult            MaterializationResult
-	AppliedConfigRevision int64
-	LastFailureCode       string
-	UpdatedAt             int64
+	ParentSessionID session.SessionID
+	ChildSessionID  session.SessionID
+	AttemptCount    int64
+	LastResult      MaterializationResult
+	LastFailureCode string
+	UpdatedAt       int64
 }
 ```
 
-Bind 初始化为 `AttemptCount=0`、`LastResult=never`、`AppliedConfigRevision=0`。一次 `Bound.Start` 成功后增加 attempt 并写 `succeeded`；失败则增加 attempt、写 `failed` 和稳定分类。该状态描述最近一次启动尝试，不表示 binding 是否存在、child Session 是否存在或当前进程是否 resident；这些事实分别由 parent binding event、Session persistence 和 live registries 判断。原始 provider error、credential 或 prompt 内容不能复制进 diagnostic 字段。
+Bind 初始化为 `AttemptCount=0`、`LastResult=never`。一次 `Bound.Start` 成功后增加 attempt 并写 `succeeded`；失败则增加 attempt、写 `failed` 和稳定分类。该状态描述最近一次启动尝试，不保存 applied config revision，也不表示 binding 是否存在、child Session 是否存在或当前进程是否 resident；这些事实分别由 parent binding/config events、child applied event、Session persistence 和 live registries 判断。原始 provider error、credential 或 prompt 内容不能复制进 diagnostic 字段。
 
 以上是 Bound domain record，不是数据库 row。持久化 adapter 必须用 owner-defined strict codec 映射 `llm.ContentBlock` variants；不能把 Go interface、sqlc row 或任意 JSON 直接暴露为 Store contract。
 
@@ -305,15 +312,15 @@ type BindCommand struct {
 	SeedBuilder      string
 	Label            string
 	InitialPrompt    []llm.ContentBlock
+	AgentOptions     *agent.Options
 	Config           BoundConfigInput
 }
 
 type BoundConfigInput struct {
-	Enabled       bool
-	AgentOptions  agent.Options
-	Persona       *string
-	ToolFilter    *tools.ToolRestriction
-	Subscriptions []BoundSubscription
+	Enabled         bool
+	PromptConfig    systemprompt.ChildPromptConfig
+	ToolRestriction *tools.ToolRestriction
+	Subscriptions   []BoundSubscription
 }
 
 type BoundBinding struct {
@@ -342,7 +349,7 @@ func NewBoundStart(
 ) (BoundStartCommand, error)
 ```
 
-`BindCommand` 负责建立 durable binding 和配置源；它不是启动命令。只有 binding projection 已经返回 child ID 后，上游才能调用 `NewBoundStart`。`BoundStartCommand` 不复制配置，`bound.Service.Start` 根据 parent/child identity 从 Bound-owned source 读取 immutable creation input 和最新 config。
+`BindCommand` 负责建立 durable binding、immutable creation record和初始 config event；它不是启动命令。只有 binding projection 已经返回 child ID 后，上游才能调用 `NewBoundStart`。`BoundStartCommand` 不复制配置，`bound.Service.Start` 根据 parent/child identity读取 immutable creation record和exact parent config projection。
 
 ### 5.2 Unified Service 的 Mode contracts
 
@@ -388,21 +395,20 @@ type bound interface {
 | `agent.Created` Bound observer | Agent publication transaction | 读取 binding projection；逐条构造 `BoundStartCommand` 并调用 `Start`；包含 per-child error并返回 `nil` |
 | `ParentEventAppended` | `session.EventAppended` observer | 只调用 Bound `ParentEventAppended` |
 | `Send` | existing `ChildControl` | resident Bound 也必须分派给 Bound `Send`；不能直接绕过 config revision 检查 |
-| `UpdateBoundConfig` | Bound 配置入口 | 更新 Bound-owned config source |
+| `UpdateBoundConfig` | Bound 配置入口 | 向 exact parent Session 提交 config event，并协调 resident child应用 projection latest revision |
 | `Interrupt` | existing control callers | 按 current `Execution.Entry.Mode` 分派 |
 | `ParentClosing` | Agent close 调用点 | 停止该 parent 的新 Bound 调用并等待已接受调用 |
 | `Close` | Subagent Plugin Dispose | 关闭统一准入，再反向关闭三个 Mode implementation |
 
 ### 5.3 Bound persistence port
 
-`bound.Service` 消费一个 owner-defined `Store`。adapter 可以用 SQLite 或其他存储，但不得暴露 sqlc row：
+`bound.Service` 消费一个 owner-defined `Store` 保存 immutable creation、materialization state 和 cursor。config truth 属于 parent Session event/projection，不进入该 port。adapter 可以用 SQLite 或其他存储，但不得暴露 sqlc row：
 
 ```go
 type Store interface {
 	Create(
 		context.Context,
 		BoundCreation,
-		BoundConfig,
 		MaterializationState,
 	) error
 	Creation(
@@ -410,12 +416,6 @@ type Store interface {
 		session.SessionID,
 		session.SessionID,
 	) (BoundCreation, bool, error)
-	Config(
-		context.Context,
-		session.SessionID,
-		session.SessionID,
-	) (BoundConfig, bool, error)
-	PutConfig(context.Context, BoundConfig) error
 	Materialization(
 		context.Context,
 		session.SessionID,
@@ -432,7 +432,7 @@ type Store interface {
 }
 ```
 
-`Create` 原子写入三条独立 record：immutable creation input、config revision 1 和 `never` materialization state。它不写 parent Session event。`Bind` application method 决定 `Store.Create -> parent Session Commit -> Flush` 的顺序，并处理 event 未成功时的孤立 record。
+`Create` 原子写入两条独立 record：immutable creation input 和 `never` materialization state。它不写 parent Session event。`Bind` application method 决定 `Store.Create -> parent Session Batch(binding event, config revision 1 event) -> Flush` 的顺序，并处理 event 未成功时的孤立 record。
 
 O5 关闭后，`PutCursor` 可能被一个更窄的“确认 Inbox 已接受后推进”方法替换；当前签名不能作为最终去重事务承诺。
 
@@ -528,7 +528,7 @@ projection 规则：
 4. unknown version 返回 projection error，不静默跳过 required event；
 5. projection checkpoint 可删除后重建，不是 relationship truth；
 6. parent publication 调用 `sessionprojection.Registry.Snapshot(parent.SessionValue())`，不能扫描全部 Sessions；
-7. enabled、revision 和 subscriptions 从 `bound.Store.Config` 读取，不复制到 projection。
+7. binding 和 config 是同一 parent Session prefix上的两个独立 projections；enabled、revision 和 subscriptions 只从 config projection读取，不复制进 binding view。
 
 O12 决定 disable/remove relationship 的 event 语义前，projection 不声明 last-write-wins、tombstone 或 replacement 行为。
 
@@ -548,18 +548,18 @@ sequenceDiagram
     C->>U: Bind(BindCommand with initial prompt)
     U->>B: Bind(command)
     B->>B: validate parent, child ID, config, limits
-    B->>R: Create(creation input, config revision 1, never state)
+    B->>R: Create(creation input, never state)
     R-->>B: committed
-    B->>S: Commit(binding EventDraft)
+    B->>S: Commit Batch(binding event, config revision 1 event)
     S-->>B: WriteResult.Barrier
     B->>P: Flush(parent Session)
-    P-->>B: durable prefix includes binding event
+    P-->>B: durable prefix includes both events
     B-->>U: BoundBinding
     U-->>C: binding success
     Note over B,S: child Start is now allowed; Bind itself does not create child
 ```
 
-谁主动调用谁：caller 调用 unified Service；unified Service 调用 Bound；Bound 先调用自己的 Store，再调用 parent Session，最后调用 `LiveStore.Flush`。Bind 不调用 Agent Constructor。只有 Bind 成功后，`agent.Created` observer 才能根据 projection 构造 `BoundStartCommand`。
+谁主动调用谁：caller 调用 unified Service；unified Service 调用 Bound；Bound 先调用自己的 Store，再用一个 parent Session Batch 提交 binding/config 两个 event，最后调用 `LiveStore.Flush`。Bind 不调用 Agent Constructor。只有 Bind 成功后，`agent.Created` observer 才能根据 projection 构造 `BoundStartCommand`。
 
 如果 `Store.Create` 成功而 parent Commit/Flush 失败，该 child ID 没有 binding truth，`Bound.Start` 必须拒绝。孤立 record 的清理不得删除后来已经出现对应 binding event 的记录。
 
@@ -590,7 +590,7 @@ sequenceDiagram
     O-->>A: nil; parent publication continues
 ```
 
-`bound.Service.Start` 内部读取 BoundCreation、最新 config 和 materialization state，再决定 fresh create、existing resume 或返回 current Execution。单个 child error 由 `agent.Created` observer 包含，observer 返回 `nil`。O11 的同步预算耗尽时，剩余 child 留待后续有界重试，不能拒绝 parent publication。
+`bound.Service.Start` 内部读取 BoundCreation、同一 parent projection snapshot 中的 binding/latest config 和 materialization state，再决定 fresh create、existing resume 或返回 current Execution。单个 child error 由 `agent.Created` observer 包含，observer 返回 `nil`。O11 的同步预算耗尽时，剩余 child 留待后续有界重试，不能拒绝 parent publication。
 
 ### 7.3 Parent event handoff
 
@@ -620,34 +620,40 @@ sequenceDiagram
 
 `session.EventAppended` observer 不能把已经 committed 的 parent event 回滚。observer 只调用 Bound；Bound failure 进入 retry/diagnostic，并由 durable parent events + cursor 修复。O5 关闭前，上图中的 dedupe check 与 cursor write 是 required semantics，不是最终接口承诺。
 
-### 7.4 Config update 与下一 turn
+Binding、config changed和config applied是Bound owner control events，必须在adapter调用`ParentEventAppended`前排除，也不能被配置成subscription event type。否则Bound在Session Commit期间可能同步重入自己的per-child mutex，并把控制事实错误地变成模型输入。
+
+### 7.4 Config update 与安全应用
 
 ```mermaid
 sequenceDiagram
     participant C as Bound caller
     participant B as bound.Service
-    participant R as bound.Store
-    participant E as current Bound Execution
+    participant P as parent config projection
+    participant S as exact parent Session
     participant A as current child Agent
-    participant M as childMaterializer
+    participant E as child config application
 
-    C->>B: UpdateConfig(child, new config)
-    B->>R: PutConfig(revision N+1)
-    R-->>B: committed revision N+1
-    alt Agent running
-        Note over A,E: current turn continues with revision N
-        B->>A: wait until true idle before next input acceptance
+    C->>B: UpdateConfig(child, expected revision N)
+    B->>P: Snapshot exact parent
+    P-->>B: binding and config at one AsOfSeq
+    B->>S: Commit and Flush config event N+1
+    B->>B: pause new child work admission
+    alt Agent has active or queued work
+        Note over A: already accepted Inbox work continues on revision N
+    else RunMaintenance accepts
+        B->>A: RunMaintenance
+        A->>E: apply System Prompt and Tools revision N+1
+        E-->>A: owner handles updated
+        B->>B: Commit and Flush child applied event
+        B->>B: resume child work admission
     end
-    B->>E: StopAndWait(config change cause)
-    B->>M: Resume(existing child, revision N+1)
-    M-->>B: new exact Agent epoch + Execution
-    B->>R: PutMaterialization(applied revision N+1)
-    B->>B: accept next message only after resume commit
 ```
 
-`Agent.Followup` 不能在 pending revision 时被 unified Service 直接调用。`subagents.Service.Send` 看到 current entry 的 Mode 是 Bound 时，必须调用 Bound `Send`；Bound 在自己的 per-child mutex 内完成 wait/stop/resume/message acceptance 顺序。
+`Agent.Followup` 不能在 pending revision 时被 unified Service 直接调用。`subagents.Service.Send` 看到 current entry 的 Mode 是 Bound 时，必须调用 Bound `Send`；Bound 在自己的 per-child mutex 内比较 committed/applied revision并决定准入。
 
-这套方案通过新 exact Agent epoch应用 model/persona/Tool policy，不要求 AgentLoop 原地修改配置。current turn 不变，next turn 使用最新 revision。
+旧设计的“下一 turn 必须使用新 revision”假设已经废除。AgentLoop 可以连续 claim 已经进入 Inbox 的消息，`WhenIdle` 不能在线性化意义上抢在下一 claim 之前。新规则以 Inbox acceptance 为边界：config durable 前已接受的 work可以继续使用旧 revision；config durable 后的新 work暂停，直到 `RunMaintenance` 在没有 active/queued work 时把 System Prompt和Tools一起更新完成。详细并发、retry和 applied event语义见[Bound Config 管理详细设计](./bound-config-management.zh-CN.md)。
+
+System Prompt 不监听 binding event，也不维护 child目录。`agent.Constructor` 的 AgentLoop 实现在每个 exact Agent Scope中先安装`systemprompt.NewOverlay`和`tools.NewOverlay`，再执行Bound提供的child config provisioner，全部成功后才publication。System Prompt Registry mutation只发布既有live `system-prompt/change`；真正消费配置的AgentLoop在模型调用前把有效System Prompt文本和Tool schemas写入exact child Session的既有`request/header`。parent Bound config event、child applied event和child `request/header`分别表示期望revision、已安装revision和实际请求输入，不能合并。完整调用链见[config详设 4.4](./bound-config-management.zh-CN.md#44-system-prompt-layer-与实际请求事件)。
 
 ### 7.5 Parent close
 
@@ -687,27 +693,27 @@ sequenceDiagram
 | Method | 前置条件 | 负责 | 不负责 |
 | --- | --- | --- | --- |
 | `Bind` | exact live parent；initial prompt 非空 | records -> binding event -> Flush；返回稳定 IDs | child create |
-| `Start` | exact live parent；binding event durable；`BoundStartCommand` 来自 binding projection | 读取 creation/config/state；per-child serialization；fresh Create 或 existing Resume；发布 Bound Execution | 建立 binding；Continuable `Resume` |
+| `Start` | exact live parent；binding/config events durable；`BoundStartCommand` 来自 binding projection | 读取 creation/config projection/state；per-child serialization；fresh Create 或 existing Resume；发布 Bound Execution | 建立 binding；Continuable `Resume` |
 | `ParentEventAppended` | committed event + exact Session | subscription match、cursor read、handoff、cursor advance | 把 runtime event当 durable fact |
-| `Send` | authorized exact parent | pending config revision 收敛；必要时构造 Bound Start；Inbox acceptance | 绕过 Agent Inbox |
-| `UpdateConfig` | binding exists | revision compare-and-write；disabled 后拒绝新 work | 修改当前 running turn |
+| `Send` | authorized exact parent | 比较 committed/applied revision；pending 时暂停新 work；必要时构造 Bound Start；Inbox acceptance | 建立第二条消息队列或绕过 Agent Inbox |
+| `UpdateConfig` | binding exists | expected revision 校验；Commit/Flush parent config event；触发安全 apply | 直接修改 running/queued work |
 | `ParentClosing` | exact parent epoch entering close | 拒绝新 Bound materialize/handoff 并等待已接受调用 | report Tool admission；遍历或关闭 Agent descendants |
 | `Interrupt` | current Bound Execution exists | cancel current turn 并保留已接受 Inbox | 删除 binding 或 Session |
 | `Close` | unified Service closing | 停止全部新 Bound calls；请求 current executions 收敛；等待到 deadline | Runtime Scope teardown |
 
-create/restore 是 `bound.Service.Start` 的内部步骤，不是第四个外部 capability。per-child mutex 必须同时覆盖 Start、config switch、Bound Send 和 stop，避免同一个 child 发布两个 current executions。
+create/restore 是 `bound.Service.Start` 的内部步骤，不是第四个外部 capability。per-child mutex 必须同时覆盖 Start、config event commit、config apply、Bound Send 和 stop，避免同一个 child 发布两个 current executions或在 pending revision 下接受新 work。
 
 ## 9. Bound settlement 和 terminal
 
 Bound 复用 common `Execution` 的 `Stop/Wait/Result/StopAndWait`，但实现自己的 `execution.Terminator`：
 
 - idle 不调用 `Execution.Stop(StopIdle)`；
-- config revision 切换增加 internal `StopReconfigured`，binding disabled 增加 internal `StopBindingDisabled`；parent close、module shutdown 和 external Agent close 继续使用现有明确 stop cause；
+- config revision 正常切换使用 exact Agent 的 `RunMaintenance`，不停止 common `Execution`；binding disabled 增加 internal `StopBindingDisabled`，parent close、module shutdown 和 external Agent close 继续使用现有明确 stop cause；
 - final flush 仍由 child Session owner 执行；
 - Bound stop 不向 parent 发送 Continuable 的“finished and can be resumed by another message”summary；
 - 是否发送 Bound-specific terminal notification 必须由产品需求另行确认，未确认前不臆造消息；
 - terminal 完成后从 common execution registry 删除 exact entry，并清理 Bound process-local current pointer；
-- binding、config、materialization state 和 cursor 保留，除非显式删除用例另有决定。
+- binding/config/applied Session events、materialization state 和 cursor 保留，除非显式删除用例另有决定。
 
 ## 10. O11 的配置结构
 
@@ -738,15 +744,16 @@ type MaterializationLimits struct {
 
 | Source | `bound.Service` action | Upstream result |
 | --- | --- | --- |
-| `Store.Create` failure | 不 Commit binding event，不 create child | `Bind` error |
-| parent Session Commit/Flush failure | 不 create child；记录可清理的孤立 records | `Bind` error |
+| `Store.Create` failure | 不 Commit binding/config events，不 create child | `Bind` error |
+| parent Session binding/config Batch Commit/Flush failure | 不 create child；记录可清理的孤立 records | `Bind` error |
 | fresh child create failure | last materialization result 写 `failed`，保留 same child ID | `Bind` 已成功；Bound Start diagnostic |
 | existing child inspect/descriptor failure | 记录稳定 failure code，不创建替代 child | parent observer continues |
 | child timeout | 取消该 attempt，释放 unpublished resources | sibling 和 parent continue |
 | `Agent.Followup` rejection | cursor unchanged | retryable handoff/send error |
 | cursor persistence failure | 保留 Inbox provenance，恢复时先 dedupe | diagnostic + retry |
 | stale parent Agent | 拒绝 exact-parent authorization | stable unauthorized/unavailable error |
-| config revision conflict | reload latest revision，不能覆盖较新 config | stable conflict error或 bounded retry，待 API review |
+| config revision conflict | reload parent projection latest revision，不能覆盖较新 config | stable conflict error或相同 snapshot的 idempotent retry |
+| System Prompt/Tools config apply failure | 回滚 owner handles；保持 revision pending并暂停新 work | update 已 durable；resident apply diagnostic |
 | parent close timeout | 返回未收敛 exact child IDs | Agent close 聚合 error但继续结构关闭 |
 
 ## 12. 实施切片与验证
@@ -756,13 +763,13 @@ type MaterializationLimits struct {
 1. 已完成：增加 `ModeBound`、`BoundDescriptor`、strict codec、identity projection、listing 和 fixtures。
 2. 已完成：把 `StartCommand` 改成封闭接口与三个具体命令；统一 Service 使用 `oneShot`、`continuable`、`bound` 三个完整模式接口。
 3. 已完成：实现并装配 `bound.Service` 骨架；`Start` 返回明确的 `ErrStartNotImplemented`。
-4. 关闭 O12/O13，实现 `BoundCreation`、`BoundConfig`、`MaterializationState`、`Cursor`、`bound.Store` 和 binding projection。
-5. 实现可重试的 Bind 顺序：Store records -> parent Session event -> Flush；Bind 不创建 child。
+4. 关闭 O12/O13，实现 `BoundCreation`、binding/config/applied events、两个 parent projections、`MaterializationState`、`Cursor` 和删除 config 方法后的 `bound.Store`。
+5. 实现可重试的 Bind 顺序：Store records -> parent Session Batch(binding + config revision 1) -> Flush；Bind 不创建 child。
 6. 从 Continuable 提取无 Mode 决策的 child create/restore 组件；保持 OneShot/Continuable tests 不变。
 7. 实现 `Bound.Start` 的 fresh/existing 分支、common `Execution` publication和 failure recording。
 8. 实现 `agent.Created` observer：projection -> `BoundStartCommand` -> `Starter.Start`，包含 per-child error，并应用 O11 限制。
 9. 关闭 O4/O5/O7 后实现 subscription、dedupe、cursor recovery 和 retention repair。
-10. 实现 config next-turn exact epoch switch，并让 unified resident `Send` 对 Bound 分派。
+10. 按[Bound Config 管理详细设计](./bound-config-management.zh-CN.md)实现 System Prompt/Tools owner config、`RunMaintenance` safe apply、pending work admission，并让 unified resident/cold `Send` 对 Bound 分派。
 11. 与 Agent owner 实现 pre-descendant-close 调用点，完成 parent close concurrency tests。
 12. 让 report Tool 使用 5.6 的 child-to-parent delivery port，并验证与 parent Closing cutoff 的竞态。
 13. 增加 SQLite adapter 时，使用 sqlc、owner-defined records 和 architecture tests。
@@ -776,12 +783,13 @@ type MaterializationLimits struct {
 - single Bound Start failure 由 `agent.Created` observer 包含并返回 `nil`，parent publication 继续；
 - existing Bound restore 不运行 `SeedBuilder` 且不新增 user message；
 - enabled Bound idle 不 settle，Continuable 原测试仍通过；
-- config N+1 在 turn N 期间提交，turn N 仍使用旧 config，下一 turn 使用 N+1；
-- resident Bound `Send` 不绕过 pending config revision；
+- config N+1 durable 前已经被 Inbox 接受的 work可继续使用旧 config；durable 后的新 work在 safe apply完成前不被接受；
+- resident Bound `Send` 不绕过 pending config revision，也不建立第二条消息队列；
 - crash 位于 Inbox acceptance 与 cursor write 之间时不重复模型消息；
 - parent close 与 concurrent materialize/handoff/report 测试不遗留 live child execution；
 - Bound child `ask_user_question` 继续被 UserQuestions owner 拒绝；
-- memory/SQLite adapter contract 验证 creation/config/materialization/cursor 四类 record 独立更新且不修改 Session Header；
+- memory/SQLite adapter contract 验证 creation/materialization/cursor 三类 record 独立更新；config 只从 parent Session projection重建且不修改 Session Header；
+- fresh/create和cold/resume均在Bound config provision前安装exact child System Prompt/Tools overlay；配置切换使有效header变化时，第一个实际模型请求以reason为`change`的`request/header`记录有效System Prompt和Tool schemas；
 - architecture test 禁止 `bound` 导入 concrete Continuable 或 adapter types。
 
 ### 12.3 文档与实现映射
@@ -793,7 +801,7 @@ type MaterializationLimits struct {
 | initial prompt required | 4.3、7.1 | Bind validation + recovery tests |
 | failure不阻止 parent publication | 7.2、11 | `agent.Created` observer integration test |
 | records分离 | 4.3-4.6、5.3 | Store adapter contract tests |
-| next-turn config | 7.4、8 | Bound Send/config integration tests |
+| safe config apply | 7.4、8、[config详设](./bound-config-management.zh-CN.md) | Bound Send/config integration tests |
 | resident idle | 9 | Bound settlement tests |
 | handoff dedupe/cursor | 7.3 | O5 contract + crash recovery tests |
 | parent close | 7.5 | Agent/Bound concurrency tests |

@@ -13,7 +13,7 @@
 - 保证单 Session 写入串行，以及 `Checkpoint -> LiveStore.Flush -> CheckpointStore.Replace` 的耐久顺序；
 - 在关闭时停止准入和 timer，排空已经进入存储边界的操作。
 
-本包不负责 Session 事实、Projection Unit 业务规则、Plugin Runtime 适配、SQLite schema、`session.list/history` wire 映射或 Subagent identity 解释。跨模块最终契约见[Session Projection Cache 最终设计](../../zh-CN/SessionProjectionCache最终设计方案.md)，实施证据见[专项进度矩阵](../../zh-CN/SessionProjectionCache实施进度矩阵.md)和[全仓进度](../../zh-CN/08-implementation-progress.md)。
+本包不负责 Session 事实、Projection Unit 业务规则、Plugin Runtime 适配、SQLite schema、`session.list/history` wire 映射或 Subagent identity 解释。跨模块最终契约见[Session Projection Cache 最终设计](../../zh-CN/SessionProjectionCache最终设计方案.md)，实施证据见[08 实施进度](../../zh-CN/08-implementation-progress.md)。
 
 ## 读取流程
 

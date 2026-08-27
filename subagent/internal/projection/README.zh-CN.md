@@ -22,4 +22,4 @@ flowchart LR
 
 Identity 使用 descriptor last-wins，因为 fork seed 可能带有 ancestor descriptor，而 child 自己的 descriptor 必须覆盖它。Continuable resume 则先按 `Header.SeedLength` 排除 seed，再读取当前 child descriptor；不能用一个不带边界信息的 fold 替代两者。
 
-具体 Unit、key 和 raw codec 均为包内实现；`Units()` 是 Runtime 的 registration seam，`ReadIdentity()` 是 ChildDirectory 的 read seam。两者不公开可让 Consumer 自行选择投影规则的接口。当前验证证据见[进度矩阵](../../../zh-CN/Subagent重构进度矩阵.md)，跨包契约见[领域设计](../../docs/design.zh-CN.md)。
+具体 Unit、key 和 raw codec 均为包内实现；`Units()` 是 Runtime 的 registration seam，`ReadIdentity()` 是 ChildDirectory 的 read seam。两者不公开可让 Consumer 自行选择投影规则的接口。当前验证证据见[08 实施进度](../../../zh-CN/08-implementation-progress.md)，跨包契约见[领域设计](../../docs/design.zh-CN.md)。

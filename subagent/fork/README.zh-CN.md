@@ -12,4 +12,4 @@ flowchart LR
 
 prefix 是 detached event snapshot。Continuable 只在首次创建时调用 Builder；后续 cold resume 重放 child 自己的持久化历史。Plugin 只拥有 Builder registration，不拥有 Execution 或 Agent Handle。
 
-跨包契约见[技术方案](../../zh-CN/Subagent架构与生命周期重构技术方案.md)，实现证据见[进度矩阵](../../zh-CN/Subagent重构进度矩阵.md)。
+跨包契约见[Subagent 包说明](../README.zh-CN.md)，实现证据见[08 实施进度](../../zh-CN/08-implementation-progress.md)。

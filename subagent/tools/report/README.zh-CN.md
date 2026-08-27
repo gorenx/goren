@@ -13,4 +13,4 @@ flowchart LR
 
 `quiet` 调用 parent Agent 的 `Inject`；`next-step` 调用 `Steer`。report 不结束 child turn，也不向祖先广播。host Plugin 拥有 extension registration 和 report Tool 对 live Agent 窄接口的依赖，child Scope 拥有实际 Tool/Prompt effects。`childPlugin` 只解析依赖并注册 Tool/Prompt；`reportTool` 只负责 schema、parent identity 校验和 Agent Inbox 调用，不参加 Plugin 生命周期。
 
-跨包契约见[技术方案](../../../zh-CN/Subagent架构与生命周期重构技术方案.md)，实现证据见[进度矩阵](../../../zh-CN/Subagent重构进度矩阵.md)。
+跨包契约见[Subagent 包说明](../../README.zh-CN.md)，实现证据见[08 实施进度](../../../zh-CN/08-implementation-progress.md)。

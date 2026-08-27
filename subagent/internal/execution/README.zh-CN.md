@@ -155,4 +155,4 @@ flowchart LR
 - Runtime Plugin 实现 `EventPublisher`，只把业务事实接到 Agent 事件机制。
 - Session 保存可持久化事件；本包只读取 OneShot/Continuable 传入的事件片段。
 
-跨包稳定契约见[技术方案](../../../zh-CN/Subagent架构与生命周期重构技术方案.md)，当前实现和验证证据见[进度矩阵](../../../zh-CN/Subagent重构进度矩阵.md)。
+跨包稳定契约见[Subagent 包说明](../../README.zh-CN.md)，当前实现和验证证据见[08 实施进度](../../../zh-CN/08-implementation-progress.md)。

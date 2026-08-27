@@ -14,4 +14,4 @@ flowchart LR
 
 adapter 使用独立 `application_id` 和 `user_version`。空数据库可以初始化；确认属于本 cache 的旧 schema 可以整库重建；外来 application identity、未识别表或无法映射的存储形状使启动失败。语义上无效但可映射的 row 交由 `CheckpointCache.Open` 丢弃并报告。
 
-`Close` 幂等；SQLite 路径、权限、schema ownership 和 I/O 错误返回调用者。完整契约见[最终设计](../../../zh-CN/SessionProjectionCache最终设计方案.md)，实施证据见[专项进度矩阵](../../../zh-CN/SessionProjectionCache实施进度矩阵.md)和[全仓进度](../../../zh-CN/08-implementation-progress.md)。
+`Close` 幂等；SQLite 路径、权限、schema ownership 和 I/O 错误返回调用者。完整契约见[最终设计](../../../zh-CN/SessionProjectionCache最终设计方案.md)，实施证据见[08 实施进度](../../../zh-CN/08-implementation-progress.md)。

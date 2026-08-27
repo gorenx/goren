@@ -13,4 +13,4 @@ flowchart LR
 
 Factory 已进入默认静态 Factory Catalog 与默认 Plugin specs；这只装载 Subagent core，不表示具体 SeedBuilder 或模型可见 Tool 已经挂载。
 
-跨包契约见[领域设计](../docs/design.zh-CN.md)，实现证据见[进度矩阵](../../zh-CN/Subagent重构进度矩阵.md)。
+跨包契约见[领域设计](../docs/design.zh-CN.md)，实现证据见[08 实施进度](../../zh-CN/08-implementation-progress.md)。

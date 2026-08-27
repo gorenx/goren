@@ -13,4 +13,4 @@ flowchart LR
 
 fresh child 可以写入 delegation approval override；cold resume 已从 Session 重放该 durable policy，因此不会再次 seed。persona 与 Tool restriction 在每个 resident Agent Scope 中重新安装。
 
-本包不组合 Provisioner，不创建 Agent，也不拥有 OneShot/Continuable 生命周期。模式专属 provisioning 分别位于 `internal/oneshot` 和 `internal/continuable`。跨包契约见[技术方案](../../../zh-CN/Subagent架构与生命周期重构技术方案.md)，实现证据见[进度矩阵](../../../zh-CN/Subagent重构进度矩阵.md)。
+本包不组合 Provisioner，不创建 Agent，也不拥有 OneShot/Continuable 生命周期。模式专属 provisioning 分别位于 `internal/oneshot` 和 `internal/continuable`。跨包契约见[Subagent 包说明](../../README.zh-CN.md)，实现证据见[08 实施进度](../../../zh-CN/08-implementation-progress.md)。

@@ -21,16 +21,12 @@
 - [12 Tools Registry 与执行流水线模块设计](./12-tools-registry-and-execution-pipeline.md)：Tool Definition、Root Registry + Child Overlay、restriction/guard、policy Waterfall、一次性执行状态机、结果物化与 System Prompt 投影。
 - [13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)：provider-neutral LLM Service、Adapter Registry、模型路由、流组装、RetryPolicy，以及 DeepSeek typed config、HTTP/SSE 和错误映射。
 - [Agent Message 协议重构设计方案](./AgentMessage协议重构设计方案.md)：把 Inbox、Session surface 与模型上下文重建共用的 Message/source/content contract 从 `llm` 抽离到唯一 `agentmessage` owner，并固定兼容性与依赖方向。
-- [Agent Message 协议重构实施方案](./AgentMessage协议重构实施方案.md)：破坏性 owner 切换、全调用方原子迁移、Architecture Gate 与验证顺序。
-- [Agent Message 协议重构进度矩阵](./AgentMessage协议重构进度矩阵.md)：专项设计、实现、调用方迁移和验收状态；当前代码实施尚未开始。
 - [14 Agent Registry、Inbox 与实时事件模块设计](./14-agent-registry-inbox-and-events.md)：live Agent registry、Factory seam、durable Inbox projection、Agent-scoped events、initiator attribution 与 model selection snapshot。
 - [15 Agent Loop 与请求驱动模块设计](./15-agent-loop-and-request-driver.md)：concrete Agent lifecycle、Turn/Step 状态机、请求重建、模型 attempt、Tool-call 调度、取消与 runtime-context projection。
 - [16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)：根 wire contract 与 `apiproxy/session` 实现边界、十个 `session.*` method、主/搜索 Gateway、默认模型选择、Mux baseline/live 与 Host edge。
 - [17 Approval、UserQuestions 与 Interaction Gateway](./17-approval-user-questions-and-interaction-gateway.md)：Approval policy/audit、UserQuestions Provider、`ask_user_question` Consumer，以及 requested/respond/resolved/replay 闭环。
 - [18 Session Projection 与 Session Title 模块设计](./18-session-projection-and-title.md)：通用 projection unit/registry/checkpoint、`session/title`、fallback/Provider 调度、rename 与客户端 higher-seq-wins。
 - [Session Projection Cache 最终设计](./SessionProjectionCache最终设计方案.md)：可重建 checkpoint 的职责、数据结构、cold restore、写入与关闭语义，以及 API/Subagent 消费边界。
-- [Session Projection Cache 实施方案](./SessionProjectionCache实施方案.md)：破坏性实施顺序、模块 Gate 与验收边界。
-- [Session Projection Cache 实施进度矩阵](./SessionProjectionCache实施进度矩阵.md)：专项实现状态、代码证据、验证结果与明确未覆盖项。
 - [19 Session Persistence 与 SQLite 事实存储设计](./19-session-persistence-and-sqlite.md)：durable facts、LiveStore/Persistence/Backend 边界、write-behind、cold recovery/resume、SQLite/sqlc schema 与事务。
 - [20 Workspace Registry、SQLite 与 API Gateway](./20-workspace-registry-and-api.md)：Workspace identity/order/accounting、历史 bootstrap、SQLite/sqlc Backend、七个 API、Host frame 与 `session.create({workspaceId})`。
 - [21 Web Agent 主会话闭环与能力边界](./21-web-agent-main-flow.md)：极简内嵌 Web UI、Question 回答与固定 TypeScript Client 到 Go Agent Loop 的纵向能力矩阵、排除面、依赖方向与分层验收。
@@ -48,7 +44,7 @@
 - [`session/projectioncache/sqlite/README.zh-CN.md`](../session/projectioncache/sqlite/README.zh-CN.md)：独立 checkpoint SQLite/sqlc storage adapter。
 - [`agentloop/README.zh-CN.md`](../agentloop/README.zh-CN.md)：Agent driver、Turn/Step、请求/Tool 调度、durability checkpoint 与 idle convergence。
 - [`subagent/README.zh-CN.md`](../subagent/README.zh-CN.md)：OneShot、Continuable、Bound 三种模式的公共契约、模块边界和当前实现状态。
-- [Bound Config 管理详细设计](../subagent/docs/bound-config-management.zh-CN.md)：Bound config Session event/projection、System Prompt/Tools owner边界、resident child安全应用和失败恢复。
+- [Bound Config 管理详细设计](../subagent/docs/bound-config-management.zh-CN.md)：Bound config Session event/projection、exact child System Prompt/Tools overlay初始化、`request/header`实际输入记录、resident child安全应用和失败恢复。
 - [`apiproxy/README.zh-CN.md`](../apiproxy/README.zh-CN.md)：typed method adapter、Session/Interaction Gateway、live frame、correlation 与背压。
 - [`apiproxy/session/README.zh-CN.md`](../apiproxy/session/README.zh-CN.md)：Session API façade、读取/生命周期/模型/对话/Search 用例与 Agent activation 状态。
 - [`internal/assembly/README.zh-CN.md`](../internal/assembly/README.zh-CN.md)：Factory Catalog、typed config、依赖结算与 composition rollback。

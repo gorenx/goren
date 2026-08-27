@@ -11,4 +11,4 @@ flowchart LR
 
 Plugin Apply 只注册 Builder，Dispose 只撤销 exact registration；Builder 卸载不取消已经开始的 Execution。本包不创建 Agent，也不拥有 OneShot/Continuable 生命周期。
 
-跨包契约见[技术方案](../../zh-CN/Subagent架构与生命周期重构技术方案.md)，实现证据见[进度矩阵](../../zh-CN/Subagent重构进度矩阵.md)。
+跨包契约见[Subagent 包说明](../README.zh-CN.md)，实现证据见[08 实施进度](../../zh-CN/08-implementation-progress.md)。

@@ -25,4 +25,4 @@ Extension 与当前 exact Agent epoch 一一安装，但不再称为 Activation 
 
 Install 失败会在返回前释放本次已经取得的 partial installations。registration 撤销先标记 removed，使尚未 Commit 的 Provisioning 失败，再撤销已 resident 的 exact installations。child Scope teardown 与 registration removal 都调用同一个幂等 installation release。
 
-跨包契约见[领域设计](../../docs/design.zh-CN.md)，实现证据见[进度矩阵](../../../zh-CN/Subagent重构进度矩阵.md)。
+跨包契约见[领域设计](../../docs/design.zh-CN.md)，实现证据见[08 实施进度](../../../zh-CN/08-implementation-progress.md)。

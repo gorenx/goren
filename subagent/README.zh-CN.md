@@ -1,8 +1,8 @@
 # Subagent
 
-`subagent` 拥有委派请求、OneShot、Continuable 与 Bound 三种模式的统一生命周期契约，以及 durable child 的查询和父子通信语义。完整技术设计见[Subagent 架构与生命周期重构技术方案](../zh-CN/Subagent架构与生命周期重构技术方案.md)，实施顺序见[Subagent 重构实施方案](../zh-CN/Subagent重构实施方案.md)，当前完成证据见[Subagent 重构进度矩阵](../zh-CN/Subagent重构进度矩阵.md)，固定源职责证据见[源能力分析](../zh-CN/subagent/01-source-capability-analysis.md)。
+`subagent` 拥有委派请求、OneShot、Continuable 与 Bound 三种模式的统一生命周期契约，以及 durable child 的查询和父子通信语义。设计导航见[Subagent 领域设计导航](./docs/design.zh-CN.md)，当前完成证据见[08 实施进度](../zh-CN/08-implementation-progress.md)，固定源职责证据见[源能力分析](../zh-CN/subagent/01-source-capability-analysis.md)。
 
-局部文档包括[设计导航](./docs/design.zh-CN.md)、[术语规范](./docs/terminology.zh-CN.md)和[测试问题记录](./docs/server-test-findings.zh-CN.md)。Bound 已实现 Mode、专属启动命令、descriptor/projection/listing 和 Plugin 装配骨架；`bound.Service.Start` 仍明确返回未实现错误，binding/config source、child 创建恢复和 parent observer 尚未实现。其[需求](./docs/parent-bound-requirements.zh-CN.md)和[技术设计](./docs/parent-bound-design.zh-CN.md)不能用于解释当前代码已经具备可运行的 Bound child。
+局部文档包括[设计导航](./docs/design.zh-CN.md)和[术语规范](./docs/terminology.zh-CN.md)。Bound 已实现 Mode、专属启动命令、descriptor/projection/listing 和 Plugin 装配骨架；`bound.Service.Start` 仍明确返回未实现错误，binding/config events及projection、child 创建恢复和 parent observer 尚未实现。其[需求](./docs/parent-bound-requirements.zh-CN.md)、[技术设计](./docs/parent-bound-design.zh-CN.md)和[config详设](./docs/bound-config-management.zh-CN.md)不能用于解释当前代码已经具备可运行的 Bound child。
 
 ## 职责边界
 
@@ -40,7 +40,7 @@
 | `internal/subagents` | 统一准入、按具体 `StartCommand` variant 路由、公共中断授权、关闭编排 | 把三个模式合并成大而全的启动参数 |
 | `internal/oneshot` | OneShot 创建、初始消息、结果选择和终止 | durable resume、后续消息 |
 | `internal/continuable` | Continuable fresh create、cold resume 和 settlement | Agent epoch、普通 live Inbox 投递或 Session durability |
-| `internal/bound` | Bound Mode 与启动入口；当前 `Start` 保持 TODO 并返回明确错误 | 尚未实现的 binding/config source 和 child 创建恢复 |
+| `internal/bound` | Bound Mode 与启动入口；当前 `Start` 保持 TODO 并返回明确错误 | 尚未实现的 binding/config events及projection和 child 创建恢复 |
 | `internal/execution` | 三种模式共用的一次执行状态、terminal future 和进程内索引 | Agent phase 镜像或父子树 |
 | `internal/seedbuilder` | SeedBuilder 注册、查找和事件边界 | Agent 创建 |
 | `internal/childdirectory` | live/persisted child 的只读合并查询 | 创建、恢复或控制 child |

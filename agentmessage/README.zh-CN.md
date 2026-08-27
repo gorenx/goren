@@ -1,6 +1,6 @@
 # Agent Message 协议
 
-`agentmessage` 是 Agent 交互消息协议的唯一 owner。它定义稳定消息 identity、role、producer source、content block、Tool call correlation、构造与不可变 clone，以及 durable JSON codec。权威边界见[Agent Message 协议重构设计方案](../zh-CN/AgentMessage协议重构设计方案.md)，实施证据只见[专项进度矩阵](../zh-CN/AgentMessage协议重构进度矩阵.md)和[08 实施进度](../zh-CN/08-implementation-progress.md)。
+`agentmessage` 是 Agent 交互消息协议的唯一 owner。它定义稳定消息 identity、role、producer source、content block、Tool call correlation、构造与不可变 clone，以及 durable JSON codec。权威边界见[Agent Message 协议重构设计方案](../zh-CN/AgentMessage协议重构设计方案.md)，实施证据只见[08 实施进度](../zh-CN/08-implementation-progress.md)。
 
 ## 职责与非职责
 

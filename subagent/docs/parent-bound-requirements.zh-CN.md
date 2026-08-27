@@ -1,12 +1,12 @@
 # Bound Subagent 需求
 
-状态：进行中；Mode、启动命令和 descriptor/projection 骨架已实现，`Bound.Start` 与 binding/config source 尚未实现
+状态：进行中；Mode、启动命令和 descriptor/projection 骨架已实现，`Bound.Start` 与 binding/config event projection 尚未实现
 
 > 文件名保留 `parent-bound` 以维持已有链接。本文中的能力名称统一为 `Bound`，不再把 `Parent-bound` 当作另一个类型或 Mode 名称。
 
 ## 1. 文档边界
 
-本文只记录 Bound Subagent 的产品行为、职责和验收条件。Go 接口、数据结构和真实调用方向见[Bound Subagent 技术设计](./parent-bound-design.zh-CN.md)。当前已经实现的 OneShot、Continuable 和 common `Execution` 仍以[Subagent 技术方案](../../zh-CN/Subagent架构与生命周期重构技术方案.md)及代码为准。
+本文只记录 Bound Subagent 的产品行为、职责和验收条件。Go 接口、数据结构和真实调用方向见[Bound Subagent 技术设计](./parent-bound-design.zh-CN.md)，config event/projection和 resident apply见[Bound Config 管理详细设计](./bound-config-management.zh-CN.md)。当前已经实现的 OneShot、Continuable 和 common `Execution` 仍以[Subagent 包说明](../README.zh-CN.md)及代码为准。
 
 Bound 不在固定 DeepSeek Harness 基线内。当前默认 composition 已装配返回明确 TODO 错误的 Bound 模式对象，但还不能创建或恢复 Bound child。本文会明确区分已实现骨架和目标行为。
 
@@ -16,7 +16,7 @@ Bound 不在固定 DeepSeek Harness 基线内。当前默认 composition 已装�
 - binding：parent Session 与 Bound child Session ID 的持久关系；
 - materialize：`Bound.Start` 内部根据 binding 创建 fresh Bound child或恢复已有 child 的过程，不是另一个公开入口；
 - resident：当前进程中存在该 child 的 exact live Agent 和 common `Execution`；
-- config：Bound child 下一 turn 使用的可变配置；
+- config：写入 exact parent Session event、由 Subagent投影并在安全 maintenance 区间应用到 Bound child的可变配置；
 - materialization state：fresh child 是否已经创建、最近一次 materialize 是否失败等持久状态；
 - cursor：某个 subscription 已处理到的 parent Session event 位置；
 - handoff：把匹配的 parent Session event 转换为 child Inbox 输入。
@@ -32,13 +32,14 @@ Bound 不在固定 DeepSeek Harness 基线内。当前默认 composition 已装�
 5. 初次建立 binding 必须提供 initial prompt。initial prompt 必须在 fresh child create 前持久化，并在重试时保持同一内容。
 6. binding 成功后，child create 或 restore 失败不撤销 binding，也不阻止 parent Agent publication。
 7. canonical binding relationship 是 exact parent Session 中的 typed non-surface event。Session Header 不增加 bound child 字段。
-8. immutable creation input、config、materialization state 和 cursor 分开持久化，不写入 binding event，也不混成一条可变记录。initial prompt 属于 creation input，不属于可变 materialization state。
-9. resident child 当前 turn 使用一个不变的 config revision。已提交的新 revision 在下一 child turn 开始前生效；cold child 在下一次 materialize 时使用最新 revision。
+8. immutable creation input、config events、materialization state 和 cursor 分开持久化，不写入 binding event，也不混成一条可变记录。initial prompt 和 resolved Agent options属于 creation input，不属于可变 materialization state。
+9. config revision写入 exact parent Session event并由 Subagent投影。revision durable 后暂停该 child 的新 work；此前已经被 Inbox 接受的 work可继续使用旧 revision。System Prompt和Tools在 Agent `RunMaintenance` 的安全区间一起应用 latest revision，成功后恢复准入。
 10. enabled Bound child 在 idle 时保持 resident；Continuable 的 idle settlement 不适用于 Bound。
 11. Bound child 仍使用 Agent Inbox 和 child Session 的现有 durable path，不增加第二条模型输入队列。
 12. 同一个 parent event 对同一个 subscription 至多产生一条模型可见 child Inbox 消息；处理动作可以重试。
 13. 所有 `OriginSubagent` Session 都不能直接调用 `ask_user_question`。Bound 不增加例外。
 14. Agent 继续唯一拥有 exact Agent epoch、runtime parent/children、descendant admission、child-first close 和 Scope teardown。
+15. System Prompt 不通过 binding event 发现 child。AgentLoop 为每个 exact Agent Scope 安装 System Prompt/Tools overlay；Bound 在 child publication 前 provision 配置。配置真正被模型请求消费时，AgentLoop 使用既有 `request/header` event把有效 System Prompt和Tool schemas写入 exact child Session。
 
 ## 3. 三种 Mode 的行为边界
 
@@ -49,7 +50,7 @@ Bound 不在固定 DeepSeek Harness 基线内。当前默认 composition 已装�
 | cold child 收到普通消息 | 不支持 | `Send` 原子完成 restore + message acceptance | Bound 先按最新 config materialize，再接受消息 |
 | 无消息 cold restore | 不支持 | 当前用例不支持 | `Bound.Start` 在 parent create/resume 后执行 |
 | idle 后行为 | 结束 | 满足 settlement 条件后结束当前 `Execution` | enabled 时保持 resident |
-| 可变 config | 不属于本能力 | descriptor 决定 cold restore 配置 | revision 在下一 child turn 生效 |
+| 可变 config | 不属于本能力 | descriptor 决定 cold restore 配置 | parent Session event + projection；safe maintenance apply |
 | 关系来源 | child Session lineage | child Session lineage | parent Session binding event + child Header lineage |
 
 Bound 与 Continuable 共享 Agent 和 `Execution` 基础设施，不共享业务触发和结束条件。不得把 `ModeBound` 编码成 `ModeContinuable` 后再读取额外 flag。
@@ -61,14 +62,19 @@ flowchart LR
     Caller[Bound 配置调用方] -->|Bind| Bound[Bound 用例]
     Bound -->|Commit binding event| ParentSession[exact parent Session]
     Bound -->|保存 immutable creation input| Creation[creation record]
-    Bound -->|保存 config| Config[config record]
+    Bound -->|Commit config event| Config[parent Session config event]
+    Config -->|fold| ConfigProjection[Subagent config projection]
+    ConfigProjection --> Bound
     Bound -->|保存最近启动尝试结果| State[materialization state record]
     ParentCreated[agent.Created observer] -->|每条 binding 构造 BoundStartCommand| Starter[Starter.Start]
     Starter --> Bound
     ParentEvent[session.EventAppended observer] -->|ParentEventAppended| Bound
     Bound -->|Create or Resume| Constructor[agent.Constructor]
+    Constructor -->|mount exact Agent Scope| Overlay[System Prompt and Tools overlays]
+    Bound -->|provision child config| Overlay
     Bound -->|publish| Execution[common Execution]
     Bound -->|Followup after dedupe| Inbox[child Agent Inbox]
+    Overlay -->|assemble effective request| RequestHeader[child Session request/header]
     Bound -->|advance after acceptance| Cursor[cursor record]
     Child[Bound child] -->|existing report Tool| ParentAgent[exact live parent Agent]
 ```
@@ -79,9 +85,12 @@ flowchart LR
 
 | Owner | 负责 | 不负责 |
 | --- | --- | --- |
-| Bound | `Bind`、`Start` 内部的 create/restore、Bound config、materialization state、cursor、subscription matching、handoff、Bound idle 行为 | Agent runtime child graph、Session Header、Session persistence 实现、Continuable 用例 |
-| Session | parent/child append-only event、typed binding event、Commit 顺序、`WriteBarrier` 和 `Flush` | binding 的业务解释、child create、cursor 或 config |
+| Bound | `Bind`、`Start` 内部的 create/restore、config event/projection、materialization state、cursor、subscription matching、handoff、Bound idle 与 config apply协调 | Prompt/Tool配置规则、Agent runtime child graph、Session Header、Session persistence 实现、Continuable 用例 |
+| Session | parent/child append-only event、typed binding/config/applied events、Commit 顺序、`WriteBarrier` 和 `Flush` | binding/config 的业务解释、child create 或 cursor |
 | Agent | exact epoch、runtime parent/children、Inbox、turn 执行、descendant admission、child-first close 和 Scope teardown | binding 查询、subscription matching、Bound config persistence |
+| AgentLoop | 为每个 exact Agent Scope安装System Prompt/Tools overlay；在模型调用前把有效System Prompt和Tool schemas写入child Session的`request/header` | Bound binding/config revision、child发现或config update用例 |
+| System Prompt | child prompt config、Persona section、shadow 和 assembly | Bound revision、binding、Tool执行权限或Agent options |
+| Tools | child Tool选择/限制校验、可见 schema 和执行权限 | Bound revision、binding、prompt或Agent options |
 | common `Execution` | 每个 exact child Agent epoch 的状态、停止和 terminal result | 决定 Bound 是否保持 resident、读取 binding 或修改 config |
 | Continuable | `ContinuableStartCommand`、带消息的 cold `Resume`、Continuable idle settlement | Bound binding、`BoundStartCommand`、Bound config 和 cursor |
 | `SeedBuilder` | fresh child 的 Session seed | existing child restore、binding、config 或 handoff |
@@ -99,9 +108,9 @@ flowchart LR
 
 1. 验证 exact parent、Bound 配置和资源限制；
 2. 生成或接受一个稳定 child Session ID；
-3. 原子保存 immutable creation input、config revision 1 和初始 materialization state；
-4. 向 exact parent Session Commit 一条 typed non-surface binding event；
-5. 调用 Session `Flush`，确认包含该 event 的 committed prefix 已持久化；
+3. 原子保存 immutable creation input 和初始 materialization state；
+4. 向 exact parent Session 的同一个 `session.Batch` Commit typed non-surface binding event 和 config revision 1 event；
+5. 调用 Session `Flush`，确认包含两个 events 的 committed prefix 已持久化；
 6. 返回 binding 成功；
 7. parent 后续发现该 binding 时，才能构造 `BoundStartCommand` 并调用统一 `Starter.Start`。
 
@@ -150,15 +159,19 @@ O5 未关闭前，不固定 Inbox 去重与 cursor 写入的事务接口。
 
 ### 6.6 Config update
 
-config update 创建递增 revision。提交后立即停止已禁用 binding 的新 handoff；对仍 enabled 的 resident child：
+config update 向 exact parent Session提交一个包含完整 snapshot 的递增 revision event。prompt config由 System Prompt定义和应用；Tool选择/限制由Tools定义和应用；Subagent只拥有revision、projection和协调。
 
-- running turn 继续使用旧 revision；
-- 新 revision 不能在当前 turn 中途修改 model、persona 或 Tool policy；
-- 下一条会启动 child turn 的消息被接受前，Bound 必须让旧 `Execution` 收敛，并以最新 revision 恢复新的 exact Agent epoch；
-- cold child 在下一次 `Bound.Start` 时直接使用最新 revision；
-- 多次更新可以折叠为最新 committed revision，但每个 turn 只能使用一个 revision。
+旧的“下一 turn 必须使用新 revision”是假设，现已废除。AgentLoop可能连续处理已经进入Inbox的消息，不能依靠`WhenIdle`抢在下一次claim之前。新的可观察规则是：
 
-这里不要求同一 Agent epoch 原地修改配置。若未来要支持原地切换，Agent/AgentLoop 必须先提供可证明位于“上一 turn 完成之后、下一 Inbox claim 之前”的配置接口。
+- revision durable 前已经被 child Inbox 接受的 work可以继续使用旧 revision；
+- revision durable 后，Bound立即暂停该 child的新`Send`和handoff acceptance；disabled revision也从这一点拒绝新work；
+- Bound不保存第二条消息队列；未被接受的handoff不推进cursor，普通caller等待或重试；
+- 旧Inbox work排空后，Bound在exact Agent的`RunMaintenance`区间把System Prompt和Tools一起更新到projection latest revision；
+- owner配置更新和child applied event durable后才恢复新work准入；
+- 多次更新可以折叠为latest committed revision，中间revision仍保留在parent Session log；
+- cold/fresh child在publication和首条work acceptance前直接应用latest revision。
+
+Agent provider/model/maxTokens不在可变Bound config中；它们属于immutable creation input。未来要支持动态Agent配置时，必须由Agent owner另行提供契约，不能由System Prompt、Tools或Subagent代管。
 
 ### 6.7 Idle 与 stop
 
@@ -182,7 +195,7 @@ parent 已进入 Closing 后，新的 report 必须返回稳定失败；已经�
 
 parent close 时先停止新的 Bound materialization、handoff 和 report，再由 Agent owner 按现有 child-first 顺序关闭 runtime children。Bound 必须等待自己已接受但尚未提交到 child Inbox 的处理结束，之后才允许 common `Execution` 完成 terminal result。
 
-进程重启后，从 parent binding event、Bound config、materialization state、cursor、child Session 和 descriptor 恢复；process-local Agent、Handle、`Execution` 和 observer registration 不持久化。
+进程重启后，从 parent binding/config events及projection、materialization state、cursor、child applied event、child Session 和 descriptor 恢复；process-local Agent、Handle、`Execution` 和 observer registration 不持久化。
 
 ## 7. Invariants
 
@@ -194,7 +207,7 @@ parent close 时先停止新的 Bound materialization、handoff 和 report，再
 - I6：Bound Start 内部 create/restore failure 不撤销 binding，也不影响已经完成的 parent Agent publication。
 - I7：existing child materialize 不运行 `SeedBuilder`，也不制造模型输入。
 - I8：enabled Bound child 不执行 Continuable idle settlement。
-- I9：一个 child turn 只使用一个 config revision。
+- I9：config revision durable 后的新 child work在 latest revision安全应用完成前不能进入 Inbox；durable 前已接受的 work不被中途改写。
 - I10：config、materialization state 和 cursor 分开记录、独立更新。
 - I11：同一 parent event/subscription 至多产生一条模型可见 child message。
 - I12：cursor 只能在 child Inbox 已接受消息或确认该消息先前已接受后推进。
@@ -202,18 +215,22 @@ parent close 时先停止新的 Bound materialization、handoff 和 report，再
 - I14：parent release 完成时不存在 live Bound child `Execution`。
 - I15：Bound child 不能直接调用 `ask_user_question`。
 - I16：secrets 不进入 binding event、config、materialization error、cursor、Inbox provenance 或 telemetry。
+- I17：Prompt规则只由System Prompt拥有，Tool选择/限制和执行权限只由Tools拥有；Subagent不复制这些领域规则。
+- I18：Bound binding/config event不作为System Prompt的child发现机制；每个实际模型请求使用的有效System Prompt和Tool schemas必须通过exact child Session的既有`request/header`重建。
 
 ## 8. Failure semantics
 
 | Failure | Required result |
 | --- | --- |
-| creation/config/materialization record write failure | binding 不成功，不创建 child |
+| creation/materialization record或初始 config event写入失败 | binding 不成功，不创建 child |
 | binding event Commit/Flush failure | binding 不成功，不创建 child |
 | fresh create failure | binding 保留；materialization state 记录失败；复用同一 child ID 重试 |
 | existing restore failure | child identity 和 binding 保留；不创建替代 Session |
 | single child Bound Start failure during parent publication | observer 包含该失败并返回 `nil`；parent publication 继续 |
 | subscription decode/filter failure | 只影响对应 binding/subscription，不推进 cursor |
 | child Inbox rejection | 不推进 cursor |
+| resident config apply 暂不可执行 | 保持revision pending并暂停新work；不建立第二条消息队列 |
+| System Prompt或Tools apply failure | 反向恢复旧owner配置；不写成功applied事实，不恢复新work准入 |
 | cursor write failure | recovery 先检查去重事实，再决定只补 cursor 或重试 delivery |
 | parent unavailable/closing | 新 handoff/report/materialize 返回稳定失败或进入已定义重试状态 |
 | shutdown timeout | 报告未完成的 exact parent/child，不把它记录为成功关闭 |
@@ -240,7 +257,7 @@ O11 要求配置并验证以下四个不同上限，不能只用一个 timeout �
 | O3 | Resolved | 一个 child 只有一个 direct parent |
 | O4 | Open | subscription filter 的静态 schema 和版本迁移 |
 | O5 | Partially resolved | Inbox 必须按稳定输入去重；cursor/dedupe 的原子机制和 retry storage 未定 |
-| O6 | Resolved | resident child 下一 turn 使用最新 config revision；当前 turn 不变 |
+| O6 | Resolved | 废除“下一 turn”假设；以Inbox acceptance和`RunMaintenance`安全应用为边界，详见config详设 |
 | O7 | Open | parent event retention 与落后 cursor 的 repair policy |
 | O8 | Resolved | Bound 不获得直接 `ask_user_question` 权限 |
 | O9 | Resolved | 初次 Bind 必须提供并持久化 initial prompt |
@@ -259,7 +276,7 @@ O4、O5、O7、O11、O12 和 O13 会改变持久化、delivery 或资源语义�
 4. parent restart 后 existing Bound child 使用原 Session、descriptor 和 Inbox 恢复，不运行 `SeedBuilder`，不注入伪造消息。
 5. 任一 child materialize 失败或 timeout 时，parent `agent.Created` 仍成功完成，siblings 互不影响。
 6. enabled Bound child idle 后保持 resident；Continuable 在原 settlement 条件下仍结束当前 `Execution`。
-7. running child 的 config 更新不改变当前 turn；下一 turn 之前切换到最新 revision。
+7. config revision durable 前已接受的work可继续使用旧revision；durable后新work暂停，直到System Prompt和Tools在`RunMaintenance`中一起应用latest revision。
 8. 同一 parent event 在 crash recovery 后只产生一条对应 child Inbox 消息。
 9. cursor 只在 Inbox acceptance 成功或确认已接受后推进。
 10. parent close 与并发 handoff/report 收敛后，parent release 不留下 live Bound child。

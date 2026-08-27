@@ -8,12 +8,11 @@
 
 本文定义 Goren `Session Projection Cache` 的最终职责、模块边界、对外契约、关键数据、写入与冷恢复算法、并发与关闭语义，回答“最终代码应该是什么”。
 
-- 模块实施顺序和 Gate 见[Session Projection Cache 实施方案](./SessionProjectionCache实施方案.md)。
-- 当前完成状态和可复核证据见[Session Projection Cache 实施进度矩阵](./SessionProjectionCache实施进度矩阵.md)。
+- 当前完成状态和可复核证据见[08 实施进度](./08-implementation-progress.md)。
 - 通用 Projection Registry 与 Session Title 的既有设计见[18 Session Projection 与 Session Title](./18-session-projection-and-title.md)。
 - Session 事实持久化与 SQLite Backend 见[19 Session Persistence 与 SQLite](./19-session-persistence-and-sqlite.md)。
 
-本文不记录实施完成比例，实际实现与验证证据由专项进度矩阵拥有；checkpoint 始终不是 Session 事实。
+本文不记录实施完成比例，实际实现与验证证据由[08 实施进度](./08-implementation-progress.md)拥有；checkpoint 始终不是 Session 事实。
 
 ## 2. 固定源与 Goren 取舍
 

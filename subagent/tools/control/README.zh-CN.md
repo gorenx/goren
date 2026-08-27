@@ -15,4 +15,4 @@ flowchart LR
 
 `send_message` 使用 exact calling Agent 作为 direct-parent authority；`interrupt_agent` 使用 exact ancestor authority；`list_agents` 只读 durable directory，并组合 live Agent 状态映射为 `running`、`idle`、`ready`。目录查询不会恢复 cold Agent，OneShot child 也不会被映射成可续投目标。
 
-本包不拥有 child lifecycle、目录 projection 或 SeedBuilder 选择。跨包契约见[技术方案](../../../zh-CN/Subagent架构与生命周期重构技术方案.md)，实现证据见[进度矩阵](../../../zh-CN/Subagent重构进度矩阵.md)。
+本包不拥有 child lifecycle、目录 projection 或 SeedBuilder 选择。跨包契约见[Subagent 包说明](../../README.zh-CN.md)，实现证据见[08 实施进度](../../../zh-CN/08-implementation-progress.md)。

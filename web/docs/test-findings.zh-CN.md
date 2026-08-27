@@ -59,7 +59,7 @@ go build ./...
 git diff --check
 ```
 
-以上命令通过。服务端 subagent 的独立证据见[服务端测试问题记录](../../subagent/docs/server-test-findings.zh-CN.md)。
+以上命令通过。服务端 Subagent 的实现与验证证据见[08 实施进度](../../zh-CN/08-implementation-progress.md)。
 
 ## 5. 尚未覆盖
 

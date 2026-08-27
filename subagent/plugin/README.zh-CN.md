@@ -17,8 +17,8 @@ flowchart TD
     Plugin -->|publishes narrow views| Consumers[Tool / Control / Report / Host]
 ```
 
-Apply 顺序是：解析依赖、注册 Projection、启用 ChildDirectory、构造一个 `environmentBuilder`、把它分别作为 OneShot/Continuable 拥有的消费端口实现注入，构造 Bound 模式骨架，最后打开统一 Service 准入。Bound 当前没有 environment/config source 依赖，`Start` 返回明确 TODO 错误。Environment Builder 只把 approval、persona、Tool restriction、descriptor、structured output 和 child Extension 翻译为 child-local Plugin/Provisioner；不创建 Agent，不决定 Execution 状态。任一 Apply 步骤失败都会撤销已取得效果。Plugin 不实现 Start、Send、Interrupt、settlement 或目录查询，也不发布额外的 parent 消息能力。
+Apply 顺序是：解析依赖、注册 Projection、启用 ChildDirectory、构造一个 `environmentBuilder`、把它分别作为 OneShot/Continuable 拥有的消费端口实现注入，构造 Bound 模式骨架，最后打开统一 Service 准入。Bound 当前没有 creation store、binding/config projection或child config application依赖，`Start` 返回明确 TODO 错误。Environment Builder 当前只把 approval、persona、Tool restriction、descriptor、structured output 和 child Extension 翻译为 child-local Plugin/Provisioner；不创建 Agent，不决定 Execution 状态。未来 Bound config application必须继续通过System Prompt和Tools owner API实现，不能把规则移入Plugin。任一 Apply 步骤失败都会撤销已取得效果。Plugin 不实现 Start、Send、Interrupt、settlement 或目录查询，也不发布额外的 parent 消息能力。
 
 Dispose 先调用统一 Service `Close`：关闭新准入、等待已准入调用返回、让 Continuable 与 OneShot 请求其 exact Agent 停止，并只等待 `ClosingSignal`。它不在当前 Plugin topology 操作中递归卸载 child Scope。随后本 Plugin 停用 ChildDirectory、清理 Extension/SeedBuilder registration，并释放 Projection handle。
 
-`agent/disposed` 是本 Plugin 唯一转接给业务 Service 的 Agent 事件，用来结算由 Agent 结构关闭触发的 exact Execution。跨包契约见[技术方案](../../zh-CN/Subagent架构与生命周期重构技术方案.md)，实现证据见[进度矩阵](../../zh-CN/Subagent重构进度矩阵.md)。
+`agent/disposed` 是本 Plugin 唯一转接给业务 Service 的 Agent 事件，用来结算由 Agent 结构关闭触发的 exact Execution。跨包契约见[Subagent 包说明](../README.zh-CN.md)，实现证据见[08 实施进度](../../zh-CN/08-implementation-progress.md)。

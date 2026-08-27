@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有 Harness-compatible `llm` Service、Adapter Registry、模型路由、流归一化、增量组装、retry policy contract，以及 DeepSeek direct provider 的配置、wire 转换、SSE 与错误映射。Agent Message、source 和 content block 的唯一 owner 由[Agent Message 协议重构设计方案](./AgentMessage协议重构设计方案.md)定义并已落地为 `agentmessage`；StreamChunk、finish、usage 与 LLM 公共协议由[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)约束；Plugin Service/Event、Scope 与 effect 生命周期由[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)拥有；默认 policy 的执行、durable retry facts 和等待生命周期见[`llmretry` 模块说明](../llm/retry/README.zh-CN.md)。迁移状态见[Agent Message 专项进度矩阵](./AgentMessage协议重构进度矩阵.md)，全仓验证只见[08 实施进度](./08-implementation-progress.md)。
+本文拥有 Harness-compatible `llm` Service、Adapter Registry、模型路由、流归一化、增量组装、retry policy contract，以及 DeepSeek direct provider 的配置、wire 转换、SSE 与错误映射。Agent Message、source 和 content block 的唯一 owner 由[Agent Message 协议重构设计方案](./AgentMessage协议重构设计方案.md)定义并已落地为 `agentmessage`；StreamChunk、finish、usage 与 LLM 公共协议由[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)约束；Plugin Service/Event、Scope 与 effect 生命周期由[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)拥有；默认 policy 的执行、durable retry facts 和等待生命周期见[`llmretry` 模块说明](../llm/retry/README.zh-CN.md)。迁移状态与全仓验证只见[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 固定源与职责映射
 
@@ -31,7 +31,7 @@ Go 不复制 TypeScript class inheritance、declaration merging、fetch implemen
 
 这次调整只改变 Go import path：旧 `github.com/gorenx/goren/llmretry` 调用方迁移到 `github.com/gorenx/goren/llm/retry`，package identifier 仍为 `llmretry`；仓库内旧 `internal/llm/deepseek` 调用方迁移到 `llm/deepseek`。不保留平行 wrapper 或第二条注册路径。TypeScript Client 协议、canonical Plugin 名、配置 JSON、Provider route、事件名、持久化字段和运行时语义均不改变。
 
-Agent Message owner 迁移已将 Message/source/content 的 Go import path 从 `llm` 改为 `agentmessage`。这是有意的破坏性 Go API 变化，但不改变上述 wire、event 和 persisted semantics，也不保留 `llm.Message` 兼容 alias。原子迁移与验收证据见[实施方案](./AgentMessage协议重构实施方案.md)和[专项矩阵](./AgentMessage协议重构进度矩阵.md)。
+Agent Message owner 迁移已将 Message/source/content 的 Go import path 从 `llm` 改为 `agentmessage`。这是有意的破坏性 Go API 变化，但不改变上述 wire、event 和 persisted semantics，也不保留 `llm.Message` 兼容 alias。最终边界见[Agent Message 协议重构设计方案](./AgentMessage协议重构设计方案.md)，原子迁移与验收证据见[08 实施进度](./08-implementation-progress.md)。
 
 ## 2. 职责与非职责
 
