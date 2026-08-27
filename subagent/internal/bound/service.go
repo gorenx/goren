@@ -112,8 +112,7 @@ type Service struct {
 	mutex        sync.Mutex
 	operations   map[operationKey]*operation
 	parents      map[session.SessionID]*operation
-	workers      map[operationKey]*interactionWorker
-	routes       map[session.SessionID]map[session.SessionID]*interactionWorker
+	workers      map[session.SessionID]map[session.SessionID]*interactionWorker
 	closing      bool
 }
 
@@ -128,8 +127,7 @@ func New(dependencySet Dependencies) (*Service, error) {
 		dependencies: dependencySet,
 		operations:   make(map[operationKey]*operation),
 		parents:      make(map[session.SessionID]*operation),
-		workers:      make(map[operationKey]*interactionWorker),
-		routes:       make(map[session.SessionID]map[session.SessionID]*interactionWorker),
+		workers:      make(map[session.SessionID]map[session.SessionID]*interactionWorker),
 	}, nil
 }
 

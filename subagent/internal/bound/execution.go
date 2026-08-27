@@ -111,12 +111,13 @@ func (owner *Service) Close(ctx context.Context) error {
 	}
 	owner.mutex.Lock()
 	owner.closing = true
-	workers := make([]*interactionWorker, 0, len(owner.workers))
-	for _, worker := range owner.workers {
-		workers = append(workers, worker)
+	var workers []*interactionWorker
+	for _, parentWorkers := range owner.workers {
+		for _, worker := range parentWorkers {
+			workers = append(workers, worker)
+		}
 	}
-	owner.workers = make(map[operationKey]*interactionWorker)
-	owner.routes = make(map[session.SessionID]map[session.SessionID]*interactionWorker)
+	owner.workers = nil
 	operations := make([]*operation, 0, len(owner.operations))
 	for _, currentOperation := range owner.operations {
 		operations = append(operations, currentOperation)
@@ -125,21 +126,12 @@ func (owner *Service) Close(ctx context.Context) error {
 	for _, worker := range workers {
 		worker.Stop()
 	}
-	seen := make(map[*currentExecution]struct{})
-	currentExecutions := make([]*currentExecution, 0, len(operations))
+	var closeErr error
 	for _, currentOperation := range operations {
 		current := currentOperation.loadCurrent()
 		if current == nil {
 			continue
 		}
-		if _, duplicate := seen[current]; duplicate {
-			continue
-		}
-		seen[current] = struct{}{}
-		currentExecutions = append(currentExecutions, current)
-	}
-	var closeErr error
-	for _, current := range currentExecutions {
 		closeErr = errors.Join(
 			closeErr,
 			current.running.StopAndWait(ctx, sharedexecution.StopModule),

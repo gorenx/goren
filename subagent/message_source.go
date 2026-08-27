@@ -9,6 +9,10 @@ import (
 	"github.com/gorenx/goren/session"
 )
 
+// DeliveryKind identifies a Bound delivery in the extensible message-source
+// union.
+const DeliveryKind = "subagent-delivery"
+
 // CoordinatorSource attributes a parent coordinator's relay to a child.
 type CoordinatorSource struct {
 	Kind            string                   `json:"kind"`
@@ -115,7 +119,7 @@ type Delivery struct {
 
 // SourceKind returns the canonical delivery discriminant.
 func (Delivery) SourceKind() string {
-	return "subagent-delivery"
+	return DeliveryKind
 }
 
 // CloneSource validates and detaches the delivery identity.
@@ -144,7 +148,7 @@ func (origin Delivery) CloneSource() (agentmessage.MessageSource, error) {
 			origin.Outcome,
 		)
 	}
-	origin.Kind = "subagent-delivery"
+	origin.Kind = DeliveryKind
 	origin.Form = agentmessage.ContextRelay
 	return origin, nil
 }
@@ -154,7 +158,7 @@ func (origin Delivery) CloneSource() (agentmessage.MessageSource, error) {
 func DecodeDelivery(
 	origin agentmessage.MessageSource,
 ) (Delivery, error) {
-	if origin == nil || origin.SourceKind() != "subagent-delivery" {
+	if origin == nil || origin.SourceKind() != DeliveryKind {
 		return Delivery{}, errors.New(
 			"subagent: message source is not a Bound delivery",
 		)

@@ -97,13 +97,6 @@ func (owner *Service) Close(closeContext context.Context) error {
 		targets = append(targets, entry)
 		entry.Execution.Stop(sharedexecution.StopModule)
 	}
-	return waitForClosing(closeContext, targets)
-}
-
-func waitForClosing(
-	closeContext context.Context,
-	targets []sharedexecution.Entry,
-) error {
 	for _, entry := range targets {
 		select {
 		case <-entry.Closing:
@@ -157,7 +150,6 @@ func (owner *Service) Start(
 	seed, seedErr := owner.buildSeed(
 		ctx,
 		seedBuilderName,
-		childID,
 		requestSnapshot.Parent,
 	)
 	if seedErr != nil {
@@ -201,9 +193,7 @@ func (owner *Service) Start(
 	}
 	prompt, messageErr := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
 		Content: requestSnapshot.Prompt,
-		Source: agentmessage.UserMessageSource{
-			Kind: "user",
-		},
+		Source:  agentmessage.UserMessageSource{},
 	})
 	if messageErr != nil {
 		return nil, errors.Join(
@@ -273,7 +263,6 @@ func (owner *Service) Start(
 func (owner *Service) buildSeed(
 	ctx context.Context,
 	name string,
-	_ session.SessionID,
 	parentAgent agent.Agent,
 ) ([]session.Event, error) {
 	builder, found := owner.dependencies.SeedBuilders.Find(name)

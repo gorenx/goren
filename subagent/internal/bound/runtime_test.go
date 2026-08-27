@@ -1017,10 +1017,7 @@ func boundWorker(
 ) *interactionWorker {
 	owner.mutex.Lock()
 	defer owner.mutex.Unlock()
-	return owner.workers[operationKey{
-		parentID: parentID,
-		childID:  childID,
-	}]
+	return owner.workers[parentID][childID]
 }
 
 func detachBoundWorker(
@@ -1030,16 +1027,12 @@ func detachBoundWorker(
 ) *interactionWorker {
 	owner.mutex.Lock()
 	defer owner.mutex.Unlock()
-	key := operationKey{
-		parentID: parentID,
-		childID:  childID,
-	}
-	worker := owner.workers[key]
-	delete(owner.workers, key)
-	if parentRoutes := owner.routes[parentID]; parentRoutes != nil {
-		delete(parentRoutes, childID)
-		if len(parentRoutes) == 0 {
-			delete(owner.routes, parentID)
+	parentWorkers := owner.workers[parentID]
+	worker := parentWorkers[childID]
+	if parentWorkers != nil {
+		delete(parentWorkers, childID)
+		if len(parentWorkers) == 0 {
+			delete(owner.workers, parentID)
 		}
 	}
 	return worker

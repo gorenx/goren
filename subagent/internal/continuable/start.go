@@ -125,9 +125,7 @@ func (owner *Service) Start(
 	}
 	prompt, messageErr := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
 		Content: requestSnapshot.Prompt,
-		Source: agentmessage.UserMessageSource{
-			Kind: "user",
-		},
+		Source:  agentmessage.UserMessageSource{},
 	})
 	if messageErr != nil {
 		return nil, errors.Join(

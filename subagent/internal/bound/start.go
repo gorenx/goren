@@ -153,9 +153,7 @@ func (owner *Service) startLocked(
 		messageValue, messageErr := agentmessage.NewUserMessage(
 			agentmessage.UserMessageInput{
 				Content: binding.Creation.InitialPrompt,
-				Source: agentmessage.UserMessageSource{
-					Kind: "user",
-				},
+				Source:  agentmessage.UserMessageSource{},
 			},
 		)
 		if messageErr != nil {

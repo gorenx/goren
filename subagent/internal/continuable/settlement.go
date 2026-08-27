@@ -97,17 +97,17 @@ func (terminator *executionTerminator) Terminate(
 	if cause == sharedexecution.StopIdle || cause == sharedexecution.StopNormal {
 		fallback = subagent.StopCompleted
 	}
-	terminalValue := subagent.Terminal{
-		StopReason: executionStopReason(
-			terminator.handle.Subject.SessionValue(),
-			terminator.boundary,
-			fallback,
-		),
-	}
-	output, outputErr := lastAssistant(
+	executionEvents, eventsErr := currentExecutionEvents(
 		terminator.handle.Subject.SessionValue(),
 		terminator.boundary,
 	)
+	if eventsErr != nil {
+		terminalErr = errors.Join(terminalErr, eventsErr)
+	}
+	terminalValue := subagent.Terminal{
+		StopReason: executionStopReason(executionEvents, fallback),
+	}
+	output, outputErr := sharedexecution.SelectAssistantOutput(executionEvents)
 	if outputErr != nil {
 		terminalErr = errors.Join(terminalErr, outputErr)
 	} else {
@@ -233,21 +233,10 @@ func settlementSummary(
 }
 
 func executionStopReason(
-	conversation session.Context,
-	boundary int64,
+	events []session.Event,
 	fallback subagent.StopReason,
 ) subagent.StopReason {
-	if conversation == nil {
-		return fallback
-	}
-	events := conversation.Events()
-	suffix := make([]session.Event, 0, len(events))
-	for _, committed := range events {
-		if committed.Seq >= boundary {
-			suffix = append(suffix, committed)
-		}
-	}
-	work, foldErr := agent.FoldConsumedWork(suffix)
+	work, foldErr := agent.FoldConsumedWork(events)
 	if foldErr != nil {
 		return subagent.StopError
 	}
@@ -276,12 +265,12 @@ func executionStopReason(
 	}
 }
 
-func lastAssistant(
+func currentExecutionEvents(
 	conversation session.Context,
 	boundary int64,
-) ([]agentmessage.ContentBlock, error) {
+) ([]session.Event, error) {
 	if conversation == nil {
-		return nil, errors.New("subagent: child Session is nil")
+		return nil, errors.New("subagent: Continuable child Session is nil")
 	}
 	events := conversation.Events()
 	if boundary < 0 || boundary > conversation.Seq() {
@@ -296,7 +285,7 @@ func lastAssistant(
 			suffix = append(suffix, committed)
 		}
 	}
-	return sharedexecution.SelectAssistantOutput(suffix)
+	return suffix, nil
 }
 
 var _ sharedexecution.Terminator = (*executionTerminator)(nil)
