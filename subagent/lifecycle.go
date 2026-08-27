@@ -25,9 +25,8 @@ const (
 	ModeBound Mode = "bound"
 )
 
-// ChildRequest contains caller-owned inputs shared by both implementations.
-// The selected implementation snapshots and validates it before Agent creation.
-type ChildRequest struct {
+// OneShotOptions contains every caller-owned input for one terminal child.
+type OneShotOptions struct {
 	Prompt       []agentmessage.ContentBlock
 	Parent       agent.Agent
 	AgentOptions *agent.Options
@@ -35,19 +34,22 @@ type ChildRequest struct {
 	ToolFilter   *tools.ToolRestriction
 	Persona      *string
 	OutputSchema json.RawMessage
+	SeedBuilder  string
+	Label        *string
 }
 
-// OneShotOptions contains inputs unique to one terminal child execution.
-type OneShotOptions struct {
-	SeedBuilder string
-	Label       *string
-}
-
-// ContinuableOptions contains inputs unique to one resumable child Session.
+// ContinuableOptions contains every caller-owned input for one resumable
+// child Session. Durable restore inputs are copied into its descriptor.
 type ContinuableOptions struct {
-	SeedBuilder string
-	Label       string
-	ChildID     *session.SessionID
+	Prompt       []agentmessage.ContentBlock
+	Parent       agent.Agent
+	AgentOptions *agent.Options
+	MaxDepth     *int64
+	ToolFilter   *tools.ToolRestriction
+	Persona      *string
+	SeedBuilder  string
+	Label        string
+	ChildID      *session.SessionID
 }
 
 // StartCommand is the closed family of mode-owned start commands. The private
@@ -60,17 +62,12 @@ type StartCommand interface {
 
 // OneShotStartCommand contains the validated inputs for one terminal child.
 type OneShotStartCommand struct {
-	request     ChildRequest
-	seedBuilder string
-	label       *string
+	settings OneShotOptions
 }
 
 // ContinuableStartCommand contains the validated inputs for one durable child.
 type ContinuableStartCommand struct {
-	request     ChildRequest
-	seedBuilder string
-	label       string
-	childID     *session.SessionID
+	settings ContinuableOptions
 }
 
 // BoundStartCommand identifies one already-bound child to initialize for an
@@ -82,46 +79,37 @@ type BoundStartCommand struct {
 }
 
 // NewOneShotStart constructs a valid OneShot command.
-func NewOneShotStart(
-	input ChildRequest,
-	options OneShotOptions,
-) (OneShotStartCommand, error) {
-	if err := validateSeedBuilderName(options.SeedBuilder); err != nil {
+func NewOneShotStart(settings OneShotOptions) (OneShotStartCommand, error) {
+	if err := validateSeedBuilderName(settings.SeedBuilder); err != nil {
 		return OneShotStartCommand{}, err
 	}
-	requestSnapshot, snapshotErr := snapshotChildRequest(input)
+	detached, snapshotErr := snapshotOneShotOptions(settings)
 	if snapshotErr != nil {
 		return OneShotStartCommand{}, snapshotErr
 	}
 	return OneShotStartCommand{
-		request:     requestSnapshot,
-		seedBuilder: options.SeedBuilder,
-		label:       cloneOptionalString(options.Label),
+		settings: detached,
 	}, nil
 }
 
 // NewContinuableStart constructs a valid Continuable command.
 func NewContinuableStart(
-	input ChildRequest,
-	options ContinuableOptions,
+	settings ContinuableOptions,
 ) (ContinuableStartCommand, error) {
-	if err := validateSeedBuilderName(options.SeedBuilder); err != nil {
+	if err := validateSeedBuilderName(settings.SeedBuilder); err != nil {
 		return ContinuableStartCommand{}, err
 	}
-	if strings.TrimSpace(options.Label) == "" {
+	if strings.TrimSpace(settings.Label) == "" {
 		return ContinuableStartCommand{}, errors.New(
 			"subagent: continuable label must be non-empty",
 		)
 	}
-	requestSnapshot, snapshotErr := snapshotChildRequest(input)
+	detached, snapshotErr := snapshotContinuableOptions(settings)
 	if snapshotErr != nil {
 		return ContinuableStartCommand{}, snapshotErr
 	}
 	return ContinuableStartCommand{
-		request:     requestSnapshot,
-		seedBuilder: options.SeedBuilder,
-		label:       options.Label,
-		childID:     cloneSessionID(options.ChildID),
+		settings: detached,
 	}, nil
 }
 
@@ -155,19 +143,19 @@ func (OneShotStartCommand) Mode() Mode {
 
 func (OneShotStartCommand) startCommand() {}
 
-// Request returns a detached copy of the validated OneShot input.
-func (command OneShotStartCommand) Request() (ChildRequest, error) {
-	return snapshotChildRequest(command.request)
+// Snapshot returns a detached copy of the validated OneShot input.
+func (command OneShotStartCommand) Snapshot() (OneShotOptions, error) {
+	return snapshotOneShotOptions(command.settings)
 }
 
 // SeedBuilderName returns the exact registered seed strategy name.
 func (command OneShotStartCommand) SeedBuilderName() string {
-	return command.seedBuilder
+	return command.settings.SeedBuilder
 }
 
 // Label returns a detached optional display label.
 func (command OneShotStartCommand) Label() *string {
-	return cloneOptionalString(command.label)
+	return cloneOptionalString(command.settings.Label)
 }
 
 // Mode selects the Continuable implementation.
@@ -177,25 +165,25 @@ func (ContinuableStartCommand) Mode() Mode {
 
 func (ContinuableStartCommand) startCommand() {}
 
-// Request returns a detached copy of the validated Continuable input.
-func (command ContinuableStartCommand) Request() (ChildRequest, error) {
-	return snapshotChildRequest(command.request)
+// Snapshot returns a detached copy of the validated Continuable input.
+func (command ContinuableStartCommand) Snapshot() (ContinuableOptions, error) {
+	return snapshotContinuableOptions(command.settings)
 }
 
 // SeedBuilderName returns the exact registered seed strategy name.
 func (command ContinuableStartCommand) SeedBuilderName() string {
-	return command.seedBuilder
+	return command.settings.SeedBuilder
 }
 
 // Label returns the required Continuable display label.
 func (command ContinuableStartCommand) Label() string {
-	return command.label
+	return command.settings.Label
 }
 
 // RequestedChildID returns the detached durable identity requested for a
 // Continuable child, when present.
 func (command ContinuableStartCommand) RequestedChildID() *session.SessionID {
-	return cloneSessionID(command.childID)
+	return cloneSessionID(command.settings.ChildID)
 }
 
 // Mode selects the Bound implementation.
@@ -300,22 +288,19 @@ func cloneSessionID(source *session.SessionID) *session.SessionID {
 
 const maxSafeInteger int64 = 1<<53 - 1
 
-func snapshotChildRequest(source ChildRequest) (ChildRequest, error) {
-	if source.MaxDepth != nil &&
-		(*source.MaxDepth < 0 || *source.MaxDepth > maxSafeInteger) {
-		return ChildRequest{}, errors.New(
-			"subagent: maxDepth must be a non-negative safe integer",
-		)
+func snapshotOneShotOptions(source OneShotOptions) (OneShotOptions, error) {
+	if err := validateMaxDepth(source.MaxDepth); err != nil {
+		return OneShotOptions{}, err
 	}
 	promptSnapshot, cloneErr := agentmessage.CloneContentBlocks(source.Prompt)
 	if cloneErr != nil {
-		return ChildRequest{}, cloneErr
+		return OneShotOptions{}, cloneErr
 	}
 	filterSnapshot, snapshotErr := snapshotToolRestriction(source.ToolFilter)
 	if snapshotErr != nil {
-		return ChildRequest{}, snapshotErr
+		return OneShotOptions{}, snapshotErr
 	}
-	return ChildRequest{
+	return OneShotOptions{
 		Prompt:       promptSnapshot,
 		Parent:       source.Parent,
 		AgentOptions: snapshotAgentOptions(source.AgentOptions),
@@ -323,7 +308,46 @@ func snapshotChildRequest(source ChildRequest) (ChildRequest, error) {
 		ToolFilter:   filterSnapshot,
 		Persona:      cloneOptionalString(source.Persona),
 		OutputSchema: append(json.RawMessage(nil), source.OutputSchema...),
+		SeedBuilder:  source.SeedBuilder,
+		Label:        cloneOptionalString(source.Label),
 	}, nil
+}
+
+func snapshotContinuableOptions(
+	source ContinuableOptions,
+) (ContinuableOptions, error) {
+	if err := validateMaxDepth(source.MaxDepth); err != nil {
+		return ContinuableOptions{}, err
+	}
+	promptSnapshot, cloneErr := agentmessage.CloneContentBlocks(source.Prompt)
+	if cloneErr != nil {
+		return ContinuableOptions{}, cloneErr
+	}
+	filterSnapshot, snapshotErr := snapshotToolRestriction(source.ToolFilter)
+	if snapshotErr != nil {
+		return ContinuableOptions{}, snapshotErr
+	}
+	return ContinuableOptions{
+		Prompt:       promptSnapshot,
+		Parent:       source.Parent,
+		AgentOptions: snapshotAgentOptions(source.AgentOptions),
+		MaxDepth:     cloneInt64(source.MaxDepth),
+		ToolFilter:   filterSnapshot,
+		Persona:      cloneOptionalString(source.Persona),
+		SeedBuilder:  source.SeedBuilder,
+		Label:        source.Label,
+		ChildID:      cloneSessionID(source.ChildID),
+	}, nil
+}
+
+func validateMaxDepth(maxDepth *int64) error {
+	if maxDepth != nil &&
+		(*maxDepth < 0 || *maxDepth > maxSafeInteger) {
+		return errors.New(
+			"subagent: maxDepth must be a non-negative safe integer",
+		)
+	}
+	return nil
 }
 
 func snapshotAgentOptions(source *agent.Options) *agent.Options {

@@ -20,8 +20,7 @@ type Service struct {
 	mutex           sync.RWMutex
 	state           admissionState
 	activeCalls     sync.WaitGroup
-	agents          agent.Registry
-	executions      *sharedexecution.Registry
+	control         *childExecutionControl
 	implementations map[subagent.Mode]implementation
 	closeOrder      []implementation
 	closed          chan struct{}
@@ -77,8 +76,11 @@ func (owner *Service) Open(
 	owner.activeCalls = sync.WaitGroup{}
 	owner.closed = make(chan struct{})
 	owner.closeErr = nil
-	owner.agents = agentRegistry
-	owner.executions = executionRegistry
+	owner.control = newChildExecutionControl(
+		agentRegistry,
+		executionRegistry,
+		implementationIndex,
+	)
 	owner.implementations = implementationIndex
 	owner.closeOrder = closeOrder
 	owner.state = admissionAccepting
@@ -132,11 +134,11 @@ func (owner *Service) Start(
 	}
 }
 
-// Send delivers to a resident child through the ordinary Agent interface. If
-// the child is not resident, only the Continuable lifecycle strategy may
-// materialize it and atomically accept the first message of the new epoch.
+// Send delegates Bound admission to the Bound owner so config replacement and
+// message admission are serialized. Other resident modes use the ordinary
+// Agent Inbox; only an unbound cold child is offered to Continuable resume.
 func (owner *Service) Send(
-	requestContext context.Context,
+	ctx context.Context,
 	parentAgent agent.Agent,
 	childID session.SessionID,
 	content []agentmessage.ContentBlock,
@@ -146,54 +148,69 @@ func (owner *Service) Send(
 		return "", beginErr
 	}
 	defer owner.activeCalls.Done()
-	if requestContext == nil {
-		return "", errors.New("subagent: Send context is nil")
-	}
-	if requestErr := requestContext.Err(); requestErr != nil {
-		return "", requestErr
-	}
-	messageValue, messageErr := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
-		Content: content,
-		Source:  options.Source,
-	})
-	if messageErr != nil {
-		return "", messageErr
-	}
-	entry, found := owner.executions.Find(childID)
-	if found {
-		if authorizationErr := owner.authorizeParent(
-			entry,
-			parentAgent,
-		); authorizationErr != nil {
-			return "", authorizationErr
-		}
-		if submitErr := entry.Subject.Followup(messageValue); submitErr != nil {
-			return "", submitErr
-		}
-		return messageValue.StableID(), nil
-	}
-	candidate, resolveErr := owner.implementation(subagent.ModeContinuable)
-	if resolveErr != nil {
-		return "", resolveErr
-	}
-	selected, supported := candidate.(continuable)
-	if !supported {
-		return "", errors.New(
-			"subagent: Continuable implementation does not support resume",
-		)
-	}
-	return selected.Resume(
-		requestContext,
+	return owner.control.Send(
+		ctx,
 		parentAgent,
 		childID,
-		messageValue,
+		content,
+		options,
 	)
+}
+
+// Bind establishes one durable Bound binding through the Bound owner.
+func (owner *Service) Bind(
+	ctx context.Context,
+	command subagent.BindCommand,
+) (subagent.BoundBinding, error) {
+	if beginErr := owner.beginCall(); beginErr != nil {
+		return subagent.BoundBinding{}, beginErr
+	}
+	defer owner.activeCalls.Done()
+	selected, err := owner.boundImplementation()
+	if err != nil {
+		return subagent.BoundBinding{}, err
+	}
+	return selected.Bind(ctx, command)
+}
+
+// UpdateConfig commits and coordinates one Bound config revision.
+func (owner *Service) UpdateConfig(
+	ctx context.Context,
+	command subagent.UpdateBoundConfigCommand,
+) (subagent.UpdateBoundConfigResult, error) {
+	if beginErr := owner.beginCall(); beginErr != nil {
+		return subagent.UpdateBoundConfigResult{}, beginErr
+	}
+	defer owner.activeCalls.Done()
+	selected, err := owner.boundImplementation()
+	if err != nil {
+		return subagent.UpdateBoundConfigResult{}, err
+	}
+	return selected.UpdateConfig(ctx, command)
+}
+
+// AgentSessionStarted schedules the bindings already committed in this exact
+// parent Session. Bound contains per-child failures so this method cannot veto
+// parent Agent publication.
+func (owner *Service) AgentSessionStarted(
+	ctx context.Context,
+	subject agent.Agent,
+) error {
+	if beginErr := owner.beginCall(); beginErr != nil {
+		return beginErr
+	}
+	defer owner.activeCalls.Done()
+	selected, err := owner.boundImplementation()
+	if err != nil {
+		return err
+	}
+	return selected.StartBindings(ctx, subject)
 }
 
 // Interrupt performs common live-execution lookup and ancestor authorization,
 // then delegates only the mode-specific interruption behavior.
 func (owner *Service) Interrupt(
-	requestContext context.Context,
+	ctx context.Context,
 	childID session.SessionID,
 	authority subagent.InterruptAuthority,
 ) error {
@@ -201,48 +218,23 @@ func (owner *Service) Interrupt(
 		return beginErr
 	}
 	defer owner.activeCalls.Done()
-	entry, found := owner.executions.Find(childID)
-	if !found {
-		return nil
-	}
-	if authorizationErr := authorizeInterrupt(
-		owner.agents,
-		entry,
-		authority,
-	); authorizationErr != nil {
-		return authorizationErr
-	}
-	candidate, resolveErr := owner.implementation(entry.Mode)
-	if resolveErr != nil {
-		return resolveErr
-	}
-	return candidate.Interrupt(requestContext, childID)
+	return owner.control.Interrupt(ctx, childID, authority)
 }
 
 // AgentDisposed completes settlement synchronously when Agent owns the
 // structural close transaction. The mode terminator must not dispose the
 // already-closing Handle again.
 func (owner *Service) AgentDisposed(
-	requestContext context.Context,
+	ctx context.Context,
 	subject agent.Agent,
 ) error {
-	if subject == nil {
-		return nil
-	}
 	owner.mutex.RLock()
-	executionRegistry := owner.executions
+	control := owner.control
 	owner.mutex.RUnlock()
-	if executionRegistry == nil {
+	if control == nil {
 		return nil
 	}
-	entry, found := executionRegistry.Find(subject.ID())
-	if !found || !agent.Same(entry.Subject, subject) {
-		return nil
-	}
-	return entry.Execution.StopAndWait(
-		requestContext,
-		sharedexecution.StopExternal,
-	)
+	return control.AgentDisposed(ctx, subject)
 }
 
 // Close first closes admission, waits for admitted calls to return, and then
@@ -283,8 +275,7 @@ func (owner *Service) Close(closeContext context.Context) error {
 		closeErr = errors.Join(closeErr, closeOrder[index].Close(closeContext))
 	}
 	owner.mutex.Lock()
-	owner.agents = nil
-	owner.executions = nil
+	owner.control = nil
 	owner.implementations = nil
 	owner.closeOrder = nil
 	owner.closeErr = closeErr
@@ -315,6 +306,20 @@ func (owner *Service) implementation(
 		"subagent: no implementation registered for mode %q",
 		selectedMode,
 	)
+}
+
+func (owner *Service) boundImplementation() (bound, error) {
+	candidate, err := owner.implementation(subagent.ModeBound)
+	if err != nil {
+		return nil, err
+	}
+	selected, supported := candidate.(bound)
+	if !supported {
+		return nil, errors.New(
+			"subagent: Bound implementation is incomplete",
+		)
+	}
+	return selected, nil
 }
 
 func unavailable() error {
@@ -355,71 +360,6 @@ func validateImplementation(candidate implementation) error {
 	)
 }
 
-func (owner *Service) authorizeParent(
-	entry sharedexecution.Entry,
-	parentAgent agent.Agent,
-) error {
-	if parentAgent != nil && owner.agents.Contains(parentAgent) &&
-		agent.Same(entry.Parent, parentAgent) {
-		return nil
-	}
-	return &subagent.Error{
-		Code: subagent.ErrorUnauthorized,
-		Message: fmt.Sprintf(
-			"subagent %q delivery requires its exact live parent Agent",
-			entry.Subject.ID(),
-		),
-	}
-}
-
-func authorizeInterrupt(
-	agentRegistry agent.Registry,
-	entry sharedexecution.Entry,
-	authority subagent.InterruptAuthority,
-) error {
-	switch evidence := authority.(type) {
-	case subagent.UserInterruptAuthority:
-		if entry.Parent.ID() == evidence.ParentSessionID {
-			return nil
-		}
-	case subagent.AncestorInterruptAuthority:
-		if evidence.Agent != nil && agentRegistry.Contains(evidence.Agent) &&
-			isLiveAncestor(agentRegistry, entry.Subject, evidence.Agent) {
-			return nil
-		}
-	}
-	return &subagent.Error{
-		Code: subagent.ErrorUnauthorized,
-		Message: fmt.Sprintf(
-			"interrupting subagent %q is not authorized",
-			entry.Subject.ID(),
-		),
-	}
-}
-
-func isLiveAncestor(
-	agentRegistry agent.Registry,
-	childAgent agent.Agent,
-	candidate agent.Agent,
-) bool {
-	seen := make(map[session.SessionID]struct{})
-	parentID := childAgent.SessionValue().Header().ParentSession
-	for parentID != nil {
-		if _, duplicate := seen[*parentID]; duplicate {
-			return false
-		}
-		seen[*parentID] = struct{}{}
-		ancestor, found := agentRegistry.Get(*parentID)
-		if !found {
-			return false
-		}
-		if agent.Same(ancestor, candidate) {
-			return true
-		}
-		parentID = ancestor.SessionValue().Header().ParentSession
-	}
-	return false
-}
-
 var _ subagent.Starter = (*Service)(nil)
 var _ subagent.ChildControl = (*Service)(nil)
+var _ subagent.BoundRegistry = (*Service)(nil)

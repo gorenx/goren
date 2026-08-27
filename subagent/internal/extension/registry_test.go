@@ -70,9 +70,247 @@ func TestRegistryProvisionsInOrderAndReleasesWithChild(t *testing.T) {
 	if closeErr := acquired.Dispose(context.Background()); closeErr != nil {
 		t.Fatal(closeErr)
 	}
-	wanted := []string{"first", "second", "undo-first", "undo-second"}
+	wanted := []string{"first", "second", "undo-second", "undo-first"}
 	if !reflect.DeepEqual(order, wanted) {
 		t.Fatalf("Extension order = %v, want %v", order, wanted)
+	}
+}
+
+func TestRegistryInstallsSelectedExtensionsInConfigOrder(t *testing.T) {
+	owner := New()
+	order := make([]string, 0)
+	register := func(name string, options ...subagent.ExtensionOption) {
+		t.Helper()
+		_, err := owner.RegisterExtension(
+			extensionRecord{
+				install: func() (subagent.ExtensionInstallation, error) {
+					order = append(order, name)
+					return installationRecord{
+						dispose: func() error {
+							order = append(order, "undo-"+name)
+							return nil
+						},
+					}, nil
+				},
+			},
+			options...,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	register("common")
+	register("first", subagent.WithExtensionName("first"))
+	register("second", subagent.WithExtensionName("second"))
+
+	configured, err := NewSelectedProvisioner(
+		owner,
+		[]string{
+			"second",
+			"first",
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acquired, err := configured.Provision(context.Background(), scopeRecord{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = acquired.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err = acquired.Dispose(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	wanted := []string{
+		"second",
+		"first",
+		"undo-first",
+		"undo-second",
+	}
+	if !reflect.DeepEqual(order, wanted) {
+		t.Fatalf("Extension order = %v, want %v", order, wanted)
+	}
+}
+
+func TestNamedExtensionsAreNotInstalledWithoutSelection(t *testing.T) {
+	owner := New()
+	installed := 0
+	if _, err := owner.RegisterExtension(
+		extensionRecord{
+			install: func() (subagent.ExtensionInstallation, error) {
+				installed++
+				return installationRecord{
+					dispose: func() error { return nil },
+				}, nil
+			},
+		},
+		subagent.WithExtensionName("selected"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	acquired, err := NewProvisioner(owner).Provision(
+		context.Background(),
+		scopeRecord{},
+	)
+	if err != nil || acquired != nil || installed != 0 {
+		t.Fatalf(
+			"Provision = (%v, %v), installs = %d, want nil, nil, 0",
+			acquired,
+			err,
+			installed,
+		)
+	}
+}
+
+func TestSelectedExtensionValidationPrecedesInstallation(t *testing.T) {
+	tests := []struct {
+		name     string
+		selected []string
+	}{
+		{
+			name:     "unknown",
+			selected: []string{"missing"},
+		},
+		{
+			name:     "duplicate",
+			selected: []string{"selected", "selected"},
+		},
+		{
+			name:     "blank",
+			selected: []string{" "},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			owner := New()
+			installed := 0
+			register := func(options ...subagent.ExtensionOption) {
+				t.Helper()
+				_, err := owner.RegisterExtension(
+					extensionRecord{
+						install: func() (subagent.ExtensionInstallation, error) {
+							installed++
+							return installationRecord{
+								dispose: func() error { return nil },
+							}, nil
+						},
+					},
+					options...,
+				)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			register()
+			register(subagent.WithExtensionName("selected"))
+			configured, err := NewSelectedProvisioner(
+				owner,
+				test.selected,
+			)
+			if err == nil || configured != nil || installed != 0 {
+				t.Fatalf(
+					"NewSelectedProvisioner = (%v, %v), installs = %d, want nil, error, 0",
+					configured,
+					err,
+					installed,
+				)
+			}
+		})
+	}
+}
+
+func TestSelectedExtensionRemovedAfterResolutionFailsProvision(t *testing.T) {
+	owner := New()
+	handle, err := owner.RegisterExtension(
+		extensionRecord{
+			install: func() (subagent.ExtensionInstallation, error) {
+				return installationRecord{
+					dispose: func() error { return nil },
+				}, nil
+			},
+		},
+		subagent.WithExtensionName("selected"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configured, err := NewSelectedProvisioner(
+		owner,
+		[]string{"selected"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = handle.Unregister(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	acquired, err := configured.Provision(
+		context.Background(),
+		scopeRecord{},
+	)
+	var problem *subagent.Error
+	if acquired != nil || !errors.As(err, &problem) ||
+		problem.Code != subagent.ErrorUnknownExtension {
+		t.Fatalf("Provision = (%v, %v), want unknown Extension", acquired, err)
+	}
+}
+
+func TestNamedExtensionRegistrationValidation(t *testing.T) {
+	owner := New()
+	registered := extensionRecord{
+		install: func() (subagent.ExtensionInstallation, error) {
+			return installationRecord{
+				dispose: func() error { return nil },
+			}, nil
+		},
+	}
+	if _, err := owner.RegisterExtension(
+		registered,
+		subagent.WithExtensionName("selected"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		options []subagent.ExtensionOption
+	}{
+		{
+			name: "duplicate registration",
+			options: []subagent.ExtensionOption{
+				subagent.WithExtensionName("selected"),
+			},
+		},
+		{
+			name: "blank",
+			options: []subagent.ExtensionOption{
+				subagent.WithExtensionName(" "),
+			},
+		},
+		{
+			name: "untrimmed",
+			options: []subagent.ExtensionOption{
+				subagent.WithExtensionName(" selected-two"),
+			},
+		},
+		{
+			name: "multiple",
+			options: []subagent.ExtensionOption{
+				subagent.WithExtensionName("one"),
+				subagent.WithExtensionName("two"),
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := owner.RegisterExtension(
+				registered,
+				test.options...,
+			); err == nil {
+				t.Fatal("invalid named Extension registration succeeded")
+			}
+		})
 	}
 }
 

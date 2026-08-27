@@ -17,11 +17,11 @@ type eventPublisher struct {
 
 // Added publishes the canonical vetoable registration fact.
 func (publisher *eventPublisher) PublishAdded(
-	requestContext context.Context,
+	ctx context.Context,
 	builder subagent.SeedBuilder,
 ) error {
 	return pluginruntime.Publish(
-		requestContext,
+		ctx,
 		publisher.owner,
 		subagent.SeedBuilderAdded{
 			SeedBuilder: builder,
@@ -31,11 +31,11 @@ func (publisher *eventPublisher) PublishAdded(
 
 // Removed publishes best-effort registration cleanup.
 func (publisher *eventPublisher) PublishRemoved(
-	requestContext context.Context,
+	ctx context.Context,
 	name string,
 ) {
 	_ = pluginruntime.Publish(
-		requestContext,
+		ctx,
 		publisher.owner,
 		subagent.SeedBuilderRemoved{
 			Name: name,
@@ -62,17 +62,28 @@ func (*eventPublisher) PublishEnded(
 // ObserveEvent forwards structural Agent closure to the business Service so
 // the same Execution terminal transaction completes before teardown continues.
 func (owner *Plugin) ObserveEvent(
-	requestContext context.Context,
+	ctx context.Context,
 	fact pluginruntime.Event,
 ) error {
-	disposed, matches := fact.(agent.Disposed)
-	if !matches {
+	switch observed := fact.(type) {
+	case agent.Disposed:
+		return owner.service.AgentDisposed(
+			context.WithoutCancel(ctx),
+			observed.Subject,
+		)
+	case agent.SessionStarted:
+		go func() {
+			if err := owner.service.AgentSessionStarted(
+				context.Background(),
+				observed.Subject,
+			); err != nil {
+				owner.failures.report(err)
+			}
+		}()
+		return nil
+	default:
 		return nil
 	}
-	return owner.service.AgentDisposed(
-		context.WithoutCancel(requestContext),
-		disposed.Subject,
-	)
 }
 
 var _ seedbuilder.EventPublisher = (*eventPublisher)(nil)

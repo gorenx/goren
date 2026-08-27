@@ -48,6 +48,26 @@ type bound interface {
 		context.Context,
 		subagent.BoundStartCommand,
 	) (subagent.Execution, error)
+	StartBindings(context.Context, agent.Agent) error
+	HasBinding(
+		context.Context,
+		agent.Agent,
+		session.SessionID,
+	) (bool, error)
+	Send(
+		context.Context,
+		agent.Agent,
+		session.SessionID,
+		agentmessage.UserMessage,
+	) (agentmessage.MessageID, error)
+	Bind(
+		context.Context,
+		subagent.BindCommand,
+	) (subagent.BoundBinding, error)
+	UpdateConfig(
+		context.Context,
+		subagent.UpdateBoundConfigCommand,
+	) (subagent.UpdateBoundConfigResult, error)
 }
 
 type admissionState uint8

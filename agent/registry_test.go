@@ -181,6 +181,59 @@ type factoryRecord struct {
 	closeErrors map[session.SessionID]error
 }
 
+type sessionStartedVisibilityFactory struct {
+	registry *agentcore.RegistryService
+	visible  bool
+}
+
+type sessionStartedVisibilityRuntime struct {
+	*fakeScopeRuntime
+	builder *sessionStartedVisibilityFactory
+}
+
+func (runtime *sessionStartedVisibilityRuntime) Dispatch(
+	ctx context.Context,
+	fact agentcore.RuntimeEvent,
+) error {
+	if started, matches := fact.(agentcore.SessionStarted); matches {
+		runtime.builder.visible = runtime.builder.registry.Contains(
+			started.Subject,
+		)
+	}
+	return runtime.fakeScopeRuntime.Dispatch(ctx, fact)
+}
+
+func (builder *sessionStartedVisibilityFactory) CreateAgent(
+	_ context.Context,
+	agentEpoch agentcore.AgentEpoch,
+	options agentcore.CreateOptions,
+) error {
+	subject := newFakeAgentForFactory(options.SessionID)
+	runtime := &sessionStartedVisibilityRuntime{
+		fakeScopeRuntime: &fakeScopeRuntime{
+			subject: subject,
+		},
+		builder: builder,
+	}
+	subject.runtime = runtime
+	_, err := agentEpoch.Attach(subject, runtime)
+	return err
+}
+
+func (builder *sessionStartedVisibilityFactory) ResumeAgent(
+	ctx context.Context,
+	agentEpoch agentcore.AgentEpoch,
+	options agentcore.ResumeOptions,
+) error {
+	return builder.CreateAgent(
+		ctx,
+		agentEpoch,
+		agentcore.CreateOptions{
+			SessionID: options.SessionID,
+		},
+	)
+}
+
 type blockingFactory struct {
 	entered chan struct{}
 	closing chan struct{}
@@ -461,6 +514,34 @@ func TestRegistryFactoryRegistrationOwnsExactEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 	replacementRegistration.Close()
+}
+
+func TestSessionStartedObservesExactAgentAsVisible(t *testing.T) {
+	t.Parallel()
+	registry := agentcore.NewRegistry(agentcore.RegistryOptions{})
+	builder := &sessionStartedVisibilityFactory{
+		registry: registry,
+	}
+	registration, err := registry.RegisterFactory(builder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registration.Close()
+	handleState, err := registry.Create(
+		context.Background(),
+		agentcore.CreateOptions{
+			SessionID: "session-start-visible",
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !builder.visible {
+		t.Fatal("SessionStarted observer could not resolve the exact Agent")
+	}
+	if err = handleState.Dispose(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestFactoryRegistrationClosePreservesExistingAgents(t *testing.T) {

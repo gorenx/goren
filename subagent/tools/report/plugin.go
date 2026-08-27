@@ -87,7 +87,7 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 	return nil
 }
 
-// Dispose unregisters the Extension and revokes its resident installations.
+// Dispose unregisters the Extension and releases its resident installations.
 func (owner *Plugin) Dispose(closeContext context.Context) error {
 	if owner.registration == nil {
 		return nil

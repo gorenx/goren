@@ -3,6 +3,7 @@ package plugin
 import (
 	"fmt"
 
+	"github.com/gorenx/goren/subagent/internal/bound"
 	"github.com/gorenx/goren/subagent/internal/continuable"
 )
 
@@ -28,4 +29,26 @@ func (reporter *failureReporter) ReportFinalFlushFailure(
 	))
 }
 
+func (reporter *failureReporter) ReportBoundMaterializationFailure(
+	failure bound.MaterializationFailure,
+) {
+	reporter.report(fmt.Errorf(
+		"bound subagent %q for parent %q could not materialize: %w",
+		failure.ChildID,
+		failure.ParentID,
+		failure.Error,
+	))
+}
+
+func (reporter *failureReporter) ReportBoundFinalFlushFailure(
+	failure bound.FinalFlushFailure,
+) {
+	reporter.report(fmt.Errorf(
+		"bound subagent %q best-effort final Session flush; persisted state may be stale on restore: %w",
+		failure.ChildID,
+		failure.Error,
+	))
+}
+
 var _ continuable.FailureReporter = (*failureReporter)(nil)
+var _ bound.FailureReporter = (*failureReporter)(nil)

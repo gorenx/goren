@@ -79,7 +79,12 @@ func (*continuableRecord) Start(
 
 type boundRecord struct {
 	*implementationRecord
-	command subagent.BoundStartCommand
+	mutex     sync.Mutex
+	command   subagent.BoundStartCommand
+	bindings  map[session.SessionID]bool
+	sendCalls int
+	childID   session.SessionID
+	message   agentmessage.UserMessage
 }
 
 func (record *boundRecord) Start(
@@ -88,6 +93,46 @@ func (record *boundRecord) Start(
 ) (subagent.Execution, error) {
 	record.command = command
 	return nil, nil
+}
+
+func (*boundRecord) StartBindings(context.Context, agent.Agent) error {
+	return nil
+}
+
+func (record *boundRecord) HasBinding(
+	_ context.Context,
+	_ agent.Agent,
+	childID session.SessionID,
+) (bool, error) {
+	return record.bindings[childID], nil
+}
+
+func (record *boundRecord) Send(
+	_ context.Context,
+	_ agent.Agent,
+	childID session.SessionID,
+	messageValue agentmessage.UserMessage,
+) (agentmessage.MessageID, error) {
+	record.mutex.Lock()
+	record.sendCalls++
+	record.childID = childID
+	record.message = messageValue
+	record.mutex.Unlock()
+	return messageValue.StableID(), nil
+}
+
+func (*boundRecord) Bind(
+	context.Context,
+	subagent.BindCommand,
+) (subagent.BoundBinding, error) {
+	return subagent.BoundBinding{}, nil
+}
+
+func (*boundRecord) UpdateConfig(
+	context.Context,
+	subagent.UpdateBoundConfigCommand,
+) (subagent.UpdateBoundConfigResult, error) {
+	return subagent.UpdateBoundConfigResult{}, nil
 }
 
 func (record *continuableRecord) Resume(
@@ -134,7 +179,6 @@ func TestServiceCloseStopsAdmissionAndWaitsForAdmittedStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	command, err := subagent.NewOneShotStart(
-		subagent.ChildRequest{},
 		subagent.OneShotOptions{
 			SeedBuilder: "spawn",
 		},
@@ -189,7 +233,7 @@ func TestServiceCloseStopsAdmissionAndWaitsForAdmittedStart(t *testing.T) {
 func TestServiceStartDispatchesBoundCommand(t *testing.T) {
 	t.Parallel()
 	parentAgent := newServiceAgent(t, "parent", nil)
-	boundImplementation := &boundRecord{
+	boundMode := &boundRecord{
 		implementationRecord: &implementationRecord{
 			mode: subagent.ModeBound,
 		},
@@ -202,7 +246,7 @@ func TestServiceStartDispatchesBoundCommand(t *testing.T) {
 			},
 		},
 		sharedexecution.NewRegistry(),
-		boundImplementation,
+		boundMode,
 	); openErr != nil {
 		t.Fatal(openErr)
 	}
@@ -216,9 +260,9 @@ func TestServiceStartDispatchesBoundCommand(t *testing.T) {
 	if _, startErr := owner.Start(context.Background(), command); startErr != nil {
 		t.Fatal(startErr)
 	}
-	if boundImplementation.command.Parent() != parentAgent ||
-		boundImplementation.command.ChildID() != "bound-child" {
-		t.Fatalf("dispatched command = %#v", boundImplementation.command)
+	if boundMode.command.Parent() != parentAgent ||
+		boundMode.command.ChildID() != "bound-child" {
+		t.Fatalf("dispatched command = %#v", boundMode.command)
 	}
 }
 
@@ -402,6 +446,150 @@ func TestServiceSendUsesContinuableOnlyForColdResume(t *testing.T) {
 			continuableMode.resumeCalls,
 			continuableMode.childID,
 			continuableMode.message.StableID(),
+			messageID,
+		)
+	}
+}
+
+func TestServiceSendUsesBoundOwnerForColdBinding(t *testing.T) {
+	t.Parallel()
+	parent := newServiceAgent(t, "parent", nil)
+	agents := &agentRegistryRecord{
+		entries: map[session.SessionID]agent.Agent{
+			parent.ID(): parent,
+		},
+	}
+	continuableMode := &continuableRecord{
+		implementationRecord: &implementationRecord{
+			mode: subagent.ModeContinuable,
+		},
+	}
+	boundMode := &boundRecord{
+		implementationRecord: &implementationRecord{
+			mode: subagent.ModeBound,
+		},
+		bindings: map[session.SessionID]bool{
+			"cold-bound": true,
+		},
+	}
+	owner := New()
+	if err := owner.Open(
+		agents,
+		sharedexecution.NewRegistry(),
+		continuableMode,
+		boundMode,
+	); err != nil {
+		t.Fatal(err)
+	}
+	messageID, err := owner.Send(
+		context.Background(),
+		parent,
+		"cold-bound",
+		[]agentmessage.ContentBlock{
+			agentmessage.NewTextBlock("bound work"),
+		},
+		subagent.FollowupOptions{
+			Source: subagent.CoordinatorSource{
+				SenderSessionID: parent.ID(),
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	boundMode.mutex.Lock()
+	boundCalls := boundMode.sendCalls
+	boundChildID := boundMode.childID
+	boundMessageID := boundMode.message.StableID()
+	boundMode.mutex.Unlock()
+	continuableMode.mutex.Lock()
+	continuableCalls := continuableMode.resumeCalls
+	continuableMode.mutex.Unlock()
+	if boundCalls != 1 || boundChildID != "cold-bound" ||
+		boundMessageID != messageID || continuableCalls != 0 {
+		t.Fatalf(
+			"cold Bound route = bound calls:%d child:%q message:%q, continuable calls:%d, returned:%q",
+			boundCalls,
+			boundChildID,
+			boundMessageID,
+			continuableCalls,
+			messageID,
+		)
+	}
+}
+
+func TestServiceSendUsesBoundOwnerForResidentChild(t *testing.T) {
+	t.Parallel()
+	parent := newServiceAgent(t, "parent", nil)
+	parentID := parent.ID()
+	child := newServiceAgent(t, "resident-bound", &parentID)
+	agents := &agentRegistryRecord{
+		entries: map[session.SessionID]agent.Agent{
+			parent.ID(): parent,
+			child.ID():  child,
+		},
+	}
+	executions := sharedexecution.NewRegistry()
+	running, err := sharedexecution.New(
+		"bound-run",
+		child.ID(),
+		terminalRecord{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = running.Activate(); err != nil {
+		t.Fatal(err)
+	}
+	if err = executions.Publish(
+		sharedexecution.Entry{
+			Execution: running,
+			Mode:      subagent.ModeBound,
+			Parent:    parent,
+			Subject:   child,
+			Closing:   make(chan struct{}),
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	boundMode := &boundRecord{
+		implementationRecord: &implementationRecord{
+			mode: subagent.ModeBound,
+		},
+	}
+	owner := New()
+	if err = owner.Open(agents, executions, boundMode); err != nil {
+		t.Fatal(err)
+	}
+	messageID, err := owner.Send(
+		context.Background(),
+		parent,
+		child.ID(),
+		[]agentmessage.ContentBlock{
+			agentmessage.NewTextBlock("resident bound work"),
+		},
+		subagent.FollowupOptions{
+			Source: subagent.CoordinatorSource{
+				SenderSessionID: parent.ID(),
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	boundMode.mutex.Lock()
+	boundCalls := boundMode.sendCalls
+	boundMessageID := boundMode.message.StableID()
+	boundMode.mutex.Unlock()
+	child.mutex.Lock()
+	directFollowups := child.followupCalls
+	child.mutex.Unlock()
+	if boundCalls != 1 || boundMessageID != messageID || directFollowups != 0 {
+		t.Fatalf(
+			"resident Bound route = bound calls:%d message:%q, direct followups:%d, returned:%q",
+			boundCalls,
+			boundMessageID,
+			directFollowups,
 			messageID,
 		)
 	}

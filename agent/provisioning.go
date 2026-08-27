@@ -55,3 +55,98 @@ func ApplyProvisioning(
 	}
 	return acquired.Commit()
 }
+
+// ComposeProvisioners returns one Provisioner that applies its non-nil
+// sources in order and owns their returned Provisioning values as one
+// publication transaction. A failed source disposes earlier acquisitions in
+// reverse order; Agent Scope resources already transferred by a source remain
+// owned by that Scope.
+func ComposeProvisioners(sources ...Provisioner) Provisioner {
+	detached := make([]Provisioner, 0, len(sources))
+	for _, source := range sources {
+		if source != nil {
+			detached = append(detached, source)
+		}
+	}
+	if len(detached) == 0 {
+		return nil
+	}
+	return &composedProvisioner{
+		sources: detached,
+	}
+}
+
+type composedProvisioner struct {
+	sources []Provisioner
+}
+
+func (owner *composedProvisioner) Provision(
+	requestContext context.Context,
+	target Scope,
+) (Provisioning, error) {
+	if owner == nil || target == nil {
+		return nil, errors.New("agent: composed Provisioner is unavailable")
+	}
+	acquired := make([]Provisioning, 0, len(owner.sources))
+	for _, source := range owner.sources {
+		acquiredProvisioning, err := source.Provision(requestContext, target)
+		if err != nil {
+			return nil, errors.Join(
+				err,
+				disposeProvisionings(
+					context.WithoutCancel(requestContext),
+					acquired,
+				),
+			)
+		}
+		if acquiredProvisioning != nil {
+			acquired = append(acquired, acquiredProvisioning)
+		}
+	}
+	if len(acquired) == 0 {
+		return nil, nil
+	}
+	return &composedProvisioning{
+		acquired: acquired,
+	}, nil
+}
+
+type composedProvisioning struct {
+	acquired []Provisioning
+}
+
+func (owner *composedProvisioning) Commit() error {
+	if owner == nil {
+		return nil
+	}
+	for _, acquiredProvisioning := range owner.acquired {
+		if err := acquiredProvisioning.Commit(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (owner *composedProvisioning) Dispose(closeContext context.Context) error {
+	if owner == nil {
+		return nil
+	}
+	return disposeProvisionings(closeContext, owner.acquired)
+}
+
+func disposeProvisionings(
+	closeContext context.Context,
+	acquired []Provisioning,
+) error {
+	var closeErr error
+	for index := len(acquired) - 1; index >= 0; index-- {
+		closeErr = errors.Join(
+			closeErr,
+			acquired[index].Dispose(closeContext),
+		)
+	}
+	return closeErr
+}
+
+var _ Provisioner = (*composedProvisioner)(nil)
+var _ Provisioning = (*composedProvisioning)(nil)

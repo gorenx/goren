@@ -171,13 +171,15 @@ func (terminator *executionTerminator) notifyParent(
 		content = append(content, agentmessage.NewTextBlock("Its closing message:"))
 		content = append(content, terminalValue.Output...)
 	}
-	messageValue, messageErr := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
-		Content: content,
-		Source: subagent.SettlementSource{
-			Summary:         summary,
-			SenderSessionID: terminator.handle.Subject.ID(),
+	messageValue, messageErr := agentmessage.NewUserMessage(
+		agentmessage.UserMessageInput{
+			Content: content,
+			Source: subagent.SettlementSource{
+				Summary:         summary,
+				SenderSessionID: terminator.handle.Subject.ID(),
+			},
 		},
-	})
+	)
 	if messageErr != nil {
 		return
 	}

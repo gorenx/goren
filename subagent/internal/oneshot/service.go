@@ -3,12 +3,12 @@ package oneshot
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentmessage"
+	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
@@ -21,33 +21,13 @@ type SeedBuilders interface {
 	Find(string) (subagent.SeedBuilder, bool)
 }
 
-// ChildEnvironmentOptions describes the child-local behavior required by one
-// OneShot execution without exposing its Plugin implementation.
-type ChildEnvironmentOptions struct {
-	Descriptor   subagent.OneShotDescriptor
-	Persona      *string
-	ToolFilter   *tools.ToolRestriction
-	OutputSchema json.RawMessage
-}
-
-// ChildEnvironment installs child-local behavior and exposes the optional
-// structured result captured by that exact environment.
-type ChildEnvironment interface {
-	agent.Provisioner
-	StructuredOutput() (json.RawMessage, bool)
-}
-
-// EnvironmentBuilder creates the child-local environment consumed by OneShot.
-type EnvironmentBuilder interface {
-	Build(ChildEnvironmentOptions) ChildEnvironment
-}
-
 // Dependencies contains the capabilities required by OneShot execution.
 type Dependencies struct {
 	Agents       agent.Registry
 	Constructor  agent.Constructor
 	SeedBuilders SeedBuilders
-	Environments EnvironmentBuilder
+	Delegation   approval.DelegationPolicy
+	Extensions   agent.Provisioner
 	Publisher    sharedexecution.EventPublisher
 	Executions   *sharedexecution.Registry
 }
@@ -66,11 +46,10 @@ func (*Service) Mode() subagent.Mode {
 func New(dependencySet Dependencies) (*Service, error) {
 	if dependencySet.Agents == nil || dependencySet.Constructor == nil ||
 		dependencySet.SeedBuilders == nil ||
-		dependencySet.Environments == nil ||
 		dependencySet.Executions == nil {
 		return nil, errors.New(
 			"subagent: OneShot requires Agent Registry, Constructor, " +
-				"SeedBuilders, Environment Builder, and Execution Registry",
+				"SeedBuilders, and Execution Registry",
 		)
 	}
 	return &Service{
@@ -81,13 +60,13 @@ func New(dependencySet Dependencies) (*Service, error) {
 // Interrupt stops the exact live OneShot execution, if it still exists.
 // Authorization is enforced by the parent Subagent Service before dispatch.
 func (owner *Service) Interrupt(
-	requestContext context.Context,
+	ctx context.Context,
 	childID session.SessionID,
 ) error {
-	if requestContext == nil {
+	if ctx == nil {
 		return errors.New("subagent: OneShot Interrupt context is nil")
 	}
-	if requestErr := requestContext.Err(); requestErr != nil {
+	if requestErr := ctx.Err(); requestErr != nil {
 		return requestErr
 	}
 	entry, found := owner.dependencies.Executions.Find(childID)
@@ -147,7 +126,7 @@ func (owner *Service) Start(
 	if requestErr := ctx.Err(); requestErr != nil {
 		return nil, requestErr
 	}
-	requestSnapshot, snapshotErr := command.Request()
+	requestSnapshot, snapshotErr := command.Snapshot()
 	if snapshotErr != nil {
 		return nil, snapshotErr
 	}
@@ -191,22 +170,14 @@ func (owner *Service) Start(
 	if lineageErr != nil {
 		return nil, lineageErr
 	}
-	environment := owner.dependencies.Environments.Build(
-		ChildEnvironmentOptions{
-			Descriptor: subagent.OneShotDescriptor{
-				Provider: seedBuilderName,
-				Label:    command.Label(),
-			},
-			Persona:      requestSnapshot.Persona,
-			ToolFilter:   requestSnapshot.ToolFilter,
-			OutputSchema: requestSnapshot.OutputSchema,
-		},
-	)
-	if environment == nil {
-		return nil, errors.New(
-			"subagent: OneShot Environment Builder returned nil",
-		)
+	descriptor := subagent.OneShotDescriptor{
+		Provider: seedBuilderName,
+		Label:    command.Label(),
 	}
+	scopeProvisioner, structured := owner.provisioner(
+		requestSnapshot,
+		descriptor,
+	)
 	initiatedContext, contextErr := agent.WithInitiator(
 		ctx,
 		requestSnapshot.Parent,
@@ -221,7 +192,7 @@ func (owner *Service) Start(
 			Metadata:      childLineage.Metadata(int64(len(seed))),
 			Seed:          seed,
 			AgentOptions:  childLineage.AgentOptions(requestSnapshot.AgentOptions),
-			Provisioner:   environment,
+			Provisioner:   scopeProvisioner,
 			RuntimeParent: requestSnapshot.Parent,
 		},
 	)
@@ -252,7 +223,7 @@ func (owner *Service) Start(
 		seedBuilder: seedBuilderName,
 		runID:       runID,
 		boundary:    int64(len(seed)),
-		environment: environment,
+		structured:  structured,
 		publisher:   owner.dependencies.Publisher,
 	}
 	running, executionErr := sharedexecution.New(runID, childID, terminator)
@@ -300,9 +271,9 @@ func (owner *Service) Start(
 }
 
 func (owner *Service) buildSeed(
-	requestContext context.Context,
+	ctx context.Context,
 	name string,
-	childID session.SessionID,
+	_ session.SessionID,
 	parentAgent agent.Agent,
 ) ([]session.Event, error) {
 	builder, found := owner.dependencies.SeedBuilders.Find(name)
@@ -320,7 +291,7 @@ func (owner *Service) buildSeed(
 		return nil, errors.New("subagent: parent Session is unavailable")
 	}
 	seedValue, seedErr := builder.BuildSeed(
-		requestContext,
+		ctx,
 		parentSession.Events(),
 	)
 	if seedErr != nil {

@@ -73,6 +73,7 @@ func (owner *Plugin) Manifest() pluginruntime.Manifest {
 			pluginruntime.NewProvidedService[subagent.ChildControl](owner.service),
 			pluginruntime.NewProvidedService[subagent.ExtensionRegistry](owner.extensions),
 			pluginruntime.NewProvidedService[subagent.ChildDirectory](owner.directory),
+			pluginruntime.NewProvidedService[subagent.BoundRegistry](owner.service),
 		},
 		Requires: []pluginruntime.ServiceType{
 			pluginruntime.ServiceOf[agent.Registry](),
@@ -80,24 +81,25 @@ func (owner *Plugin) Manifest() pluginruntime.Manifest {
 			pluginruntime.ServiceOf[agent.RuntimeDescendants](),
 			pluginruntime.ServiceOf[session.LiveStore](),
 			pluginruntime.ServiceOf[persistence.Persistence](),
+			pluginruntime.ServiceOf[sessionprojection.Registry](),
 		},
 		Optional: []pluginruntime.ServiceType{
 			pluginruntime.ServiceOf[approval.DelegationPolicy](),
-			pluginruntime.ServiceOf[sessionprojection.Registry](),
 			pluginruntime.ServiceOf[projectioncache.Cache](),
 		},
 		Events: []pluginruntime.EventSubscription{
 			pluginruntime.EventOf[agent.Disposed](),
+			pluginruntime.EventOf[agent.SessionStarted](),
 		},
 	}
 }
 
 // Apply resolves dependencies and activates one Subagents business object.
-func (owner *Plugin) Apply(requestContext context.Context) error {
-	if requestContext == nil {
+func (owner *Plugin) Apply(ctx context.Context) error {
+	if ctx == nil {
 		return errors.New("subagent: Plugin Apply context is nil")
 	}
-	if requestErr := requestContext.Err(); requestErr != nil {
+	if requestErr := ctx.Err(); requestErr != nil {
 		return requestErr
 	}
 	agentRegistry, err := pluginruntime.Require[agent.Registry](owner)
@@ -121,12 +123,12 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 		return err
 	}
 	approvalService, _ := pluginruntime.Resolve[approval.DelegationPolicy](owner)
-	projectionRegistry, _ := pluginruntime.Resolve[sessionprojection.Registry](owner)
-	checkpointCache, _ := pluginruntime.Resolve[projectioncache.Cache](owner)
-	environments := &environmentBuilder{
-		delegation: approvalService,
-		extensions: owner.extensions,
+	projectionRegistry, err := pluginruntime.Require[sessionprojection.Registry](owner)
+	if err != nil {
+		return err
 	}
+	checkpointCache, _ := pluginruntime.Resolve[projectioncache.Cache](owner)
+	commonExtensions := extensionregistry.NewProvisioner(owner.extensions)
 	if err := owner.registerProjections(projectionRegistry); err != nil {
 		return err
 	}
@@ -138,7 +140,7 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 	); err != nil {
 		return errors.Join(
 			err,
-			owner.releaseProjections(context.WithoutCancel(requestContext)),
+			owner.releaseProjections(context.WithoutCancel(ctx)),
 		)
 	}
 	oneShotService, err := oneshot.New(
@@ -146,7 +148,8 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 			Agents:       agentRegistry,
 			Constructor:  agentConstructor,
 			SeedBuilders: owner.builders,
-			Environments: environments,
+			Delegation:   approvalService,
+			Extensions:   commonExtensions,
 			Publisher:    owner.events,
 			Executions:   owner.executions,
 		},
@@ -155,7 +158,7 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 		owner.directory.Disable()
 		return errors.Join(
 			err,
-			owner.releaseProjections(context.WithoutCancel(requestContext)),
+			owner.releaseProjections(context.WithoutCancel(ctx)),
 		)
 	}
 	continuableService, err := continuable.New(
@@ -167,7 +170,8 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 			Persistence:  sessionPersistence,
 			SeedBuilders: owner.builders,
 			Publisher:    owner.events,
-			Environments: environments,
+			Delegation:   approvalService,
+			Extensions:   commonExtensions,
 			Failures:     owner.failures,
 			Executions:   owner.executions,
 		},
@@ -176,10 +180,34 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 		owner.directory.Disable()
 		return errors.Join(
 			err,
-			owner.releaseProjections(context.WithoutCancel(requestContext)),
+			owner.releaseProjections(context.WithoutCancel(ctx)),
 		)
 	}
-	boundService := bound.New()
+	boundService, err := bound.New(
+		bound.Dependencies{
+			Agents:           agentRegistry,
+			Constructor:      agentConstructor,
+			Sessions:         liveSessions,
+			Persistence:      sessionPersistence,
+			Projections:      projectionRegistry,
+			SeedBuilders:     owner.builders,
+			Delegation:       approvalService,
+			CommonExtensions: commonExtensions,
+			Extensions: boundExtensions{
+				registry: owner.extensions,
+			},
+			Publisher:  owner.events,
+			Executions: owner.executions,
+			Failures:   owner.failures,
+		},
+	)
+	if err != nil {
+		owner.directory.Disable()
+		return errors.Join(
+			err,
+			owner.releaseProjections(context.WithoutCancel(ctx)),
+		)
+	}
 	err = owner.service.Open(
 		agentRegistry,
 		owner.executions,
@@ -191,7 +219,7 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 		owner.directory.Disable()
 		return errors.Join(
 			err,
-			owner.releaseProjections(context.WithoutCancel(requestContext)),
+			owner.releaseProjections(context.WithoutCancel(ctx)),
 		)
 	}
 	return nil

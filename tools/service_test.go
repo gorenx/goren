@@ -344,6 +344,123 @@ func TestRegistryLayersRestrictionShadowingAndPromptProjection(t *testing.T) {
 	}
 }
 
+func TestChildToolOverridesInheritedSchemaAndExecutorUntilUnregistered(
+	t *testing.T,
+) {
+	state := newToolsFixture(t)
+	requestContext := context.Background()
+	if _, err := state.service.AddTool(
+		requestContext,
+		objectTool(
+			"search",
+			"root search",
+			tools.ExecutorFunc(func(
+				json.RawMessage,
+				tools.ToolRunContext,
+			) (json.RawMessage, error) {
+				return json.RawMessage(`{"source":"root"}`), nil
+			}),
+		),
+	); err != nil {
+		t.Fatal(err)
+	}
+	promptOverlay := systemprompt.NewOverlay(systemprompt.RegistryOptions{})
+	promptHandle, err := state.runtimeEngine.MountScopedChild(
+		requestContext,
+		state.promptHandle,
+		promptOverlay,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolOverlay := tools.NewOverlay()
+	if _, err = state.runtimeEngine.MountScopedChild(
+		requestContext,
+		promptHandle,
+		toolOverlay,
+	); err != nil {
+		t.Fatal(err)
+	}
+	childHandle, err := toolOverlay.AddTool(
+		requestContext,
+		objectTool(
+			"search",
+			"child search",
+			tools.ExecutorFunc(func(
+				json.RawMessage,
+				tools.ToolRunContext,
+			) (json.RawMessage, error) {
+				return json.RawMessage(`{"source":"child"}`), nil
+			}),
+		),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSearchTool(t, toolOverlay, "child search", `{"source":"child"}`)
+	assertSearchTool(t, state.service, "root search", `{"source":"root"}`)
+
+	if err = childHandle.Unregister(requestContext); err != nil {
+		t.Fatal(err)
+	}
+	assertSearchTool(t, toolOverlay, "root search", `{"source":"root"}`)
+}
+
+func TestSameLayerDuplicateToolDoesNotReplaceFirstEntry(t *testing.T) {
+	state := newToolsFixture(t)
+	requestContext := context.Background()
+	if _, err := state.service.AddTool(
+		requestContext,
+		objectTool(
+			"search",
+			"first",
+			tools.ExecutorFunc(passThroughBody),
+		),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.service.AddTool(
+		requestContext,
+		objectTool(
+			"search",
+			"second",
+			tools.ExecutorFunc(passThroughBody),
+		),
+	); err == nil {
+		t.Fatal("same-layer duplicate Tool registration succeeded")
+	}
+	definition, found := state.service.Get("search")
+	if !found || definition.Description != "first" {
+		t.Fatalf("Tool after duplicate registration = (%#v, %t)", definition, found)
+	}
+}
+
+func assertSearchTool(
+	t *testing.T,
+	runtime tools.ToolRuntime,
+	wantDescription string,
+	wantValue string,
+) {
+	t.Helper()
+	schemas := runtime.Schemas()
+	if len(schemas) != 1 || schemas[0].Name != "search" ||
+		schemas[0].Description != wantDescription {
+		t.Fatalf("search schemas = %#v, want description %q", schemas, wantDescription)
+	}
+	outcome := runtime.Execute(
+		context.Background(),
+		tools.ToolExecutionInput{
+			CallID:    "search-call",
+			Name:      "search",
+			Arguments: json.RawMessage(`{}`),
+		},
+	)
+	value, succeeded := outcome.SuccessValue()
+	if !succeeded || string(value) != wantValue {
+		t.Fatalf("search result = %#v, want %s", outcome, wantValue)
+	}
+}
+
 func TestOverlayReadViewTracksParentMutationsAfterCaching(t *testing.T) {
 	state := newToolsFixture(t)
 	requestContext := context.Background()

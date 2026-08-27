@@ -141,20 +141,17 @@ func (adapter *delegationTool) execute(
 	prompt := []agentmessage.ContentBlock{
 		agentmessage.NewTextBlock(request.Prompt),
 	}
-	childRequest := subagent.ChildRequest{
-		Prompt:       prompt,
-		Parent:       parentAgent,
-		AgentOptions: adapter.settings.AgentOptions,
-		MaxDepth:     adapter.settings.MaxDepth,
-		ToolFilter:   adapter.settings.ToolFilter,
-		Persona:      adapter.settings.Persona,
-	}
 	if runInBackground {
 		command, commandErr := subagent.NewContinuableStart(
-			childRequest,
 			subagent.ContinuableOptions{
-				SeedBuilder: adapter.settings.SeedBuilder,
-				Label:       request.Description,
+				Prompt:       prompt,
+				Parent:       parentAgent,
+				AgentOptions: adapter.settings.AgentOptions,
+				MaxDepth:     adapter.settings.MaxDepth,
+				ToolFilter:   adapter.settings.ToolFilter,
+				Persona:      adapter.settings.Persona,
+				SeedBuilder:  adapter.settings.SeedBuilder,
+				Label:        request.Description,
 			},
 		)
 		if commandErr != nil {
@@ -173,10 +170,15 @@ func (adapter *delegationTool) execute(
 		})
 	}
 	command, commandErr := subagent.NewOneShotStart(
-		childRequest,
 		subagent.OneShotOptions{
-			SeedBuilder: adapter.settings.SeedBuilder,
-			Label:       stringPointer(request.Description),
+			Prompt:       prompt,
+			Parent:       parentAgent,
+			AgentOptions: adapter.settings.AgentOptions,
+			MaxDepth:     adapter.settings.MaxDepth,
+			ToolFilter:   adapter.settings.ToolFilter,
+			Persona:      adapter.settings.Persona,
+			SeedBuilder:  adapter.settings.SeedBuilder,
+			Label:        stringPointer(request.Description),
 		},
 	)
 	if commandErr != nil {

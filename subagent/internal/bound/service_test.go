@@ -2,7 +2,6 @@ package bound
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/gorenx/goren/agent"
@@ -11,16 +10,31 @@ import (
 	"github.com/gorenx/goren/subagent"
 )
 
-func TestStartReturnsExplicitPendingError(t *testing.T) {
-	t.Parallel()
-	parentAgent := newBoundAgent(t, "parent")
-	command, commandErr := subagent.NewBoundStart(parentAgent, "bound-child")
-	if commandErr != nil {
-		t.Fatal(commandErr)
+type boundExtensionsRecord struct {
+	validate  func([]string) error
+	provision func([]string) (agent.Provisioner, error)
+}
+
+func (record boundExtensionsRecord) Validate(names []string) error {
+	if record.validate == nil {
+		return nil
 	}
-	running, startErr := New().Start(context.Background(), command)
-	if running != nil || !errors.Is(startErr, ErrStartNotImplemented) {
-		t.Fatalf("Start = (%v, %v)", running, startErr)
+	return record.validate(names)
+}
+
+func (record boundExtensionsRecord) Provision(
+	names []string,
+) (agent.Provisioner, error) {
+	if record.provision == nil {
+		return nil, nil
+	}
+	return record.provision(names)
+}
+
+func TestNewRequiresExtensionSelection(t *testing.T) {
+	t.Parallel()
+	if owner, err := New(Dependencies{}); err == nil || owner != nil {
+		t.Fatalf("New = (%v, %v), want nil, error", owner, err)
 	}
 }
 
@@ -125,3 +139,4 @@ func (*boundAgent) Inject(agentmessage.UserMessage) error {
 }
 
 var _ agent.Agent = (*boundAgent)(nil)
+var _ Extensions = boundExtensionsRecord{}

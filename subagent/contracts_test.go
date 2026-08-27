@@ -16,7 +16,6 @@ func TestStartCommandsKeepImplementationInputsSeparate(t *testing.T) {
 	t.Parallel()
 	label := "terminal"
 	oneShot, err := subagent.NewOneShotStart(
-		subagent.ChildRequest{},
 		subagent.OneShotOptions{
 			SeedBuilder: "spawn",
 			Label:       &label,
@@ -27,7 +26,6 @@ func TestStartCommandsKeepImplementationInputsSeparate(t *testing.T) {
 	}
 	childID := session.SessionID("durable-child")
 	continuable, err := subagent.NewContinuableStart(
-		subagent.ChildRequest{},
 		subagent.ContinuableOptions{
 			SeedBuilder: "fork",
 			Label:       "background",
@@ -53,12 +51,12 @@ func TestStartCommandsKeepImplementationInputsSeparate(t *testing.T) {
 	}
 }
 
-func TestStartCommandOwnsItsChildRequest(t *testing.T) {
+func TestStartCommandOwnsItsModeOptions(t *testing.T) {
 	t.Parallel()
 	maxTokens := 128
 	maxDepth := int64(3)
 	persona := "reviewer"
-	input := subagent.ChildRequest{
+	input := subagent.OneShotOptions{
 		Prompt: []agentmessage.ContentBlock{
 			agentmessage.NewTextBlock("inspect"),
 		},
@@ -72,14 +70,10 @@ func TestStartCommandOwnsItsChildRequest(t *testing.T) {
 			Allow: []string{"read"},
 			Deny:  []string{"write"},
 		},
-		Persona: &persona,
+		Persona:     &persona,
+		SeedBuilder: "spawn",
 	}
-	command, commandErr := subagent.NewOneShotStart(
-		input,
-		subagent.OneShotOptions{
-			SeedBuilder: "spawn",
-		},
-	)
+	command, commandErr := subagent.NewOneShotStart(input)
 	if commandErr != nil {
 		t.Fatal(commandErr)
 	}
@@ -88,7 +82,7 @@ func TestStartCommandOwnsItsChildRequest(t *testing.T) {
 	persona = "changed"
 	input.ToolFilter.Allow[0] = "changed"
 	input.ToolFilter.Deny[0] = "changed"
-	firstRead, requestErr := command.Request()
+	firstRead, requestErr := command.Snapshot()
 	if requestErr != nil {
 		t.Fatal(requestErr)
 	}
@@ -98,7 +92,7 @@ func TestStartCommandOwnsItsChildRequest(t *testing.T) {
 		t.Fatalf("command changed with caller-owned input: %#v", firstRead)
 	}
 	firstRead.ToolFilter.Allow[0] = "mutated"
-	secondRead, requestErr := command.Request()
+	secondRead, requestErr := command.Snapshot()
 	if requestErr != nil {
 		t.Fatal(requestErr)
 	}
@@ -107,35 +101,32 @@ func TestStartCommandOwnsItsChildRequest(t *testing.T) {
 	}
 }
 
-func TestStartCommandRejectsInvalidChildRequest(t *testing.T) {
+func TestStartCommandRejectsInvalidModeOptions(t *testing.T) {
 	t.Parallel()
 	negativeDepth := int64(-1)
 	testCases := []struct {
 		name  string
-		input subagent.ChildRequest
+		input subagent.OneShotOptions
 	}{
 		{
 			name: "negative max depth",
-			input: subagent.ChildRequest{
-				MaxDepth: &negativeDepth,
+			input: subagent.OneShotOptions{
+				MaxDepth:    &negativeDepth,
+				SeedBuilder: "spawn",
 			},
 		},
 		{
 			name: "empty tool restriction",
-			input: subagent.ChildRequest{
-				ToolFilter: &tools.ToolRestriction{},
+			input: subagent.OneShotOptions{
+				ToolFilter:  &tools.ToolRestriction{},
+				SeedBuilder: "spawn",
 			},
 		},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
-			_, commandErr := subagent.NewOneShotStart(
-				testCase.input,
-				subagent.OneShotOptions{
-					SeedBuilder: "spawn",
-				},
-			)
+			_, commandErr := subagent.NewOneShotStart(testCase.input)
 			if commandErr == nil {
 				t.Fatal("invalid child request was accepted")
 			}
@@ -208,6 +199,7 @@ func TestRuntimeProvidesOnlyPublicBusinessCapabilities(t *testing.T) {
 		plugin.ServiceOf[subagent.ChildControl](),
 		plugin.ServiceOf[subagent.ExtensionRegistry](),
 		plugin.ServiceOf[subagent.ChildDirectory](),
+		plugin.ServiceOf[subagent.BoundRegistry](),
 	}
 	for _, wantedType := range wantedTypes {
 		if !providedNames[wantedType.Name()] {
