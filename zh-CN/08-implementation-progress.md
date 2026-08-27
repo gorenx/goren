@@ -246,7 +246,7 @@ interaction owner registers stable rpcId + decoder
 | S6-D10 | 能力 | Spill | Deferred | 当前主会话不依赖 |
 | S6-D11 | 能力 | Settings Provider、typed namespace、file persistence 与 mutation API | Deferred | 当前只有既有 API absent-provider 分支；完整 Web profile onboarding 不作为主流程依赖 |
 | S6-D12 | 能力 | Goals | Deferred | 当前主会话不依赖 |
-| S6-D13 | 能力 | Session Projection Framework | Completed | Contract Verified：通用 Unit/Registry、live fold、whole-value change、versioned checkpoint/restore、list/history baseline 与 `session/projection` frame 已实现；固定源 schema 与客户端 projection store 通过 |
+| S6-D13 | 能力 | Session Projection Framework | Completed | Contract Verified：通用 Unit/Registry、跨 Unit staged fold commit、失败后按 watermark 补折、whole-value change、versioned checkpoint/restore、list/history baseline 与 `session/projection` frame 已实现；固定源 schema 与客户端 projection store 通过 |
 | S6-D14 | 能力 | Session Title Core 与 `session.rename` | Completed | Contract Verified：fallback、规范化、source union、user pin/refresh、Provider 调度 seam、`title` projection、`title-invalid`、九个 Session method 与固定源 `WebApiClient`/`Session.rename()` E2E 已通过 |
 | S6-D15 | 能力 | Session Title First-Prompt LLM Provider | Completed | Contract Verified：默认 Session Title 插件内配置 First-Prompt；共享 `LLMProvider` 覆盖 route、模型可见请求事实、预算、超时、流组装和 title 结果，固定主流程 oracle 观察到独立 title call |
 | S6-D16 | 能力 | Session Title All-Prompts LLM Provider | Completed | Go Verified：同一 Session Title 插件内以 `automaticMode=all-prompts` 构造策略对象；消息选择、source seq 与结果验证由 `llm_provider_test.go` 覆盖，不注册第二个插件 |
@@ -347,7 +347,7 @@ interaction owner registers stable rpcId + decoder
 | history message-boundary pagination、durable queue fold 与宽 text extension 保真 | `TestHistoryPageCutsAtAppendMessageGroup`、`TestProjectQueueFoldsDurableSplicesAndUserPlacement`、`TestReplaceMessageContentPreservesLooseTextExtension` |
 | Mux baseline high-water 与 frame ID failure 不丢 committed event | `TestMuxBaselineHighwaterSuppressesLateCommittedCallback`、`TestSessionFrameHubSurfacesMintFailureWithoutAdvancingHighwater` |
 | live default 到显式选择的优先级与 prompt/request snapshot | `TestModelSelectionReadsLiveFallbackUntilExplicitlySelected`、`TestModelSelectionSnapshotsPromptAndRequestTogether` |
-| Session Projection late fold、whole-value change、registration refcount 与 versioned checkpoint/restore | `session/projection/registry_test.go` |
+| Session Projection late fold、跨 Unit Apply/View 失败原子性、watermark 补折、whole-value change、registration refcount 与 versioned checkpoint/restore | `session/projection/registry_test.go` |
 | Projection Cache identity/version、suffix/full restore、single-writer、关闭排空与 SQLite replacement | `session/projectioncache`、`session/projectioncache/sqlite` |
 | cold `session.list` cache summary、history cut-first reverse page 与 Subagent cached identity seed gate | `apiproxy/session/list_projection_test.go`、`history_cache_test.go`、`subagent/internal/childdirectory/cache_test.go` |
 | Session Title fallback、规范化、rename、projection、Provider supersession、refresh、JSON array wire 与 drain | `session/title/service_test.go` |

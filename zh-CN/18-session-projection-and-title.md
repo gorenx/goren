@@ -60,16 +60,20 @@ Go 没有 TypeScript `Object.is` 的 reference identity 语义，因此 `Transit
 ```mermaid
 flowchart LR
     A[Session append committed event] --> B[DriveRegistry]
-    B --> C[Unit.ApplyState]
-    C --> D[cache state and observed seq]
-    D --> E{Changed?}
-    E -- no --> F[advance watermark only]
-    E -- yes --> G[Unit.ViewState]
-    G --> H[Change listener]
+    B --> C[prepare every Unit transition]
+    C --> D{all transitions and changed views valid?}
+    D -- no --> E[discard candidates and retain prior cells]
+    D -- yes --> F[install every cell at one cut]
+    F --> G[unlock Registry]
+    G --> H[publish each changed whole value]
     H --> I[session/projection frame]
 ```
 
-首次读取或晚注册时，Registry 从 Session 的 detached event snapshot 建 cell；后续 live append 只折入尚未观察的 seq。`Snapshot` 在同一 Registry lock 内读取全部 unit，返回 `AsOfSeq` 与 whole values。
+首次读取或晚注册时，Registry 从 Session 的 detached event snapshot 建 cell；后续 live append 只折入尚未观察的 seq。一次 live append、`Snapshot` 或 `Checkpoint` 都先在 Registry lock 内为全部 Unit 准备候选 cell，只有所有 transition 以及所需 view 都成功后才统一安装。任一 Unit 失败时，既有 cells 保持在先前 cut；下一次 live append 会先补折 `observedSeq` 之后的 committed prefix，`Snapshot` 和 `Checkpoint` 也会从 Session Log 补齐，不能跳过失败后已经提交的 event。补折期间只要任一 transition 产生变化，Registry 就在当前 watermark 发布该 key 的最新 whole value。
+
+源 `SessionProjectionRegistry.drive()` 在每个 Unit 完成后立即同步调用 `onChanged`。Go 的 change feed 使用可重入的 Plugin Event；在 Registry lock 内 `Publish` 会使回调 Registry 的 Observer 死锁，逐 Unit 解锁又会暴露 mixed cut。因此 Goren 先提交完整 cell cut，解锁后仍按注册顺序逐 key 发布 `session/projection`。wire 的 key、value、seq 与帧顺序不变，客户端仍不获得多 key 原子帧；显式差异仅是 Go Observer 回调时已经可以读取完整 Registry cut，而不是源实现的处理中间状态。
+
+`Snapshot` 在同一 Registry lock 内读取全部 Unit，返回 `AsOfSeq` 与 whole values。
 
 `Checkpoint` 只缓存 `{ver, seq, val}`。它可以丢弃、失效或从日志重建，不能成为业务事实。`RestoreFloor` 找出最低可用读取点；`Restore` 只接受连续 suffix，版本不兼容且缺少从 `seq=0` 的事实时拒绝，不能用空 state 伪造恢复成功。
 
@@ -133,7 +137,7 @@ sequenceDiagram
 
 ## 8. 失败、取消与生命周期
 
-- unit 初始值、transition、view 或 checkpoint 不是合法 plain JSON 时，当前 projection 操作失败；Registry 不保存半个 transition；
+- unit 初始值、transition、view 或 checkpoint 不是合法 plain JSON 时，当前 projection 操作失败；Registry 不安装任何 Unit 的候选 cell，也不发布本次 change；
 - list 的 projection 读取失败按源行为对该 row fail-soft，history 的一致 cut 失败映射为 RPC internal；
 - projection frame 是 committed fact 的派生通知，推送失败不能回滚 title event；
 - user rename supersede 所有 pending/active 自动生成，且 user title 保持 pinned，直到显式 `Refresh`；
