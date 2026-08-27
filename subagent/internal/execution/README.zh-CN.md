@@ -1,8 +1,8 @@
 # Subagent Execution
 
-本包保存 OneShot 与 Continuable 当前正在运行的 Subagent，并保证同一次运行只执行一次结束处理。它还提供两种实现共同使用的最终 assistant 输出选择规则。
+本包保存 OneShot、Continuable 与 Bound 当前正在运行的 Subagent，统一完成运行激活、注册和 started 事件发布，并保证同一次运行只执行一次结束处理。它还提供 OneShot 与 Continuable 共用的最终 assistant 输出选择规则。
 
-本包不创建或恢复 Agent。OneShot 或 Continuable 先通过 `agent.Constructor` 得到 child Agent，再创建本包的 `Execution`。本包也不写 Session，不决定何时给 child Agent 发送消息，不决定 Continuable 是否可以再次恢复。
+本包不创建或恢复 Agent。各 Mode Service 先通过 `agent.Constructor` 得到 child Agent，完成各自的运行态关联，再把完整的 `Entry` 交给本包发布。本包也不写 Session，不决定何时给 child Agent 发送消息，不决定 Continuable 是否可以再次恢复，也不决定 Bound config 是否允许 resident epoch。
 
 ## 本文术语
 
@@ -11,6 +11,7 @@
 - **child Session**：child Agent 使用的 Session。Session 事件可以持久化；本包保存的 `Execution` 和 `Registry` 内容只存在于当前进程。
 - **OneShot**：创建 child Agent、完成一次请求并释放该 Agent 的实现。结束后不能用同一个 OneShot 执行继续发送消息。
 - **Continuable**：创建或恢复 child Session 的实现。一次运行结束后释放当前 child Agent，但保留 child Session，后续消息可以从该 Session 创建新的运行。
+- **Bound**：根据 parent Session 中的 binding 与 config 创建或恢复 resident child Agent；config revision 变化时可以替换当前运行。
 - **一次运行**：从一个 child Agent 接受本次第一条消息开始，到该 child Agent 的结束处理完成为止。Continuable 每次恢复都会产生新的一次运行。
 - **`RunID`**：一次运行的标识，只用于配对该次运行的 `subagent/start` 和 `subagent/end`。它不是 child Session ID；同一个 Continuable child Session 的不同运行具有不同 `RunID`。
 - **`Terminal`**：一次运行的最终结果，包含 assistant 输出、可选结构化输出、可选诊断信息和对调用方可见的停止原因。
@@ -22,21 +23,21 @@
 - `RunID`；
 - child Session ID；
 - `ExecutionState`；
-- 一个由 OneShot 或 Continuable 实现的 `Terminator`；
+- 一个由对应 Mode Service 实现的 `Terminator`；
 - 一个完成信号；
 - `Terminator` 最终返回的 `Terminal` 和 error。
 
 `Execution` 负责以下行为：
 
 1. `New` 校验 `RunID`、child Session ID 和 `Terminator`，创建 `Starting` 状态的对象。
-2. `Activate` 只允许把 `Starting` 改为 `Active`。OneShot/Continuable 在 child Agent 已接受本次第一条消息后调用它。
+2. `Publish` 在 Mode Service 已完成 child 首条消息接纳和 mode-owned 状态关联后调用 `Activate`，再注册运行并发布 started 事件。
 3. `Stop` 接受停止原因。第一次调用把状态改为 `Stopping`，并异步调用一次 `Terminator.Terminate`；后续调用不会再次执行结束处理。
 4. `Terminate` 返回后，`Execution` 复制并保存 `Terminal`，保存 error，把状态改为 `Stopped`，然后通知所有等待者。
 5. `Wait` 只等待终止事务并返回该事务的 error；`Result` 只读取已保存的 `Terminal`，不等待也不改变状态。
 
-`Execution` 不复制 Agent 自身的运行状态，不保存 Session 事件，不拥有 Agent 的消息队列，也不持有 Agent 创建或恢复所返回的 `agent.Handle`。这些对象由 OneShot 或 Continuable 持有。
+`Execution` 不复制 Agent 自身的运行状态，不保存 Session 事件，不拥有 Agent 的消息队列，也不持有 Agent 创建或恢复所返回的 `agent.Handle`。这些对象由对应 Mode Service 持有。
 
-## `Terminator`：两种实现各自完成结束处理
+## `Terminator`：各 Mode Service 完成自己的结束处理
 
 `Terminator` 只有一个方法：
 
@@ -44,7 +45,7 @@
 Terminate(context.Context, StopCause) (subagent.Terminal, error)
 ```
 
-`Execution` 决定该方法只调用一次；OneShot 和 Continuable 决定具体做什么。
+`Execution` 决定该方法只调用一次；OneShot、Continuable 和 Bound 决定具体做什么。
 
 OneShot 的实现按以下顺序结束一次运行：
 
@@ -67,6 +68,8 @@ Continuable 的实现按以下顺序结束一次运行：
 8. 如果 child Agent 不是已经由 Agent 关闭流程释放，则释放它的 `agent.Handle`；
 9. 清除 Continuable 保存的当前运行，使后续消息可以恢复同一个 child Session。
 
+Bound 的实现刷新 child Session、发布 ended 事件、移除公共注册并清除对应 binding 的 resident epoch；是否重建由后续 config 或启动用例决定。
+
 `StopCause` 是传给 `Terminator` 的内部原因：正常完成、child Agent 已空闲且没有待处理消息和运行中的后代、interrupt、调用方 `Dispose`、Subagent Service 关闭，或者 Agent 关闭流程已经开始。`StopReason` 是写入 `Terminal` 的调用方可见结果，例如 `completed`、`aborted` 或 `error`。二者用途不同，不能相互替代。
 
 ## `Registry`：按 child Session ID 查找当前运行
@@ -74,7 +77,7 @@ Continuable 的实现按以下顺序结束一次运行：
 `Registry` 是一个进程内 map，一个 child Session ID 最多对应一个当前 `Execution`。`Entry` 保存：
 
 - `Execution`：要等待或停止的当前运行；
-- `Mode`：`one-shot` 或 `continuable`，供公共 Subagent Service 把 interrupt 路由给对应实现；
+- `Mode`：`one-shot`、`continuable` 或 `bound`，供公共 Subagent Service 把 interrupt 路由给对应实现；
 - `Parent`：创建这次运行的 parent Agent，供 interrupt 检查调用方是不是允许控制该 child；
 - `Subject`：本次运行使用的 child Agent，供 Agent 关闭事件确认被关闭的是同一个 Agent 对象，而不只是 ID 相同；
 - `Closing`：child Agent 开始关闭时会关闭的 channel，供 OneShot Service 在模块关闭时等待 Agent 进入关闭过程。
@@ -92,7 +95,7 @@ Continuable 的实现按以下顺序结束一次运行：
 - `PublishStarted(parent, fact)` 把 `subagent.Started` 发送到 parent Agent 的运行时事件分发器；
 - `PublishEnded(parent, fact)` 把 `subagent.Ended` 发送到同一个分发器。
 
-OneShot/Continuable 在 `Execution` 已放入 `Registry` 后发布 started，在 `Terminator` 生成 `Terminal` 后发布 ended。`Execution` 状态对象不依赖 Plugin，也不直接发送事件。当前事件分发是通知，不参与 `Execution` 状态提交；监听者失败不会回滚已创建或已结束的运行。
+`Publish` 按“激活、写入 `Registry`、发布 started”的顺序公开一次运行。各 Mode Service 在调用前必须完成自己的 terminator 和 resident 状态关联，失败时自行撤销这些关联。`Terminator` 生成 `Terminal` 后由 Mode Service 发布 ended。`Execution` 状态对象不依赖 Plugin，也不直接发送事件；监听者失败不会回滚已创建或已结束的运行。
 
 ## 最终 assistant 输出选择
 
@@ -139,18 +142,22 @@ stateDiagram-v2
 flowchart LR
     Service[Subagent Service] --> OneShot[OneShot Service]
     Service --> Continuable[Continuable Service]
+    Service --> Bound[Bound Service]
     OneShot --> Constructor[agent.Constructor]
     Continuable --> Constructor
+    Bound --> Constructor
     OneShot --> Execution[Execution 和 Registry]
     Continuable --> Execution
-    Execution --> Terminator[OneShot 或 Continuable Terminator]
+    Bound --> Execution
+    Execution --> Terminator[Mode-owned Terminator]
     OneShot --> Publisher[EventPublisher]
     Continuable --> Publisher
+    Bound --> Publisher
     Publisher --> Parent[parent Agent 事件分发器]
 ```
 
 - `agent.Constructor` 创建或恢复 Agent；本包不调用它。
-- OneShot/Continuable 创建、激活并发布 `Execution`，也实现 `Terminator`。
+- 各 Mode Service 创建 `Execution`、关联自己的运行态并实现 `Terminator`；本包的 `Publish` 统一激活、注册并发布 started 事件。
 - 公共 Subagent Service 通过 `Registry` 完成 interrupt 授权、实现选择以及 Agent 关闭通知。
 - Runtime Plugin 实现 `EventPublisher`，只把业务事实接到 Agent 事件机制。
 - Session 保存可持久化事件；本包只读取 OneShot/Continuable 传入的事件片段。
