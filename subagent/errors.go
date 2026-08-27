@@ -26,6 +26,20 @@ const (
 	// ErrorExtensionReleaseFailed reports contained Extension
 	// disposal failures. Its value preserves the pinned DSH code.
 	ErrorExtensionReleaseFailed ErrorCode = "ACTIVATION_SETUP_RELEASE_FAILED"
+	// ErrorUnknownExtension rejects a selected Extension name that has no live
+	// registration in the Subagent Extension Registry.
+	ErrorUnknownExtension ErrorCode = "UNKNOWN_SUBAGENT_EXTENSION"
+	// ErrorBoundBindingNotFound reports that the exact parent Session has no
+	// binding for the requested Bound child.
+	ErrorBoundBindingNotFound ErrorCode = "BOUND_BINDING_NOT_FOUND"
+	// ErrorDuplicateBoundBinding rejects a second title in the same exact
+	// parent Session, regardless of the requested child identity.
+	ErrorDuplicateBoundBinding ErrorCode = "DUPLICATE_BOUND_BINDING"
+	// ErrorBoundConfigConflict rejects an update based on a stale revision.
+	ErrorBoundConfigConflict ErrorCode = "BOUND_CONFIG_CONFLICT"
+	// ErrorBoundDisabled rejects materialization or delivery while the latest
+	// committed Bound config is disabled.
+	ErrorBoundDisabled ErrorCode = "BOUND_DISABLED"
 	// ErrorCancelled reports caller cancellation around listing reads.
 	ErrorCancelled ErrorCode = "CANCELLED"
 	// ErrorControlProjectionsUnavailable reports a missing projection registry.

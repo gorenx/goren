@@ -15,12 +15,12 @@ import (
 // of the new Agent epoch. If another caller made the child resident first, the
 // same slot serializes delivery to that exact Agent.
 func (owner *Service) Resume(
-	requestContext context.Context,
+	ctx context.Context,
 	parentAgent agent.Agent,
 	childID session.SessionID,
 	messageValue agentmessage.UserMessage,
 ) (agentmessage.MessageID, error) {
-	if contextErr := checkContext(requestContext, "Continuable Resume"); contextErr != nil {
+	if contextErr := checkContext(ctx, "Continuable Resume"); contextErr != nil {
 		return "", contextErr
 	}
 	for {
@@ -36,14 +36,14 @@ func (owner *Service) Resume(
 			running := current.running
 			slot.mutex.Unlock()
 			owner.releaseSlot(childID, slot)
-			if waitErr := running.Wait(requestContext); waitErr != nil {
+			if waitErr := running.Wait(ctx); waitErr != nil {
 				return "", waitErr
 			}
 			continue
 		}
 		if current == nil {
 			handle, seedBuilder, resumeErr := owner.resume(
-				requestContext,
+				ctx,
 				parentAgent,
 				childID,
 			)
@@ -57,7 +57,7 @@ func (owner *Service) Resume(
 				owner.releaseSlot(childID, slot)
 				return "", errors.Join(
 					submitErr,
-					handle.Dispose(context.WithoutCancel(requestContext)),
+					handle.Dispose(context.WithoutCancel(ctx)),
 				)
 			}
 			current, resumeErr = owner.publish(
@@ -71,7 +71,7 @@ func (owner *Service) Resume(
 				owner.releaseSlot(childID, slot)
 				return "", errors.Join(
 					resumeErr,
-					handle.Dispose(context.WithoutCancel(requestContext)),
+					handle.Dispose(context.WithoutCancel(ctx)),
 				)
 			}
 			slot.current = current
@@ -106,11 +106,11 @@ func (owner *Service) Resume(
 // Interrupt cancels the current turn while retaining pending Inbox messages
 // and the durable child Session.
 func (owner *Service) Interrupt(
-	requestContext context.Context,
+	ctx context.Context,
 	targetID session.SessionID,
 ) error {
 	if contextErr := checkContext(
-		requestContext,
+		ctx,
 		"Continuable Interrupt",
 	); contextErr != nil {
 		return contextErr

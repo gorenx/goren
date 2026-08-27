@@ -1,4 +1,4 @@
-package plugin
+package oneshot
 
 import (
 	"context"
@@ -64,7 +64,7 @@ func (*structuredOutput) Manifest() pluginruntime.Manifest {
 	}
 }
 
-func (output *structuredOutput) Apply(requestContext context.Context) error {
+func (output *structuredOutput) Apply(ctx context.Context) error {
 	catalog, requireErr := pluginruntime.Require[tools.ToolCatalog](output)
 	if requireErr != nil {
 		return requireErr
@@ -78,7 +78,7 @@ func (output *structuredOutput) Apply(requestContext context.Context) error {
 		return requireErr
 	}
 	toolHandle, addErr := catalog.AddTool(
-		requestContext,
+		ctx,
 		tools.ToolDefinition{
 			Name:        structuredOutputTool,
 			Description: "Report the final structured result exactly once.",
@@ -102,7 +102,7 @@ func (output *structuredOutput) Apply(requestContext context.Context) error {
 	}
 	output.toolHandle = toolHandle
 	promptHandle, addErr := prompts.AddSection(
-		requestContext,
+		ctx,
 		systemprompt.PromptSection{
 			Name:  structuredPromptName,
 			Order: 190,
@@ -112,19 +112,19 @@ func (output *structuredOutput) Apply(requestContext context.Context) error {
 	if addErr != nil {
 		return errors.Join(
 			addErr,
-			output.release(context.WithoutCancel(requestContext)),
+			output.release(context.WithoutCancel(ctx)),
 		)
 	}
 	output.promptHandle = promptHandle
 	guardHandle, addErr := policies.AddGuard(
-		requestContext,
+		ctx,
 		structuredOutputTool,
 		tools.ToolGuardFunc(output.denyAfterCapture),
 	)
 	if addErr != nil {
 		return errors.Join(
 			addErr,
-			output.release(context.WithoutCancel(requestContext)),
+			output.release(context.WithoutCancel(ctx)),
 		)
 	}
 	output.guardHandle = guardHandle

@@ -12,6 +12,7 @@ import (
 	"github.com/gorenx/goren/subagent"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
 	"github.com/gorenx/goren/subagent/internal/lineage"
+	"github.com/gorenx/goren/subagent/internal/seedbuilder"
 )
 
 // Start creates one durable child and returns its first common Execution.
@@ -22,7 +23,7 @@ func (owner *Service) Start(
 	if contextErr := checkContext(ctx, "Continuable Start"); contextErr != nil {
 		return nil, contextErr
 	}
-	requestSnapshot, snapshotErr := command.Request()
+	requestSnapshot, snapshotErr := command.Snapshot()
 	if snapshotErr != nil {
 		return nil, snapshotErr
 	}
@@ -76,7 +77,11 @@ func (owner *Service) Start(
 		return nil, seedErr
 	}
 	builderSeed := seedValue.EventPrefix()
-	seed, seedErr := descriptorSeed(childID, builderSeed, descriptor)
+	seed, seedErr := seedbuilder.AppendDescriptor(
+		childID,
+		builderSeed,
+		descriptor,
+	)
 	if seedErr != nil {
 		return nil, seedErr
 	}
@@ -154,16 +159,16 @@ func (owner *Service) Start(
 }
 
 func (owner *Service) create(
-	requestContext context.Context,
+	ctx context.Context,
 	childID session.SessionID,
 	descriptor subagent.ContinuableDescriptor,
-	request subagent.ChildRequest,
+	request subagent.ContinuableOptions,
 	childLineage lineage.Lineage,
 	seed []session.Event,
 	lineageSeedLength int64,
 ) (agent.Handle, error) {
 	initiatedContext, contextErr := agent.WithInitiator(
-		requestContext,
+		ctx,
 		request.Parent,
 	)
 	if contextErr != nil {
@@ -172,13 +177,11 @@ func (owner *Service) create(
 	handle, createErr := owner.dependencies.Constructor.Create(
 		initiatedContext,
 		agent.CreateOptions{
-			SessionID:    childID,
-			Metadata:     childLineage.Metadata(lineageSeedLength),
-			Seed:         seed,
-			AgentOptions: *request.AgentOptions,
-			Provisioner: owner.dependencies.Environments.BuildForCreation(
-				descriptor,
-			),
+			SessionID:     childID,
+			Metadata:      childLineage.Metadata(lineageSeedLength),
+			Seed:          seed,
+			AgentOptions:  *request.AgentOptions,
+			Provisioner:   owner.provisioner(descriptor, true),
 			RuntimeParent: request.Parent,
 		},
 	)
@@ -192,12 +195,12 @@ func (owner *Service) create(
 }
 
 func (owner *Service) resume(
-	requestContext context.Context,
+	ctx context.Context,
 	parentAgent agent.Agent,
 	childID session.SessionID,
 ) (agent.Handle, string, error) {
 	inspection, inspectErr := owner.dependencies.Persistence.Inspect(
-		requestContext,
+		ctx,
 		childID,
 	)
 	if inspectErr != nil {
@@ -239,7 +242,7 @@ func (owner *Service) resume(
 		}
 	}
 	initiatedContext, contextErr := agent.WithInitiator(
-		requestContext,
+		ctx,
 		parentAgent,
 	)
 	if contextErr != nil {
@@ -253,9 +256,7 @@ func (owner *Service) resume(
 				Provider: stringValue(descriptor.AgentProvider),
 				Model:    stringValue(descriptor.AgentModel),
 			},
-			Provisioner: owner.dependencies.Environments.BuildForResume(
-				descriptor,
-			),
+			Provisioner:   owner.provisioner(descriptor, false),
 			RuntimeParent: parentAgent,
 		},
 	)
@@ -346,13 +347,13 @@ func (owner *Service) assertAvailable(
 }
 
 func (owner *Service) assertPersistedAvailable(
-	requestContext context.Context,
+	ctx context.Context,
 	childID session.SessionID,
 ) error {
 	var cursor *sesspersist.SessionCursor
 	for {
 		page, listErr := owner.dependencies.Persistence.ListSnapshots(
-			requestContext,
+			ctx,
 			sesspersist.SessionPage{
 				Cursor: cursor,
 				Limit:  256,
@@ -388,7 +389,7 @@ func requestedChildID(
 func continuableDescriptor(
 	seedBuilder string,
 	label string,
-	request subagent.ChildRequest,
+	request subagent.ContinuableOptions,
 ) (subagent.ContinuableDescriptor, error) {
 	if request.AgentOptions == nil {
 		return subagent.ContinuableDescriptor{}, errors.New(
@@ -417,45 +418,11 @@ func continuableDescriptor(
 	return descriptor, nil
 }
 
-func descriptorSeed(
-	childID session.SessionID,
-	builderSeed []session.Event,
-	descriptor subagent.ContinuableDescriptor,
-) ([]session.Event, error) {
-	staged, stageErr := session.New(
-		childID,
-		session.CreateOptions{
-			Seed: builderSeed,
-		},
-	)
-	if stageErr != nil {
-		return nil, stageErr
-	}
-	descriptorData, snapshotErr := subagent.SnapshotDescriptor(descriptor)
-	if snapshotErr != nil {
-		return nil, snapshotErr
-	}
-	draft, appendErr := session.NewEventDraft(
-		subagent.DescriptorEvent,
-		descriptorData,
-	)
-	if appendErr != nil {
-		return nil, appendErr
-	}
-	if _, appendErr := staged.Commit(
-		context.Background(),
-		session.Batch(draft),
-	); appendErr != nil {
-		return nil, appendErr
-	}
-	return staged.Events(), nil
-}
-
-func checkContext(requestContext context.Context, operation string) error {
-	if requestContext == nil {
+func checkContext(ctx context.Context, operation string) error {
+	if ctx == nil {
 		return errors.New("subagent: " + operation + " context is nil")
 	}
-	return requestContext.Err()
+	return ctx.Err()
 }
 
 func duplicateChild(childID session.SessionID) error {

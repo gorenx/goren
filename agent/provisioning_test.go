@@ -96,6 +96,63 @@ func TestApplyProvisioningDisposesWhenOwnershipTransferFails(t *testing.T) {
 	}
 }
 
+func TestComposeProvisionersPreservesOrderAndReverseDisposal(t *testing.T) {
+	t.Parallel()
+	order := make([]string, 0)
+	source := agent.ComposeProvisioners(
+		&provisioningAction{
+			result: &labeledProvisioning{
+				name:  "first",
+				order: &order,
+			},
+		},
+		&provisioningAction{
+			result: &labeledProvisioning{
+				name:  "second",
+				order: &order,
+			},
+		},
+	)
+	acquired, err := source.Provision(
+		context.Background(),
+		&provisioningScope{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = acquired.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err = acquired.Dispose(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"commit:first",
+		"commit:second",
+		"dispose:second",
+		"dispose:first",
+	}
+	if !reflect.DeepEqual(order, want) {
+		t.Fatalf("order = %v, want %v", order, want)
+	}
+}
+
+type labeledProvisioning struct {
+	name  string
+	order *[]string
+}
+
+func (owner *labeledProvisioning) Commit() error {
+	*owner.order = append(*owner.order, "commit:"+owner.name)
+	return nil
+}
+
+func (owner *labeledProvisioning) Dispose(context.Context) error {
+	*owner.order = append(*owner.order, "dispose:"+owner.name)
+	return nil
+}
+
 var _ agent.Scope = (*provisioningScope)(nil)
 var _ agent.Provisioner = (*provisioningAction)(nil)
 var _ agent.Provisioning = (*provisioningTransaction)(nil)
+var _ agent.Provisioning = (*labeledProvisioning)(nil)

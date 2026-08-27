@@ -560,8 +560,8 @@ func cloneString(source *string) *string {
 	if source == nil {
 		return nil
 	}
-	snapshot := *source
-	return &snapshot
+	detachedValue := *source
+	return &detachedValue
 }
 
 // DescriptorEvent is the owner-defined typed Session event identity.

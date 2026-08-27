@@ -262,7 +262,7 @@ func (owner *Registry) AddToolProvider(
 	if err != nil {
 		return nil, err
 	}
-	if err := owner.publishChanged(requestContext); err != nil {
+	if err = owner.publishChanged(requestContext); err != nil {
 		owner.store.removeToolProvider(name, token)
 		return nil, err
 	}

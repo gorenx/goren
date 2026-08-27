@@ -6,6 +6,28 @@ import (
 	"github.com/gorenx/goren/agent"
 )
 
+// ExtensionOption configures one Extension registration. Its fields remain
+// private so registration behavior stays closed to this package.
+type ExtensionOption struct {
+	name *string
+}
+
+// WithExtensionName makes one Extension selectable by a stable config name
+// instead of installing it as a common Extension for every child.
+func WithExtensionName(extensionNameValue string) ExtensionOption {
+	return ExtensionOption{
+		name: &extensionNameValue,
+	}
+}
+
+// Name returns the configured stable name, when this option sets one.
+func (option ExtensionOption) Name() (string, bool) {
+	if option.name == nil {
+		return "", false
+	}
+	return *option.name, true
+}
+
 // ExtensionRegistration owns one exact child Extension registration and its
 // resident installations.
 type ExtensionRegistration interface {
@@ -27,5 +49,8 @@ type Extension interface {
 // ExtensionRegistry owns Extensions installed into unpublished and resident
 // child Agents.
 type ExtensionRegistry interface {
-	RegisterExtension(Extension) (ExtensionRegistration, error)
+	RegisterExtension(
+		Extension,
+		...ExtensionOption,
+	) (ExtensionRegistration, error)
 }

@@ -486,7 +486,8 @@ func (*LifecycleCoordinator) isVisibleLocked(target *epoch) bool {
 		return true
 	}
 	return target.phase == epochAttached &&
-		target.publication == publicationPublishing
+		(target.publication == publicationPublishing ||
+			target.publication == publicationPublished)
 }
 
 func (coordinator *LifecycleCoordinator) epochForAgent(

@@ -111,8 +111,11 @@ func (installed *effect) Dispose(closeContext context.Context) error {
 
 func disposeEffects(closeContext context.Context, effects []*effect) error {
 	var closeErr error
-	for _, installed := range effects {
-		closeErr = errors.Join(closeErr, installed.Dispose(closeContext))
+	for index := len(effects) - 1; index >= 0; index-- {
+		closeErr = errors.Join(
+			closeErr,
+			effects[index].Dispose(closeContext),
+		)
 	}
 	return closeErr
 }

@@ -338,7 +338,7 @@ func TestAgentLifecycleBusinessFilesDoNotCallPluginRuntime(t *testing.T) {
 	)
 }
 
-func TestSubagentImplementationsDoNotDependOnPluginAdapters(t *testing.T) {
+func TestSubagentModesDoNotDependOnSubagentPluginWiring(t *testing.T) {
 	t.Parallel()
 	repositoryPath := repositoryRoot(t)
 	fileSet := token.NewFileSet()
@@ -356,13 +356,16 @@ func TestSubagentImplementationsDoNotDependOnPluginAdapters(t *testing.T) {
 			"internal",
 			"continuable",
 		) + ":continuable",
+		filepath.Join(
+			repositoryPath,
+			"subagent",
+			"internal",
+			"bound",
+		) + ":bound",
 	}
 	forbiddenImports := map[string]struct{}{
-		"github.com/gorenx/goren/agent/scopedplugin":            {},
-		"github.com/gorenx/goren/approval":                      {},
-		"github.com/gorenx/goren/plugin":                        {},
-		"github.com/gorenx/goren/subagent/internal/childpolicy": {},
-		"github.com/gorenx/goren/subagent/internal/extension":   {},
+		"github.com/gorenx/goren/subagent/internal/extension": {},
+		"github.com/gorenx/goren/subagent/plugin":             {},
 	}
 	findings := make([]string, 0)
 	for _, packageKey := range packageKeys {
@@ -386,7 +389,7 @@ func TestSubagentImplementationsDoNotDependOnPluginAdapters(t *testing.T) {
 	}
 	sort.Strings(findings)
 	t.Fatalf(
-		"Subagent mode implementations must consume injected environment ports:\n%s",
+		"Subagent modes must own composition without depending on Subagent Plugin wiring:\n%s",
 		strings.Join(findings, "\n"),
 	)
 }

@@ -1,4 +1,4 @@
-package plugin
+package oneshot
 
 import (
 	"context"
@@ -31,8 +31,8 @@ func (appender *descriptorAppender) Manifest() pluginruntime.Manifest {
 	}
 }
 
-func (appender *descriptorAppender) Apply(requestContext context.Context) error {
-	return requestContext.Err()
+func (appender *descriptorAppender) Apply(ctx context.Context) error {
+	return ctx.Err()
 }
 
 func (*descriptorAppender) Dispose(context.Context) error {
@@ -40,14 +40,14 @@ func (*descriptorAppender) Dispose(context.Context) error {
 }
 
 func (appender *descriptorAppender) Intercept(
-	requestContext context.Context,
+	ctx context.Context,
 	notice agent.PreStepNotice,
 	downstream pluginruntime.WaterfallAction[
 		agent.PreStepNotice,
 		agent.PreStepDecision,
 	],
 ) (agent.PreStepDecision, error) {
-	decision, decisionErr := downstream.Execute(requestContext, notice)
+	decision, decisionErr := downstream.Execute(ctx, notice)
 	if decisionErr != nil || decision.Kind != agent.PreStepEnter {
 		return decision, decisionErr
 	}
@@ -70,7 +70,7 @@ func (appender *descriptorAppender) Intercept(
 		return agent.PreStepDecision{}, appendErr
 	}
 	if _, appendErr := notice.Subject.SessionValue().Commit(
-		requestContext,
+		ctx,
 		session.Batch(draft),
 	); appendErr != nil {
 		return agent.PreStepDecision{}, appendErr
