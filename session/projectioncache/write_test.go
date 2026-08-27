@@ -108,11 +108,11 @@ func TestLiveCheckpointFailureKeepsDirtyStateForLaterTrigger(t *testing.T) {
 	}
 	cacheOwner.mutex.Lock()
 	state := cacheOwner.writes[conversation]
-	pending := state.pending
+	dirtyEvents := state.pendingEvents()
 	writing := state.writing
 	cacheOwner.mutex.Unlock()
-	if pending != 1 || writing {
-		t.Fatalf("state pending=%d writing=%v", pending, writing)
+	if dirtyEvents != 1 || writing {
+		t.Fatalf("state pending=%d writing=%v", dirtyEvents, writing)
 	}
 }
 
@@ -200,7 +200,7 @@ func TestCheckpointCutRejectsRowsFromDifferentEvents(t *testing.T) {
 				Value: []byte(`null`),
 			},
 		},
-		nil,
+		-1,
 	)
 	if err == nil {
 		t.Fatal("checkpointCut accepted rows from different cuts")

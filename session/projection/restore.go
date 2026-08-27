@@ -1,7 +1,6 @@
 package projection
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -14,27 +13,21 @@ import (
 func (owner *DriveRegistry) RestoreFloor(rows Checkpoint) *int64 {
 	owner.mu.Lock()
 	defer owner.mu.Unlock()
-	var floor *int64
+	if len(owner.order) == 0 {
+		return nil
+	}
+	floor := int64(math.MaxInt64)
 	for _, projectionKey := range owner.order {
 		entry := owner.registrations[projectionKey]
-		if entry == nil {
-			continue
-		}
 		needed := int64(0)
 		if row, found := rows[projectionKey]; found && row.Version == entry.projectionUnit.StateVersion() {
 			if row.Seq < math.MaxInt64 {
 				needed = max(row.Seq+1, 0)
 			}
 		}
-		if floor == nil || needed < *floor {
-			candidate := needed
-			floor = &candidate
-		}
+		floor = min(floor, needed)
 	}
-	if floor == nil {
-		return nil
-	}
-	anchor := max(*floor-1, 0)
+	anchor := max(floor-1, 0)
 	return &anchor
 }
 
@@ -45,18 +38,14 @@ func (owner *DriveRegistry) ViewCheckpoint(rows Checkpoint) (Values, error) {
 	projectionValues := make(Values)
 	for _, projectionKey := range owner.order {
 		entry := owner.registrations[projectionKey]
-		if entry == nil {
-			continue
-		}
 		row, found := rows[projectionKey]
 		if !found || row.Version != entry.projectionUnit.StateVersion() {
 			continue
 		}
-		state, err := validatedRaw(row.Value)
-		if err != nil {
+		if err := validateRaw(row.Value); err != nil {
 			return nil, fmt.Errorf("sessionprojection: checkpoint %q state: %w", projectionKey, err)
 		}
-		view, err := viewValue(entry.projectionUnit, state)
+		view, err := viewValue(entry.projectionUnit, row.Value)
 		if err != nil {
 			return nil, fmt.Errorf("sessionprojection: checkpoint %q view: %w", projectionKey, err)
 		}
@@ -81,9 +70,6 @@ func (owner *DriveRegistry) Restore(rows Checkpoint, events []session.Event, bas
 	refreshed := make(Checkpoint, len(owner.registrations))
 	for _, projectionKey := range owner.order {
 		entry := owner.registrations[projectionKey]
-		if entry == nil {
-			continue
-		}
 		row, found := rows[projectionKey]
 		usable := found && row.Version == entry.projectionUnit.StateVersion() &&
 			row.Seq >= baseSeq-1 && row.Seq <= endSeq
@@ -93,44 +79,41 @@ func (owner *DriveRegistry) Restore(rows Checkpoint, events []session.Event, bas
 				projectionKey, baseSeq,
 			)
 		}
-		var state json.RawMessage
-		fromSeq := baseSeq - 1
+		var cell unitCell
 		if usable {
-			state, err = validatedRaw(row.Value)
-			fromSeq = row.Seq
+			cell.state, err = validatedRaw(row.Value)
+			cell.observedSeq = row.Seq
 		} else {
-			state, err = entry.projectionUnit.InitialState()
-			if err == nil {
-				state, err = validatedRaw(state)
-			}
+			cell, err = buildCell(entry.projectionUnit, nil)
 		}
 		if err != nil {
 			return RestoreResult{}, fmt.Errorf("sessionprojection: projection %q restore state: %w", projectionKey, err)
 		}
-		for _, committed := range events {
-			if committed.Seq <= fromSeq {
-				continue
-			}
-			stateChange, transitionErr := applyTransition(entry.projectionUnit, state, committed)
-			if transitionErr != nil {
-				return RestoreResult{}, fmt.Errorf(
-					"sessionprojection: projection %q restore seq %d: %w",
-					projectionKey, committed.Seq, transitionErr,
-				)
-			}
-			state = stateChange.State
+		advanced, err := advanceCell(entry.projectionUnit, cell, events)
+		if err != nil {
+			return RestoreResult{}, fmt.Errorf(
+				"sessionprojection: projection %q restore: %w",
+				projectionKey,
+				err,
+			)
 		}
-		view, viewErr := viewValue(entry.projectionUnit, state)
+		cell = advanced.cell
+		view, viewErr := viewValue(entry.projectionUnit, cell.state)
 		if viewErr != nil {
 			return RestoreResult{}, fmt.Errorf("sessionprojection: projection %q restore view: %w", projectionKey, viewErr)
 		}
 		projectionValues[projectionKey] = view
 		refreshed[projectionKey] = CheckpointRow{
-			Version: entry.projectionUnit.StateVersion(), Seq: endSeq, Value: cloneRaw(state),
+			Version: entry.projectionUnit.StateVersion(),
+			Seq:     endSeq,
+			Value:   cloneRaw(cell.state),
 		}
 	}
 	return RestoreResult{
-		Snapshot:   Snapshot{AsOfSeq: endSeq, Values: projectionValues},
+		Snapshot: Snapshot{
+			AsOfSeq: endSeq,
+			Values:  projectionValues,
+		},
 		Checkpoint: refreshed,
 	}, nil
 }

@@ -33,6 +33,7 @@ type Cache interface {
 }
 
 // CheckpointStore persists one replaceable checkpoint record per Session.
+// Replace borrows its record for the duration of the call and must not mutate it.
 type CheckpointStore interface {
 	LoadAll(context.Context) (map[session.SessionID]CheckpointRecord, error)
 	Replace(context.Context, session.SessionID, CheckpointRecord) error
@@ -86,12 +87,14 @@ type writeState struct {
 	persistedSeq int64
 	generation   uint64
 	persistedGen uint64
-	pending      int
 	timer        *time.Timer
 	writing      bool
 	requested    bool
-	force        bool
 	retiring     bool
+}
+
+func (state *writeState) pendingEvents() int {
+	return int(state.generation - state.persistedGen)
 }
 
 // CheckpointCache owns the in-memory record index, cold restoration, and live
@@ -106,12 +109,14 @@ type CheckpointCache struct {
 	persistence      sessionpersistence.Persistence
 	projections      sessionprojection.Registry
 	store            CheckpointStore
-	records          map[session.SessionID]CheckpointRecord
-	writes           map[session.Context]*writeState
-	recordLocks      map[session.SessionID]*sync.Mutex
-	inflight         sync.WaitGroup
-	closeDone        chan struct{}
-	closeErr         error
+	// records are detached on admission and replaced wholesale; readers may
+	// borrow them while performing read-only projection operations.
+	records     map[session.SessionID]CheckpointRecord
+	writes      map[session.Context]*writeState
+	recordLocks map[session.SessionID]*sync.Mutex
+	inflight    sync.WaitGroup
+	closeDone   chan struct{}
+	closeErr    error
 }
 
 // New constructs an inactive checkpoint cache.
@@ -278,13 +283,18 @@ func identityOf(metadata session.Header) LogIdentity {
 }
 
 func sameIdentity(left LogIdentity, right LogIdentity) bool {
-	if left.CreatedAt != right.CreatedAt {
-		return false
+	return left.CreatedAt == right.CreatedAt && sameString(left.CWD, right.CWD)
+}
+
+func identityMatchesHeader(identity LogIdentity, metadata session.Header) bool {
+	return identity.CreatedAt == metadata.CreatedAt && sameString(identity.CWD, metadata.CWD)
+}
+
+func sameString(left *string, right *string) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
 	}
-	if left.CWD == nil || right.CWD == nil {
-		return left.CWD == nil && right.CWD == nil
-	}
-	return *left.CWD == *right.CWD
+	return *left == *right
 }
 
 // ValidateCheckpointRecord validates and detaches one owner-defined persisted
@@ -299,13 +309,6 @@ func ValidateCheckpointRecord(
 	if record.Identity.CreatedAt < 0 {
 		return CheckpointRecord{}, errors.New("checkpoint createdAt is negative")
 	}
-	detached := CheckpointRecord{
-		Identity: LogIdentity{
-			CreatedAt: record.Identity.CreatedAt,
-			CWD:       cloneString(record.Identity.CWD),
-		},
-		Rows: make(sessionprojection.Checkpoint, len(record.Rows)),
-	}
 	for projectionKey, row := range record.Rows {
 		if projectionKey == "" {
 			return CheckpointRecord{}, errors.New("checkpoint projection key is empty")
@@ -316,25 +319,29 @@ func ValidateCheckpointRecord(
 		if row.Seq < -1 {
 			return CheckpointRecord{}, fmt.Errorf("checkpoint %q seq is below -1", projectionKey)
 		}
-		value, err := jsonvalue.Clone(row.Value)
-		if err != nil {
+		if err := jsonvalue.Validate(row.Value); err != nil {
 			return CheckpointRecord{}, fmt.Errorf(
 				"checkpoint %q value is not valid plain JSON: %w",
 				projectionKey,
 				err,
 			)
 		}
-		detached.Rows[projectionKey] = sessionprojection.CheckpointRow{
-			Version: row.Version,
-			Seq:     row.Seq,
-			Value:   value,
-		}
 	}
-	return detached, nil
+	return cloneRecord(record), nil
 }
 
 func cloneRecord(record CheckpointRecord) CheckpointRecord {
-	detached, _ := ValidateCheckpointRecord("detached", record)
+	detached := CheckpointRecord{
+		Identity: LogIdentity{
+			CreatedAt: record.Identity.CreatedAt,
+			CWD:       cloneString(record.Identity.CWD),
+		},
+		Rows: make(sessionprojection.Checkpoint, len(record.Rows)),
+	}
+	for projectionKey, row := range record.Rows {
+		row.Value = append(json.RawMessage(nil), row.Value...)
+		detached.Rows[projectionKey] = row
+	}
 	return detached
 }
 
@@ -344,10 +351,6 @@ func cloneString(source *string) *string {
 	}
 	detached := *source
 	return &detached
-}
-
-func cloneRaw(source json.RawMessage) json.RawMessage {
-	return append(json.RawMessage(nil), source...)
 }
 
 func (owner *CheckpointCache) report(reported Failure) {

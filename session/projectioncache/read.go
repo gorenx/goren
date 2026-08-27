@@ -30,11 +30,8 @@ func (owner *CheckpointCache) CachedSnapshot(
 		return nil, ErrClosed
 	}
 	record, found := owner.records[metadata.ID]
-	if found {
-		record = cloneRecord(record)
-	}
 	owner.mutex.Unlock()
-	if !found || !sameIdentity(record.Identity, identityOf(metadata)) {
+	if !found || !identityMatchesHeader(record.Identity, metadata) {
 		return nil, nil
 	}
 	values, err := owner.projections.ViewCheckpoint(record.Rows)
@@ -80,14 +77,8 @@ func (owner *CheckpointCache) ColdSnapshot(
 
 	owner.mutex.Lock()
 	record, found := owner.records[identifier]
-	if found {
-		record = cloneRecord(record)
-	}
 	owner.mutex.Unlock()
-	rows := sessproj.Checkpoint(nil)
-	if found {
-		rows = record.Rows
-	}
+	rows := record.Rows
 	floor := owner.projections.RestoreFloor(rows)
 	if floor == nil {
 		return owner.probeEmptySnapshot(requestContext, identifier)
@@ -104,7 +95,7 @@ func (owner *CheckpointCache) ColdSnapshot(
 		}
 		return sessproj.Snapshot{}, err
 	}
-	if found && !sameIdentity(record.Identity, identityOf(restored.Header)) {
+	if found && !identityMatchesHeader(record.Identity, restored.Header) {
 		return owner.restoreAll(requestContext, identifier)
 	}
 	owner.writeBack(requestContext, restored.Header, restored.Checkpoint)
@@ -138,7 +129,6 @@ func (owner *CheckpointCache) restorePages(
 	rows := checkpoint
 	var metadata session.Header
 	var revision sesspersist.Revision
-	var result sessproj.RestoreResult
 	for {
 		segment, err := owner.persistence.ReadEventsFrom(
 			requestContext,
@@ -159,7 +149,7 @@ func (owner *CheckpointCache) restorePages(
 				"session projection cache: durable Session changed during paged restore",
 			)
 		}
-		result, err = owner.projections.Restore(rows, segment.Events, cursor)
+		result, err := owner.projections.Restore(rows, segment.Events, cursor)
 		if err != nil {
 			return restoredProjection{}, err
 		}
@@ -209,17 +199,28 @@ func (owner *CheckpointCache) writeBack(
 	metadata session.Header,
 	rows sessproj.Checkpoint,
 ) {
-	record := CheckpointRecord{
-		Identity: identityOf(metadata),
-		Rows:     rows,
-	}
-	if err := owner.replaceRecord(requestContext, metadata.ID, record); err != nil {
+	if err := owner.replaceCheckpoint(requestContext, metadata, rows); err != nil {
 		owner.report(Failure{
 			SessionID: metadata.ID,
 			Operation: "cold checkpoint write-back",
 			Error:     err,
 		})
 	}
+}
+
+func (owner *CheckpointCache) replaceCheckpoint(
+	requestContext context.Context,
+	metadata session.Header,
+	rows sessproj.Checkpoint,
+) error {
+	return owner.replaceRecord(
+		requestContext,
+		metadata.ID,
+		CheckpointRecord{
+			Identity: identityOf(metadata),
+			Rows:     rows,
+		},
+	)
 }
 
 func (owner *CheckpointCache) replaceRecord(
@@ -254,7 +255,7 @@ func (owner *CheckpointCache) replaceRecord(
 	}
 	owner.mutex.Lock()
 	if owner.state == cacheOpen || owner.state == cacheClosing {
-		owner.records[identifier] = cloneRecord(validated)
+		owner.records[identifier] = validated
 	}
 	owner.mutex.Unlock()
 	return nil
