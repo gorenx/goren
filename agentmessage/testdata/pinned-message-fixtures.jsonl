@@ -1,0 +1,5 @@
+{"id":"user-1","role":"user","content":[{"type":"text","text":"hello"}],"source":{"kind":"user"}}
+{"id":"plugin-1","role":"user","content":[{"type":"text","text":"context"}],"source":{"kind":"plugin","plugin":"context","form":"snapshot","sections":[]}}
+{"id":"assistant-1","role":"assistant","content":[{"type":"reasoning","text":"think"},{"type":"tool-call","id":"call-1","name":"lookup","arguments":"{\"q\":\"x\"}"}],"source":{"kind":"model","provider":"deepseek","model":"deepseek-chat","replayState":{"request":1}}}
+{"id":"tool-1","role":"user","content":[{"type":"tool-result","toolCallId":"call-1","content":[{"type":"text","text":"done"}],"isError":false}],"source":{"kind":"tool","callId":"call-1"}}
+{"id":"extension-1","role":"user","content":[{"type":"vendor-card","value":{"x":1}}],"source":{"kind":"vendor","trace":[1,2]}}
