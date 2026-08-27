@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
@@ -124,15 +125,15 @@ func TestContinuableToolPersistsCompletedChildForLaterResume(t *testing.T) {
 	}
 }
 
-func lastUserContentText(messages []llm.Message) string {
+func lastUserContentText(messages []agentmessage.Message) string {
 	for messageIndex := len(messages) - 1; messageIndex >= 0; messageIndex-- {
 		messageValue := messages[messageIndex]
-		if messageValue.ConversationRole() != llm.RoleUser {
+		if messageValue.ConversationRole() != agentmessage.RoleUser {
 			continue
 		}
 		var content strings.Builder
 		for _, block := range messageValue.ContentValue() {
-			plain, matches := block.(llm.PlainTextContent)
+			plain, matches := block.(agentmessage.PlainTextContent)
 			if !matches {
 				continue
 			}
@@ -150,7 +151,7 @@ func continuableTextResponse(textValue string) []llm.StreamChunk {
 	return []llm.StreamChunk{
 		llm.BlockEndChunk{
 			Index: 0,
-			Block: llm.NewTextBlock(textValue),
+			Block: agentmessage.NewTextBlock(textValue),
 		},
 		llm.FinishChunk{
 			Reason: llm.StopFinish{},

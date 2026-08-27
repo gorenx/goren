@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 )
 
@@ -12,15 +12,15 @@ func TestToolPairingBalanceUsesCurrentSurfacePositions(t *testing.T) {
 	t.Parallel()
 	conversation := newCompactionSession(t, "tool-pairing")
 	beforeSeq := appendCompactionUser(t, conversation, "before")
-	assistantValue, err := llm.NewAssistantMessage(llm.AssistantMessageInput{
-		Content: []llm.ContentBlock{
-			llm.ToolCallBlock{
+	assistantValue, err := agentmessage.NewAssistantMessage(agentmessage.AssistantMessageInput{
+		Content: []agentmessage.ContentBlock{
+			agentmessage.ToolCallBlock{
 				ID:        "call-1",
 				Name:      "read",
 				Arguments: `{}`,
 			},
 		},
-		Source: llm.ModelMessageSource{
+		Source: agentmessage.ModelMessageSource{
 			Provider: "mock",
 			Model:    "model-a",
 		},
@@ -58,10 +58,10 @@ func TestToolPairingBalanceUsesCurrentSurfacePositions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resultValue, err := llm.NewToolResultMessage(llm.ToolResultMessageInput{
+	resultValue, err := agentmessage.NewToolResultMessage(agentmessage.ToolResultMessageInput{
 		CallID: "call-1",
-		Content: []llm.ContentBlock{
-			llm.NewTextBlock("result"),
+		Content: []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock("result"),
 		},
 	})
 	if err != nil {
@@ -155,9 +155,9 @@ func TestToolPairingBalanceUsesCurrentSurfacePositions(t *testing.T) {
 func TestToolPairingBalanceRejectsOrphanResultAndAbsentSequence(t *testing.T) {
 	t.Parallel()
 	conversation := newCompactionSession(t, "tool-orphan")
-	resultValue, err := llm.NewToolResultMessage(llm.ToolResultMessageInput{
+	resultValue, err := agentmessage.NewToolResultMessage(agentmessage.ToolResultMessageInput{
 		CallID:  "orphan",
-		Content: []llm.ContentBlock{},
+		Content: []agentmessage.ContentBlock{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -278,13 +278,13 @@ func appendCompactionUser(
 func mustCompactionUserMessage(
 	testingContext *testing.T,
 	textValue string,
-) llm.UserMessage {
+) agentmessage.UserMessage {
 	testingContext.Helper()
-	messageValue, err := llm.NewUserMessage(llm.UserMessageInput{
-		Content: []llm.ContentBlock{
-			llm.NewTextBlock(textValue),
+	messageValue, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+		Content: []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock(textValue),
 		},
-		Source: llm.UserMessageSource{},
+		Source: agentmessage.UserMessageSource{},
 	})
 	if err != nil {
 		testingContext.Fatal(err)

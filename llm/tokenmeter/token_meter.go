@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
@@ -138,7 +139,7 @@ func (owner *TokenMeter) Measure(
 }
 
 // EstimateMessage will use the same fixed estimator as Measure.
-func (*TokenMeter) EstimateMessage(messageValue llm.Message) (int64, error) {
+func (*TokenMeter) EstimateMessage(messageValue agentmessage.Message) (int64, error) {
 	return estimateMessage(messageValue)
 }
 

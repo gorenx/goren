@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/subagent"
 	"github.com/gorenx/goren/subagent/spawn"
@@ -21,7 +22,7 @@ func TestForegroundOneShotRunsChildAndReleasesIt(t *testing.T) {
 			{
 				llm.BlockEndChunk{
 					Index: 0,
-					Block: llm.NewTextBlock("delegated answer"),
+					Block: agentmessage.NewTextBlock("delegated answer"),
 				},
 				llm.FinishChunk{
 					Reason: llm.StopFinish{},
@@ -123,7 +124,7 @@ func TestOneShotChildCanReportThroughItsParentAgent(t *testing.T) {
 			{
 				llm.BlockEndChunk{
 					Index: 0,
-					Block: llm.ToolCallBlock{
+					Block: agentmessage.ToolCallBlock{
 						ID:        "one-shot-report",
 						Name:      "report",
 						Arguments: `{"output":"one-shot progress"}`,
@@ -136,7 +137,7 @@ func TestOneShotChildCanReportThroughItsParentAgent(t *testing.T) {
 			{
 				llm.BlockEndChunk{
 					Index: 0,
-					Block: llm.NewTextBlock("one-shot final answer"),
+					Block: agentmessage.NewTextBlock("one-shot final answer"),
 				},
 				llm.FinishChunk{
 					Reason: llm.StopFinish{},
@@ -171,7 +172,7 @@ func TestOneShotChildCanReportThroughItsParentAgent(t *testing.T) {
 	pending := parentHandle.Subject.InboxValue().NextStep()
 	if len(starts) != 1 || len(pending) != 1 ||
 		!hasReportSource(
-			[]llm.Message{
+			[]agentmessage.Message{
 				pending[0],
 			},
 			"one-shot progress",
@@ -181,15 +182,15 @@ func TestOneShotChildCanReportThroughItsParentAgent(t *testing.T) {
 	}
 }
 
-func lastUserText(messages []llm.Message) string {
+func lastUserText(messages []agentmessage.Message) string {
 	for messageIndex := len(messages) - 1; messageIndex >= 0; messageIndex-- {
 		messageValue := messages[messageIndex]
-		if messageValue.ConversationRole() != llm.RoleUser {
+		if messageValue.ConversationRole() != agentmessage.RoleUser {
 			continue
 		}
 		content := messageValue.ContentValue()
 		for blockIndex := len(content) - 1; blockIndex >= 0; blockIndex-- {
-			plain, matchesPlain := content[blockIndex].(llm.PlainTextContent)
+			plain, matchesPlain := content[blockIndex].(agentmessage.PlainTextContent)
 			if !matchesPlain {
 				continue
 			}

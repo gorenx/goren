@@ -8,47 +8,47 @@ import (
 	"testing"
 
 	agentcore "github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 )
 
 type inboxRecorder struct {
 	mu        sync.Mutex
-	inserted  []llm.MessageID
-	discarded []llm.MessageID
-	claimed   []llm.MessageID
+	inserted  []agentmessage.MessageID
+	discarded []agentmessage.MessageID
+	claimed   []agentmessage.MessageID
 	turns     []int64
 }
 
-func (records *inboxRecorder) Inserted(message llm.UserMessage) {
+func (records *inboxRecorder) Inserted(message agentmessage.UserMessage) {
 	records.mu.Lock()
 	defer records.mu.Unlock()
 	records.inserted = append(records.inserted, message.StableID())
 }
 
-func (records *inboxRecorder) Discarded(message llm.UserMessage) {
+func (records *inboxRecorder) Discarded(message agentmessage.UserMessage) {
 	records.mu.Lock()
 	defer records.mu.Unlock()
 	records.discarded = append(records.discarded, message.StableID())
 }
 
-func (records *inboxRecorder) Claimed(message llm.UserMessage, turn int64) {
+func (records *inboxRecorder) Claimed(message agentmessage.UserMessage, turn int64) {
 	records.mu.Lock()
 	defer records.mu.Unlock()
 	records.claimed = append(records.claimed, message.StableID())
 	records.turns = append(records.turns, turn)
 }
 
-func userMessage(t *testing.T, text string) llm.UserMessage {
+func userMessage(t *testing.T, text string) agentmessage.UserMessage {
 	t.Helper()
-	message, err := llm.NewUserMessage(llm.UserMessageInput{
-		Content: []llm.ContentBlock{
-			llm.TextBlock{
+	message, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+		Content: []agentmessage.ContentBlock{
+			agentmessage.TextBlock{
 				Type: "text",
 				Text: text,
 			},
 		},
-		Source: llm.UserMessageSource{
+		Source: agentmessage.UserMessageSource{
 			Kind: "user",
 		},
 	})
@@ -69,7 +69,7 @@ func TestInboxReplaysAndRejectsInvalidDurableSplices(t *testing.T) {
 		draft, err := session.NewEventDraft(agentcore.InboxSpliced, agentcore.InboxSplice{
 			Target:   agentcore.NextTurn,
 			Start:    0,
-			Inserted: []llm.UserMessage{first},
+			Inserted: []agentmessage.UserMessage{first},
 		})
 		if err == nil {
 			_, err = conversation.Commit(context.Background(), session.Batch(draft))
@@ -94,7 +94,7 @@ func TestInboxReplaysAndRejectsInvalidDurableSplices(t *testing.T) {
 		draft, err := session.NewEventDraft(agentcore.InboxSpliced, agentcore.InboxSplice{
 			Target:   agentcore.NextTurn,
 			Start:    1,
-			Inserted: []llm.UserMessage{},
+			Inserted: []agentmessage.UserMessage{},
 		})
 		if err == nil {
 			_, err = broken.Commit(context.Background(), session.Batch(draft))
@@ -136,8 +136,8 @@ func TestInboxMutationsCommitBeforeNotifications(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantClaimed := []llm.MessageID{stepMessage.StableID(), replacement.StableID()}
-	gotClaimed := []llm.MessageID{claimedMessages[0].StableID(), claimedMessages[1].StableID()}
+	wantClaimed := []agentmessage.MessageID{stepMessage.StableID(), replacement.StableID()}
+	gotClaimed := []agentmessage.MessageID{claimedMessages[0].StableID(), claimedMessages[1].StableID()}
 	if !reflect.DeepEqual(gotClaimed, wantClaimed) {
 		t.Fatalf("claimed = %#v, want %#v", gotClaimed, wantClaimed)
 	}
@@ -147,7 +147,7 @@ func TestInboxMutationsCommitBeforeNotifications(t *testing.T) {
 	if !reflect.DeepEqual(records.claimed, wantClaimed) || !reflect.DeepEqual(records.turns, []int64{7, 7}) {
 		t.Fatalf("claim notifications = %#v / %#v", records.claimed, records.turns)
 	}
-	if !reflect.DeepEqual(records.discarded, []llm.MessageID{turnMessage.StableID()}) {
+	if !reflect.DeepEqual(records.discarded, []agentmessage.MessageID{turnMessage.StableID()}) {
 		t.Fatalf("discard notifications = %#v", records.discarded)
 	}
 
@@ -189,7 +189,7 @@ func TestInboxClearOrdersCancellationsAndRejectsDuplicates(t *testing.T) {
 	if err := pending.Clear(); err != nil {
 		t.Fatal(err)
 	}
-	if want := []llm.MessageID{stepMessage.StableID(), turnMessage.StableID()}; !reflect.DeepEqual(records.discarded, want) {
+	if want := []agentmessage.MessageID{stepMessage.StableID(), turnMessage.StableID()}; !reflect.DeepEqual(records.discarded, want) {
 		t.Fatalf("discard order = %#v, want %#v", records.discarded, want)
 	}
 	entries := conversation.Events()
@@ -220,7 +220,7 @@ func TestInboxConcurrentAppendsRemainDurableAndUnique(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	messages := make([]llm.UserMessage, 32)
+	messages := make([]agentmessage.UserMessage, 32)
 	for index := range messages {
 		messages[index] = userMessage(t, "concurrent")
 	}

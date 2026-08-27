@@ -1,4 +1,4 @@
-package llm_test
+package agentmessage_test
 
 import (
 	"encoding/json"
@@ -6,32 +6,32 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 )
 
 func TestMessageConstructionDetachesAndRoundTrips(t *testing.T) {
 	t.Parallel()
-	textBlock := llm.NewTextBlock("original")
-	input := llm.UserMessageInput{
-		Content: []llm.ContentBlock{textBlock},
-		Source:  llm.PluginMessageSource{Plugin: "test"},
+	textBlock := agentmessage.NewTextBlock("original")
+	input := agentmessage.UserMessageInput{
+		Content: []agentmessage.ContentBlock{textBlock},
+		Source:  agentmessage.PluginMessageSource{Plugin: "test"},
 	}
-	entry, err := llm.NewUserMessage(input)
+	entry, err := agentmessage.NewUserMessage(input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	input.Content[0] = llm.NewTextBlock("mutated")
-	if entry.StableID() == "" || entry.ConversationRole() != llm.RoleUser {
+	input.Content[0] = agentmessage.NewTextBlock("mutated")
+	if entry.StableID() == "" || entry.ConversationRole() != agentmessage.RoleUser {
 		t.Fatalf("message identity/role = (%q, %q)", entry.StableID(), entry.ConversationRole())
 	}
-	if got := entry.ContentValue()[0].(llm.TextBlock).Text; got != "original" {
+	if got := entry.ContentValue()[0].(agentmessage.TextBlock).Text; got != "original" {
 		t.Fatalf("detached text = %q", got)
 	}
 	encoded, err := json.Marshal(entry)
 	if err != nil {
 		t.Fatal(err)
 	}
-	restored, err := llm.DecodeMessage(encoded)
+	restored, err := agentmessage.DecodeMessage(encoded)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,26 +47,34 @@ func TestMessageConstructionDetachesAndRoundTrips(t *testing.T) {
 func TestAssistantAndToolResultConstructionPreserveProvenance(t *testing.T) {
 	t.Parallel()
 	replayBytes := json.RawMessage(`{"request":1}`)
-	assistantEntry, err := llm.NewAssistantMessage(llm.AssistantMessageInput{
-		Content: []llm.ContentBlock{llm.NewTextBlock("answer")},
-		Source:  llm.ModelMessageSource{Provider: "test-provider", Model: "test-model", ReplayState: replayBytes},
+	assistantEntry, err := agentmessage.NewAssistantMessage(agentmessage.AssistantMessageInput{
+		Content: []agentmessage.ContentBlock{agentmessage.NewTextBlock("answer")},
+		Source: agentmessage.ModelMessageSource{
+			Provider:    "test-provider",
+			Model:       "test-model",
+			ReplayState: replayBytes,
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	replayBytes[2] = 'X'
-	modelOrigin := assistantEntry.SourceValue().(llm.ModelMessageSource)
+	modelOrigin := assistantEntry.SourceValue().(agentmessage.ModelMessageSource)
 	if string(modelOrigin.ReplayState) != `{"request":1}` {
 		t.Fatalf("replayState = %s", modelOrigin.ReplayState)
 	}
-	resultEntry, err := llm.NewToolResultMessage(llm.ToolResultMessageInput{
-		CallID: "call-1", Content: []llm.ContentBlock{llm.NewTextBlock("result")}, IsError: false,
+	resultEntry, err := agentmessage.NewToolResultMessage(agentmessage.ToolResultMessageInput{
+		CallID: "call-1",
+		Content: []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock("result"),
+		},
+		IsError: false,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	toolOrigin := resultEntry.SourceValue().(llm.ToolMessageSource)
-	resultBlock := resultEntry.ContentValue()[0].(llm.ToolResultBlock)
+	toolOrigin := resultEntry.SourceValue().(agentmessage.ToolMessageSource)
+	resultBlock := resultEntry.ContentValue()[0].(agentmessage.ToolResultBlock)
 	if toolOrigin.CallID != "call-1" || resultBlock.ToolCallID != toolOrigin.CallID {
 		t.Fatalf("tool correlation = (%q, %q)", toolOrigin.CallID, resultBlock.ToolCallID)
 	}
@@ -79,10 +87,45 @@ func TestAssistantAndToolResultConstructionPreserveProvenance(t *testing.T) {
 	}
 }
 
+func TestReplaceSourcePreservesAssistantIdentityAndSpecialization(t *testing.T) {
+	t.Parallel()
+	entry, err := agentmessage.NewAssistantMessage(agentmessage.AssistantMessageInput{
+		Content: []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock("answer"),
+		},
+		Source: agentmessage.ModelMessageSource{
+			Provider:    "provider-a",
+			Model:       "model-a",
+			ReplayState: json.RawMessage(`{"request":1}`),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replaced, err := agentmessage.ReplaceSource(entry, agentmessage.ModelMessageSource{
+		Provider: "provider-b",
+		Model:    "model-b",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	typedMessage, specialized := replaced.(agentmessage.AssistantMessage)
+	if !specialized {
+		t.Fatalf("replacement type = %T, want agentmessage.AssistantMessage", replaced)
+	}
+	if typedMessage.StableID() != entry.StableID() {
+		t.Fatalf("replacement id = %q, want %q", typedMessage.StableID(), entry.StableID())
+	}
+	modelOrigin := typedMessage.SourceValue().(agentmessage.ModelMessageSource)
+	if modelOrigin.Provider != "provider-b" || modelOrigin.Model != "model-b" || len(modelOrigin.ReplayState) != 0 {
+		t.Fatalf("replacement source = %#v", modelOrigin)
+	}
+}
+
 func TestMessageRoundTripPreservesUnknownExtensions(t *testing.T) {
 	t.Parallel()
 	rawValue := json.RawMessage(`{"id":"message-1","role":"user","content":[{"type":"vendor-card","value":{"x":1}}],"source":{"kind":"vendor","trace":[1,2]}}`)
-	entry, err := llm.DecodeMessage(rawValue)
+	entry, err := agentmessage.DecodeMessage(rawValue)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +149,7 @@ func TestMessageRoundTripPreservesUnknownExtensions(t *testing.T) {
 func TestDecodeUserMessagePreservesExtendedUserSource(t *testing.T) {
 	t.Parallel()
 	rawValue := json.RawMessage(`{"id":"message-1","role":"user","content":[{"type":"text","text":"hello"}],"source":{"kind":"user","rpcId":"rpc-1","clientTimeZone":"America/Los_Angeles"}}`)
-	restored, err := llm.DecodeUserMessage(rawValue)
+	restored, err := agentmessage.DecodeUserMessage(rawValue)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +173,7 @@ func TestDecodeUserMessagePreservesExtendedUserSource(t *testing.T) {
 func TestDecodeMessagePreservesExtendedPluginSource(t *testing.T) {
 	t.Parallel()
 	rawValue := json.RawMessage(`{"id":"message-1","role":"user","content":[{"type":"text","text":"checkpoint"}],"source":{"kind":"plugin","plugin":"compact","compactionId":"compact-1"}}`)
-	restored, err := llm.DecodeUserMessage(rawValue)
+	restored, err := agentmessage.DecodeUserMessage(rawValue)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +196,7 @@ func TestDecodeMessagePreservesExtendedPluginSource(t *testing.T) {
 
 func TestMessageDecodeRejectsUnknownCoreFields(t *testing.T) {
 	t.Parallel()
-	_, err := llm.DecodeMessage(json.RawMessage(`{"id":"m","role":"user","content":[],"source":{"kind":"user"},"extra":true}`))
+	_, err := agentmessage.DecodeMessage(json.RawMessage(`{"id":"m","role":"user","content":[],"source":{"kind":"user"},"extra":true}`))
 	if err == nil || !strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("decode error = %v", err)
 	}
@@ -161,16 +204,8 @@ func TestMessageDecodeRejectsUnknownCoreFields(t *testing.T) {
 
 func TestMessageDecodeDoesNotHideMalformedPluginCoreForm(t *testing.T) {
 	t.Parallel()
-	_, err := llm.DecodeMessage(json.RawMessage(`{"id":"m","role":"user","content":[],"source":{"kind":"plugin","plugin":"context","form":"snapshot"}}`))
+	_, err := agentmessage.DecodeMessage(json.RawMessage(`{"id":"m","role":"user","content":[],"source":{"kind":"plugin","plugin":"context","form":"snapshot"}}`))
 	if err == nil || !strings.Contains(err.Error(), "snapshot context") {
-		t.Fatalf("decode error = %v", err)
-	}
-}
-
-func TestStreamChunkDecodeRejectsUnknownCoreFields(t *testing.T) {
-	t.Parallel()
-	_, err := llm.DecodeStreamChunk(json.RawMessage(`{"type":"text-delta","index":0,"text":"x","extra":true}`))
-	if err == nil || !strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("decode error = %v", err)
 	}
 }
@@ -179,11 +214,27 @@ func TestPluginContextRequiredFieldsRemainPresent(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
 		label  string
-		origin llm.PluginMessageSource
+		origin agentmessage.PluginMessageSource
 		field  string
 	}{
-		{label: "empty snapshot", origin: llm.PluginMessageSource{Plugin: "context", Form: llm.ContextSnapshot, Sections: []llm.ContextSnapshotSection{}}, field: `"sections":[]`},
-		{label: "empty notice", origin: llm.PluginMessageSource{Plugin: "context", Form: llm.ContextNotice, Summary: ""}, field: `"summary":""`},
+		{
+			label: "empty snapshot",
+			origin: agentmessage.PluginMessageSource{
+				Plugin:   "context",
+				Form:     agentmessage.ContextSnapshot,
+				Sections: []agentmessage.ContextSnapshotSection{},
+			},
+			field: `"sections":[]`,
+		},
+		{
+			label: "empty notice",
+			origin: agentmessage.PluginMessageSource{
+				Plugin:  "context",
+				Form:    agentmessage.ContextNotice,
+				Summary: "",
+			},
+			field: `"summary":""`,
+		},
 	} {
 		testCase := testCase
 		t.Run(testCase.label, func(t *testing.T) {

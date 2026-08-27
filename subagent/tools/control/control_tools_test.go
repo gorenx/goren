@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
@@ -147,9 +147,9 @@ func (record *controlChildren) Send(
 	_ context.Context,
 	parentAgent agent.Agent,
 	childID session.SessionID,
-	_ []llm.ContentBlock,
+	_ []agentmessage.ContentBlock,
 	_ subagent.FollowupOptions,
-) (llm.MessageID, error) {
+) (agentmessage.MessageID, error) {
 	record.followParent = parentAgent
 	record.followChild = childID
 	return "message", nil
@@ -242,10 +242,10 @@ func (*controlAgent) WhenIdle(context.Context) error                { return nil
 func (*controlAgent) RunMaintenance(context.Context, func(context.Context) error) error {
 	return nil
 }
-func (*controlAgent) Send(llm.UserMessage, agent.InboxTarget, bool) error { return nil }
-func (*controlAgent) Followup(llm.UserMessage) error                      { return nil }
-func (*controlAgent) Steer(llm.UserMessage) error                         { return nil }
-func (*controlAgent) Inject(llm.UserMessage) error                        { return nil }
+func (*controlAgent) Send(agentmessage.UserMessage, agent.InboxTarget, bool) error { return nil }
+func (*controlAgent) Followup(agentmessage.UserMessage) error                      { return nil }
+func (*controlAgent) Steer(agentmessage.UserMessage) error                         { return nil }
+func (*controlAgent) Inject(agentmessage.UserMessage) error                        { return nil }
 
 var _ subagent.ChildControl = (*controlChildren)(nil)
 var _ subagent.ChildDirectory = emptyDirectory{}

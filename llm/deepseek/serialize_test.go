@@ -6,36 +6,37 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/attachment"
 	"github.com/gorenx/goren/llm"
 )
 
 func TestSerializeMessagesPreservesDeepSeekReplayRules(t *testing.T) {
 	t.Parallel()
-	assistant := mustMessage(t, llm.RoleAssistant, []llm.ContentBlock{
-		llm.ReasoningBlock{
+	assistant := mustMessage(t, agentmessage.RoleAssistant, []agentmessage.ContentBlock{
+		agentmessage.ReasoningBlock{
 			Type: "reasoning",
 			Text: "think",
 		},
-		llm.ToolCallBlock{
+		agentmessage.ToolCallBlock{
 			Type:      "tool-call",
 			ID:        "call-1",
 			Name:      "lookup",
 			Arguments: `{"q":"x"}`,
 		},
 	})
-	user := mustMessage(t, llm.RoleUser, []llm.ContentBlock{
-		llm.TextBlock{
+	user := mustMessage(t, agentmessage.RoleUser, []agentmessage.ContentBlock{
+		agentmessage.TextBlock{
 			Type: "text",
 			Text: "note",
 		},
-		llm.ToolResultBlock{
+		agentmessage.ToolResultBlock{
 			Type:       "tool-result",
 			ToolCallID: "call-1",
 			Content:    nil,
 		},
 	})
-	wireMessages, err := SerializeMessages([]llm.Message{assistant, user})
+	wireMessages, err := SerializeMessages([]agentmessage.Message{assistant, user})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,15 +55,15 @@ func TestSerializeMessagesPreservesDeepSeekReplayRules(t *testing.T) {
 
 func TestSerializeMessagesRejectsNestedImage(t *testing.T) {
 	t.Parallel()
-	entry := mustMessage(t, llm.RoleUser, []llm.ContentBlock{llm.ToolResultBlock{
+	entry := mustMessage(t, agentmessage.RoleUser, []agentmessage.ContentBlock{agentmessage.ToolResultBlock{
 		Type:       "tool-result",
 		ToolCallID: "call-1",
-		Content: []llm.ContentBlock{llm.ImageBlock{
+		Content: []agentmessage.ContentBlock{agentmessage.ImageBlock{
 			Type:       "image",
 			Attachment: attachment.ImageAttachmentRef{},
 		}},
 	}})
-	_, err := SerializeMessages([]llm.Message{entry})
+	_, err := SerializeMessages([]agentmessage.Message{entry})
 	var providerFailure *llm.LlmError
 	if !errors.As(err, &providerFailure) || providerFailure.Code() != "UNSUPPORTED_CONTENT" {
 		t.Fatalf("error = %#v", err)
@@ -117,12 +118,12 @@ func TestSerializeRequestThinkingAndOptionalFields(t *testing.T) {
 	}
 }
 
-func mustMessage(t *testing.T, role llm.MessageRole, content []llm.ContentBlock) llm.Message {
+func mustMessage(t *testing.T, role agentmessage.MessageRole, content []agentmessage.ContentBlock) agentmessage.Message {
 	t.Helper()
-	entry, err := llm.NewMessage(llm.MessageInput{
+	entry, err := agentmessage.NewMessage(agentmessage.MessageInput{
 		Role:    role,
 		Content: content,
-		Source: llm.PluginMessageSource{
+		Source: agentmessage.PluginMessageSource{
 			Plugin: "test",
 		},
 	})

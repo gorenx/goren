@@ -7,8 +7,8 @@ import (
 	"fmt"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/internal/jsonvalue"
-	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/tools"
 )
@@ -47,7 +47,7 @@ func (executor *toolCallExecutor) deactivate() {
 }
 
 type plannedToolCall struct {
-	block llm.ToolCallBlock
+	block agentmessage.ToolCallBlock
 	input tools.ToolExecutionInput
 }
 
@@ -73,7 +73,7 @@ func (executor *toolCallExecutor) execute(
 	requestContext context.Context,
 	turn int64,
 	step int64,
-	blocks []llm.ToolCallBlock,
+	blocks []agentmessage.ToolCallBlock,
 ) (bool, error) {
 	plannedCalls := make([]plannedToolCall, len(blocks))
 	for index, block := range blocks {
@@ -346,7 +346,7 @@ func (executor *toolCallExecutor) appendToolCall(
 	requestContext context.Context,
 	turn int64,
 	step int64,
-	block llm.ToolCallBlock,
+	block agentmessage.ToolCallBlock,
 ) (int64, error) {
 	draft, err := session.NewEventDraft(
 		session.ToolCalled,
@@ -372,7 +372,7 @@ func (executor *toolCallExecutor) appendSkippedToolCall(
 	requestContext context.Context,
 	turn int64,
 	step int64,
-	block llm.ToolCallBlock,
+	block agentmessage.ToolCallBlock,
 ) error {
 	failure := &tools.ToolExecutionFailure{
 		Error: tools.ToolFailure{
@@ -382,8 +382,8 @@ func (executor *toolCallExecutor) appendSkippedToolCall(
 				Code: tools.ToolAbortedBeforeDispatch,
 			},
 		},
-		Content: []llm.ContentBlock{
-			llm.NewTextBlock("Error: tool call aborted before dispatch"),
+		Content: []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock("Error: tool call aborted before dispatch"),
 		},
 	}
 	toolReply, err := toolResultPayload(turn, step, block, failure)
@@ -417,7 +417,7 @@ func (executor *toolCallExecutor) appendToolResult(
 	requestContext context.Context,
 	turn int64,
 	step int64,
-	block llm.ToolCallBlock,
+	block agentmessage.ToolCallBlock,
 	outcome tools.ToolExecutionResult,
 	callSequence int64,
 ) error {
@@ -444,13 +444,13 @@ func (executor *toolCallExecutor) appendToolResult(
 func toolResultPayload(
 	turn int64,
 	step int64,
-	block llm.ToolCallBlock,
+	block agentmessage.ToolCallBlock,
 	outcome tools.ToolExecutionResult,
 ) (session.ToolResult, error) {
 	if outcome == nil {
 		return session.ToolResult{}, errors.New("agentloop: Tool scheduler returned a nil result")
 	}
-	toolReply, err := llm.NewToolResultMessage(llm.ToolResultMessageInput{
+	toolReply, err := agentmessage.NewToolResultMessage(agentmessage.ToolResultMessageInput{
 		CallID:  block.ID,
 		Content: outcome.ContentBlocks(),
 		IsError: outcome.Failed(),

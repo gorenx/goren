@@ -1,4 +1,4 @@
-package llm
+package agentmessage
 
 import (
 	"encoding/json"
@@ -34,7 +34,10 @@ type TextBlock struct {
 
 // NewTextBlock creates one canonical text block.
 func NewTextBlock(content string) TextBlock {
-	return TextBlock{Type: "text", Text: content}
+	return TextBlock{
+		Type: "text",
+		Text: content,
+	}
 }
 
 // ContentType returns the canonical discriminant.
@@ -132,7 +135,11 @@ func (source ToolResultBlock) MarshalJSON() ([]byte, error) {
 		ToolCallID CallID         `json:"toolCallId"`
 		Content    []ContentBlock `json:"content"`
 		IsError    *bool          `json:"isError,omitempty"`
-	}{Type: "tool-result", ToolCallID: source.ToolCallID, Content: content}
+	}{
+		Type:       "tool-result",
+		ToolCallID: source.ToolCallID,
+		Content:    content,
+	}
 	if source.isErrorPresent || source.IsError {
 		isError := source.IsError
 		wireValue.IsError = &isError
@@ -164,7 +171,10 @@ func NewOpaqueContentBlock(typeName string, rawValue json.RawMessage) (OpaqueCon
 	if err := json.Unmarshal(fields["type"], &encodedType); err != nil || encodedType != typeName {
 		return OpaqueContentBlock{}, errors.New("llm: opaque content discriminant does not match")
 	}
-	return OpaqueContentBlock{typeName: typeName, rawValue: detached}, nil
+	return OpaqueContentBlock{
+		typeName: typeName,
+		rawValue: detached,
+	}, nil
 }
 
 // ContentType returns the retained plugin discriminant.

@@ -1,4 +1,4 @@
-package llm
+package agentmessage
 
 import (
 	"encoding/json"
@@ -23,6 +23,13 @@ const (
 
 // ContextSummaryMaxChars is the source-compatible notice-summary bound.
 const ContextSummaryMaxChars = 120
+
+// ContextSnapshotSection is one attributed section of a runtime-context
+// snapshot in model-visible order.
+type ContextSnapshotSection struct {
+	Name string `json:"name"`
+	Text string `json:"text"`
+}
 
 // BoundContextSummary applies the transcript notice bound using UTF-16 code
 // units, matching JavaScript string length for normal Unicode text.
@@ -71,7 +78,9 @@ func (origin PluginMessageSource) CloneSource() (MessageSource, error) {
 		return nil, err
 	}
 	origin.Kind = "plugin"
-	origin.Sections = append([]ContextSnapshotSection(nil), origin.Sections...)
+	if origin.Sections != nil {
+		origin.Sections = append([]ContextSnapshotSection{}, origin.Sections...)
+	}
 	return origin, nil
 }
 
@@ -88,7 +97,11 @@ func (origin PluginMessageSource) MarshalJSON() ([]byte, error) {
 		Form     ContextForm               `json:"form,omitempty"`
 		Sections *[]ContextSnapshotSection `json:"sections,omitempty"`
 		Summary  *string                   `json:"summary,omitempty"`
-	}{Kind: "plugin", Plugin: validated.Plugin, Form: validated.Form}
+	}{
+		Kind:   "plugin",
+		Plugin: validated.Plugin,
+		Form:   validated.Form,
+	}
 	if validated.Form == ContextSnapshot {
 		sectionsCopy := append([]ContextSnapshotSection(nil), validated.Sections...)
 		if sectionsCopy == nil {
@@ -187,7 +200,10 @@ func NewOpaqueMessageSource(kindName string, rawValue json.RawMessage) (OpaqueMe
 	if err = json.Unmarshal(fields["kind"], &encodedKind); err != nil || encodedKind != kindName {
 		return OpaqueMessageSource{}, errors.New("llm: opaque message source discriminant does not match")
 	}
-	return OpaqueMessageSource{kindName: kindName, rawValue: detached}, nil
+	return OpaqueMessageSource{
+		kindName: kindName,
+		rawValue: detached,
+	}, nil
 }
 
 func (origin OpaqueMessageSource) SourceKind() string { return origin.kindName }

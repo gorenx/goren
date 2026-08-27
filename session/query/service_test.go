@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	sesspersist "github.com/gorenx/goren/session/persistence"
@@ -433,12 +433,12 @@ func appendUser(
 	sources *[]int64,
 ) {
 	testingContext.Helper()
-	messageValue, err := llm.NewUserMessage(
-		llm.UserMessageInput{
-			Content: []llm.ContentBlock{
-				llm.NewTextBlock(textValue),
+	messageValue, err := agentmessage.NewUserMessage(
+		agentmessage.UserMessageInput{
+			Content: []agentmessage.ContentBlock{
+				agentmessage.NewTextBlock(textValue),
 			},
-			Source: llm.UserMessageSource{
+			Source: agentmessage.UserMessageSource{
 				Kind: "user",
 			},
 		},
@@ -469,12 +469,12 @@ func appendAssistant(
 	operation session.SurfaceOperation,
 ) {
 	testingContext.Helper()
-	messageValue, err := llm.NewAssistantMessage(
-		llm.AssistantMessageInput{
-			Content: []llm.ContentBlock{
-				llm.NewTextBlock(textValue),
+	messageValue, err := agentmessage.NewAssistantMessage(
+		agentmessage.AssistantMessageInput{
+			Content: []agentmessage.ContentBlock{
+				agentmessage.NewTextBlock(textValue),
 			},
-			Source: llm.ModelMessageSource{
+			Source: agentmessage.ModelMessageSource{
 				Provider: "test",
 				Model:    "test",
 			},

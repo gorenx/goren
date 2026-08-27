@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/subagent"
 	"github.com/gorenx/goren/tools"
 )
@@ -138,8 +138,8 @@ func (adapter *delegationTool) execute(
 	if resolveErr != nil {
 		return nil, resolveErr
 	}
-	prompt := []llm.ContentBlock{
-		llm.NewTextBlock(request.Prompt),
+	prompt := []agentmessage.ContentBlock{
+		agentmessage.NewTextBlock(request.Prompt),
 	}
 	childRequest := subagent.ChildRequest{
 		Prompt:       prompt,
@@ -206,9 +206,9 @@ func (adapter *delegationTool) execute(
 		return nil, stopErr
 	}
 	return json.Marshal(struct {
-		Kind   string             `json:"kind"`
-		RunID  string             `json:"runId"`
-		Output []llm.ContentBlock `json:"output"`
+		Kind   string                      `json:"kind"`
+		RunID  string                      `json:"runId"`
+		Output []agentmessage.ContentBlock `json:"output"`
 	}{
 		Kind:   "foreground",
 		RunID:  string(execution.RunID()),
@@ -269,7 +269,7 @@ func failedTerminal(terminal subagent.Terminal) error {
 func renderOutput(
 	_ json.RawMessage,
 	rawValue json.RawMessage,
-) ([]llm.ContentBlock, error) {
+) ([]agentmessage.ContentBlock, error) {
 	var value struct {
 		Kind       string          `json:"kind"`
 		SubagentID string          `json:"subagentId"`
@@ -279,23 +279,23 @@ func renderOutput(
 		return nil, decodeErr
 	}
 	if value.Kind == "continuable" {
-		return []llm.ContentBlock{
-			llm.NewTextBlock("started subagent " + value.SubagentID),
+		return []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock("started subagent " + value.SubagentID),
 		}, nil
 	}
-	blocks, decodeErr := llm.DecodeContentBlocks(value.Output)
+	blocks, decodeErr := agentmessage.DecodeContentBlocks(value.Output)
 	if decodeErr != nil {
 		return nil, decodeErr
 	}
-	return []llm.ContentBlock{
-		llm.NewTextBlock(visibleText(blocks)),
+	return []agentmessage.ContentBlock{
+		agentmessage.NewTextBlock(visibleText(blocks)),
 	}, nil
 }
 
-func visibleText(content []llm.ContentBlock) string {
+func visibleText(content []agentmessage.ContentBlock) string {
 	var builder strings.Builder
 	for _, block := range content {
-		plainText, matches := block.(llm.PlainTextContent)
+		plainText, matches := block.(agentmessage.PlainTextContent)
 		if !matches {
 			continue
 		}

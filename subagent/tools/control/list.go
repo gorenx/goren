@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 	"github.com/gorenx/goren/tools"
@@ -189,7 +189,7 @@ func (adapter *controlTools) status(childID session.SessionID) string {
 func renderList(
 	rawArguments json.RawMessage,
 	rawValue json.RawMessage,
-) ([]llm.ContentBlock, error) {
+) ([]agentmessage.ContentBlock, error) {
 	var request listArguments
 	if decodeErr := json.Unmarshal(rawArguments, &request); decodeErr != nil {
 		return nil, decodeErr
@@ -202,8 +202,8 @@ func renderList(
 		return nil, decodeErr
 	}
 	if len(entries) == 0 {
-		return []llm.ContentBlock{
-			llm.NewTextBlock("(no subagents)"),
+		return []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock("(no subagents)"),
 		}, nil
 	}
 	lines := make([]string, 0, len(entries))
@@ -239,8 +239,8 @@ func renderList(
 			)
 		}
 	}
-	return []llm.ContentBlock{
-		llm.NewTextBlock(strings.Join(lines, "\n")),
+	return []agentmessage.ContentBlock{
+		agentmessage.NewTextBlock(strings.Join(lines, "\n")),
 	}, nil
 }
 

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent/tools/control"
@@ -124,7 +125,7 @@ func executeSendMessage(
 	parentHandle agent.Handle,
 	childID session.SessionID,
 	messageText string,
-) llm.MessageID {
+) agentmessage.MessageID {
 	t.Helper()
 	arguments, encodeErr := json.Marshal(struct {
 		SubagentID string `json:"subagent_id"`
@@ -160,5 +161,5 @@ func executeSendMessage(
 	if decodeErr := json.Unmarshal(rawValue, &result); decodeErr != nil {
 		t.Fatal(decodeErr)
 	}
-	return llm.MessageID(result.MessageID)
+	return agentmessage.MessageID(result.MessageID)
 }

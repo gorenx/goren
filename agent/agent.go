@@ -6,7 +6,7 @@ import (
 	"context"
 	"reflect"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 )
 
@@ -53,9 +53,9 @@ type Agent interface {
 	Cancel(CancelCause, CancelOptions)
 	WhenIdle(context.Context) error
 	RunMaintenance(context.Context, func(context.Context) error) error
-	Followup(llm.UserMessage) error
-	Steer(llm.UserMessage) error
-	Inject(llm.UserMessage) error
+	Followup(agentmessage.UserMessage) error
+	Steer(agentmessage.UserMessage) error
+	Inject(agentmessage.UserMessage) error
 }
 
 // Same reports whether both values are the exact same process-local Agent

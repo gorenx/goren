@@ -3,7 +3,7 @@ package tools
 import (
 	"encoding/json"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 )
 
 // PreToolDecision is the closed pre-dispatch policy union.
@@ -37,15 +37,15 @@ type PostToolDecision interface {
 
 // AcceptDecision preserves the normalized result and may append next-step context.
 type AcceptDecision struct {
-	AdditionalContexts []llm.UserMessage
+	AdditionalContexts []agentmessage.UserMessage
 }
 
 func (AcceptDecision) postToolDecision() {}
 
 // ReplaceContentDecision replaces only the model-facing projection.
 type ReplaceContentDecision struct {
-	Content            []llm.ContentBlock
-	AdditionalContexts []llm.UserMessage
+	Content            []agentmessage.ContentBlock
+	AdditionalContexts []agentmessage.UserMessage
 }
 
 func (ReplaceContentDecision) postToolDecision() {}
@@ -53,15 +53,15 @@ func (ReplaceContentDecision) postToolDecision() {}
 // ReplaceValueDecision replaces a successful canonical value and re-renders it.
 type ReplaceValueDecision struct {
 	Value              json.RawMessage
-	AdditionalContexts []llm.UserMessage
+	AdditionalContexts []agentmessage.UserMessage
 }
 
 func (ReplaceValueDecision) postToolDecision() {}
 
 // BlockDecision turns corrective feedback into a failed result.
 type BlockDecision struct {
-	Feedback           []llm.ContentBlock
-	AdditionalContexts []llm.UserMessage
+	Feedback           []agentmessage.ContentBlock
+	AdditionalContexts []agentmessage.UserMessage
 }
 
 func (BlockDecision) postToolDecision() {}

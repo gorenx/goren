@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 )
 
@@ -74,12 +74,12 @@ func (*Service) SeedDelegationPolicy(
 	return appendPolicy(requestContext, conversation, PolicyNever, &source)
 }
 
-func policyNotice(previous Policy, selectedPolicy Policy) (llm.UserMessage, error) {
-	return llm.NewUserMessage(llm.UserMessageInput{
-		Content: []llm.ContentBlock{llm.NewTextBlock(fmt.Sprintf(
+func policyNotice(previous Policy, selectedPolicy Policy) (agentmessage.UserMessage, error) {
+	return agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+		Content: []agentmessage.ContentBlock{agentmessage.NewTextBlock(fmt.Sprintf(
 			"The approval policy changed from %q to %q (changed by the user).", previous, selectedPolicy,
 		))},
-		Source: llm.PluginMessageSource{
+		Source: agentmessage.PluginMessageSource{
 			Plugin: "user-approval",
 		},
 	})

@@ -7,21 +7,21 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 )
 
 // NewToolResultContentReplacementDraft preserves the complete original Event
 // data and prepares a replacement that changes only the nested result content.
 func NewToolResultContentReplacementDraft(
 	original Event,
-	content []llm.ContentBlock,
+	content []agentmessage.ContentBlock,
 ) (EventDraft, error) {
 	if original.Type != ToolResultEventName {
 		return EventDraft{}, errors.New(
 			"session: tool/result content replacement must target tool/result",
 		)
 	}
-	detachedContent, err := llm.CloneContentBlocks(content)
+	detachedContent, err := agentmessage.CloneContentBlocks(content)
 	if err != nil {
 		return EventDraft{}, err
 	}

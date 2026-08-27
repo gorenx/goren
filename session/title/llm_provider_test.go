@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 )
@@ -54,7 +55,7 @@ func TestLLMProviderSelectsMessagesRecordsRequestAndReturnsText(t *testing.T) {
 			) (llm.ChunkStream, error) {
 				seen = requestOptions
 				return llm.NewSliceStream([]llm.StreamChunk{
-					llm.BlockEndChunk{Type: "block-end", Index: 0, Block: llm.NewTextBlock("  Generated\t title  ")},
+					llm.BlockEndChunk{Type: "block-end", Index: 0, Block: agentmessage.NewTextBlock("  Generated\t title  ")},
 					llm.FinishChunk{Type: "finish", Reason: llm.StopFinish{Kind: "stop"}},
 				})
 			}}
@@ -83,7 +84,7 @@ func TestLLMProviderSelectsMessagesRecordsRequestAndReturnsText(t *testing.T) {
 				seen.MaxTokens == nil || *seen.MaxTokens != 64 || len(seen.Messages) != 1 || seen.System == nil {
 				t.Fatalf("generate options = %#v", seen)
 			}
-			textValue := seen.Messages[0].ContentValue()[0].(llm.TextBlock).Text
+			textValue := seen.Messages[0].ContentValue()[0].(agentmessage.TextBlock).Text
 			if !strings.Contains(textValue, `{"seq":3,"text":"First prompt"}`) ||
 				(testCase.wantProvider == FirstPromptLLMProviderID && strings.Contains(textValue, "Second prompt")) {
 				t.Fatalf("framed input = %q", textValue)

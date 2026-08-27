@@ -1,4 +1,4 @@
-package llm
+package agentmessage
 
 import (
 	"crypto/rand"
@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 )
+
+// MessageID is the stable identity carried across inbox, Session, and model request boundaries.
+type MessageID string
 
 // MessageRole is the provider-neutral conversation role.
 type MessageRole string
@@ -161,14 +164,24 @@ func NewToolResultMessage(inputSnapshot ToolResultMessageInput) (ToolResultMessa
 		return ToolResultMessage{}, errors.New("llm: tool result needs a callId")
 	}
 	resultBlock := ToolResultBlock{
-		Type: "tool-result", ToolCallID: inputSnapshot.CallID,
-		Content: inputSnapshot.Content, IsError: inputSnapshot.IsError, isErrorPresent: true,
+		Type:           "tool-result",
+		ToolCallID:     inputSnapshot.CallID,
+		Content:        inputSnapshot.Content,
+		IsError:        inputSnapshot.IsError,
+		isErrorPresent: true,
 	}
 	identifier, err := generateMessageID()
 	if err != nil {
 		return ToolResultMessage{}, err
 	}
-	entry, err := restoreMessageValue(identifier, RoleUser, []ContentBlock{resultBlock}, ToolMessageSource{CallID: inputSnapshot.CallID})
+	entry, err := restoreMessageValue(
+		identifier,
+		RoleUser,
+		[]ContentBlock{resultBlock},
+		ToolMessageSource{
+			CallID: inputSnapshot.CallID,
+		},
+	)
 	if err != nil {
 		return ToolResultMessage{}, err
 	}
@@ -215,7 +228,12 @@ func restoreMessageValue(identifier MessageID, roleValue MessageRole, content []
 	if err != nil {
 		return messageValue{}, err
 	}
-	return messageValue{idValue: identifier, roleValue: roleValue, content: detachedContent, origin: detachedOrigin}, nil
+	return messageValue{
+		idValue:   identifier,
+		roleValue: roleValue,
+		content:   detachedContent,
+		origin:    detachedOrigin,
+	}, nil
 }
 
 func (entry messageValue) StableID() MessageID { return entry.idValue }
@@ -243,6 +261,39 @@ func (entry messageValue) SourceValue() MessageSource {
 
 func (entry messageValue) CloneMessage() (Message, error) {
 	return restoreMessageValue(entry.idValue, entry.roleValue, entry.content, entry.origin)
+}
+
+// ReplaceSource returns a detached message with the same identity, role, and
+// content and a new producer source. Specialized message kinds are preserved.
+func ReplaceSource(entry Message, origin MessageSource) (Message, error) {
+	if entry == nil {
+		return nil, errors.New("llm: message is nil")
+	}
+	restored, err := restoreMessageValue(
+		entry.StableID(),
+		entry.ConversationRole(),
+		entry.ContentValue(),
+		origin,
+	)
+	if err != nil {
+		return nil, err
+	}
+	switch entry.(type) {
+	case UserMessage, *UserMessage:
+		return UserMessage{messageValue: restored}, nil
+	case AssistantMessage, *AssistantMessage:
+		if restored.roleValue != RoleAssistant || restored.origin.SourceKind() != "model" {
+			return nil, errors.New("llm: message is not a model assistant message")
+		}
+		return AssistantMessage{messageValue: restored}, nil
+	case ToolResultMessage, *ToolResultMessage:
+		if restored.roleValue != RoleUser || restored.origin.SourceKind() != "tool" {
+			return nil, errors.New("llm: message is not a tool-result message")
+		}
+		return ToolResultMessage{messageValue: restored}, nil
+	default:
+		return restored, nil
+	}
 }
 
 // CloneMessages validates and detaches one ordered conversation.

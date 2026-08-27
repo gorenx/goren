@@ -8,8 +8,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/approval"
-	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/tools"
@@ -79,7 +79,7 @@ func (subject *executionSubject) SessionValue() session.Context {
 	return subject.conversation
 }
 
-func (*executionSubject) Inject(llm.UserMessage) error {
+func (*executionSubject) Inject(agentmessage.UserMessage) error {
 	return nil
 }
 
@@ -223,8 +223,8 @@ func TestPostPolicyCanReplaceValueOrBlock(t *testing.T) {
 		{
 			name: "block",
 			decision: tools.BlockDecision{
-				Feedback: []llm.ContentBlock{
-					llm.NewTextBlock("blocked"),
+				Feedback: []agentmessage.ContentBlock{
+					agentmessage.NewTextBlock("blocked"),
 				},
 			},
 			wantFailed:  true,

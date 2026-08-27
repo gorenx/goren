@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/compaction/toolresultpruner"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/llm/tokenmeter"
@@ -35,7 +36,7 @@ func (stub *meterStub) Measure(
 	return pricedSurface(conversation, 100, 0), nil
 }
 
-func (stub *meterStub) EstimateMessage(llm.Message) (int64, error) {
+func (stub *meterStub) EstimateMessage(agentmessage.Message) (int64, error) {
 	if stub.estimateError != nil {
 		return 0, stub.estimateError
 	}
@@ -333,11 +334,11 @@ func populateConversationFixture(
 				testingContext.Fatal(err)
 			}
 		}
-		userInput, err := llm.NewUserMessage(llm.UserMessageInput{
-			Content: []llm.ContentBlock{
-				llm.NewTextBlock(fmt.Sprintf("%s user %d", text, turn)),
+		userInput, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+			Content: []agentmessage.ContentBlock{
+				agentmessage.NewTextBlock(fmt.Sprintf("%s user %d", text, turn)),
 			},
-			Source: llm.UserMessageSource{},
+			Source: agentmessage.UserMessageSource{},
 		})
 		if err != nil {
 			testingContext.Fatal(err)
@@ -375,11 +376,11 @@ func populateConversationFixture(
 				}
 			}
 		}
-		assistantOutput, err := llm.NewAssistantMessage(llm.AssistantMessageInput{
-			Content: []llm.ContentBlock{
-				llm.NewTextBlock(fmt.Sprintf("%s assistant %d", text, turn)),
+		assistantOutput, err := agentmessage.NewAssistantMessage(agentmessage.AssistantMessageInput{
+			Content: []agentmessage.ContentBlock{
+				agentmessage.NewTextBlock(fmt.Sprintf("%s assistant %d", text, turn)),
 			},
-			Source: llm.ModelMessageSource{
+			Source: agentmessage.ModelMessageSource{
 				Provider: fixtureProvider,
 				Model:    fixtureModel,
 			},
@@ -432,10 +433,10 @@ func populateConversationFixture(
 	}
 }
 
-func textFromBlocks(blocks []llm.ContentBlock) string {
+func textFromBlocks(blocks []agentmessage.ContentBlock) string {
 	combined := ""
 	for _, blockValue := range blocks {
-		textValue, supported := blockValue.(llm.PlainTextContent)
+		textValue, supported := blockValue.(agentmessage.PlainTextContent)
 		if !supported {
 			continue
 		}

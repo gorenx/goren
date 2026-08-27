@@ -7,7 +7,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/toolaskuser"
@@ -126,7 +126,7 @@ func resultText(t *testing.T, outcome toolscore.ToolExecutionResult) string {
 	if len(content) != 1 {
 		t.Fatalf("result content = %#v", content)
 	}
-	textBlock, matches := content[0].(llm.TextBlock)
+	textBlock, matches := content[0].(agentmessage.TextBlock)
 	if !matches {
 		t.Fatalf("result content type = %T", content[0])
 	}

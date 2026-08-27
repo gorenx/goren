@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
@@ -162,16 +162,16 @@ func (terminator *executionTerminator) notifyParent(
 		terminator.handle.Subject.ID(),
 		terminalValue.StopReason,
 	)
-	content := []llm.ContentBlock{
-		llm.NewTextBlock(summary),
+	content := []agentmessage.ContentBlock{
+		agentmessage.NewTextBlock(summary),
 	}
 	if len(terminalValue.Output) == 0 {
-		content = append(content, llm.NewTextBlock("It left no closing message."))
+		content = append(content, agentmessage.NewTextBlock("It left no closing message."))
 	} else {
-		content = append(content, llm.NewTextBlock("Its closing message:"))
+		content = append(content, agentmessage.NewTextBlock("Its closing message:"))
 		content = append(content, terminalValue.Output...)
 	}
-	messageValue, messageErr := llm.NewUserMessage(llm.UserMessageInput{
+	messageValue, messageErr := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
 		Content: content,
 		Source: subagent.SettlementSource{
 			Summary:         summary,
@@ -277,7 +277,7 @@ func executionStopReason(
 func lastAssistant(
 	conversation session.Context,
 	boundary int64,
-) ([]llm.ContentBlock, error) {
+) ([]agentmessage.ContentBlock, error) {
 	if conversation == nil {
 		return nil, errors.New("subagent: child Session is nil")
 	}

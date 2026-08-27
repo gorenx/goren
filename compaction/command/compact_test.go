@@ -6,9 +6,9 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/commands"
 	"github.com/gorenx/goren/compaction"
-	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
@@ -98,13 +98,13 @@ func (*compactAgentFixture) RunMaintenance(
 	return operation(requestContext)
 }
 
-func (*compactAgentFixture) Send(llm.UserMessage, agent.InboxTarget, bool) error { return nil }
+func (*compactAgentFixture) Send(agentmessage.UserMessage, agent.InboxTarget, bool) error { return nil }
 
-func (*compactAgentFixture) Followup(llm.UserMessage) error { return nil }
+func (*compactAgentFixture) Followup(agentmessage.UserMessage) error { return nil }
 
-func (*compactAgentFixture) Steer(llm.UserMessage) error { return nil }
+func (*compactAgentFixture) Steer(agentmessage.UserMessage) error { return nil }
 
-func (*compactAgentFixture) Inject(llm.UserMessage) error { return nil }
+func (*compactAgentFixture) Inject(agentmessage.UserMessage) error { return nil }
 
 func TestCompactReportsSuccessAndForwardsCommandProvenance(t *testing.T) {
 	subject := newCompactAgentFixture(t)

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/compaction"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
@@ -114,7 +115,7 @@ func (completion *attemptCompletion) Build(
 		}
 		return completion.buildFailure()
 	}
-	summarySnapshot, err := llm.CloneContentBlocks(
+	summarySnapshot, err := agentmessage.CloneContentBlocks(
 		completion.replacement.generated.summary,
 	)
 	if err != nil {

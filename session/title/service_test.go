@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
@@ -389,12 +390,12 @@ func appendTitleFixtureHuman(
 	text string,
 ) int64 {
 	testingContext.Helper()
-	messageValue, err := llm.NewUserMessage(
-		llm.UserMessageInput{
-			Content: []llm.ContentBlock{
-				llm.NewTextBlock(text),
+	messageValue, err := agentmessage.NewUserMessage(
+		agentmessage.UserMessageInput{
+			Content: []agentmessage.ContentBlock{
+				agentmessage.NewTextBlock(text),
 			},
-			Source: llm.UserMessageSource{
+			Source: agentmessage.UserMessageSource{
 				Kind: "user",
 			},
 		},

@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/credentials"
 	credentialslocal "github.com/gorenx/goren/credentials/local"
-	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/llm/deepseek"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/subagent"
@@ -79,6 +79,16 @@ func TestRealProviderForegroundOneShot(t *testing.T) {
 	if providerErr != nil {
 		t.Fatal(providerErr)
 	}
+	durability := newIntegrationDurability(t)
+	providerPlugins := append(
+		[]plugin.Plugin(nil),
+		durability.plugins...,
+	)
+	providerPlugins = append(
+		providerPlugins,
+		credentialManager,
+		providerPlugin,
+	)
 	maxTokens := 64
 	state := newIntegrationFixtureWithConfiguration(
 		t,
@@ -88,10 +98,7 @@ func TestRealProviderForegroundOneShot(t *testing.T) {
 				Model:     deepseek.DefaultModelID,
 				MaxTokens: &maxTokens,
 			},
-			plugins: []plugin.Plugin{
-				credentialManager,
-				providerPlugin,
-			},
+			plugins: providerPlugins,
 			delegation: subagentdelegation.Settings{
 				SeedBuilder:           spawn.DefaultSeedBuilderName,
 				ToolName:              subagentdelegation.DefaultToolName,
@@ -146,7 +153,7 @@ func TestRealProviderForegroundOneShot(t *testing.T) {
 func visibleResultText(outcome tools.ToolExecutionResult) string {
 	var result strings.Builder
 	for _, block := range outcome.ContentBlocks() {
-		plain, matches := block.(llm.PlainTextContent)
+		plain, matches := block.(agentmessage.PlainTextContent)
 		if !matches {
 			continue
 		}

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 )
@@ -446,8 +447,8 @@ func appendUser(
 	testingContext.Helper()
 	messageValue := mustUserMessage(
 		testingContext,
-		[]llm.ContentBlock{
-			llm.NewTextBlock(textValue),
+		[]agentmessage.ContentBlock{
+			agentmessage.NewTextBlock(textValue),
 		},
 	)
 	draft, err := session.NewSurfaceEventDraft(session.UserMessageAdded,
@@ -512,7 +513,7 @@ func appendSuccessfulCall(
 		},
 		llm.BlockEndChunk{
 			Index: 0,
-			Block: llm.NewTextBlock(providerText),
+			Block: agentmessage.NewTextBlock(providerText),
 		},
 	}
 	for _, chunkValue := range chunks {
@@ -664,15 +665,15 @@ func appendAssistantWithSources(
 	return committed.Seq
 }
 
-func newAssistantMessage(testingContext *testing.T, textValue string) llm.AssistantMessage {
+func newAssistantMessage(testingContext *testing.T, textValue string) agentmessage.AssistantMessage {
 	testingContext.Helper()
-	content := []llm.ContentBlock{}
+	content := []agentmessage.ContentBlock{}
 	if textValue != "" {
-		content = append(content, llm.NewTextBlock(textValue))
+		content = append(content, agentmessage.NewTextBlock(textValue))
 	}
-	messageValue, err := llm.NewAssistantMessage(llm.AssistantMessageInput{
+	messageValue, err := agentmessage.NewAssistantMessage(agentmessage.AssistantMessageInput{
 		Content: content,
-		Source: llm.ModelMessageSource{
+		Source: agentmessage.ModelMessageSource{
 			Provider: "mock",
 			Model:    "model-a",
 		},

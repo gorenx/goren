@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 )
 
 func TestSubagentMessageSourcesCanonicalizeTheirForms(t *testing.T) {
@@ -17,7 +17,7 @@ func TestSubagentMessageSourcesCanonicalizeTheirForms(t *testing.T) {
 	}
 	coordinatorValue := coordinatorSnapshot.(CoordinatorSource)
 	if coordinatorValue.Kind != "coordinator" ||
-		coordinatorValue.Form != llm.ContextRelay {
+		coordinatorValue.Form != agentmessage.ContextRelay {
 		t.Fatalf("coordinator source = %#v", coordinatorValue)
 	}
 
@@ -29,12 +29,12 @@ func TestSubagentMessageSourcesCanonicalizeTheirForms(t *testing.T) {
 	}
 	reportValue := reportSnapshot.(ReportSource)
 	if reportValue.Kind != "subagent-report" ||
-		reportValue.Form != llm.ContextRelay {
+		reportValue.Form != agentmessage.ContextRelay {
 		t.Fatalf("report source = %#v", reportValue)
 	}
 
 	settledSource, err := (SettlementSource{
-		Summary:         strings.Repeat("x", llm.ContextSummaryMaxChars+10),
+		Summary:         strings.Repeat("x", agentmessage.ContextSummaryMaxChars+10),
 		SenderSessionID: "child",
 	}).CloneSource()
 	if err != nil {
@@ -42,8 +42,8 @@ func TestSubagentMessageSourcesCanonicalizeTheirForms(t *testing.T) {
 	}
 	settledValue := settledSource.(SettlementSource)
 	if settledValue.Kind != "subagent-settled" ||
-		settledValue.Form != llm.ContextNotice ||
-		settledValue.Summary != llm.BoundContextSummary(strings.Repeat("x", llm.ContextSummaryMaxChars+10)) {
+		settledValue.Form != agentmessage.ContextNotice ||
+		settledValue.Summary != agentmessage.BoundContextSummary(strings.Repeat("x", agentmessage.ContextSummaryMaxChars+10)) {
 		t.Fatalf("settled source = %#v", settledValue)
 	}
 }
@@ -55,7 +55,7 @@ func TestSubagentMessageSourcesRejectInvalidAuthorityData(t *testing.T) {
 		t.Fatal("empty coordinator sender accepted")
 	}
 	_, err = (ReportSource{
-		Form:            llm.ContextNotice,
+		Form:            agentmessage.ContextNotice,
 		SenderSessionID: "child",
 	}).CloneSource()
 	if err == nil {

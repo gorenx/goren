@@ -9,7 +9,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 )
 
@@ -20,11 +20,11 @@ const InboxCanceled InboxOutcome = "canceled"
 
 // InboxSplice is the durable normalized mutation owned by Agent Inbox.
 type InboxSplice struct {
-	Target       InboxTarget       `json:"target"`
-	Start        int               `json:"start"`
-	RemovedCount *int              `json:"removedCount,omitempty"`
-	Inserted     []llm.UserMessage `json:"inserted"`
-	Outcome      InboxOutcome      `json:"outcome,omitempty"`
+	Target       InboxTarget                `json:"target"`
+	Start        int                        `json:"start"`
+	RemovedCount *int                       `json:"removedCount,omitempty"`
+	Inserted     []agentmessage.UserMessage `json:"inserted"`
+	Outcome      InboxOutcome               `json:"outcome,omitempty"`
 }
 
 const InboxSplicedEventName = "agent/inbox/spliced"
@@ -34,14 +34,14 @@ var InboxSpliced = session.DefineEvent[InboxSplice](InboxSplicedEventName)
 
 // InboxNotifications publishes committed projection changes.
 type InboxNotifications interface {
-	Inserted(llm.UserMessage)
-	Discarded(llm.UserMessage)
-	Claimed(llm.UserMessage, int64)
+	Inserted(agentmessage.UserMessage)
+	Discarded(agentmessage.UserMessage)
+	Claimed(agentmessage.UserMessage, int64)
 }
 
 type inboxState struct {
-	nextTurn []llm.UserMessage
-	nextStep []llm.UserMessage
+	nextTurn []agentmessage.UserMessage
+	nextStep []agentmessage.UserMessage
 }
 
 // Inbox is a replay-once, incrementally updated projection of durable splices.
@@ -82,7 +82,7 @@ func NewInbox(conversation session.Context, notifications InboxNotifications) (*
 }
 
 // NextTurn returns a detached snapshot of prompts awaiting individual turns.
-func (pending *Inbox) NextTurn() []llm.UserMessage {
+func (pending *Inbox) NextTurn() []agentmessage.UserMessage {
 	pending.stateMu.RLock()
 	defer pending.stateMu.RUnlock()
 	result, _ := cloneUserMessages(pending.state.nextTurn)
@@ -90,7 +90,7 @@ func (pending *Inbox) NextTurn() []llm.UserMessage {
 }
 
 // NextStep returns a detached snapshot of input awaiting the next step.
-func (pending *Inbox) NextStep() []llm.UserMessage {
+func (pending *Inbox) NextStep() []agentmessage.UserMessage {
 	pending.stateMu.RLock()
 	defer pending.stateMu.RUnlock()
 	result, _ := cloneUserMessages(pending.state.nextStep)
@@ -116,7 +116,7 @@ func (pending *Inbox) Clear() error {
 }
 
 // Claim removes a complete step batch without classifying it as canceled.
-func (pending *Inbox) Claim(target InboxTarget, turn int64) ([]llm.UserMessage, error) {
+func (pending *Inbox) Claim(target InboxTarget, turn int64) ([]agentmessage.UserMessage, error) {
 	if target != NextTurn && target != NextStep {
 		return nil, fmt.Errorf("agent: unsupported Inbox target %q", target)
 	}
@@ -139,32 +139,32 @@ func (pending *Inbox) Claim(target InboxTarget, turn int64) ([]llm.UserMessage, 
 	return claimed, nil
 }
 
-func (pending *Inbox) Append(target InboxTarget, message llm.UserMessage) error {
+func (pending *Inbox) Append(target InboxTarget, message agentmessage.UserMessage) error {
 	pending.operationMu.Lock()
 	defer pending.operationMu.Unlock()
-	_, err := pending.mutateLocked(target, pending.length(target), 0, []llm.UserMessage{message}, true)
+	_, err := pending.mutateLocked(target, pending.length(target), 0, []agentmessage.UserMessage{message}, true)
 	return err
 }
 
-func (pending *Inbox) Prepend(target InboxTarget, message llm.UserMessage) error {
+func (pending *Inbox) Prepend(target InboxTarget, message agentmessage.UserMessage) error {
 	pending.operationMu.Lock()
 	defer pending.operationMu.Unlock()
-	_, err := pending.mutateLocked(target, 0, 0, []llm.UserMessage{message}, true)
+	_, err := pending.mutateLocked(target, 0, 0, []agentmessage.UserMessage{message}, true)
 	return err
 }
 
-func (pending *Inbox) Replace(messageID llm.MessageID, replacement llm.UserMessage) (bool, error) {
+func (pending *Inbox) Replace(messageID agentmessage.MessageID, replacement agentmessage.UserMessage) (bool, error) {
 	pending.operationMu.Lock()
 	defer pending.operationMu.Unlock()
 	target, index, found := pending.locate(messageID)
 	if !found {
 		return false, nil
 	}
-	_, err := pending.mutateLocked(target, index, 1, []llm.UserMessage{replacement}, true)
+	_, err := pending.mutateLocked(target, index, 1, []agentmessage.UserMessage{replacement}, true)
 	return err == nil, err
 }
 
-func (pending *Inbox) Remove(messageID llm.MessageID) (bool, error) {
+func (pending *Inbox) Remove(messageID agentmessage.MessageID) (bool, error) {
 	pending.operationMu.Lock()
 	defer pending.operationMu.Unlock()
 	target, index, found := pending.locate(messageID)
@@ -176,7 +176,7 @@ func (pending *Inbox) Remove(messageID llm.MessageID) (bool, error) {
 }
 
 // Splice applies Go slice coordinates and records the normalized mutation.
-func (pending *Inbox) Splice(target InboxTarget, start int, deleteCount int, inserted []llm.UserMessage) ([]llm.UserMessage, error) {
+func (pending *Inbox) Splice(target InboxTarget, start int, deleteCount int, inserted []agentmessage.UserMessage) ([]agentmessage.UserMessage, error) {
 	pending.operationMu.Lock()
 	defer pending.operationMu.Unlock()
 	return pending.mutateLocked(target, start, deleteCount, inserted, true)
@@ -186,9 +186,9 @@ func (pending *Inbox) mutateLocked(
 	target InboxTarget,
 	start int,
 	deleteCount int,
-	inserted []llm.UserMessage,
+	inserted []agentmessage.UserMessage,
 	discardRemoved bool,
-) ([]llm.UserMessage, error) {
+) ([]agentmessage.UserMessage, error) {
 	pending.stateMu.RLock()
 	queue, err := pending.targetLocked(target)
 	if err != nil {
@@ -204,7 +204,7 @@ func (pending *Inbox) mutateLocked(
 	actualDelete := min(max(deleteCount, 0), len(queue)-actualStart)
 	pending.stateMu.RUnlock()
 	if actualDelete == 0 && len(inserted) == 0 {
-		return []llm.UserMessage{}, nil
+		return []agentmessage.UserMessage{}, nil
 	}
 	insertedSnapshot, err := cloneUserMessages(inserted)
 	if err != nil {
@@ -255,7 +255,7 @@ func (pending *Inbox) mutateLocked(
 	return removed, nil
 }
 
-func (pending *Inbox) apply(mutation InboxSplice) ([]llm.UserMessage, error) {
+func (pending *Inbox) apply(mutation InboxSplice) ([]agentmessage.UserMessage, error) {
 	pending.stateMu.Lock()
 	defer pending.stateMu.Unlock()
 	if err := pending.validateLocked(mutation); err != nil {
@@ -274,7 +274,7 @@ func (pending *Inbox) apply(mutation InboxSplice) ([]llm.UserMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	updated := make([]llm.UserMessage, 0, len(queue)-removedCount+len(replacement))
+	updated := make([]agentmessage.UserMessage, 0, len(queue)-removedCount+len(replacement))
 	updated = append(updated, queue[:mutation.Start]...)
 	updated = append(updated, replacement...)
 	updated = append(updated, queue[mutation.Start+removedCount:]...)
@@ -305,11 +305,11 @@ func (pending *Inbox) validateLocked(mutation InboxSplice) error {
 	if err != nil {
 		return err
 	}
-	candidate := make([]llm.UserMessage, 0, len(queue)-removedCount+len(insertedSnapshot))
+	candidate := make([]agentmessage.UserMessage, 0, len(queue)-removedCount+len(insertedSnapshot))
 	candidate = append(candidate, queue[:mutation.Start]...)
 	candidate = append(candidate, insertedSnapshot...)
 	candidate = append(candidate, queue[mutation.Start+removedCount:]...)
-	seen := make(map[llm.MessageID]struct{}, len(candidate)+len(pending.state.nextTurn)+len(pending.state.nextStep))
+	seen := make(map[agentmessage.MessageID]struct{}, len(candidate)+len(pending.state.nextTurn)+len(pending.state.nextStep))
 	if mutation.Target == NextTurn {
 		err = addUniqueMessages(seen, candidate)
 		if err == nil {
@@ -324,7 +324,7 @@ func (pending *Inbox) validateLocked(mutation InboxSplice) error {
 	return err
 }
 
-func (pending *Inbox) targetLocked(target InboxTarget) ([]llm.UserMessage, error) {
+func (pending *Inbox) targetLocked(target InboxTarget) ([]agentmessage.UserMessage, error) {
 	switch target {
 	case NextTurn:
 		return pending.state.nextTurn, nil
@@ -342,7 +342,7 @@ func (pending *Inbox) length(target InboxTarget) int {
 	return len(queue)
 }
 
-func (pending *Inbox) locate(messageID llm.MessageID) (InboxTarget, int, bool) {
+func (pending *Inbox) locate(messageID agentmessage.MessageID) (InboxTarget, int, bool) {
 	pending.stateMu.RLock()
 	defer pending.stateMu.RUnlock()
 	for _, target := range []InboxTarget{NextTurn, NextStep} {
@@ -356,7 +356,7 @@ func (pending *Inbox) locate(messageID llm.MessageID) (InboxTarget, int, bool) {
 	return "", 0, false
 }
 
-func addUniqueMessages(seen map[llm.MessageID]struct{}, messages []llm.UserMessage) error {
+func addUniqueMessages(seen map[agentmessage.MessageID]struct{}, messages []agentmessage.UserMessage) error {
 	for _, message := range messages {
 		identifier := message.StableID()
 		if identifier == "" {
@@ -370,10 +370,10 @@ func addUniqueMessages(seen map[llm.MessageID]struct{}, messages []llm.UserMessa
 	return nil
 }
 
-func cloneUserMessages(messages []llm.UserMessage) ([]llm.UserMessage, error) {
-	result := make([]llm.UserMessage, len(messages))
+func cloneUserMessages(messages []agentmessage.UserMessage) ([]agentmessage.UserMessage, error) {
+	result := make([]agentmessage.UserMessage, len(messages))
 	for index, message := range messages {
-		copyValue, err := llm.CloneUserMessage(message)
+		copyValue, err := agentmessage.CloneUserMessage(message)
 		if err != nil {
 			return nil, fmt.Errorf("agent: clone pending message %d: %w", index, err)
 		}
@@ -445,9 +445,9 @@ func (mutation *InboxSplice) UnmarshalJSON(encoded []byte) error {
 	if err := json.Unmarshal(wireValue.Inserted, &rawMessages); err != nil {
 		return errors.New("agent: Inbox splice inserted must be an array")
 	}
-	inserted := make([]llm.UserMessage, len(rawMessages))
+	inserted := make([]agentmessage.UserMessage, len(rawMessages))
 	for index, rawValue := range rawMessages {
-		message, err := llm.DecodeUserMessage(rawValue)
+		message, err := agentmessage.DecodeUserMessage(rawValue)
 		if err != nil {
 			return fmt.Errorf("agent: invalid inserted message %d: %w", index, err)
 		}

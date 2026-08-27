@@ -3,7 +3,7 @@ package session
 import (
 	"context"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 )
 
 // Reader is the detached observation contract offered outside the
@@ -16,7 +16,7 @@ type Reader interface {
 	Events() []Event
 	Surface() Surface
 	Snapshot() Snapshot
-	DeriveMessages() ([]llm.Message, error)
+	DeriveMessages() ([]agentmessage.Message, error)
 }
 
 // Writer is the sole external mutation contract. Every Commit enters the

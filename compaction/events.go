@@ -3,6 +3,7 @@ package compaction
 import (
 	"encoding/json"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 )
@@ -23,43 +24,43 @@ type Start struct {
 
 // Summary records safe output, shadow pricing, provenance, and model call facts.
 type Summary struct {
-	CompactionID       ID                 `json:"compactionId"`
-	SourceCommandID    *string            `json:"sourceCommandId,omitempty"`
-	Summary            []llm.ContentBlock `json:"summary"`
-	RawOutput          []llm.ContentBlock `json:"rawOutput,omitempty"`
-	LLMStreamCall      bool               `json:"llmStreamCall,omitempty"`
-	ShadowedRange      SurfaceRange       `json:"shadowedRange"`
-	ShadowedSeqs       []int64            `json:"shadowedSeqs"`
-	ShadowedTokenCount int64              `json:"shadowedTokenCount"`
-	Provider           string             `json:"provider"`
-	Model              string             `json:"model"`
-	MaxTokens          *int               `json:"maxTokens,omitempty"`
-	Usage              *llm.TokenUsage    `json:"usage,omitempty"`
+	CompactionID       ID                          `json:"compactionId"`
+	SourceCommandID    *string                     `json:"sourceCommandId,omitempty"`
+	Summary            []agentmessage.ContentBlock `json:"summary"`
+	RawOutput          []agentmessage.ContentBlock `json:"rawOutput,omitempty"`
+	LLMStreamCall      bool                        `json:"llmStreamCall,omitempty"`
+	ShadowedRange      SurfaceRange                `json:"shadowedRange"`
+	ShadowedSeqs       []int64                     `json:"shadowedSeqs"`
+	ShadowedTokenCount int64                       `json:"shadowedTokenCount"`
+	Provider           string                      `json:"provider"`
+	Model              string                      `json:"model"`
+	MaxTokens          *int                        `json:"maxTokens,omitempty"`
+	Usage              *llm.TokenUsage             `json:"usage,omitempty"`
 }
 
 // MarshalJSON preserves the merge-extended rawOutput/llmStreamCall union.
 // A marked LLM call must retain rawOutput even when that output is empty.
 func (entry Summary) MarshalJSON() ([]byte, error) {
 	type wireSummary struct {
-		CompactionID       ID                  `json:"compactionId"`
-		SourceCommandID    *string             `json:"sourceCommandId,omitempty"`
-		Summary            []llm.ContentBlock  `json:"summary"`
-		RawOutput          *[]llm.ContentBlock `json:"rawOutput,omitempty"`
-		LLMStreamCall      *bool               `json:"llmStreamCall,omitempty"`
-		ShadowedRange      SurfaceRange        `json:"shadowedRange"`
-		ShadowedSeqs       []int64             `json:"shadowedSeqs"`
-		ShadowedTokenCount int64               `json:"shadowedTokenCount"`
-		Provider           string              `json:"provider"`
-		Model              string              `json:"model"`
-		MaxTokens          *int                `json:"maxTokens,omitempty"`
-		Usage              *llm.TokenUsage     `json:"usage,omitempty"`
+		CompactionID       ID                           `json:"compactionId"`
+		SourceCommandID    *string                      `json:"sourceCommandId,omitempty"`
+		Summary            []agentmessage.ContentBlock  `json:"summary"`
+		RawOutput          *[]agentmessage.ContentBlock `json:"rawOutput,omitempty"`
+		LLMStreamCall      *bool                        `json:"llmStreamCall,omitempty"`
+		ShadowedRange      SurfaceRange                 `json:"shadowedRange"`
+		ShadowedSeqs       []int64                      `json:"shadowedSeqs"`
+		ShadowedTokenCount int64                        `json:"shadowedTokenCount"`
+		Provider           string                       `json:"provider"`
+		Model              string                       `json:"model"`
+		MaxTokens          *int                         `json:"maxTokens,omitempty"`
+		Usage              *llm.TokenUsage              `json:"usage,omitempty"`
 	}
 
-	var rawOutput *[]llm.ContentBlock
+	var rawOutput *[]agentmessage.ContentBlock
 	if entry.RawOutput != nil || entry.LLMStreamCall {
-		detached := append([]llm.ContentBlock(nil), entry.RawOutput...)
+		detached := append([]agentmessage.ContentBlock(nil), entry.RawOutput...)
 		if detached == nil {
-			detached = []llm.ContentBlock{}
+			detached = []agentmessage.ContentBlock{}
 		}
 		rawOutput = &detached
 	}

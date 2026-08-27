@@ -8,14 +8,15 @@ import (
 	"io"
 	"strings"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 )
 
 // SelectAssistantOutput returns the last non-empty assistant message, or
 // accumulated text deltas when no such message was committed.
-func SelectAssistantOutput(events []session.Event) ([]llm.ContentBlock, error) {
-	var message []llm.ContentBlock
+func SelectAssistantOutput(events []session.Event) ([]agentmessage.ContentBlock, error) {
+	var message []agentmessage.ContentBlock
 	var partial strings.Builder
 	for _, committed := range events {
 		switch committed.Type {
@@ -41,12 +42,12 @@ func SelectAssistantOutput(events []session.Event) ([]llm.ContentBlock, error) {
 	if partial.Len() == 0 {
 		return nil, nil
 	}
-	return []llm.ContentBlock{
-		llm.NewTextBlock(partial.String()),
+	return []agentmessage.ContentBlock{
+		agentmessage.NewTextBlock(partial.String()),
 	}, nil
 }
 
-func decodeMessage(committed session.Event) ([]llm.ContentBlock, error) {
+func decodeMessage(committed session.Event) ([]agentmessage.ContentBlock, error) {
 	var wireValue struct {
 		Turn    int64           `json:"turn"`
 		Step    int64           `json:"step"`
@@ -66,7 +67,7 @@ func decodeMessage(committed session.Event) ([]llm.ContentBlock, error) {
 			committed.Seq,
 		)
 	}
-	messageValue, messageErr := llm.DecodeMessage(wireValue.Message)
+	messageValue, messageErr := agentmessage.DecodeMessage(wireValue.Message)
 	if messageErr != nil {
 		return nil, fmt.Errorf(
 			"subagent: decode assistant/message payload at Session seq %d: %w",
@@ -74,7 +75,7 @@ func decodeMessage(committed session.Event) ([]llm.ContentBlock, error) {
 			messageErr,
 		)
 	}
-	assistantMessage, matches := messageValue.(llm.AssistantMessage)
+	assistantMessage, matches := messageValue.(agentmessage.AssistantMessage)
 	if !matches {
 		return nil, errors.New(
 			"subagent: assistant/message contains a non-assistant message",

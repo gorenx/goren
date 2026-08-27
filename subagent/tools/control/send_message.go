@@ -5,7 +5,7 @@ import (
 	"errors"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 	"github.com/gorenx/goren/tools"
@@ -45,13 +45,13 @@ func (adapter *controlTools) sendMessageDefinition() tools.ToolDefinition {
 			Renderer: tools.OutputRendererFunc(func(
 				rawArguments json.RawMessage,
 				_ json.RawMessage,
-			) ([]llm.ContentBlock, error) {
+			) ([]agentmessage.ContentBlock, error) {
 				var request sendMessageArguments
 				if decodeErr := json.Unmarshal(rawArguments, &request); decodeErr != nil {
 					return nil, decodeErr
 				}
-				return []llm.ContentBlock{
-					llm.NewTextBlock(
+				return []agentmessage.ContentBlock{
+					agentmessage.NewTextBlock(
 						"message queued as the next turn for subagent " + request.SubagentID,
 					),
 				}, nil
@@ -77,8 +77,8 @@ func (adapter *controlTools) sendMessage(
 		runContext.Context,
 		parentAgent,
 		session.SessionID(request.SubagentID),
-		[]llm.ContentBlock{
-			llm.NewTextBlock(request.Message),
+		[]agentmessage.ContentBlock{
+			agentmessage.NewTextBlock(request.Message),
 		},
 		subagent.FollowupOptions{
 			Source: subagent.CoordinatorSource{

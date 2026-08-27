@@ -4,15 +4,15 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/compaction"
-	"github.com/gorenx/goren/llm"
 )
 
 // regionReplacement is one summarized checkpoint ready to replace its baseline.
 type regionReplacement struct {
 	baseline   baseline
 	generated  summaryResult
-	checkpoint llm.UserMessage
+	checkpoint agentmessage.UserMessage
 }
 
 func (owner *regionCompactor) buildReplacement(
@@ -41,7 +41,7 @@ func (owner *regionCompactor) buildReplacement(
 	if err != nil {
 		return regionReplacement{}, err
 	}
-	checkpoint, err := llm.NewUserMessage(llm.UserMessageInput{
+	checkpoint, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
 		Content: framedSummary,
 		Source:  origin,
 	})

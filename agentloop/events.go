@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 )
 
 // observerFailureReporter contains failures that occur after a live fact has
@@ -114,7 +114,7 @@ type inboxEventBridge struct {
 	events *agentEventPublisher
 }
 
-func (bridge inboxEventBridge) Inserted(input llm.UserMessage) {
+func (bridge inboxEventBridge) Inserted(input agentmessage.UserMessage) {
 	if err := bridge.events.subject.scopeRuntime.Dispatch(
 		context.Background(),
 		agent.InboxInserted{
@@ -126,7 +126,7 @@ func (bridge inboxEventBridge) Inserted(input llm.UserMessage) {
 	}
 }
 
-func (bridge inboxEventBridge) Discarded(input llm.UserMessage) {
+func (bridge inboxEventBridge) Discarded(input agentmessage.UserMessage) {
 	if err := bridge.events.subject.scopeRuntime.Dispatch(
 		context.Background(),
 		agent.InboxDiscarded{
@@ -139,7 +139,7 @@ func (bridge inboxEventBridge) Discarded(input llm.UserMessage) {
 }
 
 func (bridge inboxEventBridge) Claimed(
-	input llm.UserMessage,
+	input agentmessage.UserMessage,
 	turn int64,
 ) {
 	if err := bridge.events.subject.scopeRuntime.Dispatch(

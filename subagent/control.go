@@ -4,13 +4,13 @@ import (
 	"context"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 )
 
 // FollowupOptions carries durable attribution for a later child message.
 type FollowupOptions struct {
-	Source llm.MessageSource
+	Source agentmessage.MessageSource
 }
 
 // InterruptAuthority is the closed authorization union for interrupting an
@@ -42,9 +42,9 @@ type ChildControl interface {
 		context.Context,
 		agent.Agent,
 		session.SessionID,
-		[]llm.ContentBlock,
+		[]agentmessage.ContentBlock,
 		FollowupOptions,
-	) (llm.MessageID, error)
+	) (agentmessage.MessageID, error)
 	Interrupt(
 		context.Context,
 		session.SessionID,

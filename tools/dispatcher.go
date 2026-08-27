@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/internal/jsonvalue"
-	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 )
 
@@ -238,7 +238,7 @@ func (bodyDispatcher *dispatcher) success(
 			"output.render failed: "+err.Error(),
 		)
 	}
-	content, err = llm.CloneContentBlocks(content)
+	content, err = agentmessage.CloneContentBlocks(content)
 	if err != nil {
 		return nil, outputError(
 			toolCall.Name,
@@ -328,7 +328,7 @@ func invokeRenderer(
 	renderer OutputRenderer,
 	arguments json.RawMessage,
 	value json.RawMessage,
-) (content []llm.ContentBlock, invokeErr error) {
+) (content []agentmessage.ContentBlock, invokeErr error) {
 	defer func() {
 		if panicValue := recover(); panicValue != nil {
 			invokeErr = fmt.Errorf("%v", panicValue)

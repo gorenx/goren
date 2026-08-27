@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 	subagentdelegation "github.com/gorenx/goren/subagent/tools/delegation"
@@ -25,7 +26,7 @@ func TestReportExtensionDeliversChildSelectedContentToParent(t *testing.T) {
 			{
 				llm.BlockEndChunk{
 					Index: 0,
-					Block: llm.ToolCallBlock{
+					Block: agentmessage.ToolCallBlock{
 						ID:        "report-call-1",
 						Name:      "report",
 						Arguments: `{"output":"selected report content"}`,
@@ -287,13 +288,13 @@ func hasToolSchema(schemas []llm.ToolSchema, selectedName string) bool {
 	return false
 }
 
-func hasUserContent(messages []llm.Message, selectedText string) bool {
+func hasUserContent(messages []agentmessage.Message, selectedText string) bool {
 	for _, messageValue := range messages {
-		if messageValue.ConversationRole() != llm.RoleUser {
+		if messageValue.ConversationRole() != agentmessage.RoleUser {
 			continue
 		}
 		for _, block := range messageValue.ContentValue() {
-			plain, matches := block.(llm.PlainTextContent)
+			plain, matches := block.(agentmessage.PlainTextContent)
 			if !matches {
 				continue
 			}
@@ -307,7 +308,7 @@ func hasUserContent(messages []llm.Message, selectedText string) bool {
 }
 
 func hasReportSource(
-	messages []llm.Message,
+	messages []agentmessage.Message,
 	selectedText string,
 	senderID session.SessionID,
 ) bool {
@@ -321,17 +322,17 @@ func hasReportSource(
 			continue
 		}
 		var source struct {
-			Kind            string            `json:"kind"`
-			Form            llm.ContextForm   `json:"form"`
-			SenderSessionID session.SessionID `json:"senderSessionId"`
+			Kind            string                   `json:"kind"`
+			Form            agentmessage.ContextForm `json:"form"`
+			SenderSessionID session.SessionID        `json:"senderSessionId"`
 		}
 		if decodeErr := json.Unmarshal(rawOrigin, &source); decodeErr != nil ||
 			source.Kind != "subagent-report" ||
-			source.Form != llm.ContextRelay ||
+			source.Form != agentmessage.ContextRelay ||
 			source.SenderSessionID != senderID {
 			continue
 		}
-		if hasUserContent([]llm.Message{messageValue}, selectedText) {
+		if hasUserContent([]agentmessage.Message{messageValue}, selectedText) {
 			return true
 		}
 	}

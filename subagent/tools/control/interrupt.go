@@ -5,7 +5,7 @@ import (
 	"errors"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 	"github.com/gorenx/goren/tools"
@@ -43,13 +43,13 @@ func (adapter *controlTools) interruptDefinition() tools.ToolDefinition {
 			Renderer: tools.OutputRendererFunc(func(
 				rawArguments json.RawMessage,
 				_ json.RawMessage,
-			) ([]llm.ContentBlock, error) {
+			) ([]agentmessage.ContentBlock, error) {
 				var request interruptArguments
 				if decodeErr := json.Unmarshal(rawArguments, &request); decodeErr != nil {
 					return nil, decodeErr
 				}
-				return []llm.ContentBlock{
-					llm.NewTextBlock(
+				return []agentmessage.ContentBlock{
+					agentmessage.NewTextBlock(
 						"interrupt requested for agent " + request.AgentID,
 					),
 				}, nil

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm/tokenmeter"
 	"github.com/gorenx/goren/session"
 )
@@ -22,11 +22,11 @@ func TestReadSurfaceRetriesUntilMeasurementAndSnapshotShareRevision(t *testing.T
 			measureCalls++
 			measured := pricedSurface(current, 100, 0)
 			if measureCalls == 1 {
-				messageValue, err := llm.NewUserMessage(llm.UserMessageInput{
-					Content: []llm.ContentBlock{
-						llm.NewTextBlock("written after pricing"),
+				messageValue, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+					Content: []agentmessage.ContentBlock{
+						agentmessage.NewTextBlock("written after pricing"),
 					},
-					Source: llm.UserMessageSource{},
+					Source: agentmessage.UserMessageSource{},
 				})
 				if err != nil {
 					return tokenmeter.Measurement{}, err

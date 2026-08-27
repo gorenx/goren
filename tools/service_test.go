@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/tools"
@@ -150,9 +150,9 @@ func objectTool(
 			Renderer: tools.OutputRendererFunc(func(
 				_ json.RawMessage,
 				value json.RawMessage,
-			) ([]llm.ContentBlock, error) {
-				return []llm.ContentBlock{
-					llm.NewTextBlock(string(value)),
+			) ([]agentmessage.ContentBlock, error) {
+				return []agentmessage.ContentBlock{
+					agentmessage.NewTextBlock(string(value)),
 				}, nil
 			}),
 		},

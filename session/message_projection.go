@@ -4,13 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 )
 
-func decodeDerivedMessage(entry Event) (llm.Message, error) {
+func decodeDerivedMessage(entry Event) (agentmessage.Message, error) {
 	switch entry.Type {
 	case UserMessageEventName:
-		return llm.DecodeUserMessage(entry.Data)
+		return agentmessage.DecodeUserMessage(entry.Data)
 	case AssistantMessageEventName:
 		var wireValue struct {
 			Turn    int64           `json:"turn"`
@@ -21,11 +21,11 @@ func decodeDerivedMessage(entry Event) (llm.Message, error) {
 		if err := decodeSessionPayload(entry.Data, &wireValue); err != nil {
 			return nil, err
 		}
-		messageValue, err := llm.DecodeMessage(wireValue.Message)
+		messageValue, err := agentmessage.DecodeMessage(wireValue.Message)
 		if err != nil {
 			return nil, err
 		}
-		typedMessage, ok := messageValue.(llm.AssistantMessage)
+		typedMessage, ok := messageValue.(agentmessage.AssistantMessage)
 		if !ok {
 			return nil, errors.New("session: assistant/message contains a non-assistant message")
 		}
@@ -42,11 +42,11 @@ func decodeDerivedMessage(entry Event) (llm.Message, error) {
 		if err := json.Unmarshal(entry.Data, &wireValue); err != nil {
 			return nil, err
 		}
-		messageValue, err := llm.DecodeMessage(wireValue.Message)
+		messageValue, err := agentmessage.DecodeMessage(wireValue.Message)
 		if err != nil {
 			return nil, err
 		}
-		typedMessage, ok := messageValue.(llm.ToolResultMessage)
+		typedMessage, ok := messageValue.(agentmessage.ToolResultMessage)
 		if !ok {
 			return nil, errors.New("session: tool/result contains a non-tool-result message")
 		}
@@ -59,6 +59,6 @@ func decodeDerivedMessage(entry Event) (llm.Message, error) {
 // DeriveEventMessage projects one detached Session event through the same
 // owner-defined mapping used by Surface reconstruction. Non-message events and
 // empty assistant anchors return nil without an error.
-func DeriveEventMessage(entry Event) (llm.Message, error) {
+func DeriveEventMessage(entry Event) (agentmessage.Message, error) {
 	return decodeDerivedMessage(cloneEvent(entry))
 }

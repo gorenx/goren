@@ -8,7 +8,7 @@ import (
 	"fmt"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
@@ -228,9 +228,9 @@ func (owner *Service) Start(
 	if createErr != nil {
 		return nil, createErr
 	}
-	prompt, messageErr := llm.NewUserMessage(llm.UserMessageInput{
+	prompt, messageErr := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
 		Content: requestSnapshot.Prompt,
-		Source: llm.UserMessageSource{
+		Source: agentmessage.UserMessageSource{
 			Kind: "user",
 		},
 	})

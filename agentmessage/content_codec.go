@@ -1,4 +1,4 @@
-package llm
+package agentmessage
 
 import (
 	"bytes"
@@ -22,7 +22,7 @@ func DecodeContentBlocks(rawValue json.RawMessage) ([]ContentBlock, error) {
 	}
 	blocks := make([]ContentBlock, 0, len(encoded))
 	for index, blockJSON := range encoded {
-		entry, err := decodeContentBlock(blockJSON)
+		entry, err := DecodeContentBlock(blockJSON)
 		if err != nil {
 			return nil, fmt.Errorf("llm: content block %d: %w", index, err)
 		}
@@ -31,7 +31,9 @@ func DecodeContentBlocks(rawValue json.RawMessage) ([]ContentBlock, error) {
 	return blocks, nil
 }
 
-func decodeContentBlock(rawValue json.RawMessage) (ContentBlock, error) {
+// DecodeContentBlock restores one core content variant or losslessly preserves
+// one extension variant as an OpaqueContentBlock.
+func DecodeContentBlock(rawValue json.RawMessage) (ContentBlock, error) {
 	if !jsonvalue.IsObject(rawValue) {
 		return nil, errors.New("content block must be an object")
 	}
@@ -106,8 +108,11 @@ func (entry *ToolResultBlock) UnmarshalJSON(rawValue []byte) error {
 		}
 	}
 	*entry = ToolResultBlock{
-		Type: "tool-result", ToolCallID: encoded.ToolCallID, Content: nested,
-		IsError: isError, isErrorPresent: isErrorPresent,
+		Type:           "tool-result",
+		ToolCallID:     encoded.ToolCallID,
+		Content:        nested,
+		IsError:        isError,
+		isErrorPresent: isErrorPresent,
 	}
 	return nil
 }

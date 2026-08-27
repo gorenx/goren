@@ -14,6 +14,7 @@ import (
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agent/scopedplugin"
 	"github.com/gorenx/goren/agentloop"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
@@ -1261,7 +1262,7 @@ func TestTurnFlushCompletesBeforeAgentBecomesIdle(t *testing.T) {
 			{
 				llm.BlockEndChunk{
 					Index: 0,
-					Block: llm.NewTextBlock("done"),
+					Block: agentmessage.NewTextBlock("done"),
 				},
 				llm.FinishChunk{
 					Reason: llm.StopFinish{},
@@ -1332,7 +1333,7 @@ type parallelToolControl struct {
 	secondSettled chan struct{}
 	releaseFirst  chan struct{}
 	mutex         sync.Mutex
-	settled       []llm.CallID
+	settled       []agentmessage.CallID
 }
 
 func (control *parallelToolControl) run(
@@ -1354,10 +1355,10 @@ func (control *parallelToolControl) run(
 	return json.RawMessage(`{"callId":"` + string(callID) + `"}`), nil
 }
 
-func (control *parallelToolControl) settledOrder() []llm.CallID {
+func (control *parallelToolControl) settledOrder() []agentmessage.CallID {
 	control.mutex.Lock()
 	defer control.mutex.Unlock()
-	return append([]llm.CallID(nil), control.settled...)
+	return append([]agentmessage.CallID(nil), control.settled...)
 }
 
 func TestParallelToolBodiesCommitResultsAndContextInModelOrder(t *testing.T) {
@@ -1366,7 +1367,7 @@ func TestParallelToolBodiesCommitResultsAndContextInModelOrder(t *testing.T) {
 		{
 			llm.BlockEndChunk{
 				Index: 0,
-				Block: llm.NewTextBlock("done"),
+				Block: agentmessage.NewTextBlock("done"),
 			},
 			llm.FinishChunk{
 				Reason: llm.StopFinish{},
@@ -1408,7 +1409,7 @@ func TestParallelToolBodiesCommitResultsAndContextInModelOrder(t *testing.T) {
 	waitForIdle(t, handleState.Subject)
 	if settled := control.settledOrder(); !reflect.DeepEqual(
 		settled,
-		[]llm.CallID{"call-2", "call-1"},
+		[]agentmessage.CallID{"call-2", "call-1"},
 	) {
 		t.Fatalf("Tool body settlement = %#v", settled)
 	}
@@ -1436,7 +1437,7 @@ func TestMaintenanceWakeKeepsWhenIdleBehindSuccessorTurn(t *testing.T) {
 		{
 			llm.BlockEndChunk{
 				Index: 0,
-				Block: llm.NewTextBlock("done"),
+				Block: agentmessage.NewTextBlock("done"),
 			},
 			llm.FinishChunk{
 				Reason: llm.StopFinish{},
@@ -1628,7 +1629,7 @@ func TestRequestErrorRetryRepeatsAttemptInsideOneStep(t *testing.T) {
 		{
 			llm.BlockEndChunk{
 				Index: 0,
-				Block: llm.NewTextBlock("recovered"),
+				Block: agentmessage.NewTextBlock("recovered"),
 			},
 			llm.FinishChunk{
 				Reason: llm.StopFinish{},
@@ -1717,9 +1718,9 @@ func registerEchoTool(t *testing.T, state *harnessFixture) {
 				Renderer: tools.OutputRendererFunc(func(
 					_ json.RawMessage,
 					value json.RawMessage,
-				) ([]llm.ContentBlock, error) {
-					return []llm.ContentBlock{
-						llm.NewTextBlock(string(value)),
+				) ([]agentmessage.ContentBlock, error) {
+					return []agentmessage.ContentBlock{
+						agentmessage.NewTextBlock(string(value)),
 					}, nil
 				}),
 			},
@@ -1742,7 +1743,7 @@ func modelResponses() [][]llm.StreamChunk {
 		{
 			llm.BlockEndChunk{
 				Index: 0,
-				Block: llm.ToolCallBlock{
+				Block: agentmessage.ToolCallBlock{
 					ID:        "call-1",
 					Name:      "echo",
 					Arguments: `{"value":"hello"}`,
@@ -1755,7 +1756,7 @@ func modelResponses() [][]llm.StreamChunk {
 		{
 			llm.BlockEndChunk{
 				Index: 0,
-				Block: llm.NewTextBlock("done"),
+				Block: agentmessage.NewTextBlock("done"),
 			},
 			llm.FinishChunk{
 				Reason: llm.StopFinish{},
@@ -1764,13 +1765,13 @@ func modelResponses() [][]llm.StreamChunk {
 	}
 }
 
-func userMessage(t *testing.T, content string) llm.UserMessage {
+func userMessage(t *testing.T, content string) agentmessage.UserMessage {
 	t.Helper()
-	message, err := llm.NewUserMessage(llm.UserMessageInput{
-		Content: []llm.ContentBlock{
-			llm.NewTextBlock(content),
+	message, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+		Content: []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock(content),
 		},
-		Source: llm.UserMessageSource{},
+		Source: agentmessage.UserMessageSource{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1820,12 +1821,12 @@ func waitForIdle(t *testing.T, subject agent.Agent) {
 	}
 }
 
-func userMessageValue(content string) llm.UserMessage {
-	message, err := llm.NewUserMessage(llm.UserMessageInput{
-		Content: []llm.ContentBlock{
-			llm.NewTextBlock(content),
+func userMessageValue(content string) agentmessage.UserMessage {
+	message, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+		Content: []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock(content),
 		},
-		Source: llm.UserMessageSource{},
+		Source: agentmessage.UserMessageSource{},
 	})
 	if err != nil {
 		panic(err)
@@ -1833,14 +1834,14 @@ func userMessageValue(content string) llm.UserMessage {
 	return message
 }
 
-func toolCallResponse(callIDs ...llm.CallID) []llm.StreamChunk {
+func toolCallResponse(callIDs ...agentmessage.CallID) []llm.StreamChunk {
 	response := make([]llm.StreamChunk, 0, len(callIDs)+1)
 	for index, callID := range callIDs {
 		response = append(
 			response,
 			llm.BlockEndChunk{
 				Index: index,
-				Block: llm.ToolCallBlock{
+				Block: agentmessage.ToolCallBlock{
 					ID:        callID,
 					Name:      "parallel",
 					Arguments: `{"value":true}`,
@@ -1876,9 +1877,9 @@ func registerParallelTool(
 				Renderer: tools.OutputRendererFunc(func(
 					_ json.RawMessage,
 					value json.RawMessage,
-				) ([]llm.ContentBlock, error) {
-					return []llm.ContentBlock{
-						llm.NewTextBlock(string(value)),
+				) ([]agentmessage.ContentBlock, error) {
+					return []agentmessage.ContentBlock{
+						agentmessage.NewTextBlock(string(value)),
 					}, nil
 				}),
 			},
@@ -1917,7 +1918,7 @@ func lastTurnEnd(
 	return turnEndObservation{}
 }
 
-func messageTexts(messages []llm.Message) []string {
+func messageTexts(messages []agentmessage.Message) []string {
 	texts := make([]string, 0, len(messages))
 	for _, message := range messages {
 		blocks := message.ContentValue()
@@ -1926,13 +1927,13 @@ func messageTexts(messages []llm.Message) []string {
 			continue
 		}
 		switch block := blocks[0].(type) {
-		case llm.TextBlock:
+		case agentmessage.TextBlock:
 			texts = append(texts, block.Text)
-		case llm.ToolCallBlock:
+		case agentmessage.ToolCallBlock:
 			texts = append(texts, "tool-call:"+block.Name)
-		case llm.ToolResultBlock:
+		case agentmessage.ToolResultBlock:
 			if len(block.Content) == 1 {
-				if textBlock, ok := block.Content[0].(llm.TextBlock); ok {
+				if textBlock, ok := block.Content[0].(agentmessage.TextBlock); ok {
 					texts = append(texts, textBlock.Text)
 					continue
 				}

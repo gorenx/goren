@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/compaction"
-	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/llm/tokenmeter"
 	"github.com/gorenx/goren/session"
 )
@@ -28,7 +28,7 @@ func (*pricingStub) Measure(
 	return tokenmeter.Measurement{}, nil
 }
 
-func (stub *pricingStub) EstimateMessage(llm.Message) (int64, error) {
+func (stub *pricingStub) EstimateMessage(agentmessage.Message) (int64, error) {
 	stub.estimateHit++
 	if stub.failOnCall != 0 && stub.estimateHit == stub.failOnCall {
 		return 0, errors.New("price failed")
@@ -43,9 +43,9 @@ func TestPruneContentUsesCodePointsAndPreservesRichBlockOrder(t *testing.T) {
 		HeadChars:      pointerToInt(4),
 		TailChars:      pointerToInt(3),
 	})
-	measured, err := implementation.MeasureContent([]llm.ContentBlock{
-		llm.NewTextBlock("a😀b"),
-		llm.ReasoningBlock{
+	measured, err := implementation.MeasureContent([]agentmessage.ContentBlock{
+		agentmessage.NewTextBlock("a😀b"),
+		agentmessage.ReasoningBlock{
 			Type: "reasoning",
 			Text: "not measured",
 		},
@@ -54,38 +54,38 @@ func TestPruneContentUsesCodePointsAndPreservesRichBlockOrder(t *testing.T) {
 		t.Fatalf("measured = %d, %v", measured, err)
 	}
 
-	reasoningValue := llm.ReasoningBlock{
+	reasoningValue := agentmessage.ReasoningBlock{
 		Type: "reasoning",
 		Text: "private-rich-block",
 	}
-	callValue := llm.ToolCallBlock{
+	callValue := agentmessage.ToolCallBlock{
 		Type:      "tool-call",
 		ID:        "nested",
 		Name:      "nested",
 		Arguments: `{}`,
 	}
-	pruned, changed, err := implementation.PruneContent([]llm.ContentBlock{
-		llm.NewTextBlock(strings.Repeat("A", 40)),
+	pruned, changed, err := implementation.PruneContent([]agentmessage.ContentBlock{
+		agentmessage.NewTextBlock(strings.Repeat("A", 40)),
 		reasoningValue,
-		llm.NewTextBlock(strings.Repeat("B", 30)),
+		agentmessage.NewTextBlock(strings.Repeat("B", 30)),
 		callValue,
-		llm.NewTextBlock(strings.Repeat("C", 30)),
+		agentmessage.NewTextBlock(strings.Repeat("C", 30)),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []llm.ContentBlock{
-		llm.NewTextBlock("AAAA" + PruneMarker),
+	want := []agentmessage.ContentBlock{
+		agentmessage.NewTextBlock("AAAA" + PruneMarker),
 		reasoningValue,
 		callValue,
-		llm.NewTextBlock("CCC"),
+		agentmessage.NewTextBlock("CCC"),
 	}
 	if !changed || !reflect.DeepEqual(pruned, want) {
 		t.Fatalf("pruned = %#v, changed = %t", pruned, changed)
 	}
 
-	emojiBlocks, changed, err := implementation.PruneContent([]llm.ContentBlock{
-		llm.NewTextBlock(strings.Repeat("😀", 60)),
+	emojiBlocks, changed, err := implementation.PruneContent([]agentmessage.ContentBlock{
+		agentmessage.NewTextBlock(strings.Repeat("😀", 60)),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -93,7 +93,7 @@ func TestPruneContentUsesCodePointsAndPreservesRichBlockOrder(t *testing.T) {
 	if !changed || len(emojiBlocks) != 1 {
 		t.Fatalf("emoji prune = %#v, %t", emojiBlocks, changed)
 	}
-	emojiText := emojiBlocks[0].(llm.TextBlock).Text
+	emojiText := emojiBlocks[0].(agentmessage.TextBlock).Text
 	if emojiText != strings.Repeat("😀", 4)+PruneMarker+strings.Repeat("😀", 3) ||
 		strings.ContainsRune(emojiText, '\uFFFD') {
 		t.Fatalf("emoji text = %q", emojiText)
@@ -107,13 +107,13 @@ func TestPruneContentSkipsWithinBudgetAndPreservesOpaqueTextFields(t *testing.T)
 		HeadChars:      pointerToInt(2),
 		TailChars:      pointerToInt(1),
 	})
-	withinBudget := []llm.ContentBlock{llm.NewTextBlock("short")}
+	withinBudget := []agentmessage.ContentBlock{agentmessage.NewTextBlock("short")}
 	pruned, changed, err := implementation.PruneContent(withinBudget)
 	if err != nil || changed || pruned != nil {
 		t.Fatalf("within budget = %#v, %t, %v", pruned, changed, err)
 	}
 
-	opaqueBlocks, err := llm.DecodeContentBlocks(json.RawMessage(
+	opaqueBlocks, err := agentmessage.DecodeContentBlocks(json.RawMessage(
 		`[{"type":"text","text":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx","style":"kept"}]`,
 	))
 	if err != nil {
@@ -156,8 +156,8 @@ func TestPruneSessionCommitsShadowPriceAndReplacementAdjacently(t *testing.T) {
 		t,
 		conversation,
 		"call-1",
-		[]llm.ContentBlock{
-			llm.NewTextBlock(strings.Repeat("x", 100)),
+		[]agentmessage.ContentBlock{
+			agentmessage.NewTextBlock(strings.Repeat("x", 100)),
 		},
 		true,
 		errorInfo,
@@ -209,9 +209,9 @@ func TestPruneSessionCommitsShadowPriceAndReplacementAdjacently(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	replacementMessage := replacementValue.(llm.ToolResultMessage)
+	replacementMessage := replacementValue.(agentmessage.ToolResultMessage)
 	if replacementMessage.StableID() != originalMessage.StableID() ||
-		replacementMessage.SourceValue().(llm.ToolMessageSource).CallID != "call-1" {
+		replacementMessage.SourceValue().(agentmessage.ToolMessageSource).CallID != "call-1" {
 		t.Fatalf("replacement message identity = %#v", replacementMessage)
 	}
 	var replacementPayload struct {
@@ -257,7 +257,7 @@ func TestPruneSessionCommitsNothingWhenPlanBuildFails(t *testing.T) {
 		t,
 		conversation,
 		"call-a",
-		[]llm.ContentBlock{llm.NewTextBlock(strings.Repeat("a", 100))},
+		[]agentmessage.ContentBlock{agentmessage.NewTextBlock(strings.Repeat("a", 100))},
 		false,
 		nil,
 		nil,
@@ -266,7 +266,7 @@ func TestPruneSessionCommitsNothingWhenPlanBuildFails(t *testing.T) {
 		t,
 		conversation,
 		"call-b",
-		[]llm.ContentBlock{llm.NewTextBlock(strings.Repeat("b", 100))},
+		[]agentmessage.ContentBlock{agentmessage.NewTextBlock(strings.Repeat("b", 100))},
 		false,
 		nil,
 		nil,
@@ -300,7 +300,7 @@ func TestPruneSessionPreservesMergeExtendedToolResultData(t *testing.T) {
 		t,
 		sourceSession,
 		"call-extended",
-		[]llm.ContentBlock{llm.NewTextBlock(strings.Repeat("z", 100))},
+		[]agentmessage.ContentBlock{agentmessage.NewTextBlock(strings.Repeat("z", 100))},
 		false,
 		nil,
 		nil,
@@ -396,14 +396,14 @@ func newPrunerSession(
 func appendToolResultFixture(
 	testingContext *testing.T,
 	conversation session.Context,
-	callID llm.CallID,
-	content []llm.ContentBlock,
+	callID agentmessage.CallID,
+	content []agentmessage.ContentBlock,
 	isError bool,
 	errorInfo *session.ToolErrorInfo,
 	metadata json.RawMessage,
-) (int64, llm.ToolResultMessage) {
+) (int64, agentmessage.ToolResultMessage) {
 	testingContext.Helper()
-	messageValue, err := llm.NewToolResultMessage(llm.ToolResultMessageInput{
+	messageValue, err := agentmessage.NewToolResultMessage(agentmessage.ToolResultMessageInput{
 		CallID:  callID,
 		Content: content,
 		IsError: isError,

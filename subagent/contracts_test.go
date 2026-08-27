@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
@@ -59,8 +59,8 @@ func TestStartCommandOwnsItsChildRequest(t *testing.T) {
 	maxDepth := int64(3)
 	persona := "reviewer"
 	input := subagent.ChildRequest{
-		Prompt: []llm.ContentBlock{
-			llm.NewTextBlock("inspect"),
+		Prompt: []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock("inspect"),
 		},
 		AgentOptions: &agent.Options{
 			Provider:  "provider",

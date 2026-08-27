@@ -6,9 +6,9 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/connection"
-	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 )
 
@@ -17,7 +17,7 @@ type pendingApproval struct {
 	sessionID  SessionID
 	requestID  approval.RequestID
 	toolName   string
-	callID     *llm.CallID
+	callID     *agentmessage.CallID
 	reason     *string
 	waiting    *PendingResponse[approval.Outcome]
 	settlement interactionSettlement
@@ -204,14 +204,14 @@ func decodeApprovalResponse(
 	}
 }
 
-func sameCallID(leftValue *llm.CallID, rightValue *llm.CallID) bool {
+func sameCallID(leftValue *agentmessage.CallID, rightValue *agentmessage.CallID) bool {
 	if leftValue == nil || rightValue == nil {
 		return leftValue == nil && rightValue == nil
 	}
 	return *leftValue == *rightValue
 }
 
-func cloneCallID(source *llm.CallID) *llm.CallID {
+func cloneCallID(source *agentmessage.CallID) *agentmessage.CallID {
 	if source == nil {
 		return nil
 	}

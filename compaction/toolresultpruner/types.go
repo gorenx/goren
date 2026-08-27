@@ -5,7 +5,7 @@ package toolresultpruner
 import (
 	"context"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
@@ -37,7 +37,7 @@ type ResolvedConfig struct {
 type Entry struct {
 	OriginalSeq    int64
 	ReplacementSeq int64
-	CallID         llm.CallID
+	CallID         agentmessage.CallID
 	CharsBefore    int
 	CharsAfter     int
 }
@@ -51,7 +51,7 @@ type Result struct {
 // Pruner is the optional model-free companion Service.
 type Pruner interface {
 	plugin.Service
-	MeasureContent([]llm.ContentBlock) (int, error)
-	PruneContent([]llm.ContentBlock) ([]llm.ContentBlock, bool, error)
+	MeasureContent([]agentmessage.ContentBlock) (int, error)
+	PruneContent([]agentmessage.ContentBlock) ([]agentmessage.ContentBlock, bool, error)
 	PruneSession(context.Context, session.Context) (Result, error)
 }

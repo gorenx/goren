@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	agentcore "github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/userquestions"
@@ -166,19 +166,19 @@ func (*questionSubject) WhenIdle(context.Context) error {
 	return nil
 }
 
-func (*questionSubject) Send(llm.UserMessage, agentcore.InboxTarget, bool) error {
+func (*questionSubject) Send(agentmessage.UserMessage, agentcore.InboxTarget, bool) error {
 	return nil
 }
 
-func (*questionSubject) Followup(llm.UserMessage) error {
+func (*questionSubject) Followup(agentmessage.UserMessage) error {
 	return nil
 }
 
-func (*questionSubject) Steer(llm.UserMessage) error {
+func (*questionSubject) Steer(agentmessage.UserMessage) error {
 	return nil
 }
 
-func (*questionSubject) Inject(llm.UserMessage) error {
+func (*questionSubject) Inject(agentmessage.UserMessage) error {
 	return nil
 }
 

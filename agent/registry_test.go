@@ -11,7 +11,7 @@ import (
 	"time"
 
 	agentcore "github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
@@ -54,12 +54,12 @@ func (*fakeAgent) RunMaintenance(
 ) error {
 	return operation(requestContext)
 }
-func (*fakeAgent) Send(llm.UserMessage, agentcore.InboxTarget, bool) error {
+func (*fakeAgent) Send(agentmessage.UserMessage, agentcore.InboxTarget, bool) error {
 	return nil
 }
-func (*fakeAgent) Followup(llm.UserMessage) error { return nil }
-func (*fakeAgent) Steer(llm.UserMessage) error    { return nil }
-func (*fakeAgent) Inject(llm.UserMessage) error   { return nil }
+func (*fakeAgent) Followup(agentmessage.UserMessage) error { return nil }
+func (*fakeAgent) Steer(agentmessage.UserMessage) error    { return nil }
+func (*fakeAgent) Inject(agentmessage.UserMessage) error   { return nil }
 
 func newFakeAgent(t *testing.T, identifier session.SessionID) *fakeAgent {
 	t.Helper()

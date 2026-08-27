@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/compaction"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
@@ -192,7 +193,7 @@ func TestPressureAndBreakdownTrackSurfaceAndMeteredCompaction(t *testing.T) {
 		draft, err := session.NewEventDraft(compaction.SummaryEvent,
 			compaction.Summary{
 				CompactionID: transactionID,
-				Summary:      []llm.ContentBlock{llm.NewTextBlock("summary")},
+				Summary:      []agentmessage.ContentBlock{agentmessage.NewTextBlock("summary")},
 				ShadowedRange: compaction.SurfaceRange{
 					Start: firstSeq,
 					End:   lastSeq,
@@ -209,11 +210,11 @@ func TestPressureAndBreakdownTrackSurfaceAndMeteredCompaction(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	replacement, err := llm.NewUserMessage(llm.UserMessageInput{
-		Content: []llm.ContentBlock{
-			llm.NewTextBlock("summary"),
+	replacement, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+		Content: []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock("summary"),
 		},
-		Source: llm.PluginMessageSource{
+		Source: agentmessage.PluginMessageSource{
 			Plugin: "tokenmeter-test",
 		},
 	})
@@ -286,8 +287,8 @@ func TestSurfaceProjectionRejectsAdjacentMismatchedClaim(t *testing.T) {
 	}
 	replacement := mustUserMessage(
 		t,
-		[]llm.ContentBlock{
-			llm.NewTextBlock("replacement"),
+		[]agentmessage.ContentBlock{
+			agentmessage.NewTextBlock("replacement"),
 		},
 	)
 	sources := []int64{firstSeq, lastSeq}

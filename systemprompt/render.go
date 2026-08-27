@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 )
 
 const contextSnapshotPrefix = "Current runtime context. This snapshot supersedes earlier runtime-context snapshots."
@@ -27,15 +27,15 @@ func RenderPrompt(assembled PromptAssembly) (string, error) {
 }
 
 // RenderContextSections interpolates and attributes every non-empty context.
-func RenderContextSections(assembled PromptAssembly) ([]llm.ContextSnapshotSection, error) {
-	resolvedSections := make([]llm.ContextSnapshotSection, 0, len(assembled.Contexts))
+func RenderContextSections(assembled PromptAssembly) ([]agentmessage.ContextSnapshotSection, error) {
+	resolvedSections := make([]agentmessage.ContextSnapshotSection, 0, len(assembled.Contexts))
 	for _, entry := range assembled.Contexts {
 		resolved, err := interpolate(entry.Name, entry.Text, "context", assembled.Variables)
 		if err != nil {
 			return nil, err
 		}
 		if resolved != "" {
-			resolvedSections = append(resolvedSections, llm.ContextSnapshotSection{Name: entry.Name, Text: resolved})
+			resolvedSections = append(resolvedSections, agentmessage.ContextSnapshotSection{Name: entry.Name, Text: resolved})
 		}
 	}
 	return resolvedSections, nil
@@ -43,7 +43,7 @@ func RenderContextSections(assembled PromptAssembly) ([]llm.ContextSnapshotSecti
 
 // JoinContextSections renders the canonical superseding-snapshot prefix and
 // joins already-rendered context sections.
-func JoinContextSections(sections []llm.ContextSnapshotSection) string {
+func JoinContextSections(sections []agentmessage.ContextSnapshotSection) string {
 	parts := make([]string, len(sections))
 	for index, entry := range sections {
 		parts[index] = entry.Text

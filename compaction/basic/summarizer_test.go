@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/compaction"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
@@ -64,7 +65,7 @@ func TestLLMSummarizerRejectsUnsafeOrIncompleteOutput(t *testing.T) {
 			chunks: []llm.StreamChunk{
 				llm.BlockEndChunk{
 					Index: 0,
-					Block: llm.ImageBlock{},
+					Block: agentmessage.ImageBlock{},
 				},
 				llm.FinishChunk{
 					Reason: llm.StopFinish{},

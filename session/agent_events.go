@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 )
 
@@ -160,19 +161,19 @@ type AssistantChunk struct {
 
 // AssistantMessage records one assembled model response and optional usage.
 type AssistantMessage struct {
-	Turn    int64                `json:"turn"`
-	Step    int64                `json:"step"`
-	Message llm.AssistantMessage `json:"message"`
-	Usage   *llm.TokenUsage      `json:"usage,omitempty"`
+	Turn    int64                         `json:"turn"`
+	Step    int64                         `json:"step"`
+	Message agentmessage.AssistantMessage `json:"message"`
+	Usage   *llm.TokenUsage               `json:"usage,omitempty"`
 }
 
 // ToolCall records the exact raw model arguments before host execution.
 type ToolCall struct {
-	Turn      int64      `json:"turn"`
-	Step      int64      `json:"step"`
-	CallID    llm.CallID `json:"callId"`
-	Name      string     `json:"name"`
-	Arguments string     `json:"arguments"`
+	Turn      int64               `json:"turn"`
+	Step      int64               `json:"step"`
+	CallID    agentmessage.CallID `json:"callId"`
+	Name      string              `json:"name"`
+	Arguments string              `json:"arguments"`
 }
 
 // ToolErrorInfo is stable internal failure-routing metadata.
@@ -183,11 +184,11 @@ type ToolErrorInfo struct {
 
 // ToolResult records one model-facing result with optional host metadata.
 type ToolResult struct {
-	Turn    int64                 `json:"turn"`
-	Step    int64                 `json:"step"`
-	Message llm.ToolResultMessage `json:"message"`
-	Error   *ToolErrorInfo        `json:"error,omitempty"`
-	Meta    json.RawMessage       `json:"meta,omitempty"`
+	Turn    int64                          `json:"turn"`
+	Step    int64                          `json:"step"`
+	Message agentmessage.ToolResultMessage `json:"message"`
+	Error   *ToolErrorInfo                 `json:"error,omitempty"`
+	Meta    json.RawMessage                `json:"meta,omitempty"`
 }
 
 // EpochHeader is the complete non-message state for one reconstructed request.
@@ -225,7 +226,7 @@ var (
 	TurnEnded         = DefineEvent[TurnEnd](TurnEndEventName)
 	StepStarted       = DefineEvent[StepPosition](StepStartEventName)
 	StepEnded         = DefineEvent[StepPosition](StepEndEventName)
-	UserMessageAdded  = defineSurfaceEvent[llm.UserMessage](UserMessageEventName)
+	UserMessageAdded  = defineSurfaceEvent[agentmessage.UserMessage](UserMessageEventName)
 	AssistantChunked  = DefineEvent[AssistantChunk](AssistantChunkEventName)
 	AssistantMessaged = defineSurfaceEvent[AssistantMessage](AssistantMessageEventName)
 	ToolCalled        = DefineEvent[ToolCall](ToolCallEventName)

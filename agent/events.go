@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 )
@@ -60,7 +61,7 @@ func (StatusChanged) EventDelivery() plugin.DeliveryPolicy {
 // InboxInserted carries one committed live Inbox insertion.
 type InboxInserted struct {
 	Subject Agent
-	Message llm.UserMessage
+	Message agentmessage.UserMessage
 }
 
 func (InboxInserted) AgentScopedRuntimeEvent() {}
@@ -72,7 +73,7 @@ func (InboxInserted) EventDelivery() plugin.DeliveryPolicy {
 // InboxClaimed carries one committed Inbox claim.
 type InboxClaimed struct {
 	Subject Agent
-	Message llm.UserMessage
+	Message agentmessage.UserMessage
 	Turn    int64
 }
 
@@ -85,7 +86,7 @@ func (InboxClaimed) EventDelivery() plugin.DeliveryPolicy {
 // InboxDiscarded carries one committed Inbox removal without execution.
 type InboxDiscarded struct {
 	Subject Agent
-	Message llm.UserMessage
+	Message agentmessage.UserMessage
 }
 
 func (InboxDiscarded) AgentScopedRuntimeEvent() {}
@@ -128,7 +129,7 @@ const (
 type PreStepNotice struct {
 	plugin.WaterfallInputBase
 	Subject  Agent
-	Messages []llm.UserMessage
+	Messages []agentmessage.UserMessage
 	Turn     int64
 	Step     int64
 }
@@ -137,7 +138,7 @@ type PreStepNotice struct {
 type PreStepDecision struct {
 	plugin.WaterfallOutputBase
 	Kind     PreStepKind
-	Messages []llm.UserMessage
+	Messages []agentmessage.UserMessage
 }
 
 // RequestNotice identifies the step whose immutable call config is resolving.

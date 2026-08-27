@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
@@ -60,13 +60,13 @@ func (*commandAgentFixture) RunMaintenance(
 	return operation(requestContext)
 }
 
-func (*commandAgentFixture) Send(llm.UserMessage, agent.InboxTarget, bool) error { return nil }
+func (*commandAgentFixture) Send(agentmessage.UserMessage, agent.InboxTarget, bool) error { return nil }
 
-func (*commandAgentFixture) Followup(llm.UserMessage) error { return nil }
+func (*commandAgentFixture) Followup(agentmessage.UserMessage) error { return nil }
 
-func (*commandAgentFixture) Steer(llm.UserMessage) error { return nil }
+func (*commandAgentFixture) Steer(agentmessage.UserMessage) error { return nil }
 
-func (*commandAgentFixture) Inject(llm.UserMessage) error { return nil }
+func (*commandAgentFixture) Inject(agentmessage.UserMessage) error { return nil }
 
 func TestParseCommandPreservesExactTrailingInput(t *testing.T) {
 	t.Parallel()

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/systemprompt"
@@ -137,9 +138,9 @@ func (executor *stepExecutor) executeModel(
 		if err != nil {
 			return nil, err
 		}
-		assistantReply, err := llm.NewAssistantMessage(llm.AssistantMessageInput{
+		assistantReply, err := agentmessage.NewAssistantMessage(agentmessage.AssistantMessageInput{
 			Content: blocks,
-			Source: llm.ModelMessageSource{
+			Source: agentmessage.ModelMessageSource{
 				Provider:    attempt.options.Provider,
 				Model:       attempt.options.Model,
 				ReplayState: assembler.ReplayValue(),
@@ -199,7 +200,7 @@ func (executor *stepExecutor) buildRequest(
 	step int64,
 	toolSchemas []llm.ToolSchema,
 	systemText string,
-	boundaryMessages []llm.Message,
+	boundaryMessages []agentmessage.Message,
 ) (requestAttempt, error) {
 	persistedHeader, err := session.LatestRequestHeader(
 		executor.subject.conversation.Events(),
@@ -413,14 +414,14 @@ func llmErrorFromFailure(failure llm.LlmFailure) error {
 	return problem
 }
 
-func assistantToolCalls(reply llm.AssistantMessage) []llm.ToolCallBlock {
+func assistantToolCalls(reply agentmessage.AssistantMessage) []agentmessage.ToolCallBlock {
 	blocks := reply.ContentValue()
-	toolCalls := make([]llm.ToolCallBlock, 0)
+	toolCalls := make([]agentmessage.ToolCallBlock, 0)
 	for _, block := range blocks {
 		switch retained := block.(type) {
-		case llm.ToolCallBlock:
+		case agentmessage.ToolCallBlock:
 			toolCalls = append(toolCalls, retained)
-		case *llm.ToolCallBlock:
+		case *agentmessage.ToolCallBlock:
 			if retained != nil {
 				toolCalls = append(toolCalls, *retained)
 			}

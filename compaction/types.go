@@ -8,7 +8,7 @@ import (
 	"fmt"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
@@ -101,7 +101,7 @@ type Result struct {
 	StartSeq           int64
 	SummarySeq         int64
 	EndSeq             int64
-	Summary            []llm.ContentBlock
+	Summary            []agentmessage.ContentBlock
 	ShadowedRange      SurfaceRange
 	ShadowedSeqs       []int64
 	ShadowedTokenCount int64

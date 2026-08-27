@@ -6,13 +6,13 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 )
 
 func TestReplaceMessageContentPreservesLooseTextExtension(t *testing.T) {
 	t.Parallel()
-	messageValue, err := llm.NewUserMessage(llm.UserMessageInput{
-		Content: []llm.ContentBlock{llm.NewTextBlock("before")}, Source: llm.UserMessageSource{},
+	messageValue, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+		Content: []agentmessage.ContentBlock{agentmessage.NewTextBlock("before")}, Source: agentmessage.UserMessageSource{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -31,7 +31,7 @@ func TestReplaceMessageContentPreservesLooseTextExtension(t *testing.T) {
 		!bytes.Contains(encoded, []byte(`"extension":1`)) {
 		t.Fatalf("replaced message = %s", encoded)
 	}
-	readable, supported := replaced.ContentValue()[0].(llm.PlainTextContent)
+	readable, supported := replaced.ContentValue()[0].(agentmessage.PlainTextContent)
 	if !supported {
 		t.Fatalf("extended text type = %T, want PlainTextContent", replaced.ContentValue()[0])
 	}

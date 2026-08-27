@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 )
@@ -11,8 +12,8 @@ import (
 func TestSelectUsesLastNonEmptyAssistantMessage(t *testing.T) {
 	t.Parallel()
 	events := []session.Event{
-		assistantMessageEvent(t, 1, llm.NewTextBlock("step one")),
-		assistantMessageEvent(t, 2, llm.NewTextBlock("step two")),
+		assistantMessageEvent(t, 1, agentmessage.NewTextBlock("step one")),
+		assistantMessageEvent(t, 2, agentmessage.NewTextBlock("step two")),
 		assistantMessageEvent(t, 3),
 	}
 
@@ -30,7 +31,7 @@ func TestSelectPrefersMessageOverAllStreamedText(t *testing.T) {
 			Index: 0,
 			Text:  "earlier partial",
 		}),
-		assistantMessageEvent(t, 2, llm.NewTextBlock("complete answer")),
+		assistantMessageEvent(t, 2, agentmessage.NewTextBlock("complete answer")),
 		assistantChunkEvent(t, 3, llm.TextDeltaChunk{
 			Index: 0,
 			Text:  "later partial",
@@ -52,7 +53,7 @@ func TestSelectTreatsReasoningAsNonEmptyMessage(t *testing.T) {
 			Index: 0,
 			Text:  "streamed text",
 		}),
-		assistantMessageEvent(t, 2, llm.ReasoningBlock{
+		assistantMessageEvent(t, 2, agentmessage.ReasoningBlock{
 			Type: "reasoning",
 			Text: "complete reasoning",
 		}),
@@ -65,7 +66,7 @@ func TestSelectTreatsReasoningAsNonEmptyMessage(t *testing.T) {
 	if len(selected) != 1 {
 		t.Fatalf("selected = %#v", selected)
 	}
-	reasoning, matches := selected[0].(llm.ReasoningBlock)
+	reasoning, matches := selected[0].(agentmessage.ReasoningBlock)
 	if !matches || reasoning.Text != "complete reasoning" {
 		t.Fatalf("selected = %#v", selected)
 	}
@@ -123,13 +124,13 @@ func TestSelectReturnsNoOutputWithoutMessageOrText(t *testing.T) {
 func assistantMessageEvent(
 	t *testing.T,
 	sequence int64,
-	content ...llm.ContentBlock,
+	content ...agentmessage.ContentBlock,
 ) session.Event {
 	t.Helper()
-	messageValue, messageErr := llm.NewAssistantMessage(
-		llm.AssistantMessageInput{
+	messageValue, messageErr := agentmessage.NewAssistantMessage(
+		agentmessage.AssistantMessageInput{
 			Content: content,
-			Source: llm.ModelMessageSource{
+			Source: agentmessage.ModelMessageSource{
 				Provider: "mock",
 				Model:    "model",
 			},
@@ -188,14 +189,14 @@ func serializedEvent(
 
 func assertOutput(
 	t *testing.T,
-	content []llm.ContentBlock,
+	content []agentmessage.ContentBlock,
 	want string,
 ) {
 	t.Helper()
 	if len(content) != 1 {
 		t.Fatalf("content = %#v", content)
 	}
-	textBlock, matches := content[0].(llm.TextBlock)
+	textBlock, matches := content[0].(agentmessage.TextBlock)
 	if !matches || textBlock.Text != want {
 		t.Fatalf("content = %#v", content)
 	}
