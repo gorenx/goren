@@ -68,13 +68,7 @@ type bound interface {
 		context.Context,
 		subagent.UpdateBoundConfigCommand,
 	) (subagent.UpdateBoundConfigResult, error)
-}
-
-type sessionEventObserver interface {
 	SessionEventAppended(session.EventAppended)
-}
-
-type agentDisposalObserver interface {
 	AgentDisposed(context.Context, agent.Agent) error
 }
 

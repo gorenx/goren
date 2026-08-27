@@ -99,6 +99,12 @@ func (*boundRecord) StartBindings(context.Context, agent.Agent) error {
 	return nil
 }
 
+func (*boundRecord) SessionEventAppended(session.EventAppended) {}
+
+func (*boundRecord) AgentDisposed(context.Context, agent.Agent) error {
+	return nil
+}
+
 func (record *boundRecord) HasBinding(
 	_ context.Context,
 	_ agent.Agent,

@@ -216,12 +216,11 @@ func (owner *Service) SessionEventAppended(fact session.EventAppended) {
 		return
 	}
 	owner.activeCalls.Add(1)
-	candidate := owner.implementations[subagent.ModeBound]
+	control := owner.control
 	owner.mutex.RUnlock()
 	defer owner.activeCalls.Done()
-	observer, supported := candidate.(sessionEventObserver)
-	if supported {
-		observer.SessionEventAppended(fact)
+	if control != nil && control.bound != nil {
+		control.bound.SessionEventAppended(fact)
 	}
 }
 
@@ -248,13 +247,12 @@ func (owner *Service) AgentDisposed(
 ) error {
 	owner.mutex.RLock()
 	control := owner.control
-	candidate := owner.implementations[subagent.ModeBound]
 	owner.mutex.RUnlock()
 	var disposeErr error
-	if observer, supported := candidate.(agentDisposalObserver); supported {
-		disposeErr = observer.AgentDisposed(ctx, subject)
-	}
 	if control != nil {
+		if control.bound != nil {
+			disposeErr = control.bound.AgentDisposed(ctx, subject)
+		}
 		disposeErr = errors.Join(
 			disposeErr,
 			control.AgentDisposed(ctx, subject),

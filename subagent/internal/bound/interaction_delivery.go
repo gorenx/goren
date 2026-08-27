@@ -71,17 +71,12 @@ func (owner *Service) ensureInteractionWorker(
 		owner.mutex.Unlock()
 		return
 	}
-	current := owner.workers[key]
+	parentWorkers := owner.workers[key.parentID]
+	current := parentWorkers[key.childID]
 	if current != nil && agent.Same(current.parent, parentAgent) {
 		owner.mutex.Unlock()
 		current.Notify()
 		return
-	}
-	if current != nil {
-		delete(owner.workers, key)
-		if parentRoutes := owner.routes[key.parentID]; parentRoutes != nil {
-			delete(parentRoutes, key.childID)
-		}
 	}
 	worker := newInteractionWorker(
 		owner,
@@ -90,13 +85,11 @@ func (owner *Service) ensureInteractionWorker(
 		childSession,
 		currentOperation,
 	)
-	owner.workers[key] = worker
-	parentRoutes := owner.routes[key.parentID]
-	if parentRoutes == nil {
-		parentRoutes = make(map[session.SessionID]*interactionWorker)
-		owner.routes[key.parentID] = parentRoutes
+	if parentWorkers == nil {
+		parentWorkers = make(map[session.SessionID]*interactionWorker)
+		owner.workers[key.parentID] = parentWorkers
 	}
-	parentRoutes[key.childID] = worker
+	parentWorkers[key.childID] = worker
 	owner.mutex.Unlock()
 	if current != nil {
 		current.stopOnce.Do(current.cancel)
@@ -113,9 +106,9 @@ func (owner *Service) SessionEventAppended(fact session.EventAppended) {
 		return
 	}
 	owner.mutex.Lock()
-	parentRoutes := owner.routes[fact.Conversation.ID()]
-	workers := make([]*interactionWorker, 0, len(parentRoutes))
-	for _, worker := range parentRoutes {
+	parentWorkers := owner.workers[fact.Conversation.ID()]
+	workers := make([]*interactionWorker, 0, len(parentWorkers))
+	for _, worker := range parentWorkers {
 		workers = append(workers, worker)
 	}
 	owner.mutex.Unlock()
@@ -133,21 +126,17 @@ func (owner *Service) AgentDisposed(
 		return nil
 	}
 	owner.mutex.Lock()
-	parentRoutes := owner.routes[subject.ID()]
-	workers := make([]*interactionWorker, 0, len(parentRoutes))
-	for childID, worker := range parentRoutes {
+	parentWorkers := owner.workers[subject.ID()]
+	workers := make([]*interactionWorker, 0, len(parentWorkers))
+	for childID, worker := range parentWorkers {
 		if !agent.Same(worker.parent, subject) {
 			continue
 		}
 		workers = append(workers, worker)
-		delete(owner.workers, operationKey{
-			parentID: subject.ID(),
-			childID:  childID,
-		})
-		delete(parentRoutes, childID)
+		delete(parentWorkers, childID)
 	}
-	if len(parentRoutes) == 0 {
-		delete(owner.routes, subject.ID())
+	if len(parentWorkers) == 0 {
+		delete(owner.workers, subject.ID())
 	}
 	owner.mutex.Unlock()
 	for _, worker := range workers {
@@ -323,6 +312,11 @@ func countReceipts(
 	if childSession == nil {
 		return 0, errors.New("subagent: Bound child Session is unavailable")
 	}
+	canonical, err := want.CloneSource()
+	if err != nil {
+		return 0, err
+	}
+	want = canonical.(subagent.Delivery)
 	startSeq := int64(0)
 	if seedLength := childSession.Header().SeedLength; seedLength != nil {
 		startSeq = *seedLength
@@ -342,8 +336,7 @@ func countReceipts(
 		}
 		for _, messageValue := range splice.Inserted {
 			origin := messageValue.SourceValue()
-			if origin == nil ||
-				origin.SourceKind() != "subagent-delivery" {
+			if origin == nil || origin.SourceKind() != subagent.DeliveryKind {
 				continue
 			}
 			delivery, err := subagent.DecodeDelivery(origin)
@@ -354,7 +347,7 @@ func countReceipts(
 					err,
 				)
 			}
-			if sameDelivery(delivery, want) {
+			if delivery == want {
 				count++
 			}
 		}
@@ -365,17 +358,6 @@ func countReceipts(
 		)
 	}
 	return count, nil
-}
-
-func sameDelivery(
-	left subagent.Delivery,
-	right subagent.Delivery,
-) bool {
-	return left.ParentSessionID == right.ParentSessionID &&
-		left.Turn == right.Turn &&
-		left.FromSeq == right.FromSeq &&
-		left.ThroughSeq == right.ThroughSeq &&
-		left.Outcome == right.Outcome
 }
 
 type advanceCursorPlan struct {
