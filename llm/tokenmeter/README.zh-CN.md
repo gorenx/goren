@@ -107,7 +107,7 @@ Measure(context.Context, session.Context, *session.EpochHeader) (Measurement, er
 ### 4.2 `EstimateMessage`
 
 ```go
-EstimateMessage(llm.Message) (int64, error)
+EstimateMessage(agentmessage.Message) (int64, error)
 ```
 
 它使用与 `Measure` 完全相同的固定 estimator，适合 Consumer 对候选 Message 做同口径预估。它只估算传入 Message，不读取 Session，也不建立或更新 usage baseline。

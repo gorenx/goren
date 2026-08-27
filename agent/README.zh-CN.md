@@ -2,6 +2,8 @@
 
 `agent/` 定义 live Agent 能力、Agent Registry、durable Inbox 投影与未发布 Agent 的组合契约。权威领域设计见[14 Agent Registry、Inbox 与实时事件模块设计](../zh-CN/14-agent-registry-inbox-and-events.md)，Turn/Step 驱动由[15 Agent Loop 与请求驱动模块设计](../zh-CN/15-agent-loop-and-request-driver.md)拥有；实施状态与验证证据只见[08 实施进度](../zh-CN/08-implementation-progress.md)。
 
+Inbox 和 Agent event 消费唯一 [`agentmessage`](../agentmessage/README.zh-CN.md) 协议；本包拥有准入、排队和领取语义，不重新声明 Message、source 或 content。
+
 ## 职责边界
 
 | 文件 | 职责 |

@@ -2,6 +2,8 @@
 
 `session/` 集中承载 Session core 及其 persistence、projection、title、query 能力。Core 权威设计见[Session Core、唯一写协调与生命周期](./docs/design.zh-CN.md)，全仓实施状态见[08](../zh-CN/08-implementation-progress.md)；Projection/Title 见[18](../zh-CN/18-session-projection-and-title.md)，Persistence/SQLite 见[19](../zh-CN/19-session-persistence-and-sqlite.md)，Query/Search 见[23](../zh-CN/23-session-query-and-search.md)。本 README 只提供代码近邻导航，不复制 Core 契约。
 
+Session 持久化并投影唯一 [`agentmessage`](../agentmessage/README.zh-CN.md) 协议的完整 JSON；本包拥有 append-only event、surface、replacement 与 recovery，不重新定义 Message、source 或 content。
+
 ## 目录与职责
 
 | 路径 | 职责 | 不拥有 |

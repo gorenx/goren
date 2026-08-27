@@ -4,6 +4,8 @@
 
 本文是 `session` Core 的唯一权威设计，拥有 Header、Event envelope、内存 append-only log、Surface、单 Session 写协调、LiveStore 生命周期以及与 Persistence 之间的 committed-prefix barrier。全仓实施汇总见[08 实施进度](../../zh-CN/08-implementation-progress.md)，持久化设计见[19](../../zh-CN/19-session-persistence-and-sqlite.md)，Context Compaction 如何消费写契约见[24](../../zh-CN/24-context-compaction.md)。
 
+Session 保存和派生的 Message/source/content 由[Agent Message 协议重构设计方案](../../zh-CN/AgentMessage协议重构设计方案.md)拥有，当前公开签名使用 `[]agentmessage.Message`。迁移完成证据只见[专项进度矩阵](../../zh-CN/AgentMessage协议重构进度矩阵.md)。
+
 ## 1. 设计来源与 Go 差异
 
 Session Core 的固定源基线是 `47f943859bef60e4160492346772ded9b24f765a`。Context Compaction 仅按[01](../../zh-CN/01-porting-scope-and-baseline.md)使用 `b150a55` capability-scoped exception，不把其他 Session 行为升级到新基线。
@@ -71,7 +73,7 @@ type Reader interface {
     Events() []Event
     Surface() Surface
     Snapshot() Snapshot
-    DeriveMessages() ([]llm.Message, error)
+    DeriveMessages() ([]agentmessage.Message, error)
 }
 
 type Writer interface {

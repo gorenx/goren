@@ -72,9 +72,9 @@ turn/end
 
 插件扩展点可以观察或转换受支持的阶段，但不能绕过 session 记录直接向模型注入隐藏上下文。
 
-## 4. LLM 协议
+## 4. Agent Message 与 LLM 协议
 
-### 4.1 Message 与 content block
+### 4.1 Agent Message 与 content block
 
 Go 公共契约保留 TypeScript 的消息角色、`source` 判别和 content block 种类：
 
@@ -100,7 +100,9 @@ Go 公共契约保留 TypeScript 的消息角色、`source` 判别和 content bl
 
 完成原因保持 `stop`、`tool-calls`、`max-tokens`、`aborted` 和 `error`。适配器负责将供应商事件归一化为这些类型；Agent Loop 不直接依赖供应商 SDK。
 
-`llm` 是唯一 Harness LLM 公共契约 owner；Agent、System Prompt、Tools 和 Provider adapter 都复用这里的 Message、ContentBlock、StreamChunk、finish 与 usage，不建立平行的 `harness/llm` 包或兼容包装层。Provider route、流归一化、DeepSeek wire/SSE 和生命周期详见[13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)。
+最终边界把两组契约分开：`agentmessage` 是 Message、MessageSource、ContentBlock、MessageID 和 CallID 的唯一 owner；`llm` 是 GenerateOptions、ToolSchema、StreamChunk、finish、usage、failure 和 Runtime/Adapter 的唯一 owner。Agent、Session、System Prompt、Tools、Compaction、Subagent 和 Provider adapter 复用 `agentmessage`，不建立平行 Message DTO 或兼容包装层；LLM 作为下游 consumer 接受 Message 并映射到 Provider 私有 wire DTO。
+
+当前 Message family 已物理迁入唯一 `agentmessage` owner；`llm` 单向消费该协议且不提供旧路径 facade。边界、破坏性 Go import 迁移与验证证据分别见[Agent Message 协议重构设计方案](./AgentMessage协议重构设计方案.md)和[专项进度矩阵](./AgentMessage协议重构进度矩阵.md)；Provider route、流归一化、DeepSeek wire/SSE 和生命周期详见[13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)。
 
 ## 5. Tool 协议
 

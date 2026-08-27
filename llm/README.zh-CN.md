@@ -2,9 +2,11 @@
 
 `llm` 拥有 provider-neutral 的 Harness LLM Service。`Runtime` 本身就是 Plugin 和 `LlmRuntime` Service provider；它管理 Adapter route、configurable Provider 目录、模型发现、调用准备、`llm/stream` Waterfall、流失败归一化以及拓扑变更事件。稳定跨模块契约见[13 Harness LLM Runtime 与 DeepSeek Provider](../zh-CN/13-harness-llm-runtime-and-deepseek-provider.md)，实现证据只见[08 实施进度](../zh-CN/08-implementation-progress.md)。
 
+Agent 交互 Message、source 和 content contract 由唯一 [`agentmessage`](../agentmessage/README.zh-CN.md) package 拥有；`llm` 只在 `GenerateOptions`、stream block 和 Provider serialization 边界消费这些值。边界依据与迁移证据见[Agent Message 协议重构设计方案](../zh-CN/AgentMessage协议重构设计方案.md)和[专项进度矩阵](../zh-CN/AgentMessage协议重构进度矩阵.md)。
+
 ## 职责边界
 
-本包拥有 Message、ContentBlock、GenerateOptions、StreamChunk、FinishReason、RetryPolicy、Adapter 扩展接口和 `BlockAssembler`。它不拥有任何供应商 JSON/HTTP/SSE、credential 存储、Agent retry 编排、Session persistence 或 API Proxy wire projection。
+本包拥有 GenerateOptions、ToolSchema、StreamChunk、FinishReason、TokenUsage、RetryPolicy、Adapter 扩展接口和 `BlockAssembler`。它不拥有 Agent Message/source/content、任何供应商 JSON/HTTP/SSE、credential 存储、Agent retry 编排、Session persistence 或 API Proxy wire projection。
 
 调用方只依赖 `LlmRuntime`。Provider Plugin 实现最小 `Adapter`，按需实现 metadata、retry policy 或 model catalog 接口，并通过 `RegisterAdapter`/`RegisterConfigurableProviders` 取得自己拥有的 typed handle。注册 API 不接收 Plugin Scope；Provider 在 `Dispose` 中释放 handle，Runtime 只负责注册表不变量和拓扑事件。
 
@@ -33,4 +35,4 @@ Adapter route、目录和 discovery entry 都有独立 handle，支持 replace/r
 - `llm/factory` 只依赖 `llm` 和 Plugin 构造契约；Assembly 只注册该 Factory。
 - 仓库内置 Provider 位于 `internal/llm/<provider>`，只能依赖根 `llm` contract，不得反向进入 `llm`。
 - Agent、Session 和 API Proxy 通过各自 consumer-owned interface 或 `LlmRuntime` 消费能力，不依赖具体 Provider。
-- 新 Provider 不得复制 Message/Stream、RetryPolicy、Registry 或 Agent loop，也不得把供应商 wire DTO 暴露给消费者。
+- 新 Provider 不得复制 Agent Message、Stream、RetryPolicy、Registry 或 Agent loop，也不得把供应商 wire DTO 暴露给消费者。

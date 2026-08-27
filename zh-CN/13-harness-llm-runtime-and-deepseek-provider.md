@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有 Harness-compatible `llm` Service、Adapter Registry、模型路由、流归一化、增量组装、retry policy contract，以及 DeepSeek direct provider 的配置、wire 转换、SSE 与错误映射。Message、content block、StreamChunk 和 finish 的公共协议词汇由[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)拥有；Plugin Service/Event、Scope 与 effect 生命周期由[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)拥有；默认 policy 的执行、durable retry facts 和等待生命周期见[`llmretry` 模块说明](../llm/retry/README.zh-CN.md)；当前实施状态和验证证据只见[08 实施进度](./08-implementation-progress.md)。
+本文拥有 Harness-compatible `llm` Service、Adapter Registry、模型路由、流归一化、增量组装、retry policy contract，以及 DeepSeek direct provider 的配置、wire 转换、SSE 与错误映射。Agent Message、source 和 content block 的唯一 owner 由[Agent Message 协议重构设计方案](./AgentMessage协议重构设计方案.md)定义并已落地为 `agentmessage`；StreamChunk、finish、usage 与 LLM 公共协议由[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)约束；Plugin Service/Event、Scope 与 effect 生命周期由[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)拥有；默认 policy 的执行、durable retry facts 和等待生命周期见[`llmretry` 模块说明](../llm/retry/README.zh-CN.md)。迁移状态见[Agent Message 专项进度矩阵](./AgentMessage协议重构进度矩阵.md)，全仓验证只见[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 固定源与职责映射
 
@@ -10,10 +10,11 @@
 
 | 源 owner / symbol | Go owner | 保留职责 |
 | --- | --- | --- |
-| `packages/core/llm/src/types.ts` | `llm/message.go`、`message_codec.go`、`message_source.go`、`content.go`、`content_codec.go`、`tool_schema.go`、`stream.go`、`stream_codec.go`、`finish_reason.go`、`types.go` | Message、source、content、GenerateOptions、StreamChunk、finish、usage 与 model metadata |
-| `packages/core/llm/src/index.ts` 的 `Llm` | `llm.LlmRuntime`、`llm.Runtime` | Adapter route、configurable provider、model discovery、call resolution 与 stream dispatch |
+| `packages/llm/llm/src/message.ts` 与 `types.ts` 的 Message family | `agentmessage/message.go`、`message_codec.go`、`message_source.go`、`content.go`、`content_codec.go` | Message、source、content、stable identity 与 durable codec |
+| `packages/llm/llm/src/types.ts` 的 generation family | `llm/tool_schema.go`、`stream.go`、`stream_codec.go`、`finish_reason.go`、`types.go` | GenerateOptions、ToolSchema、StreamChunk、finish、usage 与 model metadata |
+| `packages/llm/llm/src/index.ts` 的 `Llm` | `llm.LlmRuntime`、`llm.Runtime` | Adapter route、configurable provider、model discovery、call resolution 与 stream dispatch |
 | `packages/host/apiproxy/src/api/llm.ts` 与 `api-proxy.ts` 的 `llm.providers`/`llm.models` | `apiproxy.LLMGateway` | configurable directory 与 active route 合并、Host-scoped model catalog wire 投影 |
-| `packages/core/llm/src/index.ts` 的 adapter registration | `llm/adapter_registration.go` 的 `AdapterRegistrationHandle`、`adapterRegistrationState` | 多 route 原子注册、replace、release 与 effect ownership |
+| `packages/llm/llm/src/index.ts` 的 adapter registration | `llm/adapter_registration.go` 的 `AdapterRegistrationHandle`、`adapterRegistrationState` | 多 route 原子注册、replace、release 与 effect ownership |
 | `llm/stream` | `llm.GenerateOptions` -> `llm.StreamOutput` Waterfall | 每次模型调用外层的 typed waterfall |
 | 源 retry policy schema/defaults | `llm.RetryPolicy`、`ResolveRetryPolicy` | normal/always union、默认 retryable code 与 backoff snapshot |
 | `packages/llm/llm-retry` | `llm/retry`（package `llmretry`） | 独立 Consumer 执行 provider policy、记录 retry facts 并把 retry action 交回 Agent Loop |
@@ -22,13 +23,15 @@
 | 源 anonymous user id helper | `llm/deepseek/anonymoususerid` | Harness installation identity 的读取、校验和持久化 |
 | `bundle/base` 的 LLM declarations | `llm/factory.Factory`、`llm/deepseek.Factory` | `llm` Runtime 与 DeepSeek Provider Plugin 的 typed config、构造和生命周期 |
 
-Go 不复制 TypeScript class inheritance、declaration merging、fetch implementation 或 schema code generation。公共扩展点以 capability interface 表达，异构 route 只保存 `llm.Adapter`；Message、StreamChunk、FinishReason 和 ContentBlock 使用封闭 core interface，并为未知 extension 保留显式 opaque variant，不使用 `any` 或反射执行 callback。
+Go 不复制 TypeScript class inheritance、declaration merging、fetch implementation 或 schema code generation。公共扩展点以 capability interface 表达，异构 route 只保存 `llm.Adapter`；最终由 `agentmessage` 的 Message/ContentBlock 与 `llm` 的 StreamChunk/FinishReason 分别使用封闭 core interface，并为未知 extension 保留显式 opaque variant，不使用 `any` 或反射执行 callback。
 
 ### 1.1 Go 包路径与兼容影响
 
 内置 LLM Plugin 按 source-aligned capability 归位到 `llm` owner 下：DeepSeek Provider 使用公开 import path `github.com/gorenx/goren/llm/deepseek`，默认 Retry Consumer 使用 `github.com/gorenx/goren/llm/retry`。公开 DeepSeek 包允许 composition root 或其他编译期装配直接注册其 typed Factory，但 vendor wire DTO、transport 细节和错误 vocabulary 仍由该包独占，不成为 provider-neutral `llm` contract。
 
 这次调整只改变 Go import path：旧 `github.com/gorenx/goren/llmretry` 调用方迁移到 `github.com/gorenx/goren/llm/retry`，package identifier 仍为 `llmretry`；仓库内旧 `internal/llm/deepseek` 调用方迁移到 `llm/deepseek`。不保留平行 wrapper 或第二条注册路径。TypeScript Client 协议、canonical Plugin 名、配置 JSON、Provider route、事件名、持久化字段和运行时语义均不改变。
+
+Agent Message owner 迁移已将 Message/source/content 的 Go import path 从 `llm` 改为 `agentmessage`。这是有意的破坏性 Go API 变化，但不改变上述 wire、event 和 persisted semantics，也不保留 `llm.Message` 兼容 alias。原子迁移与验收证据见[实施方案](./AgentMessage协议重构实施方案.md)和[专项矩阵](./AgentMessage协议重构进度矩阵.md)。
 
 ## 2. 职责与非职责
 
@@ -38,13 +41,14 @@ Go 不复制 TypeScript class inheritance、declaration merging、fetch implemen
 - provider route 到 Adapter instance、Provider metadata 和 RetryPolicy snapshot 的映射；
 - configurable provider directory 与 model discovery 的能力边界；
 - exact model capability resolution、默认 reasoning/maxTokens 合并和 prepared call 一致性；
-- Message、ContentBlock、StreamChunk、FinishReason、TokenUsage、LlmFailure 和 LlmError；
+- StreamChunk、FinishReason、TokenUsage、LlmFailure 和 LlmError；
 - 跨 Adapter replay state 清理、adapter failure 到 terminal finish 的归一化；
 - provider-neutral `BlockAssembler`。
 
 `llm` 不拥有：
 
 - Agent turn/step、何时重试、上下文压缩调度、Session append 或 Tool execution；
+- Message、MessageSource、ContentBlock、MessageID、CallID 或其 durable codec；
 - DeepSeek/OpenAI 等供应商 JSON、header、endpoint、SSE 或 credential lookup；
 - System Prompt section、Tool registry、Connection HTTP 入站或客户端状态；
 - JSONL、SQLite/sqlc 或 model catalog 的长期持久化。
@@ -55,12 +59,8 @@ Go 不复制 TypeScript class inheritance、declaration merging、fetch implemen
 
 | 文件 / 组件 | 单一职责 |
 | --- | --- |
-| `llm/message.go` | Message value、构造和 detached clone |
-| `llm/message_codec.go` | Message 的严格 JSON 恢复与 durable encoding |
-| `llm/message_source.go` | Message provenance/source 判别类型、校验和 opaque extension |
-| `llm/content.go` | ContentBlock 判别值、detached clone 与内容能力查询 |
-| `llm/content_codec.go` | ContentBlock 的严格 JSON 恢复、opaque extension 与嵌套 tool result codec |
-| `llm/tool_schema.go` | ToolSchema 与 ContextSnapshotSection 边界值 |
+| 目标 `agentmessage` package | Message/source/content value、codec、构造、clone 与 opaque extension；当前实现位置和迁移状态见专项矩阵 |
+| `llm/tool_schema.go` | ToolSchema；当前同文件的 ContextSnapshotSection 随 owner 迁移进入 `agentmessage` |
 | `llm/finish_reason.go` | FinishReason 判别类型、严格恢复和 opaque extension |
 | `llm/stream.go` | StreamChunk 判别值和 `ChunkStream` capability |
 | `llm/stream_codec.go` | StreamChunk durable codec 与 interface-valued field 恢复 |
@@ -98,7 +98,7 @@ Go 不复制 TypeScript class inheritance、declaration merging、fetch implemen
 
 Registry 锁只保护 entry membership 和 route 快照。Adapter、model discovery、observer、waterfall 和网络 I/O 都不在 Registry lock 内运行。DeepSeek parser、translator 与 BlockAssembler 分离：parser 只理解 SSE，translator 只理解 provider payload，assembler 只理解 Harness StreamChunk。
 
-上述文件划分按责任对象组织。判别 union 中多个 struct 仍可同处一个文件，因为它们共同组成一个 contract family；codec、registration lifecycle、network request 和 error mapping 等独立变化原因不得再混入该文件。公共 contract 与 Runtime 保持在根 `llm` 包；依赖根 contract 的构造边界放入 `llm/factory`，capability-owned 的内置 Provider 和 Retry Plugin 分别放入 `llm/deepseek` 与 `llm/retry`。它们都只能单向依赖 `llm`，不得建立反向 facade，也不得把具体 Provider 类型变成其他 Provider 的依赖。
+上述文件划分按责任对象组织。判别 union 中多个 struct 仍可同处一个文件，因为它们共同组成一个 contract family；codec、registration lifecycle、network request 和 error mapping 等独立变化原因不得再混入该文件。Agent Message contract 单独保持在 `agentmessage`；LLM generation contract 与 Runtime 保持在根 `llm` 包并单向依赖 `agentmessage`。依赖根 LLM contract 的构造边界放入 `llm/factory`，capability-owned 的内置 Provider 和 Retry Plugin 分别放入 `llm/deepseek` 与 `llm/retry`。不得建立反向 facade，也不得把具体 Provider 类型变成其他 Provider 的依赖。
 
 ## 4. 公共 Service 与扩展边界
 
@@ -116,9 +116,9 @@ Provider metadata、retry policy、model catalog 和 exact model resolution 是�
 
 `llm/stream` 是 provider selection 外层 waterfall。middleware 可以观察、包装或把调用路由到另一 provider；只有调用 `next` 才进入下游。最终 Adapter 选择和 provider-specific replay state 清理由 `llm` owner 执行，Plugin 不能绕过 Runtime 直接调用已注册 Adapter。
 
-## 5. Message、Stream 与组装不变量
+## 5. Agent Message 输入、Stream 与组装不变量
 
-Message 以稳定 ID、role、source 和 content block 组成。Source 保留 `user`、`plugin`、`model`、`tool` 的 provenance；model source 可携带 provider-owned replay state。Opaque source/content/finish 只承载未知 extension 的合法 JSON，不改变 core variant 的严格字段校验。
+`llm` 接受由 `agentmessage` 拥有的 Message 输入，不重新定义或复制 Message DTO。Message 以稳定 ID、role、source 和 content block 组成；Source 保留 `user`、`plugin`、`model`、`tool` 的 provenance，model source 可携带 provider-owned replay state。`agentmessage` 只对 replay state 做 lossless JSON 保存，Adapter identity 判定、跨 Adapter 清理和 Provider 转发仍由 `llm.Runtime` 拥有。Opaque source/content/finish 只承载未知 extension 的合法 JSON，不改变 core variant 的严格字段校验。
 
 Adapter 输出 pull-based `ChunkStream`。Runtime 保证：
 
@@ -248,12 +248,12 @@ DeepSeek Plugin Dispose
 
 DeepSeek Plugin 直接拥有两项 registration handle；apply 失败由 Runtime 调用幂等 `Dispose` 回滚已取得的 handle，unload 同样逆序撤销 route 和目录并发布 committed topology change。DeepSeek 在每次新请求开始时通过 `credentials.Provider.Resolve(apiKeyEnv)` 解析 secret；环境优先级、只读状态与文件 LiveStore 由[22](./22-credentials-and-api-key-management.md)拥有。Anonymous identity 只在第一次真实请求时初始化，因此普通 server 启动、`host.describe` 和非 LLM 测试不触发 Provider 网络请求。
 
-未来新增 Provider 必须实现 `llm.Adapter` 并在自己的 Plugin 中注册 route；不得复制 `LlmRuntime`、Message/Stream 类型、retry schema 或 Agent loop。Credentials Provider 由 DeepSeek Plugin 通过 typed Service dependency 取得，不改变 Agent—LLM 或 LLM—Adapter contract；未来 Settings Service 只替换 live options 来源。
+未来新增 Provider 必须实现 `llm.Adapter` 并在自己的 Plugin 中注册 route；不得复制 `LlmRuntime`、`agentmessage` Message/Content contract、LLM Stream 类型、retry schema 或 Agent loop。Credentials Provider 由 DeepSeek Plugin 通过 typed Service dependency 取得，不改变 Agent—LLM 或 LLM—Adapter contract；未来 Settings Service 只替换 live options 来源。
 
 ## 11. 后续能力进入规则
 
 - Agent Loop 消费 `PrepareCall`、RetryPolicy、ChunkStream 与 BlockAssembler，不把 retry attempt orchestration 回填进 Adapter；
-- Session 派生模型历史时复用唯一 Message/Content contract，不创建 Session 专用 LLM DTO；
+- Session 派生模型历史时复用唯一 `agentmessage` Message/Content contract，不创建 Session 专用或 LLM 专用的同构 DTO；
 - Provider model discovery 只有真实配置 UI/API Consumer 出现后才接入外部 endpoint；
 - 在线 DeepSeek smoke 必须使用显式环境 credential，并与离线 contract suite 分开记录；
 - 新 SSE/provider field 先由固定源或真实响应证明，再扩展 opaque/wire 边界，不以宽松 map 静默吞掉 core drift。

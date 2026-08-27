@@ -2,6 +2,8 @@
 
 `agentloop/` 是默认 Agent 构造实现：根 `Plugin` 向 Agent Registry 注册 `agent.Factory`；每个 `ReactLoopAgent` 拥有且只拥有一个私有执行循环。权威设计见[15 Agent Loop 与请求驱动模块设计](../zh-CN/15-agent-loop-and-request-driver.md)，实施状态与跨模块证据只见[08 实施进度](../zh-CN/08-implementation-progress.md)。
 
+Agent Loop 消费唯一 [`agentmessage`](../agentmessage/README.zh-CN.md) 协议：它从 Agent Inbox 与 Session surface 取得 Message，组装 `llm.GenerateOptions`，并在 stream 完成后创建 `agentmessage.AssistantMessage`；Message declaration 与 durable codec 不属于本包。
+
 ## 职责与文件划分
 
 | 路径 | 职责 |

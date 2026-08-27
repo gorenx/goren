@@ -134,7 +134,7 @@ Tool contract 允许任意 JSON shape，因此参数、canonical value、schema 
 
 ## 6. D-05：LLM Runtime
 
-`llm` 是公共能力 owner；provider route、Message、Content、StreamChunk、finish reason、usage 和 retry 语义以源 Harness contract 为目标。
+最终边界由两个公共 contract owner 组成：`agentmessage` 拥有 Agent Message、source、content 和 stable correlation identity；`llm` 拥有 provider route、GenerateOptions、ToolSchema、StreamChunk、finish reason、usage、failure 和 retry。两者都以固定 Harness contract 为目标，LLM 单向消费 Agent Message。该物理边界已经落地，设计依据和验证状态见[Agent Message 协议重构设计方案](./AgentMessage协议重构设计方案.md)与[专项进度矩阵](./AgentMessage协议重构进度矩阵.md)。
 
 技术策略：
 
@@ -145,7 +145,7 @@ Tool contract 允许任意 JSON shape，因此参数、canonical value、schema 
 - stream parser 设置单事件和累计响应预算，并在 `context.Context` 取消时关闭 body；
 - secret 由 Credentials Service 提供，Model metadata 不携带明文 key。
 
-迁移完成后只保留一套公共 `llm` contract。旧接口的删除与新接口迁移属于同一代码演进，不通过长期 wrapper 延缓所有权修正。
+迁移完成后只保留一套 Agent Message contract 和一套 LLM generation/runtime contract。旧接口的删除与新接口迁移属于同一代码演进，不通过长期 wrapper 延缓所有权修正。
 
 DeepSeek direct adapter 的配置、调用链、SSE 和失败映射由[13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)拥有。Echo 的“不使用原生 HTTP”决策只针对 inbound Host router/server；outbound Provider 继续以 `net/http` client/transport 作为可注入 I/O primitive，不引入第二个 server framework 或供应商 SDK。
 

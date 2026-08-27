@@ -2,6 +2,8 @@
 
 `tools` 是模型可调用工具的统一能力 owner：它把 Tool Definition、分层可见性、执行策略、规范结果和 System Prompt schema 投影收敛在同一个领域内。跨模块稳定语义由[12 Tools Registry 与执行流水线模块设计](../zh-CN/12-tools-registry-and-execution-pipeline.md)拥有，Plugin 生命周期与 Event/Waterfall 路由见[09 Plugin Runtime 与 Server Assembly](../zh-CN/09-plugin-runtime-and-server-assembly.md)，当前完成度和验证证据只见[08 实施进度](../zh-CN/08-implementation-progress.md)。
 
+Tools 使用唯一 [`agentmessage`](../agentmessage/README.zh-CN.md) 协议表达 Tool call correlation、结果 content 和 additional context；本包拥有注册、策略、调度与执行结果处理，不拥有 Message declaration 或 codec。
+
 ## 职责边界
 
 本包负责：

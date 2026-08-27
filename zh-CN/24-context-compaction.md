@@ -469,7 +469,7 @@ Pruner 不保存被裁剪文本的外置副本；完整原 Event 只存在 appen
 
 下列前置由各自 owner 提供，Basic Provider 不保留私有替代路径；实施状态与验证证据只见[25](./25-context-compaction-implementation-progress.md)：
 
-1. `llm` 对 merge-extensible plugin MessageSource 的 lossless decode，已知 form 仍 strict；
+1. 唯一 Agent Message owner 对 merge-extensible plugin MessageSource 做 lossless decode，已知 form 仍 strict；当前实现位于 `llm`，目标 `agentmessage` 迁移见[专项设计](./AgentMessage协议重构设计方案.md)；
 2. Session-owned `Context.Commit` 唯一写入口、固定 `Batch` 与状态相关 `WritePlan`；
 3. 单例 replay Token Meter、固定 estimator 和三个可选 Projection Unit；
 4. Compaction EventKey、cold replay invariant、tool pairing 和 checkpoint source codec；

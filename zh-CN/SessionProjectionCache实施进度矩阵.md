@@ -125,7 +125,7 @@
 
 ### 11.2 Contract-tag 测试基础设施
 
-当前 checkout 的多个 `//go:build contract` 测试仍导入已不在仓库中的 `tests/contract/fixture`，因此 `go mod tidy` 会尝试把它当作外部 module package 并失败。普通与 race Go suites、vet、build 不启用该 build tag，均已通过。该问题独立于 Projection Cache，修复时应统一处理 contract suite，而不是在本模块添加替代 fixture。
+仓库级 TypeScript contract suite 已删除；此前遗留并导入不存在 `tests/contract/fixture` 的 12 个 contract-tag 测试也已统一移除。Projection Cache 未引入替代 fixture，`go mod tidy` 已恢复通过。
 
 ## 12. 当前验证记录
 

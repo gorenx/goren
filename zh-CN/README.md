@@ -20,6 +20,9 @@
 - [11 System Prompt Registry 与 Assembly 模块设计](./11-system-prompt-registry-and-assembly.md)：scope overlay、注册生命周期、deterministic assembly、tool schema 排序、严格插值与上下游边界。
 - [12 Tools Registry 与执行流水线模块设计](./12-tools-registry-and-execution-pipeline.md)：Tool Definition、Root Registry + Child Overlay、restriction/guard、policy Waterfall、一次性执行状态机、结果物化与 System Prompt 投影。
 - [13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)：provider-neutral LLM Service、Adapter Registry、模型路由、流组装、RetryPolicy，以及 DeepSeek typed config、HTTP/SSE 和错误映射。
+- [Agent Message 协议重构设计方案](./AgentMessage协议重构设计方案.md)：把 Inbox、Session surface 与模型上下文重建共用的 Message/source/content contract 从 `llm` 抽离到唯一 `agentmessage` owner，并固定兼容性与依赖方向。
+- [Agent Message 协议重构实施方案](./AgentMessage协议重构实施方案.md)：破坏性 owner 切换、全调用方原子迁移、Architecture Gate 与验证顺序。
+- [Agent Message 协议重构进度矩阵](./AgentMessage协议重构进度矩阵.md)：专项设计、实现、调用方迁移和验收状态；当前代码实施尚未开始。
 - [14 Agent Registry、Inbox 与实时事件模块设计](./14-agent-registry-inbox-and-events.md)：live Agent registry、Factory seam、durable Inbox projection、Agent-scoped events、initiator attribution 与 model selection snapshot。
 - [15 Agent Loop 与请求驱动模块设计](./15-agent-loop-and-request-driver.md)：concrete Agent lifecycle、Turn/Step 状态机、请求重建、模型 attempt、Tool-call 调度、取消与 runtime-context projection。
 - [16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)：根 wire contract 与 `apiproxy/session` 实现边界、十个 `session.*` method、主/搜索 Gateway、默认模型选择、Mux baseline/live 与 Host edge。
@@ -44,6 +47,8 @@
 - [`session/projectioncache/plugin/README.zh-CN.md`](../session/projectioncache/plugin/README.zh-CN.md)：Projection Cache 与 Plugin Runtime 的生命周期适配边界。
 - [`session/projectioncache/sqlite/README.zh-CN.md`](../session/projectioncache/sqlite/README.zh-CN.md)：独立 checkpoint SQLite/sqlc storage adapter。
 - [`agentloop/README.zh-CN.md`](../agentloop/README.zh-CN.md)：Agent driver、Turn/Step、请求/Tool 调度、durability checkpoint 与 idle convergence。
+- [`subagent/README.zh-CN.md`](../subagent/README.zh-CN.md)：OneShot、Continuable、Bound 三种模式的公共契约、模块边界和当前实现状态。
+- [Bound Config 管理详细设计](../subagent/docs/bound-config-management.zh-CN.md)：Bound config Session event/projection、System Prompt/Tools owner边界、resident child安全应用和失败恢复。
 - [`apiproxy/README.zh-CN.md`](../apiproxy/README.zh-CN.md)：typed method adapter、Session/Interaction Gateway、live frame、correlation 与背压。
 - [`apiproxy/session/README.zh-CN.md`](../apiproxy/session/README.zh-CN.md)：Session API façade、读取/生命周期/模型/对话/Search 用例与 Agent activation 状态。
 - [`internal/assembly/README.zh-CN.md`](../internal/assembly/README.zh-CN.md)：Factory Catalog、typed config、依赖结算与 composition rollback。
@@ -67,8 +72,8 @@
 
 ## 权威关系
 
-- 本目录 `01`–`05` 拥有全局设计，`06`、`07`、`09`–`24` 拥有已进入实现的 Harness 模块设计；其中 `10` 单独拥有 Session 唯一写协调、调用契约和生命周期，不再维护平行 Session 重构文档；`Go_Cordis_风格插件事件领域运行时设计方案.md` 单独拥有可复用 Plugin Runtime 的重构目标与插件作者契约。`08` 拥有全仓总体实施状态与公共验证证据，`25` 单独拥有 Compaction 的子项进度和 Gate，`08` 只引用其总体状态。
-- 子模块 `README.zh-CN.md` 解释贴近代码的职责、工作原理和交互流程；跨模块契约仍由本目录对应编号文档拥有。全仓公共实施证据由 `08` 拥有，Compaction 专项子项证据由 `25` 拥有并向 `08` 汇总。
+- 本目录 `01`–`05` 拥有全局设计，`06`、`07`、`09`–`24` 拥有已进入实现的 Harness 模块设计；其中 `10` 单独拥有 Session 唯一写协调、调用契约和生命周期，不再维护平行 Session 重构文档；`Go_Cordis_风格插件事件领域运行时设计方案.md` 单独拥有可复用 Plugin Runtime 的重构目标与插件作者契约；`AgentMessage协议重构设计方案.md` 单独拥有 Agent Message 从 `llm` 抽离后的目标 owner 和跨模块依赖。`08` 拥有全仓总体实施状态与公共验证证据，`25` 单独拥有 Compaction 的子项进度和 Gate，Agent Message 专项矩阵单独拥有其重构子项状态；`08` 只保留两者的总体状态。
+- 子模块 `README.zh-CN.md` 解释贴近代码的职责、工作原理和交互流程；跨模块契约仍由本目录对应编号文档或明确列出的专项设计拥有。全仓公共实施证据由 `08` 拥有，Compaction 与 Agent Message 专项子项证据分别由其进度矩阵拥有并向 `08` 汇总。
 - 根目录 `README.md` 与 `README.zh-CN.md` 只说明项目背景。
 - TypeScript 的行为证据来自固定 commit；源仓库后续变化不会自动成为 Go 需求。
 - Go 代码证明当前实现；基于固定源契约的 Go golden、表驱动和真实 carrier 集成测试证明当前兼容性，设计状态不能代替实现或验收证据。

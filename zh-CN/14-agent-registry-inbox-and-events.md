@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有 `agent` 包的公开 Agent contract、live Registry、durable Inbox projection、Agent-scoped 实时事件、显式 initiator attribution 与单步 model selection snapshot。具体 Turn/Step 驱动由[15 Agent Loop 与请求驱动模块设计](./15-agent-loop-and-request-driver.md)拥有；Session 事实日志见[10 Session Core 与生命周期模块设计](../session/docs/design.zh-CN.md)，Session API 与默认模型来源见[16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)，通用 Scope/Event 语义见[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)，当前实施证据只见[08 实施进度](./08-implementation-progress.md)。
+本文拥有 `agent` 包的公开 Agent contract、live Registry、durable Inbox projection、Agent-scoped 实时事件、显式 initiator attribution 与单步 model selection snapshot。Inbox 消费由[Agent Message 协议重构设计方案](./AgentMessage协议重构设计方案.md)拥有的 `agentmessage.UserMessage`；具体 Turn/Step 驱动由[15 Agent Loop 与请求驱动模块设计](./15-agent-loop-and-request-driver.md)拥有；Session 事实日志见[10 Session Core 与生命周期模块设计](../session/docs/design.zh-CN.md)，Session API 与默认模型来源见[16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)，通用 Scope/Event 语义见[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)，当前实施证据只见[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 固定源与职责映射
 

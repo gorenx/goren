@@ -33,14 +33,14 @@
 | Bound 骨架 | Mode、命令、descriptor、projection、listing、Service 装配 | 已实现 | 已验证 | `lifecycle.go`、`descriptor*.go`、`internal/bound`、`internal/subagents`、`plugin/plugin.go` |
 | Bound Start | config source、fresh create、existing resume、Execution publication | 进行中 | 已验证 TODO 失败 | `internal/bound.Service.Start` 当前返回 `ErrStartNotImplemented`；`service_test.go` 固化该边界 |
 | S6 | ChildDirectory | 已实现 | 已验证 | `internal/childdirectory`、cold/live/descendant/order tests |
-| S6 | Projection Unit 行为 | 已实现 | 已验证 | `internal/projection` identity/timing tests 与 contract fixtures |
+| S6 | Projection Unit 行为 | 已实现 | 已验证 | `internal/projection` identity/timing behavior tests |
 | S6 | Projection 接口收口 | 已实现 | 已验证 | `projection.Units()`、`projection.ReadIdentity()`；concrete Unit、key 和 codec 均为包内实现 |
 | S7 | Child environment | 已实现 | 已验证 | `internal/childpolicy`、`plugin/environment.go`、`plugin/one_shot_descriptor.go`、`plugin/structured_output.go`、两种模式拥有的 Environment Builder 端口 |
 | S7 | Child Extension | 已实现 | 已验证 | OneShot/Continuable 共用 `internal/extension`、report installation/integration tests |
 | S8 | Tool adapters | 已实现 | 已验证 | `tools/delegation`、`tools/control`、`tools/report` |
 | S9 | Plugin composition | 已实现 | 已验证 | `plugin.Plugin`、factory、assembly 与 architecture tests |
 | S10 | 文档同步 | 已实现 | 已验证 | 技术方案、实施方案、本矩阵、package README、术语与 deferred Bound 文档 |
-| S10 | 全量验收 | 已实现 | 已验证 | `go test ./...`、`go test -race ./...`、`go vet ./...`、`go build ./...`、Markdown link validation、`git diff --check` |
+| S10 | 全量验收 | 已实现 | 已验证 | full Go Gate、Assembly/Subagent integration 与真实 Provider OneShot acceptance |
 
 ## 3. 已完成的破坏性删除
 
@@ -94,7 +94,9 @@ go build ./...
 git diff --check
 ```
 
-`go mod tidy` 单独失败：仓库的 contract-tag tests 导入 `github.com/gorenx/goren/tests/contract/fixture`，但当前工作树不存在 `tests/contract/fixture` 包，Go 因此尝试从模块网络解析并报 `no matching versions for query "latest"`。该失败未修改 `go.mod`/`go.sum`，不属于 Subagent 生产代码回归。Contract-tag 测试属于 DSH 对照，未经明确要求未运行，不把它记录为通过。
+仓库级 TypeScript contract suite 及其遗留的 12 个 contract-tag 测试已经统一移除，不再导入不存在的 `github.com/gorenx/goren/tests/contract/fixture`；`go mod tidy` 已恢复通过。Subagent 的常规 Go behavior、integration 与 Architecture tests 保持为验收依据。
+
+本轮还显式加载根 `.env` 并设置 `GOREN_REAL_PROVIDER_TEST=1`：真实 Provider OneShot acceptance 在补齐测试 fixture 的标准 Session durability plugins 后通过，验证 marker、start/end lifecycle、OneShot release 和 observer failure 数量；credential 未进入日志或 fixture。
 
 ## 5. 验收证据矩阵
 
@@ -106,6 +108,7 @@ git diff --check
 | Bound runtime start | `internal/bound` | `Service.Start` | `TestStartReturnsExplicitPendingError` | TODO，明确失败 |
 | common Execution state/terminal | `internal/execution` | `execution.go` | `execution_test.go` | 已验证 |
 | OneShot auto-release | `internal/oneshot` | `service.go`、`terminal.go` | `one_shot_integration_test.go` | 已验证 |
+| real Provider OneShot | Subagent + DeepSeek Adapter | `real_provider_integration_test.go` | `TestRealProviderForegroundOneShot` | Environment Verified |
 | Continuable cold resume | `internal/continuable` | `start.go`、`messaging.go` | `control_integration_test.go` | 已验证 |
 | interrupt keeps queued followup | `internal/continuable` | `messaging.go` | `interrupt_agent_integration_test.go` | 已验证 |
 | resident parent-to-child message | `internal/subagents` / `agent` | `Service.Send`、`agent.Agent.Followup` | `service_test.go`（OneShot/Continuable） | 已验证 |
@@ -114,11 +117,11 @@ git diff --check
 | single terminal transaction | `internal/execution` | `Stop`/`Wait`/`Result`/`StopAndWait` | `execution_test.go` | 已验证 |
 | bounded cold directory reads | `internal/childdirectory` | `resolve.go` | `cold_read_test.go` | 已验证 |
 | stable child ordering | `internal/childdirectory` | `order.go` | `order_test.go` | 已验证 |
-| descriptor/timing projections | `internal/projection` | `identity.go`、`timing.go` | projection and contract tests | 已验证 |
+| descriptor/timing projections | `internal/projection` | `identity.go`、`timing.go` | projection behavior tests | 已验证 |
 | projection 跨包封装 | `internal/projection` | `Units()`、`ReadIdentity()` | projection/directory/runtime focused tests | 已验证 |
 | Plugin/business separation | `plugin` / application modules | package dependency direction | `tests/architecture` | 已验证 |
 | default full repository health | repository | final worktree | test/race/vet/build/diff Gate | 已验证 |
-| dependency tidy | repository contract fixture | `tests/contract/fixture` 需存在 | `go mod tidy` | 被缺失的 contract fixture 阻断 |
+| dependency tidy | repository | TypeScript contract 残留已删除 | `go mod tidy` | 已验证 |
 
 ## 6. 本轮文档验证
 
@@ -130,10 +133,10 @@ git diff --check
 - `go test ./subagent/...`、`go test ./tests/architecture`；
 - `go test ./...`、`go test -race ./...`、`go vet ./...`、`go build ./...`、`go fmt ./...`、`git diff --check`。
 
-这些证据不包含 contract-tag/DSH 对照或真实 Provider 环境验收。
+这些证据不包含已删除的 TypeScript DSH 对照；真实 Provider 环境验收已由 `TestRealProviderForegroundOneShot` 独立执行通过。
 
 ## 7. 下一步顺序
 
 1. Subagent 重构范围已收敛；保持当前破坏性 API，不增加过渡 wrapper。
-2. `tests/contract/fixture` 由仓库级 contract 验收工作恢复；未显式要求时不运行 DSH 对照测试。
+2. 不恢复已删除的 `tests/contract/fixture` 或 Node/TypeScript contract runtime；新增兼容证据采用 owner 内固定 fixture 或 Go differential test。
 3. 用户确认后再同步全局设计索引与全局实施进度。
