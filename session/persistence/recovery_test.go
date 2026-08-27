@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 )
 
@@ -33,11 +33,11 @@ func TestInterruptedTurnClosersPreserveUnknownToolOutcomeSemantics(t *testing.T)
 			t.Fatal(err)
 		}
 	}
-	assistantMessage, err := llm.NewAssistantMessage(llm.AssistantMessageInput{
-		Content: []llm.ContentBlock{llm.ToolCallBlock{
+	assistantMessage, err := agentmessage.NewAssistantMessage(agentmessage.AssistantMessageInput{
+		Content: []agentmessage.ContentBlock{agentmessage.ToolCallBlock{
 			Type: "tool-call", ID: "call-1", Name: "probe", Arguments: `{}`,
 		}},
-		Source: llm.ModelMessageSource{Provider: "mock", Model: "mock-model"},
+		Source: agentmessage.ModelMessageSource{Provider: "mock", Model: "mock-model"},
 	})
 	if err != nil {
 		t.Fatal(err)

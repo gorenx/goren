@@ -5,6 +5,7 @@ package tokenmeter
 import (
 	"context"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
@@ -76,5 +77,5 @@ type ContextBreakdownProjection struct {
 type Meter interface {
 	plugin.Service
 	Measure(context.Context, session.Context, *session.EpochHeader) (Measurement, error)
-	EstimateMessage(llm.Message) (int64, error)
+	EstimateMessage(agentmessage.Message) (int64, error)
 }

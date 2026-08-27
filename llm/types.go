@@ -4,10 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
-)
 
-// MessageID is the stable identity carried across inbox, Session, and model request boundaries.
-type MessageID string
+	"github.com/gorenx/goren/agentmessage"
+)
 
 // ProviderRequestID is an opaque provider-issued diagnostic identity.
 type ProviderRequestID string
@@ -131,7 +130,7 @@ type CallConfigAdapterDefaults struct {
 // Cancellation is supplied by the Stream context rather than retained inside this value.
 type GenerateOptions struct {
 	CallConfig
-	Messages  []Message
+	Messages  []agentmessage.Message
 	System    *string
 	Tools     []ToolSchema
 	SessionID string
@@ -185,7 +184,7 @@ func CloneCallConfig(inputSnapshot CallConfig) CallConfig {
 func cloneGenerateOptions(inputSnapshot GenerateOptions) (GenerateOptions, error) {
 	detached := inputSnapshot
 	detached.CallConfig = cloneCallConfig(inputSnapshot.CallConfig)
-	conversation, err := CloneMessages(inputSnapshot.Messages)
+	conversation, err := agentmessage.CloneMessages(inputSnapshot.Messages)
 	if err != nil {
 		return GenerateOptions{}, err
 	}

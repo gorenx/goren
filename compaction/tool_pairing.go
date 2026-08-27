@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 )
 
@@ -114,7 +114,7 @@ func toolPairingDelta(entry session.Event) (int, error) {
 		delta := 0
 		for _, contentBlock := range messageValue.ContentValue() {
 			switch contentBlock.(type) {
-			case llm.ToolCallBlock, *llm.ToolCallBlock:
+			case agentmessage.ToolCallBlock, *agentmessage.ToolCallBlock:
 				delta++
 			}
 		}

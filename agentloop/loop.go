@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/systemprompt"
@@ -93,7 +94,7 @@ func (machine *loop) status() agent.Status {
 }
 
 func (machine *loop) send(
-	input llm.UserMessage,
+	input agentmessage.UserMessage,
 	target agent.InboxTarget,
 	wakeup bool,
 ) error {

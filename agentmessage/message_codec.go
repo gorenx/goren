@@ -1,4 +1,4 @@
-package llm
+package agentmessage
 
 import (
 	"encoding/json"
@@ -17,7 +17,12 @@ func (entry messageValue) MarshalJSON() ([]byte, error) {
 		Role    MessageRole    `json:"role"`
 		Content []ContentBlock `json:"content"`
 		Source  MessageSource  `json:"source"`
-	}{ID: entry.idValue, Role: entry.roleValue, Content: entry.content, Source: entry.origin}
+	}{
+		ID:      entry.idValue,
+		Role:    entry.roleValue,
+		Content: entry.content,
+		Source:  entry.origin,
+	}
 	return json.Marshal(wireValue)
 }
 

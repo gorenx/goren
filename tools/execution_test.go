@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/tools"
 )
@@ -71,7 +71,7 @@ func resultText(
 	if len(blocks) != 1 {
 		testingContext.Fatalf("content count = %d", len(blocks))
 	}
-	textBlock, matches := blocks[0].(llm.TextBlock)
+	textBlock, matches := blocks[0].(agentmessage.TextBlock)
 	if !matches {
 		testingContext.Fatalf("content type = %T", blocks[0])
 	}
@@ -82,13 +82,13 @@ func toolContextMessage(
 	testingContext *testing.T,
 	textValue string,
 	pluginName string,
-) llm.UserMessage {
+) agentmessage.UserMessage {
 	testingContext.Helper()
-	message, err := llm.NewUserMessage(llm.UserMessageInput{
-		Content: []llm.ContentBlock{
-			llm.NewTextBlock(textValue),
+	message, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+		Content: []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock(textValue),
 		},
-		Source: llm.PluginMessageSource{
+		Source: agentmessage.PluginMessageSource{
 			Plugin: pluginName,
 		},
 	})
@@ -236,10 +236,10 @@ func TestExecutionPipelineOrderAndDetachedResultEvent(t *testing.T) {
 	definition.Output.Renderer = tools.OutputRendererFunc(func(
 		_ json.RawMessage,
 		value json.RawMessage,
-	) ([]llm.ContentBlock, error) {
+	) ([]agentmessage.ContentBlock, error) {
 		record("render")
-		return []llm.ContentBlock{
-			llm.NewTextBlock(string(value)),
+		return []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock(string(value)),
 		}, nil
 	})
 	if _, err := state.service.AddTool(context.Background(), definition); err != nil {
@@ -359,7 +359,7 @@ func TestDeferredContextsPrecedeExecuteAndPostContexts(t *testing.T) {
 			return tools.ExecuteOutcome{
 				Result: &tools.ToolExecutionSuccess{
 					Value: value,
-					AdditionalContexts: []llm.UserMessage{
+					AdditionalContexts: []agentmessage.UserMessage{
 						wrapper,
 					},
 				},
@@ -384,7 +384,7 @@ func TestDeferredContextsPrecedeExecuteAndPostContexts(t *testing.T) {
 		) (tools.PostExecuteOutcome, error) {
 			return tools.PostExecuteOutcome{
 				Decision: tools.AcceptDecision{
-					AdditionalContexts: []llm.UserMessage{
+					AdditionalContexts: []agentmessage.UserMessage{
 						post,
 					},
 				},
@@ -417,11 +417,11 @@ func TestDeferredContextsPrecedeExecuteAndPostContexts(t *testing.T) {
 		},
 	)
 	contexts := outcome.AdditionalContextMessages()
-	actualIDs := make([]llm.MessageID, 0, len(contexts))
+	actualIDs := make([]agentmessage.MessageID, 0, len(contexts))
 	for _, message := range contexts {
 		actualIDs = append(actualIDs, message.StableID())
 	}
-	wantIDs := []llm.MessageID{
+	wantIDs := []agentmessage.MessageID{
 		deferred.StableID(),
 		wrapper.StableID(),
 		post.StableID(),
@@ -478,7 +478,7 @@ func TestSchedulerConsumesEachPreparedStageOnce(t *testing.T) {
 	definition.FinalizeContent = tools.ContentFinalizerFunc(func(
 		tools.ToolExecution,
 		tools.ToolResultSnapshot,
-	) ([]llm.ContentBlock, bool) {
+	) ([]agentmessage.ContentBlock, bool) {
 		finalizerCalls.Add(1)
 		return nil, false
 	})
@@ -656,10 +656,10 @@ func TestFinalizerRunsOnceAndClassifierFailsClosed(t *testing.T) {
 	definition.FinalizeContent = tools.ContentFinalizerFunc(func(
 		tools.ToolExecution,
 		tools.ToolResultSnapshot,
-	) ([]llm.ContentBlock, bool) {
+	) ([]agentmessage.ContentBlock, bool) {
 		finalizeCalls.Add(1)
-		return []llm.ContentBlock{
-			llm.NewTextBlock("final"),
+		return []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock("final"),
 		}, true
 	})
 	definition.ConcurrencyBehavior = tools.ConcurrencyClassifierFunc(func(

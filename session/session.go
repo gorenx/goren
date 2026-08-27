@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 )
 
 // log is one in-memory append-only Session log. It contains no persistence,
@@ -19,7 +19,7 @@ type log struct {
 	view         surfaceState
 	timeSource   TimeSource
 
-	derived           []llm.Message
+	derived           []agentmessage.Message
 	derivedNodes      int
 	derivedGeneration uint64
 }
@@ -196,7 +196,7 @@ func (conversation *log) snapshot() Snapshot {
 
 // DeriveMessages projects the current surface into provider-neutral history.
 // Non-surface events and empty assistant anchors never enter the result.
-func (conversation *log) DeriveMessages() ([]llm.Message, error) {
+func (conversation *log) DeriveMessages() ([]agentmessage.Message, error) {
 	if conversation == nil {
 		return nil, errors.New("session: derive messages from nil Session")
 	}
@@ -222,9 +222,9 @@ func (conversation *log) DeriveMessages() ([]llm.Message, error) {
 		}
 		conversation.derivedNodes++
 	}
-	cached := append([]llm.Message(nil), conversation.derived...)
+	cached := append([]agentmessage.Message(nil), conversation.derived...)
 	conversation.mu.Unlock()
-	return llm.CloneMessages(cached)
+	return agentmessage.CloneMessages(cached)
 }
 
 func (conversation *log) commitBatch(drafts []EventDraft) ([]Event, error) {

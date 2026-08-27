@@ -1,7 +1,7 @@
 package subagent
 
 import (
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
@@ -80,7 +80,7 @@ type Ended struct {
 	ID                   session.SessionID
 	Local                bool
 	StopReason           StopReason
-	LastAssistantMessage []llm.ContentBlock
+	LastAssistantMessage []agentmessage.ContentBlock
 }
 
 func (Ended) AgentScopedRuntimeEvent() {}

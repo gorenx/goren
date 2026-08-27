@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/systemprompt"
@@ -126,22 +127,22 @@ func (subject *ReactLoopAgent) StatusValue() agent.Status {
 }
 
 func (subject *ReactLoopAgent) Send(
-	input llm.UserMessage,
+	input agentmessage.UserMessage,
 	target agent.InboxTarget,
 	wakeup bool,
 ) error {
 	return subject.loop.send(input, target, wakeup)
 }
 
-func (subject *ReactLoopAgent) Followup(input llm.UserMessage) error {
+func (subject *ReactLoopAgent) Followup(input agentmessage.UserMessage) error {
 	return subject.loop.send(input, agent.NextTurn, true)
 }
 
-func (subject *ReactLoopAgent) Steer(input llm.UserMessage) error {
+func (subject *ReactLoopAgent) Steer(input agentmessage.UserMessage) error {
 	return subject.loop.send(input, agent.NextStep, true)
 }
 
-func (subject *ReactLoopAgent) Inject(input llm.UserMessage) error {
+func (subject *ReactLoopAgent) Inject(input agentmessage.UserMessage) error {
 	return subject.loop.send(input, agent.NextStep, false)
 }
 

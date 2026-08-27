@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 )
@@ -317,7 +318,7 @@ func decodeRequiredNullableTurn(rawValue json.RawMessage, label string) (*int64,
 func decodeRequiredContent(
 	rawValue json.RawMessage,
 	label string,
-) ([]llm.ContentBlock, error) {
+) ([]agentmessage.ContentBlock, error) {
 	if len(rawValue) == 0 {
 		return nil, fmt.Errorf("compaction: %s is required", label)
 	}
@@ -325,7 +326,7 @@ func decodeRequiredContent(
 	if len(trimmed) == 0 || trimmed[0] != '[' {
 		return nil, fmt.Errorf("compaction: %s must be an array", label)
 	}
-	blocks, err := llm.DecodeContentBlocks(rawValue)
+	blocks, err := agentmessage.DecodeContentBlocks(rawValue)
 	if err != nil {
 		return nil, fmt.Errorf("compaction: decode %s: %w", label, err)
 	}
@@ -335,7 +336,7 @@ func decodeRequiredContent(
 func decodeOptionalContent(
 	rawValue json.RawMessage,
 	label string,
-) ([]llm.ContentBlock, bool, error) {
+) ([]agentmessage.ContentBlock, bool, error) {
 	if len(rawValue) == 0 {
 		return nil, false, nil
 	}

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentmessage"
 	api "github.com/gorenx/goren/apiproxy"
 	"github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/llm"
@@ -68,11 +69,11 @@ func (flow *sessionConversation) Prompt(
 			)), nil
 		}
 	}
-	content := make([]llm.ContentBlock, 0, len(call.Payload.Content))
+	content := make([]agentmessage.ContentBlock, 0, len(call.Payload.Content))
 	for _, part := range call.Payload.Content {
 		switch typedPart := part.(type) {
 		case api.PromptTextPart:
-			content = append(content, llm.NewTextBlock(typedPart.Text))
+			content = append(content, agentmessage.NewTextBlock(typedPart.Text))
 		case api.PromptImagePart:
 			return api.Fail[api.SessionPromptValue](api.NewRPCError(
 				connection.ErrorAttachment,
@@ -87,11 +88,11 @@ func (flow *sessionConversation) Prompt(
 	if err != nil {
 		return api.Outcome[api.SessionPromptValue]{}, err
 	}
-	origin, err := llm.NewOpaqueMessageSource("user", originJSON)
+	origin, err := agentmessage.NewOpaqueMessageSource("user", originJSON)
 	if err != nil {
 		return api.Outcome[api.SessionPromptValue]{}, err
 	}
-	messageValue, err := llm.NewUserMessage(llm.UserMessageInput{Content: content, Source: origin})
+	messageValue, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{Content: content, Source: origin})
 	if err != nil {
 		return api.Outcome[api.SessionPromptValue]{}, err
 	}
@@ -119,7 +120,7 @@ func (flow *sessionConversation) UpdateQueue(requestContext context.Context, cal
 		}
 		return api.Fail[api.AcceptedValue](*refused), nil
 	}
-	pendingID := llm.MessageID(call.Payload.ItemID)
+	pendingID := agentmessage.MessageID(call.Payload.ItemID)
 	pending := subject.InboxValue()
 	messageValue, target, found := locatePending(pending, pendingID)
 	if !found {
@@ -204,7 +205,7 @@ func encodePromptSource(rpcID connection.RPCID, canonicalZone string) (json.RawM
 	return json.Marshal(fields)
 }
 
-func locatePending(pending *agent.Inbox, identifier llm.MessageID) (llm.UserMessage, agent.InboxTarget, bool) {
+func locatePending(pending *agent.Inbox, identifier agentmessage.MessageID) (agentmessage.UserMessage, agent.InboxTarget, bool) {
 	for _, candidate := range pending.NextTurn() {
 		if candidate.StableID() == identifier {
 			return candidate, agent.NextTurn, true
@@ -215,31 +216,31 @@ func locatePending(pending *agent.Inbox, identifier llm.MessageID) (llm.UserMess
 			return candidate, agent.NextStep, true
 		}
 	}
-	return llm.UserMessage{}, "", false
+	return agentmessage.UserMessage{}, "", false
 }
 
-func replaceMessageContent(messageValue llm.UserMessage, content []json.RawMessage) (llm.UserMessage, error) {
+func replaceMessageContent(messageValue agentmessage.UserMessage, content []json.RawMessage) (agentmessage.UserMessage, error) {
 	origin, err := json.Marshal(messageValue.SourceValue())
 	if err != nil {
-		return llm.UserMessage{}, err
+		return agentmessage.UserMessage{}, err
 	}
 	if content == nil {
 		content = []json.RawMessage{}
 	}
 	wireValue := struct {
-		ID      llm.MessageID     `json:"id"`
-		Role    llm.MessageRole   `json:"role"`
-		Content []json.RawMessage `json:"content"`
-		Source  json.RawMessage   `json:"source"`
+		ID      agentmessage.MessageID   `json:"id"`
+		Role    agentmessage.MessageRole `json:"role"`
+		Content []json.RawMessage        `json:"content"`
+		Source  json.RawMessage          `json:"source"`
 	}{
-		ID: messageValue.StableID(), Role: llm.RoleUser,
+		ID: messageValue.StableID(), Role: agentmessage.RoleUser,
 		Content: content, Source: origin,
 	}
 	encoded, err := json.Marshal(wireValue)
 	if err != nil {
-		return llm.UserMessage{}, err
+		return agentmessage.UserMessage{}, err
 	}
-	return llm.DecodeUserMessage(encoded)
+	return agentmessage.DecodeUserMessage(encoded)
 }
 
 func queueItemNotFoundError(identifier api.MessageID) connection.RPCError {

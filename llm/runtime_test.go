@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 )
@@ -480,9 +481,9 @@ func TestRuntimeFiltersReplayStateByAdapterInstance(t *testing.T) {
 	}
 	loadAdapter(t, engine, "same-adapter", []string{"historical", "same-target"}, sameBackend)
 	loadAdapter(t, engine, "other-adapter", []string{"other-target"}, otherBackend)
-	assistantEntry, err := llm.NewAssistantMessage(llm.AssistantMessageInput{
-		Content: []llm.ContentBlock{llm.NewTextBlock("answer")},
-		Source: llm.ModelMessageSource{
+	assistantEntry, err := agentmessage.NewAssistantMessage(agentmessage.AssistantMessageInput{
+		Content: []agentmessage.ContentBlock{agentmessage.NewTextBlock("answer")},
+		Source: agentmessage.ModelMessageSource{
 			Provider: "historical", Model: "m", ReplayState: json.RawMessage(`{"opaque":true}`),
 		},
 	})
@@ -495,15 +496,15 @@ func TestRuntimeFiltersReplayStateByAdapterInstance(t *testing.T) {
 				Provider: providerRoute,
 				Model:    "m",
 			},
-			Messages: []llm.Message{assistantEntry},
+			Messages: []agentmessage.Message{assistantEntry},
 		})
 		if streamErr != nil {
 			t.Fatal(streamErr)
 		}
 		drainChunks(t, flow)
 	}
-	sameOrigin := sameBackend.requestSnapshots()[0].Messages[0].SourceValue().(llm.ModelMessageSource)
-	otherOrigin := otherBackend.requestSnapshots()[0].Messages[0].SourceValue().(llm.ModelMessageSource)
+	sameOrigin := sameBackend.requestSnapshots()[0].Messages[0].SourceValue().(agentmessage.ModelMessageSource)
+	otherOrigin := otherBackend.requestSnapshots()[0].Messages[0].SourceValue().(agentmessage.ModelMessageSource)
 	if len(sameOrigin.ReplayState) == 0 || len(otherOrigin.ReplayState) != 0 {
 		t.Fatalf("replay states = (same:%s other:%s)", sameOrigin.ReplayState, otherOrigin.ReplayState)
 	}

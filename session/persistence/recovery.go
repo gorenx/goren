@@ -8,7 +8,7 @@ import (
 	"io"
 	"reflect"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 )
 
@@ -18,26 +18,26 @@ const (
 )
 
 type pendingToolCall struct {
-	callID  llm.CallID
+	callID  agentmessage.CallID
 	step    int64
 	callSeq *int64
 }
 
 type recoveryToolSource struct {
-	Kind   string     `json:"kind"`
-	CallID llm.CallID `json:"callId"`
+	Kind   string              `json:"kind"`
+	CallID agentmessage.CallID `json:"callId"`
 }
 
 type recoveryToolResultBlock struct {
-	Type       string          `json:"type"`
-	ToolCallID llm.CallID      `json:"toolCallId"`
-	IsError    bool            `json:"isError"`
-	Content    []llm.TextBlock `json:"content"`
+	Type       string                   `json:"type"`
+	ToolCallID agentmessage.CallID      `json:"toolCallId"`
+	IsError    bool                     `json:"isError"`
+	Content    []agentmessage.TextBlock `json:"content"`
 }
 
 type recoveryToolMessage struct {
-	ID      llm.MessageID             `json:"id"`
-	Role    llm.MessageRole           `json:"role"`
+	ID      agentmessage.MessageID    `json:"id"`
+	Role    agentmessage.MessageRole  `json:"role"`
 	Source  recoveryToolSource        `json:"source"`
 	Content []recoveryToolResultBlock `json:"content"`
 }
@@ -102,7 +102,7 @@ func interruptedTurnClosers(entries []session.Event) ([]session.Event, error) {
 	var openTurn *int64
 	var openStep *int64
 	pending := make([]pendingToolCall, 0)
-	positions := make(map[llm.CallID]int)
+	positions := make(map[agentmessage.CallID]int)
 	for _, entry := range entries {
 		switch entry.Type {
 		case session.TurnStartEventName:
@@ -148,7 +148,7 @@ func interruptedTurnClosers(entries []session.Event) ([]session.Event, error) {
 			}
 		case session.ToolCallEventName:
 			var payload struct {
-				CallID llm.CallID `json:"callId"`
+				CallID agentmessage.CallID `json:"callId"`
 			}
 			if err := json.Unmarshal(entry.Data, &payload); err != nil || payload.CallID == "" {
 				return nil, fmt.Errorf("invalid tool/call at seq %d", entry.Seq)
@@ -192,12 +192,12 @@ func interruptedTurnClosers(entries []session.Event) ([]session.Event, error) {
 			Turn: *openTurn,
 			Step: call.step,
 			Message: recoveryToolMessage{
-				ID:     llm.MessageID(fmt.Sprintf("interrupted-tool-result-%s-%d", call.callID, nextSeq)),
-				Role:   llm.RoleUser,
+				ID:     agentmessage.MessageID(fmt.Sprintf("interrupted-tool-result-%s-%d", call.callID, nextSeq)),
+				Role:   agentmessage.RoleUser,
 				Source: recoveryToolSource{Kind: "tool", CallID: call.callID},
 				Content: []recoveryToolResultBlock{{
 					Type: "tool-result", ToolCallID: call.callID, IsError: true,
-					Content: []llm.TextBlock{llm.NewTextBlock(message)},
+					Content: []agentmessage.TextBlock{agentmessage.NewTextBlock(message)},
 				}},
 			},
 			Error: session.ToolErrorInfo{Name: errorName, Code: errorCode},
@@ -238,21 +238,21 @@ func interruptedTurnClosers(entries []session.Event) ([]session.Event, error) {
 	return closers, nil
 }
 
-func assistantToolCalls(entry session.Event) ([]llm.CallID, int64, error) {
+func assistantToolCalls(entry session.Event) ([]agentmessage.CallID, int64, error) {
 	var payload struct {
 		Turn    int64 `json:"turn"`
 		Step    int64 `json:"step"`
 		Message struct {
 			Content []struct {
-				Type string     `json:"type"`
-				ID   llm.CallID `json:"id"`
+				Type string              `json:"type"`
+				ID   agentmessage.CallID `json:"id"`
 			} `json:"content"`
 		} `json:"message"`
 	}
 	if err := json.Unmarshal(entry.Data, &payload); err != nil || payload.Turn < 1 || payload.Step < 0 {
 		return nil, 0, fmt.Errorf("invalid assistant/message at seq %d", entry.Seq)
 	}
-	result := make([]llm.CallID, 0)
+	result := make([]agentmessage.CallID, 0)
 	for _, block := range payload.Message.Content {
 		if block.Type != "tool-call" {
 			continue
@@ -265,12 +265,12 @@ func assistantToolCalls(entry session.Event) ([]llm.CallID, int64, error) {
 	return result, payload.Step, nil
 }
 
-func toolResultCallID(entry session.Event) (llm.CallID, error) {
+func toolResultCallID(entry session.Event) (agentmessage.CallID, error) {
 	var payload struct {
 		Message struct {
 			Source struct {
-				Kind   string     `json:"kind"`
-				CallID llm.CallID `json:"callId"`
+				Kind   string              `json:"kind"`
+				CallID agentmessage.CallID `json:"callId"`
 			} `json:"source"`
 		} `json:"message"`
 	}

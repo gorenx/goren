@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 )
 
@@ -489,8 +489,8 @@ func validSummaryValue(
 	return Summary{
 		CompactionID:    compactionID,
 		SourceCommandID: sourceCommandID,
-		Summary: []llm.ContentBlock{
-			llm.NewTextBlock("short"),
+		Summary: []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock("short"),
 		},
 		ShadowedRange:      rangeValue,
 		ShadowedSeqs:       shadowedSeqs,
@@ -538,9 +538,9 @@ func appendCheckpointReplacement(
 	if err != nil {
 		testingContext.Fatal(err)
 	}
-	messageValue, err := llm.NewUserMessage(llm.UserMessageInput{
-		Content: []llm.ContentBlock{
-			llm.NewTextBlock("checkpoint"),
+	messageValue, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+		Content: []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock("checkpoint"),
 		},
 		Source: origin,
 	})

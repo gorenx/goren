@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
@@ -85,19 +86,19 @@ func (*retrySubjectFixture) RunMaintenance(
 	return operation(requestContext)
 }
 
-func (*retrySubjectFixture) Send(llm.UserMessage, agent.InboxTarget, bool) error {
+func (*retrySubjectFixture) Send(agentmessage.UserMessage, agent.InboxTarget, bool) error {
 	return nil
 }
 
-func (*retrySubjectFixture) Followup(llm.UserMessage) error {
+func (*retrySubjectFixture) Followup(agentmessage.UserMessage) error {
 	return nil
 }
 
-func (*retrySubjectFixture) Steer(llm.UserMessage) error {
+func (*retrySubjectFixture) Steer(agentmessage.UserMessage) error {
 	return nil
 }
 
-func (*retrySubjectFixture) Inject(llm.UserMessage) error {
+func (*retrySubjectFixture) Inject(agentmessage.UserMessage) error {
 	return nil
 }
 

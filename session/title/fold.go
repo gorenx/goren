@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 )
 
@@ -25,7 +25,7 @@ func CollectMessages(events []session.Event, throughSeq *int64) ([]UserMessage, 
 		if committed.Type != session.UserMessageEventName {
 			continue
 		}
-		messageValue, err := llm.DecodeUserMessage(committed.Data)
+		messageValue, err := agentmessage.DecodeUserMessage(committed.Data)
 		if err != nil {
 			return nil, fmt.Errorf("sessiontitle: decode user/message at seq %d: %w", committed.Seq, err)
 		}
@@ -35,7 +35,7 @@ func CollectMessages(events []session.Event, throughSeq *int64) ([]UserMessage, 
 		}
 		parts := make([]string, 0)
 		for _, content := range messageValue.ContentValue() {
-			textBlock, ok := content.(llm.TextBlock)
+			textBlock, ok := content.(agentmessage.TextBlock)
 			if ok {
 				parts = append(parts, textBlock.Text)
 			}

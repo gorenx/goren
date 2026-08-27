@@ -9,7 +9,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
@@ -61,7 +61,7 @@ const PolicySourceDelegation PolicySource = "delegation"
 type Request struct {
 	Subject  ApprovalTarget
 	ToolName string
-	CallID   *llm.CallID
+	CallID   *agentmessage.CallID
 	Reason   *string
 }
 
@@ -69,15 +69,15 @@ type Request struct {
 // only the Session being audited and the inbox operation used by policy changes.
 type ApprovalTarget interface {
 	SessionValue() session.Context
-	Inject(llm.UserMessage) error
+	Inject(agentmessage.UserMessage) error
 }
 
 // Asked is the durable pre-dispatch approval audit payload.
 type Asked struct {
-	ID       RequestID   `json:"id"`
-	ToolName string      `json:"toolName"`
-	CallID   *llm.CallID `json:"callId,omitempty"`
-	Reason   *string     `json:"reason,omitempty"`
+	ID       RequestID            `json:"id"`
+	ToolName string               `json:"toolName"`
+	CallID   *agentmessage.CallID `json:"callId,omitempty"`
+	Reason   *string              `json:"reason,omitempty"`
 }
 
 // Decided is the durable terminal approval audit payload.
@@ -194,7 +194,7 @@ func validPolicy(selectedPolicy Policy) bool {
 	return selectedPolicy == PolicyAsk || selectedPolicy == PolicyNever
 }
 
-func cloneCallID(source *llm.CallID) *llm.CallID {
+func cloneCallID(source *agentmessage.CallID) *agentmessage.CallID {
 	if source == nil {
 		return nil
 	}

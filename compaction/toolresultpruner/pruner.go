@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"unicode/utf8"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/compaction"
-	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/llm/tokenmeter"
 	"github.com/gorenx/goren/session"
 )
@@ -35,8 +35,8 @@ func (implementation *ToolResultPruner) release() {
 }
 
 // MeasureContent counts text blocks in Unicode code points.
-func (*ToolResultPruner) MeasureContent(blocks []llm.ContentBlock) (int, error) {
-	detachedBlocks, err := llm.CloneContentBlocks(blocks)
+func (*ToolResultPruner) MeasureContent(blocks []agentmessage.ContentBlock) (int, error) {
+	detachedBlocks, err := agentmessage.CloneContentBlocks(blocks)
 	if err != nil {
 		return 0, err
 	}
@@ -64,8 +64,8 @@ func (*ToolResultPruner) MeasureContent(blocks []llm.ContentBlock) (int, error) 
 
 // PruneContent retains head/marker/tail while preserving rich-block order.
 func (implementation *ToolResultPruner) PruneContent(
-	blocks []llm.ContentBlock,
-) ([]llm.ContentBlock, bool, error) {
+	blocks []agentmessage.ContentBlock,
+) ([]agentmessage.ContentBlock, bool, error) {
 	totalChars, err := implementation.MeasureContent(blocks)
 	if err != nil {
 		return nil, false, err
@@ -73,13 +73,13 @@ func (implementation *ToolResultPruner) PruneContent(
 	if totalChars <= implementation.settings.ThresholdChars {
 		return nil, false, nil
 	}
-	detachedBlocks, err := llm.CloneContentBlocks(blocks)
+	detachedBlocks, err := agentmessage.CloneContentBlocks(blocks)
 	if err != nil {
 		return nil, false, err
 	}
 	removedStart := implementation.settings.HeadChars
 	removedEnd := totalChars - implementation.settings.TailChars
-	prunedBlocks := make([]llm.ContentBlock, 0, len(blocks)+1)
+	prunedBlocks := make([]agentmessage.ContentBlock, 0, len(blocks)+1)
 	consumedChars := 0
 	markerInserted := false
 	for blockIndex, blockValue := range detachedBlocks {
@@ -203,7 +203,7 @@ func (plan *pruningPlan) Build(
 				candidate.Seq,
 			)
 		}
-		blockValue, valid := blocks[0].(llm.ToolResultBlock)
+		blockValue, valid := blocks[0].(agentmessage.ToolResultBlock)
 		if !valid {
 			return nil, fmt.Errorf(
 				"toolresultpruner: tool/result at seq %d has another block type",
@@ -273,7 +273,7 @@ func (plan *pruningPlan) Build(
 }
 
 type toolResultFacts struct {
-	message llm.ToolResultMessage
+	message agentmessage.ToolResultMessage
 }
 
 func decodeToolResultCandidate(candidate session.Event) (toolResultFacts, error) {
@@ -281,7 +281,7 @@ func decodeToolResultCandidate(candidate session.Event) (toolResultFacts, error)
 	if err != nil {
 		return toolResultFacts{}, err
 	}
-	typedMessage, valid := messageValue.(llm.ToolResultMessage)
+	typedMessage, valid := messageValue.(agentmessage.ToolResultMessage)
 	if !valid {
 		return toolResultFacts{}, fmt.Errorf(
 			"toolresultpruner: Event at seq %d is not a tool result",
@@ -293,14 +293,14 @@ func decodeToolResultCandidate(candidate session.Event) (toolResultFacts, error)
 	}, nil
 }
 
-func textFromBlock(blockValue llm.ContentBlock) (string, bool, error) {
+func textFromBlock(blockValue agentmessage.ContentBlock) (string, bool, error) {
 	if blockValue == nil {
 		return "", false, errors.New("content block is nil")
 	}
 	if blockValue.ContentType() != "text" {
 		return "", false, nil
 	}
-	textual, valid := blockValue.(llm.PlainTextContent)
+	textual, valid := blockValue.(agentmessage.PlainTextContent)
 	if !valid {
 		return "", false, errors.New("text block does not expose plain text")
 	}
@@ -311,10 +311,10 @@ func textFromBlock(blockValue llm.ContentBlock) (string, bool, error) {
 	return textValue, true, nil
 }
 
-func replaceTextBlock(blockValue llm.ContentBlock, textValue string) (llm.ContentBlock, error) {
+func replaceTextBlock(blockValue agentmessage.ContentBlock, textValue string) (agentmessage.ContentBlock, error) {
 	switch blockValue.(type) {
-	case llm.TextBlock, *llm.TextBlock:
-		return llm.NewTextBlock(textValue), nil
+	case agentmessage.TextBlock, *agentmessage.TextBlock:
+		return agentmessage.NewTextBlock(textValue), nil
 	}
 	encoded, err := json.Marshal(blockValue)
 	if err != nil {
@@ -333,7 +333,7 @@ func replaceTextBlock(blockValue llm.ContentBlock, textValue string) (llm.Conten
 	if err != nil {
 		return nil, err
 	}
-	blocks, err := llm.DecodeContentBlocks(rewritten)
+	blocks, err := agentmessage.DecodeContentBlocks(rewritten)
 	if err != nil {
 		return nil, err
 	}

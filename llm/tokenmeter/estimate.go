@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"unicode/utf16"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 )
 
@@ -16,7 +16,7 @@ const (
 	roleOverhead  = int64(4)
 )
 
-func estimateContent(blocks []llm.ContentBlock) (int64, error) {
+func estimateContent(blocks []agentmessage.ContentBlock) (int64, error) {
 	var tokens int64
 	for blockIndex, contentBlock := range blocks {
 		if contentBlock == nil {
@@ -24,27 +24,27 @@ func estimateContent(blocks []llm.ContentBlock) (int64, error) {
 		}
 		var blockTokens int64
 		switch typedBlock := contentBlock.(type) {
-		case llm.TextBlock:
+		case agentmessage.TextBlock:
 			blockTokens = estimateString(typedBlock.Text) + blockOverhead
-		case *llm.TextBlock:
+		case *agentmessage.TextBlock:
 			blockTokens = estimateString(typedBlock.Text) + blockOverhead
-		case llm.ReasoningBlock:
+		case agentmessage.ReasoningBlock:
 			blockTokens = estimateString(typedBlock.Text) + blockOverhead
-		case *llm.ReasoningBlock:
+		case *agentmessage.ReasoningBlock:
 			blockTokens = estimateString(typedBlock.Text) + blockOverhead
-		case llm.ToolCallBlock:
+		case agentmessage.ToolCallBlock:
 			blockTokens = estimateString(typedBlock.Name) +
 				estimateString(typedBlock.Arguments) + blockOverhead
-		case *llm.ToolCallBlock:
+		case *agentmessage.ToolCallBlock:
 			blockTokens = estimateString(typedBlock.Name) +
 				estimateString(typedBlock.Arguments) + blockOverhead
-		case llm.ToolResultBlock:
+		case agentmessage.ToolResultBlock:
 			nestedTokens, err := estimateContent(typedBlock.Content)
 			if err != nil {
 				return 0, err
 			}
 			blockTokens = nestedTokens + blockOverhead
-		case *llm.ToolResultBlock:
+		case *agentmessage.ToolResultBlock:
 			nestedTokens, err := estimateContent(typedBlock.Content)
 			if err != nil {
 				return 0, err
@@ -70,7 +70,7 @@ func estimateContent(blocks []llm.ContentBlock) (int64, error) {
 	return tokens, nil
 }
 
-func estimateMessage(messageValue llm.Message) (int64, error) {
+func estimateMessage(messageValue agentmessage.Message) (int64, error) {
 	if messageValue == nil {
 		return 0, fmt.Errorf("tokenmeter: cannot estimate a nil message")
 	}

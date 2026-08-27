@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 )
@@ -37,8 +37,8 @@ type continuable interface {
 		context.Context,
 		agent.Agent,
 		session.SessionID,
-		llm.UserMessage,
-	) (llm.MessageID, error)
+		agentmessage.UserMessage,
+	) (agentmessage.MessageID, error)
 }
 
 // bound is the complete Bound contract consumed by Service.

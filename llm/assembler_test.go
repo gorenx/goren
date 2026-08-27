@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 )
 
@@ -13,7 +14,7 @@ func TestBlockAssemblerInterleavedStream(t *testing.T) {
 	entries := []llm.StreamChunk{
 		llm.BlockStartChunk{Index: 0, BlockType: "reasoning"},
 		llm.ReasoningDeltaChunk{Index: 0, Text: "thinking…"},
-		llm.BlockEndChunk{Index: 0, Block: llm.ReasoningBlock{Text: "thinking…"}},
+		llm.BlockEndChunk{Index: 0, Block: agentmessage.ReasoningBlock{Text: "thinking…"}},
 		llm.TextDeltaChunk{Index: 1, Text: "Hello"},
 		llm.TextDeltaChunk{Index: 1, Text: " world"},
 		llm.ToolCallDeltaChunk{Index: 2, ID: "call-1", Name: &toolName, ArgumentsDelta: `{"text":`},
@@ -52,8 +53,8 @@ func TestBlockAssemblerFirstCloseWinsAndMaxTokensDropsToolCalls(t *testing.T) {
 	t.Parallel()
 	assembly := llm.NewBlockAssembler()
 	for _, entry := range []llm.StreamChunk{
-		llm.BlockEndChunk{Index: 0, Block: llm.ReasoningBlock{Text: "first"}},
-		llm.BlockEndChunk{Index: 0, Block: llm.TextBlock{Text: "second"}},
+		llm.BlockEndChunk{Index: 0, Block: agentmessage.ReasoningBlock{Text: "first"}},
+		llm.BlockEndChunk{Index: 0, Block: agentmessage.TextBlock{Text: "second"}},
 		llm.ToolCallDeltaChunk{Index: 1, ID: "call-1", ArgumentsDelta: `{}`},
 		llm.FinishChunk{Reason: llm.MaxTokensFinish{}},
 	} {

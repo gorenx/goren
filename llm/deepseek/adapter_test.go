@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 )
 
@@ -149,7 +150,7 @@ func TestAdapterStreamsRequestAndPublishesModelCapabilities(t *testing.T) {
 		}
 	}
 	blocks, err := assembler.AssembledBlocks()
-	if err != nil || len(blocks) != 1 || blocks[0].(llm.TextBlock).Text != "hello" ||
+	if err != nil || len(blocks) != 1 || blocks[0].(agentmessage.TextBlock).Text != "hello" ||
 		assembler.FinishValue().ReasonKind() != "stop" || resolutionCount.Load() != 1 {
 		t.Fatalf("assembled = (%#v, %#v, %d, %v)", blocks, assembler.FinishValue(), resolutionCount.Load(), err)
 	}

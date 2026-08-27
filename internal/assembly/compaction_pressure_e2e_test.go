@@ -15,9 +15,9 @@ import (
 	"time"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/compaction"
 	"github.com/gorenx/goren/compaction/basic"
-	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/llm/deepseek"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
@@ -678,13 +678,13 @@ func sendCompactionFixturePrompt(
 func compactionFixtureUserMessage(
 	testingContext *testing.T,
 	textValue string,
-) llm.UserMessage {
+) agentmessage.UserMessage {
 	testingContext.Helper()
-	messageValue, err := llm.NewUserMessage(llm.UserMessageInput{
-		Content: []llm.ContentBlock{
-			llm.NewTextBlock(textValue),
+	messageValue, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+		Content: []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock(textValue),
 		},
-		Source: llm.UserMessageSource{},
+		Source: agentmessage.UserMessageSource{},
 	})
 	if err != nil {
 		testingContext.Fatal(err)

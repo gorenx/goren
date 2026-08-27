@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/compaction"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
@@ -56,12 +57,12 @@ var compactionInstruction = strings.Join([]string{
 type summarizationInput struct {
 	system   *string
 	tools    []llm.ToolSchema
-	messages []llm.Message
+	messages []agentmessage.Message
 }
 
 type summaryResult struct {
-	summary       []llm.ContentBlock
-	rawOutput     []llm.ContentBlock
+	summary       []agentmessage.ContentBlock
+	rawOutput     []agentmessage.ContentBlock
 	llmStreamCall bool
 	provider      string
 	model         string
@@ -99,7 +100,7 @@ func buildSummarizationInput(
 	if err != nil {
 		return summarizationInput{}, err
 	}
-	messages := make([]llm.Message, 0, len(shadowedSeqs))
+	messages := make([]agentmessage.Message, 0, len(shadowedSeqs))
 	for _, sequence := range shadowedSeqs {
 		if sequence < 0 || sequence >= int64(len(entries)) ||
 			entries[sequence].Seq != sequence {
@@ -116,7 +117,7 @@ func buildSummarizationInput(
 			messages = append(messages, messageValue)
 		}
 	}
-	detachedMessages, err := llm.CloneMessages(messages)
+	detachedMessages, err := agentmessage.CloneMessages(messages)
 	if err != nil {
 		return summarizationInput{}, err
 	}
@@ -162,18 +163,18 @@ func (summarizer *llmSummarizer) summarize(
 			"no provider/model available for summarization: set both BasicCompactionConfig summarization fields, route one request, or set both Agent Context fields",
 		)
 	}
-	instruction, err := llm.NewUserMessage(llm.UserMessageInput{
-		Content: []llm.ContentBlock{
-			llm.NewTextBlock(compactionInstruction),
+	instruction, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+		Content: []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock(compactionInstruction),
 		},
-		Source: llm.PluginMessageSource{
+		Source: agentmessage.PluginMessageSource{
 			Plugin: "dsh-compaction-basic",
 		},
 	})
 	if err != nil {
 		return summaryResult{}, err
 	}
-	messages, err := llm.CloneMessages(input.messages)
+	messages, err := agentmessage.CloneMessages(input.messages)
 	if err != nil {
 		return summaryResult{}, err
 	}
@@ -235,7 +236,7 @@ func (summarizer *llmSummarizer) summarize(
 	}
 	nonEmpty := false
 	for _, blockValue := range summaryBlocks {
-		textValue, textual := blockValue.(llm.PlainTextContent)
+		textValue, textual := blockValue.(agentmessage.PlainTextContent)
 		if !textual {
 			continue
 		}
@@ -323,37 +324,37 @@ func summaryFailure(failure llm.LlmFailure) error {
 }
 
 func summaryText(
-	blocks []llm.ContentBlock,
-) ([]llm.ContentBlock, error) {
-	if llm.ContentHasImage(blocks) {
+	blocks []agentmessage.ContentBlock,
+) ([]agentmessage.ContentBlock, error) {
+	if agentmessage.ContentHasImage(blocks) {
 		return nil, llm.MustLlmError(
 			"compaction summary cannot contain image output",
 			"UNSUPPORTED_CONTENT",
 		)
 	}
-	textBlocks := make([]llm.ContentBlock, 0, len(blocks))
+	textBlocks := make([]agentmessage.ContentBlock, 0, len(blocks))
 	for _, blockValue := range blocks {
 		if blockValue != nil && blockValue.ContentType() == "text" {
 			textBlocks = append(textBlocks, blockValue)
 		}
 	}
-	return llm.CloneContentBlocks(textBlocks)
+	return agentmessage.CloneContentBlocks(textBlocks)
 }
 
 func frameSummary(
-	summaryBlocks []llm.ContentBlock,
-) ([]llm.ContentBlock, error) {
-	framed := make([]llm.ContentBlock, 0, len(summaryBlocks)+2)
+	summaryBlocks []agentmessage.ContentBlock,
+) ([]agentmessage.ContentBlock, error) {
+	framed := make([]agentmessage.ContentBlock, 0, len(summaryBlocks)+2)
 	framed = append(
 		framed,
-		llm.NewTextBlock(checkpointPreamble+"\n\n"+summaryOpenTag),
+		agentmessage.NewTextBlock(checkpointPreamble+"\n\n"+summaryOpenTag),
 	)
-	cloned, err := llm.CloneContentBlocks(summaryBlocks)
+	cloned, err := agentmessage.CloneContentBlocks(summaryBlocks)
 	if err != nil {
 		return nil, err
 	}
 	framed = append(framed, cloned...)
-	framed = append(framed, llm.NewTextBlock(summaryCloseTag))
+	framed = append(framed, agentmessage.NewTextBlock(summaryCloseTag))
 	return framed, nil
 }
 

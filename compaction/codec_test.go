@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 )
 
@@ -27,8 +28,8 @@ func TestCompactionEventCodecsPreserveMergeExtension(t *testing.T) {
 	}
 	summaryValue := Summary{
 		CompactionID:  "compact-1",
-		Summary:       []llm.ContentBlock{llm.NewTextBlock("checkpoint")},
-		RawOutput:     []llm.ContentBlock{},
+		Summary:       []agentmessage.ContentBlock{agentmessage.NewTextBlock("checkpoint")},
+		RawOutput:     []agentmessage.ContentBlock{},
 		LLMStreamCall: true,
 		ShadowedRange: SurfaceRange{
 			Start: 9,
@@ -60,7 +61,7 @@ func TestCompactionEventCodecsPreserveMergeExtension(t *testing.T) {
 
 	unmarked := summaryValue
 	unmarked.LLMStreamCall = false
-	unmarked.RawOutput = []llm.ContentBlock{}
+	unmarked.RawOutput = []agentmessage.ContentBlock{}
 	encoded, err = json.Marshal(unmarked)
 	if err != nil {
 		t.Fatal(err)

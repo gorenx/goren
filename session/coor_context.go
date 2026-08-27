@@ -3,7 +3,7 @@ package session
 import (
 	"sync"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 )
 
 // coordinator is the single ordering and lifecycle facade for one Session.
@@ -68,7 +68,7 @@ func (owner *coordinator) Snapshot() Snapshot {
 	return owner.log.Snapshot()
 }
 
-func (owner *coordinator) DeriveMessages() ([]llm.Message, error) {
+func (owner *coordinator) DeriveMessages() ([]agentmessage.Message, error) {
 	if owner == nil {
 		return nil, nil
 	}

@@ -3,6 +3,7 @@ package deepseek
 import (
 	"fmt"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 )
 
@@ -10,28 +11,28 @@ const emptyToolOutput = "(no output)"
 
 // SerializeMessages maps the Harness conversation vocabulary to the direct
 // DeepSeek chat-completions wire vocabulary without dropping core images.
-func SerializeMessages(conversation []llm.Message) ([]wireMessage, error) {
+func SerializeMessages(conversation []agentmessage.Message) ([]wireMessage, error) {
 	wireMessages := make([]wireMessage, 0, len(conversation))
 	for messageIndex, entry := range conversation {
 		if entry == nil {
 			return nil, fmt.Errorf("llm-deepseek: message %d is nil", messageIndex)
 		}
 		content := entry.ContentValue()
-		if llm.ContentHasImage(content) {
+		if agentmessage.ContentHasImage(content) {
 			return nil, llm.MustLlmError(
 				"The DeepSeek chat-completions adapter does not support image content.",
 				"UNSUPPORTED_CONTENT",
 			)
 		}
 		switch entry.ConversationRole() {
-		case llm.RoleSystem:
+		case agentmessage.RoleSystem:
 			wireMessages = append(wireMessages, wireSystemMessage{
 				Role:    "system",
 				Content: flattenText(content),
 			})
-		case llm.RoleAssistant:
+		case agentmessage.RoleAssistant:
 			wireMessages = append(wireMessages, serializeAssistant(content))
-		case llm.RoleUser:
+		case agentmessage.RoleUser:
 			wireMessages = append(wireMessages, serializeUser(content)...)
 		default:
 			return nil, fmt.Errorf("llm-deepseek: message %d has unsupported role %q", messageIndex, entry.ConversationRole())
@@ -40,7 +41,7 @@ func SerializeMessages(conversation []llm.Message) ([]wireMessage, error) {
 	return wireMessages, nil
 }
 
-func serializeAssistant(content []llm.ContentBlock) wireAssistantMessage {
+func serializeAssistant(content []agentmessage.ContentBlock) wireAssistantMessage {
 	visibleText := flattenText(content)
 	reasoningText := flattenContentType(content, "reasoning")
 	toolCalls := make([]wireToolCall, 0)
@@ -71,8 +72,8 @@ func serializeAssistant(content []llm.ContentBlock) wireAssistantMessage {
 	return result
 }
 
-func serializeUser(content []llm.ContentBlock) []wireMessage {
-	toolResults := make([]llm.ToolResultBlock, 0)
+func serializeUser(content []agentmessage.ContentBlock) []wireMessage {
+	toolResults := make([]agentmessage.ToolResultBlock, 0)
 	for _, entry := range content {
 		result, found := toolResultValue(entry)
 		if found {
@@ -101,18 +102,18 @@ func serializeUser(content []llm.ContentBlock) []wireMessage {
 	return wireMessages
 }
 
-func flattenText(content []llm.ContentBlock) string {
+func flattenText(content []agentmessage.ContentBlock) string {
 	return flattenContentType(content, "text")
 }
 
-func flattenContentType(content []llm.ContentBlock, contentType string) string {
+func flattenContentType(content []agentmessage.ContentBlock, contentType string) string {
 	flattened := ""
 	for _, entry := range content {
 		if entry == nil || entry.ContentType() != contentType {
 			continue
 		}
 		if contentType == "text" {
-			if readable, supported := entry.(llm.PlainTextContent); supported {
+			if readable, supported := entry.(agentmessage.PlainTextContent); supported {
 				if value, available := readable.PlainText(); available {
 					flattened += value
 				}
@@ -120,9 +121,9 @@ func flattenContentType(content []llm.ContentBlock, contentType string) string {
 			continue
 		}
 		switch block := entry.(type) {
-		case llm.ReasoningBlock:
+		case agentmessage.ReasoningBlock:
 			flattened += block.Text
-		case *llm.ReasoningBlock:
+		case *agentmessage.ReasoningBlock:
 			if block != nil {
 				flattened += block.Text
 			}
@@ -131,26 +132,26 @@ func flattenContentType(content []llm.ContentBlock, contentType string) string {
 	return flattened
 }
 
-func toolCallValue(entry llm.ContentBlock) (llm.ToolCallBlock, bool) {
+func toolCallValue(entry agentmessage.ContentBlock) (agentmessage.ToolCallBlock, bool) {
 	switch block := entry.(type) {
-	case llm.ToolCallBlock:
+	case agentmessage.ToolCallBlock:
 		return block, true
-	case *llm.ToolCallBlock:
+	case *agentmessage.ToolCallBlock:
 		if block != nil {
 			return *block, true
 		}
 	}
-	return llm.ToolCallBlock{}, false
+	return agentmessage.ToolCallBlock{}, false
 }
 
-func toolResultValue(entry llm.ContentBlock) (llm.ToolResultBlock, bool) {
+func toolResultValue(entry agentmessage.ContentBlock) (agentmessage.ToolResultBlock, bool) {
 	switch block := entry.(type) {
-	case llm.ToolResultBlock:
+	case agentmessage.ToolResultBlock:
 		return block, true
-	case *llm.ToolResultBlock:
+	case *agentmessage.ToolResultBlock:
 		if block != nil {
 			return *block, true
 		}
 	}
-	return llm.ToolResultBlock{}, false
+	return agentmessage.ToolResultBlock{}, false
 }

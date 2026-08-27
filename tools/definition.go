@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 )
 
 // Executor runs one already-snapshotted tool call and returns a canonical JSON
@@ -25,14 +25,14 @@ func (operation ExecutorFunc) Execute(arguments json.RawMessage, runContext Tool
 // OutputRenderer projects validated arguments and a validated canonical value
 // into model-facing content.
 type OutputRenderer interface {
-	Render(json.RawMessage, json.RawMessage) ([]llm.ContentBlock, error)
+	Render(json.RawMessage, json.RawMessage) ([]agentmessage.ContentBlock, error)
 }
 
 // OutputRendererFunc adapts a function to OutputRenderer.
-type OutputRendererFunc func(json.RawMessage, json.RawMessage) ([]llm.ContentBlock, error)
+type OutputRendererFunc func(json.RawMessage, json.RawMessage) ([]agentmessage.ContentBlock, error)
 
 // Render invokes the adapted function.
-func (operation OutputRendererFunc) Render(arguments json.RawMessage, value json.RawMessage) ([]llm.ContentBlock, error) {
+func (operation OutputRendererFunc) Render(arguments json.RawMessage, value json.RawMessage) ([]agentmessage.ContentBlock, error) {
 	return operation(arguments, value)
 }
 
@@ -53,14 +53,14 @@ func (operation PresentationProjectorFunc) Project(arguments json.RawMessage, va
 // ContentFinalizer performs the snapshotted definition-owned last-mile
 // content transform. replace=false preserves the supplied content.
 type ContentFinalizer interface {
-	Finalize(ToolExecution, ToolResultSnapshot) (content []llm.ContentBlock, replace bool)
+	Finalize(ToolExecution, ToolResultSnapshot) (content []agentmessage.ContentBlock, replace bool)
 }
 
 // ContentFinalizerFunc adapts a function to ContentFinalizer.
-type ContentFinalizerFunc func(ToolExecution, ToolResultSnapshot) ([]llm.ContentBlock, bool)
+type ContentFinalizerFunc func(ToolExecution, ToolResultSnapshot) ([]agentmessage.ContentBlock, bool)
 
 // Finalize invokes the adapted function.
-func (operation ContentFinalizerFunc) Finalize(toolCall ToolExecution, resultView ToolResultSnapshot) ([]llm.ContentBlock, bool) {
+func (operation ContentFinalizerFunc) Finalize(toolCall ToolExecution, resultView ToolResultSnapshot) ([]agentmessage.ContentBlock, bool) {
 	return operation(toolCall, resultView)
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 )
@@ -142,7 +143,7 @@ func TestFoldConsumedWorkReportsOnlyUnrunCancellation(t *testing.T) {
 
 	replaced := consumedWorkSession(t, "replacement")
 	replacement := consumedMessage(t, "rewritten")
-	appendCancellation(t, replaced, []llm.UserMessage{replacement})
+	appendCancellation(t, replaced, []agentmessage.UserMessage{replacement})
 	work, err = FoldConsumedWork(replaced.Events())
 	if err != nil {
 		t.Fatal(err)
@@ -192,13 +193,13 @@ func consumedWorkSession(t *testing.T, identifier session.SessionID) session.Con
 	return conversation
 }
 
-func consumedMessage(t *testing.T, text string) llm.UserMessage {
+func consumedMessage(t *testing.T, text string) agentmessage.UserMessage {
 	t.Helper()
-	messageValue, err := llm.NewUserMessage(llm.UserMessageInput{
-		Content: []llm.ContentBlock{
-			llm.NewTextBlock(text),
+	messageValue, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+		Content: []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock(text),
 		},
-		Source: llm.UserMessageSource{},
+		Source: agentmessage.UserMessageSource{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -213,7 +214,7 @@ func appendAccepted(t *testing.T, conversation session.Context, text string) {
 			InboxSplice{
 				Target:   NextTurn,
 				Start:    0,
-				Inserted: []llm.UserMessage{consumedMessage(t, text)},
+				Inserted: []agentmessage.UserMessage{consumedMessage(t, text)},
 			})
 		if err == nil {
 			_, err = conversation.Commit(context.Background(), session.Batch(draft))
@@ -233,7 +234,7 @@ func appendClaim(t *testing.T, conversation session.Context) {
 				Target:       NextTurn,
 				Start:        0,
 				RemovedCount: &removedCount,
-				Inserted:     []llm.UserMessage{},
+				Inserted:     []agentmessage.UserMessage{},
 			})
 		if err == nil {
 			_, err = conversation.Commit(context.Background(), session.Batch(draft))
@@ -247,11 +248,11 @@ func appendClaim(t *testing.T, conversation session.Context) {
 func appendCancellation(
 	t *testing.T,
 	conversation session.Context,
-	inserted []llm.UserMessage,
+	inserted []agentmessage.UserMessage,
 ) {
 	t.Helper()
 	if inserted == nil {
-		inserted = []llm.UserMessage{}
+		inserted = []agentmessage.UserMessage{}
 	}
 	removedCount := 1
 	{

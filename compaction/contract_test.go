@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/compaction"
-	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 )
 
@@ -29,9 +29,9 @@ func TestCheckpointSourceSurvivesMessageRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	message, err := llm.NewUserMessage(llm.UserMessageInput{
-		Content: []llm.ContentBlock{
-			llm.NewTextBlock("checkpoint"),
+	message, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+		Content: []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock("checkpoint"),
 		},
 		Source: origin,
 	})
@@ -42,7 +42,7 @@ func TestCheckpointSourceSurvivesMessageRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restored, err := llm.DecodeUserMessage(encoded)
+	restored, err := agentmessage.DecodeUserMessage(encoded)
 	if err != nil {
 		t.Fatal(err)
 	}

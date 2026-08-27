@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/subagent"
 	subagentdelegation "github.com/gorenx/goren/subagent/tools/delegation"
@@ -19,7 +20,7 @@ func TestContinuableSettlementReportsMaxTokensFromAgentLog(t *testing.T) {
 		[]llm.StreamChunk{
 			llm.BlockEndChunk{
 				Index: 0,
-				Block: llm.NewTextBlock("partial answer"),
+				Block: agentmessage.NewTextBlock("partial answer"),
 			},
 			llm.FinishChunk{
 				Reason: llm.MaxTokensFinish{},

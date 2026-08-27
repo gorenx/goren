@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 )
@@ -108,19 +108,19 @@ func (*boundAgent) RunMaintenance(
 	return nil
 }
 
-func (*boundAgent) Send(llm.UserMessage, agent.InboxTarget, bool) error {
+func (*boundAgent) Send(agentmessage.UserMessage, agent.InboxTarget, bool) error {
 	return nil
 }
 
-func (*boundAgent) Followup(llm.UserMessage) error {
+func (*boundAgent) Followup(agentmessage.UserMessage) error {
 	return nil
 }
 
-func (*boundAgent) Steer(llm.UserMessage) error {
+func (*boundAgent) Steer(agentmessage.UserMessage) error {
 	return nil
 }
 
-func (*boundAgent) Inject(llm.UserMessage) error {
+func (*boundAgent) Inject(agentmessage.UserMessage) error {
 	return nil
 }
 

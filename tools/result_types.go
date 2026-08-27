@@ -3,7 +3,7 @@ package tools
 import (
 	"encoding/json"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 )
 
 // ToolErrorInfo is stable internal routing metadata for a failed call.
@@ -28,20 +28,20 @@ type ToolExecutionResult interface {
 // Every accessor that exposes reference-backed data returns a detached copy.
 type ToolResultSnapshot interface {
 	Failed() bool
-	ContentBlocks() []llm.ContentBlock
+	ContentBlocks() []agentmessage.ContentBlock
 	SuccessValue() (json.RawMessage, bool)
 	FailureDetail() (ToolFailure, bool)
 	PresentationMeta() json.RawMessage
-	AdditionalContextMessages() []llm.UserMessage
+	AdditionalContextMessages() []agentmessage.UserMessage
 	ConcludesAgentTurn() bool
 }
 
 // ToolExecutionSuccess is a validated canonical value and its projections.
 type ToolExecutionSuccess struct {
 	Value              json.RawMessage
-	Content            []llm.ContentBlock
+	Content            []agentmessage.ContentBlock
 	Meta               json.RawMessage
-	AdditionalContexts []llm.UserMessage
+	AdditionalContexts []agentmessage.UserMessage
 	ConcludesTurn      bool
 }
 
@@ -49,16 +49,16 @@ type ToolExecutionSuccess struct {
 func (*ToolExecutionSuccess) Failed() bool { return false }
 
 // ContentBlocks returns the result's model-facing content.
-func (outcome *ToolExecutionSuccess) ContentBlocks() []llm.ContentBlock {
+func (outcome *ToolExecutionSuccess) ContentBlocks() []agentmessage.ContentBlock {
 	if outcome == nil {
 		return nil
 	}
-	detached, _ := llm.CloneContentBlocks(outcome.Content)
+	detached, _ := agentmessage.CloneContentBlocks(outcome.Content)
 	return detached
 }
 
 // AdditionalContextMessages returns detached next-step context in authored order.
-func (outcome *ToolExecutionSuccess) AdditionalContextMessages() []llm.UserMessage {
+func (outcome *ToolExecutionSuccess) AdditionalContextMessages() []agentmessage.UserMessage {
 	if outcome == nil {
 		return nil
 	}
@@ -95,25 +95,25 @@ func (outcome *ToolExecutionSuccess) ConcludesAgentTurn() bool {
 // ToolExecutionFailure is a normalized error and its model-facing content.
 type ToolExecutionFailure struct {
 	Error              ToolFailure
-	Content            []llm.ContentBlock
+	Content            []agentmessage.ContentBlock
 	Meta               json.RawMessage
-	AdditionalContexts []llm.UserMessage
+	AdditionalContexts []agentmessage.UserMessage
 }
 
 // Failed reports true.
 func (*ToolExecutionFailure) Failed() bool { return true }
 
 // ContentBlocks returns the result's model-facing content.
-func (outcome *ToolExecutionFailure) ContentBlocks() []llm.ContentBlock {
+func (outcome *ToolExecutionFailure) ContentBlocks() []agentmessage.ContentBlock {
 	if outcome == nil {
 		return nil
 	}
-	detached, _ := llm.CloneContentBlocks(outcome.Content)
+	detached, _ := agentmessage.CloneContentBlocks(outcome.Content)
 	return detached
 }
 
 // AdditionalContextMessages returns detached next-step context in authored order.
-func (outcome *ToolExecutionFailure) AdditionalContextMessages() []llm.UserMessage {
+func (outcome *ToolExecutionFailure) AdditionalContextMessages() []agentmessage.UserMessage {
 	if outcome == nil {
 		return nil
 	}
@@ -160,7 +160,7 @@ type canonicalToolExecutionSuccess struct {
 
 func (*canonicalToolExecutionSuccess) Failed() bool { return false }
 
-func (outcome *canonicalToolExecutionSuccess) ContentBlocks() []llm.ContentBlock {
+func (outcome *canonicalToolExecutionSuccess) ContentBlocks() []agentmessage.ContentBlock {
 	return outcome.normalized.ContentBlocks()
 }
 
@@ -176,7 +176,7 @@ func (outcome *canonicalToolExecutionSuccess) PresentationMeta() json.RawMessage
 	return outcome.normalized.PresentationMeta()
 }
 
-func (outcome *canonicalToolExecutionSuccess) AdditionalContextMessages() []llm.UserMessage {
+func (outcome *canonicalToolExecutionSuccess) AdditionalContextMessages() []agentmessage.UserMessage {
 	return outcome.normalized.AdditionalContextMessages()
 }
 

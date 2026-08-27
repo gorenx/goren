@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/systemprompt"
@@ -16,7 +17,7 @@ import (
 type stepPlan struct {
 	position session.StepPosition
 	rejected bool
-	messages []llm.UserMessage
+	messages []agentmessage.UserMessage
 	assembly systemprompt.PromptAssembly
 }
 
@@ -199,7 +200,7 @@ func (executor *stepExecutor) execute(
 
 func (executor *stepExecutor) appendMessages(
 	requestContext context.Context,
-	messages []llm.UserMessage,
+	messages []agentmessage.UserMessage,
 ) error {
 	for _, message := range messages {
 		draft, err := session.NewSurfaceEventDraft(
@@ -223,7 +224,7 @@ func (executor *stepExecutor) appendMessages(
 }
 
 type preStepEnterAction struct {
-	messages []llm.UserMessage
+	messages []agentmessage.UserMessage
 }
 
 func (action preStepEnterAction) Execute(
@@ -236,13 +237,13 @@ func (action preStepEnterAction) Execute(
 	}, nil
 }
 
-func cloneUserMessages(entries []llm.UserMessage) ([]llm.UserMessage, error) {
+func cloneUserMessages(entries []agentmessage.UserMessage) ([]agentmessage.UserMessage, error) {
 	if entries == nil {
 		return nil, nil
 	}
-	detached := make([]llm.UserMessage, len(entries))
+	detached := make([]agentmessage.UserMessage, len(entries))
 	for index, entry := range entries {
-		copyValue, err := llm.CloneUserMessage(entry)
+		copyValue, err := agentmessage.CloneUserMessage(entry)
 		if err != nil {
 			return nil, fmt.Errorf(
 				"agentloop: clone user message %d: %w",

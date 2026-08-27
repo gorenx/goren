@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/compaction"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
@@ -247,11 +248,11 @@ func TestCompactRegionRejectsConcurrentSurfaceChange(t *testing.T) {
 	runtimeValue := newRuntimeStub("checkpoint", 1_000)
 	conversation := conversationFixture(t, 2, "history")
 	runtimeValue.beforeCall = func() {
-		injected, err := llm.NewUserMessage(llm.UserMessageInput{
-			Content: []llm.ContentBlock{
-				llm.NewTextBlock("injected while summarizing"),
+		injected, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+			Content: []agentmessage.ContentBlock{
+				agentmessage.NewTextBlock("injected while summarizing"),
 			},
-			Source: llm.UserMessageSource{},
+			Source: agentmessage.UserMessageSource{},
 		})
 		if err != nil {
 			panic(err)
@@ -374,11 +375,11 @@ func TestCompactNowAllowsChangesOutsideSelectedSpan(t *testing.T) {
 	runtimeValue := newRuntimeStub("manual checkpoint", 1_000)
 	injectedSeq := int64(-1)
 	runtimeValue.beforeCall = func() {
-		injected, err := llm.NewUserMessage(llm.UserMessageInput{
-			Content: []llm.ContentBlock{
-				llm.NewTextBlock("outside the selected span"),
+		injected, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+			Content: []agentmessage.ContentBlock{
+				agentmessage.NewTextBlock("outside the selected span"),
 			},
-			Source: llm.UserMessageSource{},
+			Source: agentmessage.UserMessageSource{},
 		})
 		if err != nil {
 			panic(err)

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 )
 
@@ -357,8 +358,8 @@ func TestRequestFoldsAndDerivedMessagesTrackCurrentSurface(t *testing.T) {
 		t.Fatalf("request context = %#v, error = %v", foldedContext, err)
 	}
 
-	userInput, err := llm.NewUserMessage(llm.UserMessageInput{
-		Content: []llm.ContentBlock{llm.NewTextBlock("hello")}, Source: llm.UserMessageSource{},
+	userInput, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+		Content: []agentmessage.ContentBlock{agentmessage.NewTextBlock("hello")}, Source: agentmessage.UserMessageSource{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -372,8 +373,8 @@ func TestRequestFoldsAndDerivedMessagesTrackCurrentSurface(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	emptyReply, err := llm.NewAssistantMessage(llm.AssistantMessageInput{
-		Source: llm.ModelMessageSource{Provider: "mock", Model: "m"},
+	emptyReply, err := agentmessage.NewAssistantMessage(agentmessage.AssistantMessageInput{
+		Source: agentmessage.ModelMessageSource{Provider: "mock", Model: "m"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -389,9 +390,9 @@ func TestRequestFoldsAndDerivedMessagesTrackCurrentSurface(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	assistantReply, err := llm.NewAssistantMessage(llm.AssistantMessageInput{
-		Content: []llm.ContentBlock{llm.NewTextBlock("working")},
-		Source:  llm.ModelMessageSource{Provider: "mock", Model: "m"},
+	assistantReply, err := agentmessage.NewAssistantMessage(agentmessage.AssistantMessageInput{
+		Content: []agentmessage.ContentBlock{agentmessage.NewTextBlock("working")},
+		Source:  agentmessage.ModelMessageSource{Provider: "mock", Model: "m"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -407,8 +408,8 @@ func TestRequestFoldsAndDerivedMessagesTrackCurrentSurface(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	toolReply, err := llm.NewToolResultMessage(llm.ToolResultMessageInput{
-		CallID: "call-1", Content: []llm.ContentBlock{llm.NewTextBlock("result")},
+	toolReply, err := agentmessage.NewToolResultMessage(agentmessage.ToolResultMessageInput{
+		CallID: "call-1", Content: []agentmessage.ContentBlock{agentmessage.NewTextBlock("result")},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -433,9 +434,9 @@ func TestRequestFoldsAndDerivedMessagesTrackCurrentSurface(t *testing.T) {
 		derived[1].StableID() != assistantReply.StableID() || derived[2].StableID() != toolReply.StableID() {
 		t.Fatalf("derived messages = %#v", derived)
 	}
-	replacement, err := llm.NewUserMessage(llm.UserMessageInput{
-		Content: []llm.ContentBlock{llm.NewTextBlock("summary")},
-		Source:  llm.PluginMessageSource{Plugin: "compactor"},
+	replacement, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+		Content: []agentmessage.ContentBlock{agentmessage.NewTextBlock("summary")},
+		Source:  agentmessage.PluginMessageSource{Plugin: "compactor"},
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/approval"
-	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 )
 
@@ -190,8 +190,8 @@ func deniedResult(reason string) ToolExecutionResult {
 		Error: ToolFailure{
 			Message: reason,
 		},
-		Content: []llm.ContentBlock{
-			llm.NewTextBlock("Error: " + reason),
+		Content: []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock("Error: " + reason),
 		},
 	}
 }

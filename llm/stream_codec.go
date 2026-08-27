@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/internal/jsonvalue"
 )
 
@@ -24,11 +25,15 @@ func (entry *BlockEndChunk) UnmarshalJSON(rawValue []byte) error {
 	if wireValue.Type != "block-end" {
 		return errors.New("llm: invalid block-end discriminant")
 	}
-	detachedBlock, err := decodeContentBlock(wireValue.Block)
+	detachedBlock, err := agentmessage.DecodeContentBlock(wireValue.Block)
 	if err != nil {
 		return err
 	}
-	*entry = BlockEndChunk{Type: "block-end", Index: wireValue.Index, Block: detachedBlock}
+	*entry = BlockEndChunk{
+		Type:  "block-end",
+		Index: wireValue.Index,
+		Block: detachedBlock,
+	}
 	return nil
 }
 
@@ -52,7 +57,11 @@ func (entry *FinishChunk) UnmarshalJSON(rawValue []byte) error {
 	if err != nil {
 		return err
 	}
-	candidate := FinishChunk{Type: "finish", Reason: detachedReason, ReplayState: wireValue.ReplayState}
+	candidate := FinishChunk{
+		Type:        "finish",
+		Reason:      detachedReason,
+		ReplayState: wireValue.ReplayState,
+	}
 	detachedChunk, err := candidate.CloneChunk()
 	if err != nil {
 		return err

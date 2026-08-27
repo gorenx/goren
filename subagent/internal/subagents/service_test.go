@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
@@ -67,7 +67,7 @@ type continuableRecord struct {
 	mutex       sync.Mutex
 	resumeCalls int
 	childID     session.SessionID
-	message     llm.UserMessage
+	message     agentmessage.UserMessage
 }
 
 func (*continuableRecord) Start(
@@ -94,8 +94,8 @@ func (record *continuableRecord) Resume(
 	_ context.Context,
 	_ agent.Agent,
 	childID session.SessionID,
-	messageValue llm.UserMessage,
-) (llm.MessageID, error) {
+	messageValue agentmessage.UserMessage,
+) (agentmessage.MessageID, error) {
 	record.mutex.Lock()
 	record.resumeCalls++
 	record.childID = childID
@@ -329,8 +329,8 @@ func TestServiceSendUsesResidentChildAgentForEveryMode(t *testing.T) {
 				context.Background(),
 				parent,
 				child.ID(),
-				[]llm.ContentBlock{
-					llm.NewTextBlock("continue"),
+				[]agentmessage.ContentBlock{
+					agentmessage.NewTextBlock("continue"),
 				},
 				subagent.FollowupOptions{
 					Source: subagent.CoordinatorSource{
@@ -342,7 +342,7 @@ func TestServiceSendUsesResidentChildAgentForEveryMode(t *testing.T) {
 				t.Fatal(sendErr)
 			}
 			child.mutex.Lock()
-			followups := append([]llm.UserMessage(nil), child.followups...)
+			followups := append([]agentmessage.UserMessage(nil), child.followups...)
 			child.mutex.Unlock()
 			if len(followups) != 1 || followups[0].StableID() != messageID {
 				t.Fatalf("resident child followups = %#v, messageID = %q", followups, messageID)
@@ -381,8 +381,8 @@ func TestServiceSendUsesContinuableOnlyForColdResume(t *testing.T) {
 		context.Background(),
 		parent,
 		"cold-child",
-		[]llm.ContentBlock{
-			llm.NewTextBlock("resume"),
+		[]agentmessage.ContentBlock{
+			agentmessage.NewTextBlock("resume"),
 		},
 		subagent.FollowupOptions{
 			Source: subagent.CoordinatorSource{
@@ -473,8 +473,8 @@ func TestServiceSendReturnsResidentAgentErrorWithoutInterpretingExecutionState(
 		context.Background(),
 		parent,
 		child.ID(),
-		[]llm.ContentBlock{
-			llm.NewTextBlock("late message"),
+		[]agentmessage.ContentBlock{
+			agentmessage.NewTextBlock("late message"),
 		},
 		subagent.FollowupOptions{
 			Source: subagent.CoordinatorSource{
@@ -524,7 +524,7 @@ type serviceAgent struct {
 	id            session.SessionID
 	session       session.Context
 	mutex         sync.Mutex
-	followups     []llm.UserMessage
+	followups     []agentmessage.UserMessage
 	followupCalls int
 	followupErr   error
 }
@@ -564,10 +564,10 @@ func (*serviceAgent) WhenIdle(context.Context) error                { return nil
 func (*serviceAgent) RunMaintenance(context.Context, func(context.Context) error) error {
 	return nil
 }
-func (*serviceAgent) Send(llm.UserMessage, agent.InboxTarget, bool) error {
+func (*serviceAgent) Send(agentmessage.UserMessage, agent.InboxTarget, bool) error {
 	return nil
 }
-func (subject *serviceAgent) Followup(messageValue llm.UserMessage) error {
+func (subject *serviceAgent) Followup(messageValue agentmessage.UserMessage) error {
 	subject.mutex.Lock()
 	subject.followupCalls++
 	subject.followups = append(subject.followups, messageValue)
@@ -575,8 +575,8 @@ func (subject *serviceAgent) Followup(messageValue llm.UserMessage) error {
 	subject.mutex.Unlock()
 	return followupErr
 }
-func (*serviceAgent) Steer(llm.UserMessage) error  { return nil }
-func (*serviceAgent) Inject(llm.UserMessage) error { return nil }
+func (*serviceAgent) Steer(agentmessage.UserMessage) error  { return nil }
+func (*serviceAgent) Inject(agentmessage.UserMessage) error { return nil }
 
 type terminalRecord struct{}
 

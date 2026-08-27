@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 )
 
 const checkpointPluginName = "compact"
@@ -41,13 +41,13 @@ func NewCheckpointSource(
 	}, nil
 }
 
-// SourceKind implements llm.MessageSource.
+// SourceKind implements agentmessage.MessageSource.
 func (CheckpointSource) SourceKind() string {
 	return "plugin"
 }
 
 // CloneSource validates and detaches checkpoint provenance.
-func (origin CheckpointSource) CloneSource() (llm.MessageSource, error) {
+func (origin CheckpointSource) CloneSource() (agentmessage.MessageSource, error) {
 	return NewCheckpointSource(
 		origin.CompactionID,
 		origin.SourceCommandID,
@@ -69,7 +69,7 @@ func (origin CheckpointSource) MarshalJSON() ([]byte, error) {
 
 // IsCheckpointSource recognizes typed and losslessly restored sources without
 // making llm depend on this package.
-func IsCheckpointSource(origin llm.MessageSource) bool {
+func IsCheckpointSource(origin agentmessage.MessageSource) bool {
 	if origin == nil || origin.SourceKind() != "plugin" {
 		return false
 	}
@@ -90,7 +90,7 @@ func IsCheckpointSource(origin llm.MessageSource) bool {
 }
 
 func decodeCheckpointSource(
-	origin llm.MessageSource,
+	origin agentmessage.MessageSource,
 ) (CheckpointSource, bool, error) {
 	if !IsCheckpointSource(origin) {
 		return CheckpointSource{}, false, nil

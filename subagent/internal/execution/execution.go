@@ -9,7 +9,7 @@ import (
 	"sync"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 )
@@ -217,7 +217,7 @@ func (running *Execution) StopAndWait(
 
 func cloneTerminal(source subagent.Terminal) subagent.Terminal {
 	detached := source
-	detached.Output, _ = llm.CloneContentBlocks(source.Output)
+	detached.Output, _ = agentmessage.CloneContentBlocks(source.Output)
 	detached.Structured = append(json.RawMessage(nil), source.Structured...)
 	if source.Diagnostic != nil {
 		diagnosticValue := *source.Diagnostic

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/approval"
-	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/systemprompt"
@@ -68,14 +68,14 @@ type fakeSubject struct {
 	conversation session.Context
 
 	mutex    sync.Mutex
-	injected []llm.UserMessage
+	injected []agentmessage.UserMessage
 }
 
 func (subject *fakeSubject) SessionValue() session.Context {
 	return subject.conversation
 }
 
-func (subject *fakeSubject) Inject(messageValue llm.UserMessage) error {
+func (subject *fakeSubject) Inject(messageValue agentmessage.UserMessage) error {
 	subject.mutex.Lock()
 	subject.injected = append(subject.injected, messageValue)
 	subject.mutex.Unlock()
@@ -252,7 +252,7 @@ func TestRequestRequiresOpenTurnAndPairsAudit(t *testing.T) {
 	}
 
 	openTurn(t, subject.conversation)
-	callIdentifier := llm.CallID("call-1")
+	callIdentifier := agentmessage.CallID("call-1")
 	reasonText := "hook says ask"
 	outcome, err := state.service.Request(
 		context.Background(),

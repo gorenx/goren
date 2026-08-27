@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 )
@@ -18,8 +18,8 @@ func (owner *Service) Resume(
 	requestContext context.Context,
 	parentAgent agent.Agent,
 	childID session.SessionID,
-	messageValue llm.UserMessage,
-) (llm.MessageID, error) {
+	messageValue agentmessage.UserMessage,
+) (agentmessage.MessageID, error) {
 	if contextErr := checkContext(requestContext, "Continuable Resume"); contextErr != nil {
 		return "", contextErr
 	}

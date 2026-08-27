@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 )
 
@@ -14,7 +15,7 @@ type openBlock struct {
 	index  int
 	kind   string
 	text   string
-	callID llm.CallID
+	callID agentmessage.CallID
 	name   *string
 }
 
@@ -190,7 +191,7 @@ func (streamState *translatedStream) acceptDelta(delta wireDelta) {
 			})
 		}
 		if callDelta.ID != nil {
-			block.callID = llm.CallID(*callDelta.ID)
+			block.callID = agentmessage.CallID(*callDelta.ID)
 		}
 		fragment := ""
 		if callDelta.Function != nil {
@@ -223,15 +224,15 @@ func (streamState *translatedStream) open(kind string) *openBlock {
 	return block
 }
 
-func closeTranslatedBlock(block *openBlock) llm.ContentBlock {
+func closeTranslatedBlock(block *openBlock) agentmessage.ContentBlock {
 	switch block.kind {
 	case "text":
-		return llm.TextBlock{
+		return agentmessage.TextBlock{
 			Type: "text",
 			Text: block.text,
 		}
 	case "reasoning":
-		return llm.ReasoningBlock{
+		return agentmessage.ReasoningBlock{
 			Type: "reasoning",
 			Text: block.text,
 		}
@@ -240,7 +241,7 @@ func closeTranslatedBlock(block *openBlock) llm.ContentBlock {
 		if block.name != nil {
 			toolName = *block.name
 		}
-		return llm.ToolCallBlock{
+		return agentmessage.ToolCallBlock{
 			Type:      "tool-call",
 			ID:        block.callID,
 			Name:      toolName,

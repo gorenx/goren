@@ -9,10 +9,10 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/compaction"
 	"github.com/gorenx/goren/compaction/basic"
 	"github.com/gorenx/goren/compaction/toolresultpruner"
-	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 )
 
@@ -188,7 +188,7 @@ func assertCompactionEventVectors(
 	var startValue compaction.Start
 	var summaryValue compaction.Summary
 	var endValue compaction.End
-	var checkpointMessage llm.UserMessage
+	var checkpointMessage agentmessage.UserMessage
 	for _, entry := range documentValue.Events {
 		if err := compaction.ValidateEvent(entry); err != nil {
 			testingContext.Fatal(err)
@@ -203,7 +203,7 @@ func assertCompactionEventVectors(
 			if err != nil {
 				testingContext.Fatal(err)
 			}
-			typedMessage, valid := messageValue.(llm.UserMessage)
+			typedMessage, valid := messageValue.(agentmessage.UserMessage)
 			if !valid || !compaction.IsCheckpointSource(typedMessage.SourceValue()) {
 				testingContext.Fatalf("checkpoint fixture message = %#v", messageValue)
 			}
@@ -234,7 +234,7 @@ func assertCompactionEventVectors(
 		documentValue.CheckpointSource,
 		checkpointOrigin,
 	)
-	resultBlocks, err := llm.DecodeContentBlocks(documentValue.Result.Summary)
+	resultBlocks, err := agentmessage.DecodeContentBlocks(documentValue.Result.Summary)
 	if err != nil {
 		testingContext.Fatal(err)
 	}

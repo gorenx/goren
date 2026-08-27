@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
@@ -48,13 +48,13 @@ func (*parentRecord) RunMaintenance(
 	return operation(requestContext)
 }
 
-func (*parentRecord) Send(llm.UserMessage, agent.InboxTarget, bool) error { return nil }
+func (*parentRecord) Send(agentmessage.UserMessage, agent.InboxTarget, bool) error { return nil }
 
-func (*parentRecord) Followup(llm.UserMessage) error { return nil }
+func (*parentRecord) Followup(agentmessage.UserMessage) error { return nil }
 
-func (*parentRecord) Steer(llm.UserMessage) error { return nil }
+func (*parentRecord) Steer(agentmessage.UserMessage) error { return nil }
 
-func (*parentRecord) Inject(llm.UserMessage) error { return nil }
+func (*parentRecord) Inject(agentmessage.UserMessage) error { return nil }
 
 func TestFromInheritsParentAndResolvesChildFacts(t *testing.T) {
 	parentAgent := newParent(t, 3)

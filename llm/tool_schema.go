@@ -9,10 +9,3 @@ type ToolSchema struct {
 	Description string          `json:"description"`
 	Parameters  json.RawMessage `json:"parameters"`
 }
-
-// ContextSnapshotSection is one attributed section of a runtime-context
-// snapshot in model-visible order.
-type ContextSnapshotSection struct {
-	Name string `json:"name"`
-	Text string `json:"text"`
-}

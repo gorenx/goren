@@ -6,7 +6,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	pluginruntime "github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/tools"
@@ -88,9 +88,9 @@ func (output *structuredOutput) Apply(requestContext context.Context) error {
 				Renderer: tools.OutputRendererFunc(func(
 					json.RawMessage,
 					json.RawMessage,
-				) ([]llm.ContentBlock, error) {
-					return []llm.ContentBlock{
-						llm.NewTextBlock("Structured output recorded."),
+				) ([]agentmessage.ContentBlock, error) {
+					return []agentmessage.ContentBlock{
+						agentmessage.NewTextBlock("Structured output recorded."),
 					}, nil
 				}),
 			},

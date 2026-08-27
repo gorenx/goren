@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 )
@@ -58,11 +59,11 @@ func decodeAssistantMessageFacts(entry session.Event) (assistantMessageFacts, er
 	if err := decodePayload(entry, &wireValue); err != nil {
 		return assistantMessageFacts{}, err
 	}
-	messageValue, err := llm.DecodeMessage(wireValue.Message)
+	messageValue, err := agentmessage.DecodeMessage(wireValue.Message)
 	if err != nil {
 		return assistantMessageFacts{}, err
 	}
-	_, valid := messageValue.(llm.AssistantMessage)
+	_, valid := messageValue.(agentmessage.AssistantMessage)
 	if !valid {
 		return assistantMessageFacts{}, fmt.Errorf(
 			"tokenmeter: assistant/message at seq %d contains another role",

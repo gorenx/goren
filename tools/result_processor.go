@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/plugin"
 )
 
@@ -66,7 +66,7 @@ func (processor *resultProcessor) applyPostDecision(
 			selected.AdditionalContexts,
 		)
 	case ReplaceContentDecision:
-		content, err := llm.CloneContentBlocks(selected.Content)
+		content, err := agentmessage.CloneContentBlocks(selected.Content)
 		if err != nil {
 			return nil, err
 		}
@@ -99,7 +99,7 @@ func (processor *resultProcessor) applyPostDecision(
 		)
 		return appendAdditionalContexts(replaced, combined)
 	case BlockDecision:
-		content, err := llm.CloneContentBlocks(selected.Feedback)
+		content, err := agentmessage.CloneContentBlocks(selected.Feedback)
 		if err != nil {
 			return nil, err
 		}
@@ -161,7 +161,7 @@ func (processor *resultProcessor) finish(
 		if finalizeErr != nil {
 			finalOutcome = errorResult(finalizeErr)
 		} else if replace {
-			content, finalizeErr = llm.CloneContentBlocks(content)
+			content, finalizeErr = agentmessage.CloneContentBlocks(content)
 			if finalizeErr != nil {
 				finalOutcome = errorResult(finalizeErr)
 			} else {
@@ -197,7 +197,7 @@ func invokeFinalizer(
 	finalizer ContentFinalizer,
 	toolCall ToolExecution,
 	outcome ToolExecutionResult,
-) (content []llm.ContentBlock, replace bool, invokeErr error) {
+) (content []agentmessage.ContentBlock, replace bool, invokeErr error) {
 	defer func() {
 		if panicValue := recover(); panicValue != nil {
 			invokeErr = fmt.Errorf(

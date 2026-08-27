@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/tools"
 )
@@ -28,7 +28,7 @@ const (
 // ChildRequest contains caller-owned inputs shared by both implementations.
 // The selected implementation snapshots and validates it before Agent creation.
 type ChildRequest struct {
-	Prompt       []llm.ContentBlock
+	Prompt       []agentmessage.ContentBlock
 	Parent       agent.Agent
 	AgentOptions *agent.Options
 	MaxDepth     *int64
@@ -232,7 +232,7 @@ const (
 
 // Terminal is the immutable outcome of one exact Subagent Execution.
 type Terminal struct {
-	Output     []llm.ContentBlock
+	Output     []agentmessage.ContentBlock
 	Structured json.RawMessage
 	Diagnostic *string
 	StopReason StopReason
@@ -307,7 +307,7 @@ func snapshotChildRequest(source ChildRequest) (ChildRequest, error) {
 			"subagent: maxDepth must be a non-negative safe integer",
 		)
 	}
-	promptSnapshot, cloneErr := llm.CloneContentBlocks(source.Prompt)
+	promptSnapshot, cloneErr := agentmessage.CloneContentBlocks(source.Prompt)
 	if cloneErr != nil {
 		return ChildRequest{}, cloneErr
 	}

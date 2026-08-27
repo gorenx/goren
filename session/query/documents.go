@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 )
 
@@ -80,7 +80,7 @@ func sequencePosition(nodes []int64, target int64) int {
 func extractEventText(entry session.Event) (string, error) {
 	switch entry.Type {
 	case session.UserMessageEventName:
-		messageValue, err := llm.DecodeUserMessage(entry.Data)
+		messageValue, err := agentmessage.DecodeUserMessage(entry.Data)
 		if err != nil {
 			return "", err
 		}
@@ -92,7 +92,7 @@ func extractEventText(entry session.Event) (string, error) {
 		if err := json.Unmarshal(entry.Data, &payload); err != nil {
 			return "", err
 		}
-		messageValue, err := llm.DecodeMessage(payload.Message)
+		messageValue, err := agentmessage.DecodeMessage(payload.Message)
 		if err != nil {
 			return "", err
 		}
@@ -111,7 +111,7 @@ func extractEventText(entry session.Event) (string, error) {
 		if err := json.Unmarshal(entry.Data, &payload); err != nil {
 			return "", err
 		}
-		messageValue, err := llm.DecodeMessage(payload.Message)
+		messageValue, err := agentmessage.DecodeMessage(payload.Message)
 		if err != nil {
 			return "", err
 		}
@@ -167,17 +167,17 @@ func extractEventText(entry session.Event) (string, error) {
 	}
 }
 
-func contentText(content []llm.ContentBlock) string {
+func contentText(content []agentmessage.ContentBlock) string {
 	parts := make([]string, 0, len(content))
 	for _, block := range content {
 		switch typed := block.(type) {
-		case llm.PlainTextContent:
+		case agentmessage.PlainTextContent:
 			if textValue, available := typed.PlainText(); available {
 				parts = append(parts, textValue)
 			}
-		case llm.ToolCallBlock:
+		case agentmessage.ToolCallBlock:
 			parts = append(parts, typed.Name, typed.Arguments)
-		case llm.ToolResultBlock:
+		case agentmessage.ToolResultBlock:
 			parts = append(parts, contentText(typed.Content))
 		}
 	}

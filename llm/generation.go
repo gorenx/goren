@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/plugin"
 )
 
@@ -126,14 +127,14 @@ func (owner *Runtime) adapterBoundary(
 
 func (owner *Runtime) forAdapter(options GenerateOptions, backend Adapter) (GenerateOptions, error) {
 	changed := false
-	conversation := make([]Message, len(options.Messages))
+	conversation := make([]agentmessage.Message, len(options.Messages))
 	for index, entry := range options.Messages {
 		conversation[index] = entry
-		if entry.ConversationRole() != RoleAssistant {
+		if entry.ConversationRole() != agentmessage.RoleAssistant {
 			continue
 		}
 		origin := entry.SourceValue()
-		modelOrigin, ok := origin.(ModelMessageSource)
+		modelOrigin, ok := origin.(agentmessage.ModelMessageSource)
 		if !ok || len(modelOrigin.ReplayState) == 0 {
 			continue
 		}
@@ -145,9 +146,7 @@ func (owner *Runtime) forAdapter(options GenerateOptions, backend Adapter) (Gene
 			continue
 		}
 		modelOrigin.ReplayState = nil
-		restored, err := restoreMessageValue(
-			entry.StableID(), entry.ConversationRole(), entry.ContentValue(), modelOrigin,
-		)
+		restored, err := agentmessage.ReplaceSource(entry, modelOrigin)
 		if err != nil {
 			return GenerateOptions{}, err
 		}

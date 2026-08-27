@@ -8,7 +8,7 @@ import (
 	"sync"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
@@ -139,9 +139,9 @@ func (owner *Service) Send(
 	requestContext context.Context,
 	parentAgent agent.Agent,
 	childID session.SessionID,
-	content []llm.ContentBlock,
+	content []agentmessage.ContentBlock,
 	options subagent.FollowupOptions,
-) (llm.MessageID, error) {
+) (agentmessage.MessageID, error) {
 	if beginErr := owner.beginCall(); beginErr != nil {
 		return "", beginErr
 	}
@@ -152,7 +152,7 @@ func (owner *Service) Send(
 	if requestErr := requestContext.Err(); requestErr != nil {
 		return "", requestErr
 	}
-	messageValue, messageErr := llm.NewUserMessage(llm.UserMessageInput{
+	messageValue, messageErr := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
 		Content: content,
 		Source:  options.Source,
 	})

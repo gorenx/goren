@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/internal/jsonvalue"
 	"github.com/gorenx/goren/plugin"
 )
@@ -71,11 +72,11 @@ func (entry ReasoningDeltaChunk) MarshalJSON() ([]byte, error) {
 }
 
 type ToolCallDeltaChunk struct {
-	Type           string  `json:"type"`
-	Index          int     `json:"index"`
-	ID             CallID  `json:"id"`
-	Name           *string `json:"name,omitempty"`
-	ArgumentsDelta string  `json:"argumentsDelta"`
+	Type           string              `json:"type"`
+	Index          int                 `json:"index"`
+	ID             agentmessage.CallID `json:"id"`
+	Name           *string             `json:"name,omitempty"`
+	ArgumentsDelta string              `json:"argumentsDelta"`
 }
 
 func (ToolCallDeltaChunk) ChunkType() string { return "tool-call-delta" }
@@ -97,9 +98,9 @@ func (entry ToolCallDeltaChunk) MarshalJSON() ([]byte, error) {
 }
 
 type BlockEndChunk struct {
-	Type  string       `json:"type"`
-	Index int          `json:"index"`
-	Block ContentBlock `json:"block"`
+	Type  string                    `json:"type"`
+	Index int                       `json:"index"`
+	Block agentmessage.ContentBlock `json:"block"`
 }
 
 func (BlockEndChunk) ChunkType() string { return "block-end" }

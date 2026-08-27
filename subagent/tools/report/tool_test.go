@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
@@ -38,14 +38,14 @@ func TestReportUsesExactChildAndConfiguredDelivery(t *testing.T) {
 		t.Fatal(decodeErr)
 	}
 	parentAgent.mutex.Lock()
-	injected := append([]llm.UserMessage(nil), parentAgent.injected...)
+	injected := append([]agentmessage.UserMessage(nil), parentAgent.injected...)
 	parentAgent.mutex.Unlock()
 	if len(injected) != 1 || string(injected[0].StableID()) != result.MessageID {
 		t.Fatalf("parent injections = %#v, value=%s", injected, value)
 	}
 	var content strings.Builder
 	for _, block := range injected[0].ContentValue() {
-		plain, matches := block.(llm.PlainTextContent)
+		plain, matches := block.(agentmessage.PlainTextContent)
 		if !matches {
 			continue
 		}
@@ -157,8 +157,8 @@ type reportAgent struct {
 	id       session.SessionID
 	session  session.Context
 	mutex    sync.Mutex
-	injected []llm.UserMessage
-	steered  []llm.UserMessage
+	injected []agentmessage.UserMessage
+	steered  []agentmessage.UserMessage
 }
 
 func newReportAgent(
@@ -201,15 +201,15 @@ func (*reportAgent) WhenIdle(context.Context) error                { return nil 
 func (*reportAgent) RunMaintenance(context.Context, func(context.Context) error) error {
 	return nil
 }
-func (*reportAgent) Send(llm.UserMessage, agent.InboxTarget, bool) error { return nil }
-func (*reportAgent) Followup(llm.UserMessage) error                      { return nil }
-func (subject *reportAgent) Steer(messageValue llm.UserMessage) error {
+func (*reportAgent) Send(agentmessage.UserMessage, agent.InboxTarget, bool) error { return nil }
+func (*reportAgent) Followup(agentmessage.UserMessage) error                      { return nil }
+func (subject *reportAgent) Steer(messageValue agentmessage.UserMessage) error {
 	subject.mutex.Lock()
 	subject.steered = append(subject.steered, messageValue)
 	subject.mutex.Unlock()
 	return nil
 }
-func (subject *reportAgent) Inject(messageValue llm.UserMessage) error {
+func (subject *reportAgent) Inject(messageValue agentmessage.UserMessage) error {
 	subject.mutex.Lock()
 	subject.injected = append(subject.injected, messageValue)
 	subject.mutex.Unlock()

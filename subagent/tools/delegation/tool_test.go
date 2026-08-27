@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
@@ -21,8 +21,8 @@ func TestDelegationRoutesForegroundAndContinuableIndependently(t *testing.T) {
 		runID:   "one-shot-run",
 		childID: "one-shot-child",
 		terminal: subagent.Terminal{
-			Output: []llm.ContentBlock{
-				llm.NewTextBlock("foreground result"),
+			Output: []agentmessage.ContentBlock{
+				agentmessage.NewTextBlock("foreground result"),
 			},
 			StopReason: subagent.StopCompleted,
 		},
@@ -216,10 +216,10 @@ func (*toolAgent) WhenIdle(context.Context) error                { return nil }
 func (*toolAgent) RunMaintenance(context.Context, func(context.Context) error) error {
 	return nil
 }
-func (*toolAgent) Send(llm.UserMessage, agent.InboxTarget, bool) error { return nil }
-func (*toolAgent) Followup(llm.UserMessage) error                      { return nil }
-func (*toolAgent) Steer(llm.UserMessage) error                         { return nil }
-func (*toolAgent) Inject(llm.UserMessage) error                        { return nil }
+func (*toolAgent) Send(agentmessage.UserMessage, agent.InboxTarget, bool) error { return nil }
+func (*toolAgent) Followup(agentmessage.UserMessage) error                      { return nil }
+func (*toolAgent) Steer(agentmessage.UserMessage) error                         { return nil }
+func (*toolAgent) Inject(agentmessage.UserMessage) error                        { return nil }
 
 var _ subagent.Starter = (*starterRecord)(nil)
 var _ subagent.Execution = (*executionRecord)(nil)

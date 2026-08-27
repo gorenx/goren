@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 	"github.com/gorenx/goren/tools"
@@ -70,15 +70,15 @@ func (adapter *reportTool) definition() tools.ToolDefinition {
 			Renderer: tools.OutputRendererFunc(func(
 				_ json.RawMessage,
 				rawValue json.RawMessage,
-			) ([]llm.ContentBlock, error) {
+			) ([]agentmessage.ContentBlock, error) {
 				var value struct {
 					MessageID string `json:"messageId"`
 				}
 				if decodeErr := json.Unmarshal(rawValue, &value); decodeErr != nil {
 					return nil, decodeErr
 				}
-				return []llm.ContentBlock{
-					llm.NewTextBlock(
+				return []agentmessage.ContentBlock{
+					agentmessage.NewTextBlock(
 						"report accepted by the agent that started you as message " + value.MessageID,
 					),
 				}, nil
@@ -134,12 +134,12 @@ func (adapter *reportTool) execute(
 			Message: "direct parent is not live; report was not delivered",
 		}
 	}
-	messageValue, messageErr := llm.NewUserMessage(llm.UserMessageInput{
-		Content: []llm.ContentBlock{
-			llm.NewTextBlock(
+	messageValue, messageErr := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+		Content: []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock(
 				fmt.Sprintf("Subagent %s reported:", childAgent.ID()),
 			),
-			llm.NewTextBlock(request.Output),
+			agentmessage.NewTextBlock(request.Output),
 		},
 		Source: subagent.ReportSource{
 			SenderSessionID: childAgent.ID(),

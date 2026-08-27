@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/compaction/toolresultpruner"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/llm/tokenmeter"
@@ -160,11 +161,11 @@ func TestAutomaticOverflowFailureRetriesAfterPrunerProgress(t *testing.T) {
 			current session.Context,
 		) (toolresultpruner.Result, error) {
 			before := current.Surface()
-			replacement, err := llm.NewUserMessage(llm.UserMessageInput{
-				Content: []llm.ContentBlock{
-					llm.NewTextBlock("model-free replacement"),
+			replacement, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+				Content: []agentmessage.ContentBlock{
+					agentmessage.NewTextBlock("model-free replacement"),
 				},
-				Source: llm.PluginMessageSource{
+				Source: agentmessage.PluginMessageSource{
 					Plugin: "fixture-pruner",
 				},
 			})
@@ -258,11 +259,11 @@ func TestAutomaticOverflowCancellationWinsOverPrunerProgress(t *testing.T) {
 			current session.Context,
 		) (toolresultpruner.Result, error) {
 			before := current.Surface()
-			replacement, err := llm.NewUserMessage(llm.UserMessageInput{
-				Content: []llm.ContentBlock{
-					llm.NewTextBlock("pruned"),
+			replacement, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+				Content: []agentmessage.ContentBlock{
+					agentmessage.NewTextBlock("pruned"),
 				},
-				Source: llm.PluginMessageSource{
+				Source: agentmessage.PluginMessageSource{
 					Plugin: "fixture-pruner",
 				},
 			})
@@ -357,11 +358,11 @@ func TestAutomaticOverflowStateResetsOnAssistantSuccessAndIdle(t *testing.T) {
 	}
 	automation := newAutomaticFixture(implementation, func(error) {})
 	automation.recordRetry(subject, 1)
-	assistantOutput, err := llm.NewAssistantMessage(llm.AssistantMessageInput{
-		Content: []llm.ContentBlock{
-			llm.NewTextBlock("success"),
+	assistantOutput, err := agentmessage.NewAssistantMessage(agentmessage.AssistantMessageInput{
+		Content: []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock("success"),
 		},
-		Source: llm.ModelMessageSource{
+		Source: agentmessage.ModelMessageSource{
 			Provider: fixtureProvider,
 			Model:    fixtureModel,
 		},

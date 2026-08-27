@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 )
@@ -73,12 +74,12 @@ func (settings LLMConfig) Validate() (LLMConfig, error) {
 // LLMRequestEventData records the exact model-visible auxiliary request before
 // dispatch. It is deliberately excluded from the Session surface.
 type LLMRequestEventData struct {
-	TitleProvider ProviderID      `json:"titleProvider"`
-	MessageSeqs   []int64         `json:"messageSeqs"`
-	Route         ModelProvenance `json:"route"`
-	System        string          `json:"system"`
-	Messages      []llm.Message   `json:"messages"`
-	MaxTokens     int             `json:"maxTokens"`
+	TitleProvider ProviderID             `json:"titleProvider"`
+	MessageSeqs   []int64                `json:"messageSeqs"`
+	Route         ModelProvenance        `json:"route"`
+	System        string                 `json:"system"`
+	Messages      []agentmessage.Message `json:"messages"`
+	MaxTokens     int                    `json:"maxTokens"`
 }
 
 // TitleLLMRequest is the log-only pre-dispatch title request event.
@@ -185,10 +186,10 @@ func (implementation *LLMProvider) Generate(
 	if err != nil {
 		return ProviderResult{}, err
 	}
-	messageValue, err := llm.NewUserMessage(
-		llm.UserMessageInput{
-			Content: []llm.ContentBlock{llm.NewTextBlock(framedInput)},
-			Source:  llm.PluginMessageSource{Kind: "plugin", Plugin: "dsh-session-title-llm"},
+	messageValue, err := agentmessage.NewUserMessage(
+		agentmessage.UserMessageInput{
+			Content: []agentmessage.ContentBlock{agentmessage.NewTextBlock(framedInput)},
+			Source:  agentmessage.PluginMessageSource{Kind: "plugin", Plugin: "dsh-session-title-llm"},
 		},
 	)
 	if err != nil {
@@ -203,7 +204,7 @@ func (implementation *LLMProvider) Generate(
 			Model:     route.Model,
 			MaxTokens: &maxOutputTokens,
 		},
-		Messages:  []llm.Message{messageValue},
+		Messages:  []agentmessage.Message{messageValue},
 		System:    &systemInstruction,
 		SessionID: string(request.Session.ID()), Purpose: llm.PurposeSessionTitle,
 	}
@@ -213,7 +214,7 @@ func (implementation *LLMProvider) Generate(
 			TitleProvider: implementation.identifier,
 			MessageSeqs:   append([]int64{}, messageSeqs...),
 			Route:         route, System: systemInstruction,
-			Messages: []llm.Message{messageValue}, MaxTokens: maxOutputTokens,
+			Messages: []agentmessage.Message{messageValue}, MaxTokens: maxOutputTokens,
 		},
 	)
 	if err != nil {
@@ -270,11 +271,11 @@ func (implementation *LLMProvider) Generate(
 	visible := make([]string, 0, len(blocks))
 	for _, blockValue := range blocks {
 		switch typedBlock := blockValue.(type) {
-		case llm.TextBlock:
+		case agentmessage.TextBlock:
 			visible = append(visible, typedBlock.Text)
-		case *llm.TextBlock:
+		case *agentmessage.TextBlock:
 			visible = append(visible, typedBlock.Text)
-		case llm.ToolCallBlock, *llm.ToolCallBlock:
+		case agentmessage.ToolCallBlock, *agentmessage.ToolCallBlock:
 			return ProviderResult{}, errors.New("sessiontitle: title output must contain text only")
 		}
 	}

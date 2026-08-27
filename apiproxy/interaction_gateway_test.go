@@ -11,9 +11,9 @@ import (
 	"time"
 
 	agentcore "github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/connection"
-	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/systemprompt"
@@ -230,12 +230,12 @@ func (*interactionSubject) StatusValue() agentcore.Status         { return agent
 func (*interactionSubject) Cancel(agentcore.CancelCause, agentcore.CancelOptions) {
 }
 func (*interactionSubject) WhenIdle(context.Context) error { return nil }
-func (*interactionSubject) Send(llm.UserMessage, agentcore.InboxTarget, bool) error {
+func (*interactionSubject) Send(agentmessage.UserMessage, agentcore.InboxTarget, bool) error {
 	return nil
 }
-func (*interactionSubject) Followup(llm.UserMessage) error { return nil }
-func (*interactionSubject) Steer(llm.UserMessage) error    { return nil }
-func (*interactionSubject) Inject(llm.UserMessage) error   { return nil }
+func (*interactionSubject) Followup(agentmessage.UserMessage) error { return nil }
+func (*interactionSubject) Steer(agentmessage.UserMessage) error    { return nil }
+func (*interactionSubject) Inject(agentmessage.UserMessage) error   { return nil }
 func (*interactionSubject) RunMaintenance(requestContext context.Context, operation func(context.Context) error) error {
 	return operation(requestContext)
 }
@@ -457,13 +457,13 @@ func TestApprovalInteractionPairsParallelCallAuditAndCancels(t *testing.T) {
 		}
 	}
 	stream := state.openMux(t, subject.conversation)
-	callA := llm.CallID("call-a")
-	callB := llm.CallID("call-b")
+	callA := agentmessage.CallID("call-a")
+	callB := agentmessage.CallID("call-b")
 	contextA, cancelA := context.WithCancel(context.Background())
 	decisions := make(chan approval.Outcome, 2)
 	for _, input := range []struct {
 		callContext context.Context
-		callID      *llm.CallID
+		callID      *agentmessage.CallID
 		toolName    string
 	}{{contextA, &callA, "alpha"}, {context.Background(), &callB, "beta"}} {
 		inputValue := input

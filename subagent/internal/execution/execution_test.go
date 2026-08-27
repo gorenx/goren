@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 )
@@ -28,8 +28,8 @@ func (record *terminatorRecord) Terminate(
 		<-record.gate
 	}
 	return subagent.Terminal{
-		Output: []llm.ContentBlock{
-			llm.NewTextBlock("done"),
+		Output: []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock("done"),
 		},
 		StopReason: subagent.StopCompleted,
 	}, nil

@@ -10,7 +10,7 @@ import (
 	"fmt"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/tools"
 	"github.com/gorenx/goren/userquestions"
@@ -161,12 +161,12 @@ func newDefinition(
 		Parameters:  append(json.RawMessage(nil), parameterSchema...),
 		Output: tools.ToolOutputDefinition{
 			Schema: append(json.RawMessage(nil), outputSchema...),
-			Renderer: tools.OutputRendererFunc(func(_ json.RawMessage, value json.RawMessage) ([]llm.ContentBlock, error) {
+			Renderer: tools.OutputRendererFunc(func(_ json.RawMessage, value json.RawMessage) ([]agentmessage.ContentBlock, error) {
 				var compact bytes.Buffer
 				if err := json.Compact(&compact, value); err != nil {
 					return nil, fmt.Errorf("toolaskuser: render output: %w", err)
 				}
-				return []llm.ContentBlock{llm.NewTextBlock(compact.String())}, nil
+				return []agentmessage.ContentBlock{agentmessage.NewTextBlock(compact.String())}, nil
 			}),
 		},
 		Executor: tools.ExecutorFunc(

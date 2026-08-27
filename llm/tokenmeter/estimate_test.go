@@ -4,34 +4,34 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 )
 
 func TestEstimateMessageUsesSourceFixedHeuristic(t *testing.T) {
 	t.Parallel()
 	testCases := []struct {
 		name    string
-		content []llm.ContentBlock
+		content []agentmessage.ContentBlock
 		want    int64
 	}{
 		{
 			name: "text",
-			content: []llm.ContentBlock{
-				llm.NewTextBlock("abcd"),
+			content: []agentmessage.ContentBlock{
+				agentmessage.NewTextBlock("abcd"),
 			},
 			want: 9,
 		},
 		{
 			name: "utf16-not-runes",
-			content: []llm.ContentBlock{
-				llm.NewTextBlock("😀😀😀😀"),
+			content: []agentmessage.ContentBlock{
+				agentmessage.NewTextBlock("😀😀😀😀"),
 			},
 			want: 10,
 		},
 		{
 			name: "reasoning",
-			content: []llm.ContentBlock{
-				llm.ReasoningBlock{
+			content: []agentmessage.ContentBlock{
+				agentmessage.ReasoningBlock{
 					Text: "abcdefgh",
 				},
 			},
@@ -39,8 +39,8 @@ func TestEstimateMessageUsesSourceFixedHeuristic(t *testing.T) {
 		},
 		{
 			name: "tool-call",
-			content: []llm.ContentBlock{
-				llm.ToolCallBlock{
+			content: []agentmessage.ContentBlock{
+				agentmessage.ToolCallBlock{
 					ID:        "call-1",
 					Name:      "bash",
 					Arguments: `{"a":1}`,
@@ -50,11 +50,11 @@ func TestEstimateMessageUsesSourceFixedHeuristic(t *testing.T) {
 		},
 		{
 			name: "nested-tool-result",
-			content: []llm.ContentBlock{
-				llm.ToolResultBlock{
+			content: []agentmessage.ContentBlock{
+				agentmessage.ToolResultBlock{
 					ToolCallID: "call-1",
-					Content: []llm.ContentBlock{
-						llm.NewTextBlock("abcd"),
+					Content: []agentmessage.ContentBlock{
+						agentmessage.NewTextBlock("abcd"),
 					},
 				},
 			},
@@ -79,11 +79,11 @@ func TestEstimateMessageUsesSourceFixedHeuristic(t *testing.T) {
 func TestEstimateMessagePricesOpaqueBlockFromLosslessJSON(t *testing.T) {
 	t.Parallel()
 	rawValue := json.RawMessage(`{"type":"mystery","payload":"abc"}`)
-	block, err := llm.NewOpaqueContentBlock("mystery", rawValue)
+	block, err := agentmessage.NewOpaqueContentBlock("mystery", rawValue)
 	if err != nil {
 		t.Fatal(err)
 	}
-	messageValue := mustUserMessage(t, []llm.ContentBlock{block})
+	messageValue := mustUserMessage(t, []agentmessage.ContentBlock{block})
 	got, err := estimateMessage(messageValue)
 	if err != nil {
 		t.Fatal(err)
@@ -94,11 +94,11 @@ func TestEstimateMessagePricesOpaqueBlockFromLosslessJSON(t *testing.T) {
 	}
 }
 
-func mustUserMessage(testingContext *testing.T, content []llm.ContentBlock) llm.UserMessage {
+func mustUserMessage(testingContext *testing.T, content []agentmessage.ContentBlock) agentmessage.UserMessage {
 	testingContext.Helper()
-	messageValue, err := llm.NewUserMessage(llm.UserMessageInput{
+	messageValue, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
 		Content: content,
-		Source:  llm.UserMessageSource{},
+		Source:  agentmessage.UserMessageSource{},
 	})
 	if err != nil {
 		testingContext.Fatal(err)

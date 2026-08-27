@@ -1,36 +1,52 @@
-package llm_test
+package agentmessage_test
 
 import (
 	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/attachment"
-	"github.com/gorenx/goren/llm"
 )
 
 type panicContentBlock struct{}
 
 func (panicContentBlock) ContentType() string { panic("content failure") }
-func (panicContentBlock) CloneContent() (llm.ContentBlock, error) {
+func (panicContentBlock) CloneContent() (agentmessage.ContentBlock, error) {
 	return panicContentBlock{}, nil
 }
 
 func TestContentBlockCloneCoversPinnedCoreVariants(t *testing.T) {
 	t.Parallel()
-	source := []llm.ContentBlock{
-		llm.TextBlock{Text: "visible"},
-		llm.ReasoningBlock{Text: "thinking"},
-		llm.ImageBlock{Attachment: attachment.ImageAttachmentRef{
-			AttachmentID: "image-1", MediaType: attachment.ImagePNG,
-			Bytes: 10, Width: 2, Height: 3,
-		}},
-		llm.ToolCallBlock{ID: "call-1", Name: "lookup", Arguments: `{}`},
-		llm.ToolResultBlock{ToolCallID: "call-1", Content: []llm.ContentBlock{
-			llm.NewTextBlock("done"),
-		}},
+	source := []agentmessage.ContentBlock{
+		agentmessage.TextBlock{
+			Text: "visible",
+		},
+		agentmessage.ReasoningBlock{
+			Text: "thinking",
+		},
+		agentmessage.ImageBlock{
+			Attachment: attachment.ImageAttachmentRef{
+				AttachmentID: "image-1",
+				MediaType:    attachment.ImagePNG,
+				Bytes:        10,
+				Width:        2,
+				Height:       3,
+			},
+		},
+		agentmessage.ToolCallBlock{
+			ID:        "call-1",
+			Name:      "lookup",
+			Arguments: `{}`,
+		},
+		agentmessage.ToolResultBlock{
+			ToolCallID: "call-1",
+			Content: []agentmessage.ContentBlock{
+				agentmessage.NewTextBlock("done"),
+			},
+		},
 	}
-	detached, err := llm.CloneContentBlocks(source)
+	detached, err := agentmessage.CloneContentBlocks(source)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +62,7 @@ func TestContentBlockCloneCoversPinnedCoreVariants(t *testing.T) {
 
 func TestContentBlockCloneContainsExtensionPanic(t *testing.T) {
 	t.Parallel()
-	if _, err := llm.CloneContentBlocks([]llm.ContentBlock{panicContentBlock{}}); err == nil ||
+	if _, err := agentmessage.CloneContentBlocks([]agentmessage.ContentBlock{panicContentBlock{}}); err == nil ||
 		!strings.Contains(err.Error(), "content block 0 panicked") {
 		t.Fatalf("clone error = %v", err)
 	}
@@ -55,14 +71,14 @@ func TestContentBlockCloneContainsExtensionPanic(t *testing.T) {
 func TestKnownContentExtensionRoundTripsAndRetainsTextCapability(t *testing.T) {
 	t.Parallel()
 	rawValue := json.RawMessage(`[{"type":"text","text":"visible","extension":1}]`)
-	blocks, err := llm.DecodeContentBlocks(rawValue)
+	blocks, err := agentmessage.DecodeContentBlocks(rawValue)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(blocks) != 1 {
 		t.Fatalf("block count = %d, want 1", len(blocks))
 	}
-	readable, supported := blocks[0].(llm.PlainTextContent)
+	readable, supported := blocks[0].(agentmessage.PlainTextContent)
 	if !supported {
 		t.Fatalf("extended text type = %T, want PlainTextContent", blocks[0])
 	}
