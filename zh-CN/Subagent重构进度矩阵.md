@@ -2,7 +2,7 @@
 
 状态：工作分支实时记录
 
-最后核对：2026-08-26
+最后核对：2026-08-27
 
 分支：`refactor/agent-lifecycle`
 
@@ -30,6 +30,8 @@
 | S3 | OneShot | 已实现 | 已验证 | `internal/oneshot`、OneShot terminal 与 report integration tests |
 | S4 | Continuable | 已实现 | 已验证 | `internal/continuable`、continuable/control/settlement integration tests |
 | S5 | Unified Service | 已实现 | 已验证 | `internal/subagents.Service`、统一准入、resident Agent 投递和 interrupt authorization |
+| Bound 骨架 | Mode、命令、descriptor、projection、listing、Service 装配 | 已实现 | 已验证 | `lifecycle.go`、`descriptor*.go`、`internal/bound`、`internal/subagents`、`plugin/plugin.go` |
+| Bound Start | config source、fresh create、existing resume、Execution publication | 进行中 | 已验证 TODO 失败 | `internal/bound.Service.Start` 当前返回 `ErrStartNotImplemented`；`service_test.go` 固化该边界 |
 | S6 | ChildDirectory | 已实现 | 已验证 | `internal/childdirectory`、cold/live/descendant/order tests |
 | S6 | Projection Unit 行为 | 已实现 | 已验证 | `internal/projection` identity/timing tests 与 contract fixtures |
 | S6 | Projection 接口收口 | 已实现 | 已验证 | `projection.Units()`、`projection.ReadIdentity()`；concrete Unit、key 和 codec 均为包内实现 |
@@ -37,7 +39,7 @@
 | S7 | Child Extension | 已实现 | 已验证 | OneShot/Continuable 共用 `internal/extension`、report installation/integration tests |
 | S8 | Tool adapters | 已实现 | 已验证 | `tools/delegation`、`tools/control`、`tools/report` |
 | S9 | Plugin composition | 已实现 | 已验证 | `plugin.Plugin`、factory、assembly 与 architecture tests |
-| S10 | 文档同步 | 已实现 | 已验证 | 技术方案、实施方案、本矩阵、package README、术语与 deferred parent-bound 文档 |
+| S10 | 文档同步 | 已实现 | 已验证 | 技术方案、实施方案、本矩阵、package README、术语与 deferred Bound 文档 |
 | S10 | 全量验收 | 已实现 | 已验证 | `go test ./...`、`go test -race ./...`、`go vet ./...`、`go build ./...`、Markdown link validation、`git diff --check` |
 
 ## 3. 已完成的破坏性删除
@@ -73,9 +75,11 @@
 
 Projection 跨包接口、导出面、consumer-owned ports、状态所有权和无调用声明已完成审计。`DiagnosticUnsupported`、`InitialMessageID`、`ParentSnapshot`、`SeedPolicy` 等未被真实 Consumer 使用的预留面已删除；`assistantoutput`、`childrequest` 等无独立状态的小包已并回实际 owner。OneShot/Continuable 只依赖自己拥有的 Environment Builder 端口，不导入 Plugin Runtime 或 child Plugin adapter；该依赖方向由 architecture test 固化。
 
-### 4.2 Future parent-bound 决策
+### 4.2 Bound 后续实现
 
-Parent-bound Subagent 尚未实现。需求和技术草案已经按 common Execution、SeedBuilder 和 ChildDirectory 重新整理，但 O1-O8 尚未确认，不能据此解释现有行为或开始实现。
+Bound 已作为独立 `ModeBound` 进入代码。`StartCommand` 已从单体结构重构为封闭接口，具体 variant 是 `OneShotStartCommand`、`ContinuableStartCommand` 和只携带 exact parent/child identity 的 `BoundStartCommand`；统一 Service 消费 `oneShot`、`continuable`、`bound` 三个完整模式接口。Bound descriptor、identity projection、ChildDirectory/list_agents 映射和 Plugin 装配已经实现。
+
+`bound.Service.Start` 按要求保持 TODO，并返回明确的 `ErrStartNotImplemented`。binding event/projection、immutable creation input、config source、materialization state、cursor、`agent.Created` Bound observer、fresh create/existing resume、next-turn config 和 Bound settlement 均未实现。O4、O5、O7、O11、O12、O13 仍未关闭；不得把结构实施解释为已有可运行 Bound child。
 
 ### 4.3 全量验证
 
@@ -96,7 +100,10 @@ git diff --check
 
 | 行为 | Owner | 实现证据 | 测试证据 | 状态 |
 | --- | --- | --- | --- | --- |
-| closed StartCommand variants | `subagent` | `lifecycle.go` | `contracts_test.go` | 已验证 |
+| sealed StartCommand family | `subagent` | `lifecycle.go` 的三个具体 command | `contracts_test.go`、`internal/bound/service_test.go` | 已验证 |
+| Bound mode dispatch | `internal/subagents` | `oneShot`/`continuable`/`bound` interfaces、`Service.Start` | `TestServiceStartDispatchesBoundCommand` | 已验证 |
+| Bound descriptor/listing | `subagent` / projection / directory | `BoundDescriptor`、`BoundChildEntry` | descriptor/projection/directory/control focused tests | 已验证 |
+| Bound runtime start | `internal/bound` | `Service.Start` | `TestStartReturnsExplicitPendingError` | TODO，明确失败 |
 | common Execution state/terminal | `internal/execution` | `execution.go` | `execution_test.go` | 已验证 |
 | OneShot auto-release | `internal/oneshot` | `service.go`、`terminal.go` | `one_shot_integration_test.go` | 已验证 |
 | Continuable cold resume | `internal/continuable` | `start.go`、`messaging.go` | `control_integration_test.go` | 已验证 |
@@ -115,14 +122,12 @@ git diff --check
 
 ## 6. 本轮文档验证
 
-以下检查已在 2026-08-26 对当前工作树实际运行通过：
+以下检查已在 2026-08-27 对当前工作树实际运行通过：
 
-- Subagent 主文档、局部文档和 package README 共 28 个 Markdown 文件的相对链接检查；检查器忽略 fenced code 与 inline code；
+- 15 个 changed/new Markdown 文件的相对链接和 fenced block 检查；
+- Bound-as-Continuable 过时断言检查；
 - `git diff --check`；
-- 当前 Subagent 文档中的已删除包路径检查；旧路径只保留在明确标注“重构前”或“已删除”的证据中；
-- 当前职责术语检查；`Activation`、`Catalog`、Provider execution 只保留在兼容/删除说明中，不再作为当前对象。
-- `go test ./subagent/... ./internal/assembly ./tests/architecture`；
-- `go run honnef.co/go/tools/cmd/staticcheck@latest ./subagent/... ./tests/architecture`；
+- `go test ./subagent/...`、`go test ./tests/architecture`；
 - `go test ./...`、`go test -race ./...`、`go vet ./...`、`go build ./...`、`go fmt ./...`、`git diff --check`。
 
 这些证据不包含 contract-tag/DSH 对照或真实 Provider 环境验收。

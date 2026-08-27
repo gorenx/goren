@@ -8,14 +8,16 @@ flowchart TD
     Plugin --> Facade[subagents.Service]
     Plugin --> OneShot[oneshot.Service]
     Plugin --> Continuable[continuable.Service]
+    Plugin --> Bound[bound.Service]
     Plugin --> Directory[childdirectory.Service]
     Plugin --> Extensions[extension.Registry]
     Facade --> OneShot
     Facade --> Continuable
+    Facade --> Bound
     Plugin -->|publishes narrow views| Consumers[Tool / Control / Report / Host]
 ```
 
-Apply 顺序是：解析依赖、注册 Projection、启用 ChildDirectory、构造一个 `environmentBuilder`、把它分别作为 OneShot/Continuable 拥有的消费端口实现注入，最后打开统一 Service 准入。Environment Builder 只把 approval、persona、Tool restriction、descriptor、structured output 和 child Extension 翻译为 child-local Plugin/Provisioner；不创建 Agent，不决定 Execution 状态。任一 Apply 步骤失败都会撤销已取得效果。Plugin 不实现 Start、Send、Interrupt、settlement 或目录查询，也不发布额外的 parent 消息能力。
+Apply 顺序是：解析依赖、注册 Projection、启用 ChildDirectory、构造一个 `environmentBuilder`、把它分别作为 OneShot/Continuable 拥有的消费端口实现注入，构造 Bound 模式骨架，最后打开统一 Service 准入。Bound 当前没有 environment/config source 依赖，`Start` 返回明确 TODO 错误。Environment Builder 只把 approval、persona、Tool restriction、descriptor、structured output 和 child Extension 翻译为 child-local Plugin/Provisioner；不创建 Agent，不决定 Execution 状态。任一 Apply 步骤失败都会撤销已取得效果。Plugin 不实现 Start、Send、Interrupt、settlement 或目录查询，也不发布额外的 parent 消息能力。
 
 Dispose 先调用统一 Service `Close`：关闭新准入、等待已准入调用返回、让 Continuable 与 OneShot 请求其 exact Agent 停止，并只等待 `ClosingSignal`。它不在当前 Plugin topology 操作中递归卸载 child Scope。随后本 Plugin 停用 ChildDirectory、清理 Extension/SeedBuilder registration，并释放 Projection handle。
 

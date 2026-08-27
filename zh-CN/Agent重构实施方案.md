@@ -45,7 +45,7 @@
 - Agent Registry 决定 `agent/created`、`agent/disposed`、exact epoch 和 runtime parent-child 生命周期；
 - Session 与 Agent publication 同步、有序、可回滚；
 - Session Header 和 append-only log 仍是 durable lineage 与模型上下文的事实来源；
-- one-shot、continuable 和未来 parent-bound 只改变 Subagent residency policy，不产生不同 Agent lifecycle 接口；
+- OneShot、Continuable 和未来 Bound 拥有不同 Subagent 用例和 settlement 条件，但不产生不同 Agent lifecycle 接口；
 - 不增加 `session/prepared` 或用 Session Event 隐式触发 Agent 创建；
 - Plugin topology 与 Agent runtime parent graph 相互独立。
 

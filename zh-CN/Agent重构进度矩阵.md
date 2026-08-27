@@ -41,7 +41,7 @@
 | Subagent | 0 | 9 | 0 | 1 |
 | 跨模块与验收 | 0 | 5 | 0 | 0 |
 
-当前结论：四个业务模块的职责迁移、直接调用方、全仓普通测试、race、vet、build、架构约束和文档 Gate 均已通过。parent-bound 新业务能力不属于本次“现有职责重构”的实现范围，继续按其独立设计文档 Deferred。
+当前结论：四个业务模块的职责迁移、直接调用方、全仓普通测试、race、vet、build、架构约束和文档 Gate 均已通过。Bound 是独立 Subagent Mode，但不属于本次“现有职责重构”的实现范围，继续按其独立设计文档 Deferred。
 
 ## 3. Session 与 AgentSessions
 
@@ -100,9 +100,9 @@
 | AR-U07 | Subagent Plugin unload 先停止模块准入，再请求已接纳 Execution 收敛，且不关闭普通 parent | Completed | Race Verified | [`subagent/plugin/plugin.go`](../subagent/plugin/plugin.go)、[`subagent/internal/subagents/service.go`](../subagent/internal/subagents/service.go)、[`subagent/report_integration_test.go`](../subagent/report_integration_test.go) |
 | AR-U08 | durable lineage 只有 Session Header 一个深度事实源 | Completed | Go Verified | [`subagent/internal/lineage/lineage.go`](../subagent/internal/lineage/lineage.go) |
 | AR-U09 | 旧 Subagent Agent graph/admission 标识符删除 | Completed | Go Verified | [`tests/architecture/agent_lifecycle_boundary_test.go`](../tests/architecture/agent_lifecycle_boundary_test.go) |
-| AR-U10 | parent-bound 新 residency 能力 | Deferred | Documented | [parent-bound requirements](../subagent/docs/parent-bound-requirements.zh-CN.md) |
+| AR-U10 | Bound Subagent Mode | Deferred | Documented | [Bound requirements](../subagent/docs/parent-bound-requirements.zh-CN.md) |
 
-AR-U10 不表示 parent-bound 业务能力已经实现；它不计入本次职责重构完成条件。
+AR-U10 不表示 Bound 业务能力已经实现；它不计入本次职责重构完成条件。
 
 ## 7. 跨模块
 
@@ -132,5 +132,5 @@ AR-U10 不表示 parent-bound 业务能力已经实现；它不计入本次职�
 
 ## 9. 后续边界
 
-- 本次重构不实现 AR-U10 parent-bound 新业务能力；它继续由独立需求与设计文档管理。
+- 本次重构不实现 AR-U10 Bound Mode；它继续由独立需求与设计文档管理。
 - 用户确认设计后，才单独更新 `zh-CN/README.md` 和 `zh-CN/08-implementation-progress.md`。

@@ -25,8 +25,8 @@
 相关 Subagent 设计：
 
 - [Subagent 领域设计](../subagent/docs/design.zh-CN.md)
-- [Parent-bound Subagent 技术设计](../subagent/docs/parent-bound-design.zh-CN.md)
-- [Parent-bound Subagent 需求](../subagent/docs/parent-bound-requirements.zh-CN.md)
+- [Bound Subagent 技术设计](../subagent/docs/parent-bound-design.zh-CN.md)
+- [Bound Subagent 需求](../subagent/docs/parent-bound-requirements.zh-CN.md)
 
 ## 1. 最终决策
 
@@ -34,7 +34,7 @@
 2. `agent.Registry` 保留统一的 Create、Resume 和 Agent Factory 注册入口。具体 Registry Service 与 Agent Lifecycle Coordinator 是普通 Go 业务对象，不实现 Plugin。
 3. `agentloop.Factory` 实现 Agent Factory，统一负责一个 Agent 及其 Session 的物理构造、发布、运行和单体 teardown；`agentloop.Plugin` 只解析依赖、注册 Factory、提供统一 Agent Scope 结构宿主并适配启停。
 4. `agent` 模块的 Agent Lifecycle Coordinator 拥有所有 Agent 的完整生命周期，包括运行期父子所有权、materialization admission、managed Handle、parent closing cutoff、in-flight join 和 descendant child-first teardown；Plugin adapter 不保存这些业务状态。
-5. `subagent` 只拥有委派语义：Subagent Provider、durable lineage、depth、descriptor、结果、binding、消息投递和驻留策略。它不实现 Agent 生命周期状态机，也不持有可绕过 `agent` 协调器的底层 Handle。
+5. `subagent` 只拥有委派语义：Mode-specific use case、durable lineage、depth、descriptor、结果、binding 和消息投递。它不实现 Agent 生命周期状态机，也不持有可绕过 `agent` 协调器的底层 Handle。
 6. `apiproxy/session.AgentSessions` 负责普通 Agent 激活用例，包括按 Session ID 去重、Create/Resume 决策、普通 Session 围栏、CWD、preset 和 model composition。
 7. Session 不触发 Agent 创建。Agent 创建是必须返回结果并支持同步回滚的命令，不使用 `session/prepared` 或普通广播事件承载。
 8. 逻辑 parent、运行期 parent、结构 owner 和 Initiator 是四个独立概念，不能互相推导。
@@ -87,11 +87,11 @@
 - child epoch 指向一个精确且可接纳 descendant 的 `Publishing` 或 `Live` parent epoch；
 - 一个 epoch 可以同时是另一个 epoch 的 child 和多个 epoch 的 parent。
 
-### 2.5 Subagent Provider 与 residency policy
+### 2.5 Subagent Mode 与 Agent lifecycle
 
-`subagent.Provider` 统一称为 **Subagent Provider**。它是按名称注册的委派策略扩展点：所有 Subagent Provider 都支持 one-shot `Start`，支持 continuable 的 Subagent Provider 还可以为首次创建准备 detached Session seed。Subagent Provider 可以通过 Subagent 用例或 Driver 请求 `agent.Registry` 创建 one-shot child，但不实现 Agent Factory、不直接物理构造或恢复 Agent，也不拥有 managed Handle、durable child 驻留或关闭顺序。
+`subagent.Provider` 是按名称注册的委派策略扩展点，不等同于 Mode implementation。OneShot、Continuable 和未来 Bound 是不同 Mode：OneShot/Continuable 由 `Start` 进入，Bound 由已提交 binding 进入；三者可以复用 `SeedBuilder`、Agent Constructor 和 common `Execution` 组件，但不共享完整业务用例。
 
-**Subagent residency policy** 属于 `subagent`。它根据 one-shot 完成、continuable quiescent、binding disabled、parent closing 等业务事实决定 `KeepResident` 或请求关闭，但不执行 Agent teardown。
+各 Mode 自己决定何时结束 current `Execution` 或请求 managed Agent close：OneShot terminal、Continuable idle settlement 和 Bound binding disabled 是不同业务条件。Agent owner仍统一执行 exact epoch、runtime parent、child-first close 和 Scope teardown。
 
 ## 3. 本次重构修正的问题
 
@@ -133,7 +133,7 @@ Agent activity、membership publication、完整 epoch lifecycle 和 Subagent �
 
 Session Store 是普通 Go 业务对象。Session Plugin adapter 发布 `session.LiveStore` Service，并把业务对象决定发布的 Created、Disposed、EventAppended 和 Flush 通过 Plugin Event bridge 送入 Runtime；事件语义仍属于 Session，不属于 adapter。
 
-不负责触发 Agent 创建，不知道 Agent options、Agent Scope、runtime parent-child ownership 或 Subagent residency policy。
+不负责触发 Agent 创建，不知道 Agent options、Agent Scope、runtime parent-child ownership 或 Subagent Mode use case。
 
 Session 与 Agent 在一次 Agent 构造事务中存在必要的一致性耦合，但 `session` 包不依赖 `agent`。该耦合由 Agent Factory 显式编排，不通过事件隐藏。
 
@@ -188,11 +188,11 @@ AgentLoop 的职责变化是收窄而非搬迁：它继续“造出并安全停�
 
 ### 4.5 `subagent`
 
-负责 Subagent Provider、parent 授权、durable lineage、delegation depth、child Session metadata、seed、descriptor、result、accepted messages、binding、subscription 和 residency policy。
+负责 Subagent Provider、Mode-specific use case、parent 授权、durable lineage、delegation depth、child Session metadata、seed、descriptor、result、accepted messages，以及未来 Bound 的 binding、config、materialization state、cursor 和 subscription。
 
 它不负责 Agent lifecycle 状态机、底层 Handle ownership、runtime descendant graph、parent closing admission、in-flight Agent construction join 或实际 child-first teardown。
 
-现有提案中的 `ChildRuntime`、`ChildLifecycle` 和 `ChildLifecyclePolicy` 不作为目标公共抽象。通用部分归入 `agent`；剩余业务决策统一称为 Subagent residency policy。
+现有提案中的 `ChildRuntime`、`ChildLifecycle` 和 `ChildLifecyclePolicy` 不作为目标公共抽象。通用 Agent lifecycle 归入 `agent`；OneShot、Continuable 和 Bound 分别拥有自己的 Subagent application use case 和 settlement 条件。
 
 Subagent core Service、Manager 和 Provider 是普通 Go 业务对象。`subagent/plugin.Plugin`、spawn/fork Plugin 和 Tool Plugin 只负责依赖解析、注册、事件桥接与模型侧适配；Plugin Dispose 不自行实现 descendant lifecycle。单独卸载 Subagent Plugin 时，Service 只关闭业务准入、启动 managed Agent close 并等待 exact epoch 进入 Closing；Agent Registry 和 AgentLoop 在当前 Runtime 操作返回后完成实际 Scope teardown。
 
@@ -200,7 +200,7 @@ Subagent core Service、Manager 和 Provider 是普通 Go 业务对象。`subage
 
 `plugin` 只负责 Scope、Service binding、Event bridge、effect、结构挂载和卸载。Plugin topology 是资源释放机制，不表达 durable lineage 或 runtime parent 授权，也不保存业务状态机。本重构不修改 Plugin Runtime，也不允许 Apply、Dispose、Event 或 Waterfall 回调重入拓扑命令。
 
-所有 Agent Scope root 使用 `agentloop.Plugin` 提供的统一结构宿主。Agent Lifecycle Coordinator 只保存逻辑 runtime ownership，不依赖 `plugin.Plugin`。普通 Agent、one-shot、continuable 和 parent-bound 不再通过选择不同 Plugin parent 表达生命周期策略。
+所有 Agent Scope root 使用 `agentloop.Plugin` 提供的统一结构宿主。Agent Lifecycle Coordinator 只保存逻辑 runtime ownership，不依赖 `plugin.Plugin`。普通 Agent、OneShot、Continuable 和 Bound 不通过选择不同 Plugin parent 表达 Mode 差异。
 
 ## 5. 目标依赖关系
 
@@ -235,7 +235,7 @@ flowchart TD
 - `agentloop` 不导入 `subagent` 或 `apiproxy/session`；
 - `apiproxy/session` 与 `subagent` 只通过 `agent.Registry` 创建或恢复 Agent；
 - Agent Factory 只由 Registry 调用；
-- Subagent residency policy 只能请求 managed lifecycle 操作；
+- Subagent Mode implementation 只能请求 managed lifecycle 操作；
 - `agent` 不导入 Subagent 领域类型；
 - 业务 Service、Coordinator、Factory、Store 和 Provider 不实现 `plugin.Plugin`；
 - Plugin adapter 不保存 Agent epoch、Session log、Subagent residency 或 Agent activity 的 canonical 状态。
@@ -281,7 +281,7 @@ flowchart TD
 
 ### 7.4 Subagent
 
-- one-shot、continuable 和 parent-bound 只保留各自业务状态与 residency policy；
+- OneShot、Continuable 和 Bound 只保留各自业务状态、用例入口和 settlement 条件；
 - Subagent Provider 不实现 Agent Factory，不直接物理构造、恢复或关闭 Agent；one-shot `Start` 发起创建时只能通过 Agent Registry；
 - parent 离线后 durable child identity 不变；
 - delegation depth 只有 Session Header 一个持久事实来源；

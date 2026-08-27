@@ -25,7 +25,7 @@ child 只是 Agent 在某段运行期关系中的角色：
 - 普通 Agent 可以成为 parent；
 - 一个 child 也可以继续成为其他 Agent 的 parent；
 - root 与 child 都需要 exact Handle、closing cutoff、in-flight join 和 teardown；
-- 这些不变量不随 one-shot、continuable 或 parent-bound 改变。
+- 这些不变量不随 OneShot、Continuable 或 Bound Mode 改变。
 
 如果由 `subagent` 拥有，普通 Agent close、配置 Agent、非 Subagent 创建路径和未来其他 Agent consumer 都必须复制相同机制。因此通用状态和关闭算法归入 `agent`，Subagent 仅保留领域策略。
 
@@ -298,7 +298,7 @@ grandchildren
 - explicit close；
 - holder release；
 - parent closing；
-- residency policy close；
+- Subagent Mode requested close；
 - Agent Runtime shutdown；
 - Factory/Plugin structural fallback。
 
@@ -340,26 +340,26 @@ Coordinator admission 与 Registry membership collision 共同保证同一 Sessi
 - one-shot result pending/settled；
 - continuable accepted messages；
 - descriptor；
-- binding enabled/disabled；
-- subscription installation；
-- residency policy snapshot。
+- Bound binding enabled/disabled；
+- Bound config、materialization state 和 cursor；
+- Bound subscription definition。
 
-这些事实只能产生 `KeepResident` 或 managed Close 请求，不能直接修改 Coordinator 状态、关闭 descendants 或调用底层 teardown。
+这些事实只能驱动各 Mode 自己的 use case，并向 Agent owner 请求 managed Close，不能直接修改 Coordinator 状态、关闭 descendants 或调用底层 teardown。
 
-### 12.3 Residency policy
+### 12.3 Mode-specific settlement
 
-one-shot、continuable 和 parent-bound 可以使用不同 policy，但共用 Agent lifecycle：
+OneShot、Continuable 和 Bound 拥有不同的业务入口与 settlement 条件，但共用同一个 Agent lifecycle：
 
 ```text
-one-shot settled and released -> Close
-ordinary continuable quiescent -> Close
-continuable explicit close -> Close
-parent-bound binding enabled -> KeepResident
-parent-bound binding disabled -> Close
-parent closing -> managed lifecycle close regardless of residency preference
+OneShot terminal -> request managed Close
+Continuable idle settlement -> request managed Close
+Continuable explicit close -> request managed Close
+Bound binding enabled -> keep its current Execution resident
+Bound binding disabled -> request managed Close
+parent closing -> Agent lifecycle closes descendants regardless of Mode
 ```
 
-parent closing 和 Runtime shutdown 是 Agent lifecycle hard boundary，Subagent policy 不能 veto。
+parent closing 和 Runtime shutdown 是 Agent lifecycle hard boundary，任何 Subagent Mode 都不能 veto。
 
 ## 13. Structural custody
 
@@ -382,7 +382,7 @@ B owns C
 两者不要求形成同构 topology。这样可以：
 
 - 避免 parent teardown 中递归修改 Plugin topology；
-- 避免 one-shot、continuable 和 parent-bound 选择不同结构 owner；
+- 避免 OneShot、Continuable 和 Bound 选择不同结构 owner；
 - 让 child-first 关闭由一个 Coordinator 显式执行；
 - 保留 Plugin Runtime 对全部 Agent Scope 的兜底卸载能力。
 
@@ -422,7 +422,8 @@ Plugin Runtime structural unload 是整体关闭兜底，不代替日常 managed
 - Session Header 中的 origin、parent Session、delegation depth 和 composition identity；
 - Session append-only events；
 - Subagent descriptor；
-- parent-bound binding、revision、policy 和 subscription definition。
+- exact parent Session 中的 Bound binding event；
+- 分开记录的 Bound config、materialization state 和 cursor；
 
 不持久化：
 
@@ -463,5 +464,5 @@ delegation depth 只保留 Session Header 中的 durable 值。当前实现已�
 - structural fallback 后 Coordinator 不保留伪 Live entry；
 - Initiator 不改变 runtime parent；
 - runtime ownership 不参与 durable authorization；
-- one-shot、continuable、parent-bound policy 不持有底层 teardown；
+- OneShot、Continuable、Bound 的 Mode implementation 都不持有底层 teardown；
 - race 测试无重复 close、丢失 wakeup 或残留 entry。

@@ -32,9 +32,9 @@
 | Subagent | 由父 Agent 委派、具有独立 child Session identity 的任务执行者 | Tool DTO 或独立 AgentLoop |
 | OneShot | 每次 Start 创建一个 fresh child，形成一个 terminal outcome 后自动释放 exact Handle 的实现 | 无 Session 的函数调用 |
 | Continuable | 以 durable child Session 和 Agent Inbox 支持多次消息与 cold resume 的实现 | 长连接或永久 resident Agent |
-| Mode | 选择 OneShot/Continuable implementation 的稳定 discriminant | 生命周期状态 |
+| Mode | 选择 OneShot/Continuable/Bound implementation 的稳定 discriminant | 生命周期状态 |
 | ChildRequest | 两种实现共同 snapshot 的 caller-owned child 输入 | mode-specific command union |
-| StartCommand | 由合法构造函数生成的 closed OneShot/Continuable 启动命令 | 任意 optional-fields DTO |
+| StartCommand | 封闭的启动命令接口；每个 Mode 由自己的具体命令类型实现 | 汇总所有 Mode 字段的 optional-fields DTO |
 | SeedBuilder | 只为 fresh child 构造 detached Session event prefix 的策略 | Agent factory、Subagent implementation 或 lifecycle owner |
 | SessionSeed | SeedBuilder 返回的 detached event prefix | 完整 child Session 或 Agent |
 | Execution | 一次 Subagent 业务执行；与一个 exact Agent epoch 一一对应 | 第二个 Agent epoch 或 durable child identity |
@@ -97,8 +97,8 @@ Identity projection 使用最新 descriptor，因为 fork seed 可能包含 ance
 1. 名称首先回答“这个对象是什么”。
 2. 名称需要叠加多个 owner、步骤或存储概念时，先拆分职责。
 3. 公共接口按 Consumer 能力命名：`Starter`、`ChildControl`、`ChildDirectory`；直接使用 Agent 已有能力时不再包装同义接口。
-4. OneShot/Continuable 是私有 implementation，不发布 `OneShotService` 或 `ContinuableService` capability。
-5. 两种实现共享 `Execution` 状态和 Terminal；不同触发时机留在各自 `Terminator`。
+4. OneShot/Continuable/Bound 是私有 mode implementation，不发布 mode-specific public Service capability。
+5. 三个 Mode 共用 `Execution` 状态和 Terminal；不同触发时机留在各自实现和 `Terminator`。
 6. 不使用 Activation 表达 Agent epoch，也不使用 Catalog 表达 child directory。
 7. `Provider` 只用于兼容 token 或 Service Provider/Consumer 架构术语，不作为 Subagent 创建/执行对象名称。
 8. 不用 `Setup` 同时表达 Agent publication transaction 和 Extension；分别使用 `Provisioner`/`Provisioning` 与 `Extension`/`ExtensionInstallation`。

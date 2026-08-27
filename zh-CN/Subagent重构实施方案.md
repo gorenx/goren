@@ -60,11 +60,11 @@
 
 ### 目标
 
-先固定两种实现共享的输入、生命周期、控制、目录、创建策略和扩展边界。
+先固定各模式的启动命令、共享生命周期、控制、目录、创建策略和扩展边界。
 
 ### 变更
 
-1. 用 `Mode` 和 closed `StartCommand` 表达合法 OneShot/Continuable 启动 variant；命令构造时校验并复制 `ChildRequest`，不另设 snapshot 包。
+1. 用封闭 `StartCommand` 接口表达合法启动命令类型族；`OneShotStartCommand`、`ContinuableStartCommand`、`BoundStartCommand` 只保存本模式输入，不建立大而全的 optional-fields command。
 2. 定义 common `Execution`、`ExecutionState`、`Terminal` 和 `Starter`。
 3. 定义 `ChildControl`、`ChildDirectory`；report 直接消费 Agent 窄接口，不另建 Subagent 消息 capability。
 4. 把创建输入策略命名为 `SeedBuilder`，保留兼容 provider token。
@@ -346,7 +346,7 @@ go test -race ./subagent/plugin ./subagent/factory
 3. 独立进度矩阵记录实现和验证状态。
 4. 根包及所有真实 Subagent capability package 更新 `README.zh-CN.md`。
 5. 术语文档删除 Activation、Catalog、Provider execution 和旧路径。
-6. future parent-bound 文档明确其未实现状态，并以当前 Execution/ChildDirectory/SeedBuilder 术语重建后才能继续设计。
+6. future Bound 文档明确其独立 Mode 和未实现状态，并以当前 `Execution`、Session projection、Agent Constructor 和 `SeedBuilder` 边界继续设计。
 7. 暂不更新 `zh-CN/README.md` 和 `zh-CN/08-implementation-progress.md`。
 
 ### 静态审计

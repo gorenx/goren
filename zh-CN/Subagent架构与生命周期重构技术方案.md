@@ -2,7 +2,7 @@
 
 状态：当前目标设计
 
-最后核对：2026-08-26
+最后核对：2026-08-27
 
 ## 1. 文档职责
 
@@ -17,10 +17,10 @@
 
 ## 2. 核心结论
 
-1. OneShot 与 Continuable 是两种 Subagent 实现，不是两套互不相干的生命周期模型。
-2. 两种实现都返回同一个 `Execution` 契约，并使用同一个 `Starting -> Active -> Stopping -> Stopped` 状态词汇。
+1. OneShot、Continuable 与 Bound 是三个独立 Subagent Mode，不是一个实现加可选 flag。
+2. 各 Mode 发布运行时执行时都返回同一个 `Execution` 契约，并使用同一个 `Starting -> Active -> Stopping -> Stopped` 状态词汇；当前 Bound `Start` 仍是明确 TODO，尚不发布 Execution。
 3. 每个 `Execution` 与一个 exact Agent epoch 一一对应。Subagent 不再额外定义 `Activation` 或复制 Agent 的运行状态。
-4. OneShot 与 Continuable 只在创建策略、消息策略和停止触发时机上不同。
+4. 各 Mode 的具体启动命令、配置来源、消息策略和停止触发留在各自实现中。
 5. `SeedBuilder` 只构造 fresh child Session 的事件前缀；它不创建 Agent，也不拥有生命周期。
 6. `agent.Constructor` 是创建和恢复 Agent 的唯一入口；`agent` 拥有 exact Agent、运行父子关系、descendant admission 和 child-first 关闭。
 7. `agentloop` 只执行单个 Agent 的 Inbox、turn、step、Tool 和模型循环，不感知 OneShot、Continuable、SeedBuilder 或 ChildDirectory。
@@ -65,7 +65,7 @@
 
 durable child 是由 Session Header、`subagent/descriptor` 和 append-only event log 定义的持久身份。它可以暂时没有 live Agent。
 
-OneShot 通常只产生一次 Execution。Continuable 可以在同一个 durable child identity 上先后产生多个 Execution，但任一时刻至多有一个 current Execution。
+OneShot 通常只产生一次 Execution。Continuable 可以在同一个 durable child identity 上先后产生多个 Execution，但任一时刻至多有一个 current Execution。Bound durable identity 来自 parent binding 与 child descriptor；其运行期行为见 [Bound 技术设计](../subagent/docs/parent-bound-design.zh-CN.md)，当前 Start 尚未实现。
 
 ### 3.4 Settlement
 
@@ -88,7 +88,7 @@ Settlement 不是第二套 Agent 关闭算法。Agent 仍拥有结构关闭；Su
         ↓
 统一 Subagent application service
         ↓
-OneShot / Continuable 实现
+OneShot / Continuable / Bound 实现
         ↓
 Agent / Session / Approval / Tools 等消费接口
         ↓
@@ -99,7 +99,7 @@ Runtime Plugin 与 composition root 装配具体能力
 
 根包只声明跨包需要的稳定对象：
 
-- `StartCommand`、`Starter`、`Execution`、`Terminal`；
+- 封闭 `StartCommand` 接口及三个 mode-specific command、`Starter`、`Execution`、`Terminal`；
 - `ChildControl`、`ChildDirectory`；
 - `SeedBuilder`、`SeedBuilderRegistry`；
 - `Extension`、`ExtensionRegistry`；
@@ -114,7 +114,7 @@ Runtime Plugin 与 composition root 装配具体能力
 它负责：
 
 - 模块准入状态和已准入调用 join；
-- 按 `StartCommand.Mode()` 选择 OneShot 或 Continuable；
+- 按具体 `StartCommand` variant 选择 `oneShot`、`continuable` 或 `bound`；
 - interrupt 的公共 live Execution 查找与 ancestor/direct-parent 授权；
 - resident Send 校验 exact parent 后直接调用 child `agent.Agent.Followup`；
 - child 不 resident 时，只把 cold resume 事务交给 Continuable 实现；
@@ -123,7 +123,7 @@ Runtime Plugin 与 composition root 装配具体能力
 
 它不包含 Tool schema、Plugin API、Session codec 或 Agent 构造细节。
 
-### 4.3 两种实现
+### 4.3 三个模式实现
 
 `internal/oneshot` 完整拥有一次性委派用例：
 
@@ -144,7 +144,9 @@ Runtime Plugin 与 composition root 装配具体能力
 - idle settlement 和父通知；
 - final flush failure 的隔离报告。
 
-两者不互相调用，也不通过 capability bool 分支。统一只发生在公开 command、Execution 状态机和应用 Service 路由层。
+`internal/bound` 当前拥有独立 Mode 和 `BoundStartCommand` 入口。它已被 Plugin 装配，但 `Start` 返回 `ErrStartNotImplemented`；binding/config source 和 child create/restore 尚未落地。
+
+三个模式不互相调用，也不通过 capability bool 分支。`StartCommand` 是封闭接口，每个具体命令只含本 Mode 输入。统一只发生在 `Starter`、Execution 状态机和应用 Service 路由层。
 
 ### 4.4 共享业务模块
 
@@ -428,8 +430,8 @@ Tool 包只把模型调用映射到公开 capability。`childpolicy` 把 approva
 
 ## 12. 验收条件
 
-1. 两种实现都只返回 common `Execution`，并通过同一状态机和停止事务形成 terminal。
-2. OneShot/Continuable 的差异仅位于各自 implementation，不泄漏为公开 Service 枚举。
+1. OneShot/Continuable 以及完成后的 Bound 都只返回 common `Execution`，并通过同一状态机和停止事务形成 terminal。
+2. 三种模式的差异位于各自具体 command 和 mode implementation，不合并成大而全的启动 DTO。
 3. spawn/fork 不导入 Agent Constructor、Approval、AgentLoop 或 Execution。
 4. Runtime Plugin 只装配和适配，不实现 Subagent 用例。
 5. Agent 仍唯一拥有 exact epoch、运行父子关系和结构关闭；AgentLoop 职责不变化。
