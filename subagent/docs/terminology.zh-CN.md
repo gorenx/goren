@@ -23,7 +23,7 @@
 
 ### 1.3 实现术语
 
-实现术语描述局部机制，例如 `childSlot`、`execution.Registry`、admission state、`Terminator`。它们不能改变 wire token，也不能制造第二个领域 owner。
+实现术语描述局部机制，例如 per-child mailbox、`execution.Registry`、admission state、`Terminator`。它们不能改变 wire token，也不能制造第二个领域 owner。
 
 ## 2. 领域词典
 
