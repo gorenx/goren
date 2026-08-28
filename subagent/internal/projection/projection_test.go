@@ -21,8 +21,7 @@ func TestIdentityProjectionUsesLatestTrustworthyDescriptor(t *testing.T) {
 		Label:    "review",
 	})
 	boundData := descriptorData(t, subagent.BoundDescriptor{
-		Provider: "spawn",
-		Label:    "resident",
+		Name: "resident",
 	})
 	unit := identityUnit{}
 	state, err := unit.InitialState()

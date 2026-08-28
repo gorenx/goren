@@ -7,13 +7,9 @@ import (
 )
 
 // boundExtensions adapts the generic Extension Registry to Bound's
-// consumer-owned validation and per-epoch provisioning contract.
+// consumer-owned per-epoch provisioning contract.
 type boundExtensions struct {
 	registry *extensionregistry.Registry
-}
-
-func (adapter boundExtensions) Validate(names []string) error {
-	return adapter.registry.ValidateSelection(names)
 }
 
 func (adapter boundExtensions) Provision(

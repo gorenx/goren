@@ -1,5 +1,7 @@
 package connection
 
+// Key is a Host method restricted to trusted loopback requests. The empty
+// value records set membership only.
 var privilegedMethods = map[string]struct{}{
 	"agentPreset.read":         {},
 	"agentPreset.copy":         {},
@@ -16,6 +18,9 @@ var privilegedMethods = map[string]struct{}{
 	"credentials.set":          {},
 	"credentials.unset":        {},
 	"llm.discoverModels":       {},
+	"bound.list":               {},
+	"bound.create":             {},
+	"bound.replace":            {},
 }
 
 func isPrivilegedMethod(method string) bool {

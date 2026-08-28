@@ -6,11 +6,12 @@ import (
 	"fmt"
 
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/subagent"
+	boundcontract "github.com/gorenx/goren/subagent/bound"
 )
 
 func boundCursor(
 	events []session.Event,
+	definitionName string,
 	childID session.SessionID,
 	floor int64,
 ) (int64, error) {
@@ -19,10 +20,10 @@ func boundCursor(
 	}
 	nextSeq := floor
 	for _, committed := range events {
-		if committed.Type != subagent.BoundCursorEventName {
+		if committed.Type != boundcontract.CursorEventName {
 			continue
 		}
-		var cursor subagent.BoundCursor
+		var cursor boundcontract.Cursor
 		if err := decodeInteractionJSON(committed.Data, &cursor); err != nil {
 			return 0, fmt.Errorf(
 				"subagent: decode Bound cursor at seq %d: %w",
@@ -30,16 +31,18 @@ func boundCursor(
 				err,
 			)
 		}
-		if cursor.ChildSessionID != childID {
+		if cursor.Name != definitionName && cursor.ChildSessionID != childID {
 			continue
 		}
-		if cursor.Version != subagent.BoundEventVersion ||
+		if cursor.Version != boundcontract.EventVersion ||
+			cursor.Name != definitionName ||
+			cursor.ChildSessionID != childID ||
 			cursor.PreviousNextSeq != nextSeq ||
 			cursor.NextSeq <= cursor.PreviousNextSeq ||
 			cursor.NextSeq > committed.Seq ||
 			cursor.ThroughTurn <= 0 ||
-			(cursor.Disposition != subagent.BoundCursorDelivered &&
-				cursor.Disposition != subagent.BoundCursorSkipped) {
+			(cursor.Disposition != boundcontract.CursorDelivered &&
+				cursor.Disposition != boundcontract.CursorSkipped) {
 			return 0, fmt.Errorf(
 				"subagent: invalid Bound cursor at seq %d",
 				committed.Seq,
@@ -51,18 +54,24 @@ func boundCursor(
 }
 
 type cursorAdvance struct {
+	name        string
 	childID     session.SessionID
 	floor       int64
 	expected    int64
 	interaction parentInteraction
-	disposition subagent.BoundCursorDisposition
+	disposition boundcontract.CursorDisposition
 }
 
 func (advance cursorAdvance) Build(
 	_ context.Context,
 	snapshot session.Snapshot,
 ) ([]session.EventDraft, error) {
-	current, err := boundCursor(snapshot.Events, advance.childID, advance.floor)
+	current, err := boundCursor(
+		snapshot.Events,
+		advance.name,
+		advance.childID,
+		advance.floor,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -74,9 +83,10 @@ func (advance cursorAdvance) Build(
 		)
 	}
 	draft, err := session.NewEventDraft(
-		subagent.BoundCursorEvent,
-		subagent.BoundCursor{
-			Version:         subagent.BoundEventVersion,
+		boundcontract.CursorEvent,
+		boundcontract.Cursor{
+			Version:         boundcontract.EventVersion,
+			Name:            advance.name,
 			ChildSessionID:  advance.childID,
 			PreviousNextSeq: advance.expected,
 			NextSeq:         advance.interaction.nextSeq,

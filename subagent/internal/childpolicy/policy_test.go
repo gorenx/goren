@@ -2,10 +2,12 @@ package childpolicy
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
+	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/tools"
 )
 
@@ -38,6 +40,53 @@ func TestPluginsSeedDelegationOnlyForFreshChild(t *testing.T) {
 	}
 	if _, matches := resumed[1].(*toolRestriction); !matches {
 		t.Fatalf("second resumed Plugin = %T, want Tool restriction", resumed[1])
+	}
+}
+
+func TestBoundSystemPromptReplacesInheritedIdentity(t *testing.T) {
+	t.Parallel()
+	validated, err := systemprompt.ValidateConfig(systemprompt.Config{
+		Persona: "parent identity",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompts := systemprompt.New(
+		validated,
+		systemprompt.RegistryOptions{},
+	)
+	boundPrompt := newBoundSystemPrompt("review parent interactions")
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	if _, err = runtimeEngine.Start(
+		context.Background(),
+		prompts,
+		boundPrompt,
+	); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if shutdownErr := runtimeEngine.Shutdown(
+			context.Background(),
+		); shutdownErr != nil {
+			t.Error(shutdownErr)
+		}
+	})
+
+	assembled, err := prompts.Assemble(
+		context.Background(),
+		systemprompt.AssembleContext{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSections := []systemprompt.AssembledSection{
+		{
+			Name: boundSystemPromptSection,
+			Text: "review parent interactions",
+		},
+	}
+	if !reflect.DeepEqual(assembled.Sections, wantSections) {
+		t.Fatalf("assembled sections = %#v, want %#v", assembled.Sections, wantSections)
 	}
 }
 

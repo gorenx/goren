@@ -7,68 +7,25 @@ import (
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/subagent"
 )
 
-type boundExtensionsRecord struct {
-	validate  func([]string) error
+type extensionsStub struct {
 	provision func([]string) (agent.Provisioner, error)
 }
 
-func (record boundExtensionsRecord) Validate(names []string) error {
-	if record.validate == nil {
-		return nil
-	}
-	return record.validate(names)
-}
-
-func (record boundExtensionsRecord) Provision(
+func (stub extensionsStub) Provision(
 	names []string,
 ) (agent.Provisioner, error) {
-	if record.provision == nil {
+	if stub.provision == nil {
 		return nil, nil
 	}
-	return record.provision(names)
+	return stub.provision(names)
 }
 
-func TestNewRequiresExtensionSelection(t *testing.T) {
+func TestNewRejectsIncompleteDependencies(t *testing.T) {
 	t.Parallel()
-	if owner, err := New(Dependencies{}); err == nil || owner != nil {
+	if owner, err := New(context.Background(), Dependencies{}); err == nil || owner != nil {
 		t.Fatalf("New = (%v, %v), want nil, error", owner, err)
-	}
-}
-
-func TestBoundStartCommandRejectsMissingBindingIdentity(t *testing.T) {
-	t.Parallel()
-	parentAgent := newBoundAgent(t, "parent")
-	for _, testCase := range []struct {
-		name    string
-		parent  agent.Agent
-		childID session.SessionID
-	}{
-		{
-			name:    "nil parent",
-			childID: "bound-child",
-		},
-		{
-			name:   "empty child",
-			parent: parentAgent,
-		},
-		{
-			name:    "untrimmed child",
-			parent:  parentAgent,
-			childID: " bound-child",
-		},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-			if _, commandErr := subagent.NewBoundStart(
-				testCase.parent,
-				testCase.childID,
-			); commandErr == nil {
-				t.Fatal("invalid BoundStartCommand was accepted")
-			}
-		})
 	}
 }
 
@@ -139,4 +96,4 @@ func (*boundAgent) Inject(agentmessage.UserMessage) error {
 }
 
 var _ agent.Agent = (*boundAgent)(nil)
-var _ Extensions = boundExtensionsRecord{}
+var _ Extensions = extensionsStub{}

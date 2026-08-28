@@ -1,9 +1,11 @@
 package subagent
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
@@ -168,7 +170,7 @@ func DecodeDelivery(
 		return Delivery{}, err
 	}
 	var decoded Delivery
-	if err = decodeBoundJSON(rawValue, &decoded); err != nil {
+	if err = decodeMessageSourceJSON(rawValue, &decoded); err != nil {
 		return Delivery{}, err
 	}
 	detached, err := decoded.CloneSource()
@@ -176,6 +178,24 @@ func DecodeDelivery(
 		return Delivery{}, err
 	}
 	return detached.(Delivery), nil
+}
+
+func decodeMessageSourceJSON(rawValue []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(rawValue))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New(
+				"subagent: message source contains multiple JSON values",
+			)
+		}
+		return err
+	}
+	return nil
 }
 
 func validDeliveryOutcome(outcome string) bool {

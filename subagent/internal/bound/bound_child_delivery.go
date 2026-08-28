@@ -2,10 +2,10 @@ package bound
 
 import (
 	"context"
-	"errors"
 
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/subagent"
+	boundcontract "github.com/gorenx/goren/subagent/bound"
 )
 
 func (child *boundChild) catchUpInteractions() error {
@@ -32,6 +32,7 @@ func (child *boundChild) advanceInteraction() (bool, error) {
 	snapshot := parentSession.Snapshot()
 	nextSeq, err := boundCursor(
 		snapshot.Events,
+		child.key.name,
 		child.key.childID,
 		child.floor,
 	)
@@ -51,11 +52,11 @@ func (child *boundChild) advanceInteraction() (bool, error) {
 	); err != nil {
 		return false, err
 	}
-	current, enabled, err := child.interactionExecution()
-	if err != nil || !enabled {
+	current, definitionEnabled, err := child.interactionExecution()
+	if err != nil || !definitionEnabled {
 		return false, err
 	}
-	disposition := subagent.BoundCursorSkipped
+	disposition := boundcontract.CursorSkipped
 	if interaction.deliverable {
 		source := subagent.Delivery{
 			ParentSessionID: child.key.parentID,
@@ -93,11 +94,12 @@ func (child *boundChild) advanceInteraction() (bool, error) {
 		); err != nil {
 			return false, err
 		}
-		disposition = subagent.BoundCursorDelivered
+		disposition = boundcontract.CursorDelivered
 	}
 	_, err = parentSession.Commit(
 		child.ctx,
 		cursorAdvance{
+			name:        child.key.name,
 			childID:     child.key.childID,
 			floor:       child.floor,
 			expected:    nextSeq,
@@ -122,23 +124,16 @@ func (child *boundChild) interactionExecution() (
 	bool,
 	error,
 ) {
-	view, err := readBoundProjection(
-		child.projections,
-		child.parent.SessionValue(),
-	)
-	if err != nil {
-		return nil, false, err
-	}
-	config, found := view.Config(child.key.childID)
+	definitionValue, found := child.definitions.find(child.key.name)
 	if !found {
-		return nil, false, errors.New("subagent: Bound binding has no config")
+		return nil, false, nil
 	}
-	if !config.Config.Enabled {
+	if !definitionValue.Enabled {
 		return nil, false, nil
 	}
 	current := child.current
 	if current == nil || current.execution.State() != subagent.ExecutionActive ||
-		current.configRevision != config.Revision {
+		current.definitionRevision != definitionValue.Revision {
 		return nil, false, nil
 	}
 	return current, true, nil

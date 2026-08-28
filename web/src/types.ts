@@ -107,6 +107,39 @@ export interface CredentialsDescribeValue {
   credentials: Record<string, CredentialView>
 }
 
+export interface BoundAgentOptions {
+  provider: string
+  model: string
+  maxTokens?: number
+}
+
+export interface BoundToolRestriction {
+  allow?: string[]
+  deny?: string[]
+}
+
+export interface BoundDefinitionDraft {
+  name: string
+  enabled: boolean
+  systemPrompt: string
+  agentOptions?: BoundAgentOptions
+  maxDepth?: number
+  toolRestriction?: BoundToolRestriction
+  extensions: string[]
+}
+
+export interface BoundDefinition extends BoundDefinitionDraft {
+  revision: number
+}
+
+export interface BoundListValue {
+  definitions: BoundDefinition[]
+}
+
+export interface BoundDefinitionValue {
+  definition: BoundDefinition
+}
+
 export interface ConversationSnapshot {
   phase: 'booting' | 'ready' | 'failed'
   host?: HostDescription
@@ -124,6 +157,8 @@ export interface ConversationSnapshot {
   composerState: MessageKey
   credentialLoaded: boolean
   credential?: CredentialView
+  boundDefinitionsLoaded: boolean
+  boundDefinitions: readonly BoundDefinition[]
   error?: string
 }
 

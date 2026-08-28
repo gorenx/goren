@@ -7,42 +7,58 @@ import (
 
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/session"
+	subagentprojection "github.com/gorenx/goren/subagent/internal/projection"
 )
 
-type boundChildKey struct {
+type bindingKey struct {
 	parentID session.SessionID
+	name     string
 	childID  session.SessionID
 }
 
-// boundChildRegistry indexes the Bound children owned by exact parent Agent
-// epochs. Its mutex protects only lookup and lifecycle membership; it never
-// surrounds child work or I/O.
-type boundChildRegistry struct {
+// registry indexes Binding workers owned by exact parent Agent epochs. Its
+// mutex protects only lookup and lifecycle membership.
+type registry struct {
 	dependencies Dependencies
 	materializer *materializer
+	definitions  *definitionCatalog
+	ctx          context.Context
+	cancel       context.CancelFunc
 	mutex        sync.Mutex
-	entries      map[session.SessionID]map[session.SessionID]*boundChild
-	closing      bool
+	// Outer key is a user Session ID. Outer value is that Session's worker
+	// index. Inner key is the stable Definition name; inner value is the sole
+	// serial Binding worker for that parent and name.
+	entries map[session.SessionID]map[string]*boundChild
+	closing bool
 }
 
-func newBoundChildRegistry(
+func newRegistry(
+	requestContext context.Context,
 	dependencySet Dependencies,
 	factory *materializer,
-) *boundChildRegistry {
-	return &boundChildRegistry{
+) *registry {
+	registryContext, cancelRegistry := context.WithCancel(
+		context.WithoutCancel(requestContext),
+	)
+	return &registry{
 		dependencies: dependencySet,
 		materializer: factory,
-		entries:      make(map[session.SessionID]map[session.SessionID]*boundChild),
+		ctx:          registryContext,
+		cancel:       cancelRegistry,
+		entries: make(
+			map[session.SessionID]map[string]*boundChild,
+		),
 	}
 }
 
-func (children *boundChildRegistry) acquire(
+func (children *registry) acquire(
 	parentAgent agent.Agent,
-	childID session.SessionID,
+	bindingValue subagentprojection.BoundBinding,
 ) (*boundChild, error) {
-	key := boundChildKey{
+	key := bindingKey{
 		parentID: parentAgent.ID(),
-		childID:  childID,
+		name:     bindingValue.Name,
+		childID:  bindingValue.ChildSessionID,
 	}
 	children.mutex.Lock()
 	if children.closing {
@@ -50,22 +66,27 @@ func (children *boundChildRegistry) acquire(
 		return nil, errors.New("subagent: Bound children are closing")
 	}
 	parentChildren := children.entries[key.parentID]
-	current := parentChildren[key.childID]
-	if current != nil && agent.Same(current.parent, parentAgent) {
+	current := parentChildren[key.name]
+	if current != nil && agent.Same(current.parent, parentAgent) &&
+		current.key.childID == key.childID {
 		children.mutex.Unlock()
 		return current, nil
 	}
 	next := newBoundChild(
+		children.ctx,
 		children.dependencies,
 		children.materializer,
+		children.definitions,
 		parentAgent,
-		childID,
+		bindingValue,
 	)
 	if parentChildren == nil {
-		parentChildren = make(map[session.SessionID]*boundChild)
+		// Key is a stable Definition name. Value is the sole serial Binding
+		// worker for that name in this exact user Session.
+		parentChildren = make(map[string]*boundChild)
 		children.entries[key.parentID] = parentChildren
 	}
-	parentChildren[key.childID] = next
+	parentChildren[key.name] = next
 	children.mutex.Unlock()
 	go next.run()
 	if current != nil {
@@ -74,7 +95,7 @@ func (children *boundChildRegistry) acquire(
 	return next, nil
 }
 
-func (children *boundChildRegistry) notifyParent(parentID session.SessionID) {
+func (children *registry) notifyParent(parentID session.SessionID) {
 	children.mutex.Lock()
 	parentChildren := children.entries[parentID]
 	targets := make([]*boundChild, 0, len(parentChildren))
@@ -87,15 +108,20 @@ func (children *boundChildRegistry) notifyParent(parentID session.SessionID) {
 	}
 }
 
-func (children *boundChildRegistry) interrupt(
-	ctx context.Context,
+func (children *registry) interrupt(
+	requestContext context.Context,
 	childID session.SessionID,
 ) error {
 	children.mutex.Lock()
 	var target *boundChild
 	for _, parentChildren := range children.entries {
-		if current := parentChildren[childID]; current != nil {
-			target = current
+		for _, current := range parentChildren {
+			if current.key.childID == childID {
+				target = current
+				break
+			}
+		}
+		if target != nil {
 			break
 		}
 	}
@@ -103,39 +129,41 @@ func (children *boundChildRegistry) interrupt(
 	if target == nil {
 		return nil
 	}
-	return target.interrupt(ctx)
+	return target.interrupt(requestContext)
 }
 
-func (children *boundChildRegistry) agentDisposed(
-	ctx context.Context,
+func (children *registry) agentDisposed(
+	requestContext context.Context,
 	subject agent.Agent,
 ) error {
 	if subject == nil {
 		return nil
 	}
-	if ctx == nil {
-		ctx = context.Background()
+	if requestContext == nil {
+		requestContext = context.Background()
 	}
 	children.mutex.Lock()
 	parentChildren := children.entries[subject.ID()]
 	targets := make([]*boundChild, 0, len(parentChildren))
-	for childID, child := range parentChildren {
+	for definitionName, child := range parentChildren {
 		if !agent.Same(child.parent, subject) {
 			continue
 		}
 		targets = append(targets, child)
-		delete(parentChildren, childID)
+		delete(parentChildren, definitionName)
 	}
 	if len(parentChildren) == 0 {
 		delete(children.entries, subject.ID())
 	}
 	children.mutex.Unlock()
-	return disposeBoundChildren(ctx, targets)
+	return disposeBoundChildren(requestContext, targets)
 }
 
-func (children *boundChildRegistry) close(ctx context.Context) error {
-	if ctx == nil {
-		ctx = context.Background()
+func (children *registry) close(
+	closeContext context.Context,
+) error {
+	if closeContext == nil {
+		closeContext = context.Background()
 	}
 	children.mutex.Lock()
 	children.closing = true
@@ -147,13 +175,14 @@ func (children *boundChildRegistry) close(ctx context.Context) error {
 	}
 	children.entries = nil
 	children.mutex.Unlock()
+	children.cancel()
 	results := make(chan error, len(targets))
 	var shutdowns sync.WaitGroup
 	for _, child := range targets {
 		shutdowns.Add(1)
 		go func() {
 			defer shutdowns.Done()
-			results <- child.shutdown(ctx)
+			results <- child.shutdown(closeContext)
 		}()
 	}
 	shutdowns.Wait()
@@ -165,17 +194,22 @@ func (children *boundChildRegistry) close(ctx context.Context) error {
 	return closeErr
 }
 
-func (children *boundChildRegistry) find(
+func (children *registry) find(
 	parentID session.SessionID,
 	childID session.SessionID,
 ) *boundChild {
 	children.mutex.Lock()
 	defer children.mutex.Unlock()
-	return children.entries[parentID][childID]
+	for _, child := range children.entries[parentID] {
+		if child.key.childID == childID {
+			return child
+		}
+	}
+	return nil
 }
 
 func disposeBoundChildren(
-	ctx context.Context,
+	requestContext context.Context,
 	targets []*boundChild,
 ) error {
 	results := make(chan error, len(targets))
@@ -184,7 +218,7 @@ func disposeBoundChildren(
 		disposals.Add(1)
 		go func() {
 			defer disposals.Done()
-			results <- child.dispose(ctx)
+			results <- child.dispose(requestContext)
 		}()
 	}
 	disposals.Wait()

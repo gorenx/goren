@@ -282,6 +282,20 @@ func DefaultSpecs(
 	if err != nil {
 		return nil, err
 	}
+	subagentRaw, err := json.Marshal(
+		subagentfactory.Config{
+			BoundDefinitions: subagentfactory.DatabaseConfig{
+				Path: filepath.Join(
+					filepath.Dir(sessionDatabasePath),
+					"bound-definitions.sqlite",
+				),
+				JournalMode: subagentplugin.JournalWAL,
+			},
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
 	credentialsRaw, err := json.Marshal(credentialsfactory.Config{
 		Local: credentialslocal.Config{
 			Path: filepath.Join(
@@ -364,7 +378,7 @@ func DefaultSpecs(
 		},
 		{
 			FactoryName: subagent.PluginName,
-			Config:      emptyConfig,
+			Config:      subagentRaw,
 		},
 		{
 			FactoryName: spawn.PluginName,

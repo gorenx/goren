@@ -53,45 +53,12 @@ func descendantAdmissionClosed(childID session.SessionID) error {
 	}
 }
 
-func duplicateChild(childID session.SessionID) error {
-	return &subagent.Error{
-		Code:    subagent.ErrorDuplicateChild,
-		Message: fmt.Sprintf("subagent %q already exists", childID),
-	}
-}
-
 func bindingNotFound(childID session.SessionID) error {
 	return &subagent.Error{
 		Code: subagent.ErrorBoundBindingNotFound,
 		Message: fmt.Sprintf(
 			"subagent %q has no Bound binding in this parent Session",
 			childID,
-		),
-	}
-}
-
-func configConflict(
-	childID session.SessionID,
-	expected int64,
-	actual int64,
-) error {
-	return &subagent.Error{
-		Code: subagent.ErrorBoundConfigConflict,
-		Message: fmt.Sprintf(
-			"subagent %q Bound config revision is %d, expected %d",
-			childID,
-			actual,
-			expected,
-		),
-	}
-}
-
-func noSeedBuilder(builderName string) error {
-	return &subagent.Error{
-		Code: subagent.ErrorNoSeedBuilder,
-		Message: fmt.Sprintf(
-			"no subagent SeedBuilder registered for %q",
-			builderName,
 		),
 	}
 }

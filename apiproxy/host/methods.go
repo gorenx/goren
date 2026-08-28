@@ -11,6 +11,7 @@ import (
 	"github.com/gorenx/goren/credentials"
 	"github.com/gorenx/goren/llm"
 	sessionquery "github.com/gorenx/goren/session/query"
+	boundcontract "github.com/gorenx/goren/subagent/bound"
 )
 
 func registerMethods(
@@ -20,6 +21,7 @@ func registerMethods(
 	commandRegistry commands.Registry,
 	models llm.LlmRuntime,
 	credentialProvider credentials.Provider,
+	boundDefinitions boundcontract.Definitions,
 	agents agent.Registry,
 	defaults agentdefaultmodel.DefaultModel,
 	deploymentSettings Settings,
@@ -56,6 +58,10 @@ func registerMethods(
 	}
 	credentialsGateway := apiproxy.NewCredentialsGateway(credentialProvider)
 	if err := apiproxy.RegisterCredentialsAPI(methods, credentialsGateway); err != nil {
+		return err
+	}
+	boundGateway := apiproxy.NewBoundGateway(boundDefinitions)
+	if err := apiproxy.RegisterBoundAPI(methods, boundGateway); err != nil {
 		return err
 	}
 	llmGateway, err := apiproxy.NewLLMGateway(models)

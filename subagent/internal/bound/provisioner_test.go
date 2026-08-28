@@ -10,6 +10,7 @@ import (
 	"github.com/gorenx/goren/agent/scopedplugin"
 	pluginruntime "github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/subagent"
+	boundcontract "github.com/gorenx/goren/subagent/bound"
 	extensionregistry "github.com/gorenx/goren/subagent/internal/extension"
 	"github.com/gorenx/goren/tools"
 )
@@ -97,19 +98,19 @@ func TestBuildBoundProvisionerInstallsPoliciesCommonAndSelectedExtensions(
 		&order,
 		subagent.WithExtensionName("second"),
 	)
-	persona := "bound persona"
-	owner := newProvisionerService(t, extensionRegistry)
-	scopeProvisioner, err := owner.children.materializer.provisioner(
-		subagent.BoundConfigSnapshot{
-			Persona: &persona,
-			ToolRestriction: &tools.ToolRestriction{
-				Deny: []string{},
-			},
-			Extensions: []string{
+	factory := newProvisionerMaterializer(extensionRegistry)
+	scopeProvisioner, err := factory.provisioner(
+		boundDefinitionForProvisioner(
+			t,
+			"bound system prompt",
+			[]string{
 				"second",
 				"first",
 			},
-		},
+			&tools.ToolRestriction{
+				Deny: []string{},
+			},
+		),
 		false,
 	)
 	if err != nil {
@@ -128,7 +129,7 @@ func TestBuildBoundProvisionerInstallsPoliciesCommonAndSelectedExtensions(
 		t.Fatal(err)
 	}
 	wantInitial := []string{
-		"mount:@goren/subagent/persona",
+		"mount:@goren/subagent/bound-system-prompt",
 		"mount:@goren/subagent/tool-restriction",
 		"install:common",
 		"install:second",
@@ -154,11 +155,9 @@ func TestBuildBoundProvisionerInstallsPoliciesCommonAndSelectedExtensions(
 func TestBuildBoundProvisionerRejectsUnknownSelectionBeforeScopeMutation(
 	t *testing.T,
 ) {
-	owner := newProvisionerService(t, extensionregistry.New())
-	scopeProvisioner, err := owner.children.materializer.provisioner(
-		subagent.BoundConfigSnapshot{
-			Extensions: []string{"missing"},
-		},
+	factory := newProvisionerMaterializer(extensionregistry.New())
+	scopeProvisioner, err := factory.provisioner(
+		boundDefinitionForProvisioner(t, "prompt", []string{"missing"}, nil),
 		false,
 	)
 	if err == nil || scopeProvisioner != nil {
@@ -183,11 +182,9 @@ func TestBoundProvisionerRollsBackCommonWhenSelectedInstallFails(t *testing.T) {
 		sentinel,
 		subagent.WithExtensionName("failing"),
 	)
-	owner := newProvisionerService(t, extensionRegistry)
-	scopeProvisioner, err := owner.children.materializer.provisioner(
-		subagent.BoundConfigSnapshot{
-			Extensions: []string{"failing"},
-		},
+	factory := newProvisionerMaterializer(extensionRegistry)
+	scopeProvisioner, err := factory.provisioner(
+		boundDefinitionForProvisioner(t, "prompt", []string{"failing"}, nil),
 		false,
 	)
 	if err != nil {
@@ -203,6 +200,7 @@ func TestBoundProvisionerRollsBackCommonWhenSelectedInstallFails(t *testing.T) {
 		t.Fatalf("Provision = (%v, %v), want nil, sentinel", acquired, err)
 	}
 	want := []string{
+		"mount:@goren/subagent/bound-system-prompt",
 		"install:common",
 		"install:failing",
 		"uninstall:common",
@@ -214,7 +212,7 @@ func TestBoundProvisionerRollsBackCommonWhenSelectedInstallFails(t *testing.T) {
 
 func registerBoundProvisionerExtension(
 	t *testing.T,
-	registry *extensionregistry.Registry,
+	extensionIndex *extensionregistry.Registry,
 	extensionNameValue string,
 	order *[]string,
 	options ...subagent.ExtensionOption,
@@ -222,7 +220,7 @@ func registerBoundProvisionerExtension(
 	t.Helper()
 	registerBoundProvisionerExtensionWithFailure(
 		t,
-		registry,
+		extensionIndex,
 		extensionNameValue,
 		order,
 		nil,
@@ -230,43 +228,55 @@ func registerBoundProvisionerExtension(
 	)
 }
 
-func newProvisionerService(
-	t *testing.T,
-	registry *extensionregistry.Registry,
-) *Service {
-	t.Helper()
-	owner, err := New(
-		Dependencies{
-			CommonExtensions: extensionregistry.NewProvisioner(registry),
-			Extensions: boundExtensionsRecord{
-				validate: registry.ValidateSelection,
-				provision: func(
-					names []string,
-				) (agent.Provisioner, error) {
-					return extensionregistry.NewSelectedProvisioner(
-						registry,
-						names,
-					)
-				},
+func newProvisionerMaterializer(
+	extensionIndex *extensionregistry.Registry,
+) *materializer {
+	return &materializer{
+		commonExtensions: extensionregistry.NewProvisioner(extensionIndex),
+		extensions: extensionsStub{
+			provision: func(names []string) (agent.Provisioner, error) {
+				return extensionregistry.NewSelectedProvisioner(
+					extensionIndex,
+					names,
+				)
 			},
 		},
+	}
+}
+
+func boundDefinitionForProvisioner(
+	testingContext *testing.T,
+	systemPrompt string,
+	selectedExtensions []string,
+	restriction *tools.ToolRestriction,
+) boundcontract.Definition {
+	testingContext.Helper()
+	definitionValue, err := boundcontract.NewDefinition(
+		boundcontract.Draft{
+			Name:            "researcher",
+			Enabled:         true,
+			SystemPrompt:    systemPrompt,
+			ToolRestriction: restriction,
+			Extensions:      selectedExtensions,
+		},
+		1,
 	)
 	if err != nil {
-		t.Fatal(err)
+		testingContext.Fatal(err)
 	}
-	return owner
+	return definitionValue
 }
 
 func registerBoundProvisionerExtensionWithFailure(
 	t *testing.T,
-	registry *extensionregistry.Registry,
+	extensionIndex *extensionregistry.Registry,
 	extensionNameValue string,
 	order *[]string,
 	installErr error,
 	options ...subagent.ExtensionOption,
 ) {
 	t.Helper()
-	_, err := registry.RegisterExtension(
+	_, err := extensionIndex.RegisterExtension(
 		boundProvisionerExtension{
 			name:  extensionNameValue,
 			order: order,

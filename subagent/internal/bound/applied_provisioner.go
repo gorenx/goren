@@ -6,53 +6,51 @@ import (
 
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/subagent"
-	subagentprojection "github.com/gorenx/goren/subagent/internal/projection"
+	boundcontract "github.com/gorenx/goren/subagent/bound"
 )
 
 func newAppliedProvisioner(
-	parentID session.SessionID,
-	config subagentprojection.BoundConfig,
+	definitionValue boundcontract.Definition,
 ) agent.Provisioner {
 	return &appliedProvisioner{
-		parentID:       parentID,
-		configEventSeq: config.Seq,
-		revision:       config.Revision,
+		definition: definitionValue,
 	}
 }
 
-// appliedProvisioner appends the exact parent config reference while the
-// child Agent is still unpublished. It owns no prompt or Tool composition.
+// appliedProvisioner appends the complete effective Definition while the
+// child Agent is still unpublished.
 type appliedProvisioner struct {
-	parentID       session.SessionID
-	configEventSeq int64
-	revision       int64
+	definition boundcontract.Definition
 }
 
 func (source *appliedProvisioner) Provision(
-	ctx context.Context,
+	requestContext context.Context,
 	target agent.Scope,
 ) (agent.Provisioning, error) {
 	if source == nil || target == nil || target.Agent() == nil ||
 		target.Agent().SessionValue() == nil {
 		return nil, errors.New(
-			"subagent: Bound applied config target is unavailable",
+			"subagent: applied Bound Definition target is unavailable",
 		)
 	}
+	definitionValue, err := boundcontract.SnapshotDefinition(
+		source.definition,
+	)
+	if err != nil {
+		return nil, err
+	}
 	draft, err := session.NewEventDraft(
-		subagent.BoundConfigAppliedEvent,
-		subagent.BoundConfigAppliedData{
-			Version:              subagent.BoundEventVersion,
-			ParentSessionID:      source.parentID,
-			ParentConfigEventSeq: source.configEventSeq,
-			Revision:             source.revision,
+		boundcontract.DefinitionAppliedEvent,
+		boundcontract.DefinitionAppliedData{
+			Version:    boundcontract.EventVersion,
+			Definition: definitionValue,
 		},
 	)
 	if err != nil {
 		return nil, err
 	}
 	return &appliedProvisioning{
-		ctx:          ctx,
+		ctx:          requestContext,
 		conversation: target.Agent().SessionValue(),
 		draft:        draft,
 	}, nil

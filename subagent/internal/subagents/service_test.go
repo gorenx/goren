@@ -13,6 +13,7 @@ import (
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
+	boundcontract "github.com/gorenx/goren/subagent/bound"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
 )
 
@@ -77,68 +78,76 @@ func (*continuableRecord) Start(
 	return nil, nil
 }
 
-type boundRecord struct {
-	*implementationRecord
-	mutex     sync.Mutex
-	command   subagent.BoundStartCommand
-	bindings  map[session.SessionID]bool
-	sendCalls int
-	childID   session.SessionID
-	message   agentmessage.UserMessage
+type boundMessageSpy struct {
+	mutex   sync.Mutex
+	calls   int
+	childID session.SessionID
+	message agentmessage.UserMessage
 }
 
-func (record *boundRecord) Start(
-	_ context.Context,
-	command subagent.BoundStartCommand,
-) (subagent.Execution, error) {
-	record.command = command
+// boundImplementationStub satisfies the complete Bound port so Service tests
+// can isolate cross-mode routing. Bound behavior itself is tested by its owner.
+type boundImplementationStub struct {
+	*implementationRecord
+	// Key is a child Session ID. Value reports whether the owning user Session
+	// has a durable Bound Binding for it.
+	bindings map[session.SessionID]bool
+	messages *boundMessageSpy
+}
+
+func (*boundImplementationStub) List(
+	context.Context,
+) ([]boundcontract.Definition, error) {
 	return nil, nil
 }
 
-func (*boundRecord) StartBindings(context.Context, agent.Agent) error {
+func (*boundImplementationStub) Create(
+	_ context.Context,
+	creation boundcontract.Creation,
+) (boundcontract.Definition, error) {
+	return boundcontract.NewDefinition(creation.Definition, 1)
+}
+
+func (*boundImplementationStub) Replace(
+	_ context.Context,
+	replacement boundcontract.Replacement,
+) (boundcontract.Definition, error) {
+	return boundcontract.NewDefinition(
+		replacement.Definition,
+		replacement.ExpectedRevision+1,
+	)
+}
+
+func (*boundImplementationStub) SessionStarted(agent.Agent) {}
+
+func (*boundImplementationStub) SessionEventAppended(session.EventAppended) {}
+
+func (*boundImplementationStub) AgentDisposed(context.Context, agent.Agent) error {
 	return nil
 }
 
-func (*boundRecord) SessionEventAppended(session.EventAppended) {}
-
-func (*boundRecord) AgentDisposed(context.Context, agent.Agent) error {
-	return nil
-}
-
-func (record *boundRecord) HasBinding(
+func (stub *boundImplementationStub) HasBinding(
 	_ context.Context,
 	_ agent.Agent,
 	childID session.SessionID,
 ) (bool, error) {
-	return record.bindings[childID], nil
+	return stub.bindings[childID], nil
 }
 
-func (record *boundRecord) Send(
+func (stub *boundImplementationStub) Send(
 	_ context.Context,
 	_ agent.Agent,
 	childID session.SessionID,
 	messageValue agentmessage.UserMessage,
 ) (agentmessage.MessageID, error) {
-	record.mutex.Lock()
-	record.sendCalls++
-	record.childID = childID
-	record.message = messageValue
-	record.mutex.Unlock()
+	if stub.messages != nil {
+		stub.messages.mutex.Lock()
+		stub.messages.calls++
+		stub.messages.childID = childID
+		stub.messages.message = messageValue
+		stub.messages.mutex.Unlock()
+	}
 	return messageValue.StableID(), nil
-}
-
-func (*boundRecord) Bind(
-	context.Context,
-	subagent.BindCommand,
-) (subagent.BoundBinding, error) {
-	return subagent.BoundBinding{}, nil
-}
-
-func (*boundRecord) UpdateConfig(
-	context.Context,
-	subagent.UpdateBoundConfigCommand,
-) (subagent.UpdateBoundConfigResult, error) {
-	return subagent.UpdateBoundConfigResult{}, nil
 }
 
 func (record *continuableRecord) Resume(
@@ -233,42 +242,6 @@ func TestServiceCloseStopsAdmissionAndWaitsForAdmittedStart(t *testing.T) {
 	}
 	if !reflect.DeepEqual(actualOrder, wantOrder) {
 		t.Fatalf("close order = %v, want %v", actualOrder, wantOrder)
-	}
-}
-
-func TestServiceStartDispatchesBoundCommand(t *testing.T) {
-	t.Parallel()
-	parentAgent := newServiceAgent(t, "parent", nil)
-	boundMode := &boundRecord{
-		implementationRecord: &implementationRecord{
-			mode: subagent.ModeBound,
-		},
-	}
-	owner := New()
-	if openErr := owner.Open(
-		&agentRegistryRecord{
-			entries: map[session.SessionID]agent.Agent{
-				parentAgent.ID(): parentAgent,
-			},
-		},
-		sharedexecution.NewRegistry(),
-		boundMode,
-	); openErr != nil {
-		t.Fatal(openErr)
-	}
-	command, commandErr := subagent.NewBoundStart(
-		parentAgent,
-		"bound-child",
-	)
-	if commandErr != nil {
-		t.Fatal(commandErr)
-	}
-	if _, startErr := owner.Start(context.Background(), command); startErr != nil {
-		t.Fatal(startErr)
-	}
-	if boundMode.command.Parent() != parentAgent ||
-		boundMode.command.ChildID() != "bound-child" {
-		t.Fatalf("dispatched command = %#v", boundMode.command)
 	}
 }
 
@@ -470,13 +443,15 @@ func TestServiceSendUsesBoundOwnerForColdBinding(t *testing.T) {
 			mode: subagent.ModeContinuable,
 		},
 	}
-	boundMode := &boundRecord{
+	boundMessages := &boundMessageSpy{}
+	boundMode := &boundImplementationStub{
 		implementationRecord: &implementationRecord{
 			mode: subagent.ModeBound,
 		},
 		bindings: map[session.SessionID]bool{
 			"cold-bound": true,
 		},
+		messages: boundMessages,
 	}
 	owner := New()
 	if err := owner.Open(
@@ -503,11 +478,11 @@ func TestServiceSendUsesBoundOwnerForColdBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	boundMode.mutex.Lock()
-	boundCalls := boundMode.sendCalls
-	boundChildID := boundMode.childID
-	boundMessageID := boundMode.message.StableID()
-	boundMode.mutex.Unlock()
+	boundMessages.mutex.Lock()
+	boundCalls := boundMessages.calls
+	boundChildID := boundMessages.childID
+	boundMessageID := boundMessages.message.StableID()
+	boundMessages.mutex.Unlock()
 	continuableMode.mutex.Lock()
 	continuableCalls := continuableMode.resumeCalls
 	continuableMode.mutex.Unlock()
@@ -558,10 +533,12 @@ func TestServiceSendUsesBoundOwnerForResidentChild(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	boundMode := &boundRecord{
+	boundMessages := &boundMessageSpy{}
+	boundMode := &boundImplementationStub{
 		implementationRecord: &implementationRecord{
 			mode: subagent.ModeBound,
 		},
+		messages: boundMessages,
 	}
 	owner := New()
 	if err = owner.Open(agents, executions, boundMode); err != nil {
@@ -583,10 +560,10 @@ func TestServiceSendUsesBoundOwnerForResidentChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	boundMode.mutex.Lock()
-	boundCalls := boundMode.sendCalls
-	boundMessageID := boundMode.message.StableID()
-	boundMode.mutex.Unlock()
+	boundMessages.mutex.Lock()
+	boundCalls := boundMessages.calls
+	boundMessageID := boundMessages.message.StableID()
+	boundMessages.mutex.Unlock()
 	child.mutex.Lock()
 	directFollowups := child.followupCalls
 	child.mutex.Unlock()
@@ -688,6 +665,7 @@ func TestServiceSendReturnsResidentAgentErrorWithoutInterpretingExecutionState(
 }
 
 type agentRegistryRecord struct {
+	// Key is a Session ID. Value is the exact live Agent epoch registered for it.
 	entries map[session.SessionID]agent.Agent
 }
 

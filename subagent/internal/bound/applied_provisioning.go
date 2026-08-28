@@ -16,7 +16,7 @@ type appliedProvisioning struct {
 
 func (acquired *appliedProvisioning) Commit() error {
 	if acquired == nil || acquired.conversation == nil {
-		return errors.New("subagent: Bound applied config is unavailable")
+		return errors.New("subagent: applied Bound Definition is unavailable")
 	}
 	_, err := acquired.conversation.Commit(
 		acquired.ctx,

@@ -72,6 +72,10 @@ const (
 	ErrorSubagentNotResumable        RPCErrorCode = "subagent-not-resumable"
 	ErrorSubagentUnauthorized        RPCErrorCode = "subagent-unauthorized"
 	ErrorSubagentDeliveryUnavailable RPCErrorCode = "subagent-delivery-unavailable"
+	ErrorBoundDefinitionExists       RPCErrorCode = "bound-definition-exists"
+	ErrorBoundDefinitionNotFound     RPCErrorCode = "bound-definition-not-found"
+	ErrorBoundDefinitionConflict     RPCErrorCode = "bound-definition-conflict"
+	ErrorBoundDefinitionRejected     RPCErrorCode = "bound-definition-rejected"
 	ErrorInternal                    RPCErrorCode = "internal"
 )
 

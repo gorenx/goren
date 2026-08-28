@@ -1,15 +1,22 @@
 package bound
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 
+	"github.com/bytedance/sonic"
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 )
+
+var interactionJSONCodec = sonic.Config{
+	UseUnicodeErrors:      true,
+	DisallowUnknownFields: true,
+	CopyString:            true,
+	ValidateString:        true,
+	CaseSensitive:         true,
+}.Froze()
 
 type parentInteraction struct {
 	turn        int64
@@ -237,17 +244,5 @@ func visibleParentContent(
 }
 
 func decodeInteractionJSON(rawValue []byte, target any) error {
-	decoder := json.NewDecoder(bytes.NewReader(rawValue))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return err
-	}
-	var trailing json.RawMessage
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return errors.New("subagent: interaction payload has multiple JSON values")
-		}
-		return err
-	}
-	return nil
+	return interactionJSONCodec.Unmarshal(rawValue, target)
 }

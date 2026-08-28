@@ -7,6 +7,7 @@ import (
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
+	boundcontract "github.com/gorenx/goren/subagent/bound"
 )
 
 func TestNextParentInteractionFoldsOneCompletedDirectUserTurn(t *testing.T) {
@@ -135,27 +136,39 @@ func TestBoundCursorRequiresContiguousPerChildAdvances(t *testing.T) {
 		"question",
 	)
 	appendTurnEnd(t, conversation, 1, session.TurnBlocked{})
-	appendCursor(t, conversation, subagent.BoundCursor{
-		Version:         subagent.BoundEventVersion,
+	appendCursor(t, conversation, boundcontract.Cursor{
+		Version:         boundcontract.EventVersion,
+		Name:            "researcher",
 		ChildSessionID:  "child",
 		PreviousNextSeq: 0,
 		NextSeq:         3,
 		ThroughTurn:     1,
-		Disposition:     subagent.BoundCursorDelivered,
+		Disposition:     boundcontract.CursorDelivered,
 	})
-	nextSeq, err := boundCursor(conversation.Events(), "child", 0)
+	nextSeq, err := boundCursor(
+		conversation.Events(),
+		"researcher",
+		"child",
+		0,
+	)
 	if err != nil || nextSeq != 3 {
 		t.Fatalf("cursor = %d, error = %v", nextSeq, err)
 	}
-	appendCursor(t, conversation, subagent.BoundCursor{
-		Version:         subagent.BoundEventVersion,
+	appendCursor(t, conversation, boundcontract.Cursor{
+		Version:         boundcontract.EventVersion,
+		Name:            "researcher",
 		ChildSessionID:  "child",
 		PreviousNextSeq: 2,
 		NextSeq:         4,
 		ThroughTurn:     2,
-		Disposition:     subagent.BoundCursorSkipped,
+		Disposition:     boundcontract.CursorSkipped,
 	})
-	if _, err = boundCursor(conversation.Events(), "child", 0); err == nil {
+	if _, err = boundCursor(
+		conversation.Events(),
+		"researcher",
+		"child",
+		0,
+	); err == nil {
 		t.Fatal("non-contiguous Bound cursor was accepted")
 	}
 }
@@ -278,10 +291,10 @@ func appendTurnEnd(
 func appendCursor(
 	t *testing.T,
 	conversation session.Context,
-	cursor subagent.BoundCursor,
+	cursor boundcontract.Cursor,
 ) {
 	t.Helper()
-	draft, err := session.NewEventDraft(subagent.BoundCursorEvent, cursor)
+	draft, err := session.NewEventDraft(boundcontract.CursorEvent, cursor)
 	if err != nil {
 		t.Fatal(err)
 	}

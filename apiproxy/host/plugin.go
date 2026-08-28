@@ -24,6 +24,7 @@ import (
 	"github.com/gorenx/goren/session/projectioncache"
 	sessionquery "github.com/gorenx/goren/session/query"
 	sessiontitle "github.com/gorenx/goren/session/title"
+	boundcontract "github.com/gorenx/goren/subagent/bound"
 	"github.com/gorenx/goren/userquestions"
 	"github.com/gorenx/goren/workspace"
 )
@@ -103,6 +104,7 @@ func (owner *Plugin) Manifest() plugin.Manifest {
 			plugin.ServiceOf[userquestions.UserQuestions](),
 			plugin.ServiceOf[workspace.Registry](),
 			plugin.ServiceOf[credentials.Provider](),
+			plugin.ServiceOf[boundcontract.Definitions](),
 		},
 		Optional: []plugin.ServiceType{
 			plugin.ServiceOf[projectioncache.Cache](),
@@ -188,6 +190,10 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 	if err != nil {
 		return err
 	}
+	boundDefinitions, err := plugin.Require[boundcontract.Definitions](owner)
+	if err != nil {
+		return err
+	}
 	listProjection, err := projections.Register(
 		sessionapi.SessionListMetadataUnit(),
 	)
@@ -250,6 +256,7 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 		commandRegistry,
 		models,
 		credentialProvider,
+		boundDefinitions,
 		agents,
 		defaults,
 		owner.deploymentSettings,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -352,6 +353,12 @@ func newIntegrationFixtureWithConfiguration(
 	rootPlugins = append(rootPlugins, configuration.plugins...)
 	subagentPlugin := subagentplugin.New(subagentplugin.Diagnostics{
 		ObserverError: observerErrors.report,
+	}, subagentplugin.DefinitionDatabase{
+		Path: filepath.Join(
+			t.TempDir(),
+			"bound-definitions.sqlite",
+		),
+		JournalMode: subagentplugin.JournalWAL,
 	})
 	rootPlugins = append(
 		rootPlugins,

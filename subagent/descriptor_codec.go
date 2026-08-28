@@ -71,15 +71,13 @@ func (data DescriptorData) MarshalJSON() ([]byte, error) {
 			return nil, errors.New("subagent: invalid Bound descriptor identity")
 		}
 		return json.Marshal(struct {
-			Version  int    `json:"version"`
-			Mode     Mode   `json:"mode"`
-			Provider string `json:"provider"`
-			Label    string `json:"label"`
+			Version int    `json:"version"`
+			Mode    Mode   `json:"mode"`
+			Name    string `json:"name"`
 		}{
-			Version:  DescriptorVersion,
-			Mode:     ModeBound,
-			Provider: identity.Provider,
-			Label:    identity.Label,
+			Version: DescriptorVersion,
+			Mode:    ModeBound,
+			Name:    identity.Name,
 		})
 	case nil:
 		return nil, errors.New("subagent: descriptor value is missing")
@@ -174,10 +172,9 @@ func SnapshotDescriptor(source Descriptor) (DescriptorData, error) {
 		}
 	case BoundDescriptor:
 		normalized = BoundDescriptor{
-			Version:  DescriptorVersion,
-			Mode:     ModeBound,
-			Provider: identity.Provider,
-			Label:    identity.Label,
+			Version: DescriptorVersion,
+			Mode:    ModeBound,
+			Name:    identity.Name,
 		}
 	case nil:
 		return DescriptorData{}, errors.New("subagent: descriptor is required")
@@ -331,27 +328,23 @@ func decodeContinuableDescriptor(
 func decodeBoundDescriptor(
 	fields map[string]json.RawMessage,
 ) (BoundDescriptor, error) {
+	// Key is an accepted Bound descriptor field name. The empty value records
+	// membership only for strict unknown-field rejection.
 	if err := rejectUnknownFields(fields, map[string]struct{}{
-		"version":  {},
-		"mode":     {},
-		"provider": {},
-		"label":    {},
+		"version": {},
+		"mode":    {},
+		"name":    {},
 	}); err != nil {
 		return BoundDescriptor{}, err
 	}
-	establishedName, err := requiredString(fields, "provider")
-	if err != nil {
-		return BoundDescriptor{}, err
-	}
-	labelValue, err := requiredString(fields, "label")
+	definitionName, err := requiredString(fields, "name")
 	if err != nil {
 		return BoundDescriptor{}, err
 	}
 	return BoundDescriptor{
-		Version:  DescriptorVersion,
-		Mode:     ModeBound,
-		Provider: establishedName,
-		Label:    labelValue,
+		Version: DescriptorVersion,
+		Mode:    ModeBound,
+		Name:    definitionName,
 	}, nil
 }
 

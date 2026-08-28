@@ -27,7 +27,9 @@ const snapshot: ConversationSnapshot = {
   creatingSession: false,
   onlineDownlinks: 2,
   composerState: 'composer.ready',
-  credentialLoaded: true,
+	credentialLoaded: true,
+	boundDefinitionsLoaded: true,
+	boundDefinitions: [],
 }
 
 interface ComposerFixture {

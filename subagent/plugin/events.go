@@ -73,14 +73,7 @@ func (owner *Plugin) ObserveEvent(
 			observed.Subject,
 		)
 	case agent.SessionStarted:
-		go func() {
-			if err := owner.service.AgentSessionStarted(
-				context.Background(),
-				observed.Subject,
-			); err != nil {
-				owner.failures.report(err)
-			}
-		}()
+		owner.service.AgentSessionStarted(observed.Subject)
 		return nil
 	case session.EventAppended:
 		owner.service.SessionEventAppended(observed)

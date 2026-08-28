@@ -6,39 +6,42 @@ import (
 	"fmt"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/subagent"
+	boundcontract "github.com/gorenx/goren/subagent/bound"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
 )
 
-func (child *boundChild) handleStart(
+func (child *boundChild) handleAlignment(
 	requestContext context.Context,
-) (subagent.Execution, error) {
+) error {
 	workContext, cancelWork := child.operationContext(requestContext)
 	defer cancelWork()
-	if err := checkContext(workContext, "Bound Start"); err != nil {
-		return nil, err
+	if err := checkContext(workContext, "Bound alignment"); err != nil {
+		return err
 	}
 	if err := child.authorizeParent(); err != nil {
-		return nil, err
+		return err
 	}
 	if err := child.requireDependencies(); err != nil {
-		return nil, err
+		return err
 	}
 	view, err := readBoundProjection(
 		child.projections,
 		child.parent.SessionValue(),
 	)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	binding, found := view.Binding(child.key.childID)
-	if !found {
-		return nil, bindingNotFound(child.key.childID)
+	bindingValue, found := view.BindingNamed(child.key.name)
+	if !found || bindingValue.ChildSessionID != child.key.childID {
+		return bindingNotFound(child.key.childID)
 	}
-	config, found := view.Config(child.key.childID)
+	definitionValue, found := child.definitions.find(child.key.name)
 	if !found {
-		return nil, errors.New("subagent: Bound binding has no config")
+		return fmt.Errorf(
+			"subagent: Bound Binding %q has no Definition",
+			child.key.name,
+		)
 	}
 	current := child.current
 	if current != nil {
@@ -47,95 +50,65 @@ func (child *boundChild) handleStart(
 			child.current = nil
 			current = nil
 		} else if state != subagent.ExecutionActive {
-			return nil, errors.New("subagent: Bound child is stopping")
+			return errors.New("subagent: Bound child is stopping")
 		}
 	}
+	if current != nil &&
+		current.definitionRevision == definitionValue.Revision &&
+		definitionValue.Enabled {
+		return nil
+	}
 	if current != nil {
-		if current.configRevision == config.Revision {
-			if !config.Config.Enabled {
-				return nil, boundDisabled(child.key.childID)
-			}
-			return current.execution, nil
-		}
 		if err = current.execution.StopAndWait(
 			workContext,
 			sharedexecution.StopNormal,
 		); err != nil {
-			return nil, err
+			return err
 		}
 		if child.current == current {
 			child.current = nil
 		}
 	}
-	if !config.Config.Enabled {
-		return nil, boundDisabled(child.key.childID)
+	if !definitionValue.Enabled {
+		return nil
 	}
-	epoch, materializationErr := child.materializer.materialize(
+	handle, materializationErr := child.materializer.materialize(
 		workContext,
 		child.parent,
-		binding,
-		config,
+		bindingValue,
+		definitionValue,
 	)
 	if materializationErr != nil {
-		return nil, child.finishFailedMaterialization(
+		return child.finishFailedMaterialization(
 			workContext,
-			config.Revision,
+			definitionValue.Revision,
 			materializationErr,
 		)
-	}
-	handle := epoch.handle
-	if epoch.initialPromptPending {
-		messageValue, messageErr := agentmessage.NewUserMessage(
-			agentmessage.UserMessageInput{
-				Content: binding.Creation.InitialPrompt,
-				Source:  agentmessage.UserMessageSource{},
-			},
-		)
-		if messageErr != nil {
-			return nil, child.disposeFailedMaterialization(
-				workContext,
-				config.Revision,
-				handle,
-				messageErr,
-			)
-		}
-		if messageErr = handle.Subject.Followup(messageValue); messageErr != nil {
-			return nil, child.disposeFailedMaterialization(
-				workContext,
-				config.Revision,
-				handle,
-				messageErr,
-			)
-		}
 	}
 	if err = child.sessions.Flush(
 		workContext,
 		handle.Subject.SessionValue(),
 	); err != nil {
-		return nil, child.disposeFailedMaterialization(
+		return child.disposeFailedMaterialization(
 			workContext,
-			config.Revision,
+			definitionValue.Revision,
 			handle,
 			err,
 		)
 	}
-	current, err = child.publish(
-		handle,
-		binding.Creation.SeedBuilder,
-		config.Revision,
-	)
+	current, err = child.publish(handle, definitionValue.Revision)
 	if err != nil {
-		return nil, child.disposeFailedMaterialization(
+		return child.disposeFailedMaterialization(
 			workContext,
-			config.Revision,
+			definitionValue.Revision,
 			handle,
 			err,
 		)
 	}
 	if err = child.recordMaterialization(
 		workContext,
-		config.Revision,
-		subagent.BoundMaterializationSucceeded,
+		definitionValue.Revision,
+		boundcontract.MaterializationSucceeded,
 	); err != nil {
 		stopErr := current.execution.StopAndWait(
 			context.WithoutCancel(workContext),
@@ -144,24 +117,23 @@ func (child *boundChild) handleStart(
 		if child.current == current {
 			child.current = nil
 		}
-		return nil, errors.Join(
+		return errors.Join(
 			child.finishFailedMaterialization(
 				workContext,
-				config.Revision,
+				definitionValue.Revision,
 				err,
 			),
 			stopErr,
 		)
 	}
-	child.initializeDelivery(binding, handle.Subject.SessionValue())
+	child.initializeDelivery()
 	child.watch(current)
 	child.notify()
-	return current.execution, nil
+	return nil
 }
 
 func (child *boundChild) publish(
 	handle agent.Handle,
-	seedBuilder string,
 	revision int64,
 ) (*residentEpoch, error) {
 	runID, err := sharedexecution.NewRunID()
@@ -169,10 +141,10 @@ func (child *boundChild) publish(
 		return nil, err
 	}
 	resident := &residentEpoch{
-		owner:          child,
-		handle:         handle,
-		configRevision: revision,
-		seedBuilder:    seedBuilder,
+		owner:              child,
+		handle:             handle,
+		definitionRevision: revision,
+		provider:           string(subagent.ModeBound),
 	}
 	running, err := sharedexecution.New(
 		runID,
@@ -194,7 +166,7 @@ func (child *boundChild) publish(
 			Subject:   handle.Subject,
 			Closing:   handle.ClosingSignal(),
 		},
-		seedBuilder,
+		resident.provider,
 	); err != nil {
 		if child.current == resident {
 			child.current = nil
@@ -204,10 +176,8 @@ func (child *boundChild) publish(
 	return resident, nil
 }
 
-// watch bridges the Agent-owned closing signal into Execution settlement. The
-// Agent lifecycle closes the signal for explicit child disposal and structural
-// parent disposal, so this observer has the same lifetime as the exact child
-// epoch and must outlive the boundChild when parent teardown has begun.
+// watch bridges the Agent-owned closing signal into exact Execution
+// settlement. The signal is guaranteed to close with the epoch.
 func (*boundChild) watch(current *residentEpoch) {
 	go func() {
 		<-current.handle.ClosingSignal()
@@ -228,12 +198,15 @@ func (child *boundChild) handleInterrupt() {
 	)
 }
 
-func (child *boundChild) stopCurrent(ctx context.Context) error {
+func (child *boundChild) stopCurrent(requestContext context.Context) error {
 	current := child.current
 	if current == nil {
 		return nil
 	}
-	err := current.execution.StopAndWait(ctx, sharedexecution.StopModule)
+	err := current.execution.StopAndWait(
+		requestContext,
+		sharedexecution.StopModule,
+	)
 	if child.current == current {
 		child.current = nil
 	}
@@ -242,17 +215,14 @@ func (child *boundChild) stopCurrent(ctx context.Context) error {
 
 func (child *boundChild) authorizeParent() error {
 	if child.parent == nil || child.agents == nil ||
-		!child.agents.Contains(child.parent) {
+		!child.agents.Contains(child.parent) || !isUserAgent(child.parent) {
 		return &subagent.Error{
 			Code: subagent.ErrorUnauthorized,
 			Message: fmt.Sprintf(
-				"Bound operation requires exact live parent Agent %q",
+				"Bound operation requires exact live user Agent %q",
 				child.key.parentID,
 			),
 		}
-	}
-	if child.parent.SessionValue() == nil {
-		return errors.New("subagent: Bound parent Session is unavailable")
 	}
 	return nil
 }
@@ -261,7 +231,8 @@ func (child *boundChild) requireDependencies() error {
 	if err := child.materializer.requireDependencies(); err != nil {
 		return err
 	}
-	if child.sessions == nil || child.executions == nil {
+	if child.sessions == nil || child.executions == nil ||
+		child.definitions == nil {
 		return unavailableDependency("child dependencies")
 	}
 	return nil

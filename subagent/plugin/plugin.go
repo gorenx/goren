@@ -15,7 +15,9 @@ import (
 	sessionprojection "github.com/gorenx/goren/session/projection"
 	"github.com/gorenx/goren/session/projectioncache"
 	"github.com/gorenx/goren/subagent"
+	boundcontract "github.com/gorenx/goren/subagent/bound"
 	"github.com/gorenx/goren/subagent/internal/bound"
+	boundsqlite "github.com/gorenx/goren/subagent/internal/bound/sqlite"
 	"github.com/gorenx/goren/subagent/internal/childdirectory"
 	"github.com/gorenx/goren/subagent/internal/continuable"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
@@ -30,27 +32,50 @@ import (
 type Plugin struct {
 	pluginruntime.Base
 
-	builders    *seedbuilder.Registry
-	service     *subagents.Service
-	executions  *sharedexecution.Registry
-	extensions  *extensionregistry.Registry
-	directory   *childdirectory.Service
-	events      *eventPublisher
-	projections []sessionprojection.UnitHandle
-	failures    *failureReporter
+	definitionDatabase DefinitionDatabase
+	builders           *seedbuilder.Registry
+	service            *subagents.Service
+	executions         *sharedexecution.Registry
+	extensions         *extensionregistry.Registry
+	directory          *childdirectory.Service
+	events             *eventPublisher
+	projections        []sessionprojection.UnitHandle
+	failures           *failureReporter
 }
 
+// DefinitionDatabase identifies the private SQLite database used for global
+// Bound Definitions. Validation of user configuration remains Factory-owned.
+type DefinitionDatabase struct {
+	Path        string
+	JournalMode JournalMode
+}
+
+// JournalMode selects the SQLite journaling strategy for the independent
+// Bound Definition database.
+type JournalMode string
+
+const (
+	JournalWAL      JournalMode = "wal"
+	JournalDelete   JournalMode = "delete"
+	JournalTruncate JournalMode = "truncate"
+	JournalPersist  JournalMode = "persist"
+)
+
 // New constructs an inactive Plugin and its stable publication adapters.
-func New(failureReporting Diagnostics) *Plugin {
+func New(
+	failureReporting Diagnostics,
+	database DefinitionDatabase,
+) *Plugin {
 	reporter := failureReporting.ObserverError
 	if reporter == nil {
 		reporter = func(error) {}
 	}
 	owner := &Plugin{
-		service:    subagents.New(),
-		executions: sharedexecution.NewRegistry(),
-		extensions: extensionregistry.New(),
-		directory:  childdirectory.New(),
+		definitionDatabase: database,
+		service:            subagents.New(),
+		executions:         sharedexecution.NewRegistry(),
+		extensions:         extensionregistry.New(),
+		directory:          childdirectory.New(),
 		failures: &failureReporter{
 			report: reporter,
 		},
@@ -73,7 +98,7 @@ func (owner *Plugin) Manifest() pluginruntime.Manifest {
 			pluginruntime.NewProvidedService[subagent.ChildControl](owner.service),
 			pluginruntime.NewProvidedService[subagent.ExtensionRegistry](owner.extensions),
 			pluginruntime.NewProvidedService[subagent.ChildDirectory](owner.directory),
-			pluginruntime.NewProvidedService[subagent.BoundRegistry](owner.service),
+			pluginruntime.NewProvidedService[boundcontract.Definitions](owner.service),
 		},
 		Requires: []pluginruntime.ServiceType{
 			pluginruntime.ServiceOf[agent.Registry](),
@@ -129,6 +154,29 @@ func (owner *Plugin) Apply(ctx context.Context) error {
 		return err
 	}
 	checkpointCache, _ := pluginruntime.Resolve[projectioncache.Cache](owner)
+	if owner.definitionDatabase.Path == "" {
+		return errors.New(
+			"subagent: Plugin requires a Bound Definition database path",
+		)
+	}
+	definitionStore, err := boundsqlite.Open(
+		ctx,
+		boundsqlite.Config{
+			Path: owner.definitionDatabase.Path,
+			JournalMode: boundsqlite.JournalMode(
+				owner.definitionDatabase.JournalMode,
+			),
+		},
+	)
+	if err != nil {
+		return err
+	}
+	definitionStoreTransferred := false
+	defer func() {
+		if !definitionStoreTransferred {
+			_ = definitionStore.Close(context.WithoutCancel(ctx))
+		}
+	}()
 	commonExtensions := extensionregistry.NewProvisioner(owner.extensions)
 	if err := owner.registerProjections(projectionRegistry); err != nil {
 		return err
@@ -185,13 +233,14 @@ func (owner *Plugin) Apply(ctx context.Context) error {
 		)
 	}
 	boundService, err := bound.New(
+		ctx,
 		bound.Dependencies{
 			Agents:           agentRegistry,
 			Constructor:      agentConstructor,
 			Sessions:         liveSessions,
 			Persistence:      sessionPersistence,
 			Projections:      projectionRegistry,
-			SeedBuilders:     owner.builders,
+			Definitions:      definitionStore,
 			Delegation:       approvalService,
 			CommonExtensions: commonExtensions,
 			Extensions: boundExtensions{
@@ -209,6 +258,7 @@ func (owner *Plugin) Apply(ctx context.Context) error {
 			owner.releaseProjections(context.WithoutCancel(ctx)),
 		)
 	}
+	definitionStoreTransferred = true
 	err = owner.service.Open(
 		agentRegistry,
 		owner.executions,
@@ -217,9 +267,11 @@ func (owner *Plugin) Apply(ctx context.Context) error {
 		boundService,
 	)
 	if err != nil {
+		boundErr := boundService.Close(context.WithoutCancel(ctx))
 		owner.directory.Disable()
 		return errors.Join(
 			err,
+			boundErr,
 			owner.releaseProjections(context.WithoutCancel(ctx)),
 		)
 	}

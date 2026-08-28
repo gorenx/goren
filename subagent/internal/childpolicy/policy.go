@@ -12,12 +12,13 @@ import (
 type PolicySet struct {
 	Delegation      approval.DelegationPolicy
 	Persona         *string
+	SystemPrompt    *string
 	ToolRestriction *tools.ToolRestriction
 }
 
 // Plugins builds the child-scoped policy adapters in deterministic order.
 func Plugins(selected PolicySet) []plugin.Plugin {
-	instances := make([]plugin.Plugin, 0, 3)
+	instances := make([]plugin.Plugin, 0, 4)
 	if selected.Delegation != nil {
 		instances = append(
 			instances,
@@ -28,6 +29,12 @@ func Plugins(selected PolicySet) []plugin.Plugin {
 	}
 	if selected.Persona != nil {
 		instances = append(instances, newPersona(*selected.Persona))
+	}
+	if selected.SystemPrompt != nil {
+		instances = append(
+			instances,
+			newBoundSystemPrompt(*selected.SystemPrompt),
+		)
 	}
 	if selected.ToolRestriction != nil {
 		instances = append(

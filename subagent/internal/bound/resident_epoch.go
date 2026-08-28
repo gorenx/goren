@@ -10,13 +10,13 @@ import (
 )
 
 // residentEpoch is one published Bound child Agent epoch and its common
-// Execution under one applied config revision.
+// Execution under one applied Definition revision.
 type residentEpoch struct {
-	owner          *boundChild
-	handle         agent.Handle
-	execution      *sharedexecution.Execution
-	configRevision int64
-	seedBuilder    string
+	owner              *boundChild
+	handle             agent.Handle
+	execution          *sharedexecution.Execution
+	definitionRevision int64
+	provider           string
 }
 
 // Terminate settles this exact resident epoch and releases its Agent Handle.
@@ -65,7 +65,7 @@ func (resident *residentEpoch) Terminate(
 			resident.owner.parent,
 			subagent.Ended{
 				RunID:      resident.execution.RunID(),
-				Provider:   resident.seedBuilder,
+				Provider:   resident.provider,
 				ID:         resident.handle.Subject.ID(),
 				Local:      true,
 				StopReason: stopReason,

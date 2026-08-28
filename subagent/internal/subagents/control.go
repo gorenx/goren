@@ -16,8 +16,10 @@ import (
 // structural Agent-disposal routing. It does not own module admission or any
 // mode's config and lifecycle decisions.
 type childExecutionControl struct {
-	agents      agent.Registry
-	executions  *sharedexecution.Registry
+	agents     agent.Registry
+	executions *sharedexecution.Registry
+	// Key is a canonical Subagent mode. Value is its complete implementation
+	// for the current open Service cycle.
 	modes       map[subagent.Mode]implementation
 	continuable continuable
 	bound       bound

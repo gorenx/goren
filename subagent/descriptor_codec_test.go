@@ -48,8 +48,7 @@ func TestSnapshotDescriptorNormalizesAndDetachesVariants(t *testing.T) {
 	}
 
 	boundData, err := SnapshotDescriptor(BoundDescriptor{
-		Provider: "spawn",
-		Label:    "resident",
+		Name: "resident",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -58,7 +57,7 @@ func TestSnapshotDescriptorNormalizesAndDetachesVariants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(boundRaw) != `{"version":2,"mode":"bound","provider":"spawn","label":"resident"}` {
+	if string(boundRaw) != `{"version":2,"mode":"bound","name":"resident"}` {
 		t.Fatalf("Bound descriptor = %s", boundRaw)
 	}
 }
