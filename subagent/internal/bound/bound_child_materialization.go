@@ -9,42 +9,30 @@ import (
 	"github.com/gorenx/goren/subagent"
 )
 
-func (owner *Service) finishFailedMaterialization(
+func (child *boundChild) finishFailedMaterialization(
 	ctx context.Context,
-	parentAgent agent.Agent,
-	childID session.SessionID,
 	revision int64,
 	materializationErr error,
 ) error {
-	owner.reportMaterializationFailure(
-		parentAgent.ID(),
-		childID,
-		materializationErr,
-	)
-	stateErr := owner.recordMaterialization(
+	child.reportMaterializationFailure(materializationErr)
+	stateErr := child.recordMaterialization(
 		context.WithoutCancel(ctx),
-		parentAgent,
-		childID,
 		revision,
 		subagent.BoundMaterializationFailed,
 	)
 	return errors.Join(materializationErr, stateErr)
 }
 
-func (owner *Service) disposeFailedMaterialization(
+func (child *boundChild) disposeFailedMaterialization(
 	ctx context.Context,
-	parentAgent agent.Agent,
-	childID session.SessionID,
 	revision int64,
 	handle agent.Handle,
 	materializationErr error,
 ) error {
 	disposeErr := handle.Dispose(context.WithoutCancel(ctx))
 	return errors.Join(
-		owner.finishFailedMaterialization(
+		child.finishFailedMaterialization(
 			ctx,
-			parentAgent,
-			childID,
 			revision,
 			materializationErr,
 		),
@@ -52,10 +40,8 @@ func (owner *Service) disposeFailedMaterialization(
 	)
 }
 
-func (owner *Service) recordMaterialization(
+func (child *boundChild) recordMaterialization(
 	ctx context.Context,
-	parentAgent agent.Agent,
-	childID session.SessionID,
 	revision int64,
 	result subagent.BoundMaterializationResult,
 ) error {
@@ -63,7 +49,7 @@ func (owner *Service) recordMaterialization(
 		subagent.BoundMaterializationEvent,
 		subagent.BoundMaterializationData{
 			Version:        subagent.BoundEventVersion,
-			ChildSessionID: childID,
+			ChildSessionID: child.key.childID,
 			ConfigRevision: revision,
 			Result:         result,
 		},
@@ -71,30 +57,28 @@ func (owner *Service) recordMaterialization(
 	if err != nil {
 		return err
 	}
-	if _, err = parentAgent.SessionValue().Commit(
+	if _, err = child.parent.SessionValue().Commit(
 		ctx,
 		session.Batch(draft),
 	); err != nil {
 		return err
 	}
-	return owner.dependencies.Sessions.Flush(
+	return child.sessions.Flush(
 		ctx,
-		parentAgent.SessionValue(),
+		child.parent.SessionValue(),
 	)
 }
 
-func (owner *Service) reportMaterializationFailure(
-	parentID session.SessionID,
-	childID session.SessionID,
+func (child *boundChild) reportMaterializationFailure(
 	materializationErr error,
 ) {
-	if owner.dependencies.Failures == nil {
+	if child.failures == nil {
 		return
 	}
-	owner.dependencies.Failures.ReportBoundMaterializationFailure(
+	child.failures.ReportBoundMaterializationFailure(
 		MaterializationFailure{
-			ParentID: parentID,
-			ChildID:  childID,
+			ParentID: child.key.parentID,
+			ChildID:  child.key.childID,
 			Error:    materializationErr,
 		},
 	)

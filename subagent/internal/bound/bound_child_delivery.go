@@ -4,35 +4,36 @@ import (
 	"context"
 	"errors"
 
-	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/subagent"
 )
 
-func (delivery *interactionDelivery) catchUp() error {
+func (child *boundChild) catchUpInteractions() error {
+	if !child.deliveryReady {
+		return nil
+	}
 	for {
-		advanced, err := delivery.advanceOne()
+		advanced, err := child.advanceInteraction()
 		if err != nil || !advanced {
 			return err
 		}
 	}
 }
 
-func (delivery *interactionDelivery) advanceOne() (bool, error) {
-	if err := context.Cause(delivery.ctx); err != nil {
+func (child *boundChild) advanceInteraction() (bool, error) {
+	if err := context.Cause(child.ctx); err != nil {
 		return false, nil
 	}
-	if delivery.parent == nil || delivery.parent.SessionValue() == nil ||
-		delivery.owner.agents == nil ||
-		!delivery.owner.agents.Contains(delivery.parent) {
+	if child.parent == nil || child.parent.SessionValue() == nil ||
+		child.agents == nil || !child.agents.Contains(child.parent) {
 		return false, nil
 	}
-	parentSession := delivery.parent.SessionValue()
+	parentSession := child.parent.SessionValue()
 	snapshot := parentSession.Snapshot()
 	nextSeq, err := boundCursor(
 		snapshot.Events,
-		delivery.key.childID,
-		delivery.floor,
+		child.key.childID,
+		child.floor,
 	)
 	if err != nil {
 		return false, err
@@ -41,32 +42,30 @@ func (delivery *interactionDelivery) advanceOne() (bool, error) {
 	if err != nil || !found {
 		return false, err
 	}
-	if delivery.owner.sessions == nil {
+	if child.sessions == nil {
 		return false, unavailableDependency("Session LiveStore")
 	}
-	if err = delivery.owner.sessions.Flush(
-		delivery.ctx,
+	if err = child.sessions.Flush(
+		child.ctx,
 		parentSession,
 	); err != nil {
 		return false, err
 	}
-	delivery.slot.mutex.Lock()
-	defer delivery.slot.mutex.Unlock()
-	current, enabled, err := delivery.currentExecution()
+	current, enabled, err := child.interactionExecution()
 	if err != nil || !enabled {
 		return false, err
 	}
 	disposition := subagent.BoundCursorSkipped
 	if interaction.deliverable {
 		source := subagent.Delivery{
-			ParentSessionID: delivery.key.parentID,
+			ParentSessionID: child.key.parentID,
 			Turn:            interaction.turn,
 			FromSeq:         interaction.fromSeq,
 			ThroughSeq:      interaction.nextSeq - 1,
 			Outcome:         interaction.outcome,
 		}
 		count, receiptErr := countReceipts(
-			current.terminator.handle.Subject.SessionValue(),
+			current.handle.Subject.SessionValue(),
 			source,
 		)
 		if receiptErr != nil {
@@ -82,25 +81,25 @@ func (delivery *interactionDelivery) advanceOne() (bool, error) {
 			if messageErr != nil {
 				return false, messageErr
 			}
-			if messageErr = current.terminator.handle.Subject.Followup(
+			if messageErr = current.handle.Subject.Followup(
 				messageValue,
 			); messageErr != nil {
 				return false, messageErr
 			}
 		}
-		if err = delivery.owner.sessions.Flush(
-			delivery.ctx,
-			current.terminator.handle.Subject.SessionValue(),
+		if err = child.sessions.Flush(
+			child.ctx,
+			current.handle.Subject.SessionValue(),
 		); err != nil {
 			return false, err
 		}
 		disposition = subagent.BoundCursorDelivered
 	}
 	_, err = parentSession.Commit(
-		delivery.ctx,
+		child.ctx,
 		cursorAdvance{
-			childID:     delivery.key.childID,
-			floor:       delivery.floor,
+			childID:     child.key.childID,
+			floor:       child.floor,
 			expected:    nextSeq,
 			interaction: interaction,
 			disposition: disposition,
@@ -109,8 +108,8 @@ func (delivery *interactionDelivery) advanceOne() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if err = delivery.owner.sessions.Flush(
-		delivery.ctx,
+	if err = child.sessions.Flush(
+		child.ctx,
 		parentSession,
 	); err != nil {
 		return false, err
@@ -118,30 +117,42 @@ func (delivery *interactionDelivery) advanceOne() (bool, error) {
 	return true, nil
 }
 
-func (delivery *interactionDelivery) currentExecution() (
-	*currentExecution,
+func (child *boundChild) interactionExecution() (
+	*residentEpoch,
 	bool,
 	error,
 ) {
 	view, err := readBoundProjection(
-		delivery.owner.projections,
-		delivery.parent.SessionValue(),
+		child.projections,
+		child.parent.SessionValue(),
 	)
 	if err != nil {
 		return nil, false, err
 	}
-	config, found := view.Config(delivery.key.childID)
+	config, found := view.Config(child.key.childID)
 	if !found {
 		return nil, false, errors.New("subagent: Bound binding has no config")
 	}
 	if !config.Config.Enabled {
 		return nil, false, nil
 	}
-	current := delivery.slot.loadCurrent()
-	if current == nil || current.running.State() != subagent.ExecutionActive ||
-		current.revision != config.Revision ||
-		!agent.Same(current.terminator.parent, delivery.parent) {
+	current := child.current
+	if current == nil || current.execution.State() != subagent.ExecutionActive ||
+		current.configRevision != config.Revision {
 		return nil, false, nil
 	}
 	return current, true, nil
+}
+
+func (child *boundChild) reportInteractionFailure(err error) {
+	if child.failures == nil || err == nil {
+		return
+	}
+	child.failures.ReportBoundInteractionFailure(
+		InteractionFailure{
+			ParentID: child.key.parentID,
+			ChildID:  child.key.childID,
+			Error:    err,
+		},
+	)
 }

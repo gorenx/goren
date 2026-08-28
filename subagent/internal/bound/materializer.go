@@ -17,9 +17,10 @@ import (
 	"github.com/gorenx/goren/tools"
 )
 
-// materializer owns Bound Agent construction and restoration policy. Service
-// selects a committed binding and serializes its use case; materializer owns
-// descriptor validation, seed construction, and scoped provisioning.
+// materializer owns Bound Agent construction and restoration policy. A
+// boundChild selects a committed binding and serializes its use cases;
+// materializer owns descriptor validation, seed construction, and scoped
+// provisioning.
 type materializer struct {
 	constructor      agent.Constructor
 	persistence      sesspersist.Persistence
@@ -29,12 +30,19 @@ type materializer struct {
 	extensions       Extensions
 }
 
+// childEpoch is one materialized Bound Agent epoch together with the recovery
+// state needed before it can be published as a resident execution.
+type childEpoch struct {
+	handle               agent.Handle
+	initialPromptPending bool
+}
+
 func (factory *materializer) materialize(
 	ctx context.Context,
 	parentAgent agent.Agent,
 	binding subagentprojection.BoundBinding,
 	config subagentprojection.BoundConfig,
-) (agent.Handle, bool, error) {
+) (childEpoch, error) {
 	inspection, err := factory.persistence.Inspect(
 		ctx,
 		binding.ChildSessionID,
@@ -47,11 +55,17 @@ func (factory *materializer) materialize(
 			config,
 			inspection,
 		)
-		return handle, !hasSubmittedMessage(inspection), resumeErr
+		if resumeErr != nil {
+			return childEpoch{}, resumeErr
+		}
+		return childEpoch{
+			handle:               handle,
+			initialPromptPending: !hasSubmittedMessage(inspection),
+		}, nil
 	}
 	var notFound *sesspersist.NotFoundError
 	if !errors.As(err, &notFound) {
-		return agent.Handle{}, false, err
+		return childEpoch{}, err
 	}
 	handle, createErr := factory.create(
 		ctx,
@@ -59,7 +73,13 @@ func (factory *materializer) materialize(
 		binding,
 		config,
 	)
-	return handle, true, createErr
+	if createErr != nil {
+		return childEpoch{}, createErr
+	}
+	return childEpoch{
+		handle:               handle,
+		initialPromptPending: true,
+	}, nil
 }
 
 func (factory *materializer) create(

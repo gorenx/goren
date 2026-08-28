@@ -72,14 +72,11 @@ type Dependencies struct {
 	Failures         FailureReporter
 }
 
-// Service orchestrates Bound use cases through the materialization policy,
-// binding state slots, and interaction delivery supervisor.
+// Service validates Bound use-case inputs and routes child work to one actor
+// per exact parent-child binding.
 type Service struct {
 	dependencies Dependencies
-	materializer materializer
-	bindings     *bindingSlots
-	residents    *residentExecutions
-	interactions *deliverySupervisor
+	children     *boundChildRegistry
 }
 
 // New constructs the Bound mode service.
@@ -89,21 +86,17 @@ func New(dependencySet Dependencies) (*Service, error) {
 			"subagent: Bound requires Extension selection",
 		)
 	}
-	bindings := newBindingSlots()
-	interactions := newDeliverySupervisor(dependencySet)
+	factory := &materializer{
+		constructor:      dependencySet.Constructor,
+		persistence:      dependencySet.Persistence,
+		seedBuilders:     dependencySet.SeedBuilders,
+		delegation:       dependencySet.Delegation,
+		commonExtensions: dependencySet.CommonExtensions,
+		extensions:       dependencySet.Extensions,
+	}
 	return &Service{
 		dependencies: dependencySet,
-		materializer: materializer{
-			constructor:      dependencySet.Constructor,
-			persistence:      dependencySet.Persistence,
-			seedBuilders:     dependencySet.SeedBuilders,
-			delegation:       dependencySet.Delegation,
-			commonExtensions: dependencySet.CommonExtensions,
-			extensions:       dependencySet.Extensions,
-		},
-		bindings:     bindings,
-		residents:    newResidentExecutions(dependencySet, bindings),
-		interactions: interactions,
+		children:     newBoundChildRegistry(dependencySet, factory),
 	}, nil
 }
 
@@ -118,19 +111,21 @@ func (owner *Service) SessionEventAppended(fact session.EventAppended) {
 	if owner == nil {
 		return
 	}
-	owner.interactions.sessionEventAppended(fact)
+	if fact.Conversation == nil || fact.Committed.Type != session.TurnEndEventName {
+		return
+	}
+	owner.children.notifyParent(fact.Conversation.ID())
 }
 
 // AgentDisposed stops deliveries owned by the exact parent Agent epoch.
 func (owner *Service) AgentDisposed(
-	_ context.Context,
+	ctx context.Context,
 	subject agent.Agent,
 ) error {
 	if owner == nil {
 		return nil
 	}
-	owner.interactions.agentDisposed(subject)
-	return nil
+	return owner.children.agentDisposed(ctx, subject)
 }
 
 func (owner *Service) authorizeParent(parentAgent agent.Agent) error {
@@ -163,4 +158,21 @@ func checkContext(ctx context.Context, operationName string) error {
 
 func unavailableDependency(dependencyName string) error {
 	return fmt.Errorf("subagent: Bound %s is unavailable", dependencyName)
+}
+
+func (owner *Service) reportMaterializationFailure(
+	parentID session.SessionID,
+	childID session.SessionID,
+	materializationErr error,
+) {
+	if owner.dependencies.Failures == nil {
+		return
+	}
+	owner.dependencies.Failures.ReportBoundMaterializationFailure(
+		MaterializationFailure{
+			ParentID: parentID,
+			ChildID:  childID,
+			Error:    materializationErr,
+		},
+	)
 }
