@@ -1,24 +1,23 @@
 package session
 
 import (
-	"sync"
-
 	"github.com/gorenx/goren/agentmessage"
 )
 
 // coordinator is the single ordering and lifecycle facade for one Session.
 // Consumers receive only Context; the log and queue never escape.
 type coordinator struct {
-	log   *log
-	queue requestQueue
-
-	lifecycleMutex sync.RWMutex
-	membership     *registration
+	log             *log
+	queue           requestQueue
+	machine         lifecycleMachine
+	store           *memoryStore
+	terminalAttempt *releaseAttempt
 }
 
 func newCoordinator(sessionLog *log) *coordinator {
 	return &coordinator{
-		log: sessionLog,
+		log:     sessionLog,
+		machine: newLifecycleMachine(),
 	}
 }
 
@@ -75,27 +74,9 @@ func (owner *coordinator) DeriveMessages() ([]agentmessage.Message, error) {
 	return owner.log.DeriveMessages()
 }
 
-func (owner *coordinator) currentMembership() *registration {
-	owner.lifecycleMutex.RLock()
-	current := owner.membership
-	owner.lifecycleMutex.RUnlock()
-	return current
-}
-
-func (owner *coordinator) attach(candidate *registration) bool {
-	owner.lifecycleMutex.Lock()
-	defer owner.lifecycleMutex.Unlock()
-	if owner.membership != nil {
-		return false
-	}
-	owner.membership = candidate
-	return true
-}
-
-func (owner *coordinator) detach(candidate *registration) {
-	owner.lifecycleMutex.Lock()
-	if owner.membership == candidate {
-		owner.membership = nil
-	}
-	owner.lifecycleMutex.Unlock()
+func (owner *coordinator) visible() bool {
+	owner.queue.mutex.Lock()
+	businessVisible := owner.machine.visible()
+	owner.queue.mutex.Unlock()
+	return businessVisible
 }

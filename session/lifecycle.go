@@ -28,7 +28,7 @@ type LiveStore interface {
 	List() []Context
 }
 
-// Handle owns one live Session membership.
+// Handle is the exact lifecycle capability returned by Store entry.
 type Handle interface {
 	Session() Context
 	Release(context.Context) error

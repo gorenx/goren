@@ -21,16 +21,15 @@ type restoredProjection struct {
 
 // CachedSnapshot returns only version-compatible in-memory values and performs
 // no Session-log or checkpoint-store I/O.
-func (owner *CheckpointCache) CachedSnapshot(
+func (owner *Coordinator) CachedSnapshot(
 	metadata session.Header,
 ) (*sessproj.Snapshot, error) {
-	owner.mutex.Lock()
-	if owner.state != cacheOpen {
-		owner.mutex.Unlock()
-		return nil, ErrClosed
+	checkpoint, leave, err := owner.enterSession(metadata.ID)
+	if err != nil {
+		return nil, err
 	}
-	record, found := owner.records[metadata.ID]
-	owner.mutex.Unlock()
+	defer leave()
+	record, found := checkpoint.record.snapshot()
 	if !found || !identityMatchesHeader(record.Identity, metadata) {
 		return nil, nil
 	}
@@ -60,7 +59,7 @@ func (owner *CheckpointCache) CachedSnapshot(
 
 // ColdSnapshot proves a current projection from durable Session facts, using a
 // compatible checkpoint only to reduce the suffix that must be folded.
-func (owner *CheckpointCache) ColdSnapshot(
+func (owner *Coordinator) ColdSnapshot(
 	requestContext context.Context,
 	identifier session.SessionID,
 ) (sessproj.Snapshot, error) {
@@ -70,14 +69,13 @@ func (owner *CheckpointCache) ColdSnapshot(
 	if err := requestContext.Err(); err != nil {
 		return sessproj.Snapshot{}, err
 	}
-	if err := owner.beginOperation(); err != nil {
+	checkpoint, leave, err := owner.enterSession(identifier)
+	if err != nil {
 		return sessproj.Snapshot{}, err
 	}
-	defer owner.inflight.Done()
+	defer leave()
 
-	owner.mutex.Lock()
-	record, found := owner.records[identifier]
-	owner.mutex.Unlock()
+	record, found := checkpoint.record.snapshot()
 	rows := record.Rows
 	floor := owner.projections.RestoreFloor(rows)
 	if floor == nil {
@@ -91,35 +89,35 @@ func (owner *CheckpointCache) ColdSnapshot(
 	)
 	if err != nil {
 		if found {
-			return owner.restoreAll(requestContext, identifier)
+			return owner.restoreAll(requestContext, checkpoint)
 		}
 		return sessproj.Snapshot{}, err
 	}
 	if found && !identityMatchesHeader(record.Identity, restored.Header) {
-		return owner.restoreAll(requestContext, identifier)
+		return owner.restoreAll(requestContext, checkpoint)
 	}
-	owner.writeBack(requestContext, restored.Header, restored.Checkpoint)
+	owner.writeBack(requestContext, checkpoint, restored.Header, restored.Checkpoint)
 	return restored.Snapshot, nil
 }
 
-func (owner *CheckpointCache) restoreAll(
+func (owner *Coordinator) restoreAll(
 	requestContext context.Context,
-	identifier session.SessionID,
+	checkpoint *sessionCache,
 ) (sessproj.Snapshot, error) {
 	restored, err := owner.restorePages(
 		requestContext,
-		identifier,
+		checkpoint.identifier,
 		nil,
 		0,
 	)
 	if err != nil {
 		return sessproj.Snapshot{}, err
 	}
-	owner.writeBack(requestContext, restored.Header, restored.Checkpoint)
+	owner.writeBack(requestContext, checkpoint, restored.Header, restored.Checkpoint)
 	return restored.Snapshot, nil
 }
 
-func (owner *CheckpointCache) restorePages(
+func (owner *Coordinator) restorePages(
 	requestContext context.Context,
 	identifier session.SessionID,
 	checkpoint sessproj.Checkpoint,
@@ -170,7 +168,7 @@ func (owner *CheckpointCache) restorePages(
 	}
 }
 
-func (owner *CheckpointCache) probeEmptySnapshot(
+func (owner *Coordinator) probeEmptySnapshot(
 	requestContext context.Context,
 	identifier session.SessionID,
 ) (sessproj.Snapshot, error) {
@@ -194,12 +192,19 @@ func (owner *CheckpointCache) probeEmptySnapshot(
 	}, nil
 }
 
-func (owner *CheckpointCache) writeBack(
+func (owner *Coordinator) writeBack(
 	requestContext context.Context,
+	checkpoint *sessionCache,
 	metadata session.Header,
 	rows sessproj.Checkpoint,
 ) {
-	if err := owner.replaceCheckpoint(requestContext, metadata, rows); err != nil {
+	if err := checkpoint.record.replace(
+		requestContext,
+		CheckpointRecord{
+			Identity: identityOf(metadata),
+			Rows:     rows,
+		},
+	); err != nil {
 		owner.report(Failure{
 			SessionID: metadata.ID,
 			Operation: "cold checkpoint write-back",
@@ -208,69 +213,15 @@ func (owner *CheckpointCache) writeBack(
 	}
 }
 
-func (owner *CheckpointCache) replaceCheckpoint(
-	requestContext context.Context,
-	metadata session.Header,
-	rows sessproj.Checkpoint,
-) error {
-	return owner.replaceRecord(
-		requestContext,
-		metadata.ID,
-		CheckpointRecord{
-			Identity: identityOf(metadata),
-			Rows:     rows,
-		},
-	)
-}
-
-func (owner *CheckpointCache) replaceRecord(
+func (owner *Coordinator) replaceRecord(
 	requestContext context.Context,
 	identifier session.SessionID,
 	record CheckpointRecord,
 ) error {
-	validated, err := ValidateCheckpointRecord(identifier, record)
+	checkpoint, leave, err := owner.enterSession(identifier)
 	if err != nil {
 		return err
 	}
-	lock := owner.recordLock(identifier)
-	lock.Lock()
-	defer lock.Unlock()
-	owner.mutex.Lock()
-	current, found := owner.records[identifier]
-	if found && sameIdentity(current.Identity, validated.Identity) {
-		if checkpointDominates(current.Rows, validated.Rows) {
-			owner.mutex.Unlock()
-			return nil
-		}
-		for projectionKey, row := range current.Rows {
-			if _, replaced := validated.Rows[projectionKey]; !replaced {
-				validated.Rows[projectionKey] = row
-			}
-		}
-	}
-	store := owner.store
-	owner.mutex.Unlock()
-	if err := store.Replace(requestContext, identifier, validated); err != nil {
-		return err
-	}
-	owner.mutex.Lock()
-	if owner.state == cacheOpen || owner.state == cacheClosing {
-		owner.records[identifier] = validated
-	}
-	owner.mutex.Unlock()
-	return nil
-}
-
-func checkpointDominates(
-	current sessproj.Checkpoint,
-	candidate sessproj.Checkpoint,
-) bool {
-	for projectionKey, candidateRow := range candidate {
-		currentRow, found := current[projectionKey]
-		if !found || currentRow.Version != candidateRow.Version ||
-			currentRow.Seq < candidateRow.Seq {
-			return false
-		}
-	}
-	return true
+	defer leave()
+	return checkpoint.record.replace(requestContext, record)
 }

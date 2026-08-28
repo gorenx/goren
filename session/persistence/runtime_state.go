@@ -10,7 +10,7 @@ import (
 
 // durableSessions owns durable cursors and their optional exact live owner.
 // Callers serialize mutations through sessionGates; the internal lock protects
-// only membership and pointer publication.
+// only ID indexing and pointer publication.
 type durableSessions struct {
 	mutex   sync.Mutex
 	entries map[session.SessionID]*durableState
@@ -30,14 +30,6 @@ func (registry *durableSessions) Get(identifier session.SessionID) (*durableStat
 func (registry *durableSessions) Put(identifier session.SessionID, entry *durableState) {
 	registry.mutex.Lock()
 	registry.entries[identifier] = entry
-	registry.mutex.Unlock()
-}
-
-func (registry *durableSessions) DeleteOwned(identifier session.SessionID, conversation session.Context) {
-	registry.mutex.Lock()
-	if entry := registry.entries[identifier]; entry != nil && entry.owner == conversation {
-		delete(registry.entries, identifier)
-	}
 	registry.mutex.Unlock()
 }
 

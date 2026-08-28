@@ -8,7 +8,8 @@ import (
 )
 
 // Plugin adapts one MemoryStore to the Plugin Runtime. It owns only the
-// Service binding and Session event source; the Store owns Session state.
+// Plugin adapts the business Store to Runtime service binding and event
+// publication. Per-Session state belongs to lifecycleMachine.
 type Plugin struct {
 	plugin.Base
 	store *memoryStore

@@ -99,13 +99,14 @@ func (recorder *failureRecorder) recordedFailures() []Failure {
 }
 
 type memoryCheckpointStore struct {
-	mutex        sync.Mutex
-	loaded       map[session.SessionID]CheckpointRecord
-	records      map[session.SessionID]CheckpointRecord
-	replaceErr   error
-	replaceCalls []session.SessionID
-	replaced     chan session.SessionID
-	closed       bool
+	mutex         sync.Mutex
+	loaded        map[session.SessionID]CheckpointRecord
+	records       map[session.SessionID]CheckpointRecord
+	replaceErr    error
+	replaceErrors []error
+	replaceCalls  []session.SessionID
+	replaced      chan session.SessionID
+	closed        bool
 }
 
 func (store *memoryCheckpointStore) LoadAll(
@@ -128,8 +129,13 @@ func (store *memoryCheckpointStore) Replace(
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 	store.replaceCalls = append(store.replaceCalls, identifier)
-	if store.replaceErr != nil {
-		return store.replaceErr
+	replaceErr := store.replaceErr
+	if len(store.replaceErrors) != 0 {
+		replaceErr = store.replaceErrors[0]
+		store.replaceErrors = store.replaceErrors[1:]
+	}
+	if replaceErr != nil {
+		return replaceErr
 	}
 	if store.records == nil {
 		store.records = make(map[session.SessionID]CheckpointRecord)
@@ -240,6 +246,7 @@ type cacheLiveStore struct {
 	flushEntered chan struct{}
 	flushRelease <-chan struct{}
 	flushCalls   int
+	getCalls     int
 }
 
 func (store *cacheLiveStore) Get(
@@ -247,10 +254,17 @@ func (store *cacheLiveStore) Get(
 ) (session.Context, bool) {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
+	store.getCalls++
 	if store.conversation == nil || store.conversation.ID() != identifier {
 		return nil, false
 	}
 	return store.conversation, true
+}
+
+func (store *cacheLiveStore) observations() (int, int) {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	return store.getCalls, store.flushCalls
 }
 
 func (store *cacheLiveStore) Flush(
@@ -260,7 +274,7 @@ func (store *cacheLiveStore) Flush(
 	store.mutex.Lock()
 	store.flushCalls++
 	entered := store.flushEntered
-	release := store.flushRelease
+	flushRelease := store.flushRelease
 	store.mutex.Unlock()
 	if entered != nil {
 		select {
@@ -268,11 +282,11 @@ func (store *cacheLiveStore) Flush(
 		default:
 		}
 	}
-	if release == nil {
+	if flushRelease == nil {
 		return nil
 	}
 	select {
-	case <-release:
+	case <-flushRelease:
 		return nil
 	case <-requestContext.Done():
 		return context.Cause(requestContext)
@@ -325,7 +339,7 @@ func newCacheForTest(
 	live *cacheLiveStore,
 	store *memoryCheckpointStore,
 	settings Config,
-) (*CheckpointCache, *failureRecorder) {
+) (*Coordinator, *failureRecorder) {
 	t.Helper()
 	failures := &failureRecorder{}
 	settings.Failures = failures
