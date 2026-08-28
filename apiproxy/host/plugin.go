@@ -24,7 +24,9 @@ import (
 	"github.com/gorenx/goren/session/projectioncache"
 	sessionquery "github.com/gorenx/goren/session/query"
 	sessiontitle "github.com/gorenx/goren/session/title"
+	"github.com/gorenx/goren/subagent"
 	boundcontract "github.com/gorenx/goren/subagent/bound"
+	"github.com/gorenx/goren/tools"
 	"github.com/gorenx/goren/userquestions"
 	"github.com/gorenx/goren/workspace"
 )
@@ -105,6 +107,8 @@ func (owner *Plugin) Manifest() plugin.Manifest {
 			plugin.ServiceOf[workspace.Registry](),
 			plugin.ServiceOf[credentials.Provider](),
 			plugin.ServiceOf[boundcontract.Definitions](),
+			plugin.ServiceOf[subagent.ExtensionDirectory](),
+			plugin.ServiceOf[tools.ToolRuntime](),
 		},
 		Optional: []plugin.ServiceType{
 			plugin.ServiceOf[projectioncache.Cache](),
@@ -194,6 +198,14 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 	if err != nil {
 		return err
 	}
+	extensionDirectory, err := plugin.Require[subagent.ExtensionDirectory](owner)
+	if err != nil {
+		return err
+	}
+	rootTools, err := plugin.Require[tools.ToolRuntime](owner)
+	if err != nil {
+		return err
+	}
 	listProjection, err := projections.Register(
 		sessionapi.SessionListMetadataUnit(),
 	)
@@ -257,6 +269,8 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 		models,
 		credentialProvider,
 		boundDefinitions,
+		extensionDirectory,
+		rootTools,
 		agents,
 		defaults,
 		owner.deploymentSettings,

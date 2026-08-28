@@ -30,6 +30,10 @@ const snapshot: ConversationSnapshot = {
 	credentialLoaded: true,
 	boundDefinitionsLoaded: true,
 	boundDefinitions: [],
+	boundToolsState: 'ready',
+	boundTools: [],
+	boundExtensionsState: 'ready',
+	boundExtensions: [],
 }
 
 interface ComposerFixture {

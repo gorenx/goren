@@ -60,12 +60,14 @@ func TestBoundGatewayRegistersStrictDefinitionCommands(
 	methods := apiproxy.NewCatalog()
 	if err := apiproxy.RegisterBoundAPI(
 		methods,
-		apiproxy.NewBoundGateway(capability),
+		newBoundGateway(capability),
 	); err != nil {
 		testingContext.Fatal(err)
 	}
 	for _, method := range []string{
 		apiproxy.BoundListMethod,
+		apiproxy.BoundToolsMethod,
+		apiproxy.BoundExtensionsMethod,
 		apiproxy.BoundCreateMethod,
 		apiproxy.BoundReplaceMethod,
 	} {
@@ -89,6 +91,48 @@ func TestBoundGatewayRegistersStrictDefinitionCommands(
 	if len(listValue.Definitions) != 1 ||
 		listValue.Definitions[0].Name != definitionValue.Name {
 		testingContext.Fatalf("bound.list value = %#v", listValue)
+	}
+	toolResult, err := methods.DispatchUnary(
+		context.Background(),
+		apiproxy.BoundToolsMethod,
+		"bound-tools",
+		json.RawMessage(`{}`),
+	)
+	if err != nil || !toolResult.OK {
+		testingContext.Fatalf("bound.tools = (%#v, %v)", toolResult, err)
+	}
+	var toolsValue apiproxy.BoundToolsValue
+	if err = json.Unmarshal(toolResult.Value, &toolsValue); err != nil {
+		testingContext.Fatal(err)
+	}
+	if len(toolsValue.Tools) != 1 ||
+		toolsValue.Tools[0].Name != "delegate" ||
+		toolsValue.Tools[0].Description != "Start a child agent" {
+		testingContext.Fatalf("bound.tools value = %#v", toolsValue)
+	}
+	extensionResult, err := methods.DispatchUnary(
+		context.Background(),
+		apiproxy.BoundExtensionsMethod,
+		"bound-extensions",
+		json.RawMessage(`{}`),
+	)
+	if err != nil || !extensionResult.OK {
+		testingContext.Fatalf(
+			"bound.extensions = (%#v, %v)",
+			extensionResult,
+			err,
+		)
+	}
+	var extensionsValue apiproxy.BoundExtensionsValue
+	if err = json.Unmarshal(extensionResult.Value, &extensionsValue); err != nil {
+		testingContext.Fatal(err)
+	}
+	if len(extensionsValue.Extensions) != 1 ||
+		extensionsValue.Extensions[0].Name != "memory" {
+		testingContext.Fatalf(
+			"bound.extensions value = %#v",
+			extensionsValue,
+		)
 	}
 	created, err := methods.DispatchUnary(
 		context.Background(),
@@ -172,7 +216,7 @@ func TestBoundGatewayMapsOwnedDefinitionFailures(
 			methods := apiproxy.NewCatalog()
 			if err := apiproxy.RegisterBoundAPI(
 				methods,
-				apiproxy.NewBoundGateway(capability),
+				newBoundGateway(capability),
 			); err != nil {
 				testingContext.Fatal(err)
 			}
@@ -197,7 +241,7 @@ func TestBoundGatewayPropagatesUnownedFailure(
 	methods := apiproxy.NewCatalog()
 	if err := apiproxy.RegisterBoundAPI(
 		methods,
-		apiproxy.NewBoundGateway(&boundDefinitionsStub{
+		newBoundGateway(&boundDefinitionsStub{
 			createErr: sentinel,
 		}),
 	); err != nil {
@@ -212,6 +256,35 @@ func TestBoundGatewayPropagatesUnownedFailure(
 	if !errors.Is(err, sentinel) {
 		testingContext.Fatalf("technical error = %v", err)
 	}
+}
+
+func newBoundGateway(
+	definitionSource boundcontract.Definitions,
+) *apiproxy.BoundGateway {
+	return apiproxy.NewBoundGateway(
+		apiproxy.BoundGatewayDependencies{
+			Definitions: definitionSource,
+			Tools: apiproxy.BoundToolDirectoryFunc(func(
+				context.Context,
+			) ([]apiproxy.BoundToolOption, error) {
+				return []apiproxy.BoundToolOption{
+					{
+						Name:        "delegate",
+						Description: "Start a child agent",
+					},
+				}, nil
+			}),
+			Extensions: apiproxy.BoundExtensionDirectoryFunc(func(
+				context.Context,
+			) ([]apiproxy.BoundExtensionOption, error) {
+				return []apiproxy.BoundExtensionOption{
+					{
+						Name: "memory",
+					},
+				}, nil
+			}),
+		},
+	)
 }
 
 func boundGatewayDefinition(

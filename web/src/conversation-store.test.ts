@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConversationStore } from './conversation-store'
 import type { Translator } from './i18n'
-import type { BoundDefinition, BoundDefinitionDraft, SessionEvent, SessionSummary } from './types'
+import type { BoundDefinition, BoundDefinitionDraft, BoundExtensionOption, BoundToolOption, SessionEvent, SessionSummary } from './types'
 import { MockWebSocket } from './test/mock-websocket'
 
 const translate: Translator = (messageKey, values) => {
@@ -42,7 +42,7 @@ describe('ConversationStore', () => {
     expect(host.methods).toEqual([
       'host.describe',
       'credentials.describe',
-    'bound.list',
+      'bound.list',
       'session.list',
       'session.create',
       'session.history',
@@ -411,6 +411,7 @@ describe('ConversationStore', () => {
     const host = installMockHost({ existingSession: true })
     const store = new ConversationStore(translate)
     await store.start()
+    await store.refreshBoundTools()
     const draft: BoundDefinitionDraft = {
       name: 'researcher',
       enabled: true,
@@ -437,11 +438,57 @@ describe('ConversationStore', () => {
     expect(store.snapshot().boundDefinitions).toEqual([replaced])
     expect(host.calls.filter(call => call.method.startsWith('bound.')).map(call => call.method)).toEqual([
       'bound.list',
+      'bound.tools',
       'bound.create',
       'bound.list',
       'bound.replace',
       'bound.list',
     ])
+    store.dispose()
+  })
+
+  it('keeps Bound catalog failures local and permits retry', async () => {
+    const options: MockHostOptions = {
+      existingSession: true,
+      boundToolsFailure: 'directory unavailable',
+      boundExtensionsFailure: 'extension directory unavailable',
+    }
+    const host = installMockHost(options)
+    const store = new ConversationStore(translate)
+    await store.start()
+
+    expect(store.snapshot().phase).toBe('ready')
+    expect(host.methods).not.toContain('bound.tools')
+
+    await store.refreshBoundTools()
+    expect(store.snapshot().boundToolsState).toBe('failed')
+    expect(store.snapshot().boundToolsError).toBe('directory unavailable')
+    expect(store.snapshot().error).toBeUndefined()
+
+    await store.refreshBoundExtensions()
+    expect(store.snapshot().boundExtensionsState).toBe('failed')
+    expect(store.snapshot().boundExtensionsError).toBe('extension directory unavailable')
+    expect(store.snapshot().error).toBeUndefined()
+
+    options.boundToolsFailure = undefined
+    options.boundExtensionsFailure = undefined
+    await store.refreshBoundTools()
+    await store.refreshBoundExtensions()
+    expect(store.snapshot().boundToolsState).toBe('ready')
+    expect(store.snapshot().boundTools).toEqual([
+      {
+        name: 'delegate',
+        description: 'Start a child agent.',
+      },
+    ])
+    expect(store.snapshot().boundExtensionsState).toBe('ready')
+    expect(store.snapshot().boundExtensions).toEqual([
+      {
+        name: 'memory',
+      },
+    ])
+    expect(host.methods.filter(method => method === 'bound.tools')).toHaveLength(2)
+    expect(host.methods.filter(method => method === 'bound.extensions')).toHaveLength(2)
     store.dispose()
   })
 })
@@ -457,6 +504,10 @@ interface MockHostOptions {
   listWait?: Promise<void>
   sessionPages?: Record<string, { items: SessionSummary[], nextCursor?: string }>
   boundDefinitions?: BoundDefinition[]
+  boundTools?: BoundToolOption[]
+  boundToolsFailure?: string
+  boundExtensions?: BoundExtensionOption[]
+  boundExtensionsFailure?: string
 }
 
 function installMockHost(options: MockHostOptions = {}): {
@@ -506,33 +557,74 @@ function installMockHost(options: MockHostOptions = {}): {
         },
       }
       break
-  case 'bound.list':
-    value = { definitions: boundDefinitions }
-    break
-  case 'bound.create': {
-    const payload = call.payload as { definition: BoundDefinitionDraft }
-    const committed: BoundDefinition = {
-      ...payload.definition,
-      revision: 1,
+    case 'bound.list':
+      value = { definitions: boundDefinitions }
+      break
+    case 'bound.tools':
+      if (options.boundToolsFailure !== undefined) {
+        return response({
+          rpcId: call.rpcId,
+          result: {
+            ok: false,
+            error: {
+              message: options.boundToolsFailure,
+            },
+          },
+        })
+      }
+      value = {
+        tools: options.boundTools ?? [
+          {
+            name: 'delegate',
+            description: 'Start a child agent.',
+          },
+        ],
+      }
+      break
+    case 'bound.extensions':
+      if (options.boundExtensionsFailure !== undefined) {
+        return response({
+          rpcId: call.rpcId,
+          result: {
+            ok: false,
+            error: {
+              message: options.boundExtensionsFailure,
+            },
+          },
+        })
+      }
+      value = {
+        extensions: options.boundExtensions ?? [
+          {
+            name: 'memory',
+          },
+        ],
+      }
+      break
+    case 'bound.create': {
+      const payload = call.payload as { definition: BoundDefinitionDraft }
+      const committed: BoundDefinition = {
+        ...payload.definition,
+        revision: 1,
+      }
+      boundDefinitions = [...boundDefinitions, committed]
+      value = { definition: committed }
+      break
     }
-    boundDefinitions = [...boundDefinitions, committed]
-    value = { definition: committed }
-    break
-  }
-  case 'bound.replace': {
-    const payload = call.payload as {
-      expectedRevision: number
-      definition: BoundDefinitionDraft
+    case 'bound.replace': {
+      const payload = call.payload as {
+        expectedRevision: number
+        definition: BoundDefinitionDraft
+      }
+      const committed: BoundDefinition = {
+        ...payload.definition,
+        revision: payload.expectedRevision + 1,
+      }
+      boundDefinitions = boundDefinitions.map(current =>
+        current.name === committed.name ? committed : current)
+      value = { definition: committed }
+      break
     }
-    const committed: BoundDefinition = {
-      ...payload.definition,
-      revision: payload.expectedRevision + 1,
-    }
-    boundDefinitions = boundDefinitions.map(current =>
-      current.name === committed.name ? committed : current)
-    value = { definition: committed }
-    break
-  }
     case 'session.list':
       await options.listWait
       const listPayload = call.payload as { cursor?: string }

@@ -4,7 +4,9 @@ import type {
   BoundDefinition,
   BoundDefinitionDraft,
   BoundDefinitionValue,
+  BoundExtensionsValue,
   BoundListValue,
+  BoundToolsValue,
   CredentialsDescribeValue,
   HostDescription,
   MessageRow,
@@ -42,6 +44,10 @@ const initialSnapshot: ConversationSnapshot = {
   credentialLoaded: false,
   boundDefinitionsLoaded: false,
   boundDefinitions: [],
+  boundToolsState: 'idle',
+  boundTools: [],
+  boundExtensionsState: 'idle',
+  boundExtensions: [],
 }
 
 const historyPageMessages = 20
@@ -83,10 +89,10 @@ export class ConversationStore {
     try {
       const host = await this.#api.call<HostDescription>('host.describe', {})
       this.#patch({ host, composerState: 'composer.syncingSessions' })
-    await Promise.all([
-      this.refreshCredential(),
-      this.refreshBoundDefinitions(),
-    ])
+      await Promise.all([
+        this.refreshCredential(),
+        this.refreshBoundDefinitions(),
+      ])
       this.#api.connect()
       await this.refreshSessions()
       if (this.#value.sessions.length === 0) await this.createSession()
@@ -171,41 +177,87 @@ export class ConversationStore {
   }
 
   async refreshBoundDefinitions(): Promise<void> {
-  const result = await this.#api.call<BoundListValue>('bound.list', {})
-  this.#patch({
-    boundDefinitions: result.definitions ?? [],
-    boundDefinitionsLoaded: true,
-  })
+    const result = await this.#api.call<BoundListValue>('bound.list', {})
+    this.#patch({
+      boundDefinitions: result.definitions ?? [],
+      boundDefinitionsLoaded: true,
+    })
+  }
+
+  async refreshBoundTools(): Promise<void> {
+    if (this.#value.boundToolsState === 'loading') return
+    this.#patch({
+      boundToolsState: 'loading',
+      boundToolsError: undefined,
+    })
+    try {
+      const result = await this.#api.call<BoundToolsValue>('bound.tools', {})
+      this.#patch({
+        boundTools: result.tools ?? [],
+        boundToolsState: 'ready',
+        boundToolsError: undefined,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.#patch({
+        boundToolsState: 'failed',
+        boundToolsError: message,
+      })
+      console.error(error)
+    }
+  }
+
+  async refreshBoundExtensions(): Promise<void> {
+    if (this.#value.boundExtensionsState === 'loading') return
+    this.#patch({
+      boundExtensionsState: 'loading',
+      boundExtensionsError: undefined,
+    })
+    try {
+      const result = await this.#api.call<BoundExtensionsValue>('bound.extensions', {})
+      this.#patch({
+        boundExtensions: result.extensions ?? [],
+        boundExtensionsState: 'ready',
+        boundExtensionsError: undefined,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.#patch({
+        boundExtensionsState: 'failed',
+        boundExtensionsError: message,
+      })
+      console.error(error)
+    }
   }
 
   async createBoundDefinition(draft: BoundDefinitionDraft): Promise<BoundDefinition> {
-  try {
-    const result = await this.#api.call<BoundDefinitionValue>('bound.create', {
-    definition: draft,
-    })
-    await this.refreshBoundDefinitions()
-    return result.definition
-  } catch (error) {
-    this.#fail(error)
-    throw error
-  }
+    try {
+      const result = await this.#api.call<BoundDefinitionValue>('bound.create', {
+        definition: draft,
+      })
+      await this.refreshBoundDefinitions()
+      return result.definition
+    } catch (error) {
+      this.#fail(error)
+      throw error
+    }
   }
 
   async replaceBoundDefinition(
-  expectedRevision: number,
-  draft: BoundDefinitionDraft,
+    expectedRevision: number,
+    draft: BoundDefinitionDraft,
   ): Promise<BoundDefinition> {
-  try {
-    const result = await this.#api.call<BoundDefinitionValue>('bound.replace', {
-    expectedRevision,
-    definition: draft,
-    })
-    await this.refreshBoundDefinitions()
-    return result.definition
-  } catch (error) {
-    this.#fail(error)
-    throw error
-  }
+    try {
+      const result = await this.#api.call<BoundDefinitionValue>('bound.replace', {
+        expectedRevision,
+        definition: draft,
+      })
+      await this.refreshBoundDefinitions()
+      return result.definition
+    } catch (error) {
+      this.#fail(error)
+      throw error
+    }
   }
 
   async createSession(): Promise<void> {

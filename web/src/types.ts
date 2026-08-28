@@ -136,6 +136,25 @@ export interface BoundListValue {
   definitions: BoundDefinition[]
 }
 
+export interface BoundToolOption {
+  name: string
+  description: string
+}
+
+export interface BoundToolsValue {
+  tools: BoundToolOption[]
+}
+
+export interface BoundExtensionOption {
+  name: string
+}
+
+export interface BoundExtensionsValue {
+  extensions: BoundExtensionOption[]
+}
+
+export type BoundCatalogState = 'idle' | 'loading' | 'ready' | 'failed'
+
 export interface BoundDefinitionValue {
   definition: BoundDefinition
 }
@@ -159,6 +178,12 @@ export interface ConversationSnapshot {
   credential?: CredentialView
   boundDefinitionsLoaded: boolean
   boundDefinitions: readonly BoundDefinition[]
+  boundToolsState: BoundCatalogState
+  boundTools: readonly BoundToolOption[]
+  boundToolsError?: string
+  boundExtensionsState: BoundCatalogState
+  boundExtensions: readonly BoundExtensionOption[]
+  boundExtensionsError?: string
   error?: string
 }
 

@@ -54,3 +54,15 @@ type ExtensionRegistry interface {
 		...ExtensionOption,
 	) (ExtensionRegistration, error)
 }
+
+// ExtensionDescriptor identifies one named Extension selectable by child
+// configuration. Common Extensions are intentionally absent from this view.
+type ExtensionDescriptor struct {
+	Name string
+}
+
+// ExtensionDirectory provides the current selectable Extension catalog
+// without exposing registration or installation behavior.
+type ExtensionDirectory interface {
+	ListExtensions() []ExtensionDescriptor
+}
