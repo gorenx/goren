@@ -19,9 +19,6 @@ func (owner *coordinator) executeRequest(
 	if err := contextCause(item.requestContext); err != nil {
 		return result, err
 	}
-	if item.kind == requestBarrier {
-		return result, nil
-	}
 	if item.kind != requestCommit || item.plan == nil {
 		return result, fmt.Errorf("session: invalid coordinator request")
 	}
@@ -51,14 +48,18 @@ func (owner *coordinator) executeRequest(
 		}
 	}
 
-	publicationContext := context.WithValue(
+	eventContext := context.WithValue(
 		item.requestContext,
 		reentryKey{},
 		owner,
 	)
-	if current := owner.currentMembership(); current != nil {
+	owner.queue.mutex.Lock()
+	store := owner.store
+	shouldPublish := owner.machine.publishesEvents()
+	owner.queue.mutex.Unlock()
+	if store != nil && shouldPublish {
 		for _, entry := range committed {
-			current.publishAppend(publicationContext, entry)
+			store.publishAppend(eventContext, owner, entry)
 		}
 	}
 	return result, nil

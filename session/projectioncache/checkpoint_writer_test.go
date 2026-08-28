@@ -78,6 +78,132 @@ func TestRetireWritesFinalCheckpointForSessionWithoutObservedEvents(t *testing.T
 	}
 }
 
+func TestProjectionCacheRetireOrdering(t *testing.T) {
+	registry := sessionprojection.NewDriveRegistry()
+	registerCountingUnit(t, registry, "count", 1)
+	conversation := newCacheTestSession(t, "retire-during-writer", 85, 1)
+	flushEntered := make(chan struct{}, 1)
+	flushRelease := make(chan struct{})
+	live := &cacheLiveStore{
+		conversation: conversation,
+		flushEntered: flushEntered,
+		flushRelease: flushRelease,
+	}
+	store := &memoryCheckpointStore{
+		replaceErrors: []error{errors.New("active writer failed"), nil},
+		replaced:      make(chan session.SessionID, 1),
+	}
+	cacheOwner, failures := newCacheForTest(
+		t,
+		registry,
+		&cachePersistence{},
+		live,
+		store,
+		Config{WriteEveryEvents: 1},
+	)
+	if err := cacheOwner.Advance(conversation, conversation.Events()[0]); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-flushEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("active writer did not enter Flush")
+	}
+	if err := cacheOwner.Retire(conversation); err != nil {
+		t.Fatal(err)
+	}
+	close(flushRelease)
+	if identifier := waitForSignal(t, store.replaced); identifier != conversation.ID() {
+		t.Fatalf("final checkpoint Session = %q", identifier)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		cacheOwner.mutex.Lock()
+		checkpoint := cacheOwner.checkpoints[conversation.ID()]
+		cacheOwner.mutex.Unlock()
+		checkpoint.writersMutex.Lock()
+		_, retained := checkpoint.writers[conversation]
+		checkpoint.writersMutex.Unlock()
+		if !retained {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("retired writer state was not removed")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if calls := store.replacementIDs(); len(calls) != 2 {
+		t.Fatalf("checkpoint attempts = %v, want active plus one final", calls)
+	}
+	if reported := failures.recordedFailures(); len(reported) != 1 ||
+		reported[0].Error.Error() != "active writer failed" {
+		t.Fatalf("failures = %#v", reported)
+	}
+	getCalls, flushCalls := live.observations()
+	if getCalls != 0 || flushCalls != 1 {
+		t.Fatalf("LiveStore calls = Get %d, Flush %d", getCalls, flushCalls)
+	}
+}
+
+func TestReusedSessionIDRejectsOlderLifecycleWriter(t *testing.T) {
+	registry := sessionprojection.NewDriveRegistry()
+	registerCountingUnit(t, registry, "count", 1)
+	older := newCacheTestSession(t, "reused-writer", 85, 1)
+	newer := newCacheTestSession(t, "reused-writer", 86, 1)
+	flushEntered := make(chan struct{}, 1)
+	flushRelease := make(chan struct{})
+	live := &cacheLiveStore{
+		flushEntered: flushEntered,
+		flushRelease: flushRelease,
+	}
+	store := &memoryCheckpointStore{
+		replaced: make(chan session.SessionID, 1),
+	}
+	cacheOwner, _ := newCacheForTest(
+		t,
+		registry,
+		&cachePersistence{},
+		live,
+		store,
+		Config{WriteEveryEvents: 1},
+	)
+	if err := cacheOwner.Begin(older); err != nil {
+		t.Fatal(err)
+	}
+	if err := cacheOwner.Advance(older, older.Events()[0]); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-flushEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("older lifecycle writer did not enter Flush")
+	}
+	if err := cacheOwner.Begin(newer); err != nil {
+		t.Fatal(err)
+	}
+	close(flushRelease)
+	if err := cacheOwner.Advance(newer, newer.Events()[0]); err != nil {
+		t.Fatal(err)
+	}
+	if identifier := waitForSignal(t, store.replaced); identifier != newer.ID() {
+		t.Fatalf("checkpoint Session = %q", identifier)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		store.mutex.Lock()
+		record := store.records[newer.ID()]
+		calls := len(store.replaceCalls)
+		store.mutex.Unlock()
+		if calls == 1 && record.Identity.CreatedAt == newer.Header().CreatedAt {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("record = %#v, calls = %d", record, calls)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestLiveCheckpointFailureKeepsDirtyStateForLaterTrigger(t *testing.T) {
 	registry := sessionprojection.NewDriveRegistry()
 	registerCountingUnit(t, registry, "count", 1)
@@ -107,10 +233,15 @@ func TestLiveCheckpointFailureKeepsDirtyStateForLaterTrigger(t *testing.T) {
 		t.Fatalf("failures = %#v", failures.recordedFailures())
 	}
 	cacheOwner.mutex.Lock()
-	state := cacheOwner.writes[conversation]
-	dirtyEvents := state.pendingEvents()
-	writing := state.writing
+	checkpoint := cacheOwner.checkpoints[conversation.ID()]
 	cacheOwner.mutex.Unlock()
+	checkpoint.writersMutex.Lock()
+	writer := checkpoint.writers[conversation]
+	checkpoint.writersMutex.Unlock()
+	writer.mutex.Lock()
+	dirtyEvents := writer.pendingEvents()
+	writing := writer.schedule.isWriting()
+	writer.mutex.Unlock()
 	if dirtyEvents != 1 || writing {
 		t.Fatalf("state pending=%d writing=%v", dirtyEvents, writing)
 	}

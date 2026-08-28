@@ -17,12 +17,12 @@ type StoreOpener interface {
 	OpenCheckpointStore(context.Context) (projectioncache.CheckpointStore, error)
 }
 
-// Plugin owns dependency resolution and the active cache object's structural
-// lifetime. Checkpoint policy remains in projectioncache.CheckpointCache.
+// Plugin owns dependency resolution and translates Runtime events into
+// projectioncache business inputs. It owns no checkpoint state or policy.
 type Plugin struct {
 	pluginruntime.Base
-	opener StoreOpener
-	cache  *projectioncache.CheckpointCache
+	opener      StoreOpener
+	coordinator *projectioncache.Coordinator
 }
 
 // New constructs an inactive Plugin and its stable published Cache object.
@@ -33,13 +33,13 @@ func New(
 	if opener == nil {
 		return nil, errors.New("session projection cache plugin: StoreOpener is required")
 	}
-	cache, err := projectioncache.New(settings)
+	cacheCoordinator, err := projectioncache.New(settings)
 	if err != nil {
 		return nil, err
 	}
 	return &Plugin{
-		opener: opener,
-		cache:  cache,
+		opener:      opener,
+		coordinator: cacheCoordinator,
 	}, nil
 }
 
@@ -48,7 +48,7 @@ func (owner *Plugin) Manifest() pluginruntime.Manifest {
 	return pluginruntime.Manifest{
 		Name: projectioncache.PluginName,
 		Provides: []pluginruntime.ProvidedService{
-			pluginruntime.NewProvidedService[projectioncache.Cache](owner.cache),
+			pluginruntime.NewProvidedService[projectioncache.Cache](owner.coordinator),
 		},
 		Requires: []pluginruntime.ServiceType{
 			pluginruntime.ServiceOf[session.LiveStore](),
@@ -56,6 +56,7 @@ func (owner *Plugin) Manifest() pluginruntime.Manifest {
 			pluginruntime.ServiceOf[projection.Registry](),
 		},
 		Events: []pluginruntime.EventSubscription{
+			pluginruntime.EventOf[session.Created](),
 			pluginruntime.EventOf[session.EventAppended](),
 			pluginruntime.EventOf[session.Disposed](),
 		},
@@ -86,7 +87,7 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 	if store == nil {
 		return errors.New("session projection cache plugin: StoreOpener returned nil Store")
 	}
-	if err := owner.cache.Open(
+	if err := owner.coordinator.Open(
 		requestContext,
 		sessions,
 		durability,
@@ -107,10 +108,12 @@ func (owner *Plugin) ObserveEvent(
 	fact pluginruntime.Event,
 ) error {
 	switch observed := fact.(type) {
+	case session.Created:
+		return owner.coordinator.Begin(observed.Conversation)
 	case session.EventAppended:
-		return owner.cache.Advance(observed.Conversation, observed.Committed)
+		return owner.coordinator.Advance(observed.Conversation, observed.Committed)
 	case session.Disposed:
-		return owner.cache.Retire(observed.Conversation)
+		return owner.coordinator.Retire(observed.Conversation)
 	default:
 		return nil
 	}
@@ -118,7 +121,7 @@ func (owner *Plugin) ObserveEvent(
 
 // Dispose closes cache admission and drains entered checkpoint work.
 func (owner *Plugin) Dispose(closeContext context.Context) error {
-	return owner.cache.Close(closeContext)
+	return owner.coordinator.Close(closeContext)
 }
 
 var _ pluginruntime.Plugin = (*Plugin)(nil)

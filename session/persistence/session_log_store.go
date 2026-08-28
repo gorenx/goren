@@ -34,6 +34,7 @@ type durableState struct {
 
 type liveSessionState struct {
 	conversation session.Context
+	durable      *durableState
 	writes       *liveWriter
 }
 
@@ -309,7 +310,10 @@ func (owner *SessionLogStore) Load(requestContext context.Context, identifier se
 		if len(closers) != 0 {
 			return Inspection{}, fmt.Errorf("session persistence: cannot load live session %q while its turn is open", identifier)
 		}
-		return Inspection{Header: conversation.Header(), Events: entries}, nil
+		return Inspection{
+			Header: conversation.Header(),
+			Events: entries,
+		}, nil
 	}
 	for {
 		releaseGate, err := owner.operations.Acquire(requestContext, identifier)
@@ -338,7 +342,10 @@ func (owner *SessionLogStore) Inspect(requestContext context.Context, identifier
 		return Inspection{}, errors.New("session persistence: inspect Context is nil")
 	}
 	if conversation, found := owner.sessions.Get(identifier); found {
-		return Inspection{Header: conversation.Header(), Events: conversation.Events()}, nil
+		return Inspection{
+			Header: conversation.Header(),
+			Events: conversation.Events(),
+		}, nil
 	}
 	releaseGate, err := owner.operations.Acquire(requestContext, identifier)
 	if err != nil {
@@ -653,7 +660,7 @@ func (owner *SessionLogStore) onCreated(requestContext context.Context, conversa
 		if err := owner.appendCore(requestContext, identifier, seed[held.cursor:]); err != nil {
 			return err
 		}
-		owner.installLive(conversation)
+		owner.installLive(conversation, tracked)
 		return nil
 	}
 	if trackedFound {
@@ -682,7 +689,7 @@ func (owner *SessionLogStore) onCreated(requestContext context.Context, conversa
 		if err := owner.appendCore(requestContext, identifier, seed[tracked.cursor:]); err != nil {
 			return err
 		}
-		owner.installLive(conversation)
+		owner.installLive(conversation, tracked)
 		return nil
 	}
 
@@ -710,22 +717,28 @@ func (owner *SessionLogStore) onCreated(requestContext context.Context, conversa
 			}
 		}
 		tracked = &durableState{
-			metadata: loaded.Header, cursor: int64(len(loaded.Events)), materialized: true, owner: conversation,
+			metadata:     loaded.Header,
+			cursor:       int64(len(loaded.Events)),
+			materialized: true,
+			owner:        conversation,
 		}
 		owner.durable.Put(identifier, tracked)
 		if err := owner.appendCore(requestContext, identifier, seed[tracked.cursor:]); err != nil {
 			return err
 		}
-		owner.installLive(conversation)
+		owner.installLive(conversation, tracked)
 		return nil
 	}
 
-	tracked = &durableState{metadata: metadata, owner: conversation}
+	tracked = &durableState{
+		metadata: metadata,
+		owner:    conversation,
+	}
 	owner.durable.Put(identifier, tracked)
 	if err := owner.appendCore(requestContext, identifier, seed); err != nil {
 		return err
 	}
-	owner.installLive(conversation)
+	owner.installLive(conversation, tracked)
 	return nil
 }
 
@@ -762,16 +775,17 @@ func (owner *SessionLogStore) onFlush(
 		return err
 	}
 	defer releaseGate()
-	tracked, found := owner.durable.Get(conversation.ID())
-	if !found || tracked.cursor < barrier.NextSeq {
-		cursor := int64(-1)
-		if found {
-			cursor = tracked.cursor
-		}
+	if live.durable.owner != conversation {
+		return fmt.Errorf(
+			"session persistence: flush for %q lost its exact live owner",
+			conversation.ID(),
+		)
+	}
+	if live.durable.cursor < barrier.NextSeq {
 		return fmt.Errorf(
 			"session persistence: flush for %q reached seq %d, requires %d",
 			conversation.ID(),
-			cursor,
+			live.durable.cursor,
 			barrier.NextSeq,
 		)
 	}
@@ -783,39 +797,53 @@ func (owner *SessionLogStore) onDisposed(requestContext context.Context, convers
 	if !found {
 		return nil
 	}
-	if err := live.writes.flush(requestContext); err != nil {
-		return err
-	}
 	releaseGate, err := owner.operations.Acquire(requestContext, conversation.ID())
 	if err != nil {
 		return err
 	}
+	defer releaseGate()
+	if live.writes.hasWork() {
+		return fmt.Errorf(
+			"session persistence: disposed Session %q still has pending writes",
+			conversation.ID(),
+		)
+	}
+	if live.durable.owner != conversation {
+		return fmt.Errorf(
+			"session persistence: disposed Session %q lost its exact durable owner",
+			conversation.ID(),
+		)
+	}
 	owner.writes.Delete(conversation)
-	owner.durable.DeleteOwned(conversation.ID(), conversation)
-	releaseGate()
+	live.durable.owner = nil
 	return nil
 }
 
-func (owner *SessionLogStore) installLive(conversation session.Context) {
+func (owner *SessionLogStore) installLive(
+	conversation session.Context,
+	tracked *durableState,
+) {
+	live := &liveSessionState{
+		conversation: conversation,
+		durable:      tracked,
+	}
 	writes := newLiveWriter(
 		owner.delay,
 		&sessionWriteTarget{
-			owner:      owner,
-			identifier: conversation.ID(),
+			owner: owner,
+			live:  live,
 		},
 	)
+	live.writes = writes
 	owner.writes.Put(
 		conversation,
-		&liveSessionState{
-			conversation: conversation,
-			writes:       writes,
-		},
+		live,
 	)
 }
 
 type sessionWriteTarget struct {
-	owner      *SessionLogStore
-	identifier session.SessionID
+	owner *SessionLogStore
+	live  *liveSessionState
 }
 
 func (target *sessionWriteTarget) WriteBatch(
@@ -824,35 +852,35 @@ func (target *sessionWriteTarget) WriteBatch(
 ) error {
 	releaseGate, err := target.owner.operations.Acquire(
 		requestContext,
-		target.identifier,
+		target.live.conversation.ID(),
 	)
 	if err != nil {
 		return err
 	}
 	defer releaseGate()
-	return target.owner.appendLiveBatch(
-		requestContext,
-		target.identifier,
-		entries,
-	)
+	return target.owner.appendLiveBatch(requestContext, target.live, entries)
 }
 
 func (target *sessionWriteTarget) ReportBackgroundFailure(problem error) {
-	target.owner.safeReport(target.identifier, problem)
+	target.owner.safeReport(target.live.conversation.ID(), problem)
 }
 
-func (owner *SessionLogStore) appendLiveBatch(requestContext context.Context, identifier session.SessionID, entries []session.Event) error {
-	tracked, found := owner.durable.Get(identifier)
-	if !found {
-		return fmt.Errorf("session persistence: session %q lost its durable cursor", identifier)
+func (owner *SessionLogStore) appendLiveBatch(
+	requestContext context.Context,
+	live *liveSessionState,
+	entries []session.Event,
+) error {
+	identifier := live.conversation.ID()
+	if live.durable.owner != live.conversation {
+		return fmt.Errorf("session persistence: session %q lost its exact durable owner", identifier)
 	}
 	fresh := make([]session.Event, 0, len(entries))
 	for _, entry := range entries {
-		if entry.Seq >= tracked.cursor {
+		if entry.Seq >= live.durable.cursor {
 			fresh = append(fresh, entry)
 		}
 	}
-	return owner.appendCore(requestContext, identifier, fresh)
+	return owner.appendTracked(requestContext, identifier, live.durable, fresh)
 }
 
 func (owner *SessionLogStore) appendCore(requestContext context.Context, identifier session.SessionID, entries []session.Event) error {
@@ -880,10 +908,26 @@ func (owner *SessionLogStore) appendCore(requestContext context.Context, identif
 		}
 		tracked, trackedFound = owner.durable.Get(identifier)
 		if !trackedFound {
-			tracked = &durableState{metadata: loaded.Header, cursor: int64(len(loaded.Events)), materialized: true}
+			tracked = &durableState{
+				metadata:     loaded.Header,
+				cursor:       int64(len(loaded.Events)),
+				materialized: true,
+			}
 			owner.durable.Put(identifier, tracked)
 			trackedFound = true
 		}
+	}
+	return owner.appendTracked(requestContext, identifier, tracked, entries)
+}
+
+func (owner *SessionLogStore) appendTracked(
+	requestContext context.Context,
+	identifier session.SessionID,
+	tracked *durableState,
+	entries []session.Event,
+) error {
+	if len(entries) == 0 {
+		return nil
 	}
 	for index, entry := range entries {
 		expected := tracked.cursor + int64(index)
@@ -978,7 +1022,10 @@ func (owner *SessionLogStore) normalizeLoadError(identifier session.SessionID, m
 	}
 	if metadata.Version != session.FormatVersion {
 		reason := formatVersionRefusal(identifier, metadata.Version)
-		refusal := &UnsupportedFormatError{ID: identifier, Reason: reason}
+		refusal := &UnsupportedFormatError{
+			ID:     identifier,
+			Reason: reason,
+		}
 		if artifactLocation, found := owner.storage.Locate(metadata); found {
 			refusal.Location = &artifactLocation
 		}
@@ -992,7 +1039,10 @@ func (owner *SessionLogStore) corruption(identifier session.SessionID, problem e
 	if errors.As(problem, &storedFailure) {
 		return problem
 	}
-	return &CorruptionError{ID: identifier, Cause: problem}
+	return &CorruptionError{
+		ID:    identifier,
+		Cause: problem,
+	}
 }
 
 func (owner *SessionLogStore) close(closeContext context.Context) error {

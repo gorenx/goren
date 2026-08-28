@@ -31,6 +31,37 @@ type blockingFlushPublisher struct {
 	once    sync.Once
 }
 
+type scriptedSessionPublisher struct {
+	mutex   sync.Mutex
+	flushes []WriteBarrier
+	onFlush func(int, FlushRequested) error
+}
+
+func (publisher *scriptedSessionPublisher) Publish(
+	_ context.Context,
+	fact plugin.Event,
+) error {
+	flushRequest, matches := fact.(FlushRequested)
+	if !matches {
+		return nil
+	}
+	publisher.mutex.Lock()
+	publisher.flushes = append(publisher.flushes, flushRequest.Barrier)
+	index := len(publisher.flushes)
+	handler := publisher.onFlush
+	publisher.mutex.Unlock()
+	if handler == nil {
+		return nil
+	}
+	return handler(index, flushRequest)
+}
+
+func (publisher *scriptedSessionPublisher) observedFlushes() []WriteBarrier {
+	publisher.mutex.Lock()
+	defer publisher.mutex.Unlock()
+	return append([]WriteBarrier(nil), publisher.flushes...)
+}
+
 func (publisher *blockingFlushPublisher) Publish(
 	_ context.Context,
 	fact plugin.Event,
@@ -171,6 +202,43 @@ func newStoreFixture(
 	return storePlugin.store
 }
 
+func newDirectStore(
+	testingContext *testing.T,
+	publisher eventPublisher,
+) *memoryStore {
+	testingContext.Helper()
+	store, err := newMemoryStore(
+		MemoryStoreOptions{
+			PostCommitFailures: &failureRecorder{},
+		},
+		publisher,
+	)
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	return store
+}
+
+func waitForTerminalAdmission(
+	testingContext *testing.T,
+	owner *coordinator,
+) {
+	testingContext.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		owner.queue.mutex.Lock()
+		terminal := owner.machine.terminalRequested
+		owner.queue.mutex.Unlock()
+		if terminal {
+			return
+		}
+		if time.Now().After(deadline) {
+			testingContext.Fatal("Release did not acquire terminal admission")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestStoreLifecyclePublishesCommittedEventsAndFlush(t *testing.T) {
 	t.Parallel()
 	requestContext := context.Background()
@@ -262,10 +330,10 @@ func TestConcurrentReleaseSharesOneFinalFlush(t *testing.T) {
 		t.Fatalf("concurrent release error = %v", err)
 	}
 	flushMutex.Lock()
-	observedFlushes := flushCount
+	finalFlushCount := flushCount
 	flushMutex.Unlock()
-	if observedFlushes != 1 {
-		t.Fatalf("concurrent releases started %d final flushes", observedFlushes)
+	if finalFlushCount != 1 {
+		t.Fatalf("concurrent releases started %d final flushes", finalFlushCount)
 	}
 
 	close(releaseFlush)
@@ -276,10 +344,10 @@ func TestConcurrentReleaseSharesOneFinalFlush(t *testing.T) {
 		t.Fatal(err)
 	}
 	flushMutex.Lock()
-	observedFlushes = flushCount
+	repeatedFlushCount := flushCount
 	flushMutex.Unlock()
-	if observedFlushes != 1 {
-		t.Fatalf("repeated release started %d final flushes", observedFlushes)
+	if repeatedFlushCount != 1 {
+		t.Fatalf("repeated release started %d final flushes", repeatedFlushCount)
 	}
 }
 
@@ -425,7 +493,7 @@ func TestCreationFailureRollsBackWithPairedDisposal(t *testing.T) {
 	}
 }
 
-func TestCreationRollbackDetachesWhenFinalFlushFails(t *testing.T) {
+func TestCreationVetoFlushFailureKeepsSealedSessionForRetry(t *testing.T) {
 	t.Parallel()
 	requestContext, cancel := context.WithCancel(context.Background())
 	recorder := &failureRecorder{}
@@ -452,8 +520,210 @@ func TestCreationRollbackDetachesWhenFinalFlushFails(t *testing.T) {
 		t.Fatalf("create error = %v", err)
 	}
 	if _, found := store.Get(identifier); found {
-		t.Fatal("vetoed Session remained in Store after rollback flush failure")
+		t.Fatal("sealed Session remained visible after rollback flush failure")
 	}
+	store.mu.RLock()
+	sealed := store.sessions[identifier]
+	store.mu.RUnlock()
+	if sealed == nil {
+		t.Fatal("failed final flush discarded the exact cleanup owner")
+	}
+	sealed.queue.mutex.Lock()
+	state := sealed.machine.state
+	sealed.queue.mutex.Unlock()
+	if state != lifecycleSealed {
+		t.Fatalf("vetoed Session state = %d, want sealed", state)
+	}
+}
+
+func TestSessionReleaseOrdering(t *testing.T) {
+	t.Run("flush before release", func(t *testing.T) {
+		flushStarted := make(chan struct{})
+		allowFlush := make(chan struct{})
+		publisher := &scriptedSessionPublisher{
+			onFlush: func(index int, _ FlushRequested) error {
+				if index == 1 {
+					close(flushStarted)
+					<-allowFlush
+				}
+				return nil
+			},
+		}
+		store := newDirectStore(t, publisher)
+		handleState, err := store.Create(context.Background(), nil, CreateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		conversation := handleState.Session()
+		if _, err := commitFixtureEvent(context.Background(), conversation, "before-flush"); err != nil {
+			t.Fatal(err)
+		}
+		flushDone := make(chan error, 1)
+		go func() {
+			flushDone <- store.Flush(context.Background(), conversation)
+		}()
+		<-flushStarted
+		releaseDone := make(chan error, 1)
+		go func() {
+			releaseDone <- handleState.Release(context.Background())
+		}()
+		waitForTerminalAdmission(t, conversation.(*coordinator))
+		if _, err := conversation.Commit(
+			context.Background(),
+			Batch(newFixtureDraft(t, "rejected")),
+		); !errors.Is(err, ErrWritesClosed) {
+			t.Fatalf("Commit after terminal admission error = %v", err)
+		}
+		close(allowFlush)
+		if err := <-flushDone; err != nil {
+			t.Fatal(err)
+		}
+		if err := <-releaseDone; err != nil {
+			t.Fatal(err)
+		}
+		flushes := publisher.observedFlushes()
+		if len(flushes) != 2 || flushes[0].NextSeq != 1 || flushes[1].NextSeq != 1 {
+			t.Fatalf("flush barriers = %#v", flushes)
+		}
+	})
+
+	t.Run("release before flush", func(t *testing.T) {
+		flushStarted := make(chan struct{})
+		allowFlush := make(chan struct{})
+		publisher := &scriptedSessionPublisher{
+			onFlush: func(index int, _ FlushRequested) error {
+				if index == 1 {
+					close(flushStarted)
+					<-allowFlush
+				}
+				return nil
+			},
+		}
+		store := newDirectStore(t, publisher)
+		handleState, err := store.Create(context.Background(), nil, CreateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		conversation := handleState.Session()
+		releaseDone := make(chan error, 1)
+		go func() {
+			releaseDone <- handleState.Release(context.Background())
+		}()
+		<-flushStarted
+		if err := store.Flush(context.Background(), conversation); !errors.Is(err, ErrWritesClosed) {
+			t.Fatalf("Flush after terminal admission error = %v", err)
+		}
+		close(allowFlush)
+		if err := <-releaseDone; err != nil {
+			t.Fatal(err)
+		}
+		if flushes := publisher.observedFlushes(); len(flushes) != 1 {
+			t.Fatalf("release started %d final flushes", len(flushes))
+		}
+	})
+
+	t.Run("canceled waiter does not cancel finalization", func(t *testing.T) {
+		flushStarted := make(chan struct{})
+		allowFlush := make(chan struct{})
+		publisher := &scriptedSessionPublisher{
+			onFlush: func(index int, _ FlushRequested) error {
+				if index == 1 {
+					close(flushStarted)
+					<-allowFlush
+				}
+				return nil
+			},
+		}
+		store := newDirectStore(t, publisher)
+		handleState, err := store.Create(context.Background(), nil, CreateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		waitContext, cancel := context.WithCancel(context.Background())
+		firstDone := make(chan error, 1)
+		go func() {
+			firstDone <- handleState.Release(waitContext)
+		}()
+		<-flushStarted
+		cancel()
+		if err := <-firstDone; !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled Release waiter error = %v", err)
+		}
+		secondDone := make(chan error, 1)
+		go func() {
+			secondDone <- handleState.Release(context.Background())
+		}()
+		if flushes := publisher.observedFlushes(); len(flushes) != 1 {
+			t.Fatalf("concurrent waiter started %d final flushes", len(flushes))
+		}
+		close(allowFlush)
+		if err := <-secondDone; err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("failed final flush remains sealed and retries", func(t *testing.T) {
+		flushFailure := errors.New("final flush failed")
+		publisher := &scriptedSessionPublisher{
+			onFlush: func(index int, _ FlushRequested) error {
+				if index == 1 {
+					return flushFailure
+				}
+				return nil
+			},
+		}
+		store := newDirectStore(t, publisher)
+		handleState, err := store.Create(context.Background(), nil, CreateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		conversation := handleState.Session()
+		if err := handleState.Release(context.Background()); !errors.Is(err, flushFailure) {
+			t.Fatalf("first Release error = %v", err)
+		}
+		if _, found := store.Get(conversation.ID()); found {
+			t.Fatal("sealed Session remained business-visible")
+		}
+		if _, err := conversation.Commit(
+			context.Background(),
+			Batch(newFixtureDraft(t, "rejected")),
+		); !errors.Is(err, ErrWritesClosed) {
+			t.Fatalf("sealed Commit error = %v", err)
+		}
+		if err := handleState.Release(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if flushes := publisher.observedFlushes(); len(flushes) != 2 {
+			t.Fatalf("retry started %d final flushes", len(flushes))
+		}
+	})
+
+	t.Run("old handle cannot affect reused id", func(t *testing.T) {
+		publisher := &scriptedSessionPublisher{}
+		store := newDirectStore(t, publisher)
+		identifier := SessionID("reused")
+		oldHandle, err := store.Create(context.Background(), &identifier, CreateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := oldHandle.Release(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		newHandle, err := store.Create(context.Background(), &identifier, CreateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := oldHandle.Release(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		current, found := store.Get(identifier)
+		if !found || current != newHandle.Session() {
+			t.Fatal("old Handle affected the replacement lifecycle")
+		}
+		if err := newHandle.Release(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 func TestAppendObserverFailureIsContainedAndReentryRejected(t *testing.T) {
@@ -462,7 +732,7 @@ func TestAppendObserverFailureIsContainedAndReentryRejected(t *testing.T) {
 	recorder := &failureRecorder{}
 	observer := &storeObserverPlugin{
 		name: "fixture-reentrant-observer",
-		onAppended: func(publicationContext context.Context, activeSession Context, _ Event) error {
+		onAppended: func(eventContext context.Context, activeSession Context, _ Event) error {
 			draft, err := NewEventDraft(
 				fixtureEventKey,
 				fixturePayload{
@@ -472,7 +742,7 @@ func TestAppendObserverFailureIsContainedAndReentryRejected(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			_, appendErr := activeSession.Commit(publicationContext, Batch(draft))
+			_, appendErr := activeSession.Commit(eventContext, Batch(draft))
 			if !errors.Is(appendErr, ErrWriteReentry) {
 				return errors.New("nested append was not rejected")
 			}
