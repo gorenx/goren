@@ -5,7 +5,6 @@ package continuable
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentmessage"
@@ -50,12 +49,12 @@ type Dependencies struct {
 }
 
 // Service orchestrates Continuable use cases through the materialization
-// policy and resident execution owner. Module admission belongs to
+// policy and child owners. Module admission belongs to
 // subagents.Service; Execution phase belongs to the shared execution object.
 type Service struct {
 	dependencies Dependencies
-	materializer materializer
-	residents    *residentExecutions
+	materializer *materializer
+	children     *continuableChildRegistry
 }
 
 // Mode identifies the business mode implemented by Service.
@@ -77,9 +76,9 @@ func New(dependencySet Dependencies) (*Service, error) {
 				"Execution Registry",
 		)
 	}
-	return &Service{
+	owner := &Service{
 		dependencies: dependencySet,
-		materializer: materializer{
+		materializer: &materializer{
 			agents:      dependencySet.Agents,
 			constructor: dependencySet.Constructor,
 			sessions:    dependencySet.Sessions,
@@ -87,8 +86,12 @@ func New(dependencySet Dependencies) (*Service, error) {
 			delegation:  dependencySet.Delegation,
 			extensions:  dependencySet.Extensions,
 		},
-		residents: newResidentExecutions(dependencySet),
-	}, nil
+	}
+	owner.children = newContinuableChildRegistry(
+		dependencySet,
+		owner.materializer,
+	)
+	return owner, nil
 }
 
 // Close rejects new work, requests every current Execution to stop, and waits
@@ -97,11 +100,14 @@ func (owner *Service) Close(closeContext context.Context) error {
 	if closeContext == nil {
 		closeContext = context.Background()
 	}
-	return owner.residents.close(closeContext)
+	return owner.children.close(closeContext)
 }
 
-func (owner *Service) authorizeParent(parentAgent agent.Agent) error {
-	if parentAgent == nil || !owner.dependencies.Agents.Contains(parentAgent) {
+func requireLiveParent(
+	agents agent.Registry,
+	parentAgent agent.Agent,
+) error {
+	if parentAgent == nil || !agents.Contains(parentAgent) {
 		return unauthorized(
 			"Continuable operation requires the exact live parent Agent",
 		)
@@ -128,7 +134,10 @@ func (owner *Service) Start(
 	if snapshotErr != nil {
 		return nil, snapshotErr
 	}
-	if authorizationErr := owner.authorizeParent(requestSnapshot.Parent); authorizationErr != nil {
+	if authorizationErr := requireLiveParent(
+		owner.dependencies.Agents,
+		requestSnapshot.Parent,
+	); authorizationErr != nil {
 		return nil, authorizationErr
 	}
 	seedBuilderName := command.SeedBuilderName()
@@ -180,74 +189,27 @@ func (owner *Service) Start(
 	if seedErr != nil {
 		return nil, seedErr
 	}
-	slot := owner.residents.acquire(childID)
-	defer owner.residents.release(childID, slot)
-	slot.mutex.Lock()
-	defer slot.mutex.Unlock()
-	if requestErr := ctx.Err(); requestErr != nil {
-		return nil, requestErr
+	input := startInput{
+		parent:            requestSnapshot.Parent,
+		descriptor:        descriptor,
+		request:           requestSnapshot,
+		lineage:           childLineage,
+		seed:              seed,
+		seedBuilder:       seedBuilderName,
+		seedLength:        int64(len(builderSeed)),
+		identityRequested: requestedID != nil,
 	}
-	if authorizationErr := owner.authorizeParent(requestSnapshot.Parent); authorizationErr != nil {
-		return nil, authorizationErr
-	}
-	if slot.current != nil {
-		return nil, duplicateChild(childID)
-	}
-	if availabilityErr := owner.materializer.assertAvailable(
-		childID,
-	); availabilityErr != nil {
-		return nil, availabilityErr
-	}
-	if requestedID != nil {
-		if availabilityErr := owner.materializer.assertPersistedAvailable(
-			ctx,
-			childID,
-		); availabilityErr != nil {
-			return nil, availabilityErr
+	for {
+		child, acquireErr := owner.children.acquire(childID)
+		if acquireErr != nil {
+			return nil, acquireErr
 		}
+		running, startErr := child.start(ctx, input)
+		if errors.Is(startErr, errChildRetired) {
+			continue
+		}
+		return running, startErr
 	}
-	handle, createErr := owner.materializer.create(
-		ctx,
-		childID,
-		descriptor,
-		requestSnapshot,
-		childLineage,
-		seed,
-		int64(len(builderSeed)),
-	)
-	if createErr != nil {
-		return nil, createErr
-	}
-	prompt, messageErr := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
-		Content: requestSnapshot.Prompt,
-		Source:  agentmessage.UserMessageSource{},
-	})
-	if messageErr != nil {
-		return nil, errors.Join(
-			messageErr,
-			handle.Dispose(context.WithoutCancel(ctx)),
-		)
-	}
-	if submitErr := handle.Subject.Followup(prompt); submitErr != nil {
-		return nil, errors.Join(
-			submitErr,
-			handle.Dispose(context.WithoutCancel(ctx)),
-		)
-	}
-	current, publishErr := owner.residents.publish(
-		handle,
-		requestSnapshot.Parent,
-		seedBuilderName,
-		slot,
-	)
-	if publishErr != nil {
-		return nil, errors.Join(
-			publishErr,
-			handle.Dispose(context.WithoutCancel(ctx)),
-		)
-	}
-	owner.residents.watch(current)
-	return current.running, nil
 }
 
 // Resume materializes a durable child and atomically accepts the first message
@@ -263,81 +225,19 @@ func (owner *Service) Resume(
 		return "", contextErr
 	}
 	for {
-		slot := owner.residents.acquire(childID)
-		slot.mutex.Lock()
-		if authorizationErr := owner.authorizeParent(parentAgent); authorizationErr != nil {
-			slot.mutex.Unlock()
-			owner.residents.release(childID, slot)
-			return "", authorizationErr
+		child, acquireErr := owner.children.acquire(childID)
+		if acquireErr != nil {
+			return "", acquireErr
 		}
-		current := slot.current
-		if current != nil && current.running.State() != subagent.ExecutionActive {
-			running := current.running
-			slot.mutex.Unlock()
-			owner.residents.release(childID, slot)
-			if waitErr := running.Wait(ctx); waitErr != nil {
-				return "", waitErr
-			}
+		identifier, resumeErr := child.resume(
+			ctx,
+			parentAgent,
+			messageValue,
+		)
+		if errors.Is(resumeErr, errChildRetired) {
 			continue
 		}
-		if current == nil {
-			handle, seedBuilder, resumeErr := owner.materializer.resume(
-				ctx,
-				parentAgent,
-				childID,
-			)
-			if resumeErr != nil {
-				slot.mutex.Unlock()
-				owner.residents.release(childID, slot)
-				return "", resumeErr
-			}
-			if submitErr := handle.Subject.Followup(messageValue); submitErr != nil {
-				slot.mutex.Unlock()
-				owner.residents.release(childID, slot)
-				return "", errors.Join(
-					submitErr,
-					handle.Dispose(context.WithoutCancel(ctx)),
-				)
-			}
-			current, resumeErr = owner.residents.publish(
-				handle,
-				parentAgent,
-				seedBuilder,
-				slot,
-			)
-			if resumeErr != nil {
-				slot.mutex.Unlock()
-				owner.residents.release(childID, slot)
-				return "", errors.Join(
-					resumeErr,
-					handle.Dispose(context.WithoutCancel(ctx)),
-				)
-			}
-			owner.residents.watch(current)
-		} else {
-			if current.terminator.parent.ID() != parentAgent.ID() ||
-				!owner.dependencies.Agents.Contains(parentAgent) {
-				slot.mutex.Unlock()
-				owner.residents.release(childID, slot)
-				return "", unauthorized(
-					fmt.Sprintf(
-						"subagent %q delivery requires its exact live parent",
-						childID,
-					),
-				)
-			}
-			if submitErr := current.terminator.handle.Subject.Followup(
-				messageValue,
-			); submitErr != nil {
-				slot.mutex.Unlock()
-				owner.residents.release(childID, slot)
-				return "", submitErr
-			}
-			signal(current)
-		}
-		slot.mutex.Unlock()
-		owner.residents.release(childID, slot)
-		return messageValue.StableID(), nil
+		return identifier, resumeErr
 	}
 }
 
@@ -353,6 +253,5 @@ func (owner *Service) Interrupt(
 	); contextErr != nil {
 		return contextErr
 	}
-	owner.residents.interrupt(targetID)
-	return nil
+	return owner.children.interrupt(ctx, targetID)
 }
