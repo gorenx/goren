@@ -29,12 +29,8 @@ go.work.sum
 .env
 
 # Local runtime data created by make run
-/sessions.sqlite
-/sessions.sqlite-*
-/workspaces.sqlite
-/workspaces.sqlite-*
-/session-query.sqlite
-/session-query.sqlite-*
+/*.sqlite-*
+/*.sqlite
 /.credentials.json
 
 # Editor/IDE
