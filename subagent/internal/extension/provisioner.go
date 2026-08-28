@@ -36,7 +36,7 @@ func NewSelectedProvisioner(
 	}
 	configured := &Provisioner{
 		registry: owner,
-		selected: append([]string(nil), extensionNames...),
+		selected: append([]string{}, extensionNames...),
 	}
 	return configured, nil
 }

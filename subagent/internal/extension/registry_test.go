@@ -164,6 +164,36 @@ func TestNamedExtensionsAreNotInstalledWithoutSelection(t *testing.T) {
 	}
 }
 
+func TestEmptySelectedExtensionsDoNotInstallCommon(t *testing.T) {
+	owner := New()
+	installed := 0
+	if _, err := owner.RegisterExtension(
+		extensionRecord{
+			install: func() (subagent.ExtensionInstallation, error) {
+				installed++
+				return installationRecord{
+					dispose: func() error { return nil },
+				}, nil
+			},
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	configured, err := NewSelectedProvisioner(owner, []string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	acquired, err := configured.Provision(context.Background(), scopeRecord{})
+	if err != nil || acquired != nil || installed != 0 {
+		t.Fatalf(
+			"Provision = (%v, %v), installs = %d, want nil, nil, 0",
+			acquired,
+			err,
+			installed,
+		)
+	}
+}
+
 func TestExtensionDirectoryListsOnlyNamedRegistrations(t *testing.T) {
 	owner := New()
 	registered := extensionRecord{

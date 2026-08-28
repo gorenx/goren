@@ -32,13 +32,11 @@ type reconcileScheduler struct {
 	closed    chan struct{}
 }
 
-func newReconcileScheduler(
-	requestContext context.Context,
-	owner *Service,
-) *reconcileScheduler {
-	lifecycleContext, cancelLifecycle := context.WithCancel(
-		context.WithoutCancel(requestContext),
-	)
+func newReconcileScheduler(owner *Service) *reconcileScheduler {
+	// Reconciliation is Service-owned work that may construct Agents after the
+	// constructor call returns. It must not retain caller callback markers,
+	// deadlines, or cancellation.
+	lifecycleContext, cancelLifecycle := context.WithCancel(context.Background())
 	return &reconcileScheduler{
 		owner:   owner,
 		ctx:     lifecycleContext,

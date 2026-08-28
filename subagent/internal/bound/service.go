@@ -112,11 +112,10 @@ func New(
 		dependencies: dependencySet,
 	}
 	owner.workers = newRegistry(
-		requestContext,
 		dependencySet,
 		materializerValue,
 	)
-	owner.scheduler = newReconcileScheduler(requestContext, owner)
+	owner.scheduler = newReconcileScheduler(owner)
 	definitions, err := newDefinitionCatalog(
 		requestContext,
 		dependencySet.Definitions,
