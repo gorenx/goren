@@ -76,24 +76,28 @@ func (owner *Service) ensureBindings(
 			},
 		)
 	}
-	if len(pending) != 0 {
-		if _, err = parentSession.Commit(
-			requestContext,
-			bindingRegistration{
-				bindings: pending,
-			},
-		); err != nil {
-			return nil, err
-		}
-		if owner.dependencies.Sessions == nil {
-			return nil, unavailableDependency("Session LiveStore")
-		}
-		if err = owner.dependencies.Sessions.Flush(
-			requestContext,
-			parentSession,
-		); err != nil {
-			return nil, err
-		}
+	if len(pending) == 0 {
+		return append(
+			[]subagentprojection.BoundBinding(nil),
+			view.Bindings...,
+		), nil
+	}
+	if _, err = parentSession.Commit(
+		requestContext,
+		bindingRegistration{
+			bindings: pending,
+		},
+	); err != nil {
+		return nil, err
+	}
+	if owner.dependencies.Sessions == nil {
+		return nil, unavailableDependency("Session LiveStore")
+	}
+	if err = owner.dependencies.Sessions.Flush(
+		requestContext,
+		parentSession,
+	); err != nil {
+		return nil, err
 	}
 	view, err = readBoundProjection(
 		owner.dependencies.Projections,

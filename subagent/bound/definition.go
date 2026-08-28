@@ -50,51 +50,68 @@ type Definitions interface {
 
 // NewDefinition validates and snapshots one complete revision.
 func NewDefinition(candidate Draft, revision int64) (Definition, error) {
-	if strings.TrimSpace(candidate.Name) == "" ||
-		candidate.Name != strings.TrimSpace(candidate.Name) {
-		return Definition{}, errors.New(
-			"subagent/bound: Definition name must be non-empty and trimmed",
-		)
+	validated, err := SnapshotDraft(candidate)
+	if err != nil {
+		return Definition{}, err
 	}
 	if revision <= 0 || revision > maximumSafeInteger {
 		return Definition{}, errors.New(
 			"subagent/bound: Definition revision must be a positive safe integer",
 		)
 	}
-	if strings.TrimSpace(candidate.SystemPrompt) == "" {
-		return Definition{}, errors.New(
+	return Definition{
+		Name:            validated.Name,
+		Revision:        revision,
+		Enabled:         validated.Enabled,
+		SystemPrompt:    validated.SystemPrompt,
+		AgentOptions:    validated.AgentOptions,
+		MaxDepth:        validated.MaxDepth,
+		ToolRestriction: validated.ToolRestriction,
+		Extensions:      validated.Extensions,
+	}, nil
+}
+
+// SnapshotDraft validates and detaches one complete candidate.
+func SnapshotDraft(source Draft) (Draft, error) {
+	if strings.TrimSpace(source.Name) == "" ||
+		source.Name != strings.TrimSpace(source.Name) {
+		return Draft{}, errors.New(
+			"subagent/bound: Definition name must be non-empty and trimmed",
+		)
+	}
+	if strings.TrimSpace(source.SystemPrompt) == "" {
+		return Draft{}, errors.New(
 			"subagent/bound: Definition system prompt is required",
 		)
 	}
-	if candidate.MaxDepth != nil &&
-		(*candidate.MaxDepth < 0 || *candidate.MaxDepth > maximumSafeInteger) {
-		return Definition{}, errors.New(
+	if source.MaxDepth != nil &&
+		(*source.MaxDepth < 0 || *source.MaxDepth > maximumSafeInteger) {
+		return Draft{}, errors.New(
 			"subagent/bound: maxDepth must be a non-negative safe integer",
 		)
 	}
-	if candidate.AgentOptions != nil && candidate.AgentOptions.MaxTokens != nil &&
-		(*candidate.AgentOptions.MaxTokens <= 0 ||
-			int64(*candidate.AgentOptions.MaxTokens) > maximumSafeInteger) {
-		return Definition{}, errors.New(
+	if source.AgentOptions != nil && source.AgentOptions.MaxTokens != nil &&
+		(*source.AgentOptions.MaxTokens <= 0 ||
+			int64(*source.AgentOptions.MaxTokens) > maximumSafeInteger) {
+		return Draft{}, errors.New(
 			"subagent/bound: Agent maxTokens must be a positive safe integer",
 		)
 	}
-	restriction, err := cloneToolRestriction(candidate.ToolRestriction)
+	restriction, err := cloneToolRestriction(source.ToolRestriction)
 	if err != nil {
-		return Definition{}, err
+		return Draft{}, err
 	}
-	if err = validateExtensionNames(candidate.Extensions); err != nil {
-		return Definition{}, err
+	if err = validateExtensionNames(source.Extensions); err != nil {
+		return Draft{}, err
 	}
-	return Definition{
-		Name:            candidate.Name,
-		Revision:        revision,
-		Enabled:         candidate.Enabled,
-		SystemPrompt:    candidate.SystemPrompt,
-		AgentOptions:    cloneAgentOptions(candidate.AgentOptions),
-		MaxDepth:        cloneInt64(candidate.MaxDepth),
+	return Draft{
+		Name:            source.Name,
+		Enabled:         source.Enabled,
+		SystemPrompt:    source.SystemPrompt,
+		AgentOptions:    cloneAgentOptions(source.AgentOptions),
+		MaxDepth:        cloneInt64(source.MaxDepth),
 		ToolRestriction: restriction,
-		Extensions:      cloneStringsOrEmpty(candidate.Extensions),
+		Extensions:      cloneStringsOrEmpty(source.Extensions),
 	}, nil
 }
 
@@ -112,31 +129,6 @@ func SnapshotDefinition(source Definition) (Definition, error) {
 		},
 		source.Revision,
 	)
-}
-
-// SnapshotDraft validates and detaches one complete candidate.
-func SnapshotDraft(source Draft) (Draft, error) {
-	validated, err := NewDefinition(source, 1)
-	if err != nil {
-		return Draft{}, err
-	}
-	return draftFromDefinition(validated), nil
-}
-
-func draftFromDefinition(source Definition) Draft {
-	restriction, err := cloneToolRestriction(source.ToolRestriction)
-	if err != nil {
-		panic(err)
-	}
-	return Draft{
-		Name:            source.Name,
-		Enabled:         source.Enabled,
-		SystemPrompt:    source.SystemPrompt,
-		AgentOptions:    cloneAgentOptions(source.AgentOptions),
-		MaxDepth:        cloneInt64(source.MaxDepth),
-		ToolRestriction: restriction,
-		Extensions:      cloneStrings(source.Extensions),
-	}
 }
 
 func cloneAgentOptions(source *agent.Options) *agent.Options {
@@ -259,7 +251,18 @@ func (source Definition) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 	revision := validated.Revision
-	return encodeDefinitionFields(draftFromDefinition(validated), &revision)
+	return encodeDefinitionFields(
+		Draft{
+			Name:            validated.Name,
+			Enabled:         validated.Enabled,
+			SystemPrompt:    validated.SystemPrompt,
+			AgentOptions:    validated.AgentOptions,
+			MaxDepth:        validated.MaxDepth,
+			ToolRestriction: validated.ToolRestriction,
+			Extensions:      validated.Extensions,
+		},
+		&revision,
+	)
 }
 
 func (target *Definition) UnmarshalJSON(rawValue []byte) error {
@@ -343,20 +346,16 @@ type decodedDefinitionFields struct {
 }
 
 func encodeDefinitionFields(candidate Draft, revision *int64) ([]byte, error) {
-	restriction, err := encodeToolRestriction(candidate.ToolRestriction)
-	if err != nil {
-		return nil, err
-	}
 	return definitionJSONCodec.Marshal(
 		definitionJSON{
 			Name:            candidate.Name,
-			Revision:        cloneInt64(revision),
+			Revision:        revision,
 			Enabled:         candidate.Enabled,
 			SystemPrompt:    candidate.SystemPrompt,
 			AgentOptions:    encodeAgentOptions(candidate.AgentOptions),
-			MaxDepth:        cloneInt64(candidate.MaxDepth),
-			ToolRestriction: restriction,
-			Extensions:      cloneStringsOrEmpty(candidate.Extensions),
+			MaxDepth:        candidate.MaxDepth,
+			ToolRestriction: encodeToolRestriction(candidate.ToolRestriction),
+			Extensions:      candidate.Extensions,
 		},
 	)
 }
@@ -433,7 +432,7 @@ func encodeAgentOptions(options *agent.Options) *agentOptionsJSON {
 	return &agentOptionsJSON{
 		Provider:  options.Provider,
 		Model:     options.Model,
-		MaxTokens: cloneInt(options.MaxTokens),
+		MaxTokens: options.MaxTokens,
 	}
 }
 
@@ -492,21 +491,20 @@ func decodeMaximumDepth(field jsonField[int64]) (*int64, error) {
 
 func encodeToolRestriction(
 	restriction *tools.ToolRestriction,
-) (*toolRestrictionJSON, error) {
-	cloned, err := cloneToolRestriction(restriction)
-	if err != nil || cloned == nil {
-		return nil, err
+) *toolRestrictionJSON {
+	if restriction == nil {
+		return nil
 	}
 	wireValue := &toolRestrictionJSON{}
-	if cloned.Allow != nil {
-		allow := cloneStrings(cloned.Allow)
+	if restriction.Allow != nil {
+		allow := restriction.Allow
 		wireValue.Allow = &allow
 	}
-	if cloned.Deny != nil {
-		deny := cloneStrings(cloned.Deny)
+	if restriction.Deny != nil {
+		deny := restriction.Deny
 		wireValue.Deny = &deny
 	}
-	return wireValue, nil
+	return wireValue
 }
 
 func decodeToolRestriction(

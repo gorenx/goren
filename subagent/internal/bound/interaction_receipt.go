@@ -1,7 +1,6 @@
 package bound
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -10,30 +9,32 @@ import (
 	"github.com/gorenx/goren/subagent"
 )
 
-func countReceipts(
+func hasReceipt(
 	childSession session.Context,
 	want subagent.Delivery,
-) (int, error) {
+) (bool, error) {
 	if childSession == nil {
-		return 0, errors.New("subagent: Bound child Session is unavailable")
+		return false, errors.New(
+			"subagent: Bound child Session is unavailable",
+		)
 	}
 	canonical, err := want.CloneSource()
 	if err != nil {
-		return 0, err
+		return false, err
 	}
 	want = canonical.(subagent.Delivery)
 	startSeq := int64(0)
 	if seedLength := childSession.Header().SeedLength; seedLength != nil {
 		startSeq = *seedLength
 	}
-	count := 0
+	found := false
 	for _, committed := range childSession.Events() {
 		if committed.Seq < startSeq || committed.Type != agent.InboxSplicedEventName {
 			continue
 		}
 		var splice agent.InboxSplice
-		if err := json.Unmarshal(committed.Data, &splice); err != nil {
-			return 0, fmt.Errorf(
+		if err := decodeInteractionJSON(committed.Data, &splice); err != nil {
+			return false, fmt.Errorf(
 				"subagent: decode child Inbox receipt at seq %d: %w",
 				committed.Seq,
 				err,
@@ -46,21 +47,21 @@ func countReceipts(
 			}
 			delivery, err := subagent.DecodeDelivery(origin)
 			if err != nil {
-				return 0, fmt.Errorf(
+				return false, fmt.Errorf(
 					"subagent: decode child interaction receipt at seq %d: %w",
 					committed.Seq,
 					err,
 				)
 			}
 			if delivery == want {
-				count++
+				if found {
+					return false, errors.New(
+						"subagent: child Session contains duplicate parent interaction receipts",
+					)
+				}
+				found = true
 			}
 		}
 	}
-	if count > 1 {
-		return 0, errors.New(
-			"subagent: child Session contains duplicate parent interaction receipts",
-		)
-	}
-	return count, nil
+	return found, nil
 }

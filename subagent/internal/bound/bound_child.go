@@ -49,7 +49,6 @@ type executionClosedNotice struct {
 // Binding. It outlives individual resident Agent epochs.
 type boundChild struct {
 	key           bindingKey
-	binding       subagentprojection.BoundBinding
 	parent        agent.Agent
 	agents        agent.Registry
 	sessions      session.LiveStore
@@ -85,7 +84,6 @@ func newBoundChild(
 			name:     bindingValue.Name,
 			childID:  bindingValue.ChildSessionID,
 		},
-		binding:      bindingValue,
 		parent:       parentAgent,
 		agents:       dependencySet.Agents,
 		sessions:     dependencySet.Sessions,

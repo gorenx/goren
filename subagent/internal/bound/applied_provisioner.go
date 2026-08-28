@@ -33,17 +33,11 @@ func (source *appliedProvisioner) Provision(
 			"subagent: applied Bound Definition target is unavailable",
 		)
 	}
-	definitionValue, err := boundcontract.SnapshotDefinition(
-		source.definition,
-	)
-	if err != nil {
-		return nil, err
-	}
 	draft, err := session.NewEventDraft(
 		boundcontract.DefinitionAppliedEvent,
 		boundcontract.DefinitionAppliedData{
 			Version:    boundcontract.EventVersion,
-			Definition: definitionValue,
+			Definition: source.definition,
 		},
 	)
 	if err != nil {
