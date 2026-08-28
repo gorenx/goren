@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/approval"
@@ -73,16 +72,14 @@ type Dependencies struct {
 	Failures         FailureReporter
 }
 
-// Service owns Bound use cases. One parent lock serializes title allocation;
-// one parent-child lock serializes config replacement, epoch replacement, and
-// message admission for that exact binding.
+// Service orchestrates Bound use cases through the materialization policy,
+// binding state slots, and interaction delivery supervisor.
 type Service struct {
 	dependencies Dependencies
-	mutex        sync.Mutex
-	operations   map[operationKey]*operation
-	parents      map[session.SessionID]*operation
-	workers      map[session.SessionID]map[session.SessionID]*interactionWorker
-	closing      bool
+	materializer materializer
+	bindings     *bindingSlots
+	residents    *residentExecutions
+	interactions *deliverySupervisor
 }
 
 // New constructs the Bound mode service.
@@ -92,17 +89,48 @@ func New(dependencySet Dependencies) (*Service, error) {
 			"subagent: Bound requires Extension selection",
 		)
 	}
+	bindings := newBindingSlots()
+	interactions := newDeliverySupervisor(dependencySet)
 	return &Service{
 		dependencies: dependencySet,
-		operations:   make(map[operationKey]*operation),
-		parents:      make(map[session.SessionID]*operation),
-		workers:      make(map[session.SessionID]map[session.SessionID]*interactionWorker),
+		materializer: materializer{
+			constructor:      dependencySet.Constructor,
+			persistence:      dependencySet.Persistence,
+			seedBuilders:     dependencySet.SeedBuilders,
+			delegation:       dependencySet.Delegation,
+			commonExtensions: dependencySet.CommonExtensions,
+			extensions:       dependencySet.Extensions,
+		},
+		bindings:     bindings,
+		residents:    newResidentExecutions(dependencySet, bindings),
+		interactions: interactions,
 	}, nil
 }
 
 // Mode identifies the business mode implemented by Service.
 func (*Service) Mode() subagent.Mode {
 	return subagent.ModeBound
+}
+
+// SessionEventAppended wakes existing interaction deliveries after a complete
+// parent turn has been committed.
+func (owner *Service) SessionEventAppended(fact session.EventAppended) {
+	if owner == nil {
+		return
+	}
+	owner.interactions.sessionEventAppended(fact)
+}
+
+// AgentDisposed stops deliveries owned by the exact parent Agent epoch.
+func (owner *Service) AgentDisposed(
+	_ context.Context,
+	subject agent.Agent,
+) error {
+	if owner == nil {
+		return nil
+	}
+	owner.interactions.agentDisposed(subject)
+	return nil
 }
 
 func (owner *Service) authorizeParent(parentAgent agent.Agent) error {

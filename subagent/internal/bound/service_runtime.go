@@ -22,17 +22,17 @@ func (owner *Service) Start(
 	if err := owner.authorizeParent(command.Parent()); err != nil {
 		return nil, err
 	}
-	currentOperation := owner.childOperation(
+	slot := owner.bindings.child(
 		command.Parent().ID(),
 		command.ChildID(),
 	)
-	currentOperation.mutex.Lock()
-	defer currentOperation.mutex.Unlock()
+	slot.mutex.Lock()
+	defer slot.mutex.Unlock()
 	return owner.startLocked(
 		ctx,
 		command.Parent(),
 		command.ChildID(),
-		currentOperation,
+		slot,
 	)
 }
 
@@ -48,7 +48,10 @@ func (owner *Service) StartBindings(
 	if parentAgent == nil || parentAgent.SessionValue() == nil {
 		return nil
 	}
-	view, err := owner.parentView(parentAgent.SessionValue())
+	view, err := readBoundProjection(
+		owner.dependencies.Projections,
+		parentAgent.SessionValue(),
+	)
 	if err != nil {
 		return err
 	}
@@ -81,7 +84,7 @@ func (owner *Service) startLocked(
 	ctx context.Context,
 	parentAgent agent.Agent,
 	childID session.SessionID,
-	currentOperation *operation,
+	slot *bindingSlot,
 ) (subagent.Execution, error) {
 	if err := checkContext(ctx, "Bound Start"); err != nil {
 		return nil, err
@@ -89,10 +92,13 @@ func (owner *Service) startLocked(
 	if err := owner.authorizeParent(parentAgent); err != nil {
 		return nil, err
 	}
-	if err := owner.requireMaterializationDependencies(); err != nil {
+	if err := owner.requireRuntimeDependencies(); err != nil {
 		return nil, err
 	}
-	view, err := owner.parentView(parentAgent.SessionValue())
+	view, err := readBoundProjection(
+		owner.dependencies.Projections,
+		parentAgent.SessionValue(),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +110,7 @@ func (owner *Service) startLocked(
 	if !found {
 		return nil, errors.New("subagent: Bound binding has no config")
 	}
-	current := currentOperation.loadCurrent()
+	current := slot.loadCurrent()
 	if current != nil {
 		if current.running.State() != subagent.ExecutionActive {
 			return nil, errors.New("subagent: Bound child is stopping")
@@ -128,7 +134,7 @@ func (owner *Service) startLocked(
 	if !config.Config.Enabled {
 		return nil, boundDisabled(childID)
 	}
-	handle, initialPromptNeeded, materializationErr := owner.materialize(
+	handle, initialPromptNeeded, materializationErr := owner.materializer.materialize(
 		ctx,
 		parentAgent,
 		binding,
@@ -184,12 +190,12 @@ func (owner *Service) startLocked(
 			err,
 		)
 	}
-	current, err = owner.publish(
+	current, err = owner.residents.publish(
 		handle,
 		parentAgent,
 		binding.Creation.SeedBuilder,
 		config.Revision,
-		currentOperation,
+		slot,
 	)
 	if err != nil {
 		return nil, owner.disposeFailedMaterialization(
@@ -223,12 +229,113 @@ func (owner *Service) startLocked(
 			stopErr,
 		)
 	}
-	owner.ensureInteractionWorker(
+	owner.interactions.ensure(
 		parentAgent,
 		binding,
 		handle.Subject.SessionValue(),
-		currentOperation,
+		slot,
 	)
-	owner.watch(current)
+	owner.residents.watch(current)
 	return current.running, nil
+}
+
+func (owner *Service) requireRuntimeDependencies() error {
+	if err := owner.materializer.requireDependencies(); err != nil {
+		return err
+	}
+	if owner.dependencies.Sessions == nil || owner.dependencies.Executions == nil {
+		return unavailableDependency("runtime dependencies")
+	}
+	return nil
+}
+
+// Send ensures the latest committed Bound config has one resident Agent epoch
+// and then admits the message to that exact epoch under the same operation
+// lock used by config replacement.
+func (owner *Service) Send(
+	ctx context.Context,
+	parentAgent agent.Agent,
+	childID session.SessionID,
+	messageValue agentmessage.UserMessage,
+) (agentmessage.MessageID, error) {
+	if err := checkContext(ctx, "Bound Send"); err != nil {
+		return "", err
+	}
+	if err := owner.authorizeParent(parentAgent); err != nil {
+		return "", err
+	}
+	slot := owner.bindings.child(parentAgent.ID(), childID)
+	slot.mutex.Lock()
+	defer slot.mutex.Unlock()
+	if _, err := owner.startLocked(
+		ctx,
+		parentAgent,
+		childID,
+		slot,
+	); err != nil {
+		return "", err
+	}
+	current := slot.loadCurrent()
+	if current == nil || !agent.Same(
+		current.terminator.parent,
+		parentAgent,
+	) {
+		return "", errors.New(
+			"subagent: Bound resident Agent is unavailable",
+		)
+	}
+	if err := current.terminator.handle.Subject.Followup(
+		messageValue,
+	); err != nil {
+		return "", err
+	}
+	return messageValue.StableID(), nil
+}
+
+// Interrupt cancels the current turn but retains queued Bound work and the
+// resident Agent epoch.
+func (owner *Service) Interrupt(
+	ctx context.Context,
+	childID session.SessionID,
+) error {
+	if err := checkContext(ctx, "Bound Interrupt"); err != nil {
+		return err
+	}
+	owner.residents.interrupt(childID)
+	return nil
+}
+
+// Close stops every Bound epoch owned by this Service.
+func (owner *Service) Close(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	owner.interactions.close()
+	return owner.residents.close(ctx)
+}
+
+func (owner *Service) replaceResidentLocked(
+	ctx context.Context,
+	parentAgent agent.Agent,
+	childID session.SessionID,
+) error {
+	slot := owner.bindings.child(parentAgent.ID(), childID)
+	current := slot.loadCurrent()
+	if current == nil {
+		return nil
+	}
+	if !agent.Same(current.terminator.parent, parentAgent) {
+		return unauthorizedChild(childID)
+	}
+	_, err := owner.startLocked(
+		ctx,
+		parentAgent,
+		childID,
+		slot,
+	)
+	var typed *subagent.Error
+	if errors.As(err, &typed) && typed.Code == subagent.ErrorBoundDisabled {
+		return nil
+	}
+	return err
 }

@@ -741,11 +741,11 @@ func TestBoundWorkerDeliversCompletedParentInteractionOnce(t *testing.T) {
 		cursor.ThroughTurn != 1 {
 		t.Fatalf("Bound cursor = %#v", cursor)
 	}
-	worker := boundWorker(fixture.owner, fixture.parent.Subject.ID(), childID)
-	if worker == nil {
-		t.Fatal("Bound interaction worker is missing")
+	delivery := boundDelivery(fixture.owner, fixture.parent.Subject.ID(), childID)
+	if delivery == nil {
+		t.Fatal("Bound interaction delivery is missing")
 	}
-	if err := worker.catchUp(); err != nil {
+	if err := delivery.catchUp(); err != nil {
 		t.Fatal(err)
 	}
 	if followupCount(childAgent) != 2 {
@@ -760,15 +760,15 @@ func TestBoundWorkerRepairsCursorFromDurableChildReceipt(t *testing.T) {
 	defer func() {
 		_ = fixture.owner.Close(context.Background())
 	}()
-	worker := detachBoundWorker(
+	delivery := detachBoundDelivery(
 		fixture.owner,
 		fixture.parent.Subject.ID(),
 		childID,
 	)
-	if worker == nil {
-		t.Fatal("Bound interaction worker is missing")
+	if delivery == nil {
+		t.Fatal("Bound interaction delivery is missing")
 	}
-	worker.Stop()
+	delivery.Stop()
 	parentSession := fixture.parent.Subject.SessionValue()
 	appendTurnStart(t, parentSession, 1)
 	appendInteractionUser(
@@ -780,13 +780,13 @@ func TestBoundWorkerRepairsCursorFromDurableChildReceipt(t *testing.T) {
 	appendTurnEnd(t, parentSession, 1, session.TurnBlocked{})
 	interaction, found, err := nextParentInteraction(
 		parentSession.Events(),
-		worker.floor,
+		delivery.floor,
 	)
 	if err != nil || !found || !interaction.deliverable {
 		t.Fatalf("interaction = %#v, found = %v, error = %v", interaction, found, err)
 	}
 	childAgent := fixture.agentFactory.latestAgents[childID]
-	delivery := subagent.Delivery{
+	messageSource := subagent.Delivery{
 		ParentSessionID: fixture.parent.Subject.ID(),
 		Turn:            interaction.turn,
 		FromSeq:         interaction.fromSeq,
@@ -796,7 +796,7 @@ func TestBoundWorkerRepairsCursorFromDurableChildReceipt(t *testing.T) {
 	messageValue, err := agentmessage.NewUserMessage(
 		agentmessage.UserMessageInput{
 			Content: interaction.content,
-			Source:  delivery,
+			Source:  messageSource,
 		},
 	)
 	if err != nil {
@@ -811,15 +811,15 @@ func TestBoundWorkerRepairsCursorFromDurableChildReceipt(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	recovery := newInteractionWorker(
-		fixture.owner,
+	recovery := newInteractionDelivery(
+		fixture.owner.interactions,
 		fixture.parent.Subject,
 		subagentprojection.BoundBinding{
 			ChildSessionID: childID,
-			Seq:            worker.floor - 1,
+			Seq:            delivery.floor - 1,
 		},
 		childAgent.SessionValue(),
-		worker.operation,
+		delivery.slot,
 	)
 	defer recovery.cancel()
 	advanced, err := recovery.advanceOne()
@@ -867,15 +867,15 @@ func TestBoundWorkerKeepsBacklogWhileDisabledAndCatchesUpAfterEnable(
 		"queued while disabled",
 	)
 	appendTurnEnd(t, parentSession, 1, session.TurnCompleted{})
-	worker := boundWorker(fixture.owner, fixture.parent.Subject.ID(), childID)
-	if worker == nil {
-		t.Fatal("disabled binding lost its interaction worker")
+	delivery := boundDelivery(fixture.owner, fixture.parent.Subject.ID(), childID)
+	if delivery == nil {
+		t.Fatal("disabled binding lost its interaction delivery")
 	}
-	if err = worker.catchUp(); err != nil {
+	if err = delivery.catchUp(); err != nil {
 		t.Fatal(err)
 	}
 	if latestBoundCursor(parentSession, childID) != nil {
-		t.Fatal("disabled Bound worker advanced its cursor")
+		t.Fatal("disabled Bound delivery advanced its cursor")
 	}
 	_, err = fixture.owner.UpdateConfig(
 		context.Background(),
@@ -892,9 +892,9 @@ func TestBoundWorkerKeepsBacklogWhileDisabledAndCatchesUpAfterEnable(
 		t.Fatal(err)
 	}
 	_ = startRuntimeChild(t, fixture, childID)
-	worker = boundWorker(fixture.owner, fixture.parent.Subject.ID(), childID)
-	if worker == nil {
-		t.Fatal("re-enabled binding lost its interaction worker")
+	delivery = boundDelivery(fixture.owner, fixture.parent.Subject.ID(), childID)
+	if delivery == nil {
+		t.Fatal("re-enabled binding lost its interaction delivery")
 	}
 	waitForBoundCondition(t, func() bool {
 		return latestBoundCursor(parentSession, childID) != nil
@@ -1010,32 +1010,32 @@ func latestBoundCursor(
 	return latest
 }
 
-func boundWorker(
+func boundDelivery(
 	owner *Service,
 	parentID session.SessionID,
 	childID session.SessionID,
-) *interactionWorker {
-	owner.mutex.Lock()
-	defer owner.mutex.Unlock()
-	return owner.workers[parentID][childID]
+) *interactionDelivery {
+	owner.interactions.mutex.Lock()
+	defer owner.interactions.mutex.Unlock()
+	return owner.interactions.entries[parentID][childID]
 }
 
-func detachBoundWorker(
+func detachBoundDelivery(
 	owner *Service,
 	parentID session.SessionID,
 	childID session.SessionID,
-) *interactionWorker {
-	owner.mutex.Lock()
-	defer owner.mutex.Unlock()
-	parentWorkers := owner.workers[parentID]
-	worker := parentWorkers[childID]
-	if parentWorkers != nil {
-		delete(parentWorkers, childID)
-		if len(parentWorkers) == 0 {
-			delete(owner.workers, parentID)
+) *interactionDelivery {
+	owner.interactions.mutex.Lock()
+	defer owner.interactions.mutex.Unlock()
+	parentDeliveries := owner.interactions.entries[parentID]
+	delivery := parentDeliveries[childID]
+	if parentDeliveries != nil {
+		delete(parentDeliveries, childID)
+		if len(parentDeliveries) == 0 {
+			delete(owner.interactions.entries, parentID)
 		}
 	}
-	return worker
+	return delivery
 }
 
 func waitForBoundCondition(t *testing.T, condition func() bool) {
@@ -1043,7 +1043,7 @@ func waitForBoundCondition(t *testing.T, condition func() bool) {
 	deadline := time.Now().Add(2 * time.Second)
 	for !condition() {
 		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for Bound interaction worker")
+			t.Fatal("timed out waiting for Bound interaction delivery")
 		}
 		time.Sleep(time.Millisecond)
 	}

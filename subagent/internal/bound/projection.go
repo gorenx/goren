@@ -4,16 +4,18 @@ import (
 	"errors"
 
 	"github.com/gorenx/goren/session"
+	sessionprojection "github.com/gorenx/goren/session/projection"
 	subagentprojection "github.com/gorenx/goren/subagent/internal/projection"
 )
 
-func (owner *Service) parentView(
+func readBoundProjection(
+	projections sessionprojection.Registry,
 	parentSession session.Context,
 ) (subagentprojection.Bound, error) {
-	if owner.dependencies.Projections == nil {
+	if projections == nil {
 		return subagentprojection.Bound{}, unavailableDependency("projections")
 	}
-	snapshot, err := owner.dependencies.Projections.Snapshot(parentSession)
+	snapshot, err := projections.Snapshot(parentSession)
 	if err != nil {
 		return subagentprojection.Bound{}, err
 	}

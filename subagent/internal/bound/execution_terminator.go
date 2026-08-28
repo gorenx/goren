@@ -10,7 +10,7 @@ import (
 )
 
 type executionTerminator struct {
-	owner       *Service
+	owner       *residentExecutions
 	current     *currentExecution
 	handle      agent.Handle
 	parent      agent.Agent
@@ -35,12 +35,12 @@ func (terminator *executionTerminator) Terminate(
 	if err := terminator.handle.Subject.WhenIdle(ctx); err != nil {
 		terminalErr = errors.Join(terminalErr, err)
 	}
-	if terminator.owner.dependencies.Sessions != nil {
-		if err := terminator.owner.dependencies.Sessions.Flush(
+	if terminator.owner.sessions != nil {
+		if err := terminator.owner.sessions.Flush(
 			context.WithoutCancel(ctx),
 			terminator.handle.Subject.SessionValue(),
-		); err != nil && terminator.owner.dependencies.Failures != nil {
-			terminator.owner.dependencies.Failures.ReportBoundFinalFlushFailure(
+		); err != nil && terminator.owner.failures != nil {
+			terminator.owner.failures.ReportBoundFinalFlushFailure(
 				FinalFlushFailure{
 					ChildID: terminator.handle.Subject.ID(),
 					Error:   err,
@@ -58,8 +58,8 @@ func (terminator *executionTerminator) Terminate(
 	terminalValue := subagent.Terminal{
 		StopReason: stopReason,
 	}
-	if terminator.owner.dependencies.Publisher != nil {
-		terminator.owner.dependencies.Publisher.PublishEnded(
+	if terminator.owner.publisher != nil {
+		terminator.owner.publisher.PublishEnded(
 			terminator.parent,
 			subagent.Ended{
 				RunID:      terminator.runID,
@@ -70,10 +70,10 @@ func (terminator *executionTerminator) Terminate(
 			},
 		)
 	}
-	terminator.owner.dependencies.Executions.Remove(
+	terminator.owner.executions.Remove(
 		terminator.current.running,
 	)
-	terminator.current.operation.clearCurrent(terminator.current)
+	terminator.current.slot.clearCurrent(terminator.current)
 	if cause != sharedexecution.StopExternal {
 		terminalErr = errors.Join(
 			terminalErr,
