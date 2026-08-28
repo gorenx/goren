@@ -2,56 +2,22 @@ package bound
 
 import (
 	"context"
+	"errors"
 
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/subagent"
+	boundcontract "github.com/gorenx/goren/subagent/bound"
 	subagentprojection "github.com/gorenx/goren/subagent/internal/projection"
 )
 
-// bindingRegistration is the atomic parent-Session change that introduces
-// one immutable binding and its initial config revision.
-type bindingRegistration struct {
-	childID      session.SessionID
-	title        string
-	bindingDraft session.EventDraft
-	configDraft  session.EventDraft
+type pendingBinding struct {
+	name    string
+	childID session.SessionID
 }
 
-func newBindingRegistration(
-	childID session.SessionID,
-	creation subagent.BoundCreation,
-	config subagent.BoundConfigSnapshot,
-) (bindingRegistration, error) {
-	bindingDraft, err := session.NewEventDraft(
-		subagent.BoundBindingEvent,
-		subagent.BoundBindingData{
-			Version:        subagent.BoundEventVersion,
-			ChildSessionID: childID,
-			Creation:       creation,
-		},
-	)
-	if err != nil {
-		return bindingRegistration{}, err
-	}
-	configDraft, err := session.NewEventDraft(
-		subagent.BoundConfigEvent,
-		subagent.BoundConfigData{
-			Version:          subagent.BoundEventVersion,
-			ChildSessionID:   childID,
-			PreviousRevision: 0,
-			Revision:         1,
-			Config:           config,
-		},
-	)
-	if err != nil {
-		return bindingRegistration{}, err
-	}
-	return bindingRegistration{
-		childID:      childID,
-		title:        creation.Title,
-		bindingDraft: bindingDraft,
-		configDraft:  configDraft,
-	}, nil
+// bindingRegistration atomically introduces every still-missing enabled
+// Definition Binding at one parent Session FIFO head.
+type bindingRegistration struct {
+	bindings []pendingBinding
 }
 
 func (registration bindingRegistration) Build(
@@ -62,17 +28,41 @@ func (registration bindingRegistration) Build(
 	if err != nil {
 		return nil, err
 	}
-	if err = validateBindingAvailability(
-		view,
-		registration.childID,
-		registration.title,
-	); err != nil {
-		return nil, err
+	contextNextSeq := completedContextNextSeq(snapshot.Events)
+	drafts := make([]session.EventDraft, 0, len(registration.bindings))
+	for _, pending := range registration.bindings {
+		if _, found := view.BindingNamed(pending.name); found {
+			continue
+		}
+		if _, found := view.Binding(pending.childID); found {
+			return nil, errors.New(
+				"subagent: duplicate Bound child Session ID",
+			)
+		}
+		draft, draftErr := session.NewEventDraft(
+			boundcontract.BindingEvent,
+			boundcontract.BindingData{
+				Version:        boundcontract.EventVersion,
+				Name:           pending.name,
+				ChildSessionID: pending.childID,
+				ContextNextSeq: contextNextSeq,
+			},
+		)
+		if draftErr != nil {
+			return nil, draftErr
+		}
+		drafts = append(drafts, draft)
 	}
-	return []session.EventDraft{
-		registration.bindingDraft,
-		registration.configDraft,
-	}, nil
+	return drafts, nil
+}
+
+func completedContextNextSeq(events []session.Event) int64 {
+	for index := len(events) - 1; index >= 0; index-- {
+		if events[index].Type == session.TurnEndEventName {
+			return events[index].Seq + 1
+		}
+	}
+	return 0
 }
 
 var _ session.WritePlan = bindingRegistration{}

@@ -8,6 +8,7 @@ import (
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
+	boundcontract "github.com/gorenx/goren/subagent/bound"
 	subagentplugin "github.com/gorenx/goren/subagent/plugin"
 	"github.com/gorenx/goren/tools"
 )
@@ -187,9 +188,13 @@ func TestDescriptorAndLifecycleVocabulary(t *testing.T) {
 
 func TestRuntimeProvidesOnlyPublicBusinessCapabilities(t *testing.T) {
 	t.Parallel()
+	// Key is a provided capability type name. Value records set membership.
 	providedNames := map[string]bool{}
 	for _, capabilityType := range subagentplugin.New(
 		subagentplugin.Diagnostics{},
+		subagentplugin.DefinitionDatabase{
+			Path: ":memory:",
+		},
 	).Manifest().Provides {
 		providedNames[capabilityType.Name()] = true
 	}
@@ -199,7 +204,7 @@ func TestRuntimeProvidesOnlyPublicBusinessCapabilities(t *testing.T) {
 		plugin.ServiceOf[subagent.ChildControl](),
 		plugin.ServiceOf[subagent.ExtensionRegistry](),
 		plugin.ServiceOf[subagent.ChildDirectory](),
-		plugin.ServiceOf[subagent.BoundRegistry](),
+		plugin.ServiceOf[boundcontract.Definitions](),
 	}
 	for _, wantedType := range wantedTypes {
 		if !providedNames[wantedType.Name()] {

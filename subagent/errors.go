@@ -32,13 +32,8 @@ const (
 	// ErrorBoundBindingNotFound reports that the exact parent Session has no
 	// binding for the requested Bound child.
 	ErrorBoundBindingNotFound ErrorCode = "BOUND_BINDING_NOT_FOUND"
-	// ErrorDuplicateBoundBinding rejects a second title in the same exact
-	// parent Session, regardless of the requested child identity.
-	ErrorDuplicateBoundBinding ErrorCode = "DUPLICATE_BOUND_BINDING"
-	// ErrorBoundConfigConflict rejects an update based on a stale revision.
-	ErrorBoundConfigConflict ErrorCode = "BOUND_CONFIG_CONFLICT"
-	// ErrorBoundDisabled rejects materialization or delivery while the latest
-	// committed Bound config is disabled.
+	// ErrorBoundDisabled rejects explicit delivery while the global Definition
+	// governing the requested Binding is disabled.
 	ErrorBoundDisabled ErrorCode = "BOUND_DISABLED"
 	// ErrorCancelled reports caller cancellation around listing reads.
 	ErrorCancelled ErrorCode = "CANCELLED"

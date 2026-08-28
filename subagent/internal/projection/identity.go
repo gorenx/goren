@@ -85,7 +85,7 @@ func (identityUnit) ApplyState(
 		case subagent.BoundDescriptor:
 			next.Identity = &Identity{
 				Mode:  subagent.ModeBound,
-				Label: stringPointer(descriptor.Label),
+				Label: stringPointer(descriptor.Name),
 				Seq:   committed.Seq,
 			}
 		}

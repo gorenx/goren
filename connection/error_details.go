@@ -15,6 +15,8 @@ type errorDetailRules struct {
 	enumValues      []string
 }
 
+// Key is one RPC error code. Value is the exact details-object schema accepted
+// for that code.
 var rpcErrorDetailRules = map[RPCErrorCode]errorDetailRules{
 	ErrorBadRequest:                 {rawArrays: []string{"issues"}},
 	ErrorCancelled:                  {},
@@ -59,7 +61,16 @@ var rpcErrorDetailRules = map[RPCErrorCode]errorDetailRules{
 	ErrorSubagentNotResumable:        {requiredStrings: []string{"childSessionId"}},
 	ErrorSubagentUnauthorized:        {requiredStrings: []string{"childSessionId"}},
 	ErrorSubagentDeliveryUnavailable: {requiredStrings: []string{"childSessionId"}},
-	ErrorInternal:                    {},
+	ErrorBoundDefinitionExists:       {requiredStrings: []string{"name"}},
+	ErrorBoundDefinitionNotFound:     {requiredStrings: []string{"name"}},
+	ErrorBoundDefinitionConflict: {
+		requiredStrings: []string{"name"},
+		requiredNumbers: []string{"expectedRevision"},
+	},
+	ErrorBoundDefinitionRejected: {
+		requiredStrings: []string{"name", "reason"},
+	},
+	ErrorInternal: {},
 }
 
 func (rules errorDetailRules) valid(raw json.RawMessage) bool {
@@ -67,6 +78,7 @@ func (rules errorDetailRules) valid(raw json.RawMessage) bool {
 	if len(trimmed) < 2 || trimmed[0] != '{' {
 		return false
 	}
+	// Key is a detail field name. Value is its undecoded JSON value.
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(trimmed, &fields) != nil || fields == nil {
 		return false

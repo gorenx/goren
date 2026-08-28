@@ -1,5 +1,5 @@
-// Package bound owns durable parent bindings, Bound config revisions, and
-// resident Bound Agent epochs.
+// Package bound owns global Definitions, per-user-Session Bindings, resident
+// Bound child epochs, and parent interaction delivery.
 package bound
 
 import (
@@ -13,6 +13,7 @@ import (
 	"github.com/gorenx/goren/session/persistence"
 	sessionprojection "github.com/gorenx/goren/session/projection"
 	"github.com/gorenx/goren/subagent"
+	boundcontract "github.com/gorenx/goren/subagent/bound"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
 )
 
@@ -39,31 +40,34 @@ type InteractionFailure struct {
 	Error    error
 }
 
+// ReconcileFailure identifies one contained user Session consistency failure.
+type ReconcileFailure struct {
+	ParentID session.SessionID
+	Error    error
+}
+
 // FailureReporter receives Bound failures that must not veto parent Agent
-// publication.
+// publication or a committed global Definition.
 type FailureReporter interface {
 	ReportBoundMaterializationFailure(MaterializationFailure)
 	ReportBoundFinalFlushFailure(FinalFlushFailure)
 	ReportBoundInteractionFailure(InteractionFailure)
+	ReportBoundReconcileFailure(ReconcileFailure)
 }
 
 // Extensions is Bound's consumer-owned view of named child Extensions.
-// Validation happens before config durability; Provision builds the exact
-// epoch installation transaction without exposing the provider Registry.
 type Extensions interface {
-	Validate([]string) error
 	Provision([]string) (agent.Provisioner, error)
 }
 
-// Dependencies contains the capabilities required by Bound config and
-// resident Agent epoch management.
+// Dependencies contains the capabilities required by Bound ownership.
 type Dependencies struct {
 	Agents           agent.Registry
 	Constructor      agent.Constructor
 	Sessions         session.LiveStore
 	Persistence      persistence.Persistence
 	Projections      sessionprojection.Registry
-	SeedBuilders     subagent.SeedBuilderRegistry
+	Definitions      DefinitionStore
 	Delegation       approval.DelegationPolicy
 	CommonExtensions agent.Provisioner
 	Extensions       Extensions
@@ -72,32 +76,68 @@ type Dependencies struct {
 	Failures         FailureReporter
 }
 
-// Service validates Bound use-case inputs and routes child work to one actor
-// per exact parent-child binding.
+// Service owns global Definition management and every live Binding worker.
 type Service struct {
 	dependencies Dependencies
-	children     *boundChildRegistry
+	definitions  *definitionCatalog
+	workers      *registry
+	scheduler    *reconcileScheduler
 }
 
-// New constructs the Bound mode service.
-func New(dependencySet Dependencies) (*Service, error) {
+// New loads the committed Definition index and starts no background work.
+func New(
+	requestContext context.Context,
+	dependencySet Dependencies,
+) (*Service, error) {
+	if requestContext == nil {
+		return nil, errors.New("subagent: Bound New Context is nil")
+	}
+	if dependencySet.Agents == nil || dependencySet.Constructor == nil ||
+		dependencySet.Sessions == nil || dependencySet.Persistence == nil ||
+		dependencySet.Projections == nil || dependencySet.Executions == nil {
+		return nil, errors.New(
+			"subagent: Bound requires Agent, Session, Persistence, " +
+				"Projection, and Execution capabilities",
+		)
+	}
 	if dependencySet.Extensions == nil {
 		return nil, errors.New(
 			"subagent: Bound requires Extension selection",
 		)
 	}
-	factory := &materializer{
+	if dependencySet.Definitions == nil {
+		return nil, errors.New(
+			"subagent: Bound requires a Definition Store",
+		)
+	}
+	materializerValue := &materializer{
 		constructor:      dependencySet.Constructor,
 		persistence:      dependencySet.Persistence,
-		seedBuilders:     dependencySet.SeedBuilders,
 		delegation:       dependencySet.Delegation,
 		commonExtensions: dependencySet.CommonExtensions,
 		extensions:       dependencySet.Extensions,
 	}
-	return &Service{
+	owner := &Service{
 		dependencies: dependencySet,
-		children:     newBoundChildRegistry(dependencySet, factory),
-	}, nil
+	}
+	owner.workers = newRegistry(
+		requestContext,
+		dependencySet,
+		materializerValue,
+	)
+	owner.scheduler = newReconcileScheduler(requestContext, owner)
+	definitions, err := newDefinitionCatalog(
+		requestContext,
+		dependencySet.Definitions,
+		owner.scheduler,
+	)
+	if err != nil {
+		_ = owner.scheduler.close(context.WithoutCancel(requestContext))
+		return nil, err
+	}
+	owner.definitions = definitions
+	owner.workers.definitions = definitions
+	return owner, nil
 }
 
 // Mode identifies the business mode implemented by Service.
@@ -105,27 +145,81 @@ func (*Service) Mode() subagent.Mode {
 	return subagent.ModeBound
 }
 
+// List returns the detached committed global Definition index.
+func (owner *Service) List(
+	requestContext context.Context,
+) ([]boundcontract.Definition, error) {
+	return owner.definitions.List(requestContext)
+}
+
+// Create commits one new global Definition before requesting live reconcile.
+func (owner *Service) Create(
+	requestContext context.Context,
+	creation boundcontract.Creation,
+) (boundcontract.Definition, error) {
+	draft, err := boundcontract.SnapshotDraft(creation.Definition)
+	if err != nil {
+		return boundcontract.Definition{}, err
+	}
+	return owner.definitions.Create(
+		requestContext,
+		boundcontract.Creation{
+			Definition: draft,
+		},
+	)
+}
+
+// Replace commits one complete next global Definition revision.
+func (owner *Service) Replace(
+	requestContext context.Context,
+	replacement boundcontract.Replacement,
+) (boundcontract.Definition, error) {
+	draft, err := boundcontract.SnapshotDraft(replacement.Definition)
+	if err != nil {
+		return boundcontract.Definition{}, err
+	}
+	return owner.definitions.Replace(
+		requestContext,
+		boundcontract.Replacement{
+			ExpectedRevision: replacement.ExpectedRevision,
+			Definition:       draft,
+		},
+	)
+}
+
+// SessionStarted requests a level-triggered consistency pass for one exact
+// user Agent. Child Sessions are filtered before any task is admitted.
+func (owner *Service) SessionStarted(parentAgent agent.Agent) {
+	owner.scheduler.request(parentAgent)
+}
+
 // SessionEventAppended wakes existing interaction deliveries after a complete
 // parent turn has been committed.
 func (owner *Service) SessionEventAppended(fact session.EventAppended) {
-	if owner == nil {
+	if owner == nil || fact.Conversation == nil ||
+		fact.Committed.Type != session.TurnEndEventName {
 		return
 	}
-	if fact.Conversation == nil || fact.Committed.Type != session.TurnEndEventName {
+	parentID := fact.Conversation.ID()
+	owner.workers.notifyParent(parentID)
+	if owner.dependencies.Agents == nil {
 		return
 	}
-	owner.children.notifyParent(fact.Conversation.ID())
+	if parentAgent, found := owner.dependencies.Agents.Get(parentID); found {
+		owner.scheduler.retry(parentAgent)
+	}
 }
 
-// AgentDisposed stops deliveries owned by the exact parent Agent epoch.
+// AgentDisposed releases live routing for the exact parent Agent epoch.
 func (owner *Service) AgentDisposed(
-	ctx context.Context,
+	requestContext context.Context,
 	subject agent.Agent,
 ) error {
 	if owner == nil {
 		return nil
 	}
-	return owner.children.agentDisposed(ctx, subject)
+	owner.scheduler.agentDisposed(subject)
+	return owner.workers.agentDisposed(requestContext, subject)
 }
 
 func (owner *Service) authorizeParent(parentAgent agent.Agent) error {
@@ -143,36 +237,47 @@ func (owner *Service) authorizeParent(parentAgent agent.Agent) error {
 			),
 		}
 	}
-	if parentAgent.SessionValue() == nil {
-		return errors.New("subagent: Bound parent Session is unavailable")
+	if !isUserAgent(parentAgent) {
+		return &subagent.Error{
+			Code: subagent.ErrorUnauthorized,
+			Message: fmt.Sprintf(
+				"Bound operation requires direct user Session %q",
+				parentAgent.ID(),
+			),
+		}
 	}
 	return nil
 }
 
-func checkContext(ctx context.Context, operationName string) error {
-	if ctx == nil {
-		return errors.New("subagent: " + operationName + " context is nil")
+func isUserAgent(subject agent.Agent) bool {
+	if subject == nil || subject.SessionValue() == nil {
+		return false
 	}
-	return context.Cause(ctx)
+	header := subject.SessionValue().Header()
+	return header.Origin == "" && header.ParentSession == nil
+}
+
+func checkContext(requestContext context.Context, operationName string) error {
+	if requestContext == nil {
+		return errors.New("subagent: " + operationName + " Context is nil")
+	}
+	return context.Cause(requestContext)
 }
 
 func unavailableDependency(dependencyName string) error {
 	return fmt.Errorf("subagent: Bound %s is unavailable", dependencyName)
 }
 
-func (owner *Service) reportMaterializationFailure(
-	parentID session.SessionID,
-	childID session.SessionID,
-	materializationErr error,
-) {
-	if owner.dependencies.Failures == nil {
-		return
+// Close stops scheduler admission, waits managed tasks, closes workers in
+// parallel, then releases the independent Definition Store last.
+func (owner *Service) Close(closeContext context.Context) error {
+	if closeContext == nil {
+		closeContext = context.Background()
 	}
-	owner.dependencies.Failures.ReportBoundMaterializationFailure(
-		MaterializationFailure{
-			ParentID: parentID,
-			ChildID:  childID,
-			Error:    materializationErr,
-		},
-	)
+	schedulerErr := owner.scheduler.close(closeContext)
+	workerErr := owner.workers.close(closeContext)
+	storeErr := owner.definitions.Close(closeContext)
+	return errors.Join(schedulerErr, workerErr, storeErr)
 }
+
+var _ boundcontract.Definitions = (*Service)(nil)

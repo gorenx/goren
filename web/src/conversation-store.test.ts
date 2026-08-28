@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConversationStore } from './conversation-store'
 import type { Translator } from './i18n'
-import type { SessionEvent, SessionSummary } from './types'
+import type { BoundDefinition, BoundDefinitionDraft, SessionEvent, SessionSummary } from './types'
 import { MockWebSocket } from './test/mock-websocket'
 
 const translate: Translator = (messageKey, values) => {
@@ -42,6 +42,7 @@ describe('ConversationStore', () => {
     expect(host.methods).toEqual([
       'host.describe',
       'credentials.describe',
+    'bound.list',
       'session.list',
       'session.create',
       'session.history',
@@ -405,6 +406,44 @@ describe('ConversationStore', () => {
     ])
     store.dispose()
   })
+
+  it('creates and replaces complete Bound Definitions', async () => {
+    const host = installMockHost({ existingSession: true })
+    const store = new ConversationStore(translate)
+    await store.start()
+    const draft: BoundDefinitionDraft = {
+      name: 'researcher',
+      enabled: true,
+      systemPrompt: 'Research in the background.',
+      toolRestriction: { allow: [] },
+      extensions: ['report'],
+    }
+
+    const created = await store.createBoundDefinition(draft)
+    expect(created.revision).toBe(1)
+    expect(store.snapshot().boundDefinitions).toEqual([created])
+
+    const replaced = await store.replaceBoundDefinition(1, {
+      ...draft,
+      enabled: false,
+      systemPrompt: 'Revised prompt.',
+    })
+    expect(replaced).toEqual({
+      ...draft,
+      enabled: false,
+      systemPrompt: 'Revised prompt.',
+      revision: 2,
+    })
+    expect(store.snapshot().boundDefinitions).toEqual([replaced])
+    expect(host.calls.filter(call => call.method.startsWith('bound.')).map(call => call.method)).toEqual([
+      'bound.list',
+      'bound.create',
+      'bound.list',
+      'bound.replace',
+      'bound.list',
+    ])
+    store.dispose()
+  })
 })
 
 interface MockHostOptions {
@@ -417,6 +456,7 @@ interface MockHostOptions {
   historyWait?: Promise<void>
   listWait?: Promise<void>
   sessionPages?: Record<string, { items: SessionSummary[], nextCursor?: string }>
+  boundDefinitions?: BoundDefinition[]
 }
 
 function installMockHost(options: MockHostOptions = {}): {
@@ -425,6 +465,7 @@ function installMockHost(options: MockHostOptions = {}): {
   calls: Array<{ method: string, payload: unknown }>
 } {
   let sessions = options.existingSession === true ? [session] : []
+  let boundDefinitions = [...(options.boundDefinitions ?? [])]
   const methods: string[] = []
   const responses: unknown[] = []
   const calls: Array<{ method: string, payload: unknown }> = []
@@ -465,6 +506,33 @@ function installMockHost(options: MockHostOptions = {}): {
         },
       }
       break
+  case 'bound.list':
+    value = { definitions: boundDefinitions }
+    break
+  case 'bound.create': {
+    const payload = call.payload as { definition: BoundDefinitionDraft }
+    const committed: BoundDefinition = {
+      ...payload.definition,
+      revision: 1,
+    }
+    boundDefinitions = [...boundDefinitions, committed]
+    value = { definition: committed }
+    break
+  }
+  case 'bound.replace': {
+    const payload = call.payload as {
+      expectedRevision: number
+      definition: BoundDefinitionDraft
+    }
+    const committed: BoundDefinition = {
+      ...payload.definition,
+      revision: payload.expectedRevision + 1,
+    }
+    boundDefinitions = boundDefinitions.map(current =>
+      current.name === committed.name ? committed : current)
+    value = { definition: committed }
+    break
+  }
     case 'session.list':
       await options.listWait
       const listPayload = call.payload as { cursor?: string }
@@ -520,9 +588,9 @@ function installMockHost(options: MockHostOptions = {}): {
 }
 
 async function waitForMux(): Promise<void> {
-  for (let attempt = 0; attempt < 20; attempt++) {
+  for (let attempt = 0; attempt < 50; attempt++) {
     if (MockWebSocket.instances.some(socket => socket.url.endsWith('/api/events.mux'))) return
-    await Promise.resolve()
+    await new Promise(resolve => globalThis.setTimeout(resolve, 0))
   }
   throw new Error('web test: mux downlink was not opened')
 }

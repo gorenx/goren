@@ -6,7 +6,7 @@ import (
 
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/subagent"
+	boundcontract "github.com/gorenx/goren/subagent/bound"
 )
 
 func (child *boundChild) finishFailedMaterialization(
@@ -18,7 +18,7 @@ func (child *boundChild) finishFailedMaterialization(
 	stateErr := child.recordMaterialization(
 		context.WithoutCancel(ctx),
 		revision,
-		subagent.BoundMaterializationFailed,
+		boundcontract.MaterializationFailed,
 	)
 	return errors.Join(materializationErr, stateErr)
 }
@@ -43,15 +43,16 @@ func (child *boundChild) disposeFailedMaterialization(
 func (child *boundChild) recordMaterialization(
 	ctx context.Context,
 	revision int64,
-	result subagent.BoundMaterializationResult,
+	result boundcontract.MaterializationResult,
 ) error {
 	draft, err := session.NewEventDraft(
-		subagent.BoundMaterializationEvent,
-		subagent.BoundMaterializationData{
-			Version:        subagent.BoundEventVersion,
-			ChildSessionID: child.key.childID,
-			ConfigRevision: revision,
-			Result:         result,
+		boundcontract.MaterializationEvent,
+		boundcontract.MaterializationData{
+			Version:            boundcontract.EventVersion,
+			Name:               child.key.name,
+			ChildSessionID:     child.key.childID,
+			DefinitionRevision: revision,
+			Result:             result,
 		},
 	)
 	if err != nil {

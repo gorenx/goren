@@ -8,19 +8,13 @@ import (
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	sessionprojection "github.com/gorenx/goren/session/projection"
-	"github.com/gorenx/goren/subagent"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
 	subagentprojection "github.com/gorenx/goren/subagent/internal/projection"
 )
 
-type startRequest struct {
+type alignRequest struct {
 	ctx   context.Context
-	reply chan startResult
-}
-
-type startResult struct {
-	execution subagent.Execution
-	err       error
+	reply chan error
 }
 
 type messageRequest struct {
@@ -32,18 +26,6 @@ type messageRequest struct {
 type messageResult struct {
 	identifier agentmessage.MessageID
 	err        error
-}
-
-type configRequest struct {
-	ctx              context.Context
-	expectedRevision int64
-	config           subagent.BoundConfigSnapshot
-	reply            chan configResult
-}
-
-type configResult struct {
-	value subagent.UpdateBoundConfigResult
-	err   error
 }
 
 type interruptRequest struct {
@@ -63,15 +45,16 @@ type executionClosedNotice struct {
 	epoch *residentEpoch
 }
 
-// boundChild is one Bound child owned by an exact parent Agent epoch. It owns
-// the child command order, resident Execution, delivery floor, and
-// materialization transitions.
+// boundChild is the sole serial worker for one immutable user Session
+// Binding. It outlives individual resident Agent epochs.
 type boundChild struct {
-	key           boundChildKey
+	key           bindingKey
+	binding       subagentprojection.BoundBinding
 	parent        agent.Agent
 	agents        agent.Registry
 	sessions      session.LiveStore
 	projections   sessionprojection.Registry
+	definitions   *definitionCatalog
 	publisher     sharedexecution.EventPublisher
 	executions    *sharedexecution.Registry
 	failures      FailureReporter
@@ -88,31 +71,37 @@ type boundChild struct {
 }
 
 func newBoundChild(
+	registryContext context.Context,
 	dependencySet Dependencies,
 	factory *materializer,
+	definitions *definitionCatalog,
 	parentAgent agent.Agent,
-	childID session.SessionID,
+	bindingValue subagentprojection.BoundBinding,
 ) *boundChild {
-	childContext, cancelChild := context.WithCancel(context.Background())
+	childContext, cancelChild := context.WithCancel(registryContext)
 	return &boundChild{
-		key: boundChildKey{
+		key: bindingKey{
 			parentID: parentAgent.ID(),
-			childID:  childID,
+			name:     bindingValue.Name,
+			childID:  bindingValue.ChildSessionID,
 		},
+		binding:      bindingValue,
 		parent:       parentAgent,
 		agents:       dependencySet.Agents,
 		sessions:     dependencySet.Sessions,
 		projections:  dependencySet.Projections,
+		definitions:  definitions,
 		publisher:    dependencySet.Publisher,
 		executions:   dependencySet.Executions,
 		failures:     dependencySet.Failures,
 		materializer: factory,
-		mailbox:      make(chan any),
+		mailbox:      make(chan any, 16),
 		dirty:        make(chan struct{}, 1),
 		detach:       make(chan struct{}, 1),
 		ctx:          childContext,
 		cancel:       cancelChild,
 		done:         make(chan struct{}),
+		floor:        bindingValue.Seq + 1,
 	}
 }
 
@@ -136,160 +125,115 @@ func (child *boundChild) run() {
 }
 
 func (child *boundChild) handleCommand(received any) bool {
-	switch request := received.(type) {
-	case startRequest:
-		execution, err := child.handleStart(request.ctx)
-		request.reply <- startResult{
-			execution: execution,
-			err:       err,
-		}
+	switch commandValue := received.(type) {
+	case alignRequest:
+		commandValue.reply <- child.handleAlignment(commandValue.ctx)
 	case messageRequest:
-		identifier, err := child.handleMessage(request.ctx, request.message)
-		request.reply <- messageResult{
+		identifier, err := child.handleMessage(commandValue.ctx, commandValue.message)
+		commandValue.reply <- messageResult{
 			identifier: identifier,
 			err:        err,
 		}
-	case configRequest:
-		value, err := child.handleConfig(
-			request.ctx,
-			request.expectedRevision,
-			request.config,
-		)
-		request.reply <- configResult{
-			value: value,
-			err:   err,
-		}
 	case interruptRequest:
 		child.handleInterrupt()
-		request.reply <- struct{}{}
+		commandValue.reply <- struct{}{}
 	case catchUpRequest:
-		request.reply <- child.catchUpInteractions()
+		commandValue.reply <- child.catchUpInteractions()
 	case shutdownRequest:
 		child.cancel()
-		request.reply <- child.stopCurrent(request.ctx)
+		commandValue.reply <- child.stopCurrent(commandValue.ctx)
 		return true
 	case executionClosedNotice:
-		if child.current == request.epoch {
+		if child.current == commandValue.epoch {
 			child.current = nil
 		}
 	}
 	return false
 }
 
-func (child *boundChild) start(
-	ctx context.Context,
-) (subagent.Execution, error) {
-	reply := make(chan startResult, 1)
-	request := startRequest{
-		ctx:   ctx,
-		reply: reply,
-	}
-	select {
-	case child.mailbox <- request:
-	case <-ctx.Done():
-		return nil, context.Cause(ctx)
-	case <-child.done:
-		return nil, errors.New("subagent: Bound child is closed")
-	}
-	select {
-	case result := <-reply:
-		return result.execution, result.err
-	case <-ctx.Done():
-		return nil, context.Cause(ctx)
-	}
-}
-
-func (child *boundChild) send(
-	ctx context.Context,
-	messageValue agentmessage.UserMessage,
-) (agentmessage.MessageID, error) {
-	reply := make(chan messageResult, 1)
-	request := messageRequest{
-		ctx:     ctx,
-		message: messageValue,
-		reply:   reply,
-	}
-	select {
-	case child.mailbox <- request:
-	case <-ctx.Done():
-		return "", context.Cause(ctx)
-	case <-child.done:
-		return "", errors.New("subagent: Bound child is closed")
-	}
-	select {
-	case result := <-reply:
-		return result.identifier, result.err
-	case <-ctx.Done():
-		return "", context.Cause(ctx)
-	}
-}
-
-func (child *boundChild) updateConfig(
-	ctx context.Context,
-	expectedRevision int64,
-	config subagent.BoundConfigSnapshot,
-) (subagent.UpdateBoundConfigResult, error) {
-	reply := make(chan configResult, 1)
-	request := configRequest{
-		ctx:              ctx,
-		expectedRevision: expectedRevision,
-		config:           config,
-		reply:            reply,
-	}
-	select {
-	case child.mailbox <- request:
-	case <-ctx.Done():
-		return subagent.UpdateBoundConfigResult{}, context.Cause(ctx)
-	case <-child.done:
-		return subagent.UpdateBoundConfigResult{}, errors.New(
-			"subagent: Bound child is closed",
-		)
-	}
-	select {
-	case result := <-reply:
-		return result.value, result.err
-	case <-ctx.Done():
-		return subagent.UpdateBoundConfigResult{}, context.Cause(ctx)
-	}
-}
-
-func (child *boundChild) interrupt(ctx context.Context) error {
-	reply := make(chan struct{}, 1)
-	request := interruptRequest{
-		reply: reply,
-	}
-	select {
-	case child.mailbox <- request:
-	case <-ctx.Done():
-		return context.Cause(ctx)
-	case <-child.done:
-		return nil
-	}
-	select {
-	case <-reply:
-		return nil
-	case <-ctx.Done():
-		return context.Cause(ctx)
-	}
-}
-
-func (child *boundChild) catchUp(ctx context.Context) error {
+func (child *boundChild) align(requestContext context.Context) error {
 	reply := make(chan error, 1)
-	request := catchUpRequest{
+	commandValue := alignRequest{
+		ctx:   requestContext,
 		reply: reply,
 	}
 	select {
-	case child.mailbox <- request:
-	case <-ctx.Done():
-		return context.Cause(ctx)
+	case child.mailbox <- commandValue:
+	case <-requestContext.Done():
+		return context.Cause(requestContext)
 	case <-child.done:
 		return errors.New("subagent: Bound child is closed")
 	}
 	select {
 	case err := <-reply:
 		return err
-	case <-ctx.Done():
-		return context.Cause(ctx)
+	case <-requestContext.Done():
+		return context.Cause(requestContext)
+	}
+}
+
+func (child *boundChild) send(
+	requestContext context.Context,
+	messageValue agentmessage.UserMessage,
+) (agentmessage.MessageID, error) {
+	reply := make(chan messageResult, 1)
+	commandValue := messageRequest{
+		ctx:     requestContext,
+		message: messageValue,
+		reply:   reply,
+	}
+	select {
+	case child.mailbox <- commandValue:
+	case <-requestContext.Done():
+		return "", context.Cause(requestContext)
+	case <-child.done:
+		return "", errors.New("subagent: Bound child is closed")
+	}
+	select {
+	case result := <-reply:
+		return result.identifier, result.err
+	case <-requestContext.Done():
+		return "", context.Cause(requestContext)
+	}
+}
+
+func (child *boundChild) interrupt(requestContext context.Context) error {
+	reply := make(chan struct{}, 1)
+	commandValue := interruptRequest{
+		reply: reply,
+	}
+	select {
+	case child.mailbox <- commandValue:
+	case <-requestContext.Done():
+		return context.Cause(requestContext)
+	case <-child.done:
+		return nil
+	}
+	select {
+	case <-reply:
+		return nil
+	case <-requestContext.Done():
+		return context.Cause(requestContext)
+	}
+}
+
+func (child *boundChild) catchUp(requestContext context.Context) error {
+	reply := make(chan error, 1)
+	commandValue := catchUpRequest{
+		reply: reply,
+	}
+	select {
+	case child.mailbox <- commandValue:
+	case <-requestContext.Done():
+		return context.Cause(requestContext)
+	case <-child.done:
+		return errors.New("subagent: Bound child is closed")
+	}
+	select {
+	case err := <-reply:
+		return err
+	case <-requestContext.Done():
+		return context.Cause(requestContext)
 	}
 }
 
@@ -301,39 +245,37 @@ func (child *boundChild) notify() {
 }
 
 func (child *boundChild) executionClosed(closed *residentEpoch) {
-	go func() {
-		select {
-		case child.mailbox <- executionClosedNotice{
-			epoch: closed,
-		}:
-		case <-child.done:
-		}
-	}()
+	select {
+	case child.mailbox <- executionClosedNotice{
+		epoch: closed,
+	}:
+	case <-child.done:
+	}
 }
 
-func (child *boundChild) shutdown(ctx context.Context) error {
+func (child *boundChild) shutdown(closeContext context.Context) error {
 	child.cancel()
 	reply := make(chan error, 1)
-	request := shutdownRequest{
-		ctx:   ctx,
+	commandValue := shutdownRequest{
+		ctx:   closeContext,
 		reply: reply,
 	}
 	select {
-	case child.mailbox <- request:
-	case <-ctx.Done():
-		return context.Cause(ctx)
+	case child.mailbox <- commandValue:
+	case <-closeContext.Done():
+		return context.Cause(closeContext)
 	case <-child.done:
 		return nil
 	}
 	select {
 	case err := <-reply:
 		return err
-	case <-ctx.Done():
-		return context.Cause(ctx)
+	case <-closeContext.Done():
+		return context.Cause(closeContext)
 	}
 }
 
-func (child *boundChild) dispose(ctx context.Context) error {
+func (child *boundChild) dispose(requestContext context.Context) error {
 	child.cancel()
 	select {
 	case child.detach <- struct{}{}:
@@ -343,8 +285,8 @@ func (child *boundChild) dispose(ctx context.Context) error {
 	select {
 	case <-child.done:
 		return nil
-	case <-ctx.Done():
-		return context.Cause(ctx)
+	case <-requestContext.Done():
+		return context.Cause(requestContext)
 	}
 }
 
@@ -367,17 +309,6 @@ func (child *boundChild) operationContext(
 	}
 }
 
-func (child *boundChild) initializeDelivery(
-	binding subagentprojection.BoundBinding,
-	childSession session.Context,
-) {
-	if child.deliveryReady {
-		return
-	}
-	child.floor = binding.Seq + 1
-	if seedLength := childSession.Header().SeedLength; seedLength != nil &&
-		*seedLength > child.floor {
-		child.floor = *seedLength
-	}
+func (child *boundChild) initializeDelivery() {
 	child.deliveryReady = true
 }

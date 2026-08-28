@@ -61,5 +61,15 @@ func (reporter *failureReporter) ReportBoundInteractionFailure(
 	))
 }
 
+func (reporter *failureReporter) ReportBoundReconcileFailure(
+	failure bound.ReconcileFailure,
+) {
+	reporter.report(fmt.Errorf(
+		"bound definitions could not reconcile user Session %q: %w",
+		failure.ParentID,
+		failure.Error,
+	))
+}
+
 var _ continuable.FailureReporter = (*failureReporter)(nil)
 var _ bound.FailureReporter = (*failureReporter)(nil)

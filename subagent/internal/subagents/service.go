@@ -11,16 +11,19 @@ import (
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
+	boundcontract "github.com/gorenx/goren/subagent/bound"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
 )
 
 // Service is the single Subagent application service published through the
 // narrow Starter and ChildControl capability views.
 type Service struct {
-	mutex           sync.RWMutex
-	state           admissionState
-	activeCalls     sync.WaitGroup
-	control         *childExecutionControl
+	mutex       sync.RWMutex
+	state       admissionState
+	activeCalls sync.WaitGroup
+	control     *childExecutionControl
+	// Key is a canonical Subagent mode. Value is its complete implementation
+	// for the current open Service cycle.
 	implementations map[subagent.Mode]implementation
 	closeOrder      []implementation
 	closed          chan struct{}
@@ -49,7 +52,11 @@ func (owner *Service) Open(
 				"and implementations",
 		)
 	}
-	implementationIndex := make(map[subagent.Mode]implementation, len(implementations))
+	// Key is a canonical Subagent mode. Value is its validated implementation.
+	implementationIndex := make(
+		map[subagent.Mode]implementation,
+		len(implementations),
+	)
 	closeOrder := make([]implementation, 0, len(implementations))
 	for _, candidate := range implementations {
 		if candidate == nil || candidate.Mode() == "" {
@@ -123,12 +130,6 @@ func (owner *Service) Start(
 			return nil, unsupportedStart(command.Mode())
 		}
 		return selected.Start(ctx, typedCommand)
-	case subagent.BoundStartCommand:
-		selected, supported := candidate.(bound)
-		if !supported {
-			return nil, unsupportedStart(command.Mode())
-		}
-		return selected.Start(ctx, typedCommand)
 	default:
 		return nil, unsupportedStart(command.Mode())
 	}
@@ -157,54 +158,67 @@ func (owner *Service) Send(
 	)
 }
 
-// Bind establishes one durable Bound binding through the Bound owner.
-func (owner *Service) Bind(
+// List returns the committed global Bound Definition index.
+func (owner *Service) List(
 	ctx context.Context,
-	command subagent.BindCommand,
-) (subagent.BoundBinding, error) {
+) ([]boundcontract.Definition, error) {
 	if beginErr := owner.beginCall(); beginErr != nil {
-		return subagent.BoundBinding{}, beginErr
+		return nil, beginErr
 	}
 	defer owner.activeCalls.Done()
 	selected, err := owner.boundImplementation()
 	if err != nil {
-		return subagent.BoundBinding{}, err
+		return nil, err
 	}
-	return selected.Bind(ctx, command)
+	return selected.List(ctx)
 }
 
-// UpdateConfig commits and coordinates one Bound config revision.
-func (owner *Service) UpdateConfig(
+// Create commits one new global Bound Definition.
+func (owner *Service) Create(
 	ctx context.Context,
-	command subagent.UpdateBoundConfigCommand,
-) (subagent.UpdateBoundConfigResult, error) {
+	creation boundcontract.Creation,
+) (boundcontract.Definition, error) {
 	if beginErr := owner.beginCall(); beginErr != nil {
-		return subagent.UpdateBoundConfigResult{}, beginErr
+		return boundcontract.Definition{}, beginErr
 	}
 	defer owner.activeCalls.Done()
 	selected, err := owner.boundImplementation()
 	if err != nil {
-		return subagent.UpdateBoundConfigResult{}, err
+		return boundcontract.Definition{}, err
 	}
-	return selected.UpdateConfig(ctx, command)
+	return selected.Create(ctx, creation)
 }
 
-// AgentSessionStarted schedules the bindings already committed in this exact
-// parent Session. Bound contains per-child failures so this method cannot veto
-// parent Agent publication.
+// Replace commits one complete next Bound Definition revision.
+func (owner *Service) Replace(
+	ctx context.Context,
+	replacement boundcontract.Replacement,
+) (boundcontract.Definition, error) {
+	if beginErr := owner.beginCall(); beginErr != nil {
+		return boundcontract.Definition{}, beginErr
+	}
+	defer owner.activeCalls.Done()
+	selected, err := owner.boundImplementation()
+	if err != nil {
+		return boundcontract.Definition{}, err
+	}
+	return selected.Replace(ctx, replacement)
+}
+
+// AgentSessionStarted requests a level-triggered consistency pass. Bound owns
+// the task lifetime and returns before Session or Agent I/O begins.
 func (owner *Service) AgentSessionStarted(
-	ctx context.Context,
 	subject agent.Agent,
-) error {
+) {
 	if beginErr := owner.beginCall(); beginErr != nil {
-		return beginErr
+		return
 	}
 	defer owner.activeCalls.Done()
 	selected, err := owner.boundImplementation()
 	if err != nil {
-		return err
+		return
 	}
-	return selected.StartBindings(ctx, subject)
+	selected.SessionStarted(subject)
 }
 
 // SessionEventAppended forwards the existing post-commit wakeup to Bound
@@ -386,4 +400,4 @@ func validateImplementation(candidate implementation) error {
 
 var _ subagent.Starter = (*Service)(nil)
 var _ subagent.ChildControl = (*Service)(nil)
-var _ subagent.BoundRegistry = (*Service)(nil)
+var _ boundcontract.Definitions = (*Service)(nil)

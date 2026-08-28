@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/subagent"
+	sessionprojection "github.com/gorenx/goren/session/projection"
+	boundcontract "github.com/gorenx/goren/subagent/bound"
 )
 
-func TestBoundProjectionKeepsBindingConfigMaterializationAndAppliedSeparate(
+func TestBoundProjectionKeepsBindingMaterializationAndAppliedSeparate(
 	t *testing.T,
 ) {
 	t.Parallel()
@@ -19,57 +19,38 @@ func TestBoundProjectionKeepsBindingConfigMaterializationAndAppliedSeparate(
 	if err != nil {
 		t.Fatal(err)
 	}
+	definitionValue := boundDefinitionFixture(t, 1)
 	events := []session.Event{
 		boundProjectionEvent(
 			t,
-			subagent.BoundBindingEventName,
+			boundcontract.BindingEventName,
+			10,
+			boundcontract.BindingData{
+				Version:        boundcontract.EventVersion,
+				Name:           definitionValue.Name,
+				ChildSessionID: "child",
+				ContextNextSeq: 8,
+			},
+		),
+		boundProjectionEvent(
+			t,
+			boundcontract.MaterializationEventName,
+			11,
+			boundcontract.MaterializationData{
+				Version:            boundcontract.EventVersion,
+				Name:               definitionValue.Name,
+				ChildSessionID:     "child",
+				DefinitionRevision: definitionValue.Revision,
+				Result:             boundcontract.MaterializationSucceeded,
+			},
+		),
+		boundProjectionEvent(
+			t,
+			boundcontract.DefinitionAppliedEventName,
 			0,
-			subagent.BoundBindingData{
-				Version:        subagent.BoundEventVersion,
-				ChildSessionID: "child",
-				Creation: subagent.BoundCreation{
-					SeedBuilder: "spawn",
-					Title:       "researcher",
-					InitialPrompt: []agentmessage.ContentBlock{
-						agentmessage.NewTextBlock("start"),
-					},
-				},
-			},
-		),
-		boundProjectionEvent(
-			t,
-			subagent.BoundConfigEventName,
-			1,
-			subagent.BoundConfigData{
-				Version:          subagent.BoundEventVersion,
-				ChildSessionID:   "child",
-				PreviousRevision: 0,
-				Revision:         1,
-				Config: subagent.BoundConfigSnapshot{
-					Enabled: true,
-				},
-			},
-		),
-		boundProjectionEvent(
-			t,
-			subagent.BoundMaterializationEventName,
-			2,
-			subagent.BoundMaterializationData{
-				Version:        subagent.BoundEventVersion,
-				ChildSessionID: "child",
-				ConfigRevision: 1,
-				Result:         subagent.BoundMaterializationSucceeded,
-			},
-		),
-		boundProjectionEvent(
-			t,
-			subagent.BoundConfigAppliedEventName,
-			3,
-			subagent.BoundConfigAppliedData{
-				Version:              subagent.BoundEventVersion,
-				ParentSessionID:      "parent",
-				ParentConfigEventSeq: 1,
-				Revision:             1,
+			boundcontract.DefinitionAppliedData{
+				Version:    boundcontract.EventVersion,
+				Definition: definitionValue,
 			},
 		),
 	}
@@ -84,71 +65,25 @@ func TestBoundProjectionKeepsBindingConfigMaterializationAndAppliedSeparate(
 	if err != nil {
 		t.Fatal(err)
 	}
-	view, found, err := ReadBound(map[string]json.RawMessage{
+	// Key is a projection Unit key. Value is that Unit's encoded state.
+	values := sessionprojection.Values{
 		boundKey: viewValue,
-	})
+	}
+	view, found, err := ReadBound(values)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !found || len(view.Bindings) != 1 || len(view.Configs) != 1 ||
+	if !found || len(view.Bindings) != 1 ||
 		len(view.Materializations) != 1 || len(view.Applied) != 1 {
 		t.Fatalf("Bound view = %#v, found = %v", view, found)
 	}
-}
-
-func TestBoundProjectionRejectsNonContiguousConfigRevision(t *testing.T) {
-	t.Parallel()
-	unit := boundUnit{}
-	state, err := unit.InitialState()
-	if err != nil {
-		t.Fatal(err)
-	}
-	transition, err := unit.ApplyState(
-		state,
-		boundProjectionEvent(
-			t,
-			subagent.BoundBindingEventName,
-			0,
-			subagent.BoundBindingData{
-				Version:        subagent.BoundEventVersion,
-				ChildSessionID: "child",
-				Creation: subagent.BoundCreation{
-					SeedBuilder: "spawn",
-					Title:       "researcher",
-					InitialPrompt: []agentmessage.ContentBlock{
-						agentmessage.NewTextBlock("start"),
-					},
-				},
-			},
-		),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	state = transition.State
-	_, err = unit.ApplyState(
-		state,
-		boundProjectionEvent(
-			t,
-			subagent.BoundConfigEventName,
-			0,
-			subagent.BoundConfigData{
-				Version:          subagent.BoundEventVersion,
-				ChildSessionID:   "child",
-				PreviousRevision: 1,
-				Revision:         2,
-				Config: subagent.BoundConfigSnapshot{
-					Enabled: true,
-				},
-			},
-		),
-	)
-	if err == nil {
-		t.Fatal("Bound projection accepted config without revision 1")
+	if view.Bindings[0].ContextNextSeq != 8 ||
+		view.Applied[0].Definition.SystemPrompt != definitionValue.SystemPrompt {
+		t.Fatalf("Bound projection lost durable data: %#v", view)
 	}
 }
 
-func TestBoundProjectionRejectsConfigWithoutBinding(t *testing.T) {
+func TestBoundProjectionRejectsRemovedEventVersion(t *testing.T) {
 	t.Parallel()
 	unit := boundUnit{}
 	state, err := unit.InitialState()
@@ -159,26 +94,65 @@ func TestBoundProjectionRejectsConfigWithoutBinding(t *testing.T) {
 		state,
 		boundProjectionEvent(
 			t,
-			subagent.BoundConfigEventName,
-			0,
-			subagent.BoundConfigData{
-				Version:        subagent.BoundEventVersion,
+			boundcontract.BindingEventName,
+			1,
+			boundcontract.BindingData{
+				Version:        1,
+				Name:           "researcher",
 				ChildSessionID: "child",
-				Revision:       1,
-				Config: subagent.BoundConfigSnapshot{
-					Enabled: true,
-				},
+				ContextNextSeq: 0,
 			},
 		),
 	)
 	if err == nil {
-		t.Fatal("Bound projection accepted config without binding")
+		t.Fatal("Bound projection accepted removed event version")
 	}
 }
 
-func TestBoundProjectionRejectsMaterializationWithoutMatchingConfig(
-	t *testing.T,
-) {
+func TestBoundProjectionRejectsDuplicateDefinitionName(t *testing.T) {
+	t.Parallel()
+	unit := boundUnit{}
+	state, err := unit.InitialState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := unit.ApplyState(
+		state,
+		boundProjectionEvent(
+			t,
+			boundcontract.BindingEventName,
+			1,
+			boundcontract.BindingData{
+				Version:        boundcontract.EventVersion,
+				Name:           "researcher",
+				ChildSessionID: "child-a",
+				ContextNextSeq: 0,
+			},
+		),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = unit.ApplyState(
+		first.State,
+		boundProjectionEvent(
+			t,
+			boundcontract.BindingEventName,
+			2,
+			boundcontract.BindingData{
+				Version:        boundcontract.EventVersion,
+				Name:           "researcher",
+				ChildSessionID: "child-b",
+				ContextNextSeq: 0,
+			},
+		),
+	)
+	if err == nil {
+		t.Fatal("Bound projection accepted duplicate Definition name")
+	}
+}
+
+func TestBoundProjectionRejectsMaterializationWithoutBinding(t *testing.T) {
 	t.Parallel()
 	unit := boundUnit{}
 	state, err := unit.InitialState()
@@ -189,18 +163,19 @@ func TestBoundProjectionRejectsMaterializationWithoutMatchingConfig(
 		state,
 		boundProjectionEvent(
 			t,
-			subagent.BoundMaterializationEventName,
+			boundcontract.MaterializationEventName,
 			0,
-			subagent.BoundMaterializationData{
-				Version:        subagent.BoundEventVersion,
-				ChildSessionID: "child",
-				ConfigRevision: 1,
-				Result:         subagent.BoundMaterializationSucceeded,
+			boundcontract.MaterializationData{
+				Version:            boundcontract.EventVersion,
+				Name:               "researcher",
+				ChildSessionID:     "child",
+				DefinitionRevision: 1,
+				Result:             boundcontract.MaterializationSucceeded,
 			},
 		),
 	)
 	if err == nil {
-		t.Fatal("Bound projection accepted materialization without config")
+		t.Fatal("Bound projection accepted materialization without binding")
 	}
 }
 
@@ -215,15 +190,16 @@ func TestBoundProjectionDoesNotExposeInteractionCursor(t *testing.T) {
 		state,
 		boundProjectionEvent(
 			t,
-			subagent.BoundCursorEventName,
+			boundcontract.CursorEventName,
 			10,
-			subagent.BoundCursor{
-				Version:         subagent.BoundEventVersion,
+			boundcontract.Cursor{
+				Version:         boundcontract.EventVersion,
+				Name:            "researcher",
 				ChildSessionID:  "child",
 				PreviousNextSeq: 1,
 				NextSeq:         10,
 				ThroughTurn:     2,
-				Disposition:     subagent.BoundCursorDelivered,
+				Disposition:     boundcontract.CursorDelivered,
 			},
 		),
 	)
@@ -235,16 +211,35 @@ func TestBoundProjectionDoesNotExposeInteractionCursor(t *testing.T) {
 	}
 }
 
+func boundDefinitionFixture(
+	testingContext *testing.T,
+	revision int64,
+) boundcontract.Definition {
+	testingContext.Helper()
+	definitionValue, err := boundcontract.NewDefinition(
+		boundcontract.Draft{
+			Name:         "researcher",
+			Enabled:      true,
+			SystemPrompt: "research",
+		},
+		revision,
+	)
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	return definitionValue
+}
+
 func boundProjectionEvent(
-	t *testing.T,
+	testingContext *testing.T,
 	eventType string,
 	sequence int64,
 	payload any,
 ) session.Event {
-	t.Helper()
+	testingContext.Helper()
 	rawValue, err := json.Marshal(payload)
 	if err != nil {
-		t.Fatal(err)
+		testingContext.Fatal(err)
 	}
 	return session.Event{
 		Type: eventType,

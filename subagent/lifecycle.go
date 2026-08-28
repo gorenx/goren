@@ -70,14 +70,6 @@ type ContinuableStartCommand struct {
 	settings ContinuableOptions
 }
 
-// BoundStartCommand identifies one already-bound child to initialize for an
-// exact live parent. Bound-owned creation input and configuration are loaded by
-// the Bound implementation rather than copied into this command.
-type BoundStartCommand struct {
-	parent  agent.Agent
-	childID session.SessionID
-}
-
 // NewOneShotStart constructs a valid OneShot command.
 func NewOneShotStart(settings OneShotOptions) (OneShotStartCommand, error) {
 	if err := validateSeedBuilderName(settings.SeedBuilder); err != nil {
@@ -110,29 +102,6 @@ func NewContinuableStart(
 	}
 	return ContinuableStartCommand{
 		settings: detached,
-	}, nil
-}
-
-// NewBoundStart constructs a command for one binding-selected child. The Bound
-// implementation must still verify that the durable binding exists.
-func NewBoundStart(
-	parentAgent agent.Agent,
-	boundChildID session.SessionID,
-) (BoundStartCommand, error) {
-	if parentAgent == nil {
-		return BoundStartCommand{}, errors.New(
-			"subagent: Bound start parent Agent is nil",
-		)
-	}
-	if strings.TrimSpace(string(boundChildID)) == "" ||
-		string(boundChildID) != strings.TrimSpace(string(boundChildID)) {
-		return BoundStartCommand{}, errors.New(
-			"subagent: Bound start child Session ID must be non-empty and trimmed",
-		)
-	}
-	return BoundStartCommand{
-		parent:  parentAgent,
-		childID: boundChildID,
 	}, nil
 }
 
@@ -184,23 +153,6 @@ func (command ContinuableStartCommand) Label() string {
 // Continuable child, when present.
 func (command ContinuableStartCommand) RequestedChildID() *session.SessionID {
 	return cloneSessionID(command.settings.ChildID)
-}
-
-// Mode selects the Bound implementation.
-func (BoundStartCommand) Mode() Mode {
-	return ModeBound
-}
-
-func (BoundStartCommand) startCommand() {}
-
-// Parent returns the exact live parent that discovered the committed binding.
-func (command BoundStartCommand) Parent() agent.Agent {
-	return command.parent
-}
-
-// ChildID returns the durable child identity stored by the binding.
-func (command BoundStartCommand) ChildID() session.SessionID {
-	return command.childID
 }
 
 // ExecutionState is the single lifecycle vocabulary used by both

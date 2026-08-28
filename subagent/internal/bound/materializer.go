@@ -2,223 +2,219 @@ package bound
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agent/scopedplugin"
 	"github.com/gorenx/goren/approval"
+	"github.com/gorenx/goren/session"
 	sesspersist "github.com/gorenx/goren/session/persistence"
 	"github.com/gorenx/goren/subagent"
+	boundcontract "github.com/gorenx/goren/subagent/bound"
 	"github.com/gorenx/goren/subagent/internal/childpolicy"
 	"github.com/gorenx/goren/subagent/internal/lineage"
 	subagentprojection "github.com/gorenx/goren/subagent/internal/projection"
 	"github.com/gorenx/goren/subagent/internal/seedbuilder"
-	"github.com/gorenx/goren/tools"
 )
 
-// materializer owns Bound Agent construction and restoration policy. A
-// boundChild selects a committed binding and serializes its use cases;
-// materializer owns descriptor validation, seed construction, and scoped
-// provisioning.
+// materializer owns Bound child construction, restoration, frozen context,
+// descriptor validation, and exact Scope provisioning.
 type materializer struct {
 	constructor      agent.Constructor
 	persistence      sesspersist.Persistence
-	seedBuilders     subagent.SeedBuilderRegistry
 	delegation       approval.DelegationPolicy
 	commonExtensions agent.Provisioner
 	extensions       Extensions
 }
 
-// childEpoch is one materialized Bound Agent epoch together with the recovery
-// state needed before it can be published as a resident execution.
-type childEpoch struct {
-	handle               agent.Handle
-	initialPromptPending bool
-}
-
 func (factory *materializer) materialize(
-	ctx context.Context,
+	requestContext context.Context,
 	parentAgent agent.Agent,
-	binding subagentprojection.BoundBinding,
-	config subagentprojection.BoundConfig,
-) (childEpoch, error) {
+	bindingValue subagentprojection.BoundBinding,
+	definitionValue boundcontract.Definition,
+) (agent.Handle, error) {
 	inspection, err := factory.persistence.Inspect(
-		ctx,
-		binding.ChildSessionID,
+		requestContext,
+		bindingValue.ChildSessionID,
 	)
 	if err == nil {
-		handle, resumeErr := factory.resume(
-			ctx,
+		return factory.resume(
+			requestContext,
 			parentAgent,
-			binding,
-			config,
+			bindingValue,
+			definitionValue,
 			inspection,
 		)
-		if resumeErr != nil {
-			return childEpoch{}, resumeErr
-		}
-		return childEpoch{
-			handle:               handle,
-			initialPromptPending: !hasSubmittedMessage(inspection),
-		}, nil
 	}
 	var notFound *sesspersist.NotFoundError
 	if !errors.As(err, &notFound) {
-		return childEpoch{}, err
+		return agent.Handle{}, err
 	}
-	handle, createErr := factory.create(
-		ctx,
+	return factory.create(
+		requestContext,
 		parentAgent,
-		binding,
-		config,
+		bindingValue,
+		definitionValue,
 	)
-	if createErr != nil {
-		return childEpoch{}, createErr
-	}
-	return childEpoch{
-		handle:               handle,
-		initialPromptPending: true,
-	}, nil
 }
 
 func (factory *materializer) create(
-	ctx context.Context,
+	requestContext context.Context,
 	parentAgent agent.Agent,
-	binding subagentprojection.BoundBinding,
-	config subagentprojection.BoundConfig,
+	bindingValue subagentprojection.BoundBinding,
+	definitionValue boundcontract.Definition,
 ) (agent.Handle, error) {
-	builder, found := factory.seedBuilders.Find(
-		binding.Creation.SeedBuilder,
-	)
-	if !found {
-		return agent.Handle{}, noSeedBuilder(binding.Creation.SeedBuilder)
+	parentEvents := parentAgent.SessionValue().Events()
+	if bindingValue.ContextNextSeq < 0 ||
+		bindingValue.ContextNextSeq > int64(len(parentEvents)) {
+		return agent.Handle{}, errors.New(
+			"subagent: Bound Binding context prefix is invalid",
+		)
 	}
-	seedValue, err := builder.BuildSeed(
-		ctx,
-		parentAgent.SessionValue().Events(),
-	)
-	if err != nil {
-		return agent.Handle{}, err
-	}
-	builderSeed := seedValue.EventPrefix()
-	descriptor := subagent.BoundDescriptor{
-		Provider: binding.Creation.SeedBuilder,
-		Label:    binding.Creation.Title,
-	}
+	contextPrefix := parentEvents[:bindingValue.ContextNextSeq]
+	seedValue := subagent.NewSessionSeed(contextPrefix)
 	seed, err := seedbuilder.AppendDescriptor(
-		binding.ChildSessionID,
-		builderSeed,
-		descriptor,
+		bindingValue.ChildSessionID,
+		seedValue.EventPrefix(),
+		subagent.BoundDescriptor{
+			Name: bindingValue.Name,
+		},
 	)
 	if err != nil {
 		return agent.Handle{}, err
 	}
-	childLineage, err := lineage.From(parentAgent, nil)
+	childLineage, err := lineage.From(parentAgent, definitionValue.MaxDepth)
 	if err != nil {
 		return agent.Handle{}, err
 	}
-	configProvisioner, err := factory.provisioner(
-		config.Config,
+	effectiveDefinition, err := effectiveBoundDefinition(
+		definitionValue,
+		childLineage.AgentOptions(definitionValue.AgentOptions),
+	)
+	if err != nil {
+		return agent.Handle{}, err
+	}
+	definitionProvisioner, err := factory.provisioner(
+		effectiveDefinition,
 		true,
 	)
 	if err != nil {
 		return agent.Handle{}, err
 	}
-	initiated, err := agent.WithInitiator(ctx, parentAgent)
+	initiated, err := agent.WithInitiator(requestContext, parentAgent)
 	if err != nil {
 		return agent.Handle{}, err
 	}
 	handle, err := factory.constructor.Create(
 		initiated,
 		agent.CreateOptions{
-			SessionID:    binding.ChildSessionID,
-			Metadata:     childLineage.Metadata(int64(len(builderSeed))),
+			SessionID: bindingValue.ChildSessionID,
+			Metadata: childLineage.Metadata(
+				bindingValue.ContextNextSeq,
+			),
 			Seed:         seed,
-			AgentOptions: binding.Creation.AgentOptions,
+			AgentOptions: *effectiveDefinition.AgentOptions,
 			Provisioner: agent.ComposeProvisioners(
-				configProvisioner,
-				newAppliedProvisioner(parentAgent.ID(), config),
+				definitionProvisioner,
+				newAppliedProvisioner(effectiveDefinition),
 			),
 			RuntimeParent: parentAgent,
 		},
 	)
 	if errors.Is(err, agent.ErrDescendantAdmissionClosed) {
-		return agent.Handle{}, descendantAdmissionClosed(binding.ChildSessionID)
+		return agent.Handle{}, descendantAdmissionClosed(
+			bindingValue.ChildSessionID,
+		)
 	}
 	return handle, err
 }
 
 func (factory *materializer) resume(
-	ctx context.Context,
+	requestContext context.Context,
 	parentAgent agent.Agent,
-	binding subagentprojection.BoundBinding,
-	config subagentprojection.BoundConfig,
+	bindingValue subagentprojection.BoundBinding,
+	definitionValue boundcontract.Definition,
 	inspection sesspersist.Inspection,
 ) (agent.Handle, error) {
 	if inspection.Header.ParentSession == nil ||
-		*inspection.Header.ParentSession != parentAgent.ID() {
-		return agent.Handle{}, unauthorizedChild(binding.ChildSessionID)
+		*inspection.Header.ParentSession != parentAgent.ID() ||
+		inspection.Header.Origin != session.OriginSubagent {
+		return agent.Handle{}, unauthorizedChild(bindingValue.ChildSessionID)
 	}
-	suffixStart := int64(0)
+	seedLength := int64(0)
 	if inspection.Header.SeedLength != nil {
-		suffixStart = *inspection.Header.SeedLength
+		seedLength = *inspection.Header.SeedLength
 	}
-	if suffixStart < 0 || suffixStart > int64(len(inspection.Events)) {
+	if seedLength != bindingValue.ContextNextSeq ||
+		bindingValue.ContextNextSeq < 0 ||
+		bindingValue.ContextNextSeq > int64(len(inspection.Events)) {
 		return agent.Handle{}, notResumable(
-			binding.ChildSessionID,
-			"has an invalid seed boundary",
+			bindingValue.ChildSessionID,
+			"does not match its frozen Bound context",
 			nil,
 		)
 	}
 	descriptorValue, found, err := subagent.FoldDescriptor(
-		inspection.Events[suffixStart:],
+		inspection.Events[bindingValue.ContextNextSeq:],
 	)
 	if err != nil || !found {
 		return agent.Handle{}, notResumable(
-			binding.ChildSessionID,
+			bindingValue.ChildSessionID,
 			"has no Bound descriptor",
 			err,
 		)
 	}
 	descriptor, matches := descriptorValue.(subagent.BoundDescriptor)
-	if !matches || descriptor.Provider != binding.Creation.SeedBuilder ||
-		descriptor.Label != binding.Creation.Title {
+	if !matches || descriptor.Name != bindingValue.Name {
 		return agent.Handle{}, notResumable(
-			binding.ChildSessionID,
-			"does not match its Bound binding",
+			bindingValue.ChildSessionID,
+			"does not match its Bound Binding",
 			nil,
 		)
 	}
-	configProvisioner, err := factory.provisioner(
-		config.Config,
+	childLineage, err := lineage.From(parentAgent, definitionValue.MaxDepth)
+	if err != nil {
+		return agent.Handle{}, err
+	}
+	effectiveDefinition, err := effectiveBoundDefinition(
+		definitionValue,
+		childLineage.AgentOptions(definitionValue.AgentOptions),
+	)
+	if err != nil {
+		return agent.Handle{}, err
+	}
+	definitionProvisioner, err := factory.provisioner(
+		effectiveDefinition,
 		false,
 	)
 	if err != nil {
 		return agent.Handle{}, err
 	}
-	initiated, err := agent.WithInitiator(ctx, parentAgent)
+	initiated, err := agent.WithInitiator(requestContext, parentAgent)
 	if err != nil {
 		return agent.Handle{}, err
 	}
 	handle, err := factory.constructor.Resume(
 		initiated,
 		agent.ResumeOptions{
-			SessionID:    binding.ChildSessionID,
-			AgentOptions: binding.Creation.AgentOptions,
+			SessionID:    bindingValue.ChildSessionID,
+			AgentOptions: *effectiveDefinition.AgentOptions,
 			Provisioner: agent.ComposeProvisioners(
-				configProvisioner,
-				newAppliedProvisioner(parentAgent.ID(), config),
+				definitionProvisioner,
+				newAppliedProvisioner(effectiveDefinition),
 			),
 			RuntimeParent: parentAgent,
 		},
 	)
 	if errors.Is(err, agent.ErrDescendantAdmissionClosed) {
-		return agent.Handle{}, descendantAdmissionClosed(binding.ChildSessionID)
+		return agent.Handle{}, descendantAdmissionClosed(
+			bindingValue.ChildSessionID,
+		)
 	}
 	if err != nil {
 		return agent.Handle{}, notResumable(
-			binding.ChildSessionID,
+			bindingValue.ChildSessionID,
 			"is unavailable",
 			err,
 		)
@@ -227,17 +223,15 @@ func (factory *materializer) resume(
 }
 
 func (factory *materializer) requireDependencies() error {
-	if factory.constructor == nil || factory.persistence == nil ||
-		factory.seedBuilders == nil || factory.extensions == nil {
+	if factory == nil || factory.constructor == nil ||
+		factory.persistence == nil || factory.extensions == nil {
 		return unavailableDependency("materialization dependencies")
 	}
 	return nil
 }
 
-// provisioner composes one Bound epoch from the exact parent projection
-// snapshot. Only a fresh child receives the parent delegation policy.
 func (factory *materializer) provisioner(
-	config subagent.BoundConfigSnapshot,
+	definitionValue boundcontract.Definition,
 	fresh bool,
 ) (agent.Provisioner, error) {
 	if factory == nil || factory.extensions == nil {
@@ -245,9 +239,12 @@ func (factory *materializer) provisioner(
 			"subagent: Bound Extension selection is unavailable",
 		)
 	}
-	detached := cloneBoundConfig(config)
+	validated, err := boundcontract.SnapshotDefinition(definitionValue)
+	if err != nil {
+		return nil, err
+	}
 	selectedExtensions, err := factory.extensions.Provision(
-		detached.Extensions,
+		validated.Extensions,
 	)
 	if err != nil {
 		return nil, err
@@ -259,8 +256,8 @@ func (factory *materializer) provisioner(
 	policyPlugins := childpolicy.Plugins(
 		childpolicy.PolicySet{
 			Delegation:      delegation,
-			Persona:         detached.Persona,
-			ToolRestriction: detached.ToolRestriction,
+			SystemPrompt:    &validated.SystemPrompt,
+			ToolRestriction: validated.ToolRestriction,
 		},
 	)
 	var policies agent.Provisioner
@@ -274,43 +271,21 @@ func (factory *materializer) provisioner(
 	), nil
 }
 
-func hasSubmittedMessage(inspection sesspersist.Inspection) bool {
-	childStart := int64(0)
-	if inspection.Header.SeedLength != nil {
-		childStart = *inspection.Header.SeedLength
+func effectiveBoundDefinition(
+	definitionValue boundcontract.Definition,
+	options agent.Options,
+) (boundcontract.Definition, error) {
+	validated, err := boundcontract.SnapshotDefinition(definitionValue)
+	if err != nil {
+		return boundcontract.Definition{}, err
 	}
-	for _, committed := range inspection.Events {
-		if committed.Seq < childStart ||
-			committed.Type != agent.InboxSplicedEventName {
-			continue
-		}
-		var splice agent.InboxSplice
-		if err := json.Unmarshal(committed.Data, &splice); err != nil {
-			continue
-		}
-		if len(splice.Inserted) != 0 {
-			return true
-		}
+	validated.AgentOptions = &options
+	effective, err := boundcontract.SnapshotDefinition(validated)
+	if err != nil {
+		return boundcontract.Definition{}, fmt.Errorf(
+			"subagent: invalid effective Bound Definition: %w",
+			err,
+		)
 	}
-	return false
-}
-
-func cloneBoundConfig(
-	source subagent.BoundConfigSnapshot,
-) subagent.BoundConfigSnapshot {
-	detached := subagent.BoundConfigSnapshot{
-		Enabled:    source.Enabled,
-		Extensions: append([]string(nil), source.Extensions...),
-	}
-	if source.Persona != nil {
-		persona := *source.Persona
-		detached.Persona = &persona
-	}
-	if source.ToolRestriction != nil {
-		detached.ToolRestriction = &tools.ToolRestriction{
-			Allow: append([]string(nil), source.ToolRestriction.Allow...),
-			Deny:  append([]string(nil), source.ToolRestriction.Deny...),
-		}
-	}
-	return detached
+	return effective, nil
 }
