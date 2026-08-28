@@ -25,7 +25,7 @@
 | `seed_builder.go` | fresh child Session seed 的构造策略与注册目录 | spawn、fork、runtime |
 | `directory.go` | durable child 的只读查询目录与查询结果 | list_agents、Host/UI |
 | `descriptor*.go` | Session log 中可重建的 Subagent identity | Continuable resume、目录查询 |
-| `extension.go` | child Agent Scope 的扩展安装契约 | report 等 child-scoped capability |
+| `extension.go` | child Agent Scope 的扩展安装契约，以及named Extension只读目录 | report 等child-scoped capability、Host配置UI |
 | `bound/definition*.go`、`bound/events.go` | 全局 Bound Definition、管理命令和 Session Binding事件契约 | Web/API、Bound runtime |
 | `events.go` | 固定源兼容的注册与运行事件 | Plugin listener、Tool publication |
 | `message_source.go` | 父子消息进入 Session log 时的来源描述 | Agent Inbox、重建 |

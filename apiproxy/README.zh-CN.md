@@ -5,7 +5,7 @@
 ## 职责
 
 - method-owned request decoder、typed `Outcome` 和 canonical RPC error；
-- `host.describe` 与当前纳入的 `agentPreset.list`、`settings.describe`、`credentials.*`、`bound.list/create/replace`、`llm.providers`、`llm.models`、`session.*`、`workspace.*`、`commands/list`、`commands/execute` handlers；
+- `host.describe` 与当前纳入的 `agentPreset.list`、`settings.describe`、`credentials.*`、`bound.list/tools/create/replace`、`llm.providers`、`llm.models`、`session.*`、`workspace.*`、`commands/list`、`commands/execute` handlers；
 - selected Typert Remote 的 `{args:{...}}` decoder、HTTP 200 内 RPC failure 和 absent `value` 结果；
 - `LLMGateway` 对 configurable provider directory、active route 和 model catalog 的 Host wire 投影；
 - `apiproxy/session.Gateway` 实现 unary `session.*` façade，把读取、生命周期、模型和对话分别委派给独立状态对象；
@@ -47,14 +47,14 @@ Workspace Gateway 将七个 `workspace.*` method 映射到 `workspace.Registry`/
 
 `CredentialsGateway` 持有不包含 `Resolve` 的窄 `CredentialProvider`。`credentials.describe` 只投影 `configured/source/writable`；`credentials.set` 是秘密值唯一经过 Host wire 的方向，成功响应为空；`credentials.unset` 幂等删除托管值。Gateway 不读取 LiveStore，也没有取得 secret 的接口。
 
-`BoundGateway`只持有公共`bound.Definitions`能力。`bound.list`返回完整committed snapshots；`bound.create`和`bound.replace`直接使用Bound包定义的`Creation`与`Replacement`命令，API Proxy不重新定义业务输入。Gateway只把稳定Definition错误映射为RPC error，SQLite、reconcile、Binding和Agent replacement都留在Bound owner。
+`BoundGateway`持有公共`bound.Definitions`能力，以及consumer-owned只读`BoundToolDirectory`和`BoundExtensionDirectory`。`bound.list`返回完整committed snapshots；`bound.tools`只投影root Tool registry当前可继承工具的canonical name与description；`bound.extensions`只投影Subagent Extension Directory中的named selections，不包含自动安装的common Extension。两个目录都不暴露schema、执行、registration或mutation。`bound.create`和`bound.replace`直接使用Bound包定义的`Creation`与`Replacement`命令，API Proxy不重新定义业务输入。Gateway只把稳定Definition错误映射为RPC error，SQLite、reconcile、Binding、Tool restriction执行和Agent replacement都留在各自owner。
 
 `CommandsGateway` 持有 `commands.Registry` 和 consumer-owned `CommandAgentResolver`。它只解析固定 Remote descriptor 的 `{args:{agentId}}` 与 `{args:{agentId,line,images}}`，并通过 Session Gateway 的 ordinary Agent fence 取得目标；Registry 自己拥有命令解析、生命周期和执行。未命中命令返回缺少 `value` 的成功 RpcResult；Remote payload、调用 panic、技术错误和 cancellation 都按源 Remote 语义留在 HTTP 200 的 RPC envelope 内。
 
 ## 上下游
 
 - 上游：Connection dispatcher/event source、TypeScript wire requests。
-- 下游：`apiproxy/session.Gateway`、Commands Registry、Agent Registry、Session LiveStore、SessionPersistence、Workspace Registry、Credentials Provider、`bound.Definitions`、LLM、DefaultModel、SessionProjection、SessionTitle、Approval/UserQuestions。
+- 下游：`apiproxy/session.Gateway`、Commands Registry、Agent Registry、Session LiveStore、SessionPersistence、Workspace Registry、Credentials Provider、`bound.Definitions`、root ToolRuntime与named Extension Directory只读投影、LLM、DefaultModel、SessionProjection、SessionTitle、Approval/UserQuestions。
 - wire DTO 到此为止；下游包不依赖 RPC/frame 类型。
 
 ## 生命周期、错误、取消与背压

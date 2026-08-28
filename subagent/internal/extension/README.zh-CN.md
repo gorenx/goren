@@ -2,7 +2,7 @@
 
 本包拥有`Extension`的有序registration，以及每个unpublished child Agent Scope的installation、publication commit复核和release。OneShot、Continuable与Bound共享同一Registry；common和selected是registration选择方式，不是新的生命周期Mode。
 
-`Registry` 实现公开 `ExtensionRegistry`。它只保存 Extension registrations 和已经安装的 exact effects；它不决定 Extension 内容，不参与 Plugin lifecycle，也不创建或恢复 Agent。
+`Registry`同时实现公开`ExtensionRegistry`与只读`ExtensionDirectory`。前者只提供registration seam；后者只返回当前named registrations的detached descriptor，不包含common Extension，也不暴露安装对象。Registry不决定Extension内容，不参与Plugin lifecycle，也不创建或恢复Agent。
 
 ```mermaid
 sequenceDiagram

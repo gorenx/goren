@@ -1,6 +1,6 @@
 # Subagent Plugin
 
-`plugin.Plugin`是Subagent领域的composition owner。它解析Agent、Session、Approval和Projection能力，打开私有Bound Definition数据库，构造普通Go业务对象，并发布`SeedBuilderRegistry`、`Starter`、`ChildControl`、`ExtensionRegistry`、`ChildDirectory`和`bound.Definitions`。本包不拥有Subagent用例、Definition决策或Plugin Runtime。
+`plugin.Plugin`是Subagent领域的composition owner。它解析Agent、Session、Approval和Projection能力，打开私有Bound Definition数据库，构造普通Go业务对象，并发布`SeedBuilderRegistry`、`Starter`、`ChildControl`、`ExtensionRegistry`、`ExtensionDirectory`、`ChildDirectory`和`bound.Definitions`。Registry写入面与目录读取面是同一业务对象的两个窄capability；本包不拥有Subagent用例、Definition决策或Plugin Runtime。
 
 ```mermaid
 flowchart TD

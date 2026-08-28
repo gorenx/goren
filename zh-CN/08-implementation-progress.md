@@ -366,9 +366,10 @@ interaction owner registers stable rpcId + decoder
 | Workspace SQLite/sqlc、能力插件边界与默认 composition | `workspace/persistence/sqlite`、`internal/assembly/assembly_test.go` |
 | System Prompt built-ins、scope shadow、snapshot、suppression、complete、tool order、插值与 invariant | `systemprompt/systemprompt_test.go` |
 | Bound Definition strict codec、revision CAS、SQLite reopen与Store/index顺序 | `subagent/bound/definition_test.go`、`subagent/internal/bound/definitions_test.go`、`subagent/internal/bound/sqlite/adapter_test.go` |
+| Bound Tool/Extension独立只读目录与Web选择交互 | `apiproxy/bound_gateway_test.go`、`subagent/internal/extension/registry_test.go`、`web/src/components/BoundDefinitionDialog.test.tsx`、`web/src/conversation-store.test.ts` |
 | 多用户Session独立Binding、同Session多Bound并行、child防递归、Session FIFO原子Binding且不竞争Agent maintenance、冻结prefix、idle create、disable/enable backlog、同child revision replacement、Extension缺失隔离与关闭取消 | `subagent/internal/bound/runtime_test.go`、`subagent/internal/bound/provisioner_test.go`、`subagent/internal/childpolicy/policy_test.go`、`internal/assembly/command_compact_e2e_test.go` |
 | parent interaction fold、receipt-before-cursor、crash-window修复与失败隔离 | `subagent/internal/bound/interaction_test.go`、`subagent/internal/bound/runtime_test.go` |
-| `bound.list/create/replace` strict RPC、稳定错误映射与Web完整snapshot编辑 | `apiproxy/bound_gateway_test.go`、`web/src/components/BoundDefinitionDialog.test.tsx`、`web/src/conversation-store.test.ts` |
+| `bound.list/tools/create/replace` strict RPC、稳定错误映射、root Tool目录投影与Web完整snapshot/工具选择编辑 | `apiproxy/bound_gateway_test.go`、`web/src/components/BoundDefinitionDialog.test.tsx`、`web/src/conversation-store.test.ts` |
 | Native Tool root/overlay view、restriction/guard、schema cache、执行/取消、一次性 scheduler、finalizer 与 detached result | `tools/service_test.go`、`tools/execution_test.go`、`tools/policy_test.go`、`tools/config_test.go` |
 | LLM/DeepSeek/System Prompt/Tools Factory strict config、shipped Catalog 与 Service composition | `internal/assembly/assembly_test.go` |
 | core LLM content block variant clone 与 extension panic containment | `llm/harness_contract_test.go` |
