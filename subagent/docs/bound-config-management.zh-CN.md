@@ -127,7 +127,7 @@ type BoundConfigAppliedData struct {
 
 `internal/projection.boundUnit`在一个state中维护四个分离view：`Bindings`、latest `Configs`、latest `Materializations`和child `Applied`历史。
 
-projection拒绝：重复child/title、没有binding的config、非连续revision、没有matching config revision的materialization、无效result和unknown fields。它不保存resident Agent、runtime `bindingSlot`或Execution状态。
+projection拒绝：重复child/title、没有binding的config、非连续revision、没有matching config revision的materialization、无效result和unknown fields。它不保存resident Agent、`boundChild` mailbox或Execution状态。
 
 ## 6. Revision 1
 
@@ -160,28 +160,27 @@ fresh create还安装delegation policy；cold resume沿用durable lineage，不�
 
 `UpdateConfig`的线性化顺序是：
 
-1. 在parent-child lock外完成纯输入snapshot和Extension名称预验证；
-2. 加锁后重新校验exact parent和expected revision；
+1. 在`boundChild` mailbox外完成纯输入snapshot和Extension名称预验证；
+2. 命令进入mailbox后重新校验exact parent和expected revision；
 3. Commit完整revision N+1；
 4. Flush parent Session；
 5. cold child直接返回；
-6. resident child等待旧Agent idle，`StopAndWait(StopNormal)`；
+6. resident child执行`StopAndWait(StopNormal)`；统一settlement等待旧Agent idle并停止旧epoch；
 7. 读取latest projection并Create/Resume新epoch；
 8. 新epoch发布后返回。
 
-`Send`使用同一个parent-child lock。它先确保latest revision有resident epoch，再向exact child `Followup`。因此revision已durable后，不会有新Bound message进入旧epoch。
+`Send`使用同一个parent-child `boundChild` mailbox。它先确保latest revision有resident epoch，再向exact child `Followup`。因此revision已durable后，不会有新Bound message进入旧epoch。
 
 ```mermaid
 flowchart TD
     U[UpdateConfig revision N+1] --> C[Commit + Flush parent]
     C --> R{child resident?}
     R -- no --> Done[返回 committed result]
-    R -- yes --> Idle[等待旧 Agent idle]
-    Idle --> Stop[停止旧 epoch]
+    R -- yes --> Stop[StopAndWait: 等待idle并停止旧epoch]
     Stop --> Start[以 revision N+1 启动新 epoch]
     Start --> Done
-    S[Bound Send] --> Lock[同一 parent-child lock]
-    Lock --> Start
+    S[Bound Send] --> Mailbox[同一 boundChild mailbox]
+    Mailbox --> Start
 ```
 
 `Enabled=false`在步骤6停止旧epoch，随后不创建新epoch；`Send`返回`ErrorBoundDisabled`。

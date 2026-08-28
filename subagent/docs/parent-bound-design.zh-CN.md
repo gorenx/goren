@@ -15,8 +15,9 @@ Bound在exact parent Session中持久化child binding和配置，并在parent Ag
 | `subagent.BoundRegistry` | 对配置源公开`Bind`和`UpdateConfig` | 公开内部projection或Store |
 | `internal/subagents.Service` | admission、Start command dispatch、公开capability facade | 解释Bound config |
 | `childExecutionControl` | resident/cold Send路由、interrupt授权、Agent disposed路由 | Bound revision和epoch replacement |
-| `internal/bound.Service` | binding/config用例编排、materialization和子对象装配 | Plugin dependency lookup、System Prompt/Tools实现、通用EventBus |
-| `deliverySupervisor` / `interactionDelivery` | parent interaction投递注册、生命周期、receipt和cursor恢复 | Session EventBus或公开projection |
+| `internal/bound.Service` | binding/config入口校验、Bound child路由和子对象装配 | Plugin dependency lookup、System Prompt/Tools实现、通用EventBus |
+| `boundChildRegistry` | exact parent-child索引、parent wakeup路由和关闭准入 | binding用例、child I/O或durable状态 |
+| `boundChild` | 单binding mailbox、resident Execution、config replacement、message与interaction投递恢复 | 通用订阅或Session事件历史 |
 | `internal/projection.boundUnit` | 从Session event重建可信Bound view | 创建Agent、保存进程内resident状态 |
 | `internal/extension.Registry` | common/selected Extension注册、选择、安装事务、释放 | Bound config和revision |
 | `subagent/plugin.Plugin` | 解析依赖、注册projection、发布capability、桥接Agent与Session wakeup event | 业务config与interaction规则 |
@@ -39,9 +40,11 @@ flowchart TD
     Bound --> Constructor[agent.Constructor]
     Bound --> Execution[Execution Registry]
     Bound --> ExtPort[bound.Extensions]
-    Bound --> Supervisor[deliverySupervisor]
-    Supervisor --> Delivery[interactionDelivery]
-    Delivery --> Session
+    Bound --> Registry[boundChildRegistry]
+    Registry --> Child[boundChild per parent-child]
+    Child --> Session
+    Child --> Constructor
+    Child --> Execution
     ExtPort --> ExtRegistry[Extension Registry]
 ```
 
@@ -49,7 +52,7 @@ flowchart TD
 
 - 配置源主动调用`BoundRegistry.Bind/UpdateConfig`；仓库当前不内置特定配置源。
 - `LifecycleCoordinator`主动dispatch `agent.SessionStarted`；Subagent observer异步调用`Service.AgentSessionStarted`。
-- parent Session提交`turn/end`后主动发布既有`session.EventAppended`；Subagent observer只通知Bound，`interactionDelivery`随后主动读取log。
+- parent Session提交`turn/end`后主动发布既有`session.EventAppended`；Subagent observer只通知Bound，`boundChildRegistry`把唤醒合并到该parent已有的`boundChild`，各child随后主动读取log。
 - parent发送方主动调用`ChildControl.Send`；router根据resident Execution和parent binding选择Bound或Continuable。
 - Bound主动调用Session、projection、Constructor和Execution Registry。
 - Plugin只注入`bound.Extensions` adapter；它不读取`BoundConfigSnapshot`。
@@ -153,17 +156,14 @@ Bound Service按文件拆分职责：
 | 文件 | 方法/对象 | 职责 |
 | --- | --- | --- |
 | `service_catalog.go` | `Bind`、`UpdateConfig`、`HasBinding` | parent event、revision、唯一性、durability |
-| `service_runtime.go` | `Start`、`StartBindings`、`Send`、`Interrupt`、`Close` | runtime用例编排 |
-| `service_materialization_result.go` | materialization result方法 | parent结果event、Flush与failure reporting |
+| `service_runtime.go` | `Start`、`StartBindings`、`Send`、`Interrupt`、`Close` | 入口校验、Bound child路由与跨binding并发启动 |
 | `materializer.go` | `materializer` | exact child创建/恢复、descriptor校验和scoped provision |
 | `binding_registration.go` | `bindingRegistration` | FIFO head上的child/title唯一性校验与binding+config原子提交 |
-| `binding_slot.go`、`binding_slots.go` | `bindingSlot`、`bindingSlots` | per-binding runtime串行化与resident引用 |
-| `resident_executions.go` | `residentExecutions` | Execution发布、查询、中断、外部关闭观察和模块停止 |
+| `bound_child_registry.go` | `boundChildRegistry` | exact parent-child索引、wakeup路由、parent epoch清理和module close |
+| `bound_child*.go` | `boundChild` | mailbox、单child用例串行化、Execution和interaction恢复状态 |
 | `applied_provisioner.go` | `appliedProvisioner` | child未发布时提交applied event |
 | `interaction.go` | parent interaction与cursor fold | 纯重建、filter和连续性校验 |
-| `delivery_supervisor.go` | `deliverySupervisor` | 投递注册、turn/end唤醒、parent epoch清理和关闭 |
-| `interaction_delivery*.go` | `interactionDelivery` | 单binding投递循环、receipt对账和cursor恢复 |
-| `execution_terminator.go` | `executionTerminator` | idle、flush、event、registry removal和Handle dispose |
+| `resident_epoch.go` | `residentEpoch` | exact Agent Handle、Execution、applied revision与统一settlement |
 | `service.go` | dependencies、子对象装配、authorization | Bound用例入口 |
 
 `internal/childseed`不存在；descriptor append由`internal/seedbuilder.AppendDescriptor`承担，因为它属于SeedBuilder结果装配，而不是独立业务上下文。
@@ -204,17 +204,17 @@ sequenceDiagram
     O-->>A: 立即返回
     O->>F: AgentSessionStarted(parent)（goroutine）
     F->>B: StartBindings(parent)
-    loop 每个binding
+    par 每个binding独立boundChild
         B->>B: Start(NewBoundStart(parent, childID))
         B->>C: Create或Resume
     end
 ```
 
-`LifecycleCoordinator`在dispatch前已经使exact Agent可被Registry解析。observer使用goroutine，所以create/restore错误不会变成parent publication错误。`StartBindings`逐child containment并记录failure。
+`LifecycleCoordinator`在dispatch前已经使exact Agent可被Registry解析。observer使用goroutine，所以create/restore错误不会变成parent publication错误。`StartBindings`为每个binding取得独立`boundChild`并发启动，等待全部child收敛后返回；各child仍各自containment并记录failure。
 
 ## 8. Create、restore 与 publication
 
-`Start`持有parent-child lock并读取latest projection：
+`Start`把请求发送到parent-child `boundChild` mailbox；该child作为唯一状态写者读取latest projection：
 
 1. 已有同revision active epoch时直接返回；
 2. revision变化时等待旧Agent idle并停止旧epoch；
@@ -244,9 +244,9 @@ flowchart LR
 
 ## 10. Parent interaction 投递
 
-Plugin Manifest监听现有`session.EventAppended`。当committed event是`turn/end`时，Bound的`deliverySupervisor`按parent Session ID通知已有`interactionDelivery`；observer调用栈不读Session、不Followup也不Flush。投递过程从parent snapshot fold完整turn，先Flush source prefix，再在parent-child `bindingSlot`内确认latest enabled config和exact resident epoch。
+Plugin Manifest监听现有`session.EventAppended`。当committed event是`turn/end`时，Bound的`boundChildRegistry`按parent Session ID合并唤醒已有`boundChild`；observer调用栈不读Session、不Followup也不Flush。该child在自己的mailbox顺序内从parent snapshot fold完整turn，先Flush source prefix，再确认latest enabled config和exact resident epoch。
 
-需要投递时，`interactionDelivery`扫描child Session中的exact `agent/inbox/spliced` receipt；缺失才调用Followup。child Flush完成后，投递对象使用自定义`session.WritePlan`在FIFO head校验expected cursor，并向parent提交和Flush `subagent/bound-cursor`。恢复时若receipt已存在，只补cursor。
+需要投递时，`boundChild`扫描child Session中的exact `agent/inbox/spliced` receipt；缺失才调用Followup。child Flush完成后，`boundChild`使用自定义`session.WritePlan`在FIFO head校验expected cursor，并向parent提交和Flush `subagent/bound-cursor`。恢复时若receipt已存在，只补cursor。
 
 该路径没有projection event。完整floor、filter、调用顺序与失败语义见[Parent Interaction投递设计](./session-event-delivery.zh-CN.md)。
 
@@ -254,17 +254,18 @@ Plugin Manifest监听现有`session.EventAppended`。当committed event是`turn/
 
 Bound ordinary idle不settle。Interrupt只Cancel当前turn并`KeepInbox=true`。config replacement使用`StopNormal`结束旧epoch；module shutdown使用`StopModule`；Agent外部关闭使用`StopExternal`并避免重复Dispose Handle。
 
-terminator等待idle、Flush child Session、发布`subagent.Ended`、移除Execution Registry entry并清除current epoch。final Flush failure进入diagnostics。
+`residentEpoch.Terminate`等待idle、Flush child Session、发布`subagent.Ended`、移除Execution Registry entry并通知`boundChild`清除exact current epoch。final Flush failure进入diagnostics。
 
 child向parent report只发生在report Tool显式执行时；Bound生命周期不隐式report。
 
 ## 12. 并发与一致性
 
 - `bindingRegistration` WritePlan：同一parent内binding title和child ID在Session FIFO head线性化。
-- parent-child `bindingSlot`：UpdateConfig、Start、Send和interaction admission的runtime线性化。
-- parent route index与one-slot dirty mailbox：只合并唤醒，不保存durable delivery state。
-- `interactionDelivery`：跨child config epoch保留；parent disposed或module shutdown时先于Execution停止。
-- `bindingSlot` mutex：唯一的互斥锁保证用例线性化；current引用用atomic exact-epoch CAS清理，避免终止回调与replacement等待形成锁回环。
+- `boundChildRegistry` mutex：只保护exact parent-child索引和关闭准入，不包围child工作或I/O。
+- parent-child `boundChild`：mailbox线性化UpdateConfig、Start、Send和interaction admission；current、cursor floor和delivery状态只有该child goroutine写入。
+- 不同binding使用不同`boundChild` goroutine；`StartBindings`并发启动，因此一个child的Constructor或I/O不会阻塞其他child。
+- parent route index与one-slot dirty signal：只合并唤醒，不保存durable delivery state。
+- `residentEpoch`完成settlement后通过mailbox异步通知exact current清理，避免`StopAndWait`等待终止事务时形成回环。
 - Session Commit batch：binding+revision 1原子追加。
 - Flush：Bind/config对外成功和child publication前的durability边界。
 - projection：拒绝不完整event chain，不修复或猜测业务事实。

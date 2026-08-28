@@ -84,15 +84,15 @@ Bound Start 必须读取 binding 和 latest config。fresh create 使用 binding
 
 ### 5.4 UpdateConfig
 
-caller 必须提供 expected revision。Bound 验证完整 snapshot 与 selected Extension，提交 revision N+1 并 `Flush` parent Session。若 child cold，调用结束；若 child resident，在同一 parent-child `bindingSlot` 内替换 exact Agent epoch。revision 冲突必须拒绝且不得写 event。
+caller 必须提供 expected revision。Bound 验证完整 snapshot 与 selected Extension，再把命令交给该parent-child的`boundChild` mailbox。该child提交revision N+1并`Flush` parent Session；若child cold，调用结束；若child resident，在同一mailbox事务中替换exact Agent epoch。revision冲突必须拒绝且不得写event。
 
 ### 5.5 Send
 
-统一 Service 先查 resident Execution：resident Bound 分派给 `Bound.Send`；不存在 resident Execution 时，先查 exact parent binding，存在则 cold restore Bound，否则交给 Continuable resume。Bound config replacement 与 message admission 使用同一个 parent-child `bindingSlot`。
+统一 Service 先查 resident Execution：resident Bound 分派给`Bound.Send`；不存在resident Execution时，先查exact parent binding，存在则cold restore Bound，否则交给Continuable resume。Bound config replacement与message admission进入同一个parent-child `boundChild` mailbox；不同child使用不同`boundChild`并行执行。
 
 ### 5.6 Parent interaction delivery
 
-每个materialized binding拥有一个`interactionDelivery`。它从durable cursor fold下一条closed parent turn；没有direct user输入的turn只推进`skipped`。需要投递时，它以稳定parent seq range构造`subagent-delivery` message source，扫描child `agent/inbox/spliced` receipt去重，Flush child后再以Session FIFO head上的expected cursor提交`subagent/bound-cursor`。
+每个materialized binding的`boundChild`拥有interaction恢复状态。它从durable cursor fold下一条closed parent turn；没有direct user输入的turn只推进`skipped`。需要投递时，它以稳定parent seq range构造`subagent-delivery` message source，扫描child `agent/inbox/spliced` receipt去重，Flush child后再以Session FIFO head上的expected cursor提交`subagent/bound-cursor`。
 
 完整调用链、filter、floor和crash恢复语义见[Parent Interaction投递设计](./session-event-delivery.zh-CN.md)。
 
