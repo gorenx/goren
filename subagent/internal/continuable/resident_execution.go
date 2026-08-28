@@ -12,22 +12,74 @@ import (
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
 )
 
-type executionTerminator struct {
-	owner       *residentExecutions
-	current     *currentExecution
+// residentExecution is one published Continuable child Agent epoch and its
+// common Execution. It owns settlement observation and terminal work for that
+// exact epoch.
+type residentExecution struct {
+	owner       *continuableChild
+	agents      agent.Registry
+	descendants agent.RuntimeDescendants
+	sessions    session.LiveStore
+	publisher   sharedexecution.EventPublisher
+	failures    FailureReporter
+	executions  *sharedexecution.Registry
 	handle      agent.Handle
+	execution   *sharedexecution.Execution
 	parent      agent.Agent
 	seedBuilder string
-	runID       subagent.RunID
 	boundary    int64
+	wake        chan struct{}
 }
 
-func (terminator *executionTerminator) Terminate(
+func (resident *residentExecution) notify() {
+	select {
+	case resident.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (resident *residentExecution) watch() {
+	go func() {
+		for {
+			idleContext, cancelIdle := context.WithCancel(context.Background())
+			idleResult := make(chan error, 1)
+			go func() {
+				idleResult <- resident.handle.Subject.WhenIdle(idleContext)
+			}()
+			select {
+			case <-resident.handle.ClosingSignal():
+				cancelIdle()
+				resident.execution.Stop(sharedexecution.StopExternal)
+				return
+			case <-resident.wake:
+				cancelIdle()
+				continue
+			case <-idleResult:
+				cancelIdle()
+			}
+			if resident.execution.State() != subagent.ExecutionActive {
+				return
+			}
+			childAgent := resident.handle.Subject
+			settled := childAgent.StatusValue() == agent.StatusIdle &&
+				!childAgent.InboxValue().HasPending() &&
+				!resident.descendants.HasRuntimeDescendants(childAgent)
+			if settled {
+				resident.execution.Stop(sharedexecution.StopIdle)
+				return
+			}
+		}
+	}()
+}
+
+// Terminate settles this exact resident epoch, reports its result, and
+// releases the owned Agent Handle.
+func (resident *residentExecution) Terminate(
 	stopContext context.Context,
 	cause sharedexecution.StopCause,
 ) (subagent.Terminal, error) {
 	if cause != sharedexecution.StopIdle && cause != sharedexecution.StopNormal {
-		terminator.handle.Subject.Cancel(
+		resident.handle.Subject.Cancel(
 			agent.ParentCancel{},
 			agent.CancelOptions{
 				KeepInbox: false,
@@ -35,17 +87,17 @@ func (terminator *executionTerminator) Terminate(
 		)
 	}
 	var terminalErr error
-	if idleErr := terminator.handle.Subject.WhenIdle(stopContext); idleErr != nil {
-		terminalErr = errors.Join(terminalErr, idleErr)
+	if err := resident.handle.Subject.WhenIdle(stopContext); err != nil {
+		terminalErr = errors.Join(terminalErr, err)
 	}
-	if flushErr := terminator.owner.sessions.Flush(
+	if err := resident.sessions.Flush(
 		context.WithoutCancel(stopContext),
-		terminator.handle.Subject.SessionValue(),
-	); flushErr != nil {
-		terminator.owner.failures.ReportFinalFlushFailure(
+		resident.handle.Subject.SessionValue(),
+	); err != nil {
+		resident.failures.ReportFinalFlushFailure(
 			FinalFlushFailure{
-				ChildID: terminator.handle.Subject.ID(),
-				Error:   flushErr,
+				ChildID: resident.handle.Subject.ID(),
+				Error:   err,
 			},
 		)
 	}
@@ -53,19 +105,19 @@ func (terminator *executionTerminator) Terminate(
 	if cause == sharedexecution.StopIdle || cause == sharedexecution.StopNormal {
 		fallback = subagent.StopCompleted
 	}
-	executionEvents, eventsErr := currentExecutionEvents(
-		terminator.handle.Subject.SessionValue(),
-		terminator.boundary,
+	executionEvents, err := currentExecutionEvents(
+		resident.handle.Subject.SessionValue(),
+		resident.boundary,
 	)
-	if eventsErr != nil {
-		terminalErr = errors.Join(terminalErr, eventsErr)
+	if err != nil {
+		terminalErr = errors.Join(terminalErr, err)
 	}
 	terminalValue := subagent.Terminal{
 		StopReason: executionStopReason(executionEvents, fallback),
 	}
-	output, outputErr := sharedexecution.SelectAssistantOutput(executionEvents)
-	if outputErr != nil {
-		terminalErr = errors.Join(terminalErr, outputErr)
+	output, err := sharedexecution.SelectAssistantOutput(executionEvents)
+	if err != nil {
+		terminalErr = errors.Join(terminalErr, err)
 	} else {
 		terminalValue.Output = output
 	}
@@ -73,70 +125,69 @@ func (terminator *executionTerminator) Terminate(
 		terminalValue.StopReason = subagent.StopError
 		terminalValue.Output = nil
 	}
-	terminator.notifyParent(terminalValue)
-	if terminator.owner.publisher != nil {
-		terminator.owner.publisher.PublishEnded(
-			terminator.parent,
+	resident.notifyParent(terminalValue)
+	if resident.publisher != nil {
+		resident.publisher.PublishEnded(
+			resident.parent,
 			subagent.Ended{
-				RunID:                terminator.runID,
-				Provider:             terminator.seedBuilder,
-				ID:                   terminator.handle.Subject.ID(),
+				RunID:                resident.execution.RunID(),
+				Provider:             resident.seedBuilder,
+				ID:                   resident.handle.Subject.ID(),
 				Local:                true,
 				StopReason:           terminalValue.StopReason,
 				LastAssistantMessage: terminalValue.Output,
 			},
 		)
 	}
-	terminator.owner.executions.Remove(
-		terminator.current.running,
-	)
+	resident.executions.Remove(resident.execution)
 	if cause != sharedexecution.StopExternal {
-		if disposeErr := terminator.handle.Dispose(
+		if err = resident.handle.Dispose(
 			context.WithoutCancel(stopContext),
-		); disposeErr != nil {
-			terminalErr = errors.Join(terminalErr, disposeErr)
+		); err != nil {
+			terminalErr = errors.Join(terminalErr, err)
 		}
 	}
-	terminator.owner.detach(
-		terminator.handle.Subject.ID(),
-		terminator.current,
-	)
-	terminator.owner.wakeParent(terminator.parent.ID())
+	resident.owner.executionClosed(resident)
+	resident.owner.registry.notify(resident.parent.ID())
 	return terminalValue, terminalErr
 }
 
-func (terminator *executionTerminator) notifyParent(
+func (resident *residentExecution) notifyParent(
 	terminalValue subagent.Terminal,
 ) {
-	parentAgent, found := terminator.owner.agents.Get(
-		terminator.parent.ID(),
-	)
+	parentAgent, found := resident.agents.Get(resident.parent.ID())
 	if !found {
 		return
 	}
 	summary := settlementSummary(
-		terminator.handle.Subject.ID(),
+		resident.handle.Subject.ID(),
 		terminalValue.StopReason,
 	)
 	content := []agentmessage.ContentBlock{
 		agentmessage.NewTextBlock(summary),
 	}
 	if len(terminalValue.Output) == 0 {
-		content = append(content, agentmessage.NewTextBlock("It left no closing message."))
+		content = append(
+			content,
+			agentmessage.NewTextBlock("It left no closing message."),
+		)
 	} else {
-		content = append(content, agentmessage.NewTextBlock("Its closing message:"))
+		content = append(
+			content,
+			agentmessage.NewTextBlock("Its closing message:"),
+		)
 		content = append(content, terminalValue.Output...)
 	}
-	messageValue, messageErr := agentmessage.NewUserMessage(
+	messageValue, err := agentmessage.NewUserMessage(
 		agentmessage.UserMessageInput{
 			Content: content,
 			Source: subagent.SettlementSource{
 				Summary:         summary,
-				SenderSessionID: terminator.handle.Subject.ID(),
+				SenderSessionID: resident.handle.Subject.ID(),
 			},
 		},
 	)
-	if messageErr != nil {
+	if err != nil {
 		return
 	}
 	if parentAgent.StatusValue() == agent.StatusIdle {
@@ -169,8 +220,8 @@ func executionStopReason(
 	events []session.Event,
 	fallback subagent.StopReason,
 ) subagent.StopReason {
-	work, foldErr := agent.FoldConsumedWork(events)
-	if foldErr != nil {
+	work, err := agent.FoldConsumedWork(events)
+	if err != nil {
 		return subagent.StopError
 	}
 	if work.End == nil {
@@ -221,4 +272,4 @@ func currentExecutionEvents(
 	return suffix, nil
 }
 
-var _ sharedexecution.Terminator = (*executionTerminator)(nil)
+var _ sharedexecution.Terminator = (*residentExecution)(nil)
