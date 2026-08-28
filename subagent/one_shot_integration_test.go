@@ -3,6 +3,7 @@ package subagent_test
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -179,6 +180,120 @@ func TestOneShotChildCanReportThroughItsParentAgent(t *testing.T) {
 			starts[0].ID,
 		) {
 		t.Fatal("parent Session did not retain the OneShot child report")
+	}
+}
+
+func TestForegroundOneShotModelFailureReleasesChild(t *testing.T) {
+	state := newIntegrationFixture(
+		t,
+		[][]llm.StreamChunk{
+			{
+				llm.FinishChunk{
+					Reason: llm.ErrorFinish{
+						Failure: llm.LlmFailure{
+							Code:    "MODEL",
+							Message: "provider failed",
+						},
+					},
+				},
+			},
+		},
+	)
+	parentHandle := state.createParent(t)
+	outcome := state.toolRuntime.Execute(
+		context.Background(),
+		tools.ToolExecutionInput{
+			CallID:     "delegate-model-failure",
+			RootCallID: "delegate-model-failure",
+			Name:       subagentdelegation.DefaultToolName,
+			Arguments: json.RawMessage(`{
+  "description": "observe a model failure",
+  "prompt": "Fail this delegated turn."
+}`),
+			Subject: parentHandle.Subject,
+		},
+	)
+	if !outcome.Failed() {
+		t.Fatal("failed OneShot returned success")
+	}
+	failure, _ := outcome.FailureDetail()
+	if !strings.Contains(failure.Message, "provider failed") {
+		t.Fatalf("OneShot failure = %#v", failure)
+	}
+	starts, ends := state.lifecycle.snapshot()
+	if len(starts) != 1 || len(ends) != 1 ||
+		starts[0].ID != ends[0].ID ||
+		ends[0].StopReason != subagent.StopError {
+		t.Fatalf("failed OneShot lifecycle = %#v / %#v", starts, ends)
+	}
+	if _, live := state.agents.Get(starts[0].ID); live {
+		t.Fatal("failed OneShot child remains in Agent Registry")
+	}
+	if _, live := state.sessions.Get(starts[0].ID); live {
+		t.Fatal("failed OneShot child remains in LiveStore")
+	}
+	if failures := state.eventFailures.snapshot(); len(failures) != 0 {
+		t.Fatalf("event observer failures = %#v", failures)
+	}
+}
+
+func TestForegroundOneShotStopsWhenParentCloses(t *testing.T) {
+	requestGate := make(chan struct{})
+	state := newIntegrationFixture(
+		t,
+		[][]llm.StreamChunk{
+			continuableTextResponse("unreachable gated answer"),
+		},
+	)
+	state.backend.setGates([]<-chan struct{}{requestGate})
+	parentHandle := state.createParent(t)
+	outcomeReady := make(chan tools.ToolExecutionResult, 1)
+	go func() {
+		outcomeReady <- state.toolRuntime.Execute(
+			context.Background(),
+			tools.ToolExecutionInput{
+				CallID:     "delegate-before-parent-close",
+				RootCallID: "delegate-before-parent-close",
+				Name:       subagentdelegation.DefaultToolName,
+				Arguments: json.RawMessage(`{
+  "description": "cancel with parent",
+  "prompt": "Remain active until the parent closes."
+}`),
+				Subject: parentHandle.Subject,
+			},
+		)
+	}()
+	waitContext, cancelWait := context.WithTimeout(
+		context.Background(),
+		3*time.Second,
+	)
+	defer cancelWait()
+	if err := state.backend.waitForRequests(waitContext, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := parentHandle.Dispose(waitContext); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case outcome := <-outcomeReady:
+		if !outcome.Failed() {
+			t.Fatal("cancelled OneShot returned success")
+		}
+	case <-waitContext.Done():
+		t.Fatal(context.Cause(waitContext))
+	}
+	starts, ends := state.lifecycle.snapshot()
+	if len(starts) != 1 || len(ends) != 1 ||
+		starts[0].ID != ends[0].ID ||
+		ends[0].StopReason != subagent.StopAborted {
+		t.Fatalf("cancelled OneShot lifecycle = %#v / %#v", starts, ends)
+	}
+	if len(state.agents.List()) != 0 || len(state.sessions.List()) != 0 {
+		t.Fatalf(
+			"parent close retained Agents or Sessions: agents=%d sessions=%d",
+			len(state.agents.List()),
+			len(state.sessions.List()),
+		)
 	}
 }
 

@@ -125,6 +125,93 @@ func TestContinuableToolPersistsCompletedChildForLaterResume(t *testing.T) {
 	}
 }
 
+func TestContinuableChildStopsWhenParentCloses(t *testing.T) {
+	requestGate := make(chan struct{})
+	backend := &integrationAdapter{
+		responses: [][]llm.StreamChunk{
+			continuableTextResponse("unreachable gated answer"),
+		},
+		gates: []<-chan struct{}{
+			requestGate,
+		},
+		requestsChanged: make(chan struct{}, 1),
+	}
+	state, durability := newContinuableIntegrationFixtureWithAdapter(
+		t,
+		backend,
+	)
+	parentHandle := state.createParent(t)
+	started := state.toolRuntime.Execute(
+		context.Background(),
+		tools.ToolExecutionInput{
+			CallID:     "start-child-before-parent-close",
+			RootCallID: "start-child-before-parent-close",
+			Name:       subagentdelegation.DefaultToolName,
+			Arguments: json.RawMessage(`{
+  "description": "cancel with parent",
+  "prompt": "Remain active until the parent closes."
+}`),
+			Subject: parentHandle.Subject,
+		},
+	)
+	if started.Failed() {
+		failure, _ := started.FailureDetail()
+		t.Fatalf("continuable start failed: %#v", failure)
+	}
+	rawStart, found := started.SuccessValue()
+	if !found {
+		t.Fatal("continuable start returned no value")
+	}
+	var startResult struct {
+		SubagentID string `json:"subagentId"`
+	}
+	if err := json.Unmarshal(rawStart, &startResult); err != nil {
+		t.Fatal(err)
+	}
+	childID := session.SessionID(startResult.SubagentID)
+	waitContext, cancelWait := context.WithTimeout(
+		context.Background(),
+		3*time.Second,
+	)
+	defer cancelWait()
+	if err := backend.waitForRequests(waitContext, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := parentHandle.Dispose(waitContext); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.lifecycle.waitForEnd(waitContext); err != nil {
+		t.Fatal(err)
+	}
+	starts, ends := state.lifecycle.snapshot()
+	if len(starts) != 1 || len(ends) != 1 ||
+		starts[0].ID != childID || ends[0].ID != childID ||
+		ends[0].StopReason != subagent.StopAborted {
+		t.Fatalf("parent-close lifecycle = %#v / %#v", starts, ends)
+	}
+	if len(state.agents.List()) != 0 || len(state.sessions.List()) != 0 {
+		t.Fatalf(
+			"parent close retained Agents or Sessions: agents=%d sessions=%d",
+			len(state.agents.List()),
+			len(state.sessions.List()),
+		)
+	}
+	inspection, err := durability.sessions.Inspect(waitContext, childID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspection.Header.ParentSession == nil ||
+		*inspection.Header.ParentSession != parentHandle.Subject.ID() {
+		t.Fatalf("durable cancelled child header = %#v", inspection.Header)
+	}
+	if requests := backend.snapshots(); len(requests) != 1 {
+		t.Fatalf("parent close issued extra model requests: %d", len(requests))
+	}
+	if failures := durability.failures.snapshot(); len(failures) != 0 {
+		t.Fatalf("background persistence failures = %#v", failures)
+	}
+}
+
 func lastUserContentText(messages []agentmessage.Message) string {
 	for messageIndex := len(messages) - 1; messageIndex >= 0; messageIndex-- {
 		messageValue := messages[messageIndex]

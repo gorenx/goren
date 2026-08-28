@@ -270,13 +270,8 @@ func (factory *materializer) provisioner(
 	if err != nil {
 		return nil, err
 	}
-	var delegation approval.DelegationPolicy
-	if fresh {
-		delegation = factory.delegation
-	}
 	policyPlugins := childpolicy.Plugins(
 		childpolicy.PolicySet{
-			Delegation:      delegation,
 			SystemPrompt:    &definitionValue.SystemPrompt,
 			ToolRestriction: definitionValue.ToolRestriction,
 		},
@@ -285,7 +280,12 @@ func (factory *materializer) provisioner(
 	if len(policyPlugins) != 0 {
 		policies = scopedplugin.MountPlugins(policyPlugins...)
 	}
+	var delegation agent.Provisioner
+	if fresh {
+		delegation = childpolicy.DelegationSeed(factory.delegation)
+	}
 	return agent.ComposeProvisioners(
+		delegation,
 		policies,
 		factory.commonExtensions,
 		selectedExtensions,

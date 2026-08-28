@@ -16,7 +16,6 @@ func (owner *Service) provisioner(
 ) (agent.Provisioner, *structuredOutput) {
 	instances := childpolicy.Plugins(
 		childpolicy.PolicySet{
-			Delegation:      owner.dependencies.Delegation,
 			Persona:         settings.Persona,
 			ToolRestriction: settings.ToolFilter,
 		},
@@ -33,6 +32,7 @@ func (owner *Service) provisioner(
 		instances = append(instances, structured)
 	}
 	return agent.ComposeProvisioners(
+		childpolicy.DelegationSeed(owner.dependencies.Delegation),
 		scopedplugin.MountPlugins(instances...),
 		owner.dependencies.Extensions,
 	), structured

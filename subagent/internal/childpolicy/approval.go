@@ -6,34 +6,39 @@ import (
 
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/approval"
-	"github.com/gorenx/goren/plugin"
 )
 
-type delegationPolicy struct {
-	plugin.Base
+// delegationSeed writes the durable approval override while the delegated
+// Agent is still unpublished. It owns no resident Scope resource.
+type delegationSeed struct {
 	policy approval.DelegationPolicy
-	child  agent.Agent
 }
 
-func (*delegationPolicy) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name: "@goren/subagent/delegation-policy",
-		Requires: []plugin.ServiceType{
-			plugin.ServiceOf[agent.Agent](),
-		},
+// DelegationSeed returns the one-time Provisioner for a fresh delegated Agent.
+func DelegationSeed(policy approval.DelegationPolicy) agent.Provisioner {
+	if policy == nil {
+		return nil
+	}
+	return &delegationSeed{
+		policy: policy,
 	}
 }
 
-func (policy *delegationPolicy) Apply(requestContext context.Context) error {
-	childAgent, found := plugin.Resolve[agent.Agent](policy)
-	if !found {
-		return errors.New("subagent: delegated child Agent is unavailable")
+func (seed *delegationSeed) Provision(
+	requestContext context.Context,
+	target agent.Scope,
+) (agent.Provisioning, error) {
+	if seed == nil || seed.policy == nil || target == nil {
+		return nil, errors.New("subagent: delegated Agent is unavailable")
 	}
-	policy.child = childAgent
-	return policy.policy.SeedDelegationPolicy(requestContext, childAgent.SessionValue())
+	childSubject := target.Agent()
+	if childSubject == nil || childSubject.SessionValue() == nil {
+		return nil, errors.New("subagent: delegated Agent is unavailable")
+	}
+	return nil, seed.policy.SeedDelegationPolicy(
+		requestContext,
+		childSubject.SessionValue(),
+	)
 }
 
-func (policy *delegationPolicy) Dispose(context.Context) error {
-	policy.child = nil
-	return nil
-}
+var _ agent.Provisioner = (*delegationSeed)(nil)

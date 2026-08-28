@@ -30,7 +30,8 @@ func newContinuableIntegrationFixture(
 ) (*integrationFixture, integrationDurability, *integrationAdapter) {
 	t.Helper()
 	backend := &integrationAdapter{
-		responses: responses,
+		responses:       responses,
+		requestsChanged: make(chan struct{}, 8),
 	}
 	state, durability := newContinuableIntegrationFixtureWithAdapter(
 		t,
