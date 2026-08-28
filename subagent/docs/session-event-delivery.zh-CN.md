@@ -12,7 +12,7 @@
 - Subagent Plugin 复用现有 runtime-wide `session.EventAppended`。它只把已提交事件作为轻量唤醒信号转给 Bound，不读取 Session，不做 child 投递。
 - Bound 不注册新的 `session/projection.Unit`，也不消费 `session/projection`。父交互由 Bound 私有纯 fold 从 parent Session log 重建。
 - binding 本身就是 parent 到 child 的观察关系，不再定义通用 `SubscriptionID`、predicate 或 source selector。
-- 每个 binding 由一个 Bound-owned worker 串行投递。通知可以重复或合并，durable Session log、child Inbox receipt 与 parent `subagent/bound-cursor` 才是恢复事实。
+- 每个binding由一个Bound-owned `interactionDelivery`串行投递。通知可以重复或合并，durable Session log、child Inbox receipt与parent `subagent/bound-cursor`才是恢复事实。
 
 这里的“fold”是普通纯函数，不发布 projection event，也不把内部 cursor 暴露给 API Proxy。
 
@@ -23,7 +23,9 @@
 | Session | append-only event、FIFO Commit、`session.EventAppended`、Flush barrier | subscription、child 路由、Bound cursor |
 | Subagent Plugin | 声明并转发 `session.EventAppended` | Session 读取、消息组装、Followup、cursor |
 | `internal/subagents.Service` | Plugin event 到 Bound 的窄转接和关闭准入 | 解释交互内容 |
-| `internal/bound.Service` | binding worker、parent route index、生命周期与失败隔离 | 通用 EventBus 或公开 projection |
+| `internal/bound.Service` | Bound用例入口与子对象装配 | 通用 EventBus 或公开 projection |
+| `deliverySupervisor` | 投递注册、parent route index、parent epoch清理与关闭 | interaction内容解释与cursor推进 |
+| `interactionDelivery` | 单binding的串行投递、receipt对账、cursor推进与失败隔离 | 通用订阅或Session事件历史 |
 | Bound interaction fold | 从一个 parent committed prefix 形成下一条完整 interaction | I/O、通知和写入 |
 | Agent Inbox | `Followup` 的 durable acceptance receipt | parent cursor |
 
@@ -38,7 +40,7 @@ sequenceDiagram
     participant P as Subagent Plugin
     participant F as Subagents Service
     participant B as Bound Service
-    participant W as binding worker
+    participant W as interactionDelivery
     participant C as child Agent/Session
 
     L->>S: Commit(turn/end)
@@ -59,10 +61,10 @@ sequenceDiagram
 
 1. parent AgentLoop 提交 `turn/end`；Session 主动发布既有 `session.EventAppended`。
 2. Plugin Runtime 主动调用 Subagent Plugin observer；observer 同步转交一个无 I/O 的通知。
-3. Bound 主动把 exact parent ID 路由到该 parent 的 binding workers。
-4. worker 主动读取 parent log并调用纯 fold；fold 不发布任何事件。
-5. worker 主动调用 exact child Agent `Followup`；Agent Inbox 提交 `agent/inbox/spliced`。
-6. worker 先 Flush child receipt，再向 parent Session提交并 Flush `subagent/bound-cursor`。
+3. `deliverySupervisor`主动把exact parent ID路由到该parent的`interactionDelivery`。
+4. `interactionDelivery`主动读取parent log并调用纯fold；fold不发布任何事件。
+5. `interactionDelivery`主动调用exact child Agent `Followup`；Agent Inbox提交`agent/inbox/spliced`。
+6. `interactionDelivery`先Flush child receipt，再向parent Session提交并Flush `subagent/bound-cursor`。
 
 ## 4. Interaction fold
 
@@ -82,11 +84,11 @@ cursor 使用 half-open `NextSeq`。fold 从该位置寻找下一条 closed `tur
 
 cursor 由 parent Session的 `subagent/bound-cursor` 事件表达。它按 child ID 保存 expected previous `NextSeq`、new `NextSeq`、through turn 和 `delivered|skipped` disposition。它不进入公共 Bound projection，也没有独立 cursor Store。
 
-worker 的 effect 顺序固定为：
+`interactionDelivery`的effect顺序固定为：
 
 1. 从 parent snapshot fold current cursor 和下一条完整 interaction；
 2. Flush parent source prefix；
-3. 在 parent-child operation lock 内确认 latest config enabled 且 exact resident epoch仍有效；
+3. 在parent-child `bindingSlot`内确认latest config enabled且exact resident epoch仍有效；
 4. 扫描 child log 中 exact receipt；唯一 receipt 已存在时不再 `Followup`，不存在时提交一次；多个 receipt 是 invariant failure；
 5. Flush child Session；
 6. 通过 Session FIFO head 上执行的 `WritePlan` 校验 expected cursor并提交新 cursor；
@@ -98,13 +100,13 @@ worker 的 effect 顺序固定为：
 
 首次 cursor floor 取 binding event 后一位与 child `Header.SeedLength` 的较大值。前者排除 binding 建立前的 parent history，后者排除 fork 已复制给 child 的 parent prefix；spawn 的 seed floor 为零。
 
-worker 属于 binding，不属于某个 child Agent epoch。config revision replacement 更新 resident epoch但不替换 worker；`Enabled=false` 时 worker保留 backlog且不推进 cursor，再次启用并 materialize child 后主动 catch-up。
+`interactionDelivery`属于binding，不属于某个child Agent epoch。config revision replacement更新resident epoch但不替换该投递对象；`Enabled=false`时保留backlog且不推进cursor，再次启用并materialize child后主动catch-up。
 
-parent exact Agent disposed 时同步移除并停止其 workers。Bound Service关闭时先取消并等待所有 workers，再停止 resident Executions，避免 worker向正在拆除的 child投递。
+parent exact Agent disposed时，`deliverySupervisor`同步移除并停止其投递对象。Bound Service关闭时先取消并等待所有投递，再停止resident Executions，避免向正在拆除的child投递。
 
 ## 7. 失败语义
 
-- 通知重复、丢失或合并：worker按 durable cursor重读，启动、恢复和重新启用都会主动 catch-up。
+- 通知重复、丢失或合并：`interactionDelivery`按durable cursor重读，启动、恢复和重新启用都会主动catch-up。
 - parent source Flush失败：不产生新的 child effect。
 - child Followup或receipt Flush失败：不推进 parent cursor。
 - cursor Commit或Flush失败：报告 diagnostics；恢复重新对账 child receipt。
@@ -114,7 +116,8 @@ parent exact Agent disposed 时同步移除并停止其 workers。Bound Service�
 ## 8. 实现与验证证据
 
 - 纯 fold与cursor验证：`subagent/internal/bound/interaction.go`、`interaction_test.go`
-- worker、receipt恢复与 CAS WritePlan：`subagent/internal/bound/interaction_delivery.go`
+- 投递生命周期：`subagent/internal/bound/interaction_delivery.go`
+- receipt恢复与CAS WritePlan：`subagent/internal/bound/interaction_delivery_recovery.go`
 - live delivery与crash-window测试：`subagent/internal/bound/runtime_test.go`
 - Plugin wakeup接线：`subagent/plugin/plugin.go`、`events.go`
 - 当前完成状态：[08 实施进度](../../zh-CN/08-implementation-progress.md)

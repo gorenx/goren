@@ -127,7 +127,7 @@ type BoundConfigAppliedData struct {
 
 `internal/projection.boundUnit`在一个state中维护四个分离view：`Bindings`、latest `Configs`、latest `Materializations`和child `Applied`历史。
 
-projection拒绝：重复child/title、没有binding的config、非连续revision、没有matching config revision的materialization、无效result和unknown fields。它不保存resident Agent、operation lock或Execution状态。
+projection拒绝：重复child/title、没有binding的config、非连续revision、没有matching config revision的materialization、无效result和unknown fields。它不保存resident Agent、runtime `bindingSlot`或Execution状态。
 
 ## 6. Revision 1
 

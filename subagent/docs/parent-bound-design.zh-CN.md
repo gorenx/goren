@@ -15,7 +15,8 @@ Bound在exact parent Session中持久化child binding和配置，并在parent Ag
 | `subagent.BoundRegistry` | 对配置源公开`Bind`和`UpdateConfig` | 公开内部projection或Store |
 | `internal/subagents.Service` | admission、Start command dispatch、公开capability facade | 解释Bound config |
 | `childExecutionControl` | resident/cold Send路由、interrupt授权、Agent disposed路由 | Bound revision和epoch replacement |
-| `internal/bound.Service` | binding/config用例、create/restore、resident epoch、materialization、parent interaction workers | Plugin dependency lookup、System Prompt/Tools实现、通用EventBus |
+| `internal/bound.Service` | binding/config用例编排、materialization和子对象装配 | Plugin dependency lookup、System Prompt/Tools实现、通用EventBus |
+| `deliverySupervisor` / `interactionDelivery` | parent interaction投递注册、生命周期、receipt和cursor恢复 | Session EventBus或公开projection |
 | `internal/projection.boundUnit` | 从Session event重建可信Bound view | 创建Agent、保存进程内resident状态 |
 | `internal/extension.Registry` | common/selected Extension注册、选择、安装事务、释放 | Bound config和revision |
 | `subagent/plugin.Plugin` | 解析依赖、注册projection、发布capability、桥接Agent与Session wakeup event | 业务config与interaction规则 |
@@ -38,8 +39,9 @@ flowchart TD
     Bound --> Constructor[agent.Constructor]
     Bound --> Execution[Execution Registry]
     Bound --> ExtPort[bound.Extensions]
-    Bound --> Worker[per-binding interaction worker]
-    Worker --> Session
+    Bound --> Supervisor[deliverySupervisor]
+    Supervisor --> Delivery[interactionDelivery]
+    Delivery --> Session
     ExtPort --> ExtRegistry[Extension Registry]
 ```
 
@@ -47,7 +49,7 @@ flowchart TD
 
 - 配置源主动调用`BoundRegistry.Bind/UpdateConfig`；仓库当前不内置特定配置源。
 - `LifecycleCoordinator`主动dispatch `agent.SessionStarted`；Subagent observer异步调用`Service.AgentSessionStarted`。
-- parent Session提交`turn/end`后主动发布既有`session.EventAppended`；Subagent observer只通知Bound，worker随后主动读取log。
+- parent Session提交`turn/end`后主动发布既有`session.EventAppended`；Subagent observer只通知Bound，`interactionDelivery`随后主动读取log。
 - parent发送方主动调用`ChildControl.Send`；router根据resident Execution和parent binding选择Bound或Continuable。
 - Bound主动调用Session、projection、Constructor和Execution Registry。
 - Plugin只注入`bound.Extensions` adapter；它不读取`BoundConfigSnapshot`。
@@ -150,16 +152,19 @@ Bound Service按文件拆分职责：
 
 | 文件 | 方法/对象 | 职责 |
 | --- | --- | --- |
-| `configuration.go` | `Bind`、`UpdateConfig`、`HasBinding` | parent event、revision、唯一性、durability |
-| `start.go` | `Start`、`StartBindings`、`create`、`resume` | 读取binding/config，创建或恢复exact child |
-| `provisioner.go` | `provisioner` | 组合Persona、Tool restriction、common/selected Extension |
-| `applied.go` | `appliedProvisioner` | child未发布时提交applied event |
-| `messaging.go` | `Send` | latest epoch保证与message admission |
-| `execution.go` | `publish`、`Interrupt`、`Close` | resident Execution生命周期 |
+| `service_catalog.go` | `Bind`、`UpdateConfig`、`HasBinding` | parent event、revision、唯一性、durability |
+| `service_runtime.go` | `Start`、`StartBindings`、`Send`、`Interrupt`、`Close` | runtime用例编排 |
+| `service_materialization_result.go` | materialization result方法 | parent结果event、Flush与failure reporting |
+| `materializer.go` | `materializer` | exact child创建/恢复、descriptor校验和scoped provision |
+| `binding_registration.go` | `bindingRegistration` | FIFO head上的child/title唯一性校验与binding+config原子提交 |
+| `binding_slot.go`、`binding_slots.go` | `bindingSlot`、`bindingSlots` | per-binding runtime串行化与resident引用 |
+| `resident_executions.go` | `residentExecutions` | Execution发布、查询、中断、外部关闭观察和模块停止 |
+| `applied_provisioner.go` | `appliedProvisioner` | child未发布时提交applied event |
 | `interaction.go` | parent interaction与cursor fold | 纯重建、filter和连续性校验 |
-| `interaction_delivery.go` | worker、receipt对账、cursor WritePlan | 通知合并、投递、恢复和生命周期 |
-| `terminator.go` | `executionTerminator` | idle、flush、event、registry removal和Handle dispose |
-| `service.go` | dependencies、operation locks、authorization | 共享状态和不变量 |
+| `delivery_supervisor.go` | `deliverySupervisor` | 投递注册、turn/end唤醒、parent epoch清理和关闭 |
+| `interaction_delivery*.go` | `interactionDelivery` | 单binding投递循环、receipt对账和cursor恢复 |
+| `execution_terminator.go` | `executionTerminator` | idle、flush、event、registry removal和Handle dispose |
+| `service.go` | dependencies、子对象装配、authorization | Bound用例入口 |
 
 `internal/childseed`不存在；descriptor append由`internal/seedbuilder.AppendDescriptor`承担，因为它属于SeedBuilder结果装配，而不是独立业务上下文。
 
@@ -183,7 +188,7 @@ sequenceDiagram
     B-->>C: BoundBinding
 ```
 
-parent lock保护同一parent内title分配；parent-child lock同时保护该child的Bind。Commit和Flush完成前没有child Constructor调用。
+`bindingRegistration`进入parent Session FIFO后，从head snapshot重建Bound view并校验child/title唯一性，再生成binding与config revision 1的完整batch。它不依赖per-parent进程锁；Commit和Flush完成前没有child Constructor调用。
 
 ## 7. Parent publication 与启动
 
@@ -239,9 +244,9 @@ flowchart LR
 
 ## 10. Parent interaction 投递
 
-Plugin Manifest监听现有`session.EventAppended`。当committed event是`turn/end`时，Bound按parent Session ID通知已有binding workers；observer调用栈不读Session、不Followup也不Flush。worker从parent snapshot fold完整turn，先Flush source prefix，再在parent-child operation lock内确认latest enabled config和exact resident epoch。
+Plugin Manifest监听现有`session.EventAppended`。当committed event是`turn/end`时，Bound的`deliverySupervisor`按parent Session ID通知已有`interactionDelivery`；observer调用栈不读Session、不Followup也不Flush。投递过程从parent snapshot fold完整turn，先Flush source prefix，再在parent-child `bindingSlot`内确认latest enabled config和exact resident epoch。
 
-需要投递时，worker扫描child Session中的exact `agent/inbox/spliced` receipt；缺失才调用Followup。child Flush完成后，worker使用自定义`session.WritePlan`在FIFO head校验expected cursor，并向parent提交和Flush `subagent/bound-cursor`。恢复时若receipt已存在，只补cursor。
+需要投递时，`interactionDelivery`扫描child Session中的exact `agent/inbox/spliced` receipt；缺失才调用Followup。child Flush完成后，投递对象使用自定义`session.WritePlan`在FIFO head校验expected cursor，并向parent提交和Flush `subagent/bound-cursor`。恢复时若receipt已存在，只补cursor。
 
 该路径没有projection event。完整floor、filter、调用顺序与失败语义见[Parent Interaction投递设计](./session-event-delivery.zh-CN.md)。
 
@@ -255,11 +260,11 @@ child向parent report只发生在report Tool显式执行时；Bound生命周期�
 
 ## 12. 并发与一致性
 
-- parent lock：同一parent内binding title和child ID分配。
-- parent-child operation lock：Bind、UpdateConfig、Start、Send和interaction admission的线性化。
+- `bindingRegistration` WritePlan：同一parent内binding title和child ID在Session FIFO head线性化。
+- parent-child `bindingSlot`：UpdateConfig、Start、Send和interaction admission的runtime线性化。
 - parent route index与one-slot dirty mailbox：只合并唤醒，不保存durable delivery state。
-- binding worker：跨child config epoch保留；parent disposed或module shutdown时先于Execution停止。
-- operation current mutex：Execution close goroutine与用例读取current的并发安全。
+- `interactionDelivery`：跨child config epoch保留；parent disposed或module shutdown时先于Execution停止。
+- `bindingSlot` mutex：唯一的互斥锁保证用例线性化；current引用用atomic exact-epoch CAS清理，避免终止回调与replacement等待形成锁回环。
 - Session Commit batch：binding+revision 1原子追加。
 - Flush：Bind/config对外成功和child publication前的durability边界。
 - projection：拒绝不完整event chain，不修复或猜测业务事实。
