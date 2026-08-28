@@ -1,274 +1,169 @@
 # Bound Subagent 技术设计
 
-> 状态：当前实现设计。Bound 是Goren扩展，不属于固定DeepSeek Harness兼容基线。
+> 状态：目标设计已确认，代码迁移中。旧的 per-parent config 实现将在迁移中删除。
 
-## 1. 设计目标
+## 1. 所有权
 
-Bound在exact parent Session中持久化child binding和配置，并在parent Agent启动或parent向child发送消息时创建/恢复一个resident child Agent。它是独立Mode，不是Continuable的配置开关。
+Bound 是独立 Mode，但其 Definition 是全局配置能力，不属于任一 Session。每个用户 Session 只持久化该 Session 自己的 Binding、materialization 和 delivery cursor；每个 child Session 持久化实际应用的 Definition 快照和 delivery receipt。
 
-核心规则见[需求](./parent-bound-requirements.zh-CN.md)，config组合细节见[Bound Config管理](./bound-config-management.zh-CN.md)，实现进度以[仓库实施进度](../../zh-CN/08-implementation-progress.md)为准。
-
-## 2. 职责分配
-
-| 组件 | 职责 | 不负责 |
+| Owner | 负责 | 不负责 |
 | --- | --- | --- |
-| `subagent.BoundRegistry` | 对配置源公开`Bind`和`UpdateConfig` | 公开内部projection或Store |
-| `internal/subagents.Service` | admission、Start command dispatch、公开capability facade | 解释Bound config |
-| `childExecutionControl` | resident/cold Send路由、interrupt授权、Agent disposed路由 | Bound revision和epoch replacement |
-| `internal/bound.Service` | binding/config入口校验、Bound child路由和子对象装配 | Plugin dependency lookup、System Prompt/Tools实现、通用EventBus |
-| `boundChildRegistry` | exact parent-child索引、parent wakeup路由和关闭准入 | binding用例、child I/O或durable状态 |
-| `boundChild` | 单binding mailbox、resident Execution、config replacement、message与interaction投递恢复 | 通用订阅或Session事件历史 |
-| `internal/projection.boundUnit` | 从Session event重建可信Bound view | 创建Agent、保存进程内resident状态 |
-| `internal/extension.Registry` | common/selected Extension注册、选择、安装事务、释放 | Bound config和revision |
-| `subagent/plugin.Plugin` | 解析依赖、注册projection、发布capability、桥接Agent与Session wakeup event | 业务config与interaction规则 |
-| `agent.LifecycleCoordinator` | Agent publication与`SessionStarted`时序 | 启动Bound child |
+| Bound Definition Service | Definition 校验、CAS revision、索引、live reconcile | parent Session event、Agent epoch |
+| Definition SQLite Store | sqlc 读写、事务和技术持久化 | revision 决策、reconcile |
+| `internal/bound.Service` | 用户 Session 一致性、Binding、激活、replacement、interaction | 通用 EventBus、Web DTO、System Prompt/Tools实现 |
+| parent projection | Binding 和 materialization 派生状态 | Definition 配置、resident Agent |
+| Binding worker | 单 Binding 命令串行、resident epoch、receipt/cursor恢复 | 跨 Binding 串行化 |
+| Agent lifecycle | Agent publication、idle/maintenance、结构关闭 | 建立 Binding、解释 Definition |
+| API Proxy / Web | 严格管理协议与用户输入 | Definition 持久化或运行时协调 |
 
-## 3. 依赖与主动调用方向
+## 2. 依赖与主动调用方向
 
 ```mermaid
-flowchart TD
-    Source[配置源 Plugin] -->|Require BoundRegistry| Facade[internal/subagents.Service]
-    Lifecycle[Agent LifecycleCoordinator] -->|agent.SessionStarted| Observer[subagent/plugin.Plugin]
-    SessionEvent[parent Session EventAppended] --> Observer
-    Client[ChildControl caller] -->|Send| Facade
-    Observer -->|AgentSessionStarted| Facade
-    Facade --> Bound[internal/bound.Service]
-    Facade --> Router[childExecutionControl]
-    Router --> Bound
-    Bound --> Session[Session Context / LiveStore]
-    Bound --> Projection[Session Projection Registry]
-    Bound --> Constructor[agent.Constructor]
-    Bound --> Execution[Execution Registry]
-    Bound --> ExtPort[bound.Extensions]
-    Bound --> Registry[boundChildRegistry]
-    Registry --> Child[boundChild per parent-child]
-    Child --> Session
-    Child --> Constructor
-    Child --> Execution
-    ExtPort --> ExtRegistry[Extension Registry]
+flowchart LR
+    Web[Web Bound editor] --> API[API Proxy]
+    API --> Definitions[Bound Definition Service]
+    Definitions --> Store[Definition SQLite Store]
+    Definitions --> Index[Definition Index]
+    Definitions --> Reconcile[Reconcile scheduler]
+    Started[agent.SessionStarted] --> Reconcile
+    Idle[Agent WhenIdle] --> Reconcile
+    Reconcile --> Parent[parent user Agent]
+    Parent -->|RunMaintenance| Bindings[parent Binding events]
+    Reconcile --> Workers[Binding workers]
+    Workers --> Constructor[agent.Constructor]
+    Workers --> Child[direct Bound child]
+    Event[session.EventAppended] -->|wakeup only| Workers
+    Workers --> Receipts[child receipt]
+    Workers --> Cursor[parent cursor]
 ```
 
 谁主动调用谁：
 
-- 配置源主动调用`BoundRegistry.Bind/UpdateConfig`；仓库当前不内置特定配置源。
-- `LifecycleCoordinator`主动dispatch `agent.SessionStarted`；Subagent observer异步调用`Service.AgentSessionStarted`。
-- parent Session提交`turn/end`后主动发布既有`session.EventAppended`；Subagent observer只通知Bound，`boundChildRegistry`把唤醒合并到该parent已有的`boundChild`，各child随后主动读取log。
-- parent发送方主动调用`ChildControl.Send`；router根据resident Execution和parent binding选择Bound或Continuable。
-- Bound主动调用Session、projection、Constructor和Execution Registry。
-- Plugin只注入`bound.Extensions` adapter；它不读取`BoundConfigSnapshot`。
+1. Web 通过 API Proxy 主动调用 Definition Service 的 `List/Create/Replace`。
+2. Definition Service 先调用 Store 完成 CAS，再更新索引并请求 live reconcile。
+3. Agent lifecycle 发布 `SessionStarted`；Subagent observer 只向受管 scheduler 投递用户 Session ID。
+4. scheduler 解析 exact parent Agent 并主动调用 `RunMaintenance`；maintenance callback 读取 Definition index 和 parent projection，原子提交缺失 Bindings。
+5. maintenance 返回后 scheduler 为每个 Binding 请求激活；每个 Binding worker 主动调用 Constructor 创建或恢复 child。
+6. parent Session 提交 `turn/end` 后发布 `session.EventAppended`；observer 只合并 wakeup，Binding worker 随后主动读取 durable log。
+7. worker 先让 child 接受 receipt/input，再提交 parent cursor。
 
-## 4. 公共数据与接口
+注册监听不是运行时处理本身；事件也不是消息历史或订阅事实。
 
-### 4.1 Start command
+## 3. 全局 Definition
+
+Definition Service 对外提供稳定、传输无关的能力：
 
 ```go
-type StartCommand interface {
-	Mode() Mode
-	startCommand()
-}
-
-type BoundStartCommand struct {
-	parent  agent.Agent
-	childID session.SessionID
+type BoundDefinitions interface {
+    List(context.Context) ([]BoundDefinition, error)
+    Create(context.Context, CreateBoundDefinition) (BoundDefinition, error)
+    Replace(context.Context, ReplaceBoundDefinition) (BoundDefinition, error)
 }
 ```
 
-`StartCommand`是OneShot、Continuable、Bound的closed family。每个Mode实现自己的`Start`接口；不存在大而全的通用command。Bound command不复制creation/config，只定位exact parent和已提交binding child ID。
+`Create`要求不存在同名 Definition；成功 revision 为 1。`Replace`要求名称存在且 expected revision 匹配；每次保存完整 snapshot。Store 是 Service 消费的最小接口，SQLite adapter 实现它，composition root 负责路径、迁移和关闭装配。
 
-### 4.2 Bound use cases
+Definition 名称是 identity，不提供 rename/delete。进程索引只保存 Store 已提交的最新快照；它不是第二持久化来源。
 
-```go
-type BoundRegistry interface {
-	Bind(context.Context, BindCommand) (BoundBinding, error)
-	UpdateConfig(
-		context.Context,
-		UpdateBoundConfigCommand,
-	) (UpdateBoundConfigResult, error)
-}
-```
+## 4. Parent projection
 
-`BindCommand`携带parent、可选child ID、SeedBuilder、title、initial prompt、Agent options、MaxDepth和revision 1 config。`UpdateBoundConfigCommand`携带exact parent、child ID、expected revision和完整config。
-
-### 4.3 Persisted event payloads
+新 Binding event 使用新版本，至少表达：
 
 ```go
 type BoundBindingData struct {
-	Version        int
-	ChildSessionID session.SessionID
-	Creation       BoundCreation
-}
-
-type BoundConfigData struct {
-	Version          int
-	ChildSessionID   session.SessionID
-	PreviousRevision int64
-	Revision         int64
-	Config           BoundConfigSnapshot
-}
-
-type BoundMaterializationData struct {
-	Version        int
-	ChildSessionID session.SessionID
-	ConfigRevision int64
-	Result         BoundMaterializationResult
-}
-
-type BoundConfigAppliedData struct {
-	Version              int
-	ParentSessionID      session.SessionID
-	ParentConfigEventSeq int64
-	Revision             int64
+    Version        int
+    Name           string
+    ChildSessionID session.SessionID
+    ContextNextSeq uint64
 }
 ```
 
-这些payload有严格JSON codec、unknown-field拒绝和version检查。Session header不变。
+`ContextNextSeq` 在 maintenance 的 Session FIFO head 上，从同一 committed prefix 计算“最后完整 turn 之后的位置”。同一 batch 可写入多个缺失 Binding；projection 拒绝重复 Name、重复 child ID、无效 floor 和旧事件版本。
 
-`subagent/bound-cursor`另存每个binding的half-open parent cursor与`delivered|skipped` disposition。它由Bound私有fold读取，不加入公共`subagent-bound` projection value。child Inbox receipt使用`subagent-delivery` message source保存parent、turn、seq range和稳定outcome。
+Materialization 保存 Name、child ID、Definition revision 和稳定结果。Cursor 继续是 Bound 私有 fold 的 parent event，不进入公共 projection value。
 
-### 4.4 Projection view
-
-```go
-type Bound struct {
-	Bindings         []BoundBinding
-	Configs          []BoundConfig
-	Materializations []BoundMaterialization
-	Applied          []BoundApplied
-}
-```
-
-binding immutable；Configs与Materializations各保留每个child的latest值；Applied保留child Session中的历史引用。resident Agent不进入projection。
-
-## 5. 内部接口与方法
-
-`internal/subagents`消费三个Mode-owned接口：`oneShot`、`continuable`和`bound`。Bound接口包含：
-
-```go
-Start(context.Context, subagent.BoundStartCommand) (subagent.Execution, error)
-StartBindings(context.Context, agent.Agent) error
-HasBinding(context.Context, agent.Agent, session.SessionID) (bool, error)
-Send(context.Context, agent.Agent, session.SessionID, agentmessage.UserMessage) (agentmessage.MessageID, error)
-Bind(context.Context, subagent.BindCommand) (subagent.BoundBinding, error)
-UpdateConfig(context.Context, subagent.UpdateBoundConfigCommand) (subagent.UpdateBoundConfigResult, error)
-```
-
-Bound Service按文件拆分职责：
-
-| 文件 | 方法/对象 | 职责 |
-| --- | --- | --- |
-| `service_catalog.go` | `Bind`、`UpdateConfig`、`HasBinding` | parent event、revision、唯一性、durability |
-| `service_runtime.go` | `Start`、`StartBindings`、`Send`、`Interrupt`、`Close` | 入口校验、Bound child路由与跨binding并发启动 |
-| `materializer.go` | `materializer` | exact child创建/恢复、descriptor校验和scoped provision |
-| `binding_registration.go` | `bindingRegistration` | FIFO head上的child/title唯一性校验与binding+config原子提交 |
-| `bound_child_registry.go` | `boundChildRegistry` | exact parent-child索引、wakeup路由、parent epoch清理和module close |
-| `bound_child*.go` | `boundChild` | mailbox、单child用例串行化、Execution和interaction恢复状态 |
-| `applied_provisioner.go` | `appliedProvisioner` | child未发布时提交applied event |
-| `interaction.go` | parent interaction与cursor fold | 纯重建、filter和连续性校验 |
-| `resident_epoch.go` | `residentEpoch` | exact Agent Handle、Execution、applied revision与统一settlement |
-| `service.go` | dependencies、子对象装配、authorization | Bound用例入口 |
-
-`internal/childseed`不存在；descriptor append由`internal/seedbuilder.AppendDescriptor`承担，因为它属于SeedBuilder结果装配，而不是独立业务上下文。
-
-## 6. Bind 流程
+## 5. SessionStarted 和 maintenance
 
 ```mermaid
 sequenceDiagram
-    participant C as 配置源
-    participant F as Subagents facade
-    participant B as Bound Service
-    participant P as Projection
+    participant L as Agent Lifecycle
+    participant O as Subagent observer
+    participant Q as managed scheduler
+    participant P as parent Agent
     participant S as parent Session
+    participant W as Binding workers
 
-    C->>F: BoundRegistry.Bind(command)
-    F->>B: Bind(command)
-    B->>B: validate parent/lineage/seed/config/extensions
-    B->>P: Snapshot(parent)
-    B->>B: validate child ID and title
-    B->>S: Commit(binding + config revision 1)
-    B->>S: Flush
-    B-->>C: BoundBinding
-```
-
-`bindingRegistration`进入parent Session FIFO后，从head snapshot重建Bound view并校验child/title唯一性，再生成binding与config revision 1的完整batch。它不依赖per-parent进程锁；Commit和Flush完成前没有child Constructor调用。
-
-## 7. Parent publication 与启动
-
-```mermaid
-sequenceDiagram
-    participant A as Agent LifecycleCoordinator
-    participant O as Subagent Plugin observer
-    participant F as Subagents facade
-    participant B as Bound Service
-    participant C as agent.Constructor
-
-    A->>O: agent.SessionStarted(parent)
-    O-->>A: 立即返回
-    O->>F: AgentSessionStarted(parent)（goroutine）
-    F->>B: StartBindings(parent)
-    par 每个binding独立boundChild
-        B->>B: Start(NewBoundStart(parent, childID))
-        B->>C: Create或Resume
+    L->>O: SessionStarted(parent)
+    O->>Q: enqueue(parent ID)
+    O-->>L: return
+    Q->>P: RunMaintenance(callback)
+    P->>S: read head prefix + projection
+    P->>S: Commit(all missing Bindings)
+    P->>S: Flush
+    P-->>Q: maintenance complete
+    par different Bindings
+        Q->>W: activate(binding A)
+        Q->>W: activate(binding B)
     end
 ```
 
-`LifecycleCoordinator`在dispatch前已经使exact Agent可被Registry解析。observer使用goroutine，所以create/restore错误不会变成parent publication错误。`StartBindings`为每个binding取得独立`boundChild`并发启动，等待全部child收敛后返回；各child仍各自containment并记录failure。
+observer 不启动不受控 goroutine，也不在 lifecycle dispatch 栈中做 SQLite、Session 或 Agent I/O。scheduler 由 Plugin 拥有 context、queue 和 wait group，关闭时停止准入、取消并等待。
 
-## 8. Create、restore 与 publication
+`RunMaintenance` 是最终原子准入：parent busy 时返回拒绝。scheduler 保留 pending 标记并在 `WhenIdle`、后续启动或 Definition 变更时重试。`WhenIdle` 不能代替 maintenance，因为从观察 idle 到写入之间仍可能开始新 turn。
 
-`Start`把请求发送到parent-child `boundChild` mailbox；该child作为唯一状态写者读取latest projection：
+只对用户 Session reconcile。检查必须同时验证 Session header 与 runtime parent；任何 child Session 都不能进入该流程。
 
-1. 已有同revision active epoch时直接返回；
-2. revision变化时等待旧Agent idle并停止旧epoch；
-3. `Enabled=false`时返回disabled；
-4. Persistence中没有child时fresh create；存在时cold restore并核对parent、seed boundary和descriptor；
-5. 组合config Provisioner和`appliedProvisioner`；
-6. Constructor在unpublished Scope安装所有effect并提交applied event；
-7. 必要时Followup initial prompt，随后Flush child Session；
-8. 发布Execution Registry entry和`subagent.Started`；
-9. parent写succeeded materialization并Flush。
+## 6. 激活和 idle
 
-任何步骤失败都dispose未成功发布的Handle，写failed materialization并交给diagnostics。initial prompt是否需要根据child自己的seed boundary之后是否已有Inbox splice判断。
+maintenance 成功后才允许激活。Binding worker按 frozen `ContextNextSeq` materialize：
 
-## 9. 消息路由
+1. fresh create：构造 `parentEvents[:ContextNextSeq]` 的 detached seed；
+2. cold restore：复用同一 child Session ID并核对 direct parent、descriptor 和 seed boundary；
+3. 安装完整 system prompt、Tool restriction、common 与 selected Extensions；
+4. 在未发布 child 中提交完整 Applied Definition并 Flush；
+5. 发布 Execution；
+6. 不调用 Inbox，不产生初始 turn，resident Agent 保持 idle；
+7. 主动 catch up Binding 后已经闭合的 interaction。
 
-Config revision的提交和epoch replacement由[Bound Config管理](./bound-config-management.zh-CN.md#8-updateconfig-与-send)定义。这里仅定义统一Service的Send分派：
+延迟激活不得重新计算 seed prefix。Definition revision 变化时也不得重建 child Session或改变 Binding floor。
 
-```mermaid
-flowchart LR
-    Send[ChildControl.Send] --> Resident{Execution resident?}
-    Resident -- yes, Bound --> BoundSend[Bound.Send]
-    Resident -- yes, other --> Inbox[Agent.Followup]
-    Resident -- no --> Binding{exact parent有binding?}
-    Binding -- yes --> BoundSend
-    Binding -- no --> Resume[Continuable.Resume]
-```
+## 7. Binding worker
 
-## 10. Parent interaction 投递
+每个 Binding 有一个业务含义明确的串行执行对象。它拥有该 Binding 的：
 
-Plugin Manifest监听现有`session.EventAppended`。当committed event是`turn/end`时，Bound的`boundChildRegistry`按parent Session ID合并唤醒已有`boundChild`；observer调用栈不读Session、不Followup也不Flush。该child在自己的mailbox顺序内从parent snapshot fold完整turn，先Flush source prefix，再确认latest enabled config和exact resident epoch。
+- resident child Agent epoch；
+- Definition revision replacement；
+- 显式 `Send` admission；
+- interaction delivery 与 cursor恢复；
+- 失败隔离和关闭。
 
-需要投递时，`boundChild`扫描child Session中的exact `agent/inbox/spliced` receipt；缺失才调用Followup。child Flush完成后，`boundChild`使用自定义`session.WritePlan`在FIFO head校验expected cursor，并向parent提交和Flush `subagent/bound-cursor`。恢复时若receipt已存在，只补cursor。
+串行入口优先使用 mailbox channel；registry mutex 只保护 parent/name 到 worker 的短索引和关闭准入，不覆盖 child I/O。不同 Binding 使用不同 worker，因此 child create/restore、delivery 与 stop可以并行。
 
-该路径没有projection event。完整floor、filter、调用顺序与失败语义见[Parent Interaction投递设计](./session-event-delivery.zh-CN.md)。
+worker 与 resident epoch 是两个概念：worker 跨多次 Definition replacement长期存在；epoch 是某一 revision 对应的一次 exact Agent execution。
 
-## 11. Settlement、close 与 report
+## 8. Definition replacement
 
-Bound ordinary idle不settle。Interrupt只Cancel当前turn并`KeepInbox=true`。config replacement使用`StopNormal`结束旧epoch；module shutdown使用`StopModule`；Agent外部关闭使用`StopExternal`并避免重复Dispose Handle。
+Definition Store CAS 成功后，各 Binding worker 串行处理 latest revision：
 
-`residentEpoch.Terminate`等待idle、Flush child Session、发布`subagent.Ended`、移除Execution Registry entry并通知`boundChild`清除exact current epoch。final Flush failure进入diagnostics。
+1. 如果 disabled，等待 current epoch idle并停止，但保留 worker、Binding、cursor和backlog；
+2. 如果 enabled 且 current 已应用 latest revision，直接返回；
+3. 否则等待旧 epoch idle、Flush并停止；
+4. 以同一 child Session恢复新的 exact epoch，重新安装完整 Scope；
+5. child Session写入完整 Applied Definition并 Flush后发布；
+6. catch up backlog。
 
-child向parent report只发生在report Tool显式执行时；Bound生命周期不隐式report。
+失败只影响该 Binding；latest Definition 保持 durable，worker 保留 pending并重试。显式 `Send` 必须经过同一 worker，因此不会在 replacement 中投给旧 epoch。
 
-## 12. 并发与一致性
+## 9. Interaction 和恢复
 
-- `bindingRegistration` WritePlan：同一parent内binding title和child ID在Session FIFO head线性化。
-- `boundChildRegistry` mutex：只保护exact parent-child索引和关闭准入，不包围child工作或I/O。
-- parent-child `boundChild`：mailbox线性化UpdateConfig、Start、Send和interaction admission；current、cursor floor和delivery状态只有该child goroutine写入。
-- 不同binding使用不同`boundChild` goroutine；`StartBindings`并发启动，因此一个child的Constructor或I/O不会阻塞其他child。
-- parent route index与one-slot dirty signal：只合并唤醒，不保存durable delivery state。
-- `residentEpoch`完成settlement后通过mailbox异步通知exact current清理，避免`StopAndWait`等待终止事务时形成回环。
-- Session Commit batch：binding+revision 1原子追加。
-- Flush：Bind/config对外成功和child publication前的durability边界。
-- projection：拒绝不完整event chain，不修复或猜测业务事实。
-- child receipt与parent cursor：先Flush receipt，再以expected cursor推进；crash恢复扫描receipt去重。
+具体 fold、receipt 和 cursor 顺序由[投递设计](./session-event-delivery.zh-CN.md)定义。运行链只使用既有 `session.EventAppended` 作为 wakeup；通知可以重复、合并或丢失，启动、启用和显式操作都会主动 catch up。
 
-排除项与O11只在[需求](./parent-bound-requirements.zh-CN.md#8-未关闭事项)维护，验收行为见同文档第9节，实现证据只在[仓库实施进度](../../zh-CN/08-implementation-progress.md)维护。
+## 10. 关闭
+
+Definition Service 停止 reconcile/activation admission后，scheduler取消并等待全部任务。Binding registry随后并行关闭 workers；每个 worker取消在途操作、等待/停止 resident epoch并完成必要 Flush。最后才关闭 Definition Store和Extension Registry依赖。
+
+不得通过关闭 parent Agent 的 SessionStarted observer泄露 goroutine，也不得让一个慢 child 串行拖住其他 child 的关闭。
+
+## 11. 迁移
+
+旧的 `BoundRegistry.Bind/UpdateConfig`、parent `subagent/bound-config`、Title、Persona、InitialPrompt 和 config-applied parent引用全部删除。新 projection 明确拒绝旧事件版本，不提供双读路径。迁移期间文档状态保持“代码迁移中”；完成证据只更新到[08 实施进度](../../zh-CN/08-implementation-progress.md)。

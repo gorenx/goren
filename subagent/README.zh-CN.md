@@ -1,6 +1,6 @@
 # Subagent
 
-`subagent` 拥有委派请求、OneShot、Continuable 与 Bound 三种模式的统一生命周期契约，以及 durable child 的查询和父子通信语义。设计导航见[Subagent 领域设计导航](./docs/design.zh-CN.md)，当前完成证据见[08 实施进度](../zh-CN/08-implementation-progress.md)，固定源职责证据见[源能力分析](../zh-CN/subagent/01-source-capability-analysis.md)。
+`subagent` 拥有委派请求、OneShot、Continuable 与 Bound 三种模式的统一生命周期契约，以及 durable child 的查询和父子通信语义。Bound 的全局 Definition 方案已经确认，当前代码正在从旧的 per-parent config 模型迁移。设计导航见[Subagent 领域设计导航](./docs/design.zh-CN.md)，当前完成证据见[08 实施进度](../zh-CN/08-implementation-progress.md)，固定源职责证据见[源能力分析](../zh-CN/subagent/01-source-capability-analysis.md)。
 
 局部文档包括[设计导航](./docs/design.zh-CN.md)和[术语规范](./docs/terminology.zh-CN.md)。Bound 的需求、调用链、config owner和parent interaction恢复分别由[需求](./docs/parent-bound-requirements.zh-CN.md)、[技术设计](./docs/parent-bound-design.zh-CN.md)、[config详设](./docs/bound-config-management.zh-CN.md)和[投递设计](./docs/session-event-delivery.zh-CN.md)维护；本README只说明包边界，不复制这些契约。
 
@@ -26,6 +26,7 @@
 | `directory.go` | durable child 的只读查询目录与查询结果 | list_agents、Host/UI |
 | `descriptor*.go` | Session log 中可重建的 Subagent identity | Continuable resume、目录查询 |
 | `extension.go` | child Agent Scope 的扩展安装契约 | report 等 child-scoped capability |
+| `bound*.go` | 全局 Bound Definition、管理命令和 Session Binding 契约 | Web/API、Bound runtime |
 | `events.go` | 固定源兼容的注册与运行事件 | Plugin listener、Tool publication |
 | `message_source.go` | 父子消息进入 Session log 时的来源描述 | Agent Inbox、重建 |
 | `errors.go` | 稳定领域错误码 | 所有 Consumer |
@@ -40,7 +41,7 @@
 | `internal/subagents` | 统一准入、按具体 `StartCommand` variant 路由、公共中断授权、关闭编排 | 把三个模式合并成大而全的启动参数 |
 | `internal/oneshot` | OneShot 创建、初始消息、结果选择和终止 | durable resume、后续消息 |
 | `internal/continuable` | Continuable fresh create、cold resume 和 settlement | Agent epoch、普通 live Inbox 投递或 Session durability |
-| `internal/bound` | Bound binding/config、create/restore、resident epoch、Send、parent interaction worker与failure containment | 配置源业务、System Prompt、Tools实现或Session EventBus |
+| `internal/bound` | 全局Definition应用、用户Session binding、create/restore、idle resident epoch、Send、parent interaction worker与failure containment | Web协议、System Prompt/Tools实现或Session EventBus |
 | `internal/execution` | 三种模式共用的一次执行状态、terminal future 和进程内索引 | Agent phase 镜像或父子树 |
 | `internal/seedbuilder` | SeedBuilder 注册、查找和事件边界 | Agent 创建 |
 | `internal/childdirectory` | live/persisted child 的只读合并查询 | 创建、恢复或控制 child |
@@ -85,8 +86,10 @@ flowchart LR
 
 - OneShot 每次 `Start` 创建新 child；terminal 形成后实现自动释放 exact `agent.Handle`，调用方只等待 `Execution`，不再承担第二次 Dispose 义务。
 - Continuable 的 durable child identity 可跨多个 resident epoch。cold child 收到 `Send` 时从 Session log 恢复，形成新的 common `Execution`；seed 只在首次创建时构造。
-- Bound binding与config来自exact parent Session；ordinary idle保留resident epoch，config revision通过exact epoch replacement应用。
-- materialized Bound binding以现有`session.EventAppended`为wakeup，从parent log fold closed direct-user turn；child receipt durable后才推进parent `subagent/bound-cursor`，不使用公开projection event。
+- Bound Definition来自独立全局Store；每个用户Session只保存Definition name到direct child的Binding、materialization和cursor。
+- Bound fresh create只复制Binding建立时冻结的完整parent prefix；安装自己的完整system prompt后保持idle，不提交initial message，也不因创建调用LLM。
+- materialized Bound以现有`session.EventAppended`为wakeup，从parent log fold closed direct-user turn；child receipt durable后才推进parent`subagent/bound-cursor`，不使用公开projection event。
+- Definition revision通过同一child Session的exact epoch replacement应用；disabled保留Binding、cursor和backlog。
 - 普通 interrupt 取消当前 turn，但不等价于删除 durable child。
 - 模块关闭先停止统一Service准入并等待已准入调用返回，再让三个Mode逆序关闭自己持有的Execution。Agent模块继续拥有child-first结构关闭和Scope teardown。
 - 收到 `agent/disposed` 时，Subagent 只结算与该 exact Agent 匹配的 Execution，不再次 Dispose 已由 Agent 关闭的 Handle。

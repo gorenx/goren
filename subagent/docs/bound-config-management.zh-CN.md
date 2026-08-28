@@ -1,198 +1,119 @@
-# Bound Config 管理详细设计
+# Bound Definition 管理详细设计
 
-> 本文只描述当前实现的Bound config owner和应用机制。
+> 状态：目标设计已确认，代码迁移中。Definition 替代旧的 per-parent Bound config。
 
-## 1. Owner 与边界
+## 1. 边界
 
-| Owner | 拥有 | 不拥有 |
+Definition 是全局、版本化的 Bound 配置。它由 Bound Definition Service 决策并通过独立 SQLite/sqlc Store 持久化；Session adapter不读取其表，Definition Store也不写Session event。
+
+| Owner | 负责 | 不负责 |
 | --- | --- | --- |
-| 配置源 Plugin | 何时调用 `Bind`/`UpdateConfig`，业务授权 | Session event格式、revision规则、child生命周期 |
-| `internal/bound.Service` | config校验、revision、parent event、exact epoch replacement、Send串行化 | System Prompt或Tools注册表实现 |
-| Session | append-only Commit与Flush | config业务含义 |
-| Session Projection | binding/config/materialization/applied派生状态和事件不变量 | child创建、Agent resident状态 |
-| System Prompt | Persona section组合 | Bound revision |
-| Tools | inherited Tool restriction与同层注册冲突规则 | Bound revision |
-| Extension Registry | common/selected registration、选择、安装事务和卸载 | 何时更新Bound config、何时替换Agent epoch |
-| Agent Constructor | unpublished Scope provisioning、Create/Resume和publication transaction | 读取parent Bound config |
+| Definition Service | 业务校验、名称identity、revision CAS、索引、reconcile请求 | SQL、Web JSON、Agent构造 |
+| SQLite Store | schema、sqlc映射、事务、技术错误 | revision策略、live Session扫描 |
+| Binding worker | 把latest Definition应用到exact child epoch | 修改全局 Definition |
+| System Prompt | 完整prompt section组合 | Definition revision |
+| Tools | Tool restriction与冲突规则 | Definition持久化 |
+| Extension Registry | common/selected注册、安装、rollback和release | 何时替换epoch |
+| child Session | 保存Applied Definition历史 | 作为全局配置源 |
 
-依赖方向固定为：配置源 → `BoundRegistry` → Bound → Session/projection/Agent；Bound通过消费端口 `Extensions` 使用Extension Registry，Registry不导入Bound。
+依赖方向为：Web/API → Definition Service → Store；Definition Service → reconcile scheduler → Binding worker → Agent/Session。SQLite adapter实现Service消费的Store接口，不向上暴露sqlc row或driver类型。
 
-## 2. 配置数据
+## 2. Definition 语义
 
-公开输入和持久化snapshot分别是：
+Definition boundary data包含名称、revision、enabled、完整system prompt、可选Agent options/最大深度、Tool restriction和有序Extensions。输入在进入Store前完成：
 
-```go
-type BoundConfigInput struct {
-	Enabled         bool
-	Persona         *string
-	ToolRestriction *tools.ToolRestriction
-	Extensions      []string
-}
+- 名称规范化和非空校验；
+- system prompt非空校验；
+- Agent options与最大深度校验；
+- Tool restriction深复制与Tools现有规则校验；
+- Extension名称非空、无重复且按输入顺序保留；
+- selected Extension在应用前可解析。
 
-type BoundConfigSnapshot struct {
-	Enabled         bool
-	Persona         *string
-	ToolRestriction *tools.ToolRestriction
-	Extensions      []string
-}
-```
+返回值和索引必须防御性复制slice、map与指针字段。Definition是完整snapshot，不是patch。
 
-`SnapshotBoundConfig`负责深复制、严格校验并生成完整snapshot。`Extensions`是稳定registration name列表，不是Tool name，也不是Plugin name。顺序同时决定selected Extension安装顺序。
+`Name`回答对象身份；`Revision`回答同一对象的版本。`Revision`不是Session seq：revision只在同名Definition替换时递增，Session seq则是某个Session append-only log中的事件位置。
 
-immutable creation与mutable config分开：
+## 3. Store
 
-```go
-type BoundCreation struct {
-	SeedBuilder   string
-	Title         string
-	InitialPrompt []agentmessage.ContentBlock
-	AgentOptions  agent.Options
-}
-```
+第一版Store保存每个名称的latest完整snapshot。最小操作是load all、create和compare-and-swap replace。Create只接受revision 1；Replace要求stored revision与expected revision一致，再写expected+1。
 
-initial prompt属于binding creation，只在child尚未提交自己的Inbox message时使用；它不是可变Persona。
+Store使用独立数据库文件，例如data dir下的`bound-definitions.sqlite`。migration和query文件与adapter同置，生成代码保持repository-private。Snapshot字段可以用严格JSON列保存，但adapter必须严格decode并映射为owner-defined Definition；未知字段、缺字段和非法revision都是数据完整性错误。
 
-## 3. Prompt 与 Tools 组合
+Store关闭只负责技术资源；Service先停止所有会使用Store的任务。
 
-Bound不直接操作`systemprompt.Registry`或`tools.Service`。每次创建一个exact child Agent epoch时，`bound.Service.provisioner`把latest snapshot转换为已有child policy Plugins：
+## 4. System prompt
 
-```text
-BoundConfig.Persona
-  -> childpolicy persona Plugin
-  -> systemprompt.PromptRegistry.AddSection
-
-BoundConfig.ToolRestriction
-  -> childpolicy tool-restriction Plugin
-  -> tools.PolicyRegistry.AddRestriction
-```
-
-因此System Prompt只管理prompt section，Tools只管理Tool/policy；Subagent只负责按config选择和组合这些现有能力。config更新不对已发布Scope原位替换section或Tool handle，而是创建使用新snapshot的新Agent epoch。
-
-## 4. Extension 注册与选择
-
-公开Registry保持一个通用option参数：
+Bound system prompt不是Persona。每个exact child Scope安装：
 
 ```go
-type ExtensionRegistry interface {
-	RegisterExtension(
-		Extension,
-		...ExtensionOption,
-	) (ExtensionRegistration, error)
-}
-
-func WithExtensionName(string) ExtensionOption
-```
-
-- 无`WithExtensionName`：common Extension，每个OneShot、Continuable和Bound child都安装。
-- 有name：selected Extension，不进入common集合；只有config明确选择它的Bound epoch安装。
-- 同一Registry内name必须非空、已trim且唯一。
-- `NewSelectedProvisioner`在构造时验证完整名称列表，在Provision时重新解析，以覆盖构造与安装之间的registration变化。
-- common和selected Provisioner由`agent.ComposeProvisioners`组合；任一安装失败，已安装effect按反序卸载。
-
-Bound拥有的最小消费接口是：
-
-```go
-type Extensions interface {
-	Validate([]string) error
-	Provision([]string) (agent.Provisioner, error)
+systemprompt.PromptSection{
+    Name:     "subagent:bound",
+    Order:    systemprompt.PersonaOrder,
+    Text:     systemprompt.StaticText(definition.SystemPrompt),
+    Complete: true,
 }
 ```
 
-`subagent/plugin.boundExtensions`只是Registry到该接口的adapter，不读取config、不创建Agent、不协调revision。
+`Complete=true`表示该section构成Bound自己的完整system prompt，不继承parent的模型身份。此安装由child policy/provisioning adapter完成；Bound Definition Service不直接操作`systemprompt.Registry`。
 
-注销链路只有两条：持有`ExtensionRegistration`的注册方显式`Unregister`，或Subagent Plugin shutdown执行`Registry.Clear`。Bound不注销Extension。当前生产代码没有有名Extension注册方；report Plugin注册的是common Extension。若将来新增可热卸载的有名provider，应先定义独立change notification和Agent一致性需求，不能预置Bound callback。
+旧`Persona`类型和`newPersona`命名应从Bound路径移除。若OneShot/Continuable仍有persona语义，应由其自己的配置和公共前缀文件保留，不能让Bound完整system prompt退化成persona别名。
 
-## 5. Session events 与 projection
+## 5. Tool restriction 与 Extensions
 
-### 5.1 Parent events
+Tool restriction继续复用Tools policy；Definition不定义任意tool参数、provider配置或第二套Tool registry。
 
-`subagent/bound-binding`保存`BoundCreation`；`subagent/bound-config`保存`PreviousRevision`、`Revision`和完整snapshot；`subagent/bound-materialization`只保存child ID、config revision和`succeeded|failed`。
+Extension规则保持：
 
-### 5.2 Child event
+- 无名称registration是common Extension，每个child都安装；
+- 有名称registration是selected Extension，只有Definition按顺序选择时安装；
+- 安装是事务：任一安装失败，按逆序release已经取得的effects；
+- Bound不负责注销registration；注册方显式注销或Plugin shutdown清空Registry。
 
-`subagent/bound-config-applied`保存：
+Definition保存registration name，不保存Tool name或Plugin对象。Store CAS不依赖selected Extension当前是否live；应用到child前必须解析并失败隔离，因此暂时缺失的Extension不会破坏全局Definition持久化。
 
-```go
-type BoundConfigAppliedData struct {
-	Version              int
-	ParentSessionID      session.SessionID
-	ParentConfigEventSeq int64
-	Revision             int64
-}
-```
+## 6. Applied Definition
 
-该event由`appliedProvisioner`在child仍未发布时提交，使模型可见配置所对应的revision可从child log重建。它不复制Persona或Tool配置。
+每次fresh create或revision replacement都在child Session写入新版本`subagent/bound-definition-applied`事件。事件保存：
 
-### 5.3 Projection
+- schema version；
+- Definition name和revision；
+- enabled状态；
+- 完整system prompt；
+- 实际Agent options和最大深度；
+- 实际Tool restriction；
+- 按实际安装顺序保存的Extensions。
 
-`internal/projection.boundUnit`在一个state中维护四个分离view：`Bindings`、latest `Configs`、latest `Materializations`和child `Applied`历史。
+该事件是模型可见Scope的可恢复证据，不能只保存Definition name/revision或指向parent/global row。恢复child时先从child log校验历史Applied事件，再以Store latest决定是否需要新的epoch。
 
-projection拒绝：重复child/title、没有binding的config、非连续revision、没有matching config revision的materialization、无效result和unknown fields。它不保存resident Agent、`boundChild` mailbox或Execution状态。
-
-## 6. Revision 1
-
-`Bind`把binding和config revision 1放入同一个parent Session Commit batch，并在返回前Flush；完整Bind调用链只在[技术设计](./parent-bound-design.zh-CN.md#6-bind-流程)维护。Config owner额外保证selected Extension名称在Commit前通过`Extensions.Validate`。
-
-## 7. Epoch 启动时应用配置
+## 7. Create 和 Replace
 
 ```mermaid
 sequenceDiagram
-    participant B as Bound Service
-    participant P as parent Projection
-    participant X as Extension adapter
-    participant A as agent.Constructor
-    participant C as child Session
-    participant R as Execution Registry
+    participant C as API Consumer
+    participant D as Definition Service
+    participant S as Definition Store
+    participant I as Definition Index
+    participant R as Reconcile scheduler
 
-    B->>P: 读取binding和latest config
-    B->>X: Provision(selected names)
-    B->>A: Create或Resume(exact child ID, composed Provisioner)
-    A->>C: mount Persona/Tool policy/common/selected Extensions
-    A->>C: Commit bound-config-applied
-    B->>C: Followup initial prompt（仅需要时）
-    B->>C: Flush
-    B->>R: Publish ModeBound Execution
+    C->>D: Create or Replace
+    D->>D: validate complete snapshot
+    D->>S: CAS persist
+    S-->>D: committed Definition
+    D->>I: publish latest snapshot
+    D->>R: reconcile live user Sessions
+    D-->>C: committed Definition
 ```
 
-fresh create还安装delegation policy；cold resume沿用durable lineage，不重复seed delegation。初始prompt判断只扫描`Header.SeedLength`之后的child事件，不能把继承parent seed中的Inbox误认为child已经提交prompt。
+顺序不能反转：Store失败不得污染索引；某个live Session reconcile失败也不得回滚已经提交的全局Definition。scheduler合并同一parent的重复请求，并保留pending直到maintenance和所有Binding最终对齐。
 
-## 8. UpdateConfig 与 Send
+## 8. Disable 与 replacement
 
-`UpdateConfig`的线性化顺序是：
+`Enabled=false`仍是一条完整revision。Binding worker看到它后停止resident epoch，但保留durable Binding、child Session、cursor和backlog。disabled期间interaction wakeup可以合并，但cursor不推进。
 
-1. 在`boundChild` mailbox外完成纯输入snapshot和Extension名称预验证；
-2. 命令进入mailbox后重新校验exact parent和expected revision；
-3. Commit完整revision N+1；
-4. Flush parent Session；
-5. cold child直接返回；
-6. resident child执行`StopAndWait(StopNormal)`；统一settlement等待旧Agent idle并停止旧epoch；
-7. 读取latest projection并Create/Resume新epoch；
-8. 新epoch发布后返回。
+重新启用或配置替换时，worker等待旧epoch idle，停止旧epoch，再以同一child Session和最新exact Scope恢复。Applied event Flush完成后才允许发布新epoch；随后主动catch up。显式Send与replacement共享同一mailbox，避免消息进入旧Scope。
 
-`Send`使用同一个parent-child `boundChild` mailbox。它先确保latest revision有resident epoch，再向exact child `Followup`。因此revision已durable后，不会有新Bound message进入旧epoch。
+## 9. 迁移
 
-```mermaid
-flowchart TD
-    U[UpdateConfig revision N+1] --> C[Commit + Flush parent]
-    C --> R{child resident?}
-    R -- no --> Done[返回 committed result]
-    R -- yes --> Stop[StopAndWait: 等待idle并停止旧epoch]
-    Stop --> Start[以 revision N+1 启动新 epoch]
-    Start --> Done
-    S[Bound Send] --> Mailbox[同一 boundChild mailbox]
-    Mailbox --> Start
-```
+删除旧的`BoundConfigInput`、`BoundConfigSnapshot`、`UpdateBoundConfigCommand`、parent `subagent/bound-config`和只引用parent seq的`BoundConfigAppliedData`。新事件提升版本并拒绝旧数据；不增加兼容wrapper、双写或silent fallback。
 
-`Enabled=false`在步骤6停止旧epoch，随后不创建新epoch；`Send`返回`ErrorBoundDisabled`。
-
-## 9. 失败与恢复
-
-- validation失败：不写event。
-- parent Commit失败：不创建或替换child。
-- parent Flush失败：返回错误；Session已接受event时caller必须按持久化层语义处理，不假装回滚。
-- latest revision durable后replacement失败：返回`UpdateBoundConfigResult`和error；next Send/Start读取同一latest revision重试。
-- create/restore失败：parent写failed materialization；若来自parent startup，failure只进diagnostics，不否决parent publication。
-- child Flush或Execution publication失败：dispose unpublished/failed handle并记录failed materialization。
-- module shutdown：先关闭所有Bound/Continuable/OneShot Execution，再Clear Extension Registry。
-
-排除项、O11和验收行为只在[需求](./parent-bound-requirements.zh-CN.md)维护，实现证据只在[仓库实施进度](../../zh-CN/08-implementation-progress.md)维护。
+实现状态和测试证据只记录在[08 实施进度](../../zh-CN/08-implementation-progress.md)。

@@ -1,127 +1,117 @@
 # Bound Parent Interaction 投递设计
 
-状态：当前实现设计，已实现
+> 状态：目标设计已确认，代码迁移中。
 
-本文只说明 Bound 如何把 direct user 与 parent 的完整交互投递给已绑定 child，以及如何恢复投递水位。binding、materialization 和 config 分别以[Bound 需求](./parent-bound-requirements.zh-CN.md)、[Bound 技术设计](./parent-bound-design.zh-CN.md)和[Bound Config 管理](./bound-config-management.zh-CN.md)为准。
+本文只说明Binding建立后，Bound如何读取用户与parent的完整交互，以及如何恢复receipt和cursor。Definition、Binding和激活分别以[需求](./parent-bound-requirements.zh-CN.md)、[配置管理](./bound-config-management.zh-CN.md)和[技术设计](./parent-bound-design.zh-CN.md)为准。
 
-这项能力是 Goren 扩展，不属于固定 DeepSeek Harness 兼容基线。
+## 1. 原则
 
-## 1. 结论
+- Session不增加per-Session EventBus，也不保存listener registration。
+- 既有`session.EventAppended`只在已提交事件后提供wakeup；通知可重复、合并或丢失。
+- parent Session append-only log是interaction事实来源。
+- Binding表达parent到child的观察关系，不引入通用Subscription、predicate或source selector。
+- parent cursor和child receipt共同恢复delivery；不创建interaction projection event。
+- 同一Binding串行，不同Binding并行。
 
-- Session 不增加 per-Session EventBus，也不拥有 Bound subscription。
-- Subagent Plugin 复用现有 runtime-wide `session.EventAppended`。它只把已提交事件作为轻量唤醒信号转给 Bound，不读取 Session，不做 child 投递。
-- interaction投递不注册新的`session/projection.Unit`。`boundChild`读取既有Bound projection确认binding与latest config；交互内容和cursor仍由Bound私有纯fold从parent Session log重建。
-- binding 本身就是 parent 到 child 的观察关系，不再定义通用 `SubscriptionID`、predicate 或 source selector。
-- 每个binding由一个Bound-owned `boundChild`串行处理配置、消息与interaction投递。不同child相互独立。通知可以重复或合并，durable Session log、child Inbox receipt与parent `subagent/bound-cursor`才是恢复事实。
+## 2. 冻结上下文和delivery floor
 
-这里的“fold”是普通纯函数，不发布 projection event，也不把内部 cursor 暴露给 API Proxy。
+Binding创建发生在parent `RunMaintenance`的Session FIFO head。该时刻计算并保存`ContextNextSeq`，它指向最后一个完整parent turn之后的位置。
 
-## 2. Owner
+fresh child只复制：
 
-| Owner | 负责 | 不负责 |
-| --- | --- | --- |
-| Session | append-only event、FIFO Commit、`session.EventAppended`、Flush barrier | subscription、child 路由、Bound cursor |
-| Subagent Plugin | 声明并转发 `session.EventAppended` | Session 读取、消息组装、Followup、cursor |
-| `internal/subagents.Service` | Plugin event 到 Bound 的窄转接和关闭准入 | 解释交互内容 |
-| `internal/bound.Service` | Bound用例入口与`boundChild`路由 | 通用 EventBus 或公开 projection |
-| `boundChildRegistry` | exact parent-child索引、parent wakeup路由、parent epoch清理与关闭 | interaction内容解释与cursor推进 |
-| `boundChild` | 单binding mailbox、resident epoch、receipt对账、cursor推进与失败隔离 | 通用订阅或Session事件历史 |
-| Bound interaction fold | 从一个 parent committed prefix 形成下一条完整 interaction | I/O、通知和写入 |
-| Agent Inbox | `Followup` 的 durable acceptance receipt | parent cursor |
+```text
+parentEvents[:ContextNextSeq]
+```
 
-## 3. 注册与运行调用链
+这段prefix是模型上下文，不产生child Inbox任务。materialization即使延迟，也不能重新计算当前parent的最新完整prefix。
 
-注册阶段，Subagent Plugin 的 Manifest 声明监听既有 `session.EventAppended`。没有第二套 Session listener registry。
+首次delivery cursor从Binding event后一位开始。fold允许跳过Binding创建与`ContextNextSeq`之间的维护事件，但不能把Binding之后闭合的新用户交互吞入seed。旧实现用child `SeedLength`与动态parent prefix取最大值的规则删除。
+
+## 3. Wakeup与实际读取
 
 ```mermaid
 sequenceDiagram
-    participant L as parent AgentLoop
+    participant P as parent AgentLoop
     participant S as parent Session
-    participant P as Subagent Plugin
-    participant F as Subagents Service
-    participant BS as Bound Service
-    participant R as boundChildRegistry
-    participant BC as boundChild
+    participant O as Subagent observer
+    participant Q as managed scheduler
+    participant W as Binding worker
     participant C as child Agent/Session
 
-    L->>S: Commit(turn/end)
-    S->>P: session.EventAppended
-    P->>F: SessionEventAppended(fact)
-    F->>BS: SessionEventAppended(fact)
-    BS->>R: notifyParent(parent ID)
-    R->>BC: notify()（one-slot dirty）
-    P-->>S: observer 返回
-    BC->>S: Snapshot + Flush
-    BC->>BC: pure fold next interaction
-    BC->>C: Followup（receipt 不存在时）
-    BC->>C: Flush child receipt
-    BC->>S: Commit(subagent/bound-cursor)
-    BC->>S: Flush parent cursor
+    P->>S: Commit turn/end
+    S->>O: session.EventAppended
+    O->>Q: wake parent ID
+    O-->>S: return
+    Q->>W: catch up
+    W->>S: read durable prefix and cursor
+    W->>W: fold next closed interaction
+    W->>C: Followup with delivery source
+    W->>C: Flush receipt
+    W->>S: Commit cursor CAS
+    W->>S: Flush cursor
 ```
 
-谁主动调用谁：
-
-1. parent AgentLoop 提交 `turn/end`；Session 主动发布既有 `session.EventAppended`。
-2. Plugin Runtime 主动调用 Subagent Plugin observer；observer 同步转交一个无 I/O 的通知。
-3. `boundChildRegistry`主动把exact parent ID路由到该parent已有的`boundChild`，并合并重复唤醒。
-4. `boundChild`在自己的mailbox顺序内主动读取parent log并调用纯fold；fold不发布任何事件。
-5. `boundChild`主动调用exact child Agent `Followup`；Agent Inbox提交`agent/inbox/spliced`。
-6. `boundChild`先Flush child receipt，再向parent Session提交并Flush `subagent/bound-cursor`。
+observer不读取Session、不Followup、不Flush，也不启动裸goroutine。managed scheduler只负责parent路由、合并wakeup和任务生命周期；interaction含义由Binding worker内的纯fold解释。
 
 ## 4. Interaction fold
 
-cursor 使用 half-open `NextSeq`。fold 从该位置寻找下一条 closed `turn/start ... turn/end`：
+cursor使用half-open `NextSeq`。fold从cursor寻找下一条完整`turn/start ... turn/end`：
 
-- 只有 `user/message` 的 source kind 为 `user` 才算 direct user 输入；plugin、coordinator、tool、subagent report 和 `subagent-delivery` relay 都不算。
-- 使用 canonical `assistant/message`，不重放 `assistant/chunk`，不复制 AgentLoop 的流式组装逻辑。
-- relay 保留 direct user content 和 parent 的可见 assistant content；reasoning、tool-call 和 tool-result block 不进入 child。
-- turn 已闭合但没有 direct user 输入时写 `skipped` cursor，不向 child 生成消息。因此 child report 驱动的 parent turn 不会形成 report echo loop。
-- turn 尚未闭合时返回 NeedMore，cursor 不推进。
-- cursor floor 落在一个已开始 turn 的中部时，fold 只把该 partial turn推进为 `skipped`，不会把 binding 建立前或 fork 已继承的半条交互投给 child。
-- failed、aborted、blocked 等 turn只携带稳定 outcome kind，不复制 provider error 或原始事件 JSON。
+- 只有source kind为direct user的`user/message`使turn可投递；
+- parent回复使用canonical `assistant/message`；
+- relay保留direct user content和parent可见assistant content；
+- reasoning、tool-call、tool-result、assistant chunk和内部协调消息全部过滤；
+- 没有direct user输入的closed turn写`skipped` cursor，不生成child消息；
+- 未闭合turn返回NeedMore，cursor不推进；
+- cursor落在partial turn中时，该partial turn只能`skipped`，不能拼接成新任务；
+- failed、aborted、blocked只保留稳定outcome kind，不复制provider error或原始event JSON。
 
-## 5. Receipt 与 cursor
+因此child显式report触发的parent turn不会被再次投给同一child形成echo loop。
 
-投递消息使用 `subagent-delivery` source，包含 parent Session ID、turn、parent seq range 与稳定 outcome。child Session中的 `agent/inbox/spliced` 是 acceptance receipt；target child 由承载该 receipt 的 Session identity确定，不在 source 中重复。
+## 5. Receipt和cursor
 
-cursor 由 parent Session的 `subagent/bound-cursor` 事件表达。它按 child ID 保存 expected previous `NextSeq`、new `NextSeq`、through turn 和 `delivered|skipped` disposition。它不进入公共 Bound projection，也没有独立 cursor Store。
+投递消息使用`subagent-delivery` source，保存parent Session ID、parent turn、seq range和稳定outcome。承载receipt的child Session identity已经确定target child，不在source中重复child ID。
 
-`boundChild`的interaction effect顺序固定为：
+child Session中的`agent/inbox/spliced`是acceptance receipt。parent `subagent/bound-cursor`保存Binding name/child ID、expected previous `NextSeq`、new `NextSeq`、through turn和`delivered|skipped` disposition。
 
-1. 从 parent snapshot fold current cursor 和下一条完整 interaction；
-2. Flush parent source prefix；
-3. 在该child mailbox顺序内确认latest config enabled且exact resident epoch仍有效；
-4. 扫描 child log 中 exact receipt；唯一 receipt 已存在时不再 `Followup`，不存在时提交一次；多个 receipt 是 invariant failure；
-5. Flush child Session；
-6. 通过 Session FIFO head 上执行的 `WritePlan` 校验 expected cursor并提交新 cursor；
-7. Flush parent Session。
+effect顺序固定为：
 
-因此 crash 发生在 child receipt durable 之后、parent cursor durable 之前时，恢复只修复 cursor，不重复 child Inbox acceptance。该设计不承诺 exactly-once 模型调用或 Tool 副作用。
+1. 从parent committed prefix fold current cursor和下一条closed interaction；
+2. Flush读取所依赖的parent source prefix；
+3. 在Binding mailbox内确认latest Definition enabled且resident epoch已应用该revision；
+4. 扫描child exact receipt：不存在才Followup，存在一个则复用，多个视为invariant failure；
+5. Flush child receipt；
+6. 通过parent Session FIFO head上的WritePlan校验expected cursor并Commit；
+7. Flush parent cursor。
 
-## 6. Floor、暂停与生命周期
+若进程在child receipt durable后、parent cursor durable前崩溃，恢复只补cursor，不重复child Inbox acceptance。若Followup或child Flush失败，parent cursor不推进。
 
-首次 cursor floor 取 binding event 后一位与 child `Header.SeedLength` 的较大值。前者排除 binding 建立前的 parent history，后者排除 fork 已复制给 child 的 parent prefix；spawn 的 seed floor 为零。
+## 6. Disable、恢复和主动catch-up
 
-`boundChild`属于exact parent的binding，不等于其中某个resident child Agent epoch。config revision replacement更新resident epoch但不替换`boundChild`；`Enabled=false`时保留backlog且不推进cursor，再次启用并materialize child后主动catch-up。
+disabled Binding保留cursor和backlog，不推进。重新启用、cold restore、revision replacement、SessionStarted reconcile和显式Send都会在epoch可用后主动catch up，所以正确性不依赖每个wakeup都被收到。
 
-parent exact Agent disposed时，`boundChildRegistry`同步移除并停止该parent的`boundChild`对象。Bound Service关闭时registry并行关闭不同child；每个child先取消在途操作，再停止自己的resident Execution，避免跨child串行拖延关闭。
+Binding worker跨resident epoch存在；Definition replacement不更换worker、Binding、child Session或cursor。parent Agent epoch被结构关闭时，scheduler可移除live路由，但durable Binding仍可在该用户Session下次恢复时重建worker。
 
 ## 7. 失败语义
 
-- 通知重复、丢失或合并：`boundChild`按durable cursor重读，启动、恢复和重新启用都会主动catch-up。
-- parent source Flush失败：不产生新的 child effect。
-- child Followup或receipt Flush失败：不推进 parent cursor。
-- cursor Commit或Flush失败：报告 diagnostics；恢复重新对账 child receipt。
-- malformed parent turn、cursor chain或child receipt：停止该次 catch-up并报告，不猜测或跳过损坏事实。
-- disabled、nonresident或revision replacement中的 child：本次 catch-up暂停，cursor保持不变。
+- malformed Binding、cursor chain、parent turn或child receipt：停止该Binding catch-up并报告diagnostics，不猜测修复；
+- parent source Flush失败：不产生child effect；
+- child acceptance失败：不推进parent cursor；
+- cursor提交冲突：重读durable prefix和receipt后重试；
+- child nonresident、disabled或正在replacement：暂停并保留cursor；
+- shutdown：停止新wakeup准入，取消并等待workers，再结算resident epochs。
 
-## 8. 实现与验证证据
+该设计提供durable acceptance去重，不承诺exactly-once模型调用或Tool外部副作用。
 
-- 纯 fold与cursor验证：`subagent/internal/bound/interaction.go`、`interaction_test.go`
-- child生命周期与mailbox：`subagent/internal/bound/bound_child.go`
-- receipt恢复与CAS WritePlan：`subagent/internal/bound/bound_child_delivery.go`
-- live delivery与crash-window测试：`subagent/internal/bound/runtime_test.go`
-- Plugin wakeup接线：`subagent/plugin/plugin.go`、`events.go`
-- 当前完成状态：[08 实施进度](../../zh-CN/08-implementation-progress.md)
+## 8. 验证重点
 
-未实现通用 Session subscription API、独立 cursor database、`session/projection.Changed` 触发链、任意 event predicate、assistant chunk重组和 child processing watermark。
+- frozen context prefix和Binding后首个turn不会被seed吞掉；
+- direct user + visible assistant relay，隐藏block过滤；
+- report-only turn写skipped且不echo；
+- receipt durable/cursor缺失的crash-window修复；
+- disabled backlog在enable后按序catch up；
+- 重复、合并或缺失wakeup不改变最终cursor；
+- 多Binding并行、单Binding顺序一致；
+- shutdown无worker泄露。
+
+实现证据只记录在[08 实施进度](../../zh-CN/08-implementation-progress.md)。

@@ -1,29 +1,35 @@
 # Bound Subagent
 
-本包实现独立`ModeBound`，拥有exact parent Session中的binding/config用例、child create/restore、resident Agent epoch、message admission、parent interaction delivery和failure containment。
+> 状态：全局 Definition 方案已确认，本包正在从旧的 per-parent config 模型迁移。
+
+本包拥有每个用户 Session 的 Bound 一致性、Binding worker、direct child create/restore、idle resident epoch、Definition replacement、显式Send、parent interaction delivery与failure containment。Definition 的业务校验和revision也属于Bound能力；SQLite adapter只负责技术持久化。
 
 ```mermaid
 flowchart LR
-    Registry[BoundRegistry] --> Bound[bound.Service]
-    Started[agent.SessionStarted] --> Bound
-    Send[ChildControl.Send] --> Bound
-    Event[session.EventAppended] -->|turn/end wakeup| Bound
-    Bound --> Parent[parent Session events/projection]
-    Bound --> Registry[boundChildRegistry]
-    Registry --> Child[boundChild per parent-child]
-    Child --> Materializer[materializer]
+    API[BoundDefinitions] --> Definitions[Definition Service]
+    Definitions --> Store[Definition Store]
+    Definitions --> Scheduler[managed reconcile scheduler]
+    Started[agent.SessionStarted] --> Scheduler
+    Idle[parent WhenIdle] --> Scheduler
+    Scheduler -->|RunMaintenance| Parent[parent user Session]
+    Parent --> Bindings[Binding projection]
+    Scheduler --> Workers[Binding workers]
+    Event[session.EventAppended] -->|wakeup only| Workers
+    Workers --> Materializer[child materializer]
     Materializer --> Constructor[agent.Constructor]
-    Child --> Execution[Execution Registry]
-    Child --> Inbox[child Inbox receipt]
-    Child --> Parent
+    Workers --> Child[direct Bound child]
+    Workers --> Receipt[child receipt]
+    Workers --> Cursor[parent cursor]
 ```
 
-`Service`只校验Bound入口并把请求路由到`boundChildRegistry`。registry只维护exact parent Agent epoch与child binding到`boundChild`的进程内索引和关闭边界。每个`boundChild`拥有自己的mailbox及该binding的current Execution、config replacement、message admission、interaction cursor恢复和failure containment；`materializer`只拥有child创建、恢复、descriptor校验和scoped provision。
+`SessionStarted`只为用户Session请求reconcile。受管scheduler在parent `RunMaintenance`短窗口内读取enabled Definitions和projection，并在一个batch建立所有缺失Bindings；maintenance不创建child。窗口结束后，不同Binding worker可以并行materialize。任何child Session都不能进入reconcile，因此不会递归启动Bound。
 
-`Bind`通过`bindingRegistration`在Session FIFO head基于最新event prefix校验child/title唯一性，并原子提交binding和config revision 1后Flush；它不创建child，也不创建`boundChild`。`StartBindings`在parent publication之后并发启动不同binding并等待各自收敛；单child失败写materialization event并进入diagnostics，不否决parent。`UpdateConfig`、`Start`、`Send`和interaction admission进入同一child mailbox，因此同一child串行、不同child并行。config revision先持久化，再替换resident exact Agent epoch；cold child保持cold。
+Binding保存Definition name、稳定child Session ID和创建时冻结的`ContextNextSeq`。fresh child只复制该prefix，随后安装完整Bound system prompt、Tool restriction和Extensions，在child log保存完整Applied Definition并发布resident epoch。创建过程不提交InitialPrompt、不唤醒Inbox、不调用LLM；child保持idle直到新的parent interaction或显式Send。
 
-每个materialized binding的`boundChild`跨child config epoch保留interaction恢复状态。现有`session.EventAppended`只在parent `turn/end`时由registry按parent ID合并唤醒；`boundChild`从parent log纯fold direct user与canonical `assistant/message`，对report-only turn写`skipped` cursor。投递先形成child `agent/inbox/spliced` receipt并Flush，再向parent提交`subagent/bound-cursor`。receipt已存在但cursor缺失时只修复cursor，不重复Followup。该fold不注册`session/projection.Unit`，也没有interaction projection event。
+每个Binding worker用mailbox串行处理Definition replacement、Send、interaction和resident epoch；不同worker互不阻塞。registry mutex只保护短索引与关闭准入，不覆盖Session、Constructor或Agent I/O。worker跨多个exact resident epoch存在，不能与当前Execution混为一个对象。
 
-关闭时registry并行通知每个`boundChild`取消在途操作并停止自己的resident Execution；`Enabled=false`暂停cursor，重新启用后catch-up。Agent-owned`ClosingSignal`同时负责把explicit或structural child teardown桥接到Execution settlement。交互调用链和恢复顺序见[Parent Interaction投递设计](../../docs/session-event-delivery.zh-CN.md)。
+`session.EventAppended`只提供轻量wakeup。worker从parent log纯fold direct user与canonical visible assistant message，过滤reasoning和Tool内容。投递先形成child Inbox receipt并Flush，再向parent提交cursor；receipt存在而cursor缺失时只补cursor。disabled保留Binding、cursor与backlog，重新启用并应用latest Definition后catch up。
 
-本包不拥有配置源、Plugin dependency lookup、System Prompt、Tools实现、通用Session EventBus或公开interaction projection，也不注销Extension。完整需求见[Bound需求](../../docs/parent-bound-requirements.zh-CN.md)，方法和调用链见[技术设计](../../docs/parent-bound-design.zh-CN.md)，config组合见[Bound Config管理](../../docs/bound-config-management.zh-CN.md)，实现证据见[08实施进度](../../../zh-CN/08-implementation-progress.md)。
+Plugin关闭时先停止scheduler准入，取消并等待所有reconcile/activation任务，再并行关闭Binding workers并停止resident epochs，最后关闭Definition Store。本包不拥有Web DTO、通用Session EventBus、System Prompt或Tools registry实现，也不创建公开interaction projection event。
+
+完整需求见[Bound需求](../../docs/parent-bound-requirements.zh-CN.md)，主动调用链见[技术设计](../../docs/parent-bound-design.zh-CN.md)，Definition应用见[配置管理](../../docs/bound-config-management.zh-CN.md)，interaction恢复见[投递设计](../../docs/session-event-delivery.zh-CN.md)，完成证据见[08实施进度](../../../zh-CN/08-implementation-progress.md)。

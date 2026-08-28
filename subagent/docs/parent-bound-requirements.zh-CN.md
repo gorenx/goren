@@ -1,146 +1,120 @@
 # Bound Subagent 需求
 
-> 状态：当前仓库已实现。Bound 不属于固定 DeepSeek Harness 基线；它是 Goren 的扩展能力，不能用于声明基线兼容。
+> 状态：目标已确认，代码迁移中。Bound 是 Goren 扩展能力，不属于固定 DeepSeek Harness 兼容基线。
 
-## 1. 范围
+## 1. 目标
 
-Bound 是独立于 OneShot 和 Continuable 的第三种 Subagent Mode。它表示：exact parent Session 先持久化一个 child binding 和完整配置，随后由 parent Agent 的启动事件或 parent 的后续发送创建、恢复并保持该 child Agent；enabled binding 还持续接收 direct user 与 parent 已完成的交互。
+Bound 是直接属于用户 Session 的长期后台 Subagent。管理员通过 Web 创建一次全局 Definition；之后每个用户 Session 都为每个 enabled Definition 创建一个同名 Bound。Bound 完成创建或恢复后保持 idle，不因创建而发起模型调用；只有新的 parent interaction 或显式 `Send` 才唤醒它。
 
-本文只定义 Bound 的可观察行为。接口、数据结构、调用链和职责见[技术设计](./parent-bound-design.zh-CN.md)，配置组合细节见[Bound Config 管理](./bound-config-management.zh-CN.md)。
+本文只定义可观察行为。所有权、调用链和并发边界见[技术设计](./parent-bound-design.zh-CN.md)，Definition 与应用快照见[配置管理](./bound-config-management.zh-CN.md)，interaction 恢复见[投递设计](./session-event-delivery.zh-CN.md)。
 
-## 2. 已确认需求
+## 2. 术语和身份
 
-1. Session header 不增加 Bound 字段；所有可恢复事实写入 append-only Session event。
-2. binding 可以先于 child Session 和 child Agent 存在。
-3. `Bind` 必须先成功提交并 `Flush`，之后才允许创建 child。
-4. binding 与 revision 1 config 在 exact parent Session 的同一个 `Commit` batch 中提交。
-5. `Bind` 必须提供非空 initial prompt，但 `Bind` 本身不得创建 child。
-6. parent Agent 发布后，Subagent 根据 parent Session 中的 binding 尝试创建或恢复 Bound child。
-7. 单个 child 的创建或恢复失败不得否决 parent Agent publication；失败写 parent materialization event，并交给 diagnostics。
-8. fresh create 和 cold restore 使用相同 child Session ID；initial prompt 只在 child 尚未接受过自己的 Inbox message 时提交一次。
-9. Bound child 成功启动后保持 resident；普通 idle 不结束它。
-10. config 是完整快照并按 revision 递增，不是字段 patch。
-11. resident child 的 config 更新采用 exact Agent epoch replacement：先等待旧 Agent idle并停止旧 epoch，再按最新 revision 创建新 epoch。禁止原位修改 prompt 或 Tool。
-12. cold child 的 config 更新只写 parent Session；不因此创建 child。
-13. `Enabled=false` 停止 resident epoch，并拒绝后续 Bound `Send`，直到新 revision 再次启用。
-14. prompt 由 System Prompt 现有 section 机制组合；Tool restriction 由 Tools 现有 policy 机制应用。Subagent 不定义第二套 prompt 或 Tool model。
-15. Extension Registry 同时支持无名 common Extension 和有名 selected Extension。每个 binding 可按名称和顺序选择不同 Extension。
-16. 有名 Extension 的注册方或 Registry shutdown 可以注销 registration；Bound 不发起注销，也不为不存在的运行期动态卸载场景定义 callback。
-17. Bound child 只通过显式 report Tool 向 parent report；idle、stop 或 config update 不隐式生成 report。
-18. binding 本身表达 parent-to-child 观察关系；不增加通用 subscription schema、Session-owned EventBus或任意 event predicate。
-19. 只在 `turn/end` 后处理完整 parent turn；只有 source kind 为 `user` 的 `user/message` 使该 turn产生 child delivery。
-20. parent relay 使用 canonical `assistant/message`，过滤 reasoning、tool-call和tool-result；report-only turn不得回灌child。
-21. worker必须先Flush parent source prefix，再产生child effect；child receipt Flush成功后才允许推进parent cursor。
-22. cursor作为exact parent Session中的`subagent/bound-cursor`事件保存，不进入公共Session Projection，也不建立独立cursor Store。
-23. crash发生在child receipt durable之后、parent cursor之前时，恢复只能补cursor，不得再次Followup。
-24. cursor floor必须排除binding建立前的history与fork已继承的parent prefix；落在partial turn中时跳过该partial turn。
-25. `Enabled=false`暂停interaction delivery并保留backlog；再次启用和materialize后主动catch-up。
-26. 独立 Bound config Store和原位replacement API不实现，也不放置空接口。
+- **Definition**：一次配置、作用于所有用户 Session 的全局 Bound 定义。
+- **用户 Session**：`Header.Origin == ""` 且 `Header.ParentSession == nil` 的 Session。
+- **Binding**：某个用户 Session 内，Definition 名称与一个稳定 child Session ID 的关系。
+- **Applied Definition**：某个 child Agent epoch 实际安装的完整 Definition 快照。
+- **Parent interaction**：用户与 parent Agent 已闭合的一次交互，只包含 direct user 输入与 parent 可见回复。
+- **Context floor**：Binding 创建时冻结的 parent committed prefix 末端；此前历史只作为 child 初始上下文。
+- **Delivery cursor**：Binding 建立后 parent interaction 的增量投递水位。
 
-## 3. 三种 Mode 的边界
+Definition 名称是稳定身份。名称全局唯一，因此在每个用户 Session 内也唯一。第一版不提供 rename 或 hard delete；停用使用 `Enabled=false`，以后以同名 Definition 重新启用。
 
-| Mode | 首次启动输入 | idle 后 | 后续发送 | 配置来源 |
-| --- | --- | --- | --- | --- |
-| OneShot | `OneShotStartCommand` | 结束当前 Execution | 不恢复 | command snapshot |
-| Continuable | `ContinuableStartCommand` | 当前 Execution settle；Session 可冷恢复 | `Resume` | durable descriptor |
-| Bound | `BoundStartCommand` 只含 exact parent 和 child ID | Agent epoch 保持 resident | `Bound.Send`；cold 时先恢复 | exact parent Session binding/config events |
+## 3. Definition
 
-Bound 可以复用 `agent.Constructor`、`Execution`、SeedBuilder、child policy 和 Extension Provisioner，但不能用 Continuable flag 表示。
+每个 Definition 必须包含：
 
-## 4. 上下游交互
+- 非空 `Name`；
+- 单调递增的 `Revision`；
+- `Enabled`；
+- 非空且完整的 `SystemPrompt`；
+- 可选 Agent options 与最大深度；
+- Tool restriction；
+- 有序的 selected Extensions。
 
-配置源、Agent lifecycle、`ChildControl`和现有`session.EventAppended`是上游入口；Session、projection、Agent Constructor和Extension Registry是下游能力。`session.EventAppended`只唤醒Bound worker，不是durable subscription事实。完整主动调用方向和流程图只在[技术设计第3节](./parent-bound-design.zh-CN.md#3-依赖与主动调用方向)维护。
+Definition 不包含 parent Session ID、child Session ID、Title、Persona 或 InitialPrompt。System prompt 是 Bound 自己的完整模型身份，不是追加在 parent prompt 后的 persona 片段。Tool restriction 和 Extensions 复用现有 Tools 与 Extension 能力，不新增任意 Tool 参数模型。
 
-## 5. 用例需求
+Definition 使用独立 SQLite/sqlc Store，不写入任一 parent Session，也不与 Session SQLite 共表。创建和替换使用 expected revision；Store 成功后才更新进程内索引并协调 live 用户 Session。
 
-### 5.1 Bind
+## 4. 用户 Session 启动
 
-输入必须包含 exact live parent、SeedBuilder、parent 内唯一 title、initial prompt、Agent options 和完整 revision 1 config。可由 caller 指定 child Session ID；未指定时生成新 ID。
+`agent.SessionStarted` 是一致性检查触发器，不是后台事件历史。只有用户 Session 进入 Bound reconcile；所有 child Session，包括 Bound 自己，必须被过滤，避免递归创建。
 
-成功顺序必须是：
+启动流程满足：
 
-1. 验证 parent、lineage、SeedBuilder、creation、config 和 selected Extension 名称；
-2. 验证 child ID 在 live Agent、live Session、持久化 Session 和 parent binding 中均未占用；
-3. 在 exact parent Session 同一 batch 写 `subagent/bound-binding` 与 `subagent/bound-config` revision 1；
-4. `Flush` exact parent Session；
-5. 返回 binding identity，不创建 child。
+1. Subagent 在受管任务中处理 `SessionStarted`，任务属于 Plugin 生命周期，可取消、可等待；不得启动裸 `context.Background()` goroutine。
+2. 对 parent 调用 `RunMaintenance`，以 AgentLoop 的短维护窗口原子准入本次一致性检查。
+3. 在窗口内读取 enabled Definitions 和 parent projection，在一个 Session commit batch 中建立全部缺失 Binding 并 `Flush`。
+4. Binding 保存 Definition 名称、child Session ID 和当时最后完整 parent turn 的 `ContextNextSeq`。
+5. maintenance 只建立 durable Binding，不创建 child、不等待 LLM。
+6. maintenance 释放后，为不同 Binding 调度彼此独立的激活任务；不同 Bound 可以并行。
+7. 单个 child 创建或恢复失败不得否决 parent publication；失败写 materialization 事实并交给 diagnostics。
 
-### 5.2 Parent publication
+若 parent 正在执行 turn，`RunMaintenance` 拒绝准入。Definition 新建、启用或替换必须保留 pending reconcile；`WhenIdle` 只能唤醒重试，最终仍由 `RunMaintenance` 决定是否准入。
 
-`agent.SessionStarted` 到达时，Subagent 读取 exact parent projection，逐个调用 Bound Start。observer 必须立刻返回，使 child failure 不参与 parent publication 的 veto 路径。每个 child 的失败由 Bound 自己记录和报告。
+## 5. 创建、恢复与 idle
 
-### 5.3 Fresh create 与 cold restore
+fresh child 只复制 `ContextNextSeq` 之前冻结的 parent committed prefix。不能在延迟 materialization 时重新读取“当前最新完整前缀”，否则 Binding 之后的新交互会被吞入 seed，无法作为任务投递。
 
-Bound Start 必须读取 binding 和 latest config。fresh create 使用 binding 的 SeedBuilder、Agent options、lineage和child ID；cold restore必须核对parent identity、Seed boundary和`BoundDescriptor`。
+child 创建或恢复时必须：
 
-在 child publication 前必须完成：
+1. 核对 parent 是直接用户 Session，child 的 runtime parent 和 `Header.ParentSession` 都指向该用户 Session；
+2. 安装 Definition 的完整 system prompt、Tool restriction、common Extensions 与有序 selected Extensions；
+3. 在 child Session 提交完整 Applied Definition 快照并 `Flush`；
+4. 发布 resident child Agent epoch；
+5. 不提交 InitialPrompt，不向 Inbox 发送消息，不调用 LLM；
+6. 保持 idle，等待新的 parent interaction 或显式 `Send`。
 
-- Persona、Tool restriction、common Extension 和 selected Extension provisioning；
-- `subagent/bound-config-applied` child event提交；
-- 必要时提交 initial prompt；
-- child Session `Flush`。
+模型可见输入必须能从 child Session log 重建。Applied event 因此保存实际应用的完整 Definition 和有效配置，不能只引用全局 Store revision 或 parent event seq。
 
-成功后才发布公共 `Execution` 和 `subagent/started`。
+## 6. Interaction 与显式控制
 
-### 5.4 UpdateConfig
+Binding 建立前的 parent 历史只作为 child 上下文，不重放为任务。投递 floor 是 Binding event 后一位；Binding 建立后的完整 interaction 按 cursor 增量投递。
 
-caller 必须提供 expected revision。Bound 验证完整 snapshot 与 selected Extension，再把命令交给该parent-child的`boundChild` mailbox。该child提交revision N+1并`Flush` parent Session；若child cold，调用结束；若child resident，在同一mailbox事务中替换exact Agent epoch。revision冲突必须拒绝且不得写event。
+Interaction 只接收：
 
-### 5.5 Send
+- source kind 为 direct user 的 `user/message`；
+- canonical `assistant/message` 中 parent 的可见内容。
 
-统一 Service 先查 resident Execution：resident Bound 分派给`Bound.Send`；不存在resident Execution时，先查exact parent binding，存在则cold restore Bound，否则交给Continuable resume。Bound config replacement与message admission进入同一个parent-child `boundChild` mailbox；不同child使用不同`boundChild`并行执行。
+它过滤 reasoning、tool call、tool result、流式 chunk 和内部来源。没有 direct user 输入的 report-only turn 只推进 `skipped` cursor，避免 child report 被反向投递形成 echo loop。
 
-### 5.6 Parent interaction delivery
+同一 Binding 的 Definition replacement、显式 `Send`、interaction delivery 与 resident epoch 变更必须串行；不同 Binding 相互独立并可并行。显式 `Send` 可以唤醒 idle Bound，但必须先确认 latest enabled Definition 已被当前 resident epoch 应用。
 
-每个materialized binding的`boundChild`拥有interaction恢复状态。它从durable cursor fold下一条closed parent turn；没有direct user输入的turn只推进`skipped`。需要投递时，它以稳定parent seq range构造`subagent-delivery` message source，扫描child `agent/inbox/spliced` receipt去重，Flush child后再以Session FIFO head上的expected cursor提交`subagent/bound-cursor`。
+## 7. Definition 变更
 
-完整调用链、filter、floor和crash恢复语义见[Parent Interaction投递设计](./session-event-delivery.zh-CN.md)。
+- `Create`：CAS 写 Store，更新索引，然后 reconcile 所有 live 用户 Session。
+- `Replace`：CAS 写完整 revision N+1，更新索引，并通过每个 Binding 的串行入口替换 resident epoch。
+- `Enabled=false`：停止 resident epoch，但保留 Binding、child Session、cursor 与 backlog，不推进 cursor。
+- 重新启用：创建缺失 Binding或恢复已有 Binding，应用最新 revision，再从既有 cursor catch up。
+- replacement：等待旧 epoch idle，停止旧 epoch，使用同一 child Session 和最新 exact Scope 恢复，提交 Applied Definition，发布新 epoch。
 
-### 5.7 Close、interrupt 与 report
+旧 revision 已持久化但某个 live parent reconcile 失败时，不回滚全局 Definition；pending reconcile 保留并在下一次 idle、启动或显式操作时重试。
 
-- Interrupt 取消当前 turn但保留 Bound Inbox 和 resident epoch。
-- parent close、child external close或module shutdown结束 exact epoch并完成 Session flush。
-- child 只有调用 report Tool 才向 parent写 report；report调度策略由report Plugin拥有。
+## 8. 关闭与恢复
 
-## 6. 持久化不变量
+关闭顺序固定为：停止新的激活和 reconcile 准入；取消并等待受管任务；并行停止不同 Binding 的 resident child；结算并 Flush；最后关闭 Definition Store。
 
-必须满足：
+Session event 是轻量唤醒，不提供 exactly-once 通知。恢复事实来自：
 
-- 同一parent内child ID和binding title都唯一；
-- config必须已有binding，从revision 1开始并连续递增；
-- materialization必须引用当前存在的matching config revision；
-- binding/config/materialization与applied分开投影；
-- child Agent resident状态只存在于进程内Execution Registry，不伪装成durable Session事实；
-- binding/config event不修改Session header。
-- 每个child的cursor只能从derived floor连续前进，不允许回退、跨越或接受重复receipt；
-- child receipt先于对应`delivered` cursor durable；`skipped` cursor只能对应已closed且没有direct user输入的turn；
-- cursor是Bound私有fold事实，不加入公共`subagent-bound` projection value。
+- 全局 Definition Store；
+- parent Session 的 Binding、materialization 和 cursor；
+- child Session 的 Applied Definition 与 Inbox receipt。
 
-## 7. 失败语义
+系统承诺 acceptance receipt 与 cursor 可恢复，不承诺 exactly-once 模型调用或 Tool 外部副作用。
 
-- Bind validation、Commit或Flush失败：返回错误，不创建child。
-- parent publication期间单个child create/restore失败：parent继续发布；parent记录failed materialization并报告diagnostics。
-- config revision已durable但resident replacement失败：返回committed result和error；latest revision保留，下一次`Send`或启动可重试。
-- child final Flush失败：不回滚已经结束的epoch，交给diagnostics。
-- parent source Flush失败：不产生新的child effect；child Followup或receipt Flush失败：不推进cursor。
-- cursor Commit或Flush失败：报告diagnostics并在后续catch-up中从child receipt恢复。
-- malformed parent turn、cursor chain或receipt：停止该次catch-up，不猜测或跳过损坏事实。
-- selected Extension在provisioning前不存在：Bind/Update或Start失败；不存在已运行Bound epoch的动态注销callback。
+## 9. 迁移和验收
 
-## 8. 未关闭事项
+当前旧版 per-parent `subagent/bound-config`、带 `Title`/`Persona`/`InitialPrompt` 的 Binding 不是兼容基线。新实现提升事件版本并明确拒绝旧版记录，不保留双读或兼容 wrapper；开发数据库需要清理后重建。
 
-O11 的单parent并发启动上限、同步尝试预算和单child超时尚未确定，因此当前`StartBindings`按binding顺序逐个尝试，不宣称并发或超时保证。该问题需要独立需求值和取消语义后再实现，不能先加默认数字。
+完成验收至少覆盖：
 
-## 9. 验收场景
+1. 一个 Definition 为多个用户 Session 各创建一个直接 child；多个 Definition 在同一用户 Session 中名称唯一且并行激活。
+2. child Session 不递归创建 Bound。
+3. fresh child 只复制冻结 prefix；创建本身无 Inbox、turn 或 LLM 请求。
+4. 新 interaction 在 receipt durable 后推进 cursor；崩溃窗口恢复不重复 Inbox acceptance。
+5. disable 保留 backlog，enable 后 catch up；replace 使用同一 child Session 和新 exact epoch。
+6. busy parent 不在 maintenance 中改写 Binding，idle 后最终 reconcile。
+7. Plugin 关闭后没有遗留 activation/reconcile worker。
+8. v1 事件被明确拒绝。
 
-1. Bind成功后parent只有两个同batch事件、header不变且child不存在。
-2. 缺少initial prompt、未知Extension、重复title或child ID时零事件提交。
-3. parent publication即使某个child create失败仍成功，failed materialization可投影。
-4. fresh create与cold restore只提交一次initial prompt，并复用child ID。
-5. revision更新替换resident exact Agent，不重复initial prompt；disable停止epoch并拒绝Send。
-6. cold Bound `Send`走Bound restore；无binding cold child走Continuable。
-7. selected Extensions按config顺序安装，失败时完整回滚；common与selected职责分离。
-8. malformed config-without-binding和materialization-without-matching-config被projection拒绝。
-9. direct user与parent的完整turn只进入child Inbox一次；reasoning/tool-call和report-only turn不进入child。
-10. child receipt已durable但parent cursor缺失时，恢复只补cursor且不重复Followup。
-11. binding/fork floor不重放既有parent history；disable期间cursor不推进，重新启用后catch-up。
+实现证据只记录在[08 实施进度](../../zh-CN/08-implementation-progress.md)。
