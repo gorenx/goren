@@ -157,16 +157,7 @@ func (owner *Service) Create(
 	requestContext context.Context,
 	creation boundcontract.Creation,
 ) (boundcontract.Definition, error) {
-	draft, err := boundcontract.SnapshotDraft(creation.Definition)
-	if err != nil {
-		return boundcontract.Definition{}, err
-	}
-	return owner.definitions.Create(
-		requestContext,
-		boundcontract.Creation{
-			Definition: draft,
-		},
-	)
+	return owner.definitions.Create(requestContext, creation)
 }
 
 // Replace commits one complete next global Definition revision.
@@ -174,17 +165,7 @@ func (owner *Service) Replace(
 	requestContext context.Context,
 	replacement boundcontract.Replacement,
 ) (boundcontract.Definition, error) {
-	draft, err := boundcontract.SnapshotDraft(replacement.Definition)
-	if err != nil {
-		return boundcontract.Definition{}, err
-	}
-	return owner.definitions.Replace(
-		requestContext,
-		boundcontract.Replacement{
-			ExpectedRevision: replacement.ExpectedRevision,
-			Definition:       draft,
-		},
-	)
+	return owner.definitions.Replace(requestContext, replacement)
 }
 
 // SessionStarted requests a level-triggered consistency pass for one exact

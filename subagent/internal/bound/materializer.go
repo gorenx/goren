@@ -28,6 +28,13 @@ type materializer struct {
 	extensions       Extensions
 }
 
+// childConfiguration is the complete constructor input derived from one
+// effective Definition for the current parent lineage.
+type childConfiguration struct {
+	options     agent.Options
+	provisioner agent.Provisioner
+}
+
 func (factory *materializer) materialize(
 	requestContext context.Context,
 	parentAgent agent.Agent,
@@ -88,15 +95,9 @@ func (factory *materializer) create(
 	if err != nil {
 		return agent.Handle{}, err
 	}
-	effectiveDefinition, err := effectiveBoundDefinition(
+	configuration, err := factory.configure(
 		definitionValue,
 		childLineage.AgentOptions(definitionValue.AgentOptions),
-	)
-	if err != nil {
-		return agent.Handle{}, err
-	}
-	definitionProvisioner, err := factory.provisioner(
-		effectiveDefinition,
 		true,
 	)
 	if err != nil {
@@ -113,12 +114,9 @@ func (factory *materializer) create(
 			Metadata: childLineage.Metadata(
 				bindingValue.ContextNextSeq,
 			),
-			Seed:         seed,
-			AgentOptions: *effectiveDefinition.AgentOptions,
-			Provisioner: agent.ComposeProvisioners(
-				definitionProvisioner,
-				newAppliedProvisioner(effectiveDefinition),
-			),
+			Seed:          seed,
+			AgentOptions:  configuration.options,
+			Provisioner:   configuration.provisioner,
 			RuntimeParent: parentAgent,
 		},
 	)
@@ -177,15 +175,9 @@ func (factory *materializer) resume(
 	if err != nil {
 		return agent.Handle{}, err
 	}
-	effectiveDefinition, err := effectiveBoundDefinition(
+	configuration, err := factory.configure(
 		definitionValue,
 		childLineage.AgentOptions(definitionValue.AgentOptions),
-	)
-	if err != nil {
-		return agent.Handle{}, err
-	}
-	definitionProvisioner, err := factory.provisioner(
-		effectiveDefinition,
 		false,
 	)
 	if err != nil {
@@ -198,12 +190,9 @@ func (factory *materializer) resume(
 	handle, err := factory.constructor.Resume(
 		initiated,
 		agent.ResumeOptions{
-			SessionID:    bindingValue.ChildSessionID,
-			AgentOptions: *effectiveDefinition.AgentOptions,
-			Provisioner: agent.ComposeProvisioners(
-				definitionProvisioner,
-				newAppliedProvisioner(effectiveDefinition),
-			),
+			SessionID:     bindingValue.ChildSessionID,
+			AgentOptions:  configuration.options,
+			Provisioner:   configuration.provisioner,
 			RuntimeParent: parentAgent,
 		},
 	)
@@ -230,6 +219,42 @@ func (factory *materializer) requireDependencies() error {
 	return nil
 }
 
+func (factory *materializer) configure(
+	definitionValue boundcontract.Definition,
+	options agent.Options,
+	fresh bool,
+) (childConfiguration, error) {
+	effective, err := boundcontract.NewDefinition(
+		boundcontract.Draft{
+			Name:            definitionValue.Name,
+			Enabled:         definitionValue.Enabled,
+			SystemPrompt:    definitionValue.SystemPrompt,
+			AgentOptions:    &options,
+			MaxDepth:        definitionValue.MaxDepth,
+			ToolRestriction: definitionValue.ToolRestriction,
+			Extensions:      definitionValue.Extensions,
+		},
+		definitionValue.Revision,
+	)
+	if err != nil {
+		return childConfiguration{}, fmt.Errorf(
+			"subagent: invalid effective Bound Definition: %w",
+			err,
+		)
+	}
+	definitionProvisioner, err := factory.provisioner(effective, fresh)
+	if err != nil {
+		return childConfiguration{}, err
+	}
+	return childConfiguration{
+		options: *effective.AgentOptions,
+		provisioner: agent.ComposeProvisioners(
+			definitionProvisioner,
+			newAppliedProvisioner(effective),
+		),
+	}, nil
+}
+
 func (factory *materializer) provisioner(
 	definitionValue boundcontract.Definition,
 	fresh bool,
@@ -239,12 +264,8 @@ func (factory *materializer) provisioner(
 			"subagent: Bound Extension selection is unavailable",
 		)
 	}
-	validated, err := boundcontract.SnapshotDefinition(definitionValue)
-	if err != nil {
-		return nil, err
-	}
 	selectedExtensions, err := factory.extensions.Provision(
-		validated.Extensions,
+		definitionValue.Extensions,
 	)
 	if err != nil {
 		return nil, err
@@ -256,8 +277,8 @@ func (factory *materializer) provisioner(
 	policyPlugins := childpolicy.Plugins(
 		childpolicy.PolicySet{
 			Delegation:      delegation,
-			SystemPrompt:    &validated.SystemPrompt,
-			ToolRestriction: validated.ToolRestriction,
+			SystemPrompt:    &definitionValue.SystemPrompt,
+			ToolRestriction: definitionValue.ToolRestriction,
 		},
 	)
 	var policies agent.Provisioner
@@ -269,23 +290,4 @@ func (factory *materializer) provisioner(
 		factory.commonExtensions,
 		selectedExtensions,
 	), nil
-}
-
-func effectiveBoundDefinition(
-	definitionValue boundcontract.Definition,
-	options agent.Options,
-) (boundcontract.Definition, error) {
-	validated, err := boundcontract.SnapshotDefinition(definitionValue)
-	if err != nil {
-		return boundcontract.Definition{}, err
-	}
-	validated.AgentOptions = &options
-	effective, err := boundcontract.SnapshotDefinition(validated)
-	if err != nil {
-		return boundcontract.Definition{}, fmt.Errorf(
-			"subagent: invalid effective Bound Definition: %w",
-			err,
-		)
-	}
-	return effective, nil
 }

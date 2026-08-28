@@ -52,9 +52,9 @@ func (child *boundChild) advanceInteraction() (bool, error) {
 	); err != nil {
 		return false, err
 	}
-	current, definitionEnabled, err := child.interactionExecution()
-	if err != nil || !definitionEnabled {
-		return false, err
+	current := child.interactionEpoch()
+	if current == nil {
+		return false, nil
 	}
 	disposition := boundcontract.CursorSkipped
 	if interaction.deliverable {
@@ -65,14 +65,14 @@ func (child *boundChild) advanceInteraction() (bool, error) {
 			ThroughSeq:      interaction.nextSeq - 1,
 			Outcome:         interaction.outcome,
 		}
-		count, receiptErr := countReceipts(
+		received, receiptErr := hasReceipt(
 			current.handle.Subject.SessionValue(),
 			source,
 		)
 		if receiptErr != nil {
 			return false, receiptErr
 		}
-		if count == 0 {
+		if !received {
 			messageValue, messageErr := agentmessage.NewUserMessage(
 				agentmessage.UserMessageInput{
 					Content: interaction.content,
@@ -119,24 +119,20 @@ func (child *boundChild) advanceInteraction() (bool, error) {
 	return true, nil
 }
 
-func (child *boundChild) interactionExecution() (
-	*residentEpoch,
-	bool,
-	error,
-) {
+func (child *boundChild) interactionEpoch() *residentEpoch {
 	definitionValue, found := child.definitions.find(child.key.name)
 	if !found {
-		return nil, false, nil
+		return nil
 	}
 	if !definitionValue.Enabled {
-		return nil, false, nil
+		return nil
 	}
 	current := child.current
 	if current == nil || current.execution.State() != subagent.ExecutionActive ||
 		current.definitionRevision != definitionValue.Revision {
-		return nil, false, nil
+		return nil
 	}
-	return current, true, nil
+	return current
 }
 
 func (child *boundChild) reportInteractionFailure(err error) {

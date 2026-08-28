@@ -22,11 +22,7 @@ func (target *Creation) UnmarshalJSON(rawValue []byte) error {
 			"subagent/bound: Creation definition is required",
 		)
 	}
-	validated, err := SnapshotDraft(*commandValue.Definition)
-	if err != nil {
-		return err
-	}
-	target.Definition = validated
+	target.Definition = *commandValue.Definition
 	return nil
 }
 
@@ -58,13 +54,9 @@ func (target *Replacement) UnmarshalJSON(rawValue []byte) error {
 			"subagent/bound: Replacement definition is required",
 		)
 	}
-	validated, err := SnapshotDraft(*commandValue.Definition)
-	if err != nil {
-		return err
-	}
 	*target = Replacement{
 		ExpectedRevision: commandValue.ExpectedRevision.value,
-		Definition:       validated,
+		Definition:       *commandValue.Definition,
 	}
 	return nil
 }
