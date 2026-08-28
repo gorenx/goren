@@ -14,6 +14,7 @@ Session 持久化并投影唯一 [`agentmessage`](../agentmessage/README.zh-CN.m
 | `session/query` | live-preferred corpus、exact read/filter/title/surface/trace、search reconciliation 与 cursor policy | browser visibility、SQLite row、canonical fact 写入 |
 | `session/query/sqlite` | disposable SQLite FTS5 index、ranking、literal query、snippet、generation 与 sqlc mapping | Session recovery、live precedence、API wire policy |
 | `session/projection` | 通用 projection unit registry、live fold、snapshot、checkpoint/restore 与 change feed | 具体 projection key、API DTO、数据库事务 |
+| `session/projectioncache` | per-Session checkpoint cache、exact lifecycle writer、cold suffix restore 与统一 Coordinator | Session facts、live membership、Release 状态机、Plugin Runtime |
 | `session/title` | `session/title` 事实、fallback、rename/refresh、Provider 调度、First/All-Prompts LLM 策略与 title projection | 具体 LLM adapter、HTTP、wire handler、持久化 adapter |
 
 Go 调用方对 Persistence 使用较短的 `sesspersist`，对其 SQLite adapter 使用 `sesssqlite`；公开包路径、领域类型与 Service 名不因导入缩写改变。Projection/Title 仍按各自调用点保留清晰的领域别名。
@@ -41,15 +42,17 @@ flowchart LR
 
 Session 的 durable Event 类型和 Plugin Runtime 的进程内 Event 是两套明确契约：Session Event 由具名 event key 构造 `EventDraft`，再由唯一 `Commit(context.Context, WritePlan)` 边界分配连续 `seq/time` 并规划 Surface transition；Plugin Event 由 `plugin.EventOf[E]` / `plugin.Publish` 分发，不进入 Session log。Event Sourcing 由 Session/Persistence owner 决定，Plugin Runtime 不保存或重放它。
 
-其他领域只持有 `session.Context`，不能取得具体 coordinator 或 log。包内私有 `log` 负责 seed、append-only Event、Surface 与 detached reads；私有 coordinator 负责唯一 FIFO，并直接持有当前 `registration`，不再建立只为转发 append 的接口。`registration` 独占一个 live membership，并用 `entered -> announcing -> live -> releasing -> closed` 单一状态字段表达 announce/release 生命周期；等待通道只表示当前 announce 或 release 操作何时结束，不再承担业务状态。私有 `memoryStore` 管理 registration 集合、注册顺序和 Store 准入，`session.Plugin` 只适配 `LiveStore` Service 发布与 Plugin Event 分发。`Snapshot` 从同一 committed revision 返回 Event log、Surface 与 durability barrier，供按位置校验的 Consumer 使用。
+其他领域只持有 `session.Context`、`LiveStore` 和 exact `Handle`，不能取得具体 coordinator、state machine 或 log。包内 `log` 只负责 seed、append-only Event、Surface 与 detached reads；coordinator 只负责同一 FIFO 中的 `Commit/Enter/Announce/Flush/Release` 调度、跨层调用和结果编排。独立、无锁的 `lifecycleMachine` 是单 Session 状态的唯一 owner，只接受 coordinator 的串行 command，执行合法转换并返回 decision，不排队、不调用 callback、不执行 I/O。`memoryStore` 只是进程内 exact Session 索引和 Store `open/closing/closed` owner，不再通过独立 `registration` 状态机重复表达 lifecycle；`session.Plugin` 只适配 Service 发布与 Plugin Event 分发。完整状态机、实现证据和交互流程见[Core 权威设计](./docs/design.zh-CN.md#8-livestore-与状态机)。
 
 普通 producer 用 `session.Batch(drafts...)` 创建固定 plan，再调用 `Context.Commit`。只有完整 drafts 无法在 admission 前确定、必须基于 FIFO 头部最新 `Snapshot` 计算的业务 use case 才实现 `WritePlan.Build`；一个 use case 实现一次，不是每个 Event 实现。`Build` 一次返回完整 batch，`log` 只暂存本次新 Event，并在必要时复制 Surface nodes 来验证全部 transition，成功后原子 append；它不会为每次固定写复制完整历史，也不存在 request-local Event FIFO 或部分 batch。LLM、Tool、网络、文件和数据库 I/O 必须在 coordinator 外执行。
 
 ### Persistence 与 SQLite
 
-`session.LiveStore` 只回答当前进程有哪些 live Session；`session/persistence.Persistence` 回答跨进程事实、cold inspection、恢复与 resume preparation。具体 `SessionLogStore` 是有状态 Go 对象：监听 `OnCreated`、`OnEvent`、`OnFlush`、`OnDisposed`，编排 write-behind、load 与 repair；durable cursor、live writer、prepared LRU/reservation 和 per-ID gate 分别由内部状态对象拥有，`Backend` 只映射 records、revision、repair marker 和事务。
+`session.LiveStore` 只回答当前进程有哪些 live Session；`session/persistence.Persistence` 回答跨进程事实、cold inspection、恢复与 resume preparation。具体 `SessionLogStore` 是有状态 Go 对象：监听 `Created`、`EventAppended`、`FlushRequested`、`Disposed`，编排 write-behind、load 与 repair；一个 exact live persistence state 关联 Session object、writer 与 durable cursor，prepared LRU/reservation 和 cold per-ID gate 保持独立。`Backend` 只映射 records、revision、repair marker 和事务。
 
-正常 Agent Turn 在提交 `turn/end` 后调用 `session.LiveStore.Flush`。LiveStore 先从 Session coordinator 取得 ordered `WriteBarrier`，再发布并等待 `session/flush`；`SessionLogStore` 作为 durability participant 至少将该 prefix 的 retained facts 提交给 Backend。这样 Agent Loop 不认识 SQLite，Session coordinator 不等待数据库 I/O，而 idle 表示该正常 Turn 已越过配置中的持久化边界。
+Session `coordinator` 与 `SessionLogStore` 都是协调对象，但不是同一层：前者只调度一个 exact live Session 的 operation，并调用 `lifecycleMachine`；后者是跨多个 Session 的 persistence coordinator，实现 `Persistence` capability 并调用 storage-only `Backend`。两者不共享状态或 mutex，只通过 committed `session/event` 和带 `WriteBarrier` 的 `session/flush` 握手。`SessionLogStore` 不能发起 Release 或修改 Session 状态，coordinator 也不能直接读取 durable cursor 或调用 SQLite。
+
+正常 Agent Turn 在提交 `turn/end` 后调用 `session.LiveStore.Flush`。Flush 与 Commit、Release 进入同一个 Session FIFO；Flush 在队首取得 `WriteBarrier`，发布并等待 `session/flush` 后才归还 baton。`SessionLogStore` 至少将该 prefix 的 retained facts 提交给 Backend。这样 Agent Loop 不认识 SQLite，Release 不能越过仍在执行的 Flush，而不同 Session 仍可并行。
 
 SQLite adapter 使用以下领域内结构：
 
@@ -98,11 +101,11 @@ JSONL 与 SQLite 是同一 `Backend` port 的可替换事实存储方案，不�
 
 ## 生命周期、错误与取消
 
-Core `Create` 由 Prepare、Enter、Announce 组成；created listener 可 veto 并触发 rollback。Event commit 后 observer error 被包含和报告，不回滚事实。publication 期间同步重入同一 Session 会拒绝。Release/Close 由 `registration` 先 seal/drain 写队列，再 flush final barrier、从 `memoryStore` 删除 exact registration、detach exact membership，并仅为已经进入 `live` 的 Session 发布 disposed。并发 announce/release 通过同一状态机串行化，第二个调用只等待正在进行的状态迁移。
+Core `Create` 由 Prepare、Enter、Announce 组成；created listener 可 veto 并进入同一个 terminal Release。Event commit 后 observer error 被包含和报告，不回滚事实。publication 期间同步重入同一 Session 会拒绝。目标 Release 由 coordinator 调度，`lifecycleMachine` 原子停止新 operation 准入；coordinator 随后排空已准入 Commit/Flush、满足 final barrier、移除 exact Session，再发布 disposed，并把外部结果交回状态机完成转换。final flush 失败后保持 sealed 并允许重试，绝不恢复为“live 但 writes closed”。并发 Announce/Release 和多个 Release waiter 共享同一 FIFO，并由唯一 state machine 判定状态。
 
-`memoryStore` 使用 `open -> closing -> closed` 单一状态字段管理 Store 级准入。`Close` 在取得待释放快照前先进入 `closing`，此后 `Prepare` 和 `Enter` 都会拒绝新 Session；已有 registration 按进入顺序逆序释放。关闭失败不会重新开放准入，显式再次 `Close` 可重试尚未完成的释放。`session.Plugin.Dispose` 是进入该关闭流程的 Runtime 适配入口，业务 Store 本身不依赖 Plugin 生命周期。
+`memoryStore` 使用 `open -> closing -> closed` 管理 Store 级准入。`Close` 先进入 `closing`，此后 `Prepare` 和 `Enter` 拒绝新 Session；已有 exact coordinator 按进入顺序逆序 Release。关闭失败不会重新开放准入，后续 `Close` 只重试 sealed lifecycle。`session.Plugin.Dispose` 是 Runtime 适配入口，业务 Store 本身不依赖 Plugin 生命周期。
 
-Persistence 对同一 Session ID 的 load/append/repair 串行化。write-behind 失败保留未提交 batch；显式 flush、dispose 和插件关闭会等待 drain。Scope teardown 先停止 listener admission，再 drain writer，最后关闭 Backend。未知 required event、非连续 seq、Header 不一致或不可解释状态明确失败；是否删除 torn tail、追加哪些 recovery facts只由 `SessionLogStore` 决定。
+Persistence 对同一 Session ID 的 load/append/repair 串行化。write-behind 失败保留未提交 batch；显式 flush 和插件关闭会等待 drain，`Disposed` 只验证 final flush 已留下空 writer 并释放 exact owner。Scope teardown 先停止 listener admission，再 drain writer，最后关闭 Backend。未知 required event、非连续 seq、Header 不一致或不可解释状态明确失败；是否删除 torn tail、追加哪些 recovery facts只由 `SessionLogStore` 决定。
 
 Query Service 串行化 observe/reconcile/search，使一个 page 与 cursor 绑定同一 index generation；取消、Persistence failure、source conflict、index failure、invalid/stale cursor 分开分类。Scope teardown 等待正在执行的 Query operation 后关闭 derived index。
 
