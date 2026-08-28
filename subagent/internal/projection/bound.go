@@ -60,6 +60,25 @@ type Bound struct {
 
 type boundUnit struct{}
 
+// FoldBound rebuilds the Bound view from one committed Session prefix. It is
+// used when a state-dependent Session WritePlan must validate the FIFO-head
+// snapshot with the same rules as the registered projection unit.
+func FoldBound(events []session.Event) (Bound, error) {
+	unit := boundUnit{}
+	state, err := unit.InitialState()
+	if err != nil {
+		return Bound{}, err
+	}
+	for _, committed := range events {
+		transition, applyErr := unit.ApplyState(state, committed)
+		if applyErr != nil {
+			return Bound{}, applyErr
+		}
+		state = transition.State
+	}
+	return decodeBoundState(state)
+}
+
 func (boundUnit) Key() string {
 	return boundKey
 }

@@ -5,12 +5,26 @@ import (
 	"errors"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agent/scopedplugin"
+	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/session"
 	sesspersist "github.com/gorenx/goren/session/persistence"
 	"github.com/gorenx/goren/subagent"
+	"github.com/gorenx/goren/subagent/internal/childpolicy"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
 	"github.com/gorenx/goren/subagent/internal/lineage"
 )
+
+// materializer owns Continuable child construction and restoration policy,
+// including exact Agent options, descriptor checks, and Scope provisioning.
+type materializer struct {
+	agents      agent.Registry
+	constructor agent.Constructor
+	sessions    session.LiveStore
+	persistence sesspersist.Persistence
+	delegation  approval.DelegationPolicy
+	extensions  agent.Provisioner
+}
 
 func requestedChildID(
 	requested *session.SessionID,
@@ -24,7 +38,7 @@ func requestedChildID(
 	return sharedexecution.NewChildID()
 }
 
-func (owner *Service) create(
+func (factory *materializer) create(
 	ctx context.Context,
 	childID session.SessionID,
 	descriptor subagent.ContinuableDescriptor,
@@ -40,14 +54,14 @@ func (owner *Service) create(
 	if contextErr != nil {
 		return agent.Handle{}, contextErr
 	}
-	handle, createErr := owner.dependencies.Constructor.Create(
+	handle, createErr := factory.constructor.Create(
 		initiatedContext,
 		agent.CreateOptions{
 			SessionID:     childID,
 			Metadata:      childLineage.Metadata(lineageSeedLength),
 			Seed:          seed,
 			AgentOptions:  *request.AgentOptions,
-			Provisioner:   owner.provisioner(descriptor, true),
+			Provisioner:   factory.provisioner(descriptor, true),
 			RuntimeParent: request.Parent,
 		},
 	)
@@ -60,12 +74,12 @@ func (owner *Service) create(
 	return handle, nil
 }
 
-func (owner *Service) resume(
+func (factory *materializer) resume(
 	ctx context.Context,
 	parentAgent agent.Agent,
 	childID session.SessionID,
 ) (agent.Handle, string, error) {
-	inspection, inspectErr := owner.dependencies.Persistence.Inspect(
+	inspection, inspectErr := factory.persistence.Inspect(
 		ctx,
 		childID,
 	)
@@ -78,7 +92,7 @@ func (owner *Service) resume(
 	}
 	if inspection.Header.ParentSession == nil ||
 		*inspection.Header.ParentSession != parentAgent.ID() ||
-		!owner.dependencies.Agents.Contains(parentAgent) {
+		!factory.agents.Contains(parentAgent) {
 		return agent.Handle{}, "", unauthorizedChild(childID)
 	}
 	suffixStart := int64(0)
@@ -110,7 +124,7 @@ func (owner *Service) resume(
 	if contextErr != nil {
 		return agent.Handle{}, "", contextErr
 	}
-	handle, resumeErr := owner.dependencies.Constructor.Resume(
+	handle, resumeErr := factory.constructor.Resume(
 		initiatedContext,
 		agent.ResumeOptions{
 			SessionID: childID,
@@ -118,7 +132,7 @@ func (owner *Service) resume(
 				Provider: stringValue(descriptor.AgentProvider),
 				Model:    stringValue(descriptor.AgentModel),
 			},
-			Provisioner:   owner.provisioner(descriptor, false),
+			Provisioner:   factory.provisioner(descriptor, false),
 			RuntimeParent: parentAgent,
 		},
 	)
@@ -135,23 +149,23 @@ func (owner *Service) resume(
 	return handle, descriptor.Provider, nil
 }
 
-func (owner *Service) assertAvailable(childID session.SessionID) error {
-	if _, found := owner.dependencies.Agents.Get(childID); found {
+func (factory *materializer) assertAvailable(childID session.SessionID) error {
+	if _, found := factory.agents.Get(childID); found {
 		return duplicateChild(childID)
 	}
-	if _, found := owner.dependencies.Sessions.Get(childID); found {
+	if _, found := factory.sessions.Get(childID); found {
 		return duplicateChild(childID)
 	}
 	return nil
 }
 
-func (owner *Service) assertPersistedAvailable(
+func (factory *materializer) assertPersistedAvailable(
 	ctx context.Context,
 	childID session.SessionID,
 ) error {
 	var cursor *sesspersist.SessionCursor
 	for {
-		page, listErr := owner.dependencies.Persistence.ListSnapshots(
+		page, listErr := factory.persistence.ListSnapshots(
 			ctx,
 			sesspersist.SessionPage{
 				Cursor: cursor,
@@ -171,4 +185,77 @@ func (owner *Service) assertPersistedAvailable(
 		}
 		cursor = page.NextCursor
 	}
+}
+
+// provisioner resolves the child-scoped effects recorded by the Continuable
+// descriptor. Only a fresh child receives the parent delegation policy.
+func (factory *materializer) provisioner(
+	descriptor subagent.ContinuableDescriptor,
+	fresh bool,
+) agent.Provisioner {
+	var delegation approval.DelegationPolicy
+	if fresh {
+		delegation = factory.delegation
+	}
+	instances := childpolicy.Plugins(
+		childpolicy.PolicySet{
+			Delegation:      delegation,
+			Persona:         descriptor.Persona,
+			ToolRestriction: descriptor.ToolFilter,
+		},
+	)
+	var policies agent.Provisioner
+	if len(instances) != 0 {
+		policies = scopedplugin.MountPlugins(instances...)
+	}
+	return agent.ComposeProvisioners(
+		policies,
+		factory.extensions,
+	)
+}
+
+func continuableDescriptor(
+	seedBuilder string,
+	label string,
+	request subagent.ContinuableOptions,
+) (subagent.ContinuableDescriptor, error) {
+	if request.AgentOptions == nil {
+		return subagent.ContinuableDescriptor{}, errors.New(
+			"subagent: Continuable descriptor requires Agent options",
+		)
+	}
+	descriptorData, snapshotErr := subagent.SnapshotDescriptor(
+		subagent.ContinuableDescriptor{
+			Provider:      seedBuilder,
+			Label:         label,
+			AgentProvider: stringPointer(request.AgentOptions.Provider),
+			AgentModel:    stringPointer(request.AgentOptions.Model),
+			Persona:       request.Persona,
+			ToolFilter:    request.ToolFilter,
+		},
+	)
+	if snapshotErr != nil {
+		return subagent.ContinuableDescriptor{}, snapshotErr
+	}
+	descriptor, matches := descriptorData.DescriptorValue().(subagent.ContinuableDescriptor)
+	if !matches {
+		return subagent.ContinuableDescriptor{}, errors.New(
+			"subagent: Continuable descriptor snapshot changed variant",
+		)
+	}
+	return descriptor, nil
+}
+
+func stringPointer(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }

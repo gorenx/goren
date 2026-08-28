@@ -3,6 +3,7 @@ package bound
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"sync"
 	"testing"
@@ -366,6 +367,60 @@ func TestBindRejectsDuplicateParentTitle(t *testing.T) {
 	if !errors.As(err, &typed) ||
 		typed.Code != subagent.ErrorDuplicateBoundBinding {
 		t.Fatalf("duplicate title error = %v", err)
+	}
+}
+
+func TestConcurrentBindSerializesTitleUniquenessAtSessionHead(t *testing.T) {
+	t.Parallel()
+	fixture := newBoundConfigFixture(t)
+	const attempts = 16
+	errorsByAttempt := make(chan error, attempts)
+	var calls sync.WaitGroup
+	for index := range attempts {
+		calls.Add(1)
+		go func() {
+			defer calls.Done()
+			childID := session.SessionID(fmt.Sprintf("bound-child-%d", index))
+			_, err := fixture.owner.Bind(
+				context.Background(),
+				subagent.BindCommand{
+					Parent:           fixture.parentAgent,
+					RequestedChildID: &childID,
+					SeedBuilder:      "spawn",
+					Title:            "researcher",
+					InitialPrompt: []agentmessage.ContentBlock{
+						agentmessage.NewTextBlock("start"),
+					},
+					Config: subagent.BoundConfigInput{
+						Enabled: true,
+					},
+				},
+			)
+			errorsByAttempt <- err
+		}()
+	}
+	calls.Wait()
+	close(errorsByAttempt)
+	succeeded := 0
+	rejected := 0
+	for err := range errorsByAttempt {
+		if err == nil {
+			succeeded++
+			continue
+		}
+		var typed *subagent.Error
+		if !errors.As(err, &typed) ||
+			typed.Code != subagent.ErrorDuplicateBoundBinding {
+			t.Fatalf("concurrent Bind error = %v", err)
+		}
+		rejected++
+	}
+	if succeeded != 1 || rejected != attempts-1 {
+		t.Fatalf(
+			"concurrent Bind results = %d succeeded, %d rejected",
+			succeeded,
+			rejected,
+		)
 	}
 }
 

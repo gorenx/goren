@@ -6,25 +6,41 @@ import (
 	"errors"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agent/scopedplugin"
+	"github.com/gorenx/goren/approval"
 	sesspersist "github.com/gorenx/goren/session/persistence"
 	"github.com/gorenx/goren/subagent"
+	"github.com/gorenx/goren/subagent/internal/childpolicy"
 	"github.com/gorenx/goren/subagent/internal/lineage"
 	subagentprojection "github.com/gorenx/goren/subagent/internal/projection"
 	"github.com/gorenx/goren/subagent/internal/seedbuilder"
+	"github.com/gorenx/goren/tools"
 )
 
-func (owner *Service) materialize(
+// materializer owns Bound Agent construction and restoration policy. Service
+// selects a committed binding and serializes its use case; materializer owns
+// descriptor validation, seed construction, and scoped provisioning.
+type materializer struct {
+	constructor      agent.Constructor
+	persistence      sesspersist.Persistence
+	seedBuilders     subagent.SeedBuilderRegistry
+	delegation       approval.DelegationPolicy
+	commonExtensions agent.Provisioner
+	extensions       Extensions
+}
+
+func (factory *materializer) materialize(
 	ctx context.Context,
 	parentAgent agent.Agent,
 	binding subagentprojection.BoundBinding,
 	config subagentprojection.BoundConfig,
 ) (agent.Handle, bool, error) {
-	inspection, err := owner.dependencies.Persistence.Inspect(
+	inspection, err := factory.persistence.Inspect(
 		ctx,
 		binding.ChildSessionID,
 	)
 	if err == nil {
-		handle, resumeErr := owner.resume(
+		handle, resumeErr := factory.resume(
 			ctx,
 			parentAgent,
 			binding,
@@ -37,7 +53,7 @@ func (owner *Service) materialize(
 	if !errors.As(err, &notFound) {
 		return agent.Handle{}, false, err
 	}
-	handle, createErr := owner.create(
+	handle, createErr := factory.create(
 		ctx,
 		parentAgent,
 		binding,
@@ -46,13 +62,13 @@ func (owner *Service) materialize(
 	return handle, true, createErr
 }
 
-func (owner *Service) create(
+func (factory *materializer) create(
 	ctx context.Context,
 	parentAgent agent.Agent,
 	binding subagentprojection.BoundBinding,
 	config subagentprojection.BoundConfig,
 ) (agent.Handle, error) {
-	builder, found := owner.dependencies.SeedBuilders.Find(
+	builder, found := factory.seedBuilders.Find(
 		binding.Creation.SeedBuilder,
 	)
 	if !found {
@@ -82,7 +98,7 @@ func (owner *Service) create(
 	if err != nil {
 		return agent.Handle{}, err
 	}
-	configProvisioner, err := owner.provisioner(
+	configProvisioner, err := factory.provisioner(
 		config.Config,
 		true,
 	)
@@ -93,7 +109,7 @@ func (owner *Service) create(
 	if err != nil {
 		return agent.Handle{}, err
 	}
-	handle, err := owner.dependencies.Constructor.Create(
+	handle, err := factory.constructor.Create(
 		initiated,
 		agent.CreateOptions{
 			SessionID:    binding.ChildSessionID,
@@ -113,7 +129,7 @@ func (owner *Service) create(
 	return handle, err
 }
 
-func (owner *Service) resume(
+func (factory *materializer) resume(
 	ctx context.Context,
 	parentAgent agent.Agent,
 	binding subagentprojection.BoundBinding,
@@ -154,7 +170,7 @@ func (owner *Service) resume(
 			nil,
 		)
 	}
-	configProvisioner, err := owner.provisioner(
+	configProvisioner, err := factory.provisioner(
 		config.Config,
 		false,
 	)
@@ -165,7 +181,7 @@ func (owner *Service) resume(
 	if err != nil {
 		return agent.Handle{}, err
 	}
-	handle, err := owner.dependencies.Constructor.Resume(
+	handle, err := factory.constructor.Resume(
 		initiated,
 		agent.ResumeOptions{
 			SessionID:    binding.ChildSessionID,
@@ -190,16 +206,62 @@ func (owner *Service) resume(
 	return handle, nil
 }
 
+func (factory *materializer) requireDependencies() error {
+	if factory.constructor == nil || factory.persistence == nil ||
+		factory.seedBuilders == nil || factory.extensions == nil {
+		return unavailableDependency("materialization dependencies")
+	}
+	return nil
+}
+
+// provisioner composes one Bound epoch from the exact parent projection
+// snapshot. Only a fresh child receives the parent delegation policy.
+func (factory *materializer) provisioner(
+	config subagent.BoundConfigSnapshot,
+	fresh bool,
+) (agent.Provisioner, error) {
+	if factory == nil || factory.extensions == nil {
+		return nil, errors.New(
+			"subagent: Bound Extension selection is unavailable",
+		)
+	}
+	detached := cloneBoundConfig(config)
+	selectedExtensions, err := factory.extensions.Provision(
+		detached.Extensions,
+	)
+	if err != nil {
+		return nil, err
+	}
+	var delegation approval.DelegationPolicy
+	if fresh {
+		delegation = factory.delegation
+	}
+	policyPlugins := childpolicy.Plugins(
+		childpolicy.PolicySet{
+			Delegation:      delegation,
+			Persona:         detached.Persona,
+			ToolRestriction: detached.ToolRestriction,
+		},
+	)
+	var policies agent.Provisioner
+	if len(policyPlugins) != 0 {
+		policies = scopedplugin.MountPlugins(policyPlugins...)
+	}
+	return agent.ComposeProvisioners(
+		policies,
+		factory.commonExtensions,
+		selectedExtensions,
+	), nil
+}
+
 func hasSubmittedMessage(inspection sesspersist.Inspection) bool {
 	childStart := int64(0)
 	if inspection.Header.SeedLength != nil {
 		childStart = *inspection.Header.SeedLength
 	}
 	for _, committed := range inspection.Events {
-		if committed.Seq < childStart {
-			continue
-		}
-		if committed.Type != agent.InboxSplicedEventName {
+		if committed.Seq < childStart ||
+			committed.Type != agent.InboxSplicedEventName {
 			continue
 		}
 		var splice agent.InboxSplice
@@ -213,13 +275,22 @@ func hasSubmittedMessage(inspection sesspersist.Inspection) bool {
 	return false
 }
 
-func (owner *Service) requireMaterializationDependencies() error {
-	if owner.dependencies.Constructor == nil ||
-		owner.dependencies.Sessions == nil ||
-		owner.dependencies.Persistence == nil ||
-		owner.dependencies.SeedBuilders == nil ||
-		owner.dependencies.Executions == nil {
-		return unavailableDependency("materialization dependencies")
+func cloneBoundConfig(
+	source subagent.BoundConfigSnapshot,
+) subagent.BoundConfigSnapshot {
+	detached := subagent.BoundConfigSnapshot{
+		Enabled:    source.Enabled,
+		Extensions: append([]string(nil), source.Extensions...),
 	}
-	return nil
+	if source.Persona != nil {
+		persona := *source.Persona
+		detached.Persona = &persona
+	}
+	if source.ToolRestriction != nil {
+		detached.ToolRestriction = &tools.ToolRestriction{
+			Allow: append([]string(nil), source.ToolRestriction.Allow...),
+			Deny:  append([]string(nil), source.ToolRestriction.Deny...),
+		}
+	}
+	return detached
 }
