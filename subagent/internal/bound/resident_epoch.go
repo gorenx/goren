@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/subagent"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
 )
@@ -17,6 +18,19 @@ type residentEpoch struct {
 	execution          *sharedexecution.Execution
 	definitionRevision int64
 	provider           string
+}
+
+func (resident *residentEpoch) followup(
+	requestContext context.Context,
+	messageValue agentmessage.UserMessage,
+) error {
+	if err := resident.handle.Subject.Followup(messageValue); err != nil {
+		return err
+	}
+	return resident.owner.sessions.Flush(
+		requestContext,
+		resident.handle.Subject.SessionValue(),
+	)
 }
 
 // Terminate settles this exact resident epoch and releases its Agent Handle.
@@ -73,7 +87,6 @@ func (resident *residentEpoch) Terminate(
 		)
 	}
 	resident.owner.executions.Remove(resident.execution)
-	resident.owner.executionClosed(resident)
 	if cause != sharedexecution.StopExternal {
 		terminalErr = errors.Join(
 			terminalErr,

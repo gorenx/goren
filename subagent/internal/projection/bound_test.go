@@ -179,7 +179,7 @@ func TestBoundProjectionRejectsMaterializationWithoutBinding(t *testing.T) {
 	}
 }
 
-func TestBoundProjectionDoesNotExposeInteractionCursor(t *testing.T) {
+func TestBoundProjectionIgnoresUnownedEvents(t *testing.T) {
 	t.Parallel()
 	unit := boundUnit{}
 	state, err := unit.InitialState()
@@ -190,24 +190,16 @@ func TestBoundProjectionDoesNotExposeInteractionCursor(t *testing.T) {
 		state,
 		boundProjectionEvent(
 			t,
-			boundcontract.CursorEventName,
+			"subagent/unowned-event",
 			10,
-			boundcontract.Cursor{
-				Version:         boundcontract.EventVersion,
-				Name:            "researcher",
-				ChildSessionID:  "child",
-				PreviousNextSeq: 1,
-				NextSeq:         10,
-				ThroughTurn:     2,
-				Disposition:     boundcontract.CursorDelivered,
-			},
+			struct{}{},
 		),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if transition.Changed || !bytes.Equal(transition.State, state) {
-		t.Fatal("Bound interaction cursor entered the public projection")
+		t.Fatal("unowned event entered the Bound projection")
 	}
 }
 

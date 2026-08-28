@@ -62,3 +62,13 @@ func bindingNotFound(childID session.SessionID) error {
 		),
 	}
 }
+
+func namedBindingNotFound(name string) error {
+	return &subagent.Error{
+		Code: subagent.ErrorBoundBindingNotFound,
+		Message: fmt.Sprintf(
+			"Bound name %q has no binding in this parent Session",
+			name,
+		),
+	}
+}

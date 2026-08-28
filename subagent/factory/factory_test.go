@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/plugin"
-	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 	boundcontract "github.com/gorenx/goren/subagent/bound"
 	subagentfactory "github.com/gorenx/goren/subagent/factory"
@@ -52,18 +51,16 @@ func TestFactoryCreatesSubagentPlugin(t *testing.T) {
 		plugin.ServiceOf[subagent.ExtensionRegistry](),
 		plugin.ServiceOf[subagent.ChildDirectory](),
 		plugin.ServiceOf[boundcontract.Definitions](),
+		plugin.ServiceOf[boundcontract.Inbox](),
 	} {
 		if !provided[capability.Name()] {
 			t.Fatalf("Plugin does not provide %q", capability.Name())
 		}
 	}
-	// Key is an event name. Value records subscription set membership.
-	observed := make(map[string]bool)
 	for _, subscription := range created.Manifest().Events {
-		observed[subscription.Name()] = true
-	}
-	if !observed[session.AppendedEventName] {
-		t.Fatalf("Plugin does not observe %q", session.AppendedEventName)
+		if subscription.Name() == "session/event" {
+			t.Fatal("core Subagent Plugin observes Session append events")
+		}
 	}
 }
 

@@ -8,22 +8,34 @@ import (
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	sessionprojection "github.com/gorenx/goren/session/projection"
+	boundcontract "github.com/gorenx/goren/subagent/bound"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
 	subagentprojection "github.com/gorenx/goren/subagent/internal/projection"
 )
 
-type alignRequest struct {
+type reconcileRequest struct {
 	ctx   context.Context
 	reply chan error
 }
 
-type messageRequest struct {
+type followupCommand struct {
 	ctx     context.Context
 	message agentmessage.UserMessage
-	reply   chan messageResult
+	result  chan followupResult
 }
 
-type messageResult struct {
+type deliveryCommand struct {
+	ctx    context.Context
+	input  boundcontract.Input
+	result chan deliveryResult
+}
+
+type deliveryResult struct {
+	receipt boundcontract.Receipt
+	err     error
+}
+
+type followupResult struct {
 	identifier agentmessage.MessageID
 	err        error
 }
@@ -32,41 +44,30 @@ type interruptRequest struct {
 	reply chan struct{}
 }
 
-type catchUpRequest struct {
-	reply chan error
-}
-
 type shutdownRequest struct {
 	ctx   context.Context
 	reply chan error
 }
 
-type executionClosedNotice struct {
-	epoch *residentEpoch
-}
-
 // boundChild is the sole serial worker for one immutable user Session
 // Binding. It outlives individual resident Agent epochs.
 type boundChild struct {
-	key           bindingKey
-	parent        agent.Agent
-	agents        agent.Registry
-	sessions      session.LiveStore
-	projections   sessionprojection.Registry
-	definitions   *definitionCatalog
-	publisher     sharedexecution.EventPublisher
-	executions    *sharedexecution.Registry
-	failures      FailureReporter
-	materializer  *materializer
-	mailbox       chan any
-	dirty         chan struct{}
-	detach        chan struct{}
-	ctx           context.Context
-	cancel        context.CancelFunc
-	done          chan struct{}
-	current       *residentEpoch
-	floor         int64
-	deliveryReady bool
+	key          bindingKey
+	parent       agent.Agent
+	agents       agent.Registry
+	sessions     session.LiveStore
+	projections  sessionprojection.Registry
+	definitions  *definitionCatalog
+	publisher    sharedexecution.EventPublisher
+	executions   *sharedexecution.Registry
+	failures     FailureReporter
+	materializer *materializer
+	mailbox      chan any
+	detach       chan struct{}
+	ctx          context.Context
+	cancel       context.CancelFunc
+	done         chan struct{}
+	current      *residentEpoch
 }
 
 func newBoundChild(
@@ -94,12 +95,10 @@ func newBoundChild(
 		failures:     dependencySet.Failures,
 		materializer: factory,
 		mailbox:      make(chan any, 16),
-		dirty:        make(chan struct{}, 1),
 		detach:       make(chan struct{}, 1),
 		ctx:          childContext,
 		cancel:       cancelChild,
 		done:         make(chan struct{}),
-		floor:        bindingValue.Seq + 1,
 	}
 }
 
@@ -112,10 +111,6 @@ func (child *boundChild) run() {
 			if child.handleCommand(received) {
 				return
 			}
-		case <-child.dirty:
-			if err := child.catchUpInteractions(); err != nil {
-				child.reportInteractionFailure(err)
-			}
 		case <-child.detach:
 			return
 		}
@@ -124,34 +119,41 @@ func (child *boundChild) run() {
 
 func (child *boundChild) handleCommand(received any) bool {
 	switch commandValue := received.(type) {
-	case alignRequest:
-		commandValue.reply <- child.handleAlignment(commandValue.ctx)
-	case messageRequest:
-		identifier, err := child.handleMessage(commandValue.ctx, commandValue.message)
-		commandValue.reply <- messageResult{
+	case reconcileRequest:
+		_, err := child.reconcileExecution(commandValue.ctx)
+		commandValue.reply <- err
+	case followupCommand:
+		identifier, err := child.handleFollowup(
+			commandValue.ctx,
+			commandValue.message,
+		)
+		commandValue.result <- followupResult{
 			identifier: identifier,
 			err:        err,
+		}
+	case deliveryCommand:
+		receiptValue, err := child.handleDelivery(
+			commandValue.ctx,
+			commandValue.input,
+		)
+		commandValue.result <- deliveryResult{
+			receipt: receiptValue,
+			err:     err,
 		}
 	case interruptRequest:
 		child.handleInterrupt()
 		commandValue.reply <- struct{}{}
-	case catchUpRequest:
-		commandValue.reply <- child.catchUpInteractions()
 	case shutdownRequest:
 		child.cancel()
 		commandValue.reply <- child.stopCurrent(commandValue.ctx)
 		return true
-	case executionClosedNotice:
-		if child.current == commandValue.epoch {
-			child.current = nil
-		}
 	}
 	return false
 }
 
-func (child *boundChild) align(requestContext context.Context) error {
+func (child *boundChild) reconcile(requestContext context.Context) error {
 	reply := make(chan error, 1)
-	commandValue := alignRequest{
+	commandValue := reconcileRequest{
 		ctx:   requestContext,
 		reply: reply,
 	}
@@ -170,15 +172,15 @@ func (child *boundChild) align(requestContext context.Context) error {
 	}
 }
 
-func (child *boundChild) send(
+func (child *boundChild) followup(
 	requestContext context.Context,
 	messageValue agentmessage.UserMessage,
 ) (agentmessage.MessageID, error) {
-	reply := make(chan messageResult, 1)
-	commandValue := messageRequest{
+	result := make(chan followupResult, 1)
+	commandValue := followupCommand{
 		ctx:     requestContext,
 		message: messageValue,
-		reply:   reply,
+		result:  result,
 	}
 	select {
 	case child.mailbox <- commandValue:
@@ -188,10 +190,41 @@ func (child *boundChild) send(
 		return "", errors.New("subagent: Bound child is closed")
 	}
 	select {
-	case result := <-reply:
-		return result.identifier, result.err
+	case outcome := <-result:
+		return outcome.identifier, outcome.err
 	case <-requestContext.Done():
 		return "", context.Cause(requestContext)
+	}
+}
+
+func (child *boundChild) deliver(
+	requestContext context.Context,
+	inputValue boundcontract.Input,
+) (boundcontract.Receipt, error) {
+	result := make(chan deliveryResult, 1)
+	commandValue := deliveryCommand{
+		ctx:    requestContext,
+		input:  inputValue,
+		result: result,
+	}
+	select {
+	case child.mailbox <- commandValue:
+	case <-requestContext.Done():
+		return boundcontract.Receipt{}, context.Cause(requestContext)
+	case <-child.done:
+		return boundcontract.Receipt{}, errors.New(
+			"subagent: Bound child is closed",
+		)
+	}
+	select {
+	case delivered := <-result:
+		return delivered.receipt, delivered.err
+	case <-requestContext.Done():
+		return boundcontract.Receipt{}, context.Cause(requestContext)
+	case <-child.done:
+		return boundcontract.Receipt{}, errors.New(
+			"subagent: Bound child is closed",
+		)
 	}
 }
 
@@ -212,42 +245,6 @@ func (child *boundChild) interrupt(requestContext context.Context) error {
 		return nil
 	case <-requestContext.Done():
 		return context.Cause(requestContext)
-	}
-}
-
-func (child *boundChild) catchUp(requestContext context.Context) error {
-	reply := make(chan error, 1)
-	commandValue := catchUpRequest{
-		reply: reply,
-	}
-	select {
-	case child.mailbox <- commandValue:
-	case <-requestContext.Done():
-		return context.Cause(requestContext)
-	case <-child.done:
-		return errors.New("subagent: Bound child is closed")
-	}
-	select {
-	case err := <-reply:
-		return err
-	case <-requestContext.Done():
-		return context.Cause(requestContext)
-	}
-}
-
-func (child *boundChild) notify() {
-	select {
-	case child.dirty <- struct{}{}:
-	default:
-	}
-}
-
-func (child *boundChild) executionClosed(closed *residentEpoch) {
-	select {
-	case child.mailbox <- executionClosedNotice{
-		epoch: closed,
-	}:
-	case <-child.done:
 	}
 }
 
@@ -274,12 +271,7 @@ func (child *boundChild) shutdown(closeContext context.Context) error {
 }
 
 func (child *boundChild) dispose(requestContext context.Context) error {
-	child.cancel()
-	select {
-	case child.detach <- struct{}{}:
-	case <-child.done:
-		return nil
-	}
+	child.requestDispose()
 	select {
 	case <-child.done:
 		return nil
@@ -305,8 +297,4 @@ func (child *boundChild) operationContext(
 		stop()
 		cancelOperation()
 	}
-}
-
-func (child *boundChild) initializeDelivery() {
-	child.deliveryReady = true
 }

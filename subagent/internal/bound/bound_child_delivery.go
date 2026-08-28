@@ -1,149 +1,166 @@
 package bound
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"fmt"
 
+	"github.com/bytedance/sonic"
+	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/subagent"
+	"github.com/gorenx/goren/session"
 	boundcontract "github.com/gorenx/goren/subagent/bound"
 )
 
-func (child *boundChild) catchUpInteractions() error {
-	if !child.deliveryReady {
-		return nil
+func (child *boundChild) handleDelivery(
+	requestContext context.Context,
+	inputValue boundcontract.Input,
+) (boundcontract.Receipt, error) {
+	current, err := child.receivingEpoch(requestContext)
+	if err != nil {
+		return boundcontract.Receipt{}, err
 	}
-	for {
-		advanced, err := child.advanceInteraction()
-		if err != nil || !advanced {
-			return err
+	childSession := current.handle.Subject.SessionValue()
+	receiptValue, err := findInputReceipt(childSession, inputValue)
+	if err != nil {
+		return boundcontract.Receipt{}, err
+	}
+	if receiptValue.MessageID != "" {
+		if err = child.sessions.Flush(requestContext, childSession); err != nil {
+			return boundcontract.Receipt{}, err
 		}
+		return receiptValue, nil
 	}
-}
-
-func (child *boundChild) advanceInteraction() (bool, error) {
-	if err := context.Cause(child.ctx); err != nil {
-		return false, nil
+	deliverySource, err := boundcontract.NewDelivery(inputValue)
+	if err != nil {
+		return boundcontract.Receipt{}, err
 	}
-	if child.parent == nil || child.parent.SessionValue() == nil ||
-		child.agents == nil || !child.agents.Contains(child.parent) {
-		return false, nil
-	}
-	parentSession := child.parent.SessionValue()
-	snapshot := parentSession.Snapshot()
-	nextSeq, err := boundCursor(
-		snapshot.Events,
-		child.key.name,
-		child.key.childID,
-		child.floor,
+	messageValue, err := agentmessage.NewUserMessage(
+		agentmessage.UserMessageInput{
+			Content: inputValue.Content,
+			Source:  deliverySource,
+		},
 	)
 	if err != nil {
-		return false, err
+		return boundcontract.Receipt{}, err
 	}
-	interaction, found, err := nextParentInteraction(snapshot.Events, nextSeq)
-	if err != nil || !found {
-		return false, err
+	if err = current.followup(requestContext, messageValue); err != nil {
+		return boundcontract.Receipt{}, err
 	}
-	if child.sessions == nil {
-		return false, unavailableDependency("Session LiveStore")
-	}
-	if err = child.sessions.Flush(
-		child.ctx,
-		parentSession,
-	); err != nil {
-		return false, err
-	}
-	current := child.interactionEpoch()
-	if current == nil {
-		return false, nil
-	}
-	disposition := boundcontract.CursorSkipped
-	if interaction.deliverable {
-		source := subagent.Delivery{
-			ParentSessionID: child.key.parentID,
-			Turn:            interaction.turn,
-			FromSeq:         interaction.fromSeq,
-			ThroughSeq:      interaction.nextSeq - 1,
-			Outcome:         interaction.outcome,
-		}
-		received, receiptErr := hasReceipt(
-			current.handle.Subject.SessionValue(),
-			source,
+	return boundcontract.Receipt{
+		InputID:   inputValue.ID,
+		MessageID: messageValue.StableID(),
+	}, nil
+}
+
+func findInputReceipt(
+	childSession session.Context,
+	want boundcontract.Input,
+) (boundcontract.Receipt, error) {
+	if childSession == nil {
+		return boundcontract.Receipt{}, errors.New(
+			"subagent: Bound child Session is unavailable",
 		)
-		if receiptErr != nil {
-			return false, receiptErr
-		}
-		if !received {
-			messageValue, messageErr := agentmessage.NewUserMessage(
-				agentmessage.UserMessageInput{
-					Content: interaction.content,
-					Source:  source,
-				},
-			)
-			if messageErr != nil {
-				return false, messageErr
-			}
-			if messageErr = current.handle.Subject.Followup(
-				messageValue,
-			); messageErr != nil {
-				return false, messageErr
-			}
-		}
-		if err = child.sessions.Flush(
-			child.ctx,
-			current.handle.Subject.SessionValue(),
-		); err != nil {
-			return false, err
-		}
-		disposition = boundcontract.CursorDelivered
 	}
-	_, err = parentSession.Commit(
-		child.ctx,
-		cursorAdvance{
-			name:        child.key.name,
-			childID:     child.key.childID,
-			floor:       child.floor,
-			expected:    nextSeq,
-			interaction: interaction,
-			disposition: disposition,
-		},
+	startSeq := int64(0)
+	if seedLength := childSession.Header().SeedLength; seedLength != nil {
+		startSeq = *seedLength
+	}
+	var receiptValue boundcontract.Receipt
+	found := false
+	for _, committed := range childSession.Events() {
+		if committed.Seq < startSeq ||
+			committed.Type != agent.InboxSplicedEventName {
+			continue
+		}
+		var splice agent.InboxSplice
+		if err := deliveryJSONCodec.Unmarshal(
+			committed.Data,
+			&splice,
+		); err != nil {
+			return boundcontract.Receipt{}, fmt.Errorf(
+				"subagent: decode child Inbox receipt at seq %d: %w",
+				committed.Seq,
+				err,
+			)
+		}
+		for _, messageValue := range splice.Inserted {
+			origin := messageValue.SourceValue()
+			if origin == nil ||
+				origin.SourceKind() != boundcontract.DeliveryKind {
+				continue
+			}
+			deliveryValue, err := boundcontract.DecodeDelivery(origin)
+			if err != nil {
+				return boundcontract.Receipt{}, fmt.Errorf(
+					"subagent: decode child delivery at seq %d: %w",
+					committed.Seq,
+					err,
+				)
+			}
+			if deliveryValue.Input != want.ID {
+				continue
+			}
+			if found {
+				return boundcontract.Receipt{}, errors.New(
+					"subagent: child Session contains duplicate Bound delivery receipts",
+				)
+			}
+			if err = validateInputReceipt(
+				messageValue,
+				deliveryValue,
+				want,
+			); err != nil {
+				return boundcontract.Receipt{}, err
+			}
+			receiptValue = boundcontract.Receipt{
+				InputID:   want.ID,
+				MessageID: messageValue.StableID(),
+			}
+			found = true
+		}
+	}
+	return receiptValue, nil
+}
+
+func validateInputReceipt(
+	messageValue agentmessage.UserMessage,
+	received boundcontract.Delivery,
+	want boundcontract.Input,
+) error {
+	expected, err := boundcontract.NewDelivery(want)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(received.Origin, expected.Origin) {
+		return errors.New(
+			"subagent: Bound Input ID was reused with different provenance",
+		)
+	}
+	receivedContent, err := deliveryJSONCodec.Marshal(
+		messageValue.ContentValue(),
 	)
 	if err != nil {
-		return false, err
+		return err
 	}
-	if err = child.sessions.Flush(
-		child.ctx,
-		parentSession,
-	); err != nil {
-		return false, err
+	expectedContent, err := deliveryJSONCodec.Marshal(want.Content)
+	if err != nil {
+		return err
 	}
-	return true, nil
+	if !bytes.Equal(receivedContent, expectedContent) {
+		return errors.New(
+			"subagent: Bound Input ID was reused with different content",
+		)
+	}
+	return nil
 }
 
-func (child *boundChild) interactionEpoch() *residentEpoch {
-	definitionValue, found := child.definitions.find(child.key.name)
-	if !found {
-		return nil
-	}
-	if !definitionValue.Enabled {
-		return nil
-	}
-	current := child.current
-	if current == nil || current.execution.State() != subagent.ExecutionActive ||
-		current.definitionRevision != definitionValue.Revision {
-		return nil
-	}
-	return current
-}
-
-func (child *boundChild) reportInteractionFailure(err error) {
-	if child.failures == nil || err == nil {
-		return
-	}
-	child.failures.ReportBoundInteractionFailure(
-		InteractionFailure{
-			ParentID: child.key.parentID,
-			ChildID:  child.key.childID,
-			Error:    err,
-		},
-	)
-}
+var deliveryJSONCodec = sonic.Config{
+	SortMapKeys:           true,
+	UseUnicodeErrors:      true,
+	DisallowUnknownFields: true,
+	CopyString:            true,
+	ValidateString:        true,
+	CaseSensitive:         true,
+}.Froze()

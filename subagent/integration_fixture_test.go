@@ -14,6 +14,7 @@ import (
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
+	"github.com/gorenx/goren/subagent/bound/turnrelay"
 	subagentplugin "github.com/gorenx/goren/subagent/plugin"
 	"github.com/gorenx/goren/subagent/spawn"
 	subagentdelegation "github.com/gorenx/goren/subagent/tools/delegation"
@@ -369,6 +370,9 @@ func newIntegrationFixtureWithConfiguration(
 	rootPlugins = append(
 		rootPlugins,
 		subagentPlugin,
+		turnrelay.New(turnrelay.Diagnostics{
+			WorkerError: observerErrors.report,
+		}),
 		spawnPlugin,
 		delegationTool,
 		loopPlugin,

@@ -132,7 +132,7 @@ func (owner *Service) activateBindings(
 		activations.Add(1)
 		go func() {
 			defer activations.Done()
-			results <- worker.align(requestContext)
+			results <- worker.reconcile(requestContext)
 		}()
 	}
 	activations.Wait()

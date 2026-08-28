@@ -1,5 +1,5 @@
 // Package bound owns global Definitions, per-user-Session Bindings, resident
-// Bound child epochs, and parent interaction delivery.
+// Bound child epochs, and Inbox delivery.
 package bound
 
 import (
@@ -32,14 +32,6 @@ type FinalFlushFailure struct {
 	Error   error
 }
 
-// InteractionFailure identifies one contained parent-interaction delivery or
-// recovery failure. The durable cursor remains unchanged on failure.
-type InteractionFailure struct {
-	ParentID session.SessionID
-	ChildID  session.SessionID
-	Error    error
-}
-
 // ReconcileFailure identifies one contained user Session consistency failure.
 type ReconcileFailure struct {
 	ParentID session.SessionID
@@ -51,7 +43,6 @@ type ReconcileFailure struct {
 type FailureReporter interface {
 	ReportBoundMaterializationFailure(MaterializationFailure)
 	ReportBoundFinalFlushFailure(FinalFlushFailure)
-	ReportBoundInteractionFailure(InteractionFailure)
 	ReportBoundReconcileFailure(ReconcileFailure)
 }
 
@@ -172,23 +163,6 @@ func (owner *Service) Replace(
 // user Agent. Child Sessions are filtered before any task is admitted.
 func (owner *Service) SessionStarted(parentAgent agent.Agent) {
 	owner.scheduler.request(parentAgent)
-}
-
-// SessionEventAppended wakes existing interaction deliveries after a complete
-// parent turn has been committed.
-func (owner *Service) SessionEventAppended(fact session.EventAppended) {
-	if owner == nil || fact.Conversation == nil ||
-		fact.Committed.Type != session.TurnEndEventName {
-		return
-	}
-	parentID := fact.Conversation.ID()
-	owner.workers.notifyParent(parentID)
-	if owner.dependencies.Agents == nil {
-		return
-	}
-	if parentAgent, found := owner.dependencies.Agents.Get(parentID); found {
-		owner.scheduler.retry(parentAgent)
-	}
 }
 
 // AgentDisposed releases live routing for the exact parent Agent epoch.

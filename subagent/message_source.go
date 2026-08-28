@@ -1,19 +1,11 @@
 package subagent
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 )
-
-// DeliveryKind identifies a Bound delivery in the extensible message-source
-// union.
-const DeliveryKind = "subagent-delivery"
 
 // CoordinatorSource attributes a parent coordinator's relay to a child.
 type CoordinatorSource struct {
@@ -106,108 +98,6 @@ func (origin SettlementSource) CloneSource() (agentmessage.MessageSource, error)
 	return origin, nil
 }
 
-// Delivery identifies one complete parent turn relayed to a Bound child. When
-// the child Inbox durably accepts the carrying message, this identity lets the
-// worker reconcile that receipt after a crash.
-type Delivery struct {
-	Kind            string                   `json:"kind"`
-	Form            agentmessage.ContextForm `json:"form"`
-	ParentSessionID session.SessionID        `json:"parentSessionId"`
-	Turn            int64                    `json:"turn"`
-	FromSeq         int64                    `json:"fromSeq"`
-	ThroughSeq      int64                    `json:"throughSeq"`
-	Outcome         string                   `json:"outcome"`
-}
-
-// SourceKind returns the canonical delivery discriminant.
-func (Delivery) SourceKind() string {
-	return DeliveryKind
-}
-
-// CloneSource validates and detaches the delivery identity.
-func (origin Delivery) CloneSource() (agentmessage.MessageSource, error) {
-	if origin.ParentSessionID == "" {
-		return nil, errors.New(
-			"subagent: delivery needs a parentSessionId",
-		)
-	}
-	if origin.Form != "" && origin.Form != agentmessage.ContextRelay {
-		return nil, errors.New(
-			"subagent: delivery form must be relay",
-		)
-	}
-	if origin.Turn <= 0 || origin.Turn > maxSafeInteger ||
-		origin.FromSeq < 0 || origin.FromSeq > maxSafeInteger ||
-		origin.ThroughSeq < origin.FromSeq ||
-		origin.ThroughSeq > maxSafeInteger {
-		return nil, errors.New(
-			"subagent: delivery has an invalid turn or sequence range",
-		)
-	}
-	if !validDeliveryOutcome(origin.Outcome) {
-		return nil, fmt.Errorf(
-			"subagent: unsupported delivery outcome %q",
-			origin.Outcome,
-		)
-	}
-	origin.Kind = DeliveryKind
-	origin.Form = agentmessage.ContextRelay
-	return origin, nil
-}
-
-// DecodeDelivery restores a delivery from either its live concrete value or
-// the opaque extension source retained by message replay.
-func DecodeDelivery(
-	origin agentmessage.MessageSource,
-) (Delivery, error) {
-	if origin == nil || origin.SourceKind() != DeliveryKind {
-		return Delivery{}, errors.New(
-			"subagent: message source is not a Bound delivery",
-		)
-	}
-	rawValue, err := json.Marshal(origin)
-	if err != nil {
-		return Delivery{}, err
-	}
-	var decoded Delivery
-	if err = decodeMessageSourceJSON(rawValue, &decoded); err != nil {
-		return Delivery{}, err
-	}
-	detached, err := decoded.CloneSource()
-	if err != nil {
-		return Delivery{}, err
-	}
-	return detached.(Delivery), nil
-}
-
-func decodeMessageSourceJSON(rawValue []byte, target any) error {
-	decoder := json.NewDecoder(bytes.NewReader(rawValue))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return err
-	}
-	var trailing json.RawMessage
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return errors.New(
-				"subagent: message source contains multiple JSON values",
-			)
-		}
-		return err
-	}
-	return nil
-}
-
-func validDeliveryOutcome(outcome string) bool {
-	switch outcome {
-	case "completed", "blocked", "max-tokens", "interrupted", "aborted", "error":
-		return true
-	default:
-		return false
-	}
-}
-
 var _ agentmessage.MessageSource = CoordinatorSource{}
 var _ agentmessage.MessageSource = ReportSource{}
 var _ agentmessage.MessageSource = SettlementSource{}
-var _ agentmessage.MessageSource = Delivery{}

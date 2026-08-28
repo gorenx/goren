@@ -353,7 +353,6 @@ func TestCommandsAndEventTypesRejectRemovedContracts(t *testing.T) {
 		boundcontract.BindingEventName,
 		boundcontract.DefinitionAppliedEventName,
 		boundcontract.MaterializationEventName,
-		boundcontract.CursorEventName,
 	} {
 		if !session.IsKnownEventType(eventType) {
 			t.Fatalf("Bound event type %q is not registered", eventType)

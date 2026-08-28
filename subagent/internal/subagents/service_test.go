@@ -120,7 +120,16 @@ func (*boundImplementationStub) Replace(
 
 func (*boundImplementationStub) SessionStarted(agent.Agent) {}
 
-func (*boundImplementationStub) SessionEventAppended(session.EventAppended) {}
+func (*boundImplementationStub) Deliver(
+	_ context.Context,
+	_ boundcontract.Address,
+	inputValue boundcontract.Input,
+) (boundcontract.Receipt, error) {
+	return boundcontract.Receipt{
+		InputID:   inputValue.ID,
+		MessageID: "bound-input",
+	}, nil
+}
 
 func (*boundImplementationStub) AgentDisposed(context.Context, agent.Agent) error {
 	return nil
@@ -134,7 +143,7 @@ func (stub *boundImplementationStub) HasBinding(
 	return stub.bindings[childID], nil
 }
 
-func (stub *boundImplementationStub) Send(
+func (stub *boundImplementationStub) Followup(
 	_ context.Context,
 	_ agent.Agent,
 	childID session.SessionID,

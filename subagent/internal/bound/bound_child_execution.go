@@ -11,34 +11,47 @@ import (
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
 )
 
-func (child *boundChild) handleAlignment(
+func (child *boundChild) receivingEpoch(
 	requestContext context.Context,
-) error {
+) (*residentEpoch, error) {
+	current, err := child.reconcileExecution(requestContext)
+	if err != nil {
+		return nil, err
+	}
+	if current == nil {
+		return nil, boundDisabled(child.key.childID)
+	}
+	return current, nil
+}
+
+func (child *boundChild) reconcileExecution(
+	requestContext context.Context,
+) (*residentEpoch, error) {
 	workContext, cancelWork := child.operationContext(requestContext)
 	defer cancelWork()
-	if err := checkContext(workContext, "Bound alignment"); err != nil {
-		return err
+	if err := checkContext(workContext, "Bound reconciliation"); err != nil {
+		return nil, err
 	}
 	if err := child.authorizeParent(); err != nil {
-		return err
+		return nil, err
 	}
 	if err := child.requireDependencies(); err != nil {
-		return err
+		return nil, err
 	}
 	view, err := readBoundProjection(
 		child.projections,
 		child.parent.SessionValue(),
 	)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	bindingValue, found := view.BindingNamed(child.key.name)
 	if !found || bindingValue.ChildSessionID != child.key.childID {
-		return bindingNotFound(child.key.childID)
+		return nil, bindingNotFound(child.key.childID)
 	}
 	definitionValue, found := child.definitions.find(child.key.name)
 	if !found {
-		return fmt.Errorf(
+		return nil, fmt.Errorf(
 			"subagent: Bound Binding %q has no Definition",
 			child.key.name,
 		)
@@ -50,27 +63,27 @@ func (child *boundChild) handleAlignment(
 			child.current = nil
 			current = nil
 		} else if state != subagent.ExecutionActive {
-			return errors.New("subagent: Bound child is stopping")
+			return nil, errors.New("subagent: Bound child is stopping")
 		}
 	}
 	if current != nil &&
 		current.definitionRevision == definitionValue.Revision &&
 		definitionValue.Enabled {
-		return nil
+		return current, nil
 	}
 	if current != nil {
 		if err = current.execution.StopAndWait(
 			workContext,
 			sharedexecution.StopNormal,
 		); err != nil {
-			return err
+			return nil, err
 		}
 		if child.current == current {
 			child.current = nil
 		}
 	}
 	if !definitionValue.Enabled {
-		return nil
+		return nil, nil
 	}
 	handle, materializationErr := child.materializer.materialize(
 		workContext,
@@ -79,7 +92,7 @@ func (child *boundChild) handleAlignment(
 		definitionValue,
 	)
 	if materializationErr != nil {
-		return child.finishFailedMaterialization(
+		return nil, child.finishFailedMaterialization(
 			workContext,
 			definitionValue.Revision,
 			materializationErr,
@@ -89,7 +102,7 @@ func (child *boundChild) handleAlignment(
 		workContext,
 		handle.Subject.SessionValue(),
 	); err != nil {
-		return child.disposeFailedMaterialization(
+		return nil, child.disposeFailedMaterialization(
 			workContext,
 			definitionValue.Revision,
 			handle,
@@ -98,7 +111,7 @@ func (child *boundChild) handleAlignment(
 	}
 	current, err = child.publish(handle, definitionValue.Revision)
 	if err != nil {
-		return child.disposeFailedMaterialization(
+		return nil, child.disposeFailedMaterialization(
 			workContext,
 			definitionValue.Revision,
 			handle,
@@ -117,7 +130,7 @@ func (child *boundChild) handleAlignment(
 		if child.current == current {
 			child.current = nil
 		}
-		return errors.Join(
+		return nil, errors.Join(
 			child.finishFailedMaterialization(
 				workContext,
 				definitionValue.Revision,
@@ -126,10 +139,8 @@ func (child *boundChild) handleAlignment(
 			stopErr,
 		)
 	}
-	child.initializeDelivery()
 	child.watch(current)
-	child.notify()
-	return nil
+	return current, nil
 }
 
 func (child *boundChild) publish(

@@ -57,6 +57,8 @@ import (
 	"github.com/gorenx/goren/session/title"
 	sessiontitlefactory "github.com/gorenx/goren/session/title/factory"
 	"github.com/gorenx/goren/subagent"
+	"github.com/gorenx/goren/subagent/bound/turnrelay"
+	turnrelayfactory "github.com/gorenx/goren/subagent/bound/turnrelay/factory"
 	subagentfactory "github.com/gorenx/goren/subagent/factory"
 	subagentforkfactory "github.com/gorenx/goren/subagent/fork/factory"
 	subagentplugin "github.com/gorenx/goren/subagent/plugin"
@@ -197,6 +199,9 @@ func NewCatalog(platform Environment) (*pluginfactory.Catalog, error) {
 		systempromptfactory.New(),
 		subagentfactory.New(subagentplugin.Diagnostics{
 			ObserverError: platform.Diagnostics.Report,
+		}),
+		turnrelayfactory.New(turnrelay.Diagnostics{
+			WorkerError: platform.Diagnostics.Report,
 		}),
 		subagentspawnfactory.New(),
 		subagentforkfactory.New(),
@@ -379,6 +384,10 @@ func DefaultSpecs(
 		{
 			FactoryName: subagent.PluginName,
 			Config:      subagentRaw,
+		},
+		{
+			FactoryName: turnrelay.PluginName,
+			Config:      emptyConfig,
 		},
 		{
 			FactoryName: spawn.PluginName,
