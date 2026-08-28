@@ -238,6 +238,62 @@ func waitForIntegrationAgentAbsent(
 	}
 }
 
+func waitForBoundAppliedRevision(
+	testingContext *testing.T,
+	waitContext context.Context,
+	state *integrationFixture,
+	identifier session.SessionID,
+	previous agent.Agent,
+	wantRevision int64,
+) agent.Agent {
+	testingContext.Helper()
+	changed := time.NewTicker(time.Millisecond)
+	defer changed.Stop()
+	for {
+		current, found := state.agents.Get(identifier)
+		if found && (previous == nil || !agent.Same(previous, current)) &&
+			boundAppliedRevision(
+				testingContext,
+				current.SessionValue().Events(),
+				wantRevision,
+			) {
+			return current
+		}
+		select {
+		case <-waitContext.Done():
+			testingContext.Fatalf(
+				"Bound child %q did not publish revision %d: %v",
+				identifier,
+				wantRevision,
+				context.Cause(waitContext),
+			)
+		case <-changed.C:
+		}
+	}
+}
+
+func boundAppliedRevision(
+	testingContext *testing.T,
+	events []session.Event,
+	wantRevision int64,
+) bool {
+	testingContext.Helper()
+	for _, committed := range events {
+		if committed.Type != boundcontract.DefinitionAppliedEventName {
+			continue
+		}
+		var applied boundcontract.DefinitionAppliedData
+		if err := json.Unmarshal(committed.Data, &applied); err != nil {
+			testingContext.Fatal(err)
+		}
+		if applied.Version == boundcontract.EventVersion &&
+			applied.Definition.Revision == wantRevision {
+			return true
+		}
+	}
+	return false
+}
+
 func assertBoundChildIdentity(
 	testingContext *testing.T,
 	childAgent agent.Agent,

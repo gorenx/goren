@@ -193,13 +193,8 @@ func (factory *materializer) provisioner(
 	descriptor subagent.ContinuableDescriptor,
 	fresh bool,
 ) agent.Provisioner {
-	var delegation approval.DelegationPolicy
-	if fresh {
-		delegation = factory.delegation
-	}
 	instances := childpolicy.Plugins(
 		childpolicy.PolicySet{
-			Delegation:      delegation,
 			Persona:         descriptor.Persona,
 			ToolRestriction: descriptor.ToolFilter,
 		},
@@ -208,7 +203,12 @@ func (factory *materializer) provisioner(
 	if len(instances) != 0 {
 		policies = scopedplugin.MountPlugins(instances...)
 	}
+	var delegation agent.Provisioner
+	if fresh {
+		delegation = childpolicy.DelegationSeed(factory.delegation)
+	}
 	return agent.ComposeProvisioners(
+		delegation,
 		policies,
 		factory.extensions,
 	)
