@@ -164,6 +164,53 @@ func TestNamedExtensionsAreNotInstalledWithoutSelection(t *testing.T) {
 	}
 }
 
+func TestExtensionDirectoryListsOnlyNamedRegistrations(t *testing.T) {
+	owner := New()
+	registered := extensionRecord{
+		install: func() (subagent.ExtensionInstallation, error) {
+			return installationRecord{
+				dispose: func() error { return nil },
+			}, nil
+		},
+	}
+	if _, err := owner.RegisterExtension(registered); err != nil {
+		t.Fatal(err)
+	}
+	first, err := owner.RegisterExtension(
+		registered,
+		subagent.WithExtensionName("first"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = owner.RegisterExtension(
+		registered,
+		subagent.WithExtensionName("second"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	wanted := []subagent.ExtensionDescriptor{
+		{
+			Name: "first",
+		},
+		{
+			Name: "second",
+		},
+	}
+	if got := owner.ListExtensions(); !reflect.DeepEqual(got, wanted) {
+		t.Fatalf("Extension directory = %#v, want %#v", got, wanted)
+	}
+	if err = first.Unregister(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := owner.ListExtensions(); !reflect.DeepEqual(
+		got,
+		wanted[1:],
+	) {
+		t.Fatalf("Extension directory after removal = %#v", got)
+	}
+}
+
 func TestSelectedExtensionValidationPrecedesInstallation(t *testing.T) {
 	tests := []struct {
 		name     string

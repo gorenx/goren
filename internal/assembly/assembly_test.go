@@ -745,6 +745,95 @@ func TestServerTreeStartsCapabilitiesBeforeExposingConnection(t *testing.T) {
 			description,
 		)
 	}
+	toolBody := []byte(`{"type":"client-request","rpcId":"assembly-tools-1","method":"bound.tools","payload":{}}`)
+	toolRequest, err := http.NewRequestWithContext(
+		requestContext,
+		http.MethodPost,
+		"http://"+serverAddress+protocol.APIPath+"/"+apiproxy.BoundToolsMethod,
+		bytes.NewReader(toolBody),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolRequest.Header.Set("content-type", "application/json")
+	toolResponse, err := (&http.Client{
+		Timeout: 2 * time.Second,
+	}).Do(toolRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer toolResponse.Body.Close()
+	var toolMessage protocol.ServerResponse
+	if err = json.NewDecoder(toolResponse.Body).Decode(&toolMessage); err != nil {
+		t.Fatal(err)
+	}
+	var toolValue apiproxy.BoundToolsValue
+	if err = json.Unmarshal(toolMessage.Result.Value, &toolValue); err != nil {
+		t.Fatal(err)
+	}
+	projectedToolNames := make([]string, len(toolValue.Tools))
+	for index, option := range toolValue.Tools {
+		projectedToolNames[index] = option.Name
+		if option.Description == "" {
+			t.Fatalf("bound.tools omitted %q description", option.Name)
+		}
+	}
+	wantProjectedToolNames := []string{
+		toolaskuser.Name,
+		"interrupt_agent",
+		"list_agents",
+		"send_message",
+		subagentdelegation.DefaultToolName,
+	}
+	if toolResponse.StatusCode != http.StatusOK || !toolMessage.Result.OK ||
+		!reflect.DeepEqual(projectedToolNames, wantProjectedToolNames) {
+		t.Fatalf(
+			"bound.tools response = (%d, %#v, %#v)",
+			toolResponse.StatusCode,
+			toolMessage,
+			toolValue,
+		)
+	}
+	extensionBody := []byte(`{"type":"client-request","rpcId":"assembly-extensions-1","method":"bound.extensions","payload":{}}`)
+	extensionRequest, err := http.NewRequestWithContext(
+		requestContext,
+		http.MethodPost,
+		"http://"+serverAddress+protocol.APIPath+"/"+apiproxy.BoundExtensionsMethod,
+		bytes.NewReader(extensionBody),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extensionRequest.Header.Set("content-type", "application/json")
+	extensionResponse, err := (&http.Client{
+		Timeout: 2 * time.Second,
+	}).Do(extensionRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer extensionResponse.Body.Close()
+	var extensionMessage protocol.ServerResponse
+	if err = json.NewDecoder(extensionResponse.Body).Decode(
+		&extensionMessage,
+	); err != nil {
+		t.Fatal(err)
+	}
+	var extensionValue apiproxy.BoundExtensionsValue
+	if err = json.Unmarshal(
+		extensionMessage.Result.Value,
+		&extensionValue,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if extensionResponse.StatusCode != http.StatusOK ||
+		!extensionMessage.Result.OK || len(extensionValue.Extensions) != 0 {
+		t.Fatalf(
+			"bound.extensions response = (%d, %#v, %#v)",
+			extensionResponse.StatusCode,
+			extensionMessage,
+			extensionValue,
+		)
+	}
 	if err = runtimeEngine.Shutdown(requestContext); err != nil {
 		t.Fatal(err)
 	}

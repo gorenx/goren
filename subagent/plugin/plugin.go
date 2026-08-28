@@ -97,6 +97,7 @@ func (owner *Plugin) Manifest() pluginruntime.Manifest {
 			pluginruntime.NewProvidedService[subagent.Starter](owner.service),
 			pluginruntime.NewProvidedService[subagent.ChildControl](owner.service),
 			pluginruntime.NewProvidedService[subagent.ExtensionRegistry](owner.extensions),
+			pluginruntime.NewProvidedService[subagent.ExtensionDirectory](owner.extensions),
 			pluginruntime.NewProvidedService[subagent.ChildDirectory](owner.directory),
 			pluginruntime.NewProvidedService[boundcontract.Definitions](owner.service),
 		},

@@ -19,6 +19,8 @@ var privilegedMethods = map[string]struct{}{
 	"credentials.unset":        {},
 	"llm.discoverModels":       {},
 	"bound.list":               {},
+	"bound.tools":              {},
+	"bound.extensions":         {},
 	"bound.create":             {},
 	"bound.replace":            {},
 }

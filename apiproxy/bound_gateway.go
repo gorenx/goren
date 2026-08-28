@@ -8,15 +8,61 @@ import (
 	boundcontract "github.com/gorenx/goren/subagent/bound"
 )
 
+// BoundToolDirectory provides the root Tool choices consumed by Bound config.
+// It does not expose Tool execution or mutation to API Proxy.
+type BoundToolDirectory interface {
+	ListBoundTools(context.Context) ([]BoundToolOption, error)
+}
+
+// BoundToolDirectoryFunc adapts a composition-root projection function.
+type BoundToolDirectoryFunc func(context.Context) ([]BoundToolOption, error)
+
+// ListBoundTools invokes the adapted projection function.
+func (operation BoundToolDirectoryFunc) ListBoundTools(
+	requestContext context.Context,
+) ([]BoundToolOption, error) {
+	return operation(requestContext)
+}
+
+// BoundExtensionDirectory provides named Extension choices consumed by Bound
+// config. It does not expose registration or installation behavior.
+type BoundExtensionDirectory interface {
+	ListBoundExtensions(context.Context) ([]BoundExtensionOption, error)
+}
+
+// BoundExtensionDirectoryFunc adapts a composition-root projection function.
+type BoundExtensionDirectoryFunc func(context.Context) ([]BoundExtensionOption, error)
+
+// ListBoundExtensions invokes the adapted projection function.
+func (operation BoundExtensionDirectoryFunc) ListBoundExtensions(
+	requestContext context.Context,
+) ([]BoundExtensionOption, error) {
+	return operation(requestContext)
+}
+
+// BoundGatewayDependencies contains the Definition capability and the two
+// independent catalogs projected by the Bound configuration API.
+type BoundGatewayDependencies struct {
+	Definitions boundcontract.Definitions
+	Tools       BoundToolDirectory
+	Extensions  BoundExtensionDirectory
+}
+
 // BoundGateway maps the transport-neutral Definition capability to Host RPC.
 type BoundGateway struct {
-	definitions boundcontract.Definitions
+	definitions        boundcontract.Definitions
+	toolDirectory      BoundToolDirectory
+	extensionDirectory BoundExtensionDirectory
 }
 
 // NewBoundGateway constructs the Bound Definition API adapter.
-func NewBoundGateway(definitions boundcontract.Definitions) *BoundGateway {
+func NewBoundGateway(
+	dependencies BoundGatewayDependencies,
+) *BoundGateway {
 	return &BoundGateway{
-		definitions: definitions,
+		definitions:        dependencies.Definitions,
+		toolDirectory:      dependencies.Tools,
+		extensionDirectory: dependencies.Extensions,
 	}
 }
 
@@ -31,6 +77,37 @@ func (gateway *BoundGateway) List(
 	}
 	return OK(BoundListValue{
 		Definitions: definitions,
+	}), nil
+}
+
+// Extensions returns named selectable Extensions without exposing common
+// Extensions or Registry mutation.
+func (gateway *BoundGateway) Extensions(
+	requestContext context.Context,
+	_ Request[BoundExtensionsRequest],
+) (Outcome[BoundExtensionsValue], error) {
+	extensionOptions, err := gateway.extensionDirectory.ListBoundExtensions(
+		requestContext,
+	)
+	if err != nil {
+		return Outcome[BoundExtensionsValue]{}, err
+	}
+	return OK(BoundExtensionsValue{
+		Extensions: extensionOptions,
+	}), nil
+}
+
+// Tools returns the root Tool choices without exposing their schemas or runtime.
+func (gateway *BoundGateway) Tools(
+	requestContext context.Context,
+	_ Request[BoundToolsRequest],
+) (Outcome[BoundToolsValue], error) {
+	toolOptions, err := gateway.toolDirectory.ListBoundTools(requestContext)
+	if err != nil {
+		return Outcome[BoundToolsValue]{}, err
+	}
+	return OK(BoundToolsValue{
+		Tools: toolOptions,
 	}), nil
 }
 

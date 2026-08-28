@@ -165,6 +165,23 @@ func (owner *Registry) ValidateSelection(extensionNames []string) error {
 	return err
 }
 
+// ListExtensions returns detached descriptors for currently registered named
+// Extensions. Registration order does not determine Bound selection order.
+func (owner *Registry) ListExtensions() []subagent.ExtensionDescriptor {
+	owner.mutex.Lock()
+	defer owner.mutex.Unlock()
+	descriptors := make([]subagent.ExtensionDescriptor, 0, len(owner.named))
+	for _, record := range owner.registrations {
+		if record.name == nil {
+			continue
+		}
+		descriptors = append(descriptors, subagent.ExtensionDescriptor{
+			Name: *record.name,
+		})
+	}
+	return descriptors
+}
+
 // Clear closes every remaining registration after child close is requested.
 func (owner *Registry) Clear(closeContext context.Context) (int, error) {
 	owner.mutex.Lock()
@@ -236,3 +253,4 @@ func nilInterface(candidate any) bool {
 }
 
 var _ subagent.ExtensionRegistration = (*registration)(nil)
+var _ subagent.ExtensionDirectory = (*Registry)(nil)
