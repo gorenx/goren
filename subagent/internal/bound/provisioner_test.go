@@ -99,7 +99,7 @@ func TestBuildBoundProvisionerInstallsPoliciesCommonAndSelectedExtensions(
 	)
 	persona := "bound persona"
 	owner := newProvisionerService(t, extensionRegistry)
-	scopeProvisioner, err := owner.materializer.provisioner(
+	scopeProvisioner, err := owner.children.materializer.provisioner(
 		subagent.BoundConfigSnapshot{
 			Persona: &persona,
 			ToolRestriction: &tools.ToolRestriction{
@@ -155,7 +155,7 @@ func TestBuildBoundProvisionerRejectsUnknownSelectionBeforeScopeMutation(
 	t *testing.T,
 ) {
 	owner := newProvisionerService(t, extensionregistry.New())
-	scopeProvisioner, err := owner.materializer.provisioner(
+	scopeProvisioner, err := owner.children.materializer.provisioner(
 		subagent.BoundConfigSnapshot{
 			Extensions: []string{"missing"},
 		},
@@ -184,7 +184,7 @@ func TestBoundProvisionerRollsBackCommonWhenSelectedInstallFails(t *testing.T) {
 		subagent.WithExtensionName("failing"),
 	)
 	owner := newProvisionerService(t, extensionRegistry)
-	scopeProvisioner, err := owner.materializer.provisioner(
+	scopeProvisioner, err := owner.children.materializer.provisioner(
 		subagent.BoundConfigSnapshot{
 			Extensions: []string{"failing"},
 		},

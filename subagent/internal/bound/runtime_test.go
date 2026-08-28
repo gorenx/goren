@@ -99,6 +99,7 @@ type boundRuntimeAgent struct {
 	options      agent.Options
 	mutex        sync.Mutex
 	followups    int
+	idleWaits    int
 }
 
 func (subject *boundRuntimeAgent) ID() session.SessionID {
@@ -123,7 +124,10 @@ func (*boundRuntimeAgent) StatusValue() agent.Status {
 
 func (*boundRuntimeAgent) Cancel(agent.CancelCause, agent.CancelOptions) {}
 
-func (*boundRuntimeAgent) WhenIdle(context.Context) error {
+func (subject *boundRuntimeAgent) WhenIdle(context.Context) error {
+	subject.mutex.Lock()
+	subject.idleWaits++
+	subject.mutex.Unlock()
 	return nil
 }
 
@@ -242,13 +246,15 @@ func (runtime *boundAgentRuntime) Teardown(ctx context.Context) error {
 }
 
 type boundAgentFactory struct {
-	sessions     *boundRuntimeSessions
-	persistence  *boundRuntimePersistence
-	mutex        sync.Mutex
-	createCalls  int
-	resumeCalls  int
-	createErrors map[session.SessionID]error
-	latestAgents map[session.SessionID]*boundRuntimeAgent
+	sessions      *boundRuntimeSessions
+	persistence   *boundRuntimePersistence
+	mutex         sync.Mutex
+	createCalls   int
+	resumeCalls   int
+	createErrors  map[session.SessionID]error
+	createEntered chan<- session.SessionID
+	createRelease <-chan struct{}
+	latestAgents  map[session.SessionID]*boundRuntimeAgent
 }
 
 func (builder *boundAgentFactory) CreateAgent(
@@ -269,9 +275,25 @@ func (builder *boundAgentFactory) CreateAgent(
 	builder.mutex.Lock()
 	builder.createCalls++
 	createErr := builder.createErrors[options.SessionID]
+	createEntered := builder.createEntered
+	createRelease := builder.createRelease
 	builder.mutex.Unlock()
 	if createErr != nil {
 		return createErr
+	}
+	if createEntered != nil {
+		select {
+		case createEntered <- options.SessionID:
+		case <-ctx.Done():
+			return context.Cause(ctx)
+		}
+	}
+	if createRelease != nil {
+		select {
+		case <-createRelease:
+		case <-ctx.Done():
+			return context.Cause(ctx)
+		}
 	}
 	return builder.attach(
 		ctx,
@@ -526,6 +548,70 @@ func TestStartBindingsContainsChildMaterializationFailure(t *testing.T) {
 	}
 }
 
+func TestStartBindingsMaterializesDifferentChildrenConcurrently(t *testing.T) {
+	fixture := newBoundRuntimeFixture(t)
+	firstID := bindNamedRuntimeChild(
+		t,
+		fixture,
+		"first-child",
+		"first researcher",
+	)
+	secondID := bindNamedRuntimeChild(
+		t,
+		fixture,
+		"second-child",
+		"second researcher",
+	)
+	defer func() {
+		_ = fixture.owner.Close(context.Background())
+	}()
+	entered := make(chan session.SessionID, 2)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() {
+		releaseOnce.Do(func() {
+			close(release)
+		})
+	})
+	fixture.agentFactory.mutex.Lock()
+	fixture.agentFactory.createEntered = entered
+	fixture.agentFactory.createRelease = release
+	fixture.agentFactory.mutex.Unlock()
+	done := make(chan error, 1)
+	go func() {
+		done <- fixture.owner.StartBindings(
+			context.Background(),
+			fixture.parent.Subject,
+		)
+	}()
+	want := map[session.SessionID]bool{
+		firstID:  false,
+		secondID: false,
+	}
+	for range want {
+		select {
+		case childID := <-entered:
+			if _, found := want[childID]; !found {
+				t.Fatalf("unexpected child materialized: %q", childID)
+			}
+			want[childID] = true
+		case <-time.After(2 * time.Second):
+			t.Fatal("different Bound children did not materialize concurrently")
+		}
+	}
+	releaseOnce.Do(func() {
+		close(release)
+	})
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	for childID, observed := range want {
+		if !observed {
+			t.Fatalf("child %q did not enter materialization", childID)
+		}
+	}
+}
+
 func TestHasSubmittedMessageIgnoresInheritedSeedInbox(t *testing.T) {
 	t.Parallel()
 	seedSplice, err := json.Marshal(
@@ -619,6 +705,31 @@ func TestBoundFreshCreateAndColdResumeSubmitInitialPromptOnce(t *testing.T) {
 	}
 }
 
+func TestBoundChildWatcherSettlesExecutionOnStructuralChildClose(
+	t *testing.T,
+) {
+	fixture := newBoundRuntimeFixture(t)
+	childID := bindRuntimeChild(t, fixture)
+	running := startRuntimeChild(t, fixture, childID)
+	defer func() {
+		_ = fixture.owner.Close(context.Background())
+	}()
+	if err := fixture.parent.Dispose(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitContext, cancelWait := context.WithTimeout(
+		context.Background(),
+		2*time.Second,
+	)
+	defer cancelWait()
+	if err := running.Wait(waitContext); err != nil {
+		t.Fatal(err)
+	}
+	if running.State() != subagent.ExecutionStopped {
+		t.Fatalf("execution state = %s, want stopped", running.State())
+	}
+}
+
 func TestBoundConfigRevisionReplacesResidentEpochAndDisableStopsIt(
 	t *testing.T,
 ) {
@@ -626,6 +737,10 @@ func TestBoundConfigRevisionReplacesResidentEpochAndDisableStopsIt(
 	childID := bindRuntimeChild(t, fixture)
 	first := startRuntimeChild(t, fixture, childID)
 	firstAgent, _ := fixture.agents.Get(childID)
+	firstSubject, matches := firstAgent.(*boundRuntimeAgent)
+	if !matches {
+		t.Fatalf("first child Agent = %T, want *boundRuntimeAgent", firstAgent)
+	}
 	result, err := fixture.owner.UpdateConfig(
 		context.Background(),
 		subagent.UpdateBoundConfigCommand{
@@ -642,6 +757,9 @@ func TestBoundConfigRevisionReplacesResidentEpochAndDisableStopsIt(
 	}
 	if result.Revision != 2 || first.State() != subagent.ExecutionStopped {
 		t.Fatalf("replacement result = %#v, first state = %s", result, first.State())
+	}
+	if waits := idleWaitCount(firstSubject); waits != 1 {
+		t.Fatalf("replaced child idle waits = %d, want 1", waits)
 	}
 	secondAgent, found := fixture.agents.Get(childID)
 	if !found || agent.Same(firstAgent, secondAgent) {
@@ -696,7 +814,7 @@ func TestBoundConfigRevisionReplacesResidentEpochAndDisableStopsIt(
 	}
 }
 
-func TestBoundWorkerDeliversCompletedParentInteractionOnce(t *testing.T) {
+func TestBoundChildDeliversCompletedParentInteractionOnce(t *testing.T) {
 	fixture := newBoundRuntimeFixture(t)
 	childID := bindRuntimeChild(t, fixture)
 	_ = startRuntimeChild(t, fixture, childID)
@@ -741,11 +859,11 @@ func TestBoundWorkerDeliversCompletedParentInteractionOnce(t *testing.T) {
 		cursor.ThroughTurn != 1 {
 		t.Fatalf("Bound cursor = %#v", cursor)
 	}
-	delivery := boundDelivery(fixture.owner, fixture.parent.Subject.ID(), childID)
-	if delivery == nil {
-		t.Fatal("Bound interaction delivery is missing")
+	child := findBoundChild(fixture.owner, fixture.parent.Subject.ID(), childID)
+	if child == nil {
+		t.Fatal("Bound child is missing")
 	}
-	if err := delivery.catchUp(); err != nil {
+	if err := child.catchUp(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if followupCount(childAgent) != 2 {
@@ -753,22 +871,21 @@ func TestBoundWorkerDeliversCompletedParentInteractionOnce(t *testing.T) {
 	}
 }
 
-func TestBoundWorkerRepairsCursorFromDurableChildReceipt(t *testing.T) {
+func TestBoundChildRepairsCursorFromDurableChildReceipt(t *testing.T) {
 	fixture := newBoundRuntimeFixture(t)
 	childID := bindRuntimeChild(t, fixture)
 	_ = startRuntimeChild(t, fixture, childID)
 	defer func() {
 		_ = fixture.owner.Close(context.Background())
 	}()
-	delivery := detachBoundDelivery(
+	child := findBoundChild(
 		fixture.owner,
 		fixture.parent.Subject.ID(),
 		childID,
 	)
-	if delivery == nil {
-		t.Fatal("Bound interaction delivery is missing")
+	if child == nil {
+		t.Fatal("Bound child is missing")
 	}
-	delivery.Stop()
 	parentSession := fixture.parent.Subject.SessionValue()
 	appendTurnStart(t, parentSession, 1)
 	appendInteractionUser(
@@ -780,7 +897,7 @@ func TestBoundWorkerRepairsCursorFromDurableChildReceipt(t *testing.T) {
 	appendTurnEnd(t, parentSession, 1, session.TurnBlocked{})
 	interaction, found, err := nextParentInteraction(
 		parentSession.Events(),
-		delivery.floor,
+		interactionFloor(t, fixture, childID),
 	)
 	if err != nil || !found || !interaction.deliverable {
 		t.Fatalf("interaction = %#v, found = %v, error = %v", interaction, found, err)
@@ -811,20 +928,8 @@ func TestBoundWorkerRepairsCursorFromDurableChildReceipt(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	recovery := newInteractionDelivery(
-		fixture.owner.interactions,
-		fixture.parent.Subject,
-		subagentprojection.BoundBinding{
-			ChildSessionID: childID,
-			Seq:            delivery.floor - 1,
-		},
-		childAgent.SessionValue(),
-		delivery.slot,
-	)
-	defer recovery.cancel()
-	advanced, err := recovery.advanceOne()
-	if err != nil || !advanced {
-		t.Fatalf("recovery advance = %v, error = %v", advanced, err)
+	if err = child.catchUp(context.Background()); err != nil {
+		t.Fatalf("recovery catch-up error = %v", err)
 	}
 	if followupCount(childAgent) != 2 {
 		t.Fatal("receipt recovery called Followup a second time")
@@ -835,7 +940,7 @@ func TestBoundWorkerRepairsCursorFromDurableChildReceipt(t *testing.T) {
 	}
 }
 
-func TestBoundWorkerKeepsBacklogWhileDisabledAndCatchesUpAfterEnable(
+func TestBoundChildKeepsBacklogWhileDisabledAndCatchesUpAfterEnable(
 	t *testing.T,
 ) {
 	fixture := newBoundRuntimeFixture(t)
@@ -867,11 +972,11 @@ func TestBoundWorkerKeepsBacklogWhileDisabledAndCatchesUpAfterEnable(
 		"queued while disabled",
 	)
 	appendTurnEnd(t, parentSession, 1, session.TurnCompleted{})
-	delivery := boundDelivery(fixture.owner, fixture.parent.Subject.ID(), childID)
-	if delivery == nil {
-		t.Fatal("disabled binding lost its interaction delivery")
+	child := findBoundChild(fixture.owner, fixture.parent.Subject.ID(), childID)
+	if child == nil {
+		t.Fatal("disabled binding lost its Bound child")
 	}
-	if err = delivery.catchUp(); err != nil {
+	if err = child.catchUp(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if latestBoundCursor(parentSession, childID) != nil {
@@ -892,9 +997,9 @@ func TestBoundWorkerKeepsBacklogWhileDisabledAndCatchesUpAfterEnable(
 		t.Fatal(err)
 	}
 	_ = startRuntimeChild(t, fixture, childID)
-	delivery = boundDelivery(fixture.owner, fixture.parent.Subject.ID(), childID)
-	if delivery == nil {
-		t.Fatal("re-enabled binding lost its interaction delivery")
+	child = findBoundChild(fixture.owner, fixture.parent.Subject.ID(), childID)
+	if child == nil {
+		t.Fatal("re-enabled binding lost its Bound child")
 	}
 	waitForBoundCondition(t, func() bool {
 		return latestBoundCursor(parentSession, childID) != nil
@@ -910,14 +1015,23 @@ func bindRuntimeChild(
 	fixture boundRuntimeFixture,
 ) session.SessionID {
 	t.Helper()
-	childID := session.SessionID("bound-child")
+	return bindNamedRuntimeChild(t, fixture, "bound-child", "researcher")
+}
+
+func bindNamedRuntimeChild(
+	t *testing.T,
+	fixture boundRuntimeFixture,
+	childID session.SessionID,
+	title string,
+) session.SessionID {
+	t.Helper()
 	_, err := fixture.owner.Bind(
 		context.Background(),
 		subagent.BindCommand{
 			Parent:           fixture.parent.Subject,
 			RequestedChildID: &childID,
 			SeedBuilder:      "spawn",
-			Title:            "researcher",
+			Title:            title,
 			InitialPrompt: []agentmessage.ContentBlock{
 				agentmessage.NewTextBlock("initial task"),
 			},
@@ -990,6 +1104,12 @@ func followupCount(subject *boundRuntimeAgent) int {
 	return subject.followups
 }
 
+func idleWaitCount(subject *boundRuntimeAgent) int {
+	subject.mutex.Lock()
+	defer subject.mutex.Unlock()
+	return subject.idleWaits
+}
+
 func latestBoundCursor(
 	conversation session.Context,
 	childID session.SessionID,
@@ -1010,32 +1130,37 @@ func latestBoundCursor(
 	return latest
 }
 
-func boundDelivery(
+func findBoundChild(
 	owner *Service,
 	parentID session.SessionID,
 	childID session.SessionID,
-) *interactionDelivery {
-	owner.interactions.mutex.Lock()
-	defer owner.interactions.mutex.Unlock()
-	return owner.interactions.entries[parentID][childID]
+) *boundChild {
+	return owner.children.find(parentID, childID)
 }
 
-func detachBoundDelivery(
-	owner *Service,
-	parentID session.SessionID,
+func interactionFloor(
+	t *testing.T,
+	fixture boundRuntimeFixture,
 	childID session.SessionID,
-) *interactionDelivery {
-	owner.interactions.mutex.Lock()
-	defer owner.interactions.mutex.Unlock()
-	parentDeliveries := owner.interactions.entries[parentID]
-	delivery := parentDeliveries[childID]
-	if parentDeliveries != nil {
-		delete(parentDeliveries, childID)
-		if len(parentDeliveries) == 0 {
-			delete(owner.interactions.entries, parentID)
-		}
+) int64 {
+	t.Helper()
+	view, err := readBoundProjection(
+		fixture.projections,
+		fixture.parent.Subject.SessionValue(),
+	)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return delivery
+	binding, found := view.Binding(childID)
+	if !found {
+		t.Fatal("Bound binding is missing")
+	}
+	floor := binding.Seq + 1
+	childAgent := fixture.agentFactory.latestAgents[childID]
+	if seedLength := childAgent.SessionValue().Header().SeedLength; seedLength != nil && *seedLength > floor {
+		floor = *seedLength
+	}
+	return floor
 }
 
 func waitForBoundCondition(t *testing.T, condition func() bool) {

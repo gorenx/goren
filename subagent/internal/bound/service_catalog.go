@@ -182,8 +182,8 @@ func validChildID(childID session.SessionID) bool {
 	return strings.TrimSpace(value) != "" && value == strings.TrimSpace(value)
 }
 
-// UpdateConfig commits one complete revision and then replaces an already
-// resident Bound Agent epoch before later Bound delivery can be admitted.
+// UpdateConfig routes one complete config revision through the same child
+// that serializes materialization and message delivery for the child.
 func (owner *Service) UpdateConfig(
 	ctx context.Context,
 	command subagent.UpdateBoundConfigCommand,
@@ -214,78 +214,12 @@ func (owner *Service) UpdateConfig(
 	if err = owner.dependencies.Extensions.Validate(config.Extensions); err != nil {
 		return subagent.UpdateBoundConfigResult{}, err
 	}
-	slot := owner.bindings.child(
-		command.Parent.ID(),
-		command.ChildSessionID,
-	)
-	slot.mutex.Lock()
-	defer slot.mutex.Unlock()
-	if err = checkContext(ctx, "Bound UpdateConfig"); err != nil {
-		return subagent.UpdateBoundConfigResult{}, err
-	}
-	if err = owner.authorizeParent(command.Parent); err != nil {
-		return subagent.UpdateBoundConfigResult{}, err
-	}
-	parentSession := command.Parent.SessionValue()
-	view, err := readBoundProjection(
-		owner.dependencies.Projections,
-		parentSession,
-	)
-	if err != nil {
-		return subagent.UpdateBoundConfigResult{}, err
-	}
-	if _, found := view.Binding(command.ChildSessionID); !found {
-		return subagent.UpdateBoundConfigResult{}, bindingNotFound(
-			command.ChildSessionID,
-		)
-	}
-	current, found := view.Config(command.ChildSessionID)
-	if !found {
-		return subagent.UpdateBoundConfigResult{}, errors.New(
-			"subagent: Bound binding has no config",
-		)
-	}
-	if current.Revision != command.ExpectedRevision {
-		return subagent.UpdateBoundConfigResult{}, configConflict(
-			command.ChildSessionID,
-			command.ExpectedRevision,
-			current.Revision,
-		)
-	}
-	nextRevision := current.Revision + 1
-	draft, err := session.NewEventDraft(
-		subagent.BoundConfigEvent,
-		subagent.BoundConfigData{
-			Version:          subagent.BoundEventVersion,
-			ChildSessionID:   command.ChildSessionID,
-			PreviousRevision: current.Revision,
-			Revision:         nextRevision,
-			Config:           config,
-		},
-	)
-	if err != nil {
-		return subagent.UpdateBoundConfigResult{}, err
-	}
-	if _, err = parentSession.Commit(ctx, session.Batch(draft)); err != nil {
-		return subagent.UpdateBoundConfigResult{}, err
-	}
-	result := subagent.UpdateBoundConfigResult{
-		ParentSessionID: command.Parent.ID(),
-		ChildSessionID:  command.ChildSessionID,
-		Revision:        nextRevision,
-	}
-	if owner.dependencies.Sessions == nil {
-		return result, unavailableDependency("Session LiveStore")
-	}
-	if err = owner.dependencies.Sessions.Flush(ctx, parentSession); err != nil {
-		return result, err
-	}
-	if err = owner.replaceResidentLocked(
-		ctx,
+	child, err := owner.children.acquire(
 		command.Parent,
 		command.ChildSessionID,
-	); err != nil {
-		return result, err
+	)
+	if err != nil {
+		return subagent.UpdateBoundConfigResult{}, err
 	}
-	return result, nil
+	return child.updateConfig(ctx, command.ExpectedRevision, config)
 }
