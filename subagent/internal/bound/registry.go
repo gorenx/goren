@@ -33,13 +33,12 @@ type registry struct {
 }
 
 func newRegistry(
-	requestContext context.Context,
 	dependencySet Dependencies,
 	factory *materializer,
 ) *registry {
-	registryContext, cancelRegistry := context.WithCancel(
-		context.WithoutCancel(requestContext),
-	)
+	// Binding workers are closed explicitly with the Service. Their later Agent
+	// construction must not inherit callback markers or caller cancellation.
+	registryContext, cancelRegistry := context.WithCancel(context.Background())
 	return &registry{
 		dependencies: dependencySet,
 		materializer: factory,

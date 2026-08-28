@@ -14,6 +14,7 @@ import (
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
+	boundcontract "github.com/gorenx/goren/subagent/bound"
 	"github.com/gorenx/goren/subagent/bound/turnrelay"
 	subagentplugin "github.com/gorenx/goren/subagent/plugin"
 	"github.com/gorenx/goren/subagent/spawn"
@@ -124,6 +125,12 @@ func (backend *integrationAdapter) snapshots() []llm.GenerateOptions {
 	return result
 }
 
+func (backend *integrationAdapter) setGates(gates []<-chan struct{}) {
+	backend.mutex.Lock()
+	backend.gates = append([]<-chan struct{}(nil), gates...)
+	backend.mutex.Unlock()
+}
+
 func (backend *integrationAdapter) waitForRequests(
 	requestContext context.Context,
 	count int,
@@ -211,17 +218,44 @@ func (observerState *subagentLifecycleObserver) snapshot() (
 }
 
 type integrationFixture struct {
-	runtimeEngine  *plugin.Runtime
-	subagentHandle plugin.Handle
-	agents         *agent.RegistryService
-	sessions       session.LiveStore
-	toolRuntime    tools.ToolRuntime
-	backend        *integrationAdapter
-	lifecycle      *subagentLifecycleObserver
-	eventFailures  *integrationEventFailureSink
-	observerErrors *integrationObserverFailureSink
-	parentOptions  agent.Options
+	runtimeEngine    *plugin.Runtime
+	subagentHandle   plugin.Handle
+	turnRelayHandle  plugin.Handle
+	agents           *agent.RegistryService
+	sessions         session.LiveStore
+	toolRuntime      tools.ToolRuntime
+	backend          *integrationAdapter
+	lifecycle        *subagentLifecycleObserver
+	eventFailures    *integrationEventFailureSink
+	observerErrors   *integrationObserverFailureSink
+	boundDefinitions boundcontract.Definitions
+	parentOptions    agent.Options
 }
+
+type integrationBoundProbe struct {
+	plugin.Base
+	definitions boundcontract.Definitions
+}
+
+func (*integrationBoundProbe) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "subagent-integration-bound-probe",
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[boundcontract.Definitions](),
+		},
+	}
+}
+
+func (probe *integrationBoundProbe) Apply(context.Context) error {
+	definitions, err := plugin.Require[boundcontract.Definitions](probe)
+	if err != nil {
+		return err
+	}
+	probe.definitions = definitions
+	return nil
+}
+
+func (*integrationBoundProbe) Dispose(context.Context) error { return nil }
 
 type integrationSessionStoreProbe struct {
 	plugin.Base
@@ -275,7 +309,8 @@ func newIntegrationFixture(
 				Model:    "model",
 			},
 			backend: &integrationAdapter{
-				responses: responses,
+				responses:       responses,
+				requestsChanged: make(chan struct{}, 1),
 			},
 			plugins: configuredPlugins,
 			delegation: subagentdelegation.Settings{
@@ -361,6 +396,10 @@ func newIntegrationFixtureWithConfiguration(
 		),
 		JournalMode: subagentplugin.JournalWAL,
 	})
+	boundProbe := &integrationBoundProbe{}
+	turnRelayPlugin := turnrelay.New(turnrelay.Diagnostics{
+		WorkerError: observerErrors.report,
+	})
 	rootPlugins = append(
 		rootPlugins,
 		promptRuntime,
@@ -370,9 +409,12 @@ func newIntegrationFixtureWithConfiguration(
 	rootPlugins = append(
 		rootPlugins,
 		subagentPlugin,
-		turnrelay.New(turnrelay.Diagnostics{
-			WorkerError: observerErrors.report,
-		}),
+		boundProbe,
+	)
+	turnRelayPluginIndex := len(rootPlugins)
+	rootPlugins = append(
+		rootPlugins,
+		turnRelayPlugin,
 		spawnPlugin,
 		delegationTool,
 		loopPlugin,
@@ -409,16 +451,18 @@ func newIntegrationFixtureWithConfiguration(
 		})
 	}
 	return &integrationFixture{
-		runtimeEngine:  runtimeEngine,
-		subagentHandle: handles[subagentPluginIndex],
-		agents:         agentRegistry,
-		sessions:       storeProbe.store,
-		toolRuntime:    toolService,
-		backend:        configuration.backend,
-		lifecycle:      lifecycle,
-		eventFailures:  eventFailures,
-		observerErrors: observerErrors,
-		parentOptions:  configuration.agentOptions,
+		runtimeEngine:    runtimeEngine,
+		subagentHandle:   handles[subagentPluginIndex],
+		turnRelayHandle:  handles[turnRelayPluginIndex],
+		agents:           agentRegistry,
+		sessions:         storeProbe.store,
+		toolRuntime:      toolService,
+		backend:          configuration.backend,
+		lifecycle:        lifecycle,
+		eventFailures:    eventFailures,
+		observerErrors:   observerErrors,
+		boundDefinitions: boundProbe.definitions,
+		parentOptions:    configuration.agentOptions,
 	}
 }
 

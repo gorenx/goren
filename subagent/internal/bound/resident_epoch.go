@@ -38,8 +38,7 @@ func (resident *residentEpoch) Terminate(
 	ctx context.Context,
 	cause sharedexecution.StopCause,
 ) (subagent.Terminal, error) {
-	if cause != sharedexecution.StopNormal &&
-		cause != sharedexecution.StopExternal {
+	if cause != sharedexecution.StopNormal {
 		resident.handle.Subject.Cancel(
 			agent.ParentCancel{},
 			agent.CancelOptions{
