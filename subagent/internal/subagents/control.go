@@ -88,7 +88,7 @@ func (control *childExecutionControl) sendResident(
 				"subagent: Bound implementation is incomplete",
 			)
 		}
-		return control.bound.Send(
+		return control.bound.Followup(
 			ctx,
 			parentAgent,
 			entry.Subject.ID(),
@@ -121,7 +121,7 @@ func (control *childExecutionControl) sendCold(
 	if !boundChild {
 		return control.resumeCold(ctx, parentAgent, childID, messageValue)
 	}
-	return control.bound.Send(
+	return control.bound.Followup(
 		ctx,
 		parentAgent,
 		childID,

@@ -1,4 +1,4 @@
-package bound
+package turnrelay
 
 import (
 	"encoding/json"
@@ -8,17 +8,12 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
+	boundcontract "github.com/gorenx/goren/subagent/bound"
 )
 
-var interactionJSONCodec = sonic.Config{
-	UseUnicodeErrors:      true,
-	DisallowUnknownFields: true,
-	CopyString:            true,
-	ValidateString:        true,
-	CaseSensitive:         true,
-}.Froze()
+const turnSourceKind = "session-turn"
 
-type parentInteraction struct {
+type interaction struct {
 	turn        int64
 	fromSeq     int64
 	nextSeq     int64
@@ -27,16 +22,66 @@ type parentInteraction struct {
 	deliverable bool
 }
 
-func nextParentInteraction(
-	events []session.Event,
-	nextSeq int64,
-) (parentInteraction, bool, error) {
-	if nextSeq < 0 || nextSeq > int64(len(events)) {
-		return parentInteraction{}, false, errors.New(
-			"subagent: Bound cursor is outside the parent Session",
+// Turn identifies the committed Session turn represented by one Bound Input.
+type Turn struct {
+	Kind       string            `json:"kind"`
+	SessionID  session.SessionID `json:"sessionId"`
+	Turn       int64             `json:"turn"`
+	FromSeq    int64             `json:"fromSeq"`
+	ThroughSeq int64             `json:"throughSeq"`
+	Outcome    string            `json:"outcome"`
+}
+
+func (Turn) SourceKind() string {
+	return turnSourceKind
+}
+
+func (source Turn) CloneSource() (agentmessage.MessageSource, error) {
+	if source.SessionID == "" || source.Turn <= 0 || source.FromSeq < 0 ||
+		source.ThroughSeq < source.FromSeq || !validOutcome(source.Outcome) {
+		return nil, errors.New(
+			"subagent/bound/turnrelay: invalid Session Turn",
 		)
 	}
-	current := parentInteraction{
+	source.Kind = turnSourceKind
+	return source, nil
+}
+
+func (current interaction) input(
+	parentID session.SessionID,
+) (boundcontract.Input, error) {
+	origin, err := (Turn{
+		SessionID:  parentID,
+		Turn:       current.turn,
+		FromSeq:    current.fromSeq,
+		ThroughSeq: current.nextSeq - 1,
+		Outcome:    current.outcome,
+	}).CloneSource()
+	if err != nil {
+		return boundcontract.Input{}, err
+	}
+	return boundcontract.Input{
+		ID: boundcontract.InputID(fmt.Sprintf(
+			"session:%s:seq:%d-%d",
+			parentID,
+			current.fromSeq,
+			current.nextSeq-1,
+		)),
+		Content: current.content,
+		Source:  origin,
+	}, nil
+}
+
+func nextInteraction(
+	events []session.Event,
+	nextSeq int64,
+) (interaction, bool, error) {
+	if nextSeq < 0 || nextSeq > int64(len(events)) {
+		return interaction{}, false, errors.New(
+			"subagent/bound/turnrelay: cursor is outside the Session",
+		)
+	}
+	current := interaction{
 		fromSeq: nextSeq,
 	}
 	var directUserMessages []agentmessage.UserMessage
@@ -45,16 +90,16 @@ func nextParentInteraction(
 		switch committed.Type {
 		case session.TurnStartEventName:
 			var started session.TurnStart
-			if err := decodeInteractionJSON(committed.Data, &started); err != nil ||
+			if err := turnCodec.Unmarshal(committed.Data, &started); err != nil ||
 				started.Turn <= 0 {
-				return parentInteraction{}, false, fmt.Errorf(
-					"subagent: invalid parent turn/start at seq %d",
+				return interaction{}, false, fmt.Errorf(
+					"subagent/bound/turnrelay: invalid turn/start at seq %d",
 					committed.Seq,
 				)
 			}
 			if current.turn != 0 {
-				return parentInteraction{}, false, errors.New(
-					"subagent: parent Session opened a turn before closing the previous turn",
+				return interaction{}, false, errors.New(
+					"subagent/bound/turnrelay: Session opened a turn before closing the previous turn",
 				)
 			}
 			current.turn = started.Turn
@@ -66,8 +111,8 @@ func nextParentInteraction(
 			}
 			messageValue, err := session.DeriveEventMessage(committed)
 			if err != nil {
-				return parentInteraction{}, false, fmt.Errorf(
-					"subagent: decode parent user/message at seq %d: %w",
+				return interaction{}, false, fmt.Errorf(
+					"subagent/bound/turnrelay: decode user/message at seq %d: %w",
 					committed.Seq,
 					err,
 				)
@@ -85,14 +130,14 @@ func nextParentInteraction(
 			if current.turn == 0 {
 				continue
 			}
-			turn, messageValue, err := decodeAssistantMessage(committed)
+			turnNumber, messageValue, err := decodeAssistantMessage(committed)
 			if err != nil {
-				return parentInteraction{}, false, err
+				return interaction{}, false, err
 			}
-			if turn != current.turn {
-				return parentInteraction{}, false, fmt.Errorf(
-					"subagent: parent assistant/message turn %d is inside active turn %d",
-					turn,
+			if turnNumber != current.turn {
+				return interaction{}, false, fmt.Errorf(
+					"subagent/bound/turnrelay: assistant/message turn %d is inside active turn %d",
+					turnNumber,
 					current.turn,
 				)
 			}
@@ -101,15 +146,15 @@ func nextParentInteraction(
 			}
 		case session.TurnEndEventName:
 			var ended session.TurnEnd
-			if err := decodeInteractionJSON(committed.Data, &ended); err != nil {
-				return parentInteraction{}, false, fmt.Errorf(
-					"subagent: invalid parent turn/end at seq %d: %w",
+			if err := turnCodec.Unmarshal(committed.Data, &ended); err != nil {
+				return interaction{}, false, fmt.Errorf(
+					"subagent/bound/turnrelay: invalid turn/end at seq %d: %w",
 					committed.Seq,
 					err,
 				)
 			}
 			if current.turn == 0 {
-				return parentInteraction{
+				return interaction{
 					turn:        ended.Turn,
 					fromSeq:     nextSeq,
 					nextSeq:     committed.Seq + 1,
@@ -118,8 +163,8 @@ func nextParentInteraction(
 				}, true, nil
 			}
 			if ended.Turn != current.turn {
-				return parentInteraction{}, false, fmt.Errorf(
-					"subagent: parent turn/end %d closes active turn %d",
+				return interaction{}, false, fmt.Errorf(
+					"subagent/bound/turnrelay: turn/end %d closes active turn %d",
 					ended.Turn,
 					current.turn,
 				)
@@ -129,21 +174,18 @@ func nextParentInteraction(
 			if len(directUserMessages) == 0 {
 				return current, true, nil
 			}
-			content, err := interactionContent(
+			content := interactionContent(
 				current.turn,
 				current.outcome,
 				directUserMessages,
 				assistantMessages,
 			)
-			if err != nil {
-				return parentInteraction{}, false, err
-			}
 			current.content = content
 			current.deliverable = true
 			return current, true, nil
 		}
 	}
-	return parentInteraction{}, false, nil
+	return interaction{}, false, nil
 }
 
 func decodeAssistantMessage(
@@ -155,23 +197,23 @@ func decodeAssistantMessage(
 		Message json.RawMessage `json:"message"`
 		Usage   json.RawMessage `json:"usage,omitempty"`
 	}
-	if err := decodeInteractionJSON(committed.Data, &wireValue); err != nil {
+	if err := turnCodec.Unmarshal(committed.Data, &wireValue); err != nil {
 		return 0, nil, fmt.Errorf(
-			"subagent: decode parent assistant/message at seq %d: %w",
+			"subagent/bound/turnrelay: decode assistant/message at seq %d: %w",
 			committed.Seq,
 			err,
 		)
 	}
 	if wireValue.Turn <= 0 || wireValue.Step <= 0 {
 		return 0, nil, fmt.Errorf(
-			"subagent: parent assistant/message at seq %d has an invalid position",
+			"subagent/bound/turnrelay: assistant/message at seq %d has an invalid position",
 			committed.Seq,
 		)
 	}
 	messageValue, err := agentmessage.DecodeMessage(wireValue.Message)
 	if err != nil {
 		return 0, nil, fmt.Errorf(
-			"subagent: decode parent assistant/message at seq %d: %w",
+			"subagent/bound/turnrelay: decode assistant/message at seq %d: %w",
 			committed.Seq,
 			err,
 		)
@@ -179,7 +221,7 @@ func decodeAssistantMessage(
 	typedMessage, matches := messageValue.(agentmessage.AssistantMessage)
 	if !matches {
 		return 0, nil, fmt.Errorf(
-			"subagent: parent assistant/message at seq %d has the wrong role",
+			"subagent/bound/turnrelay: assistant/message at seq %d has the wrong role",
 			committed.Seq,
 		)
 	}
@@ -190,15 +232,15 @@ func decodeAssistantMessage(
 }
 
 func interactionContent(
-	turn int64,
+	turnNumber int64,
 	outcome string,
 	users []agentmessage.UserMessage,
 	assistants []agentmessage.AssistantMessage,
-) ([]agentmessage.ContentBlock, error) {
+) []agentmessage.ContentBlock {
 	content := []agentmessage.ContentBlock{
 		agentmessage.NewTextBlock(fmt.Sprintf(
 			"Parent interaction from turn %d (outcome: %s).",
-			turn,
+			turnNumber,
 			outcome,
 		)),
 	}
@@ -208,7 +250,7 @@ func interactionContent(
 	}
 	visibleAssistantBlocks := 0
 	for _, messageValue := range assistants {
-		filtered := visibleParentContent(messageValue.ContentValue())
+		filtered := visibleContent(messageValue.ContentValue())
 		if len(filtered) == 0 {
 			continue
 		}
@@ -219,22 +261,21 @@ func interactionContent(
 	if visibleAssistantBlocks == 0 {
 		content = append(
 			content,
-			agentmessage.NewTextBlock("Parent produced no visible assistant message."),
+			agentmessage.NewTextBlock("Parent produced no visible reply."),
 		)
 	}
-	return agentmessage.CloneContentBlocks(content)
+	return content
 }
 
-func visibleParentContent(
+func visibleContent(
 	content []agentmessage.ContentBlock,
 ) []agentmessage.ContentBlock {
 	filtered := make([]agentmessage.ContentBlock, 0, len(content))
 	for _, block := range content {
-		if block == nil {
-			continue
-		}
-		switch block.ContentType() {
-		case "reasoning", "tool-call", "tool-result":
+		switch block.(type) {
+		case agentmessage.ReasoningBlock,
+			agentmessage.ToolCallBlock,
+			agentmessage.ToolResultBlock:
 			continue
 		default:
 			filtered = append(filtered, block)
@@ -243,6 +284,21 @@ func visibleParentContent(
 	return filtered
 }
 
-func decodeInteractionJSON(rawValue []byte, target any) error {
-	return interactionJSONCodec.Unmarshal(rawValue, target)
+func validOutcome(outcome string) bool {
+	switch outcome {
+	case "completed", "blocked", "max-tokens", "interrupted", "aborted", "error":
+		return true
+	default:
+		return false
+	}
 }
+
+var turnCodec = sonic.Config{
+	UseUnicodeErrors:      true,
+	DisallowUnknownFields: true,
+	CopyString:            true,
+	ValidateString:        true,
+	CaseSensitive:         true,
+}.Froze()
+
+var _ agentmessage.MessageSource = Turn{}

@@ -60,13 +60,17 @@ type bound interface {
 		agent.Agent,
 		session.SessionID,
 	) (bool, error)
-	Send(
+	Followup(
 		context.Context,
 		agent.Agent,
 		session.SessionID,
 		agentmessage.UserMessage,
 	) (agentmessage.MessageID, error)
-	SessionEventAppended(session.EventAppended)
+	Deliver(
+		context.Context,
+		boundcontract.Address,
+		boundcontract.Input,
+	) (boundcontract.Receipt, error)
 	AgentDisposed(context.Context, agent.Agent) error
 }
 

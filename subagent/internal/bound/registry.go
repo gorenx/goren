@@ -95,19 +95,6 @@ func (children *registry) acquire(
 	return next, nil
 }
 
-func (children *registry) notifyParent(parentID session.SessionID) {
-	children.mutex.Lock()
-	parentChildren := children.entries[parentID]
-	targets := make([]*boundChild, 0, len(parentChildren))
-	for _, child := range parentChildren {
-		targets = append(targets, child)
-	}
-	children.mutex.Unlock()
-	for _, child := range targets {
-		child.notify()
-	}
-}
-
 func (children *registry) interrupt(
 	requestContext context.Context,
 	childID session.SessionID,
@@ -192,20 +179,6 @@ func (children *registry) close(
 		closeErr = errors.Join(closeErr, err)
 	}
 	return closeErr
-}
-
-func (children *registry) find(
-	parentID session.SessionID,
-	childID session.SessionID,
-) *boundChild {
-	children.mutex.Lock()
-	defer children.mutex.Unlock()
-	for _, child := range children.entries[parentID] {
-		if child.key.childID == childID {
-			return child
-		}
-	}
-	return nil
 }
 
 func disposeBoundChildren(

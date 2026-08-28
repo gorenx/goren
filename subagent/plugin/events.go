@@ -5,7 +5,6 @@ import (
 
 	"github.com/gorenx/goren/agent"
 	pluginruntime "github.com/gorenx/goren/plugin"
-	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
 	"github.com/gorenx/goren/subagent/internal/seedbuilder"
@@ -74,9 +73,6 @@ func (owner *Plugin) ObserveEvent(
 		)
 	case agent.SessionStarted:
 		owner.service.AgentSessionStarted(observed.Subject)
-		return nil
-	case session.EventAppended:
-		owner.service.SessionEventAppended(observed)
 		return nil
 	default:
 		return nil

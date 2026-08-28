@@ -2,7 +2,6 @@ package bound
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"reflect"
 	"sync"
@@ -411,7 +410,6 @@ type boundRuntimeFailures struct {
 	mutex            sync.Mutex
 	materializations []MaterializationFailure
 	flushes          []FinalFlushFailure
-	interactions     []InteractionFailure
 	reconciliations  []ReconcileFailure
 }
 
@@ -431,14 +429,6 @@ func (reporter *boundRuntimeFailures) ReportBoundFinalFlushFailure(
 	reporter.mutex.Unlock()
 }
 
-func (reporter *boundRuntimeFailures) ReportBoundInteractionFailure(
-	failure InteractionFailure,
-) {
-	reporter.mutex.Lock()
-	reporter.interactions = append(reporter.interactions, failure)
-	reporter.mutex.Unlock()
-}
-
 func (reporter *boundRuntimeFailures) ReportBoundReconcileFailure(
 	failure ReconcileFailure,
 ) {
@@ -450,6 +440,19 @@ func (reporter *boundRuntimeFailures) ReportBoundReconcileFailure(
 type boundRuntimeExtensions struct {
 	mutex        sync.Mutex
 	provisionErr error
+}
+
+func runtimeInput(identifier string, text string) boundcontract.Input {
+	return boundcontract.Input{
+		ID: boundcontract.InputID(identifier),
+		Content: []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock(text),
+		},
+		Source: agentmessage.PluginMessageSource{
+			Plugin: "test-bound-input",
+			Form:   agentmessage.ContextRelay,
+		},
+	}
 }
 
 func (selection *boundRuntimeExtensions) Provision(
@@ -863,7 +866,7 @@ func TestBindingFreezesCompletedPrefixAndCreatesIdleChild(
 	)
 }
 
-func TestDefinitionReplacementReusesSessionAndPreservesDisabledBacklog(
+func TestDefinitionReplacementReusesSessionAndRejectsDisabledInput(
 	testingContext *testing.T,
 ) {
 	fixture := newBoundRuntimeFixture(
@@ -894,31 +897,24 @@ func TestDefinitionReplacementReusesSessionAndPreservesDisabledBacklog(
 		_, resident := fixture.agents.Get(bindingValue.ChildSessionID)
 		return !resident
 	})
-	parentSession := fixture.parent.Subject.SessionValue()
-	appendTurnStart(testingContext, parentSession, 1)
-	appendInteractionUser(
-		testingContext,
-		parentSession,
-		agentmessage.UserMessageSource{},
-		"queued while disabled",
+	addressValue := boundcontract.Address{
+		SessionID: fixture.parent.Subject.ID(),
+		Name:      "researcher",
+	}
+	inputValue := runtimeInput("disabled-input", "queued while disabled")
+	_, deliveryErr := fixture.owner.Deliver(
+		context.Background(),
+		addressValue,
+		inputValue,
 	)
-	appendTurnEnd(testingContext, parentSession, 1, session.TurnCompleted{})
-	worker := fixture.owner.workers.find(
-		fixture.parent.Subject.ID(),
-		bindingValue.ChildSessionID,
-	)
+	var disabled *subagent.Error
+	if !errors.As(deliveryErr, &disabled) ||
+		disabled.Code != subagent.ErrorBoundDisabled {
+		testingContext.Fatalf("disabled Deliver error = %v", deliveryErr)
+	}
+	worker := runtimeWorker(fixture, bindingValue.ChildSessionID)
 	if worker == nil {
 		testingContext.Fatal("disabled Binding lost its worker")
-	}
-	if err := worker.catchUp(context.Background()); err != nil {
-		testingContext.Fatal(err)
-	}
-	if latestBoundCursor(
-		parentSession,
-		"researcher",
-		bindingValue.ChildSessionID,
-	) != nil {
-		testingContext.Fatal("disabled Bound advanced its interaction cursor")
 	}
 	if _, err := fixture.owner.Replace(
 		context.Background(),
@@ -934,13 +930,18 @@ func TestDefinitionReplacementReusesSessionAndPreservesDisabledBacklog(
 		testingContext.Fatal(err)
 	}
 	waitForRuntimeMaterialization(testingContext, fixture, "researcher", 3)
-	waitForBoundCondition(testingContext, func() bool {
-		return latestBoundCursor(
-			parentSession,
-			"researcher",
-			bindingValue.ChildSessionID,
-		) != nil
-	})
+	receiptValue, err := fixture.owner.Deliver(
+		context.Background(),
+		addressValue,
+		inputValue,
+	)
+	if err != nil || receiptValue.InputID != inputValue.ID {
+		testingContext.Fatalf(
+			"re-enabled Deliver = %#v, error = %v",
+			receiptValue,
+			err,
+		)
+	}
 	secondAgent, found := fixture.agents.Get(bindingValue.ChildSessionID)
 	if !found || agent.Same(firstAgent, secondAgent) {
 		testingContext.Fatal("Definition replacement did not publish a new epoch")
@@ -968,7 +969,7 @@ func TestDefinitionReplacementReusesSessionAndPreservesDisabledBacklog(
 	)
 }
 
-func TestParentInteractionDeliveryIsIdempotentAndRepairsCursorFromReceipt(
+func TestInboxDeliveryIsIdempotentByInputIdentity(
 	testingContext *testing.T,
 ) {
 	fixture := newBoundRuntimeFixture(
@@ -978,48 +979,41 @@ func TestParentInteractionDeliveryIsIdempotentAndRepairsCursorFromReceipt(
 	fixture.owner.SessionStarted(fixture.parent.Subject)
 	bindingValue := waitForRuntimeBinding(testingContext, fixture, "researcher")
 	waitForRuntimeMaterialization(testingContext, fixture, "researcher", 1)
-	parentSession := fixture.parent.Subject.SessionValue()
-	parentAgent := fixture.parent.Subject.(*boundRuntimeAgent)
-	parentAgent.mutex.Lock()
-	maintenanceAttempts := parentAgent.maintenanceAttempts
-	parentAgent.mutex.Unlock()
-	appendTurnStart(testingContext, parentSession, 1)
-	appendInteractionUser(
-		testingContext,
-		parentSession,
-		agentmessage.UserMessageSource{},
-		"investigate this",
+	inputValue := runtimeInput("stable-input", "investigate this")
+	addressValue := boundcontract.Address{
+		SessionID: fixture.parent.Subject.ID(),
+		Name:      "researcher",
+	}
+	firstReceipt, err := fixture.owner.Deliver(
+		context.Background(),
+		addressValue,
+		inputValue,
 	)
-	appendInteractionAssistant(
-		testingContext,
-		parentSession,
-		1,
-		1,
-		[]agentmessage.ContentBlock{
-			agentmessage.NewTextBlock("parent response"),
-		},
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	secondReceipt, err := fixture.owner.Deliver(
+		context.Background(),
+		addressValue,
+		inputValue,
 	)
-	appendTurnEnd(testingContext, parentSession, 1, session.TurnCompleted{})
-	ended := parentSession.Events()[parentSession.Seq()-1]
-	fixture.owner.SessionEventAppended(session.EventAppended{
-		Conversation: parentSession,
-		Committed:    ended,
-	})
-	waitForBoundCondition(testingContext, func() bool {
-		return latestBoundCursor(
-			parentSession,
-			"researcher",
-			bindingValue.ChildSessionID,
-		) != nil
-	})
-	parentAgent.mutex.Lock()
-	maintenanceAttemptsAfterDelivery := parentAgent.maintenanceAttempts
-	parentAgent.mutex.Unlock()
-	if maintenanceAttemptsAfterDelivery != maintenanceAttempts {
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	if firstReceipt != secondReceipt {
 		testingContext.Fatalf(
-			"turn/end started %d unnecessary parent maintenance attempts",
-			maintenanceAttemptsAfterDelivery-maintenanceAttempts,
+			"duplicate Input receipts = %#v and %#v",
+			firstReceipt,
+			secondReceipt,
 		)
+	}
+	conflicting := runtimeInput("stable-input", "different content")
+	if _, err = fixture.owner.Deliver(
+		context.Background(),
+		addressValue,
+		conflicting,
+	); err == nil {
+		testingContext.Fatal("reused Input ID with different content succeeded")
 	}
 	childAgent := fixture.agentFactory.latestAgents[bindingValue.ChildSessionID]
 	if followupCount(childAgent) != 1 {
@@ -1027,88 +1021,6 @@ func TestParentInteractionDeliveryIsIdempotentAndRepairsCursorFromReceipt(
 			"child followups = %d, want one interaction",
 			followupCount(childAgent),
 		)
-	}
-	worker := fixture.owner.workers.find(
-		fixture.parent.Subject.ID(),
-		bindingValue.ChildSessionID,
-	)
-	if worker == nil {
-		testingContext.Fatal("Bound worker is missing")
-	}
-	if err := worker.catchUp(context.Background()); err != nil {
-		testingContext.Fatal(err)
-	}
-	if followupCount(childAgent) != 1 {
-		testingContext.Fatal("cursor catch-up duplicated delivered interaction")
-	}
-	appendTurnStart(testingContext, parentSession, 2)
-	appendInteractionUser(
-		testingContext,
-		parentSession,
-		agentmessage.UserMessageSource{},
-		"repair this",
-	)
-	appendTurnEnd(testingContext, parentSession, 2, session.TurnBlocked{})
-	nextSeq, err := boundCursor(
-		parentSession.Events(),
-		"researcher",
-		bindingValue.ChildSessionID,
-		bindingValue.Seq+1,
-	)
-	if err != nil {
-		testingContext.Fatal(err)
-	}
-	interaction, found, err := nextParentInteraction(
-		parentSession.Events(),
-		nextSeq,
-	)
-	if err != nil || !found || !interaction.deliverable {
-		testingContext.Fatalf(
-			"repair interaction = %#v, found = %v, error = %v",
-			interaction,
-			found,
-			err,
-		)
-	}
-	source := subagent.Delivery{
-		ParentSessionID: fixture.parent.Subject.ID(),
-		Turn:            interaction.turn,
-		FromSeq:         interaction.fromSeq,
-		ThroughSeq:      interaction.nextSeq - 1,
-		Outcome:         interaction.outcome,
-	}
-	messageValue, err := agentmessage.NewUserMessage(
-		agentmessage.UserMessageInput{
-			Content: interaction.content,
-			Source:  source,
-		},
-	)
-	if err != nil {
-		testingContext.Fatal(err)
-	}
-	if err = childAgent.Followup(messageValue); err != nil {
-		testingContext.Fatal(err)
-	}
-	if err = fixture.owner.dependencies.Sessions.Flush(
-		context.Background(),
-		childAgent.SessionValue(),
-	); err != nil {
-		testingContext.Fatal(err)
-	}
-	if err = worker.catchUp(context.Background()); err != nil {
-		testingContext.Fatal(err)
-	}
-	if followupCount(childAgent) != 2 {
-		testingContext.Fatal("receipt recovery redelivered the parent interaction")
-	}
-	cursor := latestBoundCursor(
-		parentSession,
-		"researcher",
-		bindingValue.ChildSessionID,
-	)
-	if cursor == nil || cursor.ThroughTurn != 2 ||
-		cursor.Disposition != boundcontract.CursorDelivered {
-		testingContext.Fatalf("repaired Cursor = %#v", cursor)
 	}
 }
 
@@ -1175,10 +1087,7 @@ func TestBoundExecutionSettlesWhenParentCloses(
 	fixture.owner.SessionStarted(fixture.parent.Subject)
 	bindingValue := waitForRuntimeBinding(testingContext, fixture, "researcher")
 	waitForRuntimeMaterialization(testingContext, fixture, "researcher", 1)
-	worker := fixture.owner.workers.find(
-		fixture.parent.Subject.ID(),
-		bindingValue.ChildSessionID,
-	)
+	worker := runtimeWorker(fixture, bindingValue.ChildSessionID)
 	if worker == nil || worker.current == nil {
 		testingContext.Fatal("Bound execution is missing")
 	}
@@ -1234,6 +1143,21 @@ func runtimeBoundView(
 		fixture.projections,
 		fixture.parent.Subject,
 	)
+}
+
+func runtimeWorker(
+	fixture boundRuntimeFixture,
+	childID session.SessionID,
+) *boundChild {
+	fixture.owner.workers.mutex.Lock()
+	defer fixture.owner.workers.mutex.Unlock()
+	parentID := fixture.parent.Subject.ID()
+	for _, current := range fixture.owner.workers.entries[parentID] {
+		if current.key.childID == childID {
+			return current
+		}
+	}
+	return nil
 }
 
 func runtimeBoundViewForAgent(
@@ -1332,26 +1256,87 @@ func followupCount(subject *boundRuntimeAgent) int {
 	return subject.followups
 }
 
-func latestBoundCursor(
+func appendTurnStart(
+	testingContext *testing.T,
 	conversation session.Context,
-	definitionName string,
-	childID session.SessionID,
-) *boundcontract.Cursor {
-	var latest *boundcontract.Cursor
-	for _, committed := range conversation.Events() {
-		if committed.Type != boundcontract.CursorEventName {
-			continue
-		}
-		var cursor boundcontract.Cursor
-		if json.Unmarshal(committed.Data, &cursor) != nil ||
-			cursor.Name != definitionName ||
-			cursor.ChildSessionID != childID {
-			continue
-		}
-		detached := cursor
-		latest = &detached
+	turnNumber int64,
+) {
+	testingContext.Helper()
+	draft, err := session.NewEventDraft(
+		session.TurnStarted,
+		session.TurnStart{
+			Turn: turnNumber,
+		},
+	)
+	if err != nil {
+		testingContext.Fatal(err)
 	}
-	return latest
+	commitRuntimeDraft(testingContext, conversation, draft)
+}
+
+func appendInteractionUser(
+	testingContext *testing.T,
+	conversation session.Context,
+	origin agentmessage.MessageSource,
+	text string,
+) {
+	testingContext.Helper()
+	messageValue, err := agentmessage.NewUserMessage(
+		agentmessage.UserMessageInput{
+			Content: []agentmessage.ContentBlock{
+				agentmessage.NewTextBlock(text),
+			},
+			Source: origin,
+		},
+	)
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	draft, err := session.NewSurfaceEventDraft(
+		session.UserMessageAdded,
+		messageValue,
+		session.SurfaceIntent{
+			Operation: session.SurfaceAppend(),
+		},
+	)
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	commitRuntimeDraft(testingContext, conversation, draft)
+}
+
+func appendTurnEnd(
+	testingContext *testing.T,
+	conversation session.Context,
+	turnNumber int64,
+	reason session.TurnEndReason,
+) {
+	testingContext.Helper()
+	draft, err := session.NewEventDraft(
+		session.TurnEnded,
+		session.TurnEnd{
+			Turn:   turnNumber,
+			Reason: reason,
+		},
+	)
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	commitRuntimeDraft(testingContext, conversation, draft)
+}
+
+func commitRuntimeDraft(
+	testingContext *testing.T,
+	conversation session.Context,
+	draft session.EventDraft,
+) {
+	testingContext.Helper()
+	if _, err := conversation.Commit(
+		context.Background(),
+		session.Batch(draft),
+	); err != nil {
+		testingContext.Fatal(err)
+	}
 }
 
 func waitForBoundCondition(

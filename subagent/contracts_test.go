@@ -205,6 +205,7 @@ func TestRuntimeProvidesOnlyPublicBusinessCapabilities(t *testing.T) {
 		plugin.ServiceOf[subagent.ExtensionRegistry](),
 		plugin.ServiceOf[subagent.ChildDirectory](),
 		plugin.ServiceOf[boundcontract.Definitions](),
+		plugin.ServiceOf[boundcontract.Inbox](),
 	}
 	for _, wantedType := range wantedTypes {
 		if !providedNames[wantedType.Name()] {

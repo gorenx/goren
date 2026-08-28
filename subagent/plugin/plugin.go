@@ -100,6 +100,7 @@ func (owner *Plugin) Manifest() pluginruntime.Manifest {
 			pluginruntime.NewProvidedService[subagent.ExtensionDirectory](owner.extensions),
 			pluginruntime.NewProvidedService[subagent.ChildDirectory](owner.directory),
 			pluginruntime.NewProvidedService[boundcontract.Definitions](owner.service),
+			pluginruntime.NewProvidedService[boundcontract.Inbox](owner.service),
 		},
 		Requires: []pluginruntime.ServiceType{
 			pluginruntime.ServiceOf[agent.Registry](),
@@ -116,7 +117,6 @@ func (owner *Plugin) Manifest() pluginruntime.Manifest {
 		Events: []pluginruntime.EventSubscription{
 			pluginruntime.EventOf[agent.Disposed](),
 			pluginruntime.EventOf[agent.SessionStarted](),
-			pluginruntime.EventOf[session.EventAppended](),
 		},
 	}
 }

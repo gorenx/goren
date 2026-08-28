@@ -158,6 +158,23 @@ func (owner *Service) Send(
 	)
 }
 
+// Deliver delegates source-owned input admission to the Bound owner.
+func (owner *Service) Deliver(
+	ctx context.Context,
+	addressValue boundcontract.Address,
+	inputValue boundcontract.Input,
+) (boundcontract.Receipt, error) {
+	if beginErr := owner.beginCall(); beginErr != nil {
+		return boundcontract.Receipt{}, beginErr
+	}
+	defer owner.activeCalls.Done()
+	selected, err := owner.boundImplementation()
+	if err != nil {
+		return boundcontract.Receipt{}, err
+	}
+	return selected.Deliver(ctx, addressValue, inputValue)
+}
+
 // List returns the committed global Bound Definition index.
 func (owner *Service) List(
 	ctx context.Context,
@@ -219,23 +236,6 @@ func (owner *Service) AgentSessionStarted(
 		return
 	}
 	selected.SessionStarted(subject)
-}
-
-// SessionEventAppended forwards the existing post-commit wakeup to Bound
-// without performing Session reads in the Plugin observer call stack.
-func (owner *Service) SessionEventAppended(fact session.EventAppended) {
-	owner.mutex.RLock()
-	if owner.state != admissionAccepting {
-		owner.mutex.RUnlock()
-		return
-	}
-	owner.activeCalls.Add(1)
-	control := owner.control
-	owner.mutex.RUnlock()
-	defer owner.activeCalls.Done()
-	if control != nil && control.bound != nil {
-		control.bound.SessionEventAppended(fact)
-	}
 }
 
 // Interrupt performs common live-execution lookup and ancestor authorization,
@@ -401,3 +401,4 @@ func validateImplementation(candidate implementation) error {
 var _ subagent.Starter = (*Service)(nil)
 var _ subagent.ChildControl = (*Service)(nil)
 var _ boundcontract.Definitions = (*Service)(nil)
+var _ boundcontract.Inbox = (*Service)(nil)

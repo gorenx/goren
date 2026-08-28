@@ -38,6 +38,7 @@ import (
 	"github.com/gorenx/goren/session/query"
 	"github.com/gorenx/goren/session/title"
 	"github.com/gorenx/goren/subagent"
+	"github.com/gorenx/goren/subagent/bound/turnrelay"
 	"github.com/gorenx/goren/subagent/fork"
 	"github.com/gorenx/goren/subagent/spawn"
 	"github.com/gorenx/goren/subagent/tools/control"
@@ -307,6 +308,7 @@ func TestCatalogContainsOnlyCurrentServerSlice(t *testing.T) {
 		query.PluginName,
 		title.PluginName,
 		systemprompt.PluginName,
+		turnrelay.PluginName,
 		subagent.PluginName,
 		spawn.PluginName,
 		fork.PluginName,
