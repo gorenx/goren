@@ -45,4 +45,4 @@ flowchart TD
 - contained async failure：`Diagnostics` 只适配错误类型与上下文，不重新决定领域策略；
 - Shutdown：CLI 直接调用 Runtime，assembly 不维护第二套 Handle 列表。
 
-默认 SQLite adapter 由 Session Persistence 和 Workspace Factory 以 opener 形式放入各自 Plugin，数据库在 Apply 中打开。SQLite 没有独立 Factory、Manifest 或 Service。
+默认SQLite adapter由Session Persistence、Workspace与Subagent Factory以配置形式放入各自Plugin，数据库在Apply中打开。Bound Definitions使用Session数据库同目录下独立的`bound-definitions.sqlite`，不与Session facts共表。SQLite没有独立Factory、Manifest或Service。

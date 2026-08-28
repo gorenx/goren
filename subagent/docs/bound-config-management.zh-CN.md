@@ -1,6 +1,6 @@
 # Bound Definition 管理详细设计
 
-> 状态：目标设计已确认，代码迁移中。Definition 替代旧的 per-parent Bound config。
+> 状态：Accepted / Implemented。Definition 已替代旧的 per-parent Bound config。
 
 ## 1. 边界
 
@@ -20,14 +20,14 @@ Definition 是全局、版本化的 Bound 配置。它由 Bound Definition Servi
 
 ## 2. Definition 语义
 
-Definition boundary data包含名称、revision、enabled、完整system prompt、可选Agent options/最大深度、Tool restriction和有序Extensions。输入在进入Store前完成：
+Definition boundary data包含名称、revision、enabled、完整system prompt、可选Agent options/最大深度、Tool restriction和有序Extensions。输入在进入Store前完成不依赖live provider的结构校验：
 
 - 名称规范化和非空校验；
 - system prompt非空校验；
 - Agent options与最大深度校验；
 - Tool restriction深复制与Tools现有规则校验；
 - Extension名称非空、无重复且按输入顺序保留；
-- selected Extension在应用前可解析。
+- selected Extension只在应用到某个exact child epoch前解析；解析失败隔离到该Binding，不回滚Definition。
 
 返回值和索引必须防御性复制slice、map与指针字段。Definition是完整snapshot，不是patch。
 
@@ -104,7 +104,7 @@ sequenceDiagram
     D-->>C: committed Definition
 ```
 
-顺序不能反转：Store失败不得污染索引；某个live Session reconcile失败也不得回滚已经提交的全局Definition。scheduler合并同一parent的重复请求，并保留pending直到maintenance和所有Binding最终对齐。
+顺序不能反转：Store失败不得污染索引；某个live Session reconcile失败也不得回滚已经提交的全局Definition。scheduler合并同一parent的重复请求，并保留pending直到Session FIFO提交和所有Binding最终对齐。
 
 ## 8. Disable 与 replacement
 
@@ -114,6 +114,6 @@ sequenceDiagram
 
 ## 9. 迁移
 
-删除旧的`BoundConfigInput`、`BoundConfigSnapshot`、`UpdateBoundConfigCommand`、parent `subagent/bound-config`和只引用parent seq的`BoundConfigAppliedData`。新事件提升版本并拒绝旧数据；不增加兼容wrapper、双写或silent fallback。
+旧的`BoundConfigInput`、`BoundConfigSnapshot`、`UpdateBoundConfigCommand`、parent `subagent/bound-config`和只引用parent seq的`BoundConfigAppliedData`已经删除。新事件使用version 2并拒绝旧数据；没有兼容wrapper、双写或silent fallback。
 
 实现状态和测试证据只记录在[08 实施进度](../../zh-CN/08-implementation-progress.md)。

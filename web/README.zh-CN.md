@@ -10,6 +10,7 @@
 - 创建、选择 Session，提交纯文本 prompt，并通过 `session.cancel` 终止当前 Agent Turn；
 - 展示 `question/requested`，通过 `/api/respond` 回答或取消后继续当前 Agent Turn；
 - 读取 value-free credential metadata，并通过 write-only Host API 设置、替换或删除 DeepSeek API Key；
+- 列出、创建和按expected revision完整替换全局Bound Definition；
 - 提供中文与英文界面资源，按浏览器语言初始化，并持久化用户手动选择；
 - 封装 Host unary RPC envelope 和 Mux/Host 两条 WebSocket downlink；
 - 在连接断开时重连，并从 Host baseline 重建浏览器状态。
@@ -23,7 +24,7 @@
 浏览器端有两个状态对象：
 
 - `HarnessAPI` 负责 RPC、保留 server-request `rpcId`、`/api/respond`、WebSocket generation、重连和关闭；
-- `ConversationStore` 负责 Session list、selected Session、history、stream draft、pending Question、value-free credential metadata 与可观察状态；React 组件只投影视图并转发用户意图。
+- `ConversationStore` 负责 Session list、selected Session、history、stream draft、pending Question、value-free credential metadata、Bound Definition roster与可观察状态；React组件只投影视图并转发用户意图。
 
 界面文案集中在 `src/i18n.tsx` 的类型化资源表中。首次访问时优先读取 `goren.locale`，没有已保存选择时再按浏览器语言选择 `zh-CN` 或 `en`；切换后立即更新 `<html lang>`、界面文案和本地偏好。Session facts、模型输出、结构化 Question 内容和 Host 原始业务错误保持原文，不做浏览器侧机器翻译。`localStorage` 只保存语言标识，不保存 Session、credential 或 Agent 数据。
 
@@ -33,10 +34,12 @@ flowchart LR
     LiveStore --> Client[HarnessAPI]
     Client -->|POST /api/session.*| Host[Connection Host]
     Client -->|POST /api/credentials.*| Host
+    Client -->|POST /api/bound.*| Host
     Client -->|POST /api/respond| Host
     Client -->|events.mux / events.host| Host
     Host --> Proxy[API Proxy]
     Proxy --> Credentials[Credentials Provider]
+    Proxy --> Definitions[Bound Definitions]
     Proxy --> Session[Session Gateway]
     Session --> Agent[Agent Loop]
     Agent --> LLM[LLM / DeepSeek]
@@ -95,6 +98,12 @@ sequenceDiagram
 ```
 
 凭据业务与 local LiveStore 由[22 Credentials 与 API Key 管理](../zh-CN/22-credentials-and-api-key-management.md)拥有；Web 不读取文件，也不调用 Credentials Go 包。
+
+## Bound Definition 管理
+
+页面启动时并行调用`bound.list`与credential baseline。侧栏的Bound入口打开一个简洁编辑器：名称在创建后只读；replace必须携带当前`revision`；system prompt是完整模型身份；Agent options、最大深度、allow/deny Tool restriction和有序Extensions均以完整snapshot提交。成功后Store重新读取`bound.list`，不在浏览器中猜测next revision。
+
+Web不扫描用户Session、不创建Binding、不启动child，也不把Definition写入Session。Definition提交后的live reconcile、idle Bound创建和parent interaction delivery全部由[Bound技术设计](../subagent/docs/parent-bound-design.zh-CN.md)拥有。
 
 ## 构建
 

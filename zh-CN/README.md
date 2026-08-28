@@ -44,6 +44,9 @@
 - [`session/projectioncache/sqlite/README.zh-CN.md`](../session/projectioncache/sqlite/README.zh-CN.md)：独立 checkpoint SQLite/sqlc storage adapter。
 - [`agentloop/README.zh-CN.md`](../agentloop/README.zh-CN.md)：Agent driver、Turn/Step、请求/Tool 调度、durability checkpoint 与 idle convergence。
 - [`subagent/README.zh-CN.md`](../subagent/README.zh-CN.md)：OneShot、Continuable、Bound 三种模式的公共契约、模块边界和当前实现状态。
+- [`subagent/bound/README.zh-CN.md`](../subagent/bound/README.zh-CN.md)：全局Definition、管理命令、稳定错误与version 2 Session event公共契约。
+- [`subagent/internal/bound/README.zh-CN.md`](../subagent/internal/bound/README.zh-CN.md)：每用户Session reconcile、Binding worker、idle child epoch与interaction恢复运行模型。
+- [`subagent/internal/bound/sqlite/README.zh-CN.md`](../subagent/internal/bound/sqlite/README.zh-CN.md)：独立Definition SQLite/sqlc storage-only adapter。
 - [Bound 需求](../subagent/docs/parent-bound-requirements.zh-CN.md)：全局Definition、每用户Session direct Bound、idle语义与验收场景。
 - [Bound 技术设计](../subagent/docs/parent-bound-design.zh-CN.md)：Definition owner、maintenance reconcile、create/restore、worker与并发一致性。
 - [Bound Definition 管理详细设计](../subagent/docs/bound-config-management.zh-CN.md)：独立SQLite/sqlc Store、完整System Prompt、Tool restriction、Extension选择及exact Agent epoch replacement。

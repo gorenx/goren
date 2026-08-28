@@ -1,17 +1,16 @@
 # Bound Subagent
 
-> 状态：全局 Definition 方案已确认，本包正在从旧的 per-parent config 模型迁移。
+> 状态：Accepted / Implemented。旧的per-parent config路径已删除。
 
 本包拥有每个用户 Session 的 Bound 一致性、Binding worker、direct child create/restore、idle resident epoch、Definition replacement、显式Send、parent interaction delivery与failure containment。Definition 的业务校验和revision也属于Bound能力；SQLite adapter只负责技术持久化。
 
 ```mermaid
 flowchart LR
-    API[BoundDefinitions] --> Definitions[Definition Service]
+    API[bound.Definitions] --> Definitions[Definition catalog]
     Definitions --> Store[Definition Store]
     Definitions --> Scheduler[managed reconcile scheduler]
     Started[agent.SessionStarted] --> Scheduler
-    Idle[parent WhenIdle] --> Scheduler
-    Scheduler -->|RunMaintenance| Parent[parent user Session]
+    Scheduler -->|Commit WritePlan| Parent[parent Session FIFO]
     Parent --> Bindings[Binding projection]
     Scheduler --> Workers[Binding workers]
     Event[session.EventAppended] -->|wakeup only| Workers
@@ -22,7 +21,7 @@ flowchart LR
     Workers --> Cursor[parent cursor]
 ```
 
-`SessionStarted`只为用户Session请求reconcile。受管scheduler在parent `RunMaintenance`短窗口内读取enabled Definitions和projection，并在一个batch建立所有缺失Bindings；maintenance不创建child。窗口结束后，不同Binding worker可以并行materialize。任何child Session都不能进入reconcile，因此不会递归启动Bound。
+`SessionStarted`只为用户Session请求reconcile。受管scheduler生成缺失Binding候选，再由`bindingRegistration`在parent Session FIFO队首的原子Snapshot上重新fold并在一个batch建立所有仍缺失Bindings。该路径不调用parent `RunMaintenance`，因此不会与`/compact`竞争Agent activity。Binding Flush后，不同worker可以并行materialize；任何child Session都不能进入reconcile，因此不会递归启动Bound。
 
 Binding保存Definition name、稳定child Session ID和创建时冻结的`ContextNextSeq`。fresh child只复制该prefix，随后安装完整Bound system prompt、Tool restriction和Extensions，在child log保存完整Applied Definition并发布resident epoch。创建过程不提交InitialPrompt、不唤醒Inbox、不调用LLM；child保持idle直到新的parent interaction或显式Send。
 

@@ -279,7 +279,7 @@ interaction owner registers stable rpcId + decoder
 | S7-D02 | 能力 | ACP stdio adapter | Deferred | None |
 | S7-D03 | 能力 | MCP Client Bridge | Deferred | None |
 | S7-D04 | 能力 | 最小 Typert endpoint dispatch | Deferred | None：仅在纳入 endpoint 确有依赖时进入 |
-| S7-D05 | 能力 | Jobs、Subagent 与 Workflow | In Progress | Race Verified：Subagent core、OneShot、Continuable、spawn/fork Provider及Tool/control/report Consumer已闭环。Bound已有per-parent binding/config、exact Agent epoch replacement和receipt/cursor投递基础，但该配置所有权正在迁移为独立全局Definition Store、每用户Session direct Binding、冻结context prefix、idle create与受管reconcile；迁移完成前不声明Bound闭环。Jobs、background one-shot、Workflow和Code Mode structured capture仍Deferred |
+| S7-D05 | 能力 | Jobs、Subagent 与 Workflow | In Progress | Race Verified：Subagent core、OneShot、Continuable、Bound、spawn/fork Provider及Tool/control/report Consumer已闭环。Bound使用独立全局Definition SQLite/sqlc Store、每用户Session direct Bindings、冻结context prefix、idle create/restore、受管reconcile、exact epoch replacement和receipt/cursor恢复；旧per-parent config与兼容路径已删除。Jobs、background one-shot、Workflow和Code Mode structured capture仍Deferred |
 | S7-G01 | Gate | 进入任一能力时同步更新范围、contract、技术决策和矩阵 | Deferred | None |
 | S7-G02 | Gate | 不以空 package、空 handler、固定成功或未使用依赖占位 | Deferred | None：当前未创建占位 |
 
@@ -365,6 +365,10 @@ interaction owner registers stable rpcId + decoder
 | Workspace canonical identity、accounting、bootstrap、initialized-empty 与并发 commit | `workspace/registry_test.go` |
 | Workspace SQLite/sqlc、能力插件边界与默认 composition | `workspace/persistence/sqlite`、`internal/assembly/assembly_test.go` |
 | System Prompt built-ins、scope shadow、snapshot、suppression、complete、tool order、插值与 invariant | `systemprompt/systemprompt_test.go` |
+| Bound Definition strict codec、revision CAS、SQLite reopen与Store/index顺序 | `subagent/bound/definition_test.go`、`subagent/internal/bound/definitions_test.go`、`subagent/internal/bound/sqlite/adapter_test.go` |
+| 多用户Session独立Binding、同Session多Bound并行、child防递归、Session FIFO原子Binding且不竞争Agent maintenance、冻结prefix、idle create、disable/enable backlog、同child revision replacement、Extension缺失隔离与关闭取消 | `subagent/internal/bound/runtime_test.go`、`subagent/internal/bound/provisioner_test.go`、`subagent/internal/childpolicy/policy_test.go`、`internal/assembly/command_compact_e2e_test.go` |
+| parent interaction fold、receipt-before-cursor、crash-window修复与失败隔离 | `subagent/internal/bound/interaction_test.go`、`subagent/internal/bound/runtime_test.go` |
+| `bound.list/create/replace` strict RPC、稳定错误映射与Web完整snapshot编辑 | `apiproxy/bound_gateway_test.go`、`web/src/components/BoundDefinitionDialog.test.tsx`、`web/src/conversation-store.test.ts` |
 | Native Tool root/overlay view、restriction/guard、schema cache、执行/取消、一次性 scheduler、finalizer 与 detached result | `tools/service_test.go`、`tools/execution_test.go`、`tools/policy_test.go`、`tools/config_test.go` |
 | LLM/DeepSeek/System Prompt/Tools Factory strict config、shipped Catalog 与 Service composition | `internal/assembly/assembly_test.go` |
 | core LLM content block variant clone 与 extension panic containment | `llm/harness_contract_test.go` |
@@ -397,6 +401,7 @@ interaction owner registers stable rpcId + decoder
 - `sqlc generate -f session/persistence/sqlite/sqlc.yaml`
 - `sqlc generate -f session/query/sqlite/sqlc.yaml`
 - `sqlc generate -f session/projectioncache/sqlite/sqlc.yaml`
+- `sqlc generate -f subagent/internal/bound/sqlite/sqlc.yaml`
 - `go test ./...`
 - `go test -race ./...`
 - `go vet ./...`

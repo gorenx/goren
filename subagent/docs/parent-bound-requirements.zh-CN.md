@@ -1,6 +1,6 @@
 # Bound Subagent 需求
 
-> 状态：目标已确认，代码迁移中。Bound 是 Goren 扩展能力，不属于固定 DeepSeek Harness 兼容基线。
+> 状态：Accepted / Implemented。Bound 是 Goren 扩展能力，不属于固定 DeepSeek Harness 兼容基线。
 
 ## 1. 目标
 
@@ -43,14 +43,14 @@ Definition 使用独立 SQLite/sqlc Store，不写入任一 parent Session，也
 启动流程满足：
 
 1. Subagent 在受管任务中处理 `SessionStarted`，任务属于 Plugin 生命周期，可取消、可等待；不得启动裸 `context.Background()` goroutine。
-2. 对 parent 调用 `RunMaintenance`，以 AgentLoop 的短维护窗口原子准入本次一致性检查。
-3. 在窗口内读取 enabled Definitions 和 parent projection，在一个 Session commit batch 中建立全部缺失 Binding 并 `Flush`。
-4. Binding 保存 Definition 名称、child Session ID 和当时最后完整 parent turn 的 `ContextNextSeq`。
-5. maintenance 只建立 durable Binding，不创建 child、不等待 LLM。
-6. maintenance 释放后，为不同 Binding 调度彼此独立的激活任务；不同 Bound 可以并行。
-7. 单个 child 创建或恢复失败不得否决 parent publication；失败写 materialization 事实并交给 diagnostics。
+2. scheduler读取enabled Definitions和parent projection，生成缺失Binding候选，然后向parent Session唯一FIFO提交一个`WritePlan`。
+3. `WritePlan`到达FIFO队首时重新读取原子Snapshot、fold已有Binding并计算最后完整parent turn之后的`ContextNextSeq`，在一个batch提交全部仍缺失的Binding并`Flush`。
+4. Binding保存Definition名称、child Session ID和该FIFO队首Snapshot对应的`ContextNextSeq`。
+5. Binding提交不占用Agent activity，不调用`RunMaintenance`，不创建child，也不等待LLM。
+6. durable Binding提交后，为不同Binding调度彼此独立的激活任务；不同Bound可以并行。
+7. 单个child创建或恢复失败不得否决parent publication；失败写materialization事实并交给diagnostics。
 
-若 parent 正在执行 turn，`RunMaintenance` 拒绝准入。Definition 新建、启用或替换必须保留 pending reconcile；`WhenIdle` 只能唤醒重试，最终仍由 `RunMaintenance` 决定是否准入。
+parent正在执行turn或`/compact`时，Binding仍只与其他Session写入在同一FIFO中有序提交，不得竞争Agent maintenance。已经排在Binding之前但尚未闭合的turn事件可以出现在Snapshot中，但`ContextNextSeq`只指向最后一个完整turn之后，因此不进入fresh child seed。Definition新建、启用或替换后的失败reconcile必须保留pending，并由后续Session启动、Definition变更、`turn/end`或显式操作重试。
 
 ## 5. 创建、恢复与 idle
 
@@ -104,7 +104,7 @@ Session event 是轻量唤醒，不提供 exactly-once 通知。恢复事实来�
 
 ## 9. 迁移和验收
 
-当前旧版 per-parent `subagent/bound-config`、带 `Title`/`Persona`/`InitialPrompt` 的 Binding 不是兼容基线。新实现提升事件版本并明确拒绝旧版记录，不保留双读或兼容 wrapper；开发数据库需要清理后重建。
+旧版 per-parent `subagent/bound-config`、带 `Title`/`Persona`/`InitialPrompt` 的 Binding 已删除。当前实现使用事件version 2并明确拒绝旧版记录，不保留双读或兼容 wrapper；旧开发数据库需要清理后重建。
 
 完成验收至少覆盖：
 
@@ -113,7 +113,7 @@ Session event 是轻量唤醒，不提供 exactly-once 通知。恢复事实来�
 3. fresh child 只复制冻结 prefix；创建本身无 Inbox、turn 或 LLM 请求。
 4. 新 interaction 在 receipt durable 后推进 cursor；崩溃窗口恢复不重复 Inbox acceptance。
 5. disable 保留 backlog，enable 后 catch up；replace 使用同一 child Session 和新 exact epoch。
-6. busy parent 不在 maintenance 中改写 Binding，idle 后最终 reconcile。
+6. Binding通过Session FIFO原子提交，不调用parent maintenance，也不与`/compact`竞争；失败pending可由后续触发追赶。
 7. Plugin 关闭后没有遗留 activation/reconcile worker。
 8. v1 事件被明确拒绝。
 

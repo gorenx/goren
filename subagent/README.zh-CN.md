@@ -1,6 +1,6 @@
 # Subagent
 
-`subagent` 拥有委派请求、OneShot、Continuable 与 Bound 三种模式的统一生命周期契约，以及 durable child 的查询和父子通信语义。Bound 的全局 Definition 方案已经确认，当前代码正在从旧的 per-parent config 模型迁移。设计导航见[Subagent 领域设计导航](./docs/design.zh-CN.md)，当前完成证据见[08 实施进度](../zh-CN/08-implementation-progress.md)，固定源职责证据见[源能力分析](../zh-CN/subagent/01-source-capability-analysis.md)。
+`subagent` 拥有委派请求、OneShot、Continuable 与 Bound 三种模式的统一生命周期契约，以及 durable child 的查询和父子通信语义。Bound 使用全局 Definition、每用户 Session Binding 和独立 Definition Store，不再保留 per-parent config 路径。设计导航见[Subagent 领域设计导航](./docs/design.zh-CN.md)，当前完成证据见[08 实施进度](../zh-CN/08-implementation-progress.md)，固定源职责证据见[源能力分析](../zh-CN/subagent/01-source-capability-analysis.md)。
 
 局部文档包括[设计导航](./docs/design.zh-CN.md)和[术语规范](./docs/terminology.zh-CN.md)。Bound 的需求、调用链、config owner和parent interaction恢复分别由[需求](./docs/parent-bound-requirements.zh-CN.md)、[技术设计](./docs/parent-bound-design.zh-CN.md)、[config详设](./docs/bound-config-management.zh-CN.md)和[投递设计](./docs/session-event-delivery.zh-CN.md)维护；本README只说明包边界，不复制这些契约。
 
@@ -8,7 +8,7 @@
 
 本模块负责：
 
-- `StartCommand` 是封闭命令类型族；OneShot、Continuable、Bound 各自保存本模式启动所需的输入；
+- `StartCommand` 是OneShot与Continuable的封闭显式启动命令类型族；Bound由全局Definition和用户Session一致性检查启动，不伪装成一次Tool启动命令；
 - 用同一个 `Execution` 契约表示任一模式的一次 exact Agent epoch；
 - 为模型 Tool 和 Host Consumer 提供最小的 `ChildControl` 与 `ChildDirectory` 能力；
 - 通过 `SeedBuilder` 生成首次创建 child Session 时使用的 detached event prefix；
@@ -26,7 +26,7 @@
 | `directory.go` | durable child 的只读查询目录与查询结果 | list_agents、Host/UI |
 | `descriptor*.go` | Session log 中可重建的 Subagent identity | Continuable resume、目录查询 |
 | `extension.go` | child Agent Scope 的扩展安装契约 | report 等 child-scoped capability |
-| `bound*.go` | 全局 Bound Definition、管理命令和 Session Binding 契约 | Web/API、Bound runtime |
+| `bound/definition*.go`、`bound/events.go` | 全局 Bound Definition、管理命令和 Session Binding事件契约 | Web/API、Bound runtime |
 | `events.go` | 固定源兼容的注册与运行事件 | Plugin listener、Tool publication |
 | `message_source.go` | 父子消息进入 Session log 时的来源描述 | Agent Inbox、重建 |
 | `errors.go` | 稳定领域错误码 | 所有 Consumer |
@@ -78,7 +78,7 @@ flowchart LR
     Directory --> Sessions[Session live/persistence/projection]
 ```
 
-`plugin.Plugin`只做装配。Consumer通过`Starter`和`ChildControl`进入统一Service；ordinary resident child直接使用Agent Inbox，resident/cold Bound交给Bound owner串行化config与message admission，无binding的cold child才交给Continuable。child-scoped report Tool直接调用exact parent Agent，不经过Mode Service。
+`plugin.Plugin`只做装配。Consumer通过`Starter`和`ChildControl`进入统一Service；ordinary resident child直接使用Agent Inbox，resident/cold Bound交给Bound owner串行化Definition revision与message admission，无binding的cold child才交给Continuable。`bound.Definitions`是独立公开契约，API Proxy只调用其`List/Create/Replace`。child-scoped report Tool直接调用exact parent Agent，不经过Mode Service。
 
 ## 生命周期
 

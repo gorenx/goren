@@ -1,6 +1,6 @@
 # Bound Subagent 技术设计
 
-> 状态：目标设计已确认，代码迁移中。旧的 per-parent config 实现将在迁移中删除。
+> 状态：Accepted / Implemented。旧的 per-parent config 实现已经删除。
 
 ## 1. 所有权
 
@@ -13,7 +13,7 @@ Bound 是独立 Mode，但其 Definition 是全局配置能力，不属于任一
 | `internal/bound.Service` | 用户 Session 一致性、Binding、激活、replacement、interaction | 通用 EventBus、Web DTO、System Prompt/Tools实现 |
 | parent projection | Binding 和 materialization 派生状态 | Definition 配置、resident Agent |
 | Binding worker | 单 Binding 命令串行、resident epoch、receipt/cursor恢复 | 跨 Binding 串行化 |
-| Agent lifecycle | Agent publication、idle/maintenance、结构关闭 | 建立 Binding、解释 Definition |
+| Agent lifecycle | Agent publication、resident epoch idle、结构关闭 | 建立 Binding、解释 Definition |
 | API Proxy / Web | 严格管理协议与用户输入 | Definition 持久化或运行时协调 |
 
 ## 2. 依赖与主动调用方向
@@ -26,9 +26,8 @@ flowchart LR
     Definitions --> Index[Definition Index]
     Definitions --> Reconcile[Reconcile scheduler]
     Started[agent.SessionStarted] --> Reconcile
-    Idle[Agent WhenIdle] --> Reconcile
-    Reconcile --> Parent[parent user Agent]
-    Parent -->|RunMaintenance| Bindings[parent Binding events]
+    Reconcile --> Parent[parent Session FIFO]
+    Parent -->|Commit WritePlan| Bindings[parent Binding events]
     Reconcile --> Workers[Binding workers]
     Workers --> Constructor[agent.Constructor]
     Workers --> Child[direct Bound child]
@@ -42,8 +41,8 @@ flowchart LR
 1. Web 通过 API Proxy 主动调用 Definition Service 的 `List/Create/Replace`。
 2. Definition Service 先调用 Store 完成 CAS，再更新索引并请求 live reconcile。
 3. Agent lifecycle 发布 `SessionStarted`；Subagent observer 只向受管 scheduler 投递用户 Session ID。
-4. scheduler 解析 exact parent Agent 并主动调用 `RunMaintenance`；maintenance callback 读取 Definition index 和 parent projection，原子提交缺失 Bindings。
-5. maintenance 返回后 scheduler 为每个 Binding 请求激活；每个 Binding worker 主动调用 Constructor 创建或恢复 child。
+4. scheduler解析exact parent Agent并向其Session提交`bindingRegistration`；该`WritePlan`在FIFO队首重新fold projection、计算context floor并原子提交缺失Bindings。
+5. Binding batch提交并Flush后，scheduler为每个Binding请求激活；每个Binding worker主动调用Constructor创建或恢复child。
 6. parent Session 提交 `turn/end` 后发布 `session.EventAppended`；observer 只合并 wakeup，Binding worker 随后主动读取 durable log。
 7. worker 先让 child 接受 receipt/input，再提交 parent cursor。
 
@@ -54,10 +53,10 @@ flowchart LR
 Definition Service 对外提供稳定、传输无关的能力：
 
 ```go
-type BoundDefinitions interface {
-    List(context.Context) ([]BoundDefinition, error)
-    Create(context.Context, CreateBoundDefinition) (BoundDefinition, error)
-    Replace(context.Context, ReplaceBoundDefinition) (BoundDefinition, error)
+type Definitions interface {
+    List(context.Context) ([]Definition, error)
+    Create(context.Context, Creation) (Definition, error)
+    Replace(context.Context, Replacement) (Definition, error)
 }
 ```
 
@@ -70,52 +69,51 @@ Definition 名称是 identity，不提供 rename/delete。进程索引只保存 
 新 Binding event 使用新版本，至少表达：
 
 ```go
-type BoundBindingData struct {
+type BindingData struct {
     Version        int
     Name           string
     ChildSessionID session.SessionID
-    ContextNextSeq uint64
+    ContextNextSeq int64
 }
 ```
 
-`ContextNextSeq` 在 maintenance 的 Session FIFO head 上，从同一 committed prefix 计算“最后完整 turn 之后的位置”。同一 batch 可写入多个缺失 Binding；projection 拒绝重复 Name、重复 child ID、无效 floor 和旧事件版本。
+`ContextNextSeq`在Session FIFO队首的原子Snapshot上计算，指向同一committed prefix中“最后完整turn之后的位置”。同一batch可写入多个缺失Binding；projection拒绝重复Name、重复child ID、无效floor和旧事件版本。
 
 Materialization 保存 Name、child ID、Definition revision 和稳定结果。Cursor 继续是 Bound 私有 fold 的 parent event，不进入公共 projection value。
 
-## 5. SessionStarted 和 maintenance
+## 5. SessionStarted 和 Session FIFO
 
 ```mermaid
 sequenceDiagram
     participant L as Agent Lifecycle
     participant O as Subagent observer
     participant Q as managed scheduler
-    participant P as parent Agent
     participant S as parent Session
     participant W as Binding workers
 
     L->>O: SessionStarted(parent)
     O->>Q: enqueue(parent ID)
     O-->>L: return
-    Q->>P: RunMaintenance(callback)
-    P->>S: read head prefix + projection
-    P->>S: Commit(all missing Bindings)
-    P->>S: Flush
-    P-->>Q: maintenance complete
+    Q->>S: Commit(bindingRegistration)
+    S->>S: FIFO-head Snapshot + fold + floor
+    S->>S: commit all missing Bindings
+    Q->>S: Flush
+    S-->>Q: durable Bindings
     par different Bindings
         Q->>W: activate(binding A)
         Q->>W: activate(binding B)
     end
 ```
 
-observer 不启动不受控 goroutine，也不在 lifecycle dispatch 栈中做 SQLite、Session 或 Agent I/O。scheduler 由 Plugin 拥有 context、queue 和 wait group，关闭时停止准入、取消并等待。
+observer不启动不受控goroutine，也不在lifecycle dispatch栈中做SQLite、Session或Agent I/O。scheduler由Plugin拥有context、level-triggered task和wait group，关闭时停止准入、取消并等待。
 
-`RunMaintenance` 是最终原子准入：parent busy 时返回拒绝。scheduler 保留 pending 标记并在 `WhenIdle`、后续启动或 Definition 变更时重试。`WhenIdle` 不能代替 maintenance，因为从观察 idle 到写入之间仍可能开始新 turn。
+Session `WritePlan`是Binding的原子边界：候选可以在入队前计算，但是否仍缺失、队首committed prefix和`ContextNextSeq`只能在`Build(snapshot)`中决定，整个Binding batch不能被其他Session写入穿插。Bound不调用parent `RunMaintenance`，因此不会与manual compaction竞争Agent activity。失败task保留为dormant pending，后续启动、Definition变更、`turn/end`或显式操作可以重新激活。
 
 只对用户 Session reconcile。检查必须同时验证 Session header 与 runtime parent；任何 child Session 都不能进入该流程。
 
 ## 6. 激活和 idle
 
-maintenance 成功后才允许激活。Binding worker按 frozen `ContextNextSeq` materialize：
+Binding batch提交并Flush成功后才允许激活。Binding worker按frozen `ContextNextSeq` materialize：
 
 1. fresh create：构造 `parentEvents[:ContextNextSeq]` 的 detached seed；
 2. cold restore：复用同一 child Session ID并核对 direct parent、descriptor 和 seed boundary；
@@ -166,4 +164,4 @@ Definition Service 停止 reconcile/activation admission后，scheduler取消并
 
 ## 11. 迁移
 
-旧的 `BoundRegistry.Bind/UpdateConfig`、parent `subagent/bound-config`、Title、Persona、InitialPrompt 和 config-applied parent引用全部删除。新 projection 明确拒绝旧事件版本，不提供双读路径。迁移期间文档状态保持“代码迁移中”；完成证据只更新到[08 实施进度](../../zh-CN/08-implementation-progress.md)。
+旧的 `BoundRegistry.Bind/UpdateConfig`、parent `subagent/bound-config`、Title、Persona、InitialPrompt 和 config-applied parent引用已经全部删除。当前projection明确拒绝旧事件版本，不提供双读路径。完成证据只更新到[08 实施进度](../../zh-CN/08-implementation-progress.md)。

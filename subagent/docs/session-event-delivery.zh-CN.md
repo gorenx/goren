@@ -1,6 +1,6 @@
 # Bound Parent Interaction 投递设计
 
-> 状态：目标设计已确认，代码迁移中。
+> 状态：Accepted / Implemented。本文保留为interaction fold、receipt和cursor恢复的单一设计来源。
 
 本文只说明Binding建立后，Bound如何读取用户与parent的完整交互，以及如何恢复receipt和cursor。Definition、Binding和激活分别以[需求](./parent-bound-requirements.zh-CN.md)、[配置管理](./bound-config-management.zh-CN.md)和[技术设计](./parent-bound-design.zh-CN.md)为准。
 
@@ -15,7 +15,7 @@
 
 ## 2. 冻结上下文和delivery floor
 
-Binding创建发生在parent `RunMaintenance`的Session FIFO head。该时刻计算并保存`ContextNextSeq`，它指向最后一个完整parent turn之后的位置。
+Binding创建发生在parent Session唯一FIFO的队首。`bindingRegistration.Build(snapshot)`在该时刻计算并保存`ContextNextSeq`，它指向最后一个完整parent turn之后的位置；不需要占用parent Agent maintenance。
 
 fresh child只复制：
 
