@@ -108,9 +108,9 @@ sequenceDiagram
 
 ## 8. Disable 与 replacement
 
-`Enabled=false`仍是一条完整revision。Binding worker看到它后停止resident epoch，但保留durable Binding、child Session、cursor和backlog。disabled期间interaction wakeup可以合并，但cursor不推进。
+`Enabled=false`仍是一条完整revision。Binding worker看到它后停止resident epoch，但保留durable Binding和child Session。`Inbox.Deliver`返回稳定`BOUND_DISABLED`；TurnRelay或其他输入源保留自己的cursor与backlog，disabled期间不推进checkpoint。
 
-重新启用或配置替换时，worker等待旧epoch idle，停止旧epoch，再以同一child Session和最新exact Scope恢复。Applied event Flush完成后才允许发布新epoch；随后主动catch up。显式Send与replacement共享同一mailbox，避免消息进入旧Scope。
+重新启用或配置替换时，worker等待旧epoch idle，停止旧epoch，再以同一child Session和最新exact Scope恢复。Applied event Flush完成后才允许发布新epoch；下一次`Inbox.Deliver`或显式`Send`先在同一mailbox完成该对齐，因此消息不会进入旧Scope。输入源自行重试pending输入。
 
 ## 9. 迁移
 

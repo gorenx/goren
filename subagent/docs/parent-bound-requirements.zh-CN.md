@@ -16,7 +16,7 @@ Bound 是直接属于用户 Session 的长期后台 Subagent。管理员通过 W
 - **Applied Definition**：某个 child Agent epoch 实际安装的完整 Definition 快照。
 - **Parent interaction**：用户与 parent Agent 已闭合的一次交互，只包含 direct user 输入与 parent 可见回复。
 - **Context floor**：Binding 创建时冻结的 parent committed prefix 末端；此前历史只作为 child 初始上下文。
-- **Delivery cursor**：Binding 建立后 parent interaction 的增量投递水位。
+- **Delivery cursor**：输入源拥有的增量投递水位；内置TurnRelay从Binding建立后追踪parent interaction。
 
 Definition 名称是稳定身份。名称全局唯一，因此在每个用户 Session 内也唯一。第一版不提供 rename 或 hard delete；停用使用 `Enabled=false`，以后以同名 Definition 重新启用。
 
@@ -50,7 +50,7 @@ Definition 使用独立 SQLite/sqlc Store，不写入任一 parent Session，也
 6. durable Binding提交后，为不同Binding调度彼此独立的激活任务；不同Bound可以并行。
 7. 单个child创建或恢复失败不得否决parent publication；失败写materialization事实并交给diagnostics。
 
-parent正在执行turn或`/compact`时，Binding仍只与其他Session写入在同一FIFO中有序提交，不得竞争Agent maintenance。已经排在Binding之前但尚未闭合的turn事件可以出现在Snapshot中，但`ContextNextSeq`只指向最后一个完整turn之后，因此不进入fresh child seed。Definition新建、启用或替换后的失败reconcile必须保留pending，并由后续Session启动、Definition变更、`turn/end`或显式操作重试。
+parent正在执行turn或`/compact`时，Binding仍只与其他Session写入在同一FIFO中有序提交，不得竞争Agent maintenance。已经排在Binding之前但尚未闭合的turn事件可以出现在Snapshot中，但`ContextNextSeq`只指向最后一个完整turn之后，因此不进入fresh child seed。Definition新建、启用或替换后的失败reconcile必须保留pending，并由后续Session启动、Definition变更或显式操作重试；`turn/end`只驱动TurnRelay输入源，不反向驱动Bound reconcile scheduler。
 
 ## 5. 创建、恢复与 idle
 
@@ -69,7 +69,7 @@ child 创建或恢复时必须：
 
 ## 6. Interaction 与显式控制
 
-Binding 建立前的 parent 历史只作为 child 上下文，不重放为任务。投递 floor 是 Binding event 后一位；Binding 建立后的完整 interaction 按 cursor 增量投递。
+Binding建立前的parent历史只作为child上下文，不重放为任务。Bound核心公开`Inbox.Deliver(Address, Input)`，输入源提供稳定`InputID`、模型可见content和opaque provenance；Bound解析实际Binding、串行接纳并返回durable `Receipt`。内置TurnRelay的投递floor是Binding event后一位，Binding建立后的完整interaction按其私有cursor增量投递。
 
 Interaction 只接收：
 
@@ -78,14 +78,14 @@ Interaction 只接收：
 
 它过滤 reasoning、tool call、tool result、流式 chunk 和内部来源。没有 direct user 输入的 report-only turn 只推进 `skipped` cursor，避免 child report 被反向投递形成 echo loop。
 
-同一 Binding 的 Definition replacement、显式 `Send`、interaction delivery 与 resident epoch 变更必须串行；不同 Binding 相互独立并可并行。显式 `Send` 可以唤醒 idle Bound，但必须先确认 latest enabled Definition 已被当前 resident epoch 应用。
+同一Binding的Definition replacement、显式`Send`、Inbox delivery与resident epoch变更必须经过同一Binding mailbox串行；不同Binding相互独立并可并行。显式`Send`可以唤醒idle Bound，但必须先确认latest enabled Definition已被当前resident epoch应用。输入源的Session观察、retry和checkpoint不进入该mailbox，也不由Bound核心实现。
 
 ## 7. Definition 变更
 
 - `Create`：CAS 写 Store，更新索引，然后 reconcile 所有 live 用户 Session。
 - `Replace`：CAS 写完整 revision N+1，更新索引，并通过每个 Binding 的串行入口替换 resident epoch。
-- `Enabled=false`：停止 resident epoch，但保留 Binding、child Session、cursor 与 backlog，不推进 cursor。
-- 重新启用：创建缺失 Binding或恢复已有 Binding，应用最新 revision，再从既有 cursor catch up。
+- `Enabled=false`：停止resident epoch但保留Binding与child Session；Inbox拒绝接纳，输入源保留cursor与backlog。
+- 重新启用：创建缺失Binding或恢复已有Binding，应用最新revision；输入源随后重试pending输入并推进自己的cursor。
 - replacement：等待旧 epoch idle，停止旧 epoch，使用同一 child Session 和最新 exact Scope 恢复，提交 Applied Definition，发布新 epoch。
 
 旧 revision 已持久化但某个 live parent reconcile 失败时，不回滚全局 Definition；pending reconcile 保留并在下一次 idle、启动或显式操作时重试。
@@ -97,7 +97,7 @@ Interaction 只接收：
 Session event 是轻量唤醒，不提供 exactly-once 通知。恢复事实来自：
 
 - 全局 Definition Store；
-- parent Session 的 Binding、materialization 和 cursor；
+- parent Session 的Binding、materialization，以及各输入源自己的cursor；
 - child Session 的 Applied Definition 与 Inbox receipt。
 
 系统承诺 acceptance receipt 与 cursor 可恢复，不承诺 exactly-once 模型调用或 Tool 外部副作用。
@@ -116,5 +116,6 @@ Session event 是轻量唤醒，不提供 exactly-once 通知。恢复事实来�
 6. Binding通过Session FIFO原子提交，不调用parent maintenance，也不与`/compact`竞争；失败pending可由后续触发追赶。
 7. Plugin 关闭后没有遗留 activation/reconcile worker。
 8. v1 事件被明确拒绝。
+9. Bound核心不依赖`session.EventAppended`；除TurnRelay外的输入源也能直接调用同一`bound.Inbox`并维护自己的checkpoint。
 
 实现证据只记录在[08 实施进度](../../zh-CN/08-implementation-progress.md)。
