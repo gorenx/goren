@@ -118,14 +118,14 @@ TurnRelay worker属于exact parent Agent epoch。`SessionStarted`扫描已有Bin
 
 ## 8. 验证重点
 
-- frozen context prefix和Binding后首个turn不会被seed吞掉；
-- direct user + visible assistant relay，隐藏block过滤；
-- report-only turn写skipped且不echo；
-- source先Flush、child receipt后cursor的顺序；
-- receipt durable/cursor缺失的crash-window修复；
-- disabled pending Input在enable后按序重试；
-- 重复、合并或缺失wakeup不改变最终cursor；
-- 多Binding并行、单Binding顺序一致；
-- parent disposal与Plugin reactivation无worker泄露。
+- `TestBoundRelaysCompletedParentTurnToChild`：通过真实parent AgentLoop验证frozen seed之后的首个closed turn、direct user与visible assistant relay，以及隐藏reasoning过滤；
+- `TestMultipleBoundsReceiveParentTurnIndependently`：验证同一parent的多个Binding独立投递，不共享cursor或worker串行边界；
+- `TestBoundReportOnlyParentTurnDoesNotEchoToChild`：验证report-only turn推进skipped cursor且不形成echo；
+- `TestBoundDisabledTurnIsDeliveredAfterDefinitionIsEnabled`：验证disabled期间不推进cursor，enable后原Input只接纳一次；
+- `TestBoundTurnRelayCatchesUpAfterPluginReload`：验证缺失`EventAppended` wakeup时，Plugin重新挂载依靠durable log和cursor追赶；
+- `TestBoundRelayReusesReceiptWhenCursorFlushRetries`：验证child receipt已durable、parent cursor Flush失败的crash window只补cursor，不重复模型请求；
+- `TestBoundChildExecutionStopsWhenParentCloses`：验证parent disposal取消阻塞中的child execution并释放Agent与Session。
+
+这些测试位于`subagent/bound_*_integration_test.go`，并通过公开Bound能力、真实Plugin Runtime、AgentLoop、Session持久化、SQLite Definition Store和TurnRelay运行；只有LLM transport使用可控测试adapter。包内单元测试继续负责malformed chain、partial turn、Flush顺序和单worker状态机分支。
 
 包级运行模型见[TurnRelay README](../bound/turnrelay/README.zh-CN.md)，实现证据只记录在[08实施进度](../../zh-CN/08-implementation-progress.md)。

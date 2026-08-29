@@ -30,6 +30,8 @@ Binding保存Definition name、稳定child Session ID和创建时冻结的`Conte
 
 本包不观察`session.EventAppended`，不fold parent turn，不拥有parent cursor，也不启动输入订阅。内置Session turn来源见[`subagent/bound/turnrelay`](../../bound/turnrelay/README.zh-CN.md)。
 
-Plugin关闭时先停止scheduler准入，取消并等待所有reconcile/activation任务，再并行关闭Binding workers并停止resident epochs，最后关闭Definition Store。本包不拥有Web DTO、通用Session EventBus、System Prompt或Tools registry实现，也不创建公开interaction projection event。
+registry与scheduler使用由Bound Service拥有的独立lifecycle context，不能继承`Plugin.Apply`调用context中的Runtime标记、deadline或取消信号；`Service.Close`负责显式取消并等待这些后台工作。
 
-完整需求见[Bound需求](../../docs/parent-bound-requirements.zh-CN.md)，主动调用链见[技术设计](../../docs/parent-bound-design.zh-CN.md)，Definition应用见[配置管理](../../docs/bound-config-management.zh-CN.md)，interaction恢复见[投递设计](../../docs/session-event-delivery.zh-CN.md)，完成证据见[08实施进度](../../../zh-CN/08-implementation-progress.md)。
+Plugin关闭时先停止scheduler准入，取消并等待所有reconcile/activation任务，再并行关闭Binding workers并停止resident epochs，最后关闭Definition Store。parent Agent结构关闭触发`StopExternal`时，resident epoch先取消在途child再等待idle，但不重复Dispose由Agent lifecycle拥有的Handle。本包不拥有Web DTO、通用Session EventBus、System Prompt或Tools registry实现，也不创建公开interaction projection event。
+
+完整需求见[Bound需求](../../docs/parent-bound-requirements.zh-CN.md)，主动调用链见[技术设计](../../docs/parent-bound-design.zh-CN.md)，Definition应用见[配置管理](../../docs/bound-config-management.zh-CN.md)，interaction恢复见[投递设计](../../docs/session-event-delivery.zh-CN.md)，测试矩阵与问题根因见[测试跟踪](../../docs/bound-test-tracking.zh-CN.md)，完成证据见[08实施进度](../../../zh-CN/08-implementation-progress.md)。

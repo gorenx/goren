@@ -108,7 +108,7 @@ sequenceDiagram
     end
 ```
 
-observer不启动不受控goroutine，也不在lifecycle dispatch栈中做SQLite、Session或Agent I/O。scheduler由Plugin拥有context、level-triggered task和wait group，关闭时停止准入、取消并等待。
+observer不启动不受控goroutine，也不在lifecycle dispatch栈中做SQLite、Session或Agent I/O。scheduler由Bound Service拥有独立lifecycle context、level-triggered task和wait group，关闭时停止准入、取消并等待。该context不能派生自`Plugin.Apply`的调用context：后者可以携带Runtime topology mutation标记、deadline或调用者取消信号，均不属于异步reconcile和后续child构造的生命周期。
 
 Session `WritePlan`是Binding的原子边界：候选可以在入队前计算，但是否仍缺失、队首committed prefix和`ContextNextSeq`只能在`Build(snapshot)`中决定，整个Binding batch不能被其他Session写入穿插。Bound不调用parent `RunMaintenance`，因此不会与manual compaction竞争Agent activity。失败task保留为dormant pending，后续启动、Definition变更或显式操作可以重新激活。parent turn事件只唤醒TurnRelay，不反向驱动Bound reconcile scheduler。
 
@@ -163,6 +163,8 @@ Definition Store CAS 成功后，各 Binding worker 串行处理 latest revision
 
 Definition Service 停止 reconcile/activation admission后，scheduler取消并等待全部任务。Binding registry随后并行关闭 workers；每个 worker取消在途操作、等待/停止 resident epoch并完成必要 Flush。最后才关闭 Definition Store和Extension Registry依赖。
 
+parent Agent结构关闭时，Agent lifecycle先发布`agent.Disposed`，Subagent observer再以`StopExternal`终止对应execution。Bound resident epoch必须先取消仍在运行的child Agent，再等待idle；否则observer等待child idle，而child teardown又等待observer返回，会形成关闭环。`StopExternal`不重复Dispose child Handle，因为结构释放仍由Agent lifecycle拥有。
+
 TurnRelay因依赖`bound.Inbox`而在Subagent Plugin之前关闭：它先停止新source worker、取消并等待在途`Deliver`与cursor Flush；Bound随后才关闭Inbox准入和resident epochs。
 
 不得通过关闭 parent Agent 的 SessionStarted observer泄露 goroutine，也不得让一个慢 child 串行拖住其他 child 的关闭。
@@ -170,3 +172,7 @@ TurnRelay因依赖`bound.Inbox`而在Subagent Plugin之前关闭：它先停止�
 ## 11. 迁移
 
 旧的 `BoundRegistry.Bind/UpdateConfig`、parent `subagent/bound-config`、Title、Persona、InitialPrompt 和 config-applied parent引用已经全部删除。当前projection明确拒绝旧事件版本，不提供双读路径。完成证据只更新到[08 实施进度](../../zh-CN/08-implementation-progress.md)。
+
+## 12. 测试跟踪
+
+Bound纵向集成测试矩阵、测试过程中发现的问题、根因、影响、排除方案、最终修复和验证命令统一记录在[测试跟踪](./bound-test-tracking.zh-CN.md)。本文只保留已经确认的设计约束，不承担测试执行日志职责。
