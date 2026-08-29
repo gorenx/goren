@@ -83,6 +83,39 @@ type schedulerToolRuntime struct {
 	scheduler tools.ToolExecutionScheduler
 }
 
+type cancelingPrepareScheduler struct {
+	started chan struct{}
+}
+
+func (schedulerState *cancelingPrepareScheduler) Prepare(
+	requestContext context.Context,
+	_ tools.ToolExecutionInput,
+) (tools.ScheduledToolPreparation, error) {
+	close(schedulerState.started)
+	<-requestContext.Done()
+	return tools.ScheduledToolPreparation{}, requestContext.Err()
+}
+
+func (*cancelingPrepareScheduler) Dispatch(
+	tools.ToolExecution,
+) (tools.ScheduledToolDispatch, error) {
+	panic("Dispatch must not run after canceled preparation")
+}
+
+func (*cancelingPrepareScheduler) Finalize(
+	tools.ToolExecution,
+	tools.ToolExecutionResult,
+) (tools.ToolExecutionResult, error) {
+	panic("Finalize must not run for a synthetic cancellation result")
+}
+
+func (*cancelingPrepareScheduler) Finish(
+	tools.ToolExecution,
+	tools.ToolExecutionResult,
+) tools.ToolExecutionResult {
+	panic("Finish must not run for a synthetic cancellation result")
+}
+
 func (*schedulerToolRuntime) Get(string) (tools.ToolDefinition, bool) {
 	return tools.ToolDefinition{}, false
 }
@@ -117,8 +150,9 @@ func TestSchedulerFailureStopsReplenishmentAndDrainsStartedDispatch(t *testing.T
 		t.Fatal(err)
 	}
 	subject := &ReactLoopAgent{
-		identifier:   conversation.ID(),
-		conversation: conversation,
+		identifier:           conversation.ID(),
+		conversation:         conversation,
+		maxParallelToolCalls: 2,
 	}
 	pending, err := agent.NewInbox(conversation, silentInboxNotifications{})
 	if err != nil {
@@ -129,20 +163,13 @@ func TestSchedulerFailureStopsReplenishmentAndDrainsStartedDispatch(t *testing.T
 		releaseFirst: make(chan struct{}),
 		failureSeen:  make(chan struct{}),
 	}
-	executor, err := newToolCallExecutor(
-		subject,
-		pending,
-		&schedulerToolRuntime{
-			scheduler: schedulerState,
-		},
-		2,
-	)
-	if err != nil {
-		t.Fatal(err)
+	subject.pending = pending
+	subject.toolRuntime = &schedulerToolRuntime{
+		scheduler: schedulerState,
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, executeErr := executor.execute(
+		_, executeErr := subject.executeToolBatch(
 			context.Background(),
 			1,
 			1,
@@ -196,6 +223,97 @@ func TestSchedulerFailureStopsReplenishmentAndDrainsStartedDispatch(t *testing.T
 	}
 	if resultCount != 0 {
 		t.Fatalf("Tool result count = %d, want 0", resultCount)
+	}
+}
+
+func TestCanceledPreparationPairsStartedAndUnstartedToolCalls(t *testing.T) {
+	conversation, err := session.New(
+		"prepare-cancellation",
+		session.CreateOptions{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schedulerState := &cancelingPrepareScheduler{
+		started: make(chan struct{}),
+	}
+	subject := &ReactLoopAgent{
+		identifier:           conversation.ID(),
+		conversation:         conversation,
+		maxParallelToolCalls: 2,
+		toolRuntime: &schedulerToolRuntime{
+			scheduler: schedulerState,
+		},
+	}
+	pending, err := agent.NewInbox(conversation, silentInboxNotifications{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject.pending = pending
+	runContext, cancelRun := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, executeErr := subject.executeToolBatch(
+			runContext,
+			1,
+			1,
+			[]agentmessage.ToolCallBlock{
+				{
+					ID:        "call-1",
+					Name:      "parallel",
+					Arguments: `{}`,
+				},
+				{
+					ID:        "call-2",
+					Name:      "parallel",
+					Arguments: `{}`,
+				},
+			},
+		)
+		done <- executeErr
+	}()
+	select {
+	case <-schedulerState.started:
+	case <-time.After(time.Second):
+		t.Fatal("Tool preparation did not start")
+	}
+	cancelRun()
+	select {
+	case executeErr := <-done:
+		if !errors.Is(executeErr, context.Canceled) {
+			t.Fatalf("execute error = %v, want context cancellation", executeErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled Tool preparation did not settle")
+	}
+	callEvents := make([]session.Event, 0)
+	resultEvents := make([]session.Event, 0)
+	for _, committed := range conversation.Events() {
+		switch committed.Type {
+		case session.ToolCallEventName:
+			callEvents = append(callEvents, committed)
+		case session.ToolResultEventName:
+			resultEvents = append(resultEvents, committed)
+		}
+	}
+	if len(callEvents) != 2 || len(resultEvents) != 2 {
+		t.Fatalf(
+			"Tool boundaries = %d calls/%d results, want 2/2",
+			len(callEvents),
+			len(resultEvents),
+		)
+	}
+	for index := range resultEvents {
+		provenance := resultEvents[index].SourceEventSeqs
+		if provenance == nil || len(*provenance) != 1 ||
+			(*provenance)[0] != callEvents[index].Seq {
+			t.Fatalf(
+				"result %d provenance = %#v, want call seq %d",
+				index,
+				provenance,
+				callEvents[index].Seq,
+			)
+		}
 	}
 }
 

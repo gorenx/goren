@@ -12,24 +12,24 @@ import (
 	"github.com/gorenx/goren/session"
 )
 
-// configuredAgentStarter owns the one-shot boot transaction for declarative
-// Agent entries. A failed transaction is terminal for this Loop instance; the
+// StartupPlan is the one-shot boot transaction for declarative
+// Agent entries. A failed transaction is terminal for this StartupPlan; the
 // composition root must stop the Runtime rather than retry partial startup.
-type configuredAgentStarter struct {
+type StartupPlan struct {
 	mutex        sync.Mutex
 	declarations []StartupAgent
 	started      bool
 }
 
-func newConfiguredAgentStarter(
+func newStartupPlan(
 	declarations []StartupAgent,
-) *configuredAgentStarter {
-	return &configuredAgentStarter{
+) *StartupPlan {
+	return &StartupPlan{
 		declarations: declarations,
 	}
 }
 
-func (starter *configuredAgentStarter) start(
+func (plan *StartupPlan) start(
 	requestContext context.Context,
 	constructor agent.Constructor,
 ) ([]agent.Handle, error) {
@@ -39,17 +39,17 @@ func (starter *configuredAgentStarter) start(
 	if constructor == nil {
 		return nil, errors.New("agentloop: configured startup is unavailable")
 	}
-	starter.mutex.Lock()
-	if starter.started {
-		starter.mutex.Unlock()
+	plan.mutex.Lock()
+	if plan.started {
+		plan.mutex.Unlock()
 		return nil, errors.New(
 			"agentloop: configured Agents were already started",
 		)
 	}
-	starter.started = true
-	declarations := starter.declarations
-	starter.declarations = nil
-	starter.mutex.Unlock()
+	plan.started = true
+	declarations := plan.declarations
+	plan.declarations = nil
+	plan.mutex.Unlock()
 
 	started := make([]agent.Handle, 0, len(declarations))
 	revert := func(cause error) ([]agent.Handle, error) {

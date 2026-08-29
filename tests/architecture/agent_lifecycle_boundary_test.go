@@ -151,17 +151,17 @@ func TestAgentLifecycleBusinessTypesStayOutsidePluginLifecycle(t *testing.T) {
 	)
 }
 
-func TestAgentScopeRootDelegatesStructuralUnloadToAgentScopes(t *testing.T) {
+func TestAgentScopeDelegatesStructuralUnloadToScopeSet(t *testing.T) {
 	t.Parallel()
 	repositoryPath := repositoryRoot(t)
 	fileSet := token.NewFileSet()
 	sourcesByPackage := parsePackages(t, fileSet, repositoryPath)
 	packageKey := filepath.Join(repositoryPath, "agentloop") + ":agentloop"
 	sources := productionSources(sourcesByPackage[packageKey])
-	rootFound := false
-	scopesFound := false
-	scopesOwnHandle := false
-	scopesUnload := false
+	scopeFound := false
+	setFound := false
+	setOwnsHandle := false
+	setUnloads := false
 	findings := make([]string, 0)
 	for _, source := range sources {
 		for _, declaration := range source.tree.Decls {
@@ -177,8 +177,8 @@ func TestAgentScopeRootDelegatesStructuralUnloadToAgentScopes(t *testing.T) {
 						continue
 					}
 					switch typeSpecification.Name.Name {
-					case "agentScopeRoot":
-						rootFound = true
+					case "AgentScope":
+						scopeFound = true
 						for _, field := range structure.Fields.List {
 							ast.Inspect(field.Type, func(node ast.Node) bool {
 								selector, ok := node.(*ast.SelectorExpr)
@@ -189,22 +189,22 @@ func TestAgentScopeRootDelegatesStructuralUnloadToAgentScopes(t *testing.T) {
 									findings = append(
 										findings,
 										fileSet.Position(selector.Pos()).String()+
-											": agentScopeRoot owns plugin."+
+											": AgentScope owns plugin."+
 											selector.Sel.Name,
 									)
 								}
 								return true
 							})
 						}
-					case "agentScopes":
-						scopesFound = true
+					case "ScopeSet":
+						setFound = true
 						for _, field := range structure.Fields.List {
 							ast.Inspect(field.Type, func(node ast.Node) bool {
 								selector, ok := node.(*ast.SelectorExpr)
 								packageName, selectedPackage := selectorPackage(selector)
 								if ok && selectedPackage && packageName == "plugin" &&
 									selector.Sel.Name == "Handle" {
-									scopesOwnHandle = true
+									setOwnsHandle = true
 								}
 								return true
 							})
@@ -227,32 +227,32 @@ func TestAgentScopeRootDelegatesStructuralUnloadToAgentScopes(t *testing.T) {
 						selector.Sel.Name != "UnloadChild" {
 						return true
 					}
-					if receiverName == "agentScopeRoot" {
+					if receiverName == "AgentScope" {
 						findings = append(
 							findings,
 							fileSet.Position(selector.Pos()).String()+
-								": agentScopeRoot unloads itself",
+								": AgentScope unloads itself",
 						)
 					}
-					if receiverName == "agentScopes" && current.Name.Name == "release" {
-						scopesUnload = true
+					if receiverName == "ScopeSet" && current.Name.Name == "release" {
+						setUnloads = true
 					}
 					return true
 				})
 			}
 		}
 	}
-	if !rootFound {
-		findings = append(findings, "agentScopeRoot type declaration not found")
+	if !scopeFound {
+		findings = append(findings, "AgentScope type declaration not found")
 	}
-	if !scopesFound {
-		findings = append(findings, "agentScopes type declaration not found")
+	if !setFound {
+		findings = append(findings, "ScopeSet type declaration not found")
 	}
-	if !scopesOwnHandle {
-		findings = append(findings, "agentScopes does not own plugin.Handle")
+	if !setOwnsHandle {
+		findings = append(findings, "ScopeSet does not own plugin.Handle")
 	}
-	if !scopesUnload {
-		findings = append(findings, "agentScopes.release does not issue plugin.UnloadChild")
+	if !setUnloads {
+		findings = append(findings, "ScopeSet.release does not issue plugin.UnloadChild")
 	}
 	if len(findings) == 0 {
 		return

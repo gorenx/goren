@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentloop/internal/visiblecontext"
 	"github.com/gorenx/goren/session"
 	sesspersist "github.com/gorenx/goren/session/persistence"
 )
@@ -16,8 +17,8 @@ type Factory struct {
 	maxParallelToolCalls int
 	sessions             session.LiveStore
 	persistence          sesspersist.Persistence
-	failures             observerFailureReporter
-	runtimeContextEvents *runtimeContextRouter
+	reportObserverError  func(error)
+	visibleContexts      *visiblecontext.Directory
 	scopes               agentScopeFactory
 }
 
@@ -25,16 +26,16 @@ func newFactory(
 	maxParallelToolCalls int,
 	sessions session.LiveStore,
 	persistence sesspersist.Persistence,
-	failures observerFailureReporter,
-	runtimeContextEvents *runtimeContextRouter,
+	reportObserverError func(error),
+	visibleContexts *visiblecontext.Directory,
 	scopes agentScopeFactory,
 ) *Factory {
 	return &Factory{
 		maxParallelToolCalls: maxParallelToolCalls,
 		sessions:             sessions,
 		persistence:          persistence,
-		failures:             failures,
-		runtimeContextEvents: runtimeContextEvents,
+		reportObserverError:  reportObserverError,
+		visibleContexts:      visibleContexts,
 		scopes:               scopes,
 	}
 }
@@ -73,8 +74,8 @@ func (owner *Factory) CreateAgent(
 		conversation,
 		options.AgentOptions,
 		owner.maxParallelToolCalls,
-		owner.failures,
-		owner.runtimeContextEvents,
+		owner.reportObserverError,
+		owner.visibleContexts,
 		owner.scopes,
 	)
 	if err != nil {
@@ -121,8 +122,8 @@ func (owner *Factory) ResumeAgent(
 		preparation.UnpublishedSession(),
 		options.AgentOptions,
 		owner.maxParallelToolCalls,
-		owner.failures,
-		owner.runtimeContextEvents,
+		owner.reportObserverError,
+		owner.visibleContexts,
 		owner.scopes,
 	)
 	if err != nil {

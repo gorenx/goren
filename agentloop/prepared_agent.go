@@ -5,23 +5,24 @@ import (
 	"errors"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentloop/internal/visiblecontext"
 	"github.com/gorenx/goren/session"
 )
 
 // preparedAgent owns one unpublished Agent construction transaction. The
 // Registry AgentEpoch owns the lifecycle before the Agent is published.
 type preparedAgent struct {
-	subject     *ReactLoopAgent
-	preparation scopePreparation
-	router      *runtimeContextRouter
+	subject         *ReactLoopAgent
+	preparation     scopePreparation
+	visibleContexts *visiblecontext.Directory
 }
 
 func newPreparedAgent(
 	conversation session.Context,
-	loopOptions agent.Options,
+	agentOptions agent.Options,
 	maxParallelToolCalls int,
-	failures observerFailureReporter,
-	router *runtimeContextRouter,
+	reportObserverError func(error),
+	visibleContexts *visiblecontext.Directory,
 	scopes agentScopeFactory,
 ) (*preparedAgent, error) {
 	if conversation == nil {
@@ -30,24 +31,24 @@ func newPreparedAgent(
 	if scopes == nil {
 		return nil, errors.New("agentloop: Agent Scope factory is unavailable")
 	}
-	preparation := scopes.Prepare(loopOptions, conversation.Header())
+	preparation := scopes.Prepare(agentOptions, conversation.Header())
 	if preparation == nil || preparation.Runtime() == nil {
 		return nil, errors.New("agentloop: Agent Scope preparation is invalid")
 	}
 	subject, err := newReactLoopAgent(
 		conversation,
-		loopOptions,
+		agentOptions,
 		maxParallelToolCalls,
-		failures,
+		reportObserverError,
 		preparation.Runtime(),
 	)
 	if err != nil {
 		return nil, err
 	}
 	return &preparedAgent{
-		subject:     subject,
-		preparation: preparation,
-		router:      router,
+		subject:         subject,
+		preparation:     preparation,
+		visibleContexts: visibleContexts,
 	}, nil
 }
 
@@ -83,7 +84,7 @@ func (prepared *preparedAgent) publish(
 		}
 	}
 	binding := newSessionBinding(
-		prepared.router,
+		prepared.visibleContexts,
 		prepared.subject,
 	)
 	if _, err = scope.MountPlugin(requestContext, binding); err != nil {

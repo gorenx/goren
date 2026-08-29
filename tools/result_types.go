@@ -42,7 +42,9 @@ type ToolExecutionSuccess struct {
 	Content            []agentmessage.ContentBlock
 	Meta               json.RawMessage
 	AdditionalContexts []agentmessage.UserMessage
-	ConcludesTurn      bool
+	// ConcludesTurn means this Tool success ends the current Agent Turn; Agent
+	// Loop must not automatically start another model request for its result.
+	ConcludesTurn bool
 }
 
 // Failed reports false.

@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentloop/internal/visiblecontext"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	sesspersist "github.com/gorenx/goren/session/persistence"
@@ -24,13 +25,12 @@ type Plugin struct {
 	plugin.Base
 	mutex                sync.RWMutex
 	maxParallelToolCalls int
-	failures             observerFailureReporter
-	runtimeContextEvents *runtimeContextRouter
-	startup              *configuredAgentStarter
+	reportObserverError  func(error)
+	visibleContexts      *visiblecontext.Directory
+	startup              *StartupPlan
 	constructor          agent.Constructor
-	factory              *Factory
 	registration         *registrationPlugin
-	scopes               *agentScopes
+	scopes               *ScopeSet
 }
 
 // New constructs an inactive Agent Loop Plugin from validated runtime
@@ -40,18 +40,20 @@ func New(runtimeSettings Settings, policies RuntimeOptions) (*Plugin, error) {
 	if err != nil {
 		return nil, err
 	}
+	reportObserverError := policies.ObserverError
+	if reportObserverError == nil {
+		reportObserverError = func(error) {}
+	}
 	owner := &Plugin{
 		maxParallelToolCalls: validated.MaxParallelToolCalls,
-		failures:             newObserverFailureReporter(policies.ObserverError),
-		runtimeContextEvents: newRuntimeContextRouter(),
-		startup: newConfiguredAgentStarter(
+		reportObserverError:  reportObserverError,
+		visibleContexts:      visiblecontext.NewDirectory(),
+		startup: newStartupPlan(
 			validated.StartupAgents,
 		),
 	}
-	owner.registration = &registrationPlugin{
-		loop: owner,
-	}
-	owner.scopes = newAgentScopes(owner)
+	owner.registration = &registrationPlugin{}
+	owner.scopes = newScopeSet()
 	return owner, nil
 }
 
@@ -69,6 +71,11 @@ func (owner *Plugin) Manifest() plugin.Manifest {
 			plugin.EventOf[session.EventAppended](),
 		},
 		Children: []plugin.ChildPlugin{
+			{
+				Instance:  owner.scopes,
+				Placement: plugin.SameScope,
+				Phase:     plugin.ActivationMain,
+			},
 			{
 				Instance:  owner.registration,
 				Placement: plugin.SameScope,
@@ -91,23 +98,25 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 		return err
 	}
 	persistence, _ := plugin.Resolve[sesspersist.Persistence](owner)
-	loopFactory := newFactory(
+	agentFactory := newFactory(
 		owner.maxParallelToolCalls,
 		sessions,
 		persistence,
-		owner.failures,
-		owner.runtimeContextEvents,
+		owner.reportObserverError,
+		owner.visibleContexts,
 		owner.scopes,
 	)
 	owner.mutex.Lock()
 	owner.constructor = constructor
-	owner.factory = loopFactory
 	owner.mutex.Unlock()
+	if err = owner.registration.bindFactory(agentFactory); err != nil {
+		return err
+	}
 	return requestContext.Err()
 }
 
-// Dispose releases Agent Loop-local projections after the commit-phase Factory
-// adapter and every per-Agent Scope have already stopped.
+// Dispose releases Agent Loop-local VisibleContext registrations after the
+// commit-phase Factory adapter and every per-Agent Scope have already stopped.
 func (owner *Plugin) Dispose(closeContext context.Context) error {
 	if closeContext == nil {
 		closeContext = context.Background()
@@ -115,13 +124,12 @@ func (owner *Plugin) Dispose(closeContext context.Context) error {
 	var closeErr error
 	owner.mutex.Lock()
 	owner.constructor = nil
-	owner.factory = nil
 	owner.mutex.Unlock()
-	if routed := owner.runtimeContextEvents.clear(); routed != 0 {
+	if routed := owner.visibleContexts.Clear(); routed != 0 {
 		closeErr = errors.Join(
 			closeErr,
 			fmt.Errorf(
-				"agentloop: Plugin stopped with %d live runtime-context projection(s)",
+				"agentloop: Plugin stopped with %d live VisibleContext registration(s)",
 				routed,
 			),
 		)
@@ -130,7 +138,7 @@ func (owner *Plugin) Dispose(closeContext context.Context) error {
 }
 
 // ObserveEvent routes exact Session commits to the corresponding private
-// per-Agent runtime-context projection.
+// per-Agent VisibleContext.
 func (owner *Plugin) ObserveEvent(
 	_ context.Context,
 	fact plugin.Event,
@@ -139,7 +147,7 @@ func (owner *Plugin) ObserveEvent(
 	if !matches {
 		return nil
 	}
-	owner.runtimeContextEvents.accept(appended)
+	owner.visibleContexts.Observe(appended)
 	return nil
 }
 
@@ -154,10 +162,10 @@ func (owner *Plugin) StartConfiguredAgents(
 	return owner.startup.start(requestContext, constructor)
 }
 
-func validateAgentOptions(loopOptions agent.Options) error {
-	if loopOptions.MaxTokens != nil &&
-		(*loopOptions.MaxTokens <= 0 ||
-			int64(*loopOptions.MaxTokens) > maxSafeInteger) {
+func validateAgentOptions(agentOptions agent.Options) error {
+	if agentOptions.MaxTokens != nil &&
+		(*agentOptions.MaxTokens <= 0 ||
+			int64(*agentOptions.MaxTokens) > maxSafeInteger) {
 		return errors.New(
 			"agentloop: Agent maxTokens must be a positive safe integer",
 		)

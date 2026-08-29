@@ -14,8 +14,21 @@ import (
 type registrationPlugin struct {
 	plugin.Base
 	mutex        sync.Mutex
-	loop         *Plugin
+	boundFactory *Factory
 	registration agent.FactoryRegistration
+}
+
+func (owner *registrationPlugin) bindFactory(agentFactory *Factory) error {
+	if owner == nil || agentFactory == nil {
+		return errors.New("agentloop: Factory registration requires a Factory")
+	}
+	owner.mutex.Lock()
+	defer owner.mutex.Unlock()
+	if owner.boundFactory != nil {
+		return errors.New("agentloop: Factory registration is already bound")
+	}
+	owner.boundFactory = agentFactory
+	return nil
 }
 
 func (*registrationPlugin) Manifest() plugin.Manifest {
@@ -38,13 +51,13 @@ func (owner *registrationPlugin) Apply(requestContext context.Context) error {
 	if err != nil {
 		return err
 	}
-	owner.loop.mutex.RLock()
-	loopFactory := owner.loop.factory
-	owner.loop.mutex.RUnlock()
-	if loopFactory == nil {
+	owner.mutex.Lock()
+	agentFactory := owner.boundFactory
+	owner.mutex.Unlock()
+	if agentFactory == nil {
 		return errors.New("agentloop: Factory is unavailable")
 	}
-	registration, err := registrar.RegisterFactory(loopFactory)
+	registration, err := registrar.RegisterFactory(agentFactory)
 	if err != nil {
 		return err
 	}
@@ -58,6 +71,7 @@ func (owner *registrationPlugin) Dispose(context.Context) error {
 	owner.mutex.Lock()
 	registration := owner.registration
 	owner.registration = nil
+	owner.boundFactory = nil
 	owner.mutex.Unlock()
 	if registration != nil {
 		registration.Close()

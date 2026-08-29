@@ -16,7 +16,8 @@ const (
 	PluginName = "@deepseek-ai/dsh-agent-loop"
 	// DefaultMaxParallelToolCalls is the source deployment-wide scheduler cap.
 	DefaultMaxParallelToolCalls = 10
-	maxSafeInteger              = int64(1<<53 - 1)
+	// maxSafeInteger is the largest integer exactly representable by JSON clients.
+	maxSafeInteger = int64(1<<53 - 1)
 )
 
 // StartupAgent is one validated boot-time Agent declaration. It contains no
@@ -45,6 +46,8 @@ func validateSettings(candidate Settings) (Settings, error) {
 		MaxParallelToolCalls: candidate.MaxParallelToolCalls,
 		StartupAgents:        cloneStartupAgents(candidate.StartupAgents),
 	}
+	// exactIdentities maps each explicitly configured Session ID to its Agent
+	// label. Presence means another startup declaration cannot reuse that ID.
 	exactIdentities := make(map[session.SessionID]string)
 	for index := range validated.StartupAgents {
 		declaration := &validated.StartupAgents[index]

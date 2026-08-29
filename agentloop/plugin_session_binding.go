@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/gorenx/goren/agentloop/internal/visiblecontext"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
@@ -22,32 +23,32 @@ const (
 	sessionPublished
 )
 
-// sessionBinding attaches one Agent Loop to its live Session and runtime
-// context projection. Agent membership and Agent lifecycle belong exclusively
+// sessionBinding attaches one Agent Loop to its live Session and VisibleContext
+// registration. Agent membership and Agent lifecycle belong exclusively
 // to agent.RegistryService.
 type sessionBinding struct {
 	plugin.Base
-	router  *runtimeContextRouter
-	subject *ReactLoopAgent
+	visibleContexts *visiblecontext.Directory
+	subject         *ReactLoopAgent
 
-	mutex             sync.Mutex
-	sessions          session.LiveStore
-	sessionHandle     session.Handle
-	routeRegistration *runtimeContextRegistration
-	publication       sessionPublicationPhase
-	closeOnce         sync.Once
-	closed            chan struct{}
-	closeErr          error
+	mutex               sync.Mutex
+	sessions            session.LiveStore
+	sessionHandle       session.Handle
+	contextRegistration *visiblecontext.Registration
+	publication         sessionPublicationPhase
+	closeOnce           sync.Once
+	closed              chan struct{}
+	closeErr            error
 }
 
 func newSessionBinding(
-	router *runtimeContextRouter,
+	visibleContexts *visiblecontext.Directory,
 	subject *ReactLoopAgent,
 ) *sessionBinding {
 	return &sessionBinding{
-		router:  router,
-		subject: subject,
-		closed:  make(chan struct{}),
+		visibleContexts: visibleContexts,
+		subject:         subject,
+		closed:          make(chan struct{}),
 	}
 }
 
@@ -65,24 +66,24 @@ func (binding *sessionBinding) Apply(requestContext context.Context) error {
 	if err != nil {
 		return err
 	}
-	routeRegistration, err := binding.router.register(
+	contextRegistration, err := binding.visibleContexts.Register(
 		binding.subject.conversation,
-		binding.subject.loop.runtimeContextView(),
+		binding.subject.visibleContext,
 	)
 	if err != nil {
 		return err
 	}
 	sessionHandle, err := sessions.Enter(binding.subject.conversation)
 	if err != nil {
-		routeRegistration.Release()
+		contextRegistration.Release()
 		return err
 	}
 	binding.mutex.Lock()
 	binding.sessions = sessions
 	binding.sessionHandle = sessionHandle
-	binding.routeRegistration = routeRegistration
+	binding.contextRegistration = contextRegistration
 	binding.mutex.Unlock()
-	if err = binding.subject.loop.beginServing(); err != nil {
+	if err = binding.subject.enterServing(); err != nil {
 		return errors.Join(
 			err,
 			binding.Dispose(context.WithoutCancel(requestContext)),
@@ -138,17 +139,17 @@ func (binding *sessionBinding) Dispose(closeContext context.Context) error {
 func (binding *sessionBinding) release(closeContext context.Context) error {
 	binding.mutex.Lock()
 	sessionHandle := binding.sessionHandle
-	routeRegistration := binding.routeRegistration
+	contextRegistration := binding.contextRegistration
 	binding.sessionHandle = nil
-	binding.routeRegistration = nil
+	binding.contextRegistration = nil
 	binding.mutex.Unlock()
 
 	// Already-started Tool bodies may hold dependencies from the Agent Scope.
 	// Their drain is structural teardown and cannot be abandoned on caller
 	// cancellation without making the remaining Runtime shutdown unsafe.
-	closeErr := binding.subject.loop.quiesce(closeContext)
-	if routeRegistration != nil {
-		routeRegistration.Release()
+	closeErr := binding.subject.shutdown(closeContext)
+	if contextRegistration != nil {
+		contextRegistration.Release()
 	}
 	if sessionHandle != nil {
 		closeErr = errors.Join(
