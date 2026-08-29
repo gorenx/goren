@@ -105,7 +105,7 @@ flowchart LR
 
 规范化按固定源顺序去除 OSC/ANSI 控制序列、方向控制字符和其他不可见控制字符，再折叠空白、trim，并按 UTF-8 byte 边界截断。只含控制字符的 rename 因而归一为空并返回 `title-invalid`。
 
-第一条 eligible direct user text 在 Event publication 结束后生成 deterministic fallback。Title observer 只登记 Title Service 自己拥有的异步任务并立即返回；该任务随后构造固定 `session/title` draft，通过正常 `Context.Commit(session.Batch(...))` 重新进入 Session FIFO，不在 publication callback 内递归写入。Provider LLM 生成同样属于 Title Service 的异步生命周期，不能进入 Session coordinator；结果完成并通过 revision 校验后使用正常 `Commit`。
+第一条 eligible direct user text 在 Event publication 结束后生成 deterministic fallback。Title observer 只登记 Title Service 自己拥有的异步任务并立即返回；该任务随后构造固定 `session/title` draft，通过正常 `Context.Commit(session.Batch(...))` 重新进入 Session FIFO，不在 publication callback 内递归写入。Provider LLM 生成同样属于 Title Service 的异步生命周期，不能占用 Session FIFO；结果完成并通过 revision 校验后使用正常 `Commit`。
 
 可选 `Provider` 声明 `AutomaticFirstPrompt` 或 `AutomaticAllPrompts`。Service 在 request header 与主 `llm/stream` route 对齐后才启动生成，向 Provider 传 detached messages 与 route。新请求、显式 rename、refresh、Session dispose、Provider dispose 或 Service close 都会使旧 revision 失效并取消 active call；迟到结果不能覆盖新标题。
 

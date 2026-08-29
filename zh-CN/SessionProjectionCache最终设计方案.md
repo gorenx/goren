@@ -1,16 +1,16 @@
 # Session Projection Cache 最终设计方案
 
-状态：Accepted Target Design；cold read 已实现；lifecycle convergence pending
+状态：Implemented；显式事件驱动的 checkpoint lifecycle 已完成实现与全量验收
 
 ## 1. 文档职责
 
 本文定义 Goren `Session Projection Cache` 的最终职责、模块边界、对外契约、关键数据、写入与冷恢复算法、并发与关闭语义，回答“最终代码应该是什么”。
 
-- 当前完成状态和可复核证据见[08 实施进度](./08-implementation-progress.md)。
+- 全局项目进度和跨能力验证证据见[08 实施进度](./08-implementation-progress.md)。
 - 通用 Projection Registry 与 Session Title 的既有设计见[18 Session Projection 与 Session Title](./18-session-projection-and-title.md)。
 - Session 事实持久化与 SQLite Backend 见[19 Session Persistence 与 SQLite](./19-session-persistence-and-sqlite.md)。
 
-本文不记录实施完成比例，实际实现与验证证据由[08 实施进度](./08-implementation-progress.md)拥有；checkpoint 始终不是 Session 事实。
+本文只记录本专项设计及第 9.7 节的状态机验收，不维护整个项目的实施完成比例；checkpoint 始终不是 Session 事实。
 
 ## 2. 固定源与 Goren 取舍
 
@@ -110,17 +110,16 @@ Log Identity 用 Session Header 中的 `{createdAt, cwd}` 绑定 checkpoint 所�
 
 ### 5.2 `session/projectioncache`
 
-拥有普通 Go 业务/application 对象 `CheckpointCache`：
+拥有以下普通 Go 业务/application 对象：
 
-- 内存 checkpoint record index；
-- checkpoint 身份校验和完整替换；
-- live Session 的 dirty/write state；
-- threshold、interval、`turn/end`、detach 写入策略；
-- 单 Session 写入串行化；
-- cached snapshot 和 cold snapshot 算法；
-- 关闭准入、timer 停止和 in-flight 排空。
+- `ProjectionCache`：`created/opening/open/closing/closed` 生命周期、公开调用准入、组件装配和关闭顺序；
+- `liveCheckpointer`：exact `session.Context -> checkpointLifecycle` 索引、触发策略和 checkpoint attempt I/O；
+- `checkpointLifecycle`：一个 exact Session 从 clean、dirty、active、final 到 closed 的 checkpoint 生命周期；
+- `snapshotReader`：cached snapshot、cold suffix restore、全量 fallback 和 write-back；
+- `checkpointRecords`：Session ID record index、identity/dominance/merge 与 durable Replace；
+- `recordEntry`：一个 Session ID slot 的 per-ID replace 串行边界。
 
-`CheckpointCache` 不实现 Plugin lifecycle，不依赖 Plugin Runtime 的 Scope、Fiber 或 Registry。
+`ProjectionCache` 不实现 Plugin lifecycle，也不依赖 Plugin Runtime 的 Scope、Fiber 或 Registry。子对象不回指 `ProjectionCache`；`recordEntry` 不持有父集合、live writer 或 `CheckpointStore`。
 
 ### 5.3 `session/projectioncache/plugin`
 
@@ -128,9 +127,9 @@ Plugin adapter 只：
 
 - 在 Manifest 声明 `session.LiveStore`、`session/persistence.Persistence` 和 `session/projection.Registry`；
 - 发布 `projectioncache.Cache`；
-- Apply 时打开 CheckpointStore 并激活 `CheckpointCache`；
+- Apply 时打开 CheckpointStore 并激活 `ProjectionCache`；
 - 把 `session/event` 和 `session/disposed` 翻译为缓存对象的业务输入；
-- Dispose 时关闭 `CheckpointCache`。
+- Dispose 时关闭 `ProjectionCache`。
 
 Plugin adapter 不实现 checkpoint restore、SQLite 或 API 业务规则。
 
@@ -152,10 +151,10 @@ adapter 不判断什么时候写、哪个 row 版本有效、是否全量重放�
 flowchart TD
     API[apiproxy/session] --> Cache[projectioncache.Cache]
     Child[Subagent ChildDirectory] --> Cache
-    Cache --> Projection[session/projection.Registry]
-    Cache --> Persistence[session/persistence.Persistence]
-    Cache --> Sessions[session.LiveStore]
-    Cache --> Store[projectioncache.CheckpointStore]
+    Cache --> Projection[CheckpointProjector port]
+    Cache --> Persistence[DurableEventReader port]
+    Cache --> Sessions[LiveSessionFlusher port]
+    Cache --> Store[CheckpointStore port]
     Store --> SQLite[projectioncache/sqlite]
     Projection --> Session[session]
     Persistence --> Session
@@ -169,8 +168,6 @@ Agent 和 AgentLoop 不在该依赖图中，其职责不变。
 
 ```go
 type Cache interface {
-    plugin.Service
-
     CachedSnapshot(
         session.Header,
     ) (*projection.Snapshot, error)
@@ -186,7 +183,7 @@ type Cache interface {
 
 `ColdSnapshot` 是可取消的权威读组合：缓存可以加速，最终结果必须由当前 Persistence log 证明。
 
-`Write`、`Advance`、`Retire` 不进入 Cache Service 消费者契约，只由 Plugin adapter 驱动 concrete `CheckpointCache`。
+`EventAppended`、`SessionDisposed`、`Open`、`Close` 不进入只读 Cache Service 消费者契约，只由 Plugin adapter 驱动 concrete `ProjectionCache`。
 
 ### 6.2 CheckpointStore
 
@@ -289,45 +286,154 @@ SQLite adapter 必须：
 
 ## 9. 写入状态与并发
 
-### 9.1 状态
+### 9.1 重构前问题与收敛原则
 
-每个 live Session object 使用一个 write state，不只用 Session ID，以免同 ID 新旧生命周期共用运行期状态。
+重构前的实现虽然已使用单一 phase，但仍有四个问题：
+
+1. 一次迁移分散在 `beginAttempt`/`finishAttempt`/`retryTimer` 中，调用者需要自行拼接同一业务过程。
+2. I/O worker 会根据 `session.ErrNotAttached` 自行决定是否报错及如何继续，写入结果的业务含义泄漏到执行器。
+3. `session/disposed` 与 live Flush 竞争时，结果、状态和后续命令由不同方法解释，无法用一张迁移表验证闭环。
+4. 未知 phase 若由 default 分支收敛为 stopped，会隐藏内部不变量破坏。
+
+收敛原则是：`checkpointLifecycle` 成为唯一迁移权威，在一次加锁内完成“校验输入 -> 更新状态与计数 -> 产出下一条命令”。其他对象不得直接改写状态，也不得根据状态二次推导后续行为。
+
+重构不引入通用 event bus，也不更改 Plugin 的现有事件投递。本节的“事件”是 `checkpointLifecycle` 上具有业务含义的直接方法输入。
+
+### 9.2 组件职责与调用闭环
+
+`checkpointLifecycle` 只拥有一个 exact Session 的 checkpoint 生命周期：
+
+- 状态、dirty event 计数和 timer generation；
+- 输入合法性与 attempt 匹配性校验；
+- 原子状态迁移与下一条执行命令。
+
+`checkpointLifecycle` 不持有 port，不执行 Projection、Flush、SQLite I/O 或 goroutine，不直接报告外部故障。
+
+`liveCheckpointer` 只拥有运行时协调：
+
+- 管理 exact `session.Context -> checkpointLifecycle` 映射；
+- 执行 timer、goroutine 和状态机返回的命令；
+- 调用 Registry、LiveStore 和 CheckpointStore port；
+- 把 port 的 raw error 翻译为 typed outcome，再原样送回状态机。
+
+worker 可以做反腐化映射，但不能决定 retry、final、remove 或忽略。是否报告故障由 typed outcome 的分类契约给出，worker 只机械执行，不再重新解释 error。
+
+调用链固定为：
+
+```text
+Plugin / timer / checkpoint goroutine
+  -> checkpointLifecycle 命名输入
+  -> checkpointLifecycle 在锁内完成迁移
+  -> 返回一条 checkpointLifecycleCommand
+  -> liveCheckpointer 执行命令，锁外做 I/O
+  -> I/O 完成后翻译为 checkpointOutcome
+  -> CheckpointCompleted 作为新输入再次进入 checkpointLifecycle
+```
+
+异步 I/O 天然存在“启动”与“完成”两个时间点，不能把它们伪装成一次持锁 I/O。要消除的是调用者手工配对 `beginAttempt`/`finishAttempt` 的半事务：启动时的全部状态变更由原始输入一次完成，completion 是带 attempt 快照的新业务输入，不是同一迁移的“后半段”。
+
+### 9.3 状态与数据
+
+每个 exact live Session object 使用一个 `checkpointLifecycle`，不按 Session ID 合并不同生命周期。状态机使用单一枚举，不叠加 `active`、`dirty`、`detached` 等会形成非法组合的 bool：
+
+| 状态 | 业务含义 |
+| --- | --- |
+| `checkpointLifecycleClean` | 无 timer、无 active attempt，已观察输入全部已 checkpoint |
+| `checkpointLifecycleDelayed` | 存在 dirty prefix，已保留或安装 interval timer |
+| `checkpointLifecycleRunning` | 一个 live attempt 正在执行，其覆盖范围之后的输入尚未满足再次写入条件 |
+| `checkpointLifecycleQueued` | 一个 live attempt 正在执行，其覆盖范围之后的输入已满足再次写入条件；只记录一次合并请求，尚未启动第二个 attempt |
+| `checkpointLifecycleFinalQueued` | live attempt 正在执行，已收到权威 `session/disposed`，完成后必须衔接 final attempt |
+| `checkpointLifecycleFinalRunning` | final detached attempt 正在执行 |
+| `checkpointLifecycleClosed` | 终态，不再接受新输入；exact Session 映射已移除或由本次命令移除，迟到 completion 只用于释放 inflight barrier |
+
+`Queued` 是一个合并 latch，不是 task queue：当前 attempt 覆盖到 event 100，I/O 期间 event 101...105 又满足 threshold 或出现 `turn/end` 时，只记住“当前 attempt 完成后再写一次”。此时没有第二个 writer；当前 attempt 完成后才创建覆盖最新前缀的后续 attempt，期间的多次触发仍只合并为一次。`FinalQueued` 同理取代 `FinalPending`。七个状态已是业务需要的七种合法组合，再拆成多个状态轴只会重新引入非法组合。
 
 ```go
-type writeState struct {
-    latestSeq    int64
-    persistedSeq int64
-    pending      int
-    timer        *time.Timer
-    writing      bool
-    force        bool
-    retiring     bool
+type checkpointLifecycle struct {
+    state              checkpointLifecycleState
+    observedEvents     uint64
+    checkpointedEvents uint64
+    nextAttemptID      uint64
+    activeAttempt      checkpointAttempt
+    timerGeneration    uint64
+    timer              *time.Timer
 }
 ```
 
-`pending` 统计本次 live 期间自上次成功写入后的新事件，不把 resume 前的整段历史误计为新事件。
+- `observedEvents-checkpointedEvents` 表示本次 exact live 期间尚未被成功 attempt 覆盖的输入数，不把 resume 前历史误计为新事件。
+- `activeAttempt` 是 `Running`、`Queued`、`FinalQueued` 和 `FinalRunning` 的关联数据，记录当前 I/O 的 ID、kind 和 `coveredEvents`；其他状态必须为零值。它与 state 组成一个不变量，不是可独立变化的第二状态轴。
+- `nextAttemptID` 为每次启动分配非零 ID，使 completion 只能完成它所属的 active attempt；重试覆盖相同 event prefix 时也不会误接受旧 completion。
+- `timerGeneration` 拒绝已取消或已替换 timer 的迟到 callback，不能由状态本身推导。
+- `timer` 是待取消的运行时资源句柄，`Delayed` 才是调度事实；不能以 `timer != nil` 替代状态。
 
-### 9.2 事件触发
+进入 active state 时，状态机在同一次迁移中创建 `activeAttempt`，并把它的不可变副本交给 `StartCheckpoint` 命令。这样 worker 不再通过 `beginAttempt` 二次修改 state。`EventAppended` 在 active state 下以 `observedEvents-activeAttempt.coveredEvents` 计算当前 attempt 启动后的新输入；`CheckpointCompleted` 必须先校验 attempt ID 与 kind，再推进 `checkpointedEvents` 或产生后续命令。
 
-`session/event` 到达后：
+### 9.4 命名输入、结果与命令
 
-1. 更新 `latestSeq`和 `pending`；
-2. 首个 dirty event 启动 interval timer；
-3. `pending >= writeEveryEvents` 时请求写入；
-4. event type 为 `turn/end` 时设置 `force=true` 并立即请求写入；
-5. Observer 只登记工作并返回，不在 best-effort Event publication 内同步执行 SQLite I/O。
+`checkpointLifecycle` 向 `liveCheckpointer` 提供命名方法，而不暴露可任意构造的通用 event envelope：
 
-`session/event` 是并行 best-effort 投递，但 Cache 不依赖 Registry Observer 先于 Cache Observer 执行。`Registry.Checkpoint(session)` 会从 Session 当前 detached events 补算落后 cell，因此 checkpoint 不会因 Listener 顺序漏掉已 committed event。
+```go
+eventAppended(forceCheckpoint bool, writeEveryEvents int)
+timerElapsed(generation uint64)
+sessionDisposed()
+checkpointCompleted(attempt checkpointAttempt, outcome checkpointOutcome)
+cacheClosing()
+```
 
-### 9.3 单 Session 写入串行
+这些方法内部共用一个受锁保护的迁移入口，只有该入口可改写 state、计数和 timer identity。`forceCheckpoint=true` 表示 `turn/end`。timer 安装是执行 `ArmTimer` 命令后的技术确认，不是可任意调用的业务迁移。
 
-- 同一 Session 同时最多一个 writer；
-- threshold、timer、`turn/end` 和 detach 只合并为写入请求，不并发写 SQLite；
-- writer 执行期间的新 event 继续更新 `latestSeq`；
-- 写入成功后按 checkpoint row cut 重算 dirty 状态，不盲目清零写入期间的新 event；
-- 写入失败保留 dirty/force 证据，运行中 Session 在后续触发点自愈。
+checkpoint 执行结果在 port 边界翻译为：
 
-### 9.4 耐久性顺序
+| 结果 | 含义 |
+| --- | --- |
+| `checkpointSucceeded` | Projection cut 已按对应耐久性顺序成功写入 |
+| `checkpointFailed` | 需要报告的普通 checkpoint 故障 |
+| `checkpointUnavailable` | live Flush 返回 `session.ErrNotAttached`，该 live attempt 已无法在 LiveStore 上完成 |
+
+`checkpointUnavailable` 不报告缓存故障，但也不能授权 final attempt。`ErrNotAttached` 还可以表示 foreign、stale 或从未挂入的 Context，不能证明 Session final Flush 已完成。只有 `SessionDisposed()` 是 final checkpoint 的授权事实。
+
+每个输入在锁内完成迁移后，返回恰好一个 tagged command：
+
+| 命令 | 携带数据 | 执行行为 |
+| --- | --- | --- |
+| `checkpointLifecycleNoop` | 无 | 不执行外部效果 |
+| `checkpointLifecycleArmTimer` | generation | 安装 interval timer |
+| `checkpointLifecycleStartCheckpoint` | checkpoint attempt | 根据 attempt kind 启动 live 或 detached final checkpoint |
+| `checkpointLifecycleRemove` | 无 | 从 exact Session 映射移除该对象 |
+
+command 是状态机的判定结果，不是容纳任意可选字段的通用 request。live 与 final 共用 `StartCheckpoint`，耐久性路径由状态机原子创建的 attempt kind 确定，避免重复命令分支。`liveCheckpointer` 只按 tag 执行，不根据 state 补充业务判断。
+
+### 9.5 迁移表
+
+| 输入 | 当前状态 | 下一状态 | 命令 |
+| --- | --- | --- | --- |
+| EventAppended，未满足写入条件 | Clean | Delayed | ArmTimer |
+| EventAppended，满足 threshold 或为 `turn/end` | Clean/Delayed | Running | StartCheckpoint(live) |
+| EventAppended，尚未满足再次写入条件 | Running | Running | Noop |
+| EventAppended，已满足再次写入条件 | Running | Queued | Noop |
+| EventAppended | Queued | Queued | Noop |
+| TimerElapsed，generation 匹配 | Delayed | Running | StartCheckpoint(live) |
+| TimerElapsed，迟到或状态不匹配 | 任何 | 不变 | Noop |
+| SessionDisposed | Clean/Delayed | FinalRunning | StartCheckpoint(final) |
+| SessionDisposed | Running/Queued | FinalQueued | Noop |
+| SessionDisposed | FinalQueued/FinalRunning/Closed | 不变 | Noop |
+| CheckpointCompleted，success 且无新 dirty input | Running | Clean | Noop |
+| CheckpointCompleted，failure/unavailable，或 success 后仍 dirty 但未满足立即再写条件 | Running | Delayed | ArmTimer |
+| CheckpointCompleted，success/failure | Queued | Running | StartCheckpoint(live) |
+| CheckpointCompleted，unavailable | Queued | Delayed | ArmTimer |
+| CheckpointCompleted，任何 live outcome | FinalQueued | FinalRunning | StartCheckpoint(final) |
+| CheckpointCompleted，final success/failure | FinalRunning | Closed | Remove |
+| CacheClosing | Clean/Delayed | Closed | Remove |
+| CacheClosing | Running/Queued/FinalQueued/FinalRunning | Closed | Remove；已启动 attempt 由 checkpointer 的 inflight barrier 等待 |
+| CheckpointCompleted，关闭时的 active attempt | Closed | Closed | Noop |
+
+`FinalQueued` 中 live attempt 的 outcome 不影响 final 命令：`SessionDisposed` 已经提供更强的耐久性事实。`Queued` 中的普通 failure 仍按 outcome 契约报告，然后执行合并后的下一次 live write；`checkpointUnavailable` 说明 LiveStore 当下不能执行 live attempt，不做无意义的立即重试，而是保留 dirty prefix 并等待 timer 或权威 `SessionDisposed`。
+
+`FinalQueued`、`FinalRunning` 和 `Closed` 不再接受新 Session event。attempt kind 必须与当前状态期待一致。除表中明确定义的幂等输入外，其他 state/input/attempt 组合都是内部不变量破坏，必须返回明确错误，不得用 default 分支静默收敛。
+
+Cache shutdown 不把 dirty state 升级为 final write。
+
+### 9.6 耐久性顺序
 
 普通 live 写入必须保持：
 
@@ -340,19 +446,53 @@ Registry.Checkpoint(session)
 
 checkpoint 先取 cut，再调用唯一 `LiveStore.Flush`。禁止先 `LiveStore.Get` 判断 live 再调用 Flush；两次独立检查不能拥有同一个生命周期事实。Flush 可以把比 checkpoint cut 更新的 event 一并持久化，这只会让 cache 落后，不会让 cache 超前。
 
+final attempt 使用：
+
+```text
+Registry.Checkpoint(session)
+  -> CheckpointStore.Replace(record)
+  -> update in-memory record index
+```
+
+它不调用 LiveStore，因为启动它的唯一输入 `SessionDisposed` 已经证明 final Flush 完成且 exact Session 已从 LiveStore 移除。
+
+### 9.7 实施与验收
+
+实现未保留过渡性双路径：
+
+1. table-driven test 固定全部 state/input/outcome 迁移和非法组合；
+2. `checkpoint_lifecycle.go` 定义 state、outcome、attempt 和 command，枚举值与状态字段注释说明不变量；
+3. 命名输入取代 `beginAttempt`/`finishAttempt`/`retryTimer` 式半事务，旧 phase 和 action 路径已删除；
+4. `liveCheckpointer` 集中执行 command，并集中完成 raw error -> outcome 翻译，worker 不读 state 做二次决策；
+5. 确定性门闩覆盖 `ErrNotAttached` 先于 `SessionDisposed` 和 `SessionDisposed` 先于 live completion 两种时序；
+6. threshold、timer、`turn/end`、Dispose、Close、同 Session 串行与不同 Session 并行均有测试覆盖。
+
+验收矩阵包括：
+
+- threshold、timer、`turn/end` 触发与 stale timer generation；
+- running 期间连续 event 的合并；
+- Dispose 分别发生在 Clean、Delayed、Running 和 Queued；
+- `ErrNotAttached` 先于/后于 Dispose，不误报 failure，不由 error 冒充 final 授权，最终恰好一次 final attempt；
+- 普通 live failure 报告并重试，final failure 报告后移除；
+- Close 发生在每个状态，不强制 dirty write；
+- 同 exact Session 最多一个 active attempt，不同 Session 可并行；
+- live Session detach 与异步 checkpoint 竞争不产生虚假故障，权威 `SessionDisposed` 到达后由 final checkpoint 收敛。
+
+本次已通过 focused tests、Projection Cache 20 次 race 重复测试、`go test ./...`、`go test -race ./...`、`go vet ./...`、`go build ./...`、Markdown 本地链接检查和 `git diff --check`。
+
 ## 10. Detach 与 Plugin 关闭
 
 ### 10.1 Session detach
 
 Session Handle Release 在从 LiveStore 移除前已经通过同一个 operation FIFO 发布并等待最终 `session/flush`。`session/disposed` 到达 Cache 时：
 
-1. 设置 `retiring=true`，记录必须发生一次 final detached attempt；
+1. 把 `checkpointLifecycle` 转为 `FinalRunning`，或在 active attempt 后转为 `FinalQueued`；
 2. 如果普通 live writer 在运行，它完成后无论成功或失败都再执行一次 final detached attempt；
 3. final attempt 直接 `Registry.Checkpoint -> CheckpointStore.Replace`，不调用 `LiveStore.Get` 或 `LiveStore.Flush`；
 4. final attempt 成功或失败后删除 live write state；
 5. detach write 失败不无限保留 timer，由下次 cold read 全量或 suffix 自愈。
 
-这里依赖的不是“Session 大概已经不 live”，而是 `session/disposed` 的前置保证：同一 Session FIFO 已排空，final barrier 已由 Persistence 满足，exact Session 已从 LiveStore 移除。Projection Cache 不再自行重建这段生命周期判断。
+这里依赖的不是“Session 大概已经不 live”，而是 `session/disposed` 的前置保证：同一 Session FIFO 已排空，final barrier 已由 Persistence 满足，exact Session 已从 LiveStore 移除。Projection Cache 不再自行重建这段生命周期判断，也不把 `ErrNotAttached` 解释为等价事实。
 
 Projection Registry 的 `session/disposed` Observer 可能并行删除 live cell。Cache 不依赖该 cell 存活；`Checkpoint` 可从 detached Session events 重建。
 
@@ -360,14 +500,16 @@ Projection Registry 的 `session/disposed` Observer 可能并行删除 live cell
 
 Plugin Dispose 顺序固定为：
 
-1. 关闭新 event/timer/cold write-back 准入；
-2. 停止全部 timer；
-3. 取消尚未进入存储的辅助写入；
-4. 等待已进入 Flush/Store 边界的 in-flight 操作退出；
-5. 关闭 CheckpointStore；
-6. 清空内存 index 和 write states。
+1. 如果 `Open` 正在加载 record，等待该次装配成功或回滚；
+2. `ProjectionCache` 进入 `closing`，拒绝新的 event、snapshot 和 write-back 准入；
+3. 等待已准入的 facade 调用退出；
+4. `liveCheckpointer` 停止全部 timer，并等待已经启动的 checkpoint goroutine；
+5. 关闭 `CheckpointStore`；
+6. 进入 `closed` 并向并发 Close caller 发布同一个结果。
 
 缓存是可丢弃数据，Plugin shutdown 不为未达到阈值的普通 dirty state 强制创建新写入。
+
+上述顺序由 `ProjectionCache` 自己保证，不能依赖 Plugin Runtime 或某个 composition root 恰好串行调用 `Open/Close`。`Open` 的 record load 失败时没有发布任何组件，状态从临时 `opening` 回滚到 `created`，Store 仍由调用方负责关闭，并允许使用新 Store 重试。
 
 ## 11. `CachedSnapshot`
 
@@ -525,6 +667,8 @@ cold child 流程：
 - cold read 成功后的 checkpoint write-back 失败；
 - 已识别为可丢弃 checkpoint row 的验证失败。
 
+live Flush 返回 `session.ErrNotAttached` 映射为 `checkpointUnavailable`，不属于需报告的 checkpoint failure。状态机保留 dirty prefix，并且只在收到权威 `session/disposed` 后启动 final attempt。
+
 ### 16.3 必须向调用者返回的错误
 
 - request Context 取消；
@@ -544,23 +688,25 @@ cold child 流程：
 | PC-I05 | cache 可以落后 durable log，不能领先 durable log |
 | PC-I06 | Log Identity 不同时整个 record 失效 |
 | PC-I07 | StateVersion 不同时丢弃 row，不迁移 Unit state |
-| PC-I08 | 同 Session 同时最多一个 checkpoint writer |
+| PC-I08 | 同一 exact `session.Context` 同时最多一个 active checkpoint attempt；不同 exact Session 可以并行 |
 | PC-I09 | `session.list` 的 cold rows 不为 Projection 执行全量 `Inspect` |
 | PC-I10 | history 首页的 `projections.asOfSeq` 与页面末尾 event seq 相同 |
 | PC-I11 | older history page 不调用 Cache，不携带 Projection block |
 | PC-I12 | Cache Plugin Dispose 先关闭准入并排空，再关闭 CheckpointStore |
-| PC-I13 | Cache Plugin/SQLite adapter/CheckpointCache 业务对象是三个独立职责 |
+| PC-I13 | Cache Plugin、`ProjectionCache` 业务对象与 SQLite adapter 是三个独立职责 |
 | PC-I14 | Agent、AgentLoop 和 Session core 不依赖 Projection Cache |
+| PC-I15 | `checkpointLifecycle` 的所有状态变化只能由命名输入显式触发，worker 不得越过状态机决定后续写入 |
+| PC-I16 | `session/disposed` 是 final checkpoint 的唯一授权事实，`ErrNotAttached` 不与之等价 |
+| PC-I17 | 非法 state/input/attempt 组合必须显式失败，不得以默认分支静默关闭或恢复 |
 
-## 18. 文档同步边界
+## 18. 文档同步
 
-本方案的实现完成后，一次性同步：
+显式状态机完成验收后，稳定职责与证据已同步到现有文档体系，不创建第二份进度来源：
 
-- `zh-CN/18-session-projection-and-title.md`：链接本文，删除“未来 adapter”的过期表述；
-- `zh-CN/16-session-api-gateway-and-live-frames.md`：记录 list/history 的 cache 消费边界；
-- `zh-CN/19-session-persistence-and-sqlite.md`：只强化“Session fact DB 不是 Projection Cache DB”的链接；
-- `zh-CN/08-implementation-progress.md`：只记录总体完成状态和公共验证证据；
-- `zh-CN/README.md`：在设计索引加入本文和专项进度矩阵；
-- 真实新增 package 的 `README.zh-CN.md`。
+- `zh-CN/16-session-api-gateway-and-live-frames.md` 记录 list/history 的 Cache 消费边界；
+- `zh-CN/18-session-projection-and-title.md` 链接本文并区分 Registry、Cache 与 SQLite adapter；
+- `zh-CN/19-session-persistence-and-sqlite.md` 明确 Session fact DB 不是 Projection Cache DB；
+- `zh-CN/08-implementation-progress.md` 只记录总体完成状态和公共验证证据；
+- `zh-CN/README.md` 及相关 package `README.zh-CN.md` 提供索引和近邻职责说明。
 
-专项进度矩阵记录本次实现和验证的实际完成情况；全局文档只保留稳定职责和汇总证据。
+第 9.7 节记录本专项实现和验证的实际完成情况；全局文档只保留稳定职责和汇总证据。

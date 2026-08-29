@@ -69,7 +69,7 @@ Compaction 已按[Session Core](../session/docs/design.zh-CN.md)迁移到唯一 
 | CMP-M01 | `CompactNow` 通过 Agent maintenance 执行 | Completed | Go Verified：idle admission、latched successor wake 优先、busy/cancelled/changed/summary/commit/persistence 分类 |
 | CMP-M02 | selected-span stability、standalone bracket 与 explicit flush | Completed | Go Verified：completion plan 只在 FIFO 头部校验选区；manual close 后 Flush 等待 ordered committed-prefix barrier |
 | CMP-M03 | `/compact` 无参数 Command Consumer | Completed | Go Verified：独立 `Compact` 业务对象、manual result mapping 与 `sourceCommandId` |
-| CMP-M04 | Commands Registry 与 `command/run`/`command/done` | Completed | Go Verified：handler await 位于两次固定 `Batch` commit 之间，不占用 Session coordinator |
+| CMP-M04 | Commands Registry 与 `command/run`/`command/done` | Completed | Go Verified：handler await 位于两次固定 `Batch` commit 之间，不占用 Session FIFO |
 | CMP-M05 | `commands/list`/`commands/execute` Remote adapter | Completed | Go Verified：descriptor wrapper、ordinary Agent fence、absent value、image schema 与 RPC error |
 | CMP-A01 | Catalog 注册 Token Meter、Pruner 和 Basic Factory | Completed | Go Verified：Catalog 和 strict Factory tests |
 | CMP-A02 | `DefaultSpecs` 启用自动 Compaction | Completed | Go Verified：keyless composition 发布 Meter/Pruner/Engine |

@@ -83,7 +83,7 @@ sequenceDiagram
     participant W as per-Session Writer
     participant B as Backend
     U->>S: Commit EventDraft
-    S->>S: coordinator commits seq/time/surface
+    S->>S: Session commits seq/time/surface
     S-->>C: session/event
     C->>W: enqueue detached Event
     W->>B: AppendBatch on delay/batch boundary
@@ -98,7 +98,7 @@ sequenceDiagram
 
 Event 在进入 persistence listener 前已是 committed fact，因此 storage failure 不能倒转 Session memory。write-behind 必须保留失败 batch、保持原顺序并让显式 flush 报错；不能推进 durable cursor 或伪报成功。第一次 materialization 的 Header 和首批 Events 必须处于同一 Backend transaction。
 
-正常 Agent driver 在提交 `turn/end` 后调用 `session.LiveStore.Flush`，并在它完成后才成功进入 successor Turn 或 idle convergence。Flush 与 Commit、Release 使用 Session coordinator 的同一个 FIFO；它在队首取得 ordered `WriteBarrier`，确保此前 Event publication 已完成，并在所有 durability participant settle 后才归还 baton。`SessionLogStore` 必须至少把 `Seq < barrier.NextSeq` 的 retained facts提交给 Backend；可以顺带提交更晚事实，但不能用“当前 pending 已空”替代指定 prefix 校验。Agent Loop 不直接调用 `Persistence` 或 SQLite。
+正常 Agent driver 在提交 `turn/end` 后调用 `session.LiveStore.Flush`，并在它完成后才成功进入 successor Turn 或 idle convergence。Flush 与 Commit、Release 使用该 exact Session 的同一个 lifecycle FIFO；它在队首取得 ordered `WriteBarrier`，确保此前 Event publication 已完成，并在所有 durability participant settle 后才归还 baton。`SessionLogStore` 必须至少把 `Seq < barrier.NextSeq` 的 retained facts提交给 Backend；可以顺带提交更晚事实，但不能用“当前 pending 已空”替代指定 prefix 校验。Agent Loop 不直接调用 `Persistence` 或 SQLite。
 
 用户取消当前 Turn 时，已提交的 aborted `turn/end` 仍必须越过 durability barrier，因此最终屏障保留 Context value 但不继承 Turn cancellation。其他显式 flush 的调用方取消或 Backend failure 仍返回错误；未落盘 batch 由 writer 保留，供后续 flush、dispose 或 shutdown drain。Flush operation 等待 Backend I/O 时只占有该 Session 的 FIFO baton，不持有 queue/log mutex，也不阻塞其他 Session。
 

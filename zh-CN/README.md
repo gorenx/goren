@@ -39,7 +39,7 @@
 
 - [`plugin/README.zh-CN.md`](../plugin/README.zh-CN.md)：Plugin Runtime 职责边界、依赖结算、Scope 路由、统一 Fiber Effect 生命周期与按需 API 示例。
 - [`session/README.zh-CN.md`](../session/README.zh-CN.md)：Session append-only log、唯一写协调器、LiveStore、publication 与生命周期。
-- [`session/projectioncache/README.zh-CN.md`](../session/projectioncache/README.zh-CN.md)：CheckpointCache 业务职责、cached/cold read、写入调度与关闭排空。
+- [`session/projectioncache/README.zh-CN.md`](../session/projectioncache/README.zh-CN.md)：ProjectionCache 业务职责、cached/cold read、写入调度与关闭排空。
 - [`session/projectioncache/plugin/README.zh-CN.md`](../session/projectioncache/plugin/README.zh-CN.md)：Projection Cache 与 Plugin Runtime 的生命周期适配边界。
 - [`session/projectioncache/sqlite/README.zh-CN.md`](../session/projectioncache/sqlite/README.zh-CN.md)：独立 checkpoint SQLite/sqlc storage adapter。
 - [`agentloop/README.zh-CN.md`](../agentloop/README.zh-CN.md)：Agent driver、Turn/Step、请求/Tool 调度、durability checkpoint 与 idle convergence。

@@ -202,7 +202,7 @@ Session 提供三类保证：
 2. 按当前位置解释的 Surface append/replace；
 3. 固定 `Batch` 与状态相关 `WritePlan` 通过唯一 `Commit` 进入同一个 FIFO，并以完整 batch 原子提交。
 
-Compaction 不因为“事件数量多”就实现自定义 plan。`summary -> replacement -> end` 的 replacement provenance 依赖 summary 将获得的 `Seq`，Pruner 又必须在 request 真正到达 FIFO 头部时扫描最新 Surface 并确定候选，因此这两个 use case 实现 `WritePlan.Build(context.Context, session.Snapshot)`，一次返回完整 drafts。Session 在临时 log/Surface 上验证全部 draft 后原子提交；Session mutex 和 queue 不暴露给 Compaction，LLM summarization 始终在 coordinator 外执行。完整调用契约由[Session Core 设计](../session/docs/design.zh-CN.md)拥有。
+Compaction 不因为“事件数量多”就实现自定义 plan。`summary -> replacement -> end` 的 replacement provenance 依赖 summary 将获得的 `Seq`，Pruner 又必须在 request 真正到达 FIFO 头部时扫描最新 Surface 并确定候选，因此这两个 use case 实现 `WritePlan.Build(context.Context, session.Snapshot)`，一次返回完整 drafts。Session 在临时 log/Surface 上验证全部 draft 后原子提交；Session mutex 和 FIFO 不暴露给 Compaction，LLM summarization 始终在 Session FIFO 外执行。完整调用契约由[Session Core 设计](../session/docs/design.zh-CN.md)拥有。
 
 ### 5.4 Agent 与 LiveStore
 
@@ -395,7 +395,7 @@ sequenceDiagram
     end
 ```
 
-入口和提交阶段分别使用短时 `WritePlan.Build`；LLM 请求位于两者之间，不能占有 Session coordinator。事务规则按真实变化轴组合：`attemptOwnership` 只负责 current-turn 或 standalone lifecycle，`completionStability` 只负责 whole Surface 或 selected region 的完成校验；automatic/manual 只是调用入口，不再作为混合事务策略。`compaction/start/end` 是持久化生命周期事实，不是跨 LLM 调用的排他锁：人工 summarization 等待期间，独立 idle injection 可以出现在 marker 中间，`attemptCompletion` 到达 FIFO 头部后会重新校验并只替换原选中 span。Token Meter 与摘要输入通过同 revision 的 `surfaceReading` 建立 baseline，不再跨多个 Session 读视图拼接。
+入口和提交阶段分别使用短时 `WritePlan.Build`；LLM 请求位于两者之间，不能占有 Session FIFO。事务规则按真实变化轴组合：`attemptOwnership` 只负责 current-turn 或 standalone lifecycle，`completionStability` 只负责 whole Surface 或 selected region 的完成校验；automatic/manual 只是调用入口，不再作为混合事务策略。`compaction/start/end` 是持久化生命周期事实，不是跨 LLM 调用的排他锁：人工 summarization 等待期间，独立 idle injection 可以出现在 marker 中间，`attemptCompletion` 到达 FIFO 头部后会重新校验并只替换原选中 span。Token Meter 与摘要输入通过同 revision 的 `surfaceReading` 建立 baseline，不再跨多个 Session 读视图拼接。
 
 ### 11.1 `/compact` 正常完成交互
 
