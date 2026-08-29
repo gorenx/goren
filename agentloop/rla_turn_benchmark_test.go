@@ -66,7 +66,7 @@ func (benchmarkScopeRuntime) Teardown(context.Context) error { return nil }
 type turnBenchmarkHarness struct {
 	runtimeEngine *plugin.Runtime
 	handleState   agent.Handle
-	runner        *turnRunner
+	subject       *ReactLoopAgent
 }
 
 var benchmarkConstructedAgent *ReactLoopAgent
@@ -83,14 +83,13 @@ func BenchmarkAgentConstruct(b *testing.B) {
 		Provider: "benchmark",
 		Model:    "model",
 	}
-	failures := newObserverFailureReporter(nil)
 	b.ReportAllocs()
 	for b.Loop() {
 		benchmarkConstructedAgent, err = newReactLoopAgent(
 			conversation,
 			loopOptions,
 			DefaultMaxParallelToolCalls,
-			failures,
+			nil,
 			benchmarkScopeRuntime{},
 		)
 		if err != nil {
@@ -171,7 +170,7 @@ func newTurnBenchmarkHarness(
 	state := &turnBenchmarkHarness{
 		runtimeEngine: runtimeEngine,
 		handleState:   handleState,
-		runner:        subject.loop.turns,
+		subject:       subject,
 	}
 	benchmarkState.Cleanup(func() {
 		if disposeErr := state.handleState.Dispose(context.Background()); disposeErr != nil {
@@ -188,7 +187,7 @@ func BenchmarkTurnPrepareEmptyStep(b *testing.B) {
 	state := newTurnBenchmarkHarness(b)
 	b.ReportAllocs()
 	for b.Loop() {
-		plan, err := state.runner.executor.prepare(
+		plan, err := state.subject.prepareStep(
 			context.Background(),
 			agent.NextStep,
 			1,
@@ -207,7 +206,7 @@ func BenchmarkTurnRunEmpty(b *testing.B) {
 	state := newTurnBenchmarkHarness(b)
 	b.ReportAllocs()
 	for b.Loop() {
-		continued, err := state.runner.runTurn(context.Background())
+		continued, err := state.subject.runTurn(context.Background())
 		if err != nil {
 			b.Fatal(err)
 		}

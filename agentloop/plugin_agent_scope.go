@@ -13,16 +13,22 @@ import (
 	"github.com/gorenx/goren/tools"
 )
 
-// agentScopeRoot is the Plugin adapter for one exact Agent. It owns scoped
+// AgentScope is the Plugin adapter for one exact Agent. It owns scoped
 // runtime bindings and translates Agent-owned runtime contracts to Plugin
 // Events and Waterfalls; it owns no Agent lifecycle state.
-type agentScopeRoot struct {
+type scopeParent interface {
+	release(context.Context, scopeID) (bool, error)
+	forget(scopeID)
+}
+
+type AgentScope struct {
 	plugin.Base
 	children []plugin.ChildPlugin
 
 	mutex        sync.Mutex
-	subject      *ReactLoopAgent
-	scopes       *agentScopes
+	identifier   scopeID
+	parent       scopeParent
+	provider     *AgentProvider
 	resources    []agent.ScopeResource
 	disposeOnce  sync.Once
 	disposeDone  chan struct{}
@@ -32,13 +38,15 @@ type agentScopeRoot struct {
 	teardown     agent.AgentTeardown
 }
 
-func newAgentScopeRoot(
-	loopOptions agent.Options,
+func newAgentScope(
+	agentOptions agent.Options,
 	headerSnapshot session.Header,
-	scopes *agentScopes,
-) *agentScopeRoot {
-	return &agentScopeRoot{
-		scopes: scopes,
+	identifier scopeID,
+	parent scopeParent,
+) *AgentScope {
+	return &AgentScope{
+		identifier: identifier,
+		parent:     parent,
 		children: []plugin.ChildPlugin{
 			{
 				Instance:  systemprompt.NewOverlay(systemprompt.RegistryOptions{}),
@@ -51,7 +59,7 @@ func newAgentScopeRoot(
 				Phase:     plugin.ActivationMain,
 			},
 			{
-				Instance:  newAgentVariables(loopOptions, headerSnapshot),
+				Instance:  newAgentVariables(agentOptions, headerSnapshot),
 				Placement: plugin.SameScope,
 				Phase:     plugin.ActivationMain,
 			},
@@ -60,7 +68,7 @@ func newAgentScopeRoot(
 	}
 }
 
-func (root *agentScopeRoot) bindTeardown(
+func (root *AgentScope) bindTeardown(
 	teardownTarget agent.AgentTeardown,
 ) error {
 	if root == nil || teardownTarget == nil {
@@ -75,22 +83,22 @@ func (root *agentScopeRoot) bindTeardown(
 	return nil
 }
 
-func (root *agentScopeRoot) bind(subject *ReactLoopAgent) error {
+func (root *AgentScope) bind(subject *ReactLoopAgent) error {
 	if root == nil || subject == nil {
 		return errors.New("agentloop: Agent Scope requires an Agent")
 	}
 	root.mutex.Lock()
 	defer root.mutex.Unlock()
-	if root.subject != nil {
+	if root.provider != nil {
 		return errors.New("agentloop: Agent Scope is already bound")
 	}
-	root.subject = subject
+	root.provider = &AgentProvider{
+		subject: subject,
+	}
 	root.children = append(
 		root.children,
 		plugin.ChildPlugin{
-			Instance: &agentRuntimeAdapter{
-				subject: subject,
-			},
+			Instance:  root.provider,
 			Placement: plugin.SameScope,
 			Phase:     plugin.ActivationMain,
 		},
@@ -98,7 +106,7 @@ func (root *agentScopeRoot) bind(subject *ReactLoopAgent) error {
 	return nil
 }
 
-func (root *agentScopeRoot) Manifest() plugin.Manifest {
+func (root *AgentScope) Manifest() plugin.Manifest {
 	root.mutex.Lock()
 	children := append([]plugin.ChildPlugin(nil), root.children...)
 	root.mutex.Unlock()
@@ -108,34 +116,27 @@ func (root *agentScopeRoot) Manifest() plugin.Manifest {
 	}
 }
 
-func (root *agentScopeRoot) Apply(requestContext context.Context) error {
+func (root *AgentScope) Apply(requestContext context.Context) error {
 	return requestContext.Err()
 }
 
-func (root *agentScopeRoot) Dispose(closeContext context.Context) error {
+func (root *AgentScope) Dispose(closeContext context.Context) error {
 	if closeContext == nil {
 		closeContext = context.Background()
 	}
 	root.disposeOnce.Do(func() {
-		if root.scopes != nil {
-			root.scopes.forget(root)
+		if root.parent != nil {
+			root.parent.forget(root.identifier)
 		}
 		root.mutex.Lock()
 		resources := append([]agent.ScopeResource(nil), root.resources...)
 		root.resources = nil
-		subject := root.subject
 		root.mutex.Unlock()
 
 		for index := len(resources) - 1; index >= 0; index-- {
 			root.disposeErr = errors.Join(
 				root.disposeErr,
 				resources[index].Dispose(closeContext),
-			)
-		}
-		if subject != nil {
-			root.disposeErr = errors.Join(
-				root.disposeErr,
-				subject.shutdown(closeContext),
 			)
 		}
 		if root.teardown != nil {
@@ -151,14 +152,17 @@ func (root *agentScopeRoot) Dispose(closeContext context.Context) error {
 	}
 }
 
-func (root *agentScopeRoot) Agent() agent.Agent {
+func (root *AgentScope) Agent() agent.Agent {
 	root.mutex.Lock()
-	subject := root.subject
+	provider := root.provider
 	root.mutex.Unlock()
-	return subject
+	if provider == nil {
+		return nil
+	}
+	return provider.Agent()
 }
 
-func (root *agentScopeRoot) MountPlugin(
+func (root *AgentScope) MountPlugin(
 	requestContext context.Context,
 	instance plugin.Plugin,
 ) (agent.ScopeResource, error) {
@@ -175,7 +179,7 @@ func (root *agentScopeRoot) MountPlugin(
 	}, nil
 }
 
-func (root *agentScopeRoot) Own(resource agent.ScopeResource) error {
+func (root *AgentScope) Own(resource agent.ScopeResource) error {
 	if root == nil || resource == nil {
 		return errors.New("agentloop: Agent Scope Resource is nil")
 	}
@@ -190,7 +194,7 @@ func (root *agentScopeRoot) Own(resource agent.ScopeResource) error {
 	return nil
 }
 
-func (root *agentScopeRoot) Dispatch(
+func (root *AgentScope) Dispatch(
 	requestContext context.Context,
 	fact agent.RuntimeEvent,
 ) error {
@@ -203,7 +207,7 @@ func (root *agentScopeRoot) Dispatch(
 	return plugin.PublishEvent(requestContext, root, runtimeFact)
 }
 
-func (root *agentScopeRoot) ResolvePreStep(
+func (root *AgentScope) ResolvePreStep(
 	requestContext context.Context,
 	notice agent.PreStepNotice,
 	terminal agent.PreStepAction,
@@ -211,7 +215,7 @@ func (root *agentScopeRoot) ResolvePreStep(
 	return plugin.Run(requestContext, root, notice, terminal)
 }
 
-func (root *agentScopeRoot) ResolveRequest(
+func (root *AgentScope) ResolveRequest(
 	requestContext context.Context,
 	notice agent.RequestNotice,
 	terminal agent.RequestAction,
@@ -219,7 +223,7 @@ func (root *agentScopeRoot) ResolveRequest(
 	return plugin.Run(requestContext, root, notice, terminal)
 }
 
-func (root *agentScopeRoot) ResolveRequestError(
+func (root *AgentScope) ResolveRequestError(
 	requestContext context.Context,
 	notice agent.RequestErrorNotice,
 	terminal agent.RequestErrorHandler,
@@ -227,7 +231,7 @@ func (root *agentScopeRoot) ResolveRequestError(
 	return plugin.Run(requestContext, root, notice, terminal)
 }
 
-func (root *agentScopeRoot) Provision(
+func (root *AgentScope) Provision(
 	requestContext context.Context,
 	provisioner agent.Provisioner,
 ) error {
@@ -237,7 +241,7 @@ func (root *agentScopeRoot) Provision(
 	return agent.ApplyProvisioning(requestContext, root, provisioner)
 }
 
-func (root *agentScopeRoot) Teardown(closeContext context.Context) error {
+func (root *AgentScope) Teardown(closeContext context.Context) error {
 	if root == nil {
 		return nil
 	}
@@ -245,18 +249,28 @@ func (root *agentScopeRoot) Teardown(closeContext context.Context) error {
 		closeContext = context.Background()
 	}
 	root.teardownOnce.Do(func() {
-		if root.scopes == nil {
+		if root.parent == nil {
 			root.teardownErr = root.Dispose(closeContext)
 			return
 		}
-		root.teardownErr = root.scopes.release(closeContext, root)
+		mounted, releaseErr := root.parent.release(
+			closeContext,
+			root.identifier,
+		)
+		root.teardownErr = releaseErr
+		if !mounted {
+			root.teardownErr = errors.Join(
+				root.teardownErr,
+				root.Dispose(closeContext),
+			)
+		}
 	})
 	return root.teardownErr
 }
 
 type pluginEffect struct {
 	mutex  sync.Mutex
-	parent *agentScopeRoot
+	parent *AgentScope
 	handle plugin.Handle
 	closed bool
 }
@@ -292,7 +306,7 @@ func (effect *pluginEffect) Dispose(closeContext context.Context) error {
 	return err
 }
 
-var _ agent.Scope = (*agentScopeRoot)(nil)
-var _ scopedplugin.Scope = (*agentScopeRoot)(nil)
-var _ agent.AgentScopeRuntime = (*agentScopeRoot)(nil)
+var _ agent.Scope = (*AgentScope)(nil)
+var _ scopedplugin.Scope = (*AgentScope)(nil)
+var _ agent.AgentScopeRuntime = (*AgentScope)(nil)
 var _ agent.ScopeResource = (*pluginEffect)(nil)

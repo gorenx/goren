@@ -74,9 +74,11 @@ func (eventFailureSink) ReportEventFailure(
 }
 
 type scriptedAdapter struct {
-	mutex     sync.Mutex
-	responses [][]llm.StreamChunk
-	requests  []llm.GenerateOptions
+	mutex        sync.Mutex
+	responses    [][]llm.StreamChunk
+	requests     []llm.GenerateOptions
+	prefixSource func() []session.Event
+	prefixes     [][]session.Event
 }
 
 func (backend *scriptedAdapter) Stream(
@@ -84,12 +86,17 @@ func (backend *scriptedAdapter) Stream(
 	requestOptions llm.GenerateOptions,
 ) (llm.ChunkStream, error) {
 	backend.mutex.Lock()
+	var prefix []session.Event
+	if backend.prefixSource != nil {
+		prefix = backend.prefixSource()
+	}
 	deferred, err := llm.CloneGenerateOptions(requestOptions)
 	if err != nil {
 		backend.mutex.Unlock()
 		return nil, err
 	}
 	backend.requests = append(backend.requests, deferred)
+	backend.prefixes = append(backend.prefixes, prefix)
 	requestIndex := len(backend.requests) - 1
 	if requestIndex >= len(backend.responses) {
 		backend.mutex.Unlock()
@@ -98,6 +105,24 @@ func (backend *scriptedAdapter) Stream(
 	response := backend.responses[requestIndex]
 	backend.mutex.Unlock()
 	return llm.NewSliceStream(response)
+}
+
+func (backend *scriptedAdapter) capturePrefixes(
+	source func() []session.Event,
+) {
+	backend.mutex.Lock()
+	backend.prefixSource = source
+	backend.mutex.Unlock()
+}
+
+func (backend *scriptedAdapter) prefixSnapshots() [][]session.Event {
+	backend.mutex.Lock()
+	defer backend.mutex.Unlock()
+	result := make([][]session.Event, len(backend.prefixes))
+	for index, prefix := range backend.prefixes {
+		result[index] = append([]session.Event(nil), prefix...)
+	}
+	return result
 }
 
 func (backend *scriptedAdapter) snapshots() []llm.GenerateOptions {
@@ -1495,6 +1520,74 @@ func TestMaintenanceWakeKeepsWhenIdleBehindSuccessorTurn(t *testing.T) {
 	}
 }
 
+func TestMaintenanceCancelPreservesRequestedSuccessorTurn(t *testing.T) {
+	state := newHarnessFixture(t, [][]llm.StreamChunk{
+		{
+			llm.BlockEndChunk{
+				Index: 0,
+				Block: agentmessage.NewTextBlock("after maintenance"),
+			},
+			llm.FinishChunk{
+				Reason: llm.StopFinish{},
+			},
+		},
+	})
+	handleState := createTestAgent(t, state, "maintenance-cancel-wake")
+	defer func() {
+		if err := handleState.Dispose(context.Background()); err != nil {
+			t.Error(err)
+		}
+	}()
+	maintenanceStarted := make(chan struct{})
+	maintenanceDone := make(chan error, 1)
+	go func() {
+		maintenanceDone <- handleState.Subject.RunMaintenance(
+			context.Background(),
+			func(operationContext context.Context) error {
+				close(maintenanceStarted)
+				<-operationContext.Done()
+				return context.Cause(operationContext)
+			},
+		)
+	}()
+	select {
+	case <-maintenanceStarted:
+	case <-time.After(time.Second):
+		t.Fatal("maintenance did not start")
+	}
+	if err := handleState.Subject.Followup(
+		userMessage(t, "queued after maintenance"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	handleState.Subject.Cancel(
+		agent.UserCancel{},
+		agent.CancelOptions{
+			KeepInbox: true,
+		},
+	)
+	select {
+	case maintenanceErr := <-maintenanceDone:
+		if maintenanceErr == nil {
+			t.Fatal("canceled maintenance returned no cancellation error")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled maintenance did not settle")
+	}
+	waitForIdle(t, handleState.Subject)
+	if requests := state.backend.snapshots(); len(requests) != 1 {
+		t.Fatalf(
+			"successor model request count = %d, want 1",
+			len(requests),
+		)
+	}
+	ending := lastTurnEnd(t, handleState.Subject.SessionValue())
+	if ending.Kind != "completed" {
+		t.Fatalf("successor Turn ending = %#v, want completed", ending)
+	}
+	assertAgentLoopBoundariesPaired(t, handleState.Subject.SessionValue())
+}
+
 func TestFirstCancelCauseSurvivesDisposal(t *testing.T) {
 	state := newHarnessFixture(t, [][]llm.StreamChunk{
 		toolCallResponse("call-1"),
@@ -1533,6 +1626,114 @@ func TestFirstCancelCauseSurvivesDisposal(t *testing.T) {
 		ending.Reason.Kind != "hook" || ending.Reason.Reason != "first-cause" {
 		t.Fatalf("turn ending = %#v", ending)
 	}
+	assertAgentLoopBoundariesPaired(t, handleState.Subject.SessionValue())
+}
+
+func TestCancelDrainsToolAndFlushBeforeIdle(t *testing.T) {
+	barrier := &flushBarrier{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	state := newHarnessFixtureWithSettings(
+		t,
+		[][]llm.StreamChunk{
+			toolCallResponse("call-cancel-flush"),
+		},
+		agentloop.Settings{
+			MaxParallelToolCalls: agentloop.DefaultMaxParallelToolCalls,
+		},
+		barrier,
+	)
+	toolStarted := make(chan struct{})
+	toolSettled := make(chan struct{})
+	registerParallelTool(t, state, func(
+		_ json.RawMessage,
+		runContext tools.ToolRunContext,
+	) (json.RawMessage, error) {
+		close(toolStarted)
+		<-runContext.Context.Done()
+		close(toolSettled)
+		return json.RawMessage(`{"canceled":true}`), nil
+	})
+	handleState := createTestAgent(t, state, "cancel-tool-flush")
+	released := false
+	defer func() {
+		if !released {
+			close(barrier.release)
+		}
+		if disposeErr := handleState.Dispose(context.Background()); disposeErr != nil {
+			t.Error(disposeErr)
+		}
+	}()
+	if err := handleState.Subject.Followup(userMessage(t, "cancel")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-toolStarted:
+	case <-time.After(time.Second):
+		t.Fatal("Tool body did not start")
+	}
+	handleState.Subject.Cancel(
+		agent.UserCancel{},
+		agent.CancelOptions{
+			KeepInbox: true,
+		},
+	)
+	select {
+	case <-toolSettled:
+	case <-time.After(time.Second):
+		t.Fatal("canceled Tool body did not settle")
+	}
+	select {
+	case <-barrier.started:
+	case <-time.After(time.Second):
+		t.Fatal("canceled Turn did not reach Flush")
+	}
+	idle := make(chan error, 1)
+	go func() {
+		idle <- handleState.Subject.WhenIdle(context.Background())
+	}()
+	select {
+	case idleErr := <-idle:
+		t.Fatalf("Agent became idle before canceled Flush completed: %v", idleErr)
+	case <-time.After(20 * time.Millisecond):
+	}
+	assertAgentLoopBoundariesPaired(t, handleState.Subject.SessionValue())
+	close(barrier.release)
+	released = true
+	select {
+	case idleErr := <-idle:
+		if idleErr != nil {
+			t.Fatal(idleErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Agent did not converge after canceled Flush completed")
+	}
+	ending := lastTurnEnd(t, handleState.Subject.SessionValue())
+	if ending.Kind != "aborted" || ending.Reason == nil ||
+		ending.Reason.Kind != "user" {
+		t.Fatalf("turn ending = %#v, want user cancellation", ending)
+	}
+	assertSessionEventNames(
+		t,
+		handleState.Subject.SessionValue(),
+		[]string{
+			"agent/inbox/spliced",
+			"turn/start",
+			"agent/inbox/spliced",
+			"step/start",
+			"user/message",
+			"request/header",
+			"request/context",
+			"assistant/chunk",
+			"assistant/chunk",
+			"assistant/message",
+			"tool/call",
+			"tool/result",
+			"step/end",
+			"turn/end",
+		},
+	)
 }
 
 type externalCancelCause struct{}
@@ -1573,6 +1774,7 @@ func TestUnknownCancelCauseUsesHookReason(t *testing.T) {
 		ending.Reason.Reason != "external-extension" {
 		t.Fatalf("turn ending = %#v", ending)
 	}
+	assertAgentLoopBoundariesPaired(t, handleState.Subject.SessionValue())
 }
 
 type retryExtension struct {
@@ -1916,6 +2118,61 @@ func lastTurnEnd(
 	}
 	t.Fatal("turn/end event is absent")
 	return turnEndObservation{}
+}
+
+func assertAgentLoopBoundariesPaired(
+	testingState *testing.T,
+	conversation session.Context,
+) {
+	testingState.Helper()
+	turnStarts := 0
+	turnEnds := 0
+	stepStarts := 0
+	stepEnds := 0
+	toolCalls := make(map[int64]struct{})
+	toolResults := make(map[int64]int)
+	for _, committed := range conversation.Events() {
+		switch committed.Type {
+		case session.TurnStartEventName:
+			turnStarts++
+		case session.TurnEndEventName:
+			turnEnds++
+		case session.StepStartEventName:
+			stepStarts++
+		case session.StepEndEventName:
+			stepEnds++
+		case session.ToolCallEventName:
+			toolCalls[committed.Seq] = struct{}{}
+		case session.ToolResultEventName:
+			if committed.SourceEventSeqs == nil ||
+				len(*committed.SourceEventSeqs) != 1 {
+				testingState.Fatalf(
+					"Tool result seq %d has invalid provenance %#v",
+					committed.Seq,
+					committed.SourceEventSeqs,
+				)
+			}
+			toolResults[(*committed.SourceEventSeqs)[0]]++
+		}
+	}
+	if turnStarts != turnEnds || stepStarts != stepEnds {
+		testingState.Fatalf(
+			"unpaired boundaries: Turn %d/%d, Step %d/%d",
+			turnStarts,
+			turnEnds,
+			stepStarts,
+			stepEnds,
+		)
+	}
+	for callSequence := range toolCalls {
+		if toolResults[callSequence] != 1 {
+			testingState.Fatalf(
+				"Tool call seq %d has %d results",
+				callSequence,
+				toolResults[callSequence],
+			)
+		}
+	}
 }
 
 func messageTexts(messages []agentmessage.Message) []string {

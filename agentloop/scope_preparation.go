@@ -26,8 +26,9 @@ type scopePreparation interface {
 }
 
 type agentScopePreparation struct {
-	scopes *agentScopes
-	root   *agentScopeRoot
+	scopes  *ScopeSet
+	root    *AgentScope
+	scopeID scopeID
 }
 
 func (preparation *agentScopePreparation) Runtime() agent.AgentScopeRuntime {
@@ -50,7 +51,11 @@ func (preparation *agentScopePreparation) Mount(
 	if err := preparation.root.bind(subject); err != nil {
 		return nil, err
 	}
-	return preparation.scopes.mount(requestContext, preparation.root)
+	return preparation.scopes.mount(
+		requestContext,
+		preparation.scopeID,
+		preparation.root,
+	)
 }
 
 func (preparation *agentScopePreparation) Rollback(

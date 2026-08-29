@@ -26,7 +26,7 @@ type staticAgentVariable struct {
 }
 
 func newAgentVariables(
-	loopOptions agent.Options,
+	agentOptions agent.Options,
 	headerSnapshot session.Header,
 ) *agentVariables {
 	workingDirectory := ""
@@ -38,13 +38,13 @@ func newAgentVariables(
 			{
 				name: "provider",
 				provider: staticAgentVariable{
-					value: loopOptions.Provider,
+					value: agentOptions.Provider,
 				},
 			},
 			{
 				name: "model",
 				provider: staticAgentVariable{
-					value: loopOptions.Model,
+					value: agentOptions.Model,
 				},
 			},
 			{
