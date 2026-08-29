@@ -234,9 +234,9 @@ func waitForTerminalAdmission(
 	deadline := time.Now().Add(time.Second)
 	for {
 		owner.lifecycle.mutex.Lock()
-		terminal := owner.lifecycle.terminalAttempt != nil
+		active := owner.lifecycle.activeRelease != nil
 		owner.lifecycle.mutex.Unlock()
-		if terminal {
+		if active {
 			return
 		}
 		if time.Now().After(deadline) {
@@ -464,6 +464,120 @@ func TestStoreCloseRejectsPreparationAndEntryBeforeDrain(t *testing.T) {
 	}
 }
 
+func TestConcurrentStoreCloseSharesAttempt(t *testing.T) {
+	t.Parallel()
+	flushStarted := make(chan struct{})
+	allowFlush := make(chan struct{})
+	publisher := &scriptedSessionPublisher{
+		onFlush: func(index int, _ FlushRequested) error {
+			if index == 1 {
+				close(flushStarted)
+			}
+			<-allowFlush
+			return nil
+		},
+	}
+	store := newDirectStore(t, publisher)
+	if _, err := store.Create(context.Background(), nil, CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- store.Close(context.Background())
+	}()
+	<-flushStarted
+
+	waitContext, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := store.Close(waitContext); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("concurrent Close error = %v", err)
+	}
+	if flushes := publisher.observedFlushes(); len(flushes) != 1 {
+		t.Fatalf("concurrent Close started %d final flushes", len(flushes))
+	}
+
+	close(allowFlush)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	store.mutex.RLock()
+	phase := store.phase
+	active := store.activeClose
+	store.mutex.RUnlock()
+	if phase != storeClosed || active != nil {
+		t.Fatalf("closed Store state = (%d, %#v)", phase, active)
+	}
+}
+
+func TestStoreCloseFailureRemainsClosingAndRetries(t *testing.T) {
+	t.Parallel()
+	flushFailure := errors.New("final flush failed")
+	publisher := &scriptedSessionPublisher{
+		onFlush: func(index int, _ FlushRequested) error {
+			if index == 1 {
+				return flushFailure
+			}
+			return nil
+		},
+	}
+	store := newDirectStore(t, publisher)
+	if _, err := store.Create(context.Background(), nil, CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(context.Background()); !errors.Is(err, flushFailure) {
+		t.Fatalf("first Close error = %v", err)
+	}
+	store.mutex.RLock()
+	failedPhase := store.phase
+	failedAttempt := store.activeClose
+	retained := len(store.sessions)
+	store.mutex.RUnlock()
+	if failedPhase != storeClosing || failedAttempt != nil || retained != 1 {
+		t.Fatalf(
+			"failed Close state = (%d, %#v, %d retained)",
+			failedPhase,
+			failedAttempt,
+			retained,
+		)
+	}
+	if _, err := store.Prepare(nil, CreateOptions{}); err == nil ||
+		!strings.Contains(err.Error(), "not accepting") {
+		t.Fatalf("Prepare after failed Close error = %v", err)
+	}
+
+	if err := store.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	store.mutex.RLock()
+	completedPhase := store.phase
+	completedAttempt := store.activeClose
+	remaining := len(store.sessions)
+	store.mutex.RUnlock()
+	if completedPhase != storeClosed || completedAttempt != nil || remaining != 0 {
+		t.Fatalf(
+			"retried Close state = (%d, %#v, %d retained)",
+			completedPhase,
+			completedAttempt,
+			remaining,
+		)
+	}
+	if flushes := publisher.observedFlushes(); len(flushes) != 2 {
+		t.Fatalf("Close retries = %d final flushes, want two", len(flushes))
+	}
+}
+
+func TestStoreCloseRejectsUnknownPhase(t *testing.T) {
+	t.Parallel()
+	store := newDirectStore(t, &scriptedSessionPublisher{})
+	store.mutex.Lock()
+	store.phase = storePhase(255)
+	store.mutex.Unlock()
+	if err := store.Close(context.Background()); err == nil ||
+		!strings.Contains(err.Error(), "unknown Store phase") {
+		t.Fatalf("Close error = %v", err)
+	}
+}
+
 func TestCreationFailureRollsBackWithPairedDisposal(t *testing.T) {
 	t.Parallel()
 	requestContext := context.Background()
@@ -498,7 +612,7 @@ func TestCreationFailureRollsBackWithPairedDisposal(t *testing.T) {
 	}
 }
 
-func TestCreationVetoFlushFailureKeepsSealedSessionForRetry(t *testing.T) {
+func TestCreationVetoFlushFailureKeepsReleaseFailedSessionForRetry(t *testing.T) {
 	t.Parallel()
 	requestContext, cancel := context.WithCancel(context.Background())
 	recorder := &failureRecorder{}
@@ -525,19 +639,19 @@ func TestCreationVetoFlushFailureKeepsSealedSessionForRetry(t *testing.T) {
 		t.Fatalf("create error = %v", err)
 	}
 	if _, found := store.Get(identifier); found {
-		t.Fatal("sealed Session remained visible after rollback flush failure")
+		t.Fatal("release-failed Session remained visible after rollback flush failure")
 	}
 	store.mutex.RLock()
-	sealed := store.sessions[identifier]
+	releaseFailed := store.sessions[identifier]
 	store.mutex.RUnlock()
-	if sealed == nil {
+	if releaseFailed == nil {
 		t.Fatal("failed final flush discarded the exact cleanup owner")
 	}
-	sealed.conversation.lifecycle.mutex.Lock()
-	state := sealed.conversation.lifecycle.phase
-	sealed.conversation.lifecycle.mutex.Unlock()
-	if state != sessionSealed {
-		t.Fatalf("vetoed Session state = %d, want sealed", state)
+	releaseFailed.conversation.lifecycle.mutex.Lock()
+	state := releaseFailed.conversation.lifecycle.phase
+	releaseFailed.conversation.lifecycle.mutex.Unlock()
+	if state != sessionReleaseFailed {
+		t.Fatalf("vetoed Session state = %d, want release failed", state)
 	}
 }
 
@@ -667,7 +781,7 @@ func TestSessionReleaseOrdering(t *testing.T) {
 		}
 	})
 
-	t.Run("failed final flush remains sealed and retries", func(t *testing.T) {
+	t.Run("failed final flush enters release failed and retries", func(t *testing.T) {
 		flushFailure := errors.New("final flush failed")
 		publisher := &scriptedSessionPublisher{
 			onFlush: func(index int, _ FlushRequested) error {
@@ -687,13 +801,13 @@ func TestSessionReleaseOrdering(t *testing.T) {
 			t.Fatalf("first Release error = %v", err)
 		}
 		if _, found := store.Get(conversation.ID()); found {
-			t.Fatal("sealed Session remained business-visible")
+			t.Fatal("release-failed Session remained business-visible")
 		}
 		if _, err := conversation.Commit(
 			context.Background(),
 			Batch(newFixtureDraft(t, "rejected")),
 		); !errors.Is(err, ErrWritesClosed) {
-			t.Fatalf("sealed Commit error = %v", err)
+			t.Fatalf("release-failed Commit error = %v", err)
 		}
 		if err := handleState.Release(context.Background()); err != nil {
 			t.Fatal(err)

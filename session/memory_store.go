@@ -9,16 +9,16 @@ import (
 	"time"
 )
 
-// memoryStoreState is the admission and shutdown phase of the live Store.
-type memoryStoreState uint8
+// storePhase is the admission and shutdown phase of the live Store.
+type storePhase uint8
 
 const (
-	// memoryStoreOpen accepts preparation and exact Session entry.
-	memoryStoreOpen memoryStoreState = iota
-	// memoryStoreClosing rejects new membership while existing entries release.
-	memoryStoreClosing
-	// memoryStoreClosed has completed the shared Store close attempt.
-	memoryStoreClosed
+	// storeOpen accepts preparation and exact Session entry.
+	storeOpen storePhase = iota
+	// storeClosing rejects new membership while existing entries release.
+	storeClosing
+	// storeClosed has completed Close successfully.
+	storeClosed
 )
 
 // liveEntry is one exact Store membership. The token prevents a stale Handle
@@ -31,7 +31,7 @@ type liveEntry struct {
 }
 
 // memoryStore owns the process-local live index, entry order, ID allocation,
-// and Store lifecycle. Per-Session ordering remains in sessionLifecycle.
+// admission, and shutdown. Per-Session lifecycle remains in sessionLifecycle.
 type memoryStore struct {
 	mutex sync.RWMutex
 
@@ -45,12 +45,10 @@ type memoryStore struct {
 	timeSource TimeSource
 	// publisher is installed into each exact Session membership.
 	publisher eventPublisher
-	// state controls Store admission and close behavior.
-	state memoryStoreState
-	// closeDone closes after the shared Store close attempt completes.
-	closeDone chan struct{}
-	// closeErr is the shared Store close result read after closeDone.
-	closeErr error
+	// phase controls Store admission and shutdown behavior.
+	phase storePhase
+	// activeClose is the Store Close execution shared by concurrent callers.
+	activeClose *closeAttempt
 }
 
 var _ LiveStore = (*memoryStore)(nil)
@@ -76,7 +74,7 @@ func newMemoryStore(
 		sessions:   make(map[SessionID]*liveEntry),
 		timeSource: selectedTimeSource,
 		publisher:  publisher,
-		state:      memoryStoreOpen,
+		phase:      storeOpen,
 	}, nil
 }
 
@@ -108,7 +106,7 @@ func (store *memoryStore) Prepare(
 ) (Context, error) {
 	resolved := SessionID("")
 	store.mutex.Lock()
-	if store.state != memoryStoreOpen {
+	if store.phase != storeOpen {
 		store.mutex.Unlock()
 		return nil, errors.New("session: Store is not accepting Session preparation")
 	}
@@ -191,7 +189,7 @@ func (store *memoryStore) attachExact(entry *liveEntry) error {
 	identifier := entry.conversation.ID()
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
-	if store.state != memoryStoreOpen {
+	if store.phase != storeOpen {
 		return errors.New("session: Store is not accepting Session entry")
 	}
 	if _, exists := store.sessions[identifier]; exists {
