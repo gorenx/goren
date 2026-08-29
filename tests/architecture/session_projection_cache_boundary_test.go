@@ -164,3 +164,54 @@ func TestProjectionCachePluginAndSQLiteStaySeparate(t *testing.T) {
 		)
 	}
 }
+
+func TestRemovedProjectionCacheLifecycleTypesStayAbsent(t *testing.T) {
+	t.Parallel()
+	repositoryPath := repositoryRoot(t)
+	fileSet := token.NewFileSet()
+	sourcesByPackage := parsePackages(t, fileSet, repositoryPath)
+	cacheSources := sourcesByPackage[filepath.Join(repositoryPath, "session", "projectioncache")+":projectioncache"]
+	removedTypes := map[string]struct{}{
+		"Coordinator":        {},
+		"checkpointSchedule": {},
+		"checkpointWriter":   {},
+		"recordCache":        {},
+		"sessionCache":       {},
+	}
+	removedMethods := map[string]struct{}{
+		"Advance": {},
+		"Begin":   {},
+		"Retire":  {},
+	}
+	findings := []string{}
+	for _, source := range cacheSources {
+		for _, declaration := range source.tree.Decls {
+			switch current := declaration.(type) {
+			case *ast.FuncDecl:
+				if _, removed := removedMethods[current.Name.Name]; removed {
+					findings = append(findings, fileSet.Position(current.Name.Pos()).String())
+				}
+			case *ast.GenDecl:
+				for _, specification := range current.Specs {
+					typeSpecification, ok := specification.(*ast.TypeSpec)
+					if !ok {
+						continue
+					}
+					if _, removed := removedTypes[typeSpecification.Name.Name]; removed {
+						findings = append(
+							findings,
+							fileSet.Position(typeSpecification.Name.Pos()).String(),
+						)
+					}
+				}
+			}
+		}
+	}
+	if len(findings) != 0 {
+		sort.Strings(findings)
+		t.Fatalf(
+			"removed Projection Cache lifecycle APIs were reintroduced:\n%s",
+			strings.Join(findings, "\n"),
+		)
+	}
+}

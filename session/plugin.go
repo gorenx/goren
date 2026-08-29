@@ -3,22 +3,28 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/gorenx/goren/plugin"
 )
 
-// Plugin adapts one MemoryStore to the Plugin Runtime. It owns only the
 // Plugin adapts the business Store to Runtime service binding and event
-// publication. Per-Session state belongs to lifecycleMachine.
+// publication. Per-Session state belongs to sessionLifecycle.
 type Plugin struct {
 	plugin.Base
-	store *memoryStore
+	store         *memoryStore
+	failureReport PostCommitFailureReporter
 }
 
 // NewPlugin constructs the canonical Session Plugin and its business Store.
 func NewPlugin(options MemoryStoreOptions) (*Plugin, error) {
-	owner := &Plugin{}
-	store, err := newMemoryStore(options, owner)
+	if options.PostCommitFailures == nil {
+		return nil, errors.New("session: post-commit failure reporter is required")
+	}
+	owner := &Plugin{
+		failureReport: options.PostCommitFailures,
+	}
+	store, err := newMemoryStore(options.TimeSource, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -52,11 +58,88 @@ func (owner *Plugin) Dispose(closeContext context.Context) error {
 	return owner.store.Close(context.WithoutCancel(closeContext))
 }
 
-func (owner *Plugin) Publish(
+func (owner *Plugin) Created(
 	requestContext context.Context,
-	fact plugin.Event,
+	conversation Context,
 ) error {
-	return plugin.PublishEvent(requestContext, owner, fact)
+	return safelyDispatch(func() error {
+		return plugin.PublishEvent(
+			requestContext,
+			owner,
+			Created{
+				Conversation: conversation,
+			},
+		)
+	})
+}
+
+func (owner *Plugin) Appended(
+	requestContext context.Context,
+	conversation Context,
+	committed Event,
+) {
+	dispatchErr := safelyDispatch(func() error {
+		return plugin.PublishEvent(
+			requestContext,
+			owner,
+			EventAppended{
+				Conversation: conversation,
+				Committed:    cloneEvent(committed),
+			},
+		)
+	})
+	if dispatchErr != nil {
+		owner.reportPostCommitFailure(
+			PostCommitFailure{
+				SessionID: conversation.ID(),
+				Error:     dispatchErr,
+			},
+		)
+	}
+}
+
+func (owner *Plugin) Flush(
+	requestContext context.Context,
+	conversation Context,
+	barrier WriteBarrier,
+) error {
+	return plugin.PublishEvent(
+		requestContext,
+		owner,
+		FlushRequested{
+			Conversation: conversation,
+			Barrier:      barrier,
+		},
+	)
+}
+
+func (owner *Plugin) Disposed(
+	requestContext context.Context,
+	conversation Context,
+) {
+	_ = safelyDispatch(func() error {
+		return plugin.PublishEvent(
+			requestContext,
+			owner,
+			Disposed{
+				Conversation: conversation,
+			},
+		)
+	})
+}
+
+func (owner *Plugin) reportPostCommitFailure(failure PostCommitFailure) {
+	defer func() { _ = recover() }()
+	owner.failureReport.ReportPostCommitFailure(failure)
+}
+
+func safelyDispatch(operation func() error) (dispatchErr error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			dispatchErr = fmt.Errorf("session: listener panicked: %v", recovered)
+		}
+	}()
+	return operation()
 }
 
 var _ plugin.Plugin = (*Plugin)(nil)

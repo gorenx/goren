@@ -10,6 +10,102 @@ import (
 	sessionprojection "github.com/gorenx/goren/session/projection"
 )
 
+func TestLiveCheckpointTriggers(t *testing.T) {
+	t.Run("event count", func(t *testing.T) {
+		registry := sessionprojection.NewDriveRegistry()
+		registerCountingUnit(t, registry, "count", 1)
+		conversation := newCacheTestSession(t, "count-trigger", 60, 1)
+		store := &memoryCheckpointStore{
+			replaced: make(chan session.SessionID, 1),
+		}
+		cacheOwner, _ := newCacheForTest(
+			t,
+			registry,
+			&cachePersistence{},
+			&cacheLiveStore{},
+			store,
+			Config{
+				WriteEveryEvents: 3,
+				WriteInterval:    time.Hour,
+			},
+		)
+		for range 2 {
+			if err := cacheOwner.EventAppended(
+				conversation,
+				conversation.Events()[0],
+			); err != nil {
+				t.Fatal(err)
+			}
+		}
+		select {
+		case identifier := <-store.replaced:
+			t.Fatalf("checkpoint triggered early for %q", identifier)
+		case <-time.After(20 * time.Millisecond):
+		}
+		if err := cacheOwner.EventAppended(
+			conversation,
+			conversation.Events()[0],
+		); err != nil {
+			t.Fatal(err)
+		}
+		waitForSignal(t, store.replaced)
+	})
+
+	t.Run("interval", func(t *testing.T) {
+		registry := sessionprojection.NewDriveRegistry()
+		registerCountingUnit(t, registry, "count", 1)
+		conversation := newCacheTestSession(t, "interval-trigger", 61, 1)
+		store := &memoryCheckpointStore{
+			replaced: make(chan session.SessionID, 1),
+		}
+		cacheOwner, _ := newCacheForTest(
+			t,
+			registry,
+			&cachePersistence{},
+			&cacheLiveStore{},
+			store,
+			Config{
+				WriteEveryEvents: 100,
+				WriteInterval:    time.Millisecond,
+			},
+		)
+		if err := cacheOwner.EventAppended(
+			conversation,
+			conversation.Events()[0],
+		); err != nil {
+			t.Fatal(err)
+		}
+		waitForSignal(t, store.replaced)
+	})
+
+	t.Run("turn end", func(t *testing.T) {
+		registry := sessionprojection.NewDriveRegistry()
+		registerCountingUnit(t, registry, "count", 1)
+		conversation := newCacheTestSession(t, "turn-end-trigger", 62, 1)
+		store := &memoryCheckpointStore{
+			replaced: make(chan session.SessionID, 1),
+		}
+		cacheOwner, _ := newCacheForTest(
+			t,
+			registry,
+			&cachePersistence{},
+			&cacheLiveStore{},
+			store,
+			Config{
+				WriteEveryEvents: 100,
+				WriteInterval:    time.Hour,
+			},
+		)
+		if err := cacheOwner.EventAppended(
+			conversation,
+			session.Event{Type: session.TurnEndEventName},
+		); err != nil {
+			t.Fatal(err)
+		}
+		waitForSignal(t, store.replaced)
+	})
+}
+
 func TestLiveCheckpointFlushesBeforeStoreReplace(t *testing.T) {
 	registry := sessionprojection.NewDriveRegistry()
 	registerCountingUnit(t, registry, "count", 1)
@@ -34,7 +130,7 @@ func TestLiveCheckpointFlushesBeforeStoreReplace(t *testing.T) {
 			WriteEveryEvents: 1,
 		},
 	)
-	if err := cacheOwner.Advance(conversation, conversation.Events()[0]); err != nil {
+	if err := cacheOwner.EventAppended(conversation, conversation.Events()[0]); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -51,7 +147,7 @@ func TestLiveCheckpointFlushesBeforeStoreReplace(t *testing.T) {
 	}
 }
 
-func TestRetireWritesFinalCheckpointForSessionWithoutObservedEvents(t *testing.T) {
+func TestSessionDisposedWritesFinalCheckpointWithoutObservedEvents(t *testing.T) {
 	registry := sessionprojection.NewDriveRegistry()
 	registerCountingUnit(t, registry, "count", 1)
 	conversation := newCacheTestSession(t, "retire", 80, 2)
@@ -66,7 +162,7 @@ func TestRetireWritesFinalCheckpointForSessionWithoutObservedEvents(t *testing.T
 		store,
 		Config{},
 	)
-	if err := cacheOwner.Retire(conversation); err != nil {
+	if err := cacheOwner.SessionDisposed(conversation); err != nil {
 		t.Fatal(err)
 	}
 	waitForSignal(t, store.replaced)
@@ -78,7 +174,7 @@ func TestRetireWritesFinalCheckpointForSessionWithoutObservedEvents(t *testing.T
 	}
 }
 
-func TestProjectionCacheRetireOrdering(t *testing.T) {
+func TestSessionDisposedFollowsActiveCheckpoint(t *testing.T) {
 	registry := sessionprojection.NewDriveRegistry()
 	registerCountingUnit(t, registry, "count", 1)
 	conversation := newCacheTestSession(t, "retire-during-writer", 85, 1)
@@ -101,7 +197,7 @@ func TestProjectionCacheRetireOrdering(t *testing.T) {
 		store,
 		Config{WriteEveryEvents: 1},
 	)
-	if err := cacheOwner.Advance(conversation, conversation.Events()[0]); err != nil {
+	if err := cacheOwner.EventAppended(conversation, conversation.Events()[0]); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -109,7 +205,7 @@ func TestProjectionCacheRetireOrdering(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("active writer did not enter Flush")
 	}
-	if err := cacheOwner.Retire(conversation); err != nil {
+	if err := cacheOwner.SessionDisposed(conversation); err != nil {
 		t.Fatal(err)
 	}
 	close(flushRelease)
@@ -118,12 +214,9 @@ func TestProjectionCacheRetireOrdering(t *testing.T) {
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		cacheOwner.mutex.Lock()
-		checkpoint := cacheOwner.checkpoints[conversation.ID()]
-		cacheOwner.mutex.Unlock()
-		checkpoint.writersMutex.Lock()
-		_, retained := checkpoint.writers[conversation]
-		checkpoint.writersMutex.Unlock()
+		cacheOwner.live.mutex.Lock()
+		_, retained := cacheOwner.live.writes[conversation]
+		cacheOwner.live.mutex.Unlock()
 		if !retained {
 			break
 		}
@@ -145,62 +238,35 @@ func TestProjectionCacheRetireOrdering(t *testing.T) {
 	}
 }
 
-func TestReusedSessionIDRejectsOlderLifecycleWriter(t *testing.T) {
+func TestDifferentLogIdentityUsesLastCompletedReplacement(t *testing.T) {
 	registry := sessionprojection.NewDriveRegistry()
 	registerCountingUnit(t, registry, "count", 1)
 	older := newCacheTestSession(t, "reused-writer", 85, 1)
 	newer := newCacheTestSession(t, "reused-writer", 86, 1)
-	flushEntered := make(chan struct{}, 1)
-	flushRelease := make(chan struct{})
-	live := &cacheLiveStore{
-		flushEntered: flushEntered,
-		flushRelease: flushRelease,
-	}
 	store := &memoryCheckpointStore{
-		replaced: make(chan session.SessionID, 1),
+		replaced: make(chan session.SessionID, 2),
 	}
 	cacheOwner, _ := newCacheForTest(
 		t,
 		registry,
 		&cachePersistence{},
-		live,
+		&cacheLiveStore{},
 		store,
 		Config{WriteEveryEvents: 1},
 	)
-	if err := cacheOwner.Begin(older); err != nil {
+	if err := cacheOwner.SessionDisposed(older); err != nil {
 		t.Fatal(err)
 	}
-	if err := cacheOwner.Advance(older, older.Events()[0]); err != nil {
+	waitForSignal(t, store.replaced)
+	if err := cacheOwner.SessionDisposed(newer); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-flushEntered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("older lifecycle writer did not enter Flush")
+	waitForSignal(t, store.replaced)
+	if projectionSnapshot, err := cacheOwner.CachedSnapshot(older.Header()); err != nil || projectionSnapshot != nil {
+		t.Fatalf("older identity snapshot = (%#v, %v), want miss", projectionSnapshot, err)
 	}
-	if err := cacheOwner.Begin(newer); err != nil {
-		t.Fatal(err)
-	}
-	close(flushRelease)
-	if err := cacheOwner.Advance(newer, newer.Events()[0]); err != nil {
-		t.Fatal(err)
-	}
-	if identifier := waitForSignal(t, store.replaced); identifier != newer.ID() {
-		t.Fatalf("checkpoint Session = %q", identifier)
-	}
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		store.mutex.Lock()
-		record := store.records[newer.ID()]
-		calls := len(store.replaceCalls)
-		store.mutex.Unlock()
-		if calls == 1 && record.Identity.CreatedAt == newer.Header().CreatedAt {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("record = %#v, calls = %d", record, calls)
-		}
-		time.Sleep(time.Millisecond)
+	if projectionSnapshot, err := cacheOwner.CachedSnapshot(newer.Header()); err != nil || projectionSnapshot == nil {
+		t.Fatalf("newer identity snapshot = (%#v, %v), want hit", projectionSnapshot, err)
 	}
 }
 
@@ -222,7 +288,7 @@ func TestLiveCheckpointFailureKeepsDirtyStateForLaterTrigger(t *testing.T) {
 			WriteInterval:    time.Hour,
 		},
 	)
-	if err := cacheOwner.Advance(conversation, conversation.Events()[0]); err != nil {
+	if err := cacheOwner.EventAppended(conversation, conversation.Events()[0]); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(2 * time.Second)
@@ -232,16 +298,10 @@ func TestLiveCheckpointFailureKeepsDirtyStateForLaterTrigger(t *testing.T) {
 	if len(failures.recordedFailures()) != 1 {
 		t.Fatalf("failures = %#v", failures.recordedFailures())
 	}
-	cacheOwner.mutex.Lock()
-	checkpoint := cacheOwner.checkpoints[conversation.ID()]
-	cacheOwner.mutex.Unlock()
-	checkpoint.writersMutex.Lock()
-	writer := checkpoint.writers[conversation]
-	checkpoint.writersMutex.Unlock()
-	writer.mutex.Lock()
-	dirtyEvents := writer.pendingEvents()
-	writing := writer.schedule.isWriting()
-	writer.mutex.Unlock()
+	cacheOwner.live.mutex.Lock()
+	writer := cacheOwner.live.writes[conversation]
+	cacheOwner.live.mutex.Unlock()
+	dirtyEvents, writing := writer.state()
 	if dirtyEvents != 1 || writing {
 		t.Fatalf("state pending=%d writing=%v", dirtyEvents, writing)
 	}
@@ -274,7 +334,7 @@ func TestCloseWaitsForEnteredCheckpointAndRejectsNewColdReads(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := cacheOwner.Advance(conversation, conversation.Events()[0]); err != nil {
+	if err := cacheOwner.EventAppended(conversation, conversation.Events()[0]); err != nil {
 		t.Fatal(err)
 	}
 	select {

@@ -53,15 +53,21 @@ type Surface struct {
 }
 
 type surfaceState struct {
-	nodes             []int64
+	// nodes contains model-visible Event seqs in Surface order.
+	nodes []int64
+	// replaceGeneration changes whenever replacement invalidates derived caches.
 	replaceGeneration uint64
 }
 
 type surfaceTransition struct {
+	// appendNode is the Event seq appended when replacement is false.
 	appendNode int64
-	replace    bool
+	// replace selects replacement rather than tail append.
+	replace bool
+	// startIndex is the inclusive Surface replacement start.
 	startIndex int
-	endIndex   int
+	// endIndex is the inclusive Surface replacement end.
+	endIndex int
 }
 
 func planSurface(

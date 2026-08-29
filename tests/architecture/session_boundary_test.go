@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestSessionCoordinatorExportsOnlyContextContract(t *testing.T) {
+func TestSessionContextExportsOnlyContextContract(t *testing.T) {
 	t.Parallel()
 	fileSet := token.NewFileSet()
 	repositoryPath := repositoryRoot(t)
@@ -37,14 +37,14 @@ func TestSessionCoordinatorExportsOnlyContextContract(t *testing.T) {
 			functionDeclaration, ok := declaration.(*ast.FuncDecl)
 			if !ok || functionDeclaration.Recv == nil ||
 				len(functionDeclaration.Recv.List) != 1 ||
-				receiverTypeName(functionDeclaration.Recv.List[0].Type) != "coordinator" ||
+				receiverTypeName(functionDeclaration.Recv.List[0].Type) != "sessionContext" ||
 				!functionDeclaration.Name.IsExported() {
 				continue
 			}
 			methodName := functionDeclaration.Name.Name
 			if _, allowed := allowedMethods[methodName]; !allowed {
 				position := fileSet.Position(functionDeclaration.Name.Pos())
-				findings = append(findings, position.String()+": exported coordinator method "+methodName)
+				findings = append(findings, position.String()+": exported sessionContext method "+methodName)
 				continue
 			}
 			foundMethods[methodName] = struct{}{}
@@ -58,6 +58,37 @@ func TestSessionCoordinatorExportsOnlyContextContract(t *testing.T) {
 	if len(findings) != 0 {
 		sort.Strings(findings)
 		t.Fatalf("Session concrete context must expose exactly the Context contract:\n%s", strings.Join(findings, "\n"))
+	}
+}
+
+func TestMemoryStoreDoesNotReachIntoSessionComponents(t *testing.T) {
+	t.Parallel()
+	fileSet := token.NewFileSet()
+	repositoryPath := repositoryRoot(t)
+	sourcesByPackage := parsePackages(t, fileSet, repositoryPath)
+	sessionSources := sourcesByPackage[filepath.Join(repositoryPath, "session")+":session"]
+	findings := []string{}
+	for _, source := range sessionSources {
+		baseName := filepath.Base(source.path)
+		if !strings.HasPrefix(baseName, "memory_store") ||
+			strings.HasSuffix(baseName, "_test.go") {
+			continue
+		}
+		ast.Inspect(source.tree, func(node ast.Node) bool {
+			selector, ok := node.(*ast.SelectorExpr)
+			if !ok || (selector.Sel.Name != "log" && selector.Sel.Name != "lifecycle") {
+				return true
+			}
+			findings = append(findings, fileSet.Position(selector.Sel.Pos()).String())
+			return true
+		})
+	}
+	if len(findings) != 0 {
+		sort.Strings(findings)
+		t.Fatalf(
+			"memoryStore reached into a Session component:\n%s",
+			strings.Join(findings, "\n"),
+		)
 	}
 }
 
@@ -84,7 +115,10 @@ func TestRemovedSessionWriteAPIsStayAbsent(t *testing.T) {
 		"WriteContext":            {},
 	}
 	removedTypes := map[string]struct{}{
-		"Session": {},
+		"Session":          {},
+		"coordinator":      {},
+		"lifecycleMachine": {},
+		"requestQueue":     {},
 	}
 	findings := []string{}
 	for _, source := range sessionSources {

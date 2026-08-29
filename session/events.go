@@ -17,6 +17,7 @@ const EndSeedEventName = "session/end-seed"
 
 type eventTypeRegistry struct {
 	mutex sync.RWMutex
+	// names maps canonical Session Event name keys to registration-presence values.
 	names map[string]struct{}
 }
 
@@ -24,6 +25,7 @@ var knownEventTypes = eventTypeRegistry{
 	names: map[string]struct{}{EndSeedEventName: {}},
 }
 
+// surfaceEventTypes maps canonical Event name keys to Surface-eligibility values.
 var surfaceEventTypes = map[string]struct{}{
 	"user/message":      {},
 	"assistant/message": {},

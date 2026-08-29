@@ -8,18 +8,30 @@ import (
 	"github.com/gorenx/goren/llm"
 )
 
+// Canonical Session Event names preserve the fixed Harness vocabulary.
 const (
-	TurnStartEventName        = "turn/start"
-	TurnEndEventName          = "turn/end"
-	StepStartEventName        = "step/start"
-	StepEndEventName          = "step/end"
-	UserMessageEventName      = "user/message"
-	AssistantChunkEventName   = "assistant/chunk"
+	// TurnStartEventName identifies the start of an Agent turn.
+	TurnStartEventName = "turn/start"
+	// TurnEndEventName identifies the terminal outcome of an Agent turn.
+	TurnEndEventName = "turn/end"
+	// StepStartEventName identifies the start of one Agent step.
+	StepStartEventName = "step/start"
+	// StepEndEventName identifies the end of one Agent step.
+	StepEndEventName = "step/end"
+	// UserMessageEventName identifies a user message added to the Surface.
+	UserMessageEventName = "user/message"
+	// AssistantChunkEventName identifies one streamed assistant chunk.
+	AssistantChunkEventName = "assistant/chunk"
+	// AssistantMessageEventName identifies a completed assistant Surface message.
 	AssistantMessageEventName = "assistant/message"
-	ToolCallEventName         = "tool/call"
-	ToolResultEventName       = "tool/result"
-	RequestHeaderEventName    = "request/header"
-	RequestContextEventName   = "request/context"
+	// ToolCallEventName identifies a tool invocation emitted by the Agent.
+	ToolCallEventName = "tool/call"
+	// ToolResultEventName identifies a tool result added to the Surface.
+	ToolResultEventName = "tool/result"
+	// RequestHeaderEventName identifies the effective LLM request header snapshot.
+	RequestHeaderEventName = "request/header"
+	// RequestContextEventName identifies the effective request routing context.
+	RequestContextEventName = "request/context"
 )
 
 // TurnStart opens one durable Agent turn.
@@ -203,9 +215,12 @@ type EpochHeader struct {
 type RequestHeaderReason string
 
 const (
+	// RequestHeaderInitial records the first request header in an epoch.
 	RequestHeaderInitial RequestHeaderReason = "initial"
-	RequestHeaderResume  RequestHeaderReason = "resume"
-	RequestHeaderChange  RequestHeaderReason = "change"
+	// RequestHeaderResume records a header reconstructed for a resumed request.
+	RequestHeaderResume RequestHeaderReason = "resume"
+	// RequestHeaderChange records an explicit request header change.
+	RequestHeaderChange RequestHeaderReason = "change"
 )
 
 // RequestHeaderSnapshot updates the request reconstruction fold.

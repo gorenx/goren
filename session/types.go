@@ -12,6 +12,7 @@ import (
 // Version 0 matches the pinned DeepSeek Harness session format.
 const FormatVersion = 0
 
+// maxSafeInteger is the largest integer exactly representable by JSON clients.
 const maxSafeInteger int64 = 1<<53 - 1
 
 // SessionID identifies one Session in a LiveStore and in persistence artifacts.

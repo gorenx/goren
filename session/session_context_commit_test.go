@@ -44,7 +44,7 @@ func TestPlanBuildSeesSnapshotAtFIFOHead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner := conversation.(*coordinator)
+	owner := conversation.(*sessionContext)
 	firstDraft := newFixtureDraft(t, "first")
 	secondDraft := newFixtureDraft(t, "second")
 	entered := make(chan struct{})
@@ -133,7 +133,7 @@ func TestQueuedCancellationSkipsPlanBuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner := conversation.(*coordinator)
+	owner := conversation.(*sessionContext)
 	entered := make(chan struct{})
 	resume := make(chan struct{})
 	firstDone := make(chan error, 1)
@@ -298,18 +298,13 @@ func assertFixtureItems(
 
 func waitForPendingItems(
 	testingContext *testing.T,
-	owner *coordinator,
+	owner *sessionContext,
 	want int,
 ) {
 	testingContext.Helper()
 	deadline := time.Now().Add(time.Second)
 	for {
-		owner.queue.mutex.Lock()
-		pending := len(owner.queue.items) - owner.queue.head
-		if pending > 0 {
-			pending--
-		}
-		owner.queue.mutex.Unlock()
+		pending := owner.pendingOperations()
 		if pending == want {
 			return
 		}

@@ -11,6 +11,7 @@ import (
 	sessproj "github.com/gorenx/goren/session/projection"
 )
 
+// restorationPageEvents bounds each durable suffix page folded during cold restore.
 const restorationPageEvents int64 = 512
 
 type restoredProjection struct {
@@ -19,21 +20,39 @@ type restoredProjection struct {
 	Checkpoint sessproj.Checkpoint
 }
 
+// snapshotReader owns cached and durable Projection snapshot reconstruction.
+// It performs no lifecycle admission and owns no record or live-write state.
+type snapshotReader struct {
+	persistence DurableEventReader
+	projections CheckpointProjector
+	records     *checkpointRecords
+	failures    FailureReporter
+}
+
+func newSnapshotReader(
+	persistence DurableEventReader,
+	projections CheckpointProjector,
+	records *checkpointRecords,
+	failures FailureReporter,
+) *snapshotReader {
+	return &snapshotReader{
+		persistence: persistence,
+		projections: projections,
+		records:     records,
+		failures:    failures,
+	}
+}
+
 // CachedSnapshot returns only version-compatible in-memory values and performs
 // no Session-log or checkpoint-store I/O.
-func (owner *Coordinator) CachedSnapshot(
+func (reader *snapshotReader) CachedSnapshot(
 	metadata session.Header,
 ) (*sessproj.Snapshot, error) {
-	checkpoint, leave, err := owner.enterSession(metadata.ID)
-	if err != nil {
-		return nil, err
-	}
-	defer leave()
-	record, found := checkpoint.record.snapshot()
+	record, found := reader.records.Snapshot(metadata.ID)
 	if !found || !identityMatchesHeader(record.Identity, metadata) {
 		return nil, nil
 	}
-	values, err := owner.projections.ViewCheckpoint(record.Rows)
+	values, err := reader.projections.ViewCheckpoint(record.Rows)
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +78,7 @@ func (owner *Coordinator) CachedSnapshot(
 
 // ColdSnapshot proves a current projection from durable Session facts, using a
 // compatible checkpoint only to reduce the suffix that must be folded.
-func (owner *Coordinator) ColdSnapshot(
+func (reader *snapshotReader) ColdSnapshot(
 	requestContext context.Context,
 	identifier session.SessionID,
 ) (sessproj.Snapshot, error) {
@@ -69,19 +88,13 @@ func (owner *Coordinator) ColdSnapshot(
 	if err := requestContext.Err(); err != nil {
 		return sessproj.Snapshot{}, err
 	}
-	checkpoint, leave, err := owner.enterSession(identifier)
-	if err != nil {
-		return sessproj.Snapshot{}, err
-	}
-	defer leave()
-
-	record, found := checkpoint.record.snapshot()
+	record, found := reader.records.Snapshot(identifier)
 	rows := record.Rows
-	floor := owner.projections.RestoreFloor(rows)
+	floor := reader.projections.RestoreFloor(rows)
 	if floor == nil {
-		return owner.probeEmptySnapshot(requestContext, identifier)
+		return reader.probeEmptySnapshot(requestContext, identifier)
 	}
-	restored, err := owner.restorePages(
+	restored, err := reader.restorePages(
 		requestContext,
 		identifier,
 		rows,
@@ -89,35 +102,30 @@ func (owner *Coordinator) ColdSnapshot(
 	)
 	if err != nil {
 		if found {
-			return owner.restoreAll(requestContext, checkpoint)
+			return reader.restoreAll(requestContext, identifier)
 		}
 		return sessproj.Snapshot{}, err
 	}
 	if found && !identityMatchesHeader(record.Identity, restored.Header) {
-		return owner.restoreAll(requestContext, checkpoint)
+		return reader.restoreAll(requestContext, identifier)
 	}
-	owner.writeBack(requestContext, checkpoint, restored.Header, restored.Checkpoint)
+	reader.writeBack(requestContext, restored.Header, restored.Checkpoint)
 	return restored.Snapshot, nil
 }
 
-func (owner *Coordinator) restoreAll(
+func (reader *snapshotReader) restoreAll(
 	requestContext context.Context,
-	checkpoint *sessionCache,
+	identifier session.SessionID,
 ) (sessproj.Snapshot, error) {
-	restored, err := owner.restorePages(
-		requestContext,
-		checkpoint.identifier,
-		nil,
-		0,
-	)
+	restored, err := reader.restorePages(requestContext, identifier, nil, 0)
 	if err != nil {
 		return sessproj.Snapshot{}, err
 	}
-	owner.writeBack(requestContext, checkpoint, restored.Header, restored.Checkpoint)
+	reader.writeBack(requestContext, restored.Header, restored.Checkpoint)
 	return restored.Snapshot, nil
 }
 
-func (owner *Coordinator) restorePages(
+func (reader *snapshotReader) restorePages(
 	requestContext context.Context,
 	identifier session.SessionID,
 	checkpoint sessproj.Checkpoint,
@@ -128,7 +136,7 @@ func (owner *Coordinator) restorePages(
 	var metadata session.Header
 	var revision sesspersist.Revision
 	for {
-		segment, err := owner.persistence.ReadEventsFrom(
+		segment, err := reader.persistence.ReadEventsFrom(
 			requestContext,
 			identifier,
 			sesspersist.EventContinuation{
@@ -147,7 +155,7 @@ func (owner *Coordinator) restorePages(
 				"session projection cache: durable Session changed during paged restore",
 			)
 		}
-		result, err := owner.projections.Restore(rows, segment.Events, cursor)
+		result, err := reader.projections.Restore(rows, segment.Events, cursor)
 		if err != nil {
 			return restoredProjection{}, err
 		}
@@ -168,11 +176,11 @@ func (owner *Coordinator) restorePages(
 	}
 }
 
-func (owner *Coordinator) probeEmptySnapshot(
+func (reader *snapshotReader) probeEmptySnapshot(
 	requestContext context.Context,
 	identifier session.SessionID,
 ) (sessproj.Snapshot, error) {
-	window, err := owner.persistence.ReadEventsBefore(
+	window, err := reader.persistence.ReadEventsBefore(
 		requestContext,
 		identifier,
 		sesspersist.EventPage{
@@ -192,36 +200,26 @@ func (owner *Coordinator) probeEmptySnapshot(
 	}, nil
 }
 
-func (owner *Coordinator) writeBack(
+func (reader *snapshotReader) writeBack(
 	requestContext context.Context,
-	checkpoint *sessionCache,
 	metadata session.Header,
 	rows sessproj.Checkpoint,
 ) {
-	if err := checkpoint.record.replace(
+	if err := reader.records.Replace(
 		requestContext,
+		metadata.ID,
 		CheckpointRecord{
 			Identity: identityOf(metadata),
 			Rows:     rows,
 		},
 	); err != nil {
-		owner.report(Failure{
-			SessionID: metadata.ID,
-			Operation: "cold checkpoint write-back",
-			Error:     err,
-		})
+		reportFailure(
+			reader.failures,
+			Failure{
+				SessionID: metadata.ID,
+				Operation: "cold checkpoint write-back",
+				Error:     err,
+			},
+		)
 	}
-}
-
-func (owner *Coordinator) replaceRecord(
-	requestContext context.Context,
-	identifier session.SessionID,
-	record CheckpointRecord,
-) error {
-	checkpoint, leave, err := owner.enterSession(identifier)
-	if err != nil {
-		return err
-	}
-	defer leave()
-	return checkpoint.record.replace(requestContext, record)
 }
