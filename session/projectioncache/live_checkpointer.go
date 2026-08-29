@@ -236,7 +236,7 @@ func (checkpointer *liveCheckpointer) persistCheckpoint(
 	if err != nil {
 		return err
 	}
-	if _, err := checkpointCut(rows, conversation.Seq()-1); err != nil {
+	if err := validateCheckpointCut(rows); err != nil {
 		return err
 	}
 	metadata := conversation.Header()
@@ -255,26 +255,20 @@ func (checkpointer *liveCheckpointer) persistCheckpoint(
 	)
 }
 
-func checkpointCut(
-	rows sessionprojection.Checkpoint,
-	emptyCut int64,
-) (int64, error) {
-	if len(rows) == 0 {
-		return emptyCut, nil
-	}
+func validateCheckpointCut(rows sessionprojection.Checkpoint) error {
 	var cut int64
-	first := true
+	found := false
 	for _, row := range rows {
-		if first {
+		if !found {
 			cut = row.Seq
-			first = false
+			found = true
 			continue
 		}
 		if row.Seq != cut {
-			return -1, errors.New(
+			return errors.New(
 				"session projection cache: checkpoint rows do not share one event cut",
 			)
 		}
 	}
-	return cut, nil
+	return nil
 }

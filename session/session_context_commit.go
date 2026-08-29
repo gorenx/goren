@@ -32,7 +32,7 @@ func (conversation *sessionContext) Commit(
 		return WriteResult{}, err
 	}
 	result, requestErr := conversation.executeCommit(requestContext, plan)
-	conversation.lifecycle.finishCommit()
+	conversation.lifecycle.finishOperation()
 	return result, requestErr
 }
 

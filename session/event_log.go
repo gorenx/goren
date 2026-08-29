@@ -103,24 +103,13 @@ func newWithClock(
 
 // Header returns a detached copy of immutable Session metadata.
 func (conversation *eventLog) Header() Header {
-	if conversation == nil {
-		return Header{}
-	}
 	conversation.mu.RLock()
 	defer conversation.mu.RUnlock()
 	return cloneHeader(conversation.header)
 }
 
-// ID returns the durable Session identity.
-func (conversation *eventLog) ID() SessionID {
-	return conversation.Header().ID
-}
-
 // FirstLiveSeq returns the constructor seed length before any end-seed marker.
 func (conversation *eventLog) FirstLiveSeq() int64 {
-	if conversation == nil {
-		return 0
-	}
 	conversation.mu.RLock()
 	defer conversation.mu.RUnlock()
 	return conversation.firstLiveSeq
@@ -128,9 +117,6 @@ func (conversation *eventLog) FirstLiveSeq() int64 {
 
 // Seq returns the next event sequence number.
 func (conversation *eventLog) Seq() int64 {
-	if conversation == nil {
-		return 0
-	}
 	conversation.mu.RLock()
 	defer conversation.mu.RUnlock()
 	return int64(len(conversation.entries))
@@ -138,9 +124,6 @@ func (conversation *eventLog) Seq() int64 {
 
 // Events returns a detached snapshot. Later appends do not grow the returned slice.
 func (conversation *eventLog) Events() []Event {
-	if conversation == nil {
-		return nil
-	}
 	conversation.mu.RLock()
 	defer conversation.mu.RUnlock()
 	detached := make([]Event, len(conversation.entries))
@@ -152,9 +135,6 @@ func (conversation *eventLog) Events() []Event {
 
 // Surface returns a detached snapshot of the current model-visible sequences.
 func (conversation *eventLog) Surface() Surface {
-	if conversation == nil {
-		return Surface{}
-	}
 	conversation.mu.RLock()
 	defer conversation.mu.RUnlock()
 	nodes := make([]int64, len(conversation.view.nodes))
@@ -163,16 +143,6 @@ func (conversation *eventLog) Surface() Surface {
 		Nodes:             nodes,
 		ReplaceGeneration: conversation.view.replaceGeneration,
 	}
-}
-
-// Snapshot returns the append-only log, Surface, and barrier from the same
-// committed revision. Consumers that validate positional relationships use it
-// instead of composing separate reads.
-func (conversation *eventLog) Snapshot() Snapshot {
-	if conversation == nil {
-		return Snapshot{}
-	}
-	return conversation.snapshot()
 }
 
 func (conversation *eventLog) currentBarrier() WriteBarrier {
@@ -210,9 +180,6 @@ func (conversation *eventLog) snapshot() Snapshot {
 // DeriveMessages projects the current surface into provider-neutral history.
 // Non-surface events and empty assistant anchors never enter the result.
 func (conversation *eventLog) DeriveMessages() ([]agentmessage.Message, error) {
-	if conversation == nil {
-		return nil, errors.New("session: derive messages from nil Session")
-	}
 	conversation.mu.Lock()
 	if conversation.derivedGeneration != conversation.view.replaceGeneration {
 		conversation.derived = nil

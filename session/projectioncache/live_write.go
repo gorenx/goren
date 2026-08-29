@@ -114,18 +114,14 @@ func (write *liveWrite) detach() bool {
 	write.mutex.Lock()
 	defer write.mutex.Unlock()
 	switch write.phase {
-	case liveWritePhaseIdle,
-		liveWritePhaseWaiting:
+	case liveWritePhaseIdle, liveWritePhaseWaiting:
 		write.cancelTimer()
 		write.phase = liveWritePhaseFinalWriting
 		return true
-	case liveWritePhaseWriting,
-		liveWritePhaseRerun:
+	case liveWritePhaseWriting, liveWritePhaseRerun:
 		write.phase = liveWritePhaseFinalPending
 		return false
-	case liveWritePhaseFinalPending,
-		liveWritePhaseFinalWriting,
-		liveWritePhaseStopped:
+	case liveWritePhaseFinalPending, liveWritePhaseFinalWriting, liveWritePhaseStopped:
 		return false
 	default:
 		return false
@@ -231,16 +227,6 @@ func (write *liveWrite) stop() bool {
 	write.cancelTimer()
 	write.phase = liveWritePhaseStopped
 	return !active
-}
-
-func (write *liveWrite) state() (int, bool) {
-	write.mutex.Lock()
-	defer write.mutex.Unlock()
-	active := write.phase == liveWritePhaseWriting ||
-		write.phase == liveWritePhaseRerun ||
-		write.phase == liveWritePhaseFinalPending ||
-		write.phase == liveWritePhaseFinalWriting
-	return write.pendingEvents(), active
 }
 
 func (write *liveWrite) pendingEvents() int {

@@ -37,7 +37,7 @@ func (conversation *sessionContext) beginFlush(
 }
 
 func (conversation *sessionContext) finishFlush() {
-	conversation.lifecycle.finishFlush()
+	conversation.lifecycle.finishOperation()
 }
 
 func (conversation *sessionContext) requestRelease(
@@ -64,16 +64,4 @@ func (conversation *sessionContext) completeRelease(
 
 func (conversation *sessionContext) visible() bool {
 	return conversation.lifecycle.visible()
-}
-
-func (conversation *sessionContext) terminalAdmission() bool {
-	return conversation.lifecycle.terminalAdmission()
-}
-
-func (conversation *sessionContext) pendingOperations() int {
-	return conversation.lifecycle.pendingOperations()
-}
-
-func (conversation *sessionContext) currentPhase() sessionPhase {
-	return conversation.lifecycle.currentPhase()
 }
