@@ -27,8 +27,8 @@ type liveCheckpointer struct {
 
 	// state controls admission while Close stops timers and drains attempts.
 	state liveCheckpointerState
-	// writes maps each exact live Session key to its scheduling state value.
-	writes map[session.Context]*liveWrite
+	// lifecycles maps each exact live Session key to its checkpoint lifecycle value.
+	lifecycles map[session.Context]*checkpointLifecycle
 
 	writeEveryEvents int
 	writeInterval    time.Duration
@@ -40,6 +40,13 @@ type liveCheckpointer struct {
 	inflight sync.WaitGroup
 }
 
+// checkpointResult is the state-machine outcome and optional reportable error
+// produced from one port execution.
+type checkpointResult struct {
+	outcome checkpointOutcome
+	failure error
+}
+
 func newLiveCheckpointer(
 	writeEveryEvents int,
 	writeInterval time.Duration,
@@ -49,7 +56,7 @@ func newLiveCheckpointer(
 	failures FailureReporter,
 ) *liveCheckpointer {
 	return &liveCheckpointer{
-		writes:           make(map[session.Context]*liveWrite),
+		lifecycles:       make(map[session.Context]*checkpointLifecycle),
 		writeEveryEvents: writeEveryEvents,
 		writeInterval:    writeInterval,
 		sessions:         sessions,
@@ -66,19 +73,18 @@ func (checkpointer *liveCheckpointer) EventAppended(
 	if conversation == nil {
 		return errors.New("session projection cache: EventAppended Session is nil")
 	}
-	write := checkpointer.writeFor(conversation)
-	if write == nil {
+	lifecycle := checkpointer.lifecycleFor(conversation)
+	if lifecycle == nil {
 		return nil
 	}
-	shouldStart, timer := write.observe(
+	command, err := lifecycle.eventAppended(
 		committed.Type == session.TurnEndEventName,
 		checkpointer.writeEveryEvents,
 	)
-	checkpointer.scheduleTimer(conversation, write, timer)
-	if shouldStart {
-		checkpointer.start(conversation, write)
+	if err != nil {
+		return err
 	}
-	return nil
+	return checkpointer.execute(conversation, lifecycle, command)
 }
 
 func (checkpointer *liveCheckpointer) SessionDisposed(
@@ -87,14 +93,15 @@ func (checkpointer *liveCheckpointer) SessionDisposed(
 	if conversation == nil {
 		return errors.New("session projection cache: SessionDisposed Session is nil")
 	}
-	write := checkpointer.writeFor(conversation)
-	if write == nil {
+	lifecycle := checkpointer.lifecycleFor(conversation)
+	if lifecycle == nil {
 		return nil
 	}
-	if write.detach() {
-		checkpointer.start(conversation, write)
+	command, err := lifecycle.sessionDisposed()
+	if err != nil {
+		return err
 	}
-	return nil
+	return checkpointer.execute(conversation, lifecycle, command)
 }
 
 func (checkpointer *liveCheckpointer) Close() {
@@ -105,125 +112,214 @@ func (checkpointer *liveCheckpointer) Close() {
 		return
 	}
 	checkpointer.state = liveCheckpointerStopping
-	writes := make(map[session.Context]*liveWrite, len(checkpointer.writes))
-	for conversation, write := range checkpointer.writes {
-		writes[conversation] = write
+	lifecycles := make(map[session.Context]*checkpointLifecycle, len(checkpointer.lifecycles))
+	for conversation, lifecycle := range checkpointer.lifecycles {
+		lifecycles[conversation] = lifecycle
 	}
 	checkpointer.mutex.Unlock()
-	for conversation, write := range writes {
-		if write.stop() {
-			checkpointer.remove(conversation, write)
+	for conversation, lifecycle := range lifecycles {
+		command, err := lifecycle.cacheClosing()
+		if err == nil {
+			err = checkpointer.execute(conversation, lifecycle, command)
+		}
+		if err != nil {
+			checkpointer.reportTransitionFailure(conversation, err)
 		}
 	}
 	checkpointer.inflight.Wait()
 	checkpointer.mutex.Lock()
-	checkpointer.writes = make(map[session.Context]*liveWrite)
+	checkpointer.lifecycles = make(map[session.Context]*checkpointLifecycle)
 	checkpointer.mutex.Unlock()
 }
 
-func (checkpointer *liveCheckpointer) writeFor(
+func (checkpointer *liveCheckpointer) lifecycleFor(
 	conversation session.Context,
-) *liveWrite {
+) *checkpointLifecycle {
 	checkpointer.mutex.Lock()
 	defer checkpointer.mutex.Unlock()
 	if checkpointer.state == liveCheckpointerStopping {
 		return nil
 	}
-	write := checkpointer.writes[conversation]
-	if write == nil {
-		write = &liveWrite{}
-		checkpointer.writes[conversation] = write
+	lifecycle := checkpointer.lifecycles[conversation]
+	if lifecycle == nil {
+		lifecycle = &checkpointLifecycle{}
+		checkpointer.lifecycles[conversation] = lifecycle
 	}
-	return write
+	return lifecycle
 }
 
 func (checkpointer *liveCheckpointer) scheduleTimer(
 	conversation session.Context,
-	write *liveWrite,
-	request timerRequest,
+	lifecycle *checkpointLifecycle,
+	generation uint64,
 ) {
-	if request.generation == 0 {
+	if generation == 0 {
 		return
 	}
 	timer := time.AfterFunc(checkpointer.writeInterval, func() {
-		checkpointer.timerElapsed(conversation, write, request.generation)
+		checkpointer.timerElapsed(conversation, lifecycle, generation)
 	})
-	write.installTimer(request, timer)
+	lifecycle.installTimer(generation, timer)
 }
 
 func (checkpointer *liveCheckpointer) timerElapsed(
 	conversation session.Context,
-	write *liveWrite,
+	lifecycle *checkpointLifecycle,
 	generation uint64,
 ) {
 	checkpointer.mutex.Lock()
 	active := checkpointer.state == liveCheckpointerAccepting &&
-		checkpointer.writes[conversation] == write
+		checkpointer.lifecycles[conversation] == lifecycle
 	checkpointer.mutex.Unlock()
-	if !active || !write.timerElapsed(generation) {
+	if !active {
 		return
 	}
-	checkpointer.start(conversation, write)
+	command, err := lifecycle.timerElapsed(generation)
+	if err == nil {
+		err = checkpointer.execute(conversation, lifecycle, command)
+	}
+	if err != nil {
+		checkpointer.reportTransitionFailure(conversation, err)
+	}
 }
 
 func (checkpointer *liveCheckpointer) start(
 	conversation session.Context,
-	write *liveWrite,
+	lifecycle *checkpointLifecycle,
+	attempt checkpointAttempt,
 ) {
 	checkpointer.mutex.Lock()
 	if checkpointer.state == liveCheckpointerStopping ||
-		checkpointer.writes[conversation] != write {
+		checkpointer.lifecycles[conversation] != lifecycle {
 		checkpointer.mutex.Unlock()
 		return
 	}
 	checkpointer.inflight.Add(1)
 	checkpointer.mutex.Unlock()
-	go checkpointer.run(conversation, write)
+	go checkpointer.run(conversation, lifecycle, attempt)
 }
 
 func (checkpointer *liveCheckpointer) run(
 	conversation session.Context,
-	write *liveWrite,
+	lifecycle *checkpointLifecycle,
+	attempt checkpointAttempt,
 ) {
 	defer checkpointer.inflight.Done()
 	for {
-		attempt := write.beginAttempt()
 		err := checkpointer.persistCheckpoint(conversation, attempt)
-		detached := attempt.kind == liveCheckpoint &&
-			errors.Is(err, session.ErrNotAttached)
-		if err != nil && !detached {
+		result := classifyCheckpointResult(attempt, err)
+		if result.failure != nil {
 			reportFailure(
 				checkpointer.failures,
 				Failure{
 					SessionID: conversation.ID(),
 					Operation: "live checkpoint",
-					Error:     err,
+					Error:     result.failure,
 				},
 			)
 		}
-
-		switch write.finishAttempt(attempt, err == nil) {
-		case liveWriteContinue:
-			continue
-		case liveWriteRetry:
-			checkpointer.scheduleTimer(conversation, write, write.retryTimer())
-			return
-		case liveWriteIdle:
-			return
-		case liveWriteRemove:
-			checkpointer.remove(conversation, write)
+		command, transitionErr := lifecycle.checkpointCompleted(
+			attempt,
+			result.outcome,
+		)
+		if transitionErr != nil {
+			checkpointer.reportTransitionFailure(conversation, transitionErr)
+			checkpointer.remove(conversation, lifecycle)
 			return
 		}
+		if command.kind == checkpointLifecycleStartCheckpoint {
+			attempt = command.attempt
+			continue
+		}
+		if commandErr := checkpointer.execute(
+			conversation,
+			lifecycle,
+			command,
+		); commandErr != nil {
+			checkpointer.reportTransitionFailure(conversation, commandErr)
+			checkpointer.remove(conversation, lifecycle)
+		}
+		return
+	}
+}
+
+func (checkpointer *liveCheckpointer) execute(
+	conversation session.Context,
+	lifecycle *checkpointLifecycle,
+	command checkpointLifecycleCommand,
+) error {
+	switch command.kind {
+	case checkpointLifecycleNoop:
+		return nil
+	case checkpointLifecycleArmTimer:
+		if command.timerGeneration == 0 {
+			return errors.New(
+				"session projection cache: ArmTimer command has no generation",
+			)
+		}
+		checkpointer.scheduleTimer(
+			conversation,
+			lifecycle,
+			command.timerGeneration,
+		)
+		return nil
+	case checkpointLifecycleStartCheckpoint:
+		if command.attempt.id == 0 {
+			return errors.New(
+				"session projection cache: StartCheckpoint command has no attempt",
+			)
+		}
+		checkpointer.start(conversation, lifecycle, command.attempt)
+		return nil
+	case checkpointLifecycleRemove:
+		checkpointer.remove(conversation, lifecycle)
+		return nil
+	default:
+		return errors.New("session projection cache: unknown checkpoint lifecycle command")
+	}
+}
+
+func (checkpointer *liveCheckpointer) reportTransitionFailure(
+	conversation session.Context,
+	err error,
+) {
+	reportFailure(
+		checkpointer.failures,
+		Failure{
+			SessionID: conversation.ID(),
+			Operation: "live checkpoint state",
+			Error:     err,
+		},
+	)
+}
+
+func classifyCheckpointResult(
+	attempt checkpointAttempt,
+	err error,
+) checkpointResult {
+	if err == nil {
+		return checkpointResult{
+			outcome: checkpointSucceeded,
+		}
+	}
+	if attempt.kind == liveCheckpoint && errors.Is(err, session.ErrNotAttached) {
+		return checkpointResult{
+			outcome: checkpointUnavailable,
+		}
+	}
+	return checkpointResult{
+		outcome: checkpointFailed,
+		failure: err,
 	}
 }
 
 func (checkpointer *liveCheckpointer) remove(
 	conversation session.Context,
-	write *liveWrite,
+	lifecycle *checkpointLifecycle,
 ) {
 	checkpointer.mutex.Lock()
-	if checkpointer.writes[conversation] == write {
-		delete(checkpointer.writes, conversation)
+	if checkpointer.lifecycles[conversation] == lifecycle {
+		delete(checkpointer.lifecycles, conversation)
 	}
 	checkpointer.mutex.Unlock()
 }
