@@ -109,7 +109,7 @@ func TestLiveCheckpointTriggers(t *testing.T) {
 func TestLiveCheckpointFlushesBeforeStoreReplace(t *testing.T) {
 	registry := sessionprojection.NewDriveRegistry()
 	registerCountingUnit(t, registry, "count", 1)
-	conversation := newCacheTestSession(t, "write-order", 70, 1)
+	conversation := newCacheTestSession(t, "lifecycle-order", 70, 1)
 	flushEntered := make(chan struct{}, 1)
 	flushRelease := make(chan struct{})
 	live := &cacheLiveStore{
@@ -147,6 +147,101 @@ func TestLiveCheckpointFlushesBeforeStoreReplace(t *testing.T) {
 	}
 }
 
+func TestSameSessionCheckpointAttemptsAreSerial(t *testing.T) {
+	registry := sessionprojection.NewDriveRegistry()
+	registerCountingUnit(t, registry, "count", 1)
+	conversation := newCacheTestSession(t, "serial-lifecycle", 71, 1)
+	flushEntered := make(chan struct{}, 2)
+	flushRelease := make(chan struct{})
+	live := &cacheLiveStore{
+		conversation: conversation,
+		flushEntered: flushEntered,
+		flushRelease: flushRelease,
+	}
+	store := &memoryCheckpointStore{
+		replaced: make(chan session.SessionID, 2),
+	}
+	cacheOwner, _ := newCacheForTest(
+		t,
+		registry,
+		&cachePersistence{},
+		live,
+		store,
+		Config{
+			WriteEveryEvents: 1,
+			WriteInterval:    time.Hour,
+		},
+	)
+	if err := cacheOwner.EventAppended(conversation, conversation.Events()[0]); err != nil {
+		t.Fatal(err)
+	}
+	waitForCheckpointEntry(t, flushEntered)
+	if err := cacheOwner.EventAppended(conversation, conversation.Events()[0]); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-flushEntered:
+		t.Fatal("second checkpoint entered Flush before the first completed")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(flushRelease)
+	waitForSignal(t, store.replaced)
+	waitForCheckpointEntry(t, flushEntered)
+	_, flushCalls := live.observations()
+	if flushCalls != 2 {
+		t.Fatalf("Flush calls = %d, want two serial attempts", flushCalls)
+	}
+}
+
+func TestDifferentSessionCheckpointAttemptsRunInParallel(t *testing.T) {
+	registry := sessionprojection.NewDriveRegistry()
+	registerCountingUnit(t, registry, "count", 1)
+	first := newCacheTestSession(t, "parallel-first", 72, 1)
+	second := newCacheTestSession(t, "parallel-second", 73, 1)
+	flushEntered := make(chan struct{}, 2)
+	flushRelease := make(chan struct{})
+	live := &cacheLiveStore{
+		flushEntered: flushEntered,
+		flushRelease: flushRelease,
+	}
+	store := &memoryCheckpointStore{
+		replaced: make(chan session.SessionID, 2),
+	}
+	cacheOwner, _ := newCacheForTest(
+		t,
+		registry,
+		&cachePersistence{},
+		live,
+		store,
+		Config{
+			WriteEveryEvents: 1,
+			WriteInterval:    time.Hour,
+		},
+	)
+	if err := cacheOwner.EventAppended(first, first.Events()[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := cacheOwner.EventAppended(second, second.Events()[0]); err != nil {
+		t.Fatal(err)
+	}
+	waitForCheckpointEntry(t, flushEntered)
+	waitForCheckpointEntry(t, flushEntered)
+	close(flushRelease)
+	firstSeen := false
+	secondSeen := false
+	for range 2 {
+		switch waitForSignal(t, store.replaced) {
+		case first.ID():
+			firstSeen = true
+		case second.ID():
+			secondSeen = true
+		}
+	}
+	if !firstSeen || !secondSeen {
+		t.Fatalf("checkpointed Sessions = (%v, %v)", firstSeen, secondSeen)
+	}
+}
+
 func TestSessionDisposedWritesFinalCheckpointWithoutObservedEvents(t *testing.T) {
 	registry := sessionprojection.NewDriveRegistry()
 	registerCountingUnit(t, registry, "count", 1)
@@ -177,7 +272,7 @@ func TestSessionDisposedWritesFinalCheckpointWithoutObservedEvents(t *testing.T)
 func TestSessionDisposedFollowsActiveCheckpoint(t *testing.T) {
 	registry := sessionprojection.NewDriveRegistry()
 	registerCountingUnit(t, registry, "count", 1)
-	conversation := newCacheTestSession(t, "retire-during-writer", 85, 1)
+	conversation := newCacheTestSession(t, "retire-during-lifecycle", 85, 1)
 	flushEntered := make(chan struct{}, 1)
 	flushRelease := make(chan struct{})
 	live := &cacheLiveStore{
@@ -186,7 +281,7 @@ func TestSessionDisposedFollowsActiveCheckpoint(t *testing.T) {
 		flushRelease: flushRelease,
 	}
 	store := &memoryCheckpointStore{
-		replaceErrors: []error{errors.New("active writer failed"), nil},
+		replaceErrors: []error{errors.New("active lifecycle failed"), nil},
 		replaced:      make(chan session.SessionID, 1),
 	}
 	cacheOwner, failures := newCacheForTest(
@@ -203,7 +298,7 @@ func TestSessionDisposedFollowsActiveCheckpoint(t *testing.T) {
 	select {
 	case <-flushEntered:
 	case <-time.After(2 * time.Second):
-		t.Fatal("active writer did not enter Flush")
+		t.Fatal("active lifecycle did not enter Flush")
 	}
 	if err := cacheOwner.SessionDisposed(conversation); err != nil {
 		t.Fatal(err)
@@ -215,13 +310,13 @@ func TestSessionDisposedFollowsActiveCheckpoint(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		cacheOwner.live.mutex.Lock()
-		_, retained := cacheOwner.live.writes[conversation]
+		_, retained := cacheOwner.live.lifecycles[conversation]
 		cacheOwner.live.mutex.Unlock()
 		if !retained {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("retired writer state was not removed")
+			t.Fatal("retired lifecycle state was not removed")
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -229,7 +324,7 @@ func TestSessionDisposedFollowsActiveCheckpoint(t *testing.T) {
 		t.Fatalf("checkpoint attempts = %v, want active plus one final", calls)
 	}
 	if reported := failures.recordedFailures(); len(reported) != 1 ||
-		reported[0].Error.Error() != "active writer failed" {
+		reported[0].Error.Error() != "active lifecycle failed" {
 		t.Fatalf("failures = %#v", reported)
 	}
 	getCalls, flushCalls := live.observations()
@@ -241,11 +336,13 @@ func TestSessionDisposedFollowsActiveCheckpoint(t *testing.T) {
 func TestDetachedLiveCheckpointDefersToFinalCheckpoint(t *testing.T) {
 	registry := sessionprojection.NewDriveRegistry()
 	registerCountingUnit(t, registry, "count", 1)
-	conversation := newCacheTestSession(t, "detached-during-writer", 86, 1)
+	conversation := newCacheTestSession(t, "detached-during-lifecycle", 86, 1)
 	flushEntered := make(chan struct{}, 1)
+	flushRelease := make(chan struct{})
 	live := &cacheLiveStore{
 		conversation: conversation,
 		flushEntered: flushEntered,
+		flushRelease: flushRelease,
 		flushErr:     session.ErrNotAttached,
 	}
 	store := &memoryCheckpointStore{
@@ -273,6 +370,7 @@ func TestDetachedLiveCheckpointDefersToFinalCheckpoint(t *testing.T) {
 	if err := cacheOwner.SessionDisposed(conversation); err != nil {
 		t.Fatal(err)
 	}
+	close(flushRelease)
 	if identifier := waitForSignal(t, store.replaced); identifier != conversation.ID() {
 		t.Fatalf("final checkpoint Session = %q", identifier)
 	}
@@ -285,11 +383,115 @@ func TestDetachedLiveCheckpointDefersToFinalCheckpoint(t *testing.T) {
 	}
 }
 
+func TestUnavailableLiveCheckpointWaitsForSessionDisposed(t *testing.T) {
+	registry := sessionprojection.NewDriveRegistry()
+	registerCountingUnit(t, registry, "count", 1)
+	conversation := newCacheTestSession(t, "detached-before-disposal", 87, 1)
+	live := &cacheLiveStore{
+		conversation: conversation,
+		flushErr:     session.ErrNotAttached,
+	}
+	store := &memoryCheckpointStore{
+		replaced: make(chan session.SessionID, 1),
+	}
+	cacheOwner, failures := newCacheForTest(
+		t,
+		registry,
+		&cachePersistence{},
+		live,
+		store,
+		Config{
+			WriteEveryEvents: 1,
+			WriteInterval:    time.Hour,
+		},
+	)
+	if err := cacheOwner.EventAppended(conversation, conversation.Events()[0]); err != nil {
+		t.Fatal(err)
+	}
+	waitForCheckpointLifecycleState(t, cacheOwner, conversation, checkpointLifecycleDelayed)
+	select {
+	case identifier := <-store.replaced:
+		t.Fatalf("unavailable live attempt wrote record for %q", identifier)
+	default:
+	}
+	if reported := failures.recordedFailures(); len(reported) != 0 {
+		t.Fatalf("unavailable live attempt failures = %#v", reported)
+	}
+	if err := cacheOwner.SessionDisposed(conversation); err != nil {
+		t.Fatal(err)
+	}
+	if identifier := waitForSignal(t, store.replaced); identifier != conversation.ID() {
+		t.Fatalf("final checkpoint Session = %q", identifier)
+	}
+	_, flushCalls := live.observations()
+	if flushCalls != 1 {
+		t.Fatalf("Flush calls = %d, want no immediate unavailable retry", flushCalls)
+	}
+}
+
+func TestCheckpointResultClassification(t *testing.T) {
+	checkpointErr := errors.New("checkpoint failed")
+	tests := []struct {
+		name        string
+		attempt     checkpointAttempt
+		err         error
+		wantOutcome checkpointOutcome
+		wantFailure bool
+	}{
+		{
+			name: "success",
+			attempt: checkpointAttempt{
+				id:   1,
+				kind: liveCheckpoint,
+			},
+			wantOutcome: checkpointSucceeded,
+		},
+		{
+			name: "live membership unavailable",
+			attempt: checkpointAttempt{
+				id:   1,
+				kind: liveCheckpoint,
+			},
+			err:         session.ErrNotAttached,
+			wantOutcome: checkpointUnavailable,
+		},
+		{
+			name: "final failure is reportable",
+			attempt: checkpointAttempt{
+				id:   1,
+				kind: finalCheckpoint,
+			},
+			err:         session.ErrNotAttached,
+			wantOutcome: checkpointFailed,
+			wantFailure: true,
+		},
+		{
+			name: "ordinary failure",
+			attempt: checkpointAttempt{
+				id:   1,
+				kind: liveCheckpoint,
+			},
+			err:         checkpointErr,
+			wantOutcome: checkpointFailed,
+			wantFailure: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := classifyCheckpointResult(test.attempt, test.err)
+			if result.outcome != test.wantOutcome ||
+				(result.failure != nil) != test.wantFailure {
+				t.Fatalf("result = %#v", result)
+			}
+		})
+	}
+}
+
 func TestDifferentLogIdentityUsesLastCompletedReplacement(t *testing.T) {
 	registry := sessionprojection.NewDriveRegistry()
 	registerCountingUnit(t, registry, "count", 1)
-	older := newCacheTestSession(t, "reused-writer", 85, 1)
-	newer := newCacheTestSession(t, "reused-writer", 86, 1)
+	older := newCacheTestSession(t, "reused-lifecycle", 85, 1)
+	newer := newCacheTestSession(t, "reused-lifecycle", 86, 1)
 	store := &memoryCheckpointStore{
 		replaced: make(chan session.SessionID, 2),
 	}
@@ -346,9 +548,9 @@ func TestLiveCheckpointFailureKeepsDirtyStateForLaterTrigger(t *testing.T) {
 		t.Fatalf("failures = %#v", failures.recordedFailures())
 	}
 	cacheOwner.live.mutex.Lock()
-	writer := cacheOwner.live.writes[conversation]
+	lifecycle := cacheOwner.live.lifecycles[conversation]
 	cacheOwner.live.mutex.Unlock()
-	dirtyEvents, writing := liveWriteState(writer)
+	dirtyEvents, writing := inspectCheckpointLifecycle(lifecycle)
 	if dirtyEvents != 1 || writing {
 		t.Fatalf("state pending=%d writing=%v", dirtyEvents, writing)
 	}
@@ -444,12 +646,51 @@ func TestValidateCheckpointCutRejectsRowsFromDifferentEvents(t *testing.T) {
 	}
 }
 
-func liveWriteState(write *liveWrite) (int, bool) {
-	write.mutex.Lock()
-	defer write.mutex.Unlock()
-	writing := write.phase == liveWritePhaseWriting ||
-		write.phase == liveWritePhaseRerun ||
-		write.phase == liveWritePhaseFinalPending ||
-		write.phase == liveWritePhaseFinalWriting
-	return write.pendingEvents(), writing
+func inspectCheckpointLifecycle(lifecycle *checkpointLifecycle) (uint64, bool) {
+	lifecycle.mutex.Lock()
+	defer lifecycle.mutex.Unlock()
+	writing := lifecycle.state == checkpointLifecycleRunning ||
+		lifecycle.state == checkpointLifecycleQueued ||
+		lifecycle.state == checkpointLifecycleFinalQueued ||
+		lifecycle.state == checkpointLifecycleFinalRunning
+	return lifecycle.pendingEvents(), writing
+}
+
+func waitForCheckpointLifecycleState(
+	t *testing.T,
+	cacheOwner *ProjectionCache,
+	conversation session.Context,
+	want checkpointLifecycleState,
+) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		cacheOwner.live.mutex.Lock()
+		lifecycle := cacheOwner.live.lifecycles[conversation]
+		cacheOwner.live.mutex.Unlock()
+		if lifecycle != nil {
+			lifecycle.mutex.Lock()
+			state := lifecycle.state
+			lifecycle.mutex.Unlock()
+			if state == want {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("checkpoint lifecycle did not reach state %d", want)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func waitForCheckpointEntry(
+	t *testing.T,
+	entered <-chan struct{},
+) {
+	t.Helper()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("checkpoint did not enter Flush")
+	}
 }
