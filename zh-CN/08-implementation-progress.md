@@ -196,7 +196,7 @@ interaction owner registers stable rpcId + decoder
 | --- | --- | --- | --- | --- |
 | S5-D01 | 交付 | backend-neutral `Persistence`、`SessionLogStore` 与 storage-only `Backend` | Completed | Go Verified：有状态 `SessionLogStore` 实现完整服务、per-ID gate 与 reservation；SQLite adapter 只实现存储 port |
 | S5-D02 | 交付 | SQLite/sqlc Session fact Backend | Completed | Go Verified：schema/query/config/generated code 位于 `session/persistence/sqlite`，默认使用 `modernc.org/sqlite` |
-| S5-D03 | 交付 | write-behind、ordered barrier flush、dispose/shutdown drain | Completed | Go Verified：`LiveStore.Flush` 与 `Release` 共享 Session FIFO；terminal admission 拒绝后续写入，final flush 失败保持 sealed 并可重试；`TestSessionReleaseOrdering` 覆盖两种交错、取消 waiter、重试与 same-ID Handle 隔离，Persistence exact-state 测试固定 I/O 期间不按 ID 重解析 |
+| S5-D03 | 交付 | write-behind、ordered barrier flush、dispose/shutdown drain | Completed | Go Verified：`LiveStore.Flush` 与 `Release` 共享 Session FIFO；terminal admission 拒绝后续写入，final flush 失败进入 `sessionReleaseFailed` 并可重试；Store Close 使用 `storePhase + closeAttempt`，并发 caller 共享 attempt，失败后保持 `storeClosing`；`TestSessionReleaseOrdering`、`TestConcurrentStoreCloseSharesAttempt` 与 `TestStoreCloseFailureRemainsClosingAndRetries` 覆盖两层状态机及重试 |
 | S5-D04 | 交付 | cold validation、torn-tail 与开放 Turn/Step/Tool recovery | Completed | Go Verified：`SessionLogStore` 与 recovery tests 覆盖 repair planning/commit |
 | S5-D05 | 交付 | cold `session.list/history/create(resume)` 与 Agent publication handoff | Completed | Contract Verified：默认 composition 重启 E2E 完成 list、history 和 exact Session resume |
 | S5-D06 | 交付 | reconnect baseline、pending replay 和 queue snapshot | Completed | Contract Verified：subscribed/high-water、stable interaction replay 与 queue snapshot 已覆盖；live callback 不作为 durable fact |

@@ -142,7 +142,7 @@ FIFO 排列 Commit、Enter、Announce、Flush 与 Release，但准入规则由 p
 
 - detached Session 可以 Commit，也可以进入一个 Store；
 - Enter 安装 exact membership 后，Announce 发布 Created；
-- Release admission 安装 `terminalAttempt`，从此拒绝新 Commit/Announce/Flush；
+- Release admission 安装 `activeRelease`，从此拒绝新 Commit/Announce/Flush；
 - Release 之前已经准入的 operation 继续按 FIFO 完成；
 - final Flush 必须等到 Release waiter 到达队首才执行。
 
@@ -165,49 +165,63 @@ FIFO 没有常驻 goroutine，也没有跨 Session 全局锁。
 
 ### 8.1 单 Session 生命周期
 
-`sessionLifecycle` 是唯一 phase owner：
+`sessionLifecycle` 是一个 exact Session 的唯一 phase owner。`sessionPhase` 只表示 Session 当前是什么；`releaseAttempt` 表示一次已准入的 Release 执行身份，两者不能互相替代：
 
-```text
-detached -> entered -> announcing -> live
-                 \                 /
-                  -> releasing -> closed
-
-releasing --final flush failure--> sealed --retry--> releasing
+```mermaid
+stateDiagram-v2
+    [*] --> Detached
+    Detached --> Entered: Enter succeeds
+    Entered --> Announcing: Announce reaches FIFO head
+    Announcing --> Live: Created returns
+    Entered --> Releasing: Release reaches FIFO head
+    Live --> Releasing: Release reaches FIFO head
+    Releasing --> Closed: final Flush and exact removal succeed
+    Releasing --> ReleaseFailed: final Flush or exact removal fails
+    ReleaseFailed --> Releasing: later Release retry reaches FIFO head
+    Closed --> [*]
 ```
 
-各 phase 含义：
+| Phase | Session 是什么 | 允许的新动作 | 业务可见性 |
+| --- | --- | --- | --- |
+| `sessionDetached` | 尚未进入 Store 的 Session | Commit、Enter | 不在 Store 中 |
+| `sessionEntered` | 已取得 exact membership、尚未完成 Created edge | Commit、Announce、Flush、Release | 可见，除非 Release 已准入 |
+| `sessionAnnouncing` | Created callback 正在 FIFO 队首执行 | Commit、Flush、Release 可排队 | 可见，除非 Release 已准入 |
+| `sessionLive` | Created edge 已完成的正常 live Session | Commit、Flush、Release | 可见，除非 Release 已准入 |
+| `sessionReleasing` | terminal worker 正在 final Flush 和 exact removal | 不接受新业务操作 | 不可见 |
+| `sessionReleaseFailed` | Release 失败但 exact membership 仍由原 Store 持有 | 仅允许 Release 重试 | 不可见 |
+| `sessionClosed` | exact membership 已移除，Release 已完成 | Release 幂等返回 | 不可见 |
 
-- `detached`：未进入 Store，可独立 Commit；
-- `entered`：exact membership 已安装，Created 尚未发布；
-- `announcing`：Created callback 正在 FIFO 队首执行；
-- `live`：Created edge 已完成，正常可见；
-- `releasing`：terminal worker 正在 final Flush 和移除 membership；
-- `sealed`：final Flush 失败，保持不可写、不可见、可重试；
-- `closed`：membership 已移除，Release 完成。
+Release 可以在 `sessionAnnouncing` 期间准入，但它的 waiter 排在当前 Announce 后面；Created callback 完成后 phase 先进入 `sessionLive`，Release 到达 FIFO 队首时再进入 `sessionReleasing`。因此不需要另造 `releaseQueued` phase。
 
 互斥事实不用多个 bool 表达：
 
-- terminal admission 由 `terminalAttempt != nil` 表达；
+- terminal admission 和并发 caller 共享的执行身份由 `activeRelease != nil` 表达；
 - Enter/Announce 占位由对应 `operationWaiter` identity 表达；
 - Created/Disposed 配对资格由 `creationState` 表达。
 
-`sessionLifecycle` 不调用 Store、Event observer 或 I/O。它在 mutex 内验证状态并返回 `eventPublisher`、`releaseDecision` 等不可变引用；调用方释放 mutex 后执行副作用，再提交结果。
+`activeRelease` 从 Release 准入持续到该 attempt 完成。它存在时，即使 phase 暂时仍是 `sessionEntered`、`sessionAnnouncing` 或 `sessionLive`，新 Commit/Announce/Flush 也会被拒绝，`Get/List` 也不再返回该 Session。Release 失败后 attempt 完成并清除，phase 进入 `sessionReleaseFailed`；后续 Release 创建新的 attempt。
 
-### 8.2 Store 生命周期
+`sessionLifecycle` 不调用 Store、Event observer 或 I/O。它在 mutex 内验证 phase、attempt 与 membership identity，并返回 `eventPublisher`、`releaseDecision` 等不可变引用；调用方释放 mutex 后执行副作用，再提交结果。
 
-`memoryStore` 使用：
+### 8.2 Store 准入与关闭
 
-```text
-open -> closing -> closed
-```
+Store 不创建第二个 lifecycle 对象。`memoryStore` 自己拥有 `storePhase`：
 
-`Close` 进入 `closing` 后永久拒绝 Prepare/Enter，复制当前 `liveEntry` 顺序并在 Store mutex 外逆序 Release。关闭失败保留 `closing`，后续 Close 重试仍在 Store 中的 sealed membership；成功后进入 `closed`。
+| Phase | Store 是什么 | Prepare/Enter | Close |
+| --- | --- | --- | --- |
+| `storeOpen` | 正常接受 membership 的 Store | 接受 | 创建 `closeAttempt` 并进入 `storeClosing` |
+| `storeClosing` | 已永久关闭准入、正在关闭或等待重试的 Store | 拒绝 | 有 `activeClose` 时共享该 attempt；没有时创建重试 attempt |
+| `storeClosed` | 所有 exact membership 已释放的 Store | 拒绝 | 幂等成功 |
+
+`closeAttempt` 只保存一次 Close 的完成信号和结果。`Close` 进入 `storeClosing` 后永久拒绝 Prepare/Enter，复制当前 `liveEntry` 顺序并在 Store mutex 外逆序 Release。并发 Close caller 等待同一个 `activeClose`；关闭失败后 phase 保持 `storeClosing`、旧 attempt 清除，后续 Close 创建新的 attempt 并重试仍处于 `sessionReleaseFailed` 的 membership；全部成功后进入 `storeClosed`。
+
+Session 与 Store 使用同一套 `Phase + Attempt` 建模语言，但不是同一个状态机：一个 `storeClosing` 可以同时管理多个分别处于 `sessionLive`、`sessionReleasing`、`sessionReleaseFailed` 或 `sessionClosed` 的 Session。
 
 ### 8.3 exact membership
 
 `liveEntry` 同时保存 exact `sessionContext` 与非零大小 `membershipToken`。Lifecycle 只接受当前 token；Store 删除时还必须验证 map 中仍是同一个 `liveEntry`。因此旧 Handle 不能影响后来复用同一 Session ID 的 Session。
 
-`Get/List` 先取得 Store index snapshot，再调用 `sessionContext.visible()`。terminal admission 后 Session 立即不可见，即使 final Flush 尚未完成；失败后 sealed Session 仍留在 Store 内供 exact Handle 重试，但不恢复业务可见性。
+`Get/List` 先取得 Store index snapshot，再调用 `sessionContext.visible()`。terminal admission 后 Session 立即不可见，即使 final Flush 尚未完成；失败后 `sessionReleaseFailed` Session 仍留在 Store 内供 exact Handle 或 Store Close 重试，但不恢复业务可见性。
 
 `Announce/Flush` 的 exact membership 解析失败统一包裹 `ErrNotAttached`。这使消费方可以用 `errors.Is` 区分“当前对象已 detach 或不属于此 Store”和普通 Flush listener 失败，而不解析错误文本。
 
@@ -269,7 +283,7 @@ terminal worker -> sessionContext.startRelease
 | --- | --- | --- |
 | `session/created` | exact membership 已进入 Store、业务可见前 | veto；随后通过 Release 回滚 membership |
 | `session/event` | Event 已原子进入内存 log 后 | fail-soft；报告 `PostCommitFailure`，不回滚事实 |
-| `session/flush` | Flush/Release 到达 FIFO 队首并取得 barrier 后 | 返回调用者；Release 失败进入 sealed |
+| `session/flush` | Flush/Release 到达 FIFO 队首并取得 barrier 后 | 返回调用者；Release 失败进入 `sessionReleaseFailed` |
 | `session/disposed` | exact membership 成功移除且 Created edge 已开始后 | best-effort cleanup notification |
 
 `eventPublisher` 是 Core 内部 typed port；只有 `Plugin` 知道 `plugin.PublishEvent`、delivery policy 和 failure reporter。Event 名和 payload 保持固定基线兼容。`Plugin` 直接实现该端口；另加一个只转发到 Plugin 的 wrapper 不会形成新的职责。
@@ -287,7 +301,7 @@ terminal worker -> sessionContext.startRelease
 | `live_store.go` | `LiveStore`、Handle、typed `eventPublisher`、Plugin Event contract |
 | `memory_store.go` | Store index、Prepare、Enter facade、exact lookup |
 | `memory_store_lifecycle.go` | Enter/Announce/Flush/Release use case 编排 |
-| `memory_store_close.go` | Store close 生命周期 |
+| `memory_store_close.go` | Store close phase、共享 attempt 与等待语义 |
 | `plugin.go` | Plugin Runtime adapter 与 Event dispatch |
 
 同一对象跨文件时使用公共前缀；Store 文件不访问 `sessionContext.log/lifecycle`，不保留旧 coordinator、request queue、state machine wrapper 或兼容路径。

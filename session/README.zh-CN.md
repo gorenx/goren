@@ -101,11 +101,11 @@ JSONL 与 SQLite 是同一 `Backend` port 的可替换事实存储方案，不�
 
 ## 生命周期、错误与取消
 
-Core `Create` 由 Prepare、Enter、Announce 组成；created listener 可 veto 并进入同一个 terminal Release。Event commit 后 observer error 被包含和报告，不回滚事实。publication 期间同步重入同一 Session 会拒绝。`sessionLifecycle` 在 Release admission 时安装唯一 `releaseAttempt`，从这一刻拒绝新 Commit/Announce/Flush；此前已经准入的操作继续按 FIFO 完成。`memoryStore` 随后执行 final Flush、移除 exact `liveEntry`、按 Created publication 状态决定是否发布 Disposed，再把结果交回 lifecycle。final flush 失败后保持 sealed 并允许重试。多个 Release caller 通过同一 attempt 和 `sync.Once` 共享一个 terminal worker。
+Core `Create` 由 Prepare、Enter、Announce 组成；created listener 可 veto 并进入同一个 terminal Release。Event commit 后 observer error 被包含和报告，不回滚事实。publication 期间同步重入同一 Session 会拒绝。`sessionLifecycle` 在 Release admission 时安装唯一 `releaseAttempt`，从这一刻拒绝新 Commit/Announce/Flush；此前已经准入的操作继续按 FIFO 完成。`memoryStore` 随后执行 final Flush、移除 exact `liveEntry`、按 Created publication 状态决定是否发布 Disposed，再把结果交回 lifecycle。final flush 或 exact removal 失败后进入 `sessionReleaseFailed`，保持不可写、不可见并允许 Release 重试。多个 Release caller 通过同一 attempt 和 `sync.Once` 共享一个 terminal worker。
 
 调用方以错误身份判断 exact membership：`ErrNotAttached` 表示传入的 Session 没有属于当前 `LiveStore` 的 exact membership，包括已经 detach、同 ID 的旧对象和非本包创建的对象；调用方不依赖错误文本分支。
 
-`memoryStore` 使用 `open -> closing -> closed` 管理 Store 级准入。`Close` 先进入 `closing`，此后 `Prepare` 和 `Enter` 拒绝新 Session；已有 exact `liveEntry` 按进入顺序逆序 Release。关闭失败不会重新开放准入，后续 `Close` 只重试 sealed lifecycle。`session.Plugin.Dispose` 是 Runtime 适配入口，业务 Store 本身不依赖 Plugin 生命周期。
+`memoryStore` 使用 `storeOpen -> storeClosing -> storeClosed` 管理 Store 级准入和关闭，不创建第二个 lifecycle 对象。`Close` 使用共享 `closeAttempt`；进入 `storeClosing` 后拒绝新的 Prepare/Enter，并按进入顺序逆序 Release 已有 exact `liveEntry`。关闭失败不会重新开放准入，后续 `Close` 创建新 attempt，只重试仍处于 `sessionReleaseFailed` 的 Session。`session.Plugin.Dispose` 是 Runtime 适配入口，业务 Store 本身不依赖 Plugin 生命周期。
 
 Persistence 对同一 Session ID 的 load/append/repair 串行化。write-behind 失败保留未提交 batch；显式 flush 和插件关闭会等待 drain，`Disposed` 只验证 final flush 已留下空 writer 并释放 exact owner。Scope teardown 先停止 listener admission，再 drain writer，最后关闭 Backend。未知 required event、非连续 seq、Header 不一致或不可解释状态明确失败；是否删除 torn tail、追加哪些 recovery facts只由 `SessionLogStore` 决定。
 
