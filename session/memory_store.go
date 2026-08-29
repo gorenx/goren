@@ -218,18 +218,21 @@ func (store *memoryStore) removeExact(entry *liveEntry) bool {
 
 func (store *memoryStore) exactEntry(conversation Context) (*liveEntry, error) {
 	if conversation == nil {
-		return nil, errors.New("session: nil Session is not attached to this Store")
+		return nil, fmt.Errorf("%w: nil Session", ErrNotAttached)
 	}
 	ownedSession, valid := conversation.(*sessionContext)
 	if !valid {
-		return nil, errors.New("session: Session was not created by the session package")
+		return nil, fmt.Errorf(
+			"%w: Session was not created by the session package",
+			ErrNotAttached,
+		)
 	}
 	identifier := ownedSession.ID()
 	store.mutex.RLock()
 	entry := store.sessions[identifier]
 	store.mutex.RUnlock()
 	if entry == nil || entry.conversation != ownedSession {
-		return nil, fmt.Errorf("session: %q is not attached to this Store", identifier)
+		return nil, fmt.Errorf("%w: %q", ErrNotAttached, identifier)
 	}
 	return entry, nil
 }

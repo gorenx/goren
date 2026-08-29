@@ -238,6 +238,53 @@ func TestSessionDisposedFollowsActiveCheckpoint(t *testing.T) {
 	}
 }
 
+func TestDetachedLiveCheckpointDefersToFinalCheckpoint(t *testing.T) {
+	registry := sessionprojection.NewDriveRegistry()
+	registerCountingUnit(t, registry, "count", 1)
+	conversation := newCacheTestSession(t, "detached-during-writer", 86, 1)
+	flushEntered := make(chan struct{}, 1)
+	live := &cacheLiveStore{
+		conversation: conversation,
+		flushEntered: flushEntered,
+		flushErr:     session.ErrNotAttached,
+	}
+	store := &memoryCheckpointStore{
+		replaced: make(chan session.SessionID, 1),
+	}
+	cacheOwner, failures := newCacheForTest(
+		t,
+		registry,
+		&cachePersistence{},
+		live,
+		store,
+		Config{
+			WriteEveryEvents: 1,
+			WriteInterval:    time.Hour,
+		},
+	)
+	if err := cacheOwner.EventAppended(conversation, conversation.Events()[0]); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-flushEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("live checkpoint did not attempt Flush")
+	}
+	if err := cacheOwner.SessionDisposed(conversation); err != nil {
+		t.Fatal(err)
+	}
+	if identifier := waitForSignal(t, store.replaced); identifier != conversation.ID() {
+		t.Fatalf("final checkpoint Session = %q", identifier)
+	}
+	if reported := failures.recordedFailures(); len(reported) != 0 {
+		t.Fatalf("superseded live checkpoint failures = %#v", reported)
+	}
+	_, flushCalls := live.observations()
+	if flushCalls != 1 {
+		t.Fatalf("Flush calls = %d, want one superseded live attempt", flushCalls)
+	}
+}
+
 func TestDifferentLogIdentityUsesLastCompletedReplacement(t *testing.T) {
 	registry := sessionprojection.NewDriveRegistry()
 	registerCountingUnit(t, registry, "count", 1)
