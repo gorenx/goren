@@ -23,9 +23,9 @@ Goren 保留源系统可观察的行为和职责边界，同时用 typed Go conf
 | Host 传输 | HTTP RPC，以及 Mux、Host 两条 WebSocket 事件流 | **已实现：** 兼容的 `/api`、`/api/respond`、Mux 与 Host 载体 |
 | RPC 协议 | 有类型的 Client/Server Request、Response、Receipt、Error 与取消语义 | **已实现：** 纳入范围的信封与错误语义已和固定 TypeScript 源码完成契约验证 |
 | API 发现与分发 | `host.describe` 与插件贡献的 Method | **已实现：** 类型化 Catalog、解码、分发及稳定的业务失败/技术失败边界 |
-| 实时 Frame | Session、Interaction、Workspace、Status、Error 与 Remote Frame Union | **部分实现：** 已纳入 Session、Interaction、Workspace、Status 与 Error Frame；Remote execution 暂缓 |
+| 实时 Frame | Session、Interaction、Workspace、Status、Error 与 Remote Frame Union | **部分实现：** 已纳入 Session、Interaction、Workspace、Status 与 Error Frame；只准入 Commands 的两个 Remote unary endpoint，通用 Remote execution 暂缓 |
 | 插件事件 | Decision、Notification 与 Waterfall 扩展点 | **已实现：** 类型化 Go Handler `interface` 与 Scoped publication |
-| 类型生成 | Typert Schema、生成式 Client 与 Host Gateway 类型 | **已替换：** 协议兼容的 Go 类型与固定跨语言契约 fixture；不复制 Typert 生成 |
+| 类型生成 | Typert Schema、生成式 Client 与 Host Gateway 类型 | **已替换：** 协议兼容的 Go 类型、Go golden 与表驱动契约用例；不复制 Typert 生成 |
 | 动态配置 | Schemastery 与支持 JavaScript 的配置路径 | **已替换：** typed Go config；不支持 `!!js` evaluator |
 
 ### Agent、LLM 与工具
@@ -53,16 +53,16 @@ Goren 保留源系统可观察的行为和职责边界，同时用 typed Go conf
 | 对话 | History、Prompt、流式 Reasoning/Output 与 Tool Message | **已实现：** HTTP/WebSocket 主流程与 Web 渲染 |
 | Queue 与取消 | 读取/编辑/删除排队输入及取消运行中的 Turn | **已实现：** Queue Baseline、Mutation 与 Turn Cancellation |
 | Session Projection | 可扩展 Projection、Cache、Checkpoint 与实时 Frame | **已实现：** Projection Registry、Fold、Checkpoint/Restore、Baseline 与实时 Frame |
-| Session Title | Fallback、手工 Rename 与自动 LLM Title Provider | **部分实现：** 稳定 Fallback 与手工 Rename；First/All-Prompt LLM Title Provider 暂缓 |
+| Session Title | Fallback、手工 Rename 与自动 LLM Title Provider | **已实现：** Fallback、Rename/Refresh，以及可配置的 First-Prompt 或 All-Prompts LLM 生成 |
 | Session 持久化 | 可插拔 Persistence，以及 JSONL、SQLite Adapter | **部分实现：** Persistence 边界与 SQLite/sqlc Adapter；未复制 JSONL Adapter |
-| Session Query 与导出 | SQLite Query、搜索、日志导出与 Query Tool | **暂缓** |
-| Session Fork | 从既有对话创建 Fork | **暂缓** |
+| Session Query 与导出 | 精确读取、过滤、关系追踪、SQLite 搜索、日志导出与 Query Tool | **部分实现：** live-preferred Query Service、可重建 SQLite/FTS5 Index 与 `session.search` 已实现；导出和 Agent Query Tool 暂缓 |
+| Session Fork | 从既有对话创建 Fork | **不在当前范围内** |
 | Workspace | Registry、排序、Archive、Session Accounting、持久化与 Web 管理 | **部分实现：** Registry、API、Accounting、排序/Archive 与 SQLite 已实现；Web 管理暂缓 |
-| Credentials | Provider/Manager/Store、环境变量、Local Store 与 Host API | **已实现：** 环境变量优先、Owner-only Local JSON Store、只写 Host API 与 Web DeepSeek API Key 设置 |
+| Credentials | Provider/Manager/LiveStore、环境变量、Local LiveStore 与 Host API | **已实现：** 环境变量优先、Owner-only Local JSON LiveStore、只写 Host API 与 Web DeepSeek API Key 设置 |
 | Settings | Typed Namespace、文件持久化、Describe 与 Mutation | **暂缓：** 当前只实现标准 absent-provider 兼容响应 |
 | Agent Preset 与 Persona | 发现、组合、选择、创作与 Persona Prompt | **暂缓：** 当前只实现标准 empty-roster 兼容响应 |
 | Web 应用 | 可扩展浏览器 Runtime 与完整产品 UI | **部分实现：** 仓库自有 React/Vite/Tailwind 对话 UI，包含 Session、History、Streaming、Question 与 Credential 设置 |
-| Attachment | Attachment Store、Reference、Upload 与 UI | **暂缓：** 只保留已被 LLM Content 消费的稳定 Image Reference Metadata |
+| Attachment | Attachment LiveStore、Reference、Upload 与 UI | **暂缓：** 只保留已被 LLM Content 消费的稳定 Image Reference Metadata |
 
 ### 扩展能力
 
@@ -76,7 +76,7 @@ Goren 保留源系统可观察的行为和职责边界，同时用 typed Go conf
 | MCP 与 ACP | MCP Client Bridge 与 ACP Agent Adapter | **暂缓** |
 | Job、Workflow 与 Subagent | Local Job、Worker Workflow、进程内/外 Subagent 与控制工具 | **暂缓** |
 | Goal、Plan、TODO 与 Skill | Goal Driver、Plan Mode、TODO Tool 与 Filesystem Skill | **暂缓** |
-| Context Compaction | Basic Compaction、Tool Result Pruning、Checkpoint 与 Compact Command | **暂缓** |
+| Context Compaction | Basic Compaction、Tool Result Pruning、Checkpoint 与 Compact Command | **已实现并通过真实 Provider 验收：** Token Meter、Pruner、Basic Provider、自动 pressure/overflow、Commands Registry、`/compact` Remote/Consumer、取消、SQLite cold resume 与真实 DeepSeek region compaction 均已验证 |
 | Hook 与 Extension | Codex/Claude Hook，以及 Cordis Host/Client/Tool/UI Extension | **暂缓** |
 | Headless 与 SDK | Headless Bundle，以及 TypeScript、Python SDK Surface | **暂缓** |
 | Code Runtime 与 E2B | Worker-thread Code Execution，以及 E2B 文件系统/子进程 Adapter | **暂缓；**代码执行不是产品中心 |
