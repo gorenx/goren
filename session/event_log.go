@@ -9,18 +9,27 @@ import (
 	"github.com/gorenx/goren/agentmessage"
 )
 
-// log is one in-memory append-only Session log. It contains no persistence,
+// eventLog is one in-memory append-only Session log. It contains no lifecycle,
+// Store, persistence,
 // transport, model, or Tool execution logic.
-type log struct {
-	mu           sync.RWMutex
-	header       Header
+type eventLog struct {
+	mu sync.RWMutex
+	// header is immutable after construction and detached at read boundaries.
+	header Header
+	// firstLiveSeq separates borrowed seed facts from this live generation.
 	firstLiveSeq int64
-	entries      []Event
-	view         surfaceState
-	timeSource   TimeSource
+	// entries is the contiguous append-only Session Event sequence.
+	entries []Event
+	// view is the Surface derived from entries.
+	view surfaceState
+	// timeSource supplies timestamps for newly committed Events.
+	timeSource TimeSource
 
-	derived           []agentmessage.Message
-	derivedNodes      int
+	// derived caches model-visible Messages for the current Surface generation.
+	derived []agentmessage.Message
+	// derivedNodes is the number of current Surface nodes already converted.
+	derivedNodes int
+	// derivedGeneration invalidates derived after a Surface replacement.
 	derivedGeneration uint64
 }
 
@@ -33,15 +42,19 @@ func newContextWithClock(
 	identifier SessionID,
 	options CreateOptions,
 	temporalSource TimeSource,
-) (*coordinator, error) {
+) (*sessionContext, error) {
 	sessionLog, err := newWithClock(identifier, options, temporalSource)
 	if err != nil {
 		return nil, err
 	}
-	return newCoordinator(sessionLog), nil
+	return newSessionContext(sessionLog), nil
 }
 
-func newWithClock(identifier SessionID, options CreateOptions, temporalSource TimeSource) (*log, error) {
+func newWithClock(
+	identifier SessionID,
+	options CreateOptions,
+	temporalSource TimeSource,
+) (*eventLog, error) {
 	if temporalSource == nil {
 		return nil, errors.New("session: time source is nil")
 	}
@@ -49,7 +62,7 @@ func newWithClock(identifier SessionID, options CreateOptions, temporalSource Ti
 	if err != nil {
 		return nil, err
 	}
-	conversation := &log{
+	conversation := &eventLog{
 		header:     headerSnapshot,
 		timeSource: temporalSource,
 	}
@@ -89,7 +102,7 @@ func newWithClock(identifier SessionID, options CreateOptions, temporalSource Ti
 }
 
 // Header returns a detached copy of immutable Session metadata.
-func (conversation *log) Header() Header {
+func (conversation *eventLog) Header() Header {
 	if conversation == nil {
 		return Header{}
 	}
@@ -99,12 +112,12 @@ func (conversation *log) Header() Header {
 }
 
 // ID returns the durable Session identity.
-func (conversation *log) ID() SessionID {
+func (conversation *eventLog) ID() SessionID {
 	return conversation.Header().ID
 }
 
 // FirstLiveSeq returns the constructor seed length before any end-seed marker.
-func (conversation *log) FirstLiveSeq() int64 {
+func (conversation *eventLog) FirstLiveSeq() int64 {
 	if conversation == nil {
 		return 0
 	}
@@ -114,7 +127,7 @@ func (conversation *log) FirstLiveSeq() int64 {
 }
 
 // Seq returns the next event sequence number.
-func (conversation *log) Seq() int64 {
+func (conversation *eventLog) Seq() int64 {
 	if conversation == nil {
 		return 0
 	}
@@ -124,7 +137,7 @@ func (conversation *log) Seq() int64 {
 }
 
 // Events returns a detached snapshot. Later appends do not grow the returned slice.
-func (conversation *log) Events() []Event {
+func (conversation *eventLog) Events() []Event {
 	if conversation == nil {
 		return nil
 	}
@@ -138,7 +151,7 @@ func (conversation *log) Events() []Event {
 }
 
 // Surface returns a detached snapshot of the current model-visible sequences.
-func (conversation *log) Surface() Surface {
+func (conversation *eventLog) Surface() Surface {
 	if conversation == nil {
 		return Surface{}
 	}
@@ -155,14 +168,14 @@ func (conversation *log) Surface() Surface {
 // Snapshot returns the append-only log, Surface, and barrier from the same
 // committed revision. Consumers that validate positional relationships use it
 // instead of composing separate reads.
-func (conversation *log) Snapshot() Snapshot {
+func (conversation *eventLog) Snapshot() Snapshot {
 	if conversation == nil {
 		return Snapshot{}
 	}
 	return conversation.snapshot()
 }
 
-func (conversation *log) currentBarrier() WriteBarrier {
+func (conversation *eventLog) currentBarrier() WriteBarrier {
 	conversation.mu.RLock()
 	barrier := WriteBarrier{
 		SessionID: conversation.header.ID,
@@ -172,7 +185,7 @@ func (conversation *log) currentBarrier() WriteBarrier {
 	return barrier
 }
 
-func (conversation *log) snapshot() Snapshot {
+func (conversation *eventLog) snapshot() Snapshot {
 	conversation.mu.RLock()
 	entries := make([]Event, len(conversation.entries))
 	for index, committed := range conversation.entries {
@@ -196,7 +209,7 @@ func (conversation *log) snapshot() Snapshot {
 
 // DeriveMessages projects the current surface into provider-neutral history.
 // Non-surface events and empty assistant anchors never enter the result.
-func (conversation *log) DeriveMessages() ([]agentmessage.Message, error) {
+func (conversation *eventLog) DeriveMessages() ([]agentmessage.Message, error) {
 	if conversation == nil {
 		return nil, errors.New("session: derive messages from nil Session")
 	}
@@ -227,7 +240,7 @@ func (conversation *log) DeriveMessages() ([]agentmessage.Message, error) {
 	return agentmessage.CloneMessages(cached)
 }
 
-func (conversation *log) commitBatch(drafts []EventDraft) ([]Event, error) {
+func (conversation *eventLog) commitBatch(drafts []EventDraft) ([]Event, error) {
 	conversation.mu.Lock()
 	defer conversation.mu.Unlock()
 

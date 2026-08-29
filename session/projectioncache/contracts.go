@@ -12,9 +12,12 @@ import (
 )
 
 const (
-	PluginName              = "@deepseek-ai/dsh-session-projection-cache"
+	// PluginName is the canonical Session Projection Cache plugin name.
+	PluginName = "@deepseek-ai/dsh-session-projection-cache"
+	// DefaultWriteEveryEvents checkpoints after this many observed live events.
 	DefaultWriteEveryEvents = 200
-	DefaultWriteInterval    = 5 * time.Second
+	// DefaultWriteInterval bounds how long dirty live state waits for a checkpoint.
+	DefaultWriteInterval = 5 * time.Second
 )
 
 // Cache offers read-only checkpoint reuse to Session read use cases.

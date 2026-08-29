@@ -19,12 +19,6 @@ type failureRecorder struct {
 
 type panickingPostCommitReporter struct{}
 
-type sessionEventSinkStub struct{}
-
-func (sessionEventSinkStub) Publish(context.Context, plugin.Event) error {
-	return nil
-}
-
 type blockingFlushPublisher struct {
 	started chan struct{}
 	release chan struct{}
@@ -37,13 +31,22 @@ type scriptedSessionPublisher struct {
 	onFlush func(int, FlushRequested) error
 }
 
-func (publisher *scriptedSessionPublisher) Publish(
+func (*scriptedSessionPublisher) Created(context.Context, Context) error {
+	return nil
+}
+
+func (*scriptedSessionPublisher) Appended(context.Context, Context, Event) {}
+
+func (*scriptedSessionPublisher) Disposed(context.Context, Context) {}
+
+func (publisher *scriptedSessionPublisher) Flush(
 	_ context.Context,
-	fact plugin.Event,
+	conversation Context,
+	committedPrefix WriteBarrier,
 ) error {
-	flushRequest, matches := fact.(FlushRequested)
-	if !matches {
-		return nil
+	flushRequest := FlushRequested{
+		Conversation: conversation,
+		Barrier:      committedPrefix,
 	}
 	publisher.mutex.Lock()
 	publisher.flushes = append(publisher.flushes, flushRequest.Barrier)
@@ -62,13 +65,19 @@ func (publisher *scriptedSessionPublisher) observedFlushes() []WriteBarrier {
 	return append([]WriteBarrier(nil), publisher.flushes...)
 }
 
-func (publisher *blockingFlushPublisher) Publish(
+func (*blockingFlushPublisher) Created(context.Context, Context) error {
+	return nil
+}
+
+func (*blockingFlushPublisher) Appended(context.Context, Context, Event) {}
+
+func (*blockingFlushPublisher) Disposed(context.Context, Context) {}
+
+func (publisher *blockingFlushPublisher) Flush(
 	_ context.Context,
-	fact plugin.Event,
+	_ Context,
+	_ WriteBarrier,
 ) error {
-	if _, matches := fact.(FlushRequested); !matches {
-		return nil
-	}
 	publisher.once.Do(func() {
 		close(publisher.started)
 	})
@@ -208,9 +217,7 @@ func newDirectStore(
 ) *memoryStore {
 	testingContext.Helper()
 	store, err := newMemoryStore(
-		MemoryStoreOptions{
-			PostCommitFailures: &failureRecorder{},
-		},
+		nil,
 		publisher,
 	)
 	if err != nil {
@@ -221,14 +228,12 @@ func newDirectStore(
 
 func waitForTerminalAdmission(
 	testingContext *testing.T,
-	owner *coordinator,
+	owner *sessionContext,
 ) {
 	testingContext.Helper()
 	deadline := time.Now().Add(time.Second)
 	for {
-		owner.queue.mutex.Lock()
-		terminal := owner.machine.terminalRequested
-		owner.queue.mutex.Unlock()
+		terminal := owner.terminalAdmission()
 		if terminal {
 			return
 		}
@@ -406,9 +411,7 @@ func TestStoreCloseRejectsPreparationAndEntryBeforeDrain(t *testing.T) {
 		release: make(chan struct{}),
 	}
 	store, err := newMemoryStore(
-		MemoryStoreOptions{
-			PostCommitFailures: &failureRecorder{},
-		},
+		nil,
 		publisher,
 	)
 	if err != nil {
@@ -522,16 +525,14 @@ func TestCreationVetoFlushFailureKeepsSealedSessionForRetry(t *testing.T) {
 	if _, found := store.Get(identifier); found {
 		t.Fatal("sealed Session remained visible after rollback flush failure")
 	}
-	store.mu.RLock()
+	store.mutex.RLock()
 	sealed := store.sessions[identifier]
-	store.mu.RUnlock()
+	store.mutex.RUnlock()
 	if sealed == nil {
 		t.Fatal("failed final flush discarded the exact cleanup owner")
 	}
-	sealed.queue.mutex.Lock()
-	state := sealed.machine.state
-	sealed.queue.mutex.Unlock()
-	if state != lifecycleSealed {
+	state := sealed.conversation.currentPhase()
+	if state != sessionSealed {
 		t.Fatalf("vetoed Session state = %d, want sealed", state)
 	}
 }
@@ -567,7 +568,7 @@ func TestSessionReleaseOrdering(t *testing.T) {
 		go func() {
 			releaseDone <- handleState.Release(context.Background())
 		}()
-		waitForTerminalAdmission(t, conversation.(*coordinator))
+		waitForTerminalAdmission(t, conversation.(*sessionContext))
 		if _, err := conversation.Commit(
 			context.Background(),
 			Batch(newFixtureDraft(t, "rejected")),
@@ -770,15 +771,15 @@ func TestAppendObserverFailureIsContainedAndReentryRejected(t *testing.T) {
 
 func TestPostCommitReporterPanicDoesNotChangeCommitResult(t *testing.T) {
 	t.Parallel()
-	store, err := newMemoryStore(
+	storePlugin, err := NewPlugin(
 		MemoryStoreOptions{
 			PostCommitFailures: panickingPostCommitReporter{},
 		},
-		sessionEventSinkStub{},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	store := storePlugin.store
 	conversation, err := store.Prepare(nil, CreateOptions{})
 	if err != nil {
 		t.Fatal(err)

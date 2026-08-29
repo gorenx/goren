@@ -26,7 +26,7 @@ type Writer interface {
 }
 
 // Context is the complete capability offered to Session consumers. The
-// concrete log and coordinator never escape the session package.
+// concrete event log and lifecycle owner never escape the session package.
 type Context interface {
 	Reader
 	Writer

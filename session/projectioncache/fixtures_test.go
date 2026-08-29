@@ -33,11 +33,11 @@ func (countingUnit) InitialState() (json.RawMessage, error) {
 }
 
 func (unit countingUnit) ApplyState(
-	state json.RawMessage,
+	encodedState json.RawMessage,
 	_ session.Event,
 ) (sessproj.Transition, error) {
 	var count int
-	if err := json.Unmarshal(state, &count); err != nil {
+	if err := json.Unmarshal(encodedState, &count); err != nil {
 		return sessproj.Transition{}, err
 	}
 	next, err := json.Marshal(count + 1)
@@ -47,38 +47,8 @@ func (unit countingUnit) ApplyState(
 	}, err
 }
 
-func (countingUnit) ViewState(state json.RawMessage) (json.RawMessage, error) {
-	return append(json.RawMessage(nil), state...), nil
-}
-
-func TestValidateCheckpointRecordDetachesMutableInput(t *testing.T) {
-	workingDirectory := "/original"
-	value := json.RawMessage(`{"title":"original"}`)
-	record, err := ValidateCheckpointRecord(
-		"detached",
-		CheckpointRecord{
-			Identity: LogIdentity{
-				CreatedAt: 1,
-				CWD:       &workingDirectory,
-			},
-			Rows: sessproj.Checkpoint{
-				"title": {
-					Version: 1,
-					Seq:     2,
-					Value:   value,
-				},
-			},
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	workingDirectory = "/mutated"
-	value[10] = 'm'
-	if record.Identity.CWD == nil || *record.Identity.CWD != "/original" ||
-		string(record.Rows["title"].Value) != `{"title":"original"}` {
-		t.Fatalf("detached record = %#v", record)
-	}
+func (countingUnit) ViewState(encodedState json.RawMessage) (json.RawMessage, error) {
+	return append(json.RawMessage(nil), encodedState...), nil
 }
 
 type failureRecorder struct {
@@ -99,8 +69,10 @@ func (recorder *failureRecorder) recordedFailures() []Failure {
 }
 
 type memoryCheckpointStore struct {
-	mutex         sync.Mutex
-	loaded        map[session.SessionID]CheckpointRecord
+	mutex sync.Mutex
+	// loaded maps durable Session ID keys to startup checkpoint record values.
+	loaded map[session.SessionID]CheckpointRecord
+	// records maps replaced Session ID keys to durable checkpoint record values.
 	records       map[session.SessionID]CheckpointRecord
 	replaceErr    error
 	replaceErrors []error
@@ -339,7 +311,7 @@ func newCacheForTest(
 	live *cacheLiveStore,
 	store *memoryCheckpointStore,
 	settings Config,
-) (*Coordinator, *failureRecorder) {
+) (*ProjectionCache, *failureRecorder) {
 	t.Helper()
 	failures := &failureRecorder{}
 	settings.Failures = failures

@@ -8,11 +8,16 @@ import (
 )
 
 const (
-	PluginName        = "@deepseek-ai/dsh-session"
-	CreatedEventName  = "session/created"
+	// PluginName is the canonical Session capability plugin name.
+	PluginName = "@deepseek-ai/dsh-session"
+	// CreatedEventName identifies the vetoable live membership publication edge.
+	CreatedEventName = "session/created"
+	// DisposedEventName identifies cleanup after an announced membership is removed.
 	DisposedEventName = "session/disposed"
+	// AppendedEventName identifies a Session Event already committed to memory.
 	AppendedEventName = "session/event"
-	FlushEventName    = "session/flush"
+	// FlushEventName requests durability through one committed write barrier.
+	FlushEventName = "session/flush"
 )
 
 // LiveStore owns live Session membership and publication lifecycle.
@@ -32,6 +37,15 @@ type LiveStore interface {
 type Handle interface {
 	Session() Context
 	Release(context.Context) error
+}
+
+// eventPublisher is the typed publication port attached to one live Session.
+// Its implementation owns delivery policy and post-commit failure reporting.
+type eventPublisher interface {
+	Created(context.Context, Context) error
+	Appended(context.Context, Context, Event)
+	Flush(context.Context, Context, WriteBarrier) error
+	Disposed(context.Context, Context)
 }
 
 // Created is the vetoable publication edge after a Session enters the Store.

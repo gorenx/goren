@@ -7,35 +7,50 @@ import (
 	"slices"
 	"sync"
 	"time"
-
-	"github.com/gorenx/goren/plugin"
 )
 
-type eventPublisher interface {
-	Publish(context.Context, plugin.Event) error
-}
-
+// memoryStoreState is the admission and shutdown phase of the live Store.
 type memoryStoreState uint8
 
 const (
+	// memoryStoreOpen accepts preparation and exact Session entry.
 	memoryStoreOpen memoryStoreState = iota
+	// memoryStoreClosing rejects new membership while existing entries release.
 	memoryStoreClosing
+	// memoryStoreClosed has completed the shared Store close attempt.
 	memoryStoreClosed
 )
 
-// memoryStore owns only the process-local exact Session index, entry order,
-// and Store lifecycle. Per-Session lifecycle state belongs to lifecycleMachine.
+// liveEntry is one exact Store membership. The token prevents a stale Handle
+// from acting on another lifecycle that later reuses the same Session ID.
+type liveEntry struct {
+	// conversation is the exact Session object attached by this membership.
+	conversation *sessionContext
+	// token authorizes only this Store membership to drive lifecycle edges.
+	token *membershipToken
+}
+
+// memoryStore owns the process-local live index, entry order, ID allocation,
+// and Store lifecycle. Per-Session ordering remains in sessionLifecycle.
 type memoryStore struct {
-	mu            sync.RWMutex
-	sessions      map[SessionID]*coordinator
-	order         []*coordinator
-	counter       uint64
-	timeSource    TimeSource
-	failureReport PostCommitFailureReporter
-	publisher     eventPublisher
-	state         memoryStoreState
-	closeDone     chan struct{}
-	closeErr      error
+	mutex sync.RWMutex
+
+	// sessions maps SessionID keys to their exact live membership values.
+	sessions map[SessionID]*liveEntry
+	// order contains exact live memberships in insertion order.
+	order []*liveEntry
+	// counter allocates process-local default Session IDs.
+	counter uint64
+	// timeSource supplies deterministic event timestamps.
+	timeSource TimeSource
+	// publisher is installed into each exact Session membership.
+	publisher eventPublisher
+	// state controls Store admission and close behavior.
+	state memoryStoreState
+	// closeDone closes after the shared Store close attempt completes.
+	closeDone chan struct{}
+	// closeErr is the shared Store close result read after closeDone.
+	closeErr error
 }
 
 var _ LiveStore = (*memoryStore)(nil)
@@ -47,25 +62,21 @@ func (systemTimeSource) CurrentTime() time.Time {
 }
 
 func newMemoryStore(
-	options MemoryStoreOptions,
+	temporalSource TimeSource,
 	publisher eventPublisher,
 ) (*memoryStore, error) {
-	selectedTimeSource := options.TimeSource
+	selectedTimeSource := temporalSource
 	if selectedTimeSource == nil {
 		selectedTimeSource = systemTimeSource{}
-	}
-	if options.PostCommitFailures == nil {
-		return nil, errors.New("session: post-commit failure reporter is required")
 	}
 	if publisher == nil {
 		return nil, errors.New("session: event publisher is required")
 	}
 	return &memoryStore{
-		sessions:      make(map[SessionID]*coordinator),
-		timeSource:    selectedTimeSource,
-		failureReport: options.PostCommitFailures,
-		publisher:     publisher,
-		state:         memoryStoreOpen,
+		sessions:   make(map[SessionID]*liveEntry),
+		timeSource: selectedTimeSource,
+		publisher:  publisher,
+		state:      memoryStoreOpen,
 	}, nil
 }
 
@@ -91,11 +102,14 @@ func (store *memoryStore) Create(
 	return handleState, nil
 }
 
-func (store *memoryStore) Prepare(identifier *SessionID, options CreateOptions) (Context, error) {
+func (store *memoryStore) Prepare(
+	identifier *SessionID,
+	options CreateOptions,
+) (Context, error) {
 	resolved := SessionID("")
-	store.mu.Lock()
+	store.mutex.Lock()
 	if store.state != memoryStoreOpen {
-		store.mu.Unlock()
+		store.mutex.Unlock()
 		return nil, errors.New("session: Store is not accepting Session preparation")
 	}
 	if identifier == nil {
@@ -110,7 +124,7 @@ func (store *memoryStore) Prepare(identifier *SessionID, options CreateOptions) 
 		resolved = *identifier
 	}
 	_, duplicate := store.sessions[resolved]
-	store.mu.Unlock()
+	store.mutex.Unlock()
 	if duplicate {
 		return nil, fmt.Errorf("session: %q already exists", resolved)
 	}
@@ -121,221 +135,101 @@ func (store *memoryStore) Enter(conversation Context) (Handle, error) {
 	if conversation == nil {
 		return nil, errors.New("session: cannot enter nil Session")
 	}
-	owner, valid := conversation.(*coordinator)
+	ownedSession, valid := conversation.(*sessionContext)
 	if !valid {
 		return nil, errors.New("session: Session was not created by the session package")
 	}
-	return owner.enter(store)
+	return store.enter(ownedSession)
 }
 
 func (store *memoryStore) Announce(
 	requestContext context.Context,
 	conversation Context,
 ) error {
-	owner, err := store.exactCoordinator(conversation)
+	entry, err := store.exactEntry(conversation)
 	if err != nil {
 		return err
 	}
-	return owner.announce(requestContext, store)
+	return store.announce(requestContext, entry)
 }
 
 func (store *memoryStore) Flush(
 	requestContext context.Context,
 	conversation Context,
 ) error {
-	owner, err := store.exactCoordinator(conversation)
+	entry, err := store.exactEntry(conversation)
 	if err != nil {
 		return err
 	}
-	return owner.flush(requestContext, store)
+	return store.flush(requestContext, entry)
 }
 
 func (store *memoryStore) Get(identifier SessionID) (Context, bool) {
-	store.mu.RLock()
-	owner := store.sessions[identifier]
-	store.mu.RUnlock()
-	if owner == nil || !owner.visible() {
+	store.mutex.RLock()
+	entry := store.sessions[identifier]
+	store.mutex.RUnlock()
+	if entry == nil || !entry.conversation.visible() {
 		return nil, false
 	}
-	return owner, true
+	return entry.conversation, true
 }
 
 func (store *memoryStore) List() []Context {
-	store.mu.RLock()
-	ordered := append([]*coordinator(nil), store.order...)
-	store.mu.RUnlock()
+	store.mutex.RLock()
+	ordered := append([]*liveEntry(nil), store.order...)
+	store.mutex.RUnlock()
 	result := make([]Context, 0, len(ordered))
-	for _, owner := range ordered {
-		if owner.visible() {
-			result = append(result, owner)
+	for _, entry := range ordered {
+		if entry.conversation.visible() {
+			result = append(result, entry.conversation)
 		}
 	}
 	return result
 }
 
-func (store *memoryStore) Close(closeContext context.Context) error {
-	if closeContext == nil {
-		return errors.New("session: close Context is nil")
-	}
-	store.mu.Lock()
-	if store.state == memoryStoreClosed {
-		store.mu.Unlock()
-		return nil
-	}
-	if store.state == memoryStoreClosing && store.closeDone != nil {
-		done := store.closeDone
-		store.mu.Unlock()
-		select {
-		case <-done:
-			store.mu.RLock()
-			closeErr := store.closeErr
-			store.mu.RUnlock()
-			return closeErr
-		case <-closeContext.Done():
-			return context.Cause(closeContext)
-		}
-	}
-	store.state = memoryStoreClosing
-	done := make(chan struct{})
-	store.closeDone = done
-	active := append([]*coordinator(nil), store.order...)
-	store.mu.Unlock()
-
-	ownedContext := context.WithoutCancel(closeContext)
-	var closeErr error
-	for index := len(active) - 1; index >= 0; index-- {
-		closeErr = errors.Join(closeErr, active[index].release(ownedContext))
-	}
-	store.mu.Lock()
-	store.closeErr = closeErr
-	store.closeDone = nil
-	if closeErr == nil {
-		store.state = memoryStoreClosed
-	}
-	close(done)
-	store.mu.Unlock()
-	return closeErr
-}
-
-func (store *memoryStore) attachExact(owner *coordinator) error {
-	identifier := owner.ID()
-	store.mu.Lock()
-	defer store.mu.Unlock()
+func (store *memoryStore) attachExact(entry *liveEntry) error {
+	identifier := entry.conversation.ID()
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
 	if store.state != memoryStoreOpen {
 		return errors.New("session: Store is not accepting Session entry")
 	}
 	if _, exists := store.sessions[identifier]; exists {
 		return fmt.Errorf("session: %q already exists", identifier)
 	}
-	store.sessions[identifier] = owner
-	store.order = append(store.order, owner)
+	store.sessions[identifier] = entry
+	store.order = append(store.order, entry)
 	return nil
 }
 
-func (store *memoryStore) removeExact(owner *coordinator) bool {
-	identifier := owner.ID()
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	if store.sessions[identifier] != owner {
+func (store *memoryStore) removeExact(entry *liveEntry) bool {
+	identifier := entry.conversation.ID()
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	if store.sessions[identifier] != entry {
 		return false
 	}
 	delete(store.sessions, identifier)
-	store.order = slices.DeleteFunc(store.order, func(candidate *coordinator) bool {
-		return candidate == owner
+	store.order = slices.DeleteFunc(store.order, func(candidate *liveEntry) bool {
+		return candidate == entry
 	})
 	return true
 }
 
-func (store *memoryStore) exactCoordinator(conversation Context) (*coordinator, error) {
+func (store *memoryStore) exactEntry(conversation Context) (*liveEntry, error) {
 	if conversation == nil {
 		return nil, errors.New("session: nil Session is not attached to this Store")
 	}
-	owner, valid := conversation.(*coordinator)
+	ownedSession, valid := conversation.(*sessionContext)
 	if !valid {
 		return nil, errors.New("session: Session was not created by the session package")
 	}
-	identifier := owner.ID()
-	store.mu.RLock()
-	current := store.sessions[identifier]
-	store.mu.RUnlock()
-	if current != owner {
+	identifier := ownedSession.ID()
+	store.mutex.RLock()
+	entry := store.sessions[identifier]
+	store.mutex.RUnlock()
+	if entry == nil || entry.conversation != ownedSession {
 		return nil, fmt.Errorf("session: %q is not attached to this Store", identifier)
 	}
-	return owner, nil
-}
-
-func (store *memoryStore) publishAppend(
-	requestContext context.Context,
-	conversation Context,
-	committed Event,
-) {
-	publishErr := safelyDispatch(func() error {
-		return store.publisher.Publish(
-			requestContext,
-			EventAppended{
-				Conversation: conversation,
-				Committed:    cloneEvent(committed),
-			},
-		)
-	})
-	if publishErr != nil {
-		store.reportPostCommitFailure(
-			PostCommitFailure{
-				SessionID: conversation.ID(),
-				Error:     publishErr,
-			},
-		)
-	}
-}
-
-func (store *memoryStore) publishFlush(
-	requestContext context.Context,
-	conversation Context,
-	barrier WriteBarrier,
-) error {
-	return store.publisher.Publish(
-		requestContext,
-		FlushRequested{
-			Conversation: conversation,
-			Barrier:      barrier,
-		},
-	)
-}
-
-func (store *memoryStore) publishDisposed(
-	requestContext context.Context,
-	conversation Context,
-) {
-	_ = safelyDispatch(func() error {
-		return store.publisher.Publish(
-			requestContext,
-			Disposed{Conversation: conversation},
-		)
-	})
-}
-
-func (store *memoryStore) publishCreated(
-	requestContext context.Context,
-	conversation Context,
-) error {
-	return safelyDispatch(func() error {
-		return store.publisher.Publish(
-			requestContext,
-			Created{Conversation: conversation},
-		)
-	})
-}
-
-func (store *memoryStore) reportPostCommitFailure(failure PostCommitFailure) {
-	defer func() { _ = recover() }()
-	store.failureReport.ReportPostCommitFailure(failure)
-}
-
-func safelyDispatch(operation func() error) (dispatchErr error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			dispatchErr = fmt.Errorf("session: listener panicked: %v", recovered)
-		}
-	}()
-	return operation()
+	return entry, nil
 }
