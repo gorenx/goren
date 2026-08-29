@@ -63,18 +63,18 @@ func (owner *LiveFrameSource) ObserveEvent(
 	fact plugin.Event,
 ) error {
 	switch observed := fact.(type) {
-	case session.SessionEventAppended:
+	case session.EventAppended:
 		return owner.observeSessionEvent(
 			requestContext,
 			observed.Conversation,
 			observed.Committed,
 		)
-	case session.SessionCreated:
+	case session.Created:
 		return owner.observeSessionCreated(
 			requestContext,
 			observed.Conversation,
 		)
-	case session.SessionDisposed:
+	case session.Disposed:
 		return owner.observeSessionDisposed(
 			requestContext,
 			observed.Conversation,
@@ -87,7 +87,7 @@ func (owner *LiveFrameSource) ObserveEvent(
 		)
 	case agent.AgentError:
 		return owner.observeAgentError(requestContext, observed)
-	case sessionprojection.ProjectionChanged:
+	case sessionprojection.Changed:
 		owner.observeProjectionChange(observed.Change)
 		return nil
 	default:
@@ -128,7 +128,7 @@ func (owner *LiveFrameSource) InteractionBroker() InteractionFrameBroker {
 
 func (owner *LiveFrameSource) observeSessionEvent(
 	_ context.Context,
-	conversation *session.Session,
+	conversation session.Context,
 	committed session.Event,
 ) error {
 	projected, err := ProjectSessionEvent(committed)
@@ -154,14 +154,14 @@ func (owner *LiveFrameSource) observeProjectionChange(projectionChange sessionpr
 
 func (owner *LiveFrameSource) observeSessionCreated(
 	_ context.Context,
-	conversation *session.Session,
+	conversation session.Context,
 ) error {
 	return owner.hub.sessionCreated(conversation)
 }
 
 func (owner *LiveFrameSource) observeSessionDisposed(
 	_ context.Context,
-	conversation *session.Session,
+	conversation session.Context,
 ) error {
 	return owner.hub.sessionDisposed(conversation.ID())
 }

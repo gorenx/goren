@@ -17,11 +17,11 @@ type greetingPlugin struct {
 	prefix string
 }
 
-func (*greetingPlugin) Manifest() plugin.Manifest {
+func (serviceOwner *greetingPlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "greeting",
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[greeting](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[greeting](serviceOwner),
 		},
 	}
 }

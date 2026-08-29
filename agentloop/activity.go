@@ -7,15 +7,19 @@ import (
 	"sync"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 )
 
 type activityKind uint8
 
 const (
+	// activityIdle has no admitted maintenance operation or Turn driver.
 	activityIdle activityKind = iota
+	// activityMaintenance admits one caller-supplied maintenance operation while
+	// normal Turn execution remains excluded.
 	activityMaintenance
+	// activityRunning owns one active Turn driver and its typed cancellation.
 	activityRunning
 )
 
@@ -70,19 +74,6 @@ func newActivityCoordinator(
 	}
 }
 
-func (coordinator *activityCoordinator) attach(turns *turnRunner) error {
-	if turns == nil {
-		return errors.New("agentloop: activity Turn runner is nil")
-	}
-	coordinator.mutex.Lock()
-	defer coordinator.mutex.Unlock()
-	if coordinator.turns != nil {
-		return errors.New("agentloop: activity Turn runner is already attached")
-	}
-	coordinator.turns = turns
-	return nil
-}
-
 func (coordinator *activityCoordinator) beginServing() error {
 	coordinator.mutex.Lock()
 	defer coordinator.mutex.Unlock()
@@ -112,7 +103,7 @@ func (coordinator *activityCoordinator) status() agent.Status {
 }
 
 func (coordinator *activityCoordinator) send(
-	input llm.UserMessage,
+	input agentmessage.UserMessage,
 	target agent.InboxTarget,
 	wakeup bool,
 ) error {
@@ -230,11 +221,11 @@ func (coordinator *activityCoordinator) whenIdle(
 
 func (coordinator *activityCoordinator) runMaintenance(
 	requestContext context.Context,
-	task agent.MaintenanceTask,
-) (taskErr error) {
-	if requestContext == nil || task == nil {
+	operation func(context.Context) error,
+) error {
+	if requestContext == nil || operation == nil {
 		return errors.New(
-			"agentloop: maintenance Context and task are required",
+			"agentloop: maintenance Context and operation are required",
 		)
 	}
 	operationContext, cancelActivity := context.WithCancelCause(requestContext)
@@ -248,11 +239,12 @@ func (coordinator *activityCoordinator) runMaintenance(
 			coordinator.subject.identifier,
 		)
 	}
-	if coordinator.state.kind != activityIdle {
+	if coordinator.state.kind != activityIdle ||
+		coordinator.state.wakeRequested {
 		coordinator.mutex.Unlock()
 		cancelActivity(nil)
 		return fmt.Errorf(
-			"agentloop: Agent %q already has active work",
+			"agentloop: Agent %q already has active or queued work",
 			coordinator.subject.identifier,
 		)
 	}
@@ -269,7 +261,7 @@ func (coordinator *activityCoordinator) runMaintenance(
 		cancelActivity(nil)
 		coordinator.finishActivity(done, lastTurn, false)
 	}()
-	return task.Run(operationContext)
+	return operation(operationContext)
 }
 
 func (coordinator *activityCoordinator) wake(wakingAfterAbort bool) error {
@@ -453,7 +445,9 @@ func (coordinator *activityCoordinator) durableCancelCause() session.TurnCancelC
 	case nil, agent.UserCancel:
 		return session.UserCancelCause{}
 	default:
-		return session.HookCancelCause{Reason: selected.CancelKind()}
+		return session.HookCancelCause{
+			Reason: selected.CancelKind(),
+		}
 	}
 }
 

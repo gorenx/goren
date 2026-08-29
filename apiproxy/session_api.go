@@ -18,9 +18,10 @@ const (
 	SessionCancelMethod      = "session.cancel"
 )
 
-// SessionListRequest keeps the source cursor seat although v1 does not page.
+// SessionListRequest selects one newest-first page of visible Sessions.
 type SessionListRequest struct {
 	Cursor *string
+	Limit  *int64
 }
 
 // SessionSummary is the browser-visible projection of one attached Session.
@@ -42,9 +43,10 @@ type SessionProjectionsBlock struct {
 	Values  map[string]json.RawMessage `json:"values"`
 }
 
-// SessionListValue is the complete session.list result.
+// SessionListValue is one page of session.list results.
 type SessionListValue struct {
-	Items []SessionSummary `json:"items"`
+	Items      []SessionSummary `json:"items"`
+	NextCursor *string          `json:"nextCursor,omitempty"`
 }
 
 // SessionSearchRequest contains the normalized literal sidebar query.

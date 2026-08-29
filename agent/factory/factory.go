@@ -42,7 +42,8 @@ func (builder *Factory) Create(
 	); err != nil {
 		return nil, err
 	}
-	return agent.NewRegistry(builder.runtimeOptions), nil
+	registry := agent.NewRegistry(builder.runtimeOptions)
+	return agent.NewRegistryPlugin(registry)
 }
 
 var _ pluginfactory.Factory = (*Factory)(nil)

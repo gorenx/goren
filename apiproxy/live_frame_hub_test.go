@@ -8,24 +8,24 @@ import (
 	"time"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/connection"
-	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 )
 
 func TestProjectQueueFoldsDurableSplicesAndUserPlacement(t *testing.T) {
 	t.Parallel()
-	origin, err := llm.NewOpaqueMessageSource("user", json.RawMessage(`{"kind":"user","rpcId":"rpc-1"}`))
+	origin, err := agentmessage.NewOpaqueMessageSource("user", json.RawMessage(`{"kind":"user","rpcId":"rpc-1"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	messageValue, err := llm.NewUserMessage(llm.UserMessageInput{
-		Content: []llm.ContentBlock{llm.NewTextBlock("queued")}, Source: origin,
+	messageValue, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+		Content: []agentmessage.ContentBlock{agentmessage.NewTextBlock("queued")}, Source: origin,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	mutation := agent.InboxSplice{Target: agent.NextStep, Start: 0, Inserted: []llm.UserMessage{messageValue}}
+	mutation := agent.InboxSplice{Target: agent.NextStep, Start: 0, Inserted: []agentmessage.UserMessage{messageValue}}
 	encoded, err := json.Marshal(mutation)
 	if err != nil {
 		t.Fatal(err)
@@ -46,7 +46,22 @@ func TestMuxBaselineHighwaterSuppressesLateCommittedCallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	committed, err := session.Append(conversation, session.TurnStarted, session.TurnStart{Turn: 1})
+	committed, err := session.Event{}, error(nil)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewEventDraft(session.TurnStarted, session.TurnStart{Turn: 1})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		committed = committedEvent
+		err = writeErr
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +74,7 @@ func TestMuxBaselineHighwaterSuppressesLateCommittedCallback(t *testing.T) {
 	received := make(chan StreamRequest[MuxFrame], 4)
 	done := make(chan error, 1)
 	go func() {
-		done <- hub.openMux(streamContext, []*session.Session{conversation}, func(item StreamRequest[MuxFrame]) error {
+		done <- hub.openMux(streamContext, []session.Context{conversation}, func(item StreamRequest[MuxFrame]) error {
 			received <- item
 			return nil
 		})

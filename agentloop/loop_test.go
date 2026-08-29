@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agent/scopedplugin"
 	"github.com/gorenx/goren/agentloop"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
@@ -21,6 +23,42 @@ import (
 )
 
 type postCommitFailureSink struct{}
+
+type sessionStoreProbe struct {
+	plugin.Base
+	store session.LiveStore
+}
+
+func (*sessionStoreProbe) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "agentloop-session-store-probe",
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[session.LiveStore](),
+		},
+	}
+}
+
+func (probe *sessionStoreProbe) Apply(context.Context) error {
+	liveStore, err := plugin.Require[session.LiveStore](probe)
+	if err != nil {
+		return err
+	}
+	probe.store = liveStore
+	return nil
+}
+
+func (*sessionStoreProbe) Dispose(context.Context) error { return nil }
+
+type requestResolutionAction struct {
+	resolution agent.RequestResolution
+}
+
+func (action requestResolutionAction) Execute(
+	context.Context,
+	agent.RequestNotice,
+) (agent.RequestResolution, error) {
+	return action.resolution, nil
+}
 
 func (postCommitFailureSink) ReportPostCommitFailure(
 	session.PostCommitFailure,
@@ -75,19 +113,49 @@ func (backend *scriptedAdapter) snapshots() []llm.GenerateOptions {
 
 type lifecycleObserver struct {
 	plugin.Base
-	mutex   sync.Mutex
-	entries []string
+	mutex              sync.Mutex
+	entries            []string
+	disposedAgentIDs   []session.SessionID
+	disposedSessionIDs []session.SessionID
+}
+
+type agentCreatedRejector struct {
+	plugin.Base
+}
+
+func (*agentCreatedRejector) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "agentloop-test-agent-creation-veto",
+		Events: []plugin.EventSubscription{
+			plugin.EventOf[agent.Created](),
+		},
+	}
+}
+
+func (*agentCreatedRejector) Apply(requestContext context.Context) error {
+	return requestContext.Err()
+}
+
+func (*agentCreatedRejector) Dispose(context.Context) error {
+	return nil
+}
+
+func (*agentCreatedRejector) ObserveEvent(
+	context.Context,
+	plugin.Event,
+) error {
+	return errors.New("test: Agent Created listener rejected publication")
 }
 
 func (*lifecycleObserver) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "agentloop-test-lifecycle-observer",
 		Events: []plugin.EventSubscription{
-			plugin.EventOf[session.SessionCreated](),
+			plugin.EventOf[session.Created](),
 			plugin.EventOf[agent.Created](),
 			plugin.EventOf[agent.SessionStarted](),
 			plugin.EventOf[agent.Disposed](),
-			plugin.EventOf[session.SessionDisposed](),
+			plugin.EventOf[session.Disposed](),
 		},
 	}
 }
@@ -105,25 +173,51 @@ func (observerState *lifecycleObserver) ObserveEvent(
 	fact plugin.Event,
 ) error {
 	entry := ""
-	switch fact.(type) {
-	case session.SessionCreated:
-		entry = session.SessionCreatedEventName
+	var disposedAgentID session.SessionID
+	var disposedSessionID session.SessionID
+	switch lifecycleEvent := fact.(type) {
+	case session.Created:
+		entry = session.CreatedEventName
 	case agent.Created:
 		entry = agent.CreatedEventName
 	case agent.SessionStarted:
 		entry = agent.SessionStartEventName
 	case agent.Disposed:
 		entry = agent.DisposedEventName
-	case session.SessionDisposed:
-		entry = session.SessionDisposedEventName
+		disposedAgentID = lifecycleEvent.Subject.ID()
+	case session.Disposed:
+		entry = session.DisposedEventName
+		disposedSessionID = lifecycleEvent.Conversation.ID()
 	}
 	if entry == "" {
 		return nil
 	}
 	observerState.mutex.Lock()
 	observerState.entries = append(observerState.entries, entry)
+	if disposedAgentID != "" {
+		observerState.disposedAgentIDs = append(
+			observerState.disposedAgentIDs,
+			disposedAgentID,
+		)
+	}
+	if disposedSessionID != "" {
+		observerState.disposedSessionIDs = append(
+			observerState.disposedSessionIDs,
+			disposedSessionID,
+		)
+	}
 	observerState.mutex.Unlock()
 	return nil
+}
+
+func (observerState *lifecycleObserver) disposedIDs() (
+	[]session.SessionID,
+	[]session.SessionID,
+) {
+	observerState.mutex.Lock()
+	defer observerState.mutex.Unlock()
+	return append([]session.SessionID(nil), observerState.disposedAgentIDs...),
+		append([]session.SessionID(nil), observerState.disposedSessionIDs...)
 }
 
 func (observerState *lifecycleObserver) snapshot() []string {
@@ -134,11 +228,12 @@ func (observerState *lifecycleObserver) snapshot() []string {
 
 type harnessFixture struct {
 	runtimeEngine *plugin.Runtime
-	agents        *agent.RegistryPlugin
-	sessions      *session.MemoryStore
+	agents        *agent.RegistryService
+	sessions      session.LiveStore
 	models        *llm.Runtime
 	toolCatalog   tools.ToolCatalog
 	loopPlugin    *agentloop.Plugin
+	loopHandle    plugin.Handle
 	backend       *scriptedAdapter
 	lifecycle     *lifecycleObserver
 }
@@ -178,13 +273,17 @@ func newHarnessFixtureWithSettings(
 	if err != nil {
 		t.Fatal(err)
 	}
-	sessionStore, err := session.NewMemoryStore(session.MemoryStoreOptions{
+	sessionPlugin, err := session.NewPlugin(session.MemoryStoreOptions{
 		PostCommitFailures: postCommitFailureSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	agentRegistry := agent.NewRegistry(agent.RegistryOptions{})
+	agentPlugin, err := agent.NewRegistryPlugin(agentRegistry)
+	if err != nil {
+		t.Fatal(err)
+	}
 	modelRuntime := llm.NewRuntime(nil)
 	promptRuntime := systemprompt.New(
 		promptSettings,
@@ -192,23 +291,26 @@ func newHarnessFixtureWithSettings(
 	)
 	toolService := tools.New(toolSettings)
 	lifecycle := &lifecycleObserver{}
+	storeProbe := &sessionStoreProbe{}
 	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{
 		EventFailures: eventFailureSink{},
 	})
 	rootPlugins := []plugin.Plugin{
 		lifecycle,
-		agentRegistry,
-		sessionStore,
+		agentPlugin,
+		sessionPlugin,
+		storeProbe,
 		modelRuntime,
 		promptRuntime,
 		toolService,
 	}
 	rootPlugins = append(rootPlugins, rootExtensions...)
 	rootPlugins = append(rootPlugins, loopPlugin)
-	if _, err = runtimeEngine.Start(
+	handles, err := runtimeEngine.Start(
 		context.Background(),
 		rootPlugins...,
-	); err != nil {
+	)
+	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -235,10 +337,11 @@ func newHarnessFixtureWithSettings(
 	return &harnessFixture{
 		runtimeEngine: runtimeEngine,
 		agents:        agentRegistry,
-		sessions:      sessionStore,
+		sessions:      storeProbe.store,
 		models:        modelRuntime,
 		toolCatalog:   toolService,
 		loopPlugin:    loopPlugin,
+		loopHandle:    handles[len(handles)-1],
 		backend:       backend,
 		lifecycle:     lifecycle,
 	}
@@ -298,7 +401,7 @@ func TestLoopPublishesDrivesAndDisposesOneAgentLifecycle(t *testing.T) {
 		t.Fatalf("second request messages = %#v", got)
 	}
 	wantPublished := []string{
-		session.SessionCreatedEventName,
+		session.CreatedEventName,
 		agent.CreatedEventName,
 		agent.SessionStartEventName,
 	}
@@ -317,10 +420,49 @@ func TestLoopPublishesDrivesAndDisposesOneAgentLifecycle(t *testing.T) {
 	wantComplete := append(
 		wantPublished,
 		agent.DisposedEventName,
-		session.SessionDisposedEventName,
+		session.DisposedEventName,
 	)
 	if got := state.lifecycle.snapshot(); !reflect.DeepEqual(got, wantComplete) {
 		t.Fatalf("complete lifecycle = %#v, want %#v", got, wantComplete)
+	}
+}
+
+func TestAgentCreatedListenerErrorPublishesPairedDisposal(t *testing.T) {
+	state := newHarnessFixtureWithSettings(
+		t,
+		nil,
+		agentloop.Settings{
+			MaxParallelToolCalls: agentloop.DefaultMaxParallelToolCalls,
+		},
+		&agentCreatedRejector{},
+	)
+	_, err := state.agents.Create(
+		context.Background(),
+		agent.CreateOptions{
+			SessionID: "vetoed-agent-publication",
+			AgentOptions: agent.Options{
+				Provider: "mock",
+				Model:    "model",
+			},
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "listener rejected publication") {
+		t.Fatalf("Create error = %v", err)
+	}
+	want := []string{
+		session.CreatedEventName,
+		agent.CreatedEventName,
+		agent.DisposedEventName,
+		session.DisposedEventName,
+	}
+	if got := state.lifecycle.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("rejected publication lifecycle = %#v, want %#v", got, want)
+	}
+	if _, found := state.agents.Get("vetoed-agent-publication"); found {
+		t.Fatal("rejected Agent remained registered")
+	}
+	if _, found := state.sessions.Get("vetoed-agent-publication"); found {
+		t.Fatal("rejected Agent Session remained registered")
 	}
 }
 
@@ -478,9 +620,7 @@ func TestAgentRejectsWorkBeforeCommitPublication(t *testing.T) {
 				Provider: "mock",
 				Model:    "model",
 			},
-			Extensions: []plugin.Plugin{
-				extension,
-			},
+			Provisioner: scopedplugin.MountPlugins(extension),
 		},
 	)
 	if err != nil {
@@ -554,9 +694,7 @@ func TestAgentExtensionResolvesExactAgentAndWaterfall(t *testing.T) {
 				Provider: "mock",
 				Model:    "base-model",
 			},
-			Extensions: []plugin.Plugin{
-				extension,
-			},
+			Provisioner: scopedplugin.MountPlugins(extension),
 		},
 	)
 	if err != nil {
@@ -572,17 +710,14 @@ func TestAgentExtensionResolvesExactAgentAndWaterfall(t *testing.T) {
 			Turn:    1,
 			Step:    1,
 		},
-		agent.RequestActionFunc(func(
-			context.Context,
-			agent.RequestNotice,
-		) (agent.RequestResolution, error) {
-			return agent.RequestResolution{
+		requestResolutionAction{
+			resolution: agent.RequestResolution{
 				Config: llm.CallConfig{
 					Provider: "mock",
 					Model:    "base-model",
 				},
-			}, nil
-		}),
+			},
+		},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -644,9 +779,7 @@ func TestAgentExtensionInterceptsItsScopedToolRuntime(t *testing.T) {
 				Provider: "mock",
 				Model:    "model",
 			},
-			Extensions: []plugin.Plugin{
-				extension,
-			},
+			Provisioner: scopedplugin.MountPlugins(extension),
 		},
 	)
 	if err != nil {
@@ -698,9 +831,7 @@ func TestFailedExtensionNeverPublishesPartialAgentTree(t *testing.T) {
 				Provider: "mock",
 				Model:    "model",
 			},
-			Extensions: []plugin.Plugin{
-				extension,
-			},
+			Provisioner: scopedplugin.MountPlugins(extension),
 		},
 	)
 	if err == nil || !strings.Contains(err.Error(), "extension activation failed") {
@@ -763,18 +894,318 @@ func TestRuntimeShutdownRetiresLiveAgentBeforeRootServices(t *testing.T) {
 				Model:    "model",
 			},
 		},
-	); err == nil || !strings.Contains(err.Error(), "no Agent factory") {
+	); err == nil || !strings.Contains(err.Error(), "shutting down") {
 		t.Fatalf("post-shutdown Create error = %v", err)
 	}
 	want := []string{
-		session.SessionCreatedEventName,
+		session.CreatedEventName,
 		agent.CreatedEventName,
 		agent.SessionStartEventName,
 		agent.DisposedEventName,
-		session.SessionDisposedEventName,
+		session.DisposedEventName,
 	}
 	if got := state.lifecycle.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("shutdown lifecycle = %#v, want %#v", got, want)
+	}
+}
+
+func TestAgentLoopCanUnloadAndRegisterReplacementFactory(t *testing.T) {
+	state := newHarnessFixture(t, nil)
+	first, err := state.agents.Create(
+		context.Background(),
+		agent.CreateOptions{
+			SessionID: "before-agentloop-replacement",
+			AgentOptions: agent.Options{
+				Provider: "mock",
+				Model:    "model",
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = state.runtimeEngine.Unload(
+		context.Background(),
+		state.loopHandle,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.agents.List()) != 0 || len(state.sessions.List()) != 0 {
+		t.Fatalf(
+			"AgentLoop unload retained Agents or Sessions: agents=%d sessions=%d",
+			len(state.agents.List()),
+			len(state.sessions.List()),
+		)
+	}
+	if err = first.Dispose(context.Background()); err != nil {
+		t.Fatalf("old Handle after AgentLoop unload: %v", err)
+	}
+
+	replacementLoop, err := agentloop.New(
+		agentloop.Settings{
+			MaxParallelToolCalls: agentloop.DefaultMaxParallelToolCalls,
+		},
+		agentloop.RuntimeOptions{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = state.runtimeEngine.Mount(
+		context.Background(),
+		replacementLoop,
+	); err != nil {
+		t.Fatalf("mount replacement AgentLoop: %v", err)
+	}
+	replacement, err := state.agents.Create(
+		context.Background(),
+		agent.CreateOptions{
+			SessionID: "after-agentloop-replacement",
+			AgentOptions: agent.Options{
+				Provider: "mock",
+				Model:    "model",
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("Create through replacement AgentLoop: %v", err)
+	}
+	if err = replacement.Dispose(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRuntimeShutdownRetiresRuntimeDescendantsChildFirst(t *testing.T) {
+	state := newHarnessFixture(t, nil)
+	root, err := state.agents.Create(
+		context.Background(),
+		agent.CreateOptions{
+			SessionID: "shutdown-parent",
+			AgentOptions: agent.Options{
+				Provider: "mock",
+				Model:    "model",
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = state.agents.Create(
+		context.Background(),
+		agent.CreateOptions{
+			SessionID: "shutdown-child",
+			AgentOptions: agent.Options{
+				Provider: "mock",
+				Model:    "model",
+			},
+			RuntimeParent: root.Subject,
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.runtimeEngine.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	agentIDs, sessionIDs := state.lifecycle.disposedIDs()
+	want := []session.SessionID{
+		"shutdown-child",
+		"shutdown-parent",
+	}
+	if !reflect.DeepEqual(agentIDs, want) {
+		t.Fatalf("Agent disposal order = %#v, want %#v", agentIDs, want)
+	}
+	if !reflect.DeepEqual(sessionIDs, want) {
+		t.Fatalf("Session disposal order = %#v, want %#v", sessionIDs, want)
+	}
+	if len(state.agents.List()) != 0 || len(state.sessions.List()) != 0 {
+		t.Fatalf(
+			"Runtime shutdown retained Agents or Sessions: agents=%d sessions=%d",
+			len(state.agents.List()),
+			len(state.sessions.List()),
+		)
+	}
+}
+
+type shutdownBarrier struct {
+	plugin.Base
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+type constructionBarrier struct {
+	plugin.Base
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (*constructionBarrier) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "agentloop-test-construction-barrier",
+	}
+}
+
+func (barrier *constructionBarrier) Apply(context.Context) error {
+	barrier.once.Do(func() {
+		close(barrier.entered)
+	})
+	<-barrier.release
+	return nil
+}
+
+func (*constructionBarrier) Dispose(context.Context) error {
+	return nil
+}
+
+func TestSameIDCollisionDoesNotEnterSecondConstruction(t *testing.T) {
+	state := newHarnessFixture(t, nil)
+	baselineStatuses := len(state.runtimeEngine.Statuses())
+	barrier := &constructionBarrier{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			close(barrier.release)
+		})
+	}
+	defer release()
+	created := make(chan agent.Handle, 1)
+	createErrors := make(chan error, 1)
+	go func() {
+		handleState, createErr := state.agents.Create(
+			context.Background(),
+			agent.CreateOptions{
+				SessionID: "construction-collision",
+				AgentOptions: agent.Options{
+					Provider: "mock",
+					Model:    "model",
+				},
+				Provisioner: scopedplugin.MountPlugins(barrier),
+			},
+		)
+		if createErr != nil {
+			createErrors <- createErr
+			return
+		}
+		created <- handleState
+	}()
+	select {
+	case <-barrier.entered:
+	case <-time.After(time.Second):
+		t.Fatal("first construction did not reach its provisioning boundary")
+	}
+	_, err := state.agents.Resume(
+		context.Background(),
+		agent.ResumeOptions{
+			SessionID: "construction-collision",
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "active epoch") {
+		t.Fatalf("colliding Resume error = %v", err)
+	}
+	release()
+	var handleState agent.Handle
+	select {
+	case err = <-createErrors:
+		t.Fatal(err)
+	case handleState = <-created:
+	case <-time.After(time.Second):
+		t.Fatal("first construction did not complete")
+	}
+	if len(state.agents.List()) != 1 || len(state.sessions.List()) != 1 {
+		t.Fatalf(
+			"collision live state: agents=%d sessions=%d",
+			len(state.agents.List()),
+			len(state.sessions.List()),
+		)
+	}
+	if err = handleState.Dispose(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.agents.List()) != 0 || len(state.sessions.List()) != 0 {
+		t.Fatalf(
+			"collision cleanup: agents=%d sessions=%d",
+			len(state.agents.List()),
+			len(state.sessions.List()),
+		)
+	}
+	if statuses := len(state.runtimeEngine.Statuses()); statuses != baselineStatuses {
+		t.Fatalf("collision retained %d Plugin status entries", statuses-baselineStatuses)
+	}
+}
+
+func (*shutdownBarrier) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "agentloop-test-shutdown-barrier",
+	}
+}
+
+func (*shutdownBarrier) Apply(requestContext context.Context) error {
+	return requestContext.Err()
+}
+
+func (barrier *shutdownBarrier) Dispose(context.Context) error {
+	barrier.once.Do(func() {
+		close(barrier.entered)
+	})
+	<-barrier.release
+	return nil
+}
+
+func TestRuntimeShutdownClosesConstructionBeforeAgentScopes(t *testing.T) {
+	state := newHarnessFixture(t, nil)
+	barrier := &shutdownBarrier{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			close(barrier.release)
+		})
+	}
+	defer release()
+	if _, err := state.agents.Create(
+		context.Background(),
+		agent.CreateOptions{
+			SessionID: "shutdown-admission",
+			AgentOptions: agent.Options{
+				Provider: "mock",
+				Model:    "model",
+			},
+			Provisioner: scopedplugin.MountPlugins(barrier),
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	shutdownDone := make(chan error, 1)
+	go func() {
+		shutdownDone <- state.runtimeEngine.Shutdown(context.Background())
+	}()
+	select {
+	case <-barrier.entered:
+	case <-time.After(time.Second):
+		t.Fatal("Agent Scope did not begin shutdown")
+	}
+	_, err := state.agents.Create(
+		context.Background(),
+		agent.CreateOptions{
+			SessionID: "during-shutdown",
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "no Agent factory") {
+		t.Fatalf("Create during Agent Scope shutdown error = %v", err)
+	}
+	release()
+	select {
+	case err = <-shutdownDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Runtime shutdown did not complete")
 	}
 }
 
@@ -789,7 +1220,7 @@ func (*flushBarrier) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "agentloop-test-flush-barrier",
 		Events: []plugin.EventSubscription{
-			plugin.EventOf[session.SessionFlushRequested](),
+			plugin.EventOf[session.FlushRequested](),
 		},
 	}
 }
@@ -806,7 +1237,7 @@ func (barrier *flushBarrier) ObserveEvent(
 	requestContext context.Context,
 	fact plugin.Event,
 ) error {
-	if _, matches := fact.(session.SessionFlushRequested); !matches {
+	if _, matches := fact.(session.FlushRequested); !matches {
 		return nil
 	}
 	barrier.once.Do(func() {
@@ -831,7 +1262,7 @@ func TestTurnFlushCompletesBeforeAgentBecomesIdle(t *testing.T) {
 			{
 				llm.BlockEndChunk{
 					Index: 0,
-					Block: llm.NewTextBlock("done"),
+					Block: agentmessage.NewTextBlock("done"),
 				},
 				llm.FinishChunk{
 					Reason: llm.StopFinish{},
@@ -902,7 +1333,7 @@ type parallelToolControl struct {
 	secondSettled chan struct{}
 	releaseFirst  chan struct{}
 	mutex         sync.Mutex
-	settled       []llm.CallID
+	settled       []agentmessage.CallID
 }
 
 func (control *parallelToolControl) run(
@@ -924,10 +1355,10 @@ func (control *parallelToolControl) run(
 	return json.RawMessage(`{"callId":"` + string(callID) + `"}`), nil
 }
 
-func (control *parallelToolControl) settledOrder() []llm.CallID {
+func (control *parallelToolControl) settledOrder() []agentmessage.CallID {
 	control.mutex.Lock()
 	defer control.mutex.Unlock()
-	return append([]llm.CallID(nil), control.settled...)
+	return append([]agentmessage.CallID(nil), control.settled...)
 }
 
 func TestParallelToolBodiesCommitResultsAndContextInModelOrder(t *testing.T) {
@@ -936,7 +1367,7 @@ func TestParallelToolBodiesCommitResultsAndContextInModelOrder(t *testing.T) {
 		{
 			llm.BlockEndChunk{
 				Index: 0,
-				Block: llm.NewTextBlock("done"),
+				Block: agentmessage.NewTextBlock("done"),
 			},
 			llm.FinishChunk{
 				Reason: llm.StopFinish{},
@@ -978,7 +1409,7 @@ func TestParallelToolBodiesCommitResultsAndContextInModelOrder(t *testing.T) {
 	waitForIdle(t, handleState.Subject)
 	if settled := control.settledOrder(); !reflect.DeepEqual(
 		settled,
-		[]llm.CallID{"call-2", "call-1"},
+		[]agentmessage.CallID{"call-2", "call-1"},
 	) {
 		t.Fatalf("Tool body settlement = %#v", settled)
 	}
@@ -1006,7 +1437,7 @@ func TestMaintenanceWakeKeepsWhenIdleBehindSuccessorTurn(t *testing.T) {
 		{
 			llm.BlockEndChunk{
 				Index: 0,
-				Block: llm.NewTextBlock("done"),
+				Block: agentmessage.NewTextBlock("done"),
 			},
 			llm.FinishChunk{
 				Reason: llm.StopFinish{},
@@ -1025,11 +1456,11 @@ func TestMaintenanceWakeKeepsWhenIdleBehindSuccessorTurn(t *testing.T) {
 	go func() {
 		maintenanceDone <- handleState.Subject.RunMaintenance(
 			context.Background(),
-			agent.MaintenanceFunc(func(context.Context) error {
+			func(context.Context) error {
 				close(maintenanceStarted)
 				<-releaseMaintenance
 				return nil
-			}),
+			},
 		)
 	}()
 	select {
@@ -1198,7 +1629,7 @@ func TestRequestErrorRetryRepeatsAttemptInsideOneStep(t *testing.T) {
 		{
 			llm.BlockEndChunk{
 				Index: 0,
-				Block: llm.NewTextBlock("recovered"),
+				Block: agentmessage.NewTextBlock("recovered"),
 			},
 			llm.FinishChunk{
 				Reason: llm.StopFinish{},
@@ -1216,9 +1647,7 @@ func TestRequestErrorRetryRepeatsAttemptInsideOneStep(t *testing.T) {
 				Provider: "mock",
 				Model:    "model",
 			},
-			Extensions: []plugin.Plugin{
-				extension,
-			},
+			Provisioner: scopedplugin.MountPlugins(extension),
 		},
 	)
 	if err != nil {
@@ -1242,6 +1671,23 @@ func TestRequestErrorRetryRepeatsAttemptInsideOneStep(t *testing.T) {
 	}
 	if requests := state.backend.snapshots(); len(requests) != 2 {
 		t.Fatalf("model request count = %d, want 2 attempts", len(requests))
+	}
+	stepStarts := 0
+	stepEnds := 0
+	for _, event := range handleState.Subject.SessionValue().Events() {
+		switch event.Type {
+		case session.StepStartEventName:
+			stepStarts++
+		case session.StepEndEventName:
+			stepEnds++
+		}
+	}
+	if stepStarts != 1 || stepEnds != 1 {
+		t.Fatalf(
+			"Step lifecycle = (%d starts, %d ends), want one paired Step",
+			stepStarts,
+			stepEnds,
+		)
 	}
 	select {
 	case notice := <-extension.notices:
@@ -1272,9 +1718,9 @@ func registerEchoTool(t *testing.T, state *harnessFixture) {
 				Renderer: tools.OutputRendererFunc(func(
 					_ json.RawMessage,
 					value json.RawMessage,
-				) ([]llm.ContentBlock, error) {
-					return []llm.ContentBlock{
-						llm.NewTextBlock(string(value)),
+				) ([]agentmessage.ContentBlock, error) {
+					return []agentmessage.ContentBlock{
+						agentmessage.NewTextBlock(string(value)),
 					}, nil
 				}),
 			},
@@ -1297,7 +1743,7 @@ func modelResponses() [][]llm.StreamChunk {
 		{
 			llm.BlockEndChunk{
 				Index: 0,
-				Block: llm.ToolCallBlock{
+				Block: agentmessage.ToolCallBlock{
 					ID:        "call-1",
 					Name:      "echo",
 					Arguments: `{"value":"hello"}`,
@@ -1310,7 +1756,7 @@ func modelResponses() [][]llm.StreamChunk {
 		{
 			llm.BlockEndChunk{
 				Index: 0,
-				Block: llm.NewTextBlock("done"),
+				Block: agentmessage.NewTextBlock("done"),
 			},
 			llm.FinishChunk{
 				Reason: llm.StopFinish{},
@@ -1319,13 +1765,13 @@ func modelResponses() [][]llm.StreamChunk {
 	}
 }
 
-func userMessage(t *testing.T, content string) llm.UserMessage {
+func userMessage(t *testing.T, content string) agentmessage.UserMessage {
 	t.Helper()
-	message, err := llm.NewUserMessage(llm.UserMessageInput{
-		Content: []llm.ContentBlock{
-			llm.NewTextBlock(content),
+	message, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+		Content: []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock(content),
 		},
-		Source: llm.UserMessageSource{},
+		Source: agentmessage.UserMessageSource{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1375,12 +1821,12 @@ func waitForIdle(t *testing.T, subject agent.Agent) {
 	}
 }
 
-func userMessageValue(content string) llm.UserMessage {
-	message, err := llm.NewUserMessage(llm.UserMessageInput{
-		Content: []llm.ContentBlock{
-			llm.NewTextBlock(content),
+func userMessageValue(content string) agentmessage.UserMessage {
+	message, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+		Content: []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock(content),
 		},
-		Source: llm.UserMessageSource{},
+		Source: agentmessage.UserMessageSource{},
 	})
 	if err != nil {
 		panic(err)
@@ -1388,14 +1834,14 @@ func userMessageValue(content string) llm.UserMessage {
 	return message
 }
 
-func toolCallResponse(callIDs ...llm.CallID) []llm.StreamChunk {
+func toolCallResponse(callIDs ...agentmessage.CallID) []llm.StreamChunk {
 	response := make([]llm.StreamChunk, 0, len(callIDs)+1)
 	for index, callID := range callIDs {
 		response = append(
 			response,
 			llm.BlockEndChunk{
 				Index: index,
-				Block: llm.ToolCallBlock{
+				Block: agentmessage.ToolCallBlock{
 					ID:        callID,
 					Name:      "parallel",
 					Arguments: `{"value":true}`,
@@ -1431,9 +1877,9 @@ func registerParallelTool(
 				Renderer: tools.OutputRendererFunc(func(
 					_ json.RawMessage,
 					value json.RawMessage,
-				) ([]llm.ContentBlock, error) {
-					return []llm.ContentBlock{
-						llm.NewTextBlock(string(value)),
+				) ([]agentmessage.ContentBlock, error) {
+					return []agentmessage.ContentBlock{
+						agentmessage.NewTextBlock(string(value)),
 					}, nil
 				}),
 			},
@@ -1452,7 +1898,7 @@ func registerParallelTool(
 
 func lastTurnEnd(
 	t *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 ) turnEndObservation {
 	t.Helper()
 	events := conversation.Events()
@@ -1472,7 +1918,7 @@ func lastTurnEnd(
 	return turnEndObservation{}
 }
 
-func messageTexts(messages []llm.Message) []string {
+func messageTexts(messages []agentmessage.Message) []string {
 	texts := make([]string, 0, len(messages))
 	for _, message := range messages {
 		blocks := message.ContentValue()
@@ -1481,13 +1927,13 @@ func messageTexts(messages []llm.Message) []string {
 			continue
 		}
 		switch block := blocks[0].(type) {
-		case llm.TextBlock:
+		case agentmessage.TextBlock:
 			texts = append(texts, block.Text)
-		case llm.ToolCallBlock:
+		case agentmessage.ToolCallBlock:
 			texts = append(texts, "tool-call:"+block.Name)
-		case llm.ToolResultBlock:
+		case agentmessage.ToolResultBlock:
 			if len(block.Content) == 1 {
-				if textBlock, ok := block.Content[0].(llm.TextBlock); ok {
+				if textBlock, ok := block.Content[0].(agentmessage.TextBlock); ok {
 					texts = append(texts, textBlock.Text)
 					continue
 				}

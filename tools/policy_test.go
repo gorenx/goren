@@ -8,8 +8,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/approval"
-	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/tools"
@@ -24,11 +24,11 @@ type approvalProviderPlugin struct {
 	lastRequest approval.Request
 }
 
-func (*approvalProviderPlugin) Manifest() plugin.Manifest {
+func (owner *approvalProviderPlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "approval-provider",
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[approval.Approval](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[approval.Approval](owner),
 		},
 	}
 }
@@ -52,34 +52,34 @@ func (provider *approvalProviderPlugin) Request(
 }
 
 func (*approvalProviderPlugin) EffectivePolicy(
-	*session.Session,
+	session.Context,
 ) (approval.Policy, error) {
 	return approval.PolicyAsk, nil
 }
 
 func (*approvalProviderPlugin) OverrideOf(
-	*session.Session,
+	session.Context,
 ) (approval.Policy, bool, error) {
 	return "", false, nil
 }
 
 func (*approvalProviderPlugin) SetPolicy(
 	context.Context,
-	approval.Subject,
+	approval.ApprovalTarget,
 	approval.Policy,
 ) error {
 	return nil
 }
 
 type executionSubject struct {
-	conversation *session.Session
+	conversation session.Context
 }
 
-func (subject *executionSubject) SessionValue() *session.Session {
+func (subject *executionSubject) SessionValue() session.Context {
 	return subject.conversation
 }
 
-func (*executionSubject) Inject(llm.UserMessage) error {
+func (*executionSubject) Inject(agentmessage.UserMessage) error {
 	return nil
 }
 
@@ -223,8 +223,8 @@ func TestPostPolicyCanReplaceValueOrBlock(t *testing.T) {
 		{
 			name: "block",
 			decision: tools.BlockDecision{
-				Feedback: []llm.ContentBlock{
-					llm.NewTextBlock("blocked"),
+				Feedback: []agentmessage.ContentBlock{
+					agentmessage.NewTextBlock("blocked"),
 				},
 			},
 			wantFailed:  true,

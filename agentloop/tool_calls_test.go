@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
@@ -17,9 +18,9 @@ import (
 
 type silentInboxNotifications struct{}
 
-func (silentInboxNotifications) Inserted(llm.UserMessage)       {}
-func (silentInboxNotifications) Discarded(llm.UserMessage)      {}
-func (silentInboxNotifications) Claimed(llm.UserMessage, int64) {}
+func (silentInboxNotifications) Inserted(agentmessage.UserMessage)       {}
+func (silentInboxNotifications) Discarded(agentmessage.UserMessage)      {}
+func (silentInboxNotifications) Claimed(agentmessage.UserMessage, int64) {}
 
 type failingToolScheduler struct {
 	firstStarted chan struct{}
@@ -56,8 +57,8 @@ func (schedulerState *failingToolScheduler) Dispatch(
 	return tools.ScheduledToolDispatch{
 		Result: &tools.ToolExecutionSuccess{
 			Value: json.RawMessage(`{"ok":true}`),
-			Content: []llm.ContentBlock{
-				llm.NewTextBlock("ok"),
+			Content: []agentmessage.ContentBlock{
+				agentmessage.NewTextBlock("ok"),
 			},
 		},
 	}, nil
@@ -145,7 +146,7 @@ func TestSchedulerFailureStopsReplenishmentAndDrainsStartedDispatch(t *testing.T
 			context.Background(),
 			1,
 			1,
-			[]llm.ToolCallBlock{
+			[]agentmessage.ToolCallBlock{
 				{
 					ID:        "call-1",
 					Name:      "parallel",
@@ -190,7 +191,7 @@ func TestSchedulerFailureStopsReplenishmentAndDrainsStartedDispatch(t *testing.T
 		t.Fatal("executor did not settle after started dispatch drained")
 	}
 	callIDs, resultCount := internalToolEventSummary(t, conversation)
-	if !reflect.DeepEqual(callIDs, []llm.CallID{"call-1", "call-2"}) {
+	if !reflect.DeepEqual(callIDs, []agentmessage.CallID{"call-1", "call-2"}) {
 		t.Fatalf("started Tool calls = %#v", callIDs)
 	}
 	if resultCount != 0 {
@@ -200,10 +201,10 @@ func TestSchedulerFailureStopsReplenishmentAndDrainsStartedDispatch(t *testing.T
 
 func internalToolEventSummary(
 	t *testing.T,
-	conversation *session.Session,
-) ([]llm.CallID, int) {
+	conversation session.Context,
+) ([]agentmessage.CallID, int) {
 	t.Helper()
-	callIDs := make([]llm.CallID, 0)
+	callIDs := make([]agentmessage.CallID, 0)
 	resultCount := 0
 	for _, committed := range conversation.Events() {
 		switch committed.Type {

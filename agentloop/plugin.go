@@ -17,20 +17,20 @@ type RuntimeOptions struct {
 	ObserverError func(error)
 }
 
-// Plugin is the global Agent Loop factory and lifecycle owner. It assembles a
-// complete private Plugin tree for each Agent, but it does not expose a second
-// Loop Service; callers create and resume Agents through agent.Registry.
+// Plugin adapts Agent Loop construction and per-Agent Scope effects to the
+// Plugin Runtime. Agent construction is owned by Factory; Agent lifecycle and
+// runtime parent-child ordering are owned by agent.Registry.
 type Plugin struct {
 	plugin.Base
 	mutex                sync.RWMutex
-	settings             Settings
-	agents               agent.Registry
-	sessions             session.LiveStore
-	persistence          sesspersist.Persistence
+	maxParallelToolCalls int
 	failures             observerFailureReporter
-	lifecycles           *agentLifecycles
 	runtimeContextEvents *runtimeContextRouter
 	startup              *configuredAgentStarter
+	constructor          agent.Constructor
+	factory              *Factory
+	registration         *registrationPlugin
+	scopes               *agentScopes
 }
 
 // New constructs an inactive Agent Loop Plugin from validated runtime
@@ -40,43 +40,49 @@ func New(runtimeSettings Settings, policies RuntimeOptions) (*Plugin, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Plugin{
-		settings:             validated,
+	owner := &Plugin{
+		maxParallelToolCalls: validated.MaxParallelToolCalls,
 		failures:             newObserverFailureReporter(policies.ObserverError),
-		lifecycles:           newAgentLifecycles(),
 		runtimeContextEvents: newRuntimeContextRouter(),
 		startup: newConfiguredAgentStarter(
 			validated.StartupAgents,
 		),
-	}, nil
+	}
+	owner.registration = &registrationPlugin{
+		loop: owner,
+	}
+	owner.scopes = newAgentScopes(owner)
+	return owner, nil
 }
 
-// Manifest declares only capabilities needed by global construction and the
-// root Session Event subscription. Per-Agent execution dependencies are
-// declared by ReactLoopAgent inside each complete dynamic tree.
-func (*Plugin) Manifest() plugin.Manifest {
+func (owner *Plugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: PluginName,
 		Requires: []plugin.ServiceType{
-			plugin.ServiceOf[agent.Registry](),
+			plugin.ServiceOf[agent.Constructor](),
 			plugin.ServiceOf[session.LiveStore](),
 		},
 		Optional: []plugin.ServiceType{
 			plugin.ServiceOf[sesspersist.Persistence](),
 		},
 		Events: []plugin.EventSubscription{
-			plugin.EventOf[session.SessionEventAppended](),
+			plugin.EventOf[session.EventAppended](),
+		},
+		Children: []plugin.ChildPlugin{
+			{
+				Instance:  owner.registration,
+				Placement: plugin.SameScope,
+				Phase:     plugin.ActivationCommit,
+			},
 		},
 	}
 }
 
-// Apply opens construction admission and attaches this exact Factory to the
-// Agent Registry. Configured Agents start only after Runtime.Start returns.
 func (owner *Plugin) Apply(requestContext context.Context) error {
 	if err := requestContext.Err(); err != nil {
 		return err
 	}
-	agents, err := plugin.Require[agent.Registry](owner)
+	constructor, err := plugin.Require[agent.Constructor](owner)
 	if err != nil {
 		return err
 	}
@@ -85,55 +91,42 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 		return err
 	}
 	persistence, _ := plugin.Resolve[sesspersist.Persistence](owner)
-	if err = owner.lifecycles.start(); err != nil {
-		return err
-	}
+	loopFactory := newFactory(
+		owner.maxParallelToolCalls,
+		sessions,
+		persistence,
+		owner.failures,
+		owner.runtimeContextEvents,
+		owner.scopes,
+	)
 	owner.mutex.Lock()
-	owner.agents = agents
-	owner.sessions = sessions
-	owner.persistence = persistence
+	owner.constructor = constructor
+	owner.factory = loopFactory
 	owner.mutex.Unlock()
-	if err = agents.AttachFactory(owner); err != nil {
-		return err
-	}
 	return requestContext.Err()
 }
 
-// Dispose closes construction after Runtime has stopped every Agent child.
+// Dispose releases Agent Loop-local projections after the commit-phase Factory
+// adapter and every per-Agent Scope have already stopped.
 func (owner *Plugin) Dispose(closeContext context.Context) error {
 	if closeContext == nil {
 		closeContext = context.Background()
 	}
-	drainContext := context.WithoutCancel(closeContext)
-	dangling, drainErr := owner.lifecycles.stopAndWait(drainContext)
+	var closeErr error
 	owner.mutex.Lock()
-	agents := owner.agents
-	owner.agents = nil
-	owner.sessions = nil
-	owner.persistence = nil
+	owner.constructor = nil
+	owner.factory = nil
 	owner.mutex.Unlock()
-	if agents != nil {
-		agents.DetachFactory(owner)
-	}
 	if routed := owner.runtimeContextEvents.clear(); routed != 0 {
-		drainErr = errors.Join(
-			drainErr,
+		closeErr = errors.Join(
+			closeErr,
 			fmt.Errorf(
 				"agentloop: Plugin stopped with %d live runtime-context projection(s)",
 				routed,
 			),
 		)
 	}
-	if dangling != 0 {
-		drainErr = errors.Join(
-			drainErr,
-			fmt.Errorf(
-				"agentloop: Plugin stopped with %d live Agent lifecycle(s)",
-				dangling,
-			),
-		)
-	}
-	return drainErr
+	return closeErr
 }
 
 // ObserveEvent routes exact Session commits to the corresponding private
@@ -142,7 +135,7 @@ func (owner *Plugin) ObserveEvent(
 	_ context.Context,
 	fact plugin.Event,
 ) error {
-	appended, matches := fact.(session.SessionEventAppended)
+	appended, matches := fact.(session.EventAppended)
 	if !matches {
 		return nil
 	}
@@ -150,114 +143,15 @@ func (owner *Plugin) ObserveEvent(
 	return nil
 }
 
-// CreateAgent prepares an unpublished Session and mounts one complete Agent
-// tree before its commit-phase membership Plugin publishes it.
-func (owner *Plugin) CreateAgent(
-	requestContext context.Context,
-	options agent.CreateOptions,
-) (agent.Handle, error) {
-	operationContext, finishConstruction, err :=
-		owner.lifecycles.beginConstruction(requestContext)
-	if err != nil {
-		return agent.Handle{}, err
-	}
-	defer finishConstruction()
-
-	sessions, _, err := owner.constructionServices()
-	if err != nil {
-		return agent.Handle{}, err
-	}
-	if options.SessionID == "" {
-		return agent.Handle{}, errors.New("agentloop: Agent Session id is empty")
-	}
-	if err = validateAgentOptions(options.AgentOptions); err != nil {
-		return agent.Handle{}, err
-	}
-	identifier := options.SessionID
-	conversation, err := sessions.Prepare(
-		&identifier,
-		session.CreateOptions{
-			Seed:     options.Seed,
-			Metadata: options.Metadata,
-		},
-	)
-	if err != nil {
-		return agent.Handle{}, err
-	}
-	return owner.mountAgentTree(
-		operationContext,
-		conversation,
-		options.AgentOptions,
-		options.Extensions,
-		agent.SessionStartup,
-	)
-}
-
-// ResumeAgent restores an unpublished durable Session and mounts one complete
-// Agent tree before publication.
-func (owner *Plugin) ResumeAgent(
-	requestContext context.Context,
-	options agent.ResumeOptions,
-) (agent.Handle, error) {
-	operationContext, finishConstruction, err :=
-		owner.lifecycles.beginConstruction(requestContext)
-	if err != nil {
-		return agent.Handle{}, err
-	}
-	defer finishConstruction()
-
-	_, persistence, err := owner.constructionServices()
-	if err != nil {
-		return agent.Handle{}, err
-	}
-	if options.SessionID == "" {
-		return agent.Handle{}, errors.New("agentloop: resume Session id is empty")
-	}
-	if err = validateAgentOptions(options.AgentOptions); err != nil {
-		return agent.Handle{}, err
-	}
-	if persistence == nil {
-		return agent.Handle{}, errors.New(
-			"agentloop: session persistence is not configured",
-		)
-	}
-	prepared, err := persistence.Prepare(
-		operationContext,
-		options.SessionID,
-	)
-	if err != nil {
-		return agent.Handle{}, err
-	}
-	defer prepared.Dispose()
-	return owner.mountAgentTree(
-		operationContext,
-		prepared.UnpublishedSession(),
-		options.AgentOptions,
-		options.Extensions,
-		agent.SessionResume,
-	)
-}
-
 // StartConfiguredAgents runs the one-shot boot transaction after
-// plugin.Runtime.Start. Failure is terminal for this Plugin instance; the
-// composition root must stop Runtime.
+// plugin.Runtime.Start through the canonical Registry API.
 func (owner *Plugin) StartConfiguredAgents(
 	requestContext context.Context,
 ) ([]agent.Handle, error) {
-	return owner.startup.start(requestContext, owner)
-}
-
-func (owner *Plugin) constructionServices() (
-	session.LiveStore,
-	sesspersist.Persistence,
-	error,
-) {
 	owner.mutex.RLock()
-	defer owner.mutex.RUnlock()
-	if owner.sessions == nil {
-		return nil, nil, errors.New("agentloop: Agent Loop is not active")
-	}
-	return owner.sessions, owner.persistence, nil
+	constructor := owner.constructor
+	owner.mutex.RUnlock()
+	return owner.startup.start(requestContext, constructor)
 }
 
 func validateAgentOptions(loopOptions agent.Options) error {
@@ -271,4 +165,4 @@ func validateAgentOptions(loopOptions agent.Options) error {
 	return nil
 }
 
-var _ agent.Factory = (*Plugin)(nil)
+var _ plugin.Plugin = (*Plugin)(nil)

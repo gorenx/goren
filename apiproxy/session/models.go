@@ -7,6 +7,7 @@ import (
 
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentdefaultmodel"
+	"github.com/gorenx/goren/agentmessage"
 	api "github.com/gorenx/goren/apiproxy"
 	"github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/llm"
@@ -102,7 +103,7 @@ func modelSelectionValue(selected agent.ModelSelection) api.ModelSelection {
 
 func agentContainsImage(subject agent.Agent) bool {
 	for _, messageValue := range append(subject.InboxValue().NextTurn(), subject.InboxValue().NextStep()...) {
-		if llm.ContentHasImage(messageValue.ContentValue()) {
+		if agentmessage.ContentHasImage(messageValue.ContentValue()) {
 			return true
 		}
 	}
@@ -111,7 +112,7 @@ func agentContainsImage(subject agent.Agent) bool {
 		return false
 	}
 	for _, messageValue := range messages {
-		if llm.ContentHasImage(messageValue.ContentValue()) {
+		if agentmessage.ContentHasImage(messageValue.ContentValue()) {
 			return true
 		}
 	}

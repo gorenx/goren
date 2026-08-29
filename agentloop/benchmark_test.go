@@ -27,23 +27,39 @@ func (backend *benchmarkAdapter) Stream(
 
 type benchmarkHarness struct {
 	runtimeEngine *plugin.Runtime
-	agents        *agent.RegistryPlugin
+	agents        *agent.RegistryService
 	adapter       llm.AdapterRegistrationHandle
 }
 
-var benchmarkPreparedSession *session.Session
+var benchmarkPreparedSession session.Context
 
 func BenchmarkAgentSessionPrepare(b *testing.B) {
-	sessions, err := session.NewMemoryStore(session.MemoryStoreOptions{
+	sessionPlugin, err := session.NewPlugin(session.MemoryStoreOptions{
 		PostCommitFailures: postCommitFailureSink{},
 	})
 	if err != nil {
 		b.Fatal(err)
 	}
+	storeProbe := &sessionStoreProbe{}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{
+		EventFailures: eventFailureSink{},
+	})
+	if _, err = runtimeEngine.Start(
+		context.Background(),
+		sessionPlugin,
+		storeProbe,
+	); err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() {
+		if shutdownErr := runtimeEngine.Shutdown(context.Background()); shutdownErr != nil {
+			b.Error(shutdownErr)
+		}
+	})
 	identifier := session.SessionID("benchmark-prepare")
 	b.ReportAllocs()
 	for b.Loop() {
-		benchmarkPreparedSession, err = sessions.Prepare(
+		benchmarkPreparedSession, err = storeProbe.store.Prepare(
 			&identifier,
 			session.CreateOptions{},
 		)
@@ -95,13 +111,17 @@ func newAgentLoopBenchmark(
 	if err != nil {
 		benchmarkState.Fatal(err)
 	}
-	sessions, err := session.NewMemoryStore(session.MemoryStoreOptions{
+	sessionPlugin, err := session.NewPlugin(session.MemoryStoreOptions{
 		PostCommitFailures: postCommitFailureSink{},
 	})
 	if err != nil {
 		benchmarkState.Fatal(err)
 	}
 	agents := agent.NewRegistry(agent.RegistryOptions{})
+	agentPlugin, err := agent.NewRegistryPlugin(agents)
+	if err != nil {
+		benchmarkState.Fatal(err)
+	}
 	models := llm.NewRuntime(nil)
 	prompts := systemprompt.New(
 		promptSettings,
@@ -113,8 +133,8 @@ func newAgentLoopBenchmark(
 	})
 	if _, err = runtimeEngine.Start(
 		context.Background(),
-		agents,
-		sessions,
+		agentPlugin,
+		sessionPlugin,
 		models,
 		prompts,
 		toolService,

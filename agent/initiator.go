@@ -18,7 +18,14 @@ func WithInitiator(requestContext context.Context, subject Agent) (context.Conte
 	if requestContext == nil || subject == nil {
 		return nil, errors.New("agent: initiator Context and Agent are required")
 	}
-	return context.WithValue(requestContext, initiatorContextKey{}, initiatorContextValue{subject: subject, defined: true}), nil
+	return context.WithValue(
+		requestContext,
+		initiatorContextKey{},
+		initiatorContextValue{
+			subject: subject,
+			defined: true,
+		},
+	), nil
 }
 
 // WithoutInitiator explicitly hides an inherited initiator for shared work.
@@ -26,7 +33,13 @@ func WithoutInitiator(requestContext context.Context) (context.Context, error) {
 	if requestContext == nil {
 		return nil, errors.New("agent: initiator Context is nil")
 	}
-	return context.WithValue(requestContext, initiatorContextKey{}, initiatorContextValue{defined: true}), nil
+	return context.WithValue(
+		requestContext,
+		initiatorContextKey{},
+		initiatorContextValue{
+			defined: true,
+		},
+	), nil
 }
 
 // InitiatorFrom reads optional causal attribution from one explicit call chain.

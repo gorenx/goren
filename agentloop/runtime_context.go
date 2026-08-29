@@ -5,7 +5,7 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 )
 
@@ -25,7 +25,7 @@ type runtimeContextProjection struct {
 }
 
 func newRuntimeContextProjection(
-	conversation *session.Session,
+	conversation session.Context,
 ) (*runtimeContextProjection, error) {
 	if conversation == nil {
 		return nil, errors.New("agentloop: runtime-context Session is required")
@@ -35,7 +35,7 @@ func newRuntimeContextProjection(
 	return projection, nil
 }
 
-func (projection *runtimeContextProjection) restore(conversation *session.Session) {
+func (projection *runtimeContextProjection) restore(conversation session.Context) {
 	visible := make(map[int64]struct{})
 	for _, sequence := range conversation.Surface().Nodes {
 		visible[sequence] = struct{}{}
@@ -75,29 +75,34 @@ func (projection *runtimeContextProjection) accept(committed session.Event) {
 	}
 }
 
-func (projection *runtimeContextProjection) project(current string, sections []llm.ContextSnapshotSection) (llm.UserMessage, bool, error) {
+func (projection *runtimeContextProjection) project(current string, sections []agentmessage.ContextSnapshotSection) (agentmessage.UserMessage, bool, error) {
 	projection.mu.Lock()
 	initialized := projection.initialized
 	retained := projection.retained
 	retainedText := projection.text
 	projection.mu.Unlock()
 	if !initialized && current == "" {
-		return llm.UserMessage{}, false, nil
+		return agentmessage.UserMessage{}, false, nil
 	}
 	snapshot := current
 	if snapshot == "" {
 		snapshot = clearedRuntimeContext
 	}
 	if retained && retainedText == snapshot {
-		return llm.UserMessage{}, false, nil
+		return agentmessage.UserMessage{}, false, nil
 	}
-	origin := llm.PluginMessageSource{Plugin: runtimeContextSource}
+	origin := agentmessage.PluginMessageSource{
+		Plugin: runtimeContextSource,
+	}
 	if len(sections) != 0 {
-		origin.Form = llm.ContextSnapshot
+		origin.Form = agentmessage.ContextSnapshot
 		origin.Sections = slices.Clone(sections)
 	}
-	created, err := llm.NewUserMessage(llm.UserMessageInput{
-		Content: []llm.ContentBlock{llm.NewTextBlock(snapshot)}, Source: origin,
+	created, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+		Content: []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock(snapshot),
+		},
+		Source: origin,
 	})
 	return created, err == nil, err
 }
@@ -106,11 +111,11 @@ func ownedRuntimeContext(committed session.Event) (string, bool) {
 	if committed.Type != session.UserMessageEventName {
 		return "", false
 	}
-	retained, err := llm.DecodeUserMessage(committed.Data)
+	retained, err := agentmessage.DecodeUserMessage(committed.Data)
 	if err != nil {
 		return "", false
 	}
-	origin, ok := retained.SourceValue().(llm.PluginMessageSource)
+	origin, ok := retained.SourceValue().(agentmessage.PluginMessageSource)
 	if !ok || origin.Plugin != runtimeContextSource {
 		return "", false
 	}
@@ -118,7 +123,7 @@ func ownedRuntimeContext(committed session.Event) (string, bool) {
 	if len(blocks) != 1 {
 		return "", true
 	}
-	textBlock, ok := blocks[0].(llm.TextBlock)
+	textBlock, ok := blocks[0].(agentmessage.TextBlock)
 	if !ok {
 		return "", true
 	}

@@ -11,8 +11,8 @@ import (
 	"sync"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agent/scopedplugin"
 	"github.com/gorenx/goren/agentdefaultmodel"
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	sesspersist "github.com/gorenx/goren/session/persistence"
 )
@@ -34,6 +34,8 @@ func (operation DirectoryProvisionerFunc) EnsureDirectory(path string) error {
 // Agents for API-visible Sessions.
 type AgentSessionDependencies struct {
 	Agents      agent.Registry
+	Constructor agent.Constructor
+	Scopes      agent.ScopeProvisioning
 	Sessions    session.LiveStore
 	Persistence sesspersist.Persistence
 	Defaults    agentdefaultmodel.DefaultModel
@@ -55,6 +57,8 @@ type installedSelection struct {
 // reference installed into each API-addressable ordinary Agent.
 type AgentSessions struct {
 	agents      agent.Registry
+	constructor agent.Constructor
+	scopes      agent.ScopeProvisioning
 	sessions    session.LiveStore
 	persistence sesspersist.Persistence
 	defaults    agentdefaultmodel.DefaultModel
@@ -70,12 +74,15 @@ type AgentSessions struct {
 // NewAgentSessions creates the state owner. Each model-selection entry is
 // owned by an Agent child Plugin and removes itself during Agent teardown.
 func NewAgentSessions(ports AgentSessionDependencies) (*AgentSessions, error) {
-	if ports.Agents == nil || ports.Sessions == nil || ports.Persistence == nil ||
+	if ports.Agents == nil || ports.Constructor == nil || ports.Scopes == nil ||
+		ports.Sessions == nil || ports.Persistence == nil ||
 		ports.Defaults == nil || ports.Directories == nil {
 		return nil, errors.New("apiproxy/session: Agent Session dependencies are incomplete")
 	}
 	owner := &AgentSessions{
 		agents:      ports.Agents,
+		constructor: ports.Constructor,
+		scopes:      ports.Scopes,
 		sessions:    ports.Sessions,
 		persistence: ports.Persistence,
 		defaults:    ports.Defaults,
@@ -150,7 +157,7 @@ func (owner *AgentSessions) Ordinary(
 		}
 	}
 	header := subject.SessionValue().Header()
-	if header.Origin == session.OriginSubagent || owner.hasLiveParent(subject, header) {
+	if header.Origin == session.OriginSubagent {
 		return nil, &SubagentOwnershipError{identifier: identifier}
 	}
 	return subject, nil
@@ -185,7 +192,11 @@ func (owner *AgentSessions) Selection(
 	if err != nil {
 		return nil, err
 	}
-	if _, err = plugin.MountChild(requestContext, subject, extension); err != nil {
+	if err = owner.scopes.Provision(
+		requestContext,
+		subject,
+		scopedplugin.MountPlugins(extension),
+	); err != nil {
 		return nil, err
 	}
 	return selectionRef, nil
@@ -212,6 +223,11 @@ func (owner *AgentSessions) createOrAdopt(
 		loaded = *knownInspection
 	}
 	if inspectErr == nil {
+		if loaded.Header.Origin == session.OriginSubagent {
+			return nil, &SubagentOwnershipError{
+				identifier: loaded.Header.ID,
+			}
+		}
 		return owner.resumeCold(requestContext, loaded)
 	}
 	var missing *sesspersist.NotFoundError
@@ -240,7 +256,7 @@ func (owner *AgentSessions) createOrAdopt(
 	if err != nil {
 		return nil, err
 	}
-	handle, err := owner.agents.Create(requestContext, agent.CreateOptions{
+	handle, err := owner.constructor.Create(requestContext, agent.CreateOptions{
 		SessionID: identifier,
 		Metadata: session.Metadata{
 			CWD: &workingDirectory,
@@ -249,9 +265,7 @@ func (owner *AgentSessions) createOrAdopt(
 			Provider: defaultSelection.Provider,
 			Model:    defaultSelection.Model,
 		},
-		Extensions: []plugin.Plugin{
-			extension,
-		},
+		Provisioner: scopedplugin.MountPlugins(extension),
 	})
 	if err != nil {
 		if subject, found := owner.agents.Get(identifier); found {
@@ -270,9 +284,13 @@ func (owner *AgentSessions) resumeCold(
 	if subject, found := owner.agents.Get(identifier); found {
 		return subject, nil
 	}
-	transient, err := session.New(identifier, session.CreateOptions{
-		Seed: loaded.Events, Metadata: metadataFromHeader(loaded.Header),
-	})
+	transient, err := session.New(
+		identifier,
+		session.CreateOptions{
+			Seed:     loaded.Events,
+			Metadata: metadataFromHeader(loaded.Header),
+		},
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -285,9 +303,9 @@ func (owner *AgentSessions) resumeCold(
 		loopOptions.Provider = selected.Provider
 		loopOptions.Model = selected.Model
 	}
-	if requestHeader, found, headerErr := transient.RequestHeaderValue(); headerErr != nil {
+	if requestHeader, headerErr := session.LatestRequestHeader(transient.Events()); headerErr != nil {
 		return nil, headerErr
-	} else if found && requestHeader.Config.MaxTokens != nil {
+	} else if requestHeader != nil && requestHeader.Config.MaxTokens != nil {
 		tokenLimit := *requestHeader.Config.MaxTokens
 		loopOptions.MaxTokens = &tokenLimit
 	}
@@ -302,12 +320,10 @@ func (owner *AgentSessions) resumeCold(
 	if err != nil {
 		return nil, err
 	}
-	handle, err := owner.agents.Resume(requestContext, agent.ResumeOptions{
+	handle, err := owner.constructor.Resume(requestContext, agent.ResumeOptions{
 		SessionID:    identifier,
 		AgentOptions: loopOptions,
-		Extensions: []plugin.Plugin{
-			extension,
-		},
+		Provisioner:  scopedplugin.MountPlugins(extension),
 	})
 	if err != nil {
 		if subject, found := owner.agents.Get(identifier); found {
@@ -324,7 +340,7 @@ func (owner *AgentSessions) assertAdoption(
 	requestedAgentPreset *string,
 ) (agent.Agent, error) {
 	header := subject.SessionValue().Header()
-	if header.Origin == session.OriginSubagent || owner.hasLiveParent(subject, header) {
+	if header.Origin == session.OriginSubagent {
 		return nil, &SubagentOwnershipError{identifier: subject.ID()}
 	}
 	if requestedAgentPreset != nil && (header.AgentPreset == nil || *header.AgentPreset != *requestedAgentPreset) {
@@ -341,22 +357,14 @@ func (owner *AgentSessions) assertAdoption(
 	return subject, nil
 }
 
-func (owner *AgentSessions) hasLiveParent(subject agent.Agent, header session.Header) bool {
-	if header.ParentSession == nil {
-		return false
-	}
-	parent, found := owner.agents.Get(*header.ParentSession)
-	return found && owner.agents.IsOwnedBy(subject.ID(), parent)
-}
-
 func (owner *AgentSessions) loggedOrDefaultSelection(
-	conversation *session.Session,
+	conversation session.Context,
 ) (agent.ModelSelection, bool, error) {
-	header, found, err := conversation.RequestHeaderValue()
+	header, err := session.LatestRequestHeader(conversation.Events())
 	if err != nil {
 		return agent.ModelSelection{}, false, err
 	}
-	if found {
+	if header != nil {
 		return agent.ModelSelection{
 			Provider:        header.Config.Provider,
 			Model:           header.Config.Model,
@@ -411,10 +419,7 @@ func (owner *AgentSessions) removeSelection(
 }
 
 func sameAgent(leftSubject agent.Agent, rightSubject agent.Agent) bool {
-	return leftSubject != nil &&
-		rightSubject != nil &&
-		leftSubject.RuntimePlugin() != nil &&
-		leftSubject.RuntimePlugin() == rightSubject.RuntimePlugin()
+	return agent.Same(leftSubject, rightSubject)
 }
 
 func metadataFromHeader(header session.Header) session.Metadata {

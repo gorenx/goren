@@ -70,7 +70,7 @@ type LogService struct {
 	lifetime     context.Context
 	cancel       context.CancelCauseFunc
 	registration *providerRegistration
-	work         map[*session.Session]*titleWorkState
+	work         map[session.Context]*titleWorkState
 	inFlight     sync.WaitGroup
 }
 
@@ -92,7 +92,7 @@ func NewLogService(
 		reporter: reporter,
 		lifetime: lifetime,
 		cancel:   cancel,
-		work:     make(map[*session.Session]*titleWorkState),
+		work:     make(map[session.Context]*titleWorkState),
 	}, nil
 }
 
@@ -115,13 +115,13 @@ func (owner *LogService) Manifest() plugin.Manifest {
 	}
 	return plugin.Manifest{
 		Name: PluginName,
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[TitleService](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[TitleService](owner),
 		},
 		Requires: requiredServices,
 		Events: []plugin.EventSubscription{
-			plugin.EventOf[session.SessionEventAppended](),
-			plugin.EventOf[session.SessionDisposed](),
+			plugin.EventOf[session.EventAppended](),
+			plugin.EventOf[session.Disposed](),
 		},
 		Waterfalls: waterfalls,
 	}
@@ -186,13 +186,13 @@ func (owner *LogService) ObserveEvent(
 	fact plugin.Event,
 ) error {
 	switch observed := fact.(type) {
-	case session.SessionEventAppended:
+	case session.EventAppended:
 		return owner.observeEvent(
 			requestContext,
 			observed.Conversation,
 			observed.Committed,
 		)
-	case session.SessionDisposed:
+	case session.Disposed:
 		return owner.observeDisposed(requestContext, observed.Conversation)
 	default:
 		return nil
@@ -200,7 +200,7 @@ func (owner *LogService) ObserveEvent(
 }
 
 // Get reads the latest title solely from the Session log.
-func (owner *LogService) Get(conversation *session.Session) (*Snapshot, error) {
+func (owner *LogService) Get(conversation session.Context) (*Snapshot, error) {
 	if conversation == nil {
 		return nil, errors.New("sessiontitle: title Session is nil")
 	}
@@ -209,7 +209,14 @@ func (owner *LogService) Get(conversation *session.Session) (*Snapshot, error) {
 }
 
 // Rename appends one normalized user-source title and pins automation.
-func (owner *LogService) Rename(conversation *session.Session, title string) (*Snapshot, error) {
+func (owner *LogService) Rename(
+	requestContext context.Context,
+	conversation session.Context,
+	title string,
+) (*Snapshot, error) {
+	if requestContext == nil {
+		return nil, errors.New("sessiontitle: rename Context is nil")
+	}
 	if err := owner.assertLive(conversation); err != nil {
 		return nil, err
 	}
@@ -224,9 +231,13 @@ func (owner *LogService) Rename(conversation *session.Session, title string) (*S
 	state := owner.stateForLocked(conversation)
 	owner.supersedeLocked(state, errors.New("user rename superseded automatic title generation"))
 	owner.mu.Unlock()
-	if _, err := session.AppendSerialized(conversation, TitleSet, EventData{
+	draft, err := session.NewEventDraft(TitleSet, EventData{
 		Title: normalized, MessageSeqs: []int64{}, Source: UserSource{Kind: "user"},
-	}); err != nil {
+	})
+	if err != nil {
+		return nil, err
+	}
+	if _, err := conversation.Commit(requestContext, session.Batch(draft)); err != nil {
 		return nil, err
 	}
 	accepted, err := owner.Get(conversation)
@@ -240,7 +251,7 @@ func (owner *LogService) Rename(conversation *session.Session, title string) (*S
 }
 
 // Refresh deliberately unpins a user title and regenerates from the current log.
-func (owner *LogService) Refresh(requestContext context.Context, conversation *session.Session) (*Snapshot, error) {
+func (owner *LogService) Refresh(requestContext context.Context, conversation session.Context) (*Snapshot, error) {
 	if requestContext == nil {
 		return nil, errors.New("sessiontitle: refresh Context is nil")
 	}
@@ -264,7 +275,11 @@ func (owner *LogService) Refresh(requestContext context.Context, conversation *s
 			return nil, readErr
 		}
 		if accepted != nil && accepted.Source.SourceKind() == "user" && len(messages) != 0 {
-			if appendErr := owner.appendFallback(conversation, messages[0]); appendErr != nil {
+			if appendErr := owner.appendFallback(
+				requestContext,
+				conversation,
+				messages[0],
+			); appendErr != nil {
 				return nil, appendErr
 			}
 			if err := requestContext.Err(); err != nil {
@@ -351,7 +366,7 @@ func (handleState *providerHandle) Release(closeContext context.Context) error {
 
 func (owner *LogService) observeEvent(
 	requestContext context.Context,
-	conversation *session.Session,
+	conversation session.Context,
 	committed session.Event,
 ) error {
 	switch committed.Type {
@@ -366,7 +381,7 @@ func (owner *LogService) observeEvent(
 
 func (owner *LogService) onUserMessage(
 	requestContext context.Context,
-	conversation *session.Session,
+	conversation session.Context,
 	committed session.Event,
 ) error {
 	boundary := committed.Seq
@@ -410,19 +425,18 @@ func (owner *LogService) onUserMessage(
 			owner.mu.Unlock()
 		}
 	}
-	return session.DeferAfterEvent(requestContext, func() {
-		owner.deferTask(func() {
-			if _, fallbackErr := owner.ensureFallback(owner.lifetime, conversation); fallbackErr != nil &&
-				!errors.Is(fallbackErr, context.Canceled) {
-				owner.reportAsync(conversation.ID(), fallbackErr)
-			}
-		})
+	owner.deferTask(func() {
+		if _, fallbackErr := owner.ensureFallback(owner.lifetime, conversation); fallbackErr != nil &&
+			!errors.Is(fallbackErr, context.Canceled) {
+			owner.reportAsync(conversation.ID(), fallbackErr)
+		}
 	})
+	return nil
 }
 
 func (owner *LogService) onRequestHeader(
 	requestContext context.Context,
-	conversation *session.Session,
+	conversation session.Context,
 	committed session.Event,
 ) error {
 	var wireValue struct {
@@ -446,9 +460,8 @@ func (owner *LogService) onRequestHeader(
 	state.pending = nil
 	owner.mu.Unlock()
 	route := ModelProvenance{Provider: wireValue.Header.Config.Provider, Model: wireValue.Header.Config.Model}
-	return session.DeferAfterEvent(requestContext, func() {
-		owner.startPending(conversation, state, pending, route)
-	})
+	owner.startPending(conversation, state, pending, route)
+	return nil
 }
 
 // Intercept observes main LLM requests before downstream dispatch.
@@ -502,7 +515,7 @@ func (owner *LogService) onMainRequest(generationOptions llm.GenerateOptions) {
 }
 
 func (owner *LogService) startPending(
-	conversation *session.Session,
+	conversation session.Context,
 	state *titleWorkState,
 	pending pendingWork,
 	route ModelProvenance,
@@ -528,7 +541,7 @@ func (owner *LogService) startPending(
 }
 
 func (owner *LogService) runTrackedProvider(
-	conversation *session.Session,
+	conversation session.Context,
 	work *activeWork,
 	route *ModelProvenance,
 ) (*Snapshot, error) {
@@ -562,9 +575,13 @@ func (owner *LogService) runTrackedProvider(
 		return nil, err
 	}
 	source := ProviderSource{Kind: "provider", Provider: work.registration.implementation.ID(), Model: cloneRoute(accepted.Model)}
-	if _, err := session.AppendSerialized(conversation, TitleSet, EventData{
+	draft, err := session.NewEventDraft(TitleSet, EventData{
 		Title: accepted.Title, MessageSeqs: append([]int64{}, accepted.MessageSeqs...), Source: source,
-	}); err != nil {
+	})
+	if err != nil {
+		return nil, err
+	}
+	if _, err := conversation.Commit(work.requestContext, session.Batch(draft)); err != nil {
 		return nil, err
 	}
 	return owner.Get(conversation)
@@ -604,7 +621,7 @@ func (owner *LogService) validateResult(result ProviderResult, messages []UserMe
 
 func (owner *LogService) ensureFallback(
 	requestContext context.Context,
-	conversation *session.Session,
+	conversation session.Context,
 ) (*Snapshot, error) {
 	if err := requestContext.Err(); err != nil {
 		return nil, err
@@ -653,9 +670,13 @@ func (owner *LogService) ensureFallback(
 		accepted, err = owner.Get(conversation)
 	}
 	if err == nil && accepted == nil {
-		_, err = session.AppendSerialized(conversation, TitleSet, EventData{
+		var draft session.EventDraft
+		draft, err = session.NewEventDraft(TitleSet, EventData{
 			Title: title, MessageSeqs: []int64{messages[0].Seq}, Source: FallbackSource{Kind: "fallback"},
 		})
+		if err == nil {
+			_, err = conversation.Commit(requestContext, session.Batch(draft))
+		}
 		if err == nil {
 			accepted, err = owner.Get(conversation)
 		}
@@ -671,7 +692,11 @@ func (owner *LogService) ensureFallback(
 	return accepted, err
 }
 
-func (owner *LogService) appendFallback(conversation *session.Session, first UserMessage) error {
+func (owner *LogService) appendFallback(
+	requestContext context.Context,
+	conversation session.Context,
+	first UserMessage,
+) error {
 	if err := owner.assertLive(conversation); err != nil {
 		return err
 	}
@@ -681,13 +706,17 @@ func (owner *LogService) appendFallback(conversation *session.Session, first Use
 	if err != nil || title == "" {
 		return err
 	}
-	_, err = session.AppendSerialized(conversation, TitleSet, EventData{
+	draft, err := session.NewEventDraft(TitleSet, EventData{
 		Title: title, MessageSeqs: []int64{first.Seq}, Source: FallbackSource{Kind: "fallback"},
 	})
+	if err != nil {
+		return err
+	}
+	_, err = conversation.Commit(requestContext, session.Batch(draft))
 	return err
 }
 
-func (owner *LogService) assertLive(conversation *session.Session) error {
+func (owner *LogService) assertLive(conversation session.Context) error {
 	if conversation == nil {
 		return errors.New("sessiontitle: Session is nil")
 	}
@@ -704,7 +733,7 @@ func (owner *LogService) assertLive(conversation *session.Session) error {
 	return nil
 }
 
-func (owner *LogService) assertCurrent(conversation *session.Session, work *activeWork) error {
+func (owner *LogService) assertCurrent(conversation session.Context, work *activeWork) error {
 	if err := work.requestContext.Err(); err != nil {
 		return err
 	}
@@ -749,7 +778,7 @@ func (owner *LogService) supersedeLocked(state *titleWorkState, cause error) int
 	return state.revision
 }
 
-func (owner *LogService) stateForLocked(conversation *session.Session) *titleWorkState {
+func (owner *LogService) stateForLocked(conversation session.Context) *titleWorkState {
 	state := owner.work[conversation]
 	if state == nil {
 		state = &titleWorkState{}
@@ -758,7 +787,7 @@ func (owner *LogService) stateForLocked(conversation *session.Session) *titleWor
 	return state
 }
 
-func (owner *LogService) finishActive(conversation *session.Session, work *activeWork) {
+func (owner *LogService) finishActive(conversation session.Context, work *activeWork) {
 	work.stopCaller()
 	owner.mu.Lock()
 	state := owner.work[conversation]
@@ -769,7 +798,7 @@ func (owner *LogService) finishActive(conversation *session.Session, work *activ
 	work.registration.active.Done()
 }
 
-func (owner *LogService) observeDisposed(_ context.Context, conversation *session.Session) error {
+func (owner *LogService) observeDisposed(_ context.Context, conversation session.Context) error {
 	owner.mu.Lock()
 	state := owner.work[conversation]
 	if state != nil && state.active != nil {
@@ -890,12 +919,15 @@ func waitGroup(requestContext context.Context, group *sync.WaitGroup) error {
 	}
 }
 
-func currentRoute(conversation *session.Session) (*ModelProvenance, error) {
-	header, found, err := conversation.RequestHeaderValue()
-	if err != nil || !found {
+func currentRoute(conversation session.Context) (*ModelProvenance, error) {
+	header, err := session.LatestRequestHeader(conversation.Events())
+	if err != nil || header == nil {
 		return nil, err
 	}
-	return &ModelProvenance{Provider: header.Config.Provider, Model: header.Config.Model}, nil
+	return &ModelProvenance{
+		Provider: header.Config.Provider,
+		Model:    header.Config.Model,
+	}, nil
 }
 
 func cloneMessages(source []UserMessage) []UserMessage {

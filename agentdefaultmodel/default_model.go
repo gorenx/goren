@@ -42,11 +42,11 @@ func NewStatic(initial agent.ModelSelection) (*StaticPlugin, error) {
 }
 
 // Manifest provides the canonical default-model Service.
-func (*StaticPlugin) Manifest() plugin.Manifest {
+func (owner *StaticPlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: PluginName,
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[DefaultModel](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[DefaultModel](owner),
 		},
 	}
 }

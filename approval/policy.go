@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 )
 
@@ -15,7 +15,7 @@ const (
 	neverPolicyText = "Approval prompts are disabled in this session: actions that require approval are rejected automatically — do not request sandbox escalation (do not set `sandbox_permissions`)."
 )
 
-func effectiveOverride(conversation *session.Session) (Policy, bool, error) {
+func effectiveOverride(conversation session.Context) (Policy, bool, error) {
 	if conversation == nil {
 		return "", false, errors.New("approval: Session is nil")
 	}
@@ -37,32 +37,55 @@ func effectiveOverride(conversation *session.Session) (Policy, bool, error) {
 	return "", false, nil
 }
 
-func appendPolicy(conversation *session.Session, selectedPolicy Policy, source *PolicySource) error {
+func appendPolicy(
+	requestContext context.Context,
+	conversation session.Context,
+	selectedPolicy Policy,
+	source *PolicySource,
+) error {
 	if !validPolicy(selectedPolicy) {
 		return errors.New("approval: policy must be ask or never")
 	}
 	if source != nil && *source != PolicySourceDelegation {
 		return errors.New("approval: policy source must be delegation")
 	}
-	_, err := session.AppendSerialized(conversation, PolicyEvent, PolicyChanged{
+	draft, err := session.NewEventDraft(PolicyEvent, PolicyChanged{
 		Policy: selectedPolicy,
 		Source: source,
 	})
+	if err != nil {
+		return err
+	}
+	_, err = conversation.Commit(requestContext, session.Batch(draft))
 	return err
 }
 
-func policyNotice(previous Policy, selectedPolicy Policy) (llm.UserMessage, error) {
-	return llm.NewUserMessage(llm.UserMessageInput{
-		Content: []llm.ContentBlock{llm.NewTextBlock(fmt.Sprintf(
+// SeedDelegationPolicy pins one unpublished delegated Session to never ask for
+// approval. The event is model-reconstructable and carries delegation rather
+// than user attribution.
+func (*Service) SeedDelegationPolicy(
+	requestContext context.Context,
+	conversation session.Context,
+) error {
+	if conversation == nil {
+		return errors.New("approval: delegated Session is nil")
+	}
+	source := PolicySourceDelegation
+	return appendPolicy(requestContext, conversation, PolicyNever, &source)
+}
+
+func policyNotice(previous Policy, selectedPolicy Policy) (agentmessage.UserMessage, error) {
+	return agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+		Content: []agentmessage.ContentBlock{agentmessage.NewTextBlock(fmt.Sprintf(
 			"The approval policy changed from %q to %q (changed by the user).", previous, selectedPolicy,
 		))},
-		Source: llm.PluginMessageSource{
+		Source: agentmessage.PluginMessageSource{
 			Plugin: "user-approval",
 		},
 	})
 }
 
-func (owner *Service) EffectivePolicy(conversation *session.Session) (Policy, error) {
+func (owner *Service) EffectivePolicy(conversation session.Context) (Policy, error) {
 	selectedPolicy, found, err := effectiveOverride(conversation)
 	if err != nil {
 		return "", err
@@ -76,11 +99,15 @@ func (owner *Service) EffectivePolicy(conversation *session.Session) (Policy, er
 	return owner.defaultPolicy, nil
 }
 
-func (*Service) OverrideOf(conversation *session.Session) (Policy, bool, error) {
+func (*Service) OverrideOf(conversation session.Context) (Policy, bool, error) {
 	return effectiveOverride(conversation)
 }
 
-func (owner *Service) SetPolicy(requestContext context.Context, agentSubject Subject, selectedPolicy Policy) error {
+func (owner *Service) SetPolicy(
+	requestContext context.Context,
+	agentSubject ApprovalTarget,
+	selectedPolicy Policy,
+) error {
 	if requestContext == nil || agentSubject == nil || agentSubject.SessionValue() == nil {
 		return errors.New("approval: Context, Subject, and Session are required")
 	}
@@ -94,7 +121,12 @@ func (owner *Service) SetPolicy(requestContext context.Context, agentSubject Sub
 	if previous == selectedPolicy {
 		return nil
 	}
-	if err := appendPolicy(agentSubject.SessionValue(), selectedPolicy, nil); err != nil {
+	if err := appendPolicy(
+		requestContext,
+		agentSubject.SessionValue(),
+		selectedPolicy,
+		nil,
+	); err != nil {
 		return err
 	}
 	messageValue, err := policyNotice(previous, selectedPolicy)

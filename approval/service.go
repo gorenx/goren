@@ -55,8 +55,9 @@ func (owner *Service) Manifest() plugin.Manifest {
 	}
 	return plugin.Manifest{
 		Name: owner.name,
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[Approval](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[Approval](owner),
+			plugin.NewProvidedService[DelegationPolicy](owner),
 		},
 		Requires: requiredServices,
 	}
@@ -148,12 +149,16 @@ func (owner *Service) Request(
 	if identifier == "" {
 		return "", errors.New("approval: minted request id is empty")
 	}
-	if _, err := session.AppendSerialized(conversation, AskedEvent, Asked{
+	askedDraft, err := session.NewEventDraft(AskedEvent, Asked{
 		ID:       identifier,
 		ToolName: decisionInput.ToolName,
 		CallID:   cloneCallID(decisionInput.CallID),
 		Reason:   cloneString(decisionInput.Reason),
-	}); err != nil {
+	})
+	if err != nil {
+		return "", err
+	}
+	if _, err := conversation.Commit(requestContext, session.Batch(askedDraft)); err != nil {
 		return "", err
 	}
 	decisionOutcome := owner.decide(
@@ -161,10 +166,17 @@ func (owner *Service) Request(
 		decisionInput,
 		conversation,
 	)
-	if _, err := session.AppendSerialized(conversation, DecidedEvent, Decided{
+	decidedDraft, err := session.NewEventDraft(DecidedEvent, Decided{
 		ID:      identifier,
 		Outcome: decisionOutcome,
-	}); err != nil {
+	})
+	if err != nil {
+		return "", err
+	}
+	if _, err := conversation.Commit(
+		context.WithoutCancel(requestContext),
+		session.Batch(decidedDraft),
+	); err != nil {
 		return "", err
 	}
 	return decisionOutcome, nil
@@ -173,7 +185,7 @@ func (owner *Service) Request(
 func (owner *Service) decide(
 	requestContext context.Context,
 	decisionInput Request,
-	conversation *session.Session,
+	conversation session.Context,
 ) Outcome {
 	if requestContext.Err() != nil {
 		return OutcomeCancelled

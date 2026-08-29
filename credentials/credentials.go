@@ -86,11 +86,11 @@ func NewManager(storage LiveStore, platform Environment) (*Manager, error) {
 }
 
 // Manifest declares Manager as the canonical Credentials provider.
-func (*Manager) Manifest() plugin.Manifest {
+func (owner *Manager) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: PluginName,
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[Provider](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[Provider](owner),
 		},
 	}
 }

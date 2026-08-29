@@ -1,9 +1,11 @@
 package connection
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -106,6 +108,89 @@ func TestUnaryCarrierContract(t *testing.T) {
 				t.Fatalf("result = %#v", message.Result)
 			}
 		})
+	}
+}
+
+func TestUnaryCarrierAcceptsMultiSegmentRemoteEndpoint(t *testing.T) {
+	t.Parallel()
+	methods := apiproxy.NewCatalog()
+	operation := func(context.Context, apiproxy.Request[struct{}]) (apiproxy.Outcome[string], error) {
+		return apiproxy.OK("compact"), nil
+	}
+	if err := apiproxy.RegisterUnary(methods, "commands/list", apiproxy.DecodeObject[struct{}], operation); err != nil {
+		t.Fatal(err)
+	}
+	carrier, err := NewHTTPHost(HTTPConfig{}, methods, idleEventSource())
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpRequest := httptest.NewRequest(
+		http.MethodPost,
+		"http://localhost/api/commands/list",
+		strings.NewReader(`{"type":"client-request","rpcId":"remote","method":"commands/list","payload":{}}`),
+	)
+	httpRequest.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	carrier.ServeHTTP(recorder, httpRequest)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q", recorder.Code, recorder.Body.String())
+	}
+	var message wire.ServerResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &message); err != nil {
+		t.Fatal(err)
+	}
+	if message.RPCID != "remote" || message.Result.Error != nil || string(message.Result.Value) != `"compact"` {
+		t.Fatalf("response = %#v", message)
+	}
+}
+
+func TestUnaryCarrierCompressesLargeAPIResponses(t *testing.T) {
+	t.Parallel()
+	methods := apiproxy.NewCatalog()
+	largeValue := strings.Repeat("history-chunk-", 200)
+	operation := func(context.Context, apiproxy.Request[struct{}]) (apiproxy.Outcome[string], error) {
+		return apiproxy.OK(largeValue), nil
+	}
+	if err := apiproxy.RegisterUnary(methods, "session.history", apiproxy.DecodeObject[struct{}], operation); err != nil {
+		t.Fatal(err)
+	}
+	carrier, err := NewHTTPHost(HTTPConfig{}, methods, idleEventSource())
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpRequest := httptest.NewRequest(
+		http.MethodPost,
+		"http://localhost/api/session.history",
+		strings.NewReader(`{"type":"client-request","rpcId":"history","method":"session.history","payload":{}}`),
+	)
+	httpRequest.Header.Set("Content-Type", "application/json")
+	httpRequest.Header.Set("Accept-Encoding", "gzip")
+	recorder := httptest.NewRecorder()
+	carrier.ServeHTTP(recorder, httpRequest)
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Encoding") != "gzip" {
+		t.Fatalf(
+			"compressed response = (status=%d, encoding=%q)",
+			recorder.Code,
+			recorder.Header().Get("Content-Encoding"),
+		)
+	}
+	compressed, err := gzip.NewReader(recorder.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := io.ReadAll(compressed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := compressed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var message wire.ServerResponse
+	if err := json.Unmarshal(decoded, &message); err != nil {
+		t.Fatal(err)
+	}
+	if string(message.Result.Value) != `"`+largeValue+`"` {
+		t.Fatalf("response value length = %d", len(message.Result.Value))
 	}
 }
 

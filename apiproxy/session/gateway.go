@@ -7,6 +7,7 @@ import (
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentdefaultmodel"
 	api "github.com/gorenx/goren/apiproxy"
+	"github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 	sesspersist "github.com/gorenx/goren/session/persistence"
@@ -18,11 +19,14 @@ import (
 // Dependencies are the domain capabilities consumed by the Session API.
 type Dependencies struct {
 	Agents      agent.Registry
+	Constructor agent.Constructor
+	Scopes      agent.ScopeProvisioning
 	Sessions    session.LiveStore
 	Persistence sesspersist.Persistence
 	LLM         llm.LlmRuntime
 	Defaults    agentdefaultmodel.DefaultModel
 	Projections sessionprojection.Registry
+	Cache       ProjectionCache
 	Titles      sessiontitle.TitleService
 	Workspaces  workspace.Registry
 	Directories DirectoryProvisioner
@@ -30,8 +34,16 @@ type Dependencies struct {
 
 // Options are process values and injectable identity sources.
 type Options struct {
-	WorkingDirectory string
-	NewSessionID     func() (session.SessionID, error)
+	WorkingDirectory  string
+	NewSessionID      func() (session.SessionID, error)
+	ReportReadFailure func(error)
+}
+
+// ProjectionCache is the minimal rebuildable checkpoint capability consumed by
+// Session list and history reads.
+type ProjectionCache interface {
+	CachedSnapshot(session.Header) (*sessionprojection.Snapshot, error)
+	ColdSnapshot(context.Context, session.SessionID) (sessionprojection.Snapshot, error)
 }
 
 // Gateway is the unary session.* facade registered with the wire catalog.
@@ -52,7 +64,8 @@ func NewGateway(
 	if requestContext == nil {
 		return nil, errors.New("apiproxy/session: Gateway Context is required")
 	}
-	if ports.Agents == nil || ports.Sessions == nil || ports.Persistence == nil || ports.LLM == nil ||
+	if ports.Agents == nil || ports.Constructor == nil || ports.Scopes == nil ||
+		ports.Sessions == nil || ports.Persistence == nil || ports.LLM == nil ||
 		ports.Defaults == nil || ports.Projections == nil || ports.Titles == nil ||
 		ports.Workspaces == nil || ports.Directories == nil {
 		return nil, errors.New("apiproxy/session: Gateway dependencies are incomplete")
@@ -64,12 +77,18 @@ func NewGateway(
 	if newSessionID == nil {
 		newSessionID = mintSessionID
 	}
+	reportReadFailure := settings.ReportReadFailure
+	if reportReadFailure == nil {
+		reportReadFailure = func(error) {}
+	}
 	modelDirectory, err := api.NewLLMGateway(ports.LLM)
 	if err != nil {
 		return nil, err
 	}
 	runtimeSessions, err := NewAgentSessions(AgentSessionDependencies{
 		Agents:      ports.Agents,
+		Constructor: ports.Constructor,
+		Scopes:      ports.Scopes,
 		Sessions:    ports.Sessions,
 		Persistence: ports.Persistence,
 		Defaults:    ports.Defaults,
@@ -81,10 +100,12 @@ func NewGateway(
 	access := &sessionAccess{runtimeSessions: runtimeSessions}
 	owner := &Gateway{
 		reader: &sessionReader{
-			agents:      ports.Agents,
-			sessions:    ports.Sessions,
-			persistence: ports.Persistence,
-			projections: ports.Projections,
+			agents:        ports.Agents,
+			sessions:      ports.Sessions,
+			persistence:   ports.Persistence,
+			projections:   ports.Projections,
+			cache:         ports.Cache,
+			reportFailure: reportReadFailure,
 		},
 		lifecycle: &sessionLifecycle{
 			access:           access,
@@ -177,4 +198,16 @@ func (owner *Gateway) Cancel(
 	call api.Request[api.SessionCancelRequest],
 ) (api.Outcome[api.AcceptedValue], error) {
 	return owner.conversationUseCases.Cancel(requestContext, call)
+}
+
+// ResolveOrdinaryAgent resolves an API-addressable ordinary Agent while
+// preserving cold resume and subagent ownership behavior.
+func (owner *Gateway) ResolveOrdinaryAgent(
+	requestContext context.Context,
+	identifier api.SessionID,
+) (agent.Agent, *connection.RPCError) {
+	return owner.conversationUseCases.access.ordinaryAgent(
+		requestContext,
+		identifier,
+	)
 }

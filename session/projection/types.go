@@ -13,8 +13,8 @@ import (
 const ServiceName = "sessionProjections"
 
 const (
-	PluginName                 = "@deepseek-ai/dsh-session-projection"
-	ProjectionChangedEventName = "session/projection"
+	PluginName       = "@deepseek-ai/dsh-session-projection"
+	ChangedEventName = "session/projection"
 )
 
 // Transition is one unit's next plain-JSON state. Changed is explicit because
@@ -38,7 +38,7 @@ type Unit interface {
 // Values contains one whole JSON value for every registered projection key.
 type Values map[string]json.RawMessage
 
-// Snapshot is one consistent read cut over all currently registered units.
+// Snapshot is one consistent read of all currently registered units.
 type Snapshot struct {
 	AsOfSeq int64  `json:"asOfSeq"`
 	Values  Values `json:"values"`
@@ -62,22 +62,22 @@ type RestoreResult struct {
 
 // Change is one whole projection value caused by one committed event.
 type Change struct {
-	Session *session.Session
+	Session session.Context
 	Key     string
 	Value   json.RawMessage
 	Seq     int64
 }
 
-// ProjectionChanged publishes one committed whole-value projection change.
-type ProjectionChanged struct {
+// Changed publishes one committed whole-value projection change.
+type Changed struct {
 	Change Change
 }
 
-func (ProjectionChanged) EventName() string {
-	return ProjectionChangedEventName
+func (Changed) EventName() string {
+	return ChangedEventName
 }
 
-func (ProjectionChanged) EventDelivery() plugin.DeliveryPolicy {
+func (Changed) EventDelivery() plugin.DeliveryPolicy {
 	return plugin.DeliveryBestEffort
 }
 
@@ -91,8 +91,8 @@ type UnitHandle interface {
 type Registry interface {
 	plugin.Service
 	Register(Unit) (UnitHandle, error)
-	Snapshot(*session.Session) (Snapshot, error)
-	Checkpoint(*session.Session) (Checkpoint, error)
+	Snapshot(session.Context) (Snapshot, error)
+	Checkpoint(session.Context) (Checkpoint, error)
 	RestoreFloor(Checkpoint) *int64
 	ViewCheckpoint(Checkpoint) (Values, error)
 	Restore(Checkpoint, []session.Event, int64) (RestoreResult, error)

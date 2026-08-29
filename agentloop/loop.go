@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/systemprompt"
@@ -42,9 +43,7 @@ func newLoop(
 		projection,
 		events,
 	)
-	if err := activity.attach(turns); err != nil {
-		return nil, err
-	}
+	activity.turns = turns
 	return &loop{
 		activity: activity,
 		turns:    turns,
@@ -80,10 +79,14 @@ func (machine *loop) dispose(closeContext context.Context) error {
 	if machine == nil {
 		return nil
 	}
-	machine.activity.beginDispose()
-	idleErr := machine.activity.whenIdle(closeContext)
+	idleErr := machine.quiesce(closeContext)
 	machine.turns.deactivate()
 	return idleErr
+}
+
+func (machine *loop) quiesce(closeContext context.Context) error {
+	machine.activity.beginDispose()
+	return machine.activity.whenIdle(closeContext)
 }
 
 func (machine *loop) status() agent.Status {
@@ -91,7 +94,7 @@ func (machine *loop) status() agent.Status {
 }
 
 func (machine *loop) send(
-	input llm.UserMessage,
+	input agentmessage.UserMessage,
 	target agent.InboxTarget,
 	wakeup bool,
 ) error {
@@ -111,13 +114,9 @@ func (machine *loop) whenIdle(requestContext context.Context) error {
 
 func (machine *loop) runMaintenance(
 	requestContext context.Context,
-	task agent.MaintenanceTask,
+	operation func(context.Context) error,
 ) error {
-	return machine.activity.runMaintenance(requestContext, task)
-}
-
-func (machine *loop) beginDispose() {
-	machine.activity.beginDispose()
+	return machine.activity.runMaintenance(requestContext, operation)
 }
 
 func (machine *loop) runtimeContextView() *runtimeContextProjection {

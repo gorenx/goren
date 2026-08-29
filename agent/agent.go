@@ -4,9 +4,9 @@ package agent
 
 import (
 	"context"
+	"reflect"
 
-	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/plugin"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 )
 
@@ -42,33 +42,32 @@ type Options struct {
 	MaxTokens *int
 }
 
-// MaintenanceTask is one non-turn task that may run only from true idle.
-type MaintenanceTask interface {
-	Run(context.Context) error
-}
-
-// MaintenanceFunc adapts a naturally stateless operation to MaintenanceTask.
-type MaintenanceFunc func(context.Context) error
-
-func (operation MaintenanceFunc) Run(requestContext context.Context) error {
-	return operation(requestContext)
-}
-
-// Agent is both a scoped runtime Plugin and the live business capability
-// returned by Registry. Consumers do not receive its Fiber or Scope.
+// Agent is the live business capability returned by Registry. Plugin identity
+// and structural Scope ownership remain private to the Agent Loop adapter.
 type Agent interface {
-	plugin.Plugin
-	plugin.Service
 	ID() session.SessionID
 	OptionsValue() Options
-	SessionValue() *session.Session
+	SessionValue() session.Context
 	InboxValue() *Inbox
 	StatusValue() Status
 	Cancel(CancelCause, CancelOptions)
 	WhenIdle(context.Context) error
-	RunMaintenance(context.Context, MaintenanceTask) error
-	Send(llm.UserMessage, InboxTarget, bool) error
-	Followup(llm.UserMessage) error
-	Steer(llm.UserMessage) error
-	Inject(llm.UserMessage) error
+	RunMaintenance(context.Context, func(context.Context) error) error
+	Followup(agentmessage.UserMessage) error
+	Steer(agentmessage.UserMessage) error
+	Inject(agentmessage.UserMessage) error
+}
+
+// Same reports whether both values are the exact same process-local Agent
+// instance. Durable Agent IDs may be reused by later resumed instances.
+func Same(leftSubject Agent, rightSubject Agent) bool {
+	if leftSubject == nil || rightSubject == nil ||
+		leftSubject.ID() != rightSubject.ID() {
+		return false
+	}
+	leftType := reflect.TypeOf(leftSubject)
+	if leftType != reflect.TypeOf(rightSubject) || !leftType.Comparable() {
+		return false
+	}
+	return leftSubject == rightSubject
 }

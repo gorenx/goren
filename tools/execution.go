@@ -8,8 +8,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/internal/jsonvalue"
-	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 )
 
@@ -17,8 +17,8 @@ import (
 // Agent implementations satisfy it without making Tools depend on Agent's
 // lifecycle, inbox, or runtime-scope contracts.
 type ExecutionSubject interface {
-	SessionValue() *session.Session
-	Inject(llm.UserMessage) error
+	SessionValue() session.Context
+	Inject(agentmessage.UserMessage) error
 }
 
 // ToolExecutionToken is an opaque same-process parent correlation identity.
@@ -38,8 +38,8 @@ func (identity ToolExecutionToken) IsZero() bool {
 // ToolExecutionInput is one caller-supplied tool call. Context cancellation is
 // supplied separately to Execute and cannot be replaced in this value.
 type ToolExecutionInput struct {
-	CallID     llm.CallID
-	RootCallID llm.CallID
+	CallID     agentmessage.CallID
+	RootCallID agentmessage.CallID
 	Name       string
 	Arguments  json.RawMessage
 	Subject    ExecutionSubject
@@ -48,8 +48,8 @@ type ToolExecutionInput struct {
 
 // ToolExecution is the immutable registry-owned identity visible to policy.
 type ToolExecution struct {
-	CallID     llm.CallID
-	RootCallID llm.CallID
+	CallID     agentmessage.CallID
+	RootCallID agentmessage.CallID
 	Name       string
 	Subject    ExecutionSubject
 	Parent     ToolExecutionToken
@@ -72,7 +72,7 @@ type ToolRunContext struct {
 // DeferContext attaches one plugin-authored message to this toolCall's final
 // result. Agent Loop admits deferred messages only after the containing tool
 // result has been committed, preserving model call/result adjacency.
-func (runContext ToolRunContext) DeferContext(message llm.UserMessage) {
+func (runContext ToolRunContext) DeferContext(message agentmessage.UserMessage) {
 	if runContext.Execution.state != nil {
 		runContext.Execution.state.deferContext(message)
 	}
@@ -96,7 +96,7 @@ type scheduledExecutionState struct {
 	phase            scheduledExecutionPhase
 	bodyInvoked      bool
 	concludesTurn    bool
-	deferredContexts []llm.UserMessage
+	deferredContexts []agentmessage.UserMessage
 }
 
 type scheduledExecutionPhase uint8
@@ -114,7 +114,7 @@ const (
 type executionStateSnapshot struct {
 	bodyInvoked      bool
 	concludesTurn    bool
-	deferredContexts []llm.UserMessage
+	deferredContexts []agentmessage.UserMessage
 }
 
 func newScheduledExecutionState(
@@ -131,7 +131,7 @@ func newScheduledExecutionState(
 	}
 }
 
-func (state *scheduledExecutionState) deferContext(message llm.UserMessage) {
+func (state *scheduledExecutionState) deferContext(message agentmessage.UserMessage) {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	if state.phase != executionDispatching {

@@ -66,11 +66,11 @@ func New(
 }
 
 // Manifest declares the Query Service and its source dependencies.
-func (*Service) Manifest() plugin.Manifest {
+func (owner *Service) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: PluginName,
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[QueryService](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[QueryService](owner),
 		},
 		Requires: []plugin.ServiceType{
 			plugin.ServiceOf[session.LiveStore](),
@@ -363,13 +363,9 @@ func (owner *Service) observeCorpus(requestContext context.Context) (map[session
 	}
 	desired := make(map[session.SessionID]desiredSource)
 	if owner.persistence != nil {
-		snapshots, err := owner.persistence.ListSnapshots(requestContext)
-		if err != nil {
-			return nil, persistenceFailure("list snapshots", err)
-		}
-		for _, snapshot := range snapshots {
+		err := owner.walkSnapshots(requestContext, func(snapshot sesspersist.Snapshot) (bool, error) {
 			if _, duplicate := desired[snapshot.Header.ID]; duplicate {
-				return nil, failure(
+				return false, failure(
 					ErrorSourceConflict,
 					fmt.Sprintf("session query: persistence listed session %q more than once", snapshot.Header.ID),
 					nil,
@@ -379,6 +375,10 @@ func (owner *Service) observeCorpus(requestContext context.Context) (map[session
 				header: cloneHeader(snapshot.Header), persisted: true,
 				sourceRevision: "persisted:" + string(snapshot.Revision),
 			}
+			return true, nil
+		})
+		if err != nil {
+			return nil, persistenceFailure("list snapshots", err)
 		}
 	}
 	for _, conversation := range owner.sessions.List() {
@@ -399,7 +399,7 @@ func (owner *Service) observeCorpus(requestContext context.Context) (map[session
 	return desired, nil
 }
 
-func liveRevision(conversation *session.Session, entries []session.Event) string {
+func liveRevision(conversation session.Context, entries []session.Event) string {
 	last := session.Event{Seq: -1}
 	if len(entries) != 0 {
 		last = entries[len(entries)-1]

@@ -9,7 +9,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
@@ -59,25 +59,25 @@ const PolicySourceDelegation PolicySource = "delegation"
 
 // Request is one readonly approval decision borrowed by answerers.
 type Request struct {
-	Subject  Subject
+	Subject  ApprovalTarget
 	ToolName string
-	CallID   *llm.CallID
+	CallID   *agentmessage.CallID
 	Reason   *string
 }
 
-// Subject is the Approval-owned view of an active Agent. It exposes only the
-// Session being audited and the inbox operation used by policy changes.
-type Subject interface {
-	SessionValue() *session.Session
-	Inject(llm.UserMessage) error
+// ApprovalTarget is the Approval-owned view of an active Agent. It exposes
+// only the Session being audited and the inbox operation used by policy changes.
+type ApprovalTarget interface {
+	SessionValue() session.Context
+	Inject(agentmessage.UserMessage) error
 }
 
 // Asked is the durable pre-dispatch approval audit payload.
 type Asked struct {
-	ID       RequestID   `json:"id"`
-	ToolName string      `json:"toolName"`
-	CallID   *llm.CallID `json:"callId,omitempty"`
-	Reason   *string     `json:"reason,omitempty"`
+	ID       RequestID            `json:"id"`
+	ToolName string               `json:"toolName"`
+	CallID   *agentmessage.CallID `json:"callId,omitempty"`
+	Reason   *string              `json:"reason,omitempty"`
 }
 
 // Decided is the durable terminal approval audit payload.
@@ -169,9 +169,16 @@ type Decision struct {
 type Approval interface {
 	plugin.Service
 	Request(context.Context, Request) (Outcome, error)
-	EffectivePolicy(*session.Session) (Policy, error)
-	OverrideOf(*session.Session) (Policy, bool, error)
-	SetPolicy(context.Context, Subject, Policy) error
+	EffectivePolicy(session.Context) (Policy, error)
+	OverrideOf(session.Context) (Policy, bool, error)
+	SetPolicy(context.Context, ApprovalTarget, Policy) error
+}
+
+// DelegationPolicy owns the durable approval override seeded into an
+// unpublished delegated Session.
+type DelegationPolicy interface {
+	plugin.Service
+	SeedDelegationPolicy(context.Context, session.Context) error
 }
 
 func validOutcome(selectedOutcome Outcome) bool {
@@ -187,7 +194,7 @@ func validPolicy(selectedPolicy Policy) bool {
 	return selectedPolicy == PolicyAsk || selectedPolicy == PolicyNever
 }
 
-func cloneCallID(source *llm.CallID) *llm.CallID {
+func cloneCallID(source *agentmessage.CallID) *agentmessage.CallID {
 	if source == nil {
 		return nil
 	}

@@ -14,6 +14,31 @@ import (
 
 type persistenceFailureReporter struct{}
 
+type sessionStoreProbe struct {
+	plugin.Base
+	store session.LiveStore
+}
+
+func (*sessionStoreProbe) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "session-persistence-store-probe",
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[session.LiveStore](),
+		},
+	}
+}
+
+func (probe *sessionStoreProbe) Apply(context.Context) error {
+	liveStore, err := plugin.Require[session.LiveStore](probe)
+	if err != nil {
+		return err
+	}
+	probe.store = liveStore
+	return nil
+}
+
+func (*sessionStoreProbe) Dispose(context.Context) error { return nil }
+
 func (persistenceFailureReporter) ReportEventFailure(context.Context, plugin.EventFailure) {}
 
 func (persistenceFailureReporter) ReportPostCommitFailure(session.PostCommitFailure) {}
@@ -31,35 +56,35 @@ type countingBackend struct {
 	revisions int
 }
 
-func (storage *countingBackend) LoadStored(
+func (storage *countingBackend) Load(
 	requestContext context.Context,
 	identifier session.SessionID,
-) (sesspersist.StoredPrefix, bool, error) {
+) (*sesspersist.Log, error) {
 	storage.mutex.Lock()
 	storage.loads++
 	storage.mutex.Unlock()
-	return storage.Backend.LoadStored(requestContext, identifier)
+	return storage.Backend.Load(requestContext, identifier)
 }
 
-func (storage *countingBackend) ReadStoredRevision(
+func (storage *countingBackend) Revision(
 	requestContext context.Context,
 	identifier session.SessionID,
-) (sesspersist.Revision, bool, error) {
+) (*sesspersist.Revision, error) {
 	storage.mutex.Lock()
 	storage.revisions++
 	storage.mutex.Unlock()
-	return storage.Backend.ReadStoredRevision(requestContext, identifier)
+	return storage.Backend.Revision(requestContext, identifier)
 }
 
-func (storage *countingBackend) LoadStoredFrom(
+func (storage *countingBackend) ReadEventsFrom(
 	requestContext context.Context,
 	identifier session.SessionID,
-	fromSeq int64,
-) (sesspersist.StoredSuffix, bool, error) {
+	continuation sesspersist.EventContinuation,
+) (*sesspersist.EventSegment, error) {
 	storage.mutex.Lock()
 	storage.seeks++
 	storage.mutex.Unlock()
-	return storage.Backend.LoadStoredFrom(requestContext, identifier, fromSeq)
+	return storage.Backend.ReadEventsFrom(requestContext, identifier, continuation)
 }
 
 func (storage *countingBackend) counts() (int, int, int) {
@@ -92,7 +117,7 @@ func (opener *sqliteBackendOpener) OpenBackend(
 
 type persistenceFixture struct {
 	runtime     *plugin.Runtime
-	store       *session.MemoryStore
+	store       session.LiveStore
 	persistence *sesspersist.SessionLogStore
 	opener      *sqliteBackendOpener
 }
@@ -105,7 +130,7 @@ func newPersistenceFixture(
 ) persistenceFixture {
 	testingContext.Helper()
 	reporter := persistenceFailureReporter{}
-	store, err := session.NewMemoryStore(
+	sessionPlugin, err := session.NewPlugin(
 		session.MemoryStoreOptions{
 			PostCommitFailures: reporter,
 		},
@@ -136,16 +161,18 @@ func newPersistenceFixture(
 			EventFailures: reporter,
 		},
 	)
+	storeProbe := &sessionStoreProbe{}
 	if _, err := runtimeEngine.Start(
 		context.Background(),
 		durability,
-		store,
+		sessionPlugin,
+		storeProbe,
 	); err != nil {
 		testingContext.Fatal(err)
 	}
 	return persistenceFixture{
 		runtime:     runtimeEngine,
-		store:       store,
+		store:       storeProbe.store,
 		persistence: durability,
 		opener:      opener,
 	}
@@ -173,14 +200,17 @@ func TestSessionLogStorePersistsAnOpenTurnAndRepairsItOnColdLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 	conversation := handle.Session()
-	if _, err := session.Append(
-		conversation,
-		session.TurnStarted,
-		session.TurnStart{
-			Turn: 1,
-		},
-	); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.TurnStarted,
+			session.TurnStart{
+				Turn: 1,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := first.store.Flush(requestContext, conversation); err != nil {
 		t.Fatal(err)
@@ -209,29 +239,10 @@ func TestSessionLogStorePersistsAnOpenTurnAndRepairsItOnColdLoad(t *testing.T) {
 	second.close(t)
 }
 
-func TestSessionLogStoreReusesRevisionCurrentPreparationAndSeeksReadFrom(t *testing.T) {
+func TestSessionLogStoreReusesCurrentPreparation(t *testing.T) {
 	t.Parallel()
+	fixture, metadata := persistedFixture(t, "cached-session")
 	requestContext := context.Background()
-	path := t.TempDir() + "/sessions.sqlite"
-	storage, err := sesssqlite.Open(
-		requestContext,
-		sesssqlite.Config{
-			Path:        path,
-			JournalMode: sesssqlite.JournalWAL,
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	metadata, entries := persistenceClosedTurn(t, "cached-session")
-	if err := storage.AppendBatch(requestContext, metadata, entries, false); err != nil {
-		t.Fatal(err)
-	}
-	if err := storage.Close(requestContext); err != nil {
-		t.Fatal(err)
-	}
-
-	fixture := newPersistenceFixture(t, path, true, 1)
 	first, err := fixture.persistence.Inspect(requestContext, metadata.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -270,6 +281,16 @@ func TestSessionLogStoreReusesRevisionCurrentPreparationAndSeeksReadFrom(t *test
 	if loads != 1 {
 		t.Fatalf("prepared cache performed %d full loads, want 1", loads)
 	}
+	fixture.close(t)
+}
+
+func TestSessionLogStoreReloadsAfterRevisionChange(t *testing.T) {
+	t.Parallel()
+	fixture, metadata := persistedFixture(t, "revision-change")
+	requestContext := context.Background()
+	if _, err := fixture.persistence.Inspect(requestContext, metadata.ID); err != nil {
+		t.Fatal(err)
+	}
 	external := session.Event{
 		Type:      "extension/external",
 		Seq:       2,
@@ -279,9 +300,10 @@ func TestSessionLogStoreReusesRevisionCurrentPreparationAndSeeksReadFrom(t *test
 	}
 	if err := fixture.opener.opened.AppendBatch(
 		requestContext,
-		metadata,
-		[]session.Event{external},
-		true,
+		sesspersist.EventBatch{
+			Header: metadata,
+			Events: []session.Event{external},
+		},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -289,25 +311,71 @@ func TestSessionLogStoreReusesRevisionCurrentPreparationAndSeeksReadFrom(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	loads, _, _ = fixture.opener.opened.counts()
+	loads, _, _ := fixture.opener.opened.counts()
 	if len(refreshed.Events) != 3 || loads != 2 {
 		t.Fatalf("revision refresh = %#v, full loads = %d", refreshed.Events, loads)
 	}
-	suffix, err := fixture.persistence.ReadFrom(requestContext, metadata.ID, 1)
+	fixture.close(t)
+}
+
+func TestSessionLogStoreReadsBoundedEventPage(t *testing.T) {
+	t.Parallel()
+	fixture, metadata := persistedFixture(t, "event-page")
+	requestContext := context.Background()
+	page, err := fixture.persistence.ReadEventsFrom(
+		requestContext,
+		metadata.ID,
+		sesspersist.EventContinuation{
+			FromSeq: 0,
+			Limit:   1,
+		},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	loadsAfterSeek, seeksAfterRead, _ := fixture.opener.opened.counts()
-	if len(suffix.Events) != 2 || suffix.Events[0].Seq != 1 || suffix.Events[1].Seq != 2 ||
-		loadsAfterSeek != loads || seeksAfterRead != 1 {
+	loads, reads, _ := fixture.opener.opened.counts()
+	if len(page.Events) != 1 || page.Events[0].Seq != 0 || !page.HasMore ||
+		loads != 0 || reads != 1 {
 		t.Fatalf(
-			"seek suffix = %#v, backend counts = (%d, %d)",
-			suffix,
-			loadsAfterSeek,
-			seeksAfterRead,
+			"event page = %#v, backend counts = (%d, %d)",
+			page,
+			loads,
+			reads,
 		)
 	}
 	fixture.close(t)
+}
+
+func persistedFixture(
+	t *testing.T,
+	identifier session.SessionID,
+) (*persistenceFixture, session.Header) {
+	t.Helper()
+	requestContext := context.Background()
+	path := t.TempDir() + "/sessions.sqlite"
+	storage, err := sesssqlite.Open(
+		requestContext,
+		sesssqlite.Config{
+			Path:        path,
+			JournalMode: sesssqlite.JournalWAL,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, entries := persistenceClosedTurn(t, identifier)
+	if err := storage.AppendBatch(requestContext, sesspersist.EventBatch{
+		Header:      metadata,
+		Events:      entries,
+		Materialize: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.Close(requestContext); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newPersistenceFixture(t, path, true, 1)
+	return &fixture, metadata
 }
 
 func persistenceClosedTurn(
@@ -319,24 +387,30 @@ func persistenceClosedTurn(
 	if err != nil {
 		testingContext.Fatal(err)
 	}
-	if _, err := session.Append(
-		conversation,
-		session.TurnStarted,
-		session.TurnStart{
-			Turn: 1,
-		},
-	); err != nil {
-		testingContext.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.TurnStarted,
+			session.TurnStart{
+				Turn: 1,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			testingContext.Fatal(err)
+		}
 	}
-	if _, err := session.Append(
-		conversation,
-		session.TurnEnded,
-		session.TurnEnd{
-			Turn:   1,
-			Reason: session.TurnCompleted{},
-		},
-	); err != nil {
-		testingContext.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.TurnEnded,
+			session.TurnEnd{
+				Turn:   1,
+				Reason: session.TurnCompleted{},
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			testingContext.Fatal(err)
+		}
 	}
 	return conversation.Header(), conversation.Events()
 }

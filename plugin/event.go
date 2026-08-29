@@ -121,6 +121,36 @@ func eventReferenceOf[E Event]() (reference eventRef, referenceErr error) {
 	}, nil
 }
 
+func eventReferenceOfValue(fact Event) (reference eventRef, referenceErr error) {
+	if fact == nil {
+		return eventRef{}, errors.New("Event is nil")
+	}
+	selectedType := reflect.TypeOf(fact)
+	if selectedType.Kind() != reflect.Struct || selectedType.Name() == "" {
+		return eventRef{}, errors.New("Event must be a named struct value")
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			reference = eventRef{}
+			referenceErr = fmt.Errorf("Event metadata panicked: %v", recovered)
+		}
+	}()
+	eventName := fact.EventName()
+	if strings.TrimSpace(eventName) == "" ||
+		eventName != strings.TrimSpace(eventName) {
+		return eventRef{}, errors.New("Event name must be non-empty and trimmed")
+	}
+	policy := fact.EventDelivery()
+	if err := validateDeliveryPolicy(policy); err != nil {
+		return eventRef{}, err
+	}
+	return eventRef{
+		key:    selectedType,
+		name:   eventName,
+		policy: policy,
+	}, nil
+}
+
 func validateDeliveryPolicy(policy DeliveryPolicy) error {
 	switch policy {
 	case DeliveryOrdered, DeliveryParallel, DeliveryBestEffort:
@@ -303,13 +333,37 @@ func Publish[E Event](
 	source Plugin,
 	fact E,
 ) error {
-	sourceFiber, err := activeFiberOf(source)
-	if err != nil {
-		return err
-	}
 	reference, err := eventReferenceOf[E]()
 	if err != nil {
 		return fmt.Errorf("plugin: publish Event: %w", err)
+	}
+	return publishEvent(requestContext, source, fact, reference)
+}
+
+// PublishEvent delivers a dynamically typed Event from one active Plugin.
+// It exists for owner-neutral scoped event ports; ordinary Plugin code should
+// prefer Publish so its Event type remains statically selected.
+func PublishEvent(
+	requestContext context.Context,
+	source Plugin,
+	fact Event,
+) error {
+	reference, err := eventReferenceOfValue(fact)
+	if err != nil {
+		return fmt.Errorf("plugin: publish Event: %w", err)
+	}
+	return publishEvent(requestContext, source, fact, reference)
+}
+
+func publishEvent(
+	requestContext context.Context,
+	source Plugin,
+	fact Event,
+	reference eventRef,
+) error {
+	sourceFiber, err := activeFiberOf(source)
+	if err != nil {
+		return err
 	}
 	if fact.EventName() != reference.name || fact.EventDelivery() != reference.policy {
 		return errors.New("plugin: Event metadata must be constant for one Go type")
@@ -328,6 +382,14 @@ func Publish[E Event](
 		runtimeEngine.view.RUnlock()
 		return nil
 	}
+	declaredReference := observers[0].reference
+	if reference.key != declaredReference.key ||
+		reference.name != declaredReference.name ||
+		reference.policy != declaredReference.policy {
+		runtimeEngine.view.RUnlock()
+		return errors.New("plugin: Event metadata must match its declared type")
+	}
+	reference = declaredReference
 	participants := make([]*fiber, 0, len(observers)+1)
 	participants = append(participants, sourceFiber)
 	for _, observer := range observers {

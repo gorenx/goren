@@ -2,6 +2,7 @@ package agentloop
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -12,8 +13,8 @@ import (
 	"github.com/gorenx/goren/tools"
 )
 
-// turnRunner owns the durable Turn/Step state machine. Activity admission,
-// model request execution, and Tool scheduling belong to its collaborators.
+// turnRunner owns the durable Turn state machine and Step iteration. Step
+// preparation and execution belong to stepExecutor.
 type turnRunner struct {
 	subject    *ReactLoopAgent
 	activity   *activityCoordinator
@@ -22,8 +23,7 @@ type turnRunner struct {
 	events     *agentEventPublisher
 
 	sessions session.LiveStore
-	prompts  systemprompt.Assembler
-	requests *modelRequester
+	executor *stepExecutor
 }
 
 func newTurnRunner(
@@ -68,23 +68,29 @@ func (runner *turnRunner) activate(
 	if err != nil {
 		return err
 	}
-	runner.sessions = sessions
-	runner.prompts = prompts
-	runner.requests = newModelRequester(
+	executor, err := newStepExecutor(
 		runner.subject,
+		runner.activity,
+		runner.pending,
+		runner.projection,
+		prompts,
 		models,
 		toolCalls,
 	)
+	if err != nil {
+		return err
+	}
+	runner.sessions = sessions
+	runner.executor = executor
 	return requestContext.Err()
 }
 
 func (runner *turnRunner) deactivate() {
-	if runner.requests != nil {
-		runner.requests.deactivate()
+	if runner.executor != nil {
+		runner.executor.deactivate()
 	}
-	runner.requests = nil
+	runner.executor = nil
 	runner.sessions = nil
-	runner.prompts = nil
 }
 
 func (runner *turnRunner) reportError(
@@ -96,95 +102,6 @@ func (runner *turnRunner) reportError(
 		runner.activity.snapshotPosition(),
 		problem,
 	)
-}
-
-type preparedStep struct {
-	rejected bool
-	messages []llm.UserMessage
-	assembly systemprompt.PromptAssembly
-}
-
-func (runner *turnRunner) prepareStep(
-	requestContext context.Context,
-	target agent.InboxTarget,
-	turn int64,
-	step int64,
-) (preparedStep, error) {
-	if err := contextFailure(requestContext); err != nil {
-		return preparedStep{}, err
-	}
-	claimedMessages, err := runner.pending.Claim(target, turn)
-	if err != nil {
-		return preparedStep{}, err
-	}
-	assembled, err := runner.prompts.Assemble(
-		requestContext,
-		systemprompt.AssembleContext{
-			Session: runner.subject.conversation,
-		},
-	)
-	if err != nil {
-		return preparedStep{}, err
-	}
-	sections, err := systemprompt.RenderContextSections(assembled)
-	if err != nil {
-		return preparedStep{}, err
-	}
-	projected, present, err := runner.projection.project(
-		systemprompt.JoinContextSections(sections),
-		sections,
-	)
-	if err != nil {
-		return preparedStep{}, err
-	}
-	candidates := claimedMessages
-	if present {
-		candidates = append(candidates, projected)
-	}
-	decision, err := agent.ResolvePreStep(
-		requestContext,
-		agent.PreStepNotice{
-			Subject:  runner.subject,
-			Messages: candidates,
-			Turn:     turn,
-			Step:     step,
-		},
-		agent.PreStepActionFunc(func(
-			context.Context,
-			agent.PreStepNotice,
-		) (agent.PreStepDecision, error) {
-			return agent.PreStepDecision{
-				Kind:     agent.PreStepEnter,
-				Messages: candidates,
-			}, nil
-		}),
-	)
-	if err != nil {
-		return preparedStep{}, err
-	}
-	if err := contextFailure(requestContext); err != nil {
-		return preparedStep{}, err
-	}
-	switch decision.Kind {
-	case agent.PreStepReject:
-		return preparedStep{
-			rejected: true,
-		}, nil
-	case agent.PreStepEnter:
-		detached, err := cloneUserMessages(decision.Messages)
-		if err != nil {
-			return preparedStep{}, err
-		}
-		return preparedStep{
-			messages: detached,
-			assembly: assembled,
-		}, nil
-	default:
-		return preparedStep{}, fmt.Errorf(
-			"agentloop: unsupported pre-step decision %q",
-			decision.Kind,
-		)
-	}
 }
 
 func (runner *turnRunner) runTurn(
@@ -202,13 +119,17 @@ func (runner *turnRunner) runTurn(
 		runner.reportError(requestContext, problem)
 		return false, problem
 	}
-	if _, err := session.AppendSerialized(
-		runner.subject.conversation,
+	turnDraft, err := session.NewEventDraft(
 		session.TurnStarted,
 		session.TurnStart{
 			Turn: turn,
 		},
-	); err != nil {
+	)
+	if err != nil {
+		runner.reportError(requestContext, err)
+		return false, err
+	}
+	if _, err := runner.subject.conversation.Commit(requestContext, session.Batch(turnDraft)); err != nil {
 		runner.reportError(requestContext, err)
 		return false, err
 	}
@@ -225,12 +146,12 @@ func (runner *turnRunner) runTurn(
 			}
 			break
 		}
-		step, priorStep := runner.activity.proposedStep()
-		prepared, err := runner.prepareStep(
+		stepNumber, priorStep := runner.activity.proposedStep()
+		plan, err := runner.executor.prepare(
 			requestContext,
 			target,
 			turn,
-			step,
+			stepNumber,
 		)
 		if err != nil {
 			operationErr = err
@@ -246,53 +167,20 @@ func (runner *turnRunner) runTurn(
 			}
 			break
 		}
-		if prepared.rejected {
+		if plan.rejected {
 			ending = session.TurnBlocked{}
 			break
 		}
-		if ending != nil && len(prepared.messages) == 0 {
+		if ending != nil && !plan.hasMessages() {
 			break
 		}
-		if priorStep == 0 && len(prepared.messages) == 0 {
+		if priorStep == 0 && !plan.hasMessages() {
 			ending = session.TurnCompleted{}
 			break
 		}
-		if _, err := session.AppendSerialized(
-			runner.subject.conversation,
-			session.StepStarted,
-			session.StepPosition{
-				Turn: turn,
-				Step: step,
-			},
-		); err != nil {
-			operationErr = err
-			ending = session.TurnError{
-				Error: failureFromError(err),
-			}
-			runner.reportError(requestContext, err)
-			break
-		}
-		runner.activity.acceptStep(step)
-		stepErr := runner.appendStepMessages(prepared.messages)
-		var stepEnding session.TurnEndReason
-		if stepErr == nil {
-			stepEnding, stepErr = runner.requests.executeStep(
-				requestContext,
-				turn,
-				step,
-				prepared,
-			)
-		}
-		_, endErr := session.AppendSerialized(
-			runner.subject.conversation,
-			session.StepEnded,
-			session.StepPosition{
-				Turn: turn,
-				Step: step,
-			},
-		)
-		if stepErr != nil || endErr != nil {
-			operationErr = errors.Join(stepErr, endErr)
+		stepEnding, stepErr := runner.executor.execute(requestContext, plan)
+		if stepErr != nil {
+			operationErr = stepErr
 			if requestContext.Err() != nil {
 				ending = session.TurnAborted{
 					Reason: runner.activity.durableCancelCause(),
@@ -344,14 +232,20 @@ func (runner *turnRunner) runTurn(
 			},
 		}
 	}
-	if _, err := session.AppendSerialized(
-		runner.subject.conversation,
+	turnEndDraft, err := session.NewEventDraft(
 		session.TurnEnded,
 		session.TurnEnd{
 			Turn:   turn,
 			Reason: ending,
 		},
-	); err != nil {
+	)
+	if err == nil {
+		_, err = runner.subject.conversation.Commit(
+			context.WithoutCancel(requestContext),
+			session.Batch(turnEndDraft),
+		)
+	}
+	if err != nil {
 		operationErr = errors.Join(operationErr, err)
 		runner.reportError(requestContext, err)
 	}
@@ -379,24 +273,6 @@ func (runner *turnRunner) runTurn(
 	return runner.activity.renewTurnContext(requestContext)
 }
 
-func (runner *turnRunner) appendStepMessages(
-	messages []llm.UserMessage,
-) error {
-	for _, message := range messages {
-		if _, err := session.AppendSurfaceSerialized(
-			runner.subject.conversation,
-			session.UserMessageAdded,
-			message,
-			session.SurfaceIntent{
-				Operation: session.SurfaceAppend(),
-			},
-		); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func failureFromError(problem error) llm.LlmFailure {
 	var llmProblem *llm.LlmError
 	if errors.As(problem, &llmProblem) {
@@ -414,21 +290,21 @@ func failureFromError(problem error) llm.LlmFailure {
 	}
 }
 
-func cloneUserMessages(entries []llm.UserMessage) ([]llm.UserMessage, error) {
-	if entries == nil {
-		return nil, nil
-	}
-	detached := make([]llm.UserMessage, len(entries))
-	for index, entry := range entries {
-		copyValue, err := llm.CloneUserMessage(entry)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"agentloop: clone user message %d: %w",
-				index,
-				err,
+func restoreLastTurn(conversation session.Context) (int64, error) {
+	entries := conversation.Events()
+	for index := len(entries) - 1; index >= 0; index-- {
+		if entries[index].Type != session.TurnStartEventName {
+			continue
+		}
+		var started session.TurnStart
+		if err := json.Unmarshal(entries[index].Data, &started); err != nil ||
+			started.Turn <= 0 || started.Turn > maxSafeInteger {
+			return 0, fmt.Errorf(
+				"agentloop: invalid persisted turn/start at seq %d",
+				entries[index].Seq,
 			)
 		}
-		detached[index] = copyValue
+		return started.Turn, nil
 	}
-	return detached, nil
+	return 0, nil
 }

@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sync"
 	"testing"
 
 	agentcore "github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/userquestions"
@@ -15,23 +16,120 @@ import (
 
 type questionsFixture struct {
 	engine         *plugin.Runtime
-	registry       *agentcore.RegistryPlugin
+	registry       *questionRegistry
 	registryHandle plugin.Handle
-	questions      *userquestions.QuestionService
+	questions      userquestions.UserQuestions
 }
+
+type questionsFixturePlugin struct {
+	plugin.Base
+	fixture *questionsFixture
+}
+
+func (*questionsFixturePlugin) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "userquestions-test-consumer",
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[userquestions.UserQuestions](),
+		},
+	}
+}
+
+func (owner *questionsFixturePlugin) Apply(context.Context) error {
+	questions, err := plugin.Require[userquestions.UserQuestions](owner)
+	if err != nil {
+		return err
+	}
+	owner.fixture.questions = questions
+	return nil
+}
+
+func (*questionsFixturePlugin) Dispose(context.Context) error { return nil }
+
+var _ plugin.Plugin = (*questionsFixturePlugin)(nil)
+
+type questionRegistry struct {
+	mutex   sync.RWMutex
+	entries map[session.SessionID]agentcore.Agent
+}
+
+func newQuestionRegistry() *questionRegistry {
+	return &questionRegistry{
+		entries: make(map[session.SessionID]agentcore.Agent),
+	}
+}
+
+func (registry *questionRegistry) Get(
+	identifier session.SessionID,
+) (agentcore.Agent, bool) {
+	registry.mutex.RLock()
+	subject, found := registry.entries[identifier]
+	registry.mutex.RUnlock()
+	return subject, found
+}
+
+func (registry *questionRegistry) Contains(subject agentcore.Agent) bool {
+	if subject == nil {
+		return false
+	}
+	current, found := registry.Get(subject.ID())
+	return found && agentcore.Same(current, subject)
+}
+
+func (registry *questionRegistry) List() []agentcore.Agent {
+	registry.mutex.RLock()
+	result := make([]agentcore.Agent, 0, len(registry.entries))
+	for _, subject := range registry.entries {
+		result = append(result, subject)
+	}
+	registry.mutex.RUnlock()
+	return result
+}
+
+func (registry *questionRegistry) enter(subject agentcore.Agent) error {
+	registry.mutex.Lock()
+	defer registry.mutex.Unlock()
+	if registry.entries[subject.ID()] != nil {
+		return errors.New("test: duplicate Agent")
+	}
+	registry.entries[subject.ID()] = subject
+	return nil
+}
+
+type questionRegistryPlugin struct {
+	plugin.Base
+	registry *questionRegistry
+}
+
+func (adapter *questionRegistryPlugin) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "userquestions-test-registry",
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[agentcore.Registry](adapter.registry),
+		},
+	}
+}
+
+func (*questionRegistryPlugin) Apply(requestContext context.Context) error {
+	return requestContext.Err()
+}
+
+func (*questionRegistryPlugin) Dispose(context.Context) error { return nil }
+
+var _ agentcore.Registry = (*questionRegistry)(nil)
+var _ plugin.Plugin = (*questionRegistryPlugin)(nil)
 
 type questionSubject struct {
 	plugin.Base
 	identifier   session.SessionID
-	conversation *session.Session
-	registry     agentcore.Registry
+	conversation session.Context
 }
 
 func (subject *questionSubject) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "userquestions-test-agent:" + string(subject.identifier),
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[agentcore.Agent](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[agentcore.Agent](subject),
 		},
 	}
 }
@@ -40,12 +138,7 @@ func (*questionSubject) Apply(requestContext context.Context) error {
 	return requestContext.Err()
 }
 
-func (subject *questionSubject) Dispose(requestContext context.Context) error {
-	if subject.registry == nil {
-		return nil
-	}
-	return subject.registry.Remove(requestContext, subject)
-}
+func (*questionSubject) Dispose(context.Context) error { return nil }
 
 func (subject *questionSubject) ID() session.SessionID {
 	return subject.identifier
@@ -55,7 +148,7 @@ func (*questionSubject) OptionsValue() agentcore.Options {
 	return agentcore.Options{}
 }
 
-func (subject *questionSubject) SessionValue() *session.Session {
+func (subject *questionSubject) SessionValue() session.Context {
 	return subject.conversation
 }
 
@@ -73,27 +166,27 @@ func (*questionSubject) WhenIdle(context.Context) error {
 	return nil
 }
 
-func (*questionSubject) Send(llm.UserMessage, agentcore.InboxTarget, bool) error {
+func (*questionSubject) Send(agentmessage.UserMessage, agentcore.InboxTarget, bool) error {
 	return nil
 }
 
-func (*questionSubject) Followup(llm.UserMessage) error {
+func (*questionSubject) Followup(agentmessage.UserMessage) error {
 	return nil
 }
 
-func (*questionSubject) Steer(llm.UserMessage) error {
+func (*questionSubject) Steer(agentmessage.UserMessage) error {
 	return nil
 }
 
-func (*questionSubject) Inject(llm.UserMessage) error {
+func (*questionSubject) Inject(agentmessage.UserMessage) error {
 	return nil
 }
 
 func (*questionSubject) RunMaintenance(
 	requestContext context.Context,
-	task agentcore.MaintenanceTask,
+	operation func(context.Context) error,
 ) error {
-	return task.Run(requestContext)
+	return operation(requestContext)
 }
 
 type recordingProvider struct {
@@ -113,15 +206,24 @@ func (recorder *recordingProvider) Ask(
 func newQuestionsFixture(t *testing.T, withRegistry bool) *questionsFixture {
 	t.Helper()
 	state := &questionsFixture{
-		engine:    plugin.NewRuntime(plugin.RuntimeSettings{}),
-		questions: userquestions.New(),
+		engine: plugin.NewRuntime(plugin.RuntimeSettings{}),
 	}
-	instances := []plugin.Plugin{state.questions}
+	questionsPlugin := userquestions.NewPlugin()
+	consumerPlugin := &questionsFixturePlugin{
+		fixture: state,
+	}
+	instances := []plugin.Plugin{
+		questionsPlugin,
+		consumerPlugin,
+	}
 	if withRegistry {
-		state.registry = agentcore.NewRegistry(agentcore.RegistryOptions{})
+		state.registry = newQuestionRegistry()
 		instances = []plugin.Plugin{
-			state.registry,
-			state.questions,
+			&questionRegistryPlugin{
+				registry: state.registry,
+			},
+			questionsPlugin,
+			consumerPlugin,
 		}
 	}
 	handles, err := state.engine.Start(context.Background(), instances...)
@@ -143,16 +245,23 @@ func newQuestionSubject(
 	t *testing.T,
 	state *questionsFixture,
 	identifier session.SessionID,
+	origin session.Origin,
 ) *questionSubject {
 	t.Helper()
-	conversation, err := session.New(identifier, session.CreateOptions{})
+	conversation, err := session.New(
+		identifier,
+		session.CreateOptions{
+			Metadata: session.Metadata{
+				Origin: origin,
+			},
+		},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	subject := &questionSubject{
 		identifier:   identifier,
 		conversation: conversation,
-		registry:     state.registry,
 	}
 	if _, err = state.engine.MountScopedChild(
 		context.Background(),
@@ -301,12 +410,12 @@ func TestAskRequiresExactLiveRuntimeRoot(t *testing.T) {
 	if _, err := state.questions.RegisterProvider(providerValue); err != nil {
 		t.Fatal(err)
 	}
-	rootSubject := newQuestionSubject(t, state, "root")
-	childSubject := newQuestionSubject(t, state, "child")
-	if err := state.registry.Enter(rootSubject, nil); err != nil {
+	rootSubject := newQuestionSubject(t, state, "root", "")
+	childSubject := newQuestionSubject(t, state, "child", session.OriginSubagent)
+	if err := state.registry.enter(rootSubject); err != nil {
 		t.Fatal(err)
 	}
-	if err := state.registry.Enter(childSubject, rootSubject); err != nil {
+	if err := state.registry.enter(childSubject); err != nil {
 		t.Fatal(err)
 	}
 	questions := []userquestions.Question{
@@ -332,7 +441,7 @@ func TestAskRequiresExactLiveRuntimeRoot(t *testing.T) {
 		},
 	)
 	requireQuestionCode(t, err, userquestions.CodeDelegatedCaller)
-	staleSubject := newQuestionSubject(t, state, "root")
+	staleSubject := newQuestionSubject(t, state, "root", "")
 	_, err = state.questions.Ask(
 		context.Background(),
 		userquestions.Request{

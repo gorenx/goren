@@ -5,16 +5,17 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/internal/jsonvalue"
 )
 
 type blockAssembly struct {
 	blockType string
 	text      string
-	callID    CallID
+	callID    agentmessage.CallID
 	callName  string
 	arguments string
-	completed ContentBlock
+	completed agentmessage.ContentBlock
 }
 
 // BlockAssembler incrementally builds one assistant message from raw chunks.
@@ -115,7 +116,7 @@ func (assembly *BlockAssembler) appendTool(typedChunk ToolCallDeltaChunk) error 
 	return nil
 }
 
-func (assembly *BlockAssembler) endBlock(index int, blockValue ContentBlock) error {
+func (assembly *BlockAssembler) endBlock(index int, blockValue agentmessage.ContentBlock) error {
 	if blockValue == nil {
 		return errors.New("llm: block-end content is nil")
 	}
@@ -147,32 +148,40 @@ func (assembly *BlockAssembler) acceptFinish(terminalChunk FinishChunk) error {
 	return err
 }
 
-func (assembly *BlockAssembler) assemble(state *blockAssembly, index int) (ContentBlock, error) {
+func (assembly *BlockAssembler) assemble(state *blockAssembly, index int) (agentmessage.ContentBlock, error) {
 	if state.completed != nil {
 		return state.completed.CloneContent()
 	}
 	switch state.blockType {
 	case "text":
-		return NewTextBlock(state.text), nil
+		return agentmessage.NewTextBlock(state.text), nil
 	case "reasoning":
-		return ReasoningBlock{Type: "reasoning", Text: state.text}, nil
+		return agentmessage.ReasoningBlock{
+			Type: "reasoning",
+			Text: state.text,
+		}, nil
 	case "tool-call":
 		identifier := state.callID
 		if identifier == "" {
-			identifier = CallID(fmt.Sprintf("call-%d", index))
+			identifier = agentmessage.CallID(fmt.Sprintf("call-%d", index))
 		}
-		return ToolCallBlock{Type: "tool-call", ID: identifier, Name: state.callName, Arguments: state.arguments}, nil
+		return agentmessage.ToolCallBlock{
+			Type:      "tool-call",
+			ID:        identifier,
+			Name:      state.callName,
+			Arguments: state.arguments,
+		}, nil
 	default:
 		return nil, fmt.Errorf("llm: cannot assemble incomplete block of type %q", state.blockType)
 	}
 }
 
 // AssembledBlocks returns one detached block per first-seen index.
-func (assembly *BlockAssembler) AssembledBlocks() ([]ContentBlock, error) {
+func (assembly *BlockAssembler) AssembledBlocks() ([]agentmessage.ContentBlock, error) {
 	if assembly == nil {
 		return nil, errors.New("llm: block assembler is nil")
 	}
-	result := make([]ContentBlock, 0, len(assembly.order))
+	result := make([]agentmessage.ContentBlock, 0, len(assembly.order))
 	for _, index := range assembly.order {
 		state := assembly.partials[index]
 		if state == nil {
@@ -205,7 +214,13 @@ func (assembly *BlockAssembler) FinishValue() FinishReason {
 	}
 	detached, err := assembly.finish.CloneReason()
 	if err != nil {
-		return ErrorFinish{Kind: "error", Failure: LlmFailure{Message: err.Error(), Code: "INVARIANT"}}
+		return ErrorFinish{
+			Kind: "error",
+			Failure: LlmFailure{
+				Message: err.Error(),
+				Code:    "INVARIANT",
+			},
+		}
 	}
 	return detached
 }
@@ -216,16 +231,4 @@ func (assembly *BlockAssembler) ReplayValue() json.RawMessage {
 		return nil
 	}
 	return append(json.RawMessage(nil), assembly.replayState...)
-}
-
-// AssembleMessage returns an identified assistant-role message over current blocks.
-func (assembly *BlockAssembler) AssembleMessage(origin MessageSource) (Message, error) {
-	if origin == nil {
-		origin = PluginMessageSource{Plugin: "dsh-llm/assembler"}
-	}
-	result, err := assembly.AssembledBlocks()
-	if err != nil {
-		return nil, err
-	}
-	return NewMessage(MessageInput{Role: RoleAssistant, Content: result, Source: origin})
 }

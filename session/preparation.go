@@ -11,13 +11,13 @@ type PreparationLease interface {
 // provider. Release is idempotent; publication may consume the provider state
 // first, in which case the callback becomes a no-op.
 type Preparation struct {
-	conversation *Session
+	conversation Context
 	lease        PreparationLease
 	once         sync.Once
 }
 
 // NewPreparation associates an unpublished Session with its provider lease.
-func NewPreparation(conversation *Session, lease PreparationLease) *Preparation {
+func NewPreparation(conversation Context, lease PreparationLease) *Preparation {
 	return &Preparation{
 		conversation: conversation,
 		lease:        lease,
@@ -25,7 +25,7 @@ func NewPreparation(conversation *Session, lease PreparationLease) *Preparation 
 }
 
 // UnpublishedSession returns the exact Session that must be published.
-func (owned *Preparation) UnpublishedSession() *Session {
+func (owned *Preparation) UnpublishedSession() Context {
 	if owned == nil {
 		return nil
 	}

@@ -20,16 +20,26 @@ import (
 	apiproxyhost "github.com/gorenx/goren/apiproxy/host"
 	"github.com/gorenx/goren/approval"
 	approvalfactory "github.com/gorenx/goren/approval/factory"
+	"github.com/gorenx/goren/commands"
+	commandsfactory "github.com/gorenx/goren/commands/factory"
+	"github.com/gorenx/goren/compaction/basic"
+	compactionbasicfactory "github.com/gorenx/goren/compaction/basic/factory"
+	compactioncommand "github.com/gorenx/goren/compaction/command"
+	compactioncommandfactory "github.com/gorenx/goren/compaction/command/factory"
+	"github.com/gorenx/goren/compaction/toolresultpruner"
+	toolresultprunerfactory "github.com/gorenx/goren/compaction/toolresultpruner/factory"
 	"github.com/gorenx/goren/credentials"
 	credentialsfactory "github.com/gorenx/goren/credentials/factory"
 	credentialslocal "github.com/gorenx/goren/credentials/local"
 	connectionhost "github.com/gorenx/goren/internal/connection"
 	connectionfactory "github.com/gorenx/goren/internal/connection/factory"
-	"github.com/gorenx/goren/internal/llm/deepseek"
 	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/llm/deepseek"
 	llmfactory "github.com/gorenx/goren/llm/factory"
-	"github.com/gorenx/goren/llmretry"
-	llmretryfactory "github.com/gorenx/goren/llmretry/factory"
+	llmretry "github.com/gorenx/goren/llm/retry"
+	llmretryfactory "github.com/gorenx/goren/llm/retry/factory"
+	"github.com/gorenx/goren/llm/tokenmeter"
+	tokenmeterfactory "github.com/gorenx/goren/llm/tokenmeter/factory"
 	"github.com/gorenx/goren/plugin"
 	pluginfactory "github.com/gorenx/goren/plugin/factory"
 	"github.com/gorenx/goren/session"
@@ -38,11 +48,28 @@ import (
 	sessionpersistencefactory "github.com/gorenx/goren/session/persistence/factory"
 	"github.com/gorenx/goren/session/projection"
 	sessionprojectionfactory "github.com/gorenx/goren/session/projection/factory"
+	"github.com/gorenx/goren/session/projectioncache"
+	sessionprojectioncachefactory "github.com/gorenx/goren/session/projectioncache/factory"
+	projectioncachesqlite "github.com/gorenx/goren/session/projectioncache/sqlite"
 	"github.com/gorenx/goren/session/query"
 	sessionqueryfactory "github.com/gorenx/goren/session/query/factory"
 	querysqlite "github.com/gorenx/goren/session/query/sqlite"
 	"github.com/gorenx/goren/session/title"
 	sessiontitlefactory "github.com/gorenx/goren/session/title/factory"
+	"github.com/gorenx/goren/subagent"
+	"github.com/gorenx/goren/subagent/bound/turnrelay"
+	turnrelayfactory "github.com/gorenx/goren/subagent/bound/turnrelay/factory"
+	subagentfactory "github.com/gorenx/goren/subagent/factory"
+	subagentforkfactory "github.com/gorenx/goren/subagent/fork/factory"
+	subagentplugin "github.com/gorenx/goren/subagent/plugin"
+	"github.com/gorenx/goren/subagent/spawn"
+	subagentspawnfactory "github.com/gorenx/goren/subagent/spawn/factory"
+	subagentcontrol "github.com/gorenx/goren/subagent/tools/control"
+	subagentcontrolfactory "github.com/gorenx/goren/subagent/tools/control/factory"
+	subagentdelegation "github.com/gorenx/goren/subagent/tools/delegation"
+	subagentdelegationfactory "github.com/gorenx/goren/subagent/tools/delegation/factory"
+	"github.com/gorenx/goren/subagent/tools/report"
+	subagentreportfactory "github.com/gorenx/goren/subagent/tools/report/factory"
 	"github.com/gorenx/goren/systemprompt"
 	systempromptfactory "github.com/gorenx/goren/systemprompt/factory"
 	"github.com/gorenx/goren/toolaskuser"
@@ -123,6 +150,12 @@ func NewCatalog(platform Environment) (*pluginfactory.Catalog, error) {
 	if err != nil {
 		return nil, err
 	}
+	projectionCacheBuilder, err := sessionprojectioncachefactory.New(
+		platform.Diagnostics,
+	)
+	if err != nil {
+		return nil, err
+	}
 	titleBuilder, err := sessiontitlefactory.New(platform.Diagnostics)
 	if err != nil {
 		return nil, err
@@ -136,6 +169,9 @@ func NewCatalog(platform Environment) (*pluginfactory.Catalog, error) {
 			ObserverError: platform.Diagnostics.Report,
 		}),
 		approvalfactory.New(),
+		commandsfactory.New(commands.RuntimeOptions{
+			ObserverError: platform.Diagnostics.Report,
+		}),
 		apiproxyfactory.New(apiproxyhost.RuntimeOptions{
 			WorkingDirectory: platform.WorkingDirectory,
 			EnsureDirectory:  ensureDirectory,
@@ -148,12 +184,30 @@ func NewCatalog(platform Environment) (*pluginfactory.Catalog, error) {
 		llmretryfactory.New(llmretry.RuntimeOptions{
 			ObserverError: platform.Diagnostics.Report,
 		}),
+		tokenmeterfactory.New(),
+		toolresultprunerfactory.New(),
+		compactionbasicfactory.New(basic.RuntimeOptions{
+			ObserverError: platform.Diagnostics.Report,
+		}),
+		compactioncommandfactory.New(),
 		sessionBuilder,
 		persistenceBuilder,
 		sessionprojectionfactory.New(),
+		projectionCacheBuilder,
 		sessionqueryfactory.New(),
 		titleBuilder,
 		systempromptfactory.New(),
+		subagentfactory.New(subagentplugin.Diagnostics{
+			ObserverError: platform.Diagnostics.Report,
+		}),
+		turnrelayfactory.New(turnrelay.Diagnostics{
+			WorkerError: platform.Diagnostics.Report,
+		}),
+		subagentspawnfactory.New(),
+		subagentforkfactory.New(),
+		subagentdelegationfactory.New(),
+		subagentcontrolfactory.New(),
+		subagentreportfactory.New(),
 		toolsfactory.New(),
 		toolaskuserfactory.New(),
 		userquestionsfactory.New(),
@@ -207,13 +261,43 @@ func DefaultSpecs(
 	if err != nil {
 		return nil, err
 	}
-	queryRaw, err := json.Marshal(sessionqueryfactory.Config{
-		Path: filepath.Join(
-			filepath.Dir(sessionDatabasePath),
-			"session-query.sqlite",
-		),
-		JournalMode: querysqlite.JournalWAL,
-	})
+	queryRaw, err := json.Marshal(
+		sessionqueryfactory.Config{
+			Path: filepath.Join(
+				filepath.Dir(sessionDatabasePath),
+				"session-query.sqlite",
+			),
+			JournalMode: querysqlite.JournalWAL,
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	projectionCacheRaw, err := json.Marshal(
+		sessionprojectioncachefactory.Config{
+			Path: filepath.Join(
+				filepath.Dir(sessionDatabasePath),
+				"session-projection-cache.sqlite",
+			),
+			JournalMode:      projectioncachesqlite.JournalWAL,
+			WriteEveryEvents: projectioncache.DefaultWriteEveryEvents,
+			WriteIntervalMS:  projectioncache.DefaultWriteInterval.Milliseconds(),
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	subagentRaw, err := json.Marshal(
+		subagentfactory.Config{
+			BoundDefinitions: subagentfactory.DatabaseConfig{
+				Path: filepath.Join(
+					filepath.Dir(sessionDatabasePath),
+					"bound-definitions.sqlite",
+				),
+				JournalMode: subagentplugin.JournalWAL,
+			},
+		},
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -251,6 +335,26 @@ func DefaultSpecs(
 	if err != nil {
 		return nil, err
 	}
+	maxSubagentDepth, err := subagentdelegationfactory.NewNumericDepthLimit(3)
+	if err != nil {
+		return nil, err
+	}
+	subagentToolRaw, err := json.Marshal(subagentdelegationfactory.Config{
+		Provider:              spawn.DefaultSeedBuilderName,
+		ToolName:              subagentdelegation.DefaultToolName,
+		EnableRunInBackground: true,
+		BackgroundMode:        subagentdelegation.BackgroundContinuable,
+		MaxDepth:              maxSubagentDepth,
+	})
+	if err != nil {
+		return nil, err
+	}
+	reportRaw, err := json.Marshal(subagentreportfactory.Config{
+		ReportDelivery: report.NextStep,
+	})
+	if err != nil {
+		return nil, err
+	}
 	emptyConfig := json.RawMessage(`{}`)
 	return []PluginSpec{
 		{
@@ -274,6 +378,34 @@ func DefaultSpecs(
 			Config:      emptyConfig,
 		},
 		{
+			FactoryName: projectioncache.PluginName,
+			Config:      projectionCacheRaw,
+		},
+		{
+			FactoryName: subagent.PluginName,
+			Config:      subagentRaw,
+		},
+		{
+			FactoryName: turnrelay.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: spawn.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: subagentdelegation.PluginName,
+			Config:      subagentToolRaw,
+		},
+		{
+			FactoryName: subagentcontrol.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: report.PluginName,
+			Config:      reportRaw,
+		},
+		{
 			FactoryName: query.PluginName,
 			Config:      queryRaw,
 		},
@@ -295,6 +427,10 @@ func DefaultSpecs(
 		},
 		{
 			FactoryName: approval.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: commands.PluginName,
 			Config:      emptyConfig,
 		},
 		{
@@ -323,6 +459,22 @@ func DefaultSpecs(
 		},
 		{
 			FactoryName: llmretry.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: tokenmeter.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: toolresultpruner.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: basic.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: compactioncommand.PluginName,
 			Config:      emptyConfig,
 		},
 		{

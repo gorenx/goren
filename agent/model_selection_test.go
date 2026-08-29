@@ -39,6 +39,9 @@ func TestModelSelectionSnapshotsPromptAndRequestTogether(t *testing.T) {
 		t.Fatal(err)
 	}
 	subject := newFakeAgent(t, "model-selection")
+	subject.runtime = &fakeScopeRuntime{
+		source: subject,
+	}
 	subjectHandle, err := runtimeEngine.MountChild(
 		context.Background(),
 		overlayHandle,
@@ -86,18 +89,15 @@ func TestModelSelectionSnapshotsPromptAndRequestTogether(t *testing.T) {
 			Turn:    1,
 			Step:    1,
 		},
-		agentcore.RequestActionFunc(func(
-			context.Context,
-			agentcore.RequestNotice,
-		) (agentcore.RequestResolution, error) {
-			return agentcore.RequestResolution{
+		requestResolutionAction{
+			resolution: agentcore.RequestResolution{
 				Config: llm.CallConfig{
 					Provider:        "seed",
 					Model:           "seed",
 					ReasoningEffort: "max",
 				},
-			}, nil
-		}),
+			},
+		},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -119,18 +119,15 @@ func TestModelSelectionSnapshotsPromptAndRequestTogether(t *testing.T) {
 			Turn:    1,
 			Step:    2,
 		},
-		agentcore.RequestActionFunc(func(
-			context.Context,
-			agentcore.RequestNotice,
-		) (agentcore.RequestResolution, error) {
-			return agentcore.RequestResolution{
+		requestResolutionAction{
+			resolution: agentcore.RequestResolution{
 				Config: llm.CallConfig{
 					Provider:        "seed",
 					Model:           "seed",
 					ReasoningEffort: "max",
 				},
-			}, nil
-		}),
+			},
+		},
 	)
 	if err != nil {
 		t.Fatal(err)

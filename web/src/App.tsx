@@ -5,6 +5,7 @@ import { ConversationPane } from './components/ConversationPane'
 import { DetailsPanel } from './components/DetailsPanel'
 import { CloseIcon } from './icons'
 import { CredentialDialog } from './components/CredentialDialog'
+import { BoundDefinitionDialog } from './components/BoundDefinitionDialog'
 import { useI18n } from './i18n'
 
 export function App(): React.JSX.Element {
@@ -14,6 +15,7 @@ export function App(): React.JSX.Element {
   const [store] = useState(() => new ConversationStore((messageKey, values) => translateRef.current(messageKey, values)))
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [credentialsOpen, setCredentialsOpen] = useState(false)
+  const [boundDefinitionsOpen, setBoundDefinitionsOpen] = useState(false)
   const [onboardingDismissed, setOnboardingDismissed] = useState(false)
   const snapshot = useSyncExternalStore(store.subscribe, store.snapshot)
 
@@ -40,10 +42,11 @@ export function App(): React.JSX.Element {
 
   return (
     <div className="app-grid" data-sidebar-collapsed={sidebarCollapsed || undefined}>
-      <Sidebar store={store} snapshot={snapshot} collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(value => !value)} />
+    <Sidebar store={store} snapshot={snapshot} collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(value => !value)} onOpenBoundDefinitions={() => setBoundDefinitionsOpen(true)} />
       <ConversationPane store={store} snapshot={snapshot} onOpenCredentials={() => setCredentialsOpen(true)} />
       <DetailsPanel store={store} snapshot={snapshot} />
-      {credentialsOpen && <CredentialDialog store={store} snapshot={snapshot} onClose={closeCredentials} />}
+    {credentialsOpen && <CredentialDialog store={store} snapshot={snapshot} onClose={closeCredentials} />}
+    {boundDefinitionsOpen && <BoundDefinitionDialog store={store} snapshot={snapshot} onClose={() => setBoundDefinitionsOpen(false)} />}
       {snapshot.error !== undefined && (
         <div className="toast" role="alert">
           <span className="min-w-0 flex-1">{snapshot.error}</span>

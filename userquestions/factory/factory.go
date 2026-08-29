@@ -38,7 +38,7 @@ func (*Factory) Create(
 	); err != nil {
 		return nil, err
 	}
-	return userquestions.New(), nil
+	return userquestions.NewPlugin(), nil
 }
 
 var _ pluginfactory.Factory = (*Factory)(nil)

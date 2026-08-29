@@ -25,6 +25,50 @@ type Inspection struct {
 	Events []session.Event
 }
 
+// EventWindow is one contiguous newest-first event range ending before a
+// caller-selected sequence. HasEarlier reports whether an older range exists.
+type EventWindow struct {
+	Header     session.Header
+	Events     []session.Event
+	HasEarlier bool
+}
+
+// EventSegment is one contiguous oldest-first event page. Revision identifies
+// the durable log version observed by that page so multi-page consumers can
+// reject a projection assembled across different versions.
+type EventSegment struct {
+	Header   session.Header
+	Revision Revision
+	Events   []session.Event
+	HasMore  bool
+}
+
+// SessionCursor identifies the last Session in a newest-first listing page.
+// CreatedAt and ID together provide a stable order when timestamps are equal.
+type SessionCursor struct {
+	CreatedAt int64
+	ID        session.SessionID
+}
+
+// SessionPage requests one bounded page after Cursor. A nil Cursor starts at
+// the newest Session.
+type SessionPage struct {
+	Cursor *SessionCursor
+	Limit  int64
+}
+
+// HeaderPage is one page of durable Session headers.
+type HeaderPage struct {
+	Headers    []session.Header
+	NextCursor *SessionCursor
+}
+
+// SnapshotPage is one page of durable Session headers and revisions.
+type SnapshotPage struct {
+	Snapshots  []Snapshot
+	NextCursor *SessionCursor
+}
+
 // Location identifies a backend-owned per-Session artifact when one exists.
 type Location struct {
 	Kind string
@@ -43,17 +87,18 @@ type RawArtifact struct {
 // Backend adapter.
 type Persistence interface {
 	plugin.Service
-	Locate(session.Header) (Location, bool)
+	Locate(metadata session.Header) (Location, bool)
 	SupportsRawArtifacts() bool
-	ReadRaw(context.Context, session.SessionID) (RawArtifact, bool, error)
-	Create(context.Context, session.Header) error
-	Append(context.Context, session.SessionID, []session.Event) error
-	Prepare(context.Context, session.SessionID) (*session.Preparation, error)
-	Load(context.Context, session.SessionID) (Inspection, error)
-	Inspect(context.Context, session.SessionID) (Inspection, error)
-	ReadFrom(context.Context, session.SessionID, int64) (Inspection, error)
-	List(context.Context) ([]session.Header, error)
-	ListSnapshots(context.Context) ([]Snapshot, error)
+	ReadRaw(ctx context.Context, id session.SessionID) (RawArtifact, error)
+	Create(ctx context.Context, metadata session.Header) error
+	Append(ctx context.Context, id session.SessionID, events []session.Event) error
+	Prepare(ctx context.Context, id session.SessionID) (*session.Preparation, error)
+	Load(ctx context.Context, id session.SessionID) (Inspection, error)
+	Inspect(ctx context.Context, id session.SessionID) (Inspection, error)
+	ReadEventsFrom(ctx context.Context, id session.SessionID, continuation EventContinuation) (EventSegment, error)
+	ReadEventsBefore(ctx context.Context, id session.SessionID, page EventPage) (EventWindow, error)
+	List(ctx context.Context, page SessionPage) (HeaderPage, error)
+	ListSnapshots(ctx context.Context, page SessionPage) (SnapshotPage, error)
 }
 
 const PluginName = "@deepseek-ai/dsh-session-persistence"
@@ -81,35 +126,60 @@ type RepairMarker interface {
 	PersistenceRepairMarker()
 }
 
-// StoredPrefix is a fresh physical snapshot read by SessionLogStore.
-type StoredPrefix struct {
-	Header session.Header
-	Events []session.Event
-	Token  Revision
-	Marker RepairMarker
+// Log is one fresh physical Session log read by SessionLogStore. Marker is
+// present only when the Backend found a torn tail that recovery may remove.
+type Log struct {
+	Header   session.Header
+	Events   []session.Event
+	Revision Revision
+	Marker   RepairMarker
 }
 
-// StoredSuffix is a seek-capable physical suffix returned without repair.
-type StoredSuffix struct {
-	Header session.Header
-	Events []session.Event
+// EventContinuation requests one oldest-first page beginning at FromSeq.
+type EventContinuation struct {
+	FromSeq int64
+	Limit   int64
+}
+
+// EventPage requests one newest-first page before BeforeSeq. A nil BeforeSeq
+// starts at the durable log tail.
+type EventPage struct {
+	BeforeSeq *int64
+	Limit     int64
+}
+
+// EventBatch is one atomic Session Header/Event append transaction.
+// Materialize requires the Backend to create Header and Events together.
+type EventBatch struct {
+	Header      session.Header
+	Events      []session.Event
+	Materialize bool
+}
+
+// LogRepair is one atomic torn-tail removal and closing-event transaction.
+type LogRepair struct {
+	Header        session.Header
+	Marker        RepairMarker
+	ClosingEvents []session.Event
 }
 
 // Backend is the storage-only port. Implementations map rows/files and execute
 // requested transactions; recovery and live Session policy remain above it.
+// Optional reads return nil when no stored record exists and a non-nil error
+// only when the storage operation itself fails.
 type Backend interface {
 	BackendName() string
-	Locate(session.Header) (Location, bool)
+	Locate(metadata session.Header) (Location, bool)
 	SupportsRawArtifacts() bool
-	ReadRaw(context.Context, session.SessionID) (RawArtifact, bool, error)
-	LoadStored(context.Context, session.SessionID) (StoredPrefix, bool, error)
-	ReadStoredRevision(context.Context, session.SessionID) (Revision, bool, error)
-	LoadStoredFrom(context.Context, session.SessionID, int64) (StoredSuffix, bool, error)
-	AppendBatch(context.Context, session.Header, []session.Event, bool) error
-	CommitRepair(context.Context, session.Header, RepairMarker, []session.Event) error
-	ListStored(context.Context) ([]session.Header, error)
-	ListStoredSnapshots(context.Context) ([]Snapshot, error)
-	Close(context.Context) error
+	ReadRaw(ctx context.Context, id session.SessionID) (*RawArtifact, error)
+	Load(ctx context.Context, id session.SessionID) (*Log, error)
+	Revision(ctx context.Context, id session.SessionID) (*Revision, error)
+	ReadEventsFrom(ctx context.Context, id session.SessionID, continuation EventContinuation) (*EventSegment, error)
+	ReadEventsBefore(ctx context.Context, id session.SessionID, page EventPage) (*EventWindow, error)
+	AppendBatch(ctx context.Context, batch EventBatch) error
+	CommitRepair(ctx context.Context, repair LogRepair) error
+	List(ctx context.Context, page SessionPage) (SnapshotPage, error)
+	Close(closeContext context.Context) error
 }
 
 // NotFoundError reports an absent materialized Session identity.

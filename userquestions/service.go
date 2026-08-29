@@ -7,7 +7,7 @@ import (
 	"sync"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/plugin"
+	"github.com/gorenx/goren/session"
 )
 
 type providerSlot struct {
@@ -33,61 +33,45 @@ func (binding *ProviderHandle) Unregister() {
 	})
 }
 
-// QuestionService owns the single active UI Provider and validates that an
-// Agent-backed ask originates from the exact live root Agent.
-type QuestionService struct {
-	plugin.Base
+type questionServiceState uint8
 
+const (
+	questionServiceInactive questionServiceState = iota
+	questionServiceActive
+	questionServiceClosed
+)
+
+// QuestionService owns the single active UI Provider and validates that an
+// Agent-backed ask originates from the exact live root Agent. Plugin lifecycle
+// adaptation is owned separately by Plugin.
+type QuestionService struct {
 	mu       sync.RWMutex
-	active   bool
+	state    questionServiceState
 	agents   agent.Registry
 	provider *providerSlot
 }
 
-// New constructs an inactive User Questions Plugin.
-func New() *QuestionService {
+func newQuestionService() *QuestionService {
 	return &QuestionService{}
 }
 
-// Manifest provides UserQuestions and optionally consumes the Agent Registry
-// used to attest Agent-backed requests.
-func (*QuestionService) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name: PluginName,
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[UserQuestions](),
-		},
-		Optional: []plugin.ServiceType{
-			plugin.ServiceOf[agent.Registry](),
-		},
-	}
-}
-
-// Apply captures the optional Registry dependency before Service publication.
-func (owner *QuestionService) Apply(requestContext context.Context) error {
-	if err := requestContext.Err(); err != nil {
-		return err
-	}
-	agents, found := plugin.Resolve[agent.Registry](owner)
+func (owner *QuestionService) activate(agents agent.Registry) error {
 	owner.mu.Lock()
-	owner.active = true
-	if found {
-		owner.agents = agents
-	} else {
-		owner.agents = nil
+	defer owner.mu.Unlock()
+	if owner.state != questionServiceInactive {
+		return errors.New("userquestions: Question Service cannot be activated again")
 	}
-	owner.mu.Unlock()
+	owner.state = questionServiceActive
+	owner.agents = agents
 	return nil
 }
 
-// Dispose withdraws the active Provider after dependents have stopped.
-func (owner *QuestionService) Dispose(context.Context) error {
+func (owner *QuestionService) close() {
 	owner.mu.Lock()
-	owner.active = false
+	owner.state = questionServiceClosed
 	owner.agents = nil
 	owner.provider = nil
 	owner.mu.Unlock()
-	return nil
 }
 
 // RegisterProvider installs the one active UI Provider.
@@ -99,7 +83,7 @@ func (owner *QuestionService) RegisterProvider(
 	}
 	slot := &providerSlot{target: answerProvider}
 	owner.mu.Lock()
-	if !owner.active {
+	if owner.state != questionServiceActive {
 		owner.mu.Unlock()
 		return nil, errors.New("userquestions: service is not active")
 	}
@@ -176,10 +160,8 @@ func (owner *QuestionService) validateSubject(agentSubject agent.Agent) error {
 			CodeCallerNotLive,
 		)
 	}
-	for _, rootSubject := range agentRegistry.Roots() {
-		if sameAgent(rootSubject, agentSubject) {
-			return nil
-		}
+	if agentSubject.SessionValue().Header().Origin != session.OriginSubagent {
+		return nil
 	}
 	return newError(
 		"human interaction is unavailable while the calling agent is owned by another live agent; "+
@@ -189,10 +171,7 @@ func (owner *QuestionService) validateSubject(agentSubject agent.Agent) error {
 }
 
 func sameAgent(leftSubject agent.Agent, rightSubject agent.Agent) bool {
-	return leftSubject != nil &&
-		rightSubject != nil &&
-		leftSubject.RuntimePlugin() != nil &&
-		leftSubject.RuntimePlugin() == rightSubject.RuntimePlugin()
+	return agent.Same(leftSubject, rightSubject)
 }
 
 func validateIntents(questions []Question) error {
@@ -226,3 +205,5 @@ func validateIntents(questions []Question) error {
 	}
 	return nil
 }
+
+var _ UserQuestions = (*QuestionService)(nil)

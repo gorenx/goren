@@ -7,7 +7,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/toolaskuser"
@@ -32,11 +32,38 @@ func (eventFailureSink) ReportEventFailure(
 }
 
 type askUserFixture struct {
-	engine          *plugin.Runtime
-	toolService     *toolscore.Service
-	questionService *userquestions.QuestionService
-	toolHandle      plugin.Handle
+	engine      *plugin.Runtime
+	toolService *toolscore.Service
+	questions   userquestions.UserQuestions
+	toolHandle  plugin.Handle
 }
+
+type askUserFixturePlugin struct {
+	plugin.Base
+	fixture *askUserFixture
+}
+
+func (*askUserFixturePlugin) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "ask-user-test-consumer",
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[userquestions.UserQuestions](),
+		},
+	}
+}
+
+func (owner *askUserFixturePlugin) Apply(context.Context) error {
+	questions, err := plugin.Require[userquestions.UserQuestions](owner)
+	if err != nil {
+		return err
+	}
+	owner.fixture.questions = questions
+	return nil
+}
+
+func (*askUserFixturePlugin) Dispose(context.Context) error { return nil }
+
+var _ plugin.Plugin = (*askUserFixturePlugin)(nil)
 
 type providerRecorder struct {
 	requestContext context.Context
@@ -67,16 +94,19 @@ func newAskUserFixture(t *testing.T) *askUserFixture {
 		engine: plugin.NewRuntime(plugin.RuntimeSettings{
 			EventFailures: eventFailureSink{},
 		}),
-		toolService:     toolscore.New(toolSettings),
-		questionService: userquestions.New(),
+		toolService: toolscore.New(toolSettings),
 	}
+	questionsPlugin := userquestions.NewPlugin()
 	toolPlugin := toolaskuser.New()
 	handles, err := state.engine.Start(
 		context.Background(),
 		systemprompt.New(promptSettings, systemprompt.RegistryOptions{}),
 		state.toolService,
-		state.questionService,
+		questionsPlugin,
 		toolPlugin,
+		&askUserFixturePlugin{
+			fixture: state,
+		},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +126,7 @@ func resultText(t *testing.T, outcome toolscore.ToolExecutionResult) string {
 	if len(content) != 1 {
 		t.Fatalf("result content = %#v", content)
 	}
-	textBlock, matches := content[0].(llm.TextBlock)
+	textBlock, matches := content[0].(agentmessage.TextBlock)
 	if !matches {
 		t.Fatalf("result content type = %T", content[0])
 	}
@@ -169,7 +199,7 @@ func TestExecutionDelegatesAndRendersStructuredAnswer(t *testing.T) {
 			},
 		},
 	}
-	providerHandle, err := state.questionService.RegisterProvider(providerValue)
+	providerHandle, err := state.questions.RegisterProvider(providerValue)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,6 +1,12 @@
 import { HarnessAPI } from './api'
 import type {
   ConversationSnapshot,
+  BoundDefinition,
+  BoundDefinitionDraft,
+  BoundDefinitionValue,
+  BoundExtensionsValue,
+  BoundListValue,
+  BoundToolsValue,
   CredentialsDescribeValue,
   HostDescription,
   MessageRow,
@@ -11,26 +17,41 @@ import type {
   SessionCreateValue,
   SessionEvent,
   SessionHistoryValue,
+  SessionHistoryState,
   SessionListValue,
   SessionSummary,
   StreamDraft,
 } from './types'
 import { isRecord, recordBoolean, recordString } from './types'
-import type { Locale, Translator } from './i18n'
+import type { Locale, MessageKey, Translator } from './i18n'
+import { mergeEvents } from './session-events'
+import { projectStream } from './session-stream'
 
 type Subscriber = () => void
 
 const initialSnapshot: ConversationSnapshot = {
   phase: 'booting',
   sessions: [],
+  loadingMoreSessions: false,
   events: new Map(),
+  histories: new Map(),
   streams: new Map(),
   pendingQuestions: new Map(),
   localTitles: new Map(),
+  creatingSession: false,
   onlineDownlinks: 0,
   composerState: 'composer.connecting',
   credentialLoaded: false,
+  boundDefinitionsLoaded: false,
+  boundDefinitions: [],
+  boundToolsState: 'idle',
+  boundTools: [],
+  boundExtensionsState: 'idle',
+  boundExtensions: [],
 }
+
+const historyPageMessages = 20
+const sessionListPageSize = 50
 
 export const DEEPSEEK_CREDENTIAL_REF = 'DEEPSEEK_API_KEY'
 
@@ -41,6 +62,7 @@ export class ConversationStore {
   readonly #cancellingSessions = new Set<string>()
   #value = initialSnapshot
   #selectionVersion = 0
+  #sessionListVersion = 0
   #toastTimer?: number
   #started = false
 
@@ -67,7 +89,10 @@ export class ConversationStore {
     try {
       const host = await this.#api.call<HostDescription>('host.describe', {})
       this.#patch({ host, composerState: 'composer.syncingSessions' })
-      await this.refreshCredential()
+      await Promise.all([
+        this.refreshCredential(),
+        this.refreshBoundDefinitions(),
+      ])
       this.#api.connect()
       await this.refreshSessions()
       if (this.#value.sessions.length === 0) await this.createSession()
@@ -84,11 +109,44 @@ export class ConversationStore {
   }
 
   async refreshSessions(): Promise<void> {
-    const result = await this.#api.call<SessionListValue>('session.list', {})
+    const listVersion = ++this.#sessionListVersion
+    this.#patch({ loadingMoreSessions: false })
+    const result = await this.#api.call<SessionListValue>('session.list', {
+      limit: sessionListPageSize,
+    })
+    if (listVersion !== this.#sessionListVersion) return
     const sessions = [...(result.items ?? [])]
       .filter(item => item.origin !== 'subagent')
-      .sort((left, right) => right.updatedAt - left.updatedAt)
-    this.#patch({ sessions })
+    this.#patch({
+      sessions,
+      nextSessionCursor: result.nextCursor,
+      loadingMoreSessions: false,
+    })
+  }
+
+  async loadMoreSessions(): Promise<void> {
+    const cursor = this.#value.nextSessionCursor
+    if (cursor === undefined || this.#value.loadingMoreSessions) return
+    const listVersion = this.#sessionListVersion
+    this.#patch({ loadingMoreSessions: true })
+    try {
+      const result = await this.#api.call<SessionListValue>('session.list', {
+        cursor,
+        limit: sessionListPageSize,
+      })
+      if (listVersion !== this.#sessionListVersion) return
+      const appended = (result.items ?? []).filter(item => item.origin !== 'subagent')
+      this.#patch({
+        sessions: appendSessions(this.#value.sessions, appended),
+        nextSessionCursor: result.nextCursor,
+        loadingMoreSessions: false,
+      })
+    } catch (error) {
+      if (listVersion === this.#sessionListVersion) {
+        this.#patch({ loadingMoreSessions: false })
+        this.#fail(error)
+      }
+    }
   }
 
   async refreshCredential(): Promise<void> {
@@ -103,9 +161,9 @@ export class ConversationStore {
       await this.#api.call<unknown>('credentials.set', { ref: DEEPSEEK_CREDENTIAL_REF, value })
       await this.refreshCredential()
     } catch (error) {
-      this.#fail(error)
-      throw error
-    }
+    this.#fail(error)
+    throw error
+  }
   }
 
   async unsetCredential(): Promise<void> {
@@ -115,33 +173,216 @@ export class ConversationStore {
     } catch (error) {
       this.#fail(error)
       throw error
+  }
+  }
+
+  async refreshBoundDefinitions(): Promise<void> {
+    const result = await this.#api.call<BoundListValue>('bound.list', {})
+    this.#patch({
+      boundDefinitions: result.definitions ?? [],
+      boundDefinitionsLoaded: true,
+    })
+  }
+
+  async refreshBoundTools(): Promise<void> {
+    if (this.#value.boundToolsState === 'loading') return
+    this.#patch({
+      boundToolsState: 'loading',
+      boundToolsError: undefined,
+    })
+    try {
+      const result = await this.#api.call<BoundToolsValue>('bound.tools', {})
+      this.#patch({
+        boundTools: result.tools ?? [],
+        boundToolsState: 'ready',
+        boundToolsError: undefined,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.#patch({
+        boundToolsState: 'failed',
+        boundToolsError: message,
+      })
+      console.error(error)
+    }
+  }
+
+  async refreshBoundExtensions(): Promise<void> {
+    if (this.#value.boundExtensionsState === 'loading') return
+    this.#patch({
+      boundExtensionsState: 'loading',
+      boundExtensionsError: undefined,
+    })
+    try {
+      const result = await this.#api.call<BoundExtensionsValue>('bound.extensions', {})
+      this.#patch({
+        boundExtensions: result.extensions ?? [],
+        boundExtensionsState: 'ready',
+        boundExtensionsError: undefined,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.#patch({
+        boundExtensionsState: 'failed',
+        boundExtensionsError: message,
+      })
+      console.error(error)
+    }
+  }
+
+  async createBoundDefinition(draft: BoundDefinitionDraft): Promise<BoundDefinition> {
+    try {
+      const result = await this.#api.call<BoundDefinitionValue>('bound.create', {
+        definition: draft,
+      })
+      await this.refreshBoundDefinitions()
+      return result.definition
+    } catch (error) {
+      this.#fail(error)
+      throw error
+    }
+  }
+
+  async replaceBoundDefinition(
+    expectedRevision: number,
+    draft: BoundDefinitionDraft,
+  ): Promise<BoundDefinition> {
+    try {
+      const result = await this.#api.call<BoundDefinitionValue>('bound.replace', {
+        expectedRevision,
+        definition: draft,
+      })
+      await this.refreshBoundDefinitions()
+      return result.definition
+    } catch (error) {
+      this.#fail(error)
+      throw error
     }
   }
 
   async createSession(): Promise<void> {
+    if (this.#value.creatingSession) return
+    const previousSessionId = this.#value.currentSessionId
+    const previousComposerState = this.#value.composerState
+    const creationSelectionVersion = ++this.#selectionVersion
+    this.#patch({
+      currentSessionId: undefined,
+      creatingSession: true,
+      composerState: 'composer.creatingSession',
+    })
+    let created: SessionCreateValue
     try {
       const payload = this.#value.host?.cwd ? { cwd: this.#value.host.cwd } : {}
-      const created = await this.#api.call<SessionCreateValue>('session.create', payload)
-      await this.refreshSessions()
-      await this.selectSession(created.sessionId)
+      created = await this.#api.call<SessionCreateValue>('session.create', payload)
     } catch (error) {
+      if (this.#selectionVersion === creationSelectionVersion) {
+        this.#patch({
+          currentSessionId: previousSessionId,
+          composerState: previousComposerState,
+        })
+      }
+      this.#patch({ creatingSession: false })
       this.#fail(error)
+      return
+    }
+    const sessions = prependSession(this.#value.sessions, {
+      sessionId: created.sessionId,
+      updatedAt: Date.now(),
+      running: false,
+      blank: true,
+      cwd: this.#value.host?.cwd,
+    })
+    this.#patch({ sessions, creatingSession: false })
+    if (this.#selectionVersion === creationSelectionVersion) {
+      const selectionVersion = this.#beginSessionSelection(created.sessionId, 'composer.ready')
+      const select = this.#readSelectedSession(created.sessionId, selectionVersion)
+      const refresh = this.refreshSessions().catch(error => this.#fail(error))
+      await Promise.all([select, refresh])
+    } else {
+      await this.refreshSessions().catch(error => this.#fail(error))
     }
   }
 
   async selectSession(sessionId: string): Promise<void> {
+    const selectionVersion = this.#beginSessionSelection(sessionId, 'composer.readingHistory')
+    await this.#readSelectedSession(sessionId, selectionVersion)
+  }
+
+  #beginSessionSelection(sessionId: string, composerState: MessageKey): number {
     const selectionVersion = ++this.#selectionVersion
     const streams = new Map(this.#value.streams)
     streams.delete(sessionId)
-    this.#patch({ currentSessionId: sessionId, streams, composerState: 'composer.readingHistory' })
+    this.#patch({ currentSessionId: sessionId, streams, composerState })
+    return selectionVersion
+  }
+
+  async #readSelectedSession(sessionId: string, selectionVersion: number): Promise<void> {
     try {
-      const history = await this.#api.call<SessionHistoryValue>('session.history', { sessionId, maxMessages: 100 })
+      const history = await this.#api.call<SessionHistoryValue>('session.history', {
+        sessionId,
+        maxMessages: historyPageMessages,
+      })
       if (selectionVersion !== this.#selectionVersion) return
+      const historyEvents = (history.events ?? []).map(entry => entry.event)
       const events = new Map(this.#value.events)
-      events.set(sessionId, (history.events ?? []).map(entry => entry.event))
-      this.#patch({ events, composerState: this.currentSession()?.running ? 'composer.agentWorking' : 'composer.ready' })
+      const sessionEvents = compactCompletedChunks(mergeEvents(
+        historyEvents,
+        this.#value.events.get(sessionId) ?? [],
+      ))
+      events.set(sessionId, sessionEvents)
+      const histories = new Map(this.#value.histories)
+      histories.set(sessionId, historyState(historyEvents, history.hasMore))
+      const streams = new Map(this.#value.streams)
+      setProjectedStream(streams, sessionId, sessionEvents)
+      this.#patch({
+        events,
+        histories,
+        streams,
+        composerState: this.currentSession()?.running ? 'composer.agentWorking' : 'composer.ready',
+      })
     } catch (error) {
       if (selectionVersion === this.#selectionVersion) this.#fail(error)
+    }
+  }
+
+  async loadOlderHistory(): Promise<void> {
+    const sessionId = this.#value.currentSessionId
+    if (sessionId === undefined) return
+    const current = this.#value.histories.get(sessionId)
+    if (current === undefined || !current.hasMore || current.loading || current.beforeSeq === undefined) return
+    const selectionVersion = this.#selectionVersion
+    const histories = new Map(this.#value.histories)
+    histories.set(sessionId, { ...current, loading: true })
+    this.#patch({ histories })
+    try {
+      const history = await this.#api.call<SessionHistoryValue>('session.history', {
+        sessionId,
+        beforeSeq: current.beforeSeq,
+        maxMessages: historyPageMessages,
+      })
+      if (selectionVersion !== this.#selectionVersion || this.#value.currentSessionId !== sessionId) return
+      const olderEvents = (history.events ?? []).map(entry => entry.event)
+      const events = new Map(this.#value.events)
+      const sessionEvents = compactCompletedChunks(mergeEvents(
+        olderEvents,
+        events.get(sessionId) ?? [],
+      ))
+      events.set(sessionId, sessionEvents)
+      const nextHistories = new Map(this.#value.histories)
+      nextHistories.set(sessionId, historyState(
+        olderEvents,
+        olderEvents.length === 0 ? false : history.hasMore,
+        current.beforeSeq,
+      ))
+      const streams = new Map(this.#value.streams)
+      setProjectedStream(streams, sessionId, sessionEvents)
+      this.#patch({ events, histories: nextHistories, streams })
+    } catch (error) {
+      if (selectionVersion !== this.#selectionVersion || this.#value.currentSessionId !== sessionId) return
+      const failedHistories = new Map(this.#value.histories)
+      failedHistories.set(sessionId, { ...current, loading: false })
+      this.#patch({ histories: failedHistories })
+      this.#fail(error)
     }
   }
 
@@ -195,6 +436,11 @@ export class ConversationStore {
   currentEvents(): readonly SessionEvent[] {
     const sessionId = this.#value.currentSessionId
     return sessionId === undefined ? [] : this.#value.events.get(sessionId) ?? []
+  }
+
+  currentHistory(): SessionHistoryState | undefined {
+    const sessionId = this.#value.currentSessionId
+    return sessionId === undefined ? undefined : this.#value.histories.get(sessionId)
   }
 
   currentMessages(): MessageRow[] {
@@ -298,14 +544,10 @@ export class ConversationStore {
     const eventValue = payload.event
     if (sessionId === undefined || !isSessionEvent(eventValue)) return
     const events = new Map(this.#value.events)
-    const sessionEvents = [...(events.get(sessionId) ?? [])]
-    if (!sessionEvents.some(event => event.seq === eventValue.seq)) {
-      sessionEvents.push(eventValue)
-      sessionEvents.sort((left, right) => left.seq - right.seq)
-      events.set(sessionId, sessionEvents)
-    }
+    const sessionEvents = compactCompletedChunks(mergeEvents(events.get(sessionId) ?? [], [eventValue]))
+    events.set(sessionId, sessionEvents)
     const streams = new Map(this.#value.streams)
-    applyStreamEvent(streams, sessionId, eventValue)
+    setProjectedStream(streams, sessionId, sessionEvents)
     this.#patch({ events, streams })
     if (eventValue.type === 'turn/end') {
       this.#patch({ composerState: 'composer.factsSynced' })
@@ -361,28 +603,52 @@ function isSessionEvent(value: unknown): value is SessionEvent {
   return isRecord(value) && typeof value.type === 'string' && typeof value.seq === 'number' && typeof value.time === 'number'
 }
 
-function applyStreamEvent(
+function setProjectedStream(
   streams: Map<string, StreamDraft>,
   sessionId: string,
-  event: SessionEvent,
+  events: readonly SessionEvent[],
 ): void {
-  if (event.type === 'assistant/chunk' && isRecord(event.data) && isRecord(event.data.chunk)) {
-    const chunk = event.data.chunk
-    const chunkType = recordString(chunk, 'type')
-    const text = recordString(chunk, 'text') ?? ''
-    const current = streams.get(sessionId)
-    const draft = current?.streaming === true
-      ? { ...current, seq: event.seq }
-      : { text: '', reasoning: '', streaming: true, interrupted: false, seq: event.seq }
-    if (chunkType === 'text-delta') draft.text += text
-    if (chunkType === 'reasoning-delta') draft.reasoning += text
-    streams.set(sessionId, draft)
+  const draft = projectStream(events)
+  if (draft === undefined) streams.delete(sessionId)
+  else streams.set(sessionId, draft)
+}
+
+function historyState(
+  events: readonly SessionEvent[],
+  hasMore: boolean,
+  fallbackBeforeSeq?: number,
+): SessionHistoryState {
+  return {
+    beforeSeq: events[0]?.seq ?? fallbackBeforeSeq,
+    hasMore,
+    loading: false,
   }
-  if (event.type === 'assistant/message') streams.delete(sessionId)
-  if (event.type === 'turn/end') {
-    const draft = streams.get(sessionId)
-    if (draft !== undefined) streams.set(sessionId, { ...draft, streaming: false, interrupted: true, seq: event.seq })
+}
+
+function compactCompletedChunks(events: readonly SessionEvent[]): SessionEvent[] {
+  let latestCompletedSeq = -1
+  for (const event of events) {
+    if (event.type === 'assistant/message' && event.seq > latestCompletedSeq) {
+      latestCompletedSeq = event.seq
+    }
   }
+  if (latestCompletedSeq < 0) return [...events]
+  return events.filter(event => event.type !== 'assistant/chunk' || event.seq > latestCompletedSeq)
+}
+
+function prependSession(
+  sessions: readonly SessionSummary[],
+  created: SessionSummary,
+): SessionSummary[] {
+  return [created, ...sessions.filter(summary => summary.sessionId !== created.sessionId)]
+}
+
+function appendSessions(
+  sessions: readonly SessionSummary[],
+  appended: readonly SessionSummary[],
+): readonly SessionSummary[] {
+  const known = new Set(sessions.map(summary => summary.sessionId))
+  return [...sessions, ...appended.filter(summary => !known.has(summary.sessionId))]
 }
 
 function messageFromEvent(event: SessionEvent): MessageRow | undefined {

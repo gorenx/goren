@@ -2,62 +2,47 @@ package agent
 
 import (
 	"context"
-	"errors"
 
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
 
-// CreateOptions contains the shared Agent/Session identity and Plugin
-// extensions mounted before publication in the Agent's exact Scope.
+// CreateOptions contains the shared Agent/Session identity and unpublished
+// Agent composition applied before publication.
 type CreateOptions struct {
-	SessionID    session.SessionID
-	Metadata     session.Metadata
-	Seed         []session.Event
-	AgentOptions Options
-	Extensions   []plugin.Plugin
+	SessionID     session.SessionID
+	Metadata      session.Metadata
+	Seed          []session.Event
+	AgentOptions  Options
+	Provisioner   Provisioner
+	RuntimeParent Agent
 }
 
-// ResumeOptions contains durable identity and live-only Plugin extensions.
+// ResumeOptions contains durable identity and unpublished Agent composition.
 type ResumeOptions struct {
-	SessionID    session.SessionID
-	AgentOptions Options
-	Extensions   []plugin.Plugin
+	SessionID     session.SessionID
+	AgentOptions  Options
+	Provisioner   Provisioner
+	RuntimeParent Agent
 }
 
-// AgentLifecycle owns one exact Agent activation transaction.
-type AgentLifecycle interface {
-	Dispose(context.Context) error
+// AgentEpoch is the Registry-owned exact Agent lifecycle instance passed to a
+// Factory before publication. The Factory attaches one Agent and Scope runtime
+// to that same epoch; it does not construct a second lifecycle object.
+type AgentEpoch interface {
+	ClosingSignal() <-chan struct{}
+	Attach(Agent, AgentScopeRuntime) (AgentTeardown, error)
 }
 
-// Handle is the exact live Agent and its lifecycle owner.
-type Handle struct {
-	Subject   Agent
-	Lifecycle AgentLifecycle
+// AgentTeardown reports structural Scope teardown into the exact Agent epoch
+// owned by LifecycleCoordinator. It does not expose construction or close
+// authority to the runtime adapter.
+type AgentTeardown interface {
+	BeginTeardown(context.Context)
+	FinishTeardown(error)
 }
 
-// NewHandle validates and creates one Agent Handle.
-func NewHandle(subject Agent, lifecycle AgentLifecycle) (Handle, error) {
-	if subject == nil || lifecycle == nil {
-		return Handle{}, errors.New("agent: Handle requires an Agent and lifecycle")
-	}
-	return Handle{
-		Subject:   subject,
-		Lifecycle: lifecycle,
-	}, nil
-}
-
-// Dispose stops and removes the exact Agent lifecycle owned by this Handle.
-func (owned Handle) Dispose(closeContext context.Context) error {
-	if owned.Lifecycle == nil {
-		return nil
-	}
-	return owned.Lifecycle.Dispose(closeContext)
-}
-
-// Factory is the Registry-owned seam implemented by Agent Loop.
+// Factory is the Registry-owned construction seam implemented by Agent Loop.
 type Factory interface {
-	plugin.Plugin
-	CreateAgent(context.Context, CreateOptions) (Handle, error)
-	ResumeAgent(context.Context, ResumeOptions) (Handle, error)
+	CreateAgent(context.Context, AgentEpoch, CreateOptions) error
+	ResumeAgent(context.Context, AgentEpoch, ResumeOptions) error
 }

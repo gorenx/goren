@@ -22,6 +22,7 @@ type Request[P any] struct {
 type Outcome[V any] struct {
 	value    V
 	rpcError *connection.RPCError
+	absent   bool
 }
 
 // OK constructs a typed business success.
@@ -32,6 +33,12 @@ func OK[V any](value V) Outcome[V] {
 // Fail constructs a typed business failure.
 func Fail[V any](rpcError connection.RPCError) Outcome[V] {
 	return Outcome[V]{rpcError: &rpcError}
+}
+
+// Absent constructs a successful result with no value field. It preserves
+// protocol-level undefined results such as an unresolved Remote command.
+func Absent[V any]() Outcome[V] {
+	return Outcome[V]{absent: true}
 }
 
 // NewRPCError encodes typed details into the canonical wire error.
@@ -45,6 +52,11 @@ func NewRPCError[D any](code connection.RPCErrorCode, message string, details D)
 
 // PayloadDecoder owns the second-level parse for one method payload.
 type PayloadDecoder[P any] func(json.RawMessage) (P, []connection.ValidationIssue)
+
+// RemotePayloadDecoder validates one selected Typert Remote payload and owns
+// its RPC-visible boundary failure. Remote boundary failures are protocol
+// outcomes rather than HTTP carrier failures.
+type RemotePayloadDecoder[P any] func(json.RawMessage) (P, *connection.RPCError)
 
 // UnaryHandler handles one typed API request. It returns business errors in
 // Outcome and reserves Go error for handler or dependency failure.
@@ -94,19 +106,85 @@ func RegisterUnary[P, V any](methods *Catalog, method string, decodePayload Payl
 		if err != nil {
 			return connection.RPCResult{}, err
 		}
-		if businessOutcome.rpcError != nil {
-			return connection.Failure(*businessOutcome.rpcError), nil
-		}
-		return connection.Success(businessOutcome.value)
+		return encodeOutcome(businessOutcome)
 	}
 
-	methods.routeMutex.Lock()
-	defer methods.routeMutex.Unlock()
-	if _, exists := methods.routes[method]; exists {
-		return fmt.Errorf("apiproxy: method %q is already registered", method)
+	return methods.registerRoute(method, route)
+}
+
+// RegisterRemoteUnary installs one selected Typert Remote endpoint. Unlike
+// ordinary unary methods, boundary, invocation, and cancellation failures are
+// returned inside the RPC envelope, matching the source Gateway contract.
+func RegisterRemoteUnary[P, V any](
+	methods *Catalog,
+	method string,
+	decodePayload RemotePayloadDecoder[P],
+	operation UnaryHandler[P, V],
+) error {
+	if methods == nil {
+		return errors.New("apiproxy: catalog is nil")
 	}
-	methods.routes[method] = route
-	return nil
+	if method == "" {
+		return errors.New("apiproxy: method is empty")
+	}
+	if decodePayload == nil {
+		return fmt.Errorf("apiproxy: Remote decoder for %q is nil", method)
+	}
+	if operation == nil {
+		return fmt.Errorf("apiproxy: Remote handler for %q is nil", method)
+	}
+	route := func(
+		requestContext context.Context,
+		rpcID connection.RPCID,
+		rawPayload json.RawMessage,
+	) (connection.RPCResult, error) {
+		payload, boundaryFailure, decodeErr := invokeRemoteDecoder(
+			decodePayload,
+			rawPayload,
+		)
+		if decodeErr != nil {
+			return connection.Failure(NewRPCError(
+				connection.ErrorInternal,
+				decodeErr.Error(),
+				struct{}{},
+			)), nil
+		}
+		if boundaryFailure != nil {
+			return connection.Failure(*boundaryFailure), nil
+		}
+		businessOutcome, err := invoke(
+			operation,
+			requestContext,
+			Request[P]{
+				RPCID:   rpcID,
+				Payload: payload,
+			},
+		)
+		if err != nil {
+			if requestContext.Err() != nil {
+				return connection.Failure(NewRPCError(
+					connection.ErrorCancelled,
+					fmt.Sprintf("Remote invocation %q was aborted", method),
+					struct{}{},
+				)), nil
+			}
+			return connection.Failure(NewRPCError(
+				connection.ErrorInternal,
+				err.Error(),
+				struct{}{},
+			)), nil
+		}
+		encoded, encodeErr := encodeOutcome(businessOutcome)
+		if encodeErr != nil {
+			return connection.Failure(NewRPCError(
+				connection.ErrorInternal,
+				encodeErr.Error(),
+				struct{}{},
+			)), nil
+		}
+		return encoded, nil
+	}
+	return methods.registerRoute(method, route)
 }
 
 // DecodeObject decodes an object-shaped payload into an owner-defined Go type.
@@ -150,6 +228,28 @@ func (methods *Catalog) DispatchUnary(requestContext context.Context, method str
 	return route(requestContext, rpcID, rawPayload)
 }
 
+func (methods *Catalog) registerRoute(method string, route unaryRoute) error {
+	methods.routeMutex.Lock()
+	defer methods.routeMutex.Unlock()
+	if _, exists := methods.routes[method]; exists {
+		return fmt.Errorf("apiproxy: method %q is already registered", method)
+	}
+	methods.routes[method] = route
+	return nil
+}
+
+func encodeOutcome[V any](businessOutcome Outcome[V]) (connection.RPCResult, error) {
+	if businessOutcome.rpcError != nil {
+		return connection.Failure(*businessOutcome.rpcError), nil
+	}
+	if businessOutcome.absent {
+		return connection.RPCResult{
+			OK: true,
+		}, nil
+	}
+	return connection.Success(businessOutcome.value)
+}
+
 func invoke[P, V any](operation UnaryHandler[P, V], requestContext context.Context, call Request[P]) (businessOutcome Outcome[V], err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -157,4 +257,17 @@ func invoke[P, V any](operation UnaryHandler[P, V], requestContext context.Conte
 		}
 	}()
 	return operation(requestContext, call)
+}
+
+func invokeRemoteDecoder[P any](
+	decodePayload RemotePayloadDecoder[P],
+	rawPayload json.RawMessage,
+) (payload P, boundaryFailure *connection.RPCError, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("panic: %v", recovered)
+		}
+	}()
+	payload, boundaryFailure = decodePayload(rawPayload)
+	return payload, boundaryFailure, nil
 }

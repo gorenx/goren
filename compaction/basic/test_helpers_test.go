@@ -1,0 +1,455 @@
+package basic
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"testing"
+
+	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentmessage"
+	"github.com/gorenx/goren/compaction/toolresultpruner"
+	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/llm/tokenmeter"
+	"github.com/gorenx/goren/plugin"
+	"github.com/gorenx/goren/session"
+)
+
+const fixtureProvider = "fixture-provider"
+const fixtureModel = "fixture-model"
+
+type meterStub struct {
+	measure       func(context.Context, session.Context, *session.EpochHeader) (tokenmeter.Measurement, error)
+	estimate      int64
+	estimateError error
+}
+
+func (stub *meterStub) Measure(
+	requestContext context.Context,
+	conversation session.Context,
+	header *session.EpochHeader,
+) (tokenmeter.Measurement, error) {
+	if stub.measure != nil {
+		return stub.measure(requestContext, conversation, header)
+	}
+	return pricedSurface(conversation, 100, 0), nil
+}
+
+func (stub *meterStub) EstimateMessage(agentmessage.Message) (int64, error) {
+	if stub.estimateError != nil {
+		return 0, stub.estimateError
+	}
+	if stub.estimate == 0 {
+		return 10, nil
+	}
+	return stub.estimate, nil
+}
+
+func pricedSurface(
+	conversation session.Context,
+	perNode int64,
+	envelope int64,
+) tokenmeter.Measurement {
+	snapshot := conversation.Snapshot()
+	surface := snapshot.Surface
+	nodes := make([]tokenmeter.SurfaceNode, len(surface.Nodes))
+	surfaceTokens := int64(0)
+	for nodeIndex, sequence := range surface.Nodes {
+		nodes[nodeIndex] = tokenmeter.SurfaceNode{
+			Seq:    sequence,
+			Tokens: perNode,
+		}
+		surfaceTokens += perNode
+	}
+	return tokenmeter.Measurement{
+		LogRevision: conversation.Seq(),
+		Baseline: tokenmeter.Baseline{
+			Kind:   tokenmeter.BaselineEstimated,
+			Tokens: envelope,
+		},
+		TotalTokens:   surfaceTokens + envelope,
+		SurfaceTokens: surfaceTokens,
+		Nodes:         nodes,
+	}
+}
+
+type runtimeStub struct {
+	llm.LlmRuntime
+
+	mutex         sync.Mutex
+	resolved      llm.ResolvedModelInfo
+	resolveErr    error
+	beforeResolve func()
+	chunks        []llm.StreamChunk
+	streamErr     error
+	nilStream     bool
+	beforeCall    func()
+	requests      []llm.GenerateOptions
+}
+
+func (stub *runtimeStub) ResolveModelInfo(
+	_ context.Context,
+	providerRoute string,
+	modelID string,
+) (llm.ResolvedModelInfo, error) {
+	if stub.beforeResolve != nil {
+		stub.beforeResolve()
+	}
+	if stub.resolveErr != nil {
+		return llm.ResolvedModelInfo{}, stub.resolveErr
+	}
+	resolved := stub.resolved
+	if resolved.Provider == "" {
+		resolved.Provider = providerRoute
+	}
+	if resolved.ID == "" {
+		resolved.ID = modelID
+	}
+	if resolved.Name == "" {
+		resolved.Name = modelID
+	}
+	return resolved, nil
+}
+
+func (stub *runtimeStub) Stream(
+	_ context.Context,
+	options llm.GenerateOptions,
+) (llm.ChunkStream, error) {
+	if stub.beforeCall != nil {
+		stub.beforeCall()
+	}
+	if stub.streamErr != nil {
+		return nil, stub.streamErr
+	}
+	stub.mutex.Lock()
+	stub.requests = append(stub.requests, options)
+	stub.mutex.Unlock()
+	if stub.nilStream {
+		return nil, nil
+	}
+	return llm.NewSliceStream(stub.chunks)
+}
+
+func (stub *runtimeStub) requestValues() []llm.GenerateOptions {
+	stub.mutex.Lock()
+	defer stub.mutex.Unlock()
+	return append([]llm.GenerateOptions(nil), stub.requests...)
+}
+
+type liveStoreStub struct {
+	session.LiveStore
+
+	mutex      sync.Mutex
+	flushes    int
+	flushError error
+}
+
+func (stub *liveStoreStub) Flush(
+	requestContext context.Context,
+	conversation session.Context,
+) error {
+	if requestContext == nil || conversation == nil {
+		return errors.New("fixture: flush inputs are required")
+	}
+	stub.mutex.Lock()
+	stub.flushes++
+	stub.mutex.Unlock()
+	return stub.flushError
+}
+
+func (stub *liveStoreStub) flushCount() int {
+	stub.mutex.Lock()
+	defer stub.mutex.Unlock()
+	return stub.flushes
+}
+
+type prunerStub struct {
+	toolresultpruner.Pruner
+
+	prune func(context.Context, session.Context) (toolresultpruner.Result, error)
+	calls int
+}
+
+func (stub *prunerStub) PruneSession(
+	requestContext context.Context,
+	conversation session.Context,
+) (toolresultpruner.Result, error) {
+	stub.calls++
+	if stub.prune == nil {
+		return toolresultpruner.Result{}, nil
+	}
+	return stub.prune(requestContext, conversation)
+}
+
+type maintenanceStub struct {
+	run              bool
+	returnErr        error
+	operationContext context.Context
+}
+
+func (stub *maintenanceStub) RunMaintenance(
+	requestContext context.Context,
+	operation func(context.Context) error,
+) error {
+	if !stub.run {
+		return stub.returnErr
+	}
+	if operation == nil {
+		return errors.New("fixture: maintenance operation is nil")
+	}
+	selectedContext := requestContext
+	if stub.operationContext != nil {
+		selectedContext = stub.operationContext
+	}
+	if err := operation(selectedContext); err != nil {
+		return err
+	}
+	return stub.returnErr
+}
+
+type agentStub struct {
+	agent.Agent
+	base         plugin.Base
+	identifier   session.SessionID
+	conversation session.Context
+	options      agent.Options
+	maintenance  *maintenanceStub
+}
+
+func (stub *agentStub) RuntimePlugin() *plugin.Base {
+	return &stub.base
+}
+
+func (stub *agentStub) ID() session.SessionID {
+	return stub.identifier
+}
+
+func (stub *agentStub) SessionValue() session.Context {
+	return stub.conversation
+}
+
+func (stub *agentStub) OptionsValue() agent.Options {
+	return stub.options
+}
+
+func (stub *agentStub) RunMaintenance(
+	requestContext context.Context,
+	operation func(context.Context) error,
+) error {
+	if stub.maintenance == nil {
+		return errors.New("fixture: maintenance behavior is nil")
+	}
+	return stub.maintenance.RunMaintenance(requestContext, operation)
+}
+
+func newRuntimeStub(summary string, contextWindow int) *runtimeStub {
+	return &runtimeStub{
+		resolved: llm.ResolvedModelInfo{
+			Context: &llm.ModelContext{
+				ContextWindow: contextWindow,
+			},
+		},
+		chunks: []llm.StreamChunk{
+			llm.ReasoningDeltaChunk{
+				Index: 0,
+				Text:  "private reasoning",
+			},
+			llm.TextDeltaChunk{
+				Index: 1,
+				Text:  summary,
+			},
+			llm.UsageChunk{
+				Usage: llm.TokenUsage{
+					InputTokens:  40,
+					OutputTokens: 5,
+				},
+			},
+			llm.FinishChunk{
+				Reason: llm.StopFinish{},
+			},
+		},
+	}
+}
+
+func newBoundCompaction(
+	testingContext *testing.T,
+	settings Config,
+	runtimeValue *runtimeStub,
+	meterValue *meterStub,
+	storeValue *liveStoreStub,
+	prunerValue toolresultpruner.Pruner,
+) *Compaction {
+	testingContext.Helper()
+	resolved, err := ResolveConfig(settings)
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	policies := newPolicyCatalog(resolved)
+	implementation := newCompaction(policies)
+	implementation.bind(runtimeValue, storeValue, meterValue, prunerValue)
+	testingContext.Cleanup(implementation.release)
+	return implementation
+}
+
+func conversationFixture(
+	testingContext *testing.T,
+	closedTurns int,
+	text string,
+) session.Context {
+	testingContext.Helper()
+	conversation, err := session.New(
+		session.SessionID(fmt.Sprintf("compaction-%d", closedTurns)),
+		session.CreateOptions{},
+	)
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	populateConversationFixture(
+		testingContext,
+		conversation,
+		closedTurns,
+		text,
+	)
+	return conversation
+}
+
+func populateConversationFixture(
+	testingContext *testing.T,
+	conversation session.Context,
+	closedTurns int,
+	text string,
+) {
+	testingContext.Helper()
+	for turn := 1; turn <= closedTurns; turn++ {
+		{
+			draft, err := session.NewEventDraft(session.TurnStarted,
+				session.TurnStart{
+					Turn: int64(turn),
+				})
+			if err == nil {
+				_, err = conversation.Commit(context.Background(), session.Batch(draft))
+			}
+			if err != nil {
+				testingContext.Fatal(err)
+			}
+		}
+		userInput, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+			Content: []agentmessage.ContentBlock{
+				agentmessage.NewTextBlock(fmt.Sprintf("%s user %d", text, turn)),
+			},
+			Source: agentmessage.UserMessageSource{},
+		})
+		if err != nil {
+			testingContext.Fatal(err)
+		}
+		{
+			draft, err := session.NewSurfaceEventDraft(session.UserMessageAdded,
+				userInput,
+				session.SurfaceIntent{
+					Operation: session.SurfaceAppend(),
+				})
+			if err == nil {
+				_, err = conversation.Commit(context.Background(), session.Batch(draft))
+			}
+			if err != nil {
+				testingContext.Fatal(err)
+			}
+		}
+		if turn == 1 {
+			{
+				draft, err := session.NewEventDraft(session.RequestHeaderSet,
+					session.RequestHeaderSnapshot{
+						Header: session.EpochHeader{
+							Config: llm.CallConfig{
+								Provider: fixtureProvider,
+								Model:    fixtureModel,
+							},
+						},
+						Reason: session.RequestHeaderInitial,
+					})
+				if err == nil {
+					_, err = conversation.Commit(context.Background(), session.Batch(draft))
+				}
+				if err != nil {
+					testingContext.Fatal(err)
+				}
+			}
+		}
+		assistantOutput, err := agentmessage.NewAssistantMessage(agentmessage.AssistantMessageInput{
+			Content: []agentmessage.ContentBlock{
+				agentmessage.NewTextBlock(fmt.Sprintf("%s assistant %d", text, turn)),
+			},
+			Source: agentmessage.ModelMessageSource{
+				Provider: fixtureProvider,
+				Model:    fixtureModel,
+			},
+		})
+		if err != nil {
+			testingContext.Fatal(err)
+		}
+		{
+			draft, err := session.NewSurfaceEventDraft(session.AssistantMessaged,
+				session.AssistantMessage{
+					Turn:    int64(turn),
+					Step:    1,
+					Message: assistantOutput,
+				},
+				session.SurfaceIntent{
+					Operation: session.SurfaceAppend(),
+				})
+			if err == nil {
+				_, err = conversation.Commit(context.Background(), session.Batch(draft))
+			}
+			if err != nil {
+				testingContext.Fatal(err)
+			}
+		}
+		{
+			draft, err := session.NewEventDraft(session.TurnEnded,
+				session.TurnEnd{
+					Turn:   int64(turn),
+					Reason: session.TurnCompleted{},
+				})
+			if err == nil {
+				_, err = conversation.Commit(context.Background(), session.Batch(draft))
+			}
+			if err != nil {
+				testingContext.Fatal(err)
+			}
+		}
+	}
+	{
+		draft, err := session.NewEventDraft(session.TurnStarted,
+			session.TurnStart{
+				Turn: int64(closedTurns + 1),
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			testingContext.Fatal(err)
+		}
+	}
+}
+
+func textFromBlocks(blocks []agentmessage.ContentBlock) string {
+	combined := ""
+	for _, blockValue := range blocks {
+		textValue, supported := blockValue.(agentmessage.PlainTextContent)
+		if !supported {
+			continue
+		}
+		plainText, present := textValue.PlainText()
+		if present {
+			combined += plainText
+		}
+	}
+	return combined
+}
+
+var _ tokenmeter.Meter = (*meterStub)(nil)
+var _ llm.LlmRuntime = (*runtimeStub)(nil)
+var _ session.LiveStore = (*liveStoreStub)(nil)
+var _ toolresultpruner.Pruner = (*prunerStub)(nil)
+var _ agent.Agent = (*agentStub)(nil)

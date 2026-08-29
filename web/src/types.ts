@@ -30,10 +30,12 @@ export interface SessionEvent {
   seq: number
   time: number
   data?: unknown
+  sourceEventSeqs?: number[]
 }
 
 export interface SessionListValue {
   items: SessionSummary[]
+  nextCursor?: string
 }
 
 export interface SessionCreateValue {
@@ -44,6 +46,12 @@ export interface SessionHistoryValue {
   events: Array<{ event: SessionEvent }>
   hasMore: boolean
   projections?: SessionProjections
+}
+
+export interface SessionHistoryState {
+  beforeSeq?: number
+  hasMore: boolean
+  loading: boolean
 }
 
 export interface StreamDraft {
@@ -99,19 +107,83 @@ export interface CredentialsDescribeValue {
   credentials: Record<string, CredentialView>
 }
 
+export interface BoundAgentOptions {
+  provider: string
+  model: string
+  maxTokens?: number
+}
+
+export interface BoundToolRestriction {
+  allow?: string[]
+  deny?: string[]
+}
+
+export interface BoundDefinitionDraft {
+  name: string
+  enabled: boolean
+  systemPrompt: string
+  agentOptions?: BoundAgentOptions
+  maxDepth?: number
+  toolRestriction?: BoundToolRestriction
+  extensions: string[]
+}
+
+export interface BoundDefinition extends BoundDefinitionDraft {
+  revision: number
+}
+
+export interface BoundListValue {
+  definitions: BoundDefinition[]
+}
+
+export interface BoundToolOption {
+  name: string
+  description: string
+}
+
+export interface BoundToolsValue {
+  tools: BoundToolOption[]
+}
+
+export interface BoundExtensionOption {
+  name: string
+}
+
+export interface BoundExtensionsValue {
+  extensions: BoundExtensionOption[]
+}
+
+export type BoundCatalogState = 'idle' | 'loading' | 'ready' | 'failed'
+
+export interface BoundDefinitionValue {
+  definition: BoundDefinition
+}
+
 export interface ConversationSnapshot {
   phase: 'booting' | 'ready' | 'failed'
   host?: HostDescription
   sessions: readonly SessionSummary[]
+  nextSessionCursor?: string
+  loadingMoreSessions: boolean
   events: ReadonlyMap<string, readonly SessionEvent[]>
+  histories: ReadonlyMap<string, SessionHistoryState>
   streams: ReadonlyMap<string, StreamDraft>
   pendingQuestions: ReadonlyMap<string, PendingQuestionRequest>
   localTitles: ReadonlyMap<string, string>
   currentSessionId?: string
+  creatingSession: boolean
   onlineDownlinks: number
   composerState: MessageKey
   credentialLoaded: boolean
   credential?: CredentialView
+  boundDefinitionsLoaded: boolean
+  boundDefinitions: readonly BoundDefinition[]
+  boundToolsState: BoundCatalogState
+  boundTools: readonly BoundToolOption[]
+  boundToolsError?: string
+  boundExtensionsState: BoundCatalogState
+  boundExtensions: readonly BoundExtensionOption[]
+  boundExtensionsError?: string
   error?: string
 }
 

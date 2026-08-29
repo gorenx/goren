@@ -11,9 +11,9 @@ import (
 	"time"
 
 	agentcore "github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/connection"
-	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/systemprompt"
@@ -30,16 +30,87 @@ type interactionFixturePlugin struct {
 
 type interactionFixture struct {
 	engine          *plugin.Runtime
-	agents          *agentcore.RegistryPlugin
+	agents          *interactionRegistry
 	agentsHandle    plugin.Handle
 	approvalService *approval.Service
-	questionService *userquestions.QuestionService
+	questions       userquestions.UserQuestions
 	methods         *Catalog
 	frameHub        *liveFrameHub
 
 	rpcMutex sync.Mutex
 	nextRPC  int
 }
+
+type interactionRegistry struct {
+	mutex   sync.RWMutex
+	entries map[session.SessionID]agentcore.Agent
+}
+
+func newInteractionRegistry() *interactionRegistry {
+	return &interactionRegistry{
+		entries: make(map[session.SessionID]agentcore.Agent),
+	}
+}
+
+func (registry *interactionRegistry) Get(
+	identifier session.SessionID,
+) (agentcore.Agent, bool) {
+	registry.mutex.RLock()
+	subject, found := registry.entries[identifier]
+	registry.mutex.RUnlock()
+	return subject, found
+}
+
+func (registry *interactionRegistry) Contains(subject agentcore.Agent) bool {
+	if subject == nil {
+		return false
+	}
+	current, found := registry.Get(subject.ID())
+	return found && agentcore.Same(current, subject)
+}
+
+func (registry *interactionRegistry) List() []agentcore.Agent {
+	registry.mutex.RLock()
+	result := make([]agentcore.Agent, 0, len(registry.entries))
+	for _, subject := range registry.entries {
+		result = append(result, subject)
+	}
+	registry.mutex.RUnlock()
+	return result
+}
+
+func (registry *interactionRegistry) enter(subject agentcore.Agent) error {
+	registry.mutex.Lock()
+	defer registry.mutex.Unlock()
+	if registry.entries[subject.ID()] != nil {
+		return errors.New("test: duplicate Agent")
+	}
+	registry.entries[subject.ID()] = subject
+	return nil
+}
+
+type interactionRegistryPlugin struct {
+	plugin.Base
+	registry *interactionRegistry
+}
+
+func (adapter *interactionRegistryPlugin) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "api-proxy-interaction-registry",
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[agentcore.Registry](adapter.registry),
+		},
+	}
+}
+
+func (*interactionRegistryPlugin) Apply(requestContext context.Context) error {
+	return requestContext.Err()
+}
+
+func (*interactionRegistryPlugin) Dispose(context.Context) error { return nil }
+
+var _ agentcore.Registry = (*interactionRegistry)(nil)
+var _ plugin.Plugin = (*interactionRegistryPlugin)(nil)
 
 func (instance *interactionFixturePlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
@@ -89,6 +160,7 @@ func (instance *interactionFixturePlugin) Apply(requestContext context.Context) 
 	)
 	instance.state.methods = methods
 	instance.state.frameHub = frameHub
+	instance.state.questions = questionService
 	return nil
 }
 
@@ -130,15 +202,14 @@ func (state *interactionFixture) mintRPC() (connection.RPCID, error) {
 type interactionSubject struct {
 	plugin.Base
 	identifier   session.SessionID
-	conversation *session.Session
-	agents       agentcore.Registry
+	conversation session.Context
 }
 
 func (subject *interactionSubject) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "api-proxy-interaction-agent:" + string(subject.identifier),
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[agentcore.Agent](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[agentcore.Agent](subject),
 		},
 	}
 }
@@ -147,28 +218,26 @@ func (*interactionSubject) Apply(requestContext context.Context) error {
 	return requestContext.Err()
 }
 
-func (subject *interactionSubject) Dispose(requestContext context.Context) error {
-	return subject.agents.Remove(requestContext, subject)
-}
+func (*interactionSubject) Dispose(context.Context) error { return nil }
 
 func (subject *interactionSubject) ID() session.SessionID { return subject.identifier }
 func (*interactionSubject) OptionsValue() agentcore.Options {
 	return agentcore.Options{}
 }
-func (subject *interactionSubject) SessionValue() *session.Session { return subject.conversation }
-func (*interactionSubject) InboxValue() *agentcore.Inbox           { return nil }
-func (*interactionSubject) StatusValue() agentcore.Status          { return agentcore.StatusIdle }
+func (subject *interactionSubject) SessionValue() session.Context { return subject.conversation }
+func (*interactionSubject) InboxValue() *agentcore.Inbox          { return nil }
+func (*interactionSubject) StatusValue() agentcore.Status         { return agentcore.StatusIdle }
 func (*interactionSubject) Cancel(agentcore.CancelCause, agentcore.CancelOptions) {
 }
 func (*interactionSubject) WhenIdle(context.Context) error { return nil }
-func (*interactionSubject) Send(llm.UserMessage, agentcore.InboxTarget, bool) error {
+func (*interactionSubject) Send(agentmessage.UserMessage, agentcore.InboxTarget, bool) error {
 	return nil
 }
-func (*interactionSubject) Followup(llm.UserMessage) error { return nil }
-func (*interactionSubject) Steer(llm.UserMessage) error    { return nil }
-func (*interactionSubject) Inject(llm.UserMessage) error   { return nil }
-func (*interactionSubject) RunMaintenance(requestContext context.Context, task agentcore.MaintenanceTask) error {
-	return task.Run(requestContext)
+func (*interactionSubject) Followup(agentmessage.UserMessage) error { return nil }
+func (*interactionSubject) Steer(agentmessage.UserMessage) error    { return nil }
+func (*interactionSubject) Inject(agentmessage.UserMessage) error   { return nil }
+func (*interactionSubject) RunMaintenance(requestContext context.Context, operation func(context.Context) error) error {
+	return operation(requestContext)
 }
 
 type capturedMux struct {
@@ -190,20 +259,22 @@ func newInteractionFixture(t *testing.T) *interactionFixture {
 		t.Fatal(err)
 	}
 	approvalService := approval.New(approvalSettings)
-	agentRegistry := agentcore.NewRegistry(agentcore.RegistryOptions{})
-	questionService := userquestions.New()
+	agentRegistry := newInteractionRegistry()
+	agentRegistryPlugin := &interactionRegistryPlugin{
+		registry: agentRegistry,
+	}
+	questionsPlugin := userquestions.NewPlugin()
 	state := &interactionFixture{
 		engine:          plugin.NewRuntime(plugin.RuntimeSettings{}),
 		agents:          agentRegistry,
 		approvalService: approvalService,
-		questionService: questionService,
 	}
 	handles, err := state.engine.Start(
 		context.Background(),
 		promptService,
 		approvalService,
-		agentRegistry,
-		questionService,
+		agentRegistryPlugin,
+		questionsPlugin,
 		&interactionFixturePlugin{
 			state: state,
 		},
@@ -229,7 +300,6 @@ func (state *interactionFixture) newSubject(t *testing.T, identifier session.Ses
 	subject := &interactionSubject{
 		identifier:   identifier,
 		conversation: conversation,
-		agents:       state.agents,
 	}
 	if _, err = state.engine.MountScopedChild(
 		context.Background(),
@@ -238,13 +308,13 @@ func (state *interactionFixture) newSubject(t *testing.T, identifier session.Ses
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err = state.agents.Enter(subject, nil); err != nil {
+	if err = state.agents.enter(subject); err != nil {
 		t.Fatal(err)
 	}
 	return subject
 }
 
-func (state *interactionFixture) openMux(t *testing.T, conversations ...*session.Session) *capturedMux {
+func (state *interactionFixture) openMux(t *testing.T, conversations ...session.Context) *capturedMux {
 	t.Helper()
 	streamContext, cancelStream := context.WithCancel(context.Background())
 	stream := &capturedMux{
@@ -305,8 +375,14 @@ func successfulClientResponse(t *testing.T, correlationID connection.RPCID, valu
 func TestApprovalInteractionRoundTripValidationAndReconnectReplay(t *testing.T) {
 	state := newInteractionFixture(t)
 	subject := state.newSubject(t, "approval-session")
-	if _, err := session.Append(subject.conversation, session.TurnStarted, session.TurnStart{Turn: 1}); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.TurnStarted, session.TurnStart{Turn: 1})
+		if err == nil {
+			_, err = subject.conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	firstMux := state.openMux(t, subject.conversation)
 	decisionChannel := make(chan approval.Outcome, 1)
@@ -371,17 +447,23 @@ func TestApprovalInteractionRoundTripValidationAndReconnectReplay(t *testing.T) 
 func TestApprovalInteractionPairsParallelCallAuditAndCancels(t *testing.T) {
 	state := newInteractionFixture(t)
 	subject := state.newSubject(t, "parallel-approval")
-	if _, err := session.Append(subject.conversation, session.TurnStarted, session.TurnStart{Turn: 1}); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.TurnStarted, session.TurnStart{Turn: 1})
+		if err == nil {
+			_, err = subject.conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	stream := state.openMux(t, subject.conversation)
-	callA := llm.CallID("call-a")
-	callB := llm.CallID("call-b")
+	callA := agentmessage.CallID("call-a")
+	callB := agentmessage.CallID("call-b")
 	contextA, cancelA := context.WithCancel(context.Background())
 	decisions := make(chan approval.Outcome, 2)
 	for _, input := range []struct {
 		callContext context.Context
-		callID      *llm.CallID
+		callID      *agentmessage.CallID
 		toolName    string
 	}{{contextA, &callA, "alpha"}, {context.Background(), &callB, "beta"}} {
 		inputValue := input
@@ -450,7 +532,7 @@ func TestQuestionInteractionValidatesAnswersAndClientCancellation(t *testing.T) 
 	responseChannel := make(chan userquestions.Answer, 1)
 	errorChannel := make(chan error, 1)
 	go func() {
-		answerValue, err := state.questionService.Ask(context.Background(), userquestions.Request{
+		answerValue, err := state.questions.Ask(context.Background(), userquestions.Request{
 			Subject: subject,
 			Questions: []userquestions.Question{{
 				ID: "target", Question: "Choose one target", Options: &options,
@@ -503,7 +585,7 @@ func TestQuestionInteractionValidatesAnswersAndClientCancellation(t *testing.T) 
 	cancelError := connection.RPCError{Code: connection.ErrorCancelled, Message: "cancelled", Details: json.RawMessage(`{}`)}
 	cancelledChannel := make(chan error, 1)
 	go func() {
-		_, err := state.questionService.Ask(context.Background(), userquestions.Request{
+		_, err := state.questions.Ask(context.Background(), userquestions.Request{
 			Subject: subject, Questions: []userquestions.Question{{ID: "again", Question: "Continue?"}},
 		})
 		cancelledChannel <- err
@@ -530,8 +612,14 @@ func TestQuestionInteractionValidatesAnswersAndClientCancellation(t *testing.T) 
 func TestInteractionGatewayShutdownSettlesPendingApprovalAndQuestion(t *testing.T) {
 	state := newInteractionFixture(t)
 	subject := state.newSubject(t, "interaction-shutdown")
-	if _, err := session.Append(subject.conversation, session.TurnStarted, session.TurnStart{Turn: 1}); err != nil {
-		t.Fatal(err)
+	{
+		draft, err := session.NewEventDraft(session.TurnStarted, session.TurnStart{Turn: 1})
+		if err == nil {
+			_, err = subject.conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	stream := state.openMux(t, subject.conversation)
 	approvalChannel := make(chan approval.Outcome, 1)
@@ -546,7 +634,7 @@ func TestInteractionGatewayShutdownSettlesPendingApprovalAndQuestion(t *testing.
 	approvalRequest := waitMuxKind[ApprovalRequestedFrame](t, stream, "approval/requested")
 	questionErrorChannel := make(chan error, 1)
 	go func() {
-		_, err := state.questionService.Ask(context.Background(), userquestions.Request{
+		_, err := state.questions.Ask(context.Background(), userquestions.Request{
 			Subject: subject, Questions: []userquestions.Question{{ID: "confirm", Question: "Continue?"}},
 		})
 		questionErrorChannel <- err

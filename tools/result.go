@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/internal/jsonvalue"
-	"github.com/gorenx/goren/llm"
 )
 
 func (outcome *ToolExecutionSuccess) cloneResult() (ToolExecutionResult, error) {
@@ -18,7 +18,7 @@ func (outcome *ToolExecutionSuccess) cloneResult() (ToolExecutionResult, error) 
 	if err != nil {
 		return nil, fmt.Errorf("tools: invalid successful value: %w", err)
 	}
-	content, err := llm.CloneContentBlocks(outcome.Content)
+	content, err := agentmessage.CloneContentBlocks(outcome.Content)
 	if err != nil {
 		return nil, err
 	}
@@ -53,7 +53,7 @@ func (outcome *ToolExecutionFailure) cloneResult() (ToolExecutionResult, error) 
 	if outcome.Error.Message == "" {
 		return nil, errors.New("tools: failure result message is empty")
 	}
-	content, err := llm.CloneContentBlocks(outcome.Content)
+	content, err := agentmessage.CloneContentBlocks(outcome.Content)
 	if err != nil {
 		return nil, err
 	}
@@ -103,12 +103,12 @@ func errorResult(cause error) *ToolExecutionFailure {
 			Message: message,
 			Info:    info,
 		},
-		Content: []llm.ContentBlock{llm.NewTextBlock("Error: " + message)},
+		Content: []agentmessage.ContentBlock{agentmessage.NewTextBlock("Error: " + message)},
 	}
 }
 
 func abortedResult(bodyInvoked bool, prior ...ToolExecutionResult) *ToolExecutionFailure {
-	var additionalContexts []llm.UserMessage
+	var additionalContexts []agentmessage.UserMessage
 	if len(prior) != 0 && prior[0] != nil {
 		additionalContexts = prior[0].AdditionalContextMessages()
 	}
@@ -128,10 +128,10 @@ func abortedResult(bodyInvoked bool, prior ...ToolExecutionResult) *ToolExecutio
 	return outcome
 }
 
-func failureMessage(content []llm.ContentBlock) string {
+func failureMessage(content []agentmessage.ContentBlock) string {
 	parts := make([]string, 0, len(content))
 	for _, entry := range content {
-		if readable, supported := entry.(llm.PlainTextContent); supported {
+		if readable, supported := entry.(agentmessage.PlainTextContent); supported {
 			if textValue, available := readable.PlainText(); available {
 				parts = append(parts, textValue)
 				continue
@@ -146,7 +146,7 @@ func failureMessage(content []llm.ContentBlock) string {
 	return message
 }
 
-func replaceResultContent(outcome ToolExecutionResult, content []llm.ContentBlock) ToolExecutionResult {
+func replaceResultContent(outcome ToolExecutionResult, content []agentmessage.ContentBlock) ToolExecutionResult {
 	switch retained := outcome.(type) {
 	case *ToolExecutionSuccess:
 		return &ToolExecutionSuccess{
@@ -170,12 +170,12 @@ func replaceResultContent(outcome ToolExecutionResult, content []llm.ContentBloc
 
 type resultSnapshot struct {
 	failed             bool
-	content            []llm.ContentBlock
+	content            []agentmessage.ContentBlock
 	value              json.RawMessage
 	failure            ToolFailure
 	hasFailure         bool
 	meta               json.RawMessage
-	additionalContexts []llm.UserMessage
+	additionalContexts []agentmessage.UserMessage
 	concludesTurn      bool
 }
 
@@ -206,8 +206,8 @@ func newResultSnapshot(outcome ToolExecutionResult) (ToolResultSnapshot, error) 
 
 func (resultView *resultSnapshot) Failed() bool { return resultView.failed }
 
-func (resultView *resultSnapshot) ContentBlocks() []llm.ContentBlock {
-	detached, _ := llm.CloneContentBlocks(resultView.content)
+func (resultView *resultSnapshot) ContentBlocks() []agentmessage.ContentBlock {
+	detached, _ := agentmessage.CloneContentBlocks(resultView.content)
 	return detached
 }
 
@@ -234,20 +234,20 @@ func (resultView *resultSnapshot) PresentationMeta() json.RawMessage {
 	return append(json.RawMessage(nil), resultView.meta...)
 }
 
-func (resultView *resultSnapshot) AdditionalContextMessages() []llm.UserMessage {
+func (resultView *resultSnapshot) AdditionalContextMessages() []agentmessage.UserMessage {
 	detached, _ := cloneUserMessages(resultView.additionalContexts)
 	return detached
 }
 
 func (resultView *resultSnapshot) ConcludesAgentTurn() bool { return resultView.concludesTurn }
 
-func cloneUserMessages(source []llm.UserMessage) ([]llm.UserMessage, error) {
+func cloneUserMessages(source []agentmessage.UserMessage) ([]agentmessage.UserMessage, error) {
 	if source == nil {
 		return nil, nil
 	}
-	detached := make([]llm.UserMessage, len(source))
+	detached := make([]agentmessage.UserMessage, len(source))
 	for index, message := range source {
-		copyValue, err := llm.CloneUserMessage(message)
+		copyValue, err := agentmessage.CloneUserMessage(message)
 		if err != nil {
 			return nil, fmt.Errorf("message %d: %w", index, err)
 		}
@@ -256,7 +256,7 @@ func cloneUserMessages(source []llm.UserMessage) ([]llm.UserMessage, error) {
 	return detached, nil
 }
 
-func appendAdditionalContexts(outcome ToolExecutionResult, additions []llm.UserMessage) (ToolExecutionResult, error) {
+func appendAdditionalContexts(outcome ToolExecutionResult, additions []agentmessage.UserMessage) (ToolExecutionResult, error) {
 	detached, err := outcome.cloneResult()
 	if err != nil {
 		return nil, err
@@ -278,7 +278,7 @@ func appendAdditionalContexts(outcome ToolExecutionResult, additions []llm.UserM
 
 func prependAdditionalContexts(
 	outcome ToolExecutionResult,
-	additions []llm.UserMessage,
+	additions []agentmessage.UserMessage,
 ) (ToolExecutionResult, error) {
 	detached, err := outcome.cloneResult()
 	if err != nil {

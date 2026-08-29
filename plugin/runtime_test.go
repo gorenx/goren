@@ -26,8 +26,8 @@ type clockProvider struct {
 func (provider *clockProvider) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "clock",
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[clock](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[clock](provider),
 		},
 	}
 }
@@ -65,11 +65,11 @@ type clockDecorator struct {
 	prefix   string
 }
 
-func (*clockDecorator) Manifest() plugin.Manifest {
+func (decorator *clockDecorator) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "clock-decorator",
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[clock](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[clock](decorator),
 		},
 		Requires: []plugin.ServiceType{
 			plugin.ServiceOf[clock](),
@@ -156,11 +156,11 @@ type failingClockReplacement struct {
 	disposals int
 }
 
-func (*failingClockReplacement) Manifest() plugin.Manifest {
+func (replacement *failingClockReplacement) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "clock",
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[clock](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[clock](replacement),
 		},
 	}
 }
@@ -210,13 +210,71 @@ func TestRuntimeDerivesStableServiceIdentityFromGoType(t *testing.T) {
 	}
 }
 
-func TestRuntimeRejectsManifestServiceNotImplementedByPlugin(t *testing.T) {
+type clockValue struct {
+	value string
+}
+
+func (capability *clockValue) Value() string {
+	return capability.value
+}
+
+type separateClockPlugin struct {
+	plugin.Base
+	capability *clockValue
+}
+
+func (owner *separateClockPlugin) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "separate-clock",
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[clock](owner.capability),
+		},
+	}
+}
+
+func (*separateClockPlugin) Apply(context.Context) error {
+	return nil
+}
+
+func (*separateClockPlugin) Dispose(context.Context) error {
+	return nil
+}
+
+func TestRuntimePublishesServiceImplementedOutsidePlugin(t *testing.T) {
+	t.Parallel()
+	capability := &clockValue{
+		value: "separate",
+	}
+	owner := &separateClockPlugin{
+		capability: capability,
+	}
+	consumer := &clockConsumer{}
+	if _, implementsClock := any(owner).(clock); implementsClock {
+		t.Fatal("Plugin unexpectedly implements the business Service")
+	}
+	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	if _, err := runtimeEngine.Start(
+		context.Background(),
+		consumer,
+		owner,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if consumer.selected != capability || consumer.selected.Value() != "separate" {
+		t.Fatal("consumer did not receive the independent Service implementation")
+	}
+	if err := runtimeEngine.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRuntimeRejectsNilProvidedService(t *testing.T) {
 	t.Parallel()
 	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
 	if _, err := runtimeEngine.Start(
 		context.Background(),
 		&invalidClockProvider{},
-	); err == nil || !strings.Contains(err.Error(), "does not implement") {
+	); err == nil || !strings.Contains(err.Error(), "nil implementation") {
 		t.Fatalf("Start error = %v", err)
 	}
 }
@@ -226,10 +284,11 @@ type invalidClockProvider struct {
 }
 
 func (*invalidClockProvider) Manifest() plugin.Manifest {
+	var missing clock
 	return plugin.Manifest{
 		Name: "invalid-clock",
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[clock](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[clock](missing),
 		},
 	}
 }

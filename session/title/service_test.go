@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
@@ -21,6 +22,31 @@ var titleFixtureConfig = Config{
 }
 
 type titleFailureReporter struct{}
+
+type sessionStoreProbe struct {
+	plugin.Base
+	store session.LiveStore
+}
+
+func (*sessionStoreProbe) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "session-title-store-probe",
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[session.LiveStore](),
+		},
+	}
+}
+
+func (probe *sessionStoreProbe) Apply(context.Context) error {
+	liveStore, err := plugin.Require[session.LiveStore](probe)
+	if err != nil {
+		return err
+	}
+	probe.store = liveStore
+	return nil
+}
+
+func (*sessionStoreProbe) Dispose(context.Context) error { return nil }
 
 func (titleFailureReporter) ReportEventFailure(context.Context, plugin.EventFailure) {}
 
@@ -40,7 +66,7 @@ func (*titleProjectionObserver) Manifest() plugin.Manifest {
 			plugin.ServiceOf[sessionprojection.Registry](),
 		},
 		Events: []plugin.EventSubscription{
-			plugin.EventOf[sessionprojection.ProjectionChanged](),
+			plugin.EventOf[sessionprojection.Changed](),
 		},
 	}
 }
@@ -58,7 +84,7 @@ func (observer *titleProjectionObserver) ObserveEvent(
 	_ context.Context,
 	fact plugin.Event,
 ) error {
-	projectionChange, matches := fact.(sessionprojection.ProjectionChanged)
+	projectionChange, matches := fact.(sessionprojection.Changed)
 	if matches && projectionChange.Change.Key == ProjectionKey {
 		observer.changes <- projectionChange.Change
 	}
@@ -66,7 +92,7 @@ func (observer *titleProjectionObserver) ObserveEvent(
 }
 
 type titleFixture struct {
-	store       *session.MemoryStore
+	store       session.LiveStore
 	titles      *LogService
 	projections *sessionprojection.DriveRegistry
 	changes     <-chan sessionprojection.Change
@@ -75,7 +101,7 @@ type titleFixture struct {
 func newTitleFixture(testingContext *testing.T) titleFixture {
 	testingContext.Helper()
 	reporter := titleFailureReporter{}
-	store, err := session.NewMemoryStore(
+	sessionPlugin, err := session.NewPlugin(
 		session.MemoryStoreOptions{
 			PostCommitFailures: reporter,
 		},
@@ -92,6 +118,7 @@ func newTitleFixture(testingContext *testing.T) titleFixture {
 	observer := &titleProjectionObserver{
 		changes: changes,
 	}
+	storeProbe := &sessionStoreProbe{}
 	runtimeEngine := plugin.NewRuntime(
 		plugin.RuntimeSettings{
 			EventFailures: reporter,
@@ -102,7 +129,8 @@ func newTitleFixture(testingContext *testing.T) titleFixture {
 		observer,
 		titles,
 		projections,
-		store,
+		sessionPlugin,
+		storeProbe,
 	); err != nil {
 		testingContext.Fatal(err)
 	}
@@ -112,7 +140,7 @@ func newTitleFixture(testingContext *testing.T) titleFixture {
 		}
 	})
 	return titleFixture{
-		store:       store,
+		store:       storeProbe.store,
 		titles:      titles,
 		projections: projections,
 		changes:     changes,
@@ -197,7 +225,11 @@ func TestLogServiceFallbackRenameAndProjection(t *testing.T) {
 		t.Fatalf("fallback snapshot = %#v", fallback)
 	}
 
-	accepted, err := fixture.titles.Rename(conversation, "  Hand\tpicked   name  ")
+	accepted, err := fixture.titles.Rename(
+		requestContext,
+		conversation,
+		"  Hand\tpicked   name  ",
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +242,11 @@ func TestLogServiceFallbackRenameAndProjection(t *testing.T) {
 		string(renameChange.Value) != `"Hand picked name"` {
 		t.Fatalf("rename projection = %#v", renameChange)
 	}
-	if _, err := fixture.titles.Rename(conversation, " \x1b[31m "); err == nil {
+	if _, err := fixture.titles.Rename(
+		requestContext,
+		conversation,
+		" \x1b[31m ",
+	); err == nil {
 		t.Fatal("control-only rename succeeded")
 	} else {
 		var invalid *SessionTitleInvalidError
@@ -248,20 +284,23 @@ func TestLogServiceRenameSupersedesActiveProvider(t *testing.T) {
 	}
 	conversation := handle.Session()
 	promptSeq := appendTitleFixtureHuman(t, conversation, "Prompt that triggers generation")
-	if _, err := session.Append(
-		conversation,
-		session.RequestHeaderSet,
-		session.RequestHeaderSnapshot{
-			Header: session.EpochHeader{
-				Config: llm.CallConfig{
-					Provider: "main-route",
-					Model:    "chat-model",
+	{
+		draft, err := session.NewEventDraft(session.RequestHeaderSet,
+			session.RequestHeaderSnapshot{
+				Header: session.EpochHeader{
+					Config: llm.CallConfig{
+						Provider: "main-route",
+						Model:    "chat-model",
+					},
 				},
-			},
-			Reason: session.RequestHeaderChange,
-		},
-	); err != nil {
-		t.Fatal(err)
+				Reason: session.RequestHeaderChange,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	select {
 	case request := <-started:
@@ -273,7 +312,11 @@ func TestLogServiceRenameSupersedesActiveProvider(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("title provider did not start")
 	}
-	accepted, err := fixture.titles.Rename(conversation, "User wins")
+	accepted, err := fixture.titles.Rename(
+		requestContext,
+		conversation,
+		"User wins",
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +345,11 @@ func TestLogServiceFallbackRefreshUnpinsUserTitle(t *testing.T) {
 	conversation := handle.Session()
 	appendTitleFixtureHuman(t, conversation, "Derivable prompt words")
 	receiveTitleChange(t, fixture.changes)
-	if _, err := fixture.titles.Rename(conversation, "Pinned without provider"); err != nil {
+	if _, err := fixture.titles.Rename(
+		requestContext,
+		conversation,
+		"Pinned without provider",
+	); err != nil {
 		t.Fatal(err)
 	}
 	receiveTitleChange(t, fixture.changes)
@@ -339,16 +386,16 @@ func (implementation titleFixtureProvider) Generate(
 
 func appendTitleFixtureHuman(
 	testingContext *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	text string,
 ) int64 {
 	testingContext.Helper()
-	messageValue, err := llm.NewUserMessage(
-		llm.UserMessageInput{
-			Content: []llm.ContentBlock{
-				llm.NewTextBlock(text),
+	messageValue, err := agentmessage.NewUserMessage(
+		agentmessage.UserMessageInput{
+			Content: []agentmessage.ContentBlock{
+				agentmessage.NewTextBlock(text),
 			},
-			Source: llm.UserMessageSource{
+			Source: agentmessage.UserMessageSource{
 				Kind: "user",
 			},
 		},
@@ -356,14 +403,27 @@ func appendTitleFixtureHuman(
 	if err != nil {
 		testingContext.Fatal(err)
 	}
-	committed, err := session.AppendSurface(
-		conversation,
-		session.UserMessageAdded,
-		messageValue,
-		session.SurfaceIntent{
-			Operation: session.SurfaceAppend(),
-		},
-	)
+	committed, err := session.Event{}, error(nil)
+	{
+		var committedEvent session.Event
+		var writeErr error
+		draft, draftErr := session.NewSurfaceEventDraft(session.UserMessageAdded,
+			messageValue,
+			session.SurfaceIntent{
+				Operation: session.SurfaceAppend(),
+			})
+		writeErr = draftErr
+		if draftErr == nil {
+			receipt, commitErr := conversation.Commit(context.Background(), session.Batch(draft))
+			writeErr = commitErr
+			if commitErr == nil {
+				committedEvent = receipt.Events[0]
+			}
+		}
+		committed = committedEvent
+		err = writeErr
+	}
+
 	if err != nil {
 		testingContext.Fatal(err)
 	}

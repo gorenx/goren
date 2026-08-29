@@ -15,10 +15,9 @@ import (
 // current live Session generation.
 const EndSeedEventName = "session/end-seed"
 
-const endSeedEventType = EndSeedEventName
-
 type eventTypeRegistry struct {
 	mutex sync.RWMutex
+	// names maps canonical Session Event name keys to registration-presence values.
 	names map[string]struct{}
 }
 
@@ -26,6 +25,7 @@ var knownEventTypes = eventTypeRegistry{
 	names: map[string]struct{}{EndSeedEventName: {}},
 }
 
+// surfaceEventTypes maps canonical Event name keys to Surface-eligibility values.
 var surfaceEventTypes = map[string]struct{}{
 	"user/message":      {},
 	"assistant/message": {},
@@ -48,7 +48,7 @@ type SurfaceEventKey[D any] struct {
 // reserved because only Session's surface contract may define them.
 func DefineEvent[D any](canonicalName string) EventKey[D] {
 	validateEventName(canonicalName)
-	if _, reserved := surfaceEventTypes[canonicalName]; reserved || canonicalName == endSeedEventType {
+	if _, reserved := surfaceEventTypes[canonicalName]; reserved || canonicalName == EndSeedEventName {
 		panic(fmt.Sprintf("session: event name %q is owned by the core session contract", canonicalName))
 	}
 	registerKnownEventType(canonicalName)
@@ -113,12 +113,18 @@ type SurfaceOperation struct {
 
 // SurfaceAppend returns the normal tail-append operation.
 func SurfaceAppend() SurfaceOperation {
-	return SurfaceOperation{Kind: SurfaceOperationAppend}
+	return SurfaceOperation{
+		Kind: SurfaceOperationAppend,
+	}
 }
 
 // SurfaceReplace returns an inclusive positional replacement operation.
 func SurfaceReplace(start int64, end int64) SurfaceOperation {
-	return SurfaceOperation{Kind: SurfaceOperationReplace, Start: start, End: end}
+	return SurfaceOperation{
+		Kind:  SurfaceOperationReplace,
+		Start: start,
+		End:   end,
+	}
 }
 
 // MarshalJSON preserves the pinned TypeScript surfaceOp union on the wire.
@@ -130,11 +136,17 @@ func (operation SurfaceOperation) MarshalJSON() ([]byte, error) {
 		if !isSafeNonNegative(operation.Start) || !isSafeNonNegative(operation.End) {
 			return nil, errors.New("session: surface replace bounds must be non-negative safe integers")
 		}
-		return json.Marshal(struct {
-			Op    string `json:"op"`
-			Start int64  `json:"start"`
-			End   int64  `json:"end"`
-		}{Op: "replace", Start: operation.Start, End: operation.End})
+		return json.Marshal(
+			struct {
+				Op    string `json:"op"`
+				Start int64  `json:"start"`
+				End   int64  `json:"end"`
+			}{
+				Op:    "replace",
+				Start: operation.Start,
+				End:   operation.End,
+			},
+		)
 	default:
 		return nil, fmt.Errorf("session: unsupported surface operation %q", operation.Kind)
 	}
@@ -169,8 +181,8 @@ func (operation *SurfaceOperation) UnmarshalJSON(rawValue []byte) error {
 	return nil
 }
 
-// AppendOptions applies to one event admission.
-type AppendOptions struct {
+// EventOptions controls one non-surface Event envelope.
+type EventOptions struct {
 	// Ignorable marks an informational event an older reader may safely skip.
 	Ignorable bool
 }
@@ -210,15 +222,15 @@ func validateLosslessJSON(rawValue []byte) error {
 }
 
 func cloneEvent(source Event) Event {
-	snapshot := source
-	snapshot.Data = append(json.RawMessage(nil), source.Data...)
+	detached := source
+	detached.Data = append(json.RawMessage(nil), source.Data...)
 	if source.SourceEventSeqs != nil {
 		provenance := append([]int64(nil), (*source.SourceEventSeqs)...)
-		snapshot.SourceEventSeqs = &provenance
+		detached.SourceEventSeqs = &provenance
 	}
 	if source.SurfaceOp != nil {
 		operation := *source.SurfaceOp
-		snapshot.SurfaceOp = &operation
+		detached.SurfaceOp = &operation
 	}
-	return snapshot
+	return detached
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/gorenx/goren/apiproxy"
 	sessionapi "github.com/gorenx/goren/apiproxy/session"
 	"github.com/gorenx/goren/approval"
+	"github.com/gorenx/goren/commands"
 	"github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/credentials"
 	"github.com/gorenx/goren/llm"
@@ -20,8 +21,12 @@ import (
 	"github.com/gorenx/goren/session"
 	sesspersist "github.com/gorenx/goren/session/persistence"
 	sessionprojection "github.com/gorenx/goren/session/projection"
+	"github.com/gorenx/goren/session/projectioncache"
 	sessionquery "github.com/gorenx/goren/session/query"
 	sessiontitle "github.com/gorenx/goren/session/title"
+	"github.com/gorenx/goren/subagent"
+	boundcontract "github.com/gorenx/goren/subagent/bound"
+	"github.com/gorenx/goren/tools"
 	"github.com/gorenx/goren/userquestions"
 	"github.com/gorenx/goren/workspace"
 )
@@ -53,6 +58,7 @@ type Plugin struct {
 	workspaces        *apiproxy.WorkspaceGateway
 	interactions      *apiproxy.InteractionGateway
 	questions         *userquestions.ProviderHandle
+	listProjection    sessionprojection.UnitHandle
 	stopLifetimeClose func() bool
 }
 
@@ -82,12 +88,15 @@ func New(deploymentSettings Settings, options RuntimeOptions) (*Plugin, error) {
 func (owner *Plugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: apiproxy.PluginName,
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[apiproxy.Service](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[apiproxy.Service](owner),
 		},
 		Requires: []plugin.ServiceType{
 			plugin.ServiceOf[agent.Registry](),
+			plugin.ServiceOf[agent.Constructor](),
+			plugin.ServiceOf[agent.ScopeProvisioning](),
 			plugin.ServiceOf[agentdefaultmodel.DefaultModel](),
+			plugin.ServiceOf[commands.Registry](),
 			plugin.ServiceOf[llm.LlmRuntime](),
 			plugin.ServiceOf[session.LiveStore](),
 			plugin.ServiceOf[sesspersist.Persistence](),
@@ -97,14 +106,20 @@ func (owner *Plugin) Manifest() plugin.Manifest {
 			plugin.ServiceOf[userquestions.UserQuestions](),
 			plugin.ServiceOf[workspace.Registry](),
 			plugin.ServiceOf[credentials.Provider](),
+			plugin.ServiceOf[boundcontract.Definitions](),
+			plugin.ServiceOf[subagent.ExtensionDirectory](),
+			plugin.ServiceOf[tools.ToolRuntime](),
+		},
+		Optional: []plugin.ServiceType{
+			plugin.ServiceOf[projectioncache.Cache](),
 		},
 		Events: []plugin.EventSubscription{
-			plugin.EventOf[session.SessionEventAppended](),
-			plugin.EventOf[session.SessionCreated](),
-			plugin.EventOf[session.SessionDisposed](),
+			plugin.EventOf[session.EventAppended](),
+			plugin.EventOf[session.Created](),
+			plugin.EventOf[session.Disposed](),
 			plugin.EventOf[agent.StatusChanged](),
 			plugin.EventOf[agent.AgentError](),
-			plugin.EventOf[sessionprojection.ProjectionChanged](),
+			plugin.EventOf[sessionprojection.Changed](),
 			plugin.EventOf[workspace.ChangedNotice](),
 			plugin.EventOf[workspace.RemovedNotice](),
 			plugin.EventOf[workspace.OrderChangedNotice](),
@@ -126,7 +141,19 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 	if err != nil {
 		return err
 	}
+	constructor, err := plugin.Require[agent.Constructor](owner)
+	if err != nil {
+		return err
+	}
+	scopeProvisioning, err := plugin.Require[agent.ScopeProvisioning](owner)
+	if err != nil {
+		return err
+	}
 	defaults, err := plugin.Require[agentdefaultmodel.DefaultModel](owner)
+	if err != nil {
+		return err
+	}
+	commandRegistry, err := plugin.Require[commands.Registry](owner)
 	if err != nil {
 		return err
 	}
@@ -146,6 +173,7 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 	if err != nil {
 		return err
 	}
+	checkpointCache, _ := plugin.Resolve[projectioncache.Cache](owner)
 	queries, err := plugin.Require[sessionquery.QueryService](owner)
 	if err != nil {
 		return err
@@ -166,16 +194,43 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 	if err != nil {
 		return err
 	}
+	boundDefinitions, err := plugin.Require[boundcontract.Definitions](owner)
+	if err != nil {
+		return err
+	}
+	extensionDirectory, err := plugin.Require[subagent.ExtensionDirectory](owner)
+	if err != nil {
+		return err
+	}
+	rootTools, err := plugin.Require[tools.ToolRuntime](owner)
+	if err != nil {
+		return err
+	}
+	listProjection, err := projections.Register(
+		sessionapi.SessionListMetadataUnit(),
+	)
+	if err != nil {
+		return err
+	}
+	retainListProjection := false
+	defer func() {
+		if !retainListProjection {
+			_ = listProjection.Release(context.WithoutCancel(requestContext))
+		}
+	}()
 
 	sessionGateway, err := sessionapi.NewGateway(
 		requestContext,
 		sessionapi.Dependencies{
 			Agents:      agents,
+			Constructor: constructor,
+			Scopes:      scopeProvisioning,
 			Sessions:    sessions,
 			Persistence: persistence,
 			LLM:         models,
 			Defaults:    defaults,
 			Projections: projections,
+			Cache:       checkpointCache,
 			Titles:      titles,
 			Workspaces:  workspaces,
 			Directories: sessionapi.DirectoryProvisionerFunc(
@@ -183,8 +238,9 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 			),
 		},
 		sessionapi.Options{
-			WorkingDirectory: owner.options.WorkingDirectory,
-			NewSessionID:     owner.options.NewSessionID,
+			WorkingDirectory:  owner.options.WorkingDirectory,
+			NewSessionID:      owner.options.NewSessionID,
+			ReportReadFailure: owner.options.ObserverError,
 		},
 	)
 	if err != nil {
@@ -209,8 +265,12 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 		methods,
 		sessionGateway,
 		queries,
+		commandRegistry,
 		models,
 		credentialProvider,
+		boundDefinitions,
+		extensionDirectory,
+		rootTools,
 		agents,
 		defaults,
 		owner.deploymentSettings,
@@ -252,6 +312,8 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 	owner.workspaces = workspaceGateway
 	owner.interactions = interactions
 	owner.questions = providerHandle
+	owner.listProjection = listProjection
+	retainListProjection = true
 	owner.stopLifetimeClose = context.AfterFunc(
 		plugin.Lifetime(owner),
 		func() {
@@ -277,14 +339,21 @@ func (owner *Plugin) Dispose(closeContext context.Context) error {
 	if owner.frames != nil {
 		owner.frames.Close()
 	}
+	var projectionErr error
+	if owner.listProjection != nil {
+		projectionErr = owner.listProjection.Release(
+			context.WithoutCancel(closeContext),
+		)
+	}
 	owner.methods = nil
 	owner.streams = nil
 	owner.frames = nil
 	owner.workspaces = nil
 	owner.interactions = nil
 	owner.questions = nil
+	owner.listProjection = nil
 	owner.stopLifetimeClose = nil
-	return closeErr
+	return errors.Join(closeErr, projectionErr)
 }
 
 // ObserveEvent routes only the Event set declared in Manifest.

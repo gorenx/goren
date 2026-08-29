@@ -5,8 +5,7 @@ import (
 	"fmt"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/plugin"
+	"github.com/gorenx/goren/agentmessage"
 )
 
 // observerFailureReporter contains failures that occur after a live fact has
@@ -58,9 +57,8 @@ func (publisher *agentEventPublisher) reportFailure(problem error) {
 }
 
 func (publisher *agentEventPublisher) publishStatus(destination agent.Status) {
-	if err := plugin.Publish(
+	if err := publisher.subject.scopeRuntime.Dispatch(
 		context.Background(),
-		publisher.subject,
 		agent.StatusChanged{
 			Subject: publisher.subject,
 			Status:  destination,
@@ -82,9 +80,8 @@ func (publisher *agentEventPublisher) publishError(
 	if requestContext == nil {
 		requestContext = context.Background()
 	}
-	if err := plugin.Publish(
+	if err := publisher.subject.scopeRuntime.Dispatch(
 		requestContext,
-		publisher.subject,
 		agent.AgentError{
 			Subject: publisher.subject,
 			Turn:    position.turn,
@@ -104,9 +101,8 @@ func (publisher *agentEventPublisher) publishTurnStopping(
 	requestContext context.Context,
 	turn int64,
 ) error {
-	return plugin.Publish(
+	return publisher.subject.scopeRuntime.Dispatch(
 		requestContext,
-		publisher.subject,
 		agent.TurnStopping{
 			Subject: publisher.subject,
 			Turn:    turn,
@@ -118,10 +114,9 @@ type inboxEventBridge struct {
 	events *agentEventPublisher
 }
 
-func (bridge inboxEventBridge) Inserted(input llm.UserMessage) {
-	if err := plugin.Publish(
+func (bridge inboxEventBridge) Inserted(input agentmessage.UserMessage) {
+	if err := bridge.events.subject.scopeRuntime.Dispatch(
 		context.Background(),
-		bridge.events.subject,
 		agent.InboxInserted{
 			Subject: bridge.events.subject,
 			Message: input,
@@ -131,10 +126,9 @@ func (bridge inboxEventBridge) Inserted(input llm.UserMessage) {
 	}
 }
 
-func (bridge inboxEventBridge) Discarded(input llm.UserMessage) {
-	if err := plugin.Publish(
+func (bridge inboxEventBridge) Discarded(input agentmessage.UserMessage) {
+	if err := bridge.events.subject.scopeRuntime.Dispatch(
 		context.Background(),
-		bridge.events.subject,
 		agent.InboxDiscarded{
 			Subject: bridge.events.subject,
 			Message: input,
@@ -145,12 +139,11 @@ func (bridge inboxEventBridge) Discarded(input llm.UserMessage) {
 }
 
 func (bridge inboxEventBridge) Claimed(
-	input llm.UserMessage,
+	input agentmessage.UserMessage,
 	turn int64,
 ) {
-	if err := plugin.Publish(
+	if err := bridge.events.subject.scopeRuntime.Dispatch(
 		context.Background(),
-		bridge.events.subject,
 		agent.InboxClaimed{
 			Subject: bridge.events.subject,
 			Message: input,

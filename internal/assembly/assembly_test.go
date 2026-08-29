@@ -17,19 +17,33 @@ import (
 	"github.com/gorenx/goren/agentloop"
 	"github.com/gorenx/goren/apiproxy"
 	"github.com/gorenx/goren/approval"
+	"github.com/gorenx/goren/commands"
+	"github.com/gorenx/goren/compaction"
+	"github.com/gorenx/goren/compaction/basic"
+	compactioncommand "github.com/gorenx/goren/compaction/command"
+	"github.com/gorenx/goren/compaction/toolresultpruner"
 	protocol "github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/credentials"
 	connectionhost "github.com/gorenx/goren/internal/connection"
-	"github.com/gorenx/goren/internal/llm/deepseek"
 	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/llmretry"
+	"github.com/gorenx/goren/llm/deepseek"
+	"github.com/gorenx/goren/llm/retry"
+	"github.com/gorenx/goren/llm/tokenmeter"
 	"github.com/gorenx/goren/plugin"
 	pluginfactory "github.com/gorenx/goren/plugin/factory"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/session/persistence"
 	"github.com/gorenx/goren/session/projection"
+	"github.com/gorenx/goren/session/projectioncache"
 	"github.com/gorenx/goren/session/query"
 	"github.com/gorenx/goren/session/title"
+	"github.com/gorenx/goren/subagent"
+	"github.com/gorenx/goren/subagent/bound/turnrelay"
+	"github.com/gorenx/goren/subagent/fork"
+	"github.com/gorenx/goren/subagent/spawn"
+	"github.com/gorenx/goren/subagent/tools/control"
+	subagentdelegation "github.com/gorenx/goren/subagent/tools/delegation"
+	"github.com/gorenx/goren/subagent/tools/report"
 	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/toolaskuser"
 	"github.com/gorenx/goren/tools"
@@ -44,17 +58,24 @@ const invalidFactoryName = "test/invalid-factory"
 type serviceProbe struct {
 	plugin.Base
 	agents       agent.Registry
+	constructor  agent.Constructor
 	defaultModel agentdefaultmodel.DefaultModel
 	approvals    approval.Approval
 	apiProxy     apiproxy.Service
+	commandPlane commands.Registry
 	credentials  credentials.Provider
 	models       llm.LlmRuntime
+	compactor    compaction.Engine
+	meter        tokenmeter.Meter
+	pruner       toolresultpruner.Pruner
 	sessions     session.LiveStore
 	durability   persistence.Persistence
 	projections  projection.Registry
+	checkpoints  projectioncache.Cache
 	queries      query.QueryService
 	titles       title.TitleService
 	prompts      systemprompt.Assembler
+	subagents    subagent.ChildDirectory
 	toolRuntime  tools.ToolRuntime
 	questions    userquestions.UserQuestions
 	workspaces   workspace.Registry
@@ -65,17 +86,24 @@ func (*serviceProbe) Manifest() plugin.Manifest {
 		Name: probeFactoryName,
 		Requires: []plugin.ServiceType{
 			plugin.ServiceOf[agent.Registry](),
+			plugin.ServiceOf[agent.Constructor](),
 			plugin.ServiceOf[agentdefaultmodel.DefaultModel](),
 			plugin.ServiceOf[approval.Approval](),
 			plugin.ServiceOf[apiproxy.Service](),
+			plugin.ServiceOf[commands.Registry](),
 			plugin.ServiceOf[credentials.Provider](),
 			plugin.ServiceOf[llm.LlmRuntime](),
+			plugin.ServiceOf[compaction.Engine](),
+			plugin.ServiceOf[tokenmeter.Meter](),
+			plugin.ServiceOf[toolresultpruner.Pruner](),
 			plugin.ServiceOf[session.LiveStore](),
 			plugin.ServiceOf[persistence.Persistence](),
 			plugin.ServiceOf[projection.Registry](),
+			plugin.ServiceOf[projectioncache.Cache](),
 			plugin.ServiceOf[query.QueryService](),
 			plugin.ServiceOf[title.TitleService](),
 			plugin.ServiceOf[systemprompt.Assembler](),
+			plugin.ServiceOf[subagent.ChildDirectory](),
 			plugin.ServiceOf[tools.ToolRuntime](),
 			plugin.ServiceOf[userquestions.UserQuestions](),
 			plugin.ServiceOf[workspace.Registry](),
@@ -88,6 +116,9 @@ func (probe *serviceProbe) Apply(requestContext context.Context) error {
 	if probe.agents, err = plugin.Require[agent.Registry](probe); err != nil {
 		return err
 	}
+	if probe.constructor, err = plugin.Require[agent.Constructor](probe); err != nil {
+		return err
+	}
 	if probe.defaultModel, err = plugin.Require[agentdefaultmodel.DefaultModel](probe); err != nil {
 		return err
 	}
@@ -97,10 +128,22 @@ func (probe *serviceProbe) Apply(requestContext context.Context) error {
 	if probe.apiProxy, err = plugin.Require[apiproxy.Service](probe); err != nil {
 		return err
 	}
+	if probe.commandPlane, err = plugin.Require[commands.Registry](probe); err != nil {
+		return err
+	}
 	if probe.credentials, err = plugin.Require[credentials.Provider](probe); err != nil {
 		return err
 	}
 	if probe.models, err = plugin.Require[llm.LlmRuntime](probe); err != nil {
+		return err
+	}
+	if probe.compactor, err = plugin.Require[compaction.Engine](probe); err != nil {
+		return err
+	}
+	if probe.meter, err = plugin.Require[tokenmeter.Meter](probe); err != nil {
+		return err
+	}
+	if probe.pruner, err = plugin.Require[toolresultpruner.Pruner](probe); err != nil {
 		return err
 	}
 	if probe.sessions, err = plugin.Require[session.LiveStore](probe); err != nil {
@@ -112,6 +155,9 @@ func (probe *serviceProbe) Apply(requestContext context.Context) error {
 	if probe.projections, err = plugin.Require[projection.Registry](probe); err != nil {
 		return err
 	}
+	if probe.checkpoints, err = plugin.Require[projectioncache.Cache](probe); err != nil {
+		return err
+	}
 	if probe.queries, err = plugin.Require[query.QueryService](probe); err != nil {
 		return err
 	}
@@ -119,6 +165,9 @@ func (probe *serviceProbe) Apply(requestContext context.Context) error {
 		return err
 	}
 	if probe.prompts, err = plugin.Require[systemprompt.Assembler](probe); err != nil {
+		return err
+	}
+	if probe.subagents, err = plugin.Require[subagent.ChildDirectory](probe); err != nil {
 		return err
 	}
 	if probe.toolRuntime, err = plugin.Require[tools.ToolRuntime](probe); err != nil {
@@ -242,17 +291,30 @@ func TestCatalogContainsOnlyCurrentServerSlice(t *testing.T) {
 		agentloop.PluginName,
 		apiproxy.PluginName,
 		approval.PluginName,
+		commands.PluginName,
+		basic.PluginName,
+		compactioncommand.PluginName,
+		toolresultpruner.PluginName,
 		connectionhost.PluginName,
 		credentials.PluginName,
 		deepseek.PluginName,
 		llm.PluginName,
 		llmretry.PluginName,
+		tokenmeter.PluginName,
 		session.PluginName,
 		persistence.PluginName,
 		projection.PluginName,
+		projectioncache.PluginName,
 		query.PluginName,
 		title.PluginName,
 		systemprompt.PluginName,
+		turnrelay.PluginName,
+		subagent.PluginName,
+		spawn.PluginName,
+		fork.PluginName,
+		subagentdelegation.PluginName,
+		control.PluginName,
+		report.PluginName,
 		toolaskuser.PluginName,
 		tools.PluginName,
 		userquestions.PluginName,
@@ -571,6 +633,21 @@ func TestServerTreeStartsCapabilitiesBeforeExposingConnection(t *testing.T) {
 	if liveAgents := probe.agents.List(); len(liveAgents) != 0 {
 		t.Fatalf("default live Agents = %#v", liveAgents)
 	}
+	projectionSession, err := session.New(
+		"assembly-subagent-projections",
+		session.CreateOptions{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectionSnapshot, err := probe.projections.Snapshot(projectionSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(projectionSnapshot.Values["subagent"]) != "null" ||
+		string(projectionSnapshot.Values["subagentTiming"]) != `{"settledMs":0}` {
+		t.Fatalf("default Subagent projections = %#v", projectionSnapshot.Values)
+	}
 	if got := probe.defaultModel.CurrentSelection(); got.Provider != deepseek.ProviderRoute || got.Model != deepseek.DefaultModelID {
 		t.Fatalf("default model = %#v", got)
 	}
@@ -585,11 +662,24 @@ func TestServerTreeStartsCapabilitiesBeforeExposingConnection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if promptText != "You are an AI agent powered by DeepSeek Harness." {
+	wantPrompt := "You are an AI agent powered by DeepSeek Harness.\n\n" +
+		"Use subagent in the background by default. Start independent delegations together and continue useful work while they run. Set `run_in_background: false` only when your next action depends on that subagent's result."
+	if promptText != wantPrompt {
 		t.Fatalf("default System Prompt = %q", promptText)
 	}
 	toolSchemas := probe.toolRuntime.Schemas()
-	if len(toolSchemas) != 1 || toolSchemas[0].Name != toolaskuser.Name {
+	toolNames := make([]string, len(toolSchemas))
+	for index, schema := range toolSchemas {
+		toolNames[index] = schema.Name
+	}
+	wantToolNames := []string{
+		toolaskuser.Name,
+		subagentdelegation.DefaultToolName,
+		"send_message",
+		"interrupt_agent",
+		"list_agents",
+	}
+	if !reflect.DeepEqual(toolNames, wantToolNames) {
 		t.Fatalf("default Tool schemas = %#v", toolSchemas)
 	}
 	wantProviders := []llm.ProviderInfo{
@@ -601,7 +691,7 @@ func TestServerTreeStartsCapabilitiesBeforeExposingConnection(t *testing.T) {
 	if got := probe.models.ListProviders(); !reflect.DeepEqual(got, wantProviders) {
 		t.Fatalf("default LLM providers = %#v", got)
 	}
-	handle, err := probe.agents.Create(requestContext, agent.CreateOptions{
+	handle, err := probe.constructor.Create(requestContext, agent.CreateOptions{
 		SessionID: "assembly-agent",
 		AgentOptions: agent.Options{
 			Provider: deepseek.ProviderRoute,
@@ -655,6 +745,95 @@ func TestServerTreeStartsCapabilitiesBeforeExposingConnection(t *testing.T) {
 			response.StatusCode,
 			message,
 			description,
+		)
+	}
+	toolBody := []byte(`{"type":"client-request","rpcId":"assembly-tools-1","method":"bound.tools","payload":{}}`)
+	toolRequest, err := http.NewRequestWithContext(
+		requestContext,
+		http.MethodPost,
+		"http://"+serverAddress+protocol.APIPath+"/"+apiproxy.BoundToolsMethod,
+		bytes.NewReader(toolBody),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolRequest.Header.Set("content-type", "application/json")
+	toolResponse, err := (&http.Client{
+		Timeout: 2 * time.Second,
+	}).Do(toolRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer toolResponse.Body.Close()
+	var toolMessage protocol.ServerResponse
+	if err = json.NewDecoder(toolResponse.Body).Decode(&toolMessage); err != nil {
+		t.Fatal(err)
+	}
+	var toolValue apiproxy.BoundToolsValue
+	if err = json.Unmarshal(toolMessage.Result.Value, &toolValue); err != nil {
+		t.Fatal(err)
+	}
+	projectedToolNames := make([]string, len(toolValue.Tools))
+	for index, option := range toolValue.Tools {
+		projectedToolNames[index] = option.Name
+		if option.Description == "" {
+			t.Fatalf("bound.tools omitted %q description", option.Name)
+		}
+	}
+	wantProjectedToolNames := []string{
+		toolaskuser.Name,
+		"interrupt_agent",
+		"list_agents",
+		"send_message",
+		subagentdelegation.DefaultToolName,
+	}
+	if toolResponse.StatusCode != http.StatusOK || !toolMessage.Result.OK ||
+		!reflect.DeepEqual(projectedToolNames, wantProjectedToolNames) {
+		t.Fatalf(
+			"bound.tools response = (%d, %#v, %#v)",
+			toolResponse.StatusCode,
+			toolMessage,
+			toolValue,
+		)
+	}
+	extensionBody := []byte(`{"type":"client-request","rpcId":"assembly-extensions-1","method":"bound.extensions","payload":{}}`)
+	extensionRequest, err := http.NewRequestWithContext(
+		requestContext,
+		http.MethodPost,
+		"http://"+serverAddress+protocol.APIPath+"/"+apiproxy.BoundExtensionsMethod,
+		bytes.NewReader(extensionBody),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extensionRequest.Header.Set("content-type", "application/json")
+	extensionResponse, err := (&http.Client{
+		Timeout: 2 * time.Second,
+	}).Do(extensionRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer extensionResponse.Body.Close()
+	var extensionMessage protocol.ServerResponse
+	if err = json.NewDecoder(extensionResponse.Body).Decode(
+		&extensionMessage,
+	); err != nil {
+		t.Fatal(err)
+	}
+	var extensionValue apiproxy.BoundExtensionsValue
+	if err = json.Unmarshal(
+		extensionMessage.Result.Value,
+		&extensionValue,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if extensionResponse.StatusCode != http.StatusOK ||
+		!extensionMessage.Result.OK || len(extensionValue.Extensions) != 0 {
+		t.Fatalf(
+			"bound.extensions response = (%d, %#v, %#v)",
+			extensionResponse.StatusCode,
+			extensionMessage,
+			extensionValue,
 		)
 	}
 	if err = runtimeEngine.Shutdown(requestContext); err != nil {

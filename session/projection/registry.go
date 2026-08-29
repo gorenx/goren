@@ -18,9 +18,39 @@ type unitCell struct {
 	observedSeq int64
 }
 
+type cellCandidate struct {
+	key  string
+	cell unitCell
+}
+
+type cellAdvance struct {
+	cell            unitCell
+	stateWasChanged bool
+}
+
+type eventCandidate struct {
+	prepared        cellCandidate
+	stateWasChanged bool
+}
+
+type eventPrefix struct {
+	conversation session.Context
+	boundary     int64
+	events       []session.Event
+	loaded       bool
+}
+
+func (source *eventPrefix) load() []session.Event {
+	if !source.loaded {
+		source.events = eventsBefore(source.conversation.Events(), source.boundary)
+		source.loaded = true
+	}
+	return source.events
+}
+
 type registration struct {
 	projectionUnit Unit
-	cells          map[*session.Session]unitCell
+	cells          map[session.Context]unitCell
 	refs           int
 }
 
@@ -41,18 +71,18 @@ func NewDriveRegistry() *DriveRegistry {
 }
 
 // Manifest declares the projection Service and Session events it observes.
-func (*DriveRegistry) Manifest() plugin.Manifest {
+func (owner *DriveRegistry) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: PluginName,
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[Registry](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[Registry](owner),
 		},
 		Requires: []plugin.ServiceType{
 			plugin.ServiceOf[session.LiveStore](),
 		},
 		Events: []plugin.EventSubscription{
-			plugin.EventOf[session.SessionEventAppended](),
-			plugin.EventOf[session.SessionDisposed](),
+			plugin.EventOf[session.EventAppended](),
+			plugin.EventOf[session.Disposed](),
 		},
 	}
 }
@@ -81,13 +111,13 @@ func (owner *DriveRegistry) ObserveEvent(
 	fact plugin.Event,
 ) error {
 	switch observed := fact.(type) {
-	case session.SessionEventAppended:
+	case session.EventAppended:
 		return owner.observeEvent(
 			requestContext,
 			observed.Conversation,
 			observed.Committed,
 		)
-	case session.SessionDisposed:
+	case session.Disposed:
 		return owner.observeDisposed(requestContext, observed.Conversation)
 	default:
 		return nil
@@ -100,7 +130,8 @@ func (owner *DriveRegistry) Register(projectionUnit Unit) (UnitHandle, error) {
 		return nil, errors.New("sessionprojection: projection Unit is nil")
 	}
 	projectionKey := projectionUnit.Key()
-	if strings.TrimSpace(projectionKey) == "" || projectionKey != strings.TrimSpace(projectionKey) {
+	trimmedKey := strings.TrimSpace(projectionKey)
+	if trimmedKey == "" || projectionKey != trimmedKey {
 		return nil, errors.New("sessionprojection: projection key must be non-empty and trimmed")
 	}
 	version := projectionUnit.StateVersion()
@@ -113,7 +144,7 @@ func (owner *DriveRegistry) Register(projectionUnit Unit) (UnitHandle, error) {
 	if existing == nil {
 		owner.registrations[projectionKey] = &registration{
 			projectionUnit: projectionUnit,
-			cells:          make(map[*session.Session]unitCell),
+			cells:          make(map[session.Context]unitCell),
 			refs:           1,
 		}
 		owner.order = append(owner.order, projectionKey)
@@ -134,112 +165,114 @@ func (owner *DriveRegistry) Register(projectionUnit Unit) (UnitHandle, error) {
 	}, nil
 }
 
-// Snapshot folds missing cells lazily and serves one validated current cut.
-func (owner *DriveRegistry) Snapshot(conversation *session.Session) (Snapshot, error) {
+// Snapshot folds missing cells lazily and serves one validated current state.
+func (owner *DriveRegistry) Snapshot(conversation session.Context) (Snapshot, error) {
 	if conversation == nil {
 		return Snapshot{}, errors.New("sessionprojection: snapshot Session is nil")
 	}
 	events := conversation.Events()
 	owner.mu.Lock()
 	defer owner.mu.Unlock()
-	projectionValues := make(Values, len(owner.registrations))
-	for _, projectionKey := range owner.order {
-		entry := owner.registrations[projectionKey]
-		if entry == nil {
-			continue
-		}
-		cell, err := owner.cellFor(entry, conversation, events)
-		if err != nil {
-			return Snapshot{}, err
-		}
-		view, err := viewValue(entry.projectionUnit, cell.state)
-		if err != nil {
-			return Snapshot{}, fmt.Errorf("sessionprojection: projection %q view: %w", projectionKey, err)
-		}
-		projectionValues[projectionKey] = view
+	candidates, err := owner.prepareCells(conversation, events)
+	if err != nil {
+		return Snapshot{}, err
 	}
-	return Snapshot{AsOfSeq: lastSequence(events), Values: projectionValues}, nil
+	projectionValues := make(Values, len(candidates))
+	for _, prepared := range candidates {
+		entry := owner.registrations[prepared.key]
+		view, err := viewValue(entry.projectionUnit, prepared.cell.state)
+		if err != nil {
+			return Snapshot{}, fmt.Errorf(
+				"sessionprojection: projection %q view: %w",
+				prepared.key,
+				err,
+			)
+		}
+		projectionValues[prepared.key] = view
+	}
+	owner.installCells(conversation, candidates)
+	return Snapshot{
+		AsOfSeq: lastSequence(events),
+		Values:  projectionValues,
+	}, nil
 }
 
 // Checkpoint returns detached rebuildable state for every registered unit.
-func (owner *DriveRegistry) Checkpoint(conversation *session.Session) (Checkpoint, error) {
+func (owner *DriveRegistry) Checkpoint(conversation session.Context) (Checkpoint, error) {
 	if conversation == nil {
 		return nil, errors.New("sessionprojection: checkpoint Session is nil")
 	}
 	events := conversation.Events()
 	owner.mu.Lock()
 	defer owner.mu.Unlock()
-	rows := make(Checkpoint, len(owner.registrations))
-	for _, projectionKey := range owner.order {
-		entry := owner.registrations[projectionKey]
-		if entry == nil {
-			continue
-		}
-		cell, err := owner.cellFor(entry, conversation, events)
-		if err != nil {
-			return nil, err
-		}
-		rows[projectionKey] = CheckpointRow{
+	candidates, err := owner.prepareCells(conversation, events)
+	if err != nil {
+		return nil, err
+	}
+	rows := make(Checkpoint, len(candidates))
+	for _, prepared := range candidates {
+		entry := owner.registrations[prepared.key]
+		rows[prepared.key] = CheckpointRow{
 			Version: entry.projectionUnit.StateVersion(),
-			Seq:     cell.observedSeq,
-			Value:   cloneRaw(cell.state),
+			Seq:     prepared.cell.observedSeq,
+			Value:   cloneRaw(prepared.cell.state),
 		}
 	}
+	owner.installCells(conversation, candidates)
 	return rows, nil
 }
 
 func (owner *DriveRegistry) observeEvent(
 	requestContext context.Context,
-	conversation *session.Session,
+	conversation session.Context,
 	committed session.Event,
 ) error {
 	owner.mu.Lock()
+	candidates := make([]cellCandidate, 0, len(owner.registrations))
 	changes := make([]Change, 0)
+	prefix := eventPrefix{
+		conversation: conversation,
+		boundary:     committed.Seq,
+	}
 	for _, projectionKey := range owner.order {
 		entry := owner.registrations[projectionKey]
-		if entry == nil {
-			continue
-		}
-		cell, found := entry.cells[conversation]
-		if !found {
-			prefix := eventsBefore(conversation.Events(), committed.Seq)
-			built, err := buildCell(entry.projectionUnit, prefix)
-			if err != nil {
-				owner.mu.Unlock()
-				return fmt.Errorf("sessionprojection: projection %q late fold: %w", projectionKey, err)
-			}
-			cell = built
-		}
-		if cell.observedSeq >= committed.Seq {
-			continue
-		}
-		stateChange, err := applyTransition(entry.projectionUnit, cell.state, committed)
+		staged, err := owner.prepareEventCandidate(
+			projectionKey,
+			conversation,
+			committed,
+			&prefix,
+		)
 		if err != nil {
 			owner.mu.Unlock()
-			return fmt.Errorf("sessionprojection: projection %q apply seq %d: %w", projectionKey, committed.Seq, err)
+			return err
 		}
-		cell.state = stateChange.State
-		cell.observedSeq = committed.Seq
-		entry.cells[conversation] = cell
-		if !stateChange.Changed {
+		if staged == nil {
 			continue
 		}
-		view, err := viewValue(entry.projectionUnit, cell.state)
+		candidates = append(candidates, staged.prepared)
+		if !staged.stateWasChanged {
+			continue
+		}
+		view, err := viewValue(entry.projectionUnit, staged.prepared.cell.state)
 		if err != nil {
 			owner.mu.Unlock()
 			return fmt.Errorf("sessionprojection: projection %q view seq %d: %w", projectionKey, committed.Seq, err)
 		}
 		changes = append(changes, Change{
-			Session: conversation, Key: projectionKey, Value: view, Seq: committed.Seq,
+			Session: conversation,
+			Key:     projectionKey,
+			Value:   view,
+			Seq:     committed.Seq,
 		})
 	}
+	owner.installCells(conversation, candidates)
 	owner.mu.Unlock()
 	for _, projectionChange := range changes {
 		if err := plugin.Publish(
 			requestContext,
 			owner,
-			ProjectionChanged{
-				Change: cloneChange(projectionChange),
+			Changed{
+				Change: projectionChange,
 			},
 		); err != nil {
 			return err
@@ -248,7 +281,63 @@ func (owner *DriveRegistry) observeEvent(
 	return nil
 }
 
-func (owner *DriveRegistry) observeDisposed(_ context.Context, conversation *session.Session) error {
+func (owner *DriveRegistry) prepareEventCandidate(
+	projectionKey string,
+	conversation session.Context,
+	committed session.Event,
+	prefix *eventPrefix,
+) (*eventCandidate, error) {
+	entry := owner.registrations[projectionKey]
+	cell, found := entry.cells[conversation]
+	stateWasChanged := false
+	switch {
+	case !found:
+		built, err := buildCell(entry.projectionUnit, prefix.load())
+		if err != nil {
+			return nil, fmt.Errorf(
+				"sessionprojection: projection %q late fold: %w",
+				projectionKey,
+				err,
+			)
+		}
+		cell = built
+	case cell.observedSeq < committed.Seq-1:
+		catchUp, err := advanceCell(entry.projectionUnit, cell, prefix.load())
+		if err != nil {
+			return nil, fmt.Errorf(
+				"sessionprojection: projection %q catch up before seq %d: %w",
+				projectionKey,
+				committed.Seq,
+				err,
+			)
+		}
+		cell = catchUp.cell
+		stateWasChanged = catchUp.stateWasChanged
+	}
+	if cell.observedSeq >= committed.Seq {
+		return nil, nil
+	}
+	stateChange, err := applyTransition(entry.projectionUnit, cell.state, committed)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"sessionprojection: projection %q apply seq %d: %w",
+			projectionKey,
+			committed.Seq,
+			err,
+		)
+	}
+	cell.state = stateChange.State
+	cell.observedSeq = committed.Seq
+	return &eventCandidate{
+		prepared: cellCandidate{
+			key:  projectionKey,
+			cell: cell,
+		},
+		stateWasChanged: stateWasChanged || stateChange.Changed,
+	}, nil
+}
+
+func (owner *DriveRegistry) observeDisposed(_ context.Context, conversation session.Context) error {
 	owner.mu.Lock()
 	for _, entry := range owner.registrations {
 		delete(entry.cells, conversation)
@@ -277,36 +366,45 @@ func (owner *DriveRegistry) unregister(projectionKey string) {
 	}
 }
 
-func (owner *DriveRegistry) cellFor(
-	entry *registration,
-	conversation *session.Session,
+func (owner *DriveRegistry) prepareCells(
+	conversation session.Context,
 	events []session.Event,
-) (unitCell, error) {
-	cell, found := entry.cells[conversation]
-	if !found {
-		built, err := buildCell(entry.projectionUnit, events)
-		if err != nil {
-			return unitCell{}, fmt.Errorf("sessionprojection: projection %q fold: %w", entry.projectionUnit.Key(), err)
+) ([]cellCandidate, error) {
+	candidates := make([]cellCandidate, 0, len(owner.registrations))
+	for _, projectionKey := range owner.order {
+		entry := owner.registrations[projectionKey]
+		cell, found := entry.cells[conversation]
+		var prepared unitCell
+		var err error
+		if found {
+			var advanced cellAdvance
+			advanced, err = advanceCell(entry.projectionUnit, cell, events)
+			prepared = advanced.cell
+		} else {
+			prepared, err = buildCell(entry.projectionUnit, events)
 		}
-		entry.cells[conversation] = built
-		return built, nil
-	}
-	for _, committed := range events {
-		if committed.Seq <= cell.observedSeq {
-			continue
-		}
-		stateChange, err := applyTransition(entry.projectionUnit, cell.state, committed)
 		if err != nil {
-			return unitCell{}, fmt.Errorf(
-				"sessionprojection: projection %q fold seq %d: %w",
-				entry.projectionUnit.Key(), committed.Seq, err,
+			return nil, fmt.Errorf(
+				"sessionprojection: projection %q fold: %w",
+				projectionKey,
+				err,
 			)
 		}
-		cell.state = stateChange.State
-		cell.observedSeq = committed.Seq
+		candidates = append(candidates, cellCandidate{
+			key:  projectionKey,
+			cell: prepared,
+		})
 	}
-	entry.cells[conversation] = cell
-	return cell, nil
+	return candidates, nil
+}
+
+func (owner *DriveRegistry) installCells(
+	conversation session.Context,
+	candidates []cellCandidate,
+) {
+	for _, prepared := range candidates {
+		owner.registrations[prepared.key].cells[conversation] = prepared.cell
+	}
 }
 
 type unitHandle struct {
@@ -334,16 +432,40 @@ func buildCell(projectionUnit Unit, events []session.Event) (unitCell, error) {
 	if err != nil {
 		return unitCell{}, fmt.Errorf("initial state: %w", err)
 	}
-	cell := unitCell{state: state, observedSeq: -1}
+	cell := unitCell{
+		state:       state,
+		observedSeq: -1,
+	}
+	advanced, err := advanceCell(projectionUnit, cell, events)
+	return advanced.cell, err
+}
+
+func advanceCell(
+	projectionUnit Unit,
+	cell unitCell,
+	events []session.Event,
+) (cellAdvance, error) {
+	stateWasChanged := false
 	for _, committed := range events {
+		if committed.Seq <= cell.observedSeq {
+			continue
+		}
 		stateChange, transitionErr := applyTransition(projectionUnit, cell.state, committed)
 		if transitionErr != nil {
-			return unitCell{}, fmt.Errorf("apply seq %d: %w", committed.Seq, transitionErr)
+			return cellAdvance{}, fmt.Errorf(
+				"apply seq %d: %w",
+				committed.Seq,
+				transitionErr,
+			)
 		}
 		cell.state = stateChange.State
 		cell.observedSeq = committed.Seq
+		stateWasChanged = stateWasChanged || stateChange.Changed
 	}
-	return cell, nil
+	return cellAdvance{
+		cell:            cell,
+		stateWasChanged: stateWasChanged,
+	}, nil
 }
 
 func applyTransition(projectionUnit Unit, state json.RawMessage, committed session.Event) (Transition, error) {
@@ -367,34 +489,33 @@ func viewValue(projectionUnit Unit, state json.RawMessage) (json.RawMessage, err
 }
 
 func validatedRaw(rawValue json.RawMessage) (json.RawMessage, error) {
-	if len(rawValue) == 0 {
-		return nil, errors.New("plain JSON value is absent")
-	}
-	if err := jsonvalue.Validate(rawValue); err != nil {
-		return nil, fmt.Errorf("invalid plain JSON value: %w", err)
+	if err := validateRaw(rawValue); err != nil {
+		return nil, err
 	}
 	return cloneRaw(rawValue), nil
+}
+
+func validateRaw(rawValue json.RawMessage) error {
+	if len(rawValue) == 0 {
+		return errors.New("plain JSON value is absent")
+	}
+	if err := jsonvalue.Validate(rawValue); err != nil {
+		return fmt.Errorf("invalid plain JSON value: %w", err)
+	}
+	return nil
 }
 
 func cloneRaw(rawValue json.RawMessage) json.RawMessage {
 	return append(json.RawMessage(nil), rawValue...)
 }
 
-func cloneChange(source Change) Change {
-	result := source
-	result.Value = cloneRaw(source.Value)
-	return result
-}
-
 func eventsBefore(events []session.Event, boundary int64) []session.Event {
-	prefix := make([]session.Event, 0, len(events))
-	for _, committed := range events {
+	for index, committed := range events {
 		if committed.Seq >= boundary {
-			break
+			return events[:index]
 		}
-		prefix = append(prefix, committed)
 	}
-	return prefix
+	return events
 }
 
 func lastSequence(events []session.Event) int64 {

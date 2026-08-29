@@ -7,8 +7,8 @@ import (
 	"fmt"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/internal/jsonvalue"
-	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/tools"
 )
@@ -47,7 +47,7 @@ func (executor *toolCallExecutor) deactivate() {
 }
 
 type plannedToolCall struct {
-	block llm.ToolCallBlock
+	block agentmessage.ToolCallBlock
 	input tools.ToolExecutionInput
 }
 
@@ -73,7 +73,7 @@ func (executor *toolCallExecutor) execute(
 	requestContext context.Context,
 	turn int64,
 	step int64,
-	blocks []llm.ToolCallBlock,
+	blocks []agentmessage.ToolCallBlock,
 ) (bool, error) {
 	plannedCalls := make([]plannedToolCall, len(blocks))
 	for index, block := range blocks {
@@ -114,7 +114,12 @@ func (executor *toolCallExecutor) execute(
 		concluded = concluded || outcome.concluded
 		if outcome.aborted {
 			for _, skipped := range plannedCalls[nextIndex:] {
-				if err := executor.appendSkippedToolCall(turn, step, skipped.block); err != nil {
+				if err := executor.appendSkippedToolCall(
+					requestContext,
+					turn,
+					step,
+					skipped.block,
+				); err != nil {
 					return concluded, err
 				}
 			}
@@ -168,6 +173,7 @@ func (executor *toolCallExecutor) runToolGroup(
 				)
 			}
 			if err := executor.appendToolResult(
+				requestContext,
 				turn,
 				step,
 				group[committed].block,
@@ -188,7 +194,12 @@ func (executor *toolCallExecutor) runToolGroup(
 	}
 
 	startCall := func(index int) error {
-		callSequence, err := executor.appendToolCall(turn, step, group[index].block)
+		callSequence, err := executor.appendToolCall(
+			requestContext,
+			turn,
+			step,
+			group[index].block,
+		)
 		if err != nil {
 			return err
 		}
@@ -292,7 +303,12 @@ func (executor *toolCallExecutor) runToolGroup(
 	}
 	if aborted {
 		for _, skipped := range group[started:] {
-			if err := executor.appendSkippedToolCall(turn, step, skipped.block); err != nil {
+			if err := executor.appendSkippedToolCall(
+				requestContext,
+				turn,
+				step,
+				skipped.block,
+			); err != nil {
 				return toolGroupOutcome{}, err
 			}
 		}
@@ -327,12 +343,12 @@ func parseToolArguments(rawValue string) (json.RawMessage, error) {
 }
 
 func (executor *toolCallExecutor) appendToolCall(
+	requestContext context.Context,
 	turn int64,
 	step int64,
-	block llm.ToolCallBlock,
+	block agentmessage.ToolCallBlock,
 ) (int64, error) {
-	committed, err := session.AppendSerialized(
-		executor.subject.conversation,
+	draft, err := session.NewEventDraft(
 		session.ToolCalled,
 		session.ToolCall{
 			Turn:      turn,
@@ -342,18 +358,22 @@ func (executor *toolCallExecutor) appendToolCall(
 			Arguments: block.Arguments,
 		},
 	)
-	return committed.Seq, err
+	if err != nil {
+		return 0, err
+	}
+	result, err := executor.subject.conversation.Commit(requestContext, session.Batch(draft))
+	if err != nil {
+		return 0, err
+	}
+	return result.Events[0].Seq, nil
 }
 
 func (executor *toolCallExecutor) appendSkippedToolCall(
+	requestContext context.Context,
 	turn int64,
 	step int64,
-	block llm.ToolCallBlock,
+	block agentmessage.ToolCallBlock,
 ) error {
-	callSequence, err := executor.appendToolCall(turn, step, block)
-	if err != nil {
-		return err
-	}
 	failure := &tools.ToolExecutionFailure{
 		Error: tools.ToolFailure{
 			Message: "tool call aborted before dispatch",
@@ -362,30 +382,81 @@ func (executor *toolCallExecutor) appendSkippedToolCall(
 				Code: tools.ToolAbortedBeforeDispatch,
 			},
 		},
-		Content: []llm.ContentBlock{
-			llm.NewTextBlock("Error: tool call aborted before dispatch"),
+		Content: []agentmessage.ContentBlock{
+			agentmessage.NewTextBlock("Error: tool call aborted before dispatch"),
 		},
 	}
-	return executor.appendToolResult(turn, step, block, failure, callSequence)
+	toolReply, err := toolResultPayload(turn, step, block, failure)
+	if err != nil {
+		return err
+	}
+	callDraft, err := session.NewEventDraft(
+		session.ToolCalled,
+		session.ToolCall{
+			Turn:      turn,
+			Step:      step,
+			CallID:    block.ID,
+			Name:      block.Name,
+			Arguments: block.Arguments,
+		},
+	)
+	if err != nil {
+		return err
+	}
+	_, err = executor.subject.conversation.Commit(
+		requestContext,
+		&skippedCallPlan{
+			callDraft: callDraft,
+			result:    toolReply,
+		},
+	)
+	return err
 }
 
 func (executor *toolCallExecutor) appendToolResult(
+	requestContext context.Context,
 	turn int64,
 	step int64,
-	block llm.ToolCallBlock,
+	block agentmessage.ToolCallBlock,
 	outcome tools.ToolExecutionResult,
 	callSequence int64,
 ) error {
-	if outcome == nil {
-		return errors.New("agentloop: Tool scheduler returned a nil result")
+	payload, err := toolResultPayload(turn, step, block, outcome)
+	if err != nil {
+		return err
 	}
-	toolReply, err := llm.NewToolResultMessage(llm.ToolResultMessageInput{
+	provenance := []int64{callSequence}
+	draft, err := session.NewSurfaceEventDraft(
+		session.ToolResultAdded,
+		payload,
+		session.SurfaceIntent{
+			Operation:       session.SurfaceAppend(),
+			SourceEventSeqs: &provenance,
+		},
+	)
+	if err != nil {
+		return err
+	}
+	_, err = executor.subject.conversation.Commit(requestContext, session.Batch(draft))
+	return err
+}
+
+func toolResultPayload(
+	turn int64,
+	step int64,
+	block agentmessage.ToolCallBlock,
+	outcome tools.ToolExecutionResult,
+) (session.ToolResult, error) {
+	if outcome == nil {
+		return session.ToolResult{}, errors.New("agentloop: Tool scheduler returned a nil result")
+	}
+	toolReply, err := agentmessage.NewToolResultMessage(agentmessage.ToolResultMessageInput{
 		CallID:  block.ID,
 		Content: outcome.ContentBlocks(),
 		IsError: outcome.Failed(),
 	})
 	if err != nil {
-		return err
+		return session.ToolResult{}, err
 	}
 	payload := session.ToolResult{
 		Turn:    turn,
@@ -399,17 +470,34 @@ func (executor *toolCallExecutor) appendToolResult(
 			Code: failure.Info.Code,
 		}
 	}
-	provenance := []int64{callSequence}
-	_, err = session.AppendSurfaceSerialized(
-		executor.subject.conversation,
+	return payload, nil
+}
+
+type skippedCallPlan struct {
+	callDraft session.EventDraft
+	result    session.ToolResult
+}
+
+func (plan *skippedCallPlan) Build(
+	_ context.Context,
+	current session.Snapshot,
+) ([]session.EventDraft, error) {
+	provenance := []int64{current.Barrier.NextSeq}
+	resultDraft, err := session.NewSurfaceEventDraft(
 		session.ToolResultAdded,
-		payload,
+		plan.result,
 		session.SurfaceIntent{
 			Operation:       session.SurfaceAppend(),
 			SourceEventSeqs: &provenance,
 		},
 	)
-	return err
+	if err != nil {
+		return nil, err
+	}
+	return []session.EventDraft{
+		plan.callDraft,
+		resultDraft,
+	}, nil
 }
 
 func outcomeFailure(outcome tools.ToolExecutionResult) (tools.ToolFailure, bool) {

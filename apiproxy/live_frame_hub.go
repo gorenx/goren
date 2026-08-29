@@ -8,8 +8,8 @@ import (
 	"sync"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/connection"
-	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 )
 
@@ -107,7 +107,7 @@ func newLiveFrameHub(newRPC func() (connection.RPCID, error)) *liveFrameHub {
 
 func (hub *liveFrameHub) openMux(
 	requestContext context.Context,
-	conversations []*session.Session,
+	conversations []session.Context,
 	emit func(StreamRequest[MuxFrame]) error,
 ) error {
 	subscriber := &muxSubscriber{
@@ -231,7 +231,7 @@ func (hub *liveFrameHub) sessionEvent(
 	return dispatchErr
 }
 
-func (hub *liveFrameHub) sessionCreated(conversation *session.Session) error {
+func (hub *liveFrameHub) sessionCreated(conversation session.Context) error {
 	header := conversation.Header()
 	events := conversation.Events()
 	lastSeq := int64(-1)
@@ -414,8 +414,8 @@ func projectQueue(header session.Header, events []session.Event) ([]QueuedInboxI
 	if header.SeedLength != nil {
 		startSeq = *header.SeedLength
 	}
-	nextTurn := make([]llm.UserMessage, 0)
-	nextStep := make([]llm.UserMessage, 0)
+	nextTurn := make([]agentmessage.UserMessage, 0)
+	nextStep := make([]agentmessage.UserMessage, 0)
 	for _, committed := range events {
 		if committed.Seq < startSeq || committed.Type != "agent/inbox/spliced" {
 			continue
@@ -437,7 +437,7 @@ func projectQueue(header session.Header, events []session.Event) ([]QueuedInboxI
 		if mutation.Start < 0 || removedCount < 0 || mutation.Start+removedCount > len(*target) {
 			return nil, fmt.Errorf("apiproxy: project queue at seq %d: invalid splice", committed.Seq)
 		}
-		updated := make([]llm.UserMessage, 0, len(*target)-removedCount+len(mutation.Inserted))
+		updated := make([]agentmessage.UserMessage, 0, len(*target)-removedCount+len(mutation.Inserted))
 		updated = append(updated, (*target)[:mutation.Start]...)
 		updated = append(updated, mutation.Inserted...)
 		updated = append(updated, (*target)[mutation.Start+removedCount:]...)
@@ -472,7 +472,7 @@ func projectQueue(header session.Header, events []session.Event) ([]QueuedInboxI
 	return items, nil
 }
 
-func projectQueuedMessage(messageValue llm.UserMessage) (QueuedMessage, error) {
+func projectQueuedMessage(messageValue agentmessage.UserMessage) (QueuedMessage, error) {
 	blocks := messageValue.ContentValue()
 	content := make([]json.RawMessage, len(blocks))
 	for index, block := range blocks {

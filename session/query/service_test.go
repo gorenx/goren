@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	sesspersist "github.com/gorenx/goren/session/persistence"
@@ -16,6 +16,31 @@ import (
 
 type queryPostCommitFailureSink struct{}
 
+type sessionStoreProbe struct {
+	plugin.Base
+	store session.LiveStore
+}
+
+func (*sessionStoreProbe) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "session-query-store-probe",
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[session.LiveStore](),
+		},
+	}
+}
+
+func (probe *sessionStoreProbe) Apply(context.Context) error {
+	liveStore, err := plugin.Require[session.LiveStore](probe)
+	if err != nil {
+		return err
+	}
+	probe.store = liveStore
+	return nil
+}
+
+func (*sessionStoreProbe) Dispose(context.Context) error { return nil }
+
 func (queryPostCommitFailureSink) ReportPostCommitFailure(session.PostCommitFailure) {}
 
 type queryPersistencePlugin struct {
@@ -24,11 +49,11 @@ type queryPersistencePlugin struct {
 	revisions map[session.SessionID]sesspersist.Revision
 }
 
-func (*queryPersistencePlugin) Manifest() plugin.Manifest {
+func (owner *queryPersistencePlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "fixture-query-persistence",
-		Provides: []plugin.ServiceType{
-			plugin.ServiceOf[sesspersist.Persistence](),
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[sesspersist.Persistence](owner),
 		},
 	}
 }
@@ -52,8 +77,8 @@ func (*queryPersistencePlugin) SupportsRawArtifacts() bool {
 func (*queryPersistencePlugin) ReadRaw(
 	context.Context,
 	session.SessionID,
-) (sesspersist.RawArtifact, bool, error) {
-	return sesspersist.RawArtifact{}, false, errors.New("raw artifacts unavailable")
+) (sesspersist.RawArtifact, error) {
+	return sesspersist.RawArtifact{}, errors.New("raw artifacts unavailable")
 }
 
 func (*queryPersistencePlugin) Create(context.Context, session.Header) error {
@@ -95,25 +120,39 @@ func (storage *queryPersistencePlugin) Inspect(
 	return loaded, nil
 }
 
-func (*queryPersistencePlugin) ReadFrom(
+func (*queryPersistencePlugin) ReadEventsFrom(
 	context.Context,
 	session.SessionID,
-	int64,
-) (sesspersist.Inspection, error) {
-	return sesspersist.Inspection{}, errors.New("fixture does not read suffixes")
+	sesspersist.EventContinuation,
+) (sesspersist.EventSegment, error) {
+	return sesspersist.EventSegment{}, errors.New("fixture does not read event segments")
 }
 
-func (storage *queryPersistencePlugin) List(context.Context) ([]session.Header, error) {
+func (*queryPersistencePlugin) ReadEventsBefore(
+	context.Context,
+	session.SessionID,
+	sesspersist.EventPage,
+) (sesspersist.EventWindow, error) {
+	return sesspersist.EventWindow{}, errors.New("fixture does not read event windows")
+}
+
+func (storage *queryPersistencePlugin) List(
+	context.Context,
+	sesspersist.SessionPage,
+) (sesspersist.HeaderPage, error) {
 	result := make([]session.Header, 0, len(storage.logs))
 	for _, loaded := range storage.logs {
 		result = append(result, loaded.Header)
 	}
-	return result, nil
+	return sesspersist.HeaderPage{
+		Headers: result,
+	}, nil
 }
 
 func (storage *queryPersistencePlugin) ListSnapshots(
-	context.Context,
-) ([]sesspersist.Snapshot, error) {
+	_ context.Context,
+	_ sesspersist.SessionPage,
+) (sesspersist.SnapshotPage, error) {
 	result := make([]sesspersist.Snapshot, 0, len(storage.logs))
 	for identifier, loaded := range storage.logs {
 		result = append(
@@ -124,7 +163,9 @@ func (storage *queryPersistencePlugin) ListSnapshots(
 			},
 		)
 	}
-	return result, nil
+	return sesspersist.SnapshotPage{
+		Snapshots: result,
+	}, nil
 }
 
 type queryIndexOpener struct {
@@ -139,7 +180,7 @@ func (opener queryIndexOpener) OpenIndex(
 
 type queryFixture struct {
 	persistence *queryPersistencePlugin
-	store       *session.MemoryStore
+	store       session.LiveStore
 	service     *sessionquery.Service
 }
 
@@ -148,7 +189,7 @@ func newQueryFixture(
 	persistence *queryPersistencePlugin,
 ) *queryFixture {
 	testingContext.Helper()
-	store, err := session.NewMemoryStore(
+	sessionPlugin, err := session.NewPlugin(
 		session.MemoryStoreOptions{
 			PostCommitFailures: queryPostCommitFailureSink{},
 		},
@@ -168,11 +209,13 @@ func newQueryFixture(
 		testingContext.Fatal(err)
 	}
 	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
+	storeProbe := &sessionStoreProbe{}
 	if _, err := runtimeEngine.Start(
 		context.Background(),
 		queryService,
 		persistence,
-		store,
+		sessionPlugin,
+		storeProbe,
 	); err != nil {
 		testingContext.Fatal(err)
 	}
@@ -183,7 +226,7 @@ func newQueryFixture(
 	})
 	return &queryFixture{
 		persistence: persistence,
-		store:       store,
+		store:       storeProbe.store,
 		service:     queryService,
 	}
 }
@@ -365,7 +408,7 @@ func createLiveSession(
 	fixture *queryFixture,
 	identifier session.SessionID,
 	createdAt int64,
-) *session.Session {
+) session.Context {
 	testingContext.Helper()
 	handle, err := fixture.store.Create(
 		context.Background(),
@@ -384,18 +427,18 @@ func createLiveSession(
 
 func appendUser(
 	testingContext *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	textValue string,
 	operation session.SurfaceOperation,
 	sources *[]int64,
 ) {
 	testingContext.Helper()
-	messageValue, err := llm.NewUserMessage(
-		llm.UserMessageInput{
-			Content: []llm.ContentBlock{
-				llm.NewTextBlock(textValue),
+	messageValue, err := agentmessage.NewUserMessage(
+		agentmessage.UserMessageInput{
+			Content: []agentmessage.ContentBlock{
+				agentmessage.NewTextBlock(textValue),
 			},
-			Source: llm.UserMessageSource{
+			Source: agentmessage.UserMessageSource{
 				Kind: "user",
 			},
 		},
@@ -403,32 +446,35 @@ func appendUser(
 	if err != nil {
 		testingContext.Fatal(err)
 	}
-	if _, err := session.AppendSurface(
-		conversation,
-		session.UserMessageAdded,
-		messageValue,
-		session.SurfaceIntent{
-			Operation:       operation,
-			SourceEventSeqs: sources,
-		},
-	); err != nil {
-		testingContext.Fatal(err)
+	{
+		draft, err := session.NewSurfaceEventDraft(session.UserMessageAdded,
+			messageValue,
+			session.SurfaceIntent{
+				Operation:       operation,
+				SourceEventSeqs: sources,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			testingContext.Fatal(err)
+		}
 	}
 }
 
 func appendAssistant(
 	testingContext *testing.T,
-	conversation *session.Session,
+	conversation session.Context,
 	textValue string,
 	operation session.SurfaceOperation,
 ) {
 	testingContext.Helper()
-	messageValue, err := llm.NewAssistantMessage(
-		llm.AssistantMessageInput{
-			Content: []llm.ContentBlock{
-				llm.NewTextBlock(textValue),
+	messageValue, err := agentmessage.NewAssistantMessage(
+		agentmessage.AssistantMessageInput{
+			Content: []agentmessage.ContentBlock{
+				agentmessage.NewTextBlock(textValue),
 			},
-			Source: llm.ModelMessageSource{
+			Source: agentmessage.ModelMessageSource{
 				Provider: "test",
 				Model:    "test",
 			},
@@ -437,18 +483,21 @@ func appendAssistant(
 	if err != nil {
 		testingContext.Fatal(err)
 	}
-	if _, err := session.AppendSurface(
-		conversation,
-		session.AssistantMessaged,
-		session.AssistantMessage{
-			Turn:    1,
-			Step:    1,
-			Message: messageValue,
-		},
-		session.SurfaceIntent{
-			Operation: operation,
-		},
-	); err != nil {
-		testingContext.Fatal(err)
+	{
+		draft, err := session.NewSurfaceEventDraft(session.AssistantMessaged,
+			session.AssistantMessage{
+				Turn:    1,
+				Step:    1,
+				Message: messageValue,
+			},
+			session.SurfaceIntent{
+				Operation: operation,
+			})
+		if err == nil {
+			_, err = conversation.Commit(context.Background(), session.Batch(draft))
+		}
+		if err != nil {
+			testingContext.Fatal(err)
+		}
 	}
 }
