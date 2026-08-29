@@ -16,7 +16,7 @@
 - [08 实施进度](./08-implementation-progress.md)：阶段完成度、当前代码/测试证据、验证结果、阻塞项和下一步。
 - [09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)：Goren Server Assembly、源插件映射、Factory Catalog 与 Connection 插件装配。
 - [Go Cordis 风格通用 Plugin 事件领域框架设计](./Go_Cordis_风格插件事件领域运行时设计方案.md)：可复用 Plugin Runtime 的目标、Go 类型身份、Manifest、Service/Event/Waterfall、Scope、调用准入与 `RunRetained` 契约。
-- [Session Core、唯一写协调与生命周期设计](../session/docs/design.zh-CN.md)：`Context`、EventDraft、唯一 `Commit`、固定 `Batch`、状态相关 `WritePlan`、每 Session FIFO baton、原子 batch、Surface、LiveStore 与 durability barrier。
+- [Session Core、唯一写协调与生命周期设计](../session/docs/design.zh-CN.md)：Session 分层、单一 lifecycle owner、`Context`、EventDraft、`Commit/Flush/Release` 唯一 FIFO、状态机、Surface、LiveStore、durability barrier 与跨层交互流程。
 - [11 System Prompt Registry 与 Assembly 模块设计](./11-system-prompt-registry-and-assembly.md)：scope overlay、注册生命周期、deterministic assembly、tool schema 排序、严格插值与上下游边界。
 - [12 Tools Registry 与执行流水线模块设计](./12-tools-registry-and-execution-pipeline.md)：Tool Definition、Root Registry + Child Overlay、restriction/guard、policy Waterfall、一次性执行状态机、结果物化与 System Prompt 投影。
 - [13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)：provider-neutral LLM Service、Adapter Registry、模型路由、流组装、RetryPolicy，以及 DeepSeek typed config、HTTP/SSE 和错误映射。

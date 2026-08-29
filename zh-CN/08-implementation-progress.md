@@ -22,14 +22,14 @@
 | 阶段 0：基线与 Contract Freeze | In Progress | 12 Completed / 1 In Progress / 1 Planned | Contract Verified | 补齐其余 included surface mapping 与 NOTICE/provenance 决策 |
 | 阶段 1：Connection Host Carrier | Completed | 19 Completed | Contract Verified | Gate 已完成，后续扩展随新增 included surface 进入 |
 | 阶段 2：Plugin Runtime | In Progress | Plugin 底座已验证 / 业务模块迁移中 | Go Verified | 新 `plugin/...` 已通过包内检查；旧业务调用方正一次性迁移到 `Plugin.Apply/Dispose`、typed Definition、Waterfall 与 Event 契约 |
-| 阶段 3：Session/Agent slice | Completed | Session 唯一写协调与既有 Agent slice 均完成 | Contract Verified | 保持 wire/Event parity，后续新增能力按 owner 进入 |
+| 阶段 3：Session/Agent slice | In Progress | Session 唯一 Commit 与既有 Agent slice 已完成；Flush/Release 单一 lifecycle owner 尚待收敛 | Go Verified；lifecycle target pending | 保持 wire/Event parity，按 Session Core 最终设计消除 Projection Cache release/flush 竞态 |
 | 阶段 4：Agent Message / LLM Contract | Completed | 14 Completed | Environment Verified | LLM Runtime 与 Provider 行为已完成；Agent Message 已一次性迁入唯一 `agentmessage` owner，旧 `llm` declarations 与 facade 均不存在 |
-| 阶段 5：Session 持久化 | Completed | Persistence、prepared cache 与 ordered barrier 均完成 | Contract Verified | 后续只按新 Backend 或能力需求扩展 |
+| 阶段 5：Session 持久化 | In Progress | Persistence、prepared cache 与 cold read 已完成；Flush/Release 与 Projection Cache lifecycle convergence 待完成 | Contract Verified；并发 lifecycle gap | 先收敛 exact lifecycle state，再扩展 Backend |
 | 阶段 6：客户端能力扩展 | In Progress | 31 Completed / 19 Deferred / 1 Excluded | Contract Verified | 已准入的服务端能力已闭环；Fork 明确排除，export、Query Tool 与其余页面/管理能力保持冻结 |
 | 阶段 7：Deferred 能力 | Deferred | 7 Deferred | None | 不创建 package、handler 或依赖占位 |
 | 阶段 8：Parity Hardening | In Progress | 1 Completed / 4 In Progress / 10 Planned | Environment Verified | 默认 UI/Provider 主流程已有环境证据，完整发布验收仍未完成 |
 
-Session 唯一写协调已完成全调用链迁移：其他领域只持有 `session.Context`，所有写入通过唯一 `Commit(context.Context, WritePlan)`；固定事实使用 `Batch`，状态相关 use case 在 FIFO 头部基于 `Snapshot` 构造完整 drafts，并由包内 `log` 原子提交。旧 raw/serialized append、`ExecuteWrite`、`WriteContext`、after-event admission 和兼容 wrapper 已删除。迁移后的全仓 test、race、vet、build 与 architecture checks 均重新通过；wire/Event envelope 未因本次重构改变。
+Session 唯一 Commit 已完成全调用链迁移：其他领域只持有 `session.Context`，所有写入通过唯一 `Commit(context.Context, WritePlan)`；固定事实使用 `Batch`，状态相关 use case 在 FIFO 头部基于 `Snapshot` 构造完整 drafts，并由包内 `log` 原子提交。旧 raw/serialized append、`ExecuteWrite`、`WriteContext`、after-event admission 和兼容 wrapper 已删除。Flush/Release 仍由 `registration`、coordinator queue 和 Persistence 多份状态协作，尚未达到[Session Core 最终设计](../session/docs/design.zh-CN.md)的单一 lifecycle owner。
 
 ### 2.1 当前 Web Agent 主流程状态矩阵
 
@@ -196,14 +196,14 @@ interaction owner registers stable rpcId + decoder
 | --- | --- | --- | --- | --- |
 | S5-D01 | 交付 | backend-neutral `Persistence`、`SessionLogStore` 与 storage-only `Backend` | Completed | Go Verified：有状态 `SessionLogStore` 实现完整服务、per-ID gate 与 reservation；SQLite adapter 只实现存储 port |
 | S5-D02 | 交付 | SQLite/sqlc Session fact Backend | Completed | Go Verified：schema/query/config/generated code 位于 `session/persistence/sqlite`，默认使用 `modernc.org/sqlite` |
-| S5-D03 | 交付 | write-behind、ordered barrier flush、dispose/shutdown drain | Completed | Go Verified：`LiveStore.Flush` 经 Session FIFO 取得 `WriteBarrier`；Persistence 验证 durable cursor 达到 `NextSeq`，write-behind 失败保留 batch，Release/Close seal、drain、flush 后 detach |
+| S5-D03 | 交付 | write-behind、ordered barrier flush、dispose/shutdown drain | In Progress | 当前主流程 Go Verified；但 Flush publication 尚未与 Release 共享完整 FIFO operation lifetime，当前 `registration/coordinator/Persistence` 多份状态存在逻辑 TOCTOU，目标见 Session Core 最终设计 |
 | S5-D04 | 交付 | cold validation、torn-tail 与开放 Turn/Step/Tool recovery | Completed | Go Verified：`SessionLogStore` 与 recovery tests 覆盖 repair planning/commit |
 | S5-D05 | 交付 | cold `session.list/history/create(resume)` 与 Agent publication handoff | Completed | Contract Verified：默认 composition 重启 E2E 完成 list、history 和 exact Session resume |
 | S5-D06 | 交付 | reconnect baseline、pending replay 和 queue snapshot | Completed | Contract Verified：subscribed/high-water、stable interaction replay 与 queue snapshot 已覆盖；live callback 不作为 durable fact |
 | S5-D07 | 优化 | source-style bounded prepared cache 与 revision reuse | Completed | Go Verified：`preparedSessions` 使用固定容量 generic LRU；ready source 命中验证 durable revision，reservation 移出 LRU 并保持 exact unpublished Session identity，外部 revision 改变触发 reload |
 | S5-D08 | 优化 | `ReadFrom` 使用 Backend seek 而非完整 prefix scan | Completed | Go Verified：`SessionLogStore.ReadFrom` 直接调用 `Backend.LoadStoredFrom`；SQLite 在一个只读事务中读取 Header/revision/suffix 并拒绝 torn marker，计数 Backend 证明不触发 full load |
 | S5-D09 | 交付 | request/turn 完成边界的显式 durability checkpoint | Completed | Go Verified：normal/cancel turn-end 均通过 `LiveStore.Flush` 等待 committed-prefix barrier，idle 不越过 durability checkpoint |
-| S5-D10 | 优化 | Session Projection Cache、独立 SQLite checkpoint store 与 cold read 接入 | Completed | Race Verified：`CheckpointCache`、Factory/Plugin/Assembly、API list/history 与 Subagent ChildDirectory 已闭环；cache 可丢弃且不替代 Session facts；最终边界见[Session Projection Cache 最终设计](./SessionProjectionCache最终设计方案.md) |
+| S5-D10 | 优化 | Session Projection Cache、独立 SQLite checkpoint store 与 cold read 接入 | In Progress | cold read、SQLite、API/Subagent 消费已 Race Verified；live writer 仍有 `Get -> Flush` 与 Retire 交错缺口，待按[Session Projection Cache 最终设计](./SessionProjectionCache最终设计方案.md)收敛 |
 | S5-G01 | Gate | Header/首批 Event/seq/revision transaction 原子 | Completed | Go Verified：`TestAdapterMaterializesHeaderAndBatchAtomically` |
 | S5-G02 | Gate | torn tail、未知事件和开放状态 repair 不变量 | Completed | Go Verified：`TestAdapterMarksAndRepairsOnlyATornTail`、`SessionLogStore`/recovery tests |
 | S5-G03 | Gate | 背景写失败与取消不丢 batch、不伪成功 | Completed | Go Verified：`TestLiveWriterRetainsFailedBackgroundBatchForExplicitFlush`、`TestLiveWriterFlushCanCancelWhileBackgroundWriteRemainsOwned` |
@@ -342,14 +342,14 @@ interaction owner registers stable rpcId + decoder
 | CLI `--data-dir` 默认数据库解析与具体路径覆盖 | `cmd/goren/main_test.go` |
 | Server Build/Runtime Start 失败无 Plugin binding 或 endpoint 遗留 | `internal/assembly/assembly_test.go` |
 | Session payload snapshot、seed 连续性、surface 原子 replace 与负零拒绝 | `session/session_test.go` |
-| Session create/append/flush/dispose、rollback、observer containment、重入拒绝与 publication 后 follow-up append | `session/store_test.go`、`session/title/service_test.go` |
+| Session create/append/flush/dispose、rollback、observer containment、重入拒绝与 publication 后 follow-up append；Flush/Release 全 operation 顺序仍待新增确定性交错测试 | `session/store_test.go`、`session/title/service_test.go` |
 | Session -> API Proxy -> `host.describe.attachedSessions` 实时 projection | `apiproxy/catalog_test.go`、`internal/assembly/assembly_test.go` |
 | 十个 `session.*` request union 的 strict decode 与负向组合 | `TestSessionRequestDecodersMatchIncludedUnionShapes`、`TestSessionRequestDecodersRejectNullAndInvalidCombinations`、固定源 rename/search vectors |
 | history message-boundary pagination、durable queue fold 与宽 text extension 保真 | `TestHistoryPageCutsAtAppendMessageGroup`、`TestProjectQueueFoldsDurableSplicesAndUserPlacement`、`TestReplaceMessageContentPreservesLooseTextExtension` |
 | Mux baseline high-water 与 frame ID failure 不丢 committed event | `TestMuxBaselineHighwaterSuppressesLateCommittedCallback`、`TestSessionFrameHubSurfacesMintFailureWithoutAdvancingHighwater` |
 | live default 到显式选择的优先级与 prompt/request snapshot | `TestModelSelectionReadsLiveFallbackUntilExplicitlySelected`、`TestModelSelectionSnapshotsPromptAndRequestTogether` |
 | Session Projection late fold、跨 Unit Apply/View 失败原子性、watermark 补折、whole-value change、registration refcount 与 versioned checkpoint/restore | `session/projection/registry_test.go` |
-| Projection Cache identity/version、suffix/full restore、single-writer、关闭排空与 SQLite replacement | `session/projectioncache`、`session/projectioncache/sqlite` |
+| Projection Cache identity/version、suffix/full restore、single-writer、关闭排空与 SQLite replacement；Retire/live-writer 全交错仍待目标测试 | `session/projectioncache`、`session/projectioncache/sqlite` |
 | cold `session.list` cache summary、history cut-first reverse page 与 Subagent cached identity seed gate | `apiproxy/session/list_projection_test.go`、`history_cache_test.go`、`subagent/internal/childdirectory/cache_test.go` |
 | Session Title fallback、规范化、rename、projection、Provider supersession、refresh、JSON array wire 与 drain | `session/title/service_test.go` |
 | Session Title First/All-Prompts LLM 策略、请求事实、route、预算、timeout、finish 与默认组合 | `session/title/llm_provider_test.go`、`TestDefaultCompositionServesFixedTypeScriptClientThroughDeepSeekAdapter` |
@@ -397,7 +397,7 @@ interaction owner registers stable rpcId + decoder
 
 ## 13. 当前验证结果
 
-本次进一步完成 Session 唯一写协调重构、全调用方迁移、atomic batch、ordered barrier 与设计文档收敛；Session Fork 明确排除，export 与 Agent Query Tool 保持 Deferred。当前在 Go 1.26.6、`darwin/arm64` 执行并通过：
+以下历史验证证明 Session 唯一 Commit、atomic batch、当前 ordered barrier 与其他已列能力可以运行，但不证明新的 Flush/Release 单一 lifecycle target 已实现；Session Fork 明确排除，export 与 Agent Query Tool 保持 Deferred。当前记录的 Go 1.26.6、`darwin/arm64` 检查为：
 
 - `sqlc generate -f session/persistence/sqlite/sqlc.yaml`
 - `sqlc generate -f session/query/sqlite/sqlc.yaml`

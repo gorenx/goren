@@ -1,8 +1,6 @@
 # Session Projection Cache 最终设计方案
 
-状态：Accepted / Implemented
-
-最后核对：2026-08-26
+状态：Accepted Target Design；cold read 已实现；lifecycle convergence pending
 
 ## 1. 文档职责
 
@@ -331,28 +329,30 @@ type writeState struct {
 
 ### 9.4 耐久性顺序
 
-每次写入必须保持：
+普通 live 写入必须保持：
 
 ```text
 Registry.Checkpoint(session)
-  -> if still live: LiveStore.Flush(session)
+  -> LiveStore.Flush(session) in the same Session FIFO
   -> CheckpointStore.Replace(record)
   -> update in-memory record index
 ```
 
-checkpoint 先取 cut，再 Flush。Flush 可以把比 checkpoint cut 更新的 event 一并持久化，这只会让 cache 落后，不会让 cache 超前。
+checkpoint 先取 cut，再调用唯一 `LiveStore.Flush`。禁止先 `LiveStore.Get` 判断 live 再调用 Flush；两次独立检查不能拥有同一个生命周期事实。Flush 可以把比 checkpoint cut 更新的 event 一并持久化，这只会让 cache 落后，不会让 cache 超前。
 
 ## 10. Detach 与 Plugin 关闭
 
 ### 10.1 Session detach
 
-Session Handle Release 在从 LiveStore 移除前已经发布并等待最终 `session/flush`。`session/disposed` 到达 Cache 时：
+Session Handle Release 在从 LiveStore 移除前已经通过同一个 operation FIFO 发布并等待最终 `session/flush`。`session/disposed` 到达 Cache 时：
 
-1. 设置 `retiring=true` 和 `force=true`；
-2. 如果有 writer 在运行，它完成后根据 final seq 决定是否再写一次；
-3. Session 已不在 LiveStore 时不再调用 `LiveStore.Flush`；
-4. final write 成功或失败后删除 live write state；
+1. 设置 `retiring=true`，记录必须发生一次 final detached attempt；
+2. 如果普通 live writer 在运行，它完成后无论成功或失败都再执行一次 final detached attempt；
+3. final attempt 直接 `Registry.Checkpoint -> CheckpointStore.Replace`，不调用 `LiveStore.Get` 或 `LiveStore.Flush`；
+4. final attempt 成功或失败后删除 live write state；
 5. detach write 失败不无限保留 timer，由下次 cold read 全量或 suffix 自愈。
+
+这里依赖的不是“Session 大概已经不 live”，而是 `session/disposed` 的前置保证：同一 Session FIFO 已排空，final barrier 已由 Persistence 满足，exact Session 已从 LiveStore 移除。Projection Cache 不再自行重建这段生命周期判断。
 
 Projection Registry 的 `session/disposed` Observer 可能并行删除 live cell。Cache 不依赖该 cell 存活；`Checkpoint` 可从 detached Session events 重建。
 

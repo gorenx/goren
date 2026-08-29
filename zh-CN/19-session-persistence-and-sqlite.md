@@ -88,9 +88,9 @@ sequenceDiagram
     C->>W: enqueue detached Event
     W->>B: AppendBatch on delay/batch boundary
     U->>L: Flush after committed turn/end
-    L->>S: acquire ordered WriteBarrier
-    S-->>L: {sessionId, nextSeq}
-    L->>C: session/flush(barrier)
+    L->>S: enqueue Flush in the Session FIFO
+    S->>S: acquire ordered WriteBarrier at FIFO head
+    S->>C: session/flush(barrier)
     C->>W: flush through barrier and await
     W->>B: commit retained batch
     B-->>U: durable boundary acknowledged
@@ -98,22 +98,22 @@ sequenceDiagram
 
 Event 在进入 persistence listener 前已是 committed fact，因此 storage failure 不能倒转 Session memory。write-behind 必须保留失败 batch、保持原顺序并让显式 flush 报错；不能推进 durable cursor 或伪报成功。第一次 materialization 的 Header 和首批 Events 必须处于同一 Backend transaction。
 
-正常 Agent driver 在提交 `turn/end` 后调用 `session.LiveStore.Flush`，并在它完成后才成功进入 successor Turn 或 idle convergence。LiveStore 先通过 Session coordinator 取得 ordered `WriteBarrier`，确保该 prefix 的 Event publication 已完成，再以 `session/flush` 并行等待 durability participant。`SessionLogStore` 必须至少把 `Seq < barrier.NextSeq` 的 retained facts 提交给 Backend；可以顺带提交更晚事实，但不能用“当前 pending 已空”替代指定 prefix 校验。Agent Loop 不直接调用 `Persistence` 或 SQLite。
+正常 Agent driver 在提交 `turn/end` 后调用 `session.LiveStore.Flush`，并在它完成后才成功进入 successor Turn 或 idle convergence。Flush 与 Commit、Release 使用 Session coordinator 的同一个 FIFO；它在队首取得 ordered `WriteBarrier`，确保此前 Event publication 已完成，并在所有 durability participant settle 后才归还 baton。`SessionLogStore` 必须至少把 `Seq < barrier.NextSeq` 的 retained facts提交给 Backend；可以顺带提交更晚事实，但不能用“当前 pending 已空”替代指定 prefix 校验。Agent Loop 不直接调用 `Persistence` 或 SQLite。
 
-用户取消当前 Turn 时，已提交的 aborted `turn/end` 仍必须越过 durability barrier，因此最终屏障保留 Context value 但不继承 Turn cancellation。其他显式 flush 的调用方取消或 Backend failure 仍返回错误；未落盘 batch 由 writer 保留，供后续 flush、dispose 或 shutdown drain。Session coordinator 不等待 Backend I/O。
+用户取消当前 Turn 时，已提交的 aborted `turn/end` 仍必须越过 durability barrier，因此最终屏障保留 Context value 但不继承 Turn cancellation。其他显式 flush 的调用方取消或 Backend failure 仍返回错误；未落盘 batch 由 writer 保留，供后续 flush、dispose 或 shutdown drain。Flush operation 等待 Backend I/O 时只占有该 Session 的 FIFO baton，不持有 queue/log mutex，也不阻塞其他 Session。
 
-每个 Session ID 有独立串行 gate，不同 Session 可并行。同一 live Session 只有一个 writer owner；duplicate listener、不同 seed prefix、CWD 冲突或 durable identity collision 明确失败。
+不同 Session 可并行。同一 live Session 只有一个 exact persistence state 和一个 writer owner；duplicate listener、不同 seed prefix、CWD 冲突或 durable identity collision 明确失败。Session Core 保证同一 lifecycle 的 `EventAppended -> FlushRequested -> Disposed` 顺序，Persistence 不再用多张状态表重新推断 lifecycle。
 
-`SessionLogStore` 只编排 use case，不直接持有多种 map 和缓存算法。运行时状态由四个对象按变化原因拆分：
+`SessionLogStore` 只编排 durability use case。最终运行时状态按 identity 分成 exact live state、cold/prepared state 和 storage operation coordination：
 
 | 状态对象 | 拥有内容 | 变化原因 |
 | --- | --- | --- |
-| `durableSessions` | durable Header、cursor、materialized 标记与 exact live owner | durable append、cold commit、live attach/detach |
-| `liveWrites` | exact `*Session` 到 write-behind controller | live Session publication/disposal |
+| exact live persistence state | exact Session object、Header、durable cursor、materialized 标记与 write-behind controller | created、event enqueue、flush、disposed |
+| cold durable index | 没有 live owner 的 Header、cursor 与 revision observation | cold read/repair、live attach handoff |
 | `preparedSessions` | bounded ready LRU 与 exclusive reservation | cold inspect/prepare、revision 失效、publication handoff |
-| `sessionGates` | per-ID serial gate 与 admission close | 同 ID operation 生命周期、Provider shutdown |
+| storage operation coordination | 同 ID cold read/repair/attach 和 Backend mutation 的串行化 | Backend transaction、Provider shutdown |
 
-LRU 只保存可重用且尚未发布的完整 object graph；已 reservation 的对象移出 LRU，不能因容量淘汰而破坏 resume identity。`SessionLogStore` 仍负责决定何时 load、验证 revision、repair 和 commit，状态对象不调用 Backend 或产生业务事实。
+exact live operation 取得一次 state object 后使用到底；Dispose 只能解除 registry 索引，不能让已经进入的 Flush 在 I/O 后按 Session ID 解析到空值或另一个 lifecycle。LRU 只保存可重用且尚未发布的完整 object graph；已 reservation 的对象移出 LRU，不能因容量淘汰而破坏 resume identity。`SessionLogStore` 仍负责决定何时 load、验证 revision、repair 和 commit，状态对象不产生业务事实。
 
 ## 6. Cold load、recovery 与 resume
 
@@ -197,7 +197,7 @@ sqlc 只生成查询调用；事务边界由 `Backend` method contract 与 `Sess
 
 ## 9. 生命周期、取消与失败
 
-Persistence plugin 的 Scope 按 LIFO 停止：先释放 listener、拒绝新 admission，再 flush/关闭所有 writer，最后关闭 Backend。dispose 单个 Session 先 flush，再解除 live writer；durable facts 保留供 cold resume。
+Persistence plugin 的 Scope 按 LIFO 停止：先释放 listener、拒绝新 storage admission，再 flush/关闭所有 writer，最后关闭 Backend。单个 Session 的 `Disposed` 只在 Session Core final flush 成功后发生；Persistence 因此只需解除 exact live writer并保留 durable facts 供 cold resume，不与另一个同 Session Flush 并发决定 cleanup。
 
 调用方 Context 控制 gate 等待、Backend read/write transaction 与显式 flush。定时 batch 使用服务生命周期；取消不能丢弃已经 committed 但尚未落盘的 batch。后台错误进入 observer/reporting，并在后续 flush 再返回；磁盘满、锁冲突、commit failure 和 shutdown timeout 都不能编码为空成功。
 
