@@ -65,7 +65,7 @@ func (conversation *sessionContext) Snapshot() Snapshot {
 	if conversation == nil {
 		return Snapshot{}
 	}
-	return conversation.log.Snapshot()
+	return conversation.log.snapshot()
 }
 
 func (conversation *sessionContext) writeBarrier() WriteBarrier {

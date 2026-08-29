@@ -233,7 +233,9 @@ func waitForTerminalAdmission(
 	testingContext.Helper()
 	deadline := time.Now().Add(time.Second)
 	for {
-		terminal := owner.terminalAdmission()
+		owner.lifecycle.mutex.Lock()
+		terminal := owner.lifecycle.terminalAttempt != nil
+		owner.lifecycle.mutex.Unlock()
 		if terminal {
 			return
 		}
@@ -531,7 +533,9 @@ func TestCreationVetoFlushFailureKeepsSealedSessionForRetry(t *testing.T) {
 	if sealed == nil {
 		t.Fatal("failed final flush discarded the exact cleanup owner")
 	}
-	state := sealed.conversation.currentPhase()
+	sealed.conversation.lifecycle.mutex.Lock()
+	state := sealed.conversation.lifecycle.phase
+	sealed.conversation.lifecycle.mutex.Unlock()
 	if state != sessionSealed {
 		t.Fatalf("vetoed Session state = %d, want sealed", state)
 	}

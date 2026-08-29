@@ -348,7 +348,7 @@ func TestLiveCheckpointFailureKeepsDirtyStateForLaterTrigger(t *testing.T) {
 	cacheOwner.live.mutex.Lock()
 	writer := cacheOwner.live.writes[conversation]
 	cacheOwner.live.mutex.Unlock()
-	dirtyEvents, writing := writer.state()
+	dirtyEvents, writing := liveWriteState(writer)
 	if dirtyEvents != 1 || writing {
 		t.Fatalf("state pending=%d writing=%v", dirtyEvents, writing)
 	}
@@ -426,8 +426,8 @@ func TestCloseWaitsForEnteredCheckpointAndRejectsNewColdReads(t *testing.T) {
 	}
 }
 
-func TestCheckpointCutRejectsRowsFromDifferentEvents(t *testing.T) {
-	_, err := checkpointCut(
+func TestValidateCheckpointCutRejectsRowsFromDifferentEvents(t *testing.T) {
+	err := validateCheckpointCut(
 		sessionprojection.Checkpoint{
 			"first": {
 				Seq:   1,
@@ -438,9 +438,18 @@ func TestCheckpointCutRejectsRowsFromDifferentEvents(t *testing.T) {
 				Value: []byte(`null`),
 			},
 		},
-		-1,
 	)
 	if err == nil {
-		t.Fatal("checkpointCut accepted rows from different cuts")
+		t.Fatal("validateCheckpointCut accepted rows from different cuts")
 	}
+}
+
+func liveWriteState(write *liveWrite) (int, bool) {
+	write.mutex.Lock()
+	defer write.mutex.Unlock()
+	writing := write.phase == liveWritePhaseWriting ||
+		write.phase == liveWritePhaseRerun ||
+		write.phase == liveWritePhaseFinalPending ||
+		write.phase == liveWritePhaseFinalWriting
+	return write.pendingEvents(), writing
 }

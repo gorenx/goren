@@ -120,7 +120,7 @@ func (lifecycle *sessionLifecycle) beginCommit() error {
 	}
 }
 
-func (lifecycle *sessionLifecycle) finishCommit() {
+func (lifecycle *sessionLifecycle) finishOperation() {
 	lifecycle.mutex.Lock()
 	lifecycle.finishOperationLocked()
 	lifecycle.mutex.Unlock()
@@ -249,12 +249,6 @@ func (lifecycle *sessionLifecycle) beginFlush(
 	}
 }
 
-func (lifecycle *sessionLifecycle) finishFlush() {
-	lifecycle.mutex.Lock()
-	lifecycle.finishOperationLocked()
-	lifecycle.mutex.Unlock()
-}
-
 func (lifecycle *sessionLifecycle) requestRelease(
 	token *membershipToken,
 	ownedContext context.Context,
@@ -373,28 +367,6 @@ func (lifecycle *sessionLifecycle) visible() bool {
 	return lifecycle.phase == sessionEntered ||
 		lifecycle.phase == sessionAnnouncing ||
 		lifecycle.phase == sessionLive
-}
-
-func (lifecycle *sessionLifecycle) terminalAdmission() bool {
-	lifecycle.mutex.Lock()
-	defer lifecycle.mutex.Unlock()
-	return lifecycle.terminalAttempt != nil
-}
-
-func (lifecycle *sessionLifecycle) pendingOperations() int {
-	lifecycle.mutex.Lock()
-	defer lifecycle.mutex.Unlock()
-	pending := len(lifecycle.waiters) - lifecycle.head
-	if pending > 0 {
-		pending--
-	}
-	return pending
-}
-
-func (lifecycle *sessionLifecycle) currentPhase() sessionPhase {
-	lifecycle.mutex.Lock()
-	defer lifecycle.mutex.Unlock()
-	return lifecycle.phase
 }
 
 func (lifecycle *sessionLifecycle) appendLocked() *operationWaiter {

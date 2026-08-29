@@ -304,7 +304,12 @@ func waitForPendingItems(
 	testingContext.Helper()
 	deadline := time.Now().Add(time.Second)
 	for {
-		pending := owner.pendingOperations()
+		owner.lifecycle.mutex.Lock()
+		pending := len(owner.lifecycle.waiters) - owner.lifecycle.head
+		if pending > 0 {
+			pending--
+		}
+		owner.lifecycle.mutex.Unlock()
 		if pending == want {
 			return
 		}

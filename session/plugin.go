@@ -62,15 +62,12 @@ func (owner *Plugin) Created(
 	requestContext context.Context,
 	conversation Context,
 ) error {
-	return safelyDispatch(func() error {
-		return plugin.PublishEvent(
-			requestContext,
-			owner,
-			Created{
-				Conversation: conversation,
-			},
-		)
-	})
+	return owner.publishSafely(
+		requestContext,
+		Created{
+			Conversation: conversation,
+		},
+	)
 }
 
 func (owner *Plugin) Appended(
@@ -78,16 +75,13 @@ func (owner *Plugin) Appended(
 	conversation Context,
 	committed Event,
 ) {
-	dispatchErr := safelyDispatch(func() error {
-		return plugin.PublishEvent(
-			requestContext,
-			owner,
-			EventAppended{
-				Conversation: conversation,
-				Committed:    cloneEvent(committed),
-			},
-		)
-	})
+	dispatchErr := owner.publishSafely(
+		requestContext,
+		EventAppended{
+			Conversation: conversation,
+			Committed:    cloneEvent(committed),
+		},
+	)
 	if dispatchErr != nil {
 		owner.reportPostCommitFailure(
 			PostCommitFailure{
@@ -117,15 +111,12 @@ func (owner *Plugin) Disposed(
 	requestContext context.Context,
 	conversation Context,
 ) {
-	_ = safelyDispatch(func() error {
-		return plugin.PublishEvent(
-			requestContext,
-			owner,
-			Disposed{
-				Conversation: conversation,
-			},
-		)
-	})
+	_ = owner.publishSafely(
+		requestContext,
+		Disposed{
+			Conversation: conversation,
+		},
+	)
 }
 
 func (owner *Plugin) reportPostCommitFailure(failure PostCommitFailure) {
@@ -133,13 +124,16 @@ func (owner *Plugin) reportPostCommitFailure(failure PostCommitFailure) {
 	owner.failureReport.ReportPostCommitFailure(failure)
 }
 
-func safelyDispatch(operation func() error) (dispatchErr error) {
+func (owner *Plugin) publishSafely(
+	requestContext context.Context,
+	fact plugin.Event,
+) (dispatchErr error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			dispatchErr = fmt.Errorf("session: listener panicked: %v", recovered)
 		}
 	}()
-	return operation()
+	return plugin.PublishEvent(requestContext, owner, fact)
 }
 
 var _ plugin.Plugin = (*Plugin)(nil)
