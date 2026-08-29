@@ -250,7 +250,7 @@ Lifecycle attach 后、Coordinator commit 前：Registry 与 Coordinator 负责 
 Coordinator commit 后：managed Handle 可见
 ```
 
-`AgentEpoch.Attach` 成功才是 `AgentScopeRuntime` 调用时机从 AgentLoop Factory 移交给 Coordinator 的边界。AgentLoop 的 `agentScopes` 始终持有真实 Plugin Handle；Agent Scope Plugin 只持有本 Scope effect。成功返回只表示 managed Handle 开始对调用方可见。`HandleTransferred` 没有独立业务含义：Handle 是指向 Coordinator epoch 的关闭能力，不是被搬运的资源所有权，因此不增加同名状态、事件或持久化字段。
+`AgentEpoch.Attach` 成功才是 `AgentScopeRuntime` 调用时机从 AgentLoop Factory 移交给 Coordinator 的边界。AgentLoop 的 `ScopeSet` 始终持有真实 Plugin Handle；`AgentScope` 只持有本 Scope effect。成功返回只表示 managed Handle 开始对调用方可见。`HandleTransferred` 没有独立业务含义：Handle 是指向 Coordinator epoch 的关闭能力，不是被搬运的资源所有权，因此不增加同名状态、事件或持久化字段。
 
 ### 9.3 重复引用
 
@@ -323,11 +323,11 @@ child 已进入 Materializing 或 Publishing 后 parent 才 Closing：
 
 Coordinator admission 与 Registry membership collision 共同保证同一 Session ID 只有一个 live epoch。旧 construction、旧 disposer 或旧 Handle 都不能删除或关闭获胜的新 epoch。
 
-## 12. Agent activity 与 Subagent state
+## 12. Agent execution 与 Subagent state
 
-### 12.1 Agent activity
+### 12.1 Agent execution
 
-`idle`、`running`、maintenance、turn cancellation 属于 AgentLoop。Coordinator 可以等待 AgentLoop 单体 teardown，但不复制 activity 状态。
+`idle`、`running`、Maintenance、Turn cancellation 属于 AgentLoop 的 `AgentExecution`。Coordinator 可以等待 AgentLoop 单体 teardown，但不复制 execution State。
 
 普通 Agent 的 Create/Resume 由 `AgentSessions` 发起，但成功后的 canonical lifecycle 由 Coordinator 负责。`AgentSessions` 只持有或传递 managed Handle 作为用例能力，不建立自己的 closing 状态或 descendant graph。普通 root 默认驻留到显式 managed Close、结构兜底或 Runtime shutdown；创建请求的 Context 结束不等于 Agent 关闭。
 
@@ -361,13 +361,13 @@ parent closing 和 Runtime shutdown 是 Agent lifecycle hard boundary，任何 S
 
 ## 13. Structural custody
 
-目标结构不把 child Scope 挂到逻辑 parent 或某个 Subagent 执行模式 owner 下。`agentloop.Plugin` 持有 `agentScopes`，由这个结构 owner 保存所有 Agent Scope root 的精确 Handle：
+目标结构不把 child Scope 挂到逻辑 parent 或某个 Subagent 执行模式 owner 下。根 `agentloop.Plugin` 的同 Scope 子 Plugin `ScopeSet` 保存所有 Agent Scope mount 的精确 Handle：
 
 ```text
-AgentLoop Plugin agentScopes
-  -> Agent Scope root A
-  -> Agent Scope root B
-  -> Agent Scope root C
+AgentLoop Plugin -> ScopeSet
+  -> AgentScope mount A
+  -> AgentScope mount B
+  -> AgentScope mount C
 ```
 
 runtime parent-child ownership 独立保存在 Coordinator 业务状态：
@@ -386,7 +386,7 @@ B owns C
 
 Coordinator 不持有 `plugin.Plugin`、Plugin handle 或 Manifest，只持有 consumer-owned `AgentScopeRuntime` 端口。AgentLoop Plugin adapter 也不读取 runtime parent graph；结构 teardown 完成后只通过 exact teardown completion 通知 Coordinator 收敛。
 
-关闭方向必须保持单向：Coordinator 调用 `AgentScopeRuntime.Teardown` 提出 exact Scope 关闭请求；`agentScopeRoot` 把请求交给 AgentLoop 的 `agentScopes`；`agentScopes` 以 AgentLoop Plugin 这个结构父节点的身份命令 Runtime 卸载精确隔离 Scope；Runtime 才递归调用 Scope Plugin 的 `Dispose`。`agentScopeRoot` 不保存父 Plugin/Handle，也不能在自己的 Scope 中直接 Dispose 自己。Subagent 只调用 managed Agent lifecycle，不接触 `agentScopes` 或 Plugin topology。
+关闭方向必须保持单向：Coordinator 调用 `AgentScopeRuntime.Teardown` 提出 exact Scope 关闭请求；`AgentScope` 通过私有 `scopeParent` port 把请求交给 `ScopeSet`；`ScopeSet` 以结构父节点身份命令 Runtime 卸载精确隔离 Scope；Runtime 才递归调用 Scope Plugin 的 `Dispose`。`AgentScope` 不保存 `*ScopeSet`、父 Plugin 或自己的 Handle，也不能在自己的 Scope 中直接 Dispose 自己。Subagent 只调用 managed Agent lifecycle，不接触 `ScopeSet` 或 Plugin topology。
 
 这条同步链只在 Plugin callback 外执行。单独卸载 Subagent Plugin 时，Subagent Service 启动 managed close 并等待每个 exact Agent 建立 Closing cutoff，然后让当前 Plugin Dispose 返回；Agent close owner 在外层 Runtime 操作结束后继续执行上述结构链。Runtime 整体关闭则反向执行：Runtime 直接结构化卸载 Agent Scope，`AgentTeardown.BeginTeardown/FinishTeardown` 把同一事实回报 Coordinator。两种方向不要求 Plugin Runtime 支持 Dispose 内拓扑重入。
 

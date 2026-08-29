@@ -83,7 +83,7 @@ Agent Factory 是 `agent` 定义、由普通 Go `agentloop.Factory` 实现的内
 
 Agent Factory 只由 Registry 调用。配置 Agent 也必须通过 Registry，不再由 AgentLoop 绕过 lifecycle admission 直接发布。
 
-`agentloop.Plugin` 是适配器：它解析 Session、Persistence 和 Registry Service，构造 `agentloop.Factory`，并持有统一的 `agentScopes`；commit 阶段的 `registrationPlugin` 拥有 exact `FactoryRegistration`。Factory 不实现 `plugin.Plugin`，也不调用 `plugin.Require/Resolve/Publish`。
+`agentloop.Plugin` 是适配器：它解析 Session、Persistence 和 Registry Service，构造 `agentloop.Factory`，并拥有同 Scope 的 `ScopeSet`；commit 阶段的 `registrationPlugin` 拥有 exact `FactoryRegistration`。Factory 不实现 `plugin.Plugin`，也不调用 `plugin.Require/Resolve/Publish`。
 
 ### 3.5 Session Store
 
@@ -93,16 +93,16 @@ Session Store 是普通 Go 业务对象，拥有 Session preparation、membershi
 
 ### 3.6 Agent Scope Plugin adapter
 
-`ReactLoopAgent` 是业务对象，不实现 Plugin。`agentScopeRoot` 是 AgentLoop Plugin adapter 创建的单 Scope Plugin，实现 `agent.AgentScopeRuntime`，负责：
+`ReactLoopAgent` 是业务对象，不实现 Plugin。`AgentScope` 是 AgentLoop Plugin adapter 创建的单 Scope Plugin，实现 `agent.AgentScopeRuntime`，负责：
 
 - 在统一结构宿主下挂载单 Agent Scope；
 - 发布 exact Agent Service；
 - 为 Agent-scoped events 提供正确的 Plugin event source；
-- 持有 Provisioning effects，并把结构 teardown 请求交给 AgentLoop 的 `agentScopes`。
+- 持有 Provisioning effects，并通过私有 `scopeParent` port 把结构 teardown 请求交给 `ScopeSet`。
 
 业务 Agent 不暴露 `RuntimePlugin`，exact epoch identity 由 Agent 构造事务分配的进程内 identity 表达。
 
-`AgentScopeRuntime` 不暴露 `plugin.Plugin`、Scope handle 或 registration。它是业务 Agent 和 Lifecycle Coordinator 消费的运行期端口，提供 Agent-scoped event/waterfall、运行期 Provisioning 和幂等单体 teardown；事件语义、publication 时机与关闭顺序仍属于对应业务 owner，adapter 不做决策。`agentScopeRoot` 不保存自己的父 Plugin 或 Handle；`agentloop.Plugin` 持有的 `agentScopes` 才是精确 Handle 与 Runtime 卸载命令的 owner。Scope Plugin 的 `Dispose` 只释放本 Scope 资源并回报完成，不能自卸载。
+`AgentScopeRuntime` 不暴露 `plugin.Plugin`、Scope handle 或 registration。它是业务 Agent 和 Lifecycle Coordinator 消费的运行期端口，提供 Agent-scoped event/waterfall、运行期 Provisioning 和幂等单体 teardown；事件语义、publication 时机与关闭顺序仍属于对应业务 owner，adapter 不做决策。`AgentScope` 不保存 `*ScopeSet`、父 Plugin 或 Handle；`ScopeSet` 才是精确 Handle 与 Runtime 卸载命令的 owner。Scope Plugin 的 `Dispose` 只释放本 Scope 资源并回报完成，不能自卸载。
 
 ## 4. 目标 Factory 边界
 
@@ -145,7 +145,7 @@ sequenceDiagram
     F->>H: prepare unpublished Agent Scope
     H-->>F: scoped dependencies and event port
     F->>F: construct ReactLoopAgent business object
-    F->>H: bind exact Agent and mount agentScopeRoot
+    F->>H: bind exact Agent and mount AgentScope
     H-->>F: AgentScopeRuntime
     F->>F: provision and commit scope effects
     F->>S: enter Session
@@ -280,7 +280,7 @@ Coordinator 创建 exact epoch 发生在 Factory 调用前：
 - ReactLoopAgent 与 Agent Scope 构造；
 - Provisioning；
 - membership 与 announce；
-- activity、cancel、quiesce；
+- RLA invocation admission、execution、cancel 和 idle convergence；
 - lifecycle attach 前的 Factory rollback，以及 attach 后可由 Coordinator 调用的窄 `AgentScopeRuntime`；
 - `AgentEpoch.ClosingSignal` 驱动的单次构造取消。
 
@@ -288,7 +288,7 @@ Coordinator 创建 exact epoch 发生在 Factory 调用前：
 
 - Plugin Service 依赖解析；
 - Agent Factory registration effect；
-- AgentLoop `agentScopes` 结构 owner 和 Agent-scoped event bridge；
+- AgentLoop `ScopeSet` 结构 owner 和 exact `VisibleContext` Event routing；
 - commit 阶段 exact Factory registration 的建立与撤销。
 
 移出：
@@ -299,9 +299,9 @@ Coordinator 创建 exact epoch 发生在 Factory 调用前：
 - 面向业务调用方的 managed Handle ownership；
 - root/child 和 Subagent policy 判断。
 
-Factory、ReactLoopAgent 和 activity coordinator 不嵌入 `plugin.Base`，不实现 Plugin lifecycle。Plugin adapter 不保存 Agent activity、epoch 或 Session 业务状态。
+Factory、ReactLoopAgent 和六个状态机不嵌入 `plugin.Base`，不实现 Plugin lifecycle。Plugin adapter 不保存 Agent execution、epoch 或 Session 业务状态。
 
-私有 [`agentScopeRoot`](../agentloop/scope_root.go) 只表示一个 Agent 的运行期 Scope adapter，不表示 Agent 父子关系。
+私有 [`AgentScope`](../agentloop/plugin_agent_scope.go) 只表示一个 Agent 的运行期 Scope adapter，不表示 Agent 父子关系。
 
 ## 11. 测试要求
 
