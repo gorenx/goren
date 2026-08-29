@@ -3,33 +3,43 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
 )
+
+// closeAttempt is one Store Close execution shared by concurrent callers.
+type closeAttempt struct {
+	// done closes after the attempt records its result.
+	done chan struct{}
+	// err is the completed result read after done closes.
+	err error
+}
 
 func (store *memoryStore) Close(closeContext context.Context) error {
 	if closeContext == nil {
 		return errors.New("session: close Context is nil")
 	}
 	store.mutex.Lock()
-	if store.state == memoryStoreClosed {
+	switch store.phase {
+	case storeClosed:
 		store.mutex.Unlock()
 		return nil
-	}
-	if store.state == memoryStoreClosing && store.closeDone != nil {
-		done := store.closeDone
-		store.mutex.Unlock()
-		select {
-		case <-done:
-			store.mutex.RLock()
-			closeErr := store.closeErr
-			store.mutex.RUnlock()
-			return closeErr
-		case <-closeContext.Done():
-			return context.Cause(closeContext)
+	case storeClosing:
+		if store.activeClose != nil {
+			attempt := store.activeClose
+			store.mutex.Unlock()
+			return waitForClose(closeContext, attempt)
 		}
+	case storeOpen:
+	default:
+		phase := store.phase
+		store.mutex.Unlock()
+		return fmt.Errorf("session: unknown Store phase %d", phase)
 	}
-	store.state = memoryStoreClosing
-	done := make(chan struct{})
-	store.closeDone = done
+	store.phase = storeClosing
+	attempt := &closeAttempt{
+		done: make(chan struct{}),
+	}
+	store.activeClose = attempt
 	active := append([]*liveEntry(nil), store.order...)
 	store.mutex.Unlock()
 
@@ -39,12 +49,30 @@ func (store *memoryStore) Close(closeContext context.Context) error {
 		closeErr = errors.Join(closeErr, store.release(ownedContext, active[index]))
 	}
 	store.mutex.Lock()
-	store.closeErr = closeErr
-	store.closeDone = nil
-	if closeErr == nil {
-		store.state = memoryStoreClosed
+	if store.phase != storeClosing || store.activeClose != attempt {
+		attempt.err = errors.Join(
+			closeErr,
+			errors.New("session: Store Close attempt lost ownership"),
+		)
+		close(attempt.done)
+		store.mutex.Unlock()
+		return attempt.err
 	}
-	close(done)
+	attempt.err = closeErr
+	store.activeClose = nil
+	if closeErr == nil {
+		store.phase = storeClosed
+	}
+	close(attempt.done)
 	store.mutex.Unlock()
 	return closeErr
+}
+
+func waitForClose(closeContext context.Context, attempt *closeAttempt) error {
+	select {
+	case <-attempt.done:
+		return attempt.err
+	case <-closeContext.Done():
+		return context.Cause(closeContext)
+	}
 }

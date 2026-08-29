@@ -21,8 +21,8 @@ const (
 	sessionLive
 	// sessionReleasing owns the active terminal Flush and removal operation.
 	sessionReleasing
-	// sessionSealed retained membership after a failed Release attempt.
-	sessionSealed
+	// sessionReleaseFailed retains membership after a failed Release attempt.
+	sessionReleaseFailed
 	// sessionClosed has completed Release and no longer owns Store membership.
 	sessionClosed
 )
@@ -89,8 +89,8 @@ type sessionLifecycle struct {
 	membership *membershipToken
 	// publisher is installed with membership and removed only after Release.
 	publisher eventPublisher
-	// terminalAttempt is the shared Release admission and terminal-state marker.
-	terminalAttempt *releaseAttempt
+	// activeRelease is the shared Release admission and terminal-state marker.
+	activeRelease *releaseAttempt
 }
 
 func newSessionLifecycle() sessionLifecycle {
@@ -101,7 +101,7 @@ func newSessionLifecycle() sessionLifecycle {
 
 func (lifecycle *sessionLifecycle) beginCommit() error {
 	lifecycle.mutex.Lock()
-	if lifecycle.terminalAttempt != nil {
+	if lifecycle.activeRelease != nil {
 		lifecycle.mutex.Unlock()
 		return ErrWritesClosed
 	}
@@ -128,7 +128,7 @@ func (lifecycle *sessionLifecycle) finishOperation() {
 
 func (lifecycle *sessionLifecycle) beginEnter() error {
 	lifecycle.mutex.Lock()
-	if lifecycle.terminalAttempt != nil ||
+	if lifecycle.activeRelease != nil ||
 		lifecycle.phase != sessionDetached ||
 		lifecycle.enterWaiter != nil {
 		lifecycle.mutex.Unlock()
@@ -173,7 +173,7 @@ func (lifecycle *sessionLifecycle) beginAnnounce(
 		lifecycle.mutex.Unlock()
 		return nil, errors.New("session: Announce Store does not own Session")
 	}
-	if lifecycle.terminalAttempt != nil ||
+	if lifecycle.activeRelease != nil ||
 		lifecycle.phase != sessionEntered ||
 		lifecycle.announceWaiter != nil {
 		lifecycle.mutex.Unlock()
@@ -223,7 +223,7 @@ func (lifecycle *sessionLifecycle) beginFlush(
 		lifecycle.mutex.Unlock()
 		return nil, errors.New("session: Flush Store does not own Session")
 	}
-	if lifecycle.terminalAttempt != nil {
+	if lifecycle.activeRelease != nil {
 		lifecycle.mutex.Unlock()
 		return nil, ErrWritesClosed
 	}
@@ -255,11 +255,11 @@ func (lifecycle *sessionLifecycle) requestRelease(
 ) (*releaseAttempt, error) {
 	lifecycle.mutex.Lock()
 	defer lifecycle.mutex.Unlock()
-	if lifecycle.terminalAttempt != nil {
+	if lifecycle.activeRelease != nil {
 		if lifecycle.membership != token {
 			return nil, errors.New("session: Release Store does not own Session")
 		}
-		return lifecycle.terminalAttempt, nil
+		return lifecycle.activeRelease, nil
 	}
 	if lifecycle.phase == sessionClosed {
 		return nil, nil
@@ -271,7 +271,7 @@ func (lifecycle *sessionLifecycle) requestRelease(
 	case sessionEntered,
 		sessionAnnouncing,
 		sessionLive,
-		sessionSealed:
+		sessionReleaseFailed:
 	default:
 		return nil, fmt.Errorf(
 			"session: Session cannot be released from lifecycle state %d",
@@ -283,7 +283,7 @@ func (lifecycle *sessionLifecycle) requestRelease(
 		requestContext: ownedContext,
 		waiter:         lifecycle.appendLocked(),
 	}
-	lifecycle.terminalAttempt = attempt
+	lifecycle.activeRelease = attempt
 	return attempt, nil
 }
 
@@ -295,13 +295,13 @@ func (lifecycle *sessionLifecycle) startRelease(
 	lifecycle.mutex.Lock()
 	defer lifecycle.mutex.Unlock()
 	if lifecycle.membership != token ||
-		lifecycle.terminalAttempt != attempt {
+		lifecycle.activeRelease != attempt {
 		return releaseDecision{}, errors.New("session: Release started without terminal admission")
 	}
 	switch lifecycle.phase {
 	case sessionEntered,
 		sessionLive,
-		sessionSealed:
+		sessionReleaseFailed:
 		lifecycle.phase = sessionReleasing
 		return releaseDecision{
 			publisher: lifecycle.publisher,
@@ -324,18 +324,18 @@ func (lifecycle *sessionLifecycle) completeRelease(
 	defer lifecycle.mutex.Unlock()
 	completionErr := error(nil)
 	if lifecycle.phase != sessionReleasing ||
-		lifecycle.terminalAttempt != attempt ||
+		lifecycle.activeRelease != attempt ||
 		lifecycle.head >= len(lifecycle.waiters) ||
 		lifecycle.waiters[lifecycle.head] != attempt.waiter {
 		completionErr = errors.New("session: invalid Release completion")
 	} else {
-		lifecycle.terminalAttempt = nil
+		lifecycle.activeRelease = nil
 		if succeeded {
 			lifecycle.phase = sessionClosed
 			lifecycle.membership = nil
 			lifecycle.publisher = nil
 		} else {
-			lifecycle.phase = sessionSealed
+			lifecycle.phase = sessionReleaseFailed
 		}
 	}
 	resultErr := errors.Join(releaseErr, completionErr)
@@ -361,7 +361,7 @@ func (lifecycle *sessionLifecycle) appendPublisher() eventPublisher {
 func (lifecycle *sessionLifecycle) visible() bool {
 	lifecycle.mutex.Lock()
 	defer lifecycle.mutex.Unlock()
-	if lifecycle.terminalAttempt != nil {
+	if lifecycle.activeRelease != nil {
 		return false
 	}
 	return lifecycle.phase == sessionEntered ||
