@@ -710,6 +710,12 @@ func TestSessionReleaseOrdering(t *testing.T) {
 		if err := oldHandle.Release(context.Background()); err != nil {
 			t.Fatal(err)
 		}
+		if err := store.Flush(
+			context.Background(),
+			oldHandle.Session(),
+		); !errors.Is(err, ErrNotAttached) {
+			t.Fatalf("Flush after detach error = %v", err)
+		}
 		newHandle, err := store.Create(context.Background(), &identifier, CreateOptions{})
 		if err != nil {
 			t.Fatal(err)

@@ -217,6 +217,7 @@ type cacheLiveStore struct {
 	conversation session.Context
 	flushEntered chan struct{}
 	flushRelease <-chan struct{}
+	flushErr     error
 	flushCalls   int
 	getCalls     int
 }
@@ -247,6 +248,7 @@ func (store *cacheLiveStore) Flush(
 	store.flushCalls++
 	entered := store.flushEntered
 	flushRelease := store.flushRelease
+	flushErr := store.flushErr
 	store.mutex.Unlock()
 	if entered != nil {
 		select {
@@ -255,11 +257,11 @@ func (store *cacheLiveStore) Flush(
 		}
 	}
 	if flushRelease == nil {
-		return nil
+		return flushErr
 	}
 	select {
 	case <-flushRelease:
-		return nil
+		return flushErr
 	case <-requestContext.Done():
 		return context.Cause(requestContext)
 	}

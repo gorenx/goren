@@ -189,7 +189,9 @@ func (checkpointer *liveCheckpointer) run(
 	for {
 		attempt := write.beginAttempt()
 		err := checkpointer.persistCheckpoint(conversation, attempt)
-		if err != nil {
+		detached := attempt.kind == liveCheckpoint &&
+			errors.Is(err, session.ErrNotAttached)
+		if err != nil && !detached {
 			reportFailure(
 				checkpointer.failures,
 				Failure{

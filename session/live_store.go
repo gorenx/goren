@@ -2,10 +2,15 @@ package session
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/gorenx/goren/plugin"
 )
+
+// ErrNotAttached reports that an exact Session does not own a membership in
+// the receiving LiveStore.
+var ErrNotAttached = errors.New("session: Session is not attached to this Store")
 
 const (
 	// PluginName is the canonical Session capability plugin name.
