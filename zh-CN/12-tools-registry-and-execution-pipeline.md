@@ -2,7 +2,7 @@
 
 状态：Accepted
 
-本文拥有 `tools` 的 Tool Definition、Root Registry + Child Overlay、restriction/guard、执行流水线、结果物化和 System Prompt 投影边界。Plugin 的 Service Definition、父子可见性、typed Event、Waterfall 和生命周期由[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)拥有；模型 content block 和 `ToolSchema` 词汇由[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)拥有；代码近邻说明见[`tools/README.zh-CN.md`](../tools/README.zh-CN.md)；当前完成度和验证证据只见[08 实施进度](./08-implementation-progress.md)。
+本文拥有 `tools` 的 Tool Definition、root/overlay/Agent ToolLayer、restriction/guard、执行流水线、结果物化和 System Prompt 投影边界。Plugin 的 Service Definition、typed Event、Waterfall 和模块生命周期由[09 Plugin Runtime 与 Server Assembly 模块设计与实现](./09-plugin-runtime-and-server-assembly.md)拥有；模型 content block 和 `ToolSchema` 词汇由[03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)拥有；代码近邻说明见[`tools/README.zh-CN.md`](../tools/README.zh-CN.md)；当前完成度和验证证据只见[08 实施进度](./08-implementation-progress.md)。
 
 ## 1. 设计目标与固定源
 
@@ -59,6 +59,7 @@ Tools 的包边界采用[04 Go 技术架构决策与技术选型](./04-go-techno
 | 组件 | 职责 |
 | --- | --- |
 | `Service` | Plugin 生命周期、依赖解析、能力 facade、System Prompt provider 和 change publication |
+| `ToolLayer` | 普通 Tool catalog/policy/execution layer，以及 Agent-local middleware/observer |
 | `registry` | 当前 layer 与 ancestor lineage 的组合、可见性查询和 mutation 规则 |
 | `toolStore` | 锁保护的 exact-layer Tool、restriction、guard 及快照 |
 | `executionRuntime` | `Prepare -> Dispatch -> Finalize/Finish` 一次性状态机 |
@@ -68,15 +69,22 @@ Tools 的包边界采用[04 Go 技术架构决策与技术选型](./04-go-techno
 
 Store 不调用 Plugin、Executor 或用户策略。Service 不实现执行阶段细节；`executionRuntime` 不拥有 Plugin 装卸或 System Prompt 注册。
 
-## 4. Root Registry 与 Child Overlay
+## 4. Root、模块 Overlay 与 Agent ToolLayer
 
-Root 与 Child Overlay 都是正常的 `tools.Service` Plugin 实例：
+Root 与模块 Overlay 是 `tools.Service` Plugin 实例：
 
 - root 由 `tools.New(validatedConfig)` 创建，拥有根 layer；
 - overlay 由 `tools.NewOverlay()` 创建，挂载在需要隔离的父 Plugin 之下；
 - overlay 在 `Apply` 中要求最近的 ancestor `ToolRuntime`，只读取其 layer snapshots，再追加自己的 exact layer；
 - overlay 提供新的 `ToolRuntime`、`ToolCatalog` 和 `PolicyRegistry`，其子 Plugin 自动解析最近的能力，不需要业务对象持有 Plugin Context；
 - overlay 卸载只清理自己的 layer；ancestor 和 sibling 不受影响。
+
+Agent-local layer 不是 Plugin：
+
+- AgentLoop 通过 `ToolLayerFactory.NewLayer` 创建一个 plain `ToolLayer`；
+- child layer 只读取 root Tool snapshots，并拥有自己的 Tool、restriction、guard、result observer 和 execute middleware；
+- exact Agent Scope 持有 layer 和全部注册 Handle，关闭时幂等释放；
+- 创建、注册和关闭均不 mount/unload Plugin，也不创建 Runtime Fiber。
 
 可见视图按 root 到 exact overlay 的顺序计算：
 
@@ -90,7 +98,7 @@ Restriction 只能添加到 overlay。`Allow` 的非 nil 空 slice 表示有意�
 
 ## 5. 公共能力契约
 
-`Service` 同时提供三个面向不同消费者的能力：
+`Service` 提供 root consumer 能力和 `ToolLayerFactory`；plain `ToolLayer` 实现 AgentLoop 所需的同一业务读取/执行能力：
 
 ```go
 type ToolRuntime interface {
@@ -116,6 +124,8 @@ type PolicyRegistry interface {
 
 `ToolRuntime` 是 Agent Loop 的读取与执行边界；`ToolCatalog` 是具体 Tool Plugin 的定义变更边界；`PolicyRegistry` 是 visibility/policy Plugin 的变更边界。消费者不依赖 `Service`、`registry` 或 `toolStore` 的具体实现。
 
+`ToolLayerFactory` 只为 Agent Scope 创建 plain child layer；它不返回 Plugin。Agent-local contribution 通过 `agent.Setup` 的 `ScopeEditor` 注册，不要求取得 root `ToolCatalog` 或 Plugin Context。
+
 `ToolExecutionScheduler` 由 `ToolRuntime.Scheduler()` 返回，实际 owner 是私有 `executionRuntime`。`Service` 不把 `Prepare`、`Dispatch`、`Finalize`、`Finish` 摊平成自己的方法，避免生命周期 facade 同时成为执行状态机。
 
 Tool 行为使用有业务含义的 interface：`Executor`、`OutputRenderer`、`PresentationProjector`、`ContentFinalizer`、`ConcurrencyClassifier` 和 `ToolGuard`。对应 `Func` 类型只是无状态函数的可选适配器，不是主要对象模型。
@@ -133,6 +143,8 @@ Tool 行为使用有业务含义的 interface：`Executor`、`OutputRenderer`、
 5. 需要 restriction 或 guard 时再要求 `PolicyRegistry`，不能把所有插件强制成 policy Plugin。
 
 Plugin Runtime 保证依赖就绪后才调用 `Apply`，并在启动失败、替换或卸载时调用 `Dispose`。具体 Tool Plugin 必须保存自己成功取得的 Handle 并在 Dispose 中撤销；Tools Service 不猜测哪个业务对象应该被自动注册。
+
+需要 exact Agent 隔离的 Tool、restriction、guard 或 execute middleware 不实现 child Plugin，而是实现普通 `agent.Setup`。模块级 Tool Plugin 与 Agent Setup 是两条不同生命周期边界，不能互相代替。
 
 ## 7. 注册、撤销与 System Prompt
 
@@ -211,14 +223,14 @@ additional context 的顺序固定为：Tool body `DeferContext`、execute wrapp
 
 ## 11. Event、取消与失败语义
 
-Tools 使用 Plugin Runtime 的统一 Event 分发：
+Root/模块 overlay 使用 Plugin Runtime Event 分发；plain Agent ToolLayer 通过 root `layerEffects` 发布模块级 change/result，并额外调用 exact Agent-local result observer：
 
 | Event | Delivery | 可见性与失败语义 |
 | --- | --- | --- |
 | `RegistryChanged` / `tools/change` | `DeliveryOrdered` | 从发布 Service 所在 Plugin layer 向 ancestor observers 发布；新增失败回滚，撤销失败保留清理结果 |
 | `ExecutionCompleted` / `tools/result` | `DeliveryBestEffort` | 从执行 Service 所在 layer 向 ancestor observers 并行发布；失败交给 Runtime reporter，不替换 Tool result |
 
-pre/execute/post Waterfall 同样由发布 Service 的 Plugin layer 决定可见链，按 root 到当前 layer 组装 onion；sibling 和 descendant Plugin 不参与。Tools 不保存事件历史，也不实现 Event Sourcing。
+pre/execute/post 的全局 Waterfall 由发布 Service Plugin layer 决定；Agent ToolLayer 的 local execute middleware 位于全局 middleware 之内、Tool terminal action 之外。sibling 和 descendant Plugin 不参与。Tools 不保存事件历史，也不实现 Event Sourcing。
 
 取消结果由 body 是否开始决定：
 

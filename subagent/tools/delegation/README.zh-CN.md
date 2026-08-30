@@ -7,7 +7,7 @@ flowchart LR
     Builder[SeedBuilder lifecycle] --> Plugin[delegation Tool Plugin]
     Model[calling Agent] --> Tool[subagent Tool]
     Tool --> Starter[Starter.Start]
-    Starter --> Execution[common Execution]
+    Starter --> Execution[public Execution contract]
 ```
 
 前台 OneShot 先调用 `Execution.Wait`，成功后再用 `Execution.Result` 读取已保存结果；Handle 由 OneShot 实现在 terminal 后自动释放，Tool 不执行第二次 Dispose。Continuable background 在初始消息被接受后返回 durable child ID。当前没有 Jobs，因此显式 background OneShot 返回错误，不静默改路由。

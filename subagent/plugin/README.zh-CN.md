@@ -1,24 +1,25 @@
-# Subagent Plugin
+# Subagent Plugin adapter
 
-`plugin.Plugin`是Subagent领域的composition owner。它解析Agent、Session、Approval和Projection能力，打开私有Bound Definition数据库，构造普通Go业务对象，并发布`SeedBuilderRegistry`、`Starter`、`ChildControl`、`ExtensionRegistry`、`ExtensionDirectory`、`ChildDirectory`、`bound.Definitions`和`bound.Inbox`。Registry写入面、目录读取面和Bound输入面是同一应用Service的窄capability；本包不拥有Subagent用例、输入源或Plugin Runtime。
+本包只实现 Subagent 核心的唯一全局 Plugin。OneShot、Continuable、Bound、child Extension 和 execution 都是 ordinary business objects，不是 Plugin。
 
 ```mermaid
-flowchart TD
-    Plugin[plugin.Plugin] --> Builders[seedbuilder.Registry]
-    Plugin --> Facade[subagents.Service]
+flowchart LR
+    Runtime[Plugin Runtime] --> Plugin[one Subagent Plugin]
+    Plugin --> Service[subagents.Service]
     Plugin --> OneShot[oneshot.Service]
     Plugin --> Continuable[continuable.Service]
     Plugin --> Bound[bound.Service]
     Plugin --> Directory[childdirectory.Service]
-    Plugin --> Extensions[extension.Registry]
-    Facade --> OneShot
-    Facade --> Continuable
-    Facade --> Bound
-    Plugin -->|publishes narrow views| Consumers[Tool / Control / Report / Host]
+    Plugin --> Gateway[eventGateway]
+    Gateway --> Dispatcher[agent.EventDispatcher]
 ```
 
-Apply依次解析依赖、打开独立的`bound-definitions.sqlite` adapter、注册Projection、启用ChildDirectory、构造OneShot/Continuable/Bound三个Mode Service，并打开统一Service准入。Definition Store的关闭责任只在Bound Service成功接管后转移；任一步失败都会按已取得资源的逆序回滚。各Mode自己组合child-local Provisioner；Plugin只注入approval、common Extension Provisioner和`boundExtensions`窄adapter，不解释descriptor或Definition。
+`Apply` 解析 Agent、Session、Projection、Approval、Persistence、Prompt/Tool Setup 等模块级依赖，打开独立 Bound Definition Store，注册 Projection，启用 ChildDirectory，构造三个 Mode Service，最后开放统一 Service 准入。任一步失败按已取得资源逆序回滚。
 
-Plugin只观察`agent.SessionStarted`与`agent.Disposed`：第一个为direct用户Session请求Definition-to-Binding reconcile，不能否决parent publication；第二个同步停止exact parent workers并完成Execution settlement。核心Subagent Plugin不观察`session.EventAppended`、不读取parent log且不推进输入源cursor。内置TurnRelay是独立Plugin，依赖公开`bound.Inbox`并拥有Session事件观察。完整调用链只在[Bound技术设计](../docs/parent-bound-design.zh-CN.md)和[Parent Interaction投递设计](../docs/session-event-delivery.zh-CN.md)维护。
+`eventGateway` 是 Plugin-neutral typed queue，实现各 Mode 消费的 `EventPublisher`。`plugin_event_driver.go` 由唯一 Plugin 驱动 queue，并调用 `agent.EventDispatcher` 把 `Started/Ended` 发布到 exact parent Scope。Mode 不持有 Plugin；Plugin 也不为每个 Agent 或 Subagent 构造 child Plugin。
 
-Dispose先`service.Close`；Bound在内部依次停止reconcile scheduler、并行关闭Binding workers和resident Executions、关闭Definition Store，随后Plugin停用ChildDirectory、`extensions.Clear`、清理SeedBuilder并释放Projection handle。跨包契约见[Subagent包说明](../README.zh-CN.md)，实现证据见[08实施进度](../../zh-CN/08-implementation-progress.md)。
+`Dispose` 先关闭统一 Service 准入和三个 Mode execution。此时 `Ended` 仍可通过 gateway 发布；待业务 execution 收敛后才停止 gateway，再释放 ChildDirectory、Extension registrations、SeedBuilder 和 Projection。该顺序保证 parent closing 阶段仍能收到 child 的配对 `Ended`，且不在 Plugin callback 中修改 Runtime topology。
+
+Bound Definition Store 只在 Bound Service 成功接管后转移关闭责任。Plugin 不解释 Descriptor、Definition revision、Terminal 或 parent-child 业务规则。
+
+跨包契约见[Subagent 包说明](../README.zh-CN.md)，术语见[Subagent 术语](../docs/terminology.zh-CN.md)，实现证据见[08 实施进度](../../zh-CN/08-implementation-progress.md)。

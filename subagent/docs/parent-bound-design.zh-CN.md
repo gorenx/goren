@@ -163,7 +163,7 @@ Definition Store CAS 成功后，各 Binding worker 串行处理 latest revision
 
 Definition Service 停止 reconcile/activation admission后，scheduler取消并等待全部任务。Binding registry随后并行关闭 workers；每个 worker取消在途操作、等待/停止 resident epoch并完成必要 Flush。最后才关闭 Definition Store和Extension Registry依赖。
 
-parent Agent结构关闭时，Agent lifecycle先发布`agent.Disposed`，Subagent observer再以`StopExternal`终止对应execution。Bound resident epoch必须先取消仍在运行的child Agent，再等待idle；否则observer等待child idle，而child teardown又等待observer返回，会形成关闭环。`StopExternal`不重复Dispose child Handle，因为结构释放仍由Agent lifecycle拥有。
+parent Agent结构关闭时，Agent lifecycle先发布`agent.Disposed`组件事件，Subagent observer再以`CloseExternal`终止对应execution。Bound resident epoch必须先取消仍在运行的child Agent，再等待idle；否则observer等待child idle，而child teardown又等待observer返回，会形成关闭环。`CloseExternal`不重复Dispose child Handle，因为结构释放仍由Agent lifecycle拥有。
 
 TurnRelay因依赖`bound.Inbox`而在Subagent Plugin之前关闭：它先停止新source worker、取消并等待在途`Deliver`与cursor Flush；Bound随后才关闭Inbox准入和resident epochs。
 

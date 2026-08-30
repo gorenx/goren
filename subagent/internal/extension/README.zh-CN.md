@@ -1,28 +1,27 @@
 # Child Extension Registry
 
-本包拥有`Extension`的有序registration，以及每个unpublished child Agent Scope的installation、publication commit复核和release。OneShot、Continuable与Bound共享同一Registry；common和selected是registration选择方式，不是新的生命周期Mode。
-
-`Registry`同时实现公开`ExtensionRegistry`与只读`ExtensionDirectory`。前者只提供registration seam；后者只返回当前named registrations的detached descriptor，不包含common Extension，也不暴露安装对象。Registry不决定Extension内容，不参与Plugin lifecycle，也不创建或恢复Agent。
+本包拥有 child `Extension` 的有序 registration，以及把 common 或 selected Extension 组合成普通 `agent.Setup` 的能力。它不参与 Plugin lifecycle，不创建 Agent，也不拥有 Subagent execution。
 
 ```mermaid
 sequenceDiagram
-    participant Owner as Extension owner Plugin
+    participant Plugin as Extension owner Plugin
     participant Registry as extension.Registry
-    participant Provisioner as agent.Provisioner
-    participant Scope as unpublished child Scope
-    participant Provisioning as agent.Provisioning
+    participant Setup as extension.Setup
+    participant Scope as unpublished Agent Scope
 
-    Owner->>Registry: RegisterExtension
-    Provisioner->>Registry: resolve common或selected registrations
-    Provisioner->>Scope: Extension.Install in order
-    Scope-->>Provisioning: exact installations
-    Provisioning->>Provisioning: Commit installation check
-    Owner->>Registry: Unregister
-    Registry->>Scope: Uninstall exact installations
+    Plugin->>Registry: RegisterExtension
+    Setup->>Registry: snapshot common or selected registrations
+    Setup->>Scope: ApplyNestedSetup in registration order
+    Scope-->>Setup: exact ScopeResources
+    Setup->>Scope: Own resources
+    Plugin->>Registry: unregister
+    Registry->>Scope: close exact registered resources
 ```
 
-Extension 与当前 exact Agent epoch 一一安装，但不再称为 Activation Extension。Go 使用 `Extension` 表达 child-scoped contribution，使用 `Provisioner`/`Provisioning` 表达 Agent publication transaction。
+无名 registration 进入 common 集合；带 name 的 registration 只在 Bound Definition 显式选择时安装。`Registry.registrations` 保存有序 registration；每条 registration 自己保存当前 exact Agent Scope 的 `ScopeResources`，卸载时精确关闭，不修改 Plugin Runtime topology。
 
-无名registration进入common集合；`WithExtensionName`注册项只在Bound config按name选择时安装。Install失败会在返回前反序释放本次取得的partial installations。registration removal先标记removed，使尚未Commit的Provisioning失败，再释放该registration的resident installations。Registry不通知Bound，也不决定Agent epoch；当前Plugin shutdown先关闭所有child，再Clear Registry。
+Setup 失败会逆序关闭本次已取得的 resources。registration removal 先标记 removed，再关闭其所有 live resources；与它并发但尚未完成的 Setup 会在 `ScopeCheck` 阶段失败并回滚。因此 Extension 删除和 Agent publication 不需要第二套 `Provisioner/Provisioning` 事务。
 
-跨包契约见[领域设计](../../docs/design.zh-CN.md)，实现证据见[08 实施进度](../../../zh-CN/08-implementation-progress.md)。
+Extension 是 child-local contribution，不是 Plugin。Plugin 只在模块级注册/撤销 Extension；Agent Scope 才拥有每个 exact child 的 Tool、Prompt、Policy 或其他资源。
+
+跨包契约见[Subagent 包说明](../../README.zh-CN.md)，术语见[Subagent 术语](../../docs/terminology.zh-CN.md)，实现证据见[08 实施进度](../../../zh-CN/08-implementation-progress.md)。

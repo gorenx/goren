@@ -9,7 +9,7 @@ Tools 使用唯一 [`agentmessage`](../agentmessage/README.zh-CN.md) 协议表�
 本包负责：
 
 - 编译并保存 Tool Definition，维护稳定注册顺序；
-- 组合 root、ancestor 与 exact child layer，计算 shadow、restriction、guard 和可见 schema；
+- 组合 root、可选模块 overlay 与 exact Agent `ToolLayer`，计算 shadow、restriction、guard 和可见 schema；
 - 执行 `tools/pre-execute`、`tools/execute`、`tools/post-execute` Waterfall；
 - 调用 Executor，校验参数与输出，生成 model-facing content 和 presentation metadata；
 - 物化不可变结果，发布 `tools/result` 与 `tools/change`；
@@ -23,7 +23,7 @@ Tools 使用唯一 [`agentmessage`](../agentmessage/README.zh-CN.md) 协议表�
 - LLM 调用、Provider retry、模型选择和流处理；
 - 通用自愈、任务重放或业务补偿。
 
-Tools 的失败策略是“封闭并形成规范结果”，不是自行重试。超时、重试、指标或其他 around-dispatch 行为应由独立 Plugin 通过 `tools/execute` Waterfall 接入；跨 Tool 的恢复与重新调度由 Agent Loop 或更上层 use case 决定。
+Tools 的失败策略是“封闭并形成规范结果”，不是自行重试。模块级 around-dispatch 行为通过 Plugin Runtime `tools/execute` Waterfall 接入；exact Agent 行为通过该 Agent `ToolLayer.UseExecution` 注册，二者都不要求业务对象 mount Plugin。跨 Tool 的恢复与重新调度由 Agent Loop 或更上层 use case 决定。
 
 ## 公共能力
 
@@ -33,6 +33,7 @@ Tools 的失败策略是“封闭并形成规范结果”，不是自行重试�
 | `ToolExecutionScheduler` | Agent Loop | 顺序 `Prepare`，只并发 `Dispatch`，再按模型顺序 `Finalize` 或 `Finish` |
 | `ToolCatalog` | Tool 定义 Plugin | 在当前 Tools layer 增加具名 Tool，并返回精确 `ToolHandle` |
 | `PolicyRegistry` | Tool policy Plugin | 增加 restriction、guard，并返回各自的精确 Handle |
+| `ToolLayerFactory` | AgentLoop Factory | 创建继承 root catalog/policy 的普通 Agent-local `ToolLayer` |
 | `Service` | Plugin Runtime | 声明依赖与能力，绑定 System Prompt，创建 Registry 和 execution runtime，负责卸载清理 |
 
 `ToolExecutionScheduler` 不直接由 `Service` 摊平实现。调用方通过 `ToolRuntime.Scheduler()` 取得由 `executionRuntime` 实现的 staged capability，避免生命周期 facade 同时成为第二个状态机 owner。
@@ -41,7 +42,8 @@ Tools 的失败策略是“封闭并形成规范结果”，不是自行重试�
 
 | 组件 | 职责 |
 | --- | --- |
-| `service.go` | Plugin 生命周期、依赖解析、能力 facade、System Prompt provider 和 change publication |
+| `plugin*.go` | Plugin 生命周期、依赖解析、全局 Event/Waterfall 和 root effect adapter |
+| `layer*.go` | 普通 `ToolLayer`、Agent-local registration、执行 middleware 和 child close |
 | `registry.go` | 当前 layer 与 parent lineage 的组合入口、可见性查询和 mutation 规则 |
 | `store.go` | 锁保护的 exact-layer Tool、restriction、guard 状态及快照 |
 | `runtime.go` | `Prepare -> Dispatch -> Finalize/Finish` 状态机编排 |
@@ -51,7 +53,7 @@ Tools 的失败策略是“封闭并形成规范结果”，不是自行重试�
 | `schema.go`、`restriction.go` | Definition/schema 编译和 restriction 校验 |
 | `definition.go`、`execution.go`、`policy.go`、`result_types.go` | 按概念拆分的公共契约和值类型 |
 
-依赖关系保持单向：`Service` 组装 `registry` 与 `executionRuntime`；runtime 读取 Registry 快照并委托 policy、dispatch、result 三个阶段对象；Store 不调用 Plugin、Executor 或用户策略。
+依赖关系保持单向：`Service` Plugin adapter 嵌入 root `ToolLayer`；Factory 创建的 child `ToolLayer` 只向 root读取 parent snapshots 和 effect port。runtime 读取 Registry 快照并委托 policy、dispatch、result 三个阶段对象；Store 不调用 Plugin、Executor 或用户策略。
 
 ```mermaid
 flowchart LR
@@ -61,6 +63,9 @@ flowchart LR
     AgentLoop[Agent Loop] --> ToolRuntime[ToolRuntime]
     ToolRuntime --> Scheduler[ToolExecutionScheduler]
     Service --> Registry[registry]
+    Service --> Factory[ToolLayerFactory]
+    Factory --> AgentLayer[plain Agent ToolLayer]
+    AgentLayer --> Registry
     Registry --> Store[toolStore]
     Scheduler --> Execution[executionRuntime]
     Execution --> Policy[policyEngine]
@@ -72,6 +77,8 @@ flowchart LR
 ```
 
 ## 注册与生命周期
+
+模块级 Tool/Policy Plugin 继续通过 root `ToolCatalog`/`PolicyRegistry` 注册，并在 `Dispose` 撤销 Handle。Agent-local Tool、restriction、guard、result observer 和 execute middleware 由 `agent.Setup` 通过 `ScopeEditor` 注册到 plain `ToolLayer`，资源随 exact Agent Scope 关闭；该路径不创建 child Plugin。
 
 Tool 或 policy Plugin 在自己的 `Apply` 中通过 required capability 注册业务 entry，保存成功返回的 `ToolHandle`、`RestrictionHandle` 或 `GuardHandle`，并在幂等 `Dispose` 中调用 `Unregister`。Plugin Runtime 在启动失败时仍会调用 `Dispose`，因此部分注册也能收口；Tools Service 最后卸载时会清空本 layer，防止残留引用。
 

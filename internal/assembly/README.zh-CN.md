@@ -36,6 +36,8 @@ flowchart TD
 
 默认拓扑在 Token Meter、Tool Result Pruner 和 Basic Compaction Provider 之后装配 Commands Registry 与 `compaction/command` Consumer，并在 API Proxy 激活前满足其 Commands 依赖。Assembly 只声明 Factory 顺序；命令注册和 Engine 绑定仍由各自 Plugin 的 `Apply` 拥有。
 
+Agent 主链在 `DefaultSpecs` 的显式 slice 中固定为 `systemprompt → tools → agentloop → agent → userquestions`。这里不是 map，没有 key/value；slice index 直接表示装配候选顺序，每个元素是一个完整 `PluginSpec`。`agentloop` 提供单 Agent Factory，`agent` 依赖该 Factory 并发布 Registry，`userquestions` 在首次 Apply 时即可取得可选 Registry。`QuestionService` 本身支持 Registry 后挂载、替换或撤回所触发的重复 `Apply → Dispose → Apply`，因此启动正确性不依赖该顺序；默认拓扑仍避免无意义的首次刷新，以保持 Tool Plugin 的 canonical 登记顺序。回归测试分别位于 `userquestions` 和 `internal/assembly`。
+
 ## 上下游与失败
 
 - 上游：`cmd/goren` 提供工作目录、存储路径、监听地址、版本和进程 failure sink；

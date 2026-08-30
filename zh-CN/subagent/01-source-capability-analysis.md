@@ -54,7 +54,7 @@ Consumer 主动调用 Subagent core；core 再选择 Provider 并使用 Agent、
 
 ## 5. 已记录差异
 
-- Goren 使用 Go `agent.Provisioner` / optional `agent.Provisioning` 表达源 Agent setup transaction，不复制 TypeScript callback/object-literal 形态。
+- Goren 使用普通 `agent.Setup`、私有 `scopeDraft` 与提交后的 `ScopeResources` 表达源 Agent setup transaction，不复制 TypeScript callback/object-literal 或 child Plugin 形态。
 - Goren 的 child Scope 解释位于 `subagent/internal/childscope`，one-shot 与 continuable 使用不同 Builder。
 - fork Factory 静态注册，但默认 deployment 只启用 spawn continuable Tool。固定源中 fork 的 Provider 注释与部分 composition 对 continuable 使用存在漂移，Goren 不据此默认开放 fork continuable Tool。
 - Jobs、background one-shot collection、Code Mode structured capture、Host Subagent API、ACP/Codex/Claude Code/DSH SDK Provider 未纳入当前实现。

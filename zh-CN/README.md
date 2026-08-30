@@ -23,6 +23,7 @@
 - [Agent Message 协议重构设计方案](./AgentMessage协议重构设计方案.md)：把 Inbox、Session surface 与模型上下文重建共用的 Message/source/content contract 从 `llm` 抽离到唯一 `agentmessage` owner，并固定兼容性与依赖方向。
 - [14 Agent Registry、Inbox 与实时事件模块设计](./14-agent-registry-inbox-and-events.md)：live Agent registry、Factory seam、durable Inbox projection、Agent-scoped events、initiator attribution 与 model selection snapshot。
 - [15 Agent Loop 与请求驱动模块设计](./15-agent-loop-and-request-driver.md)：AgentLoop 规范术语、ownership DAG、六个独立状态机、RLA 编排、请求重建、Tool-call 调度、取消 settlement 与 `VisibleContext`。
+- [Agent、AgentLoop 与 Subagent 破坏性重构方案](../agentloop/REFACTOR.zh-CN.md)：单 Agent Host、Agent Registry 多实例所有权、Plugin-neutral Scope/Setup、三个核心全局 Plugin 与 Mode-specific Subagent 状态机的最终实现边界。
 - [16 Session API Gateway 与实时 Frame 投影](./16-session-api-gateway-and-live-frames.md)：根 wire contract 与 `apiproxy/session` 实现边界、十个 `session.*` method、主/搜索 Gateway、默认模型选择、Mux baseline/live 与 Host edge。
 - [17 Approval、UserQuestions 与 Interaction Gateway](./17-approval-user-questions-and-interaction-gateway.md)：Approval policy/audit、UserQuestions Provider、`ask_user_question` Consumer，以及 requested/respond/resolved/replay 闭环。
 - [18 Session Projection 与 Session Title 模块设计](./18-session-projection-and-title.md)：通用 projection unit/registry/checkpoint、`session/title`、fallback/Provider 调度、rename 与客户端 higher-seq-wins。
@@ -44,6 +45,7 @@
 - [`session/projectioncache/sqlite/README.zh-CN.md`](../session/projectioncache/sqlite/README.zh-CN.md)：独立 checkpoint SQLite/sqlc storage adapter。
 - [`agentloop/README.zh-CN.md`](../agentloop/README.zh-CN.md)：Plugin/RLA 文件职责、ownership DAG、六状态机、请求/Tool 调度、settlement、durability checkpoint 与 idle convergence。
 - [`subagent/README.zh-CN.md`](../subagent/README.zh-CN.md)：OneShot、Continuable、Bound 三种模式的公共契约、模块边界和当前实现状态。
+- [Subagent 术语与命名规范](../subagent/docs/terminology.zh-CN.md)：Execution、RunID、Terminal、Setup、AgentEvent、Activity 等词汇及禁用别名。
 - [`subagent/bound/README.zh-CN.md`](../subagent/bound/README.zh-CN.md)：全局Definition、管理命令、稳定错误与version 2 Session event公共契约。
 - [`subagent/internal/bound/README.zh-CN.md`](../subagent/internal/bound/README.zh-CN.md)：每用户Session reconcile、Binding worker、idle child epoch与interaction恢复运行模型。
 - [`subagent/internal/bound/sqlite/README.zh-CN.md`](../subagent/internal/bound/sqlite/README.zh-CN.md)：独立Definition SQLite/sqlc storage-only adapter。

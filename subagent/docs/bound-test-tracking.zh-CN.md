@@ -73,21 +73,21 @@
 ### BND-D02：parent结构关闭与child idle形成循环等待
 
 - **触发与现象**：child LLM请求仍阻塞时关闭parent Agent，`Dispose`不能返回。
-- **根因**：Agent lifecycle发布`agent.Disposed`并等待observer；observer以`StopExternal`调用`StopAndWait`；旧Bound terminator没有取消child便等待idle，而child的结构teardown要在observer返回后才继续，形成循环等待。
+- **根因**：Agent lifecycle发布`agent.Disposed`并等待observer；observer以`CloseExternal`调用`StopAndWait`；旧Bound关闭逻辑没有取消child便等待idle，而child的结构teardown要在observer返回后才继续，形成循环等待。
 - **影响**：parent关闭可能永久阻塞，child execution、Session和相关goroutine无法释放。
 - **排除方案**：不通过测试超时、跳过`WhenIdle`或在observer内抢先Dispose结构Handle掩盖问题；前两者破坏收敛保证，后者侵犯Agent lifecycle所有权。
-- **最终方案**：除`StopNormal`外，Bound resident epoch在等待idle前都取消child。`StopExternal`完成execution收敛但不重复Dispose Handle，结构关闭仍由Agent lifecycle完成。
+- **最终方案**：除`CloseNormal`外，Bound resident epoch在等待idle前都取消child。`CloseExternal`完成execution收敛但不重复Dispose Handle，结构关闭仍由Agent lifecycle完成。
 - **修复位置**：`internal/bound/resident_epoch.go`。
 - **回归证据**：BND-L01在真实阻塞请求下验证parent关闭、child取消以及Agent和Session注销。
 
 ### BND-D03：空的selected Extension被折叠成common模式
 
 - **触发与现象**：没有配置named Extension的Bound child安装两次common report Extension，随后因重复注册`tool:report` prompt section而materialization失败。
-- **根因**：Extension Provisioner用`nil selected`表达common模式、用non-nil slice表达selected模式；旧snapshot写法把空slice重新变成nil，丢失“明确选择零个named Extension”的业务语义。
+- **根因**：Extension Setup用`nil selected`表达common模式、用non-nil slice表达selected模式；旧snapshot写法把空slice重新变成nil，丢失“明确选择零个named Extension”的业务语义。
 - **影响**：所有未选择named Extension且同时安装common Extension的child都可能重复安装，冲突不局限于report工具。
 - **排除方案**：不在Bound materializer中特判report，也不在prompt/tool registry静默去重；这会隐藏Extension选择契约错误，并改变其他owner的冲突语义。
-- **最终方案**：`NewSelectedProvisioner`保留空但non-nil的选择快照；common和selected Provisioner继续是两个明确入口。
-- **修复位置**：`internal/extension/provisioner.go`。
+- **最终方案**：`NewSelectedSetup`保留空但non-nil的选择快照；common和selected Setup继续是两个明确入口。
+- **修复位置**：`internal/extension/setup.go`。
 - **回归证据**：`TestEmptySelectedExtensionsDoNotInstallCommon`固定选择语义，全部Bound纵向用例验证common Extension只安装一次。
 
 ### BND-D04：一次性delegation seed被建模成resident Plugin
@@ -96,8 +96,8 @@
 - **根因**：旧`delegationPolicy`被作为child-scoped Plugin挂载，并在`Apply`期间通过Plugin服务解析`agent.Agent`。delegation approval实际是写入尚未发布child Session的一次性构造行为，不是resident Plugin资源；构造Scope已经直接拥有准确Agent，不应绕到服务解析。
 - **影响**：默认approval配置下，fresh Bound、OneShot与Continuable child都可能无法创建；cold resume不受重复seed影响。
 - **排除方案**：不从默认装配移除approval，不修改Plugin可见性或挂载顺序，也不增加materialization重试；这些方案没有修复职责错误。
-- **最终方案**：`childpolicy.DelegationSeed`作为一次性`agent.Provisioner`，直接使用`agent.Scope.Agent().SessionValue()`写入durable override且不持有Scope资源；三个模式owner只在fresh构造时组合它，resident policy继续由`childpolicy.Plugins`提供。
-- **修复位置**：`internal/childpolicy/approval.go`、`internal/oneshot/provisioner.go`、`internal/continuable/materializer.go`和`internal/bound/materializer.go`。
+- **最终方案**：`childpolicy.DelegationSeed`作为一次性`agent.Setup`，使用Setup显式收到的exact child Agent写入durable override且不持有Scope资源；三个模式owner只在fresh构造时组合它，Persona和Tool restriction同样由ordinary Setup提供。
+- **修复位置**：`internal/childpolicy/approval.go`、`internal/oneshot/setup.go`、`internal/continuable/materializer.go`和`internal/bound/materializer.go`。
 - **回归证据**：`TestDelegationSeedUsesUnpublishedScopeAgent`固定owner边界；BND-E01在启用默认approval的完整组合根中验证fresh构造和重启resume。
 
 ## 5. 验证记录

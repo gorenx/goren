@@ -33,7 +33,8 @@ live Agent contract、Registry、Inbox 和 `agent/*` Event Definition 由[14](./
 | `Settlement` | operation 停止后完成事实配对、Tool drain 和 Flush | 新业务执行、错误吞并 |
 | `VisibleContext` | exact Agent 对 retained Prompt Context message 的派生视图 | Session surface owner、Plugin Context |
 | `ContextSnapshot` | `VisibleContext` 指向的一次 model-visible snapshot 值 | 投影处理器、存储对象 |
-| `ScopeSet` | exact Agent Scope mount handle 的集合 | Agent Registry、Scope owner |
+| `AgentScope` | exact Agent 的 Tool、Prompt、local Event/Waterfall 和资源环境 | Plugin Runtime Scope、Agent Registry |
+| `AgentHost` | 一个 RLA、AgentScope 和 Session membership 的单实例 owner | Registry、runtime parent 或 Plugin |
 
 `Activity` 只用于描述已经删除的旧实现或引用上游原文，不能作为当前对象、状态、模块或字段。当前实现也不建立一个跨模块的总 `Phase`。
 
@@ -66,13 +67,14 @@ live Agent contract、Registry、Inbox 和 `agent/*` Event Definition 由[14](./
 ```mermaid
 flowchart TD
     Runtime[plugin.Runtime] --> Root[agentloop.Plugin]
-    Root --> Scopes[ScopeSet]
-    Root --> Registration[registrationPlugin]
+    Root --> Factory[agentloop.Factory]
+    Root --> Gateway[pluginGateway]
     Root --> Startup[StartupPlan]
-    Scopes --> Handle[exact plugin.Handle]
-    Runtime --> Scope[AgentScope]
-    Scope --> Provider[AgentProvider]
-    Provider --> Agent[ReactLoopAgent]
+    Factory --> Host[agentHost]
+    Host --> Agent[ReactLoopAgent]
+    Host --> Scope[agentScope]
+    Scope --> Prompt[systemprompt.PromptLayer]
+    Scope --> Tools[tools.ToolLayer]
     Agent --> Inbox[agent.Inbox]
     Agent --> Lifecycle[AgentLifecycle]
     Agent --> Execution[AgentExecution]
@@ -81,11 +83,12 @@ flowchart TD
 
 关键规则：
 
-- `ScopeSet.handles` 的 key 是 process-local `scopeID`，value 是 exact `plugin.Handle`；key 存在表示该 mount 仍由 `ScopeSet` 负责卸载。它不以 Agent/Session identity 代替 handle identity。
-- `AgentScope` 通过私有 `scopeParent` port 请求释放，不保存 `*ScopeSet`，也不拥有自己的 handle。
-- `AgentProvider` 提供 exact `agent.Agent` capability 并拥有 RLA shutdown；`sessionBinding` 只引用 RLA 以绑定 Session 和 `VisibleContext` registration。
-- `registrationPlugin` 拥有 exact `agent.FactoryRegistration`，不反向保存根 Plugin。
-- RLA 不保存 `Plugin`、`AgentScope`、`AgentProvider`、`ScopeSet` 或 `sessionBinding`。
+- AgentLoop Plugin 只拥有 Factory 和全局 gateway，不保存 Agent map 或 exact Agent；
+- Factory 每次构造一个 `agentHost`，不保存已经返回的 Host；
+- `agentHost` 是 RLA shutdown 的唯一调用者，并拥有该实例的 Agent Scope 和 Session membership；
+- `agentScope` 拥有 child `PromptLayer`、`ToolLayer` 和 committed `ScopeResources`，但不保存 Host 或 RLA back-reference；
+- RLA 不保存 Plugin、Host、Registry、parent 或 children，只消费 Scope 暴露的窄端口；
+- Registry 保存 Host 和 Scope 的结构所有权，AgentLoop 不反向保存 Registry。
 - 禁止 struct 直接循环、间接循环、构造后反向指针回填和用共享 service locator 隐藏环。
 
 Turn、Step、ModelRequest 和 ToolBatch 是 RLA 创建的调用期对象。RLA 按词法生命周期拥有它们，但状态机之间不保存字段、不互相 import，也不直接调用下一个状态机。
@@ -254,7 +257,7 @@ Tool 调度只允许 body/around-execute 并发；Prepare、Finalize、result co
 - retained snapshot 被 surface replacement 移除后要求重新 materialize；
 - 接受 exact Session 的 committed event。
 
-根 Plugin 的 `visiblecontext.Directory.entries` 以 exact `session.Context` object identity 为 key，以对应 `*VisibleContext` 非拥有引用为 value；存在表示该 live Session registration 有效。`sessionBinding` 拥有 exact registration 并在 Session release 前撤销。Directory 不拥有 Agent、不决定 surface replacement，也不延长目标生命周期。
+每个 RLA 直接拥有一个 `VisibleContext`。RLA 在 Step 边界调用 `Refresh(exact Session)`，从当前 log 和 surface 重建 retained snapshot；不再使用全局 per-Agent Directory、Plugin listener registration 或反向 Session binding。`VisibleContext` 不拥有 Session，也不决定 surface replacement。
 
 ## 10. 三种 Context 与 settlement
 

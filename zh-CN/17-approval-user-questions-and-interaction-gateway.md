@@ -165,6 +165,8 @@ Connection Plugin -> consumes only API Proxy surface
 
 Approval answerer 的注册不要求 Approval Service 已存在：typed event key 可提前注册，Service 缺席时没有请求，稍后加载时仍能命中。这保留 optional Approval deployment，不依赖声明顺序。UserQuestions 则必须作为 Service 存在，因为 API Proxy 要占用它的单一 Provider slot。
 
+Agent Registry 对 UserQuestions 是可选依赖：没有 Agent 的直接 request 仍可交给 Provider，携带 Agent 时才需要 exact live-root 校验。Plugin Runtime 可能在 Registry 挂载、替换或撤回时重新激活 UserQuestions；`QuestionService` 因此拥有可重复的 `inactive → active → inactive` 周期，每次 deactivate 清除当前 Registry 和 Provider，下一次 activate 绑定新的 Registry。Provider Plugin 随硬依赖一起重新登记，旧周期 handle 不能撤回新周期 Provider。默认 Assembly 让 Agent Registry 先于 UserQuestions 可见，仅用于避免首次启动的无意义刷新并保持 canonical Tool 登记顺序，不承担业务正确性。
+
 依赖保持单向：`approval`、`userquestions`、`toolaskuser` 不导入 `apiproxy` 或 `connection`；`apiproxy` 作为 consumer adapter 导入 core contract；Echo 只在 `internal/connection`。
 
 ## 8. 存储边界

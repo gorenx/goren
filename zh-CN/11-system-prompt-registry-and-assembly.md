@@ -40,20 +40,21 @@ type PromptRegistry interface {
 }
 ```
 
-Agent Loop 只依赖 `Assembler`；拥有 Prompt entry 的 Plugin 才依赖 `PromptRegistry`。`SystemPrompt` 是 `Registry` 实现的组合接口，不要求普通 Consumer 获得 mutation API。
+AgentLoop Factory 依赖 `PromptLayerFactory`，每个 exact Agent 使用一个 plain `PromptLayer`；模块级只读 Consumer 依赖 `Assembler`，拥有 root Prompt entry 的 Plugin 依赖 `PromptRegistry`。`SystemPrompt` 是 `Registry` 实现的组合接口，不要求普通 Consumer 获得 mutation API。
 
 `AssembleContext` 只包含 assembly 所需业务数据，不含 Plugin Context 或 Scope。调用哪个 `Assembler` 已由 Plugin Runtime 的 Service resolution 决定。
 
 静态和动态文本统一实现 `TextProvider`；`VariableValue.Defined` 区分空字符串和 undefined。简单无状态函数可以显式适配为 `TextFunc`、`VariableProviderFunc` 或 `ToolProviderFunc`，但 Registry 与 assembly 仍由具名对象拥有状态和流程。
 
-## 3. Root、Overlay 与 Plugin Scope
+## 3. Root Plugin、模块 Overlay 与 plain Agent Layer
 
-`systemprompt.Registry` 本身是 Plugin，同时提供 `Assembler` 与 `PromptRegistry`。
+`systemprompt.Registry` 是模块 Plugin adapter，嵌入一个 root `PromptLayer`，同时提供 `Assembler`、`PromptRegistry` 与 `PromptLayerFactory`。
 
 - `New` 创建 root Registry，并在 Apply 中安装 Harness identity、persona 和配置的 runtime-context suppression；
 - `NewOverlay` 创建 child Registry，在 Manifest 中依赖祖先 `Assembler`，并在自己的 exact `NestedScope` 提供同一 Service；
 - Apply 解析最近祖先并保存只读 layer source；
 - Dispose 清空本层 Store 并断开 parent。
+- `PromptLayerFactory.NewLayer` 创建普通 Agent-local layer；它不实现 Plugin，不创建 Fiber，也不修改 Runtime topology。
 
 ```mermaid
 flowchart TB
@@ -61,13 +62,14 @@ flowchart TB
     Child[Overlay Registry Plugin] --> ChildLayer[promptStore]
     Child --> Parent[Require nearest Assembler]
     Parent --> Root
-    Consumer[Child-scope Consumer] --> Resolved[nearest Assembler]
-    Resolved --> Child
+    Factory[PromptLayerFactory] --> AgentLayer[plain Agent PromptLayer]
+    AgentLayer --> RootLayer
+    RLA[ReactLoopAgent] --> AgentLayer
 ```
 
-Registry 不保存 `plugin.Scope`，Store 也不知道 ScopeKey。父子关系由 Plugin Service resolution 和 overlay Plugin 对象表达，不另建 System Prompt scope registry。
+Registry 不保存 `plugin.Scope`，Store 也不知道 ScopeKey。模块 overlay 的父子关系由 Plugin Service resolution 表达；Agent layer 的 parent 是只读 `layerSource`，生命周期由 Agent Scope 持有。两者都不建立 System Prompt scope registry。
 
-可见 layer 从 root 到当前 overlay 排列。section、context、variable 和 Tool provider 都按 name 由近层覆盖远层；suppressor 只要任一可见层存在即生效。Sibling 与 descendant 不进入当前链。
+可见 layer 从 root 到当前模块 overlay 或 Agent layer 排列。section、context、variable 和 Tool provider 都按 name 由近层覆盖远层；suppressor 只要任一可见层存在即生效。Sibling 与 descendant 不进入当前链。
 
 ## 4. PromptHandle 与精确所有权
 
@@ -174,6 +176,6 @@ Factory 只构造 root Registry；built-in entry 在 Apply 中安装，失败由
 - callback panic 保持编程错误语义，不伪装成空内容；
 - System Prompt 不建立 retained signal，普通 assembly 在方法返回时结束；
 - Tool Registry 只通过 `AddToolProvider` 的 Handle 接入，不把执行或 policy 塞入 System Prompt；
-- Agent preset 需要局部 Prompt 时声明 overlay Child Plugin，不传递公开 Scope 参数。
+- Agent-local Prompt 通过 `agent.Setup` 和 `ScopeEditor` 注册到 plain `PromptLayer`；只有真正具有独立模块生命周期的静态组合才使用 overlay Plugin。
 
 实现位于 `systemprompt/*.go`，主要行为由 `systemprompt/systemprompt_test.go`、Factory tests 和固定源 `TestPinnedSourceSystemPromptMatchesGo` 验证。

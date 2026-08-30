@@ -29,9 +29,11 @@ sequenceDiagram
     Service->>Registry: Get(agent ID)
     Registry-->>Service: exact live Agent
     Runtime->>Adapter: Dispose
-    Adapter->>Service: close
+    Adapter->>Service: deactivate
+    Runtime->>Adapter: Apply after optional dependency change
+    Adapter->>Service: activate(current Registry)
 ```
 
-`QuestionService` 在 `Plugin.Apply` 成功前拒绝 Provider 登记。`Plugin.Dispose` 在所有依赖它的 Plugin 停止后关闭 Service，并清除 Registry 引用和当前 Provider；已持有的能力引用不能在卸载后重新登记 Provider。Provider handle 按登记身份撤销，重复撤销是幂等的，也不会移除后来登记的 Provider。
+`QuestionService` 在 `Plugin.Apply` 成功前拒绝 Provider 登记。`Plugin.Dispose` 在所有依赖它的 Plugin 停止后把 Service 恢复为 inactive，并清除 Registry 引用和当前 Provider；Runtime 因可选 Registry 挂载、替换或撤回而重新 Apply 时，同一个 Service 可进入新的 active 周期。最终卸载后若没有新的 Apply，Provider 登记继续被拒绝。Provider handle 按登记身份撤销，重复撤销是幂等的，旧周期 handle 也不会移除新周期登记的 Provider。
 
 `Ask` 尊重调用 Context 的取消。传入问题与返回答案都会复制，Provider 不能借用调用方切片，调用方也不能修改 Provider 保存的答案。携带 Agent 的请求必须对应 Registry 中同一实例的 live Agent；Subagent Session 不能直接发起人机交互。

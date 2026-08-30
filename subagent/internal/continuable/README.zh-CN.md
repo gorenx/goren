@@ -1,23 +1,23 @@
 # Continuable
 
-本包是 Continuable Subagent 的生命周期实现。它拥有 fresh create、durable child cold resume、per-child materialization 串行化、当前 turn 中断和 resident epoch settlement。
+本包实现可冷恢复的 Continuable child。durable identity 是 child Session ID；每次 materialize 得到一个新的 `residentExecution` 和 RunID。
 
 ```mermaid
 flowchart LR
-    Service[subagents.Service] --> Continue[continuable.Service]
-    Continue --> Children[continuableChildRegistry]
-    Children --> Child[continuableChild mailbox]
+    Service[continuable.Service] --> Registry[continuableChildRegistry]
+    Registry --> Child[continuableChild mailbox]
     Child --> Materializer[materializer]
-    Child --> Resident[residentExecution]
     Materializer --> Constructor[agent.Constructor]
-    Resident --> Execution[common Execution]
-    Continue --> Session[Session log / persistence]
+    Child --> Resident[residentExecution]
+    Resident --> Index[execution.Registry]
 ```
 
-`Service`只准备Start输入并把Start、cold Resume和Interrupt路由给durable child owner；`materializer`拥有创建、恢复、descriptor校验和scoped provision。`continuableChildRegistry`的唯一mutex只保护child owner成员关系和关闭准入，不包围materialization、Agent调用、等待或终止工作。每个`continuableChild`使用自己的mailbox串行处理同一child的materialization与中断命令，不同child由不同goroutine并行处理；当前Execution结束且没有已接受命令后，child owner从registry精确退休，迟到调用会重新取得owner后重试。
+`continuableChildRegistry` 的 map 以 child Session ID 为 key、以该 durable child 的串行 `continuableChild` 为 value。mutex 只保护 membership 和关闭准入，不包围 Agent/Session I/O。每个 child mailbox 串行 Start、Resume、Interrupt 和 shutdown；不同 child 独立执行。
 
-`residentExecution`表示一个exact resident Agent epoch及其common `Execution`，直接拥有settlement观察和terminal transaction，不再通过slot、current wrapper和terminator wrapper互相穿透。Agent仍拥有exact epoch、运行父子关系、Inbox、状态和Scope。普通resident parent消息仍由统一`childExecutionControl`在校验exact parent后直接调用child Agent `Followup`；只有公共查询判断child已经cold时才调用Continuable Resume。cold resume不再次调用SeedBuilder，而是从authoritative descriptor和Session log重建，并在发布新Execution前原子接受首条消息；若查询后的并发变化已经使child resident，Resume仍在child mailbox中把消息交给该exact Agent。Settlement继续要求Agent idle、Inbox无pending且没有runtime descendants；descendant结束会唤醒parent resident execution重新检查。
+`residentExecution` 是一个 exact Agent 生命周期对应的 Mode 状态机。它直接拥有 `Starting/Active/Stopping/Stopped`、RunID、Terminal、Agent Handle、settlement watcher 和关闭结果，不嵌套共享 execution state，也不回指 `continuableChild`。关闭完成只把自身写入 child 拥有的 channel；child 在自己的 loop 中清除 current 并决定是否退休。
 
-本包不实现 child-to-parent report。report Tool 根据当前 child Agent 的 Session parent identity 查找 exact live parent，再直接使用 parent Agent 的 Inbox 能力；OneShot 与 Continuable 共用该路径。
+Settlement 只有在 Agent idle、Inbox 无 pending 且没有 runtime descendants 时触发。Continuable 会刷新 child Session、计算本次运行 Terminal、向仍 live 的 exact parent 发送 settlement message、发布 `subagent.Ended`，再移除 live index 和释放 Handle。cold resume 从 durable Descriptor 和 Session log 恢复，不再次调用 SeedBuilder。
 
-关闭准入只由统一`subagents.Service`负责；Continuable `Close`关闭child registry准入，并行向各child mailbox请求停止当前Execution，仍只等待每个exact Agent进入Closing，不等待Agent Scope teardown。创建与恢复由`materializer`组合Mode-owned Provisioner：fresh安装delegation policy，fresh/cold都组合Persona、Tool restriction和common Extensions。跨包契约见[Subagent包说明](../../README.zh-CN.md)，实现证据见[08实施进度](../../../zh-CN/08-implementation-progress.md)。
+创建/恢复组合 delegation、Persona、Tool restriction 和 common Extension Setup，不挂载 child Plugin。普通 resident message 在 exact parent 校验后直接进入 child Agent Inbox；只有 cold child 才走 materialize/resume。
+
+跨包契约见[Subagent 包说明](../../README.zh-CN.md)，公共执行机制见[Execution 说明](../execution/README.zh-CN.md)，实现证据见[08 实施进度](../../../zh-CN/08-implementation-progress.md)。

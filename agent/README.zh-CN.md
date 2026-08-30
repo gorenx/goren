@@ -1,79 +1,72 @@
 # Agent 领域
 
-`agent/` 定义 live Agent 能力、Agent Registry、durable Inbox 投影与未发布 Agent 的组合契约。权威领域设计见[14 Agent Registry、Inbox 与实时事件模块设计](../zh-CN/14-agent-registry-inbox-and-events.md)，Turn/Step 驱动由[15 Agent Loop 与请求驱动模块设计](../zh-CN/15-agent-loop-and-request-driver.md)拥有；实施状态与验证证据只见[08 实施进度](../zh-CN/08-implementation-progress.md)。
+`agent/` 拥有 live Agent 的公共能力、Registry、多 Agent 运行期父子关系、Agent Scope 组合契约和组件通信事件。权威边界见[14 Agent Registry、Inbox 与实时事件模块设计](../zh-CN/14-agent-registry-inbox-and-events.md)，单 Agent 执行见[15 Agent Loop 与请求驱动模块设计](../zh-CN/15-agent-loop-and-request-driver.md)，实施证据见[08 实施进度](../zh-CN/08-implementation-progress.md)。
 
-Inbox 和 Agent event 消费唯一 [`agentmessage`](../agentmessage/README.zh-CN.md) 协议；本包拥有准入、排队和领取语义，不重新声明 Message、source 或 content。
+## 职责
 
-## 职责边界
-
-| 文件 | 职责 |
+| 文件前缀 | 职责 |
 | --- | --- |
-| `agent.go` | `Agent` 能力、状态、Inbox target 与 maintenance 契约 |
-| `factory.go` | Registry 消费的 `Factory`、`AgentEpoch`、`AgentTeardown` 与 Create/Resume 参数 |
-| `handle.go` | exact live Agent、关闭通知与销毁能力 |
-| `registry.go` | Registry 应用服务、Factory 注册、创建/恢复准入及面向消费者的窄接口 |
-| `lifecycle_coordinator.go` | exact Agent epoch、运行期父子关系、可见性、发布与 child-first teardown |
-| `lifecycle_status.go` | Registry 内部的 epoch、发布、子节点准入和关闭状态 |
-| `plugin.go` | 将 Registry 的窄能力发布到 Plugin Runtime，并在所有依赖停止后关闭 Registry |
-| `scope_runtime.go` | Agent 业务到私有运行 Scope 的消费侧端口 |
-| `provisioning.go` | Plugin-neutral 的 `ScopeResource`、`Scope`、`Provisioner` 与 `Provisioning` |
-| `initiator.go` | 同一调用链内的 Agent 因果归属，不表示结构所有权或授权 |
-| `inbox.go` | 从 append-only Session log 重建并提交 next-turn / next-step 消息 |
-| `events.go` | Agent 领域 Event、Waterfall 输入输出和调用入口 |
-| `model_selection.go` | prompt assembly 与 LLM request 之间的单步模型选择快照 |
-| `cancellation.go` | caller、parent、dispose 与 hook 的 typed cancellation cause |
+| `agent` | live Agent 能力与状态 |
+| `factory` | Consumer-owned `Factory`、单 Agent `Host` 与创建/恢复参数 |
+| `registry` | Session ID 准入、私有 `agentRecord`、运行期父子关系、发布和 child-first 关闭 |
+| `scope`、`setup` | Plugin-neutral Agent Scope、Setup、资源与 middleware 注册边界 |
+| `handle` | 绑定 exact `agentRecord` 的关闭能力 |
+| `events` | Agent 组件通信事件、Waterfall 请求和值 |
+| `inbox` | 从 append-only Session log 重建并修改 durable Inbox |
+| `model_selection` | 同一步 prompt/request 使用的模型选择快照 |
+| `initiator`、`cancellation` | 调用链归因与 typed cancellation cause |
+| `plugin` | 唯一 Agent 模块 Plugin；绑定 Factory 并发布 Registry 的窄能力 |
 
-本包不构造 concrete Agent，不驱动 Turn/Step，不读取部署配置，也不依赖 LLM Provider、Tool 实现、持久化 adapter、HTTP、WebSocket 或 UI。`agentloop` 实现 Registry 所消费的 `Factory`；Registry 不反向认识 `agentloop`。
+本包不构造 concrete Agent，不执行 Turn/Step，不持有 Plugin Runtime Scope，也不管理 Plugin child topology。`agentloop` 实现 `Factory`，但 `agent` 不反向依赖 `agentloop`。
 
-## 创建与可见性
+## 创建事务
 
 ```mermaid
 sequenceDiagram
-    participant Caller as Caller
-    participant Registry as agent.Registry
+    participant Caller
+    participant Registry as RegistryService
     participant Factory as agent.Factory
-    participant Provisioner as agent.Provisioner
+    participant Host as agent.Host
     participant Scope as agent.Scope
-    participant Runtime as plugin.Runtime
-    participant Session as session.LiveStore
 
-    Caller->>Registry: Create / Resume（可指定 RuntimeParent）
-    Registry->>Registry: 检查准入并创建 exact Agent epoch
-    Registry->>Factory: CreateAgent / ResumeAgent(AgentEpoch)
-    Factory->>Session: prepare unpublished Session
-    Factory->>Runtime: mount private Agent Scope below Agent Loop
-    Runtime-->>Factory: active unpublished Scope
-    Factory->>Provisioner: Provision(ctx, Scope)
-    Provisioner->>Scope: Own exact ScopeResource
-    Factory->>Registry: AgentEpoch.Attach(Agent, AgentScopeRuntime)
-    Factory->>Session: announce Session
-    Factory-->>Registry: construction complete
-    Registry->>Runtime: dispatch agent/created and agent/session-start
-    Registry-->>Caller: Agent Handle
+    Caller->>Registry: Create / Resume(options)
+    Registry->>Registry: reserve Session ID and runtime-parent relation
+    Registry->>Factory: CreateAgent / ResumeAgent
+    Factory-->>Registry: one unpublished Host
+    Registry->>Registry: attach Host, Agent and Scope
+    Registry->>Scope: ApplySetup(exact Agent, Setup)
+    Registry->>Host: EnterServing
+    Registry->>Host: Announce Session
+    Registry->>Scope: Dispatch agent/created
+    Registry->>Scope: Dispatch agent/session-start
+    Registry->>Registry: enter live
+    Registry-->>Caller: exact Handle
 ```
 
-调用方通过 `Provisioner` 配置未发布 Scope，Agent Loop 消费这个接口，并由私有 Scope adapter 实现 `Scope`。业务资源通过 `Scope.Own` 转移结构所有权；需要安装 Plugin 的调用方使用 `agent/scopedplugin` adapter，不把 `plugin.Plugin` 带入 Agent 业务接口。若配置还需要发布边界复核或 resident 生命周期，则 `Provisioner` 返回一次调用独占的 `Provisioning`；没有剩余事务时返回 nil。只有 `Provisioning.Commit`、Session 发布和 Agent 发布都成功，调用方才会取得可见 Agent。
+`Factory` 每次只构造一个 `Host`。`Host` 拥有一个 Agent、一个 Agent Scope 和单实例关闭；它不保存 Registry、runtime parent 或 children。
 
-Registry 直接拥有 exact Agent epoch 及其 `RuntimeParent` 父子关系，不再通过第二套父子关系容器、membership Plugin 或布尔状态拼装生命周期。调用方释放 `Handle` 时，Registry 先关闭运行期后代和当前 epoch 的工作准入，退休已发布事件，再通过 `AgentScopeRuntime.Teardown` 释放私有 Scope。Runtime 主动卸载 Scope 时，`AgentTeardown.BeginTeardown/FinishTeardown` 把同一结构事实回报 Registry；两条入口收敛到同一个 epoch 状态机。`Handle` 直接引用 exact epoch，不和 `AgentTeardown` 共用第二个 lifecycle wrapper。消费者若只需判断 settlement 条件，使用只读 `RuntimeDescendants`；Agent 不发布“只关闭某个父节点后代”的独立命令，父子收敛始终是 exact Handle 关闭或 Registry shutdown 的内部结果。
+`Setup.Apply` 通过 `ScopeEditor` 安装 Tool、Prompt、Policy、Agent-local Event/Waterfall 和普通资源。具体 `scopeDraft` 由 `agentloop` 的私有 Agent Scope 实现：注册在未发布 Scope 上立即取得可撤销 Handle，commit 前执行 `ScopeCheck`；失败时逆序撤销，成功后返回只负责幂等关闭的 `ScopeResources`。Setup 和资源都不能包含 Plugin。
 
-`RegistryService` 自己持有进程级创建准入状态。`Create/Resume` 在同一临界区完成“检查 Registry 准入、选择 exact Factory registration、创建 exact Agent epoch”，因此不会先取得失效 Factory 再开始构造。`FactoryRegistration.Close` 只关闭这一条 Factory 注册：先从路由中移除 exact Factory，再通过 `AgentEpoch.ClosingSignal` 取消并等待已经由该注册接纳的构造；它不关闭既有 live Agent，也不永久关闭 Registry，后续可以注册替代 Factory。只有 `RegistryService.Shutdown` 会永久停止 Registry 创建/恢复准入并收敛全部 Agent epoch；`RegistryPlugin.Dispose` 作为业务服务所有者执行该最终关闭。
+## Identity、map 与 ownership
 
-`Agent.ID()` 是 durable Session identity；`agent.Same` 判断两个接口是否指向同一个进程内 Agent 实例。它不引入第二个 `InstanceID`。`FactoryRegistration` 自身就是 exact 注册身份，不再增加只作指针 token 的 `factoryEntry`。
+Session ID 是 Agent 的唯一业务 ID。Registry 的主要索引含义是：
 
-## Event 与 Waterfall
+- `byID`：key 是 Session ID，value 是该 ID 当前 exact 生命周期的私有 `agentRecord`；
+- `parentByChild`：key 是 child Session ID，value 是 runtime parent Session ID；
+- `childrenByParent`：key 是 parent Session ID，value 是其当前 runtime child Session ID 集合。
 
-- 状态、Inbox、Session start、Turn stopping 与 Agent error 都是有业务名称的 typed Event；发布者只构造领域事实，实际监听者查找、scope 过滤、排序和分发由 `plugin.Runtime` 完成。
-- `PreStepNotice -> PreStepDecision`、`RequestNotice -> RequestResolution` 和 `RequestErrorNotice -> RequestErrorAction` 是三个独立 Waterfall 契约。Middleware 属于业务 Plugin 的 Manifest，Agent Loop 只调用 typed terminal。
-- Event 不保存历史。需要恢复的模型可见输入和 Inbox 状态必须来自 append-only Session log，不能依赖进程内监听结果。
+这些 map 只保存 ID relation，不形成 parent/child 对象互指。`Handle` 直接绑定创建时的 `agentRecord`，因此旧 Handle 不会按 Session ID 找到并关闭后来恢复的新 Agent。
 
-## Maintenance 边界
+`agentRecord` 只使用 `constructing → attached → live → closing → closed`。`publicationPhase` 单独记录 `agent/created` 是否已经开始，以保证开始发布后必有配对 `agent/disposed`。所有状态和常量的语义见 `registry_state.go` 注释。
 
-`RunMaintenance(ctx, operation)` 是 Agent 自己的窄 use-case admission，不是通用 Task/Runner 框架。调用者直接传入一个同步 operation；具体 Agent 只在 live、accepting、true idle 且没有 wake request 时切换到 maintenance activity，并传入由该 activity 拥有的 Context。
+## 事件边界
 
-maintenance 期间 Turn driver 不会同时执行；新 Inbox work 可以设置 wake request，在 operation 返回、activity 恢复 idle 后由 AgentLoop 启动。caller cancellation、Agent dispose 和 operation error 使用原有 Context/error 边界收敛，Registry 不介入也不重试。当前 Compaction `CompactNow` 是该 seam 的直接 Consumer。
+`AgentEvent` 是进程内组件通信事实，不是 Session event，也不写入 Session log。普通事件只在 exact Agent live 时派发；Agent 进入 closing 后，仅实现 `AgentClosingEvent` 的终止通知可以继续派发，直到 Scope 真正关闭。当前 `subagent.Ended` 使用该边界，使 child 关闭期间仍能向正在关闭的 parent 发布配对结束事实。
 
-## 失败与取消
+Agent-local observer 先执行，随后由 AgentLoop 的全局 Plugin gateway 接入 Plugin Runtime Event。Waterfall 顺序相反：全局 middleware 包裹 local middleware，再调用 RLA terminal action。
 
-- Factory 未注册、Registry 已关闭准入、Agent id 冲突、Session/Agent announcement 被拒绝或子树激活失败都会让创建失败；未发布 Scope 和 epoch 按结构顺序回滚。
-- best-effort observer failure 由 owner 的 failure reporter 收敛，不能改写已经提交的 Session fact。
-- `CancelCause` 表达业务取消来源；调用 `Cancel` 不等于销毁 Plugin。结构销毁由 Runtime lifecycle 和 `Handle.Dispose` 负责。
+## 关闭
+
+`Handle.Dispose` 进入一个幂等 close transaction：停止 descendant 准入，等待已接纳构造，按 Session ID relation child-first 关闭后代，发布 `agent/disposed`，关闭 Host，再逆序关闭 Agent Scope。任一 child 关闭失败不会跳过其他 child 或 parent；重复关闭返回同一稳定结果。
+
+Agent 核心只有一个 `RegistryPlugin`。它依赖 AgentLoop 提供的 `Factory`；`Dispose` 先撤销 Factory 绑定，再关闭剩余 Registry records。Plugin Runtime 本身不拥有单个 Agent 的生命周期。
