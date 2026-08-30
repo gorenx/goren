@@ -37,6 +37,21 @@ type agentHost struct {
 	closeErr           error
 }
 
+func newAgentHost(
+	subject *ReactLoopAgent,
+	scopeState *agentScope,
+	sessions session.LiveStore,
+	preparation *session.Preparation,
+) *agentHost {
+	return &agentHost{
+		subject:     subject,
+		scope:       scopeState,
+		sessions:    sessions,
+		preparation: preparation,
+		closeDone:   make(chan struct{}),
+	}
+}
+
 func (owner *agentHost) Agent() agent.Agent {
 	if owner == nil {
 		return nil
@@ -61,7 +76,7 @@ func (owner *agentHost) EnterServing(requestContext context.Context) error {
 		return errors.New("agentloop: Agent is already serving")
 	}
 	owner.mutex.Unlock()
-	sessionHandle, err := owner.sessions.Enter(owner.subject.conversation)
+	sessionHandle, err := owner.sessions.Enter(owner.subject.SessionValue())
 	if err != nil {
 		return err
 	}
@@ -82,7 +97,7 @@ func (owner *agentHost) Announce(requestContext context.Context) error {
 	}
 	owner.sessionPublication = sessionPublishing
 	owner.mutex.Unlock()
-	err := owner.sessions.Announce(requestContext, owner.subject.conversation)
+	err := owner.sessions.Announce(requestContext, owner.subject.SessionValue())
 	owner.mutex.Lock()
 	if err != nil {
 		owner.sessionPublication = sessionUnpublished
@@ -120,6 +135,10 @@ func (owner *agentHost) Close(closeContext context.Context) error {
 				sessionHandle.Release(completionContext),
 			)
 		}
+		owner.closeErr = errors.Join(
+			owner.closeErr,
+			owner.scope.Close(completionContext),
+		)
 		close(owner.closeDone)
 	})
 	select {
@@ -127,21 +146,6 @@ func (owner *agentHost) Close(closeContext context.Context) error {
 		return owner.closeErr
 	case <-closeContext.Done():
 		return context.Cause(closeContext)
-	}
-}
-
-func (owner *agentHost) WhenClosed(waitContext context.Context) error {
-	if owner == nil {
-		return nil
-	}
-	if waitContext == nil {
-		waitContext = context.Background()
-	}
-	select {
-	case <-owner.closeDone:
-		return owner.closeErr
-	case <-waitContext.Done():
-		return context.Cause(waitContext)
 	}
 }
 

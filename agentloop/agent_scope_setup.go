@@ -21,14 +21,13 @@ func (owner *agentScope) ApplySetup(
 	if requestContext == nil {
 		return nil, errors.New("agentloop: Agent Scope setup Context is nil")
 	}
+	finishCall, err := owner.beginCall()
+	if err != nil {
+		return nil, err
+	}
+	defer finishCall()
 	owner.setupMutex.Lock()
 	defer owner.setupMutex.Unlock()
-	owner.mutex.RLock()
-	closing := owner.closing
-	owner.mutex.RUnlock()
-	if closing {
-		return nil, errors.New("agentloop: Agent Scope is closing")
-	}
 	draft := &scopeDraft{
 		owner:   owner,
 		subject: subject,

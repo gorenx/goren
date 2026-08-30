@@ -46,17 +46,19 @@ type RuntimeDescendants interface {
 // RegistryService owns Agent membership, parent-child relations, and
 // multi-Agent lifecycle. AgentLoop remains responsible for each Host only.
 type RegistryService struct {
-	mutex             sync.Mutex
-	admission         registryAdmission
-	factory           Factory
-	byID              map[session.SessionID]*agentRecord
-	records           []*agentRecord
-	parentByChild     map[session.SessionID]session.SessionID
-	childrenByParent  map[session.SessionID]map[session.SessionID]struct{}
-	constructions     map[*agentRecord]struct{}
+	mutex            sync.Mutex
+	admission        registryAdmission
+	factory          Factory
+	byID             map[session.SessionID]*agentLifetime
+	lifetimes        []*agentLifetime
+	parentByChild    map[session.SessionID]session.SessionID
+	childrenByParent map[session.SessionID]map[session.SessionID]struct{}
+	// Key is an exact Agent lifetime whose Factory call was admitted. The empty
+	// value carries no ownership; membership is the construction join set.
+	constructions     map[*agentLifetime]struct{}
 	reportObserverErr func(error)
-	shutdown          lifecycleSignal
-	shutdownErr       error
+	deactivation      lifecycleSignal
+	deactivationErr   error
 }
 
 // NewRegistry constructs an inactive Agent Registry. RegistryPlugin binds its
@@ -67,13 +69,13 @@ func NewRegistry(registryConfig RegistryOptions) *RegistryService {
 		reporter = func(error) {}
 	}
 	return &RegistryService{
-		admission:         registryAccepting,
-		byID:              make(map[session.SessionID]*agentRecord),
+		admission:         registryInactive,
+		byID:              make(map[session.SessionID]*agentLifetime),
 		parentByChild:     make(map[session.SessionID]session.SessionID),
 		childrenByParent:  make(map[session.SessionID]map[session.SessionID]struct{}),
-		constructions:     make(map[*agentRecord]struct{}),
+		constructions:     make(map[*agentLifetime]struct{}),
 		reportObserverErr: reporter,
-		shutdown:          newLifecycleSignal(),
+		deactivation:      newLifecycleSignal(),
 	}
 }
 
@@ -83,31 +85,28 @@ func (service *RegistryService) bind(agentFactory Factory) error {
 	}
 	service.mutex.Lock()
 	defer service.mutex.Unlock()
-	if service.admission != registryAccepting {
-		return errors.New("agent: Agent Registry is shutting down")
-	}
-	if service.factory != nil {
+	if service.admission != registryInactive {
 		return errors.New("agent: Agent Registry is already active")
 	}
+	if len(service.lifetimes) != 0 || len(service.constructions) != 0 {
+		return errors.New("agent: Agent Registry retained inactive lifetimes")
+	}
 	service.factory = agentFactory
+	service.admission = registryAccepting
+	service.deactivation = newLifecycleSignal()
+	service.deactivationErr = nil
 	return nil
-}
-
-func (service *RegistryService) unbind() {
-	service.mutex.Lock()
-	service.factory = nil
-	service.mutex.Unlock()
 }
 
 // Get returns the visible exact Agent registered for identifier.
 func (service *RegistryService) Get(identifier session.SessionID) (Agent, bool) {
 	service.mutex.Lock()
 	defer service.mutex.Unlock()
-	record := service.byID[identifier]
-	if !recordVisible(record) {
+	lifetime := service.byID[identifier]
+	if lifetime == nil || !lifetime.Visible() {
 		return nil, false
 	}
-	return record.subject, true
+	return lifetime.Agent(), true
 }
 
 // Contains reports whether subject is the visible exact Agent instance.
@@ -117,18 +116,18 @@ func (service *RegistryService) Contains(subject Agent) bool {
 	}
 	service.mutex.Lock()
 	defer service.mutex.Unlock()
-	record := service.byID[subject.ID()]
-	return recordVisible(record) && Same(record.subject, subject)
+	lifetime := service.byID[subject.ID()]
+	return lifetime != nil && lifetime.Visible() && lifetime.Matches(subject)
 }
 
 // List returns visible exact Agents in construction order.
 func (service *RegistryService) List() []Agent {
 	service.mutex.Lock()
 	defer service.mutex.Unlock()
-	result := make([]Agent, 0, len(service.records))
-	for _, record := range service.records {
-		if recordVisible(record) {
-			result = append(result, record.subject)
+	result := make([]Agent, 0, len(service.lifetimes))
+	for _, lifetime := range service.lifetimes {
+		if lifetime.Visible() {
+			result = append(result, lifetime.Agent())
 		}
 	}
 	return result
@@ -143,11 +142,11 @@ func (service *RegistryService) ApplySetup(
 	if contribution == nil {
 		return nil, errors.New("agent: Agent Setup is nil")
 	}
-	record, err := service.liveRecord(subject)
+	lifetime, err := service.liveLifetime(subject)
 	if err != nil {
 		return nil, err
 	}
-	return record.scope.ApplySetup(requestContext, subject, contribution)
+	return lifetime.ApplySetup(requestContext, contribution)
 }
 
 // Dispatch publishes fact through the Scope of the exact live Agent.
@@ -159,36 +158,30 @@ func (service *RegistryService) Dispatch(
 	if fact == nil {
 		return errors.New("agent: AgentEvent is nil")
 	}
-	record, err := service.eventRecord(subject, fact)
+	lifetime, err := service.exactLifetime(subject)
 	if err != nil {
 		return err
 	}
-	return record.scope.Dispatch(requestContext, fact)
+	if requestContext == nil {
+		return errors.New("agent: Agent event Context is nil")
+	}
+	return lifetime.DispatchEvent(requestContext, subject, fact)
 }
 
-// eventRecord keeps only terminal event settlement available while Registry
-// closes descendants. Scope shutdown remains the final event boundary.
-func (service *RegistryService) eventRecord(
+func (service *RegistryService) exactLifetime(
 	subject Agent,
-	fact AgentEvent,
-) (*agentRecord, error) {
+) (*agentLifetime, error) {
 	if subject == nil {
 		return nil, errors.New("agent: Agent subject is nil")
 	}
 	service.mutex.Lock()
-	record := service.byID[subject.ID()]
-	available := record != nil && record.scope != nil &&
-		Same(record.subject, subject)
-	if available && record.phase == recordClosing {
-		_, available = fact.(AgentClosingEvent)
-	} else {
-		available = available && record.phase == recordLive
-	}
+	lifetime := service.byID[subject.ID()]
+	available := lifetime != nil && lifetime.Matches(subject)
 	service.mutex.Unlock()
 	if !available {
 		return nil, errors.New("agent: exact Agent event Scope is unavailable")
 	}
-	return record, nil
+	return lifetime, nil
 }
 
 // HasRuntimeDescendants reports whether the exact Agent owns active children.
@@ -198,26 +191,26 @@ func (service *RegistryService) HasRuntimeDescendants(subject Agent) bool {
 	}
 	service.mutex.Lock()
 	defer service.mutex.Unlock()
-	record := service.byID[subject.ID()]
-	if record == nil || !Same(record.subject, subject) {
+	lifetime := service.byID[subject.ID()]
+	if lifetime == nil || !lifetime.Matches(subject) {
 		return false
 	}
-	return len(service.childrenByParent[record.id]) != 0
+	return len(service.childrenByParent[lifetime.SessionID()]) != 0
 }
 
-func (service *RegistryService) liveRecord(subject Agent) (*agentRecord, error) {
+func (service *RegistryService) liveLifetime(subject Agent) (*agentLifetime, error) {
 	if subject == nil {
 		return nil, errors.New("agent: Agent subject is nil")
 	}
 	service.mutex.Lock()
-	record := service.byID[subject.ID()]
-	live := record != nil && record.phase == recordLive &&
-		Same(record.subject, subject)
+	lifetime := service.byID[subject.ID()]
+	live := lifetime != nil && lifetime.AcceptsSetup() &&
+		lifetime.Matches(subject)
 	service.mutex.Unlock()
 	if !live {
 		return nil, errors.New("agent: exact Agent is not accepting Scope operations")
 	}
-	return record, nil
+	return lifetime, nil
 }
 
 func (service *RegistryService) reportObserverFailure(problem error) {

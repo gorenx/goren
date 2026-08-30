@@ -20,8 +20,9 @@ type ScopeResources interface {
 	Close(context.Context) error
 }
 
-// Scope is the lifecycle and extension boundary of one exact Agent. Registry
-// owns it; RLA receives narrower event, waterfall, Tool, and Prompt ports.
+// Scope is the lifecycle and extension boundary of one exact Agent. Host owns
+// it; Registry borrows it while the Host is registered, and RLA receives
+// narrower event, waterfall, Tool, and Prompt ports.
 type Scope interface {
 	ApplySetup(context.Context, Agent, Setup) (ScopeResources, error)
 	Dispatch(context.Context, AgentEvent) error

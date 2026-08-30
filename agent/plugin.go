@@ -56,14 +56,13 @@ func (owner *RegistryPlugin) Apply(requestContext context.Context) error {
 	return owner.service.bind(agentFactory)
 }
 
-// Dispose closes the Registry after every dependent Plugin and Agent Scope has
-// stopped. Shutdown remains idempotent for already retired Agent epochs.
+// Dispose deactivates the Registry after dependent Plugins stop and joins every
+// exact Agent lifecycle admitted by this module activation.
 func (owner *RegistryPlugin) Dispose(closeContext context.Context) error {
 	if closeContext == nil {
 		closeContext = context.Background()
 	}
-	owner.service.unbind()
-	return owner.service.Shutdown(context.WithoutCancel(closeContext))
+	return owner.service.deactivate(context.WithoutCancel(closeContext))
 }
 
 var _ plugin.Plugin = (*RegistryPlugin)(nil)

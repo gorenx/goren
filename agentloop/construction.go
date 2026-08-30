@@ -21,6 +21,8 @@ type factoryDependencies struct {
 	models      llm.LlmRuntime
 	prompts     systemprompt.PromptLayerFactory
 	toolLayers  tools.ToolLayerFactory
+	events      agentEvents
+	waterfalls  agentWaterfalls
 }
 
 // Factory constructs independent single-Agent Hosts. It owns no live Agent
@@ -32,15 +34,11 @@ type Factory struct {
 	dependencies         factoryDependencies
 	maxParallelToolCalls int
 	reportObserverError  func(error)
-	events               agentEvents
-	waterfalls           agentWaterfalls
 }
 
 func newFactory(
 	maxParallelToolCalls int,
 	reportObserverError func(error),
-	events agentEvents,
-	waterfalls agentWaterfalls,
 ) *Factory {
 	if reportObserverError == nil {
 		reportObserverError = func(error) {}
@@ -48,14 +46,13 @@ func newFactory(
 	return &Factory{
 		maxParallelToolCalls: maxParallelToolCalls,
 		reportObserverError:  reportObserverError,
-		events:               events,
-		waterfalls:           waterfalls,
 	}
 }
 
 func (owner *Factory) enterRuntime(dependencies factoryDependencies) error {
 	if dependencies.sessions == nil || dependencies.models == nil ||
-		dependencies.prompts == nil || dependencies.toolLayers == nil {
+		dependencies.prompts == nil || dependencies.toolLayers == nil ||
+		dependencies.events == nil || dependencies.waterfalls == nil {
 		return errors.New("agentloop: Factory dependencies are incomplete")
 	}
 	owner.mutex.Lock()
@@ -107,7 +104,7 @@ func (owner *Factory) beginConstruction(
 // CreateAgent constructs one unpublished Host for a fresh Session.
 func (owner *Factory) CreateAgent(
 	requestContext context.Context,
-	options agent.CreateOptions,
+	options agent.CreateHostOptions,
 ) (agent.Host, error) {
 	dependencies, releaseConstruction, err := owner.beginConstruction(requestContext)
 	if err != nil {
@@ -143,7 +140,7 @@ func (owner *Factory) CreateAgent(
 // ResumeAgent constructs one unpublished Host from durable Session state.
 func (owner *Factory) ResumeAgent(
 	requestContext context.Context,
-	options agent.ResumeOptions,
+	options agent.ResumeHostOptions,
 ) (agent.Host, error) {
 	dependencies, releaseConstruction, err := owner.beginConstruction(requestContext)
 	if err != nil {
@@ -206,8 +203,8 @@ func (owner *Factory) construct(
 		))
 	}
 	agentScopeValue, err := newAgentScope(
-		owner.events,
-		owner.waterfalls,
+		dependencies.events,
+		dependencies.waterfalls,
 		promptLayer,
 		toolLayer,
 	)
@@ -254,13 +251,12 @@ func (owner *Factory) construct(
 			agentScopeValue.Close(context.WithoutCancel(requestContext)),
 		)
 	}
-	return &agentHost{
-		subject:     subject,
-		scope:       agentScopeValue,
-		sessions:    dependencies.sessions,
-		preparation: preparation,
-		closeDone:   make(chan struct{}),
-	}, nil
+	return newAgentHost(
+		subject,
+		agentScopeValue,
+		dependencies.sessions,
+		preparation,
+	), nil
 }
 
 var _ agent.Factory = (*Factory)(nil)

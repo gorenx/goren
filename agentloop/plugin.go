@@ -19,13 +19,56 @@ import (
 type Plugin struct {
 	plugin.Base
 	factory *Factory
-	gateway *pluginGateway
+	mutex   sync.Mutex
+	active  *pluginActivation
+}
 
+// pluginActivation owns the reversible resources of one Plugin activation.
+type pluginActivation struct {
+	gateway     *pluginGateway
 	effectCalls sync.WaitGroup
 	driverDone  chan struct{}
-	disposeOnce sync.Once
-	disposeDone chan struct{}
-	disposeErr  error
+}
+
+func newPluginActivation() *pluginActivation {
+	return &pluginActivation{
+		gateway:    newPluginGateway(),
+		driverDone: make(chan struct{}),
+	}
+}
+
+func (activation *pluginActivation) eventGateway() agentEvents {
+	return activation.gateway
+}
+
+func (activation *pluginActivation) waterfallGateway() agentWaterfalls {
+	return activation.gateway
+}
+
+func (activation *pluginActivation) start(owner *Plugin) {
+	go activation.drive(owner)
+}
+
+func (activation *pluginActivation) drive(owner *Plugin) {
+	defer close(activation.driverDone)
+	for {
+		select {
+		case request := <-activation.gateway.requests:
+			activation.effectCalls.Add(1)
+			go func() {
+				defer activation.effectCalls.Done()
+				owner.executeEffect(request)
+			}()
+		case <-activation.gateway.stopped:
+			return
+		}
+	}
+}
+
+func (activation *pluginActivation) close() {
+	activation.gateway.stop(errors.New("agentloop: Plugin is stopping"))
+	<-activation.driverDone
+	activation.effectCalls.Wait()
 }
 
 // NewPlugin constructs the one AgentLoop module Plugin.
@@ -34,17 +77,10 @@ func NewPlugin(loopSettings Settings, options RuntimeOptions) (*Plugin, error) {
 	if err != nil {
 		return nil, err
 	}
-	gateway := newPluginGateway()
-	owner := &Plugin{
-		gateway:     gateway,
-		driverDone:  make(chan struct{}),
-		disposeDone: make(chan struct{}),
-	}
+	owner := &Plugin{}
 	owner.factory = newFactory(
 		validated.MaxParallelToolCalls,
 		options.ObserverError,
-		gateway,
-		gateway,
 	)
 	return owner, nil
 }
@@ -91,16 +127,29 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 		return err
 	}
 	persistence, _ := plugin.Resolve[sesspersist.Persistence](owner)
+	activation := newPluginActivation()
+	owner.mutex.Lock()
+	if owner.active != nil {
+		owner.mutex.Unlock()
+		return errors.New("agentloop: Plugin is already active")
+	}
+	owner.active = activation
+	owner.mutex.Unlock()
 	if err = owner.factory.enterRuntime(factoryDependencies{
 		sessions:    sessions,
 		persistence: persistence,
 		models:      models,
 		prompts:     prompts,
 		toolLayers:  toolLayers,
+		events:      activation.eventGateway(),
+		waterfalls:  activation.waterfallGateway(),
 	}); err != nil {
+		owner.mutex.Lock()
+		owner.active = nil
+		owner.mutex.Unlock()
 		return err
 	}
-	go owner.driveEffects()
+	activation.start(owner)
 	return requestContext.Err()
 }
 
@@ -111,34 +160,20 @@ func (owner *Plugin) Dispose(closeContext context.Context) error {
 	if closeContext == nil {
 		closeContext = context.Background()
 	}
-	owner.disposeOnce.Do(func() {
-		owner.factory.leaveRuntime()
-		owner.gateway.stop(errors.New("agentloop: Plugin is stopping"))
-		<-owner.driverDone
-		owner.effectCalls.Wait()
-		close(owner.disposeDone)
-	})
+	owner.mutex.Lock()
+	activation := owner.active
+	owner.active = nil
+	owner.mutex.Unlock()
+	if activation == nil {
+		return nil
+	}
+	owner.factory.leaveRuntime()
+	activation.close()
 	select {
-	case <-owner.disposeDone:
-		return owner.disposeErr
 	case <-closeContext.Done():
 		return context.Cause(closeContext)
-	}
-}
-
-func (owner *Plugin) driveEffects() {
-	defer close(owner.driverDone)
-	for {
-		select {
-		case request := <-owner.gateway.requests:
-			owner.effectCalls.Add(1)
-			go func() {
-				defer owner.effectCalls.Done()
-				owner.executeEffect(request)
-			}()
-		case <-owner.gateway.stopped:
-			return
-		}
+	default:
+		return nil
 	}
 }
 
