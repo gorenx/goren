@@ -10,15 +10,16 @@ flowchart LR
     Plugin --> Continuable[continuable.Service]
     Plugin --> Bound[bound.Service]
     Plugin --> Directory[childdirectory.Service]
-    Plugin --> Gateway[eventGateway]
-    Gateway --> Dispatcher[agent.EventDispatcher]
+    Plugin --> Publisher[subagentEventPublisher]
+    Publisher --> RuntimeEvents[SeedBuilder Plugin events]
+    Publisher --> Dispatcher[Started/Ended via agent.EventDispatcher]
 ```
 
-`Apply` 解析 Agent、Session、Projection、Approval、Persistence、Prompt/Tool Setup 等模块级依赖，打开独立 Bound Definition Store，注册 Projection，启用 ChildDirectory，构造三个 Mode Service，最后开放统一 Service 准入。任一步失败按已取得资源逆序回滚。
+`Apply` 解析 Agent、Session、Projection、Approval、Persistence、Prompt/Tool Setup 等模块级依赖，打开独立 Bound Definition Store，注册 Projection，启用 ChildDirectory，构造三个 Mode Service，并在返回前开放统一 Service 准入与事件发布。任一步失败按已取得资源逆序回滚。
 
-`eventGateway` 是 Plugin-neutral typed queue，实现各 Mode 消费的 `EventPublisher`。`plugin_event_driver.go` 由唯一 Plugin 驱动 queue，并调用 `agent.EventDispatcher` 把 `Started/Ended` 发布到 exact parent Scope。Mode 不持有 Plugin；Plugin 也不为每个 Agent 或 Subagent 构造 child Plugin。
+`subagentEventPublisher` 是 Plugin-neutral 的稳定业务端口，同时实现 SeedBuilder 注册事件与 Subagent Execution 生命周期事件所需的 `EventPublisher`。`SeedBuilderAdded/SeedBuilderRemoved` 进入 Plugin Runtime 事件链；`Started/Ended` 通过 `agent.EventDispatcher` 进入 exact parent Agent Scope。`plugin_event_publisher_worker.go` 是唯一 Plugin 消费者，负责把 typed publication request 送到这两个明确边界。Mode 不持有 Plugin；Plugin 也不为每个 Agent 或 Subagent 构造 child Plugin。
 
-`Dispose` 先关闭统一 Service 准入和三个 Mode execution。此时 `Ended` 仍可通过 gateway 发布；待业务 execution 收敛后才停止 gateway，再释放 ChildDirectory、Extension registrations、SeedBuilder 和 Projection。该顺序保证 parent closing 阶段仍能收到 child 的配对 `Ended`，且不在 Plugin callback 中修改 Runtime topology。
+稳定 publisher 可跨同一 Plugin 对象的多次 `Apply → Dispose → Apply` 使用；每次 `Apply` 只创建一个 `eventPublisherRun`，它只保存本次发布 worker 的 stop/done 信号。`Dispose` 先关闭统一 Service 准入和三个 Mode execution，使配对 `Ended` 仍可发布；随后释放 ChildDirectory、Extension registrations、SeedBuilder 和 Projection，最后停止并等待本次 publication worker。`Apply` 未启动 publisher 就失败时，回滚不会等待不存在的 worker。该设计支持依赖替换后的同实例再激活，同时不在 Plugin callback 中修改 Runtime topology。
 
 Bound Definition Store 只在 Bound Service 成功接管后转移关闭责任。Plugin 不解释 Descriptor、Definition revision、Terminal 或 parent-child 业务规则。
 

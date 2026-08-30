@@ -587,9 +587,10 @@ Subagent 核心只有一个全局 Plugin。它负责：
 - 构造一个 Subagent Service；
 - 发布 Starter、Control、Directory、Definitions 和 Inbox；
 - 把 Plugin Event 转换为 Subagent Service 调用；
+- 用稳定 `subagentEventPublisher` 发布 SeedBuilder 注册事实与 Subagent Execution `Started/Ended`，每次 Apply 只创建一个保存 stop/done 信号的 `eventPublisherRun`；
 - Dispose 时关闭 Subagent Service 和自身注册资源。
 
-它不持有 AgentLoop Plugin，也不构造 per-Subagent Plugin。
+它不持有 AgentLoop Plugin，也不构造 per-Subagent Plugin。Plugin Runtime 因依赖替换重新激活同一 Subagent Plugin 对象时，业务 Service 和稳定 publisher 继续保留身份，但已停止的 `eventPublisherRun` 不会复用；失败 Apply 的回滚也不会等待尚未启动的 publication worker。
 
 实际依赖链是：
 
@@ -913,6 +914,7 @@ AgentLoop Plugin 是 Agent 事件和全局 Waterfall 的唯一 Plugin Runtime ad
 - OneShot、Continuable、Bound 的取消、settlement、flush 和 terminal 语义不互相污染；
 - Runtime shutdown child-first 关闭 Agent，并完成 Agent/Session disposal 配对；
 - Subagent Plugin shutdown 不再产生 `plugin.ErrTopologyMutation`；
+- Subagent Plugin 在可选依赖出现后可由同一对象重新激活，失败 Apply 回滚不等待未启动的 event publisher；
 - configured startup、API Agent 和 Subagent child 都经过相同 Registry admission。
 
 必须将以下当前失败测试改为通过：

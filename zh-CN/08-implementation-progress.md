@@ -281,7 +281,7 @@ interaction owner registers stable rpcId + decoder
 | S7-D02 | 能力 | ACP stdio adapter | Deferred | None |
 | S7-D03 | 能力 | MCP Client Bridge | Deferred | None |
 | S7-D04 | 能力 | 最小 Typert endpoint dispatch | Deferred | None：仅在纳入 endpoint 确有依赖时进入 |
-| S7-D05 | 能力 | Jobs、Subagent 与 Workflow | In Progress | Race Verified：Subagent core只有一个全局Plugin；Persona/Policy/Descriptor/Structured Output/Extension/Report均为ordinary Agent Setup。OneShot、Continuable、Bound各自拥有Execution状态与关闭事务，共享包只保留ID、live index、发布端口和纯函数，resident到child owner反向引用已删除。Bound使用独立全局Definition SQLite/sqlc Store、每用户Session direct Bindings、冻结context prefix、idle create/restore、受管reconcile、exact epoch replacement和receipt/cursor恢复；Jobs、background one-shot、Workflow和Code Mode structured capture仍Deferred |
+| S7-D05 | 能力 | Jobs、Subagent 与 Workflow | In Progress | Race Verified：Subagent core只有一个全局Plugin；Persona/Policy/Descriptor/Structured Output/Extension/Report均为ordinary Agent Setup。OneShot、Continuable、Bound各自拥有Execution状态与关闭事务，共享包只保留ID、live index、发布端口和纯函数，resident到child owner反向引用已删除。稳定`subagentEventPublisher`区分SeedBuilder Plugin事件与exact parent Scope中的Execution `Started/Ended`，每次Plugin激活使用独立`eventPublisherRun`，支持依赖替换后的同实例再激活和失败Apply安全回滚。Bound使用独立全局Definition SQLite/sqlc Store、每用户Session direct Bindings、冻结context prefix、idle create/restore、受管reconcile、exact epoch replacement和receipt/cursor恢复；Jobs、background one-shot、Workflow和Code Mode structured capture仍Deferred |
 | S7-G01 | Gate | 进入任一能力时同步更新范围、contract、技术决策和矩阵 | Deferred | None |
 | S7-G02 | Gate | 不以空 package、空 handler、固定成功或未使用依赖占位 | Deferred | None：当前未创建占位 |
 
@@ -374,6 +374,7 @@ interaction owner registers stable rpcId + decoder
 | parent interaction fold、receipt-before-cursor、crash-window修复、Plugin reload追赶与失败隔离 | `subagent/bound/turnrelay/relay_test.go`、`subagent/bound_interaction_integration_test.go`、`subagent/bound_recovery_integration_test.go` |
 | 默认 composition 经 Definition API 创建 Bound，并在 SQLite 全重启后恢复同一 child 与投递 cursor | `internal/assembly/bound_restart_e2e_test.go` |
 | OneShot 模型失败/parent 关闭清理，以及 Continuable cold resume、并发 message 共用 epoch 和 parent 关闭持久化 | `subagent/one_shot_integration_test.go`、`subagent/continuable_integration_test.go`、`subagent/control_integration_test.go` |
+| Subagent event publisher重复激活、Apply前Dispose回滚，以及可选依赖挂载触发的同Plugin对象重新激活 | `subagent/plugin/plugin_event_publisher_test.go`、`subagent/plugin_reactivation_integration_test.go` |
 | `bound.list/tools/create/replace` strict RPC、稳定错误映射、root Tool目录投影与Web完整snapshot/工具选择编辑 | `apiproxy/bound_gateway_test.go`、`web/src/components/BoundDefinitionDialog.test.tsx`、`web/src/conversation-store.test.ts` |
 | Native Tool root/overlay view、restriction/guard、schema cache、执行/取消、一次性 scheduler、finalizer 与 detached result | `tools/service_test.go`、`tools/execution_test.go`、`tools/policy_test.go`、`tools/config_test.go` |
 | LLM/DeepSeek/System Prompt/Tools Factory strict config、shipped Catalog 与 Service composition | `internal/assembly/assembly_test.go` |
