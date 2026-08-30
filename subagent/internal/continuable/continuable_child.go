@@ -59,6 +59,11 @@ type shutdownRequest struct {
 	reply chan error
 }
 
+type executionClosed struct {
+	executionRunID subagent.RunID
+	parentID       session.SessionID
+}
+
 // continuableChild owns command order and the current resident execution for
 // one durable Continuable child. Its mailbox serializes only this child, so
 // different child identities continue independently.
@@ -69,7 +74,7 @@ type continuableChild struct {
 	registry     *continuableChildRegistry
 	mailbox      chan any
 	settlement   chan struct{}
-	closed       chan *residentExecution
+	closed       chan executionClosed
 	ctx          context.Context
 	cancel       context.CancelFunc
 	done         chan struct{}
@@ -81,17 +86,17 @@ func newContinuableChild(
 	dependencySet Dependencies,
 	factory *materializer,
 	registry *continuableChildRegistry,
-	childID session.SessionID,
+	childSessionID session.SessionID,
 ) *continuableChild {
 	childContext, cancelChild := context.WithCancel(context.Background())
 	return &continuableChild{
-		id:           childID,
+		id:           childSessionID,
 		agents:       dependencySet.Agents,
 		materializer: factory,
 		registry:     registry,
 		mailbox:      make(chan any),
 		settlement:   make(chan struct{}, 1),
-		closed:       make(chan *residentExecution, 1),
+		closed:       make(chan executionClosed, 1),
 		ctx:          childContext,
 		cancel:       cancelChild,
 		done:         make(chan struct{}),
@@ -165,12 +170,14 @@ func (child *continuableChild) handleCommand(received any) bool {
 }
 
 func (child *continuableChild) handleExecutionClosed(
-	closed *residentExecution,
+	closed executionClosed,
 ) {
-	if child.current == closed {
+	if child.current != nil &&
+		child.current.RunID() == closed.executionRunID {
 		child.current = nil
 		child.retirable = true
 	}
+	child.registry.notify(closed.parentID)
 }
 
 func (child *continuableChild) start(
@@ -191,8 +198,8 @@ func (child *continuableChild) start(
 		return nil, errChildRetired
 	}
 	select {
-	case result := <-reply:
-		return result.execution, result.err
+	case response := <-reply:
+		return response.execution, response.err
 	case <-ctx.Done():
 		return nil, context.Cause(ctx)
 	}
@@ -218,8 +225,8 @@ func (child *continuableChild) resume(
 		return "", errChildRetired
 	}
 	select {
-	case result := <-reply:
-		return result.identifier, result.err
+	case response := <-reply:
+		return response.identifier, response.err
 	case <-ctx.Done():
 		return "", context.Cause(ctx)
 	}
@@ -253,15 +260,6 @@ func (child *continuableChild) notify() {
 	}
 }
 
-func (child *continuableChild) executionClosed(
-	closed *residentExecution,
-) {
-	select {
-	case child.closed <- closed:
-	case <-child.done:
-	}
-}
-
 func (child *continuableChild) shutdown(ctx context.Context) error {
 	child.cancel()
 	reply := make(chan error, 1)
@@ -291,7 +289,7 @@ func (child *continuableChild) stopCurrentUntilClosing(
 	if current == nil {
 		return nil
 	}
-	current.execution.Stop(sharedexecution.StopModule)
+	current.Stop(sharedexecution.CloseModule)
 	select {
 	case <-current.handle.ClosingSignal():
 		return nil
@@ -304,9 +302,9 @@ func (child *continuableChild) operationContext(
 	requestContext context.Context,
 ) (context.Context, context.CancelFunc) {
 	workContext, cancelOperation := context.WithCancel(requestContext)
-	stop := context.AfterFunc(child.ctx, cancelOperation)
+	cancelWatch := context.AfterFunc(child.ctx, cancelOperation)
 	return workContext, func() {
-		stop()
+		cancelWatch()
 		cancelOperation()
 	}
 }

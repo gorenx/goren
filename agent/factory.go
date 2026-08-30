@@ -13,7 +13,7 @@ type CreateOptions struct {
 	Metadata      session.Metadata
 	Seed          []session.Event
 	AgentOptions  Options
-	Provisioner   Provisioner
+	Setup         Setup
 	RuntimeParent Agent
 }
 
@@ -21,28 +21,24 @@ type CreateOptions struct {
 type ResumeOptions struct {
 	SessionID     session.SessionID
 	AgentOptions  Options
-	Provisioner   Provisioner
+	Setup         Setup
 	RuntimeParent Agent
 }
 
-// AgentEpoch is the Registry-owned exact Agent lifecycle instance passed to a
-// Factory before publication. The Factory attaches one Agent and Scope runtime
-// to that same epoch; it does not construct a second lifecycle object.
-type AgentEpoch interface {
-	ClosingSignal() <-chan struct{}
-	Attach(Agent, AgentScopeRuntime) (AgentTeardown, error)
+// Host owns one constructed Agent, its private Scope, and its single-instance
+// runtime lifecycle. It is an ordinary object and never a Plugin.
+type Host interface {
+	Agent() Agent
+	Scope() Scope
+	EnterServing(context.Context) error
+	Announce(context.Context) error
+	Close(context.Context) error
+	WhenClosed(context.Context) error
 }
 
-// AgentTeardown reports structural Scope teardown into the exact Agent epoch
-// owned by LifecycleCoordinator. It does not expose construction or close
-// authority to the runtime adapter.
-type AgentTeardown interface {
-	BeginTeardown(context.Context)
-	FinishTeardown(error)
-}
-
-// Factory is the Registry-owned construction seam implemented by Agent Loop.
+// Factory constructs one unpublished Agent Host. It does not reserve Registry
+// identities, publish Agent events, or manage descendants.
 type Factory interface {
-	CreateAgent(context.Context, AgentEpoch, CreateOptions) error
-	ResumeAgent(context.Context, AgentEpoch, ResumeOptions) error
+	CreateAgent(context.Context, CreateOptions) (Host, error)
+	ResumeAgent(context.Context, ResumeOptions) (Host, error)
 }

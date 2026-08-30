@@ -9,8 +9,8 @@ import (
 
 func TestInitiatorContextIsExplicitNestedAndClearable(t *testing.T) {
 	t.Parallel()
-	parent := newFakeAgent(t, "initiator-parent")
-	child := newFakeAgent(t, "initiator-child")
+	parent := newRegistryAgent("initiator-parent")
+	child := newRegistryAgent("initiator-child")
 
 	parentContext, err := agentcore.WithInitiator(context.Background(), parent)
 	if err != nil {

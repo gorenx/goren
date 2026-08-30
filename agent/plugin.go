@@ -7,8 +7,8 @@ import (
 	"github.com/gorenx/goren/plugin"
 )
 
-// RegistryPlugin publishes the independent consumer-facing capabilities of
-// one RegistryService. It owns no Agent epoch or close transaction state.
+// RegistryPlugin binds one Factory to RegistryService and publishes the
+// independent consumer-facing lifecycle capabilities.
 type RegistryPlugin struct {
 	plugin.Base
 	service *RegistryService
@@ -28,22 +28,32 @@ func NewRegistryPlugin(service *RegistryService) (*RegistryPlugin, error) {
 func (owner *RegistryPlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: PluginName,
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[Factory](),
+		},
 		Provides: []plugin.ProvidedService{
 			plugin.NewProvidedService[Registry](owner.service),
 			plugin.NewProvidedService[Constructor](owner.service),
-			plugin.NewProvidedService[ScopeProvisioning](owner.service),
+			plugin.NewProvidedService[ScopeSetup](owner.service),
 			plugin.NewProvidedService[RuntimeDescendants](owner.service),
-			plugin.NewProvidedService[FactoryRegistrar](owner.service),
+			plugin.NewProvidedService[EventDispatcher](owner.service),
 		},
 	}
 }
 
 // Apply validates startup cancellation before Service publication.
-func (*RegistryPlugin) Apply(requestContext context.Context) error {
+func (owner *RegistryPlugin) Apply(requestContext context.Context) error {
 	if requestContext == nil {
 		return errors.New("agent: Registry Plugin Apply Context is nil")
 	}
-	return requestContext.Err()
+	if err := requestContext.Err(); err != nil {
+		return err
+	}
+	agentFactory, err := plugin.Require[Factory](owner)
+	if err != nil {
+		return err
+	}
+	return owner.service.bind(agentFactory)
 }
 
 // Dispose closes the Registry after every dependent Plugin and Agent Scope has
@@ -52,6 +62,7 @@ func (owner *RegistryPlugin) Dispose(closeContext context.Context) error {
 	if closeContext == nil {
 		closeContext = context.Background()
 	}
+	owner.service.unbind()
 	return owner.service.Shutdown(context.WithoutCancel(closeContext))
 }
 

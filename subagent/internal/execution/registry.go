@@ -11,7 +11,7 @@ import (
 
 // Entry is the routing identity for one published live Execution.
 type Entry struct {
-	Execution *Execution
+	Execution ManagedExecution
 	Mode      subagent.Mode
 	Parent    agent.Agent
 	Subject   agent.Agent
@@ -66,7 +66,7 @@ func (registryOwner *Registry) Find(targetID session.SessionID) (Entry, bool) {
 }
 
 // Remove deletes only the exact matching Execution.
-func (registryOwner *Registry) Remove(running *Execution) {
+func (registryOwner *Registry) Remove(running ManagedExecution) {
 	if running == nil {
 		return
 	}

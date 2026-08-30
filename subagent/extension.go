@@ -34,16 +34,10 @@ type ExtensionRegistration interface {
 	Unregister(context.Context) error
 }
 
-// ExtensionInstallation owns one exact idempotent child-scoped effect.
-type ExtensionInstallation interface {
-	Uninstall(context.Context) error
-}
-
-// Extension installs one domain contribution into an unpublished child Agent
-// Scope. The Extension may mount a child-scoped Plugin but does not itself
-// participate in the Plugin lifecycle.
+// Extension contributes one cohesive Setup to an unpublished child Agent.
+// It is an ordinary business object and never mounts or owns a Plugin.
 type Extension interface {
-	Install(context.Context, agent.Scope) (ExtensionInstallation, error)
+	agent.Setup
 }
 
 // ExtensionRegistry owns Extensions installed into unpublished and resident

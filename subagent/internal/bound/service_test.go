@@ -10,16 +10,16 @@ import (
 )
 
 type extensionsStub struct {
-	provision func([]string) (agent.Provisioner, error)
+	setup func([]string) (agent.Setup, error)
 }
 
-func (stub extensionsStub) Provision(
+func (stub extensionsStub) Setup(
 	names []string,
-) (agent.Provisioner, error) {
-	if stub.provision == nil {
+) (agent.Setup, error) {
+	if stub.setup == nil {
 		return nil, nil
 	}
-	return stub.provision(names)
+	return stub.setup(names)
 }
 
 func TestNewRejectsIncompleteDependencies(t *testing.T) {

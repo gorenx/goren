@@ -31,14 +31,14 @@ func newContinuableChildRegistry(
 }
 
 func (children *continuableChildRegistry) acquire(
-	childID session.SessionID,
+	childSessionID session.SessionID,
 ) (*continuableChild, error) {
 	children.mutex.Lock()
 	if children.closing {
 		children.mutex.Unlock()
 		return nil, errors.New("subagent: Continuable children are closing")
 	}
-	current := children.entries[childID]
+	current := children.entries[childSessionID]
 	if current != nil {
 		children.mutex.Unlock()
 		return current, nil
@@ -47,9 +47,9 @@ func (children *continuableChildRegistry) acquire(
 		children.dependencies,
 		children.materializer,
 		children,
-		childID,
+		childSessionID,
 	)
-	children.entries[childID] = current
+	children.entries[childSessionID] = current
 	children.mutex.Unlock()
 	go current.run()
 	return current, nil
@@ -66,10 +66,10 @@ func (children *continuableChildRegistry) retire(
 }
 
 func (children *continuableChildRegistry) notify(
-	childID session.SessionID,
+	childSessionID session.SessionID,
 ) {
 	children.mutex.Lock()
-	child := children.entries[childID]
+	child := children.entries[childSessionID]
 	children.mutex.Unlock()
 	if child != nil {
 		child.notify()
@@ -78,10 +78,10 @@ func (children *continuableChildRegistry) notify(
 
 func (children *continuableChildRegistry) interrupt(
 	ctx context.Context,
-	childID session.SessionID,
+	childSessionID session.SessionID,
 ) error {
 	children.mutex.Lock()
-	child := children.entries[childID]
+	child := children.entries[childSessionID]
 	children.mutex.Unlock()
 	if child == nil {
 		return nil

@@ -342,6 +342,80 @@ func TestProviderLifecycleAndDetachedDelegation(t *testing.T) {
 	requireQuestionCode(t, err, userquestions.CodeNoProvider)
 }
 
+func TestOptionalRegistryChangesReactivateQuestionService(t *testing.T) {
+	t.Parallel()
+	state := newQuestionsFixture(t, false)
+	firstProvider := &recordingProvider{}
+	firstHandle, err := state.questions.RegisterProvider(firstProvider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registryPlugin := &questionRegistryPlugin{
+		registry: newQuestionRegistry(),
+	}
+	registryHandle, err := state.engine.Mount(
+		context.Background(),
+		registryPlugin,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondProvider := &recordingProvider{
+		answer: userquestions.Answer{
+			Answers: []userquestions.AnswerItem{
+				{
+					ID:       "confirm",
+					Selected: []string{"yes"},
+				},
+			},
+		},
+	}
+	secondHandle, err := state.questions.RegisterProvider(secondProvider)
+	if err != nil {
+		t.Fatalf("register after optional Registry mount: %v", err)
+	}
+	firstHandle.Unregister()
+	answerValue, err := state.questions.Ask(
+		context.Background(),
+		userquestions.Request{
+			Questions: []userquestions.Question{
+				{
+					ID:       "confirm",
+					Question: "Proceed?",
+				},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(answerValue, secondProvider.answer) {
+		t.Fatalf("answer after Registry mount = %#v", answerValue)
+	}
+	if err = state.engine.Unload(context.Background(), registryHandle); err != nil {
+		t.Fatal(err)
+	}
+	thirdProvider := &recordingProvider{}
+	if _, err = state.questions.RegisterProvider(thirdProvider); err != nil {
+		t.Fatalf("register after optional Registry unload: %v", err)
+	}
+	secondHandle.Unregister()
+	_, err = state.questions.Ask(
+		context.Background(),
+		userquestions.Request{
+			Questions: []userquestions.Question{
+				{
+					ID:       "confirm",
+					Question: "Proceed?",
+				},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAskRejectsInvalidInputsBeforeProvider(t *testing.T) {
 	t.Parallel()
 	state := newQuestionsFixture(t, false)

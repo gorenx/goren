@@ -29,7 +29,7 @@ func (turnBenchmarkPostCommitFailures) ReportPostCommitFailure(
 
 type benchmarkScopeRuntime struct{}
 
-func (benchmarkScopeRuntime) Dispatch(context.Context, agent.RuntimeEvent) error {
+func (benchmarkScopeRuntime) Dispatch(context.Context, agent.AgentEvent) error {
 	return nil
 }
 
@@ -56,12 +56,6 @@ func (benchmarkScopeRuntime) ResolveRequestError(
 ) (agent.RequestErrorAction, error) {
 	return terminal.Execute(requestContext, notice)
 }
-
-func (benchmarkScopeRuntime) Provision(context.Context, agent.Provisioner) error {
-	return nil
-}
-
-func (benchmarkScopeRuntime) Teardown(context.Context) error { return nil }
 
 type turnBenchmarkHarness struct {
 	runtimeEngine *plugin.Runtime
@@ -91,6 +85,7 @@ func BenchmarkAgentConstruct(b *testing.B) {
 			DefaultMaxParallelToolCalls,
 			nil,
 			benchmarkScopeRuntime{},
+			benchmarkScopeRuntime{},
 		)
 		if err != nil {
 			b.Fatal(err)
@@ -110,7 +105,7 @@ func newTurnBenchmarkHarness(
 	if err != nil {
 		benchmarkState.Fatal(err)
 	}
-	loopPlugin, err := New(
+	loopPlugin, err := NewPlugin(
 		Settings{
 			MaxParallelToolCalls: DefaultMaxParallelToolCalls,
 		},

@@ -64,15 +64,15 @@ func (owner *Service) ensureBindings(
 		if _, found := view.BindingNamed(definitionValue.Name); found {
 			continue
 		}
-		childID, childErr := sharedexecution.NewChildID()
+		childSessionID, childErr := sharedexecution.NewChildID()
 		if childErr != nil {
 			return nil, childErr
 		}
 		pending = append(
 			pending,
 			pendingBinding{
-				name:    definitionValue.Name,
-				childID: childID,
+				name:           definitionValue.Name,
+				childSessionID: childSessionID,
 			},
 		)
 	}

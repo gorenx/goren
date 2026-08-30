@@ -19,7 +19,7 @@ import (
 // narrow Starter and ChildControl capability views.
 type Service struct {
 	mutex       sync.RWMutex
-	state       admissionState
+	phase       admissionState
 	activeCalls sync.WaitGroup
 	control     *childExecutionControl
 	// Key is a canonical Subagent mode. Value is its complete implementation
@@ -33,7 +33,7 @@ type Service struct {
 // New constructs the stable, initially inactive Subagent Service.
 func New() *Service {
 	return &Service{
-		state:  admissionInactive,
+		phase:  admissionInactive,
 		closed: make(chan struct{}),
 	}
 }
@@ -76,8 +76,8 @@ func (owner *Service) Open(
 	}
 	owner.mutex.Lock()
 	defer owner.mutex.Unlock()
-	if owner.state == admissionAccepting ||
-		owner.state == admissionClosing {
+	if owner.phase == admissionAccepting ||
+		owner.phase == admissionClosing {
 		return errors.New("subagent: Service is already open")
 	}
 	owner.activeCalls = sync.WaitGroup{}
@@ -90,12 +90,12 @@ func (owner *Service) Open(
 	)
 	owner.implementations = implementationIndex
 	owner.closeOrder = closeOrder
-	owner.state = admissionAccepting
+	owner.phase = admissionAccepting
 	return nil
 }
 
 // Start selects an implementation by the command's stable business mode and
-// always returns the common Execution contract.
+// returns that mode's execution through the public Execution contract.
 func (owner *Service) Start(
 	ctx context.Context,
 	command subagent.StartCommand,
@@ -141,7 +141,7 @@ func (owner *Service) Start(
 func (owner *Service) Send(
 	ctx context.Context,
 	parentAgent agent.Agent,
-	childID session.SessionID,
+	childSessionID session.SessionID,
 	content []agentmessage.ContentBlock,
 	options subagent.FollowupOptions,
 ) (agentmessage.MessageID, error) {
@@ -152,7 +152,7 @@ func (owner *Service) Send(
 	return owner.control.Send(
 		ctx,
 		parentAgent,
-		childID,
+		childSessionID,
 		content,
 		options,
 	)
@@ -242,14 +242,14 @@ func (owner *Service) AgentSessionStarted(
 // then delegates only the mode-specific interruption behavior.
 func (owner *Service) Interrupt(
 	ctx context.Context,
-	childID session.SessionID,
+	childSessionID session.SessionID,
 	authority subagent.InterruptAuthority,
 ) error {
 	if beginErr := owner.beginCall(); beginErr != nil {
 		return beginErr
 	}
 	defer owner.activeCalls.Done()
-	return owner.control.Interrupt(ctx, childID, authority)
+	return owner.control.Interrupt(ctx, childSessionID, authority)
 }
 
 // AgentDisposed completes settlement synchronously when Agent owns the
@@ -282,16 +282,16 @@ func (owner *Service) Close(closeContext context.Context) error {
 		closeContext = context.Background()
 	}
 	owner.mutex.Lock()
-	if owner.state == admissionClosed {
+	if owner.phase == admissionClosed {
 		closeErr := owner.closeErr
 		owner.mutex.Unlock()
 		return closeErr
 	}
-	if owner.state == admissionInactive {
+	if owner.phase == admissionInactive {
 		owner.mutex.Unlock()
 		return nil
 	}
-	if owner.state == admissionClosing {
+	if owner.phase == admissionClosing {
 		closed := owner.closed
 		owner.mutex.Unlock()
 		select {
@@ -304,7 +304,7 @@ func (owner *Service) Close(closeContext context.Context) error {
 			return closeContext.Err()
 		}
 	}
-	owner.state = admissionClosing
+	owner.phase = admissionClosing
 	closeOrder := append([]implementation(nil), owner.closeOrder...)
 	owner.mutex.Unlock()
 	owner.activeCalls.Wait()
@@ -317,7 +317,7 @@ func (owner *Service) Close(closeContext context.Context) error {
 	owner.implementations = nil
 	owner.closeOrder = nil
 	owner.closeErr = closeErr
-	owner.state = admissionClosed
+	owner.phase = admissionClosed
 	close(owner.closed)
 	owner.mutex.Unlock()
 	return closeErr
@@ -326,7 +326,7 @@ func (owner *Service) Close(closeContext context.Context) error {
 func (owner *Service) beginCall() error {
 	owner.mutex.RLock()
 	defer owner.mutex.RUnlock()
-	if owner.state != admissionAccepting {
+	if owner.phase != admissionAccepting {
 		return unavailable()
 	}
 	owner.activeCalls.Add(1)

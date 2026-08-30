@@ -6,59 +6,53 @@ import (
 
 	agentcore "github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/systemprompt"
 )
 
+type modelSelectionEditor struct {
+	agentcore.ScopeEditor
+	prompt  systemprompt.AssemblyMiddleware
+	request agentcore.RequestMiddleware
+}
+
+func (editor *modelSelectionEditor) UsePromptAssembly(
+	middleware systemprompt.AssemblyMiddleware,
+) error {
+	editor.prompt = middleware
+	return nil
+}
+
+func (editor *modelSelectionEditor) UseRequest(
+	middleware agentcore.RequestMiddleware,
+) error {
+	editor.request = middleware
+	return nil
+}
+
+func (*modelSelectionEditor) Own(agentcore.ScopeResource) error { return nil }
+
+type promptAssemblyAction struct{}
+
+func (promptAssemblyAction) Execute(
+	context.Context,
+	systemprompt.AssembleRequest,
+) (systemprompt.PromptAssembly, error) {
+	return systemprompt.PromptAssembly{}, nil
+}
+
 func TestModelSelectionSnapshotsPromptAndRequestTogether(t *testing.T) {
 	t.Parallel()
-	promptConfig, err := systemprompt.ValidateConfig(
-		systemprompt.Config{
-			IncludeHarnessIdentity: boolPointer(false),
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	promptRoot := systemprompt.New(
-		promptConfig,
-		systemprompt.RegistryOptions{},
-	)
-	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
-	handles, err := runtimeEngine.Start(context.Background(), promptRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	promptOverlay := systemprompt.NewOverlay(systemprompt.RegistryOptions{})
-	overlayHandle, err := runtimeEngine.MountScopedChild(
-		context.Background(),
-		handles[0],
-		promptOverlay,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	subject := newFakeAgent(t, "model-selection")
-	subject.runtime = &fakeScopeRuntime{
-		source: subject,
-	}
-	subjectHandle, err := runtimeEngine.MountChild(
-		context.Background(),
-		overlayHandle,
-		subject,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	subject := newRegistryAgent("model-selection")
 	selection := &agentcore.ModelSelectionRef{}
-	selectionPlugin, err := agentcore.NewModelSelectionPlugin(selection)
+	selectionSetup, err := agentcore.NewModelSelectionSetup(selection)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runtimeEngine.MountChild(
+	editor := &modelSelectionEditor{}
+	if err = selectionSetup.Apply(
 		context.Background(),
-		subjectHandle,
-		selectionPlugin,
+		subject,
+		editor,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -67,9 +61,10 @@ func TestModelSelectionSnapshotsPromptAndRequestTogether(t *testing.T) {
 		Model:           "a1",
 		ReasoningEffort: llm.ReasoningEffortID("high"),
 	})
-	assembled, err := promptOverlay.Assemble(
+	assembled, err := editor.prompt.InterceptAssembly(
 		context.Background(),
-		systemprompt.AssembleContext{},
+		systemprompt.AssembleRequest{},
+		promptAssemblyAction{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -82,7 +77,7 @@ func TestModelSelectionSnapshotsPromptAndRequestTogether(t *testing.T) {
 		Provider: "beta",
 		Model:    "b1",
 	})
-	resolved, err := agentcore.ResolveRequest(
+	resolution, err := editor.request.InterceptRequest(
 		context.Background(),
 		agentcore.RequestNotice{
 			Subject: subject,
@@ -102,17 +97,19 @@ func TestModelSelectionSnapshotsPromptAndRequestTogether(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	resolved := resolution.Config
 	if resolved.Provider != "alpha" || resolved.Model != "a1" ||
 		resolved.ReasoningEffort != "high" {
 		t.Fatalf("request selection = %#v", resolved)
 	}
-	if _, err := promptOverlay.Assemble(
+	if _, err := editor.prompt.InterceptAssembly(
 		context.Background(),
-		systemprompt.AssembleContext{},
+		systemprompt.AssembleRequest{},
+		promptAssemblyAction{},
 	); err != nil {
 		t.Fatal(err)
 	}
-	resolved, err = agentcore.ResolveRequest(
+	resolution, err = editor.request.InterceptRequest(
 		context.Background(),
 		agentcore.RequestNotice{
 			Subject: subject,
@@ -132,6 +129,7 @@ func TestModelSelectionSnapshotsPromptAndRequestTogether(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	resolved = resolution.Config
 	if resolved.Provider != "beta" || resolved.Model != "b1" ||
 		resolved.ReasoningEffort != "" {
 		t.Fatalf("second request selection = %#v", resolved)
@@ -190,5 +188,3 @@ func TestModelSelectionReadsLiveFallbackUntilExplicitlySelected(t *testing.T) {
 		)
 	}
 }
-
-func boolPointer(selected bool) *bool { return &selected }

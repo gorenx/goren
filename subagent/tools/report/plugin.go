@@ -47,9 +47,6 @@ func New(selectedDelivery Delivery) (*Plugin, error) {
 func (owner *Plugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: PluginName,
-		Provides: []plugin.ProvidedService{
-			plugin.NewProvidedService[reportToolProvider](owner),
-		},
 		Requires: []plugin.ServiceType{
 			plugin.ServiceOf[subagent.ExtensionRegistry](),
 			plugin.ServiceOf[agent.Registry](),
@@ -78,7 +75,9 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 		return constructionErr
 	}
 	owner.tool = reporting
-	registration, registerErr := extensions.RegisterExtension(&extension{})
+	registration, registerErr := extensions.RegisterExtension(&extension{
+		tool: reporting,
+	})
 	if registerErr != nil {
 		owner.tool = nil
 		return registerErr
@@ -98,12 +97,4 @@ func (owner *Plugin) Dispose(closeContext context.Context) error {
 	return unregisterErr
 }
 
-type reportToolProvider interface {
-	Tool() *reportTool
-}
-
-func (owner *Plugin) Tool() *reportTool {
-	return owner.tool
-}
-
-var _ reportToolProvider = (*Plugin)(nil)
+var _ plugin.Plugin = (*Plugin)(nil)

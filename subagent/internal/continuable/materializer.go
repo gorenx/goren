@@ -5,7 +5,6 @@ import (
 	"errors"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/agent/scopedplugin"
 	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/session"
 	sesspersist "github.com/gorenx/goren/session/persistence"
@@ -23,7 +22,7 @@ type materializer struct {
 	sessions    session.LiveStore
 	persistence sesspersist.Persistence
 	delegation  approval.DelegationPolicy
-	extensions  agent.Provisioner
+	extensions  agent.Setup
 }
 
 func requestedChildID(
@@ -40,7 +39,7 @@ func requestedChildID(
 
 func (factory *materializer) create(
 	ctx context.Context,
-	childID session.SessionID,
+	childSessionID session.SessionID,
 	descriptor subagent.ContinuableDescriptor,
 	request subagent.ContinuableOptions,
 	childLineage lineage.Lineage,
@@ -57,17 +56,17 @@ func (factory *materializer) create(
 	handle, createErr := factory.constructor.Create(
 		initiatedContext,
 		agent.CreateOptions{
-			SessionID:     childID,
+			SessionID:     childSessionID,
 			Metadata:      childLineage.Metadata(lineageSeedLength),
 			Seed:          seed,
 			AgentOptions:  *request.AgentOptions,
-			Provisioner:   factory.provisioner(descriptor, true),
+			Setup:         factory.setup(descriptor, true),
 			RuntimeParent: request.Parent,
 		},
 	)
 	if createErr != nil {
 		if errors.Is(createErr, agent.ErrDescendantAdmissionClosed) {
-			return agent.Handle{}, descendantAdmissionClosed(childID)
+			return agent.Handle{}, descendantAdmissionClosed(childSessionID)
 		}
 		return agent.Handle{}, createErr
 	}
@@ -77,15 +76,15 @@ func (factory *materializer) create(
 func (factory *materializer) resume(
 	ctx context.Context,
 	parentAgent agent.Agent,
-	childID session.SessionID,
+	childSessionID session.SessionID,
 ) (agent.Handle, string, error) {
 	inspection, inspectErr := factory.persistence.Inspect(
 		ctx,
-		childID,
+		childSessionID,
 	)
 	if inspectErr != nil {
 		return agent.Handle{}, "", notResumable(
-			childID,
+			childSessionID,
 			"is unavailable",
 			inspectErr,
 		)
@@ -93,7 +92,7 @@ func (factory *materializer) resume(
 	if inspection.Header.ParentSession == nil ||
 		*inspection.Header.ParentSession != parentAgent.ID() ||
 		!factory.agents.Contains(parentAgent) {
-		return agent.Handle{}, "", unauthorizedChild(childID)
+		return agent.Handle{}, "", unauthorizedChild(childSessionID)
 	}
 	suffixStart := int64(0)
 	if inspection.Header.SeedLength != nil {
@@ -104,7 +103,7 @@ func (factory *materializer) resume(
 	)
 	if foldErr != nil || !found {
 		return agent.Handle{}, "", notResumable(
-			childID,
+			childSessionID,
 			"has no Continuable descriptor",
 			foldErr,
 		)
@@ -112,7 +111,7 @@ func (factory *materializer) resume(
 	descriptor, matches := descriptorValue.(subagent.ContinuableDescriptor)
 	if !matches {
 		return agent.Handle{}, "", notResumable(
-			childID,
+			childSessionID,
 			"is not Continuable",
 			nil,
 		)
@@ -127,21 +126,21 @@ func (factory *materializer) resume(
 	handle, resumeErr := factory.constructor.Resume(
 		initiatedContext,
 		agent.ResumeOptions{
-			SessionID: childID,
+			SessionID: childSessionID,
 			AgentOptions: agent.Options{
 				Provider: stringValue(descriptor.AgentProvider),
 				Model:    stringValue(descriptor.AgentModel),
 			},
-			Provisioner:   factory.provisioner(descriptor, false),
+			Setup:         factory.setup(descriptor, false),
 			RuntimeParent: parentAgent,
 		},
 	)
 	if resumeErr != nil {
 		if errors.Is(resumeErr, agent.ErrDescendantAdmissionClosed) {
-			return agent.Handle{}, "", descendantAdmissionClosed(childID)
+			return agent.Handle{}, "", descendantAdmissionClosed(childSessionID)
 		}
 		return agent.Handle{}, "", notResumable(
-			childID,
+			childSessionID,
 			"is unavailable",
 			resumeErr,
 		)
@@ -149,19 +148,19 @@ func (factory *materializer) resume(
 	return handle, descriptor.Provider, nil
 }
 
-func (factory *materializer) assertAvailable(childID session.SessionID) error {
-	if _, found := factory.agents.Get(childID); found {
-		return duplicateChild(childID)
+func (factory *materializer) assertAvailable(childSessionID session.SessionID) error {
+	if _, found := factory.agents.Get(childSessionID); found {
+		return duplicateChild(childSessionID)
 	}
-	if _, found := factory.sessions.Get(childID); found {
-		return duplicateChild(childID)
+	if _, found := factory.sessions.Get(childSessionID); found {
+		return duplicateChild(childSessionID)
 	}
 	return nil
 }
 
 func (factory *materializer) assertPersistedAvailable(
 	ctx context.Context,
-	childID session.SessionID,
+	childSessionID session.SessionID,
 ) error {
 	var cursor *sesspersist.SessionCursor
 	for {
@@ -176,8 +175,8 @@ func (factory *materializer) assertPersistedAvailable(
 			return listErr
 		}
 		for _, snapshot := range page.Snapshots {
-			if snapshot.Header.ID == childID {
-				return duplicateChild(childID)
+			if snapshot.Header.ID == childSessionID {
+				return duplicateChild(childSessionID)
 			}
 		}
 		if page.NextCursor == nil {
@@ -187,27 +186,23 @@ func (factory *materializer) assertPersistedAvailable(
 	}
 }
 
-// provisioner resolves the child-scoped effects recorded by the Continuable
+// setup resolves the child-local contributions recorded by the Continuable
 // descriptor. Only a fresh child receives the parent delegation policy.
-func (factory *materializer) provisioner(
+func (factory *materializer) setup(
 	descriptor subagent.ContinuableDescriptor,
 	fresh bool,
-) agent.Provisioner {
-	instances := childpolicy.Plugins(
+) agent.Setup {
+	policies := childpolicy.Setup(
 		childpolicy.PolicySet{
 			Persona:         descriptor.Persona,
 			ToolRestriction: descriptor.ToolFilter,
 		},
 	)
-	var policies agent.Provisioner
-	if len(instances) != 0 {
-		policies = scopedplugin.MountPlugins(instances...)
-	}
-	var delegation agent.Provisioner
+	var delegation agent.Setup
 	if fresh {
 		delegation = childpolicy.DelegationSeed(factory.delegation)
 	}
-	return agent.ComposeProvisioners(
+	return agent.ComposeSetups(
 		delegation,
 		policies,
 		factory.extensions,

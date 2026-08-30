@@ -20,6 +20,41 @@ type pluginPreStepRejector struct {
 	plugin.Base
 }
 
+type pluginRequestErrorRetry struct {
+	plugin.Base
+}
+
+func (extension *pluginRequestErrorRetry) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "agentloop-test-request-error-retry",
+		Waterfalls: []plugin.WaterfallMiddlewareBinding{
+			plugin.WaterfallOf(extension),
+		},
+	}
+}
+
+func (*pluginRequestErrorRetry) Apply(requestContext context.Context) error {
+	return requestContext.Err()
+}
+
+func (*pluginRequestErrorRetry) Dispose(context.Context) error { return nil }
+
+func (*pluginRequestErrorRetry) Intercept(
+	requestContext context.Context,
+	notice agent.RequestErrorNotice,
+	downstream plugin.WaterfallAction[
+		agent.RequestErrorNotice,
+		agent.RequestErrorAction,
+	],
+) (agent.RequestErrorAction, error) {
+	action, err := downstream.Execute(requestContext, notice)
+	if err != nil {
+		return agent.RequestErrorAction{}, err
+	}
+	action.Retry = true
+	return action, requestContext.Err()
+}
+
 func (rejector *pluginPreStepRejector) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: "agentloop-test-pre-step-rejector",
@@ -157,9 +192,7 @@ func TestAgentLoopGoldenEventSequences(t *testing.T) {
 				completedResponse,
 			},
 			extensions: []plugin.Plugin{
-				&retryExtension{
-					notices: make(chan agent.RequestErrorNotice, 1),
-				},
+				&pluginRequestErrorRetry{},
 			},
 			wantEvents: append(
 				append([]string(nil), executablePrefix...),

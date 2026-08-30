@@ -336,7 +336,7 @@ func newIntegrationFixtureWithConfiguration(
 	if settingsErr != nil {
 		t.Fatal(settingsErr)
 	}
-	loopPlugin, loopErr := agentloop.New(
+	loopPlugin, loopErr := agentloop.NewPlugin(
 		agentloop.Settings{
 			MaxParallelToolCalls: agentloop.DefaultMaxParallelToolCalls,
 		},
@@ -427,6 +427,9 @@ func newIntegrationFixtureWithConfiguration(
 		t.Fatal(startErr)
 	}
 	t.Cleanup(func() {
+		if shutdownErr := agentRegistry.Shutdown(context.Background()); shutdownErr != nil {
+			t.Errorf("Agent Registry shutdown failed: %v", shutdownErr)
+		}
 		if shutdownErr := runtimeEngine.Shutdown(context.Background()); shutdownErr != nil {
 			t.Errorf(
 				"Runtime shutdown failed: %v; details: %#v",

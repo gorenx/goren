@@ -36,9 +36,11 @@ func (binding *ProviderHandle) Unregister() {
 type questionServiceState uint8
 
 const (
+	// questionServiceInactive accepts no Provider registration. A later Plugin
+	// activation may bind the Service to the current optional Agent Registry.
 	questionServiceInactive questionServiceState = iota
+	// questionServiceActive accepts one Provider and serves question requests.
 	questionServiceActive
-	questionServiceClosed
 )
 
 // QuestionService owns the single active UI Provider and validates that an
@@ -66,9 +68,9 @@ func (owner *QuestionService) activate(agents agent.Registry) error {
 	return nil
 }
 
-func (owner *QuestionService) close() {
+func (owner *QuestionService) deactivate() {
 	owner.mu.Lock()
-	owner.state = questionServiceClosed
+	owner.state = questionServiceInactive
 	owner.agents = nil
 	owner.provider = nil
 	owner.mu.Unlock()

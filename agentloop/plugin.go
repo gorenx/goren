@@ -3,174 +3,194 @@ package agentloop
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/agentloop/internal/visiblecontext"
+	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	sesspersist "github.com/gorenx/goren/session/persistence"
+	"github.com/gorenx/goren/systemprompt"
+	"github.com/gorenx/goren/tools"
 )
 
-// RuntimeOptions contains process-local failure reporting policy.
-type RuntimeOptions struct {
-	ObserverError func(error)
-}
-
-// Plugin adapts Agent Loop construction and per-Agent Scope effects to the
-// Plugin Runtime. Agent construction is owned by Factory; Agent lifecycle and
-// runtime parent-child ordering are owned by agent.Registry.
+// Plugin is the sole module adapter for AgentLoop. It publishes one Factory
+// and owns no Agent, Registry membership, or parent-child relation.
 type Plugin struct {
 	plugin.Base
-	mutex                sync.RWMutex
-	maxParallelToolCalls int
-	reportObserverError  func(error)
-	visibleContexts      *visiblecontext.Directory
-	startup              *StartupPlan
-	constructor          agent.Constructor
-	registration         *registrationPlugin
-	scopes               *ScopeSet
+	factory *Factory
+	gateway *pluginGateway
+
+	effectCalls sync.WaitGroup
+	driverDone  chan struct{}
+	disposeOnce sync.Once
+	disposeDone chan struct{}
+	disposeErr  error
 }
 
-// New constructs an inactive Agent Loop Plugin from validated runtime
-// settings. Raw configuration belongs to agentloop/factory.
-func New(runtimeSettings Settings, policies RuntimeOptions) (*Plugin, error) {
-	validated, err := validateSettings(runtimeSettings)
+// NewPlugin constructs the one AgentLoop module Plugin.
+func NewPlugin(loopSettings Settings, options RuntimeOptions) (*Plugin, error) {
+	validated, err := validateSettings(loopSettings)
 	if err != nil {
 		return nil, err
 	}
-	reportObserverError := policies.ObserverError
-	if reportObserverError == nil {
-		reportObserverError = func(error) {}
-	}
+	gateway := newPluginGateway()
 	owner := &Plugin{
-		maxParallelToolCalls: validated.MaxParallelToolCalls,
-		reportObserverError:  reportObserverError,
-		visibleContexts:      visiblecontext.NewDirectory(),
-		startup: newStartupPlan(
-			validated.StartupAgents,
-		),
+		gateway:     gateway,
+		driverDone:  make(chan struct{}),
+		disposeDone: make(chan struct{}),
 	}
-	owner.registration = &registrationPlugin{}
-	owner.scopes = newScopeSet()
+	owner.factory = newFactory(
+		validated.MaxParallelToolCalls,
+		options.ObserverError,
+		gateway,
+		gateway,
+	)
 	return owner, nil
 }
 
 func (owner *Plugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name: PluginName,
+		Provides: []plugin.ProvidedService{
+			plugin.NewProvidedService[agent.Factory](owner.factory),
+		},
 		Requires: []plugin.ServiceType{
-			plugin.ServiceOf[agent.Constructor](),
 			plugin.ServiceOf[session.LiveStore](),
+			plugin.ServiceOf[llm.LlmRuntime](),
+			plugin.ServiceOf[systemprompt.PromptLayerFactory](),
+			plugin.ServiceOf[tools.ToolLayerFactory](),
 		},
 		Optional: []plugin.ServiceType{
 			plugin.ServiceOf[sesspersist.Persistence](),
-		},
-		Events: []plugin.EventSubscription{
-			plugin.EventOf[session.EventAppended](),
-		},
-		Children: []plugin.ChildPlugin{
-			{
-				Instance:  owner.scopes,
-				Placement: plugin.SameScope,
-				Phase:     plugin.ActivationMain,
-			},
-			{
-				Instance:  owner.registration,
-				Placement: plugin.SameScope,
-				Phase:     plugin.ActivationCommit,
-			},
 		},
 	}
 }
 
 func (owner *Plugin) Apply(requestContext context.Context) error {
-	if err := requestContext.Err(); err != nil {
-		return err
+	if requestContext == nil {
+		return errors.New("agentloop: Plugin Apply Context is nil")
 	}
-	constructor, err := plugin.Require[agent.Constructor](owner)
-	if err != nil {
+	if err := requestContext.Err(); err != nil {
 		return err
 	}
 	sessions, err := plugin.Require[session.LiveStore](owner)
 	if err != nil {
 		return err
 	}
-	persistence, _ := plugin.Resolve[sesspersist.Persistence](owner)
-	agentFactory := newFactory(
-		owner.maxParallelToolCalls,
-		sessions,
-		persistence,
-		owner.reportObserverError,
-		owner.visibleContexts,
-		owner.scopes,
-	)
-	owner.mutex.Lock()
-	owner.constructor = constructor
-	owner.mutex.Unlock()
-	if err = owner.registration.bindFactory(agentFactory); err != nil {
+	models, err := plugin.Require[llm.LlmRuntime](owner)
+	if err != nil {
 		return err
 	}
+	prompts, err := plugin.Require[systemprompt.PromptLayerFactory](owner)
+	if err != nil {
+		return err
+	}
+	toolLayers, err := plugin.Require[tools.ToolLayerFactory](owner)
+	if err != nil {
+		return err
+	}
+	persistence, _ := plugin.Resolve[sesspersist.Persistence](owner)
+	if err = owner.factory.enterRuntime(factoryDependencies{
+		sessions:    sessions,
+		persistence: persistence,
+		models:      models,
+		prompts:     prompts,
+		toolLayers:  toolLayers,
+	}); err != nil {
+		return err
+	}
+	go owner.driveEffects()
 	return requestContext.Err()
 }
 
-// Dispose releases Agent Loop-local VisibleContext registrations after the
-// commit-phase Factory adapter and every per-Agent Scope have already stopped.
 func (owner *Plugin) Dispose(closeContext context.Context) error {
+	if owner == nil {
+		return nil
+	}
 	if closeContext == nil {
 		closeContext = context.Background()
 	}
-	var closeErr error
-	owner.mutex.Lock()
-	owner.constructor = nil
-	owner.mutex.Unlock()
-	if routed := owner.visibleContexts.Clear(); routed != 0 {
-		closeErr = errors.Join(
-			closeErr,
-			fmt.Errorf(
-				"agentloop: Plugin stopped with %d live VisibleContext registration(s)",
-				routed,
-			),
+	owner.disposeOnce.Do(func() {
+		owner.factory.leaveRuntime()
+		owner.gateway.stop(errors.New("agentloop: Plugin is stopping"))
+		<-owner.driverDone
+		owner.effectCalls.Wait()
+		close(owner.disposeDone)
+	})
+	select {
+	case <-owner.disposeDone:
+		return owner.disposeErr
+	case <-closeContext.Done():
+		return context.Cause(closeContext)
+	}
+}
+
+func (owner *Plugin) driveEffects() {
+	defer close(owner.driverDone)
+	for {
+		select {
+		case request := <-owner.gateway.requests:
+			owner.effectCalls.Add(1)
+			go func() {
+				defer owner.effectCalls.Done()
+				owner.executeEffect(request)
+			}()
+		case <-owner.gateway.stopped:
+			return
+		}
+	}
+}
+
+func (owner *Plugin) executeEffect(call effectCall) {
+	switch requested := call.(type) {
+	case eventCall:
+		fact, matches := requested.fact.(plugin.Event)
+		if !matches {
+			requested.result <- errors.New(
+				"agentloop: Agent AgentEvent has no Plugin event metadata",
+			)
+			return
+		}
+		requested.result <- plugin.PublishEvent(
+			requested.requestContext,
+			owner,
+			fact,
 		)
-	}
-	return closeErr
-}
-
-// ObserveEvent routes exact Session commits to the corresponding private
-// per-Agent VisibleContext.
-func (owner *Plugin) ObserveEvent(
-	_ context.Context,
-	fact plugin.Event,
-) error {
-	appended, matches := fact.(session.EventAppended)
-	if !matches {
-		return nil
-	}
-	owner.visibleContexts.Observe(appended)
-	return nil
-}
-
-// StartConfiguredAgents runs the one-shot boot transaction after
-// plugin.Runtime.Start through the canonical Registry API.
-func (owner *Plugin) StartConfiguredAgents(
-	requestContext context.Context,
-) ([]agent.Handle, error) {
-	owner.mutex.RLock()
-	constructor := owner.constructor
-	owner.mutex.RUnlock()
-	return owner.startup.start(requestContext, constructor)
-}
-
-func validateAgentOptions(agentOptions agent.Options) error {
-	if agentOptions.MaxTokens != nil &&
-		(*agentOptions.MaxTokens <= 0 ||
-			int64(*agentOptions.MaxTokens) > maxSafeInteger) {
-		return errors.New(
-			"agentloop: Agent maxTokens must be a positive safe integer",
+	case preStepCall:
+		decision, err := plugin.Run(
+			requested.requestContext,
+			owner,
+			requested.notice,
+			requested.terminal,
 		)
+		requested.result <- preStepCallResult{
+			decision: decision,
+			err:      err,
+		}
+	case requestResolutionCall:
+		resolution, err := plugin.Run(
+			requested.requestContext,
+			owner,
+			requested.notice,
+			requested.terminal,
+		)
+		requested.result <- requestResolutionCallResult{
+			resolution: resolution,
+			err:        err,
+		}
+	case requestErrorCall:
+		action, err := plugin.Run(
+			requested.requestContext,
+			owner,
+			requested.notice,
+			requested.terminal,
+		)
+		requested.result <- requestErrorCallResult{
+			action: action,
+			err:    err,
+		}
 	}
-	return nil
 }
 
 var _ plugin.Plugin = (*Plugin)(nil)

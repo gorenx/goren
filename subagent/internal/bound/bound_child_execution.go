@@ -19,7 +19,7 @@ func (child *boundChild) receivingEpoch(
 		return nil, err
 	}
 	if current == nil {
-		return nil, boundDisabled(child.key.childID)
+		return nil, boundDisabled(child.key.childSessionID)
 	}
 	return current, nil
 }
@@ -46,8 +46,8 @@ func (child *boundChild) reconcileExecution(
 		return nil, err
 	}
 	bindingValue, found := view.BindingNamed(child.key.name)
-	if !found || bindingValue.ChildSessionID != child.key.childID {
-		return nil, bindingNotFound(child.key.childID)
+	if !found || bindingValue.ChildSessionID != child.key.childSessionID {
+		return nil, bindingNotFound(child.key.childSessionID)
 	}
 	definitionValue, found := child.definitions.find(child.key.name)
 	if !found {
@@ -58,11 +58,11 @@ func (child *boundChild) reconcileExecution(
 	}
 	current := child.current
 	if current != nil {
-		state := current.execution.State()
-		if state == subagent.ExecutionStopped {
+		phase := current.State()
+		if phase == subagent.ExecutionStopped {
 			child.current = nil
 			current = nil
-		} else if state != subagent.ExecutionActive {
+		} else if phase != subagent.ExecutionActive {
 			return nil, errors.New("subagent: Bound child is stopping")
 		}
 	}
@@ -72,9 +72,9 @@ func (child *boundChild) reconcileExecution(
 		return current, nil
 	}
 	if current != nil {
-		if err = current.execution.StopAndWait(
+		if err = current.StopAndWait(
 			workContext,
-			sharedexecution.StopNormal,
+			sharedexecution.CloseNormal,
 		); err != nil {
 			return nil, err
 		}
@@ -123,9 +123,9 @@ func (child *boundChild) reconcileExecution(
 		definitionValue.Revision,
 		boundcontract.MaterializationSucceeded,
 	); err != nil {
-		stopErr := current.execution.StopAndWait(
+		stopErr := current.StopAndWait(
 			context.WithoutCancel(workContext),
-			sharedexecution.StopModule,
+			sharedexecution.CloseModule,
 		)
 		if child.current == current {
 			child.current = nil
@@ -147,31 +147,28 @@ func (child *boundChild) publish(
 	handle agent.Handle,
 	revision int64,
 ) (*residentEpoch, error) {
-	runID, err := sharedexecution.NewRunID()
+	executionRunID, err := sharedexecution.NewRunID()
 	if err != nil {
 		return nil, err
 	}
-	resident := &residentEpoch{
-		owner:              child,
-		handle:             handle,
-		definitionRevision: revision,
-		provider:           string(subagent.ModeBound),
-	}
-	running, err := sharedexecution.New(
-		runID,
-		handle.Subject.ID(),
-		resident,
-	)
+	resident, err := newResidentEpoch(executionRunID, handle.Subject.ID())
 	if err != nil {
 		return nil, err
 	}
-	resident.execution = running
+	resident.handle = handle
+	resident.definitionRevision = revision
+	resident.provider = string(subagent.ModeBound)
+	resident.sessions = child.sessions
+	resident.failures = child.failures
+	resident.publisher = child.publisher
+	resident.parent = child.parent
+	resident.executions = child.executions
 	child.current = resident
 	if err = sharedexecution.Publish(
 		child.executions,
 		child.publisher,
 		sharedexecution.Entry{
-			Execution: running,
+			Execution: resident,
 			Mode:      subagent.ModeBound,
 			Parent:    child.parent,
 			Subject:   handle.Subject,
@@ -192,13 +189,13 @@ func (child *boundChild) publish(
 func (*boundChild) watch(current *residentEpoch) {
 	go func() {
 		<-current.handle.ClosingSignal()
-		current.execution.Stop(sharedexecution.StopExternal)
+		current.Stop(sharedexecution.CloseExternal)
 	}()
 }
 
 func (child *boundChild) handleInterrupt() {
 	current := child.current
-	if current == nil || current.execution.State() != subagent.ExecutionActive {
+	if current == nil || current.State() != subagent.ExecutionActive {
 		return
 	}
 	current.handle.Subject.Cancel(
@@ -214,9 +211,9 @@ func (child *boundChild) stopCurrent(requestContext context.Context) error {
 	if current == nil {
 		return nil
 	}
-	err := current.execution.StopAndWait(
+	err := current.StopAndWait(
 		requestContext,
-		sharedexecution.StopModule,
+		sharedexecution.CloseModule,
 	)
 	if child.current == current {
 		child.current = nil

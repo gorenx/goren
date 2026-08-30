@@ -53,10 +53,6 @@ func (subject *retrySubjectFixture) ID() session.SessionID {
 	return subject.conversation.ID()
 }
 
-func (subject *retrySubjectFixture) ScopeRuntimeValue() agent.AgentScopeRuntime {
-	return subject
-}
-
 func (*retrySubjectFixture) OptionsValue() agent.Options {
 	return agent.Options{}
 }
@@ -104,11 +100,11 @@ func (*retrySubjectFixture) Inject(agentmessage.UserMessage) error {
 
 func (subject *retrySubjectFixture) Dispatch(
 	requestContext context.Context,
-	fact agent.RuntimeEvent,
+	fact agent.AgentEvent,
 ) error {
 	runtimeFact, matches := fact.(plugin.Event)
 	if !matches {
-		return errors.New("test: RuntimeEvent has no Plugin metadata")
+		return errors.New("test: AgentEvent has no Plugin metadata")
 	}
 	return plugin.PublishEvent(requestContext, subject, runtimeFact)
 }
@@ -136,14 +132,6 @@ func (subject *retrySubjectFixture) ResolveRequestError(
 ) (agent.RequestErrorAction, error) {
 	return plugin.Run(requestContext, subject, notice, terminal)
 }
-
-func (*retrySubjectFixture) Provision(context.Context, agent.Provisioner) error {
-	return nil
-}
-
-func (*retrySubjectFixture) Teardown(context.Context) error { return nil }
-
-var _ agent.AgentScopeRuntime = (*retrySubjectFixture)(nil)
 
 type retryFixture struct {
 	engine      *plugin.Runtime
@@ -189,7 +177,7 @@ func (state *retryFixture) resolve(
 	terminal requestErrorActionFunc,
 ) (agent.RequestErrorAction, error) {
 	notice.Subject = state.subject
-	return agent.ResolveRequestError(requestContext, notice, terminal)
+	return plugin.Run(requestContext, state.subject, notice, terminal)
 }
 
 func TestNormalRetryRecordsBudgetAndWaitTransitions(t *testing.T) {

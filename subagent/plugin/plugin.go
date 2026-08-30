@@ -38,7 +38,9 @@ type Plugin struct {
 	executions         *sharedexecution.Registry
 	extensions         *extensionregistry.Registry
 	directory          *childdirectory.Service
-	events             *eventPublisher
+	events             *eventGateway
+	dispatcher         agent.EventDispatcher
+	eventDriverDone    chan struct{}
 	projections        []sessionprojection.UnitHandle
 	failures           *failureReporter
 }
@@ -80,15 +82,14 @@ func New(
 			report: reporter,
 		},
 	}
-	owner.events = &eventPublisher{
-		owner: owner,
-	}
+	owner.events = newEventGateway()
+	owner.eventDriverDone = make(chan struct{})
 	owner.builders = seedbuilder.New(owner.events)
 	return owner
 }
 
 // Manifest publishes narrow business capability views and declares every
-// dependency required to run both Subagent implementations.
+// dependency required to run all Subagent implementations.
 func (owner *Plugin) Manifest() pluginruntime.Manifest {
 	return pluginruntime.Manifest{
 		Name: subagent.PluginName,
@@ -106,6 +107,7 @@ func (owner *Plugin) Manifest() pluginruntime.Manifest {
 			pluginruntime.ServiceOf[agent.Registry](),
 			pluginruntime.ServiceOf[agent.Constructor](),
 			pluginruntime.ServiceOf[agent.RuntimeDescendants](),
+			pluginruntime.ServiceOf[agent.EventDispatcher](),
 			pluginruntime.ServiceOf[session.LiveStore](),
 			pluginruntime.ServiceOf[persistence.Persistence](),
 			pluginruntime.ServiceOf[sessionprojection.Registry](),
@@ -138,6 +140,10 @@ func (owner *Plugin) Apply(ctx context.Context) error {
 		return err
 	}
 	runtimeDescendants, err := pluginruntime.Require[agent.RuntimeDescendants](owner)
+	if err != nil {
+		return err
+	}
+	dispatcher, err := pluginruntime.Require[agent.EventDispatcher](owner)
 	if err != nil {
 		return err
 	}
@@ -178,7 +184,7 @@ func (owner *Plugin) Apply(ctx context.Context) error {
 			_ = definitionStore.Close(context.WithoutCancel(ctx))
 		}
 	}()
-	commonExtensions := extensionregistry.NewProvisioner(owner.extensions)
+	commonExtensions := extensionregistry.NewSetup(owner.extensions)
 	if err := owner.registerProjections(projectionRegistry); err != nil {
 		return err
 	}
@@ -276,6 +282,8 @@ func (owner *Plugin) Apply(ctx context.Context) error {
 			owner.releaseProjections(context.WithoutCancel(ctx)),
 		)
 	}
+	owner.dispatcher = dispatcher
+	go owner.driveEvents()
 	return nil
 }
 
@@ -300,6 +308,9 @@ func (owner *Plugin) Dispose(closeContext context.Context) error {
 	}
 	danglingBuilders := owner.builders.Clear()
 	projectionErr := owner.releaseProjections(completionContext)
+	owner.events.stop()
+	<-owner.eventDriverDone
+	owner.dispatcher = nil
 	if danglingBuilders == 0 {
 		return errors.Join(serviceErr, extensionErr, projectionErr)
 	}

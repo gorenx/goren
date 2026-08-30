@@ -43,16 +43,16 @@ func (child *boundChild) disposeFailedMaterialization(
 func (child *boundChild) recordMaterialization(
 	ctx context.Context,
 	revision int64,
-	result boundcontract.MaterializationResult,
+	response boundcontract.MaterializationResult,
 ) error {
 	draft, err := session.NewEventDraft(
 		boundcontract.MaterializationEvent,
 		boundcontract.MaterializationData{
 			Version:            boundcontract.EventVersion,
 			Name:               child.key.name,
-			ChildSessionID:     child.key.childID,
+			ChildSessionID:     child.key.childSessionID,
 			DefinitionRevision: revision,
-			Result:             result,
+			Result:             response,
 		},
 	)
 	if err != nil {
@@ -79,7 +79,7 @@ func (child *boundChild) reportMaterializationFailure(
 	child.failures.ReportBoundMaterializationFailure(
 		MaterializationFailure{
 			ParentID: child.key.parentID,
-			ChildID:  child.key.childID,
+			ChildID:  child.key.childSessionID,
 			Error:    materializationErr,
 		},
 	)

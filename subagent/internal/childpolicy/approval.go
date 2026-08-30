@@ -14,8 +14,8 @@ type delegationSeed struct {
 	policy approval.DelegationPolicy
 }
 
-// DelegationSeed returns the one-time Provisioner for a fresh delegated Agent.
-func DelegationSeed(policy approval.DelegationPolicy) agent.Provisioner {
+// DelegationSeed returns the one-time Setup for a fresh delegated Agent.
+func DelegationSeed(policy approval.DelegationPolicy) agent.Setup {
 	if policy == nil {
 		return nil
 	}
@@ -24,21 +24,21 @@ func DelegationSeed(policy approval.DelegationPolicy) agent.Provisioner {
 	}
 }
 
-func (seed *delegationSeed) Provision(
+func (seed *delegationSeed) Apply(
 	requestContext context.Context,
-	target agent.Scope,
-) (agent.Provisioning, error) {
-	if seed == nil || seed.policy == nil || target == nil {
-		return nil, errors.New("subagent: delegated Agent is unavailable")
+	childSubject agent.Agent,
+	_ agent.ScopeEditor,
+) error {
+	if seed == nil || seed.policy == nil {
+		return errors.New("subagent: delegated Agent is unavailable")
 	}
-	childSubject := target.Agent()
 	if childSubject == nil || childSubject.SessionValue() == nil {
-		return nil, errors.New("subagent: delegated Agent is unavailable")
+		return errors.New("subagent: delegated Agent is unavailable")
 	}
-	return nil, seed.policy.SeedDelegationPolicy(
+	return seed.policy.SeedDelegationPolicy(
 		requestContext,
 		childSubject.SessionValue(),
 	)
 }
 
-var _ agent.Provisioner = (*delegationSeed)(nil)
+var _ agent.Setup = (*delegationSeed)(nil)

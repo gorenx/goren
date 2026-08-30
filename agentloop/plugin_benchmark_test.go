@@ -102,7 +102,7 @@ func newAgentLoopBenchmark(
 	if err != nil {
 		benchmarkState.Fatal(err)
 	}
-	loopPlugin, err := agentloop.New(
+	loopPlugin, err := agentloop.NewPlugin(
 		agentloop.Settings{
 			MaxParallelToolCalls: agentloop.DefaultMaxParallelToolCalls,
 		},
@@ -172,6 +172,9 @@ func newAgentLoopBenchmark(
 	benchmarkState.Cleanup(func() {
 		if releaseErr := state.adapter.Release(context.Background()); releaseErr != nil {
 			benchmarkState.Error(releaseErr)
+		}
+		if shutdownErr := state.agents.Shutdown(context.Background()); shutdownErr != nil {
+			benchmarkState.Error(shutdownErr)
 		}
 		if shutdownErr := state.runtimeEngine.Shutdown(context.Background()); shutdownErr != nil {
 			benchmarkState.Error(shutdownErr)

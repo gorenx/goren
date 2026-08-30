@@ -43,7 +43,7 @@ type Dependencies struct {
 	SeedBuilders SeedBuilders
 	Publisher    sharedexecution.EventPublisher
 	Delegation   approval.DelegationPolicy
-	Extensions   agent.Provisioner
+	Extensions   agent.Setup
 	Failures     FailureReporter
 	Executions   *sharedexecution.Registry
 }
@@ -122,7 +122,7 @@ func checkContext(ctx context.Context, operation string) error {
 	return ctx.Err()
 }
 
-// Start creates one durable child and returns its first common Execution.
+// Start creates one durable child and returns its first Continuable execution.
 func (owner *Service) Start(
 	ctx context.Context,
 	command subagent.ContinuableStartCommand,
@@ -159,7 +159,7 @@ func (owner *Service) Start(
 		return nil, descriptorErr
 	}
 	requestedID := command.RequestedChildID()
-	childID, childIDErr := requestedChildID(requestedID)
+	childSessionID, childIDErr := requestedChildID(requestedID)
 	if childIDErr != nil {
 		return nil, childIDErr
 	}
@@ -182,7 +182,7 @@ func (owner *Service) Start(
 	}
 	builderSeed := seedValue.EventPrefix()
 	seed, seedErr := seedbuilder.AppendDescriptor(
-		childID,
+		childSessionID,
 		builderSeed,
 		descriptor,
 	)
@@ -200,7 +200,7 @@ func (owner *Service) Start(
 		identityRequested: requestedID != nil,
 	}
 	for {
-		child, acquireErr := owner.children.acquire(childID)
+		child, acquireErr := owner.children.acquire(childSessionID)
 		if acquireErr != nil {
 			return nil, acquireErr
 		}
@@ -218,14 +218,14 @@ func (owner *Service) Start(
 func (owner *Service) Resume(
 	ctx context.Context,
 	parentAgent agent.Agent,
-	childID session.SessionID,
+	childSessionID session.SessionID,
 	messageValue agentmessage.UserMessage,
 ) (agentmessage.MessageID, error) {
 	if contextErr := checkContext(ctx, "Continuable Resume"); contextErr != nil {
 		return "", contextErr
 	}
 	for {
-		child, acquireErr := owner.children.acquire(childID)
+		child, acquireErr := owner.children.acquire(childSessionID)
 		if acquireErr != nil {
 			return "", acquireErr
 		}

@@ -7,28 +7,28 @@ import (
 	"github.com/gorenx/goren/subagent"
 )
 
-func boundDisabled(childID session.SessionID) error {
+func boundDisabled(childSessionID session.SessionID) error {
 	return &subagent.Error{
 		Code: subagent.ErrorBoundDisabled,
 		Message: fmt.Sprintf(
 			"subagent %q is disabled by its latest Bound config",
-			childID,
+			childSessionID,
 		),
 	}
 }
 
-func unauthorizedChild(childID session.SessionID) error {
+func unauthorizedChild(childSessionID session.SessionID) error {
 	return &subagent.Error{
 		Code: subagent.ErrorUnauthorized,
 		Message: fmt.Sprintf(
 			"subagent %q belongs to another parent Session",
-			childID,
+			childSessionID,
 		),
 	}
 }
 
 func notResumable(
-	childID session.SessionID,
+	childSessionID session.SessionID,
 	reason string,
 	cause error,
 ) error {
@@ -36,29 +36,29 @@ func notResumable(
 		Code: subagent.ErrorNotResumable,
 		Message: fmt.Sprintf(
 			"subagent %q %s",
-			childID,
+			childSessionID,
 			reason,
 		),
 		Cause: cause,
 	}
 }
 
-func descendantAdmissionClosed(childID session.SessionID) error {
+func descendantAdmissionClosed(childSessionID session.SessionID) error {
 	return &subagent.Error{
 		Code: subagent.ErrorDraining,
 		Message: fmt.Sprintf(
 			"subagent %q lost parent descendant admission",
-			childID,
+			childSessionID,
 		),
 	}
 }
 
-func bindingNotFound(childID session.SessionID) error {
+func bindingNotFound(childSessionID session.SessionID) error {
 	return &subagent.Error{
 		Code: subagent.ErrorBoundBindingNotFound,
 		Message: fmt.Sprintf(
 			"subagent %q has no Bound binding in this parent Session",
-			childID,
+			childSessionID,
 		),
 	}
 }

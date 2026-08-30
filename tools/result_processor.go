@@ -6,13 +6,12 @@ import (
 	"fmt"
 
 	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/plugin"
 )
 
 // resultProcessor owns post-execute policy, definition finalization, and the
 // immutable final result Event.
 type resultProcessor struct {
-	source     plugin.Plugin
+	effects    layerEffects
 	dispatcher *dispatcher
 }
 
@@ -33,14 +32,12 @@ func (processor *resultProcessor) post(
 	if err != nil {
 		return nil, err
 	}
-	postOutcome, err := plugin.Run(
+	postOutcome, err := processor.effects.ResolvePostExecute(
 		requestContext,
-		processor.source,
 		PostExecuteRequest{
 			toolCall:   toolCall,
 			resultView: resultView,
 		},
-		postExecuteTerminal{},
 	)
 	if err != nil {
 		return nil, err
@@ -178,9 +175,8 @@ func (processor *resultProcessor) finish(
 		materialized = errorResult(err)
 		resultView, _ = newResultSnapshot(materialized)
 	}
-	_ = plugin.Publish(
+	_ = processor.effects.PublishCompleted(
 		requestContext,
-		processor.source,
 		ExecutionCompleted{
 			toolCall:   cloneExecution(toolCall),
 			resultView: resultView,

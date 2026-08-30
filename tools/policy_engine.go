@@ -7,11 +7,10 @@ import (
 
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/approval"
-	"github.com/gorenx/goren/plugin"
 )
 
 type policyEngine struct {
-	source    plugin.Plugin
+	effects   layerEffects
 	registry  *registry
 	approvals approval.Approval
 }
@@ -25,13 +24,11 @@ func (engine *policyEngine) evaluate(
 	requestContext context.Context,
 	toolCall ToolExecution,
 ) (preDispatchEvaluation, error) {
-	gateOutcome, err := plugin.Run(
+	gateOutcome, err := engine.effects.ResolvePreExecute(
 		requestContext,
-		engine.source,
 		PreExecuteRequest{
 			toolCall: toolCall,
 		},
-		preExecuteTerminal{},
 	)
 	if err != nil {
 		return preDispatchEvaluation{}, err

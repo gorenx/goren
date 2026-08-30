@@ -20,7 +20,7 @@ import (
 type Dependencies struct {
 	Agents      agent.Registry
 	Constructor agent.Constructor
-	Scopes      agent.ScopeProvisioning
+	Scopes      agent.ScopeSetup
 	Sessions    session.LiveStore
 	Persistence sesspersist.Persistence
 	LLM         llm.LlmRuntime

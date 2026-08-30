@@ -63,6 +63,21 @@ func (visible *VisibleContext) Observe(committed session.Event) {
 	}
 }
 
+// Refresh rebuilds retained Prompt Context from the current Session surface.
+// RLA calls it at the step boundary, avoiding any Agent-to-Plugin listener
+// registration or global per-Agent observer map.
+func (visible *VisibleContext) Refresh(conversation session.Context) error {
+	if visible == nil || conversation == nil {
+		return errors.New("agentloop visible context: Session is required")
+	}
+	visible.mutex.Lock()
+	visible.observed = false
+	visible.current = nil
+	visible.restoreLocked(conversation)
+	visible.mutex.Unlock()
+	return nil
+}
+
 // Message returns the model-visible snapshot required for the assembled Prompt
 // Context. An unchanged retained snapshot produces no message.
 func (visible *VisibleContext) Message(
@@ -105,6 +120,12 @@ func (visible *VisibleContext) Message(
 }
 
 func (visible *VisibleContext) restore(conversation session.Context) {
+	visible.mutex.Lock()
+	defer visible.mutex.Unlock()
+	visible.restoreLocked(conversation)
+}
+
+func (visible *VisibleContext) restoreLocked(conversation session.Context) {
 	retainedSequences := make(map[int64]struct{})
 	// retainedSequences is a set of model-visible Session event sequences.
 	// The key is a Session event sequence. The empty value is a membership

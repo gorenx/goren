@@ -48,13 +48,17 @@ func (record *constructorRecord) Resume(
 
 type scopeProvisioningStub struct{}
 
-func (scopeProvisioningStub) Provision(
+func (scopeProvisioningStub) ApplySetup(
 	context.Context,
 	agent.Agent,
-	agent.Provisioner,
-) error {
-	return nil
+	agent.Setup,
+) (agent.ScopeResources, error) {
+	return scopeResourcesStub{}, nil
 }
+
+type scopeResourcesStub struct{}
+
+func (scopeResourcesStub) Close(context.Context) error { return nil }
 
 type liveStoreStub struct{}
 
@@ -241,7 +245,7 @@ func TestEnsureRejectsPersistedSubagentBeforeResume(t *testing.T) {
 
 var _ agent.Registry = agentRegistryStub{}
 var _ agent.Constructor = (*constructorRecord)(nil)
-var _ agent.ScopeProvisioning = scopeProvisioningStub{}
+var _ agent.ScopeSetup = scopeProvisioningStub{}
 var _ session.LiveStore = liveStoreStub{}
 var _ sesspersist.Persistence = persistenceStub{}
 var _ agentdefaultmodel.DefaultModel = defaultModelStub{}

@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/gorenx/goren/approval"
-	"github.com/gorenx/goren/plugin"
 )
 
 // executionRuntime owns the staged Tool execution state machine. Policy evaluation,
@@ -19,23 +18,23 @@ type executionRuntime struct {
 }
 
 func newRuntime(
-	source plugin.Plugin,
+	effects layerEffects,
 	catalog *registry,
 	approvals approval.Approval,
 ) *executionRuntime {
 	bodyDispatcher := &dispatcher{
-		source: source,
+		effects: effects,
 	}
 	return &executionRuntime{
 		registry: catalog,
 		policies: &policyEngine{
-			source:    source,
+			effects:   effects,
 			registry:  catalog,
 			approvals: approvals,
 		},
 		dispatcher: bodyDispatcher,
 		results: &resultProcessor{
-			source:     source,
+			effects:    effects,
 			dispatcher: bodyDispatcher,
 		},
 	}

@@ -358,20 +358,16 @@ func DefaultSpecs(
 	emptyConfig := json.RawMessage(`{}`)
 	return []PluginSpec{
 		{
-			FactoryName: agent.PluginName,
-			Config:      emptyConfig,
-		},
-		{
-			FactoryName: agentdefaultmodel.PluginName,
-			Config:      defaultModelRaw,
-		},
-		{
 			FactoryName: session.PluginName,
 			Config:      emptyConfig,
 		},
 		{
 			FactoryName: persistence.PluginName,
 			Config:      persistenceRaw,
+		},
+		{
+			FactoryName: agentdefaultmodel.PluginName,
+			Config:      defaultModelRaw,
 		},
 		{
 			FactoryName: projection.PluginName,
@@ -438,6 +434,14 @@ func DefaultSpecs(
 			Config:      emptyConfig,
 		},
 		{
+			FactoryName: agentloop.PluginName,
+			Config:      emptyConfig,
+		},
+		{
+			FactoryName: agent.PluginName,
+			Config:      emptyConfig,
+		},
+		{
 			FactoryName: userquestions.PluginName,
 			Config:      emptyConfig,
 		},
@@ -452,10 +456,6 @@ func DefaultSpecs(
 		{
 			FactoryName: title.PluginName,
 			Config:      titleRaw,
-		},
-		{
-			FactoryName: agentloop.PluginName,
-			Config:      emptyConfig,
 		},
 		{
 			FactoryName: llmretry.PluginName,

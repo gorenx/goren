@@ -11,6 +11,11 @@ import (
 	"github.com/gorenx/goren/session"
 )
 
+// RuntimeOptions contains process-local failure reporting policy.
+type RuntimeOptions struct {
+	ObserverError func(error)
+}
+
 const (
 	// PluginName is the canonical Harness Agent Loop Plugin name.
 	PluginName = "@deepseek-ai/dsh-agent-loop"
@@ -144,4 +149,15 @@ func cloneSessionID(source *session.SessionID) *session.SessionID {
 	}
 	copyValue := *source
 	return &copyValue
+}
+
+func validateAgentOptions(agentOptions agent.Options) error {
+	if agentOptions.MaxTokens != nil &&
+		(*agentOptions.MaxTokens <= 0 ||
+			int64(*agentOptions.MaxTokens) > maxSafeInteger) {
+		return errors.New(
+			"agentloop: Agent maxTokens must be a positive safe integer",
+		)
+	}
+	return nil
 }
