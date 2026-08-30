@@ -75,30 +75,26 @@ func (owner *Factory) leaveRuntime() {
 
 func (owner *Factory) beginConstruction(
 	requestContext context.Context,
-) (factoryDependencies, func(), error) {
+) (factoryDependencies, error) {
 	if requestContext == nil {
-		return factoryDependencies{}, nil, errors.New(
+		return factoryDependencies{}, errors.New(
 			"agentloop: construction Context is nil",
 		)
 	}
 	if err := requestContext.Err(); err != nil {
-		return factoryDependencies{}, nil, err
+		return factoryDependencies{}, err
 	}
 	owner.mutex.Lock()
 	if !owner.active {
 		owner.mutex.Unlock()
-		return factoryDependencies{}, nil, errors.New(
+		return factoryDependencies{}, errors.New(
 			"agentloop: Factory is not active",
 		)
 	}
 	dependencies := owner.dependencies
 	owner.constructions.Add(1)
 	owner.mutex.Unlock()
-	var releaseOnce sync.Once
-	releaseConstruction := func() {
-		releaseOnce.Do(owner.constructions.Done)
-	}
-	return dependencies, releaseConstruction, nil
+	return dependencies, nil
 }
 
 // CreateAgent constructs one unpublished Host for a fresh Session.
@@ -106,11 +102,11 @@ func (owner *Factory) CreateAgent(
 	requestContext context.Context,
 	options agent.CreateHostOptions,
 ) (agent.Host, error) {
-	dependencies, releaseConstruction, err := owner.beginConstruction(requestContext)
+	dependencies, err := owner.beginConstruction(requestContext)
 	if err != nil {
 		return nil, err
 	}
-	defer releaseConstruction()
+	defer owner.constructions.Done()
 	if options.SessionID == "" {
 		return nil, errors.New("agentloop: Agent Session id is empty")
 	}
@@ -142,11 +138,11 @@ func (owner *Factory) ResumeAgent(
 	requestContext context.Context,
 	options agent.ResumeHostOptions,
 ) (agent.Host, error) {
-	dependencies, releaseConstruction, err := owner.beginConstruction(requestContext)
+	dependencies, err := owner.beginConstruction(requestContext)
 	if err != nil {
 		return nil, err
 	}
-	defer releaseConstruction()
+	defer owner.constructions.Done()
 	if options.SessionID == "" {
 		return nil, errors.New("agentloop: resume Session id is empty")
 	}

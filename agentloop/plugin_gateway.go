@@ -34,12 +34,12 @@ type agentWaterfalls interface {
 
 // pluginGateway submits Event and Waterfall requests to the sole AgentLoop
 // Plugin. It contains no Plugin, Runtime, callback, or owner reference.
-// It contains no Plugin, Runtime, callback, or owner reference.
 type pluginGateway struct {
 	requests chan effectCall
 	stopped  chan struct{}
 	stopOnce sync.Once
-	mutex    sync.Mutex
+	// stopErr is published before stopped closes and read only after a stopped
+	// receive establishes the lifecycle handoff.
 	stopErr  error
 }
 
@@ -235,21 +235,13 @@ func (gateway *pluginGateway) stop(cause error) {
 		if cause == nil {
 			cause = errors.New("agentloop: effect client stopped")
 		}
-		gateway.mutex.Lock()
 		gateway.stopErr = cause
-		gateway.mutex.Unlock()
 		close(gateway.stopped)
 	})
 }
 
 func (gateway *pluginGateway) stoppedError() error {
-	gateway.mutex.Lock()
-	err := gateway.stopErr
-	gateway.mutex.Unlock()
-	if err == nil {
-		return errors.New("agentloop: effect client stopped")
-	}
-	return err
+	return gateway.stopErr
 }
 
 var _ agentEvents = (*pluginGateway)(nil)

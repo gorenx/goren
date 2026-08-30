@@ -71,6 +71,9 @@ func (owner *agentScope) Close(closeContext context.Context) error {
 		closeContext = context.Background()
 	}
 	owner.closeOnce.Do(func() {
+		owner.mutex.Lock()
+		owner.phase = scopeClosing
+		owner.mutex.Unlock()
 		go owner.finishClose(context.WithoutCancel(closeContext))
 	})
 	select {
@@ -82,9 +85,6 @@ func (owner *agentScope) Close(closeContext context.Context) error {
 }
 
 func (owner *agentScope) finishClose(closeContext context.Context) {
-	owner.mutex.Lock()
-	owner.phase = scopeClosing
-	owner.mutex.Unlock()
 	owner.calls.Wait()
 	owner.setupMutex.Lock()
 	owner.mutex.Lock()

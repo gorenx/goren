@@ -38,9 +38,7 @@ type Plugin struct {
 	executions         *sharedexecution.Registry
 	extensions         *extensionregistry.Registry
 	directory          *childdirectory.Service
-	events             *eventGateway
-	dispatcher         agent.EventDispatcher
-	eventDriverDone    chan struct{}
+	events             *subagentEventPublisher
 	projections        []sessionprojection.UnitHandle
 	failures           *failureReporter
 }
@@ -57,10 +55,14 @@ type DefinitionDatabase struct {
 type JournalMode string
 
 const (
-	JournalWAL      JournalMode = "wal"
-	JournalDelete   JournalMode = "delete"
+	// JournalWAL enables SQLite write-ahead logging.
+	JournalWAL JournalMode = "wal"
+	// JournalDelete deletes the rollback journal after each transaction.
+	JournalDelete JournalMode = "delete"
+	// JournalTruncate truncates the rollback journal after each transaction.
 	JournalTruncate JournalMode = "truncate"
-	JournalPersist  JournalMode = "persist"
+	// JournalPersist preserves and invalidates the rollback journal.
+	JournalPersist JournalMode = "persist"
 )
 
 // New constructs an inactive Plugin and its stable publication adapters.
@@ -82,8 +84,7 @@ func New(
 			report: reporter,
 		},
 	}
-	owner.events = newEventGateway()
-	owner.eventDriverDone = make(chan struct{})
+	owner.events = newSubagentEventPublisher()
 	owner.builders = seedbuilder.New(owner.events)
 	return owner
 }
@@ -282,8 +283,17 @@ func (owner *Plugin) Apply(ctx context.Context) error {
 			owner.releaseProjections(context.WithoutCancel(ctx)),
 		)
 	}
-	owner.dispatcher = dispatcher
-	go owner.driveEvents()
+	eventPublisher, err := owner.events.start()
+	if err != nil {
+		serviceErr := owner.service.Close(context.WithoutCancel(ctx))
+		owner.directory.Disable()
+		return errors.Join(
+			err,
+			serviceErr,
+			owner.releaseProjections(context.WithoutCancel(ctx)),
+		)
+	}
+	go owner.serveEventPublications(eventPublisher, dispatcher)
 	return nil
 }
 
@@ -308,9 +318,9 @@ func (owner *Plugin) Dispose(closeContext context.Context) error {
 	}
 	danglingBuilders := owner.builders.Clear()
 	projectionErr := owner.releaseProjections(completionContext)
-	owner.events.stop()
-	<-owner.eventDriverDone
-	owner.dispatcher = nil
+	if eventPublisher := owner.events.stop(); eventPublisher != nil {
+		<-eventPublisher.done
+	}
 	if danglingBuilders == 0 {
 		return errors.Join(serviceErr, extensionErr, projectionErr)
 	}

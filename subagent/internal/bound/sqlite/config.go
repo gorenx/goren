@@ -11,10 +11,14 @@ import (
 type JournalMode string
 
 const (
-	JournalWAL      JournalMode = "wal"
-	JournalDelete   JournalMode = "delete"
+	// JournalWAL enables SQLite write-ahead logging.
+	JournalWAL JournalMode = "wal"
+	// JournalDelete deletes the rollback journal after each transaction.
+	JournalDelete JournalMode = "delete"
+	// JournalTruncate truncates the rollback journal after each transaction.
 	JournalTruncate JournalMode = "truncate"
-	JournalPersist  JournalMode = "persist"
+	// JournalPersist preserves and invalidates the rollback journal.
+	JournalPersist JournalMode = "persist"
 )
 
 // Config identifies one Bound Definition database.

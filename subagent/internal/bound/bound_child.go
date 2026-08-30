@@ -50,7 +50,7 @@ type shutdownRequest struct {
 }
 
 // boundChild is the sole serial worker for one immutable user Session
-// Binding. It outlives individual resident Agent epochs.
+// Binding. It outlives individual resident Agent lifetimes.
 type boundChild struct {
 	key          bindingKey
 	parent       agent.Agent

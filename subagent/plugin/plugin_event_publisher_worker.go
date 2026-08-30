@@ -9,21 +9,27 @@ import (
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
 )
 
-func (owner *Plugin) driveEvents() {
-	defer close(owner.eventDriverDone)
+func (owner *Plugin) serveEventPublications(
+	publisherRun *eventPublisherRun,
+	dispatcher agent.EventDispatcher,
+) {
+	defer close(publisherRun.done)
 	for {
 		select {
 		case requested := <-owner.events.requests:
-			owner.publishEvent(requested)
-		case <-owner.events.stopped:
+			owner.publishEventRequest(requested, dispatcher)
+		case <-publisherRun.stopped:
 			return
 		}
 	}
 }
 
-func (owner *Plugin) publishEvent(requested eventRequest) {
+func (owner *Plugin) publishEventRequest(
+	requested publicationRequest,
+	dispatcher agent.EventDispatcher,
+) {
 	switch request := requested.(type) {
-	case seedBuilderAddedRequest:
+	case seedBuilderAddedPublication:
 		request.result <- pluginruntime.Publish(
 			request.requestContext,
 			owner,
@@ -31,7 +37,7 @@ func (owner *Plugin) publishEvent(requested eventRequest) {
 				SeedBuilder: request.builder,
 			},
 		)
-	case seedBuilderRemovedRequest:
+	case seedBuilderRemovedPublication:
 		_ = pluginruntime.Publish(
 			context.WithoutCancel(request.requestContext),
 			owner,
@@ -40,18 +46,9 @@ func (owner *Plugin) publishEvent(requested eventRequest) {
 			},
 		)
 		close(request.done)
-	case executionStartedRequest:
-		if owner.dispatcher != nil {
-			_ = owner.dispatcher.Dispatch(
-				context.Background(),
-				request.parent,
-				request.fact,
-			)
-		}
-		close(request.done)
-	case executionEndedRequest:
-		if owner.dispatcher != nil {
-			_ = owner.dispatcher.Dispatch(
+	case executionPublication:
+		if dispatcher != nil {
+			_ = dispatcher.Dispatch(
 				context.Background(),
 				request.parent,
 				request.fact,
@@ -81,5 +78,5 @@ func (owner *Plugin) ObserveEvent(
 	}
 }
 
-var _ sharedexecution.EventPublisher = (*eventGateway)(nil)
+var _ sharedexecution.EventPublisher = (*subagentEventPublisher)(nil)
 var _ pluginruntime.EventObserver = (*Plugin)(nil)

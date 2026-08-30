@@ -103,10 +103,10 @@ func (service *RegistryService) Get(identifier session.SessionID) (Agent, bool) 
 	service.mutex.Lock()
 	defer service.mutex.Unlock()
 	lifetime := service.byID[identifier]
-	if lifetime == nil || !lifetime.Visible() {
+	if lifetime == nil {
 		return nil, false
 	}
-	return lifetime.Agent(), true
+	return lifetime.VisibleAgent()
 }
 
 // Contains reports whether subject is the visible exact Agent instance.
@@ -117,7 +117,11 @@ func (service *RegistryService) Contains(subject Agent) bool {
 	service.mutex.Lock()
 	defer service.mutex.Unlock()
 	lifetime := service.byID[subject.ID()]
-	return lifetime != nil && lifetime.Visible() && lifetime.Matches(subject)
+	if lifetime == nil {
+		return false
+	}
+	visible, found := lifetime.VisibleAgent()
+	return found && Same(visible, subject)
 }
 
 // List returns visible exact Agents in construction order.
@@ -126,8 +130,8 @@ func (service *RegistryService) List() []Agent {
 	defer service.mutex.Unlock()
 	result := make([]Agent, 0, len(service.lifetimes))
 	for _, lifetime := range service.lifetimes {
-		if lifetime.Visible() {
-			result = append(result, lifetime.Agent())
+		if visible, found := lifetime.VisibleAgent(); found {
+			result = append(result, visible)
 		}
 	}
 	return result

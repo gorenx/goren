@@ -352,9 +352,8 @@ func (subject *ReactLoopAgent) wake() error {
 
 func (subject *ReactLoopAgent) driveTurns(selected execution.Generation) {
 	for {
-		snapshot := subject.execution.Snapshot()
 		operationContext := subject.execution.OperationContext(selected)
-		if snapshot.Generation != selected || operationContext == nil {
+		if operationContext == nil {
 			subject.observeError(fmt.Errorf(
 				"agentloop: Agent %q lost Turn execution generation %d",
 				subject.identifier,
