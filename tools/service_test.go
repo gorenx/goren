@@ -224,7 +224,7 @@ func TestServiceExposesFocusedCapabilities(t *testing.T) {
 		tools.ToolGuardFunc(func(tools.ToolExecution) (string, bool) {
 			return "", false
 		}),
-	); !errors.Is(err, plugin.ErrPluginNotActive) {
+	); !errors.Is(err, tools.ErrToolLayerInactive) {
 		t.Fatalf("inactive AddGuard error = %v", err)
 	}
 	serviceManifest := service.Manifest()
@@ -236,6 +236,7 @@ func TestServiceExposesFocusedCapabilities(t *testing.T) {
 		"github.com/gorenx/goren/tools.ToolRuntime",
 		"github.com/gorenx/goren/tools.ToolCatalog",
 		"github.com/gorenx/goren/tools.PolicyRegistry",
+		"github.com/gorenx/goren/tools.ToolLayerFactory",
 	}
 	if !reflect.DeepEqual(actual, want) {
 		t.Fatalf("provided Services = %#v, want %#v", actual, want)

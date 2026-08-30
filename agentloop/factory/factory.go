@@ -47,7 +47,7 @@ func (builder *Factory) Create(
 	if err != nil {
 		return nil, err
 	}
-	return agentloop.New(resolved, builder.runtimeOptions)
+	return agentloop.NewPlugin(resolved, builder.runtimeOptions)
 }
 
 func decodeConfig(rawConfig json.RawMessage) (Config, error) {

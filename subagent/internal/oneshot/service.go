@@ -27,7 +27,7 @@ type Dependencies struct {
 	Constructor  agent.Constructor
 	SeedBuilders SeedBuilders
 	Delegation   approval.DelegationPolicy
-	Extensions   agent.Provisioner
+	Extensions   agent.Setup
 	Publisher    sharedexecution.EventPublisher
 	Executions   *sharedexecution.Registry
 }
@@ -61,7 +61,7 @@ func New(dependencySet Dependencies) (*Service, error) {
 // Authorization is enforced by the parent Subagent Service before dispatch.
 func (owner *Service) Interrupt(
 	ctx context.Context,
-	childID session.SessionID,
+	childSessionID session.SessionID,
 ) error {
 	if ctx == nil {
 		return errors.New("subagent: OneShot Interrupt context is nil")
@@ -69,7 +69,7 @@ func (owner *Service) Interrupt(
 	if requestErr := ctx.Err(); requestErr != nil {
 		return requestErr
 	}
-	entry, found := owner.dependencies.Executions.Find(childID)
+	entry, found := owner.dependencies.Executions.Find(childSessionID)
 	if !found || entry.Mode != subagent.ModeOneShot {
 		return nil
 	}
@@ -79,7 +79,7 @@ func (owner *Service) Interrupt(
 			KeepInbox: false,
 		},
 	)
-	entry.Execution.Stop(sharedexecution.StopInterrupted)
+	entry.Execution.Stop(sharedexecution.CloseInterrupted)
 	return nil
 }
 
@@ -95,7 +95,7 @@ func (owner *Service) Close(closeContext context.Context) error {
 			continue
 		}
 		targets = append(targets, entry)
-		entry.Execution.Stop(sharedexecution.StopModule)
+		entry.Execution.Stop(sharedexecution.CloseModule)
 	}
 	for _, entry := range targets {
 		select {
@@ -139,11 +139,11 @@ func (owner *Service) Start(
 			return nil, snapshotErr
 		}
 	}
-	childID, identityErr := sharedexecution.NewChildID()
+	childSessionID, identityErr := sharedexecution.NewChildID()
 	if identityErr != nil {
 		return nil, identityErr
 	}
-	runID, identityErr := sharedexecution.NewRunID()
+	executionRunID, identityErr := sharedexecution.NewRunID()
 	if identityErr != nil {
 		return nil, identityErr
 	}
@@ -166,7 +166,7 @@ func (owner *Service) Start(
 		Provider: seedBuilderName,
 		Label:    command.Label(),
 	}
-	scopeProvisioner, structured := owner.provisioner(
+	scopeSetup, structured := owner.setup(
 		requestSnapshot,
 		descriptor,
 	)
@@ -180,11 +180,11 @@ func (owner *Service) Start(
 	handle, createErr := owner.dependencies.Constructor.Create(
 		initiatedContext,
 		agent.CreateOptions{
-			SessionID:     childID,
+			SessionID:     childSessionID,
 			Metadata:      childLineage.Metadata(int64(len(seed))),
 			Seed:          seed,
 			AgentOptions:  childLineage.AgentOptions(requestSnapshot.AgentOptions),
-			Provisioner:   scopeProvisioner,
+			Setup:         scopeSetup,
 			RuntimeParent: requestSnapshot.Parent,
 		},
 	)
@@ -207,24 +207,20 @@ func (owner *Service) Start(
 			handle.Dispose(context.WithoutCancel(ctx)),
 		)
 	}
-	terminator := &executionTerminator{
-		handle:      handle,
-		parent:      requestSnapshot.Parent,
-		seedBuilder: seedBuilderName,
-		runID:       runID,
-		boundary:    int64(len(seed)),
-		structured:  structured,
-		publisher:   owner.dependencies.Publisher,
-	}
-	running, executionErr := sharedexecution.New(runID, childID, terminator)
+	running, executionErr := newOneShotExecution(executionRunID, childSessionID)
 	if executionErr != nil {
 		return nil, errors.Join(
 			executionErr,
 			handle.Dispose(context.WithoutCancel(ctx)),
 		)
 	}
-	terminator.running = running
-	terminator.executions = owner.dependencies.Executions
+	running.executions = owner.dependencies.Executions
+	running.handle = handle
+	running.parent = requestSnapshot.Parent
+	running.seedBuilder = seedBuilderName
+	running.boundary = int64(len(seed))
+	running.structured = structured
+	running.publisher = owner.dependencies.Publisher
 	if publishErr := sharedexecution.Publish(
 		owner.dependencies.Executions,
 		owner.dependencies.Publisher,
@@ -275,15 +271,15 @@ func (owner *Service) buildSeed(
 	return seedValue.EventPrefix(), nil
 }
 
-func watch(running *sharedexecution.Execution, handle agent.Handle) {
+func watch(running *oneShotExecution, handle agent.Handle) {
 	idleResult := make(chan error, 1)
 	go func() {
 		idleResult <- handle.Subject.WhenIdle(context.Background())
 	}()
 	select {
 	case <-handle.ClosingSignal():
-		running.Stop(sharedexecution.StopExternal)
+		running.Stop(sharedexecution.CloseExternal)
 	case <-idleResult:
-		running.Stop(sharedexecution.StopNormal)
+		running.Stop(sharedexecution.CloseNormal)
 	}
 }

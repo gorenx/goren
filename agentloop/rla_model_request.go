@@ -141,7 +141,7 @@ func (subject *ReactLoopAgent) executeModelRequest(
 			if call.prepared != nil {
 				retryPolicy = call.prepared.RetryPolicyValue()
 			}
-			action, resolveErr := agent.ResolveRequestError(
+			action, resolveErr := subject.waterfalls.ResolveRequestError(
 				requestContext,
 				agent.RequestErrorNotice{
 					Subject:     subject,
@@ -278,7 +278,7 @@ func (subject *ReactLoopAgent) buildModelCall(
 	if subject.requestHeaderLogged && headerFound {
 		seedConfig = requestProposal(*persistedHeader)
 	}
-	proposed, err := agent.ResolveRequest(
+	resolution, err := subject.waterfalls.ResolveRequest(
 		requestContext,
 		agent.RequestNotice{
 			Subject: subject,
@@ -295,6 +295,7 @@ func (subject *ReactLoopAgent) buildModelCall(
 	if err = contextFailure(requestContext); err != nil {
 		return modelCall{}, err
 	}
+	proposed := resolution.Config
 	if proposed.Provider == "" || proposed.Model == "" {
 		return modelCall{}, fmt.Errorf(
 			"agentloop: Agent %q has no provider/model; set Agent Options or supply both through agent/request",

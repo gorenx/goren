@@ -11,7 +11,7 @@ import (
 // publishStatus announces one externally visible Agent status after the
 // execution state has already entered that status.
 func (subject *ReactLoopAgent) publishStatus(destination agent.Status) {
-	if err := subject.scopeRuntime.Dispatch(
+	if err := subject.events.Dispatch(
 		context.Background(),
 		agent.StatusChanged{
 			Subject: subject,
@@ -37,7 +37,7 @@ func (subject *ReactLoopAgent) publishError(
 	if requestContext == nil {
 		requestContext = context.Background()
 	}
-	if err := subject.scopeRuntime.Dispatch(
+	if err := subject.events.Dispatch(
 		requestContext,
 		agent.AgentError{
 			Subject: subject,
@@ -60,7 +60,7 @@ func (subject *ReactLoopAgent) publishTurnStopping(
 	requestContext context.Context,
 	turnNumber int64,
 ) error {
-	return subject.scopeRuntime.Dispatch(
+	return subject.events.Dispatch(
 		requestContext,
 		agent.TurnStopping{
 			Subject: subject,
@@ -74,7 +74,7 @@ func (subject *ReactLoopAgent) publishTurnStopping(
 // event. Neither reference grants lifecycle ownership.
 type inboxNotifications struct {
 	subject             agent.Agent
-	runtime             agent.AgentScopeRuntime
+	runtime             agentEvents
 	identifier          string
 	reportObserverError func(error)
 }

@@ -10,8 +10,8 @@ import (
 )
 
 type pendingBinding struct {
-	name    string
-	childID session.SessionID
+	name           string
+	childSessionID session.SessionID
 }
 
 // bindingRegistration atomically introduces every still-missing enabled
@@ -34,7 +34,7 @@ func (registration bindingRegistration) Build(
 		if _, found := view.BindingNamed(pending.name); found {
 			continue
 		}
-		if _, found := view.Binding(pending.childID); found {
+		if _, found := view.Binding(pending.childSessionID); found {
 			return nil, errors.New(
 				"subagent: duplicate Bound child Session ID",
 			)
@@ -44,7 +44,7 @@ func (registration bindingRegistration) Build(
 			boundcontract.BindingData{
 				Version:        boundcontract.EventVersion,
 				Name:           pending.name,
-				ChildSessionID: pending.childID,
+				ChildSessionID: pending.childSessionID,
 				ContextNextSeq: contextNextSeq,
 			},
 		)

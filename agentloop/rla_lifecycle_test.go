@@ -55,6 +55,7 @@ func TestRLAInvocationAdmittedBeforeCloseFinishesBeforeInboxClear(t *testing.T) 
 		1,
 		nil,
 		benchmarkScopeRuntime{},
+		benchmarkScopeRuntime{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -127,6 +128,7 @@ func TestRLACloseCutoffRejectsLaterSend(t *testing.T) {
 		1,
 		nil,
 		benchmarkScopeRuntime{},
+		benchmarkScopeRuntime{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -163,6 +165,7 @@ func TestRLAWaitersDoNotOwnExecutionCancellation(t *testing.T) {
 		agent.Options{},
 		1,
 		nil,
+		benchmarkScopeRuntime{},
 		benchmarkScopeRuntime{},
 	)
 	if err != nil {
@@ -242,6 +245,7 @@ func TestRLASendAndCancelLinearizationRoutesCanceledInputToNextTurn(t *testing.T
 				agent.Options{},
 				1,
 				nil,
+				benchmarkScopeRuntime{},
 				benchmarkScopeRuntime{},
 			)
 			if err != nil {

@@ -65,10 +65,10 @@ func (record *oneShotRecord) Start(
 
 type continuableRecord struct {
 	*implementationRecord
-	mutex       sync.Mutex
-	resumeCalls int
-	childID     session.SessionID
-	message     agentmessage.UserMessage
+	mutex          sync.Mutex
+	resumeCalls    int
+	childSessionID session.SessionID
+	message        agentmessage.UserMessage
 }
 
 func (*continuableRecord) Start(
@@ -79,10 +79,10 @@ func (*continuableRecord) Start(
 }
 
 type boundMessageSpy struct {
-	mutex   sync.Mutex
-	calls   int
-	childID session.SessionID
-	message agentmessage.UserMessage
+	mutex          sync.Mutex
+	calls          int
+	childSessionID session.SessionID
+	message        agentmessage.UserMessage
 }
 
 // boundImplementationStub satisfies the complete Bound port so Service tests
@@ -138,21 +138,21 @@ func (*boundImplementationStub) AgentDisposed(context.Context, agent.Agent) erro
 func (stub *boundImplementationStub) HasBinding(
 	_ context.Context,
 	_ agent.Agent,
-	childID session.SessionID,
+	childSessionID session.SessionID,
 ) (bool, error) {
-	return stub.bindings[childID], nil
+	return stub.bindings[childSessionID], nil
 }
 
 func (stub *boundImplementationStub) Followup(
 	_ context.Context,
 	_ agent.Agent,
-	childID session.SessionID,
+	childSessionID session.SessionID,
 	messageValue agentmessage.UserMessage,
 ) (agentmessage.MessageID, error) {
 	if stub.messages != nil {
 		stub.messages.mutex.Lock()
 		stub.messages.calls++
-		stub.messages.childID = childID
+		stub.messages.childSessionID = childSessionID
 		stub.messages.message = messageValue
 		stub.messages.mutex.Unlock()
 	}
@@ -162,12 +162,12 @@ func (stub *boundImplementationStub) Followup(
 func (record *continuableRecord) Resume(
 	_ context.Context,
 	_ agent.Agent,
-	childID session.SessionID,
+	childSessionID session.SessionID,
 	messageValue agentmessage.UserMessage,
 ) (agentmessage.MessageID, error) {
 	record.mutex.Lock()
 	record.resumeCalls++
-	record.childID = childID
+	record.childSessionID = childSessionID
 	record.message = messageValue
 	record.mutex.Unlock()
 	return messageValue.StableID(), nil
@@ -319,14 +319,12 @@ func TestServiceSendUsesResidentChildAgentForEveryMode(t *testing.T) {
 				},
 			}
 			executions := sharedexecution.NewRegistry()
-			running, executionErr := sharedexecution.New(
+			running := newManagedExecutionStub(
 				subagent.RunID("run-"+string(selectedMode)),
 				child.ID(),
-				terminalRecord{},
+				nil,
+				nil,
 			)
-			if executionErr != nil {
-				t.Fatal(executionErr)
-			}
 			if activationErr := running.Activate(); activationErr != nil {
 				t.Fatal(activationErr)
 			}
@@ -427,12 +425,12 @@ func TestServiceSendUsesContinuableOnlyForColdResume(t *testing.T) {
 	}
 	continuableMode.mutex.Lock()
 	defer continuableMode.mutex.Unlock()
-	if continuableMode.resumeCalls != 1 || continuableMode.childID != "cold-child" ||
+	if continuableMode.resumeCalls != 1 || continuableMode.childSessionID != "cold-child" ||
 		continuableMode.message.StableID() != messageID {
 		t.Fatalf(
 			"cold resume = calls:%d child:%q message:%q, returned:%q",
 			continuableMode.resumeCalls,
-			continuableMode.childID,
+			continuableMode.childSessionID,
 			continuableMode.message.StableID(),
 			messageID,
 		)
@@ -489,7 +487,7 @@ func TestServiceSendUsesBoundOwnerForColdBinding(t *testing.T) {
 	}
 	boundMessages.mutex.Lock()
 	boundCalls := boundMessages.calls
-	boundChildID := boundMessages.childID
+	boundChildID := boundMessages.childSessionID
 	boundMessageID := boundMessages.message.StableID()
 	boundMessages.mutex.Unlock()
 	continuableMode.mutex.Lock()
@@ -520,18 +518,16 @@ func TestServiceSendUsesBoundOwnerForResidentChild(t *testing.T) {
 		},
 	}
 	executions := sharedexecution.NewRegistry()
-	running, err := sharedexecution.New(
+	running := newManagedExecutionStub(
 		"bound-run",
 		child.ID(),
-		terminalRecord{},
+		nil,
+		nil,
 	)
-	if err != nil {
+	if err := running.Activate(); err != nil {
 		t.Fatal(err)
 	}
-	if err = running.Activate(); err != nil {
-		t.Fatal(err)
-	}
-	if err = executions.Publish(
+	if err := executions.Publish(
 		sharedexecution.Entry{
 			Execution: running,
 			Mode:      subagent.ModeBound,
@@ -550,7 +546,7 @@ func TestServiceSendUsesBoundOwnerForResidentChild(t *testing.T) {
 		messages: boundMessages,
 	}
 	owner := New()
-	if err = owner.Open(agents, executions, boundMode); err != nil {
+	if err := owner.Open(agents, executions, boundMode); err != nil {
 		t.Fatal(err)
 	}
 	messageID, err := owner.Send(
@@ -602,18 +598,14 @@ func TestServiceSendReturnsResidentAgentErrorWithoutInterpretingExecutionState(
 			child.ID():  child,
 		},
 	}
-	termination := &blockingTerminal{
-		entered: make(chan struct{}),
-		release: make(chan struct{}),
-	}
-	running, executionErr := sharedexecution.New(
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	running := newManagedExecutionStub(
 		"stopping-run",
 		child.ID(),
-		termination,
+		entered,
+		release,
 	)
-	if executionErr != nil {
-		t.Fatal(executionErr)
-	}
 	if activationErr := running.Activate(); activationErr != nil {
 		t.Fatal(activationErr)
 	}
@@ -627,10 +619,10 @@ func TestServiceSendReturnsResidentAgentErrorWithoutInterpretingExecutionState(
 	}); publishErr != nil {
 		t.Fatal(publishErr)
 	}
-	running.Stop(sharedexecution.StopNormal)
-	<-termination.entered
+	running.Stop(sharedexecution.CloseNormal)
+	<-entered
 	t.Cleanup(func() {
-		close(termination.release)
+		close(release)
 	})
 	owner := New()
 	if openErr := owner.Open(
@@ -694,11 +686,11 @@ func (record *agentRegistryRecord) Contains(subject agent.Agent) bool {
 }
 
 func (record *agentRegistryRecord) List() []agent.Agent {
-	result := make([]agent.Agent, 0, len(record.entries))
+	response := make([]agent.Agent, 0, len(record.entries))
 	for _, subject := range record.entries {
-		result = append(result, subject)
+		response = append(response, subject)
 	}
-	return result
+	return response
 }
 
 type serviceAgent struct {
@@ -759,33 +751,105 @@ func (subject *serviceAgent) Followup(messageValue agentmessage.UserMessage) err
 func (*serviceAgent) Steer(agentmessage.UserMessage) error  { return nil }
 func (*serviceAgent) Inject(agentmessage.UserMessage) error { return nil }
 
-type terminalRecord struct{}
-
-func (terminalRecord) Terminate(
-	context.Context,
-	sharedexecution.StopCause,
-) (subagent.Terminal, error) {
-	return subagent.Terminal{}, nil
+type managedExecutionStub struct {
+	mutex          sync.RWMutex
+	executionRunID subagent.RunID
+	childSessionID session.SessionID
+	phase          subagent.ExecutionState
+	done           chan struct{}
+	entered        chan struct{}
+	release        chan struct{}
 }
 
-type blockingTerminal struct {
-	entered chan struct{}
-	release chan struct{}
+func newManagedExecutionStub(
+	executionRunID subagent.RunID,
+	childSessionID session.SessionID,
+	entered chan struct{},
+	release chan struct{},
+) *managedExecutionStub {
+	return &managedExecutionStub{
+		executionRunID: executionRunID,
+		childSessionID: childSessionID,
+		phase:          subagent.ExecutionStarting,
+		done:           make(chan struct{}),
+		entered:        entered,
+		release:        release,
+	}
 }
 
-func (terminal *blockingTerminal) Terminate(
-	context.Context,
-	sharedexecution.StopCause,
-) (subagent.Terminal, error) {
-	close(terminal.entered)
-	<-terminal.release
-	return subagent.Terminal{}, nil
+func (running *managedExecutionStub) Activate() error {
+	running.mutex.Lock()
+	running.phase = subagent.ExecutionActive
+	running.mutex.Unlock()
+	return nil
+}
+
+func (running *managedExecutionStub) Stop(sharedexecution.CloseCause) {
+	running.mutex.Lock()
+	if running.phase == subagent.ExecutionStopping ||
+		running.phase == subagent.ExecutionStopped {
+		running.mutex.Unlock()
+		return
+	}
+	running.phase = subagent.ExecutionStopping
+	running.mutex.Unlock()
+	go func() {
+		if running.entered != nil {
+			close(running.entered)
+		}
+		if running.release != nil {
+			<-running.release
+		}
+		running.mutex.Lock()
+		running.phase = subagent.ExecutionStopped
+		close(running.done)
+		running.mutex.Unlock()
+	}()
+}
+
+func (running *managedExecutionStub) StopAndWait(
+	closeContext context.Context,
+	cause sharedexecution.CloseCause,
+) error {
+	running.Stop(cause)
+	return running.Wait(closeContext)
+}
+
+func (running *managedExecutionStub) RunID() subagent.RunID {
+	return running.executionRunID
+}
+
+func (running *managedExecutionStub) ChildID() session.SessionID {
+	return running.childSessionID
+}
+
+func (running *managedExecutionStub) State() subagent.ExecutionState {
+	running.mutex.RLock()
+	stateValue := running.phase
+	running.mutex.RUnlock()
+	return stateValue
+}
+
+func (running *managedExecutionStub) Wait(waitContext context.Context) error {
+	select {
+	case <-running.done:
+		return nil
+	case <-waitContext.Done():
+		return context.Cause(waitContext)
+	}
+}
+
+func (*managedExecutionStub) Result() (subagent.Terminal, bool) {
+	return subagent.Terminal{}, false
+}
+
+func (running *managedExecutionStub) Dispose(closeContext context.Context) error {
+	return running.StopAndWait(closeContext, sharedexecution.CloseDisposed)
 }
 
 var _ agent.Registry = (*agentRegistryRecord)(nil)
 var _ agent.Agent = (*serviceAgent)(nil)
-var _ sharedexecution.Terminator = terminalRecord{}
-var _ sharedexecution.Terminator = (*blockingTerminal)(nil)
+var _ sharedexecution.ManagedExecution = (*managedExecutionStub)(nil)
 
 func waitForAdmissionState(
 	t *testing.T,
@@ -797,14 +861,14 @@ func waitForAdmissionState(
 	defer deadline.Stop()
 	for {
 		owner.mutex.RLock()
-		state := owner.state
+		phase := owner.phase
 		owner.mutex.RUnlock()
-		if state == want {
+		if phase == want {
 			return
 		}
 		select {
 		case <-deadline.C:
-			t.Fatalf("admission state = %v, want %v", state, want)
+			t.Fatalf("admission state = %v, want %v", phase, want)
 		default:
 			time.Sleep(time.Millisecond)
 		}

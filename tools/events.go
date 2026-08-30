@@ -1,6 +1,16 @@
 package tools
 
-import "github.com/gorenx/goren/plugin"
+import (
+	"context"
+
+	"github.com/gorenx/goren/plugin"
+)
+
+// ResultObserver observes final Tool results inside one plain Tool ToolLayer.
+// Implementations are ordinary business objects, not Plugin observers.
+type ResultObserver interface {
+	ObserveToolResult(context.Context, ExecutionCompleted) error
+}
 
 // PreExecuteRequest is the immutable input of the pre-dispatch policy
 // Waterfall. Middleware may decide, deny, ask, or delegate.

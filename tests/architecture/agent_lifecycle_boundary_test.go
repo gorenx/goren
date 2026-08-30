@@ -33,11 +33,6 @@ func TestAgentLifecycleBusinessTypesStayOutsidePluginLifecycle(t *testing.T) {
 			typeName:  "RegistryService",
 		},
 		{
-			directory: "agent",
-			packageID: "agent",
-			typeName:  "LifecycleCoordinator",
-		},
-		{
 			directory: "agentloop",
 			packageID: "agentloop",
 			typeName:  "Factory",
@@ -151,115 +146,39 @@ func TestAgentLifecycleBusinessTypesStayOutsidePluginLifecycle(t *testing.T) {
 	)
 }
 
-func TestAgentScopeDelegatesStructuralUnloadToScopeSet(t *testing.T) {
+func TestAgentScopeContractsStayPluginNeutral(t *testing.T) {
 	t.Parallel()
 	repositoryPath := repositoryRoot(t)
 	fileSet := token.NewFileSet()
 	sourcesByPackage := parsePackages(t, fileSet, repositoryPath)
-	packageKey := filepath.Join(repositoryPath, "agentloop") + ":agentloop"
+	packageKey := filepath.Join(repositoryPath, "agent") + ":agent"
 	sources := productionSources(sourcesByPackage[packageKey])
-	scopeFound := false
-	setFound := false
-	setOwnsHandle := false
-	setUnloads := false
 	findings := make([]string, 0)
 	for _, source := range sources {
-		for _, declaration := range source.tree.Decls {
-			switch current := declaration.(type) {
-			case *ast.GenDecl:
-				for _, specification := range current.Specs {
-					typeSpecification, ok := specification.(*ast.TypeSpec)
-					if !ok {
-						continue
-					}
-					structure, ok := typeSpecification.Type.(*ast.StructType)
-					if !ok {
-						continue
-					}
-					switch typeSpecification.Name.Name {
-					case "AgentScope":
-						scopeFound = true
-						for _, field := range structure.Fields.List {
-							ast.Inspect(field.Type, func(node ast.Node) bool {
-								selector, ok := node.(*ast.SelectorExpr)
-								packageName, selectedPackage := selectorPackage(selector)
-								if ok && selectedPackage && packageName == "plugin" &&
-									(selector.Sel.Name == "Handle" ||
-										selector.Sel.Name == "Plugin") {
-									findings = append(
-										findings,
-										fileSet.Position(selector.Pos()).String()+
-											": AgentScope owns plugin."+
-											selector.Sel.Name,
-									)
-								}
-								return true
-							})
-						}
-					case "ScopeSet":
-						setFound = true
-						for _, field := range structure.Fields.List {
-							ast.Inspect(field.Type, func(node ast.Node) bool {
-								selector, ok := node.(*ast.SelectorExpr)
-								packageName, selectedPackage := selectorPackage(selector)
-								if ok && selectedPackage && packageName == "plugin" &&
-									selector.Sel.Name == "Handle" {
-									setOwnsHandle = true
-								}
-								return true
-							})
-						}
-					}
-				}
-			case *ast.FuncDecl:
-				if current.Recv == nil || len(current.Recv.List) != 1 {
-					continue
-				}
-				receiverName := receiverTypeName(current.Recv.List[0].Type)
-				ast.Inspect(current.Body, func(node ast.Node) bool {
-					call, ok := node.(*ast.CallExpr)
-					if !ok {
-						return true
-					}
-					selector, ok := call.Fun.(*ast.SelectorExpr)
-					packageName, selectedPackage := selectorPackage(selector)
-					if !ok || !selectedPackage || packageName != "plugin" ||
-						selector.Sel.Name != "UnloadChild" {
-						return true
-					}
-					if receiverName == "AgentScope" {
-						findings = append(
-							findings,
-							fileSet.Position(selector.Pos()).String()+
-								": AgentScope unloads itself",
-						)
-					}
-					if receiverName == "ScopeSet" && current.Name.Name == "release" {
-						setUnloads = true
-					}
-					return true
-				})
+		baseName := filepath.Base(source.path)
+		if baseName != "scope.go" && baseName != "setup.go" {
+			continue
+		}
+		for _, imported := range source.tree.Imports {
+			importPath, err := strconv.Unquote(imported.Path.Value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if importPath == "github.com/gorenx/goren/plugin" ||
+				strings.HasPrefix(importPath, "github.com/gorenx/goren/plugin/") {
+				findings = append(
+					findings,
+					fileSet.Position(imported.Pos()).String()+": "+importPath,
+				)
 			}
 		}
-	}
-	if !scopeFound {
-		findings = append(findings, "AgentScope type declaration not found")
-	}
-	if !setFound {
-		findings = append(findings, "ScopeSet type declaration not found")
-	}
-	if !setOwnsHandle {
-		findings = append(findings, "ScopeSet does not own plugin.Handle")
-	}
-	if !setUnloads {
-		findings = append(findings, "ScopeSet.release does not issue plugin.UnloadChild")
 	}
 	if len(findings) == 0 {
 		return
 	}
 	sort.Strings(findings)
 	t.Fatalf(
-		"Agent Scope structural ownership is invalid:\n%s",
+		"Agent Scope contracts must not depend on Plugin Runtime:\n%s",
 		strings.Join(findings, "\n"),
 	)
 }
@@ -275,11 +194,11 @@ func TestAgentLifecycleBusinessFilesDoNotCallPluginRuntime(t *testing.T) {
 			"registration.go",
 		},
 		filepath.Join(repositoryPath, "agent") + ":agent": {
-			"lifecycle_coordinator.go",
 			"registry.go",
+			"registry_lifecycle.go",
 		},
 		filepath.Join(repositoryPath, "agentloop") + ":agentloop": {
-			"agent.go",
+			"agent_host.go",
 			"construction.go",
 		},
 		filepath.Join(repositoryPath, "subagent", "spawn") + ":spawn": {
@@ -390,6 +309,56 @@ func TestSubagentModesDoNotDependOnSubagentPluginWiring(t *testing.T) {
 	sort.Strings(findings)
 	t.Fatalf(
 		"Subagent modes must own composition without depending on Subagent Plugin wiring:\n%s",
+		strings.Join(findings, "\n"),
+	)
+}
+
+func TestSubagentModuleUsesOnePluginWithoutChildPlugins(t *testing.T) {
+	t.Parallel()
+	repositoryPath := repositoryRoot(t)
+	fileSet := token.NewFileSet()
+	sourcesByPackage := parsePackages(t, fileSet, repositoryPath)
+	packageKey := filepath.Join(repositoryPath, "subagent", "plugin") + ":plugin"
+	receivers := make(map[string]struct{})
+	findings := make([]string, 0)
+	for _, source := range productionSources(sourcesByPackage[packageKey]) {
+		for _, declaration := range source.tree.Decls {
+			method, ok := declaration.(*ast.FuncDecl)
+			if ok && method.Recv != nil && len(method.Recv.List) == 1 &&
+				method.Name.Name == "Manifest" {
+				receivers[receiverTypeName(method.Recv.List[0].Type)] = struct{}{}
+			}
+		}
+		ast.Inspect(source.tree, func(node ast.Node) bool {
+			assignment, ok := node.(*ast.KeyValueExpr)
+			if !ok {
+				return true
+			}
+			field, named := assignment.Key.(*ast.Ident)
+			if named && field.Name == "Children" {
+				findings = append(
+					findings,
+					fileSet.Position(field.Pos()).String()+": child Plugin topology",
+				)
+			}
+			return true
+		})
+	}
+	if len(receivers) != 1 {
+		findings = append(
+			findings,
+			"Plugin implementation count = "+strconv.Itoa(len(receivers))+", want 1",
+		)
+	}
+	if _, found := receivers["Plugin"]; !found {
+		findings = append(findings, "sole Plugin implementation is not Plugin")
+	}
+	if len(findings) == 0 {
+		return
+	}
+	sort.Strings(findings)
+	t.Fatalf(
+		"Subagent module must use one Plugin without child Plugins:\n%s",
 		strings.Join(findings, "\n"),
 	)
 }

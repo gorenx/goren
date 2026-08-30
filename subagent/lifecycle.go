@@ -155,8 +155,8 @@ func (command ContinuableStartCommand) RequestedChildID() *session.SessionID {
 	return cloneSessionID(command.settings.ChildID)
 }
 
-// ExecutionState is the single lifecycle vocabulary used by both
-// implementations for one exact Agent epoch.
+// ExecutionState is the lifecycle vocabulary shared by all Subagent modes.
+// Each mode owns an independent state machine for one exact Agent lifecycle.
 type ExecutionState string
 
 const (

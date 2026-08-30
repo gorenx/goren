@@ -27,7 +27,8 @@ type ReactLoopAgent struct {
 	execution            *execution.AgentExecution
 	visibleContext       *visiblecontext.VisibleContext
 	maxParallelToolCalls int
-	scopeRuntime         agent.AgentScopeRuntime
+	events               agentEvents
+	waterfalls           agentWaterfalls
 	reportObserverError  func(error)
 
 	sessions            session.LiveStore
@@ -43,7 +44,8 @@ func newReactLoopAgent(
 	agentOptions agent.Options,
 	maxParallelToolCalls int,
 	reportObserverError func(error),
-	scopeRuntime agent.AgentScopeRuntime,
+	events agentEvents,
+	waterfalls agentWaterfalls,
 ) (*ReactLoopAgent, error) {
 	if conversation == nil {
 		return nil, errors.New("agentloop: Agent Session is required")
@@ -53,8 +55,8 @@ func newReactLoopAgent(
 			"agentloop: Agent Tool concurrency must be positive",
 		)
 	}
-	if scopeRuntime == nil {
-		return nil, errors.New("agentloop: Agent Scope Runtime is required")
+	if events == nil || waterfalls == nil {
+		return nil, errors.New("agentloop: Agent effects are incomplete")
 	}
 	lastTurn, err := restoreLastTurn(conversation)
 	if err != nil {
@@ -75,7 +77,8 @@ func newReactLoopAgent(
 		execution:            execution.New(),
 		visibleContext:       visible,
 		maxParallelToolCalls: maxParallelToolCalls,
-		scopeRuntime:         scopeRuntime,
+		events:               events,
+		waterfalls:           waterfalls,
 		reportObserverError:  reportObserverError,
 		lastTurn:             lastTurn,
 	}
@@ -83,7 +86,7 @@ func newReactLoopAgent(
 		conversation,
 		inboxNotifications{
 			subject:             subject,
-			runtime:             scopeRuntime,
+			runtime:             events,
 			identifier:          string(subject.identifier),
 			reportObserverError: subject.reportObserverError,
 		},
@@ -99,7 +102,7 @@ func (subject *ReactLoopAgent) activate(
 	requestContext context.Context,
 	sessions session.LiveStore,
 	models llm.LlmRuntime,
-	toolRuntime tools.ToolRuntime,
+	toolsRuntime tools.ToolRuntime,
 	prompts systemprompt.Assembler,
 ) error {
 	if requestContext == nil {
@@ -108,12 +111,12 @@ func (subject *ReactLoopAgent) activate(
 	if err := requestContext.Err(); err != nil {
 		return err
 	}
-	if sessions == nil || models == nil || toolRuntime == nil || prompts == nil {
+	if sessions == nil || models == nil || toolsRuntime == nil || prompts == nil {
 		return errors.New("agentloop: Agent execution dependencies are incomplete")
 	}
 	subject.sessions = sessions
 	subject.models = models
-	subject.toolRuntime = toolRuntime
+	subject.toolRuntime = toolsRuntime
 	subject.prompts = prompts
 	return requestContext.Err()
 }
@@ -165,10 +168,6 @@ func (subject *ReactLoopAgent) shutdown(closeContext context.Context) error {
 }
 
 func (subject *ReactLoopAgent) ID() session.SessionID { return subject.identifier }
-
-func (subject *ReactLoopAgent) ScopeRuntimeValue() agent.AgentScopeRuntime {
-	return subject.scopeRuntime
-}
 
 func (subject *ReactLoopAgent) OptionsValue() agent.Options {
 	return cloneAgentOptions(subject.options)

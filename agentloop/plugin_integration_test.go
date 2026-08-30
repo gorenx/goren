@@ -12,14 +12,15 @@ import (
 	"time"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/agent/scopedplugin"
 	"github.com/gorenx/goren/agentloop"
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/systemprompt"
+	"github.com/gorenx/goren/toolaskuser"
 	"github.com/gorenx/goren/tools"
+	"github.com/gorenx/goren/userquestions"
 )
 
 type postCommitFailureSink struct{}
@@ -257,10 +258,80 @@ type harnessFixture struct {
 	sessions      session.LiveStore
 	models        *llm.Runtime
 	toolCatalog   tools.ToolCatalog
-	loopPlugin    *agentloop.Plugin
-	loopHandle    plugin.Handle
 	backend       *scriptedAdapter
 	lifecycle     *lifecycleObserver
+}
+
+type questionProviderPlugin struct {
+	plugin.Base
+
+	mutex             sync.Mutex
+	registration      *userquestions.ProviderHandle
+	activationCount   int
+	observedQuestions []userquestions.Request
+}
+
+func (*questionProviderPlugin) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Name: "agentloop-test-question-provider",
+		Requires: []plugin.ServiceType{
+			plugin.ServiceOf[userquestions.UserQuestions](),
+		},
+	}
+}
+
+func (owner *questionProviderPlugin) Apply(context.Context) error {
+	questionService, err := plugin.Require[userquestions.UserQuestions](owner)
+	if err != nil {
+		return err
+	}
+	registration, err := questionService.RegisterProvider(owner)
+	if err != nil {
+		return err
+	}
+	owner.mutex.Lock()
+	owner.registration = registration
+	owner.activationCount++
+	owner.mutex.Unlock()
+	return nil
+}
+
+func (owner *questionProviderPlugin) Dispose(context.Context) error {
+	owner.mutex.Lock()
+	registration := owner.registration
+	owner.registration = nil
+	owner.mutex.Unlock()
+	if registration != nil {
+		registration.Unregister()
+	}
+	return nil
+}
+
+func (owner *questionProviderPlugin) Ask(
+	_ context.Context,
+	request userquestions.Request,
+) (userquestions.Answer, error) {
+	owner.mutex.Lock()
+	owner.observedQuestions = append(owner.observedQuestions, request)
+	owner.mutex.Unlock()
+	return userquestions.Answer{
+		Answers: []userquestions.AnswerItem{
+			{
+				ID:       "confirm",
+				Selected: []string{"yes"},
+			},
+		},
+	}, nil
+}
+
+func (owner *questionProviderPlugin) snapshot() (
+	int,
+	[]userquestions.Request,
+) {
+	owner.mutex.Lock()
+	defer owner.mutex.Unlock()
+	return owner.activationCount,
+		append([]userquestions.Request(nil), owner.observedQuestions...)
 }
 
 func newHarnessFixture(
@@ -291,7 +362,7 @@ func newHarnessFixtureWithSettings(
 	if err != nil {
 		t.Fatal(err)
 	}
-	loopPlugin, err := agentloop.New(
+	loopPlugin, err := agentloop.NewPlugin(
 		loopSettings,
 		agentloop.RuntimeOptions{},
 	)
@@ -331,7 +402,7 @@ func newHarnessFixtureWithSettings(
 	}
 	rootPlugins = append(rootPlugins, rootExtensions...)
 	rootPlugins = append(rootPlugins, loopPlugin)
-	handles, err := runtimeEngine.Start(
+	_, err = runtimeEngine.Start(
 		context.Background(),
 		rootPlugins...,
 	)
@@ -339,6 +410,9 @@ func newHarnessFixtureWithSettings(
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
+		if shutdownErr := agentRegistry.Shutdown(context.Background()); shutdownErr != nil {
+			t.Error(shutdownErr)
+		}
 		if shutdownErr := runtimeEngine.Shutdown(context.Background()); shutdownErr != nil {
 			t.Error(shutdownErr)
 		}
@@ -365,8 +439,6 @@ func newHarnessFixtureWithSettings(
 		sessions:      storeProbe.store,
 		models:        modelRuntime,
 		toolCatalog:   toolService,
-		loopPlugin:    loopPlugin,
-		loopHandle:    handles[len(handles)-1],
 		backend:       backend,
 		lifecycle:     lifecycle,
 	}
@@ -452,6 +524,93 @@ func TestLoopPublishesDrivesAndDisposesOneAgentLifecycle(t *testing.T) {
 	}
 }
 
+func TestAgentExecutesAskUserQuestionWithExactRegisteredSubject(t *testing.T) {
+	providerPlugin := &questionProviderPlugin{}
+	state := newHarnessFixtureWithSettings(
+		t,
+		[][]llm.StreamChunk{
+			{
+				llm.BlockEndChunk{
+					Index: 0,
+					Block: agentmessage.ToolCallBlock{
+						ID:        "question-call",
+						Name:      toolaskuser.Name,
+						Arguments: `{"questions":[{"id":"confirm","question":"Proceed?","options":[{"label":"yes"},{"label":"no"}]}]}`,
+					},
+				},
+				llm.FinishChunk{
+					Reason: llm.ToolCallsFinish{},
+				},
+			},
+			{
+				llm.BlockEndChunk{
+					Index: 0,
+					Block: agentmessage.NewTextBlock("continued"),
+				},
+				llm.FinishChunk{
+					Reason: llm.StopFinish{},
+				},
+			},
+		},
+		agentloop.Settings{
+			MaxParallelToolCalls: agentloop.DefaultMaxParallelToolCalls,
+		},
+		userquestions.NewPlugin(),
+		toolaskuser.New(),
+		providerPlugin,
+	)
+	handleState := createTestAgent(t, state, "ask-user-agent")
+	if err := handleState.Subject.Followup(
+		userMessage(t, "Ask me before proceeding"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	waitForIdle(t, handleState.Subject)
+	requests := state.backend.snapshots()
+	if len(requests) != 2 {
+		t.Fatalf("model request count = %d, want 2", len(requests))
+	}
+	foundAskUser := false
+	for _, schema := range requests[0].Tools {
+		if schema.Name == toolaskuser.Name {
+			foundAskUser = true
+			break
+		}
+	}
+	if !foundAskUser {
+		t.Fatalf("first Agent request tools = %#v", requests[0].Tools)
+	}
+	applyCount, questionRequests := providerPlugin.snapshot()
+	if applyCount != 2 {
+		t.Fatalf("question Provider activation count = %d, want 2", applyCount)
+	}
+	if len(questionRequests) != 1 ||
+		questionRequests[0].Subject != handleState.Subject ||
+		!state.agents.Contains(questionRequests[0].Subject) {
+		t.Fatalf("question Provider requests = %#v", questionRequests)
+	}
+	toolCalls := 0
+	toolResults := 0
+	for _, event := range handleState.Subject.SessionValue().Events() {
+		switch event.Type {
+		case session.ToolCallEventName:
+			toolCalls++
+		case session.ToolResultEventName:
+			toolResults++
+		}
+	}
+	if toolCalls != 1 || toolResults != 1 {
+		t.Fatalf(
+			"ask_user_question events = (%d calls, %d results)",
+			toolCalls,
+			toolResults,
+		)
+	}
+	if err := handleState.Dispose(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAgentCreatedListenerErrorPublishesPairedDisposal(t *testing.T) {
 	state := newHarnessFixtureWithSettings(
 		t,
@@ -491,146 +650,21 @@ func TestAgentCreatedListenerErrorPublishesPairedDisposal(t *testing.T) {
 	}
 }
 
-func TestConfiguredAgentsStartAfterRuntimeAndOwnDetachedMetadata(t *testing.T) {
-	createdAt := int64(42)
-	workingDirectory := t.TempDir()
-	expectedWorkingDirectory := workingDirectory
-	parentSession := session.SessionID("parent-session")
-	seedLength := int64(0)
-	delegationDepth := int64(1)
-	agentPreset := "default"
-	state := newHarnessFixtureWithSettings(
-		t,
-		nil,
-		agentloop.Settings{
-			MaxParallelToolCalls: agentloop.DefaultMaxParallelToolCalls,
-			StartupAgents: []agentloop.StartupAgent{
-				{
-					Label:     "configured",
-					SessionID: "configured-session",
-					Metadata: session.Metadata{
-						CreatedAt:       &createdAt,
-						CWD:             &workingDirectory,
-						ParentSession:   &parentSession,
-						SeedLength:      &seedLength,
-						Origin:          session.OriginSubagent,
-						DelegationDepth: &delegationDepth,
-						AgentPreset:     &agentPreset,
-					},
-				},
-			},
-		},
-	)
-	createdAt = 99
-	workingDirectory = "/mutated"
-	parentSession = "mutated-parent"
-	seedLength = 99
-	delegationDepth = 99
-	agentPreset = "mutated"
-	if _, found := state.agents.Get("configured-session"); found {
-		t.Fatal("configured Agent started before Runtime.Start returned")
-	}
-	handles, err := state.loopPlugin.StartConfiguredAgents(
-		context.Background(),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(handles) != 1 {
-		t.Fatalf("configured Agent count = %d, want 1", len(handles))
-	}
-	defer func() {
-		if disposeErr := handles[0].Dispose(context.Background()); disposeErr != nil {
-			t.Error(disposeErr)
-		}
-	}()
-	header := handles[0].Subject.SessionValue().Header()
-	if header.CreatedAt != 42 || header.CWD == nil ||
-		*header.CWD != expectedWorkingDirectory || header.ParentSession == nil ||
-		*header.ParentSession != "parent-session" ||
-		header.SeedLength == nil || *header.SeedLength != 0 ||
-		header.DelegationDepth == nil || *header.DelegationDepth != 1 ||
-		header.AgentPreset == nil || *header.AgentPreset != "default" {
-		t.Fatalf("configured Session header = %#v", header)
-	}
-	if _, err = state.loopPlugin.StartConfiguredAgents(
-		context.Background(),
-	); err == nil || !strings.Contains(err.Error(), "already started") {
-		t.Fatalf("second configured startup error = %v", err)
-	}
-}
-
-func TestConfiguredAgentFailureRollsBackEarlierStartup(t *testing.T) {
-	state := newHarnessFixtureWithSettings(
-		t,
-		nil,
-		agentloop.Settings{
-			MaxParallelToolCalls: agentloop.DefaultMaxParallelToolCalls,
-			StartupAgents: []agentloop.StartupAgent{
-				{
-					Label:     "first",
-					SessionID: "configured-first",
-				},
-				{
-					Label:     "collision",
-					SessionID: "already-live",
-				},
-			},
-		},
-	)
-	existing := createTestAgent(t, state, "already-live")
-	defer func() {
-		if disposeErr := existing.Dispose(context.Background()); disposeErr != nil {
-			t.Error(disposeErr)
-		}
-	}()
-	_, err := state.loopPlugin.StartConfiguredAgents(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "already-live") {
-		t.Fatalf("configured startup error = %v", err)
-	}
-	if _, found := state.agents.Get("configured-first"); found {
-		t.Fatal("earlier configured Agent survived transaction rollback")
-	}
-	if _, found := state.sessions.Get("configured-first"); found {
-		t.Fatal("earlier configured Session survived transaction rollback")
-	}
-	if retained, found := state.agents.Get("already-live"); !found || retained != existing.Subject {
-		t.Fatal("startup rollback removed the pre-existing Agent")
-	}
-}
-
 type requestExtension struct {
-	plugin.Base
 	subject  agent.Agent
 	disposed bool
 }
 
 type prePublicationExtension struct {
-	plugin.Base
 	sendErr error
 }
 
-func (*prePublicationExtension) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name: "agentloop-test-pre-publication-extension",
-		Requires: []plugin.ServiceType{
-			plugin.ServiceOf[agent.Agent](),
-		},
-	}
-}
-
 func (extension *prePublicationExtension) Apply(
-	requestContext context.Context,
+	_ context.Context,
+	subject agent.Agent,
+	_ agent.ScopeEditor,
 ) error {
-	subject, err := plugin.Require[agent.Agent](extension)
-	if err != nil {
-		return err
-	}
 	extension.sendErr = subject.Followup(userMessageValue("too early"))
-	return requestContext.Err()
-}
-
-func (*prePublicationExtension) Dispose(context.Context) error {
 	return nil
 }
 
@@ -645,7 +679,7 @@ func TestAgentRejectsWorkBeforeCommitPublication(t *testing.T) {
 				Provider: "mock",
 				Model:    "model",
 			},
-			Provisioner: scopedplugin.MountPlugins(extension),
+			Setup: extension,
 		},
 	)
 	if err != nil {
@@ -663,42 +697,28 @@ func TestAgentRejectsWorkBeforeCommitPublication(t *testing.T) {
 	}
 }
 
-func (extension *requestExtension) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name: "agentloop-test-request-extension",
-		Requires: []plugin.ServiceType{
-			plugin.ServiceOf[agent.Agent](),
-		},
-		Waterfalls: []plugin.WaterfallMiddlewareBinding{
-			plugin.WaterfallOf(extension),
-		},
-	}
-}
-
 func (extension *requestExtension) Apply(
-	requestContext context.Context,
+	_ context.Context,
+	subject agent.Agent,
+	editor agent.ScopeEditor,
 ) error {
-	subject, err := plugin.Require[agent.Agent](extension)
-	if err != nil {
+	extension.subject = subject
+	if err := editor.UseRequest(extension); err != nil {
 		return err
 	}
-	extension.subject = subject
-	return requestContext.Err()
+	return editor.Own(extension)
 }
 
-func (extension *requestExtension) Dispose(context.Context) error {
+func (extension *requestExtension) Close(context.Context) error {
 	extension.disposed = true
 	extension.subject = nil
 	return nil
 }
 
-func (*requestExtension) Intercept(
+func (*requestExtension) InterceptRequest(
 	requestContext context.Context,
 	notice agent.RequestNotice,
-	downstream plugin.WaterfallAction[
-		agent.RequestNotice,
-		agent.RequestResolution,
-	],
+	downstream agent.RequestAction,
 ) (agent.RequestResolution, error) {
 	resolved, err := downstream.Execute(requestContext, notice)
 	if err != nil {
@@ -719,7 +739,7 @@ func TestAgentExtensionResolvesExactAgentAndWaterfall(t *testing.T) {
 				Provider: "mock",
 				Model:    "base-model",
 			},
-			Provisioner: scopedplugin.MountPlugins(extension),
+			Setup: extension,
 		},
 	)
 	if err != nil {
@@ -727,28 +747,6 @@ func TestAgentExtensionResolvesExactAgentAndWaterfall(t *testing.T) {
 	}
 	if extension.subject != handleState.Subject {
 		t.Fatal("extension did not resolve the exact scoped Agent Service")
-	}
-	resolved, err := agent.ResolveRequest(
-		context.Background(),
-		agent.RequestNotice{
-			Subject: handleState.Subject,
-			Turn:    1,
-			Step:    1,
-		},
-		requestResolutionAction{
-			resolution: agent.RequestResolution{
-				Config: llm.CallConfig{
-					Provider: "mock",
-					Model:    "base-model",
-				},
-			},
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resolved.Model != "extension-model" {
-		t.Fatalf("resolved model = %q", resolved.Model)
 	}
 	if err = handleState.Dispose(context.Background()); err != nil {
 		t.Fatal(err)
@@ -759,34 +757,21 @@ func TestAgentExtensionResolvesExactAgentAndWaterfall(t *testing.T) {
 }
 
 type toolExecutionExtension struct {
-	plugin.Base
 	invocations atomic.Int64
 }
 
-func (extension *toolExecutionExtension) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name: "agentloop-test-tool-execution-extension",
-		Waterfalls: []plugin.WaterfallMiddlewareBinding{
-			plugin.WaterfallOf(extension),
-		},
-	}
+func (extension *toolExecutionExtension) Apply(
+	_ context.Context,
+	_ agent.Agent,
+	editor agent.ScopeEditor,
+) error {
+	return editor.UseToolExecution(extension)
 }
 
-func (*toolExecutionExtension) Apply(requestContext context.Context) error {
-	return requestContext.Err()
-}
-
-func (*toolExecutionExtension) Dispose(context.Context) error {
-	return nil
-}
-
-func (extension *toolExecutionExtension) Intercept(
+func (extension *toolExecutionExtension) InterceptExecute(
 	requestContext context.Context,
 	request tools.ExecuteRequest,
-	downstream plugin.WaterfallAction[
-		tools.ExecuteRequest,
-		tools.ExecuteOutcome,
-	],
+	downstream tools.ExecuteAction,
 ) (tools.ExecuteOutcome, error) {
 	extension.invocations.Add(1)
 	return downstream.Execute(requestContext, request)
@@ -804,7 +789,7 @@ func TestAgentExtensionInterceptsItsScopedToolRuntime(t *testing.T) {
 				Provider: "mock",
 				Model:    "model",
 			},
-			Provisioner: scopedplugin.MountPlugins(extension),
+			Setup: extension,
 		},
 	)
 	if err != nil {
@@ -823,23 +808,23 @@ func TestAgentExtensionInterceptsItsScopedToolRuntime(t *testing.T) {
 }
 
 type failingAgentExtension struct {
-	plugin.Base
 	applied  bool
 	disposed bool
 }
 
-func (*failingAgentExtension) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name: "agentloop-test-failing-extension",
-	}
-}
-
-func (extension *failingAgentExtension) Apply(context.Context) error {
+func (extension *failingAgentExtension) Apply(
+	_ context.Context,
+	_ agent.Agent,
+	editor agent.ScopeEditor,
+) error {
 	extension.applied = true
+	if err := editor.Own(extension); err != nil {
+		return err
+	}
 	return errors.New("extension activation failed")
 }
 
-func (extension *failingAgentExtension) Dispose(context.Context) error {
+func (extension *failingAgentExtension) Close(context.Context) error {
 	extension.disposed = true
 	return nil
 }
@@ -856,7 +841,7 @@ func TestFailedExtensionNeverPublishesPartialAgentTree(t *testing.T) {
 				Provider: "mock",
 				Model:    "model",
 			},
-			Provisioner: scopedplugin.MountPlugins(extension),
+			Setup: extension,
 		},
 	)
 	if err == nil || !strings.Contains(err.Error(), "extension activation failed") {
@@ -883,7 +868,7 @@ func TestFailedExtensionNeverPublishesPartialAgentTree(t *testing.T) {
 	}
 }
 
-func TestRuntimeShutdownRetiresLiveAgentBeforeRootServices(t *testing.T) {
+func TestRegistryShutdownRetiresLiveAgentBeforeRootServices(t *testing.T) {
 	state := newHarnessFixture(t, nil)
 	handleState, err := state.agents.Create(
 		context.Background(),
@@ -898,14 +883,14 @@ func TestRuntimeShutdownRetiresLiveAgentBeforeRootServices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = state.runtimeEngine.Shutdown(context.Background()); err != nil {
+	if err = state.agents.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if _, found := state.agents.Get("shutdown-agent"); found {
-		t.Fatal("Runtime shutdown left the Agent registered")
+		t.Fatal("Registry shutdown left the Agent registered")
 	}
 	if _, found := state.sessions.Get("shutdown-agent"); found {
-		t.Fatal("Runtime shutdown left the Session registered")
+		t.Fatal("Registry shutdown left the Session registered")
 	}
 	if err = handleState.Dispose(context.Background()); err != nil {
 		t.Fatalf("post-shutdown Handle disposal is not idempotent: %v", err)
@@ -934,72 +919,7 @@ func TestRuntimeShutdownRetiresLiveAgentBeforeRootServices(t *testing.T) {
 	}
 }
 
-func TestAgentLoopCanUnloadAndRegisterReplacementFactory(t *testing.T) {
-	state := newHarnessFixture(t, nil)
-	first, err := state.agents.Create(
-		context.Background(),
-		agent.CreateOptions{
-			SessionID: "before-agentloop-replacement",
-			AgentOptions: agent.Options{
-				Provider: "mock",
-				Model:    "model",
-			},
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = state.runtimeEngine.Unload(
-		context.Background(),
-		state.loopHandle,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if len(state.agents.List()) != 0 || len(state.sessions.List()) != 0 {
-		t.Fatalf(
-			"AgentLoop unload retained Agents or Sessions: agents=%d sessions=%d",
-			len(state.agents.List()),
-			len(state.sessions.List()),
-		)
-	}
-	if err = first.Dispose(context.Background()); err != nil {
-		t.Fatalf("old Handle after AgentLoop unload: %v", err)
-	}
-
-	replacementLoop, err := agentloop.New(
-		agentloop.Settings{
-			MaxParallelToolCalls: agentloop.DefaultMaxParallelToolCalls,
-		},
-		agentloop.RuntimeOptions{},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = state.runtimeEngine.Mount(
-		context.Background(),
-		replacementLoop,
-	); err != nil {
-		t.Fatalf("mount replacement AgentLoop: %v", err)
-	}
-	replacement, err := state.agents.Create(
-		context.Background(),
-		agent.CreateOptions{
-			SessionID: "after-agentloop-replacement",
-			AgentOptions: agent.Options{
-				Provider: "mock",
-				Model:    "model",
-			},
-		},
-	)
-	if err != nil {
-		t.Fatalf("Create through replacement AgentLoop: %v", err)
-	}
-	if err = replacement.Dispose(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestRuntimeShutdownRetiresRuntimeDescendantsChildFirst(t *testing.T) {
+func TestRegistryShutdownRetiresRuntimeDescendantsChildFirst(t *testing.T) {
 	state := newHarnessFixture(t, nil)
 	root, err := state.agents.Create(
 		context.Background(),
@@ -1027,7 +947,7 @@ func TestRuntimeShutdownRetiresRuntimeDescendantsChildFirst(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err = state.runtimeEngine.Shutdown(context.Background()); err != nil {
+	if err = state.agents.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	agentIDs, sessionIDs := state.lifecycle.disposedIDs()
@@ -1043,7 +963,7 @@ func TestRuntimeShutdownRetiresRuntimeDescendantsChildFirst(t *testing.T) {
 	}
 	if len(state.agents.List()) != 0 || len(state.sessions.List()) != 0 {
 		t.Fatalf(
-			"Runtime shutdown retained Agents or Sessions: agents=%d sessions=%d",
+			"Registry shutdown retained Agents or Sessions: agents=%d sessions=%d",
 			len(state.agents.List()),
 			len(state.sessions.List()),
 		)
@@ -1051,34 +971,26 @@ func TestRuntimeShutdownRetiresRuntimeDescendantsChildFirst(t *testing.T) {
 }
 
 type shutdownBarrier struct {
-	plugin.Base
 	entered chan struct{}
 	release chan struct{}
 	once    sync.Once
 }
 
 type constructionBarrier struct {
-	plugin.Base
 	entered chan struct{}
 	release chan struct{}
 	once    sync.Once
 }
 
-func (*constructionBarrier) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name: "agentloop-test-construction-barrier",
-	}
-}
-
-func (barrier *constructionBarrier) Apply(context.Context) error {
+func (barrier *constructionBarrier) Apply(
+	context.Context,
+	agent.Agent,
+	agent.ScopeEditor,
+) error {
 	barrier.once.Do(func() {
 		close(barrier.entered)
 	})
 	<-barrier.release
-	return nil
-}
-
-func (*constructionBarrier) Dispose(context.Context) error {
 	return nil
 }
 
@@ -1107,7 +1019,7 @@ func TestSameIDCollisionDoesNotEnterSecondConstruction(t *testing.T) {
 					Provider: "mock",
 					Model:    "model",
 				},
-				Provisioner: scopedplugin.MountPlugins(barrier),
+				Setup: barrier,
 			},
 		)
 		if createErr != nil {
@@ -1127,7 +1039,7 @@ func TestSameIDCollisionDoesNotEnterSecondConstruction(t *testing.T) {
 			SessionID: "construction-collision",
 		},
 	)
-	if err == nil || !strings.Contains(err.Error(), "active epoch") {
+	if err == nil || !strings.Contains(err.Error(), "already active") {
 		t.Fatalf("colliding Resume error = %v", err)
 	}
 	release()
@@ -1161,17 +1073,15 @@ func TestSameIDCollisionDoesNotEnterSecondConstruction(t *testing.T) {
 	}
 }
 
-func (*shutdownBarrier) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name: "agentloop-test-shutdown-barrier",
-	}
+func (barrier *shutdownBarrier) Apply(
+	_ context.Context,
+	_ agent.Agent,
+	editor agent.ScopeEditor,
+) error {
+	return editor.Own(barrier)
 }
 
-func (*shutdownBarrier) Apply(requestContext context.Context) error {
-	return requestContext.Err()
-}
-
-func (barrier *shutdownBarrier) Dispose(context.Context) error {
+func (barrier *shutdownBarrier) Close(context.Context) error {
 	barrier.once.Do(func() {
 		close(barrier.entered)
 	})
@@ -1179,7 +1089,7 @@ func (barrier *shutdownBarrier) Dispose(context.Context) error {
 	return nil
 }
 
-func TestRuntimeShutdownClosesConstructionBeforeAgentScopes(t *testing.T) {
+func TestRegistryShutdownClosesAdmissionBeforeAgentScopes(t *testing.T) {
 	state := newHarnessFixture(t, nil)
 	barrier := &shutdownBarrier{
 		entered: make(chan struct{}),
@@ -1200,14 +1110,14 @@ func TestRuntimeShutdownClosesConstructionBeforeAgentScopes(t *testing.T) {
 				Provider: "mock",
 				Model:    "model",
 			},
-			Provisioner: scopedplugin.MountPlugins(barrier),
+			Setup: barrier,
 		},
 	); err != nil {
 		t.Fatal(err)
 	}
 	shutdownDone := make(chan error, 1)
 	go func() {
-		shutdownDone <- state.runtimeEngine.Shutdown(context.Background())
+		shutdownDone <- state.agents.Shutdown(context.Background())
 	}()
 	select {
 	case <-barrier.entered:
@@ -1220,7 +1130,7 @@ func TestRuntimeShutdownClosesConstructionBeforeAgentScopes(t *testing.T) {
 			SessionID: "during-shutdown",
 		},
 	)
-	if err == nil || !strings.Contains(err.Error(), "no Agent factory") {
+	if err == nil || !strings.Contains(err.Error(), "shutting down") {
 		t.Fatalf("Create during Agent Scope shutdown error = %v", err)
 	}
 	release()
@@ -1230,7 +1140,7 @@ func TestRuntimeShutdownClosesConstructionBeforeAgentScopes(t *testing.T) {
 			t.Fatal(err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("Runtime shutdown did not complete")
+		t.Fatal("Registry shutdown did not complete")
 	}
 }
 
@@ -1778,34 +1688,21 @@ func TestUnknownCancelCauseUsesHookReason(t *testing.T) {
 }
 
 type retryExtension struct {
-	plugin.Base
 	notices chan agent.RequestErrorNotice
 }
 
-func (extension *retryExtension) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name: "agentloop-test-retry-extension",
-		Waterfalls: []plugin.WaterfallMiddlewareBinding{
-			plugin.WaterfallOf(extension),
-		},
-	}
+func (extension *retryExtension) Apply(
+	_ context.Context,
+	_ agent.Agent,
+	editor agent.ScopeEditor,
+) error {
+	return editor.UseRequestError(extension)
 }
 
-func (*retryExtension) Apply(requestContext context.Context) error {
-	return requestContext.Err()
-}
-
-func (*retryExtension) Dispose(context.Context) error {
-	return nil
-}
-
-func (extension *retryExtension) Intercept(
+func (extension *retryExtension) InterceptRequestError(
 	requestContext context.Context,
 	notice agent.RequestErrorNotice,
-	downstream plugin.WaterfallAction[
-		agent.RequestErrorNotice,
-		agent.RequestErrorAction,
-	],
+	downstream agent.RequestErrorHandler,
 ) (agent.RequestErrorAction, error) {
 	extension.notices <- notice
 	action, err := downstream.Execute(requestContext, notice)
@@ -1849,7 +1746,7 @@ func TestRequestErrorRetryRepeatsAttemptInsideOneStep(t *testing.T) {
 				Provider: "mock",
 				Model:    "model",
 			},
-			Provisioner: scopedplugin.MountPlugins(extension),
+			Setup: extension,
 		},
 	)
 	if err != nil {

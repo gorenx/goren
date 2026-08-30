@@ -48,7 +48,7 @@ type FailureReporter interface {
 
 // Extensions is Bound's consumer-owned view of named child Extensions.
 type Extensions interface {
-	Provision([]string) (agent.Provisioner, error)
+	Setup([]string) (agent.Setup, error)
 }
 
 // Dependencies contains the capabilities required by Bound ownership.
@@ -60,7 +60,7 @@ type Dependencies struct {
 	Projections      sessionprojection.Registry
 	Definitions      DefinitionStore
 	Delegation       approval.DelegationPolicy
-	CommonExtensions agent.Provisioner
+	CommonExtensions agent.Setup
 	Extensions       Extensions
 	Publisher        sharedexecution.EventPublisher
 	Executions       *sharedexecution.Registry

@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"errors"
 
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
@@ -29,8 +28,8 @@ type Created struct {
 	Subject Agent
 }
 
-func (Created) AgentScopedRuntimeEvent() {}
-func (Created) EventName() string        { return CreatedEventName }
+func (Created) AgentScopedEvent() {}
+func (Created) EventName() string { return CreatedEventName }
 func (Created) EventDelivery() plugin.DeliveryPolicy {
 	return plugin.DeliveryOrdered
 }
@@ -40,8 +39,8 @@ type Disposed struct {
 	Subject Agent
 }
 
-func (Disposed) AgentScopedRuntimeEvent() {}
-func (Disposed) EventName() string        { return DisposedEventName }
+func (Disposed) AgentScopedEvent() {}
+func (Disposed) EventName() string { return DisposedEventName }
 func (Disposed) EventDelivery() plugin.DeliveryPolicy {
 	return plugin.DeliveryOrdered
 }
@@ -52,8 +51,8 @@ type StatusChanged struct {
 	Status  Status
 }
 
-func (StatusChanged) AgentScopedRuntimeEvent() {}
-func (StatusChanged) EventName() string        { return StatusEventName }
+func (StatusChanged) AgentScopedEvent() {}
+func (StatusChanged) EventName() string { return StatusEventName }
 func (StatusChanged) EventDelivery() plugin.DeliveryPolicy {
 	return plugin.DeliveryOrdered
 }
@@ -64,8 +63,8 @@ type InboxInserted struct {
 	Message agentmessage.UserMessage
 }
 
-func (InboxInserted) AgentScopedRuntimeEvent() {}
-func (InboxInserted) EventName() string        { return InboxInsertedEventName }
+func (InboxInserted) AgentScopedEvent() {}
+func (InboxInserted) EventName() string { return InboxInsertedEventName }
 func (InboxInserted) EventDelivery() plugin.DeliveryPolicy {
 	return plugin.DeliveryOrdered
 }
@@ -77,8 +76,8 @@ type InboxClaimed struct {
 	Turn    int64
 }
 
-func (InboxClaimed) AgentScopedRuntimeEvent() {}
-func (InboxClaimed) EventName() string        { return InboxClaimedEventName }
+func (InboxClaimed) AgentScopedEvent() {}
+func (InboxClaimed) EventName() string { return InboxClaimedEventName }
 func (InboxClaimed) EventDelivery() plugin.DeliveryPolicy {
 	return plugin.DeliveryOrdered
 }
@@ -89,8 +88,8 @@ type InboxDiscarded struct {
 	Message agentmessage.UserMessage
 }
 
-func (InboxDiscarded) AgentScopedRuntimeEvent() {}
-func (InboxDiscarded) EventName() string        { return InboxDiscardedEventName }
+func (InboxDiscarded) AgentScopedEvent() {}
+func (InboxDiscarded) EventName() string { return InboxDiscardedEventName }
 func (InboxDiscarded) EventDelivery() plugin.DeliveryPolicy {
 	return plugin.DeliveryOrdered
 }
@@ -111,8 +110,8 @@ type SessionStarted struct {
 	Source  SessionStartSource
 }
 
-func (SessionStarted) AgentScopedRuntimeEvent() {}
-func (SessionStarted) EventName() string        { return SessionStartEventName }
+func (SessionStarted) AgentScopedEvent() {}
+func (SessionStarted) EventName() string { return SessionStartEventName }
 func (SessionStarted) EventDelivery() plugin.DeliveryPolicy {
 	return plugin.DeliveryOrdered
 }
@@ -178,8 +177,8 @@ type TurnStopping struct {
 	Turn    int64
 }
 
-func (TurnStopping) AgentScopedRuntimeEvent() {}
-func (TurnStopping) EventName() string        { return TurnStoppingEventName }
+func (TurnStopping) AgentScopedEvent() {}
+func (TurnStopping) EventName() string { return TurnStoppingEventName }
 func (TurnStopping) EventDelivery() plugin.DeliveryPolicy {
 	return plugin.DeliveryOrdered
 }
@@ -192,45 +191,23 @@ type AgentError struct {
 	Err     error
 }
 
-func (AgentError) AgentScopedRuntimeEvent() {}
-func (AgentError) EventName() string        { return ErrorEventName }
+func (AgentError) AgentScopedEvent() {}
+func (AgentError) EventName() string { return ErrorEventName }
 func (AgentError) EventDelivery() plugin.DeliveryPolicy {
 	return plugin.DeliveryOrdered
 }
 
-// RuntimeEvent is an event intentionally published from one exact Agent Scope.
+// AgentEvent is an event intentionally published from one exact Agent Scope.
 // Producer modules own their event types and opt in through the marker.
-type RuntimeEvent interface {
-	AgentScopedRuntimeEvent()
+type AgentEvent interface {
+	AgentScopedEvent()
 }
 
-type scopeRuntimeCarrier interface {
-	ScopeRuntimeValue() AgentScopeRuntime
-}
-
-func scopeRuntimeOf(subject Agent) AgentScopeRuntime {
-	carrier, matches := subject.(scopeRuntimeCarrier)
-	if !matches {
-		return nil
-	}
-	return carrier.ScopeRuntimeValue()
-}
-
-// DispatchRuntimeEvent publishes one producer-owned fact from the exact Agent
-// Scope without exposing the Scope adapter on the Agent capability.
-func DispatchRuntimeEvent(
-	requestContext context.Context,
-	subject Agent,
-	fact RuntimeEvent,
-) error {
-	if subject == nil || fact == nil {
-		return errors.New("agent: RuntimeEvent subject or fact is nil")
-	}
-	runtime := scopeRuntimeOf(subject)
-	if runtime == nil {
-		return errors.New("agent: RuntimeEvent effects are unavailable")
-	}
-	return runtime.Dispatch(requestContext, fact)
+// AgentClosingEvent is a terminal fact allowed through an exact Agent Scope
+// while Registry closes descendants. It cannot admit work or mutate Scope.
+type AgentClosingEvent interface {
+	AgentEvent
+	AgentClosingEvent()
 }
 
 // PreStepAction is the Agent-owned terminal contract for pre-step resolution.
@@ -247,73 +224,4 @@ type RequestAction interface {
 // recovery.
 type RequestErrorHandler interface {
 	Execute(context.Context, RequestErrorNotice) (RequestErrorAction, error)
-}
-
-// ResolvePreStep runs the scoped pre-step Waterfall around terminal.
-func ResolvePreStep(
-	requestContext context.Context,
-	notice PreStepNotice,
-	terminal PreStepAction,
-) (PreStepDecision, error) {
-	if notice.Subject == nil || terminal == nil {
-		return PreStepDecision{}, errors.New(
-			"agent: pre-step subject or terminal is nil",
-		)
-	}
-	runtime := scopeRuntimeOf(notice.Subject)
-	if runtime == nil {
-		return PreStepDecision{}, errors.New("agent: pre-step effects are unavailable")
-	}
-	return runtime.ResolvePreStep(
-		requestContext,
-		notice,
-		terminal,
-	)
-}
-
-// ResolveRequest runs the scoped request Waterfall around terminal.
-func ResolveRequest(
-	requestContext context.Context,
-	notice RequestNotice,
-	terminal RequestAction,
-) (llm.CallConfig, error) {
-	if notice.Subject == nil || terminal == nil {
-		return llm.CallConfig{}, errors.New(
-			"agent: request subject or terminal is nil",
-		)
-	}
-	runtime := scopeRuntimeOf(notice.Subject)
-	if runtime == nil {
-		return llm.CallConfig{}, errors.New("agent: request effects are unavailable")
-	}
-	resolved, err := runtime.ResolveRequest(
-		requestContext,
-		notice,
-		terminal,
-	)
-	return resolved.Config, err
-}
-
-// ResolveRequestError runs the scoped recovery Waterfall around terminal.
-func ResolveRequestError(
-	requestContext context.Context,
-	notice RequestErrorNotice,
-	terminal RequestErrorHandler,
-) (RequestErrorAction, error) {
-	if notice.Subject == nil || terminal == nil {
-		return RequestErrorAction{}, errors.New(
-			"agent: request-error subject or terminal is nil",
-		)
-	}
-	runtime := scopeRuntimeOf(notice.Subject)
-	if runtime == nil {
-		return RequestErrorAction{}, errors.New(
-			"agent: request-error effects are unavailable",
-		)
-	}
-	return runtime.ResolveRequestError(
-		requestContext,
-		notice,
-		terminal,
-	)
 }

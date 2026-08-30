@@ -47,7 +47,7 @@ func newChildExecutionControl(
 func (control *childExecutionControl) Send(
 	ctx context.Context,
 	parentAgent agent.Agent,
-	childID session.SessionID,
+	childSessionID session.SessionID,
 	content []agentmessage.ContentBlock,
 	options subagent.FollowupOptions,
 ) (agentmessage.MessageID, error) {
@@ -66,11 +66,11 @@ func (control *childExecutionControl) Send(
 	if err != nil {
 		return "", err
 	}
-	entry, found := control.executions.Find(childID)
+	entry, found := control.executions.Find(childSessionID)
 	if found {
 		return control.sendResident(ctx, parentAgent, entry, messageValue)
 	}
-	return control.sendCold(ctx, parentAgent, childID, messageValue)
+	return control.sendCold(ctx, parentAgent, childSessionID, messageValue)
 }
 
 func (control *childExecutionControl) sendResident(
@@ -104,27 +104,27 @@ func (control *childExecutionControl) sendResident(
 func (control *childExecutionControl) sendCold(
 	ctx context.Context,
 	parentAgent agent.Agent,
-	childID session.SessionID,
+	childSessionID session.SessionID,
 	messageValue agentmessage.UserMessage,
 ) (agentmessage.MessageID, error) {
 	if control.bound == nil {
-		return control.resumeCold(ctx, parentAgent, childID, messageValue)
+		return control.resumeCold(ctx, parentAgent, childSessionID, messageValue)
 	}
 	boundChild, err := control.bound.HasBinding(
 		ctx,
 		parentAgent,
-		childID,
+		childSessionID,
 	)
 	if err != nil {
 		return "", err
 	}
 	if !boundChild {
-		return control.resumeCold(ctx, parentAgent, childID, messageValue)
+		return control.resumeCold(ctx, parentAgent, childSessionID, messageValue)
 	}
 	return control.bound.Followup(
 		ctx,
 		parentAgent,
-		childID,
+		childSessionID,
 		messageValue,
 	)
 }
@@ -132,7 +132,7 @@ func (control *childExecutionControl) sendCold(
 func (control *childExecutionControl) resumeCold(
 	ctx context.Context,
 	parentAgent agent.Agent,
-	childID session.SessionID,
+	childSessionID session.SessionID,
 	messageValue agentmessage.UserMessage,
 ) (agentmessage.MessageID, error) {
 	if control.continuable == nil {
@@ -143,17 +143,17 @@ func (control *childExecutionControl) resumeCold(
 	return control.continuable.Resume(
 		ctx,
 		parentAgent,
-		childID,
+		childSessionID,
 		messageValue,
 	)
 }
 
 func (control *childExecutionControl) Interrupt(
 	ctx context.Context,
-	childID session.SessionID,
+	childSessionID session.SessionID,
 	authority subagent.InterruptAuthority,
 ) error {
-	entry, found := control.executions.Find(childID)
+	entry, found := control.executions.Find(childSessionID)
 	if !found {
 		return nil
 	}
@@ -171,7 +171,7 @@ func (control *childExecutionControl) Interrupt(
 			entry.Mode,
 		)
 	}
-	return selected.Interrupt(ctx, childID)
+	return selected.Interrupt(ctx, childSessionID)
 }
 
 func (control *childExecutionControl) AgentDisposed(
@@ -187,7 +187,7 @@ func (control *childExecutionControl) AgentDisposed(
 	}
 	return entry.Execution.StopAndWait(
 		ctx,
-		sharedexecution.StopExternal,
+		sharedexecution.CloseExternal,
 	)
 }
 

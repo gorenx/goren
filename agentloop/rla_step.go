@@ -40,6 +40,9 @@ func (subject *ReactLoopAgent) prepareStep(
 	if err != nil {
 		return nil, err
 	}
+	if err = subject.visibleContext.Refresh(subject.conversation); err != nil {
+		return nil, err
+	}
 	assembled, err := subject.prompts.Assemble(
 		requestContext,
 		systemprompt.AssembleContext{
@@ -64,7 +67,7 @@ func (subject *ReactLoopAgent) prepareStep(
 	if present {
 		candidates = append(candidates, contextMessage)
 	}
-	decision, err := agent.ResolvePreStep(
+	decision, err := subject.waterfalls.ResolvePreStep(
 		requestContext,
 		agent.PreStepNotice{
 			Subject:  subject,

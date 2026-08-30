@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -334,6 +335,44 @@ func TestCatalogContainsOnlyCurrentServerSlice(t *testing.T) {
 		if _, err := directory.Lookup(excludedFactory); err == nil {
 			t.Fatalf("excluded Factory %q is registered", excludedFactory)
 		}
+	}
+}
+
+func TestDefaultSpecsPublishAgentRegistryBeforeUserQuestions(t *testing.T) {
+	t.Parallel()
+	dataDirectory := t.TempDir()
+	specs, err := DefaultSpecs(
+		"127.0.0.1:0",
+		"test",
+		dataDirectory+"/sessions.sqlite",
+		dataDirectory+"/workspaces.sqlite",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	factoryNames := make([]string, len(specs))
+	for specIndex, specification := range specs {
+		factoryNames[specIndex] = specification.FactoryName
+	}
+	previousPosition := -1
+	for _, factoryName := range []string{
+		systemprompt.PluginName,
+		tools.PluginName,
+		agentloop.PluginName,
+		agent.PluginName,
+		userquestions.PluginName,
+	} {
+		position := slices.Index(factoryNames, factoryName)
+		if position <= previousPosition {
+			t.Fatalf(
+				"default Agent activation order = %#v; %q position = %d after %d",
+				factoryNames,
+				factoryName,
+				position,
+				previousPosition,
+			)
+		}
+		previousPosition = position
 	}
 }
 

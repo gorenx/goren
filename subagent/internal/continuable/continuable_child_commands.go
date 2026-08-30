@@ -79,7 +79,7 @@ func (child *continuableChild) handleStart(
 		)
 	}
 	current.watch()
-	return current.execution, nil
+	return current, nil
 }
 
 func (child *continuableChild) handleResume(
@@ -98,8 +98,8 @@ func (child *continuableChild) handleResume(
 	for {
 		current := child.current
 		if current != nil &&
-			current.execution.State() != subagent.ExecutionActive {
-			if err := current.execution.Wait(workContext); err != nil {
+			current.State() != subagent.ExecutionActive {
+			if err := current.Wait(workContext); err != nil {
 				return "", err
 			}
 			if child.current == current {
@@ -156,7 +156,7 @@ func (child *continuableChild) handleResume(
 func (child *continuableChild) handleInterrupt() {
 	current := child.current
 	if current == nil ||
-		current.execution.State() != subagent.ExecutionActive {
+		current.State() != subagent.ExecutionActive {
 		return
 	}
 	current.handle.Subject.Cancel(
@@ -172,39 +172,31 @@ func (child *continuableChild) publish(
 	parentAgent agent.Agent,
 	seedBuilder string,
 ) (*residentExecution, error) {
-	runID, err := sharedexecution.NewRunID()
+	executionRunID, err := sharedexecution.NewRunID()
 	if err != nil {
 		return nil, err
 	}
-	resident := &residentExecution{
-		owner:       child,
-		agents:      child.registry.dependencies.Agents,
-		descendants: child.registry.dependencies.Descendants,
-		sessions:    child.registry.dependencies.Sessions,
-		publisher:   child.registry.dependencies.Publisher,
-		failures:    child.registry.dependencies.Failures,
-		executions:  child.registry.dependencies.Executions,
-		handle:      handle,
-		parent:      parentAgent,
-		seedBuilder: seedBuilder,
-		boundary:    handle.Subject.SessionValue().Seq(),
-		wake:        make(chan struct{}, 1),
-	}
-	running, err := sharedexecution.New(
-		runID,
-		handle.Subject.ID(),
-		resident,
-	)
+	resident, err := newResidentExecution(executionRunID, handle.Subject.ID())
 	if err != nil {
 		return nil, err
 	}
-	resident.execution = running
+	resident.agents = child.registry.dependencies.Agents
+	resident.descendants = child.registry.dependencies.Descendants
+	resident.sessions = child.registry.dependencies.Sessions
+	resident.publisher = child.registry.dependencies.Publisher
+	resident.failures = child.registry.dependencies.Failures
+	resident.executions = child.registry.dependencies.Executions
+	resident.handle = handle
+	resident.parent = parentAgent
+	resident.seedBuilder = seedBuilder
+	resident.boundary = handle.Subject.SessionValue().Seq()
+	resident.closed = child.closed
 	child.current = resident
 	if err = sharedexecution.Publish(
 		resident.executions,
 		resident.publisher,
 		sharedexecution.Entry{
-			Execution: running,
+			Execution: resident,
 			Mode:      subagent.ModeContinuable,
 			Parent:    parentAgent,
 			Subject:   handle.Subject,
