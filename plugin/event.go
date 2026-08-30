@@ -97,7 +97,7 @@ func (typedEventSubscription[E]) bindEventObserver(
 
 func eventReferenceOf[E Event]() (reference eventRef, referenceErr error) {
 	selectedType := reflect.TypeFor[E]()
-	if selectedType == nil || selectedType.Kind() != reflect.Struct || selectedType.Name() == "" {
+	if selectedType.Kind() != reflect.Struct || selectedType.Name() == "" {
 		return eventRef{}, errors.New("Event must be a named struct value")
 	}
 	defer func() {

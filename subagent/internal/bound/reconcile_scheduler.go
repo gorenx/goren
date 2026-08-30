@@ -79,26 +79,6 @@ func (scheduler *reconcileScheduler) request(parentAgent agent.Agent) {
 	go scheduler.run(parentID, task)
 }
 
-// retry reactivates only a retained failed task. A normal turn/end must not
-// create new reconciliation work after the parent is already aligned.
-func (scheduler *reconcileScheduler) retry(parentAgent agent.Agent) {
-	if !isUserAgent(parentAgent) {
-		return
-	}
-	parentID := parentAgent.ID()
-	scheduler.mutex.Lock()
-	current := scheduler.parents[parentID]
-	if scheduler.closing || current == nil || current.running {
-		scheduler.mutex.Unlock()
-		return
-	}
-	current.subject = parentAgent
-	current.requested = true
-	scheduler.startLocked(current)
-	scheduler.mutex.Unlock()
-	go scheduler.run(parentID, current)
-}
-
 func (scheduler *reconcileScheduler) startLocked(task *reconcileTask) {
 	task.running = true
 	scheduler.tasks.Add(1)

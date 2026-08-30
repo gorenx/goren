@@ -178,6 +178,7 @@ func TestFactoryRejectsNilCreateContextBeforeConstruction(t *testing.T) {
 		pluginConstructions: &pluginConstructions,
 	}
 	if _, err := candidate.Create(
+		//lint:ignore SA1012 This test verifies the nil Context contract.
 		nil,
 		json.RawMessage(`{"address":"127.0.0.1:3080"}`),
 	); err == nil || !strings.Contains(err.Error(), "create Context is nil") {

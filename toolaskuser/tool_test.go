@@ -204,7 +204,8 @@ func TestExecutionDelegatesAndRendersStructuredAnswer(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer providerHandle.Unregister()
-	contextKey := struct{}{}
+	type requestContextKey struct{}
+	contextKey := requestContextKey{}
 	requestContext := context.WithValue(context.Background(), contextKey, "exact")
 	outcome := state.toolService.Execute(
 		requestContext,

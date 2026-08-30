@@ -50,17 +50,6 @@ func (probe *sessionStoreProbe) Apply(context.Context) error {
 
 func (*sessionStoreProbe) Dispose(context.Context) error { return nil }
 
-type requestResolutionAction struct {
-	resolution agent.RequestResolution
-}
-
-func (action requestResolutionAction) Execute(
-	context.Context,
-	agent.RequestNotice,
-) (agent.RequestResolution, error) {
-	return action.resolution, nil
-}
-
 func (postCommitFailureSink) ReportPostCommitFailure(
 	session.PostCommitFailure,
 ) {

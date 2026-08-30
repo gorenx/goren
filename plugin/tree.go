@@ -188,14 +188,3 @@ func normalizeChildPlacement(placement ChildPlacement) (scopePlacement, error) {
 		return mountAtRootScope, errors.New("unsupported child Scope placement")
 	}
 }
-
-func flattenDeclaration(root *pluginDeclaration) []*pluginDeclaration {
-	if root == nil {
-		return nil
-	}
-	nodes := []*pluginDeclaration{root}
-	for _, child := range root.children {
-		nodes = append(nodes, flattenDeclaration(child)...)
-	}
-	return nodes
-}

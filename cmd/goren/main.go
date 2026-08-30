@@ -138,11 +138,11 @@ func (settings commandConfig) resolveStorage(defaultDataDirectory string) (stora
 	}
 	sessionDatabase, err := resolveStoragePath(settings.sessionDatabase, filepath.Join(dataDirectory, "sessions.sqlite"))
 	if err != nil {
-		return storagePaths{}, fmt.Errorf("Session database: %w", err)
+		return storagePaths{}, fmt.Errorf("session database: %w", err)
 	}
 	workspaceDatabase, err := resolveStoragePath(settings.workspaceDatabase, filepath.Join(dataDirectory, "workspaces.sqlite"))
 	if err != nil {
-		return storagePaths{}, fmt.Errorf("Workspace database: %w", err)
+		return storagePaths{}, fmt.Errorf("workspace database: %w", err)
 	}
 	return storagePaths{
 		dataDirectory:     filepath.Clean(dataDirectory),

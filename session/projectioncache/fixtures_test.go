@@ -14,10 +14,6 @@ import (
 
 const cacheTestEventName = "test/session-projection-cache"
 
-var cacheTestEvent = session.DefineEvent[struct {
-	Value int `json:"value"`
-}](cacheTestEventName)
-
 type countingUnit struct {
 	key     string
 	version int64

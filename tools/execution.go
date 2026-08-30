@@ -26,9 +26,9 @@ type ToolExecutionToken struct {
 	token *toolExecutionToken
 }
 
-type toolExecutionToken struct {
-	marker byte
-}
+// toolExecutionToken is non-zero-sized so separately allocated token pointers
+// remain exact identities under Go's zero-size allocation rules.
+type toolExecutionToken [1]byte
 
 // IsZero reports whether no parent execution token was supplied.
 func (identity ToolExecutionToken) IsZero() bool {
