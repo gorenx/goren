@@ -67,31 +67,31 @@ func (owner *definitionIndex) publish(
 
 func (owner *definitionIndex) all() []boundcontract.Definition {
 	owner.mutex.RLock()
-	result := make([]boundcontract.Definition, 0, len(owner.values))
+	response := make([]boundcontract.Definition, 0, len(owner.values))
 	for _, definitionValue := range owner.values {
 		detached, err := boundcontract.SnapshotDefinition(definitionValue)
 		if err != nil {
 			owner.mutex.RUnlock()
 			panic(err)
 		}
-		result = append(result, detached)
+		response = append(response, detached)
 	}
 	owner.mutex.RUnlock()
-	sort.Slice(result, func(leftIndex int, rightIndex int) bool {
-		return result[leftIndex].Name < result[rightIndex].Name
+	sort.Slice(response, func(leftIndex int, rightIndex int) bool {
+		return response[leftIndex].Name < response[rightIndex].Name
 	})
-	return result
+	return response
 }
 
 func (owner *definitionIndex) enabled() []boundcontract.Definition {
 	allDefinitions := owner.all()
-	result := make([]boundcontract.Definition, 0, len(allDefinitions))
+	response := make([]boundcontract.Definition, 0, len(allDefinitions))
 	for _, definitionValue := range allDefinitions {
 		if definitionValue.Enabled {
-			result = append(result, definitionValue)
+			response = append(response, definitionValue)
 		}
 	}
-	return result
+	return response
 }
 
 func (owner *definitionIndex) find(

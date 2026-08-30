@@ -50,9 +50,11 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 	return owner.service.activate(agents)
 }
 
-// Dispose closes the business Service after dependent Plugins have stopped.
+// Dispose deactivates the business Service after dependent Plugins have
+// stopped. Runtime may Apply this Plugin again when its optional Agent Registry
+// binding changes.
 func (owner *Plugin) Dispose(context.Context) error {
-	owner.service.close()
+	owner.service.deactivate()
 	return nil
 }
 

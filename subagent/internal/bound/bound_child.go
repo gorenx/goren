@@ -19,15 +19,15 @@ type reconcileRequest struct {
 }
 
 type followupCommand struct {
-	ctx     context.Context
-	message agentmessage.UserMessage
-	result  chan followupResult
+	ctx      context.Context
+	message  agentmessage.UserMessage
+	response chan followupResult
 }
 
 type deliveryCommand struct {
-	ctx    context.Context
-	input  boundcontract.Input
-	result chan deliveryResult
+	ctx      context.Context
+	input    boundcontract.Input
+	response chan deliveryResult
 }
 
 type deliveryResult struct {
@@ -81,9 +81,9 @@ func newBoundChild(
 	childContext, cancelChild := context.WithCancel(registryContext)
 	return &boundChild{
 		key: bindingKey{
-			parentID: parentAgent.ID(),
-			name:     bindingValue.Name,
-			childID:  bindingValue.ChildSessionID,
+			parentID:       parentAgent.ID(),
+			name:           bindingValue.Name,
+			childSessionID: bindingValue.ChildSessionID,
 		},
 		parent:       parentAgent,
 		agents:       dependencySet.Agents,
@@ -127,7 +127,7 @@ func (child *boundChild) handleCommand(received any) bool {
 			commandValue.ctx,
 			commandValue.message,
 		)
-		commandValue.result <- followupResult{
+		commandValue.response <- followupResult{
 			identifier: identifier,
 			err:        err,
 		}
@@ -136,7 +136,7 @@ func (child *boundChild) handleCommand(received any) bool {
 			commandValue.ctx,
 			commandValue.input,
 		)
-		commandValue.result <- deliveryResult{
+		commandValue.response <- deliveryResult{
 			receipt: receiptValue,
 			err:     err,
 		}
@@ -176,11 +176,11 @@ func (child *boundChild) followup(
 	requestContext context.Context,
 	messageValue agentmessage.UserMessage,
 ) (agentmessage.MessageID, error) {
-	result := make(chan followupResult, 1)
+	response := make(chan followupResult, 1)
 	commandValue := followupCommand{
-		ctx:     requestContext,
-		message: messageValue,
-		result:  result,
+		ctx:      requestContext,
+		message:  messageValue,
+		response: response,
 	}
 	select {
 	case child.mailbox <- commandValue:
@@ -190,7 +190,7 @@ func (child *boundChild) followup(
 		return "", errors.New("subagent: Bound child is closed")
 	}
 	select {
-	case outcome := <-result:
+	case outcome := <-response:
 		return outcome.identifier, outcome.err
 	case <-requestContext.Done():
 		return "", context.Cause(requestContext)
@@ -201,11 +201,11 @@ func (child *boundChild) deliver(
 	requestContext context.Context,
 	inputValue boundcontract.Input,
 ) (boundcontract.Receipt, error) {
-	result := make(chan deliveryResult, 1)
+	response := make(chan deliveryResult, 1)
 	commandValue := deliveryCommand{
-		ctx:    requestContext,
-		input:  inputValue,
-		result: result,
+		ctx:      requestContext,
+		input:    inputValue,
+		response: response,
 	}
 	select {
 	case child.mailbox <- commandValue:
@@ -217,7 +217,7 @@ func (child *boundChild) deliver(
 		)
 	}
 	select {
-	case delivered := <-result:
+	case delivered := <-response:
 		return delivered.receipt, delivered.err
 	case <-requestContext.Done():
 		return boundcontract.Receipt{}, context.Cause(requestContext)
@@ -292,9 +292,9 @@ func (child *boundChild) operationContext(
 	requestContext context.Context,
 ) (context.Context, context.CancelFunc) {
 	workContext, cancelOperation := context.WithCancel(requestContext)
-	stop := context.AfterFunc(child.ctx, cancelOperation)
+	cancelWatch := context.AfterFunc(child.ctx, cancelOperation)
 	return workContext, func() {
-		stop()
+		cancelWatch()
 		cancelOperation()
 	}
 }

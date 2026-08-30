@@ -94,7 +94,7 @@ func (owner *Plugin) Manifest() plugin.Manifest {
 		Requires: []plugin.ServiceType{
 			plugin.ServiceOf[agent.Registry](),
 			plugin.ServiceOf[agent.Constructor](),
-			plugin.ServiceOf[agent.ScopeProvisioning](),
+			plugin.ServiceOf[agent.ScopeSetup](),
 			plugin.ServiceOf[agentdefaultmodel.DefaultModel](),
 			plugin.ServiceOf[commands.Registry](),
 			plugin.ServiceOf[llm.LlmRuntime](),
@@ -145,7 +145,7 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 	if err != nil {
 		return err
 	}
-	scopeProvisioning, err := plugin.Require[agent.ScopeProvisioning](owner)
+	scopeSetup, err := plugin.Require[agent.ScopeSetup](owner)
 	if err != nil {
 		return err
 	}
@@ -224,7 +224,7 @@ func (owner *Plugin) Apply(requestContext context.Context) error {
 		sessionapi.Dependencies{
 			Agents:      agents,
 			Constructor: constructor,
-			Scopes:      scopeProvisioning,
+			Scopes:      scopeSetup,
 			Sessions:    sessions,
 			Persistence: persistence,
 			LLM:         models,

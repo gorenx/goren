@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/agent/scopedplugin"
 	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/session"
 	sesspersist "github.com/gorenx/goren/session/persistence"
@@ -24,15 +23,15 @@ type materializer struct {
 	constructor      agent.Constructor
 	persistence      sesspersist.Persistence
 	delegation       approval.DelegationPolicy
-	commonExtensions agent.Provisioner
+	commonExtensions agent.Setup
 	extensions       Extensions
 }
 
 // childConfiguration is the complete constructor input derived from one
 // effective Definition for the current parent lineage.
 type childConfiguration struct {
-	options     agent.Options
-	provisioner agent.Provisioner
+	options agent.Options
+	setup   agent.Setup
 }
 
 func (factory *materializer) materialize(
@@ -116,7 +115,7 @@ func (factory *materializer) create(
 			),
 			Seed:          seed,
 			AgentOptions:  configuration.options,
-			Provisioner:   configuration.provisioner,
+			Setup:         configuration.setup,
 			RuntimeParent: parentAgent,
 		},
 	)
@@ -192,7 +191,7 @@ func (factory *materializer) resume(
 		agent.ResumeOptions{
 			SessionID:     bindingValue.ChildSessionID,
 			AgentOptions:  configuration.options,
-			Provisioner:   configuration.provisioner,
+			Setup:         configuration.setup,
 			RuntimeParent: parentAgent,
 		},
 	)
@@ -242,49 +241,45 @@ func (factory *materializer) configure(
 			err,
 		)
 	}
-	definitionProvisioner, err := factory.provisioner(effective, fresh)
+	definitionSetup, err := factory.setup(effective, fresh)
 	if err != nil {
 		return childConfiguration{}, err
 	}
 	return childConfiguration{
 		options: *effective.AgentOptions,
-		provisioner: agent.ComposeProvisioners(
-			definitionProvisioner,
-			newAppliedProvisioner(effective),
+		setup: agent.ComposeSetups(
+			definitionSetup,
+			newAppliedSetup(effective),
 		),
 	}, nil
 }
 
-func (factory *materializer) provisioner(
+func (factory *materializer) setup(
 	definitionValue boundcontract.Definition,
 	fresh bool,
-) (agent.Provisioner, error) {
+) (agent.Setup, error) {
 	if factory == nil || factory.extensions == nil {
 		return nil, errors.New(
 			"subagent: Bound Extension selection is unavailable",
 		)
 	}
-	selectedExtensions, err := factory.extensions.Provision(
+	selectedExtensions, err := factory.extensions.Setup(
 		definitionValue.Extensions,
 	)
 	if err != nil {
 		return nil, err
 	}
-	policyPlugins := childpolicy.Plugins(
+	policies := childpolicy.Setup(
 		childpolicy.PolicySet{
 			SystemPrompt:    &definitionValue.SystemPrompt,
 			ToolRestriction: definitionValue.ToolRestriction,
 		},
 	)
-	var policies agent.Provisioner
-	if len(policyPlugins) != 0 {
-		policies = scopedplugin.MountPlugins(policyPlugins...)
-	}
-	var delegation agent.Provisioner
+	var delegation agent.Setup
 	if fresh {
 		delegation = childpolicy.DelegationSeed(factory.delegation)
 	}
-	return agent.ComposeProvisioners(
+	return agent.ComposeSetups(
 		delegation,
 		policies,
 		factory.commonExtensions,

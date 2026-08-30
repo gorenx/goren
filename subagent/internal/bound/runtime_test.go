@@ -18,6 +18,8 @@ import (
 	boundcontract "github.com/gorenx/goren/subagent/bound"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
 	subagentprojection "github.com/gorenx/goren/subagent/internal/projection"
+	"github.com/gorenx/goren/systemprompt"
+	"github.com/gorenx/goren/tools"
 )
 
 type boundRuntimePersistence struct {
@@ -171,51 +173,75 @@ func (*boundRuntimeAgent) Steer(agentmessage.UserMessage) error  { return nil }
 func (*boundRuntimeAgent) Inject(agentmessage.UserMessage) error { return nil }
 
 type boundRuntimeScope struct {
-	subject agent.Agent
-	mutex   sync.Mutex
-	// Each value is a canonical Plugin name mounted in provisioning order.
-	mounted   []string
+	agent.ScopeEditor
+	subject   agent.Agent
+	mutex     sync.Mutex
 	resources []agent.ScopeResource
 }
 
-func (scope *boundRuntimeScope) Agent() agent.Agent { return scope.subject }
+func (runtimeScope *boundRuntimeScope) ApplySetup(
+	requestContext context.Context,
+	subject agent.Agent,
+	scopeSetup agent.Setup,
+) (agent.ScopeResources, error) {
+	before := len(runtimeScope.resources)
+	if err := scopeSetup.Apply(requestContext, subject, runtimeScope); err != nil {
+		return nil, err
+	}
+	resources := &boundScopeResources{
+		resources: append(
+			[]agent.ScopeResource(nil),
+			runtimeScope.resources[before:]...,
+		),
+	}
+	return resources, nil
+}
 
-func (scope *boundRuntimeScope) Own(resource agent.ScopeResource) error {
+func (runtimeScope *boundRuntimeScope) Own(resource agent.ScopeResource) error {
 	if resource == nil {
 		return errors.New("test: nil Scope resource")
 	}
-	scope.mutex.Lock()
-	scope.resources = append(scope.resources, resource)
-	scope.mutex.Unlock()
+	runtimeScope.mutex.Lock()
+	runtimeScope.resources = append(runtimeScope.resources, resource)
+	runtimeScope.mutex.Unlock()
 	return nil
 }
 
-func (scope *boundRuntimeScope) MountPlugin(
-	_ context.Context,
-	instance pluginruntime.Plugin,
-) (agent.ScopeResource, error) {
-	resource := &boundRuntimeResource{}
-	scope.mutex.Lock()
-	scope.mounted = append(scope.mounted, instance.Manifest().Name)
-	scope.resources = append(scope.resources, resource)
-	scope.mutex.Unlock()
-	return resource, nil
+func (runtimeScope *boundRuntimeScope) ApplyNestedSetup(
+	requestContext context.Context,
+	nestedSetup agent.Setup,
+) (agent.ScopeResources, error) {
+	return runtimeScope.ApplySetup(
+		requestContext,
+		runtimeScope.subject,
+		nestedSetup,
+	)
 }
 
-type boundRuntimeResource struct{}
-
-func (*boundRuntimeResource) Dispose(context.Context) error { return nil }
-
-type boundAgentRuntime struct {
-	scope    *boundRuntimeScope
-	sessions *boundRuntimeSessions
-}
-
-func (*boundAgentRuntime) Dispatch(context.Context, agent.RuntimeEvent) error {
+func (runtimeScope *boundRuntimeScope) AddPromptSection(
+	context.Context,
+	systemprompt.PromptSection,
+) error {
 	return nil
 }
 
-func (*boundAgentRuntime) ResolvePreStep(
+func (runtimeScope *boundRuntimeScope) AddToolRestriction(
+	context.Context,
+	string,
+	tools.ToolRestriction,
+) error {
+	return nil
+}
+
+func (runtimeScope *boundRuntimeScope) Check(validation agent.ScopeCheck) error {
+	return validation.Check()
+}
+
+func (*boundRuntimeScope) Dispatch(context.Context, agent.AgentEvent) error {
+	return nil
+}
+
+func (*boundRuntimeScope) ResolvePreStep(
 	requestContext context.Context,
 	notice agent.PreStepNotice,
 	action agent.PreStepAction,
@@ -223,7 +249,7 @@ func (*boundAgentRuntime) ResolvePreStep(
 	return action.Execute(requestContext, notice)
 }
 
-func (*boundAgentRuntime) ResolveRequest(
+func (*boundRuntimeScope) ResolveRequest(
 	requestContext context.Context,
 	notice agent.RequestNotice,
 	action agent.RequestAction,
@@ -231,40 +257,79 @@ func (*boundAgentRuntime) ResolveRequest(
 	return action.Execute(requestContext, notice)
 }
 
-func (*boundAgentRuntime) ResolveRequestError(
+func (*boundRuntimeScope) ResolveRequestError(
 	requestContext context.Context,
 	notice agent.RequestErrorNotice,
-	handler agent.RequestErrorHandler,
+	action agent.RequestErrorHandler,
 ) (agent.RequestErrorAction, error) {
-	return handler.Execute(requestContext, notice)
+	return action.Execute(requestContext, notice)
 }
 
-func (runtime *boundAgentRuntime) Provision(
-	requestContext context.Context,
-	source agent.Provisioner,
-) error {
-	return agent.ApplyProvisioning(requestContext, runtime.scope, source)
-}
-
-func (runtime *boundAgentRuntime) Teardown(
-	closeContext context.Context,
-) error {
-	runtime.scope.mutex.Lock()
-	resources := append(
-		[]agent.ScopeResource(nil),
-		runtime.scope.resources...,
-	)
-	runtime.scope.resources = nil
-	runtime.scope.mutex.Unlock()
+func (runtimeScope *boundRuntimeScope) Close(closeContext context.Context) error {
+	runtimeScope.mutex.Lock()
+	resources := append([]agent.ScopeResource(nil), runtimeScope.resources...)
+	runtimeScope.resources = nil
+	runtimeScope.mutex.Unlock()
 	var closeErr error
 	for index := len(resources) - 1; index >= 0; index-- {
-		closeErr = errors.Join(
-			closeErr,
-			resources[index].Dispose(closeContext),
-		)
+		closeErr = errors.Join(closeErr, resources[index].Close(closeContext))
 	}
-	runtime.sessions.leave(runtime.scope.subject.ID())
 	return closeErr
+}
+
+type boundScopeResources struct {
+	once      sync.Once
+	resources []agent.ScopeResource
+}
+
+func (resources *boundScopeResources) Close(closeContext context.Context) error {
+	var closeErr error
+	resources.once.Do(func() {
+		for index := len(resources.resources) - 1; index >= 0; index-- {
+			closeErr = errors.Join(
+				closeErr,
+				resources.resources[index].Close(closeContext),
+			)
+		}
+	})
+	return closeErr
+}
+
+type boundAgentHost struct {
+	scope      *boundRuntimeScope
+	sessions   *boundRuntimeSessions
+	releaseErr error
+	closeOnce  sync.Once
+	closed     chan struct{}
+}
+
+func (host *boundAgentHost) Agent() agent.Agent {
+	return host.scope.subject
+}
+
+func (host *boundAgentHost) Scope() agent.Scope {
+	return host.scope
+}
+
+func (host *boundAgentHost) EnterServing(context.Context) error {
+	host.sessions.enter(host.scope.subject.SessionValue())
+	return nil
+}
+
+func (*boundAgentHost) Announce(context.Context) error {
+	return nil
+}
+
+func (host *boundAgentHost) Close(closeContext context.Context) error {
+	host.closeOnce.Do(func() {
+		host.sessions.leave(host.scope.subject.ID())
+		host.releaseErr = errors.Join(
+			host.releaseErr,
+			host.scope.Close(closeContext),
+		)
+		close(host.closed)
+	})
+	return host.releaseErr
 }
 
 type boundAgentFactory struct {
@@ -283,9 +348,8 @@ type boundAgentFactory struct {
 
 func (builder *boundAgentFactory) CreateAgent(
 	requestContext context.Context,
-	agentEpoch agent.AgentEpoch,
-	settings agent.CreateOptions,
-) error {
+	settings agent.CreateHostOptions,
+) (agent.Host, error) {
 	conversation, err := session.New(
 		settings.SessionID,
 		session.CreateOptions{
@@ -294,7 +358,7 @@ func (builder *boundAgentFactory) CreateAgent(
 		},
 	)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	builder.mutex.Lock()
 	builder.createCalls++
@@ -303,42 +367,38 @@ func (builder *boundAgentFactory) CreateAgent(
 	createRelease := builder.createRelease
 	builder.mutex.Unlock()
 	if createErr != nil {
-		return createErr
+		return nil, createErr
 	}
 	if createEntered != nil {
 		select {
 		case createEntered <- settings.SessionID:
 		case <-requestContext.Done():
-			return context.Cause(requestContext)
+			return nil, context.Cause(requestContext)
 		}
 	}
 	if createRelease != nil {
 		select {
 		case <-createRelease:
 		case <-requestContext.Done():
-			return context.Cause(requestContext)
+			return nil, context.Cause(requestContext)
 		}
 	}
-	return builder.attach(
-		requestContext,
-		agentEpoch,
+	return builder.prepare(
 		conversation,
 		settings.AgentOptions,
-		settings.Provisioner,
 	)
 }
 
 func (builder *boundAgentFactory) ResumeAgent(
 	requestContext context.Context,
-	agentEpoch agent.AgentEpoch,
-	settings agent.ResumeOptions,
-) error {
+	settings agent.ResumeHostOptions,
+) (agent.Host, error) {
 	inspection, err := builder.persistence.Inspect(
 		requestContext,
 		settings.SessionID,
 	)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	conversation, err := session.New(
 		settings.SessionID,
@@ -356,54 +416,36 @@ func (builder *boundAgentFactory) ResumeAgent(
 		},
 	)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	builder.mutex.Lock()
 	builder.resumeCalls++
 	builder.mutex.Unlock()
-	return builder.attach(
-		requestContext,
-		agentEpoch,
+	return builder.prepare(
 		conversation,
 		settings.AgentOptions,
-		settings.Provisioner,
 	)
 }
 
-func (builder *boundAgentFactory) attach(
-	requestContext context.Context,
-	agentEpoch agent.AgentEpoch,
+func (builder *boundAgentFactory) prepare(
 	conversation session.Context,
 	options agent.Options,
-	source agent.Provisioner,
-) error {
+) (agent.Host, error) {
 	subject := &boundRuntimeAgent{
 		identifier:   conversation.ID(),
 		conversation: conversation,
 		options:      options,
 	}
-	scope := &boundRuntimeScope{subject: subject}
-	if source != nil {
-		if err := agent.ApplyProvisioning(
-			requestContext,
-			scope,
-			source,
-		); err != nil {
-			return err
-		}
-	}
-	runtime := &boundAgentRuntime{
-		scope:    scope,
+	runtimeScope := &boundRuntimeScope{subject: subject}
+	host := &boundAgentHost{
+		scope:    runtimeScope,
 		sessions: builder.sessions,
+		closed:   make(chan struct{}),
 	}
-	if _, err := agentEpoch.Attach(subject, runtime); err != nil {
-		return err
-	}
-	builder.sessions.enter(conversation)
 	builder.mutex.Lock()
 	builder.latestAgents[conversation.ID()] = subject
 	builder.mutex.Unlock()
-	return nil
+	return host, nil
 }
 
 type boundRuntimeFailures struct {
@@ -455,9 +497,9 @@ func runtimeInput(identifier string, text string) boundcontract.Input {
 	}
 }
 
-func (selection *boundRuntimeExtensions) Provision(
+func (selection *boundRuntimeExtensions) Setup(
 	[]string,
-) (agent.Provisioner, error) {
+) (agent.Setup, error) {
 	selection.mutex.Lock()
 	defer selection.mutex.Unlock()
 	return nil, selection.provisionErr
@@ -471,6 +513,28 @@ type boundRuntimeFixture struct {
 	failures     *boundRuntimeFailures
 	parent       agent.Handle
 	projections  *sessionprojection.DriveRegistry
+}
+
+type boundFactoryProvider struct {
+	pluginruntime.Base
+	builder *boundAgentFactory
+}
+
+func (provider *boundFactoryProvider) Manifest() pluginruntime.Manifest {
+	return pluginruntime.Manifest{
+		Name: "test/bound-agent-factory",
+		Provides: []pluginruntime.ProvidedService{
+			pluginruntime.NewProvidedService[agent.Factory](provider.builder),
+		},
+	}
+}
+
+func (*boundFactoryProvider) Apply(requestContext context.Context) error {
+	return requestContext.Err()
+}
+
+func (*boundFactoryProvider) Dispose(context.Context) error {
+	return nil
 }
 
 func newBoundRuntimeFixture(
@@ -492,11 +556,30 @@ func newBoundRuntimeFixture(
 		createErrors: make(map[session.SessionID]error),
 		latestAgents: make(map[session.SessionID]*boundRuntimeAgent),
 	}
-	registration, err := agentRegistry.RegisterFactory(agentFactory)
+	registryPlugin, err := agent.NewRegistryPlugin(agentRegistry)
 	if err != nil {
 		testingContext.Fatal(err)
 	}
-	testingContext.Cleanup(registration.Close)
+	runtimeEngine := pluginruntime.NewRuntime(pluginruntime.RuntimeSettings{})
+	promptConfig, err := systemprompt.ValidateConfig(systemprompt.Config{})
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	toolConfig, err := tools.ValidateConfig(tools.Config{})
+	if err != nil {
+		testingContext.Fatal(err)
+	}
+	if _, err = runtimeEngine.Start(
+		context.Background(),
+		systemprompt.New(promptConfig, systemprompt.RegistryOptions{}),
+		tools.New(toolConfig),
+		&boundFactoryProvider{
+			builder: agentFactory,
+		},
+		registryPlugin,
+	); err != nil {
+		testingContext.Fatal(err)
+	}
 	parentHandle, err := agentRegistry.Create(
 		context.Background(),
 		agent.CreateOptions{
@@ -545,6 +628,9 @@ func newBoundRuntimeFixture(
 			testingContext.Error(closeErr)
 		}
 		if closeErr := parentHandle.Dispose(context.Background()); closeErr != nil {
+			testingContext.Error(closeErr)
+		}
+		if closeErr := runtimeEngine.Shutdown(context.Background()); closeErr != nil {
 			testingContext.Error(closeErr)
 		}
 	})
@@ -611,29 +697,29 @@ func TestSessionStartedBindsAndMaterializesDefinitionsConcurrently(
 		runtimeDefinition(testingContext, "second", 1, true, "second prompt"),
 	)
 	entered := make(chan session.SessionID, 2)
-	release := make(chan struct{})
+	constructionGate := make(chan struct{})
 	var releaseOnce sync.Once
 	testingContext.Cleanup(func() {
-		releaseOnce.Do(func() { close(release) })
+		releaseOnce.Do(func() { close(constructionGate) })
 	})
 	fixture.agentFactory.mutex.Lock()
 	fixture.agentFactory.createEntered = entered
-	fixture.agentFactory.createRelease = release
+	fixture.agentFactory.createRelease = constructionGate
 	fixture.agentFactory.mutex.Unlock()
 	fixture.owner.SessionStarted(fixture.parent.Subject)
 	// Key is a generated child Session ID. Value records entry before release.
 	observed := make(map[session.SessionID]bool, 2)
 	for len(observed) != 2 {
 		select {
-		case childID := <-entered:
-			observed[childID] = true
+		case childSessionID := <-entered:
+			observed[childSessionID] = true
 		case <-time.After(2 * time.Second):
 			testingContext.Fatal(
 				"different Bound children did not materialize concurrently",
 			)
 		}
 	}
-	releaseOnce.Do(func() { close(release) })
+	releaseOnce.Do(func() { close(constructionGate) })
 	waitForBoundCondition(testingContext, func() bool {
 		view := runtimeBoundView(testingContext, fixture)
 		return len(view.Bindings) == 2 && len(view.Materializations) == 2
@@ -774,10 +860,10 @@ func TestCloseCancelsBlockedBoundActivation(
 		runtimeDefinition(testingContext, "researcher", 1, true, "prompt"),
 	)
 	entered := make(chan session.SessionID, 1)
-	release := make(chan struct{})
+	constructionGate := make(chan struct{})
 	fixture.agentFactory.mutex.Lock()
 	fixture.agentFactory.createEntered = entered
-	fixture.agentFactory.createRelease = release
+	fixture.agentFactory.createRelease = constructionGate
 	fixture.agentFactory.mutex.Unlock()
 	fixture.owner.SessionStarted(fixture.parent.Subject)
 	select {
@@ -795,10 +881,10 @@ func TestCloseCancelsBlockedBoundActivation(
 			testingContext.Fatal(err)
 		}
 	case <-time.After(2 * time.Second):
-		close(release)
+		close(constructionGate)
 		testingContext.Fatal("Bound Close did not cancel blocked activation")
 	}
-	close(release)
+	close(constructionGate)
 }
 
 func TestBindingFreezesCompletedPrefixAndCreatesIdleChild(
@@ -1091,7 +1177,7 @@ func TestBoundExecutionSettlesWhenParentCloses(
 	if worker == nil || worker.current == nil {
 		testingContext.Fatal("Bound execution is missing")
 	}
-	running := worker.current.execution
+	running := worker.current
 	if err := fixture.parent.Dispose(context.Background()); err != nil {
 		testingContext.Fatal(err)
 	}
@@ -1147,13 +1233,13 @@ func runtimeBoundView(
 
 func runtimeWorker(
 	fixture boundRuntimeFixture,
-	childID session.SessionID,
+	childSessionID session.SessionID,
 ) *boundChild {
 	fixture.owner.workers.mutex.Lock()
 	defer fixture.owner.workers.mutex.Unlock()
 	parentID := fixture.parent.Subject.ID()
 	for _, current := range fixture.owner.workers.entries[parentID] {
-		if current.key.childID == childID {
+		if current.key.childSessionID == childSessionID {
 			return current
 		}
 	}
@@ -1364,7 +1450,8 @@ func int64Pointer(value int64) *int64 { return &value }
 
 var _ agent.Agent = (*boundRuntimeAgent)(nil)
 var _ agent.Scope = (*boundRuntimeScope)(nil)
-var _ agent.AgentScopeRuntime = (*boundAgentRuntime)(nil)
+var _ agent.Host = (*boundAgentHost)(nil)
 var _ agent.Factory = (*boundAgentFactory)(nil)
+var _ pluginruntime.Plugin = (*boundFactoryProvider)(nil)
 var _ FailureReporter = (*boundRuntimeFailures)(nil)
 var _ Extensions = (*boundRuntimeExtensions)(nil)

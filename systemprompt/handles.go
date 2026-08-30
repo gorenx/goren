@@ -50,7 +50,7 @@ func (state *promptHandleState) finish(
 // Tool provider, or runtime-context suppressor in one Registry layer.
 type PromptHandle struct {
 	state promptHandleState
-	owner *Registry
+	owner *PromptLayer
 	kind  promptEntryKind
 	name  string
 	token *promptEntryToken

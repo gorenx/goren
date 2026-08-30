@@ -8,13 +8,12 @@ import (
 
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/internal/jsonvalue"
-	"github.com/gorenx/goren/plugin"
 )
 
 // dispatcher owns the around-dispatch Waterfall, Tool body invocation, and
 // canonical successful-output normalization.
 type dispatcher struct {
-	source plugin.Plugin
+	effects layerEffects
 }
 
 func (bodyDispatcher *dispatcher) dispatch(
@@ -26,9 +25,8 @@ func (bodyDispatcher *dispatcher) dispatch(
 	if state == nil {
 		return nil, errors.New("tools: execution state is unavailable")
 	}
-	dispatchOutcome, err := plugin.Run(
+	dispatchOutcome, err := bodyDispatcher.effects.ResolveExecute(
 		requestContext,
-		bodyDispatcher.source,
 		ExecuteRequest{
 			toolCall: toolCall,
 		},

@@ -65,7 +65,7 @@ var _ boundcontract.Inbox = (*Service)(nil)
 func (owner *Service) HasBinding(
 	requestContext context.Context,
 	parentAgent agent.Agent,
-	childID session.SessionID,
+	childSessionID session.SessionID,
 ) (bool, error) {
 	if err := checkContext(requestContext, "Bound HasBinding"); err != nil {
 		return false, err
@@ -80,7 +80,7 @@ func (owner *Service) HasBinding(
 	if err != nil {
 		return false, err
 	}
-	_, found := view.Binding(childID)
+	_, found := view.Binding(childSessionID)
 	return found, nil
 }
 
@@ -89,7 +89,7 @@ func (owner *Service) HasBinding(
 func (owner *Service) Followup(
 	requestContext context.Context,
 	parentAgent agent.Agent,
-	childID session.SessionID,
+	childSessionID session.SessionID,
 	messageValue agentmessage.UserMessage,
 ) (agentmessage.MessageID, error) {
 	if err := checkContext(requestContext, "Bound Followup"); err != nil {
@@ -105,9 +105,9 @@ func (owner *Service) Followup(
 	if err != nil {
 		return "", err
 	}
-	bindingValue, found := view.Binding(childID)
+	bindingValue, found := view.Binding(childSessionID)
 	if !found {
-		return "", bindingNotFound(childID)
+		return "", bindingNotFound(childSessionID)
 	}
 	worker, err := owner.workers.acquire(parentAgent, bindingValue)
 	if err != nil {
@@ -120,10 +120,10 @@ func (owner *Service) Followup(
 // resident Agent epoch.
 func (owner *Service) Interrupt(
 	requestContext context.Context,
-	childID session.SessionID,
+	childSessionID session.SessionID,
 ) error {
 	if err := checkContext(requestContext, "Bound Interrupt"); err != nil {
 		return err
 	}
-	return owner.workers.interrupt(requestContext, childID)
+	return owner.workers.interrupt(requestContext, childSessionID)
 }

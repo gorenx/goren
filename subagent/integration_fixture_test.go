@@ -336,7 +336,7 @@ func newIntegrationFixtureWithConfiguration(
 	if settingsErr != nil {
 		t.Fatal(settingsErr)
 	}
-	loopPlugin, loopErr := agentloop.New(
+	loopPlugin, loopErr := agentloop.NewPlugin(
 		agentloop.Settings{
 			MaxParallelToolCalls: agentloop.DefaultMaxParallelToolCalls,
 		},

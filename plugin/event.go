@@ -35,16 +35,17 @@ type eventSubscriptionSpec struct {
 	observer  EventObserver
 }
 
-// DeliveryPolicy controls fact delivery mechanics only.
-type DeliveryPolicy uint8
+// DeliveryPolicy is the stable name of one event delivery mechanism. It is a
+// string alias so event owners do not have to import Plugin Runtime types.
+type DeliveryPolicy = string
 
 const (
 	// DeliveryOrdered invokes matching Observers sequentially.
-	DeliveryOrdered DeliveryPolicy = iota
+	DeliveryOrdered = "ordered"
 	// DeliveryParallel invokes matching Observers concurrently and joins errors.
-	DeliveryParallel
+	DeliveryParallel = "parallel"
 	// DeliveryBestEffort reports Observer failures and returns success.
-	DeliveryBestEffort
+	DeliveryBestEffort = "best-effort"
 )
 
 // EventObserver is the single event entry point of a Plugin. Runtime invokes

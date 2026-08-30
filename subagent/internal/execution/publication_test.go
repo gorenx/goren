@@ -83,18 +83,14 @@ func TestPublishActivatesRegistersAndAnnouncesExecution(t *testing.T) {
 	childAgent := &publicationAgent{
 		identifier: session.SessionID("child"),
 	}
-	running, err := New(
+	running := newManagedExecutionRecord(
 		subagent.RunID("run"),
 		childAgent.ID(),
-		&terminatorRecord{},
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	registryOwner := NewRegistry()
 	lifecyclePublisher := &publicationPublisher{}
 	closing := make(chan struct{})
-	err = Publish(
+	err := Publish(
 		registryOwner,
 		lifecyclePublisher,
 		Entry{
@@ -136,16 +132,12 @@ func TestPublishDoesNotAnnounceRejectedRegistryEntry(t *testing.T) {
 	otherAgent := &publicationAgent{
 		identifier: session.SessionID("other"),
 	}
-	running, err := New(
+	running := newManagedExecutionRecord(
 		subagent.RunID("run"),
 		childAgent.ID(),
-		&terminatorRecord{},
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	lifecyclePublisher := &publicationPublisher{}
-	err = Publish(
+	err := Publish(
 		NewRegistry(),
 		lifecyclePublisher,
 		Entry{

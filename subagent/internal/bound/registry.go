@@ -11,9 +11,9 @@ import (
 )
 
 type bindingKey struct {
-	parentID session.SessionID
-	name     string
-	childID  session.SessionID
+	parentID       session.SessionID
+	name           string
+	childSessionID session.SessionID
 }
 
 // registry indexes Binding workers owned by exact parent Agent epochs. Its
@@ -55,9 +55,9 @@ func (children *registry) acquire(
 	bindingValue subagentprojection.BoundBinding,
 ) (*boundChild, error) {
 	key := bindingKey{
-		parentID: parentAgent.ID(),
-		name:     bindingValue.Name,
-		childID:  bindingValue.ChildSessionID,
+		parentID:       parentAgent.ID(),
+		name:           bindingValue.Name,
+		childSessionID: bindingValue.ChildSessionID,
 	}
 	children.mutex.Lock()
 	if children.closing {
@@ -67,7 +67,7 @@ func (children *registry) acquire(
 	parentChildren := children.entries[key.parentID]
 	current := parentChildren[key.name]
 	if current != nil && agent.Same(current.parent, parentAgent) &&
-		current.key.childID == key.childID {
+		current.key.childSessionID == key.childSessionID {
 		children.mutex.Unlock()
 		return current, nil
 	}
@@ -96,13 +96,13 @@ func (children *registry) acquire(
 
 func (children *registry) interrupt(
 	requestContext context.Context,
-	childID session.SessionID,
+	childSessionID session.SessionID,
 ) error {
 	children.mutex.Lock()
 	var target *boundChild
 	for _, parentChildren := range children.entries {
 		for _, current := range parentChildren {
-			if current.key.childID == childID {
+			if current.key.childSessionID == childSessionID {
 				target = current
 				break
 			}

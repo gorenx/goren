@@ -31,14 +31,20 @@ const (
 
 type registration struct {
 	mutex     sync.Mutex
-	owner     *Registry
 	extension subagent.Extension
 	// name is nil for a common Extension. A non-nil value is the stable
 	// Bound-config selection name and does not identify a Tool or Plugin.
 	name          *string
 	state         registrationState
-	installations []*effect
+	installations []*extensionBinding
 	closeErr      error
+}
+
+// registrationHandle is the caller-owned removal capability. Registry never
+// stores it, so the handle may point to Registry without creating a cycle.
+type registrationHandle struct {
+	owner  *Registry
+	record *registration
 }
 
 // New constructs an empty Extension Registry.
@@ -62,7 +68,6 @@ func (owner *Registry) RegisterExtension(
 		return nil, err
 	}
 	record := &registration{
-		owner:     owner,
 		extension: extension,
 		name:      name,
 	}
@@ -79,7 +84,10 @@ func (owner *Registry) RegisterExtension(
 		owner.named[*name] = record
 	}
 	owner.mutex.Unlock()
-	return record, nil
+	return &registrationHandle{
+		owner:  owner,
+		record: record,
+	}, nil
 }
 
 func extensionName(options []subagent.ExtensionOption) (*string, error) {
@@ -191,16 +199,23 @@ func (owner *Registry) Clear(closeContext context.Context) (int, error) {
 	for index := len(registrations) - 1; index >= 0; index-- {
 		closeErr = errors.Join(
 			closeErr,
-			registrations[index].Unregister(closeContext),
+			owner.unregister(closeContext, registrations[index]),
 		)
 	}
 	return len(registrations), closeErr
 }
 
-func (record *registration) Unregister(closeContext context.Context) error {
-	if record == nil {
+func (handle *registrationHandle) Unregister(closeContext context.Context) error {
+	if handle == nil || handle.owner == nil || handle.record == nil {
 		return nil
 	}
+	return handle.owner.unregister(closeContext, handle.record)
+}
+
+func (owner *Registry) unregister(
+	closeContext context.Context,
+	record *registration,
+) error {
 	record.mutex.Lock()
 	if record.state == registrationRemoved {
 		closeErr := record.closeErr
@@ -208,23 +223,21 @@ func (record *registration) Unregister(closeContext context.Context) error {
 		return closeErr
 	}
 	record.state = registrationRemoved
-	effects := append([]*effect(nil), record.installations...)
+	bindings := append([]*extensionBinding(nil), record.installations...)
 	record.mutex.Unlock()
 
-	if record.owner != nil {
-		record.owner.mutex.Lock()
-		record.owner.registrations = slices.DeleteFunc(
-			record.owner.registrations,
-			func(candidate *registration) bool {
-				return candidate == record
-			},
-		)
-		if record.name != nil && record.owner.named[*record.name] == record {
-			delete(record.owner.named, *record.name)
-		}
-		record.owner.mutex.Unlock()
+	owner.mutex.Lock()
+	owner.registrations = slices.DeleteFunc(
+		owner.registrations,
+		func(candidate *registration) bool {
+			return candidate == record
+		},
+	)
+	if record.name != nil && owner.named[*record.name] == record {
+		delete(owner.named, *record.name)
 	}
-	closeErr := disposeEffects(closeContext, effects)
+	owner.mutex.Unlock()
+	closeErr := closeBindings(closeContext, bindings)
 	if closeErr != nil {
 		closeErr = &subagent.Error{
 			Code: subagent.ErrorExtensionReleaseFailed,
@@ -252,5 +265,5 @@ func nilInterface(candidate any) bool {
 	}
 }
 
-var _ subagent.ExtensionRegistration = (*registration)(nil)
+var _ subagent.ExtensionRegistration = (*registrationHandle)(nil)
 var _ subagent.ExtensionDirectory = (*Registry)(nil)

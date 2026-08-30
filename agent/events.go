@@ -2,26 +2,40 @@ package agent
 
 import (
 	"context"
-	"errors"
 
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/plugin"
 )
 
+// orderedEventDelivery preserves source-compatible sequential Agent event
+// observation without importing Plugin Runtime types.
+const orderedEventDelivery = "ordered"
+
 const (
-	CreatedEventName        = "agent/created"
-	DisposedEventName       = "agent/disposed"
-	StatusEventName         = "agent/status"
-	InboxInsertedEventName  = "agent/inbox/inserted"
-	InboxClaimedEventName   = "agent/inbox/claimed"
+	// CreatedEventName identifies exact Agent publication.
+	CreatedEventName = "agent/created"
+	// DisposedEventName identifies exact Agent retirement.
+	DisposedEventName = "agent/disposed"
+	// StatusEventName identifies an Agent status transition.
+	StatusEventName = "agent/status"
+	// InboxInsertedEventName identifies a committed Inbox insertion.
+	InboxInsertedEventName = "agent/inbox/inserted"
+	// InboxClaimedEventName identifies a committed Inbox claim.
+	InboxClaimedEventName = "agent/inbox/claimed"
+	// InboxDiscardedEventName identifies an Inbox removal without execution.
 	InboxDiscardedEventName = "agent/inbox/discarded"
-	SessionStartEventName   = "agent/session-start"
-	PreStepEventName        = "agent/pre-step"
-	RequestEventName        = "agent/request"
-	RequestErrorEventName   = "agent/request-error"
-	TurnStoppingEventName   = "agent/turn-stopping"
-	ErrorEventName          = "agent/error"
+	// SessionStartEventName identifies the first Session driving edge.
+	SessionStartEventName = "agent/session-start"
+	// PreStepEventName identifies pre-step decision interception.
+	PreStepEventName = "agent/pre-step"
+	// RequestEventName identifies model request resolution.
+	RequestEventName = "agent/request"
+	// RequestErrorEventName identifies failed request recovery.
+	RequestErrorEventName = "agent/request-error"
+	// TurnStoppingEventName identifies the ordered turn stop boundary.
+	TurnStoppingEventName = "agent/turn-stopping"
+	// ErrorEventName identifies a contained Agent execution failure.
+	ErrorEventName = "agent/error"
 )
 
 // Created is the vetoable live Agent publication edge.
@@ -29,10 +43,10 @@ type Created struct {
 	Subject Agent
 }
 
-func (Created) AgentScopedRuntimeEvent() {}
-func (Created) EventName() string        { return CreatedEventName }
-func (Created) EventDelivery() plugin.DeliveryPolicy {
-	return plugin.DeliveryOrdered
+func (Created) AgentScopedEvent() {}
+func (Created) EventName() string { return CreatedEventName }
+func (Created) EventDelivery() string {
+	return orderedEventDelivery
 }
 
 // Disposed announces exact live Agent removal.
@@ -40,10 +54,10 @@ type Disposed struct {
 	Subject Agent
 }
 
-func (Disposed) AgentScopedRuntimeEvent() {}
-func (Disposed) EventName() string        { return DisposedEventName }
-func (Disposed) EventDelivery() plugin.DeliveryPolicy {
-	return plugin.DeliveryOrdered
+func (Disposed) AgentScopedEvent() {}
+func (Disposed) EventName() string { return DisposedEventName }
+func (Disposed) EventDelivery() string {
+	return orderedEventDelivery
 }
 
 // StatusChanged carries one non-repeating destination state.
@@ -52,10 +66,10 @@ type StatusChanged struct {
 	Status  Status
 }
 
-func (StatusChanged) AgentScopedRuntimeEvent() {}
-func (StatusChanged) EventName() string        { return StatusEventName }
-func (StatusChanged) EventDelivery() plugin.DeliveryPolicy {
-	return plugin.DeliveryOrdered
+func (StatusChanged) AgentScopedEvent() {}
+func (StatusChanged) EventName() string { return StatusEventName }
+func (StatusChanged) EventDelivery() string {
+	return orderedEventDelivery
 }
 
 // InboxInserted carries one committed live Inbox insertion.
@@ -64,10 +78,10 @@ type InboxInserted struct {
 	Message agentmessage.UserMessage
 }
 
-func (InboxInserted) AgentScopedRuntimeEvent() {}
-func (InboxInserted) EventName() string        { return InboxInsertedEventName }
-func (InboxInserted) EventDelivery() plugin.DeliveryPolicy {
-	return plugin.DeliveryOrdered
+func (InboxInserted) AgentScopedEvent() {}
+func (InboxInserted) EventName() string { return InboxInsertedEventName }
+func (InboxInserted) EventDelivery() string {
+	return orderedEventDelivery
 }
 
 // InboxClaimed carries one committed Inbox claim.
@@ -77,10 +91,10 @@ type InboxClaimed struct {
 	Turn    int64
 }
 
-func (InboxClaimed) AgentScopedRuntimeEvent() {}
-func (InboxClaimed) EventName() string        { return InboxClaimedEventName }
-func (InboxClaimed) EventDelivery() plugin.DeliveryPolicy {
-	return plugin.DeliveryOrdered
+func (InboxClaimed) AgentScopedEvent() {}
+func (InboxClaimed) EventName() string { return InboxClaimedEventName }
+func (InboxClaimed) EventDelivery() string {
+	return orderedEventDelivery
 }
 
 // InboxDiscarded carries one committed Inbox removal without execution.
@@ -89,19 +103,23 @@ type InboxDiscarded struct {
 	Message agentmessage.UserMessage
 }
 
-func (InboxDiscarded) AgentScopedRuntimeEvent() {}
-func (InboxDiscarded) EventName() string        { return InboxDiscardedEventName }
-func (InboxDiscarded) EventDelivery() plugin.DeliveryPolicy {
-	return plugin.DeliveryOrdered
+func (InboxDiscarded) AgentScopedEvent() {}
+func (InboxDiscarded) EventName() string { return InboxDiscardedEventName }
+func (InboxDiscarded) EventDelivery() string {
+	return orderedEventDelivery
 }
 
 // SessionStartSource classifies why an Agent's Session lifecycle began.
 type SessionStartSource string
 
 const (
+	// SessionStartup means a new Session was created.
 	SessionStartup SessionStartSource = "startup"
-	SessionResume  SessionStartSource = "resume"
-	SessionClear   SessionStartSource = "clear"
+	// SessionResume means durable Session state was restored.
+	SessionResume SessionStartSource = "resume"
+	// SessionClear means the active Session was cleared.
+	SessionClear SessionStartSource = "clear"
+	// SessionCompact means compaction began a replacement Session view.
 	SessionCompact SessionStartSource = "compact"
 )
 
@@ -111,53 +129,58 @@ type SessionStarted struct {
 	Source  SessionStartSource
 }
 
-func (SessionStarted) AgentScopedRuntimeEvent() {}
-func (SessionStarted) EventName() string        { return SessionStartEventName }
-func (SessionStarted) EventDelivery() plugin.DeliveryPolicy {
-	return plugin.DeliveryOrdered
+func (SessionStarted) AgentScopedEvent() {}
+func (SessionStarted) EventName() string { return SessionStartEventName }
+func (SessionStarted) EventDelivery() string {
+	return orderedEventDelivery
 }
 
 // PreStepKind selects rejection or entry for a proposed model step.
 type PreStepKind string
 
 const (
+	// PreStepReject prevents the proposed model step.
 	PreStepReject PreStepKind = "reject"
-	PreStepEnter  PreStepKind = "enter"
+	// PreStepEnter admits the proposed model step.
+	PreStepEnter PreStepKind = "enter"
 )
 
 // PreStepNotice is the typed input of the Agent pre-step Waterfall.
 type PreStepNotice struct {
-	plugin.WaterfallInputBase
 	Subject  Agent
 	Messages []agentmessage.UserMessage
 	Turn     int64
 	Step     int64
 }
 
+func (PreStepNotice) RuntimeWaterfallInput() {}
+
 // PreStepDecision decides whether and with which messages a step starts.
 type PreStepDecision struct {
-	plugin.WaterfallOutputBase
 	Kind     PreStepKind
 	Messages []agentmessage.UserMessage
 }
 
+func (PreStepDecision) RuntimeWaterfallOutput() {}
+
 // RequestNotice identifies the step whose immutable call config is resolving.
 type RequestNotice struct {
-	plugin.WaterfallInputBase
 	Subject Agent
 	Turn    int64
 	Step    int64
 }
 
+func (RequestNotice) RuntimeWaterfallInput() {}
+
 // RequestResolution is the typed output of the Agent request Waterfall.
 type RequestResolution struct {
-	plugin.WaterfallOutputBase
 	Config llm.CallConfig
 }
 
+func (RequestResolution) RuntimeWaterfallOutput() {}
+
 // RequestErrorNotice contains provider-neutral failed-attempt policy facts.
 type RequestErrorNotice struct {
-	plugin.WaterfallInputBase
 	Subject     Agent
 	Turn        int64
 	Step        int64
@@ -166,11 +189,14 @@ type RequestErrorNotice struct {
 	RetryPolicy llm.RetryPolicy
 }
 
+func (RequestErrorNotice) RuntimeWaterfallInput() {}
+
 // RequestErrorAction lets one Middleware own recovery for a failed attempt.
 type RequestErrorAction struct {
-	plugin.WaterfallOutputBase
 	Retry bool
 }
+
+func (RequestErrorAction) RuntimeWaterfallOutput() {}
 
 // TurnStopping is the ordered turn-boundary Event.
 type TurnStopping struct {
@@ -178,10 +204,10 @@ type TurnStopping struct {
 	Turn    int64
 }
 
-func (TurnStopping) AgentScopedRuntimeEvent() {}
-func (TurnStopping) EventName() string        { return TurnStoppingEventName }
-func (TurnStopping) EventDelivery() plugin.DeliveryPolicy {
-	return plugin.DeliveryOrdered
+func (TurnStopping) AgentScopedEvent() {}
+func (TurnStopping) EventName() string { return TurnStoppingEventName }
+func (TurnStopping) EventDelivery() string {
+	return orderedEventDelivery
 }
 
 // AgentError is a contained live failure notification.
@@ -192,45 +218,23 @@ type AgentError struct {
 	Err     error
 }
 
-func (AgentError) AgentScopedRuntimeEvent() {}
-func (AgentError) EventName() string        { return ErrorEventName }
-func (AgentError) EventDelivery() plugin.DeliveryPolicy {
-	return plugin.DeliveryOrdered
+func (AgentError) AgentScopedEvent() {}
+func (AgentError) EventName() string { return ErrorEventName }
+func (AgentError) EventDelivery() string {
+	return orderedEventDelivery
 }
 
-// RuntimeEvent is an event intentionally published from one exact Agent Scope.
+// AgentEvent is an event intentionally published from one exact Agent Scope.
 // Producer modules own their event types and opt in through the marker.
-type RuntimeEvent interface {
-	AgentScopedRuntimeEvent()
+type AgentEvent interface {
+	AgentScopedEvent()
 }
 
-type scopeRuntimeCarrier interface {
-	ScopeRuntimeValue() AgentScopeRuntime
-}
-
-func scopeRuntimeOf(subject Agent) AgentScopeRuntime {
-	carrier, matches := subject.(scopeRuntimeCarrier)
-	if !matches {
-		return nil
-	}
-	return carrier.ScopeRuntimeValue()
-}
-
-// DispatchRuntimeEvent publishes one producer-owned fact from the exact Agent
-// Scope without exposing the Scope adapter on the Agent capability.
-func DispatchRuntimeEvent(
-	requestContext context.Context,
-	subject Agent,
-	fact RuntimeEvent,
-) error {
-	if subject == nil || fact == nil {
-		return errors.New("agent: RuntimeEvent subject or fact is nil")
-	}
-	runtime := scopeRuntimeOf(subject)
-	if runtime == nil {
-		return errors.New("agent: RuntimeEvent effects are unavailable")
-	}
-	return runtime.Dispatch(requestContext, fact)
+// AgentClosingEvent is a terminal fact allowed through an exact Agent Scope
+// while Registry closes descendants. It cannot admit work or mutate Scope.
+type AgentClosingEvent interface {
+	AgentEvent
+	AgentClosingEvent()
 }
 
 // PreStepAction is the Agent-owned terminal contract for pre-step resolution.
@@ -247,73 +251,4 @@ type RequestAction interface {
 // recovery.
 type RequestErrorHandler interface {
 	Execute(context.Context, RequestErrorNotice) (RequestErrorAction, error)
-}
-
-// ResolvePreStep runs the scoped pre-step Waterfall around terminal.
-func ResolvePreStep(
-	requestContext context.Context,
-	notice PreStepNotice,
-	terminal PreStepAction,
-) (PreStepDecision, error) {
-	if notice.Subject == nil || terminal == nil {
-		return PreStepDecision{}, errors.New(
-			"agent: pre-step subject or terminal is nil",
-		)
-	}
-	runtime := scopeRuntimeOf(notice.Subject)
-	if runtime == nil {
-		return PreStepDecision{}, errors.New("agent: pre-step effects are unavailable")
-	}
-	return runtime.ResolvePreStep(
-		requestContext,
-		notice,
-		terminal,
-	)
-}
-
-// ResolveRequest runs the scoped request Waterfall around terminal.
-func ResolveRequest(
-	requestContext context.Context,
-	notice RequestNotice,
-	terminal RequestAction,
-) (llm.CallConfig, error) {
-	if notice.Subject == nil || terminal == nil {
-		return llm.CallConfig{}, errors.New(
-			"agent: request subject or terminal is nil",
-		)
-	}
-	runtime := scopeRuntimeOf(notice.Subject)
-	if runtime == nil {
-		return llm.CallConfig{}, errors.New("agent: request effects are unavailable")
-	}
-	resolved, err := runtime.ResolveRequest(
-		requestContext,
-		notice,
-		terminal,
-	)
-	return resolved.Config, err
-}
-
-// ResolveRequestError runs the scoped recovery Waterfall around terminal.
-func ResolveRequestError(
-	requestContext context.Context,
-	notice RequestErrorNotice,
-	terminal RequestErrorHandler,
-) (RequestErrorAction, error) {
-	if notice.Subject == nil || terminal == nil {
-		return RequestErrorAction{}, errors.New(
-			"agent: request-error subject or terminal is nil",
-		)
-	}
-	runtime := scopeRuntimeOf(notice.Subject)
-	if runtime == nil {
-		return RequestErrorAction{}, errors.New(
-			"agent: request-error effects are unavailable",
-		)
-	}
-	return runtime.ResolveRequestError(
-		requestContext,
-		notice,
-		terminal,
-	)
 }

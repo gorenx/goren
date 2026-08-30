@@ -11,7 +11,6 @@ import (
 	"sync"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/agent/scopedplugin"
 	"github.com/gorenx/goren/agentdefaultmodel"
 	"github.com/gorenx/goren/session"
 	sesspersist "github.com/gorenx/goren/session/persistence"
@@ -35,7 +34,7 @@ func (operation DirectoryProvisionerFunc) EnsureDirectory(path string) error {
 type AgentSessionDependencies struct {
 	Agents      agent.Registry
 	Constructor agent.Constructor
-	Scopes      agent.ScopeProvisioning
+	Scopes      agent.ScopeSetup
 	Sessions    session.LiveStore
 	Persistence sesspersist.Persistence
 	Defaults    agentdefaultmodel.DefaultModel
@@ -51,6 +50,7 @@ type creationResult struct {
 type installedSelection struct {
 	subject agent.Agent
 	ref     *agent.ModelSelectionRef
+	lease   *selectionLease
 }
 
 // AgentSessions serializes activation per Session and owns the model-selection
@@ -58,7 +58,7 @@ type installedSelection struct {
 type AgentSessions struct {
 	agents      agent.Registry
 	constructor agent.Constructor
-	scopes      agent.ScopeProvisioning
+	scopes      agent.ScopeSetup
 	sessions    session.LiveStore
 	persistence sesspersist.Persistence
 	defaults    agentdefaultmodel.DefaultModel
@@ -180,7 +180,8 @@ func (owner *AgentSessions) Selection(
 	owner.selectionMu.Lock()
 	installed, found := owner.selections[identifier]
 	owner.selectionMu.Unlock()
-	if found && sameAgent(installed.subject, subject) {
+	if found && installed.lease != nil && installed.lease.isActive() &&
+		sameAgent(installed.subject, subject) {
 		return installed.ref, nil
 	}
 	selectionRef := agent.NewModelSelectionRef(
@@ -188,14 +189,14 @@ func (owner *AgentSessions) Selection(
 			return owner.loggedOrDefaultSelection(subject.SessionValue())
 		},
 	)
-	extension, err := newSelectionExtension(owner, selectionRef)
+	modelSetup, err := newSelectionSetup(owner, selectionRef)
 	if err != nil {
 		return nil, err
 	}
-	if err = owner.scopes.Provision(
+	if _, err = owner.scopes.ApplySetup(
 		requestContext,
 		subject,
-		scopedplugin.MountPlugins(extension),
+		modelSetup,
 	); err != nil {
 		return nil, err
 	}
@@ -252,7 +253,7 @@ func (owner *AgentSessions) createOrAdopt(
 		selected := owner.defaults.CurrentSelection()
 		return selected, selected.Provider != "" && selected.Model != "", nil
 	})
-	extension, err := newSelectionExtension(owner, selectionRef)
+	modelSetup, err := newSelectionSetup(owner, selectionRef)
 	if err != nil {
 		return nil, err
 	}
@@ -265,7 +266,7 @@ func (owner *AgentSessions) createOrAdopt(
 			Provider: defaultSelection.Provider,
 			Model:    defaultSelection.Model,
 		},
-		Provisioner: scopedplugin.MountPlugins(extension),
+		Setup: modelSetup,
 	})
 	if err != nil {
 		if subject, found := owner.agents.Get(identifier); found {
@@ -316,14 +317,14 @@ func (owner *AgentSessions) resumeCold(
 		}
 		return owner.loggedOrDefaultSelection(conversation)
 	})
-	extension, err := newSelectionExtension(owner, selectionRef)
+	modelSetup, err := newSelectionSetup(owner, selectionRef)
 	if err != nil {
 		return nil, err
 	}
 	handle, err := owner.constructor.Resume(requestContext, agent.ResumeOptions{
 		SessionID:    identifier,
 		AgentOptions: loopOptions,
-		Provisioner:  scopedplugin.MountPlugins(extension),
+		Setup:        modelSetup,
 	})
 	if err != nil {
 		if subject, found := owner.agents.Get(identifier); found {
@@ -381,41 +382,34 @@ func (owner *AgentSessions) loggedOrDefaultSelection(
 func (owner *AgentSessions) installSelection(
 	subject agent.Agent,
 	selectionRef *agent.ModelSelectionRef,
-) error {
+) (*selectionLease, error) {
 	if subject == nil || selectionRef == nil {
-		return errors.New("apiproxy/session: model selection binding is incomplete")
+		return nil, errors.New(
+			"apiproxy/session: model selection binding is incomplete",
+		)
 	}
 	owner.selectionMu.Lock()
 	defer owner.selectionMu.Unlock()
 	if installed, found := owner.selections[subject.ID()]; found {
-		if sameAgent(installed.subject, subject) && installed.ref == selectionRef {
-			return nil
+		if installed.lease.isActive() &&
+			sameAgent(installed.subject, subject) &&
+			installed.ref == selectionRef {
+			return installed.lease, nil
 		}
-		return fmt.Errorf(
-			"apiproxy/session: Agent %q already has a model selection binding",
-			subject.ID(),
-		)
+		if installed.lease.isActive() {
+			return nil, fmt.Errorf(
+				"apiproxy/session: Agent %q already has a model selection binding",
+				subject.ID(),
+			)
+		}
 	}
+	lease := newSelectionLease()
 	owner.selections[subject.ID()] = installedSelection{
 		subject: subject,
 		ref:     selectionRef,
+		lease:   lease,
 	}
-	return nil
-}
-
-func (owner *AgentSessions) removeSelection(
-	subject agent.Agent,
-	selectionRef *agent.ModelSelectionRef,
-) {
-	if subject == nil || selectionRef == nil {
-		return
-	}
-	owner.selectionMu.Lock()
-	installed, found := owner.selections[subject.ID()]
-	if found && sameAgent(installed.subject, subject) && installed.ref == selectionRef {
-		delete(owner.selections, subject.ID())
-	}
-	owner.selectionMu.Unlock()
+	return lease, nil
 }
 
 func sameAgent(leftSubject agent.Agent, rightSubject agent.Agent) bool {

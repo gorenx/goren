@@ -14,21 +14,21 @@ func unauthorized(message string) error {
 	}
 }
 
-func unauthorizedChild(childID session.SessionID) error {
+func unauthorizedChild(childSessionID session.SessionID) error {
 	return unauthorized(
-		fmt.Sprintf("subagent %q belongs to another parent Session", childID),
+		fmt.Sprintf("subagent %q belongs to another parent Session", childSessionID),
 	)
 }
 
-func duplicateChild(childID session.SessionID) error {
+func duplicateChild(childSessionID session.SessionID) error {
 	return &subagent.Error{
 		Code:    subagent.ErrorDuplicateChild,
-		Message: fmt.Sprintf("subagent %q already exists", childID),
+		Message: fmt.Sprintf("subagent %q already exists", childSessionID),
 	}
 }
 
 func notResumable(
-	childID session.SessionID,
+	childSessionID session.SessionID,
 	reason string,
 	cause error,
 ) error {
@@ -36,19 +36,19 @@ func notResumable(
 		Code: subagent.ErrorNotResumable,
 		Message: fmt.Sprintf(
 			"subagent %q %s",
-			childID,
+			childSessionID,
 			reason,
 		),
 		Cause: cause,
 	}
 }
 
-func descendantAdmissionClosed(childID session.SessionID) error {
+func descendantAdmissionClosed(childSessionID session.SessionID) error {
 	return &subagent.Error{
 		Code: subagent.ErrorDraining,
 		Message: fmt.Sprintf(
 			"subagent %q lost parent descendant admission",
-			childID,
+			childSessionID,
 		),
 	}
 }

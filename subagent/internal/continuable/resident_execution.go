@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentmessage"
@@ -12,23 +13,100 @@ import (
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
 )
 
-// residentExecution is one published Continuable child Agent epoch and its
-// common Execution. It owns settlement observation and terminal work for that
-// exact epoch.
+// residentExecution is one published Continuable child execution. It owns the
+// lifecycle state, settlement observation, and terminal work for that exact
+// child Agent lifecycle.
 type residentExecution struct {
-	owner       *continuableChild
-	agents      agent.Registry
-	descendants agent.RuntimeDescendants
-	sessions    session.LiveStore
-	publisher   sharedexecution.EventPublisher
-	failures    FailureReporter
-	executions  *sharedexecution.Registry
-	handle      agent.Handle
-	execution   *sharedexecution.Execution
-	parent      agent.Agent
-	seedBuilder string
-	boundary    int64
-	wake        chan struct{}
+	mutex          sync.RWMutex
+	phase          subagent.ExecutionState
+	done           chan struct{}
+	terminal       subagent.Terminal
+	terminalErr    error
+	executionRunID subagent.RunID
+	childSessionID session.SessionID
+	agents         agent.Registry
+	descendants    agent.RuntimeDescendants
+	sessions       session.LiveStore
+	publisher      sharedexecution.EventPublisher
+	failures       FailureReporter
+	executions     *sharedexecution.Registry
+	handle         agent.Handle
+	parent         agent.Agent
+	seedBuilder    string
+	boundary       int64
+	wake           chan struct{}
+	closed         chan<- executionClosed
+}
+
+func newResidentExecution(
+	executionRunID subagent.RunID,
+	childSessionID session.SessionID,
+) (*residentExecution, error) {
+	if executionRunID == "" || childSessionID == "" {
+		return nil, errors.New(
+			"subagent: Continuable execution identity is incomplete",
+		)
+	}
+	return &residentExecution{
+		phase:          subagent.ExecutionStarting,
+		done:           make(chan struct{}),
+		executionRunID: executionRunID,
+		childSessionID: childSessionID,
+		wake:           make(chan struct{}, 1),
+	}, nil
+}
+
+func (resident *residentExecution) Activate() error {
+	resident.mutex.Lock()
+	defer resident.mutex.Unlock()
+	if resident.phase != subagent.ExecutionStarting {
+		return errors.New(
+			"subagent: Continuable execution is no longer starting",
+		)
+	}
+	resident.phase = subagent.ExecutionActive
+	return nil
+}
+
+func (resident *residentExecution) Stop(cause sharedexecution.CloseCause) {
+	resident.stop(context.Background(), cause)
+}
+
+func (resident *residentExecution) stop(
+	closeContext context.Context,
+	cause sharedexecution.CloseCause,
+) {
+	resident.mutex.Lock()
+	if resident.phase == subagent.ExecutionStopping ||
+		resident.phase == subagent.ExecutionStopped {
+		resident.mutex.Unlock()
+		return
+	}
+	resident.phase = subagent.ExecutionStopping
+	resident.mutex.Unlock()
+	go resident.terminate(context.WithoutCancel(closeContext), cause)
+}
+
+func (resident *residentExecution) terminate(
+	closeContext context.Context,
+	cause sharedexecution.CloseCause,
+) {
+	terminalValue, terminalErr := resident.close(closeContext, cause)
+	resident.mutex.Lock()
+	resident.terminal = sharedexecution.CloneTerminal(terminalValue)
+	resident.terminalErr = terminalErr
+	resident.phase = subagent.ExecutionStopped
+	close(resident.done)
+	resident.mutex.Unlock()
+	if resident.closed != nil {
+		select {
+		case resident.closed <- executionClosed{
+			executionRunID: resident.executionRunID,
+			parentID:       resident.parent.ID(),
+		}:
+		default:
+		}
+	}
 }
 
 func (resident *residentExecution) notify() {
@@ -49,7 +127,7 @@ func (resident *residentExecution) watch() {
 			select {
 			case <-resident.handle.ClosingSignal():
 				cancelIdle()
-				resident.execution.Stop(sharedexecution.StopExternal)
+				resident.Stop(sharedexecution.CloseExternal)
 				return
 			case <-resident.wake:
 				cancelIdle()
@@ -57,7 +135,7 @@ func (resident *residentExecution) watch() {
 			case <-idleResult:
 				cancelIdle()
 			}
-			if resident.execution.State() != subagent.ExecutionActive {
+			if resident.State() != subagent.ExecutionActive {
 				return
 			}
 			childAgent := resident.handle.Subject
@@ -65,20 +143,20 @@ func (resident *residentExecution) watch() {
 				!childAgent.InboxValue().HasPending() &&
 				!resident.descendants.HasRuntimeDescendants(childAgent)
 			if settled {
-				resident.execution.Stop(sharedexecution.StopIdle)
+				resident.Stop(sharedexecution.CloseIdle)
 				return
 			}
 		}
 	}()
 }
 
-// Terminate settles this exact resident epoch, reports its result, and
-// releases the owned Agent Handle.
-func (resident *residentExecution) Terminate(
+// close settles this exact resident epoch, reports its result, and releases
+// the owned Agent Handle.
+func (resident *residentExecution) close(
 	stopContext context.Context,
-	cause sharedexecution.StopCause,
+	cause sharedexecution.CloseCause,
 ) (subagent.Terminal, error) {
-	if cause != sharedexecution.StopIdle && cause != sharedexecution.StopNormal {
+	if cause != sharedexecution.CloseIdle && cause != sharedexecution.CloseNormal {
 		resident.handle.Subject.Cancel(
 			agent.ParentCancel{},
 			agent.CancelOptions{
@@ -102,7 +180,7 @@ func (resident *residentExecution) Terminate(
 		)
 	}
 	fallback := subagent.StopAborted
-	if cause == sharedexecution.StopIdle || cause == sharedexecution.StopNormal {
+	if cause == sharedexecution.CloseIdle || cause == sharedexecution.CloseNormal {
 		fallback = subagent.StopCompleted
 	}
 	executionEvents, err := currentExecutionEvents(
@@ -130,7 +208,7 @@ func (resident *residentExecution) Terminate(
 		resident.publisher.PublishEnded(
 			resident.parent,
 			subagent.Ended{
-				RunID:                resident.execution.RunID(),
+				RunID:                resident.executionRunID,
 				Provider:             resident.seedBuilder,
 				ID:                   resident.handle.Subject.ID(),
 				Local:                true,
@@ -139,17 +217,69 @@ func (resident *residentExecution) Terminate(
 			},
 		)
 	}
-	resident.executions.Remove(resident.execution)
-	if cause != sharedexecution.StopExternal {
+	resident.executions.Remove(resident)
+	if cause != sharedexecution.CloseExternal {
 		if err = resident.handle.Dispose(
 			context.WithoutCancel(stopContext),
 		); err != nil {
 			terminalErr = errors.Join(terminalErr, err)
 		}
 	}
-	resident.owner.executionClosed(resident)
-	resident.owner.registry.notify(resident.parent.ID())
 	return terminalValue, terminalErr
+}
+
+func (resident *residentExecution) RunID() subagent.RunID {
+	return resident.executionRunID
+}
+
+func (resident *residentExecution) ChildID() session.SessionID {
+	return resident.childSessionID
+}
+
+func (resident *residentExecution) State() subagent.ExecutionState {
+	resident.mutex.RLock()
+	stateValue := resident.phase
+	resident.mutex.RUnlock()
+	return stateValue
+}
+
+func (resident *residentExecution) Wait(waitContext context.Context) error {
+	if waitContext == nil {
+		return errors.New("subagent: Continuable Wait context is nil")
+	}
+	select {
+	case <-resident.done:
+		resident.mutex.RLock()
+		terminalErr := resident.terminalErr
+		resident.mutex.RUnlock()
+		return terminalErr
+	case <-waitContext.Done():
+		return context.Cause(waitContext)
+	}
+}
+
+func (resident *residentExecution) Result() (subagent.Terminal, bool) {
+	resident.mutex.RLock()
+	defer resident.mutex.RUnlock()
+	if resident.phase != subagent.ExecutionStopped {
+		return subagent.Terminal{}, false
+	}
+	return sharedexecution.CloneTerminal(resident.terminal), true
+}
+
+func (resident *residentExecution) Dispose(closeContext context.Context) error {
+	return resident.StopAndWait(closeContext, sharedexecution.CloseDisposed)
+}
+
+func (resident *residentExecution) StopAndWait(
+	closeContext context.Context,
+	cause sharedexecution.CloseCause,
+) error {
+	if closeContext == nil {
+		closeContext = context.Background()
+	}
+	resident.stop(closeContext, cause)
+	return resident.Wait(closeContext)
 }
 
 func (resident *residentExecution) notifyParent(
@@ -198,10 +328,10 @@ func (resident *residentExecution) notifyParent(
 }
 
 func settlementSummary(
-	childID session.SessionID,
+	childSessionID session.SessionID,
 	reason subagent.StopReason,
 ) string {
-	subject := fmt.Sprintf("Background subagent %s", childID)
+	subject := fmt.Sprintf("Background subagent %s", childSessionID)
 	switch reason {
 	case subagent.StopCompleted:
 		return subject + " finished and can be resumed by another message."
@@ -272,4 +402,4 @@ func currentExecutionEvents(
 	return suffix, nil
 }
 
-var _ sharedexecution.Terminator = (*residentExecution)(nil)
+var _ sharedexecution.ManagedExecution = (*residentExecution)(nil)

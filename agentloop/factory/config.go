@@ -193,6 +193,8 @@ func resolveSettings(settings Config) (agentloop.Settings, error) {
 		)
 	}
 	declarations := make([]agentloop.StartupAgent, len(settings.Agents))
+	// exactIdentities maps each configured Session ID to its catalog Agent ID.
+	// Presence means a later catalog entry cannot claim the same Session.
 	exactIdentities := make(map[session.SessionID]string)
 	for index, configured := range settings.Agents {
 		if strings.TrimSpace(configured.ID) == "" ||
