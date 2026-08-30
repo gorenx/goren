@@ -51,7 +51,7 @@
 - [`subagent/internal/bound/sqlite/README.zh-CN.md`](../subagent/internal/bound/sqlite/README.zh-CN.md)：独立Definition SQLite/sqlc storage-only adapter。
 - [Bound 需求](../subagent/docs/parent-bound-requirements.zh-CN.md)：全局Definition、每用户Session direct Bound、idle语义与验收场景。
 - [Bound 技术设计](../subagent/docs/parent-bound-design.zh-CN.md)：Definition owner、maintenance reconcile、create/restore、worker与并发一致性。
-- [Bound Definition 管理详细设计](../subagent/docs/bound-config-management.zh-CN.md)：独立SQLite/sqlc Store、完整System Prompt、Tool restriction、Extension选择及exact Agent epoch replacement。
+- [Bound Definition 管理详细设计](../subagent/docs/bound-config-management.zh-CN.md)：独立SQLite/sqlc Store、完整System Prompt、Tool restriction、Extension选择及exact Agent lifetime replacement。
 - [Bound Parent Interaction 投递设计](../subagent/docs/session-event-delivery.zh-CN.md)：冻结context prefix、Session event wakeup、私有fold、child receipt、parent cursor与crash恢复。
 - [`apiproxy/README.zh-CN.md`](../apiproxy/README.zh-CN.md)：typed method adapter、Session/Interaction Gateway、live frame、correlation 与背压。
 - [`apiproxy/session/README.zh-CN.md`](../apiproxy/session/README.zh-CN.md)：Session API façade、读取/生命周期/模型/对话/Search 用例与 Agent activation 状态。

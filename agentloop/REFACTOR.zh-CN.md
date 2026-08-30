@@ -132,8 +132,8 @@ Go 实现不复制 Cordis `Context`、Fiber tracing 或 disposer closure。Go �
 | Agent | 对调用者公开的一个 live 对话 Agent 能力，不包含 Plugin topology 和关闭权限 |
 | exact Agent | 某一次具体 Agent 生命周期；同一 Session ID 关闭后恢复得到的是另一个 exact Agent |
 | ReactLoopAgent / RLA | 一个 Agent 的 Turn、Step、模型请求和 Tool 编排对象 |
-| Agent Handle | Registry 返回的一个 exact Agent 生命周期控制权；旧 Handle 只能关闭它创建时对应的 Agent record |
-| Agent record | Registry 私有的一条 exact Agent 生命周期记录；不是公共类型 |
+| Agent Handle | Registry 返回的一个 exact Agent 生命周期控制权；旧 Handle 只能关闭它创建时对应的 Agent lifetime |
+| Agent lifetime | Registry 私有的一个 exact Agent 生命周期对象；关闭后立即移出 Registry，不是公共类型 |
 | Agent Scope | 一个 Agent 独占的 Tool、Prompt、Policy、Event、Waterfall 和资源环境 |
 | Factory | `agent` 定义、AgentLoop 实现的单 Agent 构造端口 |
 | Agent Host | Factory 返回的单 Agent 生命周期对象；向 Registry 提供 Agent、启动和关闭能力 |
@@ -156,7 +156,7 @@ Go 实现不复制 Cordis `Context`、Fiber tracing 或 disposer closure。Go �
 
 禁止在目标设计继续使用：
 
-- `AgentEpoch`：不再导出 epoch 概念；私有对象统一称为 `agentRecord`；
+- `AgentEpoch`：不再导出 epoch 概念；私有对象统一称为 `agentLifetime`；
 - `Instance`、`AgentInstance`：没有增加语义，容易和 Agent 混淆；
 - `instanceID`：Session ID 已经唯一确定当前 live Agent；
 - `AgentTeardown`：不存在 Plugin 到 Registry 的反向 teardown；
@@ -261,7 +261,7 @@ Provider/Tool Plugins
 ```mermaid
 flowchart TD
     Registry[Agent Registry]
-    Record[Agent record]
+    Lifetime[Agent lifetime]
     Scope[Agent Scope]
     Host[Agent Host]
     RLA[ReactLoopAgent]
@@ -272,23 +272,23 @@ flowchart TD
     Execution[Mode-specific execution]
     Handle[Agent Handle]
 
-    Registry --> Record
+    Registry --> Lifetime
     Registry --> Relations
-    Record --> Scope
-    Record --> Host
+    Lifetime --> Host
+    Host --> Scope
     Host --> RLA
 
     Subagents --> Modes
     Modes --> Execution
     Execution --> Handle
-    Handle --> Record
+    Handle --> Lifetime
 ```
 
 禁止反向边：
 
 - RLA 不持有 Agent Plugin；
-- Agent Scope 不持有 RLA、Agent record 或 Registry；
-- Agent record 不持有 Handle；
+- Agent Scope 不持有 RLA、Agent lifetime、Host 或 Registry；
+- Agent lifetime 不持有 Handle；
 - Registry 不持有 Subagent Service；
 - Subagent execution 不持有 AgentLoop Factory 或 Plugin；
 - resident execution 不持有 owning child 的反向指针。
@@ -302,25 +302,25 @@ flowchart TD
 Registry 当前 live Agent 索引：
 
 ```text
-map[session.SessionID]*agentRecord
+map[session.SessionID]*agentLifetime
 ```
 
 - key：当前 live Agent 的 durable Session ID；
-- value：该 exact Agent 的私有生命周期记录。
+- value：该 exact Agent 当前未结束的私有生命周期对象。
 
-同一个 Session ID 可以在旧 Agent 完全关闭后恢复为新 Agent，但同一时刻只能有一个已接纳 record。
+同一个 Session ID 可以在旧 Agent 完全关闭后 Create 或 Resume 新 Agent，但同一时刻只能有一个已接纳 lifetime。Closed lifetime 立即移出 Registry，不形成常驻集合。
 
-旧 Handle 不通过 Session ID 重新查找当前 Agent。Handle 直接保留创建时对应的私有 record 引用：
+旧 Handle 不通过 Session ID 重新查找当前 Agent。Handle 直接保留创建时对应的私有 lifetime 引用：
 
 ```text
-Handle -> old agentRecord
+Handle -> old agentLifetime
 ```
 
-因此旧 Handle 只能 join 或关闭旧 record，不能关闭后来使用相同 Session ID 恢复的新 Agent。
+因此旧 Handle 只能 join 或关闭旧 lifetime，不能关闭后来使用相同 Session ID 创建或恢复的新 Agent。
 
 ### 6.2 runtime parent-child relation
 
-关系使用 Session ID，不互相嵌套 Agent record：
+关系使用 Session ID，不互相嵌套 Agent lifetime：
 
 ```text
 map[session.SessionID]session.SessionID
@@ -339,23 +339,24 @@ map[session.SessionID]map[session.SessionID]struct{}
 
 两个索引由 Registry 在同一锁和同一事务中更新。它们表达关系和查询方向，不表达双向对象 ownership。
 
-### 6.3 `agentRecord`
+### 6.3 `agentLifetime`
 
-`agentRecord` 是 Registry 私有对象，保存：
+`agentLifetime` 是 Registry 私有对象，保存：
 
 - Session ID；
-- Agent Scope；
-- Agent Host；
-- lifecycle state；
+- 唯一结构 owner `Agent Host`；
+- 唯一 `agentLifetimeState`；
 - construction、closing、closed completion；
 - stable close result；
-- `agent/created` 是否已经开始投递。
+- 当前同步事件派发计数。
 
 它不保存：
 
-- parent record pointer；
-- child record pointer；
+- parent lifetime pointer；
+- child lifetime pointer；
 - Agent Handle；
+- 独立 Agent pointer；
+- Agent Scope pointer；
 - Plugin、Fiber、ScopeKey 或 mount handle；
 - Subagent execution。
 
@@ -365,22 +366,34 @@ map[session.SessionID]map[session.SessionID]struct{}
 stateDiagram-v2
     [*] --> Constructing
     Constructing --> Attached: Agent Host returned and attached
-    Attached --> Live: setup, serving and publication complete
-    Constructing --> Closing: construction failure or parent close
-    Attached --> Closing: setup or publication failure, or close
-    Live --> Closing: Handle dispose, parent close, or shutdown
-    Closing --> Closed: descendants, Host, Scope, and publication settled
+    Attached --> Publishing: begin agent/created
+    Publishing --> Starting: agent/created returned
+    Starting --> Live: startup publication complete
+    Constructing --> ClosingUnpublished: close
+    Attached --> ClosingUnpublished: close
+    Publishing --> ClosingPublishing: close during event
+    ClosingPublishing --> ClosingPublished: event returned
+    Starting --> ClosingPublished: close
+    Live --> ClosingPublished: close
+    ClosingPublished --> Retired: begin agent/disposed
+    ClosingUnpublished --> Closed: descendants and Host settled
+    Retired --> Closed: descendants and Host settled
 ```
 
 状态含义：
 
 - `Constructing`：Session ID 和可选 runtime parent 已接纳，Factory 正在构造 Host；
-- `Attached`：Host、Agent 和 Scope 已绑定，Setup、serving 或 publication 尚未全部完成；
+- `Attached`：Host 已绑定，Setup、serving 或 publication 尚未开始完成；
+- `Publishing`：`agent/created` 正在同步派发；此时 Agent 可见并允许 observer 创建 child；
+- `Starting`：`agent/created` 已返回，正在派发 session-start 并等待进入 Live；
 - `Live`：可从 Registry 读取并接受正常工作；
-- `Closing`：拒绝新工作和新 child，由一个关闭事务完成所有清理；
-- `Closed`：终态，保留稳定 close result 供旧 Handle join。
+- `ClosingUnpublished`：尚未开始 Created，无需伪造 Disposed；
+- `ClosingPublishing`：关闭已登记，等待正在派发的 Created 返回；
+- `ClosingPublished`：Created 已开始，关闭必须配对一次 Disposed；
+- `Retired`：Disposed 已尝试，正在关闭 descendants 与 Host；
+- `Closed`：终态，已经移出 Registry；稳定 close result 只供仍持有旧 lifetime 的 Handle 或 waiter join。
 
-`publicationPhase` 与 record phase 正交：`Unpublished`、`Publishing`、`Published`、`Retired` 只记录 `agent/created` 是否已经开始及配对 `agent/disposed` 是否已尝试，不创建第二个生命周期 owner。
+不存在额外 `publicationPhase` 或 `descendantAdmission`。所有合法组合都展开为一个枚举状态，避免调用方拼接多组标记。`agentLifetime` 自己持有互斥、迁移、事件派发计数、完成信号和稳定关闭结果；Registry 不读取这些私有字段。Registry 只维护 Session ID 索引、父子 ID relation，并编排多个 lifetime 的 child-first 关闭。
 
 Factory 不能读取或迁移这些状态。
 
@@ -405,7 +418,8 @@ Agent Scope 不能暴露一个万能 Runtime 接口。不同消费者取得自�
 
 - RLA：Event dispatch、PreStep、Request、RequestError、Tool runtime、Prompt assembler；
 - Agent Setup：Tool、Prompt、Policy、local Event 和 local Middleware 注册能力；
-- Registry：commit、rollback 和 close；
+- Registry：ApplySetup 和 exact Agent event dispatch；
+- Agent Host：Scope close；
 - 外部事件 producer：通过 Agent-owned dispatcher 发布 exact Agent event。
 
 Scope 不提供 `Agent()`，Setup 显式接收 Agent；Scope 因此无需保存 Agent back-reference。
@@ -437,6 +451,8 @@ type ScopeResources interface {
 - Agent Scope 逆序关闭其拥有的全部 Scope Resources；
 - live Extension removal 直接关闭对应 Scope Resources，不修改 Plugin topology。
 
+Agent Scope 使用 `Open → Closing → Closed`。Close 先把 phase 置为 Closing，拒绝新的 Setup、Event 和 Waterfall 调用，等待已经接纳的调用全部返回，再释放 Scope Resources、ToolLayer 与 PromptLayer。进入 Closed 后不再重新打开；新的 Agent lifetime 必须使用新的 Scope。
+
 `scopeDraft` 是 `agentloop` 内部事务对象，不作为公共接口导出。`ScopeResources` 不提供 `Commit`，因此提交前事务和提交后资源所有权不会再次混合。
 
 ### 7.4 Tools 与 SystemPrompt 的必要拆分
@@ -460,8 +476,9 @@ AgentLoop 只有一个全局 `Plugin`。它负责：
 
 - 解析 Plugin Runtime 提供的 Session、LLM、`ToolLayerFactory` 和 `PromptLayerFactory` 根能力；
 - 构造并发布一个 `agent.Factory`；
-- Plugin Dispose 时停止新的 Factory 构造；
-- 等待已经接纳的 Factory 调用返回。
+- 每次 Apply 创建独立的 `pluginActivation`，其中包含 gateway、driver 和 effect join set；
+- Plugin Dispose 时停止新的 Factory 构造并排空当前 activation；
+- 下一次 Apply 创建全新的 activation，不复用已停止 gateway。
 
 它不保存 Agent 集合，不创建 per-Agent Plugin，不管理 parent-child，也不直接关闭 Registry 中的 Agent。
 
@@ -476,10 +493,11 @@ Agent Host 表示一个 Agent 的运行期拥有者，向 Registry 提供：
 - `Agent()`：返回公开 Agent capability；
 - `EnterServing(context.Context)`：进入正常服务；
 - `Announce(context.Context)`：发布 Session creation/resume 边界；
-- `Close(context.Context)`：幂等关闭 RLA、flush 和 Session membership；
-- `WhenClosed(context.Context)`：join 稳定关闭结果。
+- `Close(context.Context)`：幂等关闭 RLA、flush、Session membership 和自己拥有的 Agent Scope，并 join 稳定结果。
 
 Agent Host 不实现 Plugin，不返回 Plugin，也不保存 Registry 或 parent。
+
+`CreateHostOptions` 与 `ResumeHostOptions` 是 Factory 的最小输入，只包含 Host 构造所需的 Session ID、metadata、seed 和 Agent options。Agent Setup 与 runtime parent 由 Registry 管理，不进入 Factory port。
 
 Factory contract 不再出现：
 
@@ -665,19 +683,18 @@ OneShot、Continuable 和 Bound 只能共享：
 
 ```text
 Agent Registry
-  -> 使用 Session ID 建立 private agentRecord
+  -> 使用 Session ID 建立 private agentLifetime
   -> 验证可选 runtime parent 是当前 live Agent
-  -> 创建 Agent Scope
-  -> 调用 AgentLoop Factory 构造一个 Agent Host
-  -> 取得 Host.Agent
+  -> 调用 AgentLoop Factory 构造包含 Agent Scope 的一个 Agent Host
+  -> agentLifetime Attach(Host)
   -> 按顺序执行 Agent Setup
   -> 逐个提交 scopeDraft 并取得 Scope Resources
   -> Host.EnterServing
   -> Host.Announce
   -> agent/created
   -> agent/session-start
-  -> agentRecord EnterLive
-  -> 返回绑定 exact agentRecord 的 Agent Handle
+  -> agentLifetime EnterLive
+  -> 返回绑定 exact agentLifetime 的 Agent Handle
 ```
 
 任一步失败：
@@ -693,18 +710,18 @@ Agent Registry
 
 ```text
 Agent Handle.Dispose
-  -> exact agentRecord EnterClosing
+  -> exact agentLifetime BeginClose
   -> 拒绝新 invocation 和新 child
   -> 等待已接纳 construction
   -> 根据 children Session ID child-first 关闭
   -> 发布 agent/disposed
   -> Agent Host.Close
-  -> Agent Scope reverse close
+  -> Host 关闭 RLA、Session membership 和自己拥有的 Agent Scope
   -> 删除 Registry 和 relation indexes
-  -> agentRecord EnterClosed
+  -> agentLifetime EnterClosed
 ```
 
-旧 Handle 持有旧 record，不通过 Session ID 查找当前 record，因此不会影响同 Session ID 后来恢复的新 Agent。
+旧 Handle 持有旧 lifetime，不通过 Session ID 查找当前 lifetime，因此不会影响同 Session ID 后来 Create 或 Resume 的新 Agent。Registry 不保留 Closed lifetime；只有旧 Handle 或正在等待关闭的调用者可能短暂持有它。
 
 ### 10.3 Subagent Plugin Dispose
 
@@ -782,14 +799,14 @@ AgentLoop Plugin 是 Agent 事件和全局 Waterfall 的唯一 Plugin Runtime ad
 - `agent.MountPlugin`、`agent.MountPlugins`；
 - `PreparedAgent.Plugin()`；
 - 所有 per-Agent `plugin.Handle` map；
-- parent/children record pointer 双向嵌套。
+- parent/children lifetime pointer 双向嵌套。
 
 保留并重构：
 
 - Registry；
 - Constructor；
 - Agent Handle；
-- private `agentRecord`；
+- private `agentLifetime`；
 - Session ID relation indexes；
 - Agent Scope；
 - Setup、private scopeDraft 与 committed Scope Resources；
@@ -851,7 +868,7 @@ AgentLoop Plugin 是 Agent 事件和全局 Waterfall 的唯一 Plugin Runtime ad
 1. 增加 architecture tests，锁定三个核心全局 Plugin、禁止 per-Agent Plugin、禁止业务包导入 Plugin、禁止 object cycle 和禁止 `instanceID`。
 2. 将 Tools 和 SystemPrompt 的 plain Layer 从 Plugin adapter 中拆出。
 3. 重构 Agent Scope、Setup、private scopeDraft 和 Scope Resources，迁移所有 Agent-local contribution。
-4. 重构 Agent Registry，使用 Session ID 索引和 private `agentRecord`，删除 mount topology。
+4. 重构 Agent Registry，使用 Session ID 索引和 private `agentLifetime`，删除 mount topology。
 5. 将 AgentLoop 改为一个全局 Plugin；Factory 返回普通 Agent Host，RLA 不再依赖 Plugin。
 6. 将 Subagent Persona、Policy、Descriptor、Structured Output 和 Report 改为 plain Setup。
 7. 分离 OneShot、Continuable、Bound 状态机，删除共享 Terminator 和所有 owner back-reference。
@@ -870,7 +887,7 @@ AgentLoop Plugin 是 Agent 事件和全局 Waterfall 的唯一 Plugin Runtime ad
 - 仓库不存在 `agent.MountPlugin`、`agent.MountPlugins` 和业务 `UnloadChild`；
 - Plugin callback 中不存在 Runtime topology mutation；
 - Registry 不存在 `instanceID`、`nextID` 或第二套 Agent identity；
-- Handle 绑定 private `agentRecord`，不按 Session ID 重新查找当前 Agent；
+- Handle 绑定 private `agentLifetime`，不按 Session ID 重新查找当前 Agent；
 - parent-child 只保存 Session ID relation；
 - concrete struct、interface owner 和 registration graph 都不存在 cycle；
 - RLA 不持有 Plugin；
@@ -885,7 +902,7 @@ AgentLoop Plugin 是 Agent 事件和全局 Waterfall 的唯一 Plugin Runtime ad
 必须继续覆盖：
 
 - Create 与 Resume 的 publication 顺序；
-- 同 Session ID 并发只有一个 Agent record 准入成功；
+- 同 Session ID 并发只有一个 Agent lifetime 准入成功；
 - 旧 Handle 不影响同 Session ID 后来恢复的新 Agent；
 - parent close 取消并等待已接纳 child construction；
 - parent publication listener 创建 child 后，parent publication 失败仍 child-first 回滚；
@@ -941,7 +958,7 @@ git diff --check
 - pinned Harness 证据；
 - Go 与 Cordis Scope 实现差异及原因；
 - 三个核心 Plugin 的最终边界；
-- Session ID、Agent record 和 Handle 的 identity 规则；
+- Session ID、Agent lifetime 和 Handle 的 identity 规则；
 - 最终 ownership DAG；
 - 每种状态机的 owner；
 - 删除的旧术语、接口和文件；

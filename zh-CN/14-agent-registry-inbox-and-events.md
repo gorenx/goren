@@ -11,7 +11,7 @@
 | 源路径 / symbol | Go owner | 保留职责 |
 | --- | --- | --- |
 | `packages/core/agent/src/runtime-types.ts` | `agent.Agent`、`Options`、`Status`、事件 payload/handler | live Agent capability、状态和扩展 contract |
-| `packages/core/agent/src/index.ts` 的 `AgentRegistry` | `agent.RegistryService`、`agentRecord` | factory seam、live membership、创建/销毁公告、runtime parent-child ownership |
+| `packages/core/agent/src/index.ts` 的 `AgentRegistry` | `agent.RegistryService`、`agentLifetime` | factory seam、live membership、创建/销毁公告、runtime parent-child ownership |
 | `packages/core/agent/src/inbox.ts` | `agent.Inbox` | 两类 pending list、durable splice、replay 与通知 |
 | `packages/core/agent/src/types.ts` | `InboxSplice`、`InboxSpliced` | `agent/inbox/spliced` Session event contract |
 | `packages/core/agent/src/dispatch.ts` | `agent/events.go`、`agentloop.agentScope`、`pluginGateway` | exact Agent local dispatch 与全局 Event/Waterfall adapter |
@@ -27,7 +27,7 @@ Go 不复制 Typert lookup/context、Cordis Proxy、declaration merging 或 `Asy
 
 - canonical `agents` Service Definition 与 consumer-owned `Factory` seam；
 - live Agent 的 shared Agent/Session identity、注册顺序、root/child runtime ownership；
-- Session ID 构造准入、private `agentRecord`、Host attach、有序 publication 与 paired disposal；
+- Session ID 构造准入、private `agentLifetime`、Host attach、有序 publication 与 paired disposal；
 - `next-turn` / `next-step` Inbox projection、mutation、replay 和 live notification；
 - `agent/*` 组件事件的 payload、mode、typed handler 和 exact Agent Scope 路由；
 - process-local initiator attribution；
@@ -63,13 +63,13 @@ API / driver Consumer
   -> Registry 委派给当前 factory
 ```
 
-`Factory` interface 由其 Consumer `agent` 定义。Registry 不导入 `agentloop`，也不通过全局变量发现实现。Agent Registry Plugin 的 dependency graph 保证 Factory 先启动、后关闭；`Apply` 显式 bind，`Dispose` 先 unbind 再关闭 Registry。不存在运行期 Factory setter、per-Agent Plugin 或第二个 service locator。
+`Factory` interface 由其 Consumer `agent` 定义。Registry 不导入 `agentloop`，也不通过全局变量发现实现。`CreateHostOptions` 和 `ResumeHostOptions` 只包含 Host 构造需要的 Session、metadata、seed 与 Agent options；Registry-owned Setup 和 runtime parent 不传给 Factory。Agent Registry Plugin 的 dependency graph 保证 Factory 先启动、后关闭；`Apply` 激活 Registry，`Dispose` 排空当前激活后回到 inactive。Factory 替换可以重新激活同一 Service，但不会恢复已关闭 Agent。不存在运行期 Factory setter、per-Agent Plugin 或第二个 service locator。
 
-`Factory.CreateAgent` 与 `ResumeAgent` 都只返回一个 unpublished `Host`。`Host` 暴露 exact Agent、Agent Scope、`EnterServing`、Session `Announce` 和幂等关闭；它不预留 Registry identity，不管理 descendants，也不保存 Registry。
+`Factory.CreateAgent` 与 `ResumeAgent` 都只返回一个 unpublished `Host`。`Host` 暴露 exact Agent、Agent Scope、`EnterServing`、Session `Announce` 和幂等关闭；它是 Scope 的唯一 owner，不预留 Registry identity，不管理 descendants，也不保存 Registry。Registry 借用 Scope 执行 Setup 和事件派发，但只关闭 Host。
 
 ## 4. Registry 生命周期与 identity
 
-Agent ID 必须与其 Session ID 完全相同。Registry 在调用 Factory 前以 Session ID 建立 private `agentRecord`，因此同一 ID 的并发 create/resume 只有一个能进入构造；失败路径不需要让两个 unpublished Agent 竞速 publication。
+Agent ID 必须与其 Session ID 完全相同。Registry 在调用 Factory 前以 Session ID 建立 private `agentLifetime`，因此同一 ID 的并发 create/resume 只有一个能进入构造；失败路径不需要让两个 unpublished Agent 竞速 publication。
 
 ```text
 Registry reserves Session ID and optional RuntimeParent relation
@@ -80,17 +80,19 @@ Registry reserves Session ID and optional RuntimeParent relation
   -> Host.Announce Session
   -> Scope.Dispatch(agent/created)
   -> Scope.Dispatch(agent/session-start)
-  -> record enters Live
-  -> return Handle bound to exact agentRecord
+  -> lifetime enters Live
+  -> return Handle bound to exact agentLifetime
 ```
 
 `Setup` 在 Agent 对外可见前通过 `ScopeEditor` 安装 prompt、tool、policy、local Event/Waterfall 和普通资源。private `scopeDraft` 记录每个可撤销 Handle并在 commit 前执行 `ScopeCheck`；Apply 或 check 失败时逆序回滚。创建事件不能观察半配置 Agent。
 
-`Handle` 直接保存 exact `agentRecord`，旧 Handle 不能按 Session ID 删除未来同 ID lifecycle。`agent/created` 一旦开始派发，任何 publication failure 或 close 都会尝试配对 `agent/disposed`；尚未开始 created 的构造失败不伪造 disposal。
+`Handle` 直接保存 exact `agentLifetime`，旧 Handle 不能按 Session ID 删除未来同 ID lifecycle。`agent/created` 一旦开始派发，任何 publication failure 或 close 都会尝试配对 `agent/disposed`；尚未开始 created 的构造失败不伪造 disposal。
 
-Registry 的 `byID` map 以 Session ID 为 key、以当前 exact `agentRecord` 为 value；`parentByChild` 以 child Session ID 为 key、以 runtime parent Session ID 为 value；`childrenByParent` 以 parent Session ID 为 key、以 child Session ID 集合为 value。parent/child 不保存 record pointer，ownership graph 保持 DAG。`List` 保留 record 顺序，`Roots` 只返回没有 runtime parent 的 live Agent；runtime relation 不等同 `Header.parentSession` 的 durable lineage。
+Registry 的 `byID` map 以 Session ID 为 key、以当前未结束的 exact `agentLifetime` 为 value；`parentByChild` 以 child Session ID 为 key、以 runtime parent Session ID 为 value；`childrenByParent` 以 parent Session ID 为 key、以 child Session ID 集合为 value。parent/child 不保存 lifetime pointer，ownership graph 保持 DAG。`List` 保留 lifecycle admission 顺序；runtime relation 不等同 `Header.parentSession` 的 durable lineage。
 
-record phase 是 `Constructing → Attached → Live → Closing → Closed`。publication phase 单独记录 created 的 `Unpublished/Publishing/Published/Retired` 配对边界。关闭时先禁止新 descendants、等待已接纳构造，再按 Session ID relation child-first 收敛，最后关闭 Host 与 Scope；child failure 不跳过 sibling 或 parent。
+`agentLifetime` 是一个独立状态机，只有一个 `agentLifetimeState`：正常路径是 `Constructing → Attached → Publishing → Starting → Live`；关闭路径显式区分 `ClosingUnpublished`、`ClosingPublishing`、`ClosingPublished → Retired → Closed`。这些状态直接表达 Created 是否正在派发、是否必须配对 Disposed，不再组合 lifetime phase、publication phase 和 descendant admission 三组标记。
+
+状态、互斥、迁移准入、同步事件派发计数、完成信号和稳定关闭结果只由 `agentLifetime` 解释。Registry 不访问其私有字段，只持有 `byID` 与 parent/child Session ID 索引并编排跨 lifetime 的 child-first 关闭。关闭时 lifetime 先拒绝新 descendants，Registry 等待已接纳构造并关闭 descendants，最后 lifetime 结算 Disposed 和 Host；Host 关闭自己拥有的 Scope。进入 Closed 后立即删除 Registry 和 relation indexes，不保存 closed Agent 集合；同一 Session ID 可直接 Create 或 Resume 新生命周期。child failure 不跳过 sibling 或 parent。
 
 ## 5. Durable Inbox
 
@@ -146,7 +148,7 @@ validate normalized mutation against current projection
 
 `AgentEvent` 是进程内组件通信事实，不是 `session.Event`，不写入 Session log。payload 始终携带 exact Agent subject。Agent Scope 先调用该 exact Agent 的 local observers，再通过 AgentLoop `pluginGateway` 发布给 Plugin Runtime 的全局 observer；不存在 per-Agent Plugin Scope、ancestor Plugin propagation 或 sibling/descendant Scope lookup。
 
-Agent Registry Plugin 提供 `EventDispatcher` 给 Subagent 等外部 producer：dispatcher 根据 exact Agent identity 找到其 Scope，不让 producer持有 AgentLoop 或 Plugin。普通事件只在 record live 时接纳；record closing 后仅实现 `AgentClosingEvent` 的终止事实可继续派发，直到 Scope 真正关闭。`subagent.Ended` 使用该边界，保证 parent closing 期间仍有配对结束通知。
+Agent Registry Plugin 提供 `EventDispatcher` 给 Subagent 等外部 producer：dispatcher 根据 exact Agent identity 找到其 Scope，不让 producer 持有 AgentLoop 或 Plugin。普通事件只在 lifetime live 时接纳；lifetime closing 后仅实现 `AgentClosingEvent` 的终止事实可继续派发，直到 Scope 真正关闭。Scope 自身使用 `Open → Closing → Closed` 和调用 join set：Close 先封闭准入，等待已经接纳的 Event、Waterfall 与 Setup 返回，再释放资源。`subagent.Ended` 使用该边界，保证 parent closing 期间仍有配对结束通知。
 
 Waterfall 由 AgentLoop 全局 middleware 包裹 Agent-local middleware，再进入 RLA terminal action；Event 与 Waterfall 的方向不能混用。
 
@@ -175,7 +177,7 @@ System Prompt waterfall 在进入 downstream 前读取 `Current()`，只有 down
 
 ## 9. 并发、失败与取消
 
-- Registry 用独立锁保护 live map/order、Factory binding、ID relation 和每个 record 的 publication 状态；callback 不在全局 Registry lock 下执行。
+- Registry 用独立锁保护 live map/order、Factory activation、ID relation 和每个 lifetime 的 publication 状态；callback 不在全局 Registry lock 下执行。同步 callback 内发起同树关闭时，Registry 记录关闭并在派发返回后继续 child-first join，避免 callback 与关闭事务互等。
 - Inbox 用 operation lock 串行化 locate/normalize/append/apply 的完整 mutation，用 state lock 提供 detached list snapshot。
 - created listener error vetoes普通 `Register` publication 并触发 paired rollback；disposed observer error 由 Registry reporter 包含，不能复活已删除 entry。
 - Inbox durable payload 无效会使 replay 或 mutation 失败；业务层不能跳过损坏 Event 后继续运行。

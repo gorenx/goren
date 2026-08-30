@@ -8,7 +8,7 @@ Bound 是独立 Mode，但其 Definition 是全局配置能力，不属于任一
 
 | Owner | 负责 | 不负责 |
 | --- | --- | --- |
-| Bound Definition Service | Definition 校验、CAS revision、索引、live reconcile | parent Session event、Agent epoch |
+| Bound Definition Service | Definition 校验、CAS revision、索引、live reconcile | parent Session event、Agent lifetime |
 | Definition SQLite Store | sqlc 读写、事务和技术持久化 | revision 决策、reconcile |
 | `internal/bound.Service` | 用户 Session 一致性、Binding、激活、replacement、`Inbox.Deliver` | 输入源观察与cursor、Web DTO、System Prompt/Tools实现 |
 | `bound/turnrelay.Plugin` | Session turn观察、fold、worker、重试和source cursor | child生命周期、Definition、Bound内部mailbox |
@@ -132,7 +132,7 @@ Binding batch提交并Flush成功后才允许激活。Binding worker按frozen `C
 
 每个 Binding 有一个业务含义明确的串行执行对象。它拥有该 Binding 的：
 
-- resident child Agent epoch；
+- resident child Agent lifetime；
 - Definition revision replacement；
 - 显式 `Send` admission；
 - `deliveryCommand`与durable child receipt；

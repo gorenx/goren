@@ -4,6 +4,8 @@
 
 本文拥有 Goren 的 Plugin Runtime、Factory 构造边界和默认 Server composition。通用框架目标与插件开发方式见[Go Cordis 风格通用 Plugin 事件领域框架设计](./Go_Cordis_风格插件事件领域运行时设计方案.md)；当前测试证据见[08 实施进度](./08-implementation-progress.md)。各业务能力的规则仍由自己的模块设计拥有，本文不重新定义 Agent、Session、LLM、Tools 或 wire contract。
 
+业务 Event 事实由各业务 owner 定义；Plugin Runtime 只消费 `EventName` 与 `EventDelivery` 元数据并负责路由。`DeliveryPolicy` 使用经过校验的稳定字符串别名，使业务类型可以返回普通 `string` 而不依赖 Plugin Runtime 的具名类型。Waterfall marker 同理可由业务 input/output 自身实现；Plugin 仍独占 middleware 注册、拓扑、调用准入与排空。
+
 ## 1. 来源与 Go 取舍
 
 固定 DeepSeek Harness 基线是 `47f943859bef60e4160492346772ded9b24f765a`。

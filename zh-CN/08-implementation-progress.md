@@ -161,7 +161,7 @@ interaction owner registers stable rpcId + decoder
 | S3-D07 | 交付 | 首期 `session.*` handler | Completed | Contract Verified：八个 method 的固定源 schema accept/reject vector 与原 `WebApiClient` E2E 已通过；Go Gateway 映射 Agent/Session/LLM/DefaultModel capability |
 | S3-D08 | 交付 | Mux/Host frame 与 approval/question 闭环 | Completed | Contract Verified：Session/Host live frame 及 Approval/Question requested、resolved、respond、bad-response retry、取消和 stable reconnect replay 已接入真实双流 |
 | S3-D09 | 交付 | client cancel、disconnect 与 turn cancellation 映射 | Completed | Contract Verified：`session.cancel` 映射 `UserCancel + KeepInbox` 并产生 aborted turn；WebSocket disconnect 只取消其 stream source，不取消 Agent Turn |
-| S3-D10 | 交付 | Agent、AgentLoop ownership 与状态机破坏性重构 | Completed | Go Verified：AgentLoop 只构造单个 ordinary `agentHost`/RLA；Agent Registry 以 Session ID 和 private `agentRecord` 拥有多 Agent、runtime parent-child 与 child-first close；Agent Scope/Setup/ToolLayer/PromptLayer 均 Plugin-neutral，per-Agent Plugin 与动态 unload 已删除；六个 AgentLoop 状态机独立，concrete ownership 由 AST guard 证明为 DAG |
+| S3-D10 | 交付 | Agent、AgentLoop ownership 与状态机破坏性重构 | Completed | Go Verified：AgentLoop 只构造单个 ordinary `agentHost`/RLA，Factory 与 Plugin 不保留返回的 Agent；每个 private `agentLifetime` 以单一枚举拥有 exact Agent 状态、迁移和稳定关闭结果，Registry 不读取其私有状态，只以 Session ID 管理当前 lifetime、runtime parent-child 与 child-first close；Closed 后立即移出索引并允许同 Session ID 再次 Create/Resume；Host 是 Scope 的唯一 owner；Scope 关闭先封闭准入并排空已接纳调用；Registry 与 AgentLoop Plugin 均支持依赖替换后的重新激活；per-Agent Plugin 与动态 unload 已删除；六个 AgentLoop 状态机独立，concrete ownership 与 lifetime 私有状态边界由 AST guard 固定 |
 | S3-G01 | Gate | TypeScript Connection 完成 Session prompt 并收到最终事件 | Completed | Contract Verified：固定源 `WebApiClient` 调用 Go `session.prompt`，收到 committed `turn/end` 与 idle status 并通过 history 读取结果 |
 | S3-G02 | Gate | `user/message` 到 `turn/end` 全流程可运行 | Completed | Go Verified：`TestLoopPublishesDrivesAndDisposesOneAgentLifecycle` 覆盖 prompt、request/header/context、chunks、Assistant、Tool call/result、第二 Step 和 completed Turn |
 | S3-G03 | Gate | step、拒绝、取消、模型和 Tool failure 有 golden | Completed | Contract Verified：固定源与 Go 的 pre-step blocked turn、模型 structured terminal failure 和 Agent-level scheduler failure event sequence 一致；Go Verified：fresh、blocked、completed、max-tokens、retry、LLM failure、Tool failure 与 canceled Turn 完整 event sequence，failure 停止补充、drain 已启动 body且不伪造 Tool result |
@@ -390,12 +390,12 @@ interaction owner registers stable rpcId + decoder
 | DeepSeek Factory strict config、Service settlement、owned route/directory、partial Apply rollback 与 lazy identity | `llm/deepseek/plugin_test.go` |
 | Credentials precedence、local owner-only JSON、atomic write 与 value-free description | `credentials/local/store_test.go`、`apiproxy/credentials_gateway_test.go` |
 | anonymous Harness user identity 的持久化与损坏恢复 | `llm/deepseek/anonymoususerid/store_test.go` |
-| Agent Registry publication、rollback、reentrant detach、ownership 与顺序 | `agent/registry_test.go` |
-| Agent Registry Session ID准入、runtime parent-child、closing事件窗口与child-first close | `agent/registry_test.go`、`agent/setup_test.go` |
+| Agent Registry publication、rollback、重入关闭、Factory replacement reactivation、被拒绝 Host 完整清理、ownership 与顺序 | `agent/registry_integration_test.go` |
+| Agent Registry Session ID准入、runtime parent-child、closing事件窗口与child-first close | `agent/registry_integration_test.go`、`agent/setup_test.go` |
 | Agent scoped emit/waterfall/serial 的 subject isolation | `agent/events_test.go` |
 | durable Inbox replay、commit/notification 顺序、clear、duplicate 与并发 append | `agent/inbox_test.go` |
 | initiator context 与 prompt/request model selection snapshot | `agent/initiator_test.go`、`agent/model_selection_test.go` |
-| Agent Loop fresh lifecycle、Turn/Step、Tool continuation、request reconstruction 与 teardown | `TestLoopPublishesDrivesAndDisposesOneAgentLifecycle` |
+| Agent Loop fresh lifecycle、Provider replacement reactivation、Scope dispatch drain、Turn/Step、Tool continuation、request reconstruction 与 teardown | `TestLoopPublishesDrivesAndDisposesOneAgentLifecycle`、`TestAgentLoopReactivatesAfterSessionProviderReplacement`、`TestAgentScopeCloseDrainsAdmittedDispatch` |
 | Agent/AgentLoop/Subagent单Plugin边界、Host关闭owner、Mode状态机独立与无owner back-reference | `tests/architecture/agent_lifecycle_boundary_test.go`、`agentloop_boundary_test.go`、`subagent_execution_boundary_test.go` |
 | bounded parallel Tool body 与 model-order result/context commit | `TestParallelToolBodiesCommitResultsAndContextInModelOrder` |
 | scheduler failure 停止补充、drain 已启动 dispatch 且不伪造 result | `TestSchedulerFailureStopsReplenishmentAndDrainsStartedDispatch` |

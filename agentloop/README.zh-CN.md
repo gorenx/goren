@@ -10,7 +10,9 @@ AgentLoop 只有一个全局 `Plugin`。该 Plugin 解析 Session、LLM、`Promp
 
 ```mermaid
 flowchart LR
-    Plugin[AgentLoop Plugin] --> Factory[agent.Factory]
+	Plugin[AgentLoop Plugin] --> Activation[one plugin activation]
+	Activation --> Gateway[pluginGateway]
+	Plugin --> Factory[agent.Factory]
     Factory --> Host[one agentHost]
     Host --> RLA[one ReactLoopAgent]
     Host --> Scope[one agentScope]
@@ -18,7 +20,7 @@ flowchart LR
     Scope --> Tools[one ToolLayer]
 ```
 
-`agentHost` 不保存 Registry、parent、children 或 Plugin。多 Agent membership、运行期父子关系、发布和 child-first 关闭全部由 `agent.RegistryService` 拥有。
+`agentHost` 不保存 Registry、parent、children 或 Plugin。它是 Agent Scope 的唯一 owner。多 Agent membership、运行期父子关系、发布和 child-first 关闭全部由 `agent.RegistryService` 拥有。
 
 ## 文件职责
 
@@ -83,23 +85,25 @@ sequenceDiagram
     participant RLA as ReactLoopAgent
     participant Scope as agentScope
 
-    Registry->>Factory: CreateAgent / ResumeAgent
+	Registry->>Factory: CreateAgent(CreateHostOptions) / ResumeAgent(ResumeHostOptions)
     Factory-->>Registry: unpublished Host
     Registry->>Scope: ApplySetup
     Registry->>Host: EnterServing + Announce
     Registry->>Scope: agent/created + session-start
     Scope->>RLA: admitted work
     RLA->>Scope: prompt, tools, events, waterfalls
-    Registry->>Host: Close
+	Registry->>Host: Close
     Host->>RLA: shutdown and settle
     Host->>Host: release Session membership
-    Registry->>Scope: Close resources
+	Host->>Scope: seal, drain admitted calls, close resources
 ```
 
 `toolGroupExecution` 不持有 RLA concrete object；RLA 通过窄函数/接口提供 dispatch 所需能力。Tool body 不用回调替代 Tool Runtime，结果仍按模型顺序提交。
 
 ## 失败与关闭
 
-构造、Setup、Session announce 或 Agent publication 任一点失败，Registry 都关闭 exact Host 和 Scope；已经开始的 created/Session publication必须产生配对 disposal。`agentHost.Close` 是 RLA shutdown 的唯一调用者，并稳定 join 同一次结果。
+构造、Setup、Session announce 或 Agent publication 任一点失败，Registry 都关闭 exact Host；Host 再关闭自己拥有的 Scope。已经开始的 created/Session publication 必须产生配对 disposal。`agentHost.Close` 是 RLA shutdown 和 Scope close 的唯一调用者，并稳定 join 同一次结果。
 
-AgentLoop Plugin `Dispose` 先停止 Factory 新构造，再停止 gateway 并等待已接纳全局 Event/Waterfall 调用。它不遍历或关闭 Registry 中的 Agent；依赖方向保证 Agent Plugin 先关闭这些实例。
+Agent Scope 使用 `open → closing → closed`：Close 先封闭 Setup、Event 和 Waterfall 准入，等待已接纳调用返回，再逆序释放资源、ToolLayer 和 PromptLayer。Registry 只决定普通事件与 closing 事件能否进入 exact Agent；Scope 是最终线性化边界。
+
+AgentLoop Plugin 的 gateway、driver 和 effect join set 属于一次 `pluginActivation`。`Dispose` 先停止 Factory 新构造，再停止本次 gateway 并等待已接纳全局 Event/Waterfall 调用；下一次 `Apply` 创建全新的 activation。Plugin 不遍历或关闭 Registry 中的 Agent，依赖方向保证 Agent Plugin 先关闭这些实例。

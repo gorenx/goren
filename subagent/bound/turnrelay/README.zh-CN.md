@@ -33,7 +33,7 @@ sequenceDiagram
 
 ## 生命周期与恢复
 
-Plugin Apply解析`agent.Registry`、`session.LiveStore`和`bound.Inbox`，并扫描当时已经live的用户Agent；后续`SessionStarted`、Binding append与`turn/end`也会重新fold已有Binding，因此丢失单次Binding通知不会永久漏建worker。worker归exact parent Agent epoch所有，`agent.Disposed`只取消匹配的epoch；同一用户Session恢复为新Agent epoch时建立新worker并从durable cursor继续。
+Plugin Apply解析`agent.Registry`、`session.LiveStore`和`bound.Inbox`，并扫描当时已经live的用户Agent；后续`SessionStarted`、Binding append与`turn/end`也会重新fold已有Binding，因此丢失单次Binding通知不会永久漏建worker。worker归exact parent Agent lifetime所有，`agent.Disposed`只取消匹配的lifetime；同一用户Session恢复为新Agent lifetime时建立新worker并从durable cursor继续。
 
 worker在没有完整turn时等待合并wakeup。`Inbox.Deliver`或cursor提交失败时保留pending Input并退避重试；`BOUND_DISABLED`是正常暂停，不报告diagnostic。Definition重新启用不要求Bound反向通知输入源，pending worker最迟在退避到期后再次调用Inbox。
 

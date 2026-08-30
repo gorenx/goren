@@ -33,7 +33,7 @@ live Agent contract、Registry、Inbox 和 `agent/*` Event Definition 由[14](./
 | `Settlement` | operation 停止后完成事实配对、Tool drain 和 Flush | 新业务执行、错误吞并 |
 | `VisibleContext` | exact Agent 对 retained Prompt Context message 的派生视图 | Session surface owner、Plugin Context |
 | `ContextSnapshot` | `VisibleContext` 指向的一次 model-visible snapshot 值 | 投影处理器、存储对象 |
-| `AgentScope` | exact Agent 的 Tool、Prompt、local Event/Waterfall 和资源环境 | Plugin Runtime Scope、Agent Registry |
+| `AgentScope` | exact Agent 的 Tool、Prompt、local Event/Waterfall 和资源环境 | Plugin Runtime Scope、Registry ownership |
 | `AgentHost` | 一个 RLA、AgentScope 和 Session membership 的单实例 owner | Registry、runtime parent 或 Plugin |
 
 `Activity` 只用于描述已经删除的旧实现或引用上游原文，不能作为当前对象、状态、模块或字段。当前实现也不建立一个跨模块的总 `Phase`。
@@ -67,6 +67,8 @@ live Agent contract、Registry、Inbox 和 `agent/*` Event Definition 由[14](./
 ```mermaid
 flowchart TD
     Runtime[plugin.Runtime] --> Root[agentloop.Plugin]
+    Root --> Activation[pluginActivation]
+    Activation --> Gateway[pluginGateway]
     Root --> Factory[agentloop.Factory]
     Root --> Gateway[pluginGateway]
     Root --> Startup[StartupPlan]
@@ -83,12 +85,12 @@ flowchart TD
 
 关键规则：
 
-- AgentLoop Plugin 只拥有 Factory 和全局 gateway，不保存 Agent map 或 exact Agent；
+- AgentLoop Plugin 常驻拥有 Factory，并在每次 Apply 创建一个 `pluginActivation`；activation 拥有该次 gateway、driver 和 effect join set，不保存 Agent map 或 exact Agent；
 - Factory 每次构造一个 `agentHost`，不保存已经返回的 Host；
 - `agentHost` 是 RLA shutdown 的唯一调用者，并拥有该实例的 Agent Scope 和 Session membership；
 - `agentScope` 拥有 child `PromptLayer`、`ToolLayer` 和 committed `ScopeResources`，但不保存 Host 或 RLA back-reference；
 - RLA 不保存 Plugin、Host、Registry、parent 或 children，只消费 Scope 暴露的窄端口；
-- Registry 保存 Host 和 Scope 的结构所有权，AgentLoop 不反向保存 Registry。
+- Registry 保存活动 `agentLifetime` 和 Host 引用；Host 是 Scope 的唯一结构所有者，AgentLoop 不反向保存 Registry。
 - 禁止 struct 直接循环、间接循环、构造后反向指针回填和用共享 service locator 隐藏环。
 
 Turn、Step、ModelRequest 和 ToolBatch 是 RLA 创建的调用期对象。RLA 按词法生命周期拥有它们，但状态机之间不保存字段、不互相 import，也不直接调用下一个状态机。

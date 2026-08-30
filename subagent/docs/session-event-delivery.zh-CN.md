@@ -100,7 +100,7 @@ effect顺序固定为：
 
 disabled Bound由`Inbox.Deliver`返回`BOUND_DISABLED`，TurnRelay保留pending Input和cursor并退避重试；该状态不报告diagnostic。重新启用不要求Bound反向通知TurnRelay，pending worker最迟在退避到期后继续。
 
-TurnRelay worker属于exact parent Agent epoch。`SessionStarted`扫描已有Binding，Binding event append建立新worker；`agent.Disposed`只取消匹配epoch。Definition replacement不改变Binding、child Session或source cursor，下一次`Deliver`由Bound mailbox先完成epoch replacement再接纳输入。
+TurnRelay worker属于exact parent Agent lifetime。`SessionStarted`扫描已有Binding，Binding event append建立新worker；`agent.Disposed`只取消匹配lifetime。Definition replacement不改变Binding、child Session或source cursor，下一次`Deliver`由Bound mailbox先完成lifetime replacement再接纳输入。
 
 启动扫描与durable cursor保证正确性不依赖每次wakeup。parent恢复、新事件append和退避到期都可触发继续处理。
 

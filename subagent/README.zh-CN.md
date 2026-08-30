@@ -9,12 +9,12 @@
 本模块负责：
 
 - `StartCommand` 是OneShot与Continuable的封闭显式启动命令类型族；Bound由全局Definition和用户Session一致性检查启动，不伪装成一次Tool启动命令；
-- 用同一个 `Execution` 契约表示任一模式的一次 exact Agent epoch；
+- 用同一个 `Execution` 契约表示任一模式的一次 exact Agent lifetime；
 - 为模型 Tool 和 Host Consumer 提供最小的 `ChildControl` 与 `ChildDirectory` 能力；
 - 通过 `SeedBuilder` 生成首次创建 child Session 时使用的 detached event prefix；
 - 保存 Subagent descriptor、事件、错误和模型消息来源等领域契约。
 
-本模块不拥有 Agent epoch、AgentLoop、Session 持久化、Plugin topology、Tool schema 或模型传输。`agent` 负责 Agent 创建、恢复、运行时父子关系、结构关闭和 Scope 卸载；`agentloop` 只执行单个 Agent 的 Inbox、turn、step、Tool 与模型循环。Session 仍是 append-only 事实来源。
+本模块不拥有 Agent lifetime、AgentLoop、Session 持久化、Plugin topology、Tool schema 或模型传输。`agent` 负责 Agent 创建、恢复、运行时父子关系和结构关闭；`agentloop` 的 Host 只执行并关闭单个 Agent 的 Scope、Inbox、turn、step、Tool 与模型循环。Session 仍是 append-only 事实来源。
 
 ## 公共契约
 
@@ -41,7 +41,7 @@
 | `plugin` | 解析依赖、构造业务对象、发布窄 capability、转接事件、注册 Projection，并装配三个模式对象 | Subagent 用例、Plugin Runtime 本身和 Agent 结构关闭策略 |
 | `internal/subagents` | 统一准入、按具体 `StartCommand` variant 路由、公共中断授权、关闭编排 | 把三个模式合并成大而全的启动参数 |
 | `internal/oneshot` | OneShot 创建、初始消息、结果选择和终止 | durable resume、后续消息 |
-| `internal/continuable` | Continuable fresh create、cold resume 和 settlement | Agent epoch、普通 live Inbox 投递或 Session durability |
+| `internal/continuable` | Continuable fresh create、cold resume 和 settlement | Agent lifetime、普通 live Inbox 投递或 Session durability |
 | `internal/bound` | 全局Definition应用、用户Session Binding、create/restore、idle resident epoch、Followup、Inbox接纳与failure containment | 输入源观察/cursor、Web协议、System Prompt/Tools实现或Session EventBus |
 | `bound/turnrelay` | 观察用户Session的closed turn、恢复source cursor并调用`bound.Inbox` | Definition、child生命周期或Bound内部mailbox |
 | `internal/execution` | Run ID、live execution索引、发布流程、Terminal复制和输出选择纯函数 | 任何Mode的状态机或终止事务 |

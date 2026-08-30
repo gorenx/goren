@@ -13,7 +13,7 @@ Bound 是直接属于用户 Session 的长期后台 Subagent。管理员通过 W
 - **Definition**：一次配置、作用于所有用户 Session 的全局 Bound 定义。
 - **用户 Session**：`Header.Origin == ""` 且 `Header.ParentSession == nil` 的 Session。
 - **Binding**：某个用户 Session 内，Definition 名称与一个稳定 child Session ID 的关系。
-- **Applied Definition**：某个 child Agent epoch 实际安装的完整 Definition 快照。
+- **Applied Definition**：某个 child Agent lifetime 实际安装的完整 Definition 快照。
 - **Parent interaction**：用户与 parent Agent 已闭合的一次交互，只包含 direct user 输入与 parent 可见回复。
 - **Context floor**：Binding 创建时冻结的 parent committed prefix 末端；此前历史只作为 child 初始上下文。
 - **Delivery cursor**：输入源拥有的增量投递水位；内置TurnRelay从Binding建立后追踪parent interaction。
@@ -61,7 +61,7 @@ child 创建或恢复时必须：
 1. 核对 parent 是直接用户 Session，child 的 runtime parent 和 `Header.ParentSession` 都指向该用户 Session；
 2. 安装 Definition 的完整 system prompt、Tool restriction、common Extensions 与有序 selected Extensions；
 3. 在 child Session 提交完整 Applied Definition 快照并 `Flush`；
-4. 发布 resident child Agent epoch；
+4. 发布 resident child Agent lifetime；
 5. 不提交 InitialPrompt，不向 Inbox 发送消息，不调用 LLM；
 6. 保持 idle，等待新的 parent interaction 或显式 `Send`。
 
