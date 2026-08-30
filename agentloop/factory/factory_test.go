@@ -16,11 +16,7 @@ func TestFactoryCreatesAgentLoopPlugin(t *testing.T) {
 	created, err := builder.Create(
 		context.Background(),
 		json.RawMessage(`{
-			"maxParallelToolCalls": 3,
-			"agents": [
-				{"id":"fresh","sessionId":"fresh-session","provider":"p","model":"m","cwd":"/work"},
-				{"id":"resume","resumeSessionId":"stored-session"}
-			]
+			"maxParallelToolCalls": 3
 		}`),
 	)
 	if err != nil {
@@ -68,7 +64,7 @@ func TestFactoryRejectsInvalidConfiguration(t *testing.T) {
 			wantMessage: "unknown field",
 		},
 		{
-			label:       "unknown Agent field",
+			label:       "removed Agents field",
 			input:       `{"agents":[{"id":"a","unknown":true}]}`,
 			wantMessage: "unknown field",
 		},
@@ -81,36 +77,6 @@ func TestFactoryRejectsInvalidConfiguration(t *testing.T) {
 			label:       "invalid cap",
 			input:       `{"maxParallelToolCalls":0}`,
 			wantMessage: "positive integer",
-		},
-		{
-			label:       "untrimmed id",
-			input:       `{"agents":[{"id":" a"}]}`,
-			wantMessage: "non-empty and trimmed",
-		},
-		{
-			label:       "conflicting identity",
-			input:       `{"agents":[{"id":"a","sessionId":"s","resumeSessionId":"r"}]}`,
-			wantMessage: "mutually exclusive",
-		},
-		{
-			label:       "duplicate identity",
-			input:       `{"agents":[{"id":"a","sessionId":"s"},{"id":"b","resumeSessionId":"s"}]}`,
-			wantMessage: "duplicate exact Session identity",
-		},
-		{
-			label:       "null Agent string",
-			input:       `{"agents":[{"id":"a","provider":null}]}`,
-			wantMessage: "must be a string",
-		},
-		{
-			label:       "invalid token limit",
-			input:       `{"agents":[{"id":"a","maxTokens":0}]}`,
-			wantMessage: "positive safe integer",
-		},
-		{
-			label:       "relative working directory",
-			input:       `{"agents":[{"id":"a","cwd":"relative"}]}`,
-			wantMessage: "absolute path",
 		},
 	}
 	for _, testCase := range testCases {

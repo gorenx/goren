@@ -194,8 +194,6 @@ func TestAgentLoopConcreteStructOwnershipIsAllowedAndAcyclic(t *testing.T) {
 		"Factory -> factoryDependencies":                       {},
 		"Plugin -> Factory":                                    {},
 		"Plugin -> pluginActivation":                           {},
-		"Settings -> StartupAgent":                             {},
-		"StartupPlan -> StartupAgent":                          {},
 		"agentHost -> ReactLoopAgent":                          {},
 		"agentHost -> agentScope":                              {},
 		"agentScope -> scopeRegistration":                      {},

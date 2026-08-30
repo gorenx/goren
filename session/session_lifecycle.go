@@ -27,10 +27,9 @@ const (
 	sessionClosed
 )
 
-type membershipToken struct {
-	// identity keeps tokens non-zero-sized so pointer identity remains exact.
-	identity byte
-}
+// membershipToken is non-zero-sized so separately allocated token pointers
+// remain exact identities under Go's zero-size allocation rules.
+type membershipToken [1]byte
 
 type operationWaiter struct {
 	// ready closes when this operation reaches the FIFO head.
@@ -95,7 +94,8 @@ type sessionLifecycle struct {
 
 func newSessionLifecycle() sessionLifecycle {
 	return sessionLifecycle{
-		phase: sessionDetached,
+		phase:    sessionDetached,
+		creation: creationUnannounced,
 	}
 }
 

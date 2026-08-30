@@ -50,7 +50,7 @@ func (owner *Diagnostics) ReportEventFailure(
 
 // ReportObserverFailure adapts contained LLM topology observer failure.
 func (owner *Diagnostics) ReportObserverFailure(problem error) {
-	owner.Report(fmt.Errorf("LLM topology observer: %w", problem))
+	owner.Report(fmt.Errorf("llm topology observer: %w", problem))
 }
 
 // ReportPostCommitFailure adapts Session work that failed after commit.
@@ -58,7 +58,7 @@ func (owner *Diagnostics) ReportPostCommitFailure(
 	failure session.PostCommitFailure,
 ) {
 	owner.Report(fmt.Errorf(
-		"Session %q post-commit work: %w",
+		"session %q post-commit work: %w",
 		failure.SessionID,
 		failure.Error,
 	))
@@ -69,7 +69,7 @@ func (owner *Diagnostics) ReportBackgroundWriteFailure(
 	failure persistence.BackgroundWriteFailure,
 ) {
 	owner.Report(fmt.Errorf(
-		"Session %q background write through %s: %w",
+		"session %q background write through %s: %w",
 		failure.SessionID,
 		failure.BackendName,
 		failure.Error,
@@ -81,7 +81,7 @@ func (owner *Diagnostics) ReportProjectionCacheFailure(
 	failure projectioncache.Failure,
 ) {
 	owner.Report(fmt.Errorf(
-		"Session %q projection cache %s: %w",
+		"session %q projection cache %s: %w",
 		failure.SessionID,
 		failure.Operation,
 		failure.Error,
@@ -91,7 +91,7 @@ func (owner *Diagnostics) ReportProjectionCacheFailure(
 // ReportAsyncFailure adapts contained Session title work failure.
 func (owner *Diagnostics) ReportAsyncFailure(failure title.AsyncFailure) {
 	owner.Report(fmt.Errorf(
-		"Session %q asynchronous title work: %w",
+		"session %q asynchronous title work: %w",
 		failure.SessionID,
 		failure.Error,
 	))

@@ -32,9 +32,9 @@ type promptEntryKey struct {
 	name string
 }
 
-type promptEntryToken struct {
-	marker byte
-}
+// promptEntryToken is non-zero-sized so separately allocated token pointers
+// remain exact identities under Go's zero-size allocation rules.
+type promptEntryToken [1]byte
 
 type promptLayerSnapshot struct {
 	sections          []PromptSection

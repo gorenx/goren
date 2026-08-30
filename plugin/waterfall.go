@@ -90,9 +90,7 @@ func (typedBinding typedWaterfallMiddlewareBinding[I, O]) waterfallMiddleware() 
 	if typedBinding.middleware == nil {
 		return nil, errors.New("Plugin declared a nil WaterfallMiddleware")
 	}
-	return waterfallInvokerOf[I, O]{
-		middleware: typedBinding.middleware,
-	}, nil
+	return waterfallInvokerOf[I, O](typedBinding), nil
 }
 
 func waterfallReferenceOf[
@@ -101,11 +99,11 @@ func waterfallReferenceOf[
 ]() (waterfallRef, error) {
 	inputType := reflect.TypeFor[I]()
 	outputType := reflect.TypeFor[O]()
-	if inputType == nil || inputType.Name() == "" {
-		return waterfallRef{}, errors.New("Waterfall input must be a named type")
+	if inputType.Name() == "" {
+		return waterfallRef{}, errors.New("waterfall input must be a named type")
 	}
-	if outputType == nil || outputType.Name() == "" {
-		return waterfallRef{}, errors.New("Waterfall output must be a named type")
+	if outputType.Name() == "" {
+		return waterfallRef{}, errors.New("waterfall output must be a named type")
 	}
 	return waterfallRef{
 		input:  inputType,

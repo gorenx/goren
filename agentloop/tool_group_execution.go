@@ -289,9 +289,7 @@ func (current *toolGroupExecution) commitReadyResults() error {
 			return nil
 		}
 		finalResult := settledCall.result
-		if settledCall.acceptDirectly {
-			finalResult = settledCall.result
-		} else if settledCall.finalize {
+		if !settledCall.acceptDirectly && settledCall.finalize {
 			var err error
 			finalResult, err = current.scheduler.Finalize(
 				settledCall.execution,
@@ -300,7 +298,7 @@ func (current *toolGroupExecution) commitReadyResults() error {
 			if err != nil {
 				return err
 			}
-		} else {
+		} else if !settledCall.acceptDirectly {
 			finalResult = current.scheduler.Finish(
 				settledCall.execution,
 				settledCall.result,
