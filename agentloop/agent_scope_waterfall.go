@@ -11,6 +11,11 @@ func (owner *agentScope) ResolvePreStep(
 	notice agent.PreStepNotice,
 	terminal agent.PreStepAction,
 ) (agent.PreStepDecision, error) {
+	finishCall, err := owner.beginCall()
+	if err != nil {
+		return agent.PreStepDecision{}, err
+	}
+	defer finishCall()
 	owner.mutex.RLock()
 	registrations := append(
 		[]*scopeRegistration[agent.PreStepMiddleware](nil),
@@ -36,6 +41,11 @@ func (owner *agentScope) ResolveRequest(
 	notice agent.RequestNotice,
 	terminal agent.RequestAction,
 ) (agent.RequestResolution, error) {
+	finishCall, err := owner.beginCall()
+	if err != nil {
+		return agent.RequestResolution{}, err
+	}
+	defer finishCall()
 	owner.mutex.RLock()
 	registrations := append(
 		[]*scopeRegistration[agent.RequestMiddleware](nil),
@@ -61,6 +71,11 @@ func (owner *agentScope) ResolveRequestError(
 	notice agent.RequestErrorNotice,
 	terminal agent.RequestErrorHandler,
 ) (agent.RequestErrorAction, error) {
+	finishCall, err := owner.beginCall()
+	if err != nil {
+		return agent.RequestErrorAction{}, err
+	}
+	defer finishCall()
 	owner.mutex.RLock()
 	registrations := append(
 		[]*scopeRegistration[agent.RequestErrorMiddleware](nil),

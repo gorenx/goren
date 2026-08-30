@@ -253,13 +253,15 @@ func (observerState *lifecycleObserver) snapshot() []string {
 }
 
 type harnessFixture struct {
-	runtimeEngine *plugin.Runtime
-	agents        *agent.RegistryService
-	sessions      session.LiveStore
-	models        *llm.Runtime
-	toolCatalog   tools.ToolCatalog
-	backend       *scriptedAdapter
-	lifecycle     *lifecycleObserver
+	runtimeEngine  *plugin.Runtime
+	registryHandle plugin.Handle
+	sessionHandle  plugin.Handle
+	agents         *agent.RegistryService
+	sessions       session.LiveStore
+	models         *llm.Runtime
+	toolCatalog    tools.ToolCatalog
+	backend        *scriptedAdapter
+	lifecycle      *lifecycleObserver
 }
 
 type questionProviderPlugin struct {
@@ -402,7 +404,7 @@ func newHarnessFixtureWithSettings(
 	}
 	rootPlugins = append(rootPlugins, rootExtensions...)
 	rootPlugins = append(rootPlugins, loopPlugin)
-	_, err = runtimeEngine.Start(
+	handles, err := runtimeEngine.Start(
 		context.Background(),
 		rootPlugins...,
 	)
@@ -410,9 +412,6 @@ func newHarnessFixtureWithSettings(
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if shutdownErr := agentRegistry.Shutdown(context.Background()); shutdownErr != nil {
-			t.Error(shutdownErr)
-		}
 		if shutdownErr := runtimeEngine.Shutdown(context.Background()); shutdownErr != nil {
 			t.Error(shutdownErr)
 		}
@@ -434,13 +433,64 @@ func newHarnessFixtureWithSettings(
 		}
 	})
 	return &harnessFixture{
-		runtimeEngine: runtimeEngine,
-		agents:        agentRegistry,
-		sessions:      storeProbe.store,
-		models:        modelRuntime,
-		toolCatalog:   toolService,
-		backend:       backend,
-		lifecycle:     lifecycle,
+		runtimeEngine:  runtimeEngine,
+		registryHandle: handles[1],
+		sessionHandle:  handles[2],
+		agents:         agentRegistry,
+		sessions:       storeProbe.store,
+		models:         modelRuntime,
+		toolCatalog:    toolService,
+		backend:        backend,
+		lifecycle:      lifecycle,
+	}
+}
+
+func TestAgentLoopReactivatesAfterSessionProviderReplacement(t *testing.T) {
+	state := newHarnessFixture(t, nil)
+	first, err := state.agents.Create(
+		context.Background(),
+		agent.CreateOptions{
+			SessionID: "before-session-replacement",
+			AgentOptions: agent.Options{
+				Provider: "mock",
+				Model:    "model",
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := session.NewPlugin(session.MemoryStoreOptions{
+		PostCommitFailures: postCommitFailureSink{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = state.runtimeEngine.Replace(
+		context.Background(),
+		state.sessionHandle,
+		replacement,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := state.agents.Get(first.Subject.ID()); found {
+		t.Fatal("provider replacement retained the prior activation Agent")
+	}
+	second, err := state.agents.Create(
+		context.Background(),
+		agent.CreateOptions{
+			SessionID: "after-session-replacement",
+			AgentOptions: agent.Options{
+				Provider: "mock",
+				Model:    "model",
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = second.Dispose(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -868,7 +918,7 @@ func TestFailedExtensionNeverPublishesPartialAgentTree(t *testing.T) {
 	}
 }
 
-func TestRegistryShutdownRetiresLiveAgentBeforeRootServices(t *testing.T) {
+func TestRegistryDeactivationRetiresLiveAgentBeforeRootServices(t *testing.T) {
 	state := newHarnessFixture(t, nil)
 	handleState, err := state.agents.Create(
 		context.Background(),
@@ -883,7 +933,10 @@ func TestRegistryShutdownRetiresLiveAgentBeforeRootServices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = state.agents.Shutdown(context.Background()); err != nil {
+	if err = state.runtimeEngine.Unload(
+		context.Background(),
+		state.registryHandle,
+	); err != nil {
 		t.Fatal(err)
 	}
 	if _, found := state.agents.Get("shutdown-agent"); found {
@@ -904,7 +957,7 @@ func TestRegistryShutdownRetiresLiveAgentBeforeRootServices(t *testing.T) {
 				Model:    "model",
 			},
 		},
-	); err == nil || !strings.Contains(err.Error(), "shutting down") {
+	); err == nil || !strings.Contains(err.Error(), "not active") {
 		t.Fatalf("post-shutdown Create error = %v", err)
 	}
 	want := []string{
@@ -919,7 +972,7 @@ func TestRegistryShutdownRetiresLiveAgentBeforeRootServices(t *testing.T) {
 	}
 }
 
-func TestRegistryShutdownRetiresRuntimeDescendantsChildFirst(t *testing.T) {
+func TestRegistryDeactivationRetiresRuntimeDescendantsChildFirst(t *testing.T) {
 	state := newHarnessFixture(t, nil)
 	root, err := state.agents.Create(
 		context.Background(),
@@ -947,7 +1000,10 @@ func TestRegistryShutdownRetiresRuntimeDescendantsChildFirst(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err = state.agents.Shutdown(context.Background()); err != nil {
+	if err = state.runtimeEngine.Unload(
+		context.Background(),
+		state.registryHandle,
+	); err != nil {
 		t.Fatal(err)
 	}
 	agentIDs, sessionIDs := state.lifecycle.disposedIDs()
@@ -1089,7 +1145,7 @@ func (barrier *shutdownBarrier) Close(context.Context) error {
 	return nil
 }
 
-func TestRegistryShutdownClosesAdmissionBeforeAgentScopes(t *testing.T) {
+func TestRegistryDeactivationClosesAdmissionBeforeAgentScopes(t *testing.T) {
 	state := newHarnessFixture(t, nil)
 	barrier := &shutdownBarrier{
 		entered: make(chan struct{}),
@@ -1117,7 +1173,10 @@ func TestRegistryShutdownClosesAdmissionBeforeAgentScopes(t *testing.T) {
 	}
 	shutdownDone := make(chan error, 1)
 	go func() {
-		shutdownDone <- state.agents.Shutdown(context.Background())
+		shutdownDone <- state.runtimeEngine.Unload(
+			context.Background(),
+			state.registryHandle,
+		)
 	}()
 	select {
 	case <-barrier.entered:

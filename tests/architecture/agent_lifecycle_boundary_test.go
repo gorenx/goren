@@ -146,7 +146,7 @@ func TestAgentLifecycleBusinessTypesStayOutsidePluginLifecycle(t *testing.T) {
 	)
 }
 
-func TestAgentScopeContractsStayPluginNeutral(t *testing.T) {
+func TestAgentContractsStayPluginNeutral(t *testing.T) {
 	t.Parallel()
 	repositoryPath := repositoryRoot(t)
 	fileSet := token.NewFileSet()
@@ -156,7 +156,8 @@ func TestAgentScopeContractsStayPluginNeutral(t *testing.T) {
 	findings := make([]string, 0)
 	for _, source := range sources {
 		baseName := filepath.Base(source.path)
-		if baseName != "scope.go" && baseName != "setup.go" {
+		if baseName != "events.go" && baseName != "scope.go" &&
+			baseName != "setup.go" {
 			continue
 		}
 		for _, imported := range source.tree.Imports {
@@ -178,7 +179,138 @@ func TestAgentScopeContractsStayPluginNeutral(t *testing.T) {
 	}
 	sort.Strings(findings)
 	t.Fatalf(
-		"Agent Scope contracts must not depend on Plugin Runtime:\n%s",
+		"Agent event, Scope, and Setup contracts must not depend on Plugin Runtime:\n%s",
+		strings.Join(findings, "\n"),
+	)
+}
+
+func TestAgentLifetimeDoesNotOwnScopeOrPeerLifetimes(t *testing.T) {
+	t.Parallel()
+	repositoryPath := repositoryRoot(t)
+	fileSet := token.NewFileSet()
+	sourcesByPackage := parsePackages(t, fileSet, repositoryPath)
+	packageKey := filepath.Join(repositoryPath, "agent") + ":agent"
+	sources := productionSources(sourcesByPackage[packageKey])
+	found := false
+	hostFields := 0
+	stateFields := 0
+	findings := make([]string, 0)
+	for _, source := range sources {
+		for _, declaration := range source.tree.Decls {
+			group, ok := declaration.(*ast.GenDecl)
+			if !ok {
+				continue
+			}
+			for _, specification := range group.Specs {
+				typeSpecification, ok := specification.(*ast.TypeSpec)
+				if !ok || typeSpecification.Name.Name != "agentLifetime" {
+					continue
+				}
+				found = true
+				if filepath.Base(source.path) != "agent_lifetime.go" {
+					findings = append(
+						findings,
+						fileSet.Position(typeSpecification.Pos()).String()+": agentLifetime must be declared in agent_lifetime.go",
+					)
+				}
+				structure, ok := typeSpecification.Type.(*ast.StructType)
+				if !ok {
+					findings = append(findings, "agentLifetime is not a struct")
+					continue
+				}
+				for _, field := range structure.Fields.List {
+					ast.Inspect(field.Type, func(node ast.Node) bool {
+						identifier, ok := node.(*ast.Ident)
+						if !ok {
+							return true
+						}
+						if identifier.Name == "Host" {
+							hostFields++
+							return true
+						}
+						if identifier.Name == "agentLifetimeState" {
+							stateFields++
+							return true
+						}
+						if identifier.Name != "Agent" &&
+							identifier.Name != "Scope" &&
+							identifier.Name != "agentLifetime" {
+							return true
+						}
+						findings = append(
+							findings,
+							fileSet.Position(identifier.Pos()).String()+": "+identifier.Name,
+						)
+						return true
+					})
+				}
+			}
+		}
+	}
+	if !found {
+		findings = append(findings, "agentLifetime declaration not found")
+	} else if hostFields != 1 {
+		findings = append(findings, "agentLifetime must contain exactly one Host field")
+	}
+	if found && stateFields != 1 {
+		findings = append(
+			findings,
+			"agentLifetime must contain exactly one agentLifetimeState field",
+		)
+	}
+	if len(findings) == 0 {
+		return
+	}
+	sort.Strings(findings)
+	t.Fatalf(
+		"Agent lifetime must own one state and one Host, not Agent, Scope, or peer lifetimes:\n%s",
+		strings.Join(findings, "\n"),
+	)
+}
+
+func TestRegistryDoesNotReadAgentLifetimePrivateState(t *testing.T) {
+	t.Parallel()
+	repositoryPath := repositoryRoot(t)
+	fileSet := token.NewFileSet()
+	sourcesByPackage := parsePackages(t, fileSet, repositoryPath)
+	packageKey := filepath.Join(repositoryPath, "agent") + ":agent"
+	selectedFiles := map[string]struct{}{
+		"handle.go":             {},
+		"registry.go":           {},
+		"registry_lifecycle.go": {},
+	}
+	privateFields := map[string]struct{}{
+		"closeErr":   {},
+		"dispatches": {},
+		"ownedHost":  {},
+		"state":      {},
+	}
+	findings := make([]string, 0)
+	for _, source := range productionSources(sourcesByPackage[packageKey]) {
+		if _, selected := selectedFiles[filepath.Base(source.path)]; !selected {
+			continue
+		}
+		ast.Inspect(source.tree, func(node ast.Node) bool {
+			selector, ok := node.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			if _, private := privateFields[selector.Sel.Name]; !private {
+				return true
+			}
+			findings = append(
+				findings,
+				fileSet.Position(selector.Pos()).String()+": "+selector.Sel.Name,
+			)
+			return true
+		})
+	}
+	if len(findings) == 0 {
+		return
+	}
+	sort.Strings(findings)
+	t.Fatalf(
+		"Registry must use agentLifetime transitions, not read its private state:\n%s",
 		strings.Join(findings, "\n"),
 	)
 }

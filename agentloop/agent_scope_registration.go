@@ -102,6 +102,11 @@ func (owner *agentScope) Dispatch(
 	requestContext context.Context,
 	fact agent.AgentEvent,
 ) error {
+	finishCall, err := owner.beginCall()
+	if err != nil {
+		return err
+	}
+	defer finishCall()
 	owner.mutex.RLock()
 	registrations := append(
 		[]*scopeRegistration[agent.AgentEventObserver](nil),
@@ -113,8 +118,8 @@ func (owner *agentScope) Dispatch(
 		if !active {
 			continue
 		}
-		if err := observer.ObserveAgentEvent(requestContext, fact); err != nil {
-			return err
+		if observerErr := observer.ObserveAgentEvent(requestContext, fact); observerErr != nil {
+			return observerErr
 		}
 	}
 	return owner.events.Dispatch(requestContext, fact)

@@ -25,6 +25,22 @@ type ResumeOptions struct {
 	RuntimeParent Agent
 }
 
+// CreateHostOptions contains only the values needed to construct one fresh
+// unpublished Host. Registry-owned Setup and parent relations are excluded.
+type CreateHostOptions struct {
+	SessionID    session.SessionID
+	Metadata     session.Metadata
+	Seed         []session.Event
+	AgentOptions Options
+}
+
+// ResumeHostOptions contains only the values needed to reconstruct one
+// unpublished Host from durable Session state.
+type ResumeHostOptions struct {
+	SessionID    session.SessionID
+	AgentOptions Options
+}
+
 // Host owns one constructed Agent, its private Scope, and its single-instance
 // runtime lifecycle. It is an ordinary object and never a Plugin.
 type Host interface {
@@ -33,12 +49,11 @@ type Host interface {
 	EnterServing(context.Context) error
 	Announce(context.Context) error
 	Close(context.Context) error
-	WhenClosed(context.Context) error
 }
 
 // Factory constructs one unpublished Agent Host. It does not reserve Registry
 // identities, publish Agent events, or manage descendants.
 type Factory interface {
-	CreateAgent(context.Context, CreateOptions) (Host, error)
-	ResumeAgent(context.Context, ResumeOptions) (Host, error)
+	CreateAgent(context.Context, CreateHostOptions) (Host, error)
+	ResumeAgent(context.Context, ResumeHostOptions) (Host, error)
 }

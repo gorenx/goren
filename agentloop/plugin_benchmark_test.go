@@ -173,9 +173,6 @@ func newAgentLoopBenchmark(
 		if releaseErr := state.adapter.Release(context.Background()); releaseErr != nil {
 			benchmarkState.Error(releaseErr)
 		}
-		if shutdownErr := state.agents.Shutdown(context.Background()); shutdownErr != nil {
-			benchmarkState.Error(shutdownErr)
-		}
 		if shutdownErr := state.runtimeEngine.Shutdown(context.Background()); shutdownErr != nil {
 			benchmarkState.Error(shutdownErr)
 		}

@@ -8,23 +8,23 @@ import (
 type Handle struct {
 	Subject  Agent
 	registry *RegistryService
-	record   *agentRecord
+	lifetime *agentLifetime
 }
 
 // ClosingSignal closes when explicit or structural Handle teardown starts.
 func (owned Handle) ClosingSignal() <-chan struct{} {
-	if owned.record == nil {
+	if owned.lifetime == nil {
 		closed := make(chan struct{})
 		close(closed)
 		return closed
 	}
-	return owned.record.closing.done
+	return owned.lifetime.ClosingSignal()
 }
 
 // Dispose stops and removes the exact Agent lifecycle owned by this Handle.
 func (owned Handle) Dispose(closeContext context.Context) error {
-	if owned.registry == nil || owned.record == nil {
+	if owned.registry == nil || owned.lifetime == nil {
 		return nil
 	}
-	return owned.registry.closeRecord(closeContext, owned.record)
+	return owned.registry.closeLifetime(closeContext, owned.lifetime)
 }

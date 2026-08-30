@@ -320,21 +320,16 @@ func (*boundAgentHost) Announce(context.Context) error {
 	return nil
 }
 
-func (host *boundAgentHost) Close(context.Context) error {
+func (host *boundAgentHost) Close(closeContext context.Context) error {
 	host.closeOnce.Do(func() {
 		host.sessions.leave(host.scope.subject.ID())
+		host.releaseErr = errors.Join(
+			host.releaseErr,
+			host.scope.Close(closeContext),
+		)
 		close(host.closed)
 	})
 	return host.releaseErr
-}
-
-func (host *boundAgentHost) WhenClosed(waitContext context.Context) error {
-	select {
-	case <-host.closed:
-		return host.releaseErr
-	case <-waitContext.Done():
-		return context.Cause(waitContext)
-	}
 }
 
 type boundAgentFactory struct {
@@ -353,7 +348,7 @@ type boundAgentFactory struct {
 
 func (builder *boundAgentFactory) CreateAgent(
 	requestContext context.Context,
-	settings agent.CreateOptions,
+	settings agent.CreateHostOptions,
 ) (agent.Host, error) {
 	conversation, err := session.New(
 		settings.SessionID,
@@ -396,7 +391,7 @@ func (builder *boundAgentFactory) CreateAgent(
 
 func (builder *boundAgentFactory) ResumeAgent(
 	requestContext context.Context,
-	settings agent.ResumeOptions,
+	settings agent.ResumeHostOptions,
 ) (agent.Host, error) {
 	inspection, err := builder.persistence.Inspect(
 		requestContext,
@@ -633,9 +628,6 @@ func newBoundRuntimeFixture(
 			testingContext.Error(closeErr)
 		}
 		if closeErr := parentHandle.Dispose(context.Background()); closeErr != nil {
-			testingContext.Error(closeErr)
-		}
-		if closeErr := agentRegistry.Shutdown(context.Background()); closeErr != nil {
 			testingContext.Error(closeErr)
 		}
 		if closeErr := runtimeEngine.Shutdown(context.Background()); closeErr != nil {

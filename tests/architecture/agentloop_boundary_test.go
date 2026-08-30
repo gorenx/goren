@@ -193,7 +193,7 @@ func TestAgentLoopConcreteStructOwnershipIsAllowedAndAcyclic(t *testing.T) {
 	allowed := map[string]struct{}{
 		"Factory -> factoryDependencies":                       {},
 		"Plugin -> Factory":                                    {},
-		"Plugin -> pluginGateway":                              {},
+		"Plugin -> pluginActivation":                           {},
 		"Settings -> StartupAgent":                             {},
 		"StartupPlan -> StartupAgent":                          {},
 		"agentHost -> ReactLoopAgent":                          {},
@@ -203,6 +203,7 @@ func TestAgentLoopConcreteStructOwnershipIsAllowedAndAcyclic(t *testing.T) {
 		"agentVariablesSetup -> namedAgentVariable":            {},
 		"namedAgentVariable -> staticAgentVariable":            {},
 		"preStepCall -> preStepCallResult":                     {},
+		"pluginActivation -> pluginGateway":                    {},
 		"requestErrorCall -> requestErrorCallResult":           {},
 		"requestResolutionCall -> requestResolutionCallResult": {},
 		"scopeDraft -> agentScope":                             {},
@@ -443,7 +444,7 @@ func TestReactLoopAgentShutdownBelongsToAgentHost(t *testing.T) {
 	t.Fatalf("ReactLoopAgent shutdown callers = %#v, want %#v", callers, want)
 }
 
-func TestAgentLoopPluginDoesNotOwnAgentInstances(t *testing.T) {
+func TestAgentLoopPluginDoesNotOwnAgents(t *testing.T) {
 	t.Parallel()
 	repositoryPath := repositoryRoot(t)
 	fileSet := token.NewFileSet()

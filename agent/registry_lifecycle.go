@@ -16,44 +16,49 @@ var ErrDescendantAdmissionClosed = errors.New(
 	"agent: runtime parent is not accepting descendants",
 )
 
-// agentRecord is one exact in-process lifetime of a durable Session ID. It
-// stores no parent or child object pointer; Registry owns those ID relations.
-type agentRecord struct {
-	id                  session.SessionID
-	subject             Agent
-	host                Host
-	scope               Scope
-	phase               recordPhase
-	publication         publicationPhase
-	descendantAdmission descendantAdmission
-	construction        lifecycleSignal
-	closing             lifecycleSignal
-	closed              lifecycleSignal
-	closeErr            error
-}
-
-// construction is one admitted Factory call. Registry does not retain this
-// object, preventing a Registry-to-construction-to-Registry ownership cycle.
+// construction is one admitted Factory call and its cancellation relay. It
+// owns no Registry or Host reference.
 type construction struct {
-	registry *RegistryService
-	record   *agentRecord
-	context  context.Context
-	cancel   context.CancelCauseFunc
-	done     chan struct{}
-	once     sync.Once
+	lifetime  *agentLifetime
+	context   context.Context
+	cancel    context.CancelCauseFunc
+	relayDone chan struct{}
+	once      sync.Once
 }
 
-func (admitted *construction) finish() {
-	if admitted == nil || admitted.registry == nil {
-		return
+func newConstruction(
+	lifetime *agentLifetime,
+	constructionContext context.Context,
+	cancel context.CancelCauseFunc,
+	relayDone chan struct{},
+) *construction {
+	return &construction{
+		lifetime:  lifetime,
+		context:   constructionContext,
+		cancel:    cancel,
+		relayDone: relayDone,
 	}
+}
+
+func (admitted *construction) Context() context.Context {
+	return admitted.context
+}
+
+func (admitted *construction) AgentLifetime() *agentLifetime {
+	return admitted.lifetime
+}
+
+func (admitted *construction) Finish() bool {
+	if admitted == nil {
+		return false
+	}
+	finished := false
 	admitted.once.Do(func() {
 		admitted.cancel(nil)
-		<-admitted.done
-		admitted.registry.mutex.Lock()
-		delete(admitted.registry.constructions, admitted.record)
-		admitted.registry.mutex.Unlock()
+		<-admitted.relayDone
+		finished = true
 	})
+	return finished
 }
 
 func (service *RegistryService) beginConstruction(
@@ -69,7 +74,10 @@ func (service *RegistryService) beginConstruction(
 	}
 	service.mutex.Lock()
 	defer service.mutex.Unlock()
-	if service.admission != registryAccepting {
+	if service.admission == registryInactive {
+		return nil, nil, errors.New("agent: Agent Registry is not active")
+	}
+	if service.admission == registryDraining {
 		return nil, nil, errors.New("agent: Agent Registry is shutting down")
 	}
 	if service.factory == nil {
@@ -79,28 +87,19 @@ func (service *RegistryService) beginConstruction(
 		return nil, nil, fmt.Errorf("agent: Agent %q is already active", identifier)
 	}
 	if parent != nil {
-		parentRecord := service.byID[parent.ID()]
-		if parentRecord == nil || !Same(parentRecord.subject, parent) {
+		parentLifetime := service.byID[parent.ID()]
+		if parentLifetime == nil || !parentLifetime.Matches(parent) {
 			return nil, nil, errors.New(
 				"agent: runtime parent is not an exact Agent in this Registry",
 			)
 		}
-		if !recordVisible(parentRecord) ||
-			parentRecord.descendantAdmission != descendantsAccepted {
+		if !parentLifetime.AcceptsDescendants() {
 			return nil, nil, ErrDescendantAdmissionClosed
 		}
 	}
-	record := &agentRecord{
-		id:                  identifier,
-		phase:               recordConstructing,
-		publication:         publicationUnpublished,
-		descendantAdmission: descendantsAccepted,
-		construction:        newLifecycleSignal(),
-		closing:             newLifecycleSignal(),
-		closed:              newLifecycleSignal(),
-	}
-	service.byID[identifier] = record
-	service.records = append(service.records, record)
+	lifetime := newAgentLifetime(identifier)
+	service.byID[identifier] = lifetime
+	service.lifetimes = append(service.lifetimes, lifetime)
 	if parent != nil {
 		service.parentByChild[identifier] = parent.ID()
 		childIDs := service.childrenByParent[parent.ID()]
@@ -111,23 +110,33 @@ func (service *RegistryService) beginConstruction(
 		childIDs[identifier] = struct{}{}
 	}
 	operationContext, cancelOperation := context.WithCancelCause(requestContext)
-	done := make(chan struct{})
+	relayDone := make(chan struct{})
 	go func() {
-		defer close(done)
+		defer close(relayDone)
 		select {
-		case <-record.closing.done:
+		case <-lifetime.ClosingSignal():
 			cancelOperation(errors.New("agent: Agent construction is closing"))
 		case <-operationContext.Done():
 		}
 	}()
-	service.constructions[record] = struct{}{}
-	return &construction{
-		registry: service,
-		record:   record,
-		context:  operationContext,
-		cancel:   cancelOperation,
-		done:     done,
-	}, service.factory, nil
+	service.constructions[lifetime] = struct{}{}
+	return newConstruction(
+		lifetime,
+		operationContext,
+		cancelOperation,
+		relayDone,
+	), service.factory, nil
+}
+
+func (service *RegistryService) finishConstruction(admitted *construction) {
+	if admitted == nil || !admitted.Finish() {
+		return
+	}
+	lifetime := admitted.AgentLifetime()
+	service.mutex.Lock()
+	delete(service.constructions, lifetime)
+	service.mutex.Unlock()
+	lifetime.FinishConstruction()
 }
 
 func (service *RegistryService) construct(
@@ -146,51 +155,33 @@ func (service *RegistryService) construct(
 	if err != nil {
 		return Handle{}, err
 	}
-	defer admitted.finish()
-	agentHost, err := build(admitted.context, agentFactory)
+	defer service.finishConstruction(admitted)
+	lifetime := admitted.AgentLifetime()
+	constructionContext := admitted.Context()
+	agentHost, err := build(constructionContext, agentFactory)
 	if err == nil {
-		err = service.attach(admitted.record, agentHost)
+		err = lifetime.Attach(agentHost)
 	}
 	if err == nil && contribution != nil {
-		_, err = admitted.record.scope.ApplySetup(
-			admitted.context,
-			admitted.record.subject,
-			contribution,
-		)
+		_, err = lifetime.ApplySetup(constructionContext, contribution)
 	}
 	if err == nil {
-		err = agentHost.EnterServing(admitted.context)
+		err = agentHost.EnterServing(constructionContext)
 	}
 	if err == nil {
-		err = agentHost.Announce(admitted.context)
+		err = agentHost.Announce(constructionContext)
 	}
 	if err == nil {
-		err = service.publish(admitted.context, admitted.record, startSource)
+		err = service.publish(constructionContext, lifetime, startSource)
 	}
 	if err != nil {
-		admitted.record.construction.close()
-		closeErr := service.closeRecord(
-			context.WithoutCancel(requestContext),
-			admitted.record,
-		)
-		if agentHost != nil && admitted.record.host == nil {
-			closeErr = errors.Join(
-				closeErr,
-				agentHost.Close(context.WithoutCancel(requestContext)),
-			)
-			if constructedScope := agentHost.Scope(); constructedScope != nil {
-				closeErr = errors.Join(
-					closeErr,
-					constructedScope.Close(context.WithoutCancel(requestContext)),
-				)
-			}
-		}
+		closeErr := service.failConstruction(lifetime, agentHost)
 		return Handle{}, errors.Join(err, closeErr)
 	}
 	return Handle{
-		Subject:  admitted.record.subject,
+		Subject:  lifetime.Agent(),
 		registry: service,
-		record:   admitted.record,
+		lifetime: lifetime,
 	}, nil
 }
 
@@ -206,7 +197,15 @@ func (service *RegistryService) Create(
 		creation.Setup,
 		SessionStartup,
 		func(buildContext context.Context, agentFactory Factory) (Host, error) {
-			return agentFactory.CreateAgent(buildContext, creation)
+			return agentFactory.CreateAgent(
+				buildContext,
+				CreateHostOptions{
+					SessionID:    creation.SessionID,
+					Metadata:     creation.Metadata,
+					Seed:         creation.Seed,
+					AgentOptions: creation.AgentOptions,
+				},
+			)
 		},
 	)
 }
@@ -223,156 +222,175 @@ func (service *RegistryService) Resume(
 		restoration.Setup,
 		SessionResume,
 		func(buildContext context.Context, agentFactory Factory) (Host, error) {
-			return agentFactory.ResumeAgent(buildContext, restoration)
+			return agentFactory.ResumeAgent(
+				buildContext,
+				ResumeHostOptions{
+					SessionID:    restoration.SessionID,
+					AgentOptions: restoration.AgentOptions,
+				},
+			)
 		},
 	)
-}
-
-func (service *RegistryService) attach(record *agentRecord, agentHost Host) error {
-	if agentHost == nil || agentHost.Agent() == nil || agentHost.Scope() == nil {
-		return errors.New("agent: Factory returned an incomplete Agent Host")
-	}
-	if agentHost.Agent().ID() != record.id {
-		return fmt.Errorf(
-			"agent: Agent id %q does not match reserved id %q",
-			agentHost.Agent().ID(),
-			record.id,
-		)
-	}
-	service.mutex.Lock()
-	defer service.mutex.Unlock()
-	if record.phase != recordConstructing {
-		return errors.New("agent: Agent construction is no longer active")
-	}
-	record.host = agentHost
-	record.subject = agentHost.Agent()
-	record.scope = agentHost.Scope()
-	record.phase = recordAttached
-	return nil
 }
 
 func (service *RegistryService) publish(
 	requestContext context.Context,
-	record *agentRecord,
+	lifetime *agentLifetime,
 	startSource SessionStartSource,
 ) error {
-	service.mutex.Lock()
-	if record.phase != recordAttached ||
-		record.publication != publicationUnpublished {
-		service.mutex.Unlock()
-		return errors.New("agent: Agent is not ready for publication")
+	if err := lifetime.BeginPublication(); err != nil {
+		return err
 	}
-	record.publication = publicationPublishing
-	service.mutex.Unlock()
-	err := record.scope.Dispatch(
+	err := lifetime.DispatchLifecycleEvent(
 		requestContext,
 		Created{
-			Subject: record.subject,
+			Subject: lifetime.Agent(),
 		},
 	)
-	service.mutex.Lock()
-	record.publication = publicationPublished
-	service.mutex.Unlock()
+	completionErr := lifetime.CompleteCreatedEvent()
 	if err != nil {
 		return err
 	}
-	if observerErr := record.scope.Dispatch(
+	if completionErr != nil {
+		return completionErr
+	}
+	if observerErr := lifetime.DispatchLifecycleEvent(
 		requestContext,
 		SessionStarted{
-			Subject: record.subject,
+			Subject: lifetime.Agent(),
 			Source:  startSource,
 		},
 	); observerErr != nil {
 		service.reportObserverFailure(fmt.Errorf(
 			"agent: Agent %q session-start observer: %w",
-			record.id,
+			lifetime.SessionID(),
 			observerErr,
 		))
 	}
 	if err = requestContext.Err(); err != nil {
 		return err
 	}
-	service.mutex.Lock()
-	defer service.mutex.Unlock()
-	if record.phase != recordAttached {
-		return errors.New("agent: Agent publication was interrupted")
-	}
-	record.phase = recordLive
-	record.construction.close()
-	return nil
+	return lifetime.EnterLive()
 }
 
-func recordVisible(record *agentRecord) bool {
-	if record == nil || record.subject == nil {
-		return false
-	}
-	if record.phase == recordLive {
-		return true
-	}
-	return record.phase == recordAttached &&
-		(record.publication == publicationPublishing ||
-			record.publication == publicationPublished)
-}
-
-func (service *RegistryService) closeRecord(
+func (service *RegistryService) closeLifetime(
 	closeContext context.Context,
-	record *agentRecord,
+	lifetime *agentLifetime,
 ) error {
 	if closeContext == nil {
 		closeContext = context.Background()
 	}
-	service.mutex.Lock()
-	switch record.phase {
-	case recordClosed:
-		closeErr := record.closeErr
-		service.mutex.Unlock()
-		return closeErr
-	case recordClosing:
-		closed := record.closed.done
-		service.mutex.Unlock()
+	admission := lifetime.BeginClose()
+	closed := lifetime.ClosedSignal()
+	if admission == lifetimeCloseFinished {
+		return lifetime.CloseResult()
+	}
+	if admission == lifetimeCloseRunning {
+		deferWait := service.subtreeDispatching(lifetime)
+		if deferWait {
+			return nil
+		}
 		select {
 		case <-closed:
-			return record.closeErr
+			return lifetime.CloseResult()
 		case <-closeContext.Done():
 			return context.Cause(closeContext)
 		}
-	default:
-		record.phase = recordClosing
-		record.descendantAdmission = descendantsClosing
-		record.closing.close()
 	}
-	constructionDone := record.construction.done
-	service.mutex.Unlock()
-	completionContext := context.WithoutCancel(closeContext)
-	<-constructionDone
-	childRecords := service.children(record.id)
+	deferWait := service.subtreeDispatching(lifetime)
+	go service.finishLifetimeClose(lifetime)
+	if deferWait {
+		return nil
+	}
+	select {
+	case <-closed:
+		return lifetime.CloseResult()
+	case <-closeContext.Done():
+		return context.Cause(closeContext)
+	}
+}
+
+// subtreeDispatching reports whether synchronous event observation in
+// this Agent lifetime tree must return before child-first close can progress.
+func (service *RegistryService) subtreeDispatching(
+	lifetime *agentLifetime,
+) bool {
+	service.mutex.Lock()
+	defer service.mutex.Unlock()
+	return service.subtreeDispatchingLocked(lifetime)
+}
+
+func (service *RegistryService) subtreeDispatchingLocked(
+	lifetime *agentLifetime,
+) bool {
+	if lifetime.Dispatching() {
+		return true
+	}
+	for childID := range service.childrenByParent[lifetime.SessionID()] {
+		child := service.byID[childID]
+		if child != nil && service.subtreeDispatchingLocked(child) {
+			return true
+		}
+	}
+	return false
+}
+
+func (service *RegistryService) finishLifetimeClose(lifetime *agentLifetime) {
+	<-lifetime.ConstructionDone()
+	if lifetime.IsClosed() {
+		return
+	}
+	completionContext := context.Background()
+	childLifetimes := service.children(lifetime.SessionID())
 	var closeErr error
-	for index := len(childRecords) - 1; index >= 0; index-- {
+	for index := len(childLifetimes) - 1; index >= 0; index-- {
 		closeErr = errors.Join(
 			closeErr,
-			service.closeRecord(completionContext, childRecords[index]),
+			service.closeLifetime(completionContext, childLifetimes[index]),
 		)
 	}
-	service.retirePublication(completionContext, record)
-	if record.host != nil {
-		closeErr = errors.Join(closeErr, record.host.Close(completionContext))
+	service.retirePublication(completionContext, lifetime)
+	_, hostCloseErr := lifetime.CloseOwnedHost(completionContext)
+	closeErr = errors.Join(closeErr, hostCloseErr)
+	service.finishClosed(lifetime, closeErr)
+}
+
+func (service *RegistryService) failConstruction(
+	lifetime *agentLifetime,
+	constructedHost Host,
+) error {
+	lifetime.BeginClose()
+	completionContext := context.Background()
+	childLifetimes := service.children(lifetime.SessionID())
+	var closeErr error
+	for index := len(childLifetimes) - 1; index >= 0; index-- {
+		closeErr = errors.Join(
+			closeErr,
+			service.closeLifetime(completionContext, childLifetimes[index]),
+		)
 	}
-	if record.scope != nil {
-		closeErr = errors.Join(closeErr, record.scope.Close(completionContext))
+	service.retirePublication(completionContext, lifetime)
+	closedOwnedHost, hostCloseErr := lifetime.CloseOwnedHost(completionContext)
+	closeErr = errors.Join(closeErr, hostCloseErr)
+	if !closedOwnedHost && constructedHost != nil {
+		closeErr = errors.Join(
+			closeErr,
+			constructedHost.Close(completionContext),
+		)
 	}
-	service.finishClosed(record, closeErr)
+	service.finishClosed(lifetime, closeErr)
 	return closeErr
 }
 
 func (service *RegistryService) children(
 	parentID session.SessionID,
-) []*agentRecord {
+) []*agentLifetime {
 	service.mutex.Lock()
 	defer service.mutex.Unlock()
-	result := make([]*agentRecord, 0)
-	for _, candidate := range service.records {
-		if service.parentByChild[candidate.id] == parentID &&
-			candidate.phase != recordClosed {
+	result := make([]*agentLifetime, 0)
+	for _, candidate := range service.lifetimes {
+		if service.parentByChild[candidate.SessionID()] == parentID &&
+			!candidate.IsClosed() {
 			result = append(result, candidate)
 		}
 	}
@@ -381,78 +399,75 @@ func (service *RegistryService) children(
 
 func (service *RegistryService) retirePublication(
 	requestContext context.Context,
-	record *agentRecord,
+	lifetime *agentLifetime,
 ) {
-	service.mutex.Lock()
-	if record.publication != publicationPublished || record.scope == nil {
-		service.mutex.Unlock()
+	subject, retiring := lifetime.BeginRetirement()
+	if !retiring {
 		return
 	}
-	record.publication = publicationRetired
-	service.mutex.Unlock()
-	if err := record.scope.Dispatch(
+	if err := lifetime.DispatchLifecycleEvent(
 		requestContext,
 		Disposed{
-			Subject: record.subject,
+			Subject: subject,
 		},
 	); err != nil {
 		service.reportObserverFailure(fmt.Errorf(
 			"agent: Agent %q disposed observer: %w",
-			record.id,
+			lifetime.SessionID(),
 			err,
 		))
 	}
 }
 
 func (service *RegistryService) finishClosed(
-	record *agentRecord,
+	lifetime *agentLifetime,
 	closeErr error,
 ) {
 	service.mutex.Lock()
 	defer service.mutex.Unlock()
-	if record.phase == recordClosed {
+	if lifetime.IsClosed() {
 		return
 	}
-	record.construction.close()
-	record.closing.close()
-	record.phase = recordClosed
-	record.closeErr = closeErr
-	if parentID, exists := service.parentByChild[record.id]; exists {
-		delete(service.parentByChild, record.id)
-		delete(service.childrenByParent[parentID], record.id)
+	identifier := lifetime.SessionID()
+	if parentID, exists := service.parentByChild[identifier]; exists {
+		delete(service.parentByChild, identifier)
+		delete(service.childrenByParent[parentID], identifier)
 		if len(service.childrenByParent[parentID]) == 0 {
 			delete(service.childrenByParent, parentID)
 		}
 	}
-	delete(service.childrenByParent, record.id)
-	if service.byID[record.id] == record {
-		delete(service.byID, record.id)
-		service.records = slices.DeleteFunc(
-			service.records,
-			func(candidate *agentRecord) bool {
-				return candidate == record
+	delete(service.childrenByParent, identifier)
+	if service.byID[identifier] == lifetime {
+		delete(service.byID, identifier)
+		service.lifetimes = slices.DeleteFunc(
+			service.lifetimes,
+			func(candidate *agentLifetime) bool {
+				return candidate == lifetime
 			},
 		)
 	}
-	record.closed.close()
+	lifetime.EnterClosed(closeErr)
 }
 
-func (service *RegistryService) closeRegistry(closeContext context.Context) error {
+func (service *RegistryService) deactivate(closeContext context.Context) error {
 	if closeContext == nil {
 		closeContext = context.Background()
 	}
 	service.mutex.Lock()
 	switch service.admission {
-	case registryClosed:
-		closeErr := service.shutdownErr
+	case registryInactive:
+		closeErr := service.deactivationErr
 		service.mutex.Unlock()
 		return closeErr
 	case registryDraining:
-		done := service.shutdown.done
+		deactivationDone := service.deactivation.Done()
 		service.mutex.Unlock()
 		select {
-		case <-done:
-			return service.shutdownErr
+		case <-deactivationDone:
+			service.mutex.Lock()
+			closeErr := service.deactivationErr
+			service.mutex.Unlock()
+			return closeErr
 		case <-closeContext.Done():
 			return context.Cause(closeContext)
 		}
@@ -460,13 +475,10 @@ func (service *RegistryService) closeRegistry(closeContext context.Context) erro
 		service.admission = registryDraining
 		service.factory = nil
 	}
-	for record := range service.constructions {
-		record.closing.close()
-	}
-	roots := make([]*agentRecord, 0)
-	for _, record := range service.records {
-		if _, child := service.parentByChild[record.id]; !child {
-			roots = append(roots, record)
+	roots := make([]*agentLifetime, 0)
+	for _, lifetime := range service.lifetimes {
+		if _, child := service.parentByChild[lifetime.SessionID()]; !child {
+			roots = append(roots, lifetime)
 		}
 	}
 	service.mutex.Unlock()
@@ -474,18 +486,13 @@ func (service *RegistryService) closeRegistry(closeContext context.Context) erro
 	for index := len(roots) - 1; index >= 0; index-- {
 		closeErr = errors.Join(
 			closeErr,
-			service.closeRecord(context.WithoutCancel(closeContext), roots[index]),
+			service.closeLifetime(context.Background(), roots[index]),
 		)
 	}
 	service.mutex.Lock()
-	service.shutdownErr = closeErr
-	service.admission = registryClosed
-	service.shutdown.close()
+	service.deactivationErr = closeErr
+	service.admission = registryInactive
+	service.deactivation.close()
 	service.mutex.Unlock()
 	return closeErr
-}
-
-// Shutdown rejects construction and disposes every Agent child-first.
-func (service *RegistryService) Shutdown(closeContext context.Context) error {
-	return service.closeRegistry(closeContext)
 }
