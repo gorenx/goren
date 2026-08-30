@@ -12,6 +12,8 @@ live Agent contract、Registry、Inbox 和 `agent/*` Event Definition 由[14](./
 
 经允许对照的较新 DSH `origin/master` `cd5ef8148158c3a752a658978873241fdf8e2bbc` 仍使用单个 `ReactLoopAgent` 和直接 Turn/Step workflow，只作为职责与竞态测试的辅助证据，不自动修改固定基线。
 
+固定源与较新 DSH 的 `AgentLoop.Config.agents` 都会在 AgentLoop 启动时自动创建或恢复一组 Agent。Go 当前明确排除这个 deployment boot surface：它把多 Agent 启动策略放回 composition root，并要求 Runtime 启动完成后调用 `agent.Constructor.Create/Resume`。因此 `agentloop/factory.Config` 只接受 `maxParallelToolCalls`，`agents` 是 unknown field；迁移不是改名，而是由调用方把每个配置项翻译成既有 `agent.CreateOptions` 或 `agent.ResumeOptions`。这样不会让单实例 Factory、RLA 或 AgentLoop Plugin 重新持有多 Agent 集合。
+
 旧 Go 私有对象图 `loop -> activityCoordinator <-> turnRunner -> stepExecutor -> toolCallExecutor` 同时存在双向持有、两阶段回填和多个状态权威。当前实现已一次性删除该对象图，没有 alias、wrapper、feature flag 或 old/new 双路径。可观察公共契约没有因此改变。
 
 ## 2. 术语与命名规范
@@ -71,7 +73,6 @@ flowchart TD
     Activation --> Gateway[pluginGateway]
     Root --> Factory[agentloop.Factory]
     Root --> Gateway[pluginGateway]
-    Root --> Startup[StartupPlan]
     Factory --> Host[agentHost]
     Host --> Agent[ReactLoopAgent]
     Host --> Scope[agentScope]

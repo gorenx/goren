@@ -915,7 +915,7 @@ AgentLoop Plugin 是 Agent 事件和全局 Waterfall 的唯一 Plugin Runtime ad
 - Runtime shutdown child-first 关闭 Agent，并完成 Agent/Session disposal 配对；
 - Subagent Plugin shutdown 不再产生 `plugin.ErrTopologyMutation`；
 - Subagent Plugin 在可选依赖出现后可由同一对象重新激活，失败 Apply 回滚不等待未启动的 event publisher；
-- configured startup、API Agent 和 Subagent child 都经过相同 Registry admission。
+- API Agent 和 Subagent child 都经过相同 Registry admission；旧 `agentloop.agents` 自动启动面已删除，若 composition root 需要固定 Agent，必须在 Runtime 启动后调用既有 `agent.Constructor.Create/Resume`，不得增加 `Launch` DTO 或启动 Plugin。
 
 必须将以下当前失败测试改为通过：
 

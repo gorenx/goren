@@ -167,6 +167,7 @@ Deferred 不算已复制，也不能通过空 handler 或固定成功响应占�
 - 原版 website/前端构建、发布 npm/Python 包和完整浏览器产品测试；极简 UI 的主流程 contract test 保留；
 - Typert generator/loader 的 TypeScript compiler、Node/npm discovery、decorator、声明合并、SRC 参数名弱解析、`.d.ts` 与 Remote Client 代码生成；
 - 源 Cordis Profile 的 `!!js` tag、JavaScript evaluator、动态 `ctx` 插值和配置脚本兼容；源配置必须显式迁移为 Go typed config；
+- `AgentLoop.Config.agents` 的进程启动自动创建/恢复；当前 Go Server 在 Runtime 启动后通过 `agent.Constructor.Create/Resume` 显式管理 Agent，`agentloop` typed config 只接受单实例执行策略；
 - `ClientRemote`、浏览器 Connection controller 与客户端 API 实现；Host `/api` carrier、`rpcId` 和 server downlink 明确保留；
 - 在运行时安装并执行新的 Go 源码、Go `.so` 插件或 TypeScript 插件。
 

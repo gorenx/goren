@@ -22,6 +22,8 @@ flowchart LR
 
 `agentHost` 不保存 Registry、parent、children 或 Plugin。它是 Agent Scope 的唯一 owner。多 Agent membership、运行期父子关系、发布和 child-first 关闭全部由 `agent.RegistryService` 拥有。
 
+AgentLoop 不接受自动创建多 Agent 的 `agents` 配置。创建和恢复统一由 Runtime 启动后的调用方通过 `agent.Constructor.Create/Resume` 发起；Web/API 入口也走同一 Registry admission。若 deployment 需要固定启动 Agent，该翻译属于 composition root，不引入 `StartupPlan`、`Launch` 或额外 AgentLoop Plugin。
+
 ## 文件职责
 
 | 文件前缀 | 职责 |
@@ -33,7 +35,6 @@ flowchart LR
 | `agent_setup` | AgentLoop 自身变量 Setup |
 | `construction` | fresh/resume 的单 Host 构造 |
 | `tool_group_execution` | 有界并行 Tool body 与模型顺序提交 |
-| `startup_plan` | 配置的启动 Agent 值对象 |
 | `internal/*` | 六个互不嵌套的纯状态机与 `VisibleContext` 派生视图 |
 
 RLA receiver 文件统一使用 `rla` 前缀；Plugin 实现文件统一使用 `plugin` 前缀。
