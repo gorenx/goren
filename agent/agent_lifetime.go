@@ -82,6 +82,12 @@ func (lifetime *agentLifetime) Agent() Agent {
 	return lifetime.ownedHost.Agent()
 }
 
+func (lifetime *agentLifetime) VisibleAgent() (Agent, bool) {
+	lifetime.mutex.Lock()
+	defer lifetime.mutex.Unlock()
+	return lifetime.visibleAgentLocked()
+}
+
 func (lifetime *agentLifetime) Matches(subject Agent) bool {
 	if subject == nil {
 		return false
@@ -93,13 +99,17 @@ func (lifetime *agentLifetime) Matches(subject Agent) bool {
 }
 
 func (lifetime *agentLifetime) Attach(agentHost Host) error {
-	if agentHost == nil || agentHost.Agent() == nil || agentHost.Scope() == nil {
+	if agentHost == nil {
 		return errors.New("agent: Factory returned an incomplete Agent Host")
 	}
-	if agentHost.Agent().ID() != lifetime.id {
+	subject := agentHost.Agent()
+	if subject == nil || agentHost.Scope() == nil {
+		return errors.New("agent: Factory returned an incomplete Agent Host")
+	}
+	if subject.ID() != lifetime.id {
 		return fmt.Errorf(
 			"agent: Agent id %q does not match reserved id %q",
-			agentHost.Agent().ID(),
+			subject.ID(),
 			lifetime.id,
 		)
 	}
@@ -123,12 +133,16 @@ func (lifetime *agentLifetime) ApplySetup(
 		return nil, errors.New("agent: exact Agent is not accepting Setup")
 	}
 	agentHost := lifetime.ownedHost
-	if agentHost == nil || agentHost.Agent() == nil || agentHost.Scope() == nil {
+	if agentHost == nil {
 		lifetime.mutex.Unlock()
 		return nil, errors.New("agent: exact Agent Scope is unavailable")
 	}
 	subject := agentHost.Agent()
 	agentScope := agentHost.Scope()
+	if subject == nil || agentScope == nil {
+		lifetime.mutex.Unlock()
+		return nil, errors.New("agent: exact Agent Scope is unavailable")
+	}
 	lifetime.mutex.Unlock()
 	return agentScope.ApplySetup(requestContext, subject, contribution)
 }
@@ -145,19 +159,22 @@ func (lifetime *agentLifetime) AcceptsSetup() bool {
 	return lifetime.state == lifetimeLive
 }
 
-func (lifetime *agentLifetime) Visible() bool {
-	lifetime.mutex.Lock()
-	defer lifetime.mutex.Unlock()
-	return lifetime.visibleLocked()
+func (lifetime *agentLifetime) visibleLocked() bool {
+	_, visible := lifetime.visibleAgentLocked()
+	return visible
 }
 
-func (lifetime *agentLifetime) visibleLocked() bool {
-	if lifetime.ownedHost == nil || lifetime.ownedHost.Agent() == nil {
-		return false
+func (lifetime *agentLifetime) visibleAgentLocked() (Agent, bool) {
+	if lifetime.ownedHost == nil {
+		return nil, false
 	}
-	return lifetime.state == lifetimePublishing ||
-		lifetime.state == lifetimeStarting ||
-		lifetime.state == lifetimeLive
+	subject := lifetime.ownedHost.Agent()
+	if subject == nil || (lifetime.state != lifetimePublishing &&
+		lifetime.state != lifetimeStarting &&
+		lifetime.state != lifetimeLive) {
+		return nil, false
+	}
+	return subject, true
 }
 
 func (lifetime *agentLifetime) BeginPublication() error {
@@ -296,16 +313,15 @@ func (lifetime *agentLifetime) BeginRetirement() (Agent, bool) {
 	return lifetime.ownedHost.Agent(), true
 }
 
-func (lifetime *agentLifetime) EnterClosed(closeErr error) bool {
+func (lifetime *agentLifetime) EnterClosed(closeErr error) {
 	lifetime.mutex.Lock()
 	defer lifetime.mutex.Unlock()
 	if lifetime.state == lifetimeClosed {
-		return false
+		return
 	}
 	lifetime.state = lifetimeClosed
 	lifetime.closeErr = closeErr
 	lifetime.closed.close()
-	return true
 }
 
 func (lifetime *agentLifetime) IsClosed() bool {

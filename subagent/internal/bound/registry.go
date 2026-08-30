@@ -16,7 +16,7 @@ type bindingKey struct {
 	childSessionID session.SessionID
 }
 
-// registry indexes Binding workers owned by exact parent Agent epochs. Its
+// registry indexes Binding workers owned by exact parent Agent lifetimes. Its
 // mutex protects only lookup and lifecycle membership.
 type registry struct {
 	dependencies Dependencies

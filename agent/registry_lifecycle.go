@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"sync"
 
 	"github.com/gorenx/goren/session"
 )
@@ -23,7 +22,6 @@ type construction struct {
 	context   context.Context
 	cancel    context.CancelCauseFunc
 	relayDone chan struct{}
-	once      sync.Once
 }
 
 func newConstruction(
@@ -48,17 +46,9 @@ func (admitted *construction) AgentLifetime() *agentLifetime {
 	return admitted.lifetime
 }
 
-func (admitted *construction) Finish() bool {
-	if admitted == nil {
-		return false
-	}
-	finished := false
-	admitted.once.Do(func() {
-		admitted.cancel(nil)
-		<-admitted.relayDone
-		finished = true
-	})
-	return finished
+func (admitted *construction) Finish() {
+	admitted.cancel(nil)
+	<-admitted.relayDone
 }
 
 func (service *RegistryService) beginConstruction(
@@ -129,9 +119,7 @@ func (service *RegistryService) beginConstruction(
 }
 
 func (service *RegistryService) finishConstruction(admitted *construction) {
-	if admitted == nil || !admitted.Finish() {
-		return
-	}
+	admitted.Finish()
 	lifetime := admitted.AgentLifetime()
 	service.mutex.Lock()
 	delete(service.constructions, lifetime)
@@ -389,8 +377,7 @@ func (service *RegistryService) children(
 	defer service.mutex.Unlock()
 	result := make([]*agentLifetime, 0)
 	for _, candidate := range service.lifetimes {
-		if service.parentByChild[candidate.SessionID()] == parentID &&
-			!candidate.IsClosed() {
+		if service.parentByChild[candidate.SessionID()] == parentID {
 			result = append(result, candidate)
 		}
 	}
@@ -425,9 +412,6 @@ func (service *RegistryService) finishClosed(
 ) {
 	service.mutex.Lock()
 	defer service.mutex.Unlock()
-	if lifetime.IsClosed() {
-		return
-	}
 	identifier := lifetime.SessionID()
 	if parentID, exists := service.parentByChild[identifier]; exists {
 		delete(service.parentByChild, identifier)

@@ -2,10 +2,10 @@ package agentloop
 
 import (
 	"context"
+	"errors"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/plugin"
@@ -16,17 +16,17 @@ import (
 type blockingScopeRuntime struct {
 	entered chan struct{}
 	release chan struct{}
-	once    sync.Once
+	calls   atomic.Int32
 }
 
 func (runtimeState *blockingScopeRuntime) Dispatch(
 	context.Context,
 	agent.AgentEvent,
 ) error {
-	runtimeState.once.Do(func() {
+	if runtimeState.calls.Add(1) == 1 {
 		close(runtimeState.entered)
-	})
-	<-runtimeState.release
+		<-runtimeState.release
+	}
 	return nil
 }
 
@@ -54,7 +54,7 @@ func (*blockingScopeRuntime) ResolveRequestError(
 	return terminal.Execute(requestContext, notice)
 }
 
-func TestAgentScopeCloseDrainsAdmittedDispatch(t *testing.T) {
+func TestAgentScopeCloseRejectsNewCallsAndDrainsAdmittedDispatch(t *testing.T) {
 	promptSettings, err := systemprompt.ValidateConfig(systemprompt.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -110,20 +110,23 @@ func TestAgentScopeCloseDrainsAdmittedDispatch(t *testing.T) {
 		)
 	}()
 	<-runtimeState.entered
-	closeDone := make(chan error, 1)
-	go func() {
-		closeDone <- scopeState.Close(context.Background())
-	}()
-	select {
-	case closeErr := <-closeDone:
-		t.Fatalf("Scope closed before admitted dispatch drained: %v", closeErr)
-	case <-time.After(20 * time.Millisecond):
+	closeContext, cancelClose := context.WithCancel(context.Background())
+	cancelClose()
+	if closeErr := scopeState.Close(closeContext); !errors.Is(
+		closeErr,
+		context.Canceled,
+	) {
+		t.Fatalf("canceled Close error = %v", closeErr)
+	}
+	if err = scopeState.Dispatch(context.Background(), agent.Created{}); err == nil ||
+		!strings.Contains(err.Error(), "Scope is closing") {
+		t.Fatalf("closing Dispatch error = %v", err)
 	}
 	close(runtimeState.release)
 	if err = <-dispatchDone; err != nil {
 		t.Fatal(err)
 	}
-	if err = <-closeDone; err != nil {
+	if err = scopeState.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if err = scopeState.Dispatch(context.Background(), agent.Created{}); err == nil || !strings.Contains(err.Error(), "Scope is closed") {
