@@ -21,8 +21,27 @@ type adapterRegistrationState struct {
 	disposed bool
 }
 
-type adapterHandle struct {
-	state *adapterRegistrationState
+func (state *adapterRegistrationState) releaseOwned(closeContext context.Context) error {
+	owner := state.owner
+	owner.mu.Lock()
+	if state.disposed {
+		owner.mu.Unlock()
+		return nil
+	}
+	state.disposed = true
+	changed := len(state.owned) != 0
+	for _, providerRoute := range state.owned {
+		delete(owner.routes, providerRoute)
+		owner.routeOrder = slices.DeleteFunc(owner.routeOrder, func(existingRoute string) bool {
+			return existingRoute == providerRoute
+		})
+	}
+	state.owned = nil
+	owner.mu.Unlock()
+	if changed {
+		return owner.publishUpdate(closeContext)
+	}
+	return nil
 }
 
 func (owner *Runtime) RegisterAdapter(
@@ -173,27 +192,8 @@ func (owner *Runtime) commitRoutes(state *adapterRegistrationState, candidates [
 	return nil
 }
 
-func (state *adapterRegistrationState) releaseOwned(closeContext context.Context) error {
-	owner := state.owner
-	owner.mu.Lock()
-	if state.disposed {
-		owner.mu.Unlock()
-		return nil
-	}
-	state.disposed = true
-	changed := len(state.owned) != 0
-	for _, providerRoute := range state.owned {
-		delete(owner.routes, providerRoute)
-		owner.routeOrder = slices.DeleteFunc(owner.routeOrder, func(existingRoute string) bool {
-			return existingRoute == providerRoute
-		})
-	}
-	state.owned = nil
-	owner.mu.Unlock()
-	if changed {
-		return owner.publishUpdate(closeContext)
-	}
-	return nil
+type adapterHandle struct {
+	state *adapterRegistrationState
 }
 
 func (handleState *adapterHandle) Replace(requestContext context.Context, providers []string) error {

@@ -110,23 +110,23 @@ type ToolResultBlock struct {
 }
 
 // ContentType returns the canonical discriminant.
-func (ToolResultBlock) ContentType() string { return "tool-result" }
+func (trb ToolResultBlock) ContentType() string { return "tool-result" }
 
 // CloneContent recursively detaches nested result content.
-func (source ToolResultBlock) CloneContent() (ContentBlock, error) {
-	content, err := CloneContentBlocks(source.Content)
+func (trb ToolResultBlock) CloneContent() (ContentBlock, error) {
+	content, err := CloneContentBlocks(trb.Content)
 	if err != nil {
 		return nil, err
 	}
-	source.Type = "tool-result"
-	source.Content = content
-	return source, nil
+	trb.Type = "tool-result"
+	trb.Content = content
+	return trb, nil
 }
 
 // MarshalJSON preserves the distinction between an omitted optional isError
 // field and the explicit false emitted by NewToolResultMessage.
-func (source ToolResultBlock) MarshalJSON() ([]byte, error) {
-	content, err := CloneContentBlocks(source.Content)
+func (trb ToolResultBlock) MarshalJSON() ([]byte, error) {
+	content, err := CloneContentBlocks(trb.Content)
 	if err != nil {
 		return nil, err
 	}
@@ -137,11 +137,11 @@ func (source ToolResultBlock) MarshalJSON() ([]byte, error) {
 		IsError    *bool          `json:"isError,omitempty"`
 	}{
 		Type:       "tool-result",
-		ToolCallID: source.ToolCallID,
+		ToolCallID: trb.ToolCallID,
 		Content:    content,
 	}
-	if source.isErrorPresent || source.IsError {
-		isError := source.IsError
+	if trb.isErrorPresent || trb.IsError {
+		isError := trb.IsError
 		wireValue.IsError = &isError
 	}
 	return json.Marshal(wireValue)
@@ -164,11 +164,11 @@ func NewOpaqueContentBlock(typeName string, rawValue json.RawMessage) (OpaqueCon
 		return OpaqueContentBlock{}, errors.New("llm: opaque content must be a lossless JSON object")
 	}
 	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(detached, &fields); err != nil {
+	if err = json.Unmarshal(detached, &fields); err != nil {
 		return OpaqueContentBlock{}, err
 	}
 	var encodedType string
-	if err := json.Unmarshal(fields["type"], &encodedType); err != nil || encodedType != typeName {
+	if err = json.Unmarshal(fields["type"], &encodedType); err != nil || encodedType != typeName {
 		return OpaqueContentBlock{}, errors.New("llm: opaque content discriminant does not match")
 	}
 	return OpaqueContentBlock{

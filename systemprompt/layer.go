@@ -50,10 +50,10 @@ type PromptLayer struct {
 
 // AddSection adds one named section to this exact layer.
 func (owner *PromptLayer) AddSection(
-	requestContext context.Context,
+	ctx context.Context,
 	definition PromptSection,
 ) (*PromptHandle, error) {
-	if err := validatePromptMutationContext(requestContext); err != nil {
+	if err := validatePromptMutationContext(ctx); err != nil {
 		return nil, err
 	}
 	if err := validateEntryName("prompt section", definition.Name); err != nil {
@@ -75,7 +75,7 @@ func (owner *PromptLayer) AddSection(
 	if err != nil {
 		return nil, err
 	}
-	if err := owner.publishChanged(requestContext); err != nil {
+	if err := owner.publishChanged(ctx); err != nil {
 		owner.store.removeSection(definition.Name, token)
 		return nil, err
 	}
@@ -88,10 +88,10 @@ func (owner *PromptLayer) AddSection(
 
 // AddContext adds one named runtime-context provider to this exact layer.
 func (owner *PromptLayer) AddContext(
-	requestContext context.Context,
+	ctx context.Context,
 	definition PromptContext,
 ) (*PromptHandle, error) {
-	if err := validatePromptMutationContext(requestContext); err != nil {
+	if err := validatePromptMutationContext(ctx); err != nil {
 		return nil, err
 	}
 	if err := validateEntryName("prompt context", definition.Name); err != nil {
@@ -113,7 +113,7 @@ func (owner *PromptLayer) AddContext(
 	if err != nil {
 		return nil, err
 	}
-	if err := owner.publishChanged(requestContext); err != nil {
+	if err := owner.publishChanged(ctx); err != nil {
 		owner.store.removeContext(definition.Name, token)
 		return nil, err
 	}
@@ -127,10 +127,10 @@ func (owner *PromptLayer) AddContext(
 // AddRuntimeContextSuppressor disables all runtime context for this layer and
 // its descendants until the same named suppressor is removed.
 func (owner *PromptLayer) AddRuntimeContextSuppressor(
-	requestContext context.Context,
+	ctx context.Context,
 	name string,
 ) (*PromptHandle, error) {
-	if err := validatePromptMutationContext(requestContext); err != nil {
+	if err := validatePromptMutationContext(ctx); err != nil {
 		return nil, err
 	}
 	if err := validateEntryName("runtime-context suppressor", name); err != nil {
@@ -140,7 +140,7 @@ func (owner *PromptLayer) AddRuntimeContextSuppressor(
 	if err != nil {
 		return nil, err
 	}
-	if err := owner.publishChanged(requestContext); err != nil {
+	if err := owner.publishChanged(ctx); err != nil {
 		owner.store.removeSuppressor(name, token)
 		return nil, err
 	}
@@ -153,11 +153,11 @@ func (owner *PromptLayer) AddRuntimeContextSuppressor(
 
 // AddToolProvider adds one named assembly-time tool-schema provider.
 func (owner *PromptLayer) AddToolProvider(
-	requestContext context.Context,
+	ctx context.Context,
 	name string,
 	provider ToolProvider,
 ) (*PromptHandle, error) {
-	if err := validatePromptMutationContext(requestContext); err != nil {
+	if err := validatePromptMutationContext(ctx); err != nil {
 		return nil, err
 	}
 	if err := validateEntryName("tool provider", name); err != nil {
@@ -170,7 +170,7 @@ func (owner *PromptLayer) AddToolProvider(
 	if err != nil {
 		return nil, err
 	}
-	if err = owner.publishChanged(requestContext); err != nil {
+	if err = owner.publishChanged(ctx); err != nil {
 		owner.store.removeToolProvider(name, token)
 		return nil, err
 	}
@@ -183,11 +183,11 @@ func (owner *PromptLayer) AddToolProvider(
 
 // AddVariable adds one named variable provider to this exact layer.
 func (owner *PromptLayer) AddVariable(
-	requestContext context.Context,
+	ctx context.Context,
 	name string,
 	provider VariableProvider,
 ) (*PromptHandle, error) {
-	if err := validatePromptMutationContext(requestContext); err != nil {
+	if err := validatePromptMutationContext(ctx); err != nil {
 		return nil, err
 	}
 	if !variableNamePattern.MatchString(name) {
@@ -204,7 +204,7 @@ func (owner *PromptLayer) AddVariable(
 	if err != nil {
 		return nil, err
 	}
-	if err := owner.publishChanged(requestContext); err != nil {
+	if err := owner.publishChanged(ctx); err != nil {
 		owner.store.removeVariable(name, token)
 		return nil, err
 	}
@@ -229,12 +229,12 @@ func (owner *PromptLayer) newPromptHandle(
 }
 
 func (owner *PromptLayer) unregisterPrompt(
-	requestContext context.Context,
+	ctx context.Context,
 	kind promptEntryKind,
 	name string,
 	token *promptEntryToken,
 ) (bool, error) {
-	if err := validatePromptMutationContext(requestContext); err != nil {
+	if err := validatePromptMutationContext(ctx); err != nil {
 		return false, err
 	}
 	removed := false
@@ -255,24 +255,24 @@ func (owner *PromptLayer) unregisterPrompt(
 	if !removed {
 		return true, nil
 	}
-	return true, owner.publishChanged(requestContext)
+	return true, owner.publishChanged(ctx)
 }
 
-func validatePromptMutationContext(requestContext context.Context) error {
-	if requestContext == nil {
+func validatePromptMutationContext(ctx context.Context) error {
+	if ctx == nil {
 		return errors.New("systemprompt: mutation Context is nil")
 	}
-	return requestContext.Err()
+	return ctx.Err()
 }
 
 // Assemble resolves a detached layer snapshot and runs the typed assembly
 // Waterfall visible from this concrete root or overlay Plugin.
 func (owner *PromptLayer) Assemble(
-	requestContext context.Context,
+	ctx context.Context,
 	assemblyContext AssembleContext,
 ) (PromptAssembly, error) {
 	resolver := assemblyResolver{
-		requestContext:  requestContext,
+		requestContext:  ctx,
 		assemblyContext: assemblyContext,
 		layers:          owner.promptLayers(),
 		toolOrder:       owner.configuredToolOrder(),
@@ -301,7 +301,7 @@ func (owner *PromptLayer) Assemble(
 			next:       terminal,
 		}
 	}
-	transformed, err := terminal.Execute(requestContext, request)
+	transformed, err := terminal.Execute(ctx, request)
 	if err != nil {
 		return PromptAssembly{}, err
 	}
@@ -323,11 +323,11 @@ func (owner *PromptLayer) configuredToolOrder() []string {
 	return slices.Clone(owner.settings.toolOrder)
 }
 
-func (owner *PromptLayer) publishChanged(requestContext context.Context) error {
+func (owner *PromptLayer) publishChanged(ctx context.Context) error {
 	if owner == nil || owner.effects == nil {
 		return errors.New("systemprompt: PromptLayer effects are unavailable")
 	}
-	return owner.effects.PublishChanged(requestContext)
+	return owner.effects.PublishChanged(ctx)
 }
 
 func (owner *PromptLayer) close() {

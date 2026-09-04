@@ -80,8 +80,8 @@ func DecodeContentBlock(rawValue json.RawMessage) (ContentBlock, error) {
 }
 
 // UnmarshalJSON restores the nested content sequence of a tool-result block.
-func (entry *ToolResultBlock) UnmarshalJSON(rawValue []byte) error {
-	if entry == nil {
+func (trb *ToolResultBlock) UnmarshalJSON(rawValue []byte) error {
+	if trb == nil {
 		return errors.New("llm: cannot decode tool-result into nil target")
 	}
 	var encoded struct {
@@ -107,7 +107,7 @@ func (entry *ToolResultBlock) UnmarshalJSON(rawValue []byte) error {
 			return errors.New("llm: tool-result isError must be a boolean")
 		}
 	}
-	*entry = ToolResultBlock{
+	*trb = ToolResultBlock{
 		Type:           "tool-result",
 		ToolCallID:     encoded.ToolCallID,
 		Content:        nested,

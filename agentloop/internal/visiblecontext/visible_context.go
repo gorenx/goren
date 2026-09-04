@@ -110,12 +110,14 @@ func (visible *VisibleContext) Message(
 		source.Form = agentmessage.ContextSnapshot
 		source.Sections = slices.Clone(sections)
 	}
-	created, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
-		Content: []agentmessage.ContentBlock{
-			agentmessage.NewTextBlock(snapshotText),
+	created, err := agentmessage.NewUserMessage(
+		agentmessage.UserMessageInput{
+			Content: []agentmessage.ContentBlock{
+				agentmessage.NewTextBlock(snapshotText),
+			},
+			Source: source,
 		},
-		Source: source,
-	})
+	)
 	return created, err == nil, err
 }
 
