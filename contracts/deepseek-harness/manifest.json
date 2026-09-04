@@ -291,9 +291,11 @@
   "deferred": [
     "Headless CLI",
     "ACP stdio adapter",
-    "MCP Client Bridge",
     "Jobs and Subagent workflow",
     "session.attachment",
     "unary methods outside the included host.describe, session, and workspace slices"
+  ],
+  "planned": [
+    "MCP Client Bridge using protocol 2026-07-28 in the default Server composition"
   ]
 }
