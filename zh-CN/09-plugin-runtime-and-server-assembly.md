@@ -182,7 +182,7 @@ SQLite adapter 不单独成为 Plugin 或 Factory。Session Persistence 与 Work
 
 `DefaultSpecs` 当前按业务阅读顺序声明 Main Plugin，最后声明 Web、API Proxy 和 commit-phase Connection。正确性不依赖这个顺序：Runtime 仍按 Service graph 结算。
 
-原版浏览器 Connection runtime、SDK、Tools Code Mode、ACP、MCP、通用 Typert auxiliary endpoint 和脚本配置没有进入 Catalog，也没有占位 Plugin。`commands/list` 与 `commands/execute` 是 `/compact` 纵向切片明确准入的两个 Remote endpoint，不代表通用 Typert Gateway 已进入。
+当前代码中的原版浏览器 Connection runtime、SDK、Tools Code Mode、ACP、MCP、通用 Typert auxiliary endpoint 和脚本配置尚未进入 Catalog，也没有占位 Plugin。MCP Client 已进入计划范围：实现后 Catalog 静态注册其 Factory，`DefaultSpecs` 仅为非空 `mcp.servers` 展开实例；这仍是同一个默认 Server composition，空列表创建零实例。具体 Gate 见[MCP Client Bridge 设计方案](./MCP客户端桥接设计方案.md)。`commands/list` 与 `commands/execute` 是 `/compact` 纵向切片明确准入的两个 Remote endpoint，不代表通用 Typert Gateway 已进入。
 
 ## 9. 失败与诊断
 

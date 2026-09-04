@@ -19,7 +19,7 @@
 | D-06 | Session facts 通过 storage-only Backend 持久化；默认 SQLite adapter 使用 sqlc，JSONL 可替换 | Accepted |
 | D-07 | 文件监听使用 `fsnotify`，由上层维护递归目录与原子替换 | Proposed |
 | D-08 | 子进程使用 `os/exec`，跨平台 PTY 候选为 `go-pty`，Sandbox 按平台 Provider 分离 | Proposed |
-| D-09 | Connection Host 使用 Echo v5 与 `coder/websocket`；ACP、MCP、Typert 均 Deferred | Accepted |
+| D-09 | Connection Host 使用 Echo v5 与 `coder/websocket`；MCP Client 使用 `mark3labs/mcp-go` 并进入默认 Server composition，ACP 与通用 Typert Deferred | Accepted |
 | D-10 | 日志使用 `log/slog`；OpenTelemetry 作为可选 Plugin，默认关闭 export | Accepted |
 | D-11 | Server CLI 首期使用标准库 `flag`；并发组合候选 `x/sync`，稳定 ID 候选 `google/uuid` | Proposed |
 | D-12 | 不使用标准库 `plugin`、CGO SQLite、Node.js runtime、嵌入式脚本引擎或浏览器依赖 | Accepted |
@@ -214,7 +214,7 @@ Sandbox 是独立 Service Definition：
 
 Sandbox 不是 boolean 配置，也不能由路径字符串拼接代替。未完成的平台不得标记安全 parity。
 
-## 10. D-09：Connection Host 与 Deferred adapter
+## 10. D-09：Connection Host 与辅助 adapter
 
 ### 10.1 Connection Host
 
@@ -286,15 +286,19 @@ Trust fence 只减少浏览器跨站和错误暴露风险，不是身份认证�
 | 最小 contract / failure test | `internal/connection/websocket_test.go` 覆盖双流、426、1008、stream failure、trust、断线取消、新连接隔离、等待 cleanup 与 deadline |
 | 替换成本 | 依赖封装在 `webSocketDownlinks`；替换 codec 不改变 `connection.RPCRequest`、API Proxy `EventStreams` 或核心能力，但必须重跑 WebSocket differential fixtures |
 
-### 10.5 Deferred adapter
+### 10.5 辅助 adapter
 
-| 能力 | 未来候选 | 边界 |
+| 能力 | 技术选择 | 边界 |
 | --- | --- | --- |
 | ACP Server | [`github.com/coder/acp-go-sdk`](https://pkg.go.dev/github.com/coder/acp-go-sdk) | 映射 ACP connection/session 与内部 Agent/Session |
-| MCP Client | [`github.com/modelcontextprotocol/go-sdk`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk) | 只接入 tools，generation owner 管理重连和注册 |
+| MCP Client | [`github.com/mark3labs/mcp-go v1.0.0`](https://github.com/mark3labs/mcp-go/releases/tag/v1.0.0) | 严格使用 MCP `2026-07-28`；默认 composition 展开 `mcp.servers`，generation owner 管理发现、订阅、重连和 Tool Set |
 | Typert Host | 显式 descriptor + Go Service/lookup/context registry | 只为已纳入的 Typert Remote endpoint 提供内部 dispatch |
 
-上述能力不属于首期依赖闭包。未来采用 SDK 时，SDK 只负责协议编码、transport 与标准类型；内部领域对象不直接别名成 SDK 类型。Typert 继续复用 Connection 的 `/api` carrier，不自行启动另一套 HTTP 服务。
+MCP Client 已进入计划依赖闭包；只有 `mcp.servers` 非空时默认 Server 才创建实例。`mcp-go` 负责 Client、
+协议 metadata、标准类型和 transport，不拥有 Goren Plugin lifecycle、typed config、ToolDefinition、结构化
+结果或重连 policy。SDK 的兼容 facade 若回退到旧 revision，Goren 必须拒绝；详细 isolation 和 admission
+spike 见[MCP Client Bridge 设计方案](./MCP客户端桥接设计方案.md)。ACP 与通用 Typert 仍 Deferred；Typert
+继续复用 Connection 的 `/api` carrier，不自行启动另一套 HTTP 服务。
 
 不采用 DSH SDK。Codex subagent 的私有进程 RPC 若保留，位于该 Provider 内部且不导出为通用 SDK。
 

@@ -26,7 +26,7 @@
 | 阶段 4：Agent Message / LLM Contract | Completed | 14 Completed | Environment Verified | LLM Runtime 与 Provider 行为已完成；Agent Message 已一次性迁入唯一 `agentmessage` owner，旧 `llm` declarations 与 facade 均不存在 |
 | 阶段 5：Session 持久化 | Completed | Persistence、prepared cache、cold read、exact live state 与 Projection Cache lifecycle convergence 均完成 | Contract Verified | 后续只按新 Backend 或能力需求扩展 |
 | 阶段 6：客户端能力扩展 | In Progress | 31 Completed / 19 Deferred / 1 Excluded | Contract Verified | 已准入的服务端能力已闭环；Fork 明确排除，export、Query Tool 与其余页面/管理能力保持冻结 |
-| 阶段 7：Deferred 能力 | Deferred | 7 Deferred | None | 不创建 package、handler 或依赖占位 |
+| 阶段 7：MCP Client 与独立能力 | In Progress | MCP 1 Planned / 其他 3 Deferred / 编排 1 In Progress / Gate 2 In Progress | Design Verified | MCP 已完成范围与方案准入，代码尚未开始；其他能力不创建占位 |
 | 阶段 8：Parity Hardening | In Progress | 1 Completed / 4 In Progress / 10 Planned | Environment Verified | 默认 UI/Provider 主流程已有环境证据，完整发布验收仍未完成 |
 
 Session lifecycle convergence 已完成：其他领域只持有 `session.Context`，所有写入通过唯一 `Commit(context.Context, WritePlan)`；`sessionContext` 单向组合 `eventLog` 与 `sessionLifecycle`，后者拥有同一 FIFO、phase、exact membership 和共享 Release attempt。`memoryStore` 只经 aggregate behavior 驱动 Session，不访问组件私有成员，也不被 Session 回指。旧 raw/serialized append、`ExecuteWrite`、`WriteContext`、after-event admission、`registration`、`coordinator`、`requestQueue`、`lifecycleMachine` 和兼容 wrapper 均已删除。Projection Cache 已收敛为 `ProjectionCache/liveCheckpointer/checkpointLifecycle/snapshotReader/checkpointRecords`；`checkpointLifecycle` 以命名输入原子创建 attempt 并产生命令，不再有 `Get -> Flush`、epoch、current-writer 选举或 `beginAttempt/finishAttempt` 半事务。确定性交错测试和全仓 race suite 覆盖 Flush/Release、active/final attempt、stale timer/completion、same-ID identity miss、同 Session 串行与不同 Session 并行。
@@ -59,7 +59,7 @@ Session lifecycle convergence 已完成：其他领域只持有 `session.Context
 | ID | 类别 | 子目标 | 执行状态 | 证据或缺口 |
 | --- | --- | --- | --- | --- |
 | S0-D01 | 交付 | 固定源 commit、版本、许可证和本地参考路径 | Completed | Implemented：`01` 已固定 `47f943...`、`0.1.0-rc.5` 和 `../deepseek-harness` |
-| S0-D02 | 交付 | 建立 included/excluded surface manifest | Completed | Contract Verified：`contracts/deepseek-harness/manifest.json` 固定源、当前 surface、Excluded/Deferred 与 privileged method |
+| S0-D02 | 交付 | 建立 included/excluded surface manifest | Completed | Contract Verified：`contracts/deepseek-harness/manifest.json` 固定源、当前 surface、Excluded/Deferred/Planned 与 privileged method |
 | S0-D03 | 交付 | 提取 RPC message、result、receipt、frame、path 和 stable errors | Completed | Go Verified：RPC、path、stable errors、窄 stream request 与完整 Mux/Host frame union 已覆盖 |
 | S0-D04 | 交付 | 提取首期 Host、Session、approval/question 和 respond contract | Completed | Contract Verified：`host.describe`、Session method/frame、Approval/Question response/frame、respond receipt 与固定源 `WebApiClient` interaction E2E 已覆盖 |
 | S0-D05 | 交付 | 建立 contract manifest 和可重复 TypeScript fixture generator | Completed | Contract Verified：固定源 Zod schema 可重复生成 `vectors.json` |
@@ -273,17 +273,17 @@ interaction owner registers stable rpcId + decoder
 | S6-G05 | Gate | credential 不进入日志、Session、错误或 fixture | Completed | Contract Verified：Host response 只含 metadata，启动输出只含路径/ref；测试使用临时假值并断言 `describe` 不回显 |
 | S6-G06 | Gate | 首次实现前完成技术依赖准入 | Deferred | 扩大当前目标时重新启用 |
 
-## 10. 阶段 7：Deferred 能力
+## 10. 阶段 7：MCP Client 与独立能力
 
 | ID | 类别 | 子目标 | 执行状态 | 证据或缺口 |
 | --- | --- | --- | --- | --- |
 | S7-D01 | 能力 | Headless CLI | Deferred | None：不是客户端协议兼容前置条件 |
 | S7-D02 | 能力 | ACP stdio adapter | Deferred | None |
-| S7-D03 | 能力 | MCP Client Bridge | Deferred | None |
+| S7-D03 | 能力 | MCP Client Bridge | Planned | Design Verified：[MCP Client Bridge 设计方案](./MCP客户端桥接设计方案.md)已锁定 `mark3labs/mcp-go v1.0.0`、MCP `2026-07-28`、默认 `mcp.servers` 展开和配置到 Agent structured result、订阅、取消、重连、卸载闭环；尚无实现、依赖或测试证据 |
 | S7-D04 | 能力 | 最小 Typert endpoint dispatch | Deferred | None：仅在纳入 endpoint 确有依赖时进入 |
 | S7-D05 | 能力 | Jobs、Subagent 与 Workflow | In Progress | Race Verified：Subagent core只有一个全局Plugin；Persona/Policy/Descriptor/Structured Output/Extension/Report均为ordinary Agent Setup。OneShot、Continuable、Bound各自拥有Execution状态与关闭事务，共享包只保留ID、live index、发布端口和纯函数，resident到child owner反向引用已删除。稳定`subagentEventPublisher`区分SeedBuilder Plugin事件与exact parent Scope中的Execution `Started/Ended`，每次Plugin激活使用独立`eventPublisherRun`，支持依赖替换后的同实例再激活和失败Apply安全回滚。Bound使用独立全局Definition SQLite/sqlc Store、每用户Session direct Bindings、冻结context prefix、idle create/restore、受管reconcile、exact epoch replacement和receipt/cursor恢复；Jobs、background one-shot、Workflow和Code Mode structured capture仍Deferred |
-| S7-G01 | Gate | 进入任一能力时同步更新范围、contract、技术决策和矩阵 | Deferred | None |
-| S7-G02 | Gate | 不以空 package、空 handler、固定成功或未使用依赖占位 | Deferred | None：当前未创建占位 |
+| S7-G01 | Gate | 进入任一能力时同步更新范围、contract、技术决策和矩阵 | In Progress | MCP 的 01/03/04/05、manifest、设计索引和本矩阵已同步；实现证据完成后才能关闭 Gate |
+| S7-G02 | Gate | 不以空 package、空 handler、固定成功或未使用依赖占位 | In Progress | 当前只提交设计，没有 MCP package、handler 或 dependency；实现必须按 M0-M4 形成闭环 |
 
 ## 11. 阶段 8：Parity Hardening 与发布
 

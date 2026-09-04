@@ -8,7 +8,7 @@
 
 - [01 复制范围与兼容基线](./01-porting-scope-and-baseline.md)：目标、非目标、纳入与排除范围、需求、不变量和源代码基线。
 - [02 Go 运行时架构与插件模型](./02-runtime-architecture-and-plugin-model.md)：模块边界、依赖方向、Plugin interface、typed config、Service/Event Registry、Scope 与生命周期。
-- [03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)：Client Connection、API Proxy、RPC/stream、Session/LLM/Tool 契约、Deferred adapter 边界和跨语言兼容验证。
+- [03 协议与 API 兼容设计](./03-protocol-and-api-compatibility.md)：Client Connection、API Proxy、RPC/stream、Session/LLM/Tool 契约、辅助 adapter 边界和跨语言兼容验证。
 - [04 Go 技术架构决策与技术选型](./04-go-technology-decisions.md)：Connection carrier、typed config、标准库、第三方依赖、持久化、PTY、沙箱与可观测性决策。
 - [05 复制路线图与验收](./05-porting-roadmap-and-acceptance.md)：分阶段交付、源包映射、测试策略、完成定义和未决事项。
 - [06 Connection Host 模块设计与实现](./06-connection-host-module.md)：Connection wire contract、Echo inbound adapter、信任边界、验证所有权、取消与生命周期。
@@ -19,6 +19,7 @@
 - [Session Core、唯一写协调与生命周期设计](../session/docs/design.zh-CN.md)：Session 分层、单一 lifecycle owner、`Context`、EventDraft、`Commit/Flush/Release` 唯一 FIFO、状态机、Surface、LiveStore、durability barrier 与跨层交互流程。
 - [11 System Prompt Registry 与 Assembly 模块设计](./11-system-prompt-registry-and-assembly.md)：scope overlay、注册生命周期、deterministic assembly、tool schema 排序、严格插值与上下游边界。
 - [12 Tools Registry 与执行流水线模块设计](./12-tools-registry-and-execution-pipeline.md)：Tool Definition、Root Registry + Child Overlay、restriction/guard、policy Waterfall、一次性执行状态机、结果物化与 System Prompt 投影。
+- [MCP Client Bridge 设计方案](./MCP客户端桥接设计方案.md)：默认 Server composition 的 `mcp.servers`、MCP `2026-07-28`、外部 Tool 发现/调用、结构化结果、动态 Tool generation、重连和卸载闭环。
 - [13 Harness LLM Runtime 与 DeepSeek Provider 模块设计](./13-harness-llm-runtime-and-deepseek-provider.md)：provider-neutral LLM Service、Adapter Registry、模型路由、流组装、RetryPolicy，以及 DeepSeek typed config、HTTP/SSE 和错误映射。
 - [Agent Message 协议重构设计方案](./AgentMessage协议重构设计方案.md)：把 Inbox、Session surface 与模型上下文重建共用的 Message/source/content contract 从 `llm` 抽离到唯一 `agentmessage` owner，并固定兼容性与依赖方向。
 - [14 Agent Registry、Inbox 与实时事件模块设计](./14-agent-registry-inbox-and-events.md)：live Agent registry、Factory seam、durable Inbox projection、Agent-scoped events、initiator attribution 与 model selection snapshot。

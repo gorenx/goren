@@ -208,5 +208,5 @@ observer / extension
 - `agentloop` 实现 concrete Agent、Factory、Turn/Step、status/idle/cancel 与 retry attempt orchestration；Registry 不吸收这些状态机，具体流程见[15](./15-agent-loop-and-request-driver.md)；
 - Session persistence 通过现有 `ResumeOptions`/`ResumeAgent` seam load/repair durable Session；
 - `session.*` API 和 Mux/Host projection 只读取 Agent/Session contract，不让 wire frame 成为 Agent 领域类型；具体边界见[16](./16-session-api-gateway-and-live-frames.md)；
-- Approval/Question 与 Subagent 沿 `ScopeSetup`、`EventDispatcher` 和 Agent Inbox 消费现有边界；Jobs、ACP、MCP 和 Headless CLI 继续保持 Deferred，直到范围和真实调用链明确；
+- Approval/Question 与 Subagent 沿 `ScopeSetup`、`EventDispatcher` 和 Agent Inbox 消费现有边界；Jobs、ACP 和 Headless CLI 继续保持 Deferred；已进入计划范围的 MCP Client 只通过 Tools Registry/Runtime 被 Agent 消费，不向 Agent Registry 或 Inbox 增加 MCP 分支；
 - 新 Inbox adapter 不得出现；Inbox 是 Session facts 的业务 projection，JSONL/SQLite adapter 只存取 facts。

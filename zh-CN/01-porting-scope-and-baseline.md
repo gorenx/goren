@@ -7,7 +7,7 @@
 
 ## 1. 系统定位
 
-Goren 的当前主线不是设计一个新的 Agent 产品，也不是按 TypeScript 文件逐行翻译。目标是在 Go 中重建 DeepSeek Harness Agent 服务端，使现有 TypeScript 客户端可以按原 Connection/API 协议建立连接、提交 prompt、接收事件、处理交互并取消请求。Headless、ACP 与 MCP 可以在未来复用同一核心，但不属于当前兼容目标。
+Goren 的当前主线不是设计一个新的 Agent 产品，也不是按 TypeScript 文件逐行翻译。目标是在 Go 中重建 DeepSeek Harness Agent 服务端，使现有 TypeScript 客户端可以按原 Connection/API 协议建立连接、提交 prompt、接收事件、处理交互并取消请求。Headless 与 ACP 可以在未来复用同一核心；外部 MCP Tool 接入已经进入默认 Server composition 的计划范围，但不改变 TypeScript Client Connection 的首要兼容目标。
 
 源代码权威固定为：
 
@@ -42,6 +42,18 @@ Goren 的当前主线不是设计一个新的 Agent 产品，也不是按 TypeSc
 
 后续若要把其他能力升级到 `b150a55`，仍必须单独生成差异清单并修改本文；不得从本例外推导全仓升级。
 
+### 1.2 MCP wire protocol 专项基线例外
+
+外部 MCP Tool 接入保留固定 DSH `packages/mcp/mcp-client` 的 Plugin owner、工具命名、原子 generation、
+结果投影、重连和 Dispose 语义，但 wire protocol 明确使用 MCP `2026-07-28`，不复制固定源使用的旧
+connection-scoped handshake/session revision。该新版协议以官方 schema/spec 为 wire authority：请求无
+`initialize/initialized` 和 `Mcp-Session-Id`，每次请求携带 protocol/client/capability metadata，可选
+`server/discover`，动态通知使用 `subscriptions/listen`。完整设计见
+[MCP Client Bridge 设计方案](./MCP客户端桥接设计方案.md)。
+
+这是 protocol-scoped exception，不自动升级其他 DSH capability，也不表示 Goren 对外提供 MCP Server。
+实现只能严格接受 `2026-07-28`；SDK compatibility fallback 连接到旧 revision 不算验收通过。
+
 ## 2. 术语
 
 | 术语 | 本项目含义 |
@@ -75,7 +87,7 @@ Goren 的当前主线不是设计一个新的 Agent 产品，也不是按 TypeSc
 | 本地用户或自动化（Deferred） | `cmd/dsh` Headless CLI | 选择 typed deployment config、提交任务、等待 Session 停稳、取得退出码与最终文本 |
 | TypeScript Client | Connection HTTP/WebSocket contract | 建立 generation、调用纳入的 API、接收 Session/Host frame、回答 approval/question、取消请求 |
 | ACP Client（Deferred） | ACP stdio Server | 创建会话、提交文本、接收已提交消息、取消、处理权限请求 |
-| 外部 MCP Server（Deferred） | MCP Client Bridge | 公布工具并接收工具调用；不获得内部 Runtime 对象 |
+| 外部 MCP Server（Planned） | 默认 Server composition 中的 MCP Client Bridge | 按 `mcp.servers` 连接，公布工具并接收调用；不获得内部 Runtime 对象 |
 | Go 应用装配者 | Go package API | 组装已编译 Plugin Factory、替换 Provider、嵌入 Runtime |
 | Plugin 作者 | Plugin/Service/Event/Tool API | 注册可撤销贡献；不能绕过所属能力的执行策略 |
 | 运维与测试 | 配置、日志、metrics、Session 文件 | 观察、回放和诊断，不修改运行中领域状态 |
@@ -142,12 +154,12 @@ Headless 是不启动 Client Connection 的一次性 CLI adapter：读取一个 
 - 根级 `web` 包提供仓库自有的主会话 UI，只消费既有 Host API/Frame，包含 DeepSeek API Key 设置但不拥有 Credentials precedence/存储、Session、Agent、LLM 或持久化业务逻辑。
 - TypeScript Client 代码不复制；固定源 symbol、descriptor 和 observable semantics 作为需求证据，Go golden、表驱动和真实 carrier 集成测试作为实现验收。
 
-默认 Connection Server composition 同端口提供 `/api`、WebSocket 与内嵌 UI 静态资源。该 UI 只用于主会话，不等同原版 DeepSeek Harness Web 产品；Deferred Headless composition 若实现，仍不监听端口。
+默认 Connection Server composition 同端口提供 `/api`、WebSocket 与内嵌 UI 静态资源，并负责把 typed `mcp.servers` 展开成零个或多个 MCP Client PluginSpec。空列表不创建 MCP 实例；非空列表仍使用相同 `cmd/goren` 与 Server composition，不另建 MCP 专用部署入口。该 UI 只用于主会话，不等同原版 DeepSeek Harness Web 产品；Deferred Headless composition 若实现，仍不监听端口。
 
 ### 6.5 Deferred 能力
 
 - Headless CLI；
-- ACP Server 与 MCP Client Bridge；
+- ACP Server；
 - 完整 Typert Host Gateway；当前只实现已纳入的 `commands/list`、`commands/execute` 所需最小 Remote descriptor 与 Host dispatch；
 - Subagent、完整 Settings、扩展 Credentials Provider/watcher/event、Goals、Remote extension 等非核心客户端功能；
 - Codex/Claude Code/ACP subagent、Workflow、Schedule 等编排能力。
@@ -214,7 +226,7 @@ Deferred 不算已复制，也不能通过空 handler 或固定成功响应占�
 | H-E04 | 未知 required Session Event | 拒绝恢复；未知且 `ignorable: true` 的 Event 可跳过 |
 | H-E05 | Session crash 留下开放轮次 | repair 写入 `interrupted`，不删除已有事件 |
 | H-E06 | Tool 参数、权限或执行失败 | 在 Tool executor 处拒绝并记录规范 Tool Result，不靠 Prompt 隐藏 |
-| H-E07 | Deferred MCP 重连失败 | 进入实现范围后保留上一正常代直到预算耗尽；候选代失败不形成部分注册 |
+| H-E07 | MCP 重连失败 | 保留上一正常代直到预算耗尽；候选代失败不形成部分注册，耗尽后清空该 Server Tool Set |
 | H-E08 | Deferred Headless 被取消或退出 | 进入实现范围后先取消工作、等待所有 owned operation 静止、flush Session，再退出 |
 | H-E09 | TypeScript fixture 无法被 Go 解码 | 兼容门禁失败，不通过放宽未知字段或静默丢弃修复 |
 | H-E10 | 配置包含 `!!js`、未知字段或类型错误 | 启动/更新失败并报告来源与字段路径；不求值、不忽略、不把表达式当字符串 |
@@ -223,7 +235,7 @@ Deferred 不算已复制，也不能通过空 handler 或固定成功响应占�
 
 - 默认支持 Linux、macOS 和 Windows；目标架构至少覆盖 `amd64` 与 `arm64`。
 - 默认构建不依赖 Node.js、TypeScript Runtime、嵌入式脚本引擎、浏览器或 CGO；TypeScript 只允许出现在兼容 fixture 生成流程。
-- Connection Server composition 监听 `/api` HTTP/WebSocket；Deferred Headless 若实现，默认不监听端口。
+- Connection Server composition 监听 `/api` HTTP/WebSocket，并按 `mcp.servers` 管理外部 MCP Client Plugin；Deferred Headless 若实现，默认不监听端口。
 - Runtime shutdown 有界且可观测，不遗留 goroutine、子进程、PTY、watcher、数据库事务或临时注册。
 - 同一 Session 的 Event append 串行化；不同 Session 可以并行。
 - 配置、协议和持久化边界严格验证；同进程 typed interface 不做无证据的重复 runtime validation。

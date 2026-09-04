@@ -44,7 +44,7 @@ flowchart TB
 
     HEADLESS["Deferred: Headless CLI"] -.-> AR
     ACP["Deferred: ACP stdio"] -.-> AR
-    MCP["Deferred: MCP Client Bridge"] -.-> TOOLS
+    MCP["Planned: MCP Client Bridge"] -.-> TOOLS
     TYPERT["Deferred: minimal Typert dispatch"] -.-> API
 ```
 

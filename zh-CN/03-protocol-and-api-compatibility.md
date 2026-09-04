@@ -357,7 +357,7 @@ Typert 不是 Client Connection 协议。固定源基线中，Connection 在共�
 
 这些代码不进入 Go；它们的 source tests 和 wire schema 反过来作为 Go Server 的 compatibility oracle。
 
-## 7. Deferred：ACP 与 MCP
+## 7. 辅助 adapter：ACP Deferred，MCP Planned
 
 ACP 不是当前客户端协议兼容的前置能力。未来若进入范围，其独立 adapter 需要：
 
@@ -367,14 +367,20 @@ ACP 不是当前客户端协议兼容的前置能力。未来若进入范围，�
 - permission request；
 - ACP 生命周期与 Agent turn/session 的映射必须显式。
 
-MCP 同样是 Deferred 的出站工具发现与调用能力：
+MCP Client Bridge 已进入默认 Server composition 的计划范围，完整契约由
+[MCP Client Bridge 设计方案](./MCP客户端桥接设计方案.md)拥有：
 
-- 初次纳入时只接入 MCP tools；
+- 使用 MCP `2026-07-28`，每请求携带协议/client/capability metadata，可选调用 `server/discover`，禁止
+  SDK 静默回退到 legacy `initialize` revision；
+- `mcp.servers` 每个配置项形成一个外部 MCP Client Plugin 实例，空列表形成零实例；
+- 接入 MCP tools 的配置、发现、注册、Agent 调用、structured result、取消、订阅、重连和卸载闭环；
 - 工具命名保持 `mcp__<serverName>__<rawName>`；
 - reconnect 使用 generation swap，旧 generation 不得在替换后接收新调用；
 - server 进程、连接和工具注册都必须随插件 effect 释放。
 
-ACP/MCP 的第三方 Go SDK 只承担编码与 transport，不拥有 Goren 的 Agent、Session 或 Tool 领域模型。转换位于各自 adapter 包。
+MCP resources/prompts、MCP extensions 以及 Goren 对外提供 MCP Server 不属于该 Tool Client 闭环，不能据此
+把已纳入路径写成未完成。ACP/MCP 的第三方 Go SDK 只承担编码与 transport，不拥有 Goren 的 Agent、
+Session 或 Tool 领域模型。转换位于各自 adapter 包。
 
 ## 8. 明确排除 DSH SDK
 
@@ -412,7 +418,7 @@ internal/assembly/
   *_e2e_test.go
 ```
 
-`manifest.json` 是机器可读的范围与 provenance owner：记录源 commit/version/license/toolchain、HTTP/WS path、message/receipt/frame 判别集合、当前 unary method、privileged method、Excluded 和 Deferred 能力。源 commit 改变时必须显式更新该文件和全部向量，不能自动追随相邻 checkout。
+`manifest.json` 是机器可读的范围与 provenance owner：记录源 commit/version/license/toolchain、HTTP/WS path、message/receipt/frame 判别集合、当前 unary method、privileged method、Excluded、Deferred 和 Planned 能力。源 commit 改变时必须显式更新该文件和全部向量，不能自动追随相邻 checkout。
 
 `vectors.json` 和 `compaction-vectors.json` 是固定源契约样本，不是 embedding，也不生成 Go 类型或生产代码。新的兼容用例优先直接写在 owner package 的 Go 表驱动测试中；已有资产只有在被当前 Go 测试消费时才构成当前验证证据，单独存在不计为通过。固定源 checkout 用于人工核对 provenance、symbol、descriptor 和 observable semantics；当前普通 Go 验收不执行 TypeScript。
 

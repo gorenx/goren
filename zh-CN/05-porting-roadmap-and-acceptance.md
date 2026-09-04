@@ -30,7 +30,7 @@ Existing TypeScript Client
 6. **先内存后持久**：先用 in-memory Provider 验证状态机，再添加 JSONL/SQLite adapter。
 7. **失败路径同等重要**：取消、rollback、repair、权限拒绝、partial stream、重连和 shutdown 都是阶段 gate。
 8. **排除项不进入依赖闭包**：原版 Web UI、浏览器客户端 runtime、DSH SDK 和 Python 不以“暂时不启用”的方式引入；自有极简 UI 只依赖 Host 协议。
-9. **Deferred 不占位**：Headless、ACP、MCP、Typert 和编排能力只有进入实际范围后才创建包和依赖。
+9. **Deferred 不占位**：Headless、ACP、Typert 和未纳入的编排能力只有进入实际范围后才创建包和依赖；MCP Client 已进入阶段 7 的 Planned 闭环。
 10. **配置无脚本**：所有配置严格解码为 owner-defined Go 类型；`!!js` 和替代表达式语言属于 Excluded。
 10. **证据分级**：Implemented、Go Verified、Contract Verified、Environment Verified 分别记录。
 
@@ -235,19 +235,23 @@ Workspace、Web UI、Session Query、Filesystem、Shell、PTY、LSP、Sandbox、
 
 不支持的 Sandbox 必须明确失败，不能用无隔离执行冒充 parity。
 
-## 10. 阶段 7：Deferred 能力的独立进入规则
+## 10. 阶段 7：MCP Client 闭环与其他能力的独立进入规则
 
-下列能力不属于首期 release gate：
+MCP Client Bridge 已经进入当前计划；其 release gate 是默认 Server composition 能按 `mcp.servers` 接入外部
+MCP Server，并完成发现、Agent 调用、结构化结果、取消、动态同步、重连和卸载。其余能力仍按独立条件进入：
 
 | 能力 | 进入条件 | 独立边界 |
 | --- | --- | --- |
 | Headless | 明确需要无客户端的一次性 CLI | 只作为 Agent/Session 入站 adapter，不改变 Core |
 | ACP | 明确需要 ACP client 互操作 | stdio adapter 映射 Agent/Session，不泄漏 SDK 类型 |
-| MCP | 明确需要外部 MCP tools | Tool Provider 管理 connection generation 与撤销 |
+| MCP | 已明确需要外部 MCP tools | 默认 Server composition 展开配置；MCP Client Plugin 管理 connection generation，Tools owner 原子管理 Tool Set |
 | Typert | 纳入的辅助 Client endpoint 在源基线中由 Remote 拥有 | 只实现该 endpoint 所需 descriptor/lookup/context dispatch，复用 Connection carrier |
 | Jobs/Subagent/Workflow | 明确需要多任务编排 | 独立资源、预算、递归、取消和 Session owner |
 
-进入任一能力时都要更新 01 范围、03 contract、04 技术决策、capability matrix 和本路线图。空 handler、固定成功响应、未使用 dependency 或空包不算进入实现。
+MCP 实现按[MCP Client Bridge 设计方案](./MCP客户端桥接设计方案.md)的 M0-M4 顺序推进，使用
+`github.com/mark3labs/mcp-go v1.0.0` 严格执行 MCP `2026-07-28`；只完成 SDK demo、Factory 注册或
+`tools/list` 均不得标记 Completed。其他能力进入时也要更新 01 范围、03 contract、04 技术决策、capability
+matrix 和本路线图。空 handler、固定成功响应、未使用 dependency 或空包不算进入实现。
 
 ## 11. 阶段 8：Parity Hardening 与发布
 
@@ -283,7 +287,7 @@ Workspace、Web UI、Session Query、Filesystem、Shell、PTY、LSP、Sandbox、
 | API | P2 extension contract | 第三方测试 Plugin 只依赖公共 package |
 | Model-visible | P3 输入输出 | request/session replay、system prompt snapshot |
 | Platform | OS 差异 | PTY、sandbox、watcher、signals、filesystem |
-| Real environment | 外部互操作 | TypeScript Client、DeepSeek；Deferred peer 仅在纳入后测试 |
+| Real environment | 外部互操作 | TypeScript Client、DeepSeek，以及纳入后的外部 MCP `2026-07-28` Server；其他 Deferred peer 仅在纳入后测试 |
 
 Golden file 只固定协议稳定字段。时间、随机 ID、绝对路径等非稳定值由 fixture generator 规范化，不能在断言中删除整个对象。
 
