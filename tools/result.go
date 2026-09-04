@@ -10,6 +10,64 @@ import (
 	"github.com/gorenx/goren/internal/jsonvalue"
 )
 
+// ToolExecutionSuccess is a validated canonical value and its projections.
+type ToolExecutionSuccess struct {
+	Value              json.RawMessage
+	Content            []agentmessage.ContentBlock
+	Meta               json.RawMessage
+	AdditionalContexts []agentmessage.UserMessage
+	// ConcludesTurn means this Tool success ends the current Agent Turn; Agent
+	// Loop must not automatically start another model request for its result.
+	ConcludesTurn bool
+}
+
+// Failed reports false.
+func (*ToolExecutionSuccess) Failed() bool { return false }
+
+// ContentBlocks returns the result's model-facing content.
+func (outcome *ToolExecutionSuccess) ContentBlocks() []agentmessage.ContentBlock {
+	if outcome == nil {
+		return nil
+	}
+	detached, _ := agentmessage.CloneContentBlocks(outcome.Content)
+	return detached
+}
+
+// AdditionalContextMessages returns detached next-step context in authored order.
+func (outcome *ToolExecutionSuccess) AdditionalContextMessages() []agentmessage.UserMessage {
+	if outcome == nil {
+		return nil
+	}
+	detached, _ := cloneUserMessages(outcome.AdditionalContexts)
+	return detached
+}
+
+// SuccessValue returns a detached canonical value.
+func (outcome *ToolExecutionSuccess) SuccessValue() (json.RawMessage, bool) {
+	if outcome == nil {
+		return nil, false
+	}
+	return append(json.RawMessage(nil), outcome.Value...), true
+}
+
+// FailureDetail reports that a successful result has no failure.
+func (*ToolExecutionSuccess) FailureDetail() (ToolFailure, bool) {
+	return ToolFailure{}, false
+}
+
+// PresentationMeta returns detached tool-private presentation metadata.
+func (outcome *ToolExecutionSuccess) PresentationMeta() json.RawMessage {
+	if outcome == nil {
+		return nil
+	}
+	return append(json.RawMessage(nil), outcome.Meta...)
+}
+
+// ConcludesAgentTurn reports whether this success terminates the current turn.
+func (outcome *ToolExecutionSuccess) ConcludesAgentTurn() bool {
+	return outcome != nil && outcome.ConcludesTurn
+}
+
 func (outcome *ToolExecutionSuccess) cloneResult() (ToolExecutionResult, error) {
 	if outcome == nil {
 		return nil, errors.New("tools: nil success result")
@@ -37,13 +95,6 @@ func (outcome *ToolExecutionSuccess) cloneResult() (ToolExecutionResult, error) 
 		AdditionalContexts: additionalContexts,
 		ConcludesTurn:      outcome.ConcludesTurn,
 	}, nil
-}
-
-func (outcome *canonicalToolExecutionSuccess) cloneResult() (ToolExecutionResult, error) {
-	if outcome == nil || outcome.normalized == nil {
-		return nil, errors.New("tools: nil canonical success result")
-	}
-	return outcome.normalized.cloneResult()
 }
 
 func (outcome *ToolExecutionFailure) cloneResult() (ToolExecutionResult, error) {

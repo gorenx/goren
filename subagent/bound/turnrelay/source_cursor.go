@@ -35,14 +35,14 @@ func newSourceCursor(
 }
 
 func (current *sourceCursor) next(
-	requestContext context.Context,
+	ctx context.Context,
 ) (boundcontract.Input, bool, error) {
-	if requestContext == nil {
+	if ctx == nil {
 		return boundcontract.Input{}, false, errors.New(
 			"subagent/bound/turnrelay: cursor Context is nil",
 		)
 	}
-	if err := context.Cause(requestContext); err != nil {
+	if err := context.Cause(ctx); err != nil {
 		return boundcontract.Input{}, false, err
 	}
 	if current.pending != nil {
@@ -63,7 +63,7 @@ func (current *sourceCursor) next(
 		}
 		if !interactionValue.deliverable {
 			if err = current.advance(
-				requestContext,
+				ctx,
 				interactionValue,
 				false,
 			); err != nil {
@@ -78,7 +78,7 @@ func (current *sourceCursor) next(
 			return boundcontract.Input{}, false, err
 		}
 		if err = current.store.Flush(
-			requestContext,
+			ctx,
 			current.conversation,
 		); err != nil {
 			return boundcontract.Input{}, false, err
@@ -92,7 +92,7 @@ func (current *sourceCursor) next(
 }
 
 func (current *sourceCursor) acknowledge(
-	requestContext context.Context,
+	ctx context.Context,
 	receiptValue boundcontract.Receipt,
 ) error {
 	pending := current.pending
@@ -103,7 +103,7 @@ func (current *sourceCursor) acknowledge(
 		)
 	}
 	if err := current.advance(
-		requestContext,
+		ctx,
 		pending.interaction,
 		true,
 	); err != nil {
@@ -114,12 +114,12 @@ func (current *sourceCursor) acknowledge(
 }
 
 func (current *sourceCursor) advance(
-	requestContext context.Context,
+	ctx context.Context,
 	interactionValue interaction,
 	delivered bool,
 ) error {
 	if _, err := current.conversation.Commit(
-		requestContext,
+		ctx,
 		cursorPlan{
 			binding:     current.binding,
 			interaction: interactionValue,
@@ -128,5 +128,5 @@ func (current *sourceCursor) advance(
 	); err != nil {
 		return err
 	}
-	return current.store.Flush(requestContext, current.conversation)
+	return current.store.Flush(ctx, current.conversation)
 }

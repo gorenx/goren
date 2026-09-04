@@ -108,10 +108,16 @@ func (pending *Inbox) HasPending() bool {
 func (pending *Inbox) Clear() error {
 	pending.operationMu.Lock()
 	defer pending.operationMu.Unlock()
-	if _, err := pending.mutateLocked(NextStep, 0, pending.length(NextStep), nil, true); err != nil {
+	if _, err := pending.mutateLocked(
+		NextStep, 0, pending.length(NextStep),
+		nil, true,
+	); err != nil {
 		return err
 	}
-	_, err := pending.mutateLocked(NextTurn, 0, pending.length(NextTurn), nil, true)
+	_, err := pending.mutateLocked(
+		NextTurn, 0, pending.length(NextTurn),
+		nil, true,
+	)
 	return err
 }
 
@@ -122,7 +128,10 @@ func (pending *Inbox) Claim(target InboxTarget, turn int64) ([]agentmessage.User
 	}
 	pending.operationMu.Lock()
 	defer pending.operationMu.Unlock()
-	claimed, err := pending.mutateLocked(NextStep, 0, pending.length(NextStep), nil, false)
+	claimed, err := pending.mutateLocked(
+		NextStep, 0, pending.length(NextStep),
+		nil, false,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -142,14 +151,20 @@ func (pending *Inbox) Claim(target InboxTarget, turn int64) ([]agentmessage.User
 func (pending *Inbox) Append(target InboxTarget, message agentmessage.UserMessage) error {
 	pending.operationMu.Lock()
 	defer pending.operationMu.Unlock()
-	_, err := pending.mutateLocked(target, pending.length(target), 0, []agentmessage.UserMessage{message}, true)
+	_, err := pending.mutateLocked(
+		target, pending.length(target), 0,
+		[]agentmessage.UserMessage{message}, true,
+	)
 	return err
 }
 
 func (pending *Inbox) Prepend(target InboxTarget, message agentmessage.UserMessage) error {
 	pending.operationMu.Lock()
 	defer pending.operationMu.Unlock()
-	_, err := pending.mutateLocked(target, 0, 0, []agentmessage.UserMessage{message}, true)
+	_, err := pending.mutateLocked(
+		target, 0, 0,
+		[]agentmessage.UserMessage{message}, true,
+	)
 	return err
 }
 
@@ -160,7 +175,10 @@ func (pending *Inbox) Replace(messageID agentmessage.MessageID, replacement agen
 	if !found {
 		return false, nil
 	}
-	_, err := pending.mutateLocked(target, index, 1, []agentmessage.UserMessage{replacement}, true)
+	_, err := pending.mutateLocked(
+		target, index, 1,
+		[]agentmessage.UserMessage{replacement}, true,
+	)
 	return err == nil, err
 }
 
@@ -171,7 +189,10 @@ func (pending *Inbox) Remove(messageID agentmessage.MessageID) (bool, error) {
 	if !found {
 		return false, nil
 	}
-	_, err := pending.mutateLocked(target, index, 1, nil, true)
+	_, err := pending.mutateLocked(
+		target, index, 1,
+		nil, true,
+	)
 	return err == nil, err
 }
 

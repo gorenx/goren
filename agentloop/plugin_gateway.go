@@ -32,34 +32,23 @@ type agentWaterfalls interface {
 	) (agent.RequestErrorAction, error)
 }
 
-// pluginGateway submits Event and Waterfall requests to the sole AgentLoop
-// Plugin. It contains no Plugin, Runtime, callback, or owner reference.
-type pluginGateway struct {
-	requests chan effectCall
-	stopped  chan struct{}
-	stopOnce sync.Once
-	// stopErr is published before stopped closes and read only after a stopped
-	// receive establishes the lifecycle handoff.
-	stopErr  error
-}
-
 type effectCall interface {
 	effectCall()
 }
 
 type eventCall struct {
-	requestContext context.Context
-	fact           agent.AgentEvent
-	result         chan error
+	ctx    context.Context
+	fact   agent.AgentEvent
+	result chan error
 }
 
 func (eventCall) effectCall() {}
 
 type preStepCall struct {
-	requestContext context.Context
-	notice         agent.PreStepNotice
-	terminal       agent.PreStepAction
-	result         chan preStepCallResult
+	ctx      context.Context
+	notice   agent.PreStepNotice
+	terminal agent.PreStepAction
+	result   chan preStepCallResult
 }
 
 func (preStepCall) effectCall() {}
@@ -70,10 +59,10 @@ type preStepCallResult struct {
 }
 
 type requestResolutionCall struct {
-	requestContext context.Context
-	notice         agent.RequestNotice
-	terminal       agent.RequestAction
-	result         chan requestResolutionCallResult
+	ctx      context.Context
+	notice   agent.RequestNotice
+	terminal agent.RequestAction
+	result   chan requestResolutionCallResult
 }
 
 func (requestResolutionCall) effectCall() {}
@@ -84,10 +73,10 @@ type requestResolutionCallResult struct {
 }
 
 type requestErrorCall struct {
-	requestContext context.Context
-	notice         agent.RequestErrorNotice
-	terminal       agent.RequestErrorHandler
-	result         chan requestErrorCallResult
+	ctx      context.Context
+	notice   agent.RequestErrorNotice
+	terminal agent.RequestErrorHandler
+	result   chan requestErrorCallResult
 }
 
 func (requestErrorCall) effectCall() {}
@@ -95,6 +84,17 @@ func (requestErrorCall) effectCall() {}
 type requestErrorCallResult struct {
 	action agent.RequestErrorAction
 	err    error
+}
+
+// pluginGateway submits Event and Waterfall requests to the sole AgentLoop
+// Plugin. It contains no Plugin, Runtime, callback, or owner reference.
+type pluginGateway struct {
+	requests chan effectCall
+	stopped  chan struct{}
+	stopOnce sync.Once
+	// stopErr is published before stopped closes and read only after a stopped
+	// receive establishes the lifecycle handoff.
+	stopErr error
 }
 
 func newPluginGateway() *pluginGateway {
@@ -105,10 +105,10 @@ func newPluginGateway() *pluginGateway {
 }
 
 func (gateway *pluginGateway) submit(
-	requestContext context.Context,
+	ctx context.Context,
 	call effectCall,
 ) error {
-	if gateway == nil || requestContext == nil || call == nil {
+	if gateway == nil || ctx == nil || call == nil {
 		return errors.New("agentloop: effect call is incomplete")
 	}
 	select {
@@ -116,22 +116,22 @@ func (gateway *pluginGateway) submit(
 		return nil
 	case <-gateway.stopped:
 		return gateway.stoppedError()
-	case <-requestContext.Done():
-		return context.Cause(requestContext)
+	case <-ctx.Done():
+		return context.Cause(ctx)
 	}
 }
 
 func (gateway *pluginGateway) Dispatch(
-	requestContext context.Context,
+	ctx context.Context,
 	fact agent.AgentEvent,
 ) error {
 	result := make(chan error, 1)
 	if err := gateway.submit(
-		requestContext,
+		ctx,
 		eventCall{
-			requestContext: requestContext,
-			fact:           fact,
-			result:         result,
+			ctx:    ctx,
+			fact:   fact,
+			result: result,
 		},
 	); err != nil {
 		return err
@@ -141,24 +141,24 @@ func (gateway *pluginGateway) Dispatch(
 		return err
 	case <-gateway.stopped:
 		return gateway.stoppedError()
-	case <-requestContext.Done():
-		return context.Cause(requestContext)
+	case <-ctx.Done():
+		return context.Cause(ctx)
 	}
 }
 
 func (gateway *pluginGateway) ResolvePreStep(
-	requestContext context.Context,
+	ctx context.Context,
 	notice agent.PreStepNotice,
 	terminal agent.PreStepAction,
 ) (agent.PreStepDecision, error) {
 	result := make(chan preStepCallResult, 1)
 	if err := gateway.submit(
-		requestContext,
+		ctx,
 		preStepCall{
-			requestContext: requestContext,
-			notice:         notice,
-			terminal:       terminal,
-			result:         result,
+			ctx:      ctx,
+			notice:   notice,
+			terminal: terminal,
+			result:   result,
 		},
 	); err != nil {
 		return agent.PreStepDecision{}, err
@@ -168,24 +168,24 @@ func (gateway *pluginGateway) ResolvePreStep(
 		return resolved.decision, resolved.err
 	case <-gateway.stopped:
 		return agent.PreStepDecision{}, gateway.stoppedError()
-	case <-requestContext.Done():
-		return agent.PreStepDecision{}, context.Cause(requestContext)
+	case <-ctx.Done():
+		return agent.PreStepDecision{}, context.Cause(ctx)
 	}
 }
 
 func (gateway *pluginGateway) ResolveRequest(
-	requestContext context.Context,
+	ctx context.Context,
 	notice agent.RequestNotice,
 	terminal agent.RequestAction,
 ) (agent.RequestResolution, error) {
 	result := make(chan requestResolutionCallResult, 1)
 	if err := gateway.submit(
-		requestContext,
+		ctx,
 		requestResolutionCall{
-			requestContext: requestContext,
-			notice:         notice,
-			terminal:       terminal,
-			result:         result,
+			ctx:      ctx,
+			notice:   notice,
+			terminal: terminal,
+			result:   result,
 		},
 	); err != nil {
 		return agent.RequestResolution{}, err
@@ -195,24 +195,24 @@ func (gateway *pluginGateway) ResolveRequest(
 		return resolved.resolution, resolved.err
 	case <-gateway.stopped:
 		return agent.RequestResolution{}, gateway.stoppedError()
-	case <-requestContext.Done():
-		return agent.RequestResolution{}, context.Cause(requestContext)
+	case <-ctx.Done():
+		return agent.RequestResolution{}, context.Cause(ctx)
 	}
 }
 
 func (gateway *pluginGateway) ResolveRequestError(
-	requestContext context.Context,
+	ctx context.Context,
 	notice agent.RequestErrorNotice,
 	terminal agent.RequestErrorHandler,
 ) (agent.RequestErrorAction, error) {
 	result := make(chan requestErrorCallResult, 1)
 	if err := gateway.submit(
-		requestContext,
+		ctx,
 		requestErrorCall{
-			requestContext: requestContext,
-			notice:         notice,
-			terminal:       terminal,
-			result:         result,
+			ctx:      ctx,
+			notice:   notice,
+			terminal: terminal,
+			result:   result,
 		},
 	); err != nil {
 		return agent.RequestErrorAction{}, err
@@ -222,8 +222,8 @@ func (gateway *pluginGateway) ResolveRequestError(
 		return resolved.action, resolved.err
 	case <-gateway.stopped:
 		return agent.RequestErrorAction{}, gateway.stoppedError()
-	case <-requestContext.Done():
-		return agent.RequestErrorAction{}, context.Cause(requestContext)
+	case <-ctx.Done():
+		return agent.RequestErrorAction{}, context.Cause(ctx)
 	}
 }
 
