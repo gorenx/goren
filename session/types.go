@@ -39,6 +39,11 @@ type Header struct {
 	AgentPreset     *string    `json:"agentPreset,omitempty"`
 }
 
+// Clone returns metadata with independent pointer fields.
+func (source Header) Clone() Header {
+	return cloneHeader(source)
+}
+
 // Metadata contains caller-supplied Header fields for a newly created Session.
 type Metadata struct {
 	CreatedAt       *int64
@@ -54,6 +59,29 @@ type Metadata struct {
 type CreateOptions struct {
 	Seed     []Event
 	Metadata Metadata
+}
+
+// Clone returns independent seed events and metadata for asynchronous ownership.
+func (options CreateOptions) Clone() CreateOptions {
+	var seed []Event
+	if options.Seed != nil {
+		seed = make([]Event, len(options.Seed))
+		for index, entry := range options.Seed {
+			seed[index] = cloneEvent(entry)
+		}
+	}
+	return CreateOptions{
+		Seed: seed,
+		Metadata: Metadata{
+			CreatedAt:       cloneInt64(options.Metadata.CreatedAt),
+			CWD:             cloneString(options.Metadata.CWD),
+			ParentSession:   cloneSessionID(options.Metadata.ParentSession),
+			SeedLength:      cloneInt64(options.Metadata.SeedLength),
+			Origin:          options.Metadata.Origin,
+			DelegationDepth: cloneInt64(options.Metadata.DelegationDepth),
+			AgentPreset:     cloneString(options.Metadata.AgentPreset),
+		},
+	}
 }
 
 func buildHeader(identifier SessionID, sessionMetadata Metadata, temporalSource TimeSource) (Header, error) {

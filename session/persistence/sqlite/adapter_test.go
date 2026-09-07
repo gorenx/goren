@@ -335,7 +335,7 @@ func TestOpenRefusesForeignUnversionedDatabase(t *testing.T) {
 
 func closedTurnLog(t *testing.T, identifier session.SessionID) (session.Header, []session.Event) {
 	t.Helper()
-	conversation, err := session.New(identifier, session.CreateOptions{})
+	conversation, err := session.NewLog(identifier, session.CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,4 +360,54 @@ func closedTurnLog(t *testing.T, identifier session.SessionID) (session.Header, 
 		}
 	}
 	return conversation.Header(), conversation.Events()
+}
+
+func TestReaderUsesSQLiteWithoutSessionRuntime(t *testing.T) {
+	ctx := context.Background()
+	backend, err := Open(ctx, Config{
+		Path:        t.TempDir() + "/reader.sqlite",
+		JournalMode: JournalWAL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = backend.Close(context.Background()) })
+	metadata, entries := closedTurnLog(t, "reader-session")
+	if err := backend.AppendBatch(ctx, sesspersist.EventBatch{
+		Header:      metadata,
+		Events:      entries,
+		Materialize: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	queries, err := sesspersist.NewReader(backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspected, err := queries.Inspect(ctx, metadata.ID)
+	if err != nil || len(inspected.Events) != len(entries) {
+		t.Fatalf("Inspect = %#v, %v", inspected, err)
+	}
+	page, err := queries.ReadEventsFrom(ctx, metadata.ID, sesspersist.EventContinuation{
+		Limit: 1,
+	})
+	if err != nil || !page.HasMore || len(page.Events) != 1 || page.Events[0].Seq != 0 {
+		t.Fatalf("first page = %#v, %v", page, err)
+	}
+	tail, err := queries.ReadEventsBefore(ctx, metadata.ID, sesspersist.EventPage{
+		Limit: 1,
+	})
+	if err != nil || !tail.HasEarlier || len(tail.Events) != 1 || tail.Events[0].Seq != 1 {
+		t.Fatalf("tail = %#v, %v", tail, err)
+	}
+	listed, err := queries.ListSnapshots(ctx, sesspersist.SessionPage{
+		Limit: 1,
+	})
+	if err != nil || len(listed.Snapshots) != 1 || listed.Snapshots[0].Revision != page.Revision {
+		t.Fatalf("list = %#v, %v", listed, err)
+	}
+	after, err := backend.Load(ctx, metadata.ID)
+	if err != nil || after.Revision != page.Revision {
+		t.Fatalf("reads changed durable revision: %#v, %v", after, err)
+	}
 }

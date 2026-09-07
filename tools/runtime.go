@@ -21,15 +21,13 @@ type executionRuntime struct {
 func newRuntime(
 	stages *pipeline,
 	catalog *registry,
-	approvals approval.Approval,
 ) *executionRuntime {
 	bodyDispatcher := &dispatcher{}
 	return &executionRuntime{
 		registry: catalog,
 		pipeline: stages,
 		policies: &policyEngine{
-			registry:  catalog,
-			approvals: approvals,
+			registry: catalog,
 		},
 		dispatcher: bodyDispatcher,
 		results: &resultProcessor{
@@ -48,6 +46,13 @@ func (coordinator *executionRuntime) Execute(
 		return errorResult(err)
 	}
 	switch preparation.Stage {
+	case ScheduledApproval:
+		blocked := postPreparation(preparation.Execution, deniedResult(fallbackAskReason(preparation.Execution.Name, preparation.Approval.Reason)))
+		result, err := coordinator.Finalize(blocked.Execution, blocked.Result)
+		if err != nil {
+			return errorResult(err)
+		}
+		return result
 	case ScheduledDispatch:
 		dispatched, dispatchErr := coordinator.Dispatch(preparation.Execution)
 		if dispatchErr != nil {
@@ -130,8 +135,13 @@ func (coordinator *executionRuntime) Prepare(
 	if err != nil {
 		return finalPreparation(toolCall, errorResult(err)), nil
 	}
-	if evaluation.approvalCancelled && requestContext.Err() != nil {
-		return postPreparation(toolCall, abortedResult(false)), nil
+	if evaluation.approval != nil {
+		toolCall.state.awaitApproval()
+		return ScheduledToolPreparation{
+			Stage:     ScheduledApproval,
+			Execution: toolCall,
+			Approval:  evaluation.approval,
+		}, nil
 	}
 	if evaluation.denialReason != "" {
 		return postPreparation(
@@ -275,4 +285,43 @@ func postPreparation(
 		Execution: toolCall,
 		Result:    outcome,
 	}
+}
+
+// ResolveApproval consumes one audited approval result without repeating pre-policy.
+func (coordinator *executionRuntime) ResolveApproval(toolCall ToolExecution, outcome approval.Outcome) (ScheduledToolPreparation, error) {
+	state, err := coordinator.executionState(toolCall)
+	if err != nil {
+		return ScheduledToolPreparation{}, err
+	}
+	if err := state.acceptApproval(); err != nil {
+		return ScheduledToolPreparation{}, err
+	}
+	if state.requestContext.Err() != nil {
+		return postPreparation(toolCall, abortedResult(false)), nil
+	}
+	decision, cancelled, err := approvalDecision(toolCall.Name, outcome)
+	if err != nil {
+		return finalPreparation(toolCall, errorResult(err)), nil
+	}
+	if cancelled {
+		return postPreparation(toolCall, abortedResult(false)), nil
+	}
+	denial := decisionDenial(toolCall.Name, decision)
+	if denial == "" {
+		denial, err = coordinator.policies.guardDenial(toolCall)
+		if err != nil {
+			return finalPreparation(toolCall, errorResult(err)), nil
+		}
+	}
+	if denial != "" {
+		return postPreparation(toolCall, deniedResult(denial)), nil
+	}
+	if state.requestContext.Err() != nil {
+		return postPreparation(toolCall, abortedResult(false)), nil
+	}
+	state.prepareForDispatch()
+	return ScheduledToolPreparation{
+		Stage:     ScheduledDispatch,
+		Execution: toolCall,
+	}, nil
 }

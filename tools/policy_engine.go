@@ -10,13 +10,12 @@ import (
 )
 
 type policyEngine struct {
-	registry  *registry
-	approvals approval.Approval
+	registry *registry
 }
 
 type preDispatchEvaluation struct {
-	denialReason      string
-	approvalCancelled bool
+	denialReason string
+	approval     *ApprovalRequest
 }
 
 func (engine *policyEngine) evaluate(
@@ -32,15 +31,17 @@ func (engine *policyEngine) evaluate(
 	if err != nil {
 		return preDispatchEvaluation{}, err
 	}
-	resolvedGate, approvalCancelled, err := engine.resolveAsk(
-		ctx,
-		toolCall,
-		gateOutcome.Decision,
-	)
-	if err != nil {
-		return preDispatchEvaluation{}, err
+	if ask, needsApproval := gateOutcome.Decision.(AskDecision); needsApproval {
+		return preDispatchEvaluation{
+			approval: &ApprovalRequest{
+				SessionID: toolCall.SessionID,
+				ToolName:  toolCall.Name,
+				CallID:    toolCall.CallID,
+				Reason:    ask.Reason,
+			},
+		}, nil
 	}
-	denialReason := decisionDenial(toolCall.Name, resolvedGate)
+	denialReason := decisionDenial(toolCall.Name, gateOutcome.Decision)
 	if denialReason == "" {
 		denialReason, err = engine.guardDenial(toolCall)
 		if err != nil {
@@ -48,8 +49,7 @@ func (engine *policyEngine) evaluate(
 		}
 	}
 	return preDispatchEvaluation{
-		denialReason:      denialReason,
-		approvalCancelled: approvalCancelled,
+		denialReason: denialReason,
 	}, nil
 }
 
@@ -71,45 +71,7 @@ func (engine *policyEngine) guardDenial(
 	return "", nil
 }
 
-func (engine *policyEngine) resolveAsk(
-	requestContext context.Context,
-	toolCall ToolExecution,
-	gate PreToolDecision,
-) (PreToolDecision, bool, error) {
-	ask, needsApproval := gate.(AskDecision)
-	if !needsApproval {
-		return gate, false, nil
-	}
-	if engine.approvals == nil {
-		return DenyDecision{
-			Reason: fallbackAskReason(toolCall.Name, ask.Reason),
-		}, false, nil
-	}
-	if toolCall.Subject == nil {
-		return DenyDecision{
-			Reason: fmt.Sprintf(
-				"tool %q requires approval, but the call has no subject",
-				toolCall.Name,
-			),
-		}, false, nil
-	}
-	callID := toolCall.CallID
-	decisionRequest := approval.Request{
-		Subject:  toolCall.Subject,
-		ToolName: toolCall.Name,
-		CallID:   &callID,
-	}
-	if strings.TrimSpace(ask.Reason) != "" {
-		reason := ask.Reason
-		decisionRequest.Reason = &reason
-	}
-	decisionOutcome, err := engine.approvals.Request(
-		requestContext,
-		decisionRequest,
-	)
-	if err != nil {
-		return nil, false, err
-	}
+func approvalDecision(name string, decisionOutcome approval.Outcome) (PreToolDecision, bool, error) {
 	switch decisionOutcome {
 	case approval.OutcomeAllowedOnce:
 		return AllowDecision{}, false, nil
@@ -117,21 +79,21 @@ func (engine *policyEngine) resolveAsk(
 		return DenyDecision{
 			Reason: fmt.Sprintf(
 				"the user rejected tool %q",
-				toolCall.Name,
+				name,
 			),
 		}, false, nil
 	case approval.OutcomeCancelled:
 		return DenyDecision{
 			Reason: fmt.Sprintf(
 				"approval for tool %q was cancelled",
-				toolCall.Name,
+				name,
 			),
 		}, true, nil
 	case approval.OutcomeUnavailable:
 		return DenyDecision{
 			Reason: fmt.Sprintf(
 				"tool %q requires approval, but no approval channel is available",
-				toolCall.Name,
+				name,
 			),
 		}, false, nil
 	default:

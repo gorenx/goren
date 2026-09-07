@@ -5,7 +5,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/tools"
 )
 
@@ -136,8 +135,6 @@ func newToolsFixture(t *testing.T, dependencies ...any) *toolsFixture {
 			}
 		case *eventObserver:
 			recorder.observers = append(recorder.observers, selected)
-		case approval.Approval:
-			options.Approvals = selected
 		default:
 			t.Fatalf("unsupported test dependency: %T", dependency)
 		}

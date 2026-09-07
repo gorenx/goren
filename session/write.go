@@ -7,16 +7,11 @@ import (
 	"fmt"
 )
 
-var (
-	// ErrWritesClosed reports that the Session no longer admits writes.
-	ErrWritesClosed = errors.New("session: writes are closed")
-	// ErrWriteReentry reports a synchronous write submitted from the same
-	// Session's active publication context.
-	ErrWriteReentry = errors.New("session: synchronous write reentry is forbidden")
-)
+// ErrWritesClosed reports that the Session no longer admits writes.
+var ErrWritesClosed = errors.New("session: writes are closed")
 
 // WritePlan builds one complete atomic event batch from the Session snapshot
-// visible when the request reaches the FIFO head. Build must be deterministic,
+// supplied by its serialized owner. Build must be deterministic,
 // must not perform external I/O, and must not retain or mutate the snapshot.
 // A plan that does not depend on current state should be created with Batch.
 type WritePlan interface {

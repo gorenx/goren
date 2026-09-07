@@ -11,6 +11,9 @@ import (
 	"github.com/gorenx/goren/internal/jsonvalue"
 )
 
+// AppendedEventName is the canonical topic for committed Session notifications.
+const AppendedEventName = "session/event"
+
 // EndSeedEventName separates inherited history from events produced by the
 // current live Session generation.
 const EndSeedEventName = "session/end-seed"
@@ -220,6 +223,9 @@ func snapshotPayload[D any](payload D) (json.RawMessage, error) {
 func validateLosslessJSON(rawValue []byte) error {
 	return jsonvalue.Validate(rawValue)
 }
+
+// Clone returns an event with independent JSON, provenance, and surface metadata.
+func (source Event) Clone() Event { return cloneEvent(source) }
 
 func cloneEvent(source Event) Event {
 	detached := source

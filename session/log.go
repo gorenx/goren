@@ -4,16 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
 
 	"github.com/gorenx/goren/agentmessage"
 )
 
 // Log owns an in-memory append-only Session history and its derived surface.
 // It contains no lifecycle, persistence, transport, model, or Tool execution logic.
-// Callers serialize Commit; existing locks protect concurrent detached readers.
+// Its owner serializes every method call; asynchronous work receives detached snapshots.
 type Log struct {
-	mu sync.RWMutex
 	// header is immutable after construction and detached at read boundaries.
 	header Header
 	// firstLiveSeq separates borrowed seed facts from this live generation.
@@ -91,29 +89,25 @@ func newWithClock(
 
 // Header returns a detached copy of immutable Session metadata.
 func (conversation *Log) Header() Header {
-	conversation.mu.RLock()
-	defer conversation.mu.RUnlock()
+
 	return cloneHeader(conversation.header)
 }
 
 // FirstLiveSeq returns the constructor seed length before any end-seed marker.
 func (conversation *Log) FirstLiveSeq() int64 {
-	conversation.mu.RLock()
-	defer conversation.mu.RUnlock()
+
 	return conversation.firstLiveSeq
 }
 
 // Seq returns the next event sequence number.
 func (conversation *Log) Seq() int64 {
-	conversation.mu.RLock()
-	defer conversation.mu.RUnlock()
+
 	return int64(len(conversation.entries))
 }
 
 // Events returns a detached snapshot. Later appends do not grow the returned slice.
 func (conversation *Log) Events() []Event {
-	conversation.mu.RLock()
-	defer conversation.mu.RUnlock()
+
 	detached := make([]Event, len(conversation.entries))
 	for index, source := range conversation.entries {
 		detached[index] = cloneEvent(source)
@@ -123,8 +117,7 @@ func (conversation *Log) Events() []Event {
 
 // Surface returns a detached snapshot of the current model-visible sequences.
 func (conversation *Log) Surface() Surface {
-	conversation.mu.RLock()
-	defer conversation.mu.RUnlock()
+
 	nodes := make([]int64, len(conversation.view.nodes))
 	copy(nodes, conversation.view.nodes)
 	return Surface{
@@ -135,18 +128,18 @@ func (conversation *Log) Surface() Surface {
 
 // Barrier identifies the currently committed prefix.
 func (conversation *Log) Barrier() WriteBarrier {
-	conversation.mu.RLock()
+
 	barrier := WriteBarrier{
 		SessionID: conversation.header.ID,
 		NextSeq:   int64(len(conversation.entries)),
 	}
-	conversation.mu.RUnlock()
+
 	return barrier
 }
 
 // Snapshot captures events and surface from the same committed prefix.
 func (conversation *Log) Snapshot() Snapshot {
-	conversation.mu.RLock()
+
 	entries := make([]Event, len(conversation.entries))
 	for index, committed := range conversation.entries {
 		entries[index] = cloneEvent(committed)
@@ -159,7 +152,7 @@ func (conversation *Log) Snapshot() Snapshot {
 		SessionID: conversation.header.ID,
 		NextSeq:   int64(len(conversation.entries)),
 	}
-	conversation.mu.RUnlock()
+
 	return Snapshot{
 		Events:  entries,
 		Surface: viewSnapshot,
@@ -170,7 +163,7 @@ func (conversation *Log) Snapshot() Snapshot {
 // DeriveMessages projects the current surface into provider-neutral history.
 // Non-surface events and empty assistant anchors never enter the result.
 func (conversation *Log) DeriveMessages() ([]agentmessage.Message, error) {
-	conversation.mu.Lock()
+
 	if conversation.derivedGeneration != conversation.view.replaceGeneration {
 		conversation.derived = nil
 		conversation.derivedNodes = 0
@@ -179,12 +172,12 @@ func (conversation *Log) DeriveMessages() ([]agentmessage.Message, error) {
 	for conversation.derivedNodes < len(conversation.view.nodes) {
 		sequence := conversation.view.nodes[conversation.derivedNodes]
 		if sequence < 0 || sequence >= int64(len(conversation.entries)) {
-			conversation.mu.Unlock()
+
 			return nil, fmt.Errorf("session: surface node %d is outside the event log", sequence)
 		}
 		messageValue, err := decodeDerivedMessage(conversation.entries[sequence])
 		if err != nil {
-			conversation.mu.Unlock()
+
 			return nil, fmt.Errorf("session: derive surface seq %d: %w", sequence, err)
 		}
 		if messageValue != nil {
@@ -193,13 +186,11 @@ func (conversation *Log) DeriveMessages() ([]agentmessage.Message, error) {
 		conversation.derivedNodes++
 	}
 	cached := append([]agentmessage.Message(nil), conversation.derived...)
-	conversation.mu.Unlock()
+
 	return agentmessage.CloneMessages(cached)
 }
 
 func (conversation *Log) commitBatch(drafts []EventDraft) ([]Event, error) {
-	conversation.mu.Lock()
-	defer conversation.mu.Unlock()
 
 	surfaceDrafts := 0
 	for _, draft := range drafts {
