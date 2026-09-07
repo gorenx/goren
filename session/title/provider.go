@@ -17,9 +17,8 @@ const (
 // ProviderRequest is one immutable title-generation revision. Cancellation is
 // carried by the Generate context rather than stored in this value.
 type ProviderRequest struct {
-	Session  session.Context
-	Messages []UserMessage
-	Route    *ModelProvenance
+	SessionID session.SessionID
+	Messages  []UserMessage
 }
 
 // ProviderResult is untrusted provider output before service-owned validation.
@@ -33,5 +32,12 @@ type ProviderResult struct {
 type Provider interface {
 	ID() ProviderID
 	AutomaticMode() AutomaticMode
-	Generate(context.Context, ProviderRequest) (ProviderResult, error)
+	Prepare(ProviderRequest) (Generation, error)
+}
+
+// Generation is a prepared auxiliary call. The actor must commit Draft before
+// calling Generate; implementations neither read nor write Session state.
+type Generation interface {
+	Draft() session.EventDraft
+	Generate(context.Context) (ProviderResult, error)
 }

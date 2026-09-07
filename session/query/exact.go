@@ -8,10 +8,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"sync"
 
 	"github.com/gorenx/goren/session"
-	sesspersist "github.com/gorenx/goren/session/persistence"
 	sessiontitle "github.com/gorenx/goren/session/title"
 )
 
@@ -21,36 +19,13 @@ func (owner *Service) ListSessions(requestContext context.Context) ([]SessionRec
 	if err := contextFailure(requestContext); err != nil {
 		return nil, err
 	}
-	byID := make(map[session.SessionID]SessionRecord)
-	if owner.persistence != nil {
-		err := owner.walkSnapshots(requestContext, func(snapshot sesspersist.Snapshot) (bool, error) {
-			if _, duplicate := byID[snapshot.Header.ID]; duplicate {
-				return false, failure(
-					ErrorSourceConflict,
-					fmt.Sprintf("session query: persistence listed session %q more than once", snapshot.Header.ID),
-					nil,
-				)
-			}
-			byID[snapshot.Header.ID] = SessionRecord{Header: cloneHeader(snapshot.Header), Persisted: true}
-			return true, nil
+	result := make([]SessionRecord, 0, len(owner.sources))
+	for _, source := range owner.sources {
+		result = append(result, SessionRecord{
+			Header:    cloneHeader(source.Log.Header),
+			Live:      source.Live,
+			Persisted: source.Persisted,
 		})
-		if err != nil {
-			return nil, persistenceFailure("list snapshots", err)
-		}
-	}
-	for _, conversation := range owner.sessions.List() {
-		metadata := conversation.Header()
-		persisted, found := byID[metadata.ID]
-		if found && !headersEqual(metadata, persisted.Header) {
-			return nil, sourceConflict(metadata, persisted.Header)
-		}
-		byID[metadata.ID] = SessionRecord{
-			Header: cloneHeader(metadata), Live: true, Persisted: found,
-		}
-	}
-	result := make([]SessionRecord, 0, len(byID))
-	for _, candidate := range byID {
-		result = append(result, candidate)
 	}
 	sort.Slice(result, func(leftPosition int, rightPosition int) bool {
 		left := result[leftPosition].Header
@@ -139,111 +114,31 @@ func (owner *Service) ReadTitleSnapshot(
 	return *results[0].Observation, nil
 }
 
-// ReadTitleSnapshots folds unique ids with bounded persisted-log inspection
-// concurrency. Per-Session failures remain isolated; cancellation aborts the
-// entire batch after started inspections settle.
-func (owner *Service) ReadTitleSnapshots(
-	requestContext context.Context,
-	identifiers []session.SessionID,
-) ([]TitleObservationResult, error) {
+// ReadTitleSnapshots folds unique ids from one observation, isolating errors per id.
+func (owner *Service) ReadTitleSnapshots(requestContext context.Context, identifiers []session.SessionID) ([]TitleObservationResult, error) {
 	if err := contextFailure(requestContext); err != nil {
 		return nil, err
 	}
-	unique := make([]session.SessionID, 0, len(identifiers))
+	results := make([]TitleObservationResult, 0, len(identifiers))
 	seen := make(map[session.SessionID]struct{}, len(identifiers))
 	for _, identifier := range identifiers {
-		if _, duplicate := seen[identifier]; duplicate {
+		if err := contextFailure(requestContext); err != nil {
+			return nil, err
+		}
+		if _, found := seen[identifier]; found {
 			continue
 		}
 		seen[identifier] = struct{}{}
-		unique = append(unique, identifier)
-	}
-	results := make([]TitleObservationResult, len(unique))
-	unresolved := make([]int, 0)
-	for position, identifier := range unique {
-		results[position].SessionID = identifier
-		if conversation, found := owner.sessions.Get(identifier); found {
-			observation, err := foldTitle(conversation.Header(), conversation.Events())
-			results[position].Observation = observation
-			results[position].Err = err
-		} else {
-			unresolved = append(unresolved, position)
+		loaded, err := owner.loadLogical(requestContext, identifier)
+		var observation *TitleObservation
+		if err == nil {
+			observation, err = foldTitle(loaded.Header, loaded.Events)
 		}
-	}
-	if len(unresolved) == 0 {
-		return results, nil
-	}
-	if owner.persistence == nil {
-		for _, position := range unresolved {
-			identifier := unique[position]
-			results[position].Err = sessionNotFound(identifier)
-		}
-		return results, nil
-	}
-	listed := make(map[session.SessionID]session.Header, len(unresolved))
-	err := owner.walkSnapshots(requestContext, func(snapshot sesspersist.Snapshot) (bool, error) {
-		if _, wanted := seen[snapshot.Header.ID]; wanted {
-			listed[snapshot.Header.ID] = cloneHeader(snapshot.Header)
-		}
-		return len(listed) < len(unresolved), nil
-	})
-	if err != nil {
-		return nil, persistenceFailure("list snapshots", err)
-	}
-	jobs := make(chan int)
-	var workers sync.WaitGroup
-	workerCount := min(owner.settings.PersistedInspectConcurrency, len(unresolved))
-	workers.Add(workerCount)
-	for workerPosition := 0; workerPosition < workerCount; workerPosition++ {
-		go func() {
-			defer workers.Done()
-			for position := range jobs {
-				if requestContext.Err() != nil {
-					continue
-				}
-				identifier := unique[position]
-				listedHeader, found := listed[identifier]
-				if !found {
-					if conversation, live := owner.sessions.Get(identifier); live {
-						observation, foldErr := foldTitle(conversation.Header(), conversation.Events())
-						results[position].Observation = observation
-						results[position].Err = foldErr
-					} else {
-						results[position].Err = sessionNotFound(identifier)
-					}
-					continue
-				}
-				loaded, inspectErr := owner.persistence.Inspect(requestContext, identifier)
-				if inspectErr != nil {
-					results[position].Err = persistenceFailure("inspect", inspectErr)
-					continue
-				}
-				if conversation, live := owner.sessions.Get(identifier); live {
-					observation, foldErr := foldTitle(conversation.Header(), conversation.Events())
-					results[position].Observation = observation
-					results[position].Err = foldErr
-					continue
-				}
-				if !headersEqual(listedHeader, loaded.Header) {
-					results[position].Err = sourceConflict(listedHeader, loaded.Header)
-					continue
-				}
-				observation, foldErr := foldTitle(loaded.Header, loaded.Events)
-				results[position].Observation = observation
-				results[position].Err = foldErr
-			}
-		}()
-	}
-	for _, position := range unresolved {
-		if requestContext.Err() != nil {
-			break
-		}
-		jobs <- position
-	}
-	close(jobs)
-	workers.Wait()
-	if err := contextFailure(requestContext); err != nil {
-		return nil, err
+		results = append(results, TitleObservationResult{
+			SessionID:   identifier,
+			Observation: observation,
+			Err:         err,
+		})
 	}
 	return results, nil
 }
@@ -463,96 +358,31 @@ func (owner *Service) TraceEvent(
 	return result, nil
 }
 
-func (owner *Service) loadLogical(
-	requestContext context.Context,
-	identifier session.SessionID,
-) (LogSnapshot, error) {
+func (owner *Service) loadLogical(requestContext context.Context, identifier session.SessionID) (LogSnapshot, error) {
 	if err := contextFailure(requestContext); err != nil {
 		return LogSnapshot{}, err
 	}
-	if conversation, found := owner.sessions.Get(identifier); found {
-		return LogSnapshot{Header: conversation.Header(), Events: conversation.Events()}, nil
-	}
-	if owner.persistence == nil {
+	source, found := owner.sources[identifier]
+	if !found {
 		return LogSnapshot{}, sessionNotFound(identifier)
 	}
-	var listed *session.Header
-	err := owner.walkSnapshots(requestContext, func(snapshot sesspersist.Snapshot) (bool, error) {
-		if snapshot.Header.ID == identifier {
-			metadata := cloneHeader(snapshot.Header)
-			listed = &metadata
-			return false, nil
-		}
-		return true, nil
-	})
-	if err != nil {
-		return LogSnapshot{}, persistenceFailure("list snapshots", err)
-	}
-	if listed == nil {
-		if conversation, found := owner.sessions.Get(identifier); found {
-			return LogSnapshot{Header: conversation.Header(), Events: conversation.Events()}, nil
-		}
-		return LogSnapshot{}, sessionNotFound(identifier)
-	}
-	loaded, err := owner.persistence.Inspect(requestContext, identifier)
-	if err != nil {
-		var missing *sesspersist.NotFoundError
-		if errors.As(err, &missing) {
-			return LogSnapshot{}, sessionNotFound(identifier)
-		}
-		return LogSnapshot{}, persistenceFailure("inspect", err)
-	}
-	if conversation, found := owner.sessions.Get(identifier); found {
-		return LogSnapshot{Header: conversation.Header(), Events: conversation.Events()}, nil
-	}
-	if !headersEqual(*listed, loaded.Header) {
-		return LogSnapshot{}, sourceConflict(*listed, loaded.Header)
-	}
-	return LogSnapshot{Header: cloneHeader(loaded.Header), Events: cloneEvents(loaded.Events)}, nil
-}
-
-const snapshotPageSize int64 = 256
-
-func (owner *Service) walkSnapshots(
-	requestContext context.Context,
-	visit func(sesspersist.Snapshot) (bool, error),
-) error {
-	var pageCursor *sesspersist.SessionCursor
-	for {
-		page, err := owner.persistence.ListSnapshots(
-			requestContext,
-			sesspersist.SessionPage{
-				Cursor: pageCursor,
-				Limit:  snapshotPageSize,
-			},
-		)
-		if err != nil {
-			return err
-		}
-		for _, snapshot := range page.Snapshots {
-			continued, visitErr := visit(snapshot)
-			if visitErr != nil {
-				return visitErr
-			}
-			if !continued {
-				return nil
-			}
-		}
-		if page.NextCursor == nil {
-			return nil
-		}
-		pageCursor = page.NextCursor
-	}
+	return LogSnapshot{
+		Header: cloneHeader(source.Log.Header),
+		Events: cloneEvents(source.Log.Events),
+	}, nil
 }
 
 func validateLogical(metadata session.Header, entries []session.Event) error {
+	if metadata.Version != session.FormatVersion {
+		return errors.New("session query: unsupported Session format")
+	}
 	sessionMetadata := session.Metadata{
 		CreatedAt: &metadata.CreatedAt, CWD: cloneTextPointer(metadata.CWD),
 		ParentSession: cloneIDPointer(metadata.ParentSession), SeedLength: cloneIntPointer(metadata.SeedLength),
 		Origin: metadata.Origin, DelegationDepth: cloneIntPointer(metadata.DelegationDepth),
 		AgentPreset: cloneTextPointer(metadata.AgentPreset),
 	}
-	_, err := session.New(metadata.ID, session.CreateOptions{Seed: entries, Metadata: sessionMetadata})
+	_, err := session.NewLog(metadata.ID, session.CreateOptions{Seed: entries, Metadata: sessionMetadata})
 	return err
 }
 

@@ -5,22 +5,15 @@ package query
 import (
 	"context"
 
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	sessiontitle "github.com/gorenx/goren/session/title"
 )
 
 const (
-	PluginName = "@deepseek-ai/dsh-session-query"
-
-	// ServiceName is the canonical plugin service identity.
-	ServiceName = "sessionQuery"
-
 	DefaultLimit       = 20
 	DefaultMaximum     = 100
 	DefaultSnippetSize = 240
 	DefaultReadWindow  = 50
-	DefaultInspectors  = 4
 )
 
 // Surface identifies whether an event remains in model context, was
@@ -108,6 +101,14 @@ type SessionRecord struct {
 type LogSnapshot struct {
 	Header session.Header
 	Events []session.Event
+}
+
+// Source is one observed log and its availability. Observe receives the complete
+// corpus; separate live and persisted observations may share a Session identity.
+type Source struct {
+	Log       LogSnapshot
+	Live      bool
+	Persisted bool
 }
 
 // EventRecord is lightweight surface-aware metadata for one raw event.
@@ -221,26 +222,6 @@ type EventSearchPage struct {
 	NextCursor Cursor
 }
 
-// QueryService is the stable capability consumed by API, export, and future
-// Session query consumers. Concrete SQLite mechanics remain behind Index.
-type QueryService interface {
-	plugin.Service
-	ListSessions(context.Context) ([]SessionRecord, error)
-	ReadSession(context.Context, session.SessionID) (LogSnapshot, error)
-	FilterSessions(context.Context, SessionConstraints) ([]SessionRecord, error)
-	ReadTitle(context.Context, session.SessionID) (*sessiontitle.Snapshot, error)
-	ReadTitleSnapshot(context.Context, session.SessionID) (TitleObservation, error)
-	ReadTitleSnapshots(context.Context, []session.SessionID) ([]TitleObservationResult, error)
-	ListEvents(context.Context, session.SessionID) ([]EventRecord, error)
-	FilterEvents(context.Context, session.SessionID, EventConstraints, string) ([]Document, error)
-	ReadSurface(context.Context, session.SessionID) (SurfaceSnapshot, error)
-	ReadEvent(context.Context, EventReadRequest) (EventWindow, error)
-	TraceSession(context.Context, session.SessionID) (LineageTrace, error)
-	TraceEvent(context.Context, EventTraceRequest) (EventTrace, error)
-	SearchSessions(context.Context, SearchSessionsRequest) (SessionSearchPage, error)
-	SearchEvents(context.Context, SearchEventsRequest) (EventSearchPage, error)
-}
-
 // Document is one semantic, surface-aware projection stored in the derived
 // index. It contains no persistence row or wire representation.
 type Document struct {
@@ -309,10 +290,4 @@ type Index interface {
 	Reconcile(context.Context, Reconciliation) (IndexSnapshot, error)
 	SearchSessions(context.Context, IndexedSearchRequest) ([]SessionHit, error)
 	SearchEvents(context.Context, IndexedEventSearchRequest) (session.Header, []EventHit, error)
-	Close(context.Context) error
-}
-
-// IndexOpener acquires one configured disposable Index during Plugin Apply.
-type IndexOpener interface {
-	OpenIndex(context.Context) (Index, error)
 }

@@ -21,7 +21,7 @@ func TestResumeRepairsInterruptedSessionAndPreservesSeedBoundary(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	driver, replies := startSession(t)
+	driver, replies := startSession(t, "resumed")
 	resumed := request[sessionactor.Initialized](t, driver, replies, sessionactor.Resume{
 		CreationID: "resumed",
 		Storage:    backend,
@@ -76,7 +76,7 @@ func (storage *failingRepair) CommitRepair(ctx context.Context, repair persisten
 
 func TestResumeFailureDoesNotInstallPartialSession(t *testing.T) {
 	backend := newStorage(t)
-	driver, replies := startSession(t)
+	driver, replies := startSession(t, "resumed")
 	absent := request[sessionactor.Initialized](t, driver, replies, sessionactor.Resume{
 		CreationID: "resumed",
 		Storage:    backend,
