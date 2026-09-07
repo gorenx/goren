@@ -3,7 +3,7 @@ package session
 import "context"
 
 // The methods in this file are the Session aggregate boundary used by
-// memoryStore. They prevent Store code from reaching into eventLog or
+// memoryStore. They prevent Store code from reaching into Log or
 // sessionLifecycle state and keep lifecycle decisions with the Session owner.
 
 func (conversation *sessionContext) beginEnter() error {

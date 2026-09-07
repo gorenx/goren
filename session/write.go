@@ -164,3 +164,13 @@ func prepareEventDrafts(drafts []EventDraft) ([]EventDraft, error) {
 	}
 	return prepared, nil
 }
+
+func contextCause(requestContext context.Context) error {
+	if requestContext == nil {
+		return errors.New("session: Context is nil")
+	}
+	if requestContext.Err() == nil {
+		return nil
+	}
+	return context.Cause(requestContext)
+}

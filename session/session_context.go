@@ -10,12 +10,12 @@ import (
 // independent event log and lifecycle owners without giving either a back-reference.
 type sessionContext struct {
 	// log owns append-only facts and deterministic derived state.
-	log *eventLog
+	log *Log
 	// lifecycle owns operation ordering, membership, and release admission.
 	lifecycle sessionLifecycle
 }
 
-func newSessionContext(sessionLog *eventLog) *sessionContext {
+func newSessionContext(sessionLog *Log) *sessionContext {
 	return &sessionContext{
 		log:       sessionLog,
 		lifecycle: newSessionLifecycle(),
@@ -65,11 +65,11 @@ func (conversation *sessionContext) Snapshot() Snapshot {
 	if conversation == nil {
 		return Snapshot{}
 	}
-	return conversation.log.snapshot()
+	return conversation.log.Snapshot()
 }
 
 func (conversation *sessionContext) writeBarrier() WriteBarrier {
-	return conversation.log.currentBarrier()
+	return conversation.log.Barrier()
 }
 
 func (conversation *sessionContext) DeriveMessages() ([]agentmessage.Message, error) {
@@ -88,4 +88,21 @@ func (conversation *sessionContext) publicationContext(
 	requestContext context.Context,
 ) context.Context {
 	return context.WithValue(requestContext, reentryKey{}, conversation)
+}
+
+// New creates a detached Session and snapshots the borrowed seed.
+func New(identifier SessionID, options CreateOptions) (Context, error) {
+	return newContextWithClock(identifier, options, systemTimeSource{})
+}
+
+func newContextWithClock(
+	identifier SessionID,
+	options CreateOptions,
+	temporalSource TimeSource,
+) (*sessionContext, error) {
+	sessionLog, err := newWithClock(identifier, options, temporalSource)
+	if err != nil {
+		return nil, err
+	}
+	return newSessionContext(sessionLog), nil
 }

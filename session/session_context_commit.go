@@ -31,51 +31,20 @@ func (conversation *sessionContext) Commit(
 	if err := conversation.lifecycle.beginCommit(); err != nil {
 		return WriteResult{}, err
 	}
-	result, requestErr := conversation.executeCommit(requestContext, plan)
-	conversation.lifecycle.finishOperation()
-	return result, requestErr
+	defer conversation.lifecycle.finishOperation()
+	result, requestErr := conversation.log.Commit(requestContext, plan)
+	if requestErr != nil {
+		return result, requestErr
+	}
+	return result, conversation.publishCommitted(requestContext, result.Events)
 }
 
-func (conversation *sessionContext) executeCommit(
-	ctx context.Context,
-	plan WritePlan,
-) (result WriteResult, requestErr error) {
-	firstSeq := conversation.log.Seq()
-	var committed []Event
+func (conversation *sessionContext) publishCommitted(ctx context.Context, committed []Event) (failure error) {
 	defer func() {
-		result = conversation.writeResult(firstSeq, committed)
 		if recovered := recover(); recovered != nil {
-			requestErr = fmt.Errorf("session: WritePlan panicked: %v", recovered)
+			failure = fmt.Errorf("session: append publication panicked: %v", recovered)
 		}
 	}()
-	if err := contextCause(ctx); err != nil {
-		return result, err
-	}
-
-	var drafts []EventDraft
-	var err error
-	if fixed, ok := plan.(fixedWritePlan); ok {
-		drafts, err = fixed.Build(ctx, Snapshot{})
-	} else {
-		drafts, err = plan.Build(ctx, conversation.log.snapshot())
-	}
-	if err != nil {
-		return result, err
-	}
-	prepared, err := prepareEventDrafts(drafts)
-	if err != nil {
-		return result, err
-	}
-	if err = contextCause(ctx); err != nil {
-		return result, err
-	}
-	if len(prepared) != 0 {
-		committed, err = conversation.log.commitBatch(prepared)
-		if err != nil {
-			return result, err
-		}
-	}
-
 	publisher := conversation.lifecycle.appendPublisher()
 	if publisher != nil {
 		eventContext := conversation.publicationContext(ctx)
@@ -83,30 +52,7 @@ func (conversation *sessionContext) executeCommit(
 			publisher.Appended(eventContext, conversation, entry)
 		}
 	}
-	return result, nil
-}
-
-func (conversation *sessionContext) writeResult(
-	firstSeq int64,
-	committed []Event,
-) WriteResult {
-	barrier := conversation.log.currentBarrier()
-	return WriteResult{
-		FirstSeq: firstSeq,
-		NextSeq:  barrier.NextSeq,
-		Barrier:  barrier,
-		Events:   committed,
-	}
-}
-
-func contextCause(requestContext context.Context) error {
-	if requestContext == nil {
-		return errors.New("session: Context is nil")
-	}
-	if requestContext.Err() == nil {
-		return nil
-	}
-	return context.Cause(requestContext)
+	return nil
 }
 
 type reentryKey struct{}
