@@ -25,10 +25,10 @@ type pendingQuestion struct {
 // Ask implements the UserQuestions provider seam with one stable server
 // request that remains answerable across mux reconnects.
 func (owner *InteractionGateway) Ask(
-	requestContext context.Context,
+	ctx context.Context,
 	questionRequest userquestions.Request,
 ) (userquestions.Answer, error) {
-	if requestContext == nil {
+	if ctx == nil {
 		return userquestions.Answer{}, errors.New("apiproxy: question Context is nil")
 	}
 	if questionRequest.Subject == nil {
@@ -38,11 +38,11 @@ func (owner *InteractionGateway) Ask(
 			nil,
 		)
 	}
-	if requestContext.Err() != nil {
+	if ctx.Err() != nil {
 		return userquestions.Answer{}, questionFailure(
 			"ask_user_question was aborted before the user answered",
 			userquestions.CodeAborted,
-			requestContext.Err(),
+			ctx.Err(),
 		)
 	}
 	items := projectQuestions(questionRequest.Questions)
@@ -51,10 +51,12 @@ func (owner *InteractionGateway) Ask(
 	if err != nil {
 		return userquestions.Answer{}, fmt.Errorf("apiproxy: mint question rpcId: %w", err)
 	}
-	waiting, err := RegisterPendingResponse(owner.methods, correlationID,
+	waiting, err := RegisterPendingResponse(
+		owner.methods, correlationID,
 		func(result connection.RPCResult) (questionClientResolution, bool) {
 			return decodeQuestionResponse(result, conversationID, items)
-		})
+		},
+	)
 	if err != nil {
 		return userquestions.Answer{}, err
 	}
@@ -74,20 +76,24 @@ func (owner *InteractionGateway) Ask(
 			errInteractionGatewayClosed,
 		)
 	}
-	if requestContext.Err() != nil {
+	if ctx.Err() != nil {
 		owner.mu.Unlock()
-		waiting.Withdraw(requestContext.Err())
+		waiting.Withdraw(ctx.Err())
 		entry.settlement.complete(nil)
 		return userquestions.Answer{}, questionFailure(
 			"ask_user_question was aborted before the user answered",
 			userquestions.CodeAborted,
-			requestContext.Err(),
+			ctx.Err(),
 		)
 	}
 	owner.questions[correlationID] = entry
-	publishErr := owner.frames.PublishPending(correlationID, QuestionRequestedFrame{
-		SessionID: conversationID, Questions: cloneQuestionItems(items),
-	})
+	publishErr := owner.frames.PublishPending(
+		correlationID,
+		QuestionRequestedFrame{
+			SessionID: conversationID,
+			Questions: cloneQuestionItems(items),
+		},
+	)
 	if publishErr != nil {
 		delete(owner.questions, correlationID)
 		waiting.Withdraw(publishErr)
@@ -97,7 +103,7 @@ func (owner *InteractionGateway) Ask(
 	}
 	owner.mu.Unlock()
 
-	clientResolution, waitErr := waiting.Wait(requestContext)
+	clientResolution, waitErr := waiting.Wait(ctx)
 	if waitErr != nil {
 		entry.finish(owner, QuestionCancelled)
 		switch {

@@ -235,6 +235,7 @@ func TestServiceExposesFocusedCapabilities(t *testing.T) {
 	want := []string{
 		"github.com/gorenx/goren/tools.ToolRuntime",
 		"github.com/gorenx/goren/tools.ToolCatalog",
+		"github.com/gorenx/goren/tools.ToolSetCatalog",
 		"github.com/gorenx/goren/tools.PolicyRegistry",
 		"github.com/gorenx/goren/tools.ToolLayerFactory",
 	}

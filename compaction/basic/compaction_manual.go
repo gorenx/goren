@@ -11,7 +11,7 @@ import (
 
 // CompactNow reserves idle Agent maintenance and commits one standalone
 // compaction bracket followed by a persistence checkpoint.
-func (implementation *Compaction) CompactNow(
+func (impl *Compaction) CompactNow(
 	requestContext context.Context,
 	subject compaction.ManualAgentContext,
 	sourceCommandID *string,
@@ -25,7 +25,7 @@ func (implementation *Compaction) CompactNow(
 		Provider: options.Provider,
 		Model:    options.Model,
 	}
-	if err := implementation.validateOperation(
+	if err := impl.validateOperation(
 		requestContext,
 		ownerContext,
 	); err != nil {
@@ -35,9 +35,9 @@ func (implementation *Compaction) CompactNow(
 		return nil, errors.New("compaction-basic: sourceCommandId is empty")
 	}
 	execution := &maintenanceRun{
-		sessions:        implementation.sessions,
-		meter:           implementation.meter,
-		compactor:       &implementation.compactor,
+		sessions:        impl.sessions,
+		meter:           impl.meter,
+		compactor:       &impl.compactor,
 		ownerContext:    ownerContext,
 		sourceCommandID: cloneString(sourceCommandID),
 		callerContext:   requestContext,

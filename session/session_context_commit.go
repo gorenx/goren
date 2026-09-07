@@ -37,7 +37,7 @@ func (conversation *sessionContext) Commit(
 }
 
 func (conversation *sessionContext) executeCommit(
-	requestContext context.Context,
+	ctx context.Context,
 	plan WritePlan,
 ) (result WriteResult, requestErr error) {
 	firstSeq := conversation.log.Seq()
@@ -48,16 +48,16 @@ func (conversation *sessionContext) executeCommit(
 			requestErr = fmt.Errorf("session: WritePlan panicked: %v", recovered)
 		}
 	}()
-	if err := contextCause(requestContext); err != nil {
+	if err := contextCause(ctx); err != nil {
 		return result, err
 	}
 
 	var drafts []EventDraft
 	var err error
 	if fixed, ok := plan.(fixedWritePlan); ok {
-		drafts, err = fixed.Build(requestContext, Snapshot{})
+		drafts, err = fixed.Build(ctx, Snapshot{})
 	} else {
-		drafts, err = plan.Build(requestContext, conversation.log.snapshot())
+		drafts, err = plan.Build(ctx, conversation.log.snapshot())
 	}
 	if err != nil {
 		return result, err
@@ -66,7 +66,7 @@ func (conversation *sessionContext) executeCommit(
 	if err != nil {
 		return result, err
 	}
-	if err = contextCause(requestContext); err != nil {
+	if err = contextCause(ctx); err != nil {
 		return result, err
 	}
 	if len(prepared) != 0 {
@@ -78,7 +78,7 @@ func (conversation *sessionContext) executeCommit(
 
 	publisher := conversation.lifecycle.appendPublisher()
 	if publisher != nil {
-		eventContext := conversation.publicationContext(requestContext)
+		eventContext := conversation.publicationContext(ctx)
 		for _, entry := range committed {
 			publisher.Appended(eventContext, conversation, entry)
 		}

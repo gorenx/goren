@@ -62,6 +62,7 @@ func (owner *Service) Manifest() plugin.Manifest {
 		Provides: []plugin.ProvidedService{
 			plugin.NewProvidedService[ToolRuntime](owner),
 			plugin.NewProvidedService[ToolCatalog](owner),
+			plugin.NewProvidedService[ToolSetCatalog](owner),
 			plugin.NewProvidedService[PolicyRegistry](owner),
 			plugin.NewProvidedService[ToolLayerFactory](owner),
 		},

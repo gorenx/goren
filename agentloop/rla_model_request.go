@@ -24,7 +24,7 @@ type modelCall struct {
 // executeModelRequest owns one ModelRequest, including explicit retry
 // transitions, Assistant assembly, and optional ToolBatch entry.
 func (subject *ReactLoopAgent) executeModelRequest(
-	requestContext context.Context,
+	ctx context.Context,
 	currentStep *stepstate.Step,
 	proposal *stepProposal,
 ) (stepstate.StepResult, error) {
@@ -40,7 +40,7 @@ func (subject *ReactLoopAgent) executeModelRequest(
 	}
 	requestState := modelrequest.New()
 	for {
-		if err = contextFailure(requestContext); err != nil {
+		if err = contextFailure(ctx); err != nil {
 			_ = requestState.EnterAborted()
 			return stepstate.StepResultAborted, err
 		}
@@ -50,7 +50,7 @@ func (subject *ReactLoopAgent) executeModelRequest(
 			return stepstate.StepResultError, deriveErr
 		}
 		call, buildErr := subject.buildModelCall(
-			requestContext,
+			ctx,
 			turnNumber,
 			stepNumber,
 			proposal.assembly.Tools,
@@ -58,7 +58,7 @@ func (subject *ReactLoopAgent) executeModelRequest(
 			boundaryMessages,
 		)
 		if buildErr != nil {
-			if requestContext.Err() != nil {
+			if ctx.Err() != nil {
 				_ = requestState.EnterAborted()
 				return stepstate.StepResultAborted, buildErr
 			}
@@ -72,21 +72,21 @@ func (subject *ReactLoopAgent) executeModelRequest(
 		chunkSequences := make([]int64, 0)
 		var chunkStream llm.ChunkStream
 		if call.prepared != nil {
-			chunkStream, err = call.prepared.Stream(requestContext, call.options)
+			chunkStream, err = call.prepared.Stream(ctx, call.options)
 		} else {
-			chunkStream, err = subject.models.Stream(requestContext, call.options)
+			chunkStream, err = subject.models.Stream(ctx, call.options)
 		}
 		if err != nil {
 			_ = requestState.EnterFailed()
 			return stepstate.StepResultError, err
 		}
 		for {
-			if err = contextFailure(requestContext); err != nil {
+			if err = contextFailure(ctx); err != nil {
 				_ = chunkStream.Close(context.Background())
 				_ = requestState.EnterAborted()
 				return stepstate.StepResultAborted, err
 			}
-			chunk, found, nextErr := chunkStream.Next(requestContext)
+			chunk, found, nextErr := chunkStream.Next(ctx)
 			if nextErr != nil {
 				_ = chunkStream.Close(context.Background())
 				_ = requestState.EnterFailed()
@@ -109,7 +109,7 @@ func (subject *ReactLoopAgent) executeModelRequest(
 				return stepstate.StepResultError, appendErr
 			}
 			commitResult, appendErr := subject.conversation.Commit(
-				requestContext,
+				ctx,
 				session.Batch(chunkDraft),
 			)
 			if appendErr != nil {
@@ -131,7 +131,7 @@ func (subject *ReactLoopAgent) executeModelRequest(
 			_ = requestState.EnterFailed()
 			return stepstate.StepResultError, err
 		}
-		if err = contextFailure(requestContext); err != nil {
+		if err = contextFailure(ctx); err != nil {
 			_ = requestState.EnterAborted()
 			return stepstate.StepResultAborted, err
 		}
@@ -142,7 +142,7 @@ func (subject *ReactLoopAgent) executeModelRequest(
 				retryPolicy = call.prepared.RetryPolicyValue()
 			}
 			action, resolveErr := subject.waterfalls.ResolveRequestError(
-				requestContext,
+				ctx,
 				agent.RequestErrorNotice{
 					Subject:     subject,
 					Turn:        turnNumber,
@@ -157,7 +157,7 @@ func (subject *ReactLoopAgent) executeModelRequest(
 				_ = requestState.EnterFailed()
 				return stepstate.StepResultError, resolveErr
 			}
-			if err = contextFailure(requestContext); err != nil {
+			if err = contextFailure(ctx); err != nil {
 				_ = requestState.EnterAborted()
 				return stepstate.StepResultAborted, err
 			}
@@ -208,7 +208,7 @@ func (subject *ReactLoopAgent) executeModelRequest(
 		)
 		if messageErr == nil {
 			_, messageErr = subject.conversation.Commit(
-				requestContext,
+				ctx,
 				session.Batch(messageDraft),
 			)
 		}
@@ -230,13 +230,13 @@ func (subject *ReactLoopAgent) executeModelRequest(
 			return stepstate.StepResultError, err
 		}
 		stopsContinuation, toolErr := subject.executeToolBatch(
-			requestContext,
+			ctx,
 			turnNumber,
 			stepNumber,
 			toolCalls,
 		)
 		if toolErr != nil {
-			if requestContext.Err() != nil {
+			if ctx.Err() != nil {
 				return stepstate.StepResultAborted, toolErr
 			}
 			return stepstate.StepResultError, toolErr
