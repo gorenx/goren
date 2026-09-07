@@ -3,18 +3,13 @@ package systemprompt
 import (
 	"errors"
 	"fmt"
+	"github.com/google/uuid"
 	"slices"
-	"sync"
 )
 
 type namedVariableProvider struct {
 	name     string
 	provider VariableProvider
-}
-
-type namedToolProvider struct {
-	name     string
-	provider ToolProvider
 }
 
 type promptEntryKind uint8
@@ -23,7 +18,6 @@ const (
 	promptSectionEntry promptEntryKind = iota + 1
 	promptContextEntry
 	promptVariableEntry
-	promptToolProviderEntry
 	promptSuppressorEntry
 )
 
@@ -32,22 +26,18 @@ type promptEntryKey struct {
 	name string
 }
 
-// promptEntryToken is non-zero-sized so separately allocated token pointers
-// remain exact identities under Go's zero-size allocation rules.
-type promptEntryToken [1]byte
-
 type promptLayerSnapshot struct {
-	sections          []PromptSection
-	contexts          []PromptContext
-	variables         []namedVariableProvider
-	toolProviders     []namedToolProvider
+	sections  []PromptSection
+	contexts  []PromptContext
+	variables []namedVariableProvider
+	// contextSuppressed disables runtime-context providers for this captured layer.
+	// It is independent of Go context cancellation and does not hide tool schemas.
 	contextSuppressed bool
 }
 
-// promptStore owns one exact System Prompt layer. Parent/child composition is
-// performed by Registry, so this object never sees Plugin Scope identities.
+// promptStore owns local registrations. The owning Grain serializes mutations
+// and capture; assembly tasks read only the immutable snapshots it produces.
 type promptStore struct {
-	mutex         sync.RWMutex
 	snapshotValue promptLayerSnapshot
 
 	sections      map[string]PromptSection
@@ -56,213 +46,104 @@ type promptStore struct {
 	contextOrder  []string
 	variables     map[string]VariableProvider
 	variableOrder []string
-	toolProviders map[string]ToolProvider
-	toolOrder     []string
 	suppressors   map[string]struct{}
-	tokens        map[promptEntryKey]*promptEntryToken
+	entries       map[RegistrationID]promptEntryKey
 }
 
 func newPromptStore() *promptStore {
 	storage := &promptStore{}
-	storage.rebuildSnapshotLocked()
+	storage.rebuildSnapshot()
 	return storage
 }
 
 func (storage *promptStore) addSection(
 	definition PromptSection,
-) (*promptEntryToken, error) {
-	storage.mutex.Lock()
-	defer storage.mutex.Unlock()
+) (RegistrationID, error) {
 	if _, exists := storage.sections[definition.Name]; exists {
-		return nil, fmt.Errorf(
+		return "", fmt.Errorf(
 			"systemprompt: prompt section %q is already registered in this layer",
 			definition.Name,
 		)
 	}
-	token := storage.addToken(promptSectionEntry, definition.Name)
+	identifier := storage.addEntry(promptSectionEntry, definition.Name)
 	if storage.sections == nil {
 		storage.sections = make(map[string]PromptSection)
 	}
 	storage.sections[definition.Name] = definition
 	storage.sectionOrder = append(storage.sectionOrder, definition.Name)
-	storage.rebuildSnapshotLocked()
-	return token, nil
-}
-
-func (storage *promptStore) removeSection(
-	name string,
-	expected *promptEntryToken,
-) bool {
-	storage.mutex.Lock()
-	defer storage.mutex.Unlock()
-	if !storage.removeToken(promptSectionEntry, name, expected) {
-		return false
-	}
-	delete(storage.sections, name)
-	storage.sectionOrder = removeName(storage.sectionOrder, name)
-	storage.rebuildSnapshotLocked()
-	return true
+	storage.rebuildSnapshot()
+	return identifier, nil
 }
 
 func (storage *promptStore) addContext(
 	definition PromptContext,
-) (*promptEntryToken, error) {
-	storage.mutex.Lock()
-	defer storage.mutex.Unlock()
+) (RegistrationID, error) {
 	if _, exists := storage.contexts[definition.Name]; exists {
-		return nil, fmt.Errorf(
+		return "", fmt.Errorf(
 			"systemprompt: prompt context %q is already registered in this layer",
 			definition.Name,
 		)
 	}
-	token := storage.addToken(promptContextEntry, definition.Name)
+	identifier := storage.addEntry(promptContextEntry, definition.Name)
 	if storage.contexts == nil {
 		storage.contexts = make(map[string]PromptContext)
 	}
 	storage.contexts[definition.Name] = definition
 	storage.contextOrder = append(storage.contextOrder, definition.Name)
-	storage.rebuildSnapshotLocked()
-	return token, nil
-}
-
-func (storage *promptStore) removeContext(
-	name string,
-	expected *promptEntryToken,
-) bool {
-	storage.mutex.Lock()
-	defer storage.mutex.Unlock()
-	if !storage.removeToken(promptContextEntry, name, expected) {
-		return false
-	}
-	delete(storage.contexts, name)
-	storage.contextOrder = removeName(storage.contextOrder, name)
-	storage.rebuildSnapshotLocked()
-	return true
+	storage.rebuildSnapshot()
+	return identifier, nil
 }
 
 func (storage *promptStore) addVariable(
 	name string,
 	provider VariableProvider,
-) (*promptEntryToken, error) {
-	storage.mutex.Lock()
-	defer storage.mutex.Unlock()
+) (RegistrationID, error) {
 	if _, exists := storage.variables[name]; exists {
-		return nil, fmt.Errorf(
+		return "", fmt.Errorf(
 			"systemprompt: prompt variable %q is already registered in this layer",
 			name,
 		)
 	}
-	token := storage.addToken(promptVariableEntry, name)
+	identifier := storage.addEntry(promptVariableEntry, name)
 	if storage.variables == nil {
 		storage.variables = make(map[string]VariableProvider)
 	}
 	storage.variables[name] = provider
 	storage.variableOrder = append(storage.variableOrder, name)
-	storage.rebuildSnapshotLocked()
-	return token, nil
-}
-
-func (storage *promptStore) removeVariable(
-	name string,
-	expected *promptEntryToken,
-) bool {
-	storage.mutex.Lock()
-	defer storage.mutex.Unlock()
-	if !storage.removeToken(promptVariableEntry, name, expected) {
-		return false
-	}
-	delete(storage.variables, name)
-	storage.variableOrder = removeName(storage.variableOrder, name)
-	storage.rebuildSnapshotLocked()
-	return true
-}
-
-func (storage *promptStore) addToolProvider(
-	name string,
-	provider ToolProvider,
-) (*promptEntryToken, error) {
-	storage.mutex.Lock()
-	defer storage.mutex.Unlock()
-	if _, exists := storage.toolProviders[name]; exists {
-		return nil, fmt.Errorf(
-			"systemprompt: tool provider %q is already registered in this layer",
-			name,
-		)
-	}
-	token := storage.addToken(promptToolProviderEntry, name)
-	if storage.toolProviders == nil {
-		storage.toolProviders = make(map[string]ToolProvider)
-	}
-	storage.toolProviders[name] = provider
-	storage.toolOrder = append(storage.toolOrder, name)
-	storage.rebuildSnapshotLocked()
-	return token, nil
-}
-
-func (storage *promptStore) removeToolProvider(
-	name string,
-	expected *promptEntryToken,
-) bool {
-	storage.mutex.Lock()
-	defer storage.mutex.Unlock()
-	if !storage.removeToken(promptToolProviderEntry, name, expected) {
-		return false
-	}
-	delete(storage.toolProviders, name)
-	storage.toolOrder = removeName(storage.toolOrder, name)
-	storage.rebuildSnapshotLocked()
-	return true
+	storage.rebuildSnapshot()
+	return identifier, nil
 }
 
 func (storage *promptStore) addSuppressor(
 	name string,
-) (*promptEntryToken, error) {
-	storage.mutex.Lock()
-	defer storage.mutex.Unlock()
+) (RegistrationID, error) {
 	if _, exists := storage.suppressors[name]; exists {
-		return nil, fmt.Errorf(
+		return "", fmt.Errorf(
 			"systemprompt: runtime-context suppressor %q is already registered in this layer",
 			name,
 		)
 	}
-	token := storage.addToken(promptSuppressorEntry, name)
+	identifier := storage.addEntry(promptSuppressorEntry, name)
 	if storage.suppressors == nil {
 		storage.suppressors = make(map[string]struct{})
 	}
 	storage.suppressors[name] = struct{}{}
-	storage.rebuildSnapshotLocked()
-	return token, nil
-}
-
-func (storage *promptStore) removeSuppressor(
-	name string,
-	expected *promptEntryToken,
-) bool {
-	storage.mutex.Lock()
-	defer storage.mutex.Unlock()
-	if !storage.removeToken(promptSuppressorEntry, name, expected) {
-		return false
-	}
-	delete(storage.suppressors, name)
-	storage.rebuildSnapshotLocked()
-	return true
+	storage.rebuildSnapshot()
+	return identifier, nil
 }
 
 func (storage *promptStore) capture() promptLayerSnapshot {
-	storage.mutex.RLock()
-	snapshot := storage.snapshotValue
-	storage.mutex.RUnlock()
-	return snapshot
+	captured := storage.snapshotValue
+	return captured
 }
 
-// rebuildSnapshotLocked moves immutable registration-view construction to
+// rebuildSnapshot moves immutable registration-view construction to
 // mutation time while keeping provider resolution in every Assemble call.
-func (storage *promptStore) rebuildSnapshotLocked() {
+func (storage *promptStore) rebuildSnapshot() {
 	storage.snapshotValue = promptLayerSnapshot{
 		sections:          make([]PromptSection, 0, len(storage.sections)),
 		contexts:          make([]PromptContext, 0, len(storage.contexts)),
 		variables:         make([]namedVariableProvider, 0, len(storage.variables)),
-		toolProviders:     make([]namedToolProvider, 0, len(storage.toolProviders)),
 		contextSuppressed: len(storage.suppressors) != 0,
 	}
 	for _, name := range storage.sectionOrder {
@@ -292,63 +173,53 @@ func (storage *promptStore) rebuildSnapshotLocked() {
 			)
 		}
 	}
-	for _, name := range storage.toolOrder {
-		if provider, exists := storage.toolProviders[name]; exists {
-			storage.snapshotValue.toolProviders = append(
-				storage.snapshotValue.toolProviders,
-				namedToolProvider{
-					name:     name,
-					provider: provider,
-				},
-			)
-		}
-	}
+
 }
 
 func (storage *promptStore) clear() {
-	storage.mutex.Lock()
 	storage.sections = nil
 	storage.sectionOrder = nil
 	storage.contexts = nil
 	storage.contextOrder = nil
 	storage.variables = nil
 	storage.variableOrder = nil
-	storage.toolProviders = nil
-	storage.toolOrder = nil
 	storage.suppressors = nil
-	storage.tokens = nil
-	storage.rebuildSnapshotLocked()
-	storage.mutex.Unlock()
+	storage.entries = nil
+	storage.rebuildSnapshot()
 }
 
-func (storage *promptStore) addToken(
-	kind promptEntryKind,
-	name string,
-) *promptEntryToken {
-	if storage.tokens == nil {
-		storage.tokens = make(map[promptEntryKey]*promptEntryToken)
+func (storage *promptStore) addEntry(kind promptEntryKind, name string) RegistrationID {
+	if storage.entries == nil {
+		storage.entries = make(map[RegistrationID]promptEntryKey)
 	}
-	token := &promptEntryToken{}
-	storage.tokens[promptEntryKey{
-		kind: kind,
-		name: name,
-	}] = token
-	return token
-}
-
-func (storage *promptStore) removeToken(
-	kind promptEntryKind,
-	name string,
-	expected *promptEntryToken,
-) bool {
-	key := promptEntryKey{
+	identifier := RegistrationID(uuid.NewString())
+	storage.entries[identifier] = promptEntryKey{
 		kind: kind,
 		name: name,
 	}
-	if expected == nil || storage.tokens[key] != expected {
+	return identifier
+}
+
+func (storage *promptStore) remove(identifier RegistrationID) bool {
+	entry, found := storage.entries[identifier]
+	if !found {
 		return false
 	}
-	delete(storage.tokens, key)
+	switch entry.kind {
+	case promptSectionEntry:
+		delete(storage.sections, entry.name)
+		storage.sectionOrder = removeName(storage.sectionOrder, entry.name)
+	case promptContextEntry:
+		delete(storage.contexts, entry.name)
+		storage.contextOrder = removeName(storage.contextOrder, entry.name)
+	case promptVariableEntry:
+		delete(storage.variables, entry.name)
+		storage.variableOrder = removeName(storage.variableOrder, entry.name)
+	case promptSuppressorEntry:
+		delete(storage.suppressors, entry.name)
+	}
+	delete(storage.entries, identifier)
+	storage.rebuildSnapshot()
 	return true
 }
 

@@ -1,5 +1,5 @@
 // Package approval owns user approval policy, durable audit events, and the
-// scoped answerer seam used by permission-sensitive operations.
+// answerer boundary used by permission-sensitive operations.
 package approval
 
 import (
@@ -10,7 +10,6 @@ import (
 	"fmt"
 
 	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
 
@@ -25,10 +24,6 @@ const (
 	DecidedEventName = "approval/decided"
 	// PolicyEventName records one durable per-session policy override.
 	PolicyEventName = "approval/policy"
-	// PluginName is the canonical Harness Approval Plugin name.
-	PluginName = "@deepseek-ai/dsh-user-approval"
-	// OverlayPluginName identifies one child Approval policy/answerer layer.
-	OverlayPluginName = "@deepseek-ai/dsh-user-approval/overlay"
 )
 
 // RequestID pairs one asked audit event with exactly one decided event.
@@ -122,6 +117,17 @@ func ValidateConfig(settings Config) (ValidatedConfig, error) {
 	}, nil
 }
 
+// WithOverrides applies explicit child configuration to an independent parent snapshot.
+func (settings ValidatedConfig) WithOverrides(custom Config) (ValidatedConfig, error) {
+	if !validPolicy(settings.policy) {
+		return ValidatedConfig{}, errors.New("approval: configuration was not validated")
+	}
+	if custom.Policy == nil {
+		return settings, nil
+	}
+	return ValidateConfig(custom)
+}
+
 // UnmarshalJSON preserves omission while rejecting null and unknown fields.
 func (settings *Config) UnmarshalJSON(encoded []byte) error {
 	if settings == nil {
@@ -153,21 +159,23 @@ func (settings *Config) UnmarshalJSON(encoded []byte) error {
 	return nil
 }
 
-// DecisionRequest is the typed input of the approval answerer Waterfall.
-type DecisionRequest struct {
-	plugin.WaterfallInputBase
-	Request Request
+// Question identifies one audited approval without exposing mutable owner objects.
+type Question struct {
+	ID        RequestID
+	SessionID session.SessionID
+	ToolName  string
+	CallID    *agentmessage.CallID
+	Reason    *string
 }
 
-// Decision is the typed output of the approval answerer Waterfall.
-type Decision struct {
-	plugin.WaterfallOutputBase
-	Outcome Outcome
+// Answerer resolves an audited approval request. It must observe cancellation
+// and release its waiting resources before returning. The adapter owns routing.
+type Answerer interface {
+	Answer(context.Context, Question) (Outcome, error)
 }
 
 // Approval is the provider-owned policy and decision capability.
 type Approval interface {
-	plugin.Service
 	Request(context.Context, Request) (Outcome, error)
 	EffectivePolicy(session.Context) (Policy, error)
 	OverrideOf(session.Context) (Policy, bool, error)
@@ -177,7 +185,6 @@ type Approval interface {
 // DelegationPolicy owns the durable approval override seeded into an
 // unpublished delegated Session.
 type DelegationPolicy interface {
-	plugin.Service
 	SeedDelegationPolicy(context.Context, session.Context) error
 }
 

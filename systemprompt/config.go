@@ -8,18 +8,16 @@ import (
 	"slices"
 )
 
-// ValidateConfig applies defaults and rejects invalid tool ordering before a
-// runtime Plugin is constructed.
+// ValidateConfig applies defaults, validates configuration, and copies owned values.
 func ValidateConfig(settings Config) (ValidatedConfig, error) {
-	configuredOrder, err := validateToolOrder(settings.ToolOrder)
-	if err != nil {
+	if err := validateToolOrderSyntax(settings.ToolOrder); err != nil {
 		return ValidatedConfig{}, err
 	}
 	return ValidatedConfig{
 		includeHarnessIdentity: optionEnabled(settings.IncludeHarnessIdentity, true),
 		includeRuntimeContext:  optionEnabled(settings.IncludeRuntimeContext, true),
 		persona:                settings.Persona,
-		toolOrder:              configuredOrder,
+		toolOrder:              slices.Clone(settings.ToolOrder),
 	}, nil
 }
 
