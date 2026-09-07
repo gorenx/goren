@@ -51,3 +51,13 @@ sequenceDiagram
 当前 Session 提交仍经 ApprovalTarget 的窄进程内接口完成，后续迁移为 Session owner 请求；先保留审计/策略行为测试，不新增同步 Actor 包装。删除旧 Factory 目录及组合配置中的 Factory 注册，不保留 Plugin 桥接。
 
 实施结果：Approval 整包竞态测试和 vet 通过，Tools 生产构建通过。Service 方法按职责分在 service.go 与 service_policy.go，Policy 值规则保留在 policy.go。原 Factory 配置错误用例迁移到业务测试，旧 Plugin Scope 测试替换为独立回答端和审计关联验证；回答端选择/继承的完整 Actor 路由仍待集成验证。
+
+## Session Context 删除后的业务边界
+
+旧 Service.Request 和 ApprovalTarget 把 Session 读取/提交、Agent 注入、Answerer 等待与策略规则组合在同步调用中，随 Context 删除一起退出，不引入替代 Context 的接口。Request 改为 SessionID、完整事件快照和工具信息；Service.Prepare 校验开放 turn、解析策略并生成独立 Decision。
+
+Decision 保存分离的 Question 和本次有效 Policy。Asked 返回前置审计草稿；Interactive 决定是否请求回答；Resolve 根据取消、策略和回答结果返回 Resolution{Outcome,Draft}。业务层不提交任何草稿，也不声称已经审计。Actor 必须先收到 asked 提交确认，才能调用回答端；decided 提交成功后才能向工具返回 Outcome，取消不能跳过终态审计。
+
+Service.ChangePolicy 接收事件快照，返回可选 PolicyChange{Draft,Notice}，相同有效策略返回 nil。Actor 提交 Draft 成功后才请求 Agent 注入 Notice。DelegationPolicyDraft 返回带 delegation 来源的 never 草稿，创建编排负责纳入 Session 初始日志。业务层不持有 Actor、Session、Agent 或 Answerer。
+
+Answerer 暂留为 InteractionGateway 的消费边界；后续通过 Actor 请求接线。旧同步 Service 测试替换为草稿与策略业务测试，审计先后顺序、回答取消、panic 和最终关闭仍需 Actor 集成测试，不能把删除旧流程当作已实现。

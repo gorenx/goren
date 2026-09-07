@@ -17,7 +17,7 @@
 
 ## 主要对象与依赖
 
-`New(ValidatedConfig, Options)` 返回已构造的 ToolLayer 与 error，不需要额外激活。Options 提供具名的 Before、After、Execution、Results、Changes、Approvals 依赖。未指定前后策略时分别使用 Allow/Accept；未指定观察器表示没有订阅方。
+`New(ValidatedConfig, Options)` 返回已构造的 ToolLayer 与 error，不需要额外激活。Options 提供具名的 Before、After、Execution、Results、Changes 依赖。未指定前后策略时分别使用 Allow/Accept；未指定观察器表示没有订阅方。
 
 ToolLayer 管本地目录和业务入口；executionRuntime 调用各执行阶段；pipeline 只保存策略及观察器，不持有 ToolLayer、Registry 或 Runtime。删除了原 Service/effects 循环和 ToolLayer/runtime/effects 循环。
 
@@ -36,7 +36,7 @@ flowchart TD
     Snapshot --> Ports
     Result --> Dispatch
     Pipeline --> Ports[具名策略与观察接口]
-    Policy --> Approval[审批接口]
+    Policy --> Approval[返回审批需求给调用方 Actor]
 ```
 
 本包不依赖 GoAkt、Plugin、Prompt 或具体工具适配器。当前业务仍接受本地执行器和 Session 相关接口；这不是最终 Actor 消息契约，不能把这些对象放入公开的跨 Actor 配置事件。
@@ -65,7 +65,7 @@ sequenceDiagram
     participant Body as dispatcher
     participant Result as resultProcessor
     Caller->>Runtime: Execute / staged scheduling
-    Runtime->>Policy: 前置策略、审批、guard
+    Runtime->>Policy: 前置策略；允许后检查 guard
     Policy-->>Runtime: 允许、拒绝或失败
     Runtime->>Body: 执行中间件与工具主体
     Body-->>Runtime: 校验后的规范结果
@@ -91,3 +91,24 @@ DefinitionsChanged 已定义 AgentID、版本及完整 Definitions。Prompt Tool
 其他模块仍有旧 Tools 构造和 Plugin 调用路径，尚未完成全仓迁移。本包测试通过不代表生产 Agent Actor 链路已接通。
 
 ToolDefinition 只保留具名能力接口，已移除五个函数适配器。生产工具直接实现 Execute、Render 等方法；测试闭包适配局限于测试文件。
+
+## Session 与审批续接
+
+ExecutionSubject 已删除，执行输入只携带 SessionID。Tools 不持有 Session 或 Agent 对象，也不通过 Options 注入同步 Approval Service。Prepare 遇到 AskDecision 返回 ScheduledApproval 和分离的 ApprovalRequest；Actor 完成 asked/decided 审计后调用 Scheduler.ResolveApproval，再根据返回阶段派发或处理拒绝结果。
+
+```mermaid
+sequenceDiagram
+    participant A as Tool Runtime Actor（待接入）
+    participant T as 工具分阶段执行
+    participant P as Approval 编排 Actor（待接入）
+    A->>T: Prepare
+    T-->>A: ScheduledApproval
+    A->>P: 请求审批并等待审计完成
+    P-->>A: Outcome
+    A->>T: ResolveApproval
+    T-->>A: Dispatch 或失败结果
+```
+
+审批前 Dispatch 和重复 ResolveApproval 均拒绝。允许结果之后仍检查 guard 与取消；拒绝、不可用或取消不会进入工具体。普通 Execute 不能等待跨 Actor 审批，在 Ask 时失败关闭；生产异步执行必须使用 Scheduler 分阶段接口。
+
+真实业务测试覆盖审批需求、提前派发拒绝、重复回答拒绝、允许后单次执行，以及拒绝/不可用/取消不执行工具。该阶段尚未接入真实审批 Actor，也未完成 ToolLayer 其余生命周期与锁的迁移。
