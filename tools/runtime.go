@@ -12,29 +12,27 @@ import (
 // body dispatch, and result processing are delegated to focused collaborators.
 type executionRuntime struct {
 	registry   *registry
+	pipeline   *pipeline
 	policies   *policyEngine
 	dispatcher *dispatcher
 	results    *resultProcessor
 }
 
 func newRuntime(
-	effects layerEffects,
+	stages *pipeline,
 	catalog *registry,
 	approvals approval.Approval,
 ) *executionRuntime {
-	bodyDispatcher := &dispatcher{
-		effects: effects,
-	}
+	bodyDispatcher := &dispatcher{}
 	return &executionRuntime{
 		registry: catalog,
+		pipeline: stages,
 		policies: &policyEngine{
-			effects:   effects,
 			registry:  catalog,
 			approvals: approvals,
 		},
 		dispatcher: bodyDispatcher,
 		results: &resultProcessor{
-			effects:    effects,
 			dispatcher: bodyDispatcher,
 		},
 	}

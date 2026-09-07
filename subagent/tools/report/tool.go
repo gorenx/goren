@@ -66,29 +66,14 @@ func (adapter *reportTool) definition() tools.ToolDefinition {
 		Description: "Report selected self-contained content to the agent that started you. Reporting does not finish your work and only your direct parent receives it.",
 		Parameters:  reportParameters,
 		Output: tools.ToolOutputDefinition{
-			Schema: reportOutput,
-			Renderer: tools.OutputRendererFunc(func(
-				_ json.RawMessage,
-				rawValue json.RawMessage,
-			) ([]agentmessage.ContentBlock, error) {
-				var value struct {
-					MessageID string `json:"messageId"`
-				}
-				if decodeErr := json.Unmarshal(rawValue, &value); decodeErr != nil {
-					return nil, decodeErr
-				}
-				return []agentmessage.ContentBlock{
-					agentmessage.NewTextBlock(
-						"report accepted by the agent that started you as message " + value.MessageID,
-					),
-				}, nil
-			}),
+			Schema:   reportOutput,
+			Renderer: adapter,
 		},
-		Executor: tools.ExecutorFunc(adapter.execute),
+		Executor: adapter,
 	}
 }
 
-func (adapter *reportTool) execute(
+func (adapter *reportTool) Execute(
 	rawArguments json.RawMessage,
 	runContext tools.ToolRunContext,
 ) (json.RawMessage, error) {
@@ -168,4 +153,21 @@ func (adapter *reportTool) execute(
 	}{
 		MessageID: string(messageValue.StableID()),
 	})
+}
+
+func (adapter *reportTool) Render(
+	_ json.RawMessage,
+	rawValue json.RawMessage,
+) ([]agentmessage.ContentBlock, error) {
+	var value struct {
+		MessageID string `json:"messageId"`
+	}
+	if decodeErr := json.Unmarshal(rawValue, &value); decodeErr != nil {
+		return nil, decodeErr
+	}
+	return []agentmessage.ContentBlock{
+		agentmessage.NewTextBlock(
+			"report accepted by the agent that started you as message " + value.MessageID,
+		),
+	}, nil
 }

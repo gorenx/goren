@@ -88,6 +88,7 @@ func (runContext ToolRunContext) ConcludeTurn() {
 
 type scheduledExecutionState struct {
 	coordinator    *executionRuntime
+	pipeline       *pipeline
 	requestContext context.Context
 	entry          *registeredTool
 	finalizer      ContentFinalizer
@@ -125,6 +126,7 @@ func newScheduledExecutionState(
 ) *scheduledExecutionState {
 	return &scheduledExecutionState{
 		coordinator:    coordinator,
+		pipeline:       coordinator.pipeline,
 		requestContext: requestContext,
 		entry:          entry,
 		finalizer:      finalizer,

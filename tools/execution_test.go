@@ -11,53 +11,34 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/tools"
 )
 
-type waterfallPlugin[
-	I plugin.WaterfallInput,
-	O plugin.WaterfallOutput,
+type policyFixture[
+	I any,
+	O any,
 ] struct {
-	plugin.Base
 	name       string
-	middleware plugin.WaterfallMiddleware[I, O]
+	middleware middleware[I, O]
 }
 
-func (owner *waterfallPlugin[I, O]) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name: owner.name,
-		Waterfalls: []plugin.WaterfallMiddlewareBinding{
-			plugin.WaterfallOf[I, O](owner),
-		},
-	}
-}
-
-func (*waterfallPlugin[I, O]) Apply(context.Context) error {
-	return nil
-}
-
-func (*waterfallPlugin[I, O]) Dispose(context.Context) error {
-	return nil
-}
-
-func (owner *waterfallPlugin[I, O]) Intercept(
+func (owner *policyFixture[I, O]) Intercept(
 	requestContext context.Context,
 	input I,
-	downstream plugin.WaterfallAction[I, O],
+	downstream action[I, O],
 ) (O, error) {
 	return owner.middleware.Intercept(requestContext, input, downstream)
 }
 
-type waterfallFunc[
-	I plugin.WaterfallInput,
-	O plugin.WaterfallOutput,
-] func(context.Context, I, plugin.WaterfallAction[I, O]) (O, error)
+type policyFunc[
+	I any,
+	O any,
+] func(context.Context, I, action[I, O]) (O, error)
 
-func (operation waterfallFunc[I, O]) Intercept(
+func (operation policyFunc[I, O]) Intercept(
 	requestContext context.Context,
 	input I,
-	downstream plugin.WaterfallAction[I, O],
+	downstream action[I, O],
 ) (O, error) {
 	return operation(requestContext, input, downstream)
 }
@@ -106,18 +87,18 @@ func TestExecutionPipelineOrderAndDetachedResultEvent(t *testing.T) {
 		steps = append(steps, label)
 		orderMutex.Unlock()
 	}
-	prePolicy := &waterfallPlugin[
+	prePolicy := &policyFixture[
 		tools.PreExecuteRequest,
 		tools.PreExecuteOutcome,
 	]{
 		name: "pre-policy",
-		middleware: waterfallFunc[
+		middleware: policyFunc[
 			tools.PreExecuteRequest,
 			tools.PreExecuteOutcome,
 		](func(
 			requestContext context.Context,
 			input tools.PreExecuteRequest,
-			downstream plugin.WaterfallAction[
+			downstream action[
 				tools.PreExecuteRequest,
 				tools.PreExecuteOutcome,
 			],
@@ -130,18 +111,18 @@ func TestExecutionPipelineOrderAndDetachedResultEvent(t *testing.T) {
 			return outcome, err
 		}),
 	}
-	dispatchPolicy := &waterfallPlugin[
+	dispatchPolicy := &policyFixture[
 		tools.ExecuteRequest,
 		tools.ExecuteOutcome,
 	]{
 		name: "dispatch-policy",
-		middleware: waterfallFunc[
+		middleware: policyFunc[
 			tools.ExecuteRequest,
 			tools.ExecuteOutcome,
 		](func(
 			requestContext context.Context,
 			input tools.ExecuteRequest,
-			downstream plugin.WaterfallAction[
+			downstream action[
 				tools.ExecuteRequest,
 				tools.ExecuteOutcome,
 			],
@@ -152,18 +133,18 @@ func TestExecutionPipelineOrderAndDetachedResultEvent(t *testing.T) {
 			return outcome, err
 		}),
 	}
-	postPolicy := &waterfallPlugin[
+	postPolicy := &policyFixture[
 		tools.PostExecuteRequest,
 		tools.PostExecuteOutcome,
 	]{
 		name: "post-policy",
-		middleware: waterfallFunc[
+		middleware: policyFunc[
 			tools.PostExecuteRequest,
 			tools.PostExecuteOutcome,
 		](func(
 			requestContext context.Context,
 			input tools.PostExecuteRequest,
-			downstream plugin.WaterfallAction[
+			downstream action[
 				tools.PostExecuteRequest,
 				tools.PostExecuteOutcome,
 			],
@@ -187,12 +168,12 @@ func TestExecutionPipelineOrderAndDetachedResultEvent(t *testing.T) {
 			return outcome, err
 		}),
 	}
-	observer := &eventObserverPlugin{
+	observer := &eventObserver{
 		name: "result-observer",
-		subscriptions: []plugin.EventSubscription{
-			plugin.EventOf[tools.ExecutionCompleted](),
+		subscriptions: []string{
+			tools.ResultEventName,
 		},
-		observe: func(_ context.Context, fact plugin.Event) error {
+		observe: func(_ context.Context, fact toolEvent) error {
 			completed, matches := fact.(tools.ExecutionCompleted)
 			if !matches {
 				return errors.New("unexpected Event type")
@@ -225,7 +206,7 @@ func TestExecutionPipelineOrderAndDetachedResultEvent(t *testing.T) {
 	definition := objectTool(
 		"pipeline",
 		"",
-		tools.ExecutorFunc(func(
+		executorStub(func(
 			arguments json.RawMessage,
 			_ tools.ToolRunContext,
 		) (json.RawMessage, error) {
@@ -233,7 +214,7 @@ func TestExecutionPipelineOrderAndDetachedResultEvent(t *testing.T) {
 			return arguments, nil
 		}),
 	)
-	definition.Output.Renderer = tools.OutputRendererFunc(func(
+	definition.Output.Renderer = outputRendererStub(func(
 		_ json.RawMessage,
 		value json.RawMessage,
 	) ([]agentmessage.ContentBlock, error) {
@@ -274,18 +255,18 @@ func TestExecutionPipelineOrderAndDetachedResultEvent(t *testing.T) {
 }
 
 func TestExecuteMiddlewareReceivesReadOnlyCanonicalSuccess(t *testing.T) {
-	mutation := &waterfallPlugin[
+	mutation := &policyFixture[
 		tools.ExecuteRequest,
 		tools.ExecuteOutcome,
 	]{
 		name: "mutate-canonical-success",
-		middleware: waterfallFunc[
+		middleware: policyFunc[
 			tools.ExecuteRequest,
 			tools.ExecuteOutcome,
 		](func(
 			requestContext context.Context,
 			input tools.ExecuteRequest,
-			downstream plugin.WaterfallAction[
+			downstream action[
 				tools.ExecuteRequest,
 				tools.ExecuteOutcome,
 			],
@@ -308,7 +289,7 @@ func TestExecuteMiddlewareReceivesReadOnlyCanonicalSuccess(t *testing.T) {
 		objectTool(
 			"sealed",
 			"",
-			tools.ExecutorFunc(passThroughBody),
+			executorStub(passThroughBody),
 		),
 	); err != nil {
 		t.Fatal(err)
@@ -332,18 +313,18 @@ func TestDeferredContextsPrecedeExecuteAndPostContexts(t *testing.T) {
 	deferred := toolContextMessage(t, "deferred", "tool")
 	wrapper := toolContextMessage(t, "wrapper", "wrapper")
 	post := toolContextMessage(t, "post", "post")
-	executePolicy := &waterfallPlugin[
+	executePolicy := &policyFixture[
 		tools.ExecuteRequest,
 		tools.ExecuteOutcome,
 	]{
 		name: "append-execute-context",
-		middleware: waterfallFunc[
+		middleware: policyFunc[
 			tools.ExecuteRequest,
 			tools.ExecuteOutcome,
 		](func(
 			requestContext context.Context,
 			input tools.ExecuteRequest,
-			downstream plugin.WaterfallAction[
+			downstream action[
 				tools.ExecuteRequest,
 				tools.ExecuteOutcome,
 			],
@@ -366,18 +347,18 @@ func TestDeferredContextsPrecedeExecuteAndPostContexts(t *testing.T) {
 			}, nil
 		}),
 	}
-	postPolicy := &waterfallPlugin[
+	postPolicy := &policyFixture[
 		tools.PostExecuteRequest,
 		tools.PostExecuteOutcome,
 	]{
 		name: "append-post-context",
-		middleware: waterfallFunc[
+		middleware: policyFunc[
 			tools.PostExecuteRequest,
 			tools.PostExecuteOutcome,
 		](func(
 			context.Context,
 			tools.PostExecuteRequest,
-			plugin.WaterfallAction[
+			action[
 				tools.PostExecuteRequest,
 				tools.PostExecuteOutcome,
 			],
@@ -397,7 +378,7 @@ func TestDeferredContextsPrecedeExecuteAndPostContexts(t *testing.T) {
 		objectTool(
 			"contexts",
 			"",
-			tools.ExecutorFunc(func(
+			executorStub(func(
 				arguments json.RawMessage,
 				runContext tools.ToolRunContext,
 			) (json.RawMessage, error) {
@@ -438,7 +419,7 @@ func TestFinishMaterializesNilStagedResult(t *testing.T) {
 		objectTool(
 			"staged",
 			"",
-			tools.ExecutorFunc(passThroughBody),
+			executorStub(passThroughBody),
 		),
 	); err != nil {
 		t.Fatal(err)
@@ -467,7 +448,7 @@ func TestSchedulerConsumesEachPreparedStageOnce(t *testing.T) {
 	definition := objectTool(
 		"single-use-stage",
 		"",
-		tools.ExecutorFunc(func(
+		executorStub(func(
 			arguments json.RawMessage,
 			_ tools.ToolRunContext,
 		) (json.RawMessage, error) {
@@ -475,7 +456,7 @@ func TestSchedulerConsumesEachPreparedStageOnce(t *testing.T) {
 			return arguments, nil
 		}),
 	)
-	definition.FinalizeContent = tools.ContentFinalizerFunc(func(
+	definition.FinalizeContent = contentFinalizerStub(func(
 		tools.ToolExecution,
 		tools.ToolResultSnapshot,
 	) ([]agentmessage.ContentBlock, bool) {
@@ -547,7 +528,7 @@ func TestExecutionFailuresAreCanonical(t *testing.T) {
 	invalid := objectTool(
 		"invalid-output",
 		"",
-		tools.ExecutorFunc(func(
+		executorStub(func(
 			json.RawMessage,
 			tools.ToolRunContext,
 		) (json.RawMessage, error) {
@@ -572,18 +553,18 @@ func TestExecutionFailuresAreCanonical(t *testing.T) {
 }
 
 func TestCallerCancellationSurvivesMiddlewareContextReplacement(t *testing.T) {
-	dispatchPolicy := &waterfallPlugin[
+	dispatchPolicy := &policyFixture[
 		tools.ExecuteRequest,
 		tools.ExecuteOutcome,
 	]{
 		name: "replace-context",
-		middleware: waterfallFunc[
+		middleware: policyFunc[
 			tools.ExecuteRequest,
 			tools.ExecuteOutcome,
 		](func(
 			_ context.Context,
 			input tools.ExecuteRequest,
-			downstream plugin.WaterfallAction[
+			downstream action[
 				tools.ExecuteRequest,
 				tools.ExecuteOutcome,
 			],
@@ -599,7 +580,7 @@ func TestCallerCancellationSurvivesMiddlewareContextReplacement(t *testing.T) {
 		objectTool(
 			"cancellable",
 			"",
-			tools.ExecutorFunc(func(
+			executorStub(func(
 				_ json.RawMessage,
 				runContext tools.ToolRunContext,
 			) (json.RawMessage, error) {
@@ -645,7 +626,7 @@ func TestFinalizerRunsOnceAndClassifierFailsClosed(t *testing.T) {
 	definition := objectTool(
 		"finalized",
 		"",
-		tools.ExecutorFunc(func(
+		executorStub(func(
 			arguments json.RawMessage,
 			runContext tools.ToolRunContext,
 		) (json.RawMessage, error) {
@@ -653,7 +634,7 @@ func TestFinalizerRunsOnceAndClassifierFailsClosed(t *testing.T) {
 			return arguments, nil
 		}),
 	)
-	definition.FinalizeContent = tools.ContentFinalizerFunc(func(
+	definition.FinalizeContent = contentFinalizerStub(func(
 		tools.ToolExecution,
 		tools.ToolResultSnapshot,
 	) ([]agentmessage.ContentBlock, bool) {
@@ -662,7 +643,7 @@ func TestFinalizerRunsOnceAndClassifierFailsClosed(t *testing.T) {
 			agentmessage.NewTextBlock("final"),
 		}, true
 	})
-	definition.ConcurrencyBehavior = tools.ConcurrencyClassifierFunc(func(
+	definition.ConcurrencyBehavior = concurrencyClassifierStub(func(
 		json.RawMessage,
 	) bool {
 		panic("classifier failure")

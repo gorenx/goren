@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"sync"
 	"sync/atomic"
 )
 
@@ -100,42 +99,6 @@ type GuardHandle struct {
 	owner *ToolLayer
 	name  string
 	entry *registeredGuard
-}
-
-// ResultObserverHandle owns one exact plain-ToolLayer result observation.
-type ResultObserverHandle struct {
-	once     sync.Once
-	mutex    sync.RWMutex
-	observer ResultObserver
-	active   bool
-}
-
-// Close removes only the result observer represented by this handle.
-func (handle *ResultObserverHandle) Close(context.Context) error {
-	if handle == nil {
-		return nil
-	}
-	handle.once.Do(func() {
-		handle.mutex.Lock()
-		handle.active = false
-		handle.observer = nil
-		handle.mutex.Unlock()
-	})
-	return nil
-}
-
-func (handle *ResultObserverHandle) observe(
-	requestContext context.Context,
-	completed ExecutionCompleted,
-) error {
-	handle.mutex.RLock()
-	observer := handle.observer
-	active := handle.active
-	handle.mutex.RUnlock()
-	if !active || observer == nil {
-		return nil
-	}
-	return observer.ObserveToolResult(requestContext, completed)
 }
 
 // Unregister removes only the guard represented by this handle.

@@ -10,7 +10,6 @@ import (
 )
 
 type policyEngine struct {
-	effects   layerEffects
 	registry  *registry
 	approvals approval.Approval
 }
@@ -24,7 +23,7 @@ func (engine *policyEngine) evaluate(
 	ctx context.Context,
 	toolCall ToolExecution,
 ) (preDispatchEvaluation, error) {
-	gateOutcome, err := engine.effects.ResolvePreExecute(
+	gateOutcome, err := toolCall.state.pipeline.ResolvePreExecute(
 		ctx,
 		PreExecuteRequest{
 			toolCall: toolCall,
@@ -51,17 +50,6 @@ func (engine *policyEngine) evaluate(
 	return preDispatchEvaluation{
 		denialReason:      denialReason,
 		approvalCancelled: approvalCancelled,
-	}, nil
-}
-
-type preExecuteTerminal struct{}
-
-func (preExecuteTerminal) Execute(
-	context.Context,
-	PreExecuteRequest,
-) (PreExecuteOutcome, error) {
-	return PreExecuteOutcome{
-		Decision: AllowDecision{},
 	}, nil
 }
 

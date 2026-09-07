@@ -27,7 +27,7 @@ func TestControlToolsDelegateAuthorityToContinuableService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	value, sendErr := adapter.sendMessage(
+	value, sendErr := adapter.sendMessageDefinition().Executor.Execute(
 		json.RawMessage(`{
   "subagent_id": "child",
   "message": "continue"
@@ -47,7 +47,7 @@ func TestControlToolsDelegateAuthorityToContinuableService(t *testing.T) {
 		string(value) != `{"messageId":"message"}` {
 		t.Fatalf("send route = %#v value=%s", children, value)
 	}
-	_, interruptErr := adapter.interrupt(
+	_, interruptErr := adapter.interruptDefinition().Executor.Execute(
 		json.RawMessage(`{"agent_id":"grandchild"}`),
 		tools.ToolRunContext{
 			Context: context.Background(),
@@ -116,7 +116,7 @@ func TestListProjectionOmitsOneShotAndUsesLiveRegistryStatus(t *testing.T) {
 				Label: "worker",
 			}
 		}
-		entry, included := adapter.project(
+		entry, included := adapter.listDefinition().Executor.(*listTool).project(
 			childEntry,
 			nil,
 			nil,
@@ -125,7 +125,7 @@ func TestListProjectionOmitsOneShotAndUsesLiveRegistryStatus(t *testing.T) {
 			t.Fatalf("project %s = %#v, included=%v", testCase.id, entry, included)
 		}
 	}
-	if _, included := adapter.project(
+	if _, included := adapter.listDefinition().Executor.(*listTool).project(
 		subagent.OneShotChildEntry{
 			ID: "terminal",
 		},

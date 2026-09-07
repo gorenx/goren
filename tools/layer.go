@@ -8,62 +8,26 @@ import (
 	"sync"
 
 	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/systemprompt"
 )
-
-const promptToolProviderName = "tools:schemas"
 
 // ErrToolLayerInactive reports that a ToolLayer has not been activated or was
 // already closed. It is a Tools lifecycle error, not a Plugin Runtime error.
 var ErrToolLayerInactive = errors.New("tools: ToolLayer is inactive")
 
-type layeredToolRuntime interface {
-	ToolRuntime
-	toolLayers() []toolLayerSnapshot
-}
-
-// ToolLayerFactory creates plain Agent-local Tool Layers without mounting child
-// Plugins. Each ToolLayer inherits this provider's root catalog and policies.
-type ToolLayerFactory interface {
-	NewLayer(
-		context.Context,
-		systemprompt.PromptRegistry,
-	) (*ToolLayer, error)
-}
-
-type layerEffects interface {
-	ResolvePreExecute(
-		context.Context,
-		PreExecuteRequest,
-	) (PreExecuteOutcome, error)
-	ResolveExecute(
-		context.Context,
-		ExecuteRequest,
-		ExecuteAction,
-	) (ExecuteOutcome, error)
-	ResolvePostExecute(
-		context.Context,
-		PostExecuteRequest,
-	) (PostExecuteOutcome, error)
-	PublishCompleted(context.Context, ExecutionCompleted) error
-	PublishChanged(context.Context) error
-}
-
-// ToolLayer owns one Tool catalog, policy, and execution layer independently
-// from Plugin lifecycle. It has only provider-facing parent and effect ports.
+// ToolLayer owns a local Tool catalog and execution policy registrations.
+// Callers must serialize policy registration, removal, Close, and Prepare admission.
+// Prepared executions retain their policy snapshot independently of later changes.
 type ToolLayer struct {
-	registry       *registry
-	mutationMutex  sync.Mutex
-	toolSetMutex   sync.Mutex
-	toolSets       map[string]*toolSetState
-	runtimeMutex   sync.RWMutex
-	runtime        *executionRuntime
-	prompt         *systemprompt.PromptHandle
-	effects        layerEffects
-	observerMutex  sync.RWMutex
-	observers      []*ResultObserverHandle
-	executionMutex sync.RWMutex
-	executions     []*ExecuteMiddlewareHandle
+	registry      *registry
+	mutationMutex sync.Mutex
+	toolSetMutex  sync.Mutex
+	toolSets      map[string]*toolSetState
+	runtimeMutex  sync.RWMutex
+	runtime       *executionRuntime
+	pipeline      *pipeline
+	executions    map[RegistrationID]ExecuteMiddleware
+	observers     map[RegistrationID]ResultObserver
+	registrations []RegistrationID
 }
 
 // AddTool compiles and adds one definition to this exact Registry layer.
@@ -207,17 +171,17 @@ func (owner *ToolLayer) unregisterGuard(
 	return true, nil
 }
 
-// Get returns the Tool definition visible from this Service layer.
+// Get returns the Tool definition visible from this tool layer.
 func (owner *ToolLayer) Get(name string) (ToolDefinition, bool) {
 	return owner.registry.lookupDefinition(name)
 }
 
-// Schemas returns the model-facing schemas visible from this Service layer.
+// Schemas returns the model-facing schemas visible from this tool layer.
 func (owner *ToolLayer) Schemas() []llm.ToolSchema {
 	return owner.registry.schemas()
 }
 
-// ExecutionMode classifies one pending call through this Service layer.
+// ExecutionMode classifies one pending call through this tool layer.
 func (owner *ToolLayer) ExecutionMode(input ToolExecutionInput) ToolExecutionMode {
 	return owner.registry.executionMode(input)
 }
@@ -243,15 +207,15 @@ func (owner *ToolLayer) Scheduler() ToolExecutionScheduler {
 	return stagedRuntime
 }
 
-// ResolveTools implements System Prompt's model-facing ToolProvider contract.
-func (owner *ToolLayer) ResolveTools(
-	requestContext context.Context,
-	_ systemprompt.AssembleContext,
-) (systemprompt.ToolProviderResult, error) {
-	if err := requestContext.Err(); err != nil {
-		return systemprompt.ToolProviderResult{}, err
+// CaptureDefinitions returns a detached view of visible schemas and known names.
+func (owner *ToolLayer) CaptureDefinitions(ctx context.Context) (Definitions, error) {
+	if err := validateMutationContext(ctx); err != nil {
+		return Definitions{}, err
 	}
-	return owner.registry.promptTools(), nil
+	if err := owner.requireActive(); err != nil {
+		return Definitions{}, err
+	}
+	return owner.registry.definitions(), nil
 }
 
 func (owner *ToolLayer) toolLayers() []toolLayerSnapshot {
@@ -273,10 +237,10 @@ func (owner *ToolLayer) requireActive() error {
 }
 
 func (owner *ToolLayer) publishChanged(requestContext context.Context) error {
-	if owner == nil || owner.effects == nil {
+	if owner == nil || owner.pipeline == nil {
 		return errors.New("tools: ToolLayer effects are unavailable")
 	}
-	return owner.effects.PublishChanged(requestContext)
+	return owner.pipeline.PublishChanged(requestContext)
 }
 
 // Close releases this plain Tool ToolLayer. It is safe to call repeatedly.
@@ -297,97 +261,10 @@ func (owner *ToolLayer) Close(closeContext context.Context) error {
 	owner.toolSetMutex.Unlock()
 	owner.registry.clear()
 	owner.mutationMutex.Unlock()
-	var closeErr error
-	if owner.prompt != nil {
-		closeErr = owner.prompt.Unregister(closeContext)
-		owner.prompt = nil
-	}
-	owner.observerMutex.Lock()
-	observers := owner.observers
-	owner.observers = nil
-	owner.observerMutex.Unlock()
-	for _, observer := range observers {
-		closeErr = errors.Join(closeErr, observer.Close(closeContext))
-	}
-	owner.executionMutex.Lock()
-	executions := owner.executions
 	owner.executions = nil
-	owner.executionMutex.Unlock()
-	for _, middlewareHandle := range executions {
-		closeErr = errors.Join(closeErr, middlewareHandle.Close(closeContext))
-	}
-	return closeErr
-}
-
-// ObserveResults registers one ordinary observer in this exact ToolLayer.
-func (owner *ToolLayer) ObserveResults(observer ResultObserver) (*ResultObserverHandle, error) {
-	if owner == nil || observer == nil {
-		return nil, errors.New("tools: result observer is required")
-	}
-	handle := &ResultObserverHandle{
-		observer: observer,
-		active:   true,
-	}
-	owner.observerMutex.Lock()
-	owner.observers = append(owner.observers, handle)
-	owner.observerMutex.Unlock()
-	return handle, nil
-}
-
-func (owner *ToolLayer) ResolvePreExecute(
-	requestContext context.Context,
-	request PreExecuteRequest,
-) (PreExecuteOutcome, error) {
-	return owner.effects.ResolvePreExecute(requestContext, request)
-}
-
-func (owner *ToolLayer) ResolveExecute(
-	requestContext context.Context,
-	request ExecuteRequest,
-	terminal ExecuteAction,
-) (ExecuteOutcome, error) {
-	owner.executionMutex.RLock()
-	middlewareHandles := append(
-		[]*ExecuteMiddlewareHandle(nil),
-		owner.executions...,
-	)
-	owner.executionMutex.RUnlock()
-	local := terminal
-	for index := len(middlewareHandles) - 1; index >= 0; index-- {
-		middleware, active := middlewareHandles[index].middlewareValue()
-		if !active {
-			continue
-		}
-		local = executeMiddlewareAction{
-			middleware: middleware,
-			next:       local,
-		}
-	}
-	return owner.effects.ResolveExecute(requestContext, request, local)
-}
-
-func (owner *ToolLayer) ResolvePostExecute(
-	requestContext context.Context,
-	request PostExecuteRequest,
-) (PostExecuteOutcome, error) {
-	return owner.effects.ResolvePostExecute(requestContext, request)
-}
-
-func (owner *ToolLayer) PublishCompleted(
-	requestContext context.Context,
-	completed ExecutionCompleted,
-) error {
-	owner.observerMutex.RLock()
-	observers := append([]*ResultObserverHandle(nil), owner.observers...)
-	owner.observerMutex.RUnlock()
-	for _, observer := range observers {
-		_ = observer.observe(requestContext, completed)
-	}
-	return owner.effects.PublishCompleted(requestContext, completed)
-}
-
-func (owner *ToolLayer) PublishChanged(requestContext context.Context) error {
-	return owner.effects.PublishChanged(requestContext)
+	owner.observers = nil
+	owner.registrations = nil
+	return nil
 }
 
 func validateMutationContext(requestContext context.Context) error {

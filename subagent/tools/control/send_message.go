@@ -35,33 +35,24 @@ type sendMessageArguments struct {
 	Message    string `json:"message"`
 }
 
-func (adapter *controlTools) sendMessageDefinition() tools.ToolDefinition {
+func (owner *controlTools) sendMessageDefinition() tools.ToolDefinition {
+	adapter := &messageTool{
+		children: owner.children,
+	}
+
 	return tools.ToolDefinition{
 		Name:        "send_message",
 		Description: "Send a message to a background subagent by its durable id. The message becomes its next turn and this call returns only delivery confirmation.",
 		Parameters:  sendMessageParameters,
 		Output: tools.ToolOutputDefinition{
-			Schema: messageIDOutput,
-			Renderer: tools.OutputRendererFunc(func(
-				rawArguments json.RawMessage,
-				_ json.RawMessage,
-			) ([]agentmessage.ContentBlock, error) {
-				var request sendMessageArguments
-				if decodeErr := json.Unmarshal(rawArguments, &request); decodeErr != nil {
-					return nil, decodeErr
-				}
-				return []agentmessage.ContentBlock{
-					agentmessage.NewTextBlock(
-						"message queued as the next turn for subagent " + request.SubagentID,
-					),
-				}, nil
-			}),
+			Schema:   messageIDOutput,
+			Renderer: adapter,
 		},
-		Executor: tools.ExecutorFunc(adapter.sendMessage),
+		Executor: adapter,
 	}
 }
 
-func (adapter *controlTools) sendMessage(
+func (adapter *messageTool) Execute(
 	rawArguments json.RawMessage,
 	runContext tools.ToolRunContext,
 ) (json.RawMessage, error) {
@@ -94,4 +85,23 @@ func (adapter *controlTools) sendMessage(
 	}{
 		MessageID: string(messageID),
 	})
+}
+
+func (adapter *messageTool) Render(
+	rawArguments json.RawMessage,
+	_ json.RawMessage,
+) ([]agentmessage.ContentBlock, error) {
+	var request sendMessageArguments
+	if decodeErr := json.Unmarshal(rawArguments, &request); decodeErr != nil {
+		return nil, decodeErr
+	}
+	return []agentmessage.ContentBlock{
+		agentmessage.NewTextBlock(
+			"message queued as the next turn for subagent " + request.SubagentID,
+		),
+	}, nil
+}
+
+type messageTool struct {
+	children subagent.ChildControl
 }

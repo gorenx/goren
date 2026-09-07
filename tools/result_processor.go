@@ -11,7 +11,6 @@ import (
 // resultProcessor owns post-execute policy, definition finalization, and the
 // immutable final result Event.
 type resultProcessor struct {
-	effects    layerEffects
 	dispatcher *dispatcher
 }
 
@@ -32,7 +31,7 @@ func (processor *resultProcessor) post(
 	if err != nil {
 		return nil, err
 	}
-	postOutcome, err := processor.effects.ResolvePostExecute(
+	postOutcome, err := toolCall.state.pipeline.ResolvePostExecute(
 		requestContext,
 		PostExecuteRequest{
 			toolCall:   toolCall,
@@ -122,17 +121,6 @@ func (processor *resultProcessor) applyPostDecision(
 	}
 }
 
-type postExecuteTerminal struct{}
-
-func (postExecuteTerminal) Execute(
-	context.Context,
-	PostExecuteRequest,
-) (PostExecuteOutcome, error) {
-	return PostExecuteOutcome{
-		Decision: AcceptDecision{},
-	}, nil
-}
-
 func (processor *resultProcessor) finish(
 	requestContext context.Context,
 	toolCall ToolExecution,
@@ -150,14 +138,14 @@ func (processor *resultProcessor) finish(
 		}
 	}
 	if finalizer != nil {
-		content, replace, finalizeErr := invokeFinalizer(
+		content, replaceContent, finalizeErr := invokeFinalizer(
 			finalizer,
 			toolCall,
 			finalOutcome,
 		)
 		if finalizeErr != nil {
 			finalOutcome = errorResult(finalizeErr)
-		} else if replace {
+		} else if replaceContent {
 			content, finalizeErr = agentmessage.CloneContentBlocks(content)
 			if finalizeErr != nil {
 				finalOutcome = errorResult(finalizeErr)
@@ -175,7 +163,7 @@ func (processor *resultProcessor) finish(
 		materialized = errorResult(err)
 		resultView, _ = newResultSnapshot(materialized)
 	}
-	_ = processor.effects.PublishCompleted(
+	_ = toolCall.state.pipeline.PublishCompleted(
 		requestContext,
 		ExecutionCompleted{
 			toolCall:   cloneExecution(toolCall),
@@ -193,7 +181,7 @@ func invokeFinalizer(
 	finalizer ContentFinalizer,
 	toolCall ToolExecution,
 	outcome ToolExecutionResult,
-) (content []agentmessage.ContentBlock, replace bool, invokeErr error) {
+) (content []agentmessage.ContentBlock, replaceContent bool, invokeErr error) {
 	defer func() {
 		if panicValue := recover(); panicValue != nil {
 			invokeErr = fmt.Errorf(
@@ -206,9 +194,9 @@ func invokeFinalizer(
 	if err != nil {
 		return nil, false, err
 	}
-	content, replace = finalizer.Finalize(
+	content, replaceContent = finalizer.Finalize(
 		cloneExecution(toolCall),
 		resultView,
 	)
-	return content, replace, nil
+	return content, replaceContent, nil
 }

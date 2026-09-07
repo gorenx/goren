@@ -3,7 +3,7 @@ package tools
 import (
 	"context"
 
-	"github.com/gorenx/goren/plugin"
+	"github.com/gorenx/goren/session"
 )
 
 // ResultObserver observes final Tool results inside one plain Tool ToolLayer.
@@ -12,10 +12,8 @@ type ResultObserver interface {
 	ObserveToolResult(context.Context, ExecutionCompleted) error
 }
 
-// PreExecuteRequest is the immutable input of the pre-dispatch policy
-// Waterfall. Middleware may decide, deny, ask, or delegate.
+// PreExecuteRequest is the immutable input of the pre-dispatch policy. Middleware may decide, deny, ask, or delegate.
 type PreExecuteRequest struct {
-	plugin.WaterfallInputBase
 	toolCall ToolExecution
 }
 
@@ -26,14 +24,12 @@ func (input PreExecuteRequest) Execution() ToolExecution {
 
 // PreExecuteOutcome is the typed pre-dispatch policy result.
 type PreExecuteOutcome struct {
-	plugin.WaterfallOutputBase
 	Decision PreToolDecision
 }
 
-// ExecuteRequest is the immutable input of the around-dispatch Waterfall.
+// ExecuteRequest is the immutable input of the around-dispatch policy.
 // Middleware may replace only the context passed to the downstream Action.
 type ExecuteRequest struct {
-	plugin.WaterfallInputBase
 	toolCall ToolExecution
 }
 
@@ -44,14 +40,12 @@ func (input ExecuteRequest) Execution() ToolExecution {
 
 // ExecuteOutcome is the typed around-dispatch result.
 type ExecuteOutcome struct {
-	plugin.WaterfallOutputBase
 	Result ToolExecutionResult
 }
 
 // PostExecuteRequest contains the immutable execution and detached result seen
 // by post-dispatch policy.
 type PostExecuteRequest struct {
-	plugin.WaterfallInputBase
 	toolCall   ToolExecution
 	resultView ToolResultSnapshot
 }
@@ -68,7 +62,6 @@ func (input PostExecuteRequest) Result() ToolResultSnapshot {
 
 // PostExecuteOutcome is the typed post-dispatch policy result.
 type PostExecuteOutcome struct {
-	plugin.WaterfallOutputBase
 	Decision PostToolDecision
 }
 
@@ -81,12 +74,6 @@ type ExecutionCompleted struct {
 // EventName returns the canonical Harness Event name.
 func (ExecutionCompleted) EventName() string {
 	return ResultEventName
-}
-
-// EventDelivery contains observer failures outside the authoritative Tool
-// outcome while reporting them through Runtime's EventFailureReporter.
-func (ExecutionCompleted) EventDelivery() plugin.DeliveryPolicy {
-	return plugin.DeliveryBestEffort
 }
 
 // Execution returns a detached view of the final call.
@@ -107,9 +94,13 @@ func (RegistryChanged) EventName() string {
 	return ChangeEventName
 }
 
-// EventDelivery keeps registry mutation and notification ordered. A failed
-// observer rejects an add; lifecycle removals remain removed and report the
-// notification failure to their caller.
-func (RegistryChanged) EventDelivery() plugin.DeliveryPolicy {
-	return plugin.DeliveryOrdered
+// DefinitionsTopic carries complete, committed tool definition views.
+const DefinitionsTopic = "tools/definitions"
+
+// DefinitionsChanged is published only after a complete Agent catalog is committed.
+// Publishers must not mutate the value after handing it to the actor framework.
+type DefinitionsChanged struct {
+	AgentID     session.SessionID
+	Version     uint64
+	Definitions Definitions
 }

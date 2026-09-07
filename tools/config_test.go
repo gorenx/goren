@@ -76,3 +76,54 @@ func TestConfigPreservesOmissionAndRejectsUnavailablePresentation(t *testing.T) 
 		})
 	}
 }
+
+func TestAgentConfigOverridesValidatedDefaults(t *testing.T) {
+	defaultLimit := 7
+	baseline, err := tools.ValidateConfig(tools.Config{
+		MaxParallelSubCalls: &defaultLimit,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inherited, err := baseline.WithOverrides(tools.Config{})
+	if err != nil || inherited != baseline {
+		t.Fatalf("omitted overrides = %#v, %v", inherited, err)
+	}
+	customLimit := 3
+	custom, err := baseline.WithOverrides(tools.Config{
+		MaxParallelSubCalls: &customLimit,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected, err := tools.ValidateConfig(tools.Config{
+		MaxParallelSubCalls: &customLimit,
+	})
+	if err != nil || custom != expected || custom == baseline {
+		t.Fatalf("custom settings = %#v, %v", custom, err)
+	}
+	defaultLimit = 99
+	customLimit = 0
+	if custom != expected {
+		t.Fatal("resolved configuration retained mutable input")
+	}
+	unchanged, err := baseline.WithOverrides(tools.Config{})
+	if err != nil || unchanged != inherited {
+		t.Fatal("Agent override changed the global baseline")
+	}
+	if _, err := baseline.WithOverrides(tools.Config{
+		MaxParallelSubCalls: &customLimit,
+	}); err == nil {
+		t.Fatal("explicit zero silently inherited the default")
+	}
+	unsupported := tools.PresentationCode
+	if _, err := baseline.WithOverrides(tools.Config{
+		Mode: &unsupported,
+	}); err == nil {
+		t.Fatal("unsupported override bypassed validation")
+	}
+	var uninitialized tools.ValidatedConfig
+	if _, err := uninitialized.WithOverrides(tools.Config{}); err == nil {
+		t.Fatal("uninitialized defaults accepted")
+	}
+}

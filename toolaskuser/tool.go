@@ -155,59 +155,18 @@ func newDefinition(
 	if questionService == nil {
 		return tools.ToolDefinition{}, errors.New("toolaskuser: User Questions service is nil")
 	}
+	adapter := &questionTool{
+		questions: questionService,
+	}
 	return tools.ToolDefinition{
 		Name:        Name,
 		Description: Description,
 		Parameters:  append(json.RawMessage(nil), parameterSchema...),
 		Output: tools.ToolOutputDefinition{
-			Schema: append(json.RawMessage(nil), outputSchema...),
-			Renderer: tools.OutputRendererFunc(func(_ json.RawMessage, value json.RawMessage) ([]agentmessage.ContentBlock, error) {
-				var compact bytes.Buffer
-				if err := json.Compact(&compact, value); err != nil {
-					return nil, fmt.Errorf("toolaskuser: render output: %w", err)
-				}
-				return []agentmessage.ContentBlock{agentmessage.NewTextBlock(compact.String())}, nil
-			}),
+			Schema:   append(json.RawMessage(nil), outputSchema...),
+			Renderer: adapter,
 		},
-		Executor: tools.ExecutorFunc(
-			func(arguments json.RawMessage, runContext tools.ToolRunContext) (json.RawMessage, error) {
-				var decoded input
-				if err := json.Unmarshal(arguments, &decoded); err != nil {
-					return nil, fmt.Errorf("toolaskuser: decode validated arguments: %w", err)
-				}
-				questions := make([]userquestions.Question, len(decoded.Questions))
-				for index, item := range decoded.Questions {
-					questions[index] = userquestions.Question{
-						ID:          item.ID,
-						Question:    item.Question,
-						Header:      cloneString(item.Header),
-						Options:     cloneOptions(item.Options),
-						MultiSelect: cloneBool(item.MultiSelect),
-					}
-				}
-				var subject agent.Agent
-				if runContext.Execution.Subject != nil {
-					var matches bool
-					subject, matches = runContext.Execution.Subject.(agent.Agent)
-					if !matches {
-						return nil, errors.New(
-							"toolaskuser: execution subject is not an Agent",
-						)
-					}
-				}
-				answerValue, err := questionService.Ask(runContext.Context, userquestions.Request{
-					Questions: questions,
-					Subject:   subject,
-				})
-				if err != nil {
-					return nil, err
-				}
-				encoded, err := json.Marshal(answerValue)
-				if err != nil {
-					return nil, fmt.Errorf("toolaskuser: encode answer: %w", err)
-				}
-				return encoded, nil
-			}),
+		Executor: adapter,
 	}, nil
 }
 
@@ -237,4 +196,55 @@ func cloneBool(source *bool) *bool {
 	}
 	detached := *source
 	return &detached
+}
+
+func (adapter *questionTool) Render(_ json.RawMessage, value json.RawMessage) ([]agentmessage.ContentBlock, error) {
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, value); err != nil {
+		return nil, fmt.Errorf("toolaskuser: render output: %w", err)
+	}
+	return []agentmessage.ContentBlock{agentmessage.NewTextBlock(compact.String())}, nil
+}
+
+type questionTool struct {
+	questions userquestions.UserQuestions
+}
+
+func (adapter *questionTool) Execute(arguments json.RawMessage, runContext tools.ToolRunContext) (json.RawMessage, error) {
+	var decoded input
+	if err := json.Unmarshal(arguments, &decoded); err != nil {
+		return nil, fmt.Errorf("toolaskuser: decode validated arguments: %w", err)
+	}
+	questions := make([]userquestions.Question, len(decoded.Questions))
+	for index, item := range decoded.Questions {
+		questions[index] = userquestions.Question{
+			ID:          item.ID,
+			Question:    item.Question,
+			Header:      cloneString(item.Header),
+			Options:     cloneOptions(item.Options),
+			MultiSelect: cloneBool(item.MultiSelect),
+		}
+	}
+	var subject agent.Agent
+	if runContext.Execution.Subject != nil {
+		var matches bool
+		subject, matches = runContext.Execution.Subject.(agent.Agent)
+		if !matches {
+			return nil, errors.New(
+				"toolaskuser: execution subject is not an Agent",
+			)
+		}
+	}
+	answerValue, err := adapter.questions.Ask(runContext.Context, userquestions.Request{
+		Questions: questions,
+		Subject:   subject,
+	})
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := json.Marshal(answerValue)
+	if err != nil {
+		return nil, fmt.Errorf("toolaskuser: encode answer: %w", err)
+	}
+	return encoded, nil
 }

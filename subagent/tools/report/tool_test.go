@@ -19,7 +19,7 @@ import (
 func TestReportUsesExactChildAndConfiguredDelivery(t *testing.T) {
 	t.Parallel()
 	adapter, parentAgent, childAgent := newReportFixture(t, Quiet)
-	value, executeErr := adapter.execute(
+	value, executeErr := adapter.Execute(
 		json.RawMessage(`{"output":"review complete"}`),
 		tools.ToolRunContext{
 			Context: context.Background(),
@@ -66,7 +66,7 @@ func TestReportUsesExactChildAndConfiguredDelivery(t *testing.T) {
 func TestReportNextStepSteersParent(t *testing.T) {
 	t.Parallel()
 	adapter, parentAgent, childAgent := newReportFixture(t, NextStep)
-	if _, executeErr := adapter.execute(
+	if _, executeErr := adapter.Execute(
 		json.RawMessage(`{"output":"act now"}`),
 		tools.ToolRunContext{
 			Context: context.Background(),
@@ -93,7 +93,7 @@ func TestReportDoesNotDeliverAfterCancellation(t *testing.T) {
 	adapter, parentAgent, childAgent := newReportFixture(t, Quiet)
 	cancelledContext, cancelContext := context.WithCancel(context.Background())
 	cancelContext()
-	_, executeErr := adapter.execute(
+	_, executeErr := adapter.Execute(
 		json.RawMessage(`{"output":"must not be delivered"}`),
 		tools.ToolRunContext{
 			Context: cancelledContext,

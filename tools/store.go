@@ -187,8 +187,6 @@ func (filter compiledRestriction) admits(name string) bool {
 }
 
 type toolLayerSnapshot struct {
-	source       *toolStore
-	revision     uint64
 	tools        []*registeredTool
 	restrictions []compiledRestriction
 	guards       []ToolGuard
@@ -204,7 +202,6 @@ type toolView struct {
 type toolStore struct {
 	mutex         sync.RWMutex
 	tools         toolTable
-	revision      uint64
 	snapshotValue toolLayerSnapshot
 
 	restrictions     map[string]*registeredRestriction
@@ -373,10 +370,7 @@ func (storage *toolStore) snapshot() toolLayerSnapshot {
 // less frequent mutation path. Registered definitions and compiled policies
 // are immutable after admission, so readers may safely share these slices.
 func (storage *toolStore) rebuildSnapshotLocked() {
-	storage.revision++
 	storage.snapshotValue = toolLayerSnapshot{
-		source:       storage,
-		revision:     storage.revision,
 		tools:        storage.tools.entries(),
 		restrictions: make([]compiledRestriction, 0, len(storage.restrictionOrder)),
 		guards:       make([]ToolGuard, 0, len(storage.guardOrder)),

@@ -7,7 +7,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/tools"
 )
 
@@ -19,7 +18,7 @@ func toolSetDefinitions(names ...string) []tools.ToolDefinition {
 			objectTool(
 				name,
 				name+" description",
-				tools.ExecutorFunc(passThroughBody),
+				executorStub(passThroughBody),
 			),
 		)
 	}
@@ -37,12 +36,12 @@ func schemaNames(runtime tools.ToolRuntime) []string {
 
 func TestToolSetOpenReplaceAndClosePublishOnlySnapshotChanges(t *testing.T) {
 	var changes atomic.Int32
-	observer := &eventObserverPlugin{
+	observer := &eventObserver{
 		name: "count-tool-set-changes",
-		subscriptions: []plugin.EventSubscription{
-			plugin.EventOf[tools.RegistryChanged](),
+		subscriptions: []string{
+			tools.ChangeEventName,
 		},
-		observe: func(context.Context, plugin.Event) error {
+		observe: func(context.Context, toolEvent) error {
 			changes.Add(1)
 			return nil
 		},
@@ -125,7 +124,7 @@ func TestToolSetBuildFailurePreservesCurrentGeneration(t *testing.T) {
 	invalid := objectTool(
 		"invalid",
 		"invalid schema",
-		tools.ExecutorFunc(passThroughBody),
+		executorStub(passThroughBody),
 	)
 	invalid.Parameters = nil
 	if err := toolSet.Replace(
@@ -211,12 +210,12 @@ func findFragment(value string, fragment string) bool {
 func TestToolSetObserverFailureRollsBackWholeGeneration(t *testing.T) {
 	failure := errors.New("reject replacement")
 	var changes atomic.Int32
-	observer := &eventObserverPlugin{
+	observer := &eventObserver{
 		name: "reject-second-tool-set-change",
-		subscriptions: []plugin.EventSubscription{
-			plugin.EventOf[tools.RegistryChanged](),
+		subscriptions: []string{
+			tools.ChangeEventName,
 		},
-		observe: func(context.Context, plugin.Event) error {
+		observe: func(context.Context, toolEvent) error {
 			if changes.Add(1) == 2 {
 				return failure
 			}
@@ -351,4 +350,3 @@ func TestToolSetReadersNeverObservePartialGeneration(t *testing.T) {
 		}
 	}
 }
-

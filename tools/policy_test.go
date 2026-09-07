@@ -10,13 +10,11 @@ import (
 
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/approval"
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/tools"
 )
 
-type approvalProviderPlugin struct {
-	plugin.Base
+type approvalProvider struct {
 	outcome approval.Outcome
 	failure error
 
@@ -24,24 +22,7 @@ type approvalProviderPlugin struct {
 	lastRequest approval.Request
 }
 
-func (owner *approvalProviderPlugin) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name: "approval-provider",
-		Provides: []plugin.ProvidedService{
-			plugin.NewProvidedService[approval.Approval](owner),
-		},
-	}
-}
-
-func (*approvalProviderPlugin) Apply(context.Context) error {
-	return nil
-}
-
-func (*approvalProviderPlugin) Dispose(context.Context) error {
-	return nil
-}
-
-func (provider *approvalProviderPlugin) Request(
+func (provider *approvalProvider) Request(
 	_ context.Context,
 	decisionRequest approval.Request,
 ) (approval.Outcome, error) {
@@ -51,19 +32,19 @@ func (provider *approvalProviderPlugin) Request(
 	return provider.outcome, provider.failure
 }
 
-func (*approvalProviderPlugin) EffectivePolicy(
+func (*approvalProvider) EffectivePolicy(
 	session.Context,
 ) (approval.Policy, error) {
 	return approval.PolicyAsk, nil
 }
 
-func (*approvalProviderPlugin) OverrideOf(
+func (*approvalProvider) OverrideOf(
 	session.Context,
 ) (approval.Policy, bool, error) {
 	return "", false, nil
 }
 
-func (*approvalProviderPlugin) SetPolicy(
+func (*approvalProvider) SetPolicy(
 	context.Context,
 	approval.ApprovalTarget,
 	approval.Policy,
@@ -97,19 +78,19 @@ func newExecutionSubject(t *testing.T) *executionSubject {
 	}
 }
 
-func askPolicy(reason string) plugin.Plugin {
-	return &waterfallPlugin[
+func askPolicy(reason string) any {
+	return &policyFixture[
 		tools.PreExecuteRequest,
 		tools.PreExecuteOutcome,
 	]{
 		name: "ask-policy",
-		middleware: waterfallFunc[
+		middleware: policyFunc[
 			tools.PreExecuteRequest,
 			tools.PreExecuteOutcome,
 		](func(
 			context.Context,
 			tools.PreExecuteRequest,
-			plugin.WaterfallAction[
+			action[
 				tools.PreExecuteRequest,
 				tools.PreExecuteOutcome,
 			],
@@ -124,7 +105,7 @@ func askPolicy(reason string) plugin.Plugin {
 }
 
 func TestAskDecisionUsesOptionalApprovalBeforeDispatch(t *testing.T) {
-	provider := &approvalProviderPlugin{
+	provider := &approvalProvider{
 		outcome: approval.OutcomeAllowedOnce,
 	}
 	state := newToolsFixture(
@@ -138,7 +119,7 @@ func TestAskDecisionUsesOptionalApprovalBeforeDispatch(t *testing.T) {
 		objectTool(
 			"danger",
 			"",
-			tools.ExecutorFunc(func(
+			executorStub(func(
 				arguments json.RawMessage,
 				_ tools.ToolRunContext,
 			) (json.RawMessage, error) {
@@ -181,7 +162,7 @@ func TestAskDecisionFailsClosedWithoutApproval(t *testing.T) {
 		objectTool(
 			"danger",
 			"",
-			tools.ExecutorFunc(func(
+			executorStub(func(
 				arguments json.RawMessage,
 				_ tools.ToolRunContext,
 			) (json.RawMessage, error) {
@@ -233,18 +214,18 @@ func TestPostPolicyCanReplaceValueOrBlock(t *testing.T) {
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			policy := &waterfallPlugin[
+			policy := &policyFixture[
 				tools.PostExecuteRequest,
 				tools.PostExecuteOutcome,
 			]{
 				name: "post-decision",
-				middleware: waterfallFunc[
+				middleware: policyFunc[
 					tools.PostExecuteRequest,
 					tools.PostExecuteOutcome,
 				](func(
 					context.Context,
 					tools.PostExecuteRequest,
-					plugin.WaterfallAction[
+					action[
 						tools.PostExecuteRequest,
 						tools.PostExecuteOutcome,
 					],
@@ -260,7 +241,7 @@ func TestPostPolicyCanReplaceValueOrBlock(t *testing.T) {
 				objectTool(
 					"normalized",
 					"",
-					tools.ExecutorFunc(passThroughBody),
+					executorStub(passThroughBody),
 				),
 			); err != nil {
 				t.Fatal(err)
@@ -282,18 +263,18 @@ func TestPostPolicyCanReplaceValueOrBlock(t *testing.T) {
 }
 
 func TestPostValueReplacementPreservesTurnConclusion(t *testing.T) {
-	policy := &waterfallPlugin[
+	policy := &policyFixture[
 		tools.PostExecuteRequest,
 		tools.PostExecuteOutcome,
 	]{
 		name: "replace-concluding-value",
-		middleware: waterfallFunc[
+		middleware: policyFunc[
 			tools.PostExecuteRequest,
 			tools.PostExecuteOutcome,
 		](func(
 			context.Context,
 			tools.PostExecuteRequest,
-			plugin.WaterfallAction[
+			action[
 				tools.PostExecuteRequest,
 				tools.PostExecuteOutcome,
 			],
@@ -311,7 +292,7 @@ func TestPostValueReplacementPreservesTurnConclusion(t *testing.T) {
 		objectTool(
 			"concluding",
 			"",
-			tools.ExecutorFunc(func(
+			executorStub(func(
 				arguments json.RawMessage,
 				runContext tools.ToolRunContext,
 			) (json.RawMessage, error) {
@@ -339,12 +320,12 @@ func TestPostValueReplacementPreservesTurnConclusion(t *testing.T) {
 
 func TestBestEffortResultFailureDoesNotReplaceToolOutcome(t *testing.T) {
 	observerFailure := errors.New("observer failed")
-	observer := &eventObserverPlugin{
+	observer := &eventObserver{
 		name: "failing-result-observer",
-		subscriptions: []plugin.EventSubscription{
-			plugin.EventOf[tools.ExecutionCompleted](),
+		subscriptions: []string{
+			tools.ResultEventName,
 		},
-		observe: func(context.Context, plugin.Event) error {
+		observe: func(context.Context, toolEvent) error {
 			return observerFailure
 		},
 	}
@@ -354,7 +335,7 @@ func TestBestEffortResultFailureDoesNotReplaceToolOutcome(t *testing.T) {
 		objectTool(
 			"observed",
 			"",
-			tools.ExecutorFunc(passThroughBody),
+			executorStub(passThroughBody),
 		),
 	); err != nil {
 		t.Fatal(err)
@@ -371,7 +352,7 @@ func TestBestEffortResultFailureDoesNotReplaceToolOutcome(t *testing.T) {
 		t.Fatalf("observer replaced Tool outcome = %#v", outcome)
 	}
 	state.failures.mutex.Lock()
-	failures := append([]plugin.EventFailure(nil), state.failures.failures...)
+	failures := append([]observationFailure(nil), state.failures.failures...)
 	state.failures.mutex.Unlock()
 	if len(failures) != 1 || failures[0].EventName != tools.ResultEventName ||
 		!strings.Contains(failures[0].Error.Error(), observerFailure.Error()) {
