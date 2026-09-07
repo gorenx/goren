@@ -42,9 +42,9 @@ flowchart LR
 
 Session 的 durable Event 类型和 Plugin Runtime 的进程内 Event 是两套明确契约：Session Event 由具名 event key 构造 `EventDraft`，再由唯一 `Commit(context.Context, WritePlan)` 边界分配连续 `seq/time` 并规划 Surface transition；Plugin Event 由 `plugin.EventOf[E]` / `plugin.Publish` 分发，不进入 Session log。Event Sourcing 由 Session/Persistence owner 决定，Plugin Runtime 不保存或重放它。
 
-其他领域只持有 `session.Context`、`LiveStore` 和 exact `Handle`，不能取得私有 `sessionContext`、`eventLog` 或 `sessionLifecycle`。`sessionContext` 是 `Context` 的具体对象，只单向组合 Event log 与 lifecycle；`eventLog` 只负责 seed、append-only Event、Surface 与 detached reads；`sessionLifecycle` 自己拥有单 Session FIFO、phase、exact membership token、publication eligibility 和共享 Release attempt。`memoryStore` 只拥有进程内 exact membership index、进入顺序和 Store `open/closing/closed` 生命周期，不被 Session 回指；`session.Plugin` 只适配 Service 发布并实现 Core 消费的 typed `eventPublisher`。完整状态机和交互流程见[Core 权威设计](./docs/design.zh-CN.md#8-livestore-与状态机)。
+其他领域只持有 `session.Context`、`LiveStore` 和 exact `Handle`，不能取得私有 `sessionContext` 或 `sessionLifecycle`；迁移中的 Session Grain 直接独占 `Log`，不向其他 Actor 暴露该指针。`sessionContext` 是 `Context` 的具体对象，只单向组合 Event log 与 lifecycle；`Log` 只负责 seed、append-only Event、Surface 与 detached reads；`sessionLifecycle` 自己拥有单 Session FIFO、phase、exact membership token、publication eligibility 和共享 Release attempt。`memoryStore` 只拥有进程内 exact membership index、进入顺序和 Store `open/closing/closed` 生命周期，不被 Session 回指；`session.Plugin` 只适配 Service 发布并实现 Core 消费的 typed `eventPublisher`。完整状态机和交互流程见[Core 权威设计](./docs/design.zh-CN.md#8-livestore-与状态机)。
 
-普通 producer 用 `session.Batch(drafts...)` 创建固定 plan，再调用 `Context.Commit`。只有完整 drafts 无法在 admission 前确定、必须基于 FIFO 队首最新 `Snapshot` 计算的业务 use case 才实现 `WritePlan.Build`；一个 use case 实现一次，不是每个 Event 实现。`Build` 一次返回完整 batch，`eventLog` 只暂存本次新 Event，并在必要时复制 Surface nodes 来验证全部 transition，成功后原子 append；它不会为每次固定写复制完整历史，也不存在 request-local Event FIFO 或部分 batch。LLM、Tool、网络、文件和数据库 I/O 必须在 Session FIFO 外执行。
+普通 producer 用 `session.Batch(drafts...)` 创建固定 plan，再调用 `Context.Commit`。只有完整 drafts 无法在 admission 前确定、必须基于 FIFO 队首最新 `Snapshot` 计算的业务 use case 才实现 `WritePlan.Build`；一个 use case 实现一次，不是每个 Event 实现。`Build` 一次返回完整 batch，`Log` 只暂存本次新 Event，并在必要时复制 Surface nodes 来验证全部 transition，成功后原子 append；它不会为每次固定写复制完整历史，也不存在 request-local Event FIFO 或部分 batch。LLM、Tool、网络、文件和数据库 I/O 必须在 Session FIFO 外执行。
 
 ### Persistence 与 SQLite
 
@@ -112,3 +112,9 @@ Persistence 对同一 Session ID 的 load/append/repair 串行化。write-behind
 Query Service 串行化 observe/reconcile/search，使一个 page 与 cursor 绑定同一 index generation；取消、Persistence failure、source conflict、index failure、invalid/stale cursor 分开分类。Scope teardown 等待正在执行的 Query operation 后关闭 derived index。
 
 调用方 Context 控制锁等待、读取、事务与 flush。Session dispose、Provider dispose、用户 rename 或更新 revision 会取消过期 title work；迟到结果在 append 前再次校验。慢客户端不参与这些事务，由 API Proxy 自己的 delivery queue 隔离。
+
+## Actor 迁移中的提交职责
+
+本轮设计见 [Session 模块](../zh-CN/actor-design/22-session-module.md)。log_commit.go 拥有日志业务事务；session_context_commit.go 保留现有接纳与提交后通知。通知失败不回滚已提交事件，WriteResult 仍报告真实前缀。尚未接通生产 Session Actor，不将现存生命周期同步当作目标调度实现。
+
+[Session Grain](actor/README.zh-CN.md) 已实现初始化、内存提交和带最低前缀约束的快照读取。该入口直接持有同一日志业务实现，未接入旧 Store/Plugin 生命周期。日志仍保留服务旧并发读者的锁；Grain 持久化、恢复及业务关闭已实现，Registry 授权和生产装配尚未完成。
