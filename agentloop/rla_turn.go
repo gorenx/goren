@@ -18,9 +18,9 @@ import (
 // legal in-memory state transitions. It returns true when durable pending input
 // requires a successor Turn.
 func (subject *ReactLoopAgent) runTurn(
-	requestContext context.Context,
+	ctx context.Context,
 ) (bool, error) {
-	if err := contextFailure(requestContext); err != nil {
+	if err := contextFailure(ctx); err != nil {
 		return false, err
 	}
 	turnNumber := subject.lastTurn + 1
@@ -29,7 +29,7 @@ func (subject *ReactLoopAgent) runTurn(
 			"agentloop: Agent %q Turn exceeds the safe integer range",
 			subject.identifier,
 		)
-		subject.publishError(requestContext, subject.lastTurn, 0, problem)
+		subject.publishError(ctx, subject.lastTurn, 0, problem)
 		return false, problem
 	}
 	currentTurn, err := turnstate.New(turnNumber)
@@ -44,12 +44,12 @@ func (subject *ReactLoopAgent) runTurn(
 	)
 	if err == nil {
 		_, err = subject.conversation.Commit(
-			requestContext,
+			ctx,
 			session.Batch(started),
 		)
 	}
 	if err != nil {
-		subject.publishError(requestContext, turnNumber, 0, err)
+		subject.publishError(ctx, turnNumber, 0, err)
 		return false, err
 	}
 	if err = currentTurn.EnterOpen(); err != nil {
@@ -60,7 +60,7 @@ func (subject *ReactLoopAgent) runTurn(
 	var operationErr error
 	target := agent.NextTurn
 	for {
-		if err = contextFailure(requestContext); err != nil {
+		if err = contextFailure(ctx); err != nil {
 			operationErr = err
 			break
 		}
@@ -70,7 +70,7 @@ func (subject *ReactLoopAgent) runTurn(
 			break
 		}
 		proposal, proposalErr := subject.prepareStep(
-			requestContext,
+			ctx,
 			target,
 			turnNumber,
 			stepNumber,
@@ -99,7 +99,7 @@ func (subject *ReactLoopAgent) runTurn(
 			)
 			break
 		}
-		currentStep, openErr := subject.openStep(requestContext, proposal)
+		currentStep, openErr := subject.openStep(ctx, proposal)
 		if openErr != nil {
 			operationErr = openErr
 			break
@@ -109,7 +109,7 @@ func (subject *ReactLoopAgent) runTurn(
 			break
 		}
 		stepResult, stepErr := subject.executeOpenStep(
-			requestContext,
+			ctx,
 			currentStep,
 			proposal,
 		)
@@ -128,11 +128,11 @@ func (subject *ReactLoopAgent) runTurn(
 				operationErr = err
 				break
 			}
-			if err = subject.publishTurnStopping(requestContext, turnNumber); err != nil {
+			if err = subject.publishTurnStopping(ctx, turnNumber); err != nil {
 				operationErr = err
 				break
 			}
-			if err = contextFailure(requestContext); err != nil {
+			if err = contextFailure(ctx); err != nil {
 				operationErr = err
 				break
 			}
@@ -149,12 +149,12 @@ func (subject *ReactLoopAgent) runTurn(
 
 	result := currentTurn.ResultValue()
 	if operationErr != nil {
-		if requestContext.Err() != nil {
+		if ctx.Err() != nil {
 			result = turnstate.TurnResultAborted
 		} else {
 			result = turnstate.TurnResultError
 			subject.publishError(
-				context.WithoutCancel(requestContext),
+				context.WithoutCancel(ctx),
 				turnNumber,
 				currentTurn.LastStep(),
 				operationErr,
@@ -173,7 +173,7 @@ func (subject *ReactLoopAgent) runTurn(
 			operationErr = errors.Join(operationErr, err)
 		}
 	}
-	settlementContext := context.WithoutCancel(requestContext)
+	settlementContext := context.WithoutCancel(ctx)
 	ending := subject.turnEndReason(result, operationErr)
 	ended, endErr := session.NewEventDraft(
 		session.TurnEnded,

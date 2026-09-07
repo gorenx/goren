@@ -31,34 +31,34 @@ func newCompaction(catalog *policyCatalog) *Compaction {
 	}
 }
 
-func (implementation *Compaction) bind(
+func (impl *Compaction) bind(
 	llmRuntime llm.LlmRuntime,
 	sessions session.LiveStore,
 	meter tokenmeter.Meter,
 	pruner toolresultpruner.Pruner,
 ) {
-	implementation.llmRuntime = llmRuntime
-	implementation.sessions = sessions
-	implementation.meter = meter
-	implementation.pruner = pruner
-	implementation.compactor.bind(llmRuntime, meter)
+	impl.llmRuntime = llmRuntime
+	impl.sessions = sessions
+	impl.meter = meter
+	impl.pruner = pruner
+	impl.compactor.bind(llmRuntime, meter)
 }
 
-func (implementation *Compaction) release() {
-	implementation.compactor.release()
-	implementation.pruner = nil
-	implementation.meter = nil
-	implementation.sessions = nil
-	implementation.llmRuntime = nil
+func (impl *Compaction) release() {
+	impl.compactor.release()
+	impl.pruner = nil
+	impl.meter = nil
+	impl.sessions = nil
+	impl.llmRuntime = nil
 }
 
 // CompactIfNeeded applies routed pressure or canonical context-overflow policy.
-func (implementation *Compaction) CompactIfNeeded(
-	requestContext context.Context,
+func (impl *Compaction) CompactIfNeeded(
+	ctx context.Context,
 	ownerContext compaction.AgentContext,
 	selectedTrigger compaction.Trigger,
 ) (*compaction.Result, error) {
-	if err := implementation.validateOperation(requestContext, ownerContext); err != nil {
+	if err := impl.validateOperation(ctx, ownerContext); err != nil {
 		return nil, err
 	}
 	if err := compaction.ValidateTrigger(selectedTrigger); err != nil {
@@ -68,8 +68,8 @@ func (implementation *Compaction) CompactIfNeeded(
 	if err != nil || !found {
 		return nil, err
 	}
-	measurement, err := implementation.meter.Measure(
-		requestContext,
+	measurement, err := impl.meter.Measure(
+		ctx,
 		ownerContext.Session,
 		nil,
 	)
@@ -79,14 +79,14 @@ func (implementation *Compaction) CompactIfNeeded(
 
 	switch selectedTrigger {
 	case compaction.TriggerContextOverflow:
-		return implementation.compactOverflow(
-			requestContext,
+		return impl.compactOverflow(
+			ctx,
 			ownerContext,
 			measurement,
 		)
 	case compaction.TriggerPressure:
-		return implementation.compactPressure(
-			requestContext,
+		return impl.compactPressure(
+			ctx,
 			ownerContext,
 			selectedTarget,
 			measurement,
@@ -96,13 +96,13 @@ func (implementation *Compaction) CompactIfNeeded(
 	}
 }
 
-func (implementation *Compaction) compactOverflow(
-	requestContext context.Context,
+func (impl *Compaction) compactOverflow(
+	ctx context.Context,
 	ownerContext compaction.AgentContext,
 	measurement tokenmeter.Measurement,
 ) (*compaction.Result, error) {
-	measurement, err := implementation.pruneAndMeasure(
-		requestContext,
+	measurement, err := impl.pruneAndMeasure(
+		ctx,
 		ownerContext.Session,
 		measurement,
 	)
@@ -110,9 +110,9 @@ func (implementation *Compaction) compactOverflow(
 		return nil, err
 	}
 	reading, err := readSurface(
-		requestContext,
+		ctx,
 		ownerContext.Session,
-		implementation.meter,
+		impl.meter,
 		&measurement,
 	)
 	if err != nil {
@@ -122,8 +122,8 @@ func (implementation *Compaction) compactOverflow(
 	if err != nil || selectedRange == nil {
 		return nil, err
 	}
-	outcome, err := implementation.CompactRegion(
-		requestContext,
+	outcome, err := impl.CompactRegion(
+		ctx,
 		selectedRange.Start,
 		selectedRange.End,
 		ownerContext,
@@ -134,14 +134,14 @@ func (implementation *Compaction) compactOverflow(
 	return &outcome, nil
 }
 
-func (implementation *Compaction) compactPressure(
+func (impl *Compaction) compactPressure(
 	requestContext context.Context,
 	ownerContext compaction.AgentContext,
 	selectedTarget RouteTarget,
 	measurement tokenmeter.Measurement,
 ) (*compaction.Result, error) {
 
-	modelInfo, err := implementation.llmRuntime.ResolveModelInfo(
+	modelInfo, err := impl.llmRuntime.ResolveModelInfo(
 		requestContext,
 		selectedTarget.Provider,
 		selectedTarget.Model,
@@ -163,7 +163,7 @@ func (implementation *Compaction) compactPressure(
 				"; configure contextWindow on that adapter model",
 		}
 	}
-	targetPolicy := implementation.catalog.resolve(selectedTarget)
+	targetPolicy := impl.catalog.resolve(selectedTarget)
 	compactSpec, err := ResolveCompactSpec(
 		targetPolicy,
 		modelInfo.Context.ContextWindow,
@@ -174,7 +174,7 @@ func (implementation *Compaction) compactPressure(
 	if measurement.TotalTokens < compactSpec.ThresholdTokens {
 		return nil, nil
 	}
-	measurement, err = implementation.pruneAndMeasure(
+	measurement, err = impl.pruneAndMeasure(
 		requestContext,
 		ownerContext.Session,
 		measurement,
@@ -191,7 +191,7 @@ func (implementation *Compaction) compactPressure(
 		reading, readingErr := readSurface(
 			requestContext,
 			ownerContext.Session,
-			implementation.meter,
+			impl.meter,
 			&measurement,
 		)
 		if readingErr != nil {
@@ -210,7 +210,7 @@ func (implementation *Compaction) compactPressure(
 			}
 			break
 		}
-		outcome, compactErr := implementation.CompactRegion(
+		outcome, compactErr := impl.CompactRegion(
 			requestContext,
 			selectedRange.Start,
 			selectedRange.End,
@@ -220,7 +220,7 @@ func (implementation *Compaction) compactPressure(
 			return nil, compactErr
 		}
 		latest = &outcome
-		measurement, err = implementation.meter.Measure(
+		measurement, err = impl.meter.Measure(
 			requestContext,
 			ownerContext.Session,
 			nil,
@@ -242,17 +242,17 @@ func (implementation *Compaction) compactPressure(
 
 // CompactRegion compacts one inclusive current-Surface span inside the open
 // Agent turn.
-func (implementation *Compaction) CompactRegion(
-	requestContext context.Context,
+func (impl *Compaction) CompactRegion(
+	ctx context.Context,
 	start int64,
 	end int64,
 	ownerContext compaction.AgentContext,
 ) (compaction.Result, error) {
-	if err := implementation.validateOperation(requestContext, ownerContext); err != nil {
+	if err := impl.validateOperation(ctx, ownerContext); err != nil {
 		return compaction.Result{}, err
 	}
-	return implementation.compactor.compactTurn(
-		requestContext,
+	return impl.compactor.compactTurn(
+		ctx,
 		ownerContext,
 		compaction.SurfaceRange{
 			Start: start,
@@ -261,24 +261,24 @@ func (implementation *Compaction) CompactRegion(
 	)
 }
 
-func (implementation *Compaction) pruneAndMeasure(
-	requestContext context.Context,
+func (impl *Compaction) pruneAndMeasure(
+	ctx context.Context,
 	conversation session.Context,
 	current tokenmeter.Measurement,
 ) (tokenmeter.Measurement, error) {
-	if implementation.pruner == nil {
+	if impl.pruner == nil {
 		return current, nil
 	}
-	if _, err := implementation.pruner.PruneSession(
-		requestContext,
+	if _, err := impl.pruner.PruneSession(
+		ctx,
 		conversation,
 	); err != nil {
 		return tokenmeter.Measurement{}, err
 	}
-	return implementation.meter.Measure(requestContext, conversation, nil)
+	return impl.meter.Measure(ctx, conversation, nil)
 }
 
-func (implementation *Compaction) validateOperation(
+func (impl *Compaction) validateOperation(
 	requestContext context.Context,
 	ownerContext compaction.AgentContext,
 ) error {
@@ -291,8 +291,8 @@ func (implementation *Compaction) validateOperation(
 	if err := compaction.ValidateAgentContext(ownerContext); err != nil {
 		return err
 	}
-	if implementation.llmRuntime == nil || implementation.sessions == nil ||
-		implementation.meter == nil {
+	if impl.llmRuntime == nil || impl.sessions == nil ||
+		impl.meter == nil {
 		return errors.New("compaction-basic: Provider dependencies are not bound")
 	}
 	return nil

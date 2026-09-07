@@ -53,6 +53,9 @@ type layerEffects interface {
 // from Plugin lifecycle. It has only provider-facing parent and effect ports.
 type ToolLayer struct {
 	registry       *registry
+	mutationMutex  sync.Mutex
+	toolSetMutex   sync.Mutex
+	toolSets       map[string]*toolSetState
 	runtimeMutex   sync.RWMutex
 	runtime        *executionRuntime
 	prompt         *systemprompt.PromptHandle
@@ -78,10 +81,18 @@ func (owner *ToolLayer) AddTool(
 	if err != nil {
 		return nil, err
 	}
+	eventContext, unlock, err := owner.beginMutation(requestContext)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	if err := owner.requireActive(); err != nil {
+		return nil, err
+	}
 	if err := owner.registry.addTool(entry); err != nil {
 		return nil, err
 	}
-	if err := owner.publishChanged(requestContext); err != nil {
+	if err := owner.publishChanged(eventContext); err != nil {
 		owner.registry.removeTool(entry.registrationName, entry)
 		return nil, err
 	}
@@ -98,11 +109,16 @@ func (owner *ToolLayer) unregisterTool(
 	if err := validateMutationContext(requestContext); err != nil {
 		return false, err
 	}
+	eventContext, unlock, err := owner.beginMutation(requestContext)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
 	found := owner.registry.removeTool(entry.registrationName, entry)
 	if !found {
 		return true, nil
 	}
-	return true, owner.publishChanged(requestContext)
+	return true, owner.publishChanged(eventContext)
 }
 
 // AddRestriction adds one named inherited-capability filter to this exact
@@ -271,12 +287,21 @@ func (owner *ToolLayer) Close(closeContext context.Context) error {
 	owner.runtimeMutex.Lock()
 	owner.runtime = nil
 	owner.runtimeMutex.Unlock()
+	owner.mutationMutex.Lock()
+	owner.toolSetMutex.Lock()
+	for _, state := range owner.toolSets {
+		state.active = false
+		state.entries = nil
+	}
+	owner.toolSets = nil
+	owner.toolSetMutex.Unlock()
+	owner.registry.clear()
+	owner.mutationMutex.Unlock()
 	var closeErr error
 	if owner.prompt != nil {
 		closeErr = owner.prompt.Unregister(closeContext)
 		owner.prompt = nil
 	}
-	owner.registry.clear()
 	owner.observerMutex.Lock()
 	observers := owner.observers
 	owner.observers = nil
@@ -370,6 +395,28 @@ func validateMutationContext(requestContext context.Context) error {
 		return errors.New("tools: mutation Context is nil")
 	}
 	return requestContext.Err()
+}
+
+type mutationContextKey struct{}
+
+func (owner *ToolLayer) beginMutation(
+	requestContext context.Context,
+) (context.Context, func(), error) {
+	if err := validateMutationContext(requestContext); err != nil {
+		return nil, nil, err
+	}
+	if activeOwner, present := requestContext.Value(mutationContextKey{}).(*ToolLayer); present && activeOwner == owner {
+		return nil, nil, errors.New(
+			"tools: registry mutation is not allowed from a tools/change observer",
+		)
+	}
+	owner.mutationMutex.Lock()
+	eventContext := context.WithValue(
+		requestContext,
+		mutationContextKey{},
+		owner,
+	)
+	return eventContext, owner.mutationMutex.Unlock, nil
 }
 
 func validateMutation(

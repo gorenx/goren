@@ -121,7 +121,7 @@ func (owner *Service) SetPolicy(
 	if previous == selectedPolicy {
 		return nil
 	}
-	if err := appendPolicy(
+	if err = appendPolicy(
 		requestContext,
 		agentSubject.SessionValue(),
 		selectedPolicy,

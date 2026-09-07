@@ -75,6 +75,17 @@ func (catalog *registry) removeTool(
 	return catalog.store.removeTool(name, expected)
 }
 
+func (catalog *registry) replaceToolSet(
+	previous []*registeredTool,
+	candidates []*registeredTool,
+) (toolSetMutation, error) {
+	return catalog.store.replaceToolSet(previous, candidates)
+}
+
+func (catalog *registry) rollbackToolSet(mutation toolSetMutation) {
+	catalog.store.rollbackToolSet(mutation)
+}
+
 func (catalog *registry) compileRestriction(restriction ToolRestriction) (compiledRestriction, error) {
 	if catalog.root {
 		return compiledRestriction{}, errors.New(

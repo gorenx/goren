@@ -52,6 +52,14 @@ type ToolCatalog interface {
 	AddTool(context.Context, ToolDefinition) (*ToolHandle, error)
 }
 
+// ToolSetCatalog owns atomic replacement of a named group of Tool
+// definitions. It is intended for providers whose complete remote catalog
+// changes as one generation.
+type ToolSetCatalog interface {
+	plugin.Service
+	OpenToolSet(context.Context, string) (*ToolSetHandle, error)
+}
+
 // PolicyRegistry is the mutation boundary consumed by Plugins that own Tool
 // visibility or execution policies. It changes only the exact Registry layer
 // resolved by a Plugin.

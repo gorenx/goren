@@ -65,8 +65,8 @@ func (owner *Service) Manifest() plugin.Manifest {
 
 // Apply resolves dependencies and installs the policy context owned by this
 // exact Approval layer.
-func (owner *Service) Apply(requestContext context.Context) error {
-	if err := requestContext.Err(); err != nil {
+func (owner *Service) Apply(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if !validPolicy(owner.defaultPolicy) && owner.root {
@@ -83,31 +83,35 @@ func (owner *Service) Apply(requestContext context.Context) error {
 	if err != nil {
 		return err
 	}
-	promptHandle, err := prompts.AddContext(requestContext, systemprompt.PromptContext{
-		Name:  policyContextName,
-		Order: 115,
-		Text: systemprompt.TextFunc(func(
-			providerContext context.Context,
-			assemblyContext systemprompt.AssembleContext,
-		) (string, error) {
-			if err := providerContext.Err(); err != nil {
-				return "", err
-			}
-			if assemblyContext.Session == nil {
-				return "", nil
-			}
-			selectedPolicy, policyErr := owner.EffectivePolicy(
-				assemblyContext.Session,
-			)
-			if policyErr != nil {
-				return "", policyErr
-			}
-			if selectedPolicy == PolicyNever {
-				return neverPolicyText, nil
-			}
-			return askPolicyText, nil
-		}),
-	})
+	promptHandle, err := prompts.AddContext(
+		ctx,
+		systemprompt.PromptContext{
+			Name:  policyContextName,
+			Order: 115,
+			Text: systemprompt.TextFunc(
+				func(
+					providerContext context.Context,
+					assemblyContext systemprompt.AssembleContext,
+				) (string, error) {
+					if err := providerContext.Err(); err != nil {
+						return "", err
+					}
+					if assemblyContext.Session == nil {
+						return "", nil
+					}
+					selectedPolicy, policyErr := owner.EffectivePolicy(
+						assemblyContext.Session,
+					)
+					if policyErr != nil {
+						return "", policyErr
+					}
+					if selectedPolicy == PolicyNever {
+						return neverPolicyText, nil
+					}
+					return askPolicyText, nil
+				},
+			),
+		})
 	if err != nil {
 		return err
 	}
@@ -129,10 +133,10 @@ func (owner *Service) Dispose(closeContext context.Context) error {
 
 // Request writes the paired audit events around one policy/answerer decision.
 func (owner *Service) Request(
-	requestContext context.Context,
+	ctx context.Context,
 	decisionInput Request,
 ) (Outcome, error) {
-	if requestContext == nil || decisionInput.Subject == nil ||
+	if ctx == nil || decisionInput.Subject == nil ||
 		decisionInput.Subject.SessionValue() == nil {
 		return "", errors.New("approval: Context, Subject, and Session are required")
 	}
@@ -149,32 +153,37 @@ func (owner *Service) Request(
 	if identifier == "" {
 		return "", errors.New("approval: minted request id is empty")
 	}
-	askedDraft, err := session.NewEventDraft(AskedEvent, Asked{
-		ID:       identifier,
-		ToolName: decisionInput.ToolName,
-		CallID:   cloneCallID(decisionInput.CallID),
-		Reason:   cloneString(decisionInput.Reason),
-	})
+	askedDraft, err := session.NewEventDraft(
+		AskedEvent,
+		Asked{
+			ID:       identifier,
+			ToolName: decisionInput.ToolName,
+			CallID:   cloneCallID(decisionInput.CallID),
+			Reason:   cloneString(decisionInput.Reason),
+		},
+	)
 	if err != nil {
 		return "", err
 	}
-	if _, err := conversation.Commit(requestContext, session.Batch(askedDraft)); err != nil {
+	if _, err = conversation.Commit(ctx, session.Batch(askedDraft)); err != nil {
 		return "", err
 	}
 	decisionOutcome := owner.decide(
-		requestContext,
+		ctx,
 		decisionInput,
 		conversation,
 	)
-	decidedDraft, err := session.NewEventDraft(DecidedEvent, Decided{
-		ID:      identifier,
-		Outcome: decisionOutcome,
-	})
+	decidedDraft, err := session.NewEventDraft(
+		DecidedEvent, Decided{
+			ID:      identifier,
+			Outcome: decisionOutcome,
+		},
+	)
 	if err != nil {
 		return "", err
 	}
-	if _, err := conversation.Commit(
-		context.WithoutCancel(requestContext),
+	if _, err = conversation.Commit(
+		context.WithoutCancel(ctx),
 		session.Batch(decidedDraft),
 	); err != nil {
 		return "", err
@@ -183,11 +192,11 @@ func (owner *Service) Request(
 }
 
 func (owner *Service) decide(
-	requestContext context.Context,
+	ctx context.Context,
 	decisionInput Request,
 	conversation session.Context,
 ) Outcome {
-	if requestContext.Err() != nil {
+	if ctx.Err() != nil {
 		return OutcomeCancelled
 	}
 	selectedPolicy, err := owner.EffectivePolicy(conversation)
@@ -204,7 +213,7 @@ func (owner *Service) decide(
 	settled := make(chan result, 1)
 	go func() {
 		resolvedDecision, dispatchErr := plugin.Run(
-			requestContext,
+			ctx,
 			owner,
 			DecisionRequest{
 				Request: decisionInput,
@@ -217,7 +226,7 @@ func (owner *Service) decide(
 		}
 	}()
 	select {
-	case <-requestContext.Done():
+	case <-ctx.Done():
 		return OutcomeCancelled
 	case completed := <-settled:
 		if completed.err != nil || !validOutcome(completed.outcome) {

@@ -21,11 +21,11 @@ type preDispatchEvaluation struct {
 }
 
 func (engine *policyEngine) evaluate(
-	requestContext context.Context,
+	ctx context.Context,
 	toolCall ToolExecution,
 ) (preDispatchEvaluation, error) {
 	gateOutcome, err := engine.effects.ResolvePreExecute(
-		requestContext,
+		ctx,
 		PreExecuteRequest{
 			toolCall: toolCall,
 		},
@@ -34,7 +34,7 @@ func (engine *policyEngine) evaluate(
 		return preDispatchEvaluation{}, err
 	}
 	resolvedGate, approvalCancelled, err := engine.resolveAsk(
-		requestContext,
+		ctx,
 		toolCall,
 		gateOutcome.Decision,
 	)

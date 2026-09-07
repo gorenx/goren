@@ -11,6 +11,19 @@ type toolTable struct {
 	order  []string
 }
 
+func (table toolTable) clone() toolTable {
+	copyTable := toolTable{
+		order: append([]string(nil), table.order...),
+	}
+	if len(table.byName) != 0 {
+		copyTable.byName = make(map[string]*registeredTool, len(table.byName))
+		for name, entry := range table.byName {
+			copyTable.byName[name] = entry
+		}
+	}
+	return copyTable
+}
+
 func (table *toolTable) add(entry *registeredTool) error {
 	if table.byName == nil {
 		table.byName = make(map[string]*registeredTool)
@@ -66,6 +79,88 @@ func (table *toolTable) clear() {
 	table.order = nil
 }
 
+func (table *toolTable) replaceSet(
+	previous []*registeredTool,
+	candidates []*registeredTool,
+) (bool, error) {
+	previousByName := make(map[string]*registeredTool, len(previous))
+	firstIndex := len(table.order)
+	for _, entry := range previous {
+		current := table.byName[entry.registrationName]
+		if current != entry {
+			return false, fmt.Errorf(
+				"tools: Tool Set entry %q is stale",
+				entry.registrationName,
+			)
+		}
+		previousByName[entry.registrationName] = entry
+	}
+	for index, name := range table.order {
+		if _, present := previousByName[name]; present && index < firstIndex {
+			firstIndex = index
+		}
+	}
+
+	var conflict string
+	for _, entry := range candidates {
+		current := table.byName[entry.registrationName]
+		if current != nil && previousByName[entry.registrationName] == nil {
+			conflict = entry.registrationName
+			break
+		}
+	}
+
+	changed := len(previous) != 0 || (conflict == "" && len(candidates) != 0)
+	if !changed {
+		if conflict != "" {
+			return false, fmt.Errorf(
+				"tools: tool %q is already registered by another owner",
+				conflict,
+			)
+		}
+		return false, nil
+	}
+
+	for name := range previousByName {
+		delete(table.byName, name)
+	}
+	filteredOrder := make([]string, 0, len(table.order)-len(previous))
+	for _, name := range table.order {
+		if _, removed := previousByName[name]; !removed {
+			filteredOrder = append(filteredOrder, name)
+		}
+	}
+	if firstIndex > len(filteredOrder) {
+		firstIndex = len(filteredOrder)
+	}
+
+	if conflict != "" {
+		table.order = filteredOrder
+		if len(table.byName) == 0 {
+			table.byName = nil
+			table.order = nil
+		}
+		return true, fmt.Errorf(
+			"tools: tool %q is already registered by another owner",
+			conflict,
+		)
+	}
+
+	if table.byName == nil {
+		table.byName = make(map[string]*registeredTool, len(candidates))
+	}
+	candidateOrder := make([]string, 0, len(candidates))
+	for _, entry := range candidates {
+		table.byName[entry.registrationName] = entry
+		candidateOrder = append(candidateOrder, entry.registrationName)
+	}
+	table.order = append(
+		filteredOrder[:firstIndex:firstIndex],
+		append(candidateOrder, filteredOrder[firstIndex:]...)...,
+	)
+	return true, nil
+}
+
 type compiledRestriction struct {
 	allow map[string]struct{}
 	deny  map[string]struct{}
@@ -118,6 +213,11 @@ type toolStore struct {
 	guardOrder       []string
 }
 
+type toolSetMutation struct {
+	before  toolTable
+	changed bool
+}
+
 func newToolStore() *toolStore {
 	storage := &toolStore{}
 	storage.rebuildSnapshotLocked()
@@ -145,6 +245,33 @@ func (storage *toolStore) removeTool(
 		storage.rebuildSnapshotLocked()
 	}
 	return removed
+}
+
+func (storage *toolStore) replaceToolSet(
+	previous []*registeredTool,
+	candidates []*registeredTool,
+) (toolSetMutation, error) {
+	storage.mutex.Lock()
+	defer storage.mutex.Unlock()
+	mutation := toolSetMutation{
+		before: storage.tools.clone(),
+	}
+	changed, err := storage.tools.replaceSet(previous, candidates)
+	mutation.changed = changed
+	if changed {
+		storage.rebuildSnapshotLocked()
+	}
+	return mutation, err
+}
+
+func (storage *toolStore) rollbackToolSet(mutation toolSetMutation) {
+	if !mutation.changed {
+		return
+	}
+	storage.mutex.Lock()
+	storage.tools = mutation.before
+	storage.rebuildSnapshotLocked()
+	storage.mutex.Unlock()
 }
 
 func (storage *toolStore) addRestriction(
