@@ -9,10 +9,10 @@ import (
 	"github.com/gorenx/goren/agentmessage"
 )
 
-// eventLog is one in-memory append-only Session log. It contains no lifecycle,
-// Store, persistence,
-// transport, model, or Tool execution logic.
-type eventLog struct {
+// Log owns an in-memory append-only Session history and its derived surface.
+// It contains no lifecycle, persistence, transport, model, or Tool execution logic.
+// Callers serialize Commit; existing locks protect concurrent detached readers.
+type Log struct {
 	mu sync.RWMutex
 	// header is immutable after construction and detached at read boundaries.
 	header Header
@@ -33,28 +33,16 @@ type eventLog struct {
 	derivedGeneration uint64
 }
 
-// New creates a detached Session and snapshots the borrowed seed.
-func New(identifier SessionID, options CreateOptions) (Context, error) {
-	return newContextWithClock(identifier, options, systemTimeSource{})
-}
-
-func newContextWithClock(
-	identifier SessionID,
-	options CreateOptions,
-	temporalSource TimeSource,
-) (*sessionContext, error) {
-	sessionLog, err := newWithClock(identifier, options, temporalSource)
-	if err != nil {
-		return nil, err
-	}
-	return newSessionContext(sessionLog), nil
+// NewLog constructs business log state without Store membership or publication.
+func NewLog(identifier SessionID, options CreateOptions) (*Log, error) {
+	return newWithClock(identifier, options, systemTimeSource{})
 }
 
 func newWithClock(
 	identifier SessionID,
 	options CreateOptions,
 	temporalSource TimeSource,
-) (*eventLog, error) {
+) (*Log, error) {
 	if temporalSource == nil {
 		return nil, errors.New("session: time source is nil")
 	}
@@ -62,7 +50,7 @@ func newWithClock(
 	if err != nil {
 		return nil, err
 	}
-	conversation := &eventLog{
+	conversation := &Log{
 		header:     headerSnapshot,
 		timeSource: temporalSource,
 	}
@@ -102,28 +90,28 @@ func newWithClock(
 }
 
 // Header returns a detached copy of immutable Session metadata.
-func (conversation *eventLog) Header() Header {
+func (conversation *Log) Header() Header {
 	conversation.mu.RLock()
 	defer conversation.mu.RUnlock()
 	return cloneHeader(conversation.header)
 }
 
 // FirstLiveSeq returns the constructor seed length before any end-seed marker.
-func (conversation *eventLog) FirstLiveSeq() int64 {
+func (conversation *Log) FirstLiveSeq() int64 {
 	conversation.mu.RLock()
 	defer conversation.mu.RUnlock()
 	return conversation.firstLiveSeq
 }
 
 // Seq returns the next event sequence number.
-func (conversation *eventLog) Seq() int64 {
+func (conversation *Log) Seq() int64 {
 	conversation.mu.RLock()
 	defer conversation.mu.RUnlock()
 	return int64(len(conversation.entries))
 }
 
 // Events returns a detached snapshot. Later appends do not grow the returned slice.
-func (conversation *eventLog) Events() []Event {
+func (conversation *Log) Events() []Event {
 	conversation.mu.RLock()
 	defer conversation.mu.RUnlock()
 	detached := make([]Event, len(conversation.entries))
@@ -134,7 +122,7 @@ func (conversation *eventLog) Events() []Event {
 }
 
 // Surface returns a detached snapshot of the current model-visible sequences.
-func (conversation *eventLog) Surface() Surface {
+func (conversation *Log) Surface() Surface {
 	conversation.mu.RLock()
 	defer conversation.mu.RUnlock()
 	nodes := make([]int64, len(conversation.view.nodes))
@@ -145,7 +133,8 @@ func (conversation *eventLog) Surface() Surface {
 	}
 }
 
-func (conversation *eventLog) currentBarrier() WriteBarrier {
+// Barrier identifies the currently committed prefix.
+func (conversation *Log) Barrier() WriteBarrier {
 	conversation.mu.RLock()
 	barrier := WriteBarrier{
 		SessionID: conversation.header.ID,
@@ -155,7 +144,8 @@ func (conversation *eventLog) currentBarrier() WriteBarrier {
 	return barrier
 }
 
-func (conversation *eventLog) snapshot() Snapshot {
+// Snapshot captures events and surface from the same committed prefix.
+func (conversation *Log) Snapshot() Snapshot {
 	conversation.mu.RLock()
 	entries := make([]Event, len(conversation.entries))
 	for index, committed := range conversation.entries {
@@ -179,7 +169,7 @@ func (conversation *eventLog) snapshot() Snapshot {
 
 // DeriveMessages projects the current surface into provider-neutral history.
 // Non-surface events and empty assistant anchors never enter the result.
-func (conversation *eventLog) DeriveMessages() ([]agentmessage.Message, error) {
+func (conversation *Log) DeriveMessages() ([]agentmessage.Message, error) {
 	conversation.mu.Lock()
 	if conversation.derivedGeneration != conversation.view.replaceGeneration {
 		conversation.derived = nil
@@ -207,7 +197,7 @@ func (conversation *eventLog) DeriveMessages() ([]agentmessage.Message, error) {
 	return agentmessage.CloneMessages(cached)
 }
 
-func (conversation *eventLog) commitBatch(drafts []EventDraft) ([]Event, error) {
+func (conversation *Log) commitBatch(drafts []EventDraft) ([]Event, error) {
 	conversation.mu.Lock()
 	defer conversation.mu.Unlock()
 

@@ -319,3 +319,36 @@ func waitForPendingItems(
 		time.Sleep(time.Millisecond)
 	}
 }
+
+type panickingAppendPublisher struct {
+	scriptedSessionPublisher
+}
+
+func (*panickingAppendPublisher) Appended(context.Context, Context, Event) {
+	panic("append notification failed")
+}
+
+func TestNotificationPanicPreservesCommitAndReleasesAdmission(t *testing.T) {
+	store, err := newMemoryStore(nil, &panickingAppendPublisher{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	membership, err := store.Create(context.Background(), nil, CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close(context.Background())
+	conversation := membership.Session()
+	for index := 0; index < 2; index++ {
+		result, err := conversation.Commit(context.Background(), Batch(newFixtureDraft(t, "committed")))
+		if err == nil || !strings.Contains(err.Error(), "append publication") {
+			t.Fatalf("notification error = %v", err)
+		}
+		if result.FirstSeq != int64(index) || result.NextSeq != int64(index+1) || len(result.Events) != 1 {
+			t.Fatalf("committed result = %#v", result)
+		}
+	}
+	if conversation.Seq() != 2 {
+		t.Fatal("notification failure rolled back committed log")
+	}
+}

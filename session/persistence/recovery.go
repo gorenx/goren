@@ -71,7 +71,7 @@ func inspectStored(metadata session.Header, entries []session.Event) (Inspection
 			}
 		}
 	}
-	conversation, err := session.New(metadata.ID, session.CreateOptions{
+	conversation, err := session.NewLog(metadata.ID, session.CreateOptions{
 		Seed: entries,
 		Metadata: session.Metadata{
 			CreatedAt:       int64Pointer(metadata.CreatedAt),

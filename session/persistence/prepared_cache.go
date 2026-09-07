@@ -221,35 +221,13 @@ func (owner *SessionLogStore) loadPreparedSource(
 	if stored == nil {
 		return nil, &NotFoundError{ID: identifier}
 	}
-	if stored.Header.ID != identifier {
-		return nil, owner.corruption(identifier, fmt.Errorf(
-			"stored identity mismatch: requested %q, header contains %q", identifier, stored.Header.ID,
-		))
-	}
-	if stored.Header.Version != session.FormatVersion {
-		return nil, owner.normalizeLoadError(identifier, stored.Header, fmt.Errorf(
-			"unsupported Session format v%d", stored.Header.Version,
-		))
-	}
-	for _, entry := range stored.Events {
-		if !session.IsKnownEventType(entry.Type) && !entry.Ignorable {
-			return nil, owner.normalizeLoadError(identifier, stored.Header, &UnsupportedFormatError{
-				ID: identifier,
-				Reason: fmt.Sprintf(
-					"session %q contains event type %q at seq %d unknown to this harness and not marked ignorable",
-					identifier, entry.Type, entry.Seq,
-				),
-			})
-		}
-	}
-	closers, err := interruptedTurnClosers(stored.Events)
+	recovery, err := Recover(identifier, *stored)
 	if err != nil {
-		return nil, owner.corruption(identifier, err)
+		return nil, owner.normalizeLoadError(identifier, stored.Header, err)
 	}
-	balanced := append(snapshotEvents(stored.Events), closers...)
-	conversation, err := owner.sessions.Prepare(&identifier, session.CreateOptions{
-		Seed: balanced, Metadata: metadataFromHeader(stored.Header),
-	})
+	closers := recovery.Repair.ClosingEvents
+	balanced := recovery.Options.Seed
+	conversation, err := owner.sessions.Prepare(&identifier, recovery.Options)
 	if err != nil {
 		return nil, owner.normalizeLoadError(identifier, stored.Header, err)
 	}
