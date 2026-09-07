@@ -6,6 +6,7 @@
 
 | 对象 / 文件 | 职责 |
 | --- | --- |
+| actor.Actor | 通过具名消息串行提供日志检查和分页读取，不拥有存储生命周期 |
 | Reader / reader.go | 校验并复制持久化读取结果，区分不存在、损坏、不支持格式 |
 | ReadStorage / contracts.go | Reader 所需只读能力，不允许追加、修复或关闭适配器 |
 | session/actor.Storage / RecoveryStorage | Session 消费方定义的追加与恢复端口；适配器实现相应方法 |

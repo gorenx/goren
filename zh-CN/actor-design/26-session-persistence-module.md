@@ -39,3 +39,11 @@ Reader 方法是普通 I/O，最终由请求 Actor 的框架任务调度调用�
 旧 SessionLogStore 删除后，没有代码使用 persistence.Backend。该总接口重复 ReadStorage 与 session/actor.Storage、RecoveryStorage，并混入组合根的 Close 和无人调用的 BackendName。删除 Backend 及 SQLite.Adapter.BackendName；不增加接口嵌套来保留旧名字。
 
 读取契约由 Reader 定义；Load / AppendBatch 由 Session Actor 的 Storage 定义；Revision / CommitRepair 由 RecoveryStorage 补充；适配器 Close 由实际拥有它的组合根调用。方法实现保留，但不存在要求每个消费者依赖所有方法的总接口。
+
+## 持久化读取 Actor
+
+`session/persistence/actor.Actor` 是普通 Actor，持有业务 Reader，以固定名字提供持久化读取。构造时接收 ReadStorage，由 Reader 校验并复制返回值；不持有在线 Session、Registry 或 Query 引用。组合根打开适配器，停止读取 Actor 后关闭适配器。
+
+具名请求 Inspect、ListSnapshots、ReadEventsFrom、ReadEventsBefore 分别携带 SessionID 或既有分页值；回复 Inspection、Snapshots、Segment、Window 包含业务结果及 `Err error`。错误保持原类型。调用方使用 Request / RequestActor，I/O 在读取 Actor 的串行邮箱处理期间执行，不增加锁、工作队列或每请求 worker。请求上下文直接传给 Reader；取消是否立即中断 I/O 取决于存储支持，但不能把取消转换为成功结果。
+
+上下游依赖为 Query/Projection 编排 → 持久化读取 Actor → Reader → ReadStorage。写入和恢复继续属于 Session，不经过该 Actor。它不是新的存储服务接口，也不替代 Reader 的业务校验。

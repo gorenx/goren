@@ -1,39 +1,38 @@
-# Session Projection Registry
+# Session Projection
 
-本包拥有 Session Projection 的注册表与同步 drive。它把 committed Session Event 折叠为领域 Unit 自己定义的可重建 state，提供一致 `Snapshot`、可持久化 `Checkpoint`、cold `Restore`，并以 `session/projection` 发布发生变化的 whole value。
+本包实现领域 Unit 的注册、增量折叠与 checkpoint 恢复。Actor 重构设计与当前边界见 [模块设计](../../zh-CN/actor-design/23-session-projection-module.md)。
 
-## 职责与非职责
+## 对象与职责
 
-本包负责 Unit 注册与引用计数、每 Session cell、`observedSeq`、跨 Unit staged commit、迟注册或失败后的日志补折、版本化 checkpoint restore，以及 change feed。Unit 自己拥有 `InitialState`、`ApplyState`、`ViewState` 和 `StateVersion` 的领域规则。
+| 对象 | 职责 |
+| --- | --- |
+| Unit | 定义状态版本、初始状态、事件转换和视图；不执行 I/O |
+| Registry | Unit 注册与移除、离线 checkpoint 恢复 |
+| Projection | 一份日志的独立派生状态；单向引用 Registry |
+| Snapshot / Change | 面向消费者的完整投影值 |
+| Checkpoint | 按 Unit 保存版本、已处理序号与内部 JSON 状态 |
 
-本包不拥有 Session Event 事实、checkpoint 写入时机、SQLite、API Proxy frame、客户端 Projection Store 或具体 Projection 的业务含义。Session Log 始终是事实源；可重建 checkpoint 的持久化由 [`session/projectioncache`](../projectioncache/README.zh-CN.md) 负责。权威跨包设计见[Session Projection 与 Title](../../zh-CN/18-session-projection-and-title.md)，实施证据见[全仓进度](../../zh-CN/08-implementation-progress.md)。
+业务对象不依赖 Plugin、GoAkt 或存储，也不使用 mutex。调用方串行访问。状态转换及视图验证全部成功后才安装，失败保留旧游标；较旧快照不会倒退在线游标。注册返回值 ID，同一 ID 重复移除不影响后续注册。
 
-## Live fold 与 staged commit
+## 事件与模块交互
 
 ```mermaid
-sequenceDiagram
-    participant Session
-    participant Registry as DriveRegistry
-    participant Units as Projection Units
-    participant Consumer as Change Consumer
-
-    Session->>Registry: EventAppended(event N)
-    Registry->>Units: prepare transitions and changed views
-    alt every Unit succeeds
-        Registry->>Registry: install all cells at N
-        Registry-->>Consumer: Changed(key, whole value, N)
-    else any transition or view fails
-        Registry->>Registry: discard every candidate
-        Registry-->>Session: report projection failure
-    end
+flowchart LR
+    S[Session Grain] -->|CommitNotice| B[TopicActor]
+    B --> L[Projection Subscriber]
+    L --> G[Projection Grain]
+    G --> R[Registry / Unit]
+    G -->|缺口时 Read| S
+    G -->|投影值变更| B
+    C[ProjectionCache] -->|checkpoint / restore| G
 ```
 
-准备阶段不会修改 live cells。所有候选 transition 和所需 view 都成功后，Registry 才在同一个 lock 内安装全部 cells；随后解锁并按注册顺序逐 key 发布变化。`Changed=false` 不产生通知，但该 Unit 的 `observedSeq` 仍推进。
+框架入口位于 `actor`。连续事件由 Advance 直接计算，缺少前缀返回 ErrHistoryRequired；框架层异步读取 Session 后补齐。注册、快照、checkpoint 与离线恢复使用具名请求。Projection 变更通知采用尽力投递，不能作为日志或 checkpoint 的耐久性确认。
 
-失败不能回滚已经 committed 的 Session Event。既有 cells 保留先前 cut；后续 live event 会先补折缺失 prefix，`Snapshot` 和 `Checkpoint` 也会从 `observedSeq+1` 补齐。补折仍失败时不跳过坏 event，也不伪造成功 projection。
+## ProjectionCache 的关系
 
-## 读取、恢复与生命周期
+Projection 负责计算，ProjectionCache 负责缓存持久化与冷读取加速。对外投影值不等于内部 checkpoint state；ProjectionCache 不能简单地把投影变更事件作为 checkpoint 存储。旧缓存监听 Session 追加与关闭事件，根据阈值、定时器或关闭流程请求 checkpoint，确认 Session flush 后写入。Actor 迁移保留这个职责关系。
 
-`Snapshot` 和 `Checkpoint` 同样先准备全部 Unit，再统一安装补折后的 cells。`RestoreFloor` 根据当前注册 Unit、row 版本和 watermark 选择 durable suffix 起点；`Restore` 只接受连续 events，并返回同一 `endSeq` 上的 snapshot 与 refreshed checkpoint。
+## 尚未完成
 
-Unit 的最后一个注册 handle 释放后，key 和全部 cells 一起移除；Session dispose 删除该 Session 的所有 cells。Unit fold 是同步纯计算，不接收 `context.Context`、不执行 I/O，也没有独立取消边界。change 发布发生在 state commit 之后并采用 best-effort delivery；通知失败不能回滚 cells 或 Session facts，消费者通过 list/history baseline 恢复。
+运行身份已移到 Actor 层；业务层使用独立 Projection，不再接受 History 或 CreationID。ProjectionCache、subagent 与 API Proxy 调用者尚未迁移到新接口，旧 Factory 已删除，不提供兼容包装。ClosedNotice 已接入，释放投影后拒绝相同创建的迟到通知，并丢弃在途补读结果；依赖方的强关闭确认与缓存最终写入顺序仍待接入。当前测试通过不表示生产接线或整个 Session 重构完成。

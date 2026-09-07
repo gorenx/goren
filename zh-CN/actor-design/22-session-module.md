@@ -221,3 +221,9 @@ CreationID 表示编排层的一次创建尝试，InstanceID 表示一次 Grain 
 TimeSource 留作 Log 时间输入，默认时钟移至 time_source.go；session/event topic 的 canonical 字符串保留在 events.go，消息数据使用 actor.CommitNotice。Log 不使用读写锁：所有方法均由拥有者串行调用，I/O 任务只收到分离快照。进程级事件类型注册表的锁仍保护公共定义注册，不与 Session 生命周期混淆。
 
 纯日志测试保留事务原子性、取消、panic、seed、Surface 和数据隔离，迁到 Log。旧队列/Store 状态机测试删除；新 Actor 的队列顺序、授权、flush 与关闭测试是相应验证入口。Agent Inbox、AgentLoop、Query、Title、API Proxy 和 Subagent 仍有旧 Context 依赖，需继续迁移，不能把中间编译失败描述为完成。
+
+## 在线 Session 列表
+
+Registry 增加 `ListSessions` 请求，返回 `Sessions.Items`，每项包含已成功初始化的 Header 和对应 CreationID。Header 在初始化成功后记录，是创建元数据，不是日志副本。列表只包含仍持有有效创建授权的已初始化项；未初始化、已撤销或已释放的项不返回。按 SessionID 排序并深拷贝 Header。
+
+Query 的来源编排先请求该列表，再以返回的 CreationID 请求 Session Grain.Read。期间发生关闭时，读取可以明确失败，调用方不得把失败解释为空日志或成功发布部分来源。列表查询本身不执行 I/O、不激活 Grain，也不充当跨 Session 的事务快照。

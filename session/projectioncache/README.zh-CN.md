@@ -1,79 +1,50 @@
 # Session Projection Cache
 
-本包拥有可重建 Session Projection checkpoint 的业务模型。Session Event Log 始终是唯一事实源；checkpoint 删除、损坏、落后或被另一 Log Identity 覆盖，只能降低命中率，不能改变权威读取结果。跨模块契约见[Session Projection Cache 最终设计](../../zh-CN/SessionProjectionCache最终设计方案.md)，实现证据见[08 实施进度](../../zh-CN/08-implementation-progress.md)。
+本包保存可重建的投影 checkpoint，Session 日志始终是唯一事实源。Actor 迁移契约和验证清单见 [模块设计](../../zh-CN/actor-design/24-projection-cache-module.md)。
 
-## 职责与非职责
+## 已迁移的业务对象
 
-本包负责：
-
-- `ProjectionCache` 管理 `created -> opening -> open -> closing -> closed` 生命周期、调用准入和关闭排空；
-- `liveCheckpointer` 根据事件数量、时间、`turn/end` 和 `session/disposed` 驱动 exact `session.Context` 的 checkpoint；
-- `checkpointLifecycle` 表达一个 exact Session 从 clean、dirty、active、final 到 closed 的 checkpoint 生命周期，只迁移状态并产生命令，不执行 checkpoint I/O；
-- `snapshotReader` 使用 checkpoint、restore floor 和 durable suffix 生成读取结果，必要时从 `seq=0` 全量回退；
-- `checkpointRecords` 按 Session ID 保存一个完整 record，并用 per-ID `recordEntry` 串行 compare、merge、durable Replace 和内存发布；
-- 通过 `{createdAt, cwd}` Log Identity 校验 record 是否属于调用方正在读取的 durable log。
-
-本包不拥有 Session 事实、live membership、Projection Unit 业务规则、Plugin Runtime、SQLite schema、API wire 或 Subagent identity。它只消费自己定义的 `LiveSessionFlusher`、`DurableEventReader`、`CheckpointProjector` 和 `CheckpointStore` 端口。
-
-## 对象与文件职责
-
-| 对象/文件 | 职责 |
+| 对象 | 职责 |
 | --- | --- |
-| `ProjectionCache` / `projection_cache.go` | 生命周期、公开调用准入、组件装配与关闭顺序 |
-| `liveCheckpointer` / `live_checkpointer.go` | exact Session 索引、触发策略、异步 attempt 和 I/O 顺序 |
-| `checkpointLifecycle` / `checkpoint_lifecycle.go` | 单 exact Session 的显式状态机、attempt identity、timer generation 与下一条执行命令 |
-| `snapshotReader` / `snapshot_reader.go` | cached read、cold suffix restore、全量回退与 fail-soft write-back |
-| `checkpointRecords`、`recordEntry` / `checkpoint_records.go` | record index、per-ID 串行替换、dominance、merge 和 durable-before-memory 发布 |
-| `contracts.go`、`record.go` | 消费端口、配置、record/identity 值与纯校验规则 |
+| Cache | 按 SessionID 管理已确认持久化的记录；验证、准备、确认和分离读取 |
+| CheckpointRecord | 日志身份与 Unit 状态集合，纯验证、复制和合并 |
+| Progress | 日志前缀、turn/end 与写入期限的纯触发规则，不持有定时器 |
+| Replay | 不执行 I/O 的分页重放进度、日志身份与 revision 校验 |
+| LogIdentity | 通过 CreatedAt 与 CWD 区分持久化日志，不是 Actor 运行身份 |
+| CheckpointStore | 消费者定义的存储端口；SQLite 实现只执行 I/O |
 
-这些对象只有单向引用：`ProjectionCache` 构造三个组件；`liveCheckpointer` 和 `snapshotReader` 可以调用 `checkpointRecords`；子对象都不回指 `ProjectionCache`，`recordEntry` 也不持有父集合或 Store。
+Cache 不持有存储、Session、Projection 或 Actor 引用，不使用锁。其所有者负责串行调用。Prepare 返回分离的待写入记录，nil 表示现有记录已经覆盖输入；只有存储成功后才 Confirm。读取返回已确认记录的副本，调用方修改副本不会改变缓存。
 
-## 读取流程
+同一日志、相同 Unit 版本下逐行保留较新序号，防止混合新旧行时回退进度；新集合缺少的 Unit 行保留。日志身份变化时整体替换。NewCheckpoint 校验候选行共享同一 cut，且已被 Session durable barrier 覆盖。
+
+## 依赖与交互
 
 ```mermaid
 sequenceDiagram
-    participant Consumer as API or ChildDirectory
-    participant Cache as ProjectionCache
-    participant Reader as snapshotReader
-    participant Registry as Projection Registry
-    participant Persistence as Session Persistence
-    participant Records as checkpointRecords
-
-    Consumer->>Cache: ColdSnapshot(sessionID)
-    Cache->>Reader: ColdSnapshot(sessionID)
-    Reader->>Records: Snapshot(sessionID)
-    Reader->>Registry: RestoreFloor(rows)
-    Reader->>Persistence: ReadEventsFrom(sessionID, floor)
-    Reader->>Registry: Restore(rows, suffix, floor)
-    Reader->>Records: Replace(refreshed record), fail-soft
-    Reader-->>Consumer: authoritative Snapshot
+    participant A as Cache Actor（待迁移）
+    participant P as Projection Grain
+    participant S as Session Grain
+    participant B as Cache 业务对象
+    participant D as CheckpointStore
+    A->>P: Capture
+    P-->>A: Checkpoint
+    A->>S: Flush 对应日志前缀
+    S-->>A: Flushed
+    A->>B: Prepare 已验证记录
+    B-->>A: 待写入记录
+    A->>D: Replace
+    D-->>A: 成功 / 失败
+    alt 写入成功
+        A->>B: Confirm
+    end
 ```
 
-`CachedSnapshot` 只读内存 record，不执行 SQLite 或 Session-log I/O。非空结果表示命中，`nil, nil` 表示身份或版本不兼容导致的正常 miss。它使用所选 row 的最小 seq 作为安全 `AsOfSeq`。
+Projection 负责 Unit 算法和内部 state，Cache 负责缓存记录和存储策略。ChangeNotice 中的对外 view 不足以生成 checkpoint。调度仍应由 Session 提交、关闭、事件阈值和时间间隔驱动，持久化必须有 flush 确认。
 
-`ColdSnapshot` 先验证 durable Header 与 record identity，再从所有已注册 Unit 的 restore floor 读取 suffix。日志缩短、identity 变化、revision 变化或 checkpoint 无法继续时，从 `seq=0` 全量重放。Registry 没有 Unit 时只读取最新一条 Event 来确定 cut。
+## 当前迁移状态与验证边界
 
-## 写入与生命周期
+旧记录管理、同步读取器、facade、手写调度器、Plugin 和 Factory 已删除，未保留转发兼容层。当前包只包含业务对象、存储端口与 SQLite 适配器，可以独立编译；[缓存 Actor](actor/README.zh-CN.md) 已实现每 Session 写入与确认入口；自动调度、冷读取编排及生产消费者仍待迁移。
 
-```mermaid
-flowchart TD
-    Event[session/event] --> Input[ProjectionCache.EventAppended]
-    Dispose[session/disposed] --> Final[ProjectionCache.SessionDisposed]
-    Input --> Live[liveCheckpointer]
-    Final --> Live
-    Live --> State[checkpointLifecycle]
-    State --> Trigger{count, interval, turn/end, final}
-    Trigger --> Checkpoint[CheckpointProjector.Checkpoint]
-    Checkpoint --> Flush[LiveSessionFlusher.Flush for live attempt]
-    Flush --> Replace[checkpointRecords.Replace]
-    Replace --> Durable[CheckpointStore.Replace]
-    Durable --> Memory[publish detached memory record]
-```
+业务测试覆盖记录复制、合并、写入前不可见、确认、日志身份、durable cut、分页 revision、失败不推进游标、重复通知、阈值、期限和 turn/end。SQLite 适配器测试验证记录存取与替换。Actor 测试另外验证了同 Session 串行写、不同 Session 独立推进、失败重试、关闭等待及外部超时不提前结束底层写入。
 
-同一 exact Session 最多一个 active attempt；写入期间满足条件的新触发通过 `Queued` 合并为一次后续 attempt。`session/disposed` 请求一次不再 Flush 的 final attempt，即使此前没有收到 append 事件也会生成 checkpoint。失败保留 dirty prefix，通过 `FailureReporter` 报告，并等待后续 timer、事件或 final trigger，不在失败循环中忙重试。
-
-live attempt 与 Session Release 竞争时，`LiveSessionFlusher.Flush` 可能返回 `session.ErrNotAttached`。这表示该 live attempt 已被 detach 淘汰，不作为缓存故障报告；dirty prefix 保留，随后由 `session/disposed` 的 final attempt 在不 Flush live Session 的情况下收敛。
-
-Session ID 只是可复用 record slot。不同 Log Identity 不选举 current writer，也不保证完成顺序；最后完成的 Replace 可以覆盖 slot，但读取必须先验证 identity。相同 identity 的候选不得让已有 Unit row 倒退，并保留当前候选缺少的旧 Unit row。
-
-`ProjectionCache.Close` 拒绝新调用，等待正在进行的 `Open` 收敛，排空已准入调用，停止 timer，等待 checkpoint goroutine，再关闭 `CheckpointStore`。业务对象自己保证这条生命周期顺序，不依赖 Plugin Runtime 的调用串行性。
+已删除的旧实现测试中，同 Session 串行写、不同 Session 独立推进、关闭排空、最终 checkpoint、分页 I/O、write-back 失败隔离仍是迁移要求，列在模块设计的验证清单中，后续用真实框架测试覆盖。
