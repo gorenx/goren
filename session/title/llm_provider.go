@@ -63,11 +63,10 @@ func (settings LLMConfig) Validate() (LLMConfig, error) {
 	if settings.TimeoutMS > maximumTimerMilliseconds {
 		return LLMConfig{}, fmt.Errorf("sessiontitle: timeoutMs must not exceed %d", maximumTimerMilliseconds)
 	}
-	hasProvider := settings.Provider != ""
-	hasModel := settings.Model != ""
-	if hasProvider != hasModel {
-		return LLMConfig{}, errors.New("sessiontitle: provider and model must be supplied together")
+	if strings.TrimSpace(settings.Provider) == "" || strings.TrimSpace(settings.Model) == "" {
+		return LLMConfig{}, errors.New("sessiontitle: title provider and model are required")
 	}
+
 	return settings, nil
 }
 
@@ -153,38 +152,28 @@ func (implementation *LLMProvider) ID() ProviderID { return implementation.ident
 
 func (implementation *LLMProvider) AutomaticMode() AutomaticMode { return implementation.mode }
 
-// Generate frames, records, dispatches, and validates one auxiliary title
-// request. The title Service still owns revision and stale-result admission.
-func (implementation *LLMProvider) Generate(
-	requestContext context.Context,
-	request ProviderRequest,
-) (ProviderResult, error) {
-	if requestContext == nil {
-		return ProviderResult{}, errors.New("sessiontitle: title generation Context is nil")
-	}
-	if err := requestContext.Err(); err != nil {
-		return ProviderResult{}, err
-	}
-	if request.Session == nil {
-		return ProviderResult{}, errors.New("sessiontitle: title generation Session is nil")
+// Prepare frames and snapshots the auxiliary call without I/O.
+func (implementation *LLMProvider) Prepare(request ProviderRequest) (Generation, error) {
+	if request.SessionID == "" {
+		return nil, errors.New("sessiontitle: SessionID is required")
 	}
 	selected, err := implementation.selectMessages(request.Messages)
 	if err != nil {
-		return ProviderResult{}, err
+		return nil, err
 	}
 	framedInput, err := frameTitleMessages(selected)
 	if err != nil {
-		return ProviderResult{}, err
+		return nil, err
 	}
 	if len([]byte(framedInput)) > implementation.settings.MaxInputBytes {
-		return ProviderResult{}, fmt.Errorf(
+		return nil, fmt.Errorf(
 			"sessiontitle: input is %d bytes, exceeding maxInputBytes %d",
 			len([]byte(framedInput)), implementation.settings.MaxInputBytes,
 		)
 	}
-	route, err := implementation.resolveRoute(request.Route)
-	if err != nil {
-		return ProviderResult{}, err
+	route := ModelProvenance{
+		Provider: implementation.settings.Provider,
+		Model:    implementation.settings.Model,
 	}
 	messageValue, err := agentmessage.NewUserMessage(
 		agentmessage.UserMessageInput{
@@ -193,7 +182,7 @@ func (implementation *LLMProvider) Generate(
 		},
 	)
 	if err != nil {
-		return ProviderResult{}, err
+		return nil, err
 	}
 	systemInstruction := implementation.systemPrompt()
 	messageSeqs := selectedMessageSeqs(selected)
@@ -206,7 +195,7 @@ func (implementation *LLMProvider) Generate(
 		},
 		Messages:  []agentmessage.Message{messageValue},
 		System:    &systemInstruction,
-		SessionID: string(request.Session.ID()), Purpose: llm.PurposeSessionTitle,
+		SessionID: string(request.SessionID), Purpose: llm.PurposeSessionTitle,
 	}
 	requestDraft, err := session.NewEventDraft(
 		TitleLLMRequest,
@@ -218,20 +207,45 @@ func (implementation *LLMProvider) Generate(
 		},
 	)
 	if err != nil {
-		return ProviderResult{}, err
+		return nil, err
 	}
-	if _, err := request.Session.Commit(requestContext, session.Batch(requestDraft)); err != nil {
+	return &generation{
+		runtime:     implementation.runtime,
+		settings:    implementation.settings,
+		options:     callOptions,
+		draft:       requestDraft,
+		messageSeqs: messageSeqs,
+		route:       route,
+	}, nil
+}
+
+type generation struct {
+	runtime     LLMStreamer
+	settings    LLMConfig
+	options     llm.GenerateOptions
+	draft       session.EventDraft
+	messageSeqs []int64
+	route       ModelProvenance
+}
+
+func (call *generation) Draft() session.EventDraft { return call.draft }
+
+func (call *generation) Generate(requestContext context.Context) (ProviderResult, error) {
+	if requestContext == nil {
+		return ProviderResult{}, errors.New("sessiontitle: generation context is nil")
+	}
+	if err := requestContext.Err(); err != nil {
 		return ProviderResult{}, err
 	}
 
-	deadline := time.Duration(implementation.settings.TimeoutMS) * time.Millisecond
+	deadline := time.Duration(call.settings.TimeoutMS) * time.Millisecond
 	callContext, cancelCall := context.WithTimeoutCause(
 		requestContext,
 		deadline,
 		&titleLLMTimeoutError{duration: deadline},
 	)
 	defer cancelCall()
-	flow, err := implementation.runtime.Stream(callContext, callOptions)
+	flow, err := call.runtime.Stream(callContext, call.options)
 	if err != nil {
 		return ProviderResult{}, err
 	}
@@ -286,7 +300,7 @@ func (implementation *LLMProvider) Generate(
 	if titleValue == "" {
 		return ProviderResult{}, errors.New("sessiontitle: title model produced no text")
 	}
-	return ProviderResult{Title: titleValue, MessageSeqs: messageSeqs, Model: &route}, nil
+	return ProviderResult{Title: titleValue, MessageSeqs: append([]int64(nil), call.messageSeqs...), Model: cloneRoute(&call.route)}, nil
 }
 
 func (implementation *LLMProvider) selectMessages(messages []UserMessage) ([]UserMessage, error) {
@@ -297,16 +311,6 @@ func (implementation *LLMProvider) selectMessages(messages []UserMessage) ([]Use
 		return []UserMessage{messages[0]}, nil
 	}
 	return cloneMessages(messages), nil
-}
-
-func (implementation *LLMProvider) resolveRoute(logged *ModelProvenance) (ModelProvenance, error) {
-	if implementation.settings.Provider != "" {
-		return ModelProvenance{Provider: implementation.settings.Provider, Model: implementation.settings.Model}, nil
-	}
-	if logged == nil || logged.Provider == "" || logged.Model == "" {
-		return ModelProvenance{}, errors.New("sessiontitle: no logged request route is available; configure provider and model together")
-	}
-	return *logged, nil
 }
 
 func (implementation *LLMProvider) systemPrompt() string {

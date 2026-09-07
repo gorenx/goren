@@ -1,20 +1,11 @@
-// Package sessionprojection owns the registry that drives domain-defined
+// Package projection owns the registry that drives domain-defined
 // read projections over committed Session events.
 package projection
 
 import (
-	"context"
 	"encoding/json"
 
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
-)
-
-const ServiceName = "sessionProjections"
-
-const (
-	PluginName       = "@deepseek-ai/dsh-session-projection"
-	ChangedEventName = "session/projection"
 )
 
 // Transition is one unit's next plain-JSON state. Changed is explicit because
@@ -60,40 +51,12 @@ type RestoreResult struct {
 	Checkpoint Checkpoint
 }
 
+// RegistrationID identifies one independently removable Unit registration.
+type RegistrationID string
+
 // Change is one whole projection value caused by one committed event.
 type Change struct {
-	Session session.Context
-	Key     string
-	Value   json.RawMessage
-	Seq     int64
-}
-
-// Changed publishes one committed whole-value projection change.
-type Changed struct {
-	Change Change
-}
-
-func (Changed) EventName() string {
-	return ChangedEventName
-}
-
-func (Changed) EventDelivery() plugin.DeliveryPolicy {
-	return plugin.DeliveryBestEffort
-}
-
-// UnitHandle owns one projection Unit registration.
-type UnitHandle interface {
-	Release(context.Context) error
-}
-
-// Registry owns registrations, per-session folds, snapshots, and cache
-// restore. Domain units own only their pure projection mathematics.
-type Registry interface {
-	plugin.Service
-	Register(Unit) (UnitHandle, error)
-	Snapshot(session.Context) (Snapshot, error)
-	Checkpoint(session.Context) (Checkpoint, error)
-	RestoreFloor(Checkpoint) *int64
-	ViewCheckpoint(Checkpoint) (Values, error)
-	Restore(Checkpoint, []session.Event, int64) (RestoreResult, error)
+	Key   string
+	Value json.RawMessage
+	Seq   int64
 }

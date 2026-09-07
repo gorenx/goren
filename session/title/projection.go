@@ -8,17 +8,18 @@ import (
 	sessionprojection "github.com/gorenx/goren/session/projection"
 )
 
-type titleProjectionUnit struct{}
+// Unit folds committed title events for the shared Projection owner.
+type Unit struct{}
 
-func (titleProjectionUnit) Key() string { return ProjectionKey }
+func (Unit) Key() string { return ProjectionKey }
 
-func (titleProjectionUnit) StateVersion() int64 { return 1 }
+func (Unit) StateVersion() int64 { return 1 }
 
-func (titleProjectionUnit) InitialState() (json.RawMessage, error) {
+func (Unit) InitialState() (json.RawMessage, error) {
 	return json.RawMessage(`null`), nil
 }
 
-func (titleProjectionUnit) ApplyState(state json.RawMessage, committed session.Event) (sessionprojection.Transition, error) {
+func (Unit) ApplyState(state json.RawMessage, committed session.Event) (sessionprojection.Transition, error) {
 	if committed.Type != TitleEventName {
 		return sessionprojection.Transition{State: state}, nil
 	}
@@ -30,7 +31,7 @@ func (titleProjectionUnit) ApplyState(state json.RawMessage, committed session.E
 	return sessionprojection.Transition{State: rawValue, Changed: true}, err
 }
 
-func (titleProjectionUnit) ViewState(state json.RawMessage) (json.RawMessage, error) {
+func (Unit) ViewState(state json.RawMessage) (json.RawMessage, error) {
 	if string(state) == "null" {
 		return state, nil
 	}

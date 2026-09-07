@@ -239,7 +239,7 @@ func indexedSessionFromRow(row dbsql.IndexedSession) (sessionquery.IndexedSessio
 		SeedLength: integerPointer(row.SeedLength), Origin: session.Origin(row.Origin),
 		DelegationDepth: integerPointer(row.DelegationDepth), AgentPreset: textPointer(row.AgentPreset),
 	}
-	conversation, err := session.New(identifier, session.CreateOptions{Metadata: metadata})
+	conversation, err := session.NewLog(identifier, session.CreateOptions{Metadata: metadata})
 	if err != nil {
 		return sessionquery.IndexedSession{}, err
 	}

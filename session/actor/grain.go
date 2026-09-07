@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 
+	"github.com/google/uuid"
+
 	"github.com/gorenx/goren/session"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
@@ -20,8 +22,14 @@ var (
 // Grain owns one Session log under a stable framework name equal to SessionID.
 // It has no Store lifecycle, mailbox substitute, or mutable Agent reference.
 type Grain struct {
-	history    *session.Log
+	// instanceID is generated on each OnActivate to distinguish activations of one logical Grain.
+	// Registry binds the creation grant to it so stale initialization cannot regain authority.
+	instanceID string
+	// creationID identifies the business creation owning this log, installed after authorization
+	// and initialization. Commit/Read/Flush/Close must match it to reject earlier creations.
 	creationID string
+	admission  *admission
+	history    *session.Log
 	storage    Storage
 	durable    int64
 	writing    *write
@@ -32,11 +40,19 @@ type Grain struct {
 }
 
 // OnActivate does not grant business creation authority.
-func (*Grain) OnActivate(context.Context, *goakt.GrainProps) error { return nil }
+func (owner *Grain) OnActivate(context.Context, *goakt.GrainProps) error {
+	owner.instanceID = uuid.NewString()
+	return nil
+}
 
 // OnDeactivate cancels in-flight work and fails deferred requests on forced shutdown.
 // It does not close the shared storage adapter or acknowledge normal business drain.
 func (owner *Grain) OnDeactivate(context.Context, *goakt.GrainProps) error {
+	if owner.admission != nil {
+		owner.admission.cancel()
+		owner.admission.reply.Response(Initialized{Err: ErrUnavailable})
+		owner.admission = nil
+	}
 	if owner.restoring != nil {
 		owner.restoring.cancel()
 		owner.restoring.reply.Response(Initialized{
@@ -60,47 +76,9 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 	case restorationFinished:
 		owner.finishResume(gc, incoming)
 	case Initialize:
-		if owner.restoring != nil {
-			gc.Response(Initialized{
-				Err: ErrRestoring,
-			})
-			return
-		}
-		if incoming.CreationID == "" || (owner.history != nil && owner.creationID != incoming.CreationID) {
-			gc.Response(Initialized{
-				Err: ErrCreation,
-			})
-			return
-		}
-		if owner.closing != nil {
-			gc.Response(Initialized{
-				Err: session.ErrWritesClosed,
-			})
-			return
-		}
-		if owner.history == nil {
-			if incoming.Storage == nil {
-				gc.Response(Initialized{
-					Err: errors.New("session: storage is required"),
-				})
-				return
-			}
-			history, err := session.NewLog(session.SessionID(gc.Self().Name()), incoming.Options)
-			if err != nil {
-				gc.Response(Initialized{
-					Err: err,
-				})
-				return
-			}
-			owner.history = history
-			owner.creationID = incoming.CreationID
-			owner.storage = incoming.Storage
-			owner.startWrite(gc)
-		}
-		gc.Response(Initialized{
-			Header:  owner.history.Header(),
-			Barrier: owner.history.Barrier(),
-		})
+		owner.initialize(gc, incoming)
+	case admissionFinished:
+		owner.finishAdmission(gc, incoming)
 	case Commit:
 		if err := owner.authorize(incoming.CreationID); err != nil {
 			gc.Response(Committed{
@@ -120,6 +98,7 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 			Err:    err,
 		})
 		if err == nil {
+			owner.publishEvents(gc, result.Events)
 			owner.startWrite(gc)
 		}
 	case Close:

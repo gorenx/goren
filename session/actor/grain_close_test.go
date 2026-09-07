@@ -15,7 +15,7 @@ import (
 
 func TestCloseSealsWritesAndWaitsForActualStorageCompletion(t *testing.T) {
 	backend := newStorage(t)
-	driver, replies := startSession(t)
+	driver, replies := startSession(t, "creation")
 	storage := &gatedStorage{
 		Storage: backend,
 		entered: make(chan struct{}, 1),
@@ -91,7 +91,7 @@ func (storage *failingStorage) AppendBatch(ctx context.Context, batch persistenc
 
 func TestFailedCloseStaysSealedAndCanRetryDurability(t *testing.T) {
 	backend := newStorage(t)
-	driver, replies := startSession(t)
+	driver, replies := startSession(t, "creation")
 	storage := &failingStorage{
 		Storage: backend,
 		entered: make(chan struct{}),

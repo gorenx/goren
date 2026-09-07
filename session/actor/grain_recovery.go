@@ -15,7 +15,8 @@ import (
 var ErrRestoring = errors.New("session: recovery is in progress")
 
 type restoration struct {
-	token      string
+	token string
+	// creationID fixes the recovery owner and is installed with the recovered log.
 	creationID string
 	storage    RecoveryStorage
 	reply      *goakt.GrainReply
@@ -32,7 +33,7 @@ type restorationFinished struct {
 func (owner *Grain) startResume(gc *goakt.GrainContext, input Resume) {
 	var err error
 	switch {
-	case owner.restoring != nil:
+	case owner.admission != nil || owner.restoring != nil:
 		err = ErrRestoring
 	case input.CreationID == "" || (owner.history != nil && input.CreationID != owner.creationID):
 		err = ErrCreation
@@ -54,12 +55,14 @@ func (owner *Grain) startResume(gc *goakt.GrainContext, input Resume) {
 		})
 		return
 	}
-	reply := gc.DeferResponse()
-	if reply == nil {
-		gc.Response(Initialized{
-			Err: errors.New("session: resume requires an asynchronous request"),
-		})
-		return
+	owner.beginAdmission(gc, input.CreationID, nil, input.Storage, input.Storage, input.Authority)
+}
+
+func (owner *Grain) resume(gc *goakt.GrainContext, pending *admission) {
+	reply := pending.reply
+	input := Resume{
+		CreationID: pending.creationID,
+		Storage:    pending.recovery,
 	}
 	ctx, cancel := context.WithCancel(gc.Context())
 	token := uuid.NewString()
@@ -72,23 +75,25 @@ func (owner *Grain) startResume(gc *goakt.GrainContext, input Resume) {
 		reply:      reply,
 		cancel:     cancel,
 	}
-	err = gc.PipeToSelf(func() (payload any, taskErr error) {
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				payload = restorationFinished{
-					token: token,
-					err:   fmt.Errorf("session: recovery panicked: %v", recovered),
+	err := gc.PipeToSelf(
+		func() (payload any, taskErr error) {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					payload = restorationFinished{
+						token: token,
+						err:   fmt.Errorf("session: recovery panicked: %v", recovered),
+					}
 				}
-			}
-		}()
-		history, durable, err := restore(ctx, identifier, storage)
-		return restorationFinished{
-			token:   token,
-			history: history,
-			durable: durable,
-			err:     err,
-		}, nil
-	})
+			}()
+			history, durable, err := restore(ctx, identifier, storage)
+			return restorationFinished{
+				token:   token,
+				history: history,
+				durable: durable,
+				err:     err,
+			}, nil
+		},
+	)
 	if err != nil {
 		cancel()
 		owner.restoring = nil

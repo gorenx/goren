@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 
 	"github.com/gorenx/goren/internal/jsonvalue"
 	"github.com/gorenx/goren/session"
@@ -113,4 +114,81 @@ func checkpointDominates(
 		}
 	}
 	return true
+}
+
+// NewCheckpoint prepares a complete live checkpoint only after its log cut is durable.
+func NewCheckpoint(
+	metadata session.Header,
+	rows sessionprojection.Checkpoint,
+	durable session.WriteBarrier,
+) (CheckpointRecord, error) {
+	if metadata.ID == "" || durable.SessionID != metadata.ID || durable.NextSeq < 0 {
+		return CheckpointRecord{}, errors.New("session projection cache: invalid durable Session boundary")
+	}
+	candidate, err := ValidateCheckpointRecord(metadata.ID, CheckpointRecord{
+		Identity: identityOf(metadata),
+		Rows:     rows,
+	})
+	if err != nil {
+		return CheckpointRecord{}, err
+	}
+	var cut int64
+	found := false
+	for _, row := range candidate.Rows {
+		if row.Seq >= durable.NextSeq {
+			return CheckpointRecord{}, errors.New("session projection cache: checkpoint exceeds durable log")
+		}
+		if found && cut != row.Seq {
+			return CheckpointRecord{}, errors.New("session projection cache: checkpoint rows do not share one event cut")
+		}
+		cut = row.Seq
+		found = true
+	}
+	return candidate, nil
+}
+
+// Merge combines validated records without regressing a compatible Unit's cursor.
+// The bool reports whether any supplied row or log identity requires replacement.
+// Different Unit versions are ordered by the caller's registration, not numerically.
+func (current CheckpointRecord) Merge(incoming CheckpointRecord) (CheckpointRecord, bool) {
+	if !sameIdentity(current.Identity, incoming.Identity) {
+		return cloneRecord(incoming), true
+	}
+	if checkpointDominates(current.Rows, incoming.Rows) {
+		return cloneRecord(current), false
+	}
+	merged := cloneRecord(incoming)
+	for key, row := range current.Rows {
+		replacement, found := merged.Rows[key]
+		if !found || (row.Version == replacement.Version && row.Seq > replacement.Seq) {
+			row.Value = append(json.RawMessage(nil), row.Value...)
+			merged.Rows[key] = row
+		}
+	}
+	return merged, true
+}
+
+// Snapshot combines compatible views with their checkpoint cut without reading a log.
+// No compatible values means a cache miss, represented by nil.
+func (record CheckpointRecord) Snapshot(values sessionprojection.Values) (*sessionprojection.Snapshot, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	cut := int64(math.MaxInt64)
+	detached := make(sessionprojection.Values, len(values))
+	for key, value := range values {
+		row, found := record.Rows[key]
+		if !found {
+			return nil, fmt.Errorf("session projection cache: view %q has no checkpoint row", key)
+		}
+		if err := jsonvalue.Validate(value); err != nil {
+			return nil, fmt.Errorf("session projection cache: invalid view %q: %w", key, err)
+		}
+		cut = min(cut, row.Seq)
+		detached[key] = append(json.RawMessage(nil), value...)
+	}
+	return &sessionprojection.Snapshot{
+		AsOfSeq: cut,
+		Values:  detached,
+	}, nil
 }

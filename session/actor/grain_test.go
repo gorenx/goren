@@ -3,6 +3,7 @@ package sessionactor_test
 import (
 	"context"
 	"errors"
+	sessionregistry "github.com/gorenx/goren/session/registry"
 	"path/filepath"
 	"testing"
 	"time"
@@ -33,6 +34,38 @@ func (*requester) PreStart(*goakt.Context) error { return nil }
 func (*requester) PostStop(*goakt.Context) error { return nil }
 func (driver *requester) Receive(rc *goakt.ReceiveContext) {
 	if incoming, ok := rc.Message().(command); ok {
+		switch input := incoming.payload.(type) {
+		case sessionactor.Initialize:
+			authority, err := goakt.GrainOf[*sessionregistry.RegistryGrain](rc.Context(), rc.ActorSystem(), sessionregistry.RegistryName, goakt.WithLongLivedGrain())
+			if err != nil {
+				driver.replies <- response{
+					err: err,
+				}
+				return
+			}
+			input.Authority = authority
+			incoming.payload = input
+		case sessionactor.Resume:
+			authority, err := goakt.GrainOf[*sessionregistry.RegistryGrain](rc.Context(), rc.ActorSystem(), sessionregistry.RegistryName, goakt.WithLongLivedGrain())
+			if err != nil {
+				driver.replies <- response{
+					err: err,
+				}
+				return
+			}
+			input.Authority = authority
+			incoming.payload = input
+		case sessionactor.Close:
+			authority, err := goakt.GrainOf[*sessionregistry.RegistryGrain](rc.Context(), rc.ActorSystem(), sessionregistry.RegistryName, goakt.WithLongLivedGrain())
+			if err != nil {
+				driver.replies <- response{
+					err: err,
+				}
+				return
+			}
+			input.Authority = authority
+			incoming.payload = input
+		}
 		pending := rc.RequestGrain(driver.target, incoming.payload)
 		if pending == nil {
 			driver.replies <- response{
@@ -50,9 +83,9 @@ func (driver *requester) Receive(rc *goakt.ReceiveContext) {
 	}
 }
 
-func startSession(t *testing.T) (*goakt.PID, <-chan response) {
+func startSystem(t *testing.T, options ...goakt.Option) goakt.ActorSystem {
 	t.Helper()
-	system, err := goakt.NewActorSystem("session-test", goakt.WithLogger(log.DiscardLogger))
+	system, err := goakt.NewActorSystem("session-test", append([]goakt.Option{goakt.WithLogger(log.DiscardLogger)}, options...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,6 +99,26 @@ func startSession(t *testing.T) (*goakt.PID, <-chan response) {
 			t.Error(err)
 		}
 	})
+	return system
+}
+
+func startSession(t *testing.T, creationID string) (*goakt.PID, <-chan response) {
+	t.Helper()
+	system := startSystem(t)
+	registry, err := goakt.GrainOf[*sessionregistry.RegistryGrain](context.Background(), system, sessionregistry.RegistryName, goakt.WithLongLivedGrain())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := system.AskGrain(context.Background(), registry, sessionregistry.Reserve{
+		SessionID:  "conversation",
+		CreationID: creationID,
+	}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failure := result.(sessionregistry.Completion).Err; failure != nil {
+		t.Fatal(failure)
+	}
 	identity, err := goakt.GrainOf[*sessionactor.Grain](context.Background(), system, "conversation", goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
@@ -106,7 +159,7 @@ func request[T any](t *testing.T, driver *goakt.PID, replies <-chan response, in
 }
 
 func TestSessionGrainCommitsAndReadsDetachedSnapshots(t *testing.T) {
-	driver, replies := startSession(t)
+	driver, replies := startSession(t, "creation")
 	unavailable := request[sessionactor.View](t, driver, replies, sessionactor.Read{
 		CreationID: "creation",
 	})
@@ -168,7 +221,7 @@ func TestSessionGrainCommitsAndReadsDetachedSnapshots(t *testing.T) {
 }
 
 func TestSessionGrainRejectsForeignCreationAndUnavailablePrefix(t *testing.T) {
-	driver, replies := startSession(t)
+	driver, replies := startSession(t, "current")
 	initialized := request[sessionactor.Initialized](t, driver, replies, sessionactor.Initialize{
 		Storage:    newStorage(t),
 		CreationID: "current",

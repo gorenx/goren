@@ -13,6 +13,8 @@ import (
 )
 
 var titleLLMFixtureConfig = LLMConfig{
+	Provider:    "title-provider",
+	Model:       "title-model",
 	TargetWords: 5, TargetCJKCharacters: 10, MaxInputBytes: 4096,
 	MaxOutputTokens: 64, TimeoutMS: 1000,
 }
@@ -63,24 +65,23 @@ func TestLLMProviderSelectsMessagesRecordsRequestAndReturnsText(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			conversation, err := session.New("title-llm", session.CreateOptions{})
+			conversation, err := session.NewLog("title-llm", session.CreateOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := implementation.Generate(context.Background(), ProviderRequest{
-				Session:  conversation,
-				Messages: []UserMessage{{Seq: 3, Text: "First prompt"}, {Seq: 8, Text: "Second prompt"}},
-				Route:    &ModelProvenance{Provider: "main-route", Model: "chat-model"},
+			result, err := generateTitle(t, conversation, implementation, context.Background(), ProviderRequest{
+				SessionID: conversation.Header().ID,
+				Messages:  []UserMessage{{Seq: 3, Text: "First prompt"}, {Seq: 8, Text: "Second prompt"}},
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
 			if result.Title != "Generated title" || !equalInt64s(result.MessageSeqs, testCase.wantMessageSeq) ||
-				result.Model == nil || result.Model.Provider != "main-route" || result.Model.Model != "chat-model" {
+				result.Model == nil || result.Model.Provider != "title-provider" || result.Model.Model != "title-model" {
 				t.Fatalf("provider result = %#v", result)
 			}
 			if implementation.ID() != testCase.wantProvider || seen.Purpose != llm.PurposeSessionTitle ||
-				seen.SessionID != "title-llm" || seen.Provider != "main-route" || seen.Model != "chat-model" ||
+				seen.SessionID != "title-llm" || seen.Provider != "title-provider" || seen.Model != "title-model" ||
 				seen.MaxTokens == nil || *seen.MaxTokens != 64 || len(seen.Messages) != 1 || seen.System == nil {
 				t.Fatalf("generate options = %#v", seen)
 			}
@@ -104,7 +105,7 @@ func TestLLMProviderSelectsMessagesRecordsRequestAndReturnsText(t *testing.T) {
 			}
 			if recorded.TitleProvider != testCase.wantProvider ||
 				!equalInt64s(recorded.MessageSeqs, testCase.wantMessageSeq) ||
-				recorded.Route.Provider != "main-route" || recorded.MaxTokens != 64 {
+				recorded.Route.Provider != "title-provider" || recorded.MaxTokens != 64 {
 				t.Fatalf("recorded request = %#v", recorded)
 			}
 		})
@@ -129,12 +130,12 @@ func TestLLMProviderUsesExplicitRouteAndRejectsBeforeDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	conversation, err := session.New("title-budget", session.CreateOptions{})
+	conversation, err := session.NewLog("title-budget", session.CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = implementation.Generate(context.Background(), ProviderRequest{
-		Session: conversation, Messages: []UserMessage{{Seq: 0, Text: "prompt"}},
+	_, err = generateTitle(t, conversation, implementation, context.Background(), ProviderRequest{
+		SessionID: conversation.Header().ID, Messages: []UserMessage{{Seq: 0, Text: "prompt"}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "exceeding maxInputBytes") {
 		t.Fatalf("budget error = %v", err)
@@ -146,7 +147,7 @@ func TestLLMProviderUsesExplicitRouteAndRejectsBeforeDispatch(t *testing.T) {
 
 func TestLLMProviderRejectsNonStopAndHonorsTimeout(t *testing.T) {
 	t.Parallel()
-	conversation, err := session.New("title-errors", session.CreateOptions{})
+	conversation, err := session.NewLog("title-errors", session.CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,9 +163,8 @@ func TestLLMProviderRejectsNonStopAndHonorsTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = implementation.Generate(context.Background(), ProviderRequest{
-		Session: conversation, Messages: []UserMessage{{Seq: 0, Text: "prompt"}},
-		Route: &ModelProvenance{Provider: "p", Model: "m"},
+	_, err = generateTitle(t, conversation, implementation, context.Background(), ProviderRequest{
+		SessionID: conversation.Header().ID, Messages: []UserMessage{{Seq: 0, Text: "prompt"}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "maxOutputTokens") {
 		t.Fatalf("finish error = %v", err)
@@ -182,9 +182,8 @@ func TestLLMProviderRejectsNonStopAndHonorsTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = timeoutProvider.Generate(context.Background(), ProviderRequest{
-		Session: conversation, Messages: []UserMessage{{Seq: 0, Text: "prompt"}},
-		Route: &ModelProvenance{Provider: "p", Model: "m"},
+	_, err = generateTitle(t, conversation, timeoutProvider, context.Background(), ProviderRequest{
+		SessionID: conversation.Header().ID, Messages: []UserMessage{{Seq: 0, Text: "prompt"}},
 	})
 	var timeoutProblem *titleLLMTimeoutError
 	if !errors.As(err, &timeoutProblem) || timeoutProblem.Code() != TitleLLMTimeoutCode {
@@ -231,4 +230,72 @@ func equalInt64s(left []int64, right []int64) bool {
 		}
 	}
 	return true
+}
+
+func generateTitle(t *testing.T, conversation *session.Log, implementation Provider, requestContext context.Context, request ProviderRequest) (ProviderResult, error) {
+	t.Helper()
+	prepared, err := implementation.Prepare(request)
+	if err != nil {
+		return ProviderResult{}, err
+	}
+	if _, err := conversation.Commit(requestContext, session.Batch(prepared.Draft())); err != nil {
+		return ProviderResult{}, err
+	}
+	return prepared.Generate(requestContext)
+}
+
+func TestPrepareDoesNotDispatchOrRetainInputAliases(t *testing.T) {
+	calls := 0
+	runtime := &titleLLMFixtureRuntime{
+		stream: func(_ context.Context, options llm.GenerateOptions) (llm.ChunkStream, error) {
+			calls++
+			if options.Provider != "title-provider" {
+				t.Fatal("prepared route changed")
+			}
+			return llm.NewSliceStream([]llm.StreamChunk{
+				llm.BlockEndChunk{
+					Type:  "block-end",
+					Index: 0,
+					Block: agentmessage.NewTextBlock("generated"),
+				},
+				llm.FinishChunk{
+					Type:   "finish",
+					Reason: llm.StopFinish{Kind: "stop"},
+				},
+			})
+		},
+	}
+	implementation, err := NewFirstPromptLLMProvider(runtime, titleLLMFixtureConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := ProviderRequest{
+		SessionID: "title",
+		Messages: []UserMessage{{
+			Seq:  1,
+			Text: "original input",
+		}},
+	}
+	prepared, err := implementation.Prepare(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatal("preparation dispatched LLM")
+	}
+	request.Messages[0].Seq = 99
+	conversation, err := session.NewLog("title", session.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conversation.Commit(context.Background(), session.Batch(prepared.Draft())); err != nil {
+		t.Fatal(err)
+	}
+	result, err := prepared.Generate(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || !equalInt64s(result.MessageSeqs, []int64{1}) {
+		t.Fatalf("result = %#v, calls = %d", result, calls)
+	}
 }

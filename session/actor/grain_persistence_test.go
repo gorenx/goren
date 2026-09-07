@@ -27,7 +27,7 @@ func (storage *gatedStorage) AppendBatch(ctx context.Context, batch persistence.
 
 func TestFlushWaitsForItsPrefixWhileMailboxRemainsAvailable(t *testing.T) {
 	backend := newStorage(t)
-	driver, replies := startSession(t)
+	driver, replies := startSession(t, "creation")
 	storage := &gatedStorage{
 		Storage: backend,
 		entered: make(chan struct{}, 2),
@@ -121,7 +121,7 @@ func (storage *uncertainStorage) AppendBatch(ctx context.Context, batch persiste
 
 func TestFlushReconcilesAnUncertainCommitWithoutAppendingAgain(t *testing.T) {
 	backend := newStorage(t)
-	driver, replies := startSession(t)
+	driver, replies := startSession(t, "creation")
 	storage := &uncertainStorage{
 		Storage: backend,
 	}

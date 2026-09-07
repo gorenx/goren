@@ -55,10 +55,12 @@ func (owner *Grain) startFlush(gc *goakt.GrainContext, input Flush) {
 		})
 		return
 	}
-	owner.flushes = append(owner.flushes, flush{
-		barrier: input.Barrier,
-		reply:   reply,
-	})
+	owner.flushes = append(owner.flushes,
+		flush{
+			barrier: input.Barrier,
+			reply:   reply,
+		},
+	)
 	owner.startWrite(gc)
 }
 
@@ -143,7 +145,14 @@ func (owner *Grain) finishFlushes(err error) {
 }
 
 // persist writes detached values only. Reconciliation handles an uncertain prior commit.
-func persist(ctx context.Context, backend Storage, metadata session.Header, entries []session.Event, firstSeq int64, reconcile bool) error {
+func persist(
+	ctx context.Context,
+	backend Storage,
+	metadata session.Header,
+	entries []session.Event,
+	firstSeq int64,
+	reconcile bool,
+) error {
 	materialize := firstSeq == 0
 	if reconcile {
 		stored, err := backend.Load(ctx, metadata.ID)
