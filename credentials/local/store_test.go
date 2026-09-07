@@ -2,6 +2,7 @@ package local_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -24,7 +25,9 @@ func (environment environmentFixture) Lookup(name string) (string, bool) {
 func TestManagerPersistsAndRemovesCredentialWithoutExposingItInDescription(t *testing.T) {
 	t.Parallel()
 	documentPath := filepath.Join(t.TempDir(), ".credentials.json")
-	storage, err := credentialslocal.NewLiveStore(credentialslocal.Config{Path: documentPath})
+	storage, err := credentialslocal.NewLiveStore(credentialslocal.Config{
+		Path: documentPath,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,10 +37,7 @@ func TestManagerPersistsAndRemovesCredentialWithoutExposingItInDescription(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	ref, err := credentials.NewRef("DEEPSEEK_API_KEY")
-	if err != nil {
-		t.Fatal(err)
-	}
+	ref := "DEEPSEEK_API_KEY"
 	const testValue = "test-credential-value"
 	if err := credentialManager.Set(context.Background(), ref, testValue); err != nil {
 		t.Fatal(err)
@@ -49,12 +49,12 @@ func TestManagerPersistsAndRemovesCredentialWithoutExposingItInDescription(t *te
 	if !description.Configured || description.Source != "file" || !description.Writable {
 		t.Fatalf("description = %#v", description)
 	}
-	resolved, found, err := credentialManager.Resolve(context.Background(), ref)
+	resolved, err := credentialManager.Resolve(context.Background(), ref)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !found || resolved.Value != testValue || resolved.Source != "file" {
-		t.Fatalf("resolved = (%#v, %t)", resolved, found)
+	if resolved.Value != testValue || resolved.Source != "file" {
+		t.Fatal("resolved credential differs")
 	}
 	fileInfo, err := os.Stat(documentPath)
 	if err != nil {
@@ -63,7 +63,9 @@ func TestManagerPersistsAndRemovesCredentialWithoutExposingItInDescription(t *te
 	if runtime.GOOS != "windows" && fileInfo.Mode().Perm() != 0o600 {
 		t.Fatalf("document mode = %04o", fileInfo.Mode().Perm())
 	}
-	reloadedStorage, err := credentialslocal.NewLiveStore(credentialslocal.Config{Path: documentPath})
+	reloadedStorage, err := credentialslocal.NewLiveStore(credentialslocal.Config{
+		Path: documentPath,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,21 +75,23 @@ func TestManagerPersistsAndRemovesCredentialWithoutExposingItInDescription(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloaded, reloadedFound, resolveErr := reloadedManager.Resolve(context.Background(), ref); resolveErr != nil || !reloadedFound || reloaded.Value != testValue {
-		t.Fatalf("reloaded resolve = (%#v, %t, %v)", reloaded, reloadedFound, resolveErr)
+	if reloaded, resolveErr := reloadedManager.Resolve(context.Background(), ref); resolveErr != nil || reloaded.Value != testValue {
+		t.Fatalf("reloaded resolve failed: %v", resolveErr)
 	}
 	if err := reloadedManager.Unset(context.Background(), ref); err != nil {
 		t.Fatal(err)
 	}
-	if _, remaining, err := reloadedManager.Resolve(context.Background(), ref); err != nil || remaining {
-		t.Fatalf("resolve after unset = (%t, %v)", remaining, err)
+	if _, err := reloadedManager.Resolve(context.Background(), ref); !errors.Is(err, credentials.ErrNotFound) {
+		t.Fatalf("resolve after unset: %v", err)
 	}
 }
 
 func TestManagerTreatsLaunchingEnvironmentAsReadOnlyWinningLayer(t *testing.T) {
 	t.Parallel()
 	documentPath := filepath.Join(t.TempDir(), ".credentials.json")
-	storage, err := credentialslocal.NewLiveStore(credentialslocal.Config{Path: documentPath})
+	storage, err := credentialslocal.NewLiveStore(credentialslocal.Config{
+		Path: documentPath,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,10 +103,7 @@ func TestManagerTreatsLaunchingEnvironmentAsReadOnlyWinningLayer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ref, err := credentials.NewRef("DEEPSEEK_API_KEY")
-	if err != nil {
-		t.Fatal(err)
-	}
+	ref := "DEEPSEEK_API_KEY"
 	description, err := credentialManager.Describe(context.Background(), ref)
 	if err != nil {
 		t.Fatal(err)

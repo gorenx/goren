@@ -41,7 +41,9 @@ func NewLiveStore(settings Config) (*LiveStore, error) {
 	if err := ValidateConfig(settings); err != nil {
 		return nil, err
 	}
-	storage := &LiveStore{path: filepath.Clean(settings.Path)}
+	storage := &LiveStore{
+		path: filepath.Clean(settings.Path),
+	}
 	if _, err := storage.read(); err != nil {
 		return nil, err
 	}
@@ -52,7 +54,7 @@ func NewLiveStore(settings Config) (*LiveStore, error) {
 func (*LiveStore) Source() string { return "file" }
 
 // Load reads one stored value from the latest committed document.
-func (storage *LiveStore) Load(requestContext context.Context, ref credentials.Ref) (string, bool, error) {
+func (storage *LiveStore) Load(requestContext context.Context, ref string) (string, bool, error) {
 	if err := requestContext.Err(); err != nil {
 		return "", false, err
 	}
@@ -67,7 +69,7 @@ func (storage *LiveStore) Load(requestContext context.Context, ref credentials.R
 }
 
 // Save atomically commits one non-empty value.
-func (storage *LiveStore) Save(requestContext context.Context, ref credentials.Ref, value string) error {
+func (storage *LiveStore) Save(requestContext context.Context, ref string, value string) error {
 	if value == "" {
 		return errors.New("credentials local: storage value must be non-empty")
 	}
@@ -85,7 +87,7 @@ func (storage *LiveStore) Save(requestContext context.Context, ref credentials.R
 }
 
 // Delete atomically removes one value and is idempotent when absent.
-func (storage *LiveStore) Delete(requestContext context.Context, ref credentials.Ref) error {
+func (storage *LiveStore) Delete(requestContext context.Context, ref string) error {
 	storage.mu.Lock()
 	defer storage.mu.Unlock()
 	if err := requestContext.Err(); err != nil {
@@ -105,7 +107,7 @@ func (storage *LiveStore) Delete(requestContext context.Context, ref credentials
 // Path returns the managed document path for startup diagnostics.
 func (storage *LiveStore) Path() string { return storage.path }
 
-func (storage *LiveStore) read() (map[credentials.Ref]string, error) {
+func (storage *LiveStore) read() (map[string]string, error) {
 	fileInfo, statErr := os.Stat(storage.path)
 	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
 		return nil, fmt.Errorf("credentials local: inspect document: %w", statErr)
@@ -115,7 +117,7 @@ func (storage *LiveStore) read() (map[credentials.Ref]string, error) {
 	}
 	encoded, readErr := os.ReadFile(storage.path)
 	if errors.Is(readErr, os.ErrNotExist) {
-		return make(map[credentials.Ref]string), nil
+		return make(map[string]string), nil
 	}
 	if readErr != nil {
 		return nil, fmt.Errorf("credentials local: read document: %w", readErr)
@@ -123,7 +125,7 @@ func (storage *LiveStore) read() (map[credentials.Ref]string, error) {
 	return decodeDocument(encoded)
 }
 
-func (storage *LiveStore) write(values map[credentials.Ref]string) error {
+func (storage *LiveStore) write(values map[string]string) error {
 	directory := filepath.Dir(storage.path)
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return fmt.Errorf("credentials local: create directory: %w", err)
@@ -168,31 +170,24 @@ func (storage *LiveStore) write(values map[credentials.Ref]string) error {
 	return nil
 }
 
-func decodeDocument(encoded []byte) (map[credentials.Ref]string, error) {
+func decodeDocument(encoded []byte) (map[string]string, error) {
 	var document map[string]string
 	if err := json.Unmarshal(encoded, &document); err != nil || document == nil {
 		return nil, errors.New("credentials local: invalid JSON credential mapping")
 	}
-	values := make(map[credentials.Ref]string)
-	for rawRef, value := range document {
-		ref, err := credentials.NewRef(rawRef)
-		if err != nil {
+	for ref, value := range document {
+		if err := credentials.ValidateRef(ref); err != nil {
 			return nil, errors.New("credentials local: document contains an invalid credential reference")
 		}
 		if value == "" {
 			return nil, fmt.Errorf("credentials local: value for %q must be a non-empty string", ref)
 		}
-		values[ref] = value
 	}
-	return values, nil
+	return document, nil
 }
 
-func encodeDocument(values map[credentials.Ref]string) ([]byte, error) {
-	document := make(map[string]string, len(values))
-	for ref, value := range values {
-		document[string(ref)] = value
-	}
-	encoded, err := json.MarshalIndent(document, "", "  ")
+func encodeDocument(values map[string]string) ([]byte, error) {
+	encoded, err := json.MarshalIndent(values, "", "  ")
 	if err != nil {
 		return nil, errors.New("credentials local: encode document")
 	}

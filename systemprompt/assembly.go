@@ -4,65 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"sort"
 	"strings"
 
 	"github.com/gorenx/goren/llm"
 )
 
-type assemblyAction struct {
-	candidate PromptAssembly
-}
-
-func (action *assemblyAction) Execute(
-	context.Context,
-	AssembleRequest,
-) (PromptAssembly, error) {
-	// assemblyResolver creates an operation-owned value. Middleware may
-	// transform it in place; preparedAssembly finalizes the detached result.
-	return action.candidate, nil
-}
-
-// preparedAssembly keeps the candidate and the owner rules that must be
-// enforced after middleware returns. Registry no longer coordinates those
-// rules through parallel return values.
-type preparedAssembly struct {
-	candidate PromptAssembly
-	policy    assemblyPolicy
-}
-
-func (prepared preparedAssembly) finalize(
-	transformed PromptAssembly,
-) (PromptAssembly, error) {
-	if err := validateAssembly(transformed); err != nil {
-		return PromptAssembly{}, err
-	}
-	detached := cloneAssembly(transformed)
-	prepared.policy.enforce(&detached)
-	return detached, nil
-}
-
-type assemblyPolicy struct {
-	completeSection        AssembledSection
-	completeSectionPresent bool
-	contextsSuppressed     bool
-}
-
-func (policy assemblyPolicy) enforce(assembled *PromptAssembly) {
-	if policy.completeSectionPresent {
-		assembled.Sections = []AssembledSection{
-			policy.completeSection,
-		}
-	}
-	if policy.contextsSuppressed {
-		assembled.Contexts = []AssembledContext{}
-	}
-}
-
-// assemblyResolver owns one pre-Waterfall assembly pass. It resolves dynamic
-// providers from a fixed registration snapshot without owning post-Waterfall
-// policy enforcement.
+// assemblyResolver evaluates providers from a fixed registration snapshot.
 type assemblyResolver struct {
 	requestContext  context.Context
 	assemblyContext AssembleContext
@@ -76,41 +24,36 @@ type sectionResolution struct {
 	completePresent bool
 }
 
-type contextResolution struct {
-	entries    []AssembledContext
-	suppressed bool
-}
-
-func (resolver *assemblyResolver) resolve() (preparedAssembly, error) {
+func (resolver *assemblyResolver) resolve() (PromptAssembly, error) {
 	variables, err := resolver.resolveVariables()
 	if err != nil {
-		return preparedAssembly{}, err
+		return PromptAssembly{}, err
 	}
 	sections, err := resolver.resolveSections()
 	if err != nil {
-		return preparedAssembly{}, err
+		return PromptAssembly{}, err
 	}
 	contexts, err := resolver.resolveContexts()
 	if err != nil {
-		return preparedAssembly{}, err
+		return PromptAssembly{}, err
 	}
 	toolSchemas, err := resolver.resolveTools()
 	if err != nil {
-		return preparedAssembly{}, err
+		return PromptAssembly{}, err
 	}
-	return preparedAssembly{
-		candidate: PromptAssembly{
-			Sections:  sections.entries,
-			Contexts:  contexts.entries,
-			Tools:     toolSchemas,
-			Variables: variables,
-		},
-		policy: assemblyPolicy{
-			completeSection:        sections.complete,
-			completeSectionPresent: sections.completePresent,
-			contextsSuppressed:     contexts.suppressed,
-		},
-	}, nil
+	assembled := PromptAssembly{
+		Sections:  sections.entries,
+		Contexts:  contexts,
+		Tools:     toolSchemas,
+		Variables: variables,
+	}
+	if err := validateAssembly(assembled); err != nil {
+		return PromptAssembly{}, err
+	}
+	if sections.completePresent {
+		assembled.Sections = []AssembledSection{sections.complete}
+	}
+	return assembled, nil
 }
 
 func (resolver *assemblyResolver) resolveVariables() (
@@ -187,33 +130,27 @@ func (resolver *assemblyResolver) resolveSections() (
 	return resolved, nil
 }
 
-func (resolver *assemblyResolver) resolveContexts() (
-	contextResolution,
-	error,
-) {
+func (resolver *assemblyResolver) resolveContexts() ([]AssembledContext, error) {
+	// A suppressor in any captured layer disables all runtime-context sections.
+	// Skip their providers entirely; system sections and tools are unaffected.
 	if contextSuppressed(resolver.layers) {
-		return contextResolution{
-			entries:    []AssembledContext{},
-			suppressed: true,
-		}, nil
+		return []AssembledContext{}, nil
 	}
 	contexts := mergeContexts(resolver.layers)
-	resolved := contextResolution{
-		entries: make([]AssembledContext, 0, len(contexts)),
-	}
+	resolved := make([]AssembledContext, 0, len(contexts))
 	for _, definition := range contexts {
 		resolvedText, err := definition.Text.ResolveText(
 			resolver.requestContext,
 			resolver.assemblyContext,
 		)
 		if err != nil {
-			return contextResolution{}, fmt.Errorf(
+			return nil, fmt.Errorf(
 				"systemprompt: resolve prompt context %q: %w",
 				definition.Name,
 				err,
 			)
 		}
-		resolved.entries = append(resolved.entries, AssembledContext{
+		resolved = append(resolved, AssembledContext{
 			Name: definition.Name,
 			Text: resolvedText,
 		})
@@ -224,33 +161,20 @@ func (resolver *assemblyResolver) resolveContexts() (
 func (resolver *assemblyResolver) resolveTools() ([]llm.ToolSchema, error) {
 	collectedSchemas := make([]llm.ToolSchema, 0)
 	knownNames := make(map[string]struct{})
-	for _, entry := range mergeToolProviders(resolver.layers) {
-		providerResult, err := entry.provider.ResolveTools(
-			resolver.requestContext,
-			resolver.assemblyContext,
-		)
+	definitions := resolver.assemblyContext.Tools
+	for _, schema := range definitions.Schemas {
+		detached, err := detachToolSchema(schema)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"systemprompt: resolve tool provider %q: %w",
-				entry.name,
-				err,
-			)
+			return nil, err
 		}
-		for _, schema := range providerResult.Schemas {
-			detached, detachErr := detachToolSchema(schema)
-			if detachErr != nil {
-				return nil, detachErr
-			}
-			collectedSchemas = append(collectedSchemas, detached)
+		collectedSchemas = append(collectedSchemas, detached)
+	}
+	if definitions.KnownNames == nil {
+		for _, schema := range definitions.Schemas {
+			knownNames[schema.Name] = struct{}{}
 		}
-		acceptedNames := providerResult.KnownNames
-		if acceptedNames == nil {
-			acceptedNames = make([]string, len(providerResult.Schemas))
-			for index, schema := range providerResult.Schemas {
-				acceptedNames[index] = schema.Name
-			}
-		}
-		for _, name := range acceptedNames {
+	} else {
+		for _, name := range definitions.KnownNames {
 			knownNames[name] = struct{}{}
 		}
 	}
@@ -307,27 +231,6 @@ func mergeContexts(layers []promptLayerSnapshot) []PromptContext {
 	return merged
 }
 
-func mergeToolProviders(layers []promptLayerSnapshot) []namedToolProvider {
-	names := make([]string, 0)
-	byName := make(map[string]ToolProvider)
-	for _, layer := range layers {
-		for _, entry := range layer.toolProviders {
-			if _, exists := byName[entry.name]; !exists {
-				names = append(names, entry.name)
-			}
-			byName[entry.name] = entry.provider
-		}
-	}
-	merged := make([]namedToolProvider, 0, len(names))
-	for _, name := range names {
-		merged = append(merged, namedToolProvider{
-			name:     name,
-			provider: byName[name],
-		})
-	}
-	return merged
-}
-
 func contextSuppressed(layers []promptLayerSnapshot) bool {
 	for _, layer := range layers {
 		if layer.contextSuppressed {
@@ -378,24 +281,4 @@ func validateAssembly(assembled PromptAssembly) error {
 		}
 	}
 	return nil
-}
-
-func cloneAssembly(assembled PromptAssembly) PromptAssembly {
-	detached := PromptAssembly{
-		Sections:  slices.Clone(assembled.Sections),
-		Contexts:  slices.Clone(assembled.Contexts),
-		Tools:     make([]llm.ToolSchema, len(assembled.Tools)),
-		Variables: make(map[string]VariableValue, len(assembled.Variables)),
-	}
-	for index, schema := range assembled.Tools {
-		detached.Tools[index] = llm.ToolSchema{
-			Name:        schema.Name,
-			Description: schema.Description,
-			Parameters:  slices.Clone(schema.Parameters),
-		}
-	}
-	for name, retained := range assembled.Variables {
-		detached.Variables[name] = retained
-	}
-	return detached
 }
