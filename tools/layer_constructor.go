@@ -3,8 +3,6 @@ package tools
 import (
 	"context"
 	"errors"
-
-	"github.com/gorenx/goren/approval"
 )
 
 // PrePolicy decides whether one validated execution may proceed to dispatch.
@@ -29,7 +27,6 @@ type Options struct {
 	Execution ExecuteMiddleware
 	Results   ResultObserver
 	Changes   RegistryObserver
-	Approvals approval.Approval
 }
 
 // New constructs a ready tool layer from validated configuration.
@@ -47,7 +44,7 @@ func newToolLayer(catalog *registry, options Options) *ToolLayer {
 	return &ToolLayer{
 		registry: catalog,
 		pipeline: stages,
-		runtime:  newRuntime(stages, catalog, options.Approvals),
+		runtime:  newRuntime(stages, catalog),
 	}
 }
 

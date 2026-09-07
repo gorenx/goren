@@ -36,7 +36,7 @@ var fixtureEventKey = DefineEvent[fixturePayload]("fixture/event")
 func TestCommitSnapshotsPayloadAndEventViews(t *testing.T) {
 	t.Parallel()
 	fixedTime := time.UnixMilli(1_723_700_000_123)
-	conversation, err := newContextWithClock(
+	conversation, err := newWithClock(
 		"session-a",
 		CreateOptions{},
 		fixedTimeSource{
@@ -78,94 +78,10 @@ func TestCommitSnapshotsPayloadAndEventViews(t *testing.T) {
 	}
 }
 
-type blockingPlan struct {
-	drafts  []EventDraft
-	entered chan struct{}
-	resume  chan struct{}
-}
-
-func (plan *blockingPlan) Build(
-	context.Context,
-	Snapshot,
-) ([]EventDraft, error) {
-	close(plan.entered)
-	<-plan.resume
-	return plan.drafts, nil
-}
-
-func TestCommitKeepsOneBatchAdjacent(t *testing.T) {
-	t.Parallel()
-	conversation, err := New("atomic-group", CreateOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	firstDraft, err := NewEventDraft(
-		fixtureEventKey,
-		fixturePayload{
-			Items: []string{"group-first"},
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	secondDraft, err := NewEventDraft(
-		fixtureEventKey,
-		fixturePayload{
-			Items: []string{"group-second"},
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	buildEntered := make(chan struct{})
-	releaseBuild := make(chan struct{})
-	groupDone := make(chan error, 1)
-	go func() {
-		_, writeErr := conversation.Commit(
-			context.Background(),
-			&blockingPlan{
-				drafts:  []EventDraft{firstDraft, secondDraft},
-				entered: buildEntered,
-				resume:  releaseBuild,
-			},
-		)
-		groupDone <- writeErr
-	}()
-	<-buildEntered
-
-	outsideDone := make(chan error, 1)
-	go func() {
-		_, writeErr := commitFixtureEvent(context.Background(), conversation, "outside")
-		outsideDone <- writeErr
-	}()
-	close(releaseBuild)
-	if groupErr := <-groupDone; groupErr != nil {
-		t.Fatal(groupErr)
-	}
-	if writeErr := <-outsideDone; writeErr != nil {
-		t.Fatal(writeErr)
-	}
-
-	entries := conversation.Events()
-	if len(entries) != 3 {
-		t.Fatalf("event count = %d", len(entries))
-	}
-	wantItems := []string{"group-first", "group-second", "outside"}
-	for index, entry := range entries {
-		var body fixturePayload
-		if decodeErr := json.Unmarshal(entry.Data, &body); decodeErr != nil {
-			t.Fatal(decodeErr)
-		}
-		if !reflect.DeepEqual(body.Items, []string{wantItems[index]}) {
-			t.Fatalf("event %d items = %#v", index, body.Items)
-		}
-	}
-}
-
 func TestSeedIsContiguousAndEndsWithLifecycleMarker(t *testing.T) {
 	t.Parallel()
 	seed := []Event{{Type: "fixture/seed", Seq: 0, Time: 10, Data: json.RawMessage(`{"value":1}`)}}
-	conversation, err := New("seeded", CreateOptions{Seed: seed})
+	conversation, err := NewLog("seeded", CreateOptions{Seed: seed})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,14 +98,14 @@ func TestSeedIsContiguousAndEndsWithLifecycleMarker(t *testing.T) {
 	}
 
 	badSeed := []Event{{Type: "fixture/seed", Seq: 1, Time: 10, Data: json.RawMessage(`{}`)}}
-	if _, err := New("bad-seed", CreateOptions{Seed: badSeed}); err == nil || !strings.Contains(err.Error(), "not contiguous") {
+	if _, err := NewLog("bad-seed", CreateOptions{Seed: badSeed}); err == nil || !strings.Contains(err.Error(), "not contiguous") {
 		t.Fatalf("non-contiguous seed error = %v", err)
 	}
 }
 
 func TestExplicitEmptySeedMarksLifecycleBoundary(t *testing.T) {
 	t.Parallel()
-	fresh, err := New("fresh-empty", CreateOptions{})
+	fresh, err := NewLog("fresh-empty", CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +113,7 @@ func TestExplicitEmptySeedMarksLifecycleBoundary(t *testing.T) {
 		t.Fatalf("fresh Session events = %#v", fresh.Events())
 	}
 
-	resumed, err := New("resumed-empty", CreateOptions{
+	resumed, err := NewLog("resumed-empty", CreateOptions{
 		Seed: []Event{},
 	})
 	if err != nil {
@@ -209,7 +125,7 @@ func TestExplicitEmptySeedMarksLifecycleBoundary(t *testing.T) {
 		t.Fatalf("resumed Session events = %#v", resumedEvents)
 	}
 
-	reopened, err := New("reopened-empty", CreateOptions{
+	reopened, err := NewLog("reopened-empty", CreateOptions{
 		Seed: resumedEvents,
 	})
 	if err != nil {
@@ -225,7 +141,7 @@ func TestSurfaceReplacementIsAtomicAndTracksProvenance(t *testing.T) {
 	t.Parallel()
 	userKey := defineSurfaceEvent[fixturePayload]("user/message")
 	assistantKey := defineSurfaceEvent[fixturePayload]("assistant/message")
-	conversation, err := New("surface", CreateOptions{})
+	conversation, err := NewLog("surface", CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +202,7 @@ func TestSurfaceReplacementIsAtomicAndTracksProvenance(t *testing.T) {
 func TestAppendRejectsNegativeZeroBeforeCommit(t *testing.T) {
 	t.Parallel()
 	definition := DefineEvent[negativeZeroPayload]("fixture/negative-zero")
-	conversation, err := New("json", CreateOptions{})
+	conversation, err := NewLog("json", CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +225,7 @@ func TestAppendRejectsNegativeZeroBeforeCommit(t *testing.T) {
 
 func TestRequestFoldsAndDerivedMessagesTrackCurrentSurface(t *testing.T) {
 	t.Parallel()
-	conversation, err := New("agent-session", CreateOptions{})
+	conversation, err := NewLog("agent-session", CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

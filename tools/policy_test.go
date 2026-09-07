@@ -5,78 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/approval"
-	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/tools"
 )
-
-type approvalProvider struct {
-	outcome approval.Outcome
-	failure error
-
-	mutex       sync.Mutex
-	lastRequest approval.Request
-}
-
-func (provider *approvalProvider) Request(
-	_ context.Context,
-	decisionRequest approval.Request,
-) (approval.Outcome, error) {
-	provider.mutex.Lock()
-	provider.lastRequest = decisionRequest
-	provider.mutex.Unlock()
-	return provider.outcome, provider.failure
-}
-
-func (*approvalProvider) EffectivePolicy(
-	session.Context,
-) (approval.Policy, error) {
-	return approval.PolicyAsk, nil
-}
-
-func (*approvalProvider) OverrideOf(
-	session.Context,
-) (approval.Policy, bool, error) {
-	return "", false, nil
-}
-
-func (*approvalProvider) SetPolicy(
-	context.Context,
-	approval.ApprovalTarget,
-	approval.Policy,
-) error {
-	return nil
-}
-
-type executionSubject struct {
-	conversation session.Context
-}
-
-func (subject *executionSubject) SessionValue() session.Context {
-	return subject.conversation
-}
-
-func (*executionSubject) Inject(agentmessage.UserMessage) error {
-	return nil
-}
-
-func newExecutionSubject(t *testing.T) *executionSubject {
-	t.Helper()
-	conversation, err := session.New(
-		"tools-policy",
-		session.CreateOptions{},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return &executionSubject{
-		conversation: conversation,
-	}
-}
 
 func askPolicy(reason string) any {
 	return &policyFixture[
@@ -104,53 +38,45 @@ func askPolicy(reason string) any {
 	}
 }
 
-func TestAskDecisionUsesOptionalApprovalBeforeDispatch(t *testing.T) {
-	provider := &approvalProvider{
-		outcome: approval.OutcomeAllowedOnce,
-	}
-	state := newToolsFixture(
-		t,
-		provider,
-		askPolicy("needs permission"),
-	)
+func TestAskDecisionWaitsForAuditedOutcomeBeforeDispatch(t *testing.T) {
+	state := newToolsFixture(t, askPolicy("needs permission"))
 	bodyCalls := 0
-	if _, err := state.service.AddTool(
-		context.Background(),
-		objectTool(
-			"danger",
-			"",
-			executorStub(func(
-				arguments json.RawMessage,
-				_ tools.ToolRunContext,
-			) (json.RawMessage, error) {
-				bodyCalls++
-				return arguments, nil
-			}),
-		),
-	); err != nil {
+	if _, err := state.service.AddTool(context.Background(), objectTool("danger", "", executorStub(func(arguments json.RawMessage, _ tools.ToolRunContext) (json.RawMessage, error) {
+		bodyCalls++
+		return arguments, nil
+	}))); err != nil {
 		t.Fatal(err)
 	}
-	subject := newExecutionSubject(t)
-	outcome := state.service.Execute(
-		context.Background(),
-		tools.ToolExecutionInput{
-			CallID:    "danger-1",
-			Name:      "danger",
-			Arguments: json.RawMessage(`{}`),
-			Subject:   subject,
-		},
-	)
-	if outcome.Failed() || bodyCalls != 1 {
-		t.Fatalf("approved outcome = %#v, body calls = %d", outcome, bodyCalls)
+	scheduler := state.service.Scheduler()
+	prepared, err := scheduler.Prepare(context.Background(), tools.ToolExecutionInput{
+		SessionID: "session",
+		CallID:    "danger-1",
+		Name:      "danger",
+		Arguments: json.RawMessage(`{}`),
+	})
+	if err != nil || prepared.Stage != tools.ScheduledApproval || prepared.Approval == nil {
+		t.Fatalf("preparation = %#v, %v", prepared, err)
 	}
-	provider.mutex.Lock()
-	capturedRequest := provider.lastRequest
-	provider.mutex.Unlock()
-	if capturedRequest.Subject != subject || capturedRequest.ToolName != "danger" ||
-		capturedRequest.CallID == nil || *capturedRequest.CallID != "danger-1" ||
-		capturedRequest.Reason == nil ||
-		*capturedRequest.Reason != "needs permission" {
-		t.Fatalf("approval request = %#v", capturedRequest)
+	if prepared.Approval.SessionID != "session" || prepared.Approval.Reason != "needs permission" || bodyCalls != 0 {
+		t.Fatal("invalid approval request or early dispatch")
+	}
+	if _, err := scheduler.Dispatch(prepared.Execution); err == nil {
+		t.Fatal("dispatch bypassed approval")
+	}
+	allowed, err := scheduler.ResolveApproval(prepared.Execution, approval.OutcomeAllowedOnce)
+	if err != nil || allowed.Stage != tools.ScheduledDispatch {
+		t.Fatalf("allowed = %#v, %v", allowed, err)
+	}
+	if _, err := scheduler.ResolveApproval(prepared.Execution, approval.OutcomeAllowedOnce); err == nil {
+		t.Fatal("duplicate outcome accepted")
+	}
+	dispatched, err := scheduler.Dispatch(allowed.Execution)
+	if err != nil || bodyCalls != 1 {
+		t.Fatalf("dispatch calls = %d, err = %v", bodyCalls, err)
+	}
+	result, err := scheduler.Finalize(allowed.Execution, dispatched.Result)
+	if err != nil || result.Failed() {
+		t.Fatalf("result = %#v, %v", result, err)
 	}
 }
 
@@ -357,5 +283,68 @@ func TestBestEffortResultFailureDoesNotReplaceToolOutcome(t *testing.T) {
 	if len(failures) != 1 || failures[0].EventName != tools.ResultEventName ||
 		!strings.Contains(failures[0].Error.Error(), observerFailure.Error()) {
 		t.Fatalf("reported failures = %#v", failures)
+	}
+}
+
+func TestApprovalRejectionAndCancellationNeverDispatch(t *testing.T) {
+	for _, scenario := range []struct {
+		name    string
+		outcome approval.Outcome
+		cancel  bool
+	}{
+		{
+			name:    "rejected",
+			outcome: approval.OutcomeRejected,
+		},
+		{
+			name:    "unavailable",
+			outcome: approval.OutcomeUnavailable,
+		},
+		{
+			name:    "cancelled answer",
+			outcome: approval.OutcomeCancelled,
+		},
+		{
+			name:    "cancelled before late allow",
+			outcome: approval.OutcomeAllowedOnce,
+			cancel:  true,
+		},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			state := newToolsFixture(t, askPolicy("permission"))
+			calls := 0
+			if _, err := state.service.AddTool(context.Background(), objectTool("danger", "", executorStub(func(raw json.RawMessage, _ tools.ToolRunContext) (json.RawMessage, error) {
+				calls++
+				return raw, nil
+			}))); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			scheduler := state.service.Scheduler()
+			prepared, err := scheduler.Prepare(ctx, tools.ToolExecutionInput{
+				SessionID: "session",
+				CallID:    "call",
+				Name:      "danger",
+				Arguments: json.RawMessage(`{}`),
+			})
+			if err != nil || prepared.Stage != tools.ScheduledApproval {
+				t.Fatalf("prepare = %#v, %v", prepared, err)
+			}
+			if scenario.cancel {
+				cancel()
+			}
+			resumed, err := scheduler.ResolveApproval(prepared.Execution, scenario.outcome)
+			if err != nil || resumed.Stage != tools.ScheduledPostResult {
+				t.Fatalf("resume = %#v, %v", resumed, err)
+			}
+			if _, err := scheduler.Dispatch(resumed.Execution); err == nil {
+				t.Fatal("denied execution dispatched")
+			}
+			result, err := scheduler.Finalize(resumed.Execution, resumed.Result)
+			if err != nil || !result.Failed() || calls != 0 {
+				t.Fatalf("result = %#v, calls = %d, err = %v", result, calls, err)
+			}
+		})
 	}
 }

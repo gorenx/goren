@@ -13,7 +13,7 @@ import (
 	"github.com/gorenx/goren/session/persistence/sqlite/internal/dbsql"
 )
 
-// Adapter implements only the storage primitives consumed by SessionLogStore.
+// Adapter implements only the storage primitives consumed by Session actors and durable readers.
 type Adapter struct {
 	database      *sql.DB
 	queries       *dbsql.Queries
@@ -28,10 +28,12 @@ func Open(requestContext context.Context, settings Config) (*Adapter, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Adapter{database: database, queries: dbsql.New(database), storeIdentity: storeIdentity}, nil
+	return &Adapter{
+		database:      database,
+		queries:       dbsql.New(database),
+		storeIdentity: storeIdentity,
+	}, nil
 }
-
-func (owner *Adapter) BackendName() string { return "session-persistence-sqlite" }
 
 func (owner *Adapter) Locate(session.Header) (sesspersist.Location, bool) {
 	return sesspersist.Location{}, false

@@ -52,19 +52,13 @@ type PolicySource string
 
 const PolicySourceDelegation PolicySource = "delegation"
 
-// Request is one readonly approval decision borrowed by answerers.
+// Request supplies the fixed Session facts used to prepare one approval decision.
 type Request struct {
-	Subject  ApprovalTarget
-	ToolName string
-	CallID   *agentmessage.CallID
-	Reason   *string
-}
-
-// ApprovalTarget is the Approval-owned view of an active Agent. It exposes
-// only the Session being audited and the inbox operation used by policy changes.
-type ApprovalTarget interface {
-	SessionValue() session.Context
-	Inject(agentmessage.UserMessage) error
+	SessionID session.SessionID
+	Events    []session.Event
+	ToolName  string
+	CallID    *agentmessage.CallID
+	Reason    *string
 }
 
 // Asked is the durable pre-dispatch approval audit payload.
@@ -172,20 +166,6 @@ type Question struct {
 // and release its waiting resources before returning. The adapter owns routing.
 type Answerer interface {
 	Answer(context.Context, Question) (Outcome, error)
-}
-
-// Approval is the provider-owned policy and decision capability.
-type Approval interface {
-	Request(context.Context, Request) (Outcome, error)
-	EffectivePolicy(session.Context) (Policy, error)
-	OverrideOf(session.Context) (Policy, bool, error)
-	SetPolicy(context.Context, ApprovalTarget, Policy) error
-}
-
-// DelegationPolicy owns the durable approval override seeded into an
-// unpublished delegated Session.
-type DelegationPolicy interface {
-	SeedDelegationPolicy(context.Context, session.Context) error
 }
 
 func validOutcome(selectedOutcome Outcome) bool {

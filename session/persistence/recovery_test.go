@@ -11,7 +11,7 @@ import (
 
 func TestInterruptedTurnClosersPreserveUnknownToolOutcomeSemantics(t *testing.T) {
 	t.Parallel()
-	conversation, err := session.New("tool-recovery", session.CreateOptions{})
+	conversation, err := session.NewLog("tool-recovery", session.CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

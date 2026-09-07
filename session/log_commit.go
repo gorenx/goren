@@ -7,7 +7,7 @@ import (
 )
 
 // Commit owns the atomic business transaction without lifecycle or publication.
-// The caller serializes transactions; existing log locks only protect detached readers.
+// The caller serializes all Log operations, including detached reads.
 func (conversation *Log) Commit(
 	requestContext context.Context,
 	plan WritePlan,

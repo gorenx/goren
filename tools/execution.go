@@ -9,17 +9,10 @@ import (
 	"sync"
 
 	"github.com/gorenx/goren/agentmessage"
+	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/internal/jsonvalue"
 	"github.com/gorenx/goren/session"
 )
-
-// ExecutionSubject is the minimal active-service view needed by Tool policy.
-// Agent implementations satisfy it without making Tools depend on Agent's
-// lifecycle, inbox, or runtime-scope contracts.
-type ExecutionSubject interface {
-	SessionValue() session.Context
-	Inject(agentmessage.UserMessage) error
-}
 
 // ToolExecutionToken is an opaque same-process parent correlation identity.
 type ToolExecutionToken struct {
@@ -42,7 +35,7 @@ type ToolExecutionInput struct {
 	RootCallID agentmessage.CallID
 	Name       string
 	Arguments  json.RawMessage
-	Subject    ExecutionSubject
+	SessionID  session.SessionID
 	Parent     ToolExecutionToken
 }
 
@@ -51,7 +44,7 @@ type ToolExecution struct {
 	CallID     agentmessage.CallID
 	RootCallID agentmessage.CallID
 	Name       string
-	Subject    ExecutionSubject
+	SessionID  session.SessionID
 	Parent     ToolExecutionToken
 	Token      ToolExecutionToken
 	arguments  json.RawMessage
@@ -104,6 +97,7 @@ type scheduledExecutionPhase uint8
 
 const (
 	executionUnprepared scheduledExecutionPhase = iota
+	executionAwaitingApproval
 	executionPreparedForDispatch
 	executionDispatching
 	executionPreparedForPost
@@ -249,7 +243,7 @@ func createExecution(input ToolExecutionInput) (ToolExecution, error) {
 		CallID:     input.CallID,
 		RootCallID: rootCallID,
 		Name:       input.Name,
-		Subject:    input.Subject,
+		SessionID:  input.SessionID,
 		Parent:     input.Parent,
 		Token: ToolExecutionToken{
 			token: identity,
@@ -263,11 +257,6 @@ func createExecution(input ToolExecutionInput) (ToolExecution, error) {
 	}
 	if input.CallID == "" {
 		return toolCall, errors.New("tools: call ID is empty")
-	}
-	if input.Subject != nil && input.Subject.SessionValue() == nil {
-		return toolCall, errors.New(
-			"tools: execution subject must expose a Session",
-		)
 	}
 	arguments, err := jsonvalue.Clone(input.Arguments)
 	if err != nil {
@@ -302,6 +291,8 @@ const (
 type ScheduledToolStage string
 
 const (
+	// ScheduledApproval requires an audited external approval before dispatch.
+	ScheduledApproval ScheduledToolStage = "approval"
 	// ScheduledDispatch means only the body/around-dispatch stage may overlap.
 	ScheduledDispatch ScheduledToolStage = "dispatch"
 	// ScheduledPostResult means the result still requires ordered post policy and finalization.
@@ -312,6 +303,7 @@ const (
 
 // ScheduledToolPreparation is the ordered pre-policy outcome for one call.
 type ScheduledToolPreparation struct {
+	Approval  *ApprovalRequest
 	Stage     ScheduledToolStage
 	Execution ToolExecution
 	Result    ToolExecutionResult
@@ -328,7 +320,32 @@ type ScheduledToolDispatch struct {
 // remain typed ToolExecutionResult values so Agent Loop can commit them.
 type ToolExecutionScheduler interface {
 	Prepare(context.Context, ToolExecutionInput) (ScheduledToolPreparation, error)
+	ResolveApproval(ToolExecution, approval.Outcome) (ScheduledToolPreparation, error)
 	Dispatch(ToolExecution) (ScheduledToolDispatch, error)
 	Finalize(ToolExecution, ToolExecutionResult) (ToolExecutionResult, error)
 	Finish(ToolExecution, ToolExecutionResult) ToolExecutionResult
+}
+
+// ApprovalRequest is the detached input for asynchronous approval orchestration.
+type ApprovalRequest struct {
+	SessionID session.SessionID
+	ToolName  string
+	CallID    agentmessage.CallID
+	Reason    string
+}
+
+func (state *scheduledExecutionState) awaitApproval() {
+	state.mu.Lock()
+	state.phase = executionAwaitingApproval
+	state.mu.Unlock()
+}
+
+func (state *scheduledExecutionState) acceptApproval() error {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.phase != executionAwaitingApproval {
+		return errors.New("tools: execution is not awaiting approval")
+	}
+	state.phase = executionUnprepared
+	return nil
 }

@@ -1,12 +1,10 @@
-// Package persistence owns durable Session-log orchestration and the
-// consumer-owned storage port implemented by concrete persistence adapters.
+// Package persistence owns durable read validation, recovery rules and storage ports.
 package persistence
 
 import (
 	"context"
 	"errors"
 
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
 
@@ -82,43 +80,17 @@ type RawArtifact struct {
 	Content  string
 }
 
-// Persistence is the backend-neutral durable Session capability. Callers do
-// not observe whether its SessionLogStore uses a JSONL, SQLite, or other
-// Backend adapter.
-type Persistence interface {
-	plugin.Service
+// ReadStorage is the storage-only port consumed by Reader. It cannot mutate logs
+// or close the shared adapter; Session actors and composition own those operations.
+// Optional reads return nil when no record exists; storage failures return errors.
+type ReadStorage interface {
 	Locate(metadata session.Header) (Location, bool)
 	SupportsRawArtifacts() bool
-	ReadRaw(ctx context.Context, id session.SessionID) (RawArtifact, error)
-	Create(ctx context.Context, metadata session.Header) error
-	Append(ctx context.Context, id session.SessionID, events []session.Event) error
-	Prepare(ctx context.Context, id session.SessionID) (*session.Preparation, error)
-	Load(ctx context.Context, id session.SessionID) (Inspection, error)
-	Inspect(ctx context.Context, id session.SessionID) (Inspection, error)
-	ReadEventsFrom(ctx context.Context, id session.SessionID, continuation EventContinuation) (EventSegment, error)
-	ReadEventsBefore(ctx context.Context, id session.SessionID, page EventPage) (EventWindow, error)
-	List(ctx context.Context, page SessionPage) (HeaderPage, error)
-	ListSnapshots(ctx context.Context, page SessionPage) (SnapshotPage, error)
-}
-
-const PluginName = "@deepseek-ai/dsh-session-persistence"
-
-// BackendOpener acquires one configured storage Backend during Plugin Apply.
-type BackendOpener interface {
-	OpenBackend(context.Context) (Backend, error)
-}
-
-// BackgroundWriteFailure identifies one failed asynchronous durability batch.
-type BackgroundWriteFailure struct {
-	BackendName string
-	SessionID   session.SessionID
-	Error       error
-}
-
-// BackgroundWriteFailureReporter receives failures outside a caller-owned
-// flush boundary.
-type BackgroundWriteFailureReporter interface {
-	ReportBackgroundWriteFailure(BackgroundWriteFailure)
+	ReadRaw(ctx context.Context, id session.SessionID) (*RawArtifact, error)
+	Load(ctx context.Context, id session.SessionID) (*Log, error)
+	ReadEventsFrom(ctx context.Context, id session.SessionID, continuation EventContinuation) (*EventSegment, error)
+	ReadEventsBefore(ctx context.Context, id session.SessionID, page EventPage) (*EventWindow, error)
+	List(ctx context.Context, page SessionPage) (SnapshotPage, error)
 }
 
 // RepairMarker is opaque backend state required to remove a torn physical tail.
@@ -126,8 +98,8 @@ type RepairMarker interface {
 	PersistenceRepairMarker()
 }
 
-// Log is one fresh physical Session log read by SessionLogStore. Marker is
-// present only when the Backend found a torn tail that recovery may remove.
+// Log is one fresh physical Session log read for inspection or recovery. Marker is
+// present only when storage found a torn tail that recovery may remove.
 type Log struct {
 	Header   session.Header
 	Events   []session.Event
@@ -149,7 +121,7 @@ type EventPage struct {
 }
 
 // EventBatch is one atomic Session Header/Event append transaction.
-// Materialize requires the Backend to create Header and Events together.
+// Materialize requires storage to create Header and Events together.
 type EventBatch struct {
 	Header      session.Header
 	Events      []session.Event
@@ -161,25 +133,6 @@ type LogRepair struct {
 	Header        session.Header
 	Marker        RepairMarker
 	ClosingEvents []session.Event
-}
-
-// Backend is the storage-only port. Implementations map rows/files and execute
-// requested transactions; recovery and live Session policy remain above it.
-// Optional reads return nil when no stored record exists and a non-nil error
-// only when the storage operation itself fails.
-type Backend interface {
-	BackendName() string
-	Locate(metadata session.Header) (Location, bool)
-	SupportsRawArtifacts() bool
-	ReadRaw(ctx context.Context, id session.SessionID) (*RawArtifact, error)
-	Load(ctx context.Context, id session.SessionID) (*Log, error)
-	Revision(ctx context.Context, id session.SessionID) (*Revision, error)
-	ReadEventsFrom(ctx context.Context, id session.SessionID, continuation EventContinuation) (*EventSegment, error)
-	ReadEventsBefore(ctx context.Context, id session.SessionID, page EventPage) (*EventWindow, error)
-	AppendBatch(ctx context.Context, batch EventBatch) error
-	CommitRepair(ctx context.Context, repair LogRepair) error
-	List(ctx context.Context, page SessionPage) (SnapshotPage, error)
-	Close(closeContext context.Context) error
 }
 
 // NotFoundError reports an absent materialized Session identity.

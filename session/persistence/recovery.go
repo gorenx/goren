@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"reflect"
 
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
@@ -338,10 +337,6 @@ func snapshotEvents(entries []session.Event) []session.Event {
 		}
 	}
 	return result
-}
-
-func eventPrefixesEqual(left []session.Event, right []session.Event) bool {
-	return len(left) >= len(right) && reflect.DeepEqual(left[:len(right)], right)
 }
 
 func cloneHeader(metadata session.Header) session.Header {

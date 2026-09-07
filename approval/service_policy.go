@@ -1,7 +1,6 @@
 package approval
 
 import (
-	"context"
 	"errors"
 	"fmt"
 
@@ -9,48 +8,47 @@ import (
 	"github.com/gorenx/goren/session"
 )
 
-func effectiveOverride(conversation session.Context) (Policy, bool, error) {
-	if conversation == nil {
-		return "", false, errors.New("approval: Session is nil")
-	}
-	return policyOverride(conversation.Events())
+// PolicyChange carries an audit draft and the message to inject after its commit.
+type PolicyChange struct {
+	Draft  session.EventDraft
+	Notice agentmessage.UserMessage
 }
 
-func appendPolicy(
-	requestContext context.Context,
-	conversation session.Context,
-	selectedPolicy Policy,
-	source *PolicySource,
-) error {
+// ChangePolicy prepares a user change; nil means the effective policy already matches.
+func (owner *Service) ChangePolicy(entries []session.Event, selectedPolicy Policy) (*PolicyChange, error) {
 	if !validPolicy(selectedPolicy) {
-		return errors.New("approval: policy must be ask or never")
+		return nil, errors.New("approval: policy must be ask or never")
 	}
-	if source != nil && *source != PolicySourceDelegation {
-		return errors.New("approval: policy source must be delegation")
+	previous, err := owner.defaultPolicy.Resolve(entries)
+	if err != nil {
+		return nil, err
+	}
+	if previous == selectedPolicy {
+		return nil, nil
 	}
 	draft, err := session.NewEventDraft(PolicyEvent, PolicyChanged{
 		Policy: selectedPolicy,
-		Source: source,
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	_, err = conversation.Commit(requestContext, session.Batch(draft))
-	return err
+	messageValue, err := policyNotice(previous, selectedPolicy)
+	if err != nil {
+		return nil, err
+	}
+	return &PolicyChange{
+		Draft:  draft,
+		Notice: messageValue,
+	}, nil
 }
 
-// SeedDelegationPolicy pins one unpublished delegated Session to never ask for
-// approval. The event is model-reconstructable and carries delegation rather
-// than user attribution.
-func (*Service) SeedDelegationPolicy(
-	requestContext context.Context,
-	conversation session.Context,
-) error {
-	if conversation == nil {
-		return errors.New("approval: delegated Session is nil")
-	}
+// DelegationPolicyDraft pins delegated history to never ask, with explicit attribution.
+func DelegationPolicyDraft() (session.EventDraft, error) {
 	source := PolicySourceDelegation
-	return appendPolicy(requestContext, conversation, PolicyNever, &source)
+	return session.NewEventDraft(PolicyEvent, PolicyChanged{
+		Policy: PolicyNever,
+		Source: &source,
+	})
 }
 
 func policyNotice(previous Policy, selectedPolicy Policy) (agentmessage.UserMessage, error) {
@@ -62,48 +60,4 @@ func policyNotice(previous Policy, selectedPolicy Policy) (agentmessage.UserMess
 			Plugin: "user-approval",
 		},
 	})
-}
-
-func (owner *Service) EffectivePolicy(conversation session.Context) (Policy, error) {
-	if conversation == nil {
-		return "", errors.New("approval: Session is nil")
-	}
-	return owner.defaultPolicy.Resolve(conversation.Events())
-}
-
-func (*Service) OverrideOf(conversation session.Context) (Policy, bool, error) {
-	return effectiveOverride(conversation)
-}
-
-func (owner *Service) SetPolicy(
-	requestContext context.Context,
-	agentSubject ApprovalTarget,
-	selectedPolicy Policy,
-) error {
-	if requestContext == nil || agentSubject == nil || agentSubject.SessionValue() == nil {
-		return errors.New("approval: Context, Subject, and Session are required")
-	}
-	if err := requestContext.Err(); err != nil {
-		return err
-	}
-	previous, err := owner.EffectivePolicy(agentSubject.SessionValue())
-	if err != nil {
-		return err
-	}
-	if previous == selectedPolicy {
-		return nil
-	}
-	if err = appendPolicy(
-		requestContext,
-		agentSubject.SessionValue(),
-		selectedPolicy,
-		nil,
-	); err != nil {
-		return err
-	}
-	messageValue, err := policyNotice(previous, selectedPolicy)
-	if err != nil {
-		return err
-	}
-	return agentSubject.Inject(messageValue)
 }
