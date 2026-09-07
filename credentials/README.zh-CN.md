@@ -1,27 +1,31 @@
 # Credentials 凭据能力
 
+本次提交完成业务层、存储适配和 Grain/Client；下文所述生产装配与调用方切换仍在工作区，尚未随模块提交。
+
 `credentials` 拥有凭据引用、来源优先级和对外 `Provider` 能力；`credentials/local` 只是一个 owner-only 文件存储实现。跨模块设计由[22 Credentials 与 API Key 管理](../zh-CN/22-credentials-and-api-key-management.md)拥有，当前完成度和验证证据只见[08 实施进度](../zh-CN/08-implementation-progress.md)。
 
 ## 职责
 
-- `Ref` 校验稳定的环境变量式凭据引用，不携带秘密值；
+- 凭据名使用 string，`ValidateRef` 在 Manager 入口校验环境变量式名称；
 - `Provider` 向 LLM 和 API Proxy 提供 `Resolve`、`Describe`、`Set`、`Unset`；
 - `Manager` 决定启动环境与托管存储的优先级、只读状态和写入规则；
 - `LiveStore` 是 `Manager` 消费的 storage-only port，只执行 `Load`、`Save`、`Delete`；
 - `local.LiveStore` 把引用和值保存到 owner-only JSON 文档。
 
-本模块不拥有 DeepSeek HTTP、Host RPC、浏览器组件、Settings namespace、Session 或日志。`credentials/factory` 是领域内组合根，选择 local LiveStore 并构造 Manager；`credentials/local` 只做存储，不是独立 Plugin 或 Service。
+本模块不拥有 DeepSeek HTTP、Host RPC、浏览器组件、Settings namespace、Session 或日志。`internal/assembly.InitializeCredentials` 选择 local LiveStore 并构造 Manager；`credentials/local` 只做存储，不是独立 Plugin 或 Service。
 
 ## 工作原理
 
 ```mermaid
 flowchart LR
-    Consumer[DeepSeek or API Proxy] -->|credentials.Provider| Manager[credentials.Manager]
+    Consumer[DeepSeek or API Proxy] -->|credentials.Provider| Client[actor.Client]
+    Client --> Grain[actor.Grain]
+    Grain --> Manager[credentials.Manager]
     Manager -->|environment lookup| Env[launch environment]
     Manager -->|credentials.LiveStore| LiveStore[credentials/local.LiveStore]
     LiveStore --> File[owner-only .credentials.json]
-    Factory[credentials/factory.Factory] --> Manager
-    Factory --> LiveStore
+    Composition[进程组合根] --> Manager
+    Composition --> LiveStore
 ```
 
 `Resolve` 先读取启动进程环境。环境值存在时返回 `source=env`，并使该引用只读；否则读取 LiveStore。`Describe` 只返回 `configured`、`source` 和 `writable`，永远不返回值。`Set` 与 `Unset` 在环境值遮蔽时拒绝执行，避免 Web 显示成功但下一次请求仍使用旧环境值。
@@ -38,9 +42,13 @@ JSON 是 Goren local LiveStore 的部署格式，不是 Host 协议。源 Harnes
 
 ## 生命周期和失败边界
 
-- Factory 在创建 Plugin 前严格校验 local 绝对路径并构造 LiveStore、Manager；
-- Manager 直接作为 Plugin 提供 `credentials.Provider`，卸载由 Runtime 撤回 typed Service；
+- 组合根校验 local 绝对路径并构造 LiveStore、Manager，直接初始化共享 ActorSystem 中的 Grain；
+- Manager 为纯 Go 业务对象；组合根把不可变消息 Client 交给调用方，Grain 串行执行 get/set，停止交给框架；
 - context 取消在文件操作前返回，不产生业务成功；
 - 空值必须使用 `Unset`，不能作为已配置 Key 保存；
 - JSON 损坏、非法引用、空值或权限过宽都会失败，不以空 LiveStore 覆盖原文档；
 - secret 只能出现在 `Set` 入站参数、LiveStore 私有文档和一次 `Resolved` 结果中，不进入 `Describe`、Session、错误详情或启动输出。
+
+当前 Actor 实现与 API 变化见[Credentials 模块设计](../zh-CN/actor-design/15-credentials-module.md)。根业务包不依赖 Plugin/GoAkt。
+
+`Resolve` 返回 `(Resolved, error)`，缺失返回 `ErrNotFound`。Client 在构造后固定框架目标，无动态绑定和 mutex；生命周期由框架处理。
