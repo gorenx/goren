@@ -10,9 +10,10 @@
 | 共享注册调度 | [grain.go](grain.go) | 串行调用 `PromptLayer`，维护发布版本并回复；不执行组装任务，不重复保存注册映射 |
 | 每 Agent 消息 | [runtime_messages.go](runtime_messages.go) | 定义工具视图应用、组装、取消和关闭的输入输出；不混入共享注册操作 |
 | 每 Agent 任务调度 | [runtime_grain.go](runtime_grain.go) | 调用纯 Runtime，捕获任务输入，使用 PipeToSelf 和延迟回复完成组装；只维护在途任务及关闭所需状态 |
+| 工具事件订阅 | [tools_subscriber.go](tools_subscriber.go) | 订阅 TopicActor，筛选本 Agent 的事件并异步请求 Runtime 应用；取消订阅不承担业务排空 |
 | 非 Actor 访问入口 | [client.go](client.go) | 将外部调用转为共享注册 Grain 请求，检查回复类型并返回业务结果；Actor 间调用不经过 Client |
 
-共享注册 Grain 和每 Agent RuntimeGrain 是独立 owner：前者维护可捕获的定义集合，后者维护某个 Agent 已应用的视图及在途任务。它们不互相持有业务对象；跨 owner 的定义传递应使用快照消息。订阅适配尚未实现，不在现有 Grain 内暗含一个订阅器或第二份目录。
+共享注册 Grain 和每 Agent RuntimeGrain 是独立 owner：前者维护可捕获的定义集合，后者维护某个 Agent 已应用的视图及在途任务。它们不互相持有业务对象；跨 owner 的定义传递应使用快照消息。普通 ToolsSubscriber 适配 TopicActor 与 RuntimeGrain，不保存第二份目录。
 
 ## 主要对象职责
 
@@ -21,6 +22,7 @@
 | `Grain` | 持有共享注册 `PromptLayer` 与快照版本，串行处理定义增删 | 接收 `Initialize`、具名注册命令、`Remove` 和 `Prepare`；返回注册 ID、完成结果或版本化快照 |
 | `RuntimeGrain` | 持有一个 Agent 的纯 `Runtime`，调度组装并管理在途回复、取消和关闭 | 接收 `InitializeRuntime`、`ApplyTools`、`Assemble`、`CancelAssembly` 和 `CloseRuntime` |
 | `assembly` | 保存一次在途组装的内部身份、业务请求 ID、延迟回复及取消函数 | 只属于 RuntimeGrain，不承担业务配置或工具定义的所有权 |
+| `ToolsSubscriber` | 持有 AgentID、框架目标、协调者 PID 及停止转发标记 | 输出 ToolsSubscribed、ToolsApplied、ToolsUnsubscribed；最后一项只确认取消订阅 |
 | `Client` | 为非 Actor 调用方提供共享注册 Grain 的请求入口 | 绑定 ActorSystem 与稳定名称；不保存注册表或注销句柄；Actor 调用方直接使用 `RequestGrain` |
 | 消息及结果类型 | 用具名字段表达注册、更新、组装和关闭契约 | 普通失败使用 `error`；框架的 `any` 边界留在适配内部 |
 
@@ -42,7 +44,7 @@ flowchart TD
     Framework -->|邮箱与生命周期| Runtime
 ```
 
-业务对象不持有 Grain、Client 或 ActorSystem 的反向引用。注册身份映射仅由业务层保存，Grain 不维护第二份注册目录。RuntimeGrain 当前通过显式消息取得定义与工具视图；Tools Registry 的事件适配尚未接入。
+业务对象不持有 Grain、Client 或 ActorSystem 的反向引用。注册身份映射仅由业务层保存，Grain 不维护第二份注册目录。RuntimeGrain 通过显式消息取得定义与工具视图；ToolsSubscriber 已实现事件消费映射，实际 Tools Registry 发布端与基线查询仍未接入。
 
 ## 注册交互
 
@@ -80,4 +82,35 @@ sequenceDiagram
 
 真实 GoAkt 测试覆盖异步组装期间的工具更新、前后请求视图隔离、错误同步入口、注册删除幂等，以及提供者清理结束前不确认关闭。测试请求 Actor 显式配置异步重入。包级竞态测试与 vet 已通过。
 
-PubSub 订阅与注销、AgentCreating 授权、Session/Approval 数据请求及生产 AgentLoop 集成仍待完成。上述测试不证明旧身份重新激活防护或完整 Agent/Session 关闭链已实现。[历史实施进度](../../zh-CN/08-implementation-progress.md) 仅作为迁移证据索引，不沿用旧架构完成度。
+真实 PubSub 测试覆盖完整工具事件、错误目录、旧版本、其他 Agent 事件，以及取消订阅先于在途请求结果到达。Tools Registry 发布端与订阅后基线查询已有真实 Grain 验证；AgentCreating 授权、Session/Approval 数据请求及生产 AgentLoop 集成仍待完成。上述测试不证明旧身份重新激活防护或完整 Agent/Session 关闭链已实现。[历史实施进度](../../zh-CN/08-implementation-progress.md) 仅作为迁移证据索引，不沿用旧架构完成度。
+
+## 工具事件与取消订阅
+
+```mermaid
+sequenceDiagram
+    participant Topic as GoAkt TopicActor
+    participant Subscriber as ToolsSubscriber
+    participant Registry as Tools Registry
+    participant Runtime as RuntimeGrain
+    participant Coordinator as 生命周期协调者
+    Subscriber->>Topic: Subscribe
+    Topic-->>Subscriber: SubscribeAck
+    Subscriber-->>Coordinator: ToolsSubscribed
+    Subscriber->>Registry: RequestGrain Read(AgentID)
+    Registry-->>Subscriber: 完整已发布目录
+    Subscriber->>Runtime: RequestGrain ApplyTools（基线）
+    Topic->>Subscriber: DefinitionsChanged
+    Subscriber->>Runtime: RequestGrain ApplyTools
+    Coordinator->>Subscriber: UnsubscribeTools
+    Subscriber->>Topic: Unsubscribe（已停止转发）
+    Topic-->>Subscriber: UnsubscribeAck
+    Subscriber-->>Coordinator: ToolsUnsubscribed
+    Runtime-->>Subscriber: Completion
+    Subscriber-->>Coordinator: ToolsApplied
+```
+
+订阅器只适配事件和传递请求结果，不统计 pending，不缓存应用错误，也不判断 Runtime 是否完成业务关闭。Then 捕获 PID 与普通 context，不保留已经失效的 ReceiveContext。框架请求失败和业务错误在各自 ToolsApplied 中报告，旧版本被幂等忽略也可能返回成功。
+
+ToolsSubscribed 不表示已有权威目录；ToolsUnsubscribed 不表示所有应用请求结束。订阅器在 SubscribeAck 后异步读取初始化基线，RefreshTools 支持显式重读。不存在目录时报告 ErrToolsNotReady，不把版本零当作有效空集合。协调者仍须等待有效 ToolsApplied、请求 Runtime 业务关闭，并按生命周期协议防护身份复用。这些生产协调流程尚未接入。
+
+基线读取的 Then 只向自身发送具名结果，由邮箱检查停止转发状态后应用。取消订阅后迟到的基线不会发起新请求；基线与事件交错由 Runtime 的版本检查处理。订阅器不保存工具目录或增加请求计数。

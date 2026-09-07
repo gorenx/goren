@@ -125,3 +125,63 @@ restriction、pre/post-policy 迁到明确执行阶段，资源回滚与释放�
 Tools 定义 `Definitions` 值，包含可见 `Schemas` 和限制前 `KnownNames`。Registry 从同一有效视图生成完整值并复制 schema 参数；ToolLayer.CaptureDefinitions 只提供定义读取，不携带执行器、Prompt 类型或框架身份。Prompt 事件适配后续负责将生产者值转换为自己的 ToolDefinitions，AgentLoop 不代传 schema。保留 KnownNames 是为了延续 toolOrder 对已知但不可见名称的校验语义，不向模型额外暴露工具。
 
 本步只移除已确认错误的依赖方向，尚未实现 Registry 的 AgentID/版本事件发布和 ToolActor 注册批次；旧 Plugin 生命周期及父层依赖仍待整体迁移，不能将当前读取方法称为新 Registry 已完成。外部工具名称、schema 和错误语义保持原有实现。
+
+## Registry 读取状态的迁移前置清理
+
+现有 toolStore 持有 snapshotValue，而快照的 source 又指回该 store，构成对象循环；Registry 还为动态父链维护 source/revision 缓存及第二把读取锁。目标目录不应携带可变存储 owner，也不动态追踪父 Agent。
+
+本步保留已存在的注册与执行接口，先以 setBase 接收创建方捕获的层快照，Registry 只保存 base 值；移除快照 source/revision、缓存及 viewMutex，读取直接解析捕获基线与当前本地层。父层增删不改变已创建子层，子层覆盖和 restriction 的原有解析规则保持。不会新增第二套 Registry 或兼容 Prompt 注册。
+
+上游创建方负责在子 Agent 创建时提供最终配置。当前旧定义快照仍含执行器接口，不能冒充最终可跨 Actor 传输的工具配置；后续 ToolActor 应从独立配置创建实例。toolStore 内锁暂由尚未迁移的并发调用路径需要，不因去掉视图缓存而提前删除。
+
+测试迁移删除 Prompt Plugin 装配，只检查 Tools 自有 CaptureDefinitions 输出、覆盖、restriction 和 schema 复制；Prompt 如何消费该输出由其 Actor 测试负责。新增创建后父层变化不改变捕获视图的业务验证。该步骤不证明目录版本、批次原子发布或初始化查询已经实现。
+
+## Tools 业务执行装配与 Plugin 删除
+
+当前有两条循环：Service 嵌入 ToolLayer，ToolLayer.effects 指回 Service；ToolLayer.runtime 的执行阶段也通过 effects 指回 ToolLayer。删除只有转发职责的 Service，装配改为单向持有：ToolLayer → executionRuntime → pipeline，ToolLayer 同时持有同一个 pipeline。pipeline 只持有明确的策略和通知依赖，不持有 Service、ToolLayer、Registry 或 Runtime。
+
+`Options` 是创建时依赖输入：Before/After 为具名执行前后策略，Execution 为已有工具执行中间件，Results 为结果观察器，Changes 为目录变更观察器，Approvals 为审批能力。没有配置前后策略时分别使用 Allow/Accept；没有通知观察器表示无人订阅，不建立隐藏的 Plugin 通道。主体调用的 schema 校验、取消、审批拒绝、结果规范化及 guard 均保留，策略不能绕过效果处权限校验。
+
+New 接收 ValidatedConfig 和 Options，返回已构造的纯 ToolLayer 与 error。ToolLayer.NewLayer 捕获当前基线并创建独立 pipeline；不存在 Service 包装、Apply、Dispose、Manifest、NewOverlay 或 Factory。调用方通过 Close 关闭业务对象，框架适配在后续迁移中拥有 Actor 生命周期。旧调用方直接改用新构造契约，不提供 Plugin 桥接。
+
+pipeline 拥有本层观察器和执行中间件注册集合；ToolLayer 的 ObserveResults/UseExecution 委托给该对象，执行阶段直接访问 pipeline。关闭只清理本层注册，不关闭外部注入的策略 owner。业务仍存在旧并发执行入口，本步不提前移除其同步保护；Actor 调度与异步审批接入后再收敛实际需要的状态。
+
+删除事件的 Plugin Waterfall 基类及 DeliveryPolicy，保留具名执行输入、输出与 ExecutionCompleted 值。目录变化通知仍服务尚未迁移的本地用例，不冒充版本化 DefinitionsChanged 发布；返回错误仍按原 mutation 规则处理。正式 Registry 发布失败恢复及更新屏障另按前述批次契约实现。
+
+验收：工具纯业务包不导入 Plugin；构造验证拒绝未校验配置；普通执行、策略拒绝、结果观察、本地中间件及关闭后拒绝执行；工具行为测试迁移为直接构造，不以测试专用 Plugin 适配掩盖生产迁移。全仓旧调用方尚未迁移时如实报告构建边界。
+
+本轮实现记录：删除 tools/plugin.go、plugin_effects.go、factory 和 ToolLayerFactory，移除根契约的 Plugin 嵌入；组合目录撤销旧 Tools Factory 登记。工具测试直接构造业务依赖，不再启动 Plugin Runtime。pipeline_execution.go 与 pipeline.go 共同实现 pipeline；layer_constructor.go 负责创建 ToolLayer。策略、执行中间件和通知观察器的 panic 在业务边界转为 error，避免失去原 Plugin 错误边界后崩溃；目录通知错误仍触发原注册回滚。
+
+`go test -race -count=1 ./tools/... ./systemprompt/...`、`go vet ./tools/... ./systemprompt/...` 通过。覆盖取消传播、审批失败、结果替换、旧注册句柄、捕获基线和新增的策略/观察器 panic。其他模块仍引用已删除的 Tools 构造接口，生产调用方迁移尚未完成；本轮验证不代表全仓可编译或 Tools Actor 已接入。
+
+## 执行策略快照与串行注册入口
+
+pipeline 改为不可变执行规则值，仅包含创建时 Options、按序的 ExecuteMiddleware 和 ResultObserver 接口切片。删除 pipeline 的观察器锁、中间件锁、Close 和注册方法，也删除 ExecuteMiddlewareHandle/ResultObserverHandle 的锁及 active 状态。策略提供者自己的内部状态不由快照冻结。
+
+ToolLayer 的 UseExecution/ObserveResults 返回 RegistrationID；RemoveRegistration(ctx, ID) 幂等删除本层注册。注册目录和顺序由 ToolLayer 保存，变更时创建新的 pipeline，不修改旧切片。注册、移除、关闭与 Prepare 的接纳需要由调用方串行化；目标由 Tool Runtime 邮箱执行，纯业务层不再承诺任意线程并发注册。
+
+executionRuntime.Prepare 在任何前置策略执行前，将当前 pipeline 指针保存到本次调用状态。前置、分派、后置和结果观察均只读取该快照；本层更新只替换下一次 Prepare 使用的指针。在途任务不读取活动注册目录，因此可与之后的串行配置修改并行。旧策略移除不取消已经捕获它的调用，也不代表外部策略资源可以立即销毁；资源释放仍受工具更新屏障约束。
+
+这不是把锁转移到另一层：注册目录没有 mutex，也没有自建队列或活跃标志；只有原有调用状态的取消/阶段同步暂时保留，后续按 ToolActor 调度迁移。业务测试明确覆盖旧调用保留被移除策略、新调用仅使用更新后策略，以及取消的删除命令不改变目录。跨 Actor 的串行控制入口仍待真实 Tool Runtime 接入，不能由纯业务测试声称已实现。
+
+## Registry 批次发布业务实现
+
+`tools.Registry` 拥有各 Agent 已发布的 Definitions 及尚未结算的更新批次；现有私有 registry 只服务旧 ToolLayer 的本地执行查找，两者不互相引用。生产共享 Registry Grain 后续独占该业务对象，所有方法由邮箱串行调用，不添加锁。业务对象不执行工具、不持有执行器、不投递框架事件。
+
+接口：Begin 接收更新 ID、AgentID、期望目录版本和有序完整工具名称；Register 接收同一更新 ID 与单个候选 ToolSchema、可见性；Publish 校验候选齐备并一次替换目录，返回 DefinitionsChanged；Read 提供初始化/追赶基线；Lookup 按更新 ID 返回发布结果；Abort 仅允许发布前撤销；Settle 在 Runtime 完成切换与资源释放确认后删除事务记录。更新 ID 由配置登记 owner 分配，必须唯一；不能重新使用已结算 ID。
+
+关键结构：Registry 保存 Agent 到已发布目录、更新 ID 到 batch 两张表。batch 保存 Begin 输入、候选定义和可选发布结果。一个 Agent 同时只能有一个未结算批次；相同 Begin 输入与候选重试幂等，内容冲突明确失败。工具名称数组控制输出顺序，空数组表示删除全部工具。schema 验证和复制发生在候选登记阶段；外部修改输入或读取结果不能改变 Registry 状态。已发布批次拒绝 Abort，重复 Publish 返回原版本；缺失候选或期望版本冲突不得修改有效目录。
+
+上游 Tool Runtime 发起批次并结算，ToolActor 自注册候选。Registry Actor 在业务 Publish 成功后负责发布返回的事件；事件失败不能回滚目录，调用方通过 Lookup/Read 恢复。Prompt 消费事件或基线，不访问候选。此步骤不包含配置覆盖事件、框架消息适配、Agent 关闭回收或旧 Agent 身份防护；这些契约接通前不能宣称生产更新链路完成。
+
+验收覆盖多工具缺项禁止发布、部分候选失败保留旧目录、重复消息与冲突、发布后不能撤销、空集合发布、按 ID 查询和结算、Agent 隔离及 schema 字节隔离。
+
+### Registry Grain 消息边界
+
+新增 tools/actor.RegistryGrain，以零值 tools.Registry 为唯一业务状态。组合根须用 WithLongLivedGrain 创建共享身份；OnReceive 只处理具名 Begin、Register、Publish、Read、Lookup、Abort、Settle 命令，立即返回具名结果。Actor 调用方使用 RequestGrain；外部测试允许 AskGrain，Grain 内不做 Ask 或等待其他 owner。
+
+Publish 在目录替换后向真实 TopicActor 发送 DefinitionsChanged，回复同时包含已提交目录和通知入队错误。错误不代表未发布，调用方必须按 Catalog.Version 或 Lookup 判定提交结果。重复 Publish 可以再次发送相同版本事件，消费方按版本幂等处理。PubSub 仅用于通知，入队成功不代表 Prompt 已应用；Read 提供可验证的基线。此 Grain 不管理业务关闭和实例切换，不能据其回复解除 Agent 更新屏障。强制停止系统会丢失内存目录，不能自动重放未知工具效果。
+
+### 工具定义中的函数适配器移除
+
+删除 ExecutorFunc、OutputRendererFunc、PresentationProjectorFunc、ContentFinalizerFunc、ConcurrencyClassifierFunc。ToolDefinition 保留 Executor 等具名能力接口；生产工具对象直接实现 Execute、Render、ConcurrencySafe，控制工具按实际命令拆出独立对象并仅持有所需依赖。此变更不改变工具名称、schema、输出或取消行为；纯测试闭包适配仅留在所属包的测试文件，不再作为生产扩展 API。既有 Plugin/Scope 调用链不在此处新增兼容桥接。

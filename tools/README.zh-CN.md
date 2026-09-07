@@ -1,168 +1,93 @@
-# Tools 工具注册与执行运行时
+# Tools 业务层
 
-`tools` 是模型可调用工具的统一能力 owner：它把 Tool Definition、分层可见性、执行策略、规范结果和 System Prompt schema 投影收敛在同一个领域内。跨模块稳定语义由[12 Tools Registry 与执行流水线模块设计](../zh-CN/12-tools-registry-and-execution-pipeline.md)拥有，Plugin 生命周期与 Event/Waterfall 路由见[09 Plugin Runtime 与 Server Assembly](../zh-CN/09-plugin-runtime-and-server-assembly.md)，当前完成度和验证证据只见[08 实施进度](../zh-CN/08-implementation-progress.md)。
+`tools` 拥有工具定义、可见性、执行策略、schema 校验和规范输出。业务包已删除 Plugin、Service 包装及 Factory；Registry 已有批次发布业务对象和 Grain 入口；Tool Runtime 调度及 ToolActor 资源管理仍待实现。目标契约由[工具 Actor 方案](../zh-CN/actor-design/08-tools-implementation.md)拥有，[历史实施进度](../zh-CN/08-implementation-progress.md)不代表本次重构完成度。
 
-Tools 使用唯一 [`agentmessage`](../agentmessage/README.zh-CN.md) 协议表达 Tool call correlation、结果 content 和 additional context；本包拥有注册、策略、调度与执行结果处理，不拥有 Message declaration 或 codec。
+## 模块内职责划分
 
-## 职责边界
-
-本包负责：
-
-- 编译并保存 Tool Definition，维护稳定注册顺序；
-- 组合 root、可选模块 overlay 与 exact Agent `ToolLayer`，计算 shadow、restriction、guard 和可见 schema；
-- 执行 `tools/pre-execute`、`tools/execute`、`tools/post-execute` Waterfall；
-- 调用 Executor，校验参数与输出，生成 model-facing content 和 presentation metadata；
-- 物化不可变结果，发布 `tools/result` 与 `tools/change`；
-- 向 System Prompt 只投影 `name`、`description`、`parameters`。
-
-本包不负责：
-
-- Agent Turn、Step、并发池、Session 追加和 durable commit；
-- 具体 filesystem、shell、数据库、用户问答等 Tool 业务实现；
-- Approval 的策略、审计、UI 或 transport；
-- LLM 调用、Provider retry、模型选择和流处理；
-- 通用自愈、任务重放或业务补偿。
-
-Tools 的失败策略是“封闭并形成规范结果”，不是自行重试。模块级 around-dispatch 行为通过 Plugin Runtime `tools/execute` Waterfall 接入；exact Agent 行为通过该 Agent `ToolLayer.UseExecution` 注册，二者都不要求业务对象 mount Plugin。跨 Tool 的恢复与重新调度由 Agent Loop 或更上层 use case 决定。
-
-## 公共能力
-
-| 能力 | 消费者 | 责任 |
+| 职责 | 文件 | 主要对象 |
 | --- | --- | --- |
-| `ToolRuntime` | Agent Loop 或直接执行方 | 查询可见定义/schema、判断并发模式、取得 scheduler、执行完整流水线 |
-| `ToolExecutionScheduler` | Agent Loop | 顺序 `Prepare`，只并发 `Dispatch`，再按模型顺序 `Finalize` 或 `Finish` |
-| `ToolCatalog` | Tool 定义 Plugin | 在当前 Tools layer 增加具名 Tool，并返回精确 `ToolHandle` |
-| `PolicyRegistry` | Tool policy Plugin | 增加 restriction、guard，并返回各自的精确 Handle |
-| `ToolLayerFactory` | AgentLoop Factory | 创建继承 root catalog/policy 的普通 Agent-local `ToolLayer` |
-| `Service` | Plugin Runtime | 声明依赖与能力，绑定 System Prompt，创建 Registry 和 execution runtime，负责卸载清理 |
+| 对外契约与配置 | [contract.go](contract.go)、[config.go](config.go)、[layer_constructor.go](layer_constructor.go) | ToolRuntime、ToolCatalog、ValidatedConfig、Options；校验配置并直接构造业务层 |
+| 注册与本地生命周期 | [layer.go](layer.go)、[layer_registration.go](layer_registration.go)、[layer_tool_set.go](layer_tool_set.go) | ToolLayer；拥有本地定义、注册句柄及执行入口 |
+| 定义组合与存储 | [registry.go](registry.go)、[store.go](store.go) | registry、toolStore；组合捕获基线和本地定义，不持有父 owner |
+| 定义验证 | [schema.go](schema.go)、[restriction.go](restriction.go) | schema 编译、不可变注册项及可见性规则 |
+| 不可变执行策略 | [pipeline.go](pipeline.go)、[pipeline_execution.go](pipeline_execution.go) | pipeline；执行前后策略、执行中间件与结果观察器 |
+| 单次执行编排 | [runtime.go](runtime.go)、[execution.go](execution.go) | executionRuntime；准备、分派、结算和调用状态 |
+| 执行阶段 | [policy_engine.go](policy_engine.go)、[dispatcher.go](dispatcher.go)、[result_processor.go](result_processor.go) | policyEngine、dispatcher、resultProcessor；分别处理策略、工具主体和规范结果 |
+| 定义及事件值 | [definition.go](definition.go)、[events.go](events.go) | ToolDefinition、Definitions、ExecutionCompleted、DefinitionsChanged |
 
-`ToolExecutionScheduler` 不直接由 `Service` 摊平实现。调用方通过 `ToolRuntime.Scheduler()` 取得由 `executionRuntime` 实现的 staged capability，避免生命周期 facade 同时成为第二个状态机 owner。
+## 主要对象与依赖
 
-## 包内模块划分
+`New(ValidatedConfig, Options)` 返回已构造的 ToolLayer 与 error，不需要额外激活。Options 提供具名的 Before、After、Execution、Results、Changes、Approvals 依赖。未指定前后策略时分别使用 Allow/Accept；未指定观察器表示没有订阅方。
 
-| 组件 | 职责 |
-| --- | --- |
-| `plugin*.go` | Plugin 生命周期、依赖解析、全局 Event/Waterfall 和 root effect adapter |
-| `layer*.go` | 普通 `ToolLayer`、Agent-local registration、执行 middleware 和 child close |
-| `registry.go` | 当前 layer 与 parent lineage 的组合入口、可见性查询和 mutation 规则 |
-| `store.go` | 锁保护的 exact-layer Tool、restriction、guard 状态及快照 |
-| `runtime.go` | `Prepare -> Dispatch -> Finalize/Finish` 状态机编排 |
-| `policy_engine.go` | pre-execute、Approval 解析和 monotonic guard |
-| `dispatcher.go` | execute Waterfall、取消融合、schema 校验、Executor 和成功结果规范化 |
-| `result_processor.go` | post-execute、finalizer、最终快照和 `tools/result` 发布 |
-| `schema.go`、`restriction.go` | Definition/schema 编译和 restriction 校验 |
-| `definition.go`、`execution.go`、`policy.go`、`result_types.go` | 按概念拆分的公共契约和值类型 |
-
-依赖关系保持单向：`Service` Plugin adapter 嵌入 root `ToolLayer`；Factory 创建的 child `ToolLayer` 只向 root读取 parent snapshots 和 effect port。runtime 读取 Registry 快照并委托 policy、dispatch、result 三个阶段对象；Store 不调用 Plugin、Executor 或用户策略。
+ToolLayer 管本地目录和业务入口；executionRuntime 调用各执行阶段；pipeline 只保存策略及观察器，不持有 ToolLayer、Registry 或 Runtime。删除了原 Service/effects 循环和 ToolLayer/runtime/effects 循环。
 
 ```mermaid
-flowchart LR
-    Runtime[Plugin Runtime] --> Service[tools Service]
-    ToolPlugin[Tool Plugin] --> Catalog[ToolCatalog]
-    PolicyPlugin[Policy Plugin] --> Policies[PolicyRegistry]
-    AgentLoop[Agent Loop] --> ToolRuntime[ToolRuntime]
-    ToolRuntime --> Scheduler[ToolExecutionScheduler]
-    Service --> Registry[registry]
-    Service --> Factory[ToolLayerFactory]
-    Factory --> AgentLayer[plain Agent ToolLayer]
-    AgentLayer --> Registry
+flowchart TD
+    Caller[调用方] --> Layer[ToolLayer]
+    Layer --> Registry[registry]
     Registry --> Store[toolStore]
-    Scheduler --> Execution[executionRuntime]
-    Execution --> Policy[policyEngine]
-    Execution --> Dispatch[dispatcher]
-    Execution --> Result[resultProcessor]
-    Policy --> Approval[Approval optional]
-    Service --> Prompt[System Prompt Registry]
-    Dispatch --> Executor[Tool Executor]
+    Layer --> Runtime[executionRuntime]
+    Layer --> Pipeline[pipeline]
+    Runtime --> Policy[policyEngine]
+    Runtime --> Dispatch[dispatcher]
+    Runtime --> Result[resultProcessor]
+    Policy --> Registry
+    Runtime --> Snapshot[单次调用捕获的 pipeline]
+    Snapshot --> Ports
+    Result --> Dispatch
+    Pipeline --> Ports[具名策略与观察接口]
+    Policy --> Approval[审批接口]
 ```
 
-## 注册与生命周期
+本包不依赖 GoAkt、Plugin、Prompt 或具体工具适配器。当前业务仍接受本地执行器和 Session 相关接口；这不是最终 Actor 消息契约，不能把这些对象放入公开的跨 Actor 配置事件。
 
-模块级 Tool/Policy Plugin 继续通过 root `ToolCatalog`/`PolicyRegistry` 注册，并在 `Dispose` 撤销 Handle。Agent-local Tool、restriction、guard、result observer 和 execute middleware 由 `agent.Setup` 通过 `ScopeEditor` 注册到 plain `ToolLayer`，资源随 exact Agent Scope 关闭；该路径不创建 child Plugin。
+## 注册、覆盖与读取
 
-Tool 或 policy Plugin 在自己的 `Apply` 中通过 required capability 注册业务 entry，保存成功返回的 `ToolHandle`、`RestrictionHandle` 或 `GuardHandle`，并在幂等 `Dispose` 中调用 `Unregister`。Plugin Runtime 在启动失败时仍会调用 `Dispose`，因此部分注册也能收口；Tools Service 最后卸载时会清空本 layer，防止残留引用。
+AddTool 完整验证定义后才修改目录，返回只对应本次注册的句柄。旧句柄不能删除同名替代项。NewLayer 在创建时捕获基线，已有子层不随父层增删变化；子层覆盖和 restriction 按原有规则组合，捕获的定义集合不会动态回查父 owner。外部策略与执行器接口自身的状态不由集合快照冻结。
+
+Store 快照不再反向引用 Store。Registry 读取时组合固定基线和本地快照，已经删除 source/revision 缓存和 viewMutex。旧并发执行入口所需的其他同步保护尚未全部收敛。
+
+CaptureDefinitions 输出分离的 Schemas 与 KnownNames；后者包含限制前名称，供 Prompt 检查工具呈现顺序。Tools 不向 Prompt 注册回调，AgentLoop 也不负责搬运 schema。
+
+本地 AddTool 的目录观察器失败会回滚注册，移除后的通知失败不恢复已移除条目。ToolSet 的既有冲突行为仍需在 MCP 原子更新迁移中处理，不能将本地 ToolSet 接口称为已实现的新 Registry 发布事务。
+
+UseExecution 与 ObserveResults 返回 RegistrationID，RemoveRegistration 按 ID 幂等移除。ToolLayer 保存注册目录；每次变更创建新的 pipeline，其本身不持有锁或可变注册句柄。调用方必须串行执行注册、移除、Close 与 Prepare 接纳，最终由 Tool Runtime 邮箱负责。当前尚未接通该 Actor 入口，不能任意并发调用这些方法。
+
+Prepare 在执行前置策略前捕获 pipeline；分派、后置策略和结果通知持续使用同一份快照。移除只影响后续调用，取消的移除不改变目录。快照只冻结策略成员关系，不能冻结提供者内部状态，也不代表可以提前释放旧策略资源。完整用户消息之间的工具更新屏障仍需由 Actor 协议实现。
+
+## 执行交互
 
 ```mermaid
 sequenceDiagram
-    participant P as Tool Plugin
-    participant T as ToolCatalog
-    participant R as registry and store
-    participant E as Plugin Event Runtime
-    participant O as Change Observers
-
-    P->>T: AddTool definition
-    T->>R: compile schema and add exact layer
-    T->>E: publish tools/change
-    E-->>O: ordered notification
-    alt ordered observer fails
-        T->>R: rollback exact mutation
-        T-->>P: return error
-    else accepted
-    T-->>P: ToolHandle
-    end
-    P->>T: handle.Unregister during Dispose
-    T->>R: remove exact entry identity
-    T->>E: publish tools/change
+    participant Caller as 调用方
+    participant Runtime as executionRuntime
+    participant Policy as policyEngine
+    participant Body as dispatcher
+    participant Result as resultProcessor
+    Caller->>Runtime: Execute / staged scheduling
+    Runtime->>Policy: 前置策略、审批、guard
+    Policy-->>Runtime: 允许、拒绝或失败
+    Runtime->>Body: 执行中间件与工具主体
+    Body-->>Runtime: 校验后的规范结果
+    Runtime->>Result: 后置策略、最终呈现、结果通知
+    Result-->>Runtime: 最终结果
+    Runtime-->>Caller: ToolExecutionResult
 ```
 
-Guard 不改变模型可见 schema，因此 `AddGuard` 和 `GuardHandle.Unregister` 不发布 `tools/change`。Tool 和 restriction mutation 会发布 ordered change。
+调用前取消不执行主体；中间件更换 context 不能解除原调用的取消约束。审批不可用按既有规则拒绝，不默认放行。guard、参数和输出 schema 校验继续生效；实际文件、网络或进程操作仍由工具实现执行权限检查。
 
-新增 Tool 或 restriction 时，change observer 失败会回滚新增并向 owner Plugin 返回错误。撤销时以生命周期清理为优先：即使 change observer 失败，已删除的 entry 也不会恢复，错误仍返回给 `Dispose` 供 Runtime 记录。每个 Handle 绑定具体 entry identity；旧 Handle 不能删除后来注册的同名对象。System Prompt 不缓存另一份 Tool Catalog；下一次 assembly 直接读取当前 provider 的 live view。
+策略与中间件 panic 转为失败结果，目录观察器 panic 转为注册错误。结果观察失败不改写已经产生的工具结果；观察端负责报告自身通知失败。工具副作用发生后的取消不意味着回滚，也不会自动重试未知效果。
 
-每个 exact layer 只在 Tool、restriction 或 guard 变更时重建不可变快照；Registry 以整条 parent lineage 的 store identity 与 revision 缓存组合后的 live view。父层或当前层任一 mutation 都会使后续读取重新组合，稳定读取则不会按 Tool 数量重复复制完整 Catalog。返回给外部消费者的 schema 切片仍逐次分离，避免调用方改写 Registry 的内部视图。
+## 生命周期与当前边界
 
-## 执行流程
+Close 清空本地目录、执行入口及本地观察器/中间件绑定，不关闭注入的外部策略 owner。关闭后的执行返回失败。当前 Close 不是 Actor 的业务排空协议，不能用它证明所有在途工具主体已退出；最终应由 Tool Runtime 和 ToolActor 消息契约负责。
 
-普通调用使用 `ToolRuntime.Execute`。Agent Loop 为了让 Tool body 并发、而 policy 和 Session 提交仍保持模型顺序，使用 staged scheduler。
+DefinitionsChanged 已定义 AgentID、版本及完整 Definitions。Prompt ToolsSubscriber 已验证消费映射，但Registry Grain 已实现发布及完整目录查询；启动时的基线追赶、Agent 更新屏障与 ToolActor 资源切换尚未接通。TopicActor 注销确认也不代表这些业务步骤完成。
 
-```mermaid
-sequenceDiagram
-    participant A as Agent Loop
-    participant S as ToolExecutionScheduler
-    participant P as policyEngine
-    participant D as dispatcher
-    participant T as Tool Executor
-    participant R as resultProcessor
-    participant E as Result Observers
+## 验证
 
-    A->>S: Prepare input
-    S->>P: pre-execute, approval, guards
-    alt dispatch allowed
-        S-->>A: ScheduledDispatch
-        A->>S: Dispatch execution
-        S->>D: execute Waterfall and body boundary
-        D->>T: Execute validated arguments
-        T-->>D: canonical JSON value
-        D-->>A: normalized result needing post
-        A->>S: Finalize in model order
-        S->>R: post-execute and finalizer
-    else policy result needs post
-        S-->>A: ScheduledPostResult
-        A->>S: Finalize in model order
-    else terminal pipeline result
-        S-->>A: ScheduledFinalResult
-        A->>S: Finish in model order
-    end
-    R->>E: publish tools/result best effort
-    R-->>A: detached final result
-```
+`go test -race -count=1 ./tools/... ./systemprompt/...` 与 `go vet ./tools/... ./systemprompt/...` 通过。工具测试直接构造业务对象，覆盖注册、覆盖、restriction、schema 隔离、取消、审批、结果处理、panic、已准备调用保留旧策略和取消移除不生效；Prompt 的真实 GoAkt 测试负责验证事件消费。
 
-执行中的关键不变量：
+其他模块仍有旧 Tools 构造和 Plugin 调用路径，尚未完成全仓迁移。本包测试通过不代表生产 Agent Actor 链路已接通。
 
-- `ToolExecution` identity、参数和 registry 规范化 success 对 middleware 按不可变值处理；authored success 必须重新经过 output schema 和 renderer；
-- prepared execution 的 `Dispatch`、`Finalize` 或 `Finish` 只能按声明阶段消费一次，重复调用不能再次执行 Tool body、finalizer 或结果事件；
-- Tool body `DeferContext` 的消息先于 execute wrapper 和 post policy 追加的消息；
-- `ConcludeTurn` 只随最终成功结果传播，post value replacement 不能丢失该标记；
-- `ConcludesTurn` 只是 Tool 发出的结束信号：Agent Loop 必须先提交 Tool result 和 Session event，再决定结束当前 Turn；Tools Runtime 不拥有 Turn；
-- finalizer 使用 Prepare 时捕获的 definition-owned callback，并在一次正常完成路径上恰好调用一次；
-- `Finish` 是 total boundary，nil 或非法 staged result 被物化为失败，而不是 panic。
-
-## 取消与失败
-
-- caller 在 body 前取消，结果为 `ABORTED_BEFORE_DISPATCH`；body 已开始且最终成功时取消，等待 body 收敛后结果为 `ABORTED`。
-- Executor、renderer、projector、guard、Waterfall 或 finalizer 的 panic 被转换为规范失败，不能击穿 Tools Runtime。
-- unknown Tool、参数或输出 schema 失败属于普通 `ToolExecutionResult`，不是 Agent Loop scheduler failure。
-- `tools/result` 是 best-effort notification；observer 失败交给 Plugin Runtime reporter，不能替换已经形成的 Tool outcome。
-- Go 无法强杀同进程函数。Executor 必须观察 `ToolRunContext.Context`，并在返回前让自己启动的工作达到 quiescence。
-
-具体 Tool Plugin 只需依赖 `ToolCatalog`、构造一个完整 `ToolDefinition`，在 Apply 中保存 `AddTool` 返回的 Handle，并在 Dispose 中调用 `Unregister`。若它还需要 restriction 或 guard，再按需依赖 `PolicyRegistry` 并分别保存 Handle；不需要实现 Tools Runtime、Registry、scheduler 或事件分发。
+ToolDefinition 只保留具名能力接口，已移除五个函数适配器。生产工具直接实现 Execute、Render 等方法；测试闭包适配局限于测试文件。

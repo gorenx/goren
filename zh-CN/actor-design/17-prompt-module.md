@@ -140,10 +140,26 @@ Approval 已改为独立策略及回答契约，当前没有生产提供者使�
 
 ## 工具订阅适配
 
-以下为工作区中的未验证适配草稿，不包含在本次已完成模块提交中；发布端、基线查询及真实订阅验证仍待完成。
+ToolsSubscriber 是普通 GoAkt Actor，订阅 tools/definitions，将同一 Agent 的 DefinitionsChanged 转成 Prompt Runtime 的 ApplyTools 异步请求。它只持有 AgentID、Prompt 与 Registry 的 GrainIdentity、协调者 PID 和停止转发标记，不保存工具目录、在途计数或业务关闭状态。工具事件契约由 tools 包定义，Prompt 负责消费映射。
 
-ToolsSubscriber 是普通 GoAkt Actor，订阅 tools/definitions，将同一 Agent 的 DefinitionsChanged 转成 Prompt Runtime 的 ApplyTools 异步请求。它只持有 AgentID、目标 GrainIdentity、协调者 PID 和关闭所需的在途计数，不保存工具目录。工具事件契约由 tools 包定义，Prompt 负责消费映射。
+收到 SubscribeAck 后通知协调者订阅已建立；订阅器随后向真实 Tools Registry 异步查询权威基线，协调者等待应用结果。每次转发请求结束通知协调者请求对应版本及 error；旧版本可能由 Runtime 幂等忽略，因此成功不表示该版本取代了更新的本地版本。组装的版本检查由纯 Runtime 执行。
 
-收到 SubscribeAck 后通知协调者订阅已建立；协调者随后仍须向真实 Tools Registry 查询权威基线，这一步尚未接入。每次转发结束通知协调者实际应用结果，失败保留 error，不把 TopicActor 投递成功视为 Runtime 应用成功。组装的工具版本检查仍由纯 Runtime 执行。
+停止订阅先封闭新的事件转发，再请求 Unsubscribe。收到 UnsubscribeAck 就报告 ToolsUnsubscribed；它只确认取消订阅，不等待转发结果，也不代表 Runtime 业务排空。已发出的请求可能随后返回 ToolsApplied。协调者须单独请求 Runtime 业务关闭，关闭后拒绝迟到更新；不得仅据取消订阅确认停用并重新激活同一 Grain 身份。完整身份恢复防护仍由生命周期方案约束。
 
-停止订阅先封闭新的事件转发，再请求 Unsubscribe；只有收到 UnsubscribeAck 且已转发请求全部结算，才报告订阅关闭。此时不等于 Runtime 组装任务已结束，协调者还要执行 Runtime 的业务关闭。TopicActor 会监视普通订阅 Actor，强制停止的注册清理由框架完成，不伪造正常关闭确认。创建方须为该 Actor 配置 RequestGrain 所需重入模式。
+TopicActor 会监视普通订阅 Actor，强制停止的注册清理由框架完成。创建方须配置 RequestGrain 所需重入模式。ToolsSubscriber 不复制框架生命周期或请求状态，不以 pending、unsubscribed、reported 或累计失败字段组成另一套关闭状态机。
+
+### 请求回调边界与验证
+
+GoAkt v4.5.3 的 ReceiveContext 只在当前 Receive 内有效。Then 只捕获普通 context、框架 PID 及版本，直接向协调者投递 ToolsApplied，不保留 ReceiveContext，不经过额外自身消息跳转。每次请求的错误独立交给协调者，框架超时不证明目标没有执行。
+
+验证采用真实 TopicActor 和 RuntimeGrain，覆盖订阅确认、完整事件应用、旧版本、错误目录、其他 Agent 隔离、空集合及注销后停止转发；可控延迟 Grain 用于验证取消订阅不等待在途应用结果。发布端与初始化基线查询已有真实 Grain 实现及验证，身份恢复及生产生命周期协调仍待实现，不能由订阅适配测试推导整条链路已完成。
+
+本轮验证：`go test -race -count=1 ./systemprompt/actor` 与 `go vet ./systemprompt/...` 通过。真实 Runtime 用例确认工具应用、旧版本不覆盖、错误目录保留原视图及空集合清除；延迟 Grain 用例确认注销不等待应用回复，晚到业务 error 保留 errors.Is 语义。完整生产链路尚未验证。
+
+### 订阅后的基线追赶实现
+
+ToolsSubscriber 新增真实 Tools Registry Grain 地址。SubscribeAck 后先发送 ToolsSubscribed，再通过 RequestGrain 查询 Read(AgentID)，不让 AgentLoop 搬运定义。此前“协调者查询基线”的未接入步骤收敛到消费适配器内部，协调者仍负责等待 ToolsApplied 和启动/关闭屏障。
+
+基线回复通过具名内部消息回到订阅 Actor 邮箱，检查停止转发标记后复用 DefinitionsChanged 的应用路径；这次回自身有明确用途：禁止取消订阅后由迟到基线发起新 ApplyTools。Then 不保存 ReceiveContext，也不修改业务对象字段。没有目录时向协调者报告 ErrToolsNotReady，保持 Runtime 未就绪，不能将版本 0 或空值当作有效空工具集合。有效空集合仍须有 Registry 发布版本。RefreshTools 支持协调者显式重读基线，不添加定时器、请求计数或自建队列。
+
+SubscribeAck 之后的基线读取与正常事件允许交错：Runtime 忽略旧版本，禁止晚到基线覆盖较新事件。读取失败不清除已有目录，取消订阅后丢弃迟到基线。测试验证发布早于订阅仍完成组装、无目录不伪造就绪，以及发布后更新与重读；旧事件和关闭行为继续由既有测试覆盖。

@@ -14,3 +14,5 @@ flowchart LR
 `quiet` 调用 parent Agent 的 `Inject`；`next-step` 调用 `Steer`。report 不结束 child turn，也不向祖先广播。host Plugin 只拥有模块级 Extension registration；`extension.go` 实现普通 `agent.Setup`，通过 `ScopeEditor` 注册 Tool 和 Prompt section，返回的资源由 exact child Scope 持有。`reportTool` 只负责 schema、parent identity 校验和 Agent Inbox 调用，不参加 Plugin 生命周期，也不 mount child Plugin。
 
 跨包契约见[Subagent 包说明](../../README.zh-CN.md)，实现证据见[08 实施进度](../../../zh-CN/08-implementation-progress.md)。
+
+工具定义的执行与呈现由具名工具对象直接实现，不再使用 tools 的函数适配器。此项清理保留现有参数、结果和错误语义；不代表所属模块的 Actor 生命周期已全部迁移。
