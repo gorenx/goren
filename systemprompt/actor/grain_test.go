@@ -16,7 +16,7 @@ import (
 
 func startRegistry(t *testing.T) (*promptactor.Client, goakt.ActorSystem, *goakt.GrainIdentity) {
 	t.Helper()
-	system, err := goakt.NewActorSystem("prompt-test", goakt.WithLogger(log.DiscardLogger))
+	system, err := goakt.NewActorSystem("prompt-test", goakt.WithLogger(log.DiscardLogger), goakt.WithPubSub())
 	if err != nil {
 		t.Fatal(err)
 	}

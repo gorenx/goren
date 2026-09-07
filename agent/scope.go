@@ -58,7 +58,6 @@ type ScopeEditor interface {
 	ApplyNestedSetup(context.Context, Setup) (ScopeResources, error)
 	AddPromptSection(context.Context, systemprompt.PromptSection) error
 	AddPromptVariable(context.Context, string, systemprompt.VariableProvider) error
-	UsePromptAssembly(systemprompt.AssemblyMiddleware) error
 	SuppressRuntimeContext(context.Context, string) error
 	AddTool(context.Context, tools.ToolDefinition) error
 	AddToolRestriction(context.Context, string, tools.ToolRestriction) error

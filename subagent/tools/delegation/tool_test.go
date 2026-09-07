@@ -37,7 +37,7 @@ func TestDelegationRoutesForegroundAndContinuableIndependently(t *testing.T) {
 			subagent.ModeContinuable: continuableExecution,
 		},
 	}
-	adapter, err := newDelegationTool(
+	adapter, err := New(
 		Settings{
 			SeedBuilder:           "spawn",
 			ToolName:              "subagent",
@@ -49,7 +49,7 @@ func TestDelegationRoutesForegroundAndContinuableIndependently(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rawValue, executeErr := adapter.execute(
+	rawValue, executeErr := adapter.Execute(
 		json.RawMessage(`{
   "description": "review code",
   "prompt": "review the change",
@@ -75,7 +75,7 @@ func TestDelegationRoutesForegroundAndContinuableIndependently(t *testing.T) {
 			oneShotExecution.disposed,
 		)
 	}
-	rawValue, executeErr = adapter.execute(
+	rawValue, executeErr = adapter.Execute(
 		json.RawMessage(`{
   "description": "inspect tests",
   "prompt": "inspect the tests"
@@ -103,7 +103,7 @@ func TestDelegationRoutesForegroundAndContinuableIndependently(t *testing.T) {
 
 func TestDelegationRejectsOneShotBackgroundWithoutJobs(t *testing.T) {
 	t.Parallel()
-	adapter, err := newDelegationTool(
+	adapter, err := New(
 		Settings{
 			SeedBuilder:           "spawn",
 			ToolName:              "subagent",
@@ -115,7 +115,7 @@ func TestDelegationRejectsOneShotBackgroundWithoutJobs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, executeErr := adapter.execute(
+	_, executeErr := adapter.Execute(
 		json.RawMessage(`{
   "description": "review code",
   "prompt": "review the change",
@@ -224,3 +224,51 @@ func (*toolAgent) Inject(agentmessage.UserMessage) error                        
 var _ subagent.Starter = (*starterRecord)(nil)
 var _ subagent.Execution = (*executionRecord)(nil)
 var _ agent.Agent = (*toolAgent)(nil)
+
+func TestToolDefinitionAndInstructionsUseDetachedSettings(t *testing.T) {
+	configuration := DefaultConfig()
+	configuration.Provider = "spawn"
+	settings, err := configuration.Resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.SeedBuilder = "spawn"
+	settings.ToolName = "delegate"
+	settings.EnableRunInBackground = true
+	settings.BackgroundMode = BackgroundContinuable
+	adapter, err := New(settings, &starterRecord{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.ToolName = "changed"
+	if !strings.HasPrefix(adapter.Instructions(), "Use delegate ") {
+		t.Fatal("instructions changed with caller configuration")
+	}
+	first, err := adapter.Definition(subagent.NoParentContext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Name != "delegate" || !strings.Contains(first.Description, "self-contained") {
+		t.Fatalf("definition: %#v", first)
+	}
+	first.Output.Schema[0] = '['
+	first.Parameters[0] = '['
+	second, err := adapter.Definition(subagent.CompletedParentTurns)
+	if err != nil || !json.Valid(second.Output.Schema) || !json.Valid(second.Parameters) || !strings.Contains(second.Description, "completed turns") {
+		t.Fatalf("second definition: %#v, %v", second, err)
+	}
+	if _, err := adapter.Definition(subagent.ParentContextPolicy(99)); err == nil {
+		t.Fatal("unknown seed policy accepted")
+	}
+	settings.EnableRunInBackground = false
+	foreground, err := New(settings, &starterRecord{})
+	if err != nil || foreground.Instructions() != "" {
+		t.Fatalf("foreground instructions: %v", err)
+	}
+	if _, err := New(Settings{}, &starterRecord{}); err == nil {
+		t.Fatal("unvalidated settings accepted")
+	}
+	if _, err := New(settings, nil); err == nil {
+		t.Fatal("missing starter accepted")
+	}
+}

@@ -68,20 +68,25 @@ type listEntry struct {
 	Depth  *int64  `json:"depth,omitempty"`
 }
 
-func (adapter *controlTools) listDefinition() tools.ToolDefinition {
+func (owner *controlTools) listDefinition() tools.ToolDefinition {
+	adapter := &listTool{
+		directory: owner.directory,
+		agents:    owner.agents,
+	}
+
 	return tools.ToolDefinition{
 		Name:        "list_agents",
 		Description: "List continuable background subagents by durable id and label. children lists direct children; descendants walks the complete tree without resuming cold Agents.",
 		Parameters:  listParameters,
 		Output: tools.ToolOutputDefinition{
 			Schema:   listOutput,
-			Renderer: tools.OutputRendererFunc(renderList),
+			Renderer: adapter,
 		},
-		Executor: tools.ExecutorFunc(adapter.listAgents),
+		Executor: adapter,
 	}
 }
 
-func (adapter *controlTools) listAgents(
+func (adapter *listTool) Execute(
 	rawArguments json.RawMessage,
 	runContext tools.ToolRunContext,
 ) (json.RawMessage, error) {
@@ -136,7 +141,7 @@ func (adapter *controlTools) listAgents(
 	return json.Marshal(entries)
 }
 
-func (adapter *controlTools) project(
+func (adapter *listTool) project(
 	entry subagent.ChildEntry,
 	parentID *string,
 	depth *int64,
@@ -175,7 +180,7 @@ func (adapter *controlTools) project(
 	}
 }
 
-func (adapter *controlTools) status(childID session.SessionID) string {
+func (adapter *listTool) status(childID session.SessionID) string {
 	childAgent, found := adapter.agents.Get(childID)
 	if !found {
 		return "ready"
@@ -186,7 +191,7 @@ func (adapter *controlTools) status(childID session.SessionID) string {
 	return "idle"
 }
 
-func renderList(
+func (adapter *listTool) Render(
 	rawArguments json.RawMessage,
 	rawValue json.RawMessage,
 ) ([]agentmessage.ContentBlock, error) {
@@ -256,4 +261,9 @@ func int64OrZero(value *int64) int64 {
 		return 0
 	}
 	return *value
+}
+
+type listTool struct {
+	directory subagent.ChildDirectory
+	agents    agent.Registry
 }

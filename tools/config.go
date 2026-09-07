@@ -98,3 +98,23 @@ func (settings *Config) UnmarshalJSON(encoded []byte) error {
 	*settings = decoded
 	return nil
 }
+
+// WithOverrides resolves Agent settings over validated defaults without retaining
+// pointers to the caller's configuration. Omitted fields inherit the defaults.
+func (baseline ValidatedConfig) WithOverrides(overrides Config) (ValidatedConfig, error) {
+	if baseline.mode != PresentationNative || baseline.maxParallelSubCalls < 1 {
+		return ValidatedConfig{}, errors.New("tools: validated defaults are required")
+	}
+	modeSetting := baseline.mode
+	subCallLimit := baseline.maxParallelSubCalls
+	if overrides.Mode != nil {
+		modeSetting = *overrides.Mode
+	}
+	if overrides.MaxParallelSubCalls != nil {
+		subCallLimit = *overrides.MaxParallelSubCalls
+	}
+	return ValidateConfig(Config{
+		Mode:                &modeSetting,
+		MaxParallelSubCalls: &subCallLimit,
+	})
+}

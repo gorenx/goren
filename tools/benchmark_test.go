@@ -7,8 +7,6 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/plugin"
-	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/tools"
 )
 
@@ -19,54 +17,31 @@ var (
 	benchmarkResult     tools.ToolExecutionResult
 )
 
-type benchmarkFailureReporter struct{}
-
-func (benchmarkFailureReporter) ReportEventFailure(
-	context.Context,
-	plugin.EventFailure,
-) {
-}
-
 func newToolsBenchmark(
 	benchmarkState *testing.B,
 	toolCount int,
-) *tools.Service {
+) *tools.ToolLayer {
 	benchmarkState.Helper()
-	promptSettings, err := systemprompt.ValidateConfig(systemprompt.Config{})
-	if err != nil {
-		benchmarkState.Fatal(err)
-	}
 	toolSettings, err := tools.ValidateConfig(tools.Config{})
 	if err != nil {
 		benchmarkState.Fatal(err)
 	}
-	prompts := systemprompt.New(
-		promptSettings,
-		systemprompt.RegistryOptions{},
-	)
-	service := tools.New(toolSettings)
-	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{
-		EventFailures: benchmarkFailureReporter{},
-	})
-	if _, err = runtimeEngine.Start(
-		context.Background(),
-		prompts,
-		service,
-	); err != nil {
+	service, err := tools.New(toolSettings, tools.Options{})
+	if err != nil {
 		benchmarkState.Fatal(err)
 	}
 	benchmarkState.Cleanup(func() {
-		if shutdownErr := runtimeEngine.Shutdown(context.Background()); shutdownErr != nil {
-			benchmarkState.Error(shutdownErr)
+		if err := service.Close(context.Background()); err != nil {
+			benchmarkState.Error(err)
 		}
 	})
 	for toolIndex := 0; toolIndex < toolCount; toolIndex++ {
 		definition := objectTool(
 			fmt.Sprintf("tool-%d", toolIndex),
 			"benchmark tool",
-			tools.ExecutorFunc(passThroughBody),
+			executorStub(passThroughBody),
 		)
-		definition.ConcurrencyBehavior = tools.ConcurrencyClassifierFunc(func(
+		definition.ConcurrencyBehavior = concurrencyClassifierStub(func(
 			json.RawMessage,
 		) bool {
 			return true

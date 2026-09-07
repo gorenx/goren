@@ -5,90 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
-	"sync"
 	"sync/atomic"
 	"testing"
 
 	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/plugin"
-	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/tools"
 )
 
-type eventFailureRecorder struct {
-	mutex    sync.Mutex
-	failures []plugin.EventFailure
-}
-
-func (recorder *eventFailureRecorder) ReportEventFailure(
-	_ context.Context,
-	failure plugin.EventFailure,
-) {
-	recorder.mutex.Lock()
-	recorder.failures = append(recorder.failures, failure)
-	recorder.mutex.Unlock()
-}
-
-type toolsFixture struct {
-	runtimeEngine *plugin.Runtime
-	prompts       *systemprompt.Registry
-	promptHandle  plugin.Handle
-	service       *tools.Service
-	serviceHandle plugin.Handle
-	failures      *eventFailureRecorder
-}
-
-func newToolsFixture(
-	testingContext *testing.T,
-	plugins ...plugin.Plugin,
-) *toolsFixture {
-	testingContext.Helper()
-	promptSettings, err := systemprompt.ValidateConfig(systemprompt.Config{})
-	if err != nil {
-		testingContext.Fatal(err)
-	}
-	toolSettings, err := tools.ValidateConfig(tools.Config{})
-	if err != nil {
-		testingContext.Fatal(err)
-	}
-	prompts := systemprompt.New(
-		promptSettings,
-		systemprompt.RegistryOptions{},
-	)
-	service := tools.New(toolSettings)
-	allPlugins := []plugin.Plugin{
-		prompts,
-		service,
-	}
-	allPlugins = append(allPlugins, plugins...)
-	failures := &eventFailureRecorder{}
-	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{
-		EventFailures: failures,
-	})
-	handles, err := runtimeEngine.Start(
-		context.Background(),
-		allPlugins...,
-	)
-	if err != nil {
-		testingContext.Fatal(err)
-	}
-	state := &toolsFixture{
-		runtimeEngine: runtimeEngine,
-		prompts:       prompts,
-		promptHandle:  handles[0],
-		service:       service,
-		serviceHandle: handles[1],
-		failures:      failures,
-	}
-	testingContext.Cleanup(func() {
-		if err := runtimeEngine.Shutdown(context.Background()); err != nil {
-			testingContext.Error(err)
-		}
-	})
-	return state
-}
-
-func TestToolHandleCannotRemoveSameNameFromLaterActivation(t *testing.T) {
+func TestToolHandleCannotRemoveSameNameFromAnotherLayer(t *testing.T) {
 	t.Parallel()
 	state := newToolsFixture(t)
 	oldHandle, err := state.service.AddTool(
@@ -96,30 +20,22 @@ func TestToolHandleCannotRemoveSameNameFromLaterActivation(t *testing.T) {
 		objectTool(
 			"activation-owned",
 			"old activation",
-			tools.ExecutorFunc(passThroughBody),
+			executorStub(passThroughBody),
 		),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = state.runtimeEngine.Unload(
-		context.Background(),
-		state.serviceHandle,
-	); err != nil {
+	if err := state.service.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = state.runtimeEngine.Mount(
-		context.Background(),
-		state.service,
-	); err != nil {
-		t.Fatal(err)
-	}
+	state = newToolsFixture(t)
 	if _, err = state.service.AddTool(
 		context.Background(),
 		objectTool(
 			"activation-owned",
 			"new activation",
-			tools.ExecutorFunc(passThroughBody),
+			executorStub(passThroughBody),
 		),
 	); err != nil {
 		t.Fatal(err)
@@ -147,7 +63,7 @@ func objectTool(
 		Parameters:  json.RawMessage(`{"type":"object"}`),
 		Output: tools.ToolOutputDefinition{
 			Schema: json.RawMessage(`{"type":"object"}`),
-			Renderer: tools.OutputRendererFunc(func(
+			Renderer: outputRendererStub(func(
 				_ json.RawMessage,
 				value json.RawMessage,
 			) ([]agentmessage.ContentBlock, error) {
@@ -167,96 +83,40 @@ func passThroughBody(
 	return append(json.RawMessage(nil), arguments...), nil
 }
 
-type eventObserverPlugin struct {
-	plugin.Base
-	name          string
-	subscriptions []plugin.EventSubscription
-	observe       func(context.Context, plugin.Event) error
-}
-
-func (observer *eventObserverPlugin) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name:   observer.name,
-		Events: observer.subscriptions,
+func TestConstructionAndClose(t *testing.T) {
+	if _, err := tools.New(tools.ValidatedConfig{}, tools.Options{}); err == nil {
+		t.Fatal("unvalidated configuration accepted")
 	}
-}
-
-func (*eventObserverPlugin) Apply(context.Context) error {
-	return nil
-}
-
-func (*eventObserverPlugin) Dispose(context.Context) error {
-	return nil
-}
-
-func (observer *eventObserverPlugin) ObserveEvent(
-	requestContext context.Context,
-	fact plugin.Event,
-) error {
-	return observer.observe(requestContext, fact)
-}
-
-func TestServiceExposesFocusedCapabilities(t *testing.T) {
-	t.Parallel()
-	settings, err := tools.ValidateConfig(tools.Config{})
-	if err != nil {
+	state := newToolsFixture(t)
+	if state.service.Scheduler() == nil {
+		t.Fatal("ready layer has no scheduler")
+	}
+	if err := state.service.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	service := tools.New(settings)
-	if _, matches := any(service).(tools.ToolRuntime); !matches {
-		t.Fatal("Service does not implement ToolRuntime")
+	if state.service.Scheduler() != nil {
+		t.Fatal("closed layer returned scheduler")
 	}
-	if _, matches := any(service).(tools.ToolCatalog); !matches {
-		t.Fatal("Service does not implement ToolCatalog")
-	}
-	if _, matches := any(service).(tools.PolicyRegistry); !matches {
-		t.Fatal("Service does not implement PolicyRegistry")
-	}
-	if _, matches := any(service).(tools.ToolExecutionScheduler); matches {
-		t.Fatal("Service exposes staged scheduling outside Scheduler")
-	}
-	if service.Scheduler() != nil {
-		t.Fatal("inactive Service returned a Scheduler")
-	}
-	if _, err := service.AddGuard(
-		context.Background(),
-		"inactive",
-		tools.ToolGuardFunc(func(tools.ToolExecution) (string, bool) {
-			return "", false
-		}),
-	); !errors.Is(err, tools.ErrToolLayerInactive) {
-		t.Fatalf("inactive AddGuard error = %v", err)
-	}
-	serviceManifest := service.Manifest()
-	actual := make([]string, 0, len(serviceManifest.Provides))
-	for _, provided := range serviceManifest.Provides {
-		actual = append(actual, provided.Name())
-	}
-	want := []string{
-		"github.com/gorenx/goren/tools.ToolRuntime",
-		"github.com/gorenx/goren/tools.ToolCatalog",
-		"github.com/gorenx/goren/tools.ToolSetCatalog",
-		"github.com/gorenx/goren/tools.PolicyRegistry",
-		"github.com/gorenx/goren/tools.ToolLayerFactory",
-	}
-	if !reflect.DeepEqual(actual, want) {
-		t.Fatalf("provided Services = %#v, want %#v", actual, want)
+	if _, err := state.service.AddGuard(context.Background(), "closed", tools.ToolGuardFunc(func(tools.ToolExecution) (string, bool) {
+		return "", false
+	})); !errors.Is(err, tools.ErrToolLayerInactive) {
+		t.Fatalf("closed AddGuard: %v", err)
 	}
 }
 
-func TestRegistryLayersRestrictionShadowingAndPromptProjection(t *testing.T) {
+func TestRegistryLayersRestrictionShadowingAndDefinitions(t *testing.T) {
 	state := newToolsFixture(t)
 	requestContext := context.Background()
 	for _, definition := range []tools.ToolDefinition{
 		objectTool(
 			"alpha",
 			"global alpha",
-			tools.ExecutorFunc(passThroughBody),
+			executorStub(passThroughBody),
 		),
 		objectTool(
 			"beta",
 			"global beta",
-			tools.ExecutorFunc(passThroughBody),
+			executorStub(passThroughBody),
 		),
 	} {
 		if _, err := state.service.AddTool(requestContext, definition); err != nil {
@@ -264,21 +124,8 @@ func TestRegistryLayersRestrictionShadowingAndPromptProjection(t *testing.T) {
 		}
 	}
 
-	promptOverlay := systemprompt.NewOverlay(systemprompt.RegistryOptions{})
-	promptOverlayHandle, err := state.runtimeEngine.MountScopedChild(
-		requestContext,
-		state.promptHandle,
-		promptOverlay,
-	)
+	toolOverlay, err := state.service.NewLayer(requestContext)
 	if err != nil {
-		t.Fatal(err)
-	}
-	toolOverlay := tools.NewOverlay()
-	if _, err := state.runtimeEngine.MountScopedChild(
-		requestContext,
-		promptOverlayHandle,
-		toolOverlay,
-	); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := toolOverlay.AddRestriction(
@@ -297,7 +144,7 @@ func TestRegistryLayersRestrictionShadowingAndPromptProjection(t *testing.T) {
 		objectTool(
 			"beta",
 			"scoped beta",
-			tools.ExecutorFunc(passThroughBody),
+			executorStub(passThroughBody),
 		),
 	); err != nil {
 		t.Fatal(err)
@@ -307,7 +154,7 @@ func TestRegistryLayersRestrictionShadowingAndPromptProjection(t *testing.T) {
 		objectTool(
 			"gamma",
 			"scoped gamma",
-			tools.ExecutorFunc(passThroughBody),
+			executorStub(passThroughBody),
 		),
 	); err != nil {
 		t.Fatal(err)
@@ -330,17 +177,14 @@ func TestRegistryLayersRestrictionShadowingAndPromptProjection(t *testing.T) {
 	if rootSchemas := state.service.Schemas(); len(rootSchemas) != 2 {
 		t.Fatalf("root schemas = %#v", rootSchemas)
 	}
-	assembled, err := promptOverlay.Assemble(
-		requestContext,
-		systemprompt.AssembleContext{},
-	)
+	definitions, err := toolOverlay.CaptureDefinitions(requestContext)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(assembled.Tools) != 3 || assembled.Tools[1].Name != "beta" {
-		t.Fatalf("assembled tools = %#v", assembled.Tools)
+	if len(definitions.Schemas) != 3 || definitions.Schemas[1].Name != "beta" {
+		t.Fatalf("definition schemas = %#v", definitions.Schemas)
 	}
-	assembled.Tools[0].Parameters[0] = '['
+	definitions.Schemas[0].Parameters[0] = '['
 	if toolOverlay.Schemas()[0].Parameters[0] != '{' {
 		t.Fatal("schema projection aliases Registry storage")
 	}
@@ -356,7 +200,7 @@ func TestChildToolOverridesInheritedSchemaAndExecutorUntilUnregistered(
 		objectTool(
 			"search",
 			"root search",
-			tools.ExecutorFunc(func(
+			executorStub(func(
 				json.RawMessage,
 				tools.ToolRunContext,
 			) (json.RawMessage, error) {
@@ -366,21 +210,8 @@ func TestChildToolOverridesInheritedSchemaAndExecutorUntilUnregistered(
 	); err != nil {
 		t.Fatal(err)
 	}
-	promptOverlay := systemprompt.NewOverlay(systemprompt.RegistryOptions{})
-	promptHandle, err := state.runtimeEngine.MountScopedChild(
-		requestContext,
-		state.promptHandle,
-		promptOverlay,
-	)
+	toolOverlay, err := state.service.NewLayer(requestContext)
 	if err != nil {
-		t.Fatal(err)
-	}
-	toolOverlay := tools.NewOverlay()
-	if _, err = state.runtimeEngine.MountScopedChild(
-		requestContext,
-		promptHandle,
-		toolOverlay,
-	); err != nil {
 		t.Fatal(err)
 	}
 	childHandle, err := toolOverlay.AddTool(
@@ -388,7 +219,7 @@ func TestChildToolOverridesInheritedSchemaAndExecutorUntilUnregistered(
 		objectTool(
 			"search",
 			"child search",
-			tools.ExecutorFunc(func(
+			executorStub(func(
 				json.RawMessage,
 				tools.ToolRunContext,
 			) (json.RawMessage, error) {
@@ -416,7 +247,7 @@ func TestSameLayerDuplicateToolDoesNotReplaceFirstEntry(t *testing.T) {
 		objectTool(
 			"search",
 			"first",
-			tools.ExecutorFunc(passThroughBody),
+			executorStub(passThroughBody),
 		),
 	); err != nil {
 		t.Fatal(err)
@@ -426,7 +257,7 @@ func TestSameLayerDuplicateToolDoesNotReplaceFirstEntry(t *testing.T) {
 		objectTool(
 			"search",
 			"second",
-			tools.ExecutorFunc(passThroughBody),
+			executorStub(passThroughBody),
 		),
 	); err == nil {
 		t.Fatal("same-layer duplicate Tool registration succeeded")
@@ -463,69 +294,54 @@ func assertSearchTool(
 	}
 }
 
-func TestOverlayReadViewTracksParentMutationsAfterCaching(t *testing.T) {
+func TestOverlayCapturesParentDefinitionsAtCreation(t *testing.T) {
 	state := newToolsFixture(t)
-	requestContext := context.Background()
-	if _, err := state.service.AddTool(
-		requestContext,
-		objectTool(
-			"initial",
-			"initial root tool",
-			tools.ExecutorFunc(passThroughBody),
-		),
-	); err != nil {
-		t.Fatal(err)
-	}
-	promptOverlay := systemprompt.NewOverlay(systemprompt.RegistryOptions{})
-	promptOverlayHandle, err := state.runtimeEngine.MountScopedChild(
-		requestContext,
-		state.promptHandle,
-		promptOverlay,
-	)
+	ctx := context.Background()
+	initial, err := state.service.AddTool(ctx, objectTool(
+		"initial",
+		"initial root tool",
+		executorStub(passThroughBody),
+	))
 	if err != nil {
 		t.Fatal(err)
 	}
-	toolOverlay := tools.NewOverlay()
-	if _, err = state.runtimeEngine.MountScopedChild(
-		requestContext,
-		promptOverlayHandle,
-		toolOverlay,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if schemas := toolOverlay.Schemas(); len(schemas) != 1 || schemas[0].Name != "initial" {
-		t.Fatalf("initial cached schemas = %#v", schemas)
-	}
-	added, err := state.service.AddTool(
-		requestContext,
-		objectTool(
-			"added",
-			"added after child cache",
-			tools.ExecutorFunc(passThroughBody),
-		),
-	)
+	child, err := state.service.NewLayer(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if schemas := toolOverlay.Schemas(); len(schemas) != 2 || schemas[1].Name != "added" {
-		t.Fatalf("schemas after parent add = %#v", schemas)
-	}
-	if err = added.Unregister(requestContext); err != nil {
+	if _, err := state.service.AddTool(ctx, objectTool(
+		"added",
+		"added after child creation",
+		executorStub(passThroughBody),
+	)); err != nil {
 		t.Fatal(err)
 	}
-	if schemas := toolOverlay.Schemas(); len(schemas) != 1 || schemas[0].Name != "initial" {
-		t.Fatalf("schemas after parent removal = %#v", schemas)
+	if err := initial.Unregister(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if schemas := child.Schemas(); len(schemas) != 1 || schemas[0].Name != "initial" {
+		t.Fatalf("parent mutation changed captured child: %#v", schemas)
+	}
+	if schemas := state.service.Schemas(); len(schemas) != 1 || schemas[0].Name != "added" {
+		t.Fatalf("parent catalog did not change: %#v", schemas)
+	}
+	later, err := state.service.NewLayer(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if schemas := later.Schemas(); len(schemas) != 1 || schemas[0].Name != "added" {
+		t.Fatalf("new child did not capture current definitions: %#v", schemas)
 	}
 }
 
 func TestRegistryChangeFailureRollsBackMutation(t *testing.T) {
 	failure := errors.New("change rejected")
-	observer := &eventObserverPlugin{
+	observer := &eventObserver{
 		name: "reject-tool-change",
-		subscriptions: []plugin.EventSubscription{
-			plugin.EventOf[tools.RegistryChanged](),
+		subscriptions: []string{
+			tools.ChangeEventName,
 		},
-		observe: func(context.Context, plugin.Event) error {
+		observe: func(context.Context, toolEvent) error {
 			return failure
 		},
 	}
@@ -535,7 +351,7 @@ func TestRegistryChangeFailureRollsBackMutation(t *testing.T) {
 		objectTool(
 			"rolled-back",
 			"",
-			tools.ExecutorFunc(passThroughBody),
+			executorStub(passThroughBody),
 		),
 	)
 	if !errors.Is(err, failure) {
@@ -549,12 +365,12 @@ func TestRegistryChangeFailureRollsBackMutation(t *testing.T) {
 func TestRegistryRemovalSurvivesChangeObserverFailure(t *testing.T) {
 	failure := errors.New("change observer failed during removal")
 	var notifications atomic.Int32
-	observer := &eventObserverPlugin{
+	observer := &eventObserver{
 		name: "fail-tool-removal-change",
-		subscriptions: []plugin.EventSubscription{
-			plugin.EventOf[tools.RegistryChanged](),
+		subscriptions: []string{
+			tools.ChangeEventName,
 		},
-		observe: func(context.Context, plugin.Event) error {
+		observe: func(context.Context, toolEvent) error {
 			if notifications.Add(1) == 2 {
 				return failure
 			}
@@ -567,7 +383,7 @@ func TestRegistryRemovalSurvivesChangeObserverFailure(t *testing.T) {
 		objectTool(
 			"removed-despite-observer",
 			"",
-			tools.ExecutorFunc(passThroughBody),
+			executorStub(passThroughBody),
 		),
 	)
 	if err != nil {
@@ -589,33 +405,19 @@ func TestAncestorRestrictionDoesNotFilterSameLayerToolsInDescendant(t *testing.T
 		objectTool(
 			"alpha",
 			"root alpha",
-			tools.ExecutorFunc(passThroughBody),
+			executorStub(passThroughBody),
 		),
 		objectTool(
 			"beta",
 			"root beta",
-			tools.ExecutorFunc(passThroughBody),
+			executorStub(passThroughBody),
 		),
 	} {
 		if _, err := state.service.AddTool(requestContext, definition); err != nil {
 			t.Fatal(err)
 		}
 	}
-	firstPrompt := systemprompt.NewOverlay(systemprompt.RegistryOptions{})
-	firstPromptHandle, err := state.runtimeEngine.MountScopedChild(
-		requestContext,
-		state.promptHandle,
-		firstPrompt,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	firstTools := tools.NewOverlay()
-	firstToolsHandle, err := state.runtimeEngine.MountScopedChild(
-		requestContext,
-		firstPromptHandle,
-		firstTools,
-	)
+	firstTools, err := state.service.NewLayer(requestContext)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -635,26 +437,13 @@ func TestAncestorRestrictionDoesNotFilterSameLayerToolsInDescendant(t *testing.T
 		objectTool(
 			"beta",
 			"child beta",
-			tools.ExecutorFunc(passThroughBody),
+			executorStub(passThroughBody),
 		),
 	); err != nil {
 		t.Fatal(err)
 	}
-	secondPrompt := systemprompt.NewOverlay(systemprompt.RegistryOptions{})
-	secondPromptHandle, err := state.runtimeEngine.MountScopedChild(
-		requestContext,
-		firstToolsHandle,
-		secondPrompt,
-	)
+	secondTools, err := firstTools.NewLayer(requestContext)
 	if err != nil {
-		t.Fatal(err)
-	}
-	secondTools := tools.NewOverlay()
-	if _, err := state.runtimeEngine.MountScopedChild(
-		requestContext,
-		secondPromptHandle,
-		secondTools,
-	); err != nil {
 		t.Fatal(err)
 	}
 	schemas := secondTools.Schemas()

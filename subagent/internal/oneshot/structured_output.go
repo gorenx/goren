@@ -57,17 +57,10 @@ func (output *structuredOutput) Apply(
 			Description: "Report the final structured result exactly once.",
 			Parameters:  output.schema,
 			Output: tools.ToolOutputDefinition{
-				Schema: structuredResultSchema,
-				Renderer: tools.OutputRendererFunc(func(
-					json.RawMessage,
-					json.RawMessage,
-				) ([]agentmessage.ContentBlock, error) {
-					return []agentmessage.ContentBlock{
-						agentmessage.NewTextBlock("Structured output recorded."),
-					}, nil
-				}),
+				Schema:   structuredResultSchema,
+				Renderer: output,
 			},
-			Executor: tools.ExecutorFunc(output.execute),
+			Executor: output,
 		},
 	); err != nil {
 		return err
@@ -92,7 +85,7 @@ func (output *structuredOutput) Apply(
 	return editor.ObserveToolResults(output)
 }
 
-func (output *structuredOutput) execute(
+func (output *structuredOutput) Execute(
 	arguments json.RawMessage,
 	runContext tools.ToolRunContext,
 ) (json.RawMessage, error) {
@@ -146,3 +139,12 @@ func (output *structuredOutput) Captured() json.RawMessage {
 
 var _ agent.Setup = (*structuredOutput)(nil)
 var _ tools.ResultObserver = (*structuredOutput)(nil)
+
+func (output *structuredOutput) Render(
+	json.RawMessage,
+	json.RawMessage,
+) ([]agentmessage.ContentBlock, error) {
+	return []agentmessage.ContentBlock{
+		agentmessage.NewTextBlock("Structured output recorded."),
+	}, nil
+}

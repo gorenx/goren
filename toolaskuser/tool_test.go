@@ -1,4 +1,4 @@
-package toolaskuser_test
+package toolaskuser
 
 import (
 	"context"
@@ -9,8 +9,6 @@ import (
 
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/plugin"
-	"github.com/gorenx/goren/systemprompt"
-	"github.com/gorenx/goren/toolaskuser"
 	toolscore "github.com/gorenx/goren/tools"
 	"github.com/gorenx/goren/userquestions"
 )
@@ -33,9 +31,9 @@ func (eventFailureSink) ReportEventFailure(
 
 type askUserFixture struct {
 	engine      *plugin.Runtime
-	toolService *toolscore.Service
+	toolService *toolscore.ToolLayer
 	questions   userquestions.UserQuestions
-	toolHandle  plugin.Handle
+	toolHandle  *toolscore.ToolHandle
 }
 
 type askUserFixturePlugin struct {
@@ -82,11 +80,11 @@ func (recorder *providerRecorder) Ask(
 
 func newAskUserFixture(t *testing.T) *askUserFixture {
 	t.Helper()
-	promptSettings, err := systemprompt.ValidateConfig(systemprompt.Config{})
+	toolSettings, err := toolscore.ValidateConfig(toolscore.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	toolSettings, err := toolscore.ValidateConfig(toolscore.Config{})
+	business, err := toolscore.New(toolSettings, toolscore.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,16 +92,12 @@ func newAskUserFixture(t *testing.T) *askUserFixture {
 		engine: plugin.NewRuntime(plugin.RuntimeSettings{
 			EventFailures: eventFailureSink{},
 		}),
-		toolService: toolscore.New(toolSettings),
+		toolService: business,
 	}
 	questionsPlugin := userquestions.NewPlugin()
-	toolPlugin := toolaskuser.New()
-	handles, err := state.engine.Start(
+	_, err = state.engine.Start(
 		context.Background(),
-		systemprompt.New(promptSettings, systemprompt.RegistryOptions{}),
-		state.toolService,
 		questionsPlugin,
-		toolPlugin,
 		&askUserFixturePlugin{
 			fixture: state,
 		},
@@ -111,8 +105,18 @@ func newAskUserFixture(t *testing.T) *askUserFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state.toolHandle = handles[3]
+	definition, err := newDefinition(state.questions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.toolHandle, err = business.AddTool(context.Background(), definition)
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
+		if err := business.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
 		if shutdownErr := state.engine.Shutdown(context.Background()); shutdownErr != nil {
 			t.Error(shutdownErr)
 		}
@@ -136,11 +140,11 @@ func resultText(t *testing.T, outcome toolscore.ToolExecutionResult) string {
 func TestDefinitionMatchesPinnedSchema(t *testing.T) {
 	t.Parallel()
 	state := newAskUserFixture(t)
-	definition, found := state.toolService.Get(toolaskuser.Name)
+	definition, found := state.toolService.Get(Name)
 	if !found {
 		t.Fatal("ask_user_question is not registered")
 	}
-	if definition.Description != toolaskuser.Description {
+	if definition.Description != Description {
 		t.Fatalf("description = %q", definition.Description)
 	}
 	var parameters schemaNode
@@ -211,7 +215,7 @@ func TestExecutionDelegatesAndRendersStructuredAnswer(t *testing.T) {
 		requestContext,
 		toolscore.ToolExecutionInput{
 			CallID: "ask-1",
-			Name:   toolaskuser.Name,
+			Name:   Name,
 			Arguments: json.RawMessage(`{
           "questions": [{
             "id": "targets",
@@ -245,14 +249,14 @@ func TestExecutionDelegatesAndRendersStructuredAnswer(t *testing.T) {
 	}
 }
 
-func TestExecutionPreservesStructuredQuestionErrorAndPluginDisposal(t *testing.T) {
+func TestExecutionPreservesStructuredQuestionErrorAndRemoval(t *testing.T) {
 	t.Parallel()
 	state := newAskUserFixture(t)
 	outcome := state.toolService.Execute(
 		context.Background(),
 		toolscore.ToolExecutionInput{
 			CallID:    "ask-no-provider",
-			Name:      toolaskuser.Name,
+			Name:      Name,
 			Arguments: json.RawMessage(`{"questions":[{"id":"continue","question":"Continue?"}]}`),
 		},
 	)
@@ -262,10 +266,10 @@ func TestExecutionPreservesStructuredQuestionErrorAndPluginDisposal(t *testing.T
 		failure.Error.Info.Code != userquestions.CodeNoProvider {
 		t.Fatalf("failure = %#v", outcome)
 	}
-	if err := state.engine.Unload(context.Background(), state.toolHandle); err != nil {
+	if err := state.toolHandle.Unregister(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, found := state.toolService.Get(toolaskuser.Name); found {
+	if _, found := state.toolService.Get(Name); found {
 		t.Fatal("disposed ask_user_question remains registered")
 	}
 }

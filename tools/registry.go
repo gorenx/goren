@@ -4,37 +4,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
 
 	"github.com/gorenx/goren/internal/jsonvalue"
 	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/systemprompt"
 )
 
-type registryLayerSource interface {
-	toolLayers() []toolLayerSnapshot
-}
-
 // registry owns one exact layer of Tool definitions and policies. It has no
-// Plugin lifecycle and never executes a Tool; Service publishes its mutations
+// framework lifecycle and never executes a Tool; ToolLayer publishes its mutations
 // and Runtime consumes its read view.
 type registry struct {
-	root   bool
-	store  *toolStore
-	parent registryLayerSource
-
-	viewMutex sync.RWMutex
-	viewCache cachedToolView
-}
-
-type cachedToolView struct {
-	layers []toolLayerVersion
-	view   toolView
-}
-
-type toolLayerVersion struct {
-	source   *toolStore
-	revision uint64
+	root  bool
+	store *toolStore
+	base  []toolLayerSnapshot
 }
 
 func newRegistry(root bool) *registry {
@@ -44,19 +25,19 @@ func newRegistry(root bool) *registry {
 	}
 }
 
-func (catalog *registry) attachParent(parent registryLayerSource) error {
+func (catalog *registry) setBase(layers []toolLayerSnapshot) error {
 	if catalog.root {
-		return errors.New("tools: root Registry cannot have a parent")
+		return errors.New("tools: root Registry cannot inherit a base")
 	}
-	if parent == nil {
-		return errors.New("tools: child Registry requires a parent")
+	if len(layers) == 0 {
+		return errors.New("tools: child Registry requires a base snapshot")
 	}
-	catalog.parent = parent
+	catalog.base = append([]toolLayerSnapshot(nil), layers...)
 	return nil
 }
 
 func (catalog *registry) clear() {
-	catalog.parent = nil
+	catalog.base = nil
 	catalog.store.clear()
 }
 
@@ -148,7 +129,7 @@ func (catalog *registry) lookupDefinition(name string) (ToolDefinition, bool) {
 }
 
 func (catalog *registry) schemas() []llm.ToolSchema {
-	return catalog.promptTools().Schemas
+	return catalog.definitions().Schemas
 }
 
 func (catalog *registry) executionMode(input ToolExecutionInput) ToolExecutionMode {
@@ -173,7 +154,7 @@ func (catalog *registry) executionMode(input ToolExecutionInput) ToolExecutionMo
 	return ExecutionExclusive
 }
 
-func (catalog *registry) promptTools() systemprompt.ToolProviderResult {
+func (catalog *registry) definitions() Definitions {
 	resolved := catalog.view()
 	projections := make([]llm.ToolSchema, 0, len(resolved.order))
 	for _, name := range resolved.order {
@@ -190,64 +171,19 @@ func (catalog *registry) promptTools() systemprompt.ToolProviderResult {
 			),
 		})
 	}
-	return systemprompt.ToolProviderResult{
+	return Definitions{
 		Schemas:    projections,
 		KnownNames: sortedNames(resolved.knownNames),
 	}
 }
 
 func (catalog *registry) view() toolView {
-	layers := catalog.toolLayers()
-	versions := toolLayerVersions(layers)
-	catalog.viewMutex.RLock()
-	if sameToolLayerVersions(catalog.viewCache.layers, versions) {
-		resolved := catalog.viewCache.view
-		catalog.viewMutex.RUnlock()
-		return resolved
-	}
-	catalog.viewMutex.RUnlock()
-
-	resolved := resolveToolView(layers)
-	catalog.viewMutex.Lock()
-	catalog.viewCache = cachedToolView{
-		layers: versions,
-		view:   resolved,
-	}
-	catalog.viewMutex.Unlock()
-	return resolved
-}
-
-func toolLayerVersions(layers []toolLayerSnapshot) []toolLayerVersion {
-	versions := make([]toolLayerVersion, len(layers))
-	for layerIndex, layer := range layers {
-		versions[layerIndex] = toolLayerVersion{
-			source:   layer.source,
-			revision: layer.revision,
-		}
-	}
-	return versions
-}
-
-func sameToolLayerVersions(
-	left []toolLayerVersion,
-	right []toolLayerVersion,
-) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for layerIndex, leftLayer := range left {
-		if leftLayer != right[layerIndex] {
-			return false
-		}
-	}
-	return true
+	return resolveToolView(catalog.toolLayers())
 }
 
 func (catalog *registry) toolLayers() []toolLayerSnapshot {
-	layers := make([]toolLayerSnapshot, 0)
-	if catalog.parent != nil {
-		layers = append(layers, catalog.parent.toolLayers()...)
-	}
+	layers := make([]toolLayerSnapshot, 0, len(catalog.base)+1)
+	layers = append(layers, catalog.base...)
 	return append(layers, catalog.store.snapshot())
 }
 
