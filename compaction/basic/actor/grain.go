@@ -5,7 +5,10 @@ import (
 	"errors"
 	"time"
 
+	"github.com/gorenx/goren/agent"
 	middlewareactor "github.com/gorenx/goren/agent/middleware/actor"
+	"github.com/gorenx/goren/commands"
+	commandactor "github.com/gorenx/goren/commands/actor"
 	"github.com/gorenx/goren/compaction/basic"
 	"github.com/gorenx/goren/compaction/toolresultpruner"
 	llmactor "github.com/gorenx/goren/llm/actor"
@@ -18,6 +21,7 @@ import (
 // Grain schedules one Agent's Compaction operations. Business stages and
 // completion decisions belong to Compaction and Transaction, not this adapter.
 type Grain struct {
+	activation   *goakt.GrainProps
 	agentID      session.SessionID
 	conversation *goakt.GrainIdentity
 	creationID   string
@@ -29,16 +33,20 @@ type Grain struct {
 	active       *invocation
 	recovery     *basic.Recovery
 	diagnostics  basic.Diagnostics
+	command      *commandRegistration
 }
 
 // invocation retains only request delivery and dependency results for one call.
 type invocation struct {
-	reply    *goakt.GrainReply
-	input    Execute
-	snapshot session.Snapshot
-	prices   tokenmeter.Measurement
-	callID   llmactor.CallID
-	hook     *middlewareactor.Invocation
+	failure    agent.RequestFailure
+	pruneError error
+	reply      invocationReply
+	commandID  commands.ID
+	input      Execute
+	snapshot   session.Snapshot
+	prices     tokenmeter.Measurement
+	callID     llmactor.CallID
+	hook       *middlewareactor.Invocation
 	// cancelled retains the accepted cause while asynchronous preparation is pending.
 	cancelled error
 }
@@ -49,7 +57,10 @@ type continuation struct {
 }
 
 // OnActivate allocates no business resources before initialization.
-func (*Grain) OnActivate(context.Context, *goakt.GrainProps) error { return nil }
+func (owner *Grain) OnActivate(_ context.Context, props *goakt.GrainProps) error {
+	owner.activation = props
+	return nil
+}
 
 // OnDeactivate reports delivery failure, never a settled Compaction Result.
 // Production lifecycle must close the binding before deactivating this Grain.
@@ -63,67 +74,38 @@ func (owner *Grain) OnDeactivate(context.Context, *goakt.GrainProps) error {
 
 // OnReceive dispatches typed requests and scheduled dependency completions.
 func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
-	switch input := gc.Message().(type) {
-	case Initialize:
-		gc.Response(Completion{
-			Err: owner.initialize(gc, input),
-		})
-	case middlewareactor.CancelInvocation:
-		owner.cancelHook(gc, input)
-	case middlewareactor.InvokePreStep:
-		owner.startPressure(gc, input)
-	case middlewareactor.InvokeRequestError:
-		owner.startRecovery(gc, input)
-	case Execute:
-		if owner.business == nil || owner.active != nil {
-			gc.Response(Result{
-				Err: errors.New("compaction: initialized idle binding is required"),
-			})
-			return
-		}
-		current := &invocation{
-			reply: gc.DeferResponse(),
-			input: input,
-		}
-		if input.SourceCommandID != nil {
-			detached := *input.SourceCommandID
-			current.input.SourceCommandID = &detached
-		}
-		owner.active = current
-		owner.prepare(gc, current)
-	case Close:
-		if owner.active != nil {
-			gc.Response(Completion{
-				Err: errors.New("compaction: invocation must settle before close"),
-			})
-			return
-		}
-		if owner.models != nil {
-			owner.models.Dispose(gc)
-		}
-		owner.business = nil
-		owner.pruner = nil
-		gc.Response(Completion{})
-	case continuation:
+	if owner.receiveCommand(gc) ||
+		owner.receiveBinding(gc) ||
+		owner.receiveInvocation(gc) ||
+		owner.receiveRequest(gc) {
+		return
+	}
+	if input, ok := gc.Message().(continuation); ok {
 		gc.NoErr()
 		if owner.active == input.call {
 			input.run(gc)
 		}
-	default:
-		if owner.models == nil || !owner.models.Receive(gc, llmactor.Receivers{
-			Generation:   owner,
-			Chunk:        owner,
-			Close:        owner,
-			Model:        owner,
-			Cancellation: owner,
-		}) {
-			gc.Unhandled()
-		}
+		return
 	}
+	if owner.models != nil && owner.models.Receive(gc, llmactor.Receivers{
+		Generation:   owner,
+		Chunk:        owner,
+		Close:        owner,
+		Model:        owner,
+		Cancellation: owner,
+	}) {
+		return
+	}
+	gc.Unhandled()
 }
 
 func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) error {
-	if owner.conversation != nil || input.AgentID == "" || gc.Self().Name() != string(input.AgentID) || input.Session == nil || input.Meter == nil || input.Router == nil || input.CreationID == "" || input.Timeout <= 0 {
+	if owner.conversation != nil ||
+		input.AgentID == "" ||
+		gc.Self().Name() != string(input.AgentID) ||
+		input.Session == nil || input.Agent == nil || input.Commands == nil || input.Commands.Name() != commandactor.RegistryName ||
+		input.Meter == nil || input.Router == nil ||
+		input.CreationID == "" || input.Timeout <= 0 {
 		return errors.New("compaction: fresh binding, matching Agent identity, dependency routes and positive timeout are required")
 	}
 	settings, err := basic.ResolveConfig(input.Config)
@@ -161,7 +143,7 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) error {
 	owner.timeout = input.Timeout
 	owner.business = business
 	owner.pruner = pruner
-	return nil
+	return owner.startCommand(gc, input.Commands, input.Agent)
 }
 
 func (owner *Grain) finish(gc *goakt.GrainContext, current *invocation, outcome basic.Outcome, failure error) {
@@ -170,6 +152,10 @@ func (owner *Grain) finish(gc *goakt.GrainContext, current *invocation, outcome 
 	}
 	if current.hook != nil {
 		owner.completeHook(gc, current, failure)
+		return
+	}
+	if current.input.Mode == basic.Manual {
+		owner.finishMaintenance(gc, current, outcome, failure)
 		return
 	}
 	owner.active = nil

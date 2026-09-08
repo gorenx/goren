@@ -1,11 +1,22 @@
 package agentloop
 
-import "errors"
+import (
+	"errors"
+	"github.com/gorenx/goren/agent"
+)
 
-// activity records an accepted execution independently of its durable Turn.
-// wake is only a request received after cancellation; ordinary running input is
-// drained by the current execution and must not create a second execution.
+type activityKind uint8
+
+const (
+	executionActivity activityKind = iota
+	maintenanceActivity
+)
+
+// activity owns one execution or maintenance interval without creating a Turn.
+// wake latches input behind maintenance or cancellation; a live execution drains
+// ordinary input itself.
 type activity struct {
+	kind         activityKind
 	cancellation error
 	wake         bool
 }
@@ -23,9 +34,13 @@ func (subject *ReactLoopAgent) Cancellation() error {
 // True reserves another execution for input accepted after cancellation. Removing
 // that input before completion suppresses the replay. No task is scheduled here.
 func (subject *ReactLoopAgent) FinishActivity() (bool, error) {
-	if subject.running == nil {
-		return false, errors.New("agentloop: no execution is reserved")
+	if subject.running == nil || subject.running.kind != executionActivity {
+		return false, ErrState
 	}
+	return subject.finishActivity()
+}
+
+func (subject *ReactLoopAgent) finishActivity() (bool, error) {
 	if subject.current != nil || subject.step != nil ||
 		subject.preparing != nil || subject.request != nil || subject.ending != nil {
 		return false, errors.New("agentloop: execution still owns unfinished business work")
@@ -36,4 +51,27 @@ func (subject *ReactLoopAgent) FinishActivity() (bool, error) {
 		subject.running = &activity{}
 	}
 	return replay, nil
+}
+
+// BeginMaintenance reserves an idle Agent without opening a durable Turn.
+func (subject *ReactLoopAgent) BeginMaintenance() error {
+	if err := subject.CheckExecution(); err != nil {
+		return err
+	}
+	if subject.running != nil {
+		return agent.ErrBusy
+	}
+	subject.running = &activity{
+		kind: maintenanceActivity,
+	}
+	return nil
+}
+
+// FinishMaintenance releases a settled maintenance operation and reserves any
+// requested execution whose input still exists. It performs no I/O or scheduling.
+func (subject *ReactLoopAgent) FinishMaintenance() (bool, error) {
+	if subject.running == nil || subject.running.kind != maintenanceActivity {
+		return false, ErrState
+	}
+	return subject.finishActivity()
 }

@@ -71,9 +71,9 @@ func (subject *ReactLoopAgent) ConfirmAdmission(proposal agent.Admission, write 
 	if proposal.Wake {
 		if subject.running == nil {
 			subject.running = &activity{}
-		} else if subject.running.cancellation != nil {
+		} else if subject.running.kind == maintenanceActivity || subject.running.cancellation != nil {
 			var cancelled agent.Cancellation
-			if errors.As(subject.running.cancellation, &cancelled) && cancelled.Cause.CancelKind() != "disposed" {
+			if !errors.As(subject.running.cancellation, &cancelled) || cancelled.Cause.CancelKind() != "disposed" {
 				subject.running.wake = true
 			}
 		}

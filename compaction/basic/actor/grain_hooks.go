@@ -7,6 +7,7 @@ import (
 	middlewareactor "github.com/gorenx/goren/agent/middleware/actor"
 	"github.com/gorenx/goren/compaction/basic"
 	"github.com/gorenx/goren/session"
+	sessionactor "github.com/gorenx/goren/session/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
@@ -51,16 +52,10 @@ func (owner *Grain) startRecovery(gc *goakt.GrainContext, input middlewareactor.
 		hook: &input.Invocation,
 	}
 	owner.active = current
-	owner.read(gc, current, func(snapshot session.Snapshot) bool {
-		approved, err := owner.recovery.Prepare(input.Input, snapshot)
-		if err != nil || !approved {
-			owner.report(gc, err)
-			owner.continueHook(gc, current)
-			return true
-		}
-		owner.prepare(gc, current)
-		return true
-	})
+	current.failure = input.Input
+	owner.request(gc, current, owner.conversation, sessionactor.Read{
+		CreationID: owner.creationID,
+	}, recoveryHistory)
 }
 
 // reject handles preflight failure before a Compaction invocation has started.

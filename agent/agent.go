@@ -3,9 +3,13 @@
 package agent
 
 import (
+	"errors"
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 )
+
+// ErrBusy means an exclusive operation cannot start while another activity owns the Agent.
+var ErrBusy = errors.New("agent: an activity is already running")
 
 // Status is the complete live lifecycle vocabulary. Disposal removes an
 // Agent from the Registry instead of adding a third status.
