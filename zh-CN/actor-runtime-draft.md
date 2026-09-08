@@ -40,6 +40,8 @@ Session 首期使用显式绑定/解绑，不引入 lease；处理完一条消�
 
 ## 2. 设计导航
 
+[Workspace、UserQuestions 与 Ask User 工具](./actor-design/36-workspace-userquestions.md)记录这三个模块的业务/Actor 边界、最新本地 DSH 行为对照和验证范围。
+
 | 文档 | 职责 |
 | --- | --- |
 | [01 Actor、Registry 与 Runtime 所有权](./actor-design/01-ownership.md) | 术语、生命周期树、状态权威、发现/执行分离、Agent 隔离与共享资源 |

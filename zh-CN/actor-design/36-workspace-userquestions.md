@@ -1,0 +1,73 @@
+# Workspace、UserQuestions 与 Ask User 工具实现方案
+
+## 目标与兼容性
+
+移除三个模块的 Plugin、Factory 和旧 Agent/Session 对象依赖。Workspace SQLite 表、排序规则、工作目录校验及 API 事件名不变；ask_user_question 的 schema、答案字段、错误码与浏览器交互帧不变。调用身份由旧 Agent 指针改为 Session ID，运行适配器负责绑定及校验调用者，业务层不引用框架身份。
+
+## 模块架构与接口
+
+- Workspace Registry 独占目录注册、Session 归属及归档集合。Backend 仅执行持久化操作；SessionHeaders 只提供 Header。初始化显式接收依赖，不使用服务定位器。Actor 独占 Registry，串行执行操作，提交后发布非持久化 Notice；快照及 ID 是跨 Actor 契约，不传 Registry 或 Workspace 活对象。
+- UserQuestions Service 接收不可变 Provider 与调用者校验端口；负责空问题、展示意图、委派调用限制和输入输出复制。Provider 拥有浏览器等待与关联；Actor 将等待放到异步任务，保留原请求回复，接受取消，任务清理结束后才回复原请求。
+- ToolAskUser 提供 NewDefinition，消费最窄的 Ask 接口。工具的实例与执行由现有 Tools Runtime 管理，不增加重复的 Tool Registry 或等待队列。
+
+## 关键数据与决策
+
+Workspace 保留现有 StoredRegistry/StoredWorkspace 持久化形状；WorkspaceState 是脱离 owner 的快照。Notice 只在持久化成功后产生。Registry 不持有实体反向引用，也不包含 Actor 地址。存储失败不安装新内存状态。
+
+UserQuestions Request 包含 Questions 和 SessionID；不包含 Agent、Grain 或 CreationID。框架请求 ID 只用于匹配取消与结果，不是业务身份。Caller 校验端口负责取得实时调用资格，错误原样向上传递。委派 Agent 不得直接发起人机交互。取消不能被正常答案覆盖。
+
+## 上下游契约与流程
+
+```mermaid
+sequenceDiagram
+    participant Tool as Tools Runtime / questionTool
+    participant Q as UserQuestions Actor
+    participant S as QuestionService
+    participant UI as API Proxy Provider
+    Tool->>Q: Ask(Request)
+    Q->>S: 异步 Ask
+    S->>S: 校验调用者与问题
+    S->>UI: Ask(SessionID, Questions)
+    UI-->>S: Answer / error
+    S-->>Q: 已复制结果
+    Q-->>Tool: 原请求最终结果
+    Note over Tool,UI: 取消沿执行 context 传播，等待 Provider 清理，不等待用户正常回答
+```
+
+Workspace 的查询、更新与事件发布按一次操作排序；API Proxy 映射 wire DTO，Session 创建流程显式 AttachSession。关闭需在已接受的操作结束后关闭 Backend。业务代码不调用 GoAkt；Actor 不判断目录归属、提问资格或答案呈现规则。
+
+## 验证要求
+
+迁移原有业务测试并覆盖真实 Actor 的取消、串行更新、错误传播；检索三个目录确保无 Plugin/Factory 兼容路径。未迁移的全局装配不能作为这些模块完成生产接通的证据。
+
+## 本地最新 DSH 对照：CWD 与 Workspace 通知
+
+按用户要求，本节参照本地 `../deepseek-harness` 的 `c389f96bf3a9b6807cb71ed6bdad5849be0df6d8`；不整体替换历史协议基线，也不把尚未迁移的 API/storage-domain 描述为已完成。
+
+| 行为 | 最新 DSH 证据 | Go 处理 |
+| --- | --- | --- |
+| 确定创建目录 | `packages/api/session-controller/src/commands.ts` 的 `create`：Workspace path、请求 cwd、默认目录依次选择；禁止 workspaceId 与 cwd 同传 | 创建用例把结果放入 `session.CreateOptions.Metadata.CWD` |
+| 写入 Header | `packages/api/session-controller/src/agent.ts` 的 `createOrAdopt` 传 `meta.cwd`；`packages/core/session/src/index.ts` 的 `snapshotSessionHeader` / `validateSessionHeader` 复制、校验并冻结 Header | `session.NewLog` / `buildHeader` 复制并校验绝对路径；Header 在创建后不可变 |
+| 重新采用已有 Session | `agent.ts` 的 `assertAdoption` 以及持久化恢复分支比较原 cwd，不同则抛 `ApiSessionCwdConflict` | 保留 CWD 冲突语义，不覆盖已有 Header |
+| Workspace 归属 | `packages/workspace/workspace/src/types.ts` 声明 path 永不改写；`entity.ts` 的 `attachSession` 明确依赖 Header cwd 与 Workspace path 均不可变 | Attach 只验证并记录成员，不修改 Session CWD |
+| Workspace 持久化和通知 | `packages/workspace/workspace/src/spec.ts` 定义独立 domain 数据；`packages/api/workspace-controller/src/feed.ts` 的 WorkspaceFeed 订阅 `domain/changed` | Workspace Backend 持久化成功后产生 Notice，由 Actor 发布；Notice 不是写入 Session 的命令 |
+
+结论：本次不增加 CWD 变更事件、Setter 或可变 Header。切换执行目录需要创建另一 Session；已有 Session 继续使用创建时的 CWD。此前讨论的“初始 Header 加 CWD 变更事件”属于未采纳扩展，不是 DSH 现有行为。
+
+持久化时机也要区分：最新 DSH `session-persistence/src/index.ts` 的 create 合约要求 create 返回后本进程读取可见，并区分 append 与 flush；当前 Go Session 的 Header 随首次事件批次 materialize。这里只确认 CWD 的不可变语义，不能据此声称两套持久化生命周期完全等价。
+
+Go 的 Workspace Notice 名称是现有 Go 契约，并非最新 DSH 的同名事件；后续 API feed 迁移必须单独核对 baseline、增量与重连行为。
+
+## 最新 DSH 对照后的修正与验证
+
+- `workspace/src/paths.ts` 的 `realpathNormalize` 在文件系统解析前拒绝相对路径。Go `canonicalDirectory` 同步收紧，不再基于进程 cwd 自动补全；由 `TestRegistryRejectsRelativePathsWithoutPublishing` 覆盖。
+- `workspace/src/entity.ts` 的 `mutate` 对每个通过校验的操作执行候选成员清理，即使移动到自身也一样。Go 由 Registry.update 统一执行清理、判定无变化、写入和记录 Notice，无业务回调包装。`TestNoOpMovePrunesInvalidCandidatesDurably` 验证清理落盘与真正无变化时不通知。
+- `interaction/user-questions/src/index.ts` 的 `ask` 依据 `agents.roots()` 判断委派关系，明确不以持久化 Session lineage 限制重新独立运行的根 Agent。Go Callers 只读取当前 Registry 的 ParentID，不读取 Origin；`TestFormerChildCanAskAsNewRuntimeRoot` 验证当前子 Agent 被拒绝、释放并重新注册的根 Agent 可以提问、旧 creation 仍然被拒绝。
+
+这些是当前模块切片的行为证据，不意味着 API Session 恢复入口或全局服务器装配已经完成。
+
+## 当前验证进度
+
+业务与 Actor 实现已移除本模块的 Plugin/Factory 路径；通过 `go test -race -count=1 -timeout=30s ./workspace/... ./userquestions/... ./toolaskuser/... ./agent/registry`，并通过同范围 vet、build。`toolaskuser/actor_test.go` 验证真实 Tools 执行经过 UserQuestions Grain，保留 Session ID 和规范答案。
+
+整体 `go build ./...` 仍在 internal/assembly/catalog.go 引用已删除的 Agent、AgentLoop、Compaction、LLM、Session Query/Title Factory 时失败；它不属于已完成的全局装配。本模块保留具名初始化和消费入口，后续装配应直接使用，不能恢复旧 Factory 作为过渡。
