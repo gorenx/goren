@@ -102,3 +102,14 @@ API：Session.Models/SelectModel/Prompt 的配置读写走 Models 端口，由 L
 本批验证：`go test -race -count=1 ./agentloop/actor ./apiproxy/session/actor ./agent/registry` 通过。全项目装配缺口仍为 INT-02，未把局部验证当作项目完成。
 
 提交证据：代码 `bfcdd2a`。仅导出 Git 暂存快照后运行 `go test -race -count=1`、`go vet`、`go build`，范围为 `./agent/... ./agentloop/... ./apiproxy/session/... ./session/registry ./session/title/... ./session/projection/...`，全部通过，不依赖剩余工作区修改。
+
+
+## INT-13 API 和 Connection 仍通过已删除的 Plugin 能力装配
+
+根因：领域实现已迁到 Actor，但 host.Plugin、API Factory 与 Connection Plugin 仍解析旧 Registry、Scope、ToolRuntime 等接口，生产入口无法使用新客户端。
+
+方案：根包 apiproxy.Server 直接构造领域 Gateway、Catalog、Feed、Broker、Interaction；Service 不嵌入 plugin.Service。Connection 直接使用现有 HTTPHost，无需新的包装对象。删除旧 API Host/Factory、Connection Plugin/Factory 和仅余测试引用的 EventStreams。
+
+验证：TestServerRegistersDomainsAndDispatchesThroughHTTP 经过真实 Echo 路由，核对各领域方法注册及 host.describe 的 RPCID/结果；TestServerCloseEndsMuxAndRejectsRequests 验证已有 Mux 退出和关闭后的拒绝。这里使用消费方端口测试替身，不能据此宣称 Actor 到模型的完整链路已接通。进程启动仍需替换 internal/assembly；与 INT-02 属于同一生产装配缺口。
+
+代码提交 `ab34830`。独立暂存快照运行 `go test -race -count=1 ./apiproxy/... ./internal/connection/...`、同范围 vet 和 build 全部通过；不依赖剩余 assembly 或其他工作区修改。

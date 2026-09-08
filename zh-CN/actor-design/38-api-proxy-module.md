@@ -289,3 +289,13 @@ AgentLoop 的 ReadActivity 校验 CreationID，回复 Activity 中的 Pending �
 API 不启动 Title。Title Registry 接收 Agent Registry 的 StartComponent/StopComponent，负责创建 Grain、完成初始化、等待 Session 订阅确认，再返回组件地址；关闭先停止订阅，再取消并等待 Title 业务退出，最后停用 Grain。启动失败保留已取得的资源地址，StopComponent 仍负责清理；同一创建的重试共享启动结果，旧创建不能操作新实例。
 
 Title Registry 只保存框架创建阶段和资源地址。标题策略、日志投影、生成资格与结果采纳仍属于现有 title 业务对象；Registry 不复制这些决策。Subscriber 用一次性的订阅就绪通道表达框架确认，不再要求额外的启动观察 Actor；按显式 SessionID/CreationID 过滤事件。
+
+### API Server 装配实现
+
+根包 Server 取代 host.Plugin 和 API Factory，依赖领域端口并构造 Gateway、RPC Catalog、Feed、Broker 与 Interaction。Session 端口由组合根提供；Server 不调用 GrainOf、不持有框架系统。HostDescriptionProvider 提供部署与当前配置视图；不会从 AgentLoop 读取模型配置。
+
+Server 实现 Connection 消费的 Service，Service 不再嵌入 plugin.Service。构造完成后目录只读；Close 先结算交互再关闭 Broker，明确拒绝后续 unary/respond/stream 请求。连接层先停止新请求再关闭 API，已进入的业务调用仍按自身取消契约结算，不声明 API Close 已关闭 Agent。
+
+Session Feed、Workspace Gateway 和 Interaction 作为各自事件／交互入口供组合根连接，Server 不用无类型 ObserveEvent 分发所有领域事件。订阅者生命周期由组合根启动和关闭。Session 快照捕获、帧转换和交互关联沿用领域实现；此步骤不改变 wire schema。Subagent/Bound 装配不在本轮范围，保留其独立业务模块，不通过旧 Plugin 路径加载。
+
+验证分为 Server 方法注册／关闭测试、领域 Actor Client 集成、真实 HTTP/WebSocket 和完整对话链；前两项不能替代后两项。删除旧 API Host/Factory 后，旧 assembly 和 Connection Plugin 调用点必须继续迁移，禁止以适配旧 Plugin 接口恢复编译。

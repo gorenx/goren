@@ -4,7 +4,7 @@
 
 本目录是 Goren 当前主线设计的唯一入口。设计以 DeepSeek Harness TypeScript 基线 `47f943859bef60e4160492346772ded9b24f765a` 为源代码证据，首要目标是让现有 TypeScript 客户端与 Go Agent 服务端保持通信协议兼容。默认服务额外内嵌自有的极简主会话 UI；原版完整 Web 产品、SDK 和 Python 不进入实现。
 
-当前 Actor 重构中，LLM 统一管理模型配置，AgentLoop 只提交请求内容；最新边界见 [AgentLoop 配置职责收口](./actor-design/30-agentloop-business.md)，API 通过独立领域接口与 Actor Client 交互，Title 组件由生命周期 Registry 管理；API 集成见 [API 重构方案](./actor-design/38-api-proxy-module.md)。
+当前 Actor 重构中，LLM 统一管理模型配置，AgentLoop 只提交请求内容；最新边界见 [AgentLoop 配置职责收口](./actor-design/30-agentloop-business.md)，API Server 直接装配领域 Gateway，通过独立领域接口与 Actor Client 交互，Title 组件由生命周期 Registry 管理；API 集成见 [API 重构方案](./actor-design/38-api-proxy-module.md)。
 
 ## 阅读顺序与职责
 

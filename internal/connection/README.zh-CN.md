@@ -24,3 +24,10 @@ flowchart TD
 监听在 Apply 内同步完成，地址占用和权限错误会使 Runtime 启动回滚。Dispose 幂等；正常路径等待 graceful shutdown，deadline 到期时关闭 listener 和 active sockets，并聚合 cleanup 错误。WebSocket 断开只取消对应 stream，不停止共享 Runtime。
 
 Factory 子包拥有 `listenAddress`、`trustedHosts`、`maxBodyBytes`、`gracefulTimeoutMillis` 和 `serveWeb` 的 strict Config；Connection Plugin 只接收已验证的 `PluginConfig`。
+
+
+## 直接装配入口
+
+HTTPHost 直接消费 RPCDispatcher 与 EventSource，生产组合根传入 apiproxy.Server。删除 Plugin、PluginConfig 和 Factory；连接层不再从服务定位器解析依赖。组合根创建监听地址并调用 HTTPHost.Serve，取消其生命周期后等待退出；HTTPHost.Close 终止 WebSocket 下行并等待清理。API 与 Actor 资源随后按依赖顺序关闭。
+
+此替换不改变 Echo 路由、严格 envelope 解码、trust fence、错误映射或 WebSocket 协议。配置使用现有 HTTPConfig，监听地址归进程启动配置，不新增包装 HTTPHost 的生命周期对象。
