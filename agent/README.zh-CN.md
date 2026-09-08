@@ -1,81 +1,37 @@
-# Agent 领域
+# Agent 业务模块
 
-`agent/` 拥有 live Agent 的公共能力、Registry、多 Agent 运行期父子关系、Agent Scope 组合契约和组件通信事件。权威边界见[14 Agent Registry、Inbox 与实时事件模块设计](../zh-CN/14-agent-registry-inbox-and-events.md)，单 Agent 执行见[15 Agent Loop 与请求驱动模块设计](../zh-CN/15-agent-loop-and-request-driver.md)，实施证据见[08 实施进度](../zh-CN/08-implementation-progress.md)。
+Agent 负责身份、父子关系、Inbox 与业务契约，设计见 [Agent 模块](../zh-CN/actor-design/32-agent-module.md)及 [Inbox](../zh-CN/actor-design/27-agent-inbox-module.md)。先完成本包，再迁移 AgentLoop 编排。
 
-## 职责
-
-| 文件前缀 | 职责 |
+| 对象 / 文件 | 职责 |
 | --- | --- |
-| `agent` | live Agent 能力与状态 |
-| `factory` | Consumer-owned `Factory`、单 Agent `Host` 与创建/恢复参数 |
-| `registry` | Registry 查询、Session ID 索引与模块激活；同一对象的方法文件统一使用该前缀 |
-| `agent_lifetime` | 一个 exact Agent 的私有生命周期状态机、Host ownership、迁移与稳定关闭结果 |
-| `registry_lifecycle` | Create/Resume 事务、Session ID 父子关系和跨 Agent child-first 关闭编排 |
-| `registry_module_state` | Registry 模块的 inactive/accepting/draining 准入状态与完成信号 |
-| `registry_integration_test` | RegistryPlugin、Factory provider、替换重激活与关闭排空的模块集成测试 |
-| `scope`、`setup` | Plugin-neutral Agent Scope、Setup、资源与 middleware 注册边界 |
-| `handle` | 绑定 exact `agentLifetime` 的关闭能力 |
-| `events` | Agent 组件通信事件、Waterfall 请求和值 |
-| `inbox` | 从 append-only Session log 重建并修改 durable Inbox |
-| `model_selection` | 同一步 prompt/request 使用的模型选择快照 |
-| `initiator`、`cancellation` | 调用链归因与 typed cancellation cause |
-| `plugin` | 唯一 Agent 模块 Plugin；绑定 Factory 并发布 Registry 的窄能力 |
+| Registry / registry.go | Agent 身份和不可变父子关系，不持有运行对象 |
+| Inbox / inbox.go | 持久化待处理消息的 Prepare / Apply 与恢复 |
+| ConsumedWork / consumed_work.go | 从日志归纳已消费的输入 |
+| initiator.go | 调用链中的 Agent ID 归因与显式清除 |
+| cancellation.go | 取消原因和保留 Inbox 的业务意图 |
+| ResolveModelSelection / model_selection.go | 从显式选择、日志和默认值确定模型，不持有回调或运行状态 |
+| notices.go / decisions.go | 身份与事实通知，以及有返回结果的决策输入输出 |
+| agent.go | 状态与只读 Inbox 契约；不返回可执行的 Agent 对象 |
+| Options / options.go | Agent 配置值、校验及独立复制，不负责厂商参数规则 |
 
-本包不构造 concrete Agent，不执行 Turn/Step，不持有 Plugin Runtime Scope，也不管理 Plugin child topology。`agentloop` 实现 `Factory`，但 `agent` 不反向依赖 `agentloop`。
-
-## 创建事务
+旧 RegistryPlugin、Factory、Host、Handle、Scope、Setup 和 Registry 并发关闭实现已删除。当前 Registry 仅实现纯目录规则，返回分离数据，没有锁或工作队列。完整的 Agent Registry 仍须负责跨 Agent 创建、身份授权和关闭协调；这些 Actor 行为尚未实现，不能以目录替代。
 
 ```mermaid
-sequenceDiagram
-    participant Caller
-    participant Registry as RegistryService
-    participant Lifetime as agentLifetime
-    participant Factory as agent.Factory
-    participant Host as agent.Host
-    participant Scope as agent.Scope
-
-    Caller->>Registry: Create / Resume(options)
-    Registry->>Lifetime: create Constructing state machine
-    Registry->>Registry: index Session ID and runtime-parent relation
-    Registry->>Factory: CreateAgent(CreateHostOptions) / ResumeAgent(ResumeHostOptions)
-    Factory-->>Registry: one unpublished Host
-    Registry->>Lifetime: Attach(Host)
-    Registry->>Scope: ApplySetup(exact Agent, Setup)
-    Registry->>Host: EnterServing
-    Registry->>Host: Announce Session
-    Registry->>Lifetime: BeginPublication
-    Lifetime->>Scope: Dispatch agent/created
-    Lifetime->>Scope: Dispatch agent/session-start
-    Registry->>Lifetime: EnterLive
-    Registry-->>Caller: exact Handle
+flowchart LR
+    C[Registry Actor 编排] --> R[Registry 业务目录]
+    C --> A[AgentLoop Actor]
+    A --> I[Inbox]
+    A --> S[Session Actor]
 ```
 
-`Factory` 每次只构造一个 `Host`。`Host` 拥有一个 Agent、一个 Agent Scope 和单实例关闭；它不保存 Registry、runtime parent 或 children。
+登记失败不修改目录；父 Agent 存在已登记子项时不能移除。BeginClose 停止自身及后代的新接纳，CheckAdmission 沿祖先关系检查；现有子项保留，无关树不受影响。关闭失败不会重新开放接纳，Remove 成功才释放业务标记。配置继承在创建子 Agent 时复制并覆盖，不由父 Agent 动态管理。Inbox 只有成功提交后才 Apply；取消和恢复均依据持久化消息事实。目录没有外部资源，无需 Close。
 
-`Setup.Apply` 通过 `ScopeEditor` 安装 Tool、Prompt、Policy、Agent-local Event/Waterfall 和普通资源。具体 `scopeDraft` 由 `agentloop` 的私有 Agent Scope 实现：注册在未发布 Scope 上立即取得可撤销 Handle，commit 前执行 `ScopeCheck`；失败时逆序撤销，成功后返回只负责幂等关闭的 `ScopeResources`。Setup 和资源都不能包含 Plugin。
+本包迁移仍在进行，纯业务测试不能证明尚未实现的 Actor 创建与关闭链路。
 
-## Identity、map 与 ownership
 
-Session ID 是 Agent 的唯一业务 ID。Registry 的主要索引含义是：
+`agent.Agent` 定义身份、只读 Inbox、状态及 Followup、Steer、Inject、Cancel 业务操作，由 ReactLoopAgent 直接实现。输入方法返回准入提案，完整 Session 提交确认后才改变 Inbox 与执行预约。异步提交、取消投递和 WhenIdle 属于 actor.Client；客户端不实现业务 Agent。Grain 直接持有 ReactLoopAgent，删除了仅重复其方法清单的 execution 接口。依赖方向为 actor → agentloop → agent，业务对象不导入框架。完整执行调度仍须继续接线。
 
-- `byID`：key 是 Session ID，value 是该 ID 当前未结束的私有 `agentLifetime`；
-- `parentByChild`：key 是 child Session ID，value 是 runtime parent Session ID；
-- `childrenByParent`：key 是 parent Session ID，value 是其当前 runtime child Session ID 集合。
 
-这些 map 只保存 ID relation，不形成 parent/child 对象互指。`Handle` 直接绑定创建时的 `agentLifetime`，因此旧 Handle 不会按 Session ID 找到并关闭后来恢复的新 Agent。
+Agent 只公开业务操作。执行流程钩子的输入与决策见 decisions.go，around/串行规则由 [middleware](./middleware/README.zh-CN.md) 实现，框架请求与回复由其 actor 适配层负责。Agent 不嵌入钩子执行接口，单个中间件只参与自己需要的扩展点。
 
-`agentLifetime` 是独立状态机，只包含一个 `agentLifetimeState`：`Constructing → Attached → Publishing → Starting → Live`，关闭分支为 `ClosingUnpublished`、`ClosingPublishing`、`ClosingPublished → Retired → Closed`。这些 closing 状态显式表达 `agent/created` 是否正在派发、是否必须配对 `agent/disposed`，不再用 `phase + publicationPhase + descendantAdmission` 拼接出隐式组合。全部状态和 close admission 常量的语义见 `agent_lifetime.go` 注释。
-
-状态、互斥、事件派发计数、迁移准入、完成信号和稳定关闭结果只由 `agentLifetime` 解释。Registry 不读取其私有字段，只调用 `Attach`、`BeginPublication`、`CompleteCreatedEvent`、`EnterLive`、`BeginClose`、`BeginRetirement`、`EnterClosed` 和派发行为。Registry 只拥有 `map[SessionID]*agentLifetime`、Session ID 父子索引与跨生命周期 child-first 编排。`Closed` 后 lifetime 立即从索引删除；同一 Session ID 可再次 Create 或 Resume，旧 Handle 只 join 旧 lifetime 的稳定结果。
-
-## 事件边界
-
-`AgentEvent` 是进程内组件通信事实，不是 Session event，也不写入 Session log。普通事件只在 exact Agent live 时派发；Agent 进入 closing 后，仅实现 `AgentClosingEvent` 的终止通知可以继续派发，直到 Scope 真正关闭。当前 `subagent.Ended` 使用该边界，使 child 关闭期间仍能向正在关闭的 parent 发布配对结束事实。
-
-Agent-local observer 先执行，随后由 AgentLoop 的全局 Plugin gateway 接入 Plugin Runtime Event。Waterfall 顺序相反：全局 middleware 包裹 local middleware，再调用 RLA terminal action。
-
-## 关闭
-
-`Handle.Dispose` 先调用 exact lifetime 的 `BeginClose`，再由 Registry 等待已接纳构造、按 Session ID relation child-first 关闭后代；lifetime 决定是否发布 `agent/disposed` 并关闭自己拥有的 Host。Host 是 Scope 的唯一 owner，按 RLA、Session membership、Scope 的顺序完成清理；Registry 不重复关闭 Scope。任一 child 关闭失败不会跳过其他 child 或 parent；重复关闭返回同一稳定结果。事件回调发起同树关闭时只登记关闭请求，由独立关闭事务在同步派发返回后继续，避免 callback 与 child-first join 互等。
-
-Agent 核心只有一个 `RegistryPlugin`。它依赖 AgentLoop 提供的 `Factory`；每次 `Apply` 激活 Registry 并建立新的排空信号，每次 `Dispose` 关闭构造准入、child-first join 全部活动生命周期后回到 inactive。依赖替换可以再次激活同一 Registry Service，但不会恢复旧 Agent。Plugin Runtime 本身不拥有单个 Agent 的生命周期。
+`agent.Hooks` 是独立的异步发起窄接口，Agent 不嵌入它。方法返回值只报告能否发起；最终业务结果使用 agent 包的四类具名完成消息。Actor 执行器直接使用这些结果，不维护重复 DTO。注册、路由、Continue 与取消投递留在执行适配层；Hooks 发起适配器已实现，主驱动接线尚未完成。

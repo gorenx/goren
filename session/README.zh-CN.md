@@ -59,3 +59,7 @@ Log.Commit 在应用前校验整批草稿，失败不提交部分事件；取消
 纯业务测试保留 seed、Surface replacement、请求头、派生消息、输入输出复制、事务原子性、取消及 panic 后可继续提交。旧 MemoryStore/FIFO 实现测试已删除；框架顺序与关闭应由 Actor 测试验证。
 
 Agent Inbox、AgentLoop、Query、Title、API Proxy、Subagent 等仍有旧 Context 和 Service 调用，生产编译与端到端验收尚未完成。不能补回 Context 别名、New 包装或 Factory 来掩盖这些断点。
+
+### 提交提案与返回事件核对
+
+EventDraft.CheckCommit 用于核对当前 Commit 返回的事件是否保留原草稿的 type、原始 payload、来源序号、surface 操作及 ignorable，并检查 Seq/Time 合法性。它不暴露草稿内部字段，不改变日志形状。它不证明事件属于哪个 Session，也不比较任意历史 JSON 的语义等价；请求方仍须检查 WriteResult 中的 Session 身份和提交区间。AgentLoop 的使用边界见 [模型尝试提交确认](../zh-CN/actor-design/30-agentloop-business.md)。

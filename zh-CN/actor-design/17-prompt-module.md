@@ -163,3 +163,11 @@ ToolsSubscriber 新增真实 Tools Registry Grain 地址。SubscribeAck 后先�
 基线回复通过具名内部消息回到订阅 Actor 邮箱，检查停止转发标记后复用 DefinitionsChanged 的应用路径；这次回自身有明确用途：禁止取消订阅后由迟到基线发起新 ApplyTools。Then 不保存 ReceiveContext，也不修改业务对象字段。没有目录时向协调者报告 ErrToolsNotReady，保持 Runtime 未就绪，不能将版本 0 或空值当作有效空工具集合。有效空集合仍须有 Registry 发布版本。RefreshTools 支持协调者显式重读基线，不添加定时器、请求计数或自建队列。
 
 SubscribeAck 之后的基线读取与正常事件允许交错：Runtime 忽略旧版本，禁止晚到基线覆盖较新事件。读取失败不清除已有目录，取消订阅后丢弃迟到基线。测试验证发布早于订阅仍完成组装、无目录不伪造就绪，以及发布后更新与重读；旧事件和关闭行为继续由既有测试覆盖。
+
+## AgentLoop 异步初始化契约
+
+InitializeRuntime 改为接收 AgentID、Prompt Registry 与 Tools Registry 的 GrainIdentity，不再接收外部准备的 Snapshot。RuntimeGrain 异步请求 Prompt Registry.Prepare，创建候选纯 Runtime，再请求 Tools Registry.Read 并应用同 Agent 的已发布工具基线；全部成功后安装业务 Runtime，回复 RuntimeInitialized{ToolsVersion, Err}。未发布工具目录是初始化失败，空工具集必须作为有效目录明确发布，不能静默退化为空工具。
+
+运行状态、Snapshot 与版本仍由原业务对象拥有；初始化操作只保存原请求、延迟回复及取消资源。任何阶段失败不安装半成品 Runtime。消息回调通过具名内部结果回到邮箱后发起下一次请求，不保存池化上下文。外部 Actor 配置变化仍使用既有事件消费入口，本次基线读取不取代后续更新屏障。
+
+AgentLoop 根据创建身份创建 Prompt Runtime 框架地址，在初始化请求前登记清理责任。关闭先请求 CloseRuntime 确认组装结束，再等待框架停用，最后关闭 Session。Prompt 失败时保留 Session；重试不重复已成功停用的 Prompt 实例。

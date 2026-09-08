@@ -85,3 +85,7 @@ sequenceDiagram
 真实 PubSub 订阅、AgentCreating 初始化、Session/Approval 数据输入，以及 AgentLoop 等生产调用方仍待接入。当前包级验证不代表整个 Agent Actor 重构已完成。
 
 Prompt 保留普通变量机制。当前默认模板没有引用 provider/model，不自动注入这两个变量，也不为此订阅模型配置事件。模型选择由模型配置与 LLM 调用流程负责，参见 [原始证据与边界](../zh-CN/actor-design/17-prompt-module.md#模型关联的原始证据与边界)。
+
+PromptAssembly.Clone 返回可独立持有的组装结果，复制 sections、contexts、variables 和工具 schema，并沿用工具 schema 的已有分离校验。执行 owner 使用它保存某一步的输入，不引用 Prompt Runtime 或其可变注册配置。
+
+PromptAssembly 只表示提示词及工具数据，不含会话历史。RenderPrompt 只渲染 Sections；RenderContextSections 返回上下文内容，不自行写入 user/message。AgentLoop 决定上下文消息的生成与提交，并从 Session.Surface 构造模型对话。

@@ -1,23 +1,20 @@
 # VisibleContext
 
-本 package 拥有 exact Agent 对 retained Prompt Context message 的派生视图和 exact Session registration directory。权威术语与跨模块契约见[15 Agent Loop 与请求驱动模块设计](../../../zh-CN/15-agent-loop-and-request-driver.md)，验证状态见[08 实施进度](../../../zh-CN/08-implementation-progress.md)。
+本包负责单个 Agent 的模型可见 Prompt 上下文派生视图，设计见 [AgentLoop 业务层迁移](../../../zh-CN/actor-design/30-agentloop-business.md)。
 
-## 职责边界
+`VisibleContext` 从分离的 Session Snapshot 恢复 Surface 保留的上下文，以序号和文本记录当前值；observed 标记历史是否出现过上下文，用于决定是否需要清空消息。`ContextSnapshot` 是派生值，不持有 Session 对象。
 
-`VisibleContext` 从 Session events/surface 恢复最后一个 retained `ContextSnapshot`，判断是否需要 materialize、去重、clear 或在 surface replacement 后重新 materialize。它不是状态机，不拥有 Commit、surface replacement、Prompt assembly 或 compaction。
-
-`Directory.entries` 的 key 是 exact `session.Context` object identity，value 是对应 `*VisibleContext` 非拥有引用；存在表示该 live Session registration 仍有效。`Registration` 只释放自己的 exact pair，不能删除 replacement。
+`visible_context.go` 负责恢复、已提交事件观察以及消息生成判断。AgentLoop Actor 串行调用这些方法，模块不使用锁、不订阅事件、不维护 Session 注册目录，不执行提交、Prompt 拼装或 compaction。
 
 ```mermaid
 flowchart LR
-    Session[session.EventAppended] --> Directory[Directory]
-    Directory --> Visible[exact VisibleContext]
-    Prompt[Prompt assembly text] --> Visible
-    Visible --> Decision{materialize?}
-    Decision -->|yes| Message[plugin-authored UserMessage]
-    Decision -->|no| Skip[dedupe]
+    Session[Session Snapshot / committed Event] --> Visible[VisibleContext]
+    Prompt[Prompt 拼装文本] --> Visible
+    Visible --> Decision{需要写入?}
+    Decision -->|是| Message[UserMessage]
+    Decision -->|否| Skip[不重复写入]
 ```
 
-SessionBinding 在 Session publication 前注册，在 Session release 前撤销。根 AgentLoop Plugin 只负责 exact event routing，不接管 `VisibleContext` 判断。
+步骤开始时 Refresh 当前快照；消息成功提交后才 Observe。提交失败不更新视图。新建视图和 Refresh 不执行 I/O；Message 传播消息构造错误。Actor 销毁时直接丢弃视图，无需 disposer。持久化来源名保留原格式，用来识别既有日志。
 
-restore、dedupe、clear 和 surface replacement rematerialization 由本 package 测试拥有。
+测试覆盖恢复、去重、空上下文清除和 Surface 替换后重新写入。

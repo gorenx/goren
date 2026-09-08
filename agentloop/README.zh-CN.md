@@ -1,110 +1,117 @@
-# Agent Loop
+# ReactLoopAgent
 
-`agentloop/` 实现一个 exact Agent 的运行：构造一个 `ReactLoopAgent`（RLA），驱动 Turn/Step/ModelRequest/ToolBatch，并拥有该单实例的 Agent Scope 和 Session membership。完整设计见[15 Agent Loop 与请求驱动模块设计](../zh-CN/15-agent-loop-and-request-driver.md)，本次职责重构见[破坏性重构方案](./REFACTOR.zh-CN.md)，验证证据见[08 实施进度](../zh-CN/08-implementation-progress.md)。
+纯业务的单 Agent 执行 owner，框架请求由 [actor](./actor/README.zh-CN.md) 适配。旧 Plugin/Scope 和同步执行路径已删除；完整对话驱动、工具执行及生产组合尚未完成。
 
-## 模块边界
 
-AgentLoop 只有一个全局 `Plugin`。该 Plugin 解析 Session、LLM、`PromptLayerFactory` 和 `ToolLayerFactory`，发布一个 `agent.Factory`，并通过 `pluginGateway` 把全局 Event/Waterfall 接到 Plugin Runtime。
+ReactLoopAgent 负责单 Agent 的日志恢复、输入准入和关闭条件，拥有 Inbox、恢复出的 Turn 编号、模型配置、工具版本和首次请求头确认。它不持有 Actor 地址、回复句柄、Context、锁或队列，不执行存储及模型 I/O。
 
-单个 Agent 不是 Plugin：
+模块内，ReactLoopAgent 决定何时允许新增、替换、移除输入；agent.Inbox 决定具体 splice 并投影提交结果；turn.LastNumber 和 agent.ResolveModelSelection 解释恢复日志。模型请求的业务规则归相邻 modelrequest 包，Turn/Step 自身规则归各自包，不复制到 ReactLoopAgent。
 
-```mermaid
-flowchart LR
-	Plugin[AgentLoop Plugin] --> Activation[one plugin activation]
-	Activation --> Gateway[pluginGateway]
-	Plugin --> Factory[agent.Factory]
-    Factory --> Host[one agentHost]
-    Host --> RLA[one ReactLoopAgent]
-    Host --> Scope[one agentScope]
-    Scope --> Prompt[one PromptLayer]
-    Scope --> Tools[one ToolLayer]
-```
+上游 Grain 读取 Session 后调用 Restore。恢复解析全部成功才安装状态；模型及 Prompt 当前初始化段成功后调用 Initialize；该入口复制 CallConfig 的可变字段，Agent 不共享调用方持有的参数指针或 JSON 切片。Followup、Steer、Inject 返回 Admission；Replace、Remove 返回 InboxEdit。Actor 核对完整 Session 提交结果后调用 ConfirmAdmission/ConfirmEdit。失败不提前改变 Inbox。PrepareClose 停止新输入，已接纳输入或执行尚未结束时返回 ErrPending；移除输入仍通过日志提交。失败初始化的历史输入保留在日志中，不阻止资源回收。实际请求取消、等待执行结束及关闭资源由 Grain 编排，资源关闭成功才调用 Release。
 
-`agentHost` 不保存 Registry、parent、children 或 Plugin。它是 Agent Scope 的唯一 owner。多 Agent membership、运行期父子关系、发布和 child-first 关闭全部由 `agent.RegistryService` 拥有。
-
-AgentLoop 不接受自动创建多 Agent 的 `agents` 配置。创建和恢复统一由 Runtime 启动后的调用方通过 `agent.Constructor.Create/Resume` 发起；Web/API 入口也走同一 Registry admission。若 deployment 需要固定启动 Agent，该翻译属于 composition root，不引入 `StartupPlan`、`Launch` 或额外 AgentLoop Plugin。
-
-## 文件职责
-
-| 文件前缀 | 职责 |
-| --- | --- |
-| `plugin` | 唯一 AgentLoop Plugin 与全局 Event/Waterfall gateway |
-| `rla` | RLA 的单 Agent lifecycle、Turn、Step、模型请求和 ToolBatch 编排 |
-| `agent_host` | 一个 RLA、Session membership 和 Agent Scope 的单实例关闭 |
-| `agent_scope` | Agent-local Tool/Prompt/Event/Waterfall 与资源生命周期 |
-| `agent_setup` | AgentLoop 自身变量 Setup |
-| `construction` | fresh/resume 的单 Host 构造 |
-| `tool_group_execution` | 有界并行 Tool body 与模型顺序提交 |
-| `internal/*` | 六个互不嵌套的纯状态机与 `VisibleContext` 派生视图 |
-
-RLA receiver 文件统一使用 `rla` 前缀；Plugin 实现文件统一使用 `plugin` 前缀。
-
-## Agent Scope
-
-`agentScope` 是 ordinary Go object，不是 Plugin Runtime Scope。它拥有一个 child `PromptLayer`、一个 child `ToolLayer`、Agent-local observer/middleware 的有序 registration，以及 Setup 提交后的资源集合。
-
-`ApplySetup` 串行创建私有 `scopeDraft`。Setup 的每次注册立即作用于尚未发布的 private Scope，并把精确撤销 Handle 记入 draft；commit 前执行 `ScopeCheck`，失败时逆序回滚。成功后生成 `ScopeResources` 并转交 Scope 持有。这里没有动态 Plugin mount、`UnloadChild` 或兼容释放路径。
-
-本地事件先于全局事件派发：
-
-```text
-Agent-local observers
-  -> pluginGateway
-  -> Plugin Runtime observers
-```
-
-Waterfall 使用洋葱顺序：
-
-```text
-Plugin Runtime middleware
-  -> Agent-local middleware
-  -> RLA terminal action
-```
-
-`pluginGateway` 是无 Plugin 引用的 typed request queue。RLA 和 Scope 只依赖窄接口，不反向持有 AgentLoop Plugin。
-
-## 独立状态机
-
-| owner | 负责的状态 |
-| --- | --- |
-| `internal/lifecycle.AgentLifecycle` | Agent API invocation 的 serving/closing/closed 准入 |
-| `internal/execution.AgentExecution` | idle、maintenance、turn 与 settlement 独占 |
-| `internal/turn.Turn` | Turn 事实边界 |
-| `internal/step.Step` | Step 事实边界 |
-| `internal/modelrequest.ModelRequest` | request proposal、attempt、retry 与终止 |
-| `internal/toolbatch.ToolBatch` | Tool call 调度、结算和完成 |
-
-状态机只接收值，不导入其他 Goren 业务包，也不嵌套 peer state owner。进入状态的方法使用 `Enter...`；外部副作用由 RLA 使用 `Commit`、`Dispatch`、`Flush` 等实际动作名完成。`AgentExecution.Snapshot` 返回一个快照值，不泄漏 operation Context、cancel function 或 idle channel。
-
-## 单 Agent 调用链
+依赖单向为 actor → agentloop → agent、turn、llm 配置值及 session 契约；ReactLoopAgent 不引用 actor。具名 Pending 返回 Inbox 的两个执行边界，避免调用方依赖返回值位置。
 
 ```mermaid
 sequenceDiagram
-    participant Registry as agent.RegistryService
-    participant Factory as agentloop.Factory
-    participant Host as agentHost
-    participant RLA as ReactLoopAgent
-    participant Scope as agentScope
-
-	Registry->>Factory: CreateAgent(CreateHostOptions) / ResumeAgent(ResumeHostOptions)
-    Factory-->>Registry: unpublished Host
-    Registry->>Scope: ApplySetup
-    Registry->>Host: EnterServing + Announce
-    Registry->>Scope: agent/created + session-start
-    Scope->>RLA: admitted work
-    RLA->>Scope: prompt, tools, events, waterfalls
-	Registry->>Host: Close
-    Host->>RLA: shutdown and settle
-    Host->>Host: release Session membership
-	Host->>Scope: seal, drain admitted calls, close resources
+ participant A as Grain
+ participant B as ReactLoopAgent
+ participant S as Session
+ A->>B: Followup / Steer / Inject / Replace / Remove
+ B-->>A: Admission 或 InboxEdit / error
+ A->>S: 异步 Commit
+ S-->>A: Committed / error
+ A->>B: ConfirmAdmission / ConfirmEdit
+ B-->>A: InboxChanges
 ```
 
-`toolGroupExecution` 不持有 RLA concrete object；RLA 通过窄函数/接口提供 dispatch 所需能力。Tool body 不用回调替代 Tool Runtime，结果仍按模型顺序提交。
+当前接口和边界见 [AgentLoop 设计](../zh-CN/actor-design/30-agentloop-business.md)。整体历史实现记录见 [实现进度](../zh-CN/08-implementation-progress.md)；该记录不作为本轮重构验证证据。当前 Agent 与 AgentLoop 子树已运行非缓存行为测试；这不代表完整生产调用链通过。
 
-## 失败与关闭
+Cancel 使用具名 agent.CancelOptions：KeepInbox 保留输入并返回空编辑，否则准备整个 Inbox 的取消事件。关闭准备后仍接受取消；未完成初始化时拒绝。它不调用 Context 或框架取消函数。取消意图作为 agent.Cancellation error 传递，保留原始原因类型；字符串仅用于诊断。
 
-构造、Setup、Session announce 或 Agent publication 任一点失败，Registry 都关闭 exact Host；Host 再关闭自己拥有的 Scope。已经开始的 created/Session publication 必须产生配对 disposal。`agentHost.Close` 是 RLA shutdown 和 Scope close 的唯一调用者，并稳定 join 同一次结果。
+模块内职责进一步划分：agent.go 负责初始化、输入准入和关闭条件；agent_turn.go 负责 Turn 开始确认及输入领取边界；agent_step.go 负责前置 Step 决策、Step 开始/结束确认与结论累计。ReactLoopAgent 单向拥有 Turn 和 Step，二者不引用 ReactLoopAgent，也不接触 actor。Prepare 方法生成草稿，Confirm 方法校验提交结果；ConfirmTurn 使用完整 WriteResult 核对 Session 身份及提交范围，并通过草稿 CheckCommit 校验事件，不重复解码 JSON；关闭准备期间允许消化已接纳输入，存在未闭合 Turn 时禁止释放资源。
 
-Agent Scope 使用 `open → closing → closed`：Close 先封闭 Setup、Event 和 Waterfall 准入，等待已接纳调用返回，再逆序释放资源、ToolLayer 和 PromptLayer。Registry 只决定普通事件与 closing 事件能否进入 exact Agent；Scope 是最终线性化边界。
+Turn/Step 业务接口已实现，但 Grain 尚未接入完整调用链。Step 的消息提交仍采用原有逐条提交语义，开始模型请求必须在输入提交后；Turn 的结束提交、必要回读与 flush 由 Actor 直接编排，业务接口核对各次确认。不能把这些业务方法视为端到端执行已经完成。
 
-AgentLoop Plugin 的 gateway、driver 和 effect join set 属于一次 `pluginActivation`。`Dispose` 先停止 Factory 新构造，再停止本次 gateway 并等待已接纳全局 Event/Waterfall 调用；下一次 `Apply` 创建全新的 activation。Plugin 不遍历或关闭 Registry 中的 Agent，依赖方向保证 Agent Plugin 先关闭这些实例。
+agent_settlement.go 固定本轮结束草稿、校验单事件提交内容与范围，并保存待持久化的 WriteBarrier。只有同 Session 的成功 flush 覆盖该 barrier 后才清空当前 Turn。提交前可重试原草稿，提交后只能重试 flush。错误回复不调用确认方法。取消原因在生成 Session 事件时映射，业务规则使用 error 类型；准备结束草稿后结论固定，避免重试写入不同内容。
+
+turn-stopping 的判断在 agent_turn.go：BeginStopping 确认是否需要进入停止边界，FinishStopping 根据此期间已提交的 next-step 输入决定恢复 Step 或收尾。通知传输由上游编排，ReactLoopAgent 不接收函数回调。
+
+turn_end.go 的 TurnEnd 是单轮结束事实的不可变值。Drafts 在 Session 提供的当前日志上判断追加或去重，Find 校验同轮结束内容并返回已提交位置。actor 的 WritePlan 适配器只持有该值，不持有可变 ReactLoopAgent；此职责用于解决提交响应丢失后的重试，不是新的业务 owner 或更新 ID。当前检查基于代码，尚未运行故障注入测试。
+
+收尾操作解释协议已删除。PrepareTurnEnd 固定业务事实，ConfirmTurnEnd 核对提交结果，ReconcileTurnEnd 在完整日志中确认去重写对应的原事件，TurnBarrier 提供已确认位置，ConfirmTurnFlush 验证持久化并关闭 Turn。Actor 直接编排外部请求；业务层不返回 Commit/Read/Flush 操作。
+
+PrepareStep 接收 StepInput，验证工具定义版本并捕获待提交 Step；同一提案可重试，不能替换在途快照。ConfirmStep 将该对象安装为当前 Step，不重新创建一个丢失输入的对象。BeginModel 仅接受提供者元数据，要求当前 Step 已进入 requesting，并从 Step 获取 Prompt 和位置，阻止外部模型请求绕过本步数据所有权。
+
+本步消息提交由 ReactLoopAgent.MessageDraft/ConfirmMessage 驱动，消息来源固定为 Step 捕获的进入批次。确认要求本 Agent 的 Session 身份、有效提交区间及匹配消息内容；全部输入确认后才允许 BeginRequest。当前 actor 尚未由完整主驱动调用这些业务入口。
+
+ConfirmStep 将提交事件交给候选 Step.ConfirmStart；Step 自己验证开始事实并限定后续输入事件位置，ReactLoopAgent 不再重复解析同一份 Step 开始 payload。
+
+ConfirmStepEnd 在候选副本上调用 Step.ConfirmEnd，再根据其结论推进 Turn；任一验证失败均不安装候选。通用 confirmPosition JSON 解码已移除，Step 开始/结束 payload 由 Step 自己验证。
+
+## Step 准备调用链
+
+业务层的 Step 操作解释协议已删除。PrepareInput 创建唯一 preparation；ConfirmInput 核对实际领取提交并保存领取消息；PreparePreStep 接收 Session 与 Prompt 数据后组装默认准入，PrepareStep 消费中间件决策。调用方不能再供应 Claimed 消息替换真实领取结果。
+
+准备状态只表示领取未确认、上下文待准备、准入待决定。重复领取、未确认就组装上下文、重复消费决策都由业务检查拒绝。AbandonPreparation 只能丢弃尚未使用且没有未确认写入的上下文。Step 开始结果不确定时保留 StateProposed，读取原请求之后的 Session 快照并调用 ReconcileStepStart。
+
+Actor 的 grain_step.go 直接请求领取提交、Session 快照、Prompt 组装、pre-step 中间件、Step 开始及逐条消息提交。等待 Prompt 和中间件时允许输入/取消，Session 写入保持串行。只在全部消息确认后调用 BeginRequest。该内部驱动已实现，用户输入到完整模型/工具循环的主驱动仍未接通。
+
+StartRequest 捕获当前 Step 并由 ReactLoopAgent 持有唯一 ModelRequest，只返回第一个操作。AdvanceRequest 消费具名完成值，RetryRequestClose 重试关闭；CompleteModel 从当前请求读取终态，成功转入工具或 Step 收尾后才释放引用。重复启动、运行中完成和关闭未确认的提前续步被拒绝。配置提案与恢复只由 ModelRequest 解释；旧 PrepareRequest/RequestProposal 已删除。Grain 当前单次 Attempt 入口尚未切换，业务接口完成不代表生产调度已接通。
+
+`agent.Agent` 定义身份、只读 Inbox、状态及 Followup、Steer、Inject、Cancel 业务操作，由 ReactLoopAgent 直接实现。输入方法返回准入提案，完整 Session 提交确认后才改变 Inbox 与执行预约。异步提交、取消投递和 WhenIdle 属于 actor.Client；客户端不实现业务 Agent。Grain 直接持有 ReactLoopAgent，删除了仅重复其方法清单的 execution 接口。依赖方向为 actor → agentloop → agent，业务对象不导入框架。完整执行调度仍须继续接线。
+
+ReconcileStepStart 仅核对已停止准备流程的 Step 开始候选：已提交则安装 Step 并要求先收尾，确认未提交才删除候选。快照必须在原写入请求结束后读取，不能用任意历史快照推断未提交。
+
+Step 准备现在将明确的整批拒绝与未确认的操作失败分开：前者停止准备，后者在 step/start 阶段请求 ReadStepStart 并核对日志。取消不跳过已发出写入的核对；读取失败保留候选并报告原错误及读取错误，不自动重发写入。
+
+四个执行流程钩子是独立异步边界，不属于 Agent 的外部业务方法。ReactLoopAgent 决定调用时机并处理结果，Grain 映射具名请求和回复；中间件执行器提供空集合默认处理。等待钩子时须允许输入与取消进入，但不得启动第二条执行；停止钩子完成后重新检查 Inbox。完整驱动接线尚未完成。
+
+`agent.Hooks` 是独立的异步发起窄接口，Agent 不嵌入它。方法返回值只报告能否发起；最终业务结果使用 agent 包的四类具名完成消息。Actor 执行器直接使用这些结果，不维护重复 DTO。注册、路由、Continue 与取消投递留在执行适配层；Hooks 发起适配器已实现，主驱动接线尚未完成。
+
+agent_model_result.go 从自身持有的完整 ModelRequest 读取终态，选择 ExecuteTools 或 EndStep。max-tokens 优先结束 Step，普通成功按模型顺序提取工具调用；工具版本来自本 Step 快照。流关闭未确认时不进入后续流程。EndStep 保留原错误，待提交确认后继续 Turn 收尾。
+
+agent_tools.go 的 CompleteTools 消费本地已关闭 ToolBatch：正常结果选择 continue 或 completed，批次执行错误选择 error，typed cancellation 选择 aborted。批次尚未关闭或排空缺少对应错误时拒绝推进。普通工具失败结果不等于批次执行失败；本方法不清空 Inbox，也不执行工具策略。模型与工具完成共用 agent_step.go 的 EndStep 草稿准备，提交确认仍由 ConfirmStepEnd 负责；实际工具执行接线尚未完成。
+
+## Step 之后的推进
+
+agent_turn_flow.go 的 ContinueTurn 消费前一阶段保留的错误，在现有 Turn 状态上选择下一步准备、停止钩子或结束提交。CompleteStopping 仅消费实际完成的钩子结果，成功后重新检查已提交的 Inbox；钩子错误或取消用于准备固定的 TurnEnd。此流程复用已有 Turn/Step 状态，不持有第二份阶段、Actor 或回调。框架接线尚未完成。
+
+```mermaid
+flowchart TD
+ A[Step 已确认关闭] --> B{执行错误或取消}
+ B -->|有| S[PrepareTurnEnd: 固定结束事实]
+ B -->|无| C{正常结束且没有 next-step 输入}
+ C -->|否| P[BeginStepPreparation]
+ C -->|是| H[运行 turn-stopping]
+ H --> R{钩子完成结果}
+ R -->|失败或取消| S
+ R -->|成功| I{重新检查 Inbox}
+ I -->|有 next-step 输入| P
+ I -->|无| S
+ E[前置拒绝或首步空输入] --> S
+```
+
+TurnOperation 当前只表达继续 Step、运行停止钩子或固定 TurnEnd 等业务决策。两套外部操作解释协议均已删除；异步准备与收尾由 Actor 直接编排，业务方法验证状态和事实。完整主驱动仍需接线。
+
+执行预约及取消事实位于 agent_activity.go，输入业务入口位于 agent_admission.go，完整提交核对复用 agent_commit.go。StatusValue 在 waking 输入确认后即为 running，不用已提交 Turn 是否存在推断预约。FinishActivity 只能在业务工作全部关闭后释放预约；取消之后接纳的 waking 输入仍存在时，预约下一次执行。维护互斥与主驱动接线仍待完成，不属于当前验证覆盖范围。
+
+## 状态约束
+
+agent_lifecycle.go 是恢复、就绪、关闭接纳与释放状态的唯一判断入口，替代 ready/closing 布尔组合。Restore/Initialize 不允许重复覆盖，Initialize 失败不开放输入，Release 必须满足关闭条件。Actor 技术停用直接丢弃对象，不调用业务 Release 伪装关闭完成。
+
+PrepareTurn 现在保留 Turn 自身的 StateProposed，ConfirmTurn 只允许该状态进入 StateOpen。准备状态不得开始 Step；取消后仍接受已发出请求的真实提交确认并保留 Turn 等待收尾。未发起或重复确认被拒绝，不增加另一份 Turn 阶段字段。完整执行调度与 flow 协议的收敛仍在进行中。
+
+Step 同样只保留一个对象，StateProposed 表示尚未确认开始，StateOpen 表示开始事件已经提交。proposedStep 字段删除；开始/结束确认都验证完整 WriteResult，然后在副本上推进 Step 与 Turn，全部验证成功才安装结果。未确认开始时禁止消息和模型请求；不确定提交结果保留原 Step，按序读取 Session 后再核对。
+
+```mermaid
+stateDiagram-v2
+ [*] --> Proposed: PrepareStep
+ Proposed --> Open: ConfirmStep 验证成功
+ Open --> Requesting: 全部输入已确认
+ Requesting --> Tooling: 模型工具调用已确认
+ Open --> Settling: 执行失败或取消
+ Requesting --> Settling: 模型结束
+ Tooling --> Settling: 工具批次结束
+ Settling --> Closed: ConfirmStepEnd 验证成功
+ Closed --> [*]
+```
