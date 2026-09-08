@@ -19,12 +19,29 @@ type Delivery struct {
 	ReplyTo   *goakt.GrainIdentity
 }
 
-// Generate starts a call using the Agent's registered configuration.
-type Generate struct {
+// Generation is one model generation with an explicit configuration choice.
+type Generation struct {
 	Delivery
-	AgentID string
-	Input   llm.Input
+	Settings Settings
+	Input    llm.Input
 }
+
+// Settings selects the parameters for one generation. Only the two value forms
+// below are accepted; selecting an Agent never mutates its registered settings.
+type Settings interface {
+	generationSettings()
+}
+
+// AgentConfig selects the latest registered configuration of one Agent.
+type AgentConfig struct {
+	AgentID string
+}
+
+// Parameters supplies complete parameters for this call without changing Agent settings.
+type Parameters llm.CallConfig
+
+func (AgentConfig) generationSettings() {}
+func (Parameters) generationSettings()  {}
 
 // GenerationStarted reports resolved metadata and the actual opening result.
 // Resources must still be closed even when opening returned an error.
@@ -84,7 +101,7 @@ func RoutingKey(message any) string {
 		return string(input.RequestID)
 	case ResolveConfig:
 		return string(input.RequestID)
-	case Generate:
+	case Generation:
 		return string(input.CallID)
 	case ReadChunk:
 		return string(input.CallID)

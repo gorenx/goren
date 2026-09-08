@@ -103,7 +103,7 @@ func (subject *ReactLoopAgent) PrepareInput() (agent.InboxEdit, error) {
 		edit:  edit,
 	}
 	if len(edit.Drafts) == 0 {
-		subject.preparing.state = contextPending
+		subject.preparing.state = hooksPending
 	}
 	return edit, nil
 }

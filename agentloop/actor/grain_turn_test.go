@@ -309,14 +309,17 @@ func prepareRequestStep(t *testing.T, subject *agentloop.ReactLoopAgent, history
 	if err := subject.ConfirmInput(commit(edit.Drafts...)); err != nil {
 		t.Fatal(err)
 	}
-	decision, err := subject.PreparePreStep(agentloop.Preparation{
-		Snapshot:     history.Snapshot(),
-		ToolsVersion: 1,
-	})
+	decision, err := subject.PreparePreStep()
 	if err != nil {
 		t.Fatal(err)
 	}
-	draft, err := subject.PrepareStep(decision.Default)
+	if accepted, err := subject.AcceptPreStep(decision.Default); err != nil || !accepted {
+		t.Fatalf("admission: %v, %v", accepted, err)
+	}
+	draft, err := subject.PrepareStep(agentloop.Preparation{
+		Snapshot:     history.Snapshot(),
+		ToolsVersion: 1,
+	})
 	if err != nil || draft == nil {
 		t.Fatalf("prepare Step: %v", err)
 	}

@@ -3,7 +3,7 @@ package llm
 import "github.com/gorenx/goren/agentmessage"
 
 // Input is the conversation supplied for one generation. Configuration comes
-// from the Agent's registered settings, not a second copy in the request.
+// from a separate configuration choice, not from conversation content.
 type Input struct {
 	Messages  []agentmessage.Message
 	System    *string

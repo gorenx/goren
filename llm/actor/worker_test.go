@@ -105,9 +105,11 @@ func TestRouterWorkerCancelsBlockedReadAndReusesPool(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		send(llmactor.Generate{
+		send(llmactor.Generation{
 			Delivery: route,
-			AgentID:  "a",
+			Settings: llmactor.AgentConfig{
+				AgentID: "a",
+			},
 		})
 		started := receiveResult[llmactor.GenerationStarted](t, results)
 		if started.Err != nil || started.Config.Model != "m" {

@@ -4,7 +4,7 @@ import (
 	"errors"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/agentloop/internal/visiblecontext"
+	turnstate "github.com/gorenx/goren/agentloop/internal/turn"
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/systemprompt"
@@ -18,7 +18,7 @@ type Preparation struct {
 	ToolsVersion uint64
 }
 
-// PreStep separates middleware input from its default context-enriched decision.
+// PreStep holds detached claimed input and its default admission decision.
 type PreStep struct {
 	Input   agent.PreStepInput
 	Default agent.PreStepDecision
@@ -28,49 +28,29 @@ type preparationState uint8
 
 const (
 	inputUnconfirmed preparationState = iota
-	contextPending
+	hooksPending
 	decisionPending
+	contextPending
 )
 
 // preparation retains only data and legal admission boundaries, never I/O actions.
 type preparation struct {
-	after        int64
-	state        preparationState
-	edit         agent.InboxEdit
-	claimed      []agentmessage.UserMessage
-	prompt       systemprompt.PromptAssembly
-	toolsVersion uint64
+	after    int64
+	state    preparationState
+	edit     agent.InboxEdit
+	claimed  []agentmessage.UserMessage
+	messages []agentmessage.UserMessage
 }
 
 // PreparePreStep builds the business middleware request without performing I/O.
-func (subject *ReactLoopAgent) PreparePreStep(provided Preparation) (PreStep, error) {
+func (subject *ReactLoopAgent) PreparePreStep() (PreStep, error) {
 	if failure := subject.Cancellation(); failure != nil {
 		return PreStep{}, failure
 	}
-	if subject.preparing == nil || subject.preparing.state != contextPending || subject.step != nil {
+	if subject.preparing == nil || subject.preparing.state != hooksPending || subject.step != nil {
 		return PreStep{}, errors.New("agentloop: a Step is already preparing or executing")
 	}
 	position, err := subject.PreparePosition()
-	if err != nil {
-		return PreStep{}, err
-	}
-	if provided.ToolsVersion == 0 || provided.ToolsVersion != subject.toolsVersion {
-		return PreStep{}, systemprompt.ErrToolsVersion
-	}
-	if provided.Snapshot.Barrier.SessionID != subject.identifier ||
-		provided.Snapshot.Barrier.NextSeq != int64(len(provided.Snapshot.Events)) {
-		return PreStep{}, errors.New("agentloop: pre-step requires the current Session snapshot")
-	}
-	prompt, err := provided.Prompt.Clone()
-	if err != nil {
-		return PreStep{}, err
-	}
-	sections, err := systemprompt.RenderContextSections(prompt)
-	if err != nil {
-		return PreStep{}, err
-	}
-	visible := visiblecontext.New(provided.Snapshot)
-	contextMessage, present, err := visible.Message(systemprompt.JoinContextSections(sections), sections)
 	if err != nil {
 		return PreStep{}, err
 	}
@@ -86,11 +66,6 @@ func (subject *ReactLoopAgent) PreparePreStep(provided Preparation) (PreStep, er
 			return PreStep{}, err
 		}
 	}
-	if present {
-		entered = append(entered, contextMessage)
-	}
-	subject.preparing.prompt = prompt
-	subject.preparing.toolsVersion = provided.ToolsVersion
 	subject.preparing.state = decisionPending
 	return PreStep{
 		Input: agent.PreStepInput{
@@ -106,6 +81,43 @@ func (subject *ReactLoopAgent) PreparePreStep(provided Preparation) (PreStep, er
 	}, nil
 }
 
+// AcceptPreStep records the middleware decision before any context is rendered.
+// False means admission was rejected and the Turn must settle.
+func (subject *ReactLoopAgent) AcceptPreStep(decision agent.PreStepDecision) (bool, error) {
+	if failure := subject.Cancellation(); failure != nil {
+		return false, failure
+	}
+	if subject.preparing == nil || subject.preparing.state != decisionPending || subject.step != nil {
+		return false, ErrState
+	}
+	switch decision.Kind {
+	case agent.PreStepReject:
+		if len(decision.Messages) != 0 {
+			return false, errors.New("agentloop: rejected admission cannot contain messages")
+		}
+		if err := subject.current.EnterSettling(turnstate.TurnResultBlocked); err != nil {
+			return false, err
+		}
+		subject.preparing = nil
+		return false, nil
+	case agent.PreStepEnter:
+		messages := make([]agentmessage.UserMessage, len(decision.Messages))
+		for index, entry := range decision.Messages {
+			detached, err := agentmessage.CloneUserMessage(entry)
+			if err != nil {
+				return false, err
+			}
+			messages[index] = detached
+		}
+		subject.preparing.messages = messages
+		subject.preparing.claimed = nil
+		subject.preparing.state = contextPending
+		return true, nil
+	default:
+		return false, errors.New("agentloop: unsupported pre-step decision")
+	}
+}
+
 // ConfirmInput accepts the exact claim before preparing any model-visible context.
 func (subject *ReactLoopAgent) ConfirmInput(write session.WriteResult) error {
 	if subject.preparing == nil || subject.preparing.state != inputUnconfirmed {
@@ -117,7 +129,7 @@ func (subject *ReactLoopAgent) ConfirmInput(write session.WriteResult) error {
 	}
 	subject.preparing.claimed = changes.Claimed
 	subject.preparing.edit = agent.InboxEdit{}
-	subject.preparing.state = contextPending
+	subject.preparing.state = hooksPending
 	return nil
 }
 

@@ -64,8 +64,9 @@ func TestActorPreparesStepAndReconcilesLostStartReply(t *testing.T) {
 				t.Fatal(err)
 			}
 			if _, err := system.AskGrain(ctx, storage, storageSetup{
-				history: history,
-				failure: failure,
+				history:       history,
+				failure:       failure,
+				verifyPreStep: true,
 			}, time.Second); err != nil {
 				t.Fatal(err)
 			}

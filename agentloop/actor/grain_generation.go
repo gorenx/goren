@@ -35,10 +35,12 @@ func (owner *Grain) sendModelOperation(gc *goakt.GrainContext, current *modelInv
 	var message any
 	switch input := operation.(type) {
 	case modelrequest.Generate:
-		message = llmactor.Generate{
+		message = llmactor.Generation{
 			Delivery: route,
-			AgentID:  string(owner.business.ID()),
-			Input:    input.Input,
+			Settings: llmactor.AgentConfig{
+				AgentID: string(owner.business.ID()),
+			},
+			Input: input.Input,
 		}
 	case modelrequest.ReadChunk:
 		message = llmactor.ReadChunk{
