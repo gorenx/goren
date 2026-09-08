@@ -1,6 +1,6 @@
 package connection
-import sessionframes "github.com/gorenx/goren/apiproxy/session/events"
 
+import sessionframes "github.com/gorenx/goren/apiproxy/session/events"
 
 import (
 	"context"
@@ -25,14 +25,18 @@ func TestWebSocketDownlinksCarryIndependentStreamsAndCancelSources(t *testing.T)
 	t.Parallel()
 	muxCancelled := make(chan struct{})
 	hostCancelled := make(chan struct{})
-	streams, err := apiproxy.NewEventStreams(
-		func(requestContext context.Context, emit func(stream.Request[stream.MuxFrame]) error) error {
-			if err := emit(stream.Request[stream.MuxFrame]{
-				RPCID: "mux-1",
-				Payload: sessionframes.SubscribedFrame{
-					SessionID: "session-1",
-					LastSeq:   4,
-				},
+	streams := testEventSource{
+		muxStream: func(requestContext context.Context, emit func(wire.RPCRequest) error) error {
+			encoded, err := stream.EncodeMuxFrame(sessionframes.SubscribedFrame{
+				SessionID: "session-1",
+				LastSeq:   4,
+			})
+			if err != nil {
+				return err
+			}
+			if err := emit(wire.RPCRequest{
+				RPCID:   "mux-1",
+				Payload: encoded,
 			}); err != nil {
 				return err
 			}
@@ -40,13 +44,17 @@ func TestWebSocketDownlinksCarryIndependentStreamsAndCancelSources(t *testing.T)
 			close(muxCancelled)
 			return nil
 		},
-		func(requestContext context.Context, emit func(stream.Request[stream.HostFrame]) error) error {
-			if err := emit(stream.Request[stream.HostFrame]{
-				RPCID: "host-1",
-				Payload: apiproxy.HostRemoteEventFrame{
-					Event: "commands/change",
-					Args:  []json.RawMessage{},
-				},
+		hostStream: func(requestContext context.Context, emit func(wire.RPCRequest) error) error {
+			encoded, err := stream.EncodeHostFrame(apiproxy.HostRemoteEventFrame{
+				Event: "commands/change",
+				Args:  []json.RawMessage{},
+			})
+			if err != nil {
+				return err
+			}
+			if err := emit(wire.RPCRequest{
+				RPCID:   "host-1",
+				Payload: encoded,
 			}); err != nil {
 				return err
 			}
@@ -54,9 +62,6 @@ func TestWebSocketDownlinksCarryIndependentStreamsAndCancelSources(t *testing.T)
 			close(hostCancelled)
 			return nil
 		},
-	)
-	if err != nil {
-		t.Fatal(err)
 	}
 	carrier := webSocketTestHost(t, streams)
 	server := startWebSocketTestServer(t, carrier)
