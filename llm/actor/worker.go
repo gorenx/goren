@@ -147,7 +147,12 @@ func (*Worker) reply(rc *goakt.ReceiveContext, recipient *goakt.GrainIdentity, m
 	})
 }
 
-func (worker *Worker) run(rc *goakt.ReceiveContext, current *invocation, route Delivery, execute func() operationResult) {
+func (worker *Worker) run(
+	rc *goakt.ReceiveContext,
+	current *invocation,
+	route Delivery,
+	execute func() operationResult,
+) {
 	task := &operationTask{
 		delivery: route,
 		done:     make(chan struct{}),
@@ -155,14 +160,19 @@ func (worker *Worker) run(rc *goakt.ReceiveContext, current *invocation, route D
 	current.task = task
 	// Completion always has a value, including provider failures. PipeTo errors
 	// must not replace a typed business result with an unhandled task failure.
-	if err := rc.Self().PipeTo(context.WithoutCancel(rc.Context()), rc.Self(), func() (any, error) {
-		task.result = execute()
-		close(task.done)
-		return operationCompleted{
-			id:   route.CallID,
-			task: task,
-		}, nil
-	}); err != nil {
+	err := rc.Self().PipeTo(
+		context.WithoutCancel(rc.Context()),
+		rc.Self(),
+		func() (any, error) {
+			task.result = execute()
+			close(task.done)
+			return operationCompleted{
+				id:   route.CallID,
+				task: task,
+			}, nil
+		},
+	)
+	if err != nil {
 		current.task = nil
 		close(task.done)
 		rc.Err(err)
@@ -299,18 +309,22 @@ func (worker *Worker) next(rc *goakt.ReceiveContext, input ReadChunk) {
 		return
 	}
 	retained, operation := current.call, current.operation
-	worker.run(rc, current, input.Delivery, func() operationResult {
-		chunk, found, err := retained.Next(operation)
-		return operationResult{
-			message: ChunkRead{
-				CallID:    input.CallID,
-				RequestID: input.RequestID,
-				Chunk:     chunk,
-				Found:     found,
-				Err:       err,
-			},
-		}
-	})
+	worker.run(
+		rc, current,
+		input.Delivery,
+		func() operationResult {
+			chunk, found, err := retained.Next(operation)
+			return operationResult{
+				message: ChunkRead{
+					CallID:    input.CallID,
+					RequestID: input.RequestID,
+					Chunk:     chunk,
+					Found:     found,
+					Err:       err,
+				},
+			}
+		},
+	)
 }
 
 func (worker *Worker) cancel(rc *goakt.ReceiveContext, input CancelCall) {

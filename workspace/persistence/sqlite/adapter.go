@@ -29,11 +29,16 @@ func Open(requestContext context.Context, settings Config) (*Adapter, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Adapter{database: database, queries: dbsql.New(database)}, nil
+	return &Adapter{
+		database: database,
+		queries:  dbsql.New(database),
+	}, nil
 }
 
 func (owner *Adapter) Load(requestContext context.Context) (workspace.StoredRegistry, error) {
-	transaction, err := owner.database.BeginTx(requestContext, &sql.TxOptions{ReadOnly: true})
+	transaction, err := owner.database.BeginTx(requestContext, &sql.TxOptions{
+		ReadOnly: true,
+	})
 	if err != nil {
 		return workspace.StoredRegistry{}, err
 	}
@@ -68,8 +73,10 @@ func (owner *Adapter) Load(requestContext context.Context) (workspace.StoredRegi
 		records = append(records, record)
 	}
 	return workspace.StoredRegistry{
-		Initialized: stateRow.Initialized == 1, WorkspaceIDs: workspaceIDs,
-		ArchivedSessionIDs: archivedIDs, Records: records,
+		Initialized:        stateRow.Initialized == 1,
+		WorkspaceIDs:       workspaceIDs,
+		ArchivedSessionIDs: archivedIDs,
+		Records:            records,
 	}, nil
 }
 
@@ -241,9 +248,12 @@ func insertParams(record workspace.StoredWorkspace) (dbsql.InsertWorkspaceParams
 		return dbsql.InsertWorkspaceParams{}, err
 	}
 	return dbsql.InsertWorkspaceParams{
-		ID: string(record.ID), Path: record.Path, Title: record.Title, SessionIds: sessionIDs,
-		CreatedAt: record.CreatedAt.UTC().Format(time.RFC3339Nano),
-		UpdatedAt: record.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		ID:         string(record.ID),
+		Path:       record.Path,
+		Title:      record.Title,
+		SessionIds: sessionIDs,
+		CreatedAt:  record.CreatedAt.UTC().Format(time.RFC3339Nano),
+		UpdatedAt:  record.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}, nil
 }
 
@@ -253,8 +263,12 @@ func updateParams(record workspace.StoredWorkspace) (dbsql.UpdateWorkspaceParams
 		return dbsql.UpdateWorkspaceParams{}, err
 	}
 	return dbsql.UpdateWorkspaceParams{
-		ID: insert.ID, Path: insert.Path, Title: insert.Title, SessionIds: insert.SessionIds,
-		CreatedAt: insert.CreatedAt, UpdatedAt: insert.UpdatedAt,
+		ID:         insert.ID,
+		Path:       insert.Path,
+		Title:      insert.Title,
+		SessionIds: insert.SessionIds,
+		CreatedAt:  insert.CreatedAt,
+		UpdatedAt:  insert.UpdatedAt,
 	}, nil
 }
 
@@ -276,7 +290,9 @@ func stateParams(
 		initializedValue = 1
 	}
 	return dbsql.PutWorkspaceStateParams{
-		Initialized: initializedValue, WorkspaceIds: encodedOrder, ArchivedSessionIds: encodedArchive,
+		Initialized:        initializedValue,
+		WorkspaceIds:       encodedOrder,
+		ArchivedSessionIds: encodedArchive,
 	}, nil
 }
 
@@ -294,8 +310,12 @@ func decodeRecord(row dbsql.Workspace) (workspace.StoredWorkspace, error) {
 		return workspace.StoredWorkspace{}, fmt.Errorf("workspace persistence sqlite: decode workspace %q updatedAt: %w", row.ID, err)
 	}
 	return workspace.StoredWorkspace{
-		ID: workspace.ID(row.ID), Path: row.Path, Title: row.Title, SessionIDs: sessionIDs,
-		CreatedAt: createdAt, UpdatedAt: updatedAt,
+		ID:         workspace.ID(row.ID),
+		Path:       row.Path,
+		Title:      row.Title,
+		SessionIDs: sessionIDs,
+		CreatedAt:  createdAt,
+		UpdatedAt:  updatedAt,
 	}, nil
 }
 
