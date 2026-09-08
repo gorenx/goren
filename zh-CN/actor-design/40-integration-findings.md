@@ -124,3 +124,12 @@ API：Session.Models/SelectModel/Prompt 的配置读写走 Models 端口，由 L
 验证：TestDirectoryAttachesSessionThroughWorkspaceOwner 通过真实 Workspace Actor 和 SQLite 验证重复附加仅一项、未知 Session 拒绝与持久化；TestSearchClientUsesObservedQueryIndex 通过真实 Query Actor 和 SQLite 验证已观察消息搜索与取消。两个客户端所在包的非缓存 race 测试通过。Collector 与完整生产组合仍未接通。
 
 代码提交 `b9becf4`，独立暂存快照对两个客户端包运行非缓存 race 测试、vet 与 build 均通过。进程迁移执行表见 [Server 装配方案](41-server-composition.md)。
+
+
+## INT-15 Plugin 框架退役节点
+
+按用户要求单独删除 Plugin Runtime、Factory、示例和对应旧框架测试，同时移除 Web 的 Plugin 集成，代码提交 `ec70b99`；不保留兼容层。`actor-plugin-removed` 是重构节点标签，不是生产可运行版本。
+
+编译审计 `go test ./... -run '^$'` 未通过：旧 internal/assembly、cmd 和暂缓迁移的 subagent 仍有 Plugin 引用。API 根包保留的 Bound API 也通过 subagent/bound/inbox.go 间接依赖 Plugin，所以此前 API 子树通过的结果不能用于证明删除后的 API 可编译。
+
+后续需完成生产入口替换，并将暂缓的 Bound/Subagent 入口与当前 API 主线隔离；不恢复旧 Plugin 来绕过编译失败。移除前 Web 的非缓存 race 测试已通过，本次删除后只完成差异与依赖审计，不宣称全项目测试通过。

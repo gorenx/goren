@@ -128,7 +128,7 @@ pnpm run build
 
 ## 生命周期和失败边界
 
-- `web.Factory` 在默认 composition 中构造 `web.Site` Plugin，Connection 只消费其 `web.Frontend` 接口；
+- 组合根直接构造 `web.Site` 并通过 `http.Handler` 交给 Connection；Web 不再具有 Plugin、Factory 或独立生命周期；
 - 两条 WebSocket 独立建立和重连，页面 `beforeunload` 会关闭 owned sockets；
 - 语言切换不重建 `ConversationStore` 或 WebSocket，不改变当前 Session、draft 和 pending Question；
 - WebSocket 断开不调用 `session.cancel`，因此页面刷新不会误取消 Agent；
