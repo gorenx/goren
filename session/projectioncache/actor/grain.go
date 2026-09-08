@@ -14,8 +14,9 @@ import (
 // Grain owns confirmed records for the SessionID used as its framework name.
 // The framework stashes ordinary messages while a Writer request is outstanding.
 type Grain struct {
-	records projectioncache.Cache
-	worker  *goakt.PID
+	sessionID session.SessionID
+	records   projectioncache.Cache
+	worker    *goakt.PID
 }
 
 // OnActivate waits for explicit storage initialization.
@@ -44,7 +45,7 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 			})
 			return
 		}
-		if input.Header.ID != session.SessionID(gc.Self().Name()) {
+		if input.Header.ID != owner.sessionID {
 			gc.Response(Record{
 				Err: errors.New("projection cache: read belongs to another Session"),
 			})
@@ -68,7 +69,7 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 }
 
 func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) {
-	if owner.worker != nil || input.Storage == nil {
+	if input.SessionID == "" || gc.Self().Name() != RuntimeName(string(input.SessionID)) || owner.worker != nil || input.Storage == nil {
 		gc.Response(Completion{
 			Err: errors.New("projection cache: storage is absent or already initialized"),
 		})
@@ -82,7 +83,7 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) {
 	}
 	var records projectioncache.Cache
 	if input.Record != nil {
-		if err := records.Confirm(session.SessionID(gc.Self().Name()), *input.Record); err != nil {
+		if err := records.Confirm(input.SessionID, *input.Record); err != nil {
 			gc.Response(Completion{
 				Err: err,
 			})
@@ -93,11 +94,12 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) {
 		gc.Context(),
 		"checkpoint-writer-"+uuid.NewString(),
 		&writer{
-			identifier: session.SessionID(gc.Self().Name()),
+			identifier: input.SessionID,
 			backend:    input.Storage,
 		},
 	)
 	if err == nil {
+		owner.sessionID = input.SessionID
 		owner.worker = worker
 		owner.records = records
 	}
@@ -107,7 +109,7 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) {
 }
 
 func (owner *Grain) write(gc *goakt.GrainContext, input Write) {
-	if owner.worker == nil || input.Header.ID != session.SessionID(gc.Self().Name()) {
+	if owner.worker == nil || input.Header.ID != owner.sessionID {
 		gc.Response(Completion{
 			Err: errors.New("projection cache: storage is unavailable or Session does not match"),
 		})

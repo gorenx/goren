@@ -4,7 +4,6 @@ import (
 	"errors"
 
 	"github.com/google/uuid"
-	"github.com/gorenx/goren/session"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
@@ -24,7 +23,7 @@ func (owner *Grain) coldSnapshot(gc *goakt.GrainContext, input ColdSnapshot) {
 		return
 	}
 	task := &reader{
-		identifier:  session.SessionID(gc.Self().Name()),
+		identifier:  owner.sessionID,
 		backend:     input.Storage,
 		definitions: input.Projection,
 		reply:       reply,

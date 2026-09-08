@@ -13,6 +13,13 @@ type shutdown struct {
 }
 
 func (owner *Grain) startClose(gc *goakt.GrainContext, input Close) {
+	if input.SessionID == "" || gc.Self().Name() != RuntimeName(string(input.SessionID)) {
+		gc.Response(Closed{
+			Err: ErrCreation,
+		})
+		return
+	}
+
 	if owner.history == nil {
 		owner.closeEmpty(gc, input)
 		return

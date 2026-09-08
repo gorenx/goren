@@ -4,9 +4,6 @@ import (
 	"errors"
 
 	agentactor "github.com/gorenx/goren/agent/actor"
-	"github.com/gorenx/goren/session"
-	sessionactor "github.com/gorenx/goren/session/actor"
-	sessionregistry "github.com/gorenx/goren/session/registry"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
@@ -35,7 +32,7 @@ func (owner *Grain) closeResources(gc *goakt.GrainContext, input agentactor.Clos
 	if failure == nil {
 		failure = owner.business.CheckClose(owner.model != nil && owner.model.reply != nil)
 	}
-	if failure != nil || owner.sessionRegistry == nil {
+	if failure != nil {
 		gc.Response(agentactor.Closed{
 			Err: failure,
 		})
@@ -58,35 +55,16 @@ func (owner *Grain) closeResources(gc *goakt.GrainContext, input agentactor.Clos
 		owner.executeRequest(gc, owner.model, next)
 		return
 	}
-	if owner.prompt != nil {
-		owner.closePrompt(gc, reply)
-		return
-	}
-	owner.closeSession(gc, reply)
+	owner.releaseResources(reply)
 }
 
-func (owner *Grain) closeSession(gc *goakt.GrainContext, reply *goakt.GrainReply) {
-	gc.RequestGrain(owner.sessionRegistry, sessionregistry.CloseSession{
-		SessionID:  session.SessionID(gc.Self().Name()),
-		CreationID: owner.creationID,
-	}, goakt.WithRequestTimeout(0)).Then(func(payload any, failure error) {
-		if failure == nil {
-			result, ok := payload.(sessionactor.Closed)
-			if !ok {
-				failure = errors.New("agentloop: invalid Session close response")
-			} else {
-				failure = result.Err
-			}
-		}
-		if failure == nil {
-			failure = owner.business.Release()
-		}
-		if failure == nil {
-			owner.conversation = nil
-			owner.sessionRegistry = nil
-		}
-		reply.Response(agentactor.Closed{
-			Err: failure,
-		})
+func (owner *Grain) releaseResources(reply *goakt.GrainReply) {
+	failure := owner.business.Release()
+	if failure == nil {
+		owner.conversation = nil
+		owner.prompt = nil
+	}
+	reply.Response(agentactor.Closed{
+		Err: failure,
 	})
 }

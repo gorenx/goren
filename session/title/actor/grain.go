@@ -56,8 +56,10 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 	case sessionactor.CommitNotice:
 		owner.observeEvent(gc, input)
 	case sessionactor.ClosedNotice:
-		if string(input.SessionID) != gc.Self().Name() {
-			gc.Response(Completion{Err: errors.New("title: closed Session does not match")})
+		if RuntimeName(string(input.SessionID)) != gc.Self().Name() {
+			gc.Response(Completion{
+				Err: errors.New("title: closed Session does not match"),
+			})
 			return
 		}
 		owner.close(gc, input.CreationID)
@@ -76,12 +78,16 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 	case Rename:
 		selected, err := owner.resolve(input.CreationID)
 		if err != nil {
-			gc.Response(Updated{Err: err})
+			gc.Response(Updated{
+				Err: err,
+			})
 			return
 		}
 		plan, err := selected.rules.Rename(input.Title)
 		if err != nil {
-			gc.Response(Updated{Err: err})
+			gc.Response(Updated{
+				Err: err,
+			})
 			return
 		}
 		selected.cancel()
@@ -89,7 +95,9 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 	case EnsureFallback:
 		selected, err := owner.resolve(input.CreationID)
 		if err != nil {
-			gc.Response(Updated{Err: err})
+			gc.Response(Updated{
+				Err: err,
+			})
 			return
 		}
 		owner.commit(gc, selected, input.CreationID, selected.rules.Fallback())
@@ -101,16 +109,22 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 }
 
 func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) {
-	if input.CreationID == "" || input.Session == nil || input.Session.Name() != gc.Self().Name() || string(input.Header.ID) != gc.Self().Name() {
-		gc.Response(Completion{Err: errors.New("title: matching Session identity and creation are required")})
+	if input.CreationID == "" || input.Session == nil || input.Session.Name() != sessionactor.RuntimeName(string(input.Header.ID)) || RuntimeName(string(input.Header.ID)) != gc.Self().Name() {
+		gc.Response(Completion{
+			Err: errors.New("title: matching Session identity and creation are required"),
+		})
 		return
 	}
 	if _, found := owner.bindings[input.CreationID]; found {
-		gc.Response(Completion{Err: errors.New("title: creation is already initialized or closed")})
+		gc.Response(Completion{
+			Err: errors.New("title: creation is already initialized or closed"),
+		})
 		return
 	}
 	if input.Provider != nil && (input.Provider.ID() == "" || (input.Provider.AutomaticMode() != title.AutomaticFirstPrompt && input.Provider.AutomaticMode() != title.AutomaticAllPrompts)) {
-		gc.Response(Completion{Err: errors.New("title: invalid automatic provider")})
+		gc.Response(Completion{
+			Err: errors.New("title: invalid automatic provider"),
+		})
 		return
 	}
 	rules, err := title.NewPolicy(input.Config)
@@ -130,7 +144,9 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) {
 			}
 		}
 	}
-	gc.Response(Completion{Err: err})
+	gc.Response(Completion{
+		Err: err,
+	})
 }
 
 func (owner *Grain) resolve(creationID string) (*binding, error) {
@@ -150,7 +166,9 @@ func (selected *binding) cancel() {
 
 func (owner *Grain) close(gc *goakt.GrainContext, creationID string) {
 	if creationID == "" {
-		gc.Response(Completion{Err: errors.New("title: creation identity is required")})
+		gc.Response(Completion{
+			Err: errors.New("title: creation identity is required"),
+		})
 		return
 	}
 	selected := owner.bindings[creationID]
@@ -161,7 +179,9 @@ func (owner *Grain) close(gc *goakt.GrainContext, creationID string) {
 	}
 	reply := gc.DeferResponse()
 	if reply == nil {
-		gc.Response(Completion{Err: errors.New("title: close requires RequestGrain")})
+		gc.Response(Completion{
+			Err: errors.New("title: close requires RequestGrain"),
+		})
 		return
 	}
 	selected.cancel()
@@ -181,19 +201,25 @@ func (owner *Grain) close(gc *goakt.GrainContext, creationID string) {
 		if failure == nil {
 			owner.bindings[creationID] = nil
 		}
-		reply.Response(Completion{Err: failure})
+		reply.Response(Completion{
+			Err: failure,
+		})
 	})
 }
 
 func (owner *Grain) read(gc *goakt.GrainContext, input Read) {
 	selected, err := owner.resolve(input.CreationID)
 	if err != nil {
-		gc.Response(View{Err: err})
+		gc.Response(View{
+			Err: err,
+		})
 		return
 	}
 	reply := gc.DeferResponse()
 	if reply == nil {
-		gc.Response(View{Err: errors.New("title: read requires RequestGrain")})
+		gc.Response(View{
+			Err: errors.New("title: read requires RequestGrain"),
+		})
 		return
 	}
 	gc.RequestGrain(selected.conversation, sessionactor.Read{
@@ -220,7 +246,9 @@ func (owner *Grain) read(gc *goakt.GrainContext, input Read) {
 func (*Grain) commit(gc *goakt.GrainContext, selected *binding, creationID string, plan session.WritePlan) {
 	reply := gc.DeferResponse()
 	if reply == nil {
-		gc.Response(Updated{Err: errors.New("title: write requires RequestGrain")})
+		gc.Response(Updated{
+			Err: errors.New("title: write requires RequestGrain"),
+		})
 		return
 	}
 	gc.RequestGrain(selected.conversation, sessionactor.Commit{

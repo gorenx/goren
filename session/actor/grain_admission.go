@@ -13,7 +13,8 @@ import (
 // admission retains one initialization until the creation authority replies.
 // A prepared log has no storage effects and is not visible before authorization.
 type admission struct {
-	token string
+	sessionID session.SessionID
+	token     string
 	// creationID fixes the requested grant and is installed with the log, never replaced by a later request.
 	creationID string
 	history    *session.Log
@@ -33,7 +34,7 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) {
 	switch {
 	case owner.admission != nil || owner.restoring != nil:
 		err = ErrRestoring
-	case input.CreationID == "" || (owner.history != nil && owner.creationID != input.CreationID):
+	case input.SessionID == "" || gc.Self().Name() != RuntimeName(string(input.SessionID)) || input.CreationID == "" || (owner.history != nil && owner.creationID != input.CreationID):
 		err = ErrCreation
 	case owner.closing != nil:
 		err = session.ErrWritesClosed
@@ -57,18 +58,18 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) {
 		})
 		return
 	}
-	history, err := session.NewLog(session.SessionID(gc.Self().Name()), input.Options)
+	history, err := session.NewLog(input.SessionID, input.Options)
 	if err != nil {
 		gc.Response(Initialized{
 			Err: err,
 		})
 		return
 	}
-	owner.beginAdmission(gc, input.CreationID, history, input.Storage, nil, input.Authority)
+	owner.beginAdmission(gc, input.SessionID, input.CreationID, history, input.Storage, nil, input.Authority)
 }
 
 func (owner *Grain) beginAdmission(
-	gc *goakt.GrainContext, creationID string,
+	gc *goakt.GrainContext, identifier session.SessionID, creationID string,
 	history *session.Log, storage Storage, recovery RecoveryStorage, registry *goakt.GrainIdentity,
 ) {
 	if err := gc.EnableReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))); err != nil {
@@ -113,6 +114,7 @@ func (owner *Grain) beginAdmission(
 		return
 	}
 	owner.admission = &admission{
+		sessionID:  identifier,
 		token:      token,
 		creationID: creationID,
 		history:    history,
@@ -121,9 +123,8 @@ func (owner *Grain) beginAdmission(
 		reply:      reply,
 		cancel:     cancel,
 	}
-	self := gc.Self()
 	gc.RequestGrain(registry, Claim{
-		SessionID:  session.SessionID(self.Name()),
+		SessionID:  identifier,
 		CreationID: creationID,
 		InstanceID: owner.instanceID,
 	}).Then(

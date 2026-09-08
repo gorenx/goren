@@ -146,7 +146,7 @@ func TestCommandsRecordLifecycleAndRetainCancelledHandler(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			target, err := goakt.GrainOf[*Grain](ctx, system, "conversation", goakt.WithLongLivedGrain())
+			target, err := goakt.GrainOf[*Grain](ctx, system, RuntimeName("conversation"), goakt.WithLongLivedGrain())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -183,6 +183,7 @@ func TestCommandsRecordLifecycleAndRetainCancelledHandler(t *testing.T) {
 				t.Fatal(registered.Err)
 			}
 			initialized := ask(target, Initialize{
+				SessionID:  "conversation",
 				CreationID: "creation",
 				Session:    history,
 				Registry:   catalog,

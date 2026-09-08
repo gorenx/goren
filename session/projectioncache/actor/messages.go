@@ -10,8 +10,9 @@ import (
 
 // Initialize installs shared storage and an optional previously loaded record.
 type Initialize struct {
-	Storage projectioncache.CheckpointStore
-	Record  *projectioncache.CheckpointRecord
+	SessionID session.SessionID
+	Storage   projectioncache.CheckpointStore
+	Record    *projectioncache.CheckpointRecord
 }
 
 // Completion reports the actual outcome of a cache operation.
@@ -65,3 +66,7 @@ type ColdView struct {
 	Value *projectioncache.View
 	Err   error
 }
+
+// RuntimeName returns this service's stable address within a Session lifetime.
+// Business identity is carried explicitly in messages, never parsed from this name.
+func RuntimeName(identifier string) string { return identifier + ".projection-cache" }

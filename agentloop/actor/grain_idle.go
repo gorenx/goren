@@ -16,7 +16,7 @@ type idleObserved struct {
 func (owner *Grain) busy() bool {
 	return owner.opening != nil || owner.stopping != nil || owner.preparation != nil ||
 		owner.initialization != nil || owner.model != nil ||
-		owner.ending != nil || owner.promptClosing != nil ||
+		owner.ending != nil ||
 		owner.business.StatusValue() == agent.StatusRunning
 }
 

@@ -74,7 +74,9 @@ func (owner *Grain) startModel(gc *goakt.GrainContext, input requestModel) {
 	}
 	endpoint, err := llmactor.NewClient(input.router, input.replyTimeout)
 	if err != nil {
-		reply.Response(modelResult{err: err})
+		reply.Response(modelResult{
+			err: err,
+		})
 		return
 	}
 	next, err := owner.business.StartRequest()
@@ -108,11 +110,7 @@ func (owner *Grain) executeRequest(gc *goakt.GrainContext, invocation *modelInvo
 			reply := invocation.cleanup
 			invocation.cleanup = nil
 			owner.model = nil
-			if owner.prompt != nil {
-				owner.closePrompt(gc, reply)
-			} else {
-				owner.closeSession(gc, reply)
-			}
+			owner.releaseResources(reply)
 			return
 		}
 		owner.finishModel(invocation, input.Result.Err)

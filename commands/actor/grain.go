@@ -76,7 +76,7 @@ func (owner *Grain) OnDeactivate(context.Context, *goakt.GrainProps) error {
 func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 	switch input := gc.Message().(type) {
 	case Initialize:
-		if owner.binding.CreationID != "" || input.CreationID == "" || input.Session == nil || input.Registry == nil || input.Timeout <= 0 {
+		if owner.binding.CreationID != "" || input.SessionID == "" || gc.Self().Name() != RuntimeName(string(input.SessionID)) || input.CreationID == "" || input.Session == nil || input.Registry == nil || input.Timeout <= 0 {
 			gc.Response(Completion{
 				Err: errors.New("commands: fresh binding and complete routes are required"),
 			})
@@ -89,7 +89,7 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 			return
 		}
 		owner.binding = input
-		owner.sessionID = session.SessionID(gc.Self().Name())
+		owner.sessionID = input.SessionID
 		gc.Response(Completion{})
 	case Execute:
 		owner.execute(gc, input)
@@ -104,6 +104,10 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 			owner.send(gc, input.request)
 		}
 	case Close:
+		if owner.binding.CreationID == "" && len(owner.calls) == 0 {
+			gc.Response(Completion{})
+			return
+		}
 		if input.CreationID != owner.binding.CreationID || owner.binding.CreationID == "" || len(owner.calls) != 0 {
 			gc.Response(Completion{
 				Err: errors.New("commands: matching idle execution owner is required"),

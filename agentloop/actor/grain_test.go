@@ -126,7 +126,7 @@ func TestInboxCommandsCommitBeforeApplyingAndRetainStateOnFailure(t *testing.T) 
 	if created.Err != nil {
 		t.Fatal(created.Err)
 	}
-	identity, err := goakt.GrainOf[*loopactor.Grain](ctx, system, "conversation", goakt.WithLongLivedGrain())
+	identity, err := goakt.GrainOf[*loopactor.Grain](ctx, system, loopactor.RuntimeName("conversation"), goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,13 +136,13 @@ func TestInboxCommandsCommitBeforeApplyingAndRetainStateOnFailure(t *testing.T) 
 		t.Fatal(err)
 	}
 	authorityDriver, authorityReplies := grainDriver(t, system, authority)
-	denied := request[loopactor.Completion](t, driver, replies, loopactor.Initialize{
-		ModelConfig:     dependencies,
-		PromptRegistry:  dependencies,
-		ToolsRegistry:   dependencies,
-		Authority:       authority,
-		CreationID:      "current",
-		SessionRegistry: directory,
+	denied := request[agentactor.Initialized](t, driver, replies, agentactor.Initialize{
+		AgentID:     "conversation",
+		ModelConfig: dependencies,
+		Authority:   authority,
+		CreationID:  "current",
+		Session:     sessionRoute(t, system, "conversation"),
+		Prompt:      promptRoute(t, system, "conversation", dependencies),
 	})
 	if denied.Err == nil {
 		t.Fatal("unreserved Agent initialized")
@@ -156,13 +156,13 @@ func TestInboxCommandsCommitBeforeApplyingAndRetainStateOnFailure(t *testing.T) 
 	if reserved.Err != nil {
 		t.Fatal(reserved.Err)
 	}
-	initialized := request[loopactor.Completion](t, driver, replies, loopactor.Initialize{
-		ModelConfig:     dependencies,
-		PromptRegistry:  dependencies,
-		ToolsRegistry:   dependencies,
-		Authority:       authority,
-		CreationID:      "current",
-		SessionRegistry: directory,
+	initialized := request[agentactor.Initialized](t, driver, replies, agentactor.Initialize{
+		AgentID:     "conversation",
+		ModelConfig: dependencies,
+		Authority:   authority,
+		CreationID:  "current",
+		Session:     sessionRoute(t, system, "conversation"),
+		Prompt:      promptRoute(t, system, "conversation", dependencies),
 	})
 	if initialized.Err != nil {
 		t.Fatal(initialized.Err)
@@ -206,13 +206,13 @@ func TestInboxCommandsCommitBeforeApplyingAndRetainStateOnFailure(t *testing.T) 
 	if err := system.TellGrain(ctx, identity, new(goakt.PoisonPill)); err != nil {
 		t.Fatal(err)
 	}
-	reactivated := request[loopactor.Completion](t, driver, replies, loopactor.Initialize{
-		ModelConfig:     dependencies,
-		PromptRegistry:  dependencies,
-		ToolsRegistry:   dependencies,
-		Authority:       authority,
-		CreationID:      "current",
-		SessionRegistry: directory,
+	reactivated := request[agentactor.Initialized](t, driver, replies, agentactor.Initialize{
+		AgentID:     "conversation",
+		ModelConfig: dependencies,
+		Authority:   authority,
+		CreationID:  "current",
+		Session:     sessionRoute(t, system, "conversation"),
+		Prompt:      promptRoute(t, system, "conversation", dependencies),
 	})
 	if !errors.Is(reactivated.Err, agentregistry.ErrInstance) {
 		t.Fatalf("reactivated initialization = %v", reactivated.Err)
@@ -260,11 +260,11 @@ func TestCloseRetainsSessionUntilPendingInputIsCancelled(t *testing.T) {
 	if created.Err != nil {
 		t.Fatal(created.Err)
 	}
-	conversation, err := goakt.GrainOf[*sessionactor.Grain](ctx, system, "conversation", goakt.WithLongLivedGrain())
+	conversation, err := goakt.GrainOf[*sessionactor.Grain](ctx, system, sessionactor.RuntimeName("conversation"), goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}
-	identity, err := goakt.GrainOf[*loopactor.Grain](ctx, system, "conversation", goakt.WithLongLivedGrain())
+	identity, err := goakt.GrainOf[*loopactor.Grain](ctx, system, loopactor.RuntimeName("conversation"), goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,38 +283,32 @@ func TestCloseRetainsSessionUntilPendingInputIsCancelled(t *testing.T) {
 		target: directory,
 	})
 
-	denied := request[loopactor.Completion](t, driver, replies, loopactor.Initialize{
-		ModelConfig:     dependencies,
-		PromptRegistry:  dependencies,
-		ToolsRegistry:   dependencies,
-		Authority:       authority,
-		CreationID:      "current",
-		SessionRegistry: fault,
+	denied := request[agentactor.Initialized](t, driver, replies, agentactor.Initialize{
+		AgentID:     "conversation",
+		ModelConfig: dependencies,
+		Authority:   authority,
+		CreationID:  "current",
+		Session:     sessionRoute(t, system, "conversation"),
+		Prompt:      dependencies,
 	})
 	if denied.Err == nil {
 		t.Fatal("unreserved Agent initialized")
 	}
-	reserved := request[agentregistry.Completion](t, authorityDriver, authorityReplies, agentregistry.Reserve{
+	initialized := request[agentregistry.Ready](t, authorityDriver, authorityReplies, agentregistry.CreateAgent{
 		Creation: agentregistry.Creation{
 			AgentID:    "conversation",
 			CreationID: "current",
 		},
-	})
-	if reserved.Err != nil {
-		t.Fatal(reserved.Err)
-	}
-	initialized := request[loopactor.Completion](t, driver, replies, loopactor.Initialize{
+		Storage:         backend,
+		SessionRegistry: fault,
 		ModelConfig:     dependencies,
 		PromptRegistry:  dependencies,
 		ToolsRegistry:   dependencies,
-		Authority:       authority,
-		CreationID:      "current",
-		SessionRegistry: fault,
+		Timeout:         time.Second,
 	})
 	if initialized.Err != nil {
 		t.Fatal(initialized.Err)
 	}
-
 	if result := request[agentactor.Closed](t, driver, replies, agentactor.CloseResources{
 		CreationID: "current",
 	}); result.Err == nil {
@@ -325,6 +319,7 @@ func TestCloseRetainsSessionUntilPendingInputIsCancelled(t *testing.T) {
 	}); result.Err == nil {
 		t.Fatal("old creation prepared current Agent")
 	}
+
 	prompt, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
 		Content: []agentmessage.ContentBlock{agentmessage.NewTextBlock("pending work")},
 		Source:  agentmessage.UserMessageSource{},
@@ -362,26 +357,26 @@ func TestCloseRetainsSessionUntilPendingInputIsCancelled(t *testing.T) {
 		t.Fatal(result.Err)
 	}
 
-	if result := request[agentactor.Closed](t, driver, replies, agentactor.CloseResources{
-		CreationID: "current",
-	}); !errors.Is(result.Err, errClose) {
+	closing := agentregistry.CloseAgent{
+		Creation: agentregistry.Creation{
+			AgentID:    "conversation",
+			CreationID: "current",
+		},
+	}
+	if result := request[agentactor.Closed](t, authorityDriver, authorityReplies, closing); !errors.Is(result.Err, errClose) {
 		t.Fatalf("close failure = %v", result.Err)
 	}
-	if result := request[loopactor.Inbox](t, driver, replies, loopactor.GetInbox{}); result.Err != nil {
-		t.Fatal("failed close discarded local state", result.Err)
+	if result := request[agentregistry.Ready](t, authorityDriver, authorityReplies, agentregistry.Resolve{
+		AgentID: "conversation",
+	}); !errors.Is(result.Err, agent.ErrClosing) {
+		t.Fatal("failed close published a route", result.Err)
 	}
 	for range 2 {
-		if result := request[agentactor.Prepared](t, driver, replies, agentactor.PrepareClose{
-			CreationID: "current",
-		}); result.Err != nil {
-			t.Fatal(result.Err)
-		}
-		if result := request[agentactor.Closed](t, driver, replies, agentactor.CloseResources{
-			CreationID: "current",
-		}); result.Err != nil {
+		if result := request[agentactor.Closed](t, authorityDriver, authorityReplies, closing); result.Err != nil {
 			t.Fatal(result.Err)
 		}
 	}
+
 	// The Session Registry must actually release the old identity before success.
 	recreated := request[sessionactor.Initialized](t, registryDriver, registryReplies, sessionregistry.ResumeSession{
 		SessionID:  "conversation",
@@ -403,9 +398,7 @@ func TestCloseRetainsSessionUntilPendingInputIsCancelled(t *testing.T) {
 		t.Fatalf("durable cancelled Inbox = %v", err)
 	}
 	// A duplicate old close must not close the replacement Session.
-	if result := request[agentactor.Closed](t, driver, replies, agentactor.CloseResources{
-		CreationID: "current",
-	}); result.Err != nil {
+	if result := request[agentactor.Closed](t, authorityDriver, authorityReplies, closing); result.Err != nil {
 		t.Fatal(result.Err)
 	}
 	view = request[sessionactor.View](t, sessionDriver, sessionReplies, sessionactor.Read{
@@ -413,16 +406,6 @@ func TestCloseRetainsSessionUntilPendingInputIsCancelled(t *testing.T) {
 	})
 	if view.Err != nil {
 		t.Fatal("duplicate close affected replacement", view.Err)
-	}
-	if result := request[loopactor.Completion](t, driver, replies, loopactor.Initialize{
-		ModelConfig:     dependencies,
-		PromptRegistry:  dependencies,
-		ToolsRegistry:   dependencies,
-		Authority:       authority,
-		CreationID:      "replacement",
-		SessionRegistry: fault,
-	}); result.Err == nil {
-		t.Fatal("closed activation initialized again")
 	}
 }
 
@@ -446,14 +429,16 @@ func (fixture *closeFailure) OnReceive(gc *goakt.GrainContext) {
 	case closeDestination:
 		fixture.target = input.target
 		gc.Response(struct{}{})
-	case sessionregistry.StartSession:
+	case sessionregistry.StartSession, sessionregistry.RegisterSession:
 		if err := gc.EnableReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.StashNonReentrant))); err != nil {
 			panic(err)
 		}
 		reply := gc.DeferResponse()
 		gc.RequestGrain(fixture.target, input).Then(func(payload any, failure error) {
 			if failure != nil {
-				reply.Response(sessionactor.Initialized{Err: failure})
+				reply.Response(sessionactor.Initialized{
+					Err: failure,
+				})
 				return
 			}
 			reply.Response(payload)

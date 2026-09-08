@@ -55,3 +55,21 @@ func ResolveConfig(settings Config) (ResolvedConfig, error) {
 	}
 	return resolved, nil
 }
+
+// Clone detaches optional budgets before retaining a lifecycle configuration.
+func (settings Config) Clone() Config {
+	detached := settings
+	if settings.ThresholdChars != nil {
+		value := *settings.ThresholdChars
+		detached.ThresholdChars = &value
+	}
+	if settings.HeadChars != nil {
+		value := *settings.HeadChars
+		detached.HeadChars = &value
+	}
+	if settings.TailChars != nil {
+		value := *settings.TailChars
+		detached.TailChars = &value
+	}
+	return detached
+}

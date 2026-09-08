@@ -4,23 +4,9 @@ package loopactor
 import (
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentmessage"
-	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
-// Initialize requests the registered Session before restoring pending input.
-type Initialize struct {
-	// Authority is the internal Agent Registry route supplied by creation orchestration.
-	Authority  *goakt.GrainIdentity
-	CreationID string
-	// SessionRegistry owns the Session's flush, deactivation and identity release.
-	SessionRegistry *goakt.GrainIdentity
-	// ModelConfig resolves effective parameters and credential references.
-	ModelConfig    *goakt.GrainIdentity
-	PromptRegistry *goakt.GrainIdentity
-	ToolsRegistry  *goakt.GrainIdentity
-}
-
-// Completion reports initialization failure or success.
+// Completion reports runtime operation failure or success.
 type Completion struct {
 	Err error
 }
@@ -86,3 +72,7 @@ type Cancel struct {
 type WhenIdle struct {
 	CreationID string
 }
+
+// RuntimeName returns this service's stable address within a Session lifetime.
+// Business identity is carried explicitly in messages, never parsed from this name.
+func RuntimeName(identifier string) string { return identifier + ".agentloop" }

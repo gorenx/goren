@@ -65,6 +65,16 @@ func (owner *RuntimeGrain) OnDeactivate(context.Context, *goakt.GrainProps) erro
 // OnReceive applies updates in the mailbox and evaluates captured state in a task.
 func (owner *RuntimeGrain) OnReceive(gc *goakt.GrainContext) {
 	switch incoming := gc.Message().(type) {
+	case ReadRuntime:
+		if owner.runtime == nil || owner.closed || owner.closing != nil {
+			gc.Response(RuntimeView{
+				Err: ErrUnavailable,
+			})
+			return
+		}
+		gc.Response(RuntimeView{
+			ToolsVersion: owner.runtime.ToolsVersion(),
+		})
 	case InitializeRuntime:
 		owner.initializeRuntime(gc, incoming)
 	case promptPrepared:

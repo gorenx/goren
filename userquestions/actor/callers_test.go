@@ -10,12 +10,17 @@ import (
 	agentactor "github.com/gorenx/goren/agent/actor"
 	"github.com/gorenx/goren/agent/registry"
 	goakt "github.com/tochemey/goakt/v4/actor"
+	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
 func TestCallerAuthorityRejectsUnclaimedClosedAndReplacedLifetimes(t *testing.T) {
-	system, target := questionSystem(t)
+	system, _ := questionSystem(t)
+	target, err := goakt.GrainOf[*executorStub](context.Background(), system, "questions.agentloop", goakt.WithLongLivedGrain())
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx := context.Background()
-	directory, err := goakt.GrainOf[*registry.Grain](ctx, system, "agents", goakt.WithLongLivedGrain())
+	directory, err := goakt.GrainOf[*registry.Grain](ctx, system, "agents", goakt.WithLongLivedGrain(), goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,6 +40,10 @@ func TestCallerAuthorityRejectsUnclaimedClosedAndReplacedLifetimes(t *testing.T)
 				t.Fatal(result.Err)
 			}
 		case agentactor.Claimed:
+			if result.Err != nil {
+				t.Fatal(result.Err)
+			}
+		case agentactor.Closed:
 			if result.Err != nil {
 				t.Fatal(result.Err)
 			}
@@ -78,7 +87,7 @@ func TestCallerAuthorityRejectsUnclaimedClosedAndReplacedLifetimes(t *testing.T)
 	if err != nil || eligibility.Live {
 		t.Fatalf("closing: %+v %v", eligibility, err)
 	}
-	check(registry.ReleaseReservation{
+	check(registry.CloseAgent{
 		Creation: creation,
 	})
 	check(registry.Reserve{
@@ -94,9 +103,13 @@ func TestCallerAuthorityRejectsUnclaimedClosedAndReplacedLifetimes(t *testing.T)
 }
 
 func TestFormerChildCanAskAsNewRuntimeRoot(t *testing.T) {
-	system, target := questionSystem(t)
+	system, _ := questionSystem(t)
+	target, err := goakt.GrainOf[*executorStub](context.Background(), system, "questions.agentloop", goakt.WithLongLivedGrain())
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx := context.Background()
-	directory, err := goakt.GrainOf[*registry.Grain](ctx, system, "agents", goakt.WithLongLivedGrain())
+	directory, err := goakt.GrainOf[*registry.Grain](ctx, system, "agents", goakt.WithLongLivedGrain(), goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,12 +169,12 @@ func TestFormerChildCanAskAsNewRuntimeRoot(t *testing.T) {
 	if !errors.As(err, &problem) || problem.Code != userquestions.CodeDelegatedCaller || provider.calls != 0 {
 		t.Fatalf("child request: %v, calls=%d", err, provider.calls)
 	}
-	// The lifecycle owner has finished the old child's resources before release.
-	payload, err := system.AskGrain(ctx, directory, registry.ReleaseReservation{
+	// Close confirms the old executor has stopped before the ID is reused.
+	payload, err := system.AskGrain(ctx, directory, registry.CloseAgent{
 		Creation: child,
 	}, time.Second)
-	if err != nil || payload.(registry.Completion).Err != nil {
-		t.Fatalf("release: %v %v", payload, err)
+	if err != nil || payload.(agentactor.Closed).Err != nil {
+		t.Fatalf("close: %v %v", payload, err)
 	}
 	root := registry.Creation{
 		AgentID:    child.AgentID,
@@ -206,4 +219,20 @@ func (source *answeredProvider) Ask(context.Context, userquestions.Request) (use
 			Selected: []string{"yes"},
 		}},
 	}, nil
+}
+
+// executorStub supplies the execution close contract for caller authority tests.
+type executorStub struct{}
+
+func (*executorStub) OnActivate(context.Context, *goakt.GrainProps) error   { return nil }
+func (*executorStub) OnDeactivate(context.Context, *goakt.GrainProps) error { return nil }
+func (*executorStub) OnReceive(gc *goakt.GrainContext) {
+	switch gc.Message().(type) {
+	case agentactor.PrepareClose:
+		gc.Response(agentactor.Prepared{})
+	case agentactor.CloseResources:
+		gc.Response(agentactor.Closed{})
+	default:
+		gc.Unhandled()
+	}
 }

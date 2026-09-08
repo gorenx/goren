@@ -5,6 +5,10 @@ import (
 	"errors"
 
 	agentactor "github.com/gorenx/goren/agent/actor"
+	commandactor "github.com/gorenx/goren/commands/actor"
+	sessionactor "github.com/gorenx/goren/session/actor"
+	sessionregistry "github.com/gorenx/goren/session/registry"
+	promptactor "github.com/gorenx/goren/systemprompt/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
@@ -14,19 +18,25 @@ type closeStage uint8
 const (
 	prepare closeStage = iota
 	children
+	closeCommands
+	closeComponents
 	resources
+	closePrompt
+	closeSession
 	stop
 )
 
-// closure retains completed lifecycle steps across retries. It never owns an
-// AgentLoop object; executor is only a framework address.
+// closure retains confirmed steps across retries, without owning business objects.
 type closure struct {
-	identity Creation
-	executor *goakt.GrainIdentity
-	children []Creation
-	next     int
-	stage    closeStage
-	// replies are framework reply handles for callers sharing this close attempt.
+	componentNext int
+	identity      Creation
+	children      []Creation
+	next          int
+	stage         closeStage
+	// deactivating means this component confirmed business close. A framework
+	// stop retry must not send its business close again to a fresh activation.
+	deactivating bool
+	// replies are deferred requests sharing this close attempt, not a work queue.
 	replies []*goakt.GrainReply
 	cancel  context.CancelFunc
 }
@@ -50,12 +60,6 @@ func (owner *Grain) closeAgent(gc *goakt.GrainContext, input CloseAgent) {
 		})
 		return
 	}
-	if entry.executor == nil {
-		gc.Response(agentactor.Closed{
-			Err: errors.New("agent registry: creation has no claimed executor; initialization cleanup is required"),
-		})
-		return
-	}
 	if err := gc.EnableReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))); err != nil {
 		gc.Response(agentactor.Closed{
 			Err: err,
@@ -65,7 +69,7 @@ func (owner *Grain) closeAgent(gc *goakt.GrainContext, input CloseAgent) {
 	reply := gc.DeferResponse()
 	if reply == nil {
 		gc.Response(agentactor.Closed{
-			Err: errors.New("agent registry: close requires an asynchronous request"),
+			Err: errors.New("agent registry: close requires a request"),
 		})
 		return
 	}
@@ -73,63 +77,99 @@ func (owner *Grain) closeAgent(gc *goakt.GrainContext, input CloseAgent) {
 	if operation == nil {
 		operation = &closure{
 			identity: input.Creation,
-			executor: entry.executor,
 			children: accepted.Children,
 		}
 		entry.closure = operation
 		owner.creations[input.Creation.AgentID] = entry
 	}
 	operation.replies = append(operation.replies, reply)
-	if operation.cancel != nil {
-		return
+	if operation.cancel == nil {
+		owner.runClose(gc, operation)
 	}
-	owner.runClose(gc, operation)
 }
 
 func (owner *Grain) runClose(gc *goakt.GrainContext, operation *closure) {
+	entry := owner.creations[operation.identity.AgentID]
+	components := entry.activation
+	if components != nil && components.initializing {
+		return
+	}
 	var target *goakt.GrainIdentity
 	var message any
 	switch operation.stage {
 	case prepare:
-		target = operation.executor
-		message = agentactor.PrepareClose{
-			CreationID: operation.identity.CreationID,
+		if entry.instanceID != "" {
+			target = entry.executor
+			message = agentactor.PrepareClose{
+				CreationID: operation.identity.CreationID,
+			}
 		}
 	case children:
-		// A child may have completed an independent close while this parent was
-		// waiting or retrying. Its replacement is not part of this closing tree.
 		for operation.next < len(operation.children) {
-			child := operation.children[operation.next]
-			entry, found := owner.creations[child.AgentID]
-			if found && !entry.closed && entry.creationID == child.CreationID {
+			descendant := operation.children[operation.next]
+			current, found := owner.creations[descendant.AgentID]
+			if found && !current.closed && current.creationID == descendant.CreationID {
 				break
 			}
 			operation.next++
 		}
-		if operation.next == len(operation.children) {
-			operation.stage = resources
-			owner.runClose(gc, operation)
-			return
+		if operation.next < len(operation.children) {
+			target = gc.Self()
+			message = CloseAgent{
+				Creation: operation.children[operation.next],
+			}
 		}
-		target = gc.Self()
-		message = CloseAgent{
-			Creation: operation.children[operation.next],
+	case closeCommands:
+		if components != nil {
+			target = components.commands
+			message = commandactor.Close{
+				CreationID: operation.identity.CreationID,
+			}
+		}
+	case closeComponents:
+		if components != nil && operation.componentNext < len(components.components) {
+			position := len(components.components) - 1 - operation.componentNext
+			target = components.components[position].Owner
+			message = agentactor.StopComponent{
+				AgentID:    operation.identity.AgentID,
+				CreationID: operation.identity.CreationID,
+			}
 		}
 	case resources:
-		target = operation.executor
-		message = agentactor.CloseResources{
-			CreationID: operation.identity.CreationID,
+		if entry.instanceID != "" {
+			target = entry.executor
+			message = agentactor.CloseResources{
+				CreationID: operation.identity.CreationID,
+			}
 		}
+	case closePrompt:
+		if components != nil {
+			target = components.prompt
+			message = promptactor.CloseRuntime{}
+		}
+	case closeSession:
+		if components != nil && components.sessionRegistered {
+			target = components.input.SessionRegistry
+			message = sessionregistry.CloseSession{
+				SessionID:  operation.identity.AgentID,
+				CreationID: operation.identity.CreationID,
+			}
+		}
+	case stop:
+		target = entry.executor
+	}
+	if target == nil {
+		owner.nextClose(gc, operation)
+		return
 	}
 	ctx, cancel := context.WithCancel(context.WithoutCancel(gc.Context()))
 	operation.cancel = cancel
-	if operation.stage == stop {
+	if operation.deactivating || operation.stage == stop {
 		system := gc.ActorSystem()
-		identity := operation.executor
 		if err := gc.PipeToSelf(func() (any, error) {
 			return closeAdvanced{
 				operation: operation,
-				err:       system.TellGrain(ctx, identity, new(goakt.PoisonPill)),
+				err:       system.TellGrain(ctx, target, new(goakt.PoisonPill)),
 			}, nil
 		}); err != nil {
 			operation.respond(err)
@@ -169,19 +209,47 @@ func (owner *Grain) advanceClose(gc *goakt.GrainContext, input closeAdvanced) {
 	operation.cancel()
 	operation.cancel = nil
 	failure := input.err
-	if failure == nil {
+	if failure == nil && !operation.deactivating {
 		switch operation.stage {
 		case prepare:
 			result, ok := input.payload.(agentactor.Prepared)
 			if !ok {
-				failure = errors.New("agent registry: invalid prepare-close response")
+				failure = errors.New("agent registry: invalid preparation reply")
 			} else {
 				failure = result.Err
 			}
 		case children, resources:
 			result, ok := input.payload.(agentactor.Closed)
 			if !ok {
-				failure = errors.New("agent registry: invalid close response")
+				failure = errors.New("agent registry: invalid Agent close reply")
+			} else {
+				failure = result.Err
+			}
+		case closeCommands:
+			result, ok := input.payload.(commandactor.Completion)
+			if !ok {
+				failure = errors.New("agent registry: invalid Commands close reply")
+			} else {
+				failure = result.Err
+			}
+		case closeComponents:
+			result, ok := input.payload.(agentactor.ComponentStopped)
+			if !ok {
+				failure = errors.New("agent registry: invalid component close reply")
+			} else {
+				failure = result.Err
+			}
+		case closePrompt:
+			result, ok := input.payload.(promptactor.Completion)
+			if !ok {
+				failure = errors.New("agent registry: invalid Prompt close reply")
+			} else {
+				failure = result.Err
+			}
+		case closeSession:
+			result, ok := input.payload.(sessionactor.Closed)
+			if !ok {
+				failure = errors.New("agent registry: invalid Session close reply")
 			} else {
 				failure = result.Err
 			}
@@ -191,26 +259,42 @@ func (owner *Grain) advanceClose(gc *goakt.GrainContext, input closeAdvanced) {
 		operation.respond(failure)
 		return
 	}
-	switch operation.stage {
-	case prepare:
-		operation.stage = children
-	case children:
-		operation.next++
-	case resources:
-		operation.stage = stop
-	case stop:
-		if err := owner.directory.Remove(operation.identity.AgentID); err != nil {
-			operation.respond(err)
-			return
-		}
-		entry.closed = true
-		entry.closure = nil
-		entry.executor = nil
-		owner.creations[operation.identity.AgentID] = entry
-		operation.respond(nil)
+	if !operation.deactivating && (operation.stage == closeCommands || operation.stage == closePrompt) {
+		operation.deactivating = true
+		owner.runClose(gc, operation)
 		return
 	}
-	owner.runClose(gc, operation)
+	operation.deactivating = false
+	if operation.stage == closeComponents {
+		operation.componentNext++
+		owner.runClose(gc, operation)
+		return
+	}
+	if operation.stage == children {
+		operation.next++
+		owner.runClose(gc, operation)
+		return
+	}
+	owner.nextClose(gc, operation)
+}
+
+func (owner *Grain) nextClose(gc *goakt.GrainContext, operation *closure) {
+	if operation.stage != stop {
+		operation.stage++
+		owner.runClose(gc, operation)
+		return
+	}
+	if err := owner.directory.Remove(operation.identity.AgentID); err != nil {
+		operation.respond(err)
+		return
+	}
+	entry := owner.creations[operation.identity.AgentID]
+	entry.closed = true
+	entry.closure = nil
+	entry.activation = nil
+	entry.executor = nil
+	owner.creations[operation.identity.AgentID] = entry
+	operation.respond(nil)
 }
 
 func (operation *closure) respond(failure error) {

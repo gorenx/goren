@@ -7,7 +7,6 @@ import (
 	llmactor "github.com/gorenx/goren/llm/actor"
 
 	"github.com/google/uuid"
-	agentactor "github.com/gorenx/goren/agent/actor"
 	"github.com/gorenx/goren/agentloop"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
@@ -18,22 +17,20 @@ import (
 // before another Inbox command can prepare a mutation.
 type Grain struct {
 	// idle closes when the current busy interval ends; waiters live in framework tasks.
-	maintenance     *maintenance
-	idle            chan struct{}
-	stopped         chan struct{}
-	opening         *turnOpening
-	stopping        *stoppingInvocation
-	preparation     *stepPreparation
-	business        *agentloop.ReactLoopAgent
-	ending          *turnClosure
-	model           *modelInvocation
-	conversation    *goakt.GrainIdentity
-	creationID      string
-	instanceID      string
-	initialization  *initialization
-	sessionRegistry *goakt.GrainIdentity
-	prompt          *goakt.GrainIdentity
-	promptClosing   *promptClosure
+	maintenance    *maintenance
+	idle           chan struct{}
+	stopped        chan struct{}
+	opening        *turnOpening
+	stopping       *stoppingInvocation
+	preparation    *stepPreparation
+	business       *agentloop.ReactLoopAgent
+	ending         *turnClosure
+	model          *modelInvocation
+	conversation   *goakt.GrainIdentity
+	creationID     string
+	instanceID     string
+	initialization *initialization
+	prompt         *goakt.GrainIdentity
 }
 
 // OnActivate starts without a Session binding or mutable business dependencies.
@@ -76,17 +73,9 @@ func (owner *Grain) OnDeactivate(ctx context.Context, _ *goakt.GrainProps) error
 	if owner.initialization != nil {
 		owner.finishInitialization(owner.initialization, errors.New("agentloop: stopped during initialization"))
 	}
-	if owner.promptClosing != nil {
-		owner.promptClosing.cancel()
-		owner.promptClosing.reply.Response(agentactor.Closed{
-			Err: errors.New("agentloop: stopped during Prompt close"),
-		})
-		owner.promptClosing = nil
-	}
 	owner.prompt = nil
 	owner.conversation = nil
 	owner.creationID = ""
-	owner.sessionRegistry = nil
 	owner.business = nil
 	return nil
 }

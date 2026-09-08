@@ -13,7 +13,7 @@ func (owner *Grain) publishEvents(gc *goakt.GrainContext, events []session.Event
 	}
 	for _, entry := range events {
 		fact := CommitNotice{
-			SessionID:  session.SessionID(gc.Self().Name()),
+			SessionID:  owner.history.Header().ID,
 			CreationID: owner.creationID,
 			Event:      entry,
 		}.Clone()

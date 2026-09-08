@@ -119,7 +119,7 @@ func startSession(t *testing.T, creationID string) (*goakt.PID, <-chan response)
 	if failure := result.(sessionregistry.Completion).Err; failure != nil {
 		t.Fatal(failure)
 	}
-	identity, err := goakt.GrainOf[*sessionactor.Grain](context.Background(), system, "conversation", goakt.WithLongLivedGrain())
+	identity, err := goakt.GrainOf[*sessionactor.Grain](context.Background(), system, sessionactor.RuntimeName("conversation"), goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,6 +167,7 @@ func TestSessionGrainCommitsAndReadsDetachedSnapshots(t *testing.T) {
 		t.Fatalf("uninitialized = %#v", unavailable)
 	}
 	initialized := request[sessionactor.Initialized](t, driver, replies, sessionactor.Initialize{
+		SessionID:  "conversation",
 		Storage:    newStorage(t),
 		CreationID: "creation",
 	})
@@ -200,6 +201,7 @@ func TestSessionGrainCommitsAndReadsDetachedSnapshots(t *testing.T) {
 	}
 	view.Snapshot.Events[0].Data[0] = '!'
 	repeated := request[sessionactor.Initialized](t, driver, replies, sessionactor.Initialize{
+		SessionID:  "conversation",
 		CreationID: "creation",
 	})
 	if repeated.Err != nil || repeated.Barrier.NextSeq != 1 {
@@ -223,6 +225,7 @@ func TestSessionGrainCommitsAndReadsDetachedSnapshots(t *testing.T) {
 func TestSessionGrainRejectsForeignCreationAndUnavailablePrefix(t *testing.T) {
 	driver, replies := startSession(t, "current")
 	initialized := request[sessionactor.Initialized](t, driver, replies, sessionactor.Initialize{
+		SessionID:  "conversation",
 		Storage:    newStorage(t),
 		CreationID: "current",
 	})
@@ -230,6 +233,7 @@ func TestSessionGrainRejectsForeignCreationAndUnavailablePrefix(t *testing.T) {
 		t.Fatal(initialized.Err)
 	}
 	foreign := request[sessionactor.Initialized](t, driver, replies, sessionactor.Initialize{
+		SessionID:  "conversation",
 		CreationID: "old",
 	})
 	if !errors.Is(foreign.Err, sessionactor.ErrCreation) {

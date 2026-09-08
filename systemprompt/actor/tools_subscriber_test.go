@@ -97,7 +97,7 @@ func TestToolsSubscriberAppliesPublishedViews(t *testing.T) {
 	_, system, _ := startRegistry(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	target, err := goakt.GrainOf[*promptactor.RuntimeGrain](ctx, system, "agent", goakt.WithLongLivedGrain())
+	target, err := goakt.GrainOf[*promptactor.RuntimeGrain](ctx, system, promptactor.RuntimeName("agent"), goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +282,7 @@ func TestToolsSubscriberReadsCatalogPublishedBeforeSubscription(t *testing.T) {
 	if committed := payload.(toolactor.Catalog); committed.Err != nil || committed.Definitions.Version != 1 {
 		t.Fatalf("publication: %#v", committed)
 	}
-	target, err := goakt.GrainOf[*promptactor.RuntimeGrain](ctx, system, "agent", goakt.WithLongLivedGrain())
+	target, err := goakt.GrainOf[*promptactor.RuntimeGrain](ctx, system, promptactor.RuntimeName("agent"), goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}

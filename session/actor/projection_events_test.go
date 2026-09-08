@@ -27,7 +27,9 @@ func (valuesProjection) InitialState() (json.RawMessage, error)                 
 func (valuesProjection) ViewState(state json.RawMessage) (json.RawMessage, error) { return state, nil }
 func (valuesProjection) ApplyState(state json.RawMessage, entry session.Event) (projection.Transition, error) {
 	if entry.Type != projectionValueName {
-		return projection.Transition{State: state}, nil
+		return projection.Transition{
+			State: state,
+		}, nil
 	}
 	var values []string
 	if err := json.Unmarshal(state, &values); err != nil {
@@ -74,7 +76,7 @@ func TestSessionCommitDrivesSubscribedProjectionAndCatchesUpMissingPrefix(t *tes
 	if initialized.Err != nil {
 		t.Fatal(initialized.Err)
 	}
-	identity, err := goakt.GrainOf[*sessionactor.Grain](ctx, system, "conversation", goakt.WithLongLivedGrain())
+	identity, err := goakt.GrainOf[*sessionactor.Grain](ctx, system, sessionactor.RuntimeName("conversation"), goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -64,12 +64,14 @@ func TestRegistryClosesFailedInitializationAndReleasesIdentity(t *testing.T) {
 func TestUnauthorizedEmptyCloseCannotSealNewInitialization(t *testing.T) {
 	driver, replies := startSession(t, "current")
 	rejected := request[sessionactor.Closed](t, driver, replies, sessionactor.Close{
+		SessionID:  "conversation",
 		CreationID: "stale",
 	})
 	if rejected.Err == nil {
 		t.Fatal("stale close acquired authority")
 	}
 	initialized := request[sessionactor.Initialized](t, driver, replies, sessionactor.Initialize{
+		SessionID:  "conversation",
 		CreationID: "current",
 		Storage:    newStorage(t),
 	})

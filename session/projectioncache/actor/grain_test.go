@@ -115,12 +115,13 @@ func systemForTest(t *testing.T) (goakt.ActorSystem, *goakt.PID, <-chan outcome)
 
 func openCache(t *testing.T, system goakt.ActorSystem, id string, backend projectioncache.CheckpointStore) *goakt.GrainIdentity {
 	t.Helper()
-	identity, err := goakt.GrainOf[*cacheactor.Grain](context.Background(), system, id, goakt.WithLongLivedGrain())
+	identity, err := goakt.GrainOf[*cacheactor.Grain](context.Background(), system, cacheactor.RuntimeName(id), goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}
 	result, err := system.AskGrain(context.Background(), identity, cacheactor.Initialize{
-		Storage: backend,
+		SessionID: session.SessionID(id),
+		Storage:   backend,
 	}, time.Second)
 	if err != nil {
 		t.Fatal(err)

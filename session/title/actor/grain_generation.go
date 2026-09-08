@@ -56,12 +56,16 @@ func (owner *Grain) beginGeneration(gc *goakt.GrainContext, input Generate, auto
 		err = errors.New("title: provider is required")
 	}
 	if err != nil {
-		gc.Response(Updated{Err: err})
+		gc.Response(Updated{
+			Err: err,
+		})
 		return
 	}
 	reply := gc.DeferResponse()
 	if reply == nil {
-		gc.Response(Updated{Err: errors.New("title: generation requires RequestGrain")})
+		gc.Response(Updated{
+			Err: errors.New("title: generation requires RequestGrain"),
+		})
 		return
 	}
 	selected.cancel()
@@ -82,13 +86,17 @@ func (owner *Grain) beginGeneration(gc *goakt.GrainContext, input Generate, auto
 func (owner *Grain) startGeneration(gc *goakt.GrainContext, work *generation) {
 	selected, err := owner.current(work)
 	if err != nil {
-		owner.finish(work, Updated{Err: err})
+		owner.finish(work, Updated{
+			Err: err,
+		})
 		return
 	}
 
 	completed := make(chan generationFallback, 1)
 	if err := gc.PipeToSelf(func() (any, error) { return <-completed, nil }); err != nil {
-		owner.finish(work, Updated{Err: err})
+		owner.finish(work, Updated{
+			Err: err,
+		})
 		return
 	}
 	gc.RequestGrain(selected.conversation, sessionactor.Commit{
@@ -117,12 +125,16 @@ func (owner *Grain) readGeneration(gc *goakt.GrainContext, input generationFallb
 		err = input.err
 	}
 	if err != nil {
-		owner.finish(work, Updated{Err: err})
+		owner.finish(work, Updated{
+			Err: err,
+		})
 		return
 	}
 	completed := make(chan generationRead, 1)
 	if err := gc.PipeToSelf(func() (any, error) { return <-completed, nil }); err != nil {
-		owner.finish(work, Updated{Err: err})
+		owner.finish(work, Updated{
+			Err: err,
+		})
 		return
 	}
 	gc.RequestGrain(selected.conversation, sessionactor.Read{
@@ -174,7 +186,9 @@ func (owner *Grain) prepareGeneration(gc *goakt.GrainContext, input generationRe
 		err = input.err
 	}
 	if err != nil {
-		owner.finish(work, Updated{Err: err})
+		owner.finish(work, Updated{
+			Err: err,
+		})
 		return
 	}
 	work.events = input.view.Snapshot.Events
@@ -183,19 +197,25 @@ func (owner *Grain) prepareGeneration(gc *goakt.GrainContext, input generationRe
 		err = title.ErrSuperseded
 	}
 	if err != nil {
-		owner.finish(work, Updated{Err: err})
+		owner.finish(work, Updated{
+			Err: err,
+		})
 		return
 	}
 	messages, err := title.CollectMessages(work.events, nil)
 	if err != nil {
-		owner.finish(work, Updated{Err: err})
+		owner.finish(work, Updated{
+			Err: err,
+		})
 		return
 	}
 
 	if work.refresh && (work.provider == nil || len(messages) == 0) {
 		plan, err := selected.rules.RefreshFallback(work.events)
 		if err != nil {
-			owner.finish(work, Updated{Err: err})
+			owner.finish(work, Updated{
+				Err: err,
+			})
 			return
 		}
 		owner.commitGeneration(gc, selected, work, plan)
@@ -204,7 +224,9 @@ func (owner *Grain) prepareGeneration(gc *goakt.GrainContext, input generationRe
 	if work.automatic != nil {
 		allowed, err := title.ShouldGenerate(selected.header, work.events, *work.automatic, work.provider.AutomaticMode())
 		if err != nil {
-			owner.finish(work, Updated{Err: err})
+			owner.finish(work, Updated{
+				Err: err,
+			})
 			return
 		}
 		if !allowed {
@@ -213,19 +235,23 @@ func (owner *Grain) prepareGeneration(gc *goakt.GrainContext, input generationRe
 		}
 	}
 	work.call, err = work.provider.Prepare(title.ProviderRequest{
-		SessionID: session.SessionID(gc.Self().Name()),
+		SessionID: selected.header.ID,
 		Messages:  messages,
 	})
 	if err == nil && work.call == nil {
 		err = errors.New("title: provider returned nil generation")
 	}
 	if err != nil {
-		owner.finish(work, Updated{Err: err})
+		owner.finish(work, Updated{
+			Err: err,
+		})
 		return
 	}
 	completed := make(chan generationRecorded, 1)
 	if err := gc.PipeToSelf(func() (any, error) { return <-completed, nil }); err != nil {
-		owner.finish(work, Updated{Err: err})
+		owner.finish(work, Updated{
+			Err: err,
+		})
 		return
 	}
 	gc.RequestGrain(selected.conversation, sessionactor.Commit{
@@ -254,12 +280,16 @@ func (owner *Grain) runGeneration(gc *goakt.GrainContext, input generationRecord
 		err = input.err
 	}
 	if err != nil {
-		owner.finish(work, Updated{Err: err})
+		owner.finish(work, Updated{
+			Err: err,
+		})
 		return
 	}
 	completed := make(chan generationReturned, 1)
 	if err := gc.PipeToSelf(func() (any, error) { return <-completed, nil }); err != nil {
-		owner.finish(work, Updated{Err: err})
+		owner.finish(work, Updated{
+			Err: err,
+		})
 		return
 	}
 	gc.RequestActor(selected.worker.Name(), generate{
@@ -290,12 +320,16 @@ func (owner *Grain) acceptGeneration(gc *goakt.GrainContext, input generationRet
 		err = input.err
 	}
 	if err != nil {
-		owner.finish(work, Updated{Err: err})
+		owner.finish(work, Updated{
+			Err: err,
+		})
 		return
 	}
 	plan, err := selected.rules.Accept(work.events, work.provider.ID(), input.result, work.refresh)
 	if err != nil {
-		owner.finish(work, Updated{Err: err})
+		owner.finish(work, Updated{
+			Err: err,
+		})
 		return
 	}
 	owner.commitGeneration(gc, selected, work, plan)
@@ -306,7 +340,9 @@ func (owner *Grain) commitGeneration(gc *goakt.GrainContext, selected *binding, 
 		CreationID: work.creationID,
 		Plan:       plan,
 	}, goakt.WithRequestTimeout(0)).Then(func(payload any, failure error) {
-		result := Updated{Err: failure}
+		result := Updated{
+			Err: failure,
+		}
 		if failure == nil {
 			committed, ok := payload.(sessionactor.Committed)
 			if !ok {

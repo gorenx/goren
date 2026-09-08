@@ -66,3 +66,7 @@ type Generate struct {
 	// With no Provider or no human messages, refresh uses the deterministic fallback policy.
 	Refresh bool
 }
+
+// RuntimeName returns this service's stable address within a Session lifetime.
+// Business identity is carried explicitly in messages, never parsed from this name.
+func RuntimeName(identifier string) string { return identifier + ".title" }

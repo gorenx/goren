@@ -105,7 +105,7 @@ func TestRegistryRequestsPreserveCreationAndAncestorAdmission(t *testing.T) {
 		AgentID:    "child",
 		CreationID: "child-first",
 	}
-	executor, err := goakt.GrainOf[*registry.Grain](ctx, system, "parent", goakt.WithLongLivedGrain())
+	executor, err := goakt.GrainOf[*executorStub](ctx, system, "parent.agentloop", goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,11 +147,6 @@ func TestRegistryRequestsPreserveCreationAndAncestorAdmission(t *testing.T) {
 			t.Fatalf("conflicting activation = %v", result.Err)
 		}
 	}
-	if result := request[registry.Completion](t, driver, replies, registry.ReleaseReservation{
-		Creation: parent,
-	}); result.Err == nil {
-		t.Fatal("released parent with child")
-	}
 	if result := request[registry.CloseAccepted](t, driver, replies, registry.BeginClose{
 		Creation: parent,
 	}); result.Err != nil {
@@ -191,7 +186,7 @@ func TestRegistryRequestsPreserveCreationAndAncestorAdmission(t *testing.T) {
 		t.Fatalf("descendant creation = %v", result.Err)
 	}
 	for _, current := range []registry.Creation{child, parent} {
-		if result := request[registry.Completion](t, driver, replies, registry.ReleaseReservation{
+		if result := request[agentactor.Closed](t, driver, replies, registry.CloseAgent{
 			Creation: current,
 		}); result.Err != nil {
 			t.Fatal(result.Err)
@@ -228,9 +223,6 @@ func TestRegistryRequestsPreserveCreationAndAncestorAdmission(t *testing.T) {
 		t.Fatalf("stale close = %+v", result)
 	}
 	for _, input := range []any{
-		registry.ReleaseReservation{
-			Creation: parent,
-		},
 		registry.Reserve{
 			Creation: child,
 			Parent:   &parent,
@@ -252,5 +244,21 @@ func TestRegistryRequestsPreserveCreationAndAncestorAdmission(t *testing.T) {
 		Creation: replacement,
 	}); result.Err != nil {
 		t.Fatal("stale operation affected replacement", result.Err)
+	}
+}
+
+// executorStub isolates directory rules from AgentLoop business execution.
+type executorStub struct{}
+
+func (*executorStub) OnActivate(context.Context, *goakt.GrainProps) error   { return nil }
+func (*executorStub) OnDeactivate(context.Context, *goakt.GrainProps) error { return nil }
+func (*executorStub) OnReceive(gc *goakt.GrainContext) {
+	switch gc.Message().(type) {
+	case agentactor.PrepareClose:
+		gc.Response(agentactor.Prepared{})
+	case agentactor.CloseResources:
+		gc.Response(agentactor.Closed{})
+	default:
+		gc.Unhandled()
 	}
 }

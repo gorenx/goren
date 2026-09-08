@@ -37,7 +37,7 @@ func (owner *Grain) appended(gc *goakt.GrainContext, fact sessionactor.CommitNot
 		return
 	}
 	system := gc.ActorSystem()
-	identity, err := goakt.GrainOf[*sessionactor.Grain](gc.Context(), system, string(fact.SessionID), goakt.WithLongLivedGrain())
+	identity, err := goakt.GrainOf[*sessionactor.Grain](gc.Context(), system, sessionactor.RuntimeName(string(fact.SessionID)), goakt.WithLongLivedGrain())
 	if err != nil {
 		gc.Response(Completion{
 			Err: err,

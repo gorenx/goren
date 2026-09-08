@@ -83,11 +83,12 @@ func TestHumanMessageGeneratesTitleWithoutMainRequest(t *testing.T) {
 	if reserved.Err != nil {
 		t.Fatal(reserved.Err)
 	}
-	conversation, err := goakt.GrainOf[*sessionactor.Grain](ctx, system, "conversation", goakt.WithLongLivedGrain())
+	conversation, err := goakt.GrainOf[*sessionactor.Grain](ctx, system, sessionactor.RuntimeName("conversation"), goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}
 	initialized := request[sessionactor.Initialized](t, driver, replies, conversation, sessionactor.Initialize{
+		SessionID:  "conversation",
 		Authority:  registry,
 		CreationID: "creation",
 		Storage:    backend,
@@ -95,7 +96,7 @@ func TestHumanMessageGeneratesTitleWithoutMainRequest(t *testing.T) {
 	if initialized.Err != nil {
 		t.Fatal(initialized.Err)
 	}
-	identity, err := goakt.GrainOf[*titleactor.Grain](ctx, system, "conversation", goakt.WithLongLivedGrain())
+	identity, err := goakt.GrainOf[*titleactor.Grain](ctx, system, titleactor.RuntimeName("conversation"), goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +139,9 @@ func TestHumanMessageGeneratesTitleWithoutMainRequest(t *testing.T) {
 	}
 	message, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
 		Content: []agentmessage.ContentBlock{agentmessage.NewTextBlock("human prompt")},
-		Source:  agentmessage.UserMessageSource{Kind: "user"},
+		Source: agentmessage.UserMessageSource{
+			Kind: "user",
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -170,7 +173,9 @@ func TestHumanMessageGeneratesTitleWithoutMainRequest(t *testing.T) {
 			t.Fatal("human event did not generate a title")
 		}
 	}
-	captured := request[sessionactor.View](t, driver, replies, conversation, sessionactor.Read{CreationID: "creation"})
+	captured := request[sessionactor.View](t, driver, replies, conversation, sessionactor.Read{
+		CreationID: "creation",
+	})
 	if captured.Err != nil {
 		t.Fatal(captured.Err)
 	}

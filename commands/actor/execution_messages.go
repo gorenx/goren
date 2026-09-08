@@ -2,12 +2,14 @@ package commandactor
 
 import (
 	"github.com/gorenx/goren/commands"
+	"github.com/gorenx/goren/session"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"time"
 )
 
 // Initialize binds one Session's command execution routes.
 type Initialize struct {
+	SessionID  session.SessionID
 	CreationID string
 	Session    *goakt.GrainIdentity
 	Registry   *goakt.GrainIdentity
@@ -64,3 +66,7 @@ type CancelInvocation struct {
 	CommandID  commands.ID
 	Cause      error
 }
+
+// RuntimeName returns this service's stable address within a Session lifetime.
+// Business identity is carried explicitly in messages, never parsed from this name.
+func RuntimeName(identifier string) string { return identifier + ".commands" }

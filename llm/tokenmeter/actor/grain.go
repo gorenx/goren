@@ -87,7 +87,7 @@ func (owner *Grain) close(name string, identifier session.SessionID, creationID 
 }
 
 func validateCreation(name string, identifier session.SessionID, creationID string) error {
-	if identifier == "" || string(identifier) != name || creationID == "" {
+	if identifier == "" || RuntimeName(string(identifier)) != name || creationID == "" {
 		return errors.New("tokenmeter: matching Session and non-empty creation identity are required")
 	}
 	return nil

@@ -36,12 +36,6 @@ type CloseAccepted struct {
 	Err      error
 }
 
-// ReleaseReservation removes a reservation after its lifecycle owner confirms
-// that no owned resources remain. It is not an external close operation.
-type ReleaseReservation struct {
-	Creation Creation
-}
-
 // Completion acknowledges the requested registry operation only.
 type Completion struct {
 	Err error

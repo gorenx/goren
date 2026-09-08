@@ -50,7 +50,9 @@ func (owner *Grain) OnActivate(context.Context, *goakt.GrainProps) error {
 func (owner *Grain) OnDeactivate(context.Context, *goakt.GrainProps) error {
 	if owner.admission != nil {
 		owner.admission.cancel()
-		owner.admission.reply.Response(Initialized{Err: ErrUnavailable})
+		owner.admission.reply.Response(Initialized{
+			Err: ErrUnavailable,
+		})
 		owner.admission = nil
 	}
 	if owner.restoring != nil {
@@ -124,6 +126,7 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 			return
 		}
 		gc.Response(View{
+			Header:   owner.history.Header(),
 			Snapshot: owner.history.Snapshot(),
 		})
 	default:

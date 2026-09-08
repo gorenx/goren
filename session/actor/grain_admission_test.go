@@ -37,10 +37,12 @@ func TestInitializationRequiresReservationBeforeStorageAccess(t *testing.T) {
 	}
 	for _, input := range []any{
 		sessionactor.Initialize{
+			SessionID:  "conversation",
 			CreationID: "unreserved",
 			Storage:    backend,
 		},
 		sessionactor.Resume{
+			SessionID:  "conversation",
 			CreationID: "unreserved",
 			Storage:    backend,
 		},
@@ -54,6 +56,7 @@ func TestInitializationRequiresReservationBeforeStorageAccess(t *testing.T) {
 		t.Fatal("unauthorized initialization accessed storage")
 	}
 	initialized := request[sessionactor.Initialized](t, driver, replies, sessionactor.Initialize{
+		SessionID:  "conversation",
 		CreationID: "authorized",
 		Storage:    backend,
 	})
@@ -66,7 +69,7 @@ func TestReactivationCannotReuseClaimAndNewCreationCanOpen(t *testing.T) {
 	driver, replies := startSession(t, "creation")
 	system := driver.ActorSystem()
 	ctx := context.Background()
-	identity, err := goakt.GrainOf[*sessionactor.Grain](ctx, system, "conversation", goakt.WithLongLivedGrain())
+	identity, err := goakt.GrainOf[*sessionactor.Grain](ctx, system, sessionactor.RuntimeName("conversation"), goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,6 +77,7 @@ func TestReactivationCannotReuseClaimAndNewCreationCanOpen(t *testing.T) {
 		RecoveryStorage: newStorage(t),
 	}
 	initialized := request[sessionactor.Initialized](t, driver, replies, sessionactor.Initialize{
+		SessionID:  "conversation",
 		CreationID: "creation",
 		Storage:    backend,
 	})
@@ -81,6 +85,7 @@ func TestReactivationCannotReuseClaimAndNewCreationCanOpen(t *testing.T) {
 		t.Fatal(initialized.Err)
 	}
 	closed := request[sessionactor.Closed](t, driver, replies, sessionactor.Close{
+		SessionID:  "conversation",
 		CreationID: "creation",
 	})
 	if closed.Err != nil {
@@ -109,10 +114,12 @@ func TestReactivationCannotReuseClaimAndNewCreationCanOpen(t *testing.T) {
 	}
 	for _, input := range []any{
 		sessionactor.Initialize{
+			SessionID:  "conversation",
 			CreationID: "creation",
 			Storage:    backend,
 		},
 		sessionactor.Resume{
+			SessionID:  "conversation",
 			CreationID: "creation",
 			Storage:    backend,
 		},
@@ -158,6 +165,7 @@ func TestReactivationCannotReuseClaimAndNewCreationCanOpen(t *testing.T) {
 		}
 	}
 	replacement := request[sessionactor.Initialized](t, driver, replies, sessionactor.Initialize{
+		SessionID:  "conversation",
 		CreationID: "replacement",
 		Storage:    backend,
 	})

@@ -51,7 +51,7 @@ func (listener *Subscriber) Receive(rc *goakt.ReceiveContext) {
 			rc.Tell(listener.startup, Subscribed{})
 		}
 	case sessionactor.CommitNotice:
-		if input.CreationID != listener.creationID || string(input.SessionID) != listener.target.Name() {
+		if input.CreationID != listener.creationID || RuntimeName(string(input.SessionID)) != listener.target.Name() {
 			return
 		}
 		logger := rc.ActorSystem().Logger()
@@ -69,7 +69,7 @@ func (listener *Subscriber) Receive(rc *goakt.ReceiveContext) {
 			}
 		})
 	case sessionactor.ClosedNotice:
-		if input.CreationID != listener.creationID || string(input.SessionID) != listener.target.Name() {
+		if input.CreationID != listener.creationID || RuntimeName(string(input.SessionID)) != listener.target.Name() {
 			return
 		}
 		ctx, self, logger := context.WithoutCancel(rc.Context()), rc.Self(), rc.ActorSystem().Logger()

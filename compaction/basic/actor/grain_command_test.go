@@ -111,7 +111,7 @@ func TestCompactionRegistersAndExecutesItsCommand(t *testing.T) {
 			}, time.Second); err != nil {
 				t.Fatal(err)
 			}
-			meter, err := goakt.GrainOf[*meteractor.Grain](ctx, system, "conversation", goakt.WithLongLivedGrain())
+			meter, err := goakt.GrainOf[*meteractor.Grain](ctx, system, meteractor.RuntimeName("conversation"), goakt.WithLongLivedGrain())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -123,7 +123,7 @@ func TestCompactionRegistersAndExecutesItsCommand(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			target, err := goakt.GrainOf[*registrationProbe](ctx, system, "conversation", goakt.WithLongLivedGrain())
+			target, err := goakt.GrainOf[*registrationProbe](ctx, system, RuntimeName("conversation"), goakt.WithLongLivedGrain())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -175,11 +175,12 @@ func TestCompactionRegistersAndExecutesItsCommand(t *testing.T) {
 				}
 				return output
 			}
-			executor, err := goakt.GrainOf[*commandactor.Grain](ctx, system, "conversation", goakt.WithLongLivedGrain())
+			executor, err := goakt.GrainOf[*commandactor.Grain](ctx, system, commandactor.RuntimeName("conversation"), goakt.WithLongLivedGrain())
 			if err != nil {
 				t.Fatal(err)
 			}
 			if result := ask(executor, commandactor.Initialize{
+				SessionID:  "conversation",
 				CreationID: "creation",
 				Session:    conversation,
 				Registry:   catalog,

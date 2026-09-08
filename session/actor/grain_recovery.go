@@ -35,7 +35,7 @@ func (owner *Grain) startResume(gc *goakt.GrainContext, input Resume) {
 	switch {
 	case owner.admission != nil || owner.restoring != nil:
 		err = ErrRestoring
-	case input.CreationID == "" || (owner.history != nil && input.CreationID != owner.creationID):
+	case input.SessionID == "" || gc.Self().Name() != RuntimeName(string(input.SessionID)) || input.CreationID == "" || (owner.history != nil && input.CreationID != owner.creationID):
 		err = ErrCreation
 	case owner.closing != nil:
 		err = session.ErrWritesClosed
@@ -55,18 +55,19 @@ func (owner *Grain) startResume(gc *goakt.GrainContext, input Resume) {
 		})
 		return
 	}
-	owner.beginAdmission(gc, input.CreationID, nil, input.Storage, input.Storage, input.Authority)
+	owner.beginAdmission(gc, input.SessionID, input.CreationID, nil, input.Storage, input.Storage, input.Authority)
 }
 
 func (owner *Grain) resume(gc *goakt.GrainContext, pending *admission) {
 	reply := pending.reply
 	input := Resume{
+		SessionID:  pending.sessionID,
 		CreationID: pending.creationID,
 		Storage:    pending.recovery,
 	}
 	ctx, cancel := context.WithCancel(gc.Context())
 	token := uuid.NewString()
-	identifier := session.SessionID(gc.Self().Name())
+	identifier := input.SessionID
 	storage := input.Storage
 	owner.restoring = &restoration{
 		token:      token,
@@ -137,7 +138,9 @@ func restore(ctx context.Context, identifier session.SessionID, storage Recovery
 			return nil, 0, err
 		}
 		if stored == nil {
-			return nil, 0, &persistence.NotFoundError{ID: identifier}
+			return nil, 0, &persistence.NotFoundError{
+				ID: identifier,
+			}
 		}
 		recovery, err := persistence.Recover(identifier, *stored)
 		if err != nil {

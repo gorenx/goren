@@ -12,7 +12,7 @@ import (
 // It never treats absence of an in-memory log as absence of durable data.
 func (owner *Grain) closeEmpty(gc *goakt.GrainContext, input Close) {
 	switch {
-	case input.CreationID == "":
+	case input.SessionID == "" || gc.Self().Name() != RuntimeName(string(input.SessionID)) || input.CreationID == "":
 		gc.Response(Closed{
 			Err: ErrCreation,
 		})
@@ -53,7 +53,7 @@ func (owner *Grain) closeEmpty(gc *goakt.GrainContext, input Close) {
 		})
 		return
 	}
-	identifier := session.SessionID(gc.Self().Name())
+	identifier := input.SessionID
 	gc.RequestGrain(input.Authority, Claim{
 		SessionID:  identifier,
 		CreationID: input.CreationID,
