@@ -18,10 +18,11 @@ var ErrAsyncRequest = errors.New("systemprompt: asynchronous request required")
 
 // RuntimeGrain schedules one Agent's assembly independently of shared registration.
 type RuntimeGrain struct {
-	runtime  *systemprompt.Runtime
-	assembly *assembly
-	closing  *goakt.GrainReply
-	closed   bool
+	runtime        *systemprompt.Runtime
+	assembly       *assembly
+	closing        *goakt.GrainReply
+	closed         bool
+	initialization *runtimeInitialization
 }
 
 type assemblyFinished struct {
@@ -41,6 +42,9 @@ func (*RuntimeGrain) OnActivate(context.Context, *goakt.GrainProps) error { retu
 
 // OnDeactivate cancels work on forced shutdown; normal CloseRuntime drains first.
 func (owner *RuntimeGrain) OnDeactivate(context.Context, *goakt.GrainProps) error {
+	if owner.initialization != nil {
+		owner.finishInitialization(owner.initialization, 0, ErrUnavailable)
+	}
 	if owner.assembly != nil {
 		owner.assembly.cancel()
 		owner.assembly.reply.Response(Assembled{
@@ -62,19 +66,9 @@ func (owner *RuntimeGrain) OnDeactivate(context.Context, *goakt.GrainProps) erro
 func (owner *RuntimeGrain) OnReceive(gc *goakt.GrainContext) {
 	switch incoming := gc.Message().(type) {
 	case InitializeRuntime:
-		if owner.runtime != nil || owner.closed {
-			gc.Response(Completion{
-				Err: ErrUnavailable,
-			})
-			return
-		}
-		business, err := systemprompt.NewRuntime(incoming.AgentID, incoming.Definitions)
-		if err == nil {
-			owner.runtime = business
-		}
-		gc.Response(Completion{
-			Err: err,
-		})
+		owner.initializeRuntime(gc, incoming)
+	case promptPrepared:
+		owner.initializeTools(gc, incoming)
 	case ApplyTools:
 		if owner.runtime == nil || owner.closed || owner.closing != nil {
 			gc.Response(Completion{

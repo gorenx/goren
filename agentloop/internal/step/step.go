@@ -4,6 +4,7 @@ package step
 import (
 	"errors"
 	"fmt"
+	"github.com/gorenx/goren/session"
 )
 
 // State is the complete lifecycle of one admitted Step.
@@ -44,6 +45,9 @@ const (
 
 // Step owns one Step position and its open/close boundary.
 type Step struct {
+	inputOffset  int
+	lastInputSeq int64
+	input        *Input
 	turnNumber   int64
 	stepNumber   int64
 	currentState State
@@ -52,8 +56,8 @@ type Step struct {
 
 // New constructs a proposed Step position.
 func New(turnNumber int64, stepNumber int64) (*Step, error) {
-	if turnNumber <= 0 || stepNumber <= 0 {
-		return nil, errors.New("agentloop step: position must be positive")
+	if turnNumber <= 0 || stepNumber <= 0 || turnNumber > 1<<53-1 || stepNumber > 1<<53-1 {
+		return nil, errors.New("agentloop step: position must contain positive safe integers")
 	}
 	return &Step{
 		turnNumber:   turnNumber,
@@ -62,15 +66,23 @@ func New(turnNumber int64, stepNumber int64) (*Step, error) {
 	}, nil
 }
 
-// EnterOpen records that step/start committed and moves the Step from
-// proposed to open.
-func (current *Step) EnterOpen() error {
+// ConfirmStart opens the captured Step only after its matching start commits.
+// The start sequence also excludes acknowledgements from older input batches.
+func (current *Step) ConfirmStart(committed session.Event) error {
 	if current == nil {
 		return errors.New("agentloop step: Step is nil")
 	}
-	if current.currentState != StateProposed {
-		return current.transitionError("enter open")
+	if current.currentState != StateProposed || current.input == nil {
+		return current.transitionError("confirm start")
 	}
+	draft, err := current.StartDraft()
+	if err != nil {
+		return err
+	}
+	if err := draft.CheckCommit(committed); err != nil {
+		return err
+	}
+	current.lastInputSeq = committed.Seq
 	current.currentState = StateOpen
 	return nil
 }
@@ -83,6 +95,9 @@ func (current *Step) EnterRequesting() error {
 	}
 	if current.currentState != StateOpen {
 		return current.transitionError("enter requesting")
+	}
+	if current.input == nil || current.inputOffset != len(current.input.Messages) {
+		return errors.New("agentloop step: admitted input has not fully committed")
 	}
 	current.currentState = StateRequesting
 	return nil
@@ -111,21 +126,30 @@ func (current *Step) EnterSettling(result StepResult) error {
 		current.currentState != StateTooling {
 		return current.transitionError("enter settling")
 	}
-	if result == StepResultNone {
-		return errors.New("agentloop step: settlement outcome is empty")
+	switch result {
+	case StepResultContinue, StepResultCompleted, StepResultMaxTokens, StepResultError, StepResultAborted:
+	default:
+		return fmt.Errorf("agentloop step: invalid settlement outcome %d", result)
 	}
 	current.conclusion = result
 	current.currentState = StateSettling
 	return nil
 }
 
-// EnterClosed records that step/end committed and closes the Step.
-func (current *Step) EnterClosed() error {
+// ConfirmEnd closes the Step only after its matching end event commits.
+func (current *Step) ConfirmEnd(committed session.Event) error {
 	if current == nil {
 		return errors.New("agentloop step: Step is nil")
 	}
-	if current.currentState != StateSettling {
-		return current.transitionError("enter closed")
+	draft, err := current.EndDraft()
+	if err != nil {
+		return err
+	}
+	if err := draft.CheckCommit(committed); err != nil {
+		return err
+	}
+	if committed.Seq <= current.lastInputSeq {
+		return errors.New("agentloop step: end precedes its start or committed input")
 	}
 	current.currentState = StateClosed
 	return nil

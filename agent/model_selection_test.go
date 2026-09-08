@@ -1,190 +1,118 @@
 package agent_test
 
 import (
-	"context"
-	"testing"
-
+	"encoding/json"
 	agentcore "github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/systemprompt"
+	"github.com/gorenx/goren/session"
+	"testing"
 )
 
-type modelSelectionEditor struct {
-	agentcore.ScopeEditor
-	prompt  systemprompt.AssemblyMiddleware
-	request agentcore.RequestMiddleware
-}
-
-func (editor *modelSelectionEditor) UsePromptAssembly(
-	middleware systemprompt.AssemblyMiddleware,
-) error {
-	editor.prompt = middleware
-	return nil
-}
-
-func (editor *modelSelectionEditor) UseRequest(
-	middleware agentcore.RequestMiddleware,
-) error {
-	editor.request = middleware
-	return nil
-}
-
-func (*modelSelectionEditor) Own(agentcore.ScopeResource) error { return nil }
-
-type promptAssemblyAction struct{}
-
-func (promptAssemblyAction) Execute(
-	context.Context,
-	systemprompt.AssembleRequest,
-) (systemprompt.PromptAssembly, error) {
-	return systemprompt.PromptAssembly{}, nil
-}
-
-func TestModelSelectionSnapshotsPromptAndRequestTogether(t *testing.T) {
-	t.Parallel()
-	subject := newRegistryAgent("model-selection")
-	selection := &agentcore.ModelSelectionRef{}
-	selectionSetup, err := agentcore.NewModelSelectionSetup(selection)
-	if err != nil {
-		t.Fatal(err)
+func TestModelSelectionUsesExplicitThenRecordedThenDefault(t *testing.T) {
+	explicit := agentcore.ModelSelection{
+		Provider: "explicit",
+		Model:    "selected",
 	}
-	editor := &modelSelectionEditor{}
-	if err = selectionSetup.Apply(
-		context.Background(),
-		subject,
-		editor,
-	); err != nil {
-		t.Fatal(err)
+	defaults := agentcore.ModelSelection{
+		Provider: "default",
+		Model:    "fallback",
 	}
-	selection.SetCurrent(&agentcore.ModelSelection{
-		Provider:        "alpha",
-		Model:           "a1",
-		ReasoningEffort: llm.ReasoningEffortID("high"),
-	})
-	assembled, err := editor.prompt.InterceptAssembly(
-		context.Background(),
-		systemprompt.AssembleRequest{},
-		promptAssemblyAction{},
-	)
-	if err != nil {
-		t.Fatal(err)
+	recorded := agentcore.ModelSelection{
+		Provider: "recorded",
+		Model:    "previous",
 	}
-	if assembled.Variables["provider"].Value != "alpha" ||
-		assembled.Variables["model"].Value != "a1" {
-		t.Fatalf("prompt variables = %#v", assembled.Variables)
-	}
-	selection.SetCurrent(&agentcore.ModelSelection{
-		Provider: "beta",
-		Model:    "b1",
-	})
-	resolution, err := editor.request.InterceptRequest(
-		context.Background(),
-		agentcore.RequestNotice{
-			Subject: subject,
-			Turn:    1,
-			Step:    1,
-		},
-		requestResolutionAction{
-			resolution: agentcore.RequestResolution{
-				Config: llm.CallConfig{
-					Provider:        "seed",
-					Model:           "seed",
-					ReasoningEffort: "max",
-				},
+	encoded, err := json.Marshal(session.RequestHeaderSnapshot{
+		Header: session.EpochHeader{
+			Config: llm.CallConfig{
+				Provider: recorded.Provider,
+				Model:    recorded.Model,
 			},
 		},
-	)
+		Reason: session.RequestHeaderInitial,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved := resolution.Config
-	if resolved.Provider != "alpha" || resolved.Model != "a1" ||
-		resolved.ReasoningEffort != "high" {
-		t.Fatalf("request selection = %#v", resolved)
-	}
-	if _, err := editor.prompt.InterceptAssembly(
-		context.Background(),
-		systemprompt.AssembleRequest{},
-		promptAssemblyAction{},
-	); err != nil {
-		t.Fatal(err)
-	}
-	resolution, err = editor.request.InterceptRequest(
-		context.Background(),
-		agentcore.RequestNotice{
-			Subject: subject,
-			Turn:    1,
-			Step:    2,
+	entries := []session.Event{
+		{
+			Seq:  0,
+			Type: session.RequestHeaderEventName,
+			Data: encoded,
 		},
-		requestResolutionAction{
-			resolution: agentcore.RequestResolution{
-				Config: llm.CallConfig{
-					Provider:        "seed",
-					Model:           "seed",
-					ReasoningEffort: "max",
-				},
+	}
+	for _, testCase := range []struct {
+		name      string
+		requested *agentcore.ModelSelection
+		events    []session.Event
+		fallback  agentcore.ModelSelection
+		want      *agentcore.ModelSelection
+	}{
+		{
+			name:      "explicit",
+			requested: &explicit,
+			events:    entries,
+			fallback:  defaults,
+			want:      &explicit,
+		},
+		{
+			name:     "recorded",
+			events:   entries,
+			fallback: defaults,
+			want:     &recorded,
+		},
+		{
+			name:     "default",
+			fallback: defaults,
+			want:     &defaults,
+		},
+		{
+			name: "absent",
+		},
+		{
+			name: "incomplete default",
+			fallback: agentcore.ModelSelection{
+				Provider: "alone",
 			},
 		},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resolved = resolution.Config
-	if resolved.Provider != "beta" || resolved.Model != "b1" ||
-		resolved.ReasoningEffort != "" {
-		t.Fatalf("second request selection = %#v", resolved)
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			got, err := agentcore.ResolveModelSelection(testCase.requested, testCase.events, testCase.fallback)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if testCase.want == nil {
+				if got != nil {
+					t.Fatalf("selection = %#v", got)
+				}
+				return
+			}
+			if got == nil || *got != *testCase.want {
+				t.Fatalf("selection = %#v, want %#v", got, testCase.want)
+			}
+			got.Model = "mutated"
+			if testCase.want.Model == "mutated" {
+				t.Fatal("result aliases input")
+			}
+		})
 	}
 }
 
-func TestModelSelectionReadsLiveFallbackUntilExplicitlySelected(t *testing.T) {
-	t.Parallel()
-	fallback := agentcore.ModelSelection{
-		Provider: "first",
-		Model:    "one",
-	}
-	selection := agentcore.NewModelSelectionRef(
-		func() (agentcore.ModelSelection, bool, error) {
-			return fallback, true, nil
+func TestModelSelectionDoesNotHideRecoveryErrors(t *testing.T) {
+	events := []session.Event{
+		{
+			Type: session.RequestHeaderEventName,
+			Data: json.RawMessage(`{`),
 		},
-	)
-	current, found, err := selection.Current()
-	if err != nil || !found || current != fallback {
-		t.Fatalf(
-			"initial current = %#v, found = %t, error = %v",
-			current,
-			found,
-			err,
-		)
 	}
-	fallback = agentcore.ModelSelection{
-		Provider: "second",
-		Model:    "two",
-	}
-	current, found, err = selection.Current()
-	if err != nil || !found || current != fallback {
-		t.Fatalf(
-			"live current = %#v, found = %t, error = %v",
-			current,
-			found,
-			err,
-		)
+	if _, err := agentcore.ResolveModelSelection(nil, events, agentcore.ModelSelection{}); err == nil {
+		t.Fatal("invalid log became an absent selection")
 	}
 	explicit := agentcore.ModelSelection{
-		Provider: "chosen",
-		Model:    "exact",
+		Provider: "explicit",
+		Model:    "selected",
 	}
-	selection.SetCurrent(&explicit)
-	fallback = agentcore.ModelSelection{
-		Provider: "third",
-		Model:    "three",
-	}
-	current, found, err = selection.Current()
-	if err != nil || !found || current != explicit {
-		t.Fatalf(
-			"explicit current = %#v, found = %t, error = %v",
-			current,
-			found,
-			err,
-		)
+	got, err := agentcore.ResolveModelSelection(&explicit, events, agentcore.ModelSelection{})
+	if err != nil || got == nil || *got != explicit {
+		t.Fatal("explicit choice unnecessarily read fallback")
 	}
 }

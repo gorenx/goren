@@ -6,49 +6,32 @@ import (
 	"fmt"
 )
 
-// State is the complete lifecycle of one ToolBatch.
-type State uint8
+// StopReason distinguishes cancellation settlement from scheduler failure.
+type StopReason uint8
 
 const (
-	// StatePlanned has not admitted a Tool call.
-	StatePlanned State = iota
-	// StateDispatching admits calls and accepts settled results in model order.
-	StateDispatching
-	// StateDraining stops new dispatch after cancellation or scheduler failure.
-	StateDraining
-	// StateSettling verifies all required Tool results were accepted.
-	StateSettling
-	// StateClosed has completed the ToolBatch boundary.
-	StateClosed
+	// NotStopped records that dispatch has not been interrupted.
+	NotStopped StopReason = iota
+	// Canceled requires synthetic pairs for calls not dispatched.
+	Canceled
+	// ExecutionFailed forbids fabricated results after scheduler failure.
+	ExecutionFailed
 )
 
-// DrainReason distinguishes cancellation settlement from scheduler failure.
-type DrainReason uint8
-
-const (
-	// DrainNone records that dispatch has not been interrupted.
-	DrainNone DrainReason = iota
-	// DrainCancellation requires synthetic pairs for calls not dispatched.
-	DrainCancellation
-	// DrainFailure forbids fabricated results after scheduler failure.
-	DrainFailure
-)
-
-// ToolBatch owns started, settled, and model-order accepted call positions.
+// ToolBatch owns dispatch and committed-result prefixes plus out-of-order call exits.
 type ToolBatch struct {
-	currentState           State
-	drainReason            DrainReason
-	limit                  int
-	started                []bool
-	settled                []bool
-	accepted               []bool
+	completed  bool
+	stopReason StopReason
+	limit      int
+	finished   []bool
+	// Both cursors advance for cancellation results of calls never dispatched.
 	nextToStart            int
 	nextToAccept           int
 	inFlight               int
 	stopsModelContinuation bool
 }
 
-// New constructs one planned Tool call batch.
+// New constructs a batch ready to dispatch calls.
 func New(callCount int, parallelLimit int) (*ToolBatch, error) {
 	if callCount <= 0 {
 		return nil, errors.New("agentloop ToolBatch: call count must be positive")
@@ -57,155 +40,119 @@ func New(callCount int, parallelLimit int) (*ToolBatch, error) {
 		return nil, errors.New("agentloop ToolBatch: parallel limit must be positive")
 	}
 	return &ToolBatch{
-		currentState: StatePlanned,
-		limit:        parallelLimit,
-		started:      make([]bool, callCount),
-		settled:      make([]bool, callCount),
-		accepted:     make([]bool, callCount),
+		limit:    parallelLimit,
+		finished: make([]bool, callCount),
 	}, nil
-}
-
-// EnterDispatching moves a planned ToolBatch into call dispatch.
-func (current *ToolBatch) EnterDispatching() error {
-	if current == nil {
-		return errors.New("agentloop ToolBatch: ToolBatch is nil")
-	}
-	if current.currentState != StatePlanned {
-		return current.transitionError("enter dispatching", current.nextToStart)
-	}
-	current.currentState = StateDispatching
-	return nil
 }
 
 // CanStart reports whether the next model-order call can enter dispatch.
 func (current *ToolBatch) CanStart() bool {
 	return current != nil &&
-		current.currentState == StateDispatching &&
-		current.nextToStart < len(current.started) &&
+		!current.completed && current.stopReason == NotStopped &&
+		current.nextToStart < len(current.finished) &&
 		current.inFlight < current.limit
 }
 
-// RecordCallStart records a call start and reserves one in-flight position
-// without changing the batch lifecycle state.
-func (current *ToolBatch) RecordCallStart(index int) error {
+// StartCall reserves one in-flight position before dispatch.
+func (current *ToolBatch) StartCall(index int) error {
 	if current == nil {
 		return errors.New("agentloop ToolBatch: ToolBatch is nil")
 	}
 	if !current.CanStart() || index != current.nextToStart {
 		return current.transitionError("start call", index)
 	}
-	current.started[index] = true
 	current.nextToStart++
 	current.inFlight++
 	return nil
 }
 
-// RecordCallSettlement records that one started body or immediate policy result
-// completed without changing the batch lifecycle state.
-func (current *ToolBatch) RecordCallSettlement(index int) error {
+// CompleteCall confirms a started body or immediate policy result has finished.
+func (current *ToolBatch) CompleteCall(index int) error {
 	if current == nil {
 		return errors.New("agentloop ToolBatch: ToolBatch is nil")
 	}
-	if index < 0 || index >= len(current.started) || !current.started[index] ||
-		current.settled[index] {
+	if index < current.nextToAccept || index >= current.nextToStart ||
+		current.finished[index] {
 		return current.transitionError("settle call", index)
 	}
-	if current.currentState != StateDispatching &&
-		current.currentState != StateDraining {
+	if current.completed {
 		return current.transitionError("settle call", index)
 	}
-	current.settled[index] = true
+	current.finished[index] = true
 	current.inFlight--
 	return nil
 }
 
-// RecordAcceptedResult records a committed real Tool result in model order.
-func (current *ToolBatch) RecordAcceptedResult(
+// AcceptResult records a committed real Tool result in model order.
+func (current *ToolBatch) AcceptResult(
 	index int,
 	stopContinuation bool,
 ) error {
 	if current == nil {
 		return errors.New("agentloop ToolBatch: ToolBatch is nil")
 	}
-	if current.currentState != StateDispatching &&
-		current.currentState != StateDraining {
+	if current.completed {
 		return current.transitionError("accept call", index)
 	}
 	if index != current.nextToAccept || index < 0 ||
-		index >= len(current.started) || !current.started[index] ||
-		!current.settled[index] || current.accepted[index] {
+		index >= current.nextToStart ||
+		!current.finished[index] {
 		return current.transitionError("accept call", index)
 	}
-	current.accepted[index] = true
 	current.nextToAccept++
 	current.stopsModelContinuation = current.stopsModelContinuation ||
 		stopContinuation
 	return nil
 }
 
-// EnterDraining stops new calls after cancellation or scheduler failure.
-func (current *ToolBatch) EnterDraining(reason DrainReason) error {
+// StopDispatch stops new calls while allowing started calls to finish.
+func (current *ToolBatch) StopDispatch(reason StopReason) error {
 	if current == nil {
 		return errors.New("agentloop ToolBatch: ToolBatch is nil")
 	}
-	if current.currentState != StateDispatching {
-		return current.transitionError("enter draining", current.nextToStart)
+	if current.completed || current.stopReason != NotStopped {
+		return current.transitionError("stop dispatch", current.nextToStart)
 	}
-	if reason != DrainCancellation && reason != DrainFailure {
+	if reason != Canceled && reason != ExecutionFailed {
 		return errors.New("agentloop ToolBatch: drain reason is invalid")
 	}
-	current.currentState = StateDraining
-	current.drainReason = reason
+	current.stopReason = reason
 	return nil
 }
 
-// RecordSkippedResult records one canonical synthetic call/result pair after
+// AcceptCancellation records one canonical synthetic call/result pair after
 // cancellation. Scheduler failure cannot use this operation.
-func (current *ToolBatch) RecordSkippedResult(index int) error {
+func (current *ToolBatch) AcceptCancellation(index int) error {
 	if current == nil {
 		return errors.New("agentloop ToolBatch: ToolBatch is nil")
 	}
-	if current.currentState != StateDraining ||
-		current.drainReason != DrainCancellation || index != current.nextToAccept ||
-		index != current.nextToStart || index < 0 || index >= len(current.started) {
+	if current.completed ||
+		current.stopReason != Canceled || index != current.nextToAccept ||
+		index != current.nextToStart || index < 0 || index >= len(current.finished) {
 		return current.transitionError("accept skipped call", index)
 	}
-	current.accepted[index] = true
 	current.nextToStart++
 	current.nextToAccept++
 	return nil
 }
 
-// EnterSettling verifies the batch-specific completion rule before
-// ordered result settlement closes.
-func (current *ToolBatch) EnterSettling() error {
+// Complete confirms all started calls have exited and required results were
+// accepted in model order. Failure leaves the batch available for completion.
+func (current *ToolBatch) Complete() error {
 	if current == nil {
 		return errors.New("agentloop ToolBatch: ToolBatch is nil")
 	}
-	if current.currentState != StateDispatching &&
-		current.currentState != StateDraining {
-		return current.transitionError("enter settling", current.nextToAccept)
+	if current.completed {
+		return current.transitionError("complete batch", current.nextToAccept)
 	}
 	if current.inFlight != 0 {
 		return errors.New("agentloop ToolBatch: settle with in-flight calls")
 	}
-	if current.drainReason != DrainFailure &&
-		current.nextToAccept != len(current.accepted) {
+	if current.stopReason != ExecutionFailed &&
+		current.nextToAccept != len(current.finished) {
 		return errors.New("agentloop ToolBatch: settle before all results were accepted")
 	}
-	current.currentState = StateSettling
-	return nil
-}
-
-// EnterClosed records completion of ordered ToolBatch settlement.
-func (current *ToolBatch) EnterClosed() error {
-	if current == nil {
-		return errors.New("agentloop ToolBatch: ToolBatch is nil")
-	}
-	if current.currentState != StateSettling {
-		return current.transitionError("close", current.nextToAccept)
-	}
-	current.currentState = StateClosed
+	current.completed = true
 	return nil
 }
 
@@ -215,28 +162,26 @@ func (current *ToolBatch) StopsModelContinuation() bool {
 	return current != nil && current.stopsModelContinuation
 }
 
-// StateValue returns the current ToolBatch state.
-func (current *ToolBatch) StateValue() State {
-	if current == nil {
-		return StateClosed
-	}
-	return current.currentState
+// IsComplete reports that batch completion has been confirmed.
+func (current *ToolBatch) IsComplete() bool {
+	return current != nil && current.completed
 }
 
-// DrainReasonValue returns why the batch stopped dispatching.
-func (current *ToolBatch) DrainReasonValue() DrainReason {
+// StopReason returns why the batch stopped dispatching.
+func (current *ToolBatch) StopReason() StopReason {
 	if current == nil {
-		return DrainFailure
+		return ExecutionFailed
 	}
-	return current.drainReason
+	return current.stopReason
 }
 
 func (current *ToolBatch) transitionError(action string, index int) error {
 	return fmt.Errorf(
-		"agentloop ToolBatch: cannot %s at index %d from state %d (start %d, accept %d)",
+		"agentloop ToolBatch: cannot %s at index %d (completed %t, stop reason %d, start %d, accept %d)",
 		action,
 		index,
-		current.currentState,
+		current.completed,
+		current.stopReason,
 		current.nextToStart,
 		current.nextToAccept,
 	)

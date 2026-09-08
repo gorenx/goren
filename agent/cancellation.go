@@ -31,3 +31,26 @@ func (HookCancel) CancelKind() string { return "hook" }
 type CancelOptions struct {
 	KeepInbox bool
 }
+
+// Cancellation preserves the caller's typed intent as an operation error.
+// The error text is diagnostic; consumers inspect Cause for business decisions.
+type Cancellation struct {
+	Cause CancelCause
+}
+
+// NewCancellation supplies the canonical user intent when none was provided.
+func NewCancellation(intent CancelCause) Cancellation {
+	if intent == nil {
+		intent = UserCancel{}
+	}
+	return Cancellation{
+		Cause: intent,
+	}
+}
+
+func (problem Cancellation) Error() string {
+	if problem.Cause == nil {
+		return "agent canceled"
+	}
+	return "agent canceled: " + problem.Cause.CancelKind()
+}

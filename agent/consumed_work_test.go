@@ -181,9 +181,9 @@ func TestFoldConsumedWorkRejectsDamagedTurnEnd(t *testing.T) {
 	}
 }
 
-func consumedWorkSession(t *testing.T, identifier session.SessionID) session.Context {
+func consumedWorkSession(t *testing.T, identifier session.SessionID) *session.Log {
 	t.Helper()
-	conversation, err := session.New(
+	conversation, err := session.NewLog(
 		identifier,
 		session.CreateOptions{},
 	)
@@ -207,7 +207,7 @@ func consumedMessage(t *testing.T, text string) agentmessage.UserMessage {
 	return messageValue
 }
 
-func appendAccepted(t *testing.T, conversation session.Context, text string) {
+func appendAccepted(t *testing.T, conversation *session.Log, text string) {
 	t.Helper()
 	{
 		draft, err := session.NewEventDraft(InboxSpliced,
@@ -225,7 +225,7 @@ func appendAccepted(t *testing.T, conversation session.Context, text string) {
 	}
 }
 
-func appendClaim(t *testing.T, conversation session.Context) {
+func appendClaim(t *testing.T, conversation *session.Log) {
 	t.Helper()
 	removedCount := 1
 	{
@@ -247,7 +247,7 @@ func appendClaim(t *testing.T, conversation session.Context) {
 
 func appendCancellation(
 	t *testing.T,
-	conversation session.Context,
+	conversation *session.Log,
 	inserted []agentmessage.UserMessage,
 ) {
 	t.Helper()
@@ -275,7 +275,7 @@ func appendCancellation(
 
 func appendSteppedTurn(
 	t *testing.T,
-	conversation session.Context,
+	conversation *session.Log,
 	turnNumber int64,
 	turnEnding session.TurnEndReason,
 ) {
@@ -300,7 +300,7 @@ func appendSteppedTurn(
 
 func appendTurnStart(
 	t *testing.T,
-	conversation session.Context,
+	conversation *session.Log,
 	turnNumber int64,
 ) {
 	t.Helper()
@@ -320,7 +320,7 @@ func appendTurnStart(
 
 func appendTurnEnd(
 	t *testing.T,
-	conversation session.Context,
+	conversation *session.Log,
 	turnNumber int64,
 	turnEnding session.TurnEndReason,
 ) {

@@ -139,6 +139,7 @@ func TestTurnTransitionSourceMatrix(t *testing.T) {
 				StateOpen:     true,
 				StateStepping: true,
 				StateStopping: true,
+				StateSettling: true,
 			},
 			apply: func(current *Turn) error {
 				return current.EnterSettling(TurnResultError)
@@ -220,5 +221,98 @@ func stateName(selected State) string {
 		return "closed"
 	default:
 		return "unknown"
+	}
+}
+
+func TestTurnLaterStepReplacesOnlyNonStickyConclusion(t *testing.T) {
+	cases := []struct {
+		name  string
+		first TurnResult
+		next  TurnResult
+		want  TurnResult
+	}{
+		{
+			name:  "tools after completion require continuation",
+			first: TurnResultCompleted,
+			next:  TurnResultContinue,
+			want:  TurnResultContinue,
+		},
+		{
+			name:  "normal completion follows tools",
+			first: TurnResultContinue,
+			next:  TurnResultCompleted,
+			want:  TurnResultCompleted,
+		},
+		{
+			name:  "token limit survives tool continuation",
+			first: TurnResultMaxTokens,
+			next:  TurnResultContinue,
+			want:  TurnResultMaxTokens,
+		},
+		{
+			name:  "failure overrides token limit",
+			first: TurnResultMaxTokens,
+			next:  TurnResultError,
+			want:  TurnResultError,
+		},
+		{
+			name:  "cancellation overrides token limit",
+			first: TurnResultMaxTokens,
+			next:  TurnResultAborted,
+			want:  TurnResultAborted,
+		},
+	}
+	for _, scenario := range cases {
+		t.Run(scenario.name, func(t *testing.T) {
+			current, err := New(1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := current.EnterOpen(); err != nil {
+				t.Fatal(err)
+			}
+			for index, conclusion := range []TurnResult{scenario.first, scenario.next} {
+				if err := current.EnterStepping(int64(index + 1)); err != nil {
+					t.Fatal(err)
+				}
+				if err := current.EnterOpenAfterStep(conclusion); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if current.ResultValue() != scenario.want {
+				t.Fatalf("result = %d, want %d", current.ResultValue(), scenario.want)
+			}
+			if scenario.want == TurnResultContinue {
+				if err := current.EnterStopping(); err == nil {
+					t.Fatal("tool continuation entered stopping")
+				}
+				position, err := current.ProposedStep()
+				if err != nil || position != 3 {
+					t.Fatalf("next Step = %d, error = %v", position, err)
+				}
+			}
+		})
+	}
+}
+
+func TestTurnRejectsUnknownStepOutcomeWithoutClosingStep(t *testing.T) {
+	current, err := New(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := current.EnterOpen(); err != nil {
+		t.Fatal(err)
+	}
+	if err := current.EnterStepping(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := current.EnterOpenAfterStep(TurnResult(255)); err == nil {
+		t.Fatal("accepted unknown Step outcome")
+	}
+	if current.StateValue() != StateStepping || current.ResultValue() != TurnResultNone {
+		t.Fatal("invalid outcome changed the Turn")
+	}
+	if err := current.EnterOpenAfterStep(TurnResultContinue); err != nil {
+		t.Fatal(err)
 	}
 }
