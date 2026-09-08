@@ -35,7 +35,7 @@ func TestRuntimeGrainAppliesEventsWhileAssemblyIsRunning(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	identity, err := goakt.GrainOf[*promptactor.RuntimeGrain](ctx, system, "agent-runtime", goakt.WithLongLivedGrain())
+	identity, err := goakt.GrainOf[*promptactor.RuntimeGrain](ctx, system, promptactor.RuntimeName("agent-runtime"), goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}

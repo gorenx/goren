@@ -66,7 +66,7 @@ func TestIdempotentCommitDoesNotRepublishEvents(t *testing.T) {
 	if initialized.Err != nil {
 		t.Fatal(initialized.Err)
 	}
-	target, err := goakt.GrainOf[*sessionactor.Grain](ctx, system, "conversation", goakt.WithLongLivedGrain())
+	target, err := goakt.GrainOf[*sessionactor.Grain](ctx, system, sessionactor.RuntimeName("conversation"), goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}

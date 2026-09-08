@@ -50,3 +50,16 @@ type RuntimeInitialized struct {
 	ToolsVersion uint64
 	Err          error
 }
+
+// ReadRuntime reads the baseline of an already-initialized Prompt runtime.
+type ReadRuntime struct{}
+
+// RuntimeView reports the applied tool version without assembling a prompt.
+type RuntimeView struct {
+	ToolsVersion uint64
+	Err          error
+}
+
+// RuntimeName returns this service's stable address within a Session lifetime.
+// Business identity is carried explicitly in messages, never parsed from this name.
+func RuntimeName(identifier string) string { return identifier + ".prompt" }

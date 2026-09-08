@@ -10,6 +10,7 @@ import (
 
 // Initialize supplies one Registry-authorized creation input to a Session identity.
 type Initialize struct {
+	SessionID session.SessionID
 	// Authority identifies the trusted creation Registry supplied by internal orchestration.
 	Authority *goakt.GrainIdentity
 	// CreationID must match the Registry reservation and stays unchanged across initialization retries.
@@ -47,6 +48,8 @@ type Read struct {
 
 // View returns detached committed state, never a mutable Session owner.
 type View struct {
+	// Header belongs to the same committed view as Snapshot.
+	Header   session.Header
 	Snapshot session.Snapshot
 	Err      error
 }
@@ -73,6 +76,7 @@ type Flushed struct {
 
 // Close seals writes and waits for all committed facts to become durable.
 type Close struct {
+	SessionID session.SessionID
 	// Authority identifies the trusted creation Registry supplied by internal orchestration.
 	Authority *goakt.GrainIdentity
 	// CreationID selects the creation to close so late requests cannot close its replacement.
@@ -94,6 +98,7 @@ type RecoveryStorage interface {
 
 // Resume restores a stored Session under a fresh creation identity.
 type Resume struct {
+	SessionID session.SessionID
 	// Authority identifies the trusted creation Registry supplied by internal orchestration.
 	Authority *goakt.GrainIdentity
 	// CreationID is the new creation identity for this recovery; retries keep the same value.
@@ -115,3 +120,7 @@ type Claim struct {
 type Claimed struct {
 	Err error
 }
+
+// RuntimeName returns this service's stable address within a Session lifetime.
+// Business identity is carried explicitly in messages, never parsed from this name.
+func RuntimeName(identifier string) string { return identifier + ".session" }

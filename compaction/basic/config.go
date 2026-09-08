@@ -471,3 +471,23 @@ func floatPointer(value float64) *float64 {
 func int64Pointer(value int64) *int64 {
 	return &value
 }
+
+// Clone detaches mutable policy fields for a fixed lifecycle configuration.
+func (settings Config) Clone() Config {
+	detached := settings
+	base := cloneModelPolicy(ModelPolicyConfig{
+		PolicyConfig: settings.PolicyConfig,
+	})
+	detached.PolicyConfig = base.PolicyConfig
+	if settings.Auto != nil {
+		value := *settings.Auto
+		detached.Auto = &value
+	}
+	if settings.ModelPolicies != nil {
+		detached.ModelPolicies = make([]ModelPolicyConfig, len(settings.ModelPolicies))
+		for index, entry := range settings.ModelPolicies {
+			detached.ModelPolicies[index] = cloneModelPolicy(entry)
+		}
+	}
+	return detached
+}

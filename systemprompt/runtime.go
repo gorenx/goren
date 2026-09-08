@@ -105,3 +105,6 @@ func (owner *Runtime) Assemble(ctx context.Context, toolsVersion uint64) (Prompt
 		Tools: requestTools,
 	})
 }
+
+// ToolsVersion identifies the committed tool definitions consumed by this runtime.
+func (owner *Runtime) ToolsVersion() uint64 { return owner.toolsVersion }

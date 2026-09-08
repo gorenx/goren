@@ -56,3 +56,7 @@ type Cancel struct {
 	RequestID string
 	Cause     error
 }
+
+// RuntimeName returns this service's stable address within a Session lifetime.
+// Business identity is carried explicitly in messages, never parsed from this name.
+func RuntimeName(identifier string) string { return identifier + ".compaction" }

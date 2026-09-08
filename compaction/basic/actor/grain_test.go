@@ -168,7 +168,7 @@ func TestGrainWaitsForFlushAndSettlesPersistenceFailure(t *testing.T) {
 			}, time.Second); err != nil {
 				t.Fatal(err)
 			}
-			meter, err := goakt.GrainOf[*meteractor.Grain](ctx, system, "conversation", goakt.WithLongLivedGrain())
+			meter, err := goakt.GrainOf[*meteractor.Grain](ctx, system, meteractor.RuntimeName("conversation"), goakt.WithLongLivedGrain())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -185,7 +185,7 @@ func TestGrainWaitsForFlushAndSettlesPersistenceFailure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			target, err := goakt.GrainOf[*Grain](ctx, system, "conversation", goakt.WithLongLivedGrain())
+			target, err := goakt.GrainOf[*Grain](ctx, system, RuntimeName("conversation"), goakt.WithLongLivedGrain())
 			if err != nil {
 				t.Fatal(err)
 			}

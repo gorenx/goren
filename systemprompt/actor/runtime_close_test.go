@@ -70,7 +70,7 @@ func TestRuntimeCloseWaitsForProviderCleanup(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	identity, err := goakt.GrainOf[*promptactor.RuntimeGrain](ctx, system, "closing-agent", goakt.WithLongLivedGrain())
+	identity, err := goakt.GrainOf[*promptactor.RuntimeGrain](ctx, system, promptactor.RuntimeName("closing-agent"), goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}

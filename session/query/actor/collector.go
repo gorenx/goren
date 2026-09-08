@@ -115,7 +115,7 @@ func (owner *Collector) readLive(rc *goakt.ReceiveContext) {
 		return
 	}
 	entry := owner.live[len(owner.sources)]
-	identity, err := goakt.GrainOf[*sessionactor.Grain](rc.Context(), rc.ActorSystem(), string(entry.Header.ID), goakt.WithLongLivedGrain())
+	identity, err := goakt.GrainOf[*sessionactor.Grain](rc.Context(), rc.ActorSystem(), sessionactor.RuntimeName(string(entry.Header.ID)), goakt.WithLongLivedGrain())
 	if err != nil {
 		owner.finish(rc, err)
 		return

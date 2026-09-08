@@ -2,6 +2,7 @@ package loopactor_test
 
 import (
 	"context"
+	agentactor "github.com/gorenx/goren/agent/actor"
 	"path/filepath"
 	"testing"
 	"time"
@@ -105,19 +106,19 @@ func TestClientSeparatesInputCancellationAndIdle(t *testing.T) {
 	}); result.Err != nil {
 		t.Fatal(result.Err)
 	}
-	identity, err := goakt.GrainOf[*loopactor.Grain](ctx, system, "client-test", goakt.WithLongLivedGrain())
+	identity, err := goakt.GrainOf[*loopactor.Grain](ctx, system, loopactor.RuntimeName("client-test"), goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}
 	driver, replies = grainDriver(t, system, identity)
 	dependencies := configurationRoutes(t, system)
-	if result := request[loopactor.Completion](t, driver, replies, loopactor.Initialize{
-		Authority:       authority,
-		CreationID:      "current",
-		SessionRegistry: directory,
-		ModelConfig:     dependencies,
-		PromptRegistry:  dependencies,
-		ToolsRegistry:   dependencies,
+	if result := request[agentactor.Initialized](t, driver, replies, agentactor.Initialize{
+		AgentID:     "client-test",
+		Authority:   authority,
+		CreationID:  "current",
+		Session:     sessionRoute(t, system, "client-test"),
+		Prompt:      promptRoute(t, system, "client-test", dependencies),
+		ModelConfig: dependencies,
 	}); result.Err != nil {
 		t.Fatal(result.Err)
 	}
@@ -160,7 +161,9 @@ func TestClientSeparatesInputCancellationAndIdle(t *testing.T) {
 	}); result.Err != nil {
 		t.Fatal(result.Err)
 	}
-	if err := goakt.Tell(ctx, driver, command{payload: loopactor.WhenIdle{}}); err != nil {
+	if err := goakt.Tell(ctx, driver, command{
+		payload: loopactor.WhenIdle{},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	// The same caller must still deliver Cancel while its idle request is pending.

@@ -19,11 +19,13 @@ func (owner *RegistryGrain) registerSession(input RegisterSession) error {
 	var message any
 	if input.Restore {
 		message = sessionactor.Resume{
+			SessionID:  input.SessionID,
 			CreationID: input.CreationID,
 			Storage:    input.Storage,
 		}
 	} else {
 		message = sessionactor.Initialize{
+			SessionID:  input.SessionID,
 			CreationID: input.CreationID,
 			Options:    input.Options.Clone(),
 			Storage:    input.Storage,

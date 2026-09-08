@@ -58,7 +58,7 @@ func TestGrainIsolatesCreationsAndRejectsLateMeasurements(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	identity, err := goakt.GrainOf[*meteractor.Grain](ctx, system, "chat", goakt.WithLongLivedGrain())
+	identity, err := goakt.GrainOf[*meteractor.Grain](ctx, system, meteractor.RuntimeName("chat"), goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}

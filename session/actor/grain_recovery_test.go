@@ -23,6 +23,7 @@ func TestResumeRepairsInterruptedSessionAndPreservesSeedBoundary(t *testing.T) {
 	}
 	driver, replies := startSession(t, "resumed")
 	resumed := request[sessionactor.Initialized](t, driver, replies, sessionactor.Resume{
+		SessionID:  "conversation",
 		CreationID: "resumed",
 		Storage:    backend,
 	})
@@ -42,6 +43,7 @@ func TestResumeRepairsInterruptedSessionAndPreservesSeedBoundary(t *testing.T) {
 		}
 	}
 	repeated := request[sessionactor.Initialized](t, driver, replies, sessionactor.Resume{
+		SessionID:  "conversation",
 		CreationID: "resumed",
 		Storage:    backend,
 	})
@@ -49,6 +51,7 @@ func TestResumeRepairsInterruptedSessionAndPreservesSeedBoundary(t *testing.T) {
 		t.Fatalf("duplicate resume = %#v", repeated)
 	}
 	closed := request[sessionactor.Closed](t, driver, replies, sessionactor.Close{
+		SessionID:  "conversation",
 		CreationID: "resumed",
 	})
 	if closed.Err != nil || closed.Barrier.NextSeq != 5 {
@@ -78,6 +81,7 @@ func TestResumeFailureDoesNotInstallPartialSession(t *testing.T) {
 	backend := newStorage(t)
 	driver, replies := startSession(t, "resumed")
 	absent := request[sessionactor.Initialized](t, driver, replies, sessionactor.Resume{
+		SessionID:  "conversation",
 		CreationID: "resumed",
 		Storage:    backend,
 	})
@@ -97,6 +101,7 @@ func TestResumeFailureDoesNotInstallPartialSession(t *testing.T) {
 		RecoveryStorage: backend,
 	}
 	failed := request[sessionactor.Initialized](t, driver, replies, sessionactor.Resume{
+		SessionID:  "conversation",
 		CreationID: "resumed",
 		Storage:    storage,
 	})
@@ -110,6 +115,7 @@ func TestResumeFailureDoesNotInstallPartialSession(t *testing.T) {
 		t.Fatal("failed recovery installed a partial log")
 	}
 	retried := request[sessionactor.Initialized](t, driver, replies, sessionactor.Resume{
+		SessionID:  "conversation",
 		CreationID: "resumed",
 		Storage:    storage,
 	})
@@ -117,6 +123,7 @@ func TestResumeFailureDoesNotInstallPartialSession(t *testing.T) {
 		t.Fatalf("retry = %#v", retried)
 	}
 	closed := request[sessionactor.Closed](t, driver, replies, sessionactor.Close{
+		SessionID:  "conversation",
 		CreationID: "resumed",
 	})
 	if closed.Err != nil {

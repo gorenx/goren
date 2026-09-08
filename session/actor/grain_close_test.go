@@ -31,6 +31,7 @@ func TestCloseSealsWritesAndWaitsForActualStorageCompletion(t *testing.T) {
 	for index := 0; index < 2; index++ {
 		if err := goakt.Tell(context.Background(), driver, command{
 			payload: sessionactor.Close{
+				SessionID:  "conversation",
 				CreationID: "creation",
 			},
 		}); err != nil {
@@ -53,12 +54,14 @@ func TestCloseSealsWritesAndWaitsForActualStorageCompletion(t *testing.T) {
 		}
 	}
 	repeated := request[sessionactor.Closed](t, driver, replies, sessionactor.Close{
+		SessionID:  "conversation",
 		CreationID: "creation",
 	})
 	if repeated.Err != nil || repeated.Barrier.NextSeq != 1 {
 		t.Fatalf("repeated close = %#v", repeated)
 	}
 	reinitialized := request[sessionactor.Initialized](t, driver, replies, sessionactor.Initialize{
+		SessionID:  "conversation",
 		CreationID: "creation",
 		Storage:    storage,
 	})
@@ -106,6 +109,7 @@ func TestFailedCloseStaysSealedAndCanRetryDurability(t *testing.T) {
 	}
 	if err := goakt.Tell(context.Background(), driver, command{
 		payload: sessionactor.Close{
+			SessionID:  "conversation",
 			CreationID: "creation",
 		},
 	}); err != nil {
@@ -131,6 +135,7 @@ func TestFailedCloseStaysSealedAndCanRetryDurability(t *testing.T) {
 		t.Fatal("failed close reopened writes")
 	}
 	succeeded := request[sessionactor.Closed](t, driver, replies, sessionactor.Close{
+		SessionID:  "conversation",
 		CreationID: "creation",
 	})
 	if succeeded.Err != nil || succeeded.Barrier.NextSeq != 1 {
@@ -148,6 +153,7 @@ func TestFailedCloseStaysSealedAndCanRetryDurability(t *testing.T) {
 func initializeAndCommit(t *testing.T, driver *goakt.PID, replies <-chan response, backend sessionactor.Storage) {
 	t.Helper()
 	initialized := request[sessionactor.Initialized](t, driver, replies, sessionactor.Initialize{
+		SessionID:  "conversation",
 		CreationID: "creation",
 		Storage:    backend,
 	})

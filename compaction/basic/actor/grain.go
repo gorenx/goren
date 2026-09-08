@@ -104,7 +104,7 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) error {
 	if owner.conversation != nil ||
 		input.AgentID == "" ||
-		gc.Self().Name() != string(input.AgentID) ||
+		gc.Self().Name() != RuntimeName(string(input.AgentID)) ||
 		input.Session == nil ||
 		input.Agent == nil ||
 		input.Commands == nil ||

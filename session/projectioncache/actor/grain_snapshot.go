@@ -3,13 +3,12 @@ package cacheactor
 import (
 	"errors"
 
-	"github.com/gorenx/goren/session"
 	projectionactor "github.com/gorenx/goren/session/projection/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
 func (owner *Grain) cachedSnapshot(gc *goakt.GrainContext, input CachedSnapshot) {
-	if owner.worker == nil || input.Header.ID != session.SessionID(gc.Self().Name()) || input.Projection == nil {
+	if owner.worker == nil || input.Header.ID != owner.sessionID || input.Projection == nil {
 		gc.Response(Snapshot{
 			Err: errors.New("projection cache: snapshot requires initialized storage, matching Session and projection identity"),
 		})

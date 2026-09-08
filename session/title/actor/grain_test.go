@@ -117,11 +117,12 @@ func TestTitleGrainUsesSessionCommitsAndRejectsClosedCreation(t *testing.T) {
 	if reserved.Err != nil {
 		t.Fatal(reserved.Err)
 	}
-	conversation, err := goakt.GrainOf[*sessionactor.Grain](ctx, system, "conversation", goakt.WithLongLivedGrain())
+	conversation, err := goakt.GrainOf[*sessionactor.Grain](ctx, system, sessionactor.RuntimeName("conversation"), goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}
 	initialized := request[sessionactor.Initialized](t, driver, replies, conversation, sessionactor.Initialize{
+		SessionID:  "conversation",
 		Authority:  registry,
 		CreationID: "first",
 		Storage:    backend,
@@ -129,7 +130,7 @@ func TestTitleGrainUsesSessionCommitsAndRejectsClosedCreation(t *testing.T) {
 	if initialized.Err != nil {
 		t.Fatal(initialized.Err)
 	}
-	identity, err := goakt.GrainOf[*titleactor.Grain](ctx, system, "conversation", goakt.WithLongLivedGrain())
+	identity, err := goakt.GrainOf[*titleactor.Grain](ctx, system, titleactor.RuntimeName("conversation"), goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,18 +147,24 @@ func TestTitleGrainUsesSessionCommitsAndRejectsClosedCreation(t *testing.T) {
 	if bound.Err != nil {
 		t.Fatal(bound.Err)
 	}
-	view := request[titleactor.View](t, driver, replies, identity, titleactor.Read{CreationID: "first"})
+	view := request[titleactor.View](t, driver, replies, identity, titleactor.Read{
+		CreationID: "first",
+	})
 	if view.Err != nil || view.Title != nil {
 		t.Fatalf("initial view = %#v", view)
 	}
 	message, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
 		Content: []agentmessage.ContentBlock{agentmessage.NewTextBlock("one two three four")},
-		Source:  agentmessage.UserMessageSource{Kind: "user"},
+		Source: agentmessage.UserMessageSource{
+			Kind: "user",
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	draft, err := session.NewSurfaceEventDraft(session.UserMessageAdded, message, session.SurfaceIntent{Operation: session.SurfaceAppend()})
+	draft, err := session.NewSurfaceEventDraft(session.UserMessageAdded, message, session.SurfaceIntent{
+		Operation: session.SurfaceAppend(),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,11 +185,15 @@ func TestTitleGrainUsesSessionCommitsAndRejectsClosedCreation(t *testing.T) {
 	if failed.Err == nil {
 		t.Fatal("provider preparation failure was hidden")
 	}
-	fallback := request[titleactor.Updated](t, driver, replies, identity, titleactor.EnsureFallback{CreationID: "first"})
+	fallback := request[titleactor.Updated](t, driver, replies, identity, titleactor.EnsureFallback{
+		CreationID: "first",
+	})
 	if fallback.Err != nil || len(fallback.Result.Events) != 0 {
 		t.Fatalf("fallback = %#v", fallback)
 	}
-	view = request[titleactor.View](t, driver, replies, identity, titleactor.Read{CreationID: "first"})
+	view = request[titleactor.View](t, driver, replies, identity, titleactor.Read{
+		CreationID: "first",
+	})
 	if view.Err != nil || view.Title == nil || view.Title.Title != "one two three" {
 		t.Fatalf("fallback view = %#v", view)
 	}
@@ -209,7 +220,9 @@ func TestTitleGrainUsesSessionCommitsAndRejectsClosedCreation(t *testing.T) {
 	if refreshed.Err != nil || len(refreshed.Result.Events) != 1 {
 		t.Fatalf("fallback refresh = %#v", refreshed)
 	}
-	view = request[titleactor.View](t, driver, replies, identity, titleactor.Read{CreationID: "first"})
+	view = request[titleactor.View](t, driver, replies, identity, titleactor.Read{
+		CreationID: "first",
+	})
 	if view.Err != nil || view.Title.Title != "one two three" || view.Title.Source.SourceKind() != "fallback" {
 		t.Fatalf("refresh view = %#v", view)
 	}
@@ -241,7 +254,9 @@ func TestTitleGrainUsesSessionCommitsAndRejectsClosedCreation(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("model call never started")
 	}
-	logged := request[sessionactor.View](t, driver, replies, conversation, sessionactor.Read{CreationID: "first"})
+	logged := request[sessionactor.View](t, driver, replies, conversation, sessionactor.Read{
+		CreationID: "first",
+	})
 	if logged.Err != nil || logged.Snapshot.Events[len(logged.Snapshot.Events)-1].Type != "test/title-generation" {
 		t.Fatalf("missing pre-dispatch record: %#v", logged)
 	}
@@ -252,11 +267,15 @@ func TestTitleGrainUsesSessionCommitsAndRejectsClosedCreation(t *testing.T) {
 	if renamed.Err != nil || len(renamed.Result.Events) != 1 {
 		t.Fatalf("rename = %#v", renamed)
 	}
-	fallback = request[titleactor.Updated](t, driver, replies, identity, titleactor.EnsureFallback{CreationID: "first"})
+	fallback = request[titleactor.Updated](t, driver, replies, identity, titleactor.EnsureFallback{
+		CreationID: "first",
+	})
 	if fallback.Err != nil || len(fallback.Result.Events) != 0 {
 		t.Fatalf("fallback overwrote rename: %#v", fallback)
 	}
-	view = request[titleactor.View](t, driver, replies, identity, titleactor.Read{CreationID: "first"})
+	view = request[titleactor.View](t, driver, replies, identity, titleactor.Read{
+		CreationID: "first",
+	})
 	if view.Err != nil || view.Title.Title != "manual name" {
 		t.Fatalf("rename view = %#v", view)
 	}
@@ -269,8 +288,10 @@ func TestTitleGrainUsesSessionCommitsAndRejectsClosedCreation(t *testing.T) {
 	}
 
 	if err := goakt.Tell(ctx, driver, command{
-		target:  identity,
-		payload: titleactor.Close{CreationID: "first"},
+		target: identity,
+		payload: titleactor.Close{
+			CreationID: "first",
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -308,11 +329,15 @@ func TestTitleGrainUsesSessionCommitsAndRejectsClosedCreation(t *testing.T) {
 	if !closed || !cancelled {
 		t.Fatal("missing close or generation reply")
 	}
-	view = request[titleactor.View](t, driver, replies, identity, titleactor.Read{CreationID: "first"})
+	view = request[titleactor.View](t, driver, replies, identity, titleactor.Read{
+		CreationID: "first",
+	})
 	if view.Err == nil {
 		t.Fatal("closed creation read accepted")
 	}
-	stillLive := request[sessionactor.View](t, driver, replies, conversation, sessionactor.Read{CreationID: "first"})
+	stillLive := request[sessionactor.View](t, driver, replies, conversation, sessionactor.Read{
+		CreationID: "first",
+	})
 	if stillLive.Err != nil {
 		t.Fatalf("Title closed Session: %v", stillLive.Err)
 	}

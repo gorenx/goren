@@ -75,7 +75,7 @@ func (owner *RegistryGrain) closeSession(gc *goakt.GrainContext, input CloseSess
 
 func (owner *RegistryGrain) runClosure(gc *goakt.GrainContext, input CloseSession, operation *closure) {
 	system := gc.ActorSystem()
-	identity, err := goakt.GrainOf[*sessionactor.Grain](gc.Context(), system, string(input.SessionID), goakt.WithLongLivedGrain())
+	identity, err := goakt.GrainOf[*sessionactor.Grain](gc.Context(), system, sessionactor.RuntimeName(string(input.SessionID)), goakt.WithLongLivedGrain())
 	if err != nil {
 		operation.respond(err)
 		return
@@ -114,6 +114,7 @@ func (owner *RegistryGrain) runClosure(gc *goakt.GrainContext, input CloseSessio
 		return
 	}
 	gc.RequestGrain(identity, sessionactor.Close{
+		SessionID:  input.SessionID,
 		Authority:  gc.Self(),
 		CreationID: input.CreationID,
 	}).Then(func(payload any, failure error) {

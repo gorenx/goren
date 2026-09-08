@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/gorenx/goren/agent"
 	agentactor "github.com/gorenx/goren/agent/actor"
@@ -65,12 +66,6 @@ func TestRegistryClosesDescendantsBeforeParentAndRetriesPendingChild(t *testing.
 			AgentID:    identifier,
 			CreationID: "original",
 		}
-		if result := request[agentregistry.Completion](t, authorityDriver, authorityReplies, agentregistry.Reserve{
-			Creation: creation,
-			Parent:   parent,
-		}); result.Err != nil {
-			t.Fatal(result.Err)
-		}
 		created := request[sessionactor.Initialized](t, directoryDriver, directoryReplies, sessionregistry.CreateSession{
 			SessionID:  identifier,
 			CreationID: creation.CreationID,
@@ -79,21 +74,24 @@ func TestRegistryClosesDescendantsBeforeParentAndRetriesPendingChild(t *testing.
 		if created.Err != nil {
 			t.Fatal(created.Err)
 		}
-		execution, err := goakt.GrainOf[*loopactor.Grain](ctx, system, string(identifier), goakt.WithLongLivedGrain())
+		execution, err := goakt.GrainOf[*loopactor.Grain](ctx, system, loopactor.RuntimeName(string(identifier)), goakt.WithLongLivedGrain())
 		if err != nil {
 			t.Fatal(err)
 		}
 		drivers[identifier], replies[identifier] = grainDriver(t, system, execution)
-		if result := request[loopactor.Completion](t, drivers[identifier], replies[identifier], loopactor.Initialize{
+		if result := request[agentregistry.Ready](t, authorityDriver, authorityReplies, agentregistry.CreateAgent{
+			Creation:        creation,
+			Parent:          parent,
+			Storage:         backend,
+			SessionRegistry: directory,
 			ModelConfig:     dependencies,
 			PromptRegistry:  dependencies,
 			ToolsRegistry:   dependencies,
-			Authority:       authority,
-			CreationID:      creation.CreationID,
-			SessionRegistry: directory,
+			Timeout:         time.Second,
 		}); result.Err != nil {
 			t.Fatal(result.Err)
 		}
+
 		parent = &creation
 	}
 	prompt, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
@@ -131,11 +129,6 @@ func TestRegistryClosesDescendantsBeforeParentAndRetriesPendingChild(t *testing.
 		Parent: parent,
 	}); !errors.Is(result.Err, agent.ErrClosing) {
 		t.Fatalf("late descendant = %v", result.Err)
-	}
-	if result := request[agentregistry.Completion](t, authorityDriver, authorityReplies, agentregistry.ReleaseReservation{
-		Creation: root,
-	}); result.Err == nil {
-		t.Fatal("released reservation during close")
 	}
 	if result := request[loopactor.Changed](t, drivers["grandchild"], replies["grandchild"], loopactor.Remove{
 		CreationID: "original",
@@ -238,11 +231,6 @@ func TestRegistryClosesAuthorizedCreationAfterConfigurationFails(t *testing.T) {
 		AgentID:    "failed",
 		CreationID: "original",
 	}
-	if result := request[agentregistry.Completion](t, authorityDriver, authorityReplies, agentregistry.Reserve{
-		Creation: creation,
-	}); result.Err != nil {
-		t.Fatal(result.Err)
-	}
 	created := request[sessionactor.Initialized](t, directoryDriver, directoryReplies, sessionregistry.CreateSession{
 		SessionID:  creation.AgentID,
 		CreationID: creation.CreationID,
@@ -251,11 +239,11 @@ func TestRegistryClosesAuthorizedCreationAfterConfigurationFails(t *testing.T) {
 	if created.Err != nil {
 		t.Fatal(created.Err)
 	}
-	conversation, err := goakt.GrainOf[*sessionactor.Grain](ctx, system, string(creation.AgentID), goakt.WithLongLivedGrain())
+	conversation, err := goakt.GrainOf[*sessionactor.Grain](ctx, system, sessionactor.RuntimeName(string(creation.AgentID)), goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}
-	execution, err := goakt.GrainOf[*loopactor.Grain](ctx, system, string(creation.AgentID), goakt.WithLongLivedGrain())
+	execution, err := goakt.GrainOf[*loopactor.Grain](ctx, system, loopactor.RuntimeName(string(creation.AgentID)), goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,16 +275,18 @@ func TestRegistryClosesAuthorizedCreationAfterConfigurationFails(t *testing.T) {
 	// Configuration resolution fails after the Registry claim and Session restore.
 	configDriver, configReplies := grainDriver(t, system, dependencies)
 	request[struct{}](t, configDriver, configReplies, failConfiguration{})
-	if result := request[loopactor.Completion](t, driver, replies, loopactor.Initialize{
+	if result := request[agentregistry.Ready](t, authorityDriver, authorityReplies, agentregistry.CreateAgent{
+		Creation:        creation,
+		Storage:         backend,
+		SessionRegistry: directory,
 		ModelConfig:     dependencies,
 		PromptRegistry:  dependencies,
 		ToolsRegistry:   dependencies,
-		Authority:       authority,
-		CreationID:      creation.CreationID,
-		SessionRegistry: directory,
+		Timeout:         time.Second,
 	}); result.Err == nil {
 		t.Fatal("failed configuration initialized Agent")
 	}
+
 	if result := request[loopactor.Inbox](t, driver, replies, loopactor.GetInbox{}); result.Err != nil || len(result.NextTurn) != 1 {
 		t.Fatal("failed initialization lost restored input")
 	}

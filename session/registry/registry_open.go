@@ -27,6 +27,7 @@ func (owner *RegistryGrain) createSession(gc *goakt.GrainContext, input CreateSe
 		return
 	}
 	owner.openSession(gc, input.SessionID, input.CreationID, sessionactor.Initialize{
+		SessionID:  input.SessionID,
 		CreationID: input.CreationID,
 		Options:    input.Options.Clone(),
 		Storage:    input.Storage,
@@ -41,6 +42,7 @@ func (owner *RegistryGrain) resumeSession(gc *goakt.GrainContext, input ResumeSe
 		return
 	}
 	owner.openSession(gc, input.SessionID, input.CreationID, sessionactor.Resume{
+		SessionID:  input.SessionID,
 		CreationID: input.CreationID,
 		Storage:    input.Storage,
 	})
@@ -91,7 +93,7 @@ func (owner *RegistryGrain) openSession(gc *goakt.GrainContext, identifier sessi
 		return
 	}
 	operation.settled = make(chan struct{})
-	identity, err := goakt.GrainOf[*sessionactor.Grain](gc.Context(), gc.ActorSystem(), string(identifier), goakt.WithLongLivedGrain())
+	identity, err := goakt.GrainOf[*sessionactor.Grain](gc.Context(), gc.ActorSystem(), sessionactor.RuntimeName(string(identifier)), goakt.WithLongLivedGrain())
 	if err != nil {
 		operation.respond(sessionactor.Initialized{
 			Err: err,

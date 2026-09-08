@@ -10,13 +10,17 @@ import (
 )
 
 func (owner *Grain) observeEvent(gc *goakt.GrainContext, input sessionactor.CommitNotice) {
-	if string(input.SessionID) != gc.Self().Name() || input.Event.Seq < 0 {
-		gc.Response(Updated{Err: errors.New("title: invalid Session notification")})
+	if RuntimeName(string(input.SessionID)) != gc.Self().Name() || input.Event.Seq < 0 {
+		gc.Response(Updated{
+			Err: errors.New("title: invalid Session notification"),
+		})
 		return
 	}
 	selected, err := owner.resolve(input.CreationID)
 	if err != nil {
-		gc.Response(Updated{Err: err})
+		gc.Response(Updated{
+			Err: err,
+		})
 		return
 	}
 	switch input.Event.Type {
@@ -25,11 +29,15 @@ func (owner *Grain) observeEvent(gc *goakt.GrainContext, input sessionactor.Comm
 		if err == nil && accepted != nil && accepted.Source.SourceKind() == "user" {
 			selected.cancel()
 		}
-		gc.Response(Updated{Err: err})
+		gc.Response(Updated{
+			Err: err,
+		})
 	case session.UserMessageEventName:
 		messages, err := title.CollectMessages([]session.Event{input.Event}, nil)
 		if err != nil || len(messages) == 0 {
-			gc.Response(Updated{Err: err})
+			gc.Response(Updated{
+				Err: err,
+			})
 			return
 		}
 		if selected.provider == nil {

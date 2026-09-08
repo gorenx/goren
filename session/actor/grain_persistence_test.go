@@ -42,6 +42,7 @@ func TestFlushWaitsForItsPrefixWhileMailboxRemainsAvailable(t *testing.T) {
 		}
 	}()
 	initialized := request[sessionactor.Initialized](t, driver, replies, sessionactor.Initialize{
+		SessionID:  "conversation",
 		CreationID: "creation",
 		Storage:    storage,
 	})
@@ -126,6 +127,7 @@ func TestFlushReconcilesAnUncertainCommitWithoutAppendingAgain(t *testing.T) {
 		Storage: backend,
 	}
 	initialized := request[sessionactor.Initialized](t, driver, replies, sessionactor.Initialize{
+		SessionID:  "conversation",
 		CreationID: "creation",
 		Storage:    storage,
 	})

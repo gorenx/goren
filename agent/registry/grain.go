@@ -6,6 +6,7 @@ import (
 
 	"github.com/gorenx/goren/agent"
 	agentactor "github.com/gorenx/goren/agent/actor"
+	loopactor "github.com/gorenx/goren/agentloop/actor"
 	"github.com/gorenx/goren/session"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
@@ -25,6 +26,7 @@ type reservation struct {
 	// instanceID is fixed by the first Claim for this creation. Empty is unclaimed.
 	// It protects execution ownership without duplicating the framework address map.
 	instanceID string
+	activation *activation
 	executor   *goakt.GrainIdentity
 	closure    *closure
 	// closed retains the last successful close until a fresh reservation replaces it.
@@ -48,6 +50,16 @@ func (*Grain) OnActivate(context.Context, *goakt.GrainProps) error { return nil 
 // OnDeactivate discards admission state, never asserting resource shutdown.
 func (owner *Grain) OnDeactivate(context.Context, *goakt.GrainProps) error {
 	for _, entry := range owner.creations {
+		if entry.activation != nil {
+			if entry.activation.cancel != nil {
+				entry.activation.cancel()
+			}
+			for _, reply := range entry.activation.replies {
+				reply.Response(Ready{
+					Err: errors.New("agent registry: stopped during creation"),
+				})
+			}
+		}
 		if entry.closure != nil {
 			entry.closure.respond(errors.New("agent registry: stopped during close"))
 		}
@@ -61,6 +73,15 @@ func (owner *Grain) OnDeactivate(context.Context, *goakt.GrainProps) error {
 func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 	var err error
 	switch input := gc.Message().(type) {
+	case CreateAgent:
+		owner.createAgent(gc, input)
+		return
+	case creationAdvanced:
+		owner.advanceCreation(gc, input)
+		return
+	case Resolve:
+		owner.resolve(gc, input)
+		return
 	case CloseAgent:
 		owner.closeAgent(gc, input)
 		return
@@ -96,17 +117,6 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 	case BeginClose:
 		gc.Response(owner.beginClose(input.Creation))
 		return
-	case ReleaseReservation:
-		err = owner.check(input.Creation)
-		if err == nil && owner.creations[input.Creation.AgentID].closure != nil {
-			err = errors.New("agent registry: close coordination owns this reservation")
-		}
-		if err == nil {
-			err = owner.directory.Remove(input.Creation.AgentID)
-			if err == nil {
-				delete(owner.creations, input.Creation.AgentID)
-			}
-		}
 	default:
 		gc.Unhandled()
 		return
@@ -210,7 +220,7 @@ func (owner *Grain) claim(input agentactor.Claim) error {
 		return err
 	}
 	current := owner.creations[input.AgentID]
-	if input.InstanceID == "" || input.Executor == nil || input.Executor.Name() != string(input.AgentID) || current.instanceID != "" && current.instanceID != input.InstanceID || current.executor != nil && !current.executor.Equal(input.Executor) {
+	if input.InstanceID == "" || input.Executor == nil || input.Executor.Name() != loopactor.RuntimeName(string(input.AgentID)) || current.instanceID != "" && current.instanceID != input.InstanceID || current.executor != nil && !current.executor.Equal(input.Executor) {
 		return ErrInstance
 	}
 	current.instanceID = input.InstanceID
