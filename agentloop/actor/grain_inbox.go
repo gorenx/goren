@@ -10,13 +10,16 @@ import (
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
-func (owner *Grain) readInbox(gc *goakt.GrainContext) {
-	pending, err := owner.business.Inbox()
-	gc.Response(Inbox{
-		NextTurn: pending.NextTurn,
-		NextStep: pending.NextStep,
-		Err:      err,
-	})
+// readActivity observes pending input and execution status without claiming work.
+func (owner *Grain) readActivity(gc *goakt.GrainContext, input ReadActivity) {
+	result := Activity{
+		Err: owner.checkCreation(input.CreationID),
+	}
+	if result.Err == nil {
+		result.Pending, result.Err = owner.business.Inbox()
+		result.Status = owner.business.StatusValue()
+	}
+	gc.Response(result)
 }
 
 func (owner *Grain) followup(gc *goakt.GrainContext, input Followup) {

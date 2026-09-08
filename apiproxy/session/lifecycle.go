@@ -17,6 +17,8 @@ import (
 type sessionLifecycle struct {
 	access           *sessionAccess
 	workspaces       Workspaces
+	sessions         LiveSessions
+	titles           Titles
 	workingDirectory string
 	newSessionID     func() (session.SessionID, error)
 }
@@ -26,7 +28,7 @@ func (flow *sessionLifecycle) Rename(requestContext context.Context, call rpc.Re
 	if refused != nil {
 		return rpc.Fail[RenameValue](*refused), nil
 	}
-	accepted, err := subject.Rename(requestContext, call.Payload.Title)
+	accepted, err := flow.titles.Rename(requestContext, subject.ID(), call.Payload.Title)
 	if err != nil {
 		var invalid *sessiontitle.SessionTitleInvalidError
 		if errors.As(err, &invalid) {
@@ -144,7 +146,14 @@ func (flow *sessionLifecycle) Create(requestContext context.Context, call rpc.Re
 			)), nil
 		}
 	}
-	header := subject.Header()
+	view, err := flow.sessions.Read(requestContext, subject.ID())
+	if err != nil {
+		return rpc.Outcome[CreateValue]{}, err
+	}
+	if view == nil {
+		return rpc.Outcome[CreateValue]{}, errors.New("session API: created Session is unavailable")
+	}
+	header := view.Header
 	return rpc.OK(CreateValue{
 		SessionID:   sessionframes.SessionID(identifier),
 		AgentPreset: cloneStringPointer(header.AgentPreset),

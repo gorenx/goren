@@ -11,27 +11,26 @@ import (
 )
 
 // Subscriber forwards notifications for one creation, without owning title state.
-// Composition enables AllowAll requests and waits for Subscribed before admission.
+// Composition enables AllowAll requests and waits for Ready before admission.
 type Subscriber struct {
 	target     *goakt.GrainIdentity
 	creationID string
-	startup    *goakt.PID
+	sessionID  session.SessionID
+	ready      chan struct{}
 }
-
-// Subscribed confirms both Session topics are attached.
-type Subscribed struct{}
 
 type stopSubscriber struct{}
 
 // NewSubscriber binds an initialized Title Grain to its exact creation.
-func NewSubscriber(target *goakt.GrainIdentity, creationID string, startup *goakt.PID) (*Subscriber, error) {
-	if target == nil || creationID == "" || startup == nil {
-		return nil, errors.New("title: subscription target, creation and startup observer are required")
+func NewSubscriber(target *goakt.GrainIdentity, creationID string, sessionID session.SessionID) (*Subscriber, error) {
+	if target == nil || creationID == "" || sessionID == "" {
+		return nil, errors.New("title: subscription target, creation and Session identity are required")
 	}
 	return &Subscriber{
 		target:     target,
 		creationID: creationID,
-		startup:    startup,
+		sessionID:  sessionID,
+		ready:      make(chan struct{}),
 	}, nil
 }
 
@@ -48,10 +47,14 @@ func (listener *Subscriber) Receive(rc *goakt.ReceiveContext) {
 		case session.AppendedEventName:
 			rc.Tell(rc.ActorSystem().TopicActor(), goakt.NewSubscribe(sessionactor.ClosedTopic))
 		case sessionactor.ClosedTopic:
-			rc.Tell(listener.startup, Subscribed{})
+			select {
+			case <-listener.ready:
+			default:
+				close(listener.ready)
+			}
 		}
 	case sessionactor.CommitNotice:
-		if input.CreationID != listener.creationID || RuntimeName(string(input.SessionID)) != listener.target.Name() {
+		if input.CreationID != listener.creationID || input.SessionID != listener.sessionID {
 			return
 		}
 		logger := rc.ActorSystem().Logger()
@@ -69,7 +72,7 @@ func (listener *Subscriber) Receive(rc *goakt.ReceiveContext) {
 			}
 		})
 	case sessionactor.ClosedNotice:
-		if input.CreationID != listener.creationID || RuntimeName(string(input.SessionID)) != listener.target.Name() {
+		if input.CreationID != listener.creationID || input.SessionID != listener.sessionID {
 			return
 		}
 		ctx, self, logger := context.WithoutCancel(rc.Context()), rc.Self(), rc.ActorSystem().Logger()
@@ -96,3 +99,6 @@ func (listener *Subscriber) Receive(rc *goakt.ReceiveContext) {
 		rc.Unhandled()
 	}
 }
+
+// Ready closes after both Session subscriptions have been acknowledged.
+func (listener *Subscriber) Ready() <-chan struct{} { return listener.ready }

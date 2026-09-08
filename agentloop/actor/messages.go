@@ -11,14 +11,16 @@ type Completion struct {
 	Err error
 }
 
-// GetInbox requests detached pending input.
-type GetInbox struct{}
+// ReadActivity requests execution state for exactly one initialized creation.
+type ReadActivity struct {
+	CreationID string
+}
 
-// Inbox returns pending input without exposing its mutable business owner.
-type Inbox struct {
-	NextTurn []agentmessage.UserMessage
-	NextStep []agentmessage.UserMessage
-	Err      error
+// Activity returns detached input and status observed on one mailbox turn.
+type Activity struct {
+	Pending agent.Pending
+	Status  agent.Status
+	Err     error
 }
 
 // Followup appends one prompt for a new turn.

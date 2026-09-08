@@ -37,7 +37,7 @@ func askLifecycle[T any](t *testing.T, system goakt.ActorSystem, target *goakt.G
 	return value
 }
 
-func creationFixture(t *testing.T) (goakt.ActorSystem, *goakt.GrainIdentity, agentregistry.CreateAgent) {
+func creationFixture(t *testing.T, options ...goakt.Option) (goakt.ActorSystem, *goakt.GrainIdentity, agentregistry.CreateAgent) {
 	t.Helper()
 	ctx := context.Background()
 	backend, err := sqlite.Open(ctx, sqlite.Config{
@@ -52,7 +52,7 @@ func creationFixture(t *testing.T) (goakt.ActorSystem, *goakt.GrainIdentity, age
 			t.Error(err)
 		}
 	})
-	system, err := goakt.NewActorSystem("agent-creation", goakt.WithLogger(log.DiscardLogger))
+	system, err := goakt.NewActorSystem("agent-creation", append([]goakt.Option{goakt.WithLogger(log.DiscardLogger)}, options...)...)
 	if err != nil {
 		t.Fatal(err)
 	}

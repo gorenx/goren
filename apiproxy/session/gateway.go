@@ -16,6 +16,7 @@ type Dependencies struct {
 	Sessions    LiveSessions
 	Persistence History
 	Models      Models
+	Titles      Titles
 	Cache       ProjectionCache
 	Workspaces  Workspaces
 	Directories DirectoryProvisioner
@@ -50,6 +51,7 @@ func NewGateway(
 		ports.Sessions == nil ||
 		ports.Persistence == nil ||
 		ports.Models == nil ||
+		ports.Titles == nil ||
 		ports.Workspaces == nil ||
 		ports.Directories == nil {
 		return nil, errors.New("session API: Gateway dependencies are incomplete")
@@ -72,6 +74,7 @@ func NewGateway(
 	access := &sessionAccess{
 		runtimeSessions: &activation{
 			agents:      ports.Agents,
+			sessions:    ports.Sessions,
 			history:     ports.Persistence,
 			directories: ports.Directories,
 		},
@@ -86,12 +89,15 @@ func NewGateway(
 		lifecycle: &sessionLifecycle{
 			access:           access,
 			workspaces:       ports.Workspaces,
+			sessions:         ports.Sessions,
+			titles:           ports.Titles,
 			workingDirectory: settings.WorkingDirectory,
 			newSessionID:     newSessionID,
 		},
 		modelUseCases: &sessionModels{
 			access:    access,
 			models:    ports.Models,
+			sessions:  ports.Sessions,
 			directory: modelDirectory,
 		},
 		conversationUseCases: &sessionConversation{

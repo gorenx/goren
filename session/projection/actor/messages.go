@@ -106,3 +106,8 @@ type ChangeNotice struct {
 	CreationID string
 	Change     projection.Change
 }
+
+// Compute projects an explicit history without modifying a retained live fold.
+type Compute struct {
+	Events []session.Event
+}

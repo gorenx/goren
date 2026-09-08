@@ -180,8 +180,16 @@ func TestInboxCommandsCommitBeforeApplyingAndRetainStateOnFailure(t *testing.T) 
 	if changed.Err != nil || len(changed.Changes.Inserted) != 1 {
 		t.Fatalf("append = %#v", changed)
 	}
-	pending := request[loopactor.Inbox](t, driver, replies, loopactor.GetInbox{})
-	if pending.Err != nil || len(pending.NextTurn) != 1 || len(pending.NextStep) != 0 {
+	stale := request[loopactor.Activity](t, driver, replies, loopactor.ReadActivity{
+		CreationID: "old",
+	})
+	if stale.Err == nil || len(stale.Pending.NextTurn) != 0 {
+		t.Fatal("stale read exposed current Inbox")
+	}
+	pending := request[loopactor.Activity](t, driver, replies, loopactor.ReadActivity{
+		CreationID: "current",
+	})
+	if pending.Err != nil || len(pending.Pending.NextTurn) != 1 || len(pending.Pending.NextStep) != 0 {
 		t.Fatalf("inbox = %#v", pending)
 	}
 	closed := request[sessionactor.Closed](t, registryDriver, registryReplies, sessionregistry.CloseSession{
@@ -198,8 +206,10 @@ func TestInboxCommandsCommitBeforeApplyingAndRetainStateOnFailure(t *testing.T) 
 	if changed.Err == nil {
 		t.Fatal("closed Session accepted mutation")
 	}
-	pending = request[loopactor.Inbox](t, driver, replies, loopactor.GetInbox{})
-	if pending.Err != nil || len(pending.NextTurn) != 1 {
+	pending = request[loopactor.Activity](t, driver, replies, loopactor.ReadActivity{
+		CreationID: "current",
+	})
+	if pending.Err != nil || len(pending.Pending.NextTurn) != 1 {
 		t.Fatal("failed commit changed Inbox")
 	}
 	if err := system.TellGrain(ctx, identity, new(goakt.PoisonPill)); err != nil {
