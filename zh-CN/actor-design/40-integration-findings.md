@@ -73,3 +73,32 @@ API：Session.Models/SelectModel/Prompt 的配置读写走 Models 端口，由 L
 本轮验证命令：`go test -race -count=1 ./agent/... ./agentloop/... ./llm/... ./apiproxy/session/... ./apiproxy/llm/...`、同范围 `go vet` 和 `go build` 通过；最后一次缩小 ModelRequest 诊断数据后，重新运行 AgentLoop 全子树非缓存测试通过。
 
 全项目编译审计 `go test ./... -run '^$'` 仍失败：生产 assembly 引用已删除的 agent/factory、agentloop/factory、commands/factory、LLM/Compaction Factory 等。根因与 INT-02 相同，必须用实际 Actor 组合替换，不能恢复兼容 Factory。该审计不等于完整运行测试。
+
+
+## INT-10 Session API 客户端聚合了不同领域
+
+根因：初版 Agent Client 同时读取 Session、Projection 并修改 Title，导致 Agent 接口和客户端同时承担多领域职责。
+
+方案：拆分 Agents、Agent、Logs、Projections、Titles 端口，各由独立 Actor Client 实现；API Reader 组合日志、投影和执行状态。Projection.Compute 只折叠传入前缀，不用旧前缀替换实时缓存；当前每次重建，性能尚未优化。Title 结果来自本次提交事件。
+
+验证：`TestDomainClientsUseIndependentTitleAndAgentOwners` 使用真实 Agent Registry、Session、Projection、Title 及 SQLite，验证关闭、同 ID 恢复、独立标题修改和旧日志前缀投影。该测试的模型与 Prompt 初始化使用测试端点，未覆盖真实生成与 HTTP/WebSocket。
+
+## INT-11 Agent 查询缺少创建身份校验
+
+根因：旧 GetInbox 查询没有 CreationID，旧客户端在同 SessionID 新建后可能读到新实例输入。
+
+方案：改为 ReadActivity / Activity，校验 CreationID 后从业务对象读取 Pending 和 Status；客户端固定原创建身份，不自行保存执行状态。无身份查询删除，旧名称不保留别名。
+
+验证：AgentLoop Actor 测试以及 INT-10 的同 ID 恢复测试拒绝旧客户端查询。
+
+## INT-12 Title 组件缺少生命周期装配入口
+
+根因：Title Grain 和订阅者已有实现，但 API 没有由生命周期 owner 发布的就绪组件地址，导致此前客户端设计依赖未实现的组合。
+
+方案：Title Registry 实现 StartComponent / StopComponent；初始化 Title 并等待订阅确认后回复 Runtime，Agent Registry 统一准入。部分启动失败保留已获得的地址，由关闭流程回收；关闭旧创建不能影响新创建。Subscriber 的 Ready 通道替代额外启动观察者，不承载业务状态。
+
+验证：`TestTitleComponentRecoversAfterSessionBindingFailure` 覆盖取得 Title 地址后 Session 拒绝绑定、重复关闭、旧身份拒绝及随后新创建成功。正常关闭与恢复见 INT-10。生产组合根仍需注册该组件；Directory 的初始化失败也仍需生产关闭策略，不能把返回错误描述为自动回滚。
+
+本批验证：`go test -race -count=1 ./agentloop/actor ./apiproxy/session/actor ./agent/registry` 通过。全项目装配缺口仍为 INT-02，未把局部验证当作项目完成。
+
+提交证据：代码 `bfcdd2a`。仅导出 Git 暂存快照后运行 `go test -race -count=1`、`go vet`、`go build`，范围为 `./agent/... ./agentloop/... ./apiproxy/session/... ./session/registry ./session/title/... ./session/projection/...`，全部通过，不依赖剩余工作区修改。

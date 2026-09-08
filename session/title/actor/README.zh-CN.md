@@ -4,7 +4,7 @@
 
 ## 对象、依赖与职责
 
-`Grain` 使用 SessionID 作为框架名字，`bindings` 按 CreationID 保存 Session Grain 身份和 `title.Policy`。初始化必须提供同名 Session 身份；没有 Session 指针、日志副本或业务锁。`binding` 表示一份创建绑定，不负责 Session 生命周期。
+`Grain` 使用 `<sessionID>.title` 作为框架名字，`bindings` 按 CreationID 保存 Session Grain 身份和 `title.Policy`。初始化必须提供同名 Session 身份；没有 Session 指针、日志副本或业务锁。`binding` 表示一份创建绑定，不负责 Session 生命周期。
 
 `messages.go` 定义请求及回复；`grain.go` 处理绑定、校验和异步请求。当前支持 `Initialize`、`Read`、`Rename`、`EnsureFallback`、`Generate`、`Close`。`grain_generation.go` 负责先提交 fallback、再读取快照、准备调用、提交请求日志、执行模型和条件提交结果；`worker.go` 只执行独立模型 I/O。所有跨 Actor 调用使用 `RequestGrain`；错误在具名回复的 `Err error` 字段返回。
 
@@ -41,3 +41,5 @@ Session 请求使用内部无限等待，外部请求超时不能提前释放框
 ## 生命周期与服务地址
 
 Title Grain 使用 `<sessionID>.title` 名称，Session 业务身份来自初始化 Header.ID 和事件 SessionID。Session 地址使用 Session.RuntimeName；订阅筛选和 provider 请求不解析 Actor 名称。
+
+Subscriber 的 Ready 通道在 Appended 与 Closed 两项订阅确认后关闭；Title Registry 等待该信号再确认组件就绪。订阅者使用显式 SessionID 和 CreationID 筛选，不解析框架名称，也不需要额外启动观察 Actor。

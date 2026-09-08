@@ -426,7 +426,7 @@ Agent 根包保留身份、配置、取消原因、通知和 Inbox 业务规则�
 
 `agentloop/actor.Grain` 先承接创建结果和 Inbox 命令。当前 Initialize 接收 Registry 和各组件的框架路由，先授权，再异步请求 Session 初始化与读取，并继续请求模型和 Prompt 组件。早期传入已初始化 Header 的方案已被异步请求初始化替代。当前完成信号只覆盖已接入的初始化段。
 
-GetInbox 返回分离的 next-turn / next-step 消息；Followup、Steer 分别追加到两组；Replace、Remove 具有明确业务语义。每次变更先 Prepare，再 RequestGrain Session.Commit，成功后 Apply 返回的事件，并返回 InboxChanges。等待 Session 请求期间采用 StashNonReentrant，框架负责按邮箱顺序串行执行，不增加 mutex、queue、waiters 或重复序号记录。
+ReadActivity 返回分离的 next-turn / next-step 消息及执行状态，校验 CreationID 后回复 Activity；Followup、Steer 分别追加到两组；Replace、Remove 具有明确业务语义。每次变更先 Prepare，再 RequestGrain Session.Commit，成功后 Apply 返回的事件，并返回 InboxChanges。等待 Session 请求期间采用 StashNonReentrant，框架负责按邮箱顺序串行执行，不增加 mutex、queue、waiters 或重复序号记录。
 
 Grain 使用 DeferResponse 保留请求回复，不保留池化 GrainContext。提交失败不修改 Inbox。初始化和配置更新不得与未完成提交交错。OnDeactivate 只释放本地派生视图，不直接关闭 Session；完整关闭必须由后续业务关闭流程处理，不能把框架停用当作业务关闭完成。
 
@@ -446,7 +446,7 @@ Initialize 新增框架 Authority（Agent Registry 身份）。AgentLoop 每次 
 
 ## 当前 Inbox owner 的关闭实现
 
-关闭命令由 agent/actor 定义：PrepareClose{CreationID} 回复 Prepared{Err}，CloseResources{CreationID} 回复 Closed{Err}。Registry 不导入具体 AgentLoop。PrepareClose 校验本实例已初始化的创建身份，禁止新增/替换输入，并检查已接纳的 Inbox 是否清空；有待处理输入时明确返回 ErrPending，不把排队输入当作已执行。Remove 属于取消既有待处理输入，关闭期间仍可提交；GetInbox 仍可查询。完整 Turn/Step 接通后还必须等待正在执行的步骤、工具及其结果，当前实现不声称覆盖这些尚未迁移的资源。
+关闭命令由 agent/actor 定义：PrepareClose{CreationID} 回复 Prepared{Err}，CloseResources{CreationID} 回复 Closed{Err}。Registry 不导入具体 AgentLoop。PrepareClose 校验本实例已初始化的创建身份，禁止新增/替换输入，并检查已接纳的 Inbox 是否清空；有待处理输入时明确返回 ErrPending，不把排队输入当作已执行。Remove 属于取消既有待处理输入，关闭期间仍可提交；ReadActivity 仍可查询。完整 Turn/Step 接通后还必须等待正在执行的步骤、工具及其结果，当前实现不声称覆盖这些尚未迁移的资源。
 
 CloseResources 必须在 PrepareClose 已停止接纳且 Inbox 为空后调用。初始化输入增加 SessionRegistry 路由，AgentLoop 使用异步 RequestGrain CloseSession 等待 Session flush、停用与释放的真实结果。失败保留 Inbox 和路由，可重试同一创建；成功释放本地视图，保留原创建身份以幂等回复，拒绝再次初始化。Grain 的技术停用仍不等于该关闭流程。
 

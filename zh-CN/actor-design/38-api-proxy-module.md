@@ -269,3 +269,23 @@ Session API 的请求、响应和严格解码归入 `apiproxy/session`，根包�
 Go 的 Promote 保留原取消／重新插入日志语义，但将两个 splice 一次提交，业务 owner 检查当前消息位置与运行状态。取消和队列操作仅查询活动 Agent，不恢复冷 Session；非文本编辑在查询之前拒绝。
 
 Actor Client 的模型配置读写直接请求 LLM。AgentLoop 不提供 Configuration/Configure，不保存下一次模型配置，也不在生成前执行 SetConfiguration。Registry 在创建阶段把 Session 历史交给 LLM 初始化缺失配置；已有配置保持不变。
+
+### Session Actor Client 实现契约
+
+业务接口按领域拆分：Agents 管创建与查找，Agent 管输入与执行控制，Logs 管 Session 日志，Projections 管指定日志前缀的视图，Titles 管人工标题。`apiproxy/session/actor` 的各 Actor Client 分别实现这些接口，不在 Agent 上聚合其他领域能力。
+
+`apiproxy/session.Reader` 组合 Logs、Projections、Agents 的结果供 API 列表和历史使用。Logs 通过 Session Registry 捕获创建身份再读取日志；Projections 使用 Compute 构建独立折叠，旧前缀不能替换实时投影。状态是独立观察，不宣称跨 Actor 原子快照。Compute 当前逐次折叠，性能优化须保持此前缀契约。
+
+AgentLoop 的 ReadActivity 校验 CreationID，回复 Activity 中的 Pending 与业务 Status。两者来自同一次邮箱处理，不维护第二套状态。旧 GetInbox 无身份查询删除。客户端固定原创建身份，同 ID 重新创建后旧客户端请求被拒绝。
+
+输入修改等待 Changed。Replace/Remove 成功但未改变任何记录时返回 agent.ErrInputMissing。Titles 从已就绪 Components 找到 Title，Rename 消费本次已提交事件，不再次读取标题。错误和取消通过 error/context 传播；请求超时不自动重试写入。此迁移不改变 HTTP、WebSocket 字段和 Session 持久化格式。
+
+### Workspace 成员接口接线
+
+待完成：Session Gateway 的 Workspaces 端口由 Workspace API 的 Directory Actor Client 实现。Read 将明确的 Found=false 转为 nil；AttachSession 转发给 Workspace owner，由其读取 Session Header、验证 CWD 并持久化成员关系。API 不自行验证或修改成员集合，不因附加失败回滚已经创建的 Session。
+
+### Title 生命周期接线
+
+API 不启动 Title。Title Registry 接收 Agent Registry 的 StartComponent/StopComponent，负责创建 Grain、完成初始化、等待 Session 订阅确认，再返回组件地址；关闭先停止订阅，再取消并等待 Title 业务退出，最后停用 Grain。启动失败保留已取得的资源地址，StopComponent 仍负责清理；同一创建的重试共享启动结果，旧创建不能操作新实例。
+
+Title Registry 只保存框架创建阶段和资源地址。标题策略、日志投影、生成资格与结果采纳仍属于现有 title 业务对象；Registry 不复制这些决策。Subscriber 用一次性的订阅就绪通道表达框架确认，不再要求额外的启动观察 Actor；按显式 SessionID/CreationID 过滤事件。
