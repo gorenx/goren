@@ -3,19 +3,10 @@
 package commands
 
 import (
-	"context"
-
-	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
 
 const (
-	// PluginName is the canonical Harness Commands Plugin name.
-	PluginName = "@deepseek-ai/dsh-commands"
-	// ServiceName preserves the canonical Cordis capability name.
-	ServiceName = "commands"
-
 	RunEventName  = "command/run"
 	DoneEventName = "command/done"
 )
@@ -62,12 +53,9 @@ type Execution struct {
 // command/run has committed.
 type Invocation struct {
 	CommandID ID
-	Agent     agent.Agent
+	SessionID session.SessionID
 	RawInput  string
 }
-
-// Handler executes one resolved command without scheduling an Agent turn.
-type Handler func(context.Context, Invocation) (Result, error)
 
 // Definition is one owned command registration.
 type Definition struct {
@@ -75,7 +63,6 @@ type Definition struct {
 	Description string
 	Input       *InputDescriptor
 	RecordInput *bool
-	Handler     Handler
 }
 
 // ExecuteOptions contains adapter admission facts used before a handler runs.
@@ -83,16 +70,6 @@ type Definition struct {
 // rejects non-empty batches for every admitted command.
 type ExecuteOptions struct {
 	AttachmentCount int
-}
-
-// Registry is the Commands Service Definition consumed by command plugins and
-// inbound adapters.
-type Registry interface {
-	plugin.Service
-	Register(Definition) (*Registration, error)
-	List(agent.Agent) []Descriptor
-	Find(agent.Agent, string) (Definition, bool)
-	Execute(context.Context, agent.Agent, string, ExecuteOptions) (*Execution, error)
 }
 
 // Source identifies who issued a durable command lifecycle.

@@ -14,6 +14,9 @@ func (subject *ReactLoopAgent) PrepareTurn() (TurnStart, error) {
 	if !subject.lifetime.ready() || subject.pending == nil {
 		return TurnStart{}, errors.New("agentloop: Agent is not initialized")
 	}
+	if subject.running != nil && subject.running.kind == maintenanceActivity {
+		return TurnStart{}, ErrState
+	}
 	if subject.current != nil && subject.current.StateValue() != turnstate.StateProposed {
 		return TurnStart{}, ErrState
 	}

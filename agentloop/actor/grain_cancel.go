@@ -5,6 +5,7 @@ import (
 	llmactor "github.com/gorenx/goren/llm/actor"
 
 	"github.com/gorenx/goren/agent"
+	agentactor "github.com/gorenx/goren/agent/actor"
 	middlewareactor "github.com/gorenx/goren/agent/middleware/actor"
 	promptactor "github.com/gorenx/goren/systemprompt/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
@@ -21,6 +22,16 @@ func (owner *Grain) cancel(gc *goakt.GrainContext, input Cancel) {
 		reply: reply,
 		edit:  edit,
 		err:   err,
+	}
+	if owner.maintenance != nil {
+		owner.deliverCancellation(gc, cancellationRequest{
+			target: owner.maintenance.worker,
+			message: agentactor.CancelMaintenance{
+				RequestID: owner.maintenance.requestID,
+				Cause:     owner.business.Cancellation(),
+			},
+		}, completed)
+		return
 	}
 	if owner.model != nil && owner.model.callID != "" {
 		if owner.model.canceling != nil {
@@ -102,6 +113,13 @@ func (owner *Grain) deliverCancellation(gc *goakt.GrainContext, request cancella
 		func(payload any, failure error) {
 			if failure == nil {
 				switch message.(type) {
+				case agentactor.CancelMaintenance:
+					result, ok := payload.(agentactor.MaintenanceCancelled)
+					if !ok {
+						failure = errors.New("agentloop: invalid maintenance cancellation acknowledgement")
+					} else {
+						failure = result.Err
+					}
 				case promptactor.CancelAssembly:
 					result, ok := payload.(promptactor.Completion)
 					if !ok {

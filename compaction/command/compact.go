@@ -3,7 +3,6 @@
 package command
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,48 +11,39 @@ import (
 	"github.com/gorenx/goren/compaction"
 )
 
+// Definition supplies the canonical metadata registered by composition.
+func Definition() commands.Definition {
+	return commands.Definition{
+		Name:        "compact",
+		Description: "Compact older conversation history",
+	}
+}
+
 const usage = "Usage: /compact (no arguments)"
 
-// Compact is the /compact business operation. Plugin owns registration and
-// lifecycle; this object owns argument validation and result translation.
-type Compact struct {
-	compactor compaction.Engine
-}
+// ErrArguments reports the command's argument-free input contract.
+var ErrArguments = errors.New(usage)
 
-func (operation *Compact) bind(compactor compaction.Engine) {
-	operation.compactor = compactor
-}
-
-func (operation *Compact) release() {
-	operation.compactor = nil
-}
-
-// Execute runs one argument-free manual compaction request.
-func (operation *Compact) Execute(
-	requestContext context.Context,
-	input commands.Invocation,
-) (commands.Result, error) {
-	if strings.TrimSpace(input.RawInput) != "" {
-		return errorResult(usage), nil
+// ValidateInput rejects arguments before the runtime starts a compaction.
+func ValidateInput(rawInput string) error {
+	if strings.TrimSpace(rawInput) != "" {
+		return ErrArguments
 	}
-	if operation.compactor == nil {
-		return commands.Result{}, errors.New("command-compact: Compaction Engine is unavailable")
-	}
-	identifier := string(input.CommandID)
-	outcome, err := operation.compactor.CompactNow(
-		requestContext,
-		input.Agent,
-		&identifier,
-	)
-	if err != nil {
-		if requestContext.Err() != nil {
-			return errorResult("Compaction cancelled."), nil
+	return nil
+}
+
+// RenderResult maps a settled Compaction result to the direct command response.
+// It does not invoke the provider, own cancellation or record command events.
+func RenderResult(outcome *compaction.Result, failure error) (commands.Result, error) {
+	if failure != nil {
+		if errors.Is(failure, ErrArguments) {
+			return errorResult(usage), nil
 		}
 		var expected *compaction.ManualError
-		if errors.As(err, &expected) {
+		if errors.As(failure, &expected) {
 			return expectedFailure(expected.Code)
 		}
-		return commands.Result{}, err
+		return commands.Result{}, failure
 	}
 	if outcome == nil {
 		return successResult("No compactable history yet."), nil
@@ -63,10 +53,11 @@ func (operation *Compact) Execute(
 		len(outcome.ShadowedSeqs),
 		outcome.ShadowedTokenCount,
 	)
+	summarySeq := outcome.SummarySeq
 	return commands.Result{
 		Kind:           commands.ResultSuccess,
 		Text:           &message,
-		SourceEventSeq: &outcome.SummarySeq,
+		SourceEventSeq: &summarySeq,
 	}, nil
 }
 

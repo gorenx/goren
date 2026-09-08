@@ -15,27 +15,9 @@ func (owner *Grain) cancelHook(gc *goakt.GrainContext, input middlewareactor.Can
 		gc.Response(middlewareactor.Completion{})
 		return
 	}
-	if input.Cause == nil {
-		gc.Response(middlewareactor.Completion{
-			Err: errors.New("compaction: cancellation requires a cause"),
-		})
-		return
-	}
-	if current.cancelled != nil {
-		gc.Response(middlewareactor.Completion{})
-		return
-	}
-	current.cancelled = input.Cause
-	if err := owner.business.Cancel(input.Cause); err != nil {
-		gc.Response(middlewareactor.Completion{
-			Err: err,
-		})
-		return
-	}
-	gc.Response(middlewareactor.Completion{})
-	if current.callID != "" {
-		owner.models.Cancel(gc, current.callID, current.cancelled, owner)
-	}
+	gc.Response(middlewareactor.Completion{
+		Err: owner.cancelInvocation(gc, current, input.Cause),
+	})
 }
 
 // OnCancellationAccepted handles delivery only; the original stream operation
@@ -46,4 +28,32 @@ func (owner *Grain) OnCancellationAccepted(gc *goakt.GrainContext, result llmact
 		return
 	}
 	owner.report(gc, result.Err)
+}
+
+func (owner *Grain) cancel(gc *goakt.GrainContext, input Cancel) {
+	current := owner.active
+	if current == nil || current.hook != nil || current.input.RequestID != input.RequestID {
+		gc.Response(Completion{})
+		return
+	}
+	gc.Response(Completion{
+		Err: owner.cancelInvocation(gc, current, input.Cause),
+	})
+}
+
+func (owner *Grain) cancelInvocation(gc *goakt.GrainContext, current *invocation, cause error) error {
+	if cause == nil {
+		return errors.New("compaction: cancellation requires a cause")
+	}
+	if current.cancelled != nil {
+		return nil
+	}
+	if err := owner.business.Cancel(cause); err != nil {
+		return err
+	}
+	current.cancelled = cause
+	if current.callID != "" {
+		owner.models.Cancel(gc, current.callID, cause, owner)
+	}
+	return nil
 }

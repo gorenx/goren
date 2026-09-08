@@ -3,6 +3,7 @@ package loopactor
 import (
 	"context"
 	"errors"
+
 	llmactor "github.com/gorenx/goren/llm/actor"
 
 	"github.com/google/uuid"
@@ -17,6 +18,7 @@ import (
 // before another Inbox command can prepare a mutation.
 type Grain struct {
 	// idle closes when the current busy interval ends; waiters live in framework tasks.
+	maintenance     *maintenance
 	idle            chan struct{}
 	stopped         chan struct{}
 	opening         *turnOpening
@@ -100,85 +102,13 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 	}) {
 		return
 	}
-	switch input := gc.Message().(type) {
-	case startTurn:
-		owner.startTurn(gc)
-	case confirmTurnStart:
-		owner.confirmTurnStart(gc, input)
-	case continueTurn:
-		owner.continueTurn(gc, input)
-	case stoppingCompleted:
-		owner.completeStopping(input)
-	case prepareStep:
-		owner.startStep(gc, input)
-	case inputRecovered:
-		owner.reconcileInput(gc, input)
-	case inputClaimed:
-		owner.claimConfirmed(gc, input)
-	case contextRead:
-		owner.preparePrompt(gc, input)
-	case promptAssembled:
-		owner.openStep(gc, input)
-	case admissionResolved:
-		owner.acceptStepAdmission(gc, input)
-	case stepRecovered:
-		owner.reconcileStep(gc, input)
-	case stepStarted:
-		owner.stepConfirmed(gc, input)
-	case messageCommitted:
-		owner.messageConfirmed(gc, input)
-	case preparationFailed:
-		owner.finishPreparation(input.operation, false, input.err)
-	case Initialize:
-		owner.initialize(gc, input)
-	case initializationAuthorized:
-		owner.startSession(gc, input)
-	case initializationSession:
-		owner.restoreInbox(gc, input)
-	case initializationRestored:
-		owner.initializeModel(gc, input)
-	case initializationModel:
-		owner.initializePrompt(gc, input)
-	case GetInbox:
-		owner.readInbox(gc)
-	case Followup:
-		owner.followup(gc, input)
-	case Steer:
-		owner.steer(gc, input)
-	case Inject:
-		owner.inject(gc, input)
-	case Replace:
-		owner.replace(gc, input)
-	case Remove:
-		owner.remove(gc, input)
-	case completeCancel:
-		owner.finishCancellation(gc, input)
-	case Cancel:
-		owner.cancel(gc, input)
-	case WhenIdle:
-		owner.whenIdle(gc, input)
-	case idleObserved:
-		owner.confirmIdle(gc, input)
-	case requestModel:
-		owner.startModel(gc, input)
-	case requestProgress:
-		owner.advanceRequest(gc, input)
-
-	case streamProgress:
-		owner.advanceStream(gc, input)
-	case finishTurn:
-		owner.settleTurn(gc, input)
-	case turnProgress:
-		owner.advanceTurnEnd(gc, input)
-	case agentactor.PrepareClose:
-		gc.Response(agentactor.Prepared{
-			Err: owner.prepareClose(input.CreationID),
-		})
-	case agentactor.CloseResources:
-		owner.closeResources(gc, input)
-	case promptStopped:
-		owner.finishPromptClose(gc, input)
-	default:
-		gc.Unhandled()
+	if owner.receiveInitialization(gc) ||
+		owner.receiveInbox(gc) ||
+		owner.receiveTurn(gc) ||
+		owner.receiveStep(gc) ||
+		owner.receiveModel(gc) ||
+		owner.receiveLifecycle(gc) {
+		return
 	}
+	gc.Unhandled()
 }

@@ -96,26 +96,33 @@ func (owner *Grain) commitAdmission(gc *goakt.GrainContext, reply *goakt.GrainRe
 }
 
 func (owner *Grain) commitInbox(gc *goakt.GrainContext, reply *goakt.GrainReply, proposal agent.Admission, deliveryErr error) {
-	gc.RequestGrain(owner.conversation, sessionactor.Commit{
-		CreationID: owner.creationID,
-		Plan:       session.Batch(proposal.Edit.Drafts...),
-	}, goakt.WithRequestTimeout(0), goakt.WithReentrancyMode(reentrancy.StashNonReentrant)).Then(func(payload any, failure error) {
-		result := Changed{
-			Err: failure,
-		}
-		if failure == nil {
-			committed, ok := payload.(sessionactor.Committed)
-			switch {
-			case !ok:
-				result.Err = errors.New("agentloop: invalid Session commit response")
-			case committed.Err != nil:
-				result.Err = committed.Err
-			default:
-				result.Changes, result.Err = owner.business.ConfirmAdmission(proposal, committed.Result)
+	gc.RequestGrain(
+		owner.conversation,
+		sessionactor.Commit{
+			CreationID: owner.creationID,
+			Plan:       session.Batch(proposal.Edit.Drafts...),
+		},
+		goakt.WithRequestTimeout(0),
+		goakt.WithReentrancyMode(reentrancy.StashNonReentrant),
+	).Then(
+		func(payload any, failure error) {
+			result := Changed{
+				Err: failure,
 			}
-		}
-		result.Err = errors.Join(deliveryErr, result.Err)
-		owner.refreshIdle()
-		reply.Response(result)
-	})
+			if failure == nil {
+				committed, ok := payload.(sessionactor.Committed)
+				switch {
+				case !ok:
+					result.Err = errors.New("agentloop: invalid Session commit response")
+				case committed.Err != nil:
+					result.Err = committed.Err
+				default:
+					result.Changes, result.Err = owner.business.ConfirmAdmission(proposal, committed.Result)
+				}
+			}
+			result.Err = errors.Join(deliveryErr, result.Err)
+			owner.refreshIdle()
+			reply.Response(result)
+		},
+	)
 }

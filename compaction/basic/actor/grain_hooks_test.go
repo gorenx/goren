@@ -9,6 +9,7 @@ import (
 	"github.com/gorenx/goren/agent"
 	middlewareactor "github.com/gorenx/goren/agent/middleware/actor"
 	"github.com/gorenx/goren/agentmessage"
+	commandactor "github.com/gorenx/goren/commands/actor"
 	"github.com/gorenx/goren/llm"
 	meteractor "github.com/gorenx/goren/llm/tokenmeter/actor"
 	"github.com/gorenx/goren/session"
@@ -110,7 +111,13 @@ func hookFixture(t *testing.T, routed bool, supplied ...goakt.Actor) (goakt.Acto
 	if err != nil {
 		t.Fatal(err)
 	}
+	catalog, err := goakt.GrainOf[*commandactor.Registry](ctx, system, commandactor.RegistryName, goakt.WithLongLivedGrain())
+	if err != nil {
+		t.Fatal(err)
+	}
 	response, err := system.AskGrain(ctx, target, Initialize{
+		Commands:   catalog,
+		Agent:      target,
 		AgentID:    "conversation",
 		Session:    conversation,
 		CreationID: "creation",

@@ -12,6 +12,10 @@ import (
 
 // Initialize binds one Agent's compiled business policy and dependency routes.
 type Initialize struct {
+	// Commands is the already-started global Registry supplied by composition.
+	Commands *goakt.GrainIdentity
+	// Agent is the existing AgentLoop maintenance route; command registration starts automatically.
+	Agent      *goakt.GrainIdentity
 	AgentID    session.SessionID
 	Session    *goakt.GrainIdentity
 	CreationID string
@@ -27,6 +31,10 @@ type Completion struct{ Err error }
 
 // Execute starts one exclusive invocation and replies only after settlement.
 type Execute struct {
+	// Agent is the maintenance admission route required by manual execution.
+	Agent *goakt.GrainIdentity
+	// RequestID correlates manual cancellation with this invocation only.
+	RequestID       string
 	Mode            basic.Mode
 	Fallback        basic.RouteTarget
 	SourceCommandID *string
@@ -41,3 +49,10 @@ type Result struct {
 
 // Close releases an idle binding; active transactions must settle first.
 type Close struct{}
+
+// Cancel signals the matching manual invocation without settling Execute.
+// Late cancellation for a different invocation is an acknowledged no-op.
+type Cancel struct {
+	RequestID string
+	Cause     error
+}
