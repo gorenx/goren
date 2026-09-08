@@ -49,8 +49,11 @@ func newSSEPayloadStream(body io.ReadCloser, idleTimeout time.Duration, onCommen
 		return nil, errors.New("llm-deepseek: SSE idle timeout must be positive")
 	}
 	return &ssePayloadStream{
-		body: body, reader: bufio.NewReader(body), idleTimeout: idleTimeout,
-		onComment: onComment, firstLine: true,
+		body:        body,
+		reader:      bufio.NewReader(body),
+		idleTimeout: idleTimeout,
+		onComment:   onComment,
+		firstLine:   true,
 	}, nil
 }
 
