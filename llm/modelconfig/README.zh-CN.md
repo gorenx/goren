@@ -6,8 +6,8 @@
 
 ```mermaid
 flowchart LR
-    Composition[组合根] --> Grain[configactor.Grain]
-    Proxy[API Proxy] --> Client[configactor.Client]
+    Composition[组合根] --> Grain[llmactor.Grain]
+    Proxy[API Proxy] --> Client[llmactor.ModelsClient]
     Client --> Grain
     Agent[AgentLoop] -->|RequestGrain| Grain
     Grain --> Catalog[Catalog]

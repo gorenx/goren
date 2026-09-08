@@ -1,38 +1,72 @@
-# LLM Runtime
+# LLM
 
-`llm` 拥有 provider-neutral 的 Harness LLM Service。`Runtime` 本身就是 Plugin 和 `LlmRuntime` Service provider；它管理 Adapter route、configurable Provider 目录、模型发现、调用准备、`llm/stream` Waterfall、流失败归一化以及拓扑变更事件。稳定跨模块契约见[13 Harness LLM Runtime 与 DeepSeek Provider](../zh-CN/13-harness-llm-runtime-and-deepseek-provider.md)，实现证据只见[08 实施进度](../zh-CN/08-implementation-progress.md)。
+LLM 管理模型配置、提供者注册和模型调用。业务对象独立实现；Actor 只负责消息编排、异步 I/O 调度和运行资源。设计见 [LLM 模块](../zh-CN/actor-design/33-llm-module.md)，整体进度见 [实施计划](../zh-CN/actor-design/12-implementation-plan.md)。
 
-Agent 交互 Message、source 和 content contract 由唯一 [`agentmessage`](../agentmessage/README.zh-CN.md) package 拥有；`llm` 只在 `GenerateOptions`、stream block 和 Provider serialization 边界消费这些值。边界依据见[Agent Message 协议重构设计方案](../zh-CN/AgentMessage协议重构设计方案.md)，迁移证据见[08 实施进度](../zh-CN/08-implementation-progress.md)。
+## 模块内职责
 
-## 职责边界
+| 业务对象 | 职责 |
+|---|---|
+| modelconfig.Catalog | 校验配置定义、版本化替换、读取配置及解析 Agent 覆盖 |
+| Registry | 校验与管理 Adapter 注册、可配置提供者目录，返回固定 Binding |
+| Configuration | 按 AgentID 保存执行配置；显式更新或删除，不随 Agent 关闭删除 |
+| Binding | 固定 Provider 实现，解析模型能力、参数与模型列表 |
+| Call | 单次生成、流读取、终止和资源关闭规则 |
+| BlockAssembler | 聚合 chunk；提交与确认时序属于 AgentLoop |
 
-本包拥有 GenerateOptions、ToolSchema、StreamChunk、FinishReason、TokenUsage、RetryPolicy、Adapter 扩展接口和 `BlockAssembler`。它不拥有 Agent Message/source/content、任何供应商 JSON/HTTP/SSE、credential 存储、Agent retry 编排、Session persistence 或 API Proxy wire projection。
+已配置内容通过 Catalog.Read 获取。远端模型列表通过 Provider 的 ListModels 查询。不提供独立 ModelDiscovery 注册、Discovery 对象或 DiscoverModels 协议，不以占位扩展层替代实际功能。
 
-调用方只依赖 `LlmRuntime`。Provider Plugin 实现最小 `Adapter`，按需实现 metadata、retry policy 或 model catalog 接口，并通过 `RegisterAdapter`/`RegisterConfigurableProviders` 取得自己拥有的 typed handle。注册 API 不接收 Plugin Scope；Provider 在 `Dispose` 中释放 handle，Runtime 只负责注册表不变量和拓扑事件。
+## 全部 Actor 职责
 
-## 运行模型
+| Actor | 运行职责与调用关系 |
+|---|---|
+| actor.Grain（LLM Grain） | 串行编排 Catalog、Registry、Configuration；接收配置初始化、解析、更新与注册；向 Worker 返回一次 mailbox 处理内取得的配置与 Binding |
+| GoAkt Router | 固定 Worker 工作池；调用按 CallID、模型查询按 RequestID 分发 |
+| actor.Worker | 管理活跃 Call 和查询任务，异步执行 Provider I/O，处理取消、关闭，向 ReplyTo 返回具名结果 |
+| retry/actor.Grain | Agent 中间件的恢复调度；Recovery 决定规则，Actor 执行 Session 读写和等待；不自行派发生成 |
+| tokenmeter/actor.Grain | 接收快照进行计量，按 Session 创建身份隔离状态；不拥有生成流、不主动读取 Session |
+| apiproxy/modelquery.Grain（API 边界） | 关联 API 模型查询与 Worker 回复，处理期限和显式取消；不属于 LLM，不参与生成流 |
+
+ModelsClient 和 API Directory 是普通调用方适配器，SpawnPool 是装配函数；Call、DeepSeek Adapter、Connection 和 Identity 是普通对象。没有独立 ModelConfig、Configuration 或 Registry Grain，也不为每次调用创建 CallActor。
 
 ```mermaid
-flowchart LR
-    Factory[llm/factory] -->|construct| Runtime[llm.Runtime Plugin]
-    Runtime -->|provides| Service[LlmRuntime Service]
-    Provider[Provider Plugin] -->|requires| Service
-    Provider -->|register route and directory| Runtime
-    Consumer[Agent or auxiliary consumer] -->|PrepareCall or Stream| Service
-    Service -->|GenerateOptions through Waterfall| Adapter[Selected Adapter]
-    Adapter -->|ChunkStream| Service
-    Service -->|normalized stream| Consumer
+flowchart TD
+ C[装配层] -->|初始化配置与注册| L[LLM Grain]
+ A[AgentLoop Actor] -->|解析 / 提交配置| L
+ A -->|Generate / ReadChunk / CancelCall / CloseCall| R[固定 Router]
+ R --> W[Worker]
+ W -->|ReadCall / Select| L
+ L --> M[Catalog / Registry / Configuration]
+ W --> B[Call / Binding]
+ B --> P[Provider]
+ W -.生成结果.-> A
+ D[API Directory] -->|目录| L
+ D --> Q[API ModelQuery Grain]
+ Q -->|模型查询 / 取消| R
+ W -.查询结果.-> Q
+ A --> H[中间件 Actor]
+ H --> E[Retry Grain]
+ E --> S[Session]
+ A -->|提交 chunk 与完整消息| S
+ X[计量消费者] --> T[TokenMeter Grain]
+ S -.提交通知，接线待完成.-> API[API 流式下发]
 ```
 
-`PrepareCall` 把 route、effective config、RetryPolicy 和 Adapter registration identity 固定到一次 one-shot 调用；普通 `Stream` 在调用时读取 live route。`GenerateOptions -> StreamOutput` 是 `llm/stream` 的 typed Waterfall 合约。业务中间件只有调用下游 Action 才会进入 Adapter 边界。
+## 生成、Session 与下发
 
-Adapter route、目录和 discovery entry 都有独立 handle，支持 replace/release。重复 route、无效 metadata 或 topology invariant 失败不会产生部分提交。`llm/adapters-updated` 的非 invariant observer 失败由可选 `ObserverFailureReporter` 隔离报告；invariant 失败会回滚当前注册操作。
+AgentLoop 解析配置并执行配置钩子后，将执行配置提交给 LLM Grain。Worker 收到 Generate 后一次读取配置与 Binding，异步解析精确参数并打开流，返回 GenerationStarted。AgentLoop 先提交实际请求参数，再发送 ReadChunk。
 
-取消只终止当前调用或 stream，不撤销共享注册。`ChunkStream.Close`、terminal chunk 和上游错误都收敛到单一终止边界；Adapter 同步失败或中途错误被归一化为 Harness terminal stream。Plugin 卸载关闭注册变更并清空 Runtime 持有的引用。
+每次只读取一块。AgentLoop 将块提交为 AssistantChunked，收到 Session Committed 后才组装该块并读取下一块。流结束并成功关闭后，提交完整 AssistantMessaged。LLM 不写 Session，也不拥有 Turn/Step 或重试决策。
 
-## 依赖方向与扩展规则
+Session Committed 表示内存日志提交；磁盘持久化由 Flush 确认。API 下发消费提交后的 Session 通知，不直接读取 Provider 流；当前旧 LiveFrameSource 到 CommitNotice 的 Actor 接线仍未完成。
 
-- `llm/factory` 只依赖 `llm` 和 Plugin 构造契约；Assembly 只注册该 Factory。
-- 仓库内置 Provider 位于 `internal/llm/<provider>`，只能依赖根 `llm` contract，不得反向进入 `llm`。
-- Agent、Session 和 API Proxy 通过各自 consumer-owned interface 或 `LlmRuntime` 消费能力，不依赖具体 Provider。
-- 新 Provider 不得复制 Agent Message、Stream、RetryPolicy、Registry 或 Agent loop，也不得把供应商 wire DTO 暴露给消费者。
+## 生命周期与失败
+
+配置按 AgentID 保留，可在下次运行复用，显式变更影响后续调用。内存保留不等于进程重启持久化。已开始的调用固定配置与 Binding，不跟随注册变更。
+
+Call 只允许一次派发。没有 Adapter 时允许中间件提供替代流；进入终端才报告 NO_ADAPTER。Provider 打开/读取错误转为终止块，中间件错误保持 error。Close 失败保留资源；成功后删除 Call，Worker 继续复用。
+
+取消确认只表示处理了取消命令，不代表关闭完成。Worker 等待进行中的 I/O 退出后关闭资源。同一 Call 不能并发 Next/Close。迟到回复按 CallID/RequestID 排除；超时不能自动重复 Generate。Agent 关闭不触发配置删除。
+
+## 验证边界
+
+LLM、AgentLoop 内部请求路径和 API ModelQuery 的定向测试已通过。API 完整链路、Compaction、生产装配、完整 Turn 主驱动和异常停机回收仍未完成；局部测试不代表整仓重构完成。

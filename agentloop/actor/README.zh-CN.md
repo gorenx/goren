@@ -52,13 +52,15 @@ sequenceDiagram
 
 初始化成功之前不接纳 Inbox 写入。模型配置失败后即使已恢复 Inbox，也仍属于失败创建；关闭该创建不消费历史输入，日志保留供后续恢复。完整 Prompt/Tools 初始化接入后，成功回复必须继续后移到全部必需组件就绪。
 
-`stream_reader.go` 是独立的模型流 I/O Actor，独占 PreparedLlmCall 打开的 ChunkStream，按请求逐块读取并返回分离值。读取不占用 AgentLoop 邮箱；取消由本次模型尝试的 Context 传递，关闭请求按 worker 邮箱顺序等待前次读取结束。关闭失败保留流供重试，PostStop 仍尝试释放。此 worker 尚待接入 Turn/Step 的模型请求驱动，不能作为主流程已完成的证据。
+LLM Router 将生成、读取、取消与关闭消息分配给固定 Worker 池。AgentLoop 不持有 Binding、Worker PID、ChunkStream 或提供者取消函数。Worker 返回具名结果，AgentLoop 按 CallID 和 RequestID 关联；取消接收结果与实际关闭结果分开确认。
 
 ## 模型与 Turn 收尾的职责边界
 
-`grain_stream.go` 只执行 Attempt 返回的 ReadLog、CommitEvents、OpenStream、ReadChunk、CloseStream 和 Completed，并将技术响应转换为具名业务结果。请求头派生、发送前一致性检查、chunk 确认、消息生成、取消结论和关闭重试都由 Attempt 决定。旧 grain_request.go、streamStage、options/chunk/failure/contextDraft 业务副本已删除。
+`grain_request.go` 调度 ReactLoopAgent.StartRequest/AdvanceRequest 返回的完整 ModelRequest 操作：读取 Session、配置中间件、保存 LLM 配置、执行 Attempt、恢复中间件。只有 ModelRequest 创建 Attempt；BeginModel 独立入口已删除。requestModel 仅提供组件路由，业务对象自行提供当前 Step 的参数。
 
-模型资源释放仍归适配层：业务报告 StreamClosed 后停止 reader；技术停止失败保留 PID 以便重试。CloseResources 通过 Attempt.RetryClose 请求清理，不能自行切换业务阶段。请求完成与业务资源关闭分开，关闭失败不能提前丢弃 worker。requestModel 仍是已准备模型调用的内部入口，LLM 替代流、请求中间件及完整 Turn 驱动尚未接入。
+`grain_stream.go` 把 Attempt 的 ReadLog、CommitEvents、OpenStream、ReadChunk、CloseStream 映射为异步请求，再将具名结果交回 ModelRequest。日志派生、chunk 确认、AssistantMessage、取消结论和是否重试均不由 Actor 决定。框架回复关联和 worker 地址保留在适配层。
+
+业务确认 CallClosed 后才能结束当前调用；恢复中间件允许重试时使用新的 CallID，Worker 继续复用。CloseResources 通过 RetryRequestClose 请求清理，不能重新发起生成。真实 Actor 测试覆盖 Router、自定义恢复和默认 Retry 中间件；完整 Turn 主驱动、生产装配和异常生命周期清理尚未完成。
 
 `grain_settlement.go` 直接编排 Session 幂等 Commit 和 Flush，没有另一层业务操作解释协议。PrepareTurnEnd 固定结束事实，ConfirmTurnEnd 接受真实提交；有 barrier 就 flush；未确认提交时重试原 IdempotentWrite，Session 返回原 WriteResult，无需 Read。ConfirmTurnFlush 负责最终状态转换。重试先查已有 barrier，已确认提交只重试 flush；未确认提交重用同一去重计划。框架响应必须匹配发出的请求类型。turn_end_write.go 只持有不可变结束事实，不引用可变业务对象。
 
@@ -114,3 +116,6 @@ Grain 仅持有调用回复、CallID、地址与取消资源，业务状态仍�
 
 
 Turn 开始由 grain_start.go 提交 turnStartWrite。失败保留业务候选，重试请求返回相同 TurnStart 并交给 Session 幂等提交；不再自行读取日志。确认原结果后才能准备 Step。测试覆盖普通提交、回复丢失、提交拒绝和已有候选重试，全部无需 Session Read。
+
+
+LLM Router 的结果等待由显式 replyTimeout 限定，计时任务只携带 CallID 和 RequestID。Generate 或 ReadChunk 超时进入同一调用的关闭流程，CloseCall 超时保留未释放状态；取消确认超时向取消请求方返回错误，不冒充资源关闭。`grain_generation_test.go` 验证这些情况以及迟到生成结果不被当作关闭结果。

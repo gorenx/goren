@@ -44,3 +44,9 @@ Catalog 只有配置与版本，无 mutex、自建队列、active/closing/waiter
 `catalog.go` 为业务实现，`configuration.go` 为值与接口；`actor/grain.go`、`actor/messages.go`、`actor/client.go` 为框架边界。每个结构体字段和 keyed literal 字段逐行排列。
 
 本次独立提交快照的竞态测试与 vet 通过，业务测试覆盖配置输入/输出隔离、参数覆盖、非法更新不发布和版本冲突。actor 子包当前没有独立测试；实际 Grain 请求、生产默认读取、Session 日志选择及 Host describe 集成不属于本次验证。目标保持外部 RPC 字段与持久化格式不变。
+
+## Agent 旧模型选择与 Prompt 解耦清理
+
+当前源码证据：agent/model_selection_setup.go 已删除，但 ModelSelectionRef 仍保留 effective 与 Assembled；effective 已无写入点，Assembled 无生产调用方。旧 TestModelSelectionSnapshotsPromptAndRequestTogether 仍引用已删除的 AssemblyMiddleware / AssembleRequest / NewModelSelectionSetup。这些残留不能作为 Actor 模型选择的契约继续保留。
+
+移除 effective、Assembled 及旧 Prompt 截取测试；保留尚被 API 模型选择调用方使用的 Current、SetCurrent 和默认来源语义。该清理不替换尚未迁移的 Agent 请求装配，不声称模型选择 Actor 已完成；后续在请求执行边界从模型配置 owner 取得固定参数，Prompt 不保存模型选择状态。Assembled 是已无调用方的 Go 内部组合 API，删除不改变 HTTP/WebSocket 字段或 Session 存储格式。
