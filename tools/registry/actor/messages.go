@@ -4,6 +4,7 @@ package toolactor
 import (
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/tools"
+	toolregistry "github.com/gorenx/goren/tools/registry"
 )
 
 // RegistryName is the shared catalog owner's Grain identity.
@@ -11,18 +12,18 @@ const RegistryName = "tools-registry"
 
 // Begin declares a complete candidate catalog.
 type Begin struct {
-	Update tools.Update
+	Update toolregistry.Update
 }
 
 // Register records one ToolActor's candidate definition.
 type Register struct {
-	ID        tools.UpdateID
-	Candidate tools.Candidate
+	ID        toolregistry.UpdateID
+	Candidate toolregistry.Candidate
 }
 
 // Publish commits a complete batch and emits its definition event.
 type Publish struct {
-	ID tools.UpdateID
+	ID toolregistry.UpdateID
 }
 
 // Read requests a committed Agent baseline.
@@ -32,17 +33,17 @@ type Read struct {
 
 // Lookup requests an update's commit outcome.
 type Lookup struct {
-	ID tools.UpdateID
+	ID toolregistry.UpdateID
 }
 
 // Abort removes an unpublished batch after candidate cleanup.
 type Abort struct {
-	ID tools.UpdateID
+	ID toolregistry.UpdateID
 }
 
 // Settle releases the update record after switching and resource cleanup.
 type Settle struct {
-	ID tools.UpdateID
+	ID toolregistry.UpdateID
 }
 
 // Completion preserves ordinary business errors.
@@ -59,6 +60,6 @@ type Catalog struct {
 
 // Outcome distinguishes an unknown update from a preparing or published update.
 type Outcome struct {
-	Publication tools.Publication
+	Publication toolregistry.Publication
 	Found       bool
 }

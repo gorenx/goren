@@ -11,7 +11,7 @@ import (
 	"github.com/gorenx/goren/systemprompt"
 	promptactor "github.com/gorenx/goren/systemprompt/actor"
 	"github.com/gorenx/goren/tools"
-	toolactor "github.com/gorenx/goren/tools/actor"
+	toolactor "github.com/gorenx/goren/tools/registry/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )

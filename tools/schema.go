@@ -18,6 +18,16 @@ type registeredTool struct {
 	registrationName string
 }
 
+// SnapshotDefinition validates a complete tool definition and detaches its JSON
+// schemas. Behavior interfaces remain borrowed; their resources belong to the caller.
+func SnapshotDefinition(input ToolDefinition) (ToolDefinition, error) {
+	entry, err := compileDefinition(input)
+	if err != nil {
+		return ToolDefinition{}, err
+	}
+	return entry.definition, nil
+}
+
 // SnapshotObjectSchema validates one lossless object-rooted JSON Schema and
 // returns detached bytes. Subagent and Workflow callers use this owner-defined
 // boundary instead of duplicating Tool schema rules.

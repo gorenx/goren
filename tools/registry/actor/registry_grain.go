@@ -6,13 +6,14 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorenx/goren/tools"
+	toolregistry "github.com/gorenx/goren/tools/registry"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
 // RegistryGrain serializes catalog transactions and publishes committed definitions.
 // It must be long-lived: passivation is not a business resource-release protocol.
 type RegistryGrain struct {
-	registry tools.Registry
+	registry toolregistry.Registry
 }
 
 // OnActivate creates no resources; the business Registry has a usable zero value.

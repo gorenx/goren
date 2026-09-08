@@ -6,7 +6,7 @@ import (
 
 	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/tools"
-	toolactor "github.com/gorenx/goren/tools/actor"
+	toolactor "github.com/gorenx/goren/tools/registry/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 

@@ -5,7 +5,7 @@ import (
 	"errors"
 
 	"github.com/gorenx/goren/systemprompt"
-	toolactor "github.com/gorenx/goren/tools/actor"
+	toolactor "github.com/gorenx/goren/tools/registry/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
