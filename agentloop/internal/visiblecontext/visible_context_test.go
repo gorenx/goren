@@ -9,17 +9,14 @@ import (
 )
 
 func TestVisibleContextDeduplicatesRetainedSnapshot(t *testing.T) {
-	conversation, err := session.New(
+	conversation, err := session.NewLog(
 		"visible-context-test",
 		session.CreateOptions{},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	visible, err := New(conversation)
-	if err != nil {
-		t.Fatal(err)
-	}
+	visible := New(conversation.Snapshot())
 	contextMessage, present, err := visible.Message("cwd: /workspace", nil)
 	if err != nil || !present {
 		t.Fatalf("first snapshot = %t, %v", present, err)
@@ -45,17 +42,14 @@ func TestVisibleContextDeduplicatesRetainedSnapshot(t *testing.T) {
 }
 
 func TestVisibleContextEmitsClearedSnapshot(t *testing.T) {
-	conversation, err := session.New(
+	conversation, err := session.NewLog(
 		"visible-context-clear-test",
 		session.CreateOptions{},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	visible, err := New(conversation)
-	if err != nil {
-		t.Fatal(err)
-	}
+	visible := New(conversation.Snapshot())
 	contextMessage, present, err := visible.Message("cwd: /workspace", nil)
 	if err != nil || !present {
 		t.Fatalf("first snapshot = %t, %v", present, err)
@@ -87,17 +81,14 @@ func TestVisibleContextEmitsClearedSnapshot(t *testing.T) {
 }
 
 func TestVisibleContextRestoresRetainedSnapshot(t *testing.T) {
-	conversation, err := session.New(
+	conversation, err := session.NewLog(
 		"visible-context-restore-test",
 		session.CreateOptions{},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	initial, err := New(conversation)
-	if err != nil {
-		t.Fatal(err)
-	}
+	initial := New(conversation.Snapshot())
 	contextMessage, present, err := initial.Message("cwd: /workspace", nil)
 	if err != nil || !present {
 		t.Fatalf("initial snapshot = %t, %v", present, err)
@@ -118,10 +109,7 @@ func TestVisibleContextRestoresRetainedSnapshot(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	restored, err := New(conversation)
-	if err != nil {
-		t.Fatal(err)
-	}
+	restored := New(conversation.Snapshot())
 	if _, present, err = restored.Message(
 		"cwd: /workspace",
 		nil,
@@ -131,17 +119,14 @@ func TestVisibleContextRestoresRetainedSnapshot(t *testing.T) {
 }
 
 func TestVisibleContextRematerializesAfterSurfaceReplacement(t *testing.T) {
-	conversation, err := session.New(
+	conversation, err := session.NewLog(
 		"visible-context-replacement-test",
 		session.CreateOptions{},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	visible, err := New(conversation)
-	if err != nil {
-		t.Fatal(err)
-	}
+	visible := New(conversation.Snapshot())
 	contextMessage, present, err := visible.Message("cwd: /workspace", nil)
 	if err != nil || !present {
 		t.Fatalf("initial snapshot = %t, %v", present, err)

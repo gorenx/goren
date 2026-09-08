@@ -6,6 +6,8 @@ import (
 	"fmt"
 )
 
+const maxNumber = int64(1<<53 - 1)
+
 // State is the complete lifecycle of one Turn.
 type State uint8
 
@@ -54,8 +56,8 @@ type Turn struct {
 
 // New constructs a proposed Turn.
 func New(turnNumber int64) (*Turn, error) {
-	if turnNumber <= 0 {
-		return nil, errors.New("agentloop turn: number must be positive")
+	if turnNumber <= 0 || turnNumber > maxNumber {
+		return nil, errors.New("agentloop turn: number must be a positive safe integer")
 	}
 	return &Turn{
 		number:       turnNumber,
@@ -84,6 +86,9 @@ func (current *Turn) ProposedStep() (int64, error) {
 	if current.currentState != StateOpen {
 		return 0, current.transitionError("propose Step")
 	}
+	if current.lastStep >= maxNumber {
+		return 0, errors.New("agentloop turn: Step number exceeds the safe integer range")
+	}
 	return current.lastStep + 1, nil
 }
 
@@ -110,10 +115,14 @@ func (current *Turn) EnterOpenAfterStep(result TurnResult) error {
 	if current.currentState != StateStepping {
 		return current.transitionError("enter open after Step")
 	}
-	if result == TurnResultNone || result == TurnResultBlocked {
+	switch result {
+	case TurnResultContinue, TurnResultCompleted, TurnResultMaxTokens, TurnResultError, TurnResultAborted:
+	default:
 		return fmt.Errorf("agentloop turn: invalid Step outcome %d", result)
 	}
-	if result != TurnResultContinue && current.conclusion != TurnResultMaxTokens {
+	// Only the token-limit conclusion survives a later normal Step. A tool
+	// continuation replaces earlier completion; failures still take precedence.
+	if current.conclusion != TurnResultMaxTokens || result == TurnResultError || result == TurnResultAborted {
 		current.conclusion = result
 	}
 	current.currentState = StateOpen
@@ -148,16 +157,20 @@ func (current *Turn) EnterOpenAfterStopping() error {
 }
 
 // EnterSettling records the final Turn result and moves the Turn to its
-// settlement boundary before turn/end commits.
+// settlement boundary before turn/end commits. A later failure or cancellation
+// may revise a provisional conclusion; the caller freezes it when preparing the
+// end fact for submission.
 func (current *Turn) EnterSettling(result TurnResult) error {
 	if current == nil {
 		return errors.New("agentloop turn: Turn is nil")
 	}
 	if current.currentState != StateOpen && current.currentState != StateStopping &&
-		current.currentState != StateStepping {
+		current.currentState != StateStepping && current.currentState != StateSettling {
 		return current.transitionError("enter settling")
 	}
-	if result == TurnResultNone || result == TurnResultContinue {
+	switch result {
+	case TurnResultCompleted, TurnResultMaxTokens, TurnResultBlocked, TurnResultError, TurnResultAborted:
+	default:
 		return fmt.Errorf("agentloop turn: invalid settlement outcome %d", result)
 	}
 	if current.conclusion != TurnResultMaxTokens || result == TurnResultAborted ||

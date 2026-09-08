@@ -2,12 +2,10 @@ package agent
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"sync"
 
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
@@ -32,11 +30,18 @@ const InboxSplicedEventName = "agent/inbox/spliced"
 // InboxSpliced is the canonical Session event definition.
 var InboxSpliced = session.DefineEvent[InboxSplice](InboxSplicedEventName)
 
-// InboxNotifications publishes committed projection changes.
-type InboxNotifications interface {
-	Inserted(agentmessage.UserMessage)
-	Discarded(agentmessage.UserMessage)
-	Claimed(agentmessage.UserMessage, int64)
+// InboxChanges describes business effects after committed splices are applied.
+type InboxChanges struct {
+	Inserted  []agentmessage.UserMessage
+	Discarded []agentmessage.UserMessage
+	Claimed   []agentmessage.UserMessage
+}
+
+// InboxEdit contains one atomic Session batch. Removed messages are not claimed
+// or cancelled until the owner receives a successful Session commit.
+type InboxEdit struct {
+	Drafts  []session.EventDraft
+	Removed []agentmessage.UserMessage
 }
 
 type inboxState struct {
@@ -44,245 +49,198 @@ type inboxState struct {
 	nextStep []agentmessage.UserMessage
 }
 
-// Inbox is a replay-once, incrementally updated projection of durable splices.
+// Inbox is the single-owner projection of durable pending-message splices.
 type Inbox struct {
-	operationMu   sync.Mutex
-	stateMu       sync.RWMutex
-	state         inboxState
-	conversation  session.Context
-	notifications InboxNotifications
+	state inboxState
 }
 
-// NewInbox reconstructs pending work after the durable inherited seed boundary.
-func NewInbox(conversation session.Context, notifications InboxNotifications) (*Inbox, error) {
-	if conversation == nil || notifications == nil {
-		return nil, errors.New("agent: Inbox Session and notifications are required")
-	}
-	pending := &Inbox{
-		conversation:  conversation,
-		notifications: notifications,
-	}
+// NewInbox rebuilds pending work after the inherited seed boundary.
+func NewInbox(metadata session.Header, entries []session.Event) (*Inbox, error) {
 	start := int64(0)
-	if seedLength := conversation.Header().SeedLength; seedLength != nil {
-		start = *seedLength
+	if metadata.SeedLength != nil {
+		start = *metadata.SeedLength
 	}
-	for _, event := range conversation.Events() {
-		if event.Seq < start || event.Type != "agent/inbox/spliced" {
-			continue
-		}
-		var mutation InboxSplice
-		if err := json.Unmarshal(event.Data, &mutation); err != nil {
-			return nil, fmt.Errorf("agent: invalid persisted Inbox splice at Session seq %d: %w", event.Seq, err)
-		}
-		if _, err := pending.apply(mutation); err != nil {
-			return nil, fmt.Errorf("agent: invalid persisted Inbox splice at Session seq %d: %w", event.Seq, err)
-		}
+	if start < 0 || start > int64(len(entries)) {
+		return nil, errors.New("agent: invalid Inbox seed boundary")
+	}
+	pending := &Inbox{}
+	if _, err := pending.Apply(entries[start:]); err != nil {
+		return nil, err
 	}
 	return pending, nil
 }
 
-// NextTurn returns a detached snapshot of prompts awaiting individual turns.
+// NextTurn returns detached prompts awaiting individual turns.
 func (pending *Inbox) NextTurn() []agentmessage.UserMessage {
-	pending.stateMu.RLock()
-	defer pending.stateMu.RUnlock()
 	result, _ := cloneUserMessages(pending.state.nextTurn)
 	return result
 }
 
-// NextStep returns a detached snapshot of input awaiting the next step.
+// NextStep returns detached messages awaiting the next step.
 func (pending *Inbox) NextStep() []agentmessage.UserMessage {
-	pending.stateMu.RLock()
-	defer pending.stateMu.RUnlock()
 	result, _ := cloneUserMessages(pending.state.nextStep)
 	return result
 }
 
-// HasPending reports whether either list contains work.
+// HasPending reports whether either business list contains work.
 func (pending *Inbox) HasPending() bool {
-	pending.stateMu.RLock()
-	defer pending.stateMu.RUnlock()
 	return len(pending.state.nextTurn) != 0 || len(pending.state.nextStep) != 0
 }
 
-// Clear durably cancels next-step before next-turn work.
-func (pending *Inbox) Clear() error {
-	pending.operationMu.Lock()
-	defer pending.operationMu.Unlock()
-	if _, err := pending.mutateLocked(
-		NextStep, 0, pending.length(NextStep),
-		nil, true,
-	); err != nil {
-		return err
+// Apply atomically folds an ordered, not-yet-applied batch of committed events.
+func (pending *Inbox) Apply(entries []session.Event) (InboxChanges, error) {
+	candidate := &Inbox{
+		state: inboxState{
+			nextTurn: pending.NextTurn(),
+			nextStep: pending.NextStep(),
+		},
 	}
-	_, err := pending.mutateLocked(
-		NextTurn, 0, pending.length(NextTurn),
-		nil, true,
-	)
-	return err
-}
-
-// Claim removes a complete step batch without classifying it as canceled.
-func (pending *Inbox) Claim(target InboxTarget, turn int64) ([]agentmessage.UserMessage, error) {
-	if target != NextTurn && target != NextStep {
-		return nil, fmt.Errorf("agent: unsupported Inbox target %q", target)
-	}
-	pending.operationMu.Lock()
-	defer pending.operationMu.Unlock()
-	claimed, err := pending.mutateLocked(
-		NextStep, 0, pending.length(NextStep),
-		nil, false,
-	)
-	if err != nil {
-		return nil, err
-	}
-	if target == NextTurn {
-		queued, claimErr := pending.mutateLocked(NextTurn, 0, 1, nil, false)
-		if claimErr != nil {
-			return nil, claimErr
+	changes := InboxChanges{}
+	for _, entry := range entries {
+		if entry.Type != InboxSplicedEventName {
+			continue
 		}
-		claimed = append(claimed, queued...)
+		var mutation InboxSplice
+		if err := json.Unmarshal(entry.Data, &mutation); err != nil {
+			return InboxChanges{}, fmt.Errorf("agent: invalid Inbox splice at seq %d: %w", entry.Seq, err)
+		}
+		removed, err := candidate.apply(mutation)
+		if err != nil {
+			return InboxChanges{}, fmt.Errorf("agent: invalid Inbox splice at seq %d: %w", entry.Seq, err)
+		}
+		inserted, err := cloneUserMessages(mutation.Inserted)
+		if err != nil {
+			return InboxChanges{}, err
+		}
+		changes.Inserted = append(changes.Inserted, inserted...)
+		if mutation.Outcome == InboxCanceled {
+			changes.Discarded = append(changes.Discarded, removed...)
+		} else {
+			changes.Claimed = append(changes.Claimed, removed...)
+		}
 	}
-	for _, message := range claimed {
-		pending.notifications.Claimed(message, turn)
-	}
-	return claimed, nil
+	pending.state = candidate.state
+	return changes, nil
 }
 
-func (pending *Inbox) Append(target InboxTarget, message agentmessage.UserMessage) error {
-	pending.operationMu.Lock()
-	defer pending.operationMu.Unlock()
-	_, err := pending.mutateLocked(
-		target, pending.length(target), 0,
-		[]agentmessage.UserMessage{message}, true,
-	)
-	return err
+// PrepareSplice normalizes slice coordinates without changing online state.
+func (pending *Inbox) PrepareSplice(target InboxTarget, start int, deleteCount int, inserted []agentmessage.UserMessage) (InboxEdit, error) {
+	return pending.prepare(target, start, deleteCount, inserted, true)
 }
 
-func (pending *Inbox) Prepend(target InboxTarget, message agentmessage.UserMessage) error {
-	pending.operationMu.Lock()
-	defer pending.operationMu.Unlock()
-	_, err := pending.mutateLocked(
-		target, 0, 0,
-		[]agentmessage.UserMessage{message}, true,
-	)
-	return err
-}
-
-func (pending *Inbox) Replace(messageID agentmessage.MessageID, replacement agentmessage.UserMessage) (bool, error) {
-	pending.operationMu.Lock()
-	defer pending.operationMu.Unlock()
-	target, index, found := pending.locate(messageID)
-	if !found {
-		return false, nil
-	}
-	_, err := pending.mutateLocked(
-		target, index, 1,
-		[]agentmessage.UserMessage{replacement}, true,
-	)
-	return err == nil, err
-}
-
-func (pending *Inbox) Remove(messageID agentmessage.MessageID) (bool, error) {
-	pending.operationMu.Lock()
-	defer pending.operationMu.Unlock()
-	target, index, found := pending.locate(messageID)
-	if !found {
-		return false, nil
-	}
-	_, err := pending.mutateLocked(
-		target, index, 1,
-		nil, true,
-	)
-	return err == nil, err
-}
-
-// Splice applies Go slice coordinates and records the normalized mutation.
-func (pending *Inbox) Splice(target InboxTarget, start int, deleteCount int, inserted []agentmessage.UserMessage) ([]agentmessage.UserMessage, error) {
-	pending.operationMu.Lock()
-	defer pending.operationMu.Unlock()
-	return pending.mutateLocked(target, start, deleteCount, inserted, true)
-}
-
-func (pending *Inbox) mutateLocked(
-	target InboxTarget,
-	start int,
-	deleteCount int,
-	inserted []agentmessage.UserMessage,
-	discardRemoved bool,
-) ([]agentmessage.UserMessage, error) {
-	pending.stateMu.RLock()
-	queue, err := pending.targetLocked(target)
+func (pending *Inbox) prepare(target InboxTarget, start int, deleteCount int, inserted []agentmessage.UserMessage, discard bool) (InboxEdit, error) {
+	messages, err := pending.target(target)
 	if err != nil {
-		pending.stateMu.RUnlock()
-		return nil, err
+		return InboxEdit{}, err
 	}
-	actualStart := start
-	if actualStart < 0 {
-		actualStart = max(len(queue)+actualStart, 0)
+	if start < 0 {
+		start = max(len(messages)+start, 0)
 	} else {
-		actualStart = min(actualStart, len(queue))
+		start = min(start, len(messages))
 	}
-	actualDelete := min(max(deleteCount, 0), len(queue)-actualStart)
-	pending.stateMu.RUnlock()
-	if actualDelete == 0 && len(inserted) == 0 {
-		return []agentmessage.UserMessage{}, nil
+	count := min(max(deleteCount, 0), len(messages)-start)
+	if count == 0 && len(inserted) == 0 {
+		return InboxEdit{}, nil
 	}
-	insertedSnapshot, err := cloneUserMessages(inserted)
+	detached, err := cloneUserMessages(inserted)
 	if err != nil {
-		return nil, err
+		return InboxEdit{}, err
 	}
 	mutation := InboxSplice{
 		Target:   target,
-		Start:    actualStart,
-		Inserted: insertedSnapshot,
+		Start:    start,
+		Inserted: detached,
 	}
-	if actualDelete != 0 {
-		mutation.RemovedCount = intPointer(actualDelete)
-		if discardRemoved {
+	if count != 0 {
+		mutation.RemovedCount = intPointer(count)
+		if discard {
 			mutation.Outcome = InboxCanceled
 		}
 	}
-	pending.stateMu.RLock()
-	err = pending.validateLocked(mutation)
-	pending.stateMu.RUnlock()
-	if err != nil {
-		return nil, err
+	if err := pending.validate(mutation); err != nil {
+		return InboxEdit{}, err
 	}
 	draft, err := session.NewEventDraft(InboxSpliced, mutation)
 	if err != nil {
-		return nil, err
+		return InboxEdit{}, err
 	}
-	result, err := pending.conversation.Commit(context.Background(), session.Batch(draft))
+	removed, err := cloneUserMessages(messages[start : start+count])
 	if err != nil {
-		return nil, err
+		return InboxEdit{}, err
 	}
-	committed := result.Events[0]
-	var durable InboxSplice
-	if err = json.Unmarshal(committed.Data, &durable); err != nil {
-		return nil, fmt.Errorf("agent: decode committed Inbox splice: %w", err)
+	return InboxEdit{
+		Drafts:  []session.EventDraft{draft},
+		Removed: removed,
+	}, nil
+}
+
+// PrepareAppend stages a message after existing work in the selected list.
+func (pending *Inbox) PrepareAppend(target InboxTarget, message agentmessage.UserMessage) (InboxEdit, error) {
+	return pending.PrepareSplice(target, pending.length(target), 0, []agentmessage.UserMessage{message})
+}
+
+// PreparePrepend stages a message before existing work in the selected list.
+func (pending *Inbox) PreparePrepend(target InboxTarget, message agentmessage.UserMessage) (InboxEdit, error) {
+	return pending.PrepareSplice(target, 0, 0, []agentmessage.UserMessage{message})
+}
+
+// PrepareReplace returns an empty edit when the message is no longer pending.
+func (pending *Inbox) PrepareReplace(id agentmessage.MessageID, replacement agentmessage.UserMessage) (InboxEdit, error) {
+	target, index, found := pending.locate(id)
+	if !found {
+		return InboxEdit{}, nil
 	}
-	removed, err := pending.apply(durable)
+	return pending.PrepareSplice(target, index, 1, []agentmessage.UserMessage{replacement})
+}
+
+// PrepareRemove stages cancellation of an existing message, or an empty edit.
+func (pending *Inbox) PrepareRemove(id agentmessage.MessageID) (InboxEdit, error) {
+	target, index, found := pending.locate(id)
+	if !found {
+		return InboxEdit{}, nil
+	}
+	return pending.PrepareSplice(target, index, 1, nil)
+}
+
+// PrepareClaim stages all next-step messages followed by at most one next-turn message.
+func (pending *Inbox) PrepareClaim(target InboxTarget) (InboxEdit, error) {
+	if target != NextTurn && target != NextStep {
+		return InboxEdit{}, fmt.Errorf("agent: unsupported Inbox target %q", target)
+	}
+	first, err := pending.prepare(NextStep, 0, pending.length(NextStep), nil, false)
+	if err != nil || target == NextStep {
+		return first, err
+	}
+	second, err := pending.prepare(NextTurn, 0, 1, nil, false)
 	if err != nil {
-		return nil, fmt.Errorf("agent: committed Inbox splice violated projection: %w", err)
+		return InboxEdit{}, err
 	}
-	if discardRemoved {
-		for _, message := range removed {
-			pending.notifications.Discarded(message)
-		}
+	first.Drafts = append(first.Drafts, second.Drafts...)
+	first.Removed = append(first.Removed, second.Removed...)
+	return first, nil
+}
+
+// PrepareClear stages next-step cancellation before next-turn in one Session batch.
+func (pending *Inbox) PrepareClear() (InboxEdit, error) {
+	first, err := pending.prepare(NextStep, 0, pending.length(NextStep), nil, true)
+	if err != nil {
+		return InboxEdit{}, err
 	}
-	for _, message := range durable.Inserted {
-		pending.notifications.Inserted(message)
+	second, err := pending.prepare(NextTurn, 0, pending.length(NextTurn), nil, true)
+	if err != nil {
+		return InboxEdit{}, err
 	}
-	return removed, nil
+	first.Drafts = append(first.Drafts, second.Drafts...)
+	first.Removed = append(first.Removed, second.Removed...)
+	return first, nil
 }
 
 func (pending *Inbox) apply(mutation InboxSplice) ([]agentmessage.UserMessage, error) {
-	pending.stateMu.Lock()
-	defer pending.stateMu.Unlock()
-	if err := pending.validateLocked(mutation); err != nil {
+
+	if err := pending.validate(mutation); err != nil {
 		return nil, err
 	}
-	queue, _ := pending.targetLocked(mutation.Target)
+	queue, _ := pending.target(mutation.Target)
 	removedCount := 0
 	if mutation.RemovedCount != nil {
 		removedCount = *mutation.RemovedCount
@@ -307,8 +265,8 @@ func (pending *Inbox) apply(mutation InboxSplice) ([]agentmessage.UserMessage, e
 	return removed, nil
 }
 
-func (pending *Inbox) validateLocked(mutation InboxSplice) error {
-	queue, err := pending.targetLocked(mutation.Target)
+func (pending *Inbox) validate(mutation InboxSplice) error {
+	queue, err := pending.target(mutation.Target)
 	if err != nil {
 		return err
 	}
@@ -345,7 +303,7 @@ func (pending *Inbox) validateLocked(mutation InboxSplice) error {
 	return err
 }
 
-func (pending *Inbox) targetLocked(target InboxTarget) ([]agentmessage.UserMessage, error) {
+func (pending *Inbox) target(target InboxTarget) ([]agentmessage.UserMessage, error) {
 	switch target {
 	case NextTurn:
 		return pending.state.nextTurn, nil
@@ -357,17 +315,15 @@ func (pending *Inbox) targetLocked(target InboxTarget) ([]agentmessage.UserMessa
 }
 
 func (pending *Inbox) length(target InboxTarget) int {
-	pending.stateMu.RLock()
-	defer pending.stateMu.RUnlock()
-	queue, _ := pending.targetLocked(target)
+
+	queue, _ := pending.target(target)
 	return len(queue)
 }
 
 func (pending *Inbox) locate(messageID agentmessage.MessageID) (InboxTarget, int, bool) {
-	pending.stateMu.RLock()
-	defer pending.stateMu.RUnlock()
+
 	for _, target := range []InboxTarget{NextTurn, NextStep} {
-		queue, _ := pending.targetLocked(target)
+		queue, _ := pending.target(target)
 		for index, message := range queue {
 			if message.StableID() == messageID {
 				return target, index, true

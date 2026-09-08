@@ -74,11 +74,8 @@ func TestRuntimeCloseWaitsForProviderCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload, err := system.AskGrain(ctx, identity, promptactor.InitializeRuntime{
-		AgentID:     "closing-agent",
-		Definitions: definitions.Capture(),
-	}, time.Second)
-	if err != nil || payload.(promptactor.Completion).Err != nil {
+	payload, err := initializeRuntime(t, ctx, system, identity, "closing-agent", definitions.Capture(), nil)
+	if err != nil || payload.(promptactor.RuntimeInitialized).Err != nil {
 		t.Fatalf("initialize: %v, %v", payload, err)
 	}
 	payload, err = system.AskGrain(ctx, identity, promptactor.ApplyTools{

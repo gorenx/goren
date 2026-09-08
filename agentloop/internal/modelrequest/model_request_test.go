@@ -1,173 +1,127 @@
 package modelrequest
 
-import "testing"
+import (
+	"errors"
+	"testing"
 
-func TestModelRequestCountsRetryAttempts(t *testing.T) {
+	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/session"
+)
+
+func TestModelRequestRequiresConfigurationBeforeAttempt(t *testing.T) {
 	current := New()
-	first, err := current.EnterStreaming()
+	next, err := current.Start(RequestInput{
+		SessionID: "conversation",
+		Position: session.StepPosition{
+			Turn: 1,
+			Step: 1,
+		},
+		First: true,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first != 1 {
-		t.Fatalf("first attempt = %d, want 1", first)
+	if _, ok := next.(ReadRequest); !ok {
+		t.Fatalf("first operation = %T", next)
 	}
-	if err = current.EnterRetryPending(); err != nil {
-		t.Fatal(err)
+	if _, err := current.Outcome(); err == nil {
+		t.Fatal("unfinished request exposed an outcome")
 	}
-	second, err := current.EnterStreaming()
+	// A mismatched completion must neither start an attempt nor record cancellation.
+	if _, err := current.Advance(CallPrepared{}, agent.NewCancellation(nil)); err == nil {
+		t.Fatal("accepted preparation before configuration")
+	}
+	next, err = current.Advance(RequestRead{
+		Snapshot: session.Snapshot{
+			Barrier: session.WriteBarrier{
+				SessionID: "conversation",
+			},
+		},
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second != 2 {
-		t.Fatalf("second attempt = %d, want 2", second)
+	if _, ok := next.(ResolveConfiguration); !ok {
+		t.Fatalf("configuration operation = %T", next)
 	}
-	if err = current.EnterAccepted(); err != nil {
+	if current.Attempts() != 0 {
+		t.Fatal("attempt counted before preparation")
+	}
+	config := llm.CallConfig{
+		Provider: "provider",
+		Model:    "model",
+	}
+	next, err = current.Advance(ConfigurationResolved{
+		Config: config,
+	}, nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if current.StateValue() != StateAccepted {
-		t.Fatalf("state = %d, want accepted", current.StateValue())
+	if _, ok := next.(PrepareCall); !ok {
+		t.Fatalf("prepare operation = %T", next)
+	}
+	next, err = current.Advance(CallPrepared{
+		Config: config,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	running, ok := next.(RunAttempt)
+	if !ok {
+		t.Fatalf("attempt operation = %T", next)
+	}
+	if _, ok := running.Operation.(ReadLog); !ok {
+		t.Fatalf("attempt input operation = %T", running.Operation)
+	}
+	if current.Attempts() != 1 {
+		t.Fatalf("attempts = %d, want 1", current.Attempts())
 	}
 }
 
-func TestModelRequestTerminalStateCannotReopen(t *testing.T) {
+func TestModelRequestFailureCannotRestartGeneration(t *testing.T) {
 	current := New()
-	if _, err := current.EnterStreaming(); err != nil {
+	input := RequestInput{
+		SessionID: "conversation",
+		Position: session.StepPosition{
+			Turn: 1,
+			Step: 1,
+		},
+		First: true,
+	}
+	if _, err := current.Start(input); err != nil {
 		t.Fatal(err)
 	}
-	if err := current.EnterFailed(); err != nil {
+	problem := errors.New("session unavailable")
+	next, err := current.Advance(RequestFailed{
+		Err: problem,
+	}, nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := current.EnterStreaming(); err == nil {
-		t.Fatal("terminal ModelRequest dispatched another attempt")
+	completed, ok := next.(RequestFinished)
+	if !ok || !errors.Is(completed.Result.Err, problem) || !completed.Result.StreamClosed {
+		t.Fatalf("failure outcome = %#v", next)
 	}
-}
-
-func TestModelRequestTransitionSourceMatrix(t *testing.T) {
-	states := []State{
-		StateProposed,
-		StateStreaming,
-		StateRetryPending,
-		StateAccepted,
-		StateFailed,
-		StateAborted,
+	if _, err := current.Start(input); err == nil {
+		t.Fatal("terminal request restarted")
 	}
-	tests := []struct {
-		name    string
-		allowed map[State]bool
-		apply   func(*ModelRequest) error
-	}{
-		{
-			name: "EnterStreaming",
-			allowed: map[State]bool{
-				StateProposed:     true,
-				StateRetryPending: true,
-			},
-			apply: func(current *ModelRequest) error {
-				_, err := current.EnterStreaming()
-				return err
-			},
+	if _, err := current.Advance(RecoveryResolved{
+		Action: agent.RequestErrorAction{
+			Retry: true,
 		},
-		{
-			name:    "EnterRetryPending",
-			allowed: map[State]bool{StateStreaming: true},
-			apply: func(current *ModelRequest) error {
-				return current.EnterRetryPending()
-			},
-		},
-		{
-			name:    "EnterAccepted",
-			allowed: map[State]bool{StateStreaming: true},
-			apply:   func(current *ModelRequest) error { return current.EnterAccepted() },
-		},
-		{
-			name: "EnterFailed",
-			allowed: map[State]bool{
-				StateProposed:     true,
-				StateStreaming:    true,
-				StateRetryPending: true,
-			},
-			apply: func(current *ModelRequest) error { return current.EnterFailed() },
-		},
-		{
-			name: "EnterAborted",
-			allowed: map[State]bool{
-				StateProposed:     true,
-				StateStreaming:    true,
-				StateRetryPending: true,
-			},
-			apply: func(current *ModelRequest) error { return current.EnterAborted() },
-		},
+	}, nil); err == nil {
+		t.Fatal("ordinary failure accepted recovery")
 	}
-	for _, testCase := range tests {
-		for _, source := range states {
-			t.Run(testCase.name+"/"+stateName(source), func(t *testing.T) {
-				current := &ModelRequest{
-					currentState: source,
-				}
-				err := testCase.apply(current)
-				if (err == nil) != testCase.allowed[source] {
-					t.Fatalf("error = %v, allowed = %t", err, testCase.allowed[source])
-				}
-			})
-		}
+	next, err = current.RetryClose()
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestModelRequestAnyAcceptedTransitionPreservesAttemptInvariants(t *testing.T) {
-	const operationCount = 5
-	for encoded := 0; encoded < 3125; encoded++ {
-		current := New()
-		sequence := encoded
-		previousAttempts := 0
-		for depth := 0; depth < 5; depth++ {
-			switch sequence % operationCount {
-			case 0:
-				_, _ = current.EnterStreaming()
-			case 1:
-				_ = current.EnterRetryPending()
-			case 2:
-				_ = current.EnterAccepted()
-			case 3:
-				_ = current.EnterFailed()
-			case 4:
-				_ = current.EnterAborted()
-			}
-			sequence /= operationCount
-			if current.attempts < previousAttempts || current.attempts < 0 {
-				t.Fatalf("attempt count regressed after sequence %d", encoded)
-			}
-			previousAttempts = current.attempts
-			if isTerminal(current.currentState) {
-				attemptCount := current.attempts
-				_, _ = current.EnterStreaming()
-				if current.attempts != attemptCount {
-					t.Fatalf("terminal request reopened after sequence %d", encoded)
-				}
-			}
-		}
+	retained, ok := next.(RequestFinished)
+	if !ok || !errors.Is(retained.Result.Err, problem) {
+		t.Fatalf("cleanup lost original error: %#v", next)
 	}
-}
-
-func isTerminal(selected State) bool {
-	return selected == StateAccepted || selected == StateFailed ||
-		selected == StateAborted
-}
-
-func stateName(selected State) string {
-	switch selected {
-	case StateProposed:
-		return "proposed"
-	case StateStreaming:
-		return "streaming"
-	case StateRetryPending:
-		return "retry-pending"
-	case StateAccepted:
-		return "accepted"
-	case StateFailed:
-		return "failed"
-	case StateAborted:
-		return "aborted"
-	default:
-		return "unknown"
+	if current.Attempts() != 0 {
+		t.Fatal("failed baseline read started generation")
 	}
 }

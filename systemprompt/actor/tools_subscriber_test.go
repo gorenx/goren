@@ -101,11 +101,8 @@ func TestToolsSubscriberAppliesPublishedViews(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload, err := system.AskGrain(ctx, target, promptactor.InitializeRuntime{
-		AgentID:     "agent",
-		Definitions: systemprompt.DeriveLayer(systemprompt.Snapshot{}).Capture(),
-	}, time.Second)
-	if err != nil || payload.(promptactor.Completion).Err != nil {
+	payload, err := initializeRuntime(t, ctx, system, target, "agent", systemprompt.DeriveLayer(systemprompt.Snapshot{}).Capture(), nil)
+	if err != nil || payload.(promptactor.RuntimeInitialized).Err != nil {
 		t.Fatalf("initialize: %v, %v", payload, err)
 	}
 	subscriber, events := startSubscriber(t, ctx, system, target)
@@ -289,11 +286,8 @@ func TestToolsSubscriberReadsCatalogPublishedBeforeSubscription(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload, err = system.AskGrain(ctx, target, promptactor.InitializeRuntime{
-		AgentID:     "agent",
-		Definitions: systemprompt.DeriveLayer(systemprompt.Snapshot{}).Capture(),
-	}, time.Second)
-	if err != nil || payload.(promptactor.Completion).Err != nil {
+	payload, err = initializeRuntime(t, ctx, system, target, "agent", systemprompt.DeriveLayer(systemprompt.Snapshot{}).Capture(), registry)
+	if err != nil || payload.(promptactor.RuntimeInitialized).Err != nil {
 		t.Fatalf("initialize: %#v, %v", payload, err)
 	}
 	subscriber, events := startSubscriber(t, ctx, system, target)

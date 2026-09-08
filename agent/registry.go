@@ -1,232 +1,131 @@
 package agent
 
 import (
-	"context"
 	"errors"
-	"sync"
+	"sort"
 
 	"github.com/gorenx/goren/session"
 )
 
-// RegistryOptions supplies observer containment without changing lifecycle
-// semantics.
-type RegistryOptions struct {
-	ObserverError func(error)
+// ErrClosing means an Agent or its ancestor no longer accepts new business.
+var ErrClosing = errors.New("agent: Agent or ancestor is closing")
+
+// Registration records one Agent identity and its immutable runtime parent.
+// It contains no reference to a live Agent or framework activation.
+type Registration struct {
+	ID       session.SessionID
+	ParentID *session.SessionID
 }
 
-// Registry is the read-only view of currently visible exact Agent instances.
-type Registry interface {
-	Get(session.SessionID) (Agent, bool)
-	Contains(Agent) bool
-	List() []Agent
+// Registry owns Agent membership and parent-child constraints. Its actor owner
+// serializes operations and performs creation and shutdown outside this object.
+type Registry struct {
+	// entries maps Agent IDs to their registered identity and optional parent ID.
+	// Membership does not imply that component initialization has completed.
+	entries map[session.SessionID]Registration
+	// closing is a set of registered Agent IDs whose close was admitted.
+	// Presence forbids new business in that subtree, not completion replies.
+	// It says nothing about actor activation or resource shutdown progress.
+	closing map[session.SessionID]struct{}
 }
 
-// Constructor owns fresh Agent creation and durable Agent restoration.
-type Constructor interface {
-	Create(context.Context, CreateOptions) (Handle, error)
-	Resume(context.Context, ResumeOptions) (Handle, error)
-}
-
-// ScopeSetup applies one Setup to an exact live Agent Scope.
-type ScopeSetup interface {
-	ApplySetup(context.Context, Agent, Setup) (ScopeResources, error)
-}
-
-// EventDispatcher publishes a producer-owned event through one exact Agent
-// Scope. During closing, only AgentClosingEvent facts remain admissible.
-type EventDispatcher interface {
-	Dispatch(context.Context, Agent, AgentEvent) error
-}
-
-// RuntimeDescendants observes managed runtime descendants of an exact Agent.
-type RuntimeDescendants interface {
-	HasRuntimeDescendants(Agent) bool
-}
-
-// RegistryService owns Agent membership, parent-child relations, and
-// multi-Agent lifecycle. AgentLoop remains responsible for each Host only.
-type RegistryService struct {
-	mutex            sync.Mutex
-	admission        registryAdmission
-	factory          Factory
-	byID             map[session.SessionID]*agentLifetime
-	lifetimes        []*agentLifetime
-	parentByChild    map[session.SessionID]session.SessionID
-	childrenByParent map[session.SessionID]map[session.SessionID]struct{}
-	// Key is an exact Agent lifetime whose Factory call was admitted. The empty
-	// value carries no ownership; membership is the construction join set.
-	constructions     map[*agentLifetime]struct{}
-	reportObserverErr func(error)
-	deactivation      lifecycleSignal
-	deactivationErr   error
-}
-
-// NewRegistry constructs an inactive Agent Registry. RegistryPlugin binds its
-// Factory when the module is activated.
-func NewRegistry(registryConfig RegistryOptions) *RegistryService {
-	reporter := registryConfig.ObserverError
-	if reporter == nil {
-		reporter = func(error) {}
+// Register adds a fresh identity under an already registered parent, if any.
+func (directory *Registry) Register(entry Registration) error {
+	if entry.ID == "" {
+		return errors.New("agent: registration ID is required")
 	}
-	return &RegistryService{
-		admission:         registryInactive,
-		byID:              make(map[session.SessionID]*agentLifetime),
-		parentByChild:     make(map[session.SessionID]session.SessionID),
-		childrenByParent:  make(map[session.SessionID]map[session.SessionID]struct{}),
-		constructions:     make(map[*agentLifetime]struct{}),
-		reportObserverErr: reporter,
-		deactivation:      newLifecycleSignal(),
+	if _, found := directory.entries[entry.ID]; found {
+		return errors.New("agent: identity is already registered")
 	}
-}
-
-func (service *RegistryService) bind(agentFactory Factory) error {
-	if agentFactory == nil {
-		return errors.New("agent: Agent Factory is required")
+	if entry.ParentID != nil {
+		if *entry.ParentID == entry.ID {
+			return errors.New("agent: parent cannot be self")
+		}
+		if err := directory.CheckAdmission(*entry.ParentID); err != nil {
+			return err
+		}
 	}
-	service.mutex.Lock()
-	defer service.mutex.Unlock()
-	if service.admission != registryInactive {
-		return errors.New("agent: Agent Registry is already active")
+	if directory.entries == nil {
+		directory.entries = make(map[session.SessionID]Registration)
 	}
-	if len(service.lifetimes) != 0 || len(service.constructions) != 0 {
-		return errors.New("agent: Agent Registry retained inactive lifetimes")
-	}
-	service.factory = agentFactory
-	service.admission = registryAccepting
-	service.deactivation = newLifecycleSignal()
-	service.deactivationErr = nil
+	directory.entries[entry.ID] = cloneRegistration(entry)
 	return nil
 }
 
-// Get returns the visible exact Agent registered for identifier.
-func (service *RegistryService) Get(identifier session.SessionID) (Agent, bool) {
-	service.mutex.Lock()
-	defer service.mutex.Unlock()
-	lifetime := service.byID[identifier]
-	if lifetime == nil {
-		return nil, false
-	}
-	return lifetime.VisibleAgent()
+// Get returns a detached registration when the identity is present.
+func (directory *Registry) Get(identifier session.SessionID) (Registration, bool) {
+	entry, found := directory.entries[identifier]
+	return cloneRegistration(entry), found
 }
 
-// Contains reports whether subject is the visible exact Agent instance.
-func (service *RegistryService) Contains(subject Agent) bool {
-	if subject == nil {
-		return false
+// List returns detached registrations ordered by Agent ID.
+func (directory *Registry) List() []Registration {
+	result := make([]Registration, 0, len(directory.entries))
+	for _, entry := range directory.entries {
+		result = append(result, cloneRegistration(entry))
 	}
-	service.mutex.Lock()
-	defer service.mutex.Unlock()
-	lifetime := service.byID[subject.ID()]
-	if lifetime == nil {
-		return false
-	}
-	visible, found := lifetime.VisibleAgent()
-	return found && Same(visible, subject)
-}
-
-// List returns visible exact Agents in construction order.
-func (service *RegistryService) List() []Agent {
-	service.mutex.Lock()
-	defer service.mutex.Unlock()
-	result := make([]Agent, 0, len(service.lifetimes))
-	for _, lifetime := range service.lifetimes {
-		if visible, found := lifetime.VisibleAgent(); found {
-			result = append(result, visible)
-		}
-	}
+	sort.Slice(result, func(left, right int) bool { return result[left].ID < result[right].ID })
 	return result
 }
 
-// ApplySetup applies one cohesive Setup to the exact live Agent Scope.
-func (service *RegistryService) ApplySetup(
-	requestContext context.Context,
-	subject Agent,
-	contribution Setup,
-) (ScopeResources, error) {
-	if contribution == nil {
-		return nil, errors.New("agent: Agent Setup is nil")
+// Children returns the directly registered children in stable ID order.
+func (directory *Registry) Children(identifier session.SessionID) []session.SessionID {
+	result := make([]session.SessionID, 0)
+	for _, entry := range directory.entries {
+		if entry.ParentID != nil && *entry.ParentID == identifier {
+			result = append(result, entry.ID)
+		}
 	}
-	lifetime, err := service.liveLifetime(subject)
-	if err != nil {
-		return nil, err
-	}
-	return lifetime.ApplySetup(requestContext, contribution)
+	sort.Slice(result, func(left, right int) bool { return result[left] < result[right] })
+	return result
 }
 
-// Dispatch publishes fact through the Scope of the exact live Agent.
-func (service *RegistryService) Dispatch(
-	requestContext context.Context,
-	subject Agent,
-	fact AgentEvent,
-) error {
-	if fact == nil {
-		return errors.New("agent: AgentEvent is nil")
+// Remove requires children to have completed their independent removal first.
+// Removing an absent identity is idempotent.
+func (directory *Registry) Remove(identifier session.SessionID) error {
+	if len(directory.Children(identifier)) != 0 {
+		return errors.New("agent: registered children remain")
 	}
-	lifetime, err := service.exactLifetime(subject)
-	if err != nil {
-		return err
-	}
-	if requestContext == nil {
-		return errors.New("agent: Agent event Context is nil")
-	}
-	return lifetime.DispatchEvent(requestContext, subject, fact)
+	delete(directory.entries, identifier)
+	delete(directory.closing, identifier)
+	return nil
 }
 
-func (service *RegistryService) exactLifetime(
-	subject Agent,
-) (*agentLifetime, error) {
-	if subject == nil {
-		return nil, errors.New("agent: Agent subject is nil")
+// BeginClose stops new admission beneath an existing identity without removing
+// any child or running resource cleanup. Repeated calls are idempotent.
+func (directory *Registry) BeginClose(identifier session.SessionID) error {
+	if _, found := directory.entries[identifier]; !found {
+		return errors.New("agent: identity is not registered")
 	}
-	service.mutex.Lock()
-	lifetime := service.byID[subject.ID()]
-	available := lifetime != nil && lifetime.Matches(subject)
-	service.mutex.Unlock()
-	if !available {
-		return nil, errors.New("agent: exact Agent event Scope is unavailable")
+	if directory.closing == nil {
+		directory.closing = make(map[session.SessionID]struct{})
 	}
-	return lifetime, nil
+	directory.closing[identifier] = struct{}{}
+	return nil
 }
 
-// HasRuntimeDescendants reports whether the exact Agent owns active children.
-func (service *RegistryService) HasRuntimeDescendants(subject Agent) bool {
-	if subject == nil {
-		return false
+// CheckAdmission rejects missing identities and closing ancestors. It does not
+// establish readiness or authorize a particular framework creation.
+func (directory *Registry) CheckAdmission(identifier session.SessionID) error {
+	for {
+		entry, found := directory.entries[identifier]
+		if !found {
+			return errors.New("agent: identity is not registered")
+		}
+		if _, stopped := directory.closing[identifier]; stopped {
+			return ErrClosing
+		}
+		if entry.ParentID == nil {
+			return nil
+		}
+		identifier = *entry.ParentID
 	}
-	service.mutex.Lock()
-	defer service.mutex.Unlock()
-	lifetime := service.byID[subject.ID()]
-	if lifetime == nil || !lifetime.Matches(subject) {
-		return false
-	}
-	return len(service.childrenByParent[lifetime.SessionID()]) != 0
 }
 
-func (service *RegistryService) liveLifetime(subject Agent) (*agentLifetime, error) {
-	if subject == nil {
-		return nil, errors.New("agent: Agent subject is nil")
+func cloneRegistration(entry Registration) Registration {
+	if entry.ParentID != nil {
+		identifier := *entry.ParentID
+		entry.ParentID = &identifier
 	}
-	service.mutex.Lock()
-	lifetime := service.byID[subject.ID()]
-	live := lifetime != nil && lifetime.AcceptsSetup() &&
-		lifetime.Matches(subject)
-	service.mutex.Unlock()
-	if !live {
-		return nil, errors.New("agent: exact Agent is not accepting Scope operations")
-	}
-	return lifetime, nil
+	return entry
 }
-
-func (service *RegistryService) reportObserverFailure(problem error) {
-	if problem == nil {
-		return
-	}
-	defer func() { _ = recover() }()
-	service.reportObserverErr(problem)
-}
-
-var _ Registry = (*RegistryService)(nil)
-var _ Constructor = (*RegistryService)(nil)
-var _ ScopeSetup = (*RegistryService)(nil)
-var _ EventDispatcher = (*RegistryService)(nil)
-var _ RuntimeDescendants = (*RegistryService)(nil)

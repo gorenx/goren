@@ -2,7 +2,6 @@ package promptactor_test
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -40,11 +39,8 @@ func TestRuntimeGrainAppliesEventsWhileAssemblyIsRunning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload, err := system.AskGrain(ctx, identity, promptactor.InitializeRuntime{
-		AgentID:     "agent-runtime",
-		Definitions: definitions.Capture(),
-	}, time.Second)
-	if err != nil || payload.(promptactor.Completion).Err != nil {
+	payload, err := initializeRuntime(t, ctx, system, identity, "agent-runtime", definitions.Capture(), nil)
+	if err != nil || payload.(promptactor.RuntimeInitialized).Err != nil {
 		t.Fatalf("initialize: %v, %v", payload, err)
 	}
 	payload, err = system.AskGrain(ctx, identity, promptactor.ApplyTools{
@@ -54,18 +50,6 @@ func TestRuntimeGrainAppliesEventsWhileAssemblyIsRunning(t *testing.T) {
 	}, time.Second)
 	if err != nil || payload.(promptactor.Completion).Err != nil {
 		t.Fatalf("initial tools: %v, %v", payload, err)
-	}
-	payload, err = system.AskGrain(ctx, identity, promptactor.Assemble{
-		ID:           "invalid-synchronous-caller",
-		ToolsVersion: 1,
-	}, time.Second)
-	if err != nil || !errors.Is(payload.(promptactor.Assembled).Err, promptactor.ErrAsyncRequest) {
-		t.Fatalf("synchronous caller was not rejected: %v, %v", payload, err)
-	}
-	select {
-	case <-entered:
-		t.Fatal("rejected request started a task")
-	default:
 	}
 	completed := make(chan promptactor.Assembled, 2)
 	consumer, err := system.Spawn(ctx, "assembly-consumer", &assemblyRequester{

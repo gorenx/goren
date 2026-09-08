@@ -3,12 +3,18 @@ package promptactor
 import (
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/systemprompt"
+	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
-// InitializeRuntime supplies definitions for one Agent's unready Prompt Runtime.
+// InitializeRuntime asks the Runtime to obtain its definitions from their owners.
 type InitializeRuntime struct {
-	AgentID     session.SessionID
-	Definitions systemprompt.Snapshot
+	AgentID session.SessionID
+	// PromptRegistry owns registered prompt sections, contexts and variables.
+	// The Runtime requests Prepare to obtain their definition snapshot; it does
+	// not ask this Registry to assemble the Agent's model input.
+	PromptRegistry *goakt.GrainIdentity
+	// ToolsRegistry provides the Agent's committed tool schemas and version.
+	ToolsRegistry *goakt.GrainIdentity
 }
 
 // ApplyTools delivers a detached view of a committed tools event.
@@ -38,3 +44,9 @@ type CancelAssembly struct {
 
 // CloseRuntime waits for an active assembly to exit before reporting completion.
 type CloseRuntime struct{}
+
+// RuntimeInitialized confirms both prompt definitions and the tool baseline.
+type RuntimeInitialized struct {
+	ToolsVersion uint64
+	Err          error
+}

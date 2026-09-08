@@ -1,75 +1,40 @@
 package agent
 
 import (
-	"sync"
-
 	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/session"
 )
 
-// ModelSelection is one complete live provider/model choice.
+// ModelSelection is one complete provider/model choice, independent of an
+// in-flight request or the actor that owns the explicit selection.
 type ModelSelection struct {
 	Provider        string
 	Model           string
 	ReasoningEffort llm.ReasoningEffortID
 }
 
-// ModelSelectionSource resolves the live fallback used until this process
-// explicitly selects a model for the Agent.
-type ModelSelectionSource func() (ModelSelection, bool, error)
-
-// ModelSelectionRef couples the requested next-step selection to the effective
-// selection captured by the most recent prompt assembly.
-type ModelSelectionRef struct {
-	mu        sync.RWMutex
-	requested *ModelSelection
-	effective *ModelSelection
-	source    ModelSelectionSource
-}
-
-// NewModelSelectionRef keeps an optional logged/default source live until an
-// explicit SetCurrent selection takes precedence.
-func NewModelSelectionRef(source ModelSelectionSource) *ModelSelectionRef {
-	return &ModelSelectionRef{
-		source: source,
+// ResolveModelSelection prefers an explicit choice, then the latest recorded
+// request, then deployment defaults. Inputs are already acquired snapshots;
+// this function performs no I/O or provider capability validation. Nil means
+// no selection is available. A returned value never aliases requested.
+func ResolveModelSelection(requested *ModelSelection, entries []session.Event, defaults ModelSelection) (*ModelSelection, error) {
+	if requested != nil {
+		chosen := *requested
+		return &chosen, nil
 	}
-}
-
-// SetCurrent changes selection for the next step that enters prompt assembly.
-func (selection *ModelSelectionRef) SetCurrent(selected *ModelSelection) {
-	selection.mu.Lock()
-	selection.requested = cloneSelection(selected)
-	selection.mu.Unlock()
-}
-
-// Current returns the explicit next-step selection or resolves its live fallback.
-func (selection *ModelSelectionRef) Current() (ModelSelection, bool, error) {
-	selection.mu.RLock()
-	selected := cloneSelection(selection.requested)
-	source := selection.source
-	selection.mu.RUnlock()
-	if selected != nil {
-		return *selected, true, nil
+	header, err := session.LatestRequestHeader(entries)
+	if err != nil {
+		return nil, err
 	}
-	if source == nil {
-		return ModelSelection{}, false, nil
+	if header != nil {
+		return &ModelSelection{
+			Provider:        header.Config.Provider,
+			Model:           header.Config.Model,
+			ReasoningEffort: header.Config.ReasoningEffort,
+		}, nil
 	}
-	return source()
-}
-
-// Assembled returns the selection captured for the most recent assembly.
-func (selection *ModelSelectionRef) Assembled() (ModelSelection, bool) {
-	selection.mu.RLock()
-	defer selection.mu.RUnlock()
-	if selection.effective == nil {
-		return ModelSelection{}, false
+	if defaults.Provider == "" || defaults.Model == "" {
+		return nil, nil
 	}
-	return *selection.effective, true
-}
-
-func cloneSelection(source *ModelSelection) *ModelSelection {
-	if source == nil {
-		return nil
-	}
-	copyValue := *source
-	return &copyValue
+	return &defaults, nil
 }

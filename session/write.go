@@ -1,10 +1,12 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 )
 
 // ErrWritesClosed reports that the Session no longer admits writes.
@@ -38,6 +40,25 @@ type EventDraft struct {
 	sourceEventSeqs  *[]int64
 	surfaceOperation *SurfaceOperation
 	ignorable        bool
+}
+
+// CheckCommit verifies the exact event returned by committing this immutable draft.
+// It compares payload bytes preserved by Log.Commit, not arbitrary historical JSON
+// encodings. The caller separately checks Session identity and the requested range.
+func (draft EventDraft) CheckCommit(entry Event) error {
+	if err := validateEventDraft(draft); err != nil {
+		return err
+	}
+	if !isSafeNonNegative(entry.Seq) || !isSafeInteger(entry.Time) {
+		return errors.New("session: committed event has invalid sequence or time")
+	}
+	if entry.Type != draft.eventType || !bytes.Equal(entry.Data, draft.data) ||
+		entry.Ignorable != draft.ignorable ||
+		!reflect.DeepEqual(entry.SourceEventSeqs, draft.sourceEventSeqs) ||
+		!reflect.DeepEqual(entry.SurfaceOp, draft.surfaceOperation) {
+		return errors.New("session: committed event does not match its draft")
+	}
+	return nil
 }
 
 // NewEventDraft snapshots one typed non-surface event before queue admission.
