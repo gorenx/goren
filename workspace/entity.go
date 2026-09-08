@@ -20,11 +20,11 @@ func (subject *entity) Snapshot() WorkspaceState {
 }
 
 func (subject *entity) SetTitle(requestContext context.Context, title string) error {
-	return subject.owner.setTitle(requestContext, subject.identifier, title)
+	return subject.owner.SetTitle(requestContext, subject.identifier, title)
 }
 
 func (subject *entity) AttachSession(requestContext context.Context, identifier session.SessionID) error {
-	return subject.owner.attachSession(requestContext, subject.identifier, identifier)
+	return subject.owner.AttachSession(requestContext, subject.identifier, identifier)
 }
 
 func (subject *entity) InsertSessionBefore(
@@ -32,11 +32,11 @@ func (subject *entity) InsertSessionBefore(
 	identifier session.SessionID,
 	beforeIdentifier *session.SessionID,
 ) error {
-	return subject.owner.insertSessionBefore(requestContext, subject.identifier, identifier, beforeIdentifier)
+	return subject.owner.InsertSessionBefore(requestContext, subject.identifier, identifier, beforeIdentifier)
 }
 
 func (subject *entity) DetachSession(requestContext context.Context, identifier session.SessionID) error {
-	return subject.owner.detachSession(requestContext, subject.identifier, identifier)
+	return subject.owner.DetachSession(requestContext, subject.identifier, identifier)
 }
 
 func (subject *entity) Status() Status {

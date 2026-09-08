@@ -1,7 +1,6 @@
 package workspace
 
 import (
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
 
@@ -12,10 +11,6 @@ type ChangedNotice struct {
 
 func (ChangedNotice) EventName() string { return "workspace/changed" }
 
-func (ChangedNotice) EventDelivery() plugin.DeliveryPolicy {
-	return plugin.DeliveryBestEffort
-}
-
 // RemovedNotice identifies one committed Workspace deletion.
 type RemovedNotice struct {
 	ID ID
@@ -23,20 +18,12 @@ type RemovedNotice struct {
 
 func (RemovedNotice) EventName() string { return "workspace/removed" }
 
-func (RemovedNotice) EventDelivery() plugin.DeliveryPolicy {
-	return plugin.DeliveryBestEffort
-}
-
 // OrderChangedNotice carries the complete committed display order.
 type OrderChangedNotice struct {
 	WorkspaceIDs []ID
 }
 
 func (OrderChangedNotice) EventName() string { return "workspace/order-changed" }
-
-func (OrderChangedNotice) EventDelivery() plugin.DeliveryPolicy {
-	return plugin.DeliveryBestEffort
-}
 
 // ArchivedSessionsChangedNotice carries the complete committed archive set.
 type ArchivedSessionsChangedNotice struct {
@@ -47,6 +34,16 @@ func (ArchivedSessionsChangedNotice) EventName() string {
 	return "workspace/archived-sessions-changed"
 }
 
-func (ArchivedSessionsChangedNotice) EventDelivery() plugin.DeliveryPolicy {
-	return plugin.DeliveryBestEffort
+// Topic carries non-durable Workspace notices after successful storage writes.
+const Topic = "workspace/notices"
+
+// Notice is the closed vocabulary of post-commit Workspace changes.
+type Notice interface {
+	EventName() string
+	workspaceNotice()
 }
+
+func (ChangedNotice) workspaceNotice()                 {}
+func (RemovedNotice) workspaceNotice()                 {}
+func (OrderChangedNotice) workspaceNotice()            {}
+func (ArchivedSessionsChangedNotice) workspaceNotice() {}

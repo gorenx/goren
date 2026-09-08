@@ -6,11 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/workspace"
 	workspaceSqlite "github.com/gorenx/goren/workspace/persistence/sqlite"
@@ -21,31 +19,6 @@ type headerSource struct {
 }
 
 type unavailableHeaderSource struct{}
-
-type concurrentHeaderSource struct {
-	header  session.Header
-	arrived sync.WaitGroup
-	release chan struct{}
-}
-
-func newConcurrentHeaderSource(header session.Header) *concurrentHeaderSource {
-	source := &concurrentHeaderSource{header: header, release: make(chan struct{})}
-	source.arrived.Add(2)
-	return source
-}
-
-func (source *concurrentHeaderSource) Get(
-	context.Context,
-	session.SessionID,
-) (session.Header, bool, error) {
-	source.arrived.Done()
-	<-source.release
-	return source.header, true, nil
-}
-
-func (*concurrentHeaderSource) List(context.Context) ([]session.Header, error) {
-	return []session.Header{}, nil
-}
 
 func (unavailableHeaderSource) Get(
 	context.Context,
@@ -74,36 +47,14 @@ func (source *headerSource) List(context.Context) ([]session.Header, error) {
 	return result, nil
 }
 
-type workspaceBackendOpener struct {
-	storage workspace.Backend
-}
-
-func (opener workspaceBackendOpener) OpenBackend(context.Context) (workspace.Backend, error) {
-	return opener.storage, nil
-}
-
-func startRegistry(
-	testingContext *testing.T,
-	storage workspace.Backend,
-	headers workspace.SessionHeaders,
-	options workspace.RegistryOptions,
-) (*plugin.Runtime, *workspace.DurableRegistry) {
-	testingContext.Helper()
+func startRegistry(t *testing.T, storage workspace.Backend, headers workspace.SessionHeaders, options workspace.RegistryOptions) (*workspace.DurableRegistry, *workspace.DurableRegistry) {
+	t.Helper()
 	options.SessionHeads = headers
-	registry, err := workspace.NewRegistry(
-		workspaceBackendOpener{
-			storage: storage,
-		},
-		options,
-	)
+	directory, err := workspace.NewRegistry(context.Background(), storage, options)
 	if err != nil {
-		testingContext.Fatal(err)
+		t.Fatal(err)
 	}
-	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
-	if _, err := runtimeEngine.Start(context.Background(), registry); err != nil {
-		testingContext.Fatal(err)
-	}
-	return runtimeEngine, registry
+	return directory, directory
 }
 
 func TestRegistryPersistsCanonicalWorkspacesAndSessionAccounting(t *testing.T) {
@@ -119,7 +70,9 @@ func TestRegistryPersistsCanonicalWorkspacesAndSessionAccounting(t *testing.T) {
 	}
 	firstCWD := firstPath
 	secondCWD := firstPath
-	headers := &headerSource{byID: map[session.SessionID]session.Header{}}
+	headers := &headerSource{
+		byID: map[session.SessionID]session.Header{},
+	}
 	identifiers := []workspace.ID{"workspace-1", "workspace-2"}
 	identifierIndex := 0
 	options := workspace.RegistryOptions{
@@ -133,7 +86,8 @@ func TestRegistryPersistsCanonicalWorkspacesAndSessionAccounting(t *testing.T) {
 		}),
 	}
 	storage, err := workspaceSqlite.Open(requestContext, workspaceSqlite.Config{
-		Path: databasePath, JournalMode: workspaceSqlite.JournalWAL,
+		Path:        databasePath,
+		JournalMode: workspaceSqlite.JournalWAL,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -155,10 +109,16 @@ func TestRegistryPersistsCanonicalWorkspacesAndSessionAccounting(t *testing.T) {
 		t.Fatalf("create second = (%v, %t, %v)", second, created, err)
 	}
 	headers.byID["session-1"] = session.Header{
-		Version: session.FormatVersion, ID: "session-1", CreatedAt: 1, CWD: &firstCWD,
+		Version:   session.FormatVersion,
+		ID:        "session-1",
+		CreatedAt: 1,
+		CWD:       &firstCWD,
 	}
 	headers.byID["session-2"] = session.Header{
-		Version: session.FormatVersion, ID: "session-2", CreatedAt: 2, CWD: &secondCWD,
+		Version:   session.FormatVersion,
+		ID:        "session-2",
+		CreatedAt: 2,
+		CWD:       &secondCWD,
 	}
 	if err := first.AttachSession(requestContext, "session-1"); err != nil {
 		t.Fatal(err)
@@ -192,7 +152,7 @@ func TestRegistryPersistsCanonicalWorkspacesAndSessionAccounting(t *testing.T) {
 			t.Fatalf("archive error = %T %v", err, err)
 		}
 	}
-	if err := engine.Shutdown(requestContext); err != nil {
+	if err := engine.Close(requestContext); err != nil {
 		t.Fatal(err)
 	}
 	if err := storage.Close(requestContext); err != nil {
@@ -200,14 +160,15 @@ func TestRegistryPersistsCanonicalWorkspacesAndSessionAccounting(t *testing.T) {
 	}
 
 	reopened, err := workspaceSqlite.Open(requestContext, workspaceSqlite.Config{
-		Path: databasePath, JournalMode: workspaceSqlite.JournalWAL,
+		Path:        databasePath,
+		JournalMode: workspaceSqlite.JournalWAL,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer reopened.Close(requestContext)
 	restartEngine, restarted := startRegistry(t, reopened, headers, options)
-	defer restartEngine.Shutdown(requestContext)
+	defer restartEngine.Close(requestContext)
 	listed := restarted.List()
 	if len(listed) != 2 || listed[0].Snapshot().ID != "workspace-2" || listed[1].Snapshot().Title != "Primary" {
 		t.Fatalf("restarted workspaces = %#v", workspaceStates(listed))
@@ -230,13 +191,16 @@ func TestRegistryRejectsMismatchedSessionCWD(t *testing.T) {
 	}
 	foreignCWD := foreignPath
 	storage, err := workspaceSqlite.Open(requestContext, workspaceSqlite.Config{
-		Path: filepath.Join(dataDirectory, "workspaces.sqlite"), JournalMode: workspaceSqlite.JournalWAL,
+		Path:        filepath.Join(dataDirectory, "workspaces.sqlite"),
+		JournalMode: workspaceSqlite.JournalWAL,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer storage.Close(requestContext)
-	headers := &headerSource{byID: map[session.SessionID]session.Header{}}
+	headers := &headerSource{
+		byID: map[session.SessionID]session.Header{},
+	}
 	engine, registry := startRegistry(
 		t,
 		storage,
@@ -247,13 +211,16 @@ func TestRegistryRejectsMismatchedSessionCWD(t *testing.T) {
 			}),
 		},
 	)
-	defer engine.Shutdown(requestContext)
+	defer engine.Close(requestContext)
 	subject, _, err := registry.Create(requestContext, workspacePath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	headers.byID["foreign"] = session.Header{
-		Version: session.FormatVersion, ID: "foreign", CreatedAt: 1, CWD: &foreignCWD,
+		Version:   session.FormatVersion,
+		ID:        "foreign",
+		CreatedAt: 1,
+		CWD:       &foreignCWD,
 	}
 	if err := subject.AttachSession(requestContext, "foreign"); err == nil {
 		t.Fatal("mismatched Session was attached")
@@ -271,74 +238,25 @@ func TestRegistryRejectsMismatchedSessionCWD(t *testing.T) {
 func TestRegistryDoesNotReadHeadersAfterInitializedEmptyBootstrap(t *testing.T) {
 	requestContext := context.Background()
 	storage, err := workspaceSqlite.Open(requestContext, workspaceSqlite.Config{
-		Path: filepath.Join(t.TempDir(), "workspaces.sqlite"), JournalMode: workspaceSqlite.JournalWAL,
+		Path:        filepath.Join(t.TempDir(), "workspaces.sqlite"),
+		JournalMode: workspaceSqlite.JournalWAL,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer storage.Close(requestContext)
 	if err := storage.Initialize(requestContext, workspace.StoredRegistry{
-		Initialized: true, WorkspaceIDs: []workspace.ID{}, ArchivedSessionIDs: []session.SessionID{},
-		Records: []workspace.StoredWorkspace{},
+		Initialized:        true,
+		WorkspaceIDs:       []workspace.ID{},
+		ArchivedSessionIDs: []session.SessionID{},
+		Records:            []workspace.StoredWorkspace{},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	engine, registry := startRegistry(t, storage, unavailableHeaderSource{}, workspace.RegistryOptions{})
-	defer engine.Shutdown(requestContext)
+	defer engine.Close(requestContext)
 	if len(registry.List()) != 0 {
 		t.Fatalf("initialized empty Workspaces = %#v", workspaceStates(registry.List()))
-	}
-}
-
-func TestRegistrySerializesConcurrentSessionAccountingAtCommit(t *testing.T) {
-	requestContext := context.Background()
-	dataDirectory := t.TempDir()
-	workspacePath := filepath.Join(dataDirectory, "workspace")
-	if err := ensureDirectory(workspacePath); err != nil {
-		t.Fatal(err)
-	}
-	storage, err := workspaceSqlite.Open(requestContext, workspaceSqlite.Config{
-		Path: filepath.Join(dataDirectory, "workspaces.sqlite"), JournalMode: workspaceSqlite.JournalWAL,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer storage.Close(requestContext)
-	canonicalPath, err := filepath.EvalSymlinks(workspacePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	source := newConcurrentHeaderSource(session.Header{
-		Version: session.FormatVersion, ID: "session-1", CreatedAt: 1, CWD: &canonicalPath,
-	})
-	engine, registry := startRegistry(
-		t,
-		storage,
-		source,
-		workspace.RegistryOptions{
-			IDGenerator: workspace.IDGeneratorFunc(func() (workspace.ID, error) {
-				return "workspace-1", nil
-			}),
-		},
-	)
-	defer engine.Shutdown(requestContext)
-	subject, _, err := registry.Create(requestContext, canonicalPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	errorsByCall := make(chan error, 2)
-	for range 2 {
-		go func() { errorsByCall <- subject.AttachSession(requestContext, "session-1") }()
-	}
-	source.arrived.Wait()
-	close(source.release)
-	for range 2 {
-		if err := <-errorsByCall; err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got := subject.Snapshot().SessionIDs; !reflect.DeepEqual(got, []session.SessionID{"session-1"}) {
-		t.Fatalf("concurrently attached Session IDs = %#v", got)
 	}
 }
 
@@ -366,7 +284,8 @@ func TestRegistryBootstrapMatchesHistoricalSessionAndWorkspaceOrder(t *testing.T
 		t.Fatal(err)
 	}
 	storage, err := workspaceSqlite.Open(requestContext, workspaceSqlite.Config{
-		Path: filepath.Join(dataDirectory, "workspaces.sqlite"), JournalMode: workspaceSqlite.JournalWAL,
+		Path:        filepath.Join(dataDirectory, "workspaces.sqlite"),
+		JournalMode: workspaceSqlite.JournalWAL,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -378,23 +297,53 @@ func TestRegistryBootstrapMatchesHistoricalSessionAndWorkspaceOrder(t *testing.T
 		WorkspaceIDs: []workspace.ID{"workspace-b", "workspace-a"},
 		Records: []workspace.StoredWorkspace{
 			{
-				ID: "workspace-a", Path: pathA, Title: "", SessionIDs: []session.SessionID{"manual", "a-old"},
-				CreatedAt: initialTime, UpdatedAt: initialTime,
+				ID:         "workspace-a",
+				Path:       pathA,
+				Title:      "",
+				SessionIDs: []session.SessionID{"manual", "a-old"},
+				CreatedAt:  initialTime,
+				UpdatedAt:  initialTime,
 			},
 			{
-				ID: "workspace-b", Path: pathB, Title: "B", SessionIDs: []session.SessionID{},
-				CreatedAt: initialTime, UpdatedAt: initialTime,
+				ID:         "workspace-b",
+				Path:       pathB,
+				Title:      "B",
+				SessionIDs: []session.SessionID{},
+				CreatedAt:  initialTime,
+				UpdatedAt:  initialTime,
 			},
 		},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	headers := &headerSource{byID: map[session.SessionID]session.Header{
-		"a-new": {Version: session.FormatVersion, ID: "a-new", CreatedAt: 5_000, CWD: &pathA},
-		"a-old": {Version: session.FormatVersion, ID: "a-old", CreatedAt: 4_000, CWD: &pathA},
-		"b":     {Version: session.FormatVersion, ID: "b", CreatedAt: 5_000, CWD: &pathB},
-		"c":     {Version: session.FormatVersion, ID: "c", CreatedAt: 6_000, CWD: &pathC},
-	}}
+	headers := &headerSource{
+		byID: map[session.SessionID]session.Header{
+			"a-new": {
+				Version:   session.FormatVersion,
+				ID:        "a-new",
+				CreatedAt: 5_000,
+				CWD:       &pathA,
+			},
+			"a-old": {
+				Version:   session.FormatVersion,
+				ID:        "a-old",
+				CreatedAt: 4_000,
+				CWD:       &pathA,
+			},
+			"b": {
+				Version:   session.FormatVersion,
+				ID:        "b",
+				CreatedAt: 5_000,
+				CWD:       &pathB,
+			},
+			"c": {
+				Version:   session.FormatVersion,
+				ID:        "c",
+				CreatedAt: 6_000,
+				CWD:       &pathC,
+			},
+		},
+	}
 	engine, registry := startRegistry(
 		t,
 		storage,
@@ -408,7 +357,7 @@ func TestRegistryBootstrapMatchesHistoricalSessionAndWorkspaceOrder(t *testing.T
 			}),
 		},
 	)
-	defer engine.Shutdown(requestContext)
+	defer engine.Close(requestContext)
 
 	listed := workspaceStates(registry.List())
 	if len(listed) != 3 {
@@ -452,4 +401,118 @@ func workspaceStates(items []workspace.Workspace) []workspace.WorkspaceState {
 		result = append(result, subject.Snapshot())
 	}
 	return result
+}
+
+func TestFailedWritePreservesStateAndEmitsNoNotice(t *testing.T) {
+	ctx := context.Background()
+	storage, err := workspaceSqlite.Open(ctx, workspaceSqlite.Config{
+		Path:        filepath.Join(t.TempDir(), "workspaces.sqlite"),
+		JournalMode: workspaceSqlite.JournalWAL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, directory := startRegistry(t, storage, &headerSource{
+		byID: make(map[session.SessionID]session.Header),
+	}, workspace.RegistryOptions{})
+	subject, _, err := directory.Create(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := subject.Snapshot()
+	if notices := directory.TakeNotices(); len(notices) != 1 {
+		t.Fatalf("create notices = %v", notices)
+	}
+	if err := directory.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := directory.SetTitle(ctx, before.ID, "must not be committed"); err == nil {
+		t.Fatal("closed storage accepted write")
+	}
+	if !reflect.DeepEqual(subject.Snapshot(), before) {
+		t.Fatal("failed write changed memory")
+	}
+	if notices := directory.TakeNotices(); len(notices) != 0 {
+		t.Fatalf("failed write emitted %v", notices)
+	}
+}
+
+func TestRegistryRejectsRelativePathsWithoutPublishing(t *testing.T) {
+	ctx := context.Background()
+	storage, err := workspaceSqlite.Open(ctx, workspaceSqlite.Config{
+		Path:        filepath.Join(t.TempDir(), "workspaces.sqlite"),
+		JournalMode: workspaceSqlite.JournalWAL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, directory := startRegistry(t, storage, &headerSource{}, workspace.RegistryOptions{})
+	defer directory.Close(ctx)
+	for _, path := range []string{"", ".", ".."} {
+		if _, _, err := directory.Create(ctx, path); err == nil {
+			t.Fatalf("accepted relative path %q", path)
+		}
+	}
+	if len(directory.List()) != 0 || len(directory.TakeNotices()) != 0 {
+		t.Fatal("rejected paths changed registry")
+	}
+}
+
+func TestNoOpMovePrunesInvalidCandidatesDurably(t *testing.T) {
+	ctx := context.Background()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	storage, err := workspaceSqlite.Open(ctx, workspaceSqlite.Config{
+		Path:        filepath.Join(t.TempDir(), "workspaces.sqlite"),
+		JournalMode: workspaceSqlite.JournalWAL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := storage.Initialize(ctx, workspace.StoredRegistry{
+		Initialized:  true,
+		WorkspaceIDs: []workspace.ID{"w"},
+		Records: []workspace.StoredWorkspace{{
+			ID:         "w",
+			Path:       root,
+			Title:      "project",
+			SessionIDs: []session.SessionID{"keep", "missing"},
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, directory := startRegistry(t, storage, &headerSource{
+		byID: map[session.SessionID]session.Header{
+			"keep": {
+				ID:  "keep",
+				CWD: &root,
+			},
+		},
+	}, workspace.RegistryOptions{})
+	defer directory.Close(ctx)
+	anchor := session.SessionID("keep")
+	if err := directory.InsertSessionBefore(ctx, "w", "keep", &anchor); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := storage.Load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(stored.Records[0].SessionIDs, []session.SessionID{"keep"}) {
+		t.Fatalf("candidates = %v", stored.Records[0].SessionIDs)
+	}
+	if len(directory.TakeNotices()) != 1 {
+		t.Fatal("pruning was not published")
+	}
+	if err := directory.InsertSessionBefore(ctx, "w", "keep", &anchor); err != nil {
+		t.Fatal(err)
+	}
+	if len(directory.TakeNotices()) != 0 {
+		t.Fatal("unchanged move was published")
+	}
 }

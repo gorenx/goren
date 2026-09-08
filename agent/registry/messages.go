@@ -1,7 +1,10 @@
 // Package registry owns the Agent Registry framework boundary.
 package registry
 
-import "github.com/gorenx/goren/session"
+import (
+	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/session"
+)
 
 // Creation identifies one reserved Agent lifetime, not only its reusable ID.
 type Creation struct {
@@ -47,4 +50,13 @@ type Completion struct {
 // CloseAgent closes a creation and its descendants before releasing its identity.
 type CloseAgent struct {
 	Creation Creation
+}
+
+// Inspect returns the admitted registration for one exact Agent lifetime.
+type Inspect struct{ Creation Creation }
+
+// Inspected contains a detached registration after creation and admission checks.
+type Inspected struct {
+	Registration agent.Registration
+	Err          error
 }

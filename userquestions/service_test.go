@@ -1,543 +1,173 @@
-package userquestions_test
+package userquestions
 
 import (
 	"context"
 	"errors"
-	"reflect"
-	"sync"
 	"testing"
 
-	agentcore "github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/userquestions"
 )
 
-type questionsFixture struct {
-	engine         *plugin.Runtime
-	registry       *questionRegistry
-	registryHandle plugin.Handle
-	questions      userquestions.UserQuestions
+type callerFixture struct{ eligibility Eligibility }
+
+func (source callerFixture) CheckCaller(context.Context, session.SessionID) (Eligibility, error) {
+	return source.eligibility, nil
 }
 
-type questionsFixturePlugin struct {
-	plugin.Base
-	fixture *questionsFixture
+type providerFixture struct {
+	request Request
+	answer  Answer
+	cancel  context.CancelFunc
 }
 
-func (*questionsFixturePlugin) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name: "userquestions-test-consumer",
-		Requires: []plugin.ServiceType{
-			plugin.ServiceOf[userquestions.UserQuestions](),
+func (source *providerFixture) Ask(_ context.Context, input Request) (Answer, error) {
+	source.request = input
+	if source.cancel != nil {
+		source.cancel()
+	}
+	input.Questions[0].Question = "provider mutation"
+	return source.answer, nil
+}
+
+func TestAdmissionAndIntentErrors(t *testing.T) {
+	detail := "Review the plan"
+	for _, scenario := range []struct {
+		name        string
+		eligibility Eligibility
+		questions   []Question
+		code        string
+	}{
+		{
+			name: "missing caller",
+			code: CodeCallerNotLive,
+			questions: []Question{{
+				ID:       "q",
+				Question: "Continue?",
+			}},
 		},
-	}
-}
-
-func (owner *questionsFixturePlugin) Apply(context.Context) error {
-	questions, err := plugin.Require[userquestions.UserQuestions](owner)
-	if err != nil {
-		return err
-	}
-	owner.fixture.questions = questions
-	return nil
-}
-
-func (*questionsFixturePlugin) Dispose(context.Context) error { return nil }
-
-var _ plugin.Plugin = (*questionsFixturePlugin)(nil)
-
-type questionRegistry struct {
-	mutex   sync.RWMutex
-	entries map[session.SessionID]agentcore.Agent
-}
-
-func newQuestionRegistry() *questionRegistry {
-	return &questionRegistry{
-		entries: make(map[session.SessionID]agentcore.Agent),
-	}
-}
-
-func (registry *questionRegistry) Get(
-	identifier session.SessionID,
-) (agentcore.Agent, bool) {
-	registry.mutex.RLock()
-	subject, found := registry.entries[identifier]
-	registry.mutex.RUnlock()
-	return subject, found
-}
-
-func (registry *questionRegistry) Contains(subject agentcore.Agent) bool {
-	if subject == nil {
-		return false
-	}
-	current, found := registry.Get(subject.ID())
-	return found && agentcore.Same(current, subject)
-}
-
-func (registry *questionRegistry) List() []agentcore.Agent {
-	registry.mutex.RLock()
-	result := make([]agentcore.Agent, 0, len(registry.entries))
-	for _, subject := range registry.entries {
-		result = append(result, subject)
-	}
-	registry.mutex.RUnlock()
-	return result
-}
-
-func (registry *questionRegistry) enter(subject agentcore.Agent) error {
-	registry.mutex.Lock()
-	defer registry.mutex.Unlock()
-	if registry.entries[subject.ID()] != nil {
-		return errors.New("test: duplicate Agent")
-	}
-	registry.entries[subject.ID()] = subject
-	return nil
-}
-
-type questionRegistryPlugin struct {
-	plugin.Base
-	registry *questionRegistry
-}
-
-func (adapter *questionRegistryPlugin) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name: "userquestions-test-registry",
-		Provides: []plugin.ProvidedService{
-			plugin.NewProvidedService[agentcore.Registry](adapter.registry),
-		},
-	}
-}
-
-func (*questionRegistryPlugin) Apply(requestContext context.Context) error {
-	return requestContext.Err()
-}
-
-func (*questionRegistryPlugin) Dispose(context.Context) error { return nil }
-
-var _ agentcore.Registry = (*questionRegistry)(nil)
-var _ plugin.Plugin = (*questionRegistryPlugin)(nil)
-
-type questionSubject struct {
-	plugin.Base
-	identifier   session.SessionID
-	conversation session.Context
-}
-
-func (subject *questionSubject) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name: "userquestions-test-agent:" + string(subject.identifier),
-		Provides: []plugin.ProvidedService{
-			plugin.NewProvidedService[agentcore.Agent](subject),
-		},
-	}
-}
-
-func (*questionSubject) Apply(requestContext context.Context) error {
-	return requestContext.Err()
-}
-
-func (*questionSubject) Dispose(context.Context) error { return nil }
-
-func (subject *questionSubject) ID() session.SessionID {
-	return subject.identifier
-}
-
-func (*questionSubject) OptionsValue() agentcore.Options {
-	return agentcore.Options{}
-}
-
-func (subject *questionSubject) SessionValue() session.Context {
-	return subject.conversation
-}
-
-func (*questionSubject) InboxValue() *agentcore.Inbox {
-	return nil
-}
-
-func (*questionSubject) StatusValue() agentcore.Status {
-	return agentcore.StatusIdle
-}
-
-func (*questionSubject) Cancel(agentcore.CancelCause, agentcore.CancelOptions) {}
-
-func (*questionSubject) WhenIdle(context.Context) error {
-	return nil
-}
-
-func (*questionSubject) Send(agentmessage.UserMessage, agentcore.InboxTarget, bool) error {
-	return nil
-}
-
-func (*questionSubject) Followup(agentmessage.UserMessage) error {
-	return nil
-}
-
-func (*questionSubject) Steer(agentmessage.UserMessage) error {
-	return nil
-}
-
-func (*questionSubject) Inject(agentmessage.UserMessage) error {
-	return nil
-}
-
-func (*questionSubject) RunMaintenance(
-	requestContext context.Context,
-	operation func(context.Context) error,
-) error {
-	return operation(requestContext)
-}
-
-type recordingProvider struct {
-	requests []userquestions.Request
-	answer   userquestions.Answer
-	err      error
-}
-
-func (recorder *recordingProvider) Ask(
-	_ context.Context,
-	questionRequest userquestions.Request,
-) (userquestions.Answer, error) {
-	recorder.requests = append(recorder.requests, questionRequest)
-	return recorder.answer, recorder.err
-}
-
-func newQuestionsFixture(t *testing.T, withRegistry bool) *questionsFixture {
-	t.Helper()
-	state := &questionsFixture{
-		engine: plugin.NewRuntime(plugin.RuntimeSettings{}),
-	}
-	questionsPlugin := userquestions.NewPlugin()
-	consumerPlugin := &questionsFixturePlugin{
-		fixture: state,
-	}
-	instances := []plugin.Plugin{
-		questionsPlugin,
-		consumerPlugin,
-	}
-	if withRegistry {
-		state.registry = newQuestionRegistry()
-		instances = []plugin.Plugin{
-			&questionRegistryPlugin{
-				registry: state.registry,
+		{
+			name: "delegated",
+			eligibility: Eligibility{
+				Live:      true,
+				Delegated: true,
 			},
-			questionsPlugin,
-			consumerPlugin,
-		}
+			code: CodeDelegatedCaller,
+			questions: []Question{{
+				ID:       "q",
+				Question: "Continue?",
+			}},
+		},
+		{
+			name: "empty",
+			eligibility: Eligibility{
+				Live: true,
+			},
+			code: CodeEmptyQuestions,
+		},
+		{
+			name: "bad intent",
+			eligibility: Eligibility{
+				Live: true,
+			},
+			code: CodeBadIntent,
+			questions: []Question{{
+				ID: "q",
+				Intent: &Intent{
+					Kind: "unknown",
+				},
+			}},
+		},
+		{
+			name: "no approve option",
+			eligibility: Eligibility{
+				Live: true,
+			},
+			code: CodeBadIntent,
+			questions: []Question{{
+				ID:     "q",
+				Detail: &detail,
+				Intent: &Intent{
+					Kind:    IntentPlanReview,
+					Approve: "yes",
+				},
+			}},
+		},
+		{
+			name: "no provider",
+			eligibility: Eligibility{
+				Live: true,
+			},
+			code: CodeNoProvider,
+			questions: []Question{{
+				ID:       "q",
+				Question: "Continue?",
+			}},
+		},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			service := New(nil, callerFixture{
+				eligibility: scenario.eligibility,
+			})
+			_, err := service.Ask(context.Background(), Request{
+				SessionID: "s",
+				Questions: scenario.questions,
+			})
+			var problem *Error
+			if !errors.As(err, &problem) || problem.Code != scenario.code {
+				t.Fatalf("error = %v", err)
+			}
+		})
 	}
-	handles, err := state.engine.Start(context.Background(), instances...)
-	if err != nil {
-		t.Fatal(err)
+}
+
+func TestAskDetachesInputsAndAnswers(t *testing.T) {
+	provider := &providerFixture{
+		answer: Answer{
+			Answers: []AnswerItem{{
+				ID:       "q",
+				Selected: []string{"yes"},
+			}},
+		},
 	}
-	if withRegistry {
-		state.registryHandle = handles[0]
-	}
-	t.Cleanup(func() {
-		if shutdownErr := state.engine.Shutdown(context.Background()); shutdownErr != nil {
-			t.Error(shutdownErr)
-		}
+	service := New(provider, callerFixture{
+		eligibility: Eligibility{
+			Live: true,
+		},
 	})
-	return state
-}
-
-func newQuestionSubject(
-	t *testing.T,
-	state *questionsFixture,
-	identifier session.SessionID,
-	origin session.Origin,
-) *questionSubject {
-	t.Helper()
-	conversation, err := session.New(
-		identifier,
-		session.CreateOptions{
-			Metadata: session.Metadata{
-				Origin: origin,
-			},
-		},
-	)
+	input := Request{
+		SessionID: "s",
+		Questions: []Question{{
+			ID:       "q",
+			Question: "Continue?",
+		}},
+	}
+	answerValue, err := service.Ask(context.Background(), input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	subject := &questionSubject{
-		identifier:   identifier,
-		conversation: conversation,
+	if input.Questions[0].Question != "Continue?" || provider.request.SessionID != "s" {
+		t.Fatal("request alias or lost caller")
 	}
-	if _, err = state.engine.MountScopedChild(
-		context.Background(),
-		state.registryHandle,
-		subject,
-	); err != nil {
-		t.Fatal(err)
-	}
-	return subject
-}
-
-func requireQuestionCode(t *testing.T, err error, wantCode string) {
-	t.Helper()
-	var problem *userquestions.Error
-	if !errors.As(err, &problem) || problem.Code != wantCode {
-		t.Fatalf("error = %#v, want UserQuestionError code %q", err, wantCode)
+	answerValue.Answers[0].Selected[0] = "changed"
+	if provider.answer.Answers[0].Selected[0] != "yes" {
+		t.Fatal("answer aliases provider")
 	}
 }
 
-func TestProviderLifecycleAndDetachedDelegation(t *testing.T) {
-	t.Parallel()
-	state := newQuestionsFixture(t, false)
-	answerText := "because it is reproducible"
-	providerValue := &recordingProvider{
-		answer: userquestions.Answer{
-			Answers: []userquestions.AnswerItem{
-				{
-					ID:       "pkg",
-					Selected: []string{"pnpm"},
-					Custom:   &answerText,
-				},
-			},
-		},
+func TestCancellationWinsOverLateAnswer(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	provider := &providerFixture{
+		cancel: cancel,
 	}
-	binding, err := state.questions.RegisterProvider(providerValue)
-	if err != nil {
-		t.Fatal(err)
+	service := New(provider, nil)
+	_, err := service.Ask(ctx, Request{
+		Questions: []Question{{
+			ID:       "q",
+			Question: "Continue?",
+		}},
+	})
+	var problem *Error
+	if !errors.Is(err, context.Canceled) || !errors.As(err, &problem) || problem.Code != CodeAborted {
+		t.Fatalf("error = %v", err)
 	}
-	if _, err = state.questions.RegisterProvider(&recordingProvider{}); err == nil {
-		t.Fatal("duplicate provider registration succeeded")
-	} else {
-		requireQuestionCode(t, err, userquestions.CodeDuplicate)
-	}
-	questions := []userquestions.Question{
-		{
-			ID:       "pkg",
-			Question: "Which package manager?",
-		},
-	}
-	answerValue, err := state.questions.Ask(
-		context.Background(),
-		userquestions.Request{
-			Questions: questions,
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(answerValue, providerValue.answer) || len(providerValue.requests) != 1 {
-		t.Fatalf("delegation = (%#v, %#v)", answerValue, providerValue.requests)
-	}
-	questions[0].Question = "mutated"
-	if providerValue.requests[0].Questions[0].Question != "Which package manager?" {
-		t.Fatal("provider request borrowed caller slice")
-	}
-	answerValue.Answers[0].Selected[0] = "npm"
-	if providerValue.answer.Answers[0].Selected[0] != "pnpm" {
-		t.Fatal("returned answer borrowed provider slice")
-	}
-	binding.Unregister()
-	binding.Unregister()
-	_, err = state.questions.Ask(
-		context.Background(),
-		userquestions.Request{
-			Questions: questions,
-		},
-	)
-	requireQuestionCode(t, err, userquestions.CodeNoProvider)
-}
-
-func TestOptionalRegistryChangesReactivateQuestionService(t *testing.T) {
-	t.Parallel()
-	state := newQuestionsFixture(t, false)
-	firstProvider := &recordingProvider{}
-	firstHandle, err := state.questions.RegisterProvider(firstProvider)
-	if err != nil {
-		t.Fatal(err)
-	}
-	registryPlugin := &questionRegistryPlugin{
-		registry: newQuestionRegistry(),
-	}
-	registryHandle, err := state.engine.Mount(
-		context.Background(),
-		registryPlugin,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	secondProvider := &recordingProvider{
-		answer: userquestions.Answer{
-			Answers: []userquestions.AnswerItem{
-				{
-					ID:       "confirm",
-					Selected: []string{"yes"},
-				},
-			},
-		},
-	}
-	secondHandle, err := state.questions.RegisterProvider(secondProvider)
-	if err != nil {
-		t.Fatalf("register after optional Registry mount: %v", err)
-	}
-	firstHandle.Unregister()
-	answerValue, err := state.questions.Ask(
-		context.Background(),
-		userquestions.Request{
-			Questions: []userquestions.Question{
-				{
-					ID:       "confirm",
-					Question: "Proceed?",
-				},
-			},
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(answerValue, secondProvider.answer) {
-		t.Fatalf("answer after Registry mount = %#v", answerValue)
-	}
-	if err = state.engine.Unload(context.Background(), registryHandle); err != nil {
-		t.Fatal(err)
-	}
-	thirdProvider := &recordingProvider{}
-	if _, err = state.questions.RegisterProvider(thirdProvider); err != nil {
-		t.Fatalf("register after optional Registry unload: %v", err)
-	}
-	secondHandle.Unregister()
-	_, err = state.questions.Ask(
-		context.Background(),
-		userquestions.Request{
-			Questions: []userquestions.Question{
-				{
-					ID:       "confirm",
-					Question: "Proceed?",
-				},
-			},
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestAskRejectsInvalidInputsBeforeProvider(t *testing.T) {
-	t.Parallel()
-	state := newQuestionsFixture(t, false)
-	providerValue := &recordingProvider{}
-	if _, err := state.questions.RegisterProvider(providerValue); err != nil {
-		t.Fatal(err)
-	}
-	abortedContext, cancelRequest := context.WithCancel(context.Background())
-	cancelRequest()
-	_, err := state.questions.Ask(
-		abortedContext,
-		userquestions.Request{
-			Questions: []userquestions.Question{
-				{
-					ID:       "confirm",
-					Question: "Proceed?",
-				},
-			},
-		},
-	)
-	requireQuestionCode(t, err, userquestions.CodeAborted)
-	_, err = state.questions.Ask(context.Background(), userquestions.Request{})
-	requireQuestionCode(t, err, userquestions.CodeEmptyQuestions)
-	options := []userquestions.Option{
-		{
-			Label: "Approve",
-		},
-	}
-	detail := "# Plan"
-	_, err = state.questions.Ask(
-		context.Background(),
-		userquestions.Request{
-			Questions: []userquestions.Question{
-				{
-					ID:       "plan",
-					Question: "Approve?",
-					Detail:   &detail,
-					Options:  &options,
-					Intent: &userquestions.Intent{
-						Kind:    userquestions.IntentPlanReview,
-						Approve: "Ship it",
-					},
-				},
-			},
-		},
-	)
-	requireQuestionCode(t, err, userquestions.CodeBadIntent)
-	if len(providerValue.requests) != 0 {
-		t.Fatalf("provider calls after invalid asks = %d", len(providerValue.requests))
-	}
-}
-
-func TestAskRequiresExactLiveRuntimeRoot(t *testing.T) {
-	t.Parallel()
-	state := newQuestionsFixture(t, true)
-	providerValue := &recordingProvider{
-		answer: userquestions.Answer{
-			Answers: []userquestions.AnswerItem{
-				{
-					ID:       "confirm",
-					Selected: []string{"yes"},
-				},
-			},
-		},
-	}
-	if _, err := state.questions.RegisterProvider(providerValue); err != nil {
-		t.Fatal(err)
-	}
-	rootSubject := newQuestionSubject(t, state, "root", "")
-	childSubject := newQuestionSubject(t, state, "child", session.OriginSubagent)
-	if err := state.registry.enter(rootSubject); err != nil {
-		t.Fatal(err)
-	}
-	if err := state.registry.enter(childSubject); err != nil {
-		t.Fatal(err)
-	}
-	questions := []userquestions.Question{
-		{
-			ID:       "confirm",
-			Question: "Proceed?",
-		},
-	}
-	if _, err := state.questions.Ask(
-		context.Background(),
-		userquestions.Request{
-			Questions: questions,
-			Subject:   rootSubject,
-		},
-	); err != nil {
-		t.Fatal(err)
-	}
-	_, err := state.questions.Ask(
-		context.Background(),
-		userquestions.Request{
-			Questions: questions,
-			Subject:   childSubject,
-		},
-	)
-	requireQuestionCode(t, err, userquestions.CodeDelegatedCaller)
-	staleSubject := newQuestionSubject(t, state, "root", "")
-	_, err = state.questions.Ask(
-		context.Background(),
-		userquestions.Request{
-			Questions: questions,
-			Subject:   staleSubject,
-		},
-	)
-	requireQuestionCode(t, err, userquestions.CodeCallerNotLive)
-	if len(providerValue.requests) != 1 || providerValue.requests[0].Subject != rootSubject {
-		t.Fatalf("provider requests = %#v", providerValue.requests)
-	}
-
-	unattested := newQuestionsFixture(t, false)
-	if _, err = unattested.questions.RegisterProvider(&recordingProvider{}); err != nil {
-		t.Fatal(err)
-	}
-	_, err = unattested.questions.Ask(
-		context.Background(),
-		userquestions.Request{
-			Questions: questions,
-			Subject:   rootSubject,
-		},
-	)
-	requireQuestionCode(t, err, userquestions.CodeCallerNotLive)
 }

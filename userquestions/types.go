@@ -5,14 +5,10 @@ package userquestions
 import (
 	"context"
 
-	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/plugin"
+	"github.com/gorenx/goren/session"
 )
 
 const ServiceName = "userQuestions"
-
-// PluginName is the canonical Harness Plugin name.
-const PluginName = "@deepseek-ai/dsh-user-questions"
 
 // Option is one selectable user-facing answer.
 type Option struct {
@@ -54,10 +50,10 @@ type Answer struct {
 	Answers []AnswerItem `json:"answers"`
 }
 
-// Request borrows questions and the exact live calling Agent for one ask.
+// Request identifies the calling Session without retaining an Agent object.
 type Request struct {
 	Questions []Question
-	Subject   agent.Agent
+	SessionID session.SessionID
 }
 
 // Provider collects one human answer batch.
@@ -65,11 +61,20 @@ type Provider interface {
 	Ask(context.Context, Request) (Answer, error)
 }
 
-// UserQuestions is the provider-owned question capability.
+// UserQuestions is the narrow consumer contract for asking a question batch.
 type UserQuestions interface {
-	plugin.Service
-	RegisterProvider(Provider) (*ProviderHandle, error)
 	Ask(context.Context, Request) (Answer, error)
+}
+
+// Eligibility is the current caller admission decision, detached from its owner.
+type Eligibility struct {
+	Live      bool
+	Delegated bool
+}
+
+// Callers resolves live interaction eligibility, including parent ownership.
+type Callers interface {
+	CheckCaller(context.Context, session.SessionID) (Eligibility, error)
 }
 
 func cloneQuestions(entries []Question) []Question {

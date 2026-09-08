@@ -31,7 +31,7 @@ func (owner *InteractionGateway) Ask(
 	if ctx == nil {
 		return userquestions.Answer{}, errors.New("apiproxy: question Context is nil")
 	}
-	if questionRequest.Subject == nil {
+	if questionRequest.SessionID == "" {
 		return userquestions.Answer{}, questionFailure(
 			"web user interaction requires an agent-owned session",
 			userquestions.CodeMissingAgent,
@@ -46,7 +46,7 @@ func (owner *InteractionGateway) Ask(
 		)
 	}
 	items := projectQuestions(questionRequest.Questions)
-	conversationID := SessionID(questionRequest.Subject.ID())
+	conversationID := SessionID(questionRequest.SessionID)
 	correlationID, err := owner.newRPC()
 	if err != nil {
 		return userquestions.Answer{}, fmt.Errorf("apiproxy: mint question rpcId: %w", err)
