@@ -30,15 +30,15 @@ Cancel 使用具名 agent.CancelOptions：KeepInbox 保留输入并返回空编�
 
 模块内职责进一步划分：agent.go 负责初始化、输入准入和关闭条件；agent_turn.go 负责 Turn 开始确认及输入领取边界；agent_step.go 负责前置 Step 决策、Step 开始/结束确认与结论累计。ReactLoopAgent 单向拥有 Turn 和 Step，二者不引用 ReactLoopAgent，也不接触 actor。Prepare 方法生成草稿，Confirm 方法校验提交结果；ConfirmTurn 使用完整 WriteResult 核对 Session 身份及提交范围，并通过草稿 CheckCommit 校验事件，不重复解码 JSON；关闭准备期间允许消化已接纳输入，存在未闭合 Turn 时禁止释放资源。
 
-Turn/Step 业务接口已实现，但 Grain 尚未接入完整调用链。Step 的消息提交仍采用原有逐条提交语义，开始模型请求必须在输入提交后；Turn 的结束提交、必要回读与 flush 由 Actor 直接编排，业务接口核对各次确认。不能把这些业务方法视为端到端执行已经完成。
+Turn/Step 业务接口已实现，但 Grain 尚未接入完整调用链。Step 的消息提交仍采用原有逐条提交语义，开始模型请求必须在输入提交后；Turn 的幂等结束提交与 flush 由 Actor 直接编排，业务接口核对各次确认。不能把这些业务方法视为端到端执行已经完成。
 
 agent_settlement.go 固定本轮结束草稿、校验单事件提交内容与范围，并保存待持久化的 WriteBarrier。只有同 Session 的成功 flush 覆盖该 barrier 后才清空当前 Turn。提交前可重试原草稿，提交后只能重试 flush。错误回复不调用确认方法。取消原因在生成 Session 事件时映射，业务规则使用 error 类型；准备结束草稿后结论固定，避免重试写入不同内容。
 
-turn-stopping 的判断在 agent_turn.go：BeginStopping 确认是否需要进入停止边界，FinishStopping 根据此期间已提交的 next-step 输入决定恢复 Step 或收尾。通知传输由上游编排，ReactLoopAgent 不接收函数回调。
+turn-stopping 通过 ContinueTurn/CompleteStopping 推进，直接读取业务对象保存的取消意图；agent_turn.go 中的私有 beginStopping 确认是否需要进入停止边界，私有 finishStopping 根据此期间已提交的 next-step 输入决定恢复 Step 或收尾。通知传输由上游编排，ReactLoopAgent 不接收函数回调。
 
 turn_end.go 的 TurnEnd 是单轮结束事实的不可变值。Drafts 在 Session 提供的当前日志上判断追加或去重，Find 校验同轮结束内容并返回已提交位置。actor 的 WritePlan 适配器只持有该值，不持有可变 ReactLoopAgent；此职责用于解决提交响应丢失后的重试，不是新的业务 owner 或更新 ID。当前检查基于代码，尚未运行故障注入测试。
 
-收尾操作解释协议已删除。PrepareTurnEnd 固定业务事实，ConfirmTurnEnd 核对提交结果，ReconcileTurnEnd 在完整日志中确认去重写对应的原事件，TurnBarrier 提供已确认位置，ConfirmTurnFlush 验证持久化并关闭 Turn。Actor 直接编排外部请求；业务层不返回 Commit/Read/Flush 操作。
+收尾操作解释协议已删除。PrepareTurnEnd 固定业务事实，ConfirmTurnEnd 核对提交结果，Session 幂等重试返回原事件与原提交范围，ReconcileTurnEnd 已删除，TurnBarrier 提供已确认位置，ConfirmTurnFlush 验证持久化并关闭 Turn。Actor 直接编排外部请求；业务层不返回 Commit/Read/Flush 操作。
 
 PrepareStep 接收 StepInput，验证工具定义版本并捕获待提交 Step；同一提案可重试，不能替换在途快照。ConfirmStep 将该对象安装为当前 Step，不重新创建一个丢失输入的对象。BeginModel 仅接受提供者元数据，要求当前 Step 已进入 requesting，并从 Step 获取 Prompt 和位置，阻止外部模型请求绕过本步数据所有权。
 
@@ -58,7 +58,7 @@ Actor 的 grain_step.go 直接请求领取提交、Session 快照、Prompt 组�
 
 StartRequest 捕获当前 Step 并由 ReactLoopAgent 持有唯一 ModelRequest，只返回第一个操作。AdvanceRequest 消费具名完成值，RetryRequestClose 重试关闭；CompleteModel 从当前请求读取终态，成功转入工具或 Step 收尾后才释放引用。重复启动、运行中完成和关闭未确认的提前续步被拒绝。配置提案与恢复只由 ModelRequest 解释；旧 PrepareRequest/RequestProposal 已删除。Grain 当前单次 Attempt 入口尚未切换，业务接口完成不代表生产调度已接通。
 
-`agent.Agent` 定义身份、只读 Inbox、状态及 Followup、Steer、Inject、Cancel 业务操作，由 ReactLoopAgent 直接实现。输入方法返回准入提案，完整 Session 提交确认后才改变 Inbox 与执行预约。异步提交、取消投递和 WhenIdle 属于 actor.Client；客户端不实现业务 Agent。Grain 直接持有 ReactLoopAgent，删除了仅重复其方法清单的 execution 接口。依赖方向为 actor → agentloop → agent，业务对象不导入框架。完整执行调度仍须继续接线。
+`agent.Agent` 定义身份、只读 Inbox、状态及 Followup、Steer、Inject、Cancel 业务操作，由 ReactLoopAgent 直接实现。输入方法返回准入提案，完整 Session 提交确认后才更新 Inbox 并记录已接纳的执行。异步提交、取消投递和 WhenIdle 属于 actor.Client；客户端不实现业务 Agent。Grain 直接持有 ReactLoopAgent，删除了仅重复其方法清单的 execution 接口。依赖方向为 actor → agentloop → agent，业务对象不导入框架。完整执行调度仍须继续接线。
 
 ReconcileStepStart 仅核对已停止准备流程的 Step 开始候选：已提交则安装 Step 并要求先收尾，确认未提交才删除候选。快照必须在原写入请求结束后读取，不能用任意历史快照推断未提交。
 
@@ -93,7 +93,7 @@ flowchart TD
 
 TurnOperation 当前只表达继续 Step、运行停止钩子或固定 TurnEnd 等业务决策。两套外部操作解释协议均已删除；异步准备与收尾由 Actor 直接编排，业务方法验证状态和事实。完整主驱动仍需接线。
 
-执行预约及取消事实位于 agent_activity.go，输入业务入口位于 agent_admission.go，完整提交核对复用 agent_commit.go。StatusValue 在 waking 输入确认后即为 running，不用已提交 Turn 是否存在推断预约。FinishActivity 只能在业务工作全部关闭后释放预约；取消之后接纳的 waking 输入仍存在时，预约下一次执行。维护互斥与主驱动接线仍待完成，不属于当前验证覆盖范围。
+已接纳执行及取消事实位于 agent_activity.go，输入业务入口位于 agent_admission.go，完整提交核对复用 agent_commit.go。需要唤醒的输入提交确认后，StatusValue 即为 running，此时 Turn 可能尚未开始。FinishActivity 只能在业务工作全部关闭后清除该执行；取消之后接纳的唤醒输入仍存在时，保留下一次待执行工作。维护互斥与主驱动接线仍待完成，不属于当前验证覆盖范围。
 
 ## 状态约束
 
@@ -115,3 +115,9 @@ stateDiagram-v2
  Settling --> Closed: ConfirmStepEnd 验证成功
  Closed --> [*]
 ```
+
+
+Turn 开始使用不可变 TurnStart 与 Session.IdempotentWrite。开始回复不确定时重试同一写入，Session 返回原事件或首次追加的结果，不再 Read/ReconcileTurnStart。候选已建立后收到取消，仍确认同一开始事实并按取消结论收尾。业务与 Actor 幂等重试测试已通过；用户输入到完整模型/工具循环的主驱动仍未接通。
+
+
+模型请求统一读取业务取消意图。StartRequest 不允许取消后新建，AdvanceRequest 仅接收具名结果并内部附带已记录取消。已发出的操作仍按真实结果完成提交确认或清理；取消不是丢弃完成消息的理由。当前单次 BeginModel 也拒绝取消后启动或与完整请求并行，完整模型驱动尚待 LLM owner 迁移。

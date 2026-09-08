@@ -227,3 +227,11 @@ TimeSource 留作 Log 时间输入，默认时钟移至 time_source.go；session
 Registry 增加 `ListSessions` 请求，返回 `Sessions.Items`，每项包含已成功初始化的 Header 和对应 CreationID。Header 在初始化成功后记录，是创建元数据，不是日志副本。列表只包含仍持有有效创建授权的已初始化项；未初始化、已撤销或已释放的项不返回。按 SessionID 排序并深拷贝 Header。
 
 Query 的来源编排先请求该列表，再以返回的 CreationID 请求 Session Grain.Read。期间发生关闭时，读取可以明确失败，调用方不得把失败解释为空日志或成功发布部分来源。列表查询本身不执行 I/O、不激活 Grain，也不充当跨 Session 的事务快照。
+
+## 幂等提交与原结果返回
+
+当前 Batch 为无条件追加，不应按 payload 相同自动去重。幂等标识及同标识内容冲突由用例 owner 定义，Session 负责将查重与追加放在同一串行事务内执行。新增 IdempotentWrite 契约：扩展 WritePlan，FindCommit(Snapshot) 返回原 WriteResult 或 nil；实现必须确定、无 I/O，只检查 Session 提供的快照。普通 Batch 仍用于允许重复的事件。
+
+Log.Commit 对幂等计划先查询原提交；找到时核对 Session 身份、连续范围及事件确实来自当前日志，然后返回日志中分离的原事件、原 FirstSeq/NextSeq 和原 Barrier。未找到才 Build 并追加。冲突直接 error，不覆盖历史。用例重试必须保持同一身份及内容；Session 不维护 Actor CallID、内存回执 map 或另一个持久化索引，恢复后的日志仍可识别原提交。
+
+Session Grain 通过本次调用前后日志位置识别新增事件；返回原结果不能再次发布 Appended 通知。Flush 仍独立确认对应前缀耐久性，重试 Commit 不冒充已落盘。初始迁移对象是拥有稳定 Turn 编号的 TurnEnd 写入计划；其他计划须逐项定义身份，不能宣称所有追加已天然幂等。完整调用方迁移后删除 AgentLoop 中相应的回读补偿路径，不保留两条恢复实现。

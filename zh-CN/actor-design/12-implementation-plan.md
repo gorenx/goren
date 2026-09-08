@@ -1,6 +1,6 @@
 # Actor 架构实施计划
 
-状态：P0/P1 已开始，P2 的 Credentials 和 ModelConfig 默认读取生产切片已实现；AgentLoop 版本化配置接入和其余能力待实施。本文确定执行顺序与验收出口，不表示生产代码已迁移。
+状态：分模块重构进行中；Agent/AgentLoop 已提交业务层和部分 Actor 驱动，完整执行链尚未接通。最新完成证据及待办见本文第 13、14 节；P0–P8 表示整体验收目标，不因局部测试通过而标记完成。
 [设计入口](../actor-runtime-draft.md) · [各 Actor 定义](./11-actor-implementation.md) · [模块职责](./09-module-implementation.md)。
 
 ## 1. 实施约束与当前基线
@@ -13,8 +13,8 @@
 通用 service locator 或占位包树。Tool Runtime、Prompt Runtime 是有独立业务状态的 owner。
 包按现有能力组织，框架局部适配放在实际调用方；有重复且一致的需求后再考虑提取。
 
-每批完成一条可运行的业务路径，保持编译通过。过渡期由组合根选择完整实现，同一 Agent 身份只能由
-一套 owner 服务，不在单个 Agent 内交叉使用新旧状态机。未达到最终切换标准前，实验路径不能宣称可替换服务器。
+按用户后续确认允许破坏性重构，底层迁移期间不要求每个模块及全仓同时编译通过，也不保留过渡性代码。
+已完成模块须记录实际验证范围；同一 Agent 身份只由一套 owner 服务。最终切换仍须通过完整构建和调用链验收。
 
 `experiments/goakt` 已有 19 项顶层契约测试，覆盖核心异步通信、业务关闭、基础旧代防护、工具更新屏障及文件 flush。
 这是先前实验结果，部分测试专门复现框架限制；不等同生产验收。本次文档更新不重跑或新增宣称 Go 测试结果。
@@ -163,15 +163,112 @@ ProjectionActor 管投影进度、追赶及重建；QueryActor 管查询准入�
 如修改 Web 源码，再执行锁定依赖安装和生产构建；文档执行链接及空白检查。
 报告真实运行命令、已有失败和未覆盖边界。只有完整调用链、生命周期及外部协议验收通过后才宣布迁移完成。
 
-## 12. 下一次实际工作
+## 12. 当前工作入口
 
-从 P0 开始：读取生产调用链，形成迁移契约清单并记录根模块基线；随后完成 P1 的剩余框架实验。
-不从批量创建 Actor 文件、建立 Runtime 包或删除 Plugin 开始。
+下一步先收敛 AgentLoop 主驱动的业务入口、异步请求、完成消息和失败处理，再按第 14 节补齐实现；不重新从已完成的模块初始化工作开始。
 
-实施记录：[迁移基线](./13-migration-baseline.md) · [局部接续设计](./14-continuation-design.md)。
+设计依据：[Agent 职责](./32-agent-module.md) · [AgentLoop 需求与实现](./30-agentloop-business.md) · [Prompt](./17-prompt-module.md) · [工具调用与更新](./08-tools-implementation.md)。
 
-首个生产能力切片：[Credentials 模块设计](./15-credentials-module.md)。
+## 13. 已完成进度（2026-09-08）
 
-模型配置切片：[ModelConfig 模块设计](./16-model-config-module.md)。
+分支为 `refactor-actor`。代码提交 `9c6e055`，文档提交 `73064b6`，均已完成本地提交，未推送。以下是已提交切片，不表示整个 AgentLoop 或 P3–P8 已完成。
 
-Prompt 业务快照拆分：[Prompt 模块设计](./17-prompt-module.md)，尚未完成该模块 Grain/装配切换。
+| 已完成切片 | 实现与验证入口 |
+| --- | --- |
+| 业务 Agent 与运行 Client 分离；输入提交确认、取消意图及已接纳执行 | [业务准入测试](../../agentloop/agent_admission_test.go)、[Client 测试](../../agentloop/actor/client_test.go) |
+| Agent Registry 身份、父子关系及当前资源范围的关闭协调 | [Registry 测试](../../agent/registry/grain_test.go) |
+| ReactLoopAgent 生命周期、Turn/Step 合法转换及真实提交确认 | [生命周期测试](../../agentloop/agent_lifecycle_test.go)、[Step 测试](../../agentloop/agent_step_test.go) |
+| Session、模型配置、Prompt 的异步初始化片段 | [Grain 测试](../../agentloop/actor/grain_test.go)、[配置测试](../../agentloop/actor/configuration_test.go) |
+| Step 领取、上下文读取、Prompt 组装、pre-step 决策及输入提交 | [准备驱动测试](../../agentloop/actor/grain_step_test.go) |
+| 领取及 Step 开始提交结果不确定时回读核对 | [领取恢复测试](../../agentloop/agent_input_recovery_test.go)、[准备驱动测试](../../agentloop/actor/grain_step_test.go) |
+| Turn 结束提交、必要回读和 Session flush；失败保留重试位置 | [业务收尾测试](../../agentloop/agent_settlement_test.go)、[Actor 收尾测试](../../agentloop/actor/grain_settlement_test.go) |
+| ModelRequest/Attempt 业务规则及部分模型流调度 | [请求业务测试](../../agentloop/internal/modelrequest/model_request_test.go)、[流调度](../../agentloop/actor/grain_stream.go) |
+
+提交前对暂存快照独立执行以下检查并通过，排除了未暂存改动对这些包的影响：
+
+```sh
+go test -race -count=1 ./agent/... ./agentloop/... ./systemprompt/... ./session
+go vet ./agent/... ./agentloop/... ./systemprompt/... ./session
+go build ./agent/... ./agentloop/... ./systemprompt/... ./session
+```
+
+这里 `./session` 仅指根包。`agent/actor`、`agent/middleware`、`agent/middleware/actor` 当时没有包内测试，命令通过不能作为这些包已有独立行为覆盖的证据。文档检查覆盖暂存 Markdown 的 78 个本地链接目标，`git diff --check` 通过。最初 backlog 更新仅执行文档检查；其后 AL-04 的取消修复在当前工作区重新通过 `go test -count=1 ./agentloop/...`、`go test -race -count=1 ./agent/... ./agentloop/...`、相同 Agent/AgentLoop 范围的 vet 和 build，4 份变更文档的 40 个本地链接目标及差异检查通过。后续验证不扩展到全仓或完整执行链。
+
+全仓构建尚未通过：`internal/assembly/catalog.go` 仍引用已删除的 Agent、AgentLoop、Session Query/Title factory。API Proxy、装配、Subagent、Compaction、TokenMeter 等未完成改动仍在工作区，不包含在上述提交完成声明内。真实模型、工具、磁盘持久化和完整客户端对话不能由局部夹具测试代替。
+
+## 14. AgentLoop Backlog
+
+以下项目全部保持未完成；“部分实现”仅表示已有可复用代码。实现前更新所属模块设计，完成后在本节登记代码位置、测试范围和提交号。这里记录验收缺口，不另行改变模块所有权。
+
+### AL-01 消息唤醒与主驱动 — 部分实现
+
+Owner：AgentLoop 业务层与 Actor。输入准入及已接纳执行的业务记录已有实现，Actor 尚未把它们串到 Turn 开始、Step 循环和 FinishActivity。
+
+验收：通过真实异步 Client 输入启动执行；Followup、Steer、Inject 的唤醒语义分别成立；输入删除、取消后新输入、连续 Turn 不漏执行或重复执行；WhenIdle 等待后继工作及资源收尾结束。主驱动的每个异步边界须有具名完成消息，合法转换只由业务状态机决定。
+
+### AL-02 完整模型请求 — 部分实现
+
+Owner：AgentLoop、Agent 中间件、LLM。ModelRequest 已有业务实现，Actor 的 requestModel 仍接收 PreparedLlmCall，尚未驱动完整请求链。
+
+主驱动依赖已核对：llm/runtime_service.go 与 prepared_call.go 仍是旧 Runtime/PreparedLlmCall 绑定；当前没有 LLM 请求 Actor。Tools 仅有 Registry Actor，tools/runtime.go 仍是旧 executionRuntime，不能将其描述为每 Agent Tool Runtime 已接通。完整调度接线必须包含这两个 owner 的迁移，不通过提前注入调用或同步执行包装绕过。
+
+模型请求取消已统一由 ReactLoopAgent 读取：StartRequest 拒绝取消后新建，AdvanceRequest 不再接收外部取消参数，单次 BeginModel 拒绝取消后启动或与完整请求并行。[业务测试](../../agentloop/agent_request_test.go) 覆盖请求前、历史读取后、配置回复后的取消及重复启动/完成拒绝；AgentLoop 范围的 race、vet、build 通过。该修复未接通实际 LLM 请求，AL-02 保持未完成。
+
+验收：每次尝试重新读取 Session、调用配置中间件、准备 LLM 调用并验证模型可见输入；请求头、上下文、流块与最终消息按原契约提交；错误恢复决定重试；取消及关闭失败不提前续步。替代流与真实 Adapter 终端均须覆盖。需迁移 LLM owner 的旧实现，不增加第二套 Runtime 或兼容包装。
+
+### AL-03 每 Agent 工具运行与批次调度 — 部分实现
+
+Owner：AgentLoop 批次业务、Tools Registry、Tool Runtime、ToolActor。已有 ToolBatch 规则，AgentLoop 尚未接通工具实例及真实调用。
+
+验收：本 Agent 的实例初始化完成后才执行工具；并发上限、独占工具、模型顺序提交、取消与结果收尾、additionalContexts、concludesTurn 均进入同一 Step/Turn 流程。策略、审批及执行限制由工具 owner 执行。
+
+### AL-04 turn-stopping 异步钩子 — 内部驱动已实现，主驱动未接通
+
+Owner：AgentLoop 与 Agent 中间件。新增 grain_turn.go 内部异步调用边界，主驱动尚未调用。
+
+验收：按序等待钩子，期间允许 Steer 与取消；钩子返回后读取已提交 Inbox 决定同 Turn 续步或收尾；失败不能作为普通通知吞掉；拒绝重复或越阶段的完成请求。取消权威来源已修正：CompleteStopping 不再接收外部 cancellation；ContinueTurn、CompleteStopping 与首次 PrepareTurnEnd 读取业务对象已记录的取消意图。私有停止转换不能被外部跳过；固定后的结束事实不受迟到取消改写。新增 [边界测试](../../agentloop/agent_turn_flow_test.go) 覆盖 Steer/取消顺序、钩子失败、重复完成和固定结论。此项修复已随代码提交 `d16dad0` 完成。Actor 内部驱动通过具名完成消息调用 CompleteStopping；[交错测试](../../agentloop/actor/grain_turn_test.go) 验证等待期间 Steer、取消确认与原钩子完成分离，以及禁止提前收尾。该测试已使用真实 GoAkt、中间件协调器和具名处理者夹具，覆盖取消投递失败重试且保留首次原因；不代表真实业务钩子和主驱动已接通，AL-04 保持未完成。
+
+### AL-05 工具更新屏障 — 未接通
+
+Owner：Tools Registry、Tool Runtime、Prompt Runtime、AgentLoop。初始化读取工具基线已实现，不代表动态更新屏障已完成。
+
+验收：A 用户消息完整处理结束后才应用更新，更新完成后执行 B；实例、工具定义及 Prompt 使用一致版本；重复、迟到、失败更新不解除屏障，不修改 A 的快照。按已确认工具协议补齐生产事件消费及确认。
+
+### AL-06 维护、取消与异常收敛 — 部分实现
+
+Owner：AgentLoop。已有部分提交恢复与资源关闭，维护流程及主驱动重试仍缺失。
+
+验收：维护与执行互斥，维护期间唤醒不丢失；覆盖领取、Turn/Step 开始、逐条消息、模型/工具结果和结束提交的不确定结果。未确认写入不得按失败回复直接回滚；回读或关闭失败保留所需事实并支持明确重试。业务关闭及 WhenIdle 不能早于这些工作结束。
+
+取消投递补充：GoAkt v4.5.3 本地 TellGrain 经 localSend 等待 err 通道确认，GrainContext.Response 不确认该通道。停止钩子、AgentLoop 准备阶段及 Agent 中间件内部的取消均已改为异步 RequestGrain 并检查 Completion。准备阶段仅取消正在等待的 Prompt 或 pre-step 请求，不向尚未调用的组件发送取消。取消投递错误与原 Invoke 的业务失败分开，允许重试投递且不阻断原调用退出。新增 [准备取消测试](../../agentloop/actor/grain_cancel_test.go) 和实际协调器交错测试；Agent/AgentLoop 范围的非缓存 race、vet、build 再次通过。新增 [多层 around 测试](../../agent/middleware/actor/grain_cancel_test.go) 验证正常返回、取消等待下游退出、非法下游回复时释放 Continue 并等待上游结束；Agent/AgentLoop 范围的非缓存 race、vet、build 通过。完成取消请求的内部消息统一命名 completeCancel，不表示原业务执行结束。Turn 开始已切换为幂等提交，删除 ReconcileTurnStart 和 Actor 回读分支；[业务测试](../../agentloop/turn_start_test.go) 与 [Actor 测试](../../agentloop/actor/grain_start_test.go) 覆盖回复丢失、未提交重试、取消后保持同一身份及零回读。完整主驱动、维护及其余写入迁移仍未完成，AL-06 保持未完成。
+
+### AL-07 生产装配及上下游迁移 — 未完成
+
+Owner：组合根、Registry、API Proxy、Subagent 及各资源 owner。
+
+验收：移除已删除 factory 的引用，接通唯一 Actor 创建路径；父关闭先完成子关闭，各 Agent 自行释放资源；同 SessionID 再创建受到旧回复防护。保留现有客户端协议和取消契约，删除旧 Plugin/Scope 调用，不新增占位兼容层。
+
+### AL-08 完整回归验收 — 未完成
+
+Owner：各行为所属模块及生产组合。
+
+验收：真实 Actor 链覆盖普通对话、工具、审批、Steer、取消、模型重试、工具更新、父子关闭及 Session flush/replay；单独验证真实存储和可选真实 provider。最终运行适用全仓测试、race、vet、build、架构及协议检查，准确记录失败和测试跳过情况。局部包通过不关闭此项。
+
+### AL-09 当前文档一致性 — 部分清理
+
+Owner：当前 Actor 设计与模块 README。已修正本实施计划的旧起点及 AgentLoop Actor README 中的 execution/WhenIdle 旧描述。
+
+验收：继续核对设计演进段落与当前代码，移除或明确标识已废弃接口、阶段及验证结论；进度统一指向本节。仅维护当前 Actor 文档和相关模块 README，不扩散到历史设计。
+
+
+### Session 幂等迁移进度（未提交）
+
+已实现 IdempotentWrite、Log 的原提交核对与分离结果返回、Grain 的重复通知抑制；TurnEnd 写入已采用此契约，删除对应 AgentLoop 回读分支。验证覆盖重复结果、后续追加后仍返回原范围、日志重建后的重试、内容冲突、伪造回执拒绝和实际 PubSub 不重复通知。Session/Agent/AgentLoop 子包范围的非缓存 race、vet、build 通过，新增 PubSub 测试单独通过 race。
+
+Turn 开始已完成幂等迁移。下一步迁移 Step、Inbox 和模型/工具结果的幂等身份，逐项删除相应回读补偿。普通 Batch 仍非幂等；主驱动与全仓迁移目标未完成。上文关于 Turn 结束回读的进度由此记录替代。
+
+### 本次进度提交（2026-09-08）
+
+代码提交 `d16dad0` 包含 Session 可选幂等写入契约、Turn 开始与结束的原结果重试、停止钩子调度及异步取消确认。普通 Batch 仍是无条件追加；完整主驱动、LLM 与 Tool Runtime 接线仍按上述 backlog 推进。
+
+本次在工作区执行 `go test -race -count=1 ./session/... ./agent/... ./agentloop/...`、同范围 `go vet` 和 `go build`，全部通过。文档本地文件链接与 `git diff --check` 通过；未据此声明整仓或生产对话链路通过。

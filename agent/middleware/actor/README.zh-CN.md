@@ -40,7 +40,7 @@ sequenceDiagram
 
 ## 取消和异常收尾
 
-CancelCall 先记录业务取消，再使用业务对象返回的首个取消原因向尚未回复的模块发送 CancelInvocation。重复取消仍可重试通知，但不会把新原因转发给模块。此消息是取消信号；模块必须结束自己的工作并回复原 Invoke。取消命令成功仅说明通知已提交，原 Resolve 仍等待在途调用收尾。取消投递错误明确返回给调用方，不能据此宣布工作退出。
+CancelCall 先记录业务取消，再使用业务对象返回的首个取消原因向尚未回复的模块发送 CancelInvocation。重复取消仍可重试通知，但不会把新原因转发给模块。此消息是取消信号；模块必须结束自己的工作并回复原 Invoke。取消命令成功仅说明当前活跃处理者已确认取消命令，原 Resolve 仍等待在途调用收尾。取消投递错误明确返回给调用方，不能据此宣布工作退出。
 
 遇到调用协议错误，适配层通知仍在运行的模块取消，并释放悬挂的 Continue 回复使其能退出；根回复等剩余 Invoke 返回后才完成。框架停用时所有本地请求失败，但不声称外部模块已清理。
 
@@ -51,3 +51,8 @@ Request 回调只将数据放入完成通道，通过 PipeToSelf 回到邮箱后
 ## Hooks 发起端
 
 Hooks 实现 agent.Hooks，绑定当前 Receive 帧、coordinator、全新 CallID 及本次钩子的固定路由。每个实例只发起一次，不存入 ReactLoopAgent。发起时清除 GrainContext 引用，异步回调只转换具名结果并交给 PipeToSelf。HookCompleted 带技术 CallID 与 agent.HookResult；调用方先检查身份再推进业务。重复发起报错，错误类型回复转换为对应钩子的错误结果。取消继续使用 CancelCall 并等待原完成。当前发起适配器已实现，AgentLoop 主驱动尚未接入。
+
+
+取消传输由 grain_cancel.go 以 RequestGrain 发起。框架任务收集本次活跃处理者的 Completion，具名结果返回邮箱再回复原 CancelCall；不使用会等待独立确认通道的 TellGrain。取消确认失败不会把业务调用设为协议失败，调用方可以重试，原 Invoke 仍须正常返回。强制停用使未完成的取消请求返回错误。
+
+[AgentLoop 交错测试](../../../agentloop/actor/grain_turn_test.go) 使用本协调器验证停止钩子的取消确认、原调用完成、失败重试及首个取消原因保留；[多层 around 测试](./grain_cancel_test.go) 另行覆盖正常、取消和协议错误的等待链收尾。

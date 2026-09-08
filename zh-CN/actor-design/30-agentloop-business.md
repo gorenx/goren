@@ -582,7 +582,7 @@ ReactLoopAgent.PrepareTurnEnd(error) 在 Step 已关闭后确定终结原因。a
 
 ConfirmTurnEnd(WriteResult) 检查 turn/end 内容、Session 身份和单事件提交范围，成功后保存对应 WriteBarrier。后续只能重试 Flush，不再准备第二个 turn/end。ConfirmTurnFlush(WriteBarrier) 必须确认同一 Session 且 durable NextSeq 覆盖该结束事件，才关闭 Turn、释放当前业务执行状态。错误回复由 actor 层直接返回而不调用成功确认方法，业务对象不持有等待者或发出 Flush。框架创建身份检查仍归 actor 层。
 
-turn-stopping 的业务分支归 ReactLoopAgent.BeginStopping / FinishStopping：Step 已完成、有终结结论且没有 next-step 输入时进入 stopping；上游完成边界通知后重新检查已提交 Inbox，有 next-step 输入则继续 Step，否则进入 Turn 收尾。通知传输不进入业务对象；取消优先通过 PrepareTurnEnd 的类型化错误确定 aborted。结束草稿准备后不再因晚到输入改写结论，晚到输入留待后继执行。
+turn-stopping 的业务分支归 ReactLoopAgent 的私有 beginStopping / finishStopping：Step 已完成、有终结结论且没有 next-step 输入时进入 stopping；上游完成边界通知后重新检查已提交 Inbox，有 next-step 输入则继续 Step，否则进入 Turn 收尾。通知传输不进入业务对象；取消优先通过 PrepareTurnEnd 的类型化错误确定 aborted。结束草稿准备后不再因晚到输入改写结论，晚到输入留待后继执行。
 
 ## Grain 的 Turn 收尾请求
 
@@ -814,7 +814,7 @@ ToolBatch 继续独立维护并发调用退出和有序结果接纳，CompleteTo
 
 ContinueTurn(error) 在当前 Step 已关闭后直接返回具体 TurnOperation：Step 准备操作、携带 agent.TurnStoppingInput 的 RunTurnStopping，或 Turn 收尾操作。StepOperation 和 SettlementOperation 是 TurnOperation 的受限子集，具体值不增加包装结构；删除 PrepareNextStep/CloseTurn 及其转发方法。已有终止错误直接交给 Settle；正常路径依靠现有 Turn 结论和 Inbox 判断，不增加另一份流程阶段。前置准备已经选择 settling 时直接 Settle。调用方必须将 EndStep.Err 或取消原因传入，不能因为 step/end 提交成功而丢弃原错误。
 
-CompleteStopping(agent.TurnStoppingCompleted, error) 只在 stopping 边界接纳结果。钩子失败或取消直接收尾；成功调用 FinishStopping 重新观察已提交的 Inbox，有 next-step 输入则启动下一步准备，否则提交 Turn 结束。两入口只组合已有业务方法，不发 Actor 消息、不执行回调、不管理队列；框架执行返回的操作并将各子流程结果交回对应业务入口。Turn 的最终完成仍须经过 AdvanceSettlement 的 Session flush 确认。完整主驱动及生产接线尚未完成。
+CompleteStopping(agent.TurnStoppingCompleted) 只在 stopping 边界接纳结果。钩子失败或取消直接收尾；成功调用私有 finishStopping 重新观察已提交的 Inbox，有 next-step 输入则启动下一步准备，否则提交 Turn 结束。两入口只组合已有业务方法，不发 Actor 消息、不执行回调、不管理队列；框架执行返回的操作并将各子流程结果交回对应业务入口。Turn 的最终完成仍须经过 ConfirmTurnFlush 的 Session flush 确认。完整主驱动及生产接线尚未完成。
 
 ### 后继 Step 的结论覆盖
 
@@ -873,3 +873,45 @@ PrepareInput 重复调用、领取未确认就准备上下文、重复消费准�
 ReactLoopAgent 保存 Inbox 最近一次已应用事件之后的位置 inboxNext，恢复时取完整快照边界，成功应用 Inbox 编辑后推进。它是日志投影位置，不是 Actor 请求序号。PrepareInput 捕获该位置，领取结果不确定时，只在这个位置之后核对原子领取草稿；不通过消息文本或全历史中相同 splice 推断本次已提交。
 
 未确认领取期间禁止基于旧 Inbox 生成另一条增删改编辑。取消意图仍可记录和投递，但此时无法确认清空输入的请求必须明确报错；不伪造清空成功。ReconcileInput 在原请求结束后的完整 Session 快照中验证领取：匹配则应用一次；不存在则保留原输入并结束本次准备；冲突、缺失前缀或读取失败保留未确认状态。Actor 返回原错误及恢复错误，不能自行清掉不确定状态。
+
+
+## Turn 边界的取消权威
+
+ReactLoopAgent.running 已保存首个取消意图。ContinueTurn 与 CompleteStopping 必须读取该事实；CompleteStopping 仅接收 TurnStoppingCompleted，不再接受另一份 cancellation 参数。外部失败仍以 error 传入并保留，已接纳取消决定 aborted 结论。PrepareTurnEnd 首次固定结束事实时也读取取消，防止直接收尾入口漏掉它；结束事实一旦固定，后到取消不能改写同一次重试的事件。
+
+BeginStopping/FinishStopping 当前无外部调用方，改为私有方法；外部仅经 ContinueTurn/CompleteStopping 进入与结束钩子边界，不能绕过取消和执行边界检查。该调整只影响 Go 业务协作接口，不改变 Actor 消息、客户端协议或持久化事件格式。验收覆盖取消前后 Steer、钩子失败、重复完成，以及固定结束事实后的迟到取消；Actor 钩子调度仍属 backlog AL-04。
+
+## 停止钩子的 Actor 调度
+
+`grain_turn.go` 接收内部 continueTurn 请求，先调用业务 ContinueTurn。需要钩子时，以固定路由集合和新的 CallID 请求 Agent 中间件 RunTurnStopping；其他业务决定直接返回。等待使用 AllowAll，允许输入与取消请求进入。具名 stoppingCompleted 回到邮箱后，调用 CompleteStopping，再返回 ContinueSteps 或已固定的 TurnEnd，由主驱动执行对应工作。此入口不声称已经接通主驱动。
+
+Grain 仅保存停止调用的回复、CallID、中间件地址和任务取消资源，不复制 Turn 状态。停止调用仍在途时，不得从另一个收尾请求绕过钩子直接提交 turn/end。CancelCall 只投递取消，原钩子请求实际完成后才结束该边界；强制停用返回明确错误，迟到完成通过当前请求身份拒绝。关闭与空闲必须等待停止调用消失。业务对象与 Actor 没有反向引用，外部消息与持久化结构不变。
+
+
+取消传输验证：停止调用的 CancelCall 采用异步 RequestGrain，检查 middlewareactor.Completion 后完成输入清理及 Cancel 回复。不能在邮箱中直接使用 TellGrain 等待一个仅调用 Response 的端点；GoAkt v4.5.3 的 Tell 本地路径等待独立错误确认通道。停止调用的正常回复仍独立等待，不因取消确认而结束。准备阶段及中间件转发已采用同一异步取消原则，见下文；全流程收敛仍归 backlog AL-06。
+
+
+准备阶段只向当前正在等待的可取消组件发 Cancel：Prompt.Assemble 对应 CancelAssembly，ResolvePreStep 对应 CancelCall；Session 读取或提交不另发无关联取消。stepPreparation 保留当前请求的取消地址与具名消息，表示在途 I/O 资源，不复制业务阶段。取消投递统一使用 RequestGrain，验证对应 Completion，并在确认后执行原 Inbox 清理提案；错误如实返回，原准备请求仍须返回后才能结束。
+
+中间件协调器的 CancelCall 同样使用异步 RequestGrain 将 CancelInvocation 发给当前活跃处理者。取消请求的延迟回复只汇总这些投递确认，不占用调用业务对象的完成状态；原 Resolve 仍等待原 Invoke 完成。投递失败可以通过重复 CancelCall 重试，首个取消原因不改变。处理者提前完成与取消确认到达顺序独立，迟到取消确认只能回复原取消请求，不能作用于复用 CallID 的新调用。协议错误触发的取消共用此投递路径，已有失败事实不会因取消失败被覆盖。
+
+## Turn 开始提交恢复
+
+ReconcileTurnStart 接收原提交请求结束后、从同一 Session owner 按序取得的完整快照。仅在当前 Turn 为 StateProposed 时可调用：匹配唯一且仍未执行 Step/结束的 turn/start，则用原草稿核对并 ConfirmTurn；未找到且快照覆盖已知日志前缀及前一 Turn 编号，则清除未提交候选，保留输入和已接纳执行。缺失前缀、重复开始、更晚 Turn 或已推进的当前 Turn 返回错误并保留候选。取消后发现已提交开始仍须确认，后续以取消结论收尾；不能把丢失回复当作未落盘。本次先完成业务恢复入口和测试，Actor 的 Turn 开始请求与主驱动仍待接通。
+
+Turn 开始的 Actor 入口必须区分首次请求与未确认候选重试。已有 StateProposed 时只读取日志核对，禁止直接重提 PrepareTurn 的草稿；读取失败继续保留该候选。TurnStartPending 仅观察当前 Turn 的既有状态，不引入另一个阶段字段。首次请求提交成功直接 ConfirmTurn，异常回复转 Read/ReconcileTurnStart；恢复后仍向调用方保留原请求错误并报告是否已经开始。未提交的恢复结果允许调用方重新发起，不能在一次失败恢复中静默开始新工作。
+
+
+## Session 幂等契约替代 Turn 结束回读
+
+按用户确认，Turn 结束写入实现 Session.IdempotentWrite，FindCommit 以已有 TurnEnd.Find 识别原提交。Session 对重复写入返回原事件和原 Barrier，不再返回去重空批次。AgentLoop 删除 ReconcileTurnEnd、空批次确认和 Actor 的 Turn 结束 Read 分支；未确认时重试原提交，已确认时仅重试 flush。本文前述 Turn 结束回读方案由本节替代。Turn 开始、Step 与 Inbox 写入仍须逐项迁移幂等身份，不能宣称已全部替换。
+
+## Turn 开始改为幂等写入
+
+PrepareTurn 返回不可变 TurnStart，携带 Session 身份、Turn 编号及原事件草稿，不暴露业务 Turn 对象。Actor 的 turnStartWrite 实现 IdempotentWrite，Session 调用 Find 查找同编号 turn/start；内容冲突或重复开始报错，找到即返回原提交位置，未找到时验证前一 Turn 编号再追加。序列和持久化格式不变。
+
+开始候选一旦建立，取消后的重试仍返回同一写入事实，提交确认后以取消结论收尾；在创建候选之前已取消则拒绝开始。不再通过读取是否已提交来决定重试。删除 ReconcileTurnStart、TurnStartPending 和 Actor Read 分支，错误保留候选供原写入重试。本文前述 Turn 开始回读方案由本节替代。
+
+## 模型请求取消的唯一来源
+
+StartRequest 在创建 ModelRequest 前检查 ReactLoopAgent 的取消意图；AdvanceRequest 仅接收具名 RequestResult，内部从同一业务对象读取取消，不再由 Actor 传递第二份 cancellation。已经开始的请求仍把真实完成结果交给 ModelRequest，以保留提交确认与资源关闭规则；不能仅因取消而丢掉完成值。尚在使用的单次 BeginModel 入口也必须拒绝取消后新建尝试，以及与已持有的完整 ModelRequest 并行使用。此变更不改变 LLM 或 Session 的跨模块消息。
