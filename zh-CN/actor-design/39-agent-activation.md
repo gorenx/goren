@@ -22,8 +22,8 @@ GoAkt v4.5.3 的 GrainFactory 和 ActorSystem.GrainIdentity 已弃用，本实�
 
 - `CreateAgent`：Creation、可选 Parent、Restore、Session Options/Storage、核心配置入口、可选 Commands Registry 和 Components 列表。输入在首次准入时复制固定，后续同一创建输入不匹配时拒绝。
 - `Ready`：精确 Creation、分离的 Registration、已初始化 Executor/Commands，以及能力 owner 与 runtime 地址。任何错误都不附带可执行地址。
-- `Resolve`：查询现存创建；初始化尚未完成时返回未就绪。发布地址前向 AgentLoop 请求 Verify，校验 CreationID/InstanceID。该请求可能触发框架对旧地址的重新激活，但不会授权新的业务生命周期。
-- `Initialize`：包含 AgentID、创建授权和已启动的 Session、Prompt、模型配置地址。AgentLoop 请求 Session.Read 恢复 Inbox，再请求模型配置与 Prompt.ReadRuntime，不启动其他 Actor。
+- `Resolve`：查询现存创建；默认在初始化尚未完成时返回未就绪；WaitReady 为 true 时复用已有创建的最终回复，缺失身份仍拒绝且不启动 Actor。发布地址前向 AgentLoop 请求 Verify，校验 CreationID/InstanceID。该请求可能触发框架对旧地址的重新激活，但不会授权新的业务生命周期。
+- `Initialize`：包含 AgentID、创建授权和已启动的 Session、Prompt 地址。AgentLoop 请求 Session.Read 恢复 Inbox，再请求 Prompt.ReadRuntime，不读取模型配置，也不启动其他 Actor。Registry 在启动 AgentLoop 前读取 Session 历史并请求 LLM.InitializeAgent，由 LLM 初始化缺失配置。
 - `PrepareClose` / `CloseResources`：分别冻结执行准入并检查既有工作、释放 AgentLoop 自身执行资源。两者不表示 Session 已持久化或其他组件已关闭。
 - `StartComponent` / `ComponentStarted`：能力 Registry 接收当前 AgentID、CreationID、Agent/Session 地址；最终回复其 runtime 或 error。
 - `StopComponent` / `ComponentStopped`：能力 Registry 确认该创建的业务收尾及框架停用。Agent Registry 不解释具体能力配置。

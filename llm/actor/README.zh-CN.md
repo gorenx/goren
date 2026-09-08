@@ -2,7 +2,7 @@
 
 本包将消息映射到独立业务对象，不实现配置覆盖、模型选择或生成业务规则。完整对象清单、调用图和生命周期见 [LLM README](../README.zh-CN.md)，接口设计见 [LLM 模块](../../zh-CN/actor-design/33-llm-module.md)，整体进度见 [实施计划](../../zh-CN/actor-design/12-implementation-plan.md)。
 
-Grain 持有独立的 Catalog、Registry、Configuration，统一串行处理配置与注册。ReadModels 读取配置定义；ResolveAgent 解析覆盖；SetConfiguration 保存 Agent 执行配置；ReadCall 在一次 mailbox 处理内取得配置与 Binding。配置仅在显式 RemoveConfiguration 时删除。
+Grain 持有独立的 Catalog、Registry、Configuration，统一串行处理配置与注册。ReadModels 读取配置定义；InitializeAgent 在 Agent Registry 创建流程中恢复缺失的 Agent 配置；ResolveAgent 仅供 LLM 配置消费者解析覆盖；SetConfiguration 保存 Agent 执行配置；ReadCall 在一次 mailbox 处理内取得配置与 Binding。配置仅在显式 RemoveConfiguration 时删除。
 
 SpawnPool 创建固定一致性哈希 Router，并逐个初始化 Worker，成功后才公开入口。Worker 只接受一个 LLM Grain 地址；Provider I/O 经异步任务执行，结果回到 mailbox 后更新调用资源。
 
@@ -59,3 +59,5 @@ sequenceDiagram
 ```
 
 client_test.go 验证错误身份隔离、读取超时、迟到回复隔离以及关闭沿用原 CallID。Compaction 的真实 Grain 测试使用真实 TokenMeter 和 Session Log，验证完成事件已提交但 Flush 未回复时不会结束维护；Session 发布及生产装配仍需集成验证。
+
+API 的模型配置读写通过 Actor Client 直接发送 ReadConfiguration/SetConfiguration。AgentLoop 不读写配置，只发送 AgentConfig 和请求内容；GenerationStarted 返回实际参数供 Session 记录。

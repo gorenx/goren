@@ -9,10 +9,12 @@ flowchart LR
     Composition[组合根] --> Grain[llmactor.Grain]
     Proxy[API Proxy] --> Client[llmactor.ModelsClient]
     Client --> Grain
-    Agent[AgentLoop] -->|RequestGrain| Grain
+    Registry[Agent Registry] -->|InitializeAgent| Grain
     Grain --> Catalog[Catalog]
 ```
 
-Host describe 和 Session 默认模型读取的切换仍在未提交的集成改动中；AgentLoop 版本化 Resolve 接入仍属于后续主循环迁移。配置错误不静默替换模型；框架请求失败向调用方传递。Catalog 无外部资源，关闭由框架负责。
+Host describe 和 Session 默认模型读取的切换仍在未提交的集成改动中；AgentLoop 不读取配置，LLM 在生成时捕获已保存的配置。配置错误不静默替换模型；框架请求失败向调用方传递。Catalog 无外部资源，关闭由框架负责。
 
 接口、上下游契约和验证边界见[模块设计](../../zh-CN/actor-design/16-model-config-module.md)。历史实现基线见[实施进度](../../zh-CN/08-implementation-progress.md)，该历史文件不作为本轮 Actor 完成声明。
+
+Restore 负责缺失配置的初始化：已有 Agent 配置优先保留，否则从 Session 请求头恢复，再使用配置默认值解析。该业务逻辑由 Catalog 实现，Registry 只传递历史，Grain 只调度。关闭 Agent 不删除配置；已开始调用保留自己的实际参数快照。

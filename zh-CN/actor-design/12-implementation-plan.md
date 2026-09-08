@@ -273,6 +273,12 @@ Turn 开始已完成幂等迁移。下一步迁移 Step、Inbox 和模型/工具
 
 本次在工作区执行 `go test -race -count=1 ./session/... ./agent/... ./agentloop/...`、同范围 `go vet` 和 `go build`，全部通过。文档本地文件链接与 `git diff --check` 通过；未据此声明整仓或生产对话链路通过。
 
+### 普通 Agent 激活与 API 接线审计（2026-09-09）
+
+[激活入口设计](./39-agent-activation.md) 记录已核对的上游缺口：Agent Registry 已实现 CreateAgent/Resolve/CloseAgent，统一核心组件及能力 Registry 的生命周期；AgentLoop 只初始化并释放自身执行状态，不再启动其他 Actor。API 不应通过新 map 或旧 Scope/ModelSelectionRef 补偿这些缺口。
+
+RPC、Credentials、LLM、Settings、Preset、Commands API 已迁移至领域子模块；Commands 运行客户端真实 Grain 测试通过。Session API 业务与旧依赖已分离；普通 Agent Actor Client、事件订阅与生产组装仍未完成。Subagent 暂缓，不以其历史 Session 来源代替普通 Agent 当前归属检查。
+
 ### Agent 生命周期与命名迁移（本次工作区）
 
 生命周期实现及验收依据见 [Agent 生命周期](./39-agent-activation.md) 和 [Registry README](../../agent/registry/README.zh-CN.md)。Registry 以 SessionID 索引创建身份，Actor 名称统一 `<sessionID>.<service>`；共享 Initialize、Session 初始化/恢复、Commands 和 Projection Cache 初始化显式传递业务身份，不从 Name 解析。RuntimeName 放在各服务已有消息文件，不保留独立单函数文件或旧名称回退。

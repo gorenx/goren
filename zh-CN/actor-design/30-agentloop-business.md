@@ -173,9 +173,9 @@ A 收到 InvokePreStep 后，有两条基本路径：
 | 消费者 | 扩展点 | 当前接入证据 |
 | --- | --- | --- |
 | LLM Retry | agent/request-error | [Recovery](../../llm/retry/recovery.go) 的恢复决策与 [Grain](../../llm/retry/actor/grain.go) 的异步编排 |
-| Compaction Basic | agent/pre-step、agent/request-error | [plugin.go](../../compaction/basic/plugin.go) 的 Manifest，受 automaticEnabled 控制 |
+| Compaction Basic | agent/pre-step、agent/request-error | 旧 plugin.go Manifest 已删除；当前职责见 [Compaction](../../compaction/basic/README.zh-CN.md) |
 | OneShot 描述信息 | Agent 局部 pre-step | [descriptor_middleware.go](../../subagent/internal/oneshot/descriptor_middleware.go)、[setup.go](../../subagent/internal/oneshot/setup.go) |
-| API 模型选择 | Agent 局部请求配置 | [model_selection_setup.go](../../apiproxy/session/model_selection_setup.go) 仍调用已删除的 Agent setup 契约 |
+| API 模型选择 | Agent 局部请求配置 | 旧 Agent setup 路径已删除；配置读写见 [LLM Directory Client](../../apiproxy/llm/actor/directory_configuration.go) |
 | Time Context | pre-step 返回处理 | 固定 TS 源的语义参考；本次未在 Go 默认组合及独立模块中找到对应接入 |
 
 ### 默认组合的有效相对顺序
@@ -923,3 +923,11 @@ PrepareTurn 返回不可变 TurnStart，携带 Session 身份、Turn 编号及�
 ## 模型请求取消的唯一来源
 
 StartRequest 在创建 ModelRequest 前检查 ReactLoopAgent 的取消意图；AdvanceRequest 仅接收具名 RequestResult，内部从同一业务对象读取取消，不再由 Actor 传递第二份 cancellation。已经开始的请求仍把真实完成结果交给 ModelRequest，以保留提交确认与资源关闭规则；不能仅因取消而丢掉完成值。尚在使用的单次 BeginModel 入口也必须拒绝取消后新建尝试，以及与已持有的完整 ModelRequest 并行使用。此变更不改变 LLM 或 Session 的跨模块消息。
+
+### LLM 配置职责收口（当前实现）
+
+本节替代前文 AgentLoop 配置持有、初始化接纳 Resolved、请求前解析/写回配置的设计。ReactLoopAgent.Restore 只恢复执行日志，Initialize 只接收工具版本。配置初始化由 Registry 请求 LLM 完成；API 配置操作直接请求 LLM。ModelRequest.Start 直接启动 Attempt，读取 Session 并组装消息后发送生成请求，不查询或提交配置。LLM 返回的实际参数仅用于当前调用的 Session 事实和恢复诊断。恢复中间件仍决定重试；重试不向 LLM 写回旧参数。
+
+对象、接口与数据：ReactLoopAgent 删除 configuration；RequestInput/AttemptInput 删除 Config；Actor Initialize 删除 ModelConfig；删除 AgentLoop Configuration/Configure 和 ReadRequest/ResolveConfiguration/SaveConfiguration 操作。LLM InitializeAgent 接收 AgentID 与 Session 历史，Catalog.Restore 决定恢复规则，Grain 仅调度。
+
+该变更依据用户明确的配置所有权决定，取代原 Agent request 配置钩子的调用路径；HTTP 字段与 Session Header 形状不变。API 生产接线验收仍归 [API 重构方案](38-api-proxy-module.md)。

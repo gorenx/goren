@@ -4,6 +4,8 @@
 
 本目录是 Goren 当前主线设计的唯一入口。设计以 DeepSeek Harness TypeScript 基线 `47f943859bef60e4160492346772ded9b24f765a` 为源代码证据，首要目标是让现有 TypeScript 客户端与 Go Agent 服务端保持通信协议兼容。默认服务额外内嵌自有的极简主会话 UI；原版完整 Web 产品、SDK 和 Python 不进入实现。
 
+当前 Actor 重构中，LLM 统一管理模型配置，AgentLoop 只提交请求内容；最新边界见 [AgentLoop 配置职责收口](./actor-design/30-agentloop-business.md)，API 集成见 [API 重构方案](./actor-design/38-api-proxy-module.md)。
+
 ## 阅读顺序与职责
 
 - [01 复制范围与兼容基线](./01-porting-scope-and-baseline.md)：目标、非目标、纳入与排除范围、需求、不变量和源代码基线。
@@ -42,7 +44,7 @@
 - [`plugin/README.zh-CN.md`](../plugin/README.zh-CN.md)：Plugin Runtime 职责边界、依赖结算、Scope 路由、统一 Fiber Effect 生命周期与按需 API 示例。
 - [`session/README.zh-CN.md`](../session/README.zh-CN.md)：Session append-only log、唯一写协调器、LiveStore、publication 与生命周期。
 - [`session/projectioncache/README.zh-CN.md`](../session/projectioncache/README.zh-CN.md)：ProjectionCache 业务职责、cached/cold read、写入调度与关闭排空。
-- [`session/projectioncache/plugin/README.zh-CN.md`](../session/projectioncache/plugin/README.zh-CN.md)：Projection Cache 与 Plugin Runtime 的生命周期适配边界。
+- [`session/projectioncache/README.zh-CN.md`](../session/projectioncache/README.zh-CN.md)：Projection Cache 的缓存、恢复与生命周期边界。
 - [`session/projectioncache/sqlite/README.zh-CN.md`](../session/projectioncache/sqlite/README.zh-CN.md)：独立 checkpoint SQLite/sqlc storage adapter。
 - [`agentloop/README.zh-CN.md`](../agentloop/README.zh-CN.md)：Plugin/RLA 文件职责、ownership DAG、六状态机、请求/Tool 调度、settlement、durability checkpoint 与 idle convergence。
 - [`subagent/README.zh-CN.md`](../subagent/README.zh-CN.md)：OneShot、Continuable、Bound 三种模式的公共契约、模块边界和当前实现状态。
@@ -61,7 +63,7 @@
 - [`systemprompt/README.zh-CN.md`](../systemprompt/README.zh-CN.md)：System Prompt root/overlay、精确 Handle 与 snapshot assembly。
 - [`workspace/README.zh-CN.md`](../workspace/README.zh-CN.md)：Workspace Registry、Session accounting、SQLite adapter 与 API/Host 交互。
 - [`llm/README.zh-CN.md`](../llm/README.zh-CN.md)：provider-neutral LLM Runtime、typed Service/Event/Waterfall、Adapter registration 与流归一化。
-- [`llm/factory/README.zh-CN.md`](../llm/factory/README.zh-CN.md)：LLM 领域 typed config、严格构造与 Assembly 注册边界。
+- [`llm/modelconfig/README.zh-CN.md`](../llm/modelconfig/README.zh-CN.md)：LLM typed config、配置验证与恢复边界。
 - [`llm/retry/README.zh-CN.md`](../llm/retry/README.zh-CN.md)：默认 RetryPolicy Consumer 的职责、normal/always 决策、durable retry events、历史投影和取消/卸载流程。
 - [`llm/deepseek/README.zh-CN.md`](../llm/deepseek/README.zh-CN.md)：DeepSeek direct Provider adapter 的 typed config、lazy request、HTTP/SSE、流转换、错误/取消和 response recordings。
 - [`llm/tokenmeter/README.zh-CN.md`](../llm/tokenmeter/README.zh-CN.md)：单例 replay Token Meter 的 Service 边界、固定 estimator、usage anchor、三个 Projection 与 Consumer 交互。

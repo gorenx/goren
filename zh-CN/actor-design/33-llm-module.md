@@ -10,7 +10,7 @@ Catalog 负责配置来源、版本和覆盖；Configuration 仅保存 AgentID �
 
 不存在独立 ModelConfig/Configuration/Registry Grain，也不保留 Discovery 注册、ModelDiscovery 接口或 DiscoverModels。配置内的查询使用 Catalog.Read，远端模型列表复用 Provider ListModels。
 
-Router 固定分发到 Worker；生成操作按 CallID 路由，查询按 RequestID 路由。Worker 只保留 Call、正在执行的 I/O 与取消/关闭信息，规则委托 Call/Binding。生成结果直接回复 AgentLoop，API 查询关联归 apiproxy/modelquery，不存在 LLM QueryGrain。
+Router 固定分发到 Worker；生成操作按 CallID 路由，查询按 RequestID 路由。Worker 只保留 Call、正在执行的 I/O 与取消/关闭信息，规则委托 Call/Binding。生成结果直接回复 AgentLoop，API 查询关联归 apiproxy/llm/actor，不存在 LLM QueryGrain。
 
 ## 生成时序
 

@@ -124,3 +124,9 @@ compaction/basic/actor/grain_command_test.go 使用真实 Commands Registry、�
 补充验证：Catalog 测试覆盖实时继承、Session 覆盖撤销与失败更新不改变定义；Registry 测试覆盖
 重复发布确认、冲突 ID、Session 地址隔离及撤销后的迟到重试拒绝。Compaction 组合测试阻塞首次注册，
 解除冲突后验证周期重试成功，并确认收到 Registered 后超过一个周期不再触发定时任务。
+
+## 普通请求客户端
+
+`commands/actor.Client` 供 API 请求 goroutine 使用，绑定已初始化的执行 Grain、CreationID 和短操作超时；不创建 Grain，不缓存目录或执行状态。List 先向执行 Grain 发送 ListCommands(CreationID)，由该 Grain 检查当前创建和未关闭状态，再异步读取全局 Registry 的 Session 有效目录。不能直接读 Registry 而绕过旧创建防护。
+
+Execute 在发送前生成独立 CommandID，原调用 Context 决定等待期限；不把 Registry/取消操作的短超时当成命令完成上限。Context 取消导致等待退出后，客户端用同一 CommandID、独立的有限 Context 发送 Cancel，检查 Cancelled 并保留投递错误。取消确认不证明处理端已释放；处理端继续按已有 run/done 和关闭契约收尾。Grain 内调用方继续使用 RequestGrain，不在邮箱中调用这个阻塞客户端。

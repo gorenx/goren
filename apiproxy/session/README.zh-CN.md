@@ -54,3 +54,16 @@ flowchart LR
 - 下游：Agent Registry、Session LiveStore、Session Persistence、Default Model、Directory Provisioner。
 - `AgentSessions` 跟随 API Proxy Plugin Scope；Agent dispose listener 也由该 Scope 撤销。
 - 技术错误原样返回上游；`CWDConflictError`、`PresetConflictError` 与 `SubagentOwnershipError` 保留结构化事实，再由本子模块转换为根协议定义的 canonical RPC error。
+
+## Actor 迁移中的职责
+
+`api.go`、`decode.go` 现在拥有本领域全部请求和响应契约，根包不保留别名。
+`reader_ports.go` 定义独立快照、活动 Session 查询、持久化历史及投影缓存端口；`read.go` 保留历史分页和基线规则。
+`agents.go` 的 activation 只校验创建／恢复和接管条件，不维护创建等待表或模型缓存；Agent 端口由 Actor Client 实现。
+`gateway.go` 装配这些业务用例，框架调度不进入业务对象。
+
+模型选择不再使用 Scope／Plugin。队列提升要求单次 Promote 操作，禁止移除和 Steer 分开发送。
+当前 Gateway 及纯业务测试可构建运行；Actor Client 与生产装配仍在接入。
+迁移依据见 [API Proxy 设计](../../zh-CN/actor-design/38-api-proxy-module.md)，问题和未完成项见 [集成记录](../../zh-CN/actor-design/40-integration-findings.md)。
+
+模型配置查询和修改属于 Models 端口，Actor Client 直接请求 LLM；Agent 端口不提供配置方法。Prompt 的路由准入读取 LLM 配置，AgentLoop 只接收用户消息并提交生成内容。

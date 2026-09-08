@@ -3,13 +3,13 @@
 纯业务的单 Agent 执行 owner，框架请求由 [actor](./actor/README.zh-CN.md) 适配。旧 Plugin/Scope 和同步执行路径已删除；完整对话驱动、工具执行及生产组合尚未完成。
 
 
-ReactLoopAgent 负责单 Agent 的日志恢复、输入准入和关闭条件，拥有 Inbox、恢复出的 Turn 编号、模型配置、工具版本和首次请求头确认。它不持有 Actor 地址、回复句柄、Context、锁或队列，不执行存储及模型 I/O。
+ReactLoopAgent 负责单 Agent 的日志恢复、输入准入和关闭条件，拥有 Inbox、恢复出的 Turn 编号、工具版本和首次请求头确认。它不持有 Actor 地址、回复句柄、Context、锁或队列，不执行存储及模型 I/O。
 
-模块内，ReactLoopAgent 决定何时允许新增、替换、移除输入；agent.Inbox 决定具体 splice 并投影提交结果；turn.LastNumber 和 agent.ResolveModelSelection 解释恢复日志。模型请求的业务规则归相邻 modelrequest 包，Turn/Step 自身规则归各自包，不复制到 ReactLoopAgent。
+模块内，ReactLoopAgent 决定何时允许新增、替换、移除输入；agent.Inbox 决定具体 splice 并投影提交结果；turn.LastNumber 解释恢复日志。模型请求的业务规则归相邻 modelrequest 包，Turn/Step 自身规则归各自包，不复制到 ReactLoopAgent。
 
-上游 Grain 读取 Session 后调用 Restore。恢复解析全部成功才安装状态；模型及 Prompt 当前初始化段成功后调用 Initialize；该入口复制 CallConfig 的可变字段，Agent 不共享调用方持有的参数指针或 JSON 切片。Followup、Steer、Inject 返回 Admission；Replace、Remove 返回 InboxEdit。Actor 核对完整 Session 提交结果后调用 ConfirmAdmission/ConfirmEdit。失败不提前改变 Inbox。PrepareClose 停止新输入，已接纳输入或执行尚未结束时返回 ErrPending；移除输入仍通过日志提交。失败初始化的历史输入保留在日志中，不阻止资源回收。实际请求取消、等待执行结束及关闭资源由 Grain 编排，资源关闭成功才调用 Release。
+上游 Grain 读取 Session 后调用 Restore。恢复解析全部成功才安装状态；Prompt 当前初始化段成功后调用 Initialize(ToolsVersion)；模型配置由 LLM 独立管理。Followup、Steer、Inject 返回 Admission；Replace、Remove 返回 InboxEdit。Actor 核对完整 Session 提交结果后调用 ConfirmAdmission/ConfirmEdit。失败不提前改变 Inbox。PrepareClose 停止新输入，已接纳输入或执行尚未结束时返回 ErrPending；移除输入仍通过日志提交。失败初始化的历史输入保留在日志中，不阻止资源回收。实际请求取消、等待执行结束及关闭资源由 Grain 编排，资源关闭成功才调用 Release。
 
-依赖单向为 actor → agentloop → agent、turn、llm 配置值及 session 契约；ReactLoopAgent 不引用 actor。具名 Pending 返回 Inbox 的两个执行边界，避免调用方依赖返回值位置。
+依赖单向为 actor → agentloop → agent、turn、llm 调用结果及 session 契约；ReactLoopAgent 不引用 actor。具名 Pending 返回 Inbox 的两个执行边界，避免调用方依赖返回值位置。
 
 ```mermaid
 sequenceDiagram
@@ -121,3 +121,7 @@ Turn 开始使用不可变 TurnStart 与 Session.IdempotentWrite。开始回复�
 
 
 模型请求统一读取业务取消意图。StartRequest 不允许取消后新建，AdvanceRequest 仅接收具名结果并内部附带已记录取消。已发出的操作仍按真实结果完成提交确认或清理；取消不是丢弃完成消息的理由。当前单次 BeginModel 也拒绝取消后启动或与完整请求并行，完整模型驱动尚待 LLM owner 迁移。
+
+
+队列提升由 ReactLoopAgent.Promote 检查运行状态及 next-turn 归属，Inbox.PrepareMove 生成一次提交的删除／插入事件对。Actor 只提交和确认，不拆成 Remove 与 Steer 两次调用；取消后的提升仍回到 next-turn。
+基线及接线进度见 [API Proxy 设计](../zh-CN/actor-design/38-api-proxy-module.md) 和 [INT-07](../zh-CN/actor-design/40-integration-findings.md)。

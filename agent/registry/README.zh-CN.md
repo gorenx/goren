@@ -21,7 +21,8 @@ flowchart TD
  C[CreateAgent] --> V[校验父级及固定创建输入]
  V --> S[Session 登记与启动]
  S --> P[Prompt 初始化]
- P --> A[AgentLoop 初始化]
+ P --> M[读取 Session 历史并请求 LLM 初始化配置]
+ M --> A[AgentLoop 初始化]
  A --> X[Commands 与可选组件初始化]
  X --> R[确认准入后发布 Ready]
  D[CloseAgent] --> F[冻结子树准入，等待在途初始化]
@@ -38,7 +39,7 @@ flowchart TD
 
 通过普通调用方 AskGrain 发起首次创建时，须以 WithGrainReentrancy 激活 Registry；Actor 调用方使用 RequestGrain。等待期间 Registry 使用 AllowAll 处理 Claim、重复请求和其他 Agent。框架停用等待在 PipeToSelf 任务中完成。
 
-寻址为 `<sessionID>.<service>`，通过各服务消息文件的 RuntimeName 生成；业务身份在消息中显式传递。Registry 自身使用固定 Name。Resolve 不创建新的业务生命周期，但框架可能重新激活已失效地址，因此需核对 InstanceID。
+寻址为 `<sessionID>.<service>`，通过各服务消息文件的 RuntimeName 生成；业务身份在消息中显式传递。Registry 自身使用固定 Name。Resolve 的 WaitReady 可等待已有创建的最终结果，默认仍在初始化未完成时拒绝解析；等待者复用创建回复集合，不增加 API 生命周期 map。Resolve 不创建新的业务生命周期，但框架可能重新激活已失效地址，因此需核对 InstanceID。
 
 ## 验证与限制
 

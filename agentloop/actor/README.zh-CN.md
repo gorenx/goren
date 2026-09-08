@@ -6,7 +6,7 @@
 
 - Grain 保存 ReactLoopAgent、已启动组件地址、当前请求关联。业务状态与准入规则由 ReactLoopAgent 决定。
 - grain_initialize.go 接收共享 Initialize，按显式 AgentID/CreationID 请求 Claim、读取 Session.View 并恢复 Inbox。
-- grain_model.go 请求模型 owner 解析日志中的选择；grain_prompt.go 请求已初始化 Prompt 的 ReadRuntime，读取工具基线版本。
+- grain_prompt.go 请求已初始化 Prompt 的 ReadRuntime，读取工具基线版本。
 - grain_close.go 处理 PrepareClose、CloseResources。准备关闭停止新准入；已有消息或维护未结束时返回错误。资源释放只清理本 Agent 执行状态，不代表 Session flush 已完成。
 - messages.go 包含运行消息和 RuntimeName；Grain 名称为 `<sessionID>.agentloop`。共享初始化、关闭和激活校验消息位于 agent/actor，不保留旧 Initialize 别名。
 
@@ -17,13 +17,13 @@ sequenceDiagram
  participant S as 已启动 Session
  participant M as 模型配置 owner
  participant P as 已初始化 Prompt
+ R->>M: InitializeAgent（AgentID、Session 历史）
+ M-->>R: 初始化结果
  R->>A: Initialize（AgentID、CreationID、组件地址）
  A->>R: Claim（InstanceID）
  R-->>A: Claimed
  A->>S: Read
  S-->>A: Header / Snapshot
- A->>M: ResolveAgent
- M-->>A: 配置结果
  A->>P: ReadRuntime
  P-->>A: 工具基线版本
  A-->>R: Initialized

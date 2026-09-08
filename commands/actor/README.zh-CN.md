@@ -10,6 +10,8 @@ Register 发布配置定义与地址；Advertise 发布 Session 实例地址，�
 | 文件 | 职责 |
 | --- | --- |
 | registry.go | 定义与地址的注册、解析、撤销 |
+| client.go | 非 Actor 调用方的当前创建绑定、目录读取、命令执行与取消投递 |
+| grain_directory.go | 校验创建后异步读取有效目录 |
 | grain.go | 请求准入、框架调度和关闭等待 |
 | grain_reply.go | 消费依赖结果，提交与确认 run/done |
 | grain_cancel.go | 业务取消与 CancelInvocation 投递 |
@@ -42,6 +44,8 @@ RequestGrain 的 Then 通过激活期 ScheduleOnce(0) 将后续 Session 调度�
 
 handlers 保存全局/Session 配置地址，instances 保存 Session 能力地址。
 解析地址依次选择 Session 配置、Session 实例、全局配置；元数据由 Catalog 独立处理继承。
+
+`Client` 只接收已初始化的 Commands 执行 Grain。ListCommands 通过该 Grain 校验当前创建后读取 Registry；客户端不绕过身份检查。Execute 使用调用方 Context 作为等待期限，取消后独立投递 Cancel。真实客户端测试覆盖旧创建拒绝、短查询超时不截断执行、取消传播、关闭等待与唯一 run/done 事实；生产 Resolver 仍待接线。
 
 ## 生命周期与服务地址
 

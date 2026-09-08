@@ -46,3 +46,11 @@ sequenceDiagram
 `ListSessions` 返回已成功初始化且创建授权尚未撤销的 Session，按 Session ID 排序。每项包含独立复制的 Header 和后续读取所需的 CreationID；预留中、初始化中及已撤销的创建不进入列表。Registry 只保留不可变创建元数据，不缓存日志，也不会为了列举而激活 Session。
 
 Query 先取得列表，再向对应 Session Grain 读取日志。列表不构成跨 Session 的事务快照；列举后发生关闭时，后续读取必须显式处理失败，不能把未读到的 Session 当成不存在并发布不完整查询数据。
+
+`ResolveSession{SessionID, CreationID}` 返回已初始化创建的 Endpoint。地址在初始化成功时保留，不通过查询重新调用 GrainOf；未初始化、已退役或旧 CreationID 返回明确错误。
+该地址不取消 Session.Read 自身的 CreationID 检查：解析和读取之间可能发生关闭或替换。
+Registry 保留的是框架地址和不可变 Header，不持有 Session 业务对象或日志。
+
+外部 API 要通过 AskGrain 调用使用 DeferResponse 的生命周期操作时，组合入口必须在创建 Registry Grain 时配置 `WithGrainReentrancy`。
+在第一次 Receive 内临时 EnableReentrancy 无法改变已送达请求的回复形式。
+实测见 [Session API 快照测试](../../apiproxy/session/events/actor/snapshots_test.go) 和 [集成问题记录](../../zh-CN/actor-design/40-integration-findings.md)。
