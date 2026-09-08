@@ -3,36 +3,19 @@
 package web
 
 import (
-	"context"
 	"embed"
 	"io/fs"
 	"mime"
 	"net/http"
 	"path"
 	"strings"
-
-	"github.com/gorenx/goren/plugin"
 )
-
-const (
-	// PluginName identifies the embedded Web frontend Plugin.
-	PluginName = "@gorenx/dsh-web"
-	// ServiceName identifies the frontend HTTP capability.
-	ServiceName = "webFrontend"
-)
-
-// Frontend is the embedded browser handler consumed by Connection.
-type Frontend interface {
-	plugin.Service
-	http.Handler
-}
 
 //go:embed dist/*
 var builtAssets embed.FS
 
 // Site serves the embedded conversation shell and its immutable assets.
 type Site struct {
-	plugin.Base
 	files fs.FS
 }
 
@@ -46,26 +29,6 @@ func New() *Site {
 	return &Site{
 		files: assetFiles,
 	}
-}
-
-// Manifest provides the embedded browser frontend capability.
-func (owner *Site) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name: PluginName,
-		Provides: []plugin.ProvidedService{
-			plugin.NewProvidedService[Frontend](owner),
-		},
-	}
-}
-
-// Apply validates startup cancellation before frontend publication.
-func (*Site) Apply(requestContext context.Context) error {
-	return requestContext.Err()
-}
-
-// Dispose has no resource to release because assets are embedded and immutable.
-func (*Site) Dispose(context.Context) error {
-	return nil
 }
 
 // ServeHTTP serves GET/HEAD browser resources. Unknown browser routes fall
@@ -128,3 +91,5 @@ func (owner *Site) writeAsset(
 	}
 	_, _ = responseWriter.Write(content)
 }
+
+var _ http.Handler = (*Site)(nil)
