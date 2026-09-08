@@ -13,7 +13,13 @@ import (
 )
 
 func (owner *Grain) admitHook(address middlewareactor.Invocation, identifier session.SessionID) error {
-	if owner.business == nil || owner.active != nil || identifier != owner.agentID || address.Coordinator == nil || address.CallID == "" || address.Handler == "" {
+	if owner.business == nil ||
+		owner.commandClosing() ||
+		owner.active != nil ||
+		identifier != owner.agentID ||
+		address.Coordinator == nil ||
+		address.CallID == "" ||
+		address.Handler == "" {
 		return errors.New("compaction: idle initialized owner and matching middleware identity are required")
 	}
 	return nil
