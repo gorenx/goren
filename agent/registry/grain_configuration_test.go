@@ -32,13 +32,13 @@ func (fixture *configurationOwner) OnReceive(gc *goakt.GrainContext) {
 	case failConfiguration:
 		fixture.failure = errors.New("test: configuration unavailable")
 		gc.Response(struct{}{})
-	case configactor.ResolveAgent:
+	case configactor.InitializeAgent:
 		if fixture.held != nil {
 			fixture.held <- gc.DeferResponse()
 			fixture.held = nil
 			return
 		}
-		gc.Response(configactor.AgentConfiguration{
+		gc.Response(configactor.Completion{
 			Err: fixture.failure,
 		})
 	case promptactor.Prepare:

@@ -104,14 +104,6 @@ func TestModelResultTimeoutClosesWithoutGeneratingAgain(t *testing.T) {
 			}, time.Second); err != nil {
 				t.Fatal(err)
 			}
-			settings, err := goakt.GrainOf[*llmactor.Grain](ctx, system, "settings", goakt.WithLongLivedGrain())
-			if err != nil {
-				t.Fatal(err)
-			}
-			hooks, err := goakt.GrainOf[*modelHooks](ctx, system, "hooks", goakt.WithLongLivedGrain())
-			if err != nil {
-				t.Fatal(err)
-			}
 			coordinator, err := goakt.GrainOf[*middlewareactor.Grain](ctx, system, "middleware", goakt.WithLongLivedGrain(), goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))))
 			if err != nil {
 				t.Fatal(err)
@@ -127,14 +119,9 @@ func TestModelResultTimeoutClosesWithoutGeneratingAgain(t *testing.T) {
 			responses := make(chan responseResult, 1)
 			go func() {
 				payload, failure := system.AskGrain(ctx, target, requestModel{
-					configuration: settings,
-					router:        endpoint,
-					middleware:    coordinator,
-					replyTimeout:  40 * time.Millisecond,
-					requestRoutes: []middlewareactor.Route{{
-						Definition: "configure",
-						Target:     hooks,
-					}},
+					router:       endpoint,
+					middleware:   coordinator,
+					replyTimeout: 40 * time.Millisecond,
 				}, 3*time.Second)
 				responses <- responseResult{
 					payload: payload,

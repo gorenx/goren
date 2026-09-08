@@ -126,3 +126,12 @@ func (owner *Grain) commitInbox(gc *goakt.GrainContext, reply *goakt.GrainReply,
 		},
 	)
 }
+
+func (owner *Grain) promote(gc *goakt.GrainContext, input Promote) {
+	reply := owner.inboxReply(gc, input.CreationID)
+	if reply == nil {
+		return
+	}
+	proposal, err := owner.business.Promote(input.MessageID)
+	owner.commitAdmission(gc, reply, proposal, err)
+}

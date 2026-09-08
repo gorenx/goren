@@ -66,3 +66,12 @@ func (problem *AttachError) Error() string {
 		problem.SessionID, problem.WorkspaceID, problem.Reason,
 	)
 }
+
+// NameConflictError reports a title already used by another registration.
+type NameConflictError struct {
+	Title string
+}
+
+func (problem *NameConflictError) Error() string {
+	return fmt.Sprintf("workspace name %q is already in use", problem.Title)
+}

@@ -9,9 +9,6 @@ type requestPhase uint8
 
 const (
 	requestUnstarted requestPhase = iota
-	readingHistory
-	resolvingConfig
-	savingConfiguration
 	runningAttempt
 	resolvingRecovery
 	retryingClose
@@ -23,7 +20,7 @@ type ModelRequest struct {
 	phase           requestPhase
 	attempts        int
 	input           RequestInput
-	proposal        llm.CallConfig
+	provider        string
 	policy          llm.RetryPolicy
 	active          *Attempt
 	cancellation    error

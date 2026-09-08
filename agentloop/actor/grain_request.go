@@ -14,17 +14,14 @@ import (
 	"github.com/gorenx/goren/agentloop/internal/modelrequest"
 	"github.com/gorenx/goren/agentmessage"
 	llmactor "github.com/gorenx/goren/llm/actor"
-	sessionactor "github.com/gorenx/goren/session/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
 // requestModel supplies transport routes; the business Agent owns all request input.
 type requestModel struct {
-	configuration  *goakt.GrainIdentity
 	router         *goakt.PID
 	middleware     *goakt.GrainIdentity
-	requestRoutes  []middlewareactor.Route
 	recoveryRoutes []middlewareactor.Route
 	// replyTimeout bounds each LLM result wait, independently of provider I/O timeouts.
 	replyTimeout time.Duration
@@ -59,7 +56,7 @@ type requestProgress struct {
 }
 
 func (owner *Grain) startModel(gc *goakt.GrainContext, input requestModel) {
-	if owner.model != nil || owner.preparation != nil || input.configuration == nil || input.router == nil || input.middleware == nil || input.replyTimeout <= 0 {
+	if owner.model != nil || owner.preparation != nil || input.router == nil || input.middleware == nil || input.replyTimeout <= 0 {
 		gc.Response(modelResult{
 			err: errors.New("agentloop: exclusive model execution and component routes are required"),
 		})
@@ -86,7 +83,6 @@ func (owner *Grain) startModel(gc *goakt.GrainContext, input requestModel) {
 		})
 		return
 	}
-	input.requestRoutes = slices.Clone(input.requestRoutes)
 	input.recoveryRoutes = slices.Clone(input.recoveryRoutes)
 	invocation := &modelInvocation{
 		input:  input,
@@ -114,29 +110,6 @@ func (owner *Grain) executeRequest(gc *goakt.GrainContext, invocation *modelInvo
 			return
 		}
 		owner.finishModel(invocation, input.Result.Err)
-	case modelrequest.ReadRequest:
-		owner.awaitRequest(gc, invocation, operation, gc.RequestGrain(owner.conversation, sessionactor.Read{
-			CreationID: owner.creationID,
-		}, goakt.WithRequestTimeout(0), goakt.WithReentrancyMode(reentrancy.StashNonReentrant)))
-	case modelrequest.ResolveConfiguration:
-		id := middlewareactor.CallID(uuid.NewString())
-		invocation.cancellation = &cancellationRequest{
-			target: invocation.input.middleware,
-			message: middlewareactor.CancelCall{
-				CallID: id,
-			},
-		}
-		owner.awaitRequest(gc, invocation, operation, gc.RequestGrain(invocation.input.middleware, middlewareactor.ResolveRequest{
-			CallID:  id,
-			Routes:  invocation.input.requestRoutes,
-			Input:   input.Input,
-			Default: input.Default,
-		}, goakt.WithRequestTimeout(0), goakt.WithReentrancyMode(reentrancy.AllowAll)))
-	case modelrequest.SaveConfiguration:
-		owner.awaitRequest(gc, invocation, operation, gc.RequestGrain(invocation.input.configuration, llmactor.SetConfiguration{
-			AgentID: string(owner.business.ID()),
-			Config:  input.Config,
-		}, goakt.WithRequestTimeout(0), goakt.WithReentrancyMode(reentrancy.AllowAll)))
 	case modelrequest.ResolveRecovery:
 		id := middlewareactor.CallID(uuid.NewString())
 		invocation.cancellation = &cancellationRequest{
@@ -217,31 +190,6 @@ func requestResult(input requestProgress) modelrequest.RequestResult {
 	}
 	var failure error
 	switch input.operation.(type) {
-	case modelrequest.ReadRequest:
-		if result, ok := input.payload.(sessionactor.View); ok {
-			if result.Err == nil {
-				return modelrequest.RequestRead{
-					Snapshot: result.Snapshot,
-				}
-			}
-			failure = result.Err
-		}
-	case modelrequest.ResolveConfiguration:
-		if result, ok := input.payload.(agent.RequestResolved); ok {
-			if result.Err == nil {
-				return modelrequest.ConfigurationResolved{
-					Config: result.Config,
-				}
-			}
-			failure = result.Err
-		}
-	case modelrequest.SaveConfiguration:
-		if result, ok := input.payload.(llmactor.ConfigurationResult); ok {
-			if result.Err == nil {
-				return modelrequest.ConfigurationSaved{}
-			}
-			failure = result.Err
-		}
 	case modelrequest.ResolveRecovery:
 		if result, ok := input.payload.(agent.RequestErrorResolved); ok {
 			if result.Err == nil {

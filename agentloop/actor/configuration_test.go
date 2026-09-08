@@ -28,8 +28,8 @@ func (fixture *configurationOwner) OnReceive(gc *goakt.GrainContext) {
 	case failConfiguration:
 		fixture.failure = errors.New("test: configuration unavailable")
 		gc.Response(struct{}{})
-	case configactor.ResolveAgent:
-		gc.Response(configactor.AgentConfiguration{
+	case configactor.InitializeAgent:
+		gc.Response(configactor.Completion{
 			Err: fixture.failure,
 		})
 	case promptactor.Prepare:

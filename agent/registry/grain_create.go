@@ -10,6 +10,7 @@ import (
 	agentactor "github.com/gorenx/goren/agent/actor"
 	loopactor "github.com/gorenx/goren/agentloop/actor"
 	commandactor "github.com/gorenx/goren/commands/actor"
+	llmactor "github.com/gorenx/goren/llm/actor"
 	"github.com/gorenx/goren/session"
 	sessionactor "github.com/gorenx/goren/session/actor"
 	sessionregistry "github.com/gorenx/goren/session/registry"
@@ -24,6 +25,8 @@ const (
 	registerSession creationStage = iota
 	startSession
 	initializePrompt
+	readModelHistory
+	initializeModel
 	activateExecutor
 	initializeExecutor
 	initializeCommands
@@ -41,6 +44,7 @@ type activation struct {
 	commands      *goakt.GrainIdentity
 	components    []Component
 	componentNext int
+	history       []session.Event
 	// sessionRegistered records cleanup responsibility before initialization starts.
 	sessionRegistered bool
 	// initializing distinguishes an outstanding request from a settled failure.
@@ -206,6 +210,17 @@ func (owner *Grain) runCreation(gc *goakt.GrainContext, operation *activation) {
 			PromptRegistry: input.PromptRegistry,
 			ToolsRegistry:  input.ToolsRegistry,
 		}
+	case readModelHistory:
+		target = operation.conversation
+		message = sessionactor.Read{
+			CreationID: input.Creation.CreationID,
+		}
+	case initializeModel:
+		target = input.ModelConfig
+		message = llmactor.InitializeAgent{
+			AgentID: string(input.Creation.AgentID),
+			Events:  operation.history,
+		}
 	case activateExecutor:
 		system := gc.ActorSystem()
 		ctx, cancel := context.WithCancel(context.WithoutCancel(gc.Context()))
@@ -224,12 +239,11 @@ func (owner *Grain) runCreation(gc *goakt.GrainContext, operation *activation) {
 	case initializeExecutor:
 		target = entry.executor
 		message = agentactor.Initialize{
-			AgentID:     input.Creation.AgentID,
-			Authority:   gc.Self(),
-			CreationID:  input.Creation.CreationID,
-			Session:     operation.conversation,
-			Prompt:      operation.prompt,
-			ModelConfig: input.ModelConfig,
+			AgentID:    input.Creation.AgentID,
+			Authority:  gc.Self(),
+			CreationID: input.Creation.CreationID,
+			Session:    operation.conversation,
+			Prompt:     operation.prompt,
 		}
 	case initializeCommands:
 		if input.Commands == nil {
@@ -330,6 +344,22 @@ func (owner *Grain) advanceCreation(gc *goakt.GrainContext, input creationAdvanc
 			} else {
 				failure = result.Err
 			}
+		case readModelHistory:
+			result, ok := input.payload.(sessionactor.View)
+			if !ok {
+				failure = errors.New("agent registry: invalid model history reply")
+			} else {
+				failure = result.Err
+				operation.history = result.Snapshot.Events
+			}
+		case initializeModel:
+			result, ok := input.payload.(llmactor.Completion)
+			if !ok {
+				failure = errors.New("agent registry: invalid LLM initialization reply")
+			} else {
+				failure = result.Err
+			}
+			operation.history = nil
 		case activateExecutor:
 			identity, ok := input.payload.(*goakt.GrainIdentity)
 			if !ok || identity == nil {

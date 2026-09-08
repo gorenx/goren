@@ -70,3 +70,27 @@ func quotedOptional(textValue *string) string {
 	}
 	return fmt.Sprintf("%q", *textValue)
 }
+
+func cloneStringPointer(source *string) *string {
+	if source == nil {
+		return nil
+	}
+	copyValue := *source
+	return &copyValue
+}
+
+func cloneSessionIDPointer(source *session.SessionID) *session.SessionID {
+	if source == nil {
+		return nil
+	}
+	copyValue := *source
+	return &copyValue
+}
+
+func cloneInt64Pointer(source *int64) *int64 {
+	if source == nil {
+		return nil
+	}
+	copyValue := *source
+	return &copyValue
+}

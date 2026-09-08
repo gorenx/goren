@@ -67,6 +67,17 @@ type CancelInvocation struct {
 	Cause      error
 }
 
+// ListCommands reads this creation's effective directory through its execution owner.
+type ListCommands struct {
+	CreationID string
+}
+
+// Listed contains detached descriptors or an admission/query failure.
+type Listed struct {
+	Values []commands.Descriptor
+	Err    error
+}
+
 // RuntimeName returns this service's stable address within a Session lifetime.
 // Business identity is carried explicitly in messages, never parsed from this name.
 func RuntimeName(identifier string) string { return identifier + ".commands" }

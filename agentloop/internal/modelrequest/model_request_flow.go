@@ -5,10 +5,9 @@ import (
 
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/session"
 )
 
-// Start captures one Step and requests a fresh configuration baseline.
+// Start captures one Step and begins generation without reading model settings.
 func (current *ModelRequest) Start(input RequestInput) (RequestOperation, error) {
 	if current == nil || current.phase != requestUnstarted {
 		return nil, errors.New("agentloop: model request already started or is nil")
@@ -22,13 +21,11 @@ func (current *ModelRequest) Start(input RequestInput) (RequestOperation, error)
 		return nil, err
 	}
 	input.Prompt = captured
-	input.Config = llm.CloneCallConfig(input.Config)
 	current.input = input
 	current.outcome = Completed{
 		StreamClosed: true,
 	}
-	current.phase = readingHistory
-	return ReadRequest{}, nil
+	return current.startAttempt()
 }
 
 // Advance consumes a matching result. Protocol errors leave the pending
@@ -50,7 +47,7 @@ func (current *ModelRequest) Advance(result RequestResult, cancellation error) (
 			response = result.(AttemptAdvanced).Result
 		}
 		if started, ok := response.(GenerationStarted); ok {
-			current.proposal = llm.CloneCallConfig(started.Config)
+			current.provider = started.Config.Provider
 			if started.RetryPolicy != nil {
 				current.policy = started.RetryPolicy.CloneRetryPolicy()
 			}
@@ -68,60 +65,14 @@ func (current *ModelRequest) Advance(result RequestResult, cancellation error) (
 		return current.finish(errors.Join(current.failure, failed.Err)), nil
 	}
 	switch current.phase {
-	case readingHistory:
-		return current.resolveConfiguration(result.(RequestRead).Snapshot), nil
-	case resolvingConfig:
-		resolved := result.(ConfigurationResolved)
-		if resolved.Config.Provider == "" || resolved.Config.Model == "" {
-			return current.finish(errors.New("agentloop: request middleware must resolve provider and model")), nil
-		}
-		current.proposal = llm.CloneCallConfig(resolved.Config)
-		current.phase = savingConfiguration
-		return SaveConfiguration{
-			Config: llm.CloneCallConfig(current.proposal),
-		}, nil
-	case savingConfiguration:
-		return current.startAttempt()
 	case resolvingRecovery:
 		if !result.(RecoveryResolved).Action.Retry {
 			return current.finish(current.failure), nil
 		}
-		current.phase = readingHistory
 		current.failure = nil
-		return ReadRequest{}, nil
+		return current.startAttempt()
 	}
 	return nil, errors.New("agentloop: unsupported model request state")
-}
-
-func (current *ModelRequest) resolveConfiguration(snapshot session.Snapshot) RequestOperation {
-	if snapshot.Barrier.SessionID != current.input.SessionID || snapshot.Barrier.NextSeq != int64(len(snapshot.Events)) {
-		return current.finish(errors.New("agentloop: model request requires a complete Session snapshot"))
-	}
-	for index, entry := range snapshot.Events {
-		if entry.Seq != int64(index) {
-			return current.finish(errors.New("agentloop: model request Session sequence is discontinuous"))
-		}
-	}
-	proposed := llm.CloneCallConfig(current.input.Config)
-	if !current.input.First || current.headerCommitted {
-		previous, err := session.LatestRequestHeader(snapshot.Events)
-		if err != nil {
-			return current.finish(err)
-		}
-		if previous == nil {
-			return current.finish(errors.New("agentloop: confirmed request header is missing"))
-		}
-		proposed = Proposal(*previous)
-	}
-	current.phase = resolvingConfig
-	return ResolveConfiguration{
-		Input: agent.RequestInput{
-			AgentID: current.input.SessionID,
-			Turn:    current.input.Position.Turn,
-			Step:    current.input.Position.Step,
-		},
-		Default: proposed,
-	}
 }
 
 func (current *ModelRequest) startAttempt() (RequestOperation, error) {
@@ -129,7 +80,6 @@ func (current *ModelRequest) startAttempt() (RequestOperation, error) {
 		SessionID: current.input.SessionID,
 		Position:  current.input.Position,
 		Prompt:    current.input.Prompt,
-		Config:    current.proposal,
 		First:     current.input.First && !current.headerCommitted,
 	})
 	if err != nil {
@@ -184,11 +134,15 @@ func (current *ModelRequest) acceptAttempt(next Operation) RequestOperation {
 	default:
 		return current.finish(errors.New("agentloop: failed model finish is missing provider failure facts"))
 	}
-	problem, err := llm.NewLlmError(fact.Message, fact.Code, llm.LlmErrorOptions{
-		Status:               fact.Status,
-		ProviderRetryAfterMS: fact.ProviderRetryAfterMS,
-		RequestID:            fact.RequestID,
-	})
+	problem, err := llm.NewLlmError(
+		fact.Message,
+		fact.Code,
+		llm.LlmErrorOptions{
+			Status:               fact.Status,
+			ProviderRetryAfterMS: fact.ProviderRetryAfterMS,
+			RequestID:            fact.RequestID,
+		},
+	)
 	if err != nil {
 		return current.finish(err)
 	}
@@ -203,7 +157,7 @@ func (current *ModelRequest) acceptAttempt(next Operation) RequestOperation {
 			AgentID:     current.input.SessionID,
 			Turn:        current.input.Position.Turn,
 			Step:        current.input.Position.Step,
-			Provider:    current.proposal.Provider,
+			Provider:    current.provider,
 			Failure:     problem.Failure(),
 			RetryPolicy: policy,
 		},
@@ -266,12 +220,6 @@ func (current *ModelRequest) checkCompletion(result RequestResult) error {
 	}
 	valid := false
 	switch current.phase {
-	case readingHistory:
-		_, valid = result.(RequestRead)
-	case resolvingConfig:
-		_, valid = result.(ConfigurationResolved)
-	case savingConfiguration:
-		_, valid = result.(ConfigurationSaved)
 	case runningAttempt, retryingClose:
 		_, valid = result.(AttemptAdvanced)
 	case resolvingRecovery:

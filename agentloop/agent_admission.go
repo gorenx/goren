@@ -108,3 +108,41 @@ func (subject *ReactLoopAgent) Cancel(intent agent.CancelCause, options agent.Ca
 	}
 	return edit, nil
 }
+
+// Promote moves a queued next-turn occurrence using one durable Inbox edit.
+// Cancellation keeps the input in next-turn, matching ordinary Steer admission.
+func (subject *ReactLoopAgent) Promote(identifier agentmessage.MessageID) (agent.Admission, error) {
+	if err := subject.CheckExecution(); err != nil {
+		return agent.Admission{}, err
+	}
+	found := false
+	for _, input := range subject.pending.NextTurn() {
+		if input.StableID() == identifier {
+			found = true
+			break
+		}
+	}
+	if !found {
+		for _, input := range subject.pending.NextStep() {
+			if input.StableID() == identifier {
+				return agent.Admission{}, agent.ErrSteerUnavailable
+			}
+		}
+		return agent.Admission{}, agent.ErrInputMissing
+	}
+	if subject.running == nil {
+		return agent.Admission{}, agent.ErrSteerUnavailable
+	}
+	target := agent.NextStep
+	if subject.running.cancellation != nil {
+		target = agent.NextTurn
+	}
+	edit, err := subject.pending.PrepareMove(identifier, target)
+	if err != nil {
+		return agent.Admission{}, err
+	}
+	return agent.Admission{
+		Edit: edit,
+		Wake: true,
+	}, nil
+}

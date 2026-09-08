@@ -1,6 +1,10 @@
 package registry
 
-import "sort"
+import (
+	"sort"
+
+	sessionactor "github.com/gorenx/goren/session/actor"
+)
 
 func (owner *RegistryGrain) listSessions() Sessions {
 	result := Sessions{
@@ -20,4 +24,24 @@ func (owner *RegistryGrain) listSessions() Sessions {
 		return result.Items[left].Header.ID < result.Items[right].Header.ID
 	})
 	return result
+}
+
+func (owner *RegistryGrain) resolveSession(input ResolveSession) Endpoint {
+	entry := owner.sessions[input.SessionID]
+	grant, found := owner.directory.registrations[input.SessionID]
+	if !found ||
+		grant.retired ||
+		grant.creationID != input.CreationID ||
+		entry == nil ||
+		entry.creationID != input.CreationID ||
+		entry.header == nil ||
+		entry.endpoint == nil {
+		return Endpoint{
+			Err: sessionactor.ErrCreation,
+		}
+	}
+	// GrainIdentity is immutable and contains sync.Once; share its address.
+	return Endpoint{
+		Target: entry.endpoint,
+	}
 }

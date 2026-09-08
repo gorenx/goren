@@ -8,7 +8,6 @@ import (
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentloop"
 	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/llm/modelconfig"
 	"github.com/gorenx/goren/session"
 )
 
@@ -19,10 +18,10 @@ func readyAgent(t *testing.T) (*agentloop.ReactLoopAgent, *session.Log) {
 		t.Fatal(err)
 	}
 	subject := &agentloop.ReactLoopAgent{}
-	if _, err := subject.Restore(history.Header(), history.Snapshot()); err != nil {
+	if err := subject.Restore(history.Header(), history.Snapshot()); err != nil {
 		t.Fatal(err)
 	}
-	if err := subject.Initialize(modelconfig.Resolved{}, 1); err != nil {
+	if err := subject.Initialize(1); err != nil {
 		t.Fatal(err)
 	}
 	return subject, history
@@ -111,7 +110,9 @@ func TestInjectDoesNotWakeAndCanceledSteerTargetsNextTurn(t *testing.T) {
 	if len(subject.InboxValue().NextStep()) != 2 {
 		t.Fatal("ordinary Steer target")
 	}
-	if _, err := subject.Cancel(agent.ParentCancel{}, agent.CancelOptions{KeepInbox: true}); err != nil {
+	if _, err := subject.Cancel(agent.ParentCancel{}, agent.CancelOptions{
+		KeepInbox: true,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	proposal, err = subject.Steer(inputMessage(t, "after cancellation"))
@@ -189,5 +190,71 @@ func TestCancelClearsInboxOnlyAfterCommitAndSuppressesReplay(t *testing.T) {
 	replay, err := subject.FinishActivity()
 	if err != nil || replay || subject.StatusValue() != agent.StatusIdle {
 		t.Fatalf("finish = %v, %v", replay, err)
+	}
+}
+
+func TestPromoteCommitsOneCompleteMove(t *testing.T) {
+	subject, history := readyAgent(t)
+	input := inputMessage(t, "promote")
+	admission, err := subject.Followup(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirmInput(t, subject, history, admission)
+	proposal, err := subject.Promote(input.StableID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(proposal.Edit.Drafts) != 2 {
+		t.Fatalf("move drafts: %d", len(proposal.Edit.Drafts))
+	}
+	pending, _ := subject.Inbox()
+	if len(pending.NextTurn) != 1 || len(pending.NextStep) != 0 {
+		t.Fatal("proposal mutated live state")
+	}
+	before := history.Seq()
+	confirmInput(t, subject, history, proposal)
+	pending, _ = subject.Inbox()
+	if len(pending.NextTurn) != 0 || len(pending.NextStep) != 1 || pending.NextStep[0].StableID() != input.StableID() {
+		t.Fatalf("move: %+v", pending)
+	}
+	if history.Seq() != before+2 {
+		t.Fatal("move was not committed as a complete pair")
+	}
+	if _, err := subject.Promote(input.StableID()); !errors.Is(err, agent.ErrSteerUnavailable) {
+		t.Fatalf("next-step promotion: %v", err)
+	}
+	if _, err := subject.Promote("missing"); !errors.Is(err, agent.ErrInputMissing) {
+		t.Fatalf("missing promotion: %v", err)
+	}
+}
+
+func TestPromoteAfterCancellationKeepsInputForNextTurn(t *testing.T) {
+	subject, history := readyAgent(t)
+	first := inputMessage(t, "first")
+	second := inputMessage(t, "second")
+	for _, input := range []agentmessage.UserMessage{first, second} {
+		proposal, err := subject.Followup(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		confirmInput(t, subject, history, proposal)
+	}
+	if _, err := subject.Cancel(agent.UserCancel{}, agent.CancelOptions{
+		KeepInbox: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := subject.Promote(first.StableID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirmInput(t, subject, history, proposal)
+	pending, err := subject.Inbox()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending.NextStep) != 0 || len(pending.NextTurn) != 2 || pending.NextTurn[0].StableID() != second.StableID() || pending.NextTurn[1].StableID() != first.StableID() {
+		t.Fatalf("canceled steering changed placement: %+v", pending)
 	}
 }

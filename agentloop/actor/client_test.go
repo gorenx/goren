@@ -118,7 +118,6 @@ func TestClientSeparatesInputCancellationAndIdle(t *testing.T) {
 		CreationID:  "current",
 		Session:     sessionRoute(t, system, "client-test"),
 		Prompt:      promptRoute(t, system, "client-test", dependencies),
-		ModelConfig: dependencies,
 	}); result.Err != nil {
 		t.Fatal(result.Err)
 	}

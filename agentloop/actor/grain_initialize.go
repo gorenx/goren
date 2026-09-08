@@ -5,19 +5,16 @@ import (
 	"errors"
 
 	agentactor "github.com/gorenx/goren/agent/actor"
-	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/llm/modelconfig"
 	sessionactor "github.com/gorenx/goren/session/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
 type initialization struct {
-	input         agentactor.Initialize
-	reply         *goakt.GrainReply
-	cancel        context.CancelFunc
-	configuration modelconfig.Resolved
-	toolsVersion  uint64
+	input        agentactor.Initialize
+	reply        *goakt.GrainReply
+	cancel       context.CancelFunc
+	toolsVersion uint64
 }
 
 type initializationAuthorized struct {
@@ -32,7 +29,6 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input agentactor.Initiali
 		input.AgentID == "" ||
 		gc.Self().Name() != RuntimeName(string(input.AgentID)) ||
 		input.Session == nil ||
-		input.ModelConfig == nil ||
 		input.Prompt == nil ||
 		input.CreationID == "" {
 		gc.Response(agentactor.Initialized{
@@ -130,7 +126,6 @@ func (owner *Grain) restoreInbox(gc *goakt.GrainContext, input initializationAut
 		if owner.initialization != operation {
 			return
 		}
-		var overrides llm.CallConfig
 		if failure == nil {
 			view, ok := payload.(sessionactor.View)
 			switch {
@@ -141,12 +136,11 @@ func (owner *Grain) restoreInbox(gc *goakt.GrainContext, input initializationAut
 			case view.Header.ID != operation.input.AgentID || view.Snapshot.Barrier.SessionID != view.Header.ID:
 				failure = errors.New("agentloop: Session identity mismatch")
 			default:
-				overrides, failure = owner.business.Restore(view.Header, view.Snapshot)
+				failure = owner.business.Restore(view.Header, view.Snapshot)
 			}
 		}
 		completed <- initializationRestored{
 			operation: operation,
-			overrides: overrides,
 			err:       failure,
 		}
 	})
@@ -159,7 +153,7 @@ func (owner *Grain) finishInitialization(operation *initialization, failure erro
 	}
 	owner.initialization = nil
 	if failure == nil {
-		failure = owner.business.Initialize(operation.configuration, operation.toolsVersion)
+		failure = owner.business.Initialize(operation.toolsVersion)
 	}
 	operation.cancel()
 	operation.reply.Response(agentactor.Initialized{

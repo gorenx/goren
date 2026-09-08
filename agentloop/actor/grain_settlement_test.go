@@ -10,7 +10,6 @@ import (
 	middlewareactor "github.com/gorenx/goren/agent/middleware/actor"
 	"github.com/gorenx/goren/agentloop"
 	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/llm/modelconfig"
 	"github.com/gorenx/goren/session"
 	sessionactor "github.com/gorenx/goren/session/actor"
 	promptactor "github.com/gorenx/goren/systemprompt/actor"
@@ -288,10 +287,10 @@ func acceptedTurn(t *testing.T) (*agentloop.ReactLoopAgent, *session.Log) {
 		t.Fatal(err)
 	}
 	subject := &agentloop.ReactLoopAgent{}
-	if _, err := subject.Restore(history.Header(), history.Snapshot()); err != nil {
+	if err := subject.Restore(history.Header(), history.Snapshot()); err != nil {
 		t.Fatal(err)
 	}
-	if err := subject.Initialize(modelconfig.Resolved{}, 1); err != nil {
+	if err := subject.Initialize(1); err != nil {
 		t.Fatal(err)
 	}
 	prompt, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{

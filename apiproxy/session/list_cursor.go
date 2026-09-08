@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 
-	api "github.com/gorenx/goren/apiproxy"
 	"github.com/gorenx/goren/session"
 	sesspersist "github.com/gorenx/goren/session/persistence"
 )
@@ -20,7 +19,7 @@ type listCursor struct {
 
 const maximumSessionCursorTime int64 = 1<<53 - 1
 
-func decodeSessionListPage(request api.SessionListRequest) (sesspersist.SessionPage, error) {
+func decodeSessionListPage(request ListRequest) (sesspersist.SessionPage, error) {
 	limit := defaultSessionListPageSize
 	if request.Limit != nil {
 		limit = *request.Limit

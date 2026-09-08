@@ -8,12 +8,11 @@ import (
 // Initialize binds already-started component routes and restores execution state.
 // The lifecycle Registry owns their startup and shutdown.
 type Initialize struct {
-	AgentID     session.SessionID
-	Authority   *goakt.GrainIdentity
-	CreationID  string
-	Session     *goakt.GrainIdentity
-	Prompt      *goakt.GrainIdentity
-	ModelConfig *goakt.GrainIdentity
+	AgentID    session.SessionID
+	Authority  *goakt.GrainIdentity
+	CreationID string
+	Session    *goakt.GrainIdentity
+	Prompt     *goakt.GrainIdentity
 }
 
 // Initialized acknowledges completed Agent initialization, not just activation or Claim.

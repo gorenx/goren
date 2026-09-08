@@ -1,4 +1,6 @@
 package apiproxy
+import sessionapi "github.com/gorenx/goren/apiproxy/session"
+
 
 import (
 	"encoding/json"
@@ -8,7 +10,7 @@ import (
 
 func TestSessionRequestDecodersMatchIncludedUnionShapes(t *testing.T) {
 	t.Parallel()
-	decodedPrompt, issues := DecodeSessionPromptRequest(json.RawMessage(`{
+	decodedPrompt, issues := sessionapi.DecodePromptRequest(json.RawMessage(`{
 		"sessionId":"session-1","mode":"queue",
 		"content":[{"type":"text","text":"hello","ignored":true}],
 		"clientTimeZone":"UTC","ignored":true
@@ -17,17 +19,17 @@ func TestSessionRequestDecodersMatchIncludedUnionShapes(t *testing.T) {
 		t.Fatalf("prompt issues = %#v", issues)
 	}
 	if decodedPrompt.SessionID != "session-1" || decodedPrompt.Mode != "queue" || decodedPrompt.ClientTimeZone == nil ||
-		*decodedPrompt.ClientTimeZone != "UTC" || !reflect.DeepEqual(decodedPrompt.Content, []PromptContentPart{PromptTextPart{Text: "hello"}}) {
+		*decodedPrompt.ClientTimeZone != "UTC" || !reflect.DeepEqual(decodedPrompt.Content, []sessionapi.PromptContentPart{sessionapi.PromptTextPart{Text: "hello"}}) {
 		t.Fatalf("prompt = %#v", decodedPrompt)
 	}
-	update, issues := DecodeSessionUpdateQueueRequest(json.RawMessage(`{
+	update, issues := sessionapi.DecodeUpdateQueueRequest(json.RawMessage(`{
 		"sessionId":"session-1","itemId":"message-1",
 		"action":{"kind":"edit","content":[{"type":"text","text":"changed","extension":1}]}
 	}`))
 	if len(issues) != 0 {
 		t.Fatalf("update issues = %#v", issues)
 	}
-	edit, matched := update.Action.(EditQueueAction)
+	edit, matched := update.Action.(sessionapi.EditQueueAction)
 	if !matched || len(edit.Content) != 1 || string(edit.Content[0]) != `{"type":"text","text":"changed","extension":1}` {
 		t.Fatalf("update = %#v", update)
 	}
@@ -43,7 +45,7 @@ func TestSessionRequestDecodersRejectNullAndInvalidCombinations(t *testing.T) {
 		{
 			name: "create null id",
 			decode: func(rawValue json.RawMessage) int {
-				_, issues := DecodeSessionCreateRequest(rawValue)
+				_, issues := sessionapi.DecodeCreateRequest(rawValue)
 				return len(issues)
 			},
 			input: `{"sessionId":null}`,
@@ -51,7 +53,7 @@ func TestSessionRequestDecodersRejectNullAndInvalidCombinations(t *testing.T) {
 		{
 			name: "create workspace and cwd",
 			decode: func(rawValue json.RawMessage) int {
-				_, issues := DecodeSessionCreateRequest(rawValue)
+				_, issues := sessionapi.DecodeCreateRequest(rawValue)
 				return len(issues)
 			},
 			input: `{"workspaceId":"workspace-1","cwd":"/tmp"}`,
@@ -59,7 +61,7 @@ func TestSessionRequestDecodersRejectNullAndInvalidCombinations(t *testing.T) {
 		{
 			name: "history zero messages",
 			decode: func(rawValue json.RawMessage) int {
-				_, issues := DecodeSessionHistoryRequest(rawValue)
+				_, issues := sessionapi.DecodeHistoryRequest(rawValue)
 				return len(issues)
 			},
 			input: `{"sessionId":"session-1","maxMessages":0}`,
@@ -67,7 +69,7 @@ func TestSessionRequestDecodersRejectNullAndInvalidCombinations(t *testing.T) {
 		{
 			name: "edit null content",
 			decode: func(rawValue json.RawMessage) int {
-				_, issues := DecodeSessionUpdateQueueRequest(rawValue)
+				_, issues := sessionapi.DecodeUpdateQueueRequest(rawValue)
 				return len(issues)
 			},
 			input: `{"sessionId":"session-1","itemId":"message-1","action":{"kind":"edit","content":null}}`,

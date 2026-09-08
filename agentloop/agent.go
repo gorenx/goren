@@ -9,8 +9,6 @@ import (
 	stepstate "github.com/gorenx/goren/agentloop/internal/step"
 	turnstate "github.com/gorenx/goren/agentloop/internal/turn"
 	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/llm/modelconfig"
 	"github.com/gorenx/goren/session"
 )
 
@@ -21,52 +19,41 @@ var ErrPending = errors.New("agentloop: accepted input remains")
 // and reports committed events; this object performs no I/O or scheduling.
 type ReactLoopAgent struct {
 	// inboxNext excludes already-applied log entries when reconciling an uncertain claim.
-	inboxNext     int64
-	running       *activity
-	request       *modelrequest.ModelRequest
-	preparing     *preparation
-	identifier    session.SessionID
-	ending        *settlement
-	pending       *agent.Inbox
-	current       *turnstate.Turn
-	step          *stepstate.Step
-	lastTurn      int64
-	configuration modelconfig.Resolved
-	toolsVersion  uint64
-	lifetime      lifecycle
-	headerLogged  bool
+	inboxNext    int64
+	running      *activity
+	request      *modelrequest.ModelRequest
+	preparing    *preparation
+	identifier   session.SessionID
+	ending       *settlement
+	pending      *agent.Inbox
+	current      *turnstate.Turn
+	step         *stepstate.Step
+	lastTurn     int64
+	toolsVersion uint64
+	lifetime     lifecycle
+	headerLogged bool
 }
 
-// Restore installs a complete log projection and returns persisted model overrides.
+// Restore installs a complete log projection.
 // Parsing failures leave the previous state untouched.
-func (subject *ReactLoopAgent) Restore(metadata session.Header, snapshot session.Snapshot) (llm.CallConfig, error) {
+func (subject *ReactLoopAgent) Restore(metadata session.Header, snapshot session.Snapshot) error {
 	if subject.lifetime != unrestored {
-		return llm.CallConfig{}, ErrState
+		return ErrState
 	}
 	if snapshot.Barrier.SessionID != metadata.ID || snapshot.Barrier.NextSeq != int64(len(snapshot.Events)) {
-		return llm.CallConfig{}, errors.New("agentloop: Session read identity mismatch")
+		return errors.New("agentloop: Session read identity mismatch")
 	}
 	pending, err := agent.NewInbox(metadata, snapshot.Events)
 	if err != nil {
-		return llm.CallConfig{}, err
+		return err
 	}
 	number, err := turnstate.LastNumber(snapshot.Events)
 	if err != nil {
-		return llm.CallConfig{}, err
-	}
-	selected, err := agent.ResolveModelSelection(nil, snapshot.Events, agent.ModelSelection{})
-	if err != nil {
-		return llm.CallConfig{}, err
-	}
-	overrides := llm.CallConfig{}
-	if selected != nil {
-		overrides.Provider = selected.Provider
-		overrides.Model = selected.Model
-		overrides.ReasoningEffort = selected.ReasoningEffort
+		return err
 	}
 	for index, entry := range snapshot.Events {
 		if entry.Seq != int64(index) {
-			return llm.CallConfig{}, errors.New("agentloop: recovery snapshot sequence is discontinuous")
+			return errors.New("agentloop: recovery snapshot sequence is discontinuous")
 		}
 	}
 	subject.inboxNext = snapshot.Barrier.NextSeq
@@ -74,19 +61,17 @@ func (subject *ReactLoopAgent) Restore(metadata session.Header, snapshot session
 	subject.pending = pending
 	subject.lastTurn = number
 	subject.lifetime = restored
-	return overrides, nil
+	return nil
 }
 
 // Initialize admits work after the currently required components have initialized.
-func (subject *ReactLoopAgent) Initialize(resolved modelconfig.Resolved, version uint64) error {
+func (subject *ReactLoopAgent) Initialize(version uint64) error {
 	if subject.lifetime != restored {
 		return ErrState
 	}
 	if version == 0 {
 		return errors.New("agentloop: initialized tools require a committed version")
 	}
-	resolved.Config = llm.CloneCallConfig(resolved.Config)
-	subject.configuration = resolved
 	subject.toolsVersion = version
 	subject.lifetime = available
 	return nil

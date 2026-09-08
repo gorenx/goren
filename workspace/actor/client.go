@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/workspace"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
@@ -133,16 +134,16 @@ func (endpoint *Client) InsertBefore(ctx context.Context, input InsertBefore) ([
 }
 
 // Rename updates the workspace title.
-func (endpoint *Client) Rename(ctx context.Context, input Rename) error {
+func (endpoint *Client) Rename(ctx context.Context, input Rename) (workspace.WorkspaceState, error) {
 	payload, err := endpoint.execute(ctx, input)
 	if err != nil {
-		return err
+		return workspace.WorkspaceState{}, err
 	}
-	result, ok := payload.(Completion)
+	result, ok := payload.(Updated)
 	if !ok {
-		return errors.New("workspace: invalid mutation reply")
+		return workspace.WorkspaceState{}, errors.New("workspace: invalid mutation reply")
 	}
-	return result.Err
+	return result.State, result.Err
 }
 
 // AttachSession attaches a Session after validating its directory.
@@ -172,27 +173,27 @@ func (endpoint *Client) DetachSession(ctx context.Context, input DetachSession) 
 }
 
 // InsertSessionBefore moves a Session within one workspace.
-func (endpoint *Client) InsertSessionBefore(ctx context.Context, input InsertSessionBefore) error {
+func (endpoint *Client) InsertSessionBefore(ctx context.Context, input InsertSessionBefore) (workspace.WorkspaceState, error) {
 	payload, err := endpoint.execute(ctx, input)
 	if err != nil {
-		return err
+		return workspace.WorkspaceState{}, err
 	}
-	result, ok := payload.(Completion)
+	result, ok := payload.(Updated)
 	if !ok {
-		return errors.New("workspace: invalid mutation reply")
+		return workspace.WorkspaceState{}, errors.New("workspace: invalid mutation reply")
 	}
-	return result.Err
+	return result.State, result.Err
 }
 
 // ArchiveSession archives a known Session.
-func (endpoint *Client) ArchiveSession(ctx context.Context, input ArchiveSession) error {
+func (endpoint *Client) ArchiveSession(ctx context.Context, input ArchiveSession) ([]session.SessionID, error) {
 	payload, err := endpoint.execute(ctx, input)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	result, ok := payload.(Completion)
+	result, ok := payload.(Archived)
 	if !ok {
-		return errors.New("workspace: invalid mutation reply")
+		return nil, errors.New("workspace: invalid mutation reply")
 	}
-	return result.Err
+	return result.IDs, result.Err
 }

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/gorenx/goren/session"
@@ -326,6 +327,21 @@ func (owner *DurableRegistry) SetTitle(
 	if !found {
 		return &UnknownError{
 			ID: identifier,
+		}
+	}
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return errors.New("workspace title must be non-blank")
+	}
+	if record.Title == title {
+		return nil
+	}
+	for candidateID, candidate := range owner.entries {
+		if candidateID != identifier &&
+			candidate.Title == title {
+			return &NameConflictError{
+				Title: title,
+			}
 		}
 	}
 	record.Title = title

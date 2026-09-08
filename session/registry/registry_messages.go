@@ -3,6 +3,7 @@ package registry
 import (
 	"github.com/gorenx/goren/session"
 	sessionactor "github.com/gorenx/goren/session/actor"
+	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
 // Reserve holds a Session identity for the original creation transaction.
@@ -88,4 +89,17 @@ type Session struct {
 // Sessions is a detached list sorted by stable Session identity.
 type Sessions struct {
 	Items []Session
+}
+
+// ResolveSession addresses an existing initialized creation without activating it.
+type ResolveSession struct {
+	SessionID  session.SessionID
+	CreationID string
+}
+
+// Endpoint carries an admitted Session route or a creation error.
+// Read requests must still carry the original CreationID to survive close races.
+type Endpoint struct {
+	Target *goakt.GrainIdentity
+	Err    error
 }

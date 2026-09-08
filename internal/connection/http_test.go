@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	rpc "github.com/gorenx/goren/apiproxy/rpc"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -31,51 +32,112 @@ func TestUnaryCarrierContract(t *testing.T) {
 		wantCode    wire.RPCErrorCode
 	}{
 		{
-			name: "success", method: http.MethodPost, path: "/api/host.describe", contentType: "application/json; charset=utf-8",
-			body: `{"type":"client-request","rpcId":"r-1","method":"host.describe","payload":{}}`, wantStatus: http.StatusOK, wantRPCID: "r-1",
+			name:        "success",
+			method:      http.MethodPost,
+			path:        "/api/host.describe",
+			contentType: "application/json; charset=utf-8",
+			body:        `{"type":"client-request","rpcId":"r-1","method":"host.describe","payload":{}}`,
+			wantStatus:  http.StatusOK,
+			wantRPCID:   "r-1",
 		},
 		{
-			name: "unknown path", method: http.MethodPost, path: "/api/no.such", contentType: "application/json", body: `{}`,
-			wantStatus: http.StatusNotFound, wantText: "not found",
+			name:        "unknown path",
+			method:      http.MethodPost,
+			path:        "/api/no.such",
+			contentType: "application/json",
+			body:        `{}`,
+			wantStatus:  http.StatusNotFound,
+			wantText:    "not found",
 		},
 		{
-			name: "unknown path still checks media type", method: http.MethodPost, path: "/api/no.such",
-			wantStatus: http.StatusUnsupportedMediaType, wantText: "content type must be application/json",
+			name:       "unknown path still checks media type",
+			method:     http.MethodPost,
+			path:       "/api/no.such",
+			wantStatus: http.StatusUnsupportedMediaType,
+			wantText:   "content type must be application/json",
 		},
 		{
-			name: "unknown path still checks JSON", method: http.MethodPost, path: "/api/no.such", contentType: "application/json", body: `{oops`,
-			wantStatus: http.StatusBadRequest, wantText: "body is not JSON",
+			name:        "unknown path still checks JSON",
+			method:      http.MethodPost,
+			path:        "/api/no.such",
+			contentType: "application/json",
+			body:        `{oops`,
+			wantStatus:  http.StatusBadRequest,
+			wantText:    "body is not JSON",
 		},
 		{
-			name: "encoded endpoint", method: http.MethodPost, path: "/api/host%2Edescribe", contentType: "application/json", body: `{}`,
-			wantStatus: http.StatusNotFound, wantText: "not found",
-		},
-		{name: "wrong method", method: http.MethodGet, path: "/api/host.describe", wantStatus: http.StatusNotFound, wantText: "not found"},
-		{
-			name: "wrong media type", method: http.MethodPost, path: "/api/host.describe", contentType: "text/plain", body: `{}`,
-			wantStatus: http.StatusUnsupportedMediaType, wantText: "content type must be application/json",
-		},
-		{
-			name: "bad json", method: http.MethodPost, path: "/api/host.describe", contentType: "application/json", body: `{oops`,
-			wantStatus: http.StatusBadRequest, wantText: "body is not JSON",
+			name:        "encoded endpoint",
+			method:      http.MethodPost,
+			path:        "/api/host%2Edescribe",
+			contentType: "application/json",
+			body:        `{}`,
+			wantStatus:  http.StatusNotFound,
+			wantText:    "not found",
 		},
 		{
-			name: "bad envelope sentinel", method: http.MethodPost, path: "/api/host.describe", contentType: "application/json", body: `{"nope":true}`,
-			wantStatus: http.StatusOK, wantRPCID: wire.InvalidRequestRPCID, wantCode: wire.ErrorBadRequest,
+			name:       "wrong method",
+			method:     http.MethodGet,
+			path:       "/api/host.describe",
+			wantStatus: http.StatusNotFound,
+			wantText:   "not found",
 		},
 		{
-			name: "bad envelope salvages id", method: http.MethodPost, path: "/api/host.describe", contentType: "application/json", body: `{"rpcId":"salvage"}`,
-			wantStatus: http.StatusOK, wantRPCID: "salvage", wantCode: wire.ErrorBadRequest,
+			name:        "wrong media type",
+			method:      http.MethodPost,
+			path:        "/api/host.describe",
+			contentType: "text/plain",
+			body:        `{}`,
+			wantStatus:  http.StatusUnsupportedMediaType,
+			wantText:    "content type must be application/json",
 		},
 		{
-			name: "path mismatch", method: http.MethodPost, path: "/api/host.describe", contentType: "application/json",
-			body:       `{"type":"client-request","rpcId":"r-2","method":"session.list","payload":{}}`,
-			wantStatus: http.StatusOK, wantRPCID: "r-2", wantCode: wire.ErrorBadRequest,
+			name:        "bad json",
+			method:      http.MethodPost,
+			path:        "/api/host.describe",
+			contentType: "application/json",
+			body:        `{oops`,
+			wantStatus:  http.StatusBadRequest,
+			wantText:    "body is not JSON",
 		},
 		{
-			name: "invalid method payload", method: http.MethodPost, path: "/api/host.describe", contentType: "application/json",
-			body:       `{"type":"client-request","rpcId":"r-3","method":"host.describe","payload":null}`,
-			wantStatus: http.StatusOK, wantRPCID: "r-3", wantCode: wire.ErrorBadRequest,
+			name:        "bad envelope sentinel",
+			method:      http.MethodPost,
+			path:        "/api/host.describe",
+			contentType: "application/json",
+			body:        `{"nope":true}`,
+			wantStatus:  http.StatusOK,
+			wantRPCID:   wire.InvalidRequestRPCID,
+			wantCode:    wire.ErrorBadRequest,
+		},
+		{
+			name:        "bad envelope salvages id",
+			method:      http.MethodPost,
+			path:        "/api/host.describe",
+			contentType: "application/json",
+			body:        `{"rpcId":"salvage"}`,
+			wantStatus:  http.StatusOK,
+			wantRPCID:   "salvage",
+			wantCode:    wire.ErrorBadRequest,
+		},
+		{
+			name:        "path mismatch",
+			method:      http.MethodPost,
+			path:        "/api/host.describe",
+			contentType: "application/json",
+			body:        `{"type":"client-request","rpcId":"r-2","method":"session.list","payload":{}}`,
+			wantStatus:  http.StatusOK,
+			wantRPCID:   "r-2",
+			wantCode:    wire.ErrorBadRequest,
+		},
+		{
+			name:        "invalid method payload",
+			method:      http.MethodPost,
+			path:        "/api/host.describe",
+			contentType: "application/json",
+			body:        `{"type":"client-request","rpcId":"r-3","method":"host.describe","payload":null}`,
+			wantStatus:  http.StatusOK,
+			wantRPCID:   "r-3",
+			wantCode:    wire.ErrorBadRequest,
 		},
 	}
 
@@ -113,11 +175,11 @@ func TestUnaryCarrierContract(t *testing.T) {
 
 func TestUnaryCarrierAcceptsMultiSegmentRemoteEndpoint(t *testing.T) {
 	t.Parallel()
-	methods := apiproxy.NewCatalog()
-	operation := func(context.Context, apiproxy.Request[struct{}]) (apiproxy.Outcome[string], error) {
-		return apiproxy.OK("compact"), nil
+	methods := rpc.NewCatalog()
+	operation := func(context.Context, rpc.Request[struct{}]) (rpc.Outcome[string], error) {
+		return rpc.OK("compact"), nil
 	}
-	if err := apiproxy.RegisterUnary(methods, "commands/list", apiproxy.DecodeObject[struct{}], operation); err != nil {
+	if err := rpc.RegisterUnary(methods, "commands/list", rpc.DecodeObject[struct{}], operation); err != nil {
 		t.Fatal(err)
 	}
 	carrier, err := NewHTTPHost(HTTPConfig{}, methods, idleEventSource())
@@ -146,12 +208,12 @@ func TestUnaryCarrierAcceptsMultiSegmentRemoteEndpoint(t *testing.T) {
 
 func TestUnaryCarrierCompressesLargeAPIResponses(t *testing.T) {
 	t.Parallel()
-	methods := apiproxy.NewCatalog()
+	methods := rpc.NewCatalog()
 	largeValue := strings.Repeat("history-chunk-", 200)
-	operation := func(context.Context, apiproxy.Request[struct{}]) (apiproxy.Outcome[string], error) {
-		return apiproxy.OK(largeValue), nil
+	operation := func(context.Context, rpc.Request[struct{}]) (rpc.Outcome[string], error) {
+		return rpc.OK(largeValue), nil
 	}
-	if err := apiproxy.RegisterUnary(methods, "session.history", apiproxy.DecodeObject[struct{}], operation); err != nil {
+	if err := rpc.RegisterUnary(methods, "session.history", rpc.DecodeObject[struct{}], operation); err != nil {
 		t.Fatal(err)
 	}
 	carrier, err := NewHTTPHost(HTTPConfig{}, methods, idleEventSource())
@@ -202,8 +264,10 @@ func TestFrontendHandlesOnlyUnownedBrowserRoutes(t *testing.T) {
 		responseWriter.WriteHeader(http.StatusOK)
 		_, _ = responseWriter.Write([]byte("frontend"))
 	})
-	methods := apiproxy.NewCatalog()
-	carrier, err := NewHTTPHost(HTTPConfig{Frontend: frontendHandler}, methods, idleEventSource())
+	methods := rpc.NewCatalog()
+	carrier, err := NewHTTPHost(HTTPConfig{
+		Frontend: frontendHandler,
+	}, methods, idleEventSource())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +300,11 @@ func TestRespondCarrierContract(t *testing.T) {
 			body:       `{"type":"client-response","rpcId":"unknown","result":{"ok":true,"value":null}}`,
 			wantReason: wire.ReceiptNotPending,
 		},
-		{name: "malformed response", body: `{"type":"client-request"}`, wantReason: wire.ReceiptBadResponse},
+		{
+			name:       "malformed response",
+			body:       `{"type":"client-request"}`,
+			wantReason: wire.ReceiptBadResponse,
+		},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -258,8 +326,8 @@ func TestRespondCarrierContract(t *testing.T) {
 
 func TestRespondCarrierAcceptsPendingResponse(t *testing.T) {
 	t.Parallel()
-	methods := apiproxy.NewCatalog()
-	waiting, err := apiproxy.RegisterPendingResponse(methods, "pending-http", func(result wire.RPCResult) (string, bool) {
+	methods := rpc.NewCatalog()
+	waiting, err := rpc.RegisterPendingResponse(methods, "pending-http", func(result wire.RPCResult) (string, bool) {
 		if !result.OK || result.Error != nil {
 			return "", false
 		}
@@ -297,9 +365,9 @@ func TestRespondCarrierAcceptsPendingResponse(t *testing.T) {
 
 func TestRespondTechnicalFailureIsHTTP500AndRemainsPending(t *testing.T) {
 	t.Parallel()
-	methods := apiproxy.NewCatalog()
+	methods := rpc.NewCatalog()
 	var first atomic.Bool
-	waiting, err := apiproxy.RegisterPendingResponse(methods, "pending-http-failure", func(result wire.RPCResult) (string, bool) {
+	waiting, err := rpc.RegisterPendingResponse(methods, "pending-http-failure", func(result wire.RPCResult) (string, bool) {
 		if first.CompareAndSwap(false, true) {
 			panic("response decoder crashed")
 		}
@@ -344,8 +412,10 @@ func TestRespondTechnicalFailureIsHTTP500AndRemainsPending(t *testing.T) {
 
 func TestPrivilegedMethodsRemainLoopbackOnlyOnTrustedHost(t *testing.T) {
 	t.Parallel()
-	methods := apiproxy.NewCatalog()
-	carrier, err := NewHTTPHost(HTTPConfig{TrustedHosts: []string{"harness.internal"}}, methods, idleEventSource())
+	methods := rpc.NewCatalog()
+	carrier, err := NewHTTPHost(HTTPConfig{
+		TrustedHosts: []string{"harness.internal"},
+	}, methods, idleEventSource())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,17 +450,19 @@ func TestPrivilegedMethodsRemainLoopbackOnlyOnTrustedHost(t *testing.T) {
 
 func TestCatalogMethodsNeededByRemoteClientAreNotPrivileged(t *testing.T) {
 	t.Parallel()
-	methods := apiproxy.NewCatalog()
-	operation := func(context.Context, apiproxy.Request[struct{}]) (apiproxy.Outcome[struct{}], error) {
-		return apiproxy.OK(struct{}{}), nil
+	methods := rpc.NewCatalog()
+	operation := func(context.Context, rpc.Request[struct{}]) (rpc.Outcome[struct{}], error) {
+		return rpc.OK(struct{}{}), nil
 	}
 	remoteMethods := []string{"agentPreset.list", "agentPreset.select", "llm.providers", "llm.models"}
 	for _, method := range remoteMethods {
-		if err := apiproxy.RegisterUnary(methods, method, apiproxy.DecodeObject[struct{}], operation); err != nil {
+		if err := rpc.RegisterUnary(methods, method, rpc.DecodeObject[struct{}], operation); err != nil {
 			t.Fatal(err)
 		}
 	}
-	carrier, err := NewHTTPHost(HTTPConfig{TrustedHosts: []string{"harness.internal"}}, methods, idleEventSource())
+	carrier, err := NewHTTPHost(HTTPConfig{
+		TrustedHosts: []string{"harness.internal"},
+	}, methods, idleEventSource())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,11 +483,11 @@ func TestCatalogMethodsNeededByRemoteClientAreNotPrivileged(t *testing.T) {
 
 func TestPrivilegedMethodIsAvailableOnLoopback(t *testing.T) {
 	t.Parallel()
-	methods := apiproxy.NewCatalog()
-	operation := func(context.Context, apiproxy.Request[struct{}]) (apiproxy.Outcome[struct{}], error) {
-		return apiproxy.OK(struct{}{}), nil
+	methods := rpc.NewCatalog()
+	operation := func(context.Context, rpc.Request[struct{}]) (rpc.Outcome[struct{}], error) {
+		return rpc.OK(struct{}{}), nil
 	}
-	if err := apiproxy.RegisterUnary(methods, "settings.describe", apiproxy.DecodeObject[struct{}], operation); err != nil {
+	if err := rpc.RegisterUnary(methods, "settings.describe", rpc.DecodeObject[struct{}], operation); err != nil {
 		t.Fatal(err)
 	}
 	carrier, err := NewHTTPHost(HTTPConfig{}, methods, idleEventSource())
@@ -436,15 +508,17 @@ func TestPrivilegedMethodIsAvailableOnLoopback(t *testing.T) {
 func TestUnaryRequestCancellationReachesProvider(t *testing.T) {
 	t.Parallel()
 	started := make(chan struct{})
-	methods := apiproxy.NewCatalog()
-	operation := func(requestContext context.Context, _ apiproxy.Request[struct{}]) (apiproxy.Outcome[struct{}], error) {
+	methods := rpc.NewCatalog()
+	operation := func(requestContext context.Context, _ rpc.Request[struct{}]) (rpc.Outcome[struct{}], error) {
 		close(started)
 		<-requestContext.Done()
-		return apiproxy.Fail[struct{}](wire.RPCError{
-			Code: wire.ErrorCancelled, Message: "cancelled", Details: json.RawMessage(`{}`),
+		return rpc.Fail[struct{}](wire.RPCError{
+			Code:    wire.ErrorCancelled,
+			Message: "cancelled",
+			Details: json.RawMessage(`{}`),
 		}), nil
 	}
-	if err := apiproxy.RegisterUnary(methods, "test.wait", apiproxy.DecodeObject[struct{}], operation); err != nil {
+	if err := rpc.RegisterUnary(methods, "test.wait", rpc.DecodeObject[struct{}], operation); err != nil {
 		t.Fatal(err)
 	}
 	carrier, err := NewHTTPHost(HTTPConfig{}, methods, idleEventSource())
@@ -476,14 +550,16 @@ func TestUnaryRequestCancellationReachesProvider(t *testing.T) {
 
 func TestBodyLimit(t *testing.T) {
 	t.Parallel()
-	methods := apiproxy.NewCatalog()
+	methods := rpc.NewCatalog()
 	source := apiproxy.HostDescriptionFunc(func(context.Context) (apiproxy.HostDescription, error) {
 		return apiproxy.HostDescription{}, nil
 	})
 	if err := apiproxy.RegisterHostDescribe(methods, source); err != nil {
 		t.Fatal(err)
 	}
-	carrier, err := NewHTTPHost(HTTPConfig{MaxBodyBytes: 8}, methods, idleEventSource())
+	carrier, err := NewHTTPHost(HTTPConfig{
+		MaxBodyBytes: 8,
+	}, methods, idleEventSource())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -498,7 +574,7 @@ func TestBodyLimit(t *testing.T) {
 
 func TestTechnicalProviderFailureIsHTTP500(t *testing.T) {
 	t.Parallel()
-	methods := apiproxy.NewCatalog()
+	methods := rpc.NewCatalog()
 	source := apiproxy.HostDescriptionFunc(func(context.Context) (apiproxy.HostDescription, error) {
 		return apiproxy.HostDescription{}, errors.New("impl crashed")
 	})
@@ -551,10 +627,13 @@ func (crashingDispatcher) Respond(context.Context, wire.ClientResponse) (wire.RP
 
 func configuredHost(t *testing.T) *HTTPHost {
 	t.Helper()
-	methods := apiproxy.NewCatalog()
+	methods := rpc.NewCatalog()
 	source := apiproxy.HostDescriptionFunc(func(context.Context) (apiproxy.HostDescription, error) {
 		return apiproxy.HostDescription{
-			Version: "0.1.0-rc.5", CWD: "/workspace", AttachedSessions: 0, CanOpenPath: false,
+			Version:          "0.1.0-rc.5",
+			CWD:              "/workspace",
+			AttachedSessions: 0,
+			CanOpenPath:      false,
 		}, nil
 	})
 	if err := apiproxy.RegisterHostDescribe(methods, source); err != nil {

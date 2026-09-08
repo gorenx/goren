@@ -3,6 +3,10 @@ package loopactor_test
 import (
 	"context"
 	"errors"
+	"path/filepath"
+	"testing"
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/gorenx/goren/agent"
 	agentactor "github.com/gorenx/goren/agent/actor"
@@ -17,9 +21,6 @@ import (
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/log"
 	"github.com/tochemey/goakt/v4/reentrancy"
-	"path/filepath"
-	"testing"
-	"time"
 )
 
 type command struct {
@@ -137,12 +138,11 @@ func TestInboxCommandsCommitBeforeApplyingAndRetainStateOnFailure(t *testing.T) 
 	}
 	authorityDriver, authorityReplies := grainDriver(t, system, authority)
 	denied := request[agentactor.Initialized](t, driver, replies, agentactor.Initialize{
-		AgentID:     "conversation",
-		ModelConfig: dependencies,
-		Authority:   authority,
-		CreationID:  "current",
-		Session:     sessionRoute(t, system, "conversation"),
-		Prompt:      promptRoute(t, system, "conversation", dependencies),
+		AgentID:    "conversation",
+		Authority:  authority,
+		CreationID: "current",
+		Session:    sessionRoute(t, system, "conversation"),
+		Prompt:     promptRoute(t, system, "conversation", dependencies),
 	})
 	if denied.Err == nil {
 		t.Fatal("unreserved Agent initialized")
@@ -157,12 +157,11 @@ func TestInboxCommandsCommitBeforeApplyingAndRetainStateOnFailure(t *testing.T) 
 		t.Fatal(reserved.Err)
 	}
 	initialized := request[agentactor.Initialized](t, driver, replies, agentactor.Initialize{
-		AgentID:     "conversation",
-		ModelConfig: dependencies,
-		Authority:   authority,
-		CreationID:  "current",
-		Session:     sessionRoute(t, system, "conversation"),
-		Prompt:      promptRoute(t, system, "conversation", dependencies),
+		AgentID:    "conversation",
+		Authority:  authority,
+		CreationID: "current",
+		Session:    sessionRoute(t, system, "conversation"),
+		Prompt:     promptRoute(t, system, "conversation", dependencies),
 	})
 	if initialized.Err != nil {
 		t.Fatal(initialized.Err)
@@ -207,12 +206,11 @@ func TestInboxCommandsCommitBeforeApplyingAndRetainStateOnFailure(t *testing.T) 
 		t.Fatal(err)
 	}
 	reactivated := request[agentactor.Initialized](t, driver, replies, agentactor.Initialize{
-		AgentID:     "conversation",
-		ModelConfig: dependencies,
-		Authority:   authority,
-		CreationID:  "current",
-		Session:     sessionRoute(t, system, "conversation"),
-		Prompt:      promptRoute(t, system, "conversation", dependencies),
+		AgentID:    "conversation",
+		Authority:  authority,
+		CreationID: "current",
+		Session:    sessionRoute(t, system, "conversation"),
+		Prompt:     promptRoute(t, system, "conversation", dependencies),
 	})
 	if !errors.Is(reactivated.Err, agentregistry.ErrInstance) {
 		t.Fatalf("reactivated initialization = %v", reactivated.Err)
@@ -284,12 +282,11 @@ func TestCloseRetainsSessionUntilPendingInputIsCancelled(t *testing.T) {
 	})
 
 	denied := request[agentactor.Initialized](t, driver, replies, agentactor.Initialize{
-		AgentID:     "conversation",
-		ModelConfig: dependencies,
-		Authority:   authority,
-		CreationID:  "current",
-		Session:     sessionRoute(t, system, "conversation"),
-		Prompt:      dependencies,
+		AgentID:    "conversation",
+		Authority:  authority,
+		CreationID: "current",
+		Session:    sessionRoute(t, system, "conversation"),
+		Prompt:     dependencies,
 	})
 	if denied.Err == nil {
 		t.Fatal("unreserved Agent initialized")
@@ -301,8 +298,8 @@ func TestCloseRetainsSessionUntilPendingInputIsCancelled(t *testing.T) {
 		},
 		Storage:         backend,
 		SessionRegistry: fault,
-		ModelConfig:     dependencies,
 		PromptRegistry:  dependencies,
+		ModelConfig:     dependencies,
 		ToolsRegistry:   dependencies,
 		Timeout:         time.Second,
 	})

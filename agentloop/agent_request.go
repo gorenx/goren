@@ -39,7 +39,6 @@ func (subject *ReactLoopAgent) StartRequest() (modelrequest.RequestOperation, er
 			Step: stepNumber,
 		},
 		Prompt: captured.Prompt,
-		Config: subject.configuration.Config,
 		First:  !subject.headerLogged,
 	})
 	if err != nil {

@@ -1,9 +1,13 @@
 package connection
+import sessionframes "github.com/gorenx/goren/apiproxy/session/events"
+
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	rpc "github.com/gorenx/goren/apiproxy/rpc"
+	"github.com/gorenx/goren/apiproxy/stream"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -22,9 +26,13 @@ func TestWebSocketDownlinksCarryIndependentStreamsAndCancelSources(t *testing.T)
 	muxCancelled := make(chan struct{})
 	hostCancelled := make(chan struct{})
 	streams, err := apiproxy.NewEventStreams(
-		func(requestContext context.Context, emit func(apiproxy.StreamRequest[apiproxy.MuxFrame]) error) error {
-			if err := emit(apiproxy.StreamRequest[apiproxy.MuxFrame]{
-				RPCID: "mux-1", Payload: apiproxy.SessionSubscribedFrame{SessionID: "session-1", LastSeq: 4},
+		func(requestContext context.Context, emit func(stream.Request[stream.MuxFrame]) error) error {
+			if err := emit(stream.Request[stream.MuxFrame]{
+				RPCID: "mux-1",
+				Payload: sessionframes.SubscribedFrame{
+					SessionID: "session-1",
+					LastSeq:   4,
+				},
 			}); err != nil {
 				return err
 			}
@@ -32,10 +40,12 @@ func TestWebSocketDownlinksCarryIndependentStreamsAndCancelSources(t *testing.T)
 			close(muxCancelled)
 			return nil
 		},
-		func(requestContext context.Context, emit func(apiproxy.StreamRequest[apiproxy.HostFrame]) error) error {
-			if err := emit(apiproxy.StreamRequest[apiproxy.HostFrame]{
-				RPCID: "host-1", Payload: apiproxy.HostRemoteEventFrame{
-					Event: "commands/change", Args: []json.RawMessage{},
+		func(requestContext context.Context, emit func(stream.Request[stream.HostFrame]) error) error {
+			if err := emit(stream.Request[stream.HostFrame]{
+				RPCID: "host-1",
+				Payload: apiproxy.HostRemoteEventFrame{
+					Event: "commands/change",
+					Args:  []json.RawMessage{},
 				},
 			}); err != nil {
 				return err
@@ -75,7 +85,10 @@ func TestWebSocketDownlinkRejectsClientMessages(t *testing.T) {
 		close(cancelled)
 		return nil
 	}
-	carrier := webSocketTestHost(t, testEventSource{muxStream: idleStream, hostStream: idleStream})
+	carrier := webSocketTestHost(t, testEventSource{
+		muxStream:  idleStream,
+		hostStream: idleStream,
+	})
 	server := startWebSocketTestServer(t, carrier)
 	socket := dialWebSocket(t, server.URL, wire.MuxEventsPath, nil)
 	writeContext, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -148,7 +161,9 @@ func TestWebSocketUpgradeUsesTrustFence(t *testing.T) {
 	t.Parallel()
 	carrier := webSocketTestHost(t, idleEventSource())
 	server := startWebSocketTestServer(t, carrier)
-	header := http.Header{"Origin": []string{"http://evil.example"}}
+	header := http.Header{
+		"Origin": []string{"http://evil.example"},
+	}
 	dialContext, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	socket, response, err := websocket.Dial(dialContext, webSocketURL(server.URL, wire.MuxEventsPath), &websocket.DialOptions{
@@ -175,7 +190,10 @@ func TestWebSocketReconnectCreatesFreshStreamAfterOldSourceStops(t *testing.T) {
 		event, err := wire.NewRPCRequest(wire.RPCID("mux-"+string(rune('0'+current))), struct {
 			Type       string `json:"type"`
 			Generation int    `json:"generation"`
-		}{Type: "test/frame", Generation: current})
+		}{
+			Type:       "test/frame",
+			Generation: current,
+		})
 		if err != nil {
 			return err
 		}
@@ -190,7 +208,10 @@ func TestWebSocketReconnectCreatesFreshStreamAfterOldSourceStops(t *testing.T) {
 		<-requestContext.Done()
 		return nil
 	}
-	carrier := webSocketTestHost(t, testEventSource{muxStream: muxStream, hostStream: idleStream})
+	carrier := webSocketTestHost(t, testEventSource{
+		muxStream:  muxStream,
+		hostStream: idleStream,
+	})
 	server := startWebSocketTestServer(t, carrier)
 
 	firstSocket := dialWebSocket(t, server.URL, wire.MuxEventsPath, nil)
@@ -226,7 +247,10 @@ func TestWebSocketTeardownWaitsForSourceCleanup(t *testing.T) {
 		<-releaseCleanup
 		return nil
 	}
-	carrier := webSocketTestHost(t, testEventSource{muxStream: idleStream, hostStream: idleStream})
+	carrier := webSocketTestHost(t, testEventSource{
+		muxStream:  idleStream,
+		hostStream: idleStream,
+	})
 	server := httptest.NewServer(carrier)
 	t.Cleanup(server.Close)
 	socket := dialWebSocket(t, server.URL, wire.MuxEventsPath, nil)
@@ -265,7 +289,10 @@ func TestWebSocketTeardownHonorsDeadline(t *testing.T) {
 		<-releaseCleanup
 		return nil
 	}
-	carrier := webSocketTestHost(t, testEventSource{muxStream: idleStream, hostStream: idleStream})
+	carrier := webSocketTestHost(t, testEventSource{
+		muxStream:  idleStream,
+		hostStream: idleStream,
+	})
 	server := httptest.NewServer(carrier)
 	t.Cleanup(server.Close)
 	socket := dialWebSocket(t, server.URL, wire.MuxEventsPath, nil)
@@ -290,7 +317,10 @@ func TestWebSocketSlowClientBackpressuresSourceAndShutdownUnblocksWrite(t *testi
 	largeEvent, err := wire.NewRPCRequest("large-frame", struct {
 		Type string `json:"type"`
 		Data string `json:"data"`
-	}{Type: "test/large", Data: strings.Repeat("x", 4<<20)})
+	}{
+		Type: "test/large",
+		Data: strings.Repeat("x", 4<<20),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +346,10 @@ func TestWebSocketSlowClientBackpressuresSourceAndShutdownUnblocksWrite(t *testi
 		<-requestContext.Done()
 		return nil
 	}
-	carrier := webSocketTestHost(t, testEventSource{muxStream: muxStream, hostStream: idleStream})
+	carrier := webSocketTestHost(t, testEventSource{
+		muxStream:  muxStream,
+		hostStream: idleStream,
+	})
 	server := httptest.NewServer(carrier)
 	t.Cleanup(server.Close)
 	socket := dialWebSocket(t, server.URL, wire.MuxEventsPath, nil)
@@ -350,7 +383,10 @@ func TestWebSocketRepeatedConnectDisconnectLeavesNoOwnedResources(t *testing.T) 
 		<-requestContext.Done()
 		return nil
 	}
-	carrier := webSocketTestHost(t, testEventSource{muxStream: idleStream, hostStream: idleStream})
+	carrier := webSocketTestHost(t, testEventSource{
+		muxStream:  idleStream,
+		hostStream: idleStream,
+	})
 	server := httptest.NewServer(carrier)
 	t.Cleanup(server.Close)
 
@@ -388,9 +424,12 @@ func TestWebSocketRepeatedConnectDisconnectLeavesNoOwnedResources(t *testing.T) 
 
 func webSocketTestHost(t *testing.T, source EventSource) *HTTPHost {
 	t.Helper()
-	methods := apiproxy.NewCatalog()
+	methods := rpc.NewCatalog()
 	descriptionSource := apiproxy.HostDescriptionFunc(func(context.Context) (apiproxy.HostDescription, error) {
-		return apiproxy.HostDescription{Version: "test", CWD: "/workspace"}, nil
+		return apiproxy.HostDescription{
+			Version: "test",
+			CWD:     "/workspace",
+		}, nil
 	})
 	if err := apiproxy.RegisterHostDescribe(methods, descriptionSource); err != nil {
 		t.Fatal(err)

@@ -84,8 +84,8 @@ func TestRegistryClosesDescendantsBeforeParentAndRetriesPendingChild(t *testing.
 			Parent:          parent,
 			Storage:         backend,
 			SessionRegistry: directory,
-			ModelConfig:     dependencies,
 			PromptRegistry:  dependencies,
+			ModelConfig:     dependencies,
 			ToolsRegistry:   dependencies,
 			Timeout:         time.Second,
 		}); result.Err != nil {
@@ -243,11 +243,6 @@ func TestRegistryClosesAuthorizedCreationAfterConfigurationFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	execution, err := goakt.GrainOf[*loopactor.Grain](ctx, system, loopactor.RuntimeName(string(creation.AgentID)), goakt.WithLongLivedGrain())
-	if err != nil {
-		t.Fatal(err)
-	}
-	driver, replies := grainDriver(t, system, execution)
 
 	prompt, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
 		Content: []agentmessage.ContentBlock{agentmessage.NewTextBlock("preserve pending input")},
@@ -272,24 +267,21 @@ func TestRegistryClosesAuthorizedCreationAfterConfigurationFails(t *testing.T) {
 	if committed.Err != nil {
 		t.Fatal(committed.Err)
 	}
-	// Configuration resolution fails after the Registry claim and Session restore.
+	// LLM initialization fails before executor activation; Session facts survive cleanup.
 	configDriver, configReplies := grainDriver(t, system, dependencies)
 	request[struct{}](t, configDriver, configReplies, failConfiguration{})
 	if result := request[agentregistry.Ready](t, authorityDriver, authorityReplies, agentregistry.CreateAgent{
 		Creation:        creation,
 		Storage:         backend,
 		SessionRegistry: directory,
-		ModelConfig:     dependencies,
 		PromptRegistry:  dependencies,
+		ModelConfig:     dependencies,
 		ToolsRegistry:   dependencies,
 		Timeout:         time.Second,
 	}); result.Err == nil {
 		t.Fatal("failed configuration initialized Agent")
 	}
 
-	if result := request[loopactor.Inbox](t, driver, replies, loopactor.GetInbox{}); result.Err != nil || len(result.NextTurn) != 1 {
-		t.Fatal("failed initialization lost restored input")
-	}
 	if result := request[agentactor.Closed](t, authorityDriver, authorityReplies, agentregistry.CloseAgent{
 		Creation: creation,
 	}); result.Err != nil {

@@ -3,6 +3,7 @@ package llmactor
 import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/llm/modelconfig"
+	"github.com/gorenx/goren/session"
 )
 
 // InitializeModels supplies validated initial business state from composition.
@@ -37,4 +38,10 @@ type Models struct {
 type AgentConfiguration struct {
 	Resolved modelconfig.Resolved
 	Err      error
+}
+
+// InitializeAgent restores missing configuration before Registry admits the Agent.
+type InitializeAgent struct {
+	AgentID string
+	Events  []session.Event
 }

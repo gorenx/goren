@@ -2,6 +2,7 @@ package apiproxy
 
 import (
 	"context"
+	rpc "github.com/gorenx/goren/apiproxy/rpc"
 
 	boundcontract "github.com/gorenx/goren/subagent/bound"
 )
@@ -61,51 +62,51 @@ type BoundDefinitionValue struct {
 
 // BoundAPI owns the browser-facing global Definition methods.
 type BoundAPI interface {
-	List(context.Context, Request[BoundListRequest]) (Outcome[BoundListValue], error)
-	Tools(context.Context, Request[BoundToolsRequest]) (Outcome[BoundToolsValue], error)
-	Extensions(context.Context, Request[BoundExtensionsRequest]) (Outcome[BoundExtensionsValue], error)
-	Create(context.Context, Request[boundcontract.Creation]) (Outcome[BoundDefinitionValue], error)
-	Replace(context.Context, Request[boundcontract.Replacement]) (Outcome[BoundDefinitionValue], error)
+	List(context.Context, rpc.Request[BoundListRequest]) (rpc.Outcome[BoundListValue], error)
+	Tools(context.Context, rpc.Request[BoundToolsRequest]) (rpc.Outcome[BoundToolsValue], error)
+	Extensions(context.Context, rpc.Request[BoundExtensionsRequest]) (rpc.Outcome[BoundExtensionsValue], error)
+	Create(context.Context, rpc.Request[boundcontract.Creation]) (rpc.Outcome[BoundDefinitionValue], error)
+	Replace(context.Context, rpc.Request[boundcontract.Replacement]) (rpc.Outcome[BoundDefinitionValue], error)
 }
 
 // RegisterBoundAPI installs the complete global Bound Definition surface.
-func RegisterBoundAPI(methods *Catalog, gateway BoundAPI) error {
-	if err := RegisterUnary(
+func RegisterBoundAPI(methods *rpc.Catalog, gateway BoundAPI) error {
+	if err := rpc.RegisterUnary(
 		methods,
 		BoundListMethod,
-		DecodeObject[BoundListRequest],
+		rpc.DecodeObject[BoundListRequest],
 		gateway.List,
 	); err != nil {
 		return err
 	}
-	if err := RegisterUnary(
+	if err := rpc.RegisterUnary(
 		methods,
 		BoundToolsMethod,
-		DecodeObject[BoundToolsRequest],
+		rpc.DecodeObject[BoundToolsRequest],
 		gateway.Tools,
 	); err != nil {
 		return err
 	}
-	if err := RegisterUnary(
+	if err := rpc.RegisterUnary(
 		methods,
 		BoundExtensionsMethod,
-		DecodeObject[BoundExtensionsRequest],
+		rpc.DecodeObject[BoundExtensionsRequest],
 		gateway.Extensions,
 	); err != nil {
 		return err
 	}
-	if err := RegisterUnary(
+	if err := rpc.RegisterUnary(
 		methods,
 		BoundCreateMethod,
-		DecodeObject[boundcontract.Creation],
+		rpc.DecodeObject[boundcontract.Creation],
 		gateway.Create,
 	); err != nil {
 		return err
 	}
-	return RegisterUnary(
+	return rpc.RegisterUnary(
 		methods,
 		BoundReplaceMethod,
-		DecodeObject[boundcontract.Replacement],
+		rpc.DecodeObject[boundcontract.Replacement],
 		gateway.Replace,
 	)
 }

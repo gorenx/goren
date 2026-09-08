@@ -38,6 +38,9 @@ type Component struct {
 // Framework reactivation does not authorize a replacement business instance.
 type Resolve struct {
 	AgentID session.SessionID
+	// WaitReady shares the final result of an existing initialization. It does
+	// not create a missing lifetime or authorize a replacement activation.
+	WaitReady bool
 }
 
 // Ready contains routes from one completed creation. An error exposes no routes.

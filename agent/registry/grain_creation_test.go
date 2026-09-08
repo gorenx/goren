@@ -232,7 +232,7 @@ func TestCloseDuringInitializationWaitsAndDoesNotPublishReady(t *testing.T) {
 		t.Fatalf("closed before initialization settled: %+v", result)
 	default:
 	}
-	pending.Response(configactor.AgentConfiguration{})
+	pending.Response(configactor.Completion{})
 	result := <-results
 	if result.err != nil || !errors.Is(result.value.(agentregistry.Ready).Err, agent.ErrClosing) {
 		t.Fatal("closing creation published success", result)

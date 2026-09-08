@@ -11,6 +11,9 @@ import (
 // ErrBusy means an exclusive operation cannot start while another activity owns the Agent.
 var ErrBusy = errors.New("agent: an activity is already running")
 
+// ErrSteerUnavailable means queued input cannot enter the active turn.
+var ErrSteerUnavailable = errors.New("agent: current turn no longer accepts steering")
+
 // Status is the complete live lifecycle vocabulary. Disposal removes an
 // Agent from the Registry instead of adding a third status.
 type Status string

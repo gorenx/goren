@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	rpc "github.com/gorenx/goren/apiproxy/rpc"
 	"testing"
 
 	"github.com/gorenx/goren/apiproxy"
@@ -57,7 +58,7 @@ func TestBoundGatewayRegistersStrictDefinitionCommands(
 	capability := &boundDefinitionsStub{
 		definitions: []boundcontract.Definition{definitionValue},
 	}
-	methods := apiproxy.NewCatalog()
+	methods := rpc.NewCatalog()
 	if err := apiproxy.RegisterBoundAPI(
 		methods,
 		newBoundGateway(capability),
@@ -213,7 +214,7 @@ func TestBoundGatewayMapsOwnedDefinitionFailures(
 			} else {
 				capability.createErr = businessErr
 			}
-			methods := apiproxy.NewCatalog()
+			methods := rpc.NewCatalog()
 			if err := apiproxy.RegisterBoundAPI(
 				methods,
 				newBoundGateway(capability),
@@ -238,7 +239,7 @@ func TestBoundGatewayPropagatesUnownedFailure(
 	testingContext *testing.T,
 ) {
 	sentinel := errors.New("definition store unavailable")
-	methods := apiproxy.NewCatalog()
+	methods := rpc.NewCatalog()
 	if err := apiproxy.RegisterBoundAPI(
 		methods,
 		newBoundGateway(&boundDefinitionsStub{
