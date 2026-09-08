@@ -1,13 +1,11 @@
 package basic
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/compaction"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 )
@@ -60,35 +58,25 @@ type summarizationInput struct {
 	messages []agentmessage.Message
 }
 
-type summaryResult struct {
-	summary       []agentmessage.ContentBlock
-	rawOutput     []agentmessage.ContentBlock
-	llmStreamCall bool
-	provider      string
-	model         string
-	maxTokens     *int
-	usage         *llm.TokenUsage
+// Summary contains detached model output accepted as checkpoint text.
+type Summary struct {
+	Content []agentmessage.ContentBlock
+	Output  []agentmessage.ContentBlock
+	Usage   *llm.TokenUsage
 }
 
-// llmSummarizer owns the auxiliary LLM protocol, route selection, stream
-// assembly, and safe text projection. It does not mutate the Session.
-type llmSummarizer struct {
-	catalog    *policyCatalog
-	llmRuntime llm.LlmRuntime
+// Summarizer owns one summary's policy and output assembly, without I/O resources.
+type Summarizer struct {
+	catalog  *policyCatalog
+	assembly *llm.BlockAssembler
 }
 
-func newLLMSummarizer(catalog *policyCatalog) llmSummarizer {
-	return llmSummarizer{
-		catalog: catalog,
+// NewSummarizer captures the policy for one summary generation.
+func NewSummarizer(settings ResolvedConfig) *Summarizer {
+	return &Summarizer{
+		catalog:  newPolicyCatalog(settings),
+		assembly: llm.NewBlockAssembler(),
 	}
-}
-
-func (summarizer *llmSummarizer) bind(llmRuntime llm.LlmRuntime) {
-	summarizer.llmRuntime = llmRuntime
-}
-
-func (summarizer *llmSummarizer) release() {
-	summarizer.llmRuntime = nil
 }
 
 func buildSummarizationInput(
@@ -134,16 +122,19 @@ func buildSummarizationInput(
 	return input, nil
 }
 
-func (summarizer *llmSummarizer) summarize(
-	requestContext context.Context,
-	input summarizationInput,
-	ownerContext compaction.AgentContext,
-) (summaryResult, error) {
-	conversationTarget, targetFound, err := summarizationConversationTarget(
-		ownerContext,
-	)
+// Request prepares selected history and routing without invoking the LLM.
+func (summarizer *Summarizer) Request(
+	snapshot session.Snapshot,
+	selectedSeqs []int64,
+	fallback RouteTarget,
+) (llm.GenerateOptions, error) {
+	input, err := buildSummarizationInput(snapshot, selectedSeqs)
 	if err != nil {
-		return summaryResult{}, err
+		return llm.GenerateOptions{}, err
+	}
+	conversationTarget, targetFound, err := summarizationConversationTarget(snapshot, fallback)
+	if err != nil {
+		return llm.GenerateOptions{}, err
 	}
 	targetPolicy := summarizer.catalog.defaults()
 	if targetFound {
@@ -159,7 +150,7 @@ func (summarizer *llmSummarizer) summarize(
 		selectedTarget = conversationTarget
 	}
 	if selectedTarget.Provider == "" || selectedTarget.Model == "" {
-		return summaryResult{}, errors.New(
+		return llm.GenerateOptions{}, errors.New(
 			"no provider/model available for summarization: set both BasicCompactionConfig summarization fields, route one request, or set both Agent Context fields",
 		)
 	}
@@ -172,11 +163,11 @@ func (summarizer *llmSummarizer) summarize(
 		},
 	})
 	if err != nil {
-		return summaryResult{}, err
+		return llm.GenerateOptions{}, err
 	}
 	messages, err := agentmessage.CloneMessages(input.messages)
 	if err != nil {
-		return summaryResult{}, err
+		return llm.GenerateOptions{}, err
 	}
 	messages = append(messages, instruction)
 	maxTokens := targetPolicy.MaxTokens
@@ -189,50 +180,31 @@ func (summarizer *llmSummarizer) summarize(
 		Messages:  messages,
 		System:    cloneString(input.system),
 		Tools:     cloneToolSchemas(input.tools),
-		SessionID: string(ownerContext.Session.ID()),
+		SessionID: string(snapshot.Barrier.SessionID),
 		Purpose:   llm.PurposeCompaction,
 	}
-	flow, err := summarizer.llmRuntime.Stream(requestContext, callOptions)
-	if err != nil {
-		return summaryResult{}, err
-	}
-	if flow == nil {
-		return summaryResult{}, errors.New(
-			"compaction-basic: LLM Runtime returned a nil summary stream",
-		)
-	}
-	defer func() {
-		_ = flow.Close(context.Background())
-	}()
-	assembly := llm.NewBlockAssembler()
-	for {
-		if err := contextFailure(requestContext); err != nil {
-			return summaryResult{}, err
-		}
-		chunk, available, nextErr := flow.Next(requestContext)
-		if nextErr != nil {
-			if contextErr := contextFailure(requestContext); contextErr != nil {
-				return summaryResult{}, contextErr
-			}
-			return summaryResult{}, nextErr
-		}
-		if !available {
-			break
-		}
-		if err := assembly.Push(chunk); err != nil {
-			return summaryResult{}, err
-		}
-	}
+	return llm.CloneGenerateOptions(callOptions)
+}
+
+// Push consumes one delivered model chunk. The caller owns stream ordering and closure.
+func (summarizer *Summarizer) Push(chunk llm.StreamChunk) error {
+	return summarizer.assembly.Push(chunk)
+}
+
+// Result projects safe non-empty text while retaining raw output and usage.
+// Successful projection does not imply that the caller has closed its LLM resources.
+func (summarizer *Summarizer) Result() (Summary, error) {
+	assembly := summarizer.assembly
 	if err := validateSummaryFinish(assembly.FinishValue()); err != nil {
-		return summaryResult{}, err
+		return Summary{}, err
 	}
 	rawOutput, err := assembly.AssembledBlocks()
 	if err != nil {
-		return summaryResult{}, err
+		return Summary{}, err
 	}
 	summaryBlocks, err := summaryText(rawOutput)
 	if err != nil {
-		return summaryResult{}, err
+		return Summary{}, err
 	}
 	nonEmpty := false
 	for _, blockValue := range summaryBlocks {
@@ -247,44 +219,39 @@ func (summarizer *llmSummarizer) summarize(
 		}
 	}
 	if !nonEmpty {
-		return summaryResult{}, errors.New(
+		return Summary{}, errors.New(
 			"summarization produced no text summary content",
 		)
 	}
 	var usageValue *llm.TokenUsage
 	if observedUsage, present := assembly.UsageValue(); present {
-		usageValue = cloneUsage(&observedUsage)
+		usageValue = &observedUsage
 	}
-	return summaryResult{
-		summary:       summaryBlocks,
-		rawOutput:     rawOutput,
-		llmStreamCall: true,
-		provider:      selectedTarget.Provider,
-		model:         selectedTarget.Model,
-		maxTokens:     &maxTokens,
-		usage:         usageValue,
+	return Summary{
+		Content: summaryBlocks,
+		Output:  rawOutput,
+		Usage:   usageValue,
 	}, nil
 }
 
-func summarizationConversationTarget(
-	ownerContext compaction.AgentContext,
-) (RouteTarget, bool, error) {
-	selectedTarget, found, err := routedTarget(ownerContext.Session)
-	if err != nil || found {
-		return selectedTarget, found, err
+func summarizationConversationTarget(snapshot session.Snapshot, fallback RouteTarget) (RouteTarget, bool, error) {
+	header, err := session.LatestRequestHeader(snapshot.Events)
+	if err != nil {
+		return RouteTarget{}, false, err
 	}
-	if ownerContext.Provider == "" && ownerContext.Model == "" {
+	if header != nil && header.Config.Provider != "" && header.Config.Model != "" {
+		return RouteTarget{
+			Provider: header.Config.Provider,
+			Model:    header.Config.Model,
+		}, true, nil
+	}
+	if fallback.Provider == "" && fallback.Model == "" {
 		return RouteTarget{}, false, nil
 	}
-	if ownerContext.Provider == "" || ownerContext.Model == "" {
-		return RouteTarget{}, false, errors.New(
-			"compaction-basic: Agent Context provider and model must be set together",
-		)
+	if fallback.Provider == "" || fallback.Model == "" {
+		return RouteTarget{}, false, errors.New("compaction-basic: default provider and model must be set together")
 	}
-	return RouteTarget{
-		Provider: ownerContext.Provider,
-		Model:    ownerContext.Model,
-	}, true, nil
+	return fallback, true, nil
 }
 
 func validateSummaryFinish(reason llm.FinishReason) error {
@@ -371,4 +338,15 @@ func cloneToolSchemas(source []llm.ToolSchema) []llm.ToolSchema {
 		)
 	}
 	return detached
+}
+
+func cloneUsage(source *llm.TokenUsage) *llm.TokenUsage {
+	if source == nil {
+		return nil
+	}
+	detached := *source
+	detached.CacheReadTokens = cloneInt64(source.CacheReadTokens)
+	detached.CacheWriteTokens = cloneInt64(source.CacheWriteTokens)
+	detached.ReasoningTokens = cloneInt64(source.ReasoningTokens)
+	return &detached
 }

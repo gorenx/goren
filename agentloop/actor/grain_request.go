@@ -41,7 +41,7 @@ type modelResult struct {
 type modelInvocation struct {
 	input            requestModel
 	callID           llmactor.CallID
-	pendingID        llmactor.RequestID
+	models           *llmactor.Client
 	pendingOperation modelrequest.Operation
 	canceling        *modelCancellation
 	reply            *goakt.GrainReply
@@ -72,6 +72,11 @@ func (owner *Grain) startModel(gc *goakt.GrainContext, input requestModel) {
 		})
 		return
 	}
+	endpoint, err := llmactor.NewClient(input.router, input.replyTimeout)
+	if err != nil {
+		reply.Response(modelResult{err: err})
+		return
+	}
 	next, err := owner.business.StartRequest()
 	if err != nil {
 		reply.Response(modelResult{
@@ -82,8 +87,9 @@ func (owner *Grain) startModel(gc *goakt.GrainContext, input requestModel) {
 	input.requestRoutes = slices.Clone(input.requestRoutes)
 	input.recoveryRoutes = slices.Clone(input.recoveryRoutes)
 	invocation := &modelInvocation{
-		input: input,
-		reply: reply,
+		input:  input,
+		reply:  reply,
+		models: endpoint,
 	}
 	owner.model = invocation
 	owner.executeRequest(gc, invocation, next)

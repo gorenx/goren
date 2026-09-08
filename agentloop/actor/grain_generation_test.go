@@ -2,7 +2,7 @@ package loopactor
 
 import (
 	"context"
-	"strings"
+	"errors"
 	"testing"
 	"time"
 
@@ -157,7 +157,7 @@ func TestModelResultTimeoutClosesWithoutGeneratingAgain(t *testing.T) {
 					t.Fatal(err)
 				}
 				changed := payload.(Changed)
-				if changed.Err == nil || !strings.Contains(changed.Err.Error(), "acknowledgement timed out") {
+				if changed.Err == nil || !errors.Is(changed.Err, context.DeadlineExceeded) {
 					t.Fatalf("cancel result: %+v", changed)
 				}
 				select {
@@ -174,7 +174,7 @@ func TestModelResultTimeoutClosesWithoutGeneratingAgain(t *testing.T) {
 				t.Fatal(completed.err)
 			}
 			result := completed.payload.(modelResult)
-			if result.err == nil || !strings.Contains(result.err.Error(), "result timed out") {
+			if result.err == nil || !errors.Is(result.err, context.DeadlineExceeded) {
 				t.Fatalf("outcome: %+v", result)
 			}
 			closed := (<-commands).(llmactor.CloseCall)

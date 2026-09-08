@@ -8,11 +8,26 @@ import (
 )
 
 // region is one validated inclusive span of a particular Surface snapshot.
+// Event sequence numbers identify log entries; Surface positions define their
+// current visible order, which may differ from append order after replacement.
+// For Surface.Nodes = [2, 9, 5, 6], selecting [9, 5] gives start=9, end=5,
+// first=1, last=2, and sequences=[9, 5]. Both endpoints are included.
 type region struct {
-	start     int64
-	end       int64
-	first     int
-	last      int
+	// start is the first selected event's log sequence number (9 in the example).
+	// It identifies the replacement boundary; it is not a Surface slice index.
+	start int64
+	// end is the last selected event's log sequence number (5 in the example).
+	// It may be less than start because the range follows Surface order.
+	end int64
+	// first is the zero-based position of start in the captured Surface (1).
+	// It also locates the first matching node in that snapshot's token measurement.
+	first int
+	// last is the inclusive position of end in the captured Surface (2).
+	// Measurement.Nodes[first:last+1] prices exactly the selected span.
+	last int
+	// sequences is a detached copy of Surface.Nodes[first:last+1] ([9, 5]).
+	// It fixes the selected order for summary input, provenance, and commit-time
+	// stability checks; first/last must not be reused against a newer Surface.
 	sequences []int64
 }
 
@@ -110,11 +125,11 @@ func assertWholeSurfaceStable(
 	snapshot session.Snapshot,
 	source baseline,
 ) error {
-	if len(snapshot.Surface.Nodes) != len(source.measurement.Nodes) {
+	if len(snapshot.Surface.Nodes) != len(source.surface) {
 		return changedSurface("compaction: Session Surface changed during summarization")
 	}
 	for index, sequence := range snapshot.Surface.Nodes {
-		if sequence != source.measurement.Nodes[index].Seq {
+		if sequence != source.surface[index] {
 			return changedSurface("compaction: Session Surface changed during summarization")
 		}
 	}
@@ -140,14 +155,6 @@ func assertSelectedRegionStable(
 	}
 	if !equalSequences(current.sequences, source.selected.sequences) {
 		return changedSurface("compaction: selected span changed during summarization")
-	}
-	if len(current.sequences) != len(source.selectedNodes) {
-		return changedSurface("compaction: selected span was rewritten during summarization")
-	}
-	for index, sequence := range current.sequences {
-		if sequence != source.selectedNodes[index].Seq {
-			return changedSurface("compaction: selected span was rewritten during summarization")
-		}
 	}
 	return nil
 }

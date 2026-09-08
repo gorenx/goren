@@ -1,7 +1,6 @@
 package basic
 
 import (
-	"context"
 	"errors"
 
 	"github.com/gorenx/goren/compaction"
@@ -9,76 +8,24 @@ import (
 	"github.com/gorenx/goren/session"
 )
 
-const surfaceReadAttempts = 3
-
-// surfaceReading joins pricing and Surface facts from exactly one log revision.
-type surfaceReading struct {
-	snapshot    session.Snapshot
-	measurement tokenmeter.Measurement
-	boundaries  compaction.ToolPairingBoundaries
-}
-
-func readSurface(
-	requestContext context.Context,
-	conversation session.Context,
-	pricing tokenmeter.Meter,
-	current *tokenmeter.Measurement,
-) (surfaceReading, error) {
-	if conversation == nil {
-		return surfaceReading{}, errors.New("compaction-basic: reading Session is nil")
-	}
-	for attemptIndex := 0; attemptIndex < surfaceReadAttempts; attemptIndex++ {
-		var measurement tokenmeter.Measurement
-		if current != nil {
-			measurement = *current
-			current = nil
-		} else {
-			measured, err := pricing.Measure(requestContext, conversation, nil)
-			if err != nil {
-				return surfaceReading{}, err
-			}
-			measurement = measured
-		}
-		snapshot := conversation.Snapshot()
-		if measurement.LogRevision != snapshot.Barrier.NextSeq {
-			continue
-		}
-		if len(measurement.Nodes) != len(snapshot.Surface.Nodes) {
-			continue
-		}
-		matches := true
-		for nodeIndex, pricedNode := range measurement.Nodes {
-			if pricedNode.Seq != snapshot.Surface.Nodes[nodeIndex] {
-				matches = false
-				break
-			}
-		}
-		if !matches {
-			continue
-		}
-		boundaries, err := compaction.BuildToolPairingBoundaries(snapshot)
-		if err != nil {
-			return surfaceReading{}, err
-		}
-		return surfaceReading{
-			snapshot:    snapshot,
-			measurement: measurement,
-			boundaries:  boundaries,
-		}, nil
-	}
-	return surfaceReading{}, changedSurface(
-		"compaction: Session changed while reading the Surface",
-	)
-}
-
+// selectRange chooses a balanced Surface prefix from one snapshot and its prices.
+// A zero retention budget still retains the newest node and its tool pairing.
 func selectRange(
-	reading surfaceReading,
+	snapshot session.Snapshot,
+	measurement tokenmeter.Measurement,
 	retainTokens int64,
 ) (*compaction.SurfaceRange, error) {
 	if retainTokens < 0 {
 		return nil, errors.New("compaction-basic: retained token budget is negative")
 	}
-	pricedNodes := reading.measurement.Nodes
+	if err := validateMeasurement(snapshot, measurement); err != nil {
+		return nil, err
+	}
+	boundaries, err := compaction.BuildToolPairingBoundaries(snapshot)
+	if err != nil {
+		return nil, err
+	}
+	pricedNodes := measurement.Nodes
 	if len(pricedNodes) == 0 {
 		return nil, nil
 	}
@@ -99,8 +46,8 @@ func selectRange(
 		return nil, nil
 	}
 	for keepFrom > 0 {
-		balanced, err := reading.boundaries.CutBefore(
-			reading.snapshot.Surface.Nodes[keepFrom],
+		balanced, err := boundaries.CutBefore(
+			snapshot.Surface.Nodes[keepFrom],
 		)
 		if err != nil {
 			return nil, err
@@ -114,7 +61,29 @@ func selectRange(
 		return nil, nil
 	}
 	return &compaction.SurfaceRange{
-		Start: reading.snapshot.Surface.Nodes[0],
-		End:   reading.snapshot.Surface.Nodes[keepFrom-1],
+		Start: snapshot.Surface.Nodes[0],
+		End:   snapshot.Surface.Nodes[keepFrom-1],
 	}, nil
+}
+
+func validateMeasurement(snapshot session.Snapshot, measurement tokenmeter.Measurement) error {
+	if measurement.TotalTokens < 0 || measurement.TotalTokens > int64(1<<53-1) {
+		return errors.New("compaction-basic: invalid total token price")
+	}
+	if snapshot.Barrier.NextSeq != int64(len(snapshot.Events)) ||
+		measurement.LogRevision != snapshot.Barrier.NextSeq {
+		return errors.New("compaction-basic: selection requires prices from the same log revision")
+	}
+	if len(measurement.Nodes) != len(snapshot.Surface.Nodes) {
+		return errors.New("compaction-basic: selection requires prices for the complete Surface")
+	}
+	for index, priced := range measurement.Nodes {
+		if priced.Seq != snapshot.Surface.Nodes[index] {
+			return errors.New("compaction-basic: selection prices do not follow Surface order")
+		}
+		if priced.Tokens < 0 || priced.Tokens > int64(1<<53-1) {
+			return errors.New("compaction-basic: invalid Surface token price")
+		}
+	}
+	return nil
 }
