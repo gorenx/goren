@@ -118,4 +118,4 @@ Grain 仅持有调用回复、CallID、地址与取消资源，业务状态仍�
 Turn 开始由 grain_start.go 提交 turnStartWrite。失败保留业务候选，重试请求返回相同 TurnStart 并交给 Session 幂等提交；不再自行读取日志。确认原结果后才能准备 Step。测试覆盖普通提交、回复丢失、提交拒绝和已有候选重试，全部无需 Session Read。
 
 
-LLM Router 的结果等待由显式 replyTimeout 限定，计时任务只携带 CallID 和 RequestID。Generate 或 ReadChunk 超时进入同一调用的关闭流程，CloseCall 超时保留未释放状态；取消确认超时向取消请求方返回错误，不冒充资源关闭。`grain_generation_test.go` 验证这些情况以及迟到生成结果不被当作关闭结果。
+LLM Router 的结果等待由显式 replyTimeout 限定，计时任务只携带 CallID 和 RequestID。Generation 或 ReadChunk 超时进入同一调用的关闭流程，CloseCall 超时保留未释放状态；取消确认超时向取消请求方返回错误，不冒充资源关闭。`grain_generation_test.go` 验证这些情况以及迟到生成结果不被当作关闭结果。

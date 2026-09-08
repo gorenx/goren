@@ -32,7 +32,7 @@ ModelsClient 和 API Directory 是普通调用方适配器，SpawnPool 是装配
 flowchart TD
  C[装配层] -->|初始化配置与注册| L[LLM Grain]
  A[AgentLoop Actor] -->|解析 / 提交配置| L
- A -->|Generate / ReadChunk / CancelCall / CloseCall| R[固定 Router]
+ A -->|Generation / ReadChunk / CancelCall / CloseCall| R[固定 Router]
  R --> W[Worker]
  W -->|ReadCall / Select| L
  L --> M[Catalog / Registry / Configuration]
@@ -53,7 +53,7 @@ flowchart TD
 
 ## 生成、Session 与下发
 
-AgentLoop 解析配置并执行配置钩子后，将执行配置提交给 LLM Grain。Worker 收到 Generate 后一次读取配置与 Binding，异步解析精确参数并打开流，返回 GenerationStarted。AgentLoop 先提交实际请求参数，再发送 ReadChunk。
+AgentLoop 解析配置并执行配置钩子后，将执行配置提交给 LLM Grain。Worker 收到 Generation 后一次读取配置与 Binding，异步解析精确参数并打开流，返回 GenerationStarted。AgentLoop 先提交实际请求参数，再发送 ReadChunk。
 
 每次只读取一块。AgentLoop 将块提交为 AssistantChunked，收到 Session Committed 后才组装该块并读取下一块。流结束并成功关闭后，提交完整 AssistantMessaged。LLM 不写 Session，也不拥有 Turn/Step 或重试决策。
 
@@ -65,7 +65,7 @@ Session Committed 表示内存日志提交；磁盘持久化由 Flush 确认。A
 
 Call 只允许一次派发。没有 Adapter 时允许中间件提供替代流；进入终端才报告 NO_ADAPTER。Provider 打开/读取错误转为终止块，中间件错误保持 error。Close 失败保留资源；成功后删除 Call，Worker 继续复用。
 
-取消确认只表示处理了取消命令，不代表关闭完成。Worker 等待进行中的 I/O 退出后关闭资源。同一 Call 不能并发 Next/Close。迟到回复按 CallID/RequestID 排除；超时不能自动重复 Generate。Agent 关闭不触发配置删除。
+取消确认只表示处理了取消命令，不代表关闭完成。Worker 等待进行中的 I/O 退出后关闭资源。同一 Call 不能并发 Next/Close。迟到回复按 CallID/RequestID 排除；超时不能自动重复 Generation。Agent 关闭不触发配置删除。
 
 ## 验证边界
 

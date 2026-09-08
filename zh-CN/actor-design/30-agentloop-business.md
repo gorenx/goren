@@ -31,7 +31,7 @@ Followup 进入 next-turn 并唤醒；Steer 进入 next-step 并唤醒；Inject 
 
 先提交 turn/start，再领取输入。首 Step 领取所有 next-step 加至多一个 next-turn；后续 Step 只领取 next-step。领取只能在持久化变更确认后生效，不能取消相邻未领取输入。
 
-领取后组装 Prompt 和运行上下文，再运行 agent/pre-step。源码传给中间件的 messages 是已领取消息；默认 next 的进入结果才附加生成的运行上下文。不能把中间件输入和默认结果混成同一列表。
+按本轮确认的顺序，领取后先运行完整 agent/pre-step，再读取新 Session、组装 Prompt 和运行上下文。源码原顺序在钩子之前派生上下文；此处明确调整，以免压缩改变 Surface 后仍使用旧上下文去重结果。钩子的输入与默认决策分别克隆领取消息，运行上下文在钩子完成后追加。
 
 拒绝产生 blocked 的无 Step Turn；首 Step 进入结果为空产生 completed 的无 Step Turn；已有终结结论且后续进入结果为空时不再开 Step。只有确认 step/start 后，才逐条提交进入消息并执行模型。已开 Step 必须进入 step/end 收尾；step/start 未提交成功不能伪造 step/end。
 
@@ -125,7 +125,7 @@ Agent 的中间件执行组件负责一次链调用，关联指定 Agent 的有�
 | InvokeRequestError / ContinueRequestError | 链执行组件与注册模块之间 | RequestErrorResolved |
 | RunTurnStopping | AgentLoop → 串行钩子执行 | 完成或 error |
 
-ResolvePreStep 携带 agent.PreStepInput 和默认 PreStepDecision，二者分开：输入是领取的原始消息；默认决策包含需要进入模型的运行上下文。ResolveRequest 携带 agent.RequestInput 和默认 CallConfig；ResolveRequestError 携带 agent.RequestFailure，默认不重试。结果分别封装该扩展点的业务值和 error，不使用总的 Result{Value any}。
+ResolvePreStep 携带 agent.PreStepInput 和默认 PreStepDecision，二者分开：输入是领取的原始消息；默认决策是领取消息的独立副本；运行上下文在钩子完成后准备。ResolveRequest 携带 agent.RequestInput 和默认 CallConfig；ResolveRequestError 携带 agent.RequestFailure，默认不重试。结果分别封装该扩展点的业务值和 error，不使用总的 Result{Value any}。
 
 Invoke 请求在 actor 信封中携带本次调用关联信息及 Continue 的技术路由。Continue 只标识所属调用，不允许注册模块自行提供“跳到第几个中间件”的索引；后续位置由链业务对象记录。关联信息不进入持久化事件，不充当 AgentID、CreationID 或新的业务配置身份。
 
@@ -172,7 +172,7 @@ A 收到 InvokePreStep 后，有两条基本路径：
 
 | 消费者 | 扩展点 | 当前接入证据 |
 | --- | --- | --- |
-| LLM Retry | agent/request-error | [consumer.go](../../llm/retry/consumer.go) 的 Manifest、Intercept 与 resolve |
+| LLM Retry | agent/request-error | [Recovery](../../llm/retry/recovery.go) 的恢复决策与 [Grain](../../llm/retry/actor/grain.go) 的异步编排 |
 | Compaction Basic | agent/pre-step、agent/request-error | [plugin.go](../../compaction/basic/plugin.go) 的 Manifest，受 automaticEnabled 控制 |
 | OneShot 描述信息 | Agent 局部 pre-step | [descriptor_middleware.go](../../subagent/internal/oneshot/descriptor_middleware.go)、[setup.go](../../subagent/internal/oneshot/setup.go) |
 | API 模型选择 | Agent 局部请求配置 | [model_selection_setup.go](../../apiproxy/session/model_selection_setup.go) 仍调用已删除的 Agent setup 契约 |
@@ -685,13 +685,21 @@ Prompt Runtime 只负责 section、运行上下文、变量和工具定义的组
 
 Step.Input.Messages 是本步通过 pre-step 的输入批次，不是整个 Session 历史。这些消息需要由 AgentLoop 提交到 Session 后，才会进入 Attempt 派生的模型 messages。每次重试必须重新读取历史，不能复用 Step 的输入批次或 Prompt 快照当作全部对话。
 
-运行上下文另有一条路径：RenderContextSections → VisibleContext.Message → pre-step 默认进入结果 → AgentLoop 提交 user/message → Session 历史。这里 Prompt 只提供上下文内容；是否生成上下文消息、何时提交及如何进入对话由 AgentLoop 决定。当前 VisibleContext 已有业务实现，这条主驱动接线尚未完成，不把单独存在的工具方法当作已接通。
+运行上下文另有一条路径：完整 PreStep → 新 Session 与 Prompt → RenderContextSections → VisibleContext.Message → Step 输入 → AgentLoop 提交 user/message → Session 历史。这里 Prompt 只提供上下文内容；是否生成上下文消息、何时提交及如何进入对话由 AgentLoop 决定。当前 VisibleContext 已有业务实现，这条主驱动接线尚未完成，不把单独存在的工具方法当作已接通。
 
 ## pre-step 准备的业务实现
 
-PreparePreStep 消费已经提交的领取消息、Session Snapshot 和 Prompt 结果；不向 Prompt 索取会话历史。ReactLoopAgent 在此生成可选运行上下文消息，输出 PreStep.Input（只含领取消息）和 PreStep.Default（可附加上下文）。方法不执行 I/O，错误时不安装准备状态。
+执行顺序为：领取输入并确认 → PreparePreStep → 完整中间件链 → AcceptPreStep → 读取最新 Session → Prompt.Assemble → PrepareStep → 提交 step/start 和输入消息。PreStep 不接收提前渲染的运行上下文；压缩或其他钩子修改 Session 后，后续上下文去重使用新快照。
 
-ReactLoopAgent 保存本次 Prompt 和工具定义版本。PrepareStep 只消费中间件返回的决策，不再由调用方重新传入 Prompt；进入时将本次准备转交 Step，拒绝或无 Step 结束时释放准备数据。实际 actor 的领取/组装/中间件请求接线仍未覆盖，本次不将这些业务方法描述为完整执行驱动。
+业务接口及状态由 ReactLoopAgent 统一拥有：
+
+- PreparePreStep() 返回 PreStep.Input 与 Default，二者分别克隆已确认领取的消息，不接收 Session 或 Prompt。成功后进入等待钩子决策阶段。
+- AcceptPreStep(agent.PreStepDecision) 返回是否继续准备输入。拒绝时由业务对象将 Turn 转为 blocked 并释放 preparation；进入时保存已克隆的中间件消息并等待上下文数据。非法决策与重复确认不改变状态。
+- PrepareStep(Preparation) 仅在中间件决策已接受后消费新 Session Snapshot、Prompt 和工具版本，派生可选运行上下文并追加到中间件消息之后，按既有空输入/Turn 结论规则决定是否创建 Step。Prompt 与工具版本直接交给 Step，不再提前存入 preparation。
+
+preparation 只持有领取提交、当前阶段和输入消息；阶段依次为领取未确认、钩子待调用、决策待确认、上下文待准备。它不持有框架地址、请求句柄或回调。Actor 根据业务返回决定是否读取上下文，仅负责请求、结果校验和提交，不解释拒绝或空输入的业务含义。
+
+该变更有意调整 Go 准备接口及中间件默认消息的语义；PreStepDecision.Messages 表示钩子决定进入的消息，系统运行上下文随后由 AgentLoop 追加。中间件仍可修改、添加或清空其返回消息，但不再通过覆盖默认消息列表来删除尚未生成的系统上下文。Session 事件和客户端协议字段不变，不保留旧准备入口。
 
 ## ReactLoopAgent 单一执行 owner
 
@@ -735,7 +743,7 @@ Step 准备的 Advance 同时接收取消事实：已确认提交仍照实应用
 
 | 边界 | 业务调用位置 | 现有异步请求 → 回复 | 无中间件时 |
 |---|---|---|---|
-| PreStep | 领取输入、准备运行上下文后，step/start 前 | ResolvePreStep → PreStepResolved | 返回传入的默认进入结果 |
+| PreStep | 领取输入后、准备运行上下文及 step/start 前 | ResolvePreStep → PreStepResolved | 返回传入的默认进入结果 |
 | Request | 模型路由校验和调用准备之前 | ResolveRequest → RequestResolved | 返回传入的默认配置 |
 | RequestError | 模型返回失败终止原因之后 | ResolveRequestError → RequestErrorResolved | 不重试 |
 | TurnStopping | 准备结束 Turn 时 | RunTurnStopping → TurnStoppingCompleted | 正常完成 |
@@ -862,9 +870,9 @@ Actor 根据已有 barrier 直接恢复 flush；否则提交固定结束事实�
 
 ## 删除 Step 操作解释协议
 
-StepOperation/StepCompletion 及 BeginStepPreparation/AdvanceStepPreparation 删除。PrepareInput 建立唯一 preparation：领取尚未确认、上下文待准备、准入待决定三种业务状态。ConfirmInput 接受精确领取提交并保存实际领取消息；PreparePreStep 只接受已确认领取，在内部使用这些消息组装默认决策，调用方不再供应 Claimed。PrepareStep 消费合法准入并创建 StateProposed 的 Step。
+StepOperation/StepCompletion 及 BeginStepPreparation/AdvanceStepPreparation 删除。PrepareInput 建立唯一 preparation：领取尚未确认、钩子待调用、准入待决定、上下文待准备四种业务阶段。ConfirmInput 接受精确领取提交并保存实际领取消息；PreparePreStep 只接受已确认领取，在内部使用这些消息组装默认决策，调用方不再供应 Claimed。AcceptPreStep 消费合法准入；PrepareStep 消费后续上下文数据并创建 StateProposed 的 Step。
 
-Actor 负责 Commit 领取、Read Session、请求 Prompt.Assemble、请求 pre-step 中间件、Commit step/start、逐条 Commit 用户消息的顺序。普通提交失败不能被推断成整批未提交；未确认领取或开始事实必须保留，禁止直接结束业务活动。取消后先确认实际写入，再结束准备；没有实际提交的读取/中间件结果不得开启 Step。
+Actor 负责 Commit 领取、请求 pre-step 中间件、Read Session、请求 Prompt.Assemble、Commit step/start、逐条 Commit 用户消息的顺序。普通提交失败不能被推断成整批未提交；未确认领取或开始事实必须保留，禁止直接结束业务活动。取消后先确认实际写入，再结束准备；没有实际提交的读取/中间件结果不得开启 Step。
 
 PrepareInput 重复调用、领取未确认就准备上下文、重复消费准入，都由业务状态机拒绝。Actor 的任务身份只隔离异步请求，不充当这些规则的替代品。
 

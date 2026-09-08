@@ -1,8 +1,8 @@
-# DeepSeek Provider Plugin
+# DeepSeek Provider
 
-`llm/deepseek` 是 LLM 领域公开、静态链接的内置 DeepSeek Harness `@deepseek-ai/dsh-llm-deepseek` Provider 包。它直接实现 Plugin 与 Adapter：Factory 负责严格配置和实例化，Plugin 负责取得 LLM/Credentials Service、发布 route 与配置目录，并在卸载时释放全部贡献；Adapter 把 provider-neutral `llm.GenerateOptions` 转换为 DeepSeek chat-completions 请求，再把 HTTP/SSE 响应归一化为 Harness `llm.StreamChunk`。
+`llm/deepseek` 实现 DeepSeek 配置解析、连接与凭据引用、模型目录和 HTTP/SSE Adapter。它不再实现 Plugin 或 Factory，不自行注册 Provider。装配层构造 Connection、Identity 和 Adapter，并向 LLM Grain 注册；Worker 调用 Adapter，业务流规则由 LLM Call 管理。
 
-该公开路径用于编译期注册、Provider 配置和定向复用，不把 DeepSeek wire vocabulary 提升为共享领域 contract，也不是第二套 LLM Runtime 或通用 OpenAI-compatible SDK。其他 Provider 仍应实现 `llm.Adapter` 等 owner-defined contract，不能依赖本包的 concrete transport。公共 LLM contract、Adapter Registry 和 RetryPolicy 类型由[`llm`](../README.zh-CN.md)拥有；默认重试执行由[`llmretry`](../retry/README.zh-CN.md)拥有。跨模块稳定设计见[Harness LLM Runtime 与 DeepSeek Provider](../../zh-CN/13-harness-llm-runtime-and-deepseek-provider.md)，实施证据只见[实施进度](../../zh-CN/08-implementation-progress.md)。
+公共契约见 [LLM](../README.zh-CN.md)，恢复策略执行见 [Retry](../retry/README.zh-CN.md)，Actor 设计见 [LLM 模块](../../zh-CN/actor-design/33-llm-module.md)，整体进度见 [实施计划](../../zh-CN/actor-design/12-implementation-plan.md)。供应商 wire DTO 和 SSE 细节保留在本包，不进入 Agent 或 Session 契约。
 
 ## 1. 源实现映射
 
@@ -25,7 +25,7 @@ Go 不复制 TypeScript `fetch`、Cordis Service、Zod/Schemastery 或 OpenAI SD
 本模块拥有：
 
 - canonical route `deepseek-official` 的 direct chat-completions Adapter；
-- canonical Plugin Factory、typed config decode、Plugin Service 依赖和贡献生命周期；
+- typed config decode、不可变连接参数和请求级凭据解析；
 - DeepSeek typed config 的严格 decode、默认值和 immutable `ConnectionOptions` snapshot；
 - model catalog、Provider metadata、exact model capability 与 Provider RetryPolicy snapshot；
 - Message、ToolSchema、thinking/reasoning、stop 和 purpose header 的 wire serialization；
@@ -51,7 +51,8 @@ Go 不复制 TypeScript `fetch`、Cordis Service、Zod/Schemastery 或 OpenAI SD
 | `config_codec.go` | omission/null/unknown field 的严格 JSON codec |
 | `config_resolve.go` | 环境优先级、默认值、组合约束和 atomic validation |
 | `model_catalog.go` | Provider metadata、model capability 和 RetryPolicy exposure |
-| `plugin.go` | Factory、Plugin、LLM/Credentials Service 依赖、route/directory handle 与 Dispose |
+| `connection.go` | 固定连接参数与凭据引用解析，不持有注册或 Actor 生命周期 |
+| `identity.go` | 安装身份的延迟读取与创建，不参与 Agent 配置 |
 | `adapter.go` | Adapter 构造、依赖注入和 lazy `Stream` 入口 |
 | `stream.go` | 单次 stream generation、first `Next` 初始化、terminal 和 `Close` |
 | `request.go` | credential/identity、request headers、send、timeout 和 SSE bridge |
@@ -69,32 +70,29 @@ Go 不复制 TypeScript `fetch`、Cordis Service、Zod/Schemastery 或 OpenAI SD
 
 ```mermaid
 flowchart TD
-    Assembly[Assembly registers Factory] --> Factory[DeepSeek Factory]
-    Factory -->|strict config and construct| Plugin[DeepSeek Plugin]
-    Plugin -->|Require LlmRuntime| Runtime[llm Runtime]
-    Plugin -->|Require Provider| Credentials[Credentials Provider]
-    Plugin -->|Register directory and adapter| Runtime
-    Agent[agentloop 或其他 LLM Consumer] -->|PrepareCall / Stream| Runtime
-    Runtime -->|GenerateOptions| Adapter[deepseek Adapter]
-    Adapter -->|resolve config and user id| Inputs[Launch environment and identity store]
-    Adapter -->|request-scoped resolver| Credentials
-    Adapter -->|POST chat/completions| API[DeepSeek API]
-    API -->|HTTP plus SSE bytes| Parser[SSE parser]
-    Parser -->|data payloads| Translator[DeepSeek translator]
-    Translator -->|llm.StreamChunk| Runtime
-    Runtime -->|normalized ChunkStream| Agent
-    Agent -->|failed attempt plus policy snapshot| Retry[llmretry Consumer]
+ A[装配层] --> C[Connection / Identity / Adapter]
+ A -->|注册 Adapter| G[LLM Grain]
+ W[LLM Worker] --> L[LLM Call]
+ L --> D[DeepSeek Adapter]
+ D --> C
+ C --> K[Credentials Provider]
+ D -->|HTTP| P[DeepSeek API]
+ P --> S[SSE parser]
+ S --> T[translator]
+ T -->|StreamChunk| L
+ L --> W
+ W -->|具名结果| Agent[AgentLoop]
 ```
 
-Assembly 只注册 statically linked Factory 并按服务配置选择实例。DeepSeek Factory/Plugin 是本模块自己的组合根：Plugin 声明并取得 `llm.LlmRuntime` 与 `credentials.Provider`，持有 configurable Provider 和 Adapter 的 registration handle。卸载时先释放 Adapter route，再释放目录；不销毁整个 LLM Runtime。
+Connection 与 Identity 是普通对象。注册由 LLM Registry 管理，现有调用持有固定 Binding；删除注册不关闭正在使用的流。Worker 经 Call 负责取消和关闭，不依赖 Provider Plugin Dispose。
 
 ## 5. 配置与请求 generation
 
-配置只保存 credential reference，不保存明文 API key。主要字段包括 `apiKeyEnv`、`baseURL`、`thinking`、`reasoningEffort`、`maxTokens`、`defaultContextWindow`、`models`、`streamIdleTimeoutMs` 和 `retryPolicy`。默认引用是 `DEEPSEEK_API_KEY`，由 Plugin 取得的 Credentials Provider 在每次请求开始时解析；默认 base URL 是 `https://api.deepseek.com`。Credentials precedence、LiveStore 与 Host API 由[22 Credentials 与 API Key 管理](../../zh-CN/22-credentials-and-api-key-management.md)拥有。
+配置只保存 credential reference，不保存明文 API key。主要字段包括 `apiKeyEnv`、`baseURL`、`thinking`、`reasoningEffort`、`maxTokens`、`defaultContextWindow`、`models`、`streamIdleTimeoutMs` 和 `retryPolicy`。默认引用是 `DEEPSEEK_API_KEY`，由 Connection 持有的 Credentials Provider 在每次请求开始时解析；默认 base URL 是 `https://api.deepseek.com`。Credentials precedence、LiveStore 与 Host API 由[22 Credentials 与 API Key 管理](../../zh-CN/22-credentials-and-api-key-management.md)拥有。
 
 ```mermaid
 sequenceDiagram
-    participant C as Plugin Factory
+    participant C as 装配层
     participant R as ResolveOptions
     participant A as Adapter Stream
     participant E as Launch environment and identity store
@@ -103,7 +101,7 @@ sequenceDiagram
 
     C->>R: strict Config plus launch environment
     R-->>C: immutable ConnectionOptions
-    C->>A: Plugin builds Adapter from named capability ports
+    C->>A: NewAdapter 传入具名依赖
     Note over A: Stream creation performs no network I/O
     A->>A: first Next starts one request generation
     A->>E: resolve ConnectionOptions and anonymous user id once
@@ -112,9 +110,9 @@ sequenceDiagram
     D-->>A: HTTP/SSE response
 ```
 
-同一次 stream 在首次 `Next` 时只解析一次 connection、credential 和 identity，此后保持该 generation。Plugin replacement 创建新的 immutable connection generation，不会让进行中的请求混用两个 endpoint、key 或 policy。
+同一次 stream 在首次 `Next` 时只解析一次 connection、credential 和 identity，此后保持该 generation。装配层替换注册时构造新的不可变连接参数，不会让进行中的请求混用两个 endpoint、key 或 policy。
 
-strict config 在 Plugin 创建前拒绝 unknown field、显式 `null`、空 credential reference、重复 model、越界整数、非法 thinking/effort 组合、非法 timeout 和 retry union。`baseURL` 的优先级是显式 config、启动环境 `DEEPSEEK_BASE_URL`、官方默认值；无法形成 HTTP request 的 endpoint 在第一次真实请求开始时失败。
+严格配置解析在 Connection 创建时拒绝 unknown field、显式 `null`、空 credential reference、重复 model、越界整数、非法 thinking/effort 组合、非法 timeout 和 retry union。`baseURL` 的优先级是显式 config、启动环境 `DEEPSEEK_BASE_URL`、官方默认值；无法形成 HTTP request 的 endpoint 在第一次真实请求开始时失败。
 
 ## 6. Serialization 与流转换
 
@@ -152,7 +150,7 @@ flowchart TD
 
 HTTP 和 provider error 被映射为结构化 `llm.LlmFailure`；Adapter 不解析自己的错误来重试。Runtime/Agent Loop 把失败送到 `agent/request-error`，再由 `llmretry` 执行 Provider policy。
 
-请求 context、单次 `Next` context 和 `ChunkStream.Close` 都会取消 owned operation 并关闭 response body。terminal finish 或 error 只发生一次；之后的 `Next` 返回 exhausted。Adapter/Plugin 卸载不取消其他 Adapter 或整个 LLM Service。
+请求 context、单次 `Next` context 和 `ChunkStream.Close` 都会取消 owned operation 并关闭 response body。terminal finish 或 error 只发生一次；之后的 `Next` 返回 exhausted。删除 Adapter 注册不取消其他 Adapter 的调用；每个已打开流仍由所属 Call 负责关闭。
 
 ## 8. 可复用 response recordings
 
@@ -167,8 +165,8 @@ HTTP 和 provider error 被映射为结构化 `llm.LlmFailure`；Adapter 不解�
 ## 9. 扩展规则
 
 - 新 DeepSeek wire field 先由固定源或真实脱敏响应证明，再进入私有 wire DTO 和 mapper；
-- 新 Provider 实现自己的 `llm.Adapter` Plugin，不向本包增加 vendor switch；
-- Credentials Service 由 Plugin 通过 typed Service dependency 取得；未来 Settings Service 只替换 live options 来源，不改变 Adapter 或 Agent—LLM contract；
+- 新 Provider 实现自己的 `llm.Adapter`，不向本包增加 vendor switch；
+- Credentials Provider 由装配层传给 Connection，Adapter 仅消费 APIKeyResolver；配置变更通过构造新的连接与注册实现，不让 Agent 依赖 Provider 细节；
 - transport instrumentation 通过 `RequestSender` 或 request boundary 注入，不让 domain/runtime 依赖 HTTP DTO；
 - RetryPolicy 仍随 Provider registration 暴露，执行逻辑不能回填本包；
 - 真实 endpoint smoke 必须显式使用环境 credential、自跳过且单独记录，deterministic recording 不能提升为 `Environment Verified`。

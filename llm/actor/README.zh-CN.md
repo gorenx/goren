@@ -12,8 +12,8 @@ sequenceDiagram
  participant R as Router
  participant W as Worker
  participant L as LLM Grain
- A->>R: Generate
- R->>W: Generate
+ A->>R: Generation
+ R->>W: Generation
  W->>L: ReadCall
  L-->>W: CallSnapshot
  Note over W: 异步解析参数并打开流
@@ -27,10 +27,12 @@ sequenceDiagram
  W-->>A: CallClosed
 ```
 
-Generate、ReadChunk、CancelCall、CloseCall 通过 CallID 固定路由，RequestID 区分操作，ReplyTo 指定结果接收者。取消与关闭分别确认。失败关闭保留同一 Call，不能重新生成。
+Generation、ReadChunk、CancelCall、CloseCall 通过 CallID 固定路由，RequestID 区分操作，ReplyTo 指定结果接收者。取消与关闭分别确认。失败关闭保留同一 Call，不能重新生成。
 
 模型查询仅包括 ListModels、ResolveModel、ResolveConfig，不创建 Call、不修改 Agent 配置。API 请求关联位于 apiproxy/modelquery，其他 Actor 直接接收 Worker 回复。不存在 LLM QueryGrain 或独立 Discovery 注册路径。
 
 GoAkt v4.5.3 的 TellGrain 等待处理确认，因此 Worker 在异步任务中投递结果；接收 Grain 使用 NoErr 确认。该确认不能替代具名业务结果。
 
 测试覆盖固定 Worker 复用、阻塞读取取消、失败关闭重试、配置与注册读取，以及 API 查询并发、期限和显式取消。生产装配和框架异常退出时的资源清理仍需完成。
+
+Generation 表示一次模型生成，Settings 明确选择 AgentConfig（读取该 Agent 已登记配置）或 Parameters（本次完整参数）。两者共用同一 Worker 调用流程；临时参数不写回 Agent 配置。未选择配置或参数非法时返回 GenerationStarted.Err，不分配 Call 资源。

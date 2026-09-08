@@ -50,11 +50,11 @@ ConfirmStepEnd 在候选副本上调用 Step.ConfirmEnd，再根据其结论推�
 
 ## Step 准备调用链
 
-业务层的 Step 操作解释协议已删除。PrepareInput 创建唯一 preparation；ConfirmInput 核对实际领取提交并保存领取消息；PreparePreStep 接收 Session 与 Prompt 数据后组装默认准入，PrepareStep 消费中间件决策。调用方不能再供应 Claimed 消息替换真实领取结果。
+业务层的 Step 操作解释协议已删除。PrepareInput 创建唯一 preparation；ConfirmInput 核对实际领取提交并保存领取消息；PreparePreStep 只用已领取消息生成默认准入；AcceptPreStep 保存中间件决定进入的消息；随后读取最新 Session 并组装 Prompt，PrepareStep 派生运行上下文并准备 Step。调用方不能再供应 Claimed 消息替换真实领取结果。
 
-准备状态只表示领取未确认、上下文待准备、准入待决定。重复领取、未确认就组装上下文、重复消费决策都由业务检查拒绝。AbandonPreparation 只能丢弃尚未使用且没有未确认写入的上下文。Step 开始结果不确定时保留 StateProposed，读取原请求之后的 Session 快照并调用 ReconcileStepStart。
+准备状态只表示领取未确认、钩子待调用、准入待决定、上下文待准备。重复领取、未确认就组装上下文、重复消费决策都由业务检查拒绝。AbandonPreparation 只能丢弃尚未使用且没有未确认写入的上下文。Step 开始结果不确定时保留 StateProposed，读取原请求之后的 Session 快照并调用 ReconcileStepStart。
 
-Actor 的 grain_step.go 直接请求领取提交、Session 快照、Prompt 组装、pre-step 中间件、Step 开始及逐条消息提交。等待 Prompt 和中间件时允许输入/取消，Session 写入保持串行。只在全部消息确认后调用 BeginRequest。该内部驱动已实现，用户输入到完整模型/工具循环的主驱动仍未接通。
+Actor 的 grain_step.go 依次请求领取提交、pre-step 中间件、Session 快照、Prompt 组装、Step 开始及逐条消息提交。等待 Prompt 和中间件时允许输入/取消，Session 写入保持串行。只在全部消息确认后调用 BeginRequest。该内部驱动已实现，用户输入到完整模型/工具循环的主驱动仍未接通。
 
 StartRequest 捕获当前 Step 并由 ReactLoopAgent 持有唯一 ModelRequest，只返回第一个操作。AdvanceRequest 消费具名完成值，RetryRequestClose 重试关闭；CompleteModel 从当前请求读取终态，成功转入工具或 Step 收尾后才释放引用。重复启动、运行中完成和关闭未确认的提前续步被拒绝。配置提案与恢复只由 ModelRequest 解释；旧 PrepareRequest/RequestProposal 已删除。Grain 当前单次 Attempt 入口尚未切换，业务接口完成不代表生产调度已接通。
 
