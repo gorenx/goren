@@ -111,9 +111,9 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 	case contextRead:
 		owner.preparePrompt(gc, input)
 	case promptAssembled:
-		owner.resolveStepAdmission(gc, input)
-	case admissionResolved:
 		owner.openStep(gc, input)
+	case admissionResolved:
+		owner.acceptStepAdmission(gc, input)
 	case stepRecovered:
 		owner.reconcileStep(gc, input)
 	case stepStarted:

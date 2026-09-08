@@ -4,9 +4,9 @@ import (
 	"errors"
 	"reflect"
 
-	"github.com/gorenx/goren/agent"
 	stepstate "github.com/gorenx/goren/agentloop/internal/step"
 	turnstate "github.com/gorenx/goren/agentloop/internal/turn"
+	"github.com/gorenx/goren/agentloop/internal/visiblecontext"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/systemprompt"
 )
@@ -29,9 +29,9 @@ func (subject *ReactLoopAgent) endStep(conclusion stepstate.StepResult, failure 
 	}, nil
 }
 
-// PrepareStep interprets admission without opening a durable Step. A nil draft
+// PrepareStep renders context after admission without opening a durable Step. A nil draft
 // means the Turn is settling and must proceed to its end boundary.
-func (subject *ReactLoopAgent) PrepareStep(decision agent.PreStepDecision) (*session.EventDraft, error) {
+func (subject *ReactLoopAgent) PrepareStep(provided Preparation) (*session.EventDraft, error) {
 	if failure := subject.Cancellation(); failure != nil {
 		return nil, failure
 	}
@@ -44,11 +44,11 @@ func (subject *ReactLoopAgent) PrepareStep(decision agent.PreStepDecision) (*ses
 			return nil, err
 		}
 		proposed := stepstate.Input{
-			Messages:     decision.Messages,
-			Prompt:       captured.Prompt,
-			ToolsVersion: captured.ToolsVersion,
+			Messages:     captured.Messages,
+			Prompt:       provided.Prompt,
+			ToolsVersion: provided.ToolsVersion,
 		}
-		if decision.Kind != agent.PreStepEnter || !reflect.DeepEqual(captured, proposed) {
+		if !reflect.DeepEqual(captured, proposed) {
 			return nil, errors.New("agentloop: pending Step input cannot be replaced")
 		}
 		draft, err := subject.step.StartDraft()
@@ -58,22 +58,35 @@ func (subject *ReactLoopAgent) PrepareStep(decision agent.PreStepDecision) (*ses
 	if err != nil {
 		return nil, err
 	}
-	if subject.preparing == nil || subject.preparing.state != decisionPending {
+	if subject.preparing == nil || subject.preparing.state != contextPending {
 		return nil, errors.New("agentloop: pre-step preparation is missing")
 	}
-	switch decision.Kind {
-	case agent.PreStepReject:
-		err := subject.current.EnterSettling(turnstate.TurnResultBlocked)
-		if err == nil {
-			subject.preparing = nil
-		}
+	if provided.ToolsVersion == 0 || provided.ToolsVersion != subject.toolsVersion {
+		return nil, systemprompt.ErrToolsVersion
+	}
+	if provided.Snapshot.Barrier.SessionID != subject.identifier ||
+		provided.Snapshot.Barrier.NextSeq != int64(len(provided.Snapshot.Events)) {
+		return nil, errors.New("agentloop: Step input requires the current Session snapshot")
+	}
+	prompt, err := provided.Prompt.Clone()
+	if err != nil {
 		return nil, err
-	case agent.PreStepEnter:
-	default:
-		return nil, errors.New("agentloop: unsupported pre-step decision")
+	}
+	sections, err := systemprompt.RenderContextSections(prompt)
+	if err != nil {
+		return nil, err
+	}
+	visible := visiblecontext.New(provided.Snapshot)
+	contextMessage, present, err := visible.Message(systemprompt.JoinContextSections(sections), sections)
+	if err != nil {
+		return nil, err
+	}
+	messages := subject.preparing.messages
+	if present {
+		messages = append(messages[:len(messages):len(messages)], contextMessage)
 	}
 	conclusion := subject.current.ResultValue()
-	if len(decision.Messages) == 0 {
+	if len(messages) == 0 {
 		if conclusion != turnstate.TurnResultNone && conclusion != turnstate.TurnResultContinue {
 			err := subject.current.EnterSettling(conclusion)
 			if err == nil {
@@ -93,13 +106,10 @@ func (subject *ReactLoopAgent) PrepareStep(decision agent.PreStepDecision) (*ses
 	if err != nil {
 		return nil, err
 	}
-	if subject.preparing.toolsVersion != subject.toolsVersion {
-		return nil, systemprompt.ErrToolsVersion
-	}
 	if err := proposed.Capture(stepstate.Input{
-		Messages:     decision.Messages,
-		Prompt:       subject.preparing.prompt,
-		ToolsVersion: subject.preparing.toolsVersion,
+		Messages:     messages,
+		Prompt:       prompt,
+		ToolsVersion: provided.ToolsVersion,
 	}); err != nil {
 		return nil, err
 	}

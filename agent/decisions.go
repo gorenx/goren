@@ -24,7 +24,8 @@ type PreStepInput struct {
 	Step     int64
 }
 
-// PreStepDecision decides whether and with which messages a step starts.
+// PreStepDecision selects admitted messages before AgentLoop prepares runtime context.
+// System context is derived from the post-hook Session snapshot and appended later.
 type PreStepDecision struct {
 	Kind     PreStepKind
 	Messages []agentmessage.UserMessage

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/gorenx/goren/llm"
@@ -88,7 +89,7 @@ func (worker *Worker) Receive(rc *goakt.ReceiveContext) {
 	case InitializeWorker:
 		var err error
 		if worker.routes.LLM != nil || input.LLM == nil {
-			err = errors.New("llm: worker requires one initialization with registry and configuration routes")
+			err = errors.New("llm: worker requires one initialization with an LLM route")
 		} else {
 			input.Middleware = slices.Clone(input.Middleware)
 			worker.routes = input
@@ -106,7 +107,7 @@ func (worker *Worker) Receive(rc *goakt.ReceiveContext) {
 		worker.cancelQuery(input)
 	case queryCompleted:
 		worker.queryResult(rc, input)
-	case Generate:
+	case Generation:
 		worker.generate(rc, input)
 	case ReadChunk:
 		worker.next(rc, input)
@@ -168,8 +169,22 @@ func (worker *Worker) run(rc *goakt.ReceiveContext, current *invocation, route D
 	}
 }
 
-func (worker *Worker) generate(rc *goakt.ReceiveContext, input Generate) {
+func (worker *Worker) generate(rc *goakt.ReceiveContext, input Generation) {
 	failure := validateDelivery(input.Delivery)
+	if failure == nil {
+		switch settings := input.Settings.(type) {
+		case AgentConfig:
+			if strings.TrimSpace(settings.AgentID) == "" {
+				failure = errors.New("llm: generation requires an Agent identity")
+			}
+		case Parameters:
+			settings = Parameters(llm.CloneCallConfig(llm.CallConfig(settings)))
+			input.Settings = settings
+			failure = llm.ValidateCallConfig(llm.CallConfig(settings))
+		default:
+			failure = errors.New("llm: generation requires a configuration choice")
+		}
+	}
 	if failure == nil && worker.routes.LLM == nil {
 		failure = errors.New("llm: worker is not initialized")
 	}
@@ -214,19 +229,46 @@ func (worker *Worker) generate(rc *goakt.ReceiveContext, input Generate) {
 	})
 }
 
-func prepareGeneration(ctx context.Context, system goakt.ActorSystem, routes InitializeWorker, input Generate) (*llm.Call, error) {
-	payload, err := system.AskGrain(ctx, routes.LLM, ReadCall{
-		AgentID: input.AgentID,
-	}, time.Minute)
-	if err != nil {
-		return nil, err
-	}
-	snapshot, ok := payload.(CallSnapshot)
-	if !ok {
-		return nil, errors.New("llm: invalid call snapshot")
-	}
-	if snapshot.Err != nil {
-		return nil, snapshot.Err
+func prepareGeneration(ctx context.Context, system goakt.ActorSystem, routes InitializeWorker, input Generation) (*llm.Call, error) {
+	var snapshot CallSnapshot
+	switch settings := input.Settings.(type) {
+	case AgentConfig:
+		payload, err := system.AskGrain(ctx, routes.LLM, ReadCall{
+			AgentID: settings.AgentID,
+		}, time.Minute)
+		if err != nil {
+			return nil, err
+		}
+		result, ok := payload.(CallSnapshot)
+		if !ok {
+			return nil, errors.New("llm: invalid call snapshot")
+		}
+		if result.Err != nil {
+			return nil, result.Err
+		}
+		snapshot = result
+	case Parameters:
+		explicit := llm.CallConfig(settings)
+		payload, err := system.AskGrain(ctx, routes.LLM, Select{
+			Provider: explicit.Provider,
+		}, time.Minute)
+		if err != nil {
+			return nil, err
+		}
+		result, ok := payload.(Selected)
+		if !ok {
+			return nil, errors.New("llm: invalid binding reply")
+		}
+		if result.Err != nil {
+			var failure *llm.LlmError
+			if !errors.As(result.Err, &failure) || failure.Code() != "NO_ADAPTER" {
+				return nil, result.Err
+			}
+		}
+		snapshot.Config = explicit
+		snapshot.Binding = result.Binding
+	default:
+		return nil, errors.New("llm: generation requires a configuration choice")
 	}
 	prepared, err := llm.NewCall(ctx, snapshot.Binding, snapshot.Config, routes.Middleware)
 	if err != nil {

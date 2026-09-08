@@ -19,7 +19,7 @@ import (
 type silentGeneration struct {
 	closeReply bool
 	commands   chan any
-	initial    llmactor.Generate
+	initial    llmactor.Generation
 }
 
 func (*silentGeneration) PreStart(*goakt.Context) error { return nil }
@@ -32,10 +32,10 @@ func (endpoint *silentGeneration) Receive(rc *goakt.ReceiveContext) {
 	input := envelope.Message()
 	endpoint.commands <- input
 	switch request := input.(type) {
-	case llmactor.Generate:
+	case llmactor.Generation:
 		endpoint.initial = request
 	case llmactor.CloseCall:
-		// A result from the expired Generate must not be interpreted as the
+		// A result from the expired Generation must not be interpreted as the
 		// response to CloseCall, even though both operations share a CallID.
 		_ = rc.ActorSystem().TellGrain(rc.Context(), request.ReplyTo, llmactor.GenerationStarted{
 			CallID:    request.CallID,
@@ -141,10 +141,10 @@ func TestModelResultTimeoutClosesWithoutGeneratingAgain(t *testing.T) {
 					err:     failure,
 				}
 			}()
-			var generated llmactor.Generate
+			var generated llmactor.Generation
 			select {
 			case command := <-commands:
-				generated = command.(llmactor.Generate)
+				generated = command.(llmactor.Generation)
 			case <-time.After(time.Second):
 				t.Fatal("generation was not sent")
 			}

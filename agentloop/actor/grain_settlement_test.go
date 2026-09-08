@@ -46,8 +46,9 @@ func (owner *settlementAgent) OnReceive(gc *goakt.GrainContext) {
 }
 
 type storageSetup struct {
-	history *session.Log
-	failure string
+	verifyPreStep bool
+	history       *session.Log
+	failure       string
 }
 
 type storageCounts struct {
@@ -61,9 +62,10 @@ type storageCounts struct {
 type readCounts struct{}
 
 type settlementStorage struct {
-	history *session.Log
-	failure string
-	counts  storageCounts
+	verifyPreStep bool
+	history       *session.Log
+	failure       string
+	counts        storageCounts
 }
 
 func (*settlementStorage) OnActivate(context.Context, *goakt.GrainProps) error   { return nil }
@@ -73,6 +75,7 @@ func (owner *settlementStorage) OnReceive(gc *goakt.GrainContext) {
 	case storageSetup:
 		owner.history = input.history
 		owner.failure = input.failure
+		owner.verifyPreStep = input.verifyPreStep
 		gc.Response(struct{}{})
 	case promptactor.Assemble:
 		owner.counts.prompts++
@@ -80,6 +83,12 @@ func (owner *settlementStorage) OnReceive(gc *goakt.GrainContext) {
 			ID: input.ID,
 		})
 	case middlewareactor.ResolvePreStep:
+		if owner.verifyPreStep && (owner.counts.reads != 0 || owner.counts.prompts != 0) {
+			gc.Response(agent.PreStepResolved{
+				Err: errors.New("test: Session or Prompt prepared before PreStep"),
+			})
+			return
+		}
 		owner.counts.admissions++
 		gc.Response(agent.PreStepResolved{
 			Decision: input.Default,

@@ -103,7 +103,7 @@ func (owner *Grain) startStep(gc *goakt.GrainContext, input prepareStep) {
 	}
 	owner.preparation = operation
 	if len(edit.Drafts) == 0 {
-		owner.readStepContext(gc, operation)
+		owner.resolveStepAdmission(gc, operation)
 		return
 	}
 	owner.requestPreparation(gc, operation, owner.conversation, sessionactor.Commit{
@@ -226,7 +226,7 @@ func (owner *Grain) claimConfirmed(gc *goakt.GrainContext, input inputClaimed) {
 	if !owner.checkPreparationCancellation(operation) {
 		return
 	}
-	owner.readStepContext(gc, operation)
+	owner.resolveStepAdmission(gc, operation)
 }
 
 func (owner *Grain) readStepContext(gc *goakt.GrainContext, operation *stepPreparation) {
@@ -294,32 +294,12 @@ func (owner *Grain) preparePrompt(gc *goakt.GrainContext, input contextRead) {
 	})
 }
 
-func (owner *Grain) resolveStepAdmission(gc *goakt.GrainContext, input promptAssembled) {
-	operation := input.operation
-	if !owner.acceptPreparation(operation) {
-		return
-	}
-	if input.result.Err != nil {
-		owner.finishPreparation(operation, false, input.result.Err)
-		return
-	}
-	if input.result.ID != operation.id {
-		owner.finishPreparation(operation, false, errors.New("agentloop: Prompt response identity mismatch"))
-		return
-	}
-	if !owner.checkPreparationCancellation(operation) {
-		return
-	}
-	proposal, err := owner.business.PreparePreStep(agentloop.Preparation{
-		Snapshot:     operation.snapshot,
-		Prompt:       input.result.Prompt,
-		ToolsVersion: owner.business.ToolsVersion(),
-	})
+func (owner *Grain) resolveStepAdmission(gc *goakt.GrainContext, operation *stepPreparation) {
+	proposal, err := owner.business.PreparePreStep()
 	if err != nil {
 		owner.finishPreparation(operation, false, err)
 		return
 	}
-	operation.snapshot = session.Snapshot{}
 	owner.requestPreparation(gc, operation, operation.middleware, middlewareactor.ResolvePreStep{
 		CallID:  middlewareactor.CallID(operation.id),
 		Routes:  operation.routes,
@@ -346,7 +326,7 @@ func (owner *Grain) resolveStepAdmission(gc *goakt.GrainContext, input promptAss
 	})
 }
 
-func (owner *Grain) openStep(gc *goakt.GrainContext, input admissionResolved) {
+func (owner *Grain) acceptStepAdmission(gc *goakt.GrainContext, input admissionResolved) {
 	operation := input.operation
 	if !owner.acceptPreparation(operation) {
 		return
@@ -358,7 +338,36 @@ func (owner *Grain) openStep(gc *goakt.GrainContext, input admissionResolved) {
 	if !owner.checkPreparationCancellation(operation) {
 		return
 	}
-	draft, err := owner.business.PrepareStep(input.result.Decision)
+	accepted, err := owner.business.AcceptPreStep(input.result.Decision)
+	if err != nil || !accepted {
+		owner.finishPreparation(operation, false, err)
+		return
+	}
+	owner.readStepContext(gc, operation)
+}
+
+func (owner *Grain) openStep(gc *goakt.GrainContext, input promptAssembled) {
+	operation := input.operation
+	if !owner.acceptPreparation(operation) {
+		return
+	}
+	if input.result.Err != nil {
+		owner.finishPreparation(operation, false, input.result.Err)
+		return
+	}
+	if input.result.ID != operation.id {
+		owner.finishPreparation(operation, false, errors.New("agentloop: Prompt response identity mismatch"))
+		return
+	}
+	if !owner.checkPreparationCancellation(operation) {
+		return
+	}
+	draft, err := owner.business.PrepareStep(agentloop.Preparation{
+		Snapshot:     operation.snapshot,
+		Prompt:       input.result.Prompt,
+		ToolsVersion: owner.business.ToolsVersion(),
+	})
+	operation.snapshot = session.Snapshot{}
 	if err != nil {
 		owner.finishPreparation(operation, false, err)
 		return
