@@ -1,7 +1,11 @@
 package loopactor
 
 import (
+	"context"
 	"errors"
+	"github.com/google/uuid"
+	llmactor "github.com/gorenx/goren/llm/actor"
+	"time"
 
 	"github.com/gorenx/goren/agent"
 	middlewareactor "github.com/gorenx/goren/agent/middleware/actor"
@@ -16,13 +20,47 @@ func (owner *Grain) cancel(gc *goakt.GrainContext, input Cancel) {
 		return
 	}
 	edit, err := owner.business.Cancel(input.Cause, input.Options)
-	if owner.model != nil {
-		owner.model.cancelRead(owner.business.Cancellation())
-	}
 	completed := completeCancel{
 		reply: reply,
 		edit:  edit,
 		err:   err,
+	}
+	if owner.model != nil && owner.model.callID != "" {
+		if owner.model.canceling != nil {
+			completed.err = errors.Join(completed.err, errors.New("agentloop: model cancellation acknowledgement is pending"))
+			owner.finishCancellation(gc, completed)
+			return
+		}
+		id := llmactor.RequestID(uuid.NewString())
+		owner.model.canceling = &modelCancellation{
+			id:         id,
+			completion: completed,
+		}
+		if failure := owner.awaitModelCancellation(gc, owner.model); failure != nil {
+			owner.model.canceling.cancel()
+			owner.model.canceling = nil
+			completed.err = errors.Join(completed.err, failure)
+			owner.finishCancellation(gc, completed)
+			return
+		}
+		if failure := goakt.Tell(gc.Context(), owner.model.input.router, goakt.NewBroadcast(llmactor.CancelCall{
+			Delivery: llmactor.Delivery{
+				CallID:    owner.model.callID,
+				RequestID: id,
+				ReplyTo:   gc.Self(),
+			},
+			Cause: owner.business.Cancellation(),
+		})); failure != nil {
+			owner.model.canceling.cancel()
+			owner.model.canceling = nil
+			completed.err = errors.Join(completed.err, failure)
+			owner.finishCancellation(gc, completed)
+		}
+		return
+	}
+	if owner.model != nil && owner.model.cancellation != nil {
+		owner.deliverCancellation(gc, *owner.model.cancellation, completed)
+		return
 	}
 	if owner.preparation != nil && owner.preparation.cancellation != nil {
 		owner.deliverCancellation(gc, *owner.preparation.cancellation, completed)
@@ -119,7 +157,56 @@ func (owner *Grain) finishCancellation(gc *goakt.GrainContext, input completeCan
 	owner.commitInbox(
 		gc,
 		input.reply,
-		agent.Admission{Edit: input.edit},
+		agent.Admission{
+			Edit: input.edit,
+		},
 		input.err,
 	)
+}
+
+// modelCancellation retains only the reply awaiting LLM cancellation delivery.
+// The original model operation and resource closure finish independently.
+type modelCancellation struct {
+	id         llmactor.RequestID
+	completion completeCancel
+	cancel     context.CancelFunc
+}
+
+func (owner *Grain) modelCancellationResult(gc *goakt.GrainContext, input llmactor.CancellationAccepted) {
+	gc.NoErr()
+	current := owner.model
+	if current == nil || current.canceling == nil || current.canceling.id != input.RequestID {
+		return
+	}
+	completed := current.canceling.completion
+	current.canceling.cancel()
+	current.canceling = nil
+	completed.err = errors.Join(completed.err, input.Err)
+	owner.finishCancellation(gc, completed)
+	if current.callID == "" && current.reply == nil && current.cleanup == nil {
+		owner.model = nil
+		owner.refreshIdle()
+	}
+}
+
+type modelCancellationExpired struct{ id llmactor.RequestID }
+
+func (owner *Grain) awaitModelCancellation(gc *goakt.GrainContext, current *modelInvocation) error {
+	lifetime, cancel := context.WithCancel(context.WithoutCancel(gc.Context()))
+	current.canceling.cancel = cancel
+	expired := modelCancellationExpired{id: current.canceling.id}
+	timeout := current.input.replyTimeout
+	stopped := owner.stopped
+	return gc.PipeToSelf(func() (any, error) {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			return expired, nil
+		case <-lifetime.Done():
+			return nil, nil
+		case <-stopped:
+			return nil, nil
+		}
+	})
 }

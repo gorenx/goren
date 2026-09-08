@@ -12,7 +12,7 @@ type Operation interface{ modelOperation() }
 
 type ReadLog struct{}
 type CommitEvents struct{ Draft session.EventDraft }
-type OpenStream struct{ Options llm.GenerateOptions }
+type Generate struct{ Input llm.Input }
 type ReadChunk struct{}
 type CloseStream struct{}
 
@@ -27,7 +27,7 @@ type Completed struct {
 
 func (ReadLog) modelOperation()      {}
 func (CommitEvents) modelOperation() {}
-func (OpenStream) modelOperation()   {}
+func (Generate) modelOperation()     {}
 func (ReadChunk) modelOperation()    {}
 func (CloseStream) modelOperation()  {}
 func (Completed) modelOperation()    {}
@@ -38,7 +38,15 @@ type LogRead struct{ Snapshot session.Snapshot }
 
 // EventsCommitted carries the complete acknowledgement, including Session identity.
 type EventsCommitted struct{ Write session.WriteResult }
-type StreamOpened struct{}
+
+// GenerationStarted carries actual settings after opening the model stream.
+type GenerationStarted struct {
+	Config      llm.CallConfig
+	Defaults    llm.CallConfigAdapterDefaults
+	Context     *llm.ModelContext
+	RetryPolicy llm.RetryPolicy
+	Err         error
+}
 type ChunkRead struct {
 	Chunk llm.StreamChunk
 	Found bool
@@ -46,9 +54,9 @@ type ChunkRead struct {
 type StreamClosed struct{}
 type Failed struct{ Err error }
 
-func (LogRead) modelResult()         {}
-func (EventsCommitted) modelResult() {}
-func (StreamOpened) modelResult()    {}
-func (ChunkRead) modelResult()       {}
-func (StreamClosed) modelResult()    {}
-func (Failed) modelResult()          {}
+func (LogRead) modelResult()           {}
+func (EventsCommitted) modelResult()   {}
+func (GenerationStarted) modelResult() {}
+func (ChunkRead) modelResult()         {}
+func (StreamClosed) modelResult()      {}
+func (Failed) modelResult()            {}

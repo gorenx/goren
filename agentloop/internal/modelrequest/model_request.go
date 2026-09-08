@@ -11,7 +11,7 @@ const (
 	requestUnstarted requestPhase = iota
 	readingHistory
 	resolvingConfig
-	preparingCall
+	savingConfiguration
 	runningAttempt
 	resolvingRecovery
 	retryingClose

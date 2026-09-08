@@ -2,6 +2,7 @@ package modelrequest
 
 import (
 	"errors"
+	"github.com/gorenx/goren/llm"
 
 	"github.com/gorenx/goren/session"
 )
@@ -62,7 +63,27 @@ func (attempt *Attempt) advance(result Result, cancellation error) Operation {
 		if err := attempt.load(read.Snapshot); err != nil {
 			return attempt.fail(err)
 		}
-		boundary, err := attempt.Prepare(read.Snapshot.Events, attempt.first)
+		attempt.baseline = read.Snapshot.Events
+		attempt.phase = openingStream
+		next = Generate{
+			Input: llm.Input{
+				Messages:  attempt.options.Messages,
+				System:    attempt.options.System,
+				Tools:     attempt.options.Tools,
+				SessionID: attempt.options.SessionID,
+				Purpose:   attempt.options.Purpose,
+			},
+		}
+	case openingStream:
+		started := result.(GenerationStarted)
+		if started.Err != nil {
+			return attempt.fail(started.Err)
+		}
+		attempt.options.CallConfig = llm.CloneCallConfig(started.Config)
+		attempt.defaults = started.Defaults
+		attempt.context = started.Context
+		boundary, err := attempt.Prepare(attempt.baseline, attempt.first)
+		attempt.baseline = nil
 		if err != nil {
 			return attempt.fail(err)
 		}
@@ -73,6 +94,7 @@ func (attempt *Attempt) advance(result Result, cancellation error) Operation {
 		} else {
 			next = attempt.afterHeader()
 		}
+
 	case committingHeader, committingContext, committingChunk, committingMessage:
 		committed := result.(EventsCommitted)
 		if err := attempt.confirmCommit(committed.Write); err != nil {
@@ -103,17 +125,9 @@ func (attempt *Attempt) advance(result Result, cancellation error) Operation {
 		if err := attempt.checkRequest(read.Snapshot); err != nil {
 			return attempt.fail(err)
 		}
-		options, err := attempt.Options()
-		if err != nil {
-			return attempt.fail(err)
-		}
-		attempt.phase = openingStream
-		next = OpenStream{
-			Options: options,
-		}
-	case openingStream:
 		attempt.phase = readingStream
 		next = ReadChunk{}
+
 	case readingStream:
 		read := result.(ChunkRead)
 		if !read.Found {

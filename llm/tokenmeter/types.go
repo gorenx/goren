@@ -7,13 +7,10 @@ import (
 
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
 
 const (
-	// PluginName is the canonical Harness Token Meter Plugin name.
-	PluginName = "@deepseek-ai/dsh-token-meter"
 	// ServiceName preserves the canonical Cordis capability name.
 	ServiceName       = "tokenMeter"
 	maxSafeTokenCount = int64(1<<53 - 1)
@@ -73,9 +70,8 @@ type ContextBreakdownProjection struct {
 	MessageTokens int64 `json:"messageTokens"`
 }
 
-// Meter is the singleton replay measurement Service.
+// Meter measures one append-only log and estimates model-visible messages.
 type Meter interface {
-	plugin.Service
-	Measure(context.Context, session.Context, *session.EpochHeader) (Measurement, error)
-	EstimateMessage(agentmessage.Message) (int64, error)
+	Measure(ctx context.Context, entries []session.Event, requestHeader *session.EpochHeader) (Measurement, error)
+	EstimateMessage(messageValue agentmessage.Message) (int64, error)
 }

@@ -9,7 +9,7 @@ import (
 	"github.com/gorenx/goren/systemprompt"
 )
 
-// AttemptInput contains prepared model parameters and this Step's prompt data.
+// AttemptInput contains submitted model parameters and this Step's prompt data.
 // It deliberately excludes conversation messages: Start requests the committed
 // Session and derives those inside the AgentLoop business boundary.
 type AttemptInput struct {
@@ -18,8 +18,6 @@ type AttemptInput struct {
 	Prompt    systemprompt.PromptAssembly
 	Config    llm.CallConfig
 	First     bool
-	Defaults  llm.CallConfigAdapterDefaults
-	Context   *llm.ModelContext
 }
 
 // Boundary contains the optional request facts to commit before model I/O.
@@ -32,6 +30,7 @@ type Boundary struct {
 // It has no scheduling, cancellation, provider or storage responsibilities.
 type Attempt struct {
 	phase           attemptPhase
+	baseline        []session.Event
 	pendingDraft    *session.EventDraft
 	messageDraft    *session.EventDraft
 	confirmedNext   int64
@@ -51,7 +50,7 @@ type Attempt struct {
 	accepted        bool
 }
 
-// NewAttempt captures the prepared parameters without opening a provider stream.
+// NewAttempt captures the proposal without opening a provider stream.
 func NewAttempt(input AttemptInput) (*Attempt, error) {
 	if input.Position.Turn <= 0 || input.Position.Step <= 0 || input.Position.Turn > 1<<53-1 || input.Position.Step > 1<<53-1 {
 		return nil, errors.New("agentloop: model position must contain positive safe integers")
@@ -79,13 +78,9 @@ func NewAttempt(input AttemptInput) (*Attempt, error) {
 		position: input.Position,
 		first:    input.First,
 		options:  options,
-		defaults: input.Defaults,
 		assembly: llm.NewBlockAssembler(),
 	}
-	if input.Context != nil {
-		copied := *input.Context
-		result.context = &copied
-	}
+
 	return result, nil
 }
 
@@ -128,11 +123,6 @@ func (attempt *Attempt) Prepare(entries []session.Event, first bool) (Boundary, 
 		Header:  draft,
 		Context: contextDraft,
 	}, nil
-}
-
-// Options returns the canonical request parameters without exposing mutable state.
-func (attempt *Attempt) Options() (llm.GenerateOptions, error) {
-	return llm.CloneGenerateOptions(attempt.options)
 }
 
 // ChunkDraft prepares one stream fact without advancing response assembly.

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/gorenx/goren/internal/jsonvalue"
 	"github.com/gorenx/goren/llm"
 )
 
@@ -38,6 +39,9 @@ func (catalogEntry *CatalogModel) UnmarshalJSON(encoded []byte) error {
 	}
 	if isNull(encoded) {
 		return errors.New("llm-deepseek: catalog model must be an object")
+	}
+	if err := jsonvalue.Validate(encoded); err != nil {
+		return fmt.Errorf("llm-deepseek: invalid model configuration: %w", err)
 	}
 	var wireValue catalogModelWire
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
@@ -78,6 +82,9 @@ func (settings *Config) UnmarshalJSON(encoded []byte) error {
 	}
 	if bytes.Equal(bytes.TrimSpace(encoded), []byte("null")) {
 		return errors.New("llm-deepseek: config must be an object")
+	}
+	if err := jsonvalue.Validate(encoded); err != nil {
+		return fmt.Errorf("llm-deepseek: invalid configuration: %w", err)
 	}
 	var wireValue configWire
 	decoder := json.NewDecoder(bytes.NewReader(encoded))

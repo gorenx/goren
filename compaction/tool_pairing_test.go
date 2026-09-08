@@ -190,30 +190,30 @@ func TestToolPairingBalanceRejectsOrphanResultAndAbsentSequence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ToolPairingBalancedAfter(conversation, resultEntry.Seq); err == nil {
+	if _, err := ToolPairingBalancedAfter(conversation.Snapshot(), resultEntry.Seq); err == nil {
 		t.Fatal("orphan tool/result was accepted")
 	}
 
 	clean := newCompactionSession(t, "tool-absent")
 	currentSeq := appendCompactionUser(t, clean, "current")
-	if _, err := ToolPairingBalancedBefore(clean, currentSeq+1); err == nil {
+	if _, err := ToolPairingBalancedBefore(clean.Snapshot(), currentSeq+1); err == nil {
 		t.Fatal("absent Surface sequence was accepted")
 	}
 }
 
 func assertToolPairingCut(
 	testingContext *testing.T,
-	conversation session.Context,
+	conversation *session.Log,
 	sequence int64,
 	wantBefore bool,
 	wantAfter bool,
 ) {
 	testingContext.Helper()
-	before, err := ToolPairingBalancedBefore(conversation, sequence)
+	before, err := ToolPairingBalancedBefore(conversation.Snapshot(), sequence)
 	if err != nil {
 		testingContext.Fatal(err)
 	}
-	after, err := ToolPairingBalancedAfter(conversation, sequence)
+	after, err := ToolPairingBalancedAfter(conversation.Snapshot(), sequence)
 	if err != nil {
 		testingContext.Fatal(err)
 	}
@@ -232,9 +232,9 @@ func assertToolPairingCut(
 func newCompactionSession(
 	testingContext *testing.T,
 	identifier session.SessionID,
-) session.Context {
+) *session.Log {
 	testingContext.Helper()
-	conversation, err := session.New(identifier, session.CreateOptions{})
+	conversation, err := session.NewLog(identifier, session.CreateOptions{})
 	if err != nil {
 		testingContext.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func newCompactionSession(
 
 func appendCompactionUser(
 	testingContext *testing.T,
-	conversation session.Context,
+	conversation *session.Log,
 	textValue string,
 ) int64 {
 	testingContext.Helper()

@@ -17,7 +17,9 @@ type RequestInput struct {
 }
 
 // RequestOperation describes one effect of the complete model request.
-type RequestOperation interface{ requestOperation() }
+type RequestOperation interface {
+	requestOperation()
+}
 
 // ReadRequest fetches a fresh Session snapshot, including after recovery.
 type ReadRequest struct{}
@@ -28,8 +30,8 @@ type ResolveConfiguration struct {
 	Default llm.CallConfig
 }
 
-// PrepareCall requests effective parameters without opening a stream.
-type PrepareCall struct {
+// SaveConfiguration registers the Agent settings before generation.
+type SaveConfiguration struct {
 	Config llm.CallConfig
 }
 
@@ -50,7 +52,7 @@ type RequestFinished struct {
 
 func (ReadRequest) requestOperation()          {}
 func (ResolveConfiguration) requestOperation() {}
-func (PrepareCall) requestOperation()          {}
+func (SaveConfiguration) requestOperation()    {}
 func (RunAttempt) requestOperation()           {}
 func (ResolveRecovery) requestOperation()      {}
 func (RequestFinished) requestOperation()      {}
@@ -61,13 +63,8 @@ type RequestResult interface{ requestResult() }
 type RequestRead struct{ Snapshot session.Snapshot }
 type ConfigurationResolved struct{ Config llm.CallConfig }
 
-// CallPrepared contains metadata only; the adapter retains its actual binding.
-type CallPrepared struct {
-	Config      llm.CallConfig
-	Defaults    llm.CallConfigAdapterDefaults
-	Context     *llm.ModelContext
-	RetryPolicy llm.RetryPolicy
-}
+// ConfigurationSaved confirms that the submitted Agent settings are available.
+type ConfigurationSaved struct{}
 
 type AttemptAdvanced struct{ Result Result }
 type RecoveryResolved struct{ Action agent.RequestErrorAction }
@@ -75,7 +72,7 @@ type RequestFailed struct{ Err error }
 
 func (RequestRead) requestResult()           {}
 func (ConfigurationResolved) requestResult() {}
-func (CallPrepared) requestResult()          {}
+func (ConfigurationSaved) requestResult()    {}
 func (AttemptAdvanced) requestResult()       {}
 func (RecoveryResolved) requestResult()      {}
 func (RequestFailed) requestResult()         {}

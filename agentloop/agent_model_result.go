@@ -45,7 +45,7 @@ func (subject *ReactLoopAgent) completeModel(result modelrequest.Completed) (Mod
 	if subject.step == nil || subject.step.StateValue() != stepstate.StateRequesting {
 		return nil, errors.New("agentloop: model completion requires a current requesting Step")
 	}
-	subject.AcceptModel(result)
+	subject.acceptModel(result)
 	if !result.StreamClosed {
 		return nil, errors.Join(result.Err, errors.New("agentloop: model resources must close before Step continuation"))
 	}

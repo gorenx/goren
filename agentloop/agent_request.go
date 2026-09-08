@@ -57,7 +57,7 @@ func (subject *ReactLoopAgent) AdvanceRequest(result modelrequest.RequestResult)
 	}
 	next, err := subject.request.Advance(result, subject.Cancellation())
 	if completed, ok := next.(modelrequest.RequestFinished); ok {
-		subject.AcceptModel(completed.Result)
+		subject.acceptModel(completed.Result)
 	}
 	return next, err
 }
@@ -82,4 +82,11 @@ func (subject *ReactLoopAgent) checkRequestCompletion() error {
 		return errors.New("agentloop: model resources must close before Step continuation")
 	}
 	return nil
+}
+
+// acceptModel retains durable facts from a completed attempt, including failures.
+func (subject *ReactLoopAgent) acceptModel(result modelrequest.Completed) {
+	if result.HeaderCommitted {
+		subject.headerLogged = true
+	}
 }

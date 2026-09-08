@@ -1,7 +1,6 @@
 package compaction
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/gorenx/goren/agentmessage"
@@ -49,17 +48,8 @@ func BuildToolPairingBoundaries(
 	return boundaries, nil
 }
 
-// ToolPairingBalancedBefore reports whether no unanswered Tool Call crosses
-// the cut immediately before one current Surface node.
-func ToolPairingBalancedBefore(conversation session.Context, sequence int64) (bool, error) {
-	if conversation == nil {
-		return false, errors.New("tool-pairing balance: Session is nil")
-	}
-	return ToolPairingBalancedBeforeSnapshot(conversation.Snapshot(), sequence)
-}
-
-// ToolPairingBalancedBeforeSnapshot evaluates one already-consistent Session snapshot.
-func ToolPairingBalancedBeforeSnapshot(
+// ToolPairingBalancedBefore evaluates one already-consistent Session snapshot.
+func ToolPairingBalancedBefore(
 	snapshot session.Snapshot,
 	sequence int64,
 ) (bool, error) {
@@ -70,17 +60,8 @@ func ToolPairingBalancedBeforeSnapshot(
 	return boundaries.CutBefore(sequence)
 }
 
-// ToolPairingBalancedAfter reports whether no unanswered Tool Call crosses
-// the cut immediately after one current Surface node.
-func ToolPairingBalancedAfter(conversation session.Context, sequence int64) (bool, error) {
-	if conversation == nil {
-		return false, errors.New("tool-pairing balance: Session is nil")
-	}
-	return ToolPairingBalancedAfterSnapshot(conversation.Snapshot(), sequence)
-}
-
-// ToolPairingBalancedAfterSnapshot evaluates one already-consistent Session snapshot.
-func ToolPairingBalancedAfterSnapshot(
+// ToolPairingBalancedAfter evaluates one already-consistent Session snapshot.
+func ToolPairingBalancedAfter(
 	snapshot session.Snapshot,
 	sequence int64,
 ) (bool, error) {

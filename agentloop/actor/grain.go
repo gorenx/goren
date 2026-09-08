@@ -5,9 +5,9 @@ import (
 	"errors"
 
 	"github.com/google/uuid"
-	"github.com/gorenx/goren/agent"
 	agentactor "github.com/gorenx/goren/agent/actor"
 	"github.com/gorenx/goren/agentloop"
+	llmactor "github.com/gorenx/goren/llm/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
@@ -24,7 +24,7 @@ type Grain struct {
 	preparation     *stepPreparation
 	business        *agentloop.ReactLoopAgent
 	ending          *turnClosure
-	model           *modelAttempt
+	model           *modelInvocation
 	conversation    *goakt.GrainIdentity
 	creationID      string
 	instanceID      string
@@ -57,9 +57,13 @@ func (owner *Grain) OnDeactivate(ctx context.Context, _ *goakt.GrainProps) error
 		owner.finishPreparation(owner.preparation, false, errors.New("agentloop: stopped during Step preparation"))
 	}
 	if owner.model != nil {
-		owner.model.cancelRead(agent.NewCancellation(agent.DisposedCancel{}))
-		if owner.model.reader != nil {
-			_ = goakt.Tell(ctx, owner.model.reader, new(goakt.PoisonPill))
+
+		if owner.model.canceling != nil {
+			owner.model.canceling.cancel()
+			owner.model.canceling.completion.reply.Response(Changed{
+				Err: errors.New("agentloop: stopped before LLM cancellation acknowledgement"),
+			})
+			owner.model.canceling = nil
 		}
 		owner.finishModel(owner.model, errors.New("agentloop: stopped during model attempt"))
 		owner.model = nil
@@ -149,7 +153,25 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 	case idleObserved:
 		owner.confirmIdle(gc, input)
 	case requestModel:
-		owner.requestModel(gc, input)
+		owner.startModel(gc, input)
+	case requestProgress:
+		owner.advanceRequest(gc, input)
+	case modelCancellationExpired:
+		owner.modelCancellationResult(gc, llmactor.CancellationAccepted{
+			RequestID: input.id,
+			Err:       errors.New("agentloop: LLM cancellation acknowledgement timed out"),
+		})
+	case generationExpired:
+		owner.expireGeneration(gc, input)
+	case llmactor.GenerationStarted:
+		owner.generationResult(gc, input.CallID, input.RequestID, input)
+	case llmactor.ChunkRead:
+		owner.generationResult(gc, input.CallID, input.RequestID, input)
+	case llmactor.CallClosed:
+		owner.generationResult(gc, input.CallID, input.RequestID, input)
+	case llmactor.CancellationAccepted:
+		owner.modelCancellationResult(gc, input)
+
 	case streamProgress:
 		owner.advanceStream(gc, input)
 	case finishTurn:

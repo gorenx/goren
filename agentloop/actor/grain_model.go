@@ -5,7 +5,7 @@ import (
 	"errors"
 
 	"github.com/gorenx/goren/llm"
-	configactor "github.com/gorenx/goren/llm/modelconfig/actor"
+	configactor "github.com/gorenx/goren/llm/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
@@ -45,7 +45,7 @@ func (owner *Grain) initializeModel(gc *goakt.GrainContext, input initialization
 	}
 	gc.RequestGrain(
 		operation.input.ModelConfig,
-		configactor.Resolve{
+		configactor.ResolveAgent{
 			Overrides: input.overrides,
 		},
 		goakt.WithRequestTimeout(0),
@@ -55,7 +55,7 @@ func (owner *Grain) initializeModel(gc *goakt.GrainContext, input initialization
 				return
 			}
 			if failure == nil {
-				result, ok := payload.(configactor.Resolution)
+				result, ok := payload.(configactor.AgentConfiguration)
 				switch {
 				case !ok:
 					failure = errors.New("agentloop: invalid model configuration response")

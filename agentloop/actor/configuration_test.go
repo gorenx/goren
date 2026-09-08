@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	configactor "github.com/gorenx/goren/llm/modelconfig/actor"
+	configactor "github.com/gorenx/goren/llm/actor"
 	"github.com/gorenx/goren/systemprompt"
 	promptactor "github.com/gorenx/goren/systemprompt/actor"
 	"github.com/gorenx/goren/tools"
@@ -28,8 +28,8 @@ func (fixture *configurationOwner) OnReceive(gc *goakt.GrainContext) {
 	case failConfiguration:
 		fixture.failure = errors.New("test: configuration unavailable")
 		gc.Response(struct{}{})
-	case configactor.Resolve:
-		gc.Response(configactor.Resolution{
+	case configactor.ResolveAgent:
+		gc.Response(configactor.AgentConfiguration{
 			Err: fixture.failure,
 		})
 	case promptactor.Prepare:

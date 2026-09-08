@@ -50,13 +50,12 @@ func (owner *Grain) closeResources(gc *goakt.GrainContext, input agentactor.Clos
 	}
 	if owner.model != nil {
 		owner.model.cleanup = reply
-		owner.model.cancelRead(nil)
-		next, err := owner.model.business.RetryClose()
+		next, err := owner.business.RetryRequestClose()
 		if err != nil {
 			owner.finishModel(owner.model, err)
 			return
 		}
-		owner.executeModel(gc, owner.model, next)
+		owner.executeRequest(gc, owner.model, next)
 		return
 	}
 	if owner.prompt != nil {

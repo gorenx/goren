@@ -293,7 +293,7 @@ func TestStoppingWaitAcceptsSteerAndWaitsForCanceledHook(t *testing.T) {
 	}
 }
 
-func finishStepForStopping(t *testing.T, subject *agentloop.ReactLoopAgent, history *session.Log) {
+func prepareRequestStep(t *testing.T, subject *agentloop.ReactLoopAgent, history *session.Log) {
 	t.Helper()
 	commit := func(drafts ...session.EventDraft) session.WriteResult {
 		write, err := history.Commit(context.Background(), session.Batch(drafts...))
@@ -338,11 +338,25 @@ func finishStepForStopping(t *testing.T, subject *agentloop.ReactLoopAgent, hist
 	if err := subject.BeginRequest(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func finishStepForStopping(t *testing.T, subject *agentloop.ReactLoopAgent, history *session.Log) {
+	t.Helper()
+	prepareRequestStep(t, subject, history)
 	ending, err := subject.PrepareStepEnd(stepstate.StepResultCompleted)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := subject.ConfirmStepEnd(commit(ending)); err != nil {
+	if err := subject.ConfirmStepEnd(commitStepEnd(t, history, ending)); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func commitStepEnd(t *testing.T, history *session.Log, draft session.EventDraft) session.WriteResult {
+	t.Helper()
+	write, err := history.Commit(context.Background(), session.Batch(draft))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return write
 }
