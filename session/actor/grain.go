@@ -92,12 +92,13 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 			})
 			return
 		}
+		before := owner.history.Seq()
 		result, err := owner.history.Commit(gc.Context(), incoming.Plan)
 		gc.Response(Committed{
 			Result: result,
 			Err:    err,
 		})
-		if err == nil {
+		if err == nil && owner.history.Seq() > before {
 			owner.publishEvents(gc, result.Events)
 			owner.startWrite(gc)
 		}

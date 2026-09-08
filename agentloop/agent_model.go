@@ -19,6 +19,12 @@ type ModelInput struct {
 // attempt. Attempt owns the complete business flow after construction.
 // Close preparation still permits execution of already accepted input.
 func (subject *ReactLoopAgent) BeginModel(input ModelInput) (*modelrequest.Attempt, error) {
+	if failure := subject.Cancellation(); failure != nil {
+		return nil, failure
+	}
+	if subject.request != nil {
+		return nil, errors.New("agentloop: model request already owns its attempts")
+	}
 	if !subject.lifetime.ready() || subject.pending == nil {
 		return nil, errors.New("agentloop: Agent is not initialized")
 	}

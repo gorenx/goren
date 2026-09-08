@@ -31,6 +31,8 @@ func (subject *ReactLoopAgent) PrepareTurnEnd(problem error) (TurnEnd, error) {
 		}
 		return subject.ending.event, nil
 	}
+	// The first end fact captures accepted cancellation; retries retain that fact.
+	problem = errors.Join(subject.Cancellation(), problem)
 	candidate := *subject.current
 	conclusion := candidate.ResultValue()
 	var intent session.TurnCancelCause
@@ -80,11 +82,6 @@ func (subject *ReactLoopAgent) PrepareTurnEnd(problem error) (TurnEnd, error) {
 func (subject *ReactLoopAgent) ConfirmTurnEnd(result session.WriteResult) error {
 	if subject.ending == nil || subject.current == nil {
 		return errors.New("agentloop: Turn end has not been prepared")
-	}
-	// A successful deduplicated write proves only that no new event was appended.
-	// The original end position remains unknown until the log is reconciled.
-	if len(result.Events) == 0 {
-		return subject.checkCommit(nil, result)
 	}
 	if err := subject.checkCommit([]session.EventDraft{subject.ending.event.draft}, result); err != nil {
 		return err
@@ -140,20 +137,4 @@ func cancellationReason(intent agent.CancelCause) session.TurnCancelCause {
 			Reason: intent.CancelKind(),
 		}
 	}
-}
-
-// ReconcileTurnEnd confirms the fixed end fact from a complete ordered snapshot.
-// This is required when a deduplicated commit did not return the original event.
-func (subject *ReactLoopAgent) ReconcileTurnEnd(snapshot session.Snapshot) error {
-	if subject.ending == nil || subject.current == nil {
-		return ErrState
-	}
-	confirmed, err := subject.ending.event.Find(snapshot)
-	if err != nil {
-		return err
-	}
-	if confirmed == nil {
-		return errors.New("agentloop: prepared Turn end is absent from Session log")
-	}
-	return subject.ConfirmTurnEnd(*confirmed)
 }

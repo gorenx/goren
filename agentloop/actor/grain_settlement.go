@@ -35,7 +35,7 @@ func (owner *Grain) settleTurn(gc *goakt.GrainContext, input finishTurn) {
 		})
 		return
 	}
-	if owner.conversation == nil || owner.model != nil {
+	if owner.conversation == nil || owner.model != nil || owner.stopping != nil {
 		gc.Response(turnFinished{
 			err: errors.New("agentloop: Turn settlement requires Session binding and released model resources"),
 		})
@@ -109,8 +109,6 @@ func (owner *Grain) requestTurnEnd(gc *goakt.GrainContext, operation *turnClosur
 			switch message.(type) {
 			case sessionactor.Commit:
 				_, valid = payload.(sessionactor.Committed)
-			case sessionactor.Read:
-				_, valid = payload.(sessionactor.View)
 			case sessionactor.Flush:
 				_, valid = payload.(sessionactor.Flushed)
 			}
@@ -144,22 +142,6 @@ func (owner *Grain) advanceTurnEnd(gc *goakt.GrainContext, input turnProgress) {
 			return
 		}
 		if err := owner.business.ConfirmTurnEnd(result.Result); err != nil {
-			owner.finishTurnRequest(operation, err)
-			return
-		}
-		if _, err := owner.business.TurnBarrier(); err != nil {
-			owner.requestTurnEnd(gc, operation, sessionactor.Read{
-				CreationID: owner.creationID,
-			})
-			return
-		}
-		owner.flushTurnEnd(gc, operation)
-	case sessionactor.View:
-		if result.Err != nil {
-			owner.finishTurnRequest(operation, result.Err)
-			return
-		}
-		if err := owner.business.ReconcileTurnEnd(result.Snapshot); err != nil {
 			owner.finishTurnRequest(operation, err)
 			return
 		}

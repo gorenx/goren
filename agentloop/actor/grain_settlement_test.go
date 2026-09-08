@@ -20,6 +20,7 @@ import (
 )
 
 type settlementSetup struct {
+	prompt  *goakt.GrainIdentity
 	subject *agentloop.ReactLoopAgent
 	target  *goakt.GrainIdentity
 }
@@ -34,6 +35,9 @@ func (owner *settlementAgent) OnReceive(gc *goakt.GrainContext) {
 		owner.business = input.subject
 		owner.conversation = input.target
 		owner.prompt = input.target
+		if input.prompt != nil {
+			owner.prompt = input.prompt
+		}
 		owner.creationID = "test"
 		gc.Response(struct{}{})
 		return
@@ -82,7 +86,7 @@ func (owner *settlementStorage) OnReceive(gc *goakt.GrainContext) {
 		})
 	case sessionactor.Commit:
 		owner.counts.commits++
-		if owner.failure == "claim rejected" {
+		if owner.failure == "claim rejected" || owner.failure == "turn rejected" {
 			owner.failure = ""
 			gc.Response(sessionactor.Committed{
 				Err: errors.New("test: claim rejected before append"),
@@ -97,6 +101,10 @@ func (owner *settlementStorage) OnReceive(gc *goakt.GrainContext) {
 		if owner.failure == "step reply" && len(write.Events) == 1 && write.Events[0].Type == session.StepStartEventName {
 			owner.failure = ""
 			err = errors.New("test: Step start reply lost")
+		}
+		if owner.failure == "turn reply" {
+			owner.failure = ""
+			err = errors.New("test: Turn start reply lost")
 		}
 		if owner.failure == "commit reply" {
 			owner.failure = ""
@@ -176,7 +184,7 @@ func TestActorSettlementRequestsOnlyRequiredOperations(t *testing.T) {
 			failure: "commit reply",
 			expected: storageCounts{
 				commits: 2,
-				reads:   1,
+				reads:   0,
 				flushes: 1,
 			},
 		},
@@ -263,7 +271,7 @@ func TestActorSettlementRequestsOnlyRequiredOperations(t *testing.T) {
 	}
 }
 
-func preparedTurn(t *testing.T) (*agentloop.ReactLoopAgent, *session.Log) {
+func acceptedTurn(t *testing.T) (*agentloop.ReactLoopAgent, *session.Log) {
 	t.Helper()
 	ctx := context.Background()
 	history, err := session.NewLog("settlement", session.CreateOptions{})
@@ -295,11 +303,20 @@ func preparedTurn(t *testing.T) (*agentloop.ReactLoopAgent, *session.Log) {
 	if _, err := subject.ConfirmAdmission(admission, write); err != nil {
 		t.Fatal(err)
 	}
+	return subject, history
+}
+
+func preparedTurn(t *testing.T) (*agentloop.ReactLoopAgent, *session.Log) {
+	t.Helper()
+	subject, history := acceptedTurn(t)
+	ctx := context.Background()
 	draft, err := subject.PrepareTurn()
 	if err != nil {
 		t.Fatal(err)
 	}
-	write, err = history.Commit(ctx, session.Batch(draft))
+	write, err := history.Commit(ctx, turnStartWrite{
+		event: draft,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

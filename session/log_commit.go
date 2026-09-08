@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 )
 
 // Commit owns the atomic business transaction without lifecycle or publication.
@@ -17,6 +18,7 @@ func (conversation *Log) Commit(
 	}
 	firstSeq := conversation.Seq()
 	var committed []Event
+	var replay *WriteResult
 	defer func() {
 		barrier := conversation.Barrier()
 		result = WriteResult{
@@ -24,6 +26,9 @@ func (conversation *Log) Commit(
 			NextSeq:  barrier.NextSeq,
 			Barrier:  barrier,
 			Events:   committed,
+		}
+		if replay != nil && commitErr == nil {
+			result = *replay
 		}
 		if recovered := recover(); recovered != nil {
 			commitErr = fmt.Errorf("session: WritePlan panicked: %v", recovered)
@@ -40,7 +45,21 @@ func (conversation *Log) Commit(
 	if fixed, ok := plan.(fixedWritePlan); ok {
 		drafts, err = fixed.Build(requestContext, Snapshot{})
 	} else {
-		drafts, err = plan.Build(requestContext, conversation.Snapshot())
+		snapshot := conversation.Snapshot()
+		if retry, ok := plan.(IdempotentWrite); ok {
+			previous, failure := retry.FindCommit(snapshot)
+			if failure != nil {
+				return result, failure
+			}
+			if previous != nil {
+				if err := contextCause(requestContext); err != nil {
+					return result, err
+				}
+				replay, failure = conversation.replayCommit(*previous)
+				return result, failure
+			}
+		}
+		drafts, err = plan.Build(requestContext, snapshot)
 	}
 	if err != nil {
 		return result, err
@@ -56,4 +75,23 @@ func (conversation *Log) Commit(
 		committed, err = conversation.commitBatch(prepared)
 	}
 	return result, err
+}
+
+// replayCommit accepts only an exact existing batch and returns detached data.
+func (conversation *Log) replayCommit(previous WriteResult) (*WriteResult, error) {
+	if previous.Barrier.SessionID != conversation.header.ID || previous.FirstSeq < 0 ||
+		previous.NextSeq <= previous.FirstSeq || previous.NextSeq > conversation.Seq() ||
+		previous.Barrier.NextSeq != previous.NextSeq || int64(len(previous.Events)) != previous.NextSeq-previous.FirstSeq {
+		return nil, errors.New("session: invalid replayed commit range")
+	}
+	copied := make([]Event, len(previous.Events))
+	for index, entry := range previous.Events {
+		stored := conversation.entries[previous.FirstSeq+int64(index)]
+		if !reflect.DeepEqual(entry, stored) {
+			return nil, errors.New("session: replayed event differs from committed log")
+		}
+		copied[index] = cloneEvent(stored)
+	}
+	previous.Events = copied
+	return &previous, nil
 }

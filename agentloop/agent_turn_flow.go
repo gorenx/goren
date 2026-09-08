@@ -28,6 +28,7 @@ func (subject *ReactLoopAgent) ContinueTurn(failure error) (TurnOperation, error
 	if subject.current == nil || subject.step != nil || subject.preparing != nil || subject.request != nil {
 		return nil, errors.New("agentloop: Turn continuation requires execution boundaries to finish")
 	}
+	failure = errors.Join(subject.Cancellation(), failure)
 	switch subject.current.StateValue() {
 	case turnstate.StateSettling:
 		return subject.PrepareTurnEnd(failure)
@@ -38,7 +39,7 @@ func (subject *ReactLoopAgent) ContinueTurn(failure error) (TurnOperation, error
 	if failure != nil {
 		return subject.PrepareTurnEnd(failure)
 	}
-	stopping, err := subject.BeginStopping()
+	stopping, err := subject.beginStopping()
 	if err != nil {
 		return nil, err
 	}
@@ -56,14 +57,14 @@ func (subject *ReactLoopAgent) ContinueTurn(failure error) (TurnOperation, error
 // CompleteStopping rechecks Inbox only after the hook has actually completed.
 // Cancellation or hook failure bypasses continuation and retains the error for
 // Turn settlement, even when the hook accepted additional next-step input.
-func (subject *ReactLoopAgent) CompleteStopping(completed agent.TurnStoppingCompleted, cancellation error) (TurnOperation, error) {
+func (subject *ReactLoopAgent) CompleteStopping(completed agent.TurnStoppingCompleted) (TurnOperation, error) {
 	if subject.current == nil || subject.current.StateValue() != turnstate.StateStopping {
 		return nil, errors.New("agentloop: no turn-stopping hook is pending")
 	}
-	if failure := errors.Join(cancellation, completed.Err); failure != nil {
+	if failure := errors.Join(subject.Cancellation(), completed.Err); failure != nil {
 		return subject.PrepareTurnEnd(failure)
 	}
-	resume, err := subject.FinishStopping()
+	resume, err := subject.finishStopping()
 	if err != nil {
 		return nil, err
 	}

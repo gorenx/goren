@@ -3,6 +3,7 @@ package agentloop_test
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/gorenx/goren/agentloop"
@@ -17,6 +18,10 @@ func (plan endingPlan) Build(_ context.Context, snapshot session.Snapshot) ([]se
 	return plan.fact.Drafts(snapshot)
 }
 
+func (plan endingPlan) FindCommit(snapshot session.Snapshot) (*session.WriteResult, error) {
+	return plan.fact.Find(snapshot)
+}
+
 func openTurn(t *testing.T) (*agentloop.ReactLoopAgent, *session.Log) {
 	t.Helper()
 	subject, history := readyAgent(t)
@@ -29,7 +34,9 @@ func openTurn(t *testing.T) (*agentloop.ReactLoopAgent, *session.Log) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	write, err := history.Commit(context.Background(), session.Batch(draft))
+	write, err := history.Commit(context.Background(), startPlan{
+		fact: draft,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +94,7 @@ func TestSettlementConfirmsCommitAndRetainsBarrierOnFlushFailure(t *testing.T) {
 	}
 }
 
-func TestSettlementRecoversLostCommitByDeduplicatingThenReading(t *testing.T) {
+func TestSettlementRetriesReturnOriginalCommit(t *testing.T) {
 	subject, history := openTurn(t)
 	write := beginSettlement(t, subject, history)
 	ending, err := subject.PrepareTurnEnd(errors.New("transport failed"))
@@ -100,16 +107,10 @@ func TestSettlementRecoversLostCommitByDeduplicatingThenReading(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(repeated.Events) != 0 {
-		t.Fatal("retry appended another Turn end")
+	if !reflect.DeepEqual(write, repeated) {
+		t.Fatal("retry did not return the original commit")
 	}
 	if err := subject.ConfirmTurnEnd(repeated); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := subject.TurnBarrier(); err == nil {
-		t.Fatal("empty commit invented original event position")
-	}
-	if err := subject.ReconcileTurnEnd(history.Snapshot()); err != nil {
 		t.Fatal(err)
 	}
 	boundary, err := subject.TurnBarrier()

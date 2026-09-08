@@ -10,32 +10,35 @@ import (
 
 // PrepareTurn proposes the next durable start without claiming input or advancing
 // the number. Close preparation still permits draining previously accepted input.
-func (subject *ReactLoopAgent) PrepareTurn() (session.EventDraft, error) {
+func (subject *ReactLoopAgent) PrepareTurn() (TurnStart, error) {
 	if !subject.lifetime.ready() || subject.pending == nil {
-		return session.EventDraft{}, errors.New("agentloop: Agent is not initialized")
+		return TurnStart{}, errors.New("agentloop: Agent is not initialized")
 	}
 	if subject.current != nil && subject.current.StateValue() != turnstate.StateProposed {
-		return session.EventDraft{}, ErrState
+		return TurnStart{}, ErrState
 	}
 	if subject.running == nil {
-		return session.EventDraft{}, errors.New("agentloop: no execution is reserved")
+		return TurnStart{}, errors.New("agentloop: no execution is accepted")
 	}
-	if subject.running.cancellation != nil {
-		return session.EventDraft{}, subject.running.cancellation
+	if subject.current == nil {
+		if subject.running.cancellation != nil {
+			return TurnStart{}, subject.running.cancellation
+		}
+		proposed, err := turnstate.New(subject.lastTurn + 1)
+		if err != nil {
+			return TurnStart{}, err
+		}
+		subject.current = proposed
 	}
-	if subject.current != nil {
-		return subject.current.StartDraft()
-	}
-	proposed, err := turnstate.New(subject.lastTurn + 1)
+	draft, err := subject.current.StartDraft()
 	if err != nil {
-		return session.EventDraft{}, err
+		return TurnStart{}, err
 	}
-	draft, err := proposed.StartDraft()
-	if err != nil {
-		return session.EventDraft{}, err
-	}
-	subject.current = proposed
-	return draft, nil
+	return TurnStart{
+		identifier: subject.identifier,
+		number:     subject.current.Number(),
+		draft:      draft,
+	}, nil
 }
 
 // ConfirmTurn installs only the expected committed start. Failed confirmation
@@ -105,9 +108,9 @@ func (subject *ReactLoopAgent) PrepareInput() (agent.InboxEdit, error) {
 	return edit, nil
 }
 
-// BeginStopping enters the turn-stopping boundary only when a completed Step
+// beginStopping enters the turn-stopping boundary only when a completed Step
 // has no queued continuation input. False means execution must continue first.
-func (subject *ReactLoopAgent) BeginStopping() (bool, error) {
+func (subject *ReactLoopAgent) beginStopping() (bool, error) {
 	if subject.current == nil || subject.step != nil || subject.current.StateValue() != turnstate.StateOpen {
 		return false, errors.New("agentloop: stopping requires an open Turn between Steps")
 	}
@@ -121,9 +124,9 @@ func (subject *ReactLoopAgent) BeginStopping() (bool, error) {
 	return true, nil
 }
 
-// FinishStopping observes input committed during the stopping boundary. True
+// finishStopping observes input committed during the stopping boundary. True
 // resumes Steps; false fixes the existing conclusion for Turn settlement.
-func (subject *ReactLoopAgent) FinishStopping() (bool, error) {
+func (subject *ReactLoopAgent) finishStopping() (bool, error) {
 	if subject.current == nil || subject.current.StateValue() != turnstate.StateStopping {
 		return false, errors.New("agentloop: turn-stopping boundary has not opened")
 	}
