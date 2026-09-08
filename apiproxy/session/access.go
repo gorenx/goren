@@ -6,22 +6,24 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/gorenx/goren/agent"
-	api "github.com/gorenx/goren/apiproxy"
+	sessionframes "github.com/gorenx/goren/apiproxy/session/events"
+
+	rpc "github.com/gorenx/goren/apiproxy/rpc"
 	"github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/session"
+
 	sesspersist "github.com/gorenx/goren/session/persistence"
 )
 
 type sessionAccess struct {
-	runtimeSessions *AgentSessions
+	runtimeSessions *activation
 }
 
 func (access *sessionAccess) ordinaryAgent(
 	requestContext context.Context,
-	identifier api.SessionID,
-) (agent.Agent, *connection.RPCError) {
-	subject, err := access.runtimeSessions.Ordinary(requestContext, session.SessionID(identifier))
+	identifier sessionframes.SessionID,
+) (Agent, *connection.RPCError) {
+	subject, err := access.runtimeSessions.ordinary(requestContext, session.SessionID(identifier))
 	if err == nil {
 		return subject, nil
 	}
@@ -35,27 +37,31 @@ func (access *sessionAccess) ordinaryAgent(
 		problem := subagentOwnershipError(identifier)
 		return nil, &problem
 	}
-	problem := api.NewRPCError(connection.ErrorInternal, err.Error(), struct{}{})
+	problem := rpc.NewRPCError(connection.ErrorInternal, err.Error(), struct{}{})
 	return nil, &problem
 }
 
-func sessionNotFoundError(identifier api.SessionID) connection.RPCError {
-	return api.NewRPCError(
+func sessionNotFoundError(identifier sessionframes.SessionID) connection.RPCError {
+	return rpc.NewRPCError(
 		connection.ErrorSessionNotFound,
 		fmt.Sprintf("session %q not found (not attached)", identifier),
 		struct {
-			SessionID api.SessionID `json:"sessionId"`
-		}{SessionID: identifier},
+			SessionID sessionframes.SessionID `json:"sessionId"`
+		}{
+			SessionID: identifier,
+		},
 	)
 }
 
-func subagentOwnershipError(identifier api.SessionID) connection.RPCError {
-	return api.NewRPCError(
+func subagentOwnershipError(identifier sessionframes.SessionID) connection.RPCError {
+	return rpc.NewRPCError(
 		connection.ErrorAgentBusy,
 		fmt.Sprintf("session %q is owned by subagent routing", identifier),
 		struct {
 			Reason string `json:"reason"`
-		}{Reason: "use subagent delivery for this child session"},
+		}{
+			Reason: "use subagent delivery for this child session",
+		},
 	)
 }
 
@@ -78,4 +84,26 @@ func mintUUID() (string, error) {
 		"%x-%x-%x-%x-%x",
 		randomBytes[0:4], randomBytes[4:6], randomBytes[6:8], randomBytes[8:10], randomBytes[10:16],
 	), nil
+}
+
+// attachedAgent resolves live control requests without recovering durable Sessions.
+func (access *sessionAccess) attachedAgent(ctx context.Context, identifier sessionframes.SessionID) (Agent, *connection.RPCError) {
+	subject, err := access.runtimeSessions.agents.Resolve(ctx, session.SessionID(identifier))
+	if err != nil {
+		problem := rpc.NewRPCError(connection.ErrorInternal, err.Error(), struct{}{})
+		return nil, &problem
+	}
+	if subject == nil {
+		problem := sessionNotFoundError(identifier)
+		return nil, &problem
+	}
+	if subject.ID() != session.SessionID(identifier) {
+		problem := rpc.NewRPCError(connection.ErrorInternal, "Agent resolution returned another identity", struct{}{})
+		return nil, &problem
+	}
+	if subject.ParentID() != nil {
+		problem := subagentOwnershipError(identifier)
+		return nil, &problem
+	}
+	return subject, nil
 }

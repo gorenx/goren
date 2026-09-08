@@ -3,6 +3,7 @@ package apiproxy
 import (
 	"context"
 	"errors"
+	rpc "github.com/gorenx/goren/apiproxy/rpc"
 
 	"github.com/gorenx/goren/connection"
 	boundcontract "github.com/gorenx/goren/subagent/bound"
@@ -69,13 +70,13 @@ func NewBoundGateway(
 // List returns the detached committed Definition roster.
 func (gateway *BoundGateway) List(
 	requestContext context.Context,
-	_ Request[BoundListRequest],
-) (Outcome[BoundListValue], error) {
+	_ rpc.Request[BoundListRequest],
+) (rpc.Outcome[BoundListValue], error) {
 	definitions, err := gateway.definitions.List(requestContext)
 	if err != nil {
-		return Outcome[BoundListValue]{}, err
+		return rpc.Outcome[BoundListValue]{}, err
 	}
-	return OK(BoundListValue{
+	return rpc.OK(BoundListValue{
 		Definitions: definitions,
 	}), nil
 }
@@ -84,15 +85,15 @@ func (gateway *BoundGateway) List(
 // Extensions or Registry mutation.
 func (gateway *BoundGateway) Extensions(
 	requestContext context.Context,
-	_ Request[BoundExtensionsRequest],
-) (Outcome[BoundExtensionsValue], error) {
+	_ rpc.Request[BoundExtensionsRequest],
+) (rpc.Outcome[BoundExtensionsValue], error) {
 	extensionOptions, err := gateway.extensionDirectory.ListBoundExtensions(
 		requestContext,
 	)
 	if err != nil {
-		return Outcome[BoundExtensionsValue]{}, err
+		return rpc.Outcome[BoundExtensionsValue]{}, err
 	}
-	return OK(BoundExtensionsValue{
+	return rpc.OK(BoundExtensionsValue{
 		Extensions: extensionOptions,
 	}), nil
 }
@@ -100,13 +101,13 @@ func (gateway *BoundGateway) Extensions(
 // Tools returns the root Tool choices without exposing their schemas or runtime.
 func (gateway *BoundGateway) Tools(
 	requestContext context.Context,
-	_ Request[BoundToolsRequest],
-) (Outcome[BoundToolsValue], error) {
+	_ rpc.Request[BoundToolsRequest],
+) (rpc.Outcome[BoundToolsValue], error) {
 	toolOptions, err := gateway.toolDirectory.ListBoundTools(requestContext)
 	if err != nil {
-		return Outcome[BoundToolsValue]{}, err
+		return rpc.Outcome[BoundToolsValue]{}, err
 	}
-	return OK(BoundToolsValue{
+	return rpc.OK(BoundToolsValue{
 		Tools: toolOptions,
 	}), nil
 }
@@ -114,8 +115,8 @@ func (gateway *BoundGateway) Tools(
 // Create commits and returns the first revision.
 func (gateway *BoundGateway) Create(
 	requestContext context.Context,
-	call Request[boundcontract.Creation],
-) (Outcome[BoundDefinitionValue], error) {
+	call rpc.Request[boundcontract.Creation],
+) (rpc.Outcome[BoundDefinitionValue], error) {
 	definitionValue, err := gateway.definitions.Create(
 		requestContext,
 		call.Payload,
@@ -127,7 +128,7 @@ func (gateway *BoundGateway) Create(
 			err,
 		)
 	}
-	return OK(BoundDefinitionValue{
+	return rpc.OK(BoundDefinitionValue{
 		Definition: definitionValue,
 	}), nil
 }
@@ -135,8 +136,8 @@ func (gateway *BoundGateway) Create(
 // Replace commits and returns one complete next revision.
 func (gateway *BoundGateway) Replace(
 	requestContext context.Context,
-	call Request[boundcontract.Replacement],
-) (Outcome[BoundDefinitionValue], error) {
+	call rpc.Request[boundcontract.Replacement],
+) (rpc.Outcome[BoundDefinitionValue], error) {
 	definitionValue, err := gateway.definitions.Replace(
 		requestContext,
 		call.Payload,
@@ -148,7 +149,7 @@ func (gateway *BoundGateway) Replace(
 			err,
 		)
 	}
-	return OK(BoundDefinitionValue{
+	return rpc.OK(BoundDefinitionValue{
 		Definition: definitionValue,
 	}), nil
 }
@@ -157,14 +158,14 @@ func boundDefinitionFailure[V any](
 	name string,
 	expectedRevision int64,
 	definitionErr error,
-) (Outcome[V], error) {
+) (rpc.Outcome[V], error) {
 	var typed *boundcontract.Error
 	if !errors.As(definitionErr, &typed) {
-		return Outcome[V]{}, definitionErr
+		return rpc.Outcome[V]{}, definitionErr
 	}
 	switch typed.Code {
 	case boundcontract.ErrorDefinitionExists:
-		return Fail[V](NewRPCError(
+		return rpc.Fail[V](rpc.NewRPCError(
 			connection.ErrorBoundDefinitionExists,
 			typed.Error(),
 			struct {
@@ -174,7 +175,7 @@ func boundDefinitionFailure[V any](
 			},
 		)), nil
 	case boundcontract.ErrorDefinitionNotFound:
-		return Fail[V](NewRPCError(
+		return rpc.Fail[V](rpc.NewRPCError(
 			connection.ErrorBoundDefinitionNotFound,
 			typed.Error(),
 			struct {
@@ -184,7 +185,7 @@ func boundDefinitionFailure[V any](
 			},
 		)), nil
 	case boundcontract.ErrorDefinitionConflict:
-		return Fail[V](NewRPCError(
+		return rpc.Fail[V](rpc.NewRPCError(
 			connection.ErrorBoundDefinitionConflict,
 			typed.Error(),
 			struct {
@@ -196,7 +197,7 @@ func boundDefinitionFailure[V any](
 			},
 		)), nil
 	case boundcontract.ErrorDefinitionRejected:
-		return Fail[V](NewRPCError(
+		return rpc.Fail[V](rpc.NewRPCError(
 			connection.ErrorBoundDefinitionRejected,
 			typed.Error(),
 			struct {
@@ -208,7 +209,7 @@ func boundDefinitionFailure[V any](
 			},
 		)), nil
 	default:
-		return Outcome[V]{}, definitionErr
+		return rpc.Outcome[V]{}, definitionErr
 	}
 }
 

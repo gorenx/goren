@@ -3,6 +3,7 @@ package apiproxy
 import (
 	"context"
 	"errors"
+	rpc "github.com/gorenx/goren/apiproxy/rpc"
 )
 
 // HostDescribeMethod is the canonical method and HTTP endpoint segment.
@@ -37,19 +38,19 @@ func (operation HostDescriptionFunc) DescribeHost(requestContext context.Context
 }
 
 // RegisterHostDescribe installs host.describe in a Catalog.
-func RegisterHostDescribe(methods *Catalog, source HostDescriptionProvider) error {
+func RegisterHostDescribe(methods *rpc.Catalog, source HostDescriptionProvider) error {
 	if source == nil {
 		return errors.New("apiproxy: host description provider is nil")
 	}
-	return RegisterUnary(methods, HostDescribeMethod, DecodeObject[HostDescribeRequest],
-		func(requestContext context.Context, _ Request[HostDescribeRequest]) (Outcome[HostDescription], error) {
+	return rpc.RegisterUnary(methods, HostDescribeMethod, rpc.DecodeObject[HostDescribeRequest],
+		func(requestContext context.Context, _ rpc.Request[HostDescribeRequest]) (rpc.Outcome[HostDescription], error) {
 			snapshot, err := source.DescribeHost(requestContext)
 			if err != nil {
-				return Outcome[HostDescription]{}, err
+				return rpc.Outcome[HostDescription]{}, err
 			}
 			if snapshot.AttachedSessions < 0 {
-				return Outcome[HostDescription]{}, errors.New("apiproxy: host description has negative attachedSessions")
+				return rpc.Outcome[HostDescription]{}, errors.New("apiproxy: host description has negative attachedSessions")
 			}
-			return OK(snapshot), nil
+			return rpc.OK(snapshot), nil
 		})
 }

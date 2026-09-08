@@ -9,14 +9,13 @@ import (
 	"github.com/gorenx/goren/systemprompt"
 )
 
-// AttemptInput contains submitted model parameters and this Step's prompt data.
+// AttemptInput contains this Step's identity and prompt data.
 // It deliberately excludes conversation messages: Start requests the committed
 // Session and derives those inside the AgentLoop business boundary.
 type AttemptInput struct {
 	Position  session.StepPosition
 	SessionID session.SessionID
 	Prompt    systemprompt.PromptAssembly
-	Config    llm.CallConfig
 	First     bool
 }
 
@@ -63,9 +62,8 @@ func NewAttempt(input AttemptInput) (*Attempt, error) {
 		return nil, err
 	}
 	initial := llm.GenerateOptions{
-		CallConfig: input.Config,
-		SessionID:  string(input.SessionID),
-		Tools:      input.Prompt.Tools,
+		SessionID: string(input.SessionID),
+		Tools:     input.Prompt.Tools,
 	}
 	if rendered != "" {
 		initial.System = &rendered

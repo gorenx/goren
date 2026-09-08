@@ -6,13 +6,13 @@ import (
 	"strings"
 	"testing"
 
-	api "github.com/gorenx/goren/apiproxy"
+	rpc "github.com/gorenx/goren/apiproxy/rpc"
+
 	"github.com/gorenx/goren/session"
 	sessionquery "github.com/gorenx/goren/session/query"
 )
 
 type searchQueryStub struct {
-	sessionquery.QueryService
 	requests []sessionquery.SearchSessionsRequest
 	pages    []sessionquery.SessionSearchPage
 }
@@ -37,30 +37,33 @@ func (visible visibilityStub) VisibleSessionIDs(context.Context) (map[session.Se
 
 func TestSearchGatewayAppliesFixedScopeAndVisibility(t *testing.T) {
 	t.Parallel()
-	queryStub := &searchQueryStub{pages: []sessionquery.SessionSearchPage{{
-		Items: []sessionquery.SessionHit{
-			searchHit("hidden", session.UserMessageEventName, sessionquery.SurfaceCurrent, "hidden"),
-			searchHit("visible", session.AssistantMessageEventName, sessionquery.SurfaceCurrent, strings.Repeat("界", 241)),
-			searchHit("shadowed", session.UserMessageEventName, sessionquery.SurfaceShadowed, "old"),
-		},
-	}}}
+	queryStub := &searchQueryStub{
+		pages: []sessionquery.SessionSearchPage{{
+			Items: []sessionquery.SessionHit{
+				searchHit("hidden", session.UserMessageEventName, sessionquery.SurfaceCurrent, "hidden"),
+				searchHit("visible", session.AssistantMessageEventName, sessionquery.SurfaceCurrent, strings.Repeat("界", 241)),
+				searchHit("shadowed", session.UserMessageEventName, sessionquery.SurfaceShadowed, "old"),
+			},
+		}},
+	}
 	searchService, err := NewSearchGateway(queryStub, visibilityStub{
-		"visible": {}, "shadowed": {},
+		"visible":  {},
+		"shadowed": {},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	methods := api.NewCatalog()
-	if err := api.RegisterUnary(methods, api.SessionSearchMethod, api.DecodeSessionSearchRequest, searchService.Search); err != nil {
+	methods := rpc.NewCatalog()
+	if err := rpc.RegisterUnary(methods, SearchMethod, DecodeSearchRequest, searchService.Search); err != nil {
 		t.Fatal(err)
 	}
 	result, err := methods.DispatchUnary(
-		context.Background(), api.SessionSearchMethod, "search-rpc", json.RawMessage(`{"query":"needle"}`),
+		context.Background(), SearchMethod, "search-rpc", json.RawMessage(`{"query":"needle"}`),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var value api.SessionSearchValue
+	var value SearchValue
 	if !result.OK || result.Error != nil || json.Unmarshal(result.Value, &value) != nil ||
 		len(value.Items) != 1 || value.Items[0].SessionID != "visible" ||
 		len([]rune(value.Items[0].Snippet)) != sessionSearchSnippetMaximum {
@@ -85,9 +88,16 @@ func searchHit(
 	snippet string,
 ) sessionquery.SessionHit {
 	return sessionquery.SessionHit{
-		SessionRecord: sessionquery.SessionRecord{Header: session.Header{ID: identifier}},
+		SessionRecord: sessionquery.SessionRecord{
+			Header: session.Header{
+				ID: identifier,
+			},
+		},
 		BestMatch: sessionquery.EventHit{
-			SessionID: identifier, Type: eventType, Surface: surface, Snippet: snippet,
+			SessionID: identifier,
+			Type:      eventType,
+			Surface:   surface,
+			Snippet:   snippet,
 		},
 	}
 }

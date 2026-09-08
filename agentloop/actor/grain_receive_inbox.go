@@ -17,6 +17,8 @@ func (owner *Grain) receiveInbox(gc *goakt.GrainContext) bool {
 		owner.inject(gc, input)
 	case Replace:
 		owner.replace(gc, input)
+	case Promote:
+		owner.promote(gc, input)
 	case Remove:
 		owner.remove(gc, input)
 	default:

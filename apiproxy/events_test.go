@@ -1,8 +1,12 @@
 package apiproxy_test
+import sessionframes "github.com/gorenx/goren/apiproxy/session/events"
+
 
 import (
 	"context"
 	"errors"
+	"github.com/gorenx/goren/apiproxy/interaction"
+	"github.com/gorenx/goren/apiproxy/stream"
 	"testing"
 
 	"github.com/gorenx/goren/apiproxy"
@@ -11,17 +15,17 @@ import (
 
 func TestEventStreamsKeepMuxAndHostIndependent(t *testing.T) {
 	t.Parallel()
-	muxItem := apiproxy.StreamRequest[apiproxy.MuxFrame]{
-		RPCID: "mux", Payload: apiproxy.SessionSubscribedFrame{SessionID: "session-1", LastSeq: 4},
+	muxItem := stream.Request[stream.MuxFrame]{
+		RPCID: "mux", Payload: sessionframes.SubscribedFrame{SessionID: "session-1", LastSeq: 4},
 	}
-	hostItem := apiproxy.StreamRequest[apiproxy.HostFrame]{
-		RPCID: "host", Payload: apiproxy.HostSessionStatusFrame{SessionID: "session-1", Running: true},
+	hostItem := stream.Request[stream.HostFrame]{
+		RPCID: "host", Payload: sessionframes.StatusFrame{SessionID: "session-1", Running: true},
 	}
 	streams, err := apiproxy.NewEventStreams(
-		func(_ context.Context, emit func(apiproxy.StreamRequest[apiproxy.MuxFrame]) error) error {
+		func(_ context.Context, emit func(stream.Request[stream.MuxFrame]) error) error {
 			return emit(muxItem)
 		},
-		func(_ context.Context, emit func(apiproxy.StreamRequest[apiproxy.HostFrame]) error) error {
+		func(_ context.Context, emit func(stream.Request[stream.HostFrame]) error) error {
 			return emit(hostItem)
 		},
 	)
@@ -54,10 +58,10 @@ func TestEventStreamsPreserveSourceFailure(t *testing.T) {
 	t.Parallel()
 	sourceFailure := errors.New("source failed")
 	streams, err := apiproxy.NewEventStreams(
-		func(context.Context, func(apiproxy.StreamRequest[apiproxy.MuxFrame]) error) error {
+		func(context.Context, func(stream.Request[stream.MuxFrame]) error) error {
 			return sourceFailure
 		},
-		func(context.Context, func(apiproxy.StreamRequest[apiproxy.HostFrame]) error) error { return nil },
+		func(context.Context, func(stream.Request[stream.HostFrame]) error) error { return nil },
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -69,8 +73,8 @@ func TestEventStreamsPreserveSourceFailure(t *testing.T) {
 
 func TestEventStreamsRequireBothProviders(t *testing.T) {
 	t.Parallel()
-	idleMux := func(context.Context, func(apiproxy.StreamRequest[apiproxy.MuxFrame]) error) error { return nil }
-	idleHost := func(context.Context, func(apiproxy.StreamRequest[apiproxy.HostFrame]) error) error { return nil }
+	idleMux := func(context.Context, func(stream.Request[stream.MuxFrame]) error) error { return nil }
+	idleHost := func(context.Context, func(stream.Request[stream.HostFrame]) error) error { return nil }
 	if _, err := apiproxy.NewEventStreams(nil, idleHost); err == nil {
 		t.Fatal("nil mux handler was accepted")
 	}
@@ -82,12 +86,12 @@ func TestEventStreamsRequireBothProviders(t *testing.T) {
 func TestEventStreamsRejectInvalidTypedFrameBeforeCarrier(t *testing.T) {
 	t.Parallel()
 	streams, err := apiproxy.NewEventStreams(
-		func(_ context.Context, emit func(apiproxy.StreamRequest[apiproxy.MuxFrame]) error) error {
-			return emit(apiproxy.StreamRequest[apiproxy.MuxFrame]{
-				RPCID: "bad", Payload: apiproxy.QuestionRequestedFrame{SessionID: "session-1", Questions: nil},
+		func(_ context.Context, emit func(stream.Request[stream.MuxFrame]) error) error {
+			return emit(stream.Request[stream.MuxFrame]{
+				RPCID: "bad", Payload: interaction.QuestionRequestedFrame{SessionID: "session-1", Questions: nil},
 			})
 		},
-		func(context.Context, func(apiproxy.StreamRequest[apiproxy.HostFrame]) error) error { return nil },
+		func(context.Context, func(stream.Request[stream.HostFrame]) error) error { return nil },
 	)
 	if err != nil {
 		t.Fatal(err)

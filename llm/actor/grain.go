@@ -3,6 +3,7 @@ package llmactor
 import (
 	"context"
 	"errors"
+
 	"github.com/google/uuid"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/llm/modelconfig"
@@ -29,6 +30,16 @@ func (*Grain) OnDeactivate(context.Context, *goakt.GrainProps) error { return ni
 // OnReceive delegates business invariants to Registry and publishes only mutations.
 func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 	switch input := gc.Message().(type) {
+	case InitializeAgent:
+		if owner.catalog == nil {
+			gc.Response(Completion{
+				Err: ErrModelsUnavailable,
+			})
+			return
+		}
+		gc.Response(Completion{
+			Err: owner.catalog.Restore(&owner.settings, input.AgentID, input.Events),
+		})
 	case InitializeModels:
 		if owner.catalog != nil || input.Catalog == nil {
 			gc.Response(Completion{

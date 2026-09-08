@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	api "github.com/gorenx/goren/apiproxy"
+	rpc "github.com/gorenx/goren/apiproxy/rpc"
+	sessionframes "github.com/gorenx/goren/apiproxy/session/events"
+	workspaceapi "github.com/gorenx/goren/apiproxy/workspace"
 	"github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/session"
 	sessiontitle "github.com/gorenx/goren/session/title"
@@ -14,52 +16,55 @@ import (
 
 type sessionLifecycle struct {
 	access           *sessionAccess
-	titles           sessiontitle.TitleService
-	workspaces       workspace.Registry
+	workspaces       Workspaces
 	workingDirectory string
 	newSessionID     func() (session.SessionID, error)
 }
 
-func (flow *sessionLifecycle) Rename(requestContext context.Context, call api.Request[api.SessionRenameRequest]) (api.Outcome[api.SessionRenameValue], error) {
+func (flow *sessionLifecycle) Rename(requestContext context.Context, call rpc.Request[RenameRequest]) (rpc.Outcome[RenameValue], error) {
 	subject, refused := flow.access.ordinaryAgent(requestContext, call.Payload.SessionID)
 	if refused != nil {
-		return api.Fail[api.SessionRenameValue](*refused), nil
+		return rpc.Fail[RenameValue](*refused), nil
 	}
-	accepted, err := flow.titles.Rename(
-		requestContext,
-		subject.SessionValue(),
-		call.Payload.Title,
-	)
+	accepted, err := subject.Rename(requestContext, call.Payload.Title)
 	if err != nil {
 		var invalid *sessiontitle.SessionTitleInvalidError
 		if errors.As(err, &invalid) {
-			return api.Fail[api.SessionRenameValue](api.NewRPCError(
+			return rpc.Fail[RenameValue](rpc.NewRPCError(
 				connection.ErrorTitleInvalid, invalid.Error(), struct {
-					SessionID api.SessionID `json:"sessionId"`
-				}{SessionID: call.Payload.SessionID},
+					SessionID sessionframes.SessionID `json:"sessionId"`
+				}{
+					SessionID: call.Payload.SessionID,
+				},
 			)), nil
 		}
-		return api.Fail[api.SessionRenameValue](api.NewRPCError(
+		return rpc.Fail[RenameValue](rpc.NewRPCError(
 			connection.ErrorInternal,
 			fmt.Sprintf("failed to rename session %q: %v", call.Payload.SessionID, err),
 			struct{}{},
 		)), nil
 	}
-	return api.OK(api.SessionRenameValue{Title: accepted.Title, Seq: accepted.EventSeq}), nil
+	return rpc.OK(RenameValue{
+		Title: accepted.Text,
+		Seq:   accepted.Seq,
+	}), nil
 }
 
 // Create publishes a fresh ordinary Agent or idempotently adopts the same id and cwd.
-func (flow *sessionLifecycle) Create(requestContext context.Context, call api.Request[api.SessionCreateRequest]) (api.Outcome[api.SessionCreateValue], error) {
-	var workspaceSubject workspace.Workspace
+func (flow *sessionLifecycle) Create(requestContext context.Context, call rpc.Request[CreateRequest]) (rpc.Outcome[CreateValue], error) {
+	var workspaceSubject *workspace.WorkspaceState
 	var workspaceSnapshot workspace.WorkspaceState
 	if call.Payload.WorkspaceID != nil {
-		resolved, found := flow.workspaces.Get(workspace.ID(*call.Payload.WorkspaceID))
-		if !found {
-			return workspaceNotFound[api.SessionCreateValue](*call.Payload.WorkspaceID), nil
+		resolved, err := flow.workspaces.Read(requestContext, workspace.ID(*call.Payload.WorkspaceID))
+		if err != nil {
+			return rpc.Outcome[CreateValue]{}, err
 		}
-		workspaceSnapshot = resolved.Snapshot()
+		if resolved == nil {
+			return workspaceNotFound[CreateValue](*call.Payload.WorkspaceID), nil
+		}
+		workspaceSnapshot = *resolved
 		if workspaceSnapshot.ID == "" {
-			return workspaceNotFound[api.SessionCreateValue](*call.Payload.WorkspaceID), nil
+			return workspaceNotFound[CreateValue](*call.Payload.WorkspaceID), nil
 		}
 		workspaceSubject = resolved
 	}
@@ -67,7 +72,7 @@ func (flow *sessionLifecycle) Create(requestContext context.Context, call api.Re
 	if call.Payload.SessionID == nil {
 		generated, err := flow.newSessionID()
 		if err != nil {
-			return api.Outcome[api.SessionCreateValue]{}, err
+			return rpc.Outcome[CreateValue]{}, err
 		}
 		identifier = generated
 	} else {
@@ -79,76 +84,81 @@ func (flow *sessionLifecycle) Create(requestContext context.Context, call api.Re
 	} else if call.Payload.CWD != nil {
 		workingDirectory = *call.Payload.CWD
 	}
-	subject, err := flow.access.runtimeSessions.Ensure(
-		requestContext, identifier, workingDirectory, call.Payload.AgentPreset, true, nil,
+	subject, err := flow.access.runtimeSessions.ensure(
+		requestContext, identifier, workingDirectory, call.Payload.AgentPreset,
 	)
 	if err != nil {
 		var ownership *SubagentOwnershipError
 		if errors.As(err, &ownership) {
-			return api.Fail[api.SessionCreateValue](subagentOwnershipError(api.SessionID(ownership.SessionID()))), nil
+			return rpc.Fail[CreateValue](subagentOwnershipError(sessionframes.SessionID(ownership.SessionID()))), nil
 		}
 		var presetConflict *PresetConflictError
 		if errors.As(err, &presetConflict) {
-			return api.Fail[api.SessionCreateValue](api.NewRPCError(
+			return rpc.Fail[CreateValue](rpc.NewRPCError(
 				connection.ErrorAgentPresetConflict, presetConflict.Error(), struct {
-					SessionID       api.SessionID `json:"sessionId"`
-					RequestedPreset string        `json:"requestedPreset"`
-					ExistingPreset  *string       `json:"existingPreset,omitempty"`
+					SessionID       sessionframes.SessionID `json:"sessionId"`
+					RequestedPreset string                  `json:"requestedPreset"`
+					ExistingPreset  *string                 `json:"existingPreset,omitempty"`
 				}{
-					SessionID: api.SessionID(presetConflict.SessionID()), RequestedPreset: presetConflict.RequestedPreset(),
-					ExistingPreset: presetConflict.ExistingPreset(),
+					SessionID:       sessionframes.SessionID(presetConflict.SessionID()),
+					RequestedPreset: presetConflict.RequestedPreset(),
+					ExistingPreset:  presetConflict.ExistingPreset(),
 				},
 			)), nil
 		}
 		var conflict *CWDConflictError
 		if errors.As(err, &conflict) {
-			return api.Fail[api.SessionCreateValue](api.NewRPCError(
+			return rpc.Fail[CreateValue](rpc.NewRPCError(
 				connection.ErrorSessionConflict, conflict.Error(), struct {
-					SessionID    api.SessionID `json:"sessionId"`
-					RequestedCWD string        `json:"requestedCwd"`
-					ExistingCWD  *string       `json:"existingCwd,omitempty"`
+					SessionID    sessionframes.SessionID `json:"sessionId"`
+					RequestedCWD string                  `json:"requestedCwd"`
+					ExistingCWD  *string                 `json:"existingCwd,omitempty"`
 				}{
-					SessionID: api.SessionID(conflict.SessionID()), RequestedCWD: conflict.RequestedCWD(),
-					ExistingCWD: conflict.ExistingCWD(),
+					SessionID:    sessionframes.SessionID(conflict.SessionID()),
+					RequestedCWD: conflict.RequestedCWD(),
+					ExistingCWD:  conflict.ExistingCWD(),
 				},
 			)), nil
 		}
-		return api.Fail[api.SessionCreateValue](api.NewRPCError(
+		return rpc.Fail[CreateValue](rpc.NewRPCError(
 			connection.ErrorInternal,
 			fmt.Sprintf("failed to create session %q: %v", identifier, err),
 			struct{}{},
 		)), nil
 	}
 	if workspaceSubject != nil {
-		if err := workspaceSubject.AttachSession(requestContext, subject.SessionValue().ID()); err != nil {
-			return api.Fail[api.SessionCreateValue](api.NewRPCError(
+		if err := flow.workspaces.AttachSession(requestContext, workspaceSnapshot.ID, subject.ID()); err != nil {
+			return rpc.Fail[CreateValue](rpc.NewRPCError(
 				connection.ErrorWorkspaceAttachFailed,
 				fmt.Sprintf(
 					"session %q was created but could not attach to workspace %q: %v",
-					subject.SessionValue().ID(), workspaceSnapshot.ID, err,
+					subject.ID(), workspaceSnapshot.ID, err,
 				),
 				struct {
-					SessionID   api.SessionID   `json:"sessionId"`
-					WorkspaceID api.WorkspaceID `json:"workspaceId"`
+					SessionID   sessionframes.SessionID `json:"sessionId"`
+					WorkspaceID workspaceapi.ID         `json:"workspaceId"`
 				}{
-					SessionID:   api.SessionID(subject.SessionValue().ID()),
-					WorkspaceID: api.WorkspaceID(workspaceSnapshot.ID),
+					SessionID:   sessionframes.SessionID(subject.ID()),
+					WorkspaceID: workspaceapi.ID(workspaceSnapshot.ID),
 				},
 			)), nil
 		}
 	}
-	header := subject.SessionValue().Header()
-	return api.OK(api.SessionCreateValue{
-		SessionID: api.SessionID(identifier), AgentPreset: cloneStringPointer(header.AgentPreset),
+	header := subject.Header()
+	return rpc.OK(CreateValue{
+		SessionID:   sessionframes.SessionID(identifier),
+		AgentPreset: cloneStringPointer(header.AgentPreset),
 	}), nil
 }
 
-func workspaceNotFound[V any](identifier api.WorkspaceID) api.Outcome[V] {
-	return api.Fail[V](api.NewRPCError(
+func workspaceNotFound[V any](identifier workspaceapi.ID) rpc.Outcome[V] {
+	return rpc.Fail[V](rpc.NewRPCError(
 		connection.ErrorWorkspaceNotFound,
 		"workspace \""+string(identifier)+"\" not found",
 		struct {
-			WorkspaceID api.WorkspaceID `json:"workspaceId"`
-		}{WorkspaceID: identifier},
+			WorkspaceID workspaceapi.ID `json:"workspaceId"`
+		}{
+			WorkspaceID: identifier,
+		},
 	))
 }

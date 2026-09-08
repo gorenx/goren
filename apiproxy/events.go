@@ -4,16 +4,18 @@ import (
 	"context"
 	"errors"
 
+	"github.com/gorenx/goren/apiproxy/stream"
+
 	"github.com/gorenx/goren/connection"
 )
 
 // MuxStreamHandler produces one typed all-session downlink until its context
 // is cancelled, the source completes, or delivery fails.
-type MuxStreamHandler func(context.Context, func(StreamRequest[MuxFrame]) error) error
+type MuxStreamHandler func(context.Context, func(stream.Request[stream.MuxFrame]) error) error
 
 // HostStreamHandler produces one typed host-level downlink until its context
 // is cancelled, the source completes, or delivery fails.
-type HostStreamHandler func(context.Context, func(StreamRequest[HostFrame]) error) error
+type HostStreamHandler func(context.Context, func(stream.Request[stream.HostFrame]) error) error
 
 // EventStreams is the API Proxy's transport-neutral offered surface for the
 // independent mux and host event streams.
@@ -35,8 +37,8 @@ func NewEventStreams(muxHandler MuxStreamHandler, hostHandler HostStreamHandler)
 
 // Mux opens the all-session mux stream.
 func (streams *EventStreams) Mux(requestContext context.Context, emit func(connection.RPCRequest) error) error {
-	return streams.muxHandler(requestContext, func(item StreamRequest[MuxFrame]) error {
-		payload, err := EncodeMuxFrame(item.Payload)
+	return streams.muxHandler(requestContext, func(item stream.Request[stream.MuxFrame]) error {
+		payload, err := stream.EncodeMuxFrame(item.Payload)
 		if err != nil {
 			return err
 		}
@@ -46,8 +48,8 @@ func (streams *EventStreams) Mux(requestContext context.Context, emit func(conne
 
 // Host opens the host-level event stream.
 func (streams *EventStreams) Host(requestContext context.Context, emit func(connection.RPCRequest) error) error {
-	return streams.hostHandler(requestContext, func(item StreamRequest[HostFrame]) error {
-		payload, err := EncodeHostFrame(item.Payload)
+	return streams.hostHandler(requestContext, func(item stream.Request[stream.HostFrame]) error {
+		payload, err := stream.EncodeHostFrame(item.Payload)
 		if err != nil {
 			return err
 		}

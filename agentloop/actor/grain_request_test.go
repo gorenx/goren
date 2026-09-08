@@ -152,7 +152,16 @@ func runModelRecovery(t *testing.T, useDefault bool) {
 			t.Fatal(err)
 		}
 	}
-	settings := catalog
+	_, configureErr := system.AskGrain(ctx, catalog, llmactor.SetConfiguration{
+		AgentID: "settlement",
+		Config: llm.CallConfig{
+			Provider: "p",
+			Model:    "m",
+		},
+	}, time.Second)
+	if configureErr != nil {
+		t.Fatal(configureErr)
+	}
 	pool, err := llmactor.SpawnPool(ctx, system, "llm-pool", 2, llmactor.InitializeWorker{
 		LLM: catalog,
 	})
@@ -160,14 +169,9 @@ func runModelRecovery(t *testing.T, useDefault bool) {
 		t.Fatal(err)
 	}
 	payload, err := system.AskGrain(ctx, target, requestModel{
-		configuration: settings,
-		router:        pool,
-		replyTimeout:  time.Second,
-		middleware:    coordinator,
-		requestRoutes: []middlewareactor.Route{{
-			Definition: "configure",
-			Target:     hooks,
-		}},
+		router:       pool,
+		replyTimeout: time.Second,
+		middleware:   coordinator,
 		recoveryRoutes: []middlewareactor.Route{{
 			Definition: "recover",
 			Target:     recovery,
@@ -192,7 +196,7 @@ func runModelRecovery(t *testing.T, useDefault bool) {
 	if useDefault {
 		expectedRecovery = 0
 	}
-	if counts.configurations != 2 || counts.recoveries != expectedRecovery {
+	if counts.configurations != 0 || counts.recoveries != expectedRecovery {
 		t.Fatalf("hook counts: %+v", counts)
 	}
 	payload, err = system.AskGrain(ctx, storage, sessionactor.Read{}, time.Second)

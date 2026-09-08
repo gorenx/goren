@@ -2,16 +2,17 @@ package loopactor
 
 import (
 	"errors"
+
 	promptactor "github.com/gorenx/goren/systemprompt/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
-type initializationModel struct {
+type initializationRestored struct {
 	operation *initialization
 	err       error
 }
 
-func (owner *Grain) initializePrompt(gc *goakt.GrainContext, input initializationModel) {
+func (owner *Grain) initializePrompt(gc *goakt.GrainContext, input initializationRestored) {
 	operation := input.operation
 	if owner.initialization != operation {
 		return

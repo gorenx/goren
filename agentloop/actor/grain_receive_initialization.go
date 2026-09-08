@@ -5,7 +5,7 @@ import (
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
-// Initialization advances authorization, Session restoration, model selection and Prompt binding.
+// Initialization advances authorization, Session restoration, and Prompt binding.
 func (owner *Grain) receiveInitialization(gc *goakt.GrainContext) bool {
 	switch input := gc.Message().(type) {
 	case agentactor.Initialize:
@@ -13,8 +13,6 @@ func (owner *Grain) receiveInitialization(gc *goakt.GrainContext) bool {
 	case initializationAuthorized:
 		owner.restoreInbox(gc, input)
 	case initializationRestored:
-		owner.initializeModel(gc, input)
-	case initializationModel:
 		owner.initializePrompt(gc, input)
 	default:
 		return false

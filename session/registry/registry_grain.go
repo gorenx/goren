@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"errors"
+
 	sessionactor "github.com/gorenx/goren/session/actor"
 
 	"github.com/gorenx/goren/session"
@@ -12,7 +13,7 @@ import (
 // RegistryName identifies the shared Session creation authority.
 const RegistryName = "session-registry"
 
-// RegistryGrain owns Session reservations, not framework addressing or logs.
+// RegistryGrain owns Session reservations and initialized routes, not Session logs.
 // The composition root must create it as a long-lived Grain.
 type RegistryGrain struct {
 	directory authority
@@ -49,6 +50,9 @@ func (owner *RegistryGrain) OnDeactivate(context.Context, *goakt.GrainProps) err
 func (owner *RegistryGrain) OnReceive(gc *goakt.GrainContext) {
 	var err error
 	switch incoming := gc.Message().(type) {
+	case ResolveSession:
+		gc.Response(owner.resolveSession(incoming))
+		return
 	case ListSessions:
 		gc.Response(owner.listSessions())
 		return

@@ -9,6 +9,29 @@ import (
 )
 
 func (owner *Grain) resolve(gc *goakt.GrainContext, input Resolve) {
+	if input.WaitReady {
+		entry, found := owner.creations[input.AgentID]
+		if found &&
+			!entry.closed &&
+			entry.activation != nil &&
+			entry.activation.initializing {
+			if failure := owner.directory.CheckAdmission(input.AgentID); failure != nil {
+				gc.Response(Ready{
+					Err: failure,
+				})
+				return
+			}
+			reply := gc.DeferResponse()
+			if reply == nil {
+				gc.Response(Ready{
+					Err: errors.New("agent registry: resolution requires a request"),
+				})
+				return
+			}
+			entry.activation.replies = append(entry.activation.replies, reply)
+			return
+		}
+	}
 	result := owner.ready(input.AgentID)
 	if result.Err != nil {
 		gc.Response(result)

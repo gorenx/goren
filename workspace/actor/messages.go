@@ -2,6 +2,7 @@ package workspaceactor
 
 import (
 	"context"
+
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/workspace"
 )
@@ -120,3 +121,18 @@ func (Listing) workspaceReply()               {}
 func (Deleted) workspaceReply()               {}
 func (Order) workspaceReply()                 {}
 func (Completion) workspaceReply()            {}
+
+// Updated returns the snapshot committed by one workspace mutation.
+type Updated struct {
+	State workspace.WorkspaceState
+	Err   error
+}
+
+// Archived returns the archive set committed by one archive operation.
+type Archived struct {
+	IDs []session.SessionID
+	Err error
+}
+
+func (Updated) workspaceReply()  {}
+func (Archived) workspaceReply() {}

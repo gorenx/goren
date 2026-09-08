@@ -453,3 +453,36 @@ func cloneInt(source *int) *int {
 	value := *source
 	return &value
 }
+
+// ErrInputMissing means a queued occurrence was already claimed or removed.
+var ErrInputMissing = errors.New("agent: queued input is no longer pending")
+
+// PrepareMove stages removal and reinsertion in one atomic Session batch.
+// It preserves the existing cancellation notification of an explicit queue removal.
+func (pending *Inbox) PrepareMove(identifier agentmessage.MessageID, destination InboxTarget) (InboxEdit, error) {
+	source, index, found := pending.locate(identifier)
+	if !found {
+		return InboxEdit{}, ErrInputMissing
+	}
+	first, err := pending.PrepareSplice(source, index, 1, nil)
+	if err != nil {
+		return InboxEdit{}, err
+	}
+	candidate := &Inbox{
+		state: inboxState{
+			nextTurn: pending.NextTurn(),
+			nextStep: pending.NextStep(),
+		},
+	}
+	if source == NextTurn {
+		candidate.state.nextTurn = append(candidate.state.nextTurn[:index], candidate.state.nextTurn[index+1:]...)
+	} else {
+		candidate.state.nextStep = append(candidate.state.nextStep[:index], candidate.state.nextStep[index+1:]...)
+	}
+	second, err := candidate.PrepareAppend(destination, first.Removed[0])
+	if err != nil {
+		return InboxEdit{}, err
+	}
+	first.Drafts = append(first.Drafts, second.Drafts...)
+	return first, nil
+}

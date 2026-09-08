@@ -2,8 +2,9 @@ package registry
 
 import (
 	"errors"
-	sessionactor "github.com/gorenx/goren/session/actor"
 	"reflect"
+
+	sessionactor "github.com/gorenx/goren/session/actor"
 
 	"github.com/gorenx/goren/session"
 	goakt "github.com/tochemey/goakt/v4/actor"
@@ -130,6 +131,7 @@ func (owner *RegistryGrain) openSession(gc *goakt.GrainContext, identifier sessi
 			if result.Err == nil && owner.sessions[identifier] == entry {
 				header := result.Header.Clone()
 				entry.header = &header
+				entry.endpoint = identity
 			}
 			operation.respond(result)
 		},

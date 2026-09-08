@@ -9,11 +9,13 @@ import (
 )
 
 func TestModelRequestUsesAgentCancellationAtEachBoundary(t *testing.T) {
-	for _, boundary := range []string{"before request", "history", "configuration"} {
+	for _, boundary := range []string{"before request", "history", "generation"} {
 		t.Run(boundary, func(t *testing.T) {
 			subject, history := requestingStep(t)
-			var completion modelrequest.RequestResult = modelrequest.RequestRead{
-				Snapshot: history.Snapshot(),
+			var completion modelrequest.RequestResult = modelrequest.AttemptAdvanced{
+				Result: modelrequest.LogRead{
+					Snapshot: history.Snapshot(),
+				},
 			}
 			if boundary != "before request" {
 				if _, err := subject.StartRequest(); err != nil {
@@ -23,12 +25,14 @@ func TestModelRequestUsesAgentCancellationAtEachBoundary(t *testing.T) {
 					t.Fatal("second request accepted")
 				}
 			}
-			if boundary == "configuration" {
+			if boundary == "generation" {
 				next, err := subject.AdvanceRequest(completion)
-				if _, ok := next.(modelrequest.ResolveConfiguration); err != nil || !ok {
+				if _, ok := next.(modelrequest.RunAttempt); err != nil || !ok {
 					t.Fatalf("configuration boundary: %T, %v", next, err)
 				}
-				completion = modelrequest.ConfigurationResolved{}
+				completion = modelrequest.AttemptAdvanced{
+					Result: modelrequest.GenerationStarted{},
+				}
 			}
 			if _, err := subject.Cancel(agent.ParentCancel{}, agent.CancelOptions{
 				KeepInbox: true,
@@ -44,6 +48,19 @@ func TestModelRequestUsesAgentCancellationAtEachBoundary(t *testing.T) {
 				return
 			}
 			next, err := subject.AdvanceRequest(completion)
+			if err != nil {
+				t.Fatal(err)
+			}
+			running, ok := next.(modelrequest.RunAttempt)
+			if !ok {
+				t.Fatalf("cleanup operation = %T", next)
+			}
+			if _, ok := running.Operation.(modelrequest.CloseStream); !ok {
+				t.Fatalf("cleanup = %T", running.Operation)
+			}
+			next, err = subject.AdvanceRequest(modelrequest.AttemptAdvanced{
+				Result: modelrequest.StreamClosed{},
+			})
 			if err != nil {
 				t.Fatal(err)
 			}

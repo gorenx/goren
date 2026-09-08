@@ -3,6 +3,7 @@ package registry
 import (
 	"github.com/gorenx/goren/session"
 	sessionactor "github.com/gorenx/goren/session/actor"
+	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
 // lifecycle groups all framework-facing work and results for one Session creation.
@@ -17,6 +18,9 @@ type lifecycle struct {
 	// header is present only after successful initialization. It is immutable
 	// creation metadata for listing, not a copy of the mutable Session log.
 	header *session.Header
+
+	// endpoint addresses the initialized Session Grain. Resolution does not activate it.
+	endpoint *goakt.GrainIdentity
 
 	// initialization fixes the original input and storage port and tracks callers
 	// waiting for initialization. It remains after success or failure so retries

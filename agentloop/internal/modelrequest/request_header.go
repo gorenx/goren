@@ -1,7 +1,6 @@
 package modelrequest
 
 import (
-	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 )
 
@@ -39,21 +38,6 @@ func ContextDraft(previous *session.RequestRouteContext, effective session.Reque
 		return nil, err
 	}
 	return &draft, nil
-}
-
-// Proposal removes adapter-derived defaults so a subsequent adapter resolution
-// can recompute them. The returned parameters do not alias the persisted header.
-func Proposal(previous session.EpochHeader) llm.CallConfig {
-	proposed := llm.CloneCallConfig(previous.Config)
-	if previous.AdapterDefaults != nil {
-		if previous.AdapterDefaults.ReasoningEffort {
-			proposed.ReasoningEffort = ""
-		}
-		if previous.AdapterDefaults.MaxTokens {
-			proposed.MaxTokens = nil
-		}
-	}
-	return proposed
 }
 
 func sameContext(left session.RequestRouteContext, right session.RequestRouteContext) bool {

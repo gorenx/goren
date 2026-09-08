@@ -91,6 +91,8 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 		owner.binding = input
 		owner.sessionID = input.SessionID
 		gc.Response(Completion{})
+	case ListCommands:
+		owner.listCommands(gc, input)
 	case Execute:
 		owner.execute(gc, input)
 	case Cancel:

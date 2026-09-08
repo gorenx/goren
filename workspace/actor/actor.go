@@ -21,7 +21,11 @@ type Actor struct {
 
 // Spawn starts the single Workspace owner with framework stashing enabled.
 // Storage remains owned by the caller if actor startup fails.
-func Spawn(ctx context.Context, system goakt.ActorSystem, name string, storage workspace.Backend, options workspace.RegistryOptions) (*goakt.PID, error) {
+func Spawn(
+	ctx context.Context, system goakt.ActorSystem,
+	name string, storage workspace.Backend,
+	options workspace.RegistryOptions,
+) (*goakt.PID, error) {
 	if system == nil {
 		return nil, errors.New("workspace: actor system is required")
 	}
@@ -170,9 +174,8 @@ func (owner *Actor) execute(ctx context.Context, command Command) Reply {
 			Err: err,
 		}
 	case Rename:
-		result = Completion{
-			Err: owner.registry.SetTitle(ctx, input.ID, input.Title),
-		}
+		err := owner.registry.SetTitle(ctx, input.ID, input.Title)
+		result = owner.updated(input.ID, err)
 	case AttachSession:
 		result = Completion{
 			Err: owner.registry.AttachSession(ctx, input.ID, input.SessionID),
@@ -182,12 +185,13 @@ func (owner *Actor) execute(ctx context.Context, command Command) Reply {
 			Err: owner.registry.DetachSession(ctx, input.ID, input.SessionID),
 		}
 	case InsertSessionBefore:
-		result = Completion{
-			Err: owner.registry.InsertSessionBefore(ctx, input.ID, input.SessionID, input.Before),
-		}
+		err := owner.registry.InsertSessionBefore(ctx, input.ID, input.SessionID, input.Before)
+		result = owner.updated(input.ID, err)
 	case ArchiveSession:
-		result = Completion{
-			Err: owner.registry.ArchiveSession(ctx, input.SessionID),
+		err := owner.registry.ArchiveSession(ctx, input.SessionID)
+		result = Archived{
+			IDs: owner.registry.ArchivedSessionIDs(),
+			Err: err,
 		}
 	default:
 		return Completion{
@@ -205,3 +209,14 @@ type task struct {
 	notices  []workspace.Notice
 }
 type finished struct{ task *task }
+
+func (owner *Actor) updated(identifier workspace.ID, failure error) Updated {
+	response := Updated{
+		Err: failure,
+	}
+	if failure == nil {
+		subject, _ := owner.registry.Get(identifier)
+		response.State = subject.Snapshot()
+	}
+	return response
+}

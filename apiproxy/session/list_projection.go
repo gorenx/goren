@@ -21,7 +21,7 @@ type sessionListMetadataState struct {
 type sessionListMetadataUnit struct{}
 
 // SessionListMetadataUnit returns the API-owned projection registered by the
-// Host Plugin for session.list cold summaries.
+// composition root for session.list cold summaries.
 func SessionListMetadataUnit() sessionprojection.Unit {
 	return sessionListMetadataUnit{}
 }

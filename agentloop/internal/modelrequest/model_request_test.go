@@ -5,11 +5,10 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 )
 
-func TestModelRequestRequiresConfigurationBeforeAttempt(t *testing.T) {
+func TestModelRequestStartsAttemptWithoutConfiguration(t *testing.T) {
 	current := New()
 	next, err := current.Start(RequestInput{
 		SessionID: "conversation",
@@ -22,58 +21,21 @@ func TestModelRequestRequiresConfigurationBeforeAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := next.(ReadRequest); !ok {
-		t.Fatalf("first operation = %T", next)
-	}
-	if _, err := current.Outcome(); err == nil {
-		t.Fatal("unfinished request exposed an outcome")
-	}
-	// A mismatched completion must neither start an attempt nor record cancellation.
-	if _, err := current.Advance(ConfigurationSaved{}, agent.NewCancellation(nil)); err == nil {
-		t.Fatal("accepted preparation before configuration")
-	}
-	next, err = current.Advance(RequestRead{
-		Snapshot: session.Snapshot{
-			Barrier: session.WriteBarrier{
-				SessionID: "conversation",
-			},
-		},
-	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := next.(ResolveConfiguration); !ok {
-		t.Fatalf("configuration operation = %T", next)
-	}
-	if current.Attempts() != 0 {
-		t.Fatal("attempt counted before preparation")
-	}
-	config := llm.CallConfig{
-		Provider: "provider",
-		Model:    "model",
-	}
-	next, err = current.Advance(ConfigurationResolved{
-		Config: config,
-	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := next.(SaveConfiguration); !ok {
-		t.Fatalf("prepare operation = %T", next)
-	}
-	next, err = current.Advance(ConfigurationSaved{}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
 	running, ok := next.(RunAttempt)
 	if !ok {
-		t.Fatalf("attempt operation = %T", next)
+		t.Fatalf("first operation = %T", next)
 	}
 	if _, ok := running.Operation.(ReadLog); !ok {
-		t.Fatalf("attempt input operation = %T", running.Operation)
+		t.Fatalf("input operation = %T", running.Operation)
+	}
+	if _, err := current.Outcome(); err == nil {
+		t.Fatal("unfinished request exposed outcome")
+	}
+	if _, err := current.Advance(RecoveryResolved{}, agent.NewCancellation(nil)); err == nil {
+		t.Fatal("accepted mismatched result")
 	}
 	if current.Attempts() != 1 {
-		t.Fatalf("attempts = %d, want 1", current.Attempts())
+		t.Fatalf("attempts = %d", current.Attempts())
 	}
 }
 
@@ -93,6 +55,19 @@ func TestModelRequestFailureCannotRestartGeneration(t *testing.T) {
 	problem := errors.New("session unavailable")
 	next, err := current.Advance(RequestFailed{
 		Err: problem,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	running, ok := next.(RunAttempt)
+	if !ok {
+		t.Fatalf("cleanup operation = %T", next)
+	}
+	if _, ok := running.Operation.(CloseStream); !ok {
+		t.Fatalf("cleanup = %T", running.Operation)
+	}
+	next, err = current.Advance(AttemptAdvanced{
+		Result: StreamClosed{},
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -119,7 +94,7 @@ func TestModelRequestFailureCannotRestartGeneration(t *testing.T) {
 	if !ok || !errors.Is(retained.Result.Err, problem) {
 		t.Fatalf("cleanup lost original error: %#v", next)
 	}
-	if current.Attempts() != 0 {
-		t.Fatal("failed baseline read started generation")
+	if current.Attempts() != 1 {
+		t.Fatal("failed read restarted the attempt")
 	}
 }

@@ -5,7 +5,8 @@ import (
 	"errors"
 	"unicode/utf8"
 
-	api "github.com/gorenx/goren/apiproxy"
+	rpc "github.com/gorenx/goren/apiproxy/rpc"
+	sessionframes "github.com/gorenx/goren/apiproxy/session/events"
 	"github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/session"
 	sessionquery "github.com/gorenx/goren/session/query"
@@ -17,6 +18,11 @@ const (
 	sessionSearchProviderCallLimit = 1_000
 )
 
+// Search supplies ranked Session matches without exposing index lifecycle.
+type Search interface {
+	SearchSessions(context.Context, sessionquery.SearchSessionsRequest) (sessionquery.SessionSearchPage, error)
+}
+
 // Visibility is the authorization boundary consumed by Session
 // Search. It deliberately exposes identities instead of session.list DTOs.
 type Visibility interface {
@@ -27,29 +33,32 @@ type Visibility interface {
 // event scope, list-equivalent visibility, cursor recovery, and wire mapping.
 // Query observation and full-text mechanics remain in session/query.
 type SearchGateway struct {
-	queries    sessionquery.QueryService
+	queries    Search
 	visibility Visibility
 }
 
 // NewSearchGateway binds Session Query to the API authorization view.
 func NewSearchGateway(
-	queries sessionquery.QueryService,
+	queries Search,
 	visibilitySource Visibility,
 ) (*SearchGateway, error) {
 	if queries == nil || visibilitySource == nil {
 		return nil, errors.New("apiproxy: Session Search Gateway dependencies are incomplete")
 	}
-	return &SearchGateway{queries: queries, visibility: visibilitySource}, nil
+	return &SearchGateway{
+		queries:    queries,
+		visibility: visibilitySource,
+	}, nil
 }
 
 // Search enforces list-equivalent visibility and projects the fixed current
 // user/assistant message surface into the source wire result.
 func (owner *SearchGateway) Search(
 	requestContext context.Context,
-	call api.Request[api.SessionSearchRequest],
-) (api.Outcome[api.SessionSearchValue], error) {
-	cancelled := func() api.Outcome[api.SessionSearchValue] {
-		return api.Fail[api.SessionSearchValue](api.NewRPCError(
+	call rpc.Request[SearchRequest],
+) (rpc.Outcome[SearchValue], error) {
+	cancelled := func() rpc.Outcome[SearchValue] {
+		return rpc.Fail[SearchValue](rpc.NewRPCError(
 			connection.ErrorCancelled, "session search was aborted", struct{}{},
 		))
 	}
@@ -58,12 +67,14 @@ func (owner *SearchGateway) Search(
 	}
 	visibleIDs, err := owner.visibility.VisibleSessionIDs(requestContext)
 	if err != nil {
-		return api.Outcome[api.SessionSearchValue]{}, err
+		return rpc.Outcome[SearchValue]{}, err
 	}
 	if len(visibleIDs) == 0 {
-		return api.OK(api.SessionSearchValue{Items: []api.SessionSearchItem{}}), nil
+		return rpc.OK(SearchValue{
+			Items: []SearchItem{},
+		}), nil
 	}
-	authorized := make([]api.SessionSearchItem, 0, sessionSearchResultLimit+1)
+	authorized := make([]SearchItem, 0, sessionSearchResultLimit+1)
 	accepted := make(map[session.SessionID]struct{}, sessionSearchResultLimit+1)
 	seenCursors := make(map[sessionquery.Cursor]struct{})
 	var cursor sessionquery.Cursor
@@ -75,7 +86,7 @@ func (owner *SearchGateway) Search(
 		}
 		providerCalls++
 		if providerCalls > sessionSearchProviderCallLimit {
-			return api.Outcome[api.SessionSearchValue]{}, errors.New("apiproxy: Session search exceeded provider call budget")
+			return rpc.Outcome[SearchValue]{}, errors.New("apiproxy: Session search exceeded provider call budget")
 		}
 		page, searchErr := owner.queries.SearchSessions(requestContext, sessionquery.SearchSessionsRequest{
 			Text: call.Payload.Query,
@@ -83,7 +94,8 @@ func (owner *SearchGateway) Search(
 				Types:    []string{session.UserMessageEventName, session.AssistantMessageEventName},
 				Surfaces: []sessionquery.Surface{sessionquery.SurfaceCurrent},
 			},
-			Limit: sessionSearchResultLimit, Cursor: cursor,
+			Limit:  sessionSearchResultLimit,
+			Cursor: cursor,
 		})
 		if searchErr != nil {
 			var classified *sessionquery.Error
@@ -98,12 +110,12 @@ func (owner *SearchGateway) Search(
 			if requestContext.Err() != nil || errors.As(searchErr, &classified) && classified.Code == sessionquery.ErrorAborted {
 				return cancelled(), nil
 			}
-			return api.Fail[api.SessionSearchValue](api.NewRPCError(
+			return rpc.Fail[SearchValue](rpc.NewRPCError(
 				connection.ErrorInternal, "session search failed: "+searchErr.Error(), struct{}{},
 			)), nil
 		}
 		if len(page.Items) > sessionSearchResultLimit {
-			return api.Outcome[api.SessionSearchValue]{}, errors.New("apiproxy: Session Query returned too many search hits")
+			return rpc.Outcome[SearchValue]{}, errors.New("apiproxy: Session Query returned too many search hits")
 		}
 		for _, hit := range page.Items {
 			if len(authorized) > sessionSearchResultLimit {
@@ -119,8 +131,8 @@ func (owner *SearchGateway) Search(
 				continue
 			}
 			accepted[identifier] = struct{}{}
-			authorized = append(authorized, api.SessionSearchItem{
-				SessionID: api.SessionID(identifier),
+			authorized = append(authorized, SearchItem{
+				SessionID: sessionframes.SessionID(identifier),
 				Snippet:   truncateCodePoints(hit.BestMatch.Snippet, sessionSearchSnippetMaximum),
 			})
 		}
@@ -128,7 +140,7 @@ func (owner *SearchGateway) Search(
 			break
 		}
 		if _, repeated := seenCursors[page.NextCursor]; repeated {
-			return api.Outcome[api.SessionSearchValue]{}, errors.New("apiproxy: Session Query repeated a continuation cursor")
+			return rpc.Outcome[SearchValue]{}, errors.New("apiproxy: Session Query repeated a continuation cursor")
 		}
 		seenCursors[page.NextCursor] = struct{}{}
 		cursor = page.NextCursor
@@ -138,9 +150,12 @@ func (owner *SearchGateway) Search(
 		authorized = authorized[:sessionSearchResultLimit]
 	}
 	if authorized == nil {
-		authorized = []api.SessionSearchItem{}
+		authorized = []SearchItem{}
 	}
-	return api.OK(api.SessionSearchValue{Items: authorized, HasMore: hasMore}), nil
+	return rpc.OK(SearchValue{
+		Items:   authorized,
+		HasMore: hasMore,
+	}), nil
 }
 
 func truncateCodePoints(textValue string, maximum int) string {
