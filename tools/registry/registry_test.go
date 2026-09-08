@@ -1,15 +1,15 @@
-package tools_test
+package toolregistry_test
 
 import (
 	"slices"
 	"testing"
 
 	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/tools"
+	toolregistry "github.com/gorenx/goren/tools/registry"
 )
 
-func candidate(name string, visible bool) tools.Candidate {
-	return tools.Candidate{
+func candidate(name string, visible bool) toolregistry.Candidate {
+	return toolregistry.Candidate{
 		Schema: llm.ToolSchema{
 			Name:       name,
 			Parameters: []byte(`{"type":"object"}`),
@@ -19,8 +19,8 @@ func candidate(name string, visible bool) tools.Candidate {
 }
 
 func TestRegistryPublishesCompleteCatalogAndRetainsOutcome(t *testing.T) {
-	var catalog tools.Registry
-	input := tools.Update{
+	var catalog toolregistry.Registry
+	input := toolregistry.Update{
 		ID:      "first",
 		AgentID: "agent",
 		Names:   []string{"visible", "hidden"},
@@ -71,7 +71,7 @@ func TestRegistryPublishesCompleteCatalogAndRetainsOutcome(t *testing.T) {
 	if err := catalog.Abort("first"); err == nil {
 		t.Fatal("published update aborted")
 	}
-	if err := catalog.Begin(tools.Update{
+	if err := catalog.Begin(toolregistry.Update{
 		ID:              "blocked",
 		AgentID:         "agent",
 		ExpectedVersion: 1,
@@ -87,13 +87,13 @@ func TestRegistryPublishesCompleteCatalogAndRetainsOutcome(t *testing.T) {
 	if _, exists := catalog.Lookup("first"); exists {
 		t.Fatal("settled batch retained")
 	}
-	if err := catalog.Begin(tools.Update{
+	if err := catalog.Begin(toolregistry.Update{
 		ID:      "stale",
 		AgentID: "agent",
 	}); err == nil {
 		t.Fatal("stale version accepted")
 	}
-	if err := catalog.Begin(tools.Update{
+	if err := catalog.Begin(toolregistry.Update{
 		ID:              "empty",
 		AgentID:         "agent",
 		ExpectedVersion: 1,
@@ -107,8 +107,8 @@ func TestRegistryPublishesCompleteCatalogAndRetainsOutcome(t *testing.T) {
 }
 
 func TestRegistryRejectsConflictsWithoutChangingBaseline(t *testing.T) {
-	var catalog tools.Registry
-	first := tools.Update{
+	var catalog toolregistry.Registry
+	first := toolregistry.Update{
 		ID:      "baseline",
 		AgentID: "agent",
 	}
@@ -121,7 +121,7 @@ func TestRegistryRejectsConflictsWithoutChangingBaseline(t *testing.T) {
 	if err := catalog.Settle(first.ID); err != nil {
 		t.Fatal(err)
 	}
-	next := tools.Update{
+	next := toolregistry.Update{
 		ID:              "next",
 		AgentID:         "agent",
 		ExpectedVersion: 1,
@@ -156,7 +156,7 @@ func TestRegistryRejectsConflictsWithoutChangingBaseline(t *testing.T) {
 	if !exists || before.Version != 1 || len(before.Definitions.Schemas) != 0 {
 		t.Fatalf("baseline changed: %#v", before)
 	}
-	if err := catalog.Begin(tools.Update{
+	if err := catalog.Begin(toolregistry.Update{
 		ID:      "independent",
 		AgentID: "second",
 	}); err != nil {
@@ -181,9 +181,9 @@ func TestRegistryRejectsConflictsWithoutChangingBaseline(t *testing.T) {
 }
 
 func TestAbortedUpdateCannotRegisterIntoItsReplacement(t *testing.T) {
-	var catalog tools.Registry
-	for _, identifier := range []tools.UpdateID{"aborted", "replacement"} {
-		if err := catalog.Begin(tools.Update{
+	var catalog toolregistry.Registry
+	for _, identifier := range []toolregistry.UpdateID{"aborted", "replacement"} {
+		if err := catalog.Begin(toolregistry.Update{
 			ID:      identifier,
 			AgentID: "agent",
 			Names:   []string{"echo"},

@@ -12,8 +12,7 @@ import (
 
 // dispatcher owns the around-dispatch policy, Tool body invocation, and
 // canonical successful-output normalization.
-type dispatcher struct {
-}
+type dispatcher struct{}
 
 func (bodyDispatcher *dispatcher) dispatch(
 	requestContext context.Context,
@@ -123,18 +122,12 @@ func (bodyDispatcher *dispatcher) executeBody(
 		}), nil
 	}
 	state.markBodyInvoked()
-	value, err := invokeExecutor(
-		entry.definition.Executor,
-		toolCall.arguments,
-		ToolRunContext{
-			Context:   fusedContext,
-			Execution: toolCall,
-		},
-	)
-	if err != nil {
-		return errorResult(err), nil
+	body := toolCall.Invocation().Run(fusedContext, entry.definition.Executor)
+	state.recordEffects(body)
+	if body.Err != nil {
+		return errorResult(body.Err), nil
 	}
-	outcome, err := bodyDispatcher.success(toolCall, entry, value)
+	outcome, err := bodyDispatcher.success(toolCall, entry, body.Value)
 	if err != nil {
 		return errorResult(err), nil
 	}

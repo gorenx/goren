@@ -59,23 +59,32 @@ func (toolCall ToolExecution) ArgumentsJSON() json.RawMessage {
 // ToolRunContext is handed to the selected body after policy allows dispatch.
 type ToolRunContext struct {
 	Context   context.Context
-	Execution ToolExecution
+	Execution Invocation
+	effects   *bodyEffects
 }
 
 // DeferContext attaches one plugin-authored message to this toolCall's final
 // result. Agent Loop admits deferred messages only after the containing tool
 // result has been committed, preserving model call/result adjacency.
 func (runContext ToolRunContext) DeferContext(message agentmessage.UserMessage) {
-	if runContext.Execution.state != nil {
-		runContext.Execution.state.deferContext(message)
+	if runContext.effects != nil {
+		runContext.effects.mu.Lock()
+		defer runContext.effects.mu.Unlock()
+		if !runContext.effects.closed {
+			runContext.effects.contexts = append(runContext.effects.contexts, message)
+		}
 	}
 }
 
 // ConcludeTurn marks this successful execution as terminal for the current
 // agent turn. Failed outcomes never carry the marker.
 func (runContext ToolRunContext) ConcludeTurn() {
-	if runContext.Execution.state != nil {
-		runContext.Execution.state.concludeTurn()
+	if runContext.effects != nil {
+		runContext.effects.mu.Lock()
+		defer runContext.effects.mu.Unlock()
+		if !runContext.effects.closed {
+			runContext.effects.concludesTurn = true
+		}
 	}
 }
 
@@ -127,22 +136,14 @@ func newScheduledExecutionState(
 	}
 }
 
-func (state *scheduledExecutionState) deferContext(message agentmessage.UserMessage) {
+func (state *scheduledExecutionState) recordEffects(outcome BodyResult) {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	if state.phase != executionDispatching {
 		return
 	}
-	state.deferredContexts = append(state.deferredContexts, message)
-}
-
-func (state *scheduledExecutionState) concludeTurn() {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	if state.phase != executionDispatching {
-		return
-	}
-	state.concludesTurn = true
+	state.deferredContexts = append(state.deferredContexts, outcome.AdditionalContexts...)
+	state.concludesTurn = state.concludesTurn || outcome.ConcludesTurn
 }
 
 func (state *scheduledExecutionState) markBodyInvoked() {

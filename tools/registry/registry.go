@@ -1,4 +1,4 @@
-package tools
+package toolregistry
 
 import (
 	"bytes"
@@ -9,6 +9,7 @@ import (
 
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
+	"github.com/gorenx/goren/tools"
 )
 
 // UpdateID identifies a unique configuration update until its settlement.
@@ -22,7 +23,7 @@ type Update struct {
 	Names           []string
 }
 
-// Candidate is a ToolActor's model-facing definition, without runtime resources.
+// Candidate is a model-facing tool definition, without runtime resources.
 type Candidate struct {
 	Schema  llm.ToolSchema
 	Visible bool
@@ -31,14 +32,14 @@ type Candidate struct {
 // Registry owns committed Agent catalogs and unsettled publication batches.
 // Its caller serializes all access; it performs no IO and has no framework dependencies.
 type Registry struct {
-	catalogs map[session.SessionID]DefinitionsChanged
+	catalogs map[session.SessionID]tools.DefinitionsChanged
 	batches  map[UpdateID]*batch
 }
 
 type batch struct {
 	update     Update
 	candidates map[string]Candidate
-	published  *DefinitionsChanged
+	published  *tools.DefinitionsChanged
 }
 
 // Begin starts a batch without changing the effective catalog.
@@ -64,7 +65,7 @@ func (owner *Registry) Begin(input Update) error {
 	}
 	names := make(map[string]struct{}, len(input.Names))
 	for _, name := range input.Names {
-		if strings.TrimSpace(name) == "" || strings.TrimSpace(name) != name || name == RunCodeName {
+		if strings.TrimSpace(name) == "" || strings.TrimSpace(name) != name || name == tools.RunCodeName {
 			return fmt.Errorf("tools: invalid candidate name %q", name)
 		}
 		if _, exists := names[name]; exists {
@@ -92,7 +93,7 @@ func (owner *Registry) Register(identifier UpdateID, input Candidate) error {
 	if !slices.Contains(pending.update.Names, input.Schema.Name) {
 		return errors.New("tools: candidate is not in the update")
 	}
-	parameters, err := SnapshotObjectSchema(input.Schema.Parameters)
+	parameters, err := tools.SnapshotObjectSchema(input.Schema.Parameters)
 	if err != nil {
 		return err
 	}
@@ -111,24 +112,24 @@ func (owner *Registry) Register(identifier UpdateID, input Candidate) error {
 }
 
 // Publish atomically installs a complete catalog or returns the prior publication.
-func (owner *Registry) Publish(identifier UpdateID) (DefinitionsChanged, error) {
+func (owner *Registry) Publish(identifier UpdateID) (tools.DefinitionsChanged, error) {
 	pending, exists := owner.batches[identifier]
 	if !exists {
-		return DefinitionsChanged{}, errors.New("tools: unknown update")
+		return tools.DefinitionsChanged{}, errors.New("tools: unknown update")
 	}
 	if pending.published != nil {
 		return clonePublication(*pending.published), nil
 	}
 	if owner.catalogs[pending.update.AgentID].Version != pending.update.ExpectedVersion {
-		return DefinitionsChanged{}, errors.New("tools: catalog version conflict")
+		return tools.DefinitionsChanged{}, errors.New("tools: catalog version conflict")
 	}
 	if len(pending.candidates) != len(pending.update.Names) {
-		return DefinitionsChanged{}, errors.New("tools: candidate catalog is incomplete")
+		return tools.DefinitionsChanged{}, errors.New("tools: candidate catalog is incomplete")
 	}
 	if pending.update.ExpectedVersion == ^uint64(0) {
-		return DefinitionsChanged{}, errors.New("tools: catalog version exhausted")
+		return tools.DefinitionsChanged{}, errors.New("tools: catalog version exhausted")
 	}
-	definitions := Definitions{
+	definitions := tools.Definitions{
 		KnownNames: slices.Clone(pending.update.Names),
 	}
 	for _, name := range pending.update.Names {
@@ -137,13 +138,13 @@ func (owner *Registry) Publish(identifier UpdateID) (DefinitionsChanged, error) 
 			definitions.Schemas = append(definitions.Schemas, entry.Schema)
 		}
 	}
-	committed := DefinitionsChanged{
+	committed := tools.DefinitionsChanged{
 		AgentID:     pending.update.AgentID,
 		Version:     pending.update.ExpectedVersion + 1,
 		Definitions: definitions,
 	}
 	if owner.catalogs == nil {
-		owner.catalogs = make(map[session.SessionID]DefinitionsChanged)
+		owner.catalogs = make(map[session.SessionID]tools.DefinitionsChanged)
 	}
 	owner.catalogs[committed.AgentID] = committed
 	pending.published = &committed
@@ -151,7 +152,7 @@ func (owner *Registry) Publish(identifier UpdateID) (DefinitionsChanged, error) 
 }
 
 // Read returns a detached committed baseline; candidates are never exposed.
-func (owner *Registry) Read(identifier session.SessionID) (DefinitionsChanged, bool) {
+func (owner *Registry) Read(identifier session.SessionID) (tools.DefinitionsChanged, bool) {
 	committed, exists := owner.catalogs[identifier]
 	return clonePublication(committed), exists
 }
@@ -176,7 +177,7 @@ func (owner *Registry) Lookup(identifier UpdateID) (Publication, bool) {
 type Publication struct {
 	AgentID   session.SessionID
 	Published bool
-	Catalog   DefinitionsChanged
+	Catalog   tools.DefinitionsChanged
 }
 
 // Abort forgets an unpublished batch after the caller has released its candidates.
@@ -206,7 +207,7 @@ func (owner *Registry) Settle(identifier UpdateID) error {
 	return nil
 }
 
-func clonePublication(input DefinitionsChanged) DefinitionsChanged {
+func clonePublication(input tools.DefinitionsChanged) tools.DefinitionsChanged {
 	input.Definitions.KnownNames = slices.Clone(input.Definitions.KnownNames)
 	input.Definitions.Schemas = slices.Clone(input.Definitions.Schemas)
 	for index := range input.Definitions.Schemas {

@@ -13,7 +13,8 @@ import (
 	"github.com/gorenx/goren/systemprompt"
 	promptactor "github.com/gorenx/goren/systemprompt/actor"
 	"github.com/gorenx/goren/tools"
-	toolactor "github.com/gorenx/goren/tools/actor"
+	toolregistry "github.com/gorenx/goren/tools/registry"
+	toolactor "github.com/gorenx/goren/tools/registry/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
@@ -248,7 +249,7 @@ func TestToolsSubscriberReadsCatalogPublishedBeforeSubscription(t *testing.T) {
 	}
 	for _, command := range []any{
 		toolactor.Begin{
-			Update: tools.Update{
+			Update: toolregistry.Update{
 				ID:      "initial",
 				AgentID: "agent",
 				Names:   []string{"read"},
@@ -256,7 +257,7 @@ func TestToolsSubscriberReadsCatalogPublishedBeforeSubscription(t *testing.T) {
 		},
 		toolactor.Register{
 			ID: "initial",
-			Candidate: tools.Candidate{
+			Candidate: toolregistry.Candidate{
 				Schema: llm.ToolSchema{
 					Name:       "read",
 					Parameters: []byte(`{"type":"object"}`),

@@ -7,7 +7,8 @@ import (
 
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/tools"
-	toolactor "github.com/gorenx/goren/tools/actor"
+	toolregistry "github.com/gorenx/goren/tools/registry"
+	toolactor "github.com/gorenx/goren/tools/registry/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/log"
 )
@@ -73,7 +74,7 @@ func ask[T any](t *testing.T, system goakt.ActorSystem, target *goakt.GrainIdent
 func begin(t *testing.T, system goakt.ActorSystem, target *goakt.GrainIdentity) {
 	t.Helper()
 	result := ask[toolactor.Completion](t, system, target, toolactor.Begin{
-		Update: tools.Update{
+		Update: toolregistry.Update{
 			ID:      "update",
 			AgentID: "agent",
 			Names:   []string{"echo"},
@@ -88,7 +89,7 @@ func register(t *testing.T, system goakt.ActorSystem, target *goakt.GrainIdentit
 	t.Helper()
 	result := ask[toolactor.Completion](t, system, target, toolactor.Register{
 		ID: "update",
-		Candidate: tools.Candidate{
+		Candidate: toolregistry.Candidate{
 			Schema: llm.ToolSchema{
 				Name:       "echo",
 				Parameters: []byte(`{"type":"object"}`),
