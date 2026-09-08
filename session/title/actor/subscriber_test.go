@@ -30,7 +30,7 @@ func (sink *observer) Receive(rc *goakt.ReceiveContext) {
 	switch input := rc.Message().(type) {
 	case *goakt.PostStart:
 		rc.Tell(rc.ActorSystem().TopicActor(), goakt.NewSubscribe(session.AppendedEventName))
-	case *goakt.SubscribeAck, titleactor.Subscribed:
+	case *goakt.SubscribeAck:
 		sink.ready <- struct{}{}
 	case sessionactor.CommitNotice:
 		if input.Event.Type == title.TitleEventName {
@@ -116,23 +116,23 @@ func TestHumanMessageGeneratesTitleWithoutMainRequest(t *testing.T) {
 	}
 	ready := make(chan struct{}, 2)
 	titles := make(chan session.Event, 8)
-	sink, err := system.Spawn(ctx, "observer", &observer{
+	_, err = system.Spawn(ctx, "observer", &observer{
 		ready:  ready,
 		titles: titles,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	listener, err := titleactor.NewSubscriber(identity, "creation", sink)
+	listener, err := titleactor.NewSubscriber(identity, "creation", "conversation")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := system.Spawn(ctx, "subscriber", listener, goakt.WithReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll)))); err != nil {
 		t.Fatal(err)
 	}
-	for index := 0; index < 2; index++ {
+	for _, confirmation := range []<-chan struct{}{ready, listener.Ready()} {
 		select {
-		case <-ready:
+		case <-confirmation:
 		case <-time.After(3 * time.Second):
 			t.Fatal("subscription not ready")
 		}

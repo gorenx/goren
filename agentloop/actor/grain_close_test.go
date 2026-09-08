@@ -117,7 +117,9 @@ func TestRegistryClosesDescendantsBeforeParentAndRetriesPendingChild(t *testing.
 		t.Fatalf("close with pending descendant = %v", result.Err)
 	}
 	for _, identifier := range []session.SessionID{"parent", "child"} {
-		if result := request[loopactor.Inbox](t, drivers[identifier], replies[identifier], loopactor.GetInbox{}); result.Err != nil {
+		if result := request[loopactor.Activity](t, drivers[identifier], replies[identifier], loopactor.ReadActivity{
+			CreationID: "original",
+		}); result.Err != nil {
 			t.Fatal("ancestor released before descendant", identifier, result.Err)
 		}
 	}

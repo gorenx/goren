@@ -53,6 +53,9 @@ func (owner *RegistryGrain) OnReceive(gc *goakt.GrainContext) {
 	case ResolveSession:
 		gc.Response(owner.resolveSession(incoming))
 		return
+	case FindSession:
+		gc.Response(owner.findSession(incoming))
+		return
 	case ListSessions:
 		gc.Response(owner.listSessions())
 		return

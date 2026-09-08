@@ -45,3 +45,17 @@ func (owner *RegistryGrain) resolveSession(input ResolveSession) Endpoint {
 		Target: entry.endpoint,
 	}
 }
+
+func (owner *RegistryGrain) findSession(input FindSession) FoundSession {
+	entry := owner.sessions[input.SessionID]
+	grant, found := owner.directory.registrations[input.SessionID]
+	if !found || grant.retired || entry == nil || grant.creationID != entry.creationID || entry.header == nil {
+		return FoundSession{}
+	}
+	return FoundSession{
+		Session: &Session{
+			Header:     entry.header.Clone(),
+			CreationID: entry.creationID,
+		},
+	}
+}

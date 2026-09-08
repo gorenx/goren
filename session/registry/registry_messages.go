@@ -103,3 +103,13 @@ type Endpoint struct {
 	Target *goakt.GrainIdentity
 	Err    error
 }
+
+// FindSession selects admitted creation metadata without activating the Session.
+type FindSession struct {
+	SessionID session.SessionID
+}
+
+// FoundSession contains nil when no initialized creation is admitted.
+type FoundSession struct {
+	Session *Session
+}

@@ -3,6 +3,7 @@ package projectionactor
 import (
 	"context"
 	"errors"
+
 	sessionactor "github.com/gorenx/goren/session/actor"
 
 	"github.com/gorenx/goren/session"
@@ -45,6 +46,13 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 	case Remove:
 		owner.registry.Remove(input.ID)
 		gc.Response(Completion{})
+	case Compute:
+		current := owner.registry.NewProjection()
+		snapshot, err := current.Snapshot(input.Events)
+		gc.Response(Viewed{
+			Snapshot: snapshot,
+			Err:      err,
+		})
 	case Read:
 		current, err := owner.projection(input.SessionID, input.CreationID)
 		var snapshot projection.Snapshot

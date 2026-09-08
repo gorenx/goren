@@ -7,8 +7,8 @@ import (
 // Inbox commands propose mutations; Session commit acknowledgement precedes business confirmation.
 func (owner *Grain) receiveInbox(gc *goakt.GrainContext) bool {
 	switch input := gc.Message().(type) {
-	case GetInbox:
-		owner.readInbox(gc)
+	case ReadActivity:
+		owner.readActivity(gc, input)
 	case Followup:
 		owner.followup(gc, input)
 	case Steer:

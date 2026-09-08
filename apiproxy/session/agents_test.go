@@ -16,7 +16,6 @@ type activationAgent struct {
 }
 
 func (subject activationAgent) ID() session.SessionID        { return subject.header.ID }
-func (subject activationAgent) Header() session.Header       { return subject.header.Clone() }
 func (subject activationAgent) ParentID() *session.SessionID { return subject.parent }
 
 type activationDirectory struct {
@@ -97,6 +96,12 @@ func TestActivationChecksTheWinningCreationAgainstEachRequest(t *testing.T) {
 	ensured := false
 	access := &activation{
 		agents: directory,
+		sessions: activationSessions{
+			header: session.Header{
+				ID:  "shared",
+				CWD: &cwd,
+			},
+		},
 		history: activationHistory{
 			failure: &persistence.NotFoundError{
 				ID: "shared",
@@ -112,4 +117,15 @@ func TestActivationChecksTheWinningCreationAgainstEachRequest(t *testing.T) {
 	if conflict.RequestedCWD() != "/second" || *conflict.ExistingCWD() != cwd {
 		t.Fatal("request-specific conflict lost")
 	}
+}
+
+type activationSessions struct {
+	LiveSessions
+	header session.Header
+}
+
+func (source activationSessions) Read(context.Context, session.SessionID) (*Snapshot, error) {
+	return &Snapshot{
+		Header: source.header.Clone(),
+	}, nil
 }

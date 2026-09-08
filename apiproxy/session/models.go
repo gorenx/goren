@@ -26,6 +26,7 @@ type Models interface {
 type sessionModels struct {
 	access    *sessionAccess
 	models    Models
+	sessions  LiveSessions
 	directory *llmapi.Catalog
 }
 
@@ -82,7 +83,7 @@ func (selectionFlow *sessionModels) SelectModel(requestContext context.Context, 
 			},
 		)), nil
 	}
-	hasImage, err := agentContainsImage(requestContext, subject)
+	hasImage, err := agentContainsImage(requestContext, subject, selectionFlow.sessions)
 	if err != nil {
 		return rpc.Outcome[SelectModelValue]{}, err
 	}
@@ -129,7 +130,7 @@ func modelSelectionValue(selected llm.CallConfig) ModelSelection {
 	}
 }
 
-func agentContainsImage(ctx context.Context, subject Agent) (bool, error) {
+func agentContainsImage(ctx context.Context, subject Agent, sessions LiveSessions) (bool, error) {
 	pending, err := subject.Pending(ctx)
 	if err != nil {
 		return false, err
@@ -139,9 +140,12 @@ func agentContainsImage(ctx context.Context, subject Agent) (bool, error) {
 			return true, nil
 		}
 	}
-	snapshot, err := subject.Snapshot(ctx)
+	snapshot, err := sessions.Read(ctx, subject.ID())
 	if err != nil {
 		return false, err
+	}
+	if snapshot == nil {
+		return false, fmt.Errorf("session %q is unavailable", subject.ID())
 	}
 	history, err := session.NewLog(snapshot.Header.ID, session.CreateOptions{
 		Seed: snapshot.Events,
