@@ -4,194 +4,81 @@ import (
 	"context"
 	"errors"
 
-	"github.com/google/uuid"
 	agentactor "github.com/gorenx/goren/agent/actor"
-	"github.com/gorenx/goren/agentloop"
 	"github.com/gorenx/goren/agentloop/internal/modelrequest"
-	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/llm"
+	llmactor "github.com/gorenx/goren/llm/actor"
 	"github.com/gorenx/goren/session"
 	sessionactor "github.com/gorenx/goren/session/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
-type requestModel struct {
-	operation context.Context
-	call      llm.PreparedLlmCall
-}
-
-type modelResult struct {
-	message agentmessage.AssistantMessage
-	finish  llm.FinishReason
-	err     error
-}
-
-// modelAttempt retains only the business driver and its transport resources.
-type modelAttempt struct {
-	input      requestModel
-	reader     *goakt.PID
-	reply      *goakt.GrainReply
-	business   *modelrequest.Attempt
-	cancel     context.CancelFunc
-	cancelRead context.CancelCauseFunc
-	cleanup    *goakt.GrainReply
-}
-
 type streamProgress struct {
-	attempt   *modelAttempt
+	attempt   *modelInvocation
 	operation modelrequest.Operation
 	payload   any
 	err       error
 }
 
-func (owner *Grain) requestModel(gc *goakt.GrainContext, input requestModel) {
-	if owner.model != nil || input.operation == nil || input.call == nil {
-		gc.Response(modelResult{
-			err: errors.New("agentloop: exclusive model transport, operation context and prepared call are required"),
-		})
-		return
-	}
-	prepared := agentloop.ModelInput{
-		Config:   input.call.ConfigValue(),
-		Defaults: input.call.AdapterDefaultsValue(),
-	}
-	if capacity, present := input.call.ContextValue(); present {
-		prepared.Context = &capacity
-	}
-	business, err := owner.business.BeginModel(prepared)
-	if err != nil {
-		gc.Response(modelResult{
-			err: err,
-		})
-		return
-	}
-	reply := gc.DeferResponse()
-	if reply == nil {
-		gc.Response(modelResult{
-			err: errors.New("agentloop: model attempt requires an asynchronous request"),
-		})
-		return
-	}
-	operation, cancelRead := context.WithCancelCause(input.operation)
-	input.operation = operation
-	reader, err := gc.ActorSystem().Spawn(gc.Context(), "model-stream-"+uuid.NewString(), &streamReader{})
-	if err != nil {
-		cancelRead(nil)
-		reply.Response(modelResult{
-			err: err,
-		})
-		return
-	}
-	attempt := &modelAttempt{
-		input:      input,
-		reader:     reader,
-		reply:      reply,
-		cancelRead: cancelRead,
-		business:   business,
-	}
-	owner.model = attempt
-	next, err := business.Start()
-	if err != nil {
-		owner.finishModel(attempt, err)
-		return
-	}
-	owner.executeModel(gc, attempt, next)
-}
-
 // executeModel maps a business operation to an asynchronous transport request.
-func (owner *Grain) executeModel(gc *goakt.GrainContext, attempt *modelAttempt, operation modelrequest.Operation) {
-	if outcome, ok := operation.(modelrequest.Completed); ok {
-		owner.business.AcceptModel(outcome)
-		if outcome.StreamClosed && attempt.reader != nil {
-			if err := goakt.Tell(gc.Context(), attempt.reader, new(goakt.PoisonPill)); err != nil {
-				owner.finishModel(attempt, errors.Join(outcome.Err, err))
-				return
-			}
-			attempt.reader = nil
-		}
-		if attempt.cleanup != nil && outcome.StreamClosed {
-			reply := attempt.cleanup
-			attempt.cleanup = nil
-			attempt.cancelRead(nil)
-			owner.model = nil
-			if owner.prompt != nil {
-				owner.closePrompt(gc, reply)
-			} else {
-				owner.closeSession(gc, reply)
-			}
-			return
-		}
-		owner.finishModel(attempt, outcome.Err)
-		return
-	}
+func (owner *Grain) executeModel(
+	gc *goakt.GrainContext,
+	attempt *modelInvocation,
+	operation modelrequest.Operation,
+) {
 	var message any
-	sessionRequest := false
 	switch input := operation.(type) {
 	case modelrequest.ReadLog:
-		sessionRequest = true
 		message = sessionactor.Read{
 			CreationID: owner.creationID,
 		}
 	case modelrequest.CommitEvents:
-		sessionRequest = true
 		message = sessionactor.Commit{
 			CreationID: owner.creationID,
 			Plan:       session.Batch(input.Draft),
 		}
-	case modelrequest.OpenStream:
-		message = openStream{
-			operation: attempt.input.operation,
-			call:      attempt.input.call,
-			options:   input.Options,
-		}
-	case modelrequest.ReadChunk:
-		message = readChunk{}
-	case modelrequest.CloseStream:
-		message = closeStream{}
 	default:
-		owner.finishModel(attempt, errors.New("agentloop: unsupported model operation"))
+		owner.sendModelOperation(gc, attempt, operation)
 		return
 	}
 	ctx, cancel := context.WithCancel(context.WithoutCancel(gc.Context()))
 	attempt.cancel = cancel
 	completed := make(chan streamProgress, 1)
-	if err := gc.PipeToSelf(func() (any, error) {
-		select {
-		case result := <-completed:
-			return result, nil
-		case <-ctx.Done():
-			return streamProgress{
-				attempt:   attempt,
-				operation: operation,
-				err:       context.Cause(ctx),
-			}, nil
-		}
-	}); err != nil {
+	err := gc.PipeToSelf(
+		func() (any, error) {
+			select {
+			case result := <-completed:
+				return result, nil
+			case <-ctx.Done():
+				return streamProgress{
+					attempt:   attempt,
+					operation: operation,
+					err:       context.Cause(ctx),
+				}, nil
+			}
+		},
+	)
+	if err != nil {
 		cancel()
 		attempt.cancel = nil
-		next, failure := attempt.business.Advance(modelrequest.Failed{
-			Err: err,
-		}, context.Cause(attempt.input.operation))
+		next, failure := owner.business.AdvanceRequest(
+			modelrequest.AttemptAdvanced{
+				Result: modelrequest.Failed{
+					Err: err,
+				},
+			},
+		)
 		if failure != nil {
 			owner.finishModel(attempt, failure)
 			return
 		}
-		owner.executeModel(gc, attempt, next)
+		owner.executeRequest(gc, attempt, next)
 		return
 	}
-	var request goakt.RequestCall
-	if sessionRequest {
-		request = gc.RequestGrain(owner.conversation, message,
-			goakt.WithRequestTimeout(0),
-			goakt.WithReentrancyMode(reentrancy.StashNonReentrant),
-		)
-	} else {
-		request = gc.RequestActor(attempt.reader.Name(), message,
-			goakt.WithRequestTimeout(0),
-			goakt.WithReentrancyMode(reentrancy.AllowAll),
-		)
-	}
+	request := gc.RequestGrain(owner.conversation, message,
+		goakt.WithRequestTimeout(0),
+		goakt.WithReentrancyMode(reentrancy.StashNonReentrant),
+	)
 	request.Then(func(payload any, failure error) {
 		completed <- streamProgress{
 			attempt:   attempt,
@@ -211,12 +98,14 @@ func (owner *Grain) advanceStream(gc *goakt.GrainContext, input streamProgress) 
 		attempt.cancel()
 		attempt.cancel = nil
 	}
-	next, err := attempt.business.Advance(streamResult(input), context.Cause(attempt.input.operation))
+	next, err := owner.business.AdvanceRequest(modelrequest.AttemptAdvanced{
+		Result: streamResult(input),
+	})
 	if err != nil {
 		owner.finishModel(attempt, err)
 		return
 	}
-	owner.executeModel(gc, attempt, next)
+	owner.executeRequest(gc, attempt, next)
 }
 
 // streamResult only decodes the response for the operation that was dispatched.
@@ -248,32 +137,34 @@ func streamResult(input streamProgress) modelrequest.Result {
 		if ok {
 			failure = result.Err
 		}
-	case modelrequest.OpenStream:
-		result, ok := input.payload.(streamOpened)
-		if ok && result.err == nil {
-			return modelrequest.StreamOpened{}
-		}
-		if ok {
-			failure = result.err
+	case modelrequest.Generate:
+		if result, ok := input.payload.(llmactor.GenerationStarted); ok {
+			return modelrequest.GenerationStarted{
+				Config:      result.Config,
+				Defaults:    result.Defaults,
+				Context:     result.Context,
+				RetryPolicy: result.RetryPolicy,
+				Err:         result.Err,
+			}
 		}
 	case modelrequest.ReadChunk:
-		result, ok := input.payload.(chunkRead)
-		if ok && result.err == nil {
+		result, ok := input.payload.(llmactor.ChunkRead)
+		if ok && result.Err == nil {
 			return modelrequest.ChunkRead{
-				Chunk: result.chunk,
-				Found: result.found,
+				Chunk: result.Chunk,
+				Found: result.Found,
 			}
 		}
 		if ok {
-			failure = result.err
+			failure = result.Err
 		}
 	case modelrequest.CloseStream:
-		result, ok := input.payload.(streamClosed)
-		if ok && result.err == nil {
+		result, ok := input.payload.(llmactor.CallClosed)
+		if ok && result.Err == nil {
 			return modelrequest.StreamClosed{}
 		}
 		if ok {
-			failure = result.err
+			failure = result.Err
 		}
 	}
 	if failure == nil {
@@ -284,7 +175,7 @@ func streamResult(input streamProgress) modelrequest.Result {
 	}
 }
 
-func (owner *Grain) finishModel(attempt *modelAttempt, failure error) {
+func (owner *Grain) finishModel(attempt *modelInvocation, failure error) {
 	defer owner.refreshIdle()
 	if owner.model != attempt {
 		return
@@ -301,20 +192,16 @@ func (owner *Grain) finishModel(attempt *modelAttempt, failure error) {
 	}
 	if attempt.reply != nil {
 		result := modelResult{
-
 			err: failure,
 		}
-		if attempt.business != nil {
-			result.finish = attempt.business.Finish()
-			if failure == nil {
-				result.message = attempt.business.Message()
-			}
+		result.finish = attempt.outcome.Finish
+		if failure == nil {
+			result.message = attempt.outcome.Message
 		}
 		attempt.reply.Response(result)
 		attempt.reply = nil
 	}
-	if attempt.reader == nil {
-		attempt.cancelRead(nil)
+	if attempt.callID == "" && attempt.canceling == nil {
 		owner.model = nil
 	}
 }

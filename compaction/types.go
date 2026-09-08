@@ -3,21 +3,9 @@
 package compaction
 
 import (
-	"context"
-	"errors"
 	"fmt"
 
-	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/plugin"
-	"github.com/gorenx/goren/session"
-)
-
-const (
-	// PluginName is the canonical Harness Service Definition package name.
-	PluginName = "@deepseek-ai/dsh-compaction"
-	// ServiceName preserves the canonical Cordis capability name.
-	ServiceName = "compaction"
 )
 
 // ID identifies one durable compaction transaction.
@@ -78,22 +66,6 @@ type SurfaceRange struct {
 	End   int64 `json:"end"`
 }
 
-// AgentContext is the minimal provider-neutral Agent snapshot Compaction uses.
-type AgentContext struct {
-	Session  session.Context
-	Provider string
-	Model    string
-}
-
-// ManualAgentContext is the minimal live Agent view required by CompactNow.
-// The real Agent capability satisfies it directly; Compaction does not require
-// an adapter or reconstruct a second maintenance owner.
-type ManualAgentContext interface {
-	SessionValue() session.Context
-	OptionsValue() agent.Options
-	RunMaintenance(context.Context, func(context.Context) error) error
-}
-
 // Result records one successful durable compaction transaction.
 type Result struct {
 	CompactionID       ID
@@ -107,14 +79,6 @@ type Result struct {
 	ShadowedTokenCount int64
 }
 
-// Engine is the Service Definition implemented by one Compaction Provider.
-type Engine interface {
-	plugin.Service
-	CompactIfNeeded(context.Context, AgentContext, Trigger) (*Result, error)
-	CompactNow(context.Context, ManualAgentContext, *string) (*Result, error)
-	CompactRegion(context.Context, int64, int64, AgentContext) (Result, error)
-}
-
 // ValidateTrigger rejects values outside the closed source union.
 func ValidateTrigger(selectedTrigger Trigger) error {
 	switch selectedTrigger {
@@ -123,13 +87,4 @@ func ValidateTrigger(selectedTrigger Trigger) error {
 	default:
 		return fmt.Errorf("compaction: unsupported trigger %q", selectedTrigger)
 	}
-}
-
-// ValidateAgentContext checks the stable Definition boundary before a Provider
-// starts policy or asynchronous work.
-func ValidateAgentContext(subject AgentContext) error {
-	if subject.Session == nil {
-		return errors.New("compaction: Agent Context needs a Session")
-	}
-	return nil
 }

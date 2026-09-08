@@ -123,7 +123,7 @@ func (attempt *Attempt) checkResult(result Result) error {
 	case committingHeader, committingContext, committingChunk, committingMessage:
 		_, valid = result.(EventsCommitted)
 	case openingStream:
-		_, valid = result.(StreamOpened)
+		_, valid = result.(GenerationStarted)
 	case readingStream:
 		_, valid = result.(ChunkRead)
 	case closingStream:

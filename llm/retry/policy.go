@@ -47,11 +47,10 @@ func policyKey(resolved llm.RetryPolicy) (string, error) {
 	}
 }
 
-func localDelay(resolved llm.RetryPolicy, retryNumber int64, randomSample func() float64) (float64, error) {
+func localDelay(resolved llm.RetryPolicy, retryNumber int64, sample float64) (float64, error) {
 	if retryNumber < 1 {
 		return 0, errors.New("llm-retry: retry number must be positive")
 	}
-	sample := randomSample()
 	if math.IsNaN(sample) || math.IsInf(sample, 0) || sample < 0 || sample > 1 {
 		return 0, fmt.Errorf("llm-retry: random sample %v is outside 0..1", sample)
 	}

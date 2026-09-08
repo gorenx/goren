@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/agentloop"
 	"github.com/gorenx/goren/agentloop/internal/modelrequest"
 )
 
@@ -23,9 +22,6 @@ func TestModelRequestUsesAgentCancellationAtEachBoundary(t *testing.T) {
 				if _, err := subject.StartRequest(); err == nil {
 					t.Fatal("second request accepted")
 				}
-				if _, err := subject.BeginModel(agentloop.ModelInput{}); err == nil {
-					t.Fatal("separate attempt accepted while request owned execution")
-				}
 			}
 			if boundary == "configuration" {
 				next, err := subject.AdvanceRequest(completion)
@@ -38,9 +34,6 @@ func TestModelRequestUsesAgentCancellationAtEachBoundary(t *testing.T) {
 				KeepInbox: true,
 			}); err != nil {
 				t.Fatal(err)
-			}
-			if _, err := subject.BeginModel(agentloop.ModelInput{}); err == nil {
-				t.Fatal("canceled Agent started attempt")
 			}
 			if boundary == "before request" {
 				_, err := subject.StartRequest()

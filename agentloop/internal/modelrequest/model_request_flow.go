@@ -49,6 +49,12 @@ func (current *ModelRequest) Advance(result RequestResult, cancellation error) (
 		} else {
 			response = result.(AttemptAdvanced).Result
 		}
+		if started, ok := response.(GenerationStarted); ok {
+			current.proposal = llm.CloneCallConfig(started.Config)
+			if started.RetryPolicy != nil {
+				current.policy = started.RetryPolicy.CloneRetryPolicy()
+			}
+		}
 		next, err := current.active.Advance(response, current.cancellation)
 		if err != nil {
 			return nil, err
@@ -59,12 +65,6 @@ func (current *ModelRequest) Advance(result RequestResult, cancellation error) (
 		return current.finish(current.cancellation), nil
 	}
 	if failed, ok := result.(RequestFailed); ok {
-		var problem *llm.LlmError
-		if current.phase == preparingCall && errors.As(failed.Err, &problem) && problem.Code() == "NO_ADAPTER" {
-			return current.startAttempt(CallPrepared{
-				Config: current.proposal,
-			})
-		}
 		return current.finish(errors.Join(current.failure, failed.Err)), nil
 	}
 	switch current.phase {
@@ -76,12 +76,12 @@ func (current *ModelRequest) Advance(result RequestResult, cancellation error) (
 			return current.finish(errors.New("agentloop: request middleware must resolve provider and model")), nil
 		}
 		current.proposal = llm.CloneCallConfig(resolved.Config)
-		current.phase = preparingCall
-		return PrepareCall{
+		current.phase = savingConfiguration
+		return SaveConfiguration{
 			Config: llm.CloneCallConfig(current.proposal),
 		}, nil
-	case preparingCall:
-		return current.startAttempt(result.(CallPrepared))
+	case savingConfiguration:
+		return current.startAttempt()
 	case resolvingRecovery:
 		if !result.(RecoveryResolved).Action.Retry {
 			return current.finish(current.failure), nil
@@ -124,28 +124,19 @@ func (current *ModelRequest) resolveConfiguration(snapshot session.Snapshot) Req
 	}
 }
 
-func (current *ModelRequest) startAttempt(prepared CallPrepared) (RequestOperation, error) {
-	if prepared.Config.Provider == "" || prepared.Config.Model == "" {
-		return current.finish(errors.New("agentloop: prepared call is missing provider or model")), nil
-	}
+func (current *ModelRequest) startAttempt() (RequestOperation, error) {
 	attempt, err := NewAttempt(AttemptInput{
 		SessionID: current.input.SessionID,
 		Position:  current.input.Position,
 		Prompt:    current.input.Prompt,
-		Config:    prepared.Config,
-		Defaults:  prepared.Defaults,
-		Context:   prepared.Context,
+		Config:    current.proposal,
 		First:     current.input.First && !current.headerCommitted,
 	})
 	if err != nil {
 		return current.finish(err), nil
 	}
 	current.active = attempt
-	current.proposal = llm.CloneCallConfig(prepared.Config)
 	current.policy = nil
-	if prepared.RetryPolicy != nil {
-		current.policy = prepared.RetryPolicy.CloneRetryPolicy()
-	}
 	current.outcome = Completed{}
 	next, err := attempt.Start()
 	if err != nil {
@@ -279,8 +270,8 @@ func (current *ModelRequest) checkCompletion(result RequestResult) error {
 		_, valid = result.(RequestRead)
 	case resolvingConfig:
 		_, valid = result.(ConfigurationResolved)
-	case preparingCall:
-		_, valid = result.(CallPrepared)
+	case savingConfiguration:
+		_, valid = result.(ConfigurationSaved)
 	case runningAttempt, retryingClose:
 		_, valid = result.(AttemptAdvanced)
 	case resolvingRecovery:

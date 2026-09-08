@@ -29,7 +29,7 @@ func TestModelRequestRequiresConfigurationBeforeAttempt(t *testing.T) {
 		t.Fatal("unfinished request exposed an outcome")
 	}
 	// A mismatched completion must neither start an attempt nor record cancellation.
-	if _, err := current.Advance(CallPrepared{}, agent.NewCancellation(nil)); err == nil {
+	if _, err := current.Advance(ConfigurationSaved{}, agent.NewCancellation(nil)); err == nil {
 		t.Fatal("accepted preparation before configuration")
 	}
 	next, err = current.Advance(RequestRead{
@@ -58,12 +58,10 @@ func TestModelRequestRequiresConfigurationBeforeAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := next.(PrepareCall); !ok {
+	if _, ok := next.(SaveConfiguration); !ok {
 		t.Fatalf("prepare operation = %T", next)
 	}
-	next, err = current.Advance(CallPrepared{
-		Config: config,
-	}, nil)
+	next, err = current.Advance(ConfigurationSaved{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
