@@ -1,28 +1,18 @@
-package factory
+package basic
 
 import (
-	"context"
 	"encoding/json"
 	"strings"
 	"testing"
-
-	"github.com/gorenx/goren/compaction/basic"
 )
 
-func TestFactoryStrictlyConstructsValidatedBasicCompaction(t *testing.T) {
-	t.Parallel()
-	owner := New(basic.RuntimeOptions{})
-	instance, err := owner.Create(
-		context.Background(),
-		json.RawMessage(`{"thresholdRatio":0.6,"retainTokens":100,"auto":false}`),
-	)
+func TestDecodeConfigPreservesStrictPolicyValidation(t *testing.T) {
+	resolved, err := DecodeConfig(json.RawMessage(`{"thresholdRatio":0.6,"retainTokens":100,"auto":false}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	metadata := instance.Manifest()
-	if metadata.Name != basic.PluginName || len(metadata.Waterfalls) != 0 ||
-		len(metadata.Events) != 0 {
-		t.Fatalf("plugin manifest = %#v", metadata)
+	if resolved.Auto || resolved.Retention.Tokens == nil || *resolved.Retention.Tokens != 100 || resolved.ThresholdRatio != 0.6 {
+		t.Fatalf("resolved = %#v", resolved)
 	}
 	testCases := []struct {
 		name      string
@@ -63,16 +53,10 @@ func TestFactoryStrictlyConstructsValidatedBasicCompaction(t *testing.T) {
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := owner.Create(context.Background(), testCase.rawValue)
+			_, err := DecodeConfig(testCase.rawValue)
 			if err == nil || !strings.Contains(err.Error(), testCase.wantError) {
 				t.Fatalf("Create error = %v, want %q", err, testCase.wantError)
 			}
 		})
-	}
-	cancelled, cancel := context.WithCancel(context.Background())
-	cancel()
-	_, err = owner.Create(cancelled, json.RawMessage(`{}`))
-	if err == nil || !strings.Contains(err.Error(), "canceled") {
-		t.Fatalf("cancelled Create error = %v", err)
 	}
 }

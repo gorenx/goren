@@ -3,11 +3,11 @@ package loopactor
 import (
 	"context"
 	"errors"
+	llmactor "github.com/gorenx/goren/llm/actor"
 
 	"github.com/google/uuid"
 	agentactor "github.com/gorenx/goren/agent/actor"
 	"github.com/gorenx/goren/agentloop"
-	llmactor "github.com/gorenx/goren/llm/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
@@ -59,7 +59,6 @@ func (owner *Grain) OnDeactivate(ctx context.Context, _ *goakt.GrainProps) error
 	if owner.model != nil {
 
 		if owner.model.canceling != nil {
-			owner.model.canceling.cancel()
 			owner.model.canceling.completion.reply.Response(Changed{
 				Err: errors.New("agentloop: stopped before LLM cancellation acknowledgement"),
 			})
@@ -93,6 +92,14 @@ func (owner *Grain) OnDeactivate(ctx context.Context, _ *goakt.GrainProps) error
 // OnReceive only dispatches commands and completions to their runtime handlers.
 func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 	defer owner.refreshIdle()
+	if owner.model != nil && owner.model.models != nil && owner.model.models.Receive(gc, llmactor.Receivers{
+		Generation:   owner,
+		Chunk:        owner,
+		Close:        owner,
+		Cancellation: owner,
+	}) {
+		return
+	}
 	switch input := gc.Message().(type) {
 	case startTurn:
 		owner.startTurn(gc)
@@ -156,21 +163,6 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 		owner.startModel(gc, input)
 	case requestProgress:
 		owner.advanceRequest(gc, input)
-	case modelCancellationExpired:
-		owner.modelCancellationResult(gc, llmactor.CancellationAccepted{
-			RequestID: input.id,
-			Err:       errors.New("agentloop: LLM cancellation acknowledgement timed out"),
-		})
-	case generationExpired:
-		owner.expireGeneration(gc, input)
-	case llmactor.GenerationStarted:
-		owner.generationResult(gc, input.CallID, input.RequestID, input)
-	case llmactor.ChunkRead:
-		owner.generationResult(gc, input.CallID, input.RequestID, input)
-	case llmactor.CallClosed:
-		owner.generationResult(gc, input.CallID, input.RequestID, input)
-	case llmactor.CancellationAccepted:
-		owner.modelCancellationResult(gc, input)
 
 	case streamProgress:
 		owner.advanceStream(gc, input)
