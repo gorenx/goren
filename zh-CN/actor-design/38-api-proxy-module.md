@@ -301,3 +301,7 @@ Session Feed、Workspace Gateway 和 Interaction 作为各自事件／交互入�
 验证分为 Server 方法注册／关闭测试、领域 Actor Client 集成、真实 HTTP/WebSocket 和完整对话链；前两项不能替代后两项。删除旧 API Host/Factory 后，旧 assembly 和 Connection Plugin 调用点必须继续迁移，禁止以适配旧 Plugin 接口恢复编译。
 
 Session Search 端口由 session/actor.Search 请求现有 Query Actor 实现；该客户端不打开索引、不收集 Session。Collector 仍负责观察源和刷新派生索引，生产装配须接通 Collector 后再开放搜索。
+
+### 暂缓 Bound API 的依赖隔离
+
+Plugin 删除后，根包的 bound_api.go、bound_gateway.go 通过 subagent/bound 导入已退役 Plugin，连带阻断与 Subagent 无关的 API 构建。默认 Server 已不注册 Bound，因此删除根包的 Bound API 实现与测试，不保留别名或不可编译的迁移副本。Bound wire 能力随 Subagent 重构暂缓；以后应由该能力的最终 owner 重新实现并接入 Server，不能据主线 API 测试通过宣称 Bound 可用。

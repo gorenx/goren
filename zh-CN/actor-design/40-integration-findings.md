@@ -125,6 +125,26 @@ API：Session.Models/SelectModel/Prompt 的配置读写走 Models 端口，由 L
 
 代码提交 `b9becf4`，独立暂存快照对两个客户端包运行非缓存 race 测试、vet 与 build 均通过。进程迁移执行表见 [Server 装配方案](41-server-composition.md)。
 
+## INT-16 暂缓 Subagent 阻断主线 API 编译
+
+根因：根 `apiproxy` 仍保存 Bound API，而其契约导入暂缓迁移的 `subagent/bound`；Plugin 删除后，该依赖使不使用 Bound 的 API 主线也无法构建。
+
+影响：`go test ./apiproxy/...` 在加载根包时失败，无法独立验证已完成的 Session、LLM、Workspace 与 Connection 迁移。
+
+方案：删除根包 Bound API 和对应测试，不创建不可编译的迁移副本，也不保留别名。默认 `apiproxy.Server` 本来没有注册 Bound，因此实际主线方法集合不再变化。Bound wire 能力随 Subagent 重构暂缓。
+
+验证：代码提交 `0a889b1` 后，`go test -race -count=1 ./apiproxy/... ./internal/connection/... ./internal/server ./web` 全部通过。此结果不覆盖 Subagent。
+
+## INT-17 共享资源初始化仍归属旧 Assembly
+
+根因：Credentials、LLM 配置与 Prompt 已有 Actor owner 和客户端，但构造函数仍放在待删除的 `internal/assembly`，名称和错误也继续表达旧 Plugin 装配职责。
+
+影响：新生产组合根无法逐步取得共享 Actor 资源；继续复用旧包会把 Factory Catalog 生命周期带入新入口。
+
+方案：将三项初始化迁入 `internal/server` 私有函数。函数构造并验证纯业务 owner、初始化共享 Grain、返回领域客户端；不启动 ActorSystem、不开放网络、不提供 Assembly 转发。模型配置初始化不等于 provider worker 已可调用。
+
+验证：代码提交 `6e64148`。独立暂存快照运行 `go test -race -count=1 ./internal/server`、`go vet ./internal/server` 和 `go build ./internal/server` 通过；无密钥测试验证 Credentials 缺失按业务错误返回，Prompt 初始化不依赖密钥且重复初始化被拒绝。
+
 
 ## INT-15 Plugin 框架退役节点
 
