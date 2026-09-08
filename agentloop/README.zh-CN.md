@@ -93,7 +93,7 @@ flowchart TD
 
 TurnOperation 当前只表达继续 Step、运行停止钩子或固定 TurnEnd 等业务决策。两套外部操作解释协议均已删除；异步准备与收尾由 Actor 直接编排，业务方法验证状态和事实。完整主驱动仍需接线。
 
-已接纳执行及取消事实位于 agent_activity.go，输入业务入口位于 agent_admission.go，完整提交核对复用 agent_commit.go。需要唤醒的输入提交确认后，StatusValue 即为 running，此时 Turn 可能尚未开始。FinishActivity 只能在业务工作全部关闭后清除该执行；取消之后接纳的唤醒输入仍存在时，保留下一次待执行工作。维护互斥与主驱动接线仍待完成，不属于当前验证覆盖范围。
+已接纳执行及取消事实位于 agent_activity.go，输入业务入口位于 agent_admission.go，完整提交核对复用 agent_commit.go。需要唤醒的输入提交确认后，StatusValue 即为 running，此时 Turn 可能尚未开始。FinishActivity 只能在业务工作全部关闭后清除该执行；取消之后接纳的唤醒输入仍存在时，保留下一次待执行工作。维护互斥已由同一 activity 状态实现：BeginMaintenance 只允许空闲准入，FinishMaintenance 在工作完成后释放，并根据仍存在的输入保留延后执行；维护期间 PrepareTurn 与 FinishActivity 均拒绝请求。业务验证见 agent_maintenance_test.go。通用维护的 Actor 协议、Commands 接线与主驱动仍待完成。
 
 ## 状态约束
 

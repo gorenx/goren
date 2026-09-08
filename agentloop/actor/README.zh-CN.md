@@ -119,3 +119,39 @@ Turn 开始由 grain_start.go 提交 turnStartWrite。失败保留业务候选�
 
 
 LLM Router 的结果等待由显式 replyTimeout 限定，计时任务只携带 CallID 和 RequestID。Generation 或 ReadChunk 超时进入同一调用的关闭流程，CloseCall 超时保留未释放状态；取消确认超时向取消请求方返回错误，不冒充资源关闭。`grain_generation_test.go` 验证这些情况以及迟到生成结果不被当作关闭结果。
+
+## 消息分派职责与依赖
+
+OnReceive 只处理共享 LLM Client 的协议回复、按职责分派和刷新空闲通知。
+`grain_receive_*` 只路由消息，不新增业务状态或修改执行顺序；未识别消息最终交给框架 Unhandled。
+
+| 分派文件 | 消息职责 | 前置条件与后续依赖 |
+| --- | --- | --- |
+| grain_receive_initialization.go | 创建授权、Session 恢复、模型与 Prompt 初始化回复 | 创建身份校验后逐段初始化；完成前不能开始执行 |
+| grain_receive_inbox.go | 查询、Followup、Steer、Inject、Replace、Remove | Session 确认提交后才更新 Inbox 投影 |
+| grain_receive_turn.go | Turn 开始、继续与收尾 | 已接纳执行才能开始 Turn；关闭 Step 和模型工作后才收尾 |
+| grain_receive_step.go | PreStep 准入、输入准备及提交回复 | 准入先于输入派生；异步完成必须匹配原 preparation |
+| grain_receive_model.go | 模型请求与流、持久化进度 | 输入准备完成后发起；回复推进同一 ModelRequest |
+| grain_receive_lifecycle.go | 维护、取消、等待空闲和资源关闭 | 取消只表达意图；工作收尾后才释放；关闭沿既有父子生命周期执行 |
+
+```mermaid
+flowchart TD
+ I[初始化完成] --> A[接纳执行]
+ A --> T[Turn 开始确认]
+ T --> P[PreStep 准入]
+ P --> S[Step 输入准备与提交]
+ S --> M[模型请求与流结果提交]
+ M --> D{继续 Step 或结束 Turn}
+ D --> P
+ D --> E[Turn 收尾与持久化]
+ E --> Q[释放执行]
+ H[空闲时维护准入] --> W[组件执行维护]
+ W --> F[收到匹配的维护完成请求]
+ F --> Q
+ C[取消] -.记录意图并投递.-> M
+ C -.记录意图并投递.-> W
+```
+
+图中表示消息组之间的契约依赖，完整 Turn 主驱动尚未接通，不能据此宣称自动循环已完成。
+通用维护协议已实现 Begin/Finish 和取消投递；Compaction 内部执行器消费该协议，
+`compaction/command` 的运行适配仍待迁移。

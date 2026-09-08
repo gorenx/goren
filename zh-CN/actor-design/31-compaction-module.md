@@ -291,3 +291,122 @@ Compaction Grain 直接处理 InvokePreStep 与 InvokeRequestError，复用同�
 PreStep 完成必要收尾后继续原协调器；RequestError 通过 Recovery.Complete 的取消参数禁止 Retry。协调器拥有整个中间件调用的取消结果。手动维护也需支持中途取消，不能等待摘要正常生成完；其入口接线仍未实现，当前可用的取消通信入口是自动中间件的 CancelInvocation。
 
 取消验证证据：transaction_cancel_test.go 覆盖开始提交前/后取消不启动生成、迟到块丢弃、取消优先于 Flush 错误、已提交摘要保持不变。grain_cancel_test.go 经真实中间件协调器，在读取挂起时发出取消，验证同一 Call 收到 Cancel、Close 未确认前原 Invoke 不返回、关闭后提交失败 end 且不生成摘要或替换 Surface；错误调用身份不能取消当前工作。该测试覆盖自动中间件，不能替代尚未实现的手动维护取消入口。
+
+## 手动维护：AgentLoop 状态与请求契约
+
+本节以本地 DSH `c389f96bf3a9b6807cb71ed6bdad5849be0df6d8` 的
+`packages/core/agent-loop/src/agent.ts` 的 `runMaintenance`、`wakeDriver` 为行为依据。
+维护只能在 idle 开始，不增加 Turn；维护期间可提交输入和取消，输入的执行等待维护完成。
+对外仍使用 idle/running 状态，不增加 wire 状态值。
+
+### 对象与接口
+
+- ReactLoopAgent 的 activity 持有执行/维护种类、首个取消原因和延后唤醒意图。
+  BeginMaintenance 只接受已初始化且空闲的 Agent；FinishMaintenance 只结束维护。
+  PrepareTurn 和 FinishActivity 拒绝维护状态。业务层不持有 Grain 或 Compaction 实例。
+- 手动入口保留在 compaction/command：Compact.Execute 校验命令参数，将 CommandID 传给 Compaction，
+  并把压缩结果转换成 commands.Result。AgentLoop 不新增 Compact 请求，也不消费压缩专用 DTO。
+- Compaction 拥有手动压缩用例；它通过 AgentLoop 的通用维护契约获得独占执行时段，
+  在压缩及必要 Flush 完成后释放。AgentLoop 只决定维护准入、取消和延后唤醒。
+  维护的 Actor 请求协议还需补齐，不能把当前内部 Execute 当成已接通的命令入口。
+- Compaction Execute 必须带 RequestID；Cancel 按相同 RequestID 关联手动调用。
+  RequestID 是调用关联，不持久化、不作为 Agent 身份；迟到取消不能影响下次执行。
+  自动中间件仍用既有 CallID/Handler 契约。
+- Cancel 的 Completion 只确认取消意图已接纳。Execute 的 Result 只在事务及所需 Flush 完成后返回，
+  包括明确失败；维护编排只有确认最终结果后才能请求 FinishMaintenance。
+
+### 交互与失败边界
+
+```mermaid
+sequenceDiagram
+    participant Caller as Commands
+    participant Cmd as compaction/command
+    participant C as Compaction
+    participant Loop as AgentLoop
+    participant S as Session / LLM
+    Caller->>Cmd: Execute(Invocation)
+    Cmd->>C: 手动压缩(CommandID)
+    C->>Loop: 请求维护准入
+    Loop-->>C: 已进入维护
+    C->>S: 读取、摘要、提交
+    Caller->>Loop: Followup / Steer
+    Note over Loop: 提交输入，延后执行
+    Caller->>Loop: Cancel
+    Loop->>C: 传播取消意图
+    C->>S: 取消生成、关闭 Call、结束事务、Flush
+    C->>Loop: 维护工作已结束
+    Note over Loop: 释放维护，检查延后唤醒
+    C-->>Cmd: 压缩结果
+    Cmd-->>Caller: commands.Result
+```
+
+长维护请求使用 AllowAll，不把取消与普通输入暂存到维护完成。Inbox Commit 的短暂串行边界仍由既有实现保证。
+运行中的 Turn、第二次维护和资源释放不能越过业务状态机。Followup/Steer 的延后唤醒只有在输入仍存在时重放；
+Inject 不唤醒，disposed 取消不重放。完成维护保留现有 Turn 编号。
+
+请求传输失败或无效回复不是压缩业务完成：返回投递错误并保留维护占用，不重新发送 Execute，避免重复压缩。
+目标永久故障后的恢复属于尚未完成的生命周期工作，不能用假 Result 解除占用。
+取消失败同样不能解除维护；调用方仍等待原结果。主 Turn 驱动尚未接线，当前重放只保留待执行业务状态。
+
+实现验证需分别覆盖业务状态转换、真实 Grain 的取消投递与最终回复屏障；不得把框架暂存实验当作业务证据。
+
+
+本轮实现证据：`agentloop/agent_maintenance_test.go` 验证维护互斥、普通输入延后执行、取消保留占用、
+Inject 不唤醒、输入移除及 disposed 取消抑制重放；`compaction/basic/actor/grain_test.go` 验证手动
+Execute 的旧请求取消隔离、重复取消与 Flush 完成屏障。`go test -race -count=1 -timeout=45s
+./agentloop/... ./compaction/basic/...` 已通过。以上不代表 Commands 或通用维护 Actor 接线已完成。
+
+### 通用维护 Actor 协议
+
+维护工作所属组件先发送 `agentactor.BeginMaintenance(CreationID, RequestID, Worker)`。
+AgentLoop 校验当前创建身份并调用业务 BeginMaintenance，成功回复 MaintenanceAccepted 后，组件才执行工作。
+Worker 是取消接收地址，AgentLoop 不持有组件业务对象或组件专用参数。
+组件完成全部工作后发送 `FinishMaintenance(CreationID, RequestID)`，收到 MaintenanceFinished 后结束外部调用。
+AgentLoop 将当前 Cancel 转发为 `CancelMaintenance(RequestID, Cause)`；Worker 回复 MaintenanceCancelled
+只表示取消接纳，不替代 FinishMaintenance。当前请求标识不匹配时不能释放维护。
+
+本协议在 `agent/actor` 定义；AgentLoop 与 Compaction 分别消费，避免相互导入具体实现。
+AgentLoop 仅保存 RequestID 和 Worker 这两个投递字段，不重复保存业务运行/取消状态。
+协议使用新调用标识，不允许调用方重用；本阶段不增加完成回执缓存。传输失败不得重试整个压缩，
+维护结束投递失败时仍保留原调用上下文，生命周期恢复接线仍需完成。
+
+Compaction 内部 Execute 的手动模式另带 Agent 路由，由 Command 的运行适配层提供。
+Compaction 先以本次 RequestID 申请维护，收到明确准入成功后才读取 Session；失败直接结束本次请求。
+收尾使用原 RequestID 释放维护，释放确认后才返回 Result。Begin/Finish 使用后台 Ask 和 Initialize.Timeout，
+投递错误或无效响应返回框架错误并保留当前调用，不能伪造准入或最终 Result。
+自动中间件不申请第二次维护，它已处于 Agent 执行时段。两条路径共用取消业务操作。
+
+
+### GoAkt 4.5.3 请求回调的调度依据
+
+已核对项目实际依赖的 actor/grain_context.go、actor/grain_pid.go 与 actor/reentrancy.go：
+RequestGrain 的 Then 在当前 Grain 的处理轮次执行；已经完成的请求注册 Then 时会立即执行回调。
+GrainContext.reset 清空 pid、self、actorSystem 等字段，不能跨回复等待捕获旧 gc 再发请求。
+Then 只有结果与错误参数，没有新的 GrainContext 参数。
+
+Compaction 使用 PipeToSelf 后台 Ask 等待结果，不组合 RequestGrain、Then 和 channel。
+Session/TokenMeter 返回 replyReceived，显式 retryRequest 调度相同依赖请求；维护握手返回完成消息。
+新消息只承接框架调度，不创建第二个业务流程或状态机。仅修改串行状态、完成稳定 GrainReply 的回调无须再投递消息。
+Session 事件仍用于业务事实传播，不能替代维护准入、LLM 关闭或 Flush 的请求结果。
+
+已验证不能在 Then 内直接 ActorSystem.TellGrain 给自身：grain_engine.go 的 TellGrain 调用
+localSend 并等待目标处理确认，导致当前处理轮次等待自身邮箱，测试出现请求超时。
+因此需要阻塞等待时放在框架 PipeToSelf 任务中直接 Ask；不能仅根据 Tell 的名称假定它是非阻塞入队。
+
+维护准入的 busy 需要跨组件识别：Agent 业务契约提供 ErrBusy，ReactLoopAgent 已有活动时返回该错误。
+Compaction 只将此错误映射为既有 ManualErrorBusy；创建身份、请求参数或初始化错误继续保留原错误，
+不能把所有准入失败都翻译成 busy。本组件已有活动时，手动 Execute 同样返回 ManualErrorBusy。
+
+当前局部验证：Agent、AgentLoop、Compaction Basic 全部子包的非缓存竞态测试通过，
+包括手动流式取消与维护握手；Command 迁移、生产接线及故障恢复仍未完成。
+
+
+后台 Ask 使用正值 Timeout；未知维护准入/释放不重新执行压缩，不以超时为业务结束。
+延迟回复要求目标已启用重入，否则 Ask 走同步通道，DeferResponse 无效。
+Session 生产初始化已满足此条件。测试覆盖维护释放超时保留占用，以及提交成功但回复失败时重试同一提交。
+
+Commands 的独立生命周期及后续迁移计划见 [Commands 模块设计](37-commands-module.md)。
+
+Session/TokenMeter 调度不再传入 read/measure 回调：每个依赖请求记录具体回复用途，
+例如准备历史、重计量、裁剪提交确认、事务提交确认。完成消息按用途进入具名处理方法。
+用途只关联本次 I/O 后续处理，业务阶段仍由 Compaction/Transaction 决定；重试保留同一用途和原请求。
