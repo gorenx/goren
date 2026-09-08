@@ -37,3 +37,7 @@ Session 请求使用内部无限等待，外部请求超时不能提前释放框
 已使用真实 Session Grain 和 SQLite 验证 fallback、rename、读取、关闭后的拒绝以及独立 Session 生命周期。模型生成已接通，并验证 Provider 准备失败时仍保留 fallback、请求日志先于调用、生成期间 rename 可处理、关闭等待实际调用结束、迟到结果不覆盖 rename。显式刷新在没有 Provider 时使用 fallback，已有自动标题不重写；相关业务与集成测试通过。人工消息事件已通过 Subscriber 自动触发生成，已验证不需要主 LLM 请求。重新激活授权、Provider 更新和生产组装尚未接通。不得将这里的基础请求测试视为完整 Title Actor 验证。
 
 自动入口见 `grain_automation.go`：仅处理人工消息与人工标题事件。`Subscriber` 过滤 Session/Creation 身份并转发 Topic 通知。Title 没有 MainRequest、日志消费游标或等待路由状态，模型来自独立标题配置。
+
+## 生命周期与服务地址
+
+Title Grain 使用 `<sessionID>.title` 名称，Session 业务身份来自初始化 Header.ID 和事件 SessionID。Session 地址使用 Session.RuntimeName；订阅筛选和 provider 请求不解析 Actor 名称。

@@ -2,7 +2,7 @@
 
 ## 职责与依赖
 
-先实现 Agent，再实现 AgentLoop。Agent 根包负责身份、配置值、Inbox 和父子关系业务约束；不调度模型/工具调用，不持有 Session 对象。AgentLoop Actor 使用这些对象编排每个 Agent 的执行；Registry Actor 后续负责跨 Agent 创建与关闭。
+先实现 Agent，再实现 AgentLoop。Agent 根包负责身份、配置值、Inbox 和父子关系业务约束；不调度模型/工具调用，不持有 Session 对象。AgentLoop Actor 使用这些对象编排每个 Agent 的执行；Registry Actor 统一负责跨 Agent 创建与关闭。
 
 ## Agent、Registry 与 AgentLoop 的职责
 
@@ -22,9 +22,9 @@ AgentLoop 是单个 Agent 的唯一执行 Actor；不增加一个与之相互转
 
 Agent Registry 接收创建/恢复请求，按 SessionID 查找并占用身份，合并同一创建中的重复请求。子 Agent 创建先固定父有效配置快照和覆盖输入，不与父对象建立动态配置引用。
 
-Registry 创建未就绪的 AgentLoop，传递身份、创建事务与运行时入口。AgentLoop 请求组件解析配置，并协调 Session 和每 Agent 组件初始化；Session Registry 是 Session 创建的唯一执行方。全部必要组件成功后，AgentLoop 向 Registry 报告可处理消息，Registry 才移交用户输入。创建失败尚未清理完时，Registry 保留占用，不能创建同 ID 的替代业务实例。
+Registry 先通过 Session Registry 创建/恢复日志，启动并初始化 Prompt，再启动 AgentLoop。AgentLoop 接收显式 AgentID 和已启动的组件地址，异步读取 Session、模型和 Prompt 基线，只初始化自身执行状态，不启动其他 Actor。Registry 随后初始化 Commands 及可选能力，全部成功且当前及祖先准入仍有效后，才发布 Ready。创建失败时保留身份，关闭确认资源释放后才允许替代创建。
 
-目前 Session CreatingNotice 订阅链与旧初始化设计同时存在；最终接线必须保证 Session 创建只发起一次，不能既由订阅器又由 AgentLoop 各启动一条独立创建事务。通知是初始化触发，成功判定必须来自所属创建事务的明确结果。
+唯一创建、失败清理、关闭与命名契约见 [Agent 生命周期实现](./39-agent-activation.md)。不再由 CreatingNotice 订阅链重复启动本次生命周期的 Session 或组件。
 
 ## 消息处理与配置更新
 
@@ -268,43 +268,19 @@ closing 是集合：key 为本目录已接纳关闭的 AgentID，空值只是存
 
 原 AgentLoop 的 cloneAgentOptions、validateAgentOptions 删除，调用方直接调用 Options 方法。这是把既有规则移回拥有配置类型的模块，不新增运行对象或通用深度合并。子配置集合的覆盖规则仍需由对应配置 owner 定义，Clone 不等于完成子 Agent 全量配置继承。
 
-## Agent Registry Grain：身份与接纳入口
+## Agent Registry Grain：生命周期与准入
 
-`agent/registry.Grain` 是共享 Registry 的框架 owner，内部持有纯业务 Registry 和每身份的创建标识。预留、校验、关闭接纳与预留释放在同一邮箱串行处理，无额外锁或异步任务。它尚未驱动 AgentLoop 创建；CloseAgent 的资源关闭编排见文末。Completion 仅确认当前原语命令，不表示 Agent Ready 或 Close 完成。
+`agent/registry.Grain` 统一处理 CreateAgent、Resolve 和 CloseAgent，内部持有纯业务 Registry。完整接口、创建顺序、关闭顺序及故障处理以 [Agent 生命周期](./39-agent-activation.md) 为准，不再由调用方分别启动 AgentLoop 和清理 Session。
 
-`Creation{AgentID, CreationID}` 是框架层创建凭据。Reserve 同时提供新 Creation 和可选 Parent Creation：子创建必须匹配父当前创建且祖先允许接纳；相同输入重试幂等，但关闭开始后不得作为新接纳成功。更换父或创建 ID 不能重用已有预留。CheckAdmission 同时检查创建身份与业务祖先限制，BeginClose 同时检查创建身份再关闭接纳。
+`Creation{AgentID, CreationID}` 标识一次生命周期。Reserve 只登记身份及可选父创建，不能发布执行地址；CheckAdmission 检查精确创建及祖先准入，Inspect 返回已 Claim 的注册信息。对外取得可执行地址使用 Resolve，必须等待整个创建完成并核对原激活身份。
 
-ReleaseReservation 只释放调用方已确认无需继续持有的预留，绝不执行或证明资源关闭；父有子项时仍拒绝释放。它是进程内生命周期编排原语，不暴露到 HTTP。后续创建/关闭事务必须在资源结束后调用，不能让 API 将其当作 Close。旧创建的延迟 Release 或 BeginClose 不得影响同 ID 新创建。
+Claim/Claimed 位于 agent/actor，绑定首次授权的 InstanceID 与 Executor 框架地址。AgentLoop 先 Claim，再读取已经启动的 Session、Prompt 和模型配置。共享契约不引用 Registry 实现；Registry 为统一生命周期编排导入具体核心 Grain，纯业务 agent 包不依赖 agentloop 或框架。
 
-Grain 停用不清理 AgentLoop 或 Session；当前恢复为空目录，生产必须用进程启动隔离与创建授权约束激活，不能把丢失内存目录当作资源已关闭。真实框架测试只验证本节的身份、重复请求和父子接纳，不代替完整生命周期验收。
+BeginClose 在同一邮箱内冻结子树准入并返回直接子项的精确 Creation，包含正在初始化的子项。它仅确认关闭准入，不表示资源关闭。身份释放统一由 CloseAgent 完成，没有外部直接删除预留的入口。
 
-## AgentLoop 激活绑定
+CloseAgent 等待在途创建最终回复，按依赖顺序关闭子项、Commands、能力组件、AgentLoop 执行资源、Prompt 和 Session，最后停用执行 Grain 并释放身份。失败保留已确认阶段、资源与身份；未 Claim 的失败创建也必须清理已获得的资源。重复关闭幂等，旧创建请求不能操作替代创建。
 
-Registry 处理 agent/actor 定义的 Claim{AgentID, CreationID, InstanceID}，将当前创建绑定到第一次请求的非空激活标识。相同标识可重试，另一个标识返回 ErrInstance；不存在/已替代创建返回 ErrCreation；关闭子树拒绝初始化 Claim。InstanceID 由 AgentLoop 每次激活取得，不用 SessionID 或 CreationID 冒充。
-
-reservation 新增 instanceID，是执行授权事实，不能作为框架地址或调度状态。它只存在 Registry Actor，Agent 根包的 Registration 不增加运行字段。AgentLoop 后续必须先 Claim 成功再初始化资源；单独实现此接口并不代表现有 AgentLoop 已完成重激活防护。关闭中的原实例仍可处理必要的完成结果，这不通过新的 Claim 授权。
-
-此限制不允许在旧创建上自动重建执行实例。异常停用后必须先清理旧创建资源，再分配新 CreationID；否则无法确定旧工具操作是否已结束。Registry 自身丢失授权时不能开放旧资源执行，恢复策略仍须整体生命周期验证。
-
-激活授权已接入当前 Inbox 初始化段：无预留拒绝初始化，首次授权成功后读取 Session，框架停用后重新激活不能用原创建重新 Claim。真实框架验证不代表完整资源关闭或模型循环已实现。
-
-依赖方向修正：Claim/Claimed 归入 agent/actor 的运行授权契约，不归具体 AgentLoop。agent/registry 和 agentloop/actor 都依赖 agent/actor；Agent 包树禁止导入 agentloop。创建时的具体执行实现装配属于组合边界，不能为了静态构造便利让 Agent 反向依赖执行实现。
-
-## 关闭接纳返回子创建
-
-BeginClose 的回复改为 CloseAccepted{Children []Creation, Err error}。Registry 在同一邮箱处理内校验当前创建、关闭子树接纳，再读取直接子项的当前创建身份；回复按 AgentID 排序且不暴露内部集合。这样关闭协调方取得的子项均属于已经禁止新增成员的子树，不必根据裸 AgentID 猜测待关闭的是哪次创建。子项包括已预留但尚未初始化完成的 Agent，不能只返回 Ready 实例。
-
-重复 BeginClose 返回仍登记的直接子项：已完成释放的子项不再返回；剩余子项继续沿用原 CreationID。旧父创建返回 ErrCreation 且不返回新创建的子项。该回复只确认关闭接纳与成员身份，后续仍须等待每个子 Agent 的业务关闭和释放，最后释放父方；本步骤不增加执行对象引用或宣称完整关闭编排已经实现。
-
-## Registry 子树关闭编排
-
-CloseAgent{Creation} 由 Registry 处理，回复 agent/actor.Closed。Claim 增加 Executor GrainIdentity，由 AgentLoop 提供自身框架地址；Registry 校验逻辑名称并固定地址，不导入具体 AgentLoop，也不保存执行对象。尚未 Claim 的创建不推断为无资源：关闭停止新接纳并返回明确错误，创建失败清理仍需后续创建事务完成。
-
-每个创建保存一个关闭操作，依次执行 PrepareClose、递归 CloseAgent 关闭直接子创建、CloseResources、框架停用、移除业务关系。所有业务调用使用异步 RequestGrain；Registry 使用 AllowAll 处理其他身份和子关闭请求。多阶段结果由 PipeToSelf 返回具名内部消息，回调不持有池化上下文。框架停用在受管理任务中等待真实完成。
-
-相同创建的并发关闭共用该操作；失败回复 error 并保留阶段，重试不重复已成功的资源关闭。等待回复句柄属于未完成请求，不是自行维护的用户消息队列。关闭中不允许 ReleaseReservation 绕过协调。子项失败时父资源保留；子项成功后才从目录移除。完成后保留该 ID 最近一次创建的关闭结果直到下次 Reserve 替换，以便重复关闭幂等；旧请求不能影响替换后的创建。
-
-当前接通 Inbox/Session 资源持有者，尚未 Claim 的创建清理、执行中工作排空、Actor 异常失效清理以及完整生产创建事务仍需继续实现；正常子树关闭验证不能替代这些验收。
+意外重新激活不能复用原 InstanceID。Resolve 收到明确身份不匹配时停止发布地址；不能确认清理时保留身份并返回错误。Registry 自身停用不会证明其他资源已关闭，进程崩溃恢复和旧 API/Scope 装配不在上述内存生命周期保证内。
 
 ## 本轮完整实现边界（以本节为准）
 

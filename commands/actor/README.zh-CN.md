@@ -42,3 +42,7 @@ RequestGrain 的 Then 通过激活期 ScheduleOnce(0) 将后续 Session 调度�
 
 handlers 保存全局/Session 配置地址，instances 保存 Session 能力地址。
 解析地址依次选择 Session 配置、Session 实例、全局配置；元数据由 Catalog 独立处理继承。
+
+## 生命周期与服务地址
+
+每 Agent Commands Grain 名称为 `<sessionID>.commands`，Initialize 显式携带 SessionID；消息文件定义 RuntimeName。Agent Registry 负责其启动和关闭，Commands 不依赖 AgentLoop；关闭确认仍等待已接收命令及其最终 Session 写入结束。

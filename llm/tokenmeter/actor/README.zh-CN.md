@@ -22,3 +22,7 @@ sequenceDiagram
 处理器只进行内存计算，直接回复；调用者通过框架异步请求收取结果。无队列、锁、任务或共享存储。取消和计算错误由业务对象返回，失败不安装新状态。停用会丢弃所有可重建状态和本地关闭记录；跨激活授权仍由 Session 生命周期控制。
 
 真实 RequestGrain 测试覆盖相同 Session 不同创建的状态隔离、重复关闭、延迟请求拒绝、旧关闭不影响新创建，以及错误 Session 拒绝。尚未接入 PubSub 转发、Unit 注册、Compaction 和生产组合根，模块测试不代表这些链路完成。
+
+## 生命周期与服务地址
+
+TokenMeter Grain 名称为 `<sessionID>.tokenmeter`，通过消息文件的 RuntimeName 生成。Measure、Close 和 Session 事件已有显式 SessionID，业务 ID 不从名称解析。

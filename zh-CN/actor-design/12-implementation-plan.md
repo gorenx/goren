@@ -272,3 +272,11 @@ Turn 开始已完成幂等迁移。下一步迁移 Step、Inbox 和模型/工具
 代码提交 `d16dad0` 包含 Session 可选幂等写入契约、Turn 开始与结束的原结果重试、停止钩子调度及异步取消确认。普通 Batch 仍是无条件追加；完整主驱动、LLM 与 Tool Runtime 接线仍按上述 backlog 推进。
 
 本次在工作区执行 `go test -race -count=1 ./session/... ./agent/... ./agentloop/...`、同范围 `go vet` 和 `go build`，全部通过。文档本地文件链接与 `git diff --check` 通过；未据此声明整仓或生产对话链路通过。
+
+### Agent 生命周期与命名迁移（本次工作区）
+
+生命周期实现及验收依据见 [Agent 生命周期](./39-agent-activation.md) 和 [Registry README](../../agent/registry/README.zh-CN.md)。Registry 以 SessionID 索引创建身份，Actor 名称统一 `<sessionID>.<service>`；共享 Initialize、Session 初始化/恢复、Commands 和 Projection Cache 初始化显式传递业务身份，不从 Name 解析。RuntimeName 放在各服务已有消息文件，不保留独立单函数文件或旧名称回退。
+
+已实现并发创建共享、固定输入冲突拒绝、初始化最终确认、初始化期间关闭、逆序组件关闭与失败重试、Session flush 完成后释放身份、同 SessionID 再创建和旧激活校验。Compaction 启动由它自己的 Registry 处理，Agent Registry 只使用通用组件生命周期消息。
+
+API Proxy 的 ordinary Resolver、旧 Session/Scope 清理和生产组合仍是独立待办，Subagent 暂缓；不得将本次生命周期验证替代 AL-08 全链回归。

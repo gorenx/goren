@@ -97,3 +97,7 @@ sequenceDiagram
 冷读取独立于缓存写入，不关闭共享适配器。当前 ColdView 返回证明后的视图和 checkpoint，尚未自动写回。缓存 Close 仅保证先前写入结束；组合根对共享存储的最终关闭仍需覆盖全部读取使用者。
 
 框架测试覆盖 1100 条事件的多页恢复、跳过已保存前缀、错误日志身份从零重试、无 Unit 的末尾序号、跨页 revision 变化与 I/O 失败。
+
+## 生命周期与服务地址
+
+Projection Cache Grain 使用 `<sessionID>.projection-cache` 名称，Initialize 显式携带 SessionID。Writer、Reader 和记录校验使用该业务 ID，不从 Actor 名称恢复 ID。RuntimeName 位于消息契约文件。

@@ -117,3 +117,7 @@ Advertise 建立缺省命令定义和 Session 实例地址；Session 继承全�
 Close 停止重试并撤销当前发布，确认后释放资源；压缩期间拒绝关闭。
 没有独立 Compact Actor、普通 Handler/Runner 或能力自身维护的全局路由表。
 完整交互与验证范围见 [Commands 设计](../../../zh-CN/actor-design/37-commands-module.md)。
+
+## 生命周期与服务地址
+
+Compaction Grain 使用 `<sessionID>.compaction` 名称，业务身份来自 Initialize.AgentID。其启动与关闭由 [Compaction Registry](../registry/README.zh-CN.md) 负责，Agent Registry 通过统一组件生命周期消息协调，不持有 Compaction 专用配置。RuntimeName 位于消息文件。

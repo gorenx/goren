@@ -120,3 +120,7 @@ ToolsSubscribed 不表示已有权威目录；ToolsUnsubscribed 不表示所有�
 `runtime_initialize.go` 处理 InitializeRuntime：调用方只提供 AgentID 和 Prompt/Tools Registry 地址。Runtime 先请求 Prepare 捕获提示词定义，再请求工具 Read 并校验、应用基线；全部成功才安装业务对象并回复 RuntimeInitialized。未发布工具目录返回明确错误，不自动使用空集合。任一阶段失败保留未初始化状态，强制停用会取消等待并返回错误。
 
 AgentLoop 使用此入口建立本 Agent 的 Prompt Runtime，后续 Assemble 使用初始化回复中的 ToolsVersion。注册配置变化仍由相应事件消费路径处理；本次初始化不代表工具动态更新屏障已经接通。关闭仍使用 CloseRuntime 明确确认，再由持有者停用框架实例。契约见 [Prompt 设计](../../zh-CN/actor-design/17-prompt-module.md)。
+
+## 生命周期与服务地址
+
+每 Agent Prompt Runtime 名称为 `<sessionID>.prompt`，RuntimeName 位于 runtime_messages.go。生命周期 Registry 负责启动并发送 InitializeRuntime；AgentLoop 通过 ReadRuntime 读取已应用工具基线，既不启动也不关闭 Prompt。

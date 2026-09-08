@@ -142,3 +142,7 @@ sequenceDiagram
 实际实现与测试已覆盖图中的登记、订阅、初始化、结果发布及关闭后旧事件拒绝；AgentLoop 发布和消费两端仍待生产迁移，图中相应两端是目标契约。真实 SQLite 测试证明登记无 I/O、重复触发仅写一个种子批次、缺登记与恢复失败保持 error 类型。
 
 事件订阅与结果发布已移至 [session/subscriber](../subscriber/README.zh-CN.md)。本包通过具名初始化请求提供能力，不导入订阅器。Registry Grain 已移至 [session/registry](../registry/README.zh-CN.md)。本包从 Initialize、Resume 和空日志 Close 接收授权方 GrainIdentity，通过本包 Claim / Claimed 消息取得授权，不依赖 Registry 实现。
+
+## 生命周期与服务地址
+
+Session Grain 名称由消息文件中的 RuntimeName 生成，格式为 `<sessionID>.session`。Initialize、Resume、Close 显式携带 SessionID；Header 和持久化事件使用业务 ID，不读取或拆分 Actor 名称。Read 返回同一提交视图的 Header 和 Snapshot。

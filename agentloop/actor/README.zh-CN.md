@@ -1,56 +1,44 @@
 # AgentLoop Actor
 
-本包是每个 Agent 的执行框架边界，设计见 [AgentLoop 业务迁移](../../zh-CN/actor-design/30-agentloop-business.md)与 [Agent 职责](../../zh-CN/actor-design/32-agent-module.md)。当前接通授权、Session 请求初始化、Inbox 恢复与提交、模型配置解析、Prompt Runtime 请求初始化；完整模型循环和其余组件初始化尚未完成。
+本包是单 Agent 执行的 GoAkt 边界，生命周期设计见 [Agent 生命周期](../../zh-CN/actor-design/39-agent-activation.md)，业务设计见 [AgentLoop](../../zh-CN/actor-design/30-agentloop-business.md)。Grain 不启动其他 Actor，也不关闭 Session、Prompt 或 Commands；这些职责由 Agent Registry 与能力 Registry 协调。
 
-`Grain` 按 SessionID 寻址，持有 Inbox 业务投影。`grain_initialize.go` 管理 Session 与 Inbox 初始化，`grain_model.go` 根据日志恢复的选择请求 ModelConfig Registry，保留解析后的参数、版本和凭据引用；`messages.go` 定义初始化与 Inbox 命令。创建授权 Claim/Claimed 属于 agent/actor 共享运行契约。Registry 与 AgentLoop 都依赖该契约；agent 不导入 agentloop，AgentLoop 也不导入具体 Registry。
+## 对象和模块职责
 
-```mermaid
-sequenceDiagram
-    participant C as 创建协调
-    participant A as AgentLoop
-    participant R as Agent Registry
-    participant M as ModelConfig Registry
-    participant D as Session Registry
-    participant S as Session Grain
-    C->>A: Initialize（Registry 路由与 CreationID）
-    A->>R: RequestGrain Claim
-    R-->>A: Claimed
-    A->>D: RequestGrain StartSession
-    D-->>A: Initialized（Header）
-    A->>S: Read
-    S-->>A: 分离 Snapshot
-    A->>A: 恢复 Inbox
-    A->>M: RequestGrain Resolve（日志中的模型选择）
-    M-->>A: Resolution / error
-    A-->>C: Completion（仅当前初始化段）
-    C->>A: Followup / Steer / Replace / Remove
-    A->>S: Commit
-    S-->>A: Committed / error
-    A->>A: 成功后 Apply
-    A-->>C: Changed
-```
-
-每次激活生成 InstanceID，必须先取得授权，再向 Session Registry 请求已登记的 Session，随后读取日志。Initialize 不接收 Header、Session 结果或存储适配器。初始化持有原输入和独立 GrainReply，异步阶段不保留池化上下文。框架 StashNonReentrant 串行化 Session 请求与 Inbox 更新，没有业务消息队列或 mutex。初始化停止时取消等待并失败回复，Session 提交失败不改变 Inbox。Claim 成功后即绑定原创建的 Session 清理责任；读取或 Inbox 恢复失败保留绑定，Registry 仍可关闭这次失败创建。初始化尚未结束时不允许资源释放，Inbox 缺失不作为资源关闭成功的依据。
-
-`grain_prompt.go` 请求 Prompt Runtime 自行读取提示词定义及工具基线，并在关闭时等待其业务关闭和框架停用。`grain_close.go` 处理 agent/actor 的 PrepareClose 与 CloseResources。前者禁止新增/替换输入，有待处理 Inbox 时返回 ErrPending；Remove 取消既有输入仍需提交 Session。后者要求已经停止接纳且 Inbox 为空，异步请求初始化时提供的 Session Registry 执行 CloseSession，等待 flush、停用与释放。失败保留状态供重试；成功清空本地视图并保留原创建身份，重复关闭不再访问 Session，也不能重新初始化本实例。
+- Grain 保存 ReactLoopAgent、已启动组件地址、当前请求关联。业务状态与准入规则由 ReactLoopAgent 决定。
+- grain_initialize.go 接收共享 Initialize，按显式 AgentID/CreationID 请求 Claim、读取 Session.View 并恢复 Inbox。
+- grain_model.go 请求模型 owner 解析日志中的选择；grain_prompt.go 请求已初始化 Prompt 的 ReadRuntime，读取工具基线版本。
+- grain_close.go 处理 PrepareClose、CloseResources。准备关闭停止新准入；已有消息或维护未结束时返回错误。资源释放只清理本 Agent 执行状态，不代表 Session flush 已完成。
+- messages.go 包含运行消息和 RuntimeName；Grain 名称为 `<sessionID>.agentloop`。共享初始化、关闭和激活校验消息位于 agent/actor，不保留旧 Initialize 别名。
 
 ```mermaid
 sequenceDiagram
-    participant R as Agent Registry 关闭协调
-    participant A as AgentLoop
-    participant S as Session Registry
-    R->>A: PrepareClose
-    A-->>R: Prepared（待处理输入存在则 error）
-    Note over R: 后续须先确认子 Agent 全部关闭
-    R->>A: CloseResources
-    A->>S: RequestGrain CloseSession
-    S-->>A: Closed（flush、停用、释放结果）
-    A-->>R: Closed
+ participant R as Agent Registry
+ participant A as AgentLoop
+ participant S as 已启动 Session
+ participant M as 模型配置 owner
+ participant P as 已初始化 Prompt
+ R->>A: Initialize（AgentID、CreationID、组件地址）
+ A->>R: Claim（InstanceID）
+ R-->>A: Claimed
+ A->>S: Read
+ S-->>A: Header / Snapshot
+ A->>M: ResolveAgent
+ M-->>A: 配置结果
+ A->>P: ReadRuntime
+ P-->>A: 工具基线版本
+ A-->>R: Initialized
+ Note over R: 其余组件就绪且准入仍有效，才对外发布 Ready
+ R->>A: PrepareClose
+ A-->>R: Prepared 或工作未完成错误
+ Note over R: 关闭子 Agent、Commands 和可选组件
+ R->>A: CloseResources
+ A-->>R: 自身资源已释放
+ Note over R: 关闭 Prompt、等待 Session flush，再停用 AgentLoop
 ```
 
-技术停用只释放本地派生视图，不代表 Session 或 Agent 已业务关闭。当前关闭覆盖已实现的 Inbox、Prompt Runtime 和 Session 绑定；Registry 已接通当前资源范围内的父子关闭编排；配置就绪、消息驱动执行与其他组件收尾仍待实现。不能把 Inbox 初始化成功报告为生产 Agent 已 Ready。
+每次激活生成新的 InstanceID，不能重新使用旧创建的授权。Registry 返回运行地址前通过 Verify 校验激活身份。初始化失败保留原创建状态供生命周期清理，历史 Inbox 不因失败被消费。关闭期间取消既有输入仍须通过 Session 提交；失败不修改业务投影。技术停用不能作为业务资源已经关闭的证据。
 
-初始化成功之前不接纳 Inbox 写入。模型配置失败后即使已恢复 Inbox，也仍属于失败创建；关闭该创建不消费历史输入，日志保留供后续恢复。完整 Prompt/Tools 初始化接入后，成功回复必须继续后移到全部必需组件就绪。
+框架异步 RequestGrain 与 PipeToSelf 管理请求及邮箱续接，不保留池化 GrainContext，没有业务消息队列或 mutex。创建、关闭、恢复与故障交错的完整验证范围见 [Registry README](../../agent/registry/README.zh-CN.md)；这些生命周期测试不代表完整模型循环和生产 HTTP 装配完成。
 
 LLM Router 将生成、读取、取消与关闭消息分配给固定 Worker 池。AgentLoop 不持有 Binding、Worker PID、ChunkStream 或提供者取消函数。Worker 返回具名结果，AgentLoop 按 CallID 和 RequestID 关联；取消接收结果与实际关闭结果分开确认。
 
@@ -155,3 +143,5 @@ flowchart TD
 图中表示消息组之间的契约依赖，完整 Turn 主驱动尚未接通，不能据此宣称自动循环已完成。
 通用维护协议已实现 Begin/Finish 和取消投递；Compaction 内部执行器消费该协议，
 `compaction/command` 的运行适配仍待迁移。
+
+创建共享协议位于 `agent/actor.Initialize` / `Initialized`，初始化调度仍由本包实现。Registry 无需 import 具体 AgentLoop 来取得消息类型；普通运行操作继续使用本包协议。已删除原 Initialize 类型，不保留兼容别名。当前创建入口与组件收尾契约见 [普通 Agent 激活设计](../../zh-CN/actor-design/39-agent-activation.md)。

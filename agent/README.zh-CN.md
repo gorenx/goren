@@ -14,7 +14,7 @@ Agent 负责身份、父子关系、Inbox 与业务契约，设计见 [Agent 模
 | agent.go | 状态与只读 Inbox 契约；不返回可执行的 Agent 对象 |
 | Options / options.go | Agent 配置值、校验及独立复制，不负责厂商参数规则 |
 
-旧 RegistryPlugin、Factory、Host、Handle、Scope、Setup 和 Registry 并发关闭实现已删除。当前 Registry 仅实现纯目录规则，返回分离数据，没有锁或工作队列。完整的 Agent Registry 仍须负责跨 Agent 创建、身份授权和关闭协调；这些 Actor 行为尚未实现，不能以目录替代。
+旧 RegistryPlugin、Factory、Host、Handle、Scope、Setup 和 Registry 并发关闭实现已删除。当前 Registry 仅实现纯目录规则，返回分离数据，没有锁或工作队列。[Registry Grain](./registry/README.zh-CN.md) 已实现创建、身份授权与关闭编排，纯业务目录仍不承担框架职责。
 
 ```mermaid
 flowchart LR
@@ -26,7 +26,7 @@ flowchart LR
 
 登记失败不修改目录；父 Agent 存在已登记子项时不能移除。BeginClose 停止自身及后代的新接纳，CheckAdmission 沿祖先关系检查；现有子项保留，无关树不受影响。关闭失败不会重新开放接纳，Remove 成功才释放业务标记。配置继承在创建子 Agent 时复制并覆盖，不由父 Agent 动态管理。Inbox 只有成功提交后才 Apply；取消和恢复均依据持久化消息事实。目录没有外部资源，无需 Close。
 
-本包迁移仍在进行，纯业务测试不能证明尚未实现的 Actor 创建与关闭链路。
+纯业务测试与 Registry 生命周期集成测试分别验证业务规则和实际 Actor 链路。生产 API 装配仍按实施计划推进。
 
 
 `agent.Agent` 定义身份、只读 Inbox、状态及 Followup、Steer、Inject、Cancel 业务操作，由 ReactLoopAgent 直接实现。输入方法返回准入提案，完整 Session 提交确认后才改变 Inbox 与执行预约。异步提交、取消投递和 WhenIdle 属于 actor.Client；客户端不实现业务 Agent。Grain 直接持有 ReactLoopAgent，删除了仅重复其方法清单的 execution 接口。依赖方向为 actor → agentloop → agent，业务对象不导入框架。完整执行调度仍须继续接线。
