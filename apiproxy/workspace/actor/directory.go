@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	sessionapi "github.com/gorenx/goren/apiproxy/session"
 	workspaceapi "github.com/gorenx/goren/apiproxy/workspace"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/workspace"
@@ -62,3 +63,25 @@ func (adapter *Directory) ArchiveSession(ctx context.Context, selected session.S
 }
 
 var _ workspaceapi.Directory = (*Directory)(nil)
+
+// Read resolves membership metadata without exposing the Workspace owner.
+func (adapter *Directory) Read(ctx context.Context, identifier workspace.ID) (*workspace.WorkspaceState, error) {
+	result, err := adapter.endpoint.Read(ctx, identifier)
+	if err != nil {
+		return nil, err
+	}
+	if !result.Found {
+		return nil, nil
+	}
+	return &result.State, nil
+}
+
+// AttachSession asks Workspace to validate the Session header and persist membership.
+func (adapter *Directory) AttachSession(ctx context.Context, identifier workspace.ID, selected session.SessionID) error {
+	return adapter.endpoint.AttachSession(ctx, workspaceactor.AttachSession{
+		ID:        identifier,
+		SessionID: selected,
+	})
+}
+
+var _ sessionapi.Workspaces = (*Directory)(nil)
