@@ -2,10 +2,12 @@ package loopactor
 
 import (
 	"errors"
+
 	"github.com/gorenx/goren/agent"
 	middlewareactor "github.com/gorenx/goren/agent/middleware/actor"
 	promptactor "github.com/gorenx/goren/systemprompt/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
+	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
 func (owner *Grain) cancel(gc *goakt.GrainContext, input Cancel) {
@@ -14,28 +16,110 @@ func (owner *Grain) cancel(gc *goakt.GrainContext, input Cancel) {
 		return
 	}
 	edit, err := owner.business.Cancel(input.Cause, input.Options)
-	var deliveryErr error
-	if owner.preparation != nil {
-		operation := owner.preparation
-		deliveryErr = gc.ActorSystem().TellGrain(gc.Context(), owner.prompt, promptactor.CancelAssembly{
-			ID: operation.id,
-		})
-		deliveryErr = errors.Join(deliveryErr, gc.ActorSystem().TellGrain(gc.Context(), operation.middleware, middlewareactor.CancelCall{
-			CallID: middlewareactor.CallID(operation.id),
-			Cause:  agent.NewCancellation(input.Cause),
-		}))
-	}
 	if owner.model != nil {
-		owner.model.cancelRead(agent.NewCancellation(input.Cause))
+		owner.model.cancelRead(owner.business.Cancellation())
 	}
-	deliveryErr = errors.Join(err, deliveryErr)
-	if len(edit.Drafts) == 0 {
-		reply.Response(Changed{
-			Err: deliveryErr,
+	completed := completeCancel{
+		reply: reply,
+		edit:  edit,
+		err:   err,
+	}
+	if owner.preparation != nil && owner.preparation.cancellation != nil {
+		owner.deliverCancellation(gc, *owner.preparation.cancellation, completed)
+		return
+	}
+	if owner.stopping != nil {
+		owner.deliverCancellation(gc, cancellationRequest{
+			target: owner.stopping.middleware,
+			message: middlewareactor.CancelCall{
+				CallID: owner.stopping.id,
+				Cause:  owner.business.Cancellation(),
+			},
+		}, completed)
+		return
+	}
+	owner.finishCancellation(gc, completed)
+}
+
+// completeCancel tells the mailbox to finish the cancellation request: commit
+// its Inbox edit, if any, then reply with the cancellation delivery result.
+// It does not finish the original Step, hook, or model execution.
+type completeCancel struct {
+	reply *goakt.GrainReply
+	edit  agent.InboxEdit
+	err   error
+}
+
+// cancellationRequest describes only an in-flight component's cancel endpoint.
+// message is erased locally for the framework; component contracts remain named.
+type cancellationRequest struct {
+	target  *goakt.GrainIdentity
+	message any
+}
+
+func (owner *Grain) deliverCancellation(gc *goakt.GrainContext, request cancellationRequest, input completeCancel) {
+	completed := make(chan error, 1)
+	stopped := owner.stopped
+	if err := gc.PipeToSelf(func() (any, error) {
+		select {
+		case failure := <-completed:
+			input.err = errors.Join(input.err, failure)
+			return input, nil
+		case <-stopped:
+			input.reply.Response(Changed{
+				Err: errors.Join(input.err, errors.New("agentloop: stopped during cancellation delivery")),
+			})
+			return nil, nil
+		}
+	}); err != nil {
+		input.err = errors.Join(input.err, err)
+		owner.finishCancellation(gc, input)
+		return
+	}
+	message := request.message
+	if cancellation, ok := message.(middlewareactor.CancelCall); ok {
+		cancellation.Cause = owner.business.Cancellation()
+		message = cancellation
+	}
+	gc.RequestGrain(
+		request.target, message,
+		goakt.WithReentrancyMode(reentrancy.StashNonReentrant),
+	).Then(
+		func(payload any, failure error) {
+			if failure == nil {
+				switch message.(type) {
+				case promptactor.CancelAssembly:
+					result, ok := payload.(promptactor.Completion)
+					if !ok {
+						failure = errors.New("agentloop: invalid Prompt cancellation acknowledgement")
+					} else {
+						failure = result.Err
+					}
+				case middlewareactor.CancelCall:
+					result, ok := payload.(middlewareactor.Completion)
+					if !ok {
+						failure = errors.New("agentloop: invalid middleware cancellation acknowledgement")
+					} else {
+						failure = result.Err
+					}
+				}
+			}
+			completed <- failure
+		},
+	)
+}
+
+func (owner *Grain) finishCancellation(gc *goakt.GrainContext, input completeCancel) {
+	if len(input.edit.Drafts) == 0 {
+		input.reply.Response(Changed{
+			Err: input.err,
 		})
 		return
 	}
-	owner.commitInbox(gc, reply, agent.Admission{
-		Edit: edit,
-	}, deliveryErr)
+	owner.commitInbox(
+		gc,
+		input.reply,
+		agent.Admission{Edit: input.edit},
+		input.err,
+	)
 }

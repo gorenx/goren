@@ -19,6 +19,8 @@ type Grain struct {
 	// idle closes when the current busy interval ends; waiters live in framework tasks.
 	idle            chan struct{}
 	stopped         chan struct{}
+	opening         *turnOpening
+	stopping        *stoppingInvocation
 	preparation     *stepPreparation
 	business        *agentloop.ReactLoopAgent
 	ending          *turnClosure
@@ -43,6 +45,14 @@ func (owner *Grain) OnActivate(context.Context, *goakt.GrainProps) error {
 // OnDeactivate releases local projections; Session business close is independent.
 func (owner *Grain) OnDeactivate(ctx context.Context, _ *goakt.GrainProps) error {
 	close(owner.stopped)
+	if owner.opening != nil {
+		owner.finishTurnStart(owner.opening, false, errors.New("agentloop: stopped during Turn start"))
+	}
+	if owner.stopping != nil {
+		owner.finishStopping(owner.stopping, turnContinued{
+			err: errors.New("agentloop: stopped during stopping hook"),
+		})
+	}
 	if owner.preparation != nil {
 		owner.finishPreparation(owner.preparation, false, errors.New("agentloop: stopped during Step preparation"))
 	}
@@ -80,6 +90,14 @@ func (owner *Grain) OnDeactivate(ctx context.Context, _ *goakt.GrainProps) error
 func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 	defer owner.refreshIdle()
 	switch input := gc.Message().(type) {
+	case startTurn:
+		owner.startTurn(gc)
+	case confirmTurnStart:
+		owner.confirmTurnStart(gc, input)
+	case continueTurn:
+		owner.continueTurn(gc, input)
+	case stoppingCompleted:
+		owner.completeStopping(input)
 	case prepareStep:
 		owner.startStep(gc, input)
 	case inputRecovered:
@@ -122,6 +140,8 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 		owner.replace(gc, input)
 	case Remove:
 		owner.remove(gc, input)
+	case completeCancel:
+		owner.finishCancellation(gc, input)
 	case Cancel:
 		owner.cancel(gc, input)
 	case WhenIdle:

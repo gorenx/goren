@@ -29,13 +29,14 @@ type stepPrepared struct {
 // stepPreparation retains request resources and detached upstream data only.
 // Legal preparation transitions are owned by ReactLoopAgent.
 type stepPreparation struct {
-	reply      *goakt.GrainReply
-	cancel     context.CancelFunc
-	id         string
-	middleware *goakt.GrainIdentity
-	routes     []middlewareactor.Route
-	failure    error
-	snapshot   session.Snapshot
+	cancellation *cancellationRequest
+	reply        *goakt.GrainReply
+	cancel       context.CancelFunc
+	id           string
+	middleware   *goakt.GrainIdentity
+	routes       []middlewareactor.Route
+	failure      error
+	snapshot     session.Snapshot
 }
 
 type preparationFailed struct {
@@ -133,7 +134,30 @@ var errPreparationUnavailable = errors.New("agentloop: Step preparation requires
 
 // requestPreparation sends a named external request and resumes through a named
 // mailbox message. The decoder is stateless framing, not a business continuation.
-func (owner *Grain) requestPreparation(gc *goakt.GrainContext, operation *stepPreparation, target *goakt.GrainIdentity, message any, reentrant bool, decode func(any, error) any) {
+func (owner *Grain) requestPreparation(
+	gc *goakt.GrainContext,
+	operation *stepPreparation,
+	target *goakt.GrainIdentity,
+	message any, reentrant bool,
+	decode func(any, error) any,
+) {
+	operation.cancellation = nil
+	switch request := message.(type) {
+	case promptactor.Assemble:
+		operation.cancellation = &cancellationRequest{
+			target: target,
+			message: promptactor.CancelAssembly{
+				ID: request.ID,
+			},
+		}
+	case middlewareactor.ResolvePreStep:
+		operation.cancellation = &cancellationRequest{
+			target: target,
+			message: middlewareactor.CancelCall{
+				CallID: request.CallID,
+			},
+		}
+	}
 	ctx, cancel := context.WithCancel(context.WithoutCancel(gc.Context()))
 	operation.cancel = cancel
 	completed := make(chan any, 1)
@@ -155,9 +179,16 @@ func (owner *Grain) requestPreparation(gc *goakt.GrainContext, operation *stepPr
 	if reentrant {
 		mode = reentrancy.AllowAll
 	}
-	gc.RequestGrain(target, message, goakt.WithRequestTimeout(0), goakt.WithReentrancyMode(mode)).Then(func(payload any, failure error) {
-		completed <- decode(payload, failure)
-	})
+	gc.RequestGrain(
+		target,
+		message,
+		goakt.WithRequestTimeout(0),
+		goakt.WithReentrancyMode(mode),
+	).Then(
+		func(payload any, failure error) {
+			completed <- decode(payload, failure)
+		},
+	)
 }
 
 func (owner *Grain) acceptPreparation(operation *stepPreparation) bool {
@@ -199,27 +230,31 @@ func (owner *Grain) claimConfirmed(gc *goakt.GrainContext, input inputClaimed) {
 }
 
 func (owner *Grain) readStepContext(gc *goakt.GrainContext, operation *stepPreparation) {
-	owner.requestPreparation(gc, operation, owner.conversation, sessionactor.Read{
-		CreationID: owner.creationID,
-	}, false, func(payload any, failure error) any {
-		if failure != nil {
-			return preparationFailed{
-				operation: operation,
-				err:       failure,
+	owner.requestPreparation(gc,
+		operation,
+		owner.conversation,
+		sessionactor.Read{CreationID: owner.creationID},
+		false,
+		func(payload any, failure error) any {
+			if failure != nil {
+				return preparationFailed{
+					operation: operation,
+					err:       failure,
+				}
 			}
-		}
-		result, ok := payload.(sessionactor.View)
-		if !ok {
-			return preparationFailed{
-				operation: operation,
-				err:       errors.New("agentloop: invalid Step Session response"),
+			result, ok := payload.(sessionactor.View)
+			if !ok {
+				return preparationFailed{
+					operation: operation,
+					err:       errors.New("agentloop: invalid Step Session response"),
+				}
 			}
-		}
-		return contextRead{
-			operation: operation,
-			result:    result,
-		}
-	})
+			return contextRead{
+				operation: operation,
+				result:    result,
+			}
+		},
+	)
 }
 
 func (owner *Grain) preparePrompt(gc *goakt.GrainContext, input contextRead) {

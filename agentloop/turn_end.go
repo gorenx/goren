@@ -18,16 +18,9 @@ type TurnEnd struct {
 	payload    json.RawMessage
 }
 
-// Drafts appends the intended end only if the same Turn has not already ended.
-// The Session owner must evaluate this and append in one serialized Commit.
+// Drafts builds the first end commit after Session's idempotency lookup.
+// The owning WritePlan must also implement FindCommit for retries.
 func (ending TurnEnd) Drafts(snapshot session.Snapshot) ([]session.EventDraft, error) {
-	committed, err := ending.Find(snapshot)
-	if err != nil {
-		return nil, err
-	}
-	if committed != nil {
-		return nil, nil
-	}
 	latest, err := turnstate.LastNumber(snapshot.Events)
 	if err != nil {
 		return nil, err

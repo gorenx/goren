@@ -14,6 +14,9 @@ import (
 // recovery belong to ModelRequest; this method does not resolve a provider.
 // Close preparation still permits execution of already accepted input.
 func (subject *ReactLoopAgent) StartRequest() (modelrequest.RequestOperation, error) {
+	if failure := subject.Cancellation(); failure != nil {
+		return nil, failure
+	}
 	if !subject.lifetime.ready() || subject.pending == nil {
 		return nil, errors.New("agentloop: Agent is not initialized")
 	}
@@ -46,12 +49,13 @@ func (subject *ReactLoopAgent) StartRequest() (modelrequest.RequestOperation, er
 	return next, nil
 }
 
-// AdvanceRequest consumes one completion of the currently owned model request.
-func (subject *ReactLoopAgent) AdvanceRequest(result modelrequest.RequestResult, cancellation error) (modelrequest.RequestOperation, error) {
+// AdvanceRequest consumes one completion together with the Agent-owned cancellation.
+// The caller cannot omit or replace an already accepted cancellation intent.
+func (subject *ReactLoopAgent) AdvanceRequest(result modelrequest.RequestResult) (modelrequest.RequestOperation, error) {
 	if subject.request == nil {
 		return nil, errors.New("agentloop: no model request is active")
 	}
-	next, err := subject.request.Advance(result, cancellation)
+	next, err := subject.request.Advance(result, subject.Cancellation())
 	if completed, ok := next.(modelrequest.RequestFinished); ok {
 		subject.AcceptModel(completed.Result)
 	}

@@ -109,7 +109,9 @@ func TestTurnStateRejectsUnrequestedAndRepeatedConfirmation(t *testing.T) {
 	if _, err := subject.PreparePosition(); err == nil {
 		t.Fatal("uncommitted Turn admitted Step")
 	}
-	write, err := history.Commit(context.Background(), session.Batch(draft))
+	write, err := history.Commit(context.Background(), startPlan{
+		fact: draft,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

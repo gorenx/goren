@@ -20,6 +20,16 @@ type WritePlan interface {
 	Build(context.Context, Snapshot) ([]EventDraft, error)
 }
 
+// IdempotentWrite identifies an earlier commit using a stable business identity.
+// FindCommit runs under the same serialized owner as Build. It must only inspect
+// the supplied snapshot, return an error for conflicting content, and return nil
+// when no matching commit exists. Retries must retain the identity and payload.
+// Log validates and copies the returned range from its authoritative entries.
+type IdempotentWrite interface {
+	WritePlan
+	FindCommit(Snapshot) (*WriteResult, error)
+}
+
 // Batch snapshots a fixed event batch for Commit. The drafts retain their
 // slice order and cannot be mutated through caller-owned payload aliases.
 func Batch(drafts ...EventDraft) WritePlan {

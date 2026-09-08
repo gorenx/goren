@@ -16,3 +16,8 @@ type turnEndWrite struct {
 func (plan turnEndWrite) Build(_ context.Context, snapshot session.Snapshot) ([]session.EventDraft, error) {
 	return plan.event.Drafts(snapshot)
 }
+
+// FindCommit lets Session return the original end acknowledgement on retry.
+func (plan turnEndWrite) FindCommit(snapshot session.Snapshot) (*session.WriteResult, error) {
+	return plan.event.Find(snapshot)
+}

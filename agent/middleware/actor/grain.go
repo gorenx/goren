@@ -45,15 +45,20 @@ func (call *exchange) reply(payload any) {
 // It must be activated with GoAkt reentrancy enabled. Definition ownership and
 // registration updates belong to the caller's registry, not this adapter.
 type Grain struct {
+	stopped chan struct{}
 	// calls maps a caller-generated invocation ID to its live transport exchange.
 	calls map[CallID]execution
 }
 
 // OnActivate starts without reviving process-local calls.
-func (*Grain) OnActivate(context.Context, *goakt.GrainProps) error { return nil }
+func (owner *Grain) OnActivate(context.Context, *goakt.GrainProps) error {
+	owner.stopped = make(chan struct{})
+	return nil
+}
 
 // OnDeactivate fails outstanding requests without asserting module cleanup.
 func (owner *Grain) OnDeactivate(context.Context, *goakt.GrainProps) error {
+	close(owner.stopped)
 	for _, call := range owner.calls {
 		call.transport().stop()
 		call.respond(errors.New("agent middleware: coordinator stopped during invocation"))
@@ -87,10 +92,24 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 			})
 			return
 		}
+		reply := gc.DeferResponse()
+		if reply == nil {
+			gc.Response(Completion{
+				Err: errors.New("agent middleware: CancelCall requires an asynchronous request"),
+			})
+			return
+		}
 		cause := call.cancel(input.Cause)
-		gc.Response(Completion{
-			Err: owner.notifyCancellation(gc, call, cause),
-		})
+		owner.notifyCancellation(gc, call, cause, reply)
+	case completeCancel:
+		if call := owner.calls[input.envelope.identity]; input.reply == nil && call != nil && call.transport() == input.envelope {
+			input.envelope.failed = errors.Join(input.envelope.failed, input.err)
+		}
+		if input.reply != nil {
+			input.reply.Response(Completion{
+				Err: input.err,
+			})
+		}
 	case invoked:
 		call := owner.calls[input.identity]
 		if call == nil || call.transport() != input.exchange {
@@ -191,24 +210,11 @@ func (owner *Grain) invoke(gc *goakt.GrainContext, call execution, identity midd
 	})
 }
 
-func (owner *Grain) notifyCancellation(gc *goakt.GrainContext, call execution, cause error) error {
-	envelope := call.transport()
-	var failure error
-	for identity := range envelope.active {
-		failure = errors.Join(failure, gc.TellGrain(envelope.routes[identity], CancelInvocation{
-			CallID:  envelope.identity,
-			Handler: identity,
-			Cause:   cause,
-		}))
-	}
-	return failure
-}
-
 func (owner *Grain) breakCall(gc *goakt.GrainContext, call execution, cause error) {
 	envelope := call.transport()
 	envelope.failed = errors.Join(envelope.failed, cause)
 	effective := call.cancel(cause)
-	envelope.failed = errors.Join(envelope.failed, owner.notifyCancellation(gc, call, effective))
+	owner.notifyCancellation(gc, call, effective, nil)
 	// Reply to suspended Continue requests so handlers can unwind, but retain the
 	// root and live module requests until their original invocations have replied.
 	root := envelope.root
