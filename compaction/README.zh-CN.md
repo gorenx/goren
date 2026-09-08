@@ -19,3 +19,5 @@ flowchart LR
 ```
 
 Actor 提供一致快照并消费校验结果；Session 负责实际提交与持久化。纯业务无启动/关闭资源和并发任务，非法日志与边界返回 error；调用方负责取消、模型请求及失败后的收尾。
+
+与 AgentLoop 的三条交互链——PreStep 自动压力、RequestError 溢出恢复和 RunMaintenance 手动维护——见 [Basic 的 Agent 交互流程](basic/README.zh-CN.md#与-agent-的交互)。AgentLoop 拥有准入与执行状态，根包只提供业务事实和校验规则；这些调用链的 Actor 接线仍未完成。

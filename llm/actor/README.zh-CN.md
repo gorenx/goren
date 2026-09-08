@@ -36,3 +36,26 @@ GoAkt v4.5.3 的 TellGrain 等待处理确认，因此 Worker 在异步任务中
 测试覆盖固定 Worker 复用、阻塞读取取消、失败关闭重试、配置与注册读取，以及 API 查询并发、期限和显式取消。生产装配和框架异常退出时的资源清理仍需完成。
 
 Generation 表示一次模型生成，Settings 明确选择 AgentConfig（读取该 Agent 已登记配置）或 Parameters（本次完整参数）。两者共用同一 Worker 调用流程；临时参数不写回 Agent 配置。未选择配置或参数非法时返回 GenerationStarted.Err，不分配 Call 资源。
+
+## Actor Client
+
+Client 供 AgentLoop、Compaction 等 Grain 共用。Start、Read、Cancel、Close、ResolveModel 只投递异步消息；Receive 在当前 mailbox turn 关联回复、校验 CallID/RequestID、处理超时，再调用 Receivers 中对应的单方法接口。每个调用方只提供自己消费的结果接口。Client 不保留调用方对象或 GrainContext，不建立反向对象引用，不创建 Actor、不持有业务队列或 mutex。
+
+Client 的 pending 表只保存尚未收到回复的通信请求；框架定时器负责截止时间。完成后删除请求并取消定时器，迟到回复不触发第二次业务回调。超时保留 context.DeadlineExceeded 类型；不自动重发 Generation，也不把取消确认当作关闭。是否再次读取、重试关闭、写入 Session 或结束压缩由调用方业务对象决定。
+
+AgentLoop 和 Compaction 已共用此 Client 的生成、读取和关闭通信，AgentLoop 的取消投递也已迁入。ModelsClient 仍只适配非 Actor 调用方的同步模型配置查询，不承担生成通信。
+
+```mermaid
+sequenceDiagram
+ participant A as 调用方 Grain
+ participant C as llmactor.Client
+ participant R as LLM Router / Worker
+ A->>C: Start / Read / Cancel / Close
+ C->>R: 具名请求、CallID、RequestID
+ R-->>A: 具名结果
+ A->>C: Receive(当前上下文, Receivers)
+ C->>A: 对应窄接口回调
+ Note over A: 把结果交给业务对象，再编排下一步
+```
+
+client_test.go 验证错误身份隔离、读取超时、迟到回复隔离以及关闭沿用原 CallID。Compaction 的真实 Grain 测试使用真实 TokenMeter 和 Session Log，验证完成事件已提交但 Flush 未回复时不会结束维护；Session 发布及生产装配仍需集成验证。

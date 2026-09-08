@@ -1,48 +1,30 @@
 # Tool Result Pruner
 
-状态：已实现；已进入默认 composition
+本包提供不调用模型的工具结果裁剪业务，设计见 [Compaction 迁移方案](../../zh-CN/actor-design/31-compaction-module.md)，整体进度见 [实施计划](../../zh-CN/actor-design/12-implementation-plan.md)。
 
-本包提供可选 `toolresultpruner.Pruner` Service。它是 Basic Compaction 的无模型 companion，不是第二个 Compaction backend，也不是模型可调用 Tool。权威设计见[24 Context Compaction](../../zh-CN/24-context-compaction.md)，逐项进度见[25 Context Compaction 实现进度](../../zh-CN/25-context-compaction-implementation-progress.md)。
+## 职责划分
 
-## 边界
+ToolResultPruner 校验字符预算，按 Unicode code point 保留头部、标记和尾部，保持非文本内容块的顺序。Estimator 只提供纯 token 估算，不执行 Session I/O 或 Actor 请求。Plan 实现 Session IdempotentWrite，基于准备时的固定 Snapshot 构造不可变批次。提交点只校验修订与原批次，不重新计价或修改 Result。
 
-```mermaid
-flowchart LR
-    BASIC[compaction/basic] --> PRUNER[Pruner Service]
-    PRUNER --> METER[tokenmeter.Meter]
-    PRUNER --> SESSION[session.Context Snapshot]
-```
-
-本包拥有 Unicode code-point budget、head/marker/tail 形状、`compaction/prune` shadow price、`tool/result` replacement 以及一次 pruning pass 的 `WritePlan`。Session 继续拥有 FIFO、atomic batch、Surface mutation 和“replacement 只能改变 result content”的 invariant；Token Meter 拥有 token price。
-
-## 配置与生命周期
-
-Factory 严格接受 `thresholdChars`、`headChars`、`tailChars`，默认值为 `8192/4096/1024`，并验证 head + marker + tail 不超过 threshold。`Plugin` 只负责 Runtime 生命周期，发布内部 `ToolResultPruner` 业务对象；后者实现 `Pruner` 并拥有裁剪策略与 replacement orchestration。Plugin 只依赖 `tokenmeter.Meter`，在 `Apply` 后绑定给业务对象，Dispose 清除 dependency snapshot。Factory 已注册到默认 Catalog，`DefaultSpecs` 在 Basic Provider 之前启用它。
-
-## 裁剪与提交流程
+每个被裁剪结果对应相邻的 compaction prune 计价事件和 tool/result 替换事件。原始事件不被修改；Surface replacement 指向新的结果，保留重放与计价来源。任一候选计算失败时整批不提交。
 
 ```mermaid
 sequenceDiagram
-    participant B as Basic Compaction
-    participant P as ToolResultPruner
-    participant M as Token Meter
-    participant S as Session
-
-    B->>P: PruneSession(ctx, session)
-    P->>S: Commit pruningPlan
-    S->>P: Build(latest Snapshot)
-    loop Snapshot 中每个超预算 tool/result
-        P->>P: code-point head + marker + tail
-        P->>M: EstimateMessage(original)
-        P->>P: build prune + replacement drafts
-    end
-    P->>S: return complete drafts
-    S->>S: atomic batch commit
-    P-->>B: replacements + charsRemoved
+ participant C as 编排调用方
+ participant P as ToolResultPruner
+ participant S as Session
+ participant W as Plan
+ C->>P: NewPlan（固定 Snapshot、纯估算策略）
+ P-->>C: Plan
+ C->>S: Commit Plan
+ S->>W: FindCommit / Build 提交点 Snapshot
+ W-->>S: 原提交结果或固定草稿批次
+ S-->>C: 提交结果
+ Note over C: 仅成功后读取 Plan.Result
 ```
 
-- 只统计 text block 的 Unicode code point，通过 Go rune 切分避免拆开 surrogate pair；非文本 block 原位保留；
-- replacement 由 Session owner 校验，保留 Tool result 的 call ID、status、source 和扩展字段，只改 content；
-- `compaction/prune` shadow price 与 replacement 在同一个有序 draft slice 中相邻；
-- `pruningPlan.Build` 在 request 到达 FIFO 头部后扫描最新 `Snapshot`，一次返回整个 pass 的 drafts；任一候选构造或 Surface 校验失败时整批不提交；
-- 二次 pass 忽略已落入预算的结果，不产生重复 replacement；取消会在处理下一候选前收敛。
+Plan.Result 返回分离的结果，不构成 Session 提交确认。调用方必须先验证 Commit 成功。取消或构造失败由 error 返回，不返回部分成功的业务结果。
+
+已删除 Plugin、Factory、Pruner Service、Session 对象入口与动态 bind/release。业务测试覆盖 Unicode、富内容、扩展字段保留、计价及替换顺序、失败不提交和重放。独立 Pruner Grain 候选已删除，统一由 Compaction Actor 调度；其接线仍待完成；本包测试通过不代表生产压缩链可用。
+
+Plan 在原起始位置验证每项草稿、相邻序号和来源引用，重发后返回原批次结果。原位置被其他写入占用、只存在半个批次或内容不符时拒绝；不重新计算成“无变化”。无变化计划没有持久化批次身份。plan_test.go 验证重复确认不重计价、不追加、保留原结果、后续追加不影响原收据，以及冲突/部分批次拒绝。

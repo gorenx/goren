@@ -35,3 +35,9 @@ Generation 内部读取调用快照、解析模型参数并打开流，返回 Ge
 生成统一使用 Generation。普通对话和压缩摘要属于调用用途，不拆成不同生成消息。Generation 持有 Delivery、Input 和 Settings；Settings 是封闭的配置选择接口：AgentConfig 标识已登记配置的 Agent，Parameters 是本次调用的完整参数。两种选择互斥，不能同时传 AgentID 与临时参数，也不使用 any 或两组可选字段。
 
 Worker 根据配置选择读取同一 LLM owner 的配置与 Binding，或仅选择本次参数的 Binding，随后进入同一个 llm.Call 流程。本次参数不写入已登记 Agent 配置；LLM 不识别或硬编码 Compaction 用途。删除旧生成类型及兼容分支，保留 CallID 路由、RequestID 关联、GenerationStarted 和流读取/关闭协议。该内部 Go 契约变化不改变客户端协议和 Session 持久化字段。
+
+## Actor 调用方的通信封装
+
+llm/actor.Client 统一封装 Router 请求投递、关联、定时器与具名结果校验。Client 由调用方 Grain 串行使用，不创建额外 Actor。五个单方法接收接口分别处理生成开始、流块、关闭、取消和模型元数据；Receive 每次接收临时 Receivers，不在 pending 请求中保留调用方对象或旧 GrainContext。AgentLoop 和 Compaction 使用相同通信实现，业务包不依赖 Client。
+
+Client 只重建通信结果，不决定业务重试、Session 写入或维护结束。Start 只发送一次 Generation，读取超时仍须由业务流程决定关闭同一 Call；Cancel 的确认与 Close 的资源释放确认保持独立。此内部封装不更改 Router 消息、Session 事件或外部协议。对象与调用关系见 [LLM Actor README](../../llm/actor/README.zh-CN.md#actor-client)。
