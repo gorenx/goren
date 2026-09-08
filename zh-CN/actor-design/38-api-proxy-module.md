@@ -282,7 +282,7 @@ AgentLoop 的 ReadActivity 校验 CreationID，回复 Activity 中的 Pending �
 
 ### Workspace 成员接口接线
 
-待完成：Session Gateway 的 Workspaces 端口由 Workspace API 的 Directory Actor Client 实现。Read 将明确的 Found=false 转为 nil；AttachSession 转发给 Workspace owner，由其读取 Session Header、验证 CWD 并持久化成员关系。API 不自行验证或修改成员集合，不因附加失败回滚已经创建的 Session。
+Session Gateway 的 Workspaces 端口由 Workspace API 的 Directory Actor Client 实现。Read 将明确的 Found=false 转为 nil；AttachSession 转发给 Workspace owner，由其读取 Session Header、验证 CWD 并持久化成员关系。API 不自行验证或修改成员集合，不因附加失败回滚已经创建的 Session。
 
 ### Title 生命周期接线
 
@@ -299,3 +299,5 @@ Server 实现 Connection 消费的 Service，Service 不再嵌入 plugin.Service
 Session Feed、Workspace Gateway 和 Interaction 作为各自事件／交互入口供组合根连接，Server 不用无类型 ObserveEvent 分发所有领域事件。订阅者生命周期由组合根启动和关闭。Session 快照捕获、帧转换和交互关联沿用领域实现；此步骤不改变 wire schema。Subagent/Bound 装配不在本轮范围，保留其独立业务模块，不通过旧 Plugin 路径加载。
 
 验证分为 Server 方法注册／关闭测试、领域 Actor Client 集成、真实 HTTP/WebSocket 和完整对话链；前两项不能替代后两项。删除旧 API Host/Factory 后，旧 assembly 和 Connection Plugin 调用点必须继续迁移，禁止以适配旧 Plugin 接口恢复编译。
+
+Session Search 端口由 session/actor.Search 请求现有 Query Actor 实现；该客户端不打开索引、不收集 Session。Collector 仍负责观察源和刷新派生索引，生产装配须接通 Collector 后再开放搜索。

@@ -10,6 +10,7 @@
 | Agent | Agent | 固定创建身份，仅向 AgentLoop 查询执行概况、提交输入和取消 |
 | Logs | Logs | 从 Session Registry 取得当前创建，读取该创建的日志 |
 | Projections | Projections | 请求 Projection.Compute 折叠指定日志前缀，不替换已有实例的投影缓存 |
+| Search | Search | 请求 Query Actor 查询已观察索引；不采集 Session 或维护索引 |
 | Titles | Titles | 从 Registry 已就绪的组件中解析 Title，提交人工标题 |
 
 API 业务层的 Reader 消费 Logs、Projections、Agents，组合列表和历史视图。Agent 不提供 Session 日志、标题或模型配置方法。AgentLoop 的 Pending 和 Status 来自同一次 ReadActivity；Reader 的日志与执行状态属于独立观察，不宣称跨 Actor 原子快照。
@@ -45,3 +46,5 @@ Agent 始终携带原 CreationID，旧客户端不能访问同 ID 的新创建�
 ## 验证范围
 
 真实 Registry、Session、Title、Projection 与 SQLite 集成测试覆盖创建、标题修改、关闭、同 ID 恢复、旧客户端拒绝及指定日志前缀的投影。Title 部分启动失败后的关闭和重新创建也已验证。Projection.Compute 每次重建指定前缀，尚未做性能优化；这些测试不替代生产 HTTP/WebSocket 对话验收。
+
+`TestSearchClientUsesObservedQueryIndex` 验证真实 Query Actor 与 SQLite 中的人工消息能经 Search 端口检索，取消保留 context.Canceled。源采集仍由 Query Collector 和生产组合根接线。

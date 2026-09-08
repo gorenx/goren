@@ -32,3 +32,6 @@ Gateway 不拥有 Workspace 生命周期；API Proxy 连接通知来源和 Broke
 
 Gateway 不持有可变 Workspace 对象，不自行加锁检查名称。修改响应取自同一次 Actor 操作结果。
 `actor/directory_test.go` 验证 Catalog、Gateway、真实 Workspace Actor 和 SQLite 下的并发重命名冲突；生产入口连接仍属于 API Proxy 总体迁移的待完成部分。
+
+
+Session API 的 Workspaces 端口也由 actor.Directory 实现。Read 返回独立视图，Found=false 映射为 nil；AttachSession 由 Workspace Actor 委托业务 owner 验证 Session Header.CWD 并持久化成员。API 不扫描或修改成员集合，不回滚已创建的 Session。`TestDirectoryAttachesSessionThroughWorkspaceOwner` 验证未知 Session 拒绝、重复附加幂等及 SQLite 持久化。

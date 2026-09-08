@@ -100,3 +100,5 @@
 - 已实现的独立子模块在代码旁维护 `README.zh-CN.md`，流程与交互图使用 Mermaid；暂不增加子模块英文 README，也不为 helper、generated 或 test-only 目录批量创建模板文档。
 - 未确认的行为保留为显式未决事项，不写成已经实现或已经验证。
 - 新增、删除、重命名、重排文档或改变文档职责时同步更新本索引。
+
+生产 Actor 组合根的迁移与验收计划见 [Server 装配](./actor-design/41-server-composition.md)，替换旧 internal/assembly，不保留 Plugin 装配路径。

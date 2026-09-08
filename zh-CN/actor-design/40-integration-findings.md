@@ -113,3 +113,14 @@ API：Session.Models/SelectModel/Prompt 的配置读写走 Models 端口，由 L
 验证：TestServerRegistersDomainsAndDispatchesThroughHTTP 经过真实 Echo 路由，核对各领域方法注册及 host.describe 的 RPCID/结果；TestServerCloseEndsMuxAndRejectsRequests 验证已有 Mux 退出和关闭后的拒绝。这里使用消费方端口测试替身，不能据此宣称 Actor 到模型的完整链路已接通。进程启动仍需替换 internal/assembly；与 INT-02 属于同一生产装配缺口。
 
 代码提交 `ab34830`。独立暂存快照运行 `go test -race -count=1 ./apiproxy/... ./internal/connection/...`、同范围 vet 和 build 全部通过；不依赖剩余 assembly 或其他工作区修改。
+
+
+## INT-14 生产 API 缺少成员与搜索端口实现
+
+根因：Gateway 已声明 Workspaces 和 Search 领域接口，但 Workspace Actor Client 未实现 Session 用例需要的 Read/AttachSession，Query Actor 也没有 API 侧搜索客户端。组合根无法只通过领域端口装配。
+
+方案：workspace/actor.Directory 实现 Session 的 Workspaces 接口；session/actor.Search 仅将 SearchSessions 转成 Query Actor 请求并映射具名回复。客户端不重复 Workspace 成员规则，不负责索引观察或启动 Actor。
+
+验证：TestDirectoryAttachesSessionThroughWorkspaceOwner 通过真实 Workspace Actor 和 SQLite 验证重复附加仅一项、未知 Session 拒绝与持久化；TestSearchClientUsesObservedQueryIndex 通过真实 Query Actor 和 SQLite 验证已观察消息搜索与取消。两个客户端所在包的非缓存 race 测试通过。Collector 与完整生产组合仍未接通。
+
+代码提交 `b9becf4`，独立暂存快照对两个客户端包运行非缓存 race 测试、vet 与 build 均通过。进程迁移执行表见 [Server 装配方案](41-server-composition.md)。
