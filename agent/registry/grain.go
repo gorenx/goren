@@ -74,6 +74,20 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 			Err: owner.claim(input),
 		})
 		return
+	case Inspect:
+		err = owner.check(input.Creation)
+		if err == nil {
+			err = owner.directory.CheckAdmission(input.Creation.AgentID)
+		}
+		if err == nil && owner.creations[input.Creation.AgentID].instanceID == "" {
+			err = ErrInstance
+		}
+		entry, _ := owner.directory.Get(input.Creation.AgentID)
+		gc.Response(Inspected{
+			Registration: entry,
+			Err:          err,
+		})
+		return
 	case CheckAdmission:
 		err = owner.check(input.Creation)
 		if err == nil {

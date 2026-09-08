@@ -6,7 +6,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
 
@@ -74,7 +73,6 @@ type Workspace interface {
 
 // Registry owns Workspace identity, durable order, and Session accounting.
 type Registry interface {
-	plugin.Service
 	Create(context.Context, string) (Workspace, bool, error)
 	Get(ID) (Workspace, bool)
 	List() []Workspace
@@ -82,13 +80,6 @@ type Registry interface {
 	InsertBefore(context.Context, ID, *ID) ([]ID, error)
 	ArchivedSessionIDs() []session.SessionID
 	ArchiveSession(context.Context, session.SessionID) error
-}
-
-const PluginName = "@deepseek-ai/dsh-workspace"
-
-// BackendOpener acquires one configured Workspace Backend during Plugin Apply.
-type BackendOpener interface {
-	OpenBackend(context.Context) (Backend, error)
 }
 
 // TimeSource supplies mutation timestamps.

@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/plugin"
 	toolscore "github.com/gorenx/goren/tools"
 	"github.com/gorenx/goren/userquestions"
 )
@@ -21,47 +20,10 @@ type schemaNode struct {
 	Items                *schemaNode           `json:"items,omitempty"`
 }
 
-type eventFailureSink struct{}
-
-func (eventFailureSink) ReportEventFailure(
-	context.Context,
-	plugin.EventFailure,
-) {
-}
-
 type askUserFixture struct {
-	engine      *plugin.Runtime
 	toolService *toolscore.ToolLayer
-	questions   userquestions.UserQuestions
 	toolHandle  *toolscore.ToolHandle
 }
-
-type askUserFixturePlugin struct {
-	plugin.Base
-	fixture *askUserFixture
-}
-
-func (*askUserFixturePlugin) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name: "ask-user-test-consumer",
-		Requires: []plugin.ServiceType{
-			plugin.ServiceOf[userquestions.UserQuestions](),
-		},
-	}
-}
-
-func (owner *askUserFixturePlugin) Apply(context.Context) error {
-	questions, err := plugin.Require[userquestions.UserQuestions](owner)
-	if err != nil {
-		return err
-	}
-	owner.fixture.questions = questions
-	return nil
-}
-
-func (*askUserFixturePlugin) Dispose(context.Context) error { return nil }
-
-var _ plugin.Plugin = (*askUserFixturePlugin)(nil)
 
 type providerRecorder struct {
 	requestContext context.Context
@@ -78,7 +40,7 @@ func (recorder *providerRecorder) Ask(
 	return recorder.answerValue, nil
 }
 
-func newAskUserFixture(t *testing.T) *askUserFixture {
+func newAskUserFixture(t *testing.T, providers ...userquestions.Provider) *askUserFixture {
 	t.Helper()
 	toolSettings, err := toolscore.ValidateConfig(toolscore.Config{})
 	if err != nil {
@@ -89,23 +51,13 @@ func newAskUserFixture(t *testing.T) *askUserFixture {
 		t.Fatal(err)
 	}
 	state := &askUserFixture{
-		engine: plugin.NewRuntime(plugin.RuntimeSettings{
-			EventFailures: eventFailureSink{},
-		}),
 		toolService: business,
 	}
-	questionsPlugin := userquestions.NewPlugin()
-	_, err = state.engine.Start(
-		context.Background(),
-		questionsPlugin,
-		&askUserFixturePlugin{
-			fixture: state,
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
+	var answerer userquestions.Provider
+	if len(providers) != 0 {
+		answerer = providers[0]
 	}
-	definition, err := newDefinition(state.questions)
+	definition, err := NewDefinition(userquestions.New(answerer, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,9 +69,7 @@ func newAskUserFixture(t *testing.T) *askUserFixture {
 		if err := business.Close(context.Background()); err != nil {
 			t.Error(err)
 		}
-		if shutdownErr := state.engine.Shutdown(context.Background()); shutdownErr != nil {
-			t.Error(shutdownErr)
-		}
+
 	})
 	return state
 }
@@ -190,7 +140,6 @@ func TestDefinitionMatchesPinnedSchema(t *testing.T) {
 
 func TestExecutionDelegatesAndRendersStructuredAnswer(t *testing.T) {
 	t.Parallel()
-	state := newAskUserFixture(t)
 	customText := "release notes"
 	providerValue := &providerRecorder{
 		answerValue: userquestions.Answer{
@@ -203,11 +152,7 @@ func TestExecutionDelegatesAndRendersStructuredAnswer(t *testing.T) {
 			},
 		},
 	}
-	providerHandle, err := state.questions.RegisterProvider(providerValue)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer providerHandle.Unregister()
+	state := newAskUserFixture(t, providerValue)
 	type requestContextKey struct{}
 	contextKey := requestContextKey{}
 	requestContext := context.WithValue(context.Background(), contextKey, "exact")

@@ -1,7 +1,10 @@
 package sqlite
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"github.com/gorenx/goren/internal/jsonvalue"
 	"strings"
 )
 
@@ -31,4 +34,28 @@ func (settings Config) validate() error {
 	default:
 		return fmt.Errorf("workspace persistence sqlite: unsupported journal mode %q", settings.JournalMode)
 	}
+}
+
+// DecodeConfig validates an object before opening any storage resources.
+func DecodeConfig(raw json.RawMessage) (Config, error) {
+	if !jsonvalue.IsObject(raw) {
+		return Config{}, fmt.Errorf("workspace sqlite: configuration must be a lossless JSON object")
+	}
+	var wire struct {
+		Path        string      `json:"path"`
+		JournalMode JournalMode `json:"journalMode,omitempty"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&wire); err != nil {
+		return Config{}, err
+	}
+	settings := Config{
+		Path:        wire.Path,
+		JournalMode: wire.JournalMode,
+	}
+	if settings.JournalMode == "" {
+		settings.JournalMode = JournalWAL
+	}
+	return settings, settings.validate()
 }
