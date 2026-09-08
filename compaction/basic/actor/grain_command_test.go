@@ -37,7 +37,7 @@ func (owner *registrationProbe) OnReceive(gc *goakt.GrainContext) {
 		owner.ticks++
 	case inspectRegistration:
 		gc.Response(registrationStatus{
-			registered: owner.command != nil && owner.command.registered,
+			registered: owner.command != nil && owner.command.phase == registrationPublished,
 			ticks:      owner.ticks,
 		})
 		return
@@ -243,11 +243,6 @@ func TestCompactionRegistersAndExecutesItsCommand(t *testing.T) {
 			if stale.Err == nil {
 				t.Fatal("accepted retired Agent invocation")
 			}
-			if result := ask(target, UnregisterCommand{
-				CreationID: "old-creation",
-			}).(Completion); result.Err == nil {
-				t.Fatal("retired Agent withdrew current command")
-			}
 			invalid := ask(executor, commandactor.Execute{
 				CreationID: "creation",
 				CommandID:  "invalid-command",
@@ -284,11 +279,6 @@ func TestCompactionRegistersAndExecutesItsCommand(t *testing.T) {
 				t.Fatalf("command returned before flush: %#v", output)
 			case <-time.After(3 * time.Second):
 				t.Fatal("compaction did not reach Flush")
-			}
-			if result := ask(target, UnregisterCommand{
-				CreationID: "creation",
-			}).(Completion); result.Err == nil {
-				t.Fatal("withdrew active command")
 			}
 			snapshot := ask(conversation, sessionactor.Read{}).(sessionactor.View).Snapshot
 			foundOrigin := false
@@ -346,9 +336,7 @@ func TestCompactionRegistersAndExecutesItsCommand(t *testing.T) {
 			}
 			deadline := time.Now().Add(time.Second)
 			for {
-				if result := ask(target, UnregisterCommand{
-					CreationID: "creation",
-				}).(Completion); result.Err == nil {
+				if result := ask(target, Close{}).(Completion); result.Err == nil {
 					break
 				}
 				if time.Now().After(deadline) {

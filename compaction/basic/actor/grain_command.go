@@ -11,25 +11,36 @@ import (
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
-// UnregisterCommand retires this creation's publication and stops retries.
-type UnregisterCommand struct{ CreationID string }
-
+// commandRegistration owns publication identity and registration scheduling only.
+// It does not own command executions or the Agent maintenance route.
 type commandRegistration struct {
-	registry    *goakt.GrainIdentity
-	agent       *goakt.GrainIdentity
-	id          string
-	timer       string
-	registered  bool
-	withdrawing bool
+	// registry is the already-started global Commands Registry supplied by composition.
+	registry *goakt.GrainIdentity
+	// id identifies this publication attempt. All retries and withdrawal reuse it;
+	// it is independent of business CommandID and Agent CreationID.
+	id string
+	// timer is the framework retry timer reference, cancelled on acknowledgement
+	// or closure. Already queued ticks are rejected by phase and object identity.
+	timer string
+	// phase distinguishes publishing, acknowledged publication and permanent
+	// admission closure while withdrawal is pending or needs retry.
+	phase registrationPhase
 }
+
+type registrationPhase uint8
+
+const (
+	registrationPending registrationPhase = iota
+	registrationPublished
+	registrationClosing
+)
 
 type registerCommand struct{ publication *commandRegistration }
 
 // startCommand schedules retries immediately after capability initialization.
-func (owner *Grain) startCommand(gc *goakt.GrainContext, registry, agent *goakt.GrainIdentity) error {
+func (owner *Grain) startCommand(gc *goakt.GrainContext, registry *goakt.GrainIdentity) error {
 	current := &commandRegistration{
 		registry: registry,
-		agent:    agent,
 		id:       uuid.NewString(),
 	}
 	owner.command = current
@@ -46,7 +57,8 @@ func (owner *Grain) startCommand(gc *goakt.GrainContext, registry, agent *goakt.
 }
 
 func (owner *Grain) registerCommand(gc *goakt.GrainContext, current *commandRegistration) {
-	if owner.command != current || current.registered || current.withdrawing {
+	if owner.command != current ||
+		current.phase != registrationPending {
 		return
 	}
 	activation := owner.activation
@@ -61,14 +73,18 @@ func (owner *Grain) registerCommand(gc *goakt.GrainContext, current *commandRegi
 		goakt.WithReentrancyMode(reentrancy.AllowAll),
 	).Then(
 		func(payload any, failure error) {
-			if owner.command != current || current.registered || current.withdrawing {
+			if owner.command != current ||
+				current.phase != registrationPending {
 				return
 			}
 			result, ok := payload.(commandactor.Registered)
-			if failure != nil || !ok || result.Err != nil || result.ID != current.id {
+			if failure != nil ||
+				!ok ||
+				result.Err != nil ||
+				result.ID != current.id {
 				return
 			}
-			current.registered = true
+			current.phase = registrationPublished
 			_ = activation.CancelSchedule(current.timer)
 		},
 	)
@@ -110,43 +126,9 @@ func (owner *Grain) receiveCommand(gc *goakt.GrainContext) bool {
 	case registerCommand:
 		gc.NoErr()
 		owner.registerCommand(gc, input.publication)
-	case UnregisterCommand:
-		if owner.creationID == "" || input.CreationID != owner.creationID {
-			gc.Response(Completion{
-				Err: errors.New("compaction: command creation is not current"),
-			})
-			return true
-		}
-		current := owner.command
-		if current == nil {
-			gc.Response(Completion{})
-			return true
-		}
-		if owner.active != nil {
-			gc.Response(Completion{
-				Err: errors.New("compaction: command registration and execution must settle before withdrawal"),
-			})
-			return true
-		}
-		reply := gc.DeferResponse()
-		current.withdrawing = true
-		_ = owner.activation.CancelSchedule(current.timer)
-		gc.RequestGrain(current.registry, commandactor.Unregister{
-			ID: current.id,
-		}, goakt.WithRequestTimeout(0), goakt.WithReentrancyMode(reentrancy.AllowAll)).Then(func(payload any, failure error) {
-			_, ok := payload.(commandactor.Unregistered)
-			if failure == nil && !ok {
-				failure = errors.New("compaction: invalid withdrawal reply")
-			}
-			if failure == nil && owner.command == current {
-				owner.command = nil
-			}
-			reply.Response(Completion{
-				Err: failure,
-			})
-		})
 	case commandactor.Invoke:
-		if owner.command == nil || owner.command.withdrawing ||
+		if owner.command == nil ||
+			owner.command.phase == registrationClosing ||
 			input.CreationID != owner.creationID ||
 			input.Input.SessionID != owner.agentID ||
 			input.Input.CommandID == "" {
@@ -170,7 +152,7 @@ func (owner *Grain) receiveCommand(gc *goakt.GrainContext) bool {
 		}
 		origin := string(input.Input.CommandID)
 		owner.execute(gc, Execute{
-			Agent:           owner.command.agent,
+			Agent:           owner.executor,
 			RequestID:       uuid.NewString(),
 			Mode:            basic.Manual,
 			SourceCommandID: &origin,
@@ -179,7 +161,10 @@ func (owner *Grain) receiveCommand(gc *goakt.GrainContext) bool {
 		}, input.Input.CommandID)
 	case commandactor.CancelInvocation:
 		current := owner.active
-		if current == nil || input.CreationID != owner.creationID || current.commandID != input.CommandID || current.commandID == "" {
+		if current == nil ||
+			input.CreationID != owner.creationID ||
+			current.commandID != input.CommandID ||
+			current.commandID == "" {
 			gc.Response(commandactor.Cancelled{})
 			return true
 		}
@@ -200,7 +185,7 @@ type commandWithdrawn struct {
 
 func (owner *Grain) closeCommand(gc *goakt.GrainContext) {
 	current := owner.command
-	current.withdrawing = true
+	current.phase = registrationClosing
 	_ = gc.CancelSchedule(current.timer)
 	reply := gc.DeferResponse()
 	activation := owner.activation

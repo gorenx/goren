@@ -41,7 +41,7 @@ func (owner *Grain) receiveBinding(gc *goakt.GrainContext) bool {
 	case Close:
 		if owner.active != nil {
 			gc.Response(Completion{
-				Err: errors.New("compaction: invocation must settle and command must be withdrawn before close"),
+				Err: errors.New("compaction: invocation must settle before close"),
 			})
 			return true
 		}
@@ -66,7 +66,11 @@ func (owner *Grain) execute(gc *goakt.GrainContext, input Execute, reply invocat
 		})
 		return
 	}
-	if owner.business == nil || owner.active != nil || input.RequestID == "" || (input.Mode == basic.Manual && input.Agent == nil) {
+	if owner.business == nil ||
+		owner.commandClosing() ||
+		owner.active != nil ||
+		input.RequestID == "" ||
+		(input.Mode == basic.Manual && input.Agent == nil) {
 		reply.Response(Result{
 			Err: errors.New("compaction: initialized idle binding and request identity are required"),
 		})
@@ -93,6 +97,12 @@ func (owner *Grain) closeResources(gc *goakt.GrainContext) {
 	if owner.models != nil {
 		owner.models.Dispose(gc)
 	}
+	owner.executor = nil
 	owner.business = nil
 	owner.pruner = nil
+}
+
+// commandClosing prevents new work while asynchronous registry withdrawal runs.
+func (owner *Grain) commandClosing() bool {
+	return owner.command != nil && owner.command.phase == registrationClosing
 }

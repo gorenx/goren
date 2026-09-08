@@ -21,8 +21,10 @@ import (
 // Grain schedules one Agent's Compaction operations. Business stages and
 // completion decisions belong to Compaction and Transaction, not this adapter.
 type Grain struct {
-	activation   *goakt.GrainProps
-	agentID      session.SessionID
+	activation *goakt.GrainProps
+	agentID    session.SessionID
+	// executor is this Agent creation's maintenance owner, independent of command registration.
+	executor     *goakt.GrainIdentity
 	conversation *goakt.GrainIdentity
 	creationID   string
 	meter        *goakt.GrainIdentity
@@ -103,9 +105,14 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) error {
 	if owner.conversation != nil ||
 		input.AgentID == "" ||
 		gc.Self().Name() != string(input.AgentID) ||
-		input.Session == nil || input.Agent == nil || input.Commands == nil || input.Commands.Name() != commandactor.RegistryName ||
-		input.Meter == nil || input.Router == nil ||
-		input.CreationID == "" || input.Timeout <= 0 {
+		input.Session == nil ||
+		input.Agent == nil ||
+		input.Commands == nil ||
+		input.Commands.Name() != commandactor.RegistryName ||
+		input.Meter == nil ||
+		input.Router == nil ||
+		input.CreationID == "" ||
+		input.Timeout <= 0 {
 		return errors.New("compaction: fresh binding, matching Agent identity, dependency routes and positive timeout are required")
 	}
 	settings, err := basic.ResolveConfig(input.Config)
@@ -136,6 +143,7 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) error {
 	}
 	owner.recovery = recovery
 	owner.agentID = input.AgentID
+	owner.executor = input.Agent
 	owner.conversation = input.Session
 	owner.creationID = input.CreationID
 	owner.meter = input.Meter
@@ -143,7 +151,7 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) error {
 	owner.timeout = input.Timeout
 	owner.business = business
 	owner.pruner = pruner
-	return owner.startCommand(gc, input.Commands, input.Agent)
+	return owner.startCommand(gc, input.Commands)
 }
 
 func (owner *Grain) finish(gc *goakt.GrainContext, current *invocation, outcome basic.Outcome, failure error) {
