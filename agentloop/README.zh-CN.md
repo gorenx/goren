@@ -11,7 +11,7 @@ ReactLoopAgent 是单 Agent 执行的业务所有者。它拥有 Inbox 投影、
 | agent_preparation.go | 领取输入、PreStep 决策、读取 Session 与 Prompt、Step 开始和输入提交 |
 | agent_request.go | 驱动当前模型请求、流片段处理与 Session 提交、请求恢复及流关闭 |
 | agent_tools.go | 工具批次、审批结果分支、执行结果与附加上下文入库、实例释放 |
-| services.go | Conversation、Prompts、Middleware、Models、ToolCalls、Approvals 等窄能力接口和结果接收接口 |
+| services.go | Conversation、Prompts、Middleware、Models、ToolCalls 等窄能力接口和结果接收接口 |
 | agent_turn.go / agent_step.go / agent_settlement.go | Turn/Step 状态、提交内容和持久化屏障的合法性校验 |
 | agent_commit.go | 提交校验及只持有不可变事实的 Session 写入计划 |
 | internal/turn、internal/step、internal/modelrequest、internal/toolbatch | 各自业务状态与不变量；不依赖 Actor，不反向拥有 ReactLoopAgent |

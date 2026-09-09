@@ -379,3 +379,31 @@ Snapshot 只保留已结算工具名称，不保留 UpdateID，也不换名为 R
 命名修正：PrePolicy.EvaluateCall 表示执行前评估；PostPolicy.ReviewResult 表示结果审查；Call.ApplyApproval 及 Runtime 的 ApplyCallApproval 表示应用已产生的审批决定；执行中间件调度使用 ExecuteBody。移除 Resolve* 名称及别名。Scheduler 的底层阶段方法不再对外公开；外部持有 Call，不能传入自造结果完成结算。Contract 统一保存编译后的 Schema，避免执行模块复制定义校验规则。删除仅服务于旧 ToolLayer 的 Config/ValidatedConfig 及 Code Mode 配置入口；当前 Actor 初始化使用 Registry 默认工具及 Agent 覆盖契约。
 
 Tools Runtime 的 Actor 实现命名为 `runtimeactor.Runtime`，表示每个 Agent 的工具运行调度入口，不再使用仅表示框架类型的 Grain。文件为 runtime.go、runtime_calls.go；业务对象仍为 toolruntime.Runtime。框架身份的类型名随 Go 类型变更，不提供旧 Grain 类型别名；服务名 `<sessionID>.tools`、消息和持久化业务数据不变。生命周期创建方与全部测试同步迁移。
+
+## Schema、Policy 与工具工作的最终边界
+
+本节替代本文此前的 Provider 注册表和 Registry 候选发布事务设计。Registry 只保存配置事实：全局本地与其他来源的 Schema、Session 自定义 Schema，以及各自的 Policy；不持有 Provider、执行器、Runtime 更新对象或资源清理进度。
+
+### Registry
+
+`Catalog` 是一个来源或一个 Session 的 Schema 与 Policy 集合。Schemas 使用现有 llm.ToolSchema，按工具名称独立维护 Version；Policy 以工具名称索引，缺省字段表示继承。`Registry` 的全局集合按来源标识索引，Session 集合按 SessionID 索引。RegisterSource 原子替换某来源的配置，ConfigureSession 原子替换 Session 自定义配置，Read 返回独立配置快照，RemoveSource/RemoveSession 删除配置。不同全局来源不能注册相同工具名，拒绝隐式覆盖；Session 自定义 Schema 同名覆盖全局 Schema，Policy 逐字段覆盖。配置变更通知只携带影响范围，Runtime 读取最新快照，不传播 Provider。
+
+### Runtime
+
+Runtime 是合并和应用的业务 owner。它读取全局与 Session 配置，按工具名称合并 Schema 与 Policy，剔除禁用工具，对 Prompt 隐藏不可见工具。生效集合只有在 ToolActor 完成工具工作切换后才发布。配置变更在 Agent 执行边界应用，进行中的调用继续使用原快照。更新准备、回滚、旧资源释放由 Runtime 与单工具业务拥有，不再通过 Registry 的 Begin/Register/Publish/Settle 事务模拟。
+
+### ToolActor
+
+所有工具使用一个通用 ToolActor 类型，每 Agent 每工具独立实例。生命周期 Registry 创建和关闭 Actor；ToolActor 在框架任务中调度单工具业务的启动、停止、执行和取消。具体工作实现通过组合入口提供的名称查找能力取得，不由 Schema Registry 保存构造器。Schema、策略、工作实现分别可验证，禁止在通用执行模块硬编码 Approval 业务。
+
+### 迁移和验收
+
+删除 Manifest、Candidate、Registry publication/batch、Provider 注册消息，以及 ToolActor 向 Registry 查询发布状态和登记候选定义的链路。Prompt 改为读取和订阅 Runtime 生效定义。保留已有外部工具 Schema、Session 事件和 wire 语义，不保留兼容别名。测试覆盖多来源冲突、Schema 独立版本、Session 覆盖与恢复继承、Policy 合并、调用中的更新屏障、启动失败回滚、取消和关闭、Prompt 只消费生效定义，以及生产创建和流式工具调用。
+
+### 动态配置执行边界
+
+每 Agent 的配置订阅 Actor 由生命周期 Registry 启动、关闭，只将相关 ConfigurationChanged 投递给 Tool Runtime。通知不立即替换工具工作。AgentLoop 在 Turn start 事实确认后、读取首个 Step 输入之前请求 RefreshConfiguration；这个业务边界保证上一 Turn 的工具已经完成并释放。Runtime 读取最新 Registry 配置并完成切换，返回生效定义。Actor 客户端确认 Prompt.ApplyTools 后才把配置完成结果交还 AgentLoop，后续 Step 不重新配置。
+
+订阅建立后强制标记一次变更，弥补初始化读取与订阅之间的间隔；进行中的 Refresh 不清除后到通知。取消请求携带本次 Refresh ID，只中断同一次准备，最终回复仍须等待回滚或切换清理完成。没有配置差异时不重新 Open 工具。
+
+阶段记录：Schema/Policy 分层保存、Runtime 合并和资源替换、通用 ToolActor 与生产初始化接线已通过相关测试。动态 Refresh 消息已定义；配置订阅的生命周期接线和 AgentLoop Turn 边界调用尚未完成，本次提交不代表动态更新整链路完成。

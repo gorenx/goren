@@ -1061,3 +1061,9 @@ Registry 的 PrepareClose 先由业务对象冻结准入。存在执行时，业
 工具日志恢复：toolWrite 以 Session、Step、CallID 和事件类型识别原提交，同时验证完整草稿内容；调用/结果和取消配对均走 Session 的 IdempotentWrite。回复失败保留当前接收器与原事实，后续 Run 只重试提交。保留前复制调用进度并断开 ReactLoopAgent 引用，Run 清除 retry 后才重新关联，避免 owner 与子对象循环引用。工具执行结果保留原消息身份，不再次 Finalize 或 Dispatch。
 
 关闭取消确认后再调用业务 Run：业务已保存的失败提交或资源关闭可重试；已有在途业务仍由原接收器继续。Actor 不判断 Turn/Step 阶段，也不重新发起模型或工具。这样关闭不会仅等待一个没有任何在途结果的失败执行。
+
+## 工具后续执行补齐
+
+附加上下文属于工具结果的后续持久化责任。每条上下文保留原始 MessageID 与已准备的 InboxEdit；写入失败或确认丢失后，Session 按该插入消息的身份查找并验证完整草稿，返回原提交，不再次调用 Inject 或执行工具。恢复确认完成后才处理下一条上下文，全部完成才 Release。重试对象不反向持有 AgentLoop。验收覆盖提交成功但确认丢失、多个上下文顺序和工具只执行一次。
+
+审批由 Tool Runtime 调用，复用 Approval.Service/Decision 和 Interaction Answerer；asked 确认后才提问，decided 确认后才完成工具准入，取消必须形成 cancelled 审计。AgentLoop 不接收或应用审批结果。并发调度由 AgentLoop 工具批次业务对象负责，工具定义的并发分类由 Tool Runtime 提供；准备和结果策略保持串行，安全工具体可重叠，独占工具等待先前工具释放。结果及附加上下文按模型顺序提交，Actor 不选择下一调用或业务阶段。

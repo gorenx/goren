@@ -75,3 +75,7 @@ Close 先取消当前生成，再向 Worker 请求 drain。Worker 的框架邮�
 Topic 集成测试验证：只提交人工消息、不创建 step 或 request/header，也能通过 Subscriber 生成并提交标题。模型配置测试不再提供主请求路由。
 
 重新激活授权、Provider 配置更新与完整生产组装仍未完成；局部 race 测试不能证明全项目重构完成。详细对象交互见包内 README，不扩散到历史设计文档。
+
+## 空闲 worker 生命周期修复
+
+Title Grain 的 binding 持有 worker 的资源责任，worker 必须使用 GoAkt LongLivedStrategy；普通 Actor 默认的空闲停用会让 binding 保留已消失的地址。关闭仍先取消生成，再等待 drain 回复，最后停止 worker 并释放 binding。不通过忽略 actor-not-found 掩盖丢失的资源责任。接口、Session 事件与持久化形状不变。验收覆盖超过默认空闲期限后再次生成和关闭，以及已有取消和关闭行为。
