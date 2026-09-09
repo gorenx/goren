@@ -18,7 +18,13 @@ func SpawnPool(ctx context.Context, system goakt.ActorSystem, name string, size 
 	if err != nil {
 		return nil, err
 	}
-	failure := initializePool(ctx, system, target, size, routes)
+	// GoAkt 4.5.3 SpawnRouter does not accept a passivation option. Pause its
+	// default idle timer before the initialization mailbox barrier; the pool
+	// belongs to the server lifetime, including periods with no model traffic.
+	failure := goakt.Tell(ctx, target, &goakt.PausePassivation{})
+	if failure == nil {
+		failure = initializePool(ctx, system, target, size, routes)
+	}
 	if failure != nil {
 		return nil, errors.Join(failure, target.Shutdown(context.WithoutCancel(ctx)))
 	}

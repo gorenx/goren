@@ -1,6 +1,7 @@
 package loopactor
 
 import (
+	"context"
 	"errors"
 
 	"github.com/gorenx/goren/agent"
@@ -119,6 +120,8 @@ func (owner *Grain) commitInbox(gc *goakt.GrainContext, reply *goakt.GrainReply,
 			return
 		}
 	}
+	statusContext := context.WithoutCancel(gc.Context())
+	system := gc.ActorSystem()
 	gc.RequestGrain(
 		owner.conversation,
 		sessionactor.Commit{
@@ -129,6 +132,7 @@ func (owner *Grain) commitInbox(gc *goakt.GrainContext, reply *goakt.GrainReply,
 		goakt.WithReentrancyMode(reentrancy.StashNonReentrant),
 	).Then(
 		func(payload any, failure error) {
+			previous := owner.business.StatusValue()
 			result := Changed{
 				Err: failure,
 			}
@@ -148,6 +152,13 @@ func (owner *Grain) commitInbox(gc *goakt.GrainContext, reply *goakt.GrainReply,
 				wake <- result.Err == nil
 			}
 			owner.refreshIdle()
+			current := owner.business.StatusValue()
+			if current != previous {
+				publishStatus(statusContext, system, agent.StatusNotice{
+					AgentID: owner.business.ID(),
+					Status:  current,
+				})
+			}
 			reply.Response(result)
 		},
 	)

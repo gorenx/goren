@@ -5,23 +5,28 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/session"
 	sessionactor "github.com/gorenx/goren/session/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
-// Commits consumes detached Session facts. Calls are serialized and must return
-// when their context is canceled so shutdown can wait for their completion.
-type Commits interface {
+// Events consumes Session facts and Agent execution notices. Committed calls
+// are serialized and must stop on cancellation. StatusChanged publishes to a
+// bounded feed without I/O and may run while Committed awaits a snapshot.
+type Events interface {
+	StatusChanged(agent.StatusNotice) error
 	Committed(context.Context, session.SessionID, string, session.Event) error
 }
 
 // Subscriber serializes committed-event delivery without owning Session state.
 type Subscriber struct {
-	consumer Commits
+	consumer Events
 	ready    chan struct{}
-	context  context.Context
-	cancel   context.CancelFunc
+	// subscriptions maps each pending topic name to its acknowledgement responsibility.
+	subscriptions map[string]struct{}
+	context       context.Context
+	cancel        context.CancelFunc
 	// shutdown guards the framework boundary: external PID.Shutdown may invoke
 	// PostStop concurrently with Receive. It does not coordinate business work.
 	shutdown sync.Mutex
@@ -39,7 +44,7 @@ type delivered struct {
 
 // SpawnSubscriber waits for PubSub acknowledgement. If waiting is canceled after
 // spawn, the returned PID remains the caller's shutdown responsibility.
-func SpawnSubscriber(ctx context.Context, system goakt.ActorSystem, name string, consumer Commits) (*goakt.PID, error) {
+func SpawnSubscriber(ctx context.Context, system goakt.ActorSystem, name string, consumer Events) (*goakt.PID, error) {
 	if system == nil || consumer == nil {
 		return nil, errors.New("session API: actor system and commit consumer are required")
 	}
@@ -50,10 +55,14 @@ func SpawnSubscriber(ctx context.Context, system goakt.ActorSystem, name string,
 	listener := &Subscriber{
 		consumer: consumer,
 		ready:    make(chan struct{}),
-		context:  lifetime,
-		cancel:   cancel,
+		subscriptions: map[string]struct{}{
+			session.AppendedEventName: {},
+			agent.StatusTopic:         {},
+		},
+		context: lifetime,
+		cancel:  cancel,
 	}
-	endpoint, err := system.Spawn(ctx, name, listener, goakt.WithStashing())
+	endpoint, err := system.Spawn(ctx, name, listener, goakt.WithStashing(), goakt.WithLongLived())
 	if err != nil {
 		cancel()
 		return nil, err
@@ -89,14 +98,22 @@ func (listener *Subscriber) Receive(rc *goakt.ReceiveContext) {
 	}
 	switch input := rc.Message().(type) {
 	case *goakt.PostStart:
-		rc.Tell(rc.ActorSystem().TopicActor(), goakt.NewSubscribe(session.AppendedEventName))
+		for topic := range listener.subscriptions {
+			rc.Tell(rc.ActorSystem().TopicActor(), goakt.NewSubscribe(topic))
+		}
 	case *goakt.SubscribeAck:
-		if input.Topic() == session.AppendedEventName {
+		delete(listener.subscriptions, input.Topic())
+		if len(listener.subscriptions) == 0 {
 			select {
 			case <-listener.ready:
 			default:
 				close(listener.ready)
 			}
+		}
+	case agent.StatusNotice:
+		err := listener.consumer.StatusChanged(input)
+		if err != nil {
+			rc.Logger().Error(err)
 		}
 	case sessionactor.CommitNotice:
 		if listener.active != nil {

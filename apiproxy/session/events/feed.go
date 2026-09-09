@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/apiproxy/stream"
 	"github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/session"
@@ -206,4 +207,12 @@ func (source *Feed) Created(snapshot Snapshot) error {
 		frame.ParentSessionID = SessionID(*snapshot.Header.ParentSession)
 	}
 	return source.broker.PublishHostFrame(frame)
+}
+
+// StatusChanged publishes the execution owner's state, including final cancellation settlement.
+func (source *Feed) StatusChanged(notice agent.StatusNotice) error {
+	return source.broker.PublishHostFrame(StatusFrame{
+		SessionID: SessionID(notice.AgentID),
+		Running:   notice.Status == agent.StatusRunning,
+	})
 }
