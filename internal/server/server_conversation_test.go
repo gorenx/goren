@@ -22,14 +22,35 @@ import (
 )
 
 func TestHTTPPromptDrivesModelAndPersistsCompletedTurn(t *testing.T) {
+	testHTTPStreaming(t, false)
+}
+
+func TestHTTPStreamIncludesSessionCreatedAfterConnection(t *testing.T) {
+	testHTTPStreaming(t, true)
+}
+
+func testHTTPStreaming(t *testing.T, connectFirst bool) {
+	t.Helper()
 	requested := make(chan struct{}, 4)
+	visible := make(chan struct{})
 	remote := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, incoming *http.Request) {
 		if incoming.Header.Get("Authorization") != "Bearer test-key" {
 			t.Error("missing test credential")
 		}
 		requested <- struct{}{}
 		writer.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(writer, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"driver response\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+		// The provider cannot finish until both deltas have reached the downlink.
+		// Buffering the response until EOF therefore makes this test fail.
+		for _, text := range []string{"driver ", "response"} {
+			fmt.Fprintf(writer, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":%q},\"finish_reason\":null}]}\n\n", text)
+			writer.(http.Flusher).Flush()
+			select {
+			case <-visible:
+			case <-incoming.Context().Done():
+				return
+			}
+		}
+		fmt.Fprint(writer, "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
 	}))
 	defer remote.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -59,16 +80,23 @@ func TestHTTPPromptDrivesModelAndPersistsCompletedTurn(t *testing.T) {
 		}
 	})
 	callHTTP(t, ctx, process, "credentials.set", json.RawMessage(`{"ref":"DEEPSEEK_API_KEY","value":"test-key"}`))
-	callHTTP(t, ctx, process, "session.create", json.RawMessage(`{"sessionId":"driver"}`))
+	if !connectFirst {
+		callHTTP(t, ctx, process, "session.create", json.RawMessage(`{"sessionId":"driver"}`))
+	}
 	feed, _, err := websocket.Dial(ctx, "ws://"+process.Address()+connection.MuxEventsPath, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer feed.CloseNow()
-	baseline := readConversationFrame(t, ctx, feed)
-	if baseline.Method != "session/subscribed" {
-		t.Fatalf("missing subscription baseline: %+v", baseline)
+	if connectFirst {
+		callHTTP(t, ctx, process, "session.create", json.RawMessage(`{"sessionId":"driver"}`))
+	} else {
+		baseline := readConversationFrame(t, ctx, feed)
+		if baseline.Method != "session/subscribed" {
+			t.Fatalf("missing subscription baseline: %+v", baseline)
+		}
 	}
+
 	callHTTP(t, ctx, process, "session.prompt", json.RawMessage(`{"sessionId":"driver","mode":"queue","content":[{"type":"text","text":"hello"}]}`))
 	select {
 	case <-requested:
@@ -77,6 +105,7 @@ func TestHTTPPromptDrivesModelAndPersistsCompletedTurn(t *testing.T) {
 	}
 	counts := make(map[string]int)
 	lastSequence := int64(-1)
+	deltas := 0
 	for counts[session.TurnEndEventName] == 0 {
 		frame := readConversationFrame(t, ctx, feed)
 		if frame.Method != "session/event" {
@@ -92,11 +121,35 @@ func TestHTTPPromptDrivesModelAndPersistsCompletedTurn(t *testing.T) {
 		}
 		lastSequence = notification.Event.Seq
 		counts[notification.Event.Type]++
+		if notification.Event.Type == session.AssistantChunkEventName {
+			var chunk struct {
+				Chunk struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"chunk"`
+			}
+			err = json.Unmarshal(notification.Event.Data, &chunk)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if chunk.Chunk.Type == "text-delta" {
+				expected := []string{"driver ", "response"}
+				if deltas >= len(expected) || chunk.Chunk.Text != expected[deltas] {
+					t.Fatalf("unexpected live delta: %+v", chunk)
+				}
+				deltas++
+				select {
+				case visible <- struct{}{}:
+				case <-ctx.Done():
+					t.Fatal("provider did not await live delta")
+				}
+			}
+		}
 		if notification.Event.Type == session.AssistantMessageEventName && !bytes.Contains(frame.Payload, []byte("driver response")) {
 			t.Fatalf("model reply missing from downlink: %s", frame.Payload)
 		}
 	}
-	if counts[session.AssistantChunkEventName] == 0 || counts[session.AssistantMessageEventName] != 1 || counts[session.StepEndEventName] != 1 {
+	if deltas != 2 || counts[session.AssistantChunkEventName] == 0 || counts[session.AssistantMessageEventName] != 1 || counts[session.StepEndEventName] != 1 {
 		t.Fatalf("incomplete WebSocket Turn: %v", counts)
 	}
 	durable, err := persistence.NewReader(process.sessions)
