@@ -56,12 +56,10 @@ type Request struct {
 	SessionID session.SessionID
 }
 
-// Provider collects one human answer batch.
-type Provider interface {
-	Ask(context.Context, Request) (Answer, error)
-}
-
 // UserQuestions is the narrow consumer contract for asking a question batch.
+// QuestionService adds caller and input validation; an answer transport implements
+// the same operation. Implementations must settle their waiting resources before
+// returning, including when the caller cancels.
 type UserQuestions interface {
 	Ask(context.Context, Request) (Answer, error)
 }

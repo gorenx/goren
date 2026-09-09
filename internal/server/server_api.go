@@ -26,13 +26,14 @@ import (
 	sessionregistry "github.com/gorenx/goren/session/registry"
 	"github.com/gorenx/goren/session/title"
 	promptactor "github.com/gorenx/goren/systemprompt/actor"
+	toolactor "github.com/gorenx/goren/tools/tool/actor"
 	workspaceactor "github.com/gorenx/goren/workspace/actor"
 	workspacesqlite "github.com/gorenx/goren/workspace/persistence/sqlite"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
-func (owner *Server) initializeAPI(ctx context.Context) error {
+func (owner *Server) initializeAPI(ctx context.Context, constructors *toolactor.Providers) error {
 	system := owner.system
 	timeout := owner.settings.Timeout
 	secrets, err := initializeCredentials(ctx, system, credentialslocal.Config{
@@ -89,7 +90,7 @@ func (owner *Server) initializeAPI(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	tools, err := initializeTools(ctx, system, owner.settings.Tools)
+	tools, err := initializeTools(ctx, system, defaultTools(owner.settings.Tools))
 	if err != nil {
 		return err
 	}
@@ -267,6 +268,10 @@ func (owner *Server) initializeAPI(ctx context.Context) error {
 			WorkingDirectory: owner.settings.WorkingDirectory,
 		},
 	})
+	if err != nil {
+		return err
+	}
+	err = owner.initializeToolProviders(ctx, sessions, constructors)
 	if err != nil {
 		return err
 	}

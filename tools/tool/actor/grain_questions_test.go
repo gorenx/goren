@@ -10,8 +10,6 @@ import (
 	"github.com/gorenx/goren/tools"
 	toolactor "github.com/gorenx/goren/tools/tool/actor"
 	"github.com/gorenx/goren/userquestions"
-	questionactor "github.com/gorenx/goren/userquestions/actor"
-	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
 type liveQuestionCaller struct{}
@@ -45,7 +43,7 @@ func (service *humanQuestions) Ask(ctx context.Context, input userquestions.Requ
 	}
 }
 
-func TestToolActorUsesQuestionActorForAnswerAndCancellation(t *testing.T) {
+func TestToolActorQuestionsWaitForAnswerOrCancellationCleanup(t *testing.T) {
 	for _, cancelled := range []bool{false, true} {
 		name := "answer"
 		if cancelled {
@@ -66,21 +64,7 @@ func TestToolActorUsesQuestionActorForAnswerAndCancellation(t *testing.T) {
 					close(service.release)
 				}
 			})
-			questions, err := goakt.GrainOf[*questionactor.Grain](context.Background(), system, "conversation.questions", goakt.WithLongLivedGrain())
-			if err != nil {
-				t.Fatal(err)
-			}
-			if reply := ask[questionactor.Completion](t, system, questions, questionactor.Initialize{
-				Provider: service,
-				Callers:  liveQuestionCaller{},
-			}); reply.Err != nil {
-				t.Fatal(reply.Err)
-			}
-			endpoint, err := questionactor.NewClient(system, questions)
-			if err != nil {
-				t.Fatal(err)
-			}
-			source.questions = endpoint
+			source.questions = userquestions.New(service, liveQuestionCaller{})
 			provisionTool(t, system, target)
 			type received struct {
 				body tools.BodyResult
@@ -116,7 +100,7 @@ func TestToolActorUsesQuestionActorForAnswerAndCancellation(t *testing.T) {
 				select {
 				case <-service.cancelled:
 				case <-time.After(time.Second):
-					t.Fatal("cancellation did not cross both Actors")
+					t.Fatal("cancellation did not reach the answerer")
 				}
 			}
 			select {
