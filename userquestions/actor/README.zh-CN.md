@@ -1,20 +1,18 @@
-# UserQuestions Actor
+# UserQuestions Actor Client
 
-完整职责见[模块说明](../README.zh-CN.md)与[设计方案](../../zh-CN/actor-design/36-workspace-userquestions.md)。
+本目录只有 Agent Registry 消息适配，不定义 UserQuestions Actor。业务规则由上层 QuestionService 执行；设计见 [模块方案](../../zh-CN/actor-design/36-workspace-userquestions.md)。
 
-Grain 只拥有后台任务的回复与取消句柄。业务校验、调用资格解释和复制归 QuestionService；Callers 适配器在后台任务中查询 Agent Registry，检查精确 creation 与当前父子关系。它不把 GrainIdentity 或 CreationID 放进业务 Request。
+- Directory 为共享提问能力查找当前 Ready Agent，再按固定 Creation 查询准入。
+- Callers 为已选定的 Agent 生命周期执行 Inspect，拒绝旧身份、未绑定实例和关闭中的 Agent。
+- 两者仅返回 Eligibility，不判断问题内容、不联系浏览器、不维护 pending map。
 
 ```mermaid
 flowchart LR
-    Tool[toolaskuser / Client] --> Grain
-    Grain -->|PipeToSelf| Service[QuestionService]
-    Service --> Callers[Actor Callers]
-    Callers --> Registry[Agent Registry]
-    Service --> Provider[InteractionGateway]
-    Provider -->|最终结果| Grain
-    Grain -->|ResultReceiver / GrainReply| Tool
+    Q[QuestionService] --> D[Directory]
+    D -->|FindAgent| R[Agent Registry Grain]
+    D --> C[Callers]
+    C -->|Inspect exact Creation| R
+    R -->|Eligibility facts| Q
 ```
 
-本地工具 Client 使用 TellGrain 的短接收确认和具名 ResultReceiver 等待用户答案，避免用外部 AskGrain 的超时充当业务期限。直接 Actor 请求使用框架延迟回复；Cancel 可在等待期间处理。请求 ID 只匹配本次调用，不能复用为另一问题；重复待处理 ID 被拒绝。
-
-普通 Close 仅在已接受的问题全部退出后成功。强制 OnDeactivate 取消等待并报告失败。ResultReceiver.Deliver 必须非阻塞；它不拥有业务状态，也不接收 any。
+这些同步客户端运行在通用 ToolActor 的异步工具任务中，不占用 Grain dispatcher。Tool Runtime 保留发起调用的 Agent 生命周期直到工具退出；调用不会跨到同名的新 Agent。客户端借用 ActorSystem，无独立 Close。

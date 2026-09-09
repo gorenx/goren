@@ -638,3 +638,7 @@ close Agent "integration": agent middleware: cancellation requires a live call a
 用户报告关闭时报多个 `checkpoint-writer-<uuid>: actor not found`。Cache Grain 长驻，但 `session/projectioncache/actor/grain.go` 的 Writer Spawn 未设置长驻策略。固定 GoAkt 4.5.3 的普通 Actor 默认空闲两分钟后停用；Cache 没有同步释放 PID，后续写入或关闭会按旧名称查找已经停止的 Writer。
 
 修复在创建 Writer 时设置 LongLivedStrategy，由所属 Cache 显式结束它的生命周期，不吞掉关闭错误或新建替代 Writer。新回归测试修复前失败，修复后通过；ProjectionCache 与服务器相关 race 测试和 vet 通过。完整原因、验收范围见 [ProjectionCache 方案](./24-projection-cache-module.md#关闭时报-checkpoint-writer-不存在)。
+
+## 内置工具 schema 导致请求头误判
+
+默认装配 ask_user_question 后，真实 HTTP 测试报 `model parameters do not match the committed request header`，模型端未收到请求。根因是 EpochHeaderEqual 直接比较 RawMessage 字节；Session 写入的 JSON 会压缩缩进并转义特殊字符，因此同一 schema 经持久化编码后与原始文本不同。比较应使用相同 JSON 编码得到的 schema 内容，继续保留工具顺序、字段及精确数字差异，不比较仅用于运行期的 Version。验收为 Session 序列化往返回归及默认工具装配后的真实模型请求测试。

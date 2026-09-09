@@ -13,7 +13,7 @@
 | operation | 保存当前资源操作的回复及取消句柄 |
 | Grain.calls | key 为模型 CallID；value 为当前工具体调用的取消和回复句柄 |
 
-Grain 不保存 Schema Registry、Provider 注册表或策略快照。组合入口通过 GoAkt WithExtensions 安装不可变 Providers；ToolActor 在 Initialize 按名称取得并绑定 Provider，Provision 只携带有效 Schema，由框架任务把绑定的 Provider 与 Schema 交给 Tool 业务。策略和中间件归执行业务，Actor 不直接承担审批。生产调用端口位于 Runtime 的 Instances；已删除仅测试使用的固定地址 Client。
+Grain 不保存 Schema Registry、Provider 注册表或策略快照。组合入口通过 GoAkt WithExtensions 安装 Providers，在 HTTP / Agent 准入前一次性 Install 完整实现表，此后不可变；ToolActor 在 Initialize 按名称取得并绑定 Provider，Provision 只携带有效 Schema，由框架任务把绑定的 Provider 与 Schema 交给 Tool 业务。策略和中间件归执行业务，Actor 不直接承担审批。生产调用端口位于 Runtime 的 Instances；已删除仅测试使用的固定地址 Client。
 
 ```mermaid
 sequenceDiagram

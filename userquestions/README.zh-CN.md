@@ -1,46 +1,39 @@
 # UserQuestions
 
-本模块负责结构化问题校验、调用者资格检查，以及输入与答案的隔离复制。实现设计见[Workspace 与用户问答](../zh-CN/actor-design/36-workspace-userquestions.md)。浏览器 RPC 关联、重连、答案匹配、取消帧由 API Proxy 的 InteractionGateway 提供；本模块不写 Session。
+本包拥有结构化提问的业务校验，不管理工具生命周期、Actor 消息或浏览器请求表。设计见 [Workspace 与 UserQuestions](../zh-CN/actor-design/36-workspace-userquestions.md)。
 
-## 对象与依赖
+## 主要对象与职责
 
 | 对象 | 职责 |
 | --- | --- |
-| QuestionService | 无状态业务实现，检查空问题、展示意图、live 与 delegated 资格，并调用不可变 Provider |
-| Request | Questions 与 SessionID，不包含 Agent 活对象或框架身份 |
-| Callers / Eligibility | 业务拥有的实时调用资格端口和返回值 |
-| Provider | 收集一批用户答案；必须响应 context 取消并在返回前释放等待资源 |
-| actor.Callers | 绑定 Agent 的精确创建身份，查询 Registry，隔离关闭或重建后的旧请求 |
-| actor.Grain | 调度后台 Ask，保存待回复与取消句柄，转发最终结果 |
-| actor.Client | 在工具执行任务中桥接 Grain；不在 Receive 内同步等待 |
+| UserQuestions | 唯一 Ask 契约，输入问题及 SessionID，返回答案或 error |
+| QuestionService | 校验问题、展示意图和调用者资格，调用回答端并复制输入输出 |
+| Callers / Eligibility | 查询当前 Agent 是否存活、是否受父 Agent 管理 |
+| Question / Answer | 结构化问题与答案，不包含 Agent 或框架对象 |
 
-Provider 由 composition 显式传入，每次 Grain 初始化固定，替换需关闭旧实例后重新初始化；不再保留 Plugin 的 RegisterProvider、ProviderHandle 或重新 Apply 生命周期。无 Provider 时仍返回 NO_PROVIDER。QuestionService 的依赖不可变，可以并发服务相互独立的请求。
+QuestionService 持有不可变的回答能力与 Callers。接口相同不代表实现职责相同：QuestionService 负责校验，Interaction Gateway 负责客户端请求关联。已删除重复的 Provider 接口，不保留别名。
 
-## 调用与生命周期
+## 交互流程与生命周期
 
 ```mermaid
 sequenceDiagram
-    participant T as questionTool
-    participant C as actor.Client
-    participant G as UserQuestions Grain
-    participant S as QuestionService
-    participant A as Agent Registry
-    participant UI as InteractionGateway
-    T->>C: Ask(SessionID, Questions)
-    C->>G: 提交 Ask 与具名 ResultReceiver
-    G-->>C: 接收确认
-    G->>S: PipeToSelf 后台 Ask
-    S->>A: Callers 查询精确创建身份
-    A-->>S: 当前注册与准入结果
-    S->>UI: Ask
-    UI-->>S: 答案 / 取消 / error
-    S-->>G: 脱离 Provider 的最终结果
-    G-->>C: ResultReceiver.Deliver
-    C-->>T: Answer / error
+    participant T as 通用 ToolActor
+    participant A as ask_user_question
+    participant Q as QuestionService
+    participant R as Agent Registry Client
+    participant G as Interaction Gateway
+    T->>A: Execute（可取消任务）
+    A->>Q: Ask(SessionID, Questions)
+    Q->>R: CheckCaller
+    R-->>Q: Live / Delegated
+    Q->>G: Ask
+    G-->>Q: 客户端回答或取消
+    Q-->>A: Answer / error
+    A-->>T: 工具结果
 ```
 
-每 Agent 的工具客户端绑定对应 UserQuestions Grain；Callers 保留 creation 身份只在 Actor 适配层使用。未 claim、非当前 creation、关闭中的 Agent 不可提问。当前注册存在 ParentID 时由业务拒绝交互；持久化 Origin 不决定当前运行时是否为根 Agent。
+不启动独立 UserQuestions Actor；通用 ToolActor 已负责调度、取消和等待执行退出。QuestionService 无状态，不需要第二层 pending 表或关闭协议。共享 Interaction Gateway 由 API 关闭，工具实现只借用它；随后 Agent Registry 等待 Tool Runtime 排空，最后关闭 Session。
 
-取消可以发生在等待回答期间。工具 context 直接进入后台任务，Grain 调用方也可发送 Cancel(ID, Cause)。取消确认不结束原请求；Provider 退出后才返回，迟到的正常答案不能覆盖取消。Close 在仍有待完成问题时返回错误；强制框架停止会取消所有等待并返回技术失败，不宣称浏览器已完成清理。
+当前调用者的 parent 关系由 Agent Registry 决定，历史 Session 的 Origin 不决定提问资格。取消在回答等待期间生效；回答端释放等待资源后才返回，晚到的正常答案不能覆盖取消。无回答端仍返回 NO_PROVIDER；非法意图、空问题和 delegated caller 在发出客户端请求前拒绝。
 
-真实 Grain 测试覆盖中途取消、等待 Provider 清理、关闭拒绝和创建身份替换；业务测试覆盖错误码、意图和对象复制。API Proxy 的问答输入已改为 SessionID；服务器整体装配仍在独立迁移中。
+业务测试覆盖准入、意图、复制和错误码；通用 ToolActor 测试覆盖取消传递与等待回答端退出。生产装配与 HTTP 验收见 [服务装配](../zh-CN/actor-design/41-server-composition.md)。

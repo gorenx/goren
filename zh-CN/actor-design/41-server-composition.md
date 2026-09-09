@@ -104,3 +104,13 @@ main 保留 listen/version/data-dir/session-db/workspace-db 参数，以进程�
 新增生命周期入口失败必须回滚，Server 实例不能重复 Start；Close 可在失败后重试，已完成的释放不再执行。进程关闭停止网络和通知消费者，结算 API、Agent Registry 与 Session flush，再停止 Workspace/Query/缓存 Registry、ActorSystem，最后关闭各数据库。强制取消冷读取与索引 I/O 的全部故障路径仍需继续验收。
 
 server_test.go 覆盖实际 HTTP Session 创建/重命名、Workspace WebSocket 通知、关闭监听、重启后原 ProjectionCache 恢复标题、监听冲突回滚和新实例重启。独立 CLI 进程验证无密钥 host.describe 和 SIGTERM 退出 0；测试端直连 localhost，避免开发环境 HTTP 代理干扰。
+
+## 内置工具与回答入口装配
+
+实际工具实现依赖 Session 客户端和 API Interaction Gateway；它们在 ActorSystem 启动后才能构造。组合入口先向 GoAkt 安装空的 Providers 扩展，再在 API 初始化完成、HTTP 监听开始前调用一次 Install，传入依赖完整的 Provider。Install 验证并复制整个表，第二次调用拒绝；初始化失败不开放 HTTP。初始化后的表不可变，不是运行期注册接口，Registry / Runtime 不接管 Provider。已有完整依赖的测试或嵌入式组合仍可直接 NewProviders。
+
+默认目录包含 ask_user_question（模型可见）与 approval（内部调用，Visible=false）。显式本地 schema / policy 覆盖同名默认项；自定义 Provider 覆盖同名内置实现。每个 ToolActor 的 Provider.Open 创建独立工具实现，借用能力客户端，不关闭共享能力。
+
+User Questions 直接使用无状态 QuestionService，每次通过 Agent Registry Client 查询当前 Agent 并核对准入；QuestionService 决定根 Agent / 子 Agent 的提问规则。历史 Session 的 parent header 不参与判断。不启动额外 UserQuestions Actor，通用 ToolActor 已负责取消和排空。关闭顺序为 API 终止交互 → Agent / Tool Runtime 排空工具 → ActorSystem Stop。
+
+验收包括默认启动后模型取得问题 schema、真实 ToolActor 发出问题、WebSocket 请求与 HTTP /api/respond 回答、取消和关闭、Session 中工具结果及审批 asked/decided 顺序。仅 Provider 或 Gateway 单元测试不算完成接线。

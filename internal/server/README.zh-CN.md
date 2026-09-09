@@ -2,7 +2,7 @@
 
 本包是 Actor 生产组合根，替换 internal/assembly 的 Plugin Catalog 与树装配。设计、接口与待完成验收见 [Server 装配方案](../../zh-CN/actor-design/41-server-composition.md)，进度见 [项目记录](../../zh-CN/08-implementation-progress.md) 和 [集成问题](../../zh-CN/actor-design/40-integration-findings.md)。
 
-真实配置 owner 的 Agent 创建验收已通过：Session 可用后由 Tools Runtime 准备实例并发布定义，再初始化 Prompt。agent_creation_test.go 使用真实 Registry、SQLite 和 ToolActor，覆盖空工具、非空工具、初始化失败清理、实现执行以及取消后等待退出；这仍不代表 AgentLoop 完整对话主驱动或 HTTP 服务入口已完成。
+真实配置 owner 的 Agent 创建验收已通过：Session 可用后由 Tools Runtime 准备实例并发布定义，再初始化 Prompt。agent_creation_test.go 使用真实 Registry、SQLite 和 ToolActor，覆盖空工具、非空工具、初始化失败清理、实现执行以及取消后等待退出；完整对话与内置工具另由下述 HTTP 测试验收。
 
 当前已迁入 Credentials、LLM 配置、DeepSeek Provider 和 Prompt 初始化代码；这些函数创建业务 owner，交给进程中的 Grain，再返回领域客户端或注册 ID。它们不启动独立 ActorSystem、不开放 HTTP，也不提供兼容 assembly 的公开转发函数。Server.Start/Close 已接入共享资源、API 和 HTTP，具体验证范围见下文。
 
@@ -37,4 +37,4 @@ Checkpoint SQLite 的 LoadAll 结果配置到现有缓存的生命周期 Registr
 
 server_test.go 通过真实 HTTP 创建与重命名 Session、真实 WebSocket 接收 Workspace 通知、关闭监听、重启后读取标题，并验证监听冲突回滚后可以重新启动。CLI 已构建并验证无 API key 启动、host.describe、SIGTERM 退出 0。
 
-这些验证不包含完整模型对话：AgentLoop 生产主驱动、默认 Tools / Compaction / 问答审批接线、自动 checkpoint 与模型标题 Provider 仍须完成；当前 CLI 未安装默认工具集。不要把 Host 控制面可运行等同于整个 Agent 重构完成。
+server_conversation_test.go 已验证真实 HTTP 流式对话与关闭；server_interaction_test.go 已验证默认 ask_user_question、隐藏 approval、客户端回答/取消/重连与审计持久化。server_tools.go 在 HTTP 准入前一次性安装依赖完整的 Provider，具体实例仍归每 Agent Tool Runtime。QuestionService 直接借用 Interaction Gateway，不增加 UserQuestions Actor。当前默认工具集仅包含已实现的提问与审批，不宣称已装配文件系统、MCP 或 Compaction 工具；其他迁移缺口仍以 Actor 方案为准。

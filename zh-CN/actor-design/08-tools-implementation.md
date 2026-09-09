@@ -114,7 +114,7 @@ AgentLoop 提交工具调用事实后请求执行，工具体结果经 Call 规�
 
 TestHTTPToolsChangeOnlyBetweenTurns 使用真实 HTTP、WebSocket、AgentLoop、Registry、Runtime、Prompt 与 ToolActor：工具体运行中修改全局 Schema；同一 Turn 的后续模型请求仍使用旧定义；下一 Turn 使用新定义；旧工作和关闭后的工作各释放一次。模型和工具通过可控测试提供者运行，不代表真实模型服务验收。
 
-审批 AskDecision 已由执行业务按名称调用通用 ToolActor 续接；完整审批审计与默认工具仍需接入，不能把执行模块的审批业务测试当作生产接线完成。此前未接线的 Approval Journal/Execute 草稿和专属 Actor 方案不作为现有能力保留。AgentLoop 多工具批次的并行选择仍需独立验收；MCP 外部来源执行器按迁移范围延后，不用占位 Provider 模拟支持。
+审批 AskDecision 已由执行业务按名称调用通用 ToolActor 续接；完整审批审计与默认工具现已接入，生产证据见本文末节。此前未接线的 Approval Journal/Execute 草稿和专属 Actor 方案不作为现有能力保留。AgentLoop 多工具批次的并行选择仍需独立验收；MCP 外部来源执行器按迁移范围延后，不用占位 Provider 模拟支持。
 
 ## 生命周期归属修复：原因、方案与验收
 
@@ -166,3 +166,15 @@ Agent Registry 等待整个 Tool Runtime 初始化或关闭的结果，不逐个
 
 
 提交前补充验证：`go test -race -count=1 ./tools/... ./approval/... ./agent/... ./agentloop/... ./systemprompt/... ./internal/server -timeout=60s` 与受影响模块的 `go vet` 通过。整仓 `go test -count=1 ./... -timeout=60s` 仍因暂缓迁移的 subagent 引用已删除 Plugin，以及 tests/architecture 中旧架构断言等检查失败，不能宣称整仓通过。默认审批工具与客户端回答装配仍按 [Approval 方案](./20-approval-module.md) 跟进。
+
+## 内置审批与提问装配验收
+
+默认启动已装配隐藏 approval 与可见 ask_user_question。执行经真实 Registry → Runtime → 通用 ToolActor；Session 审计使用固定创建身份，Interaction Gateway 通过 WebSocket 发请求、HTTP /api/respond 接收回答。UserQuestions 的重复 Provider 接口与独立 Grain / Client / pending 表已移除，QuestionService 直接在通用 ToolActor 任务中执行。详见 [审批模块](./20-approval-module.md) 与 [服务装配](./41-server-composition.md)。
+
+`TestHTTPBuiltInToolInteractions` 覆盖回答、拒绝、中途取消、Agent 关闭、完整 Server 关闭、断线重连保持原请求、重复回答拒绝、恢复数据库中的 asked/decided 与工具结果。`TestRequestHeaderSchemaSurvivesSessionEncoding` 修复多行 schema 被 Session 编码后误判配置不一致的问题，不改变模型参数或持久化格式。
+
+本轮 Tools / Approval / UserQuestions / ToolAskUser / Agent / AgentLoop / Prompt / Session / API Proxy / Server 的 fresh race 测试与 vet 已通过。整仓测试仍失败：暂缓迁移的 subagent 依赖已删除 Plugin，architecture 检查包含旧路径/旧生命周期与命名问题；另观察到 Workspace 重启测试的 actor is not alive，需单独核实。不能宣称整仓通过。
+
+仍未完成：AgentLoop 的业务多工具并发调度和端到端验收；生产 Session 技术故障后的审批自动恢复（业务幂等重试不等同于自动恢复）。MCP 与暂缓的 subagent 不属于本轮默认工具装配。
+
+本批实现提交：`e954b2c`。完整服务关闭场景的追加 race 验收通过；Workspace 重启测试单独 fresh 重复 30 次通过，整仓中的一次失败暂未复现，仍保留记录，不据此修改其生命周期。

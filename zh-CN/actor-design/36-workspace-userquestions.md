@@ -91,3 +91,13 @@ Go 的 Workspace Notice 名称是现有 Go 契约，并非最新 DSH 的同名�
 ### Header 查询返回契约
 
 Workspace.SessionHeaders.Get 返回 `(*session.Header, error)`。查到时返回独立 Header 副本；`nil, nil` 表示实时 Registry 与持久化历史均不存在；查询失败返回 `nil, error`。不存在不作为存储失败，也不通过 Header 零值推断。Workspace 根据自身操作把缺失映射为 UnknownSessionError 或 AttachError，保留既有业务错误和 wire 行为。移除 found 布尔值，同步实时/持久化适配器、业务调用方及测试端口，不提供旧签名兼容路径。
+
+## 默认提问工具装配补充
+
+组合入口把 QuestionService 交给 toolaskuser.Provider。Provider.Open 返回独立 questionTool，底层不可变业务能力可以共享；ToolActor 仍按 Session 与工具名称独立存在。不启动 UserQuestions Actor，等待与取消由通用 ToolActor 和 Interaction Gateway 各自负责。Agent 准入由 Registry 的当前 Ready 和 Inspect 结果确认，当前调用的工具生命周期阻止旧 Agent 未结束时同名身份被重用。具体启动、覆盖与关闭顺序见 [服务装配](./41-server-composition.md#内置工具与回答入口装配)。
+
+UserQuestions 是唯一提问接口，QuestionService、Actor Client 与客户端回答适配器均实现 Ask。删除签名完全相同的 Provider 接口，不保留别名。业务校验与回答输送的区别由 QuestionService / Gateway 的对象职责表达，不重复定义相同交互契约。
+
+### 删除重复提问调度层
+
+UserQuestions Grain 只包装 QuestionService.Ask 并维护重复的 pending / cancel / reply，通用 ToolActor 已承担这些职责。因此删除 Grain、Client 和其关闭协议，保留查询 Agent Registry 的 Directory / Callers 适配。原两层 Actor 的行为测试改为通用 ToolActor 直接执行 QuestionService，继续验证取消后等待回答端清理；旧 Grain 测试删除。上文早期双 Actor 验证记录不再代表目标结构。
