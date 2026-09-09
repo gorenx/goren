@@ -46,11 +46,11 @@ type Tool struct {
 	revision Revision
 	identity Identity
 	current  *Implementation
-	// candidate holds the validated replacement until the catalog update is published.
+	// candidate holds the validated replacement until Runtime switches the replacement.
 	// Provision creates it without replacing current or releasing current's resources.
-	// After publication, Commit moves its body to current and moves the previous
+	// During switching, Commit moves its body to current and moves the previous
 	// current to retiring; Retire then releases the old resources.
-	// Before publication, Abort releases only candidate and preserves current.
+	// Before switching, Abort releases only candidate and preserves current.
 	// Failed cleanup retains candidate for retry, but never permits activation.
 	candidate *candidate
 	retiring  *Implementation

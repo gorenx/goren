@@ -283,7 +283,7 @@ func postPreparation(
 	}
 }
 
-// ApplyApproval consumes one audited approval result without repeating pre-policy.
+// applyApproval consumes one audited approval result without repeating pre-policy.
 func (coordinator *Scheduler) applyApproval(toolCall callExecution, outcome approval.Outcome) (preparation, error) {
 	state, err := coordinator.executionState(toolCall)
 	if err != nil {
@@ -323,16 +323,24 @@ func (coordinator *Scheduler) applyApproval(toolCall callExecution, outcome appr
 	}, nil
 }
 
-// PrepareCall captures policy and prepares one immutable invocation.
+// PrepareCall captures policy and settles any named approval before admitting dispatch.
+// An unconfirmed approval returns the retained Call with its delivery error.
 func (coordinator *Scheduler) PrepareCall(ctx context.Context, input tools.ToolExecutionInput) (*Call, error) {
 	prepared, err := coordinator.prepare(ctx, input)
 	if err != nil {
 		return nil, err
 	}
-	return &Call{
+	current := &Call{
 		scheduler:   coordinator,
 		preparation: prepared,
-	}, nil
+	}
+	if prepared.Stage == tools.ScheduledApproval {
+		current.preparation, err = coordinator.requestApproval(prepared)
+		if err != nil {
+			current.failure = err
+		}
+	}
+	return current, err
 }
 
 // ExecutionMode classifies overlap using the captured definition and validated input.

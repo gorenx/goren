@@ -35,7 +35,6 @@ type ToolAddress struct {
 	Actor      *goakt.GrainIdentity
 	CreationID string
 	Found      bool
-	Err        error
 }
 
 type toolName struct {

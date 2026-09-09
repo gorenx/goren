@@ -52,7 +52,8 @@ func TestToolActorUsesQuestionActorForAnswerAndCancellation(t *testing.T) {
 			name = "cancel"
 		}
 		t.Run(name, func(t *testing.T) {
-			system, directory, target := startTool(t)
+			source := &provider{}
+			system, target := startTool(t, source)
 			service := &humanQuestions{
 				requests:  make(chan userquestions.Request, 1),
 				cancelled: make(chan struct{}),
@@ -79,10 +80,8 @@ func TestToolActorUsesQuestionActorForAnswerAndCancellation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			source := &provider{
-				questions: endpoint,
-			}
-			provisionTool(t, system, directory, target, source)
+			source.questions = endpoint
+			provisionTool(t, system, target)
 			type received struct {
 				body tools.BodyResult
 				err  error

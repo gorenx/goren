@@ -132,11 +132,3 @@ const (
 	// ScheduledFinalResult means policy failed terminally and only finalization remains.
 	ScheduledFinalResult ScheduledToolStage = "final-result"
 )
-
-// ApprovalRequest is the detached input for asynchronous approval orchestration.
-type ApprovalRequest struct {
-	SessionID session.SessionID
-	ToolName  string
-	CallID    agentmessage.CallID
-	Reason    string
-}

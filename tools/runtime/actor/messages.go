@@ -10,7 +10,6 @@ import (
 	"github.com/gorenx/goren/session"
 	toolregistry "github.com/gorenx/goren/tools/registry"
 	toolruntime "github.com/gorenx/goren/tools/runtime"
-	"github.com/gorenx/goren/tools/tool"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
@@ -22,7 +21,6 @@ type InitializeRuntime struct {
 	Authority  *goakt.GrainIdentity
 	Registry   *goakt.GrainIdentity
 	Config     *toolregistry.Catalog
-	Workers    tool.Workers
 	Timeout    time.Duration
 }
 

@@ -13,18 +13,25 @@ import (
 func (owner *Runtime) receiveConfiguration(gc *goakt.GrainContext) bool {
 	switch input := gc.Message().(type) {
 	case configurationNotice:
-		gc.NoErr()
+		gc.Response(Completion{})
 		if input.creationID == owner.creationID {
 			owner.changed = true
 		}
 	case RefreshConfiguration:
-		if input.ID == "" || input.CreationID != owner.creationID || owner.toolRuntime == nil || owner.active != nil || len(owner.calls) != 0 {
+		if input.ID == "" ||
+			input.CreationID != owner.creationID ||
+			owner.toolRuntime == nil ||
+			owner.active != nil ||
+			len(owner.calls) != 0 {
 			gc.Response(Definitions{Err: errors.New("tools: configuration requires an idle runtime and current creation")})
 			return true
 		}
 		if !owner.changed {
 			definitions, err := owner.toolRuntime.Definitions()
-			gc.Response(Definitions{Value: definitions, Err: err})
+			gc.Response(Definitions{
+				Value: definitions,
+				Err:   err,
+			})
 			return true
 		}
 		reply := gc.DeferResponse()
@@ -46,7 +53,10 @@ func (owner *Runtime) receiveConfiguration(gc *goakt.GrainContext) bool {
 			return err
 		})
 	case CancelConfiguration:
-		if input.CreationID == owner.creationID && owner.active != nil && owner.active.refreshID == input.ID && owner.active.cancel != nil {
+		if input.CreationID == owner.creationID &&
+			owner.active != nil &&
+			owner.active.refreshID == input.ID &&
+			owner.active.cancel != nil {
 			owner.active.cancel()
 		}
 		gc.Response(Completion{})
@@ -118,5 +128,14 @@ func (owner *Watcher) Receive(rc *goakt.ReceiveContext) {
 }
 
 func (owner *Watcher) notify(rc *goakt.ReceiveContext) {
-	rc.RequestGrain(owner.Target, configurationNotice{creationID: owner.CreationID})
+	call := rc.RequestGrain(owner.Target, configurationNotice{creationID: owner.CreationID})
+	if call == nil {
+		return
+	}
+	logger := rc.Logger()
+	call.Then(func(_ any, failure error) {
+		if failure != nil {
+			logger.Error(failure)
+		}
+	})
 }

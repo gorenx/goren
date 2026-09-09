@@ -32,14 +32,6 @@ type reservation struct {
 	releases   map[agent.Resource]releaser
 	executor   *goakt.GrainIdentity
 	closure    *closure
-	// tools maps a tool's canonical name (CreateTool.Name, e.g. "ask_user_question")
-	// to its lifecycle record within this Agent creation. The value retains the
-	// Grain identity, tool creation/activation IDs, and pending creation or cleanup.
-	// For example, creations["session-1"].tools["ask_user_question"] and
-	// creations["session-2"].tools["ask_user_question"] own separate instances.
-	// The key is neither the SessionID nor the generated Grain name. An entry is
-	// removed only after successful removal; failed cleanup retains it for retry.
-	tools map[string]*toolLifecycle
 }
 
 // Grain owns Agent identity, admission and descendant close coordination.
@@ -59,12 +51,6 @@ func (*Grain) OnActivate(context.Context, *goakt.GrainProps) error { return nil 
 // OnDeactivate discards admission state, never asserting resource shutdown.
 func (owner *Grain) OnDeactivate(context.Context, *goakt.GrainProps) error {
 	for _, entry := range owner.creations {
-		for _, instance := range entry.tools {
-			if instance.active != nil {
-				instance.active.cancel()
-				instance.active.respond(instance, errors.New("agent registry: stopped during tool lifecycle operation"))
-			}
-		}
 		if entry.activation != nil {
 			if entry.activation.cancel != nil {
 				entry.activation.cancel()
@@ -89,8 +75,7 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 		result.deliver(gc)
 		return
 	}
-	if owner.receiveTools(gc) ||
-		owner.receiveLifecycle(gc) ||
+	if owner.receiveLifecycle(gc) ||
 		owner.receiveIdentity(gc) ||
 		owner.receiveAdmission(gc) {
 		return

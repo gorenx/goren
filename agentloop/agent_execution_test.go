@@ -42,6 +42,9 @@ type executionEnvironment struct {
 }
 
 func (fixture *executionEnvironment) services() agentloop.Services {
+	if fixture.tools == nil {
+		fixture.tools = &heldTool{fixture: fixture}
+	}
 	return agentloop.Services{
 		Conversation: executionSession{fixture: fixture},
 		Tools:        fixture.tools,
@@ -565,13 +568,28 @@ func TestBusinessExecutionResumesInputAfterMaintenance(t *testing.T) {
 
 // heldTool exposes actual capability boundaries without directing the Step flow.
 type heldTool struct {
-	fixture    *executionEnvironment
-	waiting    agentloop.ToolReceiver
-	prepared   int
-	dispatched int
-	released   int
-	concludes  bool
-	contexts   []agentmessage.UserMessage
+	holdConfiguration bool
+	configuration     agentloop.ConfigurationReceiver
+	configured        int
+	fixture           *executionEnvironment
+	waiting           agentloop.ToolReceiver
+	prepared          int
+	dispatched        int
+	released          int
+	concludes         bool
+	contexts          []agentmessage.UserMessage
+}
+
+func (endpoint *heldTool) Configure(receiver agentloop.ConfigurationReceiver) error {
+	endpoint.configured++
+	if endpoint.holdConfiguration {
+		endpoint.configuration = receiver
+		return nil
+	}
+	endpoint.fixture.queued = append(endpoint.fixture.queued, func() {
+		receiver.ToolsConfigured(endpoint.fixture.services(), nil)
+	})
+	return nil
 }
 
 func (endpoint *heldTool) Prepare(_ tools.ToolExecutionInput, receiver agentloop.ToolReceiver) error {
@@ -768,5 +786,41 @@ func TestBusinessToolWritesRetryWithoutRepeatingExecution(t *testing.T) {
 				t.Fatal("retried tool did not finish")
 			}
 		})
+	}
+}
+
+func TestBusinessConfigurationWaitPrecedesInputAndSettlesCancellation(t *testing.T) {
+	subject, history := readyAgent(t)
+	proposal, err := subject.Followup(inputMessage(t, "wait for tool configuration"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirmInput(t, subject, history, proposal)
+	fixture := &executionEnvironment{history: history}
+	endpoint := &heldTool{
+		fixture:           fixture,
+		holdConfiguration: true,
+	}
+	fixture.tools = endpoint
+	err = subject.Run(fixture.services())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.drain(t)
+	if endpoint.configured != 1 || endpoint.configuration == nil || !slices.Equal(fixture.trace, []string{"turn/start"}) || !subject.InboxValue().HasPending() {
+		t.Fatalf("configuration did not hold input: count=%d trace=%v", endpoint.configured, fixture.trace)
+	}
+	_, err = subject.Cancel(agent.UserCancel{}, agent.CancelOptions{KeepInbox: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint.configuration.ToolsConfigured(fixture.services(), context.Canceled)
+	fixture.drain(t)
+	if fixture.flush == nil {
+		t.Fatalf("cancelled configuration did not settle Turn: %v", fixture.failure)
+	}
+	fixture.flush.SessionFlushed(fixture.services(), fixture.barrier, nil)
+	if !fixture.finished || !subject.InboxValue().HasPending() {
+		t.Fatal("cancellation lost pending input or left Turn running")
 	}
 }

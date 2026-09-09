@@ -11,7 +11,7 @@ import (
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
-// Grain orchestrates preparation, catalog registration and resource cleanup.
+// Grain schedules tool preparation, execution and resource cleanup.
 // The lifecycle owner must close business resources before deactivating it.
 type Grain struct {
 	instanceID string
@@ -19,6 +19,7 @@ type Grain struct {
 	agentID    session.SessionID
 	authority  *goakt.GrainIdentity
 	business   *tool.Tool
+	provider   tool.Provider
 	active     *operation
 	// calls maps an executing invocation's CallID to its reply and cancellation
 	// handles. The entry exists until that body returns; it contains no policy or
@@ -85,8 +86,9 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 			return
 		}
 		business := owner.business
+		source := owner.provider
 		owner.schedule(gc, current, input.Context, func(ctx context.Context) error {
-			return business.Provision(ctx, input.Revision, input.Provider, input.Schema)
+			return business.Provision(ctx, input.Revision, source, input.Schema)
 		})
 	case Commit:
 		if owner.admit(gc, input.CreationID) {

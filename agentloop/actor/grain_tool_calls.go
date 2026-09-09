@@ -4,6 +4,10 @@ import (
 	"context"
 	"errors"
 
+	"github.com/google/uuid"
+	"github.com/gorenx/goren/systemprompt"
+	promptactor "github.com/gorenx/goren/systemprompt/actor"
+
 	"github.com/gorenx/goren/agentloop"
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/tools"
@@ -83,4 +87,74 @@ func (endpoint toolPort) request(message any, deliver func(runtimeactor.CallResu
 			}
 			return deliver(result)
 		})
+}
+
+// Configure requests the tool owner, then confirms the matching Prompt baseline.
+// The business caller chooses this boundary; this adapter never advances the Turn.
+func (endpoint toolPort) Configure(receiver agentloop.ConfigurationReceiver) error {
+	identifier := uuid.NewString()
+	target := endpoint.scope.owner.tools
+	creationID := endpoint.scope.owner.creationID
+	return endpoint.scope.request(
+		target,
+		runtimeactor.RefreshConfiguration{
+			CreationID: creationID,
+			ID:         identifier,
+		},
+		&cancellationRequest{
+			target: target,
+			message: runtimeactor.CancelConfiguration{
+				CreationID: creationID,
+				ID:         identifier,
+			},
+		},
+		reentrancy.AllowAll,
+		func(payload any, failure error) func(agentloop.Services) {
+			result, valid := payload.(runtimeactor.Definitions)
+			if failure == nil {
+				if !valid {
+					failure = errors.New("agentloop: invalid tool configuration response")
+				} else {
+					failure = result.Err
+				}
+			}
+			return func(services agentloop.Services) {
+				if failure != nil {
+					receiver.ToolsConfigured(services, failure)
+					return
+				}
+				port := services.Tools.(toolPort)
+				err := port.applyDefinitions(result.Value, receiver)
+				if err != nil {
+					receiver.ToolsConfigured(services, err)
+				}
+			}
+		},
+	)
+}
+
+func (endpoint toolPort) applyDefinitions(definitions tools.Definitions, receiver agentloop.ConfigurationReceiver) error {
+	return endpoint.scope.request(
+		endpoint.scope.owner.prompt,
+		promptactor.ApplyTools{
+			AgentID: definitions.AgentID,
+			Definitions: systemprompt.ToolDefinitions{
+				Schemas:    definitions.Schemas,
+				KnownNames: definitions.KnownNames,
+			},
+		},
+		nil,
+		reentrancy.AllowAll,
+		func(payload any, failure error) func(agentloop.Services) {
+			result, valid := payload.(promptactor.Completion)
+			if failure == nil {
+				if !valid {
+					failure = errors.New("agentloop: invalid Prompt tool update response")
+				} else {
+					failure = result.Err
+				}
+			}
+			return func(services agentloop.Services) { receiver.ToolsConfigured(services, failure) }
+		},
+	)
 }

@@ -32,7 +32,7 @@ type Policy struct {
 type Catalog struct {
 	Schemas []llm.ToolSchema
 	// Policies maps a canonical tool name to explicitly configured policy fields.
-	// For example, Policies["read_file"].Visible=false hides that tool after merging.
+	// For example, a false value at *Policies["read_file"].Visible hides that tool after merging.
 	// A Session may override policy without copying the inherited schema.
 	Policies map[string]Policy
 }

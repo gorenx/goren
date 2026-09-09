@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 
 	"github.com/gorenx/goren/agentmessage"
- "github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/tools"
 	"github.com/gorenx/goren/tools/tool"
@@ -29,16 +29,15 @@ func RuntimeName(agentID string, toolName string) string {
 }
 
 // Provision constructs a candidate under the caller-owned update boundary.
-// Provider configuration must remain identical for retries of the same Revision.
+// The implementation is bound by Initialize from process-local composition.
 type Provision struct {
 	CreationID string
 	Revision   tool.Revision
-	Provider   tool.Provider
- Schema llm.ToolSchema
+	Schema     llm.ToolSchema
 	Context    context.Context
 }
 
-// Commit switches to a candidate after the caller confirms catalog publication.
+// Commit switches to a candidate after Runtime has prepared all replacement work.
 type Commit struct {
 	CreationID string
 	Revision   tool.Revision
@@ -94,4 +93,13 @@ type Description struct {
 	Implementation tool.Identity
 	Descriptor     tools.Descriptor
 	Err            error
+}
+
+// Claim binds a reserved tool to its first physical activation in Tool Runtime.
+// A fresh activation cannot assume a prior activation's cleanup responsibility.
+type Claim struct {
+	AgentID    session.SessionID
+	Name       string
+	CreationID string
+	InstanceID string
 }

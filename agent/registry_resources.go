@@ -22,8 +22,6 @@ const (
 	Execution
 	// ToolsRuntime owns pending collection updates and instance cleanup.
 	ToolsRuntime
-	// Tool owns one canonical tool instance, including uncertain initialization.
-	Tool
 	// PromptRuntime owns the Agent's prompt subscriptions and snapshots.
 	PromptRuntime
 	// Conversation owns Session registration, flush and shutdown responsibility.
@@ -33,7 +31,7 @@ const (
 )
 
 // Resource identifies a cleanup responsibility without a runtime address.
-// Name is a canonical tool or child ID. Index is the declared capability position.
+// Name is a child ID. Index is the declared capability position.
 // Other kinds use neither field. Capabilities close in descending Index order.
 type Resource struct {
 	Kind  ResourceKind
@@ -50,8 +48,7 @@ func (directory *Registry) TrackResource(identifier session.SessionID, owned Res
 	}
 	if owned.Kind > Activation || owned.Kind == Child || owned.Index < 0 ||
 		(owned.Kind != Capability && owned.Index != 0) ||
-		(owned.Kind == Tool && owned.Name == "") ||
-		(owned.Kind != Tool && owned.Name != "") {
+		owned.Name != "" {
 		return errors.New("agent: invalid resource responsibility")
 	}
 	if entry.resources == nil {
@@ -60,14 +57,6 @@ func (directory *Registry) TrackResource(identifier session.SessionID, owned Res
 	entry.resources[owned] = struct{}{}
 	directory.entries[identifier] = entry
 	return nil
-}
-
-// ReleaseTool confirms normal tool removal without ending the Agent lifetime.
-func (directory *Registry) ReleaseTool(identifier session.SessionID, name string) {
-	delete(directory.entries[identifier].resources, Resource{
-		Kind: Tool,
-		Name: name,
-	})
 }
 
 // ConfirmRelease accepts the selected cleanup only after its owner confirms it.
@@ -148,7 +137,6 @@ var releasePriority = map[ResourceKind]int{
 	Capability:     3,
 	Execution:      4,
 	ToolsRuntime:   5,
-	Tool:           6,
 	PromptRuntime:  7,
 	Conversation:   8,
 	Activation:     9,

@@ -138,7 +138,7 @@ func (owner *Grain) deliverCancellations(gc *goakt.GrainContext, requests []canc
 						} else {
 							failure = result.Err
 						}
-					case runtimeactor.CancelCall:
+					case runtimeactor.CancelCall, runtimeactor.CancelConfiguration:
 						result, ok := payload.(runtimeactor.Completion)
 						if !ok {
 							failure = errors.New("agentloop: invalid tool cancellation acknowledgement")

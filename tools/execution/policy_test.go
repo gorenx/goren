@@ -100,7 +100,7 @@ func TestAskDecisionWaitsForAuditedOutcomeBeforeDispatch(t *testing.T) {
 	if err != nil || prepared.Stage != tools.ScheduledApproval || prepared.Approval == nil {
 		t.Fatalf("preparation = %#v, %v", prepared, err)
 	}
-	if prepared.Approval.SessionID != "session" || prepared.Approval.Reason != "needs permission" || bodyCalls != 0 {
+	if prepared.Execution.SessionID != "session" || prepared.Approval.Reason != "needs permission" || bodyCalls != 0 {
 		t.Fatal("invalid approval request or early dispatch")
 	}
 	if _, err := scheduler.dispatch(prepared.Execution); err == nil {

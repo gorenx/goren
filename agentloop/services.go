@@ -110,6 +110,8 @@ type Observer interface {
 // ToolCalls transports individual tool operations. Batch ordering and result
 // acceptance belong to the calling business flow, never the implementation.
 type ToolCalls interface {
+	// Configure applies pending tools and Prompt definitions before this Turn prepares input.
+	Configure(ConfigurationReceiver) error
 	Prepare(tools.ToolExecutionInput, ToolReceiver) error
 	Dispatch(agentmessage.CallID, ToolReceiver) error
 	Finalize(agentmessage.CallID, ToolReceiver) error
@@ -122,4 +124,9 @@ type ToolReceiver interface {
 	ToolDispatched(Services, error)
 	ToolFinalized(Services, tools.ToolExecutionResult, error)
 	ToolReleased(Services, error)
+}
+
+// ConfigurationReceiver confirms that tools and their Prompt definitions agree.
+type ConfigurationReceiver interface {
+	ToolsConfigured(Services, error)
 }

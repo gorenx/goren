@@ -103,6 +103,7 @@ func (owner *Server) initializeAPI(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
 	commands, err := goakt.GrainOf[*commandactor.Registry](ctx, system, commandactor.RegistryName, goakt.WithLongLivedGrain())
 	if err != nil {
 		return err
@@ -208,7 +209,6 @@ func (owner *Server) initializeAPI(ctx context.Context) error {
 			Middleware:      hooks,
 			PromptRegistry:  prompts,
 			ToolsRegistry:   tools,
-			Workers:         owner.settings.Workers,
 			Commands:        commands,
 			Components:      []*goakt.GrainIdentity{titleOwner},
 		},

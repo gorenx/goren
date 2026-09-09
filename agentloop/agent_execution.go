@@ -16,6 +16,7 @@ func (subject *ReactLoopAgent) Run(services Services) error {
 		services.Prompts == nil ||
 		services.Middleware == nil ||
 		services.Models == nil ||
+		services.Tools == nil ||
 		services.Observer == nil {
 		return errors.New("agentloop: execution capabilities are incomplete")
 	}
@@ -99,7 +100,25 @@ func (opening *turnOpening) SessionCommitted(services Services, result session.W
 		services.Observer.ExecutionFailed(failure)
 		return
 	}
-	opening.work.prepareStep(services)
+	opening.work.configureTools(services)
+}
+
+// configureTools holds the Turn boundary until the effective tools and Prompt agree.
+// Later Steps in this Turn continue with that same tool configuration.
+func (work *ReactLoopAgent) configureTools(services Services) {
+	err := services.Tools.Configure(work)
+	if err != nil {
+		work.ToolsConfigured(services, err)
+	}
+}
+
+// ToolsConfigured resumes input preparation only after the configuration boundary settles.
+func (work *ReactLoopAgent) ToolsConfigured(services Services, failure error) {
+	if failure != nil {
+		work.failStep(services, errors.Join(failure, work.Cancellation()))
+		return
+	}
+	work.prepareStep(services)
 }
 
 func (work *ReactLoopAgent) continueTurn(services Services) {

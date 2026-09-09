@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/gorenx/goren/agentmessage"
+	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/tools"
 )
 
@@ -189,7 +190,7 @@ func (state *scheduledExecutionState) acceptApproval() error {
 
 // preparation is the ordered pre-policy outcome for one call.
 type preparation struct {
-	Approval  *tools.ApprovalRequest
+	Approval  *approval.Permission
 	Stage     tools.ScheduledToolStage
 	Execution callExecution
 	Result    tools.ToolExecutionResult

@@ -1,9 +1,12 @@
 package registry
 
 import (
+	"context"
 	"errors"
-	middlewareactor "github.com/gorenx/goren/agent/middleware/actor"
 	"time"
+
+	middlewareactor "github.com/gorenx/goren/agent/middleware/actor"
+	"github.com/tochemey/goakt/v4/passivation"
 
 	runtimeactor "github.com/gorenx/goren/tools/runtime/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
@@ -53,7 +56,6 @@ func newInstallation(
 			Authority:  authority,
 			Registry:   input.ToolsRegistry,
 			Config:     input.Tools,
-			Workers:    input.Workers,
 			Timeout:    input.Timeout,
 		}}
 	prompt := &promptClient{
@@ -461,20 +463,9 @@ func (endpoint *childClient) Close(gc *goakt.GrainContext, reply chan<- error) {
 	)
 }
 
-type toolClient struct {
-	input agentactor.RemoveTool
-}
-
-func (endpoint *toolClient) Close(gc *goakt.GrainContext, reply chan<- error) {
-	requestComponent(
-		gc, gc.Self(), endpoint.input,
-		func(gc *goakt.GrainContext, closed agentactor.ToolRemoved, failure error) {
-			reply <- errors.Join(failure, closed.Err)
-		},
-	)
-}
-
 type toolsClient struct {
+	// watcher belongs to this Tools resource and stops before Runtime deactivation.
+	watcher *goakt.PID
 	input   runtimeactor.InitializeRuntime
 	release runtimeRelease
 	// instanceID is fixed before authorization; Close never certifies a reactivated runtime.
@@ -485,7 +476,8 @@ func (endpoint *toolsClient) Runtime() *goakt.GrainIdentity { return endpoint.re
 
 func (endpoint *toolsClient) Initialize(gc *goakt.GrainContext, reply chan<- componentResult) {
 	identity, err := goakt.GrainOf[*runtimeactor.Runtime](
-		gc.Context(), gc.ActorSystem(),
+		gc.Context(),
+		gc.ActorSystem(),
 		runtimeactor.RuntimeName(string(endpoint.input.AgentID)),
 		goakt.WithLongLivedGrain(),
 		goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))),
@@ -499,12 +491,51 @@ func (endpoint *toolsClient) Initialize(gc *goakt.GrainContext, reply chan<- com
 		gc,
 		identity,
 		endpoint.input,
-		func(_ *goakt.GrainContext, initialized runtimeactor.Completion, failure error) {
-			reply <- componentResult{err: errors.Join(failure, initialized.Err)}
+		func(gc *goakt.GrainContext, initialized runtimeactor.Completion, failure error) {
+			failure = errors.Join(failure, initialized.Err)
+			if failure == nil {
+				endpoint.watcher, failure = gc.ActorSystem().Spawn(
+					gc.Context(),
+					string(endpoint.input.AgentID)+".tools.configuration",
+					&runtimeactor.Watcher{
+						AgentID:    string(endpoint.input.AgentID),
+						CreationID: endpoint.input.CreationID,
+						Target:     endpoint.Runtime(),
+					},
+					goakt.WithReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))),
+					goakt.WithPassivationStrategy(passivation.NewLongLivedStrategy()),
+				)
+			}
+			reply <- componentResult{err: failure}
 		})
 }
 
 func (endpoint *toolsClient) Close(gc *goakt.GrainContext, reply chan<- error) {
+	if endpoint.watcher == nil {
+		endpoint.closeRuntime(gc, reply)
+		return
+	}
+	watcher := endpoint.watcher
+	ctx := context.WithoutCancel(gc.Context())
+	err := gc.PipeToSelf(func() (any, error) {
+		return clientReply[struct{}]{
+			err: watcher.Shutdown(ctx),
+			receive: func(gc *goakt.GrainContext, _ struct{}, failure error) {
+				if failure != nil {
+					reply <- failure
+					return
+				}
+				endpoint.watcher = nil
+				endpoint.closeRuntime(gc, reply)
+			},
+		}, nil
+	})
+	if err != nil {
+		reply <- err
+	}
+}
+
+func (endpoint *toolsClient) closeRuntime(gc *goakt.GrainContext, reply chan<- error) {
 	if endpoint.instanceID == "" {
 		// No activation was ever authorized to acquire resources. Closing admission
 		// prevents any delayed claim from succeeding, so framework stop suffices.

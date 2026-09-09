@@ -103,6 +103,23 @@ func TestAroundCancellationWaitsForDownstreamAndUnwinds(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			for _, input := range []middlewareactor.CancelCall{
+				{
+					Cause: context.Canceled,
+				},
+				{
+					CallID: "missing-cause",
+				},
+			} {
+				payload, failure := system.AskGrain(ctx, coordinator, input, time.Second)
+				if failure != nil {
+					t.Fatal(failure)
+				}
+				ack, valid := payload.(middlewareactor.Completion)
+				if !valid || ack.Err == nil {
+					t.Fatalf("invalid cancellation accepted: %+v", payload)
+				}
+			}
 			outer, err := goakt.GrainOf[*handler](ctx, system, "outer", goakt.WithLongLivedGrain(), mode)
 			if err != nil {
 				t.Fatal(err)
@@ -220,6 +237,21 @@ func TestAroundCancellationWaitsForDownstreamAndUnwinds(t *testing.T) {
 			case <-returned:
 			default:
 				t.Fatal("root completed before outer handler")
+			}
+			// The coordinator has completed the original request. Its caller may
+			// still have a cancellation in flight until it consumes that reply.
+			for attempt := 0; attempt < 2; attempt++ {
+				payload, failure := system.AskGrain(ctx, coordinator, middlewareactor.CancelCall{
+					CallID: "chain",
+					Cause:  agent.NewCancellation(agent.ParentCancel{}),
+				}, time.Second)
+				if failure != nil {
+					t.Fatal(failure)
+				}
+				ack, valid := payload.(middlewareactor.Completion)
+				if !valid || ack.Err != nil {
+					t.Fatalf("late cancellation %d: %+v", attempt, payload)
+				}
 			}
 		})
 	}

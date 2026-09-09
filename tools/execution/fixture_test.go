@@ -5,7 +5,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/tools"
 )
 
@@ -166,14 +165,7 @@ func executeCall(t *testing.T, coordinator *Scheduler, ctx context.Context, inpu
 	if err != nil {
 		t.Fatal(err)
 	}
-	phase, _ := current.Preparation()
-	if phase == tools.ScheduledApproval {
-		err = current.ApplyApproval(approval.OutcomeUnavailable)
-		if err != nil {
-			t.Fatal(err)
-		}
-		phase, _ = current.Preparation()
-	}
+	phase := current.Preparation()
 	if phase == tools.ScheduledDispatch {
 		err = current.Dispatch()
 		if err != nil {

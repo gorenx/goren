@@ -20,6 +20,7 @@ import (
 	"github.com/gorenx/goren/systemprompt"
 	toolregistry "github.com/gorenx/goren/tools/registry"
 	"github.com/gorenx/goren/tools/tool"
+	toolactor "github.com/gorenx/goren/tools/tool/actor"
 	"github.com/gorenx/goren/web"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/log"
@@ -39,7 +40,7 @@ type Config struct {
 	Provider          deepseek.Config
 	Prompt            systemprompt.Config
 	Tools             toolregistry.Catalog
-	Workers           tool.Workers
+	Providers         tool.Providers
 }
 
 // Server owns process resources and their dependency-ordered release. It does not
@@ -94,6 +95,8 @@ func New(settings Config, platform anonymoususerid.Environment) (*Server, error)
 	if settings.CacheDatabase == "" {
 		settings.CacheDatabase = filepath.Join(filepath.Dir(settings.SessionDatabase), "projections.sqlite")
 	}
+	settings.Tools = settings.Tools.Clone()
+	settings.Providers = settings.Providers.Clone()
 	return &Server{
 		settings: settings,
 		platform: platform,
@@ -137,7 +140,11 @@ func (owner *Server) Start(ctx context.Context) (failure error) {
 	if err != nil {
 		return err
 	}
-	owner.system, err = goakt.NewActorSystem("goren", goakt.WithPubSub(), goakt.WithLogger(log.DiscardLogger))
+	constructors, err := toolactor.NewProviders(owner.settings.Providers)
+	if err != nil {
+		return err
+	}
+	owner.system, err = goakt.NewActorSystem("goren", goakt.WithPubSub(), goakt.WithLogger(log.DiscardLogger), goakt.WithExtensions(constructors))
 	if err != nil {
 		return err
 	}
