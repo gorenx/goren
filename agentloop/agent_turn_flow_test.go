@@ -51,7 +51,7 @@ func completedStep(t *testing.T) (*agentloop.ReactLoopAgent, *session.Log) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	write, err := history.Commit(context.Background(), session.Batch(draft))
+	write, err := history.Commit(context.Background(), stepEndPlan{fact: draft})
 	if err != nil {
 		t.Fatal(err)
 	}

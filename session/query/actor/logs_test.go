@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorenx/goren/session"
 	sessionactor "github.com/gorenx/goren/session/actor"
 	"github.com/gorenx/goren/session/persistence"
-	persistenceactor "github.com/gorenx/goren/session/persistence/actor"
 	storage "github.com/gorenx/goren/session/persistence/sqlite"
 	"github.com/gorenx/goren/session/query"
 	queryactor "github.com/gorenx/goren/session/query/actor"
@@ -20,32 +20,6 @@ import (
 	"github.com/tochemey/goakt/v4/log"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
-
-type collect struct {
-	registry    *goakt.GrainIdentity
-	persistence *goakt.PID
-	target      *goakt.PID
-}
-
-type collectionHost struct{}
-
-func (*collectionHost) OnActivate(context.Context, *goakt.GrainProps) error   { return nil }
-func (*collectionHost) OnDeactivate(context.Context, *goakt.GrainProps) error { return nil }
-func (*collectionHost) OnReceive(gc *goakt.GrainContext) {
-	input := gc.Message().(collect)
-	reply := gc.DeferResponse()
-	_, err := gc.ActorSystem().Spawn(gc.Context(), "collector-"+uuid.NewString(), &queryactor.Collector{
-		Registry:    input.registry,
-		Persistence: input.persistence,
-		Target:      input.target,
-		Reply:       reply,
-	}, goakt.WithReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))))
-	if err != nil {
-		reply.Response(queryactor.Completion{
-			Err: err,
-		})
-	}
-}
 
 type grainRequester struct {
 	target  *goakt.GrainIdentity
@@ -78,7 +52,7 @@ func grainDriver(t *testing.T, system goakt.ActorSystem, identity *goakt.GrainId
 	return driver, replies
 }
 
-func TestCollectorPublishesLiveAndPagedDurableSourcesAtomically(t *testing.T) {
+func TestQueryReadsLiveAndPagedDurableSourcesBeforeReply(t *testing.T) {
 	ctx := context.Background()
 	backend, err := storage.Open(ctx, storage.Config{
 		Path:        filepath.Join(t.TempDir(), "sessions.sqlite"),
@@ -142,19 +116,19 @@ func TestCollectorPublishesLiveAndPagedDurableSourcesAtomically(t *testing.T) {
 	if opened.Err != nil {
 		t.Fatal(opened.Err)
 	}
-	reader, err := persistenceactor.New(backend)
+	history, err := persistence.NewReader(backend)
 	if err != nil {
 		t.Fatal(err)
 	}
-	durable, err := system.Spawn(ctx, "persistence", reader)
+	observations, err := queryactor.NewLogs(system, directory, history, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner, err := queryactor.New(index, query.Config{})
+	owner, err := queryactor.New(index, query.Config{}, observations)
 	if err != nil {
 		t.Fatal(err)
 	}
-	target, err := system.Spawn(ctx, "query", owner)
+	target, err := system.Spawn(ctx, "query", owner, goakt.WithStashing())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,47 +140,16 @@ func TestCollectorPublishesLiveAndPagedDurableSourcesAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	host, err := goakt.GrainOf[*collectionHost](ctx, system, "collection", goakt.WithLongLivedGrain())
-	if err != nil {
-		t.Fatal(err)
-	}
-	collectorDriver, collectorReplies := grainDriver(t, system, host)
-	input := collect{
-		registry:    directory,
-		persistence: durable,
-		target:      target,
-	}
-	completed := request[queryactor.Completion](t, collectorDriver, collectorReplies, input)
-	if completed.Err != nil {
-		t.Fatal(completed.Err)
-	}
 	listed := request[queryactor.Sessions](t, driver, replies, queryactor.ListSessions{})
 	if listed.Err != nil || len(listed.Items) != 130 {
 		t.Fatalf("list = %d, %v", len(listed.Items), listed.Err)
 	}
-	// A failed collection cannot erase the previously published observation.
-	if err := system.Kill(ctx, "persistence"); err != nil {
+	// A stopped source must fail this request instead of returning old observations.
+	if err := backend.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	completed = request[queryactor.Completion](t, collectorDriver, collectorReplies, input)
-	if completed.Err == nil {
-		t.Fatal("stopped source reported success")
-	}
-	listed = request[queryactor.Sessions](t, driver, replies, queryactor.ListSessions{})
-	if listed.Err != nil || len(listed.Items) != 130 {
-		t.Fatal("failed collection replaced the observation")
-	}
-	live := request[queryactor.Log](t, driver, replies, queryactor.ReadSession{
-		SessionID: "live",
-	})
-	if live.Err != nil || live.Value.Header.ID != "live" {
-		t.Fatalf("live = %#v", live)
-	}
-	closed := request[sessionactor.Closed](t, registryDriver, registryReplies, sessionregistry.CloseSession{
-		SessionID:  "live",
-		CreationID: "current",
-	})
-	if closed.Err != nil {
-		t.Fatal(closed.Err)
+	failed := request[queryactor.Sessions](t, driver, replies, queryactor.ListSessions{})
+	if failed.Err == nil {
+		t.Fatal("failed source returned stale observation")
 	}
 }

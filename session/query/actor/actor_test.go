@@ -80,7 +80,8 @@ func TestActorQueriesObservedSourcesThroughFrameworkRequests(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	owner, err := queryactor.New(backend, query.Config{})
+	observations := &fixedSources{}
+	owner, err := queryactor.New(backend, query.Config{}, observations)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +97,7 @@ func TestActorQueriesObservedSourcesThroughFrameworkRequests(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	target, err := system.Spawn(ctx, "query", owner)
+	target, err := system.Spawn(ctx, "query", owner, goakt.WithStashing())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,18 +137,13 @@ func TestActorQueriesObservedSourcesThroughFrameworkRequests(t *testing.T) {
 	if _, err := conversation.Commit(ctx, session.Batch(draft, named)); err != nil {
 		t.Fatal(err)
 	}
-	accepted := request[queryactor.Completion](t, driver, replies, queryactor.Observe{
-		Sources: []query.Source{{
-			Log: query.LogSnapshot{
-				Header: conversation.Header(),
-				Events: conversation.Events(),
-			},
-			Live: true,
-		}},
-	})
-	if accepted.Err != nil {
-		t.Fatal(accepted.Err)
-	}
+	observations.items = []query.Source{{
+		Log: query.LogSnapshot{
+			Header: conversation.Header(),
+			Events: conversation.Events(),
+		},
+		Live: true,
+	}}
 	listed := request[queryactor.Sessions](t, driver, replies, queryactor.ListSessions{})
 	if listed.Err != nil || len(listed.Items) != 1 {
 		t.Fatalf("sessions = %#v", listed)
@@ -216,4 +212,10 @@ func TestActorQueriesObservedSourcesThroughFrameworkRequests(t *testing.T) {
 	if _, err := backend.Snapshot(ctx); err != nil {
 		t.Fatalf("actor closed shared index: %v", err)
 	}
+}
+
+type fixedSources struct{ items []query.Source }
+
+func (source *fixedSources) ReadSources(ctx context.Context) ([]query.Source, error) {
+	return source.items, ctx.Err()
 }

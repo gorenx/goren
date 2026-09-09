@@ -86,7 +86,7 @@ func TestStepStateRejectsEarlyExecutionAndForeignConfirmations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	write, err = history.Commit(context.Background(), session.Batch(end))
+	write, err = history.Commit(context.Background(), stepEndPlan{fact: end})
 	if err != nil {
 		t.Fatal(err)
 	}

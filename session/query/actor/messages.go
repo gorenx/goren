@@ -7,12 +7,7 @@ import (
 	"github.com/gorenx/goren/session/title"
 )
 
-// Observe replaces the complete successfully acquired source observation.
-type Observe struct {
-	Sources []query.Source
-}
-
-// Completion reports whether the source observation was accepted.
+// Completion rejects a request outside the supported query vocabulary.
 type Completion struct {
 	Err error
 }

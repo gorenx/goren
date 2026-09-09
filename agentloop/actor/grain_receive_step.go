@@ -7,6 +7,8 @@ import (
 // Step preparation waits for admission before deriving model input. Each completion belongs to its original preparation.
 func (owner *Grain) receiveStep(gc *goakt.GrainContext) bool {
 	switch input := gc.Message().(type) {
+	case finishStep:
+		owner.settleStep(gc, input)
 	case prepareStep:
 		owner.startStep(gc, input)
 	case inputRecovered:

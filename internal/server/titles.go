@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"errors"
+	sessionapi "github.com/gorenx/goren/apiproxy/session"
+	"github.com/gorenx/goren/session/projection"
 	"time"
 
 	projectionactor "github.com/gorenx/goren/session/projection/actor"
@@ -66,15 +68,20 @@ func initializeProjections(ctx context.Context, system goakt.ActorSystem, timeou
 	if err != nil {
 		return nil, err
 	}
-	payload, err := system.AskGrain(ctx, endpoint, projectionactor.Register{
-		Unit: title.Unit{},
-	}, timeout)
-	if err != nil {
-		return endpoint, err
+	for _, unit := range []projection.Unit{title.Unit{}, sessionapi.SessionListMetadataUnit()} {
+		payload, failure := system.AskGrain(ctx, endpoint, projectionactor.Register{
+			Unit: unit,
+		}, timeout)
+		if failure != nil {
+			return endpoint, failure
+		}
+		result, valid := payload.(projectionactor.Registered)
+		if !valid {
+			return endpoint, errors.New("server: invalid projection registration reply")
+		}
+		if result.Err != nil {
+			return endpoint, result.Err
+		}
 	}
-	result, valid := payload.(projectionactor.Registered)
-	if !valid {
-		return endpoint, errors.New("server: invalid projection registration reply")
-	}
-	return endpoint, result.Err
+	return endpoint, nil
 }
