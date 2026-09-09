@@ -9,6 +9,7 @@ import (
 
 	"github.com/gorenx/goren/agentmessage"
 	toolscore "github.com/gorenx/goren/tools"
+	"github.com/gorenx/goren/tools/execution"
 	"github.com/gorenx/goren/userquestions"
 )
 
@@ -18,11 +19,6 @@ type schemaNode struct {
 	Properties           map[string]schemaNode `json:"properties,omitempty"`
 	Required             []string              `json:"required,omitempty"`
 	Items                *schemaNode           `json:"items,omitempty"`
-}
-
-type askUserFixture struct {
-	toolService *toolscore.ToolLayer
-	toolHandle  *toolscore.ToolHandle
 }
 
 type providerRecorder struct {
@@ -40,40 +36,6 @@ func (recorder *providerRecorder) Ask(
 	return recorder.answerValue, nil
 }
 
-func newAskUserFixture(t *testing.T, providers ...userquestions.Provider) *askUserFixture {
-	t.Helper()
-	toolSettings, err := toolscore.ValidateConfig(toolscore.Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	business, err := toolscore.New(toolSettings, toolscore.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	state := &askUserFixture{
-		toolService: business,
-	}
-	var answerer userquestions.Provider
-	if len(providers) != 0 {
-		answerer = providers[0]
-	}
-	definition, err := NewDefinition(userquestions.New(answerer, nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	state.toolHandle, err = business.AddTool(context.Background(), definition)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := business.Close(context.Background()); err != nil {
-			t.Error(err)
-		}
-
-	})
-	return state
-}
-
 func resultText(t *testing.T, outcome toolscore.ToolExecutionResult) string {
 	t.Helper()
 	content := outcome.ContentBlocks()
@@ -89,10 +51,9 @@ func resultText(t *testing.T, outcome toolscore.ToolExecutionResult) string {
 
 func TestDefinitionMatchesPinnedSchema(t *testing.T) {
 	t.Parallel()
-	state := newAskUserFixture(t)
-	definition, found := state.toolService.Get(Name)
-	if !found {
-		t.Fatal("ask_user_question is not registered")
+	definition, err := NewDefinition(userquestions.New(nil, nil))
+	if err != nil {
+		t.Fatal(err)
 	}
 	if definition.Description != Description {
 		t.Fatalf("description = %q", definition.Description)
@@ -152,11 +113,14 @@ func TestExecutionDelegatesAndRendersStructuredAnswer(t *testing.T) {
 			},
 		},
 	}
-	state := newAskUserFixture(t, providerValue)
+	definition, err := NewDefinition(userquestions.New(providerValue, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
 	type requestContextKey struct{}
 	contextKey := requestContextKey{}
 	requestContext := context.WithValue(context.Background(), contextKey, "exact")
-	outcome := state.toolService.Execute(
+	outcome := executeQuestion(t, definition,
 		requestContext,
 		toolscore.ToolExecutionInput{
 			CallID: "ask-1",
@@ -194,10 +158,13 @@ func TestExecutionDelegatesAndRendersStructuredAnswer(t *testing.T) {
 	}
 }
 
-func TestExecutionPreservesStructuredQuestionErrorAndRemoval(t *testing.T) {
+func TestExecutionPreservesStructuredQuestionError(t *testing.T) {
 	t.Parallel()
-	state := newAskUserFixture(t)
-	outcome := state.toolService.Execute(
+	definition, err := NewDefinition(userquestions.New(nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome := executeQuestion(t, definition,
 		context.Background(),
 		toolscore.ToolExecutionInput{
 			CallID:    "ask-no-provider",
@@ -211,10 +178,31 @@ func TestExecutionPreservesStructuredQuestionErrorAndRemoval(t *testing.T) {
 		failure.Error.Info.Code != userquestions.CodeNoProvider {
 		t.Fatalf("failure = %#v", outcome)
 	}
-	if err := state.toolHandle.Unregister(context.Background()); err != nil {
+}
+
+func executeQuestion(t *testing.T, definition toolscore.ToolDefinition, ctx context.Context, input toolscore.ToolExecutionInput) toolscore.ToolExecutionResult {
+	t.Helper()
+	coordinator, err := execution.NewScheduler([]toolscore.Descriptor{definition.Describe()}, execution.Policies{}, questionBody{
+		handler: definition.Executor,
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, found := state.toolService.Get(Name); found {
-		t.Fatal("disposed ask_user_question remains registered")
+	current, err := coordinator.PrepareCall(ctx, input)
+	if err != nil {
+		t.Fatal(err)
 	}
+	err = current.Dispatch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = current.Finalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := current.Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
 }

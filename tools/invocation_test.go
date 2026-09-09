@@ -62,3 +62,9 @@ func TestInvocationReturnsDetachedEffectsAndRejectsLateCallbacks(t *testing.T) {
 		t.Fatalf("effects crossed invocations: %#v", next)
 	}
 }
+
+type executorStub func(json.RawMessage, tools.ToolRunContext) (json.RawMessage, error)
+
+func (operation executorStub) Execute(arguments json.RawMessage, runContext tools.ToolRunContext) (json.RawMessage, error) {
+	return operation(arguments, runContext)
+}

@@ -4,36 +4,39 @@ import (
 	"context"
 	"errors"
 
+	"github.com/gorenx/goren/tools/execution"
+
 	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/tools"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
 // invocation retains one call and its current transport reply. Business stages
 // and actual results belong to Call; cancellation does not release this record.
 type invocation struct {
-	business *tools.Call
+	business *execution.Call
 	cancel   context.CancelFunc
 	reply    *goakt.GrainReply
 }
 
 type callCompleted struct {
 	invocation *invocation
-	business   *tools.Call
+	business   *execution.Call
 	result     CallResult
 }
 
-func (owner *Grain) receiveCalls(gc *goakt.GrainContext) bool {
+func (owner *Runtime) receiveCalls(gc *goakt.GrainContext) bool {
 	switch input := gc.Message().(type) {
 	case PrepareCall:
 		owner.prepareCall(gc, input)
 	case DispatchCall:
-		owner.requestCall(gc, input.CreationID, input.CallID, true, func(current *tools.Call) CallResult {
-			return CallResult{Err: current.Dispatch()}
+		owner.requestCall(gc, input.CreationID, input.CallID, true, func(current *execution.Call) CallResult {
+			return CallResult{
+				Err: current.Dispatch(),
+			}
 		})
-	case ResolveCallApproval:
-		owner.requestCall(gc, input.CreationID, input.CallID, false, func(current *tools.Call) CallResult {
-			err := current.ResolveApproval(input.Outcome)
+	case ApplyCallApproval:
+		owner.requestCall(gc, input.CreationID, input.CallID, false, func(current *execution.Call) CallResult {
+			err := current.ApplyApproval(input.Outcome)
 			stage, request := current.Preparation()
 			return CallResult{
 				Stage:    stage,
@@ -42,10 +45,12 @@ func (owner *Grain) receiveCalls(gc *goakt.GrainContext) bool {
 			}
 		})
 	case FinalizeCall:
-		owner.requestCall(gc, input.CreationID, input.CallID, false, func(current *tools.Call) CallResult {
+		owner.requestCall(gc, input.CreationID, input.CallID, false, func(current *execution.Call) CallResult {
 			err := current.Finalize()
 			if err != nil {
-				return CallResult{Err: err}
+				return CallResult{
+					Err: err,
+				}
 			}
 			result, err := current.Result()
 			return CallResult{
@@ -58,7 +63,9 @@ func (owner *Grain) receiveCalls(gc *goakt.GrainContext) bool {
 		if err == nil {
 			current.cancel()
 		}
-		gc.Response(Completion{Err: err})
+		gc.Response(Completion{
+			Err: err,
+		})
 	case ReleaseCall:
 		current, err := owner.findCall(input.CreationID, input.CallID)
 		if err == nil && current.reply != nil {
@@ -71,7 +78,9 @@ func (owner *Grain) receiveCalls(gc *goakt.GrainContext) bool {
 			current.cancel()
 			delete(owner.calls, input.CallID)
 		}
-		gc.Response(Completion{Err: err})
+		gc.Response(Completion{
+			Err: err,
+		})
 	case callCompleted:
 		gc.NoErr()
 		current := input.invocation
@@ -92,8 +101,8 @@ func (owner *Grain) receiveCalls(gc *goakt.GrainContext) bool {
 	return true
 }
 
-func (owner *Grain) findCall(creationID string, identifier agentmessage.CallID) (*invocation, error) {
-	if owner.input == nil || owner.input.CreationID != creationID {
+func (owner *Runtime) findCall(creationID string, identifier agentmessage.CallID) (*invocation, error) {
+	if owner.initialization == nil || owner.initialization.CreationID != creationID {
 		return nil, errors.New("tools: call does not own this runtime")
 	}
 	current := owner.calls[identifier]
@@ -103,26 +112,32 @@ func (owner *Grain) findCall(creationID string, identifier agentmessage.CallID) 
 	return current, nil
 }
 
-func (owner *Grain) prepareCall(gc *goakt.GrainContext, input PrepareCall) {
-	if owner.input == nil ||
-		owner.input.CreationID != input.CreationID ||
-		owner.business == nil ||
+func (owner *Runtime) prepareCall(gc *goakt.GrainContext, input PrepareCall) {
+	if owner.initialization == nil ||
+		owner.initialization.CreationID != input.CreationID ||
+		owner.toolRuntime == nil ||
 		owner.active != nil ||
 		owner.policyRequest != nil ||
-		input.Input.SessionID != owner.input.AgentID ||
+		input.Input.SessionID != owner.initialization.AgentID ||
 		input.Input.CallID == "" ||
 		owner.calls[input.Input.CallID] != nil {
-		gc.Response(CallResult{Err: errors.New("tools: call preparation requires an available runtime and unique call identity")})
+		gc.Response(CallResult{
+			Err: errors.New("tools: call preparation requires an available runtime and unique call identity"),
+		})
 		return
 	}
-	snapshot, err := owner.business.Snapshot()
+	snapshot, err := owner.toolRuntime.Snapshot()
 	if err != nil {
-		gc.Response(CallResult{Err: err})
+		gc.Response(CallResult{
+			Err: err,
+		})
 		return
 	}
 	reply := gc.DeferResponse()
 	if reply == nil {
-		gc.Response(CallResult{Err: errors.New("tools: asynchronous call request required")})
+		gc.Response(CallResult{
+			Err: errors.New("tools: asynchronous call request required"),
+		})
 		return
 	}
 	ctx := input.Context
@@ -141,18 +156,22 @@ func (owner *Grain) prepareCall(gc *goakt.GrainContext, input PrepareCall) {
 	owner.policyRequest = current
 	input.Input.Arguments = append([]byte(nil), input.Input.Arguments...)
 	instances := owner.instances
-	policies := owner.input.Policies
+	policies := owner.initialization.Policies
 	err = gc.PipeToSelf(func() (payload any, failure error) {
 		defer recoverCall(current, &payload)
 		coordinator, failure := instances.Scheduler(ctx, snapshot, policies)
 		if failure != nil {
 			return callCompleted{
 				invocation: current,
-				result:     CallResult{Err: failure},
+				result: CallResult{
+					Err: failure,
+				},
 			}, nil
 		}
 		business, failure := coordinator.PrepareCall(ctx, input.Input)
-		result := CallResult{Err: failure}
+		result := CallResult{
+			Err: failure,
+		}
 		if failure == nil {
 			result.Stage, result.Approval = business.Preparation()
 		}
@@ -166,12 +185,14 @@ func (owner *Grain) prepareCall(gc *goakt.GrainContext, input PrepareCall) {
 		if owner.policyRequest == current {
 			owner.policyRequest = nil
 		}
-		current.reply.Response(CallResult{Err: err})
+		current.reply.Response(CallResult{
+			Err: err,
+		})
 		current.reply = nil
 	}
 }
 
-func (owner *Grain) requestCall(gc *goakt.GrainContext, creationID string, identifier agentmessage.CallID, overlap bool, run func(*tools.Call) CallResult) {
+func (owner *Runtime) requestCall(gc *goakt.GrainContext, creationID string, identifier agentmessage.CallID, overlap bool, run func(*execution.Call) CallResult) {
 	current, err := owner.findCall(creationID, identifier)
 	if err == nil && !overlap && owner.policyRequest != nil {
 		err = errors.New("tools: another policy request is running")
@@ -180,12 +201,16 @@ func (owner *Grain) requestCall(gc *goakt.GrainContext, creationID string, ident
 		err = errors.New("tools: call has no available business operation")
 	}
 	if err != nil {
-		gc.Response(CallResult{Err: err})
+		gc.Response(CallResult{
+			Err: err,
+		})
 		return
 	}
 	reply := gc.DeferResponse()
 	if reply == nil {
-		gc.Response(CallResult{Err: errors.New("tools: asynchronous call request required")})
+		gc.Response(CallResult{
+			Err: errors.New("tools: asynchronous call request required"),
+		})
 		return
 	}
 	current.reply = reply
@@ -204,7 +229,9 @@ func (owner *Grain) requestCall(gc *goakt.GrainContext, creationID string, ident
 		if owner.policyRequest == current {
 			owner.policyRequest = nil
 		}
-		current.reply.Response(CallResult{Err: err})
+		current.reply.Response(CallResult{
+			Err: err,
+		})
 		current.reply = nil
 	}
 }
@@ -215,7 +242,9 @@ func recoverCall(current *invocation, payload *any) {
 	if recover() != nil {
 		*payload = callCompleted{
 			invocation: current,
-			result:     CallResult{Err: errors.New("tools: call operation panicked")},
+			result: CallResult{
+				Err: errors.New("tools: call operation panicked"),
+			},
 		}
 	}
 }

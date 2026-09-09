@@ -23,8 +23,8 @@ type unavailableHeaderSource struct{}
 func (unavailableHeaderSource) Get(
 	context.Context,
 	session.SessionID,
-) (session.Header, bool, error) {
-	return session.Header{}, false, errors.New("session headers unavailable")
+) (*session.Header, error) {
+	return nil, errors.New("session headers unavailable")
 }
 
 func (unavailableHeaderSource) List(context.Context) ([]session.Header, error) {
@@ -34,9 +34,13 @@ func (unavailableHeaderSource) List(context.Context) ([]session.Header, error) {
 func (source *headerSource) Get(
 	_ context.Context,
 	identifier session.SessionID,
-) (session.Header, bool, error) {
+) (*session.Header, error) {
 	header, found := source.byID[identifier]
-	return header, found, nil
+	if !found {
+		return nil, nil
+	}
+	retained := header.Clone()
+	return &retained, nil
 }
 
 func (source *headerSource) List(context.Context) ([]session.Header, error) {

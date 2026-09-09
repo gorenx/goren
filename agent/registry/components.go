@@ -460,9 +460,12 @@ type toolsClient struct {
 func (endpoint *toolsClient) Runtime() *goakt.GrainIdentity { return endpoint.release.identity }
 
 func (endpoint *toolsClient) Initialize(gc *goakt.GrainContext, reply chan<- componentResult) {
-	identity, err := goakt.GrainOf[*runtimeactor.Grain](gc.Context(), gc.ActorSystem(), runtimeactor.RuntimeName(string(endpoint.input.AgentID)),
+	identity, err := goakt.GrainOf[*runtimeactor.Runtime](
+		gc.Context(), gc.ActorSystem(),
+		runtimeactor.RuntimeName(string(endpoint.input.AgentID)),
 		goakt.WithLongLivedGrain(),
-		goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))))
+		goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))),
+	)
 	endpoint.release.identity = identity
 	if err != nil {
 		reply <- componentResult{err: err}

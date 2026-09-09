@@ -1,4 +1,4 @@
-package tools
+package execution
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/gorenx/goren/agentmessage"
+	"github.com/gorenx/goren/tools"
 )
 
 // resultProcessor owns post-execute policy, definition finalization, and the
@@ -16,27 +17,24 @@ type resultProcessor struct {
 
 func (processor *resultProcessor) post(
 	requestContext context.Context,
-	toolCall ToolExecution,
-	entry *registeredTool,
-	outcome ToolExecutionResult,
-) (ToolExecutionResult, error) {
+	toolCall callExecution,
+	entry *tools.Contract,
+	outcome tools.ToolExecutionResult,
+) (tools.ToolExecutionResult, error) {
 	if outcome == nil {
 		return nil, errors.New("tools: staged result is nil")
 	}
-	detached, err := outcome.cloneResult()
+	detached, err := tools.CloneResult(outcome)
 	if err != nil {
 		return nil, err
 	}
-	resultView, err := newResultSnapshot(detached)
+	resultView, err := tools.SnapshotResult(detached)
 	if err != nil {
 		return nil, err
 	}
-	postOutcome, err := toolCall.state.pipeline.ResolvePostExecute(
+	postOutcome, err := toolCall.state.pipeline.ReviewResult(
 		requestContext,
-		PostExecuteRequest{
-			toolCall:   cloneExecution(toolCall),
-			resultView: resultView,
-		},
+		tools.NewPostExecuteRequest(cloneExecution(toolCall), resultView),
 	)
 	if err != nil {
 		return nil, err
@@ -50,18 +48,18 @@ func (processor *resultProcessor) post(
 }
 
 func (processor *resultProcessor) applyPostDecision(
-	toolCall ToolExecution,
-	entry *registeredTool,
-	outcome ToolExecutionResult,
-	decision PostToolDecision,
-) (ToolExecutionResult, error) {
+	toolCall callExecution,
+	entry *tools.Contract,
+	outcome tools.ToolExecutionResult,
+	decision tools.PostToolDecision,
+) (tools.ToolExecutionResult, error) {
 	switch selected := decision.(type) {
-	case AcceptDecision:
+	case tools.AcceptDecision:
 		return appendAdditionalContexts(
 			outcome,
 			selected.AdditionalContexts,
 		)
-	case ReplaceContentDecision:
+	case tools.ReplaceContentDecision:
 		content, err := agentmessage.CloneContentBlocks(selected.Content)
 		if err != nil {
 			return nil, err
@@ -70,14 +68,14 @@ func (processor *resultProcessor) applyPostDecision(
 			replaceResultContent(outcome, content),
 			selected.AdditionalContexts,
 		)
-	case ReplaceValueDecision:
+	case tools.ReplaceValueDecision:
 		if outcome.Failed() {
 			return nil, errors.New(
 				"tools: post-execute cannot replace the value of a failed result",
 			)
 		}
 		if entry == nil {
-			return nil, &ToolNotFoundError{
+			return nil, &tools.ToolNotFoundError{
 				Name: toolCall.Name,
 			}
 		}
@@ -94,13 +92,13 @@ func (processor *resultProcessor) applyPostDecision(
 			selected.AdditionalContexts...,
 		)
 		return appendAdditionalContexts(replaced, combined)
-	case BlockDecision:
+	case tools.BlockDecision:
 		content, err := agentmessage.CloneContentBlocks(selected.Feedback)
 		if err != nil {
 			return nil, err
 		}
-		blocked := &ToolExecutionFailure{
-			Error: ToolFailure{
+		blocked := &tools.ToolExecutionFailure{
+			Error: tools.ToolFailure{
 				Message: failureMessage(content),
 			},
 			Content: content,
@@ -123,16 +121,16 @@ func (processor *resultProcessor) applyPostDecision(
 
 func (processor *resultProcessor) finish(
 	requestContext context.Context,
-	toolCall ToolExecution,
-	outcome ToolExecutionResult,
-	finalizer ContentFinalizer,
-) ToolExecutionResult {
-	var finalOutcome ToolExecutionResult
+	toolCall callExecution,
+	outcome tools.ToolExecutionResult,
+	finalizer tools.ContentFinalizer,
+) tools.ToolExecutionResult {
+	var finalOutcome tools.ToolExecutionResult
 	if outcome == nil {
 		finalOutcome = errorResult(errors.New("tools: staged result is nil"))
 	} else {
 		var err error
-		finalOutcome, err = outcome.cloneResult()
+		finalOutcome, err = tools.CloneResult(outcome)
 		if err != nil {
 			finalOutcome = errorResult(err)
 		}
@@ -154,23 +152,20 @@ func (processor *resultProcessor) finish(
 			}
 		}
 	}
-	materialized, err := finalOutcome.cloneResult()
+	materialized, err := tools.CloneResult(finalOutcome)
 	if err != nil {
 		materialized = errorResult(err)
 	}
-	resultView, err := newResultSnapshot(materialized)
+	resultView, err := tools.SnapshotResult(materialized)
 	if err != nil {
 		materialized = errorResult(err)
-		resultView, _ = newResultSnapshot(materialized)
+		resultView, _ = tools.SnapshotResult(materialized)
 	}
 	_ = toolCall.state.pipeline.PublishCompleted(
 		requestContext,
-		ExecutionCompleted{
-			toolCall:   cloneExecution(toolCall),
-			resultView: resultView,
-		},
+		tools.NewExecutionCompleted(cloneExecution(toolCall), resultView),
 	)
-	returned, err := materialized.cloneResult()
+	returned, err := tools.CloneResult(materialized)
 	if err != nil {
 		return errorResult(err)
 	}
@@ -178,19 +173,20 @@ func (processor *resultProcessor) finish(
 }
 
 func invokeFinalizer(
-	finalizer ContentFinalizer,
-	toolCall ToolExecution,
-	outcome ToolExecutionResult,
+	finalizer tools.ContentFinalizer,
+	toolCall callExecution,
+	outcome tools.ToolExecutionResult,
 ) (content []agentmessage.ContentBlock, replaceContent bool, invokeErr error) {
 	defer func() {
-		if panicValue := recover(); panicValue != nil {
+		panicValue := recover()
+		if panicValue != nil {
 			invokeErr = fmt.Errorf(
 				"tools: content finalizer panicked: %v",
 				panicValue,
 			)
 		}
 	}()
-	resultView, err := newResultSnapshot(outcome)
+	resultView, err := tools.SnapshotResult(outcome)
 	if err != nil {
 		return nil, false, err
 	}

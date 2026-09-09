@@ -271,11 +271,11 @@ func (owner *DurableRegistry) ArchiveSession(
 	if alreadyArchived {
 		return nil
 	}
-	_, found, err := owner.headers.Get(requestContext, identifier)
+	metadata, err := owner.headers.Get(requestContext, identifier)
 	if err != nil {
 		return err
 	}
-	if !found {
+	if metadata == nil {
 		return &UnknownSessionError{
 			SessionID: identifier,
 		}
@@ -364,11 +364,11 @@ func (owner *DurableRegistry) AttachSession(
 	}
 	canonical := ""
 	if !alreadyAccounted {
-		header, headerFound, err := owner.headers.Get(requestContext, sessionID)
+		header, err := owner.headers.Get(requestContext, sessionID)
 		if err != nil {
 			return err
 		}
-		if !headerFound {
+		if header == nil {
 			return &AttachError{
 				WorkspaceID: identifier,
 				SessionID:   sessionID,

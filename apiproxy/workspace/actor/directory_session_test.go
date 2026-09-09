@@ -17,14 +17,14 @@ import (
 
 type membershipHeaders struct{ root string }
 
-func (source membershipHeaders) Get(_ context.Context, id session.SessionID) (session.Header, bool, error) {
+func (source membershipHeaders) Get(_ context.Context, id session.SessionID) (*session.Header, error) {
 	if id != "known" {
-		return session.Header{}, false, nil
+		return nil, nil
 	}
-	return session.Header{
+	return &session.Header{
 		ID:  id,
 		CWD: &source.root,
-	}, true, nil
+	}, nil
 }
 func (membershipHeaders) List(context.Context) ([]session.Header, error) { return nil, nil }
 func TestDirectoryAttachesSessionThroughWorkspaceOwner(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/tools"
+	"github.com/gorenx/goren/tools/execution"
 	"github.com/gorenx/goren/userquestions"
 	questionactor "github.com/gorenx/goren/userquestions/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
@@ -63,28 +64,43 @@ func TestToolExecutionUsesQuestionActorAndSessionIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	config, err := tools.ValidateConfig(tools.Config{})
+	coordinator, err := execution.NewScheduler([]tools.Descriptor{definition.Describe()}, execution.Policies{}, questionBody{
+		handler: definition.Executor,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := tools.New(config, tools.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.Close(ctx)
-	if _, err := runtime.AddTool(ctx, definition); err != nil {
-		t.Fatal(err)
-	}
-	outcome := runtime.Execute(ctx, tools.ToolExecutionInput{
+	current, err := coordinator.PrepareCall(ctx, tools.ToolExecutionInput{
 		SessionID: "session-1",
 		CallID:    "ask-1",
 		Name:      Name,
 		Arguments: json.RawMessage(`{"questions":[{"id":"q","question":"Continue?"}]}`),
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = current.Dispatch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = current.Finalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := current.Result()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if provider.requestValue.SessionID != "session-1" {
 		t.Fatalf("caller = %q", provider.requestValue.SessionID)
 	}
 	if got := resultText(t, outcome); got != `{"answers":[{"id":"q","selected":["yes"]}]}` {
 		t.Fatalf("result = %s", got)
 	}
+}
+
+type questionBody struct{ handler tools.Executor }
+
+func (endpoint questionBody) Invoke(ctx context.Context, input tools.Invocation) (tools.BodyResult, error) {
+	return input.Run(ctx, endpoint.handler), nil
 }

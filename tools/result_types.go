@@ -2,7 +2,6 @@ package tools
 
 import (
 	"encoding/json"
-	"errors"
 
 	"github.com/gorenx/goren/agentmessage"
 )
@@ -94,44 +93,3 @@ func (outcome *ToolExecutionFailure) PresentationMeta() json.RawMessage {
 
 // ConcludesAgentTurn reports false for every failed result.
 func (*ToolExecutionFailure) ConcludesAgentTurn() bool { return false }
-
-// canonicalToolExecutionSuccess is the immutable terminal result visible to
-// execute Middleware. Returning it unchanged preserves the already-normalized
-// projection; authored public successes are normalized again.
-type canonicalToolExecutionSuccess struct {
-	execution  *scheduledExecutionState
-	normalized *ToolExecutionSuccess
-}
-
-func (*canonicalToolExecutionSuccess) Failed() bool { return false }
-
-func (outcome *canonicalToolExecutionSuccess) ContentBlocks() []agentmessage.ContentBlock {
-	return outcome.normalized.ContentBlocks()
-}
-
-func (outcome *canonicalToolExecutionSuccess) SuccessValue() (json.RawMessage, bool) {
-	return outcome.normalized.SuccessValue()
-}
-
-func (*canonicalToolExecutionSuccess) FailureDetail() (ToolFailure, bool) {
-	return ToolFailure{}, false
-}
-
-func (outcome *canonicalToolExecutionSuccess) PresentationMeta() json.RawMessage {
-	return outcome.normalized.PresentationMeta()
-}
-
-func (outcome *canonicalToolExecutionSuccess) AdditionalContextMessages() []agentmessage.UserMessage {
-	return outcome.normalized.AdditionalContextMessages()
-}
-
-func (outcome *canonicalToolExecutionSuccess) ConcludesAgentTurn() bool {
-	return outcome.normalized.ConcludesAgentTurn()
-}
-
-func (outcome *canonicalToolExecutionSuccess) cloneResult() (ToolExecutionResult, error) {
-	if outcome == nil || outcome.normalized == nil {
-		return nil, errors.New("tools: nil canonical success result")
-	}
-	return outcome.normalized.cloneResult()
-}

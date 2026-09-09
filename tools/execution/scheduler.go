@@ -1,9 +1,12 @@
-package tools
+package execution
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"fmt"
+
+	"github.com/gorenx/goren/internal/jsonvalue"
+	"github.com/gorenx/goren/tools"
 
 	"github.com/gorenx/goren/approval"
 )
@@ -11,7 +14,7 @@ import (
 // Scheduler owns the staged Tool execution state machine. Policy evaluation,
 // body dispatch, and result processing are delegated to focused collaborators.
 type Scheduler struct {
-	definitions map[string]*registeredTool
+	definitions map[string]*tools.Contract
 	pipeline    *pipeline
 	policies    *policyEngine
 	dispatcher  *dispatcher
@@ -21,31 +24,32 @@ type Scheduler struct {
 // Invoker calls an already-selected body without owning policy or result handling.
 // A returned error means body exit is unconfirmed; never fabricate a Tool result.
 type Invoker interface {
-	Invoke(context.Context, Invocation) (BodyResult, error)
+	Invoke(context.Context, tools.Invocation) (tools.BodyResult, error)
 }
 
 // Policies fixes the business collaborators used by prepared executions.
 // Borrowed implementations must remain valid until those executions finish.
 type Policies struct {
-	Before    PrePolicy
-	After     PostPolicy
-	Execution ExecuteMiddleware
-	Results   ResultObserver
-	Guards    []ToolGuard
+	Before    tools.PrePolicy
+	After     tools.PostPolicy
+	Execution tools.ExecuteMiddleware
+	Results   tools.ResultObserver
+	Guards    []tools.ToolGuard
 }
 
 // NewScheduler captures executable descriptions independently of registration and Actors.
-func NewScheduler(descriptions []Descriptor, policies Policies, bodies Invoker) (*Scheduler, error) {
+func NewScheduler(descriptions []tools.Descriptor, policies Policies, bodies Invoker) (*Scheduler, error) {
 	if bodies == nil {
 		return nil, errors.New("tools: body invoker is required")
 	}
-	entries := make(map[string]*registeredTool, len(descriptions))
+	entries := make(map[string]*tools.Contract, len(descriptions))
 	for _, description := range descriptions {
-		entry, err := compileDescriptor(description.definition())
+		entry, err := tools.CompileDescriptor(description)
 		if err != nil {
 			return nil, err
 		}
-		if _, found := entries[description.Name]; found {
+		_, found := entries[description.Name]
+		if found {
 			return nil, errors.New("tools: duplicate execution descriptor")
 		}
 		entries[description.Name] = entry
@@ -55,22 +59,9 @@ func NewScheduler(descriptions []Descriptor, policies Policies, bodies Invoker) 
 			return nil, errors.New("tools: guard is required")
 		}
 	}
-	return newScheduler(entries, &pipeline{
-		options: Options{
-			Before:    policies.Before,
-			After:     policies.After,
-			Execution: policies.Execution,
-			Results:   policies.Results,
-		},
-	}, policies.Guards, bodies), nil
-}
-
-func newScheduler(
-	entries map[string]*registeredTool,
-	stages *pipeline,
-	guards []ToolGuard,
-	bodies Invoker,
-) *Scheduler {
+	stages := &pipeline{
+		options: policies,
+	}
 	bodyDispatcher := &dispatcher{
 		bodies: bodies,
 	}
@@ -78,80 +69,25 @@ func newScheduler(
 		definitions: entries,
 		pipeline:    stages,
 		policies: &policyEngine{
-			guards: append([]ToolGuard(nil), guards...),
+			guards: append([]tools.ToolGuard(nil), policies.Guards...),
 		},
 		dispatcher: bodyDispatcher,
 		results: &resultProcessor{
 			dispatcher: bodyDispatcher,
 		},
-	}
+	}, nil
 }
 
-// Execute runs one Tool call through the complete staged pipeline.
-func (coordinator *Scheduler) Execute(
-	requestContext context.Context,
-	input ToolExecutionInput,
-) ToolExecutionResult {
-	preparation, err := coordinator.Prepare(requestContext, input)
-	if err != nil {
-		return errorResult(err)
-	}
-	switch preparation.Stage {
-	case ScheduledApproval:
-		blocked := postPreparation(
-			preparation.Execution,
-			deniedResult(fallbackAskReason(preparation.Execution.Name, preparation.Approval.Reason)),
-		)
-		result, err := coordinator.Finalize(blocked.Execution, blocked.Result)
-		if err != nil {
-			return errorResult(err)
-		}
-		return result
-	case ScheduledDispatch:
-		dispatched, dispatchErr := coordinator.Dispatch(preparation.Execution)
-		if dispatchErr != nil {
-			return errorResult(dispatchErr)
-		}
-		finalOutcome, finalizeErr := coordinator.Finalize(
-			preparation.Execution,
-			dispatched.Result,
-		)
-		if finalizeErr != nil {
-			return errorResult(finalizeErr)
-		}
-		return finalOutcome
-	case ScheduledPostResult:
-		finalOutcome, finalizeErr := coordinator.Finalize(
-			preparation.Execution,
-			preparation.Result,
-		)
-		if finalizeErr != nil {
-			return errorResult(finalizeErr)
-		}
-		return finalOutcome
-	case ScheduledFinalResult:
-		return coordinator.Finish(
-			preparation.Execution,
-			preparation.Result,
-		)
-	default:
-		return errorResult(fmt.Errorf(
-			"tools: unsupported scheduled stage %q",
-			preparation.Stage,
-		))
-	}
-}
-
-// Prepare validates the call and runs ordered pre-dispatch policy without
+// prepare validates the call and runs ordered pre-dispatch policy without
 // starting the Tool body.
-func (coordinator *Scheduler) Prepare(
+func (coordinator *Scheduler) prepare(
 	requestContext context.Context,
-	input ToolExecutionInput,
-) (ScheduledToolPreparation, error) {
+	input tools.ToolExecutionInput,
+) (preparation, error) {
 	entry, _ := coordinator.definitions[input.Name]
-	var finalizer ContentFinalizer
+	var finalizer tools.ContentFinalizer
 	if entry != nil {
-		finalizer = entry.definition.FinalizeContent
+		finalizer = entry.Descriptor().FinalizeContent
 	}
 	toolCall, err := createExecution(input)
 	if requestContext == nil {
@@ -162,8 +98,8 @@ func (coordinator *Scheduler) Prepare(
 			entry,
 			finalizer,
 		)
-		return ScheduledToolPreparation{
-			Stage:     ScheduledFinalResult,
+		return preparation{
+			Stage:     tools.ScheduledFinalResult,
 			Execution: toolCall,
 			Result: errorResult(errors.New(
 				"tools: execution context is nil",
@@ -191,8 +127,8 @@ func (coordinator *Scheduler) Prepare(
 	}
 	if evaluation.approval != nil {
 		toolCall.state.awaitApproval()
-		return ScheduledToolPreparation{
-			Stage:     ScheduledApproval,
+		return preparation{
+			Stage:     tools.ScheduledApproval,
 			Execution: toolCall,
 			Approval:  evaluation.approval,
 		}, nil
@@ -207,22 +143,23 @@ func (coordinator *Scheduler) Prepare(
 		return postPreparation(toolCall, abortedResult(false)), nil
 	}
 	toolCall.state.prepareForDispatch()
-	return ScheduledToolPreparation{
-		Stage:     ScheduledDispatch,
+	return preparation{
+		Stage:     tools.ScheduledDispatch,
 		Execution: toolCall,
 	}, nil
 }
 
 // Dispatch runs the around-dispatch chain and Tool body.
-func (coordinator *Scheduler) Dispatch(
-	toolCall ToolExecution,
-) (ScheduledToolDispatch, error) {
+func (coordinator *Scheduler) dispatch(
+	toolCall callExecution,
+) (dispatchResult, error) {
 	state, err := coordinator.executionState(toolCall)
 	if err != nil {
-		return ScheduledToolDispatch{}, err
+		return dispatchResult{}, err
 	}
-	if err := state.beginDispatch(); err != nil {
-		return ScheduledToolDispatch{}, err
+	err = state.beginDispatch()
+	if err != nil {
+		return dispatchResult{}, err
 	}
 	defer state.completeDispatch()
 	outcome, err := coordinator.dispatcher.dispatch(
@@ -233,28 +170,29 @@ func (coordinator *Scheduler) Dispatch(
 	if err != nil {
 		var unconfirmed *DeliveryError
 		if errors.As(err, &unconfirmed) {
-			return ScheduledToolDispatch{}, unconfirmed
+			return dispatchResult{}, unconfirmed
 		}
-		return ScheduledToolDispatch{
+		return dispatchResult{
 			Result: errorResult(err),
 		}, nil
 	}
-	return ScheduledToolDispatch{
+	return dispatchResult{
 		Result: outcome,
 	}, nil
 }
 
 // Finalize applies ordered post policy, cancellation, final content, and the
 // final result Event.
-func (coordinator *Scheduler) Finalize(
-	toolCall ToolExecution,
-	outcome ToolExecutionResult,
-) (ToolExecutionResult, error) {
+func (coordinator *Scheduler) finalize(
+	toolCall callExecution,
+	outcome tools.ToolExecutionResult,
+) (tools.ToolExecutionResult, error) {
 	state, err := coordinator.executionState(toolCall)
 	if err != nil {
 		return nil, err
 	}
-	if err := state.beginFinalize(); err != nil {
+	err = state.beginFinalize()
+	if err != nil {
 		return nil, err
 	}
 	defer state.completeFinalization()
@@ -288,15 +226,16 @@ func (coordinator *Scheduler) Finalize(
 }
 
 // Finish materializes a terminal staged result without post-execute policy.
-func (coordinator *Scheduler) Finish(
-	toolCall ToolExecution,
-	outcome ToolExecutionResult,
-) ToolExecutionResult {
+func (coordinator *Scheduler) finish(
+	toolCall callExecution,
+	outcome tools.ToolExecutionResult,
+) tools.ToolExecutionResult {
 	state, err := coordinator.executionState(toolCall)
 	if err != nil {
 		return errorResult(err)
 	}
-	if err := state.beginFinish(); err != nil {
+	err = state.beginFinish()
+	if err != nil {
 		return errorResult(err)
 	}
 	defer state.completeFinalization()
@@ -309,7 +248,7 @@ func (coordinator *Scheduler) Finish(
 }
 
 func (coordinator *Scheduler) executionState(
-	toolCall ToolExecution,
+	toolCall callExecution,
 ) (*scheduledExecutionState, error) {
 	state := toolCall.state
 	if state == nil || state.coordinator != coordinator {
@@ -321,37 +260,38 @@ func (coordinator *Scheduler) executionState(
 }
 
 func finalPreparation(
-	toolCall ToolExecution,
-	outcome ToolExecutionResult,
-) ScheduledToolPreparation {
+	toolCall callExecution,
+	outcome tools.ToolExecutionResult,
+) preparation {
 	toolCall.state.prepareForFinish()
-	return ScheduledToolPreparation{
-		Stage:     ScheduledFinalResult,
+	return preparation{
+		Stage:     tools.ScheduledFinalResult,
 		Execution: toolCall,
 		Result:    outcome,
 	}
 }
 
 func postPreparation(
-	toolCall ToolExecution,
-	outcome ToolExecutionResult,
-) ScheduledToolPreparation {
+	toolCall callExecution,
+	outcome tools.ToolExecutionResult,
+) preparation {
 	toolCall.state.prepareForPost()
-	return ScheduledToolPreparation{
-		Stage:     ScheduledPostResult,
+	return preparation{
+		Stage:     tools.ScheduledPostResult,
 		Execution: toolCall,
 		Result:    outcome,
 	}
 }
 
-// ResolveApproval consumes one audited approval result without repeating pre-policy.
-func (coordinator *Scheduler) ResolveApproval(toolCall ToolExecution, outcome approval.Outcome) (ScheduledToolPreparation, error) {
+// ApplyApproval consumes one audited approval result without repeating pre-policy.
+func (coordinator *Scheduler) applyApproval(toolCall callExecution, outcome approval.Outcome) (preparation, error) {
 	state, err := coordinator.executionState(toolCall)
 	if err != nil {
-		return ScheduledToolPreparation{}, err
+		return preparation{}, err
 	}
-	if err := state.acceptApproval(); err != nil {
-		return ScheduledToolPreparation{}, err
+	err = state.acceptApproval()
+	if err != nil {
+		return preparation{}, err
 	}
 	if state.requestContext.Err() != nil {
 		return postPreparation(toolCall, abortedResult(false)), nil
@@ -377,15 +317,15 @@ func (coordinator *Scheduler) ResolveApproval(toolCall ToolExecution, outcome ap
 		return postPreparation(toolCall, abortedResult(false)), nil
 	}
 	state.prepareForDispatch()
-	return ScheduledToolPreparation{
-		Stage:     ScheduledDispatch,
+	return preparation{
+		Stage:     tools.ScheduledDispatch,
 		Execution: toolCall,
 	}, nil
 }
 
 // PrepareCall captures policy and prepares one immutable invocation.
-func (coordinator *Scheduler) PrepareCall(ctx context.Context, input ToolExecutionInput) (*Call, error) {
-	prepared, err := coordinator.Prepare(ctx, input)
+func (coordinator *Scheduler) PrepareCall(ctx context.Context, input tools.ToolExecutionInput) (*Call, error) {
+	prepared, err := coordinator.prepare(ctx, input)
 	if err != nil {
 		return nil, err
 	}
@@ -393,4 +333,38 @@ func (coordinator *Scheduler) PrepareCall(ctx context.Context, input ToolExecuti
 		scheduler:   coordinator,
 		preparation: prepared,
 	}, nil
+}
+
+// ExecutionMode classifies overlap using the captured definition and validated input.
+func (coordinator *Scheduler) ExecutionMode(input tools.ToolExecutionInput) tools.ToolExecutionMode {
+	arguments, err := jsonvalue.Clone(input.Arguments)
+	if err != nil {
+		return tools.ExecutionExclusive
+	}
+	entry, found := coordinator.definitions[input.Name]
+	if !found || entry.Descriptor().ConcurrencyBehavior == nil {
+		return tools.ExecutionExclusive
+	}
+	err = entry.ValidateArguments(arguments)
+	if err != nil {
+		return tools.ExecutionExclusive
+	}
+	if concurrencySafe(entry.Descriptor().ConcurrencyBehavior, arguments) {
+		return tools.ExecutionParallel
+	}
+	return tools.ExecutionExclusive
+}
+
+func concurrencySafe(
+	classifier tools.ConcurrencyClassifier,
+	arguments json.RawMessage,
+) (safe bool) {
+	defer func() {
+		if recover() != nil {
+			safe = false
+		}
+	}()
+	return classifier.ConcurrencySafe(
+		append(json.RawMessage(nil), arguments...),
+	)
 }

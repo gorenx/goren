@@ -1,4 +1,4 @@
-package tools_test
+package execution
 
 import (
 	"context"
@@ -43,12 +43,12 @@ func TestSchedulerDistinguishesUnconfirmedInvocationFromBodyFailure(t *testing.T
 			if err != nil {
 				t.Fatal(err)
 			}
-			coordinator, err := tools.NewScheduler([]tools.Descriptor{definition.Describe()}, tools.Policies{}, endpoint)
+			coordinator, err := NewScheduler([]tools.Descriptor{definition.Describe()}, Policies{}, endpoint)
 			if err != nil {
 				t.Fatal(err)
 			}
 			// Unknown tool is rejected before body delivery, even if the endpoint would fail.
-			prepared, err := coordinator.Prepare(context.Background(), tools.ToolExecutionInput{
+			prepared, err := coordinator.prepare(context.Background(), tools.ToolExecutionInput{
 				CallID:    "missing-call",
 				Name:      "missing",
 				SessionID: "conversation",
@@ -57,11 +57,11 @@ func TestSchedulerDistinguishesUnconfirmedInvocationFromBodyFailure(t *testing.T
 			if err != nil {
 				t.Fatal(err)
 			}
-			dispatched, err := coordinator.Dispatch(prepared.Execution)
+			dispatched, err := coordinator.dispatch(prepared.Execution)
 			if err != nil || dispatched.Result == nil || !dispatched.Result.Failed() || endpoint.calls != 0 {
 				t.Fatalf("unknown tool reached endpoint: %+v, %v", dispatched, err)
 			}
-			prepared, err = coordinator.Prepare(context.Background(), tools.ToolExecutionInput{
+			prepared, err = coordinator.prepare(context.Background(), tools.ToolExecutionInput{
 				CallID:    "actual-call",
 				Name:      toolaskuser.Name,
 				SessionID: "conversation",
@@ -70,12 +70,12 @@ func TestSchedulerDistinguishesUnconfirmedInvocationFromBodyFailure(t *testing.T
 			if err != nil {
 				t.Fatal(err)
 			}
-			dispatched, err = coordinator.Dispatch(prepared.Execution)
+			dispatched, err = coordinator.dispatch(prepared.Execution)
 			if endpoint.calls != 1 {
 				t.Fatal("valid call was not delivered")
 			}
 			if unconfirmed {
-				var delivery *tools.DeliveryError
+				var delivery *DeliveryError
 				if !errors.As(err, &delivery) || (name != "delivery-panic" && !errors.Is(err, failure)) || dispatched.Result != nil {
 					t.Fatalf("unconfirmed delivery was converted to a tool result: %+v, %v", dispatched, err)
 				}
@@ -94,7 +94,7 @@ func TestSchedulerDistinguishesUnconfirmedInvocationFromBodyFailure(t *testing.T
 					t.Fatal(failure)
 				}
 				failure = current.Dispatch()
-				var delivery *tools.DeliveryError
+				var delivery *DeliveryError
 				if !errors.As(failure, &delivery) {
 					t.Fatal("Call lost uncertain delivery", failure)
 				}

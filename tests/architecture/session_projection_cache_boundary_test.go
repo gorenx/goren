@@ -57,7 +57,7 @@ func TestSessionProjectionCacheDependencyDirection(t *testing.T) {
 				cacheImport + "/plugin",
 				cacheImport + "/sqlite",
 				"github.com/gorenx/goren/apiproxy",
-				"github.com/gorenx/goren/internal/assembly",
+				"github.com/gorenx/goren/internal/server",
 				"github.com/gorenx/goren/subagent",
 			},
 		},

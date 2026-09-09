@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 
 	"github.com/gorenx/goren/agentmessage"
@@ -73,4 +74,23 @@ type bodyEffects struct {
 	closed        bool
 	contexts      []agentmessage.UserMessage
 	concludesTurn bool
+}
+
+func invokeExecutor(
+	body Executor,
+	arguments json.RawMessage,
+	runContext ToolRunContext,
+) (value json.RawMessage, invokeErr error) {
+	defer func() {
+		if panicValue := recover(); panicValue != nil {
+			invokeErr = fmt.Errorf(
+				"tools: executor panicked: %v",
+				panicValue,
+			)
+		}
+	}()
+	return body.Execute(
+		append(json.RawMessage(nil), arguments...),
+		runContext,
+	)
 }

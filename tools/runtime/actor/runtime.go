@@ -15,16 +15,18 @@ import (
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
-// Grain schedules one Agent's tool initialization and cleanup. Business state
-// and failure recovery belong to Runtime; this Grain never starts another actor.
-type Grain struct {
+// Runtime schedules one Agent's tool initialization and cleanup. Business state
+// and failure recovery belong to toolruntime.Runtime; this actor never starts another actor.
+type Runtime struct {
 	instanceID string
-	input      *InitializeRuntime
-	business   *toolruntime.Runtime
-	catalog    *Catalog
-	instances  *Instances
-	active     *operation
-	calls      map[agentmessage.CallID]*invocation
+	// initialization retains the accepted creation binding and borrowed execution policies.
+	initialization *InitializeRuntime
+	// toolRuntime owns the Agent tool set, update recovery, and resource cleanup.
+	toolRuntime *toolruntime.Runtime
+	catalog     *Catalog
+	instances   *Instances
+	active      *operation
+	calls       map[agentmessage.CallID]*invocation
 	// policyRequest serializes preparation and finalization while body tasks overlap.
 	policyRequest *invocation
 }
@@ -45,13 +47,13 @@ type completed struct {
 }
 
 // OnActivate acquires no resources and assigns a fresh physical activation identity.
-func (owner *Grain) OnActivate(context.Context, *goakt.GrainProps) error {
+func (owner *Runtime) OnActivate(context.Context, *goakt.GrainProps) error {
 	owner.instanceID = uuid.NewString()
 	return nil
 }
 
 // OnDeactivate cancels work without certifying that external resources were released.
-func (owner *Grain) OnDeactivate(context.Context, *goakt.GrainProps) error {
+func (owner *Runtime) OnDeactivate(context.Context, *goakt.GrainProps) error {
 	for _, current := range owner.calls {
 		current.cancel()
 		if current.reply != nil {
@@ -68,7 +70,7 @@ func (owner *Grain) OnDeactivate(context.Context, *goakt.GrainProps) error {
 }
 
 // OnReceive serializes protocol handling; framework tasks exclusively run the business owner.
-func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
+func (owner *Runtime) OnReceive(gc *goakt.GrainContext) {
 	if owner.receiveCalls(gc) {
 		return
 	}
@@ -84,7 +86,7 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 			owner.finish(input.operation, input.err)
 			return
 		}
-		settings := owner.input
+		settings := owner.initialization
 		business, err := toolruntime.NewRuntime(settings.AgentID)
 		if err != nil {
 			owner.finish(input.operation, err)
@@ -107,7 +109,7 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 			owner.finish(input.operation, err)
 			return
 		}
-		owner.business = business
+		owner.toolRuntime = business
 		owner.catalog = directory
 		owner.instances = instances
 		identifier := toolregistry.UpdateID(uuid.NewString())
@@ -119,13 +121,13 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 		owner.finish(input.operation, input.err)
 	case ReadRuntime:
 		result := RuntimeView{}
-		if owner.input == nil ||
-			owner.input.CreationID != input.CreationID ||
-			owner.business == nil ||
+		if owner.initialization == nil ||
+			owner.initialization.CreationID != input.CreationID ||
+			owner.toolRuntime == nil ||
 			owner.active != nil {
 			result.Err = errors.New("tools: runtime snapshot is unavailable")
 		} else {
-			result.Snapshot, result.Err = owner.business.Snapshot()
+			result.Snapshot, result.Err = owner.toolRuntime.Snapshot()
 		}
 		gc.Response(result)
 	case CloseRuntime:
@@ -134,8 +136,8 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 			return
 		}
 		if input.InstanceID != owner.instanceID ||
-			owner.input == nil ||
-			owner.input.CreationID != input.CreationID {
+			owner.initialization == nil ||
+			owner.initialization.CreationID != input.CreationID {
 			gc.Response(Completion{Err: errors.New("tools: close does not own this runtime activation")})
 			return
 		}
@@ -143,7 +145,7 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 			gc.Response(Completion{Err: errors.New("tools: runtime operation is still running")})
 			return
 		}
-		if owner.business == nil {
+		if owner.toolRuntime == nil {
 			gc.Response(Completion{})
 			return
 		}
@@ -151,7 +153,7 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 		if current == nil {
 			return
 		}
-		business := owner.business
+		business := owner.toolRuntime
 		directory := owner.catalog
 		instances := owner.instances
 		owner.schedule(gc, current, func(ctx context.Context) error { return business.Close(ctx, directory, instances) })
@@ -160,7 +162,7 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 	}
 }
 
-func (owner *Grain) initialize(gc *goakt.GrainContext, input InitializeRuntime) {
+func (owner *Runtime) initialize(gc *goakt.GrainContext, input InitializeRuntime) {
 	if input.AgentID == "" ||
 		input.CreationID == "" ||
 		input.Authority == nil ||
@@ -173,14 +175,14 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input InitializeRuntime) 
 		gc.Response(Completion{Err: errors.New("tools: runtime operation is still running")})
 		return
 	}
-	if owner.input != nil {
+	if owner.initialization != nil {
 		var err error
-		if !reflect.DeepEqual(*owner.input, input) {
+		if !reflect.DeepEqual(*owner.initialization, input) {
 			err = errors.New("tools: runtime is bound to a different initialization")
-		} else if owner.business == nil {
+		} else if owner.toolRuntime == nil {
 			err = errors.New("tools: runtime initialization failed")
 		} else {
-			_, err = owner.business.Snapshot()
+			_, err = owner.toolRuntime.Snapshot()
 		}
 		gc.Response(Completion{Err: err})
 		return
@@ -198,7 +200,7 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input InitializeRuntime) 
 	}
 	input.Overrides = slices.Clone(input.Overrides)
 	input.Policies.Guards = slices.Clone(input.Policies.Guards)
-	owner.input = &input
+	owner.initialization = &input
 	received := make(chan authorized, 1)
 	err = gc.PipeToSelf(func() (any, error) { return <-received, nil })
 	if err != nil {
@@ -229,7 +231,7 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input InitializeRuntime) 
 	)
 }
 
-func (owner *Grain) deferOperation(gc *goakt.GrainContext) *operation {
+func (owner *Runtime) deferOperation(gc *goakt.GrainContext) *operation {
 	reply := gc.DeferResponse()
 	if reply == nil {
 		gc.Response(Completion{Err: errors.New("tools: deferred runtime response required")})
@@ -240,7 +242,7 @@ func (owner *Grain) deferOperation(gc *goakt.GrainContext) *operation {
 	return current
 }
 
-func (owner *Grain) schedule(gc *goakt.GrainContext, current *operation, run func(context.Context) error) {
+func (owner *Runtime) schedule(gc *goakt.GrainContext, current *operation, run func(context.Context) error) {
 	ctx, cancel := context.WithCancel(context.WithoutCancel(gc.Context()))
 	current.cancel = cancel
 	err := gc.PipeToSelf(func() (result any, failure error) {
@@ -262,7 +264,7 @@ func (owner *Grain) schedule(gc *goakt.GrainContext, current *operation, run fun
 	}
 }
 
-func (owner *Grain) finish(current *operation, failure error) {
+func (owner *Runtime) finish(current *operation, failure error) {
 	if owner.active != current {
 		return
 	}

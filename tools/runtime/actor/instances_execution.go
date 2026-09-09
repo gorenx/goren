@@ -5,6 +5,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/gorenx/goren/tools/execution"
+
 	agentactor "github.com/gorenx/goren/agent/actor"
 	"github.com/gorenx/goren/tools"
 	toolruntime "github.com/gorenx/goren/tools/runtime"
@@ -18,8 +20,8 @@ import (
 func (endpoint *Instances) Scheduler(
 	ctx context.Context,
 	snapshot toolruntime.Snapshot,
-	policies tools.Policies,
-) (*tools.Scheduler, error) {
+	policies execution.Policies,
+) (*execution.Scheduler, error) {
 	bindings := make(map[string]destination, len(snapshot.Names))
 	descriptions := make([]tools.Descriptor, 0, len(snapshot.Names))
 	for _, name := range snapshot.Names {
@@ -49,10 +51,14 @@ func (endpoint *Instances) Scheduler(
 		}
 		descriptions = append(descriptions, description.Descriptor)
 	}
-	return tools.NewScheduler(descriptions, policies, &bodies{
-		system:   endpoint.system,
-		bindings: bindings,
-	})
+	return execution.NewScheduler(
+		descriptions,
+		policies,
+		&bodies{
+			system:   endpoint.system,
+			bindings: bindings,
+		},
+	)
 }
 
 // bodies contains a detached set of exact destinations, never an Instances owner.

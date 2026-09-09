@@ -61,12 +61,3 @@ func (*ToolOutputError) ToolErrorName() string { return "ToolOutputError" }
 
 // ToolErrorCode returns the stable routing code.
 func (*ToolOutputError) ToolErrorCode() string { return "INVALID_TOOL_OUTPUT" }
-
-type abortError struct {
-	message string
-	code    string
-}
-
-func (failure *abortError) Error() string         { return failure.message }
-func (*abortError) ToolErrorName() string         { return "AbortError" }
-func (failure *abortError) ToolErrorCode() string { return failure.code }

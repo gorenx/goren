@@ -6,10 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/internal/jsonvalue"
 	"github.com/gorenx/goren/session"
 )
@@ -24,14 +22,13 @@ type ToolExecutionInput struct {
 	SessionID  session.SessionID
 }
 
-// ToolExecution is the immutable registry-owned identity visible to policy.
+// ToolExecution is the detached call data visible to policy; it carries no scheduling authority.
 type ToolExecution struct {
 	CallID     agentmessage.CallID
 	RootCallID agentmessage.CallID
 	Name       string
 	SessionID  session.SessionID
 	arguments  json.RawMessage
-	state      *scheduledExecutionState
 }
 
 // ArgumentsJSON returns a detached copy of the losslessly materialized input.
@@ -71,153 +68,8 @@ func (runContext ToolRunContext) ConcludeTurn() {
 	}
 }
 
-type scheduledExecutionState struct {
-	coordinator    *Scheduler
-	pipeline       *pipeline
-	requestContext context.Context
-	entry          *registeredTool
-	finalizer      ContentFinalizer
-
-	mu               sync.Mutex
-	phase            scheduledExecutionPhase
-	bodyInvoked      bool
-	concludesTurn    bool
-	deferredContexts []agentmessage.UserMessage
-}
-
-type scheduledExecutionPhase uint8
-
-const (
-	executionUnprepared scheduledExecutionPhase = iota
-	executionAwaitingApproval
-	executionPreparedForDispatch
-	executionDispatching
-	executionPreparedForPost
-	executionPreparedForFinish
-	executionFinalizing
-	executionCompleted
-)
-
-type executionStateSnapshot struct {
-	bodyInvoked      bool
-	concludesTurn    bool
-	deferredContexts []agentmessage.UserMessage
-}
-
-func newScheduledExecutionState(
-	coordinator *Scheduler,
-	requestContext context.Context,
-	entry *registeredTool,
-	finalizer ContentFinalizer,
-) *scheduledExecutionState {
-	return &scheduledExecutionState{
-		coordinator:    coordinator,
-		pipeline:       coordinator.pipeline,
-		requestContext: requestContext,
-		entry:          entry,
-		finalizer:      finalizer,
-	}
-}
-
-func (state *scheduledExecutionState) recordEffects(outcome BodyResult) {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	if state.phase != executionDispatching {
-		return
-	}
-	state.deferredContexts = append(state.deferredContexts, outcome.AdditionalContexts...)
-	state.concludesTurn = state.concludesTurn || outcome.ConcludesTurn
-}
-
-func (state *scheduledExecutionState) markBodyInvoked() {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	if state.phase != executionDispatching {
-		return
-	}
-	state.bodyInvoked = true
-}
-
-func (state *scheduledExecutionState) snapshot() executionStateSnapshot {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	deferred, _ := cloneUserMessages(state.deferredContexts)
-	return executionStateSnapshot{
-		bodyInvoked:      state.bodyInvoked,
-		concludesTurn:    state.concludesTurn,
-		deferredContexts: deferred,
-	}
-}
-
-func (state *scheduledExecutionState) prepareForDispatch() {
-	state.mu.Lock()
-	state.phase = executionPreparedForDispatch
-	state.mu.Unlock()
-}
-
-func (state *scheduledExecutionState) prepareForPost() {
-	state.mu.Lock()
-	state.phase = executionPreparedForPost
-	state.mu.Unlock()
-}
-
-func (state *scheduledExecutionState) prepareForFinish() {
-	state.mu.Lock()
-	state.phase = executionPreparedForFinish
-	state.mu.Unlock()
-}
-
-func (state *scheduledExecutionState) beginDispatch() error {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	if state.phase != executionPreparedForDispatch {
-		return errors.New("tools: execution is not prepared for dispatch")
-	}
-	state.phase = executionDispatching
-	return nil
-}
-
-func (state *scheduledExecutionState) completeDispatch() {
-	state.mu.Lock()
-	if state.phase == executionDispatching {
-		state.phase = executionPreparedForPost
-	}
-	state.mu.Unlock()
-}
-
-func (state *scheduledExecutionState) beginFinalize() error {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	if state.phase != executionPreparedForPost {
-		return errors.New(
-			"tools: execution is not prepared for post-execute finalization",
-		)
-	}
-	state.phase = executionFinalizing
-	return nil
-}
-
-func (state *scheduledExecutionState) beginFinish() error {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	if state.phase != executionPreparedForFinish {
-		return errors.New(
-			"tools: execution is not prepared for terminal finalization",
-		)
-	}
-	state.phase = executionFinalizing
-	return nil
-}
-
-func (state *scheduledExecutionState) completeFinalization() {
-	state.mu.Lock()
-	if state.phase == executionFinalizing {
-		state.phase = executionCompleted
-	}
-	state.mu.Unlock()
-}
-
-func createExecution(input ToolExecutionInput) (ToolExecution, error) {
+// NewExecution validates and detaches the policy-visible call input.
+func NewExecution(input ToolExecutionInput) (ToolExecution, error) {
 	rootCallID := input.RootCallID
 	if rootCallID == "" {
 		rootCallID = input.CallID
@@ -249,8 +101,7 @@ func createExecution(input ToolExecutionInput) (ToolExecution, error) {
 }
 
 func cloneExecution(source ToolExecution) ToolExecution {
-	// Extension views retain correlation data, but never scheduler authority.
-	source.state = nil
+	// Extension views contain only detached business data.
 	source.arguments = append(
 		json.RawMessage(nil),
 		source.arguments...,
@@ -282,51 +133,10 @@ const (
 	ScheduledFinalResult ScheduledToolStage = "final-result"
 )
 
-// ScheduledToolPreparation is the ordered pre-policy outcome for one call.
-type ScheduledToolPreparation struct {
-	Approval  *ApprovalRequest
-	Stage     ScheduledToolStage
-	Execution ToolExecution
-	Result    ToolExecutionResult
-}
-
-// ScheduledToolDispatch is one settled overlapping dispatch outcome.
-type ScheduledToolDispatch struct {
-	Result ToolExecutionResult
-}
-
-// ToolExecutionScheduler separates ordered policy/finalization from the only
-// stage that Agent Loop may overlap: around-dispatch plus the tool body. An
-// error is an internal scheduler failure; ordinary Tool and policy failures
-// remain typed ToolExecutionResult values so Agent Loop can commit them.
-type ToolExecutionScheduler interface {
-	Prepare(context.Context, ToolExecutionInput) (ScheduledToolPreparation, error)
-	ResolveApproval(ToolExecution, approval.Outcome) (ScheduledToolPreparation, error)
-	Dispatch(ToolExecution) (ScheduledToolDispatch, error)
-	Finalize(ToolExecution, ToolExecutionResult) (ToolExecutionResult, error)
-	Finish(ToolExecution, ToolExecutionResult) ToolExecutionResult
-}
-
 // ApprovalRequest is the detached input for asynchronous approval orchestration.
 type ApprovalRequest struct {
 	SessionID session.SessionID
 	ToolName  string
 	CallID    agentmessage.CallID
 	Reason    string
-}
-
-func (state *scheduledExecutionState) awaitApproval() {
-	state.mu.Lock()
-	state.phase = executionAwaitingApproval
-	state.mu.Unlock()
-}
-
-func (state *scheduledExecutionState) acceptApproval() error {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	if state.phase != executionAwaitingApproval {
-		return errors.New("tools: execution is not awaiting approval")
-	}
-	state.phase = executionUnprepared
-	return nil
 }

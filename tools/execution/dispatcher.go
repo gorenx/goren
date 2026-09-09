@@ -1,4 +1,4 @@
-package tools
+package execution
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/internal/jsonvalue"
+	"github.com/gorenx/goren/tools"
 )
 
 // dispatcher owns the around-dispatch policy, Tool body invocation, and
@@ -29,18 +30,16 @@ func (failure *DeliveryError) Unwrap() error { return failure.Cause }
 
 func (bodyDispatcher *dispatcher) dispatch(
 	requestContext context.Context,
-	toolCall ToolExecution,
-	entry *registeredTool,
-) (ToolExecutionResult, error) {
+	toolCall callExecution,
+	entry *tools.Contract,
+) (tools.ToolExecutionResult, error) {
 	state := toolCall.state
 	if state == nil {
 		return nil, errors.New("tools: execution state is unavailable")
 	}
-	dispatchOutcome, err := state.pipeline.ResolveExecute(
+	dispatchOutcome, err := state.pipeline.ExecuteBody(
 		requestContext,
-		ExecuteRequest{
-			toolCall: cloneExecution(toolCall),
-		},
+		tools.NewExecuteRequest(cloneExecution(toolCall)),
 		executeTerminal{
 			dispatcher:    bodyDispatcher,
 			callerContext: requestContext,
@@ -76,16 +75,16 @@ func (bodyDispatcher *dispatcher) dispatch(
 type executeTerminal struct {
 	dispatcher    *dispatcher
 	callerContext context.Context
-	toolCall      ToolExecution
-	entry         *registeredTool
+	toolCall      callExecution
+	entry         *tools.Contract
 }
 
 func (terminal executeTerminal) Execute(
 	chainContext context.Context,
-	_ ExecuteRequest,
-) (ExecuteOutcome, error) {
+	_ tools.ExecuteRequest,
+) (tools.ExecuteOutcome, error) {
 	if chainContext == nil {
-		return ExecuteOutcome{}, errors.New(
+		return tools.ExecuteOutcome{}, errors.New(
 			"tools: execute Middleware delegated with a nil Context",
 		)
 	}
@@ -95,7 +94,7 @@ func (terminal executeTerminal) Execute(
 		terminal.toolCall,
 		terminal.entry,
 	)
-	return ExecuteOutcome{
+	return tools.ExecuteOutcome{
 		Result: outcome,
 	}, err
 }
@@ -103,9 +102,9 @@ func (terminal executeTerminal) Execute(
 func (bodyDispatcher *dispatcher) executeBody(
 	requestContext context.Context,
 	chainContext context.Context,
-	toolCall ToolExecution,
-	entry *registeredTool,
-) (ToolExecutionResult, error) {
+	toolCall callExecution,
+	entry *tools.Contract,
+) (tools.ToolExecutionResult, error) {
 	state := toolCall.state
 	if state == nil {
 		return nil, errors.New("tools: execution state is unavailable")
@@ -119,16 +118,13 @@ func (bodyDispatcher *dispatcher) executeBody(
 		return abortedResult(false), nil
 	}
 	if entry == nil {
-		return errorResult(&ToolNotFoundError{
+		return errorResult(&tools.ToolNotFoundError{
 			Name: toolCall.Name,
 		}), nil
 	}
-	if err := validateSchemaValue(
-		entry.parameterSchema,
-		toolCall.arguments,
-		"arguments",
-	); err != nil {
-		return errorResult(&ToolArgumentsError{
+	err := entry.ValidateArguments(toolCall.ArgumentsJSON())
+	if err != nil {
+		return errorResult(&tools.ToolArgumentsError{
 			Violations: []string{
 				err.Error(),
 			},
@@ -149,39 +145,42 @@ func (bodyDispatcher *dispatcher) executeBody(
 	if err != nil {
 		return errorResult(err), nil
 	}
-	return &canonicalToolExecutionSuccess{
-		execution:  toolCall.state,
-		normalized: outcome.(*ToolExecutionSuccess),
+	return &canonicalSuccess{
+		execution:            toolCall.state,
+		ToolExecutionSuccess: outcome.(*tools.ToolExecutionSuccess),
 	}, nil
 }
 
 func (bodyDispatcher *dispatcher) normalize(
-	toolCall ToolExecution,
-	entry *registeredTool,
-	candidate ToolExecutionResult,
-) (ToolExecutionResult, error) {
+	toolCall callExecution,
+	entry *tools.Contract,
+	candidate tools.ToolExecutionResult,
+) (tools.ToolExecutionResult, error) {
 	if candidate == nil {
 		return nil, errors.New("tools: execute handler returned a nil result")
 	}
-	if canonical, matches := candidate.(*canonicalToolExecutionSuccess); matches {
+	canonical, canonicalMatches := candidate.(*canonicalSuccess)
+	if canonicalMatches {
 		if canonical.execution == toolCall.state {
-			return canonical.cloneResult()
+			return tools.CloneResult(canonical)
 		}
 		return bodyDispatcher.normalizeAuthoredSuccess(
 			toolCall,
 			entry,
-			canonical.normalized,
+			canonical.ToolExecutionSuccess,
 		)
 	}
-	if succeeded, matches := candidate.(*ToolExecutionSuccess); matches {
+	succeeded, succeededMatches := candidate.(*tools.ToolExecutionSuccess)
+	if succeededMatches {
 		return bodyDispatcher.normalizeAuthoredSuccess(
 			toolCall,
 			entry,
 			succeeded,
 		)
 	}
-	if failedOutcome, matches := candidate.(*ToolExecutionFailure); matches {
-		return failedOutcome.cloneResult()
+	failedOutcome, failedOutcomeMatches := candidate.(*tools.ToolExecutionFailure)
+	if failedOutcomeMatches {
+		return tools.CloneResult(failedOutcome)
 	}
 	return nil, fmt.Errorf(
 		"tools: unsupported execution result %T",
@@ -190,15 +189,15 @@ func (bodyDispatcher *dispatcher) normalize(
 }
 
 func (bodyDispatcher *dispatcher) normalizeAuthoredSuccess(
-	toolCall ToolExecution,
-	entry *registeredTool,
-	authored *ToolExecutionSuccess,
-) (ToolExecutionResult, error) {
+	toolCall callExecution,
+	entry *tools.Contract,
+	authored *tools.ToolExecutionSuccess,
+) (tools.ToolExecutionResult, error) {
 	if authored == nil {
 		return nil, errors.New("tools: execute handler returned a nil success")
 	}
 	if entry == nil {
-		return nil, &ToolNotFoundError{
+		return nil, &tools.ToolNotFoundError{
 			Name: toolCall.Name,
 		}
 	}
@@ -217,10 +216,10 @@ func (bodyDispatcher *dispatcher) normalizeAuthoredSuccess(
 }
 
 func (bodyDispatcher *dispatcher) success(
-	toolCall ToolExecution,
-	entry *registeredTool,
+	toolCall callExecution,
+	entry *tools.Contract,
 	candidate json.RawMessage,
-) (ToolExecutionResult, error) {
+) (tools.ToolExecutionResult, error) {
 	value, err := jsonvalue.Clone(candidate)
 	if err != nil {
 		return nil, outputError(
@@ -228,16 +227,13 @@ func (bodyDispatcher *dispatcher) success(
 			"value is not lossless JSON: "+err.Error(),
 		)
 	}
-	if err := validateSchemaValue(
-		entry.outputSchema,
-		value,
-		"value",
-	); err != nil {
+	err = entry.ValidateValue(value)
+	if err != nil {
 		return nil, outputError(toolCall.Name, err.Error())
 	}
 	content, err := invokeRenderer(
-		entry.definition.Output.Renderer,
-		toolCall.arguments,
+		entry.Descriptor().Output.Renderer,
+		toolCall.ArgumentsJSON(),
 		value,
 	)
 	if err != nil {
@@ -255,10 +251,10 @@ func (bodyDispatcher *dispatcher) success(
 	}
 	var meta json.RawMessage
 	if toolCall.RootCallID == toolCall.CallID &&
-		entry.definition.Output.PresentationMeta != nil {
+		entry.Descriptor().Output.PresentationMeta != nil {
 		meta, err = invokeProjector(
-			entry.definition.Output.PresentationMeta,
-			toolCall.arguments,
+			entry.Descriptor().Output.PresentationMeta,
+			toolCall.ArgumentsJSON(),
 			value,
 		)
 		if err == nil {
@@ -272,7 +268,7 @@ func (bodyDispatcher *dispatcher) success(
 		}
 	}
 	stateSnapshot := toolCall.state.snapshot()
-	return &ToolExecutionSuccess{
+	return &tools.ToolExecutionSuccess{
 		Value:         value,
 		Content:       content,
 		Meta:          meta,
@@ -280,8 +276,8 @@ func (bodyDispatcher *dispatcher) success(
 	}, nil
 }
 
-func outputError(name string, violation string) *ToolOutputError {
-	return &ToolOutputError{
+func outputError(name string, violation string) *tools.ToolOutputError {
+	return &tools.ToolOutputError{
 		Name: name,
 		Violations: []string{
 			violation,
@@ -307,38 +303,21 @@ func fuseCancellation(
 }
 
 func cancellationCause(requestContext context.Context) error {
-	if cause := context.Cause(requestContext); cause != nil {
+	cause := context.Cause(requestContext)
+	if cause != nil {
 		return cause
 	}
 	return requestContext.Err()
 }
 
-func invokeExecutor(
-	body Executor,
-	arguments json.RawMessage,
-	runContext ToolRunContext,
-) (value json.RawMessage, invokeErr error) {
-	defer func() {
-		if panicValue := recover(); panicValue != nil {
-			invokeErr = fmt.Errorf(
-				"tools: executor panicked: %v",
-				panicValue,
-			)
-		}
-	}()
-	return body.Execute(
-		append(json.RawMessage(nil), arguments...),
-		runContext,
-	)
-}
-
 func invokeRenderer(
-	renderer OutputRenderer,
+	renderer tools.OutputRenderer,
 	arguments json.RawMessage,
 	value json.RawMessage,
 ) (content []agentmessage.ContentBlock, invokeErr error) {
 	defer func() {
-		if panicValue := recover(); panicValue != nil {
+		panicValue := recover()
+		if panicValue != nil {
 			invokeErr = fmt.Errorf("%v", panicValue)
 		}
 	}()
@@ -349,12 +328,13 @@ func invokeRenderer(
 }
 
 func invokeProjector(
-	projector PresentationProjector,
+	projector tools.PresentationProjector,
 	arguments json.RawMessage,
 	value json.RawMessage,
 ) (meta json.RawMessage, invokeErr error) {
 	defer func() {
-		if panicValue := recover(); panicValue != nil {
+		panicValue := recover()
+		if panicValue != nil {
 			invokeErr = fmt.Errorf("%v", panicValue)
 		}
 	}()
@@ -365,10 +345,10 @@ func invokeProjector(
 }
 
 // invokeBody preserves uncertainty if a delivery adapter panics after submission.
-func invokeBody(endpoint Invoker, ctx context.Context, input Invocation) (result BodyResult, failure error) {
+func invokeBody(endpoint Invoker, ctx context.Context, input tools.Invocation) (result tools.BodyResult, failure error) {
 	defer func() {
 		if recover() != nil {
-			result = BodyResult{}
+			result = tools.BodyResult{}
 			failure = errors.New("tools: body delivery panicked; execution completion is unconfirmed")
 		}
 	}()

@@ -3,18 +3,22 @@ package server
 import (
 	"context"
 	"errors"
-	"github.com/gorenx/goren/toolaskuser"
-	"github.com/gorenx/goren/tools"
-	toolregistry "github.com/gorenx/goren/tools/registry"
-	runtimeactor "github.com/gorenx/goren/tools/runtime/actor"
-	"github.com/gorenx/goren/tools/tool"
-	"github.com/gorenx/goren/userquestions"
 	"path/filepath"
 	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	sessionadapter "github.com/gorenx/goren/apiproxy/session/actor"
+	"github.com/gorenx/goren/session/persistence"
+	"github.com/gorenx/goren/session/title"
+	"github.com/gorenx/goren/toolaskuser"
+	"github.com/gorenx/goren/tools"
+	toolregistry "github.com/gorenx/goren/tools/registry"
+	runtimeactor "github.com/gorenx/goren/tools/runtime/actor"
+	"github.com/gorenx/goren/tools/tool"
+	"github.com/gorenx/goren/userquestions"
 
 	agentactor "github.com/gorenx/goren/agent/actor"
 	agentregistry "github.com/gorenx/goren/agent/registry"
@@ -105,6 +109,18 @@ func TestAgentCreationWithProductionConfigurationOwners(t *testing.T) {
 					t.Error(err)
 				}
 			}()
+			titleOwner, err := initializeTitles(ctx, system, title.Config{
+				FallbackMaxWords: 5,
+				FallbackMaxBytes: 40,
+				MaxTitleBytes:    80,
+			}, nil, time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			projectionOwner, err := initializeProjections(ctx, system, time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
 			input := agentregistry.CreateAgent{
 				Creation: agentregistry.Creation{
 					AgentID:    "conversation",
@@ -116,6 +132,7 @@ func TestAgentCreationWithProductionConfigurationOwners(t *testing.T) {
 				ModelConfig:     models,
 				PromptRegistry:  prompts,
 				ToolsRegistry:   directory,
+				Components:      []*goakt.GrainIdentity{titleOwner},
 				Timeout:         time.Second,
 			}
 			payload, err := system.AskGrain(ctx, authority, input, 4*time.Second)
@@ -160,7 +177,35 @@ func TestAgentCreationWithProductionConfigurationOwners(t *testing.T) {
 				t.Fatal("ready Agent has no execution route")
 			}
 
-			target, err := goakt.GrainOf[*runtimeactor.Grain](ctx, system, runtimeactor.RuntimeName("conversation"), goakt.WithLongLivedGrain())
+			titles, err := sessionadapter.NewTitles(system, authority, time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			renamed, err := titles.Rename(ctx, input.Creation.AgentID, "Integration title")
+			if err != nil || renamed.Text != "Integration title" {
+				t.Fatalf("rename: %+v %v", renamed, err)
+			}
+			logs, err := sessionadapter.NewLogs(system, sessions, time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			history, err := logs.Read(ctx, input.Creation.AgentID)
+			if err != nil || history == nil {
+				t.Fatalf("history: %+v %v", history, err)
+			}
+			projections, err := sessionadapter.NewProjections(system, projectionOwner, time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			projected, err := projections.Read(ctx, history.Events)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(projected.Values[title.ProjectionKey]) != `"Integration title"` || projected.AsOfSeq < renamed.Seq {
+				t.Fatalf("title projection did not include committed rename: %+v", projected)
+			}
+
+			target, err := goakt.GrainOf[*runtimeactor.Runtime](ctx, system, runtimeactor.RuntimeName("conversation"), goakt.WithLongLivedGrain())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -301,6 +346,23 @@ func TestAgentCreationWithProductionConfigurationOwners(t *testing.T) {
 			if source.closes.Load() != opens {
 				t.Fatalf("provider closes %d, want %d", source.closes.Load(), opens)
 			}
+			durable, err := persistence.NewReader(storage)
+			if err != nil {
+				t.Fatal(err)
+			}
+			persisted, err := durable.Inspect(ctx, input.Creation.AgentID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			retained, err := title.Fold(persisted.Events)
+			if err != nil || retained == nil || retained.Title != renamed.Text || retained.EventSeq != renamed.Seq {
+				t.Fatalf("title lost during Agent close and Session flush: %+v %v", retained, err)
+			}
+			_, err = titles.Rename(ctx, input.Creation.AgentID, "closed title")
+			if err == nil {
+				t.Fatal("closed Agent accepted a title mutation")
+			}
+
 		})
 	}
 }

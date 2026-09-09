@@ -1,10 +1,11 @@
-package tools_test
+package execution
 
 import (
 	"context"
 	"sync"
 	"testing"
 
+	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/tools"
 )
 
@@ -36,7 +37,7 @@ type beforePolicy struct {
 	source middleware[tools.PreExecuteRequest, tools.PreExecuteOutcome]
 }
 
-func (policy beforePolicy) ResolvePreExecute(ctx context.Context, input tools.PreExecuteRequest) (tools.PreExecuteOutcome, error) {
+func (policy beforePolicy) EvaluateCall(ctx context.Context, input tools.PreExecuteRequest) (tools.PreExecuteOutcome, error) {
 	return policy.source.Intercept(ctx, input, defaultBefore{})
 }
 
@@ -44,7 +45,7 @@ type afterPolicy struct {
 	source middleware[tools.PostExecuteRequest, tools.PostExecuteOutcome]
 }
 
-func (policy afterPolicy) ResolvePostExecute(ctx context.Context, input tools.PostExecuteRequest) (tools.PostExecuteOutcome, error) {
+func (policy afterPolicy) ReviewResult(ctx context.Context, input tools.PostExecuteRequest) (tools.PostExecuteOutcome, error) {
 	return policy.source.Intercept(ctx, input, defaultAfter{})
 }
 
@@ -77,9 +78,6 @@ type eventRecorder struct {
 	failures  []observationFailure
 }
 
-func (recorder *eventRecorder) RegistryChanged(ctx context.Context) error {
-	return recorder.observe(ctx, tools.RegistryChanged{})
-}
 func (recorder *eventRecorder) ObserveToolResult(ctx context.Context, completed tools.ExecutionCompleted) error {
 	return recorder.observe(ctx, completed)
 }
@@ -104,20 +102,15 @@ func (recorder *eventRecorder) observe(ctx context.Context, fact toolEvent) erro
 }
 
 type toolsFixture struct {
-	service  *tools.ToolLayer
+	policies Policies
 	failures *eventRecorder
 }
 
 func newToolsFixture(t *testing.T, dependencies ...any) *toolsFixture {
 	t.Helper()
-	settings, err := tools.ValidateConfig(tools.Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
 	recorder := &eventRecorder{}
-	options := tools.Options{
+	options := Policies{
 		Results: recorder,
-		Changes: recorder,
 	}
 	for _, dependency := range dependencies {
 		switch selected := dependency.(type) {
@@ -139,17 +132,61 @@ func newToolsFixture(t *testing.T, dependencies ...any) *toolsFixture {
 			t.Fatalf("unsupported test dependency: %T", dependency)
 		}
 	}
-	business, err := tools.New(settings, options)
+	return &toolsFixture{
+		policies: options,
+		failures: recorder,
+	}
+}
+
+// directBodies is a test delivery endpoint; scheduling uses the production Scheduler.
+type directBodies map[string]tools.Executor
+
+func (bodies directBodies) Invoke(ctx context.Context, input tools.Invocation) (tools.BodyResult, error) {
+	return input.Run(ctx, bodies[input.Name]), nil
+}
+func testScheduler(t *testing.T, policies Policies, definitions ...tools.ToolDefinition) *Scheduler {
+	t.Helper()
+	descriptions := make([]tools.Descriptor, 0, len(definitions))
+	bodies := make(directBodies, len(definitions))
+	for _, definition := range definitions {
+		descriptions = append(descriptions, definition.Describe())
+		bodies[definition.Name] = definition.Executor
+	}
+	coordinator, err := NewScheduler(descriptions, policies, bodies)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		if err := business.Close(context.Background()); err != nil {
-			t.Error(err)
-		}
-	})
-	return &toolsFixture{
-		service:  business,
-		failures: recorder,
+	return coordinator
+}
+
+// executeCall drives the production Call protocol for tests with no interactive approver.
+func executeCall(t *testing.T, coordinator *Scheduler, ctx context.Context, input tools.ToolExecutionInput) tools.ToolExecutionResult {
+	t.Helper()
+	current, err := coordinator.PrepareCall(ctx, input)
+	if err != nil {
+		t.Fatal(err)
 	}
+	phase, _ := current.Preparation()
+	if phase == tools.ScheduledApproval {
+		err = current.ApplyApproval(approval.OutcomeUnavailable)
+		if err != nil {
+			t.Fatal(err)
+		}
+		phase, _ = current.Preparation()
+	}
+	if phase == tools.ScheduledDispatch {
+		err = current.Dispatch()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	err = current.Finalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := current.Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
 }

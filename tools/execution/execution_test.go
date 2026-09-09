@@ -1,4 +1,4 @@
-package tools_test
+package execution
 
 import (
 	"context"
@@ -193,16 +193,10 @@ func TestExecutionPipelineOrderAndDetachedResultEvent(t *testing.T) {
 		postPolicy,
 		observer,
 	)
-	if _, err := state.service.AddGuard(
-		context.Background(),
-		"record",
-		tools.ToolGuardFunc(func(tools.ToolExecution) (string, bool) {
-			record("guard")
-			return "", false
-		}),
-	); err != nil {
-		t.Fatal(err)
-	}
+	state.policies.Guards = []tools.ToolGuard{tools.ToolGuardFunc(func(tools.ToolExecution) (string, bool) {
+		record("guard")
+		return "", false
+	})}
 	definition := objectTool(
 		"pipeline",
 		"",
@@ -223,10 +217,8 @@ func TestExecutionPipelineOrderAndDetachedResultEvent(t *testing.T) {
 			agentmessage.NewTextBlock(string(value)),
 		}, nil
 	})
-	if _, err := state.service.AddTool(context.Background(), definition); err != nil {
-		t.Fatal(err)
-	}
-	outcome := state.service.Execute(
+	coordinator := testScheduler(t, state.policies, definition)
+	outcome := executeCall(t, coordinator,
 		context.Background(),
 		tools.ToolExecutionInput{
 			CallID:    "call-1",
@@ -284,17 +276,12 @@ func TestExecuteMiddlewareReceivesReadOnlyCanonicalSuccess(t *testing.T) {
 		}),
 	}
 	state := newToolsFixture(t, mutation)
-	if _, err := state.service.AddTool(
-		context.Background(),
-		objectTool(
-			"sealed",
-			"",
-			executorStub(passThroughBody),
-		),
-	); err != nil {
-		t.Fatal(err)
-	}
-	outcome := state.service.Execute(
+	coordinator := testScheduler(t, state.policies, objectTool(
+		"sealed",
+		"",
+		executorStub(passThroughBody),
+	))
+	outcome := executeCall(t, coordinator,
 		context.Background(),
 		tools.ToolExecutionInput{
 			CallID:    "sealed-1",
@@ -373,23 +360,18 @@ func TestDeferredContextsPrecedeExecuteAndPostContexts(t *testing.T) {
 		}),
 	}
 	state := newToolsFixture(t, executePolicy, postPolicy)
-	if _, err := state.service.AddTool(
-		context.Background(),
-		objectTool(
-			"contexts",
-			"",
-			executorStub(func(
-				arguments json.RawMessage,
-				runContext tools.ToolRunContext,
-			) (json.RawMessage, error) {
-				runContext.DeferContext(deferred)
-				return arguments, nil
-			}),
-		),
-	); err != nil {
-		t.Fatal(err)
-	}
-	outcome := state.service.Execute(
+	coordinator := testScheduler(t, state.policies, objectTool(
+		"contexts",
+		"",
+		executorStub(func(
+			arguments json.RawMessage,
+			runContext tools.ToolRunContext,
+		) (json.RawMessage, error) {
+			runContext.DeferContext(deferred)
+			return arguments, nil
+		}),
+	))
+	outcome := executeCall(t, coordinator,
 		context.Background(),
 		tools.ToolExecutionInput{
 			CallID:    "contexts-1",
@@ -414,18 +396,13 @@ func TestDeferredContextsPrecedeExecuteAndPostContexts(t *testing.T) {
 
 func TestFinishMaterializesNilStagedResult(t *testing.T) {
 	state := newToolsFixture(t)
-	if _, err := state.service.AddTool(
-		context.Background(),
-		objectTool(
-			"staged",
-			"",
-			executorStub(passThroughBody),
-		),
-	); err != nil {
-		t.Fatal(err)
-	}
-	scheduler := state.service.Scheduler()
-	preparation, err := scheduler.Prepare(
+	coordinator := testScheduler(t, state.policies, objectTool(
+		"staged",
+		"",
+		executorStub(passThroughBody),
+	))
+	scheduler := coordinator
+	preparation, err := scheduler.prepare(
 		context.Background(),
 		tools.ToolExecutionInput{
 			CallID:    "",
@@ -436,7 +413,7 @@ func TestFinishMaterializesNilStagedResult(t *testing.T) {
 	if err != nil || preparation.Stage != tools.ScheduledFinalResult {
 		t.Fatalf("preparation = %#v, error = %v", preparation, err)
 	}
-	outcome := scheduler.Finish(preparation.Execution, nil)
+	outcome := scheduler.finish(preparation.Execution, nil)
 	if !outcome.Failed() || !strings.Contains(resultText(t, outcome), "staged result is nil") {
 		t.Fatalf("nil staged result = %#v", outcome)
 	}
@@ -464,14 +441,9 @@ func TestSchedulerConsumesEachPreparedStageOnce(t *testing.T) {
 		return nil, false
 	})
 	state := newToolsFixture(t)
-	if _, err := state.service.AddTool(
-		context.Background(),
-		definition,
-	); err != nil {
-		t.Fatal(err)
-	}
-	scheduler := state.service.Scheduler()
-	preparation, err := scheduler.Prepare(
+	coordinator := testScheduler(t, state.policies, definition)
+	scheduler := coordinator
+	preparation, err := scheduler.prepare(
 		context.Background(),
 		tools.ToolExecutionInput{
 			CallID:    "single-use-1",
@@ -482,22 +454,22 @@ func TestSchedulerConsumesEachPreparedStageOnce(t *testing.T) {
 	if err != nil || preparation.Stage != tools.ScheduledDispatch {
 		t.Fatalf("preparation = %#v, error = %v", preparation, err)
 	}
-	dispatched, err := scheduler.Dispatch(preparation.Execution)
+	dispatched, err := scheduler.dispatch(preparation.Execution)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := scheduler.Dispatch(preparation.Execution); err == nil ||
+	if _, err := scheduler.dispatch(preparation.Execution); err == nil ||
 		!strings.Contains(err.Error(), "not prepared for dispatch") {
 		t.Fatalf("second Dispatch error = %v", err)
 	}
-	finalOutcome, err := scheduler.Finalize(
+	finalOutcome, err := scheduler.finalize(
 		preparation.Execution,
 		dispatched.Result,
 	)
 	if err != nil || finalOutcome.Failed() {
 		t.Fatalf("final outcome = %#v, error = %v", finalOutcome, err)
 	}
-	if _, err := scheduler.Finalize(
+	if _, err := scheduler.finalize(
 		preparation.Execution,
 		dispatched.Result,
 	); err == nil || !strings.Contains(err.Error(), "not prepared") {
@@ -514,7 +486,7 @@ func TestSchedulerConsumesEachPreparedStageOnce(t *testing.T) {
 
 func TestExecutionFailuresAreCanonical(t *testing.T) {
 	state := newToolsFixture(t)
-	unknown := state.service.Execute(
+	unknown := executeCall(t, testScheduler(t, state.policies),
 		context.Background(),
 		tools.ToolExecutionInput{
 			CallID:    "unknown-1",
@@ -535,10 +507,8 @@ func TestExecutionFailuresAreCanonical(t *testing.T) {
 			return json.RawMessage(`"wrong"`), nil
 		}),
 	)
-	if _, err := state.service.AddTool(context.Background(), invalid); err != nil {
-		t.Fatal(err)
-	}
-	invalidOutcome := state.service.Execute(
+	coordinator := testScheduler(t, state.policies, invalid)
+	invalidOutcome := executeCall(t, coordinator,
 		context.Background(),
 		tools.ToolExecutionInput{
 			CallID:    "invalid-1",
@@ -575,28 +545,23 @@ func TestCallerCancellationSurvivesMiddlewareContextReplacement(t *testing.T) {
 	state := newToolsFixture(t, dispatchPolicy)
 	started := make(chan struct{})
 	settled := make(chan struct{})
-	if _, err := state.service.AddTool(
-		context.Background(),
-		objectTool(
-			"cancellable",
-			"",
-			executorStub(func(
-				_ json.RawMessage,
-				runContext tools.ToolRunContext,
-			) (json.RawMessage, error) {
-				close(started)
-				<-runContext.Context.Done()
-				close(settled)
-				return json.RawMessage(`{}`), nil
-			}),
-		),
-	); err != nil {
-		t.Fatal(err)
-	}
+	coordinator := testScheduler(t, state.policies, objectTool(
+		"cancellable",
+		"",
+		executorStub(func(
+			_ json.RawMessage,
+			runContext tools.ToolRunContext,
+		) (json.RawMessage, error) {
+			close(started)
+			<-runContext.Context.Done()
+			close(settled)
+			return json.RawMessage(`{}`), nil
+		}),
+	))
 	callerContext, cancelCaller := context.WithCancel(context.Background())
 	resultChannel := make(chan tools.ToolExecutionResult, 1)
 	go func() {
-		resultChannel <- state.service.Execute(
+		resultChannel <- executeCall(t, coordinator,
 			callerContext,
 			tools.ToolExecutionInput{
 				CallID:    "cancel-1",
@@ -648,16 +613,14 @@ func TestFinalizerRunsOnceAndClassifierFailsClosed(t *testing.T) {
 	) bool {
 		panic("classifier failure")
 	})
-	if _, err := state.service.AddTool(context.Background(), definition); err != nil {
-		t.Fatal(err)
-	}
-	if mode := state.service.ExecutionMode(tools.ToolExecutionInput{
+	coordinator := testScheduler(t, state.policies, definition)
+	if mode := coordinator.ExecutionMode(tools.ToolExecutionInput{
 		Name:      "finalized",
 		Arguments: json.RawMessage(`{}`),
 	}); mode != tools.ExecutionExclusive {
 		t.Fatalf("execution mode = %s", mode)
 	}
-	outcome := state.service.Execute(
+	outcome := executeCall(t, coordinator,
 		context.Background(),
 		tools.ToolExecutionInput{
 			CallID:    "final-1",

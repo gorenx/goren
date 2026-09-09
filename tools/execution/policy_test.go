@@ -1,4 +1,4 @@
-package tools_test
+package execution
 
 import (
 	"context"
@@ -38,7 +38,7 @@ func askPolicy(reason string) any {
 	}
 }
 
-func TestPolicyExecutionViewCannotDispatchPreparedCall(t *testing.T) {
+func TestPolicyExecutionViewCannotChangePreparedCall(t *testing.T) {
 	var captured tools.ToolExecution
 	observer := &policyFixture[tools.PreExecuteRequest, tools.PreExecuteOutcome]{
 		name: "capture-execution",
@@ -53,14 +53,12 @@ func TestPolicyExecutionViewCannotDispatchPreparedCall(t *testing.T) {
 	}
 	state := newToolsFixture(t, observer)
 	bodyCalls := 0
-	if _, err := state.service.AddTool(context.Background(), objectTool("read", "", executorStub(func(arguments json.RawMessage, _ tools.ToolRunContext) (json.RawMessage, error) {
+	coordinator := testScheduler(t, state.policies, objectTool("read", "", executorStub(func(arguments json.RawMessage, _ tools.ToolRunContext) (json.RawMessage, error) {
 		bodyCalls++
 		return arguments, nil
-	}))); err != nil {
-		t.Fatal(err)
-	}
-	scheduler := state.service.Scheduler()
-	prepared, err := scheduler.Prepare(context.Background(), tools.ToolExecutionInput{
+	})))
+	scheduler := coordinator
+	prepared, err := scheduler.prepare(context.Background(), tools.ToolExecutionInput{
 		SessionID: "session",
 		CallID:    "read-1",
 		Name:      "read",
@@ -72,14 +70,14 @@ func TestPolicyExecutionViewCannotDispatchPreparedCall(t *testing.T) {
 	if captured.CallID != prepared.Execution.CallID || captured.Name != "read" {
 		t.Fatalf("execution view lost call identity: %#v", captured)
 	}
-	if _, err := scheduler.Dispatch(captured); err == nil || bodyCalls != 0 {
-		t.Fatalf("policy view dispatched tool: calls = %d, err = %v", bodyCalls, err)
-	}
-	dispatched, err := scheduler.Dispatch(prepared.Execution)
+	// Policy data has no state field and cannot be passed to Dispatch: its type
+	// differs from the package-private scheduling handle.
+	captured.Name = "changed-by-policy"
+	dispatched, err := scheduler.dispatch(prepared.Execution)
 	if err != nil || bodyCalls != 1 {
 		t.Fatalf("original handle dispatch: calls = %d, err = %v", bodyCalls, err)
 	}
-	final, err := scheduler.Finalize(prepared.Execution, dispatched.Result)
+	final, err := scheduler.finalize(prepared.Execution, dispatched.Result)
 	if err != nil || final.Failed() {
 		t.Fatalf("original handle finalization = %#v, %v", final, err)
 	}
@@ -88,14 +86,12 @@ func TestPolicyExecutionViewCannotDispatchPreparedCall(t *testing.T) {
 func TestAskDecisionWaitsForAuditedOutcomeBeforeDispatch(t *testing.T) {
 	state := newToolsFixture(t, askPolicy("needs permission"))
 	bodyCalls := 0
-	if _, err := state.service.AddTool(context.Background(), objectTool("danger", "", executorStub(func(arguments json.RawMessage, _ tools.ToolRunContext) (json.RawMessage, error) {
+	coordinator := testScheduler(t, state.policies, objectTool("danger", "", executorStub(func(arguments json.RawMessage, _ tools.ToolRunContext) (json.RawMessage, error) {
 		bodyCalls++
 		return arguments, nil
-	}))); err != nil {
-		t.Fatal(err)
-	}
-	scheduler := state.service.Scheduler()
-	prepared, err := scheduler.Prepare(context.Background(), tools.ToolExecutionInput{
+	})))
+	scheduler := coordinator
+	prepared, err := scheduler.prepare(context.Background(), tools.ToolExecutionInput{
 		SessionID: "session",
 		CallID:    "danger-1",
 		Name:      "danger",
@@ -107,21 +103,21 @@ func TestAskDecisionWaitsForAuditedOutcomeBeforeDispatch(t *testing.T) {
 	if prepared.Approval.SessionID != "session" || prepared.Approval.Reason != "needs permission" || bodyCalls != 0 {
 		t.Fatal("invalid approval request or early dispatch")
 	}
-	if _, err := scheduler.Dispatch(prepared.Execution); err == nil {
+	if _, err := scheduler.dispatch(prepared.Execution); err == nil {
 		t.Fatal("dispatch bypassed approval")
 	}
-	allowed, err := scheduler.ResolveApproval(prepared.Execution, approval.OutcomeAllowedOnce)
+	allowed, err := scheduler.applyApproval(prepared.Execution, approval.OutcomeAllowedOnce)
 	if err != nil || allowed.Stage != tools.ScheduledDispatch {
 		t.Fatalf("allowed = %#v, %v", allowed, err)
 	}
-	if _, err := scheduler.ResolveApproval(prepared.Execution, approval.OutcomeAllowedOnce); err == nil {
+	if _, err := scheduler.applyApproval(prepared.Execution, approval.OutcomeAllowedOnce); err == nil {
 		t.Fatal("duplicate outcome accepted")
 	}
-	dispatched, err := scheduler.Dispatch(allowed.Execution)
+	dispatched, err := scheduler.dispatch(allowed.Execution)
 	if err != nil || bodyCalls != 1 {
 		t.Fatalf("dispatch calls = %d, err = %v", bodyCalls, err)
 	}
-	result, err := scheduler.Finalize(allowed.Execution, dispatched.Result)
+	result, err := scheduler.finalize(allowed.Execution, dispatched.Result)
 	if err != nil || result.Failed() {
 		t.Fatalf("result = %#v, %v", result, err)
 	}
@@ -130,23 +126,18 @@ func TestAskDecisionWaitsForAuditedOutcomeBeforeDispatch(t *testing.T) {
 func TestAskDecisionFailsClosedWithoutApproval(t *testing.T) {
 	state := newToolsFixture(t, askPolicy("needs permission"))
 	bodyCalls := 0
-	if _, err := state.service.AddTool(
-		context.Background(),
-		objectTool(
-			"danger",
-			"",
-			executorStub(func(
-				arguments json.RawMessage,
-				_ tools.ToolRunContext,
-			) (json.RawMessage, error) {
-				bodyCalls++
-				return arguments, nil
-			}),
-		),
-	); err != nil {
-		t.Fatal(err)
-	}
-	outcome := state.service.Execute(
+	coordinator := testScheduler(t, state.policies, objectTool(
+		"danger",
+		"",
+		executorStub(func(
+			arguments json.RawMessage,
+			_ tools.ToolRunContext,
+		) (json.RawMessage, error) {
+			bodyCalls++
+			return arguments, nil
+		}),
+	))
+	outcome := executeCall(t, coordinator,
 		context.Background(),
 		tools.ToolExecutionInput{
 			CallID:    "danger-1",
@@ -155,7 +146,7 @@ func TestAskDecisionFailsClosedWithoutApproval(t *testing.T) {
 		},
 	)
 	if !outcome.Failed() || bodyCalls != 0 ||
-		resultText(t, outcome) != "Error: needs permission" {
+		!strings.Contains(resultText(t, outcome), "no approval channel") {
 		t.Fatalf("unapproved outcome = %#v, body calls = %d", outcome, bodyCalls)
 	}
 }
@@ -209,17 +200,12 @@ func TestPostPolicyCanReplaceValueOrBlock(t *testing.T) {
 				}),
 			}
 			state := newToolsFixture(t, policy)
-			if _, err := state.service.AddTool(
-				context.Background(),
-				objectTool(
-					"normalized",
-					"",
-					executorStub(passThroughBody),
-				),
-			); err != nil {
-				t.Fatal(err)
-			}
-			outcome := state.service.Execute(
+			coordinator := testScheduler(t, state.policies, objectTool(
+				"normalized",
+				"",
+				executorStub(passThroughBody),
+			))
+			outcome := executeCall(t, coordinator,
 				context.Background(),
 				tools.ToolExecutionInput{
 					CallID:    "post-1",
@@ -260,23 +246,18 @@ func TestPostValueReplacementPreservesTurnConclusion(t *testing.T) {
 		}),
 	}
 	state := newToolsFixture(t, policy)
-	if _, err := state.service.AddTool(
-		context.Background(),
-		objectTool(
-			"concluding",
-			"",
-			executorStub(func(
-				arguments json.RawMessage,
-				runContext tools.ToolRunContext,
-			) (json.RawMessage, error) {
-				runContext.ConcludeTurn()
-				return arguments, nil
-			}),
-		),
-	); err != nil {
-		t.Fatal(err)
-	}
-	outcome := state.service.Execute(
+	coordinator := testScheduler(t, state.policies, objectTool(
+		"concluding",
+		"",
+		executorStub(func(
+			arguments json.RawMessage,
+			runContext tools.ToolRunContext,
+		) (json.RawMessage, error) {
+			runContext.ConcludeTurn()
+			return arguments, nil
+		}),
+	))
+	outcome := executeCall(t, coordinator,
 		context.Background(),
 		tools.ToolExecutionInput{
 			CallID:    "concluding-1",
@@ -303,17 +284,12 @@ func TestBestEffortResultFailureDoesNotReplaceToolOutcome(t *testing.T) {
 		},
 	}
 	state := newToolsFixture(t, observer)
-	if _, err := state.service.AddTool(
-		context.Background(),
-		objectTool(
-			"observed",
-			"",
-			executorStub(passThroughBody),
-		),
-	); err != nil {
-		t.Fatal(err)
-	}
-	outcome := state.service.Execute(
+	coordinator := testScheduler(t, state.policies, objectTool(
+		"observed",
+		"",
+		executorStub(passThroughBody),
+	))
+	outcome := executeCall(t, coordinator,
 		context.Background(),
 		tools.ToolExecutionInput{
 			CallID:    "observed-1",
@@ -360,16 +336,14 @@ func TestApprovalRejectionAndCancellationNeverDispatch(t *testing.T) {
 		t.Run(scenario.name, func(t *testing.T) {
 			state := newToolsFixture(t, askPolicy("permission"))
 			calls := 0
-			if _, err := state.service.AddTool(context.Background(), objectTool("danger", "", executorStub(func(raw json.RawMessage, _ tools.ToolRunContext) (json.RawMessage, error) {
+			coordinator := testScheduler(t, state.policies, objectTool("danger", "", executorStub(func(raw json.RawMessage, _ tools.ToolRunContext) (json.RawMessage, error) {
 				calls++
 				return raw, nil
-			}))); err != nil {
-				t.Fatal(err)
-			}
+			})))
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			scheduler := state.service.Scheduler()
-			prepared, err := scheduler.Prepare(ctx, tools.ToolExecutionInput{
+			scheduler := coordinator
+			prepared, err := scheduler.prepare(ctx, tools.ToolExecutionInput{
 				SessionID: "session",
 				CallID:    "call",
 				Name:      "danger",
@@ -381,14 +355,14 @@ func TestApprovalRejectionAndCancellationNeverDispatch(t *testing.T) {
 			if scenario.cancel {
 				cancel()
 			}
-			resumed, err := scheduler.ResolveApproval(prepared.Execution, scenario.outcome)
+			resumed, err := scheduler.applyApproval(prepared.Execution, scenario.outcome)
 			if err != nil || resumed.Stage != tools.ScheduledPostResult {
 				t.Fatalf("resume = %#v, %v", resumed, err)
 			}
-			if _, err := scheduler.Dispatch(resumed.Execution); err == nil {
+			if _, err := scheduler.dispatch(resumed.Execution); err == nil {
 				t.Fatal("denied execution dispatched")
 			}
-			result, err := scheduler.Finalize(resumed.Execution, resumed.Result)
+			result, err := scheduler.finalize(resumed.Execution, resumed.Result)
 			if err != nil || !result.Failed() || calls != 0 {
 				t.Fatalf("result = %#v, calls = %d, err = %v", result, calls, err)
 			}

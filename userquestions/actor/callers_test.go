@@ -55,7 +55,7 @@ func TestCallerAuthorityRejectsUnclaimedClosedAndReplacedLifetimes(t *testing.T)
 			t.Fatalf("unexpected reply %T", payload)
 		}
 	}
-	check(registry.Reserve{
+	check(registry.ReserveAgent{
 		Creation: creation,
 	})
 	authority, err := NewCallers(system, directory, creation, time.Second)
@@ -90,7 +90,7 @@ func TestCallerAuthorityRejectsUnclaimedClosedAndReplacedLifetimes(t *testing.T)
 	check(registry.CloseAgent{
 		Creation: creation,
 	})
-	check(registry.Reserve{
+	check(registry.ReserveAgent{
 		Creation: registry.Creation{
 			AgentID:    "questions",
 			CreationID: "second",
@@ -122,10 +122,10 @@ func TestFormerChildCanAskAsNewRuntimeRoot(t *testing.T) {
 		CreationID: "child-lifetime",
 	}
 	for _, input := range []any{
-		registry.Reserve{
+		registry.ReserveAgent{
 			Creation: parent,
 		},
-		registry.Reserve{
+		registry.ReserveAgent{
 			Creation: child,
 			Parent:   &parent,
 		},
@@ -180,7 +180,7 @@ func TestFormerChildCanAskAsNewRuntimeRoot(t *testing.T) {
 		AgentID:    child.AgentID,
 		CreationID: "root-lifetime",
 	}
-	payload, err = system.AskGrain(ctx, directory, registry.Reserve{
+	payload, err = system.AskGrain(ctx, directory, registry.ReserveAgent{
 		Creation: root,
 	}, time.Second)
 	if err != nil || payload.(registry.Completion).Err != nil {

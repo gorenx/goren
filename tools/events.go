@@ -4,7 +4,7 @@ import (
 	"context"
 )
 
-// ResultObserver observes final Tool results inside one plain Tool ToolLayer.
+// ResultObserver observes final Tool results after one call completes.
 // Implementations are ordinary business objects, not Plugin observers.
 type ResultObserver interface {
 	ObserveToolResult(context.Context, ExecutionCompleted) error
@@ -84,13 +84,35 @@ func (completed ExecutionCompleted) Result() ToolResultSnapshot {
 	return completed.resultView
 }
 
-// RegistryChanged reports a successful Tool definition or restriction change.
-type RegistryChanged struct{}
-
-// EventName returns the canonical Harness Event name.
-func (RegistryChanged) EventName() string {
-	return ChangeEventName
-}
-
 // DefinitionsTopic carries complete, committed tool definition views.
 const DefinitionsTopic = "tools/definitions"
+
+// NewPreExecuteRequest captures input for pre-dispatch policy.
+func NewPreExecuteRequest(input ToolExecution) PreExecuteRequest {
+	return PreExecuteRequest{
+		toolCall: cloneExecution(input),
+	}
+}
+
+// NewExecuteRequest captures input for execution middleware.
+func NewExecuteRequest(input ToolExecution) ExecuteRequest {
+	return ExecuteRequest{
+		toolCall: cloneExecution(input),
+	}
+}
+
+// NewPostExecuteRequest combines detached input with an immutable result view.
+func NewPostExecuteRequest(input ToolExecution, view ToolResultSnapshot) PostExecuteRequest {
+	return PostExecuteRequest{
+		toolCall:   cloneExecution(input),
+		resultView: view,
+	}
+}
+
+// NewExecutionCompleted combines detached input with an immutable final result view.
+func NewExecutionCompleted(input ToolExecution, view ToolResultSnapshot) ExecutionCompleted {
+	return ExecutionCompleted{
+		toolCall:   cloneExecution(input),
+		resultView: view,
+	}
+}

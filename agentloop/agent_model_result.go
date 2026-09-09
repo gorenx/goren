@@ -17,8 +17,7 @@ type ModelAction interface{ modelAction() }
 // Tool policy, middleware and execution remain the Tool Runtime's responsibility.
 type ExecuteTools struct {
 	Position session.StepPosition
-
-	Calls []agentmessage.ToolCallBlock
+	Calls    []agentmessage.ToolCallBlock
 }
 
 func (ExecuteTools) modelAction() {}

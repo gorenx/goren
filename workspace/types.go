@@ -57,7 +57,8 @@ type Backend interface {
 // SessionHeaders is the Workspace-owned anti-corruption port for immutable
 // Session headers. Implementations may merge live and persisted Sessions.
 type SessionHeaders interface {
-	Get(context.Context, session.SessionID) (session.Header, bool, error)
+	// Get returns a detached header; nil without error means the Session is absent.
+	Get(context.Context, session.SessionID) (*session.Header, error)
 	List(context.Context) ([]session.Header, error)
 }
 

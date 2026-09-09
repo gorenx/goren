@@ -2,10 +2,12 @@ package runtimeactor
 
 import (
 	"context"
+	"time"
+
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/tools"
-	"time"
+	"github.com/gorenx/goren/tools/execution"
 
 	"github.com/gorenx/goren/session"
 	toolregistry "github.com/gorenx/goren/tools/registry"
@@ -14,14 +16,14 @@ import (
 )
 
 // InitializeRuntime binds an Agent creation and applies its initial overrides.
-// Only the Agent lifecycle owner starts this Grain and authorizes its activation.
+// Only the Agent lifecycle owner starts this Runtime and authorizes its activation.
 type InitializeRuntime struct {
 	AgentID    session.SessionID
 	CreationID string
 	Authority  *goakt.GrainIdentity
 	Registry   *goakt.GrainIdentity
 	Overrides  []toolregistry.Tool
-	Policies   tools.Policies
+	Policies   execution.Policies
 	Timeout    time.Duration
 }
 
@@ -57,8 +59,8 @@ type PrepareCall struct {
 	Context    context.Context
 }
 
-// ResolveCallApproval supplies the approval owner's audited decision.
-type ResolveCallApproval struct {
+// ApplyCallApproval supplies the approval owner's audited decision.
+type ApplyCallApproval struct {
 	CreationID string
 	CallID     agentmessage.CallID
 	Outcome    approval.Outcome

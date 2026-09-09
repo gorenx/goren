@@ -25,7 +25,7 @@ type Catalog struct {
 
 var _ toolruntime.Catalog = (*Catalog)(nil)
 
-// NewCatalog binds an existing Registry Grain without creating resources.
+// NewCatalog binds an existing Registry Runtime without creating resources.
 func NewCatalog(system goakt.ActorSystem, target *goakt.GrainIdentity, timeout time.Duration) (*Catalog, error) {
 	if system == nil || target == nil || timeout <= 0 {
 		return nil, errors.New("tools: catalog system, identity and positive timeout are required")
