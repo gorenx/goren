@@ -127,3 +127,46 @@ func TestTurnStateRejectsUnrequestedAndRepeatedConfirmation(t *testing.T) {
 		t.Fatal("committed canceled Turn was not retained for settlement")
 	}
 }
+
+func TestClosePreservesAcceptedInputBeforeTurnStart(t *testing.T) {
+	subject, history := readyAgent(t)
+	message := inputMessage(t, "resume after restart")
+	proposal, err := subject.Followup(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write, err := history.Commit(context.Background(), session.Batch(proposal.Edit.Drafts...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = subject.ConfirmAdmission(proposal, write)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = subject.PrepareClose(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if subject.StatusValue() != agent.StatusIdle {
+		t.Fatal("unstarted execution still blocks close")
+	}
+	if !subject.InboxValue().HasPending() {
+		t.Fatal("close discarded input")
+	}
+	err = subject.Release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := &agentloop.ReactLoopAgent{}
+	err = restored.Restore(history.Header(), history.Snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = restored.Initialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !restored.InboxValue().HasPending() {
+		t.Fatal("restoration lost accepted input")
+	}
+}

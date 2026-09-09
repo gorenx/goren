@@ -30,7 +30,8 @@ func TestSearchClientUsesObservedQueryIndex(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	owner, err := queryactor.New(backend, query.Config{})
+	observations := &searchSources{}
+	owner, err := queryactor.New(backend, query.Config{}, observations)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +47,7 @@ func TestSearchClientUsesObservedQueryIndex(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	target, err := system.Spawn(ctx, "query", owner)
+	target, err := system.Spawn(ctx, "query", owner, goakt.WithStashing())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,21 +80,13 @@ func TestSearchClientUsesObservedQueryIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	payload, err := goakt.Ask(ctx, target, queryactor.Observe{
-		Sources: []query.Source{{
-			Log: query.LogSnapshot{
-				Header: conversation.Header(),
-				Events: conversation.Events(),
-			},
-			Live: true,
-		}},
-	}, time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result := payload.(queryactor.Completion); result.Err != nil {
-		t.Fatal(result.Err)
-	}
+	observations.items = []query.Source{{
+		Log: query.LogSnapshot{
+			Header: conversation.Header(),
+			Events: conversation.Events(),
+		},
+		Live: true,
+	}}
 	endpoint, err := sessionadapter.NewSearch(target, time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -112,4 +105,10 @@ func TestSearchClientUsesObservedQueryIndex(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled search: %v", err)
 	}
+}
+
+type searchSources struct{ items []query.Source }
+
+func (source *searchSources) ReadSources(ctx context.Context) ([]query.Source, error) {
+	return source.items, ctx.Err()
 }

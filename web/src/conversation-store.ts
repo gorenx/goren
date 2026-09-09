@@ -89,10 +89,9 @@ export class ConversationStore {
     try {
       const host = await this.#api.call<HostDescription>('host.describe', {})
       this.#patch({ host, composerState: 'composer.syncingSessions' })
-      await Promise.all([
-        this.refreshCredential(),
-        this.refreshBoundDefinitions(),
-      ])
+      // Auxiliary configuration must not gate Session history or the composer.
+      void this.refreshCredential().catch(error => this.#fail(error))
+      void this.refreshBoundDefinitions().catch(error => this.#fail(error))
       this.#api.connect()
       await this.refreshSessions()
       if (this.#value.sessions.length === 0) await this.createSession()

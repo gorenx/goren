@@ -354,9 +354,9 @@ func finishStepForStopping(t *testing.T, subject *agentloop.ReactLoopAgent, hist
 	}
 }
 
-func commitStepEnd(t *testing.T, history *session.Log, draft session.EventDraft) session.WriteResult {
+func commitStepEnd(t *testing.T, history *session.Log, ending agentloop.EndStep) session.WriteResult {
 	t.Helper()
-	write, err := history.Commit(context.Background(), session.Batch(draft))
+	write, err := history.Commit(context.Background(), stepEndWrite{ending: ending})
 	if err != nil {
 		t.Fatal(err)
 	}

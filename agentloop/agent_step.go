@@ -14,19 +14,19 @@ import (
 // EndStep requests the prepared end event. Failure must remain available for
 // Turn settlement after the event commits; a successful write does not erase it.
 type EndStep struct {
-	Draft session.EventDraft
-	Err   error
+	draft      session.EventDraft
+	Err        error
+	identifier session.SessionID
+	position   session.StepPosition
 }
 
 func (subject *ReactLoopAgent) endStep(conclusion stepstate.StepResult, failure error) (EndStep, error) {
-	draft, err := subject.PrepareStepEnd(conclusion)
+	ending, err := subject.PrepareStepEnd(conclusion)
 	if err != nil {
 		return EndStep{}, err
 	}
-	return EndStep{
-		Draft: draft,
-		Err:   failure,
-	}, nil
+	ending.Err = failure
+	return ending, nil
 }
 
 // PrepareStep renders context after admission without opening a durable Step. A nil draft
@@ -191,27 +191,35 @@ func (subject *ReactLoopAgent) BeginTools() error {
 
 // PrepareStepEnd stages a conclusion without closing either execution boundary.
 // Repeating the same preparation is safe after a failed commit.
-func (subject *ReactLoopAgent) PrepareStepEnd(result stepstate.StepResult) (session.EventDraft, error) {
+func (subject *ReactLoopAgent) PrepareStepEnd(result stepstate.StepResult) (EndStep, error) {
 	if err := subject.checkRequestCompletion(); err != nil {
-		return session.EventDraft{}, err
+		return EndStep{}, err
 	}
 	if subject.step == nil {
-		return session.EventDraft{}, errors.New("agentloop: no Step is open")
+		return EndStep{}, errors.New("agentloop: no Step is open")
 	}
 	candidate := *subject.step
 	if candidate.StateValue() == stepstate.StateSettling {
 		if candidate.ResultValue() != result {
-			return session.EventDraft{}, errors.New("agentloop: Step conclusion is already selected")
+			return EndStep{}, errors.New("agentloop: Step conclusion is already selected")
 		}
 	} else if err := candidate.EnterSettling(result); err != nil {
-		return session.EventDraft{}, err
+		return EndStep{}, err
 	}
 	draft, err := candidate.EndDraft()
 	if err != nil {
-		return session.EventDraft{}, err
+		return EndStep{}, err
 	}
 	subject.step = &candidate
-	return draft, nil
+	turnNumber, stepNumber := candidate.Position()
+	return EndStep{
+		draft:      draft,
+		identifier: subject.identifier,
+		position: session.StepPosition{
+			Turn: turnNumber,
+			Step: stepNumber,
+		},
+	}, nil
 }
 
 // ConfirmStepEnd closes the Step and applies its conclusion to the enclosing Turn.

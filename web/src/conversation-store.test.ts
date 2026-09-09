@@ -52,6 +52,36 @@ describe('ConversationStore', () => {
     store.dispose()
   })
 
+  it('loads existing history when the bound catalog is unavailable', async () => {
+    const host = installMockHost({ existingSession: true, boundDefinitionsFailure: 'Unknown method: bound.list' })
+    const store = new ConversationStore(translate)
+
+    await store.start()
+
+    expect(store.snapshot().phase).toBe('ready')
+    expect(store.snapshot().currentSessionId).toBe(session.sessionId)
+    expect(host.methods).toContain('session.history')
+    expect(host.methods).not.toContain('session.create')
+    expect(store.snapshot().boundDefinitionsLoaded).toBe(false)
+    expect(store.snapshot().error).toBe('Unknown method: bound.list')
+    store.dispose()
+  })
+
+  it('does not wait for the bound catalog before selecting an existing Session', async () => {
+    let release: (() => void) | undefined
+    const pending = new Promise<void>(resolve => { release = resolve })
+    installMockHost({ existingSession: true, boundDefinitionsWait: pending })
+    const store = new ConversationStore(translate)
+
+    await store.start()
+
+    expect(store.snapshot().phase).toBe('ready')
+    expect(store.snapshot().currentSessionId).toBe(session.sessionId)
+    expect(store.snapshot().boundDefinitionsLoaded).toBe(false)
+    release?.()
+    store.dispose()
+  })
+
   it('shows the new-conversation state immediately and admits only one create request', async () => {
     let releaseCreate: (() => void) | undefined
     const createWait = new Promise<void>(resolve => {
@@ -503,6 +533,8 @@ interface MockHostOptions {
   historyWait?: Promise<void>
   listWait?: Promise<void>
   sessionPages?: Record<string, { items: SessionSummary[], nextCursor?: string }>
+  boundDefinitionsFailure?: string
+  boundDefinitionsWait?: Promise<void>
   boundDefinitions?: BoundDefinition[]
   boundTools?: BoundToolOption[]
   boundToolsFailure?: string
@@ -558,6 +590,13 @@ function installMockHost(options: MockHostOptions = {}): {
       }
       break
     case 'bound.list':
+      await options.boundDefinitionsWait
+      if (options.boundDefinitionsFailure !== undefined) {
+        return response({
+          rpcId: call.rpcId,
+          result: { ok: false, error: { message: options.boundDefinitionsFailure } },
+        })
+      }
       value = { definitions: boundDefinitions }
       break
     case 'bound.tools':

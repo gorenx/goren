@@ -132,9 +132,25 @@ func (subject *ReactLoopAgent) Apply(entries []session.Event) (agent.InboxChange
 	return changes, nil
 }
 
-// PrepareClose stops new input even when already accepted work remains.
+// PrepareClose freezes admission and preserves input whose execution has not
+// started. A proposed Turn still owns an uncertain start commit and must settle.
 func (subject *ReactLoopAgent) PrepareClose(executing bool) error {
 	subject.lifetime.beginClose()
+	if !executing &&
+		subject.running != nil &&
+		subject.running.kind == executionActivity &&
+		subject.current == nil &&
+		subject.step == nil &&
+		subject.preparing == nil &&
+		subject.request == nil &&
+		subject.ending == nil {
+		subject.preserveInbox = true
+		subject.running.wake = false
+		_, err := subject.FinishActivity()
+		if err != nil {
+			return err
+		}
+	}
 	return subject.CheckClose(executing)
 }
 

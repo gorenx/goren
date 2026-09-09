@@ -291,3 +291,9 @@ type Index interface {
 	SearchSessions(context.Context, IndexedSearchRequest) ([]SessionHit, error)
 	SearchEvents(context.Context, IndexedEventSearchRequest) (session.Header, []EventHit, error)
 }
+
+// Sources supplies one complete observation. Failure must not expose a partial
+// replacement; the Query owner serializes acquisition with index operations.
+type Sources interface {
+	ReadSources(context.Context) ([]Source, error)
+}
