@@ -4,15 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
-	"time"
 
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/tools"
 	"github.com/gorenx/goren/tools/execution"
 	"github.com/gorenx/goren/userquestions"
-	questionactor "github.com/gorenx/goren/userquestions/actor"
-	goakt "github.com/tochemey/goakt/v4/actor"
-	"github.com/tochemey/goakt/v4/log"
 )
 
 type liveCaller struct{}
@@ -23,24 +19,8 @@ func (liveCaller) CheckCaller(context.Context, session.SessionID) (userquestions
 	}, nil
 }
 
-func TestToolExecutionUsesQuestionActorAndSessionIdentity(t *testing.T) {
+func TestToolExecutionUsesQuestionServiceAndSessionIdentity(t *testing.T) {
 	ctx := context.Background()
-	system, err := goakt.NewActorSystem("ask-tool-test", goakt.WithLogger(log.DiscardLogger))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := system.Start(ctx); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := system.Stop(ctx); err != nil {
-			t.Error(err)
-		}
-	})
-	target, err := goakt.GrainOf[*questionactor.Grain](ctx, system, "session-1", goakt.WithLongLivedGrain())
-	if err != nil {
-		t.Fatal(err)
-	}
 	provider := &providerRecorder{
 		answerValue: userquestions.Answer{
 			Answers: []userquestions.AnswerItem{{
@@ -49,17 +29,7 @@ func TestToolExecutionUsesQuestionActorAndSessionIdentity(t *testing.T) {
 			}},
 		},
 	}
-	payload, err := system.AskGrain(ctx, target, questionactor.Initialize{
-		Provider: provider,
-		Callers:  liveCaller{},
-	}, time.Second)
-	if err != nil || payload.(questionactor.Completion).Err != nil {
-		t.Fatalf("initialize: %v %v", payload, err)
-	}
-	endpoint, err := questionactor.NewClient(system, target)
-	if err != nil {
-		t.Fatal(err)
-	}
+	endpoint := userquestions.New(provider, liveCaller{})
 	definition, err := NewDefinition(endpoint)
 	if err != nil {
 		t.Fatal(err)

@@ -7,7 +7,9 @@ import (
 
 // Decision fixes the policy and audit identity of one approval, without tracking I/O.
 type Decision struct {
-	policy   Policy
+	policy Policy
+	// turnSeq fixes the enclosing Turn start; a later Turn cannot adopt this request.
+	turnSeq  int64
 	question Question
 }
 

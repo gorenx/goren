@@ -40,17 +40,25 @@ func TestHTTPToolsChangeOnlyBetweenTurns(t *testing.T) {
 		var body struct {
 			Tools []struct {
 				Function struct {
+					Name        string `json:"name"`
 					Description string `json:"description"`
 				} `json:"function"`
 			} `json:"tools"`
 		}
 		err := json.NewDecoder(incoming.Body).Decode(&body)
-		if err != nil || len(body.Tools) != 1 {
+		if err != nil {
 			t.Errorf("model tool definitions: %+v, %v", body, err)
 			writer.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		requests <- body.Tools[0].Function.Description
+		for _, entry := range body.Tools {
+			if entry.Function.Name == "echo" {
+				requests <- entry.Function.Description
+			}
+			if entry.Function.Name == "approval" {
+				t.Error("internal approval tool leaked to the model")
+			}
+		}
 		number := calls.Add(1)
 		writer.Header().Set("Content-Type", "text/event-stream")
 		if number%2 == 1 {

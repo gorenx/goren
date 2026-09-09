@@ -9,13 +9,13 @@ import (
 // QuestionService validates and forwards questions. Dependencies are immutable;
 // each invocation owns its input and answer, so concurrent asks share no state.
 type QuestionService struct {
-	provider Provider
+	provider UserQuestions
 	callers  Callers
 }
 
 // New constructs the question capability. A nil provider returns CodeNoProvider
 // when asked; an Agent-backed request requires a caller authority.
-func New(answerer Provider, authority Callers) *QuestionService {
+func New(answerer UserQuestions, authority Callers) *QuestionService {
 	return &QuestionService{
 		provider: answerer,
 		callers:  authority,

@@ -140,10 +140,7 @@ func (owner *Server) Start(ctx context.Context) (failure error) {
 	if err != nil {
 		return err
 	}
-	constructors, err := toolactor.NewProviders(owner.settings.Providers)
-	if err != nil {
-		return err
-	}
+	constructors := &toolactor.Providers{}
 	owner.system, err = goakt.NewActorSystem("goren", goakt.WithPubSub(), goakt.WithLogger(log.DiscardLogger), goakt.WithExtensions(constructors))
 	if err != nil {
 		return err
@@ -152,7 +149,7 @@ func (owner *Server) Start(ctx context.Context) (failure error) {
 	if err != nil {
 		return err
 	}
-	err = owner.initializeAPI(ctx)
+	err = owner.initializeAPI(ctx, constructors)
 	if err != nil {
 		return err
 	}

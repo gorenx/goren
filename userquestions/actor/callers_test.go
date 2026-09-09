@@ -10,11 +10,12 @@ import (
 	agentactor "github.com/gorenx/goren/agent/actor"
 	"github.com/gorenx/goren/agent/registry"
 	goakt "github.com/tochemey/goakt/v4/actor"
+	"github.com/tochemey/goakt/v4/log"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
 func TestCallerAuthorityRejectsUnclaimedClosedAndReplacedLifetimes(t *testing.T) {
-	system, _ := questionSystem(t)
+	system := questionSystem(t)
 	target, err := goakt.GrainOf[*executorStub](context.Background(), system, "questions.agentloop", goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
@@ -103,7 +104,7 @@ func TestCallerAuthorityRejectsUnclaimedClosedAndReplacedLifetimes(t *testing.T)
 }
 
 func TestFormerChildCanAskAsNewRuntimeRoot(t *testing.T) {
-	system, _ := questionSystem(t)
+	system := questionSystem(t)
 	target, err := goakt.GrainOf[*executorStub](context.Background(), system, "questions.agentloop", goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
@@ -235,4 +236,24 @@ func (*executorStub) OnReceive(gc *goakt.GrainContext) {
 	default:
 		gc.Unhandled()
 	}
+}
+
+func questionSystem(t *testing.T) goakt.ActorSystem {
+	t.Helper()
+	ctx := context.Background()
+	system, err := goakt.NewActorSystem("caller-test", goakt.WithLogger(log.DiscardLogger))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = system.Start(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		failure := system.Stop(ctx)
+		if failure != nil {
+			t.Error(failure)
+		}
+	})
+	return system
 }

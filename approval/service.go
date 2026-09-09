@@ -29,7 +29,8 @@ func (owner *Service) Prepare(input Request) (*Decision, error) {
 	if input.SessionID == "" || strings.TrimSpace(input.ToolName) == "" {
 		return nil, errors.New("approval: Session identity and tool name are required")
 	}
-	if !hasOpenTurn(input.Events) {
+	turnSeq, open := openTurn(input.Events)
+	if !open {
 		return nil, errors.New("approval: request outside an open turn; audit events must be turn-enclosed")
 	}
 	selectedPolicy, err := owner.defaultPolicy.Resolve(input.Events)
@@ -41,7 +42,8 @@ func (owner *Service) Prepare(input Request) (*Decision, error) {
 		return nil, fmt.Errorf("approval: mint request id: %w", err)
 	}
 	return &Decision{
-		policy: selectedPolicy,
+		policy:  selectedPolicy,
+		turnSeq: turnSeq,
 		question: Question{
 			ID:        identifier,
 			SessionID: input.SessionID,
@@ -52,16 +54,16 @@ func (owner *Service) Prepare(input Request) (*Decision, error) {
 	}, nil
 }
 
-func hasOpenTurn(entries []session.Event) bool {
+func openTurn(entries []session.Event) (int64, bool) {
 	for index := len(entries) - 1; index >= 0; index-- {
 		switch entries[index].Type {
 		case session.TurnStartEventName:
-			return true
+			return entries[index].Seq, true
 		case session.TurnEndEventName:
-			return false
+			return 0, false
 		}
 	}
-	return false
+	return 0, false
 }
 
 func mintRequestID() (RequestID, error) {
