@@ -140,7 +140,7 @@ Approval 已改为独立策略及回答契约，当前没有生产提供者使�
 
 ## 工具订阅适配
 
-ToolsSubscriber 是普通 GoAkt Actor，订阅 tools/definitions，将同一 Agent 的 DefinitionsChanged 转成 Prompt Runtime 的 ApplyTools 异步请求。它只持有 AgentID、Prompt 与 Registry 的 GrainIdentity、协调者 PID 和停止转发标记，不保存工具目录、在途计数或业务关闭状态。工具事件契约由 tools 包定义，Prompt 负责消费映射。
+ToolsSubscriber 是普通 GoAkt Actor，订阅 tools/definitions，将同一 Agent 的 Definitions 转成 Prompt Runtime 的 ApplyTools 异步请求。它只持有 AgentID、Prompt 与 Registry 的 GrainIdentity、协调者 PID 和停止转发标记，不保存工具目录、在途计数或业务关闭状态。工具事件契约由 tools 包定义，Prompt 负责消费映射。
 
 收到 SubscribeAck 后通知协调者订阅已建立；订阅器随后向真实 Tools Registry 异步查询权威基线，协调者等待应用结果。每次转发请求结束通知协调者请求对应版本及 error；旧版本可能由 Runtime 幂等忽略，因此成功不表示该版本取代了更新的本地版本。组装的版本检查由纯 Runtime 执行。
 
@@ -160,7 +160,7 @@ GoAkt v4.5.3 的 ReceiveContext 只在当前 Receive 内有效。Then 只捕获�
 
 ToolsSubscriber 新增真实 Tools Registry Grain 地址。SubscribeAck 后先发送 ToolsSubscribed，再通过 RequestGrain 查询 Read(AgentID)，不让 AgentLoop 搬运定义。此前“协调者查询基线”的未接入步骤收敛到消费适配器内部，协调者仍负责等待 ToolsApplied 和启动/关闭屏障。
 
-基线回复通过具名内部消息回到订阅 Actor 邮箱，检查停止转发标记后复用 DefinitionsChanged 的应用路径；这次回自身有明确用途：禁止取消订阅后由迟到基线发起新 ApplyTools。Then 不保存 ReceiveContext，也不修改业务对象字段。没有目录时向协调者报告 ErrToolsNotReady，保持 Runtime 未就绪，不能将版本 0 或空值当作有效空工具集合。有效空集合仍须有 Registry 发布版本。RefreshTools 支持协调者显式重读基线，不添加定时器、请求计数或自建队列。
+基线回复通过具名内部消息回到订阅 Actor 邮箱，检查停止转发标记后复用 Definitions 的应用路径；这次回自身有明确用途：禁止取消订阅后由迟到基线发起新 ApplyTools。Then 不保存 ReceiveContext，也不修改业务对象字段。没有目录时向协调者报告 ErrToolsNotReady，保持 Runtime 未就绪，不能将版本 0 或空值当作有效空工具集合。有效空集合仍须有 Registry 发布版本。RefreshTools 支持协调者显式重读基线，不添加定时器、请求计数或自建队列。
 
 SubscribeAck 之后的基线读取与正常事件允许交错：Runtime 忽略旧版本，禁止晚到基线覆盖较新事件。读取失败不清除已有目录，取消订阅后丢弃迟到基线。测试验证发布早于订阅仍完成组装、无目录不伪造就绪，以及发布后更新与重读；旧事件和关闭行为继续由既有测试覆盖。
 

@@ -305,3 +305,23 @@ Session Search 端口由 session/actor.Search 请求现有 Query Actor 实现；
 ### 暂缓 Bound API 的依赖隔离
 
 Plugin 删除后，根包的 bound_api.go、bound_gateway.go 通过 subagent/bound 导入已退役 Plugin，连带阻断与 Subagent 无关的 API 构建。默认 Server 已不注册 Bound，因此删除根包的 Bound API 实现与测试，不保留别名或不可编译的迁移副本。Bound wire 能力随 Subagent 重构暂缓；以后应由该能力的最终 owner 重新实现并接入 Server，不能据主线 API 测试通过宣称 Bound 可用。
+
+### Commands 客户端与 Session 准入
+
+Commands Gateway 使用 Session Gateway.ActivateAgent 完成普通 Agent 准入：复用当前父子归属检查及持久化 Session 恢复，保持现有错误映射。该入口不执行命令，也不把 Commands 能力加到 AgentLoop 或 Agent 业务接口上。
+
+`apiproxy/commands/actor.Directory` 实现 Resolver，依赖 Agent Registry 地址、ActorSystem 和请求超时。Gateway 完成准入后，Directory 向 Registry Resolve 获取当前 Ready，核对 AgentID、Registration、CreationID、父子归属和 Commands 地址，再构造现有 commands/actor.Client。两次请求不构成事务；若其间变为子 Agent，必须拒绝；若绑定后关闭或重新创建，由 Commands owner 校验捕获的 CreationID 拒绝旧客户端。
+
+客户端不启动 Grain、不缓存路由、不保留生命周期状态。取消和执行最终回复沿用 commands/actor.Client。验证覆盖准入拒绝不查询 Registry、当前 Commands 路由、缺失组件、身份不匹配及父子归属变化；真实 Registry 的生命周期及命令执行测试与 API 接线测试分别提供证据。API Server 先构造 Session Gateway，再将其作为只含 ActivateAgent 的 Access 注入 Commands Gateway；对象引用单向，Session Gateway 不反向引用 Commands。
+
+### Session 提交事件订阅者
+
+`apiproxy/session/events/actor.Subscriber` 订阅现有 `session.AppendedEventName`，将 CommitNotice 的 SessionID、CreationID 和独立事件副本交给 Committed 消费接口（由 Feed 实现）。订阅者只负责订阅、按序调度和退出，不生成事件、不维护日志游标、不判断业务去重，也不注册新的持久化事件。
+
+业务消费可能读取队列投影所需的 Session 快照，因此用框架 PipeTo 执行；完成消息回到邮箱之前，后续通知进入框架 stash，完成后按原顺序恢复。禁止并行调用 Feed.Committed 后让较晚事件先发布。工作线程只访问捕获的消费者和事件，不访问 Actor 可变字段。
+
+SpawnSubscriber 等待 SubscribeAck 后返回。框架停止时 PostStop 取消当前消费并等待退出，TopicActor 的死亡监听移除订阅；它不关闭 Feed、Broker 或 Session。消费失败记录明确错误，不自动重试写入或声明成功。启动等待被取消时返回已取得的 PID 和错误，组合根仍须关闭该 PID，不能丢失资源责任。
+
+GoAkt v4.5.3 的外部 PID.Shutdown 可使 PostStop 与 Receive 重叠（见 INT-19 的 race 复现）。订阅者用一把锁保护这个关闭边界：先取消不可变的生命周期 Context，再锁定并等待已登记任务退出；Receive 在相同锁内检查取消，防止关闭后新增任务。异步消费不持锁，也不读取 Actor 字段。此锁不能替代邮箱排序，更不能扩散为业务对象之间的共享锁。
+
+本订阅者只覆盖提交事件。Session 创建／移除、Agent 状态／错误通知的发布与消费需分别接线，不能把提交订阅成功视为生产下行完整。验收包含实际 PubSub 到 Feed 的传递、阻塞消费期间保持顺序、停止传播取消且等待消费退出。

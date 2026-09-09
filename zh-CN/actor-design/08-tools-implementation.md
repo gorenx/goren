@@ -7,9 +7,25 @@
 
 Tools Registry 管各 Agent 的定义目录、配置版本及更新批次；Tool Runtime 管调用、预算、路由和更新过程；
 ToolActor 管一个稳定工具身份的实现资源和操作。三者不复制完整业务状态。
+
+本文的 Tools Registry 是配置与定义目录 owner，不是生命周期 owner。Actor 的启动与停止由 Agent Registry 的生命周期编排负责；Tools Registry 不因为名字含 Registry 就承担这些职责。Tool Runtime 决定更新步骤，ToolActor 执行具体实现的准备、切换和资源释放，生命周期请求明确指向 Agent Registry。
 工具名称保持 canonical 名称，技术地址由 Runtime 管理，AgentLoop 只指定逻辑目标。
 
 ## 配置注册与事件消费
+
+### 配置登记业务接口
+
+Registry Grain 使用 InitializeDefaults、RegisterConfiguration、ReadConfiguration 三个具名消息适配下列业务方法。RegisterConfiguration 回复 Configuration，Found=true 表示登记已完成，Err 可单独报告配置事件投递失败；调用方不得将通知失败视为配置未登记。配置事件在 tools/configuration topic 只携带 AgentID 与更新 ID，不广播 Provider。ReadConfiguration 精确查询已登记快照，不负责重发事件或执行工具。Actor 只执行短业务方法和事件投递，不在邮箱内调用 Provider.Open。
+
+Registry.InitializeDefaults 接收启动时的全局工具配置，只允许初始化一次；未初始化时 Configure 必须失败，不能用未知配置冒充空工具集合。配置条目 Tool 包含 canonical Name、绑定具名配置和借用能力的 tool.Provider、Visible。Provider 是不可变构造描述，Registry 不调用 Open，也不持有构造出的实现或资源。各工具内部字段的默认值由对应 Provider 构造时验证。
+
+Configure 接收唯一更新 ID、AgentID、期望目录版本和完整 Agent 覆盖条目，按名称替换全局同名条目，新增条目追加到末尾。覆盖以完整工具配置为单位，保留默认名称顺序。结果作为 Configuration 固定到同一个 batch，不新增候选配置队列；返回 ConfigurationRegistered 身份供 Actor 发布。Runtime 的 ReadConfiguration 按更新 ID 读取快照，不能用后来配置替代该次输入。此阶段只声明候选名称，实例构造仍由 Runtime 在 Agent 更新屏障内启动，定义发布仍要求全部 Register 完成。
+
+Configure 拒绝重复更新 ID；回复不确定时读取该 ID 的配置，不能比较任意 Provider 实现或用相同 ID 覆盖构造参数。失败校验不创建批次。Abort/Settle 同时释放该批次配置引用；Provider 的资源释放不归 Registry。返回的切片全部复制，Provider 接口值作为只读构造能力借用，不允许回指 Registry/Runtime owner。
+
+候选登记必须满足已登记配置的工具名称与可见性，不能用自注册消息重新决定模型可见性。ConfigurationRegistered 是配置登记完成的业务事实；RegisterConfiguration 是登记请求，两者不使用模糊的 Configure 或 Changed 消息名混称，也不通过叠加 Runtime、Snapshot 等实现细节延长名称。
+
+验收包括未初始化拒绝、全局继承和 Agent 覆盖、名称顺序、同 Agent 未结算更新拒绝、重复 ID 拒绝与精确查询、非法配置不占用更新、输入输出副本隔离、目录发布前 Prompt 基线不可见、结算释放配置引用。动态全局配置变更的逐 Agent 更新发起、生产配置注册入口与事件订阅接线仍待实现；InitializeDefaults 不提供热更新替代路径。
 
 配置注册到 Tools Registry。Registry 分别记录请求应用的配置与已经发布的有效工具目录，两者不能混称“当前配置”。Tool Runtime 消费配置变化，Prompt Runtime 消费已发布定义的变化；AgentLoop 消费更新通知并决定业务屏障时机。
 
@@ -31,6 +47,34 @@ Prompt 的订阅初始化、版本追赶和组装约束见 [Prompt 模块](./17-
 
 ## 2. 执行协议
 
+### ToolActor 准备与登记边界
+
+配置构造消息命名为 Provision，以区别 executionRuntime.Prepare 的单次调用准备。后者执行 pre-policy 和 guard，必要时返回审批需求；Dispatch 包含执行中间件、参数验证与工具体调用，随后执行结果处理和 post-policy。这些业务流程不进入配置构造消息处理器。
+
+`tools/tool/actor.Grain` 由生命周期 owner 创建，Initialize 绑定 CreationID、AgentID、工具名称和共享 Registry 地址，不创建其他 Actor。Provision 接收 Revision、具名 Provider、可见性和本进程取消 context，通过 PipeToSelf 调度 Tool.Provision；业务对象在任务完成前由该任务独占，邮箱不读取或修改它。完成消息回到邮箱后，Grain 调用 Tool.Schema，再通过 RequestGrain 发送 RegisterDefinition，得到登记确认才回复 Completion。
+
+Initialize 的重复请求以五项绑定内容为准：相同 CreationID、AgentID、工具名称、Registry 身份和 Authority 身份返回原绑定确认，不重新创建业务对象；任一不一致均拒绝。确认仅说明绑定相同，不承诺工具已配置或可执行，也不使已关闭资源恢复。Tool.Name 只返回不可变工具名称，用于绑定校验，不能读取或修改候选与当前实现。此幂等契约处理初始化回复丢失，不替代生命周期 owner 的旧身份准入检查。
+
+准备或登记尚在进行时，重复准备请求返回明确的调度忙错误，不创建第二个任务。登记回复丢失后可重试同一 Revision：读取已经准备的候选并重新 RegisterDefinition，不重新 Open。更新 ID 定义同一份配置，调用方不得用相同 Revision 代表另一份 Provider 配置。登记失败保留候选，调用方决定重试登记或在确认未发布后 Abort。CreationID 不匹配的请求不能接触业务对象。
+
+Commit 是短业务操作；Abort、Retire、Close 可能执行资源 I/O，均在独占框架任务中调用业务方法，任务结束后才返回最终结果。关闭必须在工具调用排空后由生命周期 owner 发起；停掉 Grain 不等同于成功关闭业务资源。首个实现切片验证真实 Grain → Registry 注册，以及构造一次、重复登记、错误和取消后的清理；工具调用消息与全局生命周期接线继续单独验证。
+
+### 工具体调用的数据边界
+
+ToolActor 的 Execute 接收 CreationID、目录版本、Invocation 和本进程 context，返回 BodyResult。Actor 只校验创建／Session 路由、调用 ID 及任务占用；Tool.Execute 校验工具名称、有效版本和候选切换屏障，再复用 Invocation.Run 执行工具体。它不重复 pre-policy、审批、执行中间件或输出规范化。调用方 Tool Runtime 完成这些前后阶段，不能直接用 Actor 回复作为最终工具结果提交 Session。
+
+工具体任务可并行，是否允许并行由 Runtime 已有执行策略决定。Actor 的 calls 表只关联在途调用 ID、取消句柄和原回复，不是业务队列或执行历史。任何调用尚未返回时拒绝配置构造、切换及资源清理，防止释放仍被工具体使用的资源。CancelCall 只投递该调用的取消意图，原 Execute 必须等工具体退出后才返回结果。超时不自动重试工具副作用；已结束调用 ID 的持久化幂等不由该表承诺。
+
+Tool Runtime 的 Actor 层使用 `tools/tool/actor.Client`，绑定现有 ToolActor 身份、CreationID 和目录版本，不创建 Actor。Execute 使用 RequestGrain 并关闭请求等待计时器，取消通过工具体 context 或单独 CancelCall 传播，不能用调用方等待超时冒充工具体退出。客户端不保存调用方 Actor 或回调。PipeToSelf 等待一个有缓冲的内部结果通道；Then 只写入该通道，框架任务把具名完成消息送回邮箱，Receive 使用本轮传入的窄接口消费结果。不能在 Then 中同步 TellGrain 给自己，该方法会等待当前邮箱处理完成而超时。调用方在停用时 Dispose，终止等待回复的任务；Dispose 不证明远端工具体已经结束。客户端不做业务重试。
+
+CallResult.Body 是已收到的工具体结果，其中 error 表示工具业务失败；CallResult.Err 是请求失败或无效回复，不能证明工具体已经退出。强制停 Grain 时，在途 Execute 用框架错误回复，不包装成 BodyResult，以保留该区别。Cancellation 只表示取消消息处理结果，不能释放原调用的资源预算。
+
+现有 ToolExecution 含 scheduledExecutionState，后者反向引用 executionRuntime、pipeline 和注册项，不能跨 ToolActor 发送。新增 Invocation 作为工具体输入，只包含调用 ID、根调用 ID、工具名、SessionID 和独立参数副本；不携带调度状态。ToolRunContext.Execution 改为 Invocation，工具体仍能读取其业务身份。Invocation 已移除 Parent／Token；Runtime 的结果归属校验仍使用内部 ToolExecutionToken，不把进程内指针身份放入工具体消息。暂缓的 Subagent 结构化输出调用方以后按具名调用身份迁移，本轮不保留兼容字段。
+
+Invocation.Run 负责调用现有 Executor 和收集工具体产生的上下文／结束 turn 意图，返回 BodyResult（原始 JSON 值、error、追加上下文、结束 turn 标记）。收集器只属于这次工具体调用，返回后关闭，晚到写入不再改变结果。Tool Runtime 在执行仍处于分派阶段时采纳 BodyResult 的效果，继续原有标准化、后置策略及 Session 提交流程。跨 Actor 的请求和回复使用 Invocation／BodyResult，而不是 ToolRunContext 或 ToolExecution。
+
+此修改不改变模型工具 schema、工具名称、Session 事件和附加上下文的提交顺序；暂缓的 Subagent 调用方以后迁移到该输入。验收沿用 Tools 执行和审批测试，增加独立调用的上下文隔离与晚到写入拒绝测试。此步骤只完成业务交互边界，尚不能宣称 INT-23 的生命周期缺失已修复。
+
 AgentLoop 经 GoAkt 运行时 向所属 Tool Runtime 请求执行。Tool Runtime 校验工具版本、权限和预算，
 完成 pre-policy 后请求 ToolActor；ToolActor 使用 task 执行，完成消息回本 Actor 后回复。
 Tool Runtime 完成 post-policy、schema 校验及结果处理，再回复 AgentLoop，由 AgentLoop 提交 Session。
@@ -39,6 +83,20 @@ Tool Runtime 完成 post-policy、schema 校验及结果处理，再回复 Agent
 请求超时不释放仍在运行的任务预算，不重试未知副作用。效果处仍做文件、网络和进程权限校验。
 
 ## 3. 更新事务与唯一发布点
+
+### 单工具业务对象
+
+`tools/tool.Tool` 是稳定工具身份的纯业务对象，不导入 GoAkt。它保存工具名称、当前实现、待应用候选及待释放旧实现。`Revision` 使用唯一更新 ID 和目标目录版本，防止旧更新消息操作后来的候选；`Implementation` 包含工具定义及可选的 `Resource.Close(context.Context) error`。无独占资源的静态工具无需空 Close 实现。Resource 只负责释放该实现独占的资源，不关闭其借用的 Session、UserQuestions 等共享能力。
+
+接口为 Prepare、Schema、Commit、Retire、Abort、Close 和 Definition。Prepare 接收已构造实现，验证并复制定义后才接管资源；失败时资源仍由提供方清理。Schema 按 Revision 返回候选的模型 schema 副本，用于候选自注册，不暴露 Executor、Resource 或输出呈现接口；不存在、已开始撤销或不匹配的候选返回错误。Commit 仅切换引用，不执行 I/O；Retire/Abort/Close 通过 Resource 释放资源，失败保留对应实现以便重试。相同更新的 Commit/Retire 重试不重复切换或释放；已结算版本不能被重新 Prepare。重复 Prepare 明确拒绝，避免把新构造资源误当作已接管资源。Definition 在候选存在或旧资源未释放时拒绝读取执行定义。
+
+上游 Runtime 负责完整调用排空与目录发布屏障，ToolActor 负责先等待工具任务结束，再串行调度业务方法；不得在业务方法返回前处理另一个修改请求，也不得让后台任务直接修改 Tool 字段。Tool 不保存 PID、GrainContext、框架取消函数或等待回复列表，不自建任务队列。目录事务 ID 转入 Revision.ID，版本必须与执行请求一致；只有 Registry 确认发布后才调用 Commit。单工具对象不能独立证明整个目录已发布。
+
+撤销一旦开始，即使 Close 返回错误也不允许提交候选，因为资源可能已经部分释放。候选记录 discardRequested，仅用于表达不可逆的业务撤销决定，不表示 Actor 正在执行任务。取消同样保留候选与该决定，随后继续 Abort 或 Close。
+
+异步准备使用 `Provider.Open(context.Context) (Implementation, error)`，Provider 是已经绑定工具类型、具名配置及借用能力的构造对象，不是可执行配置或 Plugin。构造对象必须可重复调用，每次返回独立资源；不得持有 Tool、Tool Runtime 或其等待请求。若返回 error 的同时存在需要清理的资源，也必须通过 Implementation.Resource 返回。`Tool.Provision` 先验证更新准入，再调用 Provider；成功后与 Prepare 共用内部定义校验及接管方法，不重复检查更新准入。构造、定义校验或取消失败时，业务层清理新资源；清理失败则保存不可提交的候选供 Abort/Close 重试。失败后的清理不沿用已经取消的准备 context，以免直接跳过资源释放；Resource 必须使 Close 有界结束。此接口只解决构造与资源接管，不代替 Registry 中的全局／Agent 配置合并。
+
+验收直接调用纯业务对象，验证准备不破坏当前实现、切换后旧资源释放失败可重试、候选撤销、过期更新拒绝、定义字节隔离和关闭失败重试。真实 Actor 自注册、任务排空和生产初始化需在后续集成验收，不能由这些业务测试代替。
 
 一个 ToolActor 对应 AgentID + ToolName，配置更新不创建同身份的第二个 Grain。
 旧实现资源、候选实现资源是 ToolActor 内部的受管理资源，不是两代可同时执行的工具 Actor。
@@ -77,6 +135,20 @@ sequenceDiagram
 新增工具才创建 ToolActor；删除工具发布撤销后释放资源并停止 ToolActor。替换仅清理旧实现资源，保留稳定 Actor。
 
 ## 4. 重试、退役与故障
+
+### Runtime 更新业务对象
+
+`tools/runtime.Update` 拥有一次更新的业务进度，不拥有框架地址、任务、邮箱或工具资源。输入为 Registry 的精确 Configuration 与旧工具名称；输出为 Apply 的完成标记与 error。完成标记只在成功结算或发布前回滚清理结束时为 true，清理失败或发布结果未知保持 false，调用方不能解除更新屏障。重复 Apply 从未完成阶段续接，不重新执行已确认步骤。
+
+阶段只保留影响后续业务规则的准备、发布、发布确认、切换、退役、实例移除、候选撤销和完成。成功路径与回滚路径共用实例移除阶段；Settle/Abort 是清理末尾的目录操作，不再各自定义阶段。移除游标结束后，目录操作失败只重试该操作，不重新释放资源。
+
+Catalog 是 Runtime 消费的发布、查询、撤销及结算接口；Instances 是准备、切换、退役、候选撤销和实例移除接口。Instances.Prepare 包含 ToolActor 构造与自注册确认；Remove 必须通过生命周期 owner 关闭资源并移除实例，Runtime 不创建或停止 Actor。各方法由框架适配层完成实际请求；业务对象不引用 GoAkt。Apply 可以等待端口结果，因此必须在框架任务中执行，不能直接在 Receive 中运行；端口错误不等于资源已释放，重试操作必须幂等。
+
+目录端口由 tools/runtime/actor.Catalog 实现，绑定共享 Registry Grain、ActorSystem 和正请求超时，不创建 Actor。它仅供 Apply 所在的框架任务调用，用 AskGrain 等待短 Registry 操作；Actor 邮箱中不得直接调用这些阻塞方法。Publish 将 Catalog 的定义与通知错误原样映射，Update 按更新 ID 查询提交结果；Lookup 保留未找到与已知未发布的区别。ReadConfiguration 同样只取指定 ID，缺失返回业务错误。传输错误、错误类型回复及 Registry 业务错误均向调用方返回，不使用静默空值或备用本地目录。
+
+业务顺序固定为全部准备、发布、全部切换、旧实现退役、移除删除工具、目录结算。发布请求失败必须查询该更新：已发布则继续切换，确认未发布才回滚，未知或查询失败保持屏障。准备失败要撤销包含失败工具在内的已尝试候选，并移除该批次新增实例，最后撤销 Registry 批次；旧实例不被移除。发布后的取消不能回滚目录，继续完成切换和资源清理；发布前取消走回滚。清理与发布后收尾使用不继承请求取消的 context，端口必须有界返回。
+
+验收覆盖多工具顺序、删除与新增、准备失败后的清理、发布回复丢失但实际已提交、查询失败保留状态、部分切换/释放失败续接、不重复成功资源操作和两侧取消。此对象只落实更新业务；执行 policy/中间件、Actor 端口与生产生命周期仍须继续接通。
 
 | 失败点 | 处理方式 |
 | --- | --- |
@@ -120,7 +192,7 @@ restriction、pre/post-policy 迁到明确执行阶段，资源回滚与释放�
 
 ## 定义输出契约与 Prompt 解耦
 
-现有 tools.Registry 的 promptTools、ToolLayer.ResolveTools 及 Service.Apply/NewLayer 将 Tools 反向注册到 Prompt；关闭还需要注销 Prompt 句柄。这使定义权与消费方向倒置。删除该注册、注销和回调接口，Tools 的构造及局部层创建不接收 PromptRegistry。
+现有 toolregistry.Registry 的 promptTools、ToolLayer.ResolveTools 及 Service.Apply/NewLayer 将 Tools 反向注册到 Prompt；关闭还需要注销 Prompt 句柄。这使定义权与消费方向倒置。删除该注册、注销和回调接口，Tools 的构造及局部层创建不接收 PromptRegistry。
 
 Tools 定义 `Definitions` 值，包含可见 `Schemas` 和限制前 `KnownNames`。Registry 从同一有效视图生成完整值并复制 schema 参数；ToolLayer.CaptureDefinitions 只提供定义读取，不携带执行器、Prompt 类型或框架身份。Prompt 事件适配后续负责将生产者值转换为自己的 ToolDefinitions，AgentLoop 不代传 schema。保留 KnownNames 是为了延续 toolOrder 对已知但不可见名称的校验语义，不向模型额外暴露工具。
 
@@ -146,7 +218,7 @@ New 接收 ValidatedConfig 和 Options，返回已构造的纯 ToolLayer 与 err
 
 pipeline 拥有本层观察器和执行中间件注册集合；ToolLayer 的 ObserveResults/UseExecution 委托给该对象，执行阶段直接访问 pipeline。关闭只清理本层注册，不关闭外部注入的策略 owner。业务仍存在旧并发执行入口，本步不提前移除其同步保护；Actor 调度与异步审批接入后再收敛实际需要的状态。
 
-删除事件的 Plugin Waterfall 基类及 DeliveryPolicy，保留具名执行输入、输出与 ExecutionCompleted 值。目录变化通知仍服务尚未迁移的本地用例，不冒充版本化 DefinitionsChanged 发布；返回错误仍按原 mutation 规则处理。正式 Registry 发布失败恢复及更新屏障另按前述批次契约实现。
+删除事件的 Plugin Waterfall 基类及 DeliveryPolicy，保留具名执行输入、输出与 ExecutionCompleted 值。目录变化通知仍服务尚未迁移的本地用例，不冒充版本化 Definitions 发布；返回错误仍按原 mutation 规则处理。正式 Registry 发布失败恢复及更新屏障另按前述批次契约实现。
 
 验收：工具纯业务包不导入 Plugin；构造验证拒绝未校验配置；普通执行、策略拒绝、结果观察、本地中间件及关闭后拒绝执行；工具行为测试迁移为直接构造，不以测试专用 Plugin 适配掩盖生产迁移。全仓旧调用方尚未迁移时如实报告构建边界。
 
@@ -164,11 +236,19 @@ executionRuntime.Prepare 在任何前置策略执行前，将当前 pipeline 指
 
 这不是把锁转移到另一层：注册目录没有 mutex，也没有自建队列或活跃标志；只有原有调用状态的取消/阶段同步暂时保留，后续按 ToolActor 调度迁移。业务测试明确覆盖旧调用保留被移除策略、新调用仅使用更新后策略，以及取消的删除命令不改变目录。跨 Actor 的串行控制入口仍待真实 Tool Runtime 接入，不能由纯业务测试声称已实现。
 
+## Tools 子模块与业务边界
+
+按业务职责逐步拆分实际实现，不创建占位目录。`tools` 保留共享定义、调用输入输出及扩展接口；`tools/registry` 拥有目录批次与原子发布业务，`tools/registry/actor` 负责消息接收、串行调度、回复和已提交定义的事件投递。后续 Runtime 与单工具业务分别迁移时另行落实模块接口及验收，不将现有 ToolLayer 整体搬入 Actor。
+
+依赖方向为 Registry Actor → Registry 业务 → tools 共享契约。Registry 业务不得依赖 GoAkt、PID、GrainContext、邮箱或 Actor 客户端；业务对象返回具名结果和 error。候选校验、版本检查、幂等、发布与撤销规则全部由业务对象决定，Actor 不重复实现。共享契约不反向引用 Registry。
+
+本次迁移保持 Begin/Register/Publish/Read/Lookup/Abort/Settle 的业务接口和数据结构，迁移 Go 导入路径，不保留旧路径别名；工具名称、事件载荷与持久化格式不变。验收复用纯业务批次测试、真实 Grain 发布测试和 Prompt 消费测试，分别证明业务规则、投递边界及上游消费没有因目录迁移改变。
+
 ## Registry 批次发布业务实现
 
-`tools.Registry` 拥有各 Agent 已发布的 Definitions 及尚未结算的更新批次；现有私有 registry 只服务旧 ToolLayer 的本地执行查找，两者不互相引用。生产共享 Registry Grain 后续独占该业务对象，所有方法由邮箱串行调用，不添加锁。业务对象不执行工具、不持有执行器、不投递框架事件。
+`toolregistry.Registry` 拥有各 Agent 已发布的 Definitions 及尚未结算的更新批次；现有私有 registry 只服务旧 ToolLayer 的本地执行查找，两者不互相引用。生产共享 Registry Grain 后续独占该业务对象，所有方法由邮箱串行调用，不添加锁。业务对象不执行工具、不持有执行器、不投递框架事件。
 
-接口：Begin 接收更新 ID、AgentID、期望目录版本和有序完整工具名称；Register 接收同一更新 ID 与单个候选 ToolSchema、可见性；Publish 校验候选齐备并一次替换目录，返回 DefinitionsChanged；Read 提供初始化/追赶基线；Lookup 按更新 ID 返回发布结果；Abort 仅允许发布前撤销；Settle 在 Runtime 完成切换与资源释放确认后删除事务记录。更新 ID 由配置登记 owner 分配，必须唯一；不能重新使用已结算 ID。
+接口：Begin 接收更新 ID、AgentID、期望目录版本和有序完整工具名称；Register 接收同一更新 ID 与单个候选 ToolSchema、可见性；Publish 校验候选齐备并一次替换目录，返回 Definitions；Read 提供初始化/追赶基线；Lookup 按更新 ID 返回发布结果；Abort 仅允许发布前撤销；Settle 在 Runtime 完成切换与资源释放确认后删除事务记录。更新 ID 由配置登记 owner 分配，必须唯一；不能重新使用已结算 ID。
 
 关键结构：Registry 保存 Agent 到已发布目录、更新 ID 到 batch 两张表。batch 保存 Begin 输入、候选定义和可选发布结果。一个 Agent 同时只能有一个未结算批次；相同 Begin 输入与候选重试幂等，内容冲突明确失败。工具名称数组控制输出顺序，空数组表示删除全部工具。schema 验证和复制发生在候选登记阶段；外部修改输入或读取结果不能改变 Registry 状态。已发布批次拒绝 Abort，重复 Publish 返回原版本；缺失候选或期望版本冲突不得修改有效目录。
 
@@ -178,13 +258,21 @@ executionRuntime.Prepare 在任何前置策略执行前，将当前 pipeline 指
 
 ### Registry Grain 消息边界
 
-新增 tools/actor.RegistryGrain，以零值 tools.Registry 为唯一业务状态。组合根须用 WithLongLivedGrain 创建共享身份；OnReceive 只处理具名 Begin、Register、Publish、Read、Lookup、Abort、Settle 命令，立即返回具名结果。Actor 调用方使用 RequestGrain；外部测试允许 AskGrain，Grain 内不做 Ask 或等待其他 owner。
+目录请求明确命名为 BeginUpdate、RegisterDefinition、PublishDefinitions、ReadDefinitions、ReadPublication、AbortUpdate、SettleUpdate。它们分别表示声明更新、登记单工具候选、发布完整目录、读取已发布目录、查询指定更新的发布结果、撤销未发布更新、结算已完成更新；不是业务事件。此次只替换进程内 Go 消息类型及调用方，不保留旧名别名，不改变 Registry 业务方法、事件 payload、版本和持久化语义。OnReceive 仍只分派业务方法。
 
-Publish 在目录替换后向真实 TopicActor 发送 DefinitionsChanged，回复同时包含已提交目录和通知入队错误。错误不代表未发布，调用方必须按 Catalog.Version 或 Lookup 判定提交结果。重复 Publish 可以再次发送相同版本事件，消费方按版本幂等处理。PubSub 仅用于通知，入队成功不代表 Prompt 已应用；Read 提供可验证的基线。此 Grain 不管理业务关闭和实例切换，不能据其回复解除 Agent 更新屏障。强制停止系统会丢失内存目录，不能自动重放未知工具效果。
+新增 tools/registry/actor.RegistryGrain，以零值 toolregistry.Registry 为唯一业务状态。组合根须用 WithLongLivedGrain 创建共享身份；OnReceive 只处理具名 BeginUpdate、RegisterDefinition、PublishDefinitions、ReadDefinitions、ReadPublication、AbortUpdate、SettleUpdate 命令，立即返回具名结果。Actor 调用方使用 RequestGrain；外部测试允许 AskGrain，Grain 内不做 Ask 或等待其他 owner。
+
+PublishDefinitions 在目录替换后向真实 TopicActor 发送 Definitions，回复同时包含已提交目录和通知入队错误。错误不代表未发布，调用方必须按 Catalog.Version 或 ReadPublication 判定提交结果。重复 PublishDefinitions 可以再次发送相同版本事件，消费方按版本幂等处理。PubSub 仅用于通知，入队成功不代表 Prompt 已应用；ReadDefinitions 提供可验证的基线。此 Grain 不管理业务关闭和实例切换，不能据其回复解除 Agent 更新屏障。强制停止系统会丢失内存目录，不能自动重放未知工具效果。
 
 ### 工具定义中的函数适配器移除
 
 删除 ExecutorFunc、OutputRendererFunc、PresentationProjectorFunc、ContentFinalizerFunc、ConcurrencyClassifierFunc。ToolDefinition 保留 Executor 等具名能力接口；生产工具对象直接实现 Execute、Render、ConcurrencySafe，控制工具按实际命令拆出独立对象并仅持有所需依赖。此变更不改变工具名称、schema、输出或取消行为；纯测试闭包适配仅留在所属包的测试文件，不再作为生产扩展 API。既有 Plugin/Scope 调用链不在此处新增兼容桥接。
+
+## 执行视图与调度权限
+
+Scheduler 返回的执行句柄包含阶段状态，只交给执行编排调用方。Pre/Execute/Post policy、Guard、Finalizer 和 ResultObserver 接收的执行视图仅用于读取调用身份与参数，不得携带内部状态或反向引用 Runtime。沿用现有 Execution() 接口，统一在视图复制及请求构造处断开 state；Token 保留关联用途，不赋予调度权限。此调整不改变工具协议、审批规则和持久化内容，也不新增 Actor 状态。
+
+验收：扩展保留执行视图后调用 Scheduler.Dispatch 必须失败且不执行工具体；同次 Prepare 返回的真实句柄仍可正常 Dispatch 和 Finalize，确保拒绝只读视图不会损坏合法执行。
 
 ## Session 引用与审批续接迁移
 
@@ -193,3 +281,53 @@ Publish 在目录替换后向真实 TopicActor 发送 DefinitionsChanged，回�
 Prepare 遇到 AskDecision 返回 ScheduledApproval 和 ApprovalRequest{SessionID,ToolName,CallID,Reason}，此时不得 Dispatch。Actor 完成 Approval 的 asked/decided 审计后调用 ResolveApproval(execution,outcome)，原执行身份只允许续接一次；允许后仍需 guard 检查和取消检查。拒绝、不可用和取消进入结果处理，不能执行工具体。
 
 普通 Execute 无法跨调用等待审批，只能在 Ask 时失败关闭；生产 Actor 必须使用分阶段 Scheduler 路径。此阶段不创建 Actor 队列或等待 goroutine，保留的 awaiting-approval 是禁止过早派发的业务阶段。旧工具运行时的其他锁与状态仍待整体 ToolActor 迁移，不能据此宣称生产执行编排完成。
+
+## Runtime 实例客户端
+
+runtime/actor.Instances 实现更新业务的 Instances 端口，绑定一个 Agent Creation、Agent Registry、Tools Registry 和正请求超时。它通过 CreateTool 请求生命周期 owner 获得 ToolInstance，再发送 Provision、Commit、Retire、Abort；Remove 委托 RemoveTool，确认资源关闭和框架停用后才忘记路由。客户端不调用 GrainOf，不构造 Provider，不承担更新业务决策。
+
+实例表以工具名称为 key，保存本次 Agent 下已请求的工具创建及其确认身份，仅供串行更新任务使用，不增加 mutex。Prepare 在发送创建前记录责任；创建回复不确定时，清理先重试同名 CreateTool 以确认同一实例，然后 Abort 候选。此确认可能创建未配置的空实例，但不会 Open Provider；回滚仍须 Remove 新增项。移除回复不确定时保留原 CreationID 重试，不能重新创建来猜测移除结果。没有尝试创建的新增项清理直接完成。
+
+验收使用实际 Update、Catalog、Agent Registry、Tools Registry 和 ToolActor：首次发布、替换并释放旧实现、构造失败回滚保持旧版本、删除工具关闭资源。不据此宣称 Runtime Grain、Agent 更新屏障或生产启动接线完成。
+
+## 每 Agent 的更新业务 owner
+
+runtime.Runtime 保存 AgentID、已生效的工具名称/版本、当前 Update 和最近一次已完成更新结果。Directory 组合既有目录更新端口与精确配置读取；Instances 保持实例端口。Apply 读取指定配置，验证所属 Agent 与当前版本，创建并推进 Update；同一未完成更新重试使用原业务进度，不重复读取已结算删除的配置。其他更新不能越过未完成更新。最新已完成请求重试返回原结果，不重新发布或构造工具。
+
+Snapshot 仅在已初始化且没有未完成更新时提供脱离内部切片的名称/版本。回滚完成保留旧集合；发布后清理失败时不能把旧集合当作仍可使用的快照。Runtime 不持有框架地址、ActorSystem、等待回复或业务端口对象，调用者串行执行方法。
+
+### Runtime 关闭业务
+
+Runtime.Close 永久停止该实例的新更新和快照读取。若存在未完成 Update，以取消意图继续原更新：未发布则回滚，已发布则继续提交后的清理，发布状态不确定则保持失败并等待重试。更新回滚完成的原业务错误不阻止资源关闭；未完成的清理错误必须返回。之后逐个 Remove 当前工具，成功后从待关闭集合移除，失败保留当前项。重复 Close 不重复释放已确认移除的工具。关闭调用方仍须先排空执行；目录配置记录的生命周期清理与 Runtime Grain 停用由后续生命周期接线负责，本方法不启动或停用框架自身。
+
+### 新 Runtime 接续已发布目录
+
+同一 Session 的 Agent 关闭后，Tools Registry 的目录版本仍然存在。新 Runtime 必须创建本次工具实例，不能将旧目录视为自身已有的执行快照，也不能假定 Registry 版本归零。
+
+Runtime 的 current 改为可缺省快照：nil 表示本次尚无已完成更新。首次 Apply 接受 Registry 已登记的精确配置及其 ExpectedVersion，实际版本冲突仍由 Registry 的原子发布检查；本次已有快照后继续严格校验 ExpectedVersion。实例准备失败并回滚时 current 仍为 nil；只有完整成功后才设置本次快照。旧实例的释放必须由 Agent 生命周期先确认，这个变化不允许两个 Agent 生命周期并存。
+
+Catalog 客户端补充版本读取及配置登记，以现有 Registry 契约提交完整覆盖。读取不存在的目录返回版本 0；明确空目录返回其真实非零版本。配置通知失败仍保留 Registry 返回的已登记配置与 error，不伪装登记回滚，也不自动重复提交同一 UpdateID。
+
+验收：真实 Registry 业务保留版本 1、旧 Runtime 已关闭后，新 Runtime 首次准备失败不能暴露快照，重试新更新成功发布版本 2 并重新准备实例；Actor 客户端验证配置登记不发布工具定义，以及通知失败后的配置仍可精确读取。Runtime Grain 和生产创建接线仍是后续工作，不能以这些测试替代生产初始化验收。
+
+### Definitions 与单个 Schema 版本
+
+完整 Session 工具目录统一为 `tools.Definitions`，直接包含 AgentID、Schemas 和 KnownNames，删除外层包装，不保留旧类型别名。Schemas 使用 `[]llm.ToolSchema`，目录不再包含 Version 或 Revision。
+
+每个 Schema 独立维护 Version，由 Registry 在发布时按 SessionID 和工具名称分配。首次发布为 1；Description、Parameters 未变化时保持版本，仅变化的工具递增。移除后重新添加沿用该名称的历史版本并递增；隐藏不删除工具，也不改变未修改的 Schema 版本。候选提交 Version 必须为 0，禁止 Provider 分配或覆盖已发布版本。版本不编码进模型请求。
+
+Registry 继续按每 Agent 同时一个未结算更新约束原子发布；UpdateID 标识精确更新及查询结果，不承担排序，也不是换名后的目录版本。Begin/Configure 移除 ExpectedVersion。完整目录不存在与已发布空目录通过查询 Found 区分。发布前先计算全部 Schema 版本，校验全部通过后一次替换目录和版本记录；失败不能消耗部分工具的版本。
+
+Runtime 和 Prompt 对旧目录版本的依赖必须同步删除，不能从 Schema 最大版本推导整套目录版本。涉及删除和重加的通知消费须查询 Registry 当前完整目录确认成员，不能仅靠单个 Schema 版本推断删除。这部分在实际接线与测试完成前保持未完成状态。
+
+验收：修改 A 不增加 B 的版本；相同 Schema 重发不增加版本；删除再添加不复用版本；隐藏后再次可见保持未修改 Schema 的版本；空集合与未初始化可区分；模型请求不包含内部版本。
+
+#### Runtime 与执行契约迁移的已确认影响
+
+代码核对：`tools/runtime.Update` 将 ExpectedVersion + 1 放进 `tool.Revision.Version`；`Tool.Definition` 和执行消息又使用该数值选择实现。独立 Schema 版本不能直接替代它：Provider 可在 Schema 不变时替换实现，Schema 版本应保持不变，执行却必须绑定更新后已确认的实现。后续需以精确更新身份关联准备、提交、清理及执行，删除目录数值依赖；不能给每次实现替换强行增加 Schema 版本。旧更新迟到时的拒绝必须由有效更新及原实例身份契约保证，不能仅删除原数值比较。
+
+Catalog 客户端已移除 Version 方法及 Configure 的 expectedVersion 参数，不添加返回虚构目录版本的兼容 API。真实查询使用现有 ReadDefinitions.Found 区分不存在与已发布空集合。Runtime 和 Tool 的执行关联契约尚待实现与测试，因此 Catalog 整包验收也尚未重新通过。
+
+#### 实现更新身份
+
+`tool.Revision` 改为具名字符串，值为本次唯一更新 ID，仅标识工具实现，不可比较大小。Prepare、Commit、Retire、Abort、Definition、Execute 使用同一身份；Snapshot 返回已结算 UpdateID，不返回目录数值版本。相同 Schema 的新实现具有新更新身份，旧执行请求不能命中新实现。候选 Schema 的 Version 仍由 Registry 独立分配。ToolActor 在调用 Provider 前核实更新属于该 Agent 且尚未发布；已结算、已撤销或其他 Agent 的更新不得重新构造资源。框架回复经当前邮箱继续编排，不能保存旧 GrainContext 发起后续请求。

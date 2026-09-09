@@ -1,6 +1,6 @@
 # Tools 业务层
 
-`tools` 拥有工具定义、可见性、执行策略、schema 校验和规范输出。业务包已删除 Plugin、Service 包装及 Factory；Registry 已有批次发布业务对象和 Grain 入口；Tool Runtime 调度及 ToolActor 资源管理仍待实现。目标契约由[工具 Actor 方案](../zh-CN/actor-design/08-tools-implementation.md)拥有，[历史实施进度](../zh-CN/08-implementation-progress.md)不代表本次重构完成度。
+`tools` 拥有工具定义、可见性、执行策略、schema 校验和规范输出。业务包已删除 Plugin、Service 包装及 Factory；Registry 已有批次发布业务对象和 Grain 入口；ToolActor 已实现构造、自注册、工具体执行与资源清理调度，Tool Runtime 调度及生产生命周期接线仍待完成。目标契约由[工具 Actor 方案](../zh-CN/actor-design/08-tools-implementation.md)拥有，[历史实施进度](../zh-CN/08-implementation-progress.md)不代表本次重构完成度。
 
 ## 模块内职责划分
 
@@ -12,10 +12,18 @@
 | 定义验证 | [schema.go](schema.go)、[restriction.go](restriction.go) | schema 编译、不可变注册项及可见性规则 |
 | 不可变执行策略 | [pipeline.go](pipeline.go)、[pipeline_execution.go](pipeline_execution.go) | pipeline；执行前后策略、执行中间件与结果观察器 |
 | 单次执行编排 | [runtime.go](runtime.go)、[execution.go](execution.go) | executionRuntime；准备、分派、结算和调用状态 |
+| 工具体输入与输出 | [invocation.go](invocation.go) | Invocation、BodyResult；独立调用数据和随回复返回的上下文／结束 turn 意图，不持有 Runtime 状态 |
 | 执行阶段 | [policy_engine.go](policy_engine.go)、[dispatcher.go](dispatcher.go)、[result_processor.go](result_processor.go) | policyEngine、dispatcher、resultProcessor；分别处理策略、工具主体和规范结果 |
-| 定义及事件值 | [definition.go](definition.go)、[events.go](events.go) | ToolDefinition、Definitions、ExecutionCompleted、DefinitionsChanged |
+| 定义及事件值 | [definition.go](definition.go)、[events.go](events.go) | ToolDefinition、Definitions、ExecutionCompleted |
+| 已发布目录与更新批次 | [registry](registry/README.zh-CN.md) | Registry；纯业务校验、原子发布与结算 |
+| 目录消息与事件投递 | [registry/actor](registry/actor/README.zh-CN.md) | RegistryGrain；串行调度业务方法并投递结果 |
+| 单工具实现与资源生命周期 | [tool](tool/README.zh-CN.md) | Tool；准备、切换、撤销和资源释放；Actor 调度见 [tool/actor](tool/actor/README.zh-CN.md) |
 
 ## 主要对象与依赖
+
+策略、中间件、Guard、Finalizer 和结果观察器获取的执行视图只保留关联身份和参数，不携带内部调度状态。只有 Scheduler 返回给执行编排方的原始句柄能够推进执行阶段；保留视图不能绕过编排方再次派发工具。
+
+ToolRunContext.Execution 是独立 Invocation，不再携带 ToolExecution 的调度状态。Invocation.Run 调用 Executor，返回原始值、error 和本次工具体收集的效果；dispatcher 在原执行阶段采纳效果，再完成标准化与后置策略。上下文仍在包含它的工具结果提交后由 AgentLoop 接纳，失败结果不因结束 turn 标记被当成成功。工具体返回后其收集器关闭，晚到回调不能改变已返回结果。ToolActor 后续仅传 Invocation／BodyResult，不传可变业务 owner。
 
 `New(ValidatedConfig, Options)` 返回已构造的 ToolLayer 与 error，不需要额外激活。Options 提供具名的 Before、After、Execution、Results、Changes 依赖。未指定前后策略时分别使用 Allow/Accept；未指定观察器表示没有订阅方。
 
@@ -82,7 +90,7 @@ sequenceDiagram
 
 Close 清空本地目录、执行入口及本地观察器/中间件绑定，不关闭注入的外部策略 owner。关闭后的执行返回失败。当前 Close 不是 Actor 的业务排空协议，不能用它证明所有在途工具主体已退出；最终应由 Tool Runtime 和 ToolActor 消息契约负责。
 
-DefinitionsChanged 已定义 AgentID、版本及完整 Definitions。Prompt ToolsSubscriber 已验证消费映射，但Registry Grain 已实现发布及完整目录查询；启动时的基线追赶、Agent 更新屏障与 ToolActor 资源切换尚未接通。TopicActor 注销确认也不代表这些业务步骤完成。
+Definitions 直接包含 AgentID、Schemas 和 KnownNames，每个 Schema 独立携带版本。Prompt ToolsSubscriber 已验证消费映射，但Registry Grain 已实现发布及完整目录查询；启动时的基线追赶、Agent 更新屏障与 ToolActor 资源切换尚未接通。TopicActor 注销确认也不代表这些业务步骤完成。
 
 ## 验证
 

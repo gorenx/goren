@@ -125,6 +125,120 @@ API：Session.Models/SelectModel/Prompt 的配置读写走 Models 端口，由 L
 
 代码提交 `b9becf4`，独立暂存快照对两个客户端包运行非缓存 race 测试、vet 与 build 均通过。进程迁移执行表见 [Server 装配方案](41-server-composition.md)。
 
+## INT-28 ToolActor 初始化回复丢失后无法确认原绑定（已修复）
+
+生命周期接线前的契约检查发现 Initialize 无条件拒绝已初始化对象。`TestInitializationRetryConfirmsBindingWithoutReplacingImplementation` 先重复发送相同绑定，修复前失败于 `tools: Grain is already initialized`。这会使调用方在首次回复丢失后无法通过重试确认已成功的绑定。
+
+Initialize 现在比较 CreationID、AgentID、工具名称和 Registry 身份，相同则确认原绑定，不创建新的 Tool；不同则拒绝。不可变名称通过 Tool.Name 读取。绑定确认不代表配置就绪，不改变关闭状态，也不允许重新打开已释放的资源。测试还验证配置后重试不重开 Provider、四种绑定冲突均被拒绝、关闭后重试不使执行恢复。
+
+`go test -race -count=1 ./tools/... ./toolaskuser/... ./systemprompt/... ./agentloop/...` 通过。此修复不替代 Agent Registry 的创建准入或同名 ToolActor 移除后重建的代次保护，生产工具生命周期与 INT-23 仍待完成。
+
+## INT-27 配置登记后候选可见性仍可被覆盖（已修复）
+
+本轮配置登记接入后，`TestRegistryRetainsMergedConfigurationUntilSettlement` 新增隐藏配置检查，修复前失败：配置 Visible=false 的 ask 候选以 Visible=true 登记仍成功。原目录登记只有名称、schema 和重试冲突校验，尚未约束新加入的配置事实；因此 Agent 覆盖隐藏的工具可能错误进入模型工具目录。
+
+Registry.Register 现在按候选名称定位该批次的配置，拒绝可见性不一致，校验失败不写候选。此规则由业务实现，Grain 不重复判断。业务回归及真实配置 Grain、ToolActor 执行链路均通过：`go test -race -count=1 ./tools/... ./userquestions/... ./toolaskuser/... ./systemprompt/... ./agentloop/...`。
+
+配置消息现已实现 InitializeDefaults、RegisterConfiguration、ReadConfiguration，事件为 ConfigurationRegistered，明确表示登记事实。PubSub 不可用时配置保持已登记且可精确查询。ToolActor 测试已由手工 Begin 改为真实配置登记、读取 Provider 后再构造与发布；生产配置事件消费、动态全局更新及 Agent 生命周期接线仍未完成，INT-23 保留。
+
+## INT-26 执行只读视图仍具有调度权限（已修复）
+
+复现：`tools/policy_test.go` 的 `TestPolicyExecutionViewCannotDispatchPreparedCall` 在前置策略中保存 Execution() 返回值，正常 Prepare 完成后将该视图交给 Scheduler.Dispatch。修复前测试失败：工具体被调用一次且返回 nil error。
+
+根因：cloneExecution 仅复制参数字节，仍保留指向 scheduledExecutionState 的私有 state；该指针同时满足 Scheduler 的归属和阶段校验。字段不可导出并不意味着持有整个值的扩展无法把它交回公开调度接口。
+
+影响：扩展可用声明为只读的视图消费原本交给执行编排方的阶段，导致非预期工具执行或合法调用方随后收到阶段错误。这不是审批前自动绕过审批的证据：复现发生在 Prepare 已允许派发之后。
+
+解决：视图统一清除 state，Pre/Execute/Post 请求构造时也直接存放脱离状态的副本；调用关联 Token 不变。真实 Scheduler 句柄、内部执行终点仍保留必要状态，没有引入第二套权限表或 Actor 状态。
+
+验证：回归测试同时证明视图派发被拒绝且工具体未执行、真实句柄仍能派发并完成 Finalize。`go test -race -count=1 ./tools/... ./toolaskuser/... ./systemprompt/... ./agentloop/...` 和 `go vet ./tools/...` 通过。此结果不覆盖生产生命周期接线，INT-23 仍未解决。
+
+## INT-25 ToolActor 客户端向自己同步投递导致请求超时（已修复）
+
+复现：新增真实 Grain 客户端测试 TestClientReceivesActualBodyResultAndBusinessFailure 与 TestClientDoesNotTreatInvalidReplyAsCompletedBody，均失败为 request timed out。最初的 Then 回调在调用方邮箱轮次中通过 ActorSystem.TellGrain 给自己投递结果。
+
+根因：本地 TellGrain 等待目标处理消息并确认；调用方正占用同一邮箱轮次，无法处理自己正在等待确认的消息。影响：即使工具已经返回，调用方也迟迟收不到最终结果，进而触发外部超时。
+
+修复：先用 PipeToSelf 启动回复等待任务，Then 只向有缓冲的内部结果通道交付一次结果，由框架任务回送具名消息。当前轮次不等待自身邮箱。Client.Dispose 终止客户端等待任务，不表示远端工具体已关闭。工具业务 error 保留在 CallResult.Body；框架错误或无效回复使用 CallResult.Err，避免把未确认的执行状态当成已结束。
+
+验证：两项原失败测试及新增取消测试通过；取消确认后，原调用仍等待工具体退出。`go test -race -count=1 ./tools/... ./toolaskuser/... ./systemprompt/... ./agentloop/...`、Tools vet 与差异检查通过。该结果只覆盖工具客户端及相关模块，INT-23 的生产初始化缺口仍未解决。
+
+## INT-24 候选撤销失败后仍可提交（业务测试已修复）
+
+复现：新增纯业务测试 TestFailedAbortCannotCommitPartiallyReleasedCandidate，Resource.Close 返回部分释放错误后调用 Commit，测试失败 `partially released candidate was committed`。这是新单工具业务实现中的缺陷，尚未进入生产链路。
+
+根因：原实现只保留候选资源，没有保存已开始撤销的业务决定；资源释放返回 error 不保证资源毫无变化。影响：后续提交可能激活一个已经部分关闭的连接或进程。
+
+修复：Abort 开始时标记候选不再允许提交，失败与取消都保留待清理资源，只允许继续清理。Close 仍尝试所有资源，成功项不重复释放，失败项可重试。业务对象独立于 Actor。
+
+验证：Tools、ToolAskUser、SystemPrompt 和 AgentLoop 的非缓存 race 测试通过；新增测试覆盖部分释放失败后拒绝提交、取消后的资源保留、关闭失败重试、旧版本拒绝和定义字节隔离。该结果不证明 ToolActor 调度与生产工具初始化已经完成，INT-23 仍未解决。
+
+## INT-23 实际配置 owner 下 Agent 创建失败（未解决）
+
+复现：新增 internal/server/agent_creation_test.go，使用真实 ModelConfig、Prompt Registry、Tools Registry、Session Registry、Agent Registry 和 SQLite，不使用 configurationOwner。运行 `go test -race -count=1 ./internal/server -run '^TestAgentCreationWithProductionConfigurationOwners$'` 明确失败：`production Agent creation failed: systemprompt: tool definitions are not ready`。失败后的 closeAgents 清理成功。
+
+根因：Agent Registry 的启动阶段直接从 Session 初始化进入 Prompt.InitializeRuntime；后者要求 Tools Registry.Read 返回已经发布的该 Agent 工具目录。真实 Tools Registry 仅实现目录发布事务，没有按全局／Agent 配置准备 Tool Runtime 和 ToolActor 的生命周期接线。既有 agent/registry 创建夹具直接返回 Found=true、Version=1，掩盖了实际配置 owner 之间缺失的先后依赖。
+
+影响：此前局部测试通过不代表真实 Agent 可以创建；生产入口即使完成 HTTP 装配也会在创建时失败。问题超出 API 客户端本身，需要补上工具生命周期和启动顺序。此验收测试保持失败，不 Skip，也不把预期改成 ErrToolsNotReady 来伪装通过。
+
+修复方向：按 [工具实现方案](08-tools-implementation.md)，由工具生命周期 owner 根据全局配置与 Agent 覆盖准备 Tool Runtime／ToolActor，完成目录发布后再初始化 Prompt；Agent Registry 统一启动、失败回滚和关闭。不得直接在 API／组合根发布空工具目录，也不得让 Prompt 忽略缺失定义。后续须同时验证真实默认工具、启动失败清理、工具执行和配置更新屏障，而非只使该创建测试变绿。
+
+已完成前置拆分：ToolRunContext.Execution 原先含 scheduledExecutionState，并可达 executionRuntime 和注册项，不能直接跨 Actor 传递。改为独立 Invocation，工具体输出使用 BodyResult 返回值、error 和效果；Runtime 再采纳效果并保持原流水线行为。新增参数／结果隔离、调用间效果隔离和晚到回调测试。`go test -race -count=1 ./tools/... ./toolaskuser/... ./agentloop/...` 通过；该结果不包含且不解决上述生产 Agent 创建失败。ToolActor 与 Tool Runtime 的生命周期仍待实现。
+
+单工具业务已增加 Schema 和 Provision：Schema 提供候选定义副本；Provision 通过 Provider.Open 构造实现，负责校验、接管、取消后的清理和清理失败时的资源保留。纯业务集成测试验证 Schema → Registry.Register → Publish → Tool.Commit 的先后契约；资源测试验证部分构造失败、校验失败、取消及重复准备不会丢失资源或重复构造。此阶段的纯业务测试不包含生产配置装配，不能据此关闭 INT-23。
+
+ToolActor 后续已实现 Provision → Tool.Provision → Schema → Registry.Lookup/Register，登记确认后才回复；Lookup 验证更新所属 Agent。同一 Revision 的登记重试复用候选，CreationID 拒绝旧创建请求。真实 Grain 测试验证构造一次、候选登记、跨 Agent 拒绝、取消等待清理、任务 panic 回复与重复关闭。`go test -race -count=1 ./tools/... ./toolaskuser/... ./systemprompt/... ./agentloop/...` 及 Tools vet 通过。工具体执行消息已接入 Tool.Execute，真实 Grain 测试验证取消等到工具体退出、在途调用禁止资源释放、并发取消隔离和版本拒绝。调用 policy／中间件的 Actor 接线及 Agent Registry 启动顺序仍未完成，INT-23 继续保留。
+
+补充集成验证：`TestToolActorUsesQuestionActorForAnswerAndCancellation` 已接通实际 ToolActor → UserQuestions Client → UserQuestions Grain，正常答案及取消等待 Provider 退出均通过；资源不能在问答尚未退出时关闭。`go test -race -count=1 ./tools/... ./userquestions/... ./toolaskuser/...` 通过。本次重新运行真实配置 owner 的生产创建测试，仍失败于 `systemprompt: tool definitions are not ready`；根因仍是配置与初始化顺序未接入，没有用空目录基线绕过。
+
+Registry 配置业务进展：InitializeDefaults 显式登记启动基线；Configure 将全局默认值与 Agent 完整条目覆盖合并到同一批次；ReadConfiguration 提供指定更新快照。测试验证未初始化拒绝、配置登记不发布目录、切片隔离、未结算限制及结算清理。`go test -race -count=1 ./tools/registry/... ./tools/tool/...` 通过。尚未增加配置消息/事件、动态全局更新或生产创建接线，INT-23 仍未解决。
+
+## INT-22 Workspace 的 Session Header 端口只有测试实现
+
+缺失路径：Workspace Registry 的初始化、成员附加和 CWD 验证消费 SessionHeaders，但现有接线仅由测试夹具提供 Header。生产组合根无法提供实时与持久化 Session 的统一元数据来源。
+
+方案：workspace/actor.Headers 通过现有 Session Registry 查找实时 Header，通过 persistence.Reader 读取持久化 Header；Get 优先实时，List 分页读取持久化结果再覆盖实时同 ID，排序并复制返回。适配器不做成员归属判断、不创建 Session，不增加反向 owner 引用。它由 Workspace 的后台业务任务调用，读取错误不得当作不存在吞掉。
+
+验证：`go test -race -count=1 ./workspace/... ./apiproxy/workspace/...` 通过。新增实际 Session Registry／SQLite 集成测试验证未持久化空 Session、Header 副本隔离、关闭后持久化读取、恢复后的实时与持久化去重、缺失和取消。生产 Server 的具体注入仍待完成，测试不宣称整个进程已启动。
+
+## INT-21 进程关闭缺少稳定的 Agent 清理入口
+
+缺失路径：Registry 只提供单创建 CloseAgent，生产组合根没有取得全部剩余根创建并停止新准入的契约。仅查询当前就绪 Agent 会遗漏未完成初始化及失败后仍保留资源的创建；边查询边允许新建则无法确定关闭集合。
+
+方案：业务 Registry.StopAdmission 永久停止本次目录的新注册及普通准入，保留成员关系；Registry Grain 同一轮次返回剩余根 Creation。internal/server.closeAgents 仅调用这些根的现有 CloseAgent，子树关闭和 Session flush 继续由 Registry 编排；部分失败合并返回，重试再次读取剩余根，不另存 Agent 表、不提前停用框架和数据库。
+
+验证：`go test -race -count=1 ./agent ./agent/registry ./internal/server` 通过。新测试用真实 Registry、父子登记和执行关闭故障夹具验证根顺序、禁止新根及子注册、其他根独立关闭、失败根保留、重试后子树移除及重复关闭。原 Registry 测试覆盖已初始化组件和 Session 持久化关闭；新测试不冒充进程 HTTP 停止或活跃 turn 取消的完整验收。
+
+## INT-20 LLM 配置初始化没有注册默认 Provider
+
+缺失路径：internal/server 已能安装 ModelConfig，但没有构造并注册 DeepSeek Adapter。配置存在不代表 worker 能选中 Provider，因此仅配置初始化测试无法证明模型调用可用。
+
+方案：initializeDeepSeek 使用现有 Connection、Identity、Adapter 构造契约，向同一个 LLM Grain 注册 deepseek-official；保留 RegistrationID 与 error，既不注入密钥值，也不保存 Agent 配置。组合根继续使用已有 SpawnPool 初始化 worker router。
+
+测试中首次未启用 PubSub，Registry 返回非空注册 ID 和“registration committed but PubSub is unavailable”错误。根因是测试 ActorSystem 不满足生产方案的 PubSub 前置条件，不是注册未发生；修正测试装配启用 PubSub，未把已生效错误吞掉或盲目重试注册。
+
+复验：`go test -race -count=1 ./internal/server` 通过。新集成测试使用真实 Credentials Actor、LLM Grain、两个 workers、真实 DeepSeek Adapter 和本地 HTTP SSE 服务；验证无密钥初始化不发请求、后写凭据能用于调用、所有流读取经相同 CallID 路由、仅产生一次 HTTP 请求且返回 hello，最终收到成功 CloseCall 确认。测试不覆盖远端 DeepSeek 可用性或 AgentLoop 到 Session 的完整对话链。
+
+## INT-19 Session 提交订阅与关闭竞态
+
+缺失路径：Feed 已能转换提交事件，但没有 PubSub 订阅者；因此现有 Feed 单测不能证明 Session 发布的通知会到达 API。新增 Subscriber 将 CommitNotice 交给 Committed 消费接口，异步任务串行执行，后续通知使用框架 stash，启动等待 SubscribeAck。
+
+首次 race 测试在 Subscriber.PostStop 与 Receive 之间失败：前者读取 active，后者处理任务完成时清空 active。GoAkt v4.5.3 外部 PID.Shutdown 的 PostStop 路径与 dispatcher 的 Receive 可重叠，不能把 PostStop 当作同一邮箱中的下一条消息。影响是关闭可能竞争当前任务的取得与释放。
+
+修复：关闭边界加锁，先取消生命周期 Context，再等待已登记任务退出；Receive 在同一保护范围内检查取消，停止后不新增消费。工作线程只持捕获的消费者、事件和完成通道，不访问 Actor 状态。未通过增加自管消息队列解决排序，也未修改持久化或下行协议。
+
+复验：`go test -race -count=5 ./apiproxy/session/events/actor` 通过，包含真实 PubSub 到 Feed、阻塞首事件时后续事件不能先发送、Shutdown 取消并等待消费退出。Session 创建／移除、Agent 状态及生产端到端连接仍待实现；这不是完整下行验收。
+
+## INT-18 Commands API 缺少生产目录解析
+
+根因：API 只定义了 Resolver，测试替身同时承担准入和能力返回；实际 commands/actor.Client 虽可执行，但没有实现从 Agent Registry 获取已就绪 Commands 地址的 API 客户端。Session 普通 Agent 准入封装在私有流程中，不能直接绕过它读取 Registry。
+
+影响：生产组合根无法提供 Commands 依赖；直接按服务名构造客户端还会绕过持久化恢复和当前父子归属检查。
+
+方案：Session Gateway.ActivateAgent 复用原普通准入及错误映射。Commands Gateway 先调用 Access，再调用 Resolver；API Server 连接两个 Gateway。新增 commands/actor.Directory 查询 Registry、核对身份与当前归属，返回固定 CreationID 的现有命令 Client，不启动 Actor、不维护路由缓存，也不增加 AgentLoop 到 Commands 的依赖。
+
+验证：`go test -race -count=1 ./apiproxy/... ./internal/connection/... ./internal/server ./commands/actor`、`go vet ./apiproxy/...` 通过。新增测试覆盖持久化恢复、live child 拒绝、准入失败不访问目录、路由身份校验及客户端使用正确 CreationID；目录映射使用协议测试 Grain，命令执行与取消由 commands/actor 原有真实 Grain 测试覆盖。Markdown 本地链接与 `git diff --check` 通过。尚未验证真实 HTTP 到 Compaction 的完整链路；进程组合根仍需注入 Directory。
+
 ## INT-16 暂缓 Subagent 阻断主线 API 编译
 
 根因：根 `apiproxy` 仍保存 Bound API，而其契约导入暂缓迁移的 `subagent/bound`；Plugin 删除后，该依赖使不使用 Bound 的 API 主线也无法构建。
@@ -153,3 +267,100 @@ API：Session.Models/SelectModel/Prompt 的配置读写走 Models 端口，由 L
 编译审计 `go test ./... -run '^$'` 未通过：旧 internal/assembly、cmd 和暂缓迁移的 subagent 仍有 Plugin 引用。API 根包保留的 Bound API 也通过 subagent/bound/inbox.go 间接依赖 Plugin，所以此前 API 子树通过的结果不能用于证明删除后的 API 可编译。
 
 后续需完成生产入口替换，并将暂缓的 Bound/Subagent 入口与当前 API 主线隔离；不恢复旧 Plugin 来绕过编译失败。移除前 Web 的非缓存 race 测试已通过，本次删除后只完成差异与依赖审计，不宣称全项目测试通过。
+
+
+## INT-29 工具移除失败后仍被重复创建复用（已修复）
+
+发现：新增 Agent Registry → ToolActor 生命周期集成时检查 RemoveTool 与 CreateTool 的交错。资源 Close 失败后原实现仍保留 toolInitialized，CreateTool 因此可能返回已经开始关闭的实例。
+
+根因：已初始化同时被当作可复用和可重试关闭两个状态；清理失败没有保留不可逆的移除意图。
+
+方案：增加 toolClosing，仅表示已开始移除但资源关闭尚未确认；CreateTool 拒绝复用，RemoveTool 继续清理原实例。资源关闭确认后进入 toolReleased，仅重试框架停用。创建、移除结果分别使用 toolCreationResult、toolRemovalResult，避免把任务返回误称为整个生命周期完成。
+
+验证：grain_tools_test.go 的 TestToolRemovalFailureRejectsReuseUntilCleanupSucceeds 使用真实 Registry、ToolActor 和可注入关闭错误的资源，覆盖失败后拒绝复用、重试成功及同名新工具获得新 CreationID。TestAgentCloseRetainsToolCleanupFailureAndRetries 验证 Agent 不会在工具关闭失败后释放身份。强制 PoisonPill 的测试明确预期后续关闭报错：新激活不能冒领旧工具登记，测试不把系统停止当作业务清理成功。
+
+初始化首次外部 Ask 也复现 INT-06 的请求信封问题；ToolActor 在 GrainOf 时配置重入，Initialize 通过 RequestGrain 向 Agent Registry 声明激活身份。延迟回复不再依赖 Receive 内临时启用重入来改变已收到的请求。
+
+本轮验证：go test -race -count=1 ./tools/... ./agent/registry ./agentloop/... ./systemprompt/... ./toolaskuser/... 通过；go vet ./tools/... ./agent/registry 与 git diff --check 通过。新增测试最初因重复声明 askLifecycle 无法编译，已删除重复夹具并复用既有函数。这些检查不证明生产 CreateAgent 已接通 Tools Runtime，INT-23 和完整生产调用链仍未完成。
+
+
+### INT-23 后续进度：实际工具更新端口
+
+已实现 tools/runtime/actor.Instances，工具创建和移除交给 Agent Registry，配置应用及候选清理交给 ToolActor；业务 Update 不依赖 GoAkt。TestUpdateUsesToolLifecycleForReplacementRollbackAndRemoval 经真实 Actor 验证首次发布、替换、构造失败回滚、删除及资源释放次数。新增测试最初误用 RegisterConfiguration.Tools，已按现有 Overrides 契约纠正。go test -race -count=1 ./tools/runtime/actor 与 go vet ./tools/runtime/... 通过。
+
+生产初始化仍未接通。最近一次 go test -race -count=1 ./agent/registry ./agentloop/... ./apiproxy/... ./internal/server 中前三个范围通过，internal/server 的 TestAgentCreationWithProductionConfigurationOwners 仍报 systemprompt: tool definitions are not ready。下一步需实现 Runtime 的 Actor 编排及其生命周期接线，不能以手工预发布目录替代实际生产初始化。
+
+
+## INT-30 Runtime 生命周期接线的反向实现依赖（已移除）
+
+发现：Instances 客户端直接导入 agent/registry 来使用四类工具生命周期消息；后续 Agent Registry 若直接启动 Runtime Grain，会形成 registry → runtime/actor → registry 包依赖环。
+
+修复：CreateTool、ToolInstance、RemoveTool、ToolRemoved 移入既有 agent/actor 契约包；父 Agent 身份由 AgentID、AgentCreationID 表达，独立工具身份不变。Registry 与 Runtime 客户端分别依赖契约，删除旧声明并迁移调用和测试，无兼容别名。未更改 wire 或持久化。
+
+验证：go test -race -count=1 ./agent/registry ./tools/runtime/actor ./agentloop/actor 通过。TestUpdateUsesToolLifecycleForReplacementRollbackAndRemoval 增加删除失败后重试、目录版本和资源次数断言，通过真实 Actor 验证原身份复用与更新保留。此变更消除了接线障碍，尚未实现 Runtime Grain，生产初始化失败仍归 INT-23。
+
+
+## INT-31 Session 登记回复无法确认时遗漏清理（已修复）
+
+复现：TestUnconfirmedSessionRegistrationStillClosesItsReservation 将请求转发到真实 Session Registry，登记成功后仅损坏回复。修复前 Agent 关闭返回成功，但新 CreationID 登记报 session: identity is reserved or retired，证明旧登记泄漏。
+
+根因：activation.sessionRegistered 只在成功回复后置位，关闭又仅按该标记执行 Session 清理；创建操作同时承担临时执行状态与长期组件登记。
+
+修复：installation 独立保存组件地址和 Session owner。发送登记前记录清理责任；无法识别或传输错误的回复保留责任，正常拒绝回复撤回本次责任。关闭从 installation 取得资源，与启动游标分离。原创建身份的关闭成功后，新身份能够重新登记。
+
+验证：专项测试修复前稳定失败、修复后通过；go test -race -count=1 ./agent/registry ./agentloop/... ./tools/runtime/actor ./apiproxy/session/actor 全部通过，go vet ./agent/registry 和 git diff --check 通过。此变更未完成创建依赖顺序调整，不表示 Runtime Grain 与生产工具初始化已经接通。登记未到达与其他身份占用的进一步查询契约仍需明确，不吞掉关闭错误。
+
+
+### INT-23 后续进度：工具集合状态归业务 owner
+
+新增 toolruntime.Runtime，保存每 Agent 当前集合和版本、未完成 Update、最近一次完成结果。真实 Actor 更新集成改为从 Runtime.Apply 驱动，覆盖结算后重复请求、不重复 Open、未完成清理阻止后续更新、未完成期间拒绝快照、回滚保留版本和快照切片隔离。go test -race -count=1 ./tools/runtime/... 通过。该业务对象不含框架引用，尚未实现 Runtime Grain 和生产生命周期初始化。
+
+
+### INT-23 后续进度：Runtime 关闭业务
+
+Runtime.Close 已实现关闭准入、未完成更新清理和工具逐项移除。新增业务测试验证发布前回滚与发布后继续清理，失败保留责任，重试和重复关闭不重复已确认操作。go test -race -count=1 ./tools/runtime/...、go vet ./tools/runtime/... 与 git diff --check 通过。测试使用 Registry 业务和故障端口；Runtime Grain、目录关闭清理及生产接线仍未完成。
+
+
+## INT-32 同一 Session 重建工具实例时拒绝保留目录版本（已修复）
+
+复现：`TestNewRuntimeRebuildsInstancesAgainstRetainedCatalog` 先发布工具目录、关闭旧 Runtime，再用新 Runtime 应用基于保留版本的配置。修复前首次更新报 `configuration does not match this Agent and current version`，导致关闭后的 Session 无法按已有目录版本重建工具实例。
+
+根因：Registry 保留已发布目录及版本，新 Runtime 却将零值 Snapshot 当作自己的有效版本，强制要求首次配置基于版本 0。保留目录只能证明过去的发布事实，不能证明新 Runtime 已经持有对应实例。
+
+修复：Runtime 在首次完整更新成功前没有当前快照；首次更新采用 Registry 已登记配置的 ExpectedVersion，原子发布仍由 Registry 校验。首次准备失败并完成回滚后仍不能读取快照；后续成功重建才提供新版本及工具集合。已有有效快照时继续要求版本匹配，不放宽并发发布条件。
+
+Catalog 客户端增加 Version 和 Configure：无目录返回版本 0，已发布空目录返回真实版本；配置已登记但通知失败时同时返回登记事实和错误，调用方不能把通知错误当作登记失败。
+
+验收覆盖重建失败回滚、再次重建成功、实际新实例准备/提交、空目录版本和 PubSub 失败保留配置。该修复是 Runtime 业务与 Actor 客户端契约修复；Runtime Grain、生产创建链和 AgentLoop 更新屏障仍未接通，不代表 INT-23 已解决。
+
+
+## INT-33 工具目录版本与单个 Schema 版本混用（迁移中）
+
+用户确认 Definitions 去掉嵌套、每个 ToolSchema 独立维护 Version，不保留目录 Version/Revision。原实现使用整套目录版本同时承担 Schema 识别、发布校验和 Prompt 去重，使单个工具变化影响所有工具的版本表达。
+
+Registry 已移除 ExpectedVersion 与目录版本字段，使用原有的每 Agent 一个未结算更新约束原子发布。Schema 版本按 SessionID 和名称独立分配，全部校验成功后才提交；删除重加递增，隐藏恢复保留未改变 Schema 的版本。Definitions 查询和发布使用同一扁平值，模型 JSON 不包含内部 Version。没有旧类型别名。
+
+验证：`go test -race -count=1 ./tools/registry/...` 通过，包含真实 Registry Grain 发布、查询及通知失败后保留提交事实，以及单个 Schema 版本业务测试。
+
+边界：随后执行 `go test -count=1 ./tools/runtime/... ./systemprompt/... ./agentloop/actor` 编译失败，明确定位 Runtime 对 ExpectedVersion、Prompt 对目录 Revision 的剩余依赖。迁移尚未完成，不以静默默认值、兼容字段或 Schema 最大版本修复。INT-32 的目录版本续接机制随本次确认废止，其“新 Runtime 必须重新获得实际实例后才可提供快照”的业务约束仍保留。
+
+
+### INT-33 后续：Catalog 契约与执行选择依赖
+
+Catalog.Configure 已移除目录版本参数，Version 查询方法已删除；Actor 测试改为检查空集合的 Found、通知失败保留登记、未结算更新排他及结算后允许下一次登记。未提供兼容字段或替代版本。
+
+进一步调用链核对发现 Tool.Revision.Version 同时用于 Runtime 更新关联和 Tool.Definition/Execute 的实现选择。Schema 不变的 Provider 更新仍会替换执行实现，故不能把此数值机械改成 Schema.Version。这个依赖需要连同旧更新迟到防护一起迁移。当前仅完成代码和契约调整，Runtime 原 ExpectedVersion 依赖仍导致整包编译失败，不能声明 Catalog 新测试已通过。差异检查通过。
+
+
+### INT-33 后续：工具实现身份迁移通过，Prompt 尚未完成
+
+Runtime Snapshot 移除目录 Version，返回已结算 UpdateID。tool.Revision 改为不可排序的具名字符串，Prepare/Commit/Retire/Abort/Definition/Execute 使用准确更新身份。相同 Schema 更换 Provider 时 Schema.Version 不变，但旧实现请求被拒绝，新实现请求成功。
+
+ToolActor 在 Open 前核实有效更新，阻止已结算更新和其他 Agent 的更新构造资源。查询回复经邮箱继续，移除旧的 Then 内使用保存 GrainContext 发起后续请求。新增迟到更新测试保证旧请求不干扰当前实现及资源释放。取消测试补齐有效批次；panic 测试增加 Open 次数断言，避免请求被前置拒绝却误判已验证 panic 清理。
+
+验证：`go test -race -count=1 ./tools/tool/... ./tools/runtime/... ./tools/registry/...`、对应 `go vet`、`git diff --check` 通过。Prompt 仍依赖旧目录版本，跨模块初始化尚未通过；扩大检查中的 Agent Registry 测试超过预期时间后主动中断，另用 20 秒超时定位。未声明全项目可运行。
+
+
+### INT-33 提交前扩大检查的准确结果
+
+`go test -count=1 -timeout=20s ./agent/registry ./systemprompt/... ./agentloop/actor` 未通过：Prompt.Initialize 仍调用要求非零目录版本的旧业务 ApplyTools，输入已不再提供目录版本，报 `systemprompt: tool definition version mismatch`。Agent 创建和 AgentLoop 初始化因此提前失败。Registry 的 TestComponentFailurePreservesSessionAndRetriesReverseShutdown 在等待尚未到达的组件阶段通知时触发 20 秒超时；这是上游初始化失败后夹具无界等待，不能解释为 GoAkt dispatcher 整体阻塞。后续应完成 Prompt 契约迁移并将该夹具等待改为有界断言。该失败不通过填入版本 1 或保留兼容字段绕过。

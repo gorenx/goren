@@ -99,7 +99,7 @@ sequenceDiagram
     Subscriber->>Registry: RequestGrain Read(AgentID)
     Registry-->>Subscriber: 完整已发布目录
     Subscriber->>Runtime: RequestGrain ApplyTools（基线）
-    Topic->>Subscriber: DefinitionsChanged
+    Topic->>Subscriber: Definitions
     Subscriber->>Runtime: RequestGrain ApplyTools
     Coordinator->>Subscriber: UnsubscribeTools
     Subscriber->>Topic: Unsubscribe（已停止转发）

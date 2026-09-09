@@ -14,7 +14,9 @@ Agent 负责身份、父子关系、Inbox 与业务契约，设计见 [Agent 模
 | agent.go | 状态与只读 Inbox 契约；不返回可执行的 Agent 对象 |
 | Options / options.go | Agent 配置值、校验及独立复制，不负责厂商参数规则 |
 
-旧 RegistryPlugin、Factory、Host、Handle、Scope、Setup 和 Registry 并发关闭实现已删除。当前 Registry 仅实现纯目录规则，返回分离数据，没有锁或工作队列。[Registry Grain](./registry/README.zh-CN.md) 已实现创建、身份授权与关闭编排，纯业务目录仍不承担框架职责。
+旧 RegistryPlugin、Factory、Host、Handle、Scope、Setup 和 Registry 并发关闭实现已删除。当前 Registry 管理身份、生命周期、组件就绪依赖和资源责任，返回分离数据，没有锁或工作队列。[Registry Grain](./registry/README.zh-CN.md) 已实现创建、身份授权与关闭编排，纯业务目录仍不承担框架职责。
+
+Registry.StopAdmission 永久停止本次目录实例的新注册和普通准入，保留现有成员供递归关闭及失败重试。它不运行取消、框架停止或存储 flush，也不通过清空成员表伪装关闭完成。
 
 ```mermaid
 flowchart LR

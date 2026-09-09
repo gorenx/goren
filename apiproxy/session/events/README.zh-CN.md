@@ -33,7 +33,7 @@ sequenceDiagram
 Feed 只借用 Broker；取消订阅会释放本次连接，不关闭 Session 或清除未完成交互。
 队列变化与对应日志通知组成一个批次，避免单独过滤事件后仍发送过期队列。
 
-当前测试覆盖基线读取期间收到事件时的去重和取消退出；Feed 对同 Session ID 重新激活的过滤、实际 PubSub 连接及 HTTP/WebSocket 全链路尚待接通验证。
+当前测试覆盖基线读取期间收到事件时的去重和取消退出。`actor.Subscriber` 已连接真实 PubSub 到 Feed.Committed，按序消费并在停止时取消、等待当前工作；Session 创建／移除、Agent 状态通知与生产 HTTP/WebSocket 全链路仍待接通。不能因 CreationID 改变就假定持久化日志序号重置。
 详细边界见 [API Proxy 设计](../../../zh-CN/actor-design/38-api-proxy-module.md)，
 集成证据见 [问题记录](../../../zh-CN/actor-design/40-integration-findings.md)。
 

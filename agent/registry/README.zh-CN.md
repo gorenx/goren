@@ -1,48 +1,60 @@
-# Agent Registry Grain
+# Agent Registry
 
-本包以 SessionID 索引 Agent 生命周期，统一创建、恢复、就绪发布与关闭编排。设计见 [Agent 生命周期](../../zh-CN/actor-design/39-agent-activation.md)，进度见 [实施计划](../../zh-CN/actor-design/12-implementation-plan.md)。
+本包按 SessionID 管理 Agent 的框架身份并调度生命周期请求。业务依赖、可用状态和资源责任由独立的 `agent.Registry` 管理。设计见 [Agent 生命周期](../../zh-CN/actor-design/39-agent-activation.md)，集成问题见 [验证记录](../../zh-CN/actor-design/40-integration-findings.md)。
 
-## 对象与模块职责
+## 模块内职责
 
-| 对象 / 文件 | 职责 |
+| 文件 | 职责 |
 | --- | --- |
-| Grain / grain.go | 持有纯业务 agent.Registry，校验 CreationID、InstanceID 与父级准入 |
-| creation.go / messages.go | 创建、查询和关闭契约；返回分离注册信息与框架地址 |
-| activation / grain_create.go | 固定创建输入，保存已接收的启动责任和异步初始化进度 |
-| grain_resolve.go | 发布地址前校验原 AgentLoop 激活仍有效；旧回复不影响替代实例 |
-| closure / grain_close.go | 保存关闭阶段、逆序组件位置和等待回复；失败从原步骤重试 |
+| grain.go | 消息入口、身份授权、父子身份关联和准入请求适配 |
+| grain_create.go | 合并重复创建请求，调度未就绪组件，交回初始化结果 |
+| grain_close.go | 调度尚未释放的责任，关联关闭回复，确认身份释放 |
+| grain_find.go | 返回地址前验证原 AgentLoop 激活仍然有效 |
+| grain_tools.go | 单工具实例授权、创建、移除与失败重试 |
+| components.go | Client 装配，以及 Session、Prompt、LLM、AgentLoop、Commands、附加组件、子 Agent 和工具的具体协议 |
+| client.go | 异步请求、回复类型检查、使用当前邮箱上下文续接协议及框架停用 |
+| creation.go | 创建请求及校验、复制、重复请求比较，以及就绪结果 |
+| messages.go | 身份登记、准入和关闭消息契约 |
 
-creations 的 key 是 SessionID，value 是最近一次创建身份、当前执行地址和创建/关闭进度。关闭成功保留结果到下一次创建，不保留业务 AgentLoop 对象。父子关系仅在纯业务目录中维护，模型、Inbox、工具和压缩业务不进入 Registry。
+不按单个对象拆文件。组件 Client 集中放在同一文件，各自封装对应 owner 的协议；通用调度入口不包含按组件展开的 switch，也不维护 startupStep、shutdownStep 或 StartupAction。
 
-Registry 用 GrainOf 启动核心组件，使用共享 StartComponent/StopComponent 协议请求能力 Registry。没有 GrainFactory、Plugin、业务队列或 mutex。Compaction 的策略和具体 Grain 启动归它自己的 Registry。
+## 主要对象与依赖
+
+业务 Registry 保存四种生命周期状态、组件依赖、已就绪事实及待释放资源。`reservation` 保存本次 CreationID、已授权 InstanceID、Client 和未完成请求。`activation` 仅保存固定创建输入、当前请求关联和共享回复；`closure` 仅保存当前资源请求及共享回复。
+
+`installation` 装配 Client，不启动 Actor。AgentLoop Client 依赖 Session 和 Prompt Client 的已初始化地址；附加组件 Client 依赖 Session 和 AgentLoop 地址。Client 不回指 Registry Grain，不持有业务 Agent 对象。框架地址、回复句柄和取消函数不进入业务 Registry。
+
+`creations` 的 key 是 SessionID。单工具表的 key 是 canonical tool name，例如 `creations["session-1"].tools["ask_user_question"]`；不同 Agent 的同名工具分别登记。工具配置与实现切换仍归 Tools Registry、Tool Runtime 和 Tool 业务对象。
+
+## 交互流程
 
 ```mermaid
-flowchart TD
- C[CreateAgent] --> V[校验父级及固定创建输入]
- V --> S[Session 登记与启动]
- S --> P[Prompt 初始化]
- P --> M[读取 Session 历史并请求 LLM 初始化配置]
- M --> A[AgentLoop 初始化]
- A --> X[Commands 与可选组件初始化]
- X --> R[确认准入后发布 Ready]
- D[CloseAgent] --> F[冻结子树准入，等待在途初始化]
- F --> Q[AgentLoop 准备关闭]
- Q --> K[子 Agent 关闭]
- K --> O[Commands 关闭，组件逆序关闭]
- O --> E[AgentLoop 释放执行资源]
- E --> H[Prompt 关闭]
- H --> L[Session flush 与关闭]
- L --> Z[AgentLoop 停用，释放身份]
+sequenceDiagram
+ participant C as 调用方
+ participant G as Registry Grain
+ participant B as Agent Registry 业务
+ participant P as 组件 Client
+ participant O as 组件 Owner
+ C->>G: CreateAgent / CloseAgent
+ G->>B: 检查依赖或读取未释放责任
+ B-->>G: 所需组件或资源
+ G->>P: Initialize / Close
+ P->>O: Owner 的具体协议
+ O-->>P: 具名确认或 error
+ P-->>G: 完成结果回到邮箱
+ G->>B: 确认就绪或资源释放
+ Note over B: 依实际事实决定下一项
+ G-->>C: Ready / Closed
 ```
 
-身份只能在 CloseAgent 确认资源关闭后释放，没有直接删除预留的消息入口。关闭不丢弃待处理输入、不把取消确认当作工作结束。失败保留资源与身份，后续重试继续；初始化失败但尚未 Claim 的创建也会清理已获得的 Session/Prompt。旧 CreationID 无权释放替代创建；Verify 检测意外重新激活后停止发布地址，不能据此假称原执行资源已清理。
+创建前记录资源责任；无效或丢失回复不能当作没有取得资源。初始化失败自动进入 Closing 并启动清理，创建回复保留原错误。关闭失败保留身份和未释放责任，CloseAgent 重试不会重复已确认的释放。
 
-通过普通调用方 AskGrain 发起首次创建时，须以 WithGrainReentrancy 激活 Registry；Actor 调用方使用 RequestGrain。等待期间 Registry 使用 AllowAll 处理 Claim、重复请求和其他 Agent。框架停用等待在 PipeToSelf 任务中完成。
+关闭先冻结准入，等待在途初始化和实际执行结束，再关闭子 Agent、Commands、附加组件、执行资源、Tools、Prompt、Session，最后停用 AgentLoop。取消确认不等于执行结束。显式取消并保留 Inbox 后，输入可以随 Session flush 保留，并在下次恢复；尚有执行或维护时仍等待完成。
 
-寻址为 `<sessionID>.<service>`，通过各服务消息文件的 RuntimeName 生成；业务身份在消息中显式传递。Registry 自身使用固定 Name。Resolve 的 WaitReady 可等待已有创建的最终结果，默认仍在初始化未完成时拒绝解析；等待者复用创建回复集合，不增加 API 生命周期 map。Resolve 不创建新的业务生命周期，但框架可能重新激活已失效地址，因此需核对 InstanceID。
+Session 登记和启动由 Session Client 封装。LLM Client 只请求配置初始化，LLM owner 自行读取 Session 并恢复配置。业务关闭后还需框架停用的 Client 保留停用确认边界，以便框架停用失败后只重试停用。
 
-## 验证与限制
+## 验证与未完成范围
 
-[创建集成测试](./grain_creation_test.go) 覆盖并发创建、输入冲突、关闭与初始化交错、失败清理、组件逆序关闭重试、SQLite 恢复、Compaction 注册撤销及旧身份隔离；[父子关闭测试](../../agentloop/actor/grain_close_test.go) 覆盖三代关系与父资源保留；[执行关闭测试](../../agentloop/actor/grain_test.go) 覆盖待处理输入取消和 Session flush 失败重试。测试使用真实 GoAkt 和 SQLite，配置及特定故障通过窄契约夹具提供。
+[纯业务测试](../registry_lifecycle_test.go) 覆盖依赖、非法就绪、未确认资源、关闭顺序和失败保留。[创建集成测试](./grain_creation_test.go) 使用 GoAkt 与 SQLite，覆盖重复创建、自动清理、关闭重试、关闭与维护交错，以及保留 Inbox 后恢复消息身份与顺序。[登记测试](./grain_registration_test.go) 验证损坏注册回复仍保留 Session 清理责任。
 
-本包不代表旧 API Session/Scope 已迁移，也不保证进程崩溃后恢复仍在内存中的创建事务。强制停用导致无法确认资源清理时返回错误并保留身份，不能把框架地址存在视为业务可用。
+这些测试没有完成生产 Tools Runtime 的初始配置接线；配置夹具提供已发布工具基线。生产创建仍需补齐 Tools 配置应用及发布先于 Prompt 初始化的链路，不通过空实现或默认版本绕过。强制停用也不能证明业务资源已经释放。
