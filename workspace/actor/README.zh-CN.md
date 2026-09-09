@@ -24,3 +24,5 @@ Headers 的 Actor 查询只发生在启动或后台任务内。存储和 Header 
 actor_shutdown_test.go 使用真实 GoAkt 与 SQLite，阻塞在途写入，验证外部 PID.Shutdown 传播取消、等待操作退出、交付最终取消结果，然后才关闭存储。该用例连续 10 次非缓存 race 测试通过；它验证这条关闭流程，不代表所有外部关闭与邮箱交错都已覆盖。
 
 Headers.Get 返回 `(*session.Header, error)`：命中返回独立副本，两处都不存在返回 nil、nil，Actor/持久化查询失败返回 nil、error。Workspace 自行把缺失转换成当前操作的业务错误，适配器不再额外返回 found。真实 Registry/SQLite 测试覆盖未落盘 Session、关闭后的持久化读取、缺失、取消与副本隔离。
+
+Workspace Actor 使用常驻策略，存活到服务显式关闭；空闲不会释放 Registry 和存储句柄。API Workspace 订阅者同样随服务关闭，避免下次修改 CWD 时丢失通知。

@@ -83,3 +83,5 @@ LLM 使用独立 Client 和 Router Worker 池，Actor 保存 CallID 及窄接收
 中间件选择通过生命周期的 Handlers 传入，分别对应 PreStep、RequestError、TurnStopping；能力适配仅传递有序路由。恢复测试位于 grain_recovery_test.go，覆盖真实协调器、自定义恢复与默认 Retry actor；停止钩子测试覆盖 Steer、取消与失败取消重投，均不发送内部 Turn/Step 指令。关闭超时测试验证保持 CallID、迟到生成回复不替代关闭结果、未确认关闭时继续保留执行责任。
 
 关闭接线验证：`PrepareClose` 在业务对象中冻结准入并记录执行取消，Actor 复用取消通道通知正在执行的能力；收到取消确认后仍等待业务收尾。`internal/server/server_conversation_test.go` 的 `TestHTTPCloseCancelsStreamingModelAndFlushesTurn` 通过真实 HTTP 提交消息、保持模型流打开、再关闭服务，验证提供方收到取消、Step/Turn 结束写入 SQLite，以及后续排队输入仍能从日志恢复。
+
+Actor 在业务状态变化后发布 agent/status，包括 Inbox 提交确认后进入 running，以及执行收尾后进入 idle；不维护第二份执行状态。API 将通知映射为停止按钮依赖的 host/session-status，取消准入确认不提前发布 idle。

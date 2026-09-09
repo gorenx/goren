@@ -61,3 +61,5 @@ sequenceDiagram
 client_test.go 验证错误身份隔离、读取超时、迟到回复隔离以及关闭沿用原 CallID。Compaction 的真实 Grain 测试使用真实 TokenMeter 和 Session Log，验证完成事件已提交但 Flush 未回复时不会结束维护；Session 发布及生产装配仍需集成验证。
 
 API 的模型配置读写通过 Actor Client 直接发送 ReadConfiguration/SetConfiguration。AgentLoop 不读写配置，只发送 AgentConfig 和请求内容；GenerationStarted 返回实际参数供 Session 记录。
+
+Router 与 Worker 存活到服务关闭。GoAkt 4.5.3 的 SpawnRouter 没有停用策略参数，因此 SpawnPool 在初始化屏障前发送框架 PausePassivation，防止空闲两分钟后 Router 停止并连带释放 Worker。

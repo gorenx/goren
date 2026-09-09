@@ -642,3 +642,23 @@ close Agent "integration": agent middleware: cancellation requires a live call a
 ## 内置工具 schema 导致请求头误判
 
 默认装配 ask_user_question 后，真实 HTTP 测试报 `model parameters do not match the committed request header`，模型端未收到请求。根因是 EpochHeaderEqual 直接比较 RawMessage 字节；Session 写入的 JSON 会压缩缩进并转义特殊字符，因此同一 schema 经持久化编码后与原始文本不同。比较应使用相同 JSON 编码得到的 schema 内容，继续保留工具顺序、字段及精确数字差异，不比较仅用于运行期的 Version。验收为 Session 序列化往返回归及默认工具装配后的真实模型请求测试。
+
+## Web 执行状态与空闲后事件接收
+
+现象：发送消息后按钮未切换为停止，页面可能不再接收新 Session 事实。
+根因：AgentLoop 未发布已有的 `agent/status` 通知，API 未将其映射为
+`host/session-status`；API Session 订阅 Actor 使用默认空闲停用策略。
+
+修复边界：业务对象继续拥有执行状态；Actor 只发布状态变化。API 订阅者在
+启动时确认 Session 和 Agent 状态两个订阅，存活到服务关闭；Feed 映射状态到
+已有 Host 协议。取消确认不等于执行结束，停止按钮等待真实 idle 通知恢复。
+验收覆盖发送、流式读取、中途取消、最终 idle，以及订阅者常驻策略。
+
+实机补充：2026-09-09 对卡住会话执行 `session.cancel` 返回 `actor is not alive`；
+该会话仅提交到 user/message，未出现工具或 question 请求。GoAkt 4.5.3 的
+SpawnRouter 使用默认空闲策略，routee 虽常驻仍会随父 Router 停止。
+SpawnPool 在公开入口前发送框架 PausePassivation，并通过初始化请求确认邮箱顺序；
+Workspace、Session Query 与 Workspace 通知订阅者也明确存活到服务关闭。
+不通过定时业务消息保活，不创建另一套地址或状态管理。
+
+验证：`TestHTTPStopPublishesExecutionStatus` 和 `TestHTTPStopAfterIdle` 经 race 检查通过；后者实际等待超过默认 2 分钟，再创建会话、读取流、取消模型 I/O、接收 idle 与 turn/end。AgentLoop、API Proxy、LLM Actor、Workspace、Server 的相关 short race 测试通过；Web 36 个测试、TypeScript 类型检查、相关 Go vet 与 CLI 构建通过。测试使用本地受控模型服务，不代表真实 DeepSeek 网络调用验证；运行中的旧服务需要重启载入修复。
