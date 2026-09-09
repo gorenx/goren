@@ -8,26 +8,77 @@ import (
 	"github.com/gorenx/goren/approval"
 )
 
-// executionRuntime owns the staged Tool execution state machine. Policy evaluation,
+// Scheduler owns the staged Tool execution state machine. Policy evaluation,
 // body dispatch, and result processing are delegated to focused collaborators.
-type executionRuntime struct {
-	registry   *registry
-	pipeline   *pipeline
-	policies   *policyEngine
-	dispatcher *dispatcher
-	results    *resultProcessor
+type Scheduler struct {
+	definitions map[string]*registeredTool
+	pipeline    *pipeline
+	policies    *policyEngine
+	dispatcher  *dispatcher
+	results     *resultProcessor
 }
 
-func newRuntime(
+// Invoker calls an already-selected body without owning policy or result handling.
+// A returned error means body exit is unconfirmed; never fabricate a Tool result.
+type Invoker interface {
+	Invoke(context.Context, Invocation) (BodyResult, error)
+}
+
+// Policies fixes the business collaborators used by prepared executions.
+// Borrowed implementations must remain valid until those executions finish.
+type Policies struct {
+	Before    PrePolicy
+	After     PostPolicy
+	Execution ExecuteMiddleware
+	Results   ResultObserver
+	Guards    []ToolGuard
+}
+
+// NewScheduler captures executable descriptions independently of registration and Actors.
+func NewScheduler(descriptions []Descriptor, policies Policies, bodies Invoker) (*Scheduler, error) {
+	if bodies == nil {
+		return nil, errors.New("tools: body invoker is required")
+	}
+	entries := make(map[string]*registeredTool, len(descriptions))
+	for _, description := range descriptions {
+		entry, err := compileDescriptor(description.definition())
+		if err != nil {
+			return nil, err
+		}
+		if _, found := entries[description.Name]; found {
+			return nil, errors.New("tools: duplicate execution descriptor")
+		}
+		entries[description.Name] = entry
+	}
+	for _, guard := range policies.Guards {
+		if guard == nil {
+			return nil, errors.New("tools: guard is required")
+		}
+	}
+	return newScheduler(entries, &pipeline{
+		options: Options{
+			Before:    policies.Before,
+			After:     policies.After,
+			Execution: policies.Execution,
+			Results:   policies.Results,
+		},
+	}, policies.Guards, bodies), nil
+}
+
+func newScheduler(
+	entries map[string]*registeredTool,
 	stages *pipeline,
-	catalog *registry,
-) *executionRuntime {
-	bodyDispatcher := &dispatcher{}
-	return &executionRuntime{
-		registry: catalog,
-		pipeline: stages,
+	guards []ToolGuard,
+	bodies Invoker,
+) *Scheduler {
+	bodyDispatcher := &dispatcher{
+		bodies: bodies,
+	}
+	return &Scheduler{
+		definitions: entries,
+		pipeline:    stages,
 		policies: &policyEngine{
-			registry: catalog,
+			guards: append([]ToolGuard(nil), guards...),
 		},
 		dispatcher: bodyDispatcher,
 		results: &resultProcessor{
@@ -37,7 +88,7 @@ func newRuntime(
 }
 
 // Execute runs one Tool call through the complete staged pipeline.
-func (coordinator *executionRuntime) Execute(
+func (coordinator *Scheduler) Execute(
 	requestContext context.Context,
 	input ToolExecutionInput,
 ) ToolExecutionResult {
@@ -47,7 +98,10 @@ func (coordinator *executionRuntime) Execute(
 	}
 	switch preparation.Stage {
 	case ScheduledApproval:
-		blocked := postPreparation(preparation.Execution, deniedResult(fallbackAskReason(preparation.Execution.Name, preparation.Approval.Reason)))
+		blocked := postPreparation(
+			preparation.Execution,
+			deniedResult(fallbackAskReason(preparation.Execution.Name, preparation.Approval.Reason)),
+		)
 		result, err := coordinator.Finalize(blocked.Execution, blocked.Result)
 		if err != nil {
 			return errorResult(err)
@@ -90,11 +144,11 @@ func (coordinator *executionRuntime) Execute(
 
 // Prepare validates the call and runs ordered pre-dispatch policy without
 // starting the Tool body.
-func (coordinator *executionRuntime) Prepare(
+func (coordinator *Scheduler) Prepare(
 	requestContext context.Context,
 	input ToolExecutionInput,
 ) (ScheduledToolPreparation, error) {
-	entry, _ := coordinator.registry.find(input.Name)
+	entry, _ := coordinator.definitions[input.Name]
 	var finalizer ContentFinalizer
 	if entry != nil {
 		finalizer = entry.definition.FinalizeContent
@@ -160,7 +214,7 @@ func (coordinator *executionRuntime) Prepare(
 }
 
 // Dispatch runs the around-dispatch chain and Tool body.
-func (coordinator *executionRuntime) Dispatch(
+func (coordinator *Scheduler) Dispatch(
 	toolCall ToolExecution,
 ) (ScheduledToolDispatch, error) {
 	state, err := coordinator.executionState(toolCall)
@@ -177,6 +231,10 @@ func (coordinator *executionRuntime) Dispatch(
 		state.entry,
 	)
 	if err != nil {
+		var unconfirmed *DeliveryError
+		if errors.As(err, &unconfirmed) {
+			return ScheduledToolDispatch{}, unconfirmed
+		}
 		return ScheduledToolDispatch{
 			Result: errorResult(err),
 		}, nil
@@ -188,7 +246,7 @@ func (coordinator *executionRuntime) Dispatch(
 
 // Finalize applies ordered post policy, cancellation, final content, and the
 // final result Event.
-func (coordinator *executionRuntime) Finalize(
+func (coordinator *Scheduler) Finalize(
 	toolCall ToolExecution,
 	outcome ToolExecutionResult,
 ) (ToolExecutionResult, error) {
@@ -230,7 +288,7 @@ func (coordinator *executionRuntime) Finalize(
 }
 
 // Finish materializes a terminal staged result without post-execute policy.
-func (coordinator *executionRuntime) Finish(
+func (coordinator *Scheduler) Finish(
 	toolCall ToolExecution,
 	outcome ToolExecutionResult,
 ) ToolExecutionResult {
@@ -250,12 +308,11 @@ func (coordinator *executionRuntime) Finish(
 	)
 }
 
-func (coordinator *executionRuntime) executionState(
+func (coordinator *Scheduler) executionState(
 	toolCall ToolExecution,
 ) (*scheduledExecutionState, error) {
 	state := toolCall.state
-	if state == nil || state.coordinator != coordinator ||
-		toolCall.Token.token == nil {
+	if state == nil || state.coordinator != coordinator {
 		return nil, errors.New(
 			"tools: execution was not prepared by this runtime",
 		)
@@ -288,7 +345,7 @@ func postPreparation(
 }
 
 // ResolveApproval consumes one audited approval result without repeating pre-policy.
-func (coordinator *executionRuntime) ResolveApproval(toolCall ToolExecution, outcome approval.Outcome) (ScheduledToolPreparation, error) {
+func (coordinator *Scheduler) ResolveApproval(toolCall ToolExecution, outcome approval.Outcome) (ScheduledToolPreparation, error) {
 	state, err := coordinator.executionState(toolCall)
 	if err != nil {
 		return ScheduledToolPreparation{}, err
@@ -323,5 +380,17 @@ func (coordinator *executionRuntime) ResolveApproval(toolCall ToolExecution, out
 	return ScheduledToolPreparation{
 		Stage:     ScheduledDispatch,
 		Execution: toolCall,
+	}, nil
+}
+
+// PrepareCall captures policy and prepares one immutable invocation.
+func (coordinator *Scheduler) PrepareCall(ctx context.Context, input ToolExecutionInput) (*Call, error) {
+	prepared, err := coordinator.Prepare(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	return &Call{
+		scheduler:   coordinator,
+		preparation: prepared,
 	}, nil
 }

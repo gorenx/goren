@@ -12,6 +12,8 @@ type ComponentKind uint8
 const (
 	// SessionComponent supplies the opened or restored conversation.
 	SessionComponent ComponentKind = iota
+	// ToolsComponent supplies the applied tool instances and published definitions.
+	ToolsComponent
 	// PromptComponent supplies the first prompt and published tool definitions.
 	PromptComponent
 	// ModelComponent restores retained model configuration at its owner.
@@ -121,6 +123,7 @@ func (directory *Registry) RejectComponent(identifier session.SessionID, depende
 
 var componentResources = map[ComponentKind]ResourceKind{
 	SessionComponent:    Conversation,
+	ToolsComponent:      ToolsRuntime,
 	PromptComponent:     PromptRuntime,
 	AgentComponent:      Activation,
 	CommandsComponent:   CommandRuntime,
@@ -162,6 +165,7 @@ func (directory *Registry) checkComponent(identifier session.SessionID, dependen
 
 func componentRequirements(required Requirements) []requirement {
 	conversation := Component{Kind: SessionComponent}
+	tools := Component{Kind: ToolsComponent}
 	prompt := Component{Kind: PromptComponent}
 	models := Component{Kind: ModelComponent}
 	executor := Component{Kind: AgentComponent}
@@ -169,8 +173,12 @@ func componentRequirements(required Requirements) []requirement {
 	result := []requirement{
 		{component: conversation},
 		{
-			component:    prompt,
+			component:    tools,
 			dependencies: []Component{conversation},
+		},
+		{
+			component:    prompt,
+			dependencies: []Component{tools},
 		},
 		{
 			component:    models,

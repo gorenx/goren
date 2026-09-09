@@ -32,7 +32,14 @@ type Instances struct {
 var _ toolruntime.Instances = (*Instances)(nil)
 
 // NewInstances binds existing owners without starting Actors or opening tools.
-func NewInstances(system goakt.ActorSystem, authority *goakt.GrainIdentity, directory *goakt.GrainIdentity, agentID session.SessionID, creationID string, timeout time.Duration) (*Instances, error) {
+func NewInstances(
+	system goakt.ActorSystem,
+	authority *goakt.GrainIdentity,
+	directory *goakt.GrainIdentity,
+	agentID session.SessionID,
+	creationID string,
+	timeout time.Duration,
+) (*Instances, error) {
 	if system == nil || authority == nil || directory == nil ||
 		agentID == "" || creationID == "" || timeout <= 0 {
 		return nil, errors.New("tools: instance owners, Agent creation and positive timeout are required")

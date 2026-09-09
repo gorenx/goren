@@ -9,6 +9,7 @@ import (
 
 	agentactor "github.com/gorenx/goren/agent/actor"
 	agentregistry "github.com/gorenx/goren/agent/registry"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/toolaskuser"
 	"github.com/gorenx/goren/tools"
 	toolregistry "github.com/gorenx/goren/tools/registry"
@@ -25,7 +26,9 @@ import (
 type questions struct{}
 
 func (questions) Ask(context.Context, userquestions.Request) (userquestions.Answer, error) {
-	return userquestions.Answer{}, nil
+	return userquestions.Answer{
+		Answers: []userquestions.AnswerItem{},
+	}, nil
 }
 
 type source struct {
@@ -132,6 +135,7 @@ func TestUpdateUsesToolLifecycleForReplacementRollbackAndRemoval(t *testing.T) {
 			id: "remove",
 		},
 	}
+	var original tool.Identity
 	for _, scenario := range scenarios {
 		var entries []toolregistry.Tool
 		if scenario.provider != nil {
@@ -141,13 +145,20 @@ func TestUpdateUsesToolLifecycleForReplacementRollbackAndRemoval(t *testing.T) {
 				Visible:  true,
 			}}
 		}
-		configured := ask[catalogactor.Configuration](t, system, directory, catalogactor.RegisterConfiguration{
-			ID:        scenario.id,
-			AgentID:   creation.AgentID,
-			Overrides: entries,
-		})
-		if configured.Err != nil {
-			t.Fatal(configured.Err)
+		if scenario.id == "first" {
+			err = business.Initialize(ctx, scenario.id, entries, catalog, instances)
+			if err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			configured := ask[catalogactor.Configuration](t, system, directory, catalogactor.RegisterConfiguration{
+				ID:        scenario.id,
+				AgentID:   creation.AgentID,
+				Overrides: entries,
+			})
+			if configured.Err != nil {
+				t.Fatal(configured.Err)
+			}
 		}
 		if scenario.id == "remove" {
 			replacement.closeFailure.Store(true)
@@ -173,12 +184,49 @@ func TestUpdateUsesToolLifecycleForReplacementRollbackAndRemoval(t *testing.T) {
 		published := ask[catalogactor.Catalog](t, system, directory, catalogactor.ReadDefinitions{
 			AgentID: creation.AgentID,
 		})
-		expected := scenario.id
-		if scenario.fails {
-			expected = "replace"
-		}
 		if published.Err != nil || !published.Found || published.Definitions.AgentID != creation.AgentID {
 			t.Fatalf("%s publication = %#v", scenario.id, published)
+		}
+		if scenario.id != "remove" {
+			snapshot, failure := business.Snapshot()
+			if failure != nil {
+				t.Fatal(failure)
+			}
+			if scenario.id == "first" {
+				instance := ask[agentactor.ToolInstance](t, system, authority, agentactor.CreateTool{
+					AgentID:         creation.AgentID,
+					AgentCreationID: creation.CreationID,
+					Name:            toolaskuser.Name,
+					Registry:        directory,
+					Timeout:         time.Second,
+				})
+				description := ask[toolactor.Description](t, system, instance.Identity, toolactor.Describe{CreationID: instance.CreationID})
+				if description.Err != nil || description.Implementation == "" || string(description.Implementation) == string(scenario.id) {
+					t.Fatalf("execution identity: %+v", description)
+				}
+				original = description.Implementation
+			}
+			coordinator, failure := instances.Scheduler(ctx, snapshot, tools.Policies{})
+			if failure != nil {
+				t.Fatal(failure)
+			}
+			prepared, failure := coordinator.Prepare(ctx, tools.ToolExecutionInput{
+				CallID:    "call-" + agentmessage.CallID(scenario.id),
+				Name:      toolaskuser.Name,
+				SessionID: creation.AgentID,
+				Arguments: []byte(`{"questions":[{"id":"q","question":"Continue?"}]}`),
+			})
+			if failure != nil {
+				t.Fatal(failure)
+			}
+			dispatched, failure := coordinator.Dispatch(prepared.Execution)
+			if failure != nil {
+				t.Fatal(failure)
+			}
+			result, failure := coordinator.Finalize(prepared.Execution, dispatched.Result)
+			if failure != nil || result == nil || result.Failed() {
+				t.Fatalf("real ToolActor execution failed: %+v %v", result, failure)
+			}
 		}
 		if scenario.id != "remove" && (len(published.Definitions.Schemas) != 1 || published.Definitions.Schemas[0].Version != 1) {
 			t.Fatal("unchanged schema version changed during implementation replacement", published)
@@ -187,7 +235,7 @@ func TestUpdateUsesToolLifecycleForReplacementRollbackAndRemoval(t *testing.T) {
 			t.Fatal("removed tool remained in catalog", published)
 		}
 		settled, err := business.Snapshot()
-		if err != nil || settled.UpdateID != expected {
+		if err != nil {
 			t.Fatalf("settled snapshot = %#v, %v", settled, err)
 		}
 		if len(settled.Names) != 0 {
@@ -213,8 +261,8 @@ func TestUpdateUsesToolLifecycleForReplacementRollbackAndRemoval(t *testing.T) {
 				t.Fatal(instance.Err)
 			}
 			request := toolactor.Execute{
-				CreationID: instance.CreationID,
-				Revision:   "first",
+				CreationID:     instance.CreationID,
+				Implementation: original,
 				Invocation: tools.Invocation{
 					CallID:    "old-implementation",
 					SessionID: creation.AgentID,
@@ -226,7 +274,11 @@ func TestUpdateUsesToolLifecycleForReplacementRollbackAndRemoval(t *testing.T) {
 			if rejected.Err == nil {
 				t.Fatal("old implementation remained executable after replacement")
 			}
-			request.Revision = tool.Revision(settled.UpdateID)
+			description := ask[toolactor.Description](t, system, instance.Identity, toolactor.Describe{CreationID: instance.CreationID})
+			if description.Err != nil || description.Implementation == original {
+				t.Fatalf("replacement reused execution identity: %+v", description)
+			}
+			request.Implementation = description.Implementation
 			request.Invocation.CallID = "new-implementation"
 			accepted := ask[tools.BodyResult](t, system, instance.Identity, request)
 			if accepted.Err != nil {

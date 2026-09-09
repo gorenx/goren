@@ -20,6 +20,8 @@ const (
 	Capability
 	// Execution owns model, tool, and maintenance execution resources.
 	Execution
+	// ToolsRuntime owns pending collection updates and instance cleanup.
+	ToolsRuntime
 	// Tool owns one canonical tool instance, including uncertain initialization.
 	Tool
 	// PromptRuntime owns the Agent's prompt subscriptions and snapshots.
@@ -145,8 +147,9 @@ var releasePriority = map[ResourceKind]int{
 	CommandRuntime: 2,
 	Capability:     3,
 	Execution:      4,
-	Tool:           5,
-	PromptRuntime:  6,
-	Conversation:   7,
-	Activation:     8,
+	ToolsRuntime:   5,
+	Tool:           6,
+	PromptRuntime:  7,
+	Conversation:   8,
+	Activation:     9,
 }

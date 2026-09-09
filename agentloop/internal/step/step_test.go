@@ -113,9 +113,7 @@ func TestStepTransitionSourceMatrix(t *testing.T) {
 					turnNumber:   1,
 					stepNumber:   1,
 					currentState: source,
-					input: &Input{
-						ToolsVersion: 1,
-					},
+					input:        &Input{},
 				}
 				err := testCase.apply(current)
 				if (err == nil) != testCase.allowed[source] {
@@ -181,9 +179,7 @@ func stateName(selected State) string {
 // batch so the lifecycle matrix remains independent of message-commit scenarios.
 func confirmFixtureStart(current *Step) error {
 	if current.input == nil && current.currentState == StateProposed {
-		if err := current.Capture(Input{
-			ToolsVersion: 1,
-		}); err != nil {
+		if err := current.Capture(Input{}); err != nil {
 			return err
 		}
 	}

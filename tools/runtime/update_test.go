@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/tools"
 	toolregistry "github.com/gorenx/goren/tools/registry"
 	toolruntime "github.com/gorenx/goren/tools/runtime"
@@ -22,12 +23,29 @@ func (unusedProvider) Open(context.Context) (tool.Implementation, error) {
 }
 
 type catalogPort struct {
-	business            toolregistry.Registry
-	publicationLost     bool
-	lookupFailure       bool
-	settlementFailure   bool
-	publicationRejected bool
-	abortFailure        bool
+	business             toolregistry.Registry
+	publicationLost      bool
+	lookupFailure        bool
+	settlementFailure    bool
+	publicationRejected  bool
+	abortFailure         bool
+	registrationLost     bool
+	registrationRejected bool
+}
+
+func (port *catalogPort) Configure(_ context.Context, identifier toolregistry.UpdateID, agentID session.SessionID, overrides []toolregistry.Tool) (toolregistry.Configuration, error) {
+	if port.registrationRejected {
+		return toolregistry.Configuration{}, errInjected
+	}
+	_, err := port.business.Configure(identifier, agentID, overrides)
+	if err != nil {
+		return toolregistry.Configuration{}, err
+	}
+	if port.registrationLost {
+		return toolregistry.Configuration{}, errInjected
+	}
+	configured, _ := port.business.ReadConfiguration(identifier)
+	return configured, nil
 }
 
 func (port *catalogPort) Publish(_ context.Context, identifier toolregistry.UpdateID) (tools.Definitions, error) {

@@ -16,9 +16,10 @@ type ToolsSubscribed struct {
 }
 
 // ToolsApplied reports settlement of a forwarded tool view.
+type toolsApplied struct{ err error }
+
 type ToolsApplied struct {
 	AgentID session.SessionID
-	Version uint64
 	Err     error
 }
 
@@ -38,6 +39,10 @@ type ToolsSubscriber struct {
 	registry    *goakt.GrainIdentity
 	coordinator *goakt.PID
 	stopping    bool
+	// refreshing spans the current Registry read and its Runtime application.
+	// refreshPending coalesces notifications received during that request pair.
+	refreshing     bool
+	refreshPending bool
 }
 
 // NewToolsSubscriber binds framework addresses without starting a subscription.
@@ -80,10 +85,7 @@ func (owner *ToolsSubscriber) Receive(rc *goakt.ReceiveContext) {
 			return
 		}
 		if incoming.err != nil {
-			rc.Tell(owner.coordinator, ToolsApplied{
-				AgentID: owner.agentID,
-				Err:     incoming.err,
-			})
+			owner.finishRefresh(rc, incoming.err)
 			return
 		}
 		owner.applyTools(rc, incoming.definitions)
@@ -91,7 +93,9 @@ func (owner *ToolsSubscriber) Receive(rc *goakt.ReceiveContext) {
 		if owner.stopping || incoming.AgentID != owner.agentID {
 			return
 		}
-		owner.applyTools(rc, incoming)
+		owner.refreshTools(rc)
+	case toolsApplied:
+		owner.finishRefresh(rc, incoming.err)
 	case UnsubscribeTools:
 		if !owner.stopping {
 			owner.stopping = true
@@ -117,17 +121,12 @@ func (owner *ToolsSubscriber) applyTools(rc *goakt.ReceiveContext, incoming tool
 		},
 	})
 	if request == nil {
-		rc.Tell(owner.coordinator, ToolsApplied{
-			AgentID: owner.agentID,
-			Err:     ErrUnavailable,
-		})
+		owner.finishRefresh(rc, ErrUnavailable)
 		return
 	}
 	ctx := context.WithoutCancel(rc.Context())
 	self := rc.Self()
 	logger := rc.Logger()
-	coordinator := owner.coordinator
-	identifier := owner.agentID
 	request.Then(func(payload any, err error) {
 		if err == nil {
 			completion, ok := payload.(Completion)
@@ -137,11 +136,22 @@ func (owner *ToolsSubscriber) applyTools(rc *goakt.ReceiveContext, incoming tool
 				err = completion.Err
 			}
 		}
-		if deliveryErr := self.Tell(ctx, coordinator, ToolsApplied{
-			AgentID: identifier,
-			Err:     err,
+		if deliveryErr := self.Tell(ctx, self, toolsApplied{
+			err: err,
 		}); deliveryErr != nil {
 			logger.Error("systemprompt: failed to deliver tool update result to coordinator")
 		}
 	})
+}
+
+func (owner *ToolsSubscriber) finishRefresh(rc *goakt.ReceiveContext, failure error) {
+	owner.refreshing = false
+	rc.Tell(owner.coordinator, ToolsApplied{
+		AgentID: owner.agentID,
+		Err:     failure,
+	})
+	if owner.refreshPending && !owner.stopping {
+		owner.refreshPending = false
+		owner.refreshTools(rc)
+	}
 }

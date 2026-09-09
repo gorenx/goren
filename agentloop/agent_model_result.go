@@ -13,12 +13,12 @@ import (
 // ModelAction describes the next Step effect after the model request finishes.
 type ModelAction interface{ modelAction() }
 
-// ExecuteTools contains model-order calls and their Step's definition version.
+// ExecuteTools contains model-order calls and their Step's frozen prompt.
 // Tool policy, middleware and execution remain the Tool Runtime's responsibility.
 type ExecuteTools struct {
-	Position     session.StepPosition
-	ToolsVersion uint64
-	Calls        []agentmessage.ToolCallBlock
+	Position session.StepPosition
+
+	Calls []agentmessage.ToolCallBlock
 }
 
 func (ExecuteTools) modelAction() {}
@@ -85,10 +85,6 @@ func (subject *ReactLoopAgent) completeModel(result modelrequest.Completed) (Mod
 	if len(calls) == 0 {
 		return subject.endStep(stepstate.StepResultCompleted, nil)
 	}
-	captured, err := subject.step.InputValue()
-	if err != nil {
-		return nil, err
-	}
 	turnNumber, stepNumber := subject.step.Position()
 	if err := subject.BeginTools(); err != nil {
 		return nil, err
@@ -98,7 +94,6 @@ func (subject *ReactLoopAgent) completeModel(result modelrequest.Completed) (Mod
 			Turn: turnNumber,
 			Step: stepNumber,
 		},
-		ToolsVersion: captured.ToolsVersion,
-		Calls:        calls,
+		Calls: calls,
 	}, nil
 }

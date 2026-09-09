@@ -28,7 +28,16 @@ func TestInitializationRetryConfirmsBindingWithoutReplacingImplementation(t *tes
 	if reply := ask[toolactor.Completion](t, system, target, input); reply.Err != nil {
 		t.Fatal(reply.Err)
 	}
-	if reply := ask[tools.BodyResult](t, system, target, invocation()); reply.Err != nil || source.opens.Load() != 1 {
+	retained := invocation(currentIdentity(t, system, target))
+	committed := ask[toolactor.Completion](t, system, target, toolactor.Commit{
+		CreationID: "creation",
+		Revision:   "initial",
+	})
+	if committed.Err != nil || currentIdentity(t, system, target) != retained.Implementation {
+		t.Fatal("commit retry replaced the implementation identity", committed.Err)
+	}
+
+	if reply := ask[tools.BodyResult](t, system, target, retained); reply.Err != nil || source.opens.Load() != 1 {
 		t.Fatalf("binding retry replaced implementation: %v, opens = %d", reply.Err, source.opens.Load())
 	}
 	other, err := goakt.GrainOf[*catalogactor.RegistryGrain](context.Background(), system, "other-catalog", goakt.WithLongLivedGrain())
@@ -61,7 +70,7 @@ func TestInitializationRetryConfirmsBindingWithoutReplacingImplementation(t *tes
 	if reply := ask[toolactor.Completion](t, system, target, input); reply.Err != nil {
 		t.Fatal(reply.Err)
 	}
-	if reply := ask[tools.BodyResult](t, system, target, invocation()); reply.Err == nil || source.closes.Load() != 1 {
+	if reply := ask[tools.BodyResult](t, system, target, retained); reply.Err == nil || source.closes.Load() != 1 {
 		t.Fatal("binding acknowledgement revived closed resources")
 	}
 }

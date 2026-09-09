@@ -13,21 +13,20 @@ type InitializeRuntime struct {
 	// The Runtime requests Prepare to obtain their definition snapshot; it does
 	// not ask this Registry to assemble the Agent's model input.
 	PromptRegistry *goakt.GrainIdentity
-	// ToolsRegistry provides the Agent's committed tool schemas and version.
+	// ToolsRegistry provides the Agent's committed tool schemas.
 	ToolsRegistry *goakt.GrainIdentity
 }
 
 // ApplyTools delivers a detached view of a committed tools event.
 type ApplyTools struct {
-	AgentID     session.SessionID
-	Version     uint64
+	AgentID session.SessionID
+
 	Definitions systemprompt.ToolDefinitions
 }
 
-// Assemble requests one model input using the applied tool version.
+// Assemble requests one prompt using the installed tool baseline.
 type Assemble struct {
-	ID           string
-	ToolsVersion uint64
+	ID string
 }
 
 // Assembled carries a completed assembly and preserves ordinary Go errors.
@@ -47,17 +46,15 @@ type CloseRuntime struct{}
 
 // RuntimeInitialized confirms both prompt definitions and the tool baseline.
 type RuntimeInitialized struct {
-	ToolsVersion uint64
-	Err          error
+	Err error
 }
 
 // ReadRuntime reads the baseline of an already-initialized Prompt runtime.
 type ReadRuntime struct{}
 
-// RuntimeView reports the applied tool version without assembling a prompt.
+// RuntimeView confirms an initialized Prompt runtime without assembling a prompt.
 type RuntimeView struct {
-	ToolsVersion uint64
-	Err          error
+	Err error
 }
 
 // RuntimeName returns this service's stable address within a Session lifetime.

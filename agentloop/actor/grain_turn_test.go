@@ -317,8 +317,7 @@ func prepareRequestStep(t *testing.T, subject *agentloop.ReactLoopAgent, history
 		t.Fatalf("admission: %v, %v", accepted, err)
 	}
 	draft, err := subject.PrepareStep(agentloop.Preparation{
-		Snapshot:     history.Snapshot(),
-		ToolsVersion: 1,
+		Snapshot: history.Snapshot(),
 	})
 	if err != nil || draft == nil {
 		t.Fatalf("prepare Step: %v", err)

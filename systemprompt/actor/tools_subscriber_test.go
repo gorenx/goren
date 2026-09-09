@@ -76,19 +76,59 @@ func startSubscriber(t *testing.T, ctx context.Context, system goakt.ActorSystem
 	return pid, events
 }
 
-func publishTools(t *testing.T, ctx context.Context, system goakt.ActorSystem, identifier session.SessionID, version uint64, names ...string) {
+func publishTools(t *testing.T, ctx context.Context, system goakt.ActorSystem, identifier session.SessionID, names ...string) {
 	t.Helper()
-	definitions := tools.Definitions{
-		AgentID: identifier,
+	registry, err := goakt.GrainOf[*toolactor.RegistryGrain](ctx, system, toolactor.RegistryName, goakt.WithLongLivedGrain())
+	if err != nil {
+		t.Fatal(err)
 	}
+	update := toolregistry.UpdateID(uuid.NewString())
+	commands := []any{toolactor.BeginUpdate{
+		Update: toolregistry.Update{
+			ID:      update,
+			AgentID: identifier,
+			Names:   names,
+		},
+	}}
 	for _, name := range names {
-		definitions.Schemas = append(definitions.Schemas, llm.ToolSchema{
-			Name:       name,
-			Parameters: []byte(`{"type":"object"}`),
+		commands = append(commands, toolactor.RegisterDefinition{
+			ID: update,
+			Candidate: toolregistry.Candidate{
+				Schema: llm.ToolSchema{
+					Name:       name,
+					Parameters: []byte(`{"type":"object"}`),
+				},
+				Visible: true,
+			},
 		})
 	}
-	if err := goakt.Tell(ctx, system.TopicActor(), goakt.NewPublish(uuid.NewString(), tools.DefinitionsTopic, definitions)); err != nil {
+	for _, command := range commands {
+		payload, err := system.AskGrain(ctx, registry, command, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := payload.(toolactor.Completion)
+		if result.Err != nil {
+			t.Fatal(result.Err)
+		}
+	}
+	payload, err := system.AskGrain(ctx, registry, toolactor.PublishDefinitions{
+		ID: update,
+	}, time.Second)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if payload.(toolactor.Catalog).Err != nil {
+		t.Fatal(payload)
+	}
+	payload, err = system.AskGrain(ctx, registry, toolactor.SettleUpdate{
+		ID: update,
+	}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.(toolactor.Completion).Err != nil {
+		t.Fatal(payload)
 	}
 }
 
@@ -120,8 +160,7 @@ func TestToolsSubscriberAppliesPublishedViews(t *testing.T) {
 		if err := goakt.Tell(ctx, consumer, assemblyRequest{
 			Target: target,
 			Input: promptactor.Assemble{
-				ID:           fmt.Sprint(version),
-				ToolsVersion: version,
+				ID: fmt.Sprint(version),
 			},
 		}); err != nil {
 			t.Fatal(err)
@@ -142,27 +181,47 @@ func TestToolsSubscriberAppliesPublishedViews(t *testing.T) {
 			t.Fatal("assembly timed out")
 		}
 	}
-	publishTools(t, ctx, system, "agent", 2, "read")
-	if applied := receiveEvent[promptactor.ToolsApplied](t, ctx, events); applied.Err != nil || applied.Version != 2 {
+	publishTools(t, ctx, system, "agent", "read")
+	if applied := receiveEvent[promptactor.ToolsApplied](t, ctx, events); applied.Err != nil {
 		t.Fatalf("application: %#v", applied)
 	}
 	check(2, "read")
-	publishTools(t, ctx, system, "agent", 1, "old")
-	if applied := receiveEvent[promptactor.ToolsApplied](t, ctx, events); applied.Err != nil || applied.Version != 1 {
-		t.Fatalf("old event: %#v", applied)
+	// A delayed or malformed notification is a refresh hint, never a catalog replacement.
+	for _, name := range []string{"old", "duplicate"} {
+		err := goakt.Tell(ctx, subscriber, tools.Definitions{
+			AgentID: "agent",
+			Schemas: []llm.ToolSchema{{
+				Name: name,
+			}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		applied := receiveEvent[promptactor.ToolsApplied](t, ctx, events)
+		if applied.Err != nil {
+			t.Fatal(applied.Err)
+		}
+		check(2, "read")
 	}
-	check(2, "read")
-	publishTools(t, ctx, system, "agent", 3, "duplicate", "duplicate")
-	if applied := receiveEvent[promptactor.ToolsApplied](t, ctx, events); applied.Err == nil {
-		t.Fatal("invalid catalog was accepted")
-	}
-	check(2, "read")
-	publishTools(t, ctx, system, "other-agent", 99, "foreign")
-	publishTools(t, ctx, system, "agent", 4)
-	if applied := receiveEvent[promptactor.ToolsApplied](t, ctx, events); applied.Err != nil || applied.AgentID != "agent" || applied.Version != 4 {
+	publishTools(t, ctx, system, "other-agent", "foreign")
+	publishTools(t, ctx, system, "agent")
+	if applied := receiveEvent[promptactor.ToolsApplied](t, ctx, events); applied.Err != nil || applied.AgentID != "agent" {
 		t.Fatalf("Agent filtering: %#v", applied)
 	}
 	check(4, "")
+	err = goakt.Tell(ctx, subscriber, tools.Definitions{
+		AgentID: "agent",
+		Schemas: []llm.ToolSchema{{Name: "read"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	applied := receiveEvent[promptactor.ToolsApplied](t, ctx, events)
+	if applied.Err != nil {
+		t.Fatal(applied.Err)
+	}
+	check(4, "")
+
 	if err := goakt.Tell(ctx, subscriber, promptactor.UnsubscribeTools{}); err != nil {
 		t.Fatal(err)
 	}
@@ -173,12 +232,14 @@ func TestToolsSubscriberAppliesPublishedViews(t *testing.T) {
 
 type installDelay struct {
 	Entered chan<- struct{}
+	Views   chan<- systemprompt.ToolDefinitions
 }
 type releaseUpdate struct{}
 
 // DelayedToolsGrain holds a reply so topic removal can be observed independently.
 type DelayedToolsGrain struct {
 	entered chan<- struct{}
+	views   chan<- systemprompt.ToolDefinitions
 	reply   *goakt.GrainReply
 }
 
@@ -188,13 +249,17 @@ func (owner *DelayedToolsGrain) OnReceive(gc *goakt.GrainContext) {
 	switch incoming := gc.Message().(type) {
 	case installDelay:
 		owner.entered = incoming.Entered
+		owner.views = incoming.Views
 		gc.Response(promptactor.Completion{})
 	case promptactor.ApplyTools:
 		owner.reply = gc.DeferResponse()
 		owner.entered <- struct{}{}
+		if owner.views != nil {
+			owner.views <- incoming.Definitions
+		}
 	case releaseUpdate:
 		owner.reply.Response(promptactor.Completion{
-			Err: systemprompt.ErrToolsVersion,
+			Err: systemprompt.ErrAgent,
 		})
 		gc.Response(promptactor.Completion{})
 	}
@@ -218,7 +283,7 @@ func TestToolsUnsubscribeDoesNotWaitForRuntimeReply(t *testing.T) {
 	if baseline := receiveEvent[promptactor.ToolsApplied](t, ctx, events); !errors.Is(baseline.Err, systemprompt.ErrToolsNotReady) {
 		t.Fatalf("missing baseline = %#v", baseline)
 	}
-	publishTools(t, ctx, system, "agent", 1)
+	publishTools(t, ctx, system, "agent")
 	select {
 	case <-entered:
 	case <-ctx.Done():
@@ -232,7 +297,7 @@ func TestToolsUnsubscribeDoesNotWaitForRuntimeReply(t *testing.T) {
 		t.Fatal(err)
 	}
 	applied := receiveEvent[promptactor.ToolsApplied](t, ctx, events)
-	if applied.Version != 1 || !errors.Is(applied.Err, systemprompt.ErrToolsVersion) {
+	if !errors.Is(applied.Err, systemprompt.ErrAgent) {
 		t.Fatalf("late outcome lost: %#v", applied)
 	}
 }
@@ -304,8 +369,7 @@ func TestToolsSubscriberReadsCatalogPublishedBeforeSubscription(t *testing.T) {
 	if err := goakt.Tell(ctx, requester, assemblyRequest{
 		Target: target,
 		Input: promptactor.Assemble{
-			ID:           "baseline",
-			ToolsVersion: 1,
+			ID: "baseline",
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -321,7 +385,65 @@ func TestToolsSubscriberReadsCatalogPublishedBeforeSubscription(t *testing.T) {
 	if err := goakt.Tell(ctx, subscriber, promptactor.RefreshTools{}); err != nil {
 		t.Fatal(err)
 	}
-	if refreshed := receiveEvent[promptactor.ToolsApplied](t, ctx, events); refreshed.Err != nil || refreshed.Version != 1 {
+	if refreshed := receiveEvent[promptactor.ToolsApplied](t, ctx, events); refreshed.Err != nil {
 		t.Fatalf("refresh: %#v", refreshed)
 	}
+}
+
+func TestToolsRefreshAppliesLatestMembershipAfterPendingApplication(t *testing.T) {
+	_, system, _ := startRegistry(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	target, err := goakt.GrainOf[*DelayedToolsGrain](ctx, system, "delayed-refresh", goakt.WithLongLivedGrain())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{}, 4)
+	views := make(chan systemprompt.ToolDefinitions, 4)
+	_, err = system.AskGrain(ctx, target, installDelay{
+		Entered: entered,
+		Views:   views,
+	}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscriber, events := startSubscriber(t, ctx, system, target)
+	baseline := receiveEvent[promptactor.ToolsApplied](t, ctx, events)
+	if !errors.Is(baseline.Err, systemprompt.ErrToolsNotReady) {
+		t.Fatal(baseline.Err)
+	}
+	publishTools(t, ctx, system, "agent", "first")
+	select {
+	case initial := <-views:
+		if len(initial.Schemas) != 1 || initial.Schemas[0].Name != "first" {
+			t.Fatal(initial)
+		}
+	case <-ctx.Done():
+		t.Fatal("first application did not arrive")
+	}
+	publishTools(t, ctx, system, "agent", "replacement")
+	publishTools(t, ctx, system, "agent")
+	_, err = system.AskGrain(ctx, target, releaseUpdate{}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiveEvent[promptactor.ToolsApplied](t, ctx, events)
+	select {
+	case latest := <-views:
+		if len(latest.Schemas) != 0 || len(latest.KnownNames) != 0 {
+			t.Fatal("refresh applied obsolete membership", latest)
+		}
+	case <-ctx.Done():
+		t.Fatal("pending refresh did not continue")
+	}
+	err = goakt.Tell(ctx, subscriber, promptactor.UnsubscribeTools{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiveEvent[promptactor.ToolsUnsubscribed](t, ctx, events)
+	_, err = system.AskGrain(ctx, target, releaseUpdate{}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiveEvent[promptactor.ToolsApplied](t, ctx, events)
 }

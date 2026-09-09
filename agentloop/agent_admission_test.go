@@ -21,7 +21,7 @@ func readyAgent(t *testing.T) (*agentloop.ReactLoopAgent, *session.Log) {
 	if err := subject.Restore(history.Header(), history.Snapshot()); err != nil {
 		t.Fatal(err)
 	}
-	if err := subject.Initialize(1); err != nil {
+	if err := subject.Initialize(); err != nil {
 		t.Fatal(err)
 	}
 	return subject, history

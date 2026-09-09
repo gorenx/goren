@@ -44,7 +44,6 @@ func newToolLayer(catalog *registry, options Options) *ToolLayer {
 	return &ToolLayer{
 		registry: catalog,
 		pipeline: stages,
-		runtime:  newRuntime(stages, catalog),
 	}
 }
 

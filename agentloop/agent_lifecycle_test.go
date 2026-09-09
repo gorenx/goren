@@ -13,7 +13,7 @@ import (
 
 func TestLifecycleRejectsReinitializationAndRestoration(t *testing.T) {
 	subject, history := readyAgent(t)
-	if err := subject.Initialize(2); !errors.Is(err, agentloop.ErrState) {
+	if err := subject.Initialize(); !errors.Is(err, agentloop.ErrState) {
 		t.Fatalf("second initialization = %v", err)
 	}
 	if err := subject.Restore(history.Header(), history.Snapshot()); !errors.Is(err, agentloop.ErrState) {
@@ -27,23 +27,22 @@ func TestLifecycleRejectsReinitializationAndRestoration(t *testing.T) {
 	}
 }
 
-func TestLifecycleInitializationFailureCanRetryWithoutBecomingReady(t *testing.T) {
+func TestLifecycleRequiresRestoreAndExplicitInitialization(t *testing.T) {
 	_, history := readyAgent(t)
 	subject := &agentloop.ReactLoopAgent{}
-	if err := subject.Initialize(1); !errors.Is(err, agentloop.ErrState) {
+	if err := subject.Initialize(); !errors.Is(err, agentloop.ErrState) {
 		t.Fatalf("initialize before restore = %v", err)
 	}
 	if err := subject.Restore(history.Header(), history.Snapshot()); err != nil {
 		t.Fatal(err)
 	}
-	if err := subject.Initialize(0); err == nil {
-		t.Fatal("unpublished tools initialized Agent")
+
+	err := subject.CheckExecution()
+	if err == nil {
+		t.Fatal("restored Agent became executable before initialization")
 	}
-	if _, err := subject.Inject(inputMessage(t, "not ready")); !errors.Is(err, agentloop.ErrState) {
-		t.Fatalf("input after failed initialization = %v", err)
-	}
-	if err := subject.Initialize(1); err != nil {
-		t.Fatal("valid initialization retry", err)
+	if err := subject.Initialize(); err != nil {
+		t.Fatal("initialization", err)
 	}
 }
 
@@ -64,7 +63,7 @@ func TestLifecycleReleaseIsTerminalAndRequiresClosedWork(t *testing.T) {
 	if _, err := subject.Followup(input); !errors.Is(err, agent.ErrClosing) {
 		t.Fatal("closing accepted input", err)
 	}
-	if err := subject.Initialize(1); !errors.Is(err, agentloop.ErrState) {
+	if err := subject.Initialize(); !errors.Is(err, agentloop.ErrState) {
 		t.Fatal("closing initialized", err)
 	}
 	edit, err := subject.Remove(input.StableID())
@@ -84,7 +83,7 @@ func TestLifecycleReleaseIsTerminalAndRequiresClosedWork(t *testing.T) {
 	if err := subject.Restore(history.Header(), history.Snapshot()); !errors.Is(err, agentloop.ErrState) {
 		t.Fatal("released Agent restored", err)
 	}
-	if err := subject.Initialize(1); !errors.Is(err, agentloop.ErrState) {
+	if err := subject.Initialize(); !errors.Is(err, agentloop.ErrState) {
 		t.Fatal("released Agent initialized", err)
 	}
 	if subject.InboxValue() != nil {

@@ -104,6 +104,7 @@ func detachToolSchema(schema llm.ToolSchema) (llm.ToolSchema, error) {
 		return llm.ToolSchema{}, fmt.Errorf("systemprompt: tool %q parameters must be a valid JSON object", schema.Name)
 	}
 	return llm.ToolSchema{
+		Version:     schema.Version,
 		Name:        schema.Name,
 		Description: schema.Description,
 		Parameters:  slices.Clone(schema.Parameters),

@@ -19,17 +19,17 @@ var ErrPending = errors.New("agentloop: accepted input remains")
 // and reports committed events; this object performs no I/O or scheduling.
 type ReactLoopAgent struct {
 	// inboxNext excludes already-applied log entries when reconciling an uncertain claim.
-	inboxNext    int64
-	running      *activity
-	request      *modelrequest.ModelRequest
-	preparing    *preparation
-	identifier   session.SessionID
-	ending       *settlement
-	pending      *agent.Inbox
-	current      *turnstate.Turn
-	step         *stepstate.Step
-	lastTurn     int64
-	toolsVersion uint64
+	inboxNext  int64
+	running    *activity
+	request    *modelrequest.ModelRequest
+	preparing  *preparation
+	identifier session.SessionID
+	ending     *settlement
+	pending    *agent.Inbox
+	current    *turnstate.Turn
+	step       *stepstate.Step
+	lastTurn   int64
+
 	lifetime     lifecycle
 	headerLogged bool
 	// preserveInbox records explicit cancellation intent until another input is admitted.
@@ -68,14 +68,10 @@ func (subject *ReactLoopAgent) Restore(metadata session.Header, snapshot session
 }
 
 // Initialize admits work after the currently required components have initialized.
-func (subject *ReactLoopAgent) Initialize(version uint64) error {
+func (subject *ReactLoopAgent) Initialize() error {
 	if subject.lifetime != restored {
 		return ErrState
 	}
-	if version == 0 {
-		return errors.New("agentloop: initialized tools require a committed version")
-	}
-	subject.toolsVersion = version
 	subject.lifetime = available
 	return nil
 }

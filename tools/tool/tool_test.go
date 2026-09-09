@@ -64,7 +64,7 @@ func TestReplacementRetainsResourcesUntilCleanupSucceeds(t *testing.T) {
 	first := tool.Revision("initial")
 	second := tool.Revision("replacement")
 	input := implementation(old)
-	if err := owner.Prepare(first, input); err != nil {
+	if err := owner.Provision(context.Background(), first, &provider{input: input}); err != nil {
 		t.Fatal(err)
 	}
 	input.Definition.Parameters[0] = '!'
@@ -80,7 +80,7 @@ func TestReplacementRetainsResourcesUntilCleanupSucceeds(t *testing.T) {
 	if err != nil || !json.Valid(view.Output.Schema) {
 		t.Fatalf("returned definition aliases owner: %v", err)
 	}
-	if err := owner.Prepare(second, implementation(next)); err != nil {
+	if err := owner.Provision(context.Background(), second, &provider{input: implementation(next)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := owner.Definition("initial"); err == nil || old.calls != 0 {
@@ -118,7 +118,7 @@ func TestReplacementRetainsResourcesUntilCleanupSucceeds(t *testing.T) {
 	if _, err := owner.Definition("replacement"); err != nil {
 		t.Fatal(err)
 	}
-	if err := owner.Prepare(second, implementation(nil)); err == nil {
+	if err := owner.Provision(context.Background(), second, &provider{input: implementation(nil)}); err == nil {
 		t.Fatal("already committed implementation was prepared again")
 	}
 	if err := owner.Close(ctx); err != nil {
@@ -136,7 +136,7 @@ func TestFailedAbortCannotCommitPartiallyReleasedCandidate(t *testing.T) {
 		err: failure,
 	}
 	target := tool.Revision("aborted")
-	if err := owner.Prepare(target, implementation(owned)); err != nil {
+	if err := owner.Provision(context.Background(), target, &provider{input: implementation(owned)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := owner.Abort(context.Background(), target); !errors.Is(err, failure) {
@@ -163,13 +163,13 @@ func TestCloseAttemptsEveryResourceAndRetriesOnlyFailures(t *testing.T) {
 	next := &resource{
 		err: failure,
 	}
-	if err := owner.Prepare(first, implementation(old)); err != nil {
+	if err := owner.Provision(context.Background(), first, &provider{input: implementation(old)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := owner.Commit(first); err != nil {
 		t.Fatal(err)
 	}
-	if err := owner.Prepare(second, implementation(next)); err != nil {
+	if err := owner.Provision(context.Background(), second, &provider{input: implementation(next)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := owner.Close(context.Background()); !errors.Is(err, failure) {
@@ -194,7 +194,7 @@ func TestCanceledAbortRetainsCleanupAndRejectsActivation(t *testing.T) {
 	owner := newTool(t)
 	owned := &resource{}
 	target := tool.Revision("canceled")
-	if err := owner.Prepare(target, implementation(owned)); err != nil {
+	if err := owner.Provision(context.Background(), target, &provider{input: implementation(owned)}); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -213,16 +213,19 @@ func TestCanceledAbortRetainsCleanupAndRejectsActivation(t *testing.T) {
 	}
 }
 
-func TestInvalidPreparationDoesNotTakeResourceOwnership(t *testing.T) {
+func TestInvalidImplementationIsReleasedBeforeProvisionReturns(t *testing.T) {
 	owner := newTool(t)
 	owned := &resource{}
 	input := implementation(owned)
 	input.Definition.Output.Schema = json.RawMessage(`{"type":"not-a-json-schema-type"}`)
-	if err := owner.Prepare(tool.Revision("invalid"), input); err == nil {
+	if err := owner.Provision(context.Background(), tool.Revision("invalid"), &provider{input: input}); err == nil {
 		t.Fatal("invalid output schema accepted")
 	}
-	if err := owner.Close(context.Background()); err != nil || owned.calls != 0 {
-		t.Fatalf("rejected resource was taken from caller: %v, calls=%d", err, owned.calls)
+	if owned.calls != 1 {
+		t.Fatal("invalid implementation resource was not released before the error reply")
+	}
+	if err := owner.Close(context.Background()); err != nil || owned.calls != 1 {
+		t.Fatalf("invalid implementation resource was released again: %v, calls=%d", err, owned.calls)
 	}
 }
 
@@ -237,7 +240,7 @@ func TestCandidateDefinitionRegistersWithoutExposingExecution(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := owner.Prepare(target, implementation(nil)); err != nil {
+	if err := owner.Provision(context.Background(), target, &provider{input: implementation(nil)}); err != nil {
 		t.Fatal(err)
 	}
 	schema, err := owner.Schema(target)
@@ -286,7 +289,7 @@ func TestDiscardedCandidateCannotRegisterDefinition(t *testing.T) {
 	owned := &resource{
 		err: errors.New("cleanup failure"),
 	}
-	if err := owner.Prepare(target, implementation(owned)); err != nil {
+	if err := owner.Provision(context.Background(), target, &provider{input: implementation(owned)}); err != nil {
 		t.Fatal(err)
 	}
 	other := target

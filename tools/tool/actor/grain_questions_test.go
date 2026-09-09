@@ -89,7 +89,7 @@ func TestToolActorUsesQuestionActorForAnswerAndCancellation(t *testing.T) {
 			}
 			results := make(chan received, 1)
 			go func() {
-				payload, err := system.AskGrain(context.Background(), target, invocation(), 3*time.Second)
+				payload, err := system.AskGrain(context.Background(), target, invocation(currentIdentity(t, system, target)), 3*time.Second)
 				body, valid := payload.(tools.BodyResult)
 				if err == nil && !valid {
 					err = errors.New("unexpected execution reply")

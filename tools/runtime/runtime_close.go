@@ -15,6 +15,22 @@ func (owner *Runtime) Close(ctx context.Context, directory Catalog, instances In
 	if ctx.Err() != nil {
 		return context.Cause(ctx)
 	}
+	if owner.registration != "" {
+		publication, found, err := directory.Lookup(ctx, owner.registration)
+		if err != nil {
+			return err
+		}
+		if found {
+			if publication.AgentID != owner.agentID || publication.Published {
+				return errors.New("tools: unconfirmed registration has conflicting publication state")
+			}
+			err = directory.Abort(ctx, owner.registration)
+			if err != nil {
+				return err
+			}
+		}
+		owner.registration = ""
+	}
 	if owner.pending != nil {
 		// Cancellation rolls back unpublished candidates. Update preserves published
 		// facts and finishes their cleanup regardless of this cancellation intention.

@@ -31,7 +31,6 @@ func (owner *Grain) initializePrompt(gc *goakt.GrainContext, input initializatio
 				failure = errors.New("agentloop: invalid Prompt view")
 			} else {
 				failure = result.Err
-				operation.toolsVersion = result.ToolsVersion
 			}
 		}
 		owner.finishInitialization(operation, failure)

@@ -10,6 +10,7 @@ import (
 	"github.com/gorenx/goren/llm/deepseek"
 	"github.com/gorenx/goren/llm/modelconfig"
 	goakt "github.com/tochemey/goakt/v4/actor"
+	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
 // initializeModels installs ModelConfig in the process-owned ActorSystem.
@@ -32,7 +33,7 @@ func initializeModels(
 	if err != nil {
 		return nil, err
 	}
-	identity, err := goakt.GrainOf[*configactor.Grain](ctx, system, configactor.Name, goakt.WithLongLivedGrain())
+	identity, err := goakt.GrainOf[*configactor.Grain](ctx, system, configactor.Name, goakt.WithLongLivedGrain(), goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))))
 	if err != nil {
 		return nil, err
 	}

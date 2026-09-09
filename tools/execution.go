@@ -14,20 +14,6 @@ import (
 	"github.com/gorenx/goren/session"
 )
 
-// ToolExecutionToken is an opaque same-process parent correlation identity.
-type ToolExecutionToken struct {
-	token *toolExecutionToken
-}
-
-// toolExecutionToken is non-zero-sized so separately allocated token pointers
-// remain exact identities under Go's zero-size allocation rules.
-type toolExecutionToken [1]byte
-
-// IsZero reports whether no parent execution token was supplied.
-func (identity ToolExecutionToken) IsZero() bool {
-	return identity.token == nil
-}
-
 // ToolExecutionInput is one caller-supplied tool call. Context cancellation is
 // supplied separately to Execute and cannot be replaced in this value.
 type ToolExecutionInput struct {
@@ -36,7 +22,6 @@ type ToolExecutionInput struct {
 	Name       string
 	Arguments  json.RawMessage
 	SessionID  session.SessionID
-	Parent     ToolExecutionToken
 }
 
 // ToolExecution is the immutable registry-owned identity visible to policy.
@@ -45,8 +30,6 @@ type ToolExecution struct {
 	RootCallID agentmessage.CallID
 	Name       string
 	SessionID  session.SessionID
-	Parent     ToolExecutionToken
-	Token      ToolExecutionToken
 	arguments  json.RawMessage
 	state      *scheduledExecutionState
 }
@@ -89,7 +72,7 @@ func (runContext ToolRunContext) ConcludeTurn() {
 }
 
 type scheduledExecutionState struct {
-	coordinator    *executionRuntime
+	coordinator    *Scheduler
 	pipeline       *pipeline
 	requestContext context.Context
 	entry          *registeredTool
@@ -122,7 +105,7 @@ type executionStateSnapshot struct {
 }
 
 func newScheduledExecutionState(
-	coordinator *executionRuntime,
+	coordinator *Scheduler,
 	requestContext context.Context,
 	entry *registeredTool,
 	finalizer ContentFinalizer,
@@ -235,7 +218,6 @@ func (state *scheduledExecutionState) completeFinalization() {
 }
 
 func createExecution(input ToolExecutionInput) (ToolExecution, error) {
-	identity := &toolExecutionToken{}
 	rootCallID := input.RootCallID
 	if rootCallID == "" {
 		rootCallID = input.CallID
@@ -245,10 +227,6 @@ func createExecution(input ToolExecutionInput) (ToolExecution, error) {
 		RootCallID: rootCallID,
 		Name:       input.Name,
 		SessionID:  input.SessionID,
-		Parent:     input.Parent,
-		Token: ToolExecutionToken{
-			token: identity,
-		},
 	}
 	if strings.TrimSpace(input.Name) == "" ||
 		input.Name != strings.TrimSpace(input.Name) {

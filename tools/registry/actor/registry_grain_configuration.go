@@ -16,7 +16,8 @@ func (owner *RegistryGrain) receiveConfiguration(gc *goakt.GrainContext) bool {
 		})
 	case RegisterConfiguration:
 		change, err := owner.registry.Configure(
-			incoming.ID, incoming.AgentID,
+			incoming.ID,
+			incoming.AgentID,
 			incoming.Overrides,
 		)
 		if err != nil {

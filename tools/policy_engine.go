@@ -10,7 +10,7 @@ import (
 )
 
 type policyEngine struct {
-	registry *registry
+	guards []ToolGuard
 }
 
 type preDispatchEvaluation struct {
@@ -56,7 +56,7 @@ func (engine *policyEngine) evaluate(
 func (engine *policyEngine) guardDenial(
 	toolCall ToolExecution,
 ) (string, error) {
-	for _, policy := range engine.registry.guards() {
+	for _, policy := range engine.guards {
 		reason, denied, err := invokeGuard(policy, toolCall)
 		if err != nil {
 			return "", err

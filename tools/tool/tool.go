@@ -5,6 +5,7 @@ package tool
 import (
 	"context"
 	"errors"
+	"github.com/google/uuid"
 	"strings"
 
 	"github.com/gorenx/goren/llm"
@@ -35,14 +36,18 @@ type Implementation struct {
 // It is opaque, never ordered, and independent of the model-facing schema version.
 type Revision string
 
+// Identity identifies one committed implementation independently of its update request.
+type Identity string
+
 // Tool owns current, candidate and retiring implementations of one logical tool.
 // It has no scheduler or framework references and must not be used concurrently.
 type Tool struct {
 	name     string
 	revision Revision
+	identity Identity
 	current  *Implementation
 	// candidate holds the validated replacement until the catalog update is published.
-	// Prepare creates it without replacing current or releasing current's resources.
+	// Provision creates it without replacing current or releasing current's resources.
 	// After publication, Commit moves its body to current and moves the previous
 	// current to retiring; Retire then releases the old resources.
 	// Before publication, Abort releases only candidate and preserves current.
@@ -73,16 +78,6 @@ func New(name string) (*Tool, error) {
 
 // Name returns the immutable logical tool name, independent of implementation state.
 func (owner *Tool) Name() string { return owner.name }
-
-// Prepare takes ownership only after successful validation. On error the caller
-// still owns input.Resource, including when the same revision was already prepared.
-func (owner *Tool) Prepare(target Revision, input Implementation) error {
-	err := owner.checkPreparation(target)
-	if err != nil {
-		return err
-	}
-	return owner.acceptImplementation(target, input)
-}
 
 // acceptImplementation validates and retains a candidate after admission.
 // Its caller keeps the Tool exclusively owned from admission through this call.
@@ -149,6 +144,7 @@ func (owner *Tool) Commit(target Revision) error {
 	owner.retiring = owner.current
 	owner.current = &owner.candidate.body
 	owner.revision = target
+	owner.identity = Identity(uuid.NewString())
 	owner.candidate = nil
 	return nil
 }
@@ -237,4 +233,14 @@ func closeResource(ctx context.Context, owned Resource) error {
 		return nil
 	}
 	return owned.Close(ctx)
+}
+
+// Binding returns the current implementation identity and borrowed execution contract.
+// The caller must drain executions before replacing or closing the implementation.
+func (owner *Tool) Binding() (Identity, tools.Descriptor, error) {
+	definition, err := owner.Definition(owner.revision)
+	if err != nil {
+		return "", tools.Descriptor{}, err
+	}
+	return owner.identity, definition.Describe(), nil
 }
