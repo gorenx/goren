@@ -99,6 +99,26 @@ func (owner *Grain) commitAdmission(gc *goakt.GrainContext, reply *goakt.GrainRe
 }
 
 func (owner *Grain) commitInbox(gc *goakt.GrainContext, reply *goakt.GrainReply, proposal agent.Admission, deliveryErr error) {
+	wake := make(chan bool, 1)
+	if proposal.Wake {
+		creationID := owner.creationID
+		stopped := owner.stopped
+		err := gc.PipeToSelf(func() (any, error) {
+			select {
+			case accepted := <-wake:
+				if accepted {
+					return executePending{creationID: creationID}, nil
+				}
+				return nil, nil
+			case <-stopped:
+				return nil, nil
+			}
+		})
+		if err != nil {
+			reply.Response(Changed{Err: err})
+			return
+		}
+	}
 	gc.RequestGrain(
 		owner.conversation,
 		sessionactor.Commit{
@@ -124,6 +144,9 @@ func (owner *Grain) commitInbox(gc *goakt.GrainContext, reply *goakt.GrainReply,
 				}
 			}
 			result.Err = errors.Join(deliveryErr, result.Err)
+			if proposal.Wake {
+				wake <- result.Err == nil
+			}
 			owner.refreshIdle()
 			reply.Response(result)
 		},
@@ -137,4 +160,27 @@ func (owner *Grain) promote(gc *goakt.GrainContext, input Promote) {
 	}
 	proposal, err := owner.business.Promote(input.MessageID)
 	owner.commitAdmission(gc, reply, proposal, err)
+}
+
+// Inbox commands propose mutations; Session commit acknowledgement precedes business confirmation.
+func (owner *Grain) receiveInbox(gc *goakt.GrainContext) bool {
+	switch input := gc.Message().(type) {
+	case ReadActivity:
+		owner.readActivity(gc, input)
+	case Followup:
+		owner.followup(gc, input)
+	case Steer:
+		owner.steer(gc, input)
+	case Inject:
+		owner.inject(gc, input)
+	case Replace:
+		owner.replace(gc, input)
+	case Promote:
+		owner.promote(gc, input)
+	case Remove:
+		owner.remove(gc, input)
+	default:
+		return false
+	}
+	return true
 }

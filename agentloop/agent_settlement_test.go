@@ -83,13 +83,13 @@ func TestSettlementConfirmsCommitAndRetainsBarrierOnFlushFailure(t *testing.T) {
 	if _, err := subject.PrepareTurnEnd(errors.New("retry")); err == nil {
 		t.Fatal("confirmed end prepared another write")
 	}
-	if _, err := subject.FinishActivity(); err == nil {
+	if _, err := subject.FinishExecution(); err == nil {
 		t.Fatal("unflushed Turn released activity")
 	}
 	if err := subject.ConfirmTurnFlush(boundary); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := subject.FinishActivity(); err != nil {
+	if _, err := subject.FinishExecution(); err != nil {
 		t.Fatal(err)
 	}
 }

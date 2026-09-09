@@ -23,7 +23,7 @@ func (subject *ReactLoopAgent) InboxValue() agent.InboxReader {
 
 // StatusValue includes reserved execution before the first Turn is committed.
 func (subject *ReactLoopAgent) StatusValue() agent.Status {
-	if subject.running != nil {
+	if subject.state != executionIdle {
 		return agent.StatusRunning
 	}
 	return agent.StatusIdle
@@ -48,7 +48,7 @@ func (subject *ReactLoopAgent) admit(target agent.InboxTarget, input agentmessag
 	if err := subject.CheckExecution(); err != nil {
 		return agent.Admission{}, err
 	}
-	if wake && subject.running != nil && subject.running.cancellation != nil {
+	if wake && subject.cancelCause != nil {
 		target = agent.NextTurn
 	}
 	edit, err := subject.pending.PrepareAppend(target, input)
@@ -68,17 +68,7 @@ func (subject *ReactLoopAgent) ConfirmAdmission(proposal agent.Admission, write 
 	if err != nil {
 		return agent.InboxChanges{}, err
 	}
-	subject.preserveInbox = false
-	if proposal.Wake {
-		if subject.running == nil {
-			subject.running = &activity{}
-		} else if subject.running.kind == maintenanceActivity || subject.running.cancellation != nil {
-			var cancelled agent.Cancellation
-			if !errors.As(subject.running.cancellation, &cancelled) || cancelled.Cause.CancelKind() != "disposed" {
-				subject.running.wake = true
-			}
-		}
-	}
+	subject.acceptExecution(proposal.Wake)
 	return changes, nil
 }
 
@@ -88,14 +78,7 @@ func (subject *ReactLoopAgent) Cancel(intent agent.CancelCause, options agent.Ca
 	if !subject.lifetime.ready() || subject.pending == nil {
 		return agent.InboxEdit{}, errors.New("agentloop: Agent is not initialized")
 	}
-	if subject.running != nil {
-		if subject.running.cancellation == nil {
-			subject.running.cancellation = agent.NewCancellation(intent)
-		}
-		if !options.KeepInbox {
-			subject.running.wake = false
-		}
-	}
+	subject.cancelExecution(intent, options.KeepInbox)
 	var edit agent.InboxEdit
 	if !options.KeepInbox {
 		if err := subject.checkInboxMutation(); err != nil {
@@ -132,11 +115,11 @@ func (subject *ReactLoopAgent) Promote(identifier agentmessage.MessageID) (agent
 		}
 		return agent.Admission{}, agent.ErrInputMissing
 	}
-	if subject.running == nil {
+	if subject.state == executionIdle {
 		return agent.Admission{}, agent.ErrSteerUnavailable
 	}
 	target := agent.NextStep
-	if subject.running.cancellation != nil {
+	if subject.cancelCause != nil {
 		target = agent.NextTurn
 	}
 	edit, err := subject.pending.PrepareMove(identifier, target)

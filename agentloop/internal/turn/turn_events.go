@@ -35,9 +35,12 @@ func (current *Turn) StartDraft() (session.EventDraft, error) {
 	if current.currentState != StateProposed {
 		return session.EventDraft{}, current.transitionError("prepare start")
 	}
-	return session.NewEventDraft(session.TurnStarted, session.TurnStart{
-		Turn: current.number,
-	})
+	return session.NewEventDraft(
+		session.TurnStarted,
+		session.TurnStart{
+			Turn: current.number,
+		},
+	)
 }
 
 // EndDraft encodes the accepted terminal conclusion without closing the Turn.

@@ -22,7 +22,7 @@ func (plan firstAppend) FindCommit(snapshot session.Snapshot) (*session.WriteRes
 	if len(snapshot.Events) == 0 {
 		return nil, nil
 	}
-	if err := plan.draft.CheckCommit(snapshot.Events[0]); err != nil {
+	if err := plan.draft.ValidateEvent(snapshot.Events[0]); err != nil {
 		return nil, err
 	}
 	return &session.WriteResult{

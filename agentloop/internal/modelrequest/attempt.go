@@ -144,7 +144,7 @@ func (attempt *Attempt) ConfirmChunk(chunk llm.StreamChunk, events []session.Eve
 	if err != nil {
 		return err
 	}
-	if err := draft.CheckCommit(events[0]); err != nil {
+	if err := draft.ValidateEvent(events[0]); err != nil {
 		return err
 	}
 	if len(attempt.sequences) != 0 && events[0].Seq <= attempt.sequences[len(attempt.sequences)-1] {
@@ -207,7 +207,7 @@ func (attempt *Attempt) ConfirmMessage(events []session.Event) error {
 	if len(events) != 1 || attempt.messageDraft == nil || attempt.accepted {
 		return errors.New("agentloop: unexpected committed assistant message")
 	}
-	if err := attempt.messageDraft.CheckCommit(events[0]); err != nil {
+	if err := attempt.messageDraft.ValidateEvent(events[0]); err != nil {
 		return err
 	}
 	attempt.accepted = true

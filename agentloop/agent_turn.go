@@ -14,18 +14,18 @@ func (subject *ReactLoopAgent) PrepareTurn() (TurnStart, error) {
 	if !subject.lifetime.ready() || subject.pending == nil {
 		return TurnStart{}, errors.New("agentloop: Agent is not initialized")
 	}
-	if subject.running != nil && subject.running.kind == maintenanceActivity {
+	if subject.state == executionMaintenance {
 		return TurnStart{}, ErrState
 	}
 	if subject.current != nil && subject.current.StateValue() != turnstate.StateProposed {
 		return TurnStart{}, ErrState
 	}
-	if subject.running == nil {
+	if subject.state == executionIdle {
 		return TurnStart{}, errors.New("agentloop: no execution is accepted")
 	}
 	if subject.current == nil {
-		if subject.running.cancellation != nil {
-			return TurnStart{}, subject.running.cancellation
+		if subject.cancelCause != nil {
+			return TurnStart{}, subject.Cancellation()
 		}
 		proposed, err := turnstate.New(subject.lastTurn + 1)
 		if err != nil {

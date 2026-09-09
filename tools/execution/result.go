@@ -98,7 +98,10 @@ func replaceResultContent(outcome tools.ToolExecutionResult, content []agentmess
 	}
 }
 
-func appendAdditionalContexts(outcome tools.ToolExecutionResult, additions []agentmessage.UserMessage) (tools.ToolExecutionResult, error) {
+func appendAdditionalContexts(
+	outcome tools.ToolExecutionResult,
+	additions []agentmessage.UserMessage,
+) (tools.ToolExecutionResult, error) {
 	detached, err := tools.CloneResult(outcome)
 	if err != nil {
 		return nil, err

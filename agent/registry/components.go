@@ -2,6 +2,7 @@ package registry
 
 import (
 	"errors"
+	middlewareactor "github.com/gorenx/goren/agent/middleware/actor"
 	"time"
 
 	runtimeactor "github.com/gorenx/goren/tools/runtime/actor"
@@ -57,6 +58,11 @@ func newInstallation(
 		ToolsRegistry:  input.ToolsRegistry,
 	}}
 	executor := &agentClient{
+		modelRouter:  input.ModelRouter,
+		middleware:   input.Middleware,
+		handlers:     input.Handlers.Clone(),
+		tools:        tools,
+		timeout:      input.Timeout,
 		authority:    authority,
 		creation:     input.Creation,
 		conversation: conversation,
@@ -256,6 +262,11 @@ func (endpoint *modelClient) Initialize(gc *goakt.GrainContext, reply chan<- com
 }
 
 type agentClient struct {
+	modelRouter  *goakt.PID
+	middleware   *goakt.GrainIdentity
+	handlers     middlewareactor.Handlers
+	tools        *toolsClient
+	timeout      time.Duration
 	authority    *goakt.GrainIdentity
 	creation     Creation
 	conversation *sessionClient
@@ -280,11 +291,16 @@ func (endpoint *agentClient) Initialize(gc *goakt.GrainContext, reply chan<- com
 		gc,
 		identity,
 		agentactor.Initialize{
-			AgentID:    endpoint.creation.AgentID,
-			CreationID: endpoint.creation.CreationID,
-			Authority:  endpoint.authority,
-			Session:    endpoint.conversation.Runtime(),
-			Prompt:     endpoint.prompt.Runtime(),
+			AgentID:     endpoint.creation.AgentID,
+			CreationID:  endpoint.creation.CreationID,
+			Authority:   endpoint.authority,
+			Session:     endpoint.conversation.Runtime(),
+			Prompt:      endpoint.prompt.Runtime(),
+			ModelRouter: endpoint.modelRouter,
+			Middleware:  endpoint.middleware,
+			Handlers:    endpoint.handlers.Clone(),
+			Tools:       endpoint.tools.Runtime(),
+			Timeout:     endpoint.timeout,
 		},
 		func(gc *goakt.GrainContext, initialized agentactor.Initialized, failure error) {
 			reply <- componentResult{err: errors.Join(failure, initialized.Err)}

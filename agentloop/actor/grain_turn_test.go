@@ -2,148 +2,16 @@ package loopactor
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
 	"github.com/gorenx/goren/agent"
 	middlewareactor "github.com/gorenx/goren/agent/middleware/actor"
-	"github.com/gorenx/goren/agentloop"
-	stepstate "github.com/gorenx/goren/agentloop/internal/step"
 	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/session"
-	promptactor "github.com/gorenx/goren/systemprompt/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/log"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
-
-type stoppingSetup struct {
-	failCancel bool
-	phase      string
-	entered    chan struct{}
-}
-type releaseStopping struct{}
-type stoppingEndpoint struct {
-	failCancel bool
-	phase      string
-	entered    chan struct{}
-	reply      *goakt.GrainReply
-	id         middlewareactor.CallID
-	cause      error
-}
-
-func (*stoppingEndpoint) OnActivate(context.Context, *goakt.GrainProps) error   { return nil }
-func (*stoppingEndpoint) OnDeactivate(context.Context, *goakt.GrainProps) error { return nil }
-func (owner *stoppingEndpoint) OnReceive(gc *goakt.GrainContext) {
-	switch input := gc.Message().(type) {
-	case stoppingSetup:
-		if err := gc.EnableReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))); err != nil {
-			panic(err)
-		}
-		owner.entered = input.entered
-		owner.phase = input.phase
-		owner.failCancel = input.failCancel
-		gc.Response(struct{}{})
-	case promptactor.Assemble:
-		if owner.phase != "prompt" {
-			gc.Response(promptactor.Assembled{
-				ID: input.ID,
-			})
-			return
-		}
-		owner.reply = gc.DeferResponse()
-		owner.id = middlewareactor.CallID(input.ID)
-		close(owner.entered)
-	case middlewareactor.ResolvePreStep:
-		owner.reply = gc.DeferResponse()
-		owner.id = input.CallID
-		close(owner.entered)
-	case promptactor.CancelAssembly:
-		if middlewareactor.CallID(input.ID) != owner.id {
-			panic("wrong Prompt invocation")
-		}
-		owner.cause = errors.New("Prompt canceled")
-		gc.Response(promptactor.Completion{})
-	case middlewareactor.InvokeTurnStopping:
-		owner.reply = gc.DeferResponse()
-		owner.id = input.Invocation.CallID
-		close(owner.entered)
-	case middlewareactor.CancelInvocation:
-		if input.CallID != owner.id || input.Handler != "stopping" {
-			panic("wrong middleware cancellation")
-		}
-		if owner.cause != nil && owner.cause.Error() != input.Cause.Error() {
-			panic("retry replaced the first cancellation cause")
-		}
-		owner.cause = input.Cause
-		if owner.failCancel {
-			owner.failCancel = false
-			gc.Response(middlewareactor.Completion{
-				Err: errors.New("test: cancellation delivery failed"),
-			})
-			return
-		}
-		gc.Response(middlewareactor.Completion{})
-	case middlewareactor.RunTurnStopping:
-		owner.reply = gc.DeferResponse()
-		owner.id = input.CallID
-		close(owner.entered)
-	case middlewareactor.CancelCall:
-		if input.CallID != owner.id {
-			panic("wrong stopping invocation")
-		}
-		owner.cause = input.Cause
-		gc.Response(middlewareactor.Completion{})
-	case releaseStopping:
-		switch owner.phase {
-		case "prompt":
-			owner.reply.Response(promptactor.Assembled{
-				ID:  string(owner.id),
-				Err: owner.cause,
-			})
-		case "pre-step":
-			owner.reply.Response(agent.PreStepResolved{
-				Err: owner.cause,
-			})
-		default:
-			owner.reply.Response(agent.TurnStoppingCompleted{
-				Err: owner.cause,
-			})
-		}
-		owner.reply = nil
-		gc.Response(struct{}{})
-	}
-}
-
-type continuationRequest struct {
-	routes []middlewareactor.Route
-	target *goakt.GrainIdentity
-	hooks  *goakt.GrainIdentity
-}
-type continuationCaller struct {
-	replies chan turnContinued
-}
-
-func (*continuationCaller) PreStart(*goakt.Context) error { return nil }
-func (*continuationCaller) PostStop(*goakt.Context) error { return nil }
-func (owner *continuationCaller) Receive(rc *goakt.ReceiveContext) {
-	if input, ok := rc.Message().(continuationRequest); ok {
-		replies := owner.replies
-		rc.RequestGrain(input.target, continueTurn{
-			middleware: input.hooks,
-			routes:     input.routes,
-		}).Then(func(payload any, failure error) {
-			result, ok := payload.(turnContinued)
-			if failure != nil {
-				result.err = failure
-			} else if !ok {
-				result.err = errors.New("unexpected continuation response")
-			}
-			replies <- result
-		})
-	}
-}
 
 func TestStoppingWaitAcceptsSteerAndWaitsForCanceledHook(t *testing.T) {
 	for _, scenario := range []string{"steer", "cancel", "retry cancellation"} {
@@ -151,7 +19,7 @@ func TestStoppingWaitAcceptsSteerAndWaitsForCanceledHook(t *testing.T) {
 			canceled := scenario != "steer"
 			retry := scenario == "retry cancellation"
 			ctx := context.Background()
-			system, err := goakt.NewActorSystem("stopping", goakt.WithLogger(log.DiscardLogger))
+			system, err := goakt.NewActorSystem("stopping", goakt.WithLogger(log.DiscardLogger), goakt.WithPubSub())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -163,25 +31,20 @@ func TestStoppingWaitAcceptsSteerAndWaitsForCanceledHook(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			subject, history := preparedTurn(t)
-			finishStepForStopping(t, subject, history)
-			storage, err := goakt.GrainOf[*settlementStorage](ctx, system, "storage", goakt.WithLongLivedGrain())
+			subject, history := acceptedTurn(t)
+			backend := &modelProvider{}
+			pool := modelPool(t, system, backend)
+			storage, err := goakt.GrainOf[*sessionGrain](ctx, system, "storage", goakt.WithLongLivedGrain())
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := system.AskGrain(ctx, storage, storageSetup{
+			if _, err := system.AskGrain(ctx, storage, sessionSetup{
 				history: history,
 			}, time.Second); err != nil {
 				t.Fatal(err)
 			}
-			target, err := goakt.GrainOf[*settlementAgent](ctx, system, "execution", goakt.WithLongLivedGrain())
+			target, err := goakt.GrainOf[*executionGrain](ctx, system, "execution", goakt.WithLongLivedGrain())
 			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := system.AskGrain(ctx, target, settlementSetup{
-				subject: subject,
-				target:  storage,
-			}, time.Second); err != nil {
 				t.Fatal(err)
 			}
 			hooks, err := goakt.GrainOf[*stoppingEndpoint](ctx, system, "hooks", goakt.WithLongLivedGrain())
@@ -202,23 +65,23 @@ func TestStoppingWaitAcceptsSteerAndWaitsForCanceledHook(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			replies := make(chan turnContinued, 1)
-			caller, err := system.Spawn(ctx, "caller", &continuationCaller{
-				replies: replies,
-			}, goakt.WithReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := goakt.Tell(ctx, caller, continuationRequest{
-				target: target,
-				hooks:  coordinator,
-				routes: []middlewareactor.Route{
-					{
-						Definition: "stopping",
-						Target:     hooks,
+			_, err = system.AskGrain(ctx, target, executionSetup{
+				execute:    true,
+				subject:    subject,
+				target:     storage,
+				middleware: coordinator,
+				router:     pool,
+				timeout:    time.Second,
+				handlers: middlewareactor.Handlers{
+					TurnStopping: []middlewareactor.Route{
+						{
+							Definition: "stopping",
+							Target:     hooks,
+						},
 					},
 				},
-			}); err != nil {
+			}, time.Second)
+			if err != nil {
 				t.Fatal(err)
 			}
 			select {
@@ -264,101 +127,25 @@ func TestStoppingWaitAcceptsSteerAndWaitsForCanceledHook(t *testing.T) {
 					}
 				}
 			}
-			payload, err = system.AskGrain(ctx, target, finishTurn{}, time.Second)
-			if err != nil || payload.(turnFinished).err == nil {
-				t.Fatalf("settlement bypassed hook: %v, %v", payload, err)
-			}
-			select {
-			case result := <-replies:
-				t.Fatalf("hook completed before release: %+v", result)
-			default:
+			payload, err = system.AskGrain(ctx, target, ReadActivity{CreationID: "test"}, time.Second)
+			if err != nil || payload.(Activity).Status != agent.StatusRunning {
+				t.Fatalf("hook prematurely settled execution: %v, %v", payload, err)
 			}
 			if _, err := system.AskGrain(ctx, hooks, releaseStopping{}, time.Second); err != nil {
 				t.Fatal(err)
 			}
-			select {
-			case result := <-replies:
-				if result.err != nil {
-					t.Fatal(result.err)
-				}
-				_, resumes := result.next.(agentloop.ContinueSteps)
-				_, ends := result.next.(agentloop.TurnEnd)
-				if resumes == canceled || ends != canceled {
-					t.Fatalf("continuation = %T", result.next)
-				}
-			case <-time.After(time.Second):
-				t.Fatal("hook result not delivered")
+			payload, err = system.AskGrain(ctx, target, WhenIdle{CreationID: "test"}, 3*time.Second)
+			if err != nil || payload.(Completion).Err != nil {
+				t.Fatalf("hook did not settle: %v, %v", payload, err)
 			}
+			expected := int32(2)
+			if canceled {
+				expected = 1
+			}
+			if backend.calls.Load() != expected {
+				t.Fatalf("model calls = %d, want %d", backend.calls.Load(), expected)
+			}
+
 		})
 	}
-}
-
-func prepareRequestStep(t *testing.T, subject *agentloop.ReactLoopAgent, history *session.Log) {
-	t.Helper()
-	commit := func(drafts ...session.EventDraft) session.WriteResult {
-		write, err := history.Commit(context.Background(), session.Batch(drafts...))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return write
-	}
-	edit, err := subject.PrepareInput()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := subject.ConfirmInput(commit(edit.Drafts...)); err != nil {
-		t.Fatal(err)
-	}
-	decision, err := subject.PreparePreStep()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if accepted, err := subject.AcceptPreStep(decision.Default); err != nil || !accepted {
-		t.Fatalf("admission: %v, %v", accepted, err)
-	}
-	draft, err := subject.PrepareStep(agentloop.Preparation{
-		Snapshot: history.Snapshot(),
-	})
-	if err != nil || draft == nil {
-		t.Fatalf("prepare Step: %v", err)
-	}
-	if err := subject.ConfirmStep(commit(*draft)); err != nil {
-		t.Fatal(err)
-	}
-	for {
-		draft, err := subject.MessageDraft()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if draft == nil {
-			break
-		}
-		if err := subject.ConfirmMessage(commit(*draft)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := subject.BeginRequest(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func finishStepForStopping(t *testing.T, subject *agentloop.ReactLoopAgent, history *session.Log) {
-	t.Helper()
-	prepareRequestStep(t, subject, history)
-	ending, err := subject.PrepareStepEnd(stepstate.StepResultCompleted)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := subject.ConfirmStepEnd(commitStepEnd(t, history, ending)); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func commitStepEnd(t *testing.T, history *session.Log, ending agentloop.EndStep) session.WriteResult {
-	t.Helper()
-	write, err := history.Commit(context.Background(), stepEndWrite{ending: ending})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return write
 }

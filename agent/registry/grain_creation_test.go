@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	middlewareactor "github.com/gorenx/goren/agent/middleware/actor"
+	llmactor "github.com/gorenx/goren/llm/actor"
 	"path/filepath"
 	"testing"
 	"time"
@@ -78,6 +80,15 @@ func creationFixture(t *testing.T, options ...goakt.Option) (goakt.ActorSystem, 
 		t.Fatal(err)
 	}
 	dependencies := configurationRoutes(t, system)
+	router, err := llmactor.SpawnPool(ctx, system, "models", 1, llmactor.InitializeWorker{LLM: dependencies})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hooks, err := goakt.GrainOf[*middlewareactor.Grain](ctx, system, "middleware", goakt.WithLongLivedGrain(),
+		goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))))
+	if err != nil {
+		t.Fatal(err)
+	}
 	return system, authority, agentregistry.CreateAgent{
 		Creation: agentregistry.Creation{
 			AgentID:    "conversation",
@@ -86,6 +97,8 @@ func creationFixture(t *testing.T, options ...goakt.Option) (goakt.ActorSystem, 
 		Storage:         backend,
 		SessionRegistry: sessions,
 		ModelConfig:     dependencies,
+		ModelRouter:     router,
+		Middleware:      hooks,
 		PromptRegistry:  dependencies,
 		ToolsRegistry:   toolRegistry(t, system),
 		Commands:        directory,
@@ -648,5 +661,27 @@ func TestToolsReactivationCannotClaimOrReleaseOriginalResources(t *testing.T) {
 	result := askLifecycle[agentregistry.Ready](t, system, authority, replacement)
 	if result.Err == nil {
 		t.Fatal("unconfirmed cleanup released Agent identity")
+	}
+}
+
+func TestCreationRejectsMissingExecutionRoutesBeforeReservation(t *testing.T) {
+	system, authority, input := creationFixture(t)
+	for _, missing := range []string{"router", "middleware"} {
+		t.Run(missing, func(t *testing.T) {
+			candidate := input
+			if missing == "router" {
+				candidate.ModelRouter = nil
+			} else {
+				candidate.Middleware = nil
+			}
+			result := askLifecycle[agentregistry.Ready](t, system, authority, candidate)
+			if result.Err == nil || result.Executor != nil {
+				t.Fatal("incomplete execution routes were published")
+			}
+		})
+	}
+	ready := askLifecycle[agentregistry.Ready](t, system, authority, input)
+	if ready.Err != nil {
+		t.Fatalf("rejected dependencies reserved the identity: %v", ready.Err)
 	}
 }

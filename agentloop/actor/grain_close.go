@@ -23,7 +23,7 @@ func (owner *Grain) prepareClose(identifier string) error {
 	if owner.initialization != nil {
 		return errors.New("agentloop: initialization has not finished")
 	}
-	return owner.business.PrepareClose(owner.model != nil && owner.model.reply != nil)
+	return owner.business.PrepareClose(owner.deliveries != 0 || owner.callID != "" || len(owner.calls) != 0)
 }
 
 func (owner *Grain) closeResources(gc *goakt.GrainContext, input agentactor.CloseResources) {
@@ -32,7 +32,7 @@ func (owner *Grain) closeResources(gc *goakt.GrainContext, input agentactor.Clos
 		failure = errors.New("agentloop: initialization has not finished")
 	}
 	if failure == nil {
-		failure = owner.business.CheckClose(owner.model != nil && owner.model.reply != nil)
+		failure = owner.business.CheckClose(owner.deliveries != 0 || owner.callID != "" || len(owner.calls) != 0)
 	}
 	if failure != nil {
 		gc.Response(agentactor.Closed{Err: failure})
@@ -43,15 +43,8 @@ func (owner *Grain) closeResources(gc *goakt.GrainContext, input agentactor.Clos
 		gc.Response(agentactor.Closed{Err: errors.New("agentloop: resource close requires an asynchronous request")})
 		return
 	}
-	if owner.model != nil {
-		owner.model.cleanup = reply
-		next, err := owner.business.RetryRequestClose()
-		if err != nil {
-			owner.finishModel(owner.model, err)
-			return
-		}
-		owner.executeRequest(gc, owner.model, next)
-		return
+	if owner.models != nil {
+		owner.models.Dispose(gc)
 	}
 	owner.releaseResources(reply)
 }
@@ -84,9 +77,9 @@ func (owner *Grain) requestClosePreparation(gc *goakt.GrainContext, input agenta
 		gc.Response(agentactor.Prepared{Err: errors.New("agentloop: close preparation requires an asynchronous request")})
 		return
 	}
-	owner.awaitClosePreparation(gc, closePreparation{
-		creationID: input.CreationID,
-		reply:      reply,
+	owner.cancelOperations(gc, completeCancel{
+		closeCreation: input.CreationID,
+		reply:         reply,
 	})
 }
 

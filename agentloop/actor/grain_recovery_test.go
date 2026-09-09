@@ -2,15 +2,11 @@ package loopactor
 
 import (
 	"context"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gorenx/goren/agent"
 	middlewareactor "github.com/gorenx/goren/agent/middleware/actor"
-	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/llm"
-	llmactor "github.com/gorenx/goren/llm/actor"
 	llmretry "github.com/gorenx/goren/llm/retry"
 	retryactor "github.com/gorenx/goren/llm/retry/actor"
 	"github.com/gorenx/goren/session"
@@ -20,30 +16,8 @@ import (
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
-type modelProvider struct{ calls atomic.Int32 }
-
-func (backend *modelProvider) Stream(context.Context, llm.GenerateOptions) (llm.ChunkStream, error) {
-	if backend.calls.Add(1) == 1 {
-		return nil, llm.MustLlmError("limited", "RATE_LIMITED")
-	}
-	return llm.NewSliceStream([]llm.StreamChunk{
-		llm.BlockStartChunk{
-			Index:     0,
-			BlockType: "text",
-		},
-		llm.BlockEndChunk{
-			Index: 0,
-			Block: agentmessage.NewTextBlock("answer"),
-		},
-		llm.FinishChunk{
-			Reason: llm.StopFinish{},
-		},
-	})
-}
-
 type hookCounts struct {
-	configurations int
-	recoveries     int
+	recoveries int
 }
 type modelHooks struct{ counts hookCounts }
 
@@ -51,14 +25,6 @@ func (*modelHooks) OnActivate(context.Context, *goakt.GrainProps) error   { retu
 func (*modelHooks) OnDeactivate(context.Context, *goakt.GrainProps) error { return nil }
 func (owner *modelHooks) OnReceive(gc *goakt.GrainContext) {
 	switch gc.Message().(type) {
-	case middlewareactor.InvokeRequest:
-		owner.counts.configurations++
-		gc.Response(agent.RequestResolved{
-			Config: llm.CallConfig{
-				Provider: "p",
-				Model:    "m",
-			},
-		})
 	case middlewareactor.InvokeRequestError:
 		owner.counts.recoveries++
 		gc.Response(agent.RequestErrorResolved{
@@ -71,7 +37,7 @@ func (owner *modelHooks) OnReceive(gc *goakt.GrainContext) {
 	}
 }
 
-func TestModelRequestActorRunsConfigurationRecoveryAndFreshAttempt(t *testing.T) {
+func TestModelRecoveryCompletesTurnThroughSelectedHandlers(t *testing.T) {
 	t.Run("custom recovery", func(t *testing.T) { runModelRecovery(t, false) })
 	t.Run("default retry", func(t *testing.T) { runModelRecovery(t, true) })
 }
@@ -90,42 +56,22 @@ func runModelRecovery(t *testing.T, useDefault bool) {
 			t.Error(err)
 		}
 	})
-	subject, history := preparedTurn(t)
-	prepareRequestStep(t, subject, history)
-	storage, err := goakt.GrainOf[*settlementStorage](ctx, system, "storage", goakt.WithLongLivedGrain())
+	subject, history := acceptedTurn(t)
+	storage, err := goakt.GrainOf[*sessionGrain](ctx, system, "storage", goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := system.AskGrain(ctx, storage, storageSetup{
+	if _, err := system.AskGrain(ctx, storage, sessionSetup{
 		history: history,
 	}, time.Second); err != nil {
 		t.Fatal(err)
 	}
-	target, err := goakt.GrainOf[*settlementAgent](ctx, system, "execution", goakt.WithLongLivedGrain())
+	target, err := goakt.GrainOf[*executionGrain](ctx, system, "execution", goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := system.AskGrain(ctx, target, settlementSetup{
-		subject: subject,
-		target:  storage,
-	}, time.Second); err != nil {
-		t.Fatal(err)
-	}
-	catalog, err := goakt.GrainOf[*llmactor.Grain](ctx, system, "llm", goakt.WithLongLivedGrain())
-	if err != nil {
-		t.Fatal(err)
-	}
-	backend := &modelProvider{}
-	registered, err := system.AskGrain(ctx, catalog, llmactor.RegisterAdapter{
-		Providers: []string{"p"},
-		Adapter:   backend,
-	}, time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := registered.(llmactor.Registered).Err; err != nil {
-		t.Fatal(err)
-	}
+	backend := &modelProvider{failFirst: true}
+	pool := modelPool(t, system, backend)
 	hooks, err := goakt.GrainOf[*modelHooks](ctx, system, "hooks", goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
@@ -152,37 +98,28 @@ func runModelRecovery(t *testing.T, useDefault bool) {
 			t.Fatal(err)
 		}
 	}
-	_, configureErr := system.AskGrain(ctx, catalog, llmactor.SetConfiguration{
-		AgentID: "settlement",
-		Config: llm.CallConfig{
-			Provider: "p",
-			Model:    "m",
+	_, err = system.AskGrain(ctx, target, executionSetup{
+		execute:    true,
+		subject:    subject,
+		target:     storage,
+		middleware: coordinator,
+		router:     pool,
+		timeout:    time.Second,
+		handlers: middlewareactor.Handlers{
+			RequestError: []middlewareactor.Route{
+				{
+					Definition: "recover",
+					Target:     recovery,
+				},
+			},
 		},
 	}, time.Second)
-	if configureErr != nil {
-		t.Fatal(configureErr)
-	}
-	pool, err := llmactor.SpawnPool(ctx, system, "llm-pool", 2, llmactor.InitializeWorker{
-		LLM: catalog,
-	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload, err := system.AskGrain(ctx, target, requestModel{
-		router:       pool,
-		replyTimeout: time.Second,
-		middleware:   coordinator,
-		recoveryRoutes: []middlewareactor.Route{{
-			Definition: "recover",
-			Target:     recovery,
-		}},
-	}, 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	result := payload.(modelResult)
-	if result.err != nil || result.finish == nil || result.finish.ReasonKind() != "stop" {
-		t.Fatalf("request: %+v", result)
+	payload, err := system.AskGrain(ctx, target, WhenIdle{CreationID: "test"}, 5*time.Second)
+	if err != nil || payload.(Completion).Err != nil {
+		t.Fatalf("execution: %v, %v", payload, err)
 	}
 	if backend.calls.Load() != 2 {
 		t.Fatalf("provider calls: %d", backend.calls.Load())
@@ -196,7 +133,7 @@ func runModelRecovery(t *testing.T, useDefault bool) {
 	if useDefault {
 		expectedRecovery = 0
 	}
-	if counts.configurations != 0 || counts.recoveries != expectedRecovery {
+	if counts.recoveries != expectedRecovery {
 		t.Fatalf("hook counts: %+v", counts)
 	}
 	payload, err = system.AskGrain(ctx, storage, sessionactor.Read{}, time.Second)
@@ -224,20 +161,4 @@ func runModelRecovery(t *testing.T, useDefault bool) {
 	if useDefault && retries != 2 {
 		t.Fatalf("retry facts: %d", retries)
 	}
-	if _, err := subject.CompleteModel(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func (*modelProvider) ProviderRetryPolicy(string) (llm.RetryPolicy, error) {
-	return llm.NormalRetryPolicy{
-		Mode:           llm.RetryNormal,
-		MaxRetries:     1,
-		RetryableCodes: []string{"RATE_LIMITED"},
-		ResolvedRetryBackoff: llm.ResolvedRetryBackoff{
-			InitialDelayMS: 1,
-			MaxDelayMS:     1,
-			JitterRatio:    0,
-		},
-	}, nil
 }

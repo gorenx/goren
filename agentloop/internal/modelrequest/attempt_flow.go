@@ -251,7 +251,7 @@ func (attempt *Attempt) confirmCommit(write session.WriteResult) error {
 		write.Barrier.NextSeq != write.NextSeq || write.Events[0].Seq != write.FirstSeq {
 		return errors.New("agentloop: model commit acknowledgement does not match the pending write")
 	}
-	if err := attempt.pendingDraft.CheckCommit(write.Events[0]); err != nil {
+	if err := attempt.pendingDraft.ValidateEvent(write.Events[0]); err != nil {
 		return err
 	}
 	attempt.confirmedNext = write.NextSeq

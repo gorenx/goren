@@ -72,7 +72,7 @@ func (plan *retryWrite) FindCommit(snapshot session.Snapshot) (*session.WriteRes
 		if found != nil {
 			return nil, errors.New("llm-retry: duplicate committed retry fact")
 		}
-		if err := plan.draft.CheckCommit(entry); err != nil {
+		if err := plan.draft.ValidateEvent(entry); err != nil {
 			return nil, err
 		}
 		found = &session.WriteResult{

@@ -112,12 +112,17 @@ func TestClientSeparatesInputCancellationAndIdle(t *testing.T) {
 	}
 	driver, replies = grainDriver(t, system, identity)
 	dependencies := configurationRoutes(t, system)
+	routes := executionDependencies(t, system)
 	if result := request[agentactor.Initialized](t, driver, replies, agentactor.Initialize{
-		AgentID:    "client-test",
-		Authority:  authority,
-		CreationID: "current",
-		Session:    sessionRoute(t, system, "client-test"),
-		Prompt:     promptRoute(t, system, "client-test", dependencies),
+		ModelRouter: routes.router,
+		Middleware:  routes.middleware,
+		Tools:       toolRuntimeRoute(t, system, "client-test"),
+		Timeout:     time.Second,
+		AgentID:     "client-test",
+		Authority:   authority,
+		CreationID:  "current",
+		Session:     sessionRoute(t, system, "client-test"),
+		Prompt:      promptRoute(t, system, "client-test", dependencies),
 	}); result.Err != nil {
 		t.Fatal(result.Err)
 	}
@@ -148,6 +153,7 @@ func TestClientSeparatesInputCancellationAndIdle(t *testing.T) {
 	if result := request[loopactor.Completion](t, driver, replies, loopactor.WhenIdle{}); result.Err != nil {
 		t.Fatal(result.Err)
 	}
+	holdExecution(t, system, identity)
 	input, err = agentmessage.NewUserMessage(agentmessage.UserMessageInput{
 		Content: []agentmessage.ContentBlock{agentmessage.NewTextBlock("execute")},
 		Source:  agentmessage.UserMessageSource{},

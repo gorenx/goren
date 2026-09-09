@@ -22,7 +22,10 @@ type exchange struct {
 	root     *goakt.GrainReply
 	// downstream maps suspended handlers to their outstanding Continue replies.
 	downstream map[middleware.RegistrationID]*goakt.GrainReply
-	routes     map[middleware.RegistrationID]*goakt.GrainIdentity
+	// routes maps caller-supplied registration IDs to their module Grains for
+	// this invocation, e.g. routes["compaction"] == compactGrain. invoke uses
+	// this map to send InvokePreStep; the ID itself is not an actor address.
+	routes map[middleware.RegistrationID]*goakt.GrainIdentity
 	// active contains requests whose module work has not replied yet.
 	active  map[middleware.RegistrationID]bool
 	context context.Context
@@ -148,7 +151,11 @@ func selectRoutes(entries []Route) ([]middleware.RegistrationID, map[middleware.
 	return selection, routes, nil
 }
 
-func (owner *Grain) begin(gc *goakt.GrainContext, identity CallID, routes map[middleware.RegistrationID]*goakt.GrainIdentity) (exchange, error) {
+func (owner *Grain) begin(
+	gc *goakt.GrainContext,
+	identity CallID,
+	routes map[middleware.RegistrationID]*goakt.GrainIdentity,
+) (exchange, error) {
 	if identity == "" || owner.calls[identity] != nil {
 		return exchange{}, errors.New("agent middleware: invocation ID is empty or already active")
 	}

@@ -6,20 +6,53 @@ import (
 	"github.com/gorenx/goren/agent/middleware"
 	"github.com/gorenx/goren/llm"
 	goakt "github.com/tochemey/goakt/v4/actor"
+	"slices"
 )
 
 // CallID correlates one process-local invocation, never a persisted business fact.
 type CallID string
 
-// Route binds a selected middleware definition to its module Grain.
+// Route binds a selected middleware registration to the Grain that handles it.
+// For example, Definition: "compaction", Target: compactGrain binds that ID to
+// an already-known Grain identity. No lookup by middleware name is performed.
 type Route struct {
 	Definition middleware.RegistrationID
 	Target     *goakt.GrainIdentity
 }
 
+// Handlers selects the ordered middleware registrations for one Agent lifetime.
+// The lifecycle owner supplies already-started targets; empty lists use defaults.
+type Handlers struct {
+	PreStep      []Route
+	RequestError []Route
+	TurnStopping []Route
+}
+
+// Clone detaches the selections from mutable caller-owned slices.
+func (selection Handlers) Clone() Handlers {
+	return Handlers{
+		PreStep:      slices.Clone(selection.PreStep),
+		RequestError: slices.Clone(selection.RequestError),
+		TurnStopping: slices.Clone(selection.TurnStopping),
+	}
+}
+
+// Validate rejects invalid routes and duplicate registrations in each boundary.
+func (selection Handlers) Validate() error {
+	for _, entries := range [][]Route{selection.PreStep, selection.RequestError, selection.TurnStopping} {
+		_, _, err := selectRoutes(entries)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Invocation identifies a single selected handler and the route for Continue.
 type Invocation struct {
-	CallID      CallID
+	CallID CallID
+	// Handler is copied from Route.Definition. Return this same ID in Continue
+	// so the coordinator locates this registration's position and waiting reply.
 	Handler     middleware.RegistrationID
 	Coordinator *goakt.GrainIdentity
 }

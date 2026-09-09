@@ -58,7 +58,7 @@ func (current *Step) ConfirmMessage(write session.WriteResult) error {
 		write.Barrier.NextSeq != write.NextSeq {
 		return errors.New("agentloop step: invalid input commit acknowledgement")
 	}
-	if err := draft.CheckCommit(write.Events[0]); err != nil {
+	if err := draft.ValidateEvent(write.Events[0]); err != nil {
 		return err
 	}
 	current.lastInputSeq = write.FirstSeq

@@ -2,6 +2,7 @@ package registry
 
 import (
 	"errors"
+	middlewareactor "github.com/gorenx/goren/agent/middleware/actor"
 	"reflect"
 	"regexp"
 	"slices"
@@ -24,6 +25,9 @@ type CreateAgent struct {
 	Storage         sessionactor.RecoveryStorage
 	SessionRegistry *goakt.GrainIdentity
 	ModelConfig     *goakt.GrainIdentity
+	ModelRouter     *goakt.PID
+	Middleware      *goakt.GrainIdentity
+	Handlers        middlewareactor.Handlers
 	PromptRegistry  *goakt.GrainIdentity
 	ToolsRegistry   *goakt.GrainIdentity
 	// Tools overrides the registered defaults for this Agent lifetime.
@@ -65,9 +69,15 @@ var sessionName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 
 // validate checks construction input; parent admission remains a Registry rule.
 func (input CreateAgent) validate() error {
+	err := input.Handlers.Validate()
+	if err != nil {
+		return err
+	}
 	if input.Storage == nil ||
 		input.SessionRegistry == nil ||
 		input.ModelConfig == nil ||
+		input.ModelRouter == nil ||
+		input.Middleware == nil ||
 		input.PromptRegistry == nil ||
 		input.ToolsRegistry == nil ||
 		input.Timeout <= 0 {
@@ -97,6 +107,7 @@ func (input CreateAgent) validate() error {
 
 func (input CreateAgent) clone() CreateAgent {
 	input.Options = input.Options.Clone()
+	input.Handlers = input.Handlers.Clone()
 	input.Tools = slices.Clone(input.Tools)
 	if input.Parent != nil {
 		parent := *input.Parent
@@ -117,6 +128,9 @@ func (original CreateAgent) matches(input CreateAgent) bool {
 		!reflect.DeepEqual(original.Tools, input.Tools) ||
 		!sameRoute(original.SessionRegistry, input.SessionRegistry) ||
 		!sameRoute(original.ModelConfig, input.ModelConfig) ||
+		original.ModelRouter != input.ModelRouter ||
+		!reflect.DeepEqual(original.Handlers, input.Handlers) ||
+		!sameRoute(original.Middleware, input.Middleware) ||
 		!sameRoute(original.PromptRegistry, input.PromptRegistry) ||
 		!sameRoute(original.ToolsRegistry, input.ToolsRegistry) ||
 		!sameRoute(original.Commands, input.Commands) ||

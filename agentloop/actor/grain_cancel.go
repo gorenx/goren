@@ -7,7 +7,9 @@ import (
 	"github.com/gorenx/goren/agent"
 	agentactor "github.com/gorenx/goren/agent/actor"
 	middlewareactor "github.com/gorenx/goren/agent/middleware/actor"
+	"github.com/gorenx/goren/agentmessage"
 	promptactor "github.com/gorenx/goren/systemprompt/actor"
+	runtimeactor "github.com/gorenx/goren/tools/runtime/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
@@ -23,46 +25,49 @@ func (owner *Grain) cancel(gc *goakt.GrainContext, input Cancel) {
 		edit:  edit,
 		err:   err,
 	}
+	owner.cancelOperations(gc, completed)
+}
+
+// cancelOperations delivers the stop intent to active capability requests.
+func (owner *Grain) cancelOperations(gc *goakt.GrainContext, completed completeCancel) {
 	if owner.maintenance != nil {
-		owner.deliverCancellation(gc, cancellationRequest{
+		owner.deliverCancellations(gc, []cancellationRequest{{
 			target: owner.maintenance.worker,
 			message: agentactor.CancelMaintenance{
 				RequestID: owner.maintenance.requestID,
 				Cause:     owner.business.Cancellation(),
 			},
-		}, completed)
+		}}, completed)
 		return
 	}
-	if owner.model != nil && owner.model.callID != "" {
-		if owner.model.canceling != nil {
+	if owner.callID != "" {
+		if owner.modelCancellation != nil {
 			completed.err = errors.Join(completed.err, errors.New("agentloop: model cancellation acknowledgement is pending"))
 			owner.finishCancellation(gc, completed)
 			return
 		}
-		owner.model.canceling = &modelCancellation{
-			completion: completed,
-		}
-		owner.model.models.Cancel(gc, owner.model.callID, owner.business.Cancellation(), owner)
+		owner.modelCancellation = &completed
+		owner.models.Cancel(gc, owner.callID, owner.business.Cancellation(), owner)
 		return
 	}
-	if owner.model != nil && owner.model.cancellation != nil {
-		owner.deliverCancellation(gc, *owner.model.cancellation, completed)
-		return
+	requests := make([]cancellationRequest, 0, len(owner.cancellations)+len(owner.calls))
+	for _, request := range owner.cancellations {
+		requests = append(requests, request)
 	}
-	if owner.preparation != nil && owner.preparation.cancellation != nil {
-		owner.deliverCancellation(gc, *owner.preparation.cancellation, completed)
-		return
-	}
-	if owner.stopping != nil {
-		owner.deliverCancellation(gc, cancellationRequest{
-			target: owner.stopping.middleware,
-			message: middlewareactor.CancelCall{
-				CallID: owner.stopping.id,
-				Cause:  owner.business.Cancellation(),
+	for identifier := range owner.calls {
+		requests = append(requests, cancellationRequest{
+			target: owner.tools,
+			message: runtimeactor.CancelCall{
+				CreationID: owner.creationID,
+				CallID:     agentmessage.CallID(identifier),
 			},
-		}, completed)
+		})
+	}
+	if len(requests) > 0 {
+		owner.deliverCancellations(gc, requests, completed)
 		return
 	}
+
 	owner.finishCancellation(gc, completed)
 }
 
@@ -70,9 +75,19 @@ func (owner *Grain) cancel(gc *goakt.GrainContext, input Cancel) {
 // its Inbox edit, if any, then reply with the cancellation delivery result.
 // It does not finish the original Step, hook, or model execution.
 type completeCancel struct {
-	reply *goakt.GrainReply
-	edit  agent.InboxEdit
-	err   error
+	// closeCreation selects the lifecycle reply after cancellation delivery.
+	closeCreation string
+	reply         *goakt.GrainReply
+	edit          agent.InboxEdit
+	err           error
+}
+
+func (input completeCancel) respond(failure error) {
+	if input.closeCreation != "" {
+		input.reply.Response(agentactor.Prepared{Err: failure})
+		return
+	}
+	input.reply.Response(Changed{Err: failure})
 }
 
 // cancellationRequest describes only an in-flight component's cancel endpoint.
@@ -82,70 +97,90 @@ type cancellationRequest struct {
 	message any
 }
 
-func (owner *Grain) deliverCancellation(gc *goakt.GrainContext, request cancellationRequest, input completeCancel) {
-	completed := make(chan error, 1)
+func (owner *Grain) deliverCancellations(gc *goakt.GrainContext, requests []cancellationRequest, input completeCancel) {
+	completed := make(chan error, len(requests))
 	stopped := owner.stopped
-	if err := gc.PipeToSelf(func() (any, error) {
-		select {
-		case failure := <-completed:
-			input.err = errors.Join(input.err, failure)
-			return input, nil
-		case <-stopped:
-			input.reply.Response(Changed{
-				Err: errors.Join(input.err, errors.New("agentloop: stopped during cancellation delivery")),
-			})
-			return nil, nil
+	err := gc.PipeToSelf(func() (any, error) {
+		for range requests {
+			select {
+			case failure := <-completed:
+				input.err = errors.Join(input.err, failure)
+			case <-stopped:
+				failure := errors.Join(input.err, errors.New("agentloop: stopped during cancellation delivery"))
+				input.respond(failure)
+				return nil, nil
+			}
 		}
-	}); err != nil {
+		return input, nil
+	})
+	if err != nil {
 		input.err = errors.Join(input.err, err)
 		owner.finishCancellation(gc, input)
 		return
 	}
-	message := request.message
-	if cancellation, ok := message.(middlewareactor.CancelCall); ok {
-		cancellation.Cause = owner.business.Cancellation()
-		message = cancellation
-	}
-	gc.RequestGrain(
-		request.target, message,
-		goakt.WithReentrancyMode(reentrancy.StashNonReentrant),
-	).Then(
-		func(payload any, failure error) {
-			if failure == nil {
-				switch message.(type) {
-				case agentactor.CancelMaintenance:
-					result, ok := payload.(agentactor.MaintenanceCancelled)
-					if !ok {
-						failure = errors.New("agentloop: invalid maintenance cancellation acknowledgement")
-					} else {
-						failure = result.Err
-					}
-				case promptactor.CancelAssembly:
-					result, ok := payload.(promptactor.Completion)
-					if !ok {
-						failure = errors.New("agentloop: invalid Prompt cancellation acknowledgement")
-					} else {
-						failure = result.Err
-					}
-				case middlewareactor.CancelCall:
-					result, ok := payload.(middlewareactor.Completion)
-					if !ok {
-						failure = errors.New("agentloop: invalid middleware cancellation acknowledgement")
-					} else {
-						failure = result.Err
+	for _, request := range requests {
+		message := request.message
+		if cancellation, ok := message.(middlewareactor.CancelCall); ok {
+			cancellation.Cause = owner.business.Cancellation()
+			message = cancellation
+		}
+		gc.RequestGrain(
+			request.target, message,
+			goakt.WithReentrancyMode(reentrancy.StashNonReentrant),
+		).Then(
+			func(payload any, failure error) {
+				if failure == nil {
+					switch message.(type) {
+					case agentactor.CancelMaintenance:
+						result, ok := payload.(agentactor.MaintenanceCancelled)
+						if !ok {
+							failure = errors.New("agentloop: invalid maintenance cancellation acknowledgement")
+						} else {
+							failure = result.Err
+						}
+					case runtimeactor.CancelCall:
+						result, ok := payload.(runtimeactor.Completion)
+						if !ok {
+							failure = errors.New("agentloop: invalid tool cancellation acknowledgement")
+						} else {
+							failure = result.Err
+						}
+					case promptactor.CancelAssembly:
+						result, ok := payload.(promptactor.Completion)
+						if !ok {
+							failure = errors.New("agentloop: invalid Prompt cancellation acknowledgement")
+						} else {
+							failure = result.Err
+						}
+					case middlewareactor.CancelCall:
+						result, ok := payload.(middlewareactor.Completion)
+						if !ok {
+							failure = errors.New("agentloop: invalid middleware cancellation acknowledgement")
+						} else {
+							failure = result.Err
+						}
 					}
 				}
-			}
-			completed <- failure
-		},
-	)
+				completed <- failure
+			},
+		)
+	}
 }
 
 func (owner *Grain) finishCancellation(gc *goakt.GrainContext, input completeCancel) {
-	if len(input.edit.Drafts) == 0 {
-		input.reply.Response(Changed{
-			Err: input.err,
+	if input.closeCreation != "" {
+		if input.err != nil {
+			input.respond(input.err)
+			return
+		}
+		owner.confirmClosePreparation(gc, closePreparation{
+			creationID: input.closeCreation,
+			reply:      input.reply,
 		})
+		return
+	}
+	if len(input.edit.Drafts) == 0 {
+		input.respond(input.err)
 		return
 	}
 	owner.commitInbox(
@@ -158,24 +193,13 @@ func (owner *Grain) finishCancellation(gc *goakt.GrainContext, input completeCan
 	)
 }
 
-// modelCancellation retains only the reply awaiting LLM cancellation delivery.
-// The original model operation and resource closure finish independently.
-type modelCancellation struct {
-	completion completeCancel
-}
-
-// OnCancellationAccepted settles cancellation delivery independently of stream closure.
+// OnCancellationAccepted acknowledges delivery without completing the original call.
 func (owner *Grain) OnCancellationAccepted(gc *goakt.GrainContext, input llmactor.CancellationAccepted) {
-	current := owner.model
-	if current == nil || current.canceling == nil {
+	if owner.modelCancellation == nil {
 		return
 	}
-	completed := current.canceling.completion
-	current.canceling = nil
+	completed := *owner.modelCancellation
+	owner.modelCancellation = nil
 	completed.err = errors.Join(completed.err, input.Err)
 	owner.finishCancellation(gc, completed)
-	if current.callID == "" && current.reply == nil && current.cleanup == nil {
-		owner.model = nil
-		owner.refreshIdle()
-	}
 }

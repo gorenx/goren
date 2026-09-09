@@ -3,7 +3,13 @@ package middleware
 
 import "errors"
 
-// RegistrationID identifies a definition, never an Agent or persisted event.
+// RegistrationID identifies one middleware registration in a selected chain.
+// The caller chooses it; a middleware name such as "compaction" is a valid ID,
+// but it is not a Grain name or a globally resolved address. IDs must be nonempty
+// and unique within the selection. Distinct registrations may share one Grain.
+// For example, ["compaction", "time-context"] runs compaction first; continuing
+// from "compaction" advances to "time-context". The actor adapter receives the
+// corresponding RegistrationID-to-GrainIdentity bindings in Routes.
 type RegistrationID string
 
 // ErrContinued rejects a second downstream request within one invocation.

@@ -69,7 +69,7 @@ func (proposal *Plan) FindCommit(snapshot session.Snapshot) (*session.WriteResul
 		if entry.Seq != first+int64(index) {
 			return nil, errors.New("toolresultpruner: original batch is not contiguous")
 		}
-		if err := draft.CheckCommit(entry); err != nil {
+		if err := draft.ValidateEvent(entry); err != nil {
 			return nil, fmt.Errorf("toolresultpruner: original batch conflicts with committed history: %w", err)
 		}
 	}

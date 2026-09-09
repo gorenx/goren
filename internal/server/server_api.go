@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 
+	middlewareactor "github.com/gorenx/goren/agent/middleware/actor"
 	agentregistry "github.com/gorenx/goren/agent/registry"
 	"github.com/gorenx/goren/apiproxy"
 	commandsadapter "github.com/gorenx/goren/apiproxy/commands/actor"
@@ -132,7 +133,11 @@ func (owner *Server) initializeAPI(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	owner.caches, err = goakt.GrainOf[*cacheactor.Registry](ctx, system, cacheactor.RegistryName, goakt.WithLongLivedGrain())
+	owner.caches, err = goakt.GrainOf[*cacheactor.Registry](
+		ctx, system,
+		cacheactor.RegistryName,
+		goakt.WithLongLivedGrain(),
+	)
 	if err != nil {
 		return err
 	}
@@ -185,15 +190,29 @@ func (owner *Server) initializeAPI(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	agents, err := sessionadapter.NewDirectory(system, owner.agents, agentregistry.CreateAgent{
-		Storage:         owner.sessions,
-		SessionRegistry: sessions,
-		ModelConfig:     models,
-		PromptRegistry:  prompts,
-		ToolsRegistry:   tools,
-		Commands:        commands,
-		Components:      []*goakt.GrainIdentity{titleOwner},
-	}, timeout)
+	hooks, err := goakt.GrainOf[*middlewareactor.Grain](
+		ctx, system, "middleware",
+		goakt.WithLongLivedGrain(),
+		goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))),
+	)
+	if err != nil {
+		return err
+	}
+	agents, err := sessionadapter.NewDirectory(
+		system, owner.agents,
+		agentregistry.CreateAgent{
+			Storage:         owner.sessions,
+			SessionRegistry: sessions,
+			ModelConfig:     models,
+			ModelRouter:     router,
+			Middleware:      hooks,
+			PromptRegistry:  prompts,
+			ToolsRegistry:   tools,
+			Commands:        commands,
+			Components:      []*goakt.GrainIdentity{titleOwner},
+		},
+		timeout,
+	)
 	if err != nil {
 		return err
 	}

@@ -79,7 +79,7 @@ func (proposal *transactionStart) FindCommit(snapshot session.Snapshot) (*sessio
 		if err != nil {
 			return nil, err
 		}
-		if err := draft.CheckCommit(entry); err != nil {
+		if err := draft.ValidateEvent(entry); err != nil {
 			return nil, fmt.Errorf("compaction: start identity conflicts with committed fields: %w", err)
 		}
 		return &session.WriteResult{

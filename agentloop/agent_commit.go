@@ -1,8 +1,8 @@
 package agentloop
 
 import (
+	"context"
 	"errors"
-
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/session"
 )
@@ -26,9 +26,26 @@ func (subject *ReactLoopAgent) checkCommit(drafts []session.EventDraft, write se
 		if write.Events[index].Seq != write.FirstSeq+int64(index) {
 			return errors.New("agentloop: commit sequence is discontinuous")
 		}
-		if err := draft.CheckCommit(write.Events[index]); err != nil {
+		if err := draft.ValidateEvent(write.Events[index]); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// boundary is implemented by immutable TurnStart, EndStep and TurnEnd facts.
+type boundary interface {
+	Drafts(session.Snapshot) ([]session.EventDraft, error)
+	Find(session.Snapshot) (*session.WriteResult, error)
+}
+
+// boundaryWrite crosses the Session boundary without a reference to execution.
+type boundaryWrite struct{ fact boundary }
+
+func (plan boundaryWrite) Build(_ context.Context, snapshot session.Snapshot) ([]session.EventDraft, error) {
+	return plan.fact.Drafts(snapshot)
+}
+
+func (plan boundaryWrite) FindCommit(snapshot session.Snapshot) (*session.WriteResult, error) {
+	return plan.fact.Find(snapshot)
 }

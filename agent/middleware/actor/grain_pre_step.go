@@ -21,6 +21,9 @@ func (call *preStepCall) respond(failure error) {
 }
 
 func (owner *Grain) resolvePreStep(gc *goakt.GrainContext, input ResolvePreStep) {
+	// Routes supplies both execution order and destinations. For example, a
+	// registration named "compaction" selects routes["compaction"]; its Target
+	// is the Grain identity to invoke, not an address derived from this name.
 	selection, routes, err := selectRoutes(input.Routes)
 	if err != nil {
 		gc.Response(agent.PreStepResolved{

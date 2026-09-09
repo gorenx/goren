@@ -47,10 +47,10 @@ func TestMaintenanceProtocolKeepsOwnershipUntilMatchingFinish(t *testing.T) {
 		}
 	})
 	subject, _ := acceptedTurn(t)
-	if _, err := subject.FinishActivity(); err != nil {
+	if _, err := subject.FinishExecution(); err != nil {
 		t.Fatal(err)
 	}
-	target, err := goakt.GrainOf[*settlementAgent](ctx, system, "agent", goakt.WithLongLivedGrain())
+	target, err := goakt.GrainOf[*executionGrain](ctx, system, "agent", goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestMaintenanceProtocolKeepsOwnershipUntilMatchingFinish(t *testing.T) {
 		}
 		return reply
 	}
-	ask(settlementSetup{
+	ask(executionSetup{
 		subject: subject,
 	})
 	begin := agentactor.BeginMaintenance{
@@ -79,9 +79,6 @@ func TestMaintenanceProtocolKeepsOwnershipUntilMatchingFinish(t *testing.T) {
 	}
 	if reply := ask(begin).(agentactor.MaintenanceAccepted); reply.Err == nil {
 		t.Fatal("duplicate maintenance accepted")
-	}
-	if reply := ask(startTurn{}).(turnStarted); reply.err == nil {
-		t.Fatal("Turn started during maintenance")
 	}
 	if reply := ask(Cancel{
 		CreationID: "test",

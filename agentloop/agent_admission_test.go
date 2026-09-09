@@ -130,7 +130,7 @@ func TestInjectDoesNotWakeAndCanceledSteerTargetsNextTurn(t *testing.T) {
 	if _, ok := stopped.Cause.(agent.ParentCancel); !ok {
 		t.Fatal("cancellation lost cause")
 	}
-	replay, err := subject.FinishActivity()
+	replay, err := subject.FinishExecution()
 	if err != nil || !replay || subject.Cancellation() != nil || subject.StatusValue() != agent.StatusRunning {
 		t.Fatalf("replay = %v, %v", replay, err)
 	}
@@ -187,7 +187,7 @@ func TestCancelClearsInboxOnlyAfterCommitAndSuppressesReplay(t *testing.T) {
 	if _, err := subject.PrepareTurn(); err == nil {
 		t.Fatal("canceled execution opened Turn")
 	}
-	replay, err := subject.FinishActivity()
+	replay, err := subject.FinishExecution()
 	if err != nil || replay || subject.StatusValue() != agent.StatusIdle {
 		t.Fatalf("finish = %v, %v", replay, err)
 	}

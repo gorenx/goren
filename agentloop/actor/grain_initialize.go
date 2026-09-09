@@ -23,12 +23,17 @@ type initializationAuthorized struct {
 
 func (owner *Grain) initialize(gc *goakt.GrainContext, input agentactor.Initialize) {
 	if owner.creationID != "" ||
+		input.Handlers.Validate() != nil ||
 		owner.initialization != nil ||
 		input.Authority == nil ||
 		input.AgentID == "" ||
 		gc.Self().Name() != RuntimeName(string(input.AgentID)) ||
 		input.Session == nil ||
 		input.Prompt == nil ||
+		input.ModelRouter == nil ||
+		input.Middleware == nil ||
+		input.Tools == nil ||
+		input.Timeout <= 0 ||
 		input.CreationID == "" {
 		gc.Response(agentactor.Initialized{
 			Err: errors.New("agentloop: matching uninitialized Agent, Session and authority are required"),
@@ -71,22 +76,27 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input agentactor.Initiali
 		owner.finishInitialization(operation, err)
 		return
 	}
-	gc.RequestGrain(input.Authority, agentactor.Claim{
-		AgentID:    input.AgentID,
-		CreationID: input.CreationID,
-		InstanceID: owner.instanceID,
-		Executor:   gc.Self(),
-	}, goakt.WithRequestTimeout(0)).Then(func(payload any, failure error) {
-		if failure == nil {
-			result, ok := payload.(agentactor.Claimed)
-			if !ok {
-				failure = errors.New("agentloop: invalid Registry claim response")
-			} else {
-				failure = result.Err
+	gc.RequestGrain(
+		input.Authority,
+		agentactor.Claim{
+			AgentID:    input.AgentID,
+			CreationID: input.CreationID,
+			InstanceID: owner.instanceID,
+			Executor:   gc.Self(),
+		},
+		goakt.WithRequestTimeout(0),
+	).Then(
+		func(payload any, failure error) {
+			if failure == nil {
+				result, ok := payload.(agentactor.Claimed)
+				if !ok {
+					failure = errors.New("agentloop: invalid Registry claim response")
+				} else {
+					failure = result.Err
+				}
 			}
-		}
-		authorized <- failure
-	})
+			authorized <- failure
+		})
 }
 
 func (owner *Grain) restoreInbox(gc *goakt.GrainContext, input initializationAuthorized) {
@@ -101,6 +111,11 @@ func (owner *Grain) restoreInbox(gc *goakt.GrainContext, input initializationAut
 	owner.creationID = operation.input.CreationID
 	owner.conversation = operation.input.Session
 	owner.prompt = operation.input.Prompt
+	owner.modelRouter = operation.input.ModelRouter
+	owner.middleware = operation.input.Middleware
+	owner.handlers = operation.input.Handlers.Clone()
+	owner.tools = operation.input.Tools
+	owner.replyTimeout = operation.input.Timeout
 	operation.cancel()
 	ctx, cancel := context.WithCancel(context.WithoutCancel(gc.Context()))
 	operation.cancel = cancel
@@ -158,4 +173,19 @@ func (owner *Grain) finishInitialization(operation *initialization, failure erro
 	operation.reply.Response(agentactor.Initialized{
 		Err: failure,
 	})
+}
+
+// Initialization advances authorization, Session restoration, and Prompt binding.
+func (owner *Grain) receiveInitialization(gc *goakt.GrainContext) bool {
+	switch input := gc.Message().(type) {
+	case agentactor.Initialize:
+		owner.initialize(gc, input)
+	case initializationAuthorized:
+		owner.restoreInbox(gc, input)
+	case initializationRestored:
+		owner.initializePrompt(gc, input)
+	default:
+		return false
+	}
+	return true
 }

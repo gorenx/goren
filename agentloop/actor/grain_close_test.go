@@ -43,6 +43,7 @@ func TestRegistryClosesDescendantsBeforeParentAndRetriesPendingChild(t *testing.
 		t.Fatal(err)
 	}
 	dependencies := configurationRoutes(t, system)
+	routes := executionDependencies(t, system)
 	t.Cleanup(func() {
 		if err := system.Stop(ctx); err != nil {
 			t.Error(err)
@@ -80,7 +81,8 @@ func TestRegistryClosesDescendantsBeforeParentAndRetriesPendingChild(t *testing.
 		}
 		drivers[identifier], replies[identifier] = grainDriver(t, system, execution)
 		if result := request[agentregistry.Ready](t, authorityDriver, authorityReplies, agentregistry.CreateAgent{
-			Creation:        creation,
+			ModelRouter: routes.router,
+			Middleware:  routes.middleware, Creation: creation,
 			Parent:          parent,
 			Storage:         backend,
 			SessionRegistry: directory,
@@ -213,6 +215,7 @@ func TestRegistryClosesAuthorizedCreationAfterConfigurationFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	dependencies := configurationRoutes(t, system)
+	routes := executionDependencies(t, system)
 	t.Cleanup(func() {
 		if err := system.Stop(ctx); err != nil {
 			t.Error(err)
@@ -273,7 +276,8 @@ func TestRegistryClosesAuthorizedCreationAfterConfigurationFails(t *testing.T) {
 	configDriver, configReplies := grainDriver(t, system, dependencies)
 	request[struct{}](t, configDriver, configReplies, failConfiguration{})
 	if result := request[agentregistry.Ready](t, authorityDriver, authorityReplies, agentregistry.CreateAgent{
-		Creation:        creation,
+		ModelRouter: routes.router,
+		Middleware:  routes.middleware, Creation: creation,
 		Storage:         backend,
 		SessionRegistry: directory,
 		PromptRegistry:  dependencies,
