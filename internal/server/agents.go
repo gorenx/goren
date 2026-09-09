@@ -50,7 +50,7 @@ func closeAgents(ctx context.Context, system goakt.ActorSystem, registry *goakt.
 
 // initializeTools registers explicit process defaults before Agent admission.
 // Providers remain unopened until the per-Agent lifecycle applies configuration.
-func initializeTools(ctx context.Context, system goakt.ActorSystem, entries []toolregistry.Tool) (*goakt.GrainIdentity, error) {
+func initializeTools(ctx context.Context, system goakt.ActorSystem, entries toolregistry.Catalog) (*goakt.GrainIdentity, error) {
 	if ctx == nil || system == nil {
 		return nil, errors.New("server: tool initialization context and ActorSystem are required")
 	}
@@ -62,8 +62,9 @@ func initializeTools(ctx context.Context, system goakt.ActorSystem, entries []to
 	if err != nil {
 		return nil, err
 	}
-	payload, err := system.AskGrain(ctx, identity, toolactor.InitializeDefaults{
-		Tools: entries,
+	payload, err := system.AskGrain(ctx, identity, toolactor.RegisterSource{
+		Name:    "local",
+		Catalog: entries,
 	}, time.Duration(1<<63-1))
 	if err != nil {
 		return nil, err

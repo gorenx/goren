@@ -7,10 +7,12 @@ import (
 	"time"
 
 	configactor "github.com/gorenx/goren/llm/actor"
+	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/systemprompt"
 	promptactor "github.com/gorenx/goren/systemprompt/actor"
 	"github.com/gorenx/goren/tools"
 	toolactor "github.com/gorenx/goren/tools/registry/actor"
+	runtimeactor "github.com/gorenx/goren/tools/runtime/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
@@ -46,11 +48,10 @@ func (fixture *configurationOwner) OnReceive(gc *goakt.GrainContext) {
 			Version:  1,
 			Snapshot: definitions.Capture(),
 		})
-	case toolactor.ReadDefinitions:
-		gc.Response(toolactor.Catalog{
-			Found: true,
-			Definitions: tools.Definitions{
-				AgentID: input.AgentID,
+	case runtimeactor.ReadDefinitions:
+		gc.Response(runtimeactor.Definitions{
+			Value: tools.Definitions{
+				AgentID: session.SessionID(input.CreationID),
 			},
 		})
 	default:
@@ -79,7 +80,7 @@ func toolRegistry(t *testing.T, system goakt.ActorSystem) *goakt.GrainIdentity {
 
 func initializeToolRegistry(t *testing.T, system goakt.ActorSystem) {
 	t.Helper()
-	payload, err := system.AskGrain(context.Background(), toolRegistry(t, system), toolactor.InitializeDefaults{}, time.Second)
+	payload, err := system.AskGrain(context.Background(), toolRegistry(t, system), toolactor.RegisterSource{Name: "local"}, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}

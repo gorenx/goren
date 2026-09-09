@@ -17,7 +17,6 @@ func TestInitializationRetryConfirmsBindingWithoutReplacingImplementation(t *tes
 		CreationID: "creation",
 		AgentID:    "conversation",
 		Name:       toolaskuser.Name,
-		Registry:   directory,
 		Authority:  toolAuthority(t, system),
 	}
 	if reply := ask[toolactor.Completion](t, system, target, input); reply.Err != nil {
@@ -44,7 +43,7 @@ func TestInitializationRetryConfirmsBindingWithoutReplacingImplementation(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"creation", "agent", "name", "registry", "authority"} {
+	for _, field := range []string{"creation", "agent", "name", "authority"} {
 		changed := input
 		switch field {
 		case "creation":
@@ -53,8 +52,6 @@ func TestInitializationRetryConfirmsBindingWithoutReplacingImplementation(t *tes
 			changed.AgentID = "other"
 		case "name":
 			changed.Name = "other"
-		case "registry":
-			changed.Registry = other
 		case "authority":
 			changed.Authority = other
 		}

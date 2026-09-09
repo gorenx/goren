@@ -38,7 +38,7 @@ func TestProvisionCleansPartialConstructionAndRetainsFailedCleanup(t *testing.T)
 				err:   opening,
 			}
 			target := tool.Revision("failed")
-			failure := owner.Provision(context.Background(), target, source)
+			failure := owner.Provision(context.Background(), target, source, configuredSchema())
 			if !errors.Is(failure, opening) || errors.Is(failure, cleanup) != failCleanup {
 				t.Fatalf("construction or cleanup error lost: %v", failure)
 			}
@@ -76,7 +76,7 @@ func TestProvisionCancellationCleansResourcesReturnedByProvider(t *testing.T) {
 		stop:  cancel,
 	}
 	target := tool.Revision("cancelled")
-	if err := owner.Provision(ctx, target, source); !errors.Is(err, context.Canceled) {
+	if err := owner.Provision(ctx, target, source, configuredSchema()); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancellation lost: %v", err)
 	}
 	if owned.calls != 1 {
@@ -95,14 +95,14 @@ func TestProvisionRejectsInvalidDefinitionAndDuplicateBeforeOpening(t *testing.T
 	}
 	source.input.Definition.Name = "different"
 	target := tool.Revision("update")
-	if err := owner.Provision(context.Background(), target, source); err == nil || owned.calls != 1 {
+	if err := owner.Provision(context.Background(), target, source, configuredSchema()); err == nil || owned.calls != 1 {
 		t.Fatalf("invalid definition resource was not cleaned: %v", err)
 	}
 	source.input = implementation(nil)
-	if err := owner.Provision(context.Background(), target, source); err != nil {
+	if err := owner.Provision(context.Background(), target, source, configuredSchema()); err != nil {
 		t.Fatal(err)
 	}
-	if err := owner.Provision(context.Background(), target, source); err == nil || source.open != 2 {
+	if err := owner.Provision(context.Background(), target, source, configuredSchema()); err == nil || source.open != 2 {
 		t.Fatal("duplicate preparation opened another implementation")
 	}
 	if err := owner.Close(context.Background()); err != nil {

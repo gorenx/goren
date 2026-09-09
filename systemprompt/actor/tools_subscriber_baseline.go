@@ -4,9 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/tools"
-	toolactor "github.com/gorenx/goren/tools/registry/actor"
+	toolactor "github.com/gorenx/goren/tools/runtime/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
@@ -25,7 +24,7 @@ func (owner *ToolsSubscriber) refreshTools(rc *goakt.ReceiveContext) {
 	}
 	owner.refreshing = true
 	request := rc.RequestGrain(owner.registry, toolactor.ReadDefinitions{
-		AgentID: owner.agentID,
+		CreationID: owner.creationID,
 	})
 	if request == nil {
 		owner.finishRefresh(rc, ErrUnavailable)
@@ -40,18 +39,16 @@ func (owner *ToolsSubscriber) refreshTools(rc *goakt.ReceiveContext) {
 			err: err,
 		}
 		if err == nil {
-			catalog, ok := payload.(toolactor.Catalog)
+			catalog, ok := payload.(toolactor.Definitions)
 			switch {
 			case !ok:
 				result.err = errors.New("systemprompt: invalid tool baseline response")
 			case catalog.Err != nil:
 				result.err = catalog.Err
-			case !catalog.Found:
-				result.err = systemprompt.ErrToolsNotReady
-			case catalog.Definitions.AgentID != identifier:
+			case catalog.Value.AgentID != identifier:
 				result.err = errors.New("systemprompt: invalid tool baseline identity")
 			default:
-				result.definitions = catalog.Definitions
+				result.definitions = catalog.Value
 			}
 		}
 		if err := self.Tell(ctx, self, result); err != nil {

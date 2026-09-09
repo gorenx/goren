@@ -1,90 +1,43 @@
-// Package toolactor implements the GoAkt boundaries of the Tools capability.
+// Package toolactor adapts the Schema Registry to GoAkt messaging.
 package toolactor
 
 import (
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/tools"
 	toolregistry "github.com/gorenx/goren/tools/registry"
 )
 
-// RegistryName is the shared catalog owner's Grain identity.
+// RegistryName is the global schema and policy directory identity.
 const RegistryName = "tools-registry"
 
-// InitializeDefaults registers the startup tool configuration without opening providers.
-type InitializeDefaults struct {
-	Tools []toolregistry.Tool
+// ConfigurationTopic notifies runtimes that their inherited or custom input changed.
+const ConfigurationTopic = "tools/configuration"
+
+// RegisterSource replaces the complete schema and policy set from a global source.
+type RegisterSource struct {
+	Name    string
+	Catalog toolregistry.Catalog
 }
 
-// RegisterConfiguration captures an Agent's complete overrides under a unique update identity.
-type RegisterConfiguration struct {
-	ID        toolregistry.UpdateID
-	AgentID   session.SessionID
-	Overrides []toolregistry.Tool
+// RemoveSource withdraws one global source's configuration.
+type RemoveSource struct{ Name string }
+
+// ConfigureSession replaces the Session's custom schema and policy set.
+type ConfigureSession struct {
+	SessionID session.SessionID
+	Catalog   toolregistry.Catalog
 }
 
-// ReadConfiguration requests an exact retained configuration, not the latest catalog.
-type ReadConfiguration struct {
-	ID toolregistry.UpdateID
-}
+// RemoveSession removes custom configuration and restores inheritance.
+type RemoveSession struct{ SessionID session.SessionID }
 
-// Configuration reports a retained configuration. Found remains true if event
-// delivery fails after registration; consumers recover through ReadConfiguration.
-type Configuration struct {
-	Value toolregistry.Configuration
-	Found bool
-	Err   error
-}
+// ReadConfiguration retrieves detached global and custom inputs without merging them.
+type ReadConfiguration struct{ SessionID session.SessionID }
 
-// BeginUpdate declares a complete candidate catalog.
-type BeginUpdate struct {
-	Update toolregistry.Update
-}
+// Configuration returns Registry facts; Runtime owns their effective interpretation.
+type Configuration struct{ Value toolregistry.Configuration }
 
-// RegisterDefinition records one ToolActor's candidate definition.
-type RegisterDefinition struct {
-	ID        toolregistry.UpdateID
-	Candidate toolregistry.Candidate
-}
+// ConfigurationChanged identifies the affected Session; empty means global input changed.
+type ConfigurationChanged struct{ SessionID session.SessionID }
 
-// PublishDefinitions commits a complete batch and emits its definition event.
-type PublishDefinitions struct {
-	ID toolregistry.UpdateID
-}
-
-// ReadDefinitions requests a committed Agent baseline.
-type ReadDefinitions struct {
-	AgentID session.SessionID
-}
-
-// ReadPublication requests an update's commit outcome.
-type ReadPublication struct {
-	ID toolregistry.UpdateID
-}
-
-// AbortUpdate removes an unpublished batch after candidate cleanup.
-type AbortUpdate struct {
-	ID toolregistry.UpdateID
-}
-
-// SettleUpdate releases the update record after switching and resource cleanup.
-type SettleUpdate struct {
-	ID toolregistry.UpdateID
-}
-
-// Completion preserves ordinary business errors.
-type Completion struct {
-	Err error
-}
-
-// Catalog returns a committed view. Err may report notification failure after commit.
-type Catalog struct {
-	Definitions tools.Definitions
-	Found       bool
-	Err         error
-}
-
-// Outcome distinguishes an unknown update from a preparing or published update.
-type Outcome struct {
-	Publication toolregistry.Publication
-	Found       bool
-}
+// Completion returns the original operation or notification failure.
+type Completion struct{ Err error }

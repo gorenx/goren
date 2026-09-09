@@ -4,7 +4,6 @@ import (
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentloop/internal/modelrequest"
 	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/systemprompt"
@@ -19,7 +18,6 @@ type Services struct {
 	Middleware   Middleware
 	Models       Models
 	Tools        ToolCalls
-	Approvals    Approvals
 	Observer     Observer
 }
 
@@ -113,7 +111,6 @@ type Observer interface {
 // acceptance belong to the calling business flow, never the implementation.
 type ToolCalls interface {
 	Prepare(tools.ToolExecutionInput, ToolReceiver) error
-	ApplyApproval(agentmessage.CallID, approval.Outcome, ToolReceiver) error
 	Dispatch(agentmessage.CallID, ToolReceiver) error
 	Finalize(agentmessage.CallID, ToolReceiver) error
 	Release(agentmessage.CallID, ToolReceiver) error
@@ -121,19 +118,8 @@ type ToolCalls interface {
 
 // ToolReceiver consumes the actual result of the requested tool operation.
 type ToolReceiver interface {
-	ToolPrepared(Services, tools.ScheduledToolStage, *tools.ApprovalRequest, error)
+	ToolPrepared(Services, tools.ScheduledToolStage, error)
 	ToolDispatched(Services, error)
 	ToolFinalized(Services, tools.ToolExecutionResult, error)
 	ToolReleased(Services, error)
-}
-
-// Approvals requests a decision from the approval owner rather than inventing
-// an unavailable or approved result in the Agent's transport layer.
-type Approvals interface {
-	Decide(tools.ApprovalRequest, ApprovalReceiver) error
-}
-
-// ApprovalReceiver receives an audited decision for its requested tool call.
-type ApprovalReceiver interface {
-	ApprovalDecided(Services, approval.Outcome, error)
 }

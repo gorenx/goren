@@ -9,8 +9,8 @@ import (
 
 	agentactor "github.com/gorenx/goren/agent/actor"
 	"github.com/gorenx/goren/agent/registry"
+	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/toolaskuser"
-	toolregistry "github.com/gorenx/goren/tools/registry"
 	catalogactor "github.com/gorenx/goren/tools/registry/actor"
 	"github.com/gorenx/goren/tools/tool"
 	toolactor "github.com/gorenx/goren/tools/tool/actor"
@@ -108,35 +108,25 @@ func startToolLifecycle(t *testing.T, expectCloseFailure bool) (goakt.ActorSyste
 
 func provisionOwnedTool(t *testing.T, system goakt.ActorSystem, input agentactor.CreateTool, instance agentactor.ToolInstance, source *toolProvider) {
 	t.Helper()
-	if reply := askLifecycle[catalogactor.Completion](t, system, input.Registry, catalogactor.InitializeDefaults{
-		Tools: []toolregistry.Tool{{
-			Name:     toolaskuser.Name,
-			Provider: source,
-			Visible:  true,
-		}},
-	}); reply.Err != nil {
-		t.Fatal(reply.Err)
+	definition, err := toolaskuser.NewDefinition(toolQuestions{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if reply := askLifecycle[catalogactor.Configuration](t, system, input.Registry, catalogactor.RegisterConfiguration{
-		ID:      "initial",
-		AgentID: input.AgentID,
-	}); reply.Err != nil {
-		t.Fatal(reply.Err)
-	}
+
 	revision := tool.Revision("initial")
 	if reply := askLifecycle[toolactor.Completion](t, system, instance.Identity, toolactor.Provision{
 		CreationID: instance.CreationID,
 		Revision:   revision,
 		Provider:   source,
-		Visible:    true,
+		Schema: llm.ToolSchema{
+			Name:        definition.Name,
+			Description: definition.Description,
+			Parameters:  definition.Parameters,
+		},
 	}); reply.Err != nil {
 		t.Fatal(reply.Err)
 	}
-	if reply := askLifecycle[catalogactor.Catalog](t, system, input.Registry, catalogactor.PublishDefinitions{
-		ID: "initial",
-	}); reply.Err != nil {
-		t.Fatal(reply.Err)
-	}
+
 	if reply := askLifecycle[toolactor.Completion](t, system, instance.Identity, toolactor.Commit{
 		CreationID: instance.CreationID,
 		Revision:   revision,
@@ -227,7 +217,6 @@ func TestStoppedToolActivationCannotReclaimExistingLifetime(t *testing.T) {
 		CreationID: instance.CreationID,
 		AgentID:    input.AgentID,
 		Name:       input.Name,
-		Registry:   input.Registry,
 		Authority:  authority,
 	}); reply.Err == nil {
 		t.Fatal("new activation claimed a prior tool lifetime")

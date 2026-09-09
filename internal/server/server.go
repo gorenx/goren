@@ -19,6 +19,7 @@ import (
 	querysqlite "github.com/gorenx/goren/session/query/sqlite"
 	"github.com/gorenx/goren/systemprompt"
 	toolregistry "github.com/gorenx/goren/tools/registry"
+	"github.com/gorenx/goren/tools/tool"
 	"github.com/gorenx/goren/web"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/log"
@@ -37,7 +38,8 @@ type Config struct {
 	Timeout           time.Duration
 	Provider          deepseek.Config
 	Prompt            systemprompt.Config
-	Tools             []toolregistry.Tool
+	Tools             toolregistry.Catalog
+	Workers           tool.Workers
 }
 
 // Server owns process resources and their dependency-ordered release. It does not

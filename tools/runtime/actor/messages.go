@@ -5,13 +5,12 @@ import (
 	"time"
 
 	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/tools"
-	"github.com/gorenx/goren/tools/execution"
 
 	"github.com/gorenx/goren/session"
 	toolregistry "github.com/gorenx/goren/tools/registry"
 	toolruntime "github.com/gorenx/goren/tools/runtime"
+	"github.com/gorenx/goren/tools/tool"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
@@ -22,8 +21,8 @@ type InitializeRuntime struct {
 	CreationID string
 	Authority  *goakt.GrainIdentity
 	Registry   *goakt.GrainIdentity
-	Overrides  []toolregistry.Tool
-	Policies   execution.Policies
+	Config     *toolregistry.Catalog
+	Workers    tool.Workers
 	Timeout    time.Duration
 }
 
@@ -59,13 +58,6 @@ type PrepareCall struct {
 	Context    context.Context
 }
 
-// ApplyCallApproval supplies the approval owner's audited decision.
-type ApplyCallApproval struct {
-	CreationID string
-	CallID     agentmessage.CallID
-	Outcome    approval.Outcome
-}
-
 // DispatchCall starts only the call admitted by preparation and approval.
 type DispatchCall struct {
 	CreationID string
@@ -92,8 +84,28 @@ type ReleaseCall struct {
 
 // CallResult distinguishes preparation, final output and unconfirmed failures.
 type CallResult struct {
-	Stage    tools.ScheduledToolStage
-	Approval *tools.ApprovalRequest
-	Result   tools.ToolExecutionResult
-	Err      error
+	Stage  tools.ScheduledToolStage
+	Result tools.ToolExecutionResult
+	Err    error
+}
+
+// ReadDefinitions requests the effective schema and visibility baseline.
+type ReadDefinitions struct{ CreationID string }
+
+// Definitions reports applied Runtime configuration, never Registry candidates.
+type Definitions struct {
+	Value tools.Definitions
+	Err   error
+}
+
+// RefreshConfiguration applies pending Registry input at the caller's Turn boundary.
+type RefreshConfiguration struct {
+	CreationID string
+	ID         string
+}
+
+// CancelConfiguration cancels only the named refresh; its original reply confirms cleanup.
+type CancelConfiguration struct {
+	CreationID string
+	ID         string
 }

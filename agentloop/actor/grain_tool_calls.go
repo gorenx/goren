@@ -6,7 +6,6 @@ import (
 
 	"github.com/gorenx/goren/agentloop"
 	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/tools"
 	runtimeactor "github.com/gorenx/goren/tools/runtime/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
@@ -27,19 +26,7 @@ func (endpoint toolPort) Prepare(input tools.ToolExecutionInput, receiver agentl
 		Context:    context.WithoutCancel(endpoint.scope.gc.Context()),
 	}, func(result runtimeactor.CallResult) func(agentloop.Services) {
 		return func(services agentloop.Services) {
-			receiver.ToolPrepared(services, result.Stage, result.Approval, result.Err)
-		}
-	})
-}
-
-func (endpoint toolPort) ApplyApproval(identifier agentmessage.CallID, outcome approval.Outcome, receiver agentloop.ToolReceiver) error {
-	return endpoint.request(runtimeactor.ApplyCallApproval{
-		CreationID: endpoint.scope.owner.creationID,
-		CallID:     identifier,
-		Outcome:    outcome,
-	}, func(result runtimeactor.CallResult) func(agentloop.Services) {
-		return func(services agentloop.Services) {
-			receiver.ToolPrepared(services, result.Stage, result.Approval, result.Err)
+			receiver.ToolPrepared(services, result.Stage, result.Err)
 		}
 	})
 }

@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/agentmessage"
+	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/tools"
-	toolregistry "github.com/gorenx/goren/tools/registry"
 	"github.com/gorenx/goren/tools/tool"
 )
 
@@ -64,7 +64,7 @@ func TestReplacementRetainsResourcesUntilCleanupSucceeds(t *testing.T) {
 	first := tool.Revision("initial")
 	second := tool.Revision("replacement")
 	input := implementation(old)
-	if err := owner.Provision(context.Background(), first, &provider{input: input}); err != nil {
+	if err := owner.Provision(context.Background(), first, &provider{input: input}, configuredSchema()); err != nil {
 		t.Fatal(err)
 	}
 	input.Definition.Parameters[0] = '!'
@@ -80,7 +80,7 @@ func TestReplacementRetainsResourcesUntilCleanupSucceeds(t *testing.T) {
 	if err != nil || !json.Valid(view.Output.Schema) {
 		t.Fatalf("returned definition aliases owner: %v", err)
 	}
-	if err := owner.Provision(context.Background(), second, &provider{input: implementation(next)}); err != nil {
+	if err := owner.Provision(context.Background(), second, &provider{input: implementation(next)}, configuredSchema()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := owner.Definition("initial"); err == nil || old.calls != 0 {
@@ -118,7 +118,7 @@ func TestReplacementRetainsResourcesUntilCleanupSucceeds(t *testing.T) {
 	if _, err := owner.Definition("replacement"); err != nil {
 		t.Fatal(err)
 	}
-	if err := owner.Provision(context.Background(), second, &provider{input: implementation(nil)}); err == nil {
+	if err := owner.Provision(context.Background(), second, &provider{input: implementation(nil)}, configuredSchema()); err == nil {
 		t.Fatal("already committed implementation was prepared again")
 	}
 	if err := owner.Close(ctx); err != nil {
@@ -136,7 +136,7 @@ func TestFailedAbortCannotCommitPartiallyReleasedCandidate(t *testing.T) {
 		err: failure,
 	}
 	target := tool.Revision("aborted")
-	if err := owner.Provision(context.Background(), target, &provider{input: implementation(owned)}); err != nil {
+	if err := owner.Provision(context.Background(), target, &provider{input: implementation(owned)}, configuredSchema()); err != nil {
 		t.Fatal(err)
 	}
 	if err := owner.Abort(context.Background(), target); !errors.Is(err, failure) {
@@ -163,13 +163,13 @@ func TestCloseAttemptsEveryResourceAndRetriesOnlyFailures(t *testing.T) {
 	next := &resource{
 		err: failure,
 	}
-	if err := owner.Provision(context.Background(), first, &provider{input: implementation(old)}); err != nil {
+	if err := owner.Provision(context.Background(), first, &provider{input: implementation(old)}, configuredSchema()); err != nil {
 		t.Fatal(err)
 	}
 	if err := owner.Commit(first); err != nil {
 		t.Fatal(err)
 	}
-	if err := owner.Provision(context.Background(), second, &provider{input: implementation(next)}); err != nil {
+	if err := owner.Provision(context.Background(), second, &provider{input: implementation(next)}, configuredSchema()); err != nil {
 		t.Fatal(err)
 	}
 	if err := owner.Close(context.Background()); !errors.Is(err, failure) {
@@ -194,7 +194,7 @@ func TestCanceledAbortRetainsCleanupAndRejectsActivation(t *testing.T) {
 	owner := newTool(t)
 	owned := &resource{}
 	target := tool.Revision("canceled")
-	if err := owner.Provision(context.Background(), target, &provider{input: implementation(owned)}); err != nil {
+	if err := owner.Provision(context.Background(), target, &provider{input: implementation(owned)}, configuredSchema()); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -218,7 +218,7 @@ func TestInvalidImplementationIsReleasedBeforeProvisionReturns(t *testing.T) {
 	owned := &resource{}
 	input := implementation(owned)
 	input.Definition.Output.Schema = json.RawMessage(`{"type":"not-a-json-schema-type"}`)
-	if err := owner.Provision(context.Background(), tool.Revision("invalid"), &provider{input: input}); err == nil {
+	if err := owner.Provision(context.Background(), tool.Revision("invalid"), &provider{input: input}, configuredSchema()); err == nil {
 		t.Fatal("invalid output schema accepted")
 	}
 	if owned.calls != 1 {
@@ -229,57 +229,36 @@ func TestInvalidImplementationIsReleasedBeforeProvisionReturns(t *testing.T) {
 	}
 }
 
-func TestCandidateDefinitionRegistersWithoutExposingExecution(t *testing.T) {
+func TestCandidateSchemaRemainsDetachedUntilWorkSwitches(t *testing.T) {
 	owner := newTool(t)
-	target := tool.Revision("catalog-update")
-	var directory toolregistry.Registry
-	if err := directory.Begin(toolregistry.Update{
-		ID:      toolregistry.UpdateID(string(target)),
-		AgentID: "conversation",
-		Names:   []string{"lookup"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := owner.Provision(context.Background(), target, &provider{input: implementation(nil)}); err != nil {
-		t.Fatal(err)
-	}
-	schema, err := owner.Schema(target)
+	target := tool.Revision("replacement")
+	err := owner.Provision(context.Background(), target, &provider{input: implementation(nil)}, configuredSchema())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := directory.Register(toolregistry.UpdateID(string(target)), toolregistry.Candidate{
-		Schema:  schema,
-		Visible: true,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	schema.Parameters[0] = '!'
-	if _, err := owner.Definition("initial"); err == nil {
-		t.Fatal("candidate became executable before publication and switching")
-	}
-	committed, err := directory.Publish(toolregistry.UpdateID(string(target)))
+	proposed, err := owner.Schema(target)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(committed.Schemas) != 1 ||
-		!json.Valid(committed.Schemas[0].Parameters) {
-		t.Fatalf("invalid published catalog: %#v", committed)
+	proposed.Parameters[0] = '!'
+	_, err = owner.Definition(target)
+	if err == nil {
+		t.Fatal("prepared candidate was executable before switching")
 	}
-	if _, err := owner.Definition(target); err == nil {
-		t.Fatal("publication alone switched the tool implementation")
-	}
-	if err := owner.Commit(target); err != nil {
+	err = owner.Commit(target)
+	if err != nil {
 		t.Fatal(err)
 	}
 	active, err := owner.Definition(target)
 	if err != nil || !json.Valid(active.Parameters) {
-		t.Fatalf("invalid active definition: %v", err)
+		t.Fatalf("active=%+v error=%v", active, err)
 	}
-	if _, err := owner.Schema(target); err == nil {
-		t.Fatal("committed implementation remained a candidate")
-	}
-	if err := owner.Close(context.Background()); err != nil {
-		t.Fatal(err)
+}
+
+func configuredSchema() llm.ToolSchema {
+	return llm.ToolSchema{
+		Name:       "lookup",
+		Parameters: []byte(`{"type":"object"}`),
 	}
 }
 
@@ -289,7 +268,7 @@ func TestDiscardedCandidateCannotRegisterDefinition(t *testing.T) {
 	owned := &resource{
 		err: errors.New("cleanup failure"),
 	}
-	if err := owner.Provision(context.Background(), target, &provider{input: implementation(owned)}); err != nil {
+	if err := owner.Provision(context.Background(), target, &provider{input: implementation(owned)}, configuredSchema()); err != nil {
 		t.Fatal(err)
 	}
 	other := target

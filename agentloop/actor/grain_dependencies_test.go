@@ -38,7 +38,9 @@ func promptRoute(t *testing.T, system goakt.ActorSystem, name string, dependenci
 	if result := request[promptactor.RuntimeInitialized](t, driver, replies, promptactor.InitializeRuntime{
 		AgentID:        session.SessionID(name),
 		PromptRegistry: dependencies,
-		ToolsRegistry:  dependencies,
+		ToolsRuntime:   dependencies,
+		// This fixture uses the Session name as its synthetic creation identity.
+		CreationID: name,
 	}); result.Err != nil {
 		t.Fatal(result.Err)
 	}

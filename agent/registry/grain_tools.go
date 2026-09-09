@@ -10,6 +10,7 @@ import (
 	"github.com/gorenx/goren/agent"
 	agentactor "github.com/gorenx/goren/agent/actor"
 	"github.com/gorenx/goren/tools"
+	catalogactor "github.com/gorenx/goren/tools/registry/actor"
 	toolactor "github.com/gorenx/goren/tools/tool/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
@@ -254,9 +255,16 @@ func createToolInstance(ctx context.Context, system goakt.ActorSystem, authority
 			CreationID: creationID,
 			AgentID:    input.AgentID,
 			Name:       input.Name,
-			Registry:   input.Registry,
 			Authority:  authority,
 		}, input.Timeout)
+		if result.err == nil {
+			result.err = registerToolAddress(ctx, system, input.Registry, catalogactor.RegisterTool{
+				AgentID:    input.AgentID,
+				Name:       input.Name,
+				CreationID: creationID,
+				Actor:      result.identity,
+			}, input.Timeout)
+		}
 		if result.err == nil {
 			result.phase = toolInitialized
 		}
@@ -291,6 +299,14 @@ func removeToolInstance(ctx context.Context, system goakt.ActorSystem, authority
 			return result
 		}
 		result.phase = toolReleased
+	}
+	result.err = registerToolAddress(ctx, system, input.Registry, catalogactor.UnregisterTool{
+		AgentID:    input.AgentID,
+		Name:       input.Name,
+		CreationID: creationID,
+	}, input.Timeout)
+	if result.err != nil {
+		return result
 	}
 	result.err = system.TellGrain(ctx, identity, new(goakt.PoisonPill))
 	return result
@@ -372,4 +388,18 @@ func (request *toolRequest) respond(instance *toolLifecycle, err error) {
 		}
 	}
 	request.replies = nil
+}
+
+// registerToolAddress sends explicit lifecycle registration or withdrawal.
+// Retrying uses the same tool creation, so it cannot remove another lifetime.
+func registerToolAddress(ctx context.Context, system goakt.ActorSystem, target *goakt.GrainIdentity, message any, timeout time.Duration) error {
+	payload, err := system.AskGrain(ctx, target, message, timeout)
+	if err != nil {
+		return err
+	}
+	reply, valid := payload.(catalogactor.Completion)
+	if !valid {
+		return errors.New("agent registry: invalid tool address registration reply")
+	}
+	return reply.Err
 }

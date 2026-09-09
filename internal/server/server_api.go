@@ -208,6 +208,7 @@ func (owner *Server) initializeAPI(ctx context.Context) error {
 			Middleware:      hooks,
 			PromptRegistry:  prompts,
 			ToolsRegistry:   tools,
+			Workers:         owner.settings.Workers,
 			Commands:        commands,
 			Components:      []*goakt.GrainIdentity{titleOwner},
 		},

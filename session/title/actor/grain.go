@@ -9,6 +9,7 @@ import (
 	sessionactor "github.com/gorenx/goren/session/actor"
 	"github.com/gorenx/goren/session/title"
 	goakt "github.com/tochemey/goakt/v4/actor"
+	"github.com/tochemey/goakt/v4/passivation"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
@@ -133,7 +134,11 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) {
 	}
 	if err == nil {
 		var workerPID *goakt.PID
-		workerPID, err = gc.ActorSystem().Spawn(gc.Context(), "title-worker-"+uuid.NewString(), &worker{})
+		// The binding owns this worker until drain and explicit shutdown.
+		// Idle passivation would leave the Grain holding a missing endpoint.
+		workerPID, err = gc.ActorSystem().Spawn(gc.Context(), "title-worker-"+uuid.NewString(), &worker{},
+			goakt.WithPassivationStrategy(passivation.NewLongLivedStrategy()),
+		)
 		if err == nil {
 			owner.bindings[input.CreationID] = &binding{
 				header:       input.Header.Clone(),

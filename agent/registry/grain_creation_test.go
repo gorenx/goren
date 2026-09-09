@@ -644,7 +644,7 @@ func TestToolsReactivationCannotClaimOrReleaseOriginalResources(t *testing.T) {
 		CreationID: input.Creation.CreationID,
 		Authority:  authority,
 		Registry:   input.ToolsRegistry,
-		Overrides:  input.Tools,
+		Config:     input.Tools,
 		Timeout:    input.Timeout,
 	})
 	if !errors.Is(initialized.Err, agentregistry.ErrInstance) {

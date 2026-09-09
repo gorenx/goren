@@ -3,17 +3,19 @@ package tool
 import (
 	"context"
 	"errors"
+	"github.com/gorenx/goren/llm"
+	"slices"
 )
 
 // Provision constructs and validates one replacement. Every returned resource
 // is either retained as a candidate or released, even when construction fails.
 // The caller serializes this entire operation with every other Tool method.
-func (owner *Tool) Provision(ctx context.Context, target Revision, source Provider) error {
+func (owner *Tool) Provision(ctx context.Context, target Revision, source Provider, schema llm.ToolSchema) error {
 	err := owner.checkPreparation(target)
 	if err != nil {
 		return err
 	}
-	if ctx == nil || source == nil {
+	if ctx == nil || source == nil || schema.Name != owner.name {
 		return errors.New("tools: preparation requires context and provider")
 	}
 	err = ctx.Err()
@@ -25,6 +27,8 @@ func (owner *Tool) Provision(ctx context.Context, target Revision, source Provid
 		err = context.Cause(ctx)
 	}
 	if err == nil {
+		input.Definition.Description = schema.Description
+		input.Definition.Parameters = slices.Clone(schema.Parameters)
 		err = owner.acceptImplementation(target, input)
 	}
 	if err == nil {

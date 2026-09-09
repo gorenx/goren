@@ -83,7 +83,7 @@ func toolRegistry(t *testing.T, system goakt.ActorSystem) *goakt.GrainIdentity {
 
 func initializeToolRegistry(t *testing.T, system goakt.ActorSystem) {
 	t.Helper()
-	payload, err := system.AskGrain(context.Background(), toolRegistry(t, system), toolactor.InitializeDefaults{}, time.Second)
+	payload, err := system.AskGrain(context.Background(), toolRegistry(t, system), toolactor.RegisterSource{Name: "local"}, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -34,16 +34,6 @@ func (owner *Runtime) receiveCalls(gc *goakt.GrainContext) bool {
 				Err: current.Dispatch(),
 			}
 		})
-	case ApplyCallApproval:
-		owner.requestCall(gc, input.CreationID, input.CallID, false, func(current *execution.Call) CallResult {
-			err := current.ApplyApproval(input.Outcome)
-			stage, request := current.Preparation()
-			return CallResult{
-				Stage:    stage,
-				Approval: request,
-				Err:      err,
-			}
-		})
 	case FinalizeCall:
 		owner.requestCall(gc, input.CreationID, input.CallID, false, func(current *execution.Call) CallResult {
 			err := current.Finalize()
@@ -102,7 +92,7 @@ func (owner *Runtime) receiveCalls(gc *goakt.GrainContext) bool {
 }
 
 func (owner *Runtime) findCall(creationID string, identifier agentmessage.CallID) (*invocation, error) {
-	if owner.initialization == nil || owner.initialization.CreationID != creationID {
+	if owner.creationID == "" || owner.creationID != creationID {
 		return nil, errors.New("tools: call does not own this runtime")
 	}
 	current := owner.calls[identifier]
@@ -113,12 +103,12 @@ func (owner *Runtime) findCall(creationID string, identifier agentmessage.CallID
 }
 
 func (owner *Runtime) prepareCall(gc *goakt.GrainContext, input PrepareCall) {
-	if owner.initialization == nil ||
-		owner.initialization.CreationID != input.CreationID ||
+	if owner.creationID == "" ||
+		owner.creationID != input.CreationID ||
 		owner.toolRuntime == nil ||
 		owner.active != nil ||
 		owner.policyRequest != nil ||
-		input.Input.SessionID != owner.initialization.AgentID ||
+		input.Input.SessionID != owner.agentID ||
 		input.Input.CallID == "" ||
 		owner.calls[input.Input.CallID] != nil {
 		gc.Response(CallResult{
@@ -156,7 +146,7 @@ func (owner *Runtime) prepareCall(gc *goakt.GrainContext, input PrepareCall) {
 	owner.policyRequest = current
 	input.Input.Arguments = append([]byte(nil), input.Input.Arguments...)
 	instances := owner.instances
-	policies := owner.initialization.Policies
+	policies := snapshot.Policies[input.Input.Name]
 	err = gc.PipeToSelf(func() (payload any, failure error) {
 		defer recoverCall(current, &payload)
 		coordinator, failure := instances.Scheduler(ctx, snapshot, policies)
@@ -173,7 +163,7 @@ func (owner *Runtime) prepareCall(gc *goakt.GrainContext, input PrepareCall) {
 			Err: failure,
 		}
 		if failure == nil {
-			result.Stage, result.Approval = business.Preparation()
+			result.Stage, _ = business.Preparation()
 		}
 		return callCompleted{
 			invocation: current,

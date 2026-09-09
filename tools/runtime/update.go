@@ -1,30 +1,17 @@
-// Package toolruntime owns per-Agent tool update business workflows.
 package toolruntime
 
 import (
 	"context"
 	"errors"
-	"slices"
 
-	"github.com/gorenx/goren/tools"
-	toolregistry "github.com/gorenx/goren/tools/registry"
+	"github.com/google/uuid"
 	"github.com/gorenx/goren/tools/tool"
 )
 
-// Catalog is the update workflow's directory port. Lookup must distinguish a
-// known unpublished batch from an unknown update; transport errors prove neither.
-type Catalog interface {
-	Publish(context.Context, toolregistry.UpdateID) (tools.Definitions, error)
-	Lookup(context.Context, toolregistry.UpdateID) (toolregistry.Publication, bool, error)
-	Abort(context.Context, toolregistry.UpdateID) error
-	Settle(context.Context, toolregistry.UpdateID) error
-}
-
-// Instances controls existing tool identities through the lifecycle owner.
-// Prepare includes candidate registration; Remove confirms resource closure and
-// instance removal. Operations must support retry after an uncertain reply.
+// Instances performs work on the common ToolActors. Only the lifecycle owner
+// creates or destroys Actors; each operation retains its original identity on retry.
 type Instances interface {
-	Prepare(context.Context, tool.Revision, toolregistry.Tool) error
+	Prepare(context.Context, tool.Revision, Tool) error
 	Commit(context.Context, tool.Revision, string) error
 	Retire(context.Context, tool.Revision, string) error
 	Abort(context.Context, tool.Revision, string) error
@@ -34,103 +21,138 @@ type Instances interface {
 type updatePhase uint8
 
 const (
-	// preparing constructs and registers candidates without changing the active
-	// catalog. Failure or cancellation enters candidate rollback.
+	// preparing opens replacement work while the old work remains available.
 	preparing updatePhase = iota
-	// publishing is reached only after every candidate is registered. No tool
-	// implementation switches until the catalog's commit is confirmed.
-	publishing
-	// checkingPublication retains the barrier after an uncertain publish reply.
-	// Query failure stays here; confirmed publication permits switching, while
-	// confirmed non-publication permits candidate rollback.
-	checkingPublication
-	// committing switches each prepared implementation to the published version.
-	// Failure retries the unconfirmed tool; publication can no longer be rolled back.
+	// committing switches prepared work; cancellation can no longer roll it back.
 	committing
-	// retiring releases replaced implementations after every tool has switched.
-	// Failed resource cleanup stays at the same tool and keeps the barrier closed.
+	// retiring releases the work replaced by a successful switch.
 	retiring
-	// removing closes deleted instances on success, or new instances on rollback.
-	// Once removals finish, it settles or aborts the catalog batch; failure of that
-	// final operation does not repeat already confirmed instance removals.
+	// removing releases removed tools, or newly created tools after rollback.
 	removing
-	// abortingCandidates releases every attempted candidate, including one whose
-	// preparation failed. Existing implementations remain intact; cleanup errors
-	// must be resolved before removing additions and aborting the catalog batch.
-	abortingCandidates
-	// finished means all update obligations are discharged. A retained failure
-	// reports completed rollback; nil failure reports a successfully applied update.
+	// aborting releases all attempted preparations, including failed construction.
+	aborting
+	// finished confirms that every resource obligation is discharged.
 	finished
 )
 
-// Update retains only one transaction's business progress. Its caller drains
-// tool calls and serializes Apply; this object has no framework or owner references.
+// Update owns one replacement and its cleanup obligations, never Registry state.
 type Update struct {
-	configuration toolregistry.Configuration
-	revision      tool.Revision
-	removed       []string
-	added         []string
-	phase         updatePhase
-	next          int
-	// attempted includes a failing preparation because it may retain cleanup work.
+	tools     []Tool
+	revision  tool.Revision
+	removed   []string
+	added     []string
+	phase     updatePhase
+	next      int
 	attempted int
-	// failure survives rollback retries until every cleanup obligation is discharged.
-	// A non-nil value in removing identifies rollback; publication clears it.
-	failure error
+	failure   error
 }
 
-// NewUpdate captures one registered configuration and the currently owned names.
-// The configuration identity remains fixed through publication and cleanup.
-func NewUpdate(input toolregistry.Configuration, previous []string) (*Update, error) {
-	if input.Update.ID == "" || input.Update.AgentID == "" ||
-		len(input.Tools) != len(input.Update.Names) {
-		return nil, errors.New("tools: invalid update configuration")
+// NewUpdate captures a replacement under a fresh operation identity.
+func NewUpdate(entries []Tool, previous []string) *Update {
+	pending := &Update{
+		tools:    cloneTools(entries),
+		revision: tool.Revision(uuid.NewString()),
 	}
-	names := make(map[string]bool, len(input.Tools))
-	for index, entry := range input.Tools {
-		if entry.Name == "" || entry.Name != input.Update.Names[index] ||
-			names[entry.Name] || entry.Provider == nil {
-			return nil, errors.New("tools: inconsistent configured tool membership")
-		}
-		names[entry.Name] = true
-	}
+	// names maps each requested tool name to true; absent keys are not in the replacement.
+	names := make(map[string]bool, len(entries))
+	// old maps each previously active tool name to true, identifying newly added work.
 	old := make(map[string]bool, len(previous))
 	for _, name := range previous {
-		if name == "" || old[name] {
-			return nil, errors.New("tools: invalid previous tool membership")
-		}
 		old[name] = true
 	}
-	input.Tools = slices.Clone(input.Tools)
-	input.Update.Names = slices.Clone(input.Update.Names)
-	owner := &Update{
-		configuration: input,
-		revision:      tool.Revision(string(input.Update.ID)),
+	for _, entry := range entries {
+		name := entry.Schema.Name
+		names[name] = true
+		if !old[name] {
+			pending.added = append(pending.added, name)
+		}
 	}
 	for _, name := range previous {
 		if !names[name] {
-			owner.removed = append(owner.removed, name)
+			pending.removed = append(pending.removed, name)
 		}
 	}
-	for _, entry := range input.Tools {
-		if !old[entry.Name] {
-			owner.added = append(owner.added, entry.Name)
-		}
-	}
-	return owner, nil
+	return pending
 }
 
-func (owner *Update) transition(target updatePhase) {
-	owner.phase = target
+// Apply runs outside Receive and retains exact cleanup progress on failure.
+// Cancellation rolls back before switching; after switching it drains cleanup.
+func (owner *Update) Apply(ctx context.Context, instances Instances) (bool, error) {
+	if ctx == nil || instances == nil {
+		return false, errors.New("tools: update context and instances are required")
+	}
+	cleanup := context.WithoutCancel(ctx)
+	for {
+		switch owner.phase {
+		case preparing:
+			if ctx.Err() != nil {
+				owner.failure = context.Cause(ctx)
+				owner.transition(aborting)
+				continue
+			}
+			if owner.next == len(owner.tools) {
+				owner.transition(committing)
+				continue
+			}
+			owner.attempted = owner.next + 1
+			err := instances.Prepare(ctx, owner.revision, owner.tools[owner.next])
+			if err != nil {
+				owner.failure = err
+				owner.transition(aborting)
+				continue
+			}
+			owner.next++
+		case committing:
+			if owner.next == len(owner.tools) {
+				owner.transition(retiring)
+				continue
+			}
+			err := instances.Commit(cleanup, owner.revision, owner.tools[owner.next].Schema.Name)
+			if err != nil {
+				return false, err
+			}
+			owner.next++
+		case retiring:
+			if owner.next == len(owner.tools) {
+				owner.transition(removing)
+				continue
+			}
+			err := instances.Retire(cleanup, owner.revision, owner.tools[owner.next].Schema.Name)
+			if err != nil {
+				return false, err
+			}
+			owner.next++
+		case aborting:
+			if owner.next == owner.attempted {
+				owner.transition(removing)
+				continue
+			}
+			err := instances.Abort(cleanup, owner.revision, owner.tools[owner.next].Schema.Name)
+			if err != nil {
+				return false, errors.Join(owner.failure, err)
+			}
+			owner.next++
+		case removing:
+			names := owner.removed
+			if owner.failure != nil {
+				names = owner.added
+			}
+			if owner.next == len(names) {
+				owner.transition(finished)
+				continue
+			}
+			err := instances.Remove(cleanup, names[owner.next])
+			if err != nil {
+				return false, errors.Join(owner.failure, err)
+			}
+			owner.next++
+		case finished:
+			return true, owner.failure
+		}
+	}
+}
+
+func (owner *Update) transition(next updatePhase) {
+	owner.phase = next
 	owner.next = 0
-}
-
-func (owner *Update) confirmPublication(fact tools.Definitions) error {
-	if fact.AgentID != owner.configuration.Update.AgentID ||
-		!slices.Equal(fact.KnownNames, owner.configuration.Update.Names) {
-		return errors.New("tools: publication does not match the requested update")
-	}
-	owner.failure = nil
-	owner.transition(committing)
-	return nil
 }
