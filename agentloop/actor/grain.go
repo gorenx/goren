@@ -9,6 +9,7 @@ import (
 	llmactor "github.com/gorenx/goren/llm/actor"
 
 	"github.com/google/uuid"
+	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentloop"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
@@ -75,7 +76,11 @@ func (owner *Grain) OnDeactivate(ctx context.Context, _ *goakt.GrainProps) error
 
 // OnReceive only dispatches commands and completions to their runtime handlers.
 func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
-	defer owner.refreshIdle()
+	previous := owner.business.StatusValue()
+	defer func() {
+		owner.refreshIdle()
+		owner.publishStatus(gc, previous)
+	}()
 	if owner.models != nil && owner.models.Receive(gc, llmactor.Receivers{
 		Generation:   owner,
 		Chunk:        owner,
@@ -89,4 +94,27 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 		return
 	}
 	gc.Unhandled()
+}
+
+// publishStatus reports business transitions without maintaining another state machine.
+func (owner *Grain) publishStatus(gc *goakt.GrainContext, previous agent.Status) {
+	current := owner.business.StatusValue()
+	if current == previous || owner.business.ID() == "" {
+		return
+	}
+	publishStatus(gc.Context(), gc.ActorSystem(), agent.StatusNotice{
+		AgentID: owner.business.ID(),
+		Status:  current,
+	})
+}
+
+func publishStatus(ctx context.Context, system goakt.ActorSystem, notice agent.StatusNotice) {
+	target := system.TopicActor()
+	if target == nil {
+		return
+	}
+	err := goakt.Tell(ctx, target, goakt.NewPublish(uuid.NewString(), agent.StatusTopic, notice))
+	if err != nil {
+		system.Logger().Error(err)
+	}
 }

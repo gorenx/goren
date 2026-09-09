@@ -39,7 +39,7 @@ func SpawnSubscriber(ctx context.Context, system goakt.ActorSystem, name string,
 		consumer: consumer,
 		ready:    make(chan struct{}),
 	}
-	endpoint, err := system.Spawn(ctx, name, listener)
+	endpoint, err := system.Spawn(ctx, name, listener, goakt.WithLongLived())
 	if err != nil {
 		return nil, err
 	}

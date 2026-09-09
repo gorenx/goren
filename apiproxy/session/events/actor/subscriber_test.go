@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/gorenx/goren/agent"
 	sessionevents "github.com/gorenx/goren/apiproxy/session/events"
 	eventadapter "github.com/gorenx/goren/apiproxy/session/events/actor"
 	"github.com/gorenx/goren/apiproxy/stream"
@@ -165,4 +166,8 @@ func publishCommit(t *testing.T, ctx context.Context, system goakt.ActorSystem, 
 	if err := goakt.Tell(ctx, system.TopicActor(), goakt.NewPublish(uuid.NewString(), session.AppendedEventName, fact)); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func (consumer *blockedConsumer) StatusChanged(notice agent.StatusNotice) error {
+	return consumer.feed.StatusChanged(notice)
 }

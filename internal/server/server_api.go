@@ -184,7 +184,7 @@ func (owner *Server) initializeAPI(ctx context.Context, constructors *toolactor.
 	if err != nil {
 		return err
 	}
-	owner.queries, err = system.Spawn(ctx, "session.query", queries, goakt.WithStashing())
+	owner.queries, err = system.Spawn(ctx, "session.query", queries, goakt.WithStashing(), goakt.WithLongLived())
 	if err != nil {
 		return err
 	}

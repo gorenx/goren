@@ -26,6 +26,25 @@ describe('ConversationStore', () => {
     vi.unstubAllGlobals()
   })
 
+  it('keeps execution running after cancel acknowledgement until the Host reports idle', async () => {
+    const host = installMockHost({ existingSession: true })
+    const store = new ConversationStore(translate)
+    await store.start()
+    const socket = MockWebSocket.instances.find(item => item.url.endsWith('/api/events.host'))!
+    socket.receive({ type: 'server-request', rpcId: 'running', payload: {
+      type: 'host/session-status', sessionId: session.sessionId, running: true,
+    } })
+    expect(store.currentSession()?.running).toBe(true)
+    await store.cancelCurrentTurn()
+    expect(host.calls).toContainEqual(expect.objectContaining({ method: 'session.cancel', payload: { sessionId: session.sessionId } }))
+    expect(store.currentSession()?.running).toBe(true)
+    socket.receive({ type: 'server-request', rpcId: 'idle', payload: {
+      type: 'host/session-status', sessionId: session.sessionId, running: false,
+    } })
+    expect(store.currentSession()?.running).toBe(false)
+    store.dispose()
+  })
+
   it('bootstraps one empty Host into a selected durable Session', async () => {
     const host = installMockHost()
     const store = new ConversationStore(translate)
@@ -693,6 +712,9 @@ function installMockHost(options: MockHostOptions = {}): {
       value = {
         sessionId: createdSession.sessionId,
       }
+      break
+    case 'session.cancel':
+      value = { accepted: true }
       break
     case 'session.history':
       await options.historyWait

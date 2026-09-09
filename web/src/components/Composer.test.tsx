@@ -58,6 +58,32 @@ describe('Composer', () => {
     }
   })
 
+  it('sends cancellation from the stop button and waits for idle before restoring send', async () => {
+    let running = true
+    const cancelCurrentTurn = vi.fn(async () => {})
+    const submitPrompt = vi.fn(async () => {})
+    const store = {
+      currentQuestion: () => undefined,
+      currentSession: () => ({ ...session, running }),
+      submitPrompt,
+      cancelCurrentTurn,
+    } as unknown as ConversationStore
+    const render = () => mountedRoot!.render(
+      <I18nProvider><Composer store={store} snapshot={snapshot} /></I18nProvider>,
+    )
+    act(() => { mountedRoot = createRoot(container); render() })
+    const button = container.querySelector<HTMLButtonElement>('#stop-agent')!
+    expect(button).not.toBeNull()
+    await act(async () => button.click())
+    expect(cancelCurrentTurn).toHaveBeenCalledTimes(1)
+    expect(submitPrompt).not.toHaveBeenCalled()
+    expect(container.querySelector('#stop-agent')).not.toBeNull()
+    running = false
+    act(render)
+    expect(container.querySelector('#stop-agent')).toBeNull()
+    expect(container.querySelector('#send')).not.toBeNull()
+  })
+
   it('submits the controlled textarea value once', async () => {
     const submitPrompt = vi.fn(async () => {})
     const fixture = renderComposer(submitPrompt)

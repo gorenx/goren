@@ -32,7 +32,7 @@ func Spawn(
 	return system.Spawn(ctx, name, &Actor{
 		backend: storage,
 		options: options,
-	}, goakt.WithStashing())
+	}, goakt.WithStashing(), goakt.WithLongLived())
 }
 
 // PreStart restores business state before accepting any operation.
