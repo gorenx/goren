@@ -69,6 +69,20 @@ func (owner *Grain) receiveCapabilities(gc *goakt.GrainContext) bool {
 	return true
 }
 
+// deliver normalizes immediate adapter errors and mailbox replies to a fresh
+// receive call. Only detached receivers and result data cross this boundary.
+func (scope serviceScope) deliver(accept func(agentloop.Services)) error {
+	delivery := capabilityDelivery{
+		creationID: scope.owner.creationID,
+		accept:     accept,
+	}
+	err := scope.gc.PipeToSelf(func() (any, error) { return delivery, nil })
+	if err == nil {
+		scope.owner.deliveries++
+	}
+	return err
+}
+
 func (scope serviceScope) request(target *goakt.GrainIdentity, message any, cancellation *cancellationRequest, mode reentrancy.Mode, decode func(any, error) func(agentloop.Services)) error {
 	identifier := uuid.NewString()
 	creationID := scope.owner.creationID
@@ -264,8 +278,9 @@ func (endpoint middlewarePort) TurnStopping(input agent.TurnStoppingInput, recei
 func (endpoint middlewarePort) RequestError(input agent.RequestFailure, receiver agentloop.RecoveryReceiver) error {
 	identifier := middlewareactor.CallID(uuid.NewString())
 	return endpoint.invoke(identifier, middlewareactor.ResolveRequestError{
-		Routes: endpoint.scope.owner.handlers.RequestError, CallID: identifier,
-		Input: input,
+		Routes: endpoint.scope.owner.handlers.RequestError,
+		CallID: identifier,
+		Input:  input,
 	}, func(payload any, failure error) func(agentloop.Services) {
 		result, valid := payload.(agent.RequestErrorResolved)
 		if failure != nil {

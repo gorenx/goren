@@ -95,6 +95,10 @@ func (calls *toolCalls) start(services Services) {
 		calls.work.commitStepEnd(services, ending)
 		return
 	}
+	if calls.work.Cancellation() != nil {
+		calls.cancelRemaining(services)
+		return
+	}
 	err := calls.batch.StartCall(calls.index)
 	if err != nil {
 		services.Observer.ExecutionFailed(err)
@@ -105,17 +109,88 @@ func (calls *toolCalls) start(services Services) {
 		services.Observer.ExecutionFailed(err)
 		return
 	}
-	writing := &toolCallCommit{calls: calls}
-	err = services.Conversation.Commit(session.Batch(draft), writing)
-	if err != nil {
-		writing.SessionCommitted(services, session.WriteResult{}, err)
+	writing := &toolCallCommit{
+		calls: calls,
+		fact:  calls.write(session.ToolCallEventName, draft),
 	}
+	writing.fact.commit(services, writing)
 }
 
-type toolCallCommit struct{ calls *toolCalls }
+// cancelRemaining records only calls that never entered the Tool Runtime.
+// An already started call reaches here only after its real result and release.
+func (calls *toolCalls) cancelRemaining(services Services) {
+	if calls.batch.StopReason() == toolbatch.NotStopped {
+		err := calls.batch.StopDispatch(toolbatch.Canceled)
+		if err != nil {
+			services.Observer.ExecutionFailed(err)
+			return
+		}
+	}
+	call := calls.calls[calls.index]
+	called, err := calls.work.PrepareToolCall(call)
+	if err != nil {
+		services.Observer.ExecutionFailed(err)
+		return
+	}
+	outcome := &tools.ToolExecutionFailure{
+		Error: tools.ToolFailure{
+			Message: "tool call aborted before dispatch",
+			Info: &tools.ToolErrorInfo{
+				Name: "AbortError",
+				Code: tools.ToolAbortedBeforeDispatch,
+			},
+		},
+		Content: []agentmessage.ContentBlock{agentmessage.NewTextBlock("Error: tool call aborted before dispatch")},
+	}
+	result, err := calls.work.PrepareToolResult(call, outcome)
+	if err != nil {
+		services.Observer.ExecutionFailed(err)
+		return
+	}
+	writing := &toolCancellation{
+		calls: calls,
+		fact:  calls.write(session.ToolCallEventName, called, result),
+	}
+	writing.fact.commit(services, writing)
+}
 
-func (writing *toolCallCommit) SessionCommitted(services Services, _ session.WriteResult, failure error) {
+// toolCancellation waits for the complete pair before advancing model order.
+type toolCancellation struct {
+	calls *toolCalls
+	fact  toolWrite
+}
+
+func (writing *toolCancellation) SessionCommitted(services Services, result session.WriteResult, failure error) {
+	if failure == nil {
+		failure = writing.calls.work.checkCommit(writing.fact.drafts, result)
+	}
+	if failure == nil {
+		failure = writing.calls.batch.AcceptCancellation(writing.calls.index)
+	}
 	if failure != nil {
+		retry := *writing
+		retry.calls = writing.calls.checkpoint()
+		writing.calls.work.retry = retry
+		services.Observer.ExecutionFailed(failure)
+		return
+	}
+	writing.calls.index++
+	writing.calls.start(services)
+}
+
+type toolCallCommit struct {
+	calls *toolCalls
+	fact  toolWrite
+}
+
+func (writing *toolCallCommit) SessionCommitted(services Services, result session.WriteResult, failure error) {
+	if failure == nil {
+		failure = writing.calls.work.checkCommit(writing.fact.drafts, result)
+	}
+	if failure != nil {
+		retry := *writing
+		retry.calls = writing.calls.checkpoint()
+		writing.calls.work.retry = retry
 		services.Observer.ExecutionFailed(failure)
 		return
 	}
@@ -204,17 +279,26 @@ func (calls *toolCalls) ToolFinalized(services Services, outcome tools.ToolExecu
 		services.Observer.ExecutionFailed(err)
 		return
 	}
-	writing := &toolResultCommit{calls: calls}
-	err = services.Conversation.Commit(session.Batch(draft), writing)
-	if err != nil {
-		writing.SessionCommitted(services, session.WriteResult{}, err)
+	writing := &toolResultCommit{
+		calls: calls,
+		fact:  calls.write(session.ToolResultEventName, draft),
 	}
+	writing.fact.commit(services, writing)
 }
 
-type toolResultCommit struct{ calls *toolCalls }
+type toolResultCommit struct {
+	calls *toolCalls
+	fact  toolWrite
+}
 
-func (writing *toolResultCommit) SessionCommitted(services Services, _ session.WriteResult, failure error) {
+func (writing *toolResultCommit) SessionCommitted(services Services, result session.WriteResult, failure error) {
+	if failure == nil {
+		failure = writing.calls.work.checkCommit(writing.fact.drafts, result)
+	}
 	if failure != nil {
+		retry := *writing
+		retry.calls = writing.calls.checkpoint()
+		writing.calls.work.retry = retry
 		services.Observer.ExecutionFailed(failure)
 		return
 	}
@@ -325,4 +409,42 @@ func (subject *ReactLoopAgent) PrepareToolResult(input agentmessage.ToolCallBloc
 		result,
 		session.SurfaceIntent{Operation: session.SurfaceAppend()},
 	)
+}
+
+func (writing toolCallCommit) resume(subject *ReactLoopAgent, services Services) {
+	writing.calls.work = subject
+	writing.fact.commit(services, &writing)
+}
+
+func (writing toolResultCommit) resume(subject *ReactLoopAgent, services Services) {
+	writing.calls.work = subject
+	writing.fact.commit(services, &writing)
+}
+
+func (writing toolCancellation) resume(subject *ReactLoopAgent, services Services) {
+	writing.calls.work = subject
+	writing.fact.commit(services, &writing)
+}
+
+func (calls *toolCalls) write(eventType string, drafts ...session.EventDraft) toolWrite {
+	turnNumber, stepNumber := calls.work.step.Position()
+	return toolWrite{
+		sessionID: calls.work.ID(),
+		position: session.StepPosition{
+			Turn: turnNumber,
+			Step: stepNumber,
+		},
+		callID:    calls.calls[calls.index].ID,
+		eventType: eventType,
+		drafts:    drafts,
+	}
+}
+
+// checkpoint detaches the execution owner before a retry is retained by it.
+// Run removes the retry first; resume then reattaches the owner to the receiver.
+// The retained graph therefore never points back from a child to its owner.
+func (calls *toolCalls) checkpoint() *toolCalls {
+	detached := *calls
+	detached.work = nil
+	return &detached
 }
