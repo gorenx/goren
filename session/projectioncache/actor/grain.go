@@ -8,6 +8,7 @@ import (
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/session/projectioncache"
 	goakt "github.com/tochemey/goakt/v4/actor"
+	"github.com/tochemey/goakt/v4/passivation"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
@@ -97,6 +98,8 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) {
 			identifier: input.SessionID,
 			backend:    input.Storage,
 		},
+		// Cache retains this writer until Close; idle time must not revoke it.
+		goakt.WithPassivationStrategy(passivation.NewLongLivedStrategy()),
 	)
 	if err == nil {
 		owner.sessionID = input.SessionID
