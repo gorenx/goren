@@ -131,3 +131,11 @@ ConfigureRegistry 接受共享 CheckpointStore 和启动 LoadAll 结果，逐项
 API 的 actor.Cache 实现 sessionapi.ProjectionCache，先向 Registry 取得地址，再提交原 CachedSnapshot/ColdSnapshot 消息；没有新建重放算法或无缓存兼容路径。组合根创建独立 projections.sqlite、LoadAll、配置共享 Registry，并注册 title.Unit 与 SessionListMetadataUnit，设置 Sessions.Cache。关闭网络和 API 后关闭 Cache Registry、停止框架中的剩余读取者，再关闭共享存储。独立冷读取被强制中止时底层 I/O 的完全排空仍需故障集成验证，不能以正常关闭测试代替。
 
 验收：真实 Server 重启后的 session.list 恢复已提交标题；真实 SQLite 下 16 个并发取得请求共享一个缓存身份，写入后重复关闭不丢记录，不提前关闭共享适配器，关闭后拒绝新取得。自动 checkpoint 触发、冷读取写回及最终 checkpoint 调度仍是待完成项，本次没有以新 Registry 替代这些业务规则。
+
+## 关闭时报 checkpoint-writer 不存在
+
+原因：Cache Grain 使用长驻生命周期，但 Initialize 创建私有 Writer 时没有设置对应策略。GoAkt 4.5.3 普通 Actor 默认在空闲两分钟后停用；Cache 仍保留 Writer PID，下一次 Write 或关闭时按名称访问已经退出的 Writer，得到 actor not found。多个 Session 分别持有 Writer，所以服务器关闭会同时报告多个名称。
+
+修复：Writer 创建时显式使用 LongLivedStrategy，由所属 Cache 的 Close / OnDeactivate 负责停止。保持“等待既有写入结束 → 停止 Writer → 关闭共享存储”的现有顺序，不忽略 actor not found，也不通过重新创建空 Writer 假装旧工作已经完成。
+
+验收：检查真实创建的 Writer 使用长驻策略；不同 Session 各有独立 Writer；写入完成后 Close 停止对应 Writer，重复关闭成功，后续写入拒绝；既有关闭等待测试继续验证在途存储写入未结束时不能提前停止 Writer。`TestWriterLifetimeMatchesCacheLifetime` 修复前明确失败，修复后验证实际策略、两个独立 Writer、写入、重复关闭和关闭后拒绝写入。`go test -race -count=1 ./session/projectioncache/... ./internal/server -timeout=60s` 与相同范围的 vet 通过；未把即时测试称为真实空闲两分钟的运行观测。

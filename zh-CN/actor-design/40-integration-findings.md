@@ -631,3 +631,10 @@ close Agent "integration": agent middleware: cancellation requires a live call a
 修复将 CallID / Cause 校验与活动记录查询分开，缺少记录时幂等确认，活跃记录继续使用原取消通知路径。测试同时确认缺少 CallID 或 Cause 仍被拒绝；既有活跃取消用例继续确认外层中间件不会在下游实际退出前返回。
 
 `go test -count=1 ./agent/middleware/actor ./internal/server -timeout=45s` 通过；随后 `go test -race -count=1 ./tools/... ./agent/... ./agentloop/... ./systemprompt/... ./internal/server -timeout=60s` 通过，包含服务器关闭测试。本轮未观察到空 Cause 的调用方缺陷，未加入额外取消状态或历史表。取消投递失败的独立故障注入、全部关闭交错组合仍不由这组测试证明。
+
+
+## Checkpoint Writer 空闲退出导致关闭失败
+
+用户报告关闭时报多个 `checkpoint-writer-<uuid>: actor not found`。Cache Grain 长驻，但 `session/projectioncache/actor/grain.go` 的 Writer Spawn 未设置长驻策略。固定 GoAkt 4.5.3 的普通 Actor 默认空闲两分钟后停用；Cache 没有同步释放 PID，后续写入或关闭会按旧名称查找已经停止的 Writer。
+
+修复在创建 Writer 时设置 LongLivedStrategy，由所属 Cache 显式结束它的生命周期，不吞掉关闭错误或新建替代 Writer。新回归测试修复前失败，修复后通过；ProjectionCache 与服务器相关 race 测试和 vet 通过。完整原因、验收范围见 [ProjectionCache 方案](./24-projection-cache-module.md#关闭时报-checkpoint-writer-不存在)。

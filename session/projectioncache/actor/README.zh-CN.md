@@ -35,7 +35,7 @@ sequenceDiagram
     G-->>C: Completion
 ```
 
-Writer 在自己的 Receive 中执行存储调用，不创建 goroutine。它的阻塞只占用该 Session 的 I/O Actor；缓存 Grain 的请求是异步的，不同 Session 的 Writer 可以独立推进。
+Writer 创建时显式使用 LongLivedStrategy，空闲时不会由框架提前停用；它的生命周期由所属 Cache 的 Close / OnDeactivate 结束。Writer 在自己的 Receive 中执行存储调用，不创建 goroutine。它的阻塞只占用该 Session 的 I/O Actor；缓存 Grain 的请求是异步的，不同 Session 的 Writer 可以独立推进。
 
 同一 Grain 的后续 Write、Read 和 Close 由 GoAkt 暂存至存储请求结束。内部存储请求不设超时；外部调用方超时只结束其等待，不能提前释放底层写入顺序。失败不调用 Confirm，后续可重试。Read 只返回已确认且日志身份匹配的记录。
 
