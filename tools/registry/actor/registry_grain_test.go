@@ -15,7 +15,7 @@ import (
 
 type observer struct {
 	ready  chan struct{}
-	events chan tools.DefinitionsChanged
+	events chan tools.Definitions
 }
 
 func (*observer) PreStart(*goakt.Context) error { return nil }
@@ -26,7 +26,7 @@ func (probe *observer) Receive(rc *goakt.ReceiveContext) {
 		rc.Tell(rc.ActorSystem().TopicActor(), goakt.NewSubscribe(tools.DefinitionsTopic))
 	case *goakt.SubscribeAck:
 		probe.ready <- struct{}{}
-	case tools.DefinitionsChanged:
+	case tools.Definitions:
 		probe.events <- incoming
 	}
 }
@@ -73,7 +73,7 @@ func ask[T any](t *testing.T, system goakt.ActorSystem, target *goakt.GrainIdent
 
 func begin(t *testing.T, system goakt.ActorSystem, target *goakt.GrainIdentity) {
 	t.Helper()
-	result := ask[toolactor.Completion](t, system, target, toolactor.Begin{
+	result := ask[toolactor.Completion](t, system, target, toolactor.BeginUpdate{
 		Update: toolregistry.Update{
 			ID:      "update",
 			AgentID: "agent",
@@ -87,7 +87,7 @@ func begin(t *testing.T, system goakt.ActorSystem, target *goakt.GrainIdentity) 
 
 func register(t *testing.T, system goakt.ActorSystem, target *goakt.GrainIdentity) {
 	t.Helper()
-	result := ask[toolactor.Completion](t, system, target, toolactor.Register{
+	result := ask[toolactor.Completion](t, system, target, toolactor.RegisterDefinition{
 		ID: "update",
 		Candidate: toolregistry.Candidate{
 			Schema: llm.ToolSchema{
@@ -106,7 +106,7 @@ func TestRegistryGrainPublishesOnlyCompleteCatalog(t *testing.T) {
 	system, target := startRegistry(t, true)
 	probe := &observer{
 		ready:  make(chan struct{}, 1),
-		events: make(chan tools.DefinitionsChanged, 4),
+		events: make(chan tools.Definitions, 4),
 	}
 	if _, err := system.Spawn(context.Background(), "observer", probe); err != nil {
 		t.Fatal(err)
@@ -117,44 +117,44 @@ func TestRegistryGrainPublishesOnlyCompleteCatalog(t *testing.T) {
 		t.Fatal("subscription timeout")
 	}
 	begin(t, system, target)
-	failed := ask[toolactor.Catalog](t, system, target, toolactor.Publish{
+	failed := ask[toolactor.Catalog](t, system, target, toolactor.PublishDefinitions{
 		ID: "update",
 	})
 	if failed.Err == nil || failed.Found {
 		t.Fatalf("partial publication = %#v", failed)
 	}
 	register(t, system, target)
-	committed := ask[toolactor.Catalog](t, system, target, toolactor.Publish{
+	committed := ask[toolactor.Catalog](t, system, target, toolactor.PublishDefinitions{
 		ID: "update",
 	})
-	if committed.Err != nil || !committed.Found || committed.Definitions.Version != 1 {
+	if committed.Err != nil || !committed.Found || committed.Definitions.Schemas[0].Version != 1 {
 		t.Fatalf("publication = %#v", committed)
 	}
-	committed.Definitions.Definitions.Schemas[0].Parameters[0] = '!'
+	committed.Definitions.Schemas[0].Parameters[0] = '!'
 	select {
 	case event := <-probe.events:
-		if event.Version != 1 || event.AgentID != "agent" || string(event.Definitions.Schemas[0].Parameters) != `{"type":"object"}` {
+		if event.Schemas[0].Version != 1 || event.AgentID != "agent" || string(event.Schemas[0].Parameters) != `{"type":"object"}` {
 			t.Fatalf("event = %#v", event)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("publication timeout")
 	}
-	baseline := ask[toolactor.Catalog](t, system, target, toolactor.Read{
+	baseline := ask[toolactor.Catalog](t, system, target, toolactor.ReadDefinitions{
 		AgentID: "agent",
 	})
-	if !baseline.Found || baseline.Definitions.Version != 1 {
+	if !baseline.Found || baseline.Definitions.Schemas[0].Version != 1 {
 		t.Fatalf("baseline = %#v", baseline)
 	}
-	outcome := ask[toolactor.Outcome](t, system, target, toolactor.Lookup{
+	outcome := ask[toolactor.Outcome](t, system, target, toolactor.ReadPublication{
 		ID: "update",
 	})
-	if !outcome.Found || !outcome.Publication.Published || outcome.Publication.Catalog.Version != 1 {
+	if !outcome.Found || !outcome.Publication.Published || outcome.Publication.Catalog.Schemas[0].Version != 1 {
 		t.Fatalf("outcome = %#v", outcome)
 	}
-	repeated := ask[toolactor.Catalog](t, system, target, toolactor.Publish{
+	repeated := ask[toolactor.Catalog](t, system, target, toolactor.PublishDefinitions{
 		ID: "update",
 	})
-	if repeated.Err != nil || repeated.Definitions.Version != 1 {
+	if repeated.Err != nil || repeated.Definitions.Schemas[0].Version != 1 {
 		t.Fatalf("retry = %#v", repeated)
 	}
 }
@@ -163,13 +163,13 @@ func TestRegistryGrainRetainsCommitWhenNotificationUnavailable(t *testing.T) {
 	system, target := startRegistry(t, false)
 	begin(t, system, target)
 	register(t, system, target)
-	committed := ask[toolactor.Catalog](t, system, target, toolactor.Publish{
+	committed := ask[toolactor.Catalog](t, system, target, toolactor.PublishDefinitions{
 		ID: "update",
 	})
-	if committed.Err == nil || !committed.Found || committed.Definitions.Version != 1 {
+	if committed.Err == nil || !committed.Found || committed.Definitions.Schemas[0].Version != 1 {
 		t.Fatalf("notification failure = %#v", committed)
 	}
-	outcome := ask[toolactor.Outcome](t, system, target, toolactor.Lookup{
+	outcome := ask[toolactor.Outcome](t, system, target, toolactor.ReadPublication{
 		ID: "update",
 	})
 	if !outcome.Found || !outcome.Publication.Published {

@@ -88,7 +88,7 @@ func (owner *Grain) execute(gc *goakt.GrainContext, input Execute) {
 		return executed{
 			identifier: input.Invocation.CallID,
 			call:       current,
-			result:     business.Execute(work, input.Version, input.Invocation),
+			result:     business.Execute(work, input.Revision, input.Invocation),
 		}, nil
 	}); err != nil {
 		delete(owner.calls, input.Invocation.CallID)

@@ -31,11 +31,9 @@ type Implementation struct {
 	Resource   Resource
 }
 
-// Revision ties an implementation to a unique catalog update and target version.
-type Revision struct {
-	ID      string
-	Version uint64
-}
+// Revision identifies the unique update that installed an implementation.
+// It is opaque, never ordered, and independent of the model-facing schema version.
+type Revision string
 
 // Tool owns current, candidate and retiring implementations of one logical tool.
 // It has no scheduler or framework references and must not be used concurrently.
@@ -73,10 +71,14 @@ func New(name string) (*Tool, error) {
 	}, nil
 }
 
+// Name returns the immutable logical tool name, independent of implementation state.
+func (owner *Tool) Name() string { return owner.name }
+
 // Prepare takes ownership only after successful validation. On error the caller
 // still owns input.Resource, including when the same revision was already prepared.
 func (owner *Tool) Prepare(target Revision, input Implementation) error {
-	if err := owner.checkPreparation(target); err != nil {
+	err := owner.checkPreparation(target)
+	if err != nil {
 		return err
 	}
 	return owner.acceptImplementation(target, input)
@@ -107,9 +109,7 @@ func (owner *Tool) checkPreparation(target Revision) error {
 	if owner.candidate != nil || owner.retiring != nil {
 		return errors.New("tools: previous implementation update is unsettled")
 	}
-	if target.ID == "" ||
-		target.ID == owner.revision.ID ||
-		target.Version <= owner.revision.Version {
+	if target == "" || target == owner.revision {
 		return errors.New("tools: stale or invalid implementation revision")
 	}
 	return nil
@@ -174,22 +174,23 @@ func (owner *Tool) Abort(ctx context.Context, target Revision) error {
 		return errors.New("tools: candidate belongs to a different update")
 	}
 	owner.candidate.discardRequested = true
-	if err := closeResource(ctx, owner.candidate.body.Resource); err != nil {
+	err := closeResource(ctx, owner.candidate.body.Resource)
+	if err != nil {
 		return err
 	}
 	owner.candidate = nil
 	return nil
 }
 
-// Definition returns a detached executable definition only for a settled version.
+// Definition returns a detached executable definition only for a settled implementation.
 // The caller must finish every use before preparing an update or closing the Tool.
-func (owner *Tool) Definition(version uint64) (tools.ToolDefinition, error) {
+func (owner *Tool) Definition(target Revision) (tools.ToolDefinition, error) {
 	if owner.closed ||
 		owner.current == nil ||
 		owner.candidate != nil ||
 		owner.retiring != nil ||
-		owner.revision.Version != version {
-		return tools.ToolDefinition{}, errors.New("tools: implementation is unavailable for this version")
+		owner.revision != target {
+		return tools.ToolDefinition{}, errors.New("tools: requested implementation is unavailable")
 	}
 	detached := owner.current.Definition
 	detached.Parameters = append([]byte(nil), detached.Parameters...)
@@ -203,7 +204,8 @@ func (owner *Tool) Close(ctx context.Context) error {
 	owner.closed = true
 	var failures []error
 	if owner.candidate != nil {
-		if err := closeResource(ctx, owner.candidate.body.Resource); err != nil {
+		err := closeResource(ctx, owner.candidate.body.Resource)
+		if err != nil {
 			failures = append(failures, err)
 		} else {
 			owner.candidate = nil
@@ -218,7 +220,8 @@ func release(ctx context.Context, retained **Implementation) error {
 	if *retained == nil {
 		return nil
 	}
-	if err := closeResource(ctx, (*retained).Resource); err != nil {
+	err := closeResource(ctx, (*retained).Resource)
+	if err != nil {
 		return err
 	}
 	*retained = nil
@@ -226,7 +229,8 @@ func release(ctx context.Context, retained **Implementation) error {
 }
 
 func closeResource(ctx context.Context, owned Resource) error {
-	if err := ctx.Err(); err != nil {
+	err := ctx.Err()
+	if err != nil {
 		return err
 	}
 	if owned == nil {

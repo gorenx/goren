@@ -8,13 +8,13 @@ import (
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
-func (owner *Grain) resolve(gc *goakt.GrainContext, input Resolve) {
+func (owner *Grain) findAgent(gc *goakt.GrainContext, input FindAgent) {
 	if input.WaitReady {
 		entry, found := owner.creations[input.AgentID]
 		if found &&
-			!entry.closed &&
+			!owner.directory.IsClosed(input.AgentID) &&
 			entry.activation != nil &&
-			entry.activation.initializing {
+			entry.activation.cancel != nil {
 			if failure := owner.directory.CheckAdmission(input.AgentID); failure != nil {
 				gc.Response(Ready{
 					Err: failure,
@@ -56,7 +56,9 @@ func (owner *Grain) resolve(gc *goakt.GrainContext, input Resolve) {
 	).Then(
 		func(payload any, failure error) {
 			current := owner.creations[input.AgentID]
-			if current.creationID != original.creationID || current.activation != original.activation || current.closed {
+			if current.creationID != original.creationID ||
+				current.activation != original.activation ||
+				owner.directory.IsClosed(input.AgentID) {
 				reply.Response(Ready{
 					Err: ErrCreation,
 				})
@@ -71,7 +73,6 @@ func (owner *Grain) resolve(gc *goakt.GrainContext, input Resolve) {
 					if failure != nil {
 						// Only a confirmed activation mismatch revokes admission; delivery failure is not proof of lost state.
 						_ = owner.directory.BeginClose(input.AgentID)
-						current.activation.failure = failure
 					}
 				}
 			}

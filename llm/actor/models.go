@@ -3,7 +3,7 @@ package llmactor
 import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/llm/modelconfig"
-	"github.com/gorenx/goren/session"
+	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
 // InitializeModels supplies validated initial business state from composition.
@@ -42,6 +42,7 @@ type AgentConfiguration struct {
 
 // InitializeAgent restores missing configuration before Registry admits the Agent.
 type InitializeAgent struct {
-	AgentID string
-	Events  []session.Event
+	AgentID    string
+	Session    *goakt.GrainIdentity
+	CreationID string
 }

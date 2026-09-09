@@ -6,14 +6,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorenx/goren/tools/tool"
 	"github.com/gorenx/goren/tools/tool/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
 type bind struct {
-	target  *goakt.GrainIdentity
-	version uint64
+	target   *goakt.GrainIdentity
+	revision tool.Revision
 }
 
 type caller struct {
@@ -42,7 +43,7 @@ func (owner *caller) OnReceive(gc *goakt.GrainContext) {
 		if owner.endpoint != nil {
 			owner.endpoint.Dispose()
 		}
-		endpoint, err := toolactor.NewClient(input.target, "creation", input.version)
+		endpoint, err := toolactor.NewClient(input.target, "creation", input.revision)
 		owner.endpoint = endpoint
 		gc.Response(toolactor.Completion{
 			Err: err,
@@ -72,7 +73,7 @@ func (owner *caller) OnToolCancellation(_ *goakt.GrainContext, result toolactor.
 	owner.cancellation = nil
 }
 
-func startCaller(t *testing.T, system goakt.ActorSystem, target *goakt.GrainIdentity, version uint64) *goakt.GrainIdentity {
+func startCaller(t *testing.T, system goakt.ActorSystem, target *goakt.GrainIdentity, revision tool.Revision) *goakt.GrainIdentity {
 	t.Helper()
 	identity, err := goakt.GrainOf[*caller](context.Background(), system, "caller",
 		goakt.WithLongLivedGrain(),
@@ -81,8 +82,8 @@ func startCaller(t *testing.T, system goakt.ActorSystem, target *goakt.GrainIden
 		t.Fatal(err)
 	}
 	if reply := ask[toolactor.Completion](t, system, identity, bind{
-		target:  target,
-		version: version,
+		target:   target,
+		revision: revision,
 	}); reply.Err != nil {
 		t.Fatal(reply.Err)
 	}
@@ -91,15 +92,15 @@ func startCaller(t *testing.T, system goakt.ActorSystem, target *goakt.GrainIden
 
 func TestClientReceivesActualBodyResultAndBusinessFailure(t *testing.T) {
 	system, target := installTool(t, &provider{})
-	consumer := startCaller(t, system, target, 1)
+	consumer := startCaller(t, system, target, "initial")
 	result := ask[toolactor.CallResult](t, system, consumer, invocation())
 	if result.CallID != "call" || result.Err != nil || result.Body.Err != nil || len(result.Body.Value) == 0 {
 		t.Fatalf("body result: %#v", result)
 	}
-	// A version rejection is a confirmed body-layer failure, not a lost reply.
+	// An implementation mismatch is a confirmed body-layer failure, not a lost reply.
 	if reply := ask[toolactor.Completion](t, system, consumer, bind{
-		target:  target,
-		version: 2,
+		target:   target,
+		revision: "different-update",
 	}); reply.Err != nil {
 		t.Fatal(reply.Err)
 	}
@@ -126,7 +127,7 @@ func TestClientDoesNotTreatInvalidReplyAsCompletedBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	consumer := startCaller(t, system, target, 1)
+	consumer := startCaller(t, system, target, "initial")
 	result := ask[toolactor.CallResult](t, system, consumer, invocation())
 	if result.Err == nil || result.Body.Err != nil || result.CallID != "call" {
 		t.Fatalf("invalid reply was accepted as business outcome: %#v", result)
@@ -142,7 +143,7 @@ func TestClientCancellationDoesNotCompleteTheBodyRequest(t *testing.T) {
 	system, target := installTool(t, &provider{
 		questions: service,
 	})
-	consumer := startCaller(t, system, target, 1)
+	consumer := startCaller(t, system, target, "initial")
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
 		cancel()

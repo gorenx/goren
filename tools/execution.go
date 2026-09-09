@@ -271,6 +271,8 @@ func createExecution(input ToolExecutionInput) (ToolExecution, error) {
 }
 
 func cloneExecution(source ToolExecution) ToolExecution {
+	// Extension views retain correlation data, but never scheduler authority.
+	source.state = nil
 	source.arguments = append(
 		json.RawMessage(nil),
 		source.arguments...,

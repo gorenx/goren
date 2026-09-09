@@ -98,7 +98,7 @@ func TestClientSeparatesInputCancellationAndIdle(t *testing.T) {
 		t.Fatal(err)
 	}
 	driver, replies = grainDriver(t, system, authority)
-	if result := request[agentregistry.Completion](t, driver, replies, agentregistry.Reserve{
+	if result := request[agentregistry.Completion](t, driver, replies, agentregistry.ReserveAgent{
 		Creation: agentregistry.Creation{
 			AgentID:    "client-test",
 			CreationID: "current",

@@ -36,12 +36,11 @@ func (owner *initializationRegistry) OnReceive(gc *goakt.GrainContext) {
 			Version:  1,
 			Snapshot: owner.snapshot,
 		})
-	case toolactor.Read:
+	case toolactor.ReadDefinitions:
 		gc.Response(toolactor.Catalog{
 			Found: true,
-			Definitions: tools.DefinitionsChanged{
+			Definitions: tools.Definitions{
 				AgentID: input.AgentID,
-				Version: 1,
 			},
 		})
 	default:

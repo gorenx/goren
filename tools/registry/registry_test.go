@@ -1,7 +1,10 @@
 package toolregistry_test
 
 import (
+	"encoding/json"
+	"github.com/gorenx/goren/tools"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/gorenx/goren/llm"
@@ -56,29 +59,28 @@ func TestRegistryPublishesCompleteCatalogAndRetainsOutcome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if committed.Version != 1 || committed.AgentID != "agent" ||
-		!slices.Equal(committed.Definitions.KnownNames, []string{"visible", "hidden"}) ||
-		len(committed.Definitions.Schemas) != 1 || committed.Definitions.Schemas[0].Name != "visible" {
+	if committed.AgentID != "agent" ||
+		!slices.Equal(committed.KnownNames, []string{"visible", "hidden"}) ||
+		len(committed.Schemas) != 1 || committed.Schemas[0].Name != "visible" {
 		t.Fatalf("publication = %#v", committed)
 	}
-	committed.Definitions.Schemas[0].Parameters[0] = '!'
-	committed.Definitions.KnownNames[0] = "mutated"
+	committed.Schemas[0].Parameters[0] = '!'
+	committed.KnownNames[0] = "mutated"
 	repeated, err := catalog.Publish("first")
-	if err != nil || repeated.Version != 1 || repeated.Definitions.KnownNames[0] != "visible" ||
-		string(repeated.Definitions.Schemas[0].Parameters) != `{"type":"object"}` {
+	if err != nil || repeated.KnownNames[0] != "visible" ||
+		string(repeated.Schemas[0].Parameters) != `{"type":"object"}` {
 		t.Fatalf("retry = %#v, %v", repeated, err)
 	}
 	if err := catalog.Abort("first"); err == nil {
 		t.Fatal("published update aborted")
 	}
 	if err := catalog.Begin(toolregistry.Update{
-		ID:              "blocked",
-		AgentID:         "agent",
-		ExpectedVersion: 1,
+		ID:      "blocked",
+		AgentID: "agent",
 	}); err == nil {
 		t.Fatal("unsettled update bypassed")
 	}
-	if outcome, exists := catalog.Lookup("first"); !exists || !outcome.Published || outcome.Catalog.Version != 1 {
+	if outcome, exists := catalog.Lookup("first"); !exists || !outcome.Published || outcome.Catalog.Schemas[0].Version != 1 {
 		t.Fatalf("published lookup = %#v, %v", outcome, exists)
 	}
 	if err := catalog.Settle("first"); err != nil {
@@ -87,21 +89,15 @@ func TestRegistryPublishesCompleteCatalogAndRetainsOutcome(t *testing.T) {
 	if _, exists := catalog.Lookup("first"); exists {
 		t.Fatal("settled batch retained")
 	}
+
 	if err := catalog.Begin(toolregistry.Update{
-		ID:      "stale",
+		ID:      "empty",
 		AgentID: "agent",
-	}); err == nil {
-		t.Fatal("stale version accepted")
-	}
-	if err := catalog.Begin(toolregistry.Update{
-		ID:              "empty",
-		AgentID:         "agent",
-		ExpectedVersion: 1,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	empty, err := catalog.Publish("empty")
-	if err != nil || empty.Version != 2 || len(empty.Definitions.KnownNames) != 0 || len(empty.Definitions.Schemas) != 0 {
+	if err != nil || len(empty.KnownNames) != 0 || len(empty.Schemas) != 0 {
 		t.Fatalf("empty publication = %#v, %v", empty, err)
 	}
 }
@@ -122,10 +118,10 @@ func TestRegistryRejectsConflictsWithoutChangingBaseline(t *testing.T) {
 		t.Fatal(err)
 	}
 	next := toolregistry.Update{
-		ID:              "next",
-		AgentID:         "agent",
-		ExpectedVersion: 1,
-		Names:           []string{"echo"},
+		ID:      "next",
+		AgentID: "agent",
+
+		Names: []string{"echo"},
 	}
 	if err := catalog.Begin(next); err != nil {
 		t.Fatal(err)
@@ -153,7 +149,7 @@ func TestRegistryRejectsConflictsWithoutChangingBaseline(t *testing.T) {
 		t.Fatal("conflicting candidate accepted")
 	}
 	before, exists := catalog.Read("agent")
-	if !exists || before.Version != 1 || len(before.Definitions.Schemas) != 0 {
+	if !exists || len(before.Schemas) != 0 {
 		t.Fatalf("baseline changed: %#v", before)
 	}
 	if err := catalog.Begin(toolregistry.Update{
@@ -175,7 +171,7 @@ func TestRegistryRejectsConflictsWithoutChangingBaseline(t *testing.T) {
 		t.Fatal("aborted batch published")
 	}
 	after, _ := catalog.Read("agent")
-	if after.Version != before.Version {
+	if !slices.Equal(after.KnownNames, before.KnownNames) {
 		t.Fatal("abort changed baseline")
 	}
 }
@@ -207,5 +203,116 @@ func TestAbortedUpdateCannotRegisterIntoItsReplacement(t *testing.T) {
 	}
 	if _, err := catalog.Publish("replacement"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSchemaVersionsAreIndependentAndSurviveRemoval(t *testing.T) {
+	var catalog toolregistry.Registry
+	publish := func(identifier toolregistry.UpdateID, entries ...toolregistry.Candidate) tools.Definitions {
+		t.Helper()
+		names := make([]string, len(entries))
+		for index, entry := range entries {
+			names[index] = entry.Schema.Name
+		}
+		err := catalog.Begin(toolregistry.Update{
+			ID:      identifier,
+			AgentID: "agent",
+			Names:   names,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			err = catalog.Register(identifier, entry)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		result, err := catalog.Publish(identifier)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = catalog.Settle(identifier)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	first := publish("first", candidate("a", true), candidate("b", true))
+	if first.Schemas[0].Version != 1 || first.Schemas[1].Version != 1 {
+		t.Fatalf("initial versions: %#v", first)
+	}
+	changed := candidate("a", true)
+	changed.Schema.Description = "changed"
+	second := publish("second", changed, candidate("b", true))
+	if second.Schemas[0].Version != 2 || second.Schemas[1].Version != 1 {
+		t.Fatalf("independent versions: %#v", second)
+	}
+	repeated := publish("repeated", changed, candidate("b", true))
+	if repeated.Schemas[0].Version != 2 || repeated.Schemas[1].Version != 1 {
+		t.Fatalf("unchanged definitions: %#v", repeated)
+	}
+	changed.Visible = false
+	hidden := publish("hidden", changed, candidate("b", true))
+	if len(hidden.Schemas) != 1 || hidden.Schemas[0].Version != 1 || len(hidden.KnownNames) != 2 {
+		t.Fatalf("hidden catalog: %#v", hidden)
+	}
+	changed.Visible = true
+	visible := publish("visible", changed, candidate("b", true))
+	if visible.Schemas[0].Version != 2 {
+		t.Fatalf("visibility changed schema version: %#v", visible)
+	}
+	empty := publish("empty")
+	baseline, found := catalog.Read("agent")
+	if !found || len(empty.Schemas) != 0 || len(baseline.KnownNames) != 0 {
+		t.Fatalf("empty publication: %#v, %v", baseline, found)
+	}
+	restored := publish("restored", changed, candidate("b", true))
+	if restored.Schemas[0].Version != 3 || restored.Schemas[1].Version != 2 {
+		t.Fatalf("removed versions reused: %#v", restored)
+	}
+	encoded, err := json.Marshal(restored.Schemas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "version") || strings.Contains(string(encoded), "Version") {
+		t.Fatalf("internal version leaked to model schema: %s", encoded)
+	}
+	// A returned schema must not alias the Registry's retained history.
+	restored.Schemas[0].Parameters[0] = '!'
+	intact := publish("intact", changed, candidate("b", true))
+	if intact.Schemas[0].Version != 3 {
+		t.Fatalf("read result mutated history: %#v", intact)
+	}
+}
+
+func TestRegistryRejectsProviderAssignedSchemaVersion(t *testing.T) {
+	var catalog toolregistry.Registry
+	err := catalog.Begin(toolregistry.Update{
+		ID:      "update",
+		AgentID: "agent",
+		Names:   []string{"echo"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := candidate("echo", true)
+	entry.Schema.Version = 100
+	err = catalog.Register("update", entry)
+	if err == nil {
+		t.Fatal("provider assigned a published version")
+	}
+	_, err = catalog.Publish("update")
+	if err == nil {
+		t.Fatal("invalid candidate entered the batch")
+	}
+	entry.Schema.Version = 0
+	err = catalog.Register("update", entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := catalog.Publish("update")
+	if err != nil || result.Schemas[0].Version != 1 {
+		t.Fatalf("first version was consumed by failed input: %#v, %v", result, err)
 	}
 }

@@ -103,7 +103,7 @@ func (owner *RuntimeGrain) initializeTools(gc *goakt.GrainContext, input promptP
 	}
 	gc.RequestGrain(
 		operation.input.ToolsRegistry,
-		toolactor.Read{
+		toolactor.ReadDefinitions{
 			AgentID: operation.input.AgentID,
 		}, goakt.WithRequestTimeout(0)).Then(
 		func(payload any, failure error) {
@@ -121,10 +121,9 @@ func (owner *RuntimeGrain) initializeTools(gc *goakt.GrainContext, input promptP
 				case !result.Found:
 					failure = systemprompt.ErrToolsNotReady
 				default:
-					version = result.Definitions.Version
 					failure = candidate.ApplyTools(result.Definitions.AgentID, version, systemprompt.ToolDefinitions{
-						Schemas:    result.Definitions.Definitions.Schemas,
-						KnownNames: result.Definitions.Definitions.KnownNames,
+						Schemas:    result.Definitions.Schemas,
+						KnownNames: result.Definitions.KnownNames,
 					})
 				}
 			}

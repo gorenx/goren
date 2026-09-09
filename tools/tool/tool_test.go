@@ -61,14 +61,8 @@ func TestReplacementRetainsResourcesUntilCleanupSucceeds(t *testing.T) {
 	owner := newTool(t)
 	old := &resource{}
 	next := &resource{}
-	first := tool.Revision{
-		ID:      "initial",
-		Version: 1,
-	}
-	second := tool.Revision{
-		ID:      "replacement",
-		Version: 2,
-	}
+	first := tool.Revision("initial")
+	second := tool.Revision("replacement")
 	input := implementation(old)
 	if err := owner.Prepare(first, input); err != nil {
 		t.Fatal(err)
@@ -77,19 +71,19 @@ func TestReplacementRetainsResourcesUntilCleanupSucceeds(t *testing.T) {
 	if err := owner.Commit(first); err != nil {
 		t.Fatal(err)
 	}
-	view, err := owner.Definition(1)
+	view, err := owner.Definition("initial")
 	if err != nil || !json.Valid(view.Parameters) {
 		t.Fatalf("definition was not detached: %v", err)
 	}
 	view.Output.Schema[0] = '!'
-	view, err = owner.Definition(1)
+	view, err = owner.Definition("initial")
 	if err != nil || !json.Valid(view.Output.Schema) {
 		t.Fatalf("returned definition aliases owner: %v", err)
 	}
 	if err := owner.Prepare(second, implementation(next)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := owner.Definition(1); err == nil || old.calls != 0 {
+	if _, err := owner.Definition("initial"); err == nil || old.calls != 0 {
 		t.Fatal("preparation admitted execution or released the current resource")
 	}
 	if err := owner.Commit(first); err != nil {
@@ -103,7 +97,7 @@ func TestReplacementRetainsResourcesUntilCleanupSucceeds(t *testing.T) {
 	if err := owner.Retire(ctx, second); !errors.Is(err, failure) {
 		t.Fatalf("cleanup failure lost: %v", err)
 	}
-	if _, err := owner.Definition(2); err == nil {
+	if _, err := owner.Definition("replacement"); err == nil {
 		t.Fatal("cleanup failure must keep execution blocked")
 	}
 	old.err = nil
@@ -118,14 +112,14 @@ func TestReplacementRetainsResourcesUntilCleanupSucceeds(t *testing.T) {
 	if old.calls != 2 || next.calls != 0 {
 		t.Fatalf("incorrect resource lifetime: old=%d new=%d", old.calls, next.calls)
 	}
-	if _, err := owner.Definition(1); err == nil {
+	if _, err := owner.Definition("initial"); err == nil {
 		t.Fatal("old version remained executable")
 	}
-	if _, err := owner.Definition(2); err != nil {
+	if _, err := owner.Definition("replacement"); err != nil {
 		t.Fatal(err)
 	}
-	if err := owner.Prepare(first, implementation(nil)); err == nil {
-		t.Fatal("stale revision accepted")
+	if err := owner.Prepare(second, implementation(nil)); err == nil {
+		t.Fatal("already committed implementation was prepared again")
 	}
 	if err := owner.Close(ctx); err != nil {
 		t.Fatal(err)
@@ -141,10 +135,7 @@ func TestFailedAbortCannotCommitPartiallyReleasedCandidate(t *testing.T) {
 	owned := &resource{
 		err: failure,
 	}
-	target := tool.Revision{
-		ID:      "aborted",
-		Version: 1,
-	}
+	target := tool.Revision("aborted")
 	if err := owner.Prepare(target, implementation(owned)); err != nil {
 		t.Fatal(err)
 	}
@@ -165,14 +156,8 @@ func TestFailedAbortCannotCommitPartiallyReleasedCandidate(t *testing.T) {
 
 func TestCloseAttemptsEveryResourceAndRetriesOnlyFailures(t *testing.T) {
 	owner := newTool(t)
-	first := tool.Revision{
-		ID:      "first",
-		Version: 1,
-	}
-	second := tool.Revision{
-		ID:      "second",
-		Version: 2,
-	}
+	first := tool.Revision("first")
+	second := tool.Revision("second")
 	old := &resource{}
 	failure := errors.New("candidate close failed")
 	next := &resource{
@@ -208,10 +193,7 @@ func TestCloseAttemptsEveryResourceAndRetriesOnlyFailures(t *testing.T) {
 func TestCanceledAbortRetainsCleanupAndRejectsActivation(t *testing.T) {
 	owner := newTool(t)
 	owned := &resource{}
-	target := tool.Revision{
-		ID:      "canceled",
-		Version: 1,
-	}
+	target := tool.Revision("canceled")
 	if err := owner.Prepare(target, implementation(owned)); err != nil {
 		t.Fatal(err)
 	}
@@ -236,10 +218,7 @@ func TestInvalidPreparationDoesNotTakeResourceOwnership(t *testing.T) {
 	owned := &resource{}
 	input := implementation(owned)
 	input.Definition.Output.Schema = json.RawMessage(`{"type":"not-a-json-schema-type"}`)
-	if err := owner.Prepare(tool.Revision{
-		ID:      "invalid",
-		Version: 1,
-	}, input); err == nil {
+	if err := owner.Prepare(tool.Revision("invalid"), input); err == nil {
 		t.Fatal("invalid output schema accepted")
 	}
 	if err := owner.Close(context.Background()); err != nil || owned.calls != 0 {
@@ -249,13 +228,10 @@ func TestInvalidPreparationDoesNotTakeResourceOwnership(t *testing.T) {
 
 func TestCandidateDefinitionRegistersWithoutExposingExecution(t *testing.T) {
 	owner := newTool(t)
-	target := tool.Revision{
-		ID:      "catalog-update",
-		Version: 1,
-	}
+	target := tool.Revision("catalog-update")
 	var directory toolregistry.Registry
 	if err := directory.Begin(toolregistry.Update{
-		ID:      toolregistry.UpdateID(target.ID),
+		ID:      toolregistry.UpdateID(string(target)),
 		AgentID: "conversation",
 		Names:   []string{"lookup"},
 	}); err != nil {
@@ -268,32 +244,31 @@ func TestCandidateDefinitionRegistersWithoutExposingExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := directory.Register(toolregistry.UpdateID(target.ID), toolregistry.Candidate{
+	if err := directory.Register(toolregistry.UpdateID(string(target)), toolregistry.Candidate{
 		Schema:  schema,
 		Visible: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	schema.Parameters[0] = '!'
-	if _, err := owner.Definition(1); err == nil {
+	if _, err := owner.Definition("initial"); err == nil {
 		t.Fatal("candidate became executable before publication and switching")
 	}
-	committed, err := directory.Publish(toolregistry.UpdateID(target.ID))
+	committed, err := directory.Publish(toolregistry.UpdateID(string(target)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if committed.Version != target.Version ||
-		len(committed.Definitions.Schemas) != 1 ||
-		!json.Valid(committed.Definitions.Schemas[0].Parameters) {
+	if len(committed.Schemas) != 1 ||
+		!json.Valid(committed.Schemas[0].Parameters) {
 		t.Fatalf("invalid published catalog: %#v", committed)
 	}
-	if _, err := owner.Definition(committed.Version); err == nil {
+	if _, err := owner.Definition(target); err == nil {
 		t.Fatal("publication alone switched the tool implementation")
 	}
 	if err := owner.Commit(target); err != nil {
 		t.Fatal(err)
 	}
-	active, err := owner.Definition(committed.Version)
+	active, err := owner.Definition(target)
 	if err != nil || !json.Valid(active.Parameters) {
 		t.Fatalf("invalid active definition: %v", err)
 	}
@@ -307,10 +282,7 @@ func TestCandidateDefinitionRegistersWithoutExposingExecution(t *testing.T) {
 
 func TestDiscardedCandidateCannotRegisterDefinition(t *testing.T) {
 	owner := newTool(t)
-	target := tool.Revision{
-		ID:      "discarded",
-		Version: 1,
-	}
+	target := tool.Revision("discarded")
 	owned := &resource{
 		err: errors.New("cleanup failure"),
 	}
@@ -318,7 +290,7 @@ func TestDiscardedCandidateCannotRegisterDefinition(t *testing.T) {
 		t.Fatal(err)
 	}
 	other := target
-	other.ID = "different-update"
+	other = "different-update"
 	if _, err := owner.Schema(other); err == nil {
 		t.Fatal("different update read a candidate")
 	}

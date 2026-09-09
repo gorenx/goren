@@ -2,9 +2,7 @@ package toolactor
 
 import (
 	"context"
-	"errors"
 
-	"github.com/google/uuid"
 	"github.com/gorenx/goren/tools"
 	toolregistry "github.com/gorenx/goren/tools/registry"
 	goakt "github.com/tochemey/goakt/v4/actor"
@@ -24,48 +22,47 @@ func (*RegistryGrain) OnDeactivate(context.Context, *goakt.GrainProps) error { r
 
 // OnReceive executes short catalog commands without blocking on other Actors.
 func (owner *RegistryGrain) OnReceive(gc *goakt.GrainContext) {
+	if owner.receiveConfiguration(gc) {
+		return
+	}
 	switch incoming := gc.Message().(type) {
-	case Begin:
+	case BeginUpdate:
 		gc.Response(Completion{
 			Err: owner.registry.Begin(incoming.Update),
 		})
-	case Register:
+	case RegisterDefinition:
 		gc.Response(Completion{
 			Err: owner.registry.Register(incoming.ID, incoming.Candidate),
 		})
-	case Publish:
+	case PublishDefinitions:
 		committed, err := owner.registry.Publish(incoming.ID)
-		if err == nil {
-			topic := gc.ActorSystem().TopicActor()
-			if topic == nil {
-				err = errors.New("tools: catalog committed but PubSub is unavailable")
-			} else {
-				event, _ := owner.registry.Read(committed.AgentID)
-				err = goakt.Tell(gc.Context(), topic, goakt.NewPublish(uuid.NewString(), tools.DefinitionsTopic, event))
-			}
+		found := err == nil
+		if found {
+			event, _ := owner.registry.Read(committed.AgentID)
+			err = owner.publishEvent(gc, tools.DefinitionsTopic, event)
 		}
 		gc.Response(Catalog{
 			Definitions: committed,
-			Found:       committed.Version != 0,
+			Found:       found,
 			Err:         err,
 		})
-	case Read:
+	case ReadDefinitions:
 		committed, found := owner.registry.Read(incoming.AgentID)
 		gc.Response(Catalog{
 			Definitions: committed,
 			Found:       found,
 		})
-	case Lookup:
+	case ReadPublication:
 		publication, found := owner.registry.Lookup(incoming.ID)
 		gc.Response(Outcome{
 			Publication: publication,
 			Found:       found,
 		})
-	case Abort:
+	case AbortUpdate:
 		gc.Response(Completion{
 			Err: owner.registry.Abort(incoming.ID),
 		})
-	case Settle:
+	case SettleUpdate:
 		gc.Response(Completion{
 			Err: owner.registry.Settle(incoming.ID),
 		})

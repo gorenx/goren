@@ -30,9 +30,9 @@ func (owner *Grain) receiveLifecycle(gc *goakt.GrainContext) bool {
 			Err: failure,
 		})
 	case agentactor.PrepareClose:
-		gc.Response(agentactor.Prepared{
-			Err: owner.prepareClose(input.CreationID),
-		})
+		owner.requestClosePreparation(gc, input)
+	case closePreparation:
+		owner.confirmClosePreparation(gc, input)
 	case agentactor.CloseResources:
 		owner.closeResources(gc, input)
 	default:

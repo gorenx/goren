@@ -34,7 +34,7 @@ func (processor *resultProcessor) post(
 	postOutcome, err := toolCall.state.pipeline.ResolvePostExecute(
 		requestContext,
 		PostExecuteRequest{
-			toolCall:   toolCall,
+			toolCall:   cloneExecution(toolCall),
 			resultView: resultView,
 		},
 	)

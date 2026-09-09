@@ -87,7 +87,7 @@ func (owner *Grain) awaitTurnStart(gc *goakt.GrainContext, request *turnOpening,
 	return true
 }
 
-func (owner *Grain) confirmTurnStart(gc *goakt.GrainContext, input confirmTurnStart) {
+func (owner *Grain) confirmTurnStart(_ *goakt.GrainContext, input confirmTurnStart) {
 	if owner.opening != input.request {
 		return
 	}

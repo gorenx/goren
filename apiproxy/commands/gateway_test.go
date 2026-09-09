@@ -42,14 +42,21 @@ func (endpoint *commandEndpoint) Execute(_ context.Context, line string, options
 }
 
 type commandAccess struct {
-	endpoint  Executor
-	refused   *connection.RPCError
-	requested session.SessionID
+	endpoint    Executor
+	refused     *connection.RPCError
+	requested   session.SessionID
+	resolutions int
 }
 
 func (access *commandAccess) ResolveCommands(_ context.Context, id session.SessionID) (Executor, *connection.RPCError) {
 	access.requested = id
+	access.resolutions++
 	return access.endpoint, access.refused
+}
+
+func (access *commandAccess) ActivateAgent(_ context.Context, id session.SessionID) *connection.RPCError {
+	access.requested = id
+	return access.refused
 }
 
 func TestGatewayChecksAccessBeforeCommandExecution(t *testing.T) {
@@ -57,7 +64,7 @@ func TestGatewayChecksAccessBeforeCommandExecution(t *testing.T) {
 	access := &commandAccess{
 		endpoint: endpoint,
 	}
-	owner, err := NewGateway(access)
+	owner, err := NewGateway(access, access)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,12 +102,16 @@ func TestGatewayChecksAccessBeforeCommandExecution(t *testing.T) {
 	}
 	refused := rpc.NewRPCError(connection.ErrorInternal, "access refused", struct{}{})
 	access.refused = &refused
+	resolvedBeforeRefusal := access.resolutions
 	result = invoke("/compact")
 	if result.OK ||
 		result.Error == nil ||
 		result.Error.Message != "access refused" ||
 		endpoint.executions != 1 {
 		t.Fatalf("refusal was not enforced: %#v", result)
+	}
+	if access.resolutions != resolvedBeforeRefusal {
+		t.Fatal("refused admission reached command resolution")
 	}
 	access.refused = nil
 	result = invoke("/missing")

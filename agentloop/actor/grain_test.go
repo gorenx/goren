@@ -147,7 +147,7 @@ func TestInboxCommandsCommitBeforeApplyingAndRetainStateOnFailure(t *testing.T) 
 	if denied.Err == nil {
 		t.Fatal("unreserved Agent initialized")
 	}
-	reserved := request[agentregistry.Completion](t, authorityDriver, authorityReplies, agentregistry.Reserve{
+	reserved := request[agentregistry.Completion](t, authorityDriver, authorityReplies, agentregistry.ReserveAgent{
 		Creation: agentregistry.Creation{
 			AgentID:    "conversation",
 			CreationID: "current",
@@ -373,7 +373,7 @@ func TestCloseRetainsSessionUntilPendingInputIsCancelled(t *testing.T) {
 	if result := request[agentactor.Closed](t, authorityDriver, authorityReplies, closing); !errors.Is(result.Err, errClose) {
 		t.Fatalf("close failure = %v", result.Err)
 	}
-	if result := request[agentregistry.Ready](t, authorityDriver, authorityReplies, agentregistry.Resolve{
+	if result := request[agentregistry.Ready](t, authorityDriver, authorityReplies, agentregistry.FindAgent{
 		AgentID: "conversation",
 	}); !errors.Is(result.Err, agent.ErrClosing) {
 		t.Fatal("failed close published a route", result.Err)

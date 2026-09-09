@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	agentactor "github.com/gorenx/goren/agent/actor"
 	configactor "github.com/gorenx/goren/llm/actor"
 	"github.com/gorenx/goren/systemprompt"
 	promptactor "github.com/gorenx/goren/systemprompt/actor"
@@ -26,6 +27,8 @@ func (*configurationOwner) OnActivate(context.Context, *goakt.GrainProps) error 
 func (*configurationOwner) OnDeactivate(context.Context, *goakt.GrainProps) error { return nil }
 func (fixture *configurationOwner) OnReceive(gc *goakt.GrainContext) {
 	switch input := gc.Message().(type) {
+	case agentactor.CancelMaintenance:
+		gc.Response(agentactor.MaintenanceCancelled{})
 	case holdConfiguration:
 		fixture.held = input.replies
 		gc.Response(struct{}{})
@@ -54,12 +57,11 @@ func (fixture *configurationOwner) OnReceive(gc *goakt.GrainContext) {
 			Version:  1,
 			Snapshot: definitions.Capture(),
 		})
-	case toolactor.Read:
+	case toolactor.ReadDefinitions:
 		gc.Response(toolactor.Catalog{
 			Found: true,
-			Definitions: tools.DefinitionsChanged{
+			Definitions: tools.Definitions{
 				AgentID: input.AgentID,
-				Version: 1,
 			},
 		})
 	default:

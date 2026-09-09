@@ -14,12 +14,12 @@ import (
 type RefreshTools struct{}
 
 type toolsBaseline struct {
-	definitions tools.DefinitionsChanged
+	definitions tools.Definitions
 	err         error
 }
 
 func (owner *ToolsSubscriber) refreshTools(rc *goakt.ReceiveContext) {
-	request := rc.RequestGrain(owner.registry, toolactor.Read{
+	request := rc.RequestGrain(owner.registry, toolactor.ReadDefinitions{
 		AgentID: owner.agentID,
 	})
 	if request == nil {
@@ -46,7 +46,7 @@ func (owner *ToolsSubscriber) refreshTools(rc *goakt.ReceiveContext) {
 				result.err = catalog.Err
 			case !catalog.Found:
 				result.err = systemprompt.ErrToolsNotReady
-			case catalog.Definitions.AgentID != identifier || catalog.Definitions.Version == 0:
+			case catalog.Definitions.AgentID != identifier:
 				result.err = errors.New("systemprompt: invalid tool baseline identity or version")
 			default:
 				result.definitions = catalog.Definitions

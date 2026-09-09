@@ -97,7 +97,7 @@ func TestDomainClientsUseIndependentTitleAndAgentOwners(t *testing.T) {
 	if missing, err := reader.Read(ctx, "absent"); err != nil || missing != nil {
 		t.Fatalf("missing read: %+v %v", missing, err)
 	}
-	ready := askLifecycle[agentregistry.Ready](t, system, authority, agentregistry.Resolve{
+	ready := askLifecycle[agentregistry.Ready](t, system, authority, agentregistry.FindAgent{
 		AgentID:   subject.ID(),
 		WaitReady: true,
 	})
@@ -141,7 +141,7 @@ func TestDomainClientsUseIndependentTitleAndAgentOwners(t *testing.T) {
 	if err != nil || string(historicalView.Values[title.ProjectionKey]) != `"saved title"` {
 		t.Fatalf("captured prefix: %+v %v", historicalView, err)
 	}
-	latest := askLifecycle[agentregistry.Ready](t, system, authority, agentregistry.Resolve{
+	latest := askLifecycle[agentregistry.Ready](t, system, authority, agentregistry.FindAgent{
 		AgentID:   replacement.ID(),
 		WaitReady: true,
 	})

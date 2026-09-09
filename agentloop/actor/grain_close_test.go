@@ -123,7 +123,7 @@ func TestRegistryClosesDescendantsBeforeParentAndRetriesPendingChild(t *testing.
 			t.Fatal("ancestor released before descendant", identifier, result.Err)
 		}
 	}
-	if result := request[agentregistry.Completion](t, authorityDriver, authorityReplies, agentregistry.Reserve{
+	if result := request[agentregistry.Completion](t, authorityDriver, authorityReplies, agentregistry.ReserveAgent{
 		Creation: agentregistry.Creation{
 			AgentID:    "late",
 			CreationID: "late",
@@ -149,7 +149,7 @@ func TestRegistryClosesDescendantsBeforeParentAndRetriesPendingChild(t *testing.
 		AgentID:    "grandchild",
 		CreationID: "replacement",
 	}
-	if result := request[agentregistry.Completion](t, authorityDriver, authorityReplies, agentregistry.Reserve{
+	if result := request[agentregistry.Completion](t, authorityDriver, authorityReplies, agentregistry.ReserveAgent{
 		Creation: replacement,
 	}); result.Err != nil {
 		t.Fatal(result.Err)
@@ -171,12 +171,12 @@ func TestRegistryClosesDescendantsBeforeParentAndRetriesPendingChild(t *testing.
 		t.Fatalf("Sessions remain after close: %+v", sessions.Items)
 	}
 
-	if result := request[agentregistry.Completion](t, authorityDriver, authorityReplies, agentregistry.Reserve{
+	if result := request[agentregistry.Completion](t, authorityDriver, authorityReplies, agentregistry.ReserveAgent{
 		Creation: root,
 	}); !errors.Is(result.Err, agentregistry.ErrCreation) {
 		t.Fatalf("reused closed creation = %v", result.Err)
 	}
-	if result := request[agentregistry.Completion](t, authorityDriver, authorityReplies, agentregistry.Reserve{
+	if result := request[agentregistry.Completion](t, authorityDriver, authorityReplies, agentregistry.ReserveAgent{
 		Creation: agentregistry.Creation{
 			AgentID:    "parent",
 			CreationID: "replacement",
@@ -293,7 +293,7 @@ func TestRegistryClosesAuthorizedCreationAfterConfigurationFails(t *testing.T) {
 	if len(sessions.Items) != 0 {
 		t.Fatalf("failed creation retained Session: %+v", sessions.Items)
 	}
-	if result := request[agentregistry.Completion](t, authorityDriver, authorityReplies, agentregistry.Reserve{
+	if result := request[agentregistry.Completion](t, authorityDriver, authorityReplies, agentregistry.ReserveAgent{
 		Creation: agentregistry.Creation{
 			AgentID:    creation.AgentID,
 			CreationID: "replacement",
