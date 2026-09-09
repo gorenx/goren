@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	cacheactor "github.com/gorenx/goren/session/projectioncache/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/log"
+	"github.com/tochemey/goakt/v4/passivation"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
@@ -313,5 +315,57 @@ func TestCallerTimeoutDoesNotReleaseUnderlyingWriteBarrier(t *testing.T) {
 	closed := receive(t, replies)
 	if closed.id != "close" || closed.value.(cacheactor.Completion).Err != nil {
 		t.Fatalf("close = %#v", closed)
+	}
+}
+
+func TestWriterLifetimeMatchesCacheLifetime(t *testing.T) {
+	backend := &storage{
+		entered: make(chan stored, 8),
+	}
+	system, driver, replies := systemForTest(t)
+	first := openCache(t, system, "first", backend)
+	second := openCache(t, system, "second", backend)
+	endpoints, err := system.Actors(context.Background(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workers []*goakt.PID
+	for _, endpoint := range endpoints {
+		if !strings.HasPrefix(endpoint.Name(), "checkpoint-writer-") {
+			continue
+		}
+		workers = append(workers, endpoint)
+		_, longLived := endpoint.PassivationStrategy().(*passivation.LongLivedStrategy)
+		if !longLived {
+			t.Fatal("checkpoint writer can expire while its Cache still owns it")
+		}
+	}
+	if len(workers) != 2 {
+		t.Fatalf("writers = %d, want one per Cache", len(workers))
+	}
+	for index, target := range []*goakt.GrainIdentity{first, second} {
+		identifier := []session.SessionID{"first", "second"}[index]
+		send(t, driver, "write", target, checkpoint(identifier, 0))
+		written := receive(t, replies)
+		if written.value.(cacheactor.Completion).Err != nil {
+			t.Fatalf("write: %+v", written)
+		}
+		for attempt := 0; attempt < 2; attempt++ {
+			send(t, driver, "close", target, cacheactor.Close{})
+			closed := receive(t, replies)
+			if closed.value.(cacheactor.Completion).Err != nil {
+				t.Fatalf("close attempt %d: %+v", attempt, closed)
+			}
+		}
+		send(t, driver, "late-write", target, checkpoint(identifier, 1))
+		rejected := receive(t, replies)
+		if rejected.value.(cacheactor.Completion).Err == nil {
+			t.Fatal("closed cache accepted another write")
+		}
+	}
+	for _, endpoint := range workers {
+		if endpoint.IsRunning() {
+			t.Fatal("cache close left its writer running")
+		}
 	}
 }
