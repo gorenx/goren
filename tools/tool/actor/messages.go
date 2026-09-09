@@ -72,14 +72,26 @@ type Completion struct {
 // Execute dispatches a body after Runtime policy, approval and middleware admission.
 // Its reply is tools.BodyResult, not a finalized ToolExecutionResult.
 type Execute struct {
-	CreationID string
-	Revision   tool.Revision
-	Invocation tools.Invocation
-	Context    context.Context
+	CreationID     string
+	Implementation tool.Identity
+	Invocation     tools.Invocation
+	Context        context.Context
 }
 
 // CancelCall signals cancellation; the original Execute reply proves body exit.
 type CancelCall struct {
 	CreationID string
 	CallID     agentmessage.CallID
+}
+
+// Describe requests the execution contract of one settled implementation.
+type Describe struct {
+	CreationID string
+}
+
+// Description returns no executor or owned resource to the caller.
+type Description struct {
+	Implementation tool.Identity
+	Descriptor     tools.Descriptor
+	Err            error
 }

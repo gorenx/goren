@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	configactor "github.com/gorenx/goren/llm/actor"
 	"github.com/gorenx/goren/systemprompt"
@@ -59,9 +60,31 @@ func (fixture *configurationOwner) OnReceive(gc *goakt.GrainContext) {
 
 func configurationRoutes(t *testing.T, system goakt.ActorSystem) *goakt.GrainIdentity {
 	t.Helper()
+	initializeToolRegistry(t, system)
 	identity, err := goakt.GrainOf[*configurationOwner](context.Background(), system, "configuration", goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}
 	return identity
+}
+
+func toolRegistry(t *testing.T, system goakt.ActorSystem) *goakt.GrainIdentity {
+	t.Helper()
+	identity, err := goakt.GrainOf[*toolactor.RegistryGrain](context.Background(), system, toolactor.RegistryName, goakt.WithLongLivedGrain())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return identity
+}
+
+func initializeToolRegistry(t *testing.T, system goakt.ActorSystem) {
+	t.Helper()
+	payload, err := system.AskGrain(context.Background(), toolRegistry(t, system), toolactor.InitializeDefaults{}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialized, valid := payload.(toolactor.Completion)
+	if !valid || initialized.Err != nil {
+		t.Fatalf("tool defaults: %v", payload)
+	}
 }

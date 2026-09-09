@@ -34,8 +34,7 @@ func prepareStep(t *testing.T) (*agentloop.ReactLoopAgent, *session.Log, session
 		t.Fatalf("admission: %v, %v", accepted, err)
 	}
 	draft, err := subject.PrepareStep(agentloop.Preparation{
-		Snapshot:     history.Snapshot(),
-		ToolsVersion: 1,
+		Snapshot: history.Snapshot(),
 	})
 	if err != nil || draft == nil {
 		t.Fatalf("prepare Step: %v, %v", draft, err)
@@ -200,8 +199,8 @@ func TestPreStepDecisionPrecedesContextAndRetainsDetachedMessages(t *testing.T) 
 		t.Fatal("default must contain claimed input only")
 	}
 	provided := agentloop.Preparation{
-		Snapshot:     history.Snapshot(),
-		ToolsVersion: 1,
+		Snapshot: history.Snapshot(),
+
 		Prompt: systemprompt.PromptAssembly{
 			Contexts: []systemprompt.AssembledContext{
 				{

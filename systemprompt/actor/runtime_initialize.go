@@ -63,7 +63,7 @@ func (owner *RuntimeGrain) initializeRuntime(gc *goakt.GrainContext, input Initi
 			}, nil
 		}
 	}); err != nil {
-		owner.finishInitialization(operation, 0, err)
+		owner.finishInitialization(operation, err)
 		return
 	}
 	gc.RequestGrain(
@@ -93,12 +93,12 @@ func (owner *RuntimeGrain) initializeTools(gc *goakt.GrainContext, input promptP
 		return
 	}
 	if input.err != nil {
-		owner.finishInitialization(operation, 0, input.err)
+		owner.finishInitialization(operation, input.err)
 		return
 	}
 	candidate, err := systemprompt.NewRuntime(operation.input.AgentID, input.result.Snapshot)
 	if err != nil {
-		owner.finishInitialization(operation, 0, err)
+		owner.finishInitialization(operation, err)
 		return
 	}
 	gc.RequestGrain(
@@ -110,7 +110,6 @@ func (owner *RuntimeGrain) initializeTools(gc *goakt.GrainContext, input promptP
 			if owner.initialization != operation {
 				return
 			}
-			var version uint64
 			if failure == nil {
 				result, ok := payload.(toolactor.Catalog)
 				switch {
@@ -121,7 +120,7 @@ func (owner *RuntimeGrain) initializeTools(gc *goakt.GrainContext, input promptP
 				case !result.Found:
 					failure = systemprompt.ErrToolsNotReady
 				default:
-					failure = candidate.ApplyTools(result.Definitions.AgentID, version, systemprompt.ToolDefinitions{
+					failure = candidate.ApplyTools(result.Definitions.AgentID, systemprompt.ToolDefinitions{
 						Schemas:    result.Definitions.Schemas,
 						KnownNames: result.Definitions.KnownNames,
 					})
@@ -130,19 +129,19 @@ func (owner *RuntimeGrain) initializeTools(gc *goakt.GrainContext, input promptP
 			if failure == nil {
 				owner.runtime = candidate
 			}
-			owner.finishInitialization(operation, version, failure)
+			owner.finishInitialization(operation, failure)
 		},
 	)
 }
 
-func (owner *RuntimeGrain) finishInitialization(operation *runtimeInitialization, version uint64, failure error) {
+func (owner *RuntimeGrain) finishInitialization(operation *runtimeInitialization, failure error) {
 	if owner.initialization != operation {
 		return
 	}
 	owner.initialization = nil
 	operation.cancel()
 	operation.reply.Response(RuntimeInitialized{
-		ToolsVersion: version,
-		Err:          failure,
+
+		Err: failure,
 	})
 }

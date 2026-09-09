@@ -44,9 +44,8 @@ func (subject *ReactLoopAgent) PrepareStep(provided Preparation) (*session.Event
 			return nil, err
 		}
 		proposed := stepstate.Input{
-			Messages:     captured.Messages,
-			Prompt:       provided.Prompt,
-			ToolsVersion: provided.ToolsVersion,
+			Messages: captured.Messages,
+			Prompt:   provided.Prompt,
 		}
 		if !reflect.DeepEqual(captured, proposed) {
 			return nil, errors.New("agentloop: pending Step input cannot be replaced")
@@ -61,9 +60,7 @@ func (subject *ReactLoopAgent) PrepareStep(provided Preparation) (*session.Event
 	if subject.preparing == nil || subject.preparing.state != contextPending {
 		return nil, errors.New("agentloop: pre-step preparation is missing")
 	}
-	if provided.ToolsVersion == 0 || provided.ToolsVersion != subject.toolsVersion {
-		return nil, systemprompt.ErrToolsVersion
-	}
+
 	if provided.Snapshot.Barrier.SessionID != subject.identifier ||
 		provided.Snapshot.Barrier.NextSeq != int64(len(provided.Snapshot.Events)) {
 		return nil, errors.New("agentloop: Step input requires the current Session snapshot")
@@ -107,9 +104,8 @@ func (subject *ReactLoopAgent) PrepareStep(provided Preparation) (*session.Event
 		return nil, err
 	}
 	if err := proposed.Capture(stepstate.Input{
-		Messages:     messages,
-		Prompt:       prompt,
-		ToolsVersion: provided.ToolsVersion,
+		Messages: messages,
+		Prompt:   prompt,
 	}); err != nil {
 		return nil, err
 	}

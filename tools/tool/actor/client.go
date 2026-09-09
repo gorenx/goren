@@ -14,10 +14,10 @@ import (
 // Client routes calls to one existing tool creation and committed implementation.
 // It retains no caller Actor, callbacks, business execution state or retry policy.
 type Client struct {
-	target     *goakt.GrainIdentity
-	creationID string
-	revision   tool.Revision
-	stopped    chan struct{}
+	target         *goakt.GrainIdentity
+	creationID     string
+	implementation tool.Identity
+	stopped        chan struct{}
 }
 
 // CallResult separates a returned body result from an unconfirmed request outcome.
@@ -61,8 +61,8 @@ type cancellationReceived struct {
 }
 
 // NewClient binds an existing endpoint without activating or configuring it.
-func NewClient(target *goakt.GrainIdentity, creationID string, revision tool.Revision) (*Client, error) {
-	if target == nil || creationID == "" || revision == "" {
+func NewClient(target *goakt.GrainIdentity, creationID string, implementation tool.Identity) (*Client, error) {
+	if target == nil || creationID == "" || implementation == "" {
 		return nil, errors.New("tools: tool identity, creation and committed implementation are required")
 	}
 	err := target.Validate()
@@ -70,10 +70,10 @@ func NewClient(target *goakt.GrainIdentity, creationID string, revision tool.Rev
 		return nil, err
 	}
 	return &Client{
-		target:     target,
-		creationID: creationID,
-		revision:   revision,
-		stopped:    make(chan struct{}),
+		target:         target,
+		creationID:     creationID,
+		implementation: implementation,
+		stopped:        make(chan struct{}),
 	}, nil
 }
 
@@ -87,10 +87,10 @@ func (endpoint *Client) Execute(gc *goakt.GrainContext, ctx context.Context, inp
 		return err
 	}
 	gc.RequestGrain(endpoint.target, Execute{
-		CreationID: endpoint.creationID,
-		Revision:   endpoint.revision,
-		Invocation: input,
-		Context:    ctx,
+		CreationID:     endpoint.creationID,
+		Implementation: endpoint.implementation,
+		Invocation:     input,
+		Context:        ctx,
 	}, goakt.WithRequestTimeout(0), goakt.WithReentrancyMode(reentrancy.AllowAll)).Then(func(payload any, failure error) {
 		result := CallResult{
 			CallID: input.CallID,

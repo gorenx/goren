@@ -13,9 +13,8 @@ import (
 // Preparation supplies a committed Session snapshot and resolved prompt data.
 // Claimed input is owned by the preparation state, never supplied by the caller.
 type Preparation struct {
-	Snapshot     session.Snapshot
-	Prompt       systemprompt.PromptAssembly
-	ToolsVersion uint64
+	Snapshot session.Snapshot
+	Prompt   systemprompt.PromptAssembly
 }
 
 // PreStep holds detached claimed input and its default admission decision.
@@ -142,6 +141,3 @@ func (subject *ReactLoopAgent) AbandonPreparation() error {
 	subject.preparing = nil
 	return nil
 }
-
-// ToolsVersion returns the effective definition version required by this Agent.
-func (subject *ReactLoopAgent) ToolsVersion() uint64 { return subject.toolsVersion }

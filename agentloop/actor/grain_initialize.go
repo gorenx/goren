@@ -11,10 +11,9 @@ import (
 )
 
 type initialization struct {
-	input        agentactor.Initialize
-	reply        *goakt.GrainReply
-	cancel       context.CancelFunc
-	toolsVersion uint64
+	input  agentactor.Initialize
+	reply  *goakt.GrainReply
+	cancel context.CancelFunc
 }
 
 type initializationAuthorized struct {
@@ -153,7 +152,7 @@ func (owner *Grain) finishInitialization(operation *initialization, failure erro
 	}
 	owner.initialization = nil
 	if failure == nil {
-		failure = owner.business.Initialize(operation.toolsVersion)
+		failure = owner.business.Initialize()
 	}
 	operation.cancel()
 	operation.reply.Response(agentactor.Initialized{

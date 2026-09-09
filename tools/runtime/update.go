@@ -120,10 +120,6 @@ func NewUpdate(input toolregistry.Configuration, previous []string) (*Update, er
 	return owner, nil
 }
 
-// Revision identifies the intended implementation, which is not usable until
-// Apply confirms success. A completed rollback never activates this implementation.
-func (owner *Update) Revision() tool.Revision { return owner.revision }
-
 func (owner *Update) transition(target updatePhase) {
 	owner.phase = target
 	owner.next = 0

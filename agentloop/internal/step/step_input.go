@@ -6,22 +6,18 @@ import (
 	"github.com/gorenx/goren/systemprompt"
 )
 
-// Input contains this Step's admitted messages and versioned prompt data.
+// Input contains this Step's admitted messages and frozen prompt data.
 // Messages are the admission batch, not the full conversation history.
 // Each model attempt derives its history from the committed Session.
 type Input struct {
-	Messages     []agentmessage.UserMessage
-	Prompt       systemprompt.PromptAssembly
-	ToolsVersion uint64
+	Messages []agentmessage.UserMessage
+	Prompt   systemprompt.PromptAssembly
 }
 
 // Capture binds detached input once, before step/start is committed.
 func (current *Step) Capture(provided Input) error {
 	if current.currentState != StateProposed || current.input != nil {
 		return errors.New("agentloop step: input can only be captured once before opening")
-	}
-	if provided.ToolsVersion == 0 {
-		return errors.New("agentloop step: tool definition version is required")
 	}
 	detached, err := copyInput(provided)
 	if err != nil {
@@ -45,8 +41,7 @@ func copyInput(provided Input) (Input, error) {
 		return Input{}, err
 	}
 	detached := Input{
-		Prompt:       prompt,
-		ToolsVersion: provided.ToolsVersion,
+		Prompt: prompt,
 	}
 	if provided.Messages != nil {
 		detached.Messages = make([]agentmessage.UserMessage, len(provided.Messages))

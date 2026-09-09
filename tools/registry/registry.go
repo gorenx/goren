@@ -35,8 +35,11 @@ type Registry struct {
 	initialized bool
 	catalogs    map[session.SessionID]tools.Definitions
 	batches     map[UpdateID]*batch
-	// schemas retains the last committed definition by Session and tool name,
-	// including removed tools, so re-adding a name cannot reuse an old version.
+	// schemas[sessionID][toolName] retains the last committed definition,
+	// e.g. schemas["session-1"]["read_file"]. The outer key is also the Agent ID,
+	// and the inner key is the canonical tool name. It is retained version history,
+	// not the currently executable tool set. Removed tools remain here so
+	// re-adding a name cannot reuse an old version.
 	schemas map[session.SessionID]map[string]llm.ToolSchema
 }
 
@@ -66,7 +69,9 @@ func (owner *Registry) Begin(input Update) error {
 	}
 	names := make(map[string]struct{}, len(input.Names))
 	for _, name := range input.Names {
-		if strings.TrimSpace(name) == "" || strings.TrimSpace(name) != name || name == tools.RunCodeName {
+		if strings.TrimSpace(name) == "" ||
+			strings.TrimSpace(name) != name ||
+			name == tools.RunCodeName {
 			return fmt.Errorf("tools: invalid candidate name %q", name)
 		}
 		if _, exists := names[name]; exists {
@@ -108,7 +113,10 @@ func (owner *Registry) Register(identifier UpdateID, input Candidate) error {
 	}
 	input.Schema.Parameters = parameters
 	if previous, exists := pending.candidates[input.Schema.Name]; exists {
-		if previous.Visible == input.Visible && previous.Schema.Name == input.Schema.Name && previous.Schema.Description == input.Schema.Description && bytes.Equal(previous.Schema.Parameters, input.Schema.Parameters) {
+		if previous.Visible == input.Visible &&
+			previous.Schema.Name == input.Schema.Name &&
+			previous.Schema.Description == input.Schema.Description &&
+			bytes.Equal(previous.Schema.Parameters, input.Schema.Parameters) {
 			return nil
 		}
 		return errors.New("tools: candidate already registered with different definition")

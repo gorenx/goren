@@ -104,6 +104,8 @@ func (owner *Grain) receiveIdentity(gc *goakt.GrainContext) bool {
 	switch input := gc.Message().(type) {
 	case ReserveAgent:
 		gc.Response(Completion{Err: owner.reserveAgent(input)})
+	case agentactor.ClaimTools:
+		gc.Response(agentactor.Claimed{Err: owner.claimTools(input)})
 	case agentactor.Claim:
 		gc.Response(agentactor.Claimed{Err: owner.claim(input)})
 	case Inspect:
@@ -326,4 +328,28 @@ func deferLifecycle(gc *goakt.GrainContext) (*goakt.GrainReply, error) {
 		return nil, errors.New("agent registry: lifecycle operation requires a request")
 	}
 	return reply, nil
+}
+
+func (owner *Grain) claimTools(input agentactor.ClaimTools) error {
+	err := owner.check(Creation{
+		AgentID:    input.AgentID,
+		CreationID: input.CreationID,
+	})
+	if err != nil {
+		return err
+	}
+	err = owner.directory.CheckAdmission(input.AgentID)
+	if err != nil {
+		return err
+	}
+	entry := owner.creations[input.AgentID]
+	if entry.services == nil || entry.services.tools == nil || entry.services.tools.release.identity == nil || input.InstanceID == "" {
+		return ErrInstance
+	}
+	endpoint := entry.services.tools
+	if endpoint.instanceID != "" && endpoint.instanceID != input.InstanceID {
+		return ErrInstance
+	}
+	endpoint.instanceID = input.InstanceID
+	return nil
 }

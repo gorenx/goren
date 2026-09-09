@@ -14,7 +14,7 @@ import (
 
 type bind struct {
 	target   *goakt.GrainIdentity
-	revision tool.Revision
+	revision tool.Identity
 }
 
 type caller struct {
@@ -73,7 +73,7 @@ func (owner *caller) OnToolCancellation(_ *goakt.GrainContext, result toolactor.
 	owner.cancellation = nil
 }
 
-func startCaller(t *testing.T, system goakt.ActorSystem, target *goakt.GrainIdentity, revision tool.Revision) *goakt.GrainIdentity {
+func startCaller(t *testing.T, system goakt.ActorSystem, target *goakt.GrainIdentity, revision tool.Identity) *goakt.GrainIdentity {
 	t.Helper()
 	identity, err := goakt.GrainOf[*caller](context.Background(), system, "caller",
 		goakt.WithLongLivedGrain(),
@@ -92,8 +92,8 @@ func startCaller(t *testing.T, system goakt.ActorSystem, target *goakt.GrainIden
 
 func TestClientReceivesActualBodyResultAndBusinessFailure(t *testing.T) {
 	system, target := installTool(t, &provider{})
-	consumer := startCaller(t, system, target, "initial")
-	result := ask[toolactor.CallResult](t, system, consumer, invocation())
+	consumer := startCaller(t, system, target, currentIdentity(t, system, target))
+	result := ask[toolactor.CallResult](t, system, consumer, invocation(""))
 	if result.CallID != "call" || result.Err != nil || result.Body.Err != nil || len(result.Body.Value) == 0 {
 		t.Fatalf("body result: %#v", result)
 	}
@@ -104,7 +104,7 @@ func TestClientReceivesActualBodyResultAndBusinessFailure(t *testing.T) {
 	}); reply.Err != nil {
 		t.Fatal(reply.Err)
 	}
-	result = ask[toolactor.CallResult](t, system, consumer, invocation())
+	result = ask[toolactor.CallResult](t, system, consumer, invocation(""))
 	if result.Err != nil || result.Body.Err == nil {
 		t.Fatalf("business failure was confused with delivery failure: %#v", result)
 	}
@@ -127,8 +127,8 @@ func TestClientDoesNotTreatInvalidReplyAsCompletedBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	consumer := startCaller(t, system, target, "initial")
-	result := ask[toolactor.CallResult](t, system, consumer, invocation())
+	consumer := startCaller(t, system, target, "unconfirmed")
+	result := ask[toolactor.CallResult](t, system, consumer, invocation(""))
 	if result.Err == nil || result.Body.Err != nil || result.CallID != "call" {
 		t.Fatalf("invalid reply was accepted as business outcome: %#v", result)
 	}
@@ -143,7 +143,7 @@ func TestClientCancellationDoesNotCompleteTheBodyRequest(t *testing.T) {
 	system, target := installTool(t, &provider{
 		questions: service,
 	})
-	consumer := startCaller(t, system, target, "initial")
+	consumer := startCaller(t, system, target, currentIdentity(t, system, target))
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
 		cancel()
@@ -155,7 +155,7 @@ func TestClientCancellationDoesNotCompleteTheBodyRequest(t *testing.T) {
 	})
 	results := make(chan toolactor.CallResult, 1)
 	go func() {
-		input := invocation()
+		input := invocation("")
 		input.Context = ctx
 		payload, err := system.AskGrain(context.Background(), consumer, input, 3*time.Second)
 		result, ok := payload.(toolactor.CallResult)

@@ -22,6 +22,20 @@ type executed struct {
 
 func (owner *Grain) receiveExecution(gc *goakt.GrainContext) bool {
 	switch input := gc.Message().(type) {
+	case Describe:
+		if owner.business == nil || input.CreationID != owner.creationID || owner.active != nil {
+			gc.Response(Description{Err: errors.New("tools: description does not own a settled tool")})
+			return true
+		}
+		identity, descriptor, err := owner.business.Binding()
+		if err != nil {
+			gc.Response(Description{Err: err})
+		} else {
+			gc.Response(Description{
+				Implementation: identity,
+				Descriptor:     descriptor,
+			})
+		}
 	case Execute:
 		owner.execute(gc, input)
 	case CancelCall:
@@ -88,7 +102,7 @@ func (owner *Grain) execute(gc *goakt.GrainContext, input Execute) {
 		return executed{
 			identifier: input.Invocation.CallID,
 			call:       current,
-			result:     business.Execute(work, input.Revision, input.Invocation),
+			result:     business.Execute(work, input.Implementation, input.Invocation),
 		}, nil
 	}); err != nil {
 		delete(owner.calls, input.Invocation.CallID)

@@ -9,13 +9,15 @@ import (
 // is either retained as a candidate or released, even when construction fails.
 // The caller serializes this entire operation with every other Tool method.
 func (owner *Tool) Provision(ctx context.Context, target Revision, source Provider) error {
-	if err := owner.checkPreparation(target); err != nil {
+	err := owner.checkPreparation(target)
+	if err != nil {
 		return err
 	}
 	if ctx == nil || source == nil {
 		return errors.New("tools: preparation requires context and provider")
 	}
-	if err := ctx.Err(); err != nil {
+	err = ctx.Err()
+	if err != nil {
 		return context.Cause(ctx)
 	}
 	input, err := source.Open(ctx)
@@ -28,7 +30,8 @@ func (owner *Tool) Provision(ctx context.Context, target Revision, source Provid
 	if err == nil {
 		return nil
 	}
-	if cleanup := closeResource(context.WithoutCancel(ctx), input.Resource); cleanup != nil {
+	cleanup := closeResource(context.WithoutCancel(ctx), input.Resource)
+	if cleanup != nil {
 		// The failed implementation is retained solely for cleanup. It must not
 		// become visible to catalog registration or executable after a retry.
 		owner.candidate = &candidate{

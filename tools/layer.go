@@ -23,7 +23,7 @@ type ToolLayer struct {
 	toolSetMutex  sync.Mutex
 	toolSets      map[string]*toolSetState
 	runtimeMutex  sync.RWMutex
-	runtime       *executionRuntime
+	closed        bool
 	pipeline      *pipeline
 	executions    map[RegistrationID]ExecuteMiddleware
 	observers     map[RegistrationID]ResultObserver
@@ -143,7 +143,7 @@ func (owner *ToolLayer) AddGuard(
 	}
 	owner.runtimeMutex.RLock()
 	defer owner.runtimeMutex.RUnlock()
-	if owner.runtime == nil {
+	if owner.closed {
 		return nil, ErrToolLayerInactive
 	}
 	entry, err := owner.registry.addGuard(name, policy)
@@ -222,11 +222,16 @@ func (owner *ToolLayer) toolLayers() []toolLayerSnapshot {
 	return owner.registry.toolLayers()
 }
 
-func (owner *ToolLayer) executionRuntime() *executionRuntime {
+func (owner *ToolLayer) executionRuntime() *Scheduler {
 	owner.runtimeMutex.RLock()
-	stagedRuntime := owner.runtime
-	owner.runtimeMutex.RUnlock()
-	return stagedRuntime
+	defer owner.runtimeMutex.RUnlock()
+	if owner.closed {
+		return nil
+	}
+	entries := owner.registry.view().visible
+	return newScheduler(entries, owner.pipeline, owner.registry.guards(), localBodies{
+		entries: entries,
+	})
 }
 
 func (owner *ToolLayer) requireActive() error {
@@ -249,7 +254,7 @@ func (owner *ToolLayer) Close(closeContext context.Context) error {
 		return nil
 	}
 	owner.runtimeMutex.Lock()
-	owner.runtime = nil
+	owner.closed = true
 	owner.runtimeMutex.Unlock()
 	owner.mutationMutex.Lock()
 	owner.toolSetMutex.Lock()
@@ -311,4 +316,13 @@ func validateMutation(
 		)
 	}
 	return nil
+}
+
+// localBodies is the in-process body endpoint used by the remaining local catalog.
+type localBodies struct {
+	entries map[string]*registeredTool
+}
+
+func (endpoint localBodies) Invoke(ctx context.Context, call Invocation) (BodyResult, error) {
+	return call.Run(ctx, endpoint.entries[call.Name].definition.Executor), nil
 }

@@ -77,5 +77,4 @@ func (owner *ToolLayer) rebuildPipeline() {
 		}
 	}
 	owner.pipeline = captured
-	owner.runtime.pipeline = captured
 }

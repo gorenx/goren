@@ -36,6 +36,10 @@ func TestRegistryReadinessUsesDependenciesWithoutAStartupCursor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	err = directory.ConfirmComponent(identifier, prompt)
+	if err == nil {
+		t.Fatal("prompt became ready before tool definitions")
+	}
 	// Model restoration depends on Session, independently of Prompt readiness.
 	err = directory.ConfirmComponent(identifier, agent.Component{Kind: agent.ModelComponent})
 	if err != nil {
@@ -47,6 +51,7 @@ func TestRegistryReadinessUsesDependenciesWithoutAStartupCursor(t *testing.T) {
 		t.Fatal("execution ignored missing Prompt")
 	}
 	for _, dependency := range []agent.Component{
+		{Kind: agent.ToolsComponent},
 		prompt,
 		executor,
 		{Kind: agent.CommandsComponent},
@@ -182,6 +187,7 @@ func TestRegistryChoosesOnlyRemainingResourceResponsibilities(t *testing.T) {
 			Index: 0,
 		},
 		{Kind: agent.Execution},
+		{Kind: agent.ToolsRuntime},
 		{
 			Kind: agent.Tool,
 			Name: "ask_user_question",

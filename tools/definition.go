@@ -67,3 +67,44 @@ type Definitions struct {
 	Schemas    []llm.ToolSchema
 	KnownNames []string
 }
+
+// Descriptor is the immutable execution contract borrowed from one tool implementation.
+// It deliberately excludes the body and owned resources.
+type Descriptor struct {
+	Name                string
+	Description         string
+	Parameters          json.RawMessage
+	Output              ToolOutputDefinition
+	FinalizeContent     ContentFinalizer
+	Timeout             time.Duration
+	ConcurrencyBehavior ConcurrencyClassifier
+}
+
+// Describe detaches schemas while retaining borrowed output and policy behavior.
+func (definition ToolDefinition) Describe() Descriptor {
+	return Descriptor{
+		Name:        definition.Name,
+		Description: definition.Description,
+		Parameters:  append(json.RawMessage(nil), definition.Parameters...),
+		Output: ToolOutputDefinition{
+			Schema:           append(json.RawMessage(nil), definition.Output.Schema...),
+			Renderer:         definition.Output.Renderer,
+			PresentationMeta: definition.Output.PresentationMeta,
+		},
+		FinalizeContent:     definition.FinalizeContent,
+		Timeout:             definition.Timeout,
+		ConcurrencyBehavior: definition.ConcurrencyBehavior,
+	}
+}
+
+func (description Descriptor) definition() ToolDefinition {
+	return ToolDefinition{
+		Name:                description.Name,
+		Description:         description.Description,
+		Parameters:          description.Parameters,
+		Output:              description.Output,
+		FinalizeContent:     description.FinalizeContent,
+		Timeout:             description.Timeout,
+		ConcurrencyBehavior: description.ConcurrencyBehavior,
+	}
+}

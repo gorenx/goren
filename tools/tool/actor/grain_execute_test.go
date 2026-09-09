@@ -79,10 +79,10 @@ func provisionTool(t *testing.T, system goakt.ActorSystem, directory, target *go
 	}
 }
 
-func invocation() toolactor.Execute {
+func invocation(identity tool.Identity) toolactor.Execute {
 	return toolactor.Execute{
-		CreationID: "creation",
-		Revision:   "initial",
+		CreationID:     "creation",
+		Implementation: identity,
 		Invocation: tools.Invocation{
 			CallID:    "call",
 			SessionID: "conversation",
@@ -111,7 +111,7 @@ func TestCancelWaitsForBodyExitBeforeAllowingResourceClose(t *testing.T) {
 			close(service.release)
 		}
 	})
-	input := invocation()
+	input := invocation(currentIdentity(t, system, target))
 	input.Context = ctx
 	results := make(chan tools.BodyResult, 1)
 	go func() {
@@ -200,19 +200,20 @@ func TestExecutionRejectsWrongIdentityRevisionAndClosedTool(t *testing.T) {
 		{
 			name: "implementation",
 			change: func(input *toolactor.Execute) {
-				input.Revision = "different-update"
+				input.Implementation = "different-update"
 			},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			input := invocation()
+			input := invocation(currentIdentity(t, system, target))
 			test.change(&input)
 			if result := ask[tools.BodyResult](t, system, target, input); result.Err == nil {
 				t.Fatal("invalid execution accepted")
 			}
 		})
 	}
-	if result := ask[tools.BodyResult](t, system, target, invocation()); result.Err != nil {
+	retained := invocation(currentIdentity(t, system, target))
+	if result := ask[tools.BodyResult](t, system, target, retained); result.Err != nil {
 		t.Fatalf("valid execution failed: %v", result.Err)
 	}
 	if result := ask[toolactor.Completion](t, system, target, toolactor.Close{
@@ -220,7 +221,7 @@ func TestExecutionRejectsWrongIdentityRevisionAndClosedTool(t *testing.T) {
 	}); result.Err != nil {
 		t.Fatal(result.Err)
 	}
-	if result := ask[tools.BodyResult](t, system, target, invocation()); result.Err == nil {
+	if result := ask[tools.BodyResult](t, system, target, retained); result.Err == nil {
 		t.Fatal("closed tool remained executable")
 	}
 }
@@ -250,7 +251,7 @@ func TestCancellationTargetsOnlyOneConcurrentCall(t *testing.T) {
 	results := make(chan outcome, 2)
 	for _, identifier := range []agentmessage.CallID{"first", "second"} {
 		go func() {
-			input := invocation()
+			input := invocation(currentIdentity(t, system, target))
 			input.Invocation.CallID = identifier
 			input.Context = ctx
 			payload, err := system.AskGrain(context.Background(), target, input, 3*time.Second)
@@ -318,4 +319,13 @@ func TestCancellationTargetsOnlyOneConcurrentCall(t *testing.T) {
 	}); reply.Err != nil {
 		t.Fatal(reply.Err)
 	}
+}
+
+func currentIdentity(t *testing.T, system goakt.ActorSystem, target *goakt.GrainIdentity) tool.Identity {
+	t.Helper()
+	description := ask[toolactor.Description](t, system, target, toolactor.Describe{CreationID: "creation"})
+	if description.Err != nil || description.Implementation == "" {
+		t.Fatalf("tool description: %+v", description)
+	}
+	return description.Implementation
 }

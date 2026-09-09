@@ -35,7 +35,7 @@ func TestRegistryClosesDescendantsBeforeParentAndRetriesPendingChild(t *testing.
 			t.Error(err)
 		}
 	})
-	system, err := goakt.NewActorSystem("agent-tree-close", goakt.WithLogger(log.DiscardLogger))
+	system, err := goakt.NewActorSystem("agent-tree-close", goakt.WithLogger(log.DiscardLogger), goakt.WithPubSub())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestRegistryClosesDescendantsBeforeParentAndRetriesPendingChild(t *testing.
 			SessionRegistry: directory,
 			PromptRegistry:  dependencies,
 			ModelConfig:     dependencies,
-			ToolsRegistry:   dependencies,
+			ToolsRegistry:   toolRegistry(t, system),
 			Timeout:         time.Second,
 		}); result.Err != nil {
 			t.Fatal(result.Err)
@@ -205,7 +205,7 @@ func TestRegistryClosesAuthorizedCreationAfterConfigurationFails(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	system, err := goakt.NewActorSystem("agent-tree-close", goakt.WithLogger(log.DiscardLogger))
+	system, err := goakt.NewActorSystem("agent-tree-close", goakt.WithLogger(log.DiscardLogger), goakt.WithPubSub())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +278,7 @@ func TestRegistryClosesAuthorizedCreationAfterConfigurationFails(t *testing.T) {
 		SessionRegistry: directory,
 		PromptRegistry:  dependencies,
 		ModelConfig:     dependencies,
-		ToolsRegistry:   dependencies,
+		ToolsRegistry:   toolRegistry(t, system),
 		Timeout:         time.Second,
 	}); result.Err == nil {
 		t.Fatal("failed configuration initialized Agent")

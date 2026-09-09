@@ -75,7 +75,12 @@ type messageCommitted struct {
 }
 
 func (owner *Grain) startStep(gc *goakt.GrainContext, input prepareStep) {
-	if owner.preparation != nil || owner.model != nil || owner.ending != nil || owner.conversation == nil || owner.prompt == nil || input.middleware == nil {
+	if owner.preparation != nil ||
+		owner.model != nil ||
+		owner.ending != nil ||
+		owner.conversation == nil ||
+		owner.prompt == nil ||
+		input.middleware == nil {
 		gc.Response(stepPrepared{
 			err: errPreparationUnavailable,
 		})
@@ -271,8 +276,7 @@ func (owner *Grain) preparePrompt(gc *goakt.GrainContext, input contextRead) {
 	}
 	operation.snapshot = input.result.Snapshot
 	owner.requestPreparation(gc, operation, owner.prompt, promptactor.Assemble{
-		ID:           operation.id,
-		ToolsVersion: owner.business.ToolsVersion(),
+		ID: operation.id,
 	}, true, func(payload any, failure error) any {
 		if failure != nil {
 			return preparationFailed{
@@ -363,9 +367,8 @@ func (owner *Grain) openStep(gc *goakt.GrainContext, input promptAssembled) {
 		return
 	}
 	draft, err := owner.business.PrepareStep(agentloop.Preparation{
-		Snapshot:     operation.snapshot,
-		Prompt:       input.result.Prompt,
-		ToolsVersion: owner.business.ToolsVersion(),
+		Snapshot: operation.snapshot,
+		Prompt:   input.result.Prompt,
 	})
 	operation.snapshot = session.Snapshot{}
 	if err != nil {

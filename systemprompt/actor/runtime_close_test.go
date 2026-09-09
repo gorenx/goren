@@ -80,7 +80,6 @@ func TestRuntimeCloseWaitsForProviderCleanup(t *testing.T) {
 	}
 	payload, err = system.AskGrain(ctx, identity, promptactor.ApplyTools{
 		AgentID: "closing-agent",
-		Version: 1,
 	}, time.Second)
 	if err != nil || payload.(promptactor.Completion).Err != nil {
 		t.Fatalf("tools: %v, %v", payload, err)
@@ -95,8 +94,7 @@ func TestRuntimeCloseWaitsForProviderCleanup(t *testing.T) {
 	if err := goakt.Tell(ctx, worker, assemblyRequest{
 		Target: identity,
 		Input: promptactor.Assemble{
-			ID:           "active",
-			ToolsVersion: 1,
+			ID: "active",
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -132,7 +130,6 @@ func TestRuntimeCloseWaitsForProviderCleanup(t *testing.T) {
 	}
 	payload, err = system.AskGrain(ctx, identity, promptactor.ApplyTools{
 		AgentID: "closing-agent",
-		Version: 2,
 	}, time.Second)
 	if err != nil || !errors.Is(payload.(promptactor.Completion).Err, promptactor.ErrUnavailable) {
 		t.Fatalf("closing runtime accepted update: %v, %v", payload, err)
@@ -160,8 +157,7 @@ func TestRuntimeCloseWaitsForProviderCleanup(t *testing.T) {
 		t.Fatalf("repeat close: %v, %v", payload, err)
 	}
 	payload, err = system.AskGrain(ctx, identity, promptactor.Assemble{
-		ID:           "after-close",
-		ToolsVersion: 1,
+		ID: "after-close",
 	}, time.Second)
 	if err != nil || !errors.Is(payload.(promptactor.Assembled).Err, promptactor.ErrUnavailable) {
 		t.Fatalf("closed runtime accepted assembly: %v, %v", payload, err)

@@ -43,3 +43,11 @@ type ClaimTool struct {
 	CreationID string
 	InstanceID string
 }
+
+// ClaimTools fixes the first authorized Tool Runtime activation of this Agent creation.
+// A replacement activation cannot inherit the old runtime's resource responsibilities.
+type ClaimTools struct {
+	AgentID    session.SessionID
+	CreationID string
+	InstanceID string
+}

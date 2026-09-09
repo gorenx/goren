@@ -12,7 +12,20 @@ import (
 
 // dispatcher owns the around-dispatch policy, Tool body invocation, and
 // canonical successful-output normalization.
-type dispatcher struct{}
+type dispatcher struct {
+	bodies Invoker
+}
+
+// DeliveryError denotes an unconfirmed tool invocation, not a body failure.
+// The caller must retain execution responsibility instead of committing a result.
+type DeliveryError struct {
+	Cause error
+}
+
+func (failure *DeliveryError) Error() string {
+	return "tools: invocation completion unconfirmed: " + failure.Cause.Error()
+}
+func (failure *DeliveryError) Unwrap() error { return failure.Cause }
 
 func (bodyDispatcher *dispatcher) dispatch(
 	requestContext context.Context,
@@ -122,7 +135,12 @@ func (bodyDispatcher *dispatcher) executeBody(
 		}), nil
 	}
 	state.markBodyInvoked()
-	body := toolCall.Invocation().Run(fusedContext, entry.definition.Executor)
+	body, err := invokeBody(bodyDispatcher.bodies, fusedContext, toolCall.Invocation())
+	if err != nil {
+		return nil, &DeliveryError{
+			Cause: err,
+		}
+	}
 	state.recordEffects(body)
 	if body.Err != nil {
 		return errorResult(body.Err), nil
@@ -132,8 +150,8 @@ func (bodyDispatcher *dispatcher) executeBody(
 		return errorResult(err), nil
 	}
 	return &canonicalToolExecutionSuccess{
-		executionToken: toolCall.Token.token,
-		normalized:     outcome.(*ToolExecutionSuccess),
+		execution:  toolCall.state,
+		normalized: outcome.(*ToolExecutionSuccess),
 	}, nil
 }
 
@@ -146,7 +164,7 @@ func (bodyDispatcher *dispatcher) normalize(
 		return nil, errors.New("tools: execute handler returned a nil result")
 	}
 	if canonical, matches := candidate.(*canonicalToolExecutionSuccess); matches {
-		if canonical.executionToken == toolCall.Token.token {
+		if canonical.execution == toolCall.state {
 			return canonical.cloneResult()
 		}
 		return bodyDispatcher.normalizeAuthoredSuccess(
@@ -236,7 +254,7 @@ func (bodyDispatcher *dispatcher) success(
 		)
 	}
 	var meta json.RawMessage
-	if toolCall.Parent.IsZero() &&
+	if toolCall.RootCallID == toolCall.CallID &&
 		entry.definition.Output.PresentationMeta != nil {
 		meta, err = invokeProjector(
 			entry.definition.Output.PresentationMeta,
@@ -344,4 +362,15 @@ func invokeProjector(
 		append(json.RawMessage(nil), arguments...),
 		append(json.RawMessage(nil), value...),
 	)
+}
+
+// invokeBody preserves uncertainty if a delivery adapter panics after submission.
+func invokeBody(endpoint Invoker, ctx context.Context, input Invocation) (result BodyResult, failure error) {
+	defer func() {
+		if recover() != nil {
+			result = BodyResult{}
+			failure = errors.New("tools: body delivery panicked; execution completion is unconfirmed")
+		}
+	}()
+	return endpoint.Invoke(ctx, input)
 }

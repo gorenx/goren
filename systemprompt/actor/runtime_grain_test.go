@@ -44,8 +44,8 @@ func TestRuntimeGrainAppliesEventsWhileAssemblyIsRunning(t *testing.T) {
 		t.Fatalf("initialize: %v, %v", payload, err)
 	}
 	payload, err = system.AskGrain(ctx, identity, promptactor.ApplyTools{
-		AgentID:     "agent-runtime",
-		Version:     1,
+		AgentID: "agent-runtime",
+
 		Definitions: systemprompt.ToolDefinitions{},
 	}, time.Second)
 	if err != nil || payload.(promptactor.Completion).Err != nil {
@@ -61,8 +61,7 @@ func TestRuntimeGrainAppliesEventsWhileAssemblyIsRunning(t *testing.T) {
 	if err := goakt.Tell(ctx, consumer, assemblyRequest{
 		Target: identity,
 		Input: promptactor.Assemble{
-			ID:           "first",
-			ToolsVersion: 1,
+			ID: "first",
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -74,7 +73,7 @@ func TestRuntimeGrainAppliesEventsWhileAssemblyIsRunning(t *testing.T) {
 	}
 	payload, err = system.AskGrain(ctx, identity, promptactor.ApplyTools{
 		AgentID: "agent-runtime",
-		Version: 2,
+
 		Definitions: systemprompt.ToolDefinitions{
 			Schemas: []llm.ToolSchema{
 				{
@@ -99,8 +98,7 @@ func TestRuntimeGrainAppliesEventsWhileAssemblyIsRunning(t *testing.T) {
 	if err := goakt.Tell(ctx, consumer, assemblyRequest{
 		Target: identity,
 		Input: promptactor.Assemble{
-			ID:           "second",
-			ToolsVersion: 2,
+			ID: "second",
 		},
 	}); err != nil {
 		t.Fatal(err)

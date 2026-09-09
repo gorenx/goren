@@ -43,7 +43,7 @@ func (*RuntimeGrain) OnActivate(context.Context, *goakt.GrainProps) error { retu
 // OnDeactivate cancels work on forced shutdown; normal CloseRuntime drains first.
 func (owner *RuntimeGrain) OnDeactivate(context.Context, *goakt.GrainProps) error {
 	if owner.initialization != nil {
-		owner.finishInitialization(owner.initialization, 0, ErrUnavailable)
+		owner.finishInitialization(owner.initialization, ErrUnavailable)
 	}
 	if owner.assembly != nil {
 		owner.assembly.cancel()
@@ -72,9 +72,7 @@ func (owner *RuntimeGrain) OnReceive(gc *goakt.GrainContext) {
 			})
 			return
 		}
-		gc.Response(RuntimeView{
-			ToolsVersion: owner.runtime.ToolsVersion(),
-		})
+		gc.Response(RuntimeView{})
 	case InitializeRuntime:
 		owner.initializeRuntime(gc, incoming)
 	case promptPrepared:
@@ -87,7 +85,7 @@ func (owner *RuntimeGrain) OnReceive(gc *goakt.GrainContext) {
 			return
 		}
 		gc.Response(Completion{
-			Err: owner.runtime.ApplyTools(incoming.AgentID, incoming.Version, incoming.Definitions),
+			Err: owner.runtime.ApplyTools(incoming.AgentID, incoming.Definitions),
 		})
 	case Assemble:
 		owner.startAssembly(gc, incoming)
@@ -184,7 +182,7 @@ func (owner *RuntimeGrain) startAssembly(gc *goakt.GrainContext, request Assembl
 				}
 			}
 		}()
-		completed.Prompt, completed.Err = captured.Assemble(ctx, request.ToolsVersion)
+		completed.Prompt, completed.Err = captured.Assemble(ctx)
 		if ctx.Err() != nil {
 			completed.Err = ctx.Err()
 		}

@@ -19,14 +19,16 @@ type toolsBaseline struct {
 }
 
 func (owner *ToolsSubscriber) refreshTools(rc *goakt.ReceiveContext) {
+	if owner.refreshing {
+		owner.refreshPending = true
+		return
+	}
+	owner.refreshing = true
 	request := rc.RequestGrain(owner.registry, toolactor.ReadDefinitions{
 		AgentID: owner.agentID,
 	})
 	if request == nil {
-		rc.Tell(owner.coordinator, ToolsApplied{
-			AgentID: owner.agentID,
-			Err:     ErrUnavailable,
-		})
+		owner.finishRefresh(rc, ErrUnavailable)
 		return
 	}
 	ctx := context.WithoutCancel(rc.Context())
@@ -47,7 +49,7 @@ func (owner *ToolsSubscriber) refreshTools(rc *goakt.ReceiveContext) {
 			case !catalog.Found:
 				result.err = systemprompt.ErrToolsNotReady
 			case catalog.Definitions.AgentID != identifier:
-				result.err = errors.New("systemprompt: invalid tool baseline identity or version")
+				result.err = errors.New("systemprompt: invalid tool baseline identity")
 			default:
 				result.definitions = catalog.Definitions
 			}

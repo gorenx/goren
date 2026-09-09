@@ -4,6 +4,9 @@ import (
 	"errors"
 	"time"
 
+	runtimeactor "github.com/gorenx/goren/tools/runtime/actor"
+	"github.com/tochemey/goakt/v4/reentrancy"
+
 	"github.com/gorenx/goren/agent"
 	agentactor "github.com/gorenx/goren/agent/actor"
 	loopactor "github.com/gorenx/goren/agentloop/actor"
@@ -20,6 +23,7 @@ import (
 type installation struct {
 	components   map[agent.Component]initializer
 	executor     *agentClient
+	tools        *toolsClient
 	commands     *commandsClient
 	capabilities []*capabilityClient
 }
@@ -39,6 +43,14 @@ func newInstallation(
 			Storage:    input.Storage,
 		},
 	}
+	tools := &toolsClient{input: runtimeactor.InitializeRuntime{
+		AgentID:    input.Creation.AgentID,
+		CreationID: input.Creation.CreationID,
+		Authority:  authority,
+		Registry:   input.ToolsRegistry,
+		Overrides:  input.Tools,
+		Timeout:    input.Timeout,
+	}}
 	prompt := &promptClient{input: promptactor.InitializeRuntime{
 		AgentID:        input.Creation.AgentID,
 		PromptRegistry: input.PromptRegistry,
@@ -59,12 +71,15 @@ func newInstallation(
 		components: map[agent.Component]initializer{
 			{Kind: agent.SessionComponent}: conversation,
 			{Kind: agent.PromptComponent}:  prompt,
+			{Kind: agent.ToolsComponent}:   tools,
 			{Kind: agent.ModelComponent}:   models,
 			{Kind: agent.AgentComponent}:   executor,
 		},
 		executor: executor,
+		tools:    tools,
 	}
 	releases[agent.Resource{Kind: agent.Conversation}] = conversation
+	releases[agent.Resource{Kind: agent.ToolsRuntime}] = tools
 	releases[agent.Resource{Kind: agent.PromptRuntime}] = prompt
 	installExecution(releases, executor)
 	if input.Commands != nil {
@@ -113,10 +128,12 @@ func (installed *installation) commandRoute() *goakt.GrainIdentity {
 func (installed *installation) capabilityRoutes() []Component {
 	result := make([]Component, 0, len(installed.capabilities))
 	for _, endpoint := range installed.capabilities {
-		result = append(result, Component{
-			Owner:   endpoint.owner,
-			Runtime: endpoint.Runtime(),
-		})
+		result = append(result,
+			Component{
+				Owner:   endpoint.owner,
+				Runtime: endpoint.Runtime(),
+			},
+		)
 	}
 	return result
 }
@@ -143,18 +160,27 @@ func (endpoint *sessionClient) Initialize(gc *goakt.GrainContext, reply chan<- c
 				}
 				return
 			}
-			requestComponent(gc, endpoint.owner, sessionregistry.StartSession{
-				SessionID:  endpoint.input.SessionID,
-				CreationID: endpoint.input.CreationID,
-			}, func(gc *goakt.GrainContext, initialized sessionactor.Initialized, failure error) {
-				if failure == nil {
-					failure = initialized.Err
-				}
-				if failure == nil {
-					endpoint.identity, failure = goakt.GrainOf[*sessionactor.Grain](gc.Context(), gc.ActorSystem(), sessionactor.RuntimeName(string(endpoint.input.SessionID)), goakt.WithLongLivedGrain())
-				}
-				reply <- componentResult{err: failure}
-			})
+			requestComponent(
+				gc, endpoint.owner,
+				sessionregistry.StartSession{
+					SessionID:  endpoint.input.SessionID,
+					CreationID: endpoint.input.CreationID,
+				},
+				func(gc *goakt.GrainContext, initialized sessionactor.Initialized, failure error) {
+					if failure == nil {
+						failure = initialized.Err
+					}
+					if failure == nil {
+						endpoint.identity, failure = goakt.GrainOf[*sessionactor.Grain](
+							gc.Context(),
+							gc.ActorSystem(),
+							sessionactor.RuntimeName(string(endpoint.input.SessionID)),
+							goakt.WithLongLivedGrain(),
+						)
+					}
+					reply <- componentResult{err: failure}
+				},
+			)
 		},
 	)
 }
@@ -176,19 +202,35 @@ type promptClient struct {
 func (endpoint *promptClient) Runtime() *goakt.GrainIdentity { return endpoint.release.identity }
 
 func (endpoint *promptClient) Initialize(gc *goakt.GrainContext, reply chan<- componentResult) {
-	identity, err := goakt.GrainOf[*promptactor.RuntimeGrain](gc.Context(), gc.ActorSystem(), promptactor.RuntimeName(string(endpoint.input.AgentID)), goakt.WithLongLivedGrain())
+	identity, err := goakt.GrainOf[*promptactor.RuntimeGrain](
+		gc.Context(),
+		gc.ActorSystem(),
+		promptactor.RuntimeName(string(endpoint.input.AgentID)),
+		goakt.WithLongLivedGrain(),
+	)
 	endpoint.release.identity = identity
 	if err != nil {
 		reply <- componentResult{err: err}
 		return
 	}
-	requestComponent(gc, identity, endpoint.input, func(gc *goakt.GrainContext, initialized promptactor.RuntimeInitialized, failure error) {
-		reply <- componentResult{err: errors.Join(failure, initialized.Err)}
-	})
+	requestComponent(
+		gc,
+		identity,
+		endpoint.input,
+		func(gc *goakt.GrainContext, initialized promptactor.RuntimeInitialized, failure error) {
+			reply <- componentResult{err: errors.Join(failure, initialized.Err)}
+		},
+	)
 }
 
 func (endpoint *promptClient) Close(gc *goakt.GrainContext, reply chan<- error) {
-	closeRuntime(gc, &endpoint.release, promptactor.CloseRuntime{}, func(closed promptactor.Completion) error { return closed.Err }, reply)
+	closeRuntime(
+		gc,
+		&endpoint.release,
+		promptactor.CloseRuntime{},
+		func(closed promptactor.Completion) error { return closed.Err },
+		reply,
+	)
 }
 
 type modelClient struct {
@@ -311,19 +353,29 @@ func (endpoint *commandsClient) Initialize(gc *goakt.GrainContext, reply chan<- 
 		reply <- componentResult{err: err}
 		return
 	}
-	requestComponent(gc, identity, commandactor.Initialize{
-		SessionID:  endpoint.creation.AgentID,
-		CreationID: endpoint.creation.CreationID,
-		Session:    endpoint.conversation.Runtime(),
-		Registry:   endpoint.owner,
-		Timeout:    endpoint.timeout,
-	}, func(gc *goakt.GrainContext, initialized commandactor.Completion, failure error) {
-		reply <- componentResult{err: errors.Join(failure, initialized.Err)}
-	})
+	requestComponent(
+		gc,
+		identity, commandactor.Initialize{
+			SessionID:  endpoint.creation.AgentID,
+			CreationID: endpoint.creation.CreationID,
+			Session:    endpoint.conversation.Runtime(),
+			Registry:   endpoint.owner,
+			Timeout:    endpoint.timeout,
+		},
+		func(gc *goakt.GrainContext, initialized commandactor.Completion, failure error) {
+			reply <- componentResult{err: errors.Join(failure, initialized.Err)}
+		},
+	)
 }
 
 func (endpoint *commandsClient) Close(gc *goakt.GrainContext, reply chan<- error) {
-	closeRuntime(gc, &endpoint.release, commandactor.Close{CreationID: endpoint.creation.CreationID}, func(closed commandactor.Completion) error { return closed.Err }, reply)
+	closeRuntime(
+		gc,
+		&endpoint.release,
+		commandactor.Close{CreationID: endpoint.creation.CreationID},
+		func(closed commandactor.Completion) error { return closed.Err },
+		reply,
+	)
 }
 
 type capabilityClient struct {
@@ -358,12 +410,17 @@ func (endpoint *capabilityClient) Initialize(gc *goakt.GrainContext, reply chan<
 }
 
 func (endpoint *capabilityClient) Close(gc *goakt.GrainContext, reply chan<- error) {
-	requestComponent(gc, endpoint.owner, agentactor.StopComponent{
-		AgentID:    endpoint.creation.AgentID,
-		CreationID: endpoint.creation.CreationID,
-	}, func(gc *goakt.GrainContext, closed agentactor.ComponentStopped, failure error) {
-		reply <- errors.Join(failure, closed.Err)
-	})
+	requestComponent(
+		gc,
+		endpoint.owner,
+		agentactor.StopComponent{
+			AgentID:    endpoint.creation.AgentID,
+			CreationID: endpoint.creation.CreationID,
+		},
+		func(gc *goakt.GrainContext, closed agentactor.ComponentStopped, failure error) {
+			reply <- errors.Join(failure, closed.Err)
+		},
+	)
 }
 
 type childClient struct {
@@ -371,9 +428,13 @@ type childClient struct {
 }
 
 func (endpoint *childClient) Close(gc *goakt.GrainContext, reply chan<- error) {
-	requestComponent(gc, gc.Self(), CloseAgent{Creation: endpoint.creation}, func(gc *goakt.GrainContext, closed agentactor.Closed, failure error) {
-		reply <- errors.Join(failure, closed.Err)
-	})
+	requestComponent(
+		gc, gc.Self(),
+		CloseAgent{Creation: endpoint.creation},
+		func(gc *goakt.GrainContext, closed agentactor.Closed, failure error) {
+			reply <- errors.Join(failure, closed.Err)
+		},
+	)
 }
 
 type toolClient struct {
@@ -387,4 +448,44 @@ func (endpoint *toolClient) Close(gc *goakt.GrainContext, reply chan<- error) {
 			reply <- errors.Join(failure, closed.Err)
 		},
 	)
+}
+
+type toolsClient struct {
+	input   runtimeactor.InitializeRuntime
+	release runtimeRelease
+	// instanceID is fixed before authorization; Close never certifies a reactivated runtime.
+	instanceID string
+}
+
+func (endpoint *toolsClient) Runtime() *goakt.GrainIdentity { return endpoint.release.identity }
+
+func (endpoint *toolsClient) Initialize(gc *goakt.GrainContext, reply chan<- componentResult) {
+	identity, err := goakt.GrainOf[*runtimeactor.Grain](gc.Context(), gc.ActorSystem(), runtimeactor.RuntimeName(string(endpoint.input.AgentID)),
+		goakt.WithLongLivedGrain(),
+		goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))))
+	endpoint.release.identity = identity
+	if err != nil {
+		reply <- componentResult{err: err}
+		return
+	}
+	requestComponent(
+		gc,
+		identity,
+		endpoint.input,
+		func(_ *goakt.GrainContext, initialized runtimeactor.Completion, failure error) {
+			reply <- componentResult{err: errors.Join(failure, initialized.Err)}
+		})
+}
+
+func (endpoint *toolsClient) Close(gc *goakt.GrainContext, reply chan<- error) {
+	if endpoint.instanceID == "" {
+		// No activation was ever authorized to acquire resources. Closing admission
+		// prevents any delayed claim from succeeding, so framework stop suffices.
+		deactivate(gc, endpoint.release.identity, reply)
+		return
+	}
+	closeRuntime(gc, &endpoint.release, runtimeactor.CloseRuntime{
+		CreationID: endpoint.input.CreationID,
+		InstanceID: endpoint.instanceID,
+	}, func(result runtimeactor.Completion) error { return result.Err }, reply)
 }

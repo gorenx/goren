@@ -15,17 +15,14 @@ var (
 	ErrAgent = errors.New("systemprompt: Agent identity mismatch")
 	// ErrToolsNotReady means no tool definition baseline has been received.
 	ErrToolsNotReady = errors.New("systemprompt: tool definitions are not ready")
-	// ErrToolsVersion identifies a request against a different applied tool version.
-	ErrToolsVersion = errors.New("systemprompt: tool definition version mismatch")
 )
 
 // Runtime owns one Agent's prompt definitions and consumed tool definition view.
 // Its Grain serializes access; it holds no framework or other owner references.
 type Runtime struct {
-	agentID      session.SessionID
-	definitions  Snapshot
-	tools        ToolDefinitions
-	toolsVersion uint64
+	agentID     session.SessionID
+	definitions Snapshot
+	tools       *ToolDefinitions
 }
 
 // NewRuntime creates Agent-local state without activating resources or subscriptions.
@@ -44,16 +41,11 @@ func (owner *Runtime) SetDefinitions(definitions Snapshot) {
 	owner.definitions = definitions
 }
 
-// ApplyTools installs a complete event view, preserving the previous view on error.
-func (owner *Runtime) ApplyTools(identifier session.SessionID, version uint64, definitions ToolDefinitions) error {
+// ApplyTools installs an authoritative complete baseline, preserving the previous
+// view on error. The caller orders Registry reads and rejects stale deliveries.
+func (owner *Runtime) ApplyTools(identifier session.SessionID, definitions ToolDefinitions) error {
 	if identifier != owner.agentID {
 		return ErrAgent
-	}
-	if version == 0 {
-		return ErrToolsVersion
-	}
-	if version <= owner.toolsVersion {
-		return nil
 	}
 	detached := ToolDefinitions{
 		Schemas:    make([]llm.ToolSchema, len(definitions.Schemas)),
@@ -74,21 +66,18 @@ func (owner *Runtime) ApplyTools(identifier session.SessionID, version uint64, d
 		}
 		detached.Schemas[index] = copied
 	}
-	owner.tools = detached
-	owner.toolsVersion = version
+	owner.tools = &detached
 	return nil
 }
 
 // Assemble uses only this Runtime's consumed tools and registered prompt variables.
-func (owner *Runtime) Assemble(ctx context.Context, toolsVersion uint64) (PromptAssembly, error) {
-	if err := validatePromptMutationContext(ctx); err != nil {
+func (owner *Runtime) Assemble(ctx context.Context) (PromptAssembly, error) {
+	err := validatePromptMutationContext(ctx)
+	if err != nil {
 		return PromptAssembly{}, err
 	}
-	if owner.toolsVersion == 0 {
+	if owner.tools == nil {
 		return PromptAssembly{}, ErrToolsNotReady
-	}
-	if toolsVersion != owner.toolsVersion {
-		return PromptAssembly{}, ErrToolsVersion
 	}
 	requestTools := ToolDefinitions{
 		Schemas:    make([]llm.ToolSchema, len(owner.tools.Schemas)),
@@ -96,6 +85,7 @@ func (owner *Runtime) Assemble(ctx context.Context, toolsVersion uint64) (Prompt
 	}
 	for index, schema := range owner.tools.Schemas {
 		requestTools.Schemas[index] = llm.ToolSchema{
+			Version:     schema.Version,
 			Name:        schema.Name,
 			Description: schema.Description,
 			Parameters:  slices.Clone(schema.Parameters),
@@ -105,6 +95,3 @@ func (owner *Runtime) Assemble(ctx context.Context, toolsVersion uint64) (Prompt
 		Tools: requestTools,
 	})
 }
-
-// ToolsVersion identifies the committed tool definitions consumed by this runtime.
-func (owner *Runtime) ToolsVersion() uint64 { return owner.toolsVersion }

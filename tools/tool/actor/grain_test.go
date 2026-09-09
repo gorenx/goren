@@ -369,7 +369,7 @@ func TestSettledUpdateCannotConstructAnotherToolCandidate(t *testing.T) {
 	if rejected.Err == nil || late.opens.Load() != 0 {
 		t.Fatal("settled update constructed resources", rejected.Err, late.opens.Load())
 	}
-	active := ask[tools.BodyResult](t, system, target, invocation())
+	active := ask[tools.BodyResult](t, system, target, invocation(currentIdentity(t, system, target)))
 	if active.Err != nil {
 		t.Fatal("late request disturbed current implementation", active.Err)
 	}

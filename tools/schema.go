@@ -54,14 +54,18 @@ func SnapshotObjectSchema(rawValue json.RawMessage) (json.RawMessage, error) {
 }
 
 func compileDefinition(definition ToolDefinition) (*registeredTool, error) {
+	if definition.Executor == nil {
+		return nil, fmt.Errorf("tools: tool %q executor is nil", definition.Name)
+	}
+	return compileDescriptor(definition)
+}
+
+func compileDescriptor(definition ToolDefinition) (*registeredTool, error) {
 	if strings.TrimSpace(definition.Name) == "" || definition.Name != strings.TrimSpace(definition.Name) {
 		return nil, errors.New("tools: tool name must be non-empty and trimmed")
 	}
 	if definition.Name == RunCodeName {
 		return nil, fmt.Errorf("tools: tool name %q is reserved for the Code Mode presentation transport", RunCodeName)
-	}
-	if definition.Executor == nil {
-		return nil, fmt.Errorf("tools: tool %q executor is nil", definition.Name)
 	}
 	if definition.Output.Renderer == nil {
 		return nil, fmt.Errorf("tools: tool %q must declare an output renderer", definition.Name)

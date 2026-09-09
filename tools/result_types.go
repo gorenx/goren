@@ -99,8 +99,8 @@ func (*ToolExecutionFailure) ConcludesAgentTurn() bool { return false }
 // execute Middleware. Returning it unchanged preserves the already-normalized
 // projection; authored public successes are normalized again.
 type canonicalToolExecutionSuccess struct {
-	executionToken *toolExecutionToken
-	normalized     *ToolExecutionSuccess
+	execution  *scheduledExecutionState
+	normalized *ToolExecutionSuccess
 }
 
 func (*canonicalToolExecutionSuccess) Failed() bool { return false }

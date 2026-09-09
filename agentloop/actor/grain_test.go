@@ -101,7 +101,7 @@ func TestInboxCommandsCommitBeforeApplyingAndRetainStateOnFailure(t *testing.T) 
 			t.Error(err)
 		}
 	})
-	system, err := goakt.NewActorSystem("agent-inbox", goakt.WithLogger(log.DiscardLogger))
+	system, err := goakt.NewActorSystem("agent-inbox", goakt.WithLogger(log.DiscardLogger), goakt.WithPubSub())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +242,7 @@ func TestCloseRetainsSessionUntilPendingInputIsCancelled(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	system, err := goakt.NewActorSystem("agent-inbox", goakt.WithLogger(log.DiscardLogger))
+	system, err := goakt.NewActorSystem("agent-inbox", goakt.WithLogger(log.DiscardLogger), goakt.WithPubSub())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +310,7 @@ func TestCloseRetainsSessionUntilPendingInputIsCancelled(t *testing.T) {
 		SessionRegistry: fault,
 		PromptRegistry:  dependencies,
 		ModelConfig:     dependencies,
-		ToolsRegistry:   dependencies,
+		ToolsRegistry:   toolRegistry(t, system),
 		Timeout:         time.Second,
 	})
 	if initialized.Err != nil {

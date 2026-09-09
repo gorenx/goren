@@ -113,11 +113,11 @@ func TestClientSeparatesInputCancellationAndIdle(t *testing.T) {
 	driver, replies = grainDriver(t, system, identity)
 	dependencies := configurationRoutes(t, system)
 	if result := request[agentactor.Initialized](t, driver, replies, agentactor.Initialize{
-		AgentID:     "client-test",
-		Authority:   authority,
-		CreationID:  "current",
-		Session:     sessionRoute(t, system, "client-test"),
-		Prompt:      promptRoute(t, system, "client-test", dependencies),
+		AgentID:    "client-test",
+		Authority:  authority,
+		CreationID: "current",
+		Session:    sessionRoute(t, system, "client-test"),
+		Prompt:     promptRoute(t, system, "client-test", dependencies),
 	}); result.Err != nil {
 		t.Fatal(result.Err)
 	}

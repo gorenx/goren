@@ -53,7 +53,11 @@ func (owner *Registry) InitializeDefaults(entries []Tool) error {
 // Configure captures complete Agent overrides over the startup defaults and
 // reserves the catalog batch. Update IDs are unique; query an uncertain result
 // with ReadConfiguration instead of submitting the ID again.
-func (owner *Registry) Configure(identifier UpdateID, agentID session.SessionID, overrides []Tool) (ConfigurationRegistered, error) {
+func (owner *Registry) Configure(
+	identifier UpdateID,
+	agentID session.SessionID,
+	overrides []Tool,
+) (ConfigurationRegistered, error) {
 	if !owner.initialized {
 		return ConfigurationRegistered{}, errors.New("tools: default configuration is not initialized")
 	}

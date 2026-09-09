@@ -2,6 +2,7 @@ package toolruntime_test
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 
@@ -151,7 +152,7 @@ func TestNewRuntimeRebuildsInstancesAgainstRetainedCatalog(t *testing.T) {
 		t.Fatal("new lifetime could not rebuild tools", err)
 	}
 	snapshot, err := replacement.Snapshot()
-	if err != nil || snapshot.UpdateID != "rebuild" || !slices.Equal(snapshot.Names, []string{"echo"}) {
+	if err != nil || !slices.Equal(snapshot.Names, []string{"echo"}) {
 		t.Fatal("wrong replacement snapshot", snapshot, err)
 	}
 	if !slices.Contains(fresh.operations, "prepare:echo") || !slices.Contains(fresh.operations, "commit:echo") {
@@ -160,5 +161,74 @@ func TestNewRuntimeRebuildsInstancesAgainstRetainedCatalog(t *testing.T) {
 	err = replacement.Close(ctx, directory, fresh)
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestInitializationRetainsUnconfirmedRegistrationUntilClose(t *testing.T) {
+	for _, accepted := range []bool{false, true} {
+		name := "request-not-accepted"
+		if accepted {
+			name = "accepted-reply-lost"
+		}
+		t.Run(name, func(t *testing.T) {
+			directory := &catalogPort{
+				registrationLost:     accepted,
+				registrationRejected: !accepted,
+			}
+			err := directory.business.InitializeDefaults([]toolregistry.Tool{{
+				Name:     "echo",
+				Provider: unusedProvider{},
+				Visible:  true,
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			owner, err := toolruntime.NewRuntime("agent")
+			if err != nil {
+				t.Fatal(err)
+			}
+			instances := &instancePort{directory: directory}
+			err = owner.Initialize(context.Background(), "initial", nil, directory, instances)
+			if !errors.Is(err, errInjected) {
+				t.Fatal("initialization failure lost", err)
+			}
+			if len(instances.operations) != 0 {
+				t.Fatal("unconfirmed registration constructed tools", instances.operations)
+			}
+			_, found := directory.business.Lookup("initial")
+			if found != accepted {
+				t.Fatal("fixture did not produce expected registration outcome")
+			}
+			_, err = owner.Snapshot()
+			if err == nil {
+				t.Fatal("failed initialization exposed a snapshot")
+			}
+			directory.lookupFailure = true
+			err = owner.Close(context.Background(), directory, instances)
+			if !errors.Is(err, errInjected) {
+				t.Fatal("unknown registration cleanup was reported as complete", err)
+			}
+			directory.lookupFailure = false
+			if accepted {
+				directory.abortFailure = true
+				err = owner.Close(context.Background(), directory, instances)
+				if !errors.Is(err, errInjected) {
+					t.Fatal("failed abort lost cleanup responsibility", err)
+				}
+				directory.abortFailure = false
+			}
+			err = owner.Close(context.Background(), directory, instances)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, found = directory.business.Lookup("initial")
+			if found {
+				t.Fatal("closed initialization left a retained configuration")
+			}
+			err = owner.Close(context.Background(), directory, instances)
+			if err != nil || len(instances.operations) != 0 {
+				t.Fatal("repeated close constructed or removed nonexistent instances", err)
+			}
+		})
 	}
 }

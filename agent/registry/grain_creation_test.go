@@ -19,6 +19,7 @@ import (
 	sessionactor "github.com/gorenx/goren/session/actor"
 	"github.com/gorenx/goren/session/persistence/sqlite"
 	sessionregistry "github.com/gorenx/goren/session/registry"
+	runtimeactor "github.com/gorenx/goren/tools/runtime/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/log"
 	"github.com/tochemey/goakt/v4/reentrancy"
@@ -52,7 +53,7 @@ func creationFixture(t *testing.T, options ...goakt.Option) (goakt.ActorSystem, 
 			t.Error(err)
 		}
 	})
-	system, err := goakt.NewActorSystem("agent-creation", append([]goakt.Option{goakt.WithLogger(log.DiscardLogger)}, options...)...)
+	system, err := goakt.NewActorSystem("agent-creation", append([]goakt.Option{goakt.WithLogger(log.DiscardLogger), goakt.WithPubSub()}, options...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +87,7 @@ func creationFixture(t *testing.T, options ...goakt.Option) (goakt.ActorSystem, 
 		SessionRegistry: sessions,
 		ModelConfig:     dependencies,
 		PromptRegistry:  dependencies,
-		ToolsRegistry:   dependencies,
+		ToolsRegistry:   toolRegistry(t, system),
 		Commands:        directory,
 		Timeout:         time.Second,
 	}
@@ -342,6 +343,16 @@ func TestComponentFailurePreservesSessionAndRetriesReverseShutdown(t *testing.T)
 		t.Run(fmt.Sprint("startup-failure-", failStart), func(t *testing.T) {
 			system, authority, input := creationFixture(t)
 			events := make(chan string, 16)
+			receive := func() string {
+				t.Helper()
+				select {
+				case event := <-events:
+					return event
+				case <-time.After(2 * time.Second):
+					t.Fatal("component lifecycle event did not arrive")
+					return ""
+				}
+			}
 			for _, name := range []string{"first", "second"} {
 				route, err := goakt.GrainOf[*componentOwner](context.Background(), system, name, goakt.WithLongLivedGrain())
 				if err != nil {
@@ -361,10 +372,10 @@ func TestComponentFailurePreservesSessionAndRetriesReverseShutdown(t *testing.T)
 			if failStart && (current.Executor != nil || current.Commands != nil || len(current.Components) != 0) {
 				t.Fatal("failed initialization published routes")
 			}
-			if got := <-events; got != "start-first" {
+			if got := receive(); got != "start-first" {
 				t.Fatal(got)
 			}
-			if got := <-events; got != "start-second" {
+			if got := receive(); got != "start-second" {
 				t.Fatal(got)
 			}
 			if result := askLifecycle[agentregistry.Ready](t, system, authority, input); (result.Err != nil) != failStart {
@@ -381,7 +392,7 @@ func TestComponentFailurePreservesSessionAndRetriesReverseShutdown(t *testing.T)
 					t.Fatal("close ignored component failure")
 				}
 			}
-			if got := <-events; got != "stop-second" {
+			if got := receive(); got != "stop-second" {
 				t.Fatal(got)
 			}
 			select {
@@ -392,13 +403,24 @@ func TestComponentFailurePreservesSessionAndRetriesReverseShutdown(t *testing.T)
 			if result := askLifecycle[sessionactor.View](t, system, sessionRoute(t, system, "conversation"), sessionactor.Read{CreationID: "first"}); result.Err != nil {
 				t.Fatal("Session closed before components settled", result.Err)
 			}
-			if result := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{Creation: input.Creation}); result.Err != nil {
+			result := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{
+				Creation: input.Creation,
+			})
+			if failStart && result.Err != nil {
+				// The provider event does not confirm that Registry consumed its reply.
+				// This request may share the still-running automatic cleanup attempt.
+				// Its failure reply settles that attempt; the next request is the retry.
+				result = askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{
+					Creation: input.Creation,
+				})
+			}
+			if result.Err != nil {
 				t.Fatal(result.Err)
 			}
-			if got := <-events; got != "stop-second" {
+			if got := receive(); got != "stop-second" {
 				t.Fatal(got)
 			}
-			if got := <-events; got != "stop-first" {
+			if got := receive(); got != "stop-first" {
 				t.Fatal(got)
 			}
 			if result := askLifecycle[sessionregistry.Sessions](t, system, input.SessionRegistry, sessionregistry.ListSessions{}); len(result.Items) != 0 {
@@ -585,5 +607,46 @@ func TestCancelledInboxSurvivesRegistryCloseAndSQLiteRestore(t *testing.T) {
 	}
 	if result := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{Creation: input.Creation}); result.Err != nil {
 		t.Fatal(result.Err)
+	}
+}
+
+func TestToolsReactivationCannotClaimOrReleaseOriginalResources(t *testing.T) {
+	system, authority, input := creationFixture(t)
+	ready := askLifecycle[agentregistry.Ready](t, system, authority, input)
+	if ready.Err != nil {
+		t.Fatal(ready.Err)
+	}
+	target, err := goakt.GrainOf[*runtimeactor.Grain](context.Background(), system, runtimeactor.RuntimeName(string(input.Creation.AgentID)), goakt.WithLongLivedGrain(),
+		goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = system.TellGrain(context.Background(), target, new(goakt.PoisonPill))
+	if err != nil {
+		t.Fatal(err)
+	}
+	driver, replies := grainDriver(t, system, target)
+	initialized := request[runtimeactor.Completion](t, driver, replies, runtimeactor.InitializeRuntime{
+		AgentID:    input.Creation.AgentID,
+		CreationID: input.Creation.CreationID,
+		Authority:  authority,
+		Registry:   input.ToolsRegistry,
+		Overrides:  input.Tools,
+		Timeout:    input.Timeout,
+	})
+	if !errors.Is(initialized.Err, agentregistry.ErrInstance) {
+		t.Fatalf("new activation claimed old resources: %v", initialized.Err)
+	}
+	closed := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{
+		Creation: input.Creation,
+	})
+	if closed.Err == nil {
+		t.Fatal("new activation certified old resources released")
+	}
+	replacement := input
+	replacement.Creation.CreationID = "replacement"
+	result := askLifecycle[agentregistry.Ready](t, system, authority, replacement)
+	if result.Err == nil {
+		t.Fatal("unconfirmed cleanup released Agent identity")
 	}
 }
