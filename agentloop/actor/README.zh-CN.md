@@ -7,7 +7,7 @@
 | 文件或对象 | 职责 |
 | --- | --- |
 | Grain / grain.go | 保存业务对象、组件地址、通信请求与激活身份；按职责分派消息 |
-| grain_initialize.go / grain_prompt.go | 校验创建授权，读取 Session 恢复业务，确认 Prompt 已初始化 |
+| grain_initialize.go | 校验创建授权，读取 Session 恢复业务，确认 Prompt 已初始化 |
 | grain_inbox.go | 将外部输入映射到业务入口，提交提案并交付真实确认，唤醒已接纳执行 |
 | grain_services.go | 将业务能力映射为异步请求，将解码结果交付给业务指定接收者 |
 | grain_generation.go | 适配 LLM Client 的生成、读取、关闭结果，维护 CallID 与请求关联 |

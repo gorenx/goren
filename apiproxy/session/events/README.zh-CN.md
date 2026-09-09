@@ -40,3 +40,5 @@ Feed 只借用 Broker；取消订阅会释放本次连接，不关闭 Session �
 `actor/Snapshots` 已连接真实 Session Registry 和 Session.Read，向 Feed 提供独立数据，不把框架类型带入 Feed。
 测试验证缺失创建被拒绝、读取不暴露可变 Header、关闭后列表移除、同 SessionID 重建后旧 CreationID 失效，以及日志事件复制和关闭持久化屏障。
 传输超时或实例未初始化错误会向调用方传播，只有明确的创建身份失效可从旧列表基线中跳过。
+
+Mux 的 `last` 是每条连接独立的 Session 序号去重表，不是订阅准入名单。连接建立后创建的 Session，其第一条实时事件也会发送并建立序号边界；后续重复或落后的事件仍被过滤。`TestFeedSubscribesBeforeSnapshotAndSuppressesLateCommit` 同时覆盖初始快照与新 Session 去重；Server 集成测试覆盖先创建后连接及先连接后创建两种顺序，并要求文本分块在模型结束前送达。

@@ -578,3 +578,13 @@ Header 查询原来同时返回值、found 和 error，用于区分缺失与读�
 发现并修复：Registry 已发送 PrepareClose，但 AgentLoop 原先仅等待 idle，没有将关闭意图投递给正在执行的能力。现在业务对象记录 disposed 取消，Actor 复用模型、工具、中间件和维护的取消通道；取消投递失败返回错误，成功后继续等待执行收尾。HTTP 流式关闭测试确认模型取消、Step/Turn 持久化、未消费 Inbox 保留。`go test -race -count=1 ./agentloop/... ./agent/registry ./internal/server -timeout=60s` 通过。
 
 临时目录 CLI 验证：创建 Session 后给编译产物发送单次 SIGINT，退出码 0；相同信号发送到 `go run` 进程组，包装进程退出码 1、无应用错误输出。`make run` 使用 go run，因此仅凭 make Error 1 不能推断业务关闭超时。本次尚未验证真实外部提供方，以及所有工具和中间件的生产接线，不代表 AgentLoop 整体重构完成。
+
+工具批次增量验证：完整 Run 覆盖活动工具取消后的未开始调用配对，以及工具调用/结果回复丢失后幂等重试；生成、工具准备、Dispatch、Release 各一次。回复使用 Session 范围与完整草稿校验。`go test -race -count=1 ./agentloop/... ./agent/registry ./internal/server -timeout=60s` 和相关 vet 通过。剩余包括审批接线、附加上下文恢复、并发调度与更多资源失败边界，整体目标未完成。
+
+### 新 Session 流式事件被过滤
+
+真实浏览器先连接 events.mux 再创建 Session 时，Feed.Mux 用 `!exists` 将不在初始快照中的 Session 事件全部丢弃；先创建后连接的测试无法发现。修正为只有已知 Session 且序号不超过已读边界时才跳过。新 Session 第一条事件建立边界，后续仍按 seq 去重，不改变外部帧或持久化格式。验收覆盖两种连接顺序，并在模型尚未结束时确认页面显示每段文本。
+
+页面验证：使用临时数据库运行完整 Server 与嵌入页面，模型测试端点每段后暂停；Chrome 实际显示第一段、第一加第二段、完整三段，三次均处于“生成中”。随后放行 finish。原测试先创建 Session 再打开 WebSocket 已补为两种连接顺序，保留接收文本后才允许模型继续的门控，避免整段缓冲也能通过测试。该验证使用本地模拟模型，不代表真实外部提供方验收。
+
+本次独立服务退出还复现标题生命周期缺口：标题 worker 已停止后，关闭 Agent 仍尝试关闭该 PID 并返回 actor not found（title-worker）。它与新 Session 实时事件过滤分别属于不同调用链，尚未修复，后续需核对标题资源责任与重复关闭契约。

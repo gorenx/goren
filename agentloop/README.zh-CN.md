@@ -72,3 +72,7 @@ Cancel 只记录具名业务原因及是否保留 Inbox，Actor 将意图传给�
 目标契约见 [AgentLoop 设计](../zh-CN/actor-design/30-agentloop-business.md)，当前问题与验证见 [集成问题记录](../zh-CN/actor-design/40-integration-findings.md)。历史实现记录见 [实现进度](../zh-CN/08-implementation-progress.md)，不作为本轮未完成路径的通过证据。
 
 关闭接线验证：`PrepareClose` 在业务对象中冻结准入并记录执行取消，Actor 复用取消通道通知正在执行的能力；收到取消确认后仍等待业务收尾。`internal/server/server_conversation_test.go` 的 `TestHTTPCloseCancelsStreamingModelAndFlushesTurn` 通过真实 HTTP 提交消息、保持模型流打开、再关闭服务，验证提供方收到取消、Step/Turn 结束写入 SQLite，以及后续排队输入仍能从日志恢复。
+
+工具取消：当前调用等待真实结果和释放；后续调用不进入 Runtime，按模型顺序记录执行前取消的调用/结果配对，再结束 Step 与 Turn。`TestBusinessToolCancellationDoesNotDispatchRemainingCalls` 从 Run 覆盖这一流程。所有工具写入回复均校验 Session、序列范围及草稿内容。工具附加上下文的持久化失败恢复、审批与并发调度尚未完整接通，不能将该取消测试当作工具流程的整体完成证据。
+
+调用、结果和取消配对使用 `toolWrite` 幂等提交。`TestBusinessToolWritesRetryWithoutRepeatingExecution` 从 Run 验证调用或结果回复丢失后重试同一事实，工具仅准备、执行、释放一次。关闭时也调用业务 Run，恢复已保存的失败边界；这不等于所有工具故障均已覆盖。
