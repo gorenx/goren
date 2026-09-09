@@ -63,7 +63,7 @@ flowchart TD
 | --- | --- | --- |
 | API Server 与 Connection 直接装配 | 已实现模块入口 | ab34830；真实 Echo 请求、下行取消、关闭测试 |
 | Session/Title/Projection/Workspace/Search 客户端 | 已实现核心端口 | 真实 Actor 和 SQLite 集成，不只 mock 回复 |
-| internal/server 与 cmd 迁移，删除 assembly | 待实现 | 默认无密钥启动、HTTP 探测、停止、重复启动持久化恢复 |
+| internal/server 与 cmd 迁移，删除 assembly | 旧 assembly 与 Plugin CLI 已删除；Actor 进程入口待完成 | 默认无密钥启动、HTTP 探测、停止、重复启动持久化恢复 |
 | 各领域 PubSub / Query Collector 接线 | 待完成 | 在线增量、重连基线、同 ID 重建、无重复/漏事件 |
 | AgentLoop 生产 Turn 主驱动与 LLM/工具路由 | 待核对并完成 | prompt → 多块模型响应 → 工具 → 后续模型 → Session → API 流完整链 |
 | 取消、Compaction 与关闭集成 | 待完成 | 中途取消实际停止、压缩日志顺序、Session flush、资源无泄漏 |
@@ -74,3 +74,17 @@ flowchart TD
 ### Tools 默认配置初始化契约
 
 组合入口在接收 Agent 创建前向真实 Tools Registry 发送 InitializeDefaults，并检查业务回复。空工具集合必须显式登记；Runtime 不得把未初始化当作空配置。Agent 生命周期依次确认 Session、Tools 首次配置应用与定义发布、Prompt，再开放 AgentLoop。验收使用真实 Registry 与 SQLite，验证创建和关闭，错误登记后不开放入口。
+
+### Title 与会话读视图的装配
+
+在构造 Session API 客户端之前配置共享 Title Registry，使用 AllowAll 重入，并把返回的生命周期地址加入 Agent 创建模板的 Components。Title Grain 及其订阅者仍只由该 Registry 启动和关闭，组合根不为每个 Session 直接启动 Title。标题策略由 title.Config 校验；如果配置了 LLM 标题而未提供 Provider，装配必须失败，不能静默退化为无模型配置。
+
+共享 Projection Grain 在开放 API 前注册 title.Unit。API 的 Logs 与 Projections Actor 客户端读取 Session 已确认日志并计算标题视图，不能读取 Title owner 的可变业务对象。标题变更走 API Titles → Agent Registry 已就绪组件 → Title Grain → Session；关闭通过 Agent Registry 等待 Title 订阅者和执行退出，再 Session flush。
+
+验收使用真实配置 Registry、Title 生命周期 Registry、Session、Projection 与 SQLite：创建后通过 API Titles 重命名，Logs/Projections 读取同一标题，关闭后 persistence.Reader.Inspect 仍包含标题事件。故障用例验证非法配置和缺失模型 Provider 在准入前返回错误。该验收不冒充尚未接通的 HTTP 主入口或模型标题生成链路。
+
+### 删除失效的 Plugin 装配
+
+`internal/assembly` 的 Catalog、Server Plugin 树、Diagnostics 及仅依赖旧装配的测试整体删除。唯一生产调用方 `cmd/goren` 同时删除 Plugin 启动和关闭流程；保留有效的参数解析与路径规则，按职责移到 `config.go` / `config_test.go`。不提供空 main、失败占位入口或兼容转发。此中间状态没有可构建的 CLI 可执行文件，恢复入口依赖上述 Server.Start/Close 的完整实现。
+
+旧测试包含的持久化重启、HTTP/WebSocket、手动压缩命令、压力压缩、真实 Provider 和 Bound 重启场景仍是未完成的迁移验收；删除失效夹具不代表这些行为已经验证。Bound/subagent 验收继续按暂缓范围处理。已迁入 internal/server 的 Credentials、LLM、Agent 创建、Title 和 flush 测试保留。验收要求无 Go 导入旧 assembly，配置路径测试及已迁入业务集成测试通过；生产 build 的入口缺口明确记录。

@@ -22,3 +22,7 @@ flowchart LR
 `llm.go` 负责默认 DeepSeek Adapter 的具体装配和注册，保留注册 ID 与错误同时返回的语义。凭据在调用时解析，初始化不要求密钥或进行网络请求。`llm_test.go` 使用真实 Credentials Actor、LLM Grain、双 worker router 与 DeepSeek Adapter 访问本地 HTTP 流，验证启动后写入凭据、流读取以及调用关闭；不依赖真实远端密钥，也不证明 AgentLoop／Session／API 完整链路已完成。
 
 `agents.go` 的 closeAgents 先停止 Registry 准入，再逐个关闭返回的根创建；子树、组件与 Session flush 沿用 Registry 协议。一个根失败仍尝试其他根，合并返回错误；失败时调用方保留 ActorSystem 和存储，后续重试重新查询剩余根，不维护第二份生命周期表。该函数尚待接入最终 Server.Close。
+
+`titles.go` 配置共享 Title 生命周期 Registry 和标题投影；Agent 创建模板通过 Components 引用 Title owner。生产配置集成测试现在通过 API Titles 客户端重命名、Logs/Projections 客户端读取同一标题，随后经 Agent Registry 关闭并从 SQLite 验证标题事件已 flush。配置要求模型标题却缺 Provider 时在创建共享生命周期之前失败。最终进程入口及默认模型标题 Provider 的 Actor 接线仍需完成，不能将此项集成测试称为 HTTP 端到端验收。
+
+旧 internal/assembly 及 CLI Plugin 启动链已经删除。cmd/goren 仅保留配置解析与路径测试，尚无 main 入口；本包完成进程 Start/Close 前不能构建可运行服务器。被移除旧装配测试的业务覆盖缺口见上述装配方案，不以模块测试替代端到端验收。

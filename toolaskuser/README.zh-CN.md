@@ -24,3 +24,5 @@ sequenceDiagram
 本包没有等待列表、Provider 登记、Agent 对象类型断言或 Actor 状态。取消由执行 context 传递到 UserQuestions。UserQuestionError 保持结构化错误类与错误码。原 Plugin 和 Factory 已删除；composition 将 NewDefinition 的结果交给现有 Tools 注册路径。
 
 测试保留固定 schema、参数映射、context 传播、答案呈现、无 Provider 错误和工具定义移除覆盖。
+
+工具执行测试通过 [execution.Scheduler 与 Call](../tools/execution/README.zh-CN.md) 验证参数、结构化回答与结果渲染；不再构造 ToolLayer 或本地注册句柄。Actor 测试使用同一执行业务路径调用真实 UserQuestions Grain。

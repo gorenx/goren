@@ -56,7 +56,7 @@ Configure 按准确更新 ID 登记完整覆盖配置，不读取或提交目录
 
 ## Runtime Grain 与 Agent 生命周期
 
-Grain 在 grain.go 中保留当前协议请求、原激活身份和业务对象，messages.go 定义初始化、快照读取及关闭契约。Catalog 和 Instances 只适配下游端口；业务 Runtime 持有更新与清理责任。框架任务执行业务，邮箱接收完成结果；工作进行时拒绝读取快照或并发关闭，不暴露半完成集合。
+runtimeactor.Runtime 在 runtime.go 中保留当前协议请求、原激活身份和业务对象，messages.go 定义初始化、快照读取及关闭契约。Catalog 和 Instances 只适配下游端口；业务 Runtime 持有更新与清理责任。框架任务执行业务，邮箱接收完成结果；工作进行时拒绝读取快照或并发关闭，不暴露半完成集合。
 
 ```mermaid
 sequenceDiagram
@@ -90,8 +90,10 @@ sequenceDiagram
 
 ## 执行请求
 
-grain_calls.go 将 PrepareCall、ResolveCallApproval、DispatchCall、FinalizeCall 交给独立 Call 业务对象，保留当前请求的回复和取消句柄。同一调用同一时刻只能有一个任务；准备和最终策略请求串行，工具体任务可以重叠。CancelCall 只传递意图；ReleaseCall 要求 Call.Result 已确认结算。关闭前还有调用责任时拒绝清理资源。
+runtime_calls.go 将 PrepareCall、ApplyCallApproval、DispatchCall、FinalizeCall 交给独立 Call 业务对象，保留当前请求的回复和取消句柄。同一调用同一时刻只能有一个任务；准备和最终策略请求串行，工具体任务可以重叠。CancelCall 只传递意图；ReleaseCall 要求 Call.Result 已确认结算。关闭前还有调用责任时拒绝清理资源。
 
 instances_execution.go 从实际 ToolActor 读取 Descriptor 和独立实现 Identity，构造 Scheduler 及固定的调用目的地。Snapshot 不保留 UpdateID；每个工具的执行身份都来自该工具本身，Commit 重试保留原身份，真正替换时产生新身份。等待工具体回复不继承调用 context 的取消，以免将等待者取消误当作工具体退出；工具执行本身仍接收该 context。
 
 internal/server 的实际配置 owner 集成测试已走通准备、拒绝提前释放/结算、工具分派、最终结果及释放。该测试未接入 AgentLoop 的批次主驱动、审批审计和动态更新屏障，这些路径仍需继续实现。
+
+Runtime.initialization 保存本次接受的初始化绑定和借用策略，用于 CreationID 校验、重复初始化检查和调用准备；它不是当前消息。Runtime.toolRuntime 是独立业务对象，持有工具集合和更新清理状态。Scheduler 与 Call 位于 [execution](../../execution/README.zh-CN.md)，Grain 不承担执行策略或结果处理规则。

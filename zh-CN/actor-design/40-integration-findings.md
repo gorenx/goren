@@ -441,3 +441,44 @@ Snapshot.UpdateID 混合了配置事务与执行视图职责，现已删除。�
 调用 Invoker 的 panic 如果被外层中间件恢复成普通 error，会被 Dispatcher 转成工具失败，掩盖执行可能仍在进行的事实。现于投递边界恢复为未确认错误，再由 DeliveryError 传回，Call 保留责任并拒绝最终处理、结果读取和重复派发。Runtime 框架任务也保证 panic 返回关联的完成消息，不遗失请求回复或策略请求占用；不制造 ToolExecutionResult。
 
 验证：`go test -race -count=1 -timeout=30s ./tools/... ./internal/server`、对应 `go vet` 与差异检查通过。Call 回归验证未知结果不能最终处理、不能读取虚构结果且重试 Dispatch 不再投递工具体。AgentLoop 批次、审批审计和动态更新屏障仍待接通。
+
+## INT-36：Tools 根目录仍保留旧注册机制和执行状态
+
+问题与影响：根包同时保存 ToolLayer、分层 Registry/Store、注册句柄和 Scheduler。公共 ToolExecution 内嵌执行状态并引用 Scheduler，使公共策略输入具有隐式调度耦合，执行实现无法直接分包。删除旧入口后，toolaskuser 测试也暴露对旧注册构造的依赖。
+
+根因：Actor Runtime 已接入执行业务，但旧层构造和测试仍未迁移；公共调用数据与包内调度句柄没有分开。Resolve* 同时命名策略评估、执行委托和审批结果应用，无法表达具体职责。
+
+解决：删除旧层、Store、句柄和专属配置；根包保留业务契约与共享校验。Scheduler、Call、策略评估、工具派发和结果处理聚合到 tools/execution。公共 ToolExecution 无状态字段；包内准备句柄与状态只经 Call 使用，底层阶段方法不公开。删除测试专用 Scheduler.Execute，行为测试驱动真实 Call。ToolAskUser 的执行与真实 QuestionActor 测试同步迁移，移除旧注册卸载断言。EvaluateCall、ReviewResult、ApplyApproval、ExecuteBody 按具体职责命名，不保留 Resolve* 别名。
+
+验证：Tools、ToolAskUser、Agent、AgentLoop、Prompt、server 和 API Proxy 的定向 race 测试通过；共享 Schema 契约调整后重新验证 Tools/ToolAskUser，并继续执行受影响路径检查。验证不包括尚未迁移的 subagent/旧 assembly，也不代表 AgentLoop 主驱动或动态更新屏障已经完成。
+
+后续审查项：Runtime Grain 目前保存完整 InitializeRuntime 并用 reflect.DeepEqual 检查重复初始化；该消息包含 Provider/策略接口，比较范围不够精确。本次仅将 input/business 改为 initialization/toolRuntime 并说明职责，没有更改重复初始化协议。
+
+## INT-37：扩大验收范围暴露旧生产入口与架构检查
+
+执行 go list ./... 时，cmd/goren → internal/assembly 仍引用已删除的 agent/factory、agentloop/factory、apiproxy/factory、apiproxy/host、Plugin 及其他 Factory 包，生产入口无法构建。根因是领域迁移已删除旧构造契约，而 CLI/assembly 的整体装配尚未替换。不能通过重新引入兼容 Factory 或获取同名模块解决。
+
+随后选择 97 个包执行 go test -race -count=1 -timeout=60s，明确排除暂缓的 subagent 以及已确认不可构建的 cmd/goren、internal/assembly。选中范围内各业务包通过，tests/architecture 失败。失败包含要求 plugin 目录存在、要求 agentHost.Close/Factory/RegistryService 等已删除对象，以及把已采用的业务 DTO 依赖当作非法导入；还包含有效的命名冲突和常量说明检查。不能将所有失败都当作过时测试删除。
+
+影响：领域定向测试通过不足以证明可运行服务器；旧架构守卫也无法正确描述 Actor 目标。后续须用目标边界替换 Plugin 专用守卫，保留无框架业务依赖、无循环对象关系、命名和注释等仍有效约束，并处理真实违反项。Server/CLI 的最终替换和完整链路验收仍未完成，不把这次排除后的测试称为全项目通过。
+
+## INT-38：生产创建缺少 Title 生命周期和共享标题投影
+
+核对 API Titles.Rename 调用发现，它通过 Agent Registry.Ready.Components 获取已有 Title Runtime；原生产配置集成创建没有任何 Title 组件，因而无法证明标题 API 可用。根因是模块端口迁移已完成，但共享生命周期配置和 Agent 创建模板未纳入该依赖。
+
+增加生产装配函数配置 Title Registry（首次请求前启用 AllowAll）及 Projection 的 title.Unit，真实创建验收将 Title owner 加入 Components。通过 API Actor 客户端执行标题重命名，读取已提交日志和对应投影，再由 Agent Registry 关闭 Title 与 Session，使用 persistence.Reader.Inspect 验证 SQLite 中标题及事件序号。关闭后再次重命名返回错误。覆盖空工具、正常工具、工具初始化失败清理后重建、工具中途取消四种创建路径。
+
+同时在装配边界拒绝“已配置 LLM 标题但 Provider 缺失”，防止无声禁用模型标题。测试验证错误不消耗 Title Registry 的一次性配置权，修正配置后仍可成功初始化。本次配置验收使用显式无模型标题配置；实际默认模型标题 Provider 和 HTTP 主入口仍未接通，不作完成声明。
+
+## INT-39：Workspace Header 查询返回值收敛
+
+Header 查询原来同时返回值、found 和 error，用于区分缺失与读取失败。改为可选 Header 指针和 error；nil、nil 表示不存在，错误不能被当成不存在。返回的 Header 是副本，调用方修改 CWD 不影响实时 Session 或持久化记录。Workspace 的归档与关联分别保留 UnknownSessionError、AttachError 映射，外部业务行为不变。
+
+同步迁移 Workspace 端口、Actor 适配器、两个业务调用点及 API Workspace 测试实现；不保留旧签名。go test -race -count=1 -timeout=45s ./workspace/... ./apiproxy/workspace/... ./internal/server 与对应 go vet 通过。该检查证明 Header 契约及已有 Workspace 集成，不能代替尚未完成的生产入口验收。
+
+## INT-40：失效 Plugin 装配与 CLI 启动链
+
+- 根因：internal/assembly 仍构造已删除 Factory 的 Plugin 树，CLI 仍调用已不存在的初始化函数和 plugin.Runtime；它不是可运行的备用入口。
+- 处理：删除旧装配和对应旧协议夹具，删除 CLI Plugin 启停代码；保留 config.go 的参数、路径规则与测试。ProjectionCache 依赖守卫改为禁止依赖当前 internal/server。
+- 影响：Actor Server.Start/Close 和 main 尚未完成，CLI build 仍不通过；不增加占位 main。旧端到端测试中的持久化重启、HTTP、压缩和 Provider 覆盖仍须迁移，Bound/subagent 暂缓；详见 41-server-composition.md。
+- 复验：待提交代码快照的 Tools、ToolAskUser、Agent、AgentLoop、Prompt、Workspace、UserQuestions、Server、API Proxy 和 CLI 配置通过 `go test -race -count=1 -timeout=60s` 及 `go vet`；Credentials/ProjectionCache 两项边界测试通过。`go build ./cmd/goren` 明确失败于缺少 main；全量架构检查尚有 INT-37 记录的问题，未宣称全项目通过。

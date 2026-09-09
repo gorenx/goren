@@ -278,7 +278,7 @@ Scheduler 返回的执行句柄包含阶段状态，只交给执行编排调用�
 
 删除 ExecutionSubject 及 Options.Approvals。ToolExecutionInput / ToolExecution 只携带 SessionID，不持有可变 Agent、Session 或注入接口。审批所需事件快照由 Actor 编排向 Session 获取，Tools 不同步调用 Approval Service。
 
-Prepare 遇到 AskDecision 返回 ScheduledApproval 和 ApprovalRequest{SessionID,ToolName,CallID,Reason}，此时不得 Dispatch。Actor 完成 Approval 的 asked/decided 审计后调用 ResolveApproval(execution,outcome)，原执行身份只允许续接一次；允许后仍需 guard 检查和取消检查。拒绝、不可用和取消进入结果处理，不能执行工具体。
+Prepare 遇到 AskDecision 返回 ScheduledApproval 和 ApprovalRequest{SessionID,ToolName,CallID,Reason}，此时不得 Dispatch。Actor 完成 Approval 的 asked/decided 审计后调用 ApplyApproval(execution,outcome)，原执行身份只允许续接一次；允许后仍需 guard 检查和取消检查。拒绝、不可用和取消进入结果处理，不能执行工具体。
 
 普通 Execute 无法跨调用等待审批，只能在 Ask 时失败关闭；生产 Actor 必须使用分阶段 Scheduler 路径。此阶段不创建 Actor 队列或等待 goroutine，保留的 awaiting-approval 是禁止过早派发的业务阶段。旧工具运行时的其他锁与状态仍待整体 ToolActor 迁移，不能据此宣称生产执行编排完成。
 
@@ -350,16 +350,32 @@ Grain 只在框架任务中调用 Initialize/Apply/Close，回复在当前邮箱
 
 `Invoker.Invoke(ctx, Invocation) (BodyResult, error)` 是 Scheduler 的下游端口。BodyResult.Err 表示工具体已返回的业务失败；独立 error 表示调用结果未确认，不能被转换为普通工具结果，也不能自动重复执行。Actor 实现绑定原 Tool CreationID 与已结算更新身份，框架任务等待实际工具体退出，取消只传递执行 context，不用等待者取消伪造完成。
 
-ToolActor 提供按原 CreationID 和实现身份读取 Descriptor 的请求；Runtime 只在工具更新完成后构建 Scheduler，在执行排空前不得更新或释放描述中借用的行为对象。AgentLoop 继续拥有模型批次顺序与 Session 事实提交，Tools 拥有策略与结果规范化。审批仍分为 Prepare 和 ResolveApproval，不能用同步 Execute 的失败关闭分支替代真实审批。
+ToolActor 提供按原 CreationID 和实现身份读取 Descriptor 的请求；Runtime 只在工具更新完成后构建 Scheduler，在执行排空前不得更新或释放描述中借用的行为对象。AgentLoop 继续拥有模型批次顺序与 Session 事实提交，Tools 拥有策略与结果规范化。审批仍分为 Prepare 和 ApplyApproval，不能用同步 Execute 的失败关闭分支替代真实审批。
 
 验收覆盖原 Schema/输出校验与中间件语义、Descriptor 不暴露 Executor、工具业务错误与调用结果未知分离、实际 ToolActor 调用及取消退出确认。旧 ToolLayer 的分层构造尚需移除；此处迁移同一个执行算法，不新增第二套执行器或 Plugin 适配。
 
 ### Runtime 执行请求契约
 
-单次 `Call` 业务对象持有 Scheduler 的准备句柄、已返回分派结果与最终结果；其方法约束审批、分派及最终处理的合法顺序，不向 Actor 暴露可伪造结果的入口。Runtime Grain 按 CallID 保存调用及当前请求回复，用框架任务运行 Prepare/ResolveApproval/Dispatch/Finalize；不同调用的工具体可重叠，同一调用不得同时执行两个操作。Actor 不判断 policy 或编造失败结果。
+单次 `Call` 业务对象持有 Scheduler 的准备句柄、已返回分派结果与最终结果；其方法约束审批、分派及最终处理的合法顺序，不向 Actor 暴露可伪造结果的入口。Runtime Grain 按 CallID 保存调用及当前请求回复，用框架任务运行 Prepare/ApplyApproval/Dispatch/Finalize；不同调用的工具体可重叠，同一调用不得同时执行两个操作。Actor 不判断 policy 或编造失败结果。
 
-具名消息为 PrepareCall、ResolveCallApproval、DispatchCall、FinalizeCall、CancelCall、ReleaseCall，均绑定 Agent CreationID 和 CallID。PrepareCall 的 Context 控制执行意图；等待实际工具体的框架任务不因该 context 取消提前返回。CancelCall 只取消意图。FinalizeCall 只消费 Call 内部持有的真实结果，不能由请求方提交替代结果。ReleaseCall 只释放已结算调用，不能遗忘未确认的执行。关闭 Runtime 时如果尚有调用责任则返回错误，由上游排空、结算、释放后重试；不添加隐式队列。
+具名消息为 PrepareCall、ApplyCallApproval、DispatchCall、FinalizeCall、CancelCall、ReleaseCall，均绑定 Agent CreationID 和 CallID。PrepareCall 的 Context 控制执行意图；等待实际工具体的框架任务不因该 context 取消提前返回。CancelCall 只取消意图。FinalizeCall 只消费 Call 内部持有的真实结果，不能由请求方提交替代结果。ReleaseCall 只释放已结算调用，不能遗忘未确认的执行。关闭 Runtime 时如果尚有调用责任则返回错误，由上游排空、结算、释放后重试；不添加隐式队列。
 
 ### 快照与更新身份分离
 
 Snapshot 只保留已结算工具名称，不保留 UpdateID，也不换名为 Revision。UpdateID 只关联配置批次及其完成结果。每个 Tool 在实际提交新实现时生成独立的 Identity；重试同一 Commit 不生成新身份。Describe 返回该实现 Identity 和 Descriptor，执行客户端同时绑定原 Tool CreationID 及 Identity。替换实现后旧 Identity 失效，即使 Schema.Version 未变也不能执行旧请求。Runtime 从实际 Tool 读取这些绑定，不从配置事务推导执行身份。
+
+### Tools 根目录职责收敛
+
+根目录保留工具定义、调用输入、策略和结果等跨模块契约。执行准备、审批续接、工具体调用和结果处理聚合到 `tools/execution`；该包不依赖 Actor。`tools/runtime/actor` 调用执行对象，通过 Invoker 端口调用已绑定的 ToolActor。Registry 只管理配置和定义，Runtime 管理实例集合，Tool 管理单个实现及其资源。
+
+删除 ToolLayer、旧私有分层 Registry、Store、注册句柄及其构造入口；不把旧体系搬到新目录。旧层继承、注册句柄测试随旧入口删除，仍有效的策略顺序、审批、取消、Schema 校验、输出处理、快照隔离测试改用真实 Scheduler/Call。
+
+公共 ToolExecution 只表示策略可见的调用数据，不持有执行状态或 Scheduler。Call 持有本次调用的状态和实际输出；策略获得脱离调度权限的数据。结果和 Schema 的共享校验能力由定义契约所有者提供，执行模块不复制规则。Actor 只调度各阶段并等待实际工具退出，不承担策略决策。
+
+上下游契约：Provider 返回定义与工具体；Tool 校验并绑定实现；Runtime 捕获描述与 Invoker；执行对象负责一次调用；AgentLoop 消费已完成结果。外部协议、持久化形状、策略事件名称和取消语义不变；旧 Go 分层构造 API 破坏性移除。暂缓迁移的 subagent 不作为保留旧 API 的理由。
+
+验收：根目录无 ToolLayer 或私有分层 Registry；公共调用数据不引用执行状态；执行模块无框架依赖及包循环；策略、审批、取消、校验、结果快照测试通过；Tools/Agent/AgentLoop/Prompt/server 相关测试验证真实 Runtime 调用。未接通的 AgentLoop 主驱动及动态更新屏障另行记录，不能以本次目录收敛宣称完成。
+
+命名修正：PrePolicy.EvaluateCall 表示执行前评估；PostPolicy.ReviewResult 表示结果审查；Call.ApplyApproval 及 Runtime 的 ApplyCallApproval 表示应用已产生的审批决定；执行中间件调度使用 ExecuteBody。移除 Resolve* 名称及别名。Scheduler 的底层阶段方法不再对外公开；外部持有 Call，不能传入自造结果完成结算。Contract 统一保存编译后的 Schema，避免执行模块复制定义校验规则。删除仅服务于旧 ToolLayer 的 Config/ValidatedConfig 及 Code Mode 配置入口；当前 Actor 初始化使用 Registry 默认工具及 Agent 覆盖契约。
+
+Tools Runtime 的 Actor 实现命名为 `runtimeactor.Runtime`，表示每个 Agent 的工具运行调度入口，不再使用仅表示框架类型的 Grain。文件为 runtime.go、runtime_calls.go；业务对象仍为 toolruntime.Runtime。框架身份的类型名随 Go 类型变更，不提供旧 Grain 类型别名；服务名 `<sessionID>.tools`、消息和持久化业务数据不变。生命周期创建方与全部测试同步迁移。

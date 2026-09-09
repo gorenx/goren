@@ -6,6 +6,20 @@
 
 ## 模块架构与接口
 
+### ToolActor 与问答 Actor 的集成验收
+
+`tools/tool/actor/grain_questions_test.go` 使用真实 Tools Registry Grain、ToolActor、UserQuestions Grain 和问答 Client，工具构造复用 canonical ask_user_question 定义。人工答复来源由可控 Provider 替代；不使用假工具执行结果。测试由外部协调完成 Begin、Provision、自注册、Publish、Commit，不代表生产 Agent 生命周期已接入这些步骤。
+
+验收覆盖 SessionID 和问题参数穿过两层 Actor 后不变、原答案 JSON 返回；取消从 ToolActor.CancelCall 传播至问答 Provider，取消确认不完成原工具请求，必须等待 Provider 退出；等待期间工具 Close 被拒绝且资源未释放，退出后 Close 释放一次。此测试验证工具体边界，不包括 Tool Runtime 的 policy/结果规范化、Session 持久化或 API WebSocket 通知。
+
+### Session Header 数据来源
+
+workspace/actor.Headers 实现 Workspace 拥有的 SessionHeaders 端口，只读取 Header，不读取 AgentLoop 或创建 Session。Get 先查询 Session Registry.FindSession，已初始化的实时 Header 优先；明确不存在时通过 persistence.Reader.Inspect 读取持久化 Header。List 分页读取持久化 Header，再覆盖同 ID 的实时 Header，按 SessionID 排序返回独立副本。空实时 Session 也应可见；关闭并已持久化的 Session 仍保留在结果中。
+
+适配器依赖现有 Registry 地址、ActorSystem、仅含 Inspect/List 的持久化读取接口及请求超时，不持有数据库或 Workspace Registry。读取错误必须传播，不能将超时当作不存在；只有 persistence.NotFoundError 转为 found=false。合并不是跨存储与 Actor 的原子快照，不改变成员关系、CWD 校验或持久化语义。Workspace 的异步业务任务调用此同步客户端，不能在 Actor Receive 中阻塞调用。
+
+验收使用实际 Session Registry 和 SQLite：未持久化的实时 Session 可读、关闭后从持久化读取、同 ID 去重、返回数据不别名共享、缺失及读取取消语义正确。
+
 - Workspace Registry 独占目录注册、Session 归属及归档集合。Backend 仅执行持久化操作；SessionHeaders 只提供 Header。初始化显式接收依赖，不使用服务定位器。Actor 独占 Registry，串行执行操作，提交后发布非持久化 Notice；快照及 ID 是跨 Actor 契约，不传 Registry 或 Workspace 活对象。
 - UserQuestions Service 接收不可变 Provider 与调用者校验端口；负责空问题、展示意图、委派调用限制和输入输出复制。Provider 拥有浏览器等待与关联；Actor 将等待放到异步任务，保留原请求回复，接受取消，任务清理结束后才回复原请求。
 - ToolAskUser 提供 NewDefinition，消费最窄的 Ask 接口。工具的实例与执行由现有 Tools Runtime 管理，不增加重复的 Tool Registry 或等待队列。
@@ -68,6 +82,12 @@ Go 的 Workspace Notice 名称是现有 Go 契约，并非最新 DSH 的同名�
 
 ## 当前验证进度
 
+新增 `workspace/actor/actor_shutdown_test.go`：真实 Actor 执行写入期间从外部关闭 PID，检查取消到达后仍等待写入退出、调用方收到最终取消结果、存储最后关闭。`go test -race -count=10 ./workspace/actor -run '^TestShutdownWaitsForWorkspaceOperationBeforeClosingStorage$'` 通过。该场景未复现竞态，因此没有据此添加锁；其他关闭交错仍需各自的证据。
+
 业务与 Actor 实现已移除本模块的 Plugin/Factory 路径；通过 `go test -race -count=1 -timeout=30s ./workspace/... ./userquestions/... ./toolaskuser/... ./agent/registry`，并通过同范围 vet、build。`toolaskuser/actor_test.go` 验证真实 Tools 执行经过 UserQuestions Grain，保留 Session ID 和规范答案。
 
 整体 `go build ./...` 仍在 internal/assembly/catalog.go 引用已删除的 Agent、AgentLoop、Compaction、LLM、Session Query/Title Factory 时失败；它不属于已完成的全局装配。本模块保留具名初始化和消费入口，后续装配应直接使用，不能恢复旧 Factory 作为过渡。
+
+### Header 查询返回契约
+
+Workspace.SessionHeaders.Get 返回 `(*session.Header, error)`。查到时返回独立 Header 副本；`nil, nil` 表示实时 Registry 与持久化历史均不存在；查询失败返回 `nil, error`。不存在不作为存储失败，也不通过 Header 零值推断。Workspace 根据自身操作把缺失映射为 UnknownSessionError 或 AttachError，保留既有业务错误和 wire 行为。移除 found 布尔值，同步实时/持久化适配器、业务调用方及测试端口，不提供旧签名兼容路径。
