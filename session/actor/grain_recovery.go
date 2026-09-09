@@ -128,7 +128,11 @@ func (owner *Grain) finishResume(gc *goakt.GrainContext, result restorationFinis
 	owner.startWrite(gc)
 }
 
-func restore(ctx context.Context, identifier session.SessionID, storage RecoveryStorage) (*session.Log, int64, error) {
+func restore(
+	ctx context.Context,
+	identifier session.SessionID,
+	storage RecoveryStorage,
+) (*session.Log, int64, error) {
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, 0, err

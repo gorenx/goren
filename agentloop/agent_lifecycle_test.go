@@ -123,7 +123,7 @@ func TestTurnStateRejectsUnrequestedAndRepeatedConfirmation(t *testing.T) {
 	if err := subject.ConfirmTurn(write); !errors.Is(err, agentloop.ErrState) {
 		t.Fatal("repeated confirmation", err)
 	}
-	if _, err := subject.FinishActivity(); err == nil {
+	if _, err := subject.FinishExecution(); err == nil {
 		t.Fatal("committed canceled Turn was not retained for settlement")
 	}
 }

@@ -3,6 +3,8 @@ package loopactor
 import (
 	"context"
 	"errors"
+	middlewareactor "github.com/gorenx/goren/agent/middleware/actor"
+	"time"
 
 	llmactor "github.com/gorenx/goren/llm/actor"
 
@@ -16,21 +18,30 @@ import (
 // Session requests stash ordinary messages, so committed changes are applied
 // before another Inbox command can prepare a mutation.
 type Grain struct {
-	// idle closes when the current busy interval ends; waiters live in framework tasks.
-	maintenance    *maintenance
-	idle           chan struct{}
-	stopped        chan struct{}
-	opening        *turnOpening
-	stopping       *stoppingInvocation
-	preparation    *stepPreparation
-	business       *agentloop.ReactLoopAgent
-	ending         *turnClosure
-	model          *modelInvocation
-	conversation   *goakt.GrainIdentity
-	creationID     string
-	instanceID     string
-	initialization *initialization
-	prompt         *goakt.GrainIdentity
+	// All execution decisions live in business; these fields retain transport only.
+	maintenance       *maintenance
+	idle              chan struct{}
+	stopped           chan struct{}
+	business          *agentloop.ReactLoopAgent
+	models            *llmactor.Client
+	callID            llmactor.CallID
+	generation        agentloop.GenerationReceiver
+	chunk             agentloop.ChunkReceiver
+	stream            agentloop.StreamReceiver
+	modelCancellation *completeCancel
+	calls             map[string]struct{}
+	cancellations     map[string]cancellationRequest
+	deliveries        int
+	conversation      *goakt.GrainIdentity
+	creationID        string
+	instanceID        string
+	initialization    *initialization
+	prompt            *goakt.GrainIdentity
+	modelRouter       *goakt.PID
+	middleware        *goakt.GrainIdentity
+	handlers          middlewareactor.Handlers
+	tools             *goakt.GrainIdentity
+	replyTimeout      time.Duration
 }
 
 // OnActivate starts without a Session binding or mutable business dependencies.
@@ -44,31 +55,9 @@ func (owner *Grain) OnActivate(context.Context, *goakt.GrainProps) error {
 // OnDeactivate releases local projections; Session business close is independent.
 func (owner *Grain) OnDeactivate(ctx context.Context, _ *goakt.GrainProps) error {
 	close(owner.stopped)
-	if owner.opening != nil {
-		owner.finishTurnStart(owner.opening, false, errors.New("agentloop: stopped during Turn start"))
-	}
-	if owner.stopping != nil {
-		owner.finishStopping(owner.stopping, turnContinued{
-			err: errors.New("agentloop: stopped during stopping hook"),
-		})
-	}
-	if owner.preparation != nil {
-		owner.finishPreparation(owner.preparation, false, errors.New("agentloop: stopped during Step preparation"))
-	}
-	if owner.model != nil {
-
-		if owner.model.canceling != nil {
-			owner.model.canceling.completion.reply.Response(Changed{
-				Err: errors.New("agentloop: stopped before LLM cancellation acknowledgement"),
-			})
-			owner.model.canceling = nil
-		}
-		owner.finishModel(owner.model, errors.New("agentloop: stopped during model attempt"))
-		owner.model = nil
-	}
-	if owner.ending != nil {
-		owner.finishTurnRequest(owner.ending, errors.New("agentloop: stopped during Turn settlement"))
-		owner.ending = nil
+	if owner.modelCancellation != nil {
+		owner.modelCancellation.respond(errors.New("agentloop: stopped before model cancellation acknowledgement"))
+		owner.modelCancellation = nil
 	}
 	if owner.initialization != nil {
 		owner.finishInitialization(owner.initialization, errors.New("agentloop: stopped during initialization"))
@@ -83,7 +72,7 @@ func (owner *Grain) OnDeactivate(ctx context.Context, _ *goakt.GrainProps) error
 // OnReceive only dispatches commands and completions to their runtime handlers.
 func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 	defer owner.refreshIdle()
-	if owner.model != nil && owner.model.models != nil && owner.model.models.Receive(gc, llmactor.Receivers{
+	if owner.models != nil && owner.models.Receive(gc, llmactor.Receivers{
 		Generation:   owner,
 		Chunk:        owner,
 		Close:        owner,
@@ -91,12 +80,8 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 	}) {
 		return
 	}
-	if owner.receiveInitialization(gc) ||
-		owner.receiveInbox(gc) ||
-		owner.receiveTurn(gc) ||
-		owner.receiveStep(gc) ||
-		owner.receiveModel(gc) ||
-		owner.receiveLifecycle(gc) {
+	if owner.receiveCapabilities(gc) || owner.receiveInitialization(gc) ||
+		owner.receiveInbox(gc) || owner.receiveLifecycle(gc) {
 		return
 	}
 	gc.Unhandled()

@@ -169,7 +169,7 @@ func (current *Recovery) Advance(result Result) (Operation, error) {
 		if write.Barrier.SessionID != current.input.AgentID || len(write.Events) != 1 || write.NextSeq != write.FirstSeq+1 || write.Barrier.NextSeq != write.NextSeq || write.Events[0].Seq != write.FirstSeq {
 			return current.finish(false, errors.New("llm-retry: invalid commit acknowledgement")), nil
 		}
-		if err := current.pending.draft.CheckCommit(write.Events[0]); err != nil {
+		if err := current.pending.draft.ValidateEvent(write.Events[0]); err != nil {
 			return current.finish(false, err), nil
 		}
 		if current.cancellation != nil {

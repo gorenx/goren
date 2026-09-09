@@ -3,71 +3,134 @@ package loopactor
 import (
 	"errors"
 
+	"github.com/gorenx/goren/agentloop"
 	"github.com/gorenx/goren/agentloop/internal/modelrequest"
+	"github.com/gorenx/goren/llm"
 	llmactor "github.com/gorenx/goren/llm/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
-func (owner *Grain) sendModelOperation(gc *goakt.GrainContext, current *modelInvocation, operation modelrequest.Operation) {
-	if _, generating := operation.(modelrequest.Generate); generating {
-		current.callID = current.models.NewCall()
+// modelPort adapts only LLM operations. The business receiver owns streaming,
+// Session commits, recovery and all decisions about subsequent operations.
+type modelPort struct{ scope serviceScope }
+
+func (endpoint modelPort) Generate(input llm.Input, receiver agentloop.GenerationReceiver) error {
+	owner := endpoint.scope.owner
+	if owner.callID != "" || owner.generation != nil {
+		return errors.New("agentloop: generation is already open")
 	}
-	if current.callID == "" {
-		if _, closing := operation.(modelrequest.CloseStream); closing {
-			owner.acceptRequest(gc, current, modelrequest.AttemptAdvanced{
-				Result: modelrequest.StreamClosed{},
-			})
-		} else {
-			owner.finishModel(current, errors.New("agentloop: no active LLM call"))
+	if owner.models == nil {
+		client, err := llmactor.NewClient(owner.modelRouter, owner.replyTimeout)
+		if err != nil {
+			return err
 		}
-		return
+		owner.models = client
 	}
-	current.pendingOperation = operation
-	switch input := operation.(type) {
-	case modelrequest.Generate:
-		current.models.Start(gc, current.callID, llmactor.AgentConfig{
-			AgentID: string(owner.business.ID()),
-		}, input.Input, owner)
-	case modelrequest.ReadChunk:
-		current.models.Read(gc, current.callID, owner)
-	case modelrequest.CloseStream:
-		current.models.Close(gc, current.callID, owner)
-	default:
-		owner.finishModel(current, errors.New("agentloop: invalid LLM operation"))
-	}
+	owner.callID = owner.models.NewCall()
+	owner.generation = receiver
+	owner.models.Start(endpoint.scope.gc, owner.callID, llmactor.AgentConfig{
+		AgentID: string(owner.business.ID()),
+	}, input, owner)
+	return nil
 }
 
-// OnGenerationStarted delivers resolved parameters and opening outcome to ModelRequest.
+func (endpoint modelPort) Read(receiver agentloop.ChunkReceiver) error {
+	owner := endpoint.scope.owner
+	if owner.callID == "" || owner.chunk != nil {
+		return errors.New("agentloop: chunk read requires an available generation")
+	}
+	owner.chunk = receiver
+	owner.models.Read(endpoint.scope.gc, owner.callID, owner)
+	return nil
+}
+
+func (endpoint modelPort) Close(receiver agentloop.StreamReceiver) error {
+	owner := endpoint.scope.owner
+	if owner.stream != nil {
+		return errors.New("agentloop: stream close is already pending")
+	}
+	if owner.callID == "" {
+		return endpoint.scope.deliver(func(services agentloop.Services) { receiver.StreamClosed(services, nil) })
+	}
+	owner.stream = receiver
+	owner.models.Close(endpoint.scope.gc, owner.callID, owner)
+	return nil
+}
+
+// deliver normalizes immediate adapter errors and mailbox replies to a fresh
+// receive call. Only detached receivers and result data cross this boundary.
+func (scope serviceScope) deliver(accept func(agentloop.Services)) error {
+	delivery := capabilityDelivery{
+		creationID: scope.owner.creationID,
+		accept:     accept,
+	}
+	err := scope.gc.PipeToSelf(func() (any, error) { return delivery, nil })
+	if err == nil {
+		scope.owner.deliveries++
+	}
+	return err
+}
+
 func (owner *Grain) OnGenerationStarted(gc *goakt.GrainContext, result llmactor.GenerationStarted) {
-	owner.generationResult(gc, result.CallID, result)
-}
-
-// OnChunkRead delivers one requested chunk without deciding request policy.
-func (owner *Grain) OnChunkRead(gc *goakt.GrainContext, result llmactor.ChunkRead) {
-	owner.generationResult(gc, result.CallID, result)
-}
-
-// OnCallClosed delivers the actual close outcome to ModelRequest.
-func (owner *Grain) OnCallClosed(gc *goakt.GrainContext, result llmactor.CallClosed) {
-	owner.generationResult(gc, result.CallID, result)
-}
-
-func (owner *Grain) generationResult(gc *goakt.GrainContext, id llmactor.CallID, payload any) {
-	current := owner.model
-	if current == nil || current.callID != id {
+	receiver := owner.generation
+	if receiver == nil || result.CallID != owner.callID {
 		return
 	}
-	operation := current.pendingOperation
-	if operation == nil {
-		return
+	owner.generation = nil
+	scope := serviceScope{
+		owner: owner,
+		gc:    gc,
 	}
-	current.pendingOperation = nil
-	if result, ok := payload.(llmactor.CallClosed); ok && result.Err == nil {
-		current.callID = ""
-	}
-	owner.advanceStream(gc, streamProgress{
-		attempt:   current,
-		operation: operation,
-		payload:   payload,
+	err := scope.deliver(func(services agentloop.Services) {
+		receiver.GenerationStarted(services, modelrequest.GenerationStarted{
+			Config:      result.Config,
+			Defaults:    result.Defaults,
+			Context:     result.Context,
+			RetryPolicy: result.RetryPolicy,
+			Err:         result.Err,
+		})
 	})
+	if err != nil {
+		scope.ExecutionFailed(err)
+	}
+}
+
+func (owner *Grain) OnChunkRead(gc *goakt.GrainContext, result llmactor.ChunkRead) {
+	receiver := owner.chunk
+	if receiver == nil || result.CallID != owner.callID {
+		return
+	}
+	owner.chunk = nil
+	scope := serviceScope{
+		owner: owner,
+		gc:    gc,
+	}
+	err := scope.deliver(func(services agentloop.Services) {
+		receiver.ChunkRead(services, modelrequest.ChunkRead{
+			Chunk: result.Chunk,
+			Found: result.Found,
+		}, result.Err)
+	})
+	if err != nil {
+		scope.ExecutionFailed(err)
+	}
+}
+
+func (owner *Grain) OnCallClosed(gc *goakt.GrainContext, result llmactor.CallClosed) {
+	receiver := owner.stream
+	if receiver == nil || result.CallID != owner.callID {
+		return
+	}
+	owner.stream = nil
+	if result.Err == nil {
+		owner.callID = ""
+	}
+	scope := serviceScope{
+		owner: owner,
+		gc:    gc,
+	}
+	err := scope.deliver(func(services agentloop.Services) { receiver.StreamClosed(services, result.Err) })
+	if err != nil {
+		scope.ExecutionFailed(err)
+	}
 }

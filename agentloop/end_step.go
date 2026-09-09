@@ -67,7 +67,7 @@ func (ending EndStep) inspect(snapshot session.Snapshot) (*session.WriteResult, 
 		if !open || previous != nil {
 			return nil, false, errors.New("agentloop: Step end has no unique open start")
 		}
-		err = ending.draft.CheckCommit(entry)
+		err = ending.draft.ValidateEvent(entry)
 		if err != nil {
 			return nil, false, err
 		}

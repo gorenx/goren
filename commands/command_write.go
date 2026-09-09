@@ -43,7 +43,7 @@ func (plan eventWrite) FindCommit(snapshot session.Snapshot) (*session.WriteResu
 		if found != nil {
 			return nil, errors.New("commands: duplicate lifecycle identity")
 		}
-		if err := plan.draft.CheckCommit(entry); err != nil {
+		if err := plan.draft.ValidateEvent(entry); err != nil {
 			return nil, err
 		}
 		found = &session.WriteResult{
@@ -63,5 +63,5 @@ func (plan eventWrite) check(written session.WriteResult) error {
 	if written.Barrier.SessionID != plan.sessionID || written.FirstSeq < 0 || written.NextSeq != written.FirstSeq+1 || written.Barrier.NextSeq != written.NextSeq || len(written.Events) != 1 || written.Events[0].Seq != written.FirstSeq {
 		return errors.New("commands: invalid commit identity or range")
 	}
-	return plan.draft.CheckCommit(written.Events[0])
+	return plan.draft.ValidateEvent(written.Events[0])
 }

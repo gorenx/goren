@@ -1,8 +1,10 @@
 package agentactor
 
 import (
+	middlewareactor "github.com/gorenx/goren/agent/middleware/actor"
 	"github.com/gorenx/goren/session"
 	goakt "github.com/tochemey/goakt/v4/actor"
+	"time"
 )
 
 // Initialize binds already-started component routes and restores execution state.
@@ -13,6 +15,14 @@ type Initialize struct {
 	CreationID string
 	Session    *goakt.GrainIdentity
 	Prompt     *goakt.GrainIdentity
+	// ModelRouter is the shared LLM worker pool; the loop does not spawn workers.
+	ModelRouter *goakt.PID
+	// Middleware executes the selected hooks; Tools owns this Agent's instances.
+	Middleware *goakt.GrainIdentity
+	// Handlers selects the middleware executed for this Agent.
+	Handlers middlewareactor.Handlers
+	Tools    *goakt.GrainIdentity
+	Timeout  time.Duration
 }
 
 // Initialized acknowledges completed Agent initialization, not just activation or Claim.

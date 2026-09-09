@@ -20,7 +20,7 @@ func TestMaintenanceOwnsActivityUntilSettlement(t *testing.T) {
 	if _, err := subject.PrepareTurn(); err == nil {
 		t.Fatal("Turn started during maintenance")
 	}
-	if _, err := subject.FinishActivity(); err == nil {
+	if _, err := subject.FinishExecution(); err == nil {
 		t.Fatal("execution completion released maintenance")
 	}
 	proposal, err := subject.Followup(inputMessage(t, "after maintenance"))

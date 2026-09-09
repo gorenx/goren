@@ -32,7 +32,9 @@ func (owner *Grain) startFlush(gc *goakt.GrainContext, input Flush) {
 	err := owner.authorize(input.CreationID)
 	if err == nil {
 		current := owner.history.Barrier()
-		if input.Barrier.SessionID != current.SessionID || input.Barrier.NextSeq < 0 || input.Barrier.NextSeq > current.NextSeq {
+		if input.Barrier.SessionID != current.SessionID ||
+			input.Barrier.NextSeq < 0 ||
+			input.Barrier.NextSeq > current.NextSeq {
 			err = ErrBarrier
 		}
 	}

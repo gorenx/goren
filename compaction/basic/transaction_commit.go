@@ -57,7 +57,7 @@ func (subject *Transaction) confirmWrite(written session.WriteResult) error {
 		if written.Events[index].Seq != written.FirstSeq+int64(index) {
 			return errors.New("compaction: noncontiguous transaction commit")
 		}
-		if err := draft.CheckCommit(written.Events[index]); err != nil {
+		if err := draft.ValidateEvent(written.Events[index]); err != nil {
 			return err
 		}
 	}

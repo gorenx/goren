@@ -109,6 +109,7 @@ func TestInboxCommandsCommitBeforeApplyingAndRetainStateOnFailure(t *testing.T) 
 		t.Fatal(err)
 	}
 	dependencies := configurationRoutes(t, system)
+	routes := executionDependencies(t, system)
 	t.Cleanup(func() {
 		if err := system.Stop(ctx); err != nil {
 			t.Error(err)
@@ -138,11 +139,15 @@ func TestInboxCommandsCommitBeforeApplyingAndRetainStateOnFailure(t *testing.T) 
 	}
 	authorityDriver, authorityReplies := grainDriver(t, system, authority)
 	denied := request[agentactor.Initialized](t, driver, replies, agentactor.Initialize{
-		AgentID:    "conversation",
-		Authority:  authority,
-		CreationID: "current",
-		Session:    sessionRoute(t, system, "conversation"),
-		Prompt:     promptRoute(t, system, "conversation", dependencies),
+		ModelRouter: routes.router,
+		Middleware:  routes.middleware,
+		Tools:       toolRuntimeRoute(t, system, "conversation"),
+		Timeout:     time.Second,
+		AgentID:     "conversation",
+		Authority:   authority,
+		CreationID:  "current",
+		Session:     sessionRoute(t, system, "conversation"),
+		Prompt:      promptRoute(t, system, "conversation", dependencies),
 	})
 	if denied.Err == nil {
 		t.Fatal("unreserved Agent initialized")
@@ -157,15 +162,20 @@ func TestInboxCommandsCommitBeforeApplyingAndRetainStateOnFailure(t *testing.T) 
 		t.Fatal(reserved.Err)
 	}
 	initialized := request[agentactor.Initialized](t, driver, replies, agentactor.Initialize{
-		AgentID:    "conversation",
-		Authority:  authority,
-		CreationID: "current",
-		Session:    sessionRoute(t, system, "conversation"),
-		Prompt:     promptRoute(t, system, "conversation", dependencies),
+		ModelRouter: routes.router,
+		Middleware:  routes.middleware,
+		Tools:       toolRuntimeRoute(t, system, "conversation"),
+		Timeout:     time.Second,
+		AgentID:     "conversation",
+		Authority:   authority,
+		CreationID:  "current",
+		Session:     sessionRoute(t, system, "conversation"),
+		Prompt:      promptRoute(t, system, "conversation", dependencies),
 	})
 	if initialized.Err != nil {
 		t.Fatal(initialized.Err)
 	}
+	holdExecution(t, system, identity)
 	prompt, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
 		Content: []agentmessage.ContentBlock{agentmessage.NewTextBlock("hello")},
 		Source:  agentmessage.UserMessageSource{},
@@ -216,11 +226,15 @@ func TestInboxCommandsCommitBeforeApplyingAndRetainStateOnFailure(t *testing.T) 
 		t.Fatal(err)
 	}
 	reactivated := request[agentactor.Initialized](t, driver, replies, agentactor.Initialize{
-		AgentID:    "conversation",
-		Authority:  authority,
-		CreationID: "current",
-		Session:    sessionRoute(t, system, "conversation"),
-		Prompt:     promptRoute(t, system, "conversation", dependencies),
+		ModelRouter: routes.router,
+		Middleware:  routes.middleware,
+		Tools:       toolRuntimeRoute(t, system, "conversation"),
+		Timeout:     time.Second,
+		AgentID:     "conversation",
+		Authority:   authority,
+		CreationID:  "current",
+		Session:     sessionRoute(t, system, "conversation"),
+		Prompt:      promptRoute(t, system, "conversation", dependencies),
 	})
 	if !errors.Is(reactivated.Err, agentregistry.ErrInstance) {
 		t.Fatalf("reactivated initialization = %v", reactivated.Err)
@@ -250,6 +264,7 @@ func TestCloseRetainsSessionUntilPendingInputIsCancelled(t *testing.T) {
 		t.Fatal(err)
 	}
 	dependencies := configurationRoutes(t, system)
+	routes := executionDependencies(t, system)
 	t.Cleanup(func() {
 		if err := system.Stop(ctx); err != nil {
 			t.Error(err)
@@ -292,17 +307,22 @@ func TestCloseRetainsSessionUntilPendingInputIsCancelled(t *testing.T) {
 	})
 
 	denied := request[agentactor.Initialized](t, driver, replies, agentactor.Initialize{
-		AgentID:    "conversation",
-		Authority:  authority,
-		CreationID: "current",
-		Session:    sessionRoute(t, system, "conversation"),
-		Prompt:     dependencies,
+		ModelRouter: routes.router,
+		Middleware:  routes.middleware,
+		Tools:       toolRuntimeRoute(t, system, "conversation"),
+		Timeout:     time.Second,
+		AgentID:     "conversation",
+		Authority:   authority,
+		CreationID:  "current",
+		Session:     sessionRoute(t, system, "conversation"),
+		Prompt:      dependencies,
 	})
 	if denied.Err == nil {
 		t.Fatal("unreserved Agent initialized")
 	}
 	initialized := request[agentregistry.Ready](t, authorityDriver, authorityReplies, agentregistry.CreateAgent{
-		Creation: agentregistry.Creation{
+		ModelRouter: routes.router,
+		Middleware:  routes.middleware, Creation: agentregistry.Creation{
 			AgentID:    "conversation",
 			CreationID: "current",
 		},

@@ -119,7 +119,9 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 		}
 		current := owner.history.Barrier()
 		if minimum := incoming.Minimum; minimum != nil &&
-			(minimum.SessionID != current.SessionID || minimum.NextSeq < 0 || minimum.NextSeq > current.NextSeq) {
+			(minimum.SessionID != current.SessionID ||
+				minimum.NextSeq < 0 ||
+				minimum.NextSeq > current.NextSeq) {
 			gc.Response(View{
 				Err: ErrBarrier,
 			})

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	middlewareactor "github.com/gorenx/goren/agent/middleware/actor"
 	"path/filepath"
 	"slices"
 	"sync"
@@ -121,6 +122,15 @@ func TestAgentCreationWithProductionConfigurationOwners(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			router, err := llmactor.SpawnPool(ctx, system, "models", 1, llmactor.InitializeWorker{LLM: models})
+			if err != nil {
+				t.Fatal(err)
+			}
+			hooks, err := goakt.GrainOf[*middlewareactor.Grain](ctx, system, "middleware", goakt.WithLongLivedGrain(),
+				goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))))
+			if err != nil {
+				t.Fatal(err)
+			}
 			input := agentregistry.CreateAgent{
 				Creation: agentregistry.Creation{
 					AgentID:    "conversation",
@@ -130,6 +140,8 @@ func TestAgentCreationWithProductionConfigurationOwners(t *testing.T) {
 				Storage:         storage,
 				SessionRegistry: sessions,
 				ModelConfig:     models,
+				ModelRouter:     router,
+				Middleware:      hooks,
 				PromptRegistry:  prompts,
 				ToolsRegistry:   directory,
 				Components:      []*goakt.GrainIdentity{titleOwner},

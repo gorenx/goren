@@ -52,10 +52,11 @@ type EventDraft struct {
 	ignorable        bool
 }
 
-// CheckCommit verifies the exact event returned by committing this immutable draft.
-// It compares payload bytes preserved by Log.Commit, not arbitrary historical JSON
-// encodings. The caller separately checks Session identity and the requested range.
-func (draft EventDraft) CheckCommit(entry Event) error {
+// ValidateEvent validates sequence/time metadata and checks that the event's
+// contents exactly match this draft, including payload bytes and surface intent.
+// It does not establish that a commit occurred or became durable. The caller
+// separately validates Session identity, the write range and any flush barrier.
+func (draft EventDraft) ValidateEvent(entry Event) error {
 	if err := validateEventDraft(draft); err != nil {
 		return err
 	}

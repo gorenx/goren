@@ -96,7 +96,7 @@ func (proposal *transactionCompletion) Build(_ context.Context, snapshot session
 	if err != nil {
 		return nil, err
 	}
-	if err := start.CheckCommit(snapshot.Events[proposal.startSeq]); err != nil {
+	if err := start.ValidateEvent(snapshot.Events[proposal.startSeq]); err != nil {
 		return nil, err
 	}
 	if proposal.lifecycle.Turn != nil && !equalSequences(snapshot.Surface.Nodes, proposal.surface) {
@@ -165,7 +165,7 @@ func (proposal *transactionCompletion) FindCommit(snapshot session.Snapshot) (*s
 				if stored.Seq != entry.Seq+int64(offset) {
 					return nil, errors.New("compaction: completion batch is not contiguous")
 				}
-				if err := draft.CheckCommit(stored); err != nil {
+				if err := draft.ValidateEvent(stored); err != nil {
 					return nil, fmt.Errorf("compaction: completion identity conflicts with committed batch: %w", err)
 				}
 			}

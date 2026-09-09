@@ -39,7 +39,7 @@ func (beginning TurnStart) Find(snapshot session.Snapshot) (*session.WriteResult
 		if result != nil {
 			return nil, errors.New("agentloop: duplicate Turn starts")
 		}
-		if err := beginning.draft.CheckCommit(entry); err != nil {
+		if err := beginning.draft.ValidateEvent(entry); err != nil {
 			return nil, err
 		}
 		result = &session.WriteResult{

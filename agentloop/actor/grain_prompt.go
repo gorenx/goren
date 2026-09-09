@@ -21,18 +21,22 @@ func (owner *Grain) initializePrompt(gc *goakt.GrainContext, input initializatio
 		owner.finishInitialization(operation, input.err)
 		return
 	}
-	gc.RequestGrain(owner.prompt, promptactor.ReadRuntime{}, goakt.WithRequestTimeout(0)).Then(func(payload any, failure error) {
-		if owner.initialization != operation {
-			return
-		}
-		if failure == nil {
-			result, ok := payload.(promptactor.RuntimeView)
-			if !ok {
-				failure = errors.New("agentloop: invalid Prompt view")
-			} else {
-				failure = result.Err
+	gc.RequestGrain(
+		owner.prompt, promptactor.ReadRuntime{},
+		goakt.WithRequestTimeout(0),
+	).Then(
+		func(payload any, failure error) {
+			if owner.initialization != operation {
+				return
 			}
-		}
-		owner.finishInitialization(operation, failure)
-	})
+			if failure == nil {
+				result, ok := payload.(promptactor.RuntimeView)
+				if !ok {
+					failure = errors.New("agentloop: invalid Prompt view")
+				} else {
+					failure = result.Err
+				}
+			}
+			owner.finishInitialization(operation, failure)
+		})
 }

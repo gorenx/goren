@@ -38,7 +38,7 @@ func (owner *Grain) finishMaintenance(gc *goakt.GrainContext, input agentactor.F
 		failure = errors.New("agentloop: maintenance request is not current")
 	}
 	if failure == nil {
-		_, failure = owner.business.FinishMaintenance()
+		failure = owner.business.MaintenanceCompleted(owner.services(gc))
 		if failure == nil {
 			owner.maintenance = nil
 		}

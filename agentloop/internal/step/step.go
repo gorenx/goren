@@ -79,7 +79,7 @@ func (current *Step) ConfirmStart(committed session.Event) error {
 	if err != nil {
 		return err
 	}
-	if err := draft.CheckCommit(committed); err != nil {
+	if err := draft.ValidateEvent(committed); err != nil {
 		return err
 	}
 	current.lastInputSeq = committed.Seq
@@ -145,7 +145,7 @@ func (current *Step) ConfirmEnd(committed session.Event) error {
 	if err != nil {
 		return err
 	}
-	if err := draft.CheckCommit(committed); err != nil {
+	if err := draft.ValidateEvent(committed); err != nil {
 		return err
 	}
 	if committed.Seq <= current.lastInputSeq {

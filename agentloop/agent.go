@@ -20,7 +20,6 @@ var ErrPending = errors.New("agentloop: accepted input remains")
 type ReactLoopAgent struct {
 	// inboxNext excludes already-applied log entries when reconciling an uncertain claim.
 	inboxNext  int64
-	running    *activity
 	request    *modelrequest.ModelRequest
 	preparing  *preparation
 	identifier session.SessionID
@@ -29,6 +28,20 @@ type ReactLoopAgent struct {
 	current    *turnstate.Turn
 	step       *stepstate.Step
 	lastTurn   int64
+
+	state executionState
+	// cancelCause identifies who requested stopping; nil means no cancellation.
+	// It is an intent, not an execution failure.
+	cancelCause agent.CancelCause
+	// runAfterCompletion requests execution after current work finishes.
+	// Cancelling with old input A preserved leaves it false; admitting new
+	// Followup B after cancellation sets it true. Maintenance uses the same rule.
+	runAfterCompletion bool
+	// failure retains the execution outcome, including reported cancellation,
+	// until the current Turn is durable. It does not request cancellation.
+	failure error
+	// retry retains an immutable failed boundary, never a transport receiver.
+	retry executionRetry
 
 	lifetime     lifecycle
 	headerLogged bool
@@ -136,17 +149,21 @@ func (subject *ReactLoopAgent) Apply(entries []session.Event) (agent.InboxChange
 // started. A proposed Turn still owns an uncertain start commit and must settle.
 func (subject *ReactLoopAgent) PrepareClose(executing bool) error {
 	subject.lifetime.beginClose()
+	if subject.state != executionIdle {
+		subject.cancelExecution(agent.DisposedCancel{}, true)
+		subject.preserveInbox = true
+		subject.runAfterCompletion = false
+	}
 	if !executing &&
-		subject.running != nil &&
-		subject.running.kind == executionActivity &&
+		subject.state == executionRunning &&
 		subject.current == nil &&
 		subject.step == nil &&
 		subject.preparing == nil &&
 		subject.request == nil &&
 		subject.ending == nil {
 		subject.preserveInbox = true
-		subject.running.wake = false
-		_, err := subject.FinishActivity()
+		subject.runAfterCompletion = false
+		_, err := subject.FinishExecution()
 		if err != nil {
 			return err
 		}
@@ -156,7 +173,7 @@ func (subject *ReactLoopAgent) PrepareClose(executing bool) error {
 
 // CheckClose preserves historical input when cleaning up a failed initialization.
 func (subject *ReactLoopAgent) CheckClose(executing bool) error {
-	if executing || subject.running != nil || subject.current != nil {
+	if executing || subject.state != executionIdle || subject.current != nil {
 		return ErrPending
 	}
 	if err := subject.lifetime.checkRelease(); err != nil {

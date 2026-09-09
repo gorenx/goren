@@ -61,7 +61,7 @@ func (proposal *transactionEnd) Build(_ context.Context, snapshot session.Snapsh
 	if err != nil {
 		return nil, err
 	}
-	if err := start.CheckCommit(snapshot.Events[sequence]); err != nil {
+	if err := start.ValidateEvent(snapshot.Events[sequence]); err != nil {
 		return nil, fmt.Errorf("compaction: failed end conflicts with transaction start: %w", err)
 	}
 	draft, err := proposal.draft()
@@ -87,7 +87,7 @@ func (proposal *transactionEnd) FindCommit(snapshot session.Snapshot) (*session.
 		if err != nil {
 			return nil, err
 		}
-		if err := draft.CheckCommit(entry); err != nil {
+		if err := draft.ValidateEvent(entry); err != nil {
 			return nil, fmt.Errorf("compaction: transaction already has a different end: %w", err)
 		}
 		return &session.WriteResult{

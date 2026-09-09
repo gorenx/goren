@@ -85,23 +85,16 @@ func TestModelResultTimeoutClosesWithoutGeneratingAgain(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			subject, history := preparedTurn(t)
-			prepareRequestStep(t, subject, history)
-			storage, err := goakt.GrainOf[*settlementStorage](ctx, system, "storage", goakt.WithLongLivedGrain())
+			subject, history := acceptedTurn(t)
+			storage, err := goakt.GrainOf[*sessionGrain](ctx, system, "storage", goakt.WithLongLivedGrain())
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := system.AskGrain(ctx, storage, storageSetup{history: history}, time.Second); err != nil {
+			if _, err := system.AskGrain(ctx, storage, sessionSetup{history: history}, time.Second); err != nil {
 				t.Fatal(err)
 			}
-			target, err := goakt.GrainOf[*settlementAgent](ctx, system, "execution", goakt.WithLongLivedGrain())
+			target, err := goakt.GrainOf[*executionGrain](ctx, system, "execution", goakt.WithLongLivedGrain())
 			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := system.AskGrain(ctx, target, settlementSetup{
-				subject: subject,
-				target:  storage,
-			}, time.Second); err != nil {
 				t.Fatal(err)
 			}
 			coordinator, err := goakt.GrainOf[*middlewareactor.Grain](ctx, system, "middleware", goakt.WithLongLivedGrain(), goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))))
@@ -116,18 +109,17 @@ func TestModelResultTimeoutClosesWithoutGeneratingAgain(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			responses := make(chan responseResult, 1)
-			go func() {
-				payload, failure := system.AskGrain(ctx, target, requestModel{
-					router:       endpoint,
-					middleware:   coordinator,
-					replyTimeout: 40 * time.Millisecond,
-				}, 3*time.Second)
-				responses <- responseResult{
-					payload: payload,
-					err:     failure,
-				}
-			}()
+			_, err = system.AskGrain(ctx, target, executionSetup{
+				execute:    true,
+				subject:    subject,
+				target:     storage,
+				middleware: coordinator,
+				router:     endpoint,
+				timeout:    100 * time.Millisecond,
+			}, time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
 			var generated llmactor.Generation
 			select {
 			case command := <-commands:
@@ -156,14 +148,6 @@ func TestModelResultTimeoutClosesWithoutGeneratingAgain(t *testing.T) {
 					t.Fatal("cancel was not sent")
 				}
 			}
-			completed := <-responses
-			if completed.err != nil {
-				t.Fatal(completed.err)
-			}
-			result := completed.payload.(modelResult)
-			if result.err == nil || !errors.Is(result.err, context.DeadlineExceeded) {
-				t.Fatalf("outcome: %+v", result)
-			}
 			closed := (<-commands).(llmactor.CloseCall)
 			if generated.CallID != closed.CallID || generated.RequestID == closed.RequestID {
 				t.Fatal("cleanup did not retain call identity with a new operation identity")
@@ -174,19 +158,21 @@ func TestModelResultTimeoutClosesWithoutGeneratingAgain(t *testing.T) {
 			default:
 			}
 			if confirmed {
-				if _, err := subject.CompleteModel(); err != nil {
-					t.Fatal(err)
+				payload, err := system.AskGrain(ctx, target, WhenIdle{CreationID: "test"}, 2*time.Second)
+				if err != nil || payload.(Completion).Err != nil {
+					t.Fatalf("confirmed close did not settle: %v, %v", payload, err)
 				}
 			} else {
-				if _, err := subject.CompleteModel(); err == nil {
-					t.Fatal("unconfirmed closure allowed Step continuation")
+				_, err := system.AskGrain(ctx, target, WhenIdle{CreationID: "test"}, 200*time.Millisecond)
+				if err == nil {
+					t.Fatal("unconfirmed close released execution")
+				}
+				payload, err := system.AskGrain(ctx, target, ReadActivity{CreationID: "test"}, time.Second)
+				if err != nil || payload.(Activity).Status != agent.StatusRunning {
+					t.Fatalf("unconfirmed close lost ownership: %v, %v", payload, err)
 				}
 			}
+
 		})
 	}
-}
-
-type responseResult struct {
-	payload any
-	err     error
 }

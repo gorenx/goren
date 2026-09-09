@@ -8,7 +8,6 @@ import (
 	"github.com/gorenx/goren/agent"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/log"
-	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
 func TestPreparationCancellationAwaitsOnlyActiveComponent(t *testing.T) {
@@ -27,12 +26,12 @@ func TestPreparationCancellationAwaitsOnlyActiveComponent(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			subject, history := preparedTurn(t)
-			storage, err := goakt.GrainOf[*settlementStorage](ctx, system, "storage", goakt.WithLongLivedGrain())
+			subject, history := acceptedTurn(t)
+			storage, err := goakt.GrainOf[*sessionGrain](ctx, system, "storage", goakt.WithLongLivedGrain())
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := system.AskGrain(ctx, storage, storageSetup{
+			if _, err := system.AskGrain(ctx, storage, sessionSetup{
 				history: history,
 			}, time.Second); err != nil {
 				t.Fatal(err)
@@ -48,28 +47,16 @@ func TestPreparationCancellationAwaitsOnlyActiveComponent(t *testing.T) {
 			}, time.Second); err != nil {
 				t.Fatal(err)
 			}
-			target, err := goakt.GrainOf[*settlementAgent](ctx, system, "execution", goakt.WithLongLivedGrain())
+			target, err := goakt.GrainOf[*executionGrain](ctx, system, "execution", goakt.WithLongLivedGrain())
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := system.AskGrain(ctx, target, settlementSetup{
-				subject: subject,
-				target:  storage,
-				prompt:  endpoint,
-			}, time.Second); err != nil {
-				t.Fatal(err)
-			}
-			replies := make(chan stepPrepared, 1)
-			caller, err := system.Spawn(ctx, "caller", &preparationCaller{
-				replies: replies,
-			}, goakt.WithReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := goakt.Tell(ctx, caller, preparationRequest{
-				target:     target,
+			if _, err := system.AskGrain(ctx, target, executionSetup{
+				execute: true, subject: subject,
+				target:     storage,
+				prompt:     endpoint,
 				middleware: endpoint,
-			}); err != nil {
+			}, time.Second); err != nil {
 				t.Fatal(err)
 			}
 			select {
@@ -87,27 +74,25 @@ func TestPreparationCancellationAwaitsOnlyActiveComponent(t *testing.T) {
 			if err != nil || payload.(Changed).Err != nil {
 				t.Fatalf("cancellation: %v, %v", payload, err)
 			}
-			select {
-			case result := <-replies:
-				t.Fatalf("cancellation acknowledgement finished preparation: %+v", result)
-			default:
+			payload, err = system.AskGrain(ctx, target, ReadActivity{CreationID: "test"}, time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if payload.(Activity).Status != agent.StatusRunning {
+				t.Fatal("cancellation acknowledgement finished execution")
 			}
 			if _, err := system.AskGrain(ctx, endpoint, releaseStopping{}, time.Second); err != nil {
 				t.Fatal(err)
 			}
-			select {
-			case result := <-replies:
-				if result.err == nil || result.entered {
-					t.Fatalf("canceled preparation: %+v", result)
-				}
-			case <-time.After(time.Second):
-				t.Fatal("preparation did not finish")
+			payload, err = system.AskGrain(ctx, target, WhenIdle{CreationID: "test"}, time.Second)
+			if err != nil || payload.(Completion).Err != nil {
+				t.Fatalf("cancelled execution did not settle: %v, %v", payload, err)
 			}
 			payload, err = system.AskGrain(ctx, storage, readCounts{}, time.Second)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if payload.(storageCounts).commits != 1 {
+			if payload.(sessionCounts).commits != 3 {
 				t.Fatalf("canceled preparation opened Step: %+v", payload)
 			}
 		})
