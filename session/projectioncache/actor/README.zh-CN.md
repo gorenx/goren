@@ -101,3 +101,7 @@ sequenceDiagram
 ## 生命周期与服务地址
 
 Projection Cache Grain 使用 `<sessionID>.projection-cache` 名称，Initialize 显式携带 SessionID。Writer、Reader 和记录校验使用该业务 ID，不从 Actor 名称恢复 ID。RuntimeName 位于消息契约文件。
+
+## 生产 Registry 与客户端
+
+`registry.go` 的 Registry 只负责每 Session Grain 的启动登记与关闭，具有固定身份 projection-caches。ConfigureRegistry 安装分离的 LoadAll 基线；CacheForSession 在 Initialize 回复成功后才返回地址；CloseRegistry 停止取得并关闭登记项，失败保留责任。业务算法仍在原 Cache/Replay，API actor.Cache 只提交 CachedSnapshot / ColdSnapshot；共享存储由 Server 最后关闭。并发取得、写入与重复关闭使用真实 SQLite 验证。完整方案见上述模块设计。

@@ -145,3 +145,24 @@ flowchart TD
 `compaction/command` 的运行适配仍待迁移。
 
 创建共享协议位于 `agent/actor.Initialize` / `Initialized`，初始化调度仍由本包实现。Registry 无需 import 具体 AgentLoop 来取得消息类型；普通运行操作继续使用本包协议。已删除原 Initialize 类型，不保留兼容别名。当前创建入口与组件收尾契约见 [普通 Agent 激活设计](../../zh-CN/actor-design/39-agent-activation.md)。
+
+### Step 收尾提交
+
+`finishStep` 接收业务 Agent 已选定的 `EndStep`，异步请求 Session 并暂存普通请求。Session 在 Commit 内核对原 Step 身份并返回已有确认；Actor 将结果交给 `ConfirmStepEnd`，成功后才允许后续 Turn 边界。写入错误和原执行错误分开返回，写入成功不会抹除模型错误。无需独立 Step flush，持久化屏障仍在 Turn 收尾。
+
+```mermaid
+sequenceDiagram
+    participant Driver as Loop 调度
+    participant Loop as AgentLoop Grain
+    participant Agent as ReactLoopAgent
+    participant Session as Session Grain
+    Driver->>Loop: finishStep(EndStep)
+    Loop->>Session: Commit(幂等 Step end)
+    Session-->>Loop: 原确认或新确认 / error
+    Loop->>Agent: ConfirmStepEnd
+    Loop-->>Driver: 写入结果 + 原执行错误
+```
+
+新增验证覆盖提交确认丢失后的重试、唯一 step/end 和原执行错误保留。主驱动与工具批次接线仍未完成；该请求目前由集成夹具驱动，不能据此宣称 Followup 已自动执行。设计见 [AgentLoop 业务](../../zh-CN/actor-design/30-agentloop-business.md)。
+
+关闭时，业务对象区分已接纳但未开始的活动与已开始的 Turn。前者可以保留 Inbox 并结束活动，随后由 Registry 完成 Session flush；后者（含确认未定的 Turn start）继续等待实际收尾。Actor 不以“没有模型请求”推断整个执行已经结束。对应 HTTP prompt→关闭→重启输入保留与单次 SIGINT 验证见 [INT-48](../../zh-CN/actor-design/40-integration-findings.md#int-48提交输入后-ctrl-c-关闭超时)。

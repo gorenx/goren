@@ -121,3 +121,13 @@ ColdView 返回耐久读取结果及恢复后的 checkpoint。本阶段不自动
 Projection 与 ProjectionCache 的旧 Factory、PluginName、FailureReporter 已随模块移除。internal/assembly 的 Catalog 和默认 PluginSpec 必须同时删除对应导入、Factory 注册和 JSON Factory 配置；Diagnostics 不再接收已删除的 ProjectionCache.Failure。不得为了旧组合根继续编译而重新提供这些接口。
 
 旧 assembly 测试中的 Plugin service 查询和 Factory 配置拒绝断言随旧入口删除。默认 Subagent 投影注册的业务验收仍然需要在 Actor 组合根迁移时恢复，不能以删除旧断言当作通过该验收。新的 SQLite 打开、LoadAll、Projection 注册、订阅确认、缓存 Grain 初始化及 API Proxy 接线尚待落地；这一步只删除失效入口，不表示生产切换完成。
+
+## 生产读路径与共享生命周期接线
+
+现有每 Session Grain 的 Initialize、CachedSnapshot、ColdSnapshot、Write、Close 保持业务语义。新增同包 Registry 只负责缓存身份初始化与排空，不复制 Cache、Replay 或 Projection 算法；冷 Session 没有 Agent，因此该 Registry 是进程资源，不挂在某个 Agent 的生命周期中。
+
+ConfigureRegistry 接受共享 CheckpointStore 和启动 LoadAll 结果，逐项验证并复制记录。CacheForSession 返回已初始化 Grain；框架 StashNonReentrant 串行化初始化请求，entries 记录已取得身份及失败责任。初始化结果不确定时不暴露可用地址。CloseRegistry 冻结取得请求，向实际登记的 Grain 发 Close；失败保留对应登记，成功删除，重复关闭成功。不关闭共享存储。业务缓存命中、日志身份检查、Unit 恢复、分页重放仍由原实现负责。
+
+API 的 actor.Cache 实现 sessionapi.ProjectionCache，先向 Registry 取得地址，再提交原 CachedSnapshot/ColdSnapshot 消息；没有新建重放算法或无缓存兼容路径。组合根创建独立 projections.sqlite、LoadAll、配置共享 Registry，并注册 title.Unit 与 SessionListMetadataUnit，设置 Sessions.Cache。关闭网络和 API 后关闭 Cache Registry、停止框架中的剩余读取者，再关闭共享存储。独立冷读取被强制中止时底层 I/O 的完全排空仍需故障集成验证，不能以正常关闭测试代替。
+
+验收：真实 Server 重启后的 session.list 恢复已提交标题；真实 SQLite 下 16 个并发取得请求共享一个缓存身份，写入后重复关闭不丢记录，不提前关闭共享适配器，关闭后拒绝新取得。自动 checkpoint 触发、冷读取写回及最终 checkpoint 调度仍是待完成项，本次没有以新 Registry 替代这些业务规则。

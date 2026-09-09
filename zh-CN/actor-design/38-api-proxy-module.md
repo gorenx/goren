@@ -325,3 +325,29 @@ SpawnSubscriber 等待 SubscribeAck 后返回。框架停止时 PostStop 取消�
 GoAkt v4.5.3 的外部 PID.Shutdown 可使 PostStop 与 Receive 重叠（见 INT-19 的 race 复现）。订阅者用一把锁保护这个关闭边界：先取消不可变的生命周期 Context，再锁定并等待已登记任务退出；Receive 在相同锁内检查取消，防止关闭后新增任务。异步消费不持锁，也不读取 Actor 字段。此锁不能替代邮箱排序，更不能扩散为业务对象之间的共享锁。
 
 本订阅者只覆盖提交事件。Session 创建／移除、Agent 状态／错误通知的发布与消费需分别接线，不能把提交订阅成功视为生产下行完整。验收包含实际 PubSub 到 Feed 的传递、阻塞消费期间保持顺序、停止传播取消且等待消费退出。
+
+## Workspace 通知订阅接线
+
+Workspace 的持久化 owner 在提交成功后向 `workspace/notices` 发布 Notice；API 的 `Gateway.ObserveEvent` 已负责 wire frame 转换。`apiproxy/workspace/actor.Subscriber` 只订阅和顺序投递，通过窄接口 `Notices.ObserveEvent(context.Context, workspace.Notice) error` 调用 Gateway，不读取 Workspace 状态、不重放 mutation、不决定字段和事件类型。当前消费者只把帧写入有界内存 Broker，不执行远程 I/O；因此 Receive 直接调用消费接口，不再创建异步任务、队列或互斥锁。
+
+`SpawnSubscriber(ctx, system, name, consumer)` 必须等待该 topic 的 SubscribeAck；成功后才能开放 HTTP mutation。启动上下文已取消或 PubSub 未开启时拒绝启动；若创建 PID 后等待被取消，返回 PID 与 error，由组合根负责关闭。Subscriber 只持有消费接口和 ready 通道，不反向引用 Server。停止使用 PID.Shutdown，GoAkt TopicActor 根据 Terminated 清除订阅；API Broker 在订阅者停止后关闭。投递失败记录框架日志，不回滚已经提交的 Workspace，不重试 mutation。通知本身不持久化，重连基线继续使用 workspace.list。
+
+```mermaid
+sequenceDiagram
+ participant W as Workspace Actor
+ participant DB as SQLite
+ participant P as GoAkt PubSub
+ participant S as Workspace Subscriber
+ participant G as API Gateway
+ participant B as Host Broker
+ S->>P: Subscribe workspace/notices
+ P-->>S: SubscribeAck
+ W->>DB: commit mutation
+ DB-->>W: success
+ W->>P: Notice
+ P->>S: Notice
+ S->>G: ObserveEvent
+ G->>B: PublishHostFrame
+```
+
+验收使用真实 Workspace Actor、SQLite、PubSub、Gateway 和 Broker，验证创建、重命名和删除的帧顺序与内容；关闭订阅者后 mutation 仍能提交且不再下行；不启用 PubSub 或启动上下文取消时不开放订阅。测试不直接调用 Gateway.ObserveEvent 来冒充已接线。最终进程 Server 仍须调用该启动函数并遵守上述关闭顺序。

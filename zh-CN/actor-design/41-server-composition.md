@@ -1,6 +1,6 @@
 # 生产 Server 装配与验收计划
 
-本方案落实删除 Plugin、API 使用领域接口、Registry 统一管理组件生命周期的已确认方向。进程组合根迁入 `internal/server`；`internal/assembly` 的 Catalog、Factory、Plugin 树及旧调用点整体删除，不留转发层。实施证据统一记入 [集成问题记录](40-integration-findings.md) 与 [项目进度](../08-implementation-progress.md)。当前本文是待实施计划，不能据此宣称进程可启动。
+本方案落实删除 Plugin、API 使用领域接口、Registry 统一管理组件生命周期的已确认方向。进程组合根迁入 `internal/server`；`internal/assembly` 的 Catalog、Factory、Plugin 树及旧调用点整体删除，不留转发层。实施证据统一记入 [集成问题记录](40-integration-findings.md) 与 [项目进度](../08-implementation-progress.md)。当前已实现控制面启动与关闭，完整对话验收仍按下表推进。
 
 ## 职责与接口
 
@@ -63,7 +63,7 @@ flowchart TD
 | --- | --- | --- |
 | API Server 与 Connection 直接装配 | 已实现模块入口 | ab34830；真实 Echo 请求、下行取消、关闭测试 |
 | Session/Title/Projection/Workspace/Search 客户端 | 已实现核心端口 | 真实 Actor 和 SQLite 集成，不只 mock 回复 |
-| internal/server 与 cmd 迁移，删除 assembly | 旧 assembly 与 Plugin CLI 已删除；Actor 进程入口待完成 | 默认无密钥启动、HTTP 探测、停止、重复启动持久化恢复 |
+| internal/server 与 cmd 迁移，删除 assembly | 已实现 Actor 入口和控制面重启验收 | 默认无密钥启动、HTTP 探测、停止、重复启动持久化恢复 |
 | 各领域 PubSub / Query Collector 接线 | 待完成 | 在线增量、重连基线、同 ID 重建、无重复/漏事件 |
 | AgentLoop 生产 Turn 主驱动与 LLM/工具路由 | 待核对并完成 | prompt → 多块模型响应 → 工具 → 后续模型 → Session → API 流完整链 |
 | 取消、Compaction 与关闭集成 | 待完成 | 中途取消实际停止、压缩日志顺序、Session flush、资源无泄漏 |
@@ -85,6 +85,22 @@ flowchart TD
 
 ### 删除失效的 Plugin 装配
 
-`internal/assembly` 的 Catalog、Server Plugin 树、Diagnostics 及仅依赖旧装配的测试整体删除。唯一生产调用方 `cmd/goren` 同时删除 Plugin 启动和关闭流程；保留有效的参数解析与路径规则，按职责移到 `config.go` / `config_test.go`。不提供空 main、失败占位入口或兼容转发。此中间状态没有可构建的 CLI 可执行文件，恢复入口依赖上述 Server.Start/Close 的完整实现。
+`internal/assembly` 的 Catalog、Server Plugin 树、Diagnostics 及仅依赖旧装配的测试整体删除。唯一生产调用方 `cmd/goren` 同时删除 Plugin 启动和关闭流程；保留有效的参数解析与路径规则，按职责移到 `config.go` / `config_test.go`。不提供空 main、失败占位入口或兼容转发。后续已补齐 server.go 的 Start/Close 和 cmd/goren/main.go，CLI 已通过构建与信号退出测试。
 
 旧测试包含的持久化重启、HTTP/WebSocket、手动压缩命令、压力压缩、真实 Provider 和 Bound 重启场景仍是未完成的迁移验收；删除失效夹具不代表这些行为已经验证。Bound/subagent 验收继续按暂缓范围处理。已迁入 internal/server 的 Credentials、LLM、Agent 创建、Title 和 flush 测试保留。验收要求无 Go 导入旧 assembly，配置路径测试及已迁入业务集成测试通过；生产 build 的入口缺口明确记录。
+
+### Workspace 生产资源初始化
+
+`initializeWorkspaces` 接收进程 ActorSystem、Session Registry、持久化 Reader、Workspace SQLite 配置及请求超时。先构造 Workspace 拥有的 Headers 适配器并确认 PubSub 已启动，再打开 Workspace 存储、启动唯一 workspace Actor。Session Header 的业务读取仍走 Registry/Reader；组合函数不扫描 Session、不复制 CWD 归属判断。成功仅返回 PID，进程据此构造 Workspace Client / API Directory 并负责关闭。
+
+Workspace Actor 启动成功后取得 Workspace 存储责任；启动失败则组合根关闭尚未移交的存储并合并失败。关闭顺序是先停止 API 通知消费者、停止 Workspace Actor 并等待其操作退出与存储关闭，Session 存储和框架必须在借用它们的消费者关闭后才释放。不存在第二份 Workspace 注册表或自定义运行时地址表。
+
+验收：真实 Session Registry、Session SQLite、Workspace SQLite 和 API Directory 下，在线空 Session 尚未持久化仍可凭 Header.CWD 附加；Session flush 后关闭 Workspace，重新打开 Workspace 时从持久化 Session 读取 Header，工作区身份、成员及归档集合保持不变；CWD 不符的 Session 不能附加。进程 Start/Close 已接入该函数，局部组合测试仍不代表完整对话主链通过。
+
+### 入口验收与当前部署范围
+
+main 保留 listen/version/data-dir/session-db/workspace-db 参数，以进程工作目录构造 Config；Server 启动共享 Actor、Credentials、LLM provider/router、Session/Agent/Tools/Commands/Title、Projection/ProjectionCache、Workspace、Query，构造 API 和通知订阅后绑定 Echo。配置包含路径引用，不读取或打印密钥；无密钥可启动。当前 CLI 的默认工具集、Compaction、问答审批和 AgentLoop 主驱动仍待最终接线，未以控制面可运行代替这些要求。Workspace 允许为空及 workspace/changed 修改 CWD 的目标范围正在澄清，尚未修改 Session Header 不可变协议。
+
+新增生命周期入口失败必须回滚，Server 实例不能重复 Start；Close 可在失败后重试，已完成的释放不再执行。进程关闭停止网络和通知消费者，结算 API、Agent Registry 与 Session flush，再停止 Workspace/Query/缓存 Registry、ActorSystem，最后关闭各数据库。强制取消冷读取与索引 I/O 的全部故障路径仍需继续验收。
+
+server_test.go 覆盖实际 HTTP Session 创建/重命名、Workspace WebSocket 通知、关闭监听、重启后原 ProjectionCache 恢复标题、监听冲突回滚和新实例重启。独立 CLI 进程验证无密钥 host.describe 和 SIGTERM 退出 0；测试端直连 localhost，避免开发环境 HTTP 代理干扰。

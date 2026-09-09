@@ -180,7 +180,7 @@ A 收到 InvokePreStep 后，有两条基本路径：
 
 ### 默认组合的有效相对顺序
 
-[DefaultSpecs](../../internal/assembly/catalog.go) 中 LLM Retry 先于 Compaction Basic。旧 [waterfallRegistry.add / appendWaterfallScope](../../plugin/waterfall.go) 按注册 ordinal 排序，并按父 Scope 到子 Scope 选择；`agentScope.ResolvePreStep / ResolveRequest / ResolveRequestError`（已移除的旧实现） 将 Agent 局部链作为默认终端交给外层链。
+已移除的 `internal/assembly/catalog.go` 中 `DefaultSpecs` 曾使 LLM Retry 先于 Compaction Basic。已移除的 `plugin/waterfall.go` 中 `waterfallRegistry.add / appendWaterfallScope` 按注册 ordinal 排序，并按父 Scope 到子 Scope 选择；`agentScope.ResolvePreStep / ResolveRequest / ResolveRequestError`（已移除的旧实现） 将 Agent 局部链作为默认终端交给外层链。
 
 对这两个已登记的 request-error 消费者，已有组合的目标顺序是 Retry 在外、启用时的 Compaction Overflow 在内，再到不重试的默认终端。不是从“全局总是先于局部”猜出的规则，而是上述旧实现与组合顺序共同得出的迁移依据。移除 Scope 后应在组件初始化时明确提供这个有序业务定义集合，不继续依赖父 Scope 遍历。
 
@@ -931,3 +931,15 @@ StartRequest 在创建 ModelRequest 前检查 ReactLoopAgent 的取消意图；A
 对象、接口与数据：ReactLoopAgent 删除 configuration；RequestInput/AttemptInput 删除 Config；Actor Initialize 删除 ModelConfig；删除 AgentLoop Configuration/Configure 和 ReadRequest/ResolveConfiguration/SaveConfiguration 操作。LLM InitializeAgent 接收 AgentID 与 Session 历史，Catalog.Restore 决定恢复规则，Grain 仅调度。
 
 该变更依据用户明确的配置所有权决定，取代原 Agent request 配置钩子的调用路径；HTTP 字段与 Session Header 形状不变。API 生产接线验收仍归 [API 重构方案](38-api-proxy-module.md)。
+
+## Step 收尾生产接线（2026-09-09）
+
+模型和工具结束后，由 ReactLoopAgent 选择 EndStep，保留原业务错误；Actor 只提交该结论并把确认交回 ConfirmStepEnd，再允许 Turn 继续。EndStep 携带不可变事件及所属 Session、Turn、Step 身份；不携带 Actor 或可变 Agent 引用。PrepareStepEnd 返回该业务值，原事件格式保持不变。
+
+Session 在同一 Commit 中按 SessionID 与 StepPosition 查找已有 step/end；回复丢失后的重试返回原确认，不另读 Session 后盲目追加。不存在原提交时，只允许结束日志中当前已开始、尚未关闭的 Step。错 Session、不完整日志、重复边界或冲突内容明确报错。Actor 使用 RequestGrain 与框架暂存；不增加独立收尾 Actor、队列或重复状态机。
+
+验收覆盖真实 Session Log 提交、确认丢失重试只产生一个 step/end、失败保留业务 Step、外部身份和重复边界拒绝。Step 收尾不单独 flush；Turn 收尾继续承担持久化屏障。该段完成仍不等于 Followup 已自动驱动完整模型与工具循环。
+
+### 关闭时尚未开始的执行（2026-09-09）
+
+输入确认后、turn/start 尚未提出之前，关闭准入可以撤销待执行活动并保留已提交 Inbox，下次恢复继续使用。该决策由 ReactLoopAgent.PrepareClose 执行；不能依赖尚未启动的驱动回调去释放它。已有 Turn（包括提交结果待确认的 proposed Turn）、Step、准备过程、模型请求、收尾或维护工作必须按原完成契约等待，禁止直接清除。该规则解决未开始执行的关闭等待，不代表模型主驱动已接通。

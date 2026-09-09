@@ -482,3 +482,62 @@ Header 查询原来同时返回值、found 和 error，用于区分缺失与读�
 - 处理：删除旧装配和对应旧协议夹具，删除 CLI Plugin 启停代码；保留 config.go 的参数、路径规则与测试。ProjectionCache 依赖守卫改为禁止依赖当前 internal/server。
 - 影响：Actor Server.Start/Close 和 main 尚未完成，CLI build 仍不通过；不增加占位 main。旧端到端测试中的持久化重启、HTTP、压缩和 Provider 覆盖仍须迁移，Bound/subagent 暂缓；详见 41-server-composition.md。
 - 复验：待提交代码快照的 Tools、ToolAskUser、Agent、AgentLoop、Prompt、Workspace、UserQuestions、Server、API Proxy 和 CLI 配置通过 `go test -race -count=1 -timeout=60s` 及 `go vet`；Credentials/ProjectionCache 两项边界测试通过。`go build ./cmd/goren` 明确失败于缺少 main；全量架构检查尚有 INT-37 记录的问题，未宣称全项目通过。
+
+## INT-41：Workspace 提交通知未连接 API 下行
+
+- 根因：Workspace Actor 已向 workspace/notices 发布成功提交后的 Notice，Gateway.ObserveEvent 已实现帧转换，但 API Actor 适配包只有操作客户端，没有通知订阅者。
+- 影响：仅连接 unary API 时 mutation 能成功，Host 下行不会更新；领域单测或直接调用 ObserveEvent 的测试无法证明 PubSub 接线。
+- 解决：新增 workspace API Subscriber，以 Notices 窄接口投递，等待 SubscribeAck 后返回；缺少 PubSub 或启动上下文已取消时拒绝；停止 PID 后由框架清除订阅，不回滚已提交变更。
+- 验证：真实 Workspace Actor、SQLite、PubSub、Gateway、Broker 集成覆盖创建、重命名、显式排序、删除、停止后不再下行以及启动拒绝。创建和删除只期待 owner 实际发布的对应事件，排序通知由显式排序触发。`go test -race -count=1 -timeout=20s ./apiproxy/workspace/... ./workspace/...` 与同范围 vet 通过。
+- 剩余：最终 Server 启动必须调用 SpawnSubscriber 并等待确认，关闭时在 Broker 之前停止订阅者；生产 HTTP/WebSocket 端到端验收仍未完成。
+
+## INT-42：Workspace 生产初始化缺少 Session 来源连接
+
+- 根因：API Directory 已实现成员操作，Headers 已实现在线/持久化合并，但新组合根尚未构造 Workspace Actor；旧测试使用 Header 替身，不能证明 CWD 和关闭后的成员恢复能从生产 Session 来源取得。
+- 影响：即使直接暴露 API 操作接口，仍可能缺少未落盘 Session 的归属信息，或无法验证冷启动成员/归档恢复。
+- 解决：initializeWorkspaces 在打开数据库前连接真实 Registry 和 persistence.Reader 并验证 PubSub；成功后 Workspace Actor 取得存储生命周期，失败关闭未移交数据库。
+- 验证：TestWorkspaceCompositionRecoversMembershipFromDurableSessionHeaders 使用真实 Registry、两套 SQLite 和 API Directory，覆盖在线空 Session 附加、不同 CWD 拒绝、归档、Session flush、关闭及重新打开后的成员/归档保留。`go test -race -count=1 -timeout=30s ./internal/server` 和 `go vet ./internal/server` 通过。
+- 剩余：生产 Server.Start/Close、CLI、Query 来源刷新与完整 HTTP/WebSocket 对话链仍未完成；本项是共享资源组合验收，不代表完整进程可运行。
+
+## INT-43：Query 只在测试中刷新来源
+
+- 根因：Collector 由测试 Grain 启动，生产 API Search 直接请求旧观测；未建立每次查询与刷新之间的串行关系。
+- 解决：同一 Query Actor 用框架 stash 保留原请求，框架任务先读取完整 Sources 再 Observe 和查询；删除单次 Collector/启动 Grain，新增 Logs 数据获取适配器。业务 Service 保留来源合并和索引规则。
+- 验证：Query/SQLite/API race 测试通过，覆盖真实在线日志、129 条离线分页及源读取失败时返回错误而非旧观测。取消/关闭并发的更广故障覆盖仍需继续。
+
+## INT-44：Server 缺少入口及 ProjectionCache 接线
+
+- 根因：删除 Plugin 装配后 main 尚未重建；初次接线漏掉 Sessions.Cache，导致真实 HTTP 重启测试虽然日志中有标题，但 session.list 未恢复标题视图。ProjectionCache 原本已经实现读写与冷重建，不需要再造无缓存重建分支。
+- 解决：补齐 Server Start/Close 和 CLI 信号路径；连接原缓存 Grain、独立 SQLite 与 LoadAll 基线，新增缓存生命周期 Registry 与 API Client，注册 title 和 SessionListMetadata 投影。没有新增重放算法。
+- 验证：真实 HTTP 创建/重命名、Workspace WebSocket、关闭监听、持久化重启标题、占用端口失败回滚与重新启动通过；缓存 16 并发取得、写入、重复关闭、保留共享数据库测试通过；相关包 race/vet 与 CLI build 通过。独立 CLI 无 API key、host.describe、SIGTERM 退出 0。
+- 环境问题：首次 Python localhost 探测经过系统 HTTP 代理返回 502，关闭探测端代理后直连成功；没有为此修改应用信任协议。
+- 边界：这证明控制面入口恢复，不证明完整模型对话、Compaction、默认工具、问答审批、自动 checkpoint 已接通；强制关闭缓存独立读者的底层 I/O 排空仍需验证。
+
+## INT-45：辅助配置失败阻断 Web 聊天初始化
+
+- 现象：历史不自动加载；点击新建对话后列表出现，但输入框仍被禁用。
+- 根因：ConversationStore.start 在读取 Session 前等待 credentials.describe 和 bound.list；任一失败进入全局 failed。新建对话独立刷新列表，却不能解除该失败状态。
+- 修复契约：Host 与 Session 决定聊天初始化状态；凭据及子 Agent 定义独立加载，失败保留错误提示，不阻断历史、下行连接或输入。不能把失败的配置查询伪装成成功空集合。
+- 验收：辅助查询拒绝或未完成时，已有 Session 自动选择、历史加载且页面 ready；主链失败仍按原错误机制处理。构建嵌入的 Web 产物。
+- 验证结果：Web 全部 34 项测试、TypeScript 检查、Vite build、Go Web 包测试通过。独立真实 Server 浏览器中确认 bound.list 404 不阻断会话；刷新自动选中原 Session，输入框可点击输入、发送按钮启用。没有以此声称模型生成链路通过。
+
+## INT-46：AgentLoop 生产执行主驱动仍缺失
+
+- 源码证据：grain_inbox.go 确认输入后仅回复 Changed；模型结束后的 CompleteModel、CompleteTools、ConfirmStepEnd 原先仅在业务测试中调用。API 接纳成功不能证明模型和工具执行已发生。
+- 影响：页面输入恢复后，仍可能停在已接纳状态；局部中间件、模型流和工具测试不能替代完整 Followup 验收。
+- 本次修复：补齐 Step 收尾请求，业务 EndStep 保存私有身份与事件；Session 在 Commit 内做幂等查找，Actor 只发送和确认。PrepareStepEnd 的 Go 返回值及调用测试同步迁移，未改变 step/end 持久化格式。
+- 验证：AgentLoop 全部包 fresh race 测试和 vet 通过；Actor 确认丢失重试仅写一个 step/end，并保留原执行错误；业务测试拒绝错 Session、不完整日志、重复边界和已被后续 Step 越过的关闭。
+- 未完成：自动 Turn/Step 调度、工具批次调度和完整 HTTP/WebSocket 对话仍需接线，不将本次补齐一个边界记为完整 AgentLoop 完成。
+
+## INT-47：整体测试约束未全部迁移
+
+- 当前 go test ./... 的 subagent 构建失败属于明确排除范围，未为其恢复已移除 Plugin 代码。tests/architecture 有 17 项失败，包括读取已删除 Plugin 包、旧 rla 文件前缀和 agentHost 关闭入口等旧约束，也有常量缺少注释及声明命名问题。
+- 处理原则：逐项核对 Actor 目标后迁移架构检查，保留业务与 Actor 解耦、无循环所有权和命名约束，不能通过删掉全部检查获得假绿。本次未把这些失败当作已解决。
+
+## INT-48：提交输入后 Ctrl-C 关闭超时
+
+- 用户现象：聊天无响应，反复 Ctrl-C 后 close Agent context deadline exceeded、request timed out，退出码 1。
+- 根因：Followup 已提交 Inbox 并保留 execution activity，生产主驱动未启动 Turn；PrepareClose 将未开始活动当作必须等待的执行，idle 永不触发。不是扩大关闭超时能解决的问题。
+- 修复：业务 PrepareClose 冻结准入后，只撤销没有 Turn、Step、准备过程、模型请求或收尾的执行活动，保留已提交 Inbox；存在 proposed Turn 或实际维护/执行时仍按原收尾条件等待。Actor 不自行改状态，也未跳过 Session flush。
+- 验证：业务关闭/恢复测试，Server 真实 HTTP prompt 后关闭及 SQLite 重启输入保留，AgentLoop/Agent Registry/Server fresh race 测试通过。独立 CLI 临时数据库：HTTP create→prompt→一次 SIGINT，退出码 0、stderr 为空，实测关闭约 3ms。这个结果只覆盖尚未开始 Turn 的场景。
+- 剩余：模型无响应的 INT-46 尚未解决；已开始模型/工具时的 SIGINT 取消和完整收尾还需随主驱动接线一起验收。
