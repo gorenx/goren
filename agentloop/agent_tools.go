@@ -195,12 +195,15 @@ func (writing *toolCallCommit) SessionCommitted(services Services, result sessio
 	}
 	calls := writing.calls
 	call := calls.calls[calls.index]
-	err := services.Tools.Prepare(tools.ToolExecutionInput{
-		CallID:    call.ID,
-		Name:      call.Name,
-		Arguments: json.RawMessage(call.Arguments),
-		SessionID: calls.work.ID(),
-	}, calls)
+	err := services.Tools.Prepare(
+		tools.ToolExecutionInput{
+			CallID:    call.ID,
+			Name:      call.Name,
+			Arguments: json.RawMessage(call.Arguments),
+			SessionID: calls.work.ID(),
+		},
+		calls,
+	)
 	if err != nil {
 		calls.ToolPrepared(services, "", err)
 	}

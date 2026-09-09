@@ -41,7 +41,7 @@ func defaultTools(custom toolregistry.Catalog) toolregistry.Catalog {
 	return entries
 }
 
-func (owner *Server) initializeToolProviders(ctx context.Context, sessions *goakt.GrainIdentity, constructors *toolactor.Providers) error {
+func (owner *Server) initializeToolProviders(_ context.Context, sessions *goakt.GrainIdentity, constructors *toolactor.Providers) error {
 	system := owner.system
 	timeout := owner.settings.Timeout
 	authority, err := questionactor.NewDirectory(system, owner.agents, timeout)
