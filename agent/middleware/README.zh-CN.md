@@ -51,3 +51,5 @@ Cancel 返回并保留第一次非空取消原因，适配层用该值通知模�
 Agent 对外提供 Followup、Steer、Inject 等业务操作，不嵌入中间件执行接口。四个钩子是 AgentLoop 必须经过的独立执行边界，单个模块仅参与需要的钩子。空集合也有确定结果：PreStep、Request 返回默认值，RequestError 不重试，TurnStopping 正常完成。业务流程负责调用位置及结果决策，Actor 仅异步调度。当前实现不要求模块提供无用的空方法或可空 callback。
 
 `agent.Hooks` 是独立的异步发起窄接口，Agent 不嵌入它。方法返回值只报告能否发起；最终业务结果使用 agent 包的四类具名完成消息。Actor 执行器直接使用这些结果，不维护重复 DTO。注册、路由、Continue 与取消投递留在执行适配层；Hooks 发起适配器已实现，主驱动接线尚未完成。
+
+运行适配的 Handlers 按 PreStep、RequestError、TurnStopping 保存一个 Agent 的已选有序 Route。生命周期接纳时校验并克隆集合，通过 Initialize 传到 AgentLoop 能力适配；业务流程决定调用时机，通信适配只传递相应集合。空集合沿用对应默认行为，不代表自动发现了其他模块。

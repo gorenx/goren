@@ -541,3 +541,40 @@ Header 查询原来同时返回值、found 和 error，用于区分缺失与读�
 - 修复：业务 PrepareClose 冻结准入后，只撤销没有 Turn、Step、准备过程、模型请求或收尾的执行活动，保留已提交 Inbox；存在 proposed Turn 或实际维护/执行时仍按原收尾条件等待。Actor 不自行改状态，也未跳过 Session flush。
 - 验证：业务关闭/恢复测试，Server 真实 HTTP prompt 后关闭及 SQLite 重启输入保留，AgentLoop/Agent Registry/Server fresh race 测试通过。独立 CLI 临时数据库：HTTP create→prompt→一次 SIGINT，退出码 0、stderr 为空，实测关闭约 3ms。这个结果只覆盖尚未开始 Turn 的场景。
 - 剩余：模型无响应的 INT-46 尚未解决；已开始模型/工具时的 SIGINT 取消和完整收尾还需随主驱动接线一起验收。
+
+### INT-46 补充：初始化缺少执行引用
+
+生产 Initialize 原来仅包含 Session/Prompt，无法发起模型和工具请求。CreateAgent 现要求共享 ModelRouter 与 Middleware，安装对象将已启动的 Tool Runtime、上述共享引用和请求超时交给 AgentLoop；Server 负责启动共享中间件执行 Grain。没有把 Actor 启动下放到 AgentLoop。缺失引用在身份保留前拒绝；再次提供完整引用可以正常创建。
+
+已验证 Registry/Server fresh race：真实创建路径与缺失依赖拒绝。AgentLoop 旧手工初始化夹具仍需迁移到完整依赖；自动执行驱动尚未接入，不能把“引用已提供”记为聊天恢复。
+
+### INT-46 补充：自动执行与下行验收
+
+新增驱动后，`TestHTTPPromptDrivesModelAndPersistsCompletedTurn` 通过真实 HTTP 接纳输入、调用本地 SSE 模型服务，并通过真实 WebSocket 收到递增序号的 Session 事件。测试检查流式片段、包含预期文本的完整回复、Step 结束和 Turn 结束，同时检查 SQLite 中的完整 Turn。`go test -race -count=1 ./internal/server -run TestHTTPPrompt -timeout=25s` 通过。该证据仅覆盖文本回复，不能证明工具、取消、维护和恢复路径完整。
+
+## INT-49：AgentLoop 业务流程分散在业务对象与 Actor
+
+- 源码证据：ReactLoopAgent 的 CompleteModel、ContinueTurn 决定业务分支，但 grain_execution.go 的 advanceExecution 另行串联整个执行周期；grain_step.go 负责输入、PreStep、上下文、Prompt、消息提交之间的流程衔接；grain_tools.go 在 Actor 中创建并推进 ToolBatch、保存调用游标，而且直接选择审批不可用结果。
+- 根因：此前拆分为许多 Prepare/Confirm 边界，只把局部校验与状态转换放入业务对象，流程整体仍依赖 Actor 调用顺序。新增驱动又增加一层对自身的请求与回复，放大了这种职责分散。
+- 影响：业务测试不能独立证明完整执行流程；修改流程需要同时修改业务对象和 Actor。工具审批、取消与清理存在由 Actor 决策的风险。文本对话集成通过不能抵消此架构问题。
+- 已确认边界：Actor 不知道 AgentLoop 内部执行顺序；业务流程直接调用能力接口，由通信适配异步交付原请求结果。不能改成业务返回内部流程指令、Actor 继续解释的另一套驱动。具体设计见 [能力接口驱动的优化方案](./30-agentloop-business.md#能力接口驱动的优化方案2026-09-09)。异步交付、立即失败及无环引用仍待调度验证，当前不记为已修复。
+
+### INT-49 实现进度：业务能力接口与失败边界
+
+- 生产文本路径已切换到 ReactLoopAgent.Run 和异步能力接口；Actor 内部 Turn/Step/模型流程驱动已删除。模型结果直接交给业务对象，删除仅转发的 generation 接收者。
+- 业务故障测试证明 Turn start、Step end、Turn end 回复丢失时重试同一事实，日志中各边界只有一个；flush 失败只重复 flush，原模型错误保留且不重复生成。旧开始和 Step 收尾 Actor 测试已迁入业务流程测试。
+- 同时发现并修复两处遗漏：开始前取消原来仅报告错误，导致活动停留在 running；维护完成原来丢弃 replay 返回值，导致维护期间接纳的输入不执行。现在前者释放尚未开始的活动并保留 Inbox，后者由业务 MaintenanceCompleted 推进后续输入。
+- 验证：`go test -race -count=1 ./agentloop ./internal/server -run 'TestBusinessExecution|TestHTTPPrompt' -timeout=30s` 通过。前者为可控异步能力与真实 Session.Log，后者为真实 HTTP/WebSocket、本地 SSE 提供者及 SQLite；不代表 Actor 测试包全部通过。
+- 未完成：其他旧私有流程消息测试仍需迁移；工具审批、并发、取消及清理恢复尚未完整。请求暂存解除到业务结果再次进入邮箱之间，输入与未确认提交的交错仍待验证和修复。没有为中间编译结果恢复旧流程或兼容入口。
+
+### INT-49 补充：旧测试协议清理和中间件接线
+
+旧 Turn/Step/模型私有命令测试已迁移，AgentLoop 全部包、中间件和 Agent Registry 非缓存 race 测试通过。过程中发现生产适配未传递已选中间件，实际调用的是空集合；现在从生命周期接纳 Handlers 并校验、冻结，再由能力适配传递。真实自定义恢复和 Retry actor 都会参与完整 Turn，停止钩子允许 Steer 与取消重试。
+
+模型关闭未确认时，原流程调用 failStep，但状态校验拒绝继续且没有保留恢复入口。现在由业务保留只重试关闭的责任；完整业务测试确认不重复生成、不提前写入结束事件、原错误保留。此项不代表生产自动恢复策略、工具释放及关闭交错已经全部完成。
+
+### 关闭接线补充验证（2026-09-09）
+
+发现并修复：Registry 已发送 PrepareClose，但 AgentLoop 原先仅等待 idle，没有将关闭意图投递给正在执行的能力。现在业务对象记录 disposed 取消，Actor 复用模型、工具、中间件和维护的取消通道；取消投递失败返回错误，成功后继续等待执行收尾。HTTP 流式关闭测试确认模型取消、Step/Turn 持久化、未消费 Inbox 保留。`go test -race -count=1 ./agentloop/... ./agent/registry ./internal/server -timeout=60s` 通过。
+
+临时目录 CLI 验证：创建 Session 后给编译产物发送单次 SIGINT，退出码 0；相同信号发送到 `go run` 进程组，包装进程退出码 1、无应用错误输出。`make run` 使用 go run，因此仅凭 make Error 1 不能推断业务关闭超时。本次尚未验证真实外部提供方，以及所有工具和中间件的生产接线，不代表 AgentLoop 整体重构完成。

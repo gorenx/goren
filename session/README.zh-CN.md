@@ -62,7 +62,7 @@ Agent Inbox、AgentLoop、Query、Title、API Proxy、Subagent 等仍有旧 Cont
 
 ### 提交提案与返回事件核对
 
-EventDraft.CheckCommit 用于核对当前 Commit 返回的事件是否保留原草稿的 type、原始 payload、来源序号、surface 操作及 ignorable，并检查 Seq/Time 合法性。它不暴露草稿内部字段，不改变日志形状。它不证明事件属于哪个 Session，也不比较任意历史 JSON 的语义等价；请求方仍须检查 WriteResult 中的 Session 身份和提交区间。AgentLoop 的使用边界见 [模型尝试提交确认](../zh-CN/actor-design/30-agentloop-business.md)。
+EventDraft.ValidateEvent 用于核对当前 Commit 返回的事件是否保留原草稿的 type、原始 payload、来源序号、surface 操作及 ignorable，并检查 Seq/Time 合法性。它不暴露草稿内部字段，不改变日志形状。它不证明事件属于哪个 Session，也不比较任意历史 JSON 的语义等价；请求方仍须检查 WriteResult 中的 Session 身份和提交区间。AgentLoop 的使用边界见 [模型尝试提交确认](../zh-CN/actor-design/30-agentloop-business.md)。
 
 
 ### 幂等提交

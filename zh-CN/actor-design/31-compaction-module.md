@@ -303,7 +303,7 @@ PreStep 完成必要收尾后继续原协调器；RequestError 通过 Recovery.C
 
 - ReactLoopAgent 的 activity 持有执行/维护种类、首个取消原因和延后唤醒意图。
   BeginMaintenance 只接受已初始化且空闲的 Agent；FinishMaintenance 只结束维护。
-  PrepareTurn 和 FinishActivity 拒绝维护状态。业务层不持有 Grain 或 Compaction 实例。
+  PrepareTurn 和 FinishExecution 拒绝维护状态。业务层不持有 Grain 或 Compaction 实例。
 - 手动入口保留在 compaction/command：Compact.Execute 校验命令参数，将 CommandID 传给 Compaction，
   并把压缩结果转换成 commands.Result。AgentLoop 不新增 Compact 请求，也不消费压缩专用 DTO。
 - Compaction 拥有手动压缩用例；它通过 AgentLoop 的通用维护契约获得独占执行时段，

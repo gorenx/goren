@@ -179,10 +179,10 @@ ProjectionActor 管投影进度、追赶及重建；QueryActor 管查询准入�
 | Agent Registry 身份、父子关系及当前资源范围的关闭协调 | [Registry 测试](../../agent/registry/grain_test.go) |
 | ReactLoopAgent 生命周期、Turn/Step 合法转换及真实提交确认 | [生命周期测试](../../agentloop/agent_lifecycle_test.go)、[Step 测试](../../agentloop/agent_step_test.go) |
 | Session、模型配置、Prompt 的异步初始化片段 | [Grain 测试](../../agentloop/actor/grain_test.go)、[配置测试](../../agentloop/actor/configuration_test.go) |
-| Step 领取、上下文读取、Prompt 组装、pre-step 决策及输入提交 | [准备驱动测试](../../agentloop/actor/grain_step_test.go) |
-| 领取及 Step 开始提交结果不确定时回读核对 | [领取恢复测试](../../agentloop/agent_input_recovery_test.go)、[准备驱动测试](../../agentloop/actor/grain_step_test.go) |
-| Turn 结束提交、必要回读和 Session flush；失败保留重试位置 | [业务收尾测试](../../agentloop/agent_settlement_test.go)、[Actor 收尾测试](../../agentloop/actor/grain_settlement_test.go) |
-| ModelRequest/Attempt 业务规则及部分模型流调度 | [请求业务测试](../../agentloop/internal/modelrequest/model_request_test.go)、[流调度](../../agentloop/actor/grain_stream.go) |
+| Step 领取、上下文读取、Prompt 组装、pre-step 决策及输入提交 | [业务准备流程测试](../../agentloop/agent_execution_test.go) |
+| 领取及 Step 开始提交结果不确定时回读核对 | [领取恢复测试](../../agentloop/agent_input_recovery_test.go)、[业务准备流程测试](../../agentloop/agent_execution_test.go) |
+| Turn 结束提交、必要回读和 Session flush；失败保留重试位置 | [业务收尾测试](../../agentloop/agent_settlement_test.go)、[业务完整流程及重试测试](../../agentloop/agent_execution_test.go) |
+| ModelRequest/Attempt 业务规则及部分模型流调度 | [请求业务测试](../../agentloop/internal/modelrequest/model_request_test.go)、[模型能力适配](../../agentloop/actor/grain_generation.go) |
 
 提交前对暂存快照独立执行以下检查并通过，排除了未暂存改动对这些包的影响：
 
@@ -202,7 +202,7 @@ go build ./agent/... ./agentloop/... ./systemprompt/... ./session
 
 ### AL-01 消息唤醒与主驱动 — 部分实现
 
-Owner：AgentLoop 业务层与 Actor。输入准入及已接纳执行的业务记录已有实现，Actor 尚未把它们串到 Turn 开始、Step 循环和 FinishActivity。
+Owner：AgentLoop 业务层与 Actor。输入准入及已接纳执行的业务记录已有实现，Actor 尚未把它们串到 Turn 开始、Step 循环和 FinishExecution。
 
 验收：通过真实异步 Client 输入启动执行；Followup、Steer、Inject 的唤醒语义分别成立；输入删除、取消后新输入、连续 Turn 不漏执行或重复执行；WhenIdle 等待后继工作及资源收尾结束。主驱动的每个异步边界须有具名完成消息，合法转换只由业务状态机决定。
 
@@ -240,7 +240,7 @@ Owner：AgentLoop。已有部分提交恢复与资源关闭，维护流程及主
 
 验收：维护与执行互斥，维护期间唤醒不丢失；覆盖领取、Turn/Step 开始、逐条消息、模型/工具结果和结束提交的不确定结果。未确认写入不得按失败回复直接回滚；回读或关闭失败保留所需事实并支持明确重试。业务关闭及 WhenIdle 不能早于这些工作结束。
 
-取消投递补充：GoAkt v4.5.3 本地 TellGrain 经 localSend 等待 err 通道确认，GrainContext.Response 不确认该通道。停止钩子、AgentLoop 准备阶段及 Agent 中间件内部的取消均已改为异步 RequestGrain 并检查 Completion。准备阶段仅取消正在等待的 Prompt 或 pre-step 请求，不向尚未调用的组件发送取消。取消投递错误与原 Invoke 的业务失败分开，允许重试投递且不阻断原调用退出。新增 [准备取消测试](../../agentloop/actor/grain_cancel_test.go) 和实际协调器交错测试；Agent/AgentLoop 范围的非缓存 race、vet、build 再次通过。新增 [多层 around 测试](../../agent/middleware/actor/grain_cancel_test.go) 验证正常返回、取消等待下游退出、非法下游回复时释放 Continue 并等待上游结束；Agent/AgentLoop 范围的非缓存 race、vet、build 通过。完成取消请求的内部消息统一命名 completeCancel，不表示原业务执行结束。Turn 开始已切换为幂等提交，删除 ReconcileTurnStart 和 Actor 回读分支；[业务测试](../../agentloop/turn_start_test.go) 与 [Actor 测试](../../agentloop/actor/grain_start_test.go) 覆盖回复丢失、未提交重试、取消后保持同一身份及零回读。完整主驱动、维护及其余写入迁移仍未完成，AL-06 保持未完成。
+取消投递补充：GoAkt v4.5.3 本地 TellGrain 经 localSend 等待 err 通道确认，GrainContext.Response 不确认该通道。停止钩子、AgentLoop 准备阶段及 Agent 中间件内部的取消均已改为异步 RequestGrain 并检查 Completion。准备阶段仅取消正在等待的 Prompt 或 pre-step 请求，不向尚未调用的组件发送取消。取消投递错误与原 Invoke 的业务失败分开，允许重试投递且不阻断原调用退出。新增 [准备取消测试](../../agentloop/actor/grain_cancel_test.go) 和实际协调器交错测试；Agent/AgentLoop 范围的非缓存 race、vet、build 再次通过。新增 [多层 around 测试](../../agent/middleware/actor/grain_cancel_test.go) 验证正常返回、取消等待下游退出、非法下游回复时释放 Continue 并等待上游结束；Agent/AgentLoop 范围的非缓存 race、vet、build 通过。完成取消请求的内部消息统一命名 completeCancel，不表示原业务执行结束。Turn 开始已切换为幂等提交，删除 ReconcileTurnStart 和 Actor 回读分支；[业务测试](../../agentloop/turn_start_test.go) 与 [迁移后的业务流程测试](../../agentloop/agent_execution_test.go) 覆盖回复丢失、未提交重试、取消后保持同一身份及零回读。完整主驱动、维护及其余写入迁移仍未完成，AL-06 保持未完成。
 
 ### AL-07 生产装配及上下游迁移 — 未完成
 

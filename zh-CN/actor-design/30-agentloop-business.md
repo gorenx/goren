@@ -1,6 +1,6 @@
 # AgentLoop 需求与实现方案
 
-状态：业务接口、状态机和部分 Actor 驱动已实现并通过包级验证；完整模型/工具主驱动及生产执行链未完成。本文保留设计演进记录，当前实现以末尾的状态机、直接编排与领取恢复章节及模块 README 为准。
+状态：业务接口、状态机和部分 Actor 驱动已实现；文本 HTTP/WebSocket 集成已取得验证，完整执行链仍未完成。最新确认的职责是 Actor 不了解 AgentLoop 内部执行顺序；末尾“能力接口驱动的优化方案”记录这一边界及待验证的异步接续设计。前文由 Actor 串联 Step、Turn 的直接编排设计需要替换，不能继续据此扩展实现。
 
 本文首先规定完整业务行为与边界，后面的实现片段不能替代需求。已对提交快照中的 agent、agentloop、systemprompt 子包及 session 根包执行非缓存 race 测试、vet 和 build；包级验证不能用于宣称完整重构完成。
 
@@ -566,7 +566,7 @@ Grain 单向持有 ReactLoopAgent，不允许 ReactLoopAgent 引用 Grain、PID�
 
 ## Turn 开始与输入领取的业务接口
 
-ReactLoopAgent 单向拥有当前 turn.Turn。PrepareTurn 只准备下一个 turn/start，不递增编号；ConfirmTurn 接收 Session.WriteResult，校验本 Agent 的 Session 身份、单事件提交范围及完整 turn/start 草稿后才安装当前 Turn；复用 EventDraft.CheckCommit，不在 AgentLoop 重复解析 payload。已有 Turn 不允许再开启一轮。关闭准备只禁止接纳新输入，仍允许处理已接纳输入；因此开启后继 Turn 使用业务就绪和待处理输入判定，不复用输入接纳检查。
+ReactLoopAgent 单向拥有当前 turn.Turn。PrepareTurn 只准备下一个 turn/start，不递增编号；ConfirmTurn 接收 Session.WriteResult，校验本 Agent 的 Session 身份、单事件提交范围及完整 turn/start 草稿后才安装当前 Turn；复用 EventDraft.ValidateEvent，不在 AgentLoop 重复解析 payload。已有 Turn 不允许再开启一轮。关闭准备只禁止接纳新输入，仍允许处理已接纳输入；因此开启后继 Turn 使用业务就绪和待处理输入判定，不复用输入接纳检查。
 
 PrepareInput 由当前 Turn 的 Step 进度选择 Inbox 领取边界：首 Step 领取 next-step 全部输入及至多一个 next-turn，后继 Step 只领取 next-step。返回 InboxEdit，Session 提交成功后继续使用 Apply 返回 Claimed。PreparePosition 返回具名 StepPosition，用于 Prompt 和前置 Step 决策；Step 只有实际提交后才能推进 Turn 的 Step 编号。当前阶段补齐纯业务接口，不提前启动缺少模型和工具依赖的生产 Turn。
 
@@ -644,7 +644,7 @@ pre-step、request、request-error 与 turn-stopping 的业务输入统一定义
 
 Attempt 不能仅根据事件数量或 type 推进。每次 CommitEvents 保留不可变草稿；EventsCommitted 携带完整 WriteResult，业务校验 SessionID、单事件区间、相对已观察日志的位置及草稿内容。请求头、上下文、chunk 和 assistant/message 均通过相同确认边界，错误响应不修改组装结果或“Header 已记录”事实。
 
-EventDraft 在 Session owner 内提供 CheckCommit，对当前同进程 Commit 的原样返回校验 type、原始 payload、surface 操作、来源序号和 ignorable；不开放私有草稿字段，也不把它当作任意历史 JSON 的语义等价比较。Seq/Time 合法性由该检查验证，Session 身份和本次请求区间由 Attempt 验证。此 API 不改变持久化形状或提交语义。
+EventDraft 在 Session owner 内提供 ValidateEvent，对当前同进程 Commit 的原样返回校验 type、原始 payload、surface 操作、来源序号和 ignorable；不开放私有草稿字段，也不把它当作任意历史 JSON 的语义等价比较。Seq/Time 合法性由该检查验证，Session 身份和本次请求区间由 Attempt 验证。此 API 不改变持久化形状或提交语义。
 
 ## 模型请求发送前检查的业务位置
 
@@ -943,3 +943,109 @@ Session 在同一 Commit 中按 SessionID 与 StepPosition 查找已有 step/end
 ### 关闭时尚未开始的执行（2026-09-09）
 
 输入确认后、turn/start 尚未提出之前，关闭准入可以撤销待执行活动并保留已提交 Inbox，下次恢复继续使用。该决策由 ReactLoopAgent.PrepareClose 执行；不能依赖尚未启动的驱动回调去释放它。已有 Turn（包括提交结果待确认的 proposed Turn）、Step、准备过程、模型请求、收尾或维护工作必须按原完成契约等待，禁止直接清除。该规则解决未开始执行的关闭等待，不代表模型主驱动已接通。
+
+## 自动执行驱动接线
+
+生产 AgentLoop 初始化必须具备 Session、Prompt、Tool Runtime、中间件执行 Grain 和 LLM Router 的引用；生命周期 Registry 负责提供，AgentLoop 不启动它们。输入提交确认后调度执行；各执行边界的异步回复重新进入本 Grain 邮箱。驱动只发送已有的 Turn start、Step preparation、model request、Step end、Turn continuation 和 Turn settlement 请求；状态合法性、取消结论、是否继续及工具结果事实仍由业务对象决定。
+
+同一次驱动只能有一个等待中的边界请求；新的 Followup/Steer 仍走 Inbox 提交流程，不能另开并发 Turn。Turn flush 后由业务对象判断是否有后续输入，否则结束活动。恢复后的输入也需要同一入口唤醒，不用独立历史兼容驱动。请求与业务失败保留并发布错误；不能清除未完成 Step 或伪造 turn/end。
+
+验收必须从 HTTP session.prompt 开始，经过真实 Router 与本地 SSE 模型服务，观察 assistant/chunk、assistant/message、step/end、turn/end 及持久化屏障，然后确认 Agent 空闲；不能手动调用业务 CompleteModel 冒充生产驱动。工具、取消、并发输入、恢复及关闭使用同一条驱动路径验收。
+
+## 能力接口驱动的优化方案（2026-09-09）
+
+职责边界已由用户确认；能力接口与业务主流程已接入生产文本路径，尚未完成全部调度及故障验收。本节替换上文“自动执行驱动接线”中的内部自请求推进方式，也替换“删除 Step 操作解释协议”中由 Actor 串联准备顺序的设计。原有业务行为、外部协议和持久化要求继续有效。
+
+### 唯一业务流程
+
+ReactLoopAgent 决定什么时候调用中间件、读取并组装对话、请求模型、执行工具及结束 Turn。业务流程直接使用消费方定义的能力接口，不把 StartTurn、PrepareStep、ContinueTurn 等内部指令交给 Actor 解释。业务流程跨异步边界分布在具名对象方法中，不使用匿名回调链作为主要实现，也不建立通用工作流引擎。
+
+实现应尽量显式表达流程顺序与分支。只有真正跨异步能力边界才使用结果接收接口；不为普通函数调用添加接收者、continuation 或仅做转发的对象。模型能力结果直接交给 ReactLoopAgent，删除只转发到该对象的 generation 包装。当前工具流程仍跨多个结果方法维护串行下标，需继续检查其可读性与批次调度职责，不能把这个实现限制当作并发设计结论。
+
+AgentLoop Actor 处理外部输入、取消、配置通知及通信结果。调用哪个业务结果接收者，在业务发起该组件请求时已经确定；Actor 不根据当前 Step、模型结果或工具结果选择下一业务方法。组件 Client 只做地址选择、协议编码、请求关联、结果解码、取消投递及交付。Registry 继续启动组件。
+
+```mermaid
+sequenceDiagram
+    participant Entry as AgentLoop Actor
+    participant Loop as ReactLoopAgent
+    participant Client as 能力接口的 Actor 适配
+    participant Service as 中间件、模型、工具或 Session
+    Entry->>Loop: 外部业务输入
+    Loop->>Client: 调用能力接口并指定结果接收者
+    Client->>Service: 异步请求
+    Note over Entry,Service: 等待期间释放当前处理轮次
+    Service-->>Client: 本次请求结果
+    Client->>Loop: 在所属 Grain 的串行轮次交付结果
+    Loop->>Loop: 更新状态并决定后续业务
+    Loop->>Client: 调用下一项需要的能力
+```
+
+### 能力接口及接续
+
+接口由 AgentLoop 消费方定义，覆盖模型生成与流读取/关闭、工具准备/审批/执行/释放、中间件调用、Prompt 组装和 Session 读写/flush。它们接收具名输入，结果交给窄接收接口；例如模型适配知道生成结果的接收者，不知道接收者会继续读流、结束 Step，还是启动恢复中间件。
+
+业务接口禁止暴露 GrainContext、PID、GrainReply 和 GoAkt RequestCall。现有 llm/actor.Client 的 Receivers 含有 GrainContext，只能留在通信适配层，不能直接充当业务能力接口。外部错误仍使用 error，并区分投递失败、组件业务失败和结果不确定。
+
+每次交付结果时，适配层为该次串行业务调用提供可使用的能力接口。业务对象不保存这些绑定当前处理轮次的接口，后续结果交付时重新提供；异步请求不能捕获旧 GrainContext。持久化请求关联只保存调用身份、脱离上下文的数据及具名结果接收者。
+
+该安排保持对象图无环：Actor 拥有业务对象和通信 Client；Client 的在途请求可引用业务结果接收者；业务对象不反向保存 Client、Actor 或请求回复对象。业务子对象不保存其父对象。取消使用业务调用身份和取消意图，不能让业务对象保存一个反向持有 Client 的取消句柄。
+
+### 执行与并发约束
+
+外部输入和所有结果交付都在所属 Grain 的串行处理轮次修改业务对象。能力调用发出请求后立即返回，不在 Receive 中阻塞等待网络、流或工具，也不另启 goroutine 并发推进同一个 ReactLoopAgent。业务状态机决定等待期间允许的输入、取消及更新；不复制一套 Actor 阶段，也不新增应用 mailbox。
+
+源码核对：GoAkt v4.5.3 的 actor/grain_context.go RequestGrain 和 actor/grain_pid.go handleAsyncResponse 表明 Then 在 Grain 的处理轮次执行，已知发送失败可能立即调用 Then。不能假定任何请求都必然延迟回调。适配交付设计须确保业务已登记调用后才消费结果，并覆盖立即失败；框架上下文经过池化，不能因为回调串行就保留旧上下文。
+
+优先复用框架的异步请求、重入和暂存能力。若为取得新的处理上下文而需要将结果交回邮箱，该消息仅交付原请求结果，不携带 AgentLoop 内部下一步指令。是否需要这一适配必须通过调度验证确定，不能先为所有调用机械增加 PipeToSelf。
+
+### 状态和配置归属
+
+ReactLoopAgent 及其业务子对象拥有输入准入、Turn/Step、工具批次、取消、失败结论、未确认提交和资源释放责任。Actor 只保存通信相关状态；空闲由业务完成和实际通信资源释放共同确认，不能通过 Actor 的 opening/preparation/model/ending 字段重新推断业务阶段。
+
+配置通知只表达变化。工具更新在前序完整用户消息处理结束后应用；当前执行的 Prompt、工具定义和实例保持一致。LLM 配置继续由 LLM 管理，不恢复 AgentLoop 的配置副本、配置查询或每次生成前写入配置的路径。Prompt 只组装提示词与工具定义，对话由 AgentLoop 从 Session 组装。
+
+取消确认只说明意图已经交付，原业务请求仍需报告完成；清理、结束事件和 flush 顺序属于业务流程。提交结果不确定时保留原业务事实，使用该操作已经定义的幂等或恢复契约，不假定所有 Session append 天然幂等。
+
+### 替换范围及验收
+
+1. 先验证能力接口的异步交付：延迟成功、立即失败、超时与迟到结果、取消与正常完成交错；检查回调串行、无旧上下文引用、无环引用。
+2. 将 grain_execution.go 的主流程、grain_step.go 的准备顺序、grain_tools.go 的批次与审批分支、Turn/Step 收尾与恢复决策收回业务层。删除对应内部自请求、结果中转类型和阶段控制；不保留并行执行入口。
+3. 业务测试通过可控的能力实现驱动完整流程，允许在任意等待点注入 Steer、Cancel、配置变更及失败，且无需启动 GoAkt。不能再靠测试手动选择下一个 Prepare/Confirm 方法来证明流程完整。
+4. Actor 测试验证接口适配、请求关联、结果交付、取消和生命周期；不再通过手动发送 prepareStep/finishTurn 等私有消息检验业务顺序。
+5. 最后验证真实 HTTP/WebSocket 文本与工具对话、重启恢复、维护期间取消、更新屏障和关闭 flush。当前文本集成已重新验证业务能力接口路径；它不能作为工具及全部故障边界已经完成的证据。
+
+### 执行状态与事件校验调整
+
+原 `activity` 使用空指针表示空闲、kind 表示执行或维护，同时保存错误、重试和继续执行意图，混淆状态与过程数据。本次移除该容器：ReactLoopAgent 使用显式 executionState 表达空闲、执行、维护，状态转换集中在 agent_state.go；取消原因 cancelCause 使用 agent.CancelCause 保存，按需由 Cancellation() 转换为具名取消错误；runAfterCompletion 表示当前工作结束后的继续执行请求，二者由同一业务对象管理，失败与重试事实继续属于其执行流程。没有新 Actor 状态或回调框架。
+
+runAfterCompletion 不能仅由 Inbox 非空推导：取消并保留旧输入时不自动重跑；取消后新接纳的 Followup/Steer，或维护期间的新输入，才请求完成后继续执行。如果最终 Inbox 已空，即使标记仍在也不继续。释放执行时统一清除取消、错误、重试和该标记。关闭期间保留输入的现有规则不变。
+
+Session 的 EventDraft.CheckCommit 更名为 ValidateEvent。它验证事件序号、时间以及类型、原始 payload、来源序号、surface 操作和 ignorable 与草稿一致；不验证 Session 身份、提交批次范围或持久化。这些仍由调用方的完整 WriteResult / WriteBarrier 校验负责。迁移全部生产调用和测试，不保留别名；事件格式、错误语义和外部协议不变。
+
+验收：状态互斥、取消前后输入归属、维护后恢复和关闭保留输入通过原业务测试；事件校验覆盖内容与元数据不匹配；运行受影响 Session、AgentLoop 业务、Commands、LLM Retry、Compaction 测试。旧 Actor 私有消息测试的后续迁移结果见本节最新进度。
+
+### 当前实现证据与未完成边界
+
+- `agent_execution_test.go` 从 Run 驱动业务全流程，覆盖 PreStep 拒绝、模型发起失败、Turn start / Step end / Turn end 回复丢失重试、flush 单独重试、Turn 开始前取消、维护后恢复输入。Turn 结束事件与原执行错误在重试后保留，模型请求不重复。
+- `ReactLoopAgent.retry` 只保存失败持久化边界，后续 Run 重试同一不可变事实。没有新增 Actor 阶段；生产自动重试触发尚未接通。
+- 已删除 Actor 内部 Turn/Step/模型操作驱动。开始与结束幂等测试迁入业务包；其余私有消息测试现已迁移，不恢复旧入口用于通过编译。
+- Session RequestGrain 暂存解除到 PipeToSelf 结果交付之间存在尚未封闭的调度边界；必须证明新输入不能基于尚未确认的 Inbox 准备编辑。当前结果交付探针和文本成功测试不足以证明这一点。
+- 工具审批接线、批次并发/取消、未确认资源释放恢复、历史 Inbox 自动唤醒仍未完成。
+
+本次状态与命名调整验证：AgentLoop 业务及 internal 子包、Session 子树、Commands 子树、LLM Retry 子树、Compaction 子树的非缓存 race 测试通过；上述生产范围 build 与 vet 通过。字段取消原因改为具名类型后，重新运行 AgentLoop 业务/internal 全部 race 测试及 HTTP prompt 文本集成，均通过。此时未声明 Actor 测试包或全仓通过，后续结果见以下记录。
+
+文件与测试清理：Step 准备的全部业务流程位于 agent_preparation.go；agent_state.go 仅管理状态，MaintenanceCompleted 的能力调用归 agent_execution.go。旧 grain_step_test.go 的领取拒绝、领取回复丢失、Step start 回复丢失覆盖已迁至 TestBusinessPreparationRecoversUncertainWritesBeforeStopping。准备取消测试改为运行完整业务流程并检查取消确认后仍忙碌、原组件完成后才空闲；共享 Session/Prompt/中间件夹具集中于 grain_components_test.go。删除旧 preparationCaller 和私有 prepareStep 测试调用，没有恢复旧命令类型。
+
+### 中间件处理器接线
+
+当前生产能力适配没有把已选处理器传给中间件执行器，导致 PreStep、RequestError、TurnStopping 使用空集合。补齐 middlewareactor.Handlers，分别保存三个边界的有序 Route；由 CreateAgent 接收、校验并冻结，再通过共享 Initialize 交给 AgentLoop 通信适配。Handler 对应的 Actor 仍由生命周期所有者启动，AgentLoop 只保存路由并在业务发起对应能力时传递，不负责决定调用时机或执行策略。
+
+Handlers 的零值表示显式空集合，保留现有默认行为；非空集合须拒绝缺失身份、无效目标和同一边界的重复注册。克隆集合以免调用方修改已接纳配置。配置只涉及 Go 运行契约，不改变 Session、HTTP 或 WebSocket 格式。验收通过完整 Run 使用真实中间件协调器和 Retry actor，证明恢复处理器被调用、重试生成且最终结束同一个 Turn；停止钩子等待期间的 Steer、取消和取消重试也使用完整流程。
+
+最新验证：`go test -race -count=1 ./agentloop/... ./agent/middleware/... ./agent/registry -timeout=60s` 全部通过。Actor 的旧内部 Turn/Step/模型请求消息与手动 Prepare/Confirm 主驱动夹具已删除；共享组件夹具移除不再消费的故障模式。输入与 Client 测试使用真实维护边界保持执行，避免依赖旧版“Followup 永远不启动”的行为。
+
+未确认模型关闭：RequestFinished 若仍未确认 StreamClosed，业务保留 modelCloseRetry，只允许后续 Run 重试同一请求的关闭。不会直接 failStep 越过仍在使用的资源，也不会重新生成。业务完整流程测试证明第一次关闭失败后没有 Step/Turn end，关闭重试成功才写结束边界并 flush，原始模型错误保留。生产失败自动重试触发和关闭等待的完整恢复仍待后续验收。
+
+### 关闭时传播执行取消
+
+Registry 的 PrepareClose 先由业务对象冻结准入。存在执行时，业务对象记录 disposed 取消并保留未消费 Inbox；Actor 复用普通取消的模型、工具、中间件和维护投递通道。取消确认只确认投递，关闭回复必须继续等待业务收尾，不能将确认当作 Turn 或 Session flush 完成。投递失败返回错误并保留资源供关闭重试。验收覆盖 HTTP 请求仍在模型流中时关闭服务，确认请求取消、Turn 结束持久化及关闭完成。
