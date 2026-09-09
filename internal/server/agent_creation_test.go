@@ -18,8 +18,10 @@ import (
 	"github.com/gorenx/goren/toolaskuser"
 	"github.com/gorenx/goren/tools"
 	toolregistry "github.com/gorenx/goren/tools/registry"
+	catalogactor "github.com/gorenx/goren/tools/registry/actor"
 	runtimeactor "github.com/gorenx/goren/tools/runtime/actor"
 	"github.com/gorenx/goren/tools/tool"
+	toolactor "github.com/gorenx/goren/tools/tool/actor"
 	"github.com/gorenx/goren/userquestions"
 
 	agentactor "github.com/gorenx/goren/agent/actor"
@@ -38,7 +40,7 @@ import (
 // This acceptance test uses production configuration owners. A fabricated tool
 // baseline would hide a missing initialization stage in Agent lifecycle wiring.
 func TestAgentCreationWithProductionConfigurationOwners(t *testing.T) {
-	for _, name := range []string{"empty", "tool", "failed-tool", "cancelled-tool"} {
+	for _, name := range []string{"empty", "tool", "failed-tool", "cancelled-tool", "missing-provider"} {
 		withTool := name != "empty"
 		t.Run(name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -51,7 +53,18 @@ func TestAgentCreationWithProductionConfigurationOwners(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer storage.Close(context.Background())
-			system, err := goakt.NewActorSystem("server-agent-integration", goakt.WithPubSub(), goakt.WithLogger(log.DiscardLogger))
+			source := &questionProvider{}
+			bindings := tool.Providers{
+				toolaskuser.Name: source,
+			}
+			if name == "missing-provider" {
+				delete(bindings, toolaskuser.Name)
+			}
+			constructors, err := toolactor.NewProviders(bindings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			system, err := goakt.NewActorSystem("server-agent-integration", goakt.WithPubSub(), goakt.WithLogger(log.DiscardLogger), goakt.WithExtensions(constructors))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -73,7 +86,6 @@ func TestAgentCreationWithProductionConfigurationOwners(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			source := &questionProvider{}
 			if name == "cancelled-tool" {
 				source.wait = &questionWait{
 					entered:   make(chan struct{}, 1),
@@ -152,7 +164,6 @@ func TestAgentCreationWithProductionConfigurationOwners(t *testing.T) {
 				Middleware:      hooks,
 				PromptRegistry:  prompts,
 				ToolsRegistry:   directory,
-				Workers:         tool.Workers{toolaskuser.Name: source},
 				Components:      []*goakt.GrainIdentity{titleOwner},
 				Timeout:         time.Second,
 			}
@@ -163,6 +174,33 @@ func TestAgentCreationWithProductionConfigurationOwners(t *testing.T) {
 			ready, ok := payload.(agentregistry.Ready)
 			if !ok {
 				t.Fatalf("invalid creation response: %T", payload)
+			}
+			if name == "missing-provider" {
+				if ready.Err == nil || source.opens.Load() != 0 {
+					t.Fatalf("missing implementation accepted or opened: %+v", ready)
+				}
+				payload, err = system.AskGrain(ctx, authority, agentregistry.CloseAgent{
+					Creation: input.Creation,
+				}, 4*time.Second)
+				if err != nil {
+					t.Fatal(err)
+				}
+				closed, valid := payload.(agentactor.Closed)
+				if !valid || closed.Err != nil {
+					t.Fatalf("empty tool activation was not cleaned: %+v", payload)
+				}
+				payload, err = system.AskGrain(ctx, directory, catalogactor.FindTool{
+					AgentID: input.Creation.AgentID,
+					Name:    toolaskuser.Name,
+				}, time.Second)
+				if err != nil {
+					t.Fatal(err)
+				}
+				address, valid := payload.(catalogactor.ToolAddress)
+				if !valid || address.Actor != nil {
+					t.Fatalf("failed activation retained a callable address: %+v", payload)
+				}
+				return
 			}
 			if name == "failed-tool" {
 				if ready.Err == nil || source.opens.Load() != 1 || source.closes.Load() != 1 {

@@ -16,8 +16,11 @@ import (
 // Runtime schedules one Agent's tool initialization and cleanup. Business state
 // and failure recovery belong to toolruntime.Runtime; this actor never starts another actor.
 type Runtime struct {
+	// tools maps tool names to this Runtime's exact activation and cleanup responsibility.
+	// Failed initialization or close retains the entry; successful removal deletes it.
+	tools      map[string]*toolLifecycle
 	instanceID string
-	// Only identity and execution policy survive the initialization task.
+	// These identities bind requests to the initialized Agent lifetime.
 	creationID string
 	agentID    session.SessionID
 	// toolRuntime owns the Agent tool set, update recovery, and resource cleanup.
@@ -60,6 +63,18 @@ func (owner *Runtime) OnActivate(context.Context, *goakt.GrainProps) error {
 
 // OnDeactivate cancels work without certifying that external resources were released.
 func (owner *Runtime) OnDeactivate(context.Context, *goakt.GrainProps) error {
+	for _, instance := range owner.tools {
+		if instance.active != nil {
+			pending := instance.active
+			pending.cancel()
+			failure := errors.New("tools: Runtime stopped before tool lifecycle completion")
+			if pending.remove {
+				pending.reply.Response(Completion{Err: failure})
+			} else {
+				pending.reply.Response(toolInstance{Err: failure})
+			}
+		}
+	}
 	for _, current := range owner.calls {
 		current.cancel()
 		if current.reply != nil {
@@ -77,7 +92,7 @@ func (owner *Runtime) OnDeactivate(context.Context, *goakt.GrainProps) error {
 
 // OnReceive serializes protocol handling; framework tasks exclusively run the business owner.
 func (owner *Runtime) OnReceive(gc *goakt.GrainContext) {
-	if owner.receiveCalls(gc) || owner.receiveConfiguration(gc) {
+	if owner.receiveTools(gc) || owner.receiveCalls(gc) || owner.receiveConfiguration(gc) {
 		return
 	}
 	switch input := gc.Message().(type) {
@@ -105,12 +120,11 @@ func (owner *Runtime) OnReceive(gc *goakt.GrainContext) {
 		}
 		instances, err := NewInstances(
 			gc.ActorSystem(),
-			settings.Authority,
+			gc.Self(),
 			settings.Registry,
 			settings.AgentID,
 			settings.CreationID,
 			settings.Timeout,
-			settings.Workers,
 		)
 		if err != nil {
 			owner.finish(input.operation, err)
@@ -119,6 +133,8 @@ func (owner *Runtime) OnReceive(gc *goakt.GrainContext) {
 		owner.toolRuntime = business
 		owner.catalog = directory
 		owner.instances = instances
+		// The first Turn rechecks facts changed before subscription became active.
+		owner.changed = true
 		owner.schedule(gc, input.operation, func(ctx context.Context) error {
 			if settings.Config != nil {
 				err := directory.ConfigureSession(ctx, settings.AgentID, *settings.Config)
@@ -225,7 +241,6 @@ func (owner *Runtime) initialize(gc *goakt.GrainContext, input InitializeRuntime
 		captured := input.Config.Clone()
 		input.Config = &captured
 	}
-	input.Workers = input.Workers.Clone()
 	current.initialization = &input
 	owner.creationID = input.CreationID
 	owner.agentID = input.AgentID
@@ -300,5 +315,10 @@ func (owner *Runtime) finish(current *operation, failure error) {
 		current.cancel()
 	}
 	owner.active = nil
+	if current.refreshID != "" {
+		owner.changed = true
+		current.reply.Response(Definitions{Err: failure})
+		return
+	}
 	current.reply.Response(Completion{Err: failure})
 }

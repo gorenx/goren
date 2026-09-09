@@ -8,14 +8,13 @@ import (
 	"time"
 
 	agentactor "github.com/gorenx/goren/agent/actor"
-	agentregistry "github.com/gorenx/goren/agent/registry"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/toolaskuser"
 	toolregistry "github.com/gorenx/goren/tools/registry"
 	catalogactor "github.com/gorenx/goren/tools/registry/actor"
-	toolruntime "github.com/gorenx/goren/tools/runtime"
 	runtimeactor "github.com/gorenx/goren/tools/runtime/actor"
 	"github.com/gorenx/goren/tools/tool"
+	toolactor "github.com/gorenx/goren/tools/tool/actor"
 	"github.com/gorenx/goren/userquestions"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
@@ -63,112 +62,152 @@ func (provider *source) Open(context.Context) (tool.Implementation, error) {
 	}, err
 }
 
-func TestRuntimeAppliesRegistrySchemasThroughLifecycleAndCommonToolActor(t *testing.T) {
-	system, registry, directory := startCatalog(t, true)
-	ctx := context.Background()
-	authority, err := goakt.GrainOf[*agentregistry.Grain](ctx, system, agentregistry.Name,
-		goakt.WithLongLivedGrain(), goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))))
-	if err != nil {
-		t.Fatal(err)
-	}
-	creation := agentregistry.Creation{
-		AgentID:    "agent",
-		CreationID: "creation",
-	}
-	reserved := ask[agentregistry.Completion](t, system, authority, agentregistry.ReserveAgent{Creation: creation})
-	if reserved.Err != nil {
-		t.Fatal(reserved.Err)
-	}
-	t.Cleanup(func() {
-		reply := ask[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{Creation: creation})
-		if reply.Err != nil {
-			t.Error(reply.Err)
+// runtimeAuthority represents only the upstream activation grant. Production
+// creation and descendant cleanup are covered by internal/server integration.
+type runtimeAuthority struct{ instanceID string }
+type readClaim struct{}
+
+func (*runtimeAuthority) OnActivate(context.Context, *goakt.GrainProps) error   { return nil }
+func (*runtimeAuthority) OnDeactivate(context.Context, *goakt.GrainProps) error { return nil }
+func (owner *runtimeAuthority) OnReceive(gc *goakt.GrainContext) {
+	switch input := gc.Message().(type) {
+	case agentactor.ClaimTools:
+		var err error
+		if owner.instanceID != "" && owner.instanceID != input.InstanceID {
+			err = errors.New("activation conflict")
+		} else {
+			owner.instanceID = input.InstanceID
 		}
-	})
-	provider := &source{}
-	t.Cleanup(func() { provider.closeFailure.Store(false) })
-	instances, err := runtimeactor.NewInstances(system, authority, registry, creation.AgentID, creation.CreationID, time.Second,
-		tool.Workers{toolaskuser.Name: provider})
-	if err != nil {
-		t.Fatal(err)
+		gc.Response(agentactor.Claimed{Err: err})
+	case readClaim:
+		gc.Response(owner.instanceID)
 	}
+}
+
+func startRuntime(t *testing.T, provider *source) (goakt.ActorSystem, *goakt.GrainIdentity, *goakt.GrainIdentity, runtimeactor.CloseRuntime) {
+	t.Helper()
+	system, registry, _ := startCatalog(t, true, tool.Providers{toolaskuser.Name: provider})
 	definition, err := toolaskuser.NewDefinition(questions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	input := toolregistry.Catalog{
-		Schemas: []llm.ToolSchema{
-			{
-				Name:        definition.Name,
-				Description: definition.Description,
-				Parameters:  definition.Parameters,
-			},
-		},
-	}
-	reply := ask[catalogactor.Completion](t, system, registry, catalogactor.RegisterSource{
-		Name:    "local",
-		Catalog: input,
+	configured := ask[catalogactor.Completion](t, system, registry, catalogactor.RegisterSource{
+		Name: "local",
+		Catalog: toolregistry.Catalog{Schemas: []llm.ToolSchema{{
+			Name:        definition.Name,
+			Description: definition.Description,
+			Parameters:  definition.Parameters,
+		}}},
 	})
-	if reply.Err != nil {
-		t.Fatal(reply.Err)
+	if configured.Err != nil {
+		t.Fatal(configured.Err)
 	}
-	business, err := toolruntime.NewRuntime(creation.AgentID)
+	target, closing := initializeRuntime(t, system, registry)
+	return system, target, registry, closing
+}
+
+func initializeRuntime(t *testing.T, system goakt.ActorSystem, registry *goakt.GrainIdentity) (*goakt.GrainIdentity, runtimeactor.CloseRuntime) {
+	t.Helper()
+	authority, err := goakt.GrainOf[*runtimeAuthority](context.Background(), system, "authority", goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = business.Initialize(ctx, directory, instances)
+	target, err := goakt.GrainOf[*runtimeactor.Runtime](context.Background(), system, "agent.tools", goakt.WithLongLivedGrain(), goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))))
 	if err != nil {
 		t.Fatal(err)
 	}
+	initialized := ask[runtimeactor.Completion](t, system, target, runtimeactor.InitializeRuntime{
+		AgentID:    "agent",
+		CreationID: "creation",
+		Authority:  authority,
+		Registry:   registry,
+		Timeout:    time.Second,
+	})
+	if initialized.Err != nil {
+		t.Fatal(initialized.Err)
+	}
+	return target, runtimeactor.CloseRuntime{
+		CreationID: "creation",
+		InstanceID: ask[string](t, system, authority, readClaim{}),
+	}
+}
+
+func TestRuntimeOwnsToolReplacementAndFailedCloseRecovery(t *testing.T) {
+	provider := &source{}
+	system, target, registry, closing := startRuntime(t, provider)
 	route := ask[catalogactor.ToolAddress](t, system, registry, catalogactor.FindTool{
-		AgentID: creation.AgentID,
+		AgentID: "agent",
 		Name:    toolaskuser.Name,
 	})
 	if !route.Found || provider.opens.Load() != 1 {
-		t.Fatal("work was not initialized and registered")
+		t.Fatal("ToolActor was not initialized and registered")
 	}
 	hidden := false
-	err = directory.ConfigureSession(ctx, creation.AgentID, toolregistry.Catalog{
-		Policies: map[string]toolregistry.Policy{
-			toolaskuser.Name: {Visible: &hidden},
-		},
+	configured := ask[catalogactor.Completion](t, system, registry, catalogactor.ConfigureSession{
+		SessionID: "agent",
+		Catalog:   toolregistry.Catalog{Policies: map[string]toolregistry.Policy{toolaskuser.Name: {Visible: &hidden}}},
 	})
-	if err != nil {
-		t.Fatal(err)
+	if configured.Err != nil {
+		t.Fatal(configured.Err)
 	}
-	complete, err := business.Apply(ctx, directory, instances)
-	if !complete || err != nil {
-		t.Fatalf("update=%v error=%v", complete, err)
-	}
-	definitions, err := business.Definitions()
-	if err != nil || len(definitions.Schemas) != 0 || len(definitions.KnownNames) != 1 {
-		t.Fatalf("hidden definitions=%+v error=%v", definitions, err)
+	updated := ask[runtimeactor.Definitions](t, system, target, runtimeactor.RefreshConfiguration{
+		CreationID: "creation",
+		ID:         "hide",
+	})
+	if updated.Err != nil || len(updated.Value.Schemas) != 0 || len(updated.Value.KnownNames) != 1 {
+		t.Fatalf("updated: %+v", updated)
 	}
 	if provider.opens.Load() != 2 || provider.closes.Load() != 1 {
-		t.Fatal("replacement did not retire old work")
+		t.Fatal("replacement did not release previous work")
 	}
 	provider.closeFailure.Store(true)
-	err = business.Close(ctx, instances)
-	if err == nil {
+	closed := ask[runtimeactor.Completion](t, system, target, closing)
+	if closed.Err == nil {
 		t.Fatal("failed resource close was discarded")
 	}
 	route = ask[catalogactor.ToolAddress](t, system, registry, catalogactor.FindTool{
-		AgentID: creation.AgentID,
+		AgentID: "agent",
 		Name:    toolaskuser.Name,
 	})
 	if !route.Found {
 		t.Fatal("failed close withdrew the remaining resource")
 	}
 	provider.closeFailure.Store(false)
-	err = business.Close(ctx, instances)
-	if err != nil {
-		t.Fatal(err)
+	closed = ask[runtimeactor.Completion](t, system, target, closing)
+	if closed.Err != nil {
+		t.Fatal(closed.Err)
 	}
 	route = ask[catalogactor.ToolAddress](t, system, registry, catalogactor.FindTool{
-		AgentID: creation.AgentID,
+		AgentID: "agent",
 		Name:    toolaskuser.Name,
 	})
 	if route.Found || provider.opens.Load() != 2 || provider.closes.Load() != 3 {
-		t.Fatal("cleanup reopened work or retained a closed destination")
+		t.Fatal("cleanup reopened work or retained its destination")
+	}
+}
+
+func TestRuntimeRejectsToolReactivationWithPreviousCreation(t *testing.T) {
+	provider := &source{}
+	system, target, registry, closing := startRuntime(t, provider)
+	route := ask[catalogactor.ToolAddress](t, system, registry, catalogactor.FindTool{
+		AgentID: "agent",
+		Name:    toolaskuser.Name,
+	})
+	err := system.TellGrain(context.Background(), route.Actor, new(goakt.PoisonPill))
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialized := ask[toolactor.Completion](t, system, route.Actor, toolactor.Initialize{
+		CreationID: route.CreationID,
+		AgentID:    "agent",
+		Name:       toolaskuser.Name,
+		Authority:  target,
+	})
+	if initialized.Err == nil {
+		t.Fatal("fresh activation claimed the old resource lifetime")
+	}
+	closed := ask[runtimeactor.Completion](t, system, target, closing)
+	if closed.Err == nil || provider.closes.Load() != 0 {
+		t.Fatal("new activation falsely confirmed release of old work")
 	}
 }

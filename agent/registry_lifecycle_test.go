@@ -188,10 +188,6 @@ func TestRegistryChoosesOnlyRemainingResourceResponsibilities(t *testing.T) {
 		},
 		{Kind: agent.Execution},
 		{Kind: agent.ToolsRuntime},
-		{
-			Kind: agent.Tool,
-			Name: "ask_user_question",
-		},
 		{Kind: agent.PromptRuntime},
 		{Kind: agent.Conversation},
 		{Kind: agent.Activation},

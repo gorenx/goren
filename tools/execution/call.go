@@ -3,7 +3,6 @@ package execution
 import (
 	"errors"
 
-	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/tools"
 )
 
@@ -17,24 +16,9 @@ type Call struct {
 	failure     error
 }
 
-// Preparation exposes policy's current decision without the scheduling handle.
-func (current *Call) Preparation() (tools.ScheduledToolStage, *tools.ApprovalRequest) {
-	var request *tools.ApprovalRequest
-	if current.preparation.Approval != nil {
-		detached := *current.preparation.Approval
-		request = &detached
-	}
-	return current.preparation.Stage, request
-}
-
-// ApplyApproval resumes this exact execution after the approval owner returns.
-func (current *Call) ApplyApproval(outcome approval.Outcome) error {
-	prepared, err := current.scheduler.applyApproval(current.preparation.Execution, outcome)
-	if err != nil {
-		return err
-	}
-	current.preparation = prepared
-	return nil
+// Preparation returns the stage that may run after policy and approval have settled.
+func (current *Call) Preparation() tools.ScheduledToolStage {
+	return current.preparation.Stage
 }
 
 // Dispatch records the actual body outcome. An unconfirmed exit remains owned.

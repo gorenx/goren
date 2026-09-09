@@ -16,7 +16,7 @@ type policyEngine struct {
 
 type preDispatchEvaluation struct {
 	denialReason string
-	approval     *tools.ApprovalRequest
+	approval     *approval.Permission
 }
 
 func (engine *policyEngine) evaluate(
@@ -33,11 +33,10 @@ func (engine *policyEngine) evaluate(
 	ask, needsApproval := gateOutcome.Decision.(tools.AskDecision)
 	if needsApproval {
 		return preDispatchEvaluation{
-			approval: &tools.ApprovalRequest{
-				SessionID: toolCall.SessionID,
-				ToolName:  toolCall.Name,
-				CallID:    toolCall.CallID,
-				Reason:    ask.Reason,
+			approval: &approval.Permission{
+				ToolName: toolCall.Name,
+				CallID:   toolCall.CallID,
+				Reason:   ask.Reason,
 			},
 		}, nil
 	}

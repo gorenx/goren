@@ -61,6 +61,14 @@ type Request struct {
 	Reason    *string
 }
 
+// Permission identifies the operation to authorize through the named approval tool.
+// Session identity belongs to the invocation envelope, never these arguments.
+type Permission struct {
+	ToolName string              `json:"toolName"`
+	CallID   agentmessage.CallID `json:"callId"`
+	Reason   string              `json:"reason"`
+}
+
 // Asked is the durable pre-dispatch approval audit payload.
 type Asked struct {
 	ID       RequestID            `json:"id"`

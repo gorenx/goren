@@ -88,7 +88,7 @@ func (owner *Runtime) Apply(ctx context.Context, directory Directory, instances 
 		if err != nil {
 			return false, err
 		}
-		if owner.ready && reflect.DeepEqual(entries, owner.current) {
+		if owner.ready && sameTools(entries, owner.current) {
 			return true, nil
 		}
 		owner.pending = NewUpdate(entries, previous)
@@ -154,4 +154,52 @@ func (owner *Runtime) assignVersions(entries []Tool) error {
 		}
 	}
 	return nil
+}
+
+// sameTools compares borrowed policy identities without traversing their mutable
+// internals. Shared policy owners may be serving other Agents concurrently.
+func sameTools(left, right []Tool) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index, entry := range left {
+		other := right[index]
+		if entry.Schema.Name != other.Schema.Name ||
+			entry.Schema.Version != other.Schema.Version ||
+			entry.Schema.Description != other.Schema.Description ||
+			!bytes.Equal(entry.Schema.Parameters, other.Schema.Parameters) ||
+			entry.Visible != other.Visible ||
+			!samePolicies(entry.Policies, other.Policies) {
+			return false
+		}
+	}
+	return true
+}
+
+func samePolicies(left, right execution.Policies) bool {
+	if !sameCapability(left.Before, right.Before) ||
+		!sameCapability(left.After, right.After) ||
+		!sameCapability(left.Execution, right.Execution) ||
+		!sameCapability(left.Results, right.Results) ||
+		len(left.Guards) != len(right.Guards) {
+		return false
+	}
+	for index, guard := range left.Guards {
+		if !sameCapability(guard, right.Guards[index]) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameCapability(left, right any) bool {
+	kind := reflect.TypeOf(left)
+	if kind != reflect.TypeOf(right) {
+		return false
+	}
+	if kind == nil {
+		return true
+	}
+	// Non-comparable value capabilities cannot prove stable identity; apply them.
+	return kind.Comparable() && left == right
 }

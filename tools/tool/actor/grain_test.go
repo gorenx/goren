@@ -3,14 +3,12 @@ package toolactor_test
 import (
 	"context"
 	"errors"
-	agentactor "github.com/gorenx/goren/agent/actor"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/toolaskuser"
-	catalogactor "github.com/gorenx/goren/tools/registry/actor"
 	"github.com/gorenx/goren/tools/tool"
 	toolactor "github.com/gorenx/goren/tools/tool/actor"
 	"github.com/gorenx/goren/userquestions"
@@ -68,10 +66,14 @@ func ask[T any](t *testing.T, system goakt.ActorSystem, target *goakt.GrainIdent
 	return result
 }
 
-func startTool(t *testing.T) (goakt.ActorSystem, *goakt.GrainIdentity, *goakt.GrainIdentity) {
+func startTool(t *testing.T, source tool.Provider) (goakt.ActorSystem, *goakt.GrainIdentity) {
 	t.Helper()
 	ctx := context.Background()
-	system, err := goakt.NewActorSystem("tool-registration", goakt.WithPubSub(), goakt.WithLogger(log.DiscardLogger))
+	constructors, err := toolactor.NewProviders(tool.Providers{toolaskuser.Name: source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	system, err := goakt.NewActorSystem("tool-registration", goakt.WithPubSub(), goakt.WithLogger(log.DiscardLogger), goakt.WithExtensions(constructors))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,25 +85,26 @@ func startTool(t *testing.T) (goakt.ActorSystem, *goakt.GrainIdentity, *goakt.Gr
 			t.Error(err)
 		}
 	})
-	directory, err := goakt.GrainOf[*catalogactor.RegistryGrain](ctx, system, catalogactor.RegistryName, goakt.WithLongLivedGrain())
-	if err != nil {
-		t.Fatal(err)
-	}
 	target, err := goakt.GrainOf[*toolactor.Grain](ctx, system, "conversation.tool.ask_user_question",
 		goakt.WithLongLivedGrain(),
 		goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result := ask[toolactor.Completion](t, system, target, toolactor.Initialize{
+	return system, target
+}
+
+func initializeTool(t *testing.T, system goakt.ActorSystem, target *goakt.GrainIdentity) {
+	t.Helper()
+	result := ask[toolactor.Completion](t, system, target, toolactor.Initialize{
 		CreationID: "creation",
 		AgentID:    "conversation",
 		Name:       toolaskuser.Name,
 		Authority:  toolAuthority(t, system),
-	}); result.Err != nil {
+	})
+	if result.Err != nil {
 		t.Fatal(result.Err)
 	}
-	return system, directory, target
 }
 
 type authority struct {
@@ -111,7 +114,7 @@ type authority struct {
 func (*authority) OnActivate(context.Context, *goakt.GrainProps) error   { return nil }
 func (*authority) OnDeactivate(context.Context, *goakt.GrainProps) error { return nil }
 func (owner *authority) OnReceive(gc *goakt.GrainContext) {
-	input, valid := gc.Message().(agentactor.ClaimTool)
+	input, valid := gc.Message().(toolactor.Claim)
 	if !valid {
 		gc.Unhandled()
 		return
@@ -123,7 +126,7 @@ func (owner *authority) OnReceive(gc *goakt.GrainContext) {
 	} else {
 		owner.instanceID = input.InstanceID
 	}
-	gc.Response(agentactor.Claimed{
+	gc.Response(toolactor.Completion{
 		Err: err,
 	})
 }
@@ -153,18 +156,18 @@ func (source *waitingProvider) Open(ctx context.Context) (tool.Implementation, e
 }
 
 func TestProvisionCancellationWaitsForResourceCleanup(t *testing.T) {
-	system, _, target := startTool(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	source := &waitingProvider{
 		entered: make(chan struct{}),
 	}
+	system, target := startTool(t, source)
+	initializeTool(t, system, target)
 	result := make(chan error, 1)
 	go func() {
 		payload, err := system.AskGrain(context.Background(), target, toolactor.Provision{
 			CreationID: "creation",
 			Revision:   tool.Revision("cancelled"),
-			Provider:   source,
 			Schema:     questionSchema(t),
 			Context:    ctx,
 		}, 2*time.Second)
@@ -211,12 +214,12 @@ func (source *panickingProvider) Open(context.Context) (tool.Implementation, err
 }
 
 func TestProviderPanicSettlesRequestAndAllowsCleanup(t *testing.T) {
-	system, _, target := startTool(t)
 	source := &panickingProvider{}
+	system, target := startTool(t, source)
+	initializeTool(t, system, target)
 	if reply := ask[toolactor.Completion](t, system, target, toolactor.Provision{
 		CreationID: "creation",
 		Revision:   tool.Revision("panicked"),
-		Provider:   source,
 		Schema:     questionSchema(t),
 	}); reply.Err == nil {
 		t.Fatal("provider panic was not reported")

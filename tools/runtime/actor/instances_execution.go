@@ -38,9 +38,6 @@ func (endpoint *Instances) Scheduler(
 		if !valid || !address.Found || address.Actor == nil {
 			return nil, errors.New("tools: execution has no registered ToolActor")
 		}
-		if address.Err != nil {
-			return nil, address.Err
-		}
 		payload, err = endpoint.request(ctx, address.Actor, toolactor.Describe{CreationID: address.CreationID})
 		if err != nil {
 			return nil, err
@@ -102,9 +99,6 @@ func (endpoint *bodies) Invoke(ctx context.Context, input tools.Invocation) (too
 	address, valid := payload.(catalogactor.ToolAddress)
 	if !valid || !address.Found || address.Actor == nil {
 		return tools.BodyResult{}, errors.New("tools: named ToolActor is not registered")
-	}
-	if address.Err != nil {
-		return tools.BodyResult{}, address.Err
 	}
 	input.Arguments = input.ArgumentsJSON()
 	payload, err = endpoint.system.AskGrain(context.WithoutCancel(ctx), address.Actor, toolactor.Execute{

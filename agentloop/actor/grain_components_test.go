@@ -16,6 +16,8 @@ import (
 	"github.com/gorenx/goren/session"
 	sessionactor "github.com/gorenx/goren/session/actor"
 	promptactor "github.com/gorenx/goren/systemprompt/actor"
+	"github.com/gorenx/goren/tools"
+	runtimeactor "github.com/gorenx/goren/tools/runtime/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
@@ -43,6 +45,7 @@ func (owner *executionGrain) OnReceive(gc *goakt.GrainContext) {
 		owner.handlers = input.handlers.Clone()
 		owner.replyTimeout = input.timeout
 		owner.conversation = input.target
+		owner.tools = input.target
 		owner.middleware = input.target
 		if input.middleware != nil {
 			owner.middleware = input.middleware
@@ -83,9 +86,13 @@ func (*sessionGrain) OnActivate(context.Context, *goakt.GrainProps) error   { re
 func (*sessionGrain) OnDeactivate(context.Context, *goakt.GrainProps) error { return nil }
 func (owner *sessionGrain) OnReceive(gc *goakt.GrainContext) {
 	switch input := gc.Message().(type) {
+	case runtimeactor.RefreshConfiguration:
+		gc.Response(runtimeactor.Definitions{Value: tools.Definitions{AgentID: owner.history.Header().ID}})
 	case sessionSetup:
 		owner.history = input.history
 		gc.Response(struct{}{})
+	case promptactor.ApplyTools:
+		gc.Response(promptactor.Completion{})
 	case promptactor.Assemble:
 		gc.Response(promptactor.Assembled{
 			ID: input.ID,
@@ -179,6 +186,8 @@ func (owner *stoppingEndpoint) OnReceive(gc *goakt.GrainContext) {
 		owner.phase = input.phase
 		owner.failCancel = input.failCancel
 		gc.Response(struct{}{})
+	case promptactor.ApplyTools:
+		gc.Response(promptactor.Completion{})
 	case promptactor.Assemble:
 		if owner.phase != "prompt" {
 			gc.Response(promptactor.Assembled{

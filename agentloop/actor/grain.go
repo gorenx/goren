@@ -29,19 +29,23 @@ type Grain struct {
 	chunk             agentloop.ChunkReceiver
 	stream            agentloop.StreamReceiver
 	modelCancellation *completeCancel
-	calls             map[string]struct{}
-	cancellations     map[string]cancellationRequest
-	deliveries        int
-	conversation      *goakt.GrainIdentity
-	creationID        string
-	instanceID        string
-	initialization    *initialization
-	prompt            *goakt.GrainIdentity
-	modelRouter       *goakt.PID
-	middleware        *goakt.GrainIdentity
-	handlers          middlewareactor.Handlers
-	tools             *goakt.GrainIdentity
-	replyTimeout      time.Duration
+	// calls is a set keyed by model tool-call ID; an empty struct marks a call
+	// whose cancellation and release are still owed to Tool Runtime.
+	calls map[string]struct{}
+	// cancellations maps a capability request ID to its target and cancellation
+	// message, removed only when that request delivers its final response.
+	cancellations  map[string]cancellationRequest
+	deliveries     int
+	conversation   *goakt.GrainIdentity
+	creationID     string
+	instanceID     string
+	initialization *initialization
+	prompt         *goakt.GrainIdentity
+	modelRouter    *goakt.PID
+	middleware     *goakt.GrainIdentity
+	handlers       middlewareactor.Handlers
+	tools          *goakt.GrainIdentity
+	replyTimeout   time.Duration
 }
 
 // OnActivate starts without a Session binding or mutable business dependencies.

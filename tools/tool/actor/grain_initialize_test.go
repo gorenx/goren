@@ -12,7 +12,8 @@ import (
 )
 
 func TestInitializationRetryConfirmsBindingWithoutReplacingImplementation(t *testing.T) {
-	system, directory, target := startTool(t)
+	source := &provider{}
+	system, target := startTool(t, source)
 	input := toolactor.Initialize{
 		CreationID: "creation",
 		AgentID:    "conversation",
@@ -22,8 +23,7 @@ func TestInitializationRetryConfirmsBindingWithoutReplacingImplementation(t *tes
 	if reply := ask[toolactor.Completion](t, system, target, input); reply.Err != nil {
 		t.Fatalf("same binding retry rejected: %v", reply.Err)
 	}
-	source := &provider{}
-	provisionTool(t, system, directory, target, source)
+	provisionTool(t, system, target)
 	if reply := ask[toolactor.Completion](t, system, target, input); reply.Err != nil {
 		t.Fatal(reply.Err)
 	}
@@ -38,6 +38,24 @@ func TestInitializationRetryConfirmsBindingWithoutReplacingImplementation(t *tes
 
 	if reply := ask[tools.BodyResult](t, system, target, retained); reply.Err != nil || source.opens.Load() != 1 {
 		t.Fatalf("binding retry replaced implementation: %v, opens = %d", reply.Err, source.opens.Load())
+	}
+	next := ask[toolactor.Completion](t, system, target, toolactor.Provision{
+		CreationID: "creation",
+		Revision:   "next",
+		Schema:     questionSchema(t),
+	})
+	if next.Err != nil {
+		t.Fatal(next.Err)
+	}
+	if source.opens.Load() != 2 {
+		t.Fatal("initialization retry changed the bound Provider")
+	}
+	aborted := ask[toolactor.Completion](t, system, target, toolactor.Abort{
+		CreationID: "creation",
+		Revision:   "next",
+	})
+	if aborted.Err != nil {
+		t.Fatal(aborted.Err)
 	}
 	other, err := goakt.GrainOf[*catalogactor.RegistryGrain](context.Background(), system, "other-catalog", goakt.WithLongLivedGrain())
 	if err != nil {
@@ -67,7 +85,7 @@ func TestInitializationRetryConfirmsBindingWithoutReplacingImplementation(t *tes
 	if reply := ask[toolactor.Completion](t, system, target, input); reply.Err != nil {
 		t.Fatal(reply.Err)
 	}
-	if reply := ask[tools.BodyResult](t, system, target, retained); reply.Err == nil || source.closes.Load() != 1 {
+	if reply := ask[tools.BodyResult](t, system, target, retained); reply.Err == nil || source.closes.Load() != 2 {
 		t.Fatal("binding acknowledgement revived closed resources")
 	}
 }

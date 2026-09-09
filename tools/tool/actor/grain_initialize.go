@@ -3,16 +3,17 @@ package toolactor
 import (
 	"errors"
 
-	agentactor "github.com/gorenx/goren/agent/actor"
 	"github.com/gorenx/goren/tools/tool"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
 func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) {
-	if input.CreationID == "" || input.AgentID == "" || input.Authority == nil {
+	if input.CreationID == "" ||
+		input.AgentID == "" ||
+		input.Authority == nil {
 		gc.Response(Completion{
-			Err: errors.New("tools: tool, Agent, catalog and lifecycle identities are required"),
+			Err: errors.New("tools: tool, Agent and lifecycle identities are required"),
 		})
 		return
 	}
@@ -29,6 +30,12 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) {
 		})
 		return
 	}
+	constructors, valid := gc.ActorSystem().Extension(providersID).(*Providers)
+	if !valid || constructors.entries[input.Name] == nil {
+		gc.Response(Completion{Err: errors.New("tools: tool implementation is not installed")})
+		return
+	}
+	source := constructors.entries[input.Name]
 	if owner.active != nil {
 		gc.Response(Completion{
 			Err: errors.New("tools: initialization is still running"),
@@ -47,7 +54,7 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) {
 	}
 	gc.RequestGrain(
 		input.Authority,
-		agentactor.ClaimTool{
+		Claim{
 			AgentID:    input.AgentID,
 			Name:       input.Name,
 			CreationID: input.CreationID,
@@ -59,7 +66,7 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) {
 				return
 			}
 			if failure == nil {
-				claimed, valid := payload.(agentactor.Claimed)
+				claimed, valid := payload.(Completion)
 				if !valid {
 					failure = errors.New("tools: invalid lifecycle authorization reply")
 				} else {
@@ -73,6 +80,7 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) {
 			business, err := tool.New(input.Name)
 			if err == nil {
 				owner.business = business
+				owner.provider = source
 				owner.creationID = input.CreationID
 				owner.agentID = input.AgentID
 				owner.authority = input.Authority

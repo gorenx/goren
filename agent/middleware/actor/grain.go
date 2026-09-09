@@ -88,11 +88,17 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 	case RunTurnStopping:
 		owner.runTurnStopping(gc, input)
 	case CancelCall:
-		call, found := owner.calls[input.CallID]
-		if !found || input.Cause == nil {
+		if input.CallID == "" || input.Cause == nil {
 			gc.Response(Completion{
-				Err: errors.New("agent middleware: cancellation requires a live call and cause"),
+				Err: errors.New("agent middleware: cancellation requires a CallID and cause"),
 			})
+			return
+		}
+		call := owner.calls[input.CallID]
+		if call == nil {
+			// The original reply may still be in transit after release removed
+			// the call. A late cancellation has no remaining handler to notify.
+			gc.Response(Completion{})
 			return
 		}
 		reply := gc.DeferResponse()

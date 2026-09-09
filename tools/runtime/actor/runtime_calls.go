@@ -163,7 +163,7 @@ func (owner *Runtime) prepareCall(gc *goakt.GrainContext, input PrepareCall) {
 			Err: failure,
 		}
 		if failure == nil {
-			result.Stage, _ = business.Preparation()
+			result.Stage = business.Preparation()
 		}
 		return callCompleted{
 			invocation: current,

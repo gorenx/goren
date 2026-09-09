@@ -31,17 +31,17 @@ func (service *waitingQuestions) Ask(ctx context.Context, _ userquestions.Reques
 
 func installTool(t *testing.T, source tool.Provider) (goakt.ActorSystem, *goakt.GrainIdentity) {
 	t.Helper()
-	system, directory, target := startTool(t)
-	provisionTool(t, system, directory, target, source)
+	system, target := startTool(t, source)
+	provisionTool(t, system, target)
 	return system, target
 }
 
-func provisionTool(t *testing.T, system goakt.ActorSystem, directory, target *goakt.GrainIdentity, source tool.Provider) {
+func provisionTool(t *testing.T, system goakt.ActorSystem, target *goakt.GrainIdentity) {
 	t.Helper()
+	initializeTool(t, system, target)
 	reply := ask[toolactor.Completion](t, system, target, toolactor.Provision{
 		CreationID: "creation",
 		Revision:   "initial",
-		Provider:   source,
 		Schema:     questionSchema(t),
 	})
 	if reply.Err != nil {

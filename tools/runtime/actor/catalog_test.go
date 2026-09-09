@@ -9,13 +9,19 @@ import (
 	toolregistry "github.com/gorenx/goren/tools/registry"
 	catalogactor "github.com/gorenx/goren/tools/registry/actor"
 	runtimeactor "github.com/gorenx/goren/tools/runtime/actor"
+	"github.com/gorenx/goren/tools/tool"
+	toolactor "github.com/gorenx/goren/tools/tool/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/log"
 )
 
-func startCatalog(t *testing.T, pubsub bool) (goakt.ActorSystem, *goakt.GrainIdentity, *runtimeactor.Catalog) {
+func startCatalog(t *testing.T, pubsub bool, entries tool.Providers) (goakt.ActorSystem, *goakt.GrainIdentity, *runtimeactor.Catalog) {
 	t.Helper()
-	options := []goakt.Option{goakt.WithLogger(log.DiscardLogger)}
+	constructors, err := toolactor.NewProviders(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := []goakt.Option{goakt.WithLogger(log.DiscardLogger), goakt.WithExtensions(constructors)}
 	if pubsub {
 		options = append(options, goakt.WithPubSub())
 	}
@@ -56,7 +62,7 @@ func ask[T any](t *testing.T, system goakt.ActorSystem, target *goakt.GrainIdent
 }
 
 func TestCatalogReturnsUnmergedGlobalAndCustomSchemas(t *testing.T) {
-	system, target, endpoint := startCatalog(t, true)
+	system, target, endpoint := startCatalog(t, true, nil)
 	reply := ask[catalogactor.Completion](t, system, target, catalogactor.RegisterSource{
 		Name: "local",
 		Catalog: toolregistry.Catalog{

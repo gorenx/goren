@@ -58,6 +58,7 @@ type Invocation struct {
 }
 
 // CancelCall signals cancellation; success does not assert that handlers have exited.
+// A valid cancellation for an absent CallID succeeds without invoking any handler.
 type CancelCall struct {
 	CallID CallID
 	Cause  error
