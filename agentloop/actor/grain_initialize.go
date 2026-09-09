@@ -6,6 +6,7 @@ import (
 
 	agentactor "github.com/gorenx/goren/agent/actor"
 	sessionactor "github.com/gorenx/goren/session/actor"
+	promptactor "github.com/gorenx/goren/systemprompt/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
@@ -188,4 +189,38 @@ func (owner *Grain) receiveInitialization(gc *goakt.GrainContext) bool {
 		return false
 	}
 	return true
+}
+
+type initializationRestored struct {
+	operation *initialization
+	err       error
+}
+
+func (owner *Grain) initializePrompt(gc *goakt.GrainContext, input initializationRestored) {
+	operation := input.operation
+	if owner.initialization != operation {
+		return
+	}
+	if input.err != nil {
+		owner.finishInitialization(operation, input.err)
+		return
+	}
+	gc.RequestGrain(
+		owner.prompt, promptactor.ReadRuntime{},
+		goakt.WithRequestTimeout(0),
+	).Then(
+		func(payload any, failure error) {
+			if owner.initialization != operation {
+				return
+			}
+			if failure == nil {
+				result, ok := payload.(promptactor.RuntimeView)
+				if !ok {
+					failure = errors.New("agentloop: invalid Prompt view")
+				} else {
+					failure = result.Err
+				}
+			}
+			owner.finishInitialization(operation, failure)
+		})
 }

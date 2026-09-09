@@ -70,11 +70,15 @@ func (work *ReactLoopAgent) startTurn(services Services) {
 		services.Observer.ExecutionFailed(err)
 		return
 	}
+	work.commitTurnStart(services, beginning)
+}
+
+func (work *ReactLoopAgent) commitTurnStart(services Services, beginning TurnStart) {
 	opening := &turnOpening{
 		work: work,
 		fact: beginning,
 	}
-	err = services.Conversation.Commit(boundaryWrite{fact: opening.fact}, opening)
+	err := services.Conversation.Commit(boundaryWrite{fact: beginning}, opening)
 	if err != nil {
 		opening.SessionCommitted(services, session.WriteResult{}, err)
 	}
@@ -182,14 +186,18 @@ func (ending *turnClosure) SessionCommitted(services Services, result session.Wr
 		services.Observer.ExecutionFailed(failure)
 		return
 	}
-	barrier, err := ending.work.TurnBarrier()
+	ending.work.flushTurn(services)
+}
+
+func (work *ReactLoopAgent) flushTurn(services Services) {
+	barrier, err := work.TurnBarrier()
 	if err != nil {
 		services.Observer.ExecutionFailed(err)
 		return
 	}
-	err = services.Conversation.Flush(barrier, ending.work)
+	err = services.Conversation.Flush(barrier, work)
 	if err != nil {
-		ending.work.SessionFlushed(services, session.WriteBarrier{}, err)
+		work.SessionFlushed(services, session.WriteBarrier{}, err)
 	}
 }
 
@@ -227,14 +235,7 @@ type executionRetry interface {
 type startRetry struct{ fact TurnStart }
 
 func (retry startRetry) resume(subject *ReactLoopAgent, services Services) {
-	opening := &turnOpening{
-		work: subject,
-		fact: retry.fact,
-	}
-	err := services.Conversation.Commit(boundaryWrite{fact: retry.fact}, opening)
-	if err != nil {
-		opening.SessionCommitted(services, session.WriteResult{}, err)
-	}
+	subject.commitTurnStart(services, retry.fact)
 }
 
 type stepRetry struct{ fact EndStep }
@@ -252,15 +253,7 @@ func (retry turnRetry) resume(subject *ReactLoopAgent, services Services) {
 type flushRetry struct{}
 
 func (flushRetry) resume(subject *ReactLoopAgent, services Services) {
-	barrier, err := subject.TurnBarrier()
-	if err != nil {
-		services.Observer.ExecutionFailed(err)
-		return
-	}
-	err = services.Conversation.Flush(barrier, subject)
-	if err != nil {
-		subject.SessionFlushed(services, session.WriteBarrier{}, err)
-	}
+	subject.flushTurn(services)
 }
 
 func (work *ReactLoopAgent) failStep(services Services, failure error) {
@@ -272,35 +265,19 @@ func (work *ReactLoopAgent) failStep(services Services, failure error) {
 			return
 		}
 	}
-	ending, err := work.CompleteStepFailure(failure)
-	if err != nil {
-		services.Observer.ExecutionFailed(errors.Join(work.failure, err))
+	if work.step == nil {
+		work.continueTurn(services)
 		return
-	}
-	if ending != nil {
-		work.commitStepEnd(services, *ending)
-		return
-	}
-	work.continueTurn(services)
-}
-
-// CompleteStepFailure selects an error or cancellation conclusion for an opened
-// Step. Without a Step, the caller must settle the existing Turn instead.
-func (subject *ReactLoopAgent) CompleteStepFailure(failure error) (*EndStep, error) {
-	if failure == nil {
-		return nil, errors.New("agentloop: Step failure is required")
-	}
-	if subject.step == nil {
-		return nil, nil
 	}
 	conclusion := stepstate.StepResultError
 	var cancelled agent.Cancellation
 	if errors.As(failure, &cancelled) {
 		conclusion = stepstate.StepResultAborted
 	}
-	ending, err := subject.endStep(conclusion, failure)
+	ending, err := work.endStep(conclusion, failure)
 	if err != nil {
-		return nil, err
+		services.Observer.ExecutionFailed(errors.Join(work.failure, err))
+		return
 	}
-	return &ending, nil
+	work.commitStepEnd(services, ending)
 }

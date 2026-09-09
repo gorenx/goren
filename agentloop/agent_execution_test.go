@@ -2,6 +2,7 @@ package agentloop_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"testing"
@@ -10,15 +11,18 @@ import (
 	"github.com/gorenx/goren/agentloop"
 	"github.com/gorenx/goren/agentloop/internal/modelrequest"
 	"github.com/gorenx/goren/agentmessage"
+	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/systemprompt"
+	"github.com/gorenx/goren/tools"
 )
 
 // executionEnvironment supplies deterministic asynchronous capabilities. Tests
 // release results, never choose the Agent's next business operation.
 type executionEnvironment struct {
 	history       *session.Log
+	tools         agentloop.ToolCalls
 	queued        []func()
 	trace         []string
 	chunks        []llm.StreamChunk
@@ -41,6 +45,7 @@ type executionEnvironment struct {
 func (fixture *executionEnvironment) services() agentloop.Services {
 	return agentloop.Services{
 		Conversation: executionSession{fixture: fixture},
+		Tools:        fixture.tools,
 		Prompts:      fixture,
 		Middleware:   fixture,
 		Models:       executionModel{fixture: fixture},
@@ -556,5 +561,200 @@ func TestBusinessExecutionResumesInputAfterMaintenance(t *testing.T) {
 	fixture.flush.SessionFlushed(fixture.services(), fixture.barrier, nil)
 	if !fixture.finished || subject.StatusValue() != agent.StatusIdle {
 		t.Fatalf("resumed execution did not finish: %v", fixture.failure)
+	}
+}
+
+// heldTool exposes actual capability boundaries without directing the Step flow.
+type heldTool struct {
+	fixture    *executionEnvironment
+	waiting    agentloop.ToolReceiver
+	prepared   int
+	dispatched int
+	released   int
+	concludes  bool
+}
+
+func (endpoint *heldTool) Prepare(_ tools.ToolExecutionInput, receiver agentloop.ToolReceiver) error {
+	endpoint.prepared++
+	endpoint.fixture.queued = append(endpoint.fixture.queued, func() {
+		receiver.ToolPrepared(endpoint.fixture.services(), tools.ScheduledDispatch, nil, nil)
+	})
+	return nil
+}
+
+func (*heldTool) ApplyApproval(agentmessage.CallID, approval.Outcome, agentloop.ToolReceiver) error {
+	return errors.New("unexpected approval")
+}
+
+func (endpoint *heldTool) Dispatch(_ agentmessage.CallID, receiver agentloop.ToolReceiver) error {
+	endpoint.dispatched++
+	endpoint.waiting = receiver
+	return nil
+}
+
+func (endpoint *heldTool) Finalize(_ agentmessage.CallID, receiver agentloop.ToolReceiver) error {
+	endpoint.fixture.queued = append(endpoint.fixture.queued, func() {
+		receiver.ToolFinalized(endpoint.fixture.services(), &tools.ToolExecutionSuccess{
+			Value:         []byte(`{}`),
+			ConcludesTurn: endpoint.concludes,
+			Content:       []agentmessage.ContentBlock{agentmessage.NewTextBlock("completed")},
+		}, nil)
+	})
+	return nil
+}
+
+func (endpoint *heldTool) Release(_ agentmessage.CallID, receiver agentloop.ToolReceiver) error {
+	endpoint.released++
+	endpoint.fixture.queued = append(endpoint.fixture.queued, func() {
+		receiver.ToolReleased(endpoint.fixture.services(), nil)
+	})
+	return nil
+}
+
+func TestBusinessToolCancellationDoesNotDispatchRemainingCalls(t *testing.T) {
+	subject, history := readyAgent(t)
+	proposal, err := subject.Followup(inputMessage(t, "use tools"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirmInput(t, subject, history, proposal)
+	name := "echo"
+	fixture := &executionEnvironment{
+		history: history,
+		chunks: []llm.StreamChunk{
+			llm.ToolCallDeltaChunk{
+				Index:          0,
+				ID:             "first",
+				Name:           &name,
+				ArgumentsDelta: `{}`,
+			},
+			llm.ToolCallDeltaChunk{
+				Index:          1,
+				ID:             "second",
+				Name:           &name,
+				ArgumentsDelta: `{}`,
+			},
+			llm.FinishChunk{Reason: llm.ToolCallsFinish{}},
+		},
+	}
+	endpoint := &heldTool{fixture: fixture}
+	fixture.tools = endpoint
+	err = subject.Run(fixture.services())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.drain(t)
+	if endpoint.waiting == nil {
+		t.Fatalf("tool did not start: %v", fixture.failure)
+	}
+	_, err = subject.Cancel(agent.UserCancel{}, agent.CancelOptions{KeepInbox: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint.waiting.ToolDispatched(fixture.services(), nil)
+	fixture.drain(t)
+	if fixture.flush == nil || endpoint.prepared != 1 || endpoint.dispatched != 1 || endpoint.released != 1 {
+		t.Fatalf("cancelled batch did not settle: prepared=%d dispatched=%d released=%d failure=%v", endpoint.prepared, endpoint.dispatched, endpoint.released, fixture.failure)
+	}
+	var order []string
+	cancelledResults := 0
+	for _, event := range history.Events() {
+		if event.Type == session.ToolCallEventName || event.Type == session.ToolResultEventName {
+			order = append(order, event.Type)
+		}
+		if event.Type == session.ToolResultEventName {
+			var outcome session.ToolResult
+			err = json.Unmarshal(event.Data, &outcome)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if outcome.Error != nil && outcome.Error.Code == tools.ToolAbortedBeforeDispatch {
+				cancelledResults++
+			}
+		}
+	}
+	expected := []string{session.ToolCallEventName, session.ToolResultEventName, session.ToolCallEventName, session.ToolResultEventName}
+	if !slices.Equal(order, expected) || cancelledResults != 1 {
+		t.Fatalf("incorrect cancelled call pairing: order=%v cancelled=%d", order, cancelledResults)
+	}
+	fixture.flush.SessionFlushed(fixture.services(), fixture.barrier, nil)
+	if subject.StatusValue() != agent.StatusIdle {
+		t.Fatal("cancelled tools retained execution")
+	}
+}
+
+func TestBusinessToolWritesRetryWithoutRepeatingExecution(t *testing.T) {
+	for _, boundary := range []string{session.ToolCallEventName, session.ToolResultEventName} {
+		t.Run(boundary, func(t *testing.T) {
+			subject, history := readyAgent(t)
+			proposal, err := subject.Followup(inputMessage(t, "use tool"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			confirmInput(t, subject, history, proposal)
+			name := "echo"
+			fixture := &executionEnvironment{
+				history:       history,
+				commitFailure: boundary,
+				chunks: []llm.StreamChunk{
+					llm.ToolCallDeltaChunk{
+						Index:          0,
+						ID:             "call",
+						Name:           &name,
+						ArgumentsDelta: `{}`,
+					},
+					llm.FinishChunk{Reason: llm.ToolCallsFinish{}},
+				},
+			}
+			endpoint := &heldTool{
+				fixture:   fixture,
+				concludes: true,
+			}
+			fixture.tools = endpoint
+			err = subject.Run(fixture.services())
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixture.drain(t)
+			if boundary == session.ToolCallEventName {
+				if endpoint.prepared != 0 {
+					t.Fatal("tool prepared before call acknowledgement")
+				}
+				err = subject.Run(fixture.services())
+				if err != nil {
+					t.Fatal(err)
+				}
+				fixture.drain(t)
+			}
+			if endpoint.waiting == nil {
+				t.Fatalf("tool never dispatched: %v", fixture.failure)
+			}
+			endpoint.waiting.ToolDispatched(fixture.services(), nil)
+			fixture.drain(t)
+			if boundary == session.ToolResultEventName {
+				if endpoint.released != 0 {
+					t.Fatal("tool released before result acknowledgement")
+				}
+				err = subject.Run(fixture.services())
+				if err != nil {
+					t.Fatal(err)
+				}
+				fixture.drain(t)
+			}
+			if fixture.flush == nil || fixture.generated != 1 || endpoint.dispatched != 1 || endpoint.prepared != 1 || endpoint.released != 1 {
+				t.Fatalf("retry repeated execution or failed to settle: generations=%d prepared=%d dispatched=%d released=%d failure=%v", fixture.generated, endpoint.prepared, endpoint.dispatched, endpoint.released, fixture.failure)
+			}
+			counts := map[string]int{}
+			for _, event := range history.Events() {
+				counts[event.Type]++
+			}
+			if counts[session.ToolCallEventName] != 1 || counts[session.ToolResultEventName] != 1 {
+				t.Fatalf("retry duplicated tool log: %v", counts)
+			}
+			fixture.flush.SessionFlushed(fixture.services(), fixture.barrier, nil)
+			if subject.StatusValue() != agent.StatusIdle {
+				t.Fatal("retried tool did not finish")
+			}
+		})
 	}
 }

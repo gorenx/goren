@@ -173,6 +173,13 @@ func (owner *Grain) finishCancellation(gc *goakt.GrainContext, input completeCan
 			input.respond(input.err)
 			return
 		}
+		// Run resumes only business-retained failures or accepted execution;
+		// an operation already awaiting a capability result remains untouched.
+		err := owner.business.Run(owner.services(gc))
+		if err != nil {
+			input.respond(err)
+			return
+		}
 		owner.confirmClosePreparation(gc, closePreparation{
 			creationID: input.closeCreation,
 			reply:      input.reply,

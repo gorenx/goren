@@ -57,20 +57,6 @@ func (endpoint modelPort) Close(receiver agentloop.StreamReceiver) error {
 	return nil
 }
 
-// deliver normalizes immediate adapter errors and mailbox replies to a fresh
-// receive call. Only detached receivers and result data cross this boundary.
-func (scope serviceScope) deliver(accept func(agentloop.Services)) error {
-	delivery := capabilityDelivery{
-		creationID: scope.owner.creationID,
-		accept:     accept,
-	}
-	err := scope.gc.PipeToSelf(func() (any, error) { return delivery, nil })
-	if err == nil {
-		scope.owner.deliveries++
-	}
-	return err
-}
-
 func (owner *Grain) OnGenerationStarted(gc *goakt.GrainContext, result llmactor.GenerationStarted) {
 	receiver := owner.generation
 	if receiver == nil || result.CallID != owner.callID {
