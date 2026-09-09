@@ -106,6 +106,29 @@ func TestFeedSubscribesBeforeSnapshotAndSuppressesLateCommit(t *testing.T) {
 			t.Fatal("stream result missing")
 		}
 	}
+	// A Session created after the snapshot is not an unauthorized stream;
+	// its first event establishes the deduplication boundary for this connection.
+	for _, event := range []session.Event{initial, initial, later} {
+		err = source.Committed(context.Background(), "new", "new-creation", event)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, sequence := range []int64{0, 1} {
+		select {
+		case item := <-outputs:
+			var frame EventFrame
+			err = json.Unmarshal(item.Payload, &frame)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if frame.SessionID != "new" || frame.Event.Seq != sequence {
+				t.Fatalf("new Session event dropped or duplicated: %+v", frame)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("new Session event was filtered")
+		}
+	}
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancel: %v", err)

@@ -109,7 +109,9 @@ func (source *Feed) Mux(ctx context.Context, emit func(connection.RPCRequest) er
 		switch edge.Type {
 		case "session/event":
 			cut, exists := last[edge.SessionID]
-			if !exists || edge.Event.Seq <= cut {
+			// A Session may be created after this connection captured its baseline.
+			// Its first event establishes a cut; only known prefixes are duplicates.
+			if exists && edge.Event.Seq <= cut {
 				continue
 			}
 			last[edge.SessionID] = edge.Event.Seq
