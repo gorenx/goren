@@ -10,8 +10,7 @@
 | grain_create.go | 合并重复创建请求，调度未就绪组件，交回初始化结果 |
 | grain_close.go | 调度尚未释放的责任，关联关闭回复，确认身份释放 |
 | grain_find.go | 返回地址前验证原 AgentLoop 激活仍然有效 |
-| grain_tools.go | 单工具实例授权、创建、移除与失败重试 |
-| components.go | Client 装配，以及 Session、Tools Runtime、Prompt、LLM、AgentLoop、Commands、附加组件、子 Agent 和工具的具体协议 |
+| components.go | Client 装配，以及 Session、Tools Runtime、Prompt、LLM、AgentLoop、Commands、附加组件、子 Agent 的具体协议 |
 | client.go | 异步请求、回复类型检查、使用当前邮箱上下文续接协议及框架停用 |
 | creation.go | 创建请求及校验、复制、重复请求比较，以及就绪结果 |
 | messages.go | 身份登记、准入和关闭消息契约 |
@@ -24,7 +23,7 @@
 
 `installation` 装配 Client，不启动 Actor。AgentLoop Client 依赖 Session 和 Prompt Client 的已初始化地址；附加组件 Client 依赖 Session 和 AgentLoop 地址。Client 不回指 Registry Grain，不持有业务 Agent 对象。框架地址、回复句柄和取消函数不进入业务 Registry。
 
-`creations` 的 key 是 SessionID。单工具表的 key 是 canonical tool name，例如 `creations["session-1"].tools["ask_user_question"]`；不同 Agent 的同名工具分别登记。工具配置与实现切换仍归 Tools Registry、Tool Runtime 和 Tool 业务对象。
+`creations` 的 key 是 SessionID，value 是该 Agent 的 reservation。Agent Registry 只登记整个 Tool Runtime 组件，不保存单工具表或 Provider 表；Tool Runtime Actor 负责创建和关闭具体 ToolActor。工具配置与实现切换归 Tools Registry、Tool Runtime 和 Tool 业务对象。
 
 ## 交互流程
 
@@ -57,4 +56,4 @@ Session 登记和启动由 Session Client 封装。LLM Client 只请求配置初
 
 [纯业务测试](../registry_lifecycle_test.go) 覆盖依赖、非法就绪、未确认资源、关闭顺序和失败保留。[创建集成测试](./grain_creation_test.go) 使用 GoAkt 与 SQLite，覆盖重复创建、自动清理、关闭重试、关闭与维护交错，以及保留 Inbox 后恢复消息身份与顺序。[登记测试](./grain_registration_test.go) 验证损坏注册回复仍保留 Session 清理责任。
 
-创建夹具已改用真实 Tools Registry 并显式初始化默认配置，Tools Runtime 首次应用和发布完成后才初始化 Prompt。internal/server 的真实配置 owner 验收覆盖空集合、工具资源打开与关闭、失败清理后重建。动态更新与执行链仍未完成。强制停用也不能证明业务资源已经释放。
+创建夹具已改用真实 Tools Registry 并显式初始化默认配置，Tools Runtime 首次应用和发布完成后才初始化 Prompt。internal/server 的真实配置 owner 验收覆盖空集合、工具资源打开与关闭、失败清理后重建。HTTP 工具测试已覆盖 Turn 边界的动态更新；审批与并行批次仍待验收。强制停用也不能证明业务资源已经释放。

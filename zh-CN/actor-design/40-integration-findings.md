@@ -588,3 +588,46 @@ Header 查询原来同时返回值、found 和 error，用于区分缺失与读�
 页面验证：使用临时数据库运行完整 Server 与嵌入页面，模型测试端点每段后暂停；Chrome 实际显示第一段、第一加第二段、完整三段，三次均处于“生成中”。随后放行 finish。原测试先创建 Session 再打开 WebSocket 已补为两种连接顺序，保留接收文本后才允许模型继续的门控，避免整段缓冲也能通过测试。该验证使用本地模拟模型，不代表真实外部提供方验收。
 
 本次独立服务退出还复现标题生命周期缺口：标题 worker 已停止后，关闭 Agent 仍尝试关闭该 PID 并返回 actor not found（title-worker）。它与新 Session 实时事件过滤分别属于不同调用链，尚未修复，后续需核对标题资源责任与重复关闭契约。
+
+
+## 中间件取消与原调用完成交错（2026-09-09）
+
+### 现象与影响
+
+在迁移 `Agent Registry → Tool Runtime → ToolActor` 后运行服务器测试，`TestServerHTTPPersistenceAndShutdown` 返回：
+
+```text
+close Agent "integration": agent middleware: cancellation requires a live call and cause
+```
+
+该错误从中间件取消确认传播到 Agent 关闭准备，导致本次关闭返回失败。记录时为已复现、待修复问题；随后已完成下述修复与定向验证。
+
+### 原因与证据边界
+
+[中间件 Grain](../../agent/middleware/actor/grain.go) 的 CancelCall 分支把“CallID 不在活动表中”和“Cause 为 nil”合并为同一个错误；release 在原调用收尾时删除活动记录。[AgentLoop 取消投递](../../agentloop/actor/grain_cancel.go) 根据自己尚未完成的请求发送取消，并把中间件返回的错误纳入关闭结果。
+
+两端的活动表不是同一个状态：中间件可能已完成原调用并删除记录，但原回复尚未被 AgentLoop 消费，此时 AgentLoop 仍会发送 CancelCall。单个邮箱顺序处理不能保证两个 owner 同时观察到完成。因此，把取消接收条件限定为“远端调用仍然活跃”存在时序缺陷；合法的迟到取消也会被当作关闭错误。
+
+上述缺陷可由代码路径确认；本轮失败日志不能区分实际命中的是记录缺失还是空 Cause。尚需确定性测试确认此次失败分支，并检查 Cause 在投递前是否可能被业务收尾清空，不能将可能的交错直接记为已验证根因。
+
+### 修复方案
+
+1. 分别校验 CallID 和 Cause，保留无效输入的明确错误。空 Cause 不通过忽略错误来掩盖；若来自调用方收尾时序，应在接受取消时固定本次原因，再完成异步投递。
+2. 对合法且已经没有活动记录的 CallID，取消接收端按“无需再投递取消”幂等确认；不恢复记录、不重新执行，也不维护仅为识别迟到取消的历史表。
+3. 对仍活跃的调用保持现有取消传播和原请求收尾契约。取消确认只表示取消投递处理完毕；AgentLoop 仍依据原请求结果和业务空闲状态确认执行结束。
+4. 实际取消通知失败仍返回错误并保留重试责任，不在 AgentLoop 统一吞掉中间件错误。
+
+### 验收与状态
+
+补充确定性测试：原请求已完成后再取消、完成与取消交错、重复取消、空 CallID、空 Cause、活跃处理者取消失败。前两种情况不应仅因活动记录已删除而使关闭失败；活跃工作仍须回复原请求后才能确认退出。
+
+修复后重新运行中间件、AgentLoop、Agent Registry 与服务器的相关测试及 race 检查，并重新验证 `TestServerHTTPPersistenceAndShutdown`。完成情况见下述验证记录，未覆盖项仍保留为待验证。
+
+
+### 取消修复验证
+
+在 `TestAroundCancellationWaitsForDownstreamAndUnwinds` 中，对正常返回、主动取消和错误回复三种原调用结果分别增加“原请求返回后再取消两次”的验证。修复前这三个场景均稳定返回 `cancellation requires a live call and cause`；因此已确认活动记录被释放后的迟到取消缺陷，无须依赖服务器调度概率复现。原服务器日志本身仍不能用于区分旧的合并错误分支。
+
+修复将 CallID / Cause 校验与活动记录查询分开，缺少记录时幂等确认，活跃记录继续使用原取消通知路径。测试同时确认缺少 CallID 或 Cause 仍被拒绝；既有活跃取消用例继续确认外层中间件不会在下游实际退出前返回。
+
+`go test -count=1 ./agent/middleware/actor ./internal/server -timeout=45s` 通过；随后 `go test -race -count=1 ./tools/... ./agent/... ./agentloop/... ./systemprompt/... ./internal/server -timeout=60s` 通过，包含服务器关闭测试。本轮未观察到空 Cause 的调用方缺陷，未加入额外取消状态或历史表。取消投递失败的独立故障注入、全部关闭交错组合仍不由这组测试证明。

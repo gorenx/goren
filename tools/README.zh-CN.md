@@ -9,8 +9,8 @@
 | 根包 | ToolDefinition、Descriptor、Contract | 工具体与元数据契约、Schema 编译和校验；Contract 的校验规则供初始化与执行共享 |
 | 根包 | ToolExecution、Invocation、BodyResult | 策略可见的调用数据、工具体输入及其输出；不携带调度状态 |
 | 根包 | 策略接口、结果和事件 | 前置评估、执行中间件、后置审查、只读结果通知 |
-| [registry](registry/README.zh-CN.md) | Registry | 全局默认配置与 Agent 覆盖、完整定义发布、每个 Schema 的版本 |
-| [runtime](runtime/README.zh-CN.md) | Runtime、Update | 每个 Agent 的实例集合、准备、发布、切换及资源清理 |
+| [registry](registry/README.zh-CN.md) | Registry | 全局多来源和 Session 自定义 Schema / Policy 配置、每个 Schema 的版本 |
+| [runtime](runtime/README.zh-CN.md) | Runtime、Update | 每 Agent 配置合并、准备、切换、资源清理和生效定义发布 |
 | [tool](tool/README.zh-CN.md) | Tool | 单个工具实现、候选与当前资源、实现身份和工具体执行 |
 | [execution](execution/README.zh-CN.md) | Scheduler、Call | 固定工具描述与策略；一次调用的评估、审批续接、派发和结果处理 |
 
@@ -19,7 +19,8 @@
 ```mermaid
 flowchart TD
     Provider[工具 Provider] --> Tool[tool.Tool]
-    Registry[registry.Registry] --> Definitions[tools.Definitions]
+    Registry[registry.Registry] -->|Global / Custom| Runtime[runtime.Runtime]
+    Runtime --> Definitions[tools.Definitions]
     Definitions --> Prompt[Prompt]
     Runtime[runtime.Runtime] --> Tool
     Adapter[runtime Actor] --> Runtime

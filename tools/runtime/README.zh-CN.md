@@ -28,4 +28,4 @@ flowchart TD
 
 调用方必须在执行边界排空调用后进入 Apply，直到 complete=true 才能解除边界。准备阶段支持取消回滚；开始切换后必须完成切换和清理，不能伪造回滚。失败保留当前游标和资源责任，重试不重新执行已确认的清理。Close 拒绝后续读取并逐项关闭剩余工作。
 
-Runtime 不再调用 Registry 的 Begin/Register/Publish/Settle。Prompt 只读取 Runtime 的生效定义。业务测试覆盖继承、隐藏/禁用、切换失败恢复、准备失败回滚和关闭失败重试；Actor 动态订阅及完整执行边界正在迁移。
+Runtime 不再调用 Registry 的 Begin/Register/Publish/Settle。Prompt 只读取 Runtime 的生效定义。业务测试覆盖继承、隐藏/禁用、切换失败恢复、准备失败回滚和关闭失败重试；生产生命周期已接入配置订阅；HTTP 测试覆盖当前 Turn 保持旧定义、下一 Turn 同步切换工具与 Prompt。审批续接和并行批次仍需独立验收。

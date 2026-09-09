@@ -1,63 +1,73 @@
 # Approval 模块业务迁移
 
-## 架构与对象职责
+## 架构与职责
 
-Approval 拥有 ask/never 策略选择、策略文本以及 asked/decided/policy 审计语义。Session 拥有日志与持久化，Interaction 拥有等待和回答，Prompt 只消费最终策略文本。框架负责跨 Actor 请求、取消与任务调度。
+Approval 拥有 ask/never 策略选择、策略文本以及 asked/decided/policy 审计语义。Session 拥有日志提交与持久化；Interaction 拥有客户端回答等待与取消；Prompt 消费策略文本。Approval 业务不依赖 tools、GoAkt、Agent 或可变 Session 对象。
 
-当前已移除 Approval 向 Prompt 注册回调的依赖。`Policy` 是策略值，负责根据 Session 事件快照解析覆盖值及生成策略说明。`ValidatedConfig` 是独立默认配置，子 Agent 创建时用父 Agent 的有效配置值加自定义覆盖生成；不保存父 Service。`Service` 已通过 Answerer 接口执行审批用例，Plugin/Factory/Waterfall 已删除；完整 Actor 调度仍待接入。
+审批通过名为 `approval` 的通用 ToolActor 接入，不启动专属 Approval Actor。Schema 与 Provider 分别由组合入口装配；工具的创建、工作替换和关闭遵循 [Tools 生命周期方案](./08-tools-implementation.md)。目前命名工具路由已接通，实际审批工具及其 Session / Interaction 适配仍待完成。
 
-## 接口和关键数据
+## 主要对象、接口与数据
 
-- `Policy.Resolve([]session.Event) (Policy, error)`：以接收者为默认值，从事件快照倒序解析最后一个 approval/policy；损坏或非法的最新策略事件返回 error，不回退到旧事件。
-- `Policy.Text() (string, error)`：输出已确定策略的固定提示文本；非法值返回 error，不默认按 ask 处理。
-- `ValidatedConfig.WithOverrides(Config) (ValidatedConfig, error)`：省略 policy 继承已验证值，显式值校验后覆盖；结果不保留外部指针。
-- `New(ValidatedConfig, Answerer)` 构造独立 Service，不接收 PromptRegistry。创建方传入已合并配置，不动态读取父策略 owner。
+| 对象 | 职责 |
+| --- | --- |
+| Config / ValidatedConfig | 校验默认策略，子配置按创建时的父配置值继承并覆盖 |
+| Policy | 从事件快照解析最后一次策略覆盖，生成策略文本 |
+| Service | 根据固定事实准备审批 Decision 或策略变更草稿 |
+| Decision | 固定本次策略、Question 和审批 ID，生成前置与终态审计草稿 |
+| Resolution | 返回 Outcome 与必须先提交的 decided 草稿 |
+| Permission | 命名审批工具参数：toolName、callId、reason，不携带 SessionID |
+| Answerer | 接收已审计的 Question，等待一个 Outcome，观察取消并释放等待资源 |
 
-原 Asked、Decided、PolicyChanged 的 wire 名称和 JSON 字段保持不变。本步不改变审批请求先写 asked、再决定、最终写 decided 的顺序，也不改变答复与取消竞争语义。
+`New(ValidatedConfig)` 创建独立 Service；没有 Plugin、Factory、父 Service 或 Prompt 注册回调。`ValidatedConfig.WithOverrides` 只继承配置值，不动态关联父 Agent。
 
-## 上下游交互
+`Service.Prepare(Request)` 接收 SessionID、完整事件快照和工具信息，检查开放 Turn，解析策略并生成 Decision。`Decision.Asked` 生成 `approval/asked` 草稿；`Decision.Question` 返回独立回答参数；`Decision.Interactive` 决定是否请求回答；`Decision.Resolve` 接收回答、取消事实和失败，返回 Resolution。业务对象不提交草稿，也不能据草稿存在宣称已经审计。
+
+`Service.ChangePolicy` 返回可选 PolicyChange（Draft、Notice），相同策略返回 nil。`DelegationPolicyDraft` 返回带 delegation 来源的 never 草稿。策略变更必须先由 Session 提交，再发送 Notice。`Policy.Resolve` 拒绝损坏或非法的最新覆盖，不静默回退；`Policy.Text` 拒绝非法值。
+
+## 工具调用与审计契约
 
 ```mermaid
 sequenceDiagram
-    participant Owner as Approval owner
-    participant Session as Session owner
-    participant Policy as Policy 值逻辑
-    participant Prompt as Prompt Runtime
-    Owner->>Session: 请求本次策略所需事件快照（目标异步路径）
-    Session-->>Owner: 事件值
-    Owner->>Policy: Resolve(事件)
-    Policy-->>Owner: 有效策略或 error
-    Owner->>Policy: Text()
-    Policy-->>Owner: 策略说明
-    Owner-->>Prompt: 策略说明（目标消息路径）
+    participant R as Runtime Actor
+    participant E as 工具执行业务
+    participant T as 通用 ToolActor
+    participant A as Approval 业务与工具适配
+    participant S as Session
+    participant I as Interaction
+    R->>E: 调度 PrepareCall
+    E->>T: 按 approval 名称 Invoke(Permission)
+    T->>A: 调度具体工具工作
+    A->>S: 读取固定 Session 生命周期的事件
+    A->>A: Service.Prepare
+    A->>S: 提交 asked 草稿
+    S-->>A: 提交确认
+    opt 策略为 ask
+        A->>I: Answer(Question)
+        I-->>A: Outcome / 取消 / 失败
+    end
+    A->>A: Decision.Resolve
+    A->>S: 提交 decided 草稿
+    S-->>A: 提交确认
+    A-->>T: Outcome
+    T-->>E: 原工具调用的审批结果
+    E->>E: 检查结论与 Guards
+    E-->>R: 可派发或可结算的 Call
 ```
 
-最后的 Actor 消息路径尚未接入；当前移除回调后，不能宣称生产 Prompt 已继续显示 Approval 文本。不得为了保留旧构建而恢复双向回调或 Plugin 适配。后续需要按请求关联及 Session 版本传递该结果，并由 Agent 初始化/更新流程控制就绪。
+图中 Session / Interaction 路径是待接入契约，不能当作已有生产实现。
 
-## 设计决策与验证
+SessionID 只能来自 Invocation，不允许 Permission 改写目标 Session；参数保留原工具 CallID，审批子调用另有独立 CallID 和原 RootCallID。结果是 JSON 编码的 Outcome 字符串；默认 Schema 应对模型隐藏。内部工具接入不改变原 Asked、Decided、PolicyChanged 的 wire 名称或字段。
 
-默认配置、Session 显式覆盖和生成的提示文本是不同数据；Prompt 不解析 Approval 审计事件，不决定策略。用户切换和 delegation 固定 never 的来源校验继续由 Approval 负责。子配置继承一次，后续父配置改变不静默改变已有子 Agent。
+asked 提交确认前不请求回答，decided 提交确认前不允许原工具继续。取消优先于晚到允许；never 不请求回答；不可用或非法回答不能放行。取消不得跳过终态审计，原工具仍等待审批工作实际退出。
 
-验证覆盖：默认/覆盖优先级、最后事件生效、损坏事件拒绝、delegation 来源、配置指针隔离、非法策略和文本一致性。旧 Plugin/回答器/Session 写入集成测试尚需按后续 Actor 设计迁移；定向业务测试不能代替该验证。
+缺少已生效的审批工具时，执行业务按 unavailable 拒绝原工具；已确认的工具失败进入失败结果。投递回复不确定使用 DeliveryError 保留调用责任，不自动重复审批、不伪造原工具完成事实。
 
-## 审批用例脱离 Plugin
+## 当前实现与验收
 
-`Service` 只持有独立默认策略与消费方定义的 `Answerer` 接口。`New(ValidatedConfig, Answerer)` 校验配置后返回业务对象；无 NewOverlay、Manifest、Apply、Dispose 或 Factory。子配置已在构造前合并，所有 Service 使用同一构造路径。
+纯业务测试覆盖默认和覆盖配置、损坏事件、delegation 来源、取消优先、拒绝、不可用、审计草稿 ID 配对和数据隔离。API Interaction 已实现 Answerer，但尚未由实际审批工具调用。
 
-回答契约为 `Answer(context.Context, Question) (Outcome, error)`。Question 仅含已提交 asked 的 RequestID、SessionID、ToolName、CallID 和 Reason，不传递 Agent/Session 对象。回答适配器负责选择和等待配置的回答端，后续由 Interaction Actor 实现；Approval 不再遍历 Plugin Waterfall。缺少回答端、非法回复、接口错误或 panic 均形成 unavailable，never 不调用回答端。
+`tools/execution/scheduler_approval.go` 已把 AskDecision 续接到具名工具调用；Runtime Actor 不解释审批流程。公开 `Call.ApplyApproval` 与冗余 `tools.ApprovalRequest` 已删除，调用方不能自行传入允许结论。
 
-业务用例不创建 goroutine 或结果队列。回答端必须在取消时结束等待，清理自身等待资源后返回；Service 在回答返回后再次检查取消，以确保晚到允许不能覆盖已发生的取消，随后追加配对 decided。旧测试中的不响应取消回答器不再作为合格接口实现：异步消息等待和及时取消由框架适配负责验证，不能在业务层通过遗留 goroutine 伪造完成。完整 Actor 适配尚未接入，此变化不能声称生产取消链已验证。
+`TestRuntimePreparationUsesNamedToolAndWaitsForApprovalExit` 使用真实 Registry、Runtime 与通用 ToolActor，覆盖允许、拒绝、取消、隐藏工具、策略仅执行一次及审批等待期间禁止配置切换。测试工具提供可控结果，不运行 Service 审计或真实客户端回答；相关 race 测试通过。
 
-当前 Session 提交仍经 ApprovalTarget 的窄进程内接口完成，后续迁移为 Session owner 请求；先保留审计/策略行为测试，不新增同步 Actor 包装。删除旧 Factory 目录及组合配置中的 Factory 注册，不保留 Plugin 桥接。
-
-实施结果：Approval 整包竞态测试和 vet 通过，Tools 生产构建通过。Service 方法按职责分在 service.go 与 service_policy.go，Policy 值规则保留在 policy.go。原 Factory 配置错误用例迁移到业务测试，旧 Plugin Scope 测试替换为独立回答端和审计关联验证；回答端选择/继承的完整 Actor 路由仍待集成验证。
-
-## Session Context 删除后的业务边界
-
-旧 Service.Request 和 ApprovalTarget 把 Session 读取/提交、Agent 注入、Answerer 等待与策略规则组合在同步调用中，随 Context 删除一起退出，不引入替代 Context 的接口。Request 改为 SessionID、完整事件快照和工具信息；Service.Prepare 校验开放 turn、解析策略并生成独立 Decision。
-
-Decision 保存分离的 Question 和本次有效 Policy。Asked 返回前置审计草稿；Interactive 决定是否请求回答；Resolve 根据取消、策略和回答结果返回 Resolution{Outcome,Draft}。业务层不提交任何草稿，也不声称已经审计。Actor 必须先收到 asked 提交确认，才能调用回答端；decided 提交成功后才能向工具返回 Outcome，取消不能跳过终态审计。
-
-Service.ChangePolicy 接收事件快照，返回可选 PolicyChange{Draft,Notice}，相同有效策略返回 nil。Actor 提交 Draft 成功后才请求 Agent 注入 Notice。DelegationPolicyDraft 返回带 delegation 来源的 never 草稿，创建编排负责纳入 Session 初始日志。业务层不持有 Actor、Session、Agent 或 Answerer。
-
-Answerer 暂留为 InteractionGateway 的消费边界；后续通过 Actor 请求接线。旧同步 Service 测试替换为草稿与策略业务测试，审计先后顺序、回答取消、panic 和最终关闭仍需 Actor 集成测试，不能把删除旧流程当作已实现。
+剩余实现必须完成：实际工具 Provider、Session 生命周期固定与审计提交适配、Interaction 装配、asked/decided 回复丢失后的幂等核实、取消期间审计收尾、HTTP/WebSocket 完整回答验收。组合入口需要在接纳 Agent 前完成这些依赖装配；现有不可变 Providers 扩展与晚创建的 Session / Interaction 客户端之间的装配顺序需要落实，不能用未初始化字段或运行期可变 Provider 表掩盖。

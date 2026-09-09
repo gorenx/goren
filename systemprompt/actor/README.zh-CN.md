@@ -126,3 +126,5 @@ ToolsSubscribed 不表示已有权威目录；ToolsUnsubscribed 不表示所有�
 ## 生命周期与服务地址
 
 每 Agent Prompt Runtime 名称为 `<sessionID>.prompt`，RuntimeName 位于 runtime_messages.go。生命周期 Registry 负责启动并发送 InitializeRuntime；AgentLoop 通过 ReadRuntime 读取已应用工具基线，既不启动也不关闭 Prompt。
+
+工具基线来源为每 Agent Tool Runtime 的 ReadDefinitions。生产路径在 Turn 边界等待 Tool Runtime 替换成功，再确认 Prompt.ApplyTools；不读取 Registry 尚未应用的 Schema。ToolsSubscriber 同样读取 Runtime 的生效快照，生产路径不额外启动重复订阅。

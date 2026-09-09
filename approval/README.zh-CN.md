@@ -42,8 +42,11 @@ ChangePolicy 返回 nil 表示有效策略未变，否则返回草稿与用户�
 
 无开放 turn、非法策略或未准备的 Decision 明确拒绝。取消优先于晚到允许，never 策略拒绝交互，非法回答或回答失败归为 unavailable。输入 Question 与输出 Question 的指针字段复制隔离。
 
-最终 decided 审计的不可取消提交、Answerer panic 转换、回答资源清理和关闭等待都属于尚待接入的 Actor 编排，不能以纯业务规则测试声称完成。工具与 API Proxy 的旧同步接口仍需迁移。
+当前仅实现 Service / Decision 的审批业务规则；通用 ToolActor 的工具接入、Session 审计提交与回答端仍待接线。未接线的 Journal / Execute 草稿已删除，不保留专属 ApprovalActor。不能据业务测试宣称审批链路完成。
 
 ## 验证
 
 业务测试覆盖 asked/decided 同 ID、草稿生成无写入、问题数据隔离、取消优先、never 拒绝、错误和非法回答、未准备 Decision 拒绝、开放 turn 约束、策略幂等和 delegation 来源。配置和策略文本测试保留。旧 Service 同步集成测试已删除，其编排语义仍需真实 Actor 测试替代。
+
+
+Permission 定义命名审批工具的输入（toolName、callId、reason）；SessionID 由工具调用信封提供。执行业务通过现有 Invoker 按 approval 名称查询并调用通用 ToolActor，输出为 Outcome 的 JSON 字符串。审批 Service 仍不导入 tools 或 GoAkt；具体工具适配及审计接线尚未完成。详见 [审批续接设计](../zh-CN/actor-design/08-tools-implementation.md#审批续接修复)。
