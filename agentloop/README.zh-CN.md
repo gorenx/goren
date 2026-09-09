@@ -3,11 +3,11 @@
 纯业务的单 Agent 执行 owner，框架请求由 [actor](./actor/README.zh-CN.md) 适配。旧 Plugin/Scope 和同步执行路径已删除；完整对话驱动、工具执行及生产组合尚未完成。
 
 
-ReactLoopAgent 负责单 Agent 的日志恢复、输入准入和关闭条件，拥有 Inbox、恢复出的 Turn 编号、工具版本和首次请求头确认。它不持有 Actor 地址、回复句柄、Context、锁或队列，不执行存储及模型 I/O。
+ReactLoopAgent 负责单 Agent 的日志恢复、输入准入和关闭条件，拥有 Inbox、恢复出的 Turn 编号和首次请求头确认。它不持有 Actor 地址、回复句柄、Context、锁或队列，不执行存储及模型 I/O。
 
 模块内，ReactLoopAgent 决定何时允许新增、替换、移除输入；agent.Inbox 决定具体 splice 并投影提交结果；turn.LastNumber 解释恢复日志。模型请求的业务规则归相邻 modelrequest 包，Turn/Step 自身规则归各自包，不复制到 ReactLoopAgent。
 
-上游 Grain 读取 Session 后调用 Restore。恢复解析全部成功才安装状态；Prompt 当前初始化段成功后调用 Initialize(ToolsVersion)；模型配置由 LLM 独立管理。Followup、Steer、Inject 返回 Admission；Replace、Remove 返回 InboxEdit。Actor 核对完整 Session 提交结果后调用 ConfirmAdmission/ConfirmEdit。失败不提前改变 Inbox。PrepareClose 停止新输入，已接纳输入或执行尚未结束时返回 ErrPending；移除输入仍通过日志提交。失败初始化的历史输入保留在日志中，不阻止资源回收。实际请求取消、等待执行结束及关闭资源由 Grain 编排，资源关闭成功才调用 Release。
+上游 Grain 读取 Session 后调用 Restore。恢复解析全部成功才安装状态；Prompt 当前初始化段成功后调用 Initialize()；模型配置由 LLM 独立管理。Followup、Steer、Inject 返回 Admission；Replace、Remove 返回 InboxEdit。Actor 核对完整 Session 提交结果后调用 ConfirmAdmission/ConfirmEdit。失败不提前改变 Inbox。PrepareClose 停止新输入，已接纳输入或执行尚未结束时返回 ErrPending；移除输入仍通过日志提交。失败初始化的历史输入保留在日志中，不阻止资源回收。实际请求取消、等待执行结束及关闭资源由 Grain 编排，资源关闭成功才调用 Release。
 
 依赖单向为 actor → agentloop → agent、turn、llm 调用结果及 session 契约；ReactLoopAgent 不引用 actor。具名 Pending 返回 Inbox 的两个执行边界，避免调用方依赖返回值位置。
 
@@ -40,7 +40,7 @@ turn_end.go 的 TurnEnd 是单轮结束事实的不可变值。Drafts 在 Sessio
 
 收尾操作解释协议已删除。PrepareTurnEnd 固定业务事实，ConfirmTurnEnd 核对提交结果，Session 幂等重试返回原事件与原提交范围，ReconcileTurnEnd 已删除，TurnBarrier 提供已确认位置，ConfirmTurnFlush 验证持久化并关闭 Turn。Actor 直接编排外部请求；业务层不返回 Commit/Read/Flush 操作。
 
-PrepareStep 接收 StepInput，验证工具定义版本并捕获待提交 Step；同一提案可重试，不能替换在途快照。ConfirmStep 将该对象安装为当前 Step，不重新创建一个丢失输入的对象。BeginModel 仅接受提供者元数据，要求当前 Step 已进入 requesting，并从 Step 获取 Prompt 和位置，阻止外部模型请求绕过本步数据所有权。
+PrepareStep 接收 StepInput，捕获完整 Prompt 和待提交 Step；同一提案可重试，不能替换在途快照。ConfirmStep 将该对象安装为当前 Step，不重新创建一个丢失输入的对象。BeginModel 仅接受提供者元数据，要求当前 Step 已进入 requesting，并从 Step 获取 Prompt 和位置，阻止外部模型请求绕过本步数据所有权。
 
 本步消息提交由 ReactLoopAgent.MessageDraft/ConfirmMessage 驱动，消息来源固定为 Step 捕获的进入批次。确认要求本 Agent 的 Session 身份、有效提交区间及匹配消息内容；全部输入确认后才允许 BeginRequest。当前 actor 尚未由完整主驱动调用这些业务入口。
 
@@ -68,7 +68,7 @@ Step 准备现在将明确的整批拒绝与未确认的操作失败分开：前
 
 `agent.Hooks` 是独立的异步发起窄接口，Agent 不嵌入它。方法返回值只报告能否发起；最终业务结果使用 agent 包的四类具名完成消息。Actor 执行器直接使用这些结果，不维护重复 DTO。注册、路由、Continue 与取消投递留在执行适配层；Hooks 发起适配器已实现，主驱动接线尚未完成。
 
-agent_model_result.go 从自身持有的完整 ModelRequest 读取终态，选择 ExecuteTools 或 EndStep。max-tokens 优先结束 Step，普通成功按模型顺序提取工具调用；工具版本来自本 Step 快照。流关闭未确认时不进入后续流程。EndStep 保留原错误，待提交确认后继续 Turn 收尾。
+agent_model_result.go 从自身持有的完整 ModelRequest 读取终态，选择 ExecuteTools 或 EndStep。max-tokens 优先结束 Step，普通成功按模型顺序提取工具调用；提示词及 Schema 来自本 Step 冻结快照，实现选择由 Tool Runtime 的已结算工具实例负责。流关闭未确认时不进入后续流程。EndStep 保留原错误，待提交确认后继续 Turn 收尾。
 
 agent_tools.go 的 CompleteTools 消费本地已关闭 ToolBatch：正常结果选择 continue 或 completed，批次执行错误选择 error，typed cancellation 选择 aborted。批次尚未关闭或排空缺少对应错误时拒绝推进。普通工具失败结果不等于批次执行失败；本方法不清空 Inbox，也不执行工具策略。模型与工具完成共用 agent_step.go 的 EndStep 草稿准备，提交确认仍由 ConfirmStepEnd 负责；实际工具执行接线尚未完成。
 

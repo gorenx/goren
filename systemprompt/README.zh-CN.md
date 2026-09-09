@@ -11,7 +11,7 @@
 | 配置与公开契约 | [config.go](config.go)、[types.go](types.go) | 严格解码、校验和复制配置；定义具名输入、输出及提供者接口，不负责创建 Actor |
 | 局部定义注册 | [layer.go](layer.go)、[layer_constructor.go](layer_constructor.go)、[store.go](store.go) | 构造内置定义，处理注册、删除、基线设置和关闭；注册表保存条目身份与顺序，不求值提供者 |
 | 定义快照 | [snapshot.go](snapshot.go) | 固定定义集合并提供组装入口；不读取实时注册表，按普通变量定义求值 |
-| 每 Agent 消费状态 | [runtime.go](runtime.go) | 应用工具定义及版本，维护 Agent 隔离，校验期望版本后调用快照组装；不负责工具实例或消息投递 |
+| 每 Agent 消费状态 | [runtime.go](runtime.go) | 应用完整工具基线，维护 Agent 隔离，确认基线存在后调用快照组装；不负责工具实例或消息投递 |
 | 组装与工具展示 | [assembly.go](assembly.go)、[tool_order.go](tool_order.go) | 求值定义、选择覆盖结果、处理 Complete/抑制及工具 schema；配置语法检查与实际工具名称检查分阶段执行，不改变工具可执行配置 |
 | 文本渲染 | [render.go](render.go) | 将 `PromptAssembly` 严格插值为系统文本或运行上下文文本；不注册定义、不重新调用提供者 |
 
@@ -25,7 +25,7 @@
 | `promptStore` | 保存注册 ID 到条目的映射、局部定义及注册顺序；变更后生成快照 | 不执行提供者，不缓存一次组装的结果 |
 | `RegistrationID` | 标识一次注册，供 `Remove` 精确删除 | 只是值，不持有 owner；重复删除无操作，同名重新注册分配新 ID |
 | `Snapshot` | 固定各层定义集合与工具展示顺序，提供本次组装的定义输入 | 后续增删和关闭不改变已捕获集合；提供者仍在每次组装时求值 |
-| `Runtime` | 保存 AgentID、Prompt 定义快照、已应用的工具定义与版本；校验版本后组装 | 不创建工具实例，不查询 Registry，不管理订阅或并发任务 |
+| `Runtime` | 保存 AgentID、Prompt 定义快照、已应用的工具基线；确认初始化后组装 | 不创建工具实例，不查询 Registry，不管理订阅或并发任务 |
 | `assemblyResolver` | 求值变量、选择 section、处理 Complete 和上下文抑制、校验并排列工具 schema | 仅处理本次输入，不修改注册状态 |
 | `TextProvider` / `VariableProvider` | 由具体业务提供文本或变量值 | 定义快照持有接口引用，不会复制提供者的内部状态；实现必须适合快照求值 |
 | `PromptAssembly` | 承载组装后的 section、运行上下文、工具 schema 和变量 | `RenderPrompt` / `RenderContextSnapshot` 执行严格单次插值，生成最终文本 |
@@ -42,7 +42,7 @@ flowchart TD
     Layer --> Base[继承的 Snapshot 值]
     Layer -->|Capture| Snapshot[Snapshot]
     Runtime --> Snapshot
-    Runtime --> Tools[工具定义与版本值]
+    Runtime --> Tools[包含独立 Schema 版本的工具基线]
     Snapshot --> Resolver[assemblyResolver]
     Resolver --> Providers[TextProvider / VariableProvider]
     Resolver --> Result[PromptAssembly]
@@ -69,12 +69,12 @@ sequenceDiagram
     Layer-->>Owner: Snapshot
     Note over Owner,Runtime: 定义快照传递由编排层负责，事件接入尚待完成
     Runtime->>Runtime: ApplyTools(AgentID, Version, Definitions)
-    Runtime->>Runtime: 校验本次期望工具版本
+    Runtime->>Runtime: 确认已安装工具基线
     Runtime->>Snapshot: Assemble(工具视图；变量来自定义快照)
     Snapshot-->>Runtime: PromptAssembly 或 error
 ```
 
-`Runtime.ApplyTools` 拒绝其他 Agent 的数据和非法新集合，忽略旧或重复版本，验证通过后整体替换。空工具集合也必须有明确版本。组装只使用 Runtime 已消费的工具视图，调用方不能通过组装请求替换工具集合。
+`Runtime.ApplyTools` 拒绝其他 Agent 的数据和非法集合，验证通过后整体替换。未安装基线与已安装空集合明确区分，不使用目录版本。调用方负责按序传入 Registry 当前基线，单个 Schema 的 Version 在快照中保留。组装只使用 Runtime 已消费的工具视图，调用方不能通过组装请求替换工具集合。
 
 组装失败返回 error，不输出可继续调用模型的半成品；运行上下文被抑制时直接跳过相应提供者。纯 Runtime 不管理锁、队列或取消任务，由所属 Grain 串行调用并捕获任务输入。`promptStore` 已移除内部锁，其注册、Capture 和关闭统一由 owner 串行调用。
 

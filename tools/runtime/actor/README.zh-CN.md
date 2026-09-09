@@ -1,6 +1,6 @@
 # Tool Runtime 的 Actor 端口
 
-本包实现 `Catalog` 与 `Instances`，将更新业务的目录和实例端口接到已有 Actor owner；尚未实现 Tool Runtime Grain 或生产启动接线。设计见[工具方案](../../../zh-CN/actor-design/08-tools-implementation.md)，验证范围见[本轮集成记录](../../../zh-CN/actor-design/40-integration-findings.md)；[历史实施进度](../../../zh-CN/08-implementation-progress.md)不代表本次迁移完成度。
+本包实现 `Grain`、`Catalog` 与 `Instances`，将每 Agent 工具初始化与关闭接到业务 Runtime；动态配置订阅、更新屏障及执行请求仍未接通。设计见[工具方案](../../../zh-CN/actor-design/08-tools-implementation.md)，验证范围见[本轮集成记录](../../../zh-CN/actor-design/40-integration-findings.md)；[历史实施进度](../../../zh-CN/08-implementation-progress.md)不代表本次迁移完成度。
 
 ## 职责、依赖与交互
 
@@ -49,7 +49,49 @@ sequenceDiagram
 instances_test.go 使用实际更新业务、两个 Registry 和 ToolActor，覆盖首次发布、替换释放旧实现、失败回滚保留当前实现及删除资源。Provider 以具名测试对象注入构造失败，未执行真实外部工具操作。此测试不覆盖 AgentLoop 更新屏障和生产 CreateAgent 初始化。
 
 
-生命周期消息归 agent/actor；本包生产代码不导入 agent/registry 实现包。Agent Registry 因此可以在后续生命周期接线中启动 Runtime Grain，而不形成包依赖环。实例更新测试还覆盖删除阶段资源关闭失败：保留更新和原实例身份，清理重试不重新 Open，Schema 版本与回滚行为均读取实际 Registry 验证。
+生命周期消息归 agent/actor；本包生产代码不导入 agent/registry 实现包。Agent Registry 因此可以启动 Runtime Grain，而不形成包依赖环。实例更新测试还覆盖删除阶段资源关闭失败：保留更新和原实例身份，清理重试不重新 Open，Schema 版本与回滚行为均读取实际 Registry 验证。
 
 
 Configure 按准确更新 ID 登记完整覆盖配置，不读取或提交目录版本。通知失败仍保留成功登记的配置及错误，不自动重试登记。空集合通过 Registry 的 ReadDefinitions.Found 与未发布区分。`TestCatalogConfigurationPreservesRegistrationAndEmptyPublication` 覆盖有无 PubSub、空集合发布、未结算时拒绝下一次更新和结算后继续登记；该测试已随 Runtime 契约迁移，并通过真实 Actor 的 race 检查。
+
+## Runtime Grain 与 Agent 生命周期
+
+Grain 在 grain.go 中保留当前协议请求、原激活身份和业务对象，messages.go 定义初始化、快照读取及关闭契约。Catalog 和 Instances 只适配下游端口；业务 Runtime 持有更新与清理责任。框架任务执行业务，邮箱接收完成结果；工作进行时拒绝读取快照或并发关闭，不暴露半完成集合。
+
+```mermaid
+sequenceDiagram
+    participant Lifecycle as Agent Registry
+    participant Runtime as Tool Runtime Grain
+    participant Business as Runtime 业务
+    participant Catalog as Tools Registry
+    participant Tool as ToolActor
+    Lifecycle->>Runtime: InitializeRuntime
+    Runtime->>Lifecycle: ClaimTools（原激活身份）
+    Lifecycle-->>Runtime: Claimed
+    Runtime->>Business: 框架任务 Initialize
+    Business->>Catalog: Configure
+    Business->>Lifecycle: Instances.CreateTool
+    Lifecycle->>Tool: 初始化
+    Business->>Tool: Provision / Commit / Retire
+    Business->>Catalog: Publish / Settle
+    Business-->>Runtime: 初始化完成
+    Runtime-->>Lifecycle: Completion
+    Note over Lifecycle: 此后才初始化 Prompt
+    Lifecycle->>Runtime: CloseRuntime（原激活身份）
+    Runtime->>Business: 框架任务 Close
+    Business->>Lifecycle: Instances.RemoveTool
+    Lifecycle->>Tool: Close 并停用
+    Business-->>Runtime: 清理完成
+    Runtime-->>Lifecycle: Completion
+    Note over Lifecycle: 确认后停用 Runtime，再完成 Session flush
+```
+
+同名 Grain 重新激活不继承原资源责任。ClaimTools 不能替换已固定的激活身份；CloseRuntime 核对原身份，不能由空的新实例回复清理成功。Provider 初始化失败时，业务释放已返回资源，Registry 自动发起剩余清理；创建错误回复不表示清理已结束，调用方可请求 CloseAgent 等待确认后重建。
+
+## 执行请求
+
+grain_calls.go 将 PrepareCall、ResolveCallApproval、DispatchCall、FinalizeCall 交给独立 Call 业务对象，保留当前请求的回复和取消句柄。同一调用同一时刻只能有一个任务；准备和最终策略请求串行，工具体任务可以重叠。CancelCall 只传递意图；ReleaseCall 要求 Call.Result 已确认结算。关闭前还有调用责任时拒绝清理资源。
+
+instances_execution.go 从实际 ToolActor 读取 Descriptor 和独立实现 Identity，构造 Scheduler 及固定的调用目的地。Snapshot 不保留 UpdateID；每个工具的执行身份都来自该工具本身，Commit 重试保留原身份，真正替换时产生新身份。等待工具体回复不继承调用 context 的取消，以免将等待者取消误当作工具体退出；工具执行本身仍接收该 context。
+
+internal/server 的实际配置 owner 集成测试已走通准备、拒绝提前释放/结算、工具分派、最终结果及释放。该测试未接入 AgentLoop 的批次主驱动、审批审计和动态更新屏障，这些路径仍需继续实现。

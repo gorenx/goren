@@ -11,7 +11,7 @@
 | grain_close.go | 调度尚未释放的责任，关联关闭回复，确认身份释放 |
 | grain_find.go | 返回地址前验证原 AgentLoop 激活仍然有效 |
 | grain_tools.go | 单工具实例授权、创建、移除与失败重试 |
-| components.go | Client 装配，以及 Session、Prompt、LLM、AgentLoop、Commands、附加组件、子 Agent 和工具的具体协议 |
+| components.go | Client 装配，以及 Session、Tools Runtime、Prompt、LLM、AgentLoop、Commands、附加组件、子 Agent 和工具的具体协议 |
 | client.go | 异步请求、回复类型检查、使用当前邮箱上下文续接协议及框架停用 |
 | creation.go | 创建请求及校验、复制、重复请求比较，以及就绪结果 |
 | messages.go | 身份登记、准入和关闭消息契约 |
@@ -57,4 +57,4 @@ Session 登记和启动由 Session Client 封装。LLM Client 只请求配置初
 
 [纯业务测试](../registry_lifecycle_test.go) 覆盖依赖、非法就绪、未确认资源、关闭顺序和失败保留。[创建集成测试](./grain_creation_test.go) 使用 GoAkt 与 SQLite，覆盖重复创建、自动清理、关闭重试、关闭与维护交错，以及保留 Inbox 后恢复消息身份与顺序。[登记测试](./grain_registration_test.go) 验证损坏注册回复仍保留 Session 清理责任。
 
-这些测试没有完成生产 Tools Runtime 的初始配置接线；配置夹具提供已发布工具基线。生产创建仍需补齐 Tools 配置应用及发布先于 Prompt 初始化的链路，不通过空实现或默认版本绕过。强制停用也不能证明业务资源已经释放。
+创建夹具已改用真实 Tools Registry 并显式初始化默认配置，Tools Runtime 首次应用和发布完成后才初始化 Prompt。internal/server 的真实配置 owner 验收覆盖空集合、工具资源打开与关闭、失败清理后重建。动态更新与执行链仍未完成。强制停用也不能证明业务资源已经释放。

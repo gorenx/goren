@@ -82,7 +82,7 @@ sequenceDiagram
 
 真实 GoAkt 测试覆盖异步组装期间的工具更新、前后请求视图隔离、错误同步入口、注册删除幂等，以及提供者清理结束前不确认关闭。测试请求 Actor 显式配置异步重入。包级竞态测试与 vet 已通过。
 
-真实 PubSub 测试覆盖完整工具事件、错误目录、旧版本、其他 Agent 事件，以及取消订阅先于在途请求结果到达。Tools Registry 发布端与订阅后基线查询已有真实 Grain 验证；AgentCreating 授权、Session/Approval 数据请求及生产 AgentLoop 集成仍待完成。上述测试不证明旧身份重新激活防护或完整 Agent/Session 关闭链已实现。[历史实施进度](../../zh-CN/08-implementation-progress.md) 仅作为迁移证据索引，不沿用旧架构完成度。
+真实 PubSub 测试覆盖完整工具基线、迟到及无效通知、其他 Agent 事件，以及取消订阅先于在途请求结果到达。Tools Registry 发布端与订阅后基线查询已有真实 Grain 验证；AgentCreating 授权、Session/Approval 数据请求及生产 AgentLoop 集成仍待完成。上述测试不证明旧身份重新激活防护或完整 Agent/Session 关闭链已实现。[历史实施进度](../../zh-CN/08-implementation-progress.md) 仅作为迁移证据索引，不沿用旧架构完成度。
 
 ## 工具事件与取消订阅
 
@@ -99,7 +99,9 @@ sequenceDiagram
     Subscriber->>Registry: RequestGrain Read(AgentID)
     Registry-->>Subscriber: 完整已发布目录
     Subscriber->>Runtime: RequestGrain ApplyTools（基线）
-    Topic->>Subscriber: Definitions
+    Topic->>Subscriber: Definitions（触发重读）
+    Subscriber->>Registry: ReadDefinitions
+    Registry-->>Subscriber: 当前完整目录
     Subscriber->>Runtime: RequestGrain ApplyTools
     Coordinator->>Subscriber: UnsubscribeTools
     Subscriber->>Topic: Unsubscribe（已停止转发）
@@ -109,17 +111,17 @@ sequenceDiagram
     Subscriber-->>Coordinator: ToolsApplied
 ```
 
-订阅器只适配事件和传递请求结果，不统计 pending，不缓存应用错误，也不判断 Runtime 是否完成业务关闭。Then 捕获 PID 与普通 context，不保留已经失效的 ReceiveContext。框架请求失败和业务错误在各自 ToolsApplied 中报告，旧版本被幂等忽略也可能返回成功。
+订阅器适配事件和传递请求结果；refreshing 表示正在执行一组读取及应用请求，refreshPending 合并期间收到的重读通知。它不持有目录、不缓存应用错误，也不判断 Runtime 是否完成业务关闭。Then 捕获 PID 与普通 context，不保留已经失效的 ReceiveContext。框架请求失败和业务错误在各自 ToolsApplied 中报告，迟到通知触发重读当前目录，不使用通知正文覆盖集合。
 
-ToolsSubscribed 不表示已有权威目录；ToolsUnsubscribed 不表示所有应用请求结束。订阅器在 SubscribeAck 后异步读取初始化基线，RefreshTools 支持显式重读。不存在目录时报告 ErrToolsNotReady，不把版本零当作有效空集合。协调者仍须等待有效 ToolsApplied、请求 Runtime 业务关闭，并按生命周期协议防护身份复用。这些生产协调流程尚未接入。
+ToolsSubscribed 不表示已有权威目录；ToolsUnsubscribed 不表示所有应用请求结束。订阅器在 SubscribeAck 后异步读取初始化基线，RefreshTools 支持显式重读。不存在目录时报告 ErrToolsNotReady，通过 Found 区分未发布与已发布空集合。协调者仍须等待有效 ToolsApplied、请求 Runtime 业务关闭，并按生命周期协议防护身份复用。这些生产协调流程尚未接入。
 
-基线读取的 Then 只向自身发送具名结果，由邮箱检查停止转发状态后应用。取消订阅后迟到的基线不会发起新请求；基线与事件交错由 Runtime 的版本检查处理。订阅器不保存工具目录或增加请求计数。
+基线读取的 Then 只向自身发送具名结果，由邮箱检查停止转发状态后应用。取消订阅后迟到的基线不会发起新请求；一组读取及应用确认结束后才启动后续重读，避免回复倒序。订阅器不保存工具目录或增加请求计数。
 
 ## Runtime 请求初始化
 
 `runtime_initialize.go` 处理 InitializeRuntime：调用方只提供 AgentID 和 Prompt/Tools Registry 地址。Runtime 先请求 Prepare 捕获提示词定义，再请求工具 Read 并校验、应用基线；全部成功才安装业务对象并回复 RuntimeInitialized。未发布工具目录返回明确错误，不自动使用空集合。任一阶段失败保留未初始化状态，强制停用会取消等待并返回错误。
 
-AgentLoop 使用此入口建立本 Agent 的 Prompt Runtime，后续 Assemble 使用初始化回复中的 ToolsVersion。注册配置变化仍由相应事件消费路径处理；本次初始化不代表工具动态更新屏障已经接通。关闭仍使用 CloseRuntime 明确确认，再由持有者停用框架实例。契约见 [Prompt 设计](../../zh-CN/actor-design/17-prompt-module.md)。
+生命周期 Registry 使用此入口建立本 Agent 的 Prompt Runtime，AgentLoop 通过 ReadRuntime 确认初始化，后续 Assemble 不携带目录版本。注册配置变化仍由相应事件消费路径处理；本次初始化不代表工具动态更新屏障已经接通。关闭仍使用 CloseRuntime 明确确认，再由持有者停用框架实例。契约见 [Prompt 设计](../../zh-CN/actor-design/17-prompt-module.md)。
 
 ## 生命周期与服务地址
 

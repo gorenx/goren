@@ -19,7 +19,7 @@ sequenceDiagram
     participant Business as Tool 业务
     participant Resource as 独占资源
     Runtime->>Actor: 准备更新
-    Actor->>Business: Prepare(Revision, Implementation)
+    Actor->>Business: Provision(context, Revision, Provider)
     Business-->>Actor: 验证成功并接管资源
     Runtime->>Actor: 目录发布确认后切换
     Actor->>Business: Commit(Revision)
@@ -31,6 +31,9 @@ sequenceDiagram
 
 ## 失败与关闭
 
-Prepare 失败不接管传入资源，调用方负责清理。Prepare 成功到旧资源释放完成期间不返回可执行定义。Abort 一旦开始，候选不再允许 Commit；即使资源释放失败，也只能继续清理。Close 永久停止接纳，尝试释放全部资源，失败对象保留供重试，成功对象不重复释放。取消通过清理 context 传播；取消不等于清理完成，不丢弃资源引用。
+Provision 负责清理 Provider 返回的失败实现资源，清理失败保留责任。Provision 成功到旧资源释放完成期间不返回可执行定义。Abort 一旦开始，候选不再允许 Commit；即使资源释放失败，也只能继续清理。Close 永久停止接纳，尝试释放全部资源，失败对象保留供重试，成功对象不重复释放。取消通过清理 context 传播；取消不等于清理完成，不丢弃资源引用。
 
 业务测试覆盖切换、旧实现拒绝、返回值隔离、部分释放失败、撤销失败禁止提交及关闭重试。[ToolActor](actor/README.zh-CN.md) 已调度构造、自注册与资源清理；tool_execute.go 通过 Invocation.Run 执行已结算实现的工具体，Actor 已调度执行和取消。Tool Runtime policy／中间件的 Actor 接线、生产初始化和跨工具更新屏障尚未接通。
+
+
+准备只有 Provision 一个生产入口；不再提供测试专用 Prepare。业务测试复用 Provider 夹具，验证失败返回前清理资源及 Close 不重复释放。

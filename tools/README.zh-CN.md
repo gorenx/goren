@@ -1,6 +1,6 @@
 # Tools 业务层
 
-`tools` 拥有工具定义、可见性、执行策略、schema 校验和规范输出。业务包已删除 Plugin、Service 包装及 Factory；Registry 已有批次发布业务对象和 Grain 入口；ToolActor 已实现构造、自注册、工具体执行与资源清理调度，Tool Runtime 调度及生产生命周期接线仍待完成。目标契约由[工具 Actor 方案](../zh-CN/actor-design/08-tools-implementation.md)拥有，[历史实施进度](../zh-CN/08-implementation-progress.md)不代表本次重构完成度。
+`tools` 拥有工具定义、可见性、执行策略、schema 校验和规范输出。业务包已删除 Plugin、Service 包装及 Factory；Registry 已有批次发布业务对象和 Grain 入口；ToolActor 已实现构造、自注册、工具体执行与资源清理调度，Tool Runtime 首次初始化及关闭已接入生命周期，动态更新与完整执行链仍待完成。目标契约由[工具 Actor 方案](../zh-CN/actor-design/08-tools-implementation.md)拥有，[历史实施进度](../zh-CN/08-implementation-progress.md)不代表本次重构完成度。
 
 ## 模块内职责划分
 
@@ -11,7 +11,7 @@
 | 定义组合与存储 | [registry.go](registry.go)、[store.go](store.go) | registry、toolStore；组合捕获基线和本地定义，不持有父 owner |
 | 定义验证 | [schema.go](schema.go)、[restriction.go](restriction.go) | schema 编译、不可变注册项及可见性规则 |
 | 不可变执行策略 | [pipeline.go](pipeline.go)、[pipeline_execution.go](pipeline_execution.go) | pipeline；执行前后策略、执行中间件与结果观察器 |
-| 单次执行编排 | [runtime.go](runtime.go)、[execution.go](execution.go) | executionRuntime；准备、分派、结算和调用状态 |
+| 单次执行编排 | [scheduler.go](scheduler.go)、[execution.go](execution.go) | Scheduler；准备、分派、结算和调用状态 |
 | 工具体输入与输出 | [invocation.go](invocation.go) | Invocation、BodyResult；独立调用数据和随回复返回的上下文／结束 turn 意图，不持有 Runtime 状态 |
 | 执行阶段 | [policy_engine.go](policy_engine.go)、[dispatcher.go](dispatcher.go)、[result_processor.go](result_processor.go) | policyEngine、dispatcher、resultProcessor；分别处理策略、工具主体和规范结果 |
 | 定义及事件值 | [definition.go](definition.go)、[events.go](events.go) | ToolDefinition、Definitions、ExecutionCompleted |
@@ -27,19 +27,19 @@ ToolRunContext.Execution 是独立 Invocation，不再携带 ToolExecution 的�
 
 `New(ValidatedConfig, Options)` 返回已构造的 ToolLayer 与 error，不需要额外激活。Options 提供具名的 Before、After、Execution、Results、Changes 依赖。未指定前后策略时分别使用 Allow/Accept；未指定观察器表示没有订阅方。
 
-ToolLayer 管本地目录和业务入口；executionRuntime 调用各执行阶段；pipeline 只保存策略及观察器，不持有 ToolLayer、Registry 或 Runtime。删除了原 Service/effects 循环和 ToolLayer/runtime/effects 循环。
+ToolLayer 管本地目录和业务入口；Scheduler 调用各执行阶段；pipeline 只保存策略及观察器，不持有 ToolLayer、Registry 或 Runtime。删除了原 Service/effects 循环和 ToolLayer/runtime/effects 循环。
 
 ```mermaid
 flowchart TD
     Caller[调用方] --> Layer[ToolLayer]
     Layer --> Registry[registry]
     Registry --> Store[toolStore]
-    Layer --> Runtime[executionRuntime]
+    Layer --> Runtime[Scheduler]
     Layer --> Pipeline[pipeline]
     Runtime --> Policy[policyEngine]
     Runtime --> Dispatch[dispatcher]
     Runtime --> Result[resultProcessor]
-    Policy --> Registry
+    Policy --> Guards[固定的 Guard 集合]
     Runtime --> Snapshot[单次调用捕获的 pipeline]
     Snapshot --> Ports
     Result --> Dispatch
@@ -68,7 +68,7 @@ Prepare 在执行前置策略前捕获 pipeline；分派、后置策略和结果
 ```mermaid
 sequenceDiagram
     participant Caller as 调用方
-    participant Runtime as executionRuntime
+    participant Runtime as Scheduler
     participant Policy as policyEngine
     participant Body as dispatcher
     participant Result as resultProcessor
@@ -120,3 +120,9 @@ sequenceDiagram
 审批前 Dispatch 和重复 ResolveApproval 均拒绝。允许结果之后仍检查 guard 与取消；拒绝、不可用或取消不会进入工具体。普通 Execute 不能等待跨 Actor 审批，在 Ask 时失败关闭；生产异步执行必须使用 Scheduler 分阶段接口。
 
 真实业务测试覆盖审批需求、提前派发拒绝、重复回答拒绝、允许后单次执行，以及拒绝/不可用/取消不执行工具。该阶段尚未接入真实审批 Actor，也未完成 ToolLayer 其余生命周期与锁的迁移。
+
+## 执行业务迁移进度
+
+Scheduler 已移除对可变分层 registry 的引用。NewScheduler 接收 Descriptor、Policies 和 Invoker；Descriptor 不包含 Executor 或 Resource。参数验证、前后策略、执行中间件与输出规范化复用同一个业务算法。调用错误返回 DeliveryError，区别于 BodyResult.Err；分阶段 Dispatch 不把未确认的工具调用变为普通结果。
+
+ToolLayer 当前仍是待删除的本地目录入口，每次获取 Scheduler 时捕获定义与 Guard；不再保存第二个活动执行器。生产 Runtime 的执行请求仍需接入此业务边界，不能把根包测试通过当作工具执行链完成。ToolActor Describe 已提供按原生命周期和精确实现身份读取 Descriptor 的协议。

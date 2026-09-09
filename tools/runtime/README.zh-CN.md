@@ -1,6 +1,6 @@
 # 工具更新业务
 
-本包实现每 Agent 的工具集合状态与单次更新业务流程，不代表完整 Tool Runtime 已完成。执行策略、中间件、Actor 端口适配与生产生命周期仍待迁入或接通。设计由[Tools Actor 方案](../../zh-CN/actor-design/08-tools-implementation.md)拥有；本轮验证记录见[集成记录](../../zh-CN/actor-design/40-integration-findings.md)，[历史实施进度](../../zh-CN/08-implementation-progress.md)不代表本次迁移完成度。
+本包实现每 Agent 的工具集合状态与单次更新业务流程，不代表完整 Tool Runtime 已完成。执行策略、中间件及动态更新屏障仍待迁入或接通。首次初始化和关闭已通过 Runtime Grain 接入 Agent 生命周期。设计由[Tools Actor 方案](../../zh-CN/actor-design/08-tools-implementation.md)拥有；本轮验证记录见[集成记录](../../zh-CN/actor-design/40-integration-findings.md)，[历史实施进度](../../zh-CN/08-implementation-progress.md)不代表本次迁移完成度。
 
 ## 对象职责和模块内划分
 
@@ -35,7 +35,7 @@ flowchart TD
 测试使用真实 Registry 和可控实例端口，覆盖已有目录保持、发布回复丢失、查询失败、切换/退役/移除/目录结算失败的续接、准备失败与回滚清理失败、发布前后取消。它不证明真实 Actor 生命周期已接通。
 
 
-Runtime.Apply 在更新结算后保留最近一次结果，因此重复完成请求无需读取已经释放的配置批次。回滚完成保留原工具集合，发布后清理失败保持快照不可用。runtime/actor/instances_test.go 已通过实际 Registry 和 ToolActor 验证这条调用链；Runtime Grain、执行策略整合及生产初始化尚未接通。
+Runtime.Apply 在更新结算后保留最近一次结果，因此重复完成请求无需读取已经释放的配置批次。回滚完成保留原工具集合，发布后清理失败保持快照不可用。runtime/actor/instances_test.go 已通过实际 Registry 和 ToolActor 验证这条调用链；Runtime Grain 已接入首次初始化和关闭；执行策略整合与动态更新仍未接通。
 
 
 runtime_close.go 实现 Runtime.Close：永久停止新更新与快照读取，先确认未完成更新的发布或回滚结果，再移除工具实例。未发布候选可因关闭意图回滚，已发布更新必须完成切换和清理；不能把取消当作回滚已经完成。工具移除失败保留当前成员，重试不会重复释放已确认完成的成员。Close 不承担目录配置记录删除或框架停用。
@@ -43,4 +43,7 @@ runtime_close.go 实现 Runtime.Close：永久停止新更新与快照读取，�
 runtime_close_test.go 使用实际 Registry 业务与可注入错误的实例端口，覆盖发布前后两种未完成更新、关闭失败重试、拒绝新更新、禁止读取关闭后的快照与重复关闭无副作用。该测试是业务验证，不宣称已经通过 Runtime Grain 关闭。
 
 
-同一 Session 重建时，Registry 可以保留已发布 Schema，新的 Runtime 在首次更新完成前没有有效快照。首次失败回滚不会把旧定义当作新 Runtime 已拥有的实例。Snapshot.UpdateID 关联已完成切换和清理的实现更新，不是目录版本。Schema 不变的替换保留 Schema.Version，同时切换执行身份。`TestNewRuntimeRebuildsInstancesAgainstRetainedCatalog` 覆盖关闭、重建失败回滚和再次重建成功。
+同一 Session 重建时，Registry 可以保留已发布 Schema，新的 Runtime 在首次更新完成前没有有效快照。首次失败回滚不会把旧定义当作新 Runtime 已拥有的实例。Snapshot 只返回成员名称，不保留 UpdateID 或替代版本字段。执行绑定通过 ToolActor.Describe 读取每个工具的独立实现 Identity。Schema 不变的替换保留 Schema.Version，同时切换执行身份。`TestNewRuntimeRebuildsInstancesAgainstRetainedCatalog` 覆盖关闭、重建失败回滚和再次重建成功。
+
+
+Runtime.Initialize 统一登记 Agent 覆盖配置并完成首次工具更新。登记前保留准确更新 ID 的清理责任，建立 Update 后移交责任；失败后关闭准入，由 Close 查询并撤销未确认登记。Lookup/Abort 失败保留责任，不能把超时视为没有登记。首次成功路径已经在真实 Registry Grain、Agent Registry 和 ToolActor 的端口集成中验证；Runtime Grain 与 Agent Registry 已接入此业务入口，生产组合验收使用真实配置 owner 和 SQLite。

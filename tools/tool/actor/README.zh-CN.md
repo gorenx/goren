@@ -53,4 +53,4 @@ Provision 的 context 传播到构造，回复等待失败清理结束。已经�
 真实框架测试使用 Tools Registry Grain 和 ask_user_question 的真实工具定义，覆盖自注册、登记失败后重试不重新构造、旧创建请求拒绝、跨 Agent 更新拒绝、取消等待清理、任务 panic 返回和关闭幂等。新增工具体调用测试覆盖创建／Session／名称／实现身份拒绝、重复在途调用拒绝、取消等待工具体退出、在途调用禁止关闭、并发调用取消隔离。尚未实现调用中间件的 Actor 接线、统一命名及生产生命周期装配；本包测试不能代替 INT-23 的 Agent 创建验收。
 
 
-Schema 版本不作为执行路由。Client 和 Execute 绑定工具 CreationID 与已提交 Revision，同一 Schema 的实现替换也会使旧 Revision 执行被拒绝。TestSettledUpdateCannotConstructAnotherToolCandidate 验证迟到更新不构造资源、不影响现有执行及关闭；取消和 panic 测试均先登记有效更新，panic 测试额外确认 Open 实际执行。
+Schema 版本不作为执行路由。Client 和 Execute 绑定工具 CreationID 与独立的实现 Identity；Describe 从实际已结算 Tool 读取 Identity 和 Descriptor，不从更新事务推导。相同 Schema 的实现替换也会使旧 Identity 执行被拒绝。TestSettledUpdateCannotConstructAnotherToolCandidate 验证迟到更新不构造资源、不影响现有执行及关闭；取消和 panic 测试均先登记有效更新，panic 测试额外确认 Open 实际执行。

@@ -364,3 +364,80 @@ ToolActor 在 Open 前核实有效更新，阻止已结算更新和其他 Agent 
 ### INT-33 提交前扩大检查的准确结果
 
 `go test -count=1 -timeout=20s ./agent/registry ./systemprompt/... ./agentloop/actor` 未通过：Prompt.Initialize 仍调用要求非零目录版本的旧业务 ApplyTools，输入已不再提供目录版本，报 `systemprompt: tool definition version mismatch`。Agent 创建和 AgentLoop 初始化因此提前失败。Registry 的 TestComponentFailurePreservesSessionAndRetriesReverseShutdown 在等待尚未到达的组件阶段通知时触发 20 秒超时；这是上游初始化失败后夹具无界等待，不能解释为 GoAkt dispatcher 整体阻塞。后续应完成 Prompt 契约迁移并将该夹具等待改为有界断言。该失败不通过填入版本 1 或保留兼容字段绕过。
+
+
+### 测试专用入口清理与 Prompt 业务迁移
+
+引用审计确认 Tool.Prepare 仅测试调用、Update.Revision 无调用方，已删除。Tool 测试改经生产 Provision 入口，复用 Provider 夹具，保留切换、撤销、关闭和资源释放断言；无效实现由 Provision 在返回前清理，后续 Close 不得重复释放。`go test -race -count=1 ./tools/tool ./tools/runtime ./tools/registry` 与对应 vet 通过。
+
+Prompt 纯业务 Runtime 已删除整套 ToolsVersion，用缺失工具基线与已安装空集合区分未就绪；ApplyTools/Assemble 不再接收目录版本。修复 detachToolSchema 和组装时丢失 Schema.Version 的问题，`go test -race -count=1 ./systemprompt` 通过。Actor 消费和 AgentLoop 调用仍需迁移，业务测试不能证明整条链路可用。
+
+
+### INT-33 Prompt 与 AgentLoop 消费契约迁移通过
+
+Prompt Actor、RuntimeInitialized/RuntimeView/Assemble、AgentLoop Initialize/Preparation/Step/ExecuteTools 已移除 ToolsVersion，不保留兼容值。Prompt Runtime 缺失基线时拒绝组装，空集合成功安装后可组装；Step 仍冻结整个 Prompt 快照并拒绝改变既有提案。
+
+直接消费旧通知的回归测试先复现旧成员覆盖当前集合，修复为只用通知触发 Registry 重读；订阅器串行执行读取及应用，并合并期间收到的重读请求。测试覆盖删除后迟到通知不复活工具、在途应用期间多次更新后消费最新空集合、取消订阅先于在途结果返回，以及 Schema.Version 在 Prompt 中保留。
+
+扩大 race 检查暴露 Registry 关闭夹具的另一处时序假设：组件事件先到达不证明 Registry 已消费失败回复，显式关闭可能仍共享自动清理。夹具改为收到失败回复后明确重试，并将阶段事件等待改为有界断言，没有改变生产关闭语义。
+
+`go test -race -count=1 -timeout=30s ./systemprompt/... ./agentloop/... ./agent/registry ./tools/...` 通过；补充订阅串行化测试后重新运行 systemprompt/actor 和 agent/registry 的 race 检查通过，对应 vet 与差异检查通过。仍不表示 Tool Runtime Grain、生产工具初始化和执行接线已完成。
+
+
+后续扩大验证：`go test -race -count=1 -timeout=30s ./apiproxy/... ./internal/server` 中 API Proxy 全部通过；internal/server 的 TestAgentCreationWithProductionConfigurationOwners 仍返回 `systemprompt: tool definitions are not ready`。Prompt 旧版本契约问题已解决，此失败仍是 INT-23 的生产 Tool Runtime 初始化缺失，不能用预置空目录替代。
+
+
+### INT-23 初始化登记的业务责任
+
+新增 Runtime.Initialize，将首次配置登记、准备、发布、切换及结算归入业务对象。发送登记前保留更新 ID，登记回复丢失时关闭按准确 ID 查询并撤销；查询或撤销失败不能清空责任，初始化失败禁止继续应用新更新。
+
+TestInitializationRetainsUnconfirmedRegistrationUntilClose 覆盖未受理与已登记但回复丢失，故障端口连接实际 Registry 业务；同时注入查询和撤销失败，验证重试完成后批次不存在且从未构造工具。原真实 Actor 实例更新测试首次创建改用 Initialize，验证默认覆盖登记到 ToolActor 初始化和实际实例切换，不再由测试提前登记首次配置。
+
+`go test -race -count=1 ./tools/runtime/...`、对应 vet、差异检查通过。Runtime Grain 和 Agent 生命周期启动尚未实现，生产创建失败仍未解除。
+
+
+### INT-23 生产 Tools 初始化接线及后续故障
+
+Tool Runtime Grain 接入 Agent Registry 的组件依赖：Session → Tools → Prompt；关闭先确认执行结束，再关闭 Runtime 的批次和实例，剩余单工具责任仍保留在 Registry 账本。Grain 仅调用业务 Runtime 的 Initialize/Close；组件首次激活通过 ClaimTools 固定身份，同名重新激活不能接管旧资源。
+
+真实配置验收依次暴露两处问题：
+
+| 问题 | 影响与根因 | 解决 |
+| --- | --- | --- |
+| tools: default configuration is not initialized | 只有 Registry 地址，没有显式初始化配置；新 Runtime 无法 Configure | 组合入口增加 initializeTools，空配置也必须明确登记；不提前伪造 Agent 定义 |
+| reentrancy is disabled | 真实 LLM InitializeAgent 会请求 Session；initializeModels 初次创建 Grain 未配置重入，替身测试直接返回而隐藏缺陷 | 模型初始化与 provider 注册入口在首次激活时配置 AllowAll，随后由业务对象处理配置规则 |
+
+Agent Registry 创建测试移除 Tools ReadDefinitions 替身，改为真实配置登记和发布。新增真实 Provider 验证资源打开、关闭计数以及构造失败后的资源清理。创建错误先返回，自动清理异步继续；测试通过 CloseAgent 等待清理确认后再请求新生命周期，不将错误回复等同清理完成。新增强制停用 Runtime 后重新激活的测试，检查旧身份不能被接管，关闭不确定时不得释放 Agent 身份。
+
+当前这些变更仅补齐初次配置和关闭；动态工具更新屏障、执行策略迁移、AgentLoop 工具执行和完整服务入口仍未完成。
+
+强制重新激活测试还暴露 GoAkt 自动激活不保留首次 GrainOf 重入选项：直接 Ask 无法取得延迟回复句柄，真实 RequestGrain 则需接收端启用重入才能继续请求 Registry。Runtime 在接收初始化请求时启用 AllowAll，再核对原激活身份；测试使用与生产相同的 RequestGrain，最终得到 ErrInstance，随后 CloseAgent 失败并保留资源责任。没有绕过身份检查或让新实例假称清理成功。
+
+验证：`go test -race -count=1 -timeout=30s ./internal/server ./agent/registry ./agentloop/actor ./tools/...` 通过。真实配置验收覆盖显式空工具、非空 Provider、Provider 返回资源同时失败后清理并重建；未调用真实外部工具或真实模型，不证明完整对话执行链已完成。
+
+
+### INT-34 工具执行业务仍依赖本地目录
+
+源码核对发现旧 executionRuntime 读取分层 registry 并直接调用 Executor，真实 ToolActor 只有独立调用协议；生产 Tool Runtime 尚未贯通这段业务。迁移为 Scheduler，固定描述及 Guard、policy 快照，通过 Invoker 分离工具体调用。ToolActor Describe 返回不含 Executor 或资源的 Descriptor。
+
+调用结果未确认和工具体正常返回错误不能混淆：前者表示仍需保留执行责任，不能写入普通失败结果并继续对话。新增 Scheduler 测试验证两种错误的分离，未知工具在派发前拒绝。原 Tools 行为测试及 `go test -race -count=1 -timeout=30s ./tools/...` 通过。本步骤仅迁移同一个执行算法与契约，Runtime 执行请求、实际 Invoker 接线和旧 ToolLayer 删除仍待完成。
+
+
+### INT-34 Runtime 执行接线与快照身份修正
+
+新增 Call 业务对象承接实际准备、分派和最终结果，Runtime Grain 提供具名执行请求，不能由调用方提交伪造结果。Instances 的 Scheduler/Invoker 适配实际 ToolActor，工具体 context 取消不提前结束回复等待。真实调用首次揭示测试 Questions 夹具返回 nil Answers：实际输出校验拒绝 null 数组，已将夹具改为明确的空数组，没有放宽工具输出 Schema。
+
+Snapshot.UpdateID 混合了配置事务与执行视图职责，现已删除。独立 Tool Identity 在真实 Commit 切换时生成，重复 Commit 不改变；Describe 返回 Identity 与不含 Executor 的 Descriptor。配置更新仍以 UpdateID 关联，执行不再复用它。真实替换测试检查 Schema.Version 保持、旧 Identity 被拒绝且新 Identity 可执行。
+
+工作区删除 ToolExecution.Parent/Token 后存在悬空引用；清理剩余导出 token 与构造引用，内部规范化结果用既有执行状态识别原调用，顶层输出以 CallID/RootCallID 判断，不新增进程内 token。原 Tools 行为测试通过。
+
+验证：`go test -race -count=1 -timeout=30s ./tools/... ./internal/server` 通过。生产配置验收增加 Runtime 准备、提前释放/最终处理拒绝、实际工具分派、最终处理及释放，使用真实 Registry 与 ToolActor。尚未证明 AgentLoop 工具批次、审批审计、工具更新屏障或完整对话已接通。
+
+
+### INT-35 Runtime 取消与异常投递确认
+
+生产配置验收增加可控工具体：进入后等待取消，收到取消后仍等待测试释放。取消返回确认时，原分派请求保持未完成，ReleaseCall 拒绝且 Provider 资源未释放；工具实际退出后再执行 FinalizeCall、ReleaseCall 和 Agent 关闭，最后资源只释放一次。测试验证取消意图与执行完成是两个边界。
+
+调用 Invoker 的 panic 如果被外层中间件恢复成普通 error，会被 Dispatcher 转成工具失败，掩盖执行可能仍在进行的事实。现于投递边界恢复为未确认错误，再由 DeliveryError 传回，Call 保留责任并拒绝最终处理、结果读取和重复派发。Runtime 框架任务也保证 panic 返回关联的完成消息，不遗失请求回复或策略请求占用；不制造 ToolExecutionResult。
+
+验证：`go test -race -count=1 -timeout=30s ./tools/... ./internal/server`、对应 `go vet` 与差异检查通过。Call 回归验证未知结果不能最终处理、不能读取虚构结果且重试 Dispatch 不再投递工具体。AgentLoop 批次、审批审计和动态更新屏障仍待接通。

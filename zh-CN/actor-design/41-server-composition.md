@@ -25,6 +25,10 @@ Environment 仅提供凭据环境读取、路径策略及诊断，不作为服�
 
 Session Agent 创建仍经 Agent Registry：Session 初始化、Prompt 与 LLM 初始化、AgentLoop、Commands 和组件准入。进程 Server 不另存每 Agent 生命周期表；系统关闭也必须查询 Registry 并走其关闭协议。
 
+LLM 资源初始化分开执行已有的领域契约：initializeModels 安装 Catalog；initializeDeepSeek 构造 Connection、Identity、Adapter，并向同一个 LLM Grain 注册默认 provider route；随后调用 llm/actor.SpawnPool 初始化所有 workers。Credentials 在实际调用时解析，无密钥不能阻止进程启动。Provider 初始化不启动第二个 LLM Grain、不设置 Agent 配置、不发真实网络请求。注册返回 RegistrationID（包括已生效但通知失败的结果），组合根持有该注册责任；成功后调用退出必须先关闭模型调用再停止 workers 和 Registry。
+
+此装配的验收使用本地 HTTP 服务承载真实 DeepSeek Adapter，经真实 router 发送 Generation/ReadChunk/CloseCall，检查流内容和关闭确认；它验证装配链，不冒充真实远端 Provider 验收。AgentLoop 消费、Session 提交及 API 下行仍须单独做完整链路测试。
+
 Workspace 成员读写使用 workspace/actor.Directory；Search 使用 session/actor.Search；持久化分页使用 persistence.Reader；ProjectionCache 通过现有 owner 的查询契约接入。领域端口若缺实现，先补实现和测试，不能在组合根绕过 owner 或提供空结果。
 
 ## 关闭与失败
@@ -53,6 +57,8 @@ flowchart TD
 
 ## 实施与验证表
 
+真实 Agent 创建必须先通过不替换配置 owner 的集成验收：使用实际 ModelConfig、Prompt Registry、Tools Registry、Session Registry 和 SQLite，要求 Agent Registry 返回 Ready。creationFixture 仍用 configurationOwner 隔离模型和提示词配置故障，但 Tools 已改为真实 Registry。生产创建通过独立集成验收验证所有真实配置 owner。Registry 在 Session 可用后启动 Tools Runtime，完成配置应用与定义发布后才初始化 Prompt；不能通过测试夹具、默认空目录或 Prompt 忽略缺失目录绕过。
+
 | 工作 | 当前状态 | 必须取得的证据 |
 | --- | --- | --- |
 | API Server 与 Connection 直接装配 | 已实现模块入口 | ab34830；真实 Echo 请求、下行取消、关闭测试 |
@@ -64,3 +70,7 @@ flowchart TD
 | 全项目验收（排除明确暂缓的 subagent） | 未通过 | 生产 build、适用测试/race/vet、协议 fixtures、记录失败根因及修复复验 |
 
 删除旧测试只限于被删除的 Plugin 协议本身；原测试承载的持久化、HTTP、取消和压缩行为必须在新生产入口有对应验证。不得通过测试替身、跳过测试或恢复旧 Factory 使验收表看似通过。
+
+### Tools 默认配置初始化契约
+
+组合入口在接收 Agent 创建前向真实 Tools Registry 发送 InitializeDefaults，并检查业务回复。空工具集合必须显式登记；Runtime 不得把未初始化当作空配置。Agent 生命周期依次确认 Session、Tools 首次配置应用与定义发布、Prompt，再开放 AgentLoop。验收使用真实 Registry 与 SQLite，验证创建和关闭，错误登记后不开放入口。

@@ -331,3 +331,35 @@ Catalog 客户端已移除 Version 方法及 Configure 的 expectedVersion 参�
 #### 实现更新身份
 
 `tool.Revision` 改为具名字符串，值为本次唯一更新 ID，仅标识工具实现，不可比较大小。Prepare、Commit、Retire、Abort、Definition、Execute 使用同一身份；Snapshot 返回已结算 UpdateID，不返回目录数值版本。相同 Schema 的新实现具有新更新身份，旧执行请求不能命中新实现。候选 Schema 的 Version 仍由 Registry 独立分配。ToolActor 在调用 Provider 前核实更新属于该 Agent 且尚未发布；已结算、已撤销或其他 Agent 的更新不得重新构造资源。框架回复经当前邮箱继续编排，不能保存旧 GrainContext 发起后续请求。
+
+#### 删除测试专用准备入口
+
+引用审计确认 Tool.Prepare 只被测试调用，生产统一经 Provision 构造并接管资源。删除 Prepare，业务测试复用具名 Provider 夹具从 Provision 验证构造、Schema 校验、切换及清理，不新增转发兼容入口。无效实现由 Provision 清理 Provider 已返回的资源，测试必须验证清理发生且后续 Close 不重复释放。Update.Revision 无调用方，直接删除。
+
+## Runtime 生产初始化与失败清理
+
+生命周期 Registry 负责创建 `<sessionID>.tools` Grain 并授权其第一次物理激活；Runtime Grain 不启动其他 Actor。业务 Runtime.Initialize 接收唯一更新 ID、Agent 覆盖配置、目录和实例端口，登记配置后完成初次准备、发布、切换及旧资源清理。只有成功后才能返回可用快照。默认配置必须由 composition 显式初始化，缺失配置不得静默当成空集合。
+
+登记调用前由业务 Runtime 记录准确更新 ID 作为清理责任；收到有效配置并建立 Update 后，将责任转交 Update。登记失败、无效回复或超时都不能直接丢弃此责任。关闭时按该 ID Lookup；不存在则清理完成，存在且未发布则 Abort；查询或撤销失败保留责任，下次 Close 继续。未经本 Runtime 执行却显示已发布或归属其他 Agent 时返回错误，禁止误撤销或假称清理完成。初始化失败后只能关闭，不重复登记同一 ID。
+
+Grain 只在框架任务中调用 Initialize/Apply/Close，回复在当前邮箱处理；初始化失败由 Agent Registry 统一触发资源清理。组件依赖增加 Tools：Session → Tools → Prompt → AgentLoop。执行完成确认后关闭 Tools Runtime，再清理剩余独立 ToolActor 责任，最后 Prompt、Session flush 及身份释放。生产初始化必须同时验证非空真实 Provider 和显式空配置，不能手工预发布目录让测试通过。
+
+## 执行业务与工具体调用分离
+
+`Scheduler` 是准备、审批续接、分派和结果结算的业务对象。构造时固定工具描述及 policy/middleware/guard 快照，不读取可变分层 registry，不拥有 Actor 或工具资源。`Descriptor` 仅含执行所需的 Schema、输出投影、终态内容处理、超时及并发分类；`ToolDefinition` 继续是 Provider 提供的完整定义，工具体只归 Tool 实例。
+
+`Invoker.Invoke(ctx, Invocation) (BodyResult, error)` 是 Scheduler 的下游端口。BodyResult.Err 表示工具体已返回的业务失败；独立 error 表示调用结果未确认，不能被转换为普通工具结果，也不能自动重复执行。Actor 实现绑定原 Tool CreationID 与已结算更新身份，框架任务等待实际工具体退出，取消只传递执行 context，不用等待者取消伪造完成。
+
+ToolActor 提供按原 CreationID 和实现身份读取 Descriptor 的请求；Runtime 只在工具更新完成后构建 Scheduler，在执行排空前不得更新或释放描述中借用的行为对象。AgentLoop 继续拥有模型批次顺序与 Session 事实提交，Tools 拥有策略与结果规范化。审批仍分为 Prepare 和 ResolveApproval，不能用同步 Execute 的失败关闭分支替代真实审批。
+
+验收覆盖原 Schema/输出校验与中间件语义、Descriptor 不暴露 Executor、工具业务错误与调用结果未知分离、实际 ToolActor 调用及取消退出确认。旧 ToolLayer 的分层构造尚需移除；此处迁移同一个执行算法，不新增第二套执行器或 Plugin 适配。
+
+### Runtime 执行请求契约
+
+单次 `Call` 业务对象持有 Scheduler 的准备句柄、已返回分派结果与最终结果；其方法约束审批、分派及最终处理的合法顺序，不向 Actor 暴露可伪造结果的入口。Runtime Grain 按 CallID 保存调用及当前请求回复，用框架任务运行 Prepare/ResolveApproval/Dispatch/Finalize；不同调用的工具体可重叠，同一调用不得同时执行两个操作。Actor 不判断 policy 或编造失败结果。
+
+具名消息为 PrepareCall、ResolveCallApproval、DispatchCall、FinalizeCall、CancelCall、ReleaseCall，均绑定 Agent CreationID 和 CallID。PrepareCall 的 Context 控制执行意图；等待实际工具体的框架任务不因该 context 取消提前返回。CancelCall 只取消意图。FinalizeCall 只消费 Call 内部持有的真实结果，不能由请求方提交替代结果。ReleaseCall 只释放已结算调用，不能遗忘未确认的执行。关闭 Runtime 时如果尚有调用责任则返回错误，由上游排空、结算、释放后重试；不添加隐式队列。
+
+### 快照与更新身份分离
+
+Snapshot 只保留已结算工具名称，不保留 UpdateID，也不换名为 Revision。UpdateID 只关联配置批次及其完成结果。每个 Tool 在实际提交新实现时生成独立的 Identity；重试同一 Commit 不生成新身份。Describe 返回该实现 Identity 和 Descriptor，执行客户端同时绑定原 Tool CreationID 及 Identity。替换实现后旧 Identity 失效，即使 Schema.Version 未变也不能执行旧请求。Runtime 从实际 Tool 读取这些绑定，不从配置事务推导执行身份。

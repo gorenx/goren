@@ -171,3 +171,14 @@ InitializeRuntime 改为接收 AgentID、Prompt Registry 与 Tools Registry 的 
 运行状态、Snapshot 与版本仍由原业务对象拥有；初始化操作只保存原请求、延迟回复及取消资源。任何阶段失败不安装半成品 Runtime。消息回调通过具名内部结果回到邮箱后发起下一次请求，不保存池化上下文。外部 Actor 配置变化仍使用既有事件消费入口，本次基线读取不取代后续更新屏障。
 
 AgentLoop 根据创建身份创建 Prompt Runtime 框架地址，在初始化请求前登记清理责任。关闭先请求 CloseRuntime 确认组装结束，再等待框架停用，最后关闭 Session。Prompt 失败时保留 Session；重试不重复已成功停用的 Prompt 实例。
+
+
+## 独立 Schema 版本的消费契约
+
+用户确认工具目录不再维护 Version/Revision，Prompt 不得再以数值非零判断已初始化，也不能从 Schema 最大版本合成目录版本。Runtime 以是否已安装完整工具基线区分未初始化和已发布空集合；ApplyTools 接收 AgentID 与完整 ToolDefinitions，Assemble 只接收 context。Schema.Version 在快照、排序、组装及 Clone 中必须完整保留。业务对象只接收消费端已确认的当前完整基线，不负责发消息。
+
+工具定义通知只触发读取 Registry 当前目录，不能直接把迟到通知的旧成员覆盖当前集合。消费端需将读取及应用串行化，防止多个读取回复倒序；删除和空集合以 Registry 当前完整成员为准，不能从局部 Schema 版本推断。初始化必须等待完整基线安装，失败保持未就绪。
+
+AgentLoop 的旧 ToolsVersion 字段、初始化参数及 Step 版本检查也必须删除；已有状态机负责初始化准入，Step 仍冻结完整 Prompt 快照并拒绝修改已提出的输入。执行选择使用 Tool Runtime 已结算实现身份，不能使用 Prompt 的 Schema 版本替代工具实例身份。
+
+验收包括：空集合初始化；单个 Schema 版本在 Prompt 快照和模型输入中保留；旧通知不能恢复已删除工具；更新期间已捕获组装输入不变化；Agent 初始化无需虚构目录版本。实施按业务、Actor 消费、AgentLoop 调用契约推进，全部通过前不能声明集成完成。
