@@ -8,7 +8,6 @@ import (
 
 	agentactor "github.com/gorenx/goren/agent/actor"
 	"github.com/gorenx/goren/session"
-	toolregistry "github.com/gorenx/goren/tools/registry"
 	toolruntime "github.com/gorenx/goren/tools/runtime"
 	"github.com/gorenx/goren/tools/tool"
 	toolactor "github.com/gorenx/goren/tools/tool/actor"
@@ -24,9 +23,14 @@ type Instances struct {
 	agentID    session.SessionID
 	creationID string
 	timeout    time.Duration
-	// tools records attempted creation before sending. An empty value means the
-	// reply is unconfirmed; a confirmed lifetime remains until removal succeeds.
-	tools map[string]agentactor.ToolInstance
+	// tools maps a canonical tool name to the ToolActor CreationID whose cleanup
+	// this Agent still owes, e.g. "read_file" -> "tool-creation-1". An empty value
+	// means creation was attempted but its reply is unconfirmed; removal must first
+	// confirm that lifetime. Addresses are queried, never cached in this map.
+	tools map[string]string
+	// workers maps tool names to borrowed constructors supplied by composition.
+	// It is separate from schemas and policies and does not contain live resources.
+	workers tool.Workers
 }
 
 var _ toolruntime.Instances = (*Instances)(nil)
@@ -39,6 +43,7 @@ func NewInstances(
 	agentID session.SessionID,
 	creationID string,
 	timeout time.Duration,
+	constructors tool.Workers,
 ) (*Instances, error) {
 	if system == nil || authority == nil || directory == nil ||
 		agentID == "" || creationID == "" || timeout <= 0 {
@@ -51,24 +56,25 @@ func NewInstances(
 		agentID:    agentID,
 		creationID: creationID,
 		timeout:    timeout,
-		tools:      make(map[string]agentactor.ToolInstance),
+		tools:      make(map[string]string),
+		workers:    constructors.Clone(),
 	}, nil
 }
 
-// Prepare confirms a tool lifetime, then constructs and registers its candidate.
-func (endpoint *Instances) Prepare(ctx context.Context, revision tool.Revision, entry toolregistry.Tool) error {
-	if _, found := endpoint.tools[entry.Name]; !found {
-		endpoint.tools[entry.Name] = agentactor.ToolInstance{}
+// Prepare confirms a tool lifetime, then asks its ToolActor to prepare work for the effective schema.
+func (endpoint *Instances) Prepare(ctx context.Context, revision tool.Revision, entry toolruntime.Tool) error {
+	if _, found := endpoint.tools[entry.Schema.Name]; !found {
+		endpoint.tools[entry.Schema.Name] = ""
 	}
-	instance, err := endpoint.confirmCreation(ctx, entry.Name)
+	instance, err := endpoint.confirmCreation(ctx, entry.Schema.Name)
 	if err != nil {
 		return err
 	}
 	return endpoint.complete(ctx, instance.Identity, toolactor.Provision{
 		CreationID: instance.CreationID,
 		Revision:   revision,
-		Provider:   entry.Provider,
-		Visible:    entry.Visible,
+		Provider:   endpoint.workers[entry.Schema.Name],
+		Schema:     entry.Schema,
 		Context:    ctx,
 	})
 }
@@ -119,15 +125,19 @@ func (endpoint *Instances) Remove(ctx context.Context, name string) error {
 	if _, found := endpoint.tools[name]; !found {
 		return nil
 	}
-	instance, err := endpoint.confirmCreation(ctx, name)
-	if err != nil {
-		return err
+	identifier := endpoint.tools[name]
+	if identifier == "" {
+		instance, err := endpoint.confirmCreation(ctx, name)
+		if err != nil {
+			return err
+		}
+		identifier = instance.CreationID
 	}
 	payload, err := endpoint.request(ctx, endpoint.authority, agentactor.RemoveTool{
 		AgentID:         endpoint.agentID,
 		AgentCreationID: endpoint.creationID,
 		Name:            name,
-		ToolCreationID:  instance.CreationID,
+		ToolCreationID:  identifier,
 	})
 	if err != nil {
 		return err
@@ -144,12 +154,10 @@ func (endpoint *Instances) Remove(ctx context.Context, name string) error {
 }
 
 func (endpoint *Instances) confirmCreation(ctx context.Context, name string) (agentactor.ToolInstance, error) {
-	instance, found := endpoint.tools[name]
+	_, found := endpoint.tools[name]
+	var instance agentactor.ToolInstance
 	if !found {
 		return instance, errors.New("tools: tool creation was not requested")
-	}
-	if instance.Identity != nil {
-		return instance, nil
 	}
 	payload, err := endpoint.request(ctx, endpoint.authority, agentactor.CreateTool{
 		AgentID:         endpoint.agentID,
@@ -171,7 +179,7 @@ func (endpoint *Instances) confirmCreation(ctx context.Context, name string) (ag
 	if reply.Identity == nil || reply.CreationID == "" {
 		return instance, errors.New("tools: creation reply contains no tool lifetime")
 	}
-	endpoint.tools[name] = reply
+	endpoint.tools[name] = reply.CreationID
 	return reply, nil
 }
 

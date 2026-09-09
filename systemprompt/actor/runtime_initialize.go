@@ -5,7 +5,7 @@ import (
 	"errors"
 
 	"github.com/gorenx/goren/systemprompt"
-	toolactor "github.com/gorenx/goren/tools/registry/actor"
+	toolactor "github.com/gorenx/goren/tools/runtime/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
@@ -25,7 +25,7 @@ type promptPrepared struct {
 func (owner *RuntimeGrain) initializeRuntime(gc *goakt.GrainContext, input InitializeRuntime) {
 	if owner.runtime != nil || owner.initialization != nil ||
 		owner.closed || input.AgentID == "" ||
-		input.PromptRegistry == nil || input.ToolsRegistry == nil {
+		input.PromptRegistry == nil || input.ToolsRuntime == nil {
 		gc.Response(RuntimeInitialized{
 			Err: errors.New("systemprompt: uninitialized Runtime and registry routes are required"),
 		})
@@ -102,27 +102,25 @@ func (owner *RuntimeGrain) initializeTools(gc *goakt.GrainContext, input promptP
 		return
 	}
 	gc.RequestGrain(
-		operation.input.ToolsRegistry,
+		operation.input.ToolsRuntime,
 		toolactor.ReadDefinitions{
-			AgentID: operation.input.AgentID,
+			CreationID: operation.input.CreationID,
 		}, goakt.WithRequestTimeout(0)).Then(
 		func(payload any, failure error) {
 			if owner.initialization != operation {
 				return
 			}
 			if failure == nil {
-				result, ok := payload.(toolactor.Catalog)
+				result, ok := payload.(toolactor.Definitions)
 				switch {
 				case !ok:
 					failure = errors.New("systemprompt: invalid tool baseline response")
 				case result.Err != nil:
 					failure = result.Err
-				case !result.Found:
-					failure = systemprompt.ErrToolsNotReady
 				default:
-					failure = candidate.ApplyTools(result.Definitions.AgentID, systemprompt.ToolDefinitions{
-						Schemas:    result.Definitions.Schemas,
-						KnownNames: result.Definitions.KnownNames,
+					failure = candidate.ApplyTools(result.Value.AgentID, systemprompt.ToolDefinitions{
+						Schemas:    result.Value.Schemas,
+						KnownNames: result.Value.KnownNames,
 					})
 				}
 			}

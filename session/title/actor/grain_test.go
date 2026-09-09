@@ -3,7 +3,9 @@ package titleactor_test
 import (
 	"context"
 	"errors"
+	"github.com/tochemey/goakt/v4/passivation"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -146,6 +148,24 @@ func TestTitleGrainUsesSessionCommitsAndRejectsClosedCreation(t *testing.T) {
 	})
 	if bound.Err != nil {
 		t.Fatal(bound.Err)
+	}
+	workers, err := system.Actors(ctx, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundWorker := false
+	for _, endpoint := range workers {
+		if !strings.HasPrefix(endpoint.Name(), "title-worker-") {
+			continue
+		}
+		foundWorker = true
+		_, longLived := endpoint.PassivationStrategy().(*passivation.LongLivedStrategy)
+		if !longLived {
+			t.Fatal("title worker can disappear while its binding remains active")
+		}
+	}
+	if !foundWorker {
+		t.Fatal("initialized title has no worker")
 	}
 	view := request[titleactor.View](t, driver, replies, identity, titleactor.Read{
 		CreationID: "first",

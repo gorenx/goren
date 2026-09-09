@@ -12,6 +12,7 @@ import (
 	"github.com/gorenx/goren/session"
 	sessionactor "github.com/gorenx/goren/session/actor"
 	toolregistry "github.com/gorenx/goren/tools/registry"
+	"github.com/gorenx/goren/tools/tool"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
@@ -31,7 +32,8 @@ type CreateAgent struct {
 	PromptRegistry  *goakt.GrainIdentity
 	ToolsRegistry   *goakt.GrainIdentity
 	// Tools overrides the registered defaults for this Agent lifetime.
-	Tools []toolregistry.Tool
+	Tools   *toolregistry.Catalog
+	Workers tool.Workers
 	// Commands enables the independent command runtime when its global Registry is supplied.
 	Commands *goakt.GrainIdentity
 	// Components are capability Registry routes in startup order.
@@ -108,7 +110,11 @@ func (input CreateAgent) validate() error {
 func (input CreateAgent) clone() CreateAgent {
 	input.Options = input.Options.Clone()
 	input.Handlers = input.Handlers.Clone()
-	input.Tools = slices.Clone(input.Tools)
+	if input.Tools != nil {
+		captured := input.Tools.Clone()
+		input.Tools = &captured
+	}
+	input.Workers = input.Workers.Clone()
 	if input.Parent != nil {
 		parent := *input.Parent
 		input.Parent = &parent

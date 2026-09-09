@@ -2,71 +2,65 @@ package toolactor
 
 import (
 	"context"
+	"errors"
 
-	"github.com/gorenx/goren/tools"
+	"github.com/google/uuid"
 	toolregistry "github.com/gorenx/goren/tools/registry"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
-// RegistryGrain serializes catalog transactions and publishes committed definitions.
-// It must be long-lived: passivation is not a business resource-release protocol.
+// RegistryGrain serializes schema configuration and adapts callable addresses.
+// It does not construct tool implementations or own Runtime update transactions.
 type RegistryGrain struct {
 	registry toolregistry.Registry
+	// actors maps (AgentID, canonical tool name) to an initialized ToolActor's
+	// address and CreationID, e.g. ("session-1", "read_file"). CreationID prevents
+	// a delayed withdrawal from removing the next lifetime at the same address.
+	actors map[toolName]address
 }
 
-// OnActivate creates no resources; the business Registry has a usable zero value.
+// OnActivate acquires no resources; Registry has a usable zero value.
 func (*RegistryGrain) OnActivate(context.Context, *goakt.GrainProps) error { return nil }
 
-// OnDeactivate has no external resources to release.
+// OnDeactivate releases no tool resources; their lifetime owner closes them first.
 func (*RegistryGrain) OnDeactivate(context.Context, *goakt.GrainProps) error { return nil }
 
-// OnReceive executes short catalog commands without blocking on other Actors.
+// OnReceive delegates configuration decisions and sends scope-only notifications.
 func (owner *RegistryGrain) OnReceive(gc *goakt.GrainContext) {
-	if owner.receiveConfiguration(gc) {
+	if owner.receiveTools(gc) {
 		return
 	}
-	switch incoming := gc.Message().(type) {
-	case BeginUpdate:
-		gc.Response(Completion{
-			Err: owner.registry.Begin(incoming.Update),
+	var change ConfigurationChanged
+	var err error
+	switch input := gc.Message().(type) {
+	case RegisterSource:
+		err = owner.registry.RegisterSource(input.Name, input.Catalog)
+	case RemoveSource:
+		owner.registry.RemoveSource(input.Name)
+	case ConfigureSession:
+		change.SessionID = input.SessionID
+		err = owner.registry.ConfigureSession(input.SessionID, input.Catalog)
+	case RemoveSession:
+		change.SessionID = input.SessionID
+		owner.registry.RemoveSession(input.SessionID)
+	case ReadConfiguration:
+		gc.Response(Configuration{
+			Value: owner.registry.Read(input.SessionID),
 		})
-	case RegisterDefinition:
-		gc.Response(Completion{
-			Err: owner.registry.Register(incoming.ID, incoming.Candidate),
-		})
-	case PublishDefinitions:
-		committed, err := owner.registry.Publish(incoming.ID)
-		found := err == nil
-		if found {
-			event, _ := owner.registry.Read(committed.AgentID)
-			err = owner.publishEvent(gc, tools.DefinitionsTopic, event)
-		}
-		gc.Response(Catalog{
-			Definitions: committed,
-			Found:       found,
-			Err:         err,
-		})
-	case ReadDefinitions:
-		committed, found := owner.registry.Read(incoming.AgentID)
-		gc.Response(Catalog{
-			Definitions: committed,
-			Found:       found,
-		})
-	case ReadPublication:
-		publication, found := owner.registry.Lookup(incoming.ID)
-		gc.Response(Outcome{
-			Publication: publication,
-			Found:       found,
-		})
-	case AbortUpdate:
-		gc.Response(Completion{
-			Err: owner.registry.Abort(incoming.ID),
-		})
-	case SettleUpdate:
-		gc.Response(Completion{
-			Err: owner.registry.Settle(incoming.ID),
-		})
+		return
 	default:
 		gc.Unhandled()
+		return
 	}
+	if err == nil {
+		topic := gc.ActorSystem().TopicActor()
+		if topic == nil {
+			err = errors.New("tools: configuration saved but PubSub is unavailable")
+		} else {
+			err = goakt.Tell(gc.Context(), topic, goakt.NewPublish(uuid.NewString(), ConfigurationTopic, change))
+		}
+	}
+	gc.Response(Completion{
+		Err: err,
+	})
 }

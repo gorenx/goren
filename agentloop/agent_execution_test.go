@@ -11,7 +11,6 @@ import (
 	"github.com/gorenx/goren/agentloop"
 	"github.com/gorenx/goren/agentloop/internal/modelrequest"
 	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/systemprompt"
@@ -572,18 +571,15 @@ type heldTool struct {
 	dispatched int
 	released   int
 	concludes  bool
+	contexts   []agentmessage.UserMessage
 }
 
 func (endpoint *heldTool) Prepare(_ tools.ToolExecutionInput, receiver agentloop.ToolReceiver) error {
 	endpoint.prepared++
 	endpoint.fixture.queued = append(endpoint.fixture.queued, func() {
-		receiver.ToolPrepared(endpoint.fixture.services(), tools.ScheduledDispatch, nil, nil)
+		receiver.ToolPrepared(endpoint.fixture.services(), tools.ScheduledDispatch, nil)
 	})
 	return nil
-}
-
-func (*heldTool) ApplyApproval(agentmessage.CallID, approval.Outcome, agentloop.ToolReceiver) error {
-	return errors.New("unexpected approval")
 }
 
 func (endpoint *heldTool) Dispatch(_ agentmessage.CallID, receiver agentloop.ToolReceiver) error {
@@ -595,9 +591,10 @@ func (endpoint *heldTool) Dispatch(_ agentmessage.CallID, receiver agentloop.Too
 func (endpoint *heldTool) Finalize(_ agentmessage.CallID, receiver agentloop.ToolReceiver) error {
 	endpoint.fixture.queued = append(endpoint.fixture.queued, func() {
 		receiver.ToolFinalized(endpoint.fixture.services(), &tools.ToolExecutionSuccess{
-			Value:         []byte(`{}`),
-			ConcludesTurn: endpoint.concludes,
-			Content:       []agentmessage.ContentBlock{agentmessage.NewTextBlock("completed")},
+			Value:              []byte(`{}`),
+			ConcludesTurn:      endpoint.concludes,
+			AdditionalContexts: endpoint.contexts,
+			Content:            []agentmessage.ContentBlock{agentmessage.NewTextBlock("completed")},
 		}, nil)
 	})
 	return nil
@@ -684,7 +681,7 @@ func TestBusinessToolCancellationDoesNotDispatchRemainingCalls(t *testing.T) {
 }
 
 func TestBusinessToolWritesRetryWithoutRepeatingExecution(t *testing.T) {
-	for _, boundary := range []string{session.ToolCallEventName, session.ToolResultEventName} {
+	for _, boundary := range []string{session.ToolCallEventName, session.ToolResultEventName, agent.InboxSplicedEventName} {
 		t.Run(boundary, func(t *testing.T) {
 			subject, history := readyAgent(t)
 			proposal, err := subject.Followup(inputMessage(t, "use tool"))
@@ -710,7 +707,15 @@ func TestBusinessToolWritesRetryWithoutRepeatingExecution(t *testing.T) {
 				fixture:   fixture,
 				concludes: true,
 			}
+			if boundary == agent.InboxSplicedEventName {
+				endpoint.contexts = []agentmessage.UserMessage{inputMessage(t, "tool context")}
+			}
 			fixture.tools = endpoint
+			// The initial Turn claim also writes Inbox splices. Inject the
+			// failure only after the tool has actually started below.
+			if boundary == agent.InboxSplicedEventName {
+				fixture.commitFailure = ""
+			}
 			err = subject.Run(fixture.services())
 			if err != nil {
 				t.Fatal(err)
@@ -729,9 +734,12 @@ func TestBusinessToolWritesRetryWithoutRepeatingExecution(t *testing.T) {
 			if endpoint.waiting == nil {
 				t.Fatalf("tool never dispatched: %v", fixture.failure)
 			}
+			if boundary == agent.InboxSplicedEventName {
+				fixture.commitFailure = boundary
+			}
 			endpoint.waiting.ToolDispatched(fixture.services(), nil)
 			fixture.drain(t)
-			if boundary == session.ToolResultEventName {
+			if boundary == session.ToolResultEventName || boundary == agent.InboxSplicedEventName {
 				if endpoint.released != 0 {
 					t.Fatal("tool released before result acknowledgement")
 				}
@@ -741,7 +749,11 @@ func TestBusinessToolWritesRetryWithoutRepeatingExecution(t *testing.T) {
 				}
 				fixture.drain(t)
 			}
-			if fixture.flush == nil || fixture.generated != 1 || endpoint.dispatched != 1 || endpoint.prepared != 1 || endpoint.released != 1 {
+			expectedGenerations := 1
+			if boundary == agent.InboxSplicedEventName {
+				expectedGenerations = 2
+			}
+			if fixture.flush == nil || fixture.generated != expectedGenerations || endpoint.dispatched != 1 || endpoint.prepared != 1 || endpoint.released != 1 {
 				t.Fatalf("retry repeated execution or failed to settle: generations=%d prepared=%d dispatched=%d released=%d failure=%v", fixture.generated, endpoint.prepared, endpoint.dispatched, endpoint.released, fixture.failure)
 			}
 			counts := map[string]int{}

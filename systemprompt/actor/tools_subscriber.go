@@ -34,6 +34,7 @@ type ToolsUnsubscribed struct {
 // ToolsSubscriber forwards one Agent's committed tool views without owning a catalog.
 // Spawn it with RequestGrain reentrancy enabled; its subscriber reads its baseline after topic membership is acknowledged.
 type ToolsSubscriber struct {
+	creationID  string
 	agentID     session.SessionID
 	target      *goakt.GrainIdentity
 	registry    *goakt.GrainIdentity
@@ -46,11 +47,12 @@ type ToolsSubscriber struct {
 }
 
 // NewToolsSubscriber binds framework addresses without starting a subscription.
-func NewToolsSubscriber(identifier session.SessionID, target *goakt.GrainIdentity, registry *goakt.GrainIdentity, coordinator *goakt.PID) (*ToolsSubscriber, error) {
+func NewToolsSubscriber(identifier session.SessionID, target *goakt.GrainIdentity, registry *goakt.GrainIdentity, coordinator *goakt.PID, creationID string) (*ToolsSubscriber, error) {
 	if identifier == "" || target == nil || registry == nil || coordinator == nil {
 		return nil, errors.New("systemprompt: subscriber Agent, target, Registry and coordinator are required")
 	}
 	return &ToolsSubscriber{
+		creationID:  creationID,
 		agentID:     identifier,
 		target:      target,
 		registry:    registry,

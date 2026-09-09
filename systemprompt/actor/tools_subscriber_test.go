@@ -13,8 +13,7 @@ import (
 	"github.com/gorenx/goren/systemprompt"
 	promptactor "github.com/gorenx/goren/systemprompt/actor"
 	"github.com/gorenx/goren/tools"
-	toolregistry "github.com/gorenx/goren/tools/registry"
-	toolactor "github.com/gorenx/goren/tools/registry/actor"
+	toolactor "github.com/gorenx/goren/tools/runtime/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
@@ -57,11 +56,11 @@ func startSubscriber(t *testing.T, ctx context.Context, system goakt.ActorSystem
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry, err := goakt.GrainOf[*toolactor.RegistryGrain](ctx, system, toolactor.RegistryName, goakt.WithLongLivedGrain())
+	registry, err := goakt.GrainOf[*toolDefinitions](ctx, system, "tool-definitions", goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}
-	forwarder, err := promptactor.NewToolsSubscriber("agent", target, registry, coordinator)
+	forwarder, err := promptactor.NewToolsSubscriber("agent", target, registry, coordinator, "creation")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,57 +77,50 @@ func startSubscriber(t *testing.T, ctx context.Context, system goakt.ActorSystem
 
 func publishTools(t *testing.T, ctx context.Context, system goakt.ActorSystem, identifier session.SessionID, names ...string) {
 	t.Helper()
-	registry, err := goakt.GrainOf[*toolactor.RegistryGrain](ctx, system, toolactor.RegistryName, goakt.WithLongLivedGrain())
+	registry, err := goakt.GrainOf[*toolDefinitions](ctx, system, "tool-definitions", goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}
-	update := toolregistry.UpdateID(uuid.NewString())
-	commands := []any{toolactor.BeginUpdate{
-		Update: toolregistry.Update{
-			ID:      update,
-			AgentID: identifier,
-			Names:   names,
-		},
-	}}
+	definitions := tools.Definitions{
+		AgentID:    identifier,
+		KnownNames: names,
+	}
 	for _, name := range names {
-		commands = append(commands, toolactor.RegisterDefinition{
-			ID: update,
-			Candidate: toolregistry.Candidate{
-				Schema: llm.ToolSchema{
-					Name:       name,
-					Parameters: []byte(`{"type":"object"}`),
-				},
-				Visible: true,
-			},
+		definitions.Schemas = append(definitions.Schemas, llm.ToolSchema{
+			Name:       name,
+			Parameters: []byte(`{"type":"object"}`),
+			Version:    1,
 		})
 	}
-	for _, command := range commands {
-		payload, err := system.AskGrain(ctx, registry, command, time.Second)
-		if err != nil {
-			t.Fatal(err)
-		}
-		result := payload.(toolactor.Completion)
-		if result.Err != nil {
-			t.Fatal(result.Err)
-		}
-	}
-	payload, err := system.AskGrain(ctx, registry, toolactor.PublishDefinitions{
-		ID: update,
-	}, time.Second)
+	_, err = system.AskGrain(ctx, registry, definitions, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if payload.(toolactor.Catalog).Err != nil {
-		t.Fatal(payload)
-	}
-	payload, err = system.AskGrain(ctx, registry, toolactor.SettleUpdate{
-		ID: update,
-	}, time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if payload.(toolactor.Completion).Err != nil {
-		t.Fatal(payload)
+}
+
+type toolDefinitions struct{ definitions tools.Definitions }
+
+func (*toolDefinitions) OnActivate(context.Context, *goakt.GrainProps) error   { return nil }
+func (*toolDefinitions) OnDeactivate(context.Context, *goakt.GrainProps) error { return nil }
+func (owner *toolDefinitions) OnReceive(gc *goakt.GrainContext) {
+	switch input := gc.Message().(type) {
+	case toolactor.ReadDefinitions:
+		var err error
+		if owner.definitions.AgentID == "" {
+			err = systemprompt.ErrToolsNotReady
+		}
+		gc.Response(toolactor.Definitions{
+			Value: owner.definitions,
+			Err:   err,
+		})
+	case tools.Definitions:
+		if input.AgentID == "agent" {
+			owner.definitions = input
+		}
+		err := goakt.Tell(gc.Context(), gc.ActorSystem().TopicActor(), goakt.NewPublish(uuid.NewString(), tools.DefinitionsTopic, input))
+		gc.Response(toolactor.Completion{Err: err})
+	default:
+		gc.Unhandled()
 	}
 }
 
@@ -306,51 +298,17 @@ func TestToolsSubscriberReadsCatalogPublishedBeforeSubscription(t *testing.T) {
 	_, system, _ := startRegistry(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	registry, err := goakt.GrainOf[*toolactor.RegistryGrain](ctx, system, toolactor.RegistryName, goakt.WithLongLivedGrain())
+	registry, err := goakt.GrainOf[*toolDefinitions](ctx, system, "tool-definitions", goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, command := range []any{
-		toolactor.BeginUpdate{
-			Update: toolregistry.Update{
-				ID:      "initial",
-				AgentID: "agent",
-				Names:   []string{"read"},
-			},
-		},
-		toolactor.RegisterDefinition{
-			ID: "initial",
-			Candidate: toolregistry.Candidate{
-				Schema: llm.ToolSchema{
-					Name:       "read",
-					Parameters: []byte(`{"type":"object"}`),
-				},
-				Visible: true,
-			},
-		},
-	} {
-		reply, err := system.AskGrain(ctx, registry, command, time.Second)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if completion, ok := reply.(toolactor.Completion); !ok || completion.Err != nil {
-			t.Fatalf("registration: %#v", reply)
-		}
-	}
-	payload, err := system.AskGrain(ctx, registry, toolactor.PublishDefinitions{
-		ID: "initial",
-	}, time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if committed := payload.(toolactor.Catalog); committed.Err != nil {
-		t.Fatalf("publication: %#v", committed)
-	}
+	publishTools(t, ctx, system, "agent", "read")
+
 	target, err := goakt.GrainOf[*promptactor.RuntimeGrain](ctx, system, promptactor.RuntimeName("agent"), goakt.WithLongLivedGrain())
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload, err = initializeRuntime(t, ctx, system, target, "agent", systemprompt.DeriveLayer(systemprompt.Snapshot{}).Capture(), registry)
+	payload, err := initializeRuntime(t, ctx, system, target, "agent", systemprompt.DeriveLayer(systemprompt.Snapshot{}).Capture(), registry)
 	if err != nil || payload.(promptactor.RuntimeInitialized).Err != nil {
 		t.Fatalf("initialize: %#v, %v", payload, err)
 	}

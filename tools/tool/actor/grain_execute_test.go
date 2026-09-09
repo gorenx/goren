@@ -9,8 +9,6 @@ import (
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/toolaskuser"
 	"github.com/gorenx/goren/tools"
-	toolregistry "github.com/gorenx/goren/tools/registry"
-	catalogactor "github.com/gorenx/goren/tools/registry/actor"
 	"github.com/gorenx/goren/tools/tool"
 	toolactor "github.com/gorenx/goren/tools/tool/actor"
 	"github.com/gorenx/goren/userquestions"
@@ -40,41 +38,20 @@ func installTool(t *testing.T, source tool.Provider) (goakt.ActorSystem, *goakt.
 
 func provisionTool(t *testing.T, system goakt.ActorSystem, directory, target *goakt.GrainIdentity, source tool.Provider) {
 	t.Helper()
-	if reply := ask[catalogactor.Completion](t, system, directory, catalogactor.InitializeDefaults{
-		Tools: []toolregistry.Tool{{
-			Name:     toolaskuser.Name,
-			Provider: source,
-			Visible:  true,
-		}},
-	}); reply.Err != nil {
-		t.Fatal(reply.Err)
-	}
-	configured := ask[catalogactor.Configuration](t, system, directory, catalogactor.RegisterConfiguration{
-		ID:      "initial",
-		AgentID: "conversation",
+	reply := ask[toolactor.Completion](t, system, target, toolactor.Provision{
+		CreationID: "creation",
+		Revision:   "initial",
+		Provider:   source,
+		Schema:     questionSchema(t),
 	})
-	if configured.Err != nil || !configured.Found || len(configured.Value.Tools) != 1 {
-		t.Fatalf("tool configuration = %#v", configured)
-	}
-	selected := configured.Value.Tools[0]
-	revision := tool.Revision(string(configured.Value.Update.ID))
-	if reply := ask[toolactor.Completion](t, system, target, toolactor.Provision{
-		CreationID: "creation",
-		Revision:   revision,
-		Provider:   selected.Provider,
-		Visible:    selected.Visible,
-	}); reply.Err != nil {
+	if reply.Err != nil {
 		t.Fatal(reply.Err)
 	}
-	if reply := ask[catalogactor.Catalog](t, system, directory, catalogactor.PublishDefinitions{
-		ID: "initial",
-	}); reply.Err != nil {
-		t.Fatal(reply.Err)
-	}
-	if reply := ask[toolactor.Completion](t, system, target, toolactor.Commit{
+	reply = ask[toolactor.Completion](t, system, target, toolactor.Commit{
 		CreationID: "creation",
-		Revision:   revision,
-	}); reply.Err != nil {
+		Revision:   "initial",
+	})
+	if reply.Err != nil {
 		t.Fatal(reply.Err)
 	}
 }

@@ -22,6 +22,8 @@ import (
 // installation binds owner-specific clients. Readiness and resource ownership
 // live in the business Registry; constructing clients starts no actor.
 type installation struct {
+	// components maps each component kind (and additional-component index) to
+	// the client that initializes that responsibility for this Agent creation.
 	components   map[agent.Component]initializer
 	executor     *agentClient
 	tools        *toolsClient
@@ -44,19 +46,23 @@ func newInstallation(
 			Storage:    input.Storage,
 		},
 	}
-	tools := &toolsClient{input: runtimeactor.InitializeRuntime{
-		AgentID:    input.Creation.AgentID,
-		CreationID: input.Creation.CreationID,
-		Authority:  authority,
-		Registry:   input.ToolsRegistry,
-		Overrides:  input.Tools,
-		Timeout:    input.Timeout,
-	}}
-	prompt := &promptClient{input: promptactor.InitializeRuntime{
-		AgentID:        input.Creation.AgentID,
-		PromptRegistry: input.PromptRegistry,
-		ToolsRegistry:  input.ToolsRegistry,
-	}}
+	tools := &toolsClient{
+		input: runtimeactor.InitializeRuntime{
+			AgentID:    input.Creation.AgentID,
+			CreationID: input.Creation.CreationID,
+			Authority:  authority,
+			Registry:   input.ToolsRegistry,
+			Config:     input.Tools,
+			Workers:    input.Workers,
+			Timeout:    input.Timeout,
+		}}
+	prompt := &promptClient{
+		tools: tools,
+		input: promptactor.InitializeRuntime{
+			AgentID:        input.Creation.AgentID,
+			PromptRegistry: input.PromptRegistry,
+			CreationID:     input.Creation.CreationID,
+		}}
 	executor := &agentClient{
 		modelRouter:  input.ModelRouter,
 		middleware:   input.Middleware,
@@ -201,6 +207,7 @@ func (endpoint *sessionClient) Close(gc *goakt.GrainContext, reply chan<- error)
 }
 
 type promptClient struct {
+	tools   *toolsClient
 	input   promptactor.InitializeRuntime
 	release runtimeRelease
 }
@@ -208,6 +215,7 @@ type promptClient struct {
 func (endpoint *promptClient) Runtime() *goakt.GrainIdentity { return endpoint.release.identity }
 
 func (endpoint *promptClient) Initialize(gc *goakt.GrainContext, reply chan<- componentResult) {
+	endpoint.input.ToolsRuntime = endpoint.tools.Runtime()
 	identity, err := goakt.GrainOf[*promptactor.RuntimeGrain](
 		gc.Context(),
 		gc.ActorSystem(),

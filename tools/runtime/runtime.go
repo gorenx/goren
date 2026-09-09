@@ -1,166 +1,157 @@
+// Package toolruntime owns inherited tool configuration and effective work membership.
 package toolruntime
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 
+	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
+	"github.com/gorenx/goren/tools"
+	"github.com/gorenx/goren/tools/execution"
 	toolregistry "github.com/gorenx/goren/tools/registry"
 )
 
-// Directory supplies exact configurations as well as update publication facts.
+// Directory provides Registry facts; it owns no execution or publication transaction.
 type Directory interface {
-	Catalog
-	Configure(
-		context.Context,
-		toolregistry.UpdateID,
-		session.SessionID,
-		[]toolregistry.Tool,
-	) (toolregistry.Configuration, error)
-	ReadConfiguration(context.Context, toolregistry.UpdateID) (toolregistry.Configuration, error)
+	Read(context.Context, session.SessionID) (toolregistry.Configuration, error)
 }
 
-// Snapshot is the settled tool membership available for execution.
+// Snapshot is the effective membership and policy after work has successfully switched.
 type Snapshot struct {
-	Names []string
+	Names   []string
+	Schemas []llm.ToolSchema
+	// Policies maps effective tool names to merged execution collaborators for this snapshot.
+	Policies map[string]execution.Policies
 }
 
-// Runtime owns one Agent's settled membership and unfinished update. Its caller
-// serializes access and drains executions before Apply; it owns no tool resources.
+// Runtime owns only applied work and an unfinished replacement. Registry remains
+// authoritative for source and Session configuration, which is read at each boundary.
 type Runtime struct {
 	agentID session.SessionID
-	// current is absent until this runtime has completed its own first update.
-	// A retained Registry catalog does not prove ownership of live tool instances.
-	// registration records a potentially accepted initial configuration until
-	// an Update takes over its cleanup responsibility. Errors do not clear it.
-	registration toolregistry.UpdateID
-	current      *Snapshot
-	pending      *Update
-	// closing permanently rejects updates and snapshot reads once shutdown begins.
-	// Remaining membership and pending work describe cleanup progress without a second cursor.
+	current []Tool
+	pending *Update
+	ready   bool
 	closing bool
-	// lastID and lastError retain only the latest completed request's result, so
-	// a lost completion reply does not require reading an already settled batch.
-	lastID    toolregistry.UpdateID
-	lastError error
+	// versions maps a canonical tool name (e.g. "read_file") to its last applied
+	// schema, including Version. It retains history across disabling/removal;
+	// membership and current visibility belong to current, not this map.
+	versions map[string]llm.ToolSchema
 }
 
-// NewRuntime creates an unconfigured Agent tool owner.
-func NewRuntime(agentID session.SessionID) (*Runtime, error) {
-	if agentID == "" {
-		return nil, errors.New("tools: runtime Agent identity is required")
+// NewRuntime reserves an unconfigured business owner without starting work.
+func NewRuntime(identifier session.SessionID) (*Runtime, error) {
+	if identifier == "" {
+		return nil, errors.New("tools: Agent identity is required")
 	}
-	return &Runtime{
-		agentID: agentID,
-	}, nil
+	return &Runtime{agentID: identifier}, nil
 }
 
-// Initialize registers this Agent's overrides and completes its first tool update.
-// After failure, Close must discharge registration and instance responsibilities.
-func (owner *Runtime) Initialize(
-	ctx context.Context,
-	identifier toolregistry.UpdateID,
-	overrides []toolregistry.Tool,
-	directory Directory,
-	instances Instances,
-) (err error) {
-	if ctx == nil || identifier == "" || directory == nil || instances == nil {
-		return errors.New("tools: initialization identity, context and ports are required")
+// Initialize applies inherited Registry input before exposing a tool snapshot.
+func (owner *Runtime) Initialize(ctx context.Context, directory Directory, instances Instances) error {
+	if owner.ready || owner.pending != nil || owner.closing {
+		return errors.New("tools: initialization was already attempted")
 	}
-	if owner.closing ||
-		owner.current != nil ||
-		owner.pending != nil ||
-		owner.registration != "" ||
-		owner.lastID != "" {
-		return errors.New("tools: runtime initialization was already attempted")
-	}
-	owner.registration = identifier
-	defer func() {
-		if err != nil {
-			owner.closing = true
-		}
-	}()
-	configured, err := directory.Configure(ctx, identifier, owner.agentID, overrides)
-	if err != nil {
-		return err
-	}
-	if configured.Update.ID != identifier || configured.Update.AgentID != owner.agentID {
-		return errors.New("tools: initial configuration does not match this Agent and update")
-	}
-	pending, err := NewUpdate(configured, nil)
-	if err != nil {
-		return err
-	}
-	owner.pending = pending
-	owner.registration = ""
-	complete, err := owner.applyUpdate(ctx, directory, instances)
+	complete, err := owner.Apply(ctx, directory, instances)
 	if !complete && err == nil {
-		return errors.New("tools: initialization did not settle its update")
+		return errors.New("tools: initialization is incomplete")
 	}
 	return err
 }
 
-// Apply resumes the exact update until it finishes or needs another attempt.
-// A false result retains the execution barrier, including publication uncertainty.
-func (owner *Runtime) Apply(ctx context.Context, identifier toolregistry.UpdateID, directory Directory, instances Instances) (bool, error) {
-	if ctx == nil || identifier == "" || directory == nil || instances == nil {
-		return false, errors.New("tools: update identity, context and ports are required")
+// Apply merges current Registry facts or resumes the exact unfinished replacement.
+// Callers must hold the Agent execution boundary until complete is true.
+func (owner *Runtime) Apply(ctx context.Context, directory Directory, instances Instances) (bool, error) {
+	if ctx == nil || directory == nil || instances == nil {
+		return false, errors.New("tools: update context and ports are required")
 	}
-	if owner.closing || owner.registration != "" {
-		return false, errors.New("tools: runtime is closing or initialization cleanup is pending")
-	}
-	if owner.pending != nil && owner.pending.configuration.Update.ID != identifier {
-		return false, errors.New("tools: another update has unfinished work")
-	}
-	if owner.pending == nil && owner.lastID == identifier {
-		return true, owner.lastError
+	if owner.closing {
+		return false, errors.New("tools: runtime is closing")
 	}
 	if owner.pending == nil {
-		configured, err := directory.ReadConfiguration(ctx, identifier)
+		input, err := directory.Read(ctx, owner.agentID)
 		if err != nil {
 			return false, err
 		}
-		if configured.Update.ID != identifier ||
-			configured.Update.AgentID != owner.agentID {
-			return false, errors.New("tools: configuration does not match this Agent and update")
-		}
-		var names []string
-		if owner.current != nil {
-			names = owner.current.Names
-		}
-		pending, err := NewUpdate(configured, names)
+		entries, err := Merge(input)
 		if err != nil {
 			return false, err
 		}
-		owner.pending = pending
+		var previous []string
+		for _, entry := range owner.current {
+			previous = append(previous, entry.Schema.Name)
+		}
+		err = owner.assignVersions(entries)
+		if err != nil {
+			return false, err
+		}
+		if owner.ready && reflect.DeepEqual(entries, owner.current) {
+			return true, nil
+		}
+		owner.pending = NewUpdate(entries, previous)
 	}
-	return owner.applyUpdate(ctx, directory, instances)
-}
-
-func (owner *Runtime) applyUpdate(ctx context.Context, directory Catalog, instances Instances) (bool, error) {
-	complete, err := owner.pending.Apply(ctx, directory, instances)
+	complete, err := owner.pending.Apply(ctx, instances)
 	if !complete {
 		return false, err
 	}
 	if err == nil {
-		owner.current = &Snapshot{
-			Names: slices.Clone(owner.pending.configuration.Update.Names),
+		owner.current = cloneTools(owner.pending.tools)
+		owner.ready = true
+		if owner.versions == nil {
+			owner.versions = make(map[string]llm.ToolSchema)
+		}
+		for _, entry := range owner.current {
+			owner.versions[entry.Schema.Name] = entry.Schema
 		}
 	}
-	owner.lastID = owner.pending.configuration.Update.ID
-	owner.lastError = err
 	owner.pending = nil
 	return true, err
 }
 
-// Snapshot rejects reads before initial configuration or during an unfinished
-// update; a published directory does not yet prove all instances are usable.
+// Snapshot is unavailable while a replacement or close is unfinished.
 func (owner *Runtime) Snapshot() (Snapshot, error) {
-	if owner.closing || owner.pending != nil || owner.current == nil {
-		return Snapshot{}, errors.New("tools: runtime has no settled tool snapshot")
+	if !owner.ready || owner.pending != nil || owner.closing {
+		return Snapshot{}, errors.New("tools: effective tool configuration is unavailable")
 	}
-	return Snapshot{
-		Names: slices.Clone(owner.current.Names),
-	}, nil
+	captured := Snapshot{Policies: make(map[string]execution.Policies)}
+	for _, entry := range owner.current {
+		captured.Names = append(captured.Names, entry.Schema.Name)
+		policies := entry.Policies
+		policies.Guards = slices.Clone(policies.Guards)
+		captured.Policies[entry.Schema.Name] = policies
+		if entry.Visible {
+			schema := entry.Schema
+			schema.Parameters = slices.Clone(schema.Parameters)
+			captured.Schemas = append(captured.Schemas, schema)
+		}
+	}
+	return captured, nil
+}
+
+// Definitions returns only the effective model-facing view, with hidden names retained.
+func (owner *Runtime) Definitions() (tools.Definitions, error) {
+	captured, err := owner.Snapshot()
+	return tools.Definitions{
+		AgentID:    owner.agentID,
+		Schemas:    captured.Schemas,
+		KnownNames: captured.Names,
+	}, err
+}
+
+func (owner *Runtime) assignVersions(entries []Tool) error {
+	for index := range entries {
+		entry := &entries[index].Schema
+		previous := owner.versions[entry.Name]
+		entry.Version = previous.Version
+		if previous.Version == 0 || previous.Description != entry.Description || !bytes.Equal(previous.Parameters, entry.Parameters) {
+			if previous.Version == ^uint64(0) {
+				return errors.New("tools: schema version exhausted")
+			}
+			entry.Version++
+		}
+	}
+	return nil
 }

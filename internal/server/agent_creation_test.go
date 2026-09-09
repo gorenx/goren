@@ -12,6 +12,7 @@ import (
 	"time"
 
 	sessionadapter "github.com/gorenx/goren/apiproxy/session/actor"
+	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session/persistence"
 	"github.com/gorenx/goren/session/title"
 	"github.com/gorenx/goren/toolaskuser"
@@ -81,14 +82,21 @@ func TestAgentCreationWithProductionConfigurationOwners(t *testing.T) {
 				}
 			}
 			source.failure.Store(name == "failed-tool")
-			var defaults []toolregistry.Tool
+			defaults := toolregistry.Catalog{}
 			if withTool {
-				defaults = []toolregistry.Tool{{
-					Name:     toolaskuser.Name,
-					Provider: source,
-					Visible:  true,
-				}}
+				definition, failure := toolaskuser.NewDefinition(questionService{})
+				if failure != nil {
+					t.Fatal(failure)
+				}
+				defaults.Schemas = []llm.ToolSchema{
+					{
+						Name:        definition.Name,
+						Description: definition.Description,
+						Parameters:  definition.Parameters,
+					},
+				}
 			}
+
 			directory, err := initializeTools(ctx, system, defaults)
 			if err != nil {
 				t.Fatal(err)
@@ -144,6 +152,7 @@ func TestAgentCreationWithProductionConfigurationOwners(t *testing.T) {
 				Middleware:      hooks,
 				PromptRegistry:  prompts,
 				ToolsRegistry:   directory,
+				Workers:         tool.Workers{toolaskuser.Name: source},
 				Components:      []*goakt.GrainIdentity{titleOwner},
 				Timeout:         time.Second,
 			}

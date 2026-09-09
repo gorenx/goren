@@ -8,7 +8,6 @@ import (
 	stepstate "github.com/gorenx/goren/agentloop/internal/step"
 	"github.com/gorenx/goren/agentloop/internal/toolbatch"
 	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/tools"
 )
@@ -203,14 +202,13 @@ func (writing *toolCallCommit) SessionCommitted(services Services, result sessio
 		SessionID: calls.work.ID(),
 	}, calls)
 	if err != nil {
-		calls.ToolPrepared(services, "", nil, err)
+		calls.ToolPrepared(services, "", err)
 	}
 }
 
 func (calls *toolCalls) ToolPrepared(
 	services Services,
 	stage tools.ScheduledToolStage,
-	request *tools.ApprovalRequest,
 	failure error,
 ) {
 	if failure != nil {
@@ -222,12 +220,6 @@ func (calls *toolCalls) ToolPrepared(
 	switch stage {
 	case tools.ScheduledDispatch:
 		err = services.Tools.Dispatch(identifier, calls)
-	case tools.ScheduledApproval:
-		if request == nil || services.Approvals == nil {
-			services.Observer.ExecutionFailed(errors.New("agentloop: tool approval requires its request and approval capability"))
-			return
-		}
-		err = services.Approvals.Decide(*request, calls)
 	case tools.ScheduledFinalResult, tools.ScheduledPostResult:
 		err = services.Tools.Finalize(identifier, calls)
 	default:
@@ -235,17 +227,6 @@ func (calls *toolCalls) ToolPrepared(
 	}
 	if err != nil {
 		services.Observer.ExecutionFailed(err)
-	}
-}
-
-func (calls *toolCalls) ApprovalDecided(services Services, outcome approval.Outcome, failure error) {
-	if failure != nil {
-		services.Observer.ExecutionFailed(failure)
-		return
-	}
-	err := services.Tools.ApplyApproval(calls.calls[calls.index].ID, outcome, calls)
-	if err != nil {
-		calls.ToolPrepared(services, "", nil, err)
 	}
 }
 
@@ -329,7 +310,7 @@ func (calls *toolCalls) injectContext(services Services) {
 		calls:    calls,
 		proposal: proposal,
 	}
-	err = services.Conversation.Commit(session.Batch(proposal.Edit.Drafts...), writing)
+	err = services.Conversation.Commit(writing.write(), writing)
 	if err != nil {
 		writing.SessionCommitted(services, session.WriteResult{}, err)
 	}
@@ -345,6 +326,9 @@ func (writing *toolContextCommit) SessionCommitted(services Services, result ses
 		_, failure = writing.calls.work.ConfirmAdmission(writing.proposal, result)
 	}
 	if failure != nil {
+		retry := *writing
+		retry.calls = writing.calls.checkpoint()
+		writing.calls.work.retry = retry
 		services.Observer.ExecutionFailed(failure)
 		return
 	}
@@ -447,4 +431,20 @@ func (calls *toolCalls) checkpoint() *toolCalls {
 	detached := *calls
 	detached.work = nil
 	return &detached
+}
+
+func (writing *toolContextCommit) write() contextWrite {
+	return contextWrite{
+		sessionID: writing.calls.work.ID(),
+		messageID: writing.calls.contexts[0].StableID(),
+		drafts:    writing.proposal.Edit.Drafts,
+	}
+}
+
+func (writing toolContextCommit) resume(subject *ReactLoopAgent, services Services) {
+	writing.calls.work = subject
+	err := services.Conversation.Commit(writing.write(), &writing)
+	if err != nil {
+		writing.SessionCommitted(services, session.WriteResult{}, err)
+	}
 }

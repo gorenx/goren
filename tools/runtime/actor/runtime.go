@@ -3,13 +3,11 @@ package runtimeactor
 import (
 	"context"
 	"errors"
-	"reflect"
-	"slices"
 
 	"github.com/google/uuid"
 	agentactor "github.com/gorenx/goren/agent/actor"
 	"github.com/gorenx/goren/agentmessage"
-	toolregistry "github.com/gorenx/goren/tools/registry"
+	"github.com/gorenx/goren/session"
 	toolruntime "github.com/gorenx/goren/tools/runtime"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
@@ -19,21 +17,29 @@ import (
 // and failure recovery belong to toolruntime.Runtime; this actor never starts another actor.
 type Runtime struct {
 	instanceID string
-	// initialization retains the accepted creation binding and borrowed execution policies.
-	initialization *InitializeRuntime
+	// Only identity and execution policy survive the initialization task.
+	creationID string
+	agentID    session.SessionID
 	// toolRuntime owns the Agent tool set, update recovery, and resource cleanup.
 	toolRuntime *toolruntime.Runtime
 	catalog     *Catalog
 	instances   *Instances
 	active      *operation
-	calls       map[agentmessage.CallID]*invocation
+	// calls maps a model tool-call ID to its retained business Call and current
+	// cancellation/reply handles. Entries remain until result consumption releases
+	// them; a cancellation request alone does not remove the execution obligation.
+	calls map[agentmessage.CallID]*invocation
 	// policyRequest serializes preparation and finalization while body tasks overlap.
 	policyRequest *invocation
+	// changed remembers configuration notifications until the next Turn boundary.
+	changed bool
 }
 
 type operation struct {
-	reply  *goakt.GrainReply
-	cancel context.CancelFunc
+	initialization *InitializeRuntime
+	refreshID      string
+	reply          *goakt.GrainReply
+	cancel         context.CancelFunc
 }
 
 type authorized struct {
@@ -71,7 +77,7 @@ func (owner *Runtime) OnDeactivate(context.Context, *goakt.GrainProps) error {
 
 // OnReceive serializes protocol handling; framework tasks exclusively run the business owner.
 func (owner *Runtime) OnReceive(gc *goakt.GrainContext) {
-	if owner.receiveCalls(gc) {
+	if owner.receiveCalls(gc) || owner.receiveConfiguration(gc) {
 		return
 	}
 	switch input := gc.Message().(type) {
@@ -86,7 +92,7 @@ func (owner *Runtime) OnReceive(gc *goakt.GrainContext) {
 			owner.finish(input.operation, input.err)
 			return
 		}
-		settings := owner.initialization
+		settings := input.operation.initialization
 		business, err := toolruntime.NewRuntime(settings.AgentID)
 		if err != nil {
 			owner.finish(input.operation, err)
@@ -104,6 +110,7 @@ func (owner *Runtime) OnReceive(gc *goakt.GrainContext) {
 			settings.AgentID,
 			settings.CreationID,
 			settings.Timeout,
+			settings.Workers,
 		)
 		if err != nil {
 			owner.finish(input.operation, err)
@@ -112,22 +119,39 @@ func (owner *Runtime) OnReceive(gc *goakt.GrainContext) {
 		owner.toolRuntime = business
 		owner.catalog = directory
 		owner.instances = instances
-		identifier := toolregistry.UpdateID(uuid.NewString())
 		owner.schedule(gc, input.operation, func(ctx context.Context) error {
-			return business.Initialize(ctx, identifier, settings.Overrides, directory, instances)
+			if settings.Config != nil {
+				err := directory.ConfigureSession(ctx, settings.AgentID, *settings.Config)
+				if err != nil {
+					return err
+				}
+			}
+			return business.Initialize(ctx, directory, instances)
 		})
 	case completed:
 		gc.NoErr()
+		if input.operation.refreshID != "" {
+			owner.finishRefresh(gc, input.operation, input.err)
+			return
+		}
 		owner.finish(input.operation, input.err)
 	case ReadRuntime:
 		result := RuntimeView{}
-		if owner.initialization == nil ||
-			owner.initialization.CreationID != input.CreationID ||
+		if owner.creationID == "" ||
+			owner.creationID != input.CreationID ||
 			owner.toolRuntime == nil ||
 			owner.active != nil {
 			result.Err = errors.New("tools: runtime snapshot is unavailable")
 		} else {
 			result.Snapshot, result.Err = owner.toolRuntime.Snapshot()
+		}
+		gc.Response(result)
+	case ReadDefinitions:
+		result := Definitions{}
+		if owner.creationID != input.CreationID || owner.toolRuntime == nil || owner.active != nil {
+			result.Err = errors.New("tools: definitions do not belong to an available runtime")
+		} else {
+			result.Value, result.Err = owner.toolRuntime.Definitions()
 		}
 		gc.Response(result)
 	case CloseRuntime:
@@ -136,8 +160,8 @@ func (owner *Runtime) OnReceive(gc *goakt.GrainContext) {
 			return
 		}
 		if input.InstanceID != owner.instanceID ||
-			owner.initialization == nil ||
-			owner.initialization.CreationID != input.CreationID {
+			owner.creationID == "" ||
+			owner.creationID != input.CreationID {
 			gc.Response(Completion{Err: errors.New("tools: close does not own this runtime activation")})
 			return
 		}
@@ -154,9 +178,8 @@ func (owner *Runtime) OnReceive(gc *goakt.GrainContext) {
 			return
 		}
 		business := owner.toolRuntime
-		directory := owner.catalog
 		instances := owner.instances
-		owner.schedule(gc, current, func(ctx context.Context) error { return business.Close(ctx, directory, instances) })
+		owner.schedule(gc, current, func(ctx context.Context) error { return business.Close(ctx, instances) })
 	default:
 		gc.Unhandled()
 	}
@@ -175,9 +198,9 @@ func (owner *Runtime) initialize(gc *goakt.GrainContext, input InitializeRuntime
 		gc.Response(Completion{Err: errors.New("tools: runtime operation is still running")})
 		return
 	}
-	if owner.initialization != nil {
+	if owner.creationID != "" {
 		var err error
-		if !reflect.DeepEqual(*owner.initialization, input) {
+		if owner.creationID != input.CreationID || owner.agentID != input.AgentID {
 			err = errors.New("tools: runtime is bound to a different initialization")
 		} else if owner.toolRuntime == nil {
 			err = errors.New("tools: runtime initialization failed")
@@ -198,9 +221,14 @@ func (owner *Runtime) initialize(gc *goakt.GrainContext, input InitializeRuntime
 	if current == nil {
 		return
 	}
-	input.Overrides = slices.Clone(input.Overrides)
-	input.Policies.Guards = slices.Clone(input.Policies.Guards)
-	owner.initialization = &input
+	if input.Config != nil {
+		captured := input.Config.Clone()
+		input.Config = &captured
+	}
+	input.Workers = input.Workers.Clone()
+	current.initialization = &input
+	owner.creationID = input.CreationID
+	owner.agentID = input.AgentID
 	received := make(chan authorized, 1)
 	err = gc.PipeToSelf(func() (any, error) { return <-received, nil })
 	if err != nil {

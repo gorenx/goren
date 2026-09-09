@@ -5,49 +5,34 @@ import (
 	"errors"
 )
 
-// Close resolves unfinished updates before removing the settled instances.
-// The caller must drain executions first; failures retain the exact cleanup work.
-func (owner *Runtime) Close(ctx context.Context, directory Catalog, instances Instances) error {
-	if ctx == nil || directory == nil || instances == nil {
-		return errors.New("tools: close context and ports are required")
+// Close drains unfinished replacement work and then stops each retained tool.
+// Errors preserve the exact remaining resource responsibilities for another attempt.
+func (owner *Runtime) Close(ctx context.Context, instances Instances) error {
+	if ctx == nil || instances == nil {
+		return errors.New("tools: close context and instances are required")
 	}
 	owner.closing = true
 	if ctx.Err() != nil {
 		return context.Cause(ctx)
 	}
-	if owner.registration != "" {
-		publication, found, err := directory.Lookup(ctx, owner.registration)
-		if err != nil {
-			return err
-		}
-		if found {
-			if publication.AgentID != owner.agentID || publication.Published {
-				return errors.New("tools: unconfirmed registration has conflicting publication state")
-			}
-			err = directory.Abort(ctx, owner.registration)
-			if err != nil {
-				return err
-			}
-		}
-		owner.registration = ""
-	}
 	if owner.pending != nil {
-		// Cancellation rolls back unpublished candidates. Update preserves published
-		// facts and finishes their cleanup regardless of this cancellation intention.
-		canceled, cancel := context.WithCancel(ctx)
+		cancelled, cancel := context.WithCancel(ctx)
 		cancel()
-		complete, err := owner.applyUpdate(canceled, directory, instances)
+		complete, err := owner.pending.Apply(cancelled, instances)
 		if !complete {
 			return err
 		}
+		if err == nil {
+			owner.current = cloneTools(owner.pending.tools)
+		}
+		owner.pending = nil
 	}
-	for owner.current != nil && len(owner.current.Names) != 0 {
-		name := owner.current.Names[0]
-		err := instances.Remove(ctx, name)
+	for len(owner.current) != 0 {
+		err := instances.Remove(ctx, owner.current[0].Schema.Name)
 		if err != nil {
 			return err
 		}
-		owner.current.Names = owner.current.Names[1:]
+		owner.current = owner.current[1:]
 	}
 	return nil
 }

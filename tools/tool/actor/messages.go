@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 
 	"github.com/gorenx/goren/agentmessage"
+ "github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/tools"
 	"github.com/gorenx/goren/tools/tool"
@@ -18,7 +19,6 @@ type Initialize struct {
 	CreationID string
 	AgentID    session.SessionID
 	Name       string
-	Registry   *goakt.GrainIdentity
 	Authority  *goakt.GrainIdentity
 }
 
@@ -28,13 +28,13 @@ func RuntimeName(agentID string, toolName string) string {
 	return agentID + ".tool." + hex.EncodeToString([]byte(toolName))
 }
 
-// Provision constructs a candidate and waits for its catalog registration.
+// Provision constructs a candidate under the caller-owned update boundary.
 // Provider configuration must remain identical for retries of the same Revision.
 type Provision struct {
 	CreationID string
 	Revision   tool.Revision
 	Provider   tool.Provider
-	Visible    bool
+ Schema llm.ToolSchema
 	Context    context.Context
 }
 

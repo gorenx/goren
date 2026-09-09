@@ -1,3 +1,4 @@
+// Package toolregistry owns tool schemas and policies from global sources and Sessions.
 package toolregistry
 
 import (
@@ -5,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/gorenx/goren/llm"
@@ -12,236 +14,202 @@ import (
 	"github.com/gorenx/goren/tools"
 )
 
-// UpdateID identifies a unique configuration update until its settlement.
-type UpdateID string
-
-// Update declares the complete ordered membership of a candidate catalog.
-type Update struct {
-	ID      UpdateID
-	AgentID session.SessionID
-	Names   []string
+// Policy contains optional configuration; omission inherits the global value.
+// Runtime applies defaults only after merging all applicable configuration.
+type Policy struct {
+	Enabled *bool
+	Visible *bool
+	// Execution policy collaborators are borrowed immutable capabilities.
+	Before    tools.PrePolicy
+	After     tools.PostPolicy
+	Execution tools.ExecuteMiddleware
+	Results   tools.ResultObserver
+	Guards    []tools.ToolGuard
 }
 
-// Candidate is a model-facing tool definition, without runtime resources.
-type Candidate struct {
-	Schema  llm.ToolSchema
-	Visible bool
+// Catalog is one source's or Session's unmerged tool configuration. Policy-only
+// entries override inherited tools without copying their schemas.
+type Catalog struct {
+	Schemas []llm.ToolSchema
+	// Policies maps a canonical tool name to explicitly configured policy fields.
+	// For example, Policies["read_file"].Visible=false hides that tool after merging.
+	// A Session may override policy without copying the inherited schema.
+	Policies map[string]Policy
 }
 
-// Registry owns committed Agent catalogs and unsettled publication batches.
-// Its caller serializes all access; it performs no IO and has no framework dependencies.
+// Configuration preserves global and Session values separately for Runtime merging.
+type Configuration struct {
+	Global Catalog
+	Custom Catalog
+}
+
+// Registry stores configuration only. Its caller serializes access; no method
+// constructs a tool, merges Session overrides, or tracks resource publication.
 type Registry struct {
-	defaults    []Tool
-	initialized bool
-	catalogs    map[session.SessionID]tools.Definitions
-	batches     map[UpdateID]*batch
-	// schemas[sessionID][toolName] retains the last committed definition,
-	// e.g. schemas["session-1"]["read_file"]. The outer key is also the Agent ID,
-	// and the inner key is the canonical tool name. It is retained version history,
-	// not the currently executable tool set. Removed tools remain here so
-	// re-adding a name cannot reuse an old version.
-	schemas map[session.SessionID]map[string]llm.ToolSchema
+	// sources maps a global source ID (e.g. "local" or "mcp:docs") to that
+	// source's complete schema and policy set. Values never contain workers.
+	sources map[string]Catalog
+	// sessions maps a Session ID (e.g. "session-1") to only its custom schemas
+	// and policy fields. Global values are not copied into these entries.
+	sessions map[session.SessionID]Catalog
 }
 
-type batch struct {
-	configuration *Configuration
-	update        Update
-	candidates    map[string]Candidate
-	published     *tools.Definitions
-}
-
-// Begin starts a batch without changing the effective catalog.
-func (owner *Registry) Begin(input Update) error {
-	if input.ID == "" || input.AgentID == "" {
-		return errors.New("tools: update and Agent IDs are required")
+// RegisterSource replaces a complete global source. Names cannot collide across sources.
+func (owner *Registry) RegisterSource(name string, input Catalog) error {
+	if strings.TrimSpace(name) == "" || strings.TrimSpace(name) != name {
+		return errors.New("tools: source name is required")
 	}
-	if previous, exists := owner.batches[input.ID]; exists {
-		if previous.update.AgentID == input.AgentID &&
-			slices.Equal(previous.update.Names, input.Names) {
-			return nil
-		}
-		return errors.New("tools: update ID already has different input")
-	}
-	for _, pending := range owner.batches {
-		if pending.update.AgentID == input.AgentID {
-			return errors.New("tools: Agent has an unsettled tool update")
-		}
-	}
-	names := make(map[string]struct{}, len(input.Names))
-	for _, name := range input.Names {
-		if strings.TrimSpace(name) == "" ||
-			strings.TrimSpace(name) != name ||
-			name == tools.RunCodeName {
-			return fmt.Errorf("tools: invalid candidate name %q", name)
-		}
-		if _, exists := names[name]; exists {
-			return fmt.Errorf("tools: duplicate candidate %q", name)
-		}
-		names[name] = struct{}{}
-	}
-	input.Names = slices.Clone(input.Names)
-	if owner.batches == nil {
-		owner.batches = make(map[UpdateID]*batch)
-	}
-	owner.batches[input.ID] = &batch{
-		update:     input,
-		candidates: make(map[string]Candidate, len(input.Names)),
-	}
-	return nil
-}
-
-// Register validates and captures one candidate. Conflicting retries are rejected.
-func (owner *Registry) Register(identifier UpdateID, input Candidate) error {
-	pending, exists := owner.batches[identifier]
-	if !exists {
-		return errors.New("tools: unknown update")
-	}
-	position := slices.Index(pending.update.Names, input.Schema.Name)
-	if position < 0 {
-		return errors.New("tools: candidate is not in the update")
-	}
-	if pending.configuration != nil &&
-		pending.configuration.Tools[position].Visible != input.Visible {
-		return errors.New("tools: candidate visibility differs from registered configuration")
-	}
-	if input.Schema.Version != 0 {
-		return errors.New("tools: candidate schema version is assigned by Registry")
-	}
-	parameters, err := tools.SnapshotObjectSchema(input.Schema.Parameters)
+	captured, err := snapshotCatalog(input)
 	if err != nil {
 		return err
 	}
-	input.Schema.Parameters = parameters
-	if previous, exists := pending.candidates[input.Schema.Name]; exists {
-		if previous.Visible == input.Visible &&
-			previous.Schema.Name == input.Schema.Name &&
-			previous.Schema.Description == input.Schema.Description &&
-			bytes.Equal(previous.Schema.Parameters, input.Schema.Parameters) {
-			return nil
+	for other, entries := range owner.sources {
+		if other == name {
+			continue
 		}
-		return errors.New("tools: candidate already registered with different definition")
-	}
-	if pending.published != nil {
-		return errors.New("tools: update already published")
-	}
-	pending.candidates[input.Schema.Name] = input
-	return nil
-}
-
-// Publish atomically installs a complete catalog or returns the prior publication.
-func (owner *Registry) Publish(identifier UpdateID) (tools.Definitions, error) {
-	pending, exists := owner.batches[identifier]
-	if !exists {
-		return tools.Definitions{}, errors.New("tools: unknown update")
-	}
-	if pending.published != nil {
-		return clonePublication(*pending.published), nil
-	}
-	if len(pending.candidates) != len(pending.update.Names) {
-		return tools.Definitions{}, errors.New("tools: candidate catalog is incomplete")
-	}
-	committed := tools.Definitions{
-		AgentID:    pending.update.AgentID,
-		KnownNames: slices.Clone(pending.update.Names),
-	}
-	previous := owner.catalogs[pending.update.AgentID]
-	assigned := make(map[string]llm.ToolSchema, len(pending.candidates))
-	for _, name := range pending.update.Names {
-		entry := pending.candidates[name]
-		prior := owner.schemas[pending.update.AgentID][name]
-		entry.Schema.Version = prior.Version
-		unchanged := slices.Contains(previous.KnownNames, name) &&
-			prior.Description == entry.Schema.Description &&
-			bytes.Equal(prior.Parameters, entry.Schema.Parameters)
-		if !unchanged {
-			if prior.Version == ^uint64(0) {
-				return tools.Definitions{}, fmt.Errorf("tools: schema version exhausted for %q", name)
+		for _, incoming := range captured.Schemas {
+			for _, existing := range entries.Schemas {
+				if incoming.Name == existing.Name {
+					return fmt.Errorf("tools: schema %q already belongs to source %q", incoming.Name, other)
+				}
 			}
-			entry.Schema.Version++
 		}
-		assigned[name] = entry.Schema
-		if entry.Visible {
-			committed.Schemas = append(committed.Schemas, entry.Schema)
+		for key := range captured.Policies {
+			if _, exists := entries.Policies[key]; exists {
+				return fmt.Errorf("tools: policy %q already belongs to source %q", key, other)
+			}
 		}
 	}
-	if owner.catalogs == nil {
-		owner.catalogs = make(map[session.SessionID]tools.Definitions)
+	err = assignVersions(&captured, owner.sources[name])
+	if err != nil {
+		return err
 	}
-	if owner.schemas == nil {
-		owner.schemas = make(map[session.SessionID]map[string]llm.ToolSchema)
+	if owner.sources == nil {
+		owner.sources = make(map[string]Catalog)
 	}
-	if owner.schemas[committed.AgentID] == nil {
-		owner.schemas[committed.AgentID] = make(map[string]llm.ToolSchema)
-	}
-	for name, entry := range assigned {
-		owner.schemas[committed.AgentID][name] = entry
-	}
-	owner.catalogs[committed.AgentID] = committed
-	pending.published = &committed
-	return clonePublication(committed), nil
-}
-
-// Read returns a detached committed baseline; candidates are never exposed.
-func (owner *Registry) Read(identifier session.SessionID) (tools.Definitions, bool) {
-	committed, exists := owner.catalogs[identifier]
-	return clonePublication(committed), exists
-}
-
-// Lookup distinguishes unknown, preparing, and published updates without retrying effects.
-func (owner *Registry) Lookup(identifier UpdateID) (Publication, bool) {
-	pending, exists := owner.batches[identifier]
-	if !exists {
-		return Publication{}, false
-	}
-	outcome := Publication{
-		AgentID: pending.update.AgentID,
-	}
-	if pending.published != nil {
-		outcome.Published = true
-		outcome.Catalog = clonePublication(*pending.published)
-	}
-	return outcome, true
-}
-
-// Publication reports whether an accepted update has reached its commit point.
-type Publication struct {
-	AgentID   session.SessionID
-	Published bool
-	Catalog   tools.Definitions
-}
-
-// Abort forgets an unpublished batch after the caller has released its candidates.
-func (owner *Registry) Abort(identifier UpdateID) error {
-	pending, exists := owner.batches[identifier]
-	if !exists {
-		return nil
-	}
-	if pending.published != nil {
-		return errors.New("tools: cannot abort a published update")
-	}
-	delete(owner.batches, identifier)
+	owner.sources[name] = captured
 	return nil
 }
 
-// Settle discards the lookup record after runtime switching and resource release.
-// The caller must never reuse an update ID after settlement.
-func (owner *Registry) Settle(identifier UpdateID) error {
-	pending, exists := owner.batches[identifier]
-	if !exists {
-		return nil
+// RemoveSource withdraws its schemas and policies together; runtimes decide how to apply it.
+func (owner *Registry) RemoveSource(name string) { delete(owner.sources, name) }
+
+// ConfigureSession replaces only custom values; inherited schemas are never copied here.
+func (owner *Registry) ConfigureSession(identifier session.SessionID, input Catalog) error {
+	if identifier == "" {
+		return errors.New("tools: Session identity is required")
 	}
-	if pending.published == nil {
-		return errors.New("tools: update has not been published")
+	captured, err := snapshotCatalog(input)
+	if err != nil {
+		return err
 	}
-	delete(owner.batches, identifier)
+	err = assignVersions(&captured, owner.sessions[identifier])
+	if err != nil {
+		return err
+	}
+	if owner.sessions == nil {
+		owner.sessions = make(map[session.SessionID]Catalog)
+	}
+	owner.sessions[identifier] = captured
 	return nil
 }
 
-func clonePublication(input tools.Definitions) tools.Definitions {
-	input.KnownNames = slices.Clone(input.KnownNames)
+// RemoveSession restores inheritance without withdrawing global configuration.
+func (owner *Registry) RemoveSession(identifier session.SessionID) {
+	delete(owner.sessions, identifier)
+}
+
+// Read returns detached unmerged values. Global names have deterministic order.
+func (owner *Registry) Read(identifier session.SessionID) Configuration {
+	combined := Catalog{Policies: make(map[string]Policy)}
+	for _, entries := range owner.sources {
+		combined.Schemas = append(combined.Schemas, entries.Schemas...)
+		for name, policy := range entries.Policies {
+			combined.Policies[name] = policy
+		}
+	}
+	sort.Slice(combined.Schemas, func(left int, right int) bool { return combined.Schemas[left].Name < combined.Schemas[right].Name })
+	return Configuration{
+		Global: combined.Clone(),
+		Custom: owner.sessions[identifier].Clone(),
+	}
+}
+
+// Clone detaches schema bytes and optional values from caller mutation.
+func (input Catalog) Clone() Catalog {
 	input.Schemas = slices.Clone(input.Schemas)
 	for index := range input.Schemas {
 		input.Schemas[index].Parameters = slices.Clone(input.Schemas[index].Parameters)
 	}
+	if input.Policies != nil {
+		// detached preserves tool-name keys with policy values whose mutable fields
+		// are copied below; execution collaborators remain borrowed.
+		detached := make(map[string]Policy, len(input.Policies))
+		for name, entry := range input.Policies {
+			if entry.Enabled != nil {
+				value := *entry.Enabled
+				entry.Enabled = &value
+			}
+			if entry.Visible != nil {
+				value := *entry.Visible
+				entry.Visible = &value
+			}
+			entry.Guards = slices.Clone(entry.Guards)
+			detached[name] = entry
+		}
+		input.Policies = detached
+	}
 	return input
+}
+
+func snapshotCatalog(input Catalog) (Catalog, error) {
+	captured := input.Clone()
+	// names maps each validated schema name to true to reject duplicate entries.
+	names := make(map[string]bool, len(captured.Schemas))
+	for index := range captured.Schemas {
+		entry := &captured.Schemas[index]
+		if !validName(entry.Name) || names[entry.Name] {
+			return Catalog{}, fmt.Errorf("tools: invalid or duplicate schema name %q", entry.Name)
+		}
+		if entry.Version != 0 {
+			return Catalog{}, errors.New("tools: Registry assigns schema versions")
+		}
+		parameters, err := tools.SnapshotObjectSchema(entry.Parameters)
+		if err != nil {
+			return Catalog{}, err
+		}
+		entry.Parameters = parameters
+		names[entry.Name] = true
+	}
+	for name := range captured.Policies {
+		if !validName(name) {
+			return Catalog{}, fmt.Errorf("tools: invalid policy name %q", name)
+		}
+	}
+	return captured, nil
+}
+
+func validName(name string) bool {
+	return name != "" && strings.TrimSpace(name) == name && name != tools.RunCodeName
+}
+
+func assignVersions(input *Catalog, previous Catalog) error {
+	for index := range input.Schemas {
+		incoming := &input.Schemas[index]
+		incoming.Version = 1
+		for _, existing := range previous.Schemas {
+			if existing.Name != incoming.Name {
+				continue
+			}
+			incoming.Version = existing.Version
+			if incoming.Description != existing.Description || !bytes.Equal(incoming.Parameters, existing.Parameters) {
+				if existing.Version == ^uint64(0) {
+					return errors.New("tools: schema version exhausted")
+				}
+				incoming.Version++
+			}
+			break
+		}
+	}
+	return nil
 }

@@ -13,8 +13,10 @@ type InitializeRuntime struct {
 	// The Runtime requests Prepare to obtain their definition snapshot; it does
 	// not ask this Registry to assemble the Agent's model input.
 	PromptRegistry *goakt.GrainIdentity
-	// ToolsRegistry provides the Agent's committed tool schemas.
-	ToolsRegistry *goakt.GrainIdentity
+	// ToolsRuntime provides only successfully applied tool schemas.
+	ToolsRuntime *goakt.GrainIdentity
+	// CreationID authorizes this Agent lifetime's tool baseline read.
+	CreationID string
 }
 
 // ApplyTools delivers a detached view of a committed tools event.

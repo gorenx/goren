@@ -11,16 +11,18 @@ import (
 	"github.com/gorenx/goren/systemprompt"
 	promptactor "github.com/gorenx/goren/systemprompt/actor"
 	"github.com/gorenx/goren/tools"
-	toolactor "github.com/gorenx/goren/tools/registry/actor"
+	toolactor "github.com/gorenx/goren/tools/runtime/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
 type promptDefinitions struct {
+	agentID  session.SessionID
 	snapshot systemprompt.Snapshot
 }
 
 type initializationRegistry struct {
+	agentID  session.SessionID
 	snapshot systemprompt.Snapshot
 }
 
@@ -30,6 +32,7 @@ func (owner *initializationRegistry) OnReceive(gc *goakt.GrainContext) {
 	switch input := gc.Message().(type) {
 	case promptDefinitions:
 		owner.snapshot = input.snapshot
+		owner.agentID = input.agentID
 		gc.Response(struct{}{})
 	case promptactor.Prepare:
 		gc.Response(promptactor.Prepared{
@@ -37,10 +40,9 @@ func (owner *initializationRegistry) OnReceive(gc *goakt.GrainContext) {
 			Snapshot: owner.snapshot,
 		})
 	case toolactor.ReadDefinitions:
-		gc.Response(toolactor.Catalog{
-			Found: true,
-			Definitions: tools.Definitions{
-				AgentID: input.AgentID,
+		gc.Response(toolactor.Definitions{
+			Value: tools.Definitions{
+				AgentID: owner.agentID,
 			},
 		})
 	default:
@@ -86,6 +88,7 @@ func initializeRuntime(t *testing.T, ctx context.Context, system goakt.ActorSyst
 	}
 	if _, err := system.AskGrain(ctx, registry, promptDefinitions{
 		snapshot: definitions,
+		agentID:  identifier,
 	}, time.Second); err != nil {
 		return nil, err
 	}
@@ -104,7 +107,8 @@ func initializeRuntime(t *testing.T, ctx context.Context, system goakt.ActorSyst
 		input: promptactor.InitializeRuntime{
 			AgentID:        identifier,
 			PromptRegistry: registry,
-			ToolsRegistry:  baseline,
+			ToolsRuntime:   baseline,
+			CreationID:     "creation",
 		},
 	}); err != nil {
 		return nil, err

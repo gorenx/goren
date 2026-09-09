@@ -10,7 +10,7 @@ import (
 )
 
 func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) {
-	if input.CreationID == "" || input.AgentID == "" || input.Registry == nil || input.Authority == nil {
+	if input.CreationID == "" || input.AgentID == "" || input.Authority == nil {
 		gc.Response(Completion{
 			Err: errors.New("tools: tool, Agent, catalog and lifecycle identities are required"),
 		})
@@ -21,7 +21,6 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) {
 		if owner.creationID != input.CreationID ||
 			owner.agentID != input.AgentID ||
 			owner.business.Name() != input.Name ||
-			owner.registry.String() != input.Registry.String() ||
 			owner.authority.String() != input.Authority.String() {
 			err = errors.New("tools: Grain is bound to a different tool identity")
 		}
@@ -76,7 +75,6 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) {
 				owner.business = business
 				owner.creationID = input.CreationID
 				owner.agentID = input.AgentID
-				owner.registry = input.Registry
 				owner.authority = input.Authority
 			}
 			owner.finish(current, err)

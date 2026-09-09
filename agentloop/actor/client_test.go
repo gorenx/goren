@@ -69,7 +69,7 @@ func TestClientSeparatesInputCancellationAndIdle(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	system, err := goakt.NewActorSystem("agent-client", goakt.WithLogger(log.DiscardLogger))
+	system, err := goakt.NewActorSystem("agent-client", goakt.WithLogger(log.DiscardLogger), goakt.WithPubSub())
 	if err != nil {
 		t.Fatal(err)
 	}
