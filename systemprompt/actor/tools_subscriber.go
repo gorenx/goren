@@ -87,7 +87,7 @@ func (owner *ToolsSubscriber) Receive(rc *goakt.ReceiveContext) {
 			return
 		}
 		owner.applyTools(rc, incoming.definitions)
-	case tools.DefinitionsChanged:
+	case tools.Definitions:
 		if owner.stopping || incoming.AgentID != owner.agentID {
 			return
 		}
@@ -108,19 +108,17 @@ func (owner *ToolsSubscriber) Receive(rc *goakt.ReceiveContext) {
 	}
 }
 
-func (owner *ToolsSubscriber) applyTools(rc *goakt.ReceiveContext, incoming tools.DefinitionsChanged) {
+func (owner *ToolsSubscriber) applyTools(rc *goakt.ReceiveContext, incoming tools.Definitions) {
 	request := rc.RequestGrain(owner.target, ApplyTools{
 		AgentID: incoming.AgentID,
-		Version: incoming.Version,
 		Definitions: systemprompt.ToolDefinitions{
-			Schemas:    incoming.Definitions.Schemas,
-			KnownNames: incoming.Definitions.KnownNames,
+			Schemas:    incoming.Schemas,
+			KnownNames: incoming.KnownNames,
 		},
 	})
 	if request == nil {
 		rc.Tell(owner.coordinator, ToolsApplied{
 			AgentID: owner.agentID,
-			Version: incoming.Version,
 			Err:     ErrUnavailable,
 		})
 		return
@@ -141,7 +139,6 @@ func (owner *ToolsSubscriber) applyTools(rc *goakt.ReceiveContext, incoming tool
 		}
 		if deliveryErr := self.Tell(ctx, coordinator, ToolsApplied{
 			AgentID: identifier,
-			Version: incoming.Version,
 			Err:     err,
 		}); deliveryErr != nil {
 			logger.Error("systemprompt: failed to deliver tool update result to coordinator")

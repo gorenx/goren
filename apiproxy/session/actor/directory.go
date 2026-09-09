@@ -51,7 +51,7 @@ func NewDirectory(system goakt.ActorSystem, registry *goakt.GrainIdentity, creat
 
 // Resolve waits for an existing initialization; missing or closed Agents return nil.
 func (source *Directory) Resolve(ctx context.Context, identifier session.SessionID) (sessionapi.Agent, error) {
-	payload, err := source.system.AskGrain(ctx, source.registry, agentregistry.Resolve{
+	payload, err := source.system.AskGrain(ctx, source.registry, agentregistry.FindAgent{
 		AgentID:   identifier,
 		WaitReady: true,
 	}, source.timeout)

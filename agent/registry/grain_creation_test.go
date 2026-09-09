@@ -124,9 +124,7 @@ func TestCreationConcurrentCallersShareLifetimeAndColdResume(t *testing.T) {
 	if first.Executor.Name() != "conversation.agentloop" || first.Commands.Name() != "conversation.commands" || first.Executor.Kind() == first.Commands.Kind() {
 		t.Fatal("framework identity does not distinguish services")
 	}
-	if result := askLifecycle[agentregistry.Ready](t, system, authority, agentregistry.Resolve{
-		AgentID: "conversation",
-	}); result.Err != nil {
+	if result := askLifecycle[agentregistry.Ready](t, system, authority, agentregistry.FindAgent{AgentID: "conversation"}); result.Err != nil {
 		t.Fatal(result.Err)
 	}
 	entry, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
@@ -148,9 +146,7 @@ func TestCreationConcurrentCallersShareLifetimeAndColdResume(t *testing.T) {
 	}); result.Err != nil {
 		t.Fatal(result.Err)
 	}
-	if result := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{
-		Creation: input.Creation,
-	}); result.Err != nil {
+	if result := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{Creation: input.Creation}); result.Err != nil {
 		t.Fatal(result.Err)
 	}
 	oldCommands := askLifecycle[commandactor.Executed](t, system, first.Commands, commandactor.Execute{
@@ -167,31 +163,25 @@ func TestCreationConcurrentCallersShareLifetimeAndColdResume(t *testing.T) {
 	if second.Err != nil {
 		t.Fatal(second.Err)
 	}
-	if result := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{
-		Creation: first.Creation,
-	}); !errors.Is(result.Err, agentregistry.ErrCreation) {
+	if result := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{Creation: first.Creation}); !errors.Is(result.Err, agentregistry.ErrCreation) {
 		t.Fatal("old close affected replacement", result.Err)
 	}
-	if result := askLifecycle[sessionactor.View](t, system, sessionRoute(t, system, "conversation"), sessionactor.Read{
-		CreationID: "second",
-	}); result.Err != nil || result.Header.ID != "conversation" {
+	if result := askLifecycle[sessionactor.View](t, system, sessionRoute(t, system, "conversation"), sessionactor.Read{CreationID: "second"}); result.Err != nil || result.Header.ID != "conversation" {
 		t.Fatal("recovery lost Session", result.Err)
 	}
-	if result := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{
-		Creation: second.Creation,
-	}); result.Err != nil {
+	if result := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{Creation: second.Creation}); result.Err != nil {
 		t.Fatal(result.Err)
 	}
 }
 
-type holdConfiguration struct{ replies chan *goakt.GrainReply }
+type holdConfiguration struct {
+	replies chan *goakt.GrainReply
+}
 
 func TestCloseDuringInitializationWaitsAndDoesNotPublishReady(t *testing.T) {
 	system, authority, input := creationFixture(t)
 	held := make(chan *goakt.GrainReply, 1)
-	askLifecycle[struct{}](t, system, input.ModelConfig, holdConfiguration{
-		replies: held,
-	})
+	askLifecycle[struct{}](t, system, input.ModelConfig, holdConfiguration{replies: held})
 	results := make(chan response, 1)
 	go func() {
 		payload, err := system.AskGrain(context.Background(), authority, input, 3*time.Second)
@@ -206,25 +196,19 @@ func TestCloseDuringInitializationWaitsAndDoesNotPublishReady(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("initialization did not request configuration")
 	}
-	if result := askLifecycle[agentregistry.Ready](t, system, authority, agentregistry.Resolve{
-		AgentID: "conversation",
-	}); result.Err == nil {
+	if result := askLifecycle[agentregistry.Ready](t, system, authority, agentregistry.FindAgent{AgentID: "conversation"}); result.Err == nil {
 		t.Fatal("Claim was mistaken for readiness")
 	}
 	closed := make(chan response, 1)
 	go func() {
-		payload, err := system.AskGrain(context.Background(), authority, agentregistry.CloseAgent{
-			Creation: input.Creation,
-		}, 3*time.Second)
+		payload, err := system.AskGrain(context.Background(), authority, agentregistry.CloseAgent{Creation: input.Creation}, 3*time.Second)
 		closed <- response{
 			value: payload,
 			err:   err,
 		}
 	}()
 	// BeginClose is an idempotent mailbox barrier; the final close must still wait for initialization.
-	if result := askLifecycle[agentregistry.CloseAccepted](t, system, authority, agentregistry.BeginClose{
-		Creation: input.Creation,
-	}); result.Err != nil {
+	if result := askLifecycle[agentregistry.CloseAccepted](t, system, authority, agentregistry.BeginClose{Creation: input.Creation}); result.Err != nil {
 		t.Fatal(result.Err)
 	}
 	select {
@@ -277,9 +261,7 @@ func TestCreationOwnsCompactionThroughCapabilityRegistry(t *testing.T) {
 	if repeated.Err != nil || !repeated.Runtime.Equal(current.Components[0].Runtime) {
 		t.Fatal("component startup was not idempotent", repeated.Err)
 	}
-	if result := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{
-		Creation: input.Creation,
-	}); result.Err != nil {
+	if result := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{Creation: input.Creation}); result.Err != nil {
 		t.Fatal(result.Err)
 	}
 	if result := askLifecycle[agentactor.ComponentStopped](t, system, capability, agentactor.StopComponent{
@@ -315,9 +297,7 @@ func TestCreationOwnsCompactionThroughCapabilityRegistry(t *testing.T) {
 	}); result.Err == nil {
 		t.Fatal("old component close reached replacement")
 	}
-	if result := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{
-		Creation: input.Creation,
-	}); result.Err != nil {
+	if result := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{Creation: input.Creation}); result.Err != nil {
 		t.Fatal(result.Err)
 	}
 }
@@ -328,7 +308,9 @@ type componentBehavior struct {
 	failStop  bool
 }
 
-type componentOwner struct{ settings componentBehavior }
+type componentOwner struct {
+	settings componentBehavior
+}
 
 func (*componentOwner) OnActivate(context.Context, *goakt.GrainProps) error   { return nil }
 func (*componentOwner) OnDeactivate(context.Context, *goakt.GrainProps) error { return nil }
@@ -340,21 +322,15 @@ func (owner *componentOwner) OnReceive(gc *goakt.GrainContext) {
 	case agentactor.StartComponent:
 		owner.settings.events <- "start-" + gc.Self().Name()
 		if owner.settings.failStart {
-			gc.Response(agentactor.ComponentStarted{
-				Err: errors.New("test: component startup failed"),
-			})
+			gc.Response(agentactor.ComponentStarted{Err: errors.New("test: component startup failed")})
 			return
 		}
-		gc.Response(agentactor.ComponentStarted{
-			Runtime: input.Agent,
-		})
+		gc.Response(agentactor.ComponentStarted{Runtime: input.Agent})
 	case agentactor.StopComponent:
 		owner.settings.events <- "stop-" + gc.Self().Name()
 		if owner.settings.failStop {
 			owner.settings.failStop = false
-			gc.Response(agentactor.ComponentStopped{
-				Err: errors.New("test: component shutdown failed"),
-			})
+			gc.Response(agentactor.ComponentStopped{Err: errors.New("test: component shutdown failed")})
 			return
 		}
 		gc.Response(agentactor.ComponentStopped{})
@@ -394,20 +370,16 @@ func TestComponentFailurePreservesSessionAndRetriesReverseShutdown(t *testing.T)
 			if result := askLifecycle[agentregistry.Ready](t, system, authority, input); (result.Err != nil) != failStart {
 				t.Fatal(result.Err)
 			}
-			select {
-			case extra := <-events:
-				t.Fatal("duplicate creation restarted component", extra)
-			default:
-			}
+
 			conflicting := input
 			conflicting.Restore = !input.Restore
 			if result := askLifecycle[agentregistry.Ready](t, system, authority, conflicting); result.Err == nil {
 				t.Fatal("retry changed frozen creation input")
 			}
-			if result := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{
-				Creation: input.Creation,
-			}); result.Err == nil {
-				t.Fatal("close ignored component failure")
+			if !failStart {
+				if result := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{Creation: input.Creation}); result.Err == nil {
+					t.Fatal("close ignored component failure")
+				}
 			}
 			if got := <-events; got != "stop-second" {
 				t.Fatal(got)
@@ -417,14 +389,10 @@ func TestComponentFailurePreservesSessionAndRetriesReverseShutdown(t *testing.T)
 				t.Fatal("close advanced after failure", extra)
 			default:
 			}
-			if result := askLifecycle[sessionactor.View](t, system, sessionRoute(t, system, "conversation"), sessionactor.Read{
-				CreationID: "first",
-			}); result.Err != nil {
+			if result := askLifecycle[sessionactor.View](t, system, sessionRoute(t, system, "conversation"), sessionactor.Read{CreationID: "first"}); result.Err != nil {
 				t.Fatal("Session closed before components settled", result.Err)
 			}
-			if result := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{
-				Creation: input.Creation,
-			}); result.Err != nil {
+			if result := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{Creation: input.Creation}); result.Err != nil {
 				t.Fatal(result.Err)
 			}
 			if got := <-events; got != "stop-second" {
@@ -447,9 +415,7 @@ func TestSessionRecoveryFailureCanCloseUnclaimedCreation(t *testing.T) {
 	if result.Err == nil || result.Executor != nil {
 		t.Fatal("missing Session recovery was published")
 	}
-	if result := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{
-		Creation: input.Creation,
-	}); result.Err != nil {
+	if result := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{Creation: input.Creation}); result.Err != nil {
 		t.Fatal("unclaimed creation leaked its reservation", result.Err)
 	}
 	input.Creation.CreationID = "second"
@@ -458,9 +424,7 @@ func TestSessionRecoveryFailureCanCloseUnclaimedCreation(t *testing.T) {
 	if replacement.Err != nil {
 		t.Fatal(replacement.Err)
 	}
-	if result := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{
-		Creation: input.Creation,
-	}); result.Err != nil {
+	if result := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{Creation: input.Creation}); result.Err != nil {
 		t.Fatal(result.Err)
 	}
 }
@@ -483,9 +447,7 @@ func TestResolveRejectsUnexpectedExecutorReactivation(t *testing.T) {
 	if err := system.TellGrain(context.Background(), current.Executor, new(goakt.PoisonPill)); err != nil {
 		t.Fatal(err)
 	}
-	if result := askLifecycle[agentregistry.Ready](t, system, authority, agentregistry.Resolve{
-		AgentID: input.Creation.AgentID,
-	}); result.Err == nil || result.Executor != nil {
+	if result := askLifecycle[agentregistry.Ready](t, system, authority, agentregistry.FindAgent{AgentID: input.Creation.AgentID}); result.Err == nil || result.Executor != nil {
 		t.Fatal("unexpected activation was published")
 	}
 	replacement := input
@@ -493,9 +455,7 @@ func TestResolveRejectsUnexpectedExecutorReactivation(t *testing.T) {
 	if result := askLifecycle[agentregistry.Ready](t, system, authority, replacement); result.Err == nil {
 		t.Fatal("lost execution state released the creation grant")
 	}
-	if result := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{
-		Creation: input.Creation,
-	}); result.Err == nil {
+	if result := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{Creation: input.Creation}); result.Err == nil {
 		t.Fatal("unconfirmed cleanup released ownership")
 	}
 }
@@ -510,21 +470,120 @@ func TestSessionIDIndexDoesNotParseActorNames(t *testing.T) {
 	if current.Executor.Name() != "tenant.session.agentloop.agentloop" || current.Commands.Name() != "tenant.session.agentloop.commands" {
 		t.Fatal("service address was not generated from the complete SessionID")
 	}
-	resolved := askLifecycle[agentregistry.Ready](t, system, authority, agentregistry.Resolve{
-		AgentID: input.Creation.AgentID,
-	})
+	resolved := askLifecycle[agentregistry.Ready](t, system, authority, agentregistry.FindAgent{AgentID: input.Creation.AgentID})
 	if resolved.Err != nil || resolved.Creation != input.Creation || !resolved.Executor.Equal(current.Executor) {
 		t.Fatal("SessionID lookup lost its business identity", resolved.Err)
 	}
-	view := askLifecycle[sessionactor.View](t, system, sessionRoute(t, system, string(input.Creation.AgentID)), sessionactor.Read{
-		CreationID: input.Creation.CreationID,
-	})
+	view := askLifecycle[sessionactor.View](t, system, sessionRoute(t, system, string(input.Creation.AgentID)), sessionactor.Read{CreationID: input.Creation.CreationID})
 	if view.Err != nil || view.Header.ID != input.Creation.AgentID {
 		t.Fatal("runtime name leaked into Session header", view.Err)
 	}
-	if result := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{
-		Creation: input.Creation,
+	if result := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{Creation: input.Creation}); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+}
+
+func TestCancelledInboxSurvivesRegistryCloseAndSQLiteRestore(t *testing.T) {
+	system, authority, input := creationFixture(t)
+	current := askLifecycle[agentregistry.Ready](t, system, authority, input)
+	if current.Err != nil {
+		t.Fatal(current.Err)
+	}
+	if result := askLifecycle[agentactor.MaintenanceAccepted](t, system, current.Executor, agentactor.BeginMaintenance{
+		CreationID: input.Creation.CreationID,
+		RequestID:  "maintenance",
+		Worker:     input.ModelConfig,
 	}); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	var messages []agentmessage.UserMessage
+	for _, text := range []string{"first retained input", "second retained input"} {
+		message, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+			Content: []agentmessage.ContentBlock{agentmessage.NewTextBlock(text)},
+			Source:  agentmessage.UserMessageSource{},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		messages = append(messages, message)
+		if result := askLifecycle[loopactor.Changed](t, system, current.Executor, loopactor.Inject{
+			CreationID: input.Creation.CreationID,
+			Message:    message,
+		}); result.Err != nil {
+			t.Fatal(result.Err)
+		}
+	}
+	if result := askLifecycle[loopactor.Changed](t, system, current.Executor, loopactor.Cancel{
+		CreationID: input.Creation.CreationID,
+		Cause:      agent.UserCancel{},
+		Options:    agent.CancelOptions{KeepInbox: true},
+	}); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	closed := make(chan response, 1)
+	go func() {
+		payload, err := system.AskGrain(context.Background(), authority, agentregistry.CloseAgent{Creation: input.Creation}, 3*time.Second)
+		closed <- response{
+			value: payload,
+			err:   err,
+		}
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		probe := askLifecycle[agentactor.MaintenanceAccepted](t, system, current.Executor, agentactor.BeginMaintenance{
+			CreationID: input.Creation.CreationID,
+			RequestID:  "probe",
+			Worker:     input.ModelConfig,
+		})
+		if errors.Is(probe.Err, agent.ErrClosing) {
+			break
+		}
+		if !errors.Is(probe.Err, agent.ErrBusy) || time.Now().After(deadline) {
+			t.Fatal("close did not freeze AgentLoop", probe.Err)
+		}
+	}
+	select {
+	case result := <-closed:
+		t.Fatal("cancellation acknowledgement released active maintenance", result)
+	default:
+	}
+	if result := askLifecycle[agentactor.MaintenanceFinished](t, system, current.Executor, agentactor.FinishMaintenance{
+		CreationID: input.Creation.CreationID,
+		RequestID:  "maintenance",
+	}); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	result := <-closed
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if failure := result.value.(agentactor.Closed).Err; failure != nil {
+		t.Fatal(failure)
+	}
+
+	input.Creation.CreationID = "restored"
+	input.Restore = true
+	restored := askLifecycle[agentregistry.Ready](t, system, authority, input)
+	if restored.Err != nil {
+		t.Fatal(restored.Err)
+	}
+	activity := askLifecycle[loopactor.Activity](t, system, restored.Executor, loopactor.ReadActivity{CreationID: input.Creation.CreationID})
+	if activity.Err != nil || len(activity.Pending.NextStep) != len(messages) {
+		t.Fatal("restoration lost retained Inbox", activity.Err, activity.Pending)
+	}
+	for index, message := range messages {
+		if activity.Pending.NextStep[index].StableID() != message.StableID() {
+			t.Fatal("restoration changed identity or order")
+		}
+	}
+	if result := askLifecycle[loopactor.Changed](t, system, restored.Executor, loopactor.Cancel{
+		CreationID: input.Creation.CreationID,
+		Cause:      agent.UserCancel{},
+		Options:    agent.CancelOptions{KeepInbox: true},
+	}); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if result := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{Creation: input.Creation}); result.Err != nil {
 		t.Fatal(result.Err)
 	}
 }

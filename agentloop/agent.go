@@ -32,6 +32,9 @@ type ReactLoopAgent struct {
 	toolsVersion uint64
 	lifetime     lifecycle
 	headerLogged bool
+	// preserveInbox records explicit cancellation intent until another input is admitted.
+	// Pending durable input may survive close; active work must still settle.
+	preserveInbox bool
 }
 
 // Restore installs a complete log projection.
@@ -147,7 +150,7 @@ func (subject *ReactLoopAgent) CheckClose(executing bool) error {
 	if err := subject.lifetime.checkRelease(); err != nil {
 		return err
 	}
-	if subject.lifetime.ready() && subject.pending != nil && subject.pending.HasPending() {
+	if subject.lifetime.ready() && !subject.preserveInbox && subject.pending != nil && subject.pending.HasPending() {
 		return ErrPending
 	}
 	return nil

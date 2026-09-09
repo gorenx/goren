@@ -33,3 +33,13 @@ type Claim struct {
 type Claimed struct {
 	Err error
 }
+
+// ClaimTool binds a reserved tool lifetime to one framework activation. CreationID
+// identifies the tool reservation, not the containing Agent's creation. InstanceID
+// changes on Grain reactivation, which must not silently resume a released tool.
+type ClaimTool struct {
+	AgentID    session.SessionID
+	Name       string
+	CreationID string
+	InstanceID string
+}

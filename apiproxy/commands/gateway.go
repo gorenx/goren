@@ -16,8 +16,13 @@ type Executor interface {
 	Execute(context.Context, string, commands.ExecuteOptions) (*commands.Execution, error)
 }
 
-// Resolver applies the ordinary Agent access fence and acquires its current
-// command capability. A refusal must not return an executable capability.
+// Access applies ordinary Agent admission, including durable Session recovery.
+type Access interface {
+	ActivateAgent(context.Context, session.SessionID) *connection.RPCError
+}
+
+// Resolver acquires an admitted Agent's current command capability. It must
+// recheck current ownership because admission is not a lifecycle lease.
 type Resolver interface {
 	ResolveCommands(context.Context, session.SessionID) (Executor, *connection.RPCError)
 }
@@ -25,20 +30,25 @@ type Resolver interface {
 // Gateway maps Remote requests to a current Agent's command capability.
 type Gateway struct {
 	agents Resolver
+	access Access
 }
 
 // NewGateway binds the owner of ordinary Agent access and activation.
-func NewGateway(source Resolver) (*Gateway, error) {
-	if source == nil {
-		return nil, errors.New("apiproxy: Commands resolver is required")
+func NewGateway(source Resolver, admission Access) (*Gateway, error) {
+	if source == nil || admission == nil {
+		return nil, errors.New("apiproxy: Commands resolver and Agent access are required")
 	}
 	return &Gateway{
 		agents: source,
+		access: admission,
 	}, nil
 }
 
 // List queries the effective command directory after Agent access checks.
 func (owner *Gateway) List(ctx context.Context, call rpc.Request[ListRequest]) (rpc.Outcome[[]commands.Descriptor], error) {
+	if refused := owner.access.ActivateAgent(ctx, call.Payload.AgentID); refused != nil {
+		return rpc.Fail[[]commands.Descriptor](*refused), nil
+	}
 	endpoint, refused := owner.agents.ResolveCommands(ctx, call.Payload.AgentID)
 	if refused != nil {
 		return rpc.Fail[[]commands.Descriptor](*refused), nil
@@ -55,6 +65,9 @@ func (owner *Gateway) List(ctx context.Context, call rpc.Request[ListRequest]) (
 
 // Execute delegates command execution without scheduling a model turn.
 func (owner *Gateway) Execute(ctx context.Context, call rpc.Request[ExecuteRequest]) (rpc.Outcome[*commands.Execution], error) {
+	if refused := owner.access.ActivateAgent(ctx, call.Payload.AgentID); refused != nil {
+		return rpc.Fail[*commands.Execution](*refused), nil
+	}
 	endpoint, refused := owner.agents.ResolveCommands(ctx, call.Payload.AgentID)
 	if refused != nil {
 		return rpc.Fail[*commands.Execution](*refused), nil

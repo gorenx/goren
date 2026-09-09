@@ -4,21 +4,23 @@ import (
 	"context"
 	"errors"
 
+	"github.com/google/uuid"
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	toolregistry "github.com/gorenx/goren/tools/registry"
 	catalogactor "github.com/gorenx/goren/tools/registry/actor"
 	"github.com/gorenx/goren/tools/tool"
 	goakt "github.com/tochemey/goakt/v4/actor"
-	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
 // Grain orchestrates preparation, catalog registration and resource cleanup.
 // The lifecycle owner must close business resources before deactivating it.
 type Grain struct {
+	instanceID string
 	creationID string
 	agentID    session.SessionID
 	registry   *goakt.GrainIdentity
+	authority  *goakt.GrainIdentity
 	business   *tool.Tool
 	active     *operation
 	// calls retains delivery and cancellation only until each body has returned.
@@ -32,13 +34,22 @@ type operation struct {
 	provision *Provision
 }
 
+type publicationChecked struct {
+	operation *operation
+	outcome   catalogactor.Outcome
+	err       error
+}
+
 type completed struct {
 	operation *operation
 	err       error
 }
 
 // OnActivate waits for explicit lifecycle initialization.
-func (*Grain) OnActivate(context.Context, *goakt.GrainProps) error { return nil }
+func (owner *Grain) OnActivate(context.Context, *goakt.GrainProps) error {
+	owner.instanceID = uuid.NewString()
+	return nil
+}
 
 // OnDeactivate cancels pending construction but does not certify resource closure.
 func (owner *Grain) OnDeactivate(context.Context, *goakt.GrainProps) error {
@@ -66,9 +77,7 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 	}
 	switch input := gc.Message().(type) {
 	case Initialize:
-		gc.Response(Completion{
-			Err: owner.initialize(gc, input),
-		})
+		owner.initialize(gc, input)
 	case Provision:
 		if !owner.admit(gc, input.CreationID) {
 			return
@@ -84,13 +93,33 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 			return
 		}
 		current.provision = &input
-		if _, err := owner.business.Schema(input.Revision); err == nil {
-			owner.register(gc, current)
+		owner.checkPublication(gc, current)
+	case publicationChecked:
+		gc.NoErr()
+		if owner.active != input.operation {
+			return
+		}
+		if input.err != nil {
+			owner.finish(input.operation, input.err)
+			return
+		}
+		if !input.outcome.Found || input.outcome.Publication.AgentID != owner.agentID {
+			owner.finish(input.operation, errors.New("tools: catalog update does not belong to this Agent"))
+			return
+		}
+		request := input.operation.provision
+		_, err := owner.business.Schema(request.Revision)
+		if err == nil {
+			owner.registerDefinition(gc, input.operation)
+			return
+		}
+		if input.outcome.Publication.Published {
+			owner.finish(input.operation, errors.New("tools: published update cannot construct a new candidate"))
 			return
 		}
 		business := owner.business
-		owner.schedule(gc, current, input.Context, func(ctx context.Context) error {
-			return business.Provision(ctx, input.Revision, input.Provider)
+		owner.schedule(gc, input.operation, request.Context, func(ctx context.Context) error {
+			return business.Provision(ctx, request.Revision, request.Provider)
 		})
 	case Commit:
 		if owner.admit(gc, input.CreationID) {
@@ -123,34 +152,13 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 			return
 		}
 		if input.err == nil && input.operation.provision != nil {
-			owner.register(gc, input.operation)
+			owner.registerDefinition(gc, input.operation)
 			return
 		}
 		owner.finish(input.operation, input.err)
 	default:
 		gc.Unhandled()
 	}
-}
-
-func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) error {
-	if owner.business != nil {
-		return errors.New("tools: Grain is already initialized")
-	}
-	if input.CreationID == "" || input.AgentID == "" || input.Registry == nil {
-		return errors.New("tools: creation, Agent and catalog identities are required")
-	}
-	business, err := tool.New(input.Name)
-	if err != nil {
-		return err
-	}
-	if err := gc.EnableReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))); err != nil {
-		return err
-	}
-	owner.business = business
-	owner.creationID = input.CreationID
-	owner.agentID = input.AgentID
-	owner.registry = input.Registry
-	return nil
 }
 
 func (owner *Grain) admit(gc *goakt.GrainContext, creationID string) bool {
@@ -198,7 +206,7 @@ func (owner *Grain) schedule(
 	}
 	work, cancel := context.WithCancel(ctx)
 	current.cancel = cancel
-	if err := gc.PipeToSelf(func() (result any, failure error) {
+	err := gc.PipeToSelf(func() (result any, failure error) {
 		defer func() {
 			if recover() != nil {
 				result = completed{
@@ -211,28 +219,35 @@ func (owner *Grain) schedule(
 			operation: current,
 			err:       run(work),
 		}, nil
-	}); err != nil {
+	})
+	if err != nil {
 		owner.finish(current, err)
 	}
 }
 
-func (owner *Grain) register(gc *goakt.GrainContext, current *operation) {
-	gc.RequestGrain(owner.registry, catalogactor.Lookup{
-		ID: toolregistry.UpdateID(current.provision.Revision.ID),
+func (owner *Grain) checkPublication(gc *goakt.GrainContext, current *operation) {
+	received := make(chan publicationChecked, 1)
+	err := gc.PipeToSelf(func() (any, error) { return <-received, nil })
+	if err != nil {
+		owner.finish(current, err)
+		return
+	}
+	gc.RequestGrain(owner.registry, catalogactor.ReadPublication{
+		ID: toolregistry.UpdateID(current.provision.Revision),
 	}).Then(func(payload any, failure error) {
-		if owner.active != current {
-			return
+		result := publicationChecked{
+			operation: current,
+			err:       failure,
 		}
-		if failure != nil {
-			owner.finish(current, failure)
-			return
+		if failure == nil {
+			outcome, valid := payload.(catalogactor.Outcome)
+			if !valid {
+				result.err = errors.New("tools: invalid publication reply")
+			} else {
+				result.outcome = outcome
+			}
 		}
-		outcome, ok := payload.(catalogactor.Outcome)
-		if !ok || !outcome.Found || outcome.Publication.AgentID != owner.agentID {
-			owner.finish(current, errors.New("tools: catalog update does not belong to this Agent"))
-			return
-		}
-		owner.registerDefinition(gc, current)
+		received <- result
 	})
 }
 
@@ -247,26 +262,31 @@ func (owner *Grain) registerDefinition(gc *goakt.GrainContext, current *operatio
 		owner.finish(current, err)
 		return
 	}
-	gc.RequestGrain(owner.registry, catalogactor.Register{
-		ID: toolregistry.UpdateID(input.Revision.ID),
-		Candidate: toolregistry.Candidate{
-			Schema:  schema,
-			Visible: input.Visible,
+	gc.RequestGrain(
+		owner.registry,
+		catalogactor.RegisterDefinition{
+			ID: toolregistry.UpdateID(string(input.Revision)),
+			Candidate: toolregistry.Candidate{
+				Schema:  schema,
+				Visible: input.Visible,
+			},
 		},
-	}).Then(func(payload any, failure error) {
-		if owner.active != current {
-			return
-		}
-		if failure == nil {
-			response, ok := payload.(catalogactor.Completion)
-			if !ok {
-				failure = errors.New("tools: invalid catalog registration reply")
-			} else {
-				failure = response.Err
+	).Then(
+		func(payload any, failure error) {
+			if owner.active != current {
+				return
 			}
-		}
-		owner.finish(current, failure)
-	})
+			if failure == nil {
+				response, ok := payload.(catalogactor.Completion)
+				if !ok {
+					failure = errors.New("tools: invalid catalog registration reply")
+				} else {
+					failure = response.Err
+				}
+			}
+			owner.finish(current, failure)
+		},
+	)
 }
 
 func (owner *Grain) finish(current *operation, err error) {

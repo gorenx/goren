@@ -9,6 +9,7 @@ import (
 	loopactor "github.com/gorenx/goren/agentloop/actor"
 	"github.com/gorenx/goren/session"
 	goakt "github.com/tochemey/goakt/v4/actor"
+	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
 // Name is the shared Agent Registry Grain name.
@@ -27,10 +28,18 @@ type reservation struct {
 	// It protects execution ownership without duplicating the framework address map.
 	instanceID string
 	activation *activation
+	services   *installation
+	releases   map[agent.Resource]releaser
 	executor   *goakt.GrainIdentity
 	closure    *closure
-	// closed retains the last successful close until a fresh reservation replaces it.
-	closed bool
+	// tools maps a tool's canonical name (CreateTool.Name, e.g. "ask_user_question")
+	// to its lifecycle record within this Agent creation. The value retains the
+	// Grain identity, tool creation/activation IDs, and pending creation or cleanup.
+	// For example, creations["session-1"].tools["ask_user_question"] and
+	// creations["session-2"].tools["ask_user_question"] own separate instances.
+	// The key is neither the SessionID nor the generated Grain name. An entry is
+	// removed only after successful removal; failed cleanup retains it for retry.
+	tools map[string]*toolLifecycle
 }
 
 // Grain owns Agent identity, admission and descendant close coordination.
@@ -50,14 +59,18 @@ func (*Grain) OnActivate(context.Context, *goakt.GrainProps) error { return nil 
 // OnDeactivate discards admission state, never asserting resource shutdown.
 func (owner *Grain) OnDeactivate(context.Context, *goakt.GrainProps) error {
 	for _, entry := range owner.creations {
+		for _, instance := range entry.tools {
+			if instance.active != nil {
+				instance.active.cancel()
+				instance.active.respond(instance, errors.New("agent registry: stopped during tool lifecycle operation"))
+			}
+		}
 		if entry.activation != nil {
 			if entry.activation.cancel != nil {
 				entry.activation.cancel()
 			}
 			for _, reply := range entry.activation.replies {
-				reply.Response(Ready{
-					Err: errors.New("agent registry: stopped during creation"),
-				})
+				reply.Response(Ready{Err: errors.New("agent registry: stopped during creation")})
 			}
 		}
 		if entry.closure != nil {
@@ -69,34 +82,32 @@ func (owner *Grain) OnDeactivate(context.Context, *goakt.GrainProps) error {
 	return nil
 }
 
-// OnReceive serializes identity decisions and resumes asynchronous close steps.
+// OnReceive dispatches messages to their responsibility owners in this mailbox.
 func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
-	var err error
+	result, ok := gc.Message().(clientMessage)
+	if ok {
+		result.deliver(gc)
+		return
+	}
+	if owner.receiveTools(gc) ||
+		owner.receiveLifecycle(gc) ||
+		owner.receiveIdentity(gc) ||
+		owner.receiveAdmission(gc) {
+		return
+	}
+	gc.Unhandled()
+}
+
+// receiveIdentity registers lifetimes and verifies their authorized activation.
+// ReserveAgent must succeed before Claim; neither reply certifies startup readiness.
+func (owner *Grain) receiveIdentity(gc *goakt.GrainContext) bool {
 	switch input := gc.Message().(type) {
-	case CreateAgent:
-		owner.createAgent(gc, input)
-		return
-	case creationAdvanced:
-		owner.advanceCreation(gc, input)
-		return
-	case Resolve:
-		owner.resolve(gc, input)
-		return
-	case CloseAgent:
-		owner.closeAgent(gc, input)
-		return
-	case closeAdvanced:
-		owner.advanceClose(gc, input)
-		return
-	case Reserve:
-		err = owner.reserve(input)
+	case ReserveAgent:
+		gc.Response(Completion{Err: owner.reserveAgent(input)})
 	case agentactor.Claim:
-		gc.Response(agentactor.Claimed{
-			Err: owner.claim(input),
-		})
-		return
+		gc.Response(agentactor.Claimed{Err: owner.claim(input)})
 	case Inspect:
-		err = owner.check(input.Creation)
+		err := owner.check(input.Creation)
 		if err == nil {
 			err = owner.directory.CheckAdmission(input.Creation.AgentID)
 		}
@@ -108,22 +119,154 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 			Registration: entry,
 			Err:          err,
 		})
-		return
+	default:
+		return false
+	}
+	return true
+}
+
+func (owner *Grain) check(identity Creation) error {
+	entry, found := owner.creations[identity.AgentID]
+	if identity.CreationID == "" || !found ||
+		owner.directory.IsClosed(identity.AgentID) ||
+		entry.creationID != identity.CreationID {
+		return ErrCreation
+	}
+	return nil
+}
+
+func (owner *Grain) reserveAgent(input ReserveAgent) error {
+	if input.Creation.AgentID == "" || input.Creation.CreationID == "" {
+		return ErrCreation
+	}
+	previous, found := owner.creations[input.Creation.AgentID]
+	if found && owner.directory.IsClosed(input.Creation.AgentID) && previous.creationID == input.Creation.CreationID {
+		return ErrCreation
+	}
+	var parentID *session.SessionID
+	var parentCreationID string
+	if input.Parent != nil {
+		err := owner.check(*input.Parent)
+		if err != nil {
+			return err
+		}
+		err = owner.directory.CheckAdmission(input.Parent.AgentID)
+		if err != nil {
+			return err
+		}
+		identifier := input.Parent.AgentID
+		parentID = &identifier
+		parentCreationID = input.Parent.CreationID
+	}
+	existing, found := owner.creations[input.Creation.AgentID]
+	if found && !owner.directory.IsClosed(input.Creation.AgentID) {
+		if existing.creationID != input.Creation.CreationID || existing.parentCreationID != parentCreationID {
+			return ErrCreation
+		}
+		registered, _ := owner.directory.Get(input.Creation.AgentID)
+		if (registered.ParentID == nil) != (parentID == nil) || parentID != nil && *registered.ParentID != *parentID {
+			return ErrCreation
+		}
+		return owner.directory.CheckAdmission(input.Creation.AgentID)
+	}
+	err := owner.directory.Register(agent.Registration{
+		ID:       input.Creation.AgentID,
+		ParentID: parentID,
+	})
+	if err != nil {
+		return err
+	}
+	if owner.creations == nil {
+		owner.creations = make(map[session.SessionID]reservation)
+	}
+	owner.creations[input.Creation.AgentID] = reservation{
+		creationID:       input.Creation.CreationID,
+		releases:         make(map[agent.Resource]releaser),
+		parentCreationID: parentCreationID,
+	}
+	if input.Parent != nil {
+		parent := owner.creations[input.Parent.AgentID]
+		parent.releases[agent.Resource{
+			Kind: agent.Child,
+			Name: string(input.Creation.AgentID),
+		}] = &childClient{creation: input.Creation}
+	}
+
+	return nil
+}
+
+// claim validates the current reservation and close admission before binding
+// its activation. All checks and the binding run in one Registry mailbox turn,
+// so a rejected claim leaves the reservation unchanged.
+func (owner *Grain) claim(input agentactor.Claim) error {
+	err := owner.check(Creation{
+		AgentID:    input.AgentID,
+		CreationID: input.CreationID,
+	})
+	if err != nil {
+		return err
+	}
+	err = owner.directory.CheckAdmission(input.AgentID)
+	if err != nil {
+		return err
+	}
+	current := owner.creations[input.AgentID]
+	if input.InstanceID == "" || input.Executor == nil || input.Executor.Name() != loopactor.RuntimeName(string(input.AgentID)) || current.instanceID != "" && current.instanceID != input.InstanceID || current.executor != nil && !current.executor.Equal(input.Executor) {
+		return ErrInstance
+	}
+	for _, kind := range []agent.ResourceKind{agent.Work, agent.Execution, agent.Activation} {
+		err := owner.directory.TrackResource(input.AgentID, agent.Resource{Kind: kind})
+		if err != nil {
+			return err
+		}
+	}
+	if current.services == nil {
+		installExecution(current.releases, &agentClient{
+			creation: Creation{
+				AgentID:    input.AgentID,
+				CreationID: input.CreationID,
+			},
+			identity: input.Executor,
+		})
+	}
+	current.instanceID = input.InstanceID
+	current.executor = input.Executor
+	owner.creations[input.AgentID] = current
+	return nil
+}
+
+// receiveAdmission checks or freezes admission without asserting resource release.
+// CloseAgent freezes the subtree before starting asynchronous shutdown steps.
+func (owner *Grain) receiveAdmission(gc *goakt.GrainContext) bool {
+	switch input := gc.Message().(type) {
+	case StopAdmission:
+		owner.directory.StopAdmission()
+		roots := make([]Creation, 0)
+		for _, entry := range owner.directory.List() {
+			if entry.ParentID == nil {
+				roots = append(roots, Creation{
+					AgentID:    entry.ID,
+					CreationID: owner.creations[entry.ID].creationID,
+				})
+			}
+		}
+		gc.Response(Roots{
+			Creations: roots,
+		})
 	case CheckAdmission:
-		err = owner.check(input.Creation)
+		err := owner.check(input.Creation)
 		if err == nil {
 			err = owner.directory.CheckAdmission(input.Creation.AgentID)
 		}
+		gc.Response(Completion{
+			Err: err,
+		})
 	case BeginClose:
 		gc.Response(owner.beginClose(input.Creation))
-		return
 	default:
-		gc.Unhandled()
-		return
+		return false
 	}
-	gc.Response(Completion{
-		Err: err,
-	})
+	return true
 }
 
 // beginClose freezes admission before reading child creations in the same
@@ -152,79 +295,35 @@ func (owner *Grain) beginClose(identity Creation) CloseAccepted {
 	}
 }
 
-func (owner *Grain) check(identity Creation) error {
-	entry, found := owner.creations[identity.AgentID]
-	if identity.CreationID == "" || !found || entry.closed || entry.creationID != identity.CreationID {
-		return ErrCreation
+// receiveLifecycle starts or resumes Agent startup and shutdown, or finds a ready
+// Agent. Results resume the existing operation; they never create a second one.
+func (owner *Grain) receiveLifecycle(gc *goakt.GrainContext) bool {
+	switch input := gc.Message().(type) {
+	case CreateAgent:
+		owner.createAgent(gc, input)
+	case startupResult:
+		owner.handleStartupResult(gc, input)
+	case FindAgent:
+		owner.findAgent(gc, input)
+	case CloseAgent:
+		owner.closeAgent(gc, input)
+	case shutdownResult:
+		owner.handleShutdownResult(gc, input)
+	default:
+		return false
 	}
-	return nil
+	return true
 }
 
-func (owner *Grain) reserve(input Reserve) error {
-	if input.Creation.AgentID == "" || input.Creation.CreationID == "" {
-		return ErrCreation
+// deferLifecycle shares the framework setup for asynchronous lifecycle replies.
+func deferLifecycle(gc *goakt.GrainContext) (*goakt.GrainReply, error) {
+	err := gc.EnableReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll)))
+	if err != nil {
+		return nil, err
 	}
-	if previous, found := owner.creations[input.Creation.AgentID]; found && previous.closed && previous.creationID == input.Creation.CreationID {
-		return ErrCreation
+	reply := gc.DeferResponse()
+	if reply == nil {
+		return nil, errors.New("agent registry: lifecycle operation requires a request")
 	}
-	var parentID *session.SessionID
-	var parentCreationID string
-	if input.Parent != nil {
-		if err := owner.check(*input.Parent); err != nil {
-			return err
-		}
-		if err := owner.directory.CheckAdmission(input.Parent.AgentID); err != nil {
-			return err
-		}
-		identifier := input.Parent.AgentID
-		parentID = &identifier
-		parentCreationID = input.Parent.CreationID
-	}
-	if existing, found := owner.creations[input.Creation.AgentID]; found && !existing.closed {
-		if existing.creationID != input.Creation.CreationID || existing.parentCreationID != parentCreationID {
-			return ErrCreation
-		}
-		registered, _ := owner.directory.Get(input.Creation.AgentID)
-		if (registered.ParentID == nil) != (parentID == nil) || parentID != nil && *registered.ParentID != *parentID {
-			return ErrCreation
-		}
-		return owner.directory.CheckAdmission(input.Creation.AgentID)
-	}
-	if err := owner.directory.Register(agent.Registration{
-		ID:       input.Creation.AgentID,
-		ParentID: parentID,
-	}); err != nil {
-		return err
-	}
-	if owner.creations == nil {
-		owner.creations = make(map[session.SessionID]reservation)
-	}
-	owner.creations[input.Creation.AgentID] = reservation{
-		creationID:       input.Creation.CreationID,
-		parentCreationID: parentCreationID,
-	}
-	return nil
-}
-
-// claim validates the current reservation and close admission before binding
-// its activation. All checks and the binding run in one Registry mailbox turn,
-// so a rejected claim leaves the reservation unchanged.
-func (owner *Grain) claim(input agentactor.Claim) error {
-	if err := owner.check(Creation{
-		AgentID:    input.AgentID,
-		CreationID: input.CreationID,
-	}); err != nil {
-		return err
-	}
-	if err := owner.directory.CheckAdmission(input.AgentID); err != nil {
-		return err
-	}
-	current := owner.creations[input.AgentID]
-	if input.InstanceID == "" || input.Executor == nil || input.Executor.Name() != loopactor.RuntimeName(string(input.AgentID)) || current.instanceID != "" && current.instanceID != input.InstanceID || current.executor != nil && !current.executor.Equal(input.Executor) {
-		return ErrInstance
-	}
-	current.instanceID = input.InstanceID
-	current.executor = input.Executor
-	owner.creations[input.AgentID] = current
-	return nil
+	return reply, nil
 }

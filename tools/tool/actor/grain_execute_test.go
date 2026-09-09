@@ -34,28 +34,39 @@ func (service *waitingQuestions) Ask(ctx context.Context, _ userquestions.Reques
 func installTool(t *testing.T, source tool.Provider) (goakt.ActorSystem, *goakt.GrainIdentity) {
 	t.Helper()
 	system, directory, target := startTool(t)
-	if reply := ask[catalogactor.Completion](t, system, directory, catalogactor.Begin{
-		Update: toolregistry.Update{
-			ID:      "initial",
-			AgentID: "conversation",
-			Names:   []string{toolaskuser.Name},
-		},
+	provisionTool(t, system, directory, target, source)
+	return system, target
+}
+
+func provisionTool(t *testing.T, system goakt.ActorSystem, directory, target *goakt.GrainIdentity, source tool.Provider) {
+	t.Helper()
+	if reply := ask[catalogactor.Completion](t, system, directory, catalogactor.InitializeDefaults{
+		Tools: []toolregistry.Tool{{
+			Name:     toolaskuser.Name,
+			Provider: source,
+			Visible:  true,
+		}},
 	}); reply.Err != nil {
 		t.Fatal(reply.Err)
 	}
-	revision := tool.Revision{
+	configured := ask[catalogactor.Configuration](t, system, directory, catalogactor.RegisterConfiguration{
 		ID:      "initial",
-		Version: 1,
+		AgentID: "conversation",
+	})
+	if configured.Err != nil || !configured.Found || len(configured.Value.Tools) != 1 {
+		t.Fatalf("tool configuration = %#v", configured)
 	}
+	selected := configured.Value.Tools[0]
+	revision := tool.Revision(string(configured.Value.Update.ID))
 	if reply := ask[toolactor.Completion](t, system, target, toolactor.Provision{
 		CreationID: "creation",
 		Revision:   revision,
-		Provider:   source,
-		Visible:    true,
+		Provider:   selected.Provider,
+		Visible:    selected.Visible,
 	}); reply.Err != nil {
 		t.Fatal(reply.Err)
 	}
-	if reply := ask[catalogactor.Catalog](t, system, directory, catalogactor.Publish{
+	if reply := ask[catalogactor.Catalog](t, system, directory, catalogactor.PublishDefinitions{
 		ID: "initial",
 	}); reply.Err != nil {
 		t.Fatal(reply.Err)
@@ -66,13 +77,12 @@ func installTool(t *testing.T, source tool.Provider) (goakt.ActorSystem, *goakt.
 	}); reply.Err != nil {
 		t.Fatal(reply.Err)
 	}
-	return system, target
 }
 
 func invocation() toolactor.Execute {
 	return toolactor.Execute{
 		CreationID: "creation",
-		Version:    1,
+		Revision:   "initial",
 		Invocation: tools.Invocation{
 			CallID:    "call",
 			SessionID: "conversation",
@@ -163,7 +173,7 @@ func TestCancelWaitsForBodyExitBeforeAllowingResourceClose(t *testing.T) {
 	}
 }
 
-func TestExecutionRejectsWrongIdentityVersionAndClosedTool(t *testing.T) {
+func TestExecutionRejectsWrongIdentityRevisionAndClosedTool(t *testing.T) {
 	system, target := installTool(t, &provider{})
 	for _, test := range []struct {
 		name   string
@@ -188,9 +198,9 @@ func TestExecutionRejectsWrongIdentityVersionAndClosedTool(t *testing.T) {
 			},
 		},
 		{
-			name: "version",
+			name: "implementation",
 			change: func(input *toolactor.Execute) {
-				input.Version = 2
+				input.Revision = "different-update"
 			},
 		},
 	} {

@@ -38,6 +38,53 @@ func askPolicy(reason string) any {
 	}
 }
 
+func TestPolicyExecutionViewCannotDispatchPreparedCall(t *testing.T) {
+	var captured tools.ToolExecution
+	observer := &policyFixture[tools.PreExecuteRequest, tools.PreExecuteOutcome]{
+		name: "capture-execution",
+		middleware: policyFunc[tools.PreExecuteRequest, tools.PreExecuteOutcome](func(
+			ctx context.Context,
+			input tools.PreExecuteRequest,
+			downstream action[tools.PreExecuteRequest, tools.PreExecuteOutcome],
+		) (tools.PreExecuteOutcome, error) {
+			captured = input.Execution()
+			return downstream.Execute(ctx, input)
+		}),
+	}
+	state := newToolsFixture(t, observer)
+	bodyCalls := 0
+	if _, err := state.service.AddTool(context.Background(), objectTool("read", "", executorStub(func(arguments json.RawMessage, _ tools.ToolRunContext) (json.RawMessage, error) {
+		bodyCalls++
+		return arguments, nil
+	}))); err != nil {
+		t.Fatal(err)
+	}
+	scheduler := state.service.Scheduler()
+	prepared, err := scheduler.Prepare(context.Background(), tools.ToolExecutionInput{
+		SessionID: "session",
+		CallID:    "read-1",
+		Name:      "read",
+		Arguments: json.RawMessage(`{}`),
+	})
+	if err != nil || prepared.Stage != tools.ScheduledDispatch {
+		t.Fatalf("preparation = %#v, %v", prepared, err)
+	}
+	if captured.CallID != prepared.Execution.CallID || captured.Name != "read" {
+		t.Fatalf("execution view lost call identity: %#v", captured)
+	}
+	if _, err := scheduler.Dispatch(captured); err == nil || bodyCalls != 0 {
+		t.Fatalf("policy view dispatched tool: calls = %d, err = %v", bodyCalls, err)
+	}
+	dispatched, err := scheduler.Dispatch(prepared.Execution)
+	if err != nil || bodyCalls != 1 {
+		t.Fatalf("original handle dispatch: calls = %d, err = %v", bodyCalls, err)
+	}
+	final, err := scheduler.Finalize(prepared.Execution, dispatched.Result)
+	if err != nil || final.Failed() {
+		t.Fatalf("original handle finalization = %#v, %v", final, err)
+	}
+}
+
 func TestAskDecisionWaitsForAuditedOutcomeBeforeDispatch(t *testing.T) {
 	state := newToolsFixture(t, askPolicy("needs permission"))
 	bodyCalls := 0

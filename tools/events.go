@@ -2,8 +2,6 @@ package tools
 
 import (
 	"context"
-
-	"github.com/gorenx/goren/session"
 )
 
 // ResultObserver observes final Tool results inside one plain Tool ToolLayer.
@@ -96,11 +94,3 @@ func (RegistryChanged) EventName() string {
 
 // DefinitionsTopic carries complete, committed tool definition views.
 const DefinitionsTopic = "tools/definitions"
-
-// DefinitionsChanged is published only after a complete Agent catalog is committed.
-// Publishers must not mutate the value after handing it to the actor framework.
-type DefinitionsChanged struct {
-	AgentID     session.SessionID
-	Version     uint64
-	Definitions Definitions
-}

@@ -68,6 +68,7 @@ func (subject *ReactLoopAgent) ConfirmAdmission(proposal agent.Admission, write 
 	if err != nil {
 		return agent.InboxChanges{}, err
 	}
+	subject.preserveInbox = false
 	if proposal.Wake {
 		if subject.running == nil {
 			subject.running = &activity{}
@@ -106,6 +107,7 @@ func (subject *ReactLoopAgent) Cancel(intent agent.CancelCause, options agent.Ca
 			return agent.InboxEdit{}, err
 		}
 	}
+	subject.preserveInbox = options.KeepInbox
 	return edit, nil
 }
 

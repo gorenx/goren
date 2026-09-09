@@ -1,6 +1,10 @@
 package registry
 
 import (
+	"errors"
+	"reflect"
+	"regexp"
+	"slices"
 	"time"
 
 	"github.com/gorenx/goren/agent"
@@ -34,9 +38,9 @@ type Component struct {
 	Runtime *goakt.GrainIdentity
 }
 
-// Resolve verifies the existing activation before returning a ready lifetime.
+// FindAgent verifies the existing activation before returning a ready lifetime.
 // Framework reactivation does not authorize a replacement business instance.
-type Resolve struct {
+type FindAgent struct {
 	AgentID session.SessionID
 	// WaitReady shares the final result of an existing initialization. It does
 	// not create a missing lifetime or authorize a replacement activation.
@@ -52,4 +56,79 @@ type Ready struct {
 	Commands     *goakt.GrainIdentity
 	Components   []Component
 	Err          error
+}
+
+var sessionName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
+
+// validate checks construction input; parent admission remains a Registry rule.
+func (input CreateAgent) validate() error {
+	if input.Storage == nil ||
+		input.SessionRegistry == nil ||
+		input.ModelConfig == nil ||
+		input.PromptRegistry == nil ||
+		input.ToolsRegistry == nil ||
+		input.Timeout <= 0 {
+		return errors.New("agent registry: complete creation dependencies are required")
+	}
+	if !sessionName.MatchString(string(input.Creation.AgentID)) ||
+		len(sessionactor.RuntimeName(string(input.Creation.AgentID))) > 255 {
+		return errors.New("agent registry: SessionID cannot form a valid runtime address")
+	}
+	seen := make(map[string]struct{}, len(input.Components))
+	for _, route := range input.Components {
+		if route == nil {
+			return errors.New("agent registry: nil component owner")
+		}
+		err := route.Validate()
+		if err != nil {
+			return err
+		}
+		_, found := seen[route.String()]
+		if found {
+			return errors.New("agent registry: duplicate component owner")
+		}
+		seen[route.String()] = struct{}{}
+	}
+	return nil
+}
+
+func (input CreateAgent) clone() CreateAgent {
+	input.Options = input.Options.Clone()
+	if input.Parent != nil {
+		parent := *input.Parent
+		input.Parent = &parent
+	}
+	input.Components = slices.Clone(input.Components)
+	return input
+}
+
+// matches prevents a repeated creation request from changing frozen configuration.
+func (original CreateAgent) matches(input CreateAgent) bool {
+	if original.Creation != input.Creation ||
+		!reflect.DeepEqual(original.Parent, input.Parent) ||
+		original.Restore != input.Restore ||
+		!reflect.DeepEqual(original.Options, input.Options) ||
+		!reflect.DeepEqual(original.Storage, input.Storage) ||
+		original.Timeout != input.Timeout ||
+		!sameRoute(original.SessionRegistry, input.SessionRegistry) ||
+		!sameRoute(original.ModelConfig, input.ModelConfig) ||
+		!sameRoute(original.PromptRegistry, input.PromptRegistry) ||
+		!sameRoute(original.ToolsRegistry, input.ToolsRegistry) ||
+		!sameRoute(original.Commands, input.Commands) ||
+		len(original.Components) != len(input.Components) {
+		return false
+	}
+	for index, route := range original.Components {
+		if !sameRoute(route, input.Components[index]) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameRoute(left, right *goakt.GrainIdentity) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return left.Equal(right)
 }

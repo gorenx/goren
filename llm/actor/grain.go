@@ -31,15 +31,7 @@ func (*Grain) OnDeactivate(context.Context, *goakt.GrainProps) error { return ni
 func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 	switch input := gc.Message().(type) {
 	case InitializeAgent:
-		if owner.catalog == nil {
-			gc.Response(Completion{
-				Err: ErrModelsUnavailable,
-			})
-			return
-		}
-		gc.Response(Completion{
-			Err: owner.catalog.Restore(&owner.settings, input.AgentID, input.Events),
-		})
+		owner.initializeAgent(gc, input)
 	case InitializeModels:
 		if owner.catalog != nil || input.Catalog == nil {
 			gc.Response(Completion{

@@ -37,10 +37,7 @@ func TestProvisionCleansPartialConstructionAndRetainsFailedCleanup(t *testing.T)
 				input: implementation(owned),
 				err:   opening,
 			}
-			target := tool.Revision{
-				ID:      "failed",
-				Version: 1,
-			}
+			target := tool.Revision("failed")
 			failure := owner.Provision(context.Background(), target, source)
 			if !errors.Is(failure, opening) || errors.Is(failure, cleanup) != failCleanup {
 				t.Fatalf("construction or cleanup error lost: %v", failure)
@@ -78,10 +75,7 @@ func TestProvisionCancellationCleansResourcesReturnedByProvider(t *testing.T) {
 		input: implementation(owned),
 		stop:  cancel,
 	}
-	target := tool.Revision{
-		ID:      "cancelled",
-		Version: 1,
-	}
+	target := tool.Revision("cancelled")
 	if err := owner.Provision(ctx, target, source); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancellation lost: %v", err)
 	}
@@ -100,10 +94,7 @@ func TestProvisionRejectsInvalidDefinitionAndDuplicateBeforeOpening(t *testing.T
 		input: implementation(owned),
 	}
 	source.input.Definition.Name = "different"
-	target := tool.Revision{
-		ID:      "update",
-		Version: 1,
-	}
+	target := tool.Revision("update")
 	if err := owner.Provision(context.Background(), target, source); err == nil || owned.calls != 1 {
 		t.Fatalf("invalid definition resource was not cleaned: %v", err)
 	}

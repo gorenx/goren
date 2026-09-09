@@ -26,7 +26,7 @@ func (bodyDispatcher *dispatcher) dispatch(
 	dispatchOutcome, err := state.pipeline.ResolveExecute(
 		requestContext,
 		ExecuteRequest{
-			toolCall: toolCall,
+			toolCall: cloneExecution(toolCall),
 		},
 		executeTerminal{
 			dispatcher:    bodyDispatcher,

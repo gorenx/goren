@@ -3,6 +3,7 @@ package toolactor
 
 import (
 	"context"
+	"encoding/hex"
 
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
@@ -11,12 +12,20 @@ import (
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
-// Initialize binds a tool to one Agent creation and the existing catalog owner.
+// Initialize binds a tool reservation to the catalog and lifecycle owners.
+// CreationID is the tool's lifetime, not the containing Agent's lifetime.
 type Initialize struct {
 	CreationID string
 	AgentID    session.SessionID
 	Name       string
 	Registry   *goakt.GrainIdentity
+	Authority  *goakt.GrainIdentity
+}
+
+// RuntimeName encodes the tool segment so logical names containing dots cannot
+// collide with another Session's service address.
+func RuntimeName(agentID string, toolName string) string {
+	return agentID + ".tool." + hex.EncodeToString([]byte(toolName))
 }
 
 // Provision constructs a candidate and waits for its catalog registration.
@@ -64,7 +73,7 @@ type Completion struct {
 // Its reply is tools.BodyResult, not a finalized ToolExecutionResult.
 type Execute struct {
 	CreationID string
-	Version    uint64
+	Revision   tool.Revision
 	Invocation tools.Invocation
 	Context    context.Context
 }

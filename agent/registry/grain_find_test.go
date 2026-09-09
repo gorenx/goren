@@ -26,7 +26,7 @@ type resolutionProbe struct {
 func (*resolutionProbe) PreStart(*goakt.Context) error { return nil }
 func (*resolutionProbe) PostStop(*goakt.Context) error { return nil }
 func (probe *resolutionProbe) Receive(rc *goakt.ReceiveContext) {
-	if _, ok := rc.Message().(agentregistry.Resolve); !ok {
+	if _, ok := rc.Message().(agentregistry.FindAgent); !ok {
 		return
 	}
 	rc.RequestGrain(probe.target, rc.Message()).Then(func(payload any, failure error) {
@@ -49,7 +49,7 @@ func TestResolveWaitsForExistingCreation(t *testing.T) {
 	for _, scenario := range []string{"ready", "configuration failure", "closing"} {
 		t.Run(scenario, func(t *testing.T) {
 			system, authority, input := creationFixture(t)
-			missing := askLifecycle[agentregistry.Ready](t, system, authority, agentregistry.Resolve{
+			missing := askLifecycle[agentregistry.Ready](t, system, authority, agentregistry.FindAgent{
 				AgentID:   input.Creation.AgentID,
 				WaitReady: true,
 			})
@@ -74,7 +74,7 @@ func TestResolveWaitsForExistingCreation(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("configuration not requested")
 			}
-			immediate := askLifecycle[agentregistry.Ready](t, system, authority, agentregistry.Resolve{
+			immediate := askLifecycle[agentregistry.Ready](t, system, authority, agentregistry.FindAgent{
 				AgentID: input.Creation.AgentID,
 			})
 			if immediate.Err == nil {
@@ -91,7 +91,7 @@ func TestResolveWaitsForExistingCreation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := goakt.Tell(context.Background(), probe, agentregistry.Resolve{
+			if err := goakt.Tell(context.Background(), probe, agentregistry.FindAgent{
 				AgentID:   input.Creation.AgentID,
 				WaitReady: true,
 			}); err != nil {
@@ -121,7 +121,7 @@ func TestResolveWaitsForExistingCreation(t *testing.T) {
 				if accepted.Err != nil {
 					t.Fatal(accepted.Err)
 				}
-				refused := askLifecycle[agentregistry.Ready](t, system, authority, agentregistry.Resolve{
+				refused := askLifecycle[agentregistry.Ready](t, system, authority, agentregistry.FindAgent{
 					AgentID:   input.Creation.AgentID,
 					WaitReady: true,
 				})

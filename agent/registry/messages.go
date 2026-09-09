@@ -12,8 +12,9 @@ type Creation struct {
 	CreationID string
 }
 
-// Reserve admits one creation under an optional current parent creation.
-type Reserve struct {
+// ReserveAgent registers one creation identity and its optional parent lifetime.
+// It neither starts Actors nor confirms readiness; CreateAgent owns startup.
+type ReserveAgent struct {
 	Creation Creation
 	Parent   *Creation
 }
@@ -39,6 +40,16 @@ type CloseAccepted struct {
 // Completion acknowledges the requested registry operation only.
 type Completion struct {
 	Err error
+}
+
+// StopAdmission permanently closes process admission while retaining all
+// cleanup responsibilities. It returns Roots, not a resource-close receipt.
+type StopAdmission struct{}
+
+// Roots lists remaining root creations in Agent ID order, including unfinished
+// and failed initialization. CloseAgent owns their descendant cleanup.
+type Roots struct {
+	Creations []Creation
 }
 
 // CloseAgent closes a creation and its descendants before releasing its identity.

@@ -34,7 +34,7 @@ func NewTitles(system goakt.ActorSystem, registry *goakt.GrainIdentity, timeout 
 
 // Rename returns the title committed by this operation, not a subsequent read.
 func (source *Titles) Rename(ctx context.Context, identifier session.SessionID, text string) (sessionapi.Title, error) {
-	payload, err := source.system.AskGrain(ctx, source.registry, agentregistry.Resolve{
+	payload, err := source.system.AskGrain(ctx, source.registry, agentregistry.FindAgent{
 		AgentID:   identifier,
 		WaitReady: true,
 	}, source.timeout)

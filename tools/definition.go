@@ -6,6 +6,7 @@ import (
 
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/session"
 )
 
 // Executor runs one already-snapshotted tool call and returns a canonical JSON
@@ -58,10 +59,11 @@ type ToolDefinition struct {
 	ConcurrencyBehavior ConcurrencyClassifier
 }
 
-// Definitions is a detached model-facing view of one effective tool catalog.
-// KnownNames includes names hidden by restrictions so presentation can validate
-// configured ordering without exposing those tools in Schemas.
+// Definitions is the complete committed tool catalog for one Session.
+// KnownNames includes tools hidden from the model-facing Schemas.
+// Publishers must not mutate it after handing it to the actor framework.
 type Definitions struct {
+	AgentID    session.SessionID
 	Schemas    []llm.ToolSchema
 	KnownNames []string
 }

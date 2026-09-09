@@ -6,16 +6,17 @@ import (
 
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/tools"
+	"github.com/gorenx/goren/tools/tool"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
-// Client routes calls to one existing tool creation and committed catalog version.
+// Client routes calls to one existing tool creation and committed implementation.
 // It retains no caller Actor, callbacks, business execution state or retry policy.
 type Client struct {
 	target     *goakt.GrainIdentity
 	creationID string
-	version    uint64
+	revision   tool.Revision
 	stopped    chan struct{}
 }
 
@@ -60,17 +61,18 @@ type cancellationReceived struct {
 }
 
 // NewClient binds an existing endpoint without activating or configuring it.
-func NewClient(target *goakt.GrainIdentity, creationID string, version uint64) (*Client, error) {
-	if target == nil || creationID == "" || version == 0 {
-		return nil, errors.New("tools: tool identity, creation and committed version are required")
+func NewClient(target *goakt.GrainIdentity, creationID string, revision tool.Revision) (*Client, error) {
+	if target == nil || creationID == "" || revision == "" {
+		return nil, errors.New("tools: tool identity, creation and committed implementation are required")
 	}
-	if err := target.Validate(); err != nil {
+	err := target.Validate()
+	if err != nil {
 		return nil, err
 	}
 	return &Client{
 		target:     target,
 		creationID: creationID,
-		version:    version,
+		revision:   revision,
 		stopped:    make(chan struct{}),
 	}, nil
 }
@@ -80,12 +82,13 @@ func NewClient(target *goakt.GrainIdentity, creationID string, version uint64) (
 func (endpoint *Client) Execute(gc *goakt.GrainContext, ctx context.Context, input tools.Invocation) error {
 	input.Arguments = input.ArgumentsJSON()
 	received := make(chan any, 1)
-	if err := endpoint.await(gc, received); err != nil {
+	err := endpoint.await(gc, received)
+	if err != nil {
 		return err
 	}
 	gc.RequestGrain(endpoint.target, Execute{
 		CreationID: endpoint.creationID,
-		Version:    endpoint.version,
+		Revision:   endpoint.revision,
 		Invocation: input,
 		Context:    ctx,
 	}, goakt.WithRequestTimeout(0), goakt.WithReentrancyMode(reentrancy.AllowAll)).Then(func(payload any, failure error) {
@@ -112,7 +115,8 @@ func (endpoint *Client) Execute(gc *goakt.GrainContext, ctx context.Context, inp
 // Cancel requests cancellation without completing or retrying the original call.
 func (endpoint *Client) Cancel(gc *goakt.GrainContext, identifier agentmessage.CallID) error {
 	received := make(chan any, 1)
-	if err := endpoint.await(gc, received); err != nil {
+	err := endpoint.await(gc, received)
+	if err != nil {
 		return err
 	}
 	gc.RequestGrain(endpoint.target, CancelCall{

@@ -25,7 +25,7 @@ func (engine *policyEngine) evaluate(
 	gateOutcome, err := toolCall.state.pipeline.ResolvePreExecute(
 		ctx,
 		PreExecuteRequest{
-			toolCall: toolCall,
+			toolCall: cloneExecution(toolCall),
 		},
 	)
 	if err != nil {

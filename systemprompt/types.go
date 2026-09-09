@@ -110,7 +110,9 @@ type ToolDefinitions struct {
 	KnownNames []string
 }
 
-// PromptAssembly is the complete, still-unrendered model-input snapshot.
+// PromptAssembly contains resolved prompt sections, runtime context, tool schemas,
+// and variables. It contains no conversation history or complete LLM request;
+// AgentLoop derives messages from the committed Session separately.
 type PromptAssembly struct {
 	Sections  []AssembledSection
 	Contexts  []AssembledContext

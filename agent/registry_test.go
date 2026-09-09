@@ -2,17 +2,16 @@ package agent_test
 
 import (
 	"errors"
+	"testing"
+
 	agentcore "github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/session"
-	"testing"
 )
 
 func TestRegistryOwnsDetachedParentRelations(t *testing.T) {
 	directory := &agentcore.Registry{}
 	parent := session.SessionID("parent")
-	if err := directory.Register(agentcore.Registration{
-		ID: parent,
-	}); err != nil {
+	if err := directory.Register(agentcore.Registration{ID: parent}); err != nil {
 		t.Fatal(err)
 	}
 	for _, identifier := range []session.SessionID{"child-b", "child-a"} {
@@ -44,7 +43,10 @@ func TestRegistryOwnsDetachedParentRelations(t *testing.T) {
 	if len(directory.Children("parent")) != 2 {
 		t.Fatal("list exposed retained relation")
 	}
-	for _, identifier := range []session.SessionID{"child-a", "child-b", "parent", "parent"} {
+	for _, identifier := range []session.SessionID{"child-a", "child-b", "parent"} {
+		if err := directory.BeginClose(identifier); err != nil {
+			t.Fatal(err)
+		}
 		if err := directory.Remove(identifier); err != nil {
 			t.Fatal(err)
 		}
@@ -75,14 +77,10 @@ func TestRegistryRejectsInvalidRelationsWithoutMutation(t *testing.T) {
 	if len(directory.List()) != 0 {
 		t.Fatal("failed registration changed directory")
 	}
-	if err := directory.Register(agentcore.Registration{
-		ID: self,
-	}); err != nil {
+	if err := directory.Register(agentcore.Registration{ID: self}); err != nil {
 		t.Fatal(err)
 	}
-	if err := directory.Register(agentcore.Registration{
-		ID: self,
-	}); err == nil {
+	if err := directory.Register(agentcore.Registration{ID: self}); err == nil {
 		t.Fatal("duplicate registration succeeded")
 	}
 }
@@ -93,9 +91,7 @@ func TestRegistryClosingAncestorRejectsNewChildrenButRetainsAcceptedWork(t *test
 	child := session.SessionID("child")
 	grandchild := session.SessionID("grandchild")
 	for _, entry := range []agentcore.Registration{
-		{
-			ID: root,
-		},
+		{ID: root},
 		{
 			ID:       child,
 			ParentID: &root,
@@ -128,9 +124,7 @@ func TestRegistryClosingAncestorRejectsNewChildrenButRetainsAcceptedWork(t *test
 	if len(directory.List()) != 3 || len(directory.Children(child)) != 1 {
 		t.Fatal("closing erased accepted descendants")
 	}
-	if err := directory.Register(agentcore.Registration{
-		ID: "independent",
-	}); err != nil {
+	if err := directory.Register(agentcore.Registration{ID: "independent"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := directory.CheckAdmission("independent"); err != nil {
@@ -140,13 +134,14 @@ func TestRegistryClosingAncestorRejectsNewChildrenButRetainsAcceptedWork(t *test
 		t.Fatal("closing parent removed before children")
 	}
 	for _, identifier := range []session.SessionID{grandchild, child, root} {
+		if err := directory.BeginClose(identifier); err != nil {
+			t.Fatal(err)
+		}
 		if err := directory.Remove(identifier); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := directory.Register(agentcore.Registration{
-		ID: root,
-	}); err != nil {
+	if err := directory.Register(agentcore.Registration{ID: root}); err != nil {
 		t.Fatal(err)
 	}
 	if err := directory.CheckAdmission(root); err != nil {
@@ -162,9 +157,7 @@ func TestRegistryUnknownCloseDoesNotBlockFutureRegistration(t *testing.T) {
 	if err := directory.CheckAdmission("future"); err == nil {
 		t.Fatal("unknown identity admitted")
 	}
-	if err := directory.Register(agentcore.Registration{
-		ID: "future",
-	}); err != nil {
+	if err := directory.Register(agentcore.Registration{ID: "future"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := directory.CheckAdmission("future"); err != nil {

@@ -73,7 +73,7 @@ func NewServer(ctx context.Context, ports Dependencies, settings Options) (*Serv
 	if err != nil {
 		return nil, err
 	}
-	commands, err := commandapi.NewGateway(ports.Commands)
+	commands, err := commandapi.NewGateway(ports.Commands, sessions)
 	if err != nil {
 		return nil, err
 	}

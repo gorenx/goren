@@ -78,18 +78,16 @@ func startSubscriber(t *testing.T, ctx context.Context, system goakt.ActorSystem
 
 func publishTools(t *testing.T, ctx context.Context, system goakt.ActorSystem, identifier session.SessionID, version uint64, names ...string) {
 	t.Helper()
-	definitions := tools.Definitions{}
+	definitions := tools.Definitions{
+		AgentID: identifier,
+	}
 	for _, name := range names {
 		definitions.Schemas = append(definitions.Schemas, llm.ToolSchema{
 			Name:       name,
 			Parameters: []byte(`{"type":"object"}`),
 		})
 	}
-	if err := goakt.Tell(ctx, system.TopicActor(), goakt.NewPublish(uuid.NewString(), tools.DefinitionsTopic, tools.DefinitionsChanged{
-		AgentID:     identifier,
-		Version:     version,
-		Definitions: definitions,
-	})); err != nil {
+	if err := goakt.Tell(ctx, system.TopicActor(), goakt.NewPublish(uuid.NewString(), tools.DefinitionsTopic, definitions)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -248,14 +246,14 @@ func TestToolsSubscriberReadsCatalogPublishedBeforeSubscription(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, command := range []any{
-		toolactor.Begin{
+		toolactor.BeginUpdate{
 			Update: toolregistry.Update{
 				ID:      "initial",
 				AgentID: "agent",
 				Names:   []string{"read"},
 			},
 		},
-		toolactor.Register{
+		toolactor.RegisterDefinition{
 			ID: "initial",
 			Candidate: toolregistry.Candidate{
 				Schema: llm.ToolSchema{
@@ -274,13 +272,13 @@ func TestToolsSubscriberReadsCatalogPublishedBeforeSubscription(t *testing.T) {
 			t.Fatalf("registration: %#v", reply)
 		}
 	}
-	payload, err := system.AskGrain(ctx, registry, toolactor.Publish{
+	payload, err := system.AskGrain(ctx, registry, toolactor.PublishDefinitions{
 		ID: "initial",
 	}, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if committed := payload.(toolactor.Catalog); committed.Err != nil || committed.Definitions.Version != 1 {
+	if committed := payload.(toolactor.Catalog); committed.Err != nil {
 		t.Fatalf("publication: %#v", committed)
 	}
 	target, err := goakt.GrainOf[*promptactor.RuntimeGrain](ctx, system, promptactor.RuntimeName("agent"), goakt.WithLongLivedGrain())
@@ -292,7 +290,7 @@ func TestToolsSubscriberReadsCatalogPublishedBeforeSubscription(t *testing.T) {
 		t.Fatalf("initialize: %#v, %v", payload, err)
 	}
 	subscriber, events := startSubscriber(t, ctx, system, target)
-	if baseline := receiveEvent[promptactor.ToolsApplied](t, ctx, events); baseline.Err != nil || baseline.Version != 1 {
+	if baseline := receiveEvent[promptactor.ToolsApplied](t, ctx, events); baseline.Err != nil {
 		t.Fatalf("baseline: %#v", baseline)
 	}
 	// Assembly observes the baseline through the real Prompt Runtime, not a probe.

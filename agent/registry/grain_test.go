@@ -110,7 +110,7 @@ func TestRegistryRequestsPreserveCreationAndAncestorAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, input := range []registry.Reserve{
+	for _, input := range []registry.ReserveAgent{
 		{
 			Creation: parent,
 		},
@@ -176,7 +176,7 @@ func TestRegistryRequestsPreserveCreationAndAncestorAdmission(t *testing.T) {
 	}); !errors.Is(result.Err, agent.ErrClosing) {
 		t.Fatalf("descendant admission = %v", result.Err)
 	}
-	if result := request[registry.Completion](t, driver, replies, registry.Reserve{
+	if result := request[registry.Completion](t, driver, replies, registry.ReserveAgent{
 		Creation: registry.Creation{
 			AgentID:    "grandchild",
 			CreationID: "grandchild-first",
@@ -204,7 +204,7 @@ func TestRegistryRequestsPreserveCreationAndAncestorAdmission(t *testing.T) {
 		AgentID:    parent.AgentID,
 		CreationID: "second",
 	}
-	if result := request[registry.Completion](t, driver, replies, registry.Reserve{
+	if result := request[registry.Completion](t, driver, replies, registry.ReserveAgent{
 		Creation: replacement,
 	}); result.Err != nil {
 		t.Fatal(result.Err)
@@ -223,7 +223,7 @@ func TestRegistryRequestsPreserveCreationAndAncestorAdmission(t *testing.T) {
 		t.Fatalf("stale close = %+v", result)
 	}
 	for _, input := range []any{
-		registry.Reserve{
+		registry.ReserveAgent{
 			Creation: child,
 			Parent:   &parent,
 		},

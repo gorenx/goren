@@ -10,13 +10,14 @@ import (
 // Execute invokes a settled implementation after Runtime policy and middleware
 // admission. Concurrent calls are allowed only while configuration is immutable;
 // the caller must drain all executions before any mutation or resource cleanup.
-func (owner *Tool) Execute(ctx context.Context, version uint64, input tools.Invocation) tools.BodyResult {
+func (owner *Tool) Execute(ctx context.Context, target Revision, input tools.Invocation) tools.BodyResult {
 	if ctx == nil {
 		return tools.BodyResult{
 			Err: errors.New("tools: execution context is required"),
 		}
 	}
-	if err := context.Cause(ctx); err != nil {
+	err := context.Cause(ctx)
+	if err != nil {
 		return tools.BodyResult{
 			Err: err,
 		}
@@ -26,7 +27,7 @@ func (owner *Tool) Execute(ctx context.Context, version uint64, input tools.Invo
 			Err: errors.New("tools: invocation addresses a different tool"),
 		}
 	}
-	definition, err := owner.Definition(version)
+	definition, err := owner.Definition(target)
 	if err != nil {
 		return tools.BodyResult{
 			Err: err,

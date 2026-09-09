@@ -45,7 +45,8 @@ func (subject *ReactLoopAgent) finishActivity() (bool, error) {
 		subject.preparing != nil || subject.request != nil || subject.ending != nil {
 		return false, errors.New("agentloop: execution still owns unfinished business work")
 	}
-	replay := subject.running.wake && subject.pending.HasPending()
+	replay := subject.running.wake && subject.pending.HasPending() &&
+		!(subject.preserveInbox && subject.lifetime == closingAvailable)
 	subject.running = nil
 	if replay {
 		subject.running = &activity{}
