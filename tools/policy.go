@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 
 	"github.com/gorenx/goren/agentmessage"
@@ -66,13 +67,6 @@ type BlockDecision struct {
 
 func (BlockDecision) postToolDecision() {}
 
-// ToolRestriction intersects inherited capability visibility. A nil field is
-// absent; a non-nil empty Allow intentionally admits no inherited tools.
-type ToolRestriction struct {
-	Allow []string
-	Deny  []string
-}
-
 // ToolGuard is a monotonic synchronous denial policy.
 type ToolGuard interface {
 	DenyReason(ToolExecution) (string, bool)
@@ -84,4 +78,14 @@ type ToolGuardFunc func(ToolExecution) (string, bool)
 // DenyReason invokes the adapted function.
 func (operation ToolGuardFunc) DenyReason(toolCall ToolExecution) (string, bool) {
 	return operation(toolCall)
+}
+
+// PrePolicy decides whether a call may proceed to dispatch.
+type PrePolicy interface {
+	EvaluateCall(context.Context, PreExecuteRequest) (PreExecuteOutcome, error)
+}
+
+// PostPolicy decides how a normalized result is presented.
+type PostPolicy interface {
+	ReviewResult(context.Context, PostExecuteRequest) (PostExecuteOutcome, error)
 }

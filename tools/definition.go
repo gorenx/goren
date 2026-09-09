@@ -96,15 +96,3 @@ func (definition ToolDefinition) Describe() Descriptor {
 		ConcurrencyBehavior: definition.ConcurrencyBehavior,
 	}
 }
-
-func (description Descriptor) definition() ToolDefinition {
-	return ToolDefinition{
-		Name:                description.Name,
-		Description:         description.Description,
-		Parameters:          description.Parameters,
-		Output:              description.Output,
-		FinalizeContent:     description.FinalizeContent,
-		Timeout:             description.Timeout,
-		ConcurrencyBehavior: description.ConcurrencyBehavior,
-	}
-}

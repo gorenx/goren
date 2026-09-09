@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorenx/goren/tools/execution"
+
 	agentactor "github.com/gorenx/goren/agent/actor"
 	agentregistry "github.com/gorenx/goren/agent/registry"
 	"github.com/gorenx/goren/agentmessage"
@@ -200,17 +202,19 @@ func TestUpdateUsesToolLifecycleForReplacementRollbackAndRemoval(t *testing.T) {
 					Registry:        directory,
 					Timeout:         time.Second,
 				})
-				description := ask[toolactor.Description](t, system, instance.Identity, toolactor.Describe{CreationID: instance.CreationID})
+				description := ask[toolactor.Description](t, system, instance.Identity, toolactor.Describe{
+					CreationID: instance.CreationID,
+				})
 				if description.Err != nil || description.Implementation == "" || string(description.Implementation) == string(scenario.id) {
 					t.Fatalf("execution identity: %+v", description)
 				}
 				original = description.Implementation
 			}
-			coordinator, failure := instances.Scheduler(ctx, snapshot, tools.Policies{})
+			coordinator, failure := instances.Scheduler(ctx, snapshot, execution.Policies{})
 			if failure != nil {
 				t.Fatal(failure)
 			}
-			prepared, failure := coordinator.Prepare(ctx, tools.ToolExecutionInput{
+			prepared, failure := coordinator.PrepareCall(ctx, tools.ToolExecutionInput{
 				CallID:    "call-" + agentmessage.CallID(scenario.id),
 				Name:      toolaskuser.Name,
 				SessionID: creation.AgentID,
@@ -219,11 +223,15 @@ func TestUpdateUsesToolLifecycleForReplacementRollbackAndRemoval(t *testing.T) {
 			if failure != nil {
 				t.Fatal(failure)
 			}
-			dispatched, failure := coordinator.Dispatch(prepared.Execution)
+			failure = prepared.Dispatch()
 			if failure != nil {
 				t.Fatal(failure)
 			}
-			result, failure := coordinator.Finalize(prepared.Execution, dispatched.Result)
+			failure = prepared.Finalize()
+			if failure != nil {
+				t.Fatal(failure)
+			}
+			result, failure := prepared.Result()
 			if failure != nil || result == nil || result.Failed() {
 				t.Fatalf("real ToolActor execution failed: %+v %v", result, failure)
 			}
@@ -274,7 +282,9 @@ func TestUpdateUsesToolLifecycleForReplacementRollbackAndRemoval(t *testing.T) {
 			if rejected.Err == nil {
 				t.Fatal("old implementation remained executable after replacement")
 			}
-			description := ask[toolactor.Description](t, system, instance.Identity, toolactor.Describe{CreationID: instance.CreationID})
+			description := ask[toolactor.Description](t, system, instance.Identity, toolactor.Describe{
+				CreationID: instance.CreationID,
+			})
 			if description.Err != nil || description.Implementation == original {
 				t.Fatalf("replacement reused execution identity: %+v", description)
 			}

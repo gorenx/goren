@@ -1,12 +1,5 @@
-// Package tools owns tool definitions, layered visibility, execution policy,
-// canonical output validation, and model-facing schema projection.
+// Package tools defines tool contracts, execution policy, and canonical results.
 package tools
-
-import (
-	"context"
-
-	"github.com/gorenx/goren/llm"
-)
 
 const (
 	// ServiceName is the canonical Cordis service name.
@@ -28,34 +21,3 @@ const (
 	// RunCodeName is reserved for the future Code Mode presentation transport.
 	RunCodeName = "run_code"
 )
-
-// ToolRuntime is the provider-owned lookup, scheduling, and execution
-// capability consumed by Agent Loop.
-type ToolRuntime interface {
-	Get(string) (ToolDefinition, bool)
-	Schemas() []llm.ToolSchema
-	ExecutionMode(ToolExecutionInput) ToolExecutionMode
-	Scheduler() ToolExecutionScheduler
-	Execute(context.Context, ToolExecutionInput) ToolExecutionResult
-}
-
-// ToolCatalog is the mutation boundary consumed by Plugins that own Tool
-// definitions. It changes only the exact Registry layer resolved by a Plugin.
-type ToolCatalog interface {
-	AddTool(context.Context, ToolDefinition) (*ToolHandle, error)
-}
-
-// ToolSetCatalog owns atomic replacement of a named group of Tool
-// definitions. It is intended for providers whose complete remote catalog
-// changes as one generation.
-type ToolSetCatalog interface {
-	OpenToolSet(context.Context, string) (*ToolSetHandle, error)
-}
-
-// PolicyRegistry is the mutation boundary consumed by Plugins that own Tool
-// visibility or execution policies. It changes only the exact Registry layer
-// resolved by a Plugin.
-type PolicyRegistry interface {
-	AddRestriction(context.Context, string, ToolRestriction) (*RestrictionHandle, error)
-	AddGuard(context.Context, string, ToolGuard) (*GuardHandle, error)
-}

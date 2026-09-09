@@ -11,21 +11,26 @@ import (
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 )
 
-type registeredTool struct {
-	definition       ToolDefinition
-	parameterSchema  *jsonschema.Schema
-	outputSchema     *jsonschema.Schema
-	registrationName string
+// Contract owns validated tool metadata and its compiled input/output schemas.
+type Contract struct {
+	descriptor      Descriptor
+	parameterSchema *jsonschema.Schema
+	outputSchema    *jsonschema.Schema
 }
 
 // SnapshotDefinition validates a complete tool definition and detaches its JSON
 // schemas. Behavior interfaces remain borrowed; their resources belong to the caller.
 func SnapshotDefinition(input ToolDefinition) (ToolDefinition, error) {
-	entry, err := compileDefinition(input)
+	if input.Executor == nil {
+		return ToolDefinition{}, fmt.Errorf("tools: tool %q executor is nil", input.Name)
+	}
+	contract, err := CompileDescriptor(input.Describe())
 	if err != nil {
 		return ToolDefinition{}, err
 	}
-	return entry.definition, nil
+	input.Parameters = contract.descriptor.Parameters
+	input.Output.Schema = contract.descriptor.Output.Schema
+	return input, nil
 }
 
 // SnapshotObjectSchema validates one lossless object-rooted JSON Schema and
@@ -53,14 +58,8 @@ func SnapshotObjectSchema(rawValue json.RawMessage) (json.RawMessage, error) {
 	return detached, nil
 }
 
-func compileDefinition(definition ToolDefinition) (*registeredTool, error) {
-	if definition.Executor == nil {
-		return nil, fmt.Errorf("tools: tool %q executor is nil", definition.Name)
-	}
-	return compileDescriptor(definition)
-}
-
-func compileDescriptor(definition ToolDefinition) (*registeredTool, error) {
+// CompileDescriptor validates and captures an execution contract without a body.
+func CompileDescriptor(definition Descriptor) (*Contract, error) {
 	if strings.TrimSpace(definition.Name) == "" || definition.Name != strings.TrimSpace(definition.Name) {
 		return nil, errors.New("tools: tool name must be non-empty and trimmed")
 	}
@@ -103,11 +102,10 @@ func compileDescriptor(definition ToolDefinition) (*registeredTool, error) {
 	retained := definition
 	retained.Parameters = parameters
 	retained.Output.Schema = output
-	return &registeredTool{
-		definition:       retained,
-		parameterSchema:  parameterValidator,
-		outputSchema:     outputValidator,
-		registrationName: definition.Name,
+	return &Contract{
+		descriptor:      retained,
+		parameterSchema: parameterValidator,
+		outputSchema:    outputValidator,
 	}, nil
 }
 
@@ -155,9 +153,20 @@ func deepestSchemaFailure(validationFailure *jsonschema.ValidationError) *jsonsc
 	return deepest
 }
 
-func cloneDefinition(source ToolDefinition) ToolDefinition {
-	detached := source
-	detached.Parameters = append(json.RawMessage(nil), source.Parameters...)
-	detached.Output.Schema = append(json.RawMessage(nil), source.Output.Schema...)
-	return detached
+// Descriptor returns a detached description while borrowing behavior interfaces.
+func (contract *Contract) Descriptor() Descriptor {
+	retained := contract.descriptor
+	retained.Parameters = append(json.RawMessage(nil), retained.Parameters...)
+	retained.Output.Schema = append(json.RawMessage(nil), retained.Output.Schema...)
+	return retained
+}
+
+// ValidateArguments checks a call against the compiled input schema.
+func (contract *Contract) ValidateArguments(input json.RawMessage) error {
+	return validateSchemaValue(contract.parameterSchema, input, "arguments")
+}
+
+// ValidateValue checks the canonical output before projection.
+func (contract *Contract) ValidateValue(output json.RawMessage) error {
+	return validateSchemaValue(contract.outputSchema, output, "value")
 }

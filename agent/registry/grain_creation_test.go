@@ -616,7 +616,7 @@ func TestToolsReactivationCannotClaimOrReleaseOriginalResources(t *testing.T) {
 	if ready.Err != nil {
 		t.Fatal(ready.Err)
 	}
-	target, err := goakt.GrainOf[*runtimeactor.Grain](context.Background(), system, runtimeactor.RuntimeName(string(input.Creation.AgentID)), goakt.WithLongLivedGrain(),
+	target, err := goakt.GrainOf[*runtimeactor.Runtime](context.Background(), system, runtimeactor.RuntimeName(string(input.Creation.AgentID)), goakt.WithLongLivedGrain(),
 		goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))))
 	if err != nil {
 		t.Fatal(err)

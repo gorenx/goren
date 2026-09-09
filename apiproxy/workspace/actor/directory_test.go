@@ -136,7 +136,7 @@ func TestConcurrentRenameHasOneOwner(t *testing.T) {
 // emptyHeaders describes a fresh installation with no Session records.
 type emptyHeaders struct{}
 
-func (emptyHeaders) Get(context.Context, session.SessionID) (session.Header, bool, error) {
-	return session.Header{}, false, nil
+func (emptyHeaders) Get(context.Context, session.SessionID) (*session.Header, error) {
+	return nil, nil
 }
 func (emptyHeaders) List(context.Context) ([]session.Header, error) { return nil, nil }

@@ -16,13 +16,13 @@ import (
 
 type headers struct{ root string }
 
-func (source headers) Get(_ context.Context, id session.SessionID) (session.Header, bool, error) {
-	return session.Header{
+func (source headers) Get(_ context.Context, id session.SessionID) (*session.Header, error) {
+	return &session.Header{
 		Version:   session.FormatVersion,
 		ID:        id,
 		CreatedAt: 1,
 		CWD:       &source.root,
-	}, true, nil
+	}, nil
 }
 func (headers) List(context.Context) ([]session.Header, error) { return nil, nil }
 
