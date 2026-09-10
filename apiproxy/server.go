@@ -9,6 +9,7 @@ import (
 	credentialsapi "github.com/gorenx/goren/apiproxy/credentials"
 	"github.com/gorenx/goren/apiproxy/interaction"
 	llmapi "github.com/gorenx/goren/apiproxy/llm"
+	mcpapi "github.com/gorenx/goren/apiproxy/mcp"
 	presetapi "github.com/gorenx/goren/apiproxy/preset"
 	"github.com/gorenx/goren/apiproxy/rpc"
 	sessionapi "github.com/gorenx/goren/apiproxy/session"
@@ -29,6 +30,7 @@ type Dependencies struct {
 	Description HostDescriptionProvider
 	Presets     presetapi.Roster
 	Settings    settingsapi.Describer
+	MCP         mcpapi.Directory
 }
 
 // Options contains API behavior and transport buffering settings.
@@ -96,6 +98,9 @@ func NewServer(ctx context.Context, ports Dependencies, settings Options) (*Serv
 		return nil, err
 	}
 	methods := rpc.NewCatalog()
+	if err := mcpapi.Register(methods, ports.MCP); err != nil {
+		return nil, err
+	}
 	if err := RegisterHostDescribe(methods, ports.Description); err != nil {
 		return nil, err
 	}

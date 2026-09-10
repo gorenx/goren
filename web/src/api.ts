@@ -61,9 +61,10 @@ export class HarnessAPI {
     this.#translateText = translateText
   }
 
-  async call<T>(method: string, payload: object): Promise<T> {
+  async call<T>(method: string, payload: object, signal?: AbortSignal): Promise<T> {
     const rpcId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`
     const response = await fetch(`/api/${method}`, {
+      signal,
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ type: 'client-request', rpcId, method, payload }),

@@ -32,7 +32,7 @@ func initializeDeepSeek(ctx context.Context, system goakt.ActorSystem, settings 
 	if err != nil {
 		return "", err
 	}
-	provider, err := deepseek.NewAdapter(deepseek.AdapterDependencies{
+	adapter, err := deepseek.NewAdapter(deepseek.AdapterDependencies{
 		Connections: connection,
 		Credentials: connection,
 		Identity:    identity,
@@ -46,7 +46,7 @@ func initializeDeepSeek(ctx context.Context, system goakt.ActorSystem, settings 
 	}
 	payload, err := system.AskGrain(ctx, target, llmactor.RegisterAdapter{
 		Providers: []string{deepseek.ProviderRoute},
-		Adapter:   provider,
+		Adapter:   adapter,
 	}, time.Duration(1<<63-1))
 	if err != nil {
 		return "", err

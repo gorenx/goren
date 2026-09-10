@@ -12,6 +12,7 @@ type commandConfig struct {
 	dataDirectory     string
 	sessionDatabase   string
 	workspaceDatabase string
+	mcpFiles          []string
 }
 
 type storagePaths struct {
@@ -21,6 +22,11 @@ type storagePaths struct {
 }
 
 func parseConfig() commandConfig {
+	var mcpFiles []string
+	flag.Func("mcp-server", "MCP server JSON config path (repeatable)", func(value string) error {
+		mcpFiles = append(mcpFiles, value)
+		return nil
+	})
 	address := flag.String("listen", "127.0.0.1:3080", "Echo listen address")
 	version := flag.String("version", "dev", "host.describe version")
 	dataDirectory := flag.String("data-dir", "", "data storage directory (default: user config directory)")
@@ -33,6 +39,7 @@ func parseConfig() commandConfig {
 		dataDirectory:     *dataDirectory,
 		sessionDatabase:   *sessionDatabase,
 		workspaceDatabase: *workspaceDatabase,
+		mcpFiles:          mcpFiles,
 	}
 }
 

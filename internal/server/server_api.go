@@ -242,7 +242,15 @@ func (owner *Server) initializeAPI(ctx context.Context, constructors *toolactor.
 	if err != nil {
 		return err
 	}
+	owner.mcpIdentity, err = goakt.GrainOf[*mcpGrain](ctx, system, "mcp.management", goakt.WithLongLivedGrain())
+	if err != nil {
+		return err
+	}
 	owner.api, err = apiproxy.NewServer(ctx, apiproxy.Dependencies{
+		MCP: &mcpDirectory{
+			system:   system,
+			identity: owner.mcpIdentity,
+		},
 		Sessions: sessionapi.Dependencies{
 			Agents:      agents,
 			Sessions:    reader,

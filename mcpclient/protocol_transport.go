@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -42,7 +43,7 @@ func (capture *toolResultCapture) record(value json.RawMessage) {
 	capture.overflow = false
 }
 
-func (capture *toolResultCapture) result() (json.RawMessage, error) {
+func (capture *toolResultCapture) readResult() (json.RawMessage, error) {
 	capture.mutex.Lock()
 	defer capture.mutex.Unlock()
 	if capture.overflow {
@@ -65,11 +66,13 @@ func contextWithToolResultCapture(
 type protocolTransport struct {
 	target         transport.Interface
 	requestTimeout time.Duration
+	skipDiscover   bool
 }
 
 func newProtocolTransport(
 	target transport.Interface,
 	requestTimeout time.Duration,
+	skipDiscover ...bool,
 ) (transport.Interface, error) {
 	if target == nil {
 		return nil, errors.New("mcpclient: transport is required")
@@ -80,6 +83,9 @@ func newProtocolTransport(
 	base := &protocolTransport{
 		target:         target,
 		requestTimeout: requestTimeout,
+	}
+	if len(skipDiscover) > 0 {
+		base.skipDiscover = skipDiscover[0]
 	}
 	bidirectional, supportsBidirectional := target.(transport.BidirectionalInterface)
 	httpConnection, supportsHTTP := target.(transport.HTTPConnection)
@@ -105,26 +111,87 @@ func newProtocolTransport(
 	}
 }
 
-func (connection *protocolTransport) Start(requestContext context.Context) error {
-	return connection.target.Start(requestContext)
+func (wire *protocolTransport) Start(requestContext context.Context) error {
+	return wire.target.Start(requestContext)
 }
 
-func (connection *protocolTransport) SendRequest(
+func (wire *protocolTransport) SendRequest(
 	requestContext context.Context,
 	request transport.JSONRPCRequest,
 ) (*transport.JSONRPCResponse, error) {
+	if request.Method == string(mcp.MethodInitialize) {
+		return nil, errors.New("mcpclient: unsupported protocol version; legacy initialize is forbidden")
+	}
+	if request.Method == string(mcp.MethodServerDiscover) && wire.skipDiscover {
+		// SDK v1.0.0 has no stateless initialization API. This local facade only
+		// primes SDK metadata; remote acceptance is checked by the first tools/list.
+		return transport.NewJSONRPCResultResponse(request.ID, json.RawMessage(`{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{}}`)), nil
+	}
 	operationContext := requestContext
 	cancel := func() {}
 	if request.Method != string(mcp.MethodSubscriptionsListen) {
 		operationContext, cancel = context.WithTimeout(
 			requestContext,
-			connection.requestTimeout,
+			wire.requestTimeout,
 		)
 	}
 	defer cancel()
 
-	response, err := connection.target.SendRequest(operationContext, request)
-	if err != nil || response == nil || response.Error != nil || request.Method != string(mcp.MethodToolsCall) {
+	response, err := wire.exchange(operationContext, request)
+	if err == nil &&
+		response != nil &&
+		response.ID.String() != request.ID.String() {
+		return nil, errors.New("mcpclient: response ID does not match request")
+	}
+	if err != nil && operationContext.Err() != nil {
+		if _, stdio := wire.target.(*transport.Stdio); stdio {
+			cleanup, release := context.WithTimeout(context.WithoutCancel(requestContext), min(wire.requestTimeout, time.Second))
+			defer release()
+			notification := mcp.JSONRPCNotification{
+				JSONRPC: mcp.JSONRPC_VERSION,
+				Notification: mcp.Notification{
+					Method: "notifications/cancelled",
+					Params: mcp.NotificationParams{
+						AdditionalFields: map[string]any{"requestId": request.ID.Value()},
+					},
+				},
+			}
+			settled := make(chan struct{})
+			go func() {
+				defer close(settled)
+				_ = wire.target.SendNotification(cleanup, notification)
+			}()
+			select {
+			case <-settled:
+			case <-cleanup.Done():
+				// SDK pipe writes do not observe Context. Closing its transport
+				// releases a blocked writer before we return to the ToolActor.
+				_ = wire.target.Close()
+				<-settled
+			}
+		}
+	}
+	if err == nil &&
+		response != nil &&
+		response.Error == nil {
+		var envelope struct {
+			ResultType        string   `json:"resultType"`
+			SupportedVersions []string `json:"supportedVersions"`
+		}
+		if decodeErr := json.Unmarshal(response.Result, &envelope); decodeErr != nil {
+			return nil, errors.New("mcpclient: invalid protocol result")
+		}
+		if request.Method == string(mcp.MethodServerDiscover) && !slices.Contains(envelope.SupportedVersions, protocolVersion) {
+			return nil, errors.New("mcpclient: unsupported protocol version in discovery")
+		}
+		if request.Method != string(mcp.MethodToolsCall) && envelope.ResultType != "complete" {
+			return nil, errors.New("mcpclient: expected 2026-07-28 complete result")
+		}
+	}
+	if err != nil ||
+		response == nil ||
+		response.Error != nil ||
+		request.Method != string(mcp.MethodToolsCall) {
 		return response, err
 	}
 	capture, present := requestContext.Value(toolResultKey{}).(*toolResultCapture)
@@ -138,6 +205,42 @@ func (connection *protocolTransport) SendRequest(
 		return &adapted, nil
 	}
 	return response, nil
+}
+
+type exchangeResult struct {
+	response *transport.JSONRPCResponse
+	err      error
+}
+
+func (wire *protocolTransport) exchange(ctx context.Context, request transport.JSONRPCRequest) (*transport.JSONRPCResponse, error) {
+	if _, stdio := wire.target.(*transport.Stdio); !stdio {
+		return wire.target.SendRequest(ctx, request)
+	}
+	settled := make(chan exchangeResult, 1)
+	go func() {
+		response, err := wire.target.SendRequest(ctx, request)
+		settled <- exchangeResult{
+			response: response,
+			err:      err,
+		}
+	}()
+	select {
+	case outcome := <-settled:
+		return outcome.response, outcome.err
+	case <-ctx.Done():
+	}
+	// Usually the SDK returns immediately on cancellation. A process that has
+	// stopped reading can instead leave SendRequest blocked in stdin.Write.
+	deadline := time.NewTimer(min(wire.requestTimeout, 250*time.Millisecond))
+	defer deadline.Stop()
+	select {
+	case outcome := <-settled:
+		return outcome.response, outcome.err
+	case <-deadline.C:
+		_ = wire.target.Close()
+		<-settled
+		return nil, ctx.Err()
+	}
 }
 
 func normalizeInputRequiredToolResult(rawResult json.RawMessage) json.RawMessage {
@@ -166,25 +269,25 @@ func normalizeInputRequiredToolResult(rawResult json.RawMessage) json.RawMessage
 	return adapted
 }
 
-func (connection *protocolTransport) SendNotification(
+func (wire *protocolTransport) SendNotification(
 	requestContext context.Context,
 	notification mcp.JSONRPCNotification,
 ) error {
-	return connection.target.SendNotification(requestContext, notification)
+	return wire.target.SendNotification(requestContext, notification)
 }
 
-func (connection *protocolTransport) SetNotificationHandler(
+func (wire *protocolTransport) SetNotificationHandler(
 	handler func(mcp.JSONRPCNotification),
 ) {
-	connection.target.SetNotificationHandler(handler)
+	wire.target.SetNotificationHandler(handler)
 }
 
-func (connection *protocolTransport) Close() error {
-	return connection.target.Close()
+func (wire *protocolTransport) Close() error {
+	return wire.target.Close()
 }
 
-func (connection *protocolTransport) GetSessionId() string {
-	return connection.target.GetSessionId()
+func (wire *protocolTransport) GetSessionId() string {
+	return wire.target.GetSessionId()
 }
 
 type protocolBidirectionalTransport struct {
@@ -192,10 +295,10 @@ type protocolBidirectionalTransport struct {
 	bidirectional transport.BidirectionalInterface
 }
 
-func (connection *protocolBidirectionalTransport) SetRequestHandler(
+func (wire *protocolBidirectionalTransport) SetRequestHandler(
 	handler transport.RequestHandler,
 ) {
-	connection.bidirectional.SetRequestHandler(handler)
+	wire.bidirectional.SetRequestHandler(handler)
 }
 
 type protocolHTTPTransport struct {
@@ -203,12 +306,12 @@ type protocolHTTPTransport struct {
 	httpConnection transport.HTTPConnection
 }
 
-func (connection *protocolHTTPTransport) SetProtocolVersion(version string) {
-	connection.httpConnection.SetProtocolVersion(version)
+func (wire *protocolHTTPTransport) SetProtocolVersion(version string) {
+	wire.httpConnection.SetProtocolVersion(version)
 }
 
-func (connection *protocolHTTPTransport) RequiresLegacyProtocol() bool {
-	legacy, present := connection.httpConnection.(interface {
+func (wire *protocolHTTPTransport) RequiresLegacyProtocol() bool {
+	legacy, present := wire.httpConnection.(interface {
 		RequiresLegacyProtocol() bool
 	})
 	return present && legacy.RequiresLegacyProtocol()
@@ -220,18 +323,18 @@ type protocolHTTPBidirectionalTransport struct {
 	httpConnection transport.HTTPConnection
 }
 
-func (connection *protocolHTTPBidirectionalTransport) SetRequestHandler(
+func (wire *protocolHTTPBidirectionalTransport) SetRequestHandler(
 	handler transport.RequestHandler,
 ) {
-	connection.bidirectional.SetRequestHandler(handler)
+	wire.bidirectional.SetRequestHandler(handler)
 }
 
-func (connection *protocolHTTPBidirectionalTransport) SetProtocolVersion(version string) {
-	connection.httpConnection.SetProtocolVersion(version)
+func (wire *protocolHTTPBidirectionalTransport) SetProtocolVersion(version string) {
+	wire.httpConnection.SetProtocolVersion(version)
 }
 
-func (connection *protocolHTTPBidirectionalTransport) RequiresLegacyProtocol() bool {
-	legacy, present := connection.httpConnection.(interface {
+func (wire *protocolHTTPBidirectionalTransport) RequiresLegacyProtocol() bool {
+	legacy, present := wire.httpConnection.(interface {
 		RequiresLegacyProtocol() bool
 	})
 	return present && legacy.RequiresLegacyProtocol()
@@ -251,7 +354,7 @@ func requireCompleteToolResult(rawResult json.RawMessage) error {
 		envelope.RequestState != nil {
 		return errors.New("mcpclient: incomplete MRTR result cannot be recovered as a final Tool result")
 	}
-	if envelope.ResultType != "" && envelope.ResultType != mcp.ResultTypeComplete {
+	if envelope.ResultType != mcp.ResultTypeComplete {
 		return fmt.Errorf("mcpclient: unsupported Tool result type %q", envelope.ResultType)
 	}
 	return nil
