@@ -123,11 +123,11 @@ type fixtureElicitor struct {
 	elicit func(context.Context, mcp.ElicitationRequest) (*mcp.ElicitationResult, error)
 }
 
-func (elicitor *fixtureElicitor) Elicit(
+func (questioner *fixtureElicitor) Elicit(
 	requestContext context.Context,
 	request mcp.ElicitationRequest,
 ) (*mcp.ElicitationResult, error) {
-	return elicitor.elicit(requestContext, request)
+	return questioner.elicit(requestContext, request)
 }
 
 func protocolTestSettings(elicitation sdkclient.ElicitationHandler) protocolSettings {
@@ -188,7 +188,7 @@ func TestProtocolSessionStartDiscoversExactVersionAndCapabilities(t *testing.T) 
 		}
 		return discoverResponse(request.ID), nil
 	}
-	elicitor := &fixtureElicitor{
+	questioner := &fixtureElicitor{
 		elicit: func(
 			context.Context,
 			mcp.ElicitationRequest,
@@ -197,7 +197,7 @@ func TestProtocolSessionStartDiscoversExactVersionAndCapabilities(t *testing.T) 
 			return nil, nil
 		},
 	}
-	session := startProtocolTestSession(t, fixture, elicitor)
+	session := startProtocolTestSession(t, fixture, questioner)
 	if session.client.ProtocolVersion() != protocolVersion {
 		t.Fatalf("protocol version = %q, want %q", session.client.ProtocolVersion(), protocolVersion)
 	}
@@ -224,7 +224,9 @@ func TestProtocolSessionStartDiscoversExactVersionAndCapabilities(t *testing.T) 
 		t.Fatalf("request protocol version = %q", params.Meta.ProtocolVersion())
 	}
 	identity := params.Meta.ClientInfo()
-	if identity == nil || identity.Name != "goren-test" || identity.Version != "1.0.0" {
+	if identity == nil ||
+		identity.Name != "goren-test" ||
+		identity.Version != "1.0.0" {
 		t.Fatalf("client identity = %#v", identity)
 	}
 	capabilities := params.Meta.ClientCapabilities()
@@ -234,7 +236,9 @@ func TestProtocolSessionStartDiscoversExactVersionAndCapabilities(t *testing.T) 
 	if capabilities.Elicitation.Form == nil || capabilities.Elicitation.URL == nil {
 		t.Fatalf("elicitation modes = %#v, want form and url", capabilities.Elicitation)
 	}
-	if capabilities.Sampling != nil || capabilities.Roots != nil || capabilities.Tasks != nil {
+	if capabilities.Sampling != nil ||
+		capabilities.Roots != nil ||
+		capabilities.Tasks != nil {
 		t.Fatalf("unexpected client capabilities = %#v", capabilities)
 	}
 }
@@ -282,8 +286,8 @@ func TestProtocolSessionStartRejectsLegacyFallback(t *testing.T) {
 	if !closed {
 		t.Fatal("legacy connection was not closed")
 	}
-	if len(observations) != 2 {
-		t.Fatalf("request count = %d, want discover plus legacy initialize", len(observations))
+	if len(observations) != 1 {
+		t.Fatalf("request count = %d, want discover only; legacy initialize is forbidden", len(observations))
 	}
 }
 
@@ -339,7 +343,7 @@ func TestProtocolSessionCallToolCompletesElicitationRoundTrip(t *testing.T) {
 			}`),
 		), nil
 	}
-	elicitor := &fixtureElicitor{
+	questioner := &fixtureElicitor{
 		elicit: func(
 			requestContext context.Context,
 			request mcp.ElicitationRequest,
@@ -360,7 +364,7 @@ func TestProtocolSessionCallToolCompletesElicitationRoundTrip(t *testing.T) {
 			}, nil
 		},
 	}
-	session := startProtocolTestSession(t, fixture, elicitor)
+	session := startProtocolTestSession(t, fixture, questioner)
 	requestContext := context.WithValue(
 		t.Context(),
 		protocolContextKey{},
@@ -412,7 +416,8 @@ func TestProtocolSessionCallToolCompletesElicitationRoundTrip(t *testing.T) {
 		t.Fatalf("requestState = %q", params.RequestState)
 	}
 	response, present := params.InputResponses["approval"]
-	if !present || !strings.Contains(string(response), `"action":"accept"`) ||
+	if !present ||
+		!strings.Contains(string(response), `"action":"accept"`) ||
 		!strings.Contains(string(response), `"approved":true`) {
 		t.Fatalf("input response = %s", response)
 	}
@@ -478,7 +483,7 @@ func TestProtocolSessionCallToolDoesNotRecoverInputRequiredOnHandlerError(t *tes
 			}`),
 		), nil
 	}
-	elicitor := &fixtureElicitor{
+	questioner := &fixtureElicitor{
 		elicit: func(
 			context.Context,
 			mcp.ElicitationRequest,
@@ -486,7 +491,7 @@ func TestProtocolSessionCallToolDoesNotRecoverInputRequiredOnHandlerError(t *tes
 			return nil, errors.New("question service unavailable")
 		},
 	}
-	session := startProtocolTestSession(t, fixture, elicitor)
+	session := startProtocolTestSession(t, fixture, questioner)
 	_, err := session.callTool(
 		t.Context(),
 		"needs_input",

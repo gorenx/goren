@@ -13,6 +13,7 @@ import (
 	"github.com/gorenx/goren/internal/connection"
 	"github.com/gorenx/goren/llm/deepseek"
 	"github.com/gorenx/goren/llm/deepseek/anonymoususerid"
+	"github.com/gorenx/goren/mcpclient"
 	sessionsqlite "github.com/gorenx/goren/session/persistence/sqlite"
 	cacheactor "github.com/gorenx/goren/session/projectioncache/actor"
 	cachesqlite "github.com/gorenx/goren/session/projectioncache/sqlite"
@@ -41,6 +42,7 @@ type Config struct {
 	Prompt            systemprompt.Config
 	Tools             toolregistry.Catalog
 	Providers         tool.Providers
+	MCP               []mcpclient.Config
 }
 
 // Server owns process resources and their dependency-ordered release. It does not
@@ -66,6 +68,8 @@ type Server struct {
 	carrier     *connection.HTTPHost
 	cancel      context.CancelFunc
 	served      chan error
+	mcp         *mcpManager
+	mcpIdentity *goakt.GrainIdentity
 }
 
 // New validates required process inputs without starting actors or opening files.
@@ -97,6 +101,19 @@ func New(settings Config, platform anonymoususerid.Environment) (*Server, error)
 	}
 	settings.Tools = settings.Tools.Clone()
 	settings.Providers = settings.Providers.Clone()
+	settings.MCP = append([]mcpclient.Config(nil), settings.MCP...)
+	serverNames := make(map[string]bool)
+	for index, configured := range settings.MCP {
+		validated, err := configured.Validate()
+		if err != nil {
+			return nil, err
+		}
+		if serverNames[validated.ServerName] {
+			return nil, errors.New("server: duplicate MCP server name")
+		}
+		serverNames[validated.ServerName] = true
+		settings.MCP[index] = validated
+	}
 	return &Server{
 		settings: settings,
 		platform: platform,
@@ -206,6 +223,9 @@ func (owner *Server) Close(ctx context.Context) error {
 
 func (owner *Server) closeResources(ctx context.Context) error {
 	var transportFailure error
+	if owner.mcp != nil {
+		owner.mcp.cancel()
+	}
 	if owner.cancel != nil {
 		owner.cancel()
 		select {
@@ -239,6 +259,12 @@ func (owner *Server) closeResources(ctx context.Context) error {
 			return errors.Join(transportFailure, err)
 		}
 		owner.agents = nil
+	}
+	if owner.mcp != nil {
+		if err := owner.mcp.close(ctx); err != nil {
+			return err
+		}
+		owner.mcp = nil
 	}
 	if owner.workspace != nil {
 		err := owner.workspace.Shutdown(ctx)

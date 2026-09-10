@@ -31,11 +31,19 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) {
 		return
 	}
 	constructors, valid := gc.ActorSystem().Extension(providersID).(*Providers)
-	if !valid || constructors.entries[input.Name] == nil {
-		gc.Response(Completion{Err: errors.New("tools: tool implementation is not installed")})
+	if !valid {
+		gc.Response(Completion{
+			Err: errors.New("tools: tool providers are not installed"),
+		})
 		return
 	}
-	source := constructors.entries[input.Name]
+	source, err := constructors.resolve(input.Name)
+	if err != nil {
+		gc.Response(Completion{
+			Err: err,
+		})
+		return
+	}
 	if owner.active != nil {
 		gc.Response(Completion{
 			Err: errors.New("tools: initialization is still running"),

@@ -17,6 +17,7 @@ import (
 const protocolVersion = mcp.ProtocolVersion20260728
 
 type protocolSettings struct {
+	skipDiscover       bool
 	identity           mcp.Implementation
 	elicitation        client.ElicitationHandler
 	requestTimeout     time.Duration
@@ -31,7 +32,7 @@ type protocolSession struct {
 }
 
 func newProtocolSession(
-	connection transport.Interface,
+	wire transport.Interface,
 	settings protocolSettings,
 ) (*protocolSession, error) {
 	if settings.identity.Name == "" || settings.identity.Version == "" {
@@ -43,7 +44,7 @@ func newProtocolSession(
 	if settings.maxInputRoundTrips <= 0 {
 		return nil, errors.New("mcpclient: MRTR round limit must be positive")
 	}
-	wrapped, err := newProtocolTransport(connection, settings.requestTimeout)
+	wrapped, err := newProtocolTransport(wire, settings.requestTimeout, settings.skipDiscover)
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +133,7 @@ func (session *protocolSession) callTool(
 			},
 		},
 	)
-	rawResult, captureErr := capture.result()
+	rawResult, captureErr := capture.readResult()
 	if captureErr != nil {
 		if errors.Is(captureErr, errToolResultNotCaptured) && err != nil {
 			return nil, err

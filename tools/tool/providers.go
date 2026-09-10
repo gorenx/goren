@@ -9,5 +9,11 @@ import "maps"
 // Each Provider.Open must still return independently owned work.
 type Providers map[string]Provider
 
+// ProviderSource resolves dynamically discovered implementations without doing I/O.
+// The source owns its catalog; Tool owns each implementation returned by Open.
+type ProviderSource interface {
+	Provider(string) (Provider, bool)
+}
+
 // Clone detaches name bindings while preserving borrowed constructors.
 func (entries Providers) Clone() Providers { return maps.Clone(entries) }

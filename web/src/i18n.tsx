@@ -1,6 +1,20 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 
 const simplifiedChinese = {
+  'mcp.manage': 'MCP 服务器',
+  'mcp.description': '连接 Streamable HTTP 服务，让 Agent 在后续轮次使用其工具。',
+  'mcp.scope': '对当前服务的所有 Agent 生效，重启后不保留。仅连接可信服务，地址不得包含凭据。',
+  'mcp.name': '服务器名',
+  'mcp.url': 'HTTP 地址',
+  'mcp.connect': '连接',
+  'mcp.connecting': '正在连接…',
+  'mcp.disconnect': '断开',
+  'mcp.close': '关闭 MCP 服务器',
+  'mcp.empty': '尚未连接 MCP 服务器',
+  'mcp.loading': '正在读取连接…',
+  'mcp.connected': '已连接 · {count} 个工具',
+  'mcp.failed': '连接异常 · 工具已不可用',
+  'mcp.failure': '操作失败，请检查地址、服务器名及 2026-07-28 协议支持。',
   'app.dismissError': '关闭错误提示',
   'sidebar.navigation': '会话导航',
   'sidebar.newConversation': '新对话',
@@ -180,6 +194,20 @@ export type TranslationValues = Readonly<Record<string, string | number>>
 export type Translator = (messageKey: MessageKey, values?: TranslationValues) => string
 
 const english = {
+  'mcp.manage': 'MCP servers',
+  'mcp.description': 'Connect a Streamable HTTP server so Agents can use its tools in subsequent turns.',
+  'mcp.scope': 'Shared by all Agents on this host; not retained after restart. Connect only trusted servers. Do not include credentials in the URL.',
+  'mcp.name': 'Server name',
+  'mcp.url': 'HTTP URL',
+  'mcp.connect': 'Connect',
+  'mcp.connecting': 'Connecting…',
+  'mcp.disconnect': 'Disconnect',
+  'mcp.close': 'Close MCP servers',
+  'mcp.empty': 'No MCP servers connected',
+  'mcp.loading': 'Loading connections…',
+  'mcp.connected': 'Connected · {count} tools',
+  'mcp.failed': 'Connection failed · tools unavailable',
+  'mcp.failure': 'Operation failed. Check the URL, server name and support for protocol 2026-07-28.',
   'app.dismissError': 'Dismiss error',
   'sidebar.navigation': 'Conversation navigation',
   'sidebar.newConversation': 'New conversation',

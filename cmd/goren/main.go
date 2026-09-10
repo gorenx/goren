@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gorenx/goren/internal/server"
+	"github.com/gorenx/goren/mcpclient"
 )
 
 func main() {
@@ -35,6 +36,18 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	var externalServers []mcpclient.Config
+	for _, path := range settings.mcpFiles {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		configured, err := mcpclient.DecodeConfig(data)
+		if err != nil {
+			return err
+		}
+		externalServers = append(externalServers, configured)
+	}
 	process, err := server.New(server.Config{
 		Address:           settings.address,
 		Version:           settings.version,
@@ -42,6 +55,7 @@ func run() error {
 		SessionDatabase:   paths.sessionDatabase,
 		WorkspaceDatabase: paths.workspaceDatabase,
 		CredentialsPath:   filepath.Join(filepath.Dir(paths.sessionDatabase), ".credentials.json"),
+		MCP:               externalServers,
 	}, processEnvironment{})
 	if err != nil {
 		return err

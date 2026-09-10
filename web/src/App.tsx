@@ -6,6 +6,7 @@ import { DetailsPanel } from './components/DetailsPanel'
 import { CloseIcon } from './icons'
 import { CredentialDialog } from './components/CredentialDialog'
 import { BoundDefinitionDialog } from './components/BoundDefinitionDialog'
+import { MCPDialog } from './components/MCPDialog'
 import { useI18n } from './i18n'
 
 export function App(): React.JSX.Element {
@@ -16,6 +17,7 @@ export function App(): React.JSX.Element {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [credentialsOpen, setCredentialsOpen] = useState(false)
   const [boundDefinitionsOpen, setBoundDefinitionsOpen] = useState(false)
+  const [mcpOpen, setMCPOpen] = useState(false)
   const [onboardingDismissed, setOnboardingDismissed] = useState(false)
   const snapshot = useSyncExternalStore(store.subscribe, store.snapshot)
 
@@ -42,11 +44,12 @@ export function App(): React.JSX.Element {
 
   return (
     <div className="app-grid" data-sidebar-collapsed={sidebarCollapsed || undefined}>
-    <Sidebar store={store} snapshot={snapshot} collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(value => !value)} onOpenBoundDefinitions={() => setBoundDefinitionsOpen(true)} />
+    <Sidebar store={store} snapshot={snapshot} collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(value => !value)} onOpenBoundDefinitions={() => setBoundDefinitionsOpen(true)} onOpenMCP={() => setMCPOpen(true)} />
       <ConversationPane store={store} snapshot={snapshot} onOpenCredentials={() => setCredentialsOpen(true)} />
       <DetailsPanel store={store} snapshot={snapshot} />
     {credentialsOpen && <CredentialDialog store={store} snapshot={snapshot} onClose={closeCredentials} />}
     {boundDefinitionsOpen && <BoundDefinitionDialog store={store} snapshot={snapshot} onClose={() => setBoundDefinitionsOpen(false)} />}
+    {mcpOpen && <MCPDialog onClose={() => setMCPOpen(false)} />}
       {snapshot.error !== undefined && (
         <div className="toast" role="alert">
           <span className="min-w-0 flex-1">{snapshot.error}</span>

@@ -20,10 +20,12 @@ func initializeTitles(
 	ctx context.Context,
 	system goakt.ActorSystem,
 	settings title.Config,
-	provider title.Provider,
+	generator title.Provider,
 	timeout time.Duration,
 ) (*goakt.GrainIdentity, error) {
-	if ctx == nil || system == nil || timeout <= 0 {
+	if ctx == nil ||
+		system == nil ||
+		timeout <= 0 {
 		return nil, errors.New("server: Title context, ActorSystem and positive timeout are required")
 	}
 	err := ctx.Err()
@@ -34,7 +36,7 @@ func initializeTitles(
 	if err != nil {
 		return nil, err
 	}
-	if validated.LLM != nil && provider == nil {
+	if validated.LLM != nil && generator == nil {
 		return nil, errors.New("server: configured model-backed titles require a Provider")
 	}
 	endpoint, err := goakt.GrainOf[*titleregistry.Grain](ctx, system, titleregistry.Name,
@@ -45,7 +47,7 @@ func initializeTitles(
 	}
 	payload, err := system.AskGrain(ctx, endpoint, titleregistry.Configure{
 		Config:   validated,
-		Provider: provider,
+		Provider: generator,
 		Timeout:  timeout,
 	}, timeout)
 	if err != nil {
