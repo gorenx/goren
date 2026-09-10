@@ -42,6 +42,8 @@ Session 首期使用显式绑定/解绑，不引入 lease；处理完一条消�
 
 [Workspace、UserQuestions 与 Ask User 工具](./actor-design/36-workspace-userquestions.md)记录这三个模块的业务/Actor 边界、最新本地 DSH 行为对照和验证范围。
 
+[MCP Client 基本功能](./actor-design/42-mcp-client.md)记录外部 MCP 协议、ToolActor 接入、用户输入路由和验证。
+
 | 文档 | 职责 |
 | --- | --- |
 | [01 Actor、Registry 与 Runtime 所有权](./actor-design/01-ownership.md) | 术语、生命周期树、状态权威、发现/执行分离、Agent 隔离与共享资源 |
@@ -72,7 +74,7 @@ Session 事件和 persisted shape、模型输入重建、工具权限或结果�
 
 保留现有业务 owner：LLM、Credentials、Workspace、Approval、Interaction、Compaction、Subagent、
 Query/Projection 等按实际调用链继续设计，不并入一个全局服务 actor，也不要求一包一 actor。
-MCP 后续沿新 ToolActor/连接 owner 接入，当前协议适配和测试保留，不继续扩展旧 Plugin 装配。
+MCP 沿新 ToolActor/连接 owner 接入，具体范围见 [MCP Client](./actor-design/42-mcp-client.md)，不扩展旧 Plugin 装配。
 
 ## 4. 与现有仓库规范的关系
 

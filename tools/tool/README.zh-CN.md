@@ -12,6 +12,10 @@ Schema 只返回指定候选的模型定义副本，供 ToolActor 自注册；�
 
 调用方必须串行访问，并先排空工具调用再执行更新或关闭。业务对象不维护任务队列、Actor 身份或等待回复列表；它不创建连接，不注册目录，也不推断目录是否已经发布。
 
+`ProviderSource.Provider(name)` 是动态工具来源的窄查询端口，只选择构造器，不执行 I/O。
+当前消费者是 ToolActor，MCP Connection 实现该端口；它不改变 Tool 的资源所有权。
+边界与动态目录流程见 [MCP Client](../../zh-CN/actor-design/42-mcp-client.md)。
+
 ```mermaid
 sequenceDiagram
     participant Runtime as Tool Runtime

@@ -15,6 +15,10 @@
 
 Grain 不保存 Schema Registry、Provider 注册表或策略快照。组合入口通过 GoAkt WithExtensions 安装 Providers，在 HTTP / Agent 准入前一次性 Install 完整实现表，此后不可变；ToolActor 在 Initialize 按名称取得并绑定 Provider，Provision 只携带有效 Schema，由框架任务把绑定的 Provider 与 Schema 交给 Tool 业务。策略和中间件归执行业务，Actor 不直接承担审批。生产调用端口位于 Runtime 的 Instances；已删除仅测试使用的固定地址 Client。
 
+Install 同时可绑定不可变的 `tool.ProviderSource` 列表，以接入后续才发现的 MCP 工具；来源查询不做网络 I/O。
+静态表与多个来源若同时声称同名实现，初始化拒绝歧义，不按顺序静默覆盖。
+来源只提供构造器，不保存 Actor 地址；生命周期和目录更新见 [MCP Client](../../../zh-CN/actor-design/42-mcp-client.md)。
+
 ```mermaid
 sequenceDiagram
     participant L as Tool Runtime Actor

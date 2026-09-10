@@ -9,6 +9,7 @@
 - 展示会话列表、当前会话历史和流式 Agent 输出；
 - 创建、选择 Session，提交纯文本 prompt，并通过 `session.cancel` 终止当前 Agent Turn；
 - 展示 `question/requested`，通过 `/api/respond` 回答或取消后继续当前 Agent Turn；
+- 在「MCP 服务器」输入 HTTP 地址连接、查看工具数/异常状态和断开；MCP form/URL 提问复用现有 Question UI，契约见 [Actor MCP](../zh-CN/actor-design/42-mcp-client.md)；
 - 读取 value-free credential metadata，并通过 write-only Host API 设置、替换或删除 DeepSeek API Key；
 - 列出、创建和按expected revision完整替换全局Bound Definition，并从运行时目录选择可继承Tool；
 - 提供中文与英文界面资源，按浏览器语言初始化，并持久化用户手动选择；

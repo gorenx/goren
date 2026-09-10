@@ -1,5 +1,11 @@
 # 生产 Server
 
+MCP 基本接入由 Web「MCP 服务器」、`Config.MCP` 或 CLI `-mcp-server` 启用；连接、动态目录和工具问答流程见
+[MCP 模块](../../mcpclient/README.zh-CN.md)与 [Actor MCP 设计](../../zh-CN/actor-design/42-mcp-client.md)。
+Server 先完成启动配置的 MCP 订阅与发现，再开放 HTTP；Web 连接由同一 Manager 动态管理。
+目录变化按整个来源更新，已运行 Turn 延续现有工具快照。
+关闭先停止目录刷新，随后排空 Agent，再释放 MCP 连接。没有自动重连策略。
+
 本包是 Actor 生产组合根，替换 internal/assembly 的 Plugin Catalog 与树装配。设计、接口与待完成验收见 [Server 装配方案](../../zh-CN/actor-design/41-server-composition.md)，进度见 [项目记录](../../zh-CN/08-implementation-progress.md) 和 [集成问题](../../zh-CN/actor-design/40-integration-findings.md)。
 
 真实配置 owner 的 Agent 创建验收已通过：Session 可用后由 Tools Runtime 准备实例并发布定义，再初始化 Prompt。agent_creation_test.go 使用真实 Registry、SQLite 和 ToolActor，覆盖空工具、非空工具、初始化失败清理、实现执行以及取消后等待退出；完整对话与内置工具另由下述 HTTP 测试验收。
@@ -37,4 +43,4 @@ Checkpoint SQLite 的 LoadAll 结果配置到现有缓存的生命周期 Registr
 
 server_test.go 通过真实 HTTP 创建与重命名 Session、真实 WebSocket 接收 Workspace 通知、关闭监听、重启后读取标题，并验证监听冲突回滚后可以重新启动。CLI 已构建并验证无 API key 启动、host.describe、SIGTERM 退出 0。
 
-server_conversation_test.go 已验证真实 HTTP 流式对话与关闭；server_interaction_test.go 已验证默认 ask_user_question、隐藏 approval、客户端回答/取消/重连与审计持久化。server_tools.go 在 HTTP 准入前一次性安装依赖完整的 Provider，具体实例仍归每 Agent Tool Runtime。QuestionService 直接借用 Interaction Gateway，不增加 UserQuestions Actor。当前默认工具集仅包含已实现的提问与审批，不宣称已装配文件系统、MCP 或 Compaction 工具；其他迁移缺口仍以 Actor 方案为准。
+server_conversation_test.go 已验证真实 HTTP 流式对话与关闭；server_interaction_test.go 已验证默认 ask_user_question、隐藏 approval、客户端回答/取消/重连与审计持久化。server_tools.go 在 HTTP 准入前一次性安装依赖完整的 Provider，具体实例仍归每 Agent Tool Runtime。QuestionService 直接借用 Interaction Gateway，不增加 UserQuestions Actor。默认工具集包含提问与审批，已连接 MCP 的工具由稳定 ProviderSource 动态提供；不宣称已装配文件系统或 Compaction 工具。其他迁移缺口仍以 Actor 方案为准。

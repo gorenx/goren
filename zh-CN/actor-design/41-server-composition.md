@@ -114,3 +114,18 @@ server_test.go 覆盖实际 HTTP Session 创建/重命名、Workspace WebSocket 
 User Questions 直接使用无状态 QuestionService，每次通过 Agent Registry Client 查询当前 Agent 并核对准入；QuestionService 决定根 Agent / 子 Agent 的提问规则。历史 Session 的 parent header 不参与判断。不启动额外 UserQuestions Actor，通用 ToolActor 已负责取消和排空。关闭顺序为 API 终止交互 → Agent / Tool Runtime 排空工具 → ActorSystem Stop。
 
 验收包括默认启动后模型取得问题 schema、真实 ToolActor 发出问题、WebSocket 请求与 HTTP /api/respond 回答、取消和关闭、Session 中工具结果及审批 asked/decided 顺序。仅 Provider 或 Gateway 单元测试不算完成接线。
+
+## MCP 基本接入增量
+
+`Config.MCP` 保存严格校验后的 Server 配置；CLI 可重复 `-mcp-server` 指定 JSON 文件。
+`server_mcp.go` 在 UserQuestions 可用后启动连接、订阅、完整工具发现并发布全局 Tools 来源，
+随后把统一的 `mcpManager` 作为稳定 `tool.ProviderSource` 安装到 ToolActor 扩展，最后开放 HTTP。
+无启动连接也安装该来源；Web `mcp.connect/list/disconnect` 通过 GoAkt 管理 Grain 动态接入同一 Manager。
+API 只持有 Grain identity，避免经 UserQuestions 回指 API Catalog 的对象环。
+订阅变化串行刷新并整批发布；订阅结束撤下工具并清理连接。Server 关闭先停止刷新任务，
+再按既有流程排空 API / Agent，随后释放 MCP 连接。没有自动重连或旧 Plugin 装配。
+协议及模块契约由 [MCP Client](42-mcp-client.md)拥有。
+
+`TestHTTPMCPToolActorElicitationAndCatalogChanges` 验证真实 Server、AgentLoop、ToolActor、
+UserQuestions Gateway 与 HTTP/WebSocket：表单确认和回答续调 MCP，结果进入下一次模型请求，
+目录变化后下一 Turn 执行新增工具。外部模型和 MCP Server 是 keyless 可控 HTTP fixtures。
