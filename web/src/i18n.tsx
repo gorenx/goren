@@ -1,6 +1,15 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 
 const simplifiedChinese = {
+  'composer.addImage': '添加图片附件',
+  'composer.removeImage': '移除图片',
+  'composer.vision': '发送前请手动选择 DeepSeek 视觉模型。',
+  'composer.switchVision': '当前模型不支持图片，请切换到 DeepSeek-V4-Flash-Vision 后重试。',
+  'composer.model': '选择模型',
+  'composer.imageError': '请选择 PNG、JPEG、WebP 或 GIF，每张不超过 20 MiB，最多 20 张。',
+  'message.imageFailed': '图片加载失败',
+  'message.imageLoading': '正在加载图片…',
+
   'mcp.manage': 'MCP 服务器',
   'mcp.description': '连接 Streamable HTTP 服务，让 Agent 在后续轮次使用其工具。',
   'mcp.scope': '对当前服务的所有 Agent 生效，重启后不保留。仅连接可信服务，地址不得包含凭据。',
@@ -194,6 +203,14 @@ export type TranslationValues = Readonly<Record<string, string | number>>
 export type Translator = (messageKey: MessageKey, values?: TranslationValues) => string
 
 const english = {
+  'composer.addImage': 'Add image attachments',
+  'composer.removeImage': 'Remove image',
+  'composer.vision': 'Select a DeepSeek vision model before sending images.',
+  'composer.switchVision': 'This model does not support images. Select DeepSeek-V4-Flash-Vision and try again.',
+  'composer.model': 'Select model',
+  'composer.imageError': 'Choose PNG, JPEG, WebP or GIF, up to 20 MiB each and 20 images.',
+  'message.imageFailed': 'Unable to load image',
+  'message.imageLoading': 'Loading image…',
   'mcp.manage': 'MCP servers',
   'mcp.description': 'Connect a Streamable HTTP server so Agents can use its tools in subsequent turns.',
   'mcp.scope': 'Shared by all Agents on this host; not retained after restart. Connect only trusted servers. Do not include credentials in the URL.',

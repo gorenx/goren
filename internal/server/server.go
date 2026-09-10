@@ -11,6 +11,7 @@ import (
 
 	"github.com/gorenx/goren/apiproxy"
 	imageapi "github.com/gorenx/goren/apiproxy/session/image"
+	"github.com/gorenx/goren/attachment/image"
 	"github.com/gorenx/goren/internal/connection"
 	"github.com/gorenx/goren/llm/deepseek"
 	"github.com/gorenx/goren/llm/deepseek/anonymoususerid"
@@ -31,7 +32,8 @@ import (
 // Config contains process paths and owner-defined configuration, never secrets.
 type Config struct {
 	// Attachments is a borrowed image capability shared by admission and reads.
-	// Nil leaves image I/O unavailable. Composition closes it after Server.Close.
+	// Nil creates an owned original-image Store beside SessionDatabase.
+	// Composition closes an injected capability after Server.Close.
 	Attachments       imageapi.ImageStore
 	Address           string
 	Version           string
@@ -56,6 +58,7 @@ type Server struct {
 	// scheduling and domain operations never acquire this process-boundary lock.
 	lifecycle   sync.Mutex
 	settings    Config
+	pictures    *image.Store
 	platform    anonymoususerid.Environment
 	started     bool
 	address     string
@@ -148,6 +151,10 @@ func (owner *Server) Start(ctx context.Context) (failure error) {
 		}
 	}()
 	var err error
+	if err := owner.openImages(); err != nil {
+		return err
+	}
+
 	owner.sessions, err = sessionsqlite.Open(ctx, sessionsqlite.Config{
 		Path:        owner.settings.SessionDatabase,
 		JournalMode: sessionsqlite.JournalWAL,
@@ -304,6 +311,13 @@ func (owner *Server) closeResources(ctx context.Context) error {
 			return errors.Join(transportFailure, err)
 		}
 		owner.system = nil
+	}
+	if owner.pictures != nil {
+		if err := owner.pictures.Close(ctx); err != nil {
+			return errors.Join(transportFailure, err)
+		}
+		owner.pictures = nil
+		owner.settings.Attachments = nil
 	}
 	if owner.index != nil {
 		err := owner.index.Close(ctx)

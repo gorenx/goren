@@ -28,7 +28,7 @@ func TestResolveOptionsDefaultsAndEnvironmentPrecedence(t *testing.T) {
 	}
 	if connection.APIKeyEnv != DefaultAPIKeyEnv || connection.BaseURL != "https://gateway.example" ||
 		connection.MaxTokens != DefaultMaxTokens || connection.DefaultContextWindow != DefaultContextWindow ||
-		connection.StreamIdleTimeout.Milliseconds() != DefaultStreamIdleTimeoutMS || len(connection.Models) != 2 {
+		connection.StreamIdleTimeout.Milliseconds() != DefaultStreamIdleTimeoutMS || len(connection.Models) != 3 {
 		t.Fatalf("resolved defaults = %#v", connection)
 	}
 	explicit := "https://configured.example"

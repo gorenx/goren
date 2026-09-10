@@ -8,8 +8,8 @@ import (
 	"github.com/gorenx/goren/attachment"
 )
 
-// Metadata is engine-reported metadata, with EXIF orientation applied to
-// dimensions but without changing the supplied encoded file.
+// Metadata describes encoded raster facts. Transform engines report oriented
+// dimensions; original-byte inspectors report the stored canvas dimensions.
 type Metadata struct {
 	MediaType       ImageMediaType
 	Width           int64
@@ -31,18 +31,20 @@ type Encoding struct {
 	Effort    int
 }
 
-// ImageEngine performs image I/O-free transforms. Implementations release all
-// native resources before returning, and permit concurrent independent calls.
-type ImageEngine interface {
-	// EncodingVersion identifies the exact backend and encoder dependency versions
-	// used to produce bytes, so incompatible builds cannot share request caches.
-	EncodingVersion() string
-	// Probe reads header facts from encoded sourceBytes without decoding pixels.
+// Inspector validates encoded headers and the selected raster frame without transforming it.
+// Probe must not allocate decoded pixels; Store checks geometry limits before Decode.
+type Inspector interface {
 	Probe(ctx context.Context, sourceBytes []byte) (Metadata, error)
-	// Decode verifies that the selected frame can be decoded completely.
 	Decode(ctx context.Context, sourceBytes []byte) error
-	// Encode performs one transform and reports actual output metadata in Ref.
-	// It does not assign attachment.AttachmentID or publish the returned Image.
+}
+
+// ImageEngine extends inspection with image transforms. Implementations release
+// native resources before returning and permit concurrent independent calls.
+type ImageEngine interface {
+	Inspector
+	// EncodingVersion identifies backend and encoder versions for request caches.
+	EncodingVersion() string
+	// Encode returns transformed bytes and actual metadata, without publishing them.
 	Encode(ctx context.Context, sourceBytes []byte, options Encoding) (Image, error)
 }
 

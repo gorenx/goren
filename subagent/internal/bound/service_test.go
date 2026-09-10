@@ -58,7 +58,7 @@ func (subject *boundAgent) SessionValue() session.Context {
 	return subject.session
 }
 
-func (*boundAgent) InboxValue() *agent.Inbox {
+func (*boundAgent) InboxValue() agent.InboxReader {
 	return nil
 }
 

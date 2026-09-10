@@ -1,7 +1,9 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import type { ConversationSnapshot } from '../types'
 import type { ConversationStore } from '../conversation-store'
-import { SendIcon, SparkIcon, StopIcon } from '../icons'
+import { encodeImage, imageTypes, type ImageInput } from '../images'
+import { ModelPicker } from './ModelPicker'
+import { SendIcon, StopIcon } from '../icons'
 import { useI18n } from '../i18n'
 
 interface ComposerProps {
@@ -12,6 +14,10 @@ interface ComposerProps {
 export function Composer({ store, snapshot }: ComposerProps): React.JSX.Element {
   const { translate } = useI18n()
   const [draft, setDraft] = useState('')
+  const [pictures, setPictures] = useState<ImageInput[]>([])
+  const [reading, setReading] = useState(false)
+  const [imageError, setImageError] = useState(false)
+  const picker = useRef<HTMLInputElement>(null)
   const [cancelling, setCancelling] = useState(false)
   const textarea = useRef<HTMLTextAreaElement>(null)
   const composing = useRef(false)
@@ -29,16 +35,33 @@ export function Composer({ store, snapshot }: ComposerProps): React.JSX.Element 
 
   const send = async (): Promise<void> => {
     const text = draft.trim()
-    if (text === '' || !canCompose || composing.current || submitting.current) return
+    if ((text === '' && pictures.length === 0) || reading || !canCompose || composing.current || submitting.current) return
     submitting.current = true
+    const batch = pictures
+    setPictures([])
     setDraft('')
     try {
-      await store.submitPrompt(text)
+      await store.submitPrompt(text, batch)
     } catch {
+      setPictures(current => [...batch, ...current])
       setDraft(currentDraft => currentDraft === '' ? text : currentDraft)
     } finally {
       submitting.current = false
     }
+  }
+
+  const choose = async (files: File[]): Promise<void> => {
+    if (reading || submitting.current) return
+    setImageError(false)
+    if (pictures.length + files.length > 20 || files.some(file => !imageTypes.includes(file.type) || file.size === 0 || file.size > 20 * 1024 * 1024)) {
+      setImageError(true)
+      return
+    }
+    setReading(true)
+    try {
+      const batch = await Promise.all(files.map(encodeImage))
+      setPictures(current => [...current, ...batch])
+    } catch { setImageError(true) } finally { setReading(false) }
   }
 
   const stop = async (): Promise<void> => {
@@ -63,6 +86,19 @@ export function Composer({ store, snapshot }: ComposerProps): React.JSX.Element 
           void send()
         }}
       >
+        {pictures.length > 0 && <div className="flex flex-wrap gap-2 px-3 pt-3">
+          {pictures.map((picture, index) => <div key={index} className="relative rounded-lg border border-black/10 p-1">
+            <img className="h-16 w-20 rounded object-cover" src={`data:${picture.mediaType};base64,${picture.data}`} alt={picture.name} />
+            <button type="button" className="absolute right-0 top-0 rounded-full bg-white px-1 shadow" aria-label={`${translate('composer.removeImage')} ${picture.name}`} onClick={() => setPictures(current => current.filter((_, position) => position !== index))}>×</button>
+          </div>)}
+          <p className="w-full text-xs text-tertiary">{translate('composer.vision')}</p>
+        </div>}
+        {imageError && <p role="alert" className="px-3 pt-2 text-xs text-red-700">{translate('composer.imageError')}</p>}
+        <input ref={picker} type="file" accept={imageTypes.join(',')} multiple hidden aria-label={translate('composer.addImage')} onChange={event => {
+          const files = Array.from(event.currentTarget.files ?? [])
+          event.currentTarget.value = ''
+          void choose(files)
+        }} />
         <label className="sr-only" htmlFor="prompt">{translate('composer.label')}</label>
         <textarea
           ref={textarea}
@@ -86,10 +122,8 @@ export function Composer({ store, snapshot }: ComposerProps): React.JSX.Element 
         />
         <div className="flex items-center justify-between gap-3 px-3 pb-2.5">
           <div className="flex min-w-0 items-center gap-2 text-xs text-tertiary">
-            <span className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 hover:bg-black/[0.035]">
-              <SparkIcon size={14} />
-              <span className="max-w-40 truncate">{snapshot.host?.model ?? 'DeepSeek'}</span>
-            </span>
+            <button type="button" className="icon-button" disabled={!canCompose || reading} aria-label={translate('composer.addImage')} title={translate('composer.addImage')} onClick={() => picker.current?.click()}><span aria-hidden="true" className="text-xl">＋</span></button>
+            {snapshot.currentSessionId !== undefined && <ModelPicker store={store} sessionId={snapshot.currentSessionId} />}
             <span className="hidden font-mono text-[9px] uppercase tracking-[0.08em] text-caption sm:inline">{translate('composer.enterToSend')}</span>
           </div>
           {agentRunning
@@ -107,7 +141,7 @@ export function Composer({ store, snapshot }: ComposerProps): React.JSX.Element 
               </button>
               )
             : (
-              <button id="send" type="submit" className="send-button" disabled={!canCompose || draft.trim() === ''} aria-label={translate('composer.send')}>
+              <button id="send" type="submit" className="send-button" disabled={!canCompose || reading || (draft.trim() === '' && pictures.length === 0)} aria-label={translate('composer.send')}>
                 <SendIcon size={18} />
               </button>
               )}

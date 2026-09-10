@@ -19,6 +19,10 @@ func SerializeRequest(requestOptions llm.GenerateOptions, defaults RequestDefaul
 	if err != nil {
 		return wireRequest{}, err
 	}
+	return requestWithMessages(requestOptions, defaults, wireMessages)
+}
+
+func requestWithMessages(requestOptions llm.GenerateOptions, defaults RequestDefaults, wireMessages []wireMessage) (wireRequest, error) {
 	if requestOptions.System != nil {
 		wireMessages = append([]wireMessage{
 			wireSystemMessage{

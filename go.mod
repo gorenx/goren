@@ -11,7 +11,8 @@ require (
 	github.com/mark3labs/mcp-go v1.0.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/tochemey/goakt/v4 v4.5.3
-	golang.org/x/text v0.41.0
+	golang.org/x/image v0.46.0
+	golang.org/x/text v0.42.0
 	modernc.org/sqlite v1.56.0
 )
 
@@ -75,8 +76,8 @@ require (
 	go.uber.org/zap v1.28.0 // indirect
 	golang.org/x/arch v0.30.0 // indirect
 	golang.org/x/net v0.58.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	modernc.org/libc v1.74.4 // indirect

@@ -730,7 +730,7 @@ func (*serviceAgent) OptionsValue() agent.Options   { return agent.Options{} }
 func (subject *serviceAgent) SessionValue() session.Context {
 	return subject.session
 }
-func (*serviceAgent) InboxValue() *agent.Inbox                      { return nil }
+func (*serviceAgent) InboxValue() agent.InboxReader                 { return nil }
 func (*serviceAgent) StatusValue() agent.Status                     { return agent.StatusIdle }
 func (*serviceAgent) Cancel(agent.CancelCause, agent.CancelOptions) {}
 func (*serviceAgent) WhenIdle(context.Context) error                { return nil }

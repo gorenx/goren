@@ -26,6 +26,21 @@ describe('ConversationStore', () => {
     vi.unstubAllGlobals()
   })
 
+  it('refuses images on a text model without automatically selecting another model', async () => {
+    const host = installMockHost({ existingSession: true })
+    const store = new ConversationStore(translate)
+    await store.start()
+    const baseFetch = globalThis.fetch
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const envelope = JSON.parse(String(init?.body))
+      if (envelope.method === 'session.models') return new Response(JSON.stringify({ rpcId: envelope.rpcId, result: { ok: true, value: { current: { provider: 'deepseek-official', model: 'deepseek-v4-flash' }, groups: [] } } }))
+      return baseFetch(input, init)
+    }))
+    await expect(store.submitPrompt('', [{ type: 'image', mediaType: 'image/png', data: 'AQ==', name: 'picture' }])).rejects.toThrow('composer.switchVision')
+    expect(host.calls.some(entry => entry.method === 'session.selectModel' || entry.method === 'session.prompt')).toBe(false)
+    store.dispose()
+  })
+
   it('keeps execution running after cancel acknowledgement until the Host reports idle', async () => {
     const host = installMockHost({ existingSession: true })
     const store = new ConversationStore(translate)

@@ -92,7 +92,7 @@ type delegationAgent struct {
 func (*delegationAgent) ID() session.SessionID                         { return "delegated-child" }
 func (*delegationAgent) OptionsValue() agent.Options                   { return agent.Options{} }
 func (subject *delegationAgent) SessionValue() session.Context         { return subject.conversation }
-func (*delegationAgent) InboxValue() *agent.Inbox                      { return nil }
+func (*delegationAgent) InboxValue() agent.InboxReader                 { return nil }
 func (*delegationAgent) StatusValue() agent.Status                     { return agent.StatusIdle }
 func (*delegationAgent) Cancel(agent.CancelCause, agent.CancelOptions) {}
 func (*delegationAgent) WhenIdle(context.Context) error                { return nil }

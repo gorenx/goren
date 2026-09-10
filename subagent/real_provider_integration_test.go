@@ -60,7 +60,7 @@ func TestRealProviderForegroundOneShot(t *testing.T) {
 	if credentialErr != nil {
 		t.Fatal(credentialErr)
 	}
-	providerFactory, providerErr := deepseek.NewFactory(environment)
+	providerFactory, providerErr := deepseek.NewFactory(environment, credentialManager)
 	if providerErr != nil {
 		t.Fatal(providerErr)
 	}
@@ -86,7 +86,6 @@ func TestRealProviderForegroundOneShot(t *testing.T) {
 	)
 	providerPlugins = append(
 		providerPlugins,
-		credentialManager,
 		providerPlugin,
 	)
 	maxTokens := 64

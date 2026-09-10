@@ -235,7 +235,7 @@ func (*controlAgent) Dispose(context.Context) error                 { return nil
 func (subject *controlAgent) ID() session.SessionID                 { return subject.id }
 func (*controlAgent) OptionsValue() agent.Options                   { return agent.Options{} }
 func (subject *controlAgent) SessionValue() session.Context         { return subject.session }
-func (*controlAgent) InboxValue() *agent.Inbox                      { return nil }
+func (*controlAgent) InboxValue() agent.InboxReader                 { return nil }
 func (subject *controlAgent) StatusValue() agent.Status             { return subject.status }
 func (*controlAgent) Cancel(agent.CancelCause, agent.CancelOptions) {}
 func (*controlAgent) WhenIdle(context.Context) error                { return nil }

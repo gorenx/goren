@@ -17,7 +17,7 @@ import (
 // initializeDeepSeek installs the concrete provider without resolving a secret
 // or starting network I/O. The process owns the returned registration, including
 // a nonempty ID accompanied by a publication error.
-func initializeDeepSeek(ctx context.Context, system goakt.ActorSystem, settings deepseek.Config, environment anonymoususerid.Environment, secrets credentials.Provider) (llm.RegistrationID, error) {
+func initializeDeepSeek(ctx context.Context, system goakt.ActorSystem, settings deepseek.Config, environment anonymoususerid.Environment, secrets credentials.Provider, pictures deepseek.ImageReader) (llm.RegistrationID, error) {
 	if ctx == nil || system == nil {
 		return "", errors.New("server: provider initialization requires context and actor system")
 	}
@@ -33,6 +33,7 @@ func initializeDeepSeek(ctx context.Context, system goakt.ActorSystem, settings 
 		return "", err
 	}
 	adapter, err := deepseek.NewAdapter(deepseek.AdapterDependencies{
+		Pictures:    pictures,
 		Connections: connection,
 		Credentials: connection,
 		Identity:    identity,

@@ -167,7 +167,7 @@ func TestAdapterStreamsRequestAndPublishesModelCapabilities(t *testing.T) {
 	}
 
 	models, err := backend.ListModels(context.Background(), ProviderRoute)
-	if err != nil || len(models) != 2 || models[0].InputModalities[0] != llm.ModalityText {
+	if err != nil || len(models) != 3 || models[0].InputModalities[0] != llm.ModalityText {
 		t.Fatalf("models = (%#v, %v)", models, err)
 	}
 	resolved, err := backend.ResolveModel(context.Background(), ProviderRoute, "unlisted")

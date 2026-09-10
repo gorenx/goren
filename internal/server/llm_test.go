@@ -79,7 +79,7 @@ func TestProviderInitializationAndRouterStream(t *testing.T) {
 	}
 	registration, err := initializeDeepSeek(ctx, system, deepseek.Config{
 		BaseURL: &remote.URL,
-	}, environment, secrets)
+	}, environment, secrets, nil)
 	if err != nil || registration == "" {
 		t.Fatalf("provider initialization: %q, %v", registration, err)
 	}

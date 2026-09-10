@@ -58,7 +58,7 @@ func (owner *Server) initializeAPI(ctx context.Context, constructors *toolactor.
 	if err != nil {
 		return err
 	}
-	_, err = initializeDeepSeek(ctx, system, owner.settings.Provider, owner.platform, secrets)
+	_, err = initializeDeepSeek(ctx, system, owner.settings.Provider, owner.platform, secrets, owner.settings.Attachments)
 	if err != nil {
 		return err
 	}

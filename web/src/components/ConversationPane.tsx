@@ -1,4 +1,5 @@
-import { useLayoutEffect, useRef } from 'react'
+import type { ImageRef } from '../images'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ConversationSnapshot, MessageRow } from '../types'
 import type { ConversationStore } from '../conversation-store'
 import { ActivityIcon, GorenMark, KeyIcon } from '../icons'
@@ -35,7 +36,7 @@ export function ConversationPane({ store, snapshot, onOpenCredentials }: Convers
           <h1 id="conversation-title" className="mt-1 truncate font-display text-[17px] font-semibold tracking-[-0.025em] text-ink">{title}</h1>
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <span className="model-chip">{snapshot.host?.provider ?? 'DeepSeek'} · {snapshot.host?.model ?? 'default'}</span>
+          <span className="model-chip">{snapshot.host?.provider ?? 'DeepSeek'}</span>
           <label className="language-switcher">
             <span className="sr-only">{translate('language.label')}</span>
             <select
@@ -61,6 +62,7 @@ export function ConversationPane({ store, snapshot, onOpenCredentials }: Convers
       </div>
 
       <MessageList
+        store={store}
         rows={rows}
         cwd={snapshot.host?.cwd}
         sessionId={snapshot.currentSessionId}
@@ -69,7 +71,7 @@ export function ConversationPane({ store, snapshot, onOpenCredentials }: Convers
         onLoadOlder={() => void store.loadOlderHistory()}
       />
       {pendingQuestion !== undefined && <QuestionCard key={pendingQuestion.rpcId} store={store} request={pendingQuestion} />}
-      <Composer store={store} snapshot={snapshot} />
+      <Composer key={snapshot.currentSessionId} store={store} snapshot={snapshot} />
     </main>
   )
 }
@@ -85,6 +87,7 @@ function RailItem({ label, value, active }: { label: string; value: string; acti
 }
 
 function MessageList({
+  store,
   rows,
   cwd,
   sessionId,
@@ -92,6 +95,7 @@ function MessageList({
   loadingOlder,
   onLoadOlder,
 }: {
+  store: ConversationStore
   rows: readonly MessageRow[]
   cwd?: string
   sessionId?: string
@@ -139,7 +143,7 @@ function MessageList({
                 {translate(loadingOlder ? 'conversation.loadingOlder' : 'conversation.loadOlder')}
               </button>
             )}
-            {rows.map((row, index) => <Message key={`${row.role}-${String(row.seq ?? index)}`} row={row} />)}
+            {rows.map((row, index) => <Message key={`${row.role}-${String(row.seq ?? index)}`} row={row} store={store} sessionId={sessionId} />)}
           </div>
         )}
     </section>
@@ -171,7 +175,7 @@ function EmptyConversation({ cwd }: { cwd?: string }): React.JSX.Element {
   )
 }
 
-function Message({ row }: { row: MessageRow }): React.JSX.Element {
+function Message({ row, store, sessionId }: { row: MessageRow; store: ConversationStore; sessionId?: string }): React.JSX.Element {
   const { translate } = useI18n()
   return (
     <article className={`message ${row.role}${row.streaming ? ' streaming' : ''}`}>
@@ -189,9 +193,28 @@ function Message({ row }: { row: MessageRow }): React.JSX.Element {
             <p>{row.reasoning}</p>
           </details>
         )}
+        {sessionId !== undefined && row.pictures?.map((ref, index) => <Picture key={`${ref.attachmentId}-${index}`} refValue={ref} sessionId={sessionId} store={store} />)}
         {row.text !== '' && <p>{row.text}</p>}
         {row.streaming && <span className="stream-caret" aria-hidden="true" />}
       </div>
     </article>
   )
+}
+
+function Picture({ refValue, sessionId, store }: { refValue: ImageRef; sessionId: string; store: ConversationStore }): React.JSX.Element {
+  const { translate } = useI18n()
+  const [source, setSource] = useState<string>()
+  const [failed, setFailed] = useState(false)
+  useEffect(() => {
+    const operation = new AbortController()
+    setSource(undefined)
+    setFailed(false)
+    void store.readImage(sessionId, refValue, operation.signal).then(value => {
+      if (!operation.signal.aborted) setSource(value)
+    }).catch(() => { if (!operation.signal.aborted) setFailed(true) })
+    return () => operation.abort()
+  }, [store, sessionId, refValue.attachmentId])
+  return source === undefined
+    ? <p className="text-xs text-tertiary">{translate(failed ? 'message.imageFailed' : 'message.imageLoading')}</p>
+    : <img className="my-2 max-h-80 max-w-full rounded-xl border border-black/10 object-contain" src={source} alt={refValue.name ?? 'Image'} loading="lazy" />
 }

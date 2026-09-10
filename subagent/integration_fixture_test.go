@@ -218,6 +218,7 @@ func (observerState *subagentLifecycleObserver) snapshot() (
 }
 
 type integrationFixture struct {
+	prompts          systemprompt.PromptRegistry
 	runtimeEngine    *plugin.Runtime
 	subagentHandle   plugin.Handle
 	turnRelayHandle  plugin.Handle
@@ -336,11 +337,17 @@ func newIntegrationFixtureWithConfiguration(
 	if settingsErr != nil {
 		t.Fatal(settingsErr)
 	}
+	promptRuntime := systemprompt.New(
+		promptSettings,
+		systemprompt.RegistryOptions{},
+	)
 	loopPlugin, loopErr := agentloop.NewPlugin(
 		agentloop.Settings{
 			MaxParallelToolCalls: agentloop.DefaultMaxParallelToolCalls,
 		},
-		agentloop.RuntimeOptions{},
+		agentloop.RuntimeOptions{
+			Prompts: promptRuntime,
+		},
 	)
 	if loopErr != nil {
 		t.Fatal(loopErr)
@@ -358,16 +365,12 @@ func newIntegrationFixtureWithConfiguration(
 		t.Fatal(registryErr)
 	}
 	modelRuntime := llm.NewRuntime(nil)
-	promptRuntime := systemprompt.New(
-		promptSettings,
-		systemprompt.RegistryOptions{},
-	)
-	toolService := tools.New(toolSettings)
+	toolService := tools.New(toolSettings, promptRuntime)
 	spawnPlugin, pluginErr := spawn.NewPlugin(spawn.DefaultSeedBuilderName)
 	if pluginErr != nil {
 		t.Fatal(pluginErr)
 	}
-	delegationTool, toolErr := subagentdelegation.New(configuration.delegation)
+	delegationTool, toolErr := subagentdelegation.New(configuration.delegation, promptRuntime)
 	if toolErr != nil {
 		t.Fatal(toolErr)
 	}
@@ -451,6 +454,7 @@ func newIntegrationFixtureWithConfiguration(
 		})
 	}
 	return &integrationFixture{
+		prompts:          promptRuntime,
 		runtimeEngine:    runtimeEngine,
 		subagentHandle:   handles[subagentPluginIndex],
 		turnRelayHandle:  handles[turnRelayPluginIndex],

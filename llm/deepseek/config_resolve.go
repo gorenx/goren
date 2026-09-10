@@ -95,6 +95,11 @@ func ResolveOptions(settings Config, launchSource LaunchEnvironment) (Connection
 func resolveModels(configured *[]CatalogModel) ([]CatalogModel, error) {
 	models := []CatalogModel{
 		{
+			ID:            VisionModelID,
+			Name:          stringPointer("DeepSeek-V4-Flash-Vision"),
+			ContextWindow: intPointer(DefaultContextWindow),
+		},
+		{
 			ID:            DefaultModelID,
 			Name:          stringPointer("DeepSeek-V4-Flash"),
 			ContextWindow: intPointer(DefaultContextWindow),

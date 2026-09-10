@@ -93,7 +93,7 @@ func (subject *relayAgent) SessionValue() session.Context {
 	return subject.conversation
 }
 
-func (*relayAgent) InboxValue() *agent.Inbox { return nil }
+func (*relayAgent) InboxValue() agent.InboxReader { return nil }
 
 func (*relayAgent) StatusValue() agent.Status { return agent.StatusIdle }
 

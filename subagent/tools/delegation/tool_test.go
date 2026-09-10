@@ -209,7 +209,7 @@ func (*toolAgent) Dispose(context.Context) error                 { return nil }
 func (subject *toolAgent) ID() session.SessionID                 { return subject.id }
 func (*toolAgent) OptionsValue() agent.Options                   { return agent.Options{} }
 func (subject *toolAgent) SessionValue() session.Context         { return subject.session }
-func (*toolAgent) InboxValue() *agent.Inbox                      { return nil }
+func (*toolAgent) InboxValue() agent.InboxReader                 { return nil }
 func (*toolAgent) StatusValue() agent.Status                     { return agent.StatusIdle }
 func (*toolAgent) Cancel(agent.CancelCause, agent.CancelOptions) {}
 func (*toolAgent) WhenIdle(context.Context) error                { return nil }

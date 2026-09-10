@@ -15,7 +15,7 @@ func TestSubagentPluginReactivatesWhenOptionalDependencyAppears(t *testing.T) {
 	}
 	if _, err = state.runtimeEngine.Mount(
 		context.Background(),
-		approval.New(settings),
+		approval.New(settings, state.prompts),
 	); err != nil {
 		t.Fatalf("mount optional DelegationPolicy provider: %v", err)
 	}

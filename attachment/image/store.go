@@ -36,10 +36,11 @@ type ObjectStore interface {
 }
 
 // Store owns image admission and shared transformation capacity. It borrows
-// its engine and object store; composition closes those after Store closes.
+// its inspector, optional engine and object store; composition closes those after Store.
 type Store struct {
 	settings      Config
 	normalizer    *Normalizer
+	inspector     Inspector
 	objects       ObjectStore
 	slots         chan struct{}
 	mu            sync.Mutex
@@ -52,12 +53,6 @@ type Store struct {
 
 // NewStore validates deployment policy before constructing the image service.
 func NewStore(settings Config, backend ImageEngine, storage ObjectStore) (*Store, error) {
-	if err := settings.Validate(); err != nil {
-		return nil, err
-	}
-	if storage == nil {
-		return nil, errors.New("attachment: object store is required")
-	}
 	processor, err := NewNormalizer(backend, NormalizationPolicy{
 		MaxPixels:    settings.NormalizedImageMaxPixels,
 		MaxDimension: settings.NormalizedImageMaxDimension,
@@ -66,9 +61,26 @@ func NewStore(settings Config, backend ImageEngine, storage ObjectStore) (*Store
 	if err != nil {
 		return nil, err
 	}
+	service, err := NewOriginalStore(settings, backend, storage)
+	if err != nil {
+		return nil, err
+	}
+	service.normalizer = processor
+	return service, nil
+}
+
+// NewOriginalStore validates and stores original bytes without a transformation backend.
+// The caller owns Close; inspection and storage capabilities are borrowed.
+func NewOriginalStore(settings Config, checker Inspector, storage ObjectStore) (*Store, error) {
+	if err := settings.Validate(); err != nil {
+		return nil, err
+	}
+	if checker == nil || storage == nil {
+		return nil, errors.New("attachment: inspector and object store are required")
+	}
 	return &Store{
 		settings:   settings,
-		normalizer: processor,
+		inspector:  checker,
 		objects:    storage,
 		slots:      make(chan struct{}, settings.ImageCompressionConcurrency),
 		operations: make(map[uint64]context.CancelFunc),
@@ -130,7 +142,7 @@ func (service *Store) Close(ctx context.Context) error {
 	}
 }
 
-// SaveImage validates, normalizes and durably publishes a single source image.
+// SaveImage validates and publishes an image using the construction-time storage policy.
 func (service *Store) SaveImage(ctx context.Context, input ImageInput) (ImageRef, error) {
 	refs, err := service.SaveImages(ctx, []ImageInput{input})
 	if err != nil {
@@ -193,7 +205,7 @@ func (service *Store) prepare(ctx context.Context, input ImageInput) (Image, err
 	if err := ctx.Err(); err != nil {
 		return Image{}, err
 	}
-	facts, err := service.normalizer.engine.Probe(ctx, input.Data)
+	facts, err := service.inspector.Probe(ctx, input.Data)
 	if err != nil {
 		return Image{}, rasterFailure(ctx, err)
 	}
@@ -213,7 +225,7 @@ func (service *Store) prepare(ctx context.Context, input ImageInput) (Image, err
 			Message: "Image exceeds the configured per-side pixel limit.",
 		}
 	}
-	if err := service.normalizer.engine.Decode(ctx, input.Data); err != nil {
+	if err := service.inspector.Decode(ctx, input.Data); err != nil {
 		return Image{}, rasterFailure(ctx, err)
 	}
 	if facts.MediaType != input.MediaType {
@@ -222,9 +234,19 @@ func (service *Store) prepare(ctx context.Context, input ImageInput) (Image, err
 			Message: "Declared image type does not match its bytes.",
 		}
 	}
-	normalized, err := service.normalizer.Normalize(ctx, input.Data, facts)
-	if err != nil {
-		return Image{}, err
+	normalized := Image{
+		Data: append([]byte(nil), input.Data...),
+		Ref: ImageRef{
+			MediaType: facts.MediaType,
+			Width:     facts.Width,
+			Height:    facts.Height,
+		},
+	}
+	if service.normalizer != nil {
+		normalized, err = service.normalizer.Normalize(ctx, input.Data, facts)
+		if err != nil {
+			return Image{}, err
+		}
 	}
 	digest := sha256.Sum256(normalized.Data)
 	ref := ImageRef{
@@ -260,7 +282,7 @@ func (service *Store) ReadImage(parent context.Context, ref ImageRef) (Image, er
 	if err != nil {
 		return Image{}, err
 	}
-	facts, err := service.normalizer.engine.Probe(ctx, data)
+	facts, err := service.inspector.Probe(ctx, data)
 	if ctx.Err() != nil {
 		return Image{}, ctx.Err()
 	}

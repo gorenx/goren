@@ -26,7 +26,7 @@ func (*publicationAgent) SessionValue() session.Context {
 	return nil
 }
 
-func (*publicationAgent) InboxValue() *agent.Inbox {
+func (*publicationAgent) InboxValue() agent.InboxReader {
 	return nil
 }
 

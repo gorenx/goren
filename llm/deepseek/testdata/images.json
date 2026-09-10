@@ -1,0 +1,203 @@
+{
+  "revision": "5dda764ed3aa172535a7967b06ff95d9cbfe536a",
+  "cases": [
+    {
+      "name": "mixed",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "before"
+            },
+            {
+              "type": "image",
+              "attachment": {
+                "attachmentId": "sha256:picture",
+                "mediaType": "image/png",
+                "width": 2,
+                "height": 3,
+                "bytes": 1,
+                "name": "picture.png"
+              }
+            },
+            {
+              "type": "text",
+              "text": "after"
+            }
+          ]
+        }
+      ],
+      "wire": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "before"
+            },
+            {
+              "type": "text",
+              "text": "\nImage \"picture.png\" (sha256:picture); request preview 2x3px. It may be resized or re-encoded; source dimensions, format, and byte size may differ."
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "data:image/png;base64,AQ=="
+              }
+            },
+            {
+              "type": "text",
+              "text": "after"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "only-image",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "image",
+              "attachment": {
+                "attachmentId": "sha256:picture",
+                "mediaType": "image/png",
+                "width": 2,
+                "height": 3,
+                "bytes": 1,
+                "name": "picture.png"
+              }
+            }
+          ]
+        }
+      ],
+      "wire": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Image \"picture.png\" (sha256:picture); request preview 2x3px. It may be resized or re-encoded; source dimensions, format, and byte size may differ."
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "data:image/png;base64,AQ=="
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "tool-images",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool-result",
+              "toolCallId": "one",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "found"
+                },
+                {
+                  "type": "image",
+                  "attachment": {
+                    "attachmentId": "sha256:picture",
+                    "mediaType": "image/png",
+                    "width": 2,
+                    "height": 3,
+                    "bytes": 1,
+                    "name": "picture.png"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool-result",
+              "toolCallId": "two",
+              "content": [
+                {
+                  "type": "image",
+                  "attachment": {
+                    "attachmentId": "sha256:picture",
+                    "mediaType": "image/png",
+                    "width": 2,
+                    "height": 3,
+                    "bytes": 1,
+                    "name": "picture.png"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "wire": [
+        {
+          "role": "tool",
+          "tool_call_id": "one",
+          "content": "found\nImage \"picture.png\" (sha256:picture); request preview 2x3px. It may be resized or re-encoded; source dimensions, format, and byte size may differ."
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "two",
+          "content": "Image \"picture.png\" (sha256:picture); request preview 2x3px. It may be resized or re-encoded; source dimensions, format, and byte size may differ."
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Attached image(s) from tool result:"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "data:image/png;base64,AQ=="
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "data:image/png;base64,AQ=="
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "text",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "hello"
+            }
+          ]
+        }
+      ],
+      "wire": [
+        {
+          "role": "user",
+          "content": "hello"
+        }
+      ]
+    }
+  ]
+}

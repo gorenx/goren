@@ -115,7 +115,7 @@ func (subject *boundRuntimeAgent) SessionValue() session.Context {
 	return subject.conversation
 }
 
-func (*boundRuntimeAgent) InboxValue() *agent.Inbox {
+func (*boundRuntimeAgent) InboxValue() agent.InboxReader {
 	return nil
 }
 
@@ -569,10 +569,11 @@ func newBoundRuntimeFixture(
 	if err != nil {
 		testingContext.Fatal(err)
 	}
+	prompts := systemprompt.New(promptConfig, systemprompt.RegistryOptions{})
 	if _, err = runtimeEngine.Start(
 		context.Background(),
-		systemprompt.New(promptConfig, systemprompt.RegistryOptions{}),
-		tools.New(toolConfig),
+		prompts,
+		tools.New(toolConfig, prompts),
 		&boundFactoryProvider{
 			builder: agentFactory,
 		},

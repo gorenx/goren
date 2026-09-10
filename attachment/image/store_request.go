@@ -50,6 +50,12 @@ func (service *Store) ReadImageRequest(parent context.Context, ref ImageRef, pol
 		return Variant{}, err
 	}
 	defer finish()
+	if service.normalizer == nil {
+		return Variant{}, &attachment.Error{
+			Code:    "ATTACHMENT_UNAVAILABLE",
+			Message: "Local image transformations are unavailable for original-byte storage.",
+		}
+	}
 	variantID, err := requestVariantID(ref, policy, service.normalizer.engine.EncodingVersion())
 	if err != nil {
 		return Variant{}, err

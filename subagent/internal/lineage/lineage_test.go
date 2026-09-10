@@ -33,7 +33,7 @@ func (subject *parentRecord) OptionsValue() agent.Options { return subject.optio
 
 func (subject *parentRecord) SessionValue() session.Context { return subject.conversation }
 
-func (*parentRecord) InboxValue() *agent.Inbox { return nil }
+func (*parentRecord) InboxValue() agent.InboxReader { return nil }
 
 func (*parentRecord) StatusValue() agent.Status { return agent.StatusIdle }
 
