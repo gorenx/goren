@@ -1,9 +1,11 @@
 package control
 
 import (
+	"context"
 	"errors"
 
 	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 	"github.com/gorenx/goren/tools"
 )
@@ -13,23 +15,27 @@ import (
 type controlTools struct {
 	children  subagent.ChildControl
 	directory subagent.ChildDirectory
-	agents    agent.Registry
+	activity  activityReader
+}
+
+type activityReader interface {
+	Status(context.Context, session.SessionID) (agent.Status, bool, error)
 }
 
 func newControlTools(
 	children subagent.ChildControl,
 	directory subagent.ChildDirectory,
-	agentRegistry agent.Registry,
+	activity activityReader,
 ) (*controlTools, error) {
-	if children == nil || directory == nil || agentRegistry == nil {
+	if children == nil || directory == nil || activity == nil {
 		return nil, errors.New(
-			"subagent control tools require ChildControl, ChildDirectory, and Agent Registry",
+			"subagent control tools require ChildControl, ChildDirectory, and activity reader",
 		)
 	}
 	return &controlTools{
 		children:  children,
 		directory: directory,
-		agents:    agentRegistry,
+		activity:  activity,
 	}, nil
 }
 

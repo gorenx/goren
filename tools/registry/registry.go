@@ -31,10 +31,25 @@ type Policy struct {
 // entries override inherited tools without copying their schemas.
 type Catalog struct {
 	Schemas []llm.ToolSchema
+	// Restriction intersects inherited membership. Nil Allow is unrestricted;
+	// a non-nil empty Allow admits no inherited tool.
+	Restriction *ToolRestriction
 	// Policies maps a canonical tool name to explicitly configured policy fields.
 	// For example, a false value at *Policies["read_file"].Visible hides that tool after merging.
 	// A Session may override policy without copying the inherited schema.
 	Policies map[string]Policy
+}
+
+type ToolRestriction struct {
+	Allow []string
+	Deny  []string
+}
+
+func (restriction ToolRestriction) Clone() ToolRestriction {
+	return ToolRestriction{
+		Allow: slices.Clone(restriction.Allow),
+		Deny:  slices.Clone(restriction.Deny),
+	}
 }
 
 // Configuration preserves global and Session values separately for Runtime merging.
@@ -138,6 +153,12 @@ func (owner *Registry) Read(identifier session.SessionID) Configuration {
 // Clone detaches schema bytes and optional values from caller mutation.
 func (input Catalog) Clone() Catalog {
 	input.Schemas = slices.Clone(input.Schemas)
+	if input.Restriction != nil {
+		input.Restriction = &ToolRestriction{
+			Allow: slices.Clone(input.Restriction.Allow),
+			Deny:  slices.Clone(input.Restriction.Deny),
+		}
+	}
 	for index := range input.Schemas {
 		input.Schemas[index].Parameters = slices.Clone(input.Schemas[index].Parameters)
 	}

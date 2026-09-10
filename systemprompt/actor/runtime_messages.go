@@ -17,6 +17,8 @@ type InitializeRuntime struct {
 	ToolsRuntime *goakt.GrainIdentity
 	// CreationID authorizes this Agent lifetime's tool baseline read.
 	CreationID string
+	// Sections are local definitions captured for this Agent lifetime.
+	Sections []systemprompt.PromptSection
 }
 
 // ApplyTools delivers a detached view of a committed tools event.

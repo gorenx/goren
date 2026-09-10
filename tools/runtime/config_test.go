@@ -1,6 +1,7 @@
 package toolruntime
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/gorenx/goren/llm"
@@ -63,5 +64,64 @@ func TestMergeRejectsPolicyWithoutSchema(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("unknown tool policy was accepted")
+	}
+}
+
+func TestMergeAppliesSessionToolRestriction(t *testing.T) {
+	testCases := []struct {
+		name        string
+		restriction *toolregistry.ToolRestriction
+		want        []string
+	}{
+		{
+			name: "nil allow inherits all tools except denied",
+			restriction: &toolregistry.ToolRestriction{
+				Deny: []string{"write"},
+			},
+			want: []string{"read"},
+		},
+		{
+			name: "empty allow admits no inherited tools",
+			restriction: &toolregistry.ToolRestriction{
+				Allow: []string{},
+			},
+			want: nil,
+		},
+		{
+			name: "allow and deny intersect",
+			restriction: &toolregistry.ToolRestriction{
+				Allow: []string{"read", "write"},
+				Deny:  []string{"read"},
+			},
+			want: []string{"write"},
+		},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			merged, err := Merge(toolregistry.Configuration{
+				Global: toolregistry.Catalog{
+					Schemas: []llm.ToolSchema{
+						testSchema("read"),
+						testSchema("write"),
+					},
+				},
+				Custom: toolregistry.Catalog{
+					Restriction: testCase.restriction,
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := make([]string, 0, len(merged))
+			for _, entry := range merged {
+				got = append(got, entry.Schema.Name)
+			}
+			want := slices.Clone(testCase.want)
+			slices.Sort(got)
+			slices.Sort(want)
+			if !slices.Equal(got, want) {
+				t.Fatalf("tools = %v, want %v", got, testCase.want)
+			}
+		})
 	}
 }

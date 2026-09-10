@@ -16,19 +16,22 @@ type pendingInput struct {
 // sourceCursor owns ordered Session scanning and the one outstanding input
 // for a relay worker.
 type sourceCursor struct {
-	store        session.LiveStore
-	conversation session.Context
+	conversation Source
 	binding      binding
 	pending      *pendingInput
 }
 
+type Source interface {
+	Snapshot() session.Snapshot
+	Commit(context.Context, session.WritePlan) (session.WriteResult, error)
+	Flush(context.Context) error
+}
+
 func newSourceCursor(
-	store session.LiveStore,
-	conversation session.Context,
+	conversation Source,
 	bindingValue binding,
 ) *sourceCursor {
 	return &sourceCursor{
-		store:        store,
 		conversation: conversation,
 		binding:      bindingValue,
 	}
@@ -77,10 +80,7 @@ func (current *sourceCursor) next(
 		if err != nil {
 			return boundcontract.Input{}, false, err
 		}
-		if err = current.store.Flush(
-			ctx,
-			current.conversation,
-		); err != nil {
+		if err = current.conversation.Flush(ctx); err != nil {
 			return boundcontract.Input{}, false, err
 		}
 		current.pending = &pendingInput{
@@ -128,5 +128,5 @@ func (current *sourceCursor) advance(
 	); err != nil {
 		return err
 	}
-	return current.store.Flush(ctx, current.conversation)
+	return current.conversation.Flush(ctx)
 }

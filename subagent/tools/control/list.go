@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -71,7 +72,7 @@ type listEntry struct {
 func (owner *controlTools) listDefinition() tools.ToolDefinition {
 	adapter := &listTool{
 		directory: owner.directory,
-		agents:    owner.agents,
+		activity:  owner.activity,
 	}
 
 	return tools.ToolDefinition{
@@ -90,8 +91,8 @@ func (adapter *listTool) Execute(
 	rawArguments json.RawMessage,
 	runContext tools.ToolRunContext,
 ) (json.RawMessage, error) {
-	parentAgent, matches := runContext.Execution.Subject.(agent.Agent)
-	if !matches || parentAgent == nil {
+	parentID := runContext.Execution.SessionID
+	if parentID == "" {
 		return nil, errors.New("list_agents requires a calling Agent")
 	}
 	var request listArguments
@@ -106,20 +107,24 @@ func (adapter *listTool) Execute(
 	case "children":
 		rows, listErr := adapter.directory.ListChildren(
 			runContext.Context,
-			parentAgent.ID(),
+			parentID,
 		)
 		if listErr != nil {
 			return nil, listErr
 		}
 		for _, row := range rows {
-			if projected, included := adapter.project(row, nil, nil); included {
+			projected, included, projectErr := adapter.project(runContext.Context, row, nil, nil)
+			if projectErr != nil {
+				return nil, projectErr
+			}
+			if included {
 				entries = append(entries, projected)
 			}
 		}
 	case "descendants":
 		rows, listErr := adapter.directory.ListDescendants(
 			runContext.Context,
-			parentAgent.ID(),
+			parentID,
 		)
 		if listErr != nil {
 			return nil, listErr
@@ -127,11 +132,16 @@ func (adapter *listTool) Execute(
 		for _, row := range rows {
 			parentID := string(row.ParentID)
 			depth := row.Depth
-			if projected, included := adapter.project(
+			projected, included, projectErr := adapter.project(
+				runContext.Context,
 				row.Entry,
 				&parentID,
 				&depth,
-			); included {
+			)
+			if projectErr != nil {
+				return nil, projectErr
+			}
+			if included {
 				entries = append(entries, projected)
 			}
 		}
@@ -142,29 +152,32 @@ func (adapter *listTool) Execute(
 }
 
 func (adapter *listTool) project(
+	requestContext context.Context,
 	entry subagent.ChildEntry,
 	parentID *string,
 	depth *int64,
-) (listEntry, bool) {
+) (listEntry, bool, error) {
 	switch row := entry.(type) {
 	case subagent.ContinuableChildEntry:
+		status, err := adapter.status(requestContext, row.ID)
 		return listEntry{
 			Kind:   "child",
 			ID:     string(row.ID),
 			Label:  row.Label,
-			Status: adapter.status(row.ID),
+			Status: status,
 			Parent: parentID,
 			Depth:  depth,
-		}, true
+		}, true, err
 	case subagent.BoundChildEntry:
+		status, err := adapter.status(requestContext, row.ID)
 		return listEntry{
 			Kind:   "child",
 			ID:     string(row.ID),
 			Label:  row.Label,
-			Status: adapter.status(row.ID),
+			Status: status,
 			Parent: parentID,
 			Depth:  depth,
-		}, true
+		}, true, err
 	case subagent.DiagnosticEntry:
 		return listEntry{
 			Kind:   "diagnostic",
@@ -172,23 +185,26 @@ func (adapter *listTool) project(
 			Reason: string(row.Reason),
 			Parent: parentID,
 			Depth:  depth,
-		}, true
+		}, true, nil
 	case subagent.OneShotChildEntry:
-		return listEntry{}, false
+		return listEntry{}, false, nil
 	default:
-		return listEntry{}, false
+		return listEntry{}, false, nil
 	}
 }
 
-func (adapter *listTool) status(childID session.SessionID) string {
-	childAgent, found := adapter.agents.Get(childID)
+func (adapter *listTool) status(requestContext context.Context, childID session.SessionID) (string, error) {
+	status, found, err := adapter.activity.Status(requestContext, childID)
+	if err != nil {
+		return "", err
+	}
 	if !found {
-		return "ready"
+		return "ready", nil
 	}
-	if childAgent.StatusValue() == agent.StatusRunning {
-		return "running"
+	if status == agent.StatusRunning {
+		return "running", nil
 	}
-	return "idle"
+	return "idle", nil
 }
 
 func (adapter *listTool) Render(
@@ -265,5 +281,5 @@ func int64OrZero(value *int64) int64 {
 
 type listTool struct {
 	directory subagent.ChildDirectory
-	agents    agent.Registry
+	activity  activityReader
 }

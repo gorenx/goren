@@ -41,6 +41,9 @@ func Merge(input toolregistry.Configuration) ([]Tool, error) {
 	}
 	effective := make([]Tool, 0, len(schemas))
 	for name, entry := range schemas {
+		if !admitted(name, captured.Custom.Restriction) {
+			continue
+		}
 		enabled := true
 		visible := true
 		policies := execution.Policies{}
@@ -77,6 +80,16 @@ func Merge(input toolregistry.Configuration) ([]Tool, error) {
 	}
 	sort.Slice(effective, func(left int, right int) bool { return effective[left].Schema.Name < effective[right].Schema.Name })
 	return effective, nil
+}
+
+func admitted(name string, restriction *toolregistry.ToolRestriction) bool {
+	if restriction == nil {
+		return true
+	}
+	if restriction.Allow != nil && !slices.Contains(restriction.Allow, name) {
+		return false
+	}
+	return !slices.Contains(restriction.Deny, name)
 }
 
 func cloneTools(entries []Tool) []Tool {

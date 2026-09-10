@@ -1,11 +1,10 @@
 package report
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 
-	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
@@ -34,28 +33,31 @@ type reportArguments struct {
 	Output string `json:"output"`
 }
 
-// liveAgents is the report use case's read-only view of resident Agents.
-type liveAgents interface {
-	Get(session.SessionID) (agent.Agent, bool)
-	Contains(agent.Agent) bool
+type reporter interface {
+	Report(
+		context.Context,
+		session.SessionID,
+		string,
+		Delivery,
+	) (agentmessage.MessageID, error)
 }
 
 // reportTool translates one model Tool call into a direct parent Agent Inbox
 // operation. It has no Plugin registration lifecycle.
 type reportTool struct {
-	agents     liveAgents
+	reporter   reporter
 	scheduling Delivery
 }
 
 func newReportTool(
-	agents liveAgents,
+	reporting reporter,
 	selectedDelivery Delivery,
 ) (*reportTool, error) {
-	if agents == nil {
-		return nil, errors.New("subagent report: Agent Registry is required")
+	if reporting == nil {
+		return nil, errors.New("subagent report: Reporter is required")
 	}
 	return &reportTool{
-		agents:     agents,
+		reporter:   reporting,
 		scheduling: selectedDelivery,
 	}, nil
 }
@@ -83,64 +85,20 @@ func (adapter *reportTool) Execute(
 	if contextErr := runContext.Context.Err(); contextErr != nil {
 		return nil, contextErr
 	}
-	childAgent, matches := runContext.Execution.Subject.(agent.Agent)
-	if !matches || childAgent == nil {
+	childID := runContext.Execution.SessionID
+	if childID == "" {
 		return nil, errors.New("report requires a calling child Agent")
-	}
-	if !adapter.agents.Contains(childAgent) {
-		return nil, &subagent.Error{
-			Code:    subagent.ErrorUnauthorized,
-			Message: "report requires the exact live child Agent",
-		}
 	}
 	var request reportArguments
 	if decodeErr := json.Unmarshal(rawArguments, &request); decodeErr != nil {
 		return nil, decodeErr
 	}
-	childSession := childAgent.SessionValue()
-	if childSession == nil {
-		return nil, &subagent.Error{
-			Code:    subagent.ErrorUnauthorized,
-			Message: "report requires a child Agent with a direct parent",
-		}
-	}
-	childHeader := childSession.Header()
-	if childHeader.ParentSession == nil {
-		return nil, &subagent.Error{
-			Code:    subagent.ErrorUnauthorized,
-			Message: "report requires a child Agent with a direct parent",
-		}
-	}
-	parentID := *childHeader.ParentSession
-	parentAgent, found := adapter.agents.Get(parentID)
-	if !found {
-		return nil, &subagent.Error{
-			Code:    subagent.ErrorParentUnavailable,
-			Message: "direct parent is not live; report was not delivered",
-		}
-	}
-	messageValue, messageErr := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
-		Content: []agentmessage.ContentBlock{
-			agentmessage.NewTextBlock(
-				fmt.Sprintf("Subagent %s reported:", childAgent.ID()),
-			),
-			agentmessage.NewTextBlock(request.Output),
-		},
-		Source: subagent.ReportSource{
-			SenderSessionID: childAgent.ID(),
-		},
-	})
-	if messageErr != nil {
-		return nil, messageErr
-	}
-	switch adapter.scheduling {
-	case Quiet:
-		messageErr = parentAgent.Inject(messageValue)
-	case NextStep:
-		messageErr = parentAgent.Steer(messageValue)
-	default:
-		return nil, errors.New("subagent report: unsupported delivery")
-	}
+	messageID, messageErr := adapter.reporter.Report(
+		runContext.Context,
+		childID,
+		request.Output,
+		adapter.scheduling,
+	)
 	if messageErr != nil {
 		return nil, &subagent.Error{
 			Code:    subagent.ErrorParentUnavailable,
@@ -151,7 +109,7 @@ func (adapter *reportTool) Execute(
 	return json.Marshal(struct {
 		MessageID string `json:"messageId"`
 	}{
-		MessageID: string(messageValue.StableID()),
+		MessageID: string(messageID),
 	})
 }
 

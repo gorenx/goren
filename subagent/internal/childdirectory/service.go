@@ -15,7 +15,12 @@ import (
 
 // Sessions is the live listing capability consumed by ChildDirectory.
 type Sessions interface {
-	List() []session.Context
+	List() []LiveSession
+}
+
+type LiveSession interface {
+	Header() session.Header
+	Events() []session.Event
 }
 
 // Persistence is the optional cold listing capability consumed by ChildDirectory.
@@ -26,7 +31,7 @@ type Persistence interface {
 
 // Projections is the identity fold capability consumed by ChildDirectory.
 type Projections interface {
-	Snapshot(session.Context) (sessproj.Snapshot, error)
+	Snapshot(session.Header, []session.Event) (sessproj.Snapshot, error)
 	Restore(
 		sessproj.Checkpoint,
 		[]session.Event,

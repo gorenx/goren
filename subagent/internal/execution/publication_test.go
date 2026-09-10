@@ -1,158 +1,84 @@
 package execution
 
 import (
-	"context"
 	"testing"
 
-	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/session"
+	agentregistry "github.com/gorenx/goren/agent/registry"
 	"github.com/gorenx/goren/subagent"
 )
 
-type publicationAgent struct {
-	identifier session.SessionID
-}
-
-func (subject *publicationAgent) ID() session.SessionID {
-	return subject.identifier
-}
-
-func (*publicationAgent) OptionsValue() agent.Options {
-	return agent.Options{}
-}
-
-func (*publicationAgent) SessionValue() session.Context {
-	return nil
-}
-
-func (*publicationAgent) InboxValue() agent.InboxReader {
-	return nil
-}
-
-func (*publicationAgent) StatusValue() agent.Status {
-	return agent.StatusIdle
-}
-
-func (*publicationAgent) Cancel(agent.CancelCause, agent.CancelOptions) {}
-
-func (*publicationAgent) WhenIdle(context.Context) error {
-	return nil
-}
-
-func (*publicationAgent) RunMaintenance(
-	context.Context,
-	func(context.Context) error,
-) error {
-	return nil
-}
-
-func (*publicationAgent) Followup(agentmessage.UserMessage) error {
-	return nil
-}
-
-func (*publicationAgent) Steer(agentmessage.UserMessage) error {
-	return nil
-}
-
-func (*publicationAgent) Inject(agentmessage.UserMessage) error {
-	return nil
-}
-
 type publicationPublisher struct {
-	parent agent.Agent
+	parent agentregistry.Creation
 	fact   subagent.Started
 	calls  int
 }
 
-func (publisher *publicationPublisher) PublishStarted(
-	parentAgent agent.Agent,
-	fact subagent.Started,
-) {
-	publisher.parent = parentAgent
+func (publisher *publicationPublisher) PublishStarted(parent agentregistry.Creation, fact subagent.Started) {
+	publisher.parent = parent
 	publisher.fact = fact
 	publisher.calls++
 }
 
-func (*publicationPublisher) PublishEnded(agent.Agent, subagent.Ended) {}
+func (*publicationPublisher) PublishEnded(agentregistry.Creation, subagent.Ended) {}
 
 func TestPublishActivatesRegistersAndAnnouncesExecution(t *testing.T) {
-	parentAgent := &publicationAgent{
-		identifier: session.SessionID("parent"),
+	parent := agentregistry.Creation{
+		AgentID:    "parent",
+		CreationID: "parent-run",
 	}
-	childAgent := &publicationAgent{
-		identifier: session.SessionID("child"),
+	child := agentregistry.Creation{
+		AgentID:    "child",
+		CreationID: "child-run",
 	}
-	running := newManagedExecutionRecord(
-		subagent.RunID("run"),
-		childAgent.ID(),
-	)
+	running := newManagedExecutionRecord("run", child.AgentID)
 	registryOwner := NewRegistry()
-	lifecyclePublisher := &publicationPublisher{}
-	closing := make(chan struct{})
+	publisher := &publicationPublisher{}
 	err := Publish(
 		registryOwner,
-		lifecyclePublisher,
+		publisher,
 		Entry{
 			Execution: running,
 			Mode:      subagent.ModeContinuable,
-			Parent:    parentAgent,
-			Subject:   childAgent,
-			Closing:   closing,
+			Parent:    parent,
+			Subject:   child,
 		},
 		"seed-builder",
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if running.State() != subagent.ExecutionActive {
-		t.Fatalf("state = %q", running.State())
+	published, found := registryOwner.Find(child.AgentID)
+	if running.State() != subagent.ExecutionActive || !found || published.Execution != running {
+		t.Fatalf("published = %#v, found = %v", published, found)
 	}
-	publishedEntry, found := registryOwner.Find(childAgent.ID())
-	if !found || publishedEntry.Execution != running {
-		t.Fatalf("registry entry = %#v, found = %v", publishedEntry, found)
-	}
-	if lifecyclePublisher.calls != 1 ||
-		!agent.Same(lifecyclePublisher.parent, parentAgent) ||
-		lifecyclePublisher.fact.RunID != running.RunID() ||
-		lifecyclePublisher.fact.ID != childAgent.ID() ||
-		lifecyclePublisher.fact.Provider != "seed-builder" ||
-		!lifecyclePublisher.fact.Local {
-		t.Fatalf("started publication = %#v", lifecyclePublisher)
+	if publisher.calls != 1 || publisher.parent != parent ||
+		publisher.fact.RunID != running.RunID() || publisher.fact.ID != child.AgentID ||
+		publisher.fact.Provider != "seed-builder" || !publisher.fact.Local {
+		t.Fatalf("publication = %#v", publisher)
 	}
 }
 
-func TestPublishDoesNotAnnounceRejectedRegistryEntry(t *testing.T) {
-	parentAgent := &publicationAgent{
-		identifier: session.SessionID("parent"),
-	}
-	childAgent := &publicationAgent{
-		identifier: session.SessionID("child"),
-	}
-	otherAgent := &publicationAgent{
-		identifier: session.SessionID("other"),
-	}
-	running := newManagedExecutionRecord(
-		subagent.RunID("run"),
-		childAgent.ID(),
-	)
-	lifecyclePublisher := &publicationPublisher{}
+func TestPublishRejectsMismatchedExecutionIdentityBeforeAnnouncement(t *testing.T) {
+	running := newManagedExecutionRecord("run", "child")
+	publisher := &publicationPublisher{}
 	err := Publish(
 		NewRegistry(),
-		lifecyclePublisher,
+		publisher,
 		Entry{
 			Execution: running,
 			Mode:      subagent.ModeBound,
-			Parent:    parentAgent,
-			Subject:   otherAgent,
-			Closing:   make(chan struct{}),
+			Parent: agentregistry.Creation{
+				AgentID:    "parent",
+				CreationID: "parent-run",
+			},
+			Subject: agentregistry.Creation{
+				AgentID:    "other",
+				CreationID: "other-run",
+			},
 		},
 		"seed-builder",
 	)
-	if err == nil {
-		t.Fatal("Publish accepted mismatched Execution and Agent identities")
-	}
-	if lifecyclePublisher.calls != 0 {
-		t.Fatalf("started calls = %d", lifecyclePublisher.calls)
+	if err == nil || publisher.calls != 0 {
+		t.Fatalf("error = %v, calls = %d", err, publisher.calls)
 	}
 }

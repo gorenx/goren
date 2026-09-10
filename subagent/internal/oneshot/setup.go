@@ -3,52 +3,28 @@ package oneshot
 import (
 	"context"
 
-	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/subagent"
 	"github.com/gorenx/goren/subagent/internal/childpolicy"
 )
 
-// setup resolves the child-local contributions required by this OneShot.
-func (owner *Service) setup(
+func (owner *Service) configure(
+	ctx context.Context,
 	settings subagent.OneShotOptions,
-	descriptor subagent.OneShotDescriptor,
-) (agent.Setup, *structuredOutput) {
-	policies := childpolicy.Setup(
-		childpolicy.PolicySet{
-			Persona:         settings.Persona,
-			ToolRestriction: settings.ToolFilter,
-		},
-	)
-	setups := []agent.Setup{
-		preStepSetup{
-			middleware: &descriptorAppender{
-				descriptor: descriptor,
-			},
-		},
-	}
+) (subagent.ChildConfiguration, *structuredOutput, error) {
+	configuration := subagent.ChildConfiguration{}
+	childpolicy.Apply(childpolicy.PolicySet{
+		Persona:         settings.Persona,
+		ToolRestriction: settings.ToolFilter,
+	}, &configuration)
 	var structured *structuredOutput
 	if len(settings.OutputSchema) != 0 {
 		structured = newStructuredOutput(settings.OutputSchema)
-		setups = append(setups, structured)
+		structured.Configure(&configuration)
 	}
-	return agent.ComposeSetups(
-		childpolicy.DelegationSeed(owner.dependencies.Delegation),
-		policies,
-		agent.ComposeSetups(setups...),
-		owner.dependencies.Extensions,
-	), structured
+	if owner.dependencies.Extensions != nil {
+		if err := owner.dependencies.Extensions.ConfigureChild(ctx, &configuration); err != nil {
+			return subagent.ChildConfiguration{}, nil, err
+		}
+	}
+	return configuration, structured, nil
 }
-
-type preStepSetup struct {
-	middleware agent.PreStepMiddleware
-}
-
-func (contribution preStepSetup) Apply(
-	_ context.Context,
-	_ agent.Agent,
-	editor agent.ScopeEditor,
-) error {
-	return editor.UsePreStep(contribution.middleware)
-}
-
-var _ agent.Setup = preStepSetup{}

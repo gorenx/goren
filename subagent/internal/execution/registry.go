@@ -4,7 +4,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/gorenx/goren/agent"
+	agentregistry "github.com/gorenx/goren/agent/registry"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 )
@@ -13,9 +13,8 @@ import (
 type Entry struct {
 	Execution ManagedExecution
 	Mode      subagent.Mode
-	Parent    agent.Agent
-	Subject   agent.Agent
-	Closing   <-chan struct{}
+	Parent    agentregistry.Creation
+	Subject   agentregistry.Creation
 }
 
 // Registry is the one process-local index shared by all Subagent modes. Agent
@@ -34,15 +33,15 @@ func NewRegistry() *Registry {
 
 // Publish installs one active exact Execution.
 func (registryOwner *Registry) Publish(candidate Entry) error {
-	if candidate.Execution == nil || candidate.Parent == nil ||
-		candidate.Subject == nil || candidate.Closing == nil {
+	if candidate.Execution == nil || candidate.Parent.AgentID == "" ||
+		candidate.Subject.AgentID == "" {
 		return errors.New("subagent: published Execution entry is incomplete")
 	}
 	if candidate.Execution.State() != subagent.ExecutionActive {
 		return errors.New("subagent: only an active Execution can be published")
 	}
 	targetID := candidate.Execution.ChildID()
-	if targetID != candidate.Subject.ID() {
+	if targetID != candidate.Subject.AgentID {
 		return errors.New("subagent: Execution and Agent identities differ")
 	}
 	registryOwner.mutex.Lock()

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
@@ -56,8 +55,8 @@ func (adapter *messageTool) Execute(
 	rawArguments json.RawMessage,
 	runContext tools.ToolRunContext,
 ) (json.RawMessage, error) {
-	parentAgent, matches := runContext.Execution.Subject.(agent.Agent)
-	if !matches || parentAgent == nil {
+	parentID := runContext.Execution.SessionID
+	if parentID == "" {
 		return nil, errors.New("send_message requires a calling Agent")
 	}
 	var request sendMessageArguments
@@ -66,14 +65,14 @@ func (adapter *messageTool) Execute(
 	}
 	messageID, followErr := adapter.children.Send(
 		runContext.Context,
-		parentAgent,
+		parentID,
 		session.SessionID(request.SubagentID),
 		[]agentmessage.ContentBlock{
 			agentmessage.NewTextBlock(request.Message),
 		},
 		subagent.FollowupOptions{
 			Source: subagent.CoordinatorSource{
-				SenderSessionID: parentAgent.ID(),
+				SenderSessionID: parentID,
 			},
 		},
 	)

@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 	boundcontract "github.com/gorenx/goren/subagent/bound"
 )
@@ -19,8 +17,8 @@ const (
 
 // worker owns source progress for one Binding in one exact parent Agent epoch.
 type worker struct {
-	owner   *Plugin
-	parent  agent.Agent
+	owner   *Service
+	epoch   string
 	binding binding
 	inbox   boundcontract.Inbox
 	cursor  *sourceCursor
@@ -30,27 +28,23 @@ type worker struct {
 }
 
 func newWorker(
-	owner *Plugin,
+	owner *Service,
 	workerContext context.Context,
 	cancelWorker context.CancelFunc,
-	parentAgent agent.Agent,
-	store session.LiveStore,
+	parentEpoch string,
+	source Source,
 	targetInbox boundcontract.Inbox,
 	bindingValue binding,
 ) *worker {
 	return &worker{
 		owner:   owner,
-		parent:  parentAgent,
+		epoch:   parentEpoch,
 		binding: bindingValue,
 		inbox:   targetInbox,
-		cursor: newSourceCursor(
-			store,
-			parentAgent.SessionValue(),
-			bindingValue,
-		),
-		ctx:    workerContext,
-		cancel: cancelWorker,
-		wakeup: make(chan struct{}, 1),
+		cursor:  newSourceCursor(source, bindingValue),
+		ctx:     workerContext,
+		cancel:  cancelWorker,
+		wakeup:  make(chan struct{}, 1),
 	}
 }
 

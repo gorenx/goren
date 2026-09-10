@@ -1,8 +1,6 @@
 package subagent
 
-import (
-	"github.com/gorenx/goren/tools"
-)
+import toolregistry "github.com/gorenx/goren/tools/registry"
 
 const (
 	// DescriptorEventName is the durable model-hidden child identity event.
@@ -29,14 +27,14 @@ func (OneShotDescriptor) descriptorVariant() {}
 // ContinuableDescriptor identifies a resumable child and its cold-resume
 // composition inputs.
 type ContinuableDescriptor struct {
-	Version       int                    `json:"version"`
-	Mode          Mode                   `json:"mode"`
-	Provider      string                 `json:"provider"`
-	Label         string                 `json:"label"`
-	AgentProvider *string                `json:"agentProvider,omitempty"`
-	AgentModel    *string                `json:"agentModel,omitempty"`
-	Persona       *string                `json:"persona,omitempty"`
-	ToolFilter    *tools.ToolRestriction `json:"toolFilter,omitempty"`
+	Version       int                           `json:"version"`
+	Mode          Mode                          `json:"mode"`
+	Provider      string                        `json:"provider"`
+	Label         string                        `json:"label"`
+	AgentProvider *string                       `json:"agentProvider,omitempty"`
+	AgentModel    *string                       `json:"agentModel,omitempty"`
+	Persona       *string                       `json:"persona,omitempty"`
+	ToolFilter    *toolregistry.ToolRestriction `json:"toolFilter,omitempty"`
 }
 
 func (ContinuableDescriptor) descriptorVariant() {}

@@ -9,7 +9,7 @@ import (
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/tools"
+	toolregistry "github.com/gorenx/goren/tools/registry"
 )
 
 // Mode distinguishes Subagent implementations in durable descriptors.
@@ -28,10 +28,10 @@ const (
 // OneShotOptions contains every caller-owned input for one terminal child.
 type OneShotOptions struct {
 	Prompt       []agentmessage.ContentBlock
-	Parent       agent.Agent
+	ParentID     session.SessionID
 	AgentOptions *agent.Options
 	MaxDepth     *int64
-	ToolFilter   *tools.ToolRestriction
+	ToolFilter   *toolregistry.ToolRestriction
 	Persona      *string
 	OutputSchema json.RawMessage
 	SeedBuilder  string
@@ -42,10 +42,10 @@ type OneShotOptions struct {
 // child Session. Durable restore inputs are copied into its descriptor.
 type ContinuableOptions struct {
 	Prompt       []agentmessage.ContentBlock
-	Parent       agent.Agent
+	ParentID     session.SessionID
 	AgentOptions *agent.Options
 	MaxDepth     *int64
-	ToolFilter   *tools.ToolRestriction
+	ToolFilter   *toolregistry.ToolRestriction
 	Persona      *string
 	SeedBuilder  string
 	Label        string
@@ -254,7 +254,7 @@ func snapshotOneShotOptions(source OneShotOptions) (OneShotOptions, error) {
 	}
 	return OneShotOptions{
 		Prompt:       promptSnapshot,
-		Parent:       source.Parent,
+		ParentID:     source.ParentID,
 		AgentOptions: snapshotAgentOptions(source.AgentOptions),
 		MaxDepth:     cloneInt64(source.MaxDepth),
 		ToolFilter:   filterSnapshot,
@@ -281,7 +281,7 @@ func snapshotContinuableOptions(
 	}
 	return ContinuableOptions{
 		Prompt:       promptSnapshot,
-		Parent:       source.Parent,
+		ParentID:     source.ParentID,
 		AgentOptions: snapshotAgentOptions(source.AgentOptions),
 		MaxDepth:     cloneInt64(source.MaxDepth),
 		ToolFilter:   filterSnapshot,
@@ -315,8 +315,8 @@ func snapshotAgentOptions(source *agent.Options) *agent.Options {
 }
 
 func snapshotToolRestriction(
-	filterValue *tools.ToolRestriction,
-) (*tools.ToolRestriction, error) {
+	filterValue *toolregistry.ToolRestriction,
+) (*toolregistry.ToolRestriction, error) {
 	if filterValue == nil {
 		return nil, nil
 	}
@@ -325,7 +325,7 @@ func snapshotToolRestriction(
 			"subagent: toolFilter must declare allow and/or deny",
 		)
 	}
-	return &tools.ToolRestriction{
+	return &toolregistry.ToolRestriction{
 		Allow: cloneStrings(filterValue.Allow),
 		Deny:  cloneStrings(filterValue.Deny),
 	}, nil

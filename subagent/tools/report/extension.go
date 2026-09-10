@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 
-	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/subagent"
 	"github.com/gorenx/goren/systemprompt"
 )
@@ -16,25 +15,25 @@ type extension struct {
 	tool *reportTool
 }
 
-func (contribution *extension) Apply(
+func (contribution *extension) ConfigureChild(
 	requestContext context.Context,
-	_ agent.Agent,
-	editor agent.ScopeEditor,
+	configuration *subagent.ChildConfiguration,
 ) error {
-	if contribution == nil || contribution.tool == nil {
+	if contribution == nil || contribution.tool == nil || configuration == nil {
 		return errors.New("subagent report: delivery Tool is unavailable")
 	}
-	if err := editor.AddPromptSection(
-		requestContext,
+	if err := context.Cause(requestContext); err != nil {
+		return err
+	}
+	configuration.PromptSections = append(
+		configuration.PromptSections,
 		systemprompt.PromptSection{
 			Name:  "tool:report",
 			Order: 117,
 			Text:  systemprompt.StaticText(reportPrompt),
 		},
-	); err != nil {
-		return err
-	}
-	return editor.AddTool(requestContext, contribution.tool.definition())
+	)
+	return nil
 }
 
 var _ subagent.Extension = (*extension)(nil)

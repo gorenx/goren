@@ -288,6 +288,8 @@ func (owner *Grain) receiveLifecycle(gc *goakt.GrainContext) bool {
 	switch input := gc.Message().(type) {
 	case CreateAgent:
 		owner.createAgent(gc, input)
+	case CreateChildAgent:
+		owner.createChildAgent(gc, input)
 	case startupResult:
 		owner.handleStartupResult(gc, input)
 	case FindAgent:

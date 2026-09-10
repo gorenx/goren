@@ -9,7 +9,7 @@ import (
 
 func TestCompletedTurnPrefixExcludesInflightTurn(t *testing.T) {
 	t.Parallel()
-	conversation, err := session.New("parent", session.CreateOptions{})
+	conversation, err := session.NewLog("parent", session.CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +25,7 @@ func TestCompletedTurnPrefixExcludesInflightTurn(t *testing.T) {
 
 func appendTurnBoundary(
 	t *testing.T,
-	conversation session.Context,
+	conversation *session.Log,
 	turn int64,
 	completed bool,
 ) {

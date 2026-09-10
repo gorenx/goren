@@ -5,254 +5,134 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
+	"github.com/gorenx/goren/subagent/internal/agentclient"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
 )
 
-// childExecutionControl owns child delivery, interruption authorization, and
-// structural Agent-disposal routing. It does not own module admission or any
-// mode's config and lifecycle decisions.
+type agentDirectory interface {
+	Find(context.Context, session.SessionID) (agentclient.Agent, error)
+}
+
 type childExecutionControl struct {
-	agents     agent.Registry
-	executions *sharedexecution.Registry
-	// Key is a canonical Subagent mode. Value is its complete implementation
-	// for the current open Service cycle.
+	agents      agentDirectory
+	executions  *sharedexecution.Registry
 	modes       map[subagent.Mode]implementation
 	continuable continuable
 	bound       bound
 }
 
-func newChildExecutionControl(
-	agentRegistry agent.Registry,
-	executionRegistry *sharedexecution.Registry,
-	implementations map[subagent.Mode]implementation,
-) *childExecutionControl {
-	control := &childExecutionControl{
-		agents:     agentRegistry,
-		executions: executionRegistry,
-		modes:      implementations,
-	}
-	if candidate := implementations[subagent.ModeContinuable]; candidate != nil {
-		control.continuable, _ = candidate.(continuable)
-	}
-	if candidate := implementations[subagent.ModeBound]; candidate != nil {
-		control.bound, _ = candidate.(bound)
-	}
+func newChildExecutionControl(agents agentDirectory, executions *sharedexecution.Registry, implementations map[subagent.Mode]implementation) *childExecutionControl {
+	control := &childExecutionControl{agents: agents, executions: executions, modes: implementations}
+	control.continuable, _ = implementations[subagent.ModeContinuable].(continuable)
+	control.bound, _ = implementations[subagent.ModeBound].(bound)
 	return control
 }
 
-func (control *childExecutionControl) Send(
-	ctx context.Context,
-	parentAgent agent.Agent,
-	childSessionID session.SessionID,
-	content []agentmessage.ContentBlock,
-	options subagent.FollowupOptions,
-) (agentmessage.MessageID, error) {
+func (control *childExecutionControl) Send(ctx context.Context, parentID, childID session.SessionID, content []agentmessage.ContentBlock, options subagent.FollowupOptions) (agentmessage.MessageID, error) {
 	if ctx == nil {
 		return "", errors.New("subagent: Send context is nil")
 	}
 	if err := context.Cause(ctx); err != nil {
 		return "", err
 	}
-	messageValue, err := agentmessage.NewUserMessage(
-		agentmessage.UserMessageInput{
-			Content: content,
-			Source:  options.Source,
-		},
-	)
+	message, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{Content: content, Source: options.Source})
 	if err != nil {
 		return "", err
 	}
-	entry, found := control.executions.Find(childSessionID)
+	entry, found := control.executions.Find(childID)
 	if found {
-		return control.sendResident(ctx, parentAgent, entry, messageValue)
-	}
-	return control.sendCold(ctx, parentAgent, childSessionID, messageValue)
-}
-
-func (control *childExecutionControl) sendResident(
-	ctx context.Context,
-	parentAgent agent.Agent,
-	entry sharedexecution.Entry,
-	messageValue agentmessage.UserMessage,
-) (agentmessage.MessageID, error) {
-	if err := control.authorizeParent(entry, parentAgent); err != nil {
-		return "", err
-	}
-	if entry.Mode == subagent.ModeBound {
-		if control.bound == nil {
-			return "", errors.New(
-				"subagent: Bound implementation is incomplete",
-			)
+		if err = control.authorizeParent(ctx, entry, parentID); err != nil {
+			return "", err
 		}
-		return control.bound.Followup(
-			ctx,
-			parentAgent,
-			entry.Subject.ID(),
-			messageValue,
-		)
+		if entry.Mode == subagent.ModeBound {
+			if control.bound == nil {
+				return "", errors.New("subagent: Bound implementation is incomplete")
+			}
+			return control.bound.Followup(ctx, parentID, childID, message)
+		}
+		child, findErr := control.agents.Find(ctx, childID)
+		if findErr != nil {
+			return "", findErr
+		}
+		if err = child.Followup(ctx, message); err != nil {
+			return "", err
+		}
+		return message.StableID(), nil
 	}
-	if err := entry.Subject.Followup(messageValue); err != nil {
-		return "", err
+	if control.bound != nil {
+		boundChild, checkErr := control.bound.HasBinding(ctx, parentID, childID)
+		if checkErr != nil {
+			return "", checkErr
+		}
+		if boundChild {
+			return control.bound.Followup(ctx, parentID, childID, message)
+		}
 	}
-	return messageValue.StableID(), nil
-}
-
-func (control *childExecutionControl) sendCold(
-	ctx context.Context,
-	parentAgent agent.Agent,
-	childSessionID session.SessionID,
-	messageValue agentmessage.UserMessage,
-) (agentmessage.MessageID, error) {
-	if control.bound == nil {
-		return control.resumeCold(ctx, parentAgent, childSessionID, messageValue)
-	}
-	boundChild, err := control.bound.HasBinding(
-		ctx,
-		parentAgent,
-		childSessionID,
-	)
-	if err != nil {
-		return "", err
-	}
-	if !boundChild {
-		return control.resumeCold(ctx, parentAgent, childSessionID, messageValue)
-	}
-	return control.bound.Followup(
-		ctx,
-		parentAgent,
-		childSessionID,
-		messageValue,
-	)
-}
-
-func (control *childExecutionControl) resumeCold(
-	ctx context.Context,
-	parentAgent agent.Agent,
-	childSessionID session.SessionID,
-	messageValue agentmessage.UserMessage,
-) (agentmessage.MessageID, error) {
 	if control.continuable == nil {
-		return "", errors.New(
-			"subagent: Continuable implementation does not support resume",
-		)
+		return "", errors.New("subagent: Continuable implementation does not support resume")
 	}
-	return control.continuable.Resume(
-		ctx,
-		parentAgent,
-		childSessionID,
-		messageValue,
-	)
+	return control.continuable.Resume(ctx, parentID, childID, message)
 }
 
-func (control *childExecutionControl) Interrupt(
-	ctx context.Context,
-	childSessionID session.SessionID,
-	authority subagent.InterruptAuthority,
-) error {
-	entry, found := control.executions.Find(childSessionID)
+func (control *childExecutionControl) Interrupt(ctx context.Context, childID session.SessionID, authority subagent.InterruptAuthority) error {
+	entry, found := control.executions.Find(childID)
 	if !found {
 		return nil
 	}
-	if err := authorizeInterrupt(
-		control.agents,
-		entry,
-		authority,
-	); err != nil {
+	if err := control.authorizeInterrupt(ctx, entry, authority); err != nil {
 		return err
 	}
 	selected := control.modes[entry.Mode]
 	if selected == nil {
-		return fmt.Errorf(
-			"subagent: child mode %q has no control implementation",
-			entry.Mode,
-		)
+		return fmt.Errorf("subagent: child mode %q has no control implementation", entry.Mode)
 	}
-	return selected.Interrupt(ctx, childSessionID)
+	return selected.Interrupt(ctx, childID)
 }
 
-func (control *childExecutionControl) AgentDisposed(
-	ctx context.Context,
-	subject agent.Agent,
-) error {
-	if subject == nil {
-		return nil
+func (control *childExecutionControl) authorizeParent(ctx context.Context, entry sharedexecution.Entry, parentID session.SessionID) error {
+	if entry.Parent.AgentID == parentID {
+		if _, err := control.agents.Find(ctx, parentID); err == nil {
+			return nil
+		}
 	}
-	entry, found := control.executions.Find(subject.ID())
-	if !found || !agent.Same(entry.Subject, subject) {
-		return nil
-	}
-	return entry.Execution.StopAndWait(
-		ctx,
-		sharedexecution.CloseExternal,
-	)
+	return &subagent.Error{Code: subagent.ErrorUnauthorized, Message: fmt.Sprintf("subagent %q delivery requires its exact live parent Agent", entry.Subject.AgentID)}
 }
 
-func (control *childExecutionControl) authorizeParent(
-	entry sharedexecution.Entry,
-	parentAgent agent.Agent,
-) error {
-	if parentAgent != nil && control.agents.Contains(parentAgent) &&
-		agent.Same(entry.Parent, parentAgent) {
-		return nil
-	}
-	return &subagent.Error{
-		Code: subagent.ErrorUnauthorized,
-		Message: fmt.Sprintf(
-			"subagent %q delivery requires its exact live parent Agent",
-			entry.Subject.ID(),
-		),
-	}
-}
-
-func authorizeInterrupt(
-	agentRegistry agent.Registry,
-	entry sharedexecution.Entry,
-	authority subagent.InterruptAuthority,
-) error {
+func (control *childExecutionControl) authorizeInterrupt(ctx context.Context, entry sharedexecution.Entry, authority subagent.InterruptAuthority) error {
 	switch evidence := authority.(type) {
 	case subagent.UserInterruptAuthority:
-		if entry.Parent.ID() == evidence.ParentSessionID {
+		if entry.Parent.AgentID == evidence.ParentSessionID {
 			return nil
 		}
 	case subagent.AncestorInterruptAuthority:
-		if evidence.Agent != nil && agentRegistry.Contains(evidence.Agent) &&
-			isLiveAncestor(agentRegistry, entry.Subject, evidence.Agent) {
+		if control.isLiveAncestor(ctx, entry.Subject.AgentID, evidence.AgentID) {
 			return nil
 		}
 	}
-	return &subagent.Error{
-		Code: subagent.ErrorUnauthorized,
-		Message: fmt.Sprintf(
-			"interrupting subagent %q is not authorized",
-			entry.Subject.ID(),
-		),
-	}
+	return &subagent.Error{Code: subagent.ErrorUnauthorized, Message: fmt.Sprintf("interrupting subagent %q is not authorized", entry.Subject.AgentID)}
 }
 
-func isLiveAncestor(
-	agentRegistry agent.Registry,
-	childAgent agent.Agent,
-	candidate agent.Agent,
-) bool {
+func (control *childExecutionControl) isLiveAncestor(ctx context.Context, childID, candidateID session.SessionID) bool {
 	seen := make(map[session.SessionID]struct{})
-	parentID := childAgent.SessionValue().Header().ParentSession
-	for parentID != nil {
-		if _, duplicate := seen[*parentID]; duplicate {
+	current, err := control.agents.Find(ctx, childID)
+	for err == nil {
+		view, readErr := current.Read(ctx)
+		if readErr != nil || view.Header.ParentSession == nil {
 			return false
 		}
-		seen[*parentID] = struct{}{}
-		ancestor, found := agentRegistry.Get(*parentID)
-		if !found {
+		parentID := *view.Header.ParentSession
+		if parentID == candidateID {
+			_, findErr := control.agents.Find(ctx, candidateID)
+			return findErr == nil
+		}
+		if _, duplicate := seen[parentID]; duplicate {
 			return false
 		}
-		if agent.Same(ancestor, candidate) {
-			return true
-		}
-		parentID = ancestor.SessionValue().Header().ParentSession
+		seen[parentID] = struct{}{}
+		current, err = control.agents.Find(ctx, parentID)
 	}
 	return false
 }

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
@@ -54,8 +53,8 @@ func (adapter *interruptTool) Execute(
 	rawArguments json.RawMessage,
 	runContext tools.ToolRunContext,
 ) (json.RawMessage, error) {
-	callerAgent, matches := runContext.Execution.Subject.(agent.Agent)
-	if !matches || callerAgent == nil {
+	callerID := runContext.Execution.SessionID
+	if callerID == "" {
 		return nil, errors.New("interrupt_agent requires a calling Agent")
 	}
 	var request interruptArguments
@@ -66,7 +65,7 @@ func (adapter *interruptTool) Execute(
 		runContext.Context,
 		session.SessionID(request.AgentID),
 		subagent.AncestorInterruptAuthority{
-			Agent: callerAgent,
+			AgentID: callerID,
 		},
 	)
 	if interruptErr != nil {

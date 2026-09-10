@@ -15,6 +15,7 @@ import (
 	agentactor "github.com/gorenx/goren/agent/actor"
 	loopactor "github.com/gorenx/goren/agentloop/actor"
 	commandactor "github.com/gorenx/goren/commands/actor"
+	"github.com/gorenx/goren/llm"
 	llmactor "github.com/gorenx/goren/llm/actor"
 	sessionactor "github.com/gorenx/goren/session/actor"
 	sessionregistry "github.com/gorenx/goren/session/registry"
@@ -64,6 +65,7 @@ func newInstallation(
 			AgentID:        input.Creation.AgentID,
 			PromptRegistry: input.PromptRegistry,
 			CreationID:     input.Creation.CreationID,
+			Sections:       input.PromptSections,
 		}}
 	executor := &agentClient{
 		modelRouter:  input.ModelRouter,
@@ -80,6 +82,7 @@ func newInstallation(
 		owner:        input.ModelConfig,
 		creation:     input.Creation,
 		conversation: conversation,
+		options:      input.AgentOptions,
 	}
 	installed := &installation{
 		components: map[agent.Component]initializer{
@@ -253,6 +256,7 @@ type modelClient struct {
 	owner        *goakt.GrainIdentity
 	conversation *sessionClient
 	creation     Creation
+	options      *agent.Options
 }
 
 func (endpoint *modelClient) Runtime() *goakt.GrainIdentity { return endpoint.owner }
@@ -266,7 +270,36 @@ func (endpoint *modelClient) Initialize(gc *goakt.GrainContext, reply chan<- com
 			Session:    endpoint.conversation.Runtime(),
 		},
 		func(gc *goakt.GrainContext, initialized llmactor.Completion, failure error) {
-			reply <- componentResult{err: errors.Join(failure, initialized.Err)}
+			failure = errors.Join(failure, initialized.Err)
+			if failure != nil || endpoint.options == nil {
+				reply <- componentResult{err: failure}
+				return
+			}
+			requestComponent(gc, endpoint.owner, llmactor.ReadConfiguration{
+				AgentID: string(endpoint.creation.AgentID),
+			}, func(gc *goakt.GrainContext, current llmactor.ConfigurationResult, requestErr error) {
+				failure := errors.Join(requestErr, current.Err)
+				if failure != nil {
+					reply <- componentResult{err: failure}
+					return
+				}
+				configuration := llm.CloneCallConfig(current.Config)
+				if endpoint.options.Provider != "" {
+					configuration.Provider = endpoint.options.Provider
+				}
+				if endpoint.options.Model != "" {
+					configuration.Model = endpoint.options.Model
+				}
+				if endpoint.options.MaxTokens != nil {
+					configuration.MaxTokens = endpoint.options.Clone().MaxTokens
+				}
+				requestComponent(gc, endpoint.owner, llmactor.SetConfiguration{
+					AgentID: string(endpoint.creation.AgentID),
+					Config:  configuration,
+				}, func(_ *goakt.GrainContext, configured llmactor.ConfigurationResult, setErr error) {
+					reply <- componentResult{err: errors.Join(setErr, configured.Err)}
+				})
+			})
 		},
 	)
 }

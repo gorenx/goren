@@ -11,6 +11,7 @@ import (
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/session"
 	sessionactor "github.com/gorenx/goren/session/actor"
+	"github.com/gorenx/goren/systemprompt"
 	toolregistry "github.com/gorenx/goren/tools/registry"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
@@ -22,6 +23,7 @@ type CreateAgent struct {
 	Parent          *Creation
 	Restore         bool
 	Options         session.CreateOptions
+	AgentOptions    *agent.Options
 	Storage         sessionactor.RecoveryStorage
 	SessionRegistry *goakt.GrainIdentity
 	ModelConfig     *goakt.GrainIdentity
@@ -32,6 +34,8 @@ type CreateAgent struct {
 	ToolsRegistry   *goakt.GrainIdentity
 	// Tools overrides the registered defaults for this Agent lifetime.
 	Tools *toolregistry.Catalog
+	// PromptSections are local definitions captured for this Agent lifetime.
+	PromptSections []systemprompt.PromptSection
 	// Commands enables the independent command runtime when its global Registry is supplied.
 	Commands *goakt.GrainIdentity
 	// Components are capability Registry routes in startup order.
@@ -52,6 +56,19 @@ type FindAgent struct {
 	// WaitReady shares the final result of an existing initialization. It does
 	// not create a missing lifetime or authorize a replacement activation.
 	WaitReady bool
+}
+
+// CreateChildAgent derives one child from the exact parent's frozen creation
+// input. The Registry remains the sole owner of composition dependencies and
+// parent-child admission.
+type CreateChildAgent struct {
+	Parent         Creation
+	Child          Creation
+	Restore        bool
+	Options        session.CreateOptions
+	AgentOptions   *agent.Options
+	Tools          *toolregistry.Catalog
+	PromptSections []systemprompt.PromptSection
 }
 
 // Ready contains routes from one completed creation. An error exposes no routes.
@@ -107,7 +124,12 @@ func (input CreateAgent) validate() error {
 
 func (input CreateAgent) clone() CreateAgent {
 	input.Options = input.Options.Clone()
+	if input.AgentOptions != nil {
+		captured := input.AgentOptions.Clone()
+		input.AgentOptions = &captured
+	}
 	input.Handlers = input.Handlers.Clone()
+	input.PromptSections = slices.Clone(input.PromptSections)
 	if input.Tools != nil {
 		captured := input.Tools.Clone()
 		input.Tools = &captured
@@ -126,9 +148,11 @@ func (original CreateAgent) matches(input CreateAgent) bool {
 		!reflect.DeepEqual(original.Parent, input.Parent) ||
 		original.Restore != input.Restore ||
 		!reflect.DeepEqual(original.Options, input.Options) ||
+		!reflect.DeepEqual(original.AgentOptions, input.AgentOptions) ||
 		!reflect.DeepEqual(original.Storage, input.Storage) ||
 		original.Timeout != input.Timeout ||
 		!reflect.DeepEqual(original.Tools, input.Tools) ||
+		!reflect.DeepEqual(original.PromptSections, input.PromptSections) ||
 		!sameRoute(original.SessionRegistry, input.SessionRegistry) ||
 		!sameRoute(original.ModelConfig, input.ModelConfig) ||
 		original.ModelRouter != input.ModelRouter ||

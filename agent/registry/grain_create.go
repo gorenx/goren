@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"errors"
+	"slices"
 
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/session"
@@ -23,6 +24,44 @@ type activation struct {
 type startupResult struct {
 	operation *activation
 	result    componentResult
+}
+
+func (owner *Grain) createChildAgent(gc *goakt.GrainContext, input CreateChildAgent) {
+	if input.Child.AgentID == "" || input.Child.CreationID == "" ||
+		input.Child.AgentID == input.Parent.AgentID {
+		gc.Response(Ready{Err: ErrCreation})
+		return
+	}
+	if err := owner.check(input.Parent); err != nil {
+		gc.Response(Ready{Err: err})
+		return
+	}
+	if err := owner.directory.CheckAdmission(input.Parent.AgentID); err != nil {
+		gc.Response(Ready{Err: err})
+		return
+	}
+	parent := owner.creations[input.Parent.AgentID]
+	if parent.activation == nil || parent.activation.cancel != nil {
+		gc.Response(Ready{Err: errors.New("agent registry: parent creation is not ready")})
+		return
+	}
+	derived := parent.activation.input.clone()
+	derived.Creation = input.Child
+	derived.Parent = &input.Parent
+	derived.Restore = input.Restore
+	derived.Options = input.Options.Clone()
+	if input.AgentOptions != nil {
+		captured := input.AgentOptions.Clone()
+		derived.AgentOptions = &captured
+	} else {
+		derived.AgentOptions = nil
+	}
+	if input.Tools != nil {
+		catalog := input.Tools.Clone()
+		derived.Tools = &catalog
+	}
+	derived.PromptSections = slices.Clone(input.PromptSections)
+	owner.createAgent(gc, derived)
 }
 
 func (owner *Grain) createAgent(gc *goakt.GrainContext, input CreateAgent) {

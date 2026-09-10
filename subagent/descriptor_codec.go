@@ -8,7 +8,7 @@ import (
 
 	"github.com/gorenx/goren/internal/jsonvalue"
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/tools"
+	toolregistry "github.com/gorenx/goren/tools/registry"
 )
 
 // DescriptorData is the typed Session-event envelope for the Descriptor sum.
@@ -418,7 +418,7 @@ func optionalString(
 
 func decodeToolRestriction(
 	fields map[string]json.RawMessage,
-) (*tools.ToolRestriction, error) {
+) (*toolregistry.ToolRestriction, error) {
 	rawValue, found := fields["toolFilter"]
 	if !found {
 		return nil, nil
@@ -445,7 +445,7 @@ func decodeToolRestriction(
 			"subagent: persisted descriptor toolFilter must declare allow and/or deny",
 		)
 	}
-	return &tools.ToolRestriction{
+	return &toolregistry.ToolRestriction{
 		Allow: allowValues,
 		Deny:  denyValues,
 	}, nil
@@ -482,7 +482,7 @@ func optionalStringSlice(
 }
 
 func encodeToolRestriction(
-	filterValue *tools.ToolRestriction,
+	filterValue *toolregistry.ToolRestriction,
 ) (*toolRestrictionRecord, error) {
 	if filterValue == nil {
 		return nil, nil
@@ -524,8 +524,8 @@ func cloneDescriptor(source Descriptor) Descriptor {
 }
 
 func cloneToolRestriction(
-	filterValue *tools.ToolRestriction,
-) (*tools.ToolRestriction, error) {
+	filterValue *toolregistry.ToolRestriction,
+) (*toolregistry.ToolRestriction, error) {
 	if filterValue == nil {
 		return nil, nil
 	}
@@ -534,7 +534,7 @@ func cloneToolRestriction(
 			"subagent: toolFilter must declare allow and/or deny",
 		)
 	}
-	return &tools.ToolRestriction{
+	return &toolregistry.ToolRestriction{
 		Allow: cloneStrings(filterValue.Allow),
 		Deny:  cloneStrings(filterValue.Deny),
 	}, nil

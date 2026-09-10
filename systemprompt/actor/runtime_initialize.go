@@ -96,7 +96,18 @@ func (owner *RuntimeGrain) initializeTools(gc *goakt.GrainContext, input promptP
 		owner.finishInitialization(operation, input.err)
 		return
 	}
-	candidate, err := systemprompt.NewRuntime(operation.input.AgentID, input.result.Snapshot)
+	base := input.result.Snapshot
+	if len(operation.input.Sections) != 0 {
+		layer := systemprompt.DeriveLayer(base)
+		for _, section := range operation.input.Sections {
+			if _, err := layer.AddSection(gc.Context(), section); err != nil {
+				owner.finishInitialization(operation, err)
+				return
+			}
+		}
+		base = layer.Capture()
+	}
+	candidate, err := systemprompt.NewRuntime(operation.input.AgentID, base)
 	if err != nil {
 		owner.finishInitialization(operation, err)
 		return

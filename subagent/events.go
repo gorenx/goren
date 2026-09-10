@@ -2,7 +2,6 @@ package subagent
 
 import (
 	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
 
@@ -32,11 +31,6 @@ func (SeedBuilderAdded) EventName() string {
 	return ProviderAddedEventName
 }
 
-// EventDelivery preserves listener veto and registration rollback.
-func (SeedBuilderAdded) EventDelivery() plugin.DeliveryPolicy {
-	return plugin.DeliveryOrdered
-}
-
 // SeedBuilderRemoved carries the removed SeedBuilder name while preserving the
 // canonical event identity.
 type SeedBuilderRemoved struct {
@@ -46,11 +40,6 @@ type SeedBuilderRemoved struct {
 // EventName returns ProviderRemovedEventName.
 func (SeedBuilderRemoved) EventName() string {
 	return ProviderRemovedEventName
-}
-
-// EventDelivery contains observer failures after removal commits.
-func (SeedBuilderRemoved) EventDelivery() plugin.DeliveryPolicy {
-	return plugin.DeliveryBestEffort
 }
 
 // Started is observe-only identity for one published Subagent Execution.
@@ -66,11 +55,6 @@ func (Started) AgentScopedEvent() {}
 // EventName returns StartEventName.
 func (Started) EventName() string {
 	return StartEventName
-}
-
-// EventDelivery contains lifecycle observer failures after publication.
-func (Started) EventDelivery() plugin.DeliveryPolicy {
-	return plugin.DeliveryBestEffort
 }
 
 // Ended is the terminal edge paired with Started by RunID.
@@ -89,9 +73,4 @@ func (Ended) AgentClosingEvent() {}
 // EventName returns EndEventName.
 func (Ended) EventName() string {
 	return EndEventName
-}
-
-// EventDelivery contains terminal observer failures after settlement.
-func (Ended) EventDelivery() plugin.DeliveryPolicy {
-	return plugin.DeliveryBestEffort
 }

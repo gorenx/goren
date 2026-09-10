@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/subagent"
 	"github.com/gorenx/goren/tools"
@@ -130,8 +129,8 @@ func (adapter *Tool) Execute(
 	rawArguments json.RawMessage,
 	runContext tools.ToolRunContext,
 ) (json.RawMessage, error) {
-	parentAgent, matches := runContext.Execution.Subject.(agent.Agent)
-	if !matches || parentAgent == nil {
+	parentID := runContext.Execution.SessionID
+	if parentID == "" {
 		return nil, errors.New("subagent tool requires a calling Agent")
 	}
 	var request arguments
@@ -149,7 +148,7 @@ func (adapter *Tool) Execute(
 		command, commandErr := subagent.NewContinuableStart(
 			subagent.ContinuableOptions{
 				Prompt:       prompt,
-				Parent:       parentAgent,
+				ParentID:     parentID,
 				AgentOptions: adapter.settings.AgentOptions,
 				MaxDepth:     adapter.settings.MaxDepth,
 				ToolFilter:   adapter.settings.ToolFilter,
@@ -176,7 +175,7 @@ func (adapter *Tool) Execute(
 	command, commandErr := subagent.NewOneShotStart(
 		subagent.OneShotOptions{
 			Prompt:       prompt,
-			Parent:       parentAgent,
+			ParentID:     parentID,
 			AgentOptions: adapter.settings.AgentOptions,
 			MaxDepth:     adapter.settings.MaxDepth,
 			ToolFilter:   adapter.settings.ToolFilter,

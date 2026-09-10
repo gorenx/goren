@@ -1,237 +1,307 @@
-// Package bound owns global Definitions, per-user-Session Bindings, resident
-// Bound child epochs, and Inbox delivery.
+// Package bound owns global definitions and durable per-parent bindings.
 package bound
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
-	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/approval"
+	agentregistry "github.com/gorenx/goren/agent/registry"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/session/persistence"
-	sessionprojection "github.com/gorenx/goren/session/projection"
 	"github.com/gorenx/goren/subagent"
 	boundcontract "github.com/gorenx/goren/subagent/bound"
+	"github.com/gorenx/goren/subagent/internal/agentclient"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
+	subagentprojection "github.com/gorenx/goren/subagent/internal/projection"
 )
 
-// MaterializationFailure identifies a contained Bound create or restore
-// failure. The durable parent event records only the stable result class.
 type MaterializationFailure struct {
-	ParentID session.SessionID
-	ChildID  session.SessionID
-	Error    error
+	ParentID, ChildID session.SessionID
+	Error             error
 }
-
-// FinalFlushFailure identifies a contained durability failure while a Bound
-// Agent epoch is already terminating.
 type FinalFlushFailure struct {
 	ChildID session.SessionID
 	Error   error
 }
-
-// ReconcileFailure identifies one contained user Session consistency failure.
 type ReconcileFailure struct {
 	ParentID session.SessionID
 	Error    error
 }
-
-// FailureReporter receives Bound failures that must not veto parent Agent
-// publication or a committed global Definition.
 type FailureReporter interface {
 	ReportBoundMaterializationFailure(MaterializationFailure)
 	ReportBoundFinalFlushFailure(FinalFlushFailure)
 	ReportBoundReconcileFailure(ReconcileFailure)
 }
-
-// Extensions is Bound's consumer-owned view of named child Extensions.
+type Agents interface {
+	Find(context.Context, session.SessionID) (agentclient.Agent, error)
+	CreateChild(context.Context, agentregistry.CreateChildAgent) (agentclient.Agent, error)
+}
+type History interface {
+	Load(context.Context, session.SessionID) (*persistence.Log, error)
+}
 type Extensions interface {
-	Setup([]string) (agent.Setup, error)
+	ConfigureCommon(context.Context, *subagent.ChildConfiguration) error
+	ConfigureSelected(context.Context, []string, *subagent.ChildConfiguration) error
 }
-
-// Dependencies contains the capabilities required by Bound ownership.
 type Dependencies struct {
-	Agents           agent.Registry
-	Constructor      agent.Constructor
-	Sessions         session.LiveStore
-	Persistence      persistence.Persistence
-	Projections      sessionprojection.Registry
-	Definitions      DefinitionStore
-	Delegation       approval.DelegationPolicy
-	CommonExtensions agent.Setup
-	Extensions       Extensions
-	Publisher        sharedexecution.EventPublisher
-	Executions       *sharedexecution.Registry
-	Failures         FailureReporter
+	Agents      Agents
+	History     History
+	Definitions DefinitionStore
+	Extensions  Extensions
+	Publisher   sharedexecution.EventPublisher
+	Executions  *sharedexecution.Registry
+	Failures    FailureReporter
 }
 
-// Service owns global Definition management and every live Binding worker.
 type Service struct {
 	dependencies Dependencies
 	definitions  *definitionCatalog
-	workers      *registry
-	scheduler    *reconcileScheduler
+	mutex        sync.Mutex
+	workers      map[session.SessionID]*boundWorker
+	parents      map[session.SessionID]struct{}
+	closing      bool
 }
 
-// New loads the committed Definition index and starts no background work.
-func New(
-	requestContext context.Context,
-	dependencySet Dependencies,
-) (*Service, error) {
-	if requestContext == nil {
+func New(ctx context.Context, dependencies Dependencies) (*Service, error) {
+	if ctx == nil {
 		return nil, errors.New("subagent: Bound New Context is nil")
 	}
-	if dependencySet.Agents == nil || dependencySet.Constructor == nil ||
-		dependencySet.Sessions == nil || dependencySet.Persistence == nil ||
-		dependencySet.Projections == nil || dependencySet.Executions == nil {
-		return nil, errors.New(
-			"subagent: Bound requires Agent, Session, Persistence, " +
-				"Projection, and Execution capabilities",
-		)
+	if dependencies.Agents == nil || dependencies.History == nil || dependencies.Definitions == nil || dependencies.Extensions == nil || dependencies.Executions == nil {
+		return nil, errors.New("subagent: Bound requires Agent, history, Definition, Extension, and Execution capabilities")
 	}
-	if dependencySet.Extensions == nil {
-		return nil, errors.New(
-			"subagent: Bound requires Extension selection",
-		)
-	}
-	if dependencySet.Definitions == nil {
-		return nil, errors.New(
-			"subagent: Bound requires a Definition Store",
-		)
-	}
-	materializerValue := &materializer{
-		constructor:      dependencySet.Constructor,
-		persistence:      dependencySet.Persistence,
-		delegation:       dependencySet.Delegation,
-		commonExtensions: dependencySet.CommonExtensions,
-		extensions:       dependencySet.Extensions,
-	}
-	owner := &Service{
-		dependencies: dependencySet,
-	}
-	owner.workers = newRegistry(
-		dependencySet,
-		materializerValue,
-	)
-	owner.scheduler = newReconcileScheduler(owner)
-	definitions, err := newDefinitionCatalog(
-		requestContext,
-		dependencySet.Definitions,
-		owner.scheduler,
-	)
+	owner := &Service{dependencies: dependencies, workers: make(map[session.SessionID]*boundWorker), parents: make(map[session.SessionID]struct{})}
+	definitions, err := newDefinitionCatalog(ctx, dependencies.Definitions, owner)
 	if err != nil {
-		_ = owner.scheduler.close(context.WithoutCancel(requestContext))
 		return nil, err
 	}
 	owner.definitions = definitions
-	owner.workers.definitions = definitions
 	return owner, nil
 }
-
-// Mode identifies the business mode implemented by Service.
-func (*Service) Mode() subagent.Mode {
-	return subagent.ModeBound
+func (*Service) Mode() subagent.Mode { return subagent.ModeBound }
+func (owner *Service) List(ctx context.Context) ([]boundcontract.Definition, error) {
+	return owner.definitions.List(ctx)
+}
+func (owner *Service) Create(ctx context.Context, command boundcontract.Creation) (boundcontract.Definition, error) {
+	return owner.definitions.Create(ctx, command)
+}
+func (owner *Service) Replace(ctx context.Context, command boundcontract.Replacement) (boundcontract.Definition, error) {
+	return owner.definitions.Replace(ctx, command)
 }
 
-// List returns the detached committed global Definition index.
-func (owner *Service) List(
-	requestContext context.Context,
-) ([]boundcontract.Definition, error) {
-	return owner.definitions.List(requestContext)
-}
-
-// Create commits one new global Definition before requesting live reconcile.
-func (owner *Service) Create(
-	requestContext context.Context,
-	creation boundcontract.Creation,
-) (boundcontract.Definition, error) {
-	return owner.definitions.Create(requestContext, creation)
-}
-
-// Replace commits one complete next global Definition revision.
-func (owner *Service) Replace(
-	requestContext context.Context,
-	replacement boundcontract.Replacement,
-) (boundcontract.Definition, error) {
-	return owner.definitions.Replace(requestContext, replacement)
-}
-
-// SessionStarted requests a level-triggered consistency pass for one exact
-// user Agent. Child Sessions are filtered before any task is admitted.
-func (owner *Service) SessionStarted(parentAgent agent.Agent) {
-	owner.scheduler.request(parentAgent)
-}
-
-// AgentDisposed releases live routing for the exact parent Agent epoch.
-func (owner *Service) AgentDisposed(
-	requestContext context.Context,
-	subject agent.Agent,
-) error {
-	if owner == nil {
-		return nil
+func (owner *Service) SessionStarted(parentID session.SessionID) {
+	owner.mutex.Lock()
+	if owner.closing {
+		owner.mutex.Unlock()
+		return
 	}
-	owner.scheduler.agentDisposed(subject)
-	return owner.workers.agentDisposed(requestContext, subject)
+	owner.parents[parentID] = struct{}{}
+	owner.mutex.Unlock()
+	go func() {
+		if err := owner.reconcile(context.Background(), parentID); err != nil && owner.dependencies.Failures != nil {
+			owner.dependencies.Failures.ReportBoundReconcileFailure(ReconcileFailure{ParentID: parentID, Error: err})
+		}
+	}()
+}
+func (owner *Service) DefinitionsChanged() {
+	owner.mutex.Lock()
+	parents := make([]session.SessionID, 0, len(owner.parents))
+	for id := range owner.parents {
+		parents = append(parents, id)
+	}
+	owner.mutex.Unlock()
+	for _, id := range parents {
+		owner.SessionStarted(id)
+	}
 }
 
-func (owner *Service) authorizeParent(parentAgent agent.Agent) error {
-	if owner == nil || owner.dependencies.Agents == nil || parentAgent == nil ||
-		!owner.dependencies.Agents.Contains(parentAgent) {
-		parentID := session.SessionID("")
-		if parentAgent != nil {
-			parentID = parentAgent.ID()
+func (owner *Service) reconcile(ctx context.Context, parentID session.SessionID) error {
+	parent, view, err := owner.parent(ctx, parentID)
+	if err != nil {
+		return err
+	}
+	projection, err := subagentprojection.FoldBound(view.Snapshot.Events)
+	if err != nil {
+		return err
+	}
+	var pending []pendingBinding
+	for _, definition := range owner.definitions.enabled() {
+		if _, found := projection.BindingNamed(definition.Name); found {
+			continue
 		}
-		return &subagent.Error{
-			Code: subagent.ErrorUnauthorized,
-			Message: fmt.Sprintf(
-				"Bound operation requires exact live parent Agent %q",
-				parentID,
-			),
+		childID, idErr := sharedexecution.NewChildID()
+		if idErr != nil {
+			return idErr
+		}
+		pending = append(pending, pendingBinding{name: definition.Name, childSessionID: childID})
+	}
+	if len(pending) != 0 {
+		result, commitErr := parent.Commit(ctx, bindingRegistration{bindings: pending})
+		if commitErr != nil {
+			return commitErr
+		}
+		if err = parent.Flush(ctx, result.Barrier); err != nil {
+			return err
+		}
+		updated, readErr := parent.Read(ctx)
+		err = readErr
+		if err != nil {
+			return err
+		}
+		view = sessionactorView{Header: updated.Header, Snapshot: updated.Snapshot}
+		projection, err = subagentprojection.FoldBound(view.Snapshot.Events)
+		if err != nil {
+			return err
 		}
 	}
-	if !isUserAgent(parentAgent) {
-		return &subagent.Error{
-			Code: subagent.ErrorUnauthorized,
-			Message: fmt.Sprintf(
-				"Bound operation requires direct user Session %q",
-				parentAgent.ID(),
-			),
+	for _, binding := range projection.Bindings {
+		definition, found := owner.definitions.find(binding.Name)
+		if !found || !definition.Enabled {
+			continue
+		}
+		worker := owner.acquire(parentID, binding)
+		if err = worker.materialize(ctx, parent, view, definition); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-func isUserAgent(subject agent.Agent) bool {
-	if subject == nil || subject.SessionValue() == nil {
-		return false
+func (owner *Service) Deliver(ctx context.Context, address boundcontract.Address, input boundcontract.Input) (boundcontract.Receipt, error) {
+	if err := checkContext(ctx, "Bound Deliver"); err != nil {
+		return boundcontract.Receipt{}, err
 	}
-	header := subject.SessionValue().Header()
-	return header.Origin == "" && header.ParentSession == nil
+	if address.SessionID == "" || address.Name == "" {
+		return boundcontract.Receipt{}, errors.New("subagent: Bound address is incomplete")
+	}
+	detached, err := boundcontract.SnapshotInput(input)
+	if err != nil {
+		return boundcontract.Receipt{}, err
+	}
+	parent, view, err := owner.parent(ctx, address.SessionID)
+	if err != nil {
+		return boundcontract.Receipt{}, err
+	}
+	projection, err := subagentprojection.FoldBound(view.Snapshot.Events)
+	if err != nil {
+		return boundcontract.Receipt{}, err
+	}
+	binding, found := projection.BindingNamed(address.Name)
+	if !found {
+		return boundcontract.Receipt{}, namedBindingNotFound(address.Name)
+	}
+	definition, found := owner.definitions.find(binding.Name)
+	if !found || !definition.Enabled {
+		return boundcontract.Receipt{}, boundDisabled(binding.ChildSessionID)
+	}
+	worker := owner.acquire(address.SessionID, binding)
+	if err = worker.materialize(ctx, parent, view, definition); err != nil {
+		return boundcontract.Receipt{}, err
+	}
+	return worker.deliver(ctx, detached)
+}
+func (owner *Service) HasBinding(ctx context.Context, parentID, childID session.SessionID) (bool, error) {
+	_, view, err := owner.parent(ctx, parentID)
+	if err != nil {
+		return false, err
+	}
+	projection, err := subagentprojection.FoldBound(view.Snapshot.Events)
+	if err != nil {
+		return false, err
+	}
+	_, found := projection.Binding(childID)
+	return found, nil
+}
+func (owner *Service) Followup(ctx context.Context, parentID, childID session.SessionID, message agentmessage.UserMessage) (agentmessage.MessageID, error) {
+	parent, view, err := owner.parent(ctx, parentID)
+	if err != nil {
+		return "", err
+	}
+	projection, err := subagentprojection.FoldBound(view.Snapshot.Events)
+	if err != nil {
+		return "", err
+	}
+	binding, found := projection.Binding(childID)
+	if !found {
+		return "", bindingNotFound(childID)
+	}
+	definition, found := owner.definitions.find(binding.Name)
+	if !found || !definition.Enabled {
+		return "", boundDisabled(childID)
+	}
+	worker := owner.acquire(parentID, binding)
+	if err = worker.materialize(ctx, parent, view, definition); err != nil {
+		return "", err
+	}
+	return worker.followup(ctx, message)
+}
+func (owner *Service) Interrupt(ctx context.Context, childID session.SessionID) error {
+	owner.mutex.Lock()
+	worker := owner.workers[childID]
+	owner.mutex.Unlock()
+	if worker == nil {
+		return nil
+	}
+	return worker.interrupt(ctx)
+}
+func (owner *Service) Close(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	owner.mutex.Lock()
+	owner.closing = true
+	workers := make([]*boundWorker, 0, len(owner.workers))
+	for _, worker := range owner.workers {
+		workers = append(workers, worker)
+	}
+	owner.mutex.Unlock()
+	var closeErr error
+	for _, worker := range workers {
+		closeErr = errors.Join(closeErr, worker.close(ctx))
+	}
+	return errors.Join(closeErr, owner.definitions.Close(ctx))
 }
 
-func checkContext(requestContext context.Context, operationName string) error {
-	if requestContext == nil {
-		return errors.New("subagent: " + operationName + " Context is nil")
+func (owner *Service) parent(ctx context.Context, id session.SessionID) (agentclient.Agent, sessionactorView, error) {
+	parent, err := owner.dependencies.Agents.Find(ctx, id)
+	if err != nil {
+		return nil, sessionactorView{}, &subagent.Error{Code: subagent.ErrorUnauthorized, Message: fmt.Sprintf("Bound operation requires exact live parent Agent %q", id), Cause: err}
 	}
-	return context.Cause(requestContext)
+	view, err := parent.Read(ctx)
+	if err != nil {
+		return nil, sessionactorView{}, err
+	}
+	if view.Header.Origin != "" || view.Header.ParentSession != nil {
+		return nil, sessionactorView{}, &subagent.Error{Code: subagent.ErrorUnauthorized, Message: fmt.Sprintf("Bound operation requires direct user Session %q", id)}
+	}
+	return parent, sessionactorView{Header: view.Header, Snapshot: view.Snapshot}, nil
 }
 
-func unavailableDependency(dependencyName string) error {
-	return fmt.Errorf("subagent: Bound %s is unavailable", dependencyName)
+type sessionactorView struct {
+	Header   session.Header
+	Snapshot session.Snapshot
 }
 
-// Close stops scheduler admission, waits managed tasks, closes workers in
-// parallel, then releases the independent Definition Store last.
-func (owner *Service) Close(closeContext context.Context) error {
-	if closeContext == nil {
-		closeContext = context.Background()
+func (owner *Service) acquire(parentID session.SessionID, binding subagentprojection.BoundBinding) *boundWorker {
+	owner.mutex.Lock()
+	defer owner.mutex.Unlock()
+	current := owner.workers[binding.ChildSessionID]
+	if current != nil && current.parentID == parentID && current.binding.Name == binding.Name {
+		return current
 	}
-	schedulerErr := owner.scheduler.close(closeContext)
-	workerErr := owner.workers.close(closeContext)
-	storeErr := owner.definitions.Close(closeContext)
-	return errors.Join(schedulerErr, workerErr, storeErr)
+	worker := &boundWorker{owner: owner, parentID: parentID, binding: binding}
+	owner.workers[binding.ChildSessionID] = worker
+	return worker
+}
+func checkContext(ctx context.Context, name string) error {
+	if ctx == nil {
+		return errors.New("subagent: " + name + " Context is nil")
+	}
+	return context.Cause(ctx)
 }
 
 var _ boundcontract.Definitions = (*Service)(nil)
+var _ boundcontract.Inbox = (*Service)(nil)
+var _ DefinitionReconciler = (*Service)(nil)

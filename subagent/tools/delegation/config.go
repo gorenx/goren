@@ -9,7 +9,7 @@ import (
 
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/internal/jsonvalue"
-	"github.com/gorenx/goren/tools"
+	toolregistry "github.com/gorenx/goren/tools/registry"
 )
 
 // BackgroundMode selects the lifecycle used when a call runs in background.
@@ -31,7 +31,7 @@ type Settings struct {
 	BackgroundMode        BackgroundMode
 	AgentOptions          *agent.Options
 	Persona               *string
-	ToolFilter            *tools.ToolRestriction
+	ToolFilter            *toolregistry.ToolRestriction
 	MaxDepth              *int64
 }
 
@@ -163,7 +163,7 @@ func (configured Config) Resolve() (Settings, error) {
 		}
 	}
 	if configured.ToolFilter != nil {
-		resolved.ToolFilter = &tools.ToolRestriction{}
+		resolved.ToolFilter = &toolregistry.ToolRestriction{}
 		if configured.ToolFilter.Allow != nil {
 			resolved.ToolFilter.Allow = make([]string, len(*configured.ToolFilter.Allow))
 			copy(resolved.ToolFilter.Allow, *configured.ToolFilter.Allow)
@@ -232,7 +232,7 @@ func cloneSettings(source Settings) Settings {
 		detached.Persona = &personaText
 	}
 	if source.ToolFilter != nil {
-		detached.ToolFilter = &tools.ToolRestriction{
+		detached.ToolFilter = &toolregistry.ToolRestriction{
 			Allow: cloneStrings(source.ToolFilter.Allow),
 			Deny:  cloneStrings(source.ToolFilter.Deny),
 		}
