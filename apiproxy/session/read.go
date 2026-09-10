@@ -602,3 +602,29 @@ func directUserEvent(committed session.Event) bool {
 	}
 	return json.Unmarshal(committed.Data, &envelope) == nil && envelope.Source.Kind == "user"
 }
+
+// ReadEvents returns one identity-checked live or durable Session snapshot.
+// It performs no activation and never falls back after a live read failure.
+func (view *sessionReader) ReadEvents(ctx context.Context, id session.SessionID) ([]session.Event, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	snapshot, err := view.sessions.Read(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if snapshot != nil {
+		if snapshot.Header.ID != id {
+			return nil, errors.New("session identity mismatch")
+		}
+		return snapshot.Events, nil
+	}
+	archive, err := view.persistence.Inspect(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if archive.Header.ID != id {
+		return nil, errors.New("session identity mismatch")
+	}
+	return archive.Events, nil
+}

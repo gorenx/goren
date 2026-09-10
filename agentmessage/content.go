@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/gorenx/goren/attachment"
 	"github.com/gorenx/goren/internal/jsonvalue"
 )
 
@@ -64,21 +63,6 @@ func (ReasoningBlock) ContentType() string { return "reasoning" }
 // CloneContent returns an independent value copy.
 func (source ReasoningBlock) CloneContent() (ContentBlock, error) {
 	source.Type = "reasoning"
-	return source, nil
-}
-
-// ImageBlock is one durable raster image reference.
-type ImageBlock struct {
-	Type       string                        `json:"type"`
-	Attachment attachment.ImageAttachmentRef `json:"attachment"`
-}
-
-// ContentType returns the canonical discriminant.
-func (ImageBlock) ContentType() string { return "image" }
-
-// CloneContent returns an independent value copy.
-func (source ImageBlock) CloneContent() (ContentBlock, error) {
-	source.Type = "image"
 	return source, nil
 }
 
@@ -233,27 +217,6 @@ func CloneContentBlocks(source []ContentBlock) (detached []ContentBlock, cloneEr
 		detached[index] = cloned
 	}
 	return detached, nil
-}
-
-// ContentHasImage reports whether any direct or nested tool-result block is an image.
-func ContentHasImage(content []ContentBlock) bool {
-	for _, entry := range content {
-		switch block := entry.(type) {
-		case ImageBlock:
-			return true
-		case *ImageBlock:
-			return true
-		case ToolResultBlock:
-			if ContentHasImage(block.Content) {
-				return true
-			}
-		case *ToolResultBlock:
-			if block != nil && ContentHasImage(block.Content) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // InvalidContentBlockError reports an invalid extension implementation.

@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/attachment"
+	"github.com/gorenx/goren/attachment/image"
 	"github.com/gorenx/goren/llm"
 )
 
@@ -60,7 +60,7 @@ func TestSerializeMessagesRejectsNestedImage(t *testing.T) {
 		ToolCallID: "call-1",
 		Content: []agentmessage.ContentBlock{agentmessage.ImageBlock{
 			Type:       "image",
-			Attachment: attachment.ImageAttachmentRef{},
+			Attachment: image.ImageRef{},
 		}},
 	}})
 	_, err := SerializeMessages([]agentmessage.Message{entry})

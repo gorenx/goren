@@ -9,8 +9,8 @@ import (
 
 	rpc "github.com/gorenx/goren/apiproxy/rpc"
 	sessionframes "github.com/gorenx/goren/apiproxy/session/events"
+	imageapi "github.com/gorenx/goren/apiproxy/session/image"
 	workspaceapi "github.com/gorenx/goren/apiproxy/workspace"
-
 	"github.com/gorenx/goren/connection"
 )
 
@@ -302,23 +302,10 @@ func decodePromptParts(rawValue json.RawMessage) ([]PromptContentPart, []connect
 				})
 			}
 		case "image":
-			mediaType, mediaIssues := rpc.RequiredString(fields, "mediaType", false)
-			data, dataIssues := rpc.RequiredString(fields, "data", false)
-			name, nameIssues := rpc.OptionalString(fields, "name", false)
-			issues = append(issues, rpc.PrefixIssues(mediaIssues, "content", fmt.Sprint(index))...)
-			issues = append(issues, rpc.PrefixIssues(dataIssues, "content", fmt.Sprint(index))...)
-			issues = append(issues, rpc.PrefixIssues(nameIssues, "content", fmt.Sprint(index))...)
-			if !validImageMediaType(mediaType) {
-				issues = append(issues, invalidValueIssue(
-					[]string{"content", fmt.Sprint(index), "mediaType"}, "Invalid image media type",
-				))
-			}
-			if len(mediaIssues)+len(dataIssues)+len(nameIssues) == 0 && validImageMediaType(mediaType) {
-				parts = append(parts, PromptImagePart{
-					MediaType: mediaType,
-					Data:      data,
-					Name:      name,
-				})
+			picture, pictureIssues := imageapi.DecodePart(encodedPart)
+			issues = append(issues, rpc.PrefixIssues(pictureIssues, "content", fmt.Sprint(index))...)
+			if len(pictureIssues) == 0 {
+				parts = append(parts, picture)
 			}
 		default:
 			issues = append(issues, invalidValueIssue(
@@ -372,15 +359,6 @@ func decodeQueueAction(rawValue json.RawMessage) (QueueAction, []connection.Vali
 		}, nil
 	default:
 		return nil, []connection.ValidationIssue{invalidValueIssue([]string{"action", "kind"}, "Invalid discriminator value")}
-	}
-}
-
-func validImageMediaType(mediaType string) bool {
-	switch mediaType {
-	case "image/png", "image/jpeg", "image/webp", "image/gif":
-		return true
-	default:
-		return false
 	}
 }
 

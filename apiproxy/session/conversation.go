@@ -16,6 +16,7 @@ import (
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentmessage"
 	rpc "github.com/gorenx/goren/apiproxy/rpc"
+	imageapi "github.com/gorenx/goren/apiproxy/session/image"
 	"github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/llm"
 )
@@ -23,8 +24,9 @@ import (
 var ianaTimeZonePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_+.-]*(?:/[A-Za-z0-9_+.-]+)+$`)
 
 type sessionConversation struct {
-	access *sessionAccess
-	models Models
+	access  *sessionAccess
+	models  Models
+	storage imageapi.ImageStore
 }
 
 func (flow *sessionConversation) Prompt(
@@ -34,6 +36,14 @@ func (flow *sessionConversation) Prompt(
 	subject, refused := flow.access.ordinaryAgent(requestContext, call.Payload.SessionID)
 	if refused != nil {
 		return rpc.Fail[PromptValue](*refused), nil
+	}
+	hasImage := slices.ContainsFunc(call.Payload.Content, func(part PromptContentPart) bool { _, ok := part.(imageapi.Part); return ok })
+	if hasImage {
+		release, err := flow.access.admissions.acquire(requestContext, subject.ID())
+		if err != nil {
+			return rpc.Outcome[PromptValue]{}, err
+		}
+		defer release()
 	}
 	current, err := flow.models.Configuration(requestContext, subject.ID())
 	if err != nil {
@@ -77,22 +87,27 @@ func (flow *sessionConversation) Prompt(
 			)), nil
 		}
 	}
-	content := make([]agentmessage.ContentBlock, 0, len(call.Payload.Content))
-	for _, part := range call.Payload.Content {
-		switch typedPart := part.(type) {
-		case PromptTextPart:
-			content = append(content, agentmessage.NewTextBlock(typedPart.Text))
-		case PromptImagePart:
-			return rpc.Fail[PromptValue](rpc.NewRPCError(
-				connection.ErrorAttachment,
-				"Image input is unavailable: this deployment mounts no attachment service.",
-				struct {
-					Reason string `json:"reason"`
-				}{
-					Reason: "ATTACHMENT_UNAVAILABLE",
-				},
-			)), nil
+	if hasImage {
+		metadata, err := flow.models.ResolveModelInfo(requestContext, current.Provider, current.Model)
+		if err != nil {
+			return rpc.Outcome[PromptValue]{}, err
 		}
+		if metadata.InputModalities != nil && !slices.Contains(metadata.InputModalities, llm.ModalityImage) {
+			return rpc.Fail[PromptValue](imageapi.Rejection(fmt.Sprintf("Model %q does not support image input.", current.Model), "MODEL_DOES_NOT_SUPPORT_IMAGES")), nil
+		}
+		if flow.storage == nil {
+			return rpc.Fail[PromptValue](imageapi.Rejection("Image input is unavailable: this deployment mounts no attachment service.", "ATTACHMENT_UNAVAILABLE")), nil
+		}
+	}
+	content, err := flow.admitContent(requestContext, call.Payload.Content)
+	if err != nil {
+		if requestContext.Err() != nil {
+			return rpc.Outcome[PromptValue]{}, requestContext.Err()
+		}
+		if failure := imageapi.AdmissionFailure(err); failure != nil {
+			return rpc.Fail[PromptValue](*failure), nil
+		}
+		return rpc.Outcome[PromptValue]{}, err
 	}
 	originJSON, err := encodePromptSource(call.RPCID, canonicalZone)
 	if err != nil {
@@ -107,6 +122,9 @@ func (flow *sessionConversation) Prompt(
 		Source:  origin,
 	})
 	if err != nil {
+		return rpc.Outcome[PromptValue]{}, err
+	}
+	if err := requestContext.Err(); err != nil {
 		return rpc.Outcome[PromptValue]{}, err
 	}
 	if call.Payload.Mode == "steer" {
@@ -296,4 +314,33 @@ func queueFailure(identifier sessionframes.MessageID, failure error) (rpc.Outcom
 		)), nil
 	}
 	return rpc.Outcome[AcceptedValue]{}, failure
+}
+
+func (flow *sessionConversation) admitContent(ctx context.Context, parts []PromptContentPart) ([]agentmessage.ContentBlock, error) {
+	var inputs []imageapi.Part
+	for _, part := range parts {
+		if encoded, ok := part.(imageapi.Part); ok {
+			inputs = append(inputs, encoded)
+		}
+	}
+	refs, err := imageapi.Admit(ctx, flow.storage, inputs)
+	if err != nil {
+		return nil, err
+	}
+	content := make([]agentmessage.ContentBlock, 0, len(parts))
+	position := 0
+	for _, part := range parts {
+		switch value := part.(type) {
+		case PromptTextPart:
+			content = append(content, agentmessage.NewTextBlock(value.Text))
+		case imageapi.Part:
+			content = append(content, agentmessage.ImageBlock{
+				Attachment: refs[position].Clone(),
+			})
+			position++
+		default:
+			return nil, errors.New("session API: unknown prompt content part")
+		}
+	}
+	return content, ctx.Err()
 }

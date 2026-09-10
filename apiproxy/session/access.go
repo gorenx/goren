@@ -16,6 +16,7 @@ import (
 )
 
 type sessionAccess struct {
+	admissions      admissionQueue
 	runtimeSessions *activation
 }
 

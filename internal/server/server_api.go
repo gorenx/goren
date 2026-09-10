@@ -252,6 +252,7 @@ func (owner *Server) initializeAPI(ctx context.Context, constructors *toolactor.
 			identity: owner.mcpIdentity,
 		},
 		Sessions: sessionapi.Dependencies{
+			Storage:     owner.settings.Attachments,
 			Agents:      agents,
 			Sessions:    reader,
 			Persistence: durable,

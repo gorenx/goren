@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gorenx/goren/apiproxy"
+	imageapi "github.com/gorenx/goren/apiproxy/session/image"
 	"github.com/gorenx/goren/internal/connection"
 	"github.com/gorenx/goren/llm/deepseek"
 	"github.com/gorenx/goren/llm/deepseek/anonymoususerid"
@@ -29,6 +30,9 @@ import (
 
 // Config contains process paths and owner-defined configuration, never secrets.
 type Config struct {
+	// Attachments is a borrowed image capability shared by admission and reads.
+	// Nil leaves image I/O unavailable. Composition closes it after Server.Close.
+	Attachments       imageapi.ImageStore
 	Address           string
 	Version           string
 	WorkingDirectory  string

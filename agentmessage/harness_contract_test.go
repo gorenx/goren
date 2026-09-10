@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/attachment"
+	"github.com/gorenx/goren/attachment/image"
 )
 
 type panicContentBlock struct{}
@@ -26,9 +26,9 @@ func TestContentBlockCloneCoversPinnedCoreVariants(t *testing.T) {
 			Text: "thinking",
 		},
 		agentmessage.ImageBlock{
-			Attachment: attachment.ImageAttachmentRef{
+			Attachment: image.ImageRef{
 				AttachmentID: "image-1",
-				MediaType:    attachment.ImagePNG,
+				MediaType:    image.ImagePNG,
 				Bytes:        10,
 				Width:        2,
 				Height:       3,

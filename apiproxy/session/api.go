@@ -3,6 +3,7 @@ package sessionapi
 import (
 	"context"
 	"encoding/json"
+	imageapi "github.com/gorenx/goren/apiproxy/session/image"
 
 	workspaceapi "github.com/gorenx/goren/apiproxy/workspace"
 
@@ -150,7 +151,7 @@ type SelectModelValue struct {
 
 // PromptContentPart is the closed browser prompt-input union.
 type PromptContentPart interface {
-	promptContentPart()
+	PromptContentPart()
 }
 
 // PromptTextPart is one browser-submitted text block.
@@ -158,16 +159,7 @@ type PromptTextPart struct {
 	Text string
 }
 
-func (PromptTextPart) promptContentPart() {}
-
-// PromptImagePart is one temporary browser image awaiting durable admission.
-type PromptImagePart struct {
-	MediaType string
-	Data      string
-	Name      *string
-}
-
-func (PromptImagePart) promptContentPart() {}
+func (PromptTextPart) PromptContentPart() {}
 
 // PromptRequest sends one ordinary Agent message.
 type PromptRequest struct {
@@ -231,6 +223,7 @@ type API interface {
 	History(context.Context, rpc.Request[HistoryRequest]) (rpc.Outcome[HistoryValue], error)
 	Models(context.Context, rpc.Request[ModelsRequest]) (rpc.Outcome[ModelsValue], error)
 	SelectModel(context.Context, rpc.Request[SelectModelRequest]) (rpc.Outcome[SelectModelValue], error)
+	Attachment(context.Context, rpc.Request[imageapi.AttachmentRequest]) (rpc.Outcome[imageapi.AttachmentValue], error)
 	Prompt(context.Context, rpc.Request[PromptRequest]) (rpc.Outcome[PromptValue], error)
 	UpdateQueue(context.Context, rpc.Request[UpdateQueueRequest]) (rpc.Outcome[AcceptedValue], error)
 	Cancel(context.Context, rpc.Request[CancelRequest]) (rpc.Outcome[AcceptedValue], error)
@@ -244,6 +237,9 @@ type SearchAPI interface {
 // Register installs every currently included session method.
 func Register(methods *rpc.Catalog, sessionMethods API, searchMethods SearchAPI) error {
 	registrations := []func() error{
+		func() error {
+			return rpc.RegisterUnary(methods, imageapi.AttachmentMethod, imageapi.DecodeAttachmentRequest, sessionMethods.Attachment)
+		},
 		func() error {
 			return rpc.RegisterUnary(methods, ListMethod, DecodeListRequest, sessionMethods.List)
 		},

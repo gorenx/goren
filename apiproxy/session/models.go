@@ -64,6 +64,11 @@ func (selectionFlow *sessionModels) SelectModel(requestContext context.Context, 
 	if refused != nil {
 		return rpc.Fail[SelectModelValue](*refused), nil
 	}
+	release, err := selectionFlow.access.admissions.acquire(requestContext, subject.ID())
+	if err != nil {
+		return rpc.Outcome[SelectModelValue]{}, err
+	}
+	defer release()
 	proposed := llm.CallConfig{
 		Provider: call.Payload.Provider,
 		Model:    call.Payload.Model,
@@ -100,7 +105,7 @@ func (selectionFlow *sessionModels) SelectModel(requestContext context.Context, 
 				},
 			)), nil
 		}
-		if len(metadata.InputModalities) != 0 && !slices.Contains(metadata.InputModalities, llm.ModalityImage) {
+		if metadata.InputModalities != nil && !slices.Contains(metadata.InputModalities, llm.ModalityImage) {
 			return rpc.Fail[SelectModelValue](rpc.NewRPCError(
 				connection.ErrorModelUnavailable,
 				fmt.Sprintf("Model %q does not accept image input, but this session already contains images; select an image-capable model.", resolved.Model),

@@ -6,7 +6,7 @@ import (
 
 	llmapi "github.com/gorenx/goren/apiproxy/llm"
 	rpc "github.com/gorenx/goren/apiproxy/rpc"
-
+	imageapi "github.com/gorenx/goren/apiproxy/session/image"
 	"github.com/gorenx/goren/session"
 )
 
@@ -20,6 +20,7 @@ type Dependencies struct {
 	Cache       ProjectionCache
 	Workspaces  Workspaces
 	Directories DirectoryProvisioner
+	Storage     imageapi.ImageStore
 }
 
 // Options are process values and injectable identity sources.
@@ -32,6 +33,7 @@ type Options struct {
 // Gateway is the unary session.* facade registered with the wire catalog.
 // Each capability object owns only its own dependencies and state.
 type Gateway struct {
+	pictures             *imageapi.Reader
 	reader               *sessionReader
 	lifecycle            *sessionLifecycle
 	modelUseCases        *sessionModels
@@ -101,10 +103,12 @@ func NewGateway(
 			directory: modelDirectory,
 		},
 		conversationUseCases: &sessionConversation{
-			access: access,
-			models: ports.Models,
+			access:  access,
+			models:  ports.Models,
+			storage: ports.Storage,
 		},
 	}
+	owner.pictures = imageapi.NewReader(owner.reader, ports.Storage)
 	if err := requestContext.Err(); err != nil {
 		return nil, err
 	}
@@ -178,4 +182,9 @@ func (owner *Gateway) Cancel(
 	call rpc.Request[CancelRequest],
 ) (rpc.Outcome[AcceptedValue], error) {
 	return owner.conversationUseCases.Cancel(requestContext, call)
+}
+
+// Attachment reads bytes only after the Session log authorizes the reference.
+func (owner *Gateway) Attachment(ctx context.Context, call rpc.Request[imageapi.AttachmentRequest]) (rpc.Outcome[imageapi.AttachmentValue], error) {
+	return owner.pictures.Attachment(ctx, call)
 }
