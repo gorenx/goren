@@ -64,7 +64,7 @@ export function ConversationPane({ store, snapshot, onOpenCredentials }: Convers
       <MessageList
         store={store}
         rows={rows}
-        cwd={snapshot.host?.cwd}
+        cwd={current?.cwd ?? snapshot.host?.cwd}
         sessionId={snapshot.currentSessionId}
         hasMore={history?.hasMore === true}
         loadingOlder={history?.loading === true}

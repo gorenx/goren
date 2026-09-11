@@ -8,6 +8,7 @@ var privilegedMethods = map[string]struct{}{
 	"agentPreset.openDocument":  {},
 	"agentPreset.remove":        {},
 	"host.pickDirectory":        {},
+	"directoryPicker.pick":      {},
 	"host.openPath":             {},
 	"settings.describe":         {},
 	"settings.openDocument":     {},

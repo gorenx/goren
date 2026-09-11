@@ -58,6 +58,7 @@ type Server struct {
 	mcp         *mcpManager
 	mcpIdentity *goakt.GrainIdentity
 	preferences *settingsactor.Provider
+	picker      *directoryPicker
 }
 
 // New validates required process inputs without starting actors or opening files.
@@ -279,7 +280,7 @@ func (owner *Server) Done() <-chan error {
 	return owner.served
 }
 
-// Close stops network admission before settling API and Agent resource owners.
+// Close settles native selection, then stops network admission before Agents.
 // Failure retains all dependencies needed to retry the incomplete stage.
 func (owner *Server) Close(ctx context.Context) error {
 	owner.lifecycle.Lock()
@@ -293,6 +294,12 @@ func (owner *Server) Close(ctx context.Context) error {
 
 func (owner *Server) closeResources(ctx context.Context) error {
 	var transportFailure error
+	if owner.picker != nil {
+		if err := owner.picker.Close(ctx); err != nil {
+			return err
+		}
+		owner.picker = nil
+	}
 	if owner.mcp != nil {
 		owner.mcp.cancel()
 	}

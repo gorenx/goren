@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConversationStore } from './conversation-store'
 import type { Translator } from './i18n'
-import type { BoundDefinition, BoundDefinitionDraft, BoundExtensionOption, BoundToolOption, SessionEvent, SessionSummary } from './types'
+import type { BoundDefinition, BoundDefinitionDraft, BoundExtensionOption, BoundToolOption, SessionEvent, SessionSummary, WorkspaceListValue } from './types'
 import { MockWebSocket } from './test/mock-websocket'
 
 const translate: Translator = (messageKey, values) => {
@@ -24,6 +24,103 @@ describe('ConversationStore', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+  })
+
+  it.each(['/b', null])('uses the native folder picker result %s without submitting a prompt', async pickedPath => {
+    const host = installMockHost({ existingSession: true, workspaces: workspaceListing(), pickedPath })
+    const store = new ConversationStore(translate)
+    await store.start()
+    await store.pickWorkspace(new AbortController().signal)
+    expect(host.calls).toContainEqual({ method: 'directoryPicker.pick', payload: {} })
+    expect(host.methods).not.toContain('session.prompt')
+    if (pickedPath === null) {
+      expect(host.methods).not.toContain('workspace.create')
+      expect(host.methods).not.toContain('session.create')
+      expect(store.snapshot().currentSessionId).toBe(session.sessionId)
+    } else {
+      expect(host.calls).toContainEqual({ method: 'workspace.create', payload: { path: '/b' } })
+      expect(store.currentSession()?.cwd).toBe('/b')
+    }
+    store.dispose()
+  })
+
+  it('finds a reusable workspace Session beyond the first page and keeps its directory after sidebar refresh', async () => {
+    const blank = { ...session, sessionId: 'blank-b', cwd: '/b' }
+    const rejected = [
+      { ...blank, sessionId: 'archived' },
+      { ...blank, sessionId: 'used', blank: false },
+      { ...blank, sessionId: 'running', running: true },
+      { ...blank, sessionId: 'child', origin: 'subagent' },
+      { ...blank, sessionId: 'mismatch', cwd: '/a' },
+    ]
+    const host = installMockHost({
+      existingSession: true,
+      workspaces: { items: [{ workspaceId: 'b', path: '/b', title: 'B', sessionIds: [...rejected.map(item => item.sessionId), blank.sessionId] }], archivedSessionIds: ['archived'] },
+      sessionPages: {
+        first: { items: [session, ...rejected, { ...blank, sessionId: 'unaccounted' }], nextCursor: 'older' },
+        older: { items: [blank] },
+      },
+    })
+    const store = new ConversationStore(translate)
+    await store.start()
+    await store.openWorkspace({ workspaceId: 'b' })
+    expect(store.snapshot().currentSessionId).toBe('blank-b')
+    expect(host.methods).not.toContain('session.create')
+    expect(host.calls).toContainEqual({ method: 'session.list', payload: { limit: 50, cursor: 'older' } })
+    expect(host.calls).toContainEqual({ method: 'session.history', payload: { sessionId: 'blank-b', maxMessages: 20 } })
+    await store.refreshSessions()
+    expect(store.currentSession()?.cwd).toBe('/b')
+    const reads = host.methods.filter(method => method === 'session.list').length
+    await store.openWorkspace({ workspaceId: 'b' })
+    expect(host.methods.filter(method => method === 'session.list')).toHaveLength(reads)
+    store.dispose()
+  })
+
+  it('registers a server path and creates with the canonical Workspace identity, then inherits it for new conversations', async () => {
+    const host = installMockHost({ existingSession: true, workspaces: workspaceListing() })
+    const store = new ConversationStore(translate)
+    await store.start()
+    await store.openWorkspace({ path: '/symlink-b' })
+    expect(host.calls).toContainEqual({ method: 'workspace.create', payload: { path: '/symlink-b' } })
+    expect(host.calls).toContainEqual({ method: 'session.create', payload: { workspaceId: 'b' } })
+    expect(store.currentSession()?.cwd).toBe('/b')
+    expect(store.snapshot().sessions.find(item => item.sessionId === session.sessionId)).toEqual(session)
+    await store.createSession()
+    expect(host.calls.filter(call => call.method === 'session.create')).toEqual([
+      { method: 'session.create', payload: { workspaceId: 'b' } },
+      { method: 'session.create', payload: { workspaceId: 'b' } },
+    ])
+    store.dispose()
+  })
+
+  it.each(['path', 'creation'])('keeps the original Session when workspace %s fails', async failure => {
+    installMockHost({ existingSession: true, workspaces: workspaceListing(), ...(failure === 'path' ? { workspaceFailure: 'invalid directory' } : { createFailure: 'creation failed' }) })
+    const store = new ConversationStore(translate)
+    await store.start()
+    await expect(store.openWorkspace({ path: '/b' })).rejects.toThrow()
+    expect(store.snapshot().currentSessionId).toBe(session.sessionId)
+    expect(store.snapshot().creatingSession).toBe(false)
+    store.dispose()
+  })
+
+  it.each(['cancel', 'navigate'])('does not redirect after %s during directory creation and ignores duplicate clicks', async action => {
+    let release: (() => void) | undefined
+    const wait = new Promise<void>(resolve => { release = resolve })
+    const host = installMockHost({ existingSession: true, workspaces: workspaceListing(), createWait: wait })
+    const store = new ConversationStore(translate)
+    await store.start()
+    const controller = new AbortController()
+    const pending = store.openWorkspace({ workspaceId: 'b' }, controller.signal)
+    await vi.waitFor(() => expect(host.methods).toContain('session.create'))
+    await store.openWorkspace({ workspaceId: 'b' })
+    if (action === 'cancel') controller.abort()
+    else await store.selectSession(session.sessionId)
+    release?.()
+    await pending.catch(() => { /* Transport cancellation is also allowed. */ })
+    expect(host.methods.filter(method => method === 'session.create')).toHaveLength(1)
+    expect(store.snapshot().currentSessionId).toBe(session.sessionId)
+    expect(store.snapshot().creatingSession).toBe(false)
+    store.dispose()
   })
 
   it.each(['CUSTOM_DEEPSEEK_KEY', undefined])('uses the saved credential reference for reading and mutations: %s', async reference => {
@@ -184,7 +281,7 @@ describe('ConversationStore', () => {
     expect(store.snapshot().creatingSession).toBe(true)
     expect(store.snapshot().currentSessionId).toBeUndefined()
     expect(store.snapshot().composerState).toBe('composer.creatingSession')
-    expect(host.methods.filter(method => method === 'session.create')).toHaveLength(1)
+    await vi.waitFor(() => expect(host.methods.filter(method => method === 'session.create')).toHaveLength(1))
 
     releaseCreate?.()
     await Promise.all([firstCreate, duplicateCreate])
@@ -611,6 +708,9 @@ describe('ConversationStore', () => {
 })
 
 interface MockHostOptions {
+  pickedPath?: string | null
+  workspaces?: WorkspaceListValue
+  workspaceFailure?: string
   credentialRef?: string
   settingsFailure?: string
   missingProvider?: boolean
@@ -660,6 +760,16 @@ function installMockHost(options: MockHostOptions = {}): {
     calls.push({ method: call.method, payload: call.payload })
     let value: unknown
     switch (call.method) {
+    case 'directoryPicker.pick':
+      value = options.pickedPath ?? null
+      break
+    case 'workspace.list':
+      value = options.workspaces ?? { items: [], archivedSessionIds: [] }
+      break
+    case 'workspace.create':
+      if (options.workspaceFailure !== undefined) return response({ rpcId: call.rpcId, result: { ok: false, error: { message: options.workspaceFailure } } })
+      value = { workspace: options.workspaces?.items[0], created: true }
+      break
     case 'host.describe':
       value = {
         version: 'test',
@@ -846,4 +956,8 @@ function response(value: unknown, status = 200): Response {
       'content-type': 'application/json',
     },
   })
+}
+
+function workspaceListing(): WorkspaceListValue {
+  return { items: [{ workspaceId: 'b', path: '/b', title: 'B', sessionIds: [] }], archivedSessionIds: [] }
 }

@@ -1,6 +1,11 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 
 const simplifiedChinese = {
+  "workspace.picking": "选择中…",
+  "workspace.cancel": "取消目录选择",
+  "workspace.choose": "选择目录",
+  "workspace.notFound": "该工作目录已不存在，请刷新后重新选择。",
+
   "settings.title": "设置",
   "settings.scope": "全局默认 · 用户设置优先于本地配置",
   "settings.close": "关闭设置",
@@ -271,6 +276,11 @@ export type TranslationValues = Readonly<Record<string, string | number>>
 export type Translator = (messageKey: MessageKey, values?: TranslationValues) => string
 
 const english = {
+  "workspace.picking": "Choosing…",
+  "workspace.cancel": "Cancel directory selection",
+  "workspace.choose": "Choose directory",
+  "workspace.notFound": "This workspace no longer exists. Refresh and choose again.",
+
   "settings.title": "Settings",
   "settings.scope": "Global defaults · User settings override local configuration",
   "settings.close": "Close settings",

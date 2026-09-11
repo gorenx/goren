@@ -43,6 +43,18 @@ export interface SessionCreateValue {
   sessionId: string
 }
 
+export interface WorkspaceView {
+  workspaceId: string
+  path: string
+  title: string
+  sessionIds: string[]
+}
+
+export interface WorkspaceListValue {
+  items: WorkspaceView[]
+  archivedSessionIds: string[]
+}
+
 export interface SessionHistoryValue {
   events: Array<{ event: SessionEvent }>
   hasMore: boolean

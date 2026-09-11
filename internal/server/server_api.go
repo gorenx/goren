@@ -255,9 +255,11 @@ func (owner *Server) initializeAPI(ctx context.Context, constructors *toolactor.
 		system:   system,
 		identity: owner.mcpIdentity,
 	}
+	owner.picker = newDirectoryPicker(owner.settings.Address)
 	owner.api, err = apiproxy.NewServer(ctx, apiproxy.Dependencies{
-		MCP:      connections,
-		Settings: preferences,
+		DirectoryPicker: owner.picker,
+		MCP:             connections,
+		Settings:        preferences,
 		Sessions: sessionapi.Dependencies{
 			Storage:     owner.settings.Attachments,
 			Agents:      agents,

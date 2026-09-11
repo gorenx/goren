@@ -1874,3 +1874,19 @@
   .settings-content { overflow-y: visible; padding: 18px; }
   .settings-header { padding: 18px; }
 }
+
+.workspace-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 28px;
+  max-width: 150px;
+  padding: 5px;
+  border-radius: 6px;
+}
+.workspace-button:hover { background: rgb(0 0 0 / 5%); }
+.workspace-button:disabled { opacity: .5; }
+@media (max-width: 640px) {
+  .workspace-button { max-width: 72px; }
+  .composer select { max-width: 110px; }
+}

@@ -27,6 +27,8 @@ import type {
   SessionListValue,
   SessionSummary,
   StreamDraft,
+  WorkspaceListValue,
+  WorkspaceView,
 } from './types'
 import { isRecord, recordBoolean, recordString } from './types'
 import type { Locale, MessageKey, Translator } from './i18n'
@@ -121,6 +123,9 @@ export class ConversationStore {
     if (listVersion !== this.#sessionListVersion) return
     const sessions = [...(result.items ?? [])]
       .filter(item => item.origin !== 'subagent')
+    // A selected older Session may be outside the first sidebar page.
+    const selected = this.currentSession()
+    if (selected !== undefined && !sessions.some(item => item.sessionId === selected.sessionId)) sessions.push(selected)
     this.#patch({
       sessions,
       nextSessionCursor: result.nextCursor,
@@ -285,6 +290,7 @@ export class ConversationStore {
 
   async createSession(): Promise<void> {
     if (this.#value.creatingSession) return
+    const cwd = this.currentSession()?.cwd ?? this.#value.host?.cwd
     const previousSessionId = this.#value.currentSessionId
     const previousComposerState = this.#value.composerState
     const creationSelectionVersion = ++this.#selectionVersion
@@ -295,7 +301,9 @@ export class ConversationStore {
     })
     let created: SessionCreateValue
     try {
-      const payload = this.#value.host?.cwd ? { cwd: this.#value.host.cwd } : {}
+      const listing = previousSessionId === undefined || cwd === undefined ? undefined : await this.listWorkspaces()
+      const workspace = listing?.items.find(item => item.path === cwd)
+      const payload = workspace !== undefined ? { workspaceId: workspace.workspaceId } : cwd ? { cwd } : {}
       created = await this.#api.call<SessionCreateValue>('session.create', payload)
     } catch (error) {
       if (this.#selectionVersion === creationSelectionVersion) {
@@ -313,7 +321,7 @@ export class ConversationStore {
       updatedAt: Date.now(),
       running: false,
       blank: true,
-      cwd: this.#value.host?.cwd,
+      cwd,
     })
     this.#patch({ sessions, creatingSession: false })
     if (this.#selectionVersion === creationSelectionVersion) {
@@ -323,6 +331,75 @@ export class ConversationStore {
       await Promise.all([select, refresh])
     } else {
       await this.refreshSessions().catch(error => this.#fail(error))
+    }
+  }
+
+  listWorkspaces(signal?: AbortSignal): Promise<WorkspaceListValue> {
+    return this.#api.call('workspace.list', {}, signal)
+  }
+
+  async pickWorkspace(signal: AbortSignal): Promise<void> {
+    try {
+      const path = await this.#api.call<string | null>('directoryPicker.pick', {}, signal)
+      if (signal.aborted || path === null) return
+      await this.openWorkspace({ path }, signal)
+    } catch (error) {
+      if (!signal.aborted) this.#fail(error)
+      throw error
+    }
+  }
+
+  // Directory selection navigates to another Session; it never mutates a Header.
+  async openWorkspace(target: { workspaceId: string } | { path: string }, signal?: AbortSignal): Promise<void> {
+    if (this.#value.creatingSession) return
+    const selectionVersion = ++this.#selectionVersion
+    this.#patch({ creatingSession: true })
+    try {
+      const registered = 'path' in target
+        ? await this.#api.call<{ workspace: WorkspaceView }>('workspace.create', target, signal)
+        : undefined
+      const identifier = registered?.workspace.workspaceId ?? ('workspaceId' in target ? target.workspaceId : undefined)
+      const listing = await this.listWorkspaces(signal)
+      const workspace = listing.items.find(item => item.workspaceId === identifier)
+      if (workspace === undefined) throw new Error(this.#translateText('workspace.notFound'))
+      if (signal?.aborted || selectionVersion !== this.#selectionVersion || this.currentSession()?.cwd === workspace.path) return
+
+      const members = new Set(workspace.sessionIds)
+      const archived = new Set(listing.archivedSessionIds)
+      let candidate: SessionSummary | undefined
+      let cursor: string | undefined
+      do {
+        const page = await this.#api.call<SessionListValue>('session.list', {
+          limit: sessionListPageSize,
+          ...(cursor === undefined ? {} : { cursor }),
+        }, signal)
+        if (signal?.aborted || selectionVersion !== this.#selectionVersion) return
+        candidate = page.items.find(item =>
+          members.has(item.sessionId) &&
+          !archived.has(item.sessionId) &&
+          item.cwd === workspace.path &&
+          item.blank &&
+          !item.running &&
+          item.origin !== 'subagent',
+        )
+        cursor = page.nextCursor
+      } while (candidate === undefined && cursor !== undefined && members.size > 0)
+
+      if (candidate === undefined) {
+        const created = await this.#api.call<SessionCreateValue>('session.create', { workspaceId: workspace.workspaceId }, signal)
+        candidate = {
+          sessionId: created.sessionId,
+          cwd: workspace.path,
+          updatedAt: Date.now(),
+          running: false,
+          blank: true,
+        }
+      }
+      if (signal?.aborted || selectionVersion !== this.#selectionVersion) return
+      this.#patch({ sessions: prependSession(this.#value.sessions, candidate) })
+      await this.selectSession(candidate.sessionId)
+    } finally {
+      this.#patch({ creatingSession: false })
     }
   }
 
@@ -602,6 +679,10 @@ export class ConversationStore {
     if (!isRecord(payload)) return
     const frameType = recordString(payload, 'type')
     if (frameType === 'host/session-added' || frameType === 'host/session-removed') {
+      if (frameType === 'host/session-removed' && recordString(payload, 'sessionId') === this.#value.currentSessionId) {
+        ++this.#selectionVersion
+        this.#patch({ currentSessionId: undefined })
+      }
       void this.refreshSessions().catch(error => this.#fail(error))
       return
     }

@@ -430,6 +430,7 @@ func TestPrivilegedMethodsRemainLoopbackOnlyOnTrustedHost(t *testing.T) {
 		"settings.openDocument",
 		"settings.update",
 		"settings.replace",
+		"directoryPicker.pick",
 		"settings.mutate",
 		"settings.updateProvider",
 		"settings.updatePrompt",
