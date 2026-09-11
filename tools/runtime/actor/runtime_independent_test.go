@@ -96,10 +96,10 @@ func TestRuntimeIndependentSessionsBindSameNameToOwnProviderAndRejectFallback(t 
 	publish(globalFirst.id)
 	parent, parentClose := initializeConfiguredRuntime(t, system, registry, "parent", nil)
 	selection := selectionFor(local.id)
-	selection.Independent = true
+	selection.InheritGlobal = false
 	child, childClose := initializeConfiguredRuntime(t, system, registry, "child", &selection)
 	empty, emptyClose := initializeConfiguredRuntime(t, system, registry, "empty", &toolregistry.Catalog{
-		Independent: true,
+		InheritGlobal: false,
 	})
 	if globalFirst.opens.Load() != 1 || local.opens.Load() != 1 {
 		t.Fatalf("initialization selected wrong providers: global=%d local=%d", globalFirst.opens.Load(), local.opens.Load())

@@ -145,7 +145,14 @@ func TestRuntimeOwnsToolReplacementAndFailedCloseRecovery(t *testing.T) {
 	hidden := false
 	configured := ask[catalogactor.Completion](t, system, registry, catalogactor.ConfigureSession{
 		SessionID: "agent",
-		Catalog:   toolregistry.Catalog{Policies: map[string]toolregistry.Policy{toolaskuser.Name: {Visible: &hidden}}},
+		Catalog: toolregistry.Catalog{
+			InheritGlobal: true,
+			Policies: map[string]toolregistry.Policy{
+				toolaskuser.Name: {
+					Visible: &hidden,
+				},
+			},
+		},
 	})
 	if configured.Err != nil {
 		t.Fatal(configured.Err)

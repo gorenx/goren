@@ -31,11 +31,12 @@ type Policy struct {
 // Catalog is one source's or Session's unmerged tool configuration. Policy-only
 // entries override inherited tools without copying their schemas.
 type Catalog struct {
-	// Independent makes a Session catalog complete: global schemas, flags and
-	// policies do not participate. An empty independent catalog has no tools.
-	// Global sources cannot set this field.
-	Independent bool
-	Schemas     []llm.ToolSchema
+	// InheritGlobal merges global schemas, flags and policies into this Session.
+	// False selects only this catalog; an explicitly configured empty catalog
+	// has no tools. Unconfigured Sessions use global tools. Global sources must
+	// leave this false because they do not inherit other sources.
+	InheritGlobal bool
+	Schemas       []llm.ToolSchema
 	// ProviderIDs identifies replaceable implementations by canonical tool name.
 	// Global sources and independent Sessions may bind their own schemas.
 	ProviderIDs map[string]tools.ProviderID
@@ -75,7 +76,7 @@ type Registry struct {
 	// source's complete schema and policy set. Values never contain workers.
 	sources map[string]Catalog
 	// sessions maps a Session ID (e.g. "session-1") to its supplied catalog.
-	// Independent catalogs are complete; other entries contain only overrides.
+	// Catalogs with InheritGlobal contain overrides; others are complete.
 	sessions map[session.SessionID]Catalog
 	// configured contains complete user flags accepted independently of source
 	// publication. It never owns Schema or execution-policy capabilities.
@@ -111,8 +112,8 @@ func (owner *Registry) RegisterSource(name string, input Catalog) error {
 	if strings.TrimSpace(name) == "" || strings.TrimSpace(name) != name {
 		return errors.New("tools: source name is required")
 	}
-	if input.Independent {
-		return errors.New("tools: independent catalogs belong to Sessions")
+	if input.InheritGlobal {
+		return errors.New("tools: global sources cannot inherit global configuration")
 	}
 	captured, err := snapshotCatalog(input)
 	if err != nil {
@@ -149,18 +150,25 @@ func (owner *Registry) RegisterSource(name string, input Catalog) error {
 // RemoveSource withdraws its schemas and policies together; runtimes decide how to apply it.
 func (owner *Registry) RemoveSource(name string) { delete(owner.sources, name) }
 
-// ConfigureSession replaces Session values. Independent catalogs supply a complete
-// selection; other catalogs retain global inheritance and field overrides.
+// ConfigureSession replaces Session values. InheritGlobal retains global
+// inheritance and field overrides; otherwise the catalog is a complete selection.
 func (owner *Registry) ConfigureSession(identifier session.SessionID, input Catalog) error {
 	if identifier == "" {
 		return errors.New("tools: Session identity is required")
 	}
-	if !input.Independent && len(input.ProviderIDs) != 0 {
+	if input.InheritGlobal && len(input.ProviderIDs) != 0 {
 		return errors.New("tools: inherited Session configuration cannot select Providers")
 	}
 	captured, err := snapshotCatalog(input)
 	if err != nil {
 		return err
+	}
+	if !captured.InheritGlobal {
+		for name := range captured.Policies {
+			if !slices.ContainsFunc(captured.Schemas, func(entry llm.ToolSchema) bool { return entry.Name == name }) {
+				return fmt.Errorf("tools: independent policy %q requires an owned schema", name)
+			}
+		}
 	}
 	err = assignVersions(&captured, owner.sessions[identifier])
 	if err != nil {
@@ -180,7 +188,8 @@ func (owner *Registry) RemoveSession(identifier session.SessionID) {
 
 // Read returns detached unmerged values. Global names have deterministic order.
 func (owner *Registry) Read(identifier session.SessionID) Configuration {
-	if selected := owner.sessions[identifier]; selected.Independent {
+	selected, configured := owner.sessions[identifier]
+	if configured && !selected.InheritGlobal {
 		captured := selected.Clone()
 		restriction := captured.Restriction
 		captured.Restriction = nil
@@ -212,9 +221,12 @@ func (owner *Registry) Read(identifier session.SessionID) Configuration {
 		}
 	}
 	sort.Slice(combined.Schemas, func(left int, right int) bool { return combined.Schemas[left].Name < combined.Schemas[right].Name })
+	if !configured {
+		selected.InheritGlobal = true
+	}
 	return Configuration{
 		Global: combined.Clone(),
-		Custom: owner.sessions[identifier].Clone(),
+		Custom: selected.Clone(),
 	}
 }
 
@@ -274,9 +286,6 @@ func snapshotCatalog(input Catalog) (Catalog, error) {
 	for name := range captured.Policies {
 		if !validName(name) {
 			return Catalog{}, fmt.Errorf("tools: invalid policy name %q", name)
-		}
-		if captured.Independent && !names[name] {
-			return Catalog{}, fmt.Errorf("tools: independent policy %q requires an owned schema", name)
 		}
 	}
 	for name, identifier := range captured.ProviderIDs {

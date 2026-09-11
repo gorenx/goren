@@ -35,7 +35,9 @@ func TestRegistryOwnsProviderIDsWithoutChangingSchemaVersions(t *testing.T) {
 	if after.Global.ProviderIDs["read"] != "second" || after.Global.Schemas[0].Version != before.Global.Schemas[0].Version {
 		t.Fatal("binding did not change independently from schema")
 	}
-	if err := directory.ConfigureSession("agent", input); err == nil {
+	selection := input.Clone()
+	selection.InheritGlobal = true
+	if err := directory.ConfigureSession("agent", selection); err == nil {
 		t.Fatal("Session selected a Provider")
 	}
 	for _, invalid := range []map[string]tools.ProviderID{

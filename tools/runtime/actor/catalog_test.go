@@ -80,6 +80,7 @@ func TestCatalogReturnsUnmergedGlobalAndCustomSchemas(t *testing.T) {
 	}
 	hidden := false
 	err := endpoint.ConfigureSession(context.Background(), "agent", toolregistry.Catalog{
+		InheritGlobal: true,
 		Policies: map[string]toolregistry.Policy{
 			"read": {Visible: &hidden},
 		},

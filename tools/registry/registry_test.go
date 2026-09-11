@@ -35,7 +35,8 @@ func TestRegistryKeepsSourcesAndSessionOverridesSeparate(t *testing.T) {
 	}
 	visible := true
 	err = directory.ConfigureSession("session-1", toolregistry.Catalog{
-		Schemas: []llm.ToolSchema{schema("read", "custom read")},
+		InheritGlobal: true,
+		Schemas:       []llm.ToolSchema{schema("read", "custom read")},
 		Policies: map[string]toolregistry.Policy{
 			"read": {Visible: &visible},
 		},

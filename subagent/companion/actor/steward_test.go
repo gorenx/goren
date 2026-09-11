@@ -104,7 +104,7 @@ func (fixture *childFixture) Start(ctx context.Context, parent, child agentregis
 		Child:   child,
 		Restore: stored != nil,
 		Tools: &toolregistry.Catalog{
-			Independent: true,
+			InheritGlobal: false,
 		},
 	})
 }
