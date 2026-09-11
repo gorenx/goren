@@ -4,6 +4,7 @@ export interface SessionModels {
 }
 import { imageTypes, type ImageInput, type ImageRef } from './images'
 import { HarnessAPI } from './api'
+import { decodeSettingsCatalog } from './settings'
 import type {
   ConversationSnapshot,
   BoundDefinition,
@@ -58,8 +59,6 @@ const initialSnapshot: ConversationSnapshot = {
 const historyPageMessages = 20
 const sessionListPageSize = 50
 
-export const DEEPSEEK_CREDENTIAL_REF = 'DEEPSEEK_API_KEY'
-
 export class ConversationStore {
   readonly #subscribers = new Set<Subscriber>()
   readonly #api: HarnessAPI
@@ -68,6 +67,7 @@ export class ConversationStore {
   #value = initialSnapshot
   #selectionVersion = 0
   #sessionListVersion = 0
+  #credentialVersion = 0
   #toastTimer?: number
   #started = false
 
@@ -95,7 +95,7 @@ export class ConversationStore {
       const host = await this.#api.call<HostDescription>('host.describe', {})
       this.#patch({ host, composerState: 'composer.syncingSessions' })
       // Auxiliary configuration must not gate Session history or the composer.
-      void this.refreshCredential().catch(error => this.#fail(error))
+      void this.refreshCredential().catch(() => { /* refreshCredential reports the failure. */ })
       void this.refreshBoundDefinitions().catch(error => this.#fail(error))
       this.#api.connect()
       await this.refreshSessions()
@@ -154,30 +154,49 @@ export class ConversationStore {
   }
 
   async refreshCredential(): Promise<void> {
-    const result = await this.#api.call<CredentialsDescribeValue>('credentials.describe', {
-      refs: [DEEPSEEK_CREDENTIAL_REF],
-    })
-    this.#patch({ credential: result.credentials[DEEPSEEK_CREDENTIAL_REF], credentialLoaded: true })
+    const version = ++this.#credentialVersion
+    this.#patch({ credentialLoaded: false, credential: undefined, credentialRef: undefined, credentialPendingRestart: false })
+    try {
+      const catalog = decodeSettingsCatalog(await this.#api.call('settings.describe', {}))
+      const provider = catalog.namespaces.find(group => group.ns === 'llmprovider' && group.name === 'deepseek')
+      if (provider?.value == null) throw new Error(this.#translateText('settings.loadFailure'))
+      const reference = provider.value.apiKeyEnv ?? 'DEEPSEEK_API_KEY'
+      if (typeof reference !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(reference)) {
+        throw new Error(this.#translateText('settings.loadFailure'))
+      }
+      const result = await this.#api.call<CredentialsDescribeValue>('credentials.describe', { refs: [reference] })
+      if (version !== this.#credentialVersion) return
+      const credential = result.credentials[reference]
+      if (credential === undefined) throw new Error(this.#translateText('settings.keyFailure'))
+      this.#patch({ credential, credentialRef: reference, credentialLoaded: true, credentialPendingRestart: provider.pendingRestart === true })
+    } catch (error) {
+      if (version === this.#credentialVersion) this.#fail(error)
+      throw error
+    }
   }
 
   async saveCredential(value: string): Promise<void> {
     try {
-      await this.#api.call<unknown>('credentials.set', { ref: DEEPSEEK_CREDENTIAL_REF, value })
-      await this.refreshCredential()
-    } catch (error) {
-    this.#fail(error)
-    throw error
-  }
-  }
-
-  async unsetCredential(): Promise<void> {
-    try {
-      await this.#api.call<unknown>('credentials.unset', { ref: DEEPSEEK_CREDENTIAL_REF })
+      const ref = this.#value.credentialRef
+      if (!this.#value.credentialLoaded || ref === undefined) throw new Error(this.#translateText('settings.keyFailure'))
+      await this.#api.call<unknown>('credentials.set', { ref, value })
       await this.refreshCredential()
     } catch (error) {
       this.#fail(error)
       throw error
+    }
   }
+
+  async unsetCredential(): Promise<void> {
+    try {
+      const ref = this.#value.credentialRef
+      if (!this.#value.credentialLoaded || ref === undefined) throw new Error(this.#translateText('settings.keyFailure'))
+      await this.#api.call<unknown>('credentials.unset', { ref })
+      await this.refreshCredential()
+    } catch (error) {
+      this.#fail(error)
+      throw error
+    }
   }
 
   async refreshBoundDefinitions(): Promise<void> {

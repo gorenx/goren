@@ -178,6 +178,8 @@ export interface ConversationSnapshot {
   composerState: MessageKey
   credentialLoaded: boolean
   credential?: CredentialView
+  credentialRef?: string
+  credentialPendingRestart?: boolean
   boundDefinitionsLoaded: boolean
   boundDefinitions: readonly BoundDefinition[]
   boundToolsState: BoundCatalogState

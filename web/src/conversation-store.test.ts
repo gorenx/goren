@@ -26,6 +26,59 @@ describe('ConversationStore', () => {
     vi.unstubAllGlobals()
   })
 
+  it.each(['CUSTOM_DEEPSEEK_KEY', undefined])('uses the saved credential reference for reading and mutations: %s', async reference => {
+    const host = installMockHost({ credentialRef: reference, pendingRestart: true })
+    const store = new ConversationStore(translate)
+    await store.refreshCredential()
+    const expected = reference ?? 'DEEPSEEK_API_KEY'
+    expect(store.snapshot().credentialRef).toBe(expected)
+    expect(store.snapshot().credentialPendingRestart).toBe(true)
+    expect(host.calls).toContainEqual({ method: 'credentials.describe', payload: { refs: [expected] } })
+    await store.saveCredential('fixture-key')
+    await store.unsetCredential()
+    expect(host.calls).toContainEqual({ method: 'credentials.set', payload: { ref: expected, value: 'fixture-key' } })
+    expect(host.calls).toContainEqual({ method: 'credentials.unset', payload: { ref: expected } })
+    store.dispose()
+  })
+
+  it.each([{ settingsFailure: 'unavailable' }, { missingProvider: true }])('does not write a fallback credential when Settings cannot identify it: %j', async options => {
+    const host = installMockHost(options)
+    const store = new ConversationStore(translate)
+    await expect(store.refreshCredential()).rejects.toThrow()
+    await expect(store.saveCredential('fixture-key')).rejects.toThrow()
+    await expect(store.unsetCredential()).rejects.toThrow()
+    expect(store.snapshot().credentialLoaded).toBe(false)
+    expect(host.calls.every(call => !call.method.startsWith('credentials.'))).toBe(true)
+    store.dispose()
+  })
+
+  it('ignores stale credential metadata after a newer Settings refresh', async () => {
+    let release: (() => void) | undefined
+    const pending = new Promise<void>(resolve => { release = resolve })
+    let reads = 0
+    vi.stubGlobal('fetch', vi.fn(async (_input: unknown, init?: RequestInit) => {
+      const envelope = JSON.parse(String(init?.body))
+      let value: unknown
+      if (envelope.method === 'settings.describe') {
+        const reference = ++reads === 1 ? 'OLD_KEY' : 'NEW_KEY'
+        value = { writable: true, namespaces: [{ ns: 'llmprovider', name: 'deepseek', value: { apiKeyEnv: reference }, revision: reads, applies: 'restart' }] }
+      } else {
+        const reference = envelope.payload.refs[0]
+        if (reference === 'OLD_KEY') await pending
+        value = { credentials: { [reference]: { configured: true, writable: true } } }
+      }
+      return response({ rpcId: envelope.rpcId, result: { ok: true, value } })
+    }))
+    const store = new ConversationStore(translate)
+    const earlier = store.refreshCredential()
+    await vi.waitFor(() => expect(reads).toBe(1))
+    await store.refreshCredential()
+    release?.()
+    await earlier
+    expect(store.snapshot().credentialRef).toBe('NEW_KEY')
+    store.dispose()
+  })
+
   it('refuses images on a text model without automatically selecting another model', async () => {
     const host = installMockHost({ existingSession: true })
     const store = new ConversationStore(translate)
@@ -73,9 +126,9 @@ describe('ConversationStore', () => {
       'ws://localhost:3000/api/events.host',
       'ws://localhost:3000/api/events.mux',
     ])
-    expect(host.methods).toEqual([
+    expect(host.methods.filter(method => method !== 'credentials.describe')).toEqual([
       'host.describe',
-      'credentials.describe',
+      'settings.describe',
       'bound.list',
       'session.list',
       'session.create',
@@ -558,6 +611,10 @@ describe('ConversationStore', () => {
 })
 
 interface MockHostOptions {
+  credentialRef?: string
+  settingsFailure?: string
+  missingProvider?: boolean
+  pendingRestart?: boolean
   existingSession?: boolean
   createFailure?: string
   createWait?: Promise<void>
@@ -612,10 +669,21 @@ function installMockHost(options: MockHostOptions = {}): {
         canOpenPath: false,
       }
       break
+    case 'settings.describe':
+      if (options.settingsFailure !== undefined) return response({ rpcId: call.rpcId, result: { ok: false, error: { message: options.settingsFailure } } })
+      value = { writable: true, namespaces: options.missingProvider ? [] : [{
+        ns: 'llmprovider', name: 'deepseek', value: options.credentialRef ? { apiKeyEnv: options.credentialRef } : {},
+        revision: 0, applies: 'restart', pendingRestart: options.pendingRestart,
+      }] }
+      break
+    case 'credentials.set':
+    case 'credentials.unset':
+      value = {}
+      break
     case 'credentials.describe':
       value = {
         credentials: {
-          DEEPSEEK_API_KEY: {
+          [options.credentialRef ?? 'DEEPSEEK_API_KEY']: {
             configured: true,
             source: 'environment',
             writable: false,

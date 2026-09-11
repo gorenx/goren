@@ -1826,7 +1826,7 @@
 }
 
 .settings-dialog {
-  width: min(920px, calc(100vw - 32px));
+  width: min(920px, calc(100vw - 40px));
   max-height: min(820px, 92dvh);
   display: flex;
   flex-direction: column;
@@ -1867,7 +1867,7 @@
 .settings-advanced pre { overflow: auto; max-height: 200px; padding: 10px; background: var(--color-canvas); font-size: 11px; }
 .settings-credential form > label { display: block; margin: 12px 0 6px; font-size: 12px; }
 @media (max-width: 640px) {
-  .settings-dialog { width: calc(100vw - 16px); max-height: 95dvh; }
+  .settings-dialog { width: calc(100vw - 40px); max-height: calc(100dvh - 40px); }
   .settings-layout { display: flex; flex-direction: column; overflow-y: auto; }
   .settings-nav { display: flex; flex: 0 0 auto; gap: 4px; overflow-x: auto; padding: 8px; border-right: 0; border-bottom: 1px solid rgb(21 23 27 / 8%); }
   .settings-nav button { flex: 0 0 auto; width: auto; max-width: 190px; margin: 0; }

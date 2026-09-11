@@ -14,7 +14,9 @@ func TestCommandConfigSuppliesOnlyExplicitOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if options.path != "" || options.overrides.Server.Listen != nil || options.overrides.MCP.Files != nil {
+	if options.path != "" ||
+		options.overrides.Server.Listen != nil ||
+		options.overrides.MCP.Files != nil {
 		t.Fatal("absent flags created overrides")
 	}
 	root := t.TempDir()
@@ -41,7 +43,9 @@ func TestCommandConfigSuppliesOnlyExplicitOverrides(t *testing.T) {
 
 func TestCommandConfigAcceptsPathWithoutReadingIt(t *testing.T) {
 	options, err := parseConfig([]string{"--config", "missing.yaml", "--check-config"})
-	if err != nil || options.path != "missing.yaml" || !options.check {
+	if err != nil ||
+		options.path != "missing.yaml" ||
+		!options.check {
 		t.Fatalf("options = %#v, %v", options, err)
 	}
 }

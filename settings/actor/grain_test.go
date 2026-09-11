@@ -174,3 +174,86 @@ func actorGroup(kind settings.Section, name string) settings.Group {
 
 func (*connectionFixture) ValidateTool(context.Context, string) error            { return nil }
 func (*connectionFixture) ApplyTool(context.Context, string, tools.Config) error { return nil }
+
+func TestProviderCloseTimeoutRetainsStoreUntilAcceptedEditDrains(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+	defer cancel()
+	running, err := goakt.NewActorSystem("settings-close-test", goakt.WithLogger(log.DiscardLogger))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := running.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer running.Stop(context.Background())
+	baseline := settings.Values{
+		Prompts: map[string]settings.PromptConfig{"default": {}},
+	}
+	path := filepath.Join(t.TempDir(), "settings.sqlite")
+	installed, err := Open(ctx, path, baseline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer installed.Close(context.Background())
+	prompts := &promptFixture{
+		entered: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+	defer func() {
+		select {
+		case <-prompts.release:
+		default:
+			close(prompts.release)
+		}
+	}()
+	endpoint, err := installed.Bind(ctx, running, prompts, &connectionFixture{}, &connectionFixture{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished := make(chan error, 1)
+	go func() {
+		persona := "accepted edit"
+		_, err := endpoint.UpdatePrompt(ctx, "default", 0, settings.PromptConfig{
+			Persona: &persona,
+		})
+		finished <- err
+	}()
+	select {
+	case <-prompts.entered:
+	case <-ctx.Done():
+		t.Fatal("application did not start")
+	}
+	bounded, stop := context.WithTimeout(ctx, 100*time.Millisecond)
+	err = installed.Close(bounded)
+	stop()
+	if err == nil || installed.storage == nil {
+		t.Fatal("timed-out close discarded storage responsibility")
+	}
+	if _, err := installed.storage.Load(ctx); err != nil {
+		t.Fatalf("store closed while an accepted edit was applying: %v", err)
+	}
+	if _, err := endpoint.UpdatePrompt(ctx, "default", 1, settings.PromptConfig{}); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("closing provider accepted a new edit: %v", err)
+	}
+	close(prompts.release)
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("accepted edit did not drain")
+	}
+	if err := installed.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := installed.Close(ctx); err != nil {
+		t.Fatal("repeated close failed", err)
+	}
+	resolved, err := Inspect(ctx, path, baseline)
+	if err != nil ||
+		resolved.Prompts["default"].Persona == nil ||
+		*resolved.Prompts["default"].Persona != "accepted edit" {
+		t.Fatalf("accepted edit did not survive close and reopen: %v", err)
+	}
+}

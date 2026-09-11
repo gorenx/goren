@@ -34,10 +34,16 @@ export function App(): React.JSX.Element {
   }, [store])
 
   useEffect(() => {
-    if (snapshot.credentialLoaded && snapshot.credential?.configured === false && snapshot.credential.writable && !onboardingDismissed) {
+    if (
+      snapshot.credentialLoaded &&
+      snapshot.credential?.configured === false &&
+      snapshot.credential.writable &&
+      !onboardingDismissed &&
+      !settingsOpen
+    ) {
       setCredentialsOpen(true)
     }
-  }, [onboardingDismissed, snapshot.credential, snapshot.credentialLoaded])
+  }, [onboardingDismissed, settingsOpen, snapshot.credential, snapshot.credentialLoaded])
 
   const closeCredentials = (): void => {
     setCredentialsOpen(false)
@@ -51,7 +57,7 @@ export function App(): React.JSX.Element {
       <DetailsPanel store={store} snapshot={snapshot} />
     {credentialsOpen && <CredentialDialog store={store} snapshot={snapshot} onClose={closeCredentials} />}
     {boundDefinitionsOpen && <BoundDefinitionDialog store={store} snapshot={snapshot} onClose={() => setBoundDefinitionsOpen(false)} />}
-    {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} onCredentialChanged={() => store.refreshCredential()} />}
+    {settingsOpen && <SettingsDialog onClose={() => { setSettingsOpen(false); void store.refreshCredential().catch(() => { /* The store reports the failure. */ }) }} onCredentialChanged={() => store.refreshCredential()} />}
     {mcpOpen && <MCPDialog onClose={() => setMCPOpen(false)} />}
       {snapshot.error !== undefined && (
         <div className="toast" role="alert">

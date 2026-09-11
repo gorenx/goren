@@ -284,3 +284,60 @@ func TestNamedToolConfigurationUsesStrictFrameworkDecoding(t *testing.T) {
 		}
 	}
 }
+
+func TestFilePathsUseSymlinkLocationAndExplicitPathsDoNotNeedHome(t *testing.T) {
+	root := t.TempDir()
+	original := filepath.Join(root, "original")
+	linked := filepath.Join(root, "linked")
+	for _, directory := range []string{original, linked} {
+		if err := os.Mkdir(directory, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := writeConfig(t, original, "input.yaml", "schemaVersion: 1\nstorage: {dataDirectory: ./data, sessionDatabase: ./session/custom.sqlite}\nmcp: {files: [./external.yaml]}\n")
+	link := filepath.Join(linked, "input.yaml")
+	if err := os.Symlink(path, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	input, err := local.Load(link, local.Config{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *input.Storage.DataDirectory != filepath.Join(linked, "data") ||
+		*input.Storage.SessionDatabase != filepath.Join(linked, "session", "custom.sqlite") ||
+		*input.Storage.QueryDatabase != filepath.Join(linked, "session", "query.sqlite") ||
+		(*input.MCP.Files)[0] != filepath.Join(linked, "external.yaml") {
+		t.Fatal("file paths used the symlink target or ignored an explicit database")
+	}
+	commandPath := filepath.Join("relative-cli", "sessions.sqlite")
+	input, err = local.Load(link, local.Config{
+		Storage: local.StorageConfig{
+			SessionDatabase: &commandPath,
+		},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *input.Storage.SessionDatabase != filepath.Join(cwd, commandPath) ||
+		*input.Storage.QueryDatabase != filepath.Join(cwd, "relative-cli", "query.sqlite") ||
+		*input.Storage.DataDirectory != filepath.Join(linked, "data") {
+		t.Fatal("CLI path did not use process cwd independently of file paths")
+	}
+}
+
+func TestMissingFileAndRelativeMCPCWDRemainInvalid(t *testing.T) {
+	root := t.TempDir()
+	if _, err := local.LoadFile(filepath.Join(root, "missing.yaml")); err == nil {
+		t.Fatal("missing configuration file was silently ignored")
+	}
+	path := writeConfig(t, root, "input.yaml", "schemaVersion: 1\nmcp: {servers: [{serverName: local, transport: stdio, command: fixture, cwd: ./relative}]}\n")
+	if _, err := local.LoadFile(path); err == nil {
+		t.Fatal("local input bypassed MCP absolute cwd validation")
+	}
+}

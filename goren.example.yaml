@@ -1,9 +1,11 @@
-# Goren 配置方案示例：加载器尚未实现，当前 CLI 尚不支持 --config。
-# 实施后用法：goren --config ./goren.example.yaml
+# Goren 本地配置示例。
+# 用法：goren --config ./goren.example.yaml
+# 仅校验：goren --config ./goren.example.yaml --check-config
 # 默认格式为 YAML，也支持字段与数据等价的 JSON。
 # 文件内相对路径以本文件所在目录为基准；不展开 ~ 或 ${VAR}。
-# 可覆盖字段：Web 用户设置 > 显式 CLI > 环境变量 > 本文件 > 内置默认。
-# 省略字段表示继承；不要用 null 表示省略。数组整表替换。
+# 本地来源：显式 CLI > 环境变量 > 本文件 > 内置默认。
+# Web 用户设置按类型和名称整组替换本地组；组内省略字段使用能力默认值。
+# 本地来源按字段是否出现组合；不要用 null 表示省略。数组整表替换。
 
 # 文件格式版本，必填；当前方案只接受 1。
 schemaVersion: 1
@@ -53,7 +55,7 @@ llm:
     # 模型流空闲超时，单位毫秒；不等于生成总时长限制。
     streamIdleTimeoutMs: 300000
 
-# 全局基础 Prompt，可在 Web 修改；具体应用时机见实施方案。
+# 全局基础 Prompt，可在 Web 修改；已有 Session 从下一 Turn 使用新配置。
 prompt:
   # 是否加入内置 Harness 身份提示；显式 false 必须保留。
   includeHarnessIdentity: true
