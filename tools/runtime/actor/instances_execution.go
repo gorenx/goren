@@ -22,9 +22,9 @@ func (endpoint *Instances) Scheduler(
 	snapshot toolruntime.Snapshot,
 	policies execution.Policies,
 ) (*execution.Scheduler, error) {
-	// implementations maps tool names to the exact work identities described below;
+	// revisions maps tool names to the committed revisions described below;
 	// execution must still target that work after policy preparation.
-	implementations := make(map[string]tool.Identity, len(snapshot.Names))
+	revisions := make(map[string]tool.Revision, len(snapshot.Names))
 	descriptions := make([]tools.Descriptor, 0, len(snapshot.Names))
 	for _, name := range snapshot.Names {
 		payload, err := endpoint.request(ctx, endpoint.directory, catalogactor.FindTool{
@@ -52,40 +52,40 @@ func (endpoint *Instances) Scheduler(
 		if description.Descriptor.Name != name {
 			return nil, errors.New("tools: execution descriptor name does not match its lifetime")
 		}
-		implementations[name] = description.Implementation
+		revisions[name] = description.Revision
 		descriptions = append(descriptions, description.Descriptor)
 	}
 	return execution.NewScheduler(
 		descriptions,
 		policies,
 		&bodies{
-			system:          endpoint.system,
-			registry:        endpoint.directory,
-			timeout:         endpoint.timeout,
-			implementations: implementations,
+			system:    endpoint.system,
+			registry:  endpoint.directory,
+			timeout:   endpoint.timeout,
+			revisions: revisions,
 		},
 	)
 }
 
-// bodies retains prepared implementation identities, never Actor addresses.
+// bodies retains prepared revisions, never Actor addresses.
 // Each invocation resolves its name through Registry; Execute rejects replacement
-// implementations that differ from the description used for policy preparation.
+// revisions that differ from the description used for policy preparation.
 // Waiting ignores caller cancellation so only the ToolActor can confirm body exit.
 type bodies struct {
 	system   goakt.ActorSystem
 	registry *goakt.GrainIdentity
 	timeout  time.Duration
-	// implementations maps each prepared tool name to its committed work identity.
-	// The identity is checked during Execute so a replacement cannot receive a call
+	// revisions maps each prepared tool name to its committed revision.
+	// The revision is checked during Execute so a replacement cannot receive a call
 	// prepared against the old descriptor; this map does not cache Actor addresses.
-	implementations map[string]tool.Identity
+	revisions map[string]tool.Revision
 }
 
 func (endpoint *bodies) Invoke(ctx context.Context, input tools.Invocation) (tools.BodyResult, error) {
 	if ctx == nil {
 		return tools.BodyResult{}, errors.New("tools: execution context is required")
 	}
-	implementation, found := endpoint.implementations[input.Name]
+	selected, found := endpoint.revisions[input.Name]
 	if !found {
 		return tools.BodyResult{}, errors.New("tools: execution destination is missing")
 	}
@@ -102,10 +102,10 @@ func (endpoint *bodies) Invoke(ctx context.Context, input tools.Invocation) (too
 	}
 	input.Arguments = input.ArgumentsJSON()
 	payload, err = endpoint.system.AskGrain(context.WithoutCancel(ctx), address.Actor, toolactor.Execute{
-		CreationID:     address.CreationID,
-		Implementation: implementation,
-		Invocation:     input,
-		Context:        ctx,
+		CreationID: address.CreationID,
+		Revision:   selected,
+		Invocation: input,
+		Context:    ctx,
 	}, time.Duration(1<<63-1))
 	if err != nil {
 		return tools.BodyResult{}, err

@@ -14,12 +14,13 @@ import (
 // Grain schedules tool preparation, execution and resource cleanup.
 // The lifecycle owner must close business resources before deactivating it.
 type Grain struct {
-	instanceID string
-	creationID string
-	agentID    session.SessionID
-	authority  *goakt.GrainIdentity
-	business   *tool.Tool
-	active     *operation
+	agentCreationID string
+	instanceID      string
+	creationID      string
+	agentID         session.SessionID
+	authority       *goakt.GrainIdentity
+	business        *tool.Tool
+	active          *operation
 	// calls maps an executing invocation's CallID to its reply and cancellation
 	// handles. The entry exists until that body returns; it contains no policy or
 	// configuration and is not removed merely because cancellation was requested.

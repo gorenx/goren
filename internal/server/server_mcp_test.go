@@ -474,7 +474,7 @@ func TestHTTPMCPReconnectionRebindsExistingSession(t *testing.T) {
 			t.Fatal(err)
 		}
 		identifier := payload.(registryactor.Configuration).Value.Global.ProviderIDs[name]
-		source, exists := process.mcp.Provider(name)
+		source, exists := process.mcp.Provider(name, identifier)
 		identified, valid := source.(tool.IdentifiedProvider)
 		if !exists ||
 			!valid ||

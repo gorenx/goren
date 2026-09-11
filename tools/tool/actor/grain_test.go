@@ -97,10 +97,11 @@ func startTool(t *testing.T, source tool.Provider) (goakt.ActorSystem, *goakt.Gr
 func initializeTool(t *testing.T, system goakt.ActorSystem, target *goakt.GrainIdentity) {
 	t.Helper()
 	result := ask[toolactor.Completion](t, system, target, toolactor.Initialize{
-		CreationID: "creation",
-		AgentID:    "conversation",
-		Name:       toolaskuser.Name,
-		Authority:  toolAuthority(t, system),
+		AgentCreationID: "agent-creation",
+		CreationID:      "creation",
+		AgentID:         "conversation",
+		Name:            toolaskuser.Name,
+		Authority:       toolAuthority(t, system),
 	})
 	if result.Err != nil {
 		t.Fatal(result.Err)
@@ -120,7 +121,7 @@ func (owner *authority) OnReceive(gc *goakt.GrainContext) {
 		return
 	}
 	var err error
-	if input.CreationID != "creation" || input.AgentID != "conversation" || input.Name != toolaskuser.Name ||
+	if input.AgentCreationID != "agent-creation" || input.CreationID != "creation" || input.AgentID != "conversation" || input.Name != toolaskuser.Name ||
 		(owner.instanceID != "" && owner.instanceID != input.InstanceID) {
 		err = errors.New("test authority: claim rejected")
 	} else {

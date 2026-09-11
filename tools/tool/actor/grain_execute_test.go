@@ -56,10 +56,10 @@ func provisionTool(t *testing.T, system goakt.ActorSystem, target *goakt.GrainId
 	}
 }
 
-func invocation(identity tool.Identity) toolactor.Execute {
+func invocation(selected tool.Revision) toolactor.Execute {
 	return toolactor.Execute{
-		CreationID:     "creation",
-		Implementation: identity,
+		CreationID: "creation",
+		Revision:   selected,
 		Invocation: tools.Invocation{
 			CallID:    "call",
 			SessionID: "conversation",
@@ -88,7 +88,7 @@ func TestCancelWaitsForBodyExitBeforeAllowingResourceClose(t *testing.T) {
 			close(service.release)
 		}
 	})
-	input := invocation(currentIdentity(t, system, target))
+	input := invocation(currentRevision(t, system, target))
 	input.Context = ctx
 	results := make(chan tools.BodyResult, 1)
 	go func() {
@@ -175,21 +175,27 @@ func TestExecutionRejectsWrongIdentityRevisionAndClosedTool(t *testing.T) {
 			},
 		},
 		{
-			name: "implementation",
+			name: "revision",
 			change: func(input *toolactor.Execute) {
-				input.Implementation = "different-update"
+				input.Revision = "different-update"
+			},
+		},
+		{
+			name: "empty revision",
+			change: func(input *toolactor.Execute) {
+				input.Revision = ""
 			},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			input := invocation(currentIdentity(t, system, target))
+			input := invocation(currentRevision(t, system, target))
 			test.change(&input)
 			if result := ask[tools.BodyResult](t, system, target, input); result.Err == nil {
 				t.Fatal("invalid execution accepted")
 			}
 		})
 	}
-	retained := invocation(currentIdentity(t, system, target))
+	retained := invocation(currentRevision(t, system, target))
 	if result := ask[tools.BodyResult](t, system, target, retained); result.Err != nil {
 		t.Fatalf("valid execution failed: %v", result.Err)
 	}
@@ -200,6 +206,48 @@ func TestExecutionRejectsWrongIdentityRevisionAndClosedTool(t *testing.T) {
 	}
 	if result := ask[tools.BodyResult](t, system, target, retained); result.Err == nil {
 		t.Fatal("closed tool remained executable")
+	}
+}
+
+func TestReplacementRejectsPreviousRevisionWithSameNameAndSchema(t *testing.T) {
+	system, target := installTool(t, &provider{})
+	retained := invocation(currentRevision(t, system, target))
+	if retained.Revision != "initial" {
+		t.Fatal("description did not return the committed revision")
+	}
+	for _, request := range []any{
+		toolactor.Provision{
+			CreationID: "creation",
+			Revision:   "replacement",
+			Schema:     questionSchema(t),
+		},
+		toolactor.Commit{
+			CreationID: "creation",
+			Revision:   "replacement",
+		},
+		toolactor.Retire{
+			CreationID: "creation",
+			Revision:   "replacement",
+		},
+	} {
+		if reply := ask[toolactor.Completion](t, system, target, request); reply.Err != nil {
+			t.Fatal(reply.Err)
+		}
+	}
+	if reply := ask[tools.BodyResult](t, system, target, retained); reply.Err == nil {
+		t.Fatal("previous revision executed the replacement")
+	}
+	selected := currentRevision(t, system, target)
+	if selected != "replacement" {
+		t.Fatal("description did not advance to the replacement revision")
+	}
+	if reply := ask[tools.BodyResult](t, system, target, invocation(selected)); reply.Err != nil {
+		t.Fatal(reply.Err)
+	}
+	if reply := ask[toolactor.Completion](t, system, target, toolactor.Close{
+		CreationID: "creation",
+	}); reply.Err != nil {
+		t.Fatal(reply.Err)
 	}
 }
 
@@ -228,7 +276,7 @@ func TestCancellationTargetsOnlyOneConcurrentCall(t *testing.T) {
 	results := make(chan outcome, 2)
 	for _, identifier := range []agentmessage.CallID{"first", "second"} {
 		go func() {
-			input := invocation(currentIdentity(t, system, target))
+			input := invocation(currentRevision(t, system, target))
 			input.Invocation.CallID = identifier
 			input.Context = ctx
 			payload, err := system.AskGrain(context.Background(), target, input, 3*time.Second)
@@ -298,11 +346,11 @@ func TestCancellationTargetsOnlyOneConcurrentCall(t *testing.T) {
 	}
 }
 
-func currentIdentity(t *testing.T, system goakt.ActorSystem, target *goakt.GrainIdentity) tool.Identity {
+func currentRevision(t *testing.T, system goakt.ActorSystem, target *goakt.GrainIdentity) tool.Revision {
 	t.Helper()
 	description := ask[toolactor.Description](t, system, target, toolactor.Describe{CreationID: "creation"})
-	if description.Err != nil || description.Implementation == "" {
+	if description.Err != nil || description.Revision == "" {
 		t.Fatalf("tool description: %+v", description)
 	}
-	return description.Implementation
+	return description.Revision
 }

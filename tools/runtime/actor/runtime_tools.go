@@ -167,7 +167,8 @@ func (owner *Runtime) createTool(gc *goakt.GrainContext, input createTool) {
 
 func (owner *Runtime) claimTool(input toolactor.Claim) error {
 	instance := owner.tools[input.Name]
-	if input.AgentID != owner.agentID ||
+	if input.AgentCreationID != owner.creationID ||
+		input.AgentID != owner.agentID ||
 		instance == nil ||
 		instance.creationID != input.CreationID ||
 		instance.phase >= toolClosing ||
@@ -215,6 +216,7 @@ func (owner *Runtime) scheduleTool(gc *goakt.GrainContext, name string, instance
 		phase:    phase,
 	}
 	creationID := instance.creationID
+	agentCreationID := owner.creationID
 	agentID := owner.agentID
 	authority := gc.Self()
 	system := gc.ActorSystem()
@@ -267,10 +269,11 @@ func (owner *Runtime) scheduleTool(gc *goakt.GrainContext, name string, instance
 			}
 		}
 		result.err = requestTool(ctx, system, result.identity, toolactor.Initialize{
-			CreationID: creationID,
-			AgentID:    agentID,
-			Name:       name,
-			Authority:  authority,
+			AgentCreationID: agentCreationID,
+			CreationID:      creationID,
+			AgentID:         agentID,
+			Name:            name,
+			Authority:       authority,
 		}, timeout)
 		if result.err != nil {
 			return result, nil

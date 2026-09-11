@@ -100,8 +100,8 @@ func (owner *mcpManager) connect(ctx context.Context, settings mcpclient.Config)
 	return mcpView(validated.ServerName, entry), nil
 }
 
-// Provider resolves the current connection without waiting for network I/O.
-func (owner *mcpManager) Provider(name string) (tool.Provider, bool) {
+// Provider resolves the selected published connection without network I/O.
+func (owner *mcpManager) Provider(name string, expected tools.ProviderID) (tool.Provider, bool) {
 	owner.mu.RLock()
 	defer owner.mu.RUnlock()
 	if owner.lifetime.Err() != nil {
@@ -111,6 +111,10 @@ func (owner *mcpManager) Provider(name string) (tool.Provider, bool) {
 	for _, entry := range owner.entries {
 		candidate, exists := entry.connection.Provider(name)
 		if exists {
+			identified, valid := candidate.(tool.IdentifiedProvider)
+			if !valid || expected == "" || identified.ProviderID() != expected {
+				continue
+			}
 			if selected != nil {
 				return nil, false
 			}

@@ -28,9 +28,9 @@ type dynamicSource struct {
 	current atomic.Pointer[identifiedSource]
 }
 
-func (provider *dynamicSource) Provider(name string) (tool.Provider, bool) {
+func (provider *dynamicSource) Provider(name string, expected tools.ProviderID) (tool.Provider, bool) {
 	selected := provider.current.Load()
-	if name != toolaskuser.Name || selected == nil {
+	if name != toolaskuser.Name || selected == nil || selected.id != expected {
 		return nil, false
 	}
 	return selected, true

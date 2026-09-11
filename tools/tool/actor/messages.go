@@ -16,10 +16,11 @@ import (
 // Initialize binds a tool reservation to the catalog and lifecycle owners.
 // CreationID is the tool's lifetime, not the containing Agent's lifetime.
 type Initialize struct {
-	CreationID string
-	AgentID    session.SessionID
-	Name       string
-	Authority  *goakt.GrainIdentity
+	AgentCreationID string
+	CreationID      string
+	AgentID         session.SessionID
+	Name            string
+	Authority       *goakt.GrainIdentity
 }
 
 // RuntimeName encodes the tool segment so logical names containing dots cannot
@@ -72,10 +73,10 @@ type Completion struct {
 // Execute dispatches a body after Runtime policy, approval and middleware admission.
 // Its reply is tools.BodyResult, not a finalized ToolExecutionResult.
 type Execute struct {
-	CreationID     string
-	Implementation tool.Identity
-	Invocation     tools.Invocation
-	Context        context.Context
+	CreationID string
+	Revision   tool.Revision
+	Invocation tools.Invocation
+	Context    context.Context
 }
 
 // CancelCall signals cancellation; the original Execute reply proves body exit.
@@ -91,16 +92,17 @@ type Describe struct {
 
 // Description returns no executor or owned resource to the caller.
 type Description struct {
-	Implementation tool.Identity
-	Descriptor     tools.Descriptor
-	Err            error
+	Revision   tool.Revision
+	Descriptor tools.Descriptor
+	Err        error
 }
 
 // Claim binds a reserved tool to its first physical activation in Tool Runtime.
 // A fresh activation cannot assume a prior activation's cleanup responsibility.
 type Claim struct {
-	AgentID    session.SessionID
-	Name       string
-	CreationID string
-	InstanceID string
+	AgentCreationID string
+	AgentID         session.SessionID
+	Name            string
+	CreationID      string
+	InstanceID      string
 }

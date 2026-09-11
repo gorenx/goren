@@ -31,9 +31,11 @@ func TestInvocationReturnsDetachedEffectsAndRejectsLateCallbacks(t *testing.T) {
 		SessionID: "conversation",
 		Arguments: json.RawMessage(`{"input":1}`),
 	}
-	result := call.Run(context.Background(), executorStub(func(arguments json.RawMessage, runContext tools.ToolRunContext) (json.RawMessage, error) {
+	ctx := tools.WithAgentCreationID(context.Background(), "agent-creation")
+	result := call.Run(ctx, executorStub(func(arguments json.RawMessage, runContext tools.ToolRunContext) (json.RawMessage, error) {
 		captured = runContext
-		if runContext.Execution.CallID != call.CallID || runContext.Execution.SessionID != call.SessionID {
+		identifier, found := tools.AgentCreationIDFromContext(runContext.Context)
+		if !found || identifier != "agent-creation" || runContext.Execution.CallID != call.CallID || runContext.Execution.SessionID != call.SessionID {
 			t.Fatal("body identity changed")
 		}
 		arguments[0] = '!'

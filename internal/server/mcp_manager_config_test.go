@@ -58,7 +58,13 @@ func mcpHTTPConfig(name, url string) mcpclient.Config {
 
 func managerProvider(t *testing.T, owner *mcpManager, name string) tool.IdentifiedProvider {
 	t.Helper()
-	source, exists := owner.Provider(mcpclient.ToolName(name, "read"))
+	owner.mu.RLock()
+	entry, found := owner.entries[name]
+	owner.mu.RUnlock()
+	if !found {
+		t.Fatalf("missing connection for %s", name)
+	}
+	source, exists := owner.Provider(mcpclient.ToolName(name, "read"), entry.connection.ProviderID())
 	identified, valid := source.(tool.IdentifiedProvider)
 	if !exists || !valid {
 		t.Fatalf("missing Provider for %s", name)

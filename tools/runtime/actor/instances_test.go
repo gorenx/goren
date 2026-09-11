@@ -198,10 +198,11 @@ func TestRuntimeRejectsToolReactivationWithPreviousCreation(t *testing.T) {
 		t.Fatal(err)
 	}
 	initialized := ask[toolactor.Completion](t, system, route.Actor, toolactor.Initialize{
-		CreationID: route.CreationID,
-		AgentID:    "agent",
-		Name:       toolaskuser.Name,
-		Authority:  target,
+		AgentCreationID: closing.CreationID,
+		CreationID:      route.CreationID,
+		AgentID:         "agent",
+		Name:            toolaskuser.Name,
+		Authority:       target,
 	})
 	if initialized.Err == nil {
 		t.Fatal("fresh activation claimed the old resource lifetime")

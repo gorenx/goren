@@ -57,40 +57,52 @@ func (bindings *Providers) Install(entries tool.Providers, sources ...tool.Provi
 	return nil
 }
 
-func (bindings *Providers) resolve(name string) (tool.Provider, error) {
-	selected := bindings.entries[name]
+func (bindings *Providers) resolveBinding(name string, expected tools.ProviderID) (tool.Provider, error) {
+	var selected tool.Provider
+	if installed := bindings.entries[name]; installed != nil {
+		actual, err := providerIdentity(installed)
+		if err != nil {
+			return nil, err
+		}
+		if actual == expected {
+			selected = installed
+		}
+	}
 	for _, source := range bindings.sources {
-		candidate, exists := source.Provider(name)
+		candidate, exists := source.Provider(name, expected)
 		if !exists {
 			continue
 		}
+		if candidate == nil {
+			return nil, errors.New("tools: Provider source returned an empty binding")
+		}
+		actual, err := providerIdentity(candidate)
+		if err != nil {
+			return nil, err
+		}
+		if actual == "" || actual != expected {
+			return nil, errors.New("tools: Provider changed since catalog publication")
+		}
 		if selected != nil {
-			return nil, errors.New("tools: ambiguous tool implementation")
+			return nil, errors.New("tools: ambiguous tool implementation binding")
 		}
 		selected = candidate
 	}
 	if selected == nil {
-		return nil, errors.New("tools: tool implementation is not installed")
+		return nil, errors.New("tools: tool implementation binding is not installed")
 	}
 	return selected, nil
 }
 
-func (bindings *Providers) resolveBinding(name string, expected tools.ProviderID) (tool.Provider, error) {
-	selected, err := bindings.resolve(name)
-	if err != nil {
-		return nil, err
-	}
-	var actual tools.ProviderID
-	if identified, valid := selected.(tool.IdentifiedProvider); valid {
-		actual = identified.ProviderID()
+func providerIdentity(source tool.Provider) (tools.ProviderID, error) {
+	if identified, valid := source.(tool.IdentifiedProvider); valid {
+		actual := identified.ProviderID()
 		if actual == "" {
-			return nil, errors.New("tools: replaceable Provider identity is empty")
+			return "", errors.New("tools: replaceable Provider identity is empty")
 		}
+		return actual, nil
 	}
-	if actual != expected {
-		return nil, errors.New("tools: Provider changed since catalog publication")
-	}
-	return selected, nil
+	return "", nil
 }
 
 // ID identifies this ToolActor dependency in the framework extension collection.

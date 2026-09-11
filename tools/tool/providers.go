@@ -21,10 +21,11 @@ type Provider interface {
 // Each Provider.Open must still return independently owned work.
 type Providers map[string]Provider
 
-// ProviderSource resolves dynamically discovered implementations without doing I/O.
+// ProviderSource resolves an exact published implementation without doing I/O.
+// The identity comes from the authorized Session catalog, never model arguments.
 // The source owns its catalog; Tool owns each implementation returned by Open.
 type ProviderSource interface {
-	Provider(string) (Provider, bool)
+	Provider(name string, expected tools.ProviderID) (Provider, bool)
 }
 
 // IdentifiedProvider binds dynamically replaceable work to a catalog identity.

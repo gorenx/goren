@@ -9,7 +9,7 @@ import (
 )
 
 func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) {
-	if input.CreationID == "" ||
+	if input.AgentCreationID == "" || input.CreationID == "" ||
 		input.AgentID == "" ||
 		input.Authority == nil {
 		gc.Response(Completion{
@@ -19,26 +19,13 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) {
 	}
 	if owner.business != nil {
 		var err error
-		if owner.creationID != input.CreationID ||
+		if owner.agentCreationID != input.AgentCreationID ||
+			owner.creationID != input.CreationID ||
 			owner.agentID != input.AgentID ||
 			owner.business.Name() != input.Name ||
 			owner.authority.String() != input.Authority.String() {
 			err = errors.New("tools: Grain is bound to a different tool identity")
 		}
-		gc.Response(Completion{
-			Err: err,
-		})
-		return
-	}
-	constructors, valid := gc.ActorSystem().Extension(providersID).(*Providers)
-	if !valid {
-		gc.Response(Completion{
-			Err: errors.New("tools: tool providers are not installed"),
-		})
-		return
-	}
-	_, err := constructors.resolve(input.Name)
-	if err != nil {
 		gc.Response(Completion{
 			Err: err,
 		})
@@ -63,10 +50,11 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) {
 	gc.RequestGrain(
 		input.Authority,
 		Claim{
-			AgentID:    input.AgentID,
-			Name:       input.Name,
-			CreationID: input.CreationID,
-			InstanceID: owner.instanceID,
+			AgentCreationID: input.AgentCreationID,
+			AgentID:         input.AgentID,
+			Name:            input.Name,
+			CreationID:      input.CreationID,
+			InstanceID:      owner.instanceID,
 		},
 	).Then(
 		func(payload any, failure error) {
@@ -89,6 +77,7 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) {
 			if err == nil {
 				owner.business = business
 				owner.creationID = input.CreationID
+				owner.agentCreationID = input.AgentCreationID
 				owner.agentID = input.AgentID
 				owner.authority = input.Authority
 			}

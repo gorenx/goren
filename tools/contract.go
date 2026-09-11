@@ -1,8 +1,9 @@
 // Package tools defines tool contracts, execution policy, and canonical results.
 package tools
 
-// ProviderID identifies an immutable process-local implementation binding.
-// It is separate from model schema versions and committed tool identities.
+// ProviderID identifies a process-local dynamic source instance. MCP assigns one
+// ID per Connection: all its tools share it, catalog refresh retains it, and a
+// replacement Connection gets a new ID. It is separate from a tool's Revision.
 // Empty identifies a statically installed, unversioned Provider.
 type ProviderID string
 
