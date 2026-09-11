@@ -10,7 +10,6 @@ import (
 	"github.com/gorenx/goren/agent"
 	agentactor "github.com/gorenx/goren/agent/actor"
 	agentregistry "github.com/gorenx/goren/agent/registry"
-	"github.com/gorenx/goren/agentloop"
 	loopactor "github.com/gorenx/goren/agentloop/actor"
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
@@ -21,7 +20,7 @@ import (
 	"github.com/tochemey/goakt/v4/log"
 )
 
-func TestRegistryClosesDescendantsBeforeParentAndRetriesPendingChild(t *testing.T) {
+func TestRegistryClosesDescendantsBeforeParentAndRetriesFailedChild(t *testing.T) {
 	ctx := context.Background()
 	backend, err := sqlite.Open(ctx, sqlite.Config{
 		Path:        filepath.Join(t.TempDir(), "sessions.sqlite"),
@@ -59,6 +58,14 @@ func TestRegistryClosesDescendantsBeforeParentAndRetriesPendingChild(t *testing.
 		t.Fatal(err)
 	}
 	directoryDriver, directoryReplies := grainDriver(t, system, directory)
+	fault, err := goakt.GrainOf[*closeFailure](ctx, system, "child-session-close-failure", goakt.WithLongLivedGrain())
+	if err != nil {
+		t.Fatal(err)
+	}
+	faultDriver, faultReplies := grainDriver(t, system, fault)
+	request[struct{}](t, faultDriver, faultReplies, closeDestination{
+		target: directory,
+	})
 	var parent *agentregistry.Creation
 	drivers := make(map[session.SessionID]*goakt.PID)
 	replies := make(map[session.SessionID]<-chan response)
@@ -86,13 +93,17 @@ func TestRegistryClosesDescendantsBeforeParentAndRetriesPendingChild(t *testing.
 			t.Fatal(err)
 		}
 		drivers[identifier], replies[identifier] = grainDriver(t, system, execution)
+		sessionAuthority := directory
+		if identifier == "grandchild" {
+			sessionAuthority = fault
+		}
 		if result := request[agentregistry.Ready](t, authorityDriver, authorityReplies, agentregistry.CreateAgent{
 			ModelRouter:     routes.router,
 			Middleware:      routes.middleware,
 			Creation:        creation,
 			Parent:          parent,
 			Storage:         backend,
-			SessionRegistry: directory,
+			SessionRegistry: sessionAuthority,
 			PromptRegistry:  dependencies,
 			ModelConfig:     dependencies,
 			ToolsRegistry:   toolRegistry(t, system),
@@ -122,8 +133,8 @@ func TestRegistryClosesDescendantsBeforeParentAndRetriesPendingChild(t *testing.
 	}
 	if result := request[agentactor.Closed](t, authorityDriver, authorityReplies, agentregistry.CloseAgent{
 		Creation: root,
-	}); !errors.Is(result.Err, agentloop.ErrPending) {
-		t.Fatalf("close with pending descendant = %v", result.Err)
+	}); !errors.Is(result.Err, errClose) {
+		t.Fatalf("close with failed descendant resource = %v", result.Err)
 	}
 	for _, identifier := range []session.SessionID{"parent", "child"} {
 		if result := request[loopactor.Activity](t, drivers[identifier], replies[identifier], loopactor.ReadActivity{
@@ -141,18 +152,20 @@ func TestRegistryClosesDescendantsBeforeParentAndRetriesPendingChild(t *testing.
 	}); !errors.Is(result.Err, agent.ErrClosing) {
 		t.Fatalf("late descendant = %v", result.Err)
 	}
-	if result := request[loopactor.Changed](t, drivers["grandchild"], replies["grandchild"], loopactor.Remove{
-		CreationID: "original",
-		MessageID:  prompt.StableID(),
-	}); result.Err != nil {
-		t.Fatal(result.Err)
-	}
 	// Independently closing and replacing a descendant must not redirect the
 	// parent's retry to the new creation that reused its logical identity.
 	if result := request[agentactor.Closed](t, authorityDriver, authorityReplies, agentregistry.CloseAgent{
 		Creation: *parent,
 	}); result.Err != nil {
 		t.Fatal(result.Err)
+	}
+	stored, err := backend.Load(ctx, "grandchild")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := agent.NewInbox(stored.Header, stored.Events)
+	if err != nil || len(pending.NextStep()) != 1 || pending.NextStep()[0].StableID() != prompt.StableID() {
+		t.Fatalf("child shutdown lost injected input: %v", err)
 	}
 	replacement := agentregistry.Creation{
 		AgentID:    "grandchild",

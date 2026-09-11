@@ -17,16 +17,16 @@ type reporterRecord struct {
 	delivery Delivery
 }
 
-func (record *reporterRecord) Report(_ context.Context, child session.SessionID, output string, delivery Delivery) (agentmessage.MessageID, error) {
-	record.child = child
-	record.output = output
-	record.delivery = delivery
+func (record *reporterRecord) Report(_ context.Context, input Report) (agentmessage.MessageID, error) {
+	record.child = input.ChildSessionID
+	record.output = input.Output
+	record.delivery = input.Delivery
 	return "message", nil
 }
 
 func TestReportUsesInvocationSessionAndConfiguredDelivery(t *testing.T) {
-	reporter := &reporterRecord{}
-	adapter, err := newReportTool(reporter, NextStep)
+	recorded := &reporterRecord{}
+	adapter, err := newReportTool(recorded, NextStep)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,15 +36,15 @@ func TestReportUsesInvocationSessionAndConfiguredDelivery(t *testing.T) {
 			SessionID: "child",
 		},
 	})
-	if err != nil || reporter.child != "child" || reporter.output != "review complete" ||
-		reporter.delivery != NextStep || string(value) != `{"messageId":"message"}` {
-		t.Fatalf("value = %s, reporter = %#v, error = %v", value, reporter, err)
+	if err != nil || recorded.child != "child" || recorded.output != "review complete" ||
+		recorded.delivery != NextStep || string(value) != `{"messageId":"message"}` {
+		t.Fatalf("value = %s, reporter = %#v, error = %v", value, recorded, err)
 	}
 }
 
 func TestReportHonorsCancellation(t *testing.T) {
-	reporter := &reporterRecord{}
-	adapter, err := newReportTool(reporter, Quiet)
+	recorded := &reporterRecord{}
+	adapter, err := newReportTool(recorded, Quiet)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestReportHonorsCancellation(t *testing.T) {
 			SessionID: "child",
 		},
 	})
-	if !errors.Is(err, context.Canceled) || reporter.child != "" {
-		t.Fatalf("reporter = %#v, error = %v", reporter, err)
+	if !errors.Is(err, context.Canceled) || recorded.child != "" {
+		t.Fatalf("reporter = %#v, error = %v", recorded, err)
 	}
 }

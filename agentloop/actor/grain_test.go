@@ -11,7 +11,6 @@ import (
 	"github.com/gorenx/goren/agent"
 	agentactor "github.com/gorenx/goren/agent/actor"
 	agentregistry "github.com/gorenx/goren/agent/registry"
-	"github.com/gorenx/goren/agentloop"
 	loopactor "github.com/gorenx/goren/agentloop/actor"
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
@@ -242,7 +241,7 @@ func TestInboxCommandsCommitBeforeApplyingAndRetainStateOnFailure(t *testing.T) 
 
 }
 
-func TestCloseRetainsSessionUntilPendingInputIsCancelled(t *testing.T) {
+func TestClosePreservesInjectedInputAndRetriesSessionFailure(t *testing.T) {
 	ctx := context.Background()
 	backend, err := sqlite.Open(ctx, sqlite.Config{
 		Path:        filepath.Join(t.TempDir(), "sessions.sqlite"),
@@ -362,26 +361,14 @@ func TestCloseRetainsSessionUntilPendingInputIsCancelled(t *testing.T) {
 	}
 	if result := request[agentactor.Prepared](t, driver, replies, agentactor.PrepareClose{
 		CreationID: "current",
-	}); !errors.Is(result.Err, agentloop.ErrPending) {
+	}); result.Err != nil {
 		t.Fatalf("prepare = %v", result.Err)
-	}
-	if result := request[agentactor.Closed](t, driver, replies, agentactor.CloseResources{
-		CreationID: "current",
-	}); !errors.Is(result.Err, agentloop.ErrPending) {
-		t.Fatalf("close = %v", result.Err)
 	}
 	if result := request[loopactor.Changed](t, driver, replies, loopactor.Inject{
 		CreationID: "current",
 		Message:    prompt,
 	}); !errors.Is(result.Err, agent.ErrClosing) {
 		t.Fatalf("late input = %v", result.Err)
-	}
-	// Cancellation must still commit through the live Session after close admission.
-	if result := request[loopactor.Changed](t, driver, replies, loopactor.Remove{
-		CreationID: "current",
-		MessageID:  prompt.StableID(),
-	}); result.Err != nil {
-		t.Fatal(result.Err)
 	}
 
 	closing := agentregistry.CloseAgent{
@@ -421,8 +408,8 @@ func TestCloseRetainsSessionUntilPendingInputIsCancelled(t *testing.T) {
 		t.Fatal(view.Err)
 	}
 	restored, err := agent.NewInbox(recreated.Header, view.Snapshot.Events)
-	if err != nil || restored.HasPending() {
-		t.Fatalf("durable cancelled Inbox = %v", err)
+	if err != nil || len(restored.NextStep()) != 1 || restored.NextStep()[0].StableID() != prompt.StableID() {
+		t.Fatalf("durable injected Inbox = %v", err)
 	}
 	// A duplicate old close must not close the replacement Session.
 	if result := request[agentactor.Closed](t, authorityDriver, authorityReplies, closing); result.Err != nil {

@@ -225,6 +225,9 @@ func (owner *steward) close(gc *goakt.GrainContext) {
 	}
 	owner.state = shuttingDown
 	owner.waiters = append(owner.waiters, reply)
+	for operation := range owner.deliveries {
+		operation.cancel()
+	}
 	for _, entry := range owner.entries {
 		owner.reconcile(gc, entry)
 	}
@@ -232,7 +235,7 @@ func (owner *steward) close(gc *goakt.GrainContext) {
 }
 
 func (owner *steward) finishClose() {
-	if owner.state != shuttingDown || len(owner.waiters) == 0 {
+	if owner.state != shuttingDown || len(owner.waiters) == 0 || len(owner.deliveries) != 0 {
 		return
 	}
 	var failures []error

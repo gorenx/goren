@@ -7,6 +7,7 @@ import (
 	"time"
 
 	agentregistry "github.com/gorenx/goren/agent/registry"
+	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/subagent/companion"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
@@ -95,9 +96,10 @@ type command struct {
 type listing struct{}
 type closing struct{}
 type response struct {
-	view  View
-	items []View
-	err   error
+	view      View
+	items     []View
+	messageID agentmessage.MessageID
+	err       error
 }
 
 // Open initializes management and recovers durable relationships. It does not
@@ -106,10 +108,7 @@ func Open(ctx context.Context, system goakt.ActorSystem, input Initialization) (
 	if ctx == nil || system == nil || input.Registry == nil || input.Session == nil || input.Creator == nil || input.Parent.AgentID == "" || input.Parent.CreationID == "" {
 		return nil, companion.ErrInvalid
 	}
-	target, err := goakt.GrainOf[*steward](ctx, system, string(input.Parent.AgentID)+".steward",
-		goakt.WithLongLivedGrain(),
-		goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))),
-	)
+	target, err := stewardRoute(ctx, system, input.Parent)
 	if err != nil {
 		return nil, err
 	}
@@ -125,6 +124,13 @@ func Open(ctx context.Context, system goakt.ActorSystem, input Initialization) (
 		target: target,
 		parent: input.Parent,
 	}, nil
+}
+
+func stewardRoute(ctx context.Context, system goakt.ActorSystem, parent agentregistry.Creation) (*goakt.GrainIdentity, error) {
+	return goakt.GrainOf[*steward](ctx, system, string(parent.AgentID)+".steward",
+		goakt.WithLongLivedGrain(),
+		goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))),
+	)
 }
 
 // List reads management progress without creating children.

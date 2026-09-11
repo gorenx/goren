@@ -46,7 +46,7 @@ func TestLifecycleRequiresRestoreAndExplicitInitialization(t *testing.T) {
 	}
 }
 
-func TestLifecycleReleaseIsTerminalAndRequiresClosedWork(t *testing.T) {
+func TestLifecycleReleaseIsTerminalAndPreservesIdleInjectedInput(t *testing.T) {
 	subject, history := readyAgent(t)
 	input := inputMessage(t, "pending")
 	proposal, err := subject.Inject(input)
@@ -54,11 +54,11 @@ func TestLifecycleReleaseIsTerminalAndRequiresClosedWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	confirmInput(t, subject, history, proposal)
-	if err := subject.PrepareClose(false); !errors.Is(err, agentloop.ErrPending) {
-		t.Fatal("close accepted unfinished input", err)
+	if err := subject.PrepareClose(false); err != nil {
+		t.Fatal("idle injected input blocked close", err)
 	}
-	if err := subject.Release(); !errors.Is(err, agentloop.ErrPending) {
-		t.Fatal("release discarded input", err)
+	if !subject.InboxValue().HasPending() {
+		t.Fatal("close discarded pending input")
 	}
 	if _, err := subject.Followup(input); !errors.Is(err, agent.ErrClosing) {
 		t.Fatal("closing accepted input", err)
@@ -66,14 +66,6 @@ func TestLifecycleReleaseIsTerminalAndRequiresClosedWork(t *testing.T) {
 	if err := subject.Initialize(); !errors.Is(err, agentloop.ErrState) {
 		t.Fatal("closing initialized", err)
 	}
-	edit, err := subject.Remove(input.StableID())
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Apply the same durable-edit path used by the runtime, without waking execution.
-	confirmInput(t, subject, history, agent.Admission{
-		Edit: edit,
-	})
 	if err := subject.Release(); err != nil {
 		t.Fatal(err)
 	}
@@ -88,6 +80,17 @@ func TestLifecycleReleaseIsTerminalAndRequiresClosedWork(t *testing.T) {
 	}
 	if subject.InboxValue() != nil {
 		t.Fatal("released Agent retained projection")
+	}
+	restored := &agentloop.ReactLoopAgent{}
+	if err := restored.Restore(history.Header(), history.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	pending := restored.InboxValue().NextStep()
+	if len(pending) != 1 || pending[0].StableID() != input.StableID() {
+		t.Fatal("restoration lost quiet input")
 	}
 }
 

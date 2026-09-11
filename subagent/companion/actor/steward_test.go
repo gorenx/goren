@@ -22,6 +22,8 @@ import (
 	promptactor "github.com/gorenx/goren/systemprompt/actor"
 	toolregistry "github.com/gorenx/goren/tools/registry"
 	toolactor "github.com/gorenx/goren/tools/registry/actor"
+	"github.com/gorenx/goren/tools/tool"
+	implementationactor "github.com/gorenx/goren/tools/tool/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/log"
 	"github.com/tochemey/goakt/v4/reentrancy"
@@ -70,12 +72,17 @@ type childFixture struct {
 	mu       sync.Mutex
 	gate     *creationGate
 	failure  error
+	catalog  *toolregistry.Catalog
 }
 
 func (fixture *childFixture) Start(ctx context.Context, parent, child agentregistry.Creation, initial companion.Config) (agentregistry.Ready, error) {
 	fixture.mu.Lock()
 	gate := fixture.gate
 	failure := fixture.failure
+	selection := toolregistry.Catalog{}
+	if fixture.catalog != nil {
+		selection = fixture.catalog.Clone()
+	}
 	fixture.gate = nil
 	fixture.mu.Unlock()
 	if gate != nil {
@@ -90,7 +97,7 @@ func (fixture *childFixture) Start(ctx context.Context, parent, child agentregis
 	if failure != nil {
 		return agentregistry.Ready{}, failure
 	}
-	// This fixture deliberately supports only an empty, independent tool setup.
+	// This fixture accepts resolved test tool wiring; it does not implement config recovery.
 	if len(initial.Tools) != 0 || len(initial.MCP) != 0 || initial.Model.Model != "" || initial.Prompt.Persona != "" {
 		return agentregistry.Ready{}, errors.New("test: configuration outside lifecycle fixture scope")
 	}
@@ -103,9 +110,7 @@ func (fixture *childFixture) Start(ctx context.Context, parent, child agentregis
 		Parent:  parent,
 		Child:   child,
 		Restore: stored != nil,
-		Tools: &toolregistry.Catalog{
-			InheritGlobal: false,
-		},
+		Tools:   &selection,
 	})
 }
 
@@ -130,7 +135,7 @@ func request[T any](t *testing.T, system goakt.ActorSystem, target *goakt.GrainI
 	return result
 }
 
-func newStewardship(t *testing.T) *stewardship {
+func newStewardship(t *testing.T, prepare ...func(*stewardship) tool.Providers) *stewardship {
 	t.Helper()
 	storage, err := sqlite.Open(t.Context(), sqlite.Config{
 		Path:        filepath.Join(t.TempDir(), "sessions.sqlite"),
@@ -144,7 +149,8 @@ func newStewardship(t *testing.T) *stewardship {
 			t.Error(err)
 		}
 	})
-	system, err := goakt.NewActorSystem("steward", goakt.WithLogger(log.DiscardLogger), goakt.WithPubSub())
+	constructors := &implementationactor.Providers{}
+	system, err := goakt.NewActorSystem("steward", goakt.WithLogger(log.DiscardLogger), goakt.WithPubSub(), goakt.WithExtensions(constructors))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,6 +217,15 @@ func newStewardship(t *testing.T) *stewardship {
 			registry: authority,
 			storage:  storage,
 		},
+	}
+	entries := tool.Providers{}
+	for _, setup := range prepare {
+		for name, source := range setup(fixture) {
+			entries[name] = source
+		}
+	}
+	if err := constructors.Install(entries); err != nil {
+		t.Fatal(err)
 	}
 	fixture.open(t)
 	t.Cleanup(func() {

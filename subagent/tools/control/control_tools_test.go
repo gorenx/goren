@@ -50,7 +50,8 @@ func (record activityRecord) Status(_ context.Context, id session.SessionID) (ag
 
 func TestControlToolsUseInvocationSessionAsAuthority(t *testing.T) {
 	children := &childControlRecord{}
-	adapter, err := newControlTools(children, emptyDirectory{}, activityRecord{})
+	dispatch := &messageRecord{}
+	adapter, err := newControlTools(dispatch, children, emptyDirectory{}, activityRecord{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +62,7 @@ func TestControlToolsUseInvocationSessionAsAuthority(t *testing.T) {
 		},
 	}
 	value, err := adapter.sendMessageDefinition().Executor.Execute(json.RawMessage(`{"subagent_id":"child","message":"continue"}`), run)
-	if err != nil || children.parent != "parent" || children.child != "child" || string(value) != `{"messageId":"message"}` {
+	if err != nil || dispatch.parent != "parent" || dispatch.child != "child" || string(value) != `{"messageId":"message"}` {
 		t.Fatalf("send value = %s, record = %#v, error = %v", value, children, err)
 	}
 	_, err = adapter.interruptDefinition().Executor.Execute(json.RawMessage(`{"agent_id":"grandchild"}`), run)
@@ -91,4 +92,16 @@ func TestListProjectionUsesActivityReaderAndOmitsOneShot(t *testing.T) {
 	if err != nil || included {
 		t.Fatalf("included = %v, error = %v", included, err)
 	}
+}
+
+// messageRecord exercises the message capability independently of interruption.
+type messageRecord struct {
+	parent session.SessionID
+	child  session.SessionID
+}
+
+func (record *messageRecord) Send(_ context.Context, input Message) (agentmessage.MessageID, error) {
+	record.parent = input.ParentSessionID
+	record.child = input.ChildSessionID
+	return "message", nil
 }

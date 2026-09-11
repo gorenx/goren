@@ -31,6 +31,7 @@ type steward struct {
 	state      lifecycle
 	waiters    []*goakt.GrainReply
 	loadCancel context.CancelFunc
+	deliveries map[*delivery]struct{}
 }
 
 type resident struct {
@@ -79,6 +80,13 @@ func (owner *steward) OnDeactivate(context.Context, *goakt.GrainProps) error {
 		})
 	}
 	owner.waiters = nil
+	for operation := range owner.deliveries {
+		operation.cancel()
+		operation.reply.Response(response{
+			err: failure,
+		})
+	}
+	owner.deliveries = nil
 	return nil
 }
 
@@ -94,6 +102,8 @@ func (owner *steward) OnReceive(gc *goakt.GrainContext) {
 		owner.started(gc, input)
 	case closed:
 		owner.closed(gc, input)
+	case delivered:
+		owner.delivered(input)
 	case command:
 		if input.parent != owner.input.Parent || (owner.state == uninitialized || owner.state == initializing) {
 			gc.Response(response{
@@ -126,6 +136,10 @@ func (owner *steward) OnReceive(gc *goakt.GrainContext) {
 			owner.remove(gc, request)
 		case Restart:
 			owner.restart(gc, request)
+		case sendMessage:
+			owner.sendMessage(gc, request)
+		case reportMessage:
+			owner.reportMessage(gc, request)
 		default:
 			gc.Unhandled()
 		}

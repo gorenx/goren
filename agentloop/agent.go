@@ -162,13 +162,10 @@ func (subject *ReactLoopAgent) Drain(executing bool) error {
 
 func (subject *ReactLoopAgent) prepareClose(executing bool, finishCurrent bool) error {
 	subject.lifetime.beginClose()
-	if finishCurrent {
-		subject.preserveInbox = true
-		subject.runAfterCompletion = false
-	} else if subject.state != executionIdle {
+	subject.preserveInbox = true
+	subject.runAfterCompletion = false
+	if !finishCurrent && subject.state != executionIdle {
 		subject.cancelExecution(agent.DisposedCancel{}, true)
-		subject.preserveInbox = true
-		subject.runAfterCompletion = false
 	}
 	if !executing &&
 		subject.state == executionRunning &&
