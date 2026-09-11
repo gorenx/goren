@@ -15,15 +15,22 @@ import (
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
+type toolCallPhase uint8
+
+const (
+	toolCallActive toolCallPhase = iota + 1
+	toolCallReleasing
+)
+
 // toolPort adapts individual requests without selecting stages or batch order.
 type toolPort struct{ scope serviceScope }
 
 func (endpoint toolPort) Prepare(input tools.ToolExecutionInput, receiver agentloop.ToolReceiver) error {
 	owner := endpoint.scope.owner
 	if owner.calls == nil {
-		owner.calls = make(map[string]struct{})
+		owner.calls = make(map[string]toolCallPhase)
 	}
-	owner.calls[string(input.CallID)] = struct{}{}
+	owner.calls[string(input.CallID)] = toolCallActive
 	return endpoint.request(runtimeactor.PrepareCall{
 		CreationID: owner.creationID,
 		Input:      input,
@@ -54,6 +61,9 @@ func (endpoint toolPort) Finalize(identifier agentmessage.CallID, receiver agent
 }
 
 func (endpoint toolPort) Release(identifier agentmessage.CallID, receiver agentloop.ToolReceiver) error {
+	// The body has settled. Stop targeting it for cancellation before sending
+	// Release, because Runtime may delete its record before the reply arrives.
+	endpoint.scope.owner.calls[string(identifier)] = toolCallReleasing
 	return endpoint.scope.request(endpoint.scope.owner.tools, runtimeactor.ReleaseCall{
 		CreationID: endpoint.scope.owner.creationID,
 		CallID:     identifier,

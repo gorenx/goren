@@ -54,7 +54,10 @@ func (owner *Grain) cancelOperations(gc *goakt.GrainContext, completed completeC
 	for _, request := range owner.cancellations {
 		requests = append(requests, request)
 	}
-	for identifier := range owner.calls {
+	for identifier, phase := range owner.calls {
+		if phase != toolCallActive {
+			continue
+		}
 		requests = append(requests, cancellationRequest{
 			target: owner.tools,
 			message: runtimeactor.CancelCall{
