@@ -5,26 +5,19 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent/companion"
 )
 
 func firstCompanion() companion.Companion {
-	limit := 120
 	return companion.Companion{
 		ParentSessionID: "parent",
 		Name:            "reviewer",
 		ChildSessionID:  "child",
 		Revision:        1,
 		SourceRevision:  3,
-		Initial: companion.Config{
-			Enabled: true,
-			Model: agent.Options{
-				MaxTokens: &limit,
-			},
-		},
-		Enabled: true,
+		Configuration:   "reviewer-copy",
+		Enabled:         true,
 	}
 }
 
@@ -44,13 +37,13 @@ func TestCompanionRecordFreezesCreationAndReturnsOriginalCommitOnRetry(t *testin
 	}
 	input := firstCompanion()
 	plan := newRecord(t, input)
-	*input.Initial.Model.MaxTokens = 999
+	input.Configuration = "caller-mutation"
 	first, err := history.Commit(t.Context(), plan)
 	if err != nil {
 		t.Fatal(err)
 	}
 	current, err := companion.CompanionsFromEvents("parent", history.Events())
-	if err != nil || len(current) != 1 || *current[0].Initial.Model.MaxTokens != 120 {
+	if err != nil || len(current) != 1 || current[0].Configuration != "reviewer-copy" {
 		t.Fatalf("creation not detached: %+v, %v", current, err)
 	}
 	next := current[0].Clone()
@@ -63,13 +56,13 @@ func TestCompanionRecordFreezesCreationAndReturnsOriginalCommitOnRetry(t *testin
 	if err != nil || retry.Barrier != first.Barrier || history.Seq() != 2 {
 		t.Fatalf("retry did not reuse original commit: %+v, %v", retry, err)
 	}
-	input.Initial.Model.MaxTokens = nil
+	input.Configuration = "different-copy"
 	if _, err := history.Commit(t.Context(), newRecord(t, input)); !errors.Is(err, companion.ErrConflict) {
 		t.Fatal("same revision accepted different creation data", err)
 	}
-	*current[0].Initial.Model.MaxTokens = 1
+	current[0].Configuration = "query-mutation"
 	readAgain, err := companion.CompanionsFromEvents("parent", history.Events())
-	if err != nil || *readAgain[0].Initial.Model.MaxTokens != 120 || readAgain[0].Enabled {
+	if err != nil || readAgain[0].Configuration != "reviewer-copy" || readAgain[0].Enabled {
 		t.Fatal("returned configuration changed authoritative history", err)
 	}
 }
@@ -107,6 +100,7 @@ func TestCompanionTombstoneRequiresNewChildAndRetainsNameRevision(t *testing.T) 
 		t.Fatal("removed child was revived", err)
 	}
 	next.ChildSessionID = "replacement"
+	next.Configuration = "replacement-copy"
 	if _, err := recovered.Commit(t.Context(), newRecord(t, next)); err != nil {
 		t.Fatal("explicit replacement rejected", err)
 	}
@@ -135,8 +129,8 @@ func TestCompanionRecordRejectsInvalidAndConflictingChanges(t *testing.T) {
 			change: func(next *companion.Companion) { next.ChildSessionID = next.ParentSessionID },
 		},
 		{
-			name:   "unresolved inheritance",
-			change: func(next *companion.Companion) { next.Initial.Inherit.Model = true },
+			name:   "missing configuration",
+			change: func(next *companion.Companion) { next.Configuration = "" },
 		},
 		{
 			name:   "removed but enabled",
@@ -164,8 +158,8 @@ func TestCompanionRecordRejectsInvalidAndConflictingChanges(t *testing.T) {
 			change: func(next *companion.Companion) { next.ChildSessionID = "other" },
 		},
 		{
-			name:   "rewrite initial config",
-			change: func(next *companion.Companion) { *next.Initial.Model.MaxTokens = 999 },
+			name:   "rewrite configuration reference",
+			change: func(next *companion.Companion) { next.Configuration = "other-copy" },
 		},
 		{
 			name:   "rewrite initial source",

@@ -88,13 +88,15 @@ func TestSettingsGatewayEditsDomainStateAndReportsApplication(t *testing.T) {
 	persona := "base persona"
 	storage := &storedSettings{}
 	updater := &promptUpdater{}
-	business, err := settings.NewService(settings.Values{
-		Prompts: map[string]settings.PromptConfig{
-			"default": {
-				Persona: &persona,
+	business, err := settings.NewService(settings.Directory{
+		Values: settings.Values{
+			Prompts: map[string]settings.PromptConfig{
+				"default": {
+					Persona: &persona,
+				},
 			},
+			Providers: map[string]settings.ProviderConfig{"deepseek": {}},
 		},
-		Providers: map[string]settings.ProviderConfig{"deepseek": {}},
 	}, settings.State{}, storage, updater, &connectionUpdater{}, &connectionUpdater{})
 	if err != nil {
 		t.Fatal(err)

@@ -28,6 +28,7 @@ import (
 
 // Config contains process paths and owner-defined configuration, never secrets.
 type Config struct {
+	Agents     map[string]usersettings.Values
 	Companions map[string]companion.Config
 	// Attachments is a borrowed image capability shared by admission and reads.
 	// Nil creates an owned original-image Store beside SessionDatabase.
@@ -72,7 +73,7 @@ func (settings Config) Inspect(ctx context.Context, platform anonymoususerid.Env
 	return err
 }
 
-func (settings Config) userBaseline() usersettings.Values {
+func (settings Config) userBaseline() usersettings.Directory {
 	provider := usersettings.ProviderConfig{
 		APIKeyEnv:           settings.Provider.APIKeyEnv,
 		BaseURL:             settings.Provider.BaseURL,
@@ -117,21 +118,25 @@ func (settings Config) userBaseline() usersettings.Values {
 			Visible: policy.Visible,
 		}.Clone()
 	}
-	return usersettings.Values{
+	return usersettings.Directory{
+		Agents:     settings.Agents,
 		Companions: settings.Companions,
-		Providers: map[string]usersettings.ProviderConfig{
-			"deepseek": provider.Clone(),
+		Values: usersettings.Values{
+			Providers: map[string]usersettings.ProviderConfig{
+				"deepseek": provider.Clone(),
+			},
+			Prompts: map[string]usersettings.PromptConfig{
+				"default": prompt.Clone(),
+			},
+			MCP:   httpDefinitions,
+			Tools: toolGroups,
 		},
-		Prompts: map[string]usersettings.PromptConfig{
-			"default": prompt.Clone(),
-		},
-		MCP:   httpDefinitions,
-		Tools: toolGroups,
 	}
 }
 
-func (settings Config) withUserSettings(target usersettings.Values) Config {
+func (settings Config) withUserSettings(target usersettings.Directory) Config {
 	selected := target.Clone()
+	settings.Agents = selected.Agents
 	settings.Companions = selected.Companions
 	settings.Provider.APIKeyEnv = selected.Providers["deepseek"].APIKeyEnv
 	settings.Provider.BaseURL = selected.Providers["deepseek"].BaseURL
@@ -202,7 +207,10 @@ func ConfigFromLocal(input local.Config, directory string, version string) (Conf
 	}
 	provider := input.LLM.DeepSeek.Clone()
 	output := Config{
-		Companions: (usersettings.Values{
+		Agents: (usersettings.Directory{
+			Agents: input.Agents,
+		}).Clone().Agents,
+		Companions: (usersettings.Directory{
 			Companions: input.Companions,
 		}).Clone().Companions,
 		Version:           version,

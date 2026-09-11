@@ -3,19 +3,20 @@ package settings
 import (
 	"context"
 	"errors"
-	"github.com/gorenx/goren/tools"
 	"maps"
 	"reflect"
 	"time"
+
+	"github.com/gorenx/goren/tools"
 )
 
 // Service owns configuration provenance, conditional submissions and application
 // progress. Its Actor serializes all access, including asynchronous work; callers
 // may retain only detached Snapshot values while an operation is running.
 type Service struct {
-	baseline     Values
+	baseline     Directory
 	state        State
-	target       Values
+	target       Directory
 	storage      Store
 	prompts      PromptUpdater
 	connections  MCPConnections
@@ -24,35 +25,43 @@ type Service struct {
 }
 
 // NewService restores a service after the composition root successfully installs
-// the corresponding initial target. Construction performs no resource acquisition.
-func NewService(baseline Values, stored State, storage Store, prompts PromptUpdater, connections MCPConnections, toolsets ToolUpdater) (*Service, error) {
+// the corresponding initial target. initial is the snapshot already read from
+// storage for that installation; construction does not read or open storage.
+func NewService(
+	baseline Directory,
+	initial State,
+	storage Store,
+	prompts PromptUpdater,
+	connections MCPConnections,
+	toolsets ToolUpdater,
+) (*Service, error) {
 	if storage == nil ||
 		prompts == nil ||
 		connections == nil ||
 		toolsets == nil {
 		return nil, ErrInvalid
 	}
-	if err := stored.Validate(); err != nil {
+	if err := initial.Validate(); err != nil {
 		return nil, err
 	}
-	resolved, err := Resolve(baseline, stored.User)
+	resolved, err := Resolve(baseline, initial.User)
 	if err != nil {
 		return nil, err
 	}
 	applications := make(map[Group]Application)
 	for _, identifier := range resolved.Groups() {
 		applications[identifier] = Application{
-			AppliedRevision: stored.Version(identifier),
+			AppliedRevision: initial.Version(identifier),
 		}
 	}
-	for identifier, revision := range stored.Versions {
+	for identifier, revision := range initial.Versions {
 		applications[identifier] = Application{
 			AppliedRevision: revision,
 		}
 	}
 	return &Service{
 		baseline:     baseline.Clone(),
-		state:        stored.Clone(),
+		state:        initial.Clone(),
 		target:       resolved,
 		storage:      storage,
 		prompts:      prompts,
@@ -82,6 +91,20 @@ func (owner *Service) Snapshot() Snapshot {
 		Target:       owner.target.Clone(),
 		Applications: maps.Clone(owner.applications),
 	}
+}
+
+// UpdateAgent saves a complete named Agent configuration. It does not start an
+// Agent or change an active Turn; the consumer applies the saved selection.
+func (owner *Service) UpdateAgent(ctx context.Context, name string, expected int64, configuration Values) (Snapshot, error) {
+	next := owner.state.User.Clone()
+	if next.Agents == nil {
+		next.Agents = make(map[string]Values)
+	}
+	next.Agents[name] = configuration.Clone()
+	return owner.update(ctx, Group{
+		Section: AgentSection,
+		Name:    name,
+	}, expected, next)
 }
 
 // UpdateTool replaces complete editable flags of an exposed tool.
@@ -136,7 +159,7 @@ func (owner *Service) UpdateMCP(ctx context.Context, name string, expected int64
 	}, expected, next)
 }
 
-func (owner *Service) update(ctx context.Context, identifier Group, expected int64, overrides Values) (Snapshot, error) {
+func (owner *Service) update(ctx context.Context, identifier Group, expected int64, overrides Directory) (Snapshot, error) {
 	if ctx == nil || !identifier.Valid() {
 		return owner.Snapshot(), ErrInvalid
 	}
@@ -149,7 +172,7 @@ func (owner *Service) update(ctx context.Context, identifier Group, expected int
 	return owner.commit(ctx, identifier, overrides)
 }
 
-func (owner *Service) commit(ctx context.Context, identifier Group, overrides Values) (Snapshot, error) {
+func (owner *Service) commit(ctx context.Context, identifier Group, overrides Directory) (Snapshot, error) {
 	if ctx == nil {
 		return owner.Snapshot(), ErrInvalid
 	}

@@ -8,6 +8,7 @@ import (
 
 	agentregistry "github.com/gorenx/goren/agent/registry"
 	"github.com/gorenx/goren/agentmessage"
+	"github.com/gorenx/goren/settings"
 	"github.com/gorenx/goren/subagent/companion"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
@@ -16,9 +17,9 @@ import (
 // ChildCreator enters the ordinary Agent/Session creation and recovery workflow.
 // Start returns only after the admitted creation request settles. Errors retain
 // cleanup responsibility in Registry; cancellation must not abandon that request.
-// Existing child Sessions use their adopted configuration instead of Initial.
+// The configuration name is a Settings reference, independent of Session identity.
 type ChildCreator interface {
-	Start(context.Context, agentregistry.Creation, agentregistry.Creation, companion.Config) (agentregistry.Ready, error)
+	Start(context.Context, agentregistry.Creation, agentregistry.Creation, string) (agentregistry.Ready, error)
 }
 
 // Initialization binds one parent lifetime and its existing capabilities.
@@ -27,13 +28,15 @@ type Initialization struct {
 	Registry *goakt.GrainIdentity
 	Session  *goakt.GrainIdentity
 	Creator  ChildCreator
+	Settings settings.Settings
 }
 
 // Create fixes a new child's resolved first-creation configuration.
 type Create struct {
 	Name           string
 	SourceRevision int64
-	Initial        companion.Config
+	Enabled        bool
+	Initial        settings.Values
 }
 
 // Configure conditionally changes whether an existing Companion is enabled.
@@ -105,7 +108,7 @@ type response struct {
 // Open initializes management and recovers durable relationships. It does not
 // wait for child initialization. The parent must already be a ready ordinary Agent.
 func Open(ctx context.Context, system goakt.ActorSystem, input Initialization) (*Client, error) {
-	if ctx == nil || system == nil || input.Registry == nil || input.Session == nil || input.Creator == nil || input.Parent.AgentID == "" || input.Parent.CreationID == "" {
+	if ctx == nil || system == nil || input.Registry == nil || input.Session == nil || input.Creator == nil || input.Settings == nil || input.Parent.AgentID == "" || input.Parent.CreationID == "" {
 		return nil, companion.ErrInvalid
 	}
 	target, err := stewardRoute(ctx, system, input.Parent)

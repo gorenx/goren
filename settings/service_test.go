@@ -84,23 +84,25 @@ func mcpGroup(name string) Group {
 	}
 }
 
-func exampleBaseline() Values {
+func exampleBaseline() Directory {
 	persona := "local persona"
 	endpoint := "https://example.test"
 	disabled := false
-	return Values{
-		Providers: map[string]ProviderConfig{
-			"deepseek": {
-				BaseURL: &endpoint,
+	return Directory{
+		Values: Values{
+			Providers: map[string]ProviderConfig{
+				"deepseek": {
+					BaseURL: &endpoint,
+				},
 			},
-		},
-		Prompts: map[string]PromptConfig{
-			"default": {
-				Persona:                &persona,
-				IncludeHarnessIdentity: &disabled,
+			Prompts: map[string]PromptConfig{
+				"default": {
+					Persona:                &persona,
+					IncludeHarnessIdentity: &disabled,
+				},
 			},
+			MCP: map[string]MCPConfig{},
 		},
-		MCP: map[string]MCPConfig{},
 	}
 }
 
@@ -219,12 +221,14 @@ func TestResolveDoesNotInheritNestedProviderFields(t *testing.T) {
 		},
 	}
 	nextDelay := 2000.0
-	overrides := Values{
-		Providers: map[string]ProviderConfig{
-			"deepseek": {
-				RetryPolicy: &RetryConfig{
-					Backoff: &llm.BackoffConfig{
-						InitialDelayMS: &nextDelay,
+	overrides := Directory{
+		Values: Values{
+			Providers: map[string]ProviderConfig{
+				"deepseek": {
+					RetryPolicy: &RetryConfig{
+						Backoff: &llm.BackoffConfig{
+							InitialDelayMS: &nextDelay,
+						},
 					},
 				},
 			},

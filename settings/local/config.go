@@ -13,6 +13,7 @@ import (
 // named values only; composition maps them to each runtime capability's config.
 // Pointer fields distinguish omission from explicit empty, zero and false.
 type Config struct {
+	Agents        map[string]settings.Values  `json:"agents,omitempty"`
 	Companions    map[string]companion.Config `json:"companions,omitempty"`
 	Tools         map[string]tools.Config     `json:"tools,omitempty"`
 	SchemaVersion *int                        `json:"schemaVersion,omitempty"`

@@ -21,15 +21,15 @@ const maximumRevision int64 = 1<<53 - 1
 
 // Companion is a named companion Agent owned by one parent Session.
 // Its identity and management state survive individual Agent runs.
-// Initial is the frozen first-creation configuration, not the child's current
-// adopted configuration. Runtime lifetimes and addresses never belong here.
+// Configuration names its independent Settings group. Configuration values,
+// runtime lifetimes and addresses never belong in this relationship record.
 type Companion struct {
 	ParentSessionID session.SessionID `json:"parentSessionID"`
 	Name            string            `json:"name"`
 	ChildSessionID  session.SessionID `json:"childSessionID"`
 	Revision        int64             `json:"revision"`
 	SourceRevision  int64             `json:"sourceRevision"`
-	Initial         Config            `json:"initial"`
+	Configuration   string            `json:"configuration"`
 	Enabled         bool              `json:"enabled"`
 	Removed         bool              `json:"removed"`
 }
@@ -37,9 +37,8 @@ type Companion struct {
 // CompanionRecorded is a parent-owned relationship fact, not a child readiness event.
 var CompanionRecorded = session.DefineEvent[Companion]("companion/instance")
 
-// Clone detaches the creation configuration from the caller's mutable values.
+// Clone returns the relationship value, which contains no mutable configuration.
 func (entry Companion) Clone() Companion {
-	entry.Initial = entry.Initial.Clone()
 	return entry
 }
 
@@ -51,14 +50,11 @@ func (entry Companion) Validate() error {
 		entry.ParentSessionID == entry.ChildSessionID || ValidateName(entry.Name) != nil ||
 		entry.Revision <= 0 || entry.Revision > maximumRevision ||
 		entry.SourceRevision < 0 || entry.SourceRevision > maximumRevision ||
+		ValidateName(entry.Configuration) != nil ||
 		entry.Removed && entry.Enabled {
 		return ErrInvalid
 	}
-	selection := entry.Initial.Inherit
-	if selection.Model || selection.Prompt || selection.MCP || selection.Tools == InheritAllTools {
-		return fmt.Errorf("%w: initial configuration still requires inheritance", ErrInvalid)
-	}
-	return entry.Initial.Validate()
+	return nil
 }
 
 // CompanionsFromEvents reconstructs only the specified parent's facts. Tombstones remain in
@@ -74,7 +70,9 @@ func CompanionsFromEvents(parentSessionID session.SessionID, events []session.Ev
 			continue
 		}
 		var next Companion
-		if err := json.Unmarshal(entry.Data, &next); err != nil {
+		decoder := json.NewDecoder(bytes.NewReader(entry.Data))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&next); err != nil || !json.Valid(entry.Data) {
 			return nil, fmt.Errorf("%w: malformed Companion event", ErrHistory)
 		}
 		if next.ParentSessionID == "" {
@@ -108,7 +106,7 @@ func CompanionsFromEvents(parentSessionID session.SessionID, events []session.Ev
 
 func validateTransition(previous Companion, exists bool, next Companion) error {
 	if !exists {
-		if next.Revision != 1 || next.Removed || next.Enabled != next.Initial.Enabled {
+		if next.Revision != 1 || next.Removed {
 			return ErrConflict
 		}
 		return nil
@@ -117,23 +115,14 @@ func validateTransition(previous Companion, exists bool, next Companion) error {
 		return ErrConflict
 	}
 	if previous.ChildSessionID != next.ChildSessionID {
-		if !previous.Removed || next.Removed || next.Enabled != next.Initial.Enabled {
+		if !previous.Removed || next.Removed || previous.Configuration == next.Configuration {
 			return ErrConflict
 		}
 		return nil
 	}
 	if previous.Removed && !next.Removed || previous.SourceRevision != next.SourceRevision ||
-		!sameConfig(previous.Initial, next.Initial) {
+		previous.Configuration != next.Configuration {
 		return ErrConflict
 	}
 	return nil
-}
-
-func sameConfig(left, right Config) bool {
-	first, err := json.Marshal(left)
-	if err != nil {
-		return false
-	}
-	second, err := json.Marshal(right)
-	return err == nil && bytes.Equal(first, second)
 }

@@ -9,6 +9,15 @@ import (
 	"github.com/gorenx/goren/settings"
 )
 
+// UpdateAgent saves a named selection; applying it belongs to the Agent use case.
+func (owner *Gateway) UpdateAgent(ctx context.Context, call rpc.Request[UpdateAgentRequest]) (rpc.Outcome[NamespaceView], error) {
+	if owner.service == nil {
+		return absentSettings(), nil
+	}
+	projection, err := owner.service.UpdateAgent(ctx, call.Payload.Name, call.Payload.ExpectedRevision, call.Payload.Config)
+	return updateOutcome("agent", call.Payload.Name, call.Payload.ExpectedRevision, projection, err)
+}
+
 // UpdateProvider forwards a complete named replacement to the Settings owner.
 func (owner *Gateway) UpdateProvider(ctx context.Context, call rpc.Request[UpdateProviderRequest]) (rpc.Outcome[NamespaceView], error) {
 	if owner.service == nil {

@@ -16,7 +16,6 @@ import (
 	"github.com/gorenx/goren/llm"
 	sessionactor "github.com/gorenx/goren/session/actor"
 	sessionregistry "github.com/gorenx/goren/session/registry"
-	"github.com/gorenx/goren/subagent/companion"
 	"github.com/gorenx/goren/subagent/tools/control"
 	"github.com/gorenx/goren/subagent/tools/report"
 	"github.com/gorenx/goren/tools"
@@ -56,10 +55,8 @@ func messagingFixture(t *testing.T) (*stewardship, *Messenger, View) {
 		}
 	})
 	if _, err := fixture.client.Create(t.Context(), Create{
-		Name: "reviewer",
-		Initial: companion.Config{
-			Enabled: true,
-		},
+		Name:    "reviewer",
+		Enabled: true,
 	}); err != nil {
 		t.Fatal(err)
 	}

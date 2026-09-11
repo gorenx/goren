@@ -5,14 +5,7 @@ package companion
 import (
 	"errors"
 	"fmt"
-	"maps"
-	"slices"
 	"strings"
-
-	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/mcpclient"
-	"github.com/gorenx/goren/systemprompt"
-	"github.com/gorenx/goren/tools"
 )
 
 // ToolInheritance is an explicit, complete parent-tool selection.
@@ -31,15 +24,12 @@ type Inheritance struct {
 	MCP    bool            `json:"mcp,omitempty"`
 }
 
-// Config composes already-decoded capability configuration. Configuration
-// loading and decoding remain with Settings and each capability owner.
+// Config selects a named Settings configuration and explicit parent inheritance.
+// Capability values belong to Settings; this value only describes creation policy.
 type Config struct {
-	Enabled bool                    `json:"enabled,omitempty"`
-	Inherit Inheritance             `json:"inherit,omitempty"`
-	Model   agent.Options           `json:"model,omitempty"`
-	Prompt  systemprompt.Config     `json:"prompt,omitempty"`
-	Tools   map[string]tools.Config `json:"tools,omitempty"`
-	MCP     []mcpclient.Config      `json:"mcp,omitempty"`
+	Enabled       bool        `json:"enabled,omitempty"`
+	Inherit       Inheritance `json:"inherit,omitempty"`
+	Configuration string      `json:"configuration,omitempty"`
 }
 
 // ErrInvalid rejects malformed configuration or incomplete creation input.
@@ -61,41 +51,11 @@ func (input Config) Validate() error {
 	default:
 		return fmt.Errorf("%w: tools inheritance must be none or all", ErrInvalid)
 	}
-	if err := input.Model.Validate(); err != nil {
-		return err
-	}
-	if _, err := systemprompt.ValidateConfig(input.Prompt); err != nil {
-		return err
-	}
-	for name := range input.Tools {
-		if ValidateName(name) != nil || name == "report" {
-			return fmt.Errorf("%w: invalid or duplicate dedicated tool %q", ErrInvalid, name)
-		}
-	}
-	seen := make(map[string]bool)
-	for _, connection := range input.MCP {
-		if _, err := connection.Validate(); err != nil {
-			return err
-		}
-		if seen[connection.ServerName] {
-			return fmt.Errorf("%w: duplicate MCP name %q", ErrInvalid, connection.ServerName)
-		}
-		seen[connection.ServerName] = true
+	if input.Configuration != "" && ValidateName(input.Configuration) != nil {
+		return ErrInvalid
 	}
 	return nil
 }
 
-// Clone detaches all mutable configuration, preserving omission semantics.
-func (input Config) Clone() Config {
-	input.Model = input.Model.Clone()
-	input.Prompt = input.Prompt.Clone()
-	input.Tools = maps.Clone(input.Tools)
-	for name, flags := range input.Tools {
-		input.Tools[name] = flags.Clone()
-	}
-	input.MCP = slices.Clone(input.MCP)
-	for index := range input.MCP {
-		input.MCP[index].Args = slices.Clone(input.MCP[index].Args)
-	}
-	return input
-}
+// Clone returns the creation policy, which contains no mutable capability values.
+func (input Config) Clone() Config { return input }

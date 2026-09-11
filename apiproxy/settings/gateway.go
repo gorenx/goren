@@ -109,11 +109,13 @@ func describeSnapshot(projection settings.Snapshot) (DescribeValue, error) {
 }
 
 // groupValue erases the typed value only while mapping the outbound API view.
-func groupValue(input settings.Values, identifier settings.Group) any {
+func groupValue(input settings.Directory, identifier settings.Group) any {
 	if !input.Has(identifier) {
 		return nil
 	}
 	switch identifier.Section {
+	case settings.AgentSection:
+		return input.Agents[identifier.Name]
 	case settings.CompanionSection:
 		return input.Companions[identifier.Name]
 	case settings.ToolSection:
@@ -131,6 +133,8 @@ func groupValue(input settings.Values, identifier settings.Group) any {
 
 func groupSchema(kind settings.Section) (string, string, ApplyMode) {
 	switch kind {
+	case settings.AgentSection:
+		return "agent", agentSchema, ApplyExplicit
 	case settings.CompanionSection:
 		return "companion", companionSchema, ApplyNewInstance
 	case settings.ToolSection:
@@ -161,6 +165,8 @@ func groupView(projection settings.Snapshot, namespace string, name string) (Nam
 
 func businessSection(namespace string) settings.Section {
 	switch namespace {
+	case "agent":
+		return settings.AgentSection
 	case "companion":
 		return settings.CompanionSection
 	case "tool":

@@ -56,6 +56,18 @@ func (owner *Adapter) Load(ctx context.Context) (settings.State, error) {
 			continue
 		}
 		switch identifier.Section {
+		case settings.AgentSection:
+			if stored.User.Agents == nil {
+				stored.User.Agents = make(map[string]settings.Values)
+			}
+			var decoded settings.Values
+			decoder := json.NewDecoder(strings.NewReader(row.OverridesJson))
+			decoder.DisallowUnknownFields()
+			err = decoder.Decode(&decoded)
+			if err == nil && decoder.Decode(new(any)) != io.EOF {
+				err = settings.ErrStorage
+			}
+			stored.User.Agents[name] = decoded
 		case settings.CompanionSection:
 			if stored.User.Companions == nil {
 				stored.User.Companions = make(map[string]companion.Config)
@@ -141,6 +153,8 @@ func (owner *Adapter) Commit(ctx context.Context, change settings.ChangeSet) err
 		var value any
 		if change.Next.User.Has(identifier) {
 			switch identifier.Section {
+			case settings.AgentSection:
+				value = change.Next.User.Agents[identifier.Name]
 			case settings.CompanionSection:
 				value = change.Next.User.Companions[identifier.Name]
 			case settings.ToolSection:
@@ -177,6 +191,8 @@ func (owner *Adapter) Commit(ctx context.Context, change settings.ChangeSet) err
 
 func sectionName(kind settings.Section) string {
 	switch kind {
+	case settings.AgentSection:
+		return "agent"
 	case settings.CompanionSection:
 		return "companion"
 	case settings.ToolSection:
@@ -194,6 +210,8 @@ func sectionName(kind settings.Section) string {
 
 func sectionKind(name string) settings.Section {
 	switch name {
+	case "agent":
+		return settings.AgentSection
 	case "companion":
 		return settings.CompanionSection
 	case "tool":

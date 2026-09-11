@@ -15,11 +15,15 @@ import (
 	loopactor "github.com/gorenx/goren/agentloop/actor"
 	"github.com/gorenx/goren/agentmessage"
 	llmactor "github.com/gorenx/goren/llm/actor"
+	"github.com/gorenx/goren/mcpclient"
 	"github.com/gorenx/goren/session/persistence/sqlite"
 	sessionregistry "github.com/gorenx/goren/session/registry"
+	"github.com/gorenx/goren/settings"
+	settingsactor "github.com/gorenx/goren/settings/actor"
 	"github.com/gorenx/goren/subagent/companion"
 	"github.com/gorenx/goren/systemprompt"
 	promptactor "github.com/gorenx/goren/systemprompt/actor"
+	"github.com/gorenx/goren/tools"
 	toolregistry "github.com/gorenx/goren/tools/registry"
 	toolactor "github.com/gorenx/goren/tools/registry/actor"
 	"github.com/gorenx/goren/tools/tool"
@@ -73,9 +77,10 @@ type childFixture struct {
 	gate     *creationGate
 	failure  error
 	catalog  *toolregistry.Catalog
+	settings settings.Settings
 }
 
-func (fixture *childFixture) Start(ctx context.Context, parent, child agentregistry.Creation, initial companion.Config) (agentregistry.Ready, error) {
+func (fixture *childFixture) Start(ctx context.Context, parent, child agentregistry.Creation, configuration string) (agentregistry.Ready, error) {
 	fixture.mu.Lock()
 	gate := fixture.gate
 	failure := fixture.failure
@@ -97,21 +102,48 @@ func (fixture *childFixture) Start(ctx context.Context, parent, child agentregis
 	if failure != nil {
 		return agentregistry.Ready{}, failure
 	}
-	// This fixture accepts resolved test tool wiring; it does not implement config recovery.
-	if len(initial.Tools) != 0 || len(initial.MCP) != 0 || initial.Model.Model != "" || initial.Prompt.Persona != "" {
+	selected, err := fixture.settings.Describe(context.Background())
+	if err != nil {
+		return agentregistry.Ready{}, err
+	}
+	initial, found := selected.Target.Agents[configuration]
+	if !found {
+		return agentregistry.Ready{}, errors.New("test: referenced configuration is absent")
+	}
+	// Model and MCP resource setup are outside this lifecycle fixture. Prompt
+	// configuration follows the actual Registry and Prompt Runtime path.
+	if len(initial.Tools) != 0 || len(initial.MCP) != 0 || initial.Model.Model != "" || initial.Model.Provider != "" || initial.Model.MaxTokens != nil {
 		return agentregistry.Ready{}, errors.New("test: configuration outside lifecycle fixture scope")
 	}
 	stored, err := fixture.storage.Load(context.Background(), child.AgentID)
 	if err != nil {
 		return agentregistry.Ready{}, err
 	}
+	prompt := initial.Prompts["default"].Prompt()
 	return ask[agentregistry.Ready](context.Background(), fixture.system, fixture.registry, agentregistry.CreateChildAgent{
 		Role:    agent.CompanionRole,
 		Parent:  parent,
 		Child:   child,
 		Restore: stored != nil,
 		Tools:   &selection,
+		Prompt:  &prompt,
 	})
+}
+
+func (*configurationFixture) ApplyPrompt(context.Context, string, systemprompt.Config) error {
+	return errors.New("test: unexpected global prompt update")
+}
+func (*configurationFixture) Validate(context.Context, []mcpclient.Config) error {
+	return errors.New("test: unexpected global MCP validation")
+}
+func (*configurationFixture) Reconcile(context.Context, []mcpclient.Config) error {
+	return errors.New("test: unexpected global MCP update")
+}
+func (*configurationFixture) ValidateTool(context.Context, string) error {
+	return errors.New("test: unexpected global tool validation")
+}
+func (*configurationFixture) ApplyTool(context.Context, string, tools.Config) error {
+	return errors.New("test: unexpected global tool update")
 }
 
 type stewardship struct {
@@ -227,6 +259,19 @@ func newStewardship(t *testing.T, prepare ...func(*stewardship) tool.Providers) 
 	if err := constructors.Install(entries); err != nil {
 		t.Fatal(err)
 	}
+	stored, err := settingsactor.Open(t.Context(), filepath.Join(t.TempDir(), "settings.sqlite"), settings.Directory{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := stored.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	fixture.creator.settings, err = stored.Bind(t.Context(), system, &configurationFixture{}, &configurationFixture{}, &configurationFixture{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	fixture.open(t)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -262,6 +307,7 @@ func (fixture *stewardship) open(t *testing.T) {
 		Registry: fixture.authority,
 		Session:  route.Target,
 		Creator:  fixture.creator,
+		Settings: fixture.creator.settings,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -298,10 +344,8 @@ func awaitPhase(t *testing.T, sender *Client, name string, expected Phase) View 
 func TestStewardCreatesDisablesRestartsAndRecoversRemoval(t *testing.T) {
 	fixture := newStewardship(t)
 	first, err := fixture.client.Create(t.Context(), Create{
-		Name: "reviewer",
-		Initial: companion.Config{
-			Enabled: true,
-		},
+		Name:    "reviewer",
+		Enabled: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -388,10 +432,8 @@ func TestStewardCreatesDisablesRestartsAndRecoversRemoval(t *testing.T) {
 		t.Fatalf("stale Client retained access: %v", err)
 	}
 	if _, err := fixture.client.Create(t.Context(), Create{
-		Name: "reviewer",
-		Initial: companion.Config{
-			Enabled: true,
-		},
+		Name:    "reviewer",
+		Enabled: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -404,10 +446,8 @@ func TestStewardCreatesDisablesRestartsAndRecoversRemoval(t *testing.T) {
 func TestStewardRemovalWaitsForBusyChildAndRejectsNewInput(t *testing.T) {
 	fixture := newStewardship(t)
 	if _, err := fixture.client.Create(t.Context(), Create{
-		Name: "busy",
-		Initial: companion.Config{
-			Enabled: true,
-		},
+		Name:    "busy",
+		Enabled: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -497,10 +537,8 @@ func TestStewardSettlesLateCreationAfterRemoveOrClose(t *testing.T) {
 			fixture.creator.gate = gate
 			fixture.creator.mu.Unlock()
 			created, err := fixture.client.Create(t.Context(), Create{
-				Name: "late",
-				Initial: companion.Config{
-					Enabled: true,
-				},
+				Name:    "late",
+				Enabled: true,
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -568,10 +606,8 @@ func TestStewardFailedStartupCanRestartAndCompanionCannotOwnSteward(t *testing.T
 	fixture.creator.failure = errors.New("injected preparation failure")
 	fixture.creator.mu.Unlock()
 	if _, err := fixture.client.Create(t.Context(), Create{
-		Name: "retry",
-		Initial: companion.Config{
-			Enabled: true,
-		},
+		Name:    "retry",
+		Enabled: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -605,6 +641,7 @@ func TestStewardFailedStartupCanRestartAndCompanionCannotOwnSteward(t *testing.T
 		Registry: fixture.authority,
 		Session:  route.Target,
 		Creator:  fixture.creator,
+		Settings: fixture.creator.settings,
 	}); !errors.Is(err, agent.ErrRole) {
 		t.Fatalf("recursive Steward accepted: %v", err)
 	}
@@ -628,10 +665,8 @@ func TestStewardReenableSettlesCancelledStartupBeforeNewCreation(t *testing.T) {
 	fixture.creator.gate = gate
 	fixture.creator.mu.Unlock()
 	created, err := fixture.client.Create(t.Context(), Create{
-		Name: "reenable",
-		Initial: companion.Config{
-			Enabled: true,
-		},
+		Name:    "reenable",
+		Enabled: true,
 	})
 	if err != nil {
 		t.Fatal(err)

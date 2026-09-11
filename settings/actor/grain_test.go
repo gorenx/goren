@@ -51,9 +51,11 @@ func TestGrainKeepsQueriesResponsiveAndSerializesConditionalEdits(t *testing.T) 
 	}
 	defer running.Stop(context.Background())
 	path := filepath.Join(t.TempDir(), "settings.sqlite")
-	installed, err := Open(ctx, path, settings.Values{
-		Providers: map[string]settings.ProviderConfig{"deepseek": {}},
-		Prompts:   map[string]settings.PromptConfig{"default": {}},
+	installed, err := Open(ctx, path, settings.Directory{
+		Values: settings.Values{
+			Providers: map[string]settings.ProviderConfig{"deepseek": {}},
+			Prompts:   map[string]settings.PromptConfig{"default": {}},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -156,9 +158,11 @@ func TestGrainKeepsQueriesResponsiveAndSerializesConditionalEdits(t *testing.T) 
 	if err := installed.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := Inspect(ctx, path, settings.Values{
-		Providers: map[string]settings.ProviderConfig{"deepseek": {}},
-		Prompts:   map[string]settings.PromptConfig{"default": {}},
+	resolved, err := Inspect(ctx, path, settings.Directory{
+		Values: settings.Values{
+			Providers: map[string]settings.ProviderConfig{"deepseek": {}},
+			Prompts:   map[string]settings.PromptConfig{"default": {}},
+		},
 	})
 	if err != nil || resolved.Prompts["default"].Persona != nil {
 		t.Fatalf("persistent result: %#v %v", resolved, err)
@@ -186,8 +190,10 @@ func TestProviderCloseTimeoutRetainsStoreUntilAcceptedEditDrains(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer running.Stop(context.Background())
-	baseline := settings.Values{
-		Prompts: map[string]settings.PromptConfig{"default": {}},
+	baseline := settings.Directory{
+		Values: settings.Values{
+			Prompts: map[string]settings.PromptConfig{"default": {}},
+		},
 	}
 	path := filepath.Join(t.TempDir(), "settings.sqlite")
 	installed, err := Open(ctx, path, baseline)

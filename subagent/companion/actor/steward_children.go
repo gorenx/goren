@@ -86,9 +86,9 @@ func (owner *steward) startChild(gc *goakt.GrainContext, entry *resident) {
 	creator := owner.input.Creator
 	parent := owner.input.Parent
 	child := entry.creation
-	initial := entry.record.Initial.Clone()
+	configuration := entry.record.Configuration
 	err := gc.PipeToSelf(func() (any, error) {
-		ready, failure := creator.Start(ctx, parent, child, initial)
+		ready, failure := creator.Start(ctx, parent, child, configuration)
 		if failure == nil {
 			failure = ready.Err
 		}
@@ -225,6 +225,9 @@ func (owner *steward) close(gc *goakt.GrainContext) {
 	}
 	owner.state = shuttingDown
 	owner.waiters = append(owner.waiters, reply)
+	if owner.loadCancel != nil {
+		owner.loadCancel()
+	}
 	for operation := range owner.deliveries {
 		operation.cancel()
 	}
@@ -235,7 +238,7 @@ func (owner *steward) close(gc *goakt.GrainContext) {
 }
 
 func (owner *steward) finishClose() {
-	if owner.state != shuttingDown || len(owner.waiters) == 0 || len(owner.deliveries) != 0 {
+	if owner.state != shuttingDown || len(owner.waiters) == 0 || len(owner.deliveries) != 0 || owner.loadReply != nil {
 		return
 	}
 	var failures []error

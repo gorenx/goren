@@ -136,9 +136,11 @@ func TestProviderWholeGroupOmissionUsesOwnerDefaults(t *testing.T) {
 	if *baseline.Provider.BaseURL != platform.endpoint {
 		t.Fatal("fixture did not select environment baseline")
 	}
-	target, err := settings.Resolve(baseline.userBaseline(), settings.Values{
-		Providers: map[string]settings.ProviderConfig{
-			"deepseek": {},
+	target, err := settings.Resolve(baseline.userBaseline(), settings.Directory{
+		Values: settings.Values{
+			Providers: map[string]settings.ProviderConfig{
+				"deepseek": {},
+			},
 		},
 	})
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/credentials"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/mcpclient"
@@ -76,23 +77,41 @@ type MCPConfig struct {
 	Connection mcpclient.Config `json:"connection"`
 }
 
-// Values contains Provider/Prompt configuration and independently named MCP groups.
+// Values composes capability-owned configuration for the default Agent or a
+// named Agent. It contains no directory, lifecycle policy, or Session identity.
 type Values struct {
-	Companions map[string]companion.Config
-	Providers  map[string]ProviderConfig
-	Prompts    map[string]PromptConfig
-	MCP        map[string]MCPConfig
-	Tools      map[string]tools.Config
+	Model     agent.Options             `json:"model,omitempty"`
+	Providers map[string]ProviderConfig `json:"providers,omitempty"`
+	Prompts   map[string]PromptConfig   `json:"prompts,omitempty"`
+	MCP       map[string]MCPConfig      `json:"mcp,omitempty"`
+	Tools     map[string]tools.Config   `json:"tools,omitempty"`
 }
 
-// Clone returns detached configuration, including optional fields and lists.
+// Directory owns names and creation policies separately from capability values.
+// Embedding Values makes the process defaults use exactly the same value types.
+type Directory struct {
+	Values
+	Agents     map[string]Values
+	Companions map[string]companion.Config
+}
+
+// Clone returns detached capability values.
 func (input Values) Clone() Values {
 	return Values{
+		Model:     input.Model.Clone(),
+		Providers: cloneGroups(input.Providers),
+		Prompts:   cloneGroups(input.Prompts),
+		MCP:       cloneGroups(input.MCP),
+		Tools:     cloneGroups(input.Tools),
+	}
+}
+
+// Clone returns a detached directory and all named configurations.
+func (input Directory) Clone() Directory {
+	return Directory{
+		Values:     input.Values.Clone(),
+		Agents:     cloneGroups(input.Agents),
 		Companions: cloneGroups(input.Companions),
-		Providers:  cloneGroups(input.Providers),
-		Prompts:    cloneGroups(input.Prompts),
-		MCP:        cloneGroups(input.MCP),
-		Tools:      cloneGroups(input.Tools),
 	}
 }
 
@@ -230,10 +249,8 @@ func (input PromptConfig) Validate() error {
 
 // Validate checks every named group's complete configuration.
 func (input Values) Validate() error {
-	for name, entry := range input.Companions {
-		if companion.ValidateName(name) != nil || entry.Validate() != nil {
-			return ErrInvalid
-		}
+	if err := input.Model.Validate(); err != nil {
+		return err
 	}
 	for name, entry := range input.Providers {
 		if !(Group{
@@ -266,16 +283,51 @@ func (input Values) Validate() error {
 		}
 	}
 	for name, entry := range input.MCP {
-		if err := entry.Validate(name); err != nil {
+		if !(Group{
+			Section: MCPSection,
+			Name:    name,
+		}).Valid() || entry.Connection.ServerName != name {
+			return ErrInvalid
+		}
+		if _, err := entry.Connection.Validate(); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+// Validate checks named configurations and creation policy before persistence.
+func (input Directory) Validate() error {
+	for name, entry := range input.MCP {
+		if err := entry.Validate(name); err != nil {
+			return err
+		}
+	}
+	if err := input.Values.Validate(); err != nil {
+		return err
+	}
+	for name, entry := range input.Agents {
+		if !(Group{
+			Section: AgentSection,
+			Name:    name,
+		}).Valid() || entry.Validate() != nil {
+			return ErrInvalid
+		}
+	}
+	for name, entry := range input.Companions {
+		if companion.ValidateName(name) != nil || entry.Validate() != nil {
+			return ErrInvalid
+		}
+	}
+	return nil
+}
+
 // Has reports whether an explicit complete group is present.
-func (input Values) Has(identifier Group) bool {
+func (input Directory) Has(identifier Group) bool {
 	switch identifier.Section {
+	case AgentSection:
+		_, found := input.Agents[identifier.Name]
+		return found
 	case CompanionSection:
 		_, found := input.Companions[identifier.Name]
 		return found
@@ -298,14 +350,20 @@ func (input Values) Has(identifier Group) bool {
 
 // Resolve replaces complete groups over the local baseline. Provider and Prompt
 // names must be installed by composition; MCP permits new connection names.
-func Resolve(baseline Values, overrides Values) (Values, error) {
+func Resolve(baseline Directory, overrides Directory) (Directory, error) {
 	if err := baseline.Validate(); err != nil {
-		return Values{}, err
+		return Directory{}, err
 	}
 	if err := overrides.Validate(); err != nil {
-		return Values{}, err
+		return Directory{}, err
 	}
 	output := baseline.Clone()
+	for name, entry := range overrides.Agents {
+		if output.Agents == nil {
+			output.Agents = make(map[string]Values)
+		}
+		output.Agents[name] = entry.Clone()
+	}
 	for name, entry := range overrides.Companions {
 		if output.Companions == nil {
 			output.Companions = make(map[string]companion.Config)
@@ -314,19 +372,19 @@ func Resolve(baseline Values, overrides Values) (Values, error) {
 	}
 	for name, entry := range overrides.Providers {
 		if _, installed := baseline.Providers[name]; !installed {
-			return Values{}, ErrInvalid
+			return Directory{}, ErrInvalid
 		}
 		output.Providers[name] = entry.Clone()
 	}
 	for name, entry := range overrides.Prompts {
 		if _, installed := baseline.Prompts[name]; !installed {
-			return Values{}, ErrInvalid
+			return Directory{}, ErrInvalid
 		}
 		output.Prompts[name] = entry.Clone()
 	}
 	for name, entry := range overrides.Tools {
 		if _, installed := baseline.Tools[name]; !installed {
-			return Values{}, ErrInvalid
+			return Directory{}, ErrInvalid
 		}
 		output.Tools[name] = entry.Clone()
 	}
@@ -335,6 +393,13 @@ func Resolve(baseline Values, overrides Values) (Values, error) {
 			output.MCP = make(map[string]MCPConfig)
 		}
 		output.MCP[name] = entry.Clone()
+	}
+	for _, entry := range output.Companions {
+		if entry.Configuration != "" {
+			if _, exists := output.Agents[entry.Configuration]; !exists {
+				return Directory{}, ErrInvalid
+			}
+		}
 	}
 	return output, nil
 }
@@ -376,13 +441,19 @@ func copyRetryPolicy(input *RetryConfig) *RetryConfig {
 	return &output
 }
 
-func valuesEqual(left Values, right Values) bool {
+func valuesEqual(left Directory, right Directory) bool {
 	return reflect.DeepEqual(left.Clone(), right.Clone())
 }
 
 // Groups returns the explicit identities in stable capability/name order.
-func (input Values) Groups() []Group {
-	output := make([]Group, 0, len(input.Providers)+len(input.Prompts)+len(input.MCP)+len(input.Tools)+len(input.Companions))
+func (input Directory) Groups() []Group {
+	output := make([]Group, 0, len(input.Providers)+len(input.Prompts)+len(input.MCP)+len(input.Tools)+len(input.Companions)+len(input.Agents))
+	for name := range input.Agents {
+		output = append(output, Group{
+			Section: AgentSection,
+			Name:    name,
+		})
+	}
 	for name := range input.Companions {
 		output = append(output, Group{
 			Section: CompanionSection,

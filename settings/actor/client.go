@@ -145,6 +145,16 @@ func (endpoint *Client) call(ctx context.Context, message any) (settings.Snapsho
 
 var _ settings.Settings = (*Client)(nil)
 
+// UpdateAgent persists a complete configuration under its own name.
+func (endpoint *Client) UpdateAgent(ctx context.Context, name string, expected int64, configuration settings.Values) (settings.Snapshot, error) {
+	return endpoint.call(ctx, UpdateAgent{
+		Context:          ctx,
+		Name:             name,
+		ExpectedRevision: expected,
+		Config:           configuration.Clone(),
+	})
+}
+
 // UpdateCompanion replaces one complete named configuration.
 func (endpoint *Client) UpdateCompanion(ctx context.Context, name string, expected int64, configuration companion.Config) (settings.Snapshot, error) {
 	return endpoint.call(ctx, UpdateCompanion{

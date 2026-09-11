@@ -74,6 +74,9 @@ type CreateChildAgent struct {
 	Prompt         *systemprompt.Config
 	Tools          *toolregistry.Catalog
 	PromptSections []systemprompt.PromptSection
+	// Components replaces the parent's additional capability owners. Nil inherits
+	// the frozen parent list; a non-nil empty slice installs no additional components.
+	Components []*goakt.GrainIdentity
 }
 
 // Ready contains routes from one completed creation. An error exposes no routes.

@@ -15,14 +15,14 @@ import (
 // close responsibility; this object creates no independent runtime.
 type Provider struct {
 	storage  *sqlite.Adapter
-	baseline settings.Values
+	baseline settings.Directory
 	stored   settings.State
-	target   settings.Values
+	target   settings.Directory
 	client   *Client
 }
 
 // Open validates persisted overrides before any consuming component is created.
-func Open(ctx context.Context, path string, baseline settings.Values) (*Provider, error) {
+func Open(ctx context.Context, path string, baseline settings.Directory) (*Provider, error) {
 	if err := baseline.Validate(); err != nil {
 		return nil, err
 	}
@@ -50,19 +50,19 @@ func Open(ctx context.Context, path string, baseline settings.Values) (*Provider
 }
 
 // Inspect checks persisted settings without creating a database or an Actor.
-func Inspect(ctx context.Context, path string, baseline settings.Values) (settings.Values, error) {
+func Inspect(ctx context.Context, path string, baseline settings.Directory) (settings.Directory, error) {
 	stored, err := sqlite.Inspect(ctx, path)
 	if err != nil {
-		return settings.Values{}, err
+		return settings.Directory{}, err
 	}
 	if err := stored.Validate(); err != nil {
-		return settings.Values{}, err
+		return settings.Directory{}, err
 	}
 	return settings.Resolve(baseline, stored.User)
 }
 
 // Target supplies isolated initial configuration to the composition root.
-func (owner *Provider) Target() settings.Values { return owner.target.Clone() }
+func (owner *Provider) Target() settings.Directory { return owner.target.Clone() }
 
 // Bind publishes the service after the composition root applies Target.
 func (owner *Provider) Bind(ctx context.Context,

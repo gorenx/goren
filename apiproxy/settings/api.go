@@ -12,6 +12,7 @@ import (
 
 // Settings methods share the Host privileged access boundary.
 const (
+	UpdateAgentMethod      = "settings.updateAgent"
 	UpdateCompanionMethod  = "settings.updateCompanion"
 	ResetCompanionMethod   = "settings.resetCompanion"
 	DescribeMethod         = "settings.describe"
@@ -33,6 +34,7 @@ type DescribeRequest struct{}
 type ApplyMode string
 
 const (
+	ApplyExplicit    ApplyMode = "explicit"
 	ApplyNewInstance ApplyMode = "new_instance"
 	ApplyLive        ApplyMode = "live"
 	ApplyRestart     ApplyMode = "restart"
@@ -128,6 +130,7 @@ type RetryApplicationRequest struct {
 
 // API exposes the catalog and distinct Settings business operations.
 type API interface {
+	UpdateAgent(context.Context, rpc.Request[UpdateAgentRequest]) (rpc.Outcome[NamespaceView], error)
 	UpdateCompanion(context.Context, rpc.Request[UpdateCompanionRequest]) (rpc.Outcome[NamespaceView], error)
 	ResetCompanion(context.Context, rpc.Request[ResetCompanionRequest]) (rpc.Outcome[NamespaceView], error)
 	UpdateTool(context.Context, rpc.Request[UpdateToolRequest]) (rpc.Outcome[NamespaceView], error)
@@ -144,6 +147,9 @@ type API interface {
 
 // Register installs the catalog, typed updates, resets and application retry endpoint.
 func Register(methods *rpc.Catalog, endpoint API) error {
+	if err := rpc.RegisterUnary(methods, UpdateAgentMethod, DecodeUpdateAgentRequest, endpoint.UpdateAgent); err != nil {
+		return err
+	}
 	if err := rpc.RegisterUnary(methods, UpdateCompanionMethod, DecodeUpdateCompanionRequest, endpoint.UpdateCompanion); err != nil {
 		return err
 	}
@@ -191,4 +197,12 @@ type UpdateCompanionRequest struct {
 type ResetCompanionRequest struct {
 	Name             string `json:"name"`
 	ExpectedRevision int64  `json:"expectedRevision"`
+}
+
+// UpdateAgentRequest replaces an independent named configuration. It neither
+// selects a Session nor authorizes applying that configuration to a running Agent.
+type UpdateAgentRequest struct {
+	Name             string          `json:"name"`
+	ExpectedRevision int64           `json:"expectedRevision"`
+	Config           settings.Values `json:"config"`
 }

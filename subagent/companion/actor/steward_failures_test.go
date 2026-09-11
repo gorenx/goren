@@ -85,6 +85,7 @@ func (fixture *stewardship) reopenWith(t *testing.T, registry, conversation *goa
 		Registry: registry,
 		Session:  conversation,
 		Creator:  fixture.creator,
+		Settings: fixture.creator.settings,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -104,10 +105,8 @@ func TestStewardRetriesOriginalIntentAfterFlushFailure(t *testing.T) {
 	})
 	fixture.reopenWith(t, fixture.authority, port)
 	input := Create{
-		Name: "durable",
-		Initial: companion.Config{
-			Enabled: true,
-		},
+		Name:    "durable",
+		Enabled: true,
 	}
 	failed, err := fixture.client.Create(t.Context(), input)
 	if !errors.Is(err, errInjected) {
@@ -151,10 +150,8 @@ func TestStewardRetainsCloseFailureAndRetriesBeforeRestart(t *testing.T) {
 	})
 	fixture.reopenWith(t, port, conversation.Target)
 	if _, err := fixture.client.Create(t.Context(), Create{
-		Name: "retry-close",
-		Initial: companion.Config{
-			Enabled: true,
-		},
+		Name:    "retry-close",
+		Enabled: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -200,10 +197,8 @@ func TestStewardCloseFailureKeepsAdmissionClosedUntilCleanupSettles(t *testing.T
 	})
 	fixture.reopenWith(t, port, conversation.Target)
 	if _, err := fixture.client.Create(t.Context(), Create{
-		Name: "close-retry",
-		Initial: companion.Config{
-			Enabled: true,
-		},
+		Name:    "close-retry",
+		Enabled: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -225,6 +220,7 @@ func TestStewardCloseFailureKeepsAdmissionClosedUntilCleanupSettles(t *testing.T
 		Registry: port,
 		Session:  conversation.Target,
 		Creator:  fixture.creator,
+		Settings: fixture.creator.settings,
 	}); !errors.Is(err, companion.ErrConflict) {
 		t.Fatalf("initialization discarded unsettled cleanup: %v", err)
 	}

@@ -20,6 +20,7 @@ var privilegedMethods = map[string]struct{}{
 	"settings.updateTool":       {},
 	"settings.resetTool":        {},
 	"settings.updateCompanion":  {},
+	"settings.updateAgent":      {},
 	"settings.resetCompanion":   {},
 	"settings.updateMCP":        {},
 	"settings.retryApplication": {},

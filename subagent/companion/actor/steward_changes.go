@@ -11,6 +11,7 @@ import (
 	agentregistry "github.com/gorenx/goren/agent/registry"
 	"github.com/gorenx/goren/session"
 	sessionactor "github.com/gorenx/goren/session/actor"
+	"github.com/gorenx/goren/settings"
 	"github.com/gorenx/goren/subagent/companion"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
@@ -30,6 +31,7 @@ type mutation struct {
 	request []byte
 	replies []*goakt.GrainReply
 	stage   writeStage
+	config  *settings.Values
 }
 
 type recorded struct {
@@ -55,6 +57,12 @@ func (owner *steward) create(gc *goakt.GrainContext, input Create) {
 		})
 		return
 	}
+	if input.Initial.Validate() != nil {
+		gc.Response(response{
+			err: companion.ErrInvalid,
+		})
+		return
+	}
 	entry := owner.entries[input.Name]
 	if entry != nil && entry.mutation != nil {
 		owner.change(gc, entry, input, entry.mutation.next)
@@ -72,8 +80,8 @@ func (owner *steward) create(gc *goakt.GrainContext, input Create) {
 		ChildSessionID:  session.SessionID(uuid.NewString()),
 		Revision:        1,
 		SourceRevision:  input.SourceRevision,
-		Initial:         input.Initial.Clone(),
-		Enabled:         input.Initial.Enabled,
+		Configuration:   "companion-" + uuid.NewString(),
+		Enabled:         input.Enabled,
 	}
 	if entry != nil {
 		next.Revision = entry.record.Revision + 1
@@ -151,6 +159,10 @@ func (owner *steward) change(gc *goakt.GrainContext, entry *resident, input any,
 			plan:    plan,
 			request: encoded,
 		}
+		if creation, ok := input.(Create); ok {
+			resolved := creation.Initial.Clone()
+			operation.config = &resolved
+		}
 	}
 	reply := gc.DeferResponse()
 	if reply == nil {
@@ -170,6 +182,7 @@ func (owner *steward) change(gc *goakt.GrainContext, entry *resident, input any,
 	registry := owner.input.Registry
 	target := owner.input.Session
 	plan := operation.plan
+	configuration := owner.input.Settings
 	err = gc.PipeToSelf(func() (any, error) {
 		// Once admitted, a caller timeout does not abandon a potentially committed write.
 		ctx := context.Background()
@@ -178,6 +191,9 @@ func (owner *steward) change(gc *goakt.GrainContext, entry *resident, input any,
 		})
 		if failure == nil {
 			failure = accepted.Err
+		}
+		if failure == nil && operation.config != nil {
+			failure = saveConfiguration(ctx, configuration, operation.next.Configuration, *operation.config)
 		}
 		if failure == nil {
 			committed, writeErr := ask[sessionactor.Committed](ctx, system, target, sessionactor.Commit{
@@ -207,6 +223,39 @@ func (owner *steward) change(gc *goakt.GrainContext, entry *resident, input any,
 		operation.failure = err
 		operation.respond(entry.view(), err)
 	}
+}
+
+// saveConfiguration verifies an earlier attempt before retrying a named create.
+// A timeout may have followed a successful Settings commit; the frozen name and
+// value allow retry without assigning another configuration or losing ownership.
+func saveConfiguration(ctx context.Context, directory settings.Settings, name string, expected settings.Values) error {
+	current, err := directory.Describe(ctx)
+	if err != nil {
+		return err
+	}
+	identifier := settings.Group{
+		Section: settings.AgentSection,
+		Name:    name,
+	}
+	if actual, found := current.Target.Agents[name]; found {
+		left, err := json.Marshal(actual)
+		if err != nil {
+			return err
+		}
+		right, err := json.Marshal(expected)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(left, right) {
+			return settings.ErrConflict
+		}
+		return nil
+	}
+	if current.State.Version(identifier) != 0 {
+		return settings.ErrConflict
+	}
+	_, err = directory.UpdateAgent(ctx, name, 0, expected)
+	return err
 }
 
 func (owner *steward) recorded(gc *goakt.GrainContext, result recorded) {

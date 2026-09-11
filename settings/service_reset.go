@@ -42,7 +42,7 @@ func (owner *Service) ResetTool(ctx context.Context, name string, expected int64
 	}, expected, next)
 }
 
-func (owner *Service) reset(ctx context.Context, identifier Group, expected int64, overrides Values) (Snapshot, error) {
+func (owner *Service) reset(ctx context.Context, identifier Group, expected int64, overrides Directory) (Snapshot, error) {
 	if !owner.target.Has(identifier) && owner.state.Version(identifier) == 0 {
 		return owner.Snapshot(), ErrInvalid
 	}

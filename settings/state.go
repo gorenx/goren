@@ -15,6 +15,7 @@ const (
 	MCPSection
 	ToolSection
 	CompanionSection
+	AgentSection
 )
 
 const maximumRevision int64 = 9_007_199_254_740_991
@@ -44,7 +45,7 @@ func (identifier Group) Valid() bool {
 		return false
 	}
 	switch identifier.Section {
-	case ProviderSection, PromptSection, MCPSection, ToolSection, CompanionSection:
+	case ProviderSection, PromptSection, MCPSection, ToolSection, CompanionSection, AgentSection:
 		return true
 	default:
 		return false
@@ -55,7 +56,7 @@ func (identifier Group) Valid() bool {
 type State struct {
 	Revision int64
 	Versions map[Group]int64
-	User     Values
+	User     Directory
 }
 
 // Clone detaches all mutable values and versions.
@@ -97,9 +98,9 @@ type Application struct {
 
 // Snapshot is a detached query result with independently named application status.
 type Snapshot struct {
-	Base         Values
+	Base         Directory
 	State        State
-	Target       Values
+	Target       Directory
 	Applications map[Group]Application
 }
 

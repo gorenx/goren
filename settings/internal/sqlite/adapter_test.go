@@ -3,6 +3,8 @@ package sqlite
 import (
 	"context"
 	"errors"
+	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/subagent/companion"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -28,11 +30,13 @@ func TestAdapterPersistsSparseOverridesWithConditionalRevision(t *testing.T) {
 		Versions: map[settings.Group]int64{
 			storedGroup(settings.PromptSection, "default"): 1,
 		},
-		User: settings.Values{
-			Prompts: map[string]settings.PromptConfig{
-				"default": {
-					Persona:               &empty,
-					IncludeRuntimeContext: &falseValue,
+		User: settings.Directory{
+			Values: settings.Values{
+				Prompts: map[string]settings.PromptConfig{
+					"default": {
+						Persona:               &empty,
+						IncludeRuntimeContext: &falseValue,
+					},
 				},
 			},
 		},
@@ -136,22 +140,24 @@ func TestAdapterPersistsNamedMCPGroupsAndClearedRevisions(t *testing.T) {
 			storedGroup(settings.MCPSection, "testa"):      1,
 			storedGroup(settings.MCPSection, "other/name"): 2,
 		},
-		User: settings.Values{
-			MCP: map[string]settings.MCPConfig{
-				"testa": {
-					Enabled: true,
-					Connection: mcpclient.Config{
-						ServerName: "testa",
-						Transport:  "streamable-http",
-						URL:        "https://a.example.test",
+		User: settings.Directory{
+			Values: settings.Values{
+				MCP: map[string]settings.MCPConfig{
+					"testa": {
+						Enabled: true,
+						Connection: mcpclient.Config{
+							ServerName: "testa",
+							Transport:  "streamable-http",
+							URL:        "https://a.example.test",
+						},
 					},
-				},
-				"other/name": {
-					Enabled: false,
-					Connection: mcpclient.Config{
-						ServerName: "other/name",
-						Transport:  "streamable-http",
-						URL:        "https://b.example.test",
+					"other/name": {
+						Enabled: false,
+						Connection: mcpclient.Config{
+							ServerName: "other/name",
+							Transport:  "streamable-http",
+							URL:        "https://b.example.test",
+						},
 					},
 				},
 			},
@@ -229,16 +235,18 @@ func TestAdapterSeparatesTypesWithTheSameName(t *testing.T) {
 			storedGroup(settings.PromptSection, identifier):   2,
 			storedGroup(settings.ToolSection, identifier):     3,
 		},
-		User: settings.Values{
-			Providers: map[string]settings.ProviderConfig{
-				identifier: {},
-			},
-			Tools: map[string]tools.Config{
-				identifier: {},
-			},
-			Prompts: map[string]settings.PromptConfig{
-				identifier: {
-					Persona: &persona,
+		User: settings.Directory{
+			Values: settings.Values{
+				Providers: map[string]settings.ProviderConfig{
+					identifier: {},
+				},
+				Tools: map[string]tools.Config{
+					identifier: {},
+				},
+				Prompts: map[string]settings.PromptConfig{
+					identifier: {
+						Persona: &persona,
+					},
 				},
 			},
 		},
@@ -255,5 +263,65 @@ func TestAdapterSeparatesTypesWithTheSameName(t *testing.T) {
 	}
 	if !reflect.DeepEqual(restored, next) {
 		t.Fatal("same names in different types collided in storage")
+	}
+}
+
+func TestAdapterRestoresNamedValuesAndCompanionReference(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.sqlite")
+	storage, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	next := settings.State{
+		Revision: 2,
+		Versions: map[settings.Group]int64{
+			storedGroup(settings.AgentSection, "review-config"): 1,
+			storedGroup(settings.CompanionSection, "reviewer"):  2,
+		},
+		User: settings.Directory{
+			Agents: map[string]settings.Values{"review-config": {
+				Model: agent.Options{
+					MaxTokens: new(400),
+				},
+				Prompts: map[string]settings.PromptConfig{"default": {
+					Persona: new("independent"),
+				}},
+				MCP: map[string]settings.MCPConfig{"local": {
+					Enabled: true,
+					Connection: mcpclient.Config{
+						ServerName: "local",
+						Transport:  "stdio",
+						Command:    "fixture",
+						Args:       []string{"retained"},
+					},
+				}},
+			}},
+			Companions: map[string]companion.Config{"reviewer": {
+				Enabled:       true,
+				Configuration: "review-config",
+			}},
+		},
+	}
+	if err := next.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.Commit(t.Context(), settings.ChangeSet{
+		Next: next,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := Inspect(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(restored, next) {
+		t.Fatal("restart changed capability values or configuration reference")
+	}
+	if _, err := settings.Resolve(settings.Directory{}, restored.User); err != nil {
+		t.Fatal(err)
 	}
 }

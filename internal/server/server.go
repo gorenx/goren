@@ -103,7 +103,9 @@ func (settings Config) Validate(platform anonymoususerid.Environment) (Config, e
 	if err := settings.userBaseline().Validate(); err != nil {
 		return Config{}, err
 	}
-	settings.Companions = settings.userBaseline().Clone().Companions
+	captured := settings.userBaseline().Clone()
+	settings.Companions = captured.Companions
+	settings.Agents = captured.Agents
 	settings.Tools = settings.Tools.Clone()
 	settings.Providers = settings.Providers.Clone()
 	settings.MCP = append([]mcpclient.Config(nil), settings.MCP...)

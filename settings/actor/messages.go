@@ -80,6 +80,19 @@ type Result struct {
 	Err      error
 }
 
+// UpdateAgent saves a complete named configuration without owning an Agent lifetime.
+type UpdateAgent struct {
+	Context          context.Context
+	Name             string
+	ExpectedRevision int64
+	Config           settings.Values
+}
+
+func (input UpdateAgent) context() context.Context { return input.Context }
+func (input UpdateAgent) apply(owner *settings.Service) (settings.Snapshot, error) {
+	return owner.UpdateAgent(input.Context, input.Name, input.ExpectedRevision, input.Config)
+}
+
 type command interface {
 	context() context.Context
 	apply(*settings.Service) (settings.Snapshot, error)

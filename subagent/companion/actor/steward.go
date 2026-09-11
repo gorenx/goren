@@ -105,7 +105,17 @@ func (owner *steward) OnReceive(gc *goakt.GrainContext) {
 	case delivered:
 		owner.delivered(input)
 	case command:
-		if input.parent != owner.input.Parent || (owner.state == uninitialized || owner.state == initializing) {
+		if input.parent != owner.input.Parent || owner.input.Parent.AgentID == "" {
+			gc.Response(response{
+				err: agentregistry.ErrCreation,
+			})
+			return
+		}
+		if _, ok := input.input.(closing); ok {
+			owner.close(gc)
+			return
+		}
+		if owner.state == uninitialized || owner.state == initializing {
 			gc.Response(response{
 				err: agentregistry.ErrCreation,
 			})
@@ -115,10 +125,6 @@ func (owner *steward) OnReceive(gc *goakt.GrainContext) {
 			gc.Response(response{
 				items: owner.list(),
 			})
-			return
-		}
-		if _, ok := input.input.(closing); ok {
-			owner.close(gc)
 			return
 		}
 		if owner.state != active {
@@ -155,7 +161,7 @@ func (owner *steward) initialize(gc *goakt.GrainContext, input Initialization) {
 		})
 		return
 	}
-	if input.Creator == nil || input.Registry == nil || input.Session == nil || input.Parent.AgentID == "" || input.Parent.CreationID == "" {
+	if input.Creator == nil || input.Settings == nil || input.Registry == nil || input.Session == nil || input.Parent.AgentID == "" || input.Parent.CreationID == "" {
 		gc.Response(response{
 			err: companion.ErrInvalid,
 		})
@@ -226,12 +232,22 @@ func (owner *steward) initialize(gc *goakt.GrainContext, input Initialization) {
 }
 
 func (owner *steward) loaded(gc *goakt.GrainContext, result loaded) {
+	if result.reply != owner.loadReply {
+		return
+	}
 	if owner.loadCancel != nil {
 		owner.loadCancel()
 		owner.loadCancel = nil
 	}
-	owner.state = uninitialized
 	owner.loadReply = nil
+	if owner.state == shuttingDown {
+		result.reply.Response(response{
+			err: agent.ErrClosing,
+		})
+		owner.finishClose()
+		return
+	}
+	owner.state = uninitialized
 	if result.err != nil {
 		result.reply.Response(response{
 			err: result.err,

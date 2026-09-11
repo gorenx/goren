@@ -28,7 +28,7 @@ func (owner *Service) RetryApplication(ctx context.Context, identifier Group, ex
 	}
 	var err error
 	switch identifier.Section {
-	case CompanionSection:
+	case CompanionSection, AgentSection:
 	// The directory is already installed; existing instances require explicit Apply.
 	case ToolSection:
 		err = owner.toolsets.ApplyTool(ctx, identifier.Name, owner.target.Tools[identifier.Name].Clone())

@@ -8,8 +8,8 @@ import (
 	"time"
 
 	settingsapi "github.com/gorenx/goren/apiproxy/settings"
+	"github.com/gorenx/goren/settings"
 	"github.com/gorenx/goren/subagent/companion"
-	"github.com/gorenx/goren/systemprompt"
 )
 
 func TestCompanionSettingsHTTPPersistsAcrossServerRestart(t *testing.T) {
@@ -42,16 +42,22 @@ func TestCompanionSettingsHTTPPersistsAcrossServerRestart(t *testing.T) {
 			t.Error(err)
 		}
 	}()
+	settingsHTTP(t, ctx, process, settingsapi.UpdateAgentMethod, settingsapi.UpdateAgentRequest{
+		Name: "review-config",
+		Config: settings.Values{
+			Prompts: map[string]settings.PromptConfig{"default": {
+				Persona: new("review independently"),
+			}},
+		},
+	})
 	saved := settingsHTTP(t, ctx, process, settingsapi.UpdateCompanionMethod, settingsapi.UpdateCompanionRequest{
 		Name: "reviewer",
 		Config: companion.Config{
-			Enabled: true,
-			Prompt: systemprompt.Config{
-				Persona: "review independently",
-			},
+			Enabled:       true,
+			Configuration: "review-config",
 		},
 	})
-	if saved.NS != "companion" || saved.Applies != settingsapi.ApplyNewInstance || saved.Revision != 1 || saved.AppliedRevision == nil || *saved.AppliedRevision != 1 {
+	if saved.NS != "companion" || saved.Applies != settingsapi.ApplyNewInstance || saved.Revision != 2 || saved.AppliedRevision == nil || *saved.AppliedRevision != 2 {
 		t.Fatalf("incorrect adoption scope: %+v", saved)
 	}
 	if err := process.Close(ctx); err != nil {
@@ -72,7 +78,7 @@ func TestCompanionSettingsHTTPPersistsAcrossServerRestart(t *testing.T) {
 		if err := json.Unmarshal(entry.Value, &restored); err != nil {
 			t.Fatal(err)
 		}
-		if !restored.Enabled || restored.Prompt.Persona != "review independently" || entry.Revision != saved.Revision {
+		if !restored.Enabled || restored.Configuration != "review-config" || entry.Revision != saved.Revision {
 			t.Fatal("restart lost persisted Companion configuration")
 		}
 	}
@@ -83,7 +89,7 @@ func TestCompanionSettingsHTTPPersistsAcrossServerRestart(t *testing.T) {
 		Name:             "reviewer",
 		ExpectedRevision: saved.Revision,
 	})
-	if reset.Revision != 2 || string(reset.Value) != "null" {
+	if reset.Revision != 3 || string(reset.Value) != "null" {
 		t.Fatal("reset did not preserve cleared version")
 	}
 	if err := process.Close(ctx); err != nil {
@@ -97,7 +103,7 @@ func TestCompanionSettingsHTTPPersistsAcrossServerRestart(t *testing.T) {
 	for _, entry := range description.Namespaces {
 		if entry.NS == "companion" && entry.Name == "reviewer" {
 			found = true
-			if entry.Revision != 2 || string(entry.Value) != "null" {
+			if entry.Revision != 3 || string(entry.Value) != "null" {
 				t.Fatal("restart lost reset tombstone")
 			}
 		}
