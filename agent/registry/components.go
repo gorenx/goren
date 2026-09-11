@@ -41,7 +41,9 @@ func newInstallation(
 	releases map[agent.Resource]releaser,
 ) *installation {
 	conversation := &sessionClient{
-		owner: input.SessionRegistry,
+		owner:  input.SessionRegistry,
+		role:   input.Role,
+		parent: input.Parent,
 		input: sessionregistry.RegisterSession{
 			SessionID:  input.Creation.AgentID,
 			CreationID: input.Creation.CreationID,
@@ -156,6 +158,8 @@ func (installed *installation) capabilityRoutes() []Component {
 }
 
 type sessionClient struct {
+	role     agent.Role
+	parent   *Creation
 	owner    *goakt.GrainIdentity
 	input    sessionregistry.RegisterSession
 	identity *goakt.GrainIdentity
@@ -164,6 +168,10 @@ type sessionClient struct {
 func (endpoint *sessionClient) Runtime() *goakt.GrainIdentity { return endpoint.identity }
 
 func (endpoint *sessionClient) Initialize(gc *goakt.GrainContext, reply chan<- componentResult) {
+	if endpoint.parent != nil && !endpoint.input.Restore {
+		identifier := endpoint.parent.AgentID
+		endpoint.input.Options.Metadata.ParentSession = &identifier
+	}
 	requestComponent(gc, endpoint.owner, endpoint.input,
 		func(gc *goakt.GrainContext, registered sessionregistry.Completion, failure error) {
 			if failure != nil {
@@ -195,7 +203,15 @@ func (endpoint *sessionClient) Initialize(gc *goakt.GrainContext, reply chan<- c
 							goakt.WithLongLivedGrain(),
 						)
 					}
-					reply <- componentResult{err: failure}
+					if failure != nil {
+						reply <- componentResult{err: failure}
+						return
+					}
+					if (initialized.Header.ParentSession == nil) != (endpoint.parent == nil) || endpoint.parent != nil && *initialized.Header.ParentSession != endpoint.parent.AgentID {
+						reply <- componentResult{err: errors.New("agent registry: restored Session parent differs")}
+						return
+					}
+					endpoint.admitRole(gc, reply)
 				},
 			)
 		},
@@ -579,4 +595,29 @@ func (endpoint *toolsClient) closeRuntime(gc *goakt.GrainContext, reply chan<- e
 		CreationID: endpoint.input.CreationID,
 		InstanceID: endpoint.instanceID,
 	}, func(result runtimeactor.Completion) error { return result.Err }, reply)
+}
+
+func (endpoint *sessionClient) admitRole(gc *goakt.GrainContext, reply chan<- componentResult) {
+	requestComponent(gc, endpoint.identity, sessionactor.Commit{
+		CreationID: endpoint.input.CreationID,
+		Plan: agent.RoleAdmission{
+			SessionID: endpoint.input.SessionID,
+			Expected:  endpoint.role,
+			Restore:   endpoint.input.Restore,
+		},
+	}, func(gc *goakt.GrainContext, committed sessionactor.Committed, failure error) {
+		if failure == nil {
+			failure = committed.Err
+		}
+		if failure != nil {
+			reply <- componentResult{err: failure}
+			return
+		}
+		requestComponent(gc, endpoint.identity, sessionactor.Flush{
+			CreationID: endpoint.input.CreationID,
+			Barrier:    committed.Result.Barrier,
+		}, func(_ *goakt.GrainContext, flushed sessionactor.Flushed, failure error) {
+			reply <- componentResult{err: errors.Join(failure, flushed.Err)}
+		})
+	})
 }

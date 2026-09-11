@@ -46,6 +46,7 @@ func (owner *Grain) createChildAgent(gc *goakt.GrainContext, input CreateChildAg
 		return
 	}
 	derived := parent.activation.input.clone()
+	derived.Role = input.Role
 	derived.Creation = input.Child
 	derived.Parent = &input.Parent
 	derived.Restore = input.Restore
@@ -79,6 +80,7 @@ func (owner *Grain) createAgent(gc *goakt.GrainContext, input CreateAgent) {
 		return
 	}
 	err = owner.reserveAgent(ReserveAgent{
+		Role:     input.Role,
 		Creation: input.Creation,
 		Parent:   input.Parent,
 	})

@@ -13,6 +13,7 @@ var ErrClosing = errors.New("agent: Agent or ancestor is closing")
 // Registration records one Agent identity and its immutable runtime parent.
 // It contains no reference to a live Agent or framework activation.
 type Registration struct {
+	Role     Role
 	ID       session.SessionID
 	ParentID *session.SessionID
 }
@@ -33,6 +34,9 @@ func (directory *Registry) Register(entry Registration) error {
 	if directory.admissionStopped {
 		return ErrClosing
 	}
+	if !entry.Role.Valid() || entry.Role == CompanionRole && entry.ParentID == nil {
+		return ErrRole
+	}
 	if entry.ID == "" {
 		return errors.New("agent: registration ID is required")
 	}
@@ -47,6 +51,12 @@ func (directory *Registry) Register(entry Registration) error {
 		err := directory.CheckAdmission(*entry.ParentID)
 		if err != nil {
 			return err
+		}
+	}
+	if entry.Role == CompanionRole {
+		parent := directory.entries[*entry.ParentID]
+		if parent.registration.Role == CompanionRole {
+			return ErrRole
 		}
 	}
 	if directory.entries == nil {

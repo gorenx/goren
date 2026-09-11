@@ -19,6 +19,7 @@ import (
 // CreateAgent starts one exact lifetime. Concurrent retries share the first input;
 // a failed creation remains reserved until CloseAgent confirms its cleanup.
 type CreateAgent struct {
+	Role            agent.Role
 	Creation        Creation
 	Parent          *Creation
 	Restore         bool
@@ -62,6 +63,7 @@ type FindAgent struct {
 // input. The Registry remains the sole owner of composition dependencies and
 // parent-child admission.
 type CreateChildAgent struct {
+	Role           agent.Role
 	Parent         Creation
 	Child          Creation
 	Restore        bool
@@ -86,6 +88,12 @@ var sessionName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 
 // validate checks construction input; parent admission remains a Registry rule.
 func (input CreateAgent) validate() error {
+	if !input.Role.Valid() || input.Role == agent.CompanionRole && input.Parent == nil {
+		return agent.ErrRole
+	}
+	if input.Parent == nil && input.Options.Metadata.ParentSession != nil || input.Parent != nil && input.Options.Metadata.ParentSession != nil && *input.Options.Metadata.ParentSession != input.Parent.AgentID {
+		return errors.New("agent registry: Session parent does not match creation")
+	}
 	err := input.Handlers.Validate()
 	if err != nil {
 		return err
@@ -144,7 +152,8 @@ func (input CreateAgent) clone() CreateAgent {
 
 // matches prevents a repeated creation request from changing frozen configuration.
 func (original CreateAgent) matches(input CreateAgent) bool {
-	if original.Creation != input.Creation ||
+	if original.Role != input.Role ||
+		original.Creation != input.Creation ||
 		!reflect.DeepEqual(original.Parent, input.Parent) ||
 		original.Restore != input.Restore ||
 		!reflect.DeepEqual(original.Options, input.Options) ||

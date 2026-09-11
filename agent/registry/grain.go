@@ -151,12 +151,16 @@ func (owner *Grain) reserveAgent(input ReserveAgent) error {
 			return ErrCreation
 		}
 		registered, _ := owner.directory.Get(input.Creation.AgentID)
+		if registered.Role != input.Role {
+			return agent.ErrRole
+		}
 		if (registered.ParentID == nil) != (parentID == nil) || parentID != nil && *registered.ParentID != *parentID {
 			return ErrCreation
 		}
 		return owner.directory.CheckAdmission(input.Creation.AgentID)
 	}
 	err := owner.directory.Register(agent.Registration{
+		Role:     input.Role,
 		ID:       input.Creation.AgentID,
 		ParentID: parentID,
 	})

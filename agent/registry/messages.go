@@ -15,6 +15,7 @@ type Creation struct {
 // ReserveAgent registers one creation identity and its optional parent lifetime.
 // It neither starts Actors nor confirms readiness; CreateAgent owns startup.
 type ReserveAgent struct {
+	Role     agent.Role
 	Creation Creation
 	Parent   *Creation
 }
