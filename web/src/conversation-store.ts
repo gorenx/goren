@@ -1,3 +1,8 @@
+export interface SessionModels {
+ current: { provider: string; model: string }
+ groups: Array<{ id: string; name: string; models: Array<{ id: string; name: string }> }>
+}
+import { imageTypes, type ImageInput, type ImageRef } from './images'
 import { HarnessAPI } from './api'
 import type {
   ConversationSnapshot,
@@ -89,10 +94,9 @@ export class ConversationStore {
     try {
       const host = await this.#api.call<HostDescription>('host.describe', {})
       this.#patch({ host, composerState: 'composer.syncingSessions' })
-      await Promise.all([
-        this.refreshCredential(),
-        this.refreshBoundDefinitions(),
-      ])
+      // Auxiliary configuration must not gate Session history or the composer.
+      void this.refreshCredential().catch(error => this.#fail(error))
+      void this.refreshBoundDefinitions().catch(error => this.#fail(error))
       this.#api.connect()
       await this.refreshSessions()
       if (this.#value.sessions.length === 0) await this.createSession()
@@ -386,18 +390,24 @@ export class ConversationStore {
     }
   }
 
-  async submitPrompt(rawText: string): Promise<void> {
+  async submitPrompt(rawText: string, pictures: readonly ImageInput[] = []): Promise<void> {
     const text = rawText.trim()
     const sessionId = this.#value.currentSessionId
-    if (text === '' || sessionId === undefined) return
+    if ((text === '' && pictures.length === 0) || sessionId === undefined) return
     const localTitles = new Map(this.#value.localTitles)
-    localTitles.set(sessionId, text.slice(0, 52))
+    localTitles.set(sessionId, (text || pictures[0]?.name || 'Image').slice(0, 52))
     this.#patch({ localTitles, composerState: 'composer.queued' })
     try {
+      if (pictures.length > 0) {
+        const catalog = await this.#api.call<{ current: { provider: string; model: string } }>('session.models', { sessionId })
+        if (catalog.current.model !== 'deepseek-v4-flash-vision-exp') {
+          throw new Error(this.#translateText('composer.switchVision'))
+        }
+      }
       await this.#api.call<unknown>('session.prompt', {
         sessionId,
         mode: 'queue',
-        content: [{ type: 'text', text }],
+        content: [...(text === '' ? [] : [{ type: 'text', text }]), ...pictures],
         clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
       })
     } catch (error) {
@@ -405,6 +415,20 @@ export class ConversationStore {
       this.#fail(error)
       throw error
     }
+  }
+
+  async sessionModels(sessionId: string): Promise<SessionModels> {
+    return this.#api.call<SessionModels>('session.models', { sessionId })
+  }
+
+  async selectModel(sessionId: string, provider: string, model: string): Promise<void> {
+    await this.#api.call('session.selectModel', { sessionId, provider, model })
+  }
+
+  async readImage(sessionId: string, ref: ImageRef, signal: AbortSignal): Promise<string> {
+    const value = await this.#api.call<{ attachment: ImageRef; data: string }>('session.attachment', { sessionId, attachmentId: ref.attachmentId }, signal)
+    if (value.attachment.attachmentId !== ref.attachmentId || !imageTypes.includes(value.attachment.mediaType)) throw new Error('Invalid image response')
+    return `data:${value.attachment.mediaType};base64,${value.data}`
   }
 
   async cancelCurrentTurn(): Promise<void> {
@@ -670,16 +694,22 @@ function readMessage(
   }
   let text = ''
   let reasoning = ''
+  const pictures: ImageRef[] = []
   for (const block of value.content) {
     if (!isRecord(block)) continue
     const blockType = recordString(block, 'type')
+    if (blockType === 'image' && isRecord(block.attachment)) {
+      const ref = block.attachment
+      if (typeof ref.attachmentId === 'string' && typeof ref.mediaType === 'string' && imageTypes.includes(ref.mediaType) && typeof ref.width === 'number' && typeof ref.height === 'number' && typeof ref.bytes === 'number') pictures.push({ attachmentId: ref.attachmentId, mediaType: ref.mediaType, width: ref.width, height: ref.height, bytes: ref.bytes, name: recordString(ref, 'name') })
+    }
     if (blockType === 'text') text += recordString(block, 'text') ?? ''
     if (blockType === 'reasoning') reasoning += recordString(block, 'text') ?? ''
     if (blockType === 'tool-result' && Array.isArray(block.content)) text += flattenContent(block.content)
   }
-  if (text === '' && reasoning === '') return undefined
+  if (text === '' && reasoning === '' && pictures.length === 0) return undefined
   return {
     role: expectedRole,
+    ...(pictures.length === 0 ? {} : { pictures }),
     text,
     reasoning,
     streaming: false,

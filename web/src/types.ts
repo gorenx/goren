@@ -1,3 +1,4 @@
+import type { ImageRef } from './images'
 import type { MessageKey } from './i18n'
 
 export interface HostDescription {
@@ -89,6 +90,7 @@ export interface QuestionAnswerItem {
 }
 
 export interface MessageRow {
+  pictures?: ImageRef[]
   role: 'assistant' | 'user'
   text: string
   reasoning: string

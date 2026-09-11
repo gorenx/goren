@@ -6,7 +6,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
 
@@ -58,7 +57,8 @@ type Backend interface {
 // SessionHeaders is the Workspace-owned anti-corruption port for immutable
 // Session headers. Implementations may merge live and persisted Sessions.
 type SessionHeaders interface {
-	Get(context.Context, session.SessionID) (session.Header, bool, error)
+	// Get returns a detached header; nil without error means the Session is absent.
+	Get(context.Context, session.SessionID) (*session.Header, error)
 	List(context.Context) ([]session.Header, error)
 }
 
@@ -74,7 +74,6 @@ type Workspace interface {
 
 // Registry owns Workspace identity, durable order, and Session accounting.
 type Registry interface {
-	plugin.Service
 	Create(context.Context, string) (Workspace, bool, error)
 	Get(ID) (Workspace, bool)
 	List() []Workspace
@@ -82,13 +81,6 @@ type Registry interface {
 	InsertBefore(context.Context, ID, *ID) ([]ID, error)
 	ArchivedSessionIDs() []session.SessionID
 	ArchiveSession(context.Context, session.SessionID) error
-}
-
-const PluginName = "@deepseek-ai/dsh-workspace"
-
-// BackendOpener acquires one configured Workspace Backend during Plugin Apply.
-type BackendOpener interface {
-	OpenBackend(context.Context) (Backend, error)
 }
 
 // TimeSource supplies mutation timestamps.

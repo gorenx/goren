@@ -16,33 +16,36 @@ type pendingInput struct {
 // sourceCursor owns ordered Session scanning and the one outstanding input
 // for a relay worker.
 type sourceCursor struct {
-	store        session.LiveStore
-	conversation session.Context
+	conversation Source
 	binding      binding
 	pending      *pendingInput
 }
 
+type Source interface {
+	Snapshot() session.Snapshot
+	Commit(context.Context, session.WritePlan) (session.WriteResult, error)
+	Flush(context.Context) error
+}
+
 func newSourceCursor(
-	store session.LiveStore,
-	conversation session.Context,
+	conversation Source,
 	bindingValue binding,
 ) *sourceCursor {
 	return &sourceCursor{
-		store:        store,
 		conversation: conversation,
 		binding:      bindingValue,
 	}
 }
 
 func (current *sourceCursor) next(
-	requestContext context.Context,
+	ctx context.Context,
 ) (boundcontract.Input, bool, error) {
-	if requestContext == nil {
+	if ctx == nil {
 		return boundcontract.Input{}, false, errors.New(
 			"subagent/bound/turnrelay: cursor Context is nil",
 		)
 	}
-	if err := context.Cause(requestContext); err != nil {
+	if err := context.Cause(ctx); err != nil {
 		return boundcontract.Input{}, false, err
 	}
 	if current.pending != nil {
@@ -63,7 +66,7 @@ func (current *sourceCursor) next(
 		}
 		if !interactionValue.deliverable {
 			if err = current.advance(
-				requestContext,
+				ctx,
 				interactionValue,
 				false,
 			); err != nil {
@@ -77,10 +80,7 @@ func (current *sourceCursor) next(
 		if err != nil {
 			return boundcontract.Input{}, false, err
 		}
-		if err = current.store.Flush(
-			requestContext,
-			current.conversation,
-		); err != nil {
+		if err = current.conversation.Flush(ctx); err != nil {
 			return boundcontract.Input{}, false, err
 		}
 		current.pending = &pendingInput{
@@ -92,7 +92,7 @@ func (current *sourceCursor) next(
 }
 
 func (current *sourceCursor) acknowledge(
-	requestContext context.Context,
+	ctx context.Context,
 	receiptValue boundcontract.Receipt,
 ) error {
 	pending := current.pending
@@ -103,7 +103,7 @@ func (current *sourceCursor) acknowledge(
 		)
 	}
 	if err := current.advance(
-		requestContext,
+		ctx,
 		pending.interaction,
 		true,
 	); err != nil {
@@ -114,12 +114,12 @@ func (current *sourceCursor) acknowledge(
 }
 
 func (current *sourceCursor) advance(
-	requestContext context.Context,
+	ctx context.Context,
 	interactionValue interaction,
 	delivered bool,
 ) error {
 	if _, err := current.conversation.Commit(
-		requestContext,
+		ctx,
 		cursorPlan{
 			binding:     current.binding,
 			interaction: interactionValue,
@@ -128,5 +128,5 @@ func (current *sourceCursor) advance(
 	); err != nil {
 		return err
 	}
-	return current.store.Flush(requestContext, current.conversation)
+	return current.conversation.Flush(ctx)
 }

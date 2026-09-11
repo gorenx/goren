@@ -4,19 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
 
-// TokenMeter owns per-Session replay folds and the fixed estimator. Plugin
-// only owns its Runtime publication and lifecycle.
+// TokenMeter incrementally measures one append-only log. Its owner serializes access
+// and must not reuse it for another Session creation. The zero value is ready to use.
 type TokenMeter struct {
-	mutex sync.Mutex
-	folds map[session.Context]*replayState
+	fold replayState
 }
 
 type replayStep struct {
@@ -40,62 +37,30 @@ type replayState struct {
 	anchor         *measurementAnchor
 }
 
-func newTokenMeter() *TokenMeter {
-	return &TokenMeter{
-		folds: make(map[session.Context]*replayState),
-	}
-}
-
-func (owner *TokenMeter) release() {
-	owner.mutex.Lock()
-	owner.folds = make(map[session.Context]*replayState)
-	owner.mutex.Unlock()
-}
-
-func (owner *TokenMeter) observeEvent(
-	requestContext context.Context,
-	fact plugin.Event,
-) error {
-	switch observed := fact.(type) {
-	case session.EventAppended:
-		owner.mutex.Lock()
-		_, allocated := owner.folds[observed.Conversation]
-		if !allocated {
-			owner.mutex.Unlock()
-			return nil
-		}
-		err := owner.syncLocked(requestContext, observed.Conversation)
-		owner.mutex.Unlock()
-		return err
-	case session.Disposed:
-		owner.mutex.Lock()
-		delete(owner.folds, observed.Conversation)
-		owner.mutex.Unlock()
-	}
-	return nil
-}
-
 // Measure will fold durable request and Surface facts into one measurement.
 func (owner *TokenMeter) Measure(
 	requestContext context.Context,
-	conversation session.Context,
+	entries []session.Event,
 	requestHeader *session.EpochHeader,
 ) (Measurement, error) {
 	if requestContext == nil {
 		return Measurement{}, errors.New("tokenmeter: Measure Context is nil")
 	}
-	if conversation == nil {
-		return Measurement{}, errors.New("tokenmeter: Measure Session is nil")
-	}
 	if err := requestContext.Err(); err != nil {
 		return Measurement{}, err
 	}
-	owner.mutex.Lock()
-	defer owner.mutex.Unlock()
-	if err := owner.syncLocked(requestContext, conversation); err != nil {
+	candidate := owner.fold
+	candidate.header = cloneHeader(owner.fold.header)
+	candidate.nodes = cloneNodes(owner.fold.nodes)
+	candidate.stepStart = cloneStep(owner.fold.stepStart)
+	candidate.anchor = cloneAnchor(owner.fold.anchor)
+	if int64(len(entries)) < candidate.consumedEvents {
+		candidate = replayState{}
+	}
+	if err := owner.replay(requestContext, &candidate, entries); err != nil {
 		return Measurement{}, err
 	}
-	fold := owner.folds[conversation]
+	fold := &candidate
 	headerValue := cloneHeader(fold.header)
 	if requestHeader != nil {
 		canonical := session.CanonicalEpochHeader(*requestHeader)
@@ -128,6 +93,9 @@ func (owner *TokenMeter) Measure(
 	if err != nil {
 		return Measurement{}, err
 	}
+	if candidate.consumedEvents >= owner.fold.consumedEvents {
+		owner.fold = candidate
+	}
 	return Measurement{
 		LogRevision:        fold.consumedEvents,
 		Baseline:           anchorValue,
@@ -143,16 +111,11 @@ func (*TokenMeter) EstimateMessage(messageValue agentmessage.Message) (int64, er
 	return estimateMessage(messageValue)
 }
 
-func (owner *TokenMeter) syncLocked(
+func (owner *TokenMeter) replay(
 	requestContext context.Context,
-	conversation session.Context,
+	fold *replayState,
+	entries []session.Event,
 ) error {
-	entries := conversation.Events()
-	fold := owner.folds[conversation]
-	if fold == nil {
-		fold = &replayState{}
-		owner.folds[conversation] = fold
-	}
 	if fold.consumedEvents < 0 || fold.consumedEvents > int64(len(entries)) {
 		return errors.New("tokenmeter: replay revision is outside the Session log")
 	}

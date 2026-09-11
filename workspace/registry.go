@@ -10,21 +10,17 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
-	"sync"
+	"strings"
 	"time"
 
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
-	sesspersist "github.com/gorenx/goren/session/persistence"
 )
 
 // DurableRegistry is the in-process owner of Workspace business state. Every
-// mutation is serialized, committed through Backend, then published as a
-// post-commit domain event.
+// mutation is committed through Backend before recording a post-commit notice.
+// Its owner must serialize access; this object has no framework or lock.
 type DurableRegistry struct {
-	plugin.Base
-	mu                    sync.RWMutex
-	opener                BackendOpener
+	notices               []Notice
 	repository            Backend
 	headers               SessionHeaders
 	timeSource            TimeSource
@@ -47,13 +43,15 @@ func (randomIDGenerator) NewWorkspaceID() (ID, error) {
 	return mintID()
 }
 
-// NewRegistry constructs the Workspace Service Plugin without opening storage.
+// NewRegistry loads the registry from an already opened Backend. The caller
+// retains ownership of Backend if initialization fails.
 func NewRegistry(
-	opener BackendOpener,
+	requestContext context.Context,
+	repository Backend,
 	options RegistryOptions,
 ) (*DurableRegistry, error) {
-	if opener == nil {
-		return nil, errors.New("workspace: BackendOpener is required")
+	if repository == nil || options.SessionHeads == nil {
+		return nil, errors.New("workspace: Backend and SessionHeaders are required")
 	}
 	selectedTimeSource := options.TimeSource
 	if selectedTimeSource == nil {
@@ -63,73 +61,23 @@ func NewRegistry(
 	if identifierGenerator == nil {
 		identifierGenerator = randomIDGenerator{}
 	}
-	return &DurableRegistry{
-		opener:                opener,
+	owner := &DurableRegistry{
+		repository:            repository,
 		headers:               options.SessionHeads,
 		timeSource:            selectedTimeSource,
 		identifierGenerator:   identifierGenerator,
 		entries:               make(map[ID]StoredWorkspace),
 		canonicalSessionPaths: make(map[session.SessionID]string),
-	}, nil
-}
-
-// Manifest declares Workspace ownership and Session source dependencies.
-func (owner *DurableRegistry) Manifest() plugin.Manifest {
-	requiredServices := []plugin.ServiceType(nil)
-	if owner.headers == nil {
-		requiredServices = []plugin.ServiceType{
-			plugin.ServiceOf[session.LiveStore](),
-			plugin.ServiceOf[sesspersist.Persistence](),
-		}
 	}
-	return plugin.Manifest{
-		Name: PluginName,
-		Provides: []plugin.ProvidedService{
-			plugin.NewProvidedService[Registry](owner),
-		},
-		Requires: requiredServices,
-	}
-}
-
-// Apply acquires storage and loads or bootstraps durable Workspace state.
-func (owner *DurableRegistry) Apply(requestContext context.Context) error {
-	if err := requestContext.Err(); err != nil {
-		return err
-	}
-	if owner.headers == nil {
-		sessions, err := plugin.Require[session.LiveStore](owner)
-		if err != nil {
-			return err
-		}
-		persistence, err := plugin.Require[sesspersist.Persistence](owner)
-		if err != nil {
-			return err
-		}
-		owner.headers = &sessionHeaderSource{
-			sessions:    sessions,
-			persistence: persistence,
-		}
-	}
-	repository, err := owner.opener.OpenBackend(requestContext)
-	if err != nil {
-		return err
-	}
-	if repository == nil {
-		return errors.New("workspace: BackendOpener returned nil Backend")
-	}
-	owner.repository = repository
 	if err := owner.initialize(requestContext); err != nil {
-		return errors.Join(err, repository.Close(requestContext))
+		return nil, err
 	}
-	return requestContext.Err()
+	return owner, nil
 }
 
-// Dispose closes the owned Workspace Backend.
-func (owner *DurableRegistry) Dispose(closeContext context.Context) error {
-	if owner.repository == nil {
-		return nil
-	}
-	return owner.repository.Close(closeContext)
+// Close releases storage after the owner has drained accepted operations.
+func (owner *DurableRegistry) Close(ctx context.Context) error {
+	return owner.repository.Close(ctx)
 }
 
 func (owner *DurableRegistry) initialize(requestContext context.Context) error {
@@ -176,85 +124,91 @@ func (owner *DurableRegistry) Create(
 	if err != nil {
 		return nil, false, err
 	}
-	owner.mu.Lock()
+
 	for identifier, record := range owner.entries {
 		if record.Path == canonical {
-			owner.mu.Unlock()
-			return &entity{owner: owner, identifier: identifier}, false, nil
+			return &entity{
+				owner:      owner,
+				identifier: identifier,
+			}, false, nil
 		}
 	}
 	identifier, err := owner.identifierGenerator.NewWorkspaceID()
 	if err != nil {
-		owner.mu.Unlock()
 		return nil, false, err
 	}
 	if identifier == "" {
-		owner.mu.Unlock()
 		return nil, false, errors.New("workspace: generated Workspace ID is empty")
 	}
 	if _, exists := owner.entries[identifier]; exists {
-		owner.mu.Unlock()
 		return nil, false, fmt.Errorf("workspace: generated duplicate ID %q", identifier)
 	}
 	now := owner.timeSource.CurrentTime().UTC()
 	record := StoredWorkspace{
-		ID: identifier, Path: canonical, Title: filepath.Base(canonical),
-		SessionIDs: []session.SessionID{}, CreatedAt: now, UpdatedAt: now,
+		ID:         identifier,
+		Path:       canonical,
+		Title:      filepath.Base(canonical),
+		SessionIDs: []session.SessionID{},
+		CreatedAt:  now,
+		UpdatedAt:  now,
 	}
 	nextOrder := append([]ID{identifier}, owner.workspaceIDs...)
 	if err := owner.repository.Create(requestContext, cloneRecord(record), nextOrder); err != nil {
-		owner.mu.Unlock()
 		return nil, false, err
 	}
 	owner.entries[identifier] = record
 	owner.workspaceIDs = nextOrder
-	state := owner.stateLocked(identifier)
-	owner.mu.Unlock()
-	owner.publishChanged(requestContext, state)
-	return &entity{owner: owner, identifier: identifier}, true, nil
+	state := owner.state(identifier)
+
+	owner.recordChanged(state)
+	return &entity{
+		owner:      owner,
+		identifier: identifier,
+	}, true, nil
 }
 
 // Get resolves one registered Workspace by stable identity.
 func (owner *DurableRegistry) Get(identifier ID) (Workspace, bool) {
-	owner.mu.RLock()
 	_, found := owner.entries[identifier]
-	owner.mu.RUnlock()
+
 	if !found {
 		return nil, false
 	}
-	return &entity{owner: owner, identifier: identifier}, true
+	return &entity{
+		owner:      owner,
+		identifier: identifier,
+	}, true
 }
 
 // List returns Workspace handles in durable display order.
 func (owner *DurableRegistry) List() []Workspace {
-	owner.mu.RLock()
 	identifiers := append([]ID(nil), owner.workspaceIDs...)
-	owner.mu.RUnlock()
+
 	result := make([]Workspace, 0, len(identifiers))
 	for _, identifier := range identifiers {
-		result = append(result, &entity{owner: owner, identifier: identifier})
+		result = append(result, &entity{
+			owner:      owner,
+			identifier: identifier,
+		})
 	}
 	return result
 }
 
 // Delete removes only the Workspace registration and retains directories and Session logs.
 func (owner *DurableRegistry) Delete(requestContext context.Context, identifier ID) (bool, error) {
-	owner.mu.Lock()
 	if _, found := owner.entries[identifier]; !found {
-		owner.mu.Unlock()
 		return false, nil
 	}
 	nextOrder := slices.DeleteFunc(append([]ID(nil), owner.workspaceIDs...), func(candidate ID) bool {
 		return candidate == identifier
 	})
 	if err := owner.repository.Delete(requestContext, identifier, nextOrder); err != nil {
-		owner.mu.Unlock()
 		return false, err
 	}
 	delete(owner.entries, identifier)
 	owner.workspaceIDs = nextOrder
-	owner.mu.Unlock()
-	owner.publishRemoved(requestContext, identifier)
+
+	owner.recordRemoved(identifier)
 	return true, nil
 }
 
@@ -264,19 +218,19 @@ func (owner *DurableRegistry) InsertBefore(
 	identifier ID,
 	beforeIdentifier *ID,
 ) ([]ID, error) {
-	owner.mu.Lock()
 	if _, found := owner.entries[identifier]; !found {
-		owner.mu.Unlock()
-		return nil, &OrderInvalidError{ID: identifier}
+		return nil, &OrderInvalidError{
+			ID: identifier,
+		}
 	}
 	if beforeIdentifier != nil {
 		if _, found := owner.entries[*beforeIdentifier]; !found {
-			owner.mu.Unlock()
-			return nil, &OrderInvalidError{ID: *beforeIdentifier}
+			return nil, &OrderInvalidError{
+				ID: *beforeIdentifier,
+			}
 		}
 		if *beforeIdentifier == identifier {
 			result := append([]ID(nil), owner.workspaceIDs...)
-			owner.mu.Unlock()
 			return result, nil
 		}
 	}
@@ -290,24 +244,20 @@ func (owner *DurableRegistry) InsertBefore(
 	nextOrder := slices.Insert(without, insertAt, identifier)
 	if slices.Equal(nextOrder, owner.workspaceIDs) {
 		result := append([]ID(nil), owner.workspaceIDs...)
-		owner.mu.Unlock()
 		return result, nil
 	}
 	if err := owner.repository.SetOrder(requestContext, nextOrder); err != nil {
-		owner.mu.Unlock()
 		return nil, err
 	}
 	owner.workspaceIDs = nextOrder
 	result := append([]ID(nil), nextOrder...)
-	owner.mu.Unlock()
-	owner.publishOrder(requestContext, result)
+
+	owner.recordOrder(result)
 	return result, nil
 }
 
 // ArchivedSessionIDs returns a detached registry-global archive set.
 func (owner *DurableRegistry) ArchivedSessionIDs() []session.SessionID {
-	owner.mu.RLock()
-	defer owner.mu.RUnlock()
 	return append([]session.SessionID(nil), owner.archivedSessionIDs...)
 }
 
@@ -316,46 +266,40 @@ func (owner *DurableRegistry) ArchiveSession(
 	requestContext context.Context,
 	identifier session.SessionID,
 ) error {
-	owner.mu.RLock()
 	alreadyArchived := slices.Contains(owner.archivedSessionIDs, identifier)
-	owner.mu.RUnlock()
+
 	if alreadyArchived {
 		return nil
 	}
-	_, found, err := owner.headers.Get(requestContext, identifier)
+	metadata, err := owner.headers.Get(requestContext, identifier)
 	if err != nil {
 		return err
 	}
-	if !found {
-		return &UnknownSessionError{SessionID: identifier}
+	if metadata == nil {
+		return &UnknownSessionError{
+			SessionID: identifier,
+		}
 	}
-	owner.mu.Lock()
-	if slices.Contains(owner.archivedSessionIDs, identifier) {
-		owner.mu.Unlock()
-		return nil
-	}
+
 	nextIDs := append(append([]session.SessionID(nil), owner.archivedSessionIDs...), identifier)
 	if err := owner.repository.SetArchivedSessionIDs(requestContext, nextIDs); err != nil {
-		owner.mu.Unlock()
 		return err
 	}
 	owner.archivedSessionIDs = nextIDs
 	result := append([]session.SessionID(nil), nextIDs...)
-	owner.mu.Unlock()
-	owner.publishArchived(requestContext, result)
+
+	owner.recordArchived(result)
 	return nil
 }
 
 func (owner *DurableRegistry) readState(identifier ID) (WorkspaceState, bool) {
-	owner.mu.RLock()
-	defer owner.mu.RUnlock()
 	if _, found := owner.entries[identifier]; !found {
 		return WorkspaceState{}, false
 	}
-	return owner.stateLocked(identifier), true
+	return owner.state(identifier), true
 }
 
-func (owner *DurableRegistry) stateLocked(identifier ID) WorkspaceState {
+func (owner *DurableRegistry) state(identifier ID) WorkspaceState {
 	record := owner.entries[identifier]
 	validIDs := make([]session.SessionID, 0, len(record.SessionIDs))
 	for _, sessionID := range record.SessionIDs {
@@ -364,130 +308,129 @@ func (owner *DurableRegistry) stateLocked(identifier ID) WorkspaceState {
 		}
 	}
 	return WorkspaceState{
-		ID: record.ID, Path: record.Path, Title: record.Title, SessionIDs: validIDs,
-		CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt,
+		ID:         record.ID,
+		Path:       record.Path,
+		Title:      record.Title,
+		SessionIDs: validIDs,
+		CreatedAt:  record.CreatedAt,
+		UpdatedAt:  record.UpdatedAt,
 	}
 }
 
-func (owner *DurableRegistry) setTitle(
+// SetTitle updates the title of an existing workspace.
+func (owner *DurableRegistry) SetTitle(
 	requestContext context.Context,
 	identifier ID,
 	title string,
 ) error {
-	owner.mu.Lock()
 	record, found := owner.entries[identifier]
 	if !found {
-		owner.mu.Unlock()
-		return &UnknownError{ID: identifier}
+		return &UnknownError{
+			ID: identifier,
+		}
 	}
-	record = owner.pruneLocked(record)
-	if record.Title == title && len(record.SessionIDs) == len(owner.entries[identifier].SessionIDs) {
-		owner.mu.Unlock()
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return errors.New("workspace title must be non-blank")
+	}
+	if record.Title == title {
 		return nil
 	}
-	record.Title = title
-	record.UpdatedAt = owner.timeSource.CurrentTime().UTC()
-	if err := owner.repository.Update(requestContext, cloneRecord(record)); err != nil {
-		owner.mu.Unlock()
-		return err
+	for candidateID, candidate := range owner.entries {
+		if candidateID != identifier &&
+			candidate.Title == title {
+			return &NameConflictError{
+				Title: title,
+			}
+		}
 	}
-	owner.entries[identifier] = record
-	state := owner.stateLocked(identifier)
-	owner.mu.Unlock()
-	owner.publishChanged(requestContext, state)
-	return nil
+	record.Title = title
+	return owner.update(requestContext, record)
 }
 
-func (owner *DurableRegistry) attachSession(
+// AttachSession validates and attaches a Session to an existing workspace.
+func (owner *DurableRegistry) AttachSession(
 	requestContext context.Context,
 	identifier ID,
 	sessionID session.SessionID,
 ) error {
-	owner.mu.RLock()
 	record, found := owner.entries[identifier]
 	alreadyAccounted := found && slices.Contains(record.SessionIDs, sessionID)
-	owner.mu.RUnlock()
+
 	if !found {
-		return &UnknownError{ID: identifier}
+		return &UnknownError{
+			ID: identifier,
+		}
 	}
 	canonical := ""
 	if !alreadyAccounted {
-		header, headerFound, err := owner.headers.Get(requestContext, sessionID)
+		header, err := owner.headers.Get(requestContext, sessionID)
 		if err != nil {
 			return err
 		}
-		if !headerFound {
-			return &AttachError{WorkspaceID: identifier, SessionID: sessionID, Reason: "Session is unknown"}
+		if header == nil {
+			return &AttachError{
+				WorkspaceID: identifier,
+				SessionID:   sessionID,
+				Reason:      "Session is unknown",
+			}
 		}
 		if header.CWD == nil {
-			return &AttachError{WorkspaceID: identifier, SessionID: sessionID, Reason: "Session header has no cwd"}
+			return &AttachError{
+				WorkspaceID: identifier,
+				SessionID:   sessionID,
+				Reason:      "Session header has no cwd",
+			}
 		}
 		canonical, err = canonicalDirectory(*header.CWD)
 		if err != nil {
-			return &AttachError{WorkspaceID: identifier, SessionID: sessionID, Reason: err.Error()}
+			return &AttachError{
+				WorkspaceID: identifier,
+				SessionID:   sessionID,
+				Reason:      err.Error(),
+			}
 		}
 		if canonical != record.Path {
 			return &AttachError{
-				WorkspaceID: identifier, SessionID: sessionID,
-				Reason: fmt.Sprintf("Session cwd resolves to %q, expected %q", canonical, record.Path),
+				WorkspaceID: identifier,
+				SessionID:   sessionID,
+				Reason:      fmt.Sprintf("Session cwd resolves to %q, expected %q", canonical, record.Path),
 			}
 		}
 	}
-	owner.mu.Lock()
-	record, found = owner.entries[identifier]
-	if !found {
-		owner.mu.Unlock()
-		return &UnknownError{ID: identifier}
-	}
+
 	if canonical != "" {
 		owner.canonicalSessionPaths[sessionID] = canonical
 	}
-	priorLength := len(record.SessionIDs)
-	record = owner.pruneLocked(record)
-	if slices.Contains(record.SessionIDs, sessionID) {
-		if len(record.SessionIDs) == priorLength {
-			owner.mu.Unlock()
-			return nil
-		}
-	} else {
+	if !alreadyAccounted {
 		record.SessionIDs = append([]session.SessionID{sessionID}, record.SessionIDs...)
 	}
-	record.UpdatedAt = owner.timeSource.CurrentTime().UTC()
-	if err := owner.repository.Update(requestContext, cloneRecord(record)); err != nil {
-		owner.mu.Unlock()
-		return err
-	}
-	owner.entries[identifier] = record
-	state := owner.stateLocked(identifier)
-	owner.mu.Unlock()
-	owner.publishChanged(requestContext, state)
-	return nil
+	return owner.update(requestContext, record)
 }
 
-func (owner *DurableRegistry) insertSessionBefore(
+// InsertSessionBefore reorders an existing Session membership.
+func (owner *DurableRegistry) InsertSessionBefore(
 	requestContext context.Context,
 	identifier ID,
 	sessionID session.SessionID,
 	beforeSessionID *session.SessionID,
 ) error {
-	owner.mu.Lock()
 	record, found := owner.entries[identifier]
 	if !found {
-		owner.mu.Unlock()
-		return &UnknownError{ID: identifier}
+		return &UnknownError{
+			ID: identifier,
+		}
 	}
-	record = owner.pruneLocked(record)
 	if !slices.Contains(record.SessionIDs, sessionID) ||
 		beforeSessionID != nil && !slices.Contains(record.SessionIDs, *beforeSessionID) {
-		owner.mu.Unlock()
 		return &MoveInvalidError{
-			WorkspaceID: identifier, SessionID: sessionID,
+			WorkspaceID:     identifier,
+			SessionID:       sessionID,
 			BeforeSessionID: cloneSessionID(beforeSessionID),
 		}
 	}
 	if beforeSessionID != nil && *beforeSessionID == sessionID {
-		owner.mu.Unlock()
-		return nil
+		return owner.update(requestContext, record)
 	}
 	without := slices.DeleteFunc(append([]session.SessionID(nil), record.SessionIDs...),
 		func(candidate session.SessionID) bool { return candidate == sessionID })
@@ -496,56 +439,46 @@ func (owner *DurableRegistry) insertSessionBefore(
 		insertAt = slices.Index(without, *beforeSessionID)
 	}
 	nextIDs := slices.Insert(without, insertAt, sessionID)
-	if slices.Equal(nextIDs, owner.entries[identifier].SessionIDs) {
-		owner.mu.Unlock()
-		return nil
-	}
 	record.SessionIDs = nextIDs
-	record.UpdatedAt = owner.timeSource.CurrentTime().UTC()
-	if err := owner.repository.Update(requestContext, cloneRecord(record)); err != nil {
-		owner.mu.Unlock()
-		return err
-	}
-	owner.entries[identifier] = record
-	state := owner.stateLocked(identifier)
-	owner.mu.Unlock()
-	owner.publishChanged(requestContext, state)
-	return nil
+	return owner.update(requestContext, record)
 }
 
-func (owner *DurableRegistry) detachSession(
+// DetachSession removes a Session membership without deleting its log.
+func (owner *DurableRegistry) DetachSession(
 	requestContext context.Context,
 	identifier ID,
 	sessionID session.SessionID,
 ) error {
-	owner.mu.Lock()
 	record, found := owner.entries[identifier]
 	if !found {
-		owner.mu.Unlock()
-		return &UnknownError{ID: identifier}
+		return &UnknownError{
+			ID: identifier,
+		}
 	}
-	prior := owner.entries[identifier]
-	record = owner.pruneLocked(record)
-	record.SessionIDs = slices.DeleteFunc(record.SessionIDs, func(candidate session.SessionID) bool {
+	record.SessionIDs = slices.DeleteFunc(slices.Clone(record.SessionIDs), func(candidate session.SessionID) bool {
 		return candidate == sessionID
 	})
-	if slices.Equal(record.SessionIDs, prior.SessionIDs) {
-		owner.mu.Unlock()
+	return owner.update(requestContext, record)
+}
+
+// update applies membership pruning to every accepted mutation, including a
+// no-op move. Failed validation never reaches this commit boundary.
+func (owner *DurableRegistry) update(ctx context.Context, record StoredWorkspace) error {
+	previous := owner.entries[record.ID]
+	record = owner.prune(record)
+	if previous.Title == record.Title && slices.Equal(previous.SessionIDs, record.SessionIDs) {
 		return nil
 	}
 	record.UpdatedAt = owner.timeSource.CurrentTime().UTC()
-	if err := owner.repository.Update(requestContext, cloneRecord(record)); err != nil {
-		owner.mu.Unlock()
+	if err := owner.repository.Update(ctx, cloneRecord(record)); err != nil {
 		return err
 	}
-	owner.entries[identifier] = record
-	state := owner.stateLocked(identifier)
-	owner.mu.Unlock()
-	owner.publishChanged(requestContext, state)
+	owner.entries[record.ID] = record
+	owner.recordChanged(owner.state(record.ID))
 	return nil
 }
 
-func (owner *DurableRegistry) pruneLocked(record StoredWorkspace) StoredWorkspace {
+func (owner *DurableRegistry) prune(record StoredWorkspace) StoredWorkspace {
 	filtered := make([]session.SessionID, 0, len(record.SessionIDs))
 	for _, identifier := range record.SessionIDs {
 		if owner.canonicalSessionPaths[identifier] == record.Path {
@@ -606,7 +539,9 @@ func (owner *DurableRegistry) bootstrap(
 			return groupedHeaders[leftIndex].ID < groupedHeaders[rightIndex].ID
 		})
 		groups = append(groups, bootstrapGroup{
-			path: canonical, headers: groupedHeaders, newestAt: groupedHeaders[0].CreatedAt,
+			path:     canonical,
+			headers:  groupedHeaders,
+			newestAt: groupedHeaders[0].CreatedAt,
 		})
 	}
 	sort.Slice(groups, func(leftIndex int, rightIndex int) bool {
@@ -639,8 +574,12 @@ func (owner *DurableRegistry) bootstrap(
 			}
 			created := time.UnixMilli(group.newestAt).UTC()
 			record = StoredWorkspace{
-				ID: identifier, Path: group.path, Title: filepath.Base(group.path),
-				SessionIDs: sessionIDs, CreatedAt: created, UpdatedAt: created,
+				ID:         identifier,
+				Path:       group.path,
+				Title:      filepath.Base(group.path),
+				SessionIDs: sessionIDs,
+				CreatedAt:  created,
+				UpdatedAt:  created,
 			}
 			recordsByPath[group.path] = record
 			for _, sessionID := range sessionIDs {
@@ -716,7 +655,8 @@ func (owner *DurableRegistry) bootstrap(
 		workspaceIDs = append(workspaceIDs, record.ID)
 	}
 	return StoredRegistry{
-		Initialized: true, WorkspaceIDs: workspaceIDs,
+		Initialized:        true,
+		WorkspaceIDs:       workspaceIDs,
 		ArchivedSessionIDs: append([]session.SessionID(nil), stored.ArchivedSessionIDs...),
 		Records:            records,
 	}, nil
@@ -763,11 +703,10 @@ func validateDurableState(stored StoredRegistry) error {
 }
 
 func canonicalDirectory(directory string) (string, error) {
-	absolute, err := filepath.Abs(directory)
-	if err != nil {
-		return "", err
+	if !filepath.IsAbs(directory) {
+		return "", fmt.Errorf("workspace: path must be fully qualified: %q", directory)
 	}
-	canonical, err := filepath.EvalSymlinks(absolute)
+	canonical, err := filepath.EvalSymlinks(directory)
 	if err != nil {
 		return "", err
 	}
@@ -821,42 +760,30 @@ func cloneSessionID(source *session.SessionID) *session.SessionID {
 	return &result
 }
 
-func (owner *DurableRegistry) publishChanged(requestContext context.Context, state WorkspaceState) {
-	_ = plugin.Publish(
-		requestContext,
-		owner,
-		ChangedNotice{
-			WorkspaceState: cloneState(state),
-		},
-	)
+// TakeNotices transfers committed notifications to the delivery adapter.
+func (owner *DurableRegistry) TakeNotices() []Notice {
+	notices := owner.notices
+	owner.notices = nil
+	return notices
 }
 
-func (owner *DurableRegistry) publishRemoved(requestContext context.Context, identifier ID) {
-	_ = plugin.Publish(
-		requestContext,
-		owner,
-		RemovedNotice{
-			ID: identifier,
-		},
-	)
+func (owner *DurableRegistry) recordChanged(state WorkspaceState) {
+	owner.notices = append(owner.notices, ChangedNotice{
+		WorkspaceState: cloneState(state),
+	})
 }
-
-func (owner *DurableRegistry) publishOrder(requestContext context.Context, identifiers []ID) {
-	_ = plugin.Publish(
-		requestContext,
-		owner,
-		OrderChangedNotice{
-			WorkspaceIDs: append([]ID(nil), identifiers...),
-		},
-	)
+func (owner *DurableRegistry) recordRemoved(identifier ID) {
+	owner.notices = append(owner.notices, RemovedNotice{
+		ID: identifier,
+	})
 }
-
-func (owner *DurableRegistry) publishArchived(requestContext context.Context, identifiers []session.SessionID) {
-	_ = plugin.Publish(
-		requestContext,
-		owner,
-		ArchivedSessionsChangedNotice{
-			SessionIDs: append([]session.SessionID(nil), identifiers...),
-		},
-	)
+func (owner *DurableRegistry) recordOrder(identifiers []ID) {
+	owner.notices = append(owner.notices, OrderChangedNotice{
+		WorkspaceIDs: append([]ID(nil), identifiers...),
+	})
+}
+func (owner *DurableRegistry) recordArchived(identifiers []session.SessionID) {
+	owner.notices = append(owner.notices, ArchivedSessionsChangedNotice{
+		SessionIDs: append([]session.SessionID(nil), identifiers...),
+	})
 }

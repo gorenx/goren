@@ -10,21 +10,23 @@ import (
 	"github.com/gorenx/goren/llm"
 )
 
-func validateToolOrder(requested []string) ([]string, error) {
+// validateToolOrderSyntax checks duplicate entries and the required rest marker.
+// Registered tool names are checked later, when schemas are ordered.
+func validateToolOrderSyntax(requested []string) error {
 	if requested == nil {
-		return nil, nil
+		return nil
 	}
 	seen := make(map[string]struct{}, len(requested))
 	for _, name := range requested {
 		if _, exists := seen[name]; exists {
-			return nil, fmt.Errorf("systemprompt: toolOrder lists %q more than once", name)
+			return fmt.Errorf("systemprompt: toolOrder lists %q more than once", name)
 		}
 		seen[name] = struct{}{}
 	}
 	if _, exists := seen[ToolOrderRest]; !exists {
-		return nil, fmt.Errorf("systemprompt: toolOrder must contain the %q rest entry (where unlisted tools are inserted)", ToolOrderRest)
+		return fmt.Errorf("systemprompt: toolOrder must contain the %q rest entry (where unlisted tools are inserted)", ToolOrderRest)
 	}
-	return slices.Clone(requested), nil
+	return nil
 }
 
 func orderToolSchemas(schemas []llm.ToolSchema, requested []string, knownNames map[string]struct{}) ([]llm.ToolSchema, error) {
@@ -102,7 +104,10 @@ func detachToolSchema(schema llm.ToolSchema) (llm.ToolSchema, error) {
 		return llm.ToolSchema{}, fmt.Errorf("systemprompt: tool %q parameters must be a valid JSON object", schema.Name)
 	}
 	return llm.ToolSchema{
-		Name: schema.Name, Description: schema.Description, Parameters: slices.Clone(schema.Parameters),
+		Version:     schema.Version,
+		Name:        schema.Name,
+		Description: schema.Description,
+		Parameters:  slices.Clone(schema.Parameters),
 	}, nil
 }
 

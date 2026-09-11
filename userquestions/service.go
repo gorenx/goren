@@ -4,176 +4,65 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
-
-	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/session"
 )
 
-type providerSlot struct {
-	target Provider
-}
-
-// ProviderHandle owns one exact UI Provider registration. Unregister is
-// idempotent and cannot remove a later Provider.
-type ProviderHandle struct {
-	once  sync.Once
-	owner *QuestionService
-	slot  *providerSlot
-}
-
-// Unregister releases the exact Provider registration represented by this
-// handle.
-func (binding *ProviderHandle) Unregister() {
-	if binding == nil {
-		return
-	}
-	binding.once.Do(func() {
-		binding.owner.removeProvider(binding.slot)
-	})
-}
-
-type questionServiceState uint8
-
-const (
-	// questionServiceInactive accepts no Provider registration. A later Plugin
-	// activation may bind the Service to the current optional Agent Registry.
-	questionServiceInactive questionServiceState = iota
-	// questionServiceActive accepts one Provider and serves question requests.
-	questionServiceActive
-)
-
-// QuestionService owns the single active UI Provider and validates that an
-// Agent-backed ask originates from the exact live root Agent. Plugin lifecycle
-// adaptation is owned separately by Plugin.
+// QuestionService validates and forwards questions. Dependencies are immutable;
+// each invocation owns its input and answer, so concurrent asks share no state.
 type QuestionService struct {
-	mu       sync.RWMutex
-	state    questionServiceState
-	agents   agent.Registry
-	provider *providerSlot
+	provider UserQuestions
+	callers  Callers
 }
 
-func newQuestionService() *QuestionService {
-	return &QuestionService{}
+// New constructs the question capability. A nil provider returns CodeNoProvider
+// when asked; an Agent-backed request requires a caller authority.
+func New(answerer UserQuestions, authority Callers) *QuestionService {
+	return &QuestionService{
+		provider: answerer,
+		callers:  authority,
+	}
 }
 
-func (owner *QuestionService) activate(agents agent.Registry) error {
-	owner.mu.Lock()
-	defer owner.mu.Unlock()
-	if owner.state != questionServiceInactive {
-		return errors.New("userquestions: Question Service cannot be activated again")
+// Ask validates caller eligibility and presentation before invoking the provider.
+func (owner *QuestionService) Ask(ctx context.Context, input Request) (Answer, error) {
+	if ctx == nil {
+		return Answer{}, errors.New("userquestions: context is required")
 	}
-	owner.state = questionServiceActive
-	owner.agents = agents
-	return nil
-}
-
-func (owner *QuestionService) deactivate() {
-	owner.mu.Lock()
-	owner.state = questionServiceInactive
-	owner.agents = nil
-	owner.provider = nil
-	owner.mu.Unlock()
-}
-
-// RegisterProvider installs the one active UI Provider.
-func (owner *QuestionService) RegisterProvider(
-	answerProvider Provider,
-) (*ProviderHandle, error) {
-	if answerProvider == nil {
-		return nil, errors.New("userquestions: Provider is required")
+	if ctx.Err() != nil {
+		return Answer{}, newError("ask_user_question was aborted before the user answered", CodeAborted, context.Cause(ctx))
 	}
-	slot := &providerSlot{target: answerProvider}
-	owner.mu.Lock()
-	if owner.state != questionServiceActive {
-		owner.mu.Unlock()
-		return nil, errors.New("userquestions: service is not active")
-	}
-	if owner.provider != nil {
-		owner.mu.Unlock()
-		return nil, newError("a user-questions provider is already registered", CodeDuplicate)
-	}
-	owner.provider = slot
-	owner.mu.Unlock()
-	return &ProviderHandle{
-		owner: owner,
-		slot:  slot,
-	}, nil
-}
-
-func (owner *QuestionService) removeProvider(slot *providerSlot) {
-	owner.mu.Lock()
-	if owner.provider == slot {
-		owner.provider = nil
-	}
-	owner.mu.Unlock()
-}
-
-func (owner *QuestionService) Ask(requestContext context.Context, questionRequest Request) (Answer, error) {
-	if requestContext == nil {
-		return Answer{}, errors.New("userquestions: Context is nil")
-	}
-	if requestContext.Err() != nil {
-		return Answer{}, newError("ask_user_question was aborted before the user answered", CodeAborted, requestContext.Err())
-	}
-	if len(questionRequest.Questions) == 0 {
+	if len(input.Questions) == 0 {
 		return Answer{}, newError("ask_user_question requires at least one question", CodeEmptyQuestions)
 	}
-	if err := owner.validateSubject(questionRequest.Subject); err != nil {
+	if input.SessionID != "" {
+		if owner.callers == nil {
+			return Answer{}, newError("human interaction requires a live calling agent", CodeCallerNotLive)
+		}
+		eligibility, err := owner.callers.CheckCaller(ctx, input.SessionID)
+		if err != nil {
+			return Answer{}, err
+		}
+		if !eligibility.Live {
+			return Answer{}, newError("human interaction requires a live calling agent", CodeCallerNotLive)
+		}
+		if eligibility.Delegated {
+			return Answer{}, newError("human interaction is unavailable while the calling agent is owned by another live agent; include the unresolved question or decision in the child agent's final result", CodeDelegatedCaller)
+		}
+	}
+	if err := validateIntents(input.Questions); err != nil {
 		return Answer{}, err
 	}
-	if err := validateIntents(questionRequest.Questions); err != nil {
-		return Answer{}, err
-	}
-	owner.mu.RLock()
-	slot := owner.provider
-	owner.mu.RUnlock()
-	if slot == nil {
+	if owner.provider == nil {
 		return Answer{}, newError("no user-questions provider is registered", CodeNoProvider)
 	}
-	detachedRequest := Request{
-		Questions: cloneQuestions(questionRequest.Questions),
-		Subject:   questionRequest.Subject,
+	input.Questions = cloneQuestions(input.Questions)
+	answerValue, err := owner.provider.Ask(ctx, input)
+	if ctx.Err() != nil {
+		return Answer{}, newError("ask_user_question was aborted before the user answered", CodeAborted, context.Cause(ctx))
 	}
-	answerValue, err := slot.target.Ask(requestContext, detachedRequest)
 	if err != nil {
 		return Answer{}, err
 	}
 	return cloneAnswer(answerValue), nil
-}
-
-func (owner *QuestionService) validateSubject(agentSubject agent.Agent) error {
-	if agentSubject == nil {
-		return nil
-	}
-	owner.mu.RLock()
-	agentRegistry := owner.agents
-	owner.mu.RUnlock()
-	if agentRegistry == nil {
-		return newError(
-			"human interaction requires the exact live calling agent when an agent is supplied",
-			CodeCallerNotLive,
-		)
-	}
-	liveSubject, found := agentRegistry.Get(agentSubject.ID())
-	if !found || !sameAgent(liveSubject, agentSubject) {
-		return newError(
-			"human interaction requires the exact live calling agent when an agent is supplied",
-			CodeCallerNotLive,
-		)
-	}
-	if agentSubject.SessionValue().Header().Origin != session.OriginSubagent {
-		return nil
-	}
-	return newError(
-		"human interaction is unavailable while the calling agent is owned by another live agent; "+
-			"include the unresolved question or decision in the child agent's final result",
-		CodeDelegatedCaller,
-	)
-}
-
-func sameAgent(leftSubject agent.Agent, rightSubject agent.Agent) bool {
-	return agent.Same(leftSubject, rightSubject)
 }
 
 func validateIntents(questions []Question) error {

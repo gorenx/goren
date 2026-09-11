@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
 
@@ -37,7 +36,6 @@ type Receipt struct {
 // Inbox is the Bound-owned application boundary for durable input admission.
 // Input sources own observation, recovery, retry, and their checkpoints.
 type Inbox interface {
-	plugin.Service
 	Deliver(context.Context, Address, Input) (Receipt, error)
 }
 

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
@@ -33,38 +32,29 @@ type interruptArguments struct {
 	AgentID string `json:"agent_id"`
 }
 
-func (adapter *controlTools) interruptDefinition() tools.ToolDefinition {
+func (owner *controlTools) interruptDefinition() tools.ToolDefinition {
+	adapter := &interruptTool{
+		children: owner.children,
+	}
+
 	return tools.ToolDefinition{
 		Name:        "interrupt_agent",
 		Description: "Request cancellation of a descendant background agent's current turn. The request returns immediately; queued messages and the resident agent remain available.",
 		Parameters:  interruptParameters,
 		Output: tools.ToolOutputDefinition{
-			Schema: acceptedOutput,
-			Renderer: tools.OutputRendererFunc(func(
-				rawArguments json.RawMessage,
-				_ json.RawMessage,
-			) ([]agentmessage.ContentBlock, error) {
-				var request interruptArguments
-				if decodeErr := json.Unmarshal(rawArguments, &request); decodeErr != nil {
-					return nil, decodeErr
-				}
-				return []agentmessage.ContentBlock{
-					agentmessage.NewTextBlock(
-						"interrupt requested for agent " + request.AgentID,
-					),
-				}, nil
-			}),
+			Schema:   acceptedOutput,
+			Renderer: adapter,
 		},
-		Executor: tools.ExecutorFunc(adapter.interrupt),
+		Executor: adapter,
 	}
 }
 
-func (adapter *controlTools) interrupt(
+func (adapter *interruptTool) Execute(
 	rawArguments json.RawMessage,
 	runContext tools.ToolRunContext,
 ) (json.RawMessage, error) {
-	callerAgent, matches := runContext.Execution.Subject.(agent.Agent)
-	if !matches || callerAgent == nil {
+	callerID := runContext.Execution.SessionID
+	if callerID == "" {
 		return nil, errors.New("interrupt_agent requires a calling Agent")
 	}
 	var request interruptArguments
@@ -75,11 +65,30 @@ func (adapter *controlTools) interrupt(
 		runContext.Context,
 		session.SessionID(request.AgentID),
 		subagent.AncestorInterruptAuthority{
-			Agent: callerAgent,
+			AgentID: callerID,
 		},
 	)
 	if interruptErr != nil {
 		return nil, interruptErr
 	}
 	return json.RawMessage(`{"accepted":true}`), nil
+}
+
+func (adapter *interruptTool) Render(
+	rawArguments json.RawMessage,
+	_ json.RawMessage,
+) ([]agentmessage.ContentBlock, error) {
+	var request interruptArguments
+	if decodeErr := json.Unmarshal(rawArguments, &request); decodeErr != nil {
+		return nil, decodeErr
+	}
+	return []agentmessage.ContentBlock{
+		agentmessage.NewTextBlock(
+			"interrupt requested for agent " + request.AgentID,
+		),
+	}, nil
+}
+
+type interruptTool struct {
+	children subagent.ChildControl
 }

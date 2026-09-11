@@ -4,11 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+
+	sessionframes "github.com/gorenx/goren/apiproxy/session/events"
+
 	"testing"
 
-	api "github.com/gorenx/goren/apiproxy"
+	rpc "github.com/gorenx/goren/apiproxy/rpc"
 	"github.com/gorenx/goren/session"
+
 	sesspersist "github.com/gorenx/goren/session/persistence"
+
 	sessionprojection "github.com/gorenx/goren/session/projection"
 )
 
@@ -18,6 +23,7 @@ type historyCache struct {
 }
 
 func (cache *historyCache) CachedSnapshot(
+	context.Context,
 	session.Header,
 ) (*sessionprojection.Snapshot, error) {
 	return nil, nil
@@ -127,9 +133,9 @@ func TestOlderColdHistoryPageDoesNotUseProjectionCache(t *testing.T) {
 	beforeSeq := int64(3)
 	_, err := reader.History(
 		context.Background(),
-		api.Request[api.SessionHistoryRequest]{
-			Payload: api.SessionHistoryRequest{
-				SessionID: api.SessionID(header.ID),
+		rpc.Request[HistoryRequest]{
+			Payload: HistoryRequest{
+				SessionID: sessionframes.SessionID(header.ID),
 				BeforeSeq: &beforeSeq,
 			},
 		},

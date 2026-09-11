@@ -2,7 +2,6 @@ package llm
 
 import (
 	"errors"
-	"fmt"
 	"math"
 )
 
@@ -165,11 +164,4 @@ func cloneFloat(source *float64) *float64 {
 	}
 	value := *source
 	return &value
-}
-
-func failureError(prefix string, value error) error {
-	if value == nil {
-		return errors.New(prefix)
-	}
-	return fmt.Errorf("%s: %w", prefix, value)
 }

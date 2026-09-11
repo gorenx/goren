@@ -3,18 +3,10 @@
 package toolresultpruner
 
 import (
-	"context"
-
 	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/plugin"
-	"github.com/gorenx/goren/session"
 )
 
 const (
-	// PluginName is the canonical Harness Tool Result Pruner Plugin name.
-	PluginName = "@deepseek-ai/dsh-compaction-tool-result-pruner"
-	// ServiceName preserves the canonical Cordis capability name.
-	ServiceName = "toolResultPruner"
 	// PruneMarker replaces the omitted middle of an oversized result.
 	PruneMarker = "\n\n[... tool result middle pruned ...]\n\n"
 )
@@ -48,10 +40,7 @@ type Result struct {
 	CharsRemoved int
 }
 
-// Pruner is the optional model-free companion Service.
-type Pruner interface {
-	plugin.Service
-	MeasureContent([]agentmessage.ContentBlock) (int, error)
-	PruneContent([]agentmessage.ContentBlock) ([]agentmessage.ContentBlock, bool, error)
-	PruneSession(context.Context, session.Context) (Result, error)
+// Estimator supplies pure token estimation, never Session I/O or Actor requests.
+type Estimator interface {
+	EstimateMessage(agentmessage.Message) (int64, error)
 }

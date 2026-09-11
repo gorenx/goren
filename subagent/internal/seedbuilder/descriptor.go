@@ -14,7 +14,7 @@ func AppendDescriptor(
 	builderSeed []session.Event,
 	descriptor subagent.Descriptor,
 ) ([]session.Event, error) {
-	staged, err := session.New(
+	staged, err := session.NewLog(
 		childID,
 		session.CreateOptions{
 			Seed: builderSeed,

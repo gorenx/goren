@@ -3,7 +3,6 @@ package subagent
 import (
 	"context"
 
-	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 )
@@ -29,7 +28,7 @@ func (UserInterruptAuthority) interruptAuthority() {}
 
 // AncestorInterruptAuthority carries an exact live ancestor Agent.
 type AncestorInterruptAuthority struct {
-	Agent agent.Agent
+	AgentID session.SessionID
 }
 
 func (AncestorInterruptAuthority) interruptAuthority() {}
@@ -40,7 +39,7 @@ func (AncestorInterruptAuthority) interruptAuthority() {}
 type ChildControl interface {
 	Send(
 		context.Context,
-		agent.Agent,
+		session.SessionID,
 		session.SessionID,
 		[]agentmessage.ContentBlock,
 		FollowupOptions,

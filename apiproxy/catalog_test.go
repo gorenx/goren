@@ -3,7 +3,7 @@ package apiproxy_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	rpc "github.com/gorenx/goren/apiproxy/rpc"
 	"testing"
 
 	"github.com/gorenx/goren/apiproxy"
@@ -12,11 +12,15 @@ import (
 
 func TestHostDescribeDispatch(t *testing.T) {
 	t.Parallel()
-	methods := apiproxy.NewCatalog()
+	methods := rpc.NewCatalog()
 	source := apiproxy.HostDescriptionFunc(func(context.Context) (apiproxy.HostDescription, error) {
 		return apiproxy.HostDescription{
-			Version: "0.1.0-rc.5", CWD: "/workspace", Provider: "deepseek", Model: "deepseek-chat",
-			AttachedSessions: 2, CanOpenPath: true,
+			Version:          "0.1.0-rc.5",
+			CWD:              "/workspace",
+			Provider:         "deepseek",
+			Model:            "deepseek-chat",
+			AttachedSessions: 2,
+			CanOpenPath:      true,
 		}, nil
 	})
 	if err := apiproxy.RegisterHostDescribe(methods, source); err != nil {
@@ -41,7 +45,7 @@ func TestHostDescribeDispatch(t *testing.T) {
 func TestCatalogRejectsInvalidPayloadBeforeProvider(t *testing.T) {
 	t.Parallel()
 	called := false
-	methods := apiproxy.NewCatalog()
+	methods := rpc.NewCatalog()
 	source := apiproxy.HostDescriptionFunc(func(context.Context) (apiproxy.HostDescription, error) {
 		called = true
 		return apiproxy.HostDescription{}, nil
@@ -58,52 +62,5 @@ func TestCatalogRejectsInvalidPayloadBeforeProvider(t *testing.T) {
 	}
 	if called {
 		t.Fatal("provider was called for an invalid payload")
-	}
-}
-
-func TestCatalogSeparatesBusinessAndTechnicalFailure(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name      string
-		operation apiproxy.UnaryHandler[struct{}, struct{}]
-	}{
-		{
-			name: "returned error",
-			operation: func(context.Context, apiproxy.Request[struct{}]) (apiproxy.Outcome[struct{}], error) {
-				return apiproxy.Outcome[struct{}]{}, errors.New("dependency failed")
-			},
-		},
-		{
-			name: "panic",
-			operation: func(context.Context, apiproxy.Request[struct{}]) (apiproxy.Outcome[struct{}], error) {
-				panic("provider crashed")
-			},
-		},
-	}
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-			methods := apiproxy.NewCatalog()
-			if err := apiproxy.RegisterUnary(methods, "test.failure", apiproxy.DecodeObject[struct{}], testCase.operation); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := methods.DispatchUnary(context.Background(), "test.failure", "r-1", json.RawMessage(`{}`)); err == nil {
-				t.Fatal("technical failure was not returned")
-			}
-		})
-	}
-}
-
-func TestCatalogRejectsDuplicateMethod(t *testing.T) {
-	t.Parallel()
-	methods := apiproxy.NewCatalog()
-	operation := func(context.Context, apiproxy.Request[struct{}]) (apiproxy.Outcome[struct{}], error) {
-		return apiproxy.OK(struct{}{}), nil
-	}
-	if err := apiproxy.RegisterUnary(methods, "test.duplicate", apiproxy.DecodeObject[struct{}], operation); err != nil {
-		t.Fatal(err)
-	}
-	if err := apiproxy.RegisterUnary(methods, "test.duplicate", apiproxy.DecodeObject[struct{}], operation); err == nil {
-		t.Fatal("duplicate method was accepted")
 	}
 }

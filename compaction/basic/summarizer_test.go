@@ -1,14 +1,11 @@
 package basic
 
 import (
-	"context"
 	"strings"
 	"testing"
 
 	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/compaction"
 	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/session"
 )
 
 func TestLLMSummarizerRejectsUnsafeOrIncompleteOutput(t *testing.T) {
@@ -16,7 +13,6 @@ func TestLLMSummarizerRejectsUnsafeOrIncompleteOutput(t *testing.T) {
 	testCases := []struct {
 		name      string
 		chunks    []llm.StreamChunk
-		nilStream bool
 		wantError string
 	}{
 		{
@@ -100,39 +96,20 @@ func TestLLMSummarizerRejectsUnsafeOrIncompleteOutput(t *testing.T) {
 			wantError: "no text summary content",
 		},
 		{
-			name:      "nil stream",
-			nilStream: true,
-			wantError: "nil summary stream",
+			name:      "empty output",
+			wantError: "no text summary content",
 		},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
-			conversation, err := session.New(
-				session.SessionID("summarizer-"+testCase.name),
-				session.CreateOptions{},
-			)
-			if err != nil {
-				t.Fatal(err)
+			summarizer := NewSummarizer(ResolvedConfig{})
+			for _, chunk := range testCase.chunks {
+				if err := summarizer.Push(chunk); err != nil {
+					t.Fatal(err)
+				}
 			}
-			runtimeValue := &runtimeStub{
-				chunks:    testCase.chunks,
-				nilStream: testCase.nilStream,
-			}
-			summarizer := newLLMSummarizer(newPolicyCatalog(ResolvedConfig{
-				SummarizationProvider: fixtureProvider,
-				SummarizationModel:    fixtureModel,
-				MaxTokens:             100,
-			}))
-			summarizer.bind(runtimeValue)
-			t.Cleanup(summarizer.release)
-			_, err = summarizer.summarize(
-				context.Background(),
-				summarizationInput{},
-				compaction.AgentContext{
-					Session: conversation,
-				},
-			)
+			_, err := summarizer.Result()
 			if err == nil || !strings.Contains(err.Error(), testCase.wantError) {
 				t.Fatalf("summarize error = %v, want %q", err, testCase.wantError)
 			}
@@ -148,8 +125,8 @@ func TestLLMSummarizerUsesExactRouteOverride(t *testing.T) {
 	resolved, err := ResolveConfig(Config{
 		ModelPolicies: []ModelPolicyConfig{
 			{
-				Provider: fixtureProvider,
-				Model:    fixtureModel,
+				Provider: "conversation",
+				Model:    "main",
 				PolicyConfig: PolicyConfig{
 					SummarizationProvider: &provider,
 					SummarizationModel:    &model,
@@ -161,63 +138,69 @@ func TestLLMSummarizerUsesExactRouteOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	conversation := conversationFixture(t, 1, "route")
-	runtimeValue := newRuntimeStub("checkpoint", 1_000)
-	summarizer := newLLMSummarizer(newPolicyCatalog(resolved))
-	summarizer.bind(runtimeValue)
-	t.Cleanup(summarizer.release)
-	result, err := summarizer.summarize(
-		context.Background(),
-		summarizationInput{},
-		compaction.AgentContext{
-			Session: conversation,
-		},
-	)
+	snapshot, _ := selectionSnapshot(t, 2)
+	snapshot.Barrier.SessionID = "agent"
+	summarizer := NewSummarizer(resolved)
+	request, err := summarizer.Request(snapshot, []int64{0}, RouteTarget{
+		Provider: "conversation",
+		Model:    "main",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.provider != provider || result.model != model ||
-		result.maxTokens == nil || *result.maxTokens != maximum {
-		t.Fatalf("summary result = %#v", result)
+	if request.Provider != provider || request.Model != model || request.MaxTokens == nil || *request.MaxTokens != maximum {
+		t.Fatalf("summary request = %#v", request)
 	}
-	requests := runtimeValue.requestValues()
-	if len(requests) != 1 || requests[0].Provider != provider ||
-		requests[0].Model != model || requests[0].MaxTokens == nil ||
-		*requests[0].MaxTokens != maximum {
-		t.Fatalf("summary requests = %#v", requests)
+	if request.Purpose != llm.PurposeCompaction || request.SessionID != "agent" || len(request.Messages) != 2 {
+		t.Fatalf("summary input = %#v", request)
+	}
+	text, ok := request.Messages[1].ContentValue()[0].(agentmessage.TextBlock)
+	if !ok || text.Text != compactionInstruction {
+		t.Fatal("summary instruction changed")
+	}
+	// A caller changing its request must not mutate the captured policy.
+	*request.MaxTokens = 1
+	repeated, err := summarizer.Request(snapshot, []int64{0}, RouteTarget{
+		Provider: "conversation",
+		Model:    "main",
+	})
+	if err != nil || repeated.MaxTokens == nil || *repeated.MaxTokens != maximum {
+		t.Fatalf("request shares policy: %v", err)
 	}
 }
 
-func TestCompactRegionRejectsNonShrinkingCheckpoint(t *testing.T) {
-	t.Parallel()
-	conversation := conversationFixture(t, 2, "history")
-	meterValue := &meterStub{
-		estimate: 200,
-	}
-	implementation := newBoundCompaction(
-		t,
-		Config{
-			Auto: boolPointer(false),
+func TestSummaryRetainsRawOutputAndDetachesText(t *testing.T) {
+	summarizer := NewSummarizer(ResolvedConfig{})
+	for _, chunk := range []llm.StreamChunk{
+		llm.ReasoningDeltaChunk{
+			Index: 0,
+			Text:  "private reasoning",
 		},
-		newRuntimeStub("large checkpoint", 1_000),
-		meterValue,
-		&liveStoreStub{},
-		nil,
-	)
-	before := conversation.Surface()
-	_, err := implementation.CompactRegion(
-		context.Background(),
-		before.Nodes[0],
-		before.Nodes[1],
-		compaction.AgentContext{
-			Session: conversation,
+		llm.TextDeltaChunk{
+			Index: 1,
+			Text:  "checkpoint",
 		},
-	)
-	if err == nil || !strings.Contains(err.Error(), "summary is not smaller") {
-		t.Fatalf("CompactRegion error = %v", err)
+		llm.FinishChunk{
+			Reason: llm.StopFinish{},
+		},
+	} {
+		if err := summarizer.Push(chunk); err != nil {
+			t.Fatal(err)
+		}
 	}
-	state, inspectErr := compaction.InspectLog(conversation.Events())
-	if inspectErr != nil || state.Attempt != nil {
-		t.Fatalf("non-shrinking state = %#v, error = %v", state, inspectErr)
+	result, err := summarizer.Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Content) != 1 || len(result.Output) != 2 {
+		t.Fatalf("summary = %#v", result)
+	}
+	result.Content[0] = agentmessage.NewTextBlock("external change")
+	again, err := summarizer.Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Content[0].(agentmessage.TextBlock).Text != "checkpoint" {
+		t.Fatal("summary aliases returned content")
 	}
 }

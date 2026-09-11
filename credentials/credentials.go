@@ -4,26 +4,20 @@ package credentials
 import (
 	"context"
 	"errors"
-	"fmt"
 	"regexp"
-
-	"github.com/gorenx/goren/plugin"
 )
 
 var referencePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// PluginName is the canonical Harness Credentials plugin name.
-const PluginName = "@deepseek-ai/dsh-credentials"
+// ErrNotFound means no non-empty credential exists in any source.
+var ErrNotFound = errors.New("credentials: credential not found")
 
-// Ref identifies one credential without carrying its value.
-type Ref string
-
-// NewRef validates the POSIX environment-variable name used as a credential reference.
-func NewRef(value string) (Ref, error) {
+// ValidateRef checks the POSIX environment-variable name used as a credential reference.
+func ValidateRef(value string) error {
 	if !referencePattern.MatchString(value) {
-		return "", errors.New("credential reference must be a POSIX environment-variable name")
+		return errors.New("credential reference must be a POSIX environment-variable name")
 	}
-	return Ref(value), nil
+	return nil
 }
 
 // Resolved contains a secret and the provider-defined source that supplied it.
@@ -43,122 +37,22 @@ type Info struct {
 // Provider resolves and mutates credential references. Consumers resolve once
 // per operation so a committed rotation affects the next operation immediately.
 type Provider interface {
-	plugin.Service
-	Resolve(context.Context, Ref) (Resolved, bool, error)
-	Describe(context.Context, Ref) (Info, error)
-	Set(context.Context, Ref, string) error
-	Unset(context.Context, Ref) error
+	Resolve(context.Context, string) (Resolved, error)
+	Describe(context.Context, string) (Info, error)
+	Set(context.Context, string, string) error
+	Unset(context.Context, string) error
 }
 
 // LiveStore is the storage-only port consumed by Manager. It assigns no
 // precedence and never consults the process environment.
 type LiveStore interface {
-	Load(context.Context, Ref) (string, bool, error)
-	Save(context.Context, Ref, string) error
-	Delete(context.Context, Ref) error
+	Load(context.Context, string) (string, bool, error)
+	Save(context.Context, string, string) error
+	Delete(context.Context, string) error
 	Source() string
 }
 
 // Environment supplies the read-only launch layer outside typed config.
 type Environment interface {
 	Lookup(string) (string, bool)
-}
-
-// Manager owns credential precedence and mutation semantics independently of storage.
-type Manager struct {
-	plugin.Base
-	store       LiveStore
-	environment Environment
-}
-
-// NewManager constructs the Credentials capability over one credential store.
-func NewManager(storage LiveStore, platform Environment) (*Manager, error) {
-	if storage == nil {
-		return nil, errors.New("credentials: store is required")
-	}
-	if platform == nil {
-		return nil, errors.New("credentials: environment is required")
-	}
-	return &Manager{
-		store:       storage,
-		environment: platform,
-	}, nil
-}
-
-// Manifest declares Manager as the canonical Credentials provider.
-func (owner *Manager) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name: PluginName,
-		Provides: []plugin.ProvidedService{
-			plugin.NewProvidedService[Provider](owner),
-		},
-	}
-}
-
-// Apply validates startup cancellation before the provider becomes active.
-func (*Manager) Apply(requestContext context.Context) error {
-	return requestContext.Err()
-}
-
-// Dispose is idempotent because Manager owns no long-running resource.
-func (*Manager) Dispose(context.Context) error {
-	return nil
-}
-
-// Resolve applies launching-environment precedence before managed storage.
-func (owner *Manager) Resolve(requestContext context.Context, credentialRef Ref) (Resolved, bool, error) {
-	if err := requestContext.Err(); err != nil {
-		return Resolved{}, false, err
-	}
-	if value, found := owner.inherited(credentialRef); found {
-		return Resolved{Value: value, Source: "env"}, true, nil
-	}
-	value, found, err := owner.store.Load(requestContext, credentialRef)
-	if err != nil || !found || value == "" {
-		return Resolved{}, false, err
-	}
-	return Resolved{Value: value, Source: owner.store.Source()}, true, nil
-}
-
-// Describe reports safe configuration facts without resolving a value to the caller.
-func (owner *Manager) Describe(requestContext context.Context, credentialRef Ref) (Info, error) {
-	if err := requestContext.Err(); err != nil {
-		return Info{}, err
-	}
-	if _, found := owner.inherited(credentialRef); found {
-		return Info{Configured: true, Source: "env", Writable: false}, nil
-	}
-	_, configured, err := owner.store.Load(requestContext, credentialRef)
-	if err != nil {
-		return Info{}, err
-	}
-	source := ""
-	if configured {
-		source = owner.store.Source()
-	}
-	return Info{Configured: configured, Source: source, Writable: true}, nil
-}
-
-// Set validates and commits one managed credential unless the environment shadows it.
-func (owner *Manager) Set(requestContext context.Context, credentialRef Ref, value string) error {
-	if value == "" {
-		return errors.New("credentials: empty values cannot be stored; use unset")
-	}
-	if _, found := owner.inherited(credentialRef); found {
-		return fmt.Errorf("credentials: %q is supplied read-only by the launching environment", credentialRef)
-	}
-	return owner.store.Save(requestContext, credentialRef, value)
-}
-
-// Unset removes one managed value unless the environment shadows it.
-func (owner *Manager) Unset(requestContext context.Context, credentialRef Ref) error {
-	if _, found := owner.inherited(credentialRef); found {
-		return fmt.Errorf("credentials: %q is supplied read-only by the launching environment", credentialRef)
-	}
-	return owner.store.Delete(requestContext, credentialRef)
-}
-
-func (owner *Manager) inherited(credentialRef Ref) (string, bool) {
-	value, found := owner.environment.Lookup(string(credentialRef))
-	return value, found && value != ""
 }

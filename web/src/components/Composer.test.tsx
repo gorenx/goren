@@ -58,6 +58,33 @@ describe('Composer', () => {
     }
   })
 
+  it('sends cancellation from the stop button and waits for idle before restoring send', async () => {
+    let running = true
+    const cancelCurrentTurn = vi.fn(async () => {})
+    const submitPrompt = vi.fn(async () => {})
+    const store = {
+      sessionModels: async () => ({ current: { provider: 'deepseek', model: 'deepseek-v4-flash' }, groups: [] }),
+      currentQuestion: () => undefined,
+      currentSession: () => ({ ...session, running }),
+      submitPrompt,
+      cancelCurrentTurn,
+    } as unknown as ConversationStore
+    const render = () => mountedRoot!.render(
+      <I18nProvider><Composer store={store} snapshot={snapshot} /></I18nProvider>,
+    )
+    act(() => { mountedRoot = createRoot(container); render() })
+    const button = container.querySelector<HTMLButtonElement>('#stop-agent')!
+    expect(button).not.toBeNull()
+    await act(async () => button.click())
+    expect(cancelCurrentTurn).toHaveBeenCalledTimes(1)
+    expect(submitPrompt).not.toHaveBeenCalled()
+    expect(container.querySelector('#stop-agent')).not.toBeNull()
+    running = false
+    act(render)
+    expect(container.querySelector('#stop-agent')).toBeNull()
+    expect(container.querySelector('#send')).not.toBeNull()
+  })
+
   it('submits the controlled textarea value once', async () => {
     const submitPrompt = vi.fn(async () => {})
     const fixture = renderComposer(submitPrompt)
@@ -67,7 +94,7 @@ describe('Composer', () => {
     await act(async () => fixture.sendButton.click())
 
     expect(submitPrompt).toHaveBeenCalledTimes(1)
-    expect(submitPrompt).toHaveBeenCalledWith('inspect this')
+    expect(submitPrompt).toHaveBeenCalledWith('inspect this', [])
     expect(fixture.textarea.value).toBe('')
   })
 
@@ -106,10 +133,41 @@ describe('Composer', () => {
     expect(submitPrompt).toHaveBeenCalledTimes(1)
   })
 
+  it('previews an image-only prompt and retains it when submission fails', async () => {
+    const submitPrompt = vi.fn(async () => { throw new Error('choose vision') })
+    const fixture = renderComposer(submitPrompt)
+    const picker = container.querySelector<HTMLInputElement>('input[type=file]')!
+    Object.defineProperty(picker, 'files', { value: [new File(['image bytes'], 'picture.png', { type: 'image/png' })], configurable: true })
+    await act(async () => {
+      picker.dispatchEvent(new Event('change', { bubbles: true }))
+      await new Promise(resolve => setTimeout(resolve, 30))
+    })
+    expect(container.querySelector('img')?.alt).toBe('picture.png')
+    expect(fixture.sendButton.disabled).toBe(false)
+    await act(async () => fixture.sendButton.click())
+    expect(submitPrompt).toHaveBeenCalledWith('', [expect.objectContaining({ type: 'image', name: 'picture.png', data: btoa('image bytes') })])
+    expect(container.querySelector('img')?.alt).toBe('picture.png')
+    const remove = container.querySelector<HTMLButtonElement>('button[aria-label$="picture.png"]')!
+    await act(async () => remove.click())
+    expect(container.querySelector('img')).toBeNull()
+    expect(fixture.sendButton.disabled).toBe(true)
+  })
+
+  it('rejects unsupported files without submitting', async () => {
+    const submitPrompt = vi.fn(async () => {})
+    renderComposer(submitPrompt)
+    const picker = container.querySelector<HTMLInputElement>('input[type=file]')!
+    Object.defineProperty(picker, 'files', { value: [new File(['document'], 'note.txt', { type: 'text/plain' })] })
+    await act(async () => picker.dispatchEvent(new Event('change', { bubbles: true })))
+    expect(container.querySelector('[role=alert]')).not.toBeNull()
+    expect(submitPrompt).not.toHaveBeenCalled()
+  })
+
   function renderComposer(
     submitPrompt: (text: string) => Promise<void>,
   ): ComposerFixture {
     const store = {
+      sessionModels: async () => ({ current: { provider: 'deepseek', model: 'deepseek-v4-flash' }, groups: [] }),
       currentQuestion: () => undefined,
       currentSession: () => session,
       submitPrompt,

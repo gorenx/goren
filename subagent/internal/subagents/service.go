@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
@@ -41,7 +40,7 @@ func New() *Service {
 // Open installs one complete implementation set and begins admitting calls.
 // Plugin ownership is deliberately absent from this business contract.
 func (owner *Service) Open(
-	agentRegistry agent.Registry,
+	agentRegistry agentDirectory,
 	executionRegistry *sharedexecution.Registry,
 	implementations ...implementation,
 ) error {
@@ -140,7 +139,7 @@ func (owner *Service) Start(
 // Agent Inbox; only an unbound cold child is offered to Continuable resume.
 func (owner *Service) Send(
 	ctx context.Context,
-	parentAgent agent.Agent,
+	parentID session.SessionID,
 	childSessionID session.SessionID,
 	content []agentmessage.ContentBlock,
 	options subagent.FollowupOptions,
@@ -151,7 +150,7 @@ func (owner *Service) Send(
 	defer owner.activeCalls.Done()
 	return owner.control.Send(
 		ctx,
-		parentAgent,
+		parentID,
 		childSessionID,
 		content,
 		options,
@@ -224,9 +223,7 @@ func (owner *Service) Replace(
 
 // AgentSessionStarted requests a level-triggered consistency pass. Bound owns
 // the task lifetime and returns before Session or Agent I/O begins.
-func (owner *Service) AgentSessionStarted(
-	subject agent.Agent,
-) {
+func (owner *Service) AgentSessionStarted(subject session.SessionID) {
 	if beginErr := owner.beginCall(); beginErr != nil {
 		return
 	}
@@ -250,29 +247,6 @@ func (owner *Service) Interrupt(
 	}
 	defer owner.activeCalls.Done()
 	return owner.control.Interrupt(ctx, childSessionID, authority)
-}
-
-// AgentDisposed completes settlement synchronously when Agent owns the
-// structural close transaction. The mode terminator must not dispose the
-// already-closing Handle again.
-func (owner *Service) AgentDisposed(
-	ctx context.Context,
-	subject agent.Agent,
-) error {
-	owner.mutex.RLock()
-	control := owner.control
-	owner.mutex.RUnlock()
-	var disposeErr error
-	if control != nil {
-		if control.bound != nil {
-			disposeErr = control.bound.AgentDisposed(ctx, subject)
-		}
-		disposeErr = errors.Join(
-			disposeErr,
-			control.AgentDisposed(ctx, subject),
-		)
-	}
-	return disposeErr
 }
 
 // Close first closes admission, waits for admitted calls to return, and then

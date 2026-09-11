@@ -1,26 +1,33 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 )
 
-var (
-	// ErrWritesClosed reports that the Session no longer admits writes.
-	ErrWritesClosed = errors.New("session: writes are closed")
-	// ErrWriteReentry reports a synchronous write submitted from the same
-	// Session's active publication context.
-	ErrWriteReentry = errors.New("session: synchronous write reentry is forbidden")
-)
+// ErrWritesClosed reports that the Session no longer admits writes.
+var ErrWritesClosed = errors.New("session: writes are closed")
 
 // WritePlan builds one complete atomic event batch from the Session snapshot
-// visible when the request reaches the FIFO head. Build must be deterministic,
+// supplied by its serialized owner. Build must be deterministic,
 // must not perform external I/O, and must not retain or mutate the snapshot.
 // A plan that does not depend on current state should be created with Batch.
 type WritePlan interface {
 	Build(context.Context, Snapshot) ([]EventDraft, error)
+}
+
+// IdempotentWrite identifies an earlier commit using a stable business identity.
+// FindCommit runs under the same serialized owner as Build. It must only inspect
+// the supplied snapshot, return an error for conflicting content, and return nil
+// when no matching commit exists. Retries must retain the identity and payload.
+// Log validates and copies the returned range from its authoritative entries.
+type IdempotentWrite interface {
+	WritePlan
+	FindCommit(Snapshot) (*WriteResult, error)
 }
 
 // Batch snapshots a fixed event batch for Commit. The drafts retain their
@@ -43,6 +50,26 @@ type EventDraft struct {
 	sourceEventSeqs  *[]int64
 	surfaceOperation *SurfaceOperation
 	ignorable        bool
+}
+
+// ValidateEvent validates sequence/time metadata and checks that the event's
+// contents exactly match this draft, including payload bytes and surface intent.
+// It does not establish that a commit occurred or became durable. The caller
+// separately validates Session identity, the write range and any flush barrier.
+func (draft EventDraft) ValidateEvent(entry Event) error {
+	if err := validateEventDraft(draft); err != nil {
+		return err
+	}
+	if !isSafeNonNegative(entry.Seq) || !isSafeInteger(entry.Time) {
+		return errors.New("session: committed event has invalid sequence or time")
+	}
+	if entry.Type != draft.eventType || !bytes.Equal(entry.Data, draft.data) ||
+		entry.Ignorable != draft.ignorable ||
+		!reflect.DeepEqual(entry.SourceEventSeqs, draft.sourceEventSeqs) ||
+		!reflect.DeepEqual(entry.SurfaceOp, draft.surfaceOperation) {
+		return errors.New("session: committed event does not match its draft")
+	}
+	return nil
 }
 
 // NewEventDraft snapshots one typed non-surface event before queue admission.
@@ -163,4 +190,14 @@ func prepareEventDrafts(drafts []EventDraft) ([]EventDraft, error) {
 		prepared[index] = cloneEventDraft(draft)
 	}
 	return prepared, nil
+}
+
+func contextCause(requestContext context.Context) error {
+	if requestContext == nil {
+		return errors.New("session: Context is nil")
+	}
+	if requestContext.Err() == nil {
+		return nil
+	}
+	return context.Cause(requestContext)
 }

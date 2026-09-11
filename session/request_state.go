@@ -100,11 +100,15 @@ func EpochHeaderEqual(left EpochHeader, right EpochHeader) bool {
 		return false
 	}
 	for index := range leftCanonical.Tools {
-		leftSchema := leftCanonical.Tools[index]
-		rightSchema := rightCanonical.Tools[index]
-		if leftSchema.Name != rightSchema.Name ||
-			leftSchema.Description != rightSchema.Description ||
-			!bytes.Equal(leftSchema.Parameters, rightSchema.Parameters) {
+		// Session serialization compacts and HTML-escapes RawMessage schemas.
+		// Compare both through the same encoding, preserving exact JSON numbers
+		// and tool order while excluding the non-persisted schema Version.
+		leftSchema, err := json.Marshal(leftCanonical.Tools[index])
+		if err != nil {
+			return false
+		}
+		rightSchema, err := json.Marshal(rightCanonical.Tools[index])
+		if err != nil || !bytes.Equal(leftSchema, rightSchema) {
 			return false
 		}
 	}

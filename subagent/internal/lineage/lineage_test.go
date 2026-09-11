@@ -1,111 +1,61 @@
 package lineage
 
 import (
-	"context"
 	"strings"
 	"testing"
 
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
 
-type parentRecord struct {
-	plugin.Base
-	conversation session.Context
-	options      agent.Options
-}
-
-func (*parentRecord) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name: "lineage-test-parent",
-	}
-}
-
-func (*parentRecord) Apply(context.Context) error { return nil }
-
-func (*parentRecord) Dispose(context.Context) error { return nil }
-
-func (subject *parentRecord) ID() session.SessionID { return subject.conversation.ID() }
-
-func (subject *parentRecord) OptionsValue() agent.Options { return subject.options }
-
-func (subject *parentRecord) SessionValue() session.Context { return subject.conversation }
-
-func (*parentRecord) InboxValue() *agent.Inbox { return nil }
-
-func (*parentRecord) StatusValue() agent.Status { return agent.StatusIdle }
-
-func (*parentRecord) Cancel(agent.CancelCause, agent.CancelOptions) {}
-
-func (*parentRecord) WhenIdle(context.Context) error { return nil }
-
-func (*parentRecord) RunMaintenance(
-	requestContext context.Context,
-	operation func(context.Context) error,
-) error {
-	return operation(requestContext)
-}
-
-func (*parentRecord) Send(agentmessage.UserMessage, agent.InboxTarget, bool) error { return nil }
-
-func (*parentRecord) Followup(agentmessage.UserMessage) error { return nil }
-
-func (*parentRecord) Steer(agentmessage.UserMessage) error { return nil }
-
-func (*parentRecord) Inject(agentmessage.UserMessage) error { return nil }
-
 func TestFromInheritsParentAndResolvesChildFacts(t *testing.T) {
-	parentAgent := newParent(t, 3)
 	maxDepth := int64(4)
-
-	childLineage, lineageErr := From(parentAgent, &maxDepth)
-	if lineageErr != nil {
-		t.Fatalf("From returned error: %v", lineageErr)
+	headerDepth := int64(3)
+	cwd := "/workspace"
+	preset := "coding"
+	childLineage, err := From(
+		"parent",
+		session.Header{
+			CWD:             &cwd,
+			DelegationDepth: &headerDepth,
+			AgentPreset:     &preset,
+		},
+		agent.Options{
+			Provider: "deepseek",
+			Model:    "chat",
+		},
+		&maxDepth,
+	)
+	if err != nil {
+		t.Fatal(err)
 	}
 	maxTokens := 4096
-	resolved := childLineage.AgentOptions(
-		&agent.Options{
-			Model:     "reasoner",
-			MaxTokens: &maxTokens,
-		},
-	)
-	if resolved.Provider != "deepseek" || resolved.Model != "reasoner" {
-		t.Fatalf("unexpected inherited options: %#v", resolved)
+	resolved := childLineage.AgentOptions(&agent.Options{
+		Model:     "reasoner",
+		MaxTokens: &maxTokens,
+	})
+	if resolved.Provider != "deepseek" || resolved.Model != "reasoner" ||
+		resolved.MaxTokens == nil || *resolved.MaxTokens != 4096 {
+		t.Fatalf("resolved options = %#v", resolved)
 	}
-	if resolved.MaxTokens == nil || *resolved.MaxTokens != 4096 {
-		t.Fatalf("unexpected max tokens: %#v", resolved.MaxTokens)
-	}
-	sessionMetadata := childLineage.Metadata(5)
-	if sessionMetadata.ParentSession == nil || *sessionMetadata.ParentSession != parentAgent.ID() {
-		t.Fatalf("unexpected parent Session: %#v", sessionMetadata.ParentSession)
-	}
-	if sessionMetadata.DelegationDepth == nil || *sessionMetadata.DelegationDepth != 4 {
-		t.Fatalf("unexpected metadata depth: %#v", sessionMetadata.DelegationDepth)
-	}
-	if sessionMetadata.SeedLength == nil || *sessionMetadata.SeedLength != 5 {
-		t.Fatalf("unexpected seed length: %#v", sessionMetadata.SeedLength)
-	}
-	if sessionMetadata.CWD == nil || *sessionMetadata.CWD != "/workspace" {
-		t.Fatalf("unexpected cwd: %#v", sessionMetadata.CWD)
-	}
-	if sessionMetadata.AgentPreset == nil || *sessionMetadata.AgentPreset != "coding" {
-		t.Fatalf("unexpected preset: %#v", sessionMetadata.AgentPreset)
-	}
-	if sessionMetadata.Origin != session.OriginSubagent {
-		t.Fatalf("unexpected origin: %q", sessionMetadata.Origin)
+	metadata := childLineage.Metadata(5)
+	if metadata.ParentSession == nil || *metadata.ParentSession != "parent" ||
+		metadata.DelegationDepth == nil || *metadata.DelegationDepth != 4 ||
+		metadata.SeedLength == nil || *metadata.SeedLength != 5 ||
+		metadata.CWD == nil || *metadata.CWD != cwd ||
+		metadata.AgentPreset == nil || *metadata.AgentPreset != preset ||
+		metadata.Origin != session.OriginSubagent {
+		t.Fatalf("metadata = %#v", metadata)
 	}
 }
 
 func TestFromRejectsInvalidDepth(t *testing.T) {
-	parentAgent := newParent(t, 0)
 	negative := int64(-1)
 	unsafe := maxSafeInteger + 1
 	zero := int64(0)
-
-	tests := []struct {
+	testCases := []struct {
 		name     string
+		depth    int64
 		maximum  *int64
 		contains string
 	}{
@@ -125,44 +75,19 @@ func TestFromRejectsInvalidDepth(t *testing.T) {
 			contains: "exceeds maxDepth",
 		},
 	}
-	for _, testCase := range tests {
+	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			_, lineageErr := From(parentAgent, testCase.maximum)
-			if lineageErr == nil || !contains(lineageErr.Error(), testCase.contains) {
-				t.Fatalf("unexpected error: %v", lineageErr)
+			_, err := From(
+				"parent",
+				session.Header{
+					DelegationDepth: &testCase.depth,
+				},
+				agent.Options{},
+				testCase.maximum,
+			)
+			if err == nil || !strings.Contains(err.Error(), testCase.contains) {
+				t.Fatalf("error = %v", err)
 			}
 		})
 	}
-}
-
-func newParent(t *testing.T, headerDepth int64) agent.Agent {
-	t.Helper()
-	parentSession, sessionErr := session.New(
-		"parent",
-		session.CreateOptions{
-			Metadata: session.Metadata{
-				CWD:             stringPointerValue("/workspace"),
-				DelegationDepth: int64Pointer(headerDepth),
-				AgentPreset:     stringPointerValue("coding"),
-			},
-		},
-	)
-	if sessionErr != nil {
-		t.Fatalf("session.New returned error: %v", sessionErr)
-	}
-	return &parentRecord{
-		conversation: parentSession,
-		options: agent.Options{
-			Provider: "deepseek",
-			Model:    "chat",
-		},
-	}
-}
-
-func contains(value string, fragment string) bool {
-	return strings.Contains(value, fragment)
-}
-
-func stringPointerValue(value string) *string {
-	return &value
 }

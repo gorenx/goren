@@ -45,7 +45,10 @@ func (problem *Error) ToolErrorCode() string {
 }
 
 func newError(message string, code string, cause ...error) *Error {
-	problem := &Error{Message: message, Code: code}
+	problem := &Error{
+		Message: message,
+		Code:    code,
+	}
 	if len(cause) != 0 {
 		problem.Cause = cause[0]
 	}

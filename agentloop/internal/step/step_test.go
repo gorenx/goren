@@ -1,13 +1,17 @@
 package step
 
-import "testing"
+import (
+	"encoding/json"
+	"github.com/gorenx/goren/session"
+	"testing"
+)
 
 func TestStepModelAndToolLifecycle(t *testing.T) {
 	current, err := New(1, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = current.EnterOpen(); err != nil {
+	if err = confirmFixtureStart(current); err != nil {
 		t.Fatal(err)
 	}
 	if err = current.EnterRequesting(); err != nil {
@@ -19,7 +23,7 @@ func TestStepModelAndToolLifecycle(t *testing.T) {
 	if err = current.EnterSettling(StepResultContinue); err != nil {
 		t.Fatal(err)
 	}
-	if err = current.EnterClosed(); err != nil {
+	if err = confirmFixtureEnd(current); err != nil {
 		t.Fatal(err)
 	}
 	if current.StateValue() != StateClosed {
@@ -32,7 +36,7 @@ func TestStepRejectsToolsBeforeRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = current.EnterOpen(); err != nil {
+	if err = confirmFixtureStart(current); err != nil {
 		t.Fatal(err)
 	}
 	if err = current.EnterTooling(); err == nil {
@@ -45,13 +49,13 @@ func TestStepCanSettleAfterOpenedOperationFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = current.EnterOpen(); err != nil {
+	if err = confirmFixtureStart(current); err != nil {
 		t.Fatal(err)
 	}
 	if err = current.EnterSettling(StepResultError); err != nil {
 		t.Fatal(err)
 	}
-	if err = current.EnterClosed(); err != nil {
+	if err = confirmFixtureEnd(current); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -71,9 +75,9 @@ func TestStepTransitionSourceMatrix(t *testing.T) {
 		apply   func(*Step) error
 	}{
 		{
-			name:    "EnterOpen",
+			name:    "ConfirmStart",
 			allowed: map[State]bool{StateProposed: true},
-			apply:   func(current *Step) error { return current.EnterOpen() },
+			apply:   func(current *Step) error { return confirmFixtureStart(current) },
 		},
 		{
 			name:    "EnterRequesting",
@@ -97,9 +101,9 @@ func TestStepTransitionSourceMatrix(t *testing.T) {
 			},
 		},
 		{
-			name:    "EnterClosed",
+			name:    "ConfirmEnd",
 			allowed: map[State]bool{StateSettling: true},
-			apply:   func(current *Step) error { return current.EnterClosed() },
+			apply:   func(current *Step) error { return confirmFixtureEnd(current) },
 		},
 	}
 	for _, testCase := range tests {
@@ -109,6 +113,7 @@ func TestStepTransitionSourceMatrix(t *testing.T) {
 					turnNumber:   1,
 					stepNumber:   1,
 					currentState: source,
+					input:        &Input{},
 				}
 				err := testCase.apply(current)
 				if (err == nil) != testCase.allowed[source] {
@@ -130,7 +135,7 @@ func TestStepAnyAcceptedTransitionPreservesBoundaryInvariants(t *testing.T) {
 		for depth := 0; depth < 5; depth++ {
 			switch sequence % operationCount {
 			case 0:
-				_ = current.EnterOpen()
+				_ = confirmFixtureStart(current)
 			case 1:
 				_ = current.EnterRequesting()
 			case 2:
@@ -140,7 +145,7 @@ func TestStepAnyAcceptedTransitionPreservesBoundaryInvariants(t *testing.T) {
 			case 4:
 				_ = current.EnterSettling(StepResultAborted)
 			case 5:
-				_ = current.EnterClosed()
+				_ = confirmFixtureEnd(current)
 			}
 			sequence /= operationCount
 			if current.currentState == StateClosed &&
@@ -168,4 +173,41 @@ func stateName(selected State) string {
 	default:
 		return "unknown"
 	}
+}
+
+// confirmFixtureStart supplies a real-shaped start event and an empty admitted
+// batch so the lifecycle matrix remains independent of message-commit scenarios.
+func confirmFixtureStart(current *Step) error {
+	if current.input == nil && current.currentState == StateProposed {
+		if err := current.Capture(Input{}); err != nil {
+			return err
+		}
+	}
+	payload, err := json.Marshal(session.StepPosition{
+		Turn: current.turnNumber,
+		Step: current.stepNumber,
+	})
+	if err != nil {
+		return err
+	}
+	return current.ConfirmStart(session.Event{
+		Type: session.StepStartEventName,
+		Seq:  1,
+		Data: payload,
+	})
+}
+
+func confirmFixtureEnd(current *Step) error {
+	payload, err := json.Marshal(session.StepPosition{
+		Turn: current.turnNumber,
+		Step: current.stepNumber,
+	})
+	if err != nil {
+		return err
+	}
+	return current.ConfirmEnd(session.Event{
+		Type: session.StepEndEventName,
+		Seq:  current.lastInputSeq + 1,
+		Data: payload,
+	})
 }

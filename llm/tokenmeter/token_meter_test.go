@@ -14,8 +14,8 @@ import (
 func TestTokenMeterMeasuresEmptyAndDetachedSurface(t *testing.T) {
 	t.Parallel()
 	conversation := newConversation(t, "empty")
-	meterService := newTokenMeter()
-	empty, err := meterService.Measure(context.Background(), conversation, nil)
+	meterService := new(TokenMeter)
+	empty, err := meterService.Measure(context.Background(), conversation.Events(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,13 +24,13 @@ func TestTokenMeterMeasuresEmptyAndDetachedSurface(t *testing.T) {
 		t.Fatalf("empty measurement = %#v", empty)
 	}
 	appendUser(t, conversation, "first")
-	first, err := meterService.Measure(context.Background(), conversation, nil)
+	first, err := meterService.Measure(context.Background(), conversation.Events(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	firstSnapshot := append([]SurfaceNode(nil), first.Nodes...)
 	appendUser(t, conversation, "second")
-	second, err := meterService.Measure(context.Background(), conversation, nil)
+	second, err := meterService.Measure(context.Background(), conversation.Events(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,15 +70,15 @@ func TestTokenMeterPricesHeaderAndRequestOverrideWithoutChangingSurface(t *testi
 			t.Fatal(err)
 		}
 	}
-	meterService := newTokenMeter()
-	logged, err := meterService.Measure(context.Background(), conversation, nil)
+	meterService := new(TokenMeter)
+	logged, err := meterService.Measure(context.Background(), conversation.Events(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	largePrompt := strings.Repeat("large override ", 100)
 	override := fixtureHeader("model-b")
 	override.System = &largePrompt
-	overridden, err := meterService.Measure(context.Background(), conversation, &override)
+	overridden, err := meterService.Measure(context.Background(), conversation.Events(), &override)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,8 +110,8 @@ func TestTokenMeterUsesUsageAnchorAndDurableRewriteDelta(t *testing.T) {
 		"a much longer rewritten durable assistant answer",
 		&usageValue,
 	)
-	meterService := newTokenMeter()
-	measured, err := meterService.Measure(context.Background(), conversation, nil)
+	meterService := new(TokenMeter)
+	measured, err := meterService.Measure(context.Background(), conversation.Events(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestTokenMeterUsesUsageAnchorAndDurableRewriteDelta(t *testing.T) {
 		t.Fatal("usage baseline omitted provider usage")
 	}
 	measured.Baseline.Usage.InputTokens = 1
-	again, err := meterService.Measure(context.Background(), conversation, nil)
+	again, err := meterService.Measure(context.Background(), conversation.Events(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,12 +157,12 @@ func TestTokenMeterTreatsExplicitEmptyAndAbsentProvenanceDifferently(t *testing.
 		&usageValue,
 		nil,
 	)
-	meterService := newTokenMeter()
-	explicitMeasurement, err := meterService.Measure(context.Background(), explicit, nil)
+	meterService := new(TokenMeter)
+	explicitMeasurement, err := meterService.Measure(context.Background(), explicit.Events(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacyMeasurement, err := meterService.Measure(context.Background(), legacy, nil)
+	legacyMeasurement, err := new(TokenMeter).Measure(context.Background(), legacy.Events(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,9 +198,9 @@ func TestTokenMeterRejectsMalformedStepTransactionally(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	meterService := newTokenMeter()
+	meterService := new(TokenMeter)
 	for attempt := 0; attempt < 2; attempt++ {
-		_, err := meterService.Measure(context.Background(), conversation, nil)
+		_, err := meterService.Measure(context.Background(), conversation.Events(), nil)
 		if err == nil || !strings.Contains(err.Error(), "no matching step/start") {
 			t.Fatalf("attempt %d error = %v", attempt, err)
 		}
@@ -225,7 +225,7 @@ func TestTokenMeterFallsBackWhenProviderUsageUndercutsHeuristicAnchor(t *testing
 		strings.Repeat("provider answer ", 256),
 		&usageValue,
 	)
-	measured, err := newTokenMeter().Measure(context.Background(), conversation, nil)
+	measured, err := new(TokenMeter).Measure(context.Background(), conversation.Events(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,8 +250,8 @@ func TestTokenMeterReusesUsageOnlyForMatchingCanonicalHeader(t *testing.T) {
 		"answer",
 		&usageValue,
 	)
-	meterService := newTokenMeter()
-	matching, err := meterService.Measure(context.Background(), conversation, &headerValue)
+	meterService := new(TokenMeter)
+	matching, err := meterService.Measure(context.Background(), conversation.Events(), &headerValue)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +261,7 @@ func TestTokenMeterReusesUsageOnlyForMatchingCanonicalHeader(t *testing.T) {
 	changedPrompt := "different"
 	changed := fixtureHeader("model-a")
 	changed.System = &changedPrompt
-	nonmatching, err := meterService.Measure(context.Background(), conversation, &changed)
+	nonmatching, err := meterService.Measure(context.Background(), conversation.Events(), &changed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +281,7 @@ func TestTokenMeterPricesEmptyAssistantSurfaceNodeAtZero(t *testing.T) {
 		"",
 		nil,
 	)
-	measured, err := newTokenMeter().Measure(context.Background(), conversation, nil)
+	measured, err := new(TokenMeter).Measure(context.Background(), conversation.Events(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,12 +295,12 @@ func TestTokenMeterRejectsOverlappingAndMismatchedStepBoundaries(t *testing.T) {
 	t.Parallel()
 	testCases := []struct {
 		name      string
-		populate  func(*testing.T, session.Context)
+		populate  func(*testing.T, *session.Log)
 		wantError string
 	}{
 		{
 			name: "overlapping-start",
-			populate: func(testingContext *testing.T, conversation session.Context) {
+			populate: func(testingContext *testing.T, conversation *session.Log) {
 				for _, position := range []session.StepPosition{
 					{
 						Turn: 1,
@@ -327,7 +327,7 @@ func TestTokenMeterRejectsOverlappingAndMismatchedStepBoundaries(t *testing.T) {
 		},
 		{
 			name: "mismatched-end",
-			populate: func(testingContext *testing.T, conversation session.Context) {
+			populate: func(testingContext *testing.T, conversation *session.Log) {
 				{
 					draft, err := session.NewEventDraft(session.StepStarted,
 						session.StepPosition{
@@ -363,9 +363,9 @@ func TestTokenMeterRejectsOverlappingAndMismatchedStepBoundaries(t *testing.T) {
 			t.Parallel()
 			conversation := newConversation(t, session.SessionID(testCase.name))
 			testCase.populate(t, conversation)
-			meterService := newTokenMeter()
+			meterService := new(TokenMeter)
 			for attempt := 0; attempt < 2; attempt++ {
-				_, err := meterService.Measure(context.Background(), conversation, nil)
+				_, err := meterService.Measure(context.Background(), conversation.Events(), nil)
 				if err == nil || !strings.Contains(err.Error(), testCase.wantError) {
 					t.Fatalf("attempt %d error = %v", attempt, err)
 				}
@@ -374,56 +374,9 @@ func TestTokenMeterRejectsOverlappingAndMismatchedStepBoundaries(t *testing.T) {
 	}
 }
 
-func TestTokenMeterEagerlyAdvancesOnlyAllocatedFoldsAndDisposesThem(t *testing.T) {
-	t.Parallel()
-	allocated := newConversation(t, "allocated")
-	unread := newConversation(t, "unread")
-	meterService := newTokenMeter()
-	if _, err := meterService.Measure(context.Background(), allocated, nil); err != nil {
-		t.Fatal(err)
-	}
-	allocatedEvent := appendUser(t, allocated, "allocated event")
-	unreadEvent := appendUser(t, unread, "unread event")
-	if err := meterService.observeEvent(
-		context.Background(),
-		session.EventAppended{
-			Conversation: allocated,
-			Committed:    allocated.Events()[allocatedEvent],
-		},
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := meterService.observeEvent(
-		context.Background(),
-		session.EventAppended{
-			Conversation: unread,
-			Committed:    unread.Events()[unreadEvent],
-		},
-	); err != nil {
-		t.Fatal(err)
-	}
-	if meterService.folds[allocated].consumedEvents != 1 {
-		t.Fatalf("allocated fold = %#v", meterService.folds[allocated])
-	}
-	if _, found := meterService.folds[unread]; found {
-		t.Fatal("eager observation allocated an unread Session fold")
-	}
-	if err := meterService.observeEvent(
-		context.Background(),
-		session.Disposed{
-			Conversation: allocated,
-		},
-	); err != nil {
-		t.Fatal(err)
-	}
-	if _, found := meterService.folds[allocated]; found {
-		t.Fatal("disposed Session retained its replay fold")
-	}
-}
-
-func newConversation(testingContext *testing.T, identifier session.SessionID) session.Context {
+func newConversation(testingContext *testing.T, identifier session.SessionID) *session.Log {
 	testingContext.Helper()
-	conversation, err := session.New(identifier, session.CreateOptions{})
+	conversation, err := session.NewLog(identifier, session.CreateOptions{})
 	if err != nil {
 		testingContext.Fatal(err)
 	}
@@ -441,7 +394,7 @@ func fixtureHeader(modelID string) session.EpochHeader {
 
 func appendUser(
 	testingContext *testing.T,
-	conversation session.Context,
+	conversation *session.Log,
 	textValue string,
 ) int64 {
 	testingContext.Helper()
@@ -468,7 +421,7 @@ func appendUser(
 
 func appendSuccessfulCall(
 	testingContext *testing.T,
-	conversation session.Context,
+	conversation *session.Log,
 	headerValue session.EpochHeader,
 	providerText string,
 	durableText string,
@@ -568,7 +521,7 @@ func appendSuccessfulCall(
 
 func appendCallWithProvenance(
 	testingContext *testing.T,
-	conversation session.Context,
+	conversation *session.Log,
 	headerValue session.EpochHeader,
 	durableText string,
 	usageValue *llm.TokenUsage,
@@ -625,7 +578,7 @@ func appendCallWithProvenance(
 
 func appendAssistantWithSources(
 	testingContext *testing.T,
-	conversation session.Context,
+	conversation *session.Log,
 	textValue string,
 	usageValue *llm.TokenUsage,
 	sourceSeqs *[]int64,
@@ -695,4 +648,39 @@ func sumNodeTokens(nodes []SurfaceNode) int64 {
 		total += nodeValue.Tokens
 	}
 	return total
+}
+
+func TestMeasurementFailureDoesNotInstallPartialReplay(t *testing.T) {
+	conversation := newConversation(t, "atomic")
+	appendUser(t, conversation, "first")
+	pricing := new(TokenMeter)
+	first, err := pricing.Measure(context.Background(), conversation.Events(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendUser(t, conversation, "second")
+	malformed := append(conversation.Events(), session.Event{
+		Seq:  2,
+		Type: session.StepEndEventName,
+	})
+	if _, err := pricing.Measure(context.Background(), malformed, nil); err == nil {
+		t.Fatal("invalid step accepted")
+	}
+	if pricing.fold.consumedEvents != first.LogRevision || !reflect.DeepEqual(pricing.fold.nodes, first.Nodes) {
+		t.Fatal("failed measurement installed a partial replay")
+	}
+	second, err := pricing.Measure(context.Background(), conversation.Events(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.LogRevision != 2 || len(second.Nodes) != 2 {
+		t.Fatalf("retry = %#v", second)
+	}
+	historical, err := pricing.Measure(context.Background(), conversation.Events()[:1], nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(historical, first) || pricing.fold.consumedEvents != 2 {
+		t.Fatalf("historical measurement regressed online state: %#v", historical)
+	}
 }

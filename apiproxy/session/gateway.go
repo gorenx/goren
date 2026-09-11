@@ -4,32 +4,23 @@ import (
 	"context"
 	"errors"
 
-	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/agentdefaultmodel"
-	api "github.com/gorenx/goren/apiproxy"
-	"github.com/gorenx/goren/connection"
-	"github.com/gorenx/goren/llm"
+	llmapi "github.com/gorenx/goren/apiproxy/llm"
+	rpc "github.com/gorenx/goren/apiproxy/rpc"
+	imageapi "github.com/gorenx/goren/apiproxy/session/image"
 	"github.com/gorenx/goren/session"
-	sesspersist "github.com/gorenx/goren/session/persistence"
-	sessionprojection "github.com/gorenx/goren/session/projection"
-	sessiontitle "github.com/gorenx/goren/session/title"
-	"github.com/gorenx/goren/workspace"
 )
 
 // Dependencies are the domain capabilities consumed by the Session API.
 type Dependencies struct {
-	Agents      agent.Registry
-	Constructor agent.Constructor
-	Scopes      agent.ScopeSetup
-	Sessions    session.LiveStore
-	Persistence sesspersist.Persistence
-	LLM         llm.LlmRuntime
-	Defaults    agentdefaultmodel.DefaultModel
-	Projections sessionprojection.Registry
+	Agents      Agents
+	Sessions    LiveSessions
+	Persistence History
+	Models      Models
+	Titles      Titles
 	Cache       ProjectionCache
-	Titles      sessiontitle.TitleService
-	Workspaces  workspace.Registry
+	Workspaces  Workspaces
 	Directories DirectoryProvisioner
+	Storage     imageapi.ImageStore
 }
 
 // Options are process values and injectable identity sources.
@@ -39,16 +30,10 @@ type Options struct {
 	ReportReadFailure func(error)
 }
 
-// ProjectionCache is the minimal rebuildable checkpoint capability consumed by
-// Session list and history reads.
-type ProjectionCache interface {
-	CachedSnapshot(session.Header) (*sessionprojection.Snapshot, error)
-	ColdSnapshot(context.Context, session.SessionID) (sessionprojection.Snapshot, error)
-}
-
 // Gateway is the unary session.* facade registered with the wire catalog.
 // Each capability object owns only its own dependencies and state.
 type Gateway struct {
+	pictures             *imageapi.Reader
 	reader               *sessionReader
 	lifecycle            *sessionLifecycle
 	modelUseCases        *sessionModels
@@ -64,11 +49,14 @@ func NewGateway(
 	if requestContext == nil {
 		return nil, errors.New("apiproxy/session: Gateway Context is required")
 	}
-	if ports.Agents == nil || ports.Constructor == nil || ports.Scopes == nil ||
-		ports.Sessions == nil || ports.Persistence == nil || ports.LLM == nil ||
-		ports.Defaults == nil || ports.Projections == nil || ports.Titles == nil ||
-		ports.Workspaces == nil || ports.Directories == nil {
-		return nil, errors.New("apiproxy/session: Gateway dependencies are incomplete")
+	if ports.Agents == nil ||
+		ports.Sessions == nil ||
+		ports.Persistence == nil ||
+		ports.Models == nil ||
+		ports.Titles == nil ||
+		ports.Workspaces == nil ||
+		ports.Directories == nil {
+		return nil, errors.New("session API: Gateway dependencies are incomplete")
 	}
 	if settings.WorkingDirectory == "" {
 		return nil, errors.New("apiproxy/session: Gateway working directory is empty")
@@ -81,50 +69,46 @@ func NewGateway(
 	if reportReadFailure == nil {
 		reportReadFailure = func(error) {}
 	}
-	modelDirectory, err := api.NewLLMGateway(ports.LLM)
+	modelDirectory, err := llmapi.NewCatalog(ports.Models)
 	if err != nil {
 		return nil, err
 	}
-	runtimeSessions, err := NewAgentSessions(AgentSessionDependencies{
-		Agents:      ports.Agents,
-		Constructor: ports.Constructor,
-		Scopes:      ports.Scopes,
-		Sessions:    ports.Sessions,
-		Persistence: ports.Persistence,
-		Defaults:    ports.Defaults,
-		Directories: ports.Directories,
-	})
-	if err != nil {
-		return nil, err
+	access := &sessionAccess{
+		runtimeSessions: &activation{
+			agents:      ports.Agents,
+			sessions:    ports.Sessions,
+			history:     ports.Persistence,
+			directories: ports.Directories,
+		},
 	}
-	access := &sessionAccess{runtimeSessions: runtimeSessions}
 	owner := &Gateway{
 		reader: &sessionReader{
-			agents:        ports.Agents,
 			sessions:      ports.Sessions,
 			persistence:   ports.Persistence,
-			projections:   ports.Projections,
 			cache:         ports.Cache,
 			reportFailure: reportReadFailure,
 		},
 		lifecycle: &sessionLifecycle{
 			access:           access,
-			titles:           ports.Titles,
 			workspaces:       ports.Workspaces,
+			sessions:         ports.Sessions,
+			titles:           ports.Titles,
 			workingDirectory: settings.WorkingDirectory,
 			newSessionID:     newSessionID,
 		},
 		modelUseCases: &sessionModels{
 			access:    access,
-			runtime:   ports.LLM,
+			models:    ports.Models,
+			sessions:  ports.Sessions,
 			directory: modelDirectory,
-			defaults:  ports.Defaults,
 		},
 		conversationUseCases: &sessionConversation{
 			access:  access,
-			runtime: ports.LLM,
+			models:  ports.Models,
+			storage: ports.Storage,
 		},
 	}
+	owner.pictures = imageapi.NewReader(owner.reader, ports.Storage)
 	if err := requestContext.Err(); err != nil {
 		return nil, err
 	}
@@ -133,8 +117,8 @@ func NewGateway(
 
 func (owner *Gateway) List(
 	requestContext context.Context,
-	call api.Request[api.SessionListRequest],
-) (api.Outcome[api.SessionListValue], error) {
+	call rpc.Request[ListRequest],
+) (rpc.Outcome[ListValue], error) {
 	return owner.reader.List(requestContext, call)
 }
 
@@ -146,68 +130,61 @@ func (owner *Gateway) VisibleSessionIDs(
 
 func (owner *Gateway) History(
 	requestContext context.Context,
-	call api.Request[api.SessionHistoryRequest],
-) (api.Outcome[api.SessionHistoryValue], error) {
+	call rpc.Request[HistoryRequest],
+) (rpc.Outcome[HistoryValue], error) {
 	return owner.reader.History(requestContext, call)
 }
 
 func (owner *Gateway) Rename(
 	requestContext context.Context,
-	call api.Request[api.SessionRenameRequest],
-) (api.Outcome[api.SessionRenameValue], error) {
+	call rpc.Request[RenameRequest],
+) (rpc.Outcome[RenameValue], error) {
 	return owner.lifecycle.Rename(requestContext, call)
 }
 
 func (owner *Gateway) Create(
 	requestContext context.Context,
-	call api.Request[api.SessionCreateRequest],
-) (api.Outcome[api.SessionCreateValue], error) {
+	call rpc.Request[CreateRequest],
+) (rpc.Outcome[CreateValue], error) {
 	return owner.lifecycle.Create(requestContext, call)
 }
 
 func (owner *Gateway) Models(
 	requestContext context.Context,
-	call api.Request[api.SessionModelsRequest],
-) (api.Outcome[api.SessionModelsValue], error) {
+	call rpc.Request[ModelsRequest],
+) (rpc.Outcome[ModelsValue], error) {
 	return owner.modelUseCases.Models(requestContext, call)
 }
 
 func (owner *Gateway) SelectModel(
 	requestContext context.Context,
-	call api.Request[api.SessionSelectModelRequest],
-) (api.Outcome[api.SessionSelectModelValue], error) {
+	call rpc.Request[SelectModelRequest],
+) (rpc.Outcome[SelectModelValue], error) {
 	return owner.modelUseCases.SelectModel(requestContext, call)
 }
 
 func (owner *Gateway) Prompt(
 	requestContext context.Context,
-	call api.Request[api.SessionPromptRequest],
-) (api.Outcome[api.SessionPromptValue], error) {
+	call rpc.Request[PromptRequest],
+) (rpc.Outcome[PromptValue], error) {
 	return owner.conversationUseCases.Prompt(requestContext, call)
 }
 
 func (owner *Gateway) UpdateQueue(
 	requestContext context.Context,
-	call api.Request[api.SessionUpdateQueueRequest],
-) (api.Outcome[api.AcceptedValue], error) {
+	call rpc.Request[UpdateQueueRequest],
+) (rpc.Outcome[AcceptedValue], error) {
 	return owner.conversationUseCases.UpdateQueue(requestContext, call)
 }
 
 func (owner *Gateway) Cancel(
 	requestContext context.Context,
-	call api.Request[api.SessionCancelRequest],
-) (api.Outcome[api.AcceptedValue], error) {
+	call rpc.Request[CancelRequest],
+) (rpc.Outcome[AcceptedValue], error) {
 	return owner.conversationUseCases.Cancel(requestContext, call)
 }
 
-// ResolveOrdinaryAgent resolves an API-addressable ordinary Agent while
-// preserving cold resume and subagent ownership behavior.
-func (owner *Gateway) ResolveOrdinaryAgent(
-	requestContext context.Context,
-	identifier api.SessionID,
-) (agent.Agent, *connection.RPCError) {
-	return owner.conversationUseCases.access.ordinaryAgent(
-		requestContext,
-		identifier,
-	)
+// Attachment reads bytes only after the Session log authorizes the reference.
+func (owner *Gateway) Attachment(ctx context.Context, call rpc.Request[imageapi.AttachmentRequest]) (rpc.Outcome[imageapi.AttachmentValue], error) {
+	return owner.pictures.Attachment(ctx, call)
 }

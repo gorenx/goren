@@ -15,7 +15,7 @@ func TestSubagentModesOwnIndependentExecutionState(t *testing.T) {
 	fileSet := token.NewFileSet()
 	sourcesByPackage := parsePackages(t, fileSet, repositoryPath)
 	modeTypes := map[string]string{
-		"bound":       "residentEpoch",
+		"bound":       "boundExecution",
 		"continuable": "residentExecution",
 		"oneshot":     "oneShotExecution",
 	}

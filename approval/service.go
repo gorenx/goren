@@ -1,253 +1,69 @@
 package approval
 
 import (
-	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"strings"
 
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/systemprompt"
 )
 
-const policyContextName = "approval:policy"
-
-// Service owns approval policy, paired durable audit events, and the answerer
-// Waterfall for one Runtime Scope.
+// Service prepares approval decisions from fixed facts without executing effects.
 type Service struct {
-	plugin.Base
-	name          string
-	root          bool
 	defaultPolicy Policy
-	parent        Approval
-	prompt        *systemprompt.PromptHandle
 }
 
-// New constructs the root Approval Plugin from validated configuration.
-func New(settings ValidatedConfig) *Service {
+// New constructs independently configured approval rules.
+func New(settings ValidatedConfig) (*Service, error) {
+	if !validPolicy(settings.policy) {
+		return nil, errors.New("approval: configuration was not validated")
+	}
 	return &Service{
-		name:          PluginName,
-		root:          true,
 		defaultPolicy: settings.policy,
-	}
-}
-
-// NewOverlay constructs a child Approval layer. It inherits policy from the
-// nearest ancestor and starts answerer Waterfalls from its child Scope.
-func NewOverlay() *Service {
-	return &Service{
-		name: OverlayPluginName,
-	}
-}
-
-// Manifest declares Approval, System Prompt bindings, and the ancestor
-// Approval required by an overlay.
-func (owner *Service) Manifest() plugin.Manifest {
-	requiredServices := []plugin.ServiceType{
-		plugin.ServiceOf[systemprompt.PromptRegistry](),
-	}
-	if !owner.root {
-		requiredServices = append(
-			requiredServices,
-			plugin.ServiceOf[Approval](),
-		)
-	}
-	return plugin.Manifest{
-		Name: owner.name,
-		Provides: []plugin.ProvidedService{
-			plugin.NewProvidedService[Approval](owner),
-			plugin.NewProvidedService[DelegationPolicy](owner),
-		},
-		Requires: requiredServices,
-	}
-}
-
-// Apply resolves dependencies and installs the policy context owned by this
-// exact Approval layer.
-func (owner *Service) Apply(requestContext context.Context) error {
-	if err := requestContext.Err(); err != nil {
-		return err
-	}
-	if !validPolicy(owner.defaultPolicy) && owner.root {
-		return errors.New("approval: configuration was not validated")
-	}
-	if !owner.root {
-		parent, err := plugin.Require[Approval](owner)
-		if err != nil {
-			return err
-		}
-		owner.parent = parent
-	}
-	prompts, err := plugin.Require[systemprompt.PromptRegistry](owner)
-	if err != nil {
-		return err
-	}
-	promptHandle, err := prompts.AddContext(requestContext, systemprompt.PromptContext{
-		Name:  policyContextName,
-		Order: 115,
-		Text: systemprompt.TextFunc(func(
-			providerContext context.Context,
-			assemblyContext systemprompt.AssembleContext,
-		) (string, error) {
-			if err := providerContext.Err(); err != nil {
-				return "", err
-			}
-			if assemblyContext.Session == nil {
-				return "", nil
-			}
-			selectedPolicy, policyErr := owner.EffectivePolicy(
-				assemblyContext.Session,
-			)
-			if policyErr != nil {
-				return "", policyErr
-			}
-			if selectedPolicy == PolicyNever {
-				return neverPolicyText, nil
-			}
-			return askPolicyText, nil
-		}),
-	})
-	if err != nil {
-		return err
-	}
-	owner.prompt = promptHandle
-	return nil
-}
-
-// Dispose removes the prompt entry owned by this Plugin. Runtime has already
-// hidden its Service binding.
-func (owner *Service) Dispose(closeContext context.Context) error {
-	var disposeErr error
-	if owner.prompt != nil {
-		disposeErr = owner.prompt.Unregister(closeContext)
-	}
-	owner.prompt = nil
-	owner.parent = nil
-	return disposeErr
-}
-
-// Request writes the paired audit events around one policy/answerer decision.
-func (owner *Service) Request(
-	requestContext context.Context,
-	decisionInput Request,
-) (Outcome, error) {
-	if requestContext == nil || decisionInput.Subject == nil ||
-		decisionInput.Subject.SessionValue() == nil {
-		return "", errors.New("approval: Context, Subject, and Session are required")
-	}
-	conversation := decisionInput.Subject.SessionValue()
-	if !hasOpenTurn(conversation.Events()) {
-		return "", errors.New(
-			"approval: request outside an open turn; audit events must be turn-enclosed",
-		)
-	}
-	identifier, err := mintRequestID()
-	if err != nil {
-		return "", fmt.Errorf("approval: mint request id: %w", err)
-	}
-	if identifier == "" {
-		return "", errors.New("approval: minted request id is empty")
-	}
-	askedDraft, err := session.NewEventDraft(AskedEvent, Asked{
-		ID:       identifier,
-		ToolName: decisionInput.ToolName,
-		CallID:   cloneCallID(decisionInput.CallID),
-		Reason:   cloneString(decisionInput.Reason),
-	})
-	if err != nil {
-		return "", err
-	}
-	if _, err := conversation.Commit(requestContext, session.Batch(askedDraft)); err != nil {
-		return "", err
-	}
-	decisionOutcome := owner.decide(
-		requestContext,
-		decisionInput,
-		conversation,
-	)
-	decidedDraft, err := session.NewEventDraft(DecidedEvent, Decided{
-		ID:      identifier,
-		Outcome: decisionOutcome,
-	})
-	if err != nil {
-		return "", err
-	}
-	if _, err := conversation.Commit(
-		context.WithoutCancel(requestContext),
-		session.Batch(decidedDraft),
-	); err != nil {
-		return "", err
-	}
-	return decisionOutcome, nil
-}
-
-func (owner *Service) decide(
-	requestContext context.Context,
-	decisionInput Request,
-	conversation session.Context,
-) Outcome {
-	if requestContext.Err() != nil {
-		return OutcomeCancelled
-	}
-	selectedPolicy, err := owner.EffectivePolicy(conversation)
-	if err != nil {
-		return OutcomeUnavailable
-	}
-	if selectedPolicy == PolicyNever {
-		return OutcomeRejected
-	}
-	type result struct {
-		outcome Outcome
-		err     error
-	}
-	settled := make(chan result, 1)
-	go func() {
-		resolvedDecision, dispatchErr := plugin.Run(
-			requestContext,
-			owner,
-			DecisionRequest{
-				Request: decisionInput,
-			},
-			decisionTerminal{},
-		)
-		settled <- result{
-			outcome: resolvedDecision.Outcome,
-			err:     dispatchErr,
-		}
-	}()
-	select {
-	case <-requestContext.Done():
-		return OutcomeCancelled
-	case completed := <-settled:
-		if completed.err != nil || !validOutcome(completed.outcome) {
-			return OutcomeUnavailable
-		}
-		return completed.outcome
-	}
-}
-
-type decisionTerminal struct{}
-
-func (decisionTerminal) Execute(
-	context.Context,
-	DecisionRequest,
-) (Decision, error) {
-	return Decision{
-		Outcome: OutcomeUnavailable,
 	}, nil
 }
 
-func hasOpenTurn(entries []session.Event) bool {
+// Prepare validates the turn and fixes the policy and audit identity for this request.
+func (owner *Service) Prepare(input Request) (*Decision, error) {
+	if input.SessionID == "" || strings.TrimSpace(input.ToolName) == "" {
+		return nil, errors.New("approval: Session identity and tool name are required")
+	}
+	turnSeq, open := openTurn(input.Events)
+	if !open {
+		return nil, errors.New("approval: request outside an open turn; audit events must be turn-enclosed")
+	}
+	selectedPolicy, err := owner.defaultPolicy.Resolve(input.Events)
+	if err != nil {
+		return nil, err
+	}
+	identifier, err := mintRequestID()
+	if err != nil {
+		return nil, fmt.Errorf("approval: mint request id: %w", err)
+	}
+	return &Decision{
+		policy:  selectedPolicy,
+		turnSeq: turnSeq,
+		question: Question{
+			ID:        identifier,
+			SessionID: input.SessionID,
+			ToolName:  input.ToolName,
+			CallID:    cloneCallID(input.CallID),
+			Reason:    cloneString(input.Reason),
+		},
+	}, nil
+}
+
+func openTurn(entries []session.Event) (int64, bool) {
 	for index := len(entries) - 1; index >= 0; index-- {
 		switch entries[index].Type {
 		case session.TurnStartEventName:
-			return true
+			return entries[index].Seq, true
 		case session.TurnEndEventName:
-			return false
+			return 0, false
 		}
 	}
-	return false
+	return 0, false
 }
 
 func mintRequestID() (RequestID, error) {

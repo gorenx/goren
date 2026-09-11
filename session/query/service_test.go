@@ -7,227 +7,65 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
-	sesspersist "github.com/gorenx/goren/session/persistence"
 	sessionquery "github.com/gorenx/goren/session/query"
 	querysqlite "github.com/gorenx/goren/session/query/sqlite"
 )
 
-type queryPostCommitFailureSink struct{}
-
-type sessionStoreProbe struct {
-	plugin.Base
-	store session.LiveStore
-}
-
-func (*sessionStoreProbe) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name: "session-query-store-probe",
-		Requires: []plugin.ServiceType{
-			plugin.ServiceOf[session.LiveStore](),
-		},
-	}
-}
-
-func (probe *sessionStoreProbe) Apply(context.Context) error {
-	liveStore, err := plugin.Require[session.LiveStore](probe)
-	if err != nil {
-		return err
-	}
-	probe.store = liveStore
-	return nil
-}
-
-func (*sessionStoreProbe) Dispose(context.Context) error { return nil }
-
-func (queryPostCommitFailureSink) ReportPostCommitFailure(session.PostCommitFailure) {}
-
-type queryPersistencePlugin struct {
-	plugin.Base
-	logs      map[session.SessionID]sesspersist.Inspection
-	revisions map[session.SessionID]sesspersist.Revision
-}
-
-func (owner *queryPersistencePlugin) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name: "fixture-query-persistence",
-		Provides: []plugin.ProvidedService{
-			plugin.NewProvidedService[sesspersist.Persistence](owner),
-		},
-	}
-}
-
-func (*queryPersistencePlugin) Apply(context.Context) error {
-	return nil
-}
-
-func (*queryPersistencePlugin) Dispose(context.Context) error {
-	return nil
-}
-
-func (*queryPersistencePlugin) Locate(session.Header) (sesspersist.Location, bool) {
-	return sesspersist.Location{}, false
-}
-
-func (*queryPersistencePlugin) SupportsRawArtifacts() bool {
-	return false
-}
-
-func (*queryPersistencePlugin) ReadRaw(
-	context.Context,
-	session.SessionID,
-) (sesspersist.RawArtifact, error) {
-	return sesspersist.RawArtifact{}, errors.New("raw artifacts unavailable")
-}
-
-func (*queryPersistencePlugin) Create(context.Context, session.Header) error {
-	return errors.New("fixture does not create durable Sessions")
-}
-
-func (*queryPersistencePlugin) Append(
-	context.Context,
-	session.SessionID,
-	[]session.Event,
-) error {
-	return errors.New("fixture does not append durable Sessions")
-}
-
-func (*queryPersistencePlugin) Prepare(
-	context.Context,
-	session.SessionID,
-) (*session.Preparation, error) {
-	return nil, errors.New("fixture does not prepare durable Sessions")
-}
-
-func (storage *queryPersistencePlugin) Load(
-	requestContext context.Context,
-	identifier session.SessionID,
-) (sesspersist.Inspection, error) {
-	return storage.Inspect(requestContext, identifier)
-}
-
-func (storage *queryPersistencePlugin) Inspect(
-	_ context.Context,
-	identifier session.SessionID,
-) (sesspersist.Inspection, error) {
-	loaded, found := storage.logs[identifier]
-	if !found {
-		return sesspersist.Inspection{}, &sesspersist.NotFoundError{
-			ID: identifier,
-		}
-	}
-	return loaded, nil
-}
-
-func (*queryPersistencePlugin) ReadEventsFrom(
-	context.Context,
-	session.SessionID,
-	sesspersist.EventContinuation,
-) (sesspersist.EventSegment, error) {
-	return sesspersist.EventSegment{}, errors.New("fixture does not read event segments")
-}
-
-func (*queryPersistencePlugin) ReadEventsBefore(
-	context.Context,
-	session.SessionID,
-	sesspersist.EventPage,
-) (sesspersist.EventWindow, error) {
-	return sesspersist.EventWindow{}, errors.New("fixture does not read event windows")
-}
-
-func (storage *queryPersistencePlugin) List(
-	context.Context,
-	sesspersist.SessionPage,
-) (sesspersist.HeaderPage, error) {
-	result := make([]session.Header, 0, len(storage.logs))
-	for _, loaded := range storage.logs {
-		result = append(result, loaded.Header)
-	}
-	return sesspersist.HeaderPage{
-		Headers: result,
-	}, nil
-}
-
-func (storage *queryPersistencePlugin) ListSnapshots(
-	_ context.Context,
-	_ sesspersist.SessionPage,
-) (sesspersist.SnapshotPage, error) {
-	result := make([]sesspersist.Snapshot, 0, len(storage.logs))
-	for identifier, loaded := range storage.logs {
-		result = append(
-			result,
-			sesspersist.Snapshot{
-				Header:   loaded.Header,
-				Revision: storage.revisions[identifier],
-			},
-		)
-	}
-	return sesspersist.SnapshotPage{
-		Snapshots: result,
-	}, nil
-}
-
-type queryIndexOpener struct {
-	settings querysqlite.Config
-}
-
-func (opener queryIndexOpener) OpenIndex(
-	requestContext context.Context,
-) (sessionquery.Index, error) {
-	return querysqlite.Open(requestContext, opener.settings)
+type storedSources struct {
+	logs map[session.SessionID]sessionquery.LogSnapshot
 }
 
 type queryFixture struct {
-	persistence *queryPersistencePlugin
-	store       session.LiveStore
+	persistence *storedSources
+	live        map[session.SessionID]*session.Log
 	service     *sessionquery.Service
 }
 
-func newQueryFixture(
-	testingContext *testing.T,
-	persistence *queryPersistencePlugin,
-) *queryFixture {
-	testingContext.Helper()
-	sessionPlugin, err := session.NewPlugin(
-		session.MemoryStoreOptions{
-			PostCommitFailures: queryPostCommitFailureSink{},
-		},
-	)
+func newQueryFixture(t *testing.T, stored *storedSources) *queryFixture {
+	t.Helper()
+	backend, err := querysqlite.Open(context.Background(), querysqlite.Config{
+		Path: filepath.Join(t.TempDir(), "query.sqlite"),
+	})
 	if err != nil {
-		testingContext.Fatal(err)
+		t.Fatal(err)
 	}
-	queryService, err := sessionquery.New(
-		queryIndexOpener{
-			settings: querysqlite.Config{
-				Path: filepath.Join(testingContext.TempDir(), "query.sqlite"),
-			},
-		},
-		sessionquery.Config{},
-	)
-	if err != nil {
-		testingContext.Fatal(err)
-	}
-	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{})
-	storeProbe := &sessionStoreProbe{}
-	if _, err := runtimeEngine.Start(
-		context.Background(),
-		queryService,
-		persistence,
-		sessionPlugin,
-		storeProbe,
-	); err != nil {
-		testingContext.Fatal(err)
-	}
-	testingContext.Cleanup(func() {
-		if err := runtimeEngine.Shutdown(context.Background()); err != nil {
-			testingContext.Error(err)
+	t.Cleanup(func() {
+		if err := backend.Close(context.Background()); err != nil {
+			t.Error(err)
 		}
 	})
+	owner, err := sessionquery.New(backend, sessionquery.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	return &queryFixture{
-		persistence: persistence,
-		store:       storeProbe.store,
-		service:     queryService,
+		persistence: stored,
+		live:        make(map[session.SessionID]*session.Log),
+		service:     owner,
+	}
+}
+
+func (fixture *queryFixture) observe(t *testing.T) {
+	t.Helper()
+	sources := make([]sessionquery.Source, 0)
+	for _, snapshot := range fixture.persistence.logs {
+		sources = append(sources, sessionquery.Source{
+			Log:       snapshot,
+			Persisted: true,
+		})
+	}
+	for _, conversation := range fixture.live {
+		sources = append(sources, sessionquery.Source{
+			Log: sessionquery.LogSnapshot{
+				Header: conversation.Header(),
+				Events: conversation.Events(),
+			},
+			Live: true,
+		})
+	}
+	if err := fixture.service.Observe(sources); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -237,7 +75,7 @@ func TestServiceUsesLiveLogAndTracesSurfaceAndLineage(t *testing.T) {
 	createdAt := int64(100)
 	parentID := session.SessionID("parent")
 	childID := session.SessionID("child")
-	parent, err := session.New(
+	parent, err := session.NewLog(
 		parentID,
 		session.CreateOptions{
 			Metadata: session.Metadata{
@@ -248,37 +86,30 @@ func TestServiceUsesLiveLogAndTracesSurfaceAndLineage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	storage := &queryPersistencePlugin{
-		logs: map[session.SessionID]sesspersist.Inspection{
+	storage := &storedSources{
+		logs: map[session.SessionID]sessionquery.LogSnapshot{
 			parentID: {
 				Header: parent.Header(),
 				Events: parent.Events(),
 			},
 		},
-		revisions: map[session.SessionID]sesspersist.Revision{
-			parentID: "parent-r1",
-		},
 	}
 	fixture := newQueryFixture(t, storage)
-	handle, err := fixture.store.Create(
-		requestContext,
-		&childID,
-		session.CreateOptions{
-			Metadata: session.Metadata{
-				CreatedAt:     &createdAt,
-				ParentSession: &parentID,
-			},
+	child, err := session.NewLog(childID, session.CreateOptions{
+		Metadata: session.Metadata{
+			CreatedAt:     &createdAt,
+			ParentSession: &parentID,
 		},
-	)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	child := handle.Session()
+	fixture.live[childID] = child
 	appendUser(t, child, "live question", session.SurfaceAppend(), nil)
 	appendAssistant(t, child, "obsolete answer", session.SurfaceAppend())
 	sources := []int64{0, 1}
 	appendUser(t, child, "replacement summary", session.SurfaceReplace(0, 1), &sources)
-	storage.logs[childID] = sesspersist.Inspection{
+	storage.logs[childID] = sessionquery.LogSnapshot{
 		Header: child.Header(),
 		Events: []session.Event{
 			{
@@ -289,8 +120,8 @@ func TestServiceUsesLiveLogAndTracesSurfaceAndLineage(t *testing.T) {
 			},
 		},
 	}
-	storage.revisions[childID] = "child-cold-r1"
 
+	fixture.observe(t)
 	listed, err := fixture.service.ListSessions(requestContext)
 	if err != nil {
 		t.Fatal(err)
@@ -350,9 +181,8 @@ func TestServiceUsesLiveLogAndTracesSurfaceAndLineage(t *testing.T) {
 func TestServiceSearchesLiteralTextAndRejectsStaleCursor(t *testing.T) {
 	t.Parallel()
 	requestContext := context.Background()
-	storage := &queryPersistencePlugin{
-		logs:      map[session.SessionID]sesspersist.Inspection{},
-		revisions: map[session.SessionID]sesspersist.Revision{},
+	storage := &storedSources{
+		logs: map[session.SessionID]sessionquery.LogSnapshot{},
 	}
 	fixture := newQueryFixture(t, storage)
 	first := createLiveSession(t, fixture, "first", 100)
@@ -360,6 +190,7 @@ func TestServiceSearchesLiteralTextAndRejectsStaleCursor(t *testing.T) {
 	appendUser(t, first, "alpha literal result", session.SurfaceAppend(), nil)
 	appendUser(t, second, "alpha another result", session.SurfaceAppend(), nil)
 
+	fixture.observe(t)
 	page, err := fixture.service.SearchSessions(
 		requestContext,
 		sessionquery.SearchSessionsRequest{
@@ -374,6 +205,7 @@ func TestServiceSearchesLiteralTextAndRejectsStaleCursor(t *testing.T) {
 		t.Fatalf("first search page = %#v", page)
 	}
 	appendAssistant(t, first, "alpha changed generation", session.SurfaceAppend())
+	fixture.observe(t)
 	_, err = fixture.service.SearchSessions(
 		requestContext,
 		sessionquery.SearchSessionsRequest{
@@ -389,7 +221,7 @@ func TestServiceSearchesLiteralTextAndRejectsStaleCursor(t *testing.T) {
 	events, err := fixture.service.SearchEvents(
 		requestContext,
 		sessionquery.SearchEventsRequest{
-			SessionID: first.ID(),
+			SessionID: first.Header().ID,
 			Text:      "changed",
 			Limit:     5,
 		},
@@ -397,37 +229,27 @@ func TestServiceSearchesLiteralTextAndRejectsStaleCursor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events.Items) != 1 || events.Items[0].SessionID != first.ID() ||
+	if len(events.Items) != 1 || events.Items[0].SessionID != first.Header().ID ||
 		events.Items[0].Seq != 1 {
 		t.Fatalf("within-Session search = %#v", events)
 	}
 }
 
-func createLiveSession(
-	testingContext *testing.T,
-	fixture *queryFixture,
-	identifier session.SessionID,
-	createdAt int64,
-) session.Context {
-	testingContext.Helper()
-	handle, err := fixture.store.Create(
-		context.Background(),
-		&identifier,
-		session.CreateOptions{
-			Metadata: session.Metadata{
-				CreatedAt: &createdAt,
-			},
-		},
-	)
+func createLiveSession(t *testing.T, fixture *queryFixture, identifier session.SessionID, createdAt int64) *session.Log {
+	t.Helper()
+	conversation, err := session.NewLog(identifier, session.CreateOptions{
+		Metadata: session.Metadata{CreatedAt: &createdAt},
+	})
 	if err != nil {
-		testingContext.Fatal(err)
+		t.Fatal(err)
 	}
-	return handle.Session()
+	fixture.live[identifier] = conversation
+	return conversation
 }
 
 func appendUser(
 	testingContext *testing.T,
-	conversation session.Context,
+	conversation *session.Log,
 	textValue string,
 	operation session.SurfaceOperation,
 	sources *[]int64,
@@ -464,7 +286,7 @@ func appendUser(
 
 func appendAssistant(
 	testingContext *testing.T,
-	conversation session.Context,
+	conversation *session.Log,
 	textValue string,
 	operation session.SurfaceOperation,
 ) {
@@ -499,5 +321,94 @@ func appendAssistant(
 		if err != nil {
 			testingContext.Fatal(err)
 		}
+	}
+}
+
+func TestObservationIsAtomicDetachedAndContentStable(t *testing.T) {
+	fixture := newQueryFixture(t, &storedSources{})
+	conversation := createLiveSession(t, fixture, "observed", 100)
+	appendUser(t, conversation, "alpha unchanged", session.SurfaceAppend(), nil)
+	original := sessionquery.Source{
+		Log: sessionquery.LogSnapshot{
+			Header: conversation.Header(),
+			Events: conversation.Events(),
+		},
+		Live: true,
+	}
+	if err := fixture.service.Observe([]sessionquery.Source{original}); err != nil {
+		t.Fatal(err)
+	}
+	original.Log.Events[0].Data[0] = '!'
+	loaded, err := fixture.service.ReadSession(context.Background(), "observed")
+	if err != nil || loaded.Events[0].Data[0] == '!' {
+		t.Fatal("observation retained caller memory")
+	}
+	loaded.Events[0].Data[0] = '?'
+	loaded, err = fixture.service.ReadSession(context.Background(), "observed")
+	if err != nil || loaded.Events[0].Data[0] == '?' {
+		t.Fatal("read exposed owner memory")
+	}
+	bad := sessionquery.Source{
+		Log: sessionquery.LogSnapshot{
+			Header: conversation.Header(),
+			Events: []session.Event{{
+				Type: session.UserMessageEventName,
+				Seq:  4,
+				Data: []byte(`{}`),
+			}},
+		},
+		Live: true,
+	}
+	if err := fixture.service.Observe([]sessionquery.Source{bad}); err == nil {
+		t.Fatal("invalid observation accepted")
+	}
+	loaded, err = fixture.service.ReadSession(context.Background(), "observed")
+	if err != nil || len(loaded.Events) != 1 {
+		t.Fatal("failed observation replaced valid corpus")
+	}
+	// An unusable cold log must not override a valid live source.
+	bad.Live = false
+	bad.Persisted = true
+	live := sessionquery.Source{
+		Log: sessionquery.LogSnapshot{
+			Header: conversation.Header(),
+			Events: conversation.Events(),
+		},
+		Live: true,
+	}
+	if err := fixture.service.Observe([]sessionquery.Source{bad, live}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.service.Observe([]sessionquery.Source{live, bad}); err != nil {
+		t.Fatal(err)
+	}
+	bad.Log.Header.CreatedAt++
+	if err := fixture.service.Observe([]sessionquery.Source{live, bad}); err == nil {
+		t.Fatal("conflicting source headers accepted")
+	}
+}
+
+func TestUnchangedObservationPreservesSearchCursor(t *testing.T) {
+	fixture := newQueryFixture(t, &storedSources{})
+	first := createLiveSession(t, fixture, "first", 100)
+	second := createLiveSession(t, fixture, "second", 200)
+	appendUser(t, first, "alpha first", session.SurfaceAppend(), nil)
+	appendUser(t, second, "alpha second", session.SurfaceAppend(), nil)
+	fixture.observe(t)
+	page, err := fixture.service.SearchSessions(context.Background(), sessionquery.SearchSessionsRequest{
+		Text:  "alpha",
+		Limit: 1,
+	})
+	if err != nil || page.NextCursor == "" {
+		t.Fatalf("page = %#v, %v", page, err)
+	}
+	fixture.observe(t)
+	next, err := fixture.service.SearchSessions(context.Background(), sessionquery.SearchSessionsRequest{
+		Text:   "alpha",
+		Limit:  1,
+		Cursor: page.NextCursor,
+	})
+	if err != nil || len(next.Items) != 1 {
+		t.Fatalf("unchanged observation invalidated cursor: %#v, %v", next, err)
 	}
 }

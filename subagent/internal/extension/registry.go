@@ -34,10 +34,9 @@ type registration struct {
 	extension subagent.Extension
 	// name is nil for a common Extension. A non-nil value is the stable
 	// Bound-config selection name and does not identify a Tool or Plugin.
-	name          *string
-	state         registrationState
-	installations []*extensionBinding
-	closeErr      error
+	name     *string
+	state    registrationState
+	closeErr error
 }
 
 // registrationHandle is the caller-owned removal capability. Registry never
@@ -223,7 +222,6 @@ func (owner *Registry) unregister(
 		return closeErr
 	}
 	record.state = registrationRemoved
-	bindings := append([]*extensionBinding(nil), record.installations...)
 	record.mutex.Unlock()
 
 	owner.mutex.Lock()
@@ -237,21 +235,47 @@ func (owner *Registry) unregister(
 		delete(owner.named, *record.name)
 	}
 	owner.mutex.Unlock()
-	closeErr := closeBindings(closeContext, bindings)
-	if closeErr != nil {
-		closeErr = &subagent.Error{
-			Code: subagent.ErrorExtensionReleaseFailed,
-			Message: fmt.Sprintf(
-				"child Extension removal failed to release %d installation(s)",
-				countErrors(closeErr),
-			),
-			Cause: closeErr,
-		}
-	}
+	closeErr := context.Cause(closeContext)
 	record.mutex.Lock()
 	record.closeErr = closeErr
 	record.mutex.Unlock()
 	return closeErr
+}
+
+// ConfigureCommon applies common Extensions in registration order.
+func (owner *Registry) ConfigureCommon(ctx context.Context, configuration *subagent.ChildConfiguration) error {
+	return configure(ctx, owner.common(), configuration)
+}
+
+// ConfigureSelected applies named Extensions in requested order.
+func (owner *Registry) ConfigureSelected(ctx context.Context, names []string, configuration *subagent.ChildConfiguration) error {
+	records, err := owner.selected(names)
+	if err != nil {
+		return err
+	}
+	return configure(ctx, records, configuration)
+}
+
+func configure(ctx context.Context, records []*registration, configuration *subagent.ChildConfiguration) error {
+	if configuration == nil {
+		return errors.New("subagent: child configuration is required")
+	}
+	for _, record := range records {
+		record.mutex.Lock()
+		active := record.state == registrationActive
+		contribution := record.extension
+		record.mutex.Unlock()
+		if !active {
+			return &subagent.Error{
+				Code:    subagent.ErrorUnknownExtension,
+				Message: "a selected child Extension is no longer registered",
+			}
+		}
+		if err := contribution.ConfigureChild(ctx, configuration); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func nilInterface(candidate any) bool {

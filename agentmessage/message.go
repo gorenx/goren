@@ -208,7 +208,12 @@ func generateMessageID() (MessageID, error) {
 	return MessageID(encoded), nil
 }
 
-func restoreMessageValue(identifier MessageID, roleValue MessageRole, content []ContentBlock, origin MessageSource) (messageValue, error) {
+func restoreMessageValue(
+	identifier MessageID,
+	roleValue MessageRole,
+	content []ContentBlock,
+	origin MessageSource,
+) (messageValue, error) {
 	if identifier == "" {
 		return messageValue{}, errors.New("llm: message id is empty")
 	}

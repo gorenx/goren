@@ -7,279 +7,201 @@ import (
 	"fmt"
 
 	"github.com/gorenx/goren/agent"
+	agentregistry "github.com/gorenx/goren/agent/registry"
 	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/approval"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
+	"github.com/gorenx/goren/subagent/internal/agentclient"
+	"github.com/gorenx/goren/subagent/internal/childpolicy"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
 	"github.com/gorenx/goren/subagent/internal/lineage"
+	"github.com/gorenx/goren/subagent/internal/seedbuilder"
 	"github.com/gorenx/goren/tools"
 )
 
-// SeedBuilders resolves the exact registered child seed strategy.
 type SeedBuilders interface {
 	Find(string) (subagent.SeedBuilder, bool)
 }
 
-// Dependencies contains the capabilities required by OneShot execution.
+type Agents interface {
+	Find(context.Context, session.SessionID) (agentclient.Agent, error)
+	CreateChild(context.Context, agentregistry.CreateChildAgent) (agentclient.Agent, error)
+}
+
 type Dependencies struct {
-	Agents       agent.Registry
-	Constructor  agent.Constructor
+	Agents       Agents
 	SeedBuilders SeedBuilders
-	Delegation   approval.DelegationPolicy
-	Extensions   agent.Setup
+	Extensions   subagent.Extension
 	Publisher    sharedexecution.EventPublisher
 	Executions   *sharedexecution.Registry
 }
 
-// Service starts and observes terminal child executions.
 type Service struct {
 	dependencies Dependencies
 }
 
-// Mode identifies the business mode implemented by Service.
-func (*Service) Mode() subagent.Mode {
-	return subagent.ModeOneShot
-}
+func (*Service) Mode() subagent.Mode { return subagent.ModeOneShot }
 
-// New constructs the OneShot application service.
 func New(dependencySet Dependencies) (*Service, error) {
-	if dependencySet.Agents == nil || dependencySet.Constructor == nil ||
-		dependencySet.SeedBuilders == nil ||
-		dependencySet.Executions == nil {
-		return nil, errors.New(
-			"subagent: OneShot requires Agent Registry, Constructor, " +
-				"SeedBuilders, and Execution Registry",
-		)
+	if dependencySet.Agents == nil || dependencySet.SeedBuilders == nil || dependencySet.Executions == nil {
+		return nil, errors.New("subagent: OneShot requires Agent directory, SeedBuilders, and Execution Registry")
 	}
-	return &Service{
-		dependencies: dependencySet,
-	}, nil
+	return &Service{dependencies: dependencySet}, nil
 }
 
-// Interrupt stops the exact live OneShot execution, if it still exists.
-// Authorization is enforced by the parent Subagent Service before dispatch.
-func (owner *Service) Interrupt(
-	ctx context.Context,
-	childSessionID session.SessionID,
-) error {
+func (owner *Service) Interrupt(ctx context.Context, childID session.SessionID) error {
 	if ctx == nil {
 		return errors.New("subagent: OneShot Interrupt context is nil")
 	}
-	if requestErr := ctx.Err(); requestErr != nil {
-		return requestErr
+	if err := context.Cause(ctx); err != nil {
+		return err
 	}
-	entry, found := owner.dependencies.Executions.Find(childSessionID)
+	entry, found := owner.dependencies.Executions.Find(childID)
 	if !found || entry.Mode != subagent.ModeOneShot {
 		return nil
 	}
-	entry.Subject.Cancel(
-		agent.ParentCancel{},
-		agent.CancelOptions{
-			KeepInbox: false,
-		},
-	)
+	child, err := owner.dependencies.Agents.Find(ctx, childID)
+	if err != nil {
+		return err
+	}
+	if err := child.Cancel(ctx, agent.ParentCancel{}, agent.CancelOptions{KeepInbox: false}); err != nil {
+		return err
+	}
 	entry.Execution.Stop(sharedexecution.CloseInterrupted)
 	return nil
 }
 
-// Close requests every live OneShot execution to close and waits only until
-// each exact Agent enters Closing. Agent owns structural Scope teardown.
 func (owner *Service) Close(closeContext context.Context) error {
 	if closeContext == nil {
 		closeContext = context.Background()
 	}
-	targets := make([]sharedexecution.Entry, 0)
+	var targets []sharedexecution.ManagedExecution
 	for _, entry := range owner.dependencies.Executions.List() {
-		if entry.Mode != subagent.ModeOneShot {
-			continue
+		if entry.Mode == subagent.ModeOneShot {
+			targets = append(targets, entry.Execution)
+			entry.Execution.Stop(sharedexecution.CloseModule)
 		}
-		targets = append(targets, entry)
-		entry.Execution.Stop(sharedexecution.CloseModule)
 	}
-	for _, entry := range targets {
-		select {
-		case <-entry.Closing:
-		case <-closeContext.Done():
-			return context.Cause(closeContext)
+	for _, target := range targets {
+		if err := target.Wait(closeContext); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-// Start creates one child, accepts its initial message, and returns the common
-// Execution. The Start Context is not retained after publication.
-func (owner *Service) Start(
-	ctx context.Context,
-	command subagent.OneShotStartCommand,
-) (subagent.Execution, error) {
+func (owner *Service) Start(ctx context.Context, command subagent.OneShotStartCommand) (subagent.Execution, error) {
 	if ctx == nil {
 		return nil, errors.New("subagent: OneShot Start context is nil")
 	}
-	if requestErr := ctx.Err(); requestErr != nil {
-		return nil, requestErr
+	if err := context.Cause(ctx); err != nil {
+		return nil, err
 	}
-	requestSnapshot, snapshotErr := command.Snapshot()
-	if snapshotErr != nil {
-		return nil, snapshotErr
+	request, err := command.Snapshot()
+	if err != nil {
+		return nil, err
 	}
-	if requestSnapshot.Parent == nil ||
-		!owner.dependencies.Agents.Contains(requestSnapshot.Parent) {
-		return nil, &subagent.Error{
-			Code:    subagent.ErrorUnauthorized,
-			Message: "OneShot Start requires the exact live parent Agent",
+	parent, err := owner.dependencies.Agents.Find(ctx, request.ParentID)
+	if err != nil {
+		return nil, &subagent.Error{Code: subagent.ErrorUnauthorized, Message: "OneShot Start requires the exact live parent Agent", Cause: err}
+	}
+	parentView, err := parent.Read(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(request.OutputSchema) != 0 {
+		request.OutputSchema, err = tools.SnapshotObjectSchema(request.OutputSchema)
+		if err != nil {
+			return nil, err
 		}
 	}
-	seedBuilderName := command.SeedBuilderName()
-	if len(requestSnapshot.OutputSchema) != 0 {
-		requestSnapshot.OutputSchema, snapshotErr = tools.SnapshotObjectSchema(
-			requestSnapshot.OutputSchema,
-		)
-		if snapshotErr != nil {
-			return nil, snapshotErr
-		}
+	childID, err := sharedexecution.NewChildID()
+	if err != nil {
+		return nil, err
 	}
-	childSessionID, identityErr := sharedexecution.NewChildID()
-	if identityErr != nil {
-		return nil, identityErr
+	runID, err := sharedexecution.NewRunID()
+	if err != nil {
+		return nil, err
 	}
-	executionRunID, identityErr := sharedexecution.NewRunID()
-	if identityErr != nil {
-		return nil, identityErr
+	seed, err := owner.buildSeed(ctx, command.SeedBuilderName(), parentView.Snapshot.Events)
+	if err != nil {
+		return nil, err
 	}
-	seed, seedErr := owner.buildSeed(
-		ctx,
-		seedBuilderName,
-		requestSnapshot.Parent,
-	)
-	if seedErr != nil {
-		return nil, seedErr
+	seed, err = childpolicy.AppendDelegation(seed)
+	if err != nil {
+		return nil, err
 	}
-	childLineage, lineageErr := lineage.From(
-		requestSnapshot.Parent,
-		requestSnapshot.MaxDepth,
-	)
-	if lineageErr != nil {
-		return nil, lineageErr
+	descriptor := subagent.OneShotDescriptor{Provider: command.SeedBuilderName(), Label: command.Label()}
+	seed, err = seedbuilder.AppendDescriptor(childID, seed, descriptor)
+	if err != nil {
+		return nil, err
 	}
-	descriptor := subagent.OneShotDescriptor{
-		Provider: seedBuilderName,
-		Label:    command.Label(),
+	childLineage, err := lineage.From(request.ParentID, parentView.Header, agent.Options{}, request.MaxDepth)
+	if err != nil {
+		return nil, err
 	}
-	scopeSetup, structured := owner.setup(
-		requestSnapshot,
-		descriptor,
-	)
-	initiatedContext, contextErr := agent.WithInitiator(
-		ctx,
-		requestSnapshot.Parent,
-	)
-	if contextErr != nil {
-		return nil, contextErr
+	configuration, structured, err := owner.configure(ctx, request)
+	if err != nil {
+		return nil, err
 	}
-	handle, createErr := owner.dependencies.Constructor.Create(
-		initiatedContext,
-		agent.CreateOptions{
-			SessionID:     childSessionID,
-			Metadata:      childLineage.Metadata(int64(len(seed))),
-			Seed:          seed,
-			AgentOptions:  childLineage.AgentOptions(requestSnapshot.AgentOptions),
-			Setup:         scopeSetup,
-			RuntimeParent: requestSnapshot.Parent,
-		},
-	)
-	if createErr != nil {
-		return nil, createErr
-	}
-	prompt, messageErr := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
-		Content: requestSnapshot.Prompt,
-		Source:  agentmessage.UserMessageSource{},
+	childCreation := agentregistry.Creation{AgentID: childID, CreationID: string(runID)}
+	child, err := owner.dependencies.Agents.CreateChild(ctx, agentregistry.CreateChildAgent{
+		Parent:         parent.Creation(),
+		Child:          childCreation,
+		Options:        session.CreateOptions{Seed: seed, Metadata: childLineage.Metadata(int64(len(seed)))},
+		AgentOptions:   request.AgentOptions,
+		Tools:          &configuration.Tools,
+		PromptSections: configuration.PromptSections,
 	})
-	if messageErr != nil {
-		return nil, errors.Join(
-			messageErr,
-			handle.Dispose(context.WithoutCancel(ctx)),
-		)
+	if err != nil {
+		return nil, err
 	}
-	if followErr := handle.Subject.Followup(prompt); followErr != nil {
-		return nil, errors.Join(
-			followErr,
-			handle.Dispose(context.WithoutCancel(ctx)),
-		)
+	dispose := func(failure error) (subagent.Execution, error) {
+		return nil, errors.Join(failure, child.Close(context.WithoutCancel(ctx)))
 	}
-	running, executionErr := newOneShotExecution(executionRunID, childSessionID)
-	if executionErr != nil {
-		return nil, errors.Join(
-			executionErr,
-			handle.Dispose(context.WithoutCancel(ctx)),
-		)
+	prompt, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{Content: request.Prompt, Source: agentmessage.UserMessageSource{}})
+	if err != nil {
+		return dispose(err)
+	}
+	if err = child.Followup(ctx, prompt); err != nil {
+		return dispose(err)
+	}
+	running, err := newOneShotExecution(runID, childID)
+	if err != nil {
+		return dispose(err)
 	}
 	running.executions = owner.dependencies.Executions
-	running.handle = handle
-	running.parent = requestSnapshot.Parent
-	running.seedBuilder = seedBuilderName
+	running.child = child
+	running.parent = parent.Creation()
+	running.seedBuilder = command.SeedBuilderName()
 	running.boundary = int64(len(seed))
 	running.structured = structured
 	running.publisher = owner.dependencies.Publisher
-	if publishErr := sharedexecution.Publish(
-		owner.dependencies.Executions,
-		owner.dependencies.Publisher,
-		sharedexecution.Entry{
-			Execution: running,
-			Mode:      subagent.ModeOneShot,
-			Parent:    requestSnapshot.Parent,
-			Subject:   handle.Subject,
-			Closing:   handle.ClosingSignal(),
-		},
-		seedBuilderName,
-	); publishErr != nil {
-		return nil, errors.Join(
-			publishErr,
-			handle.Dispose(context.WithoutCancel(ctx)),
-		)
+	if err = sharedexecution.Publish(owner.dependencies.Executions, owner.dependencies.Publisher, sharedexecution.Entry{
+		Execution: running,
+		Mode:      subagent.ModeOneShot,
+		Parent:    parent.Creation(),
+		Subject:   child.Creation(),
+	}, command.SeedBuilderName()); err != nil {
+		return dispose(err)
 	}
-	go watch(running, handle)
+	go watch(running, child)
 	return running, nil
 }
 
-func (owner *Service) buildSeed(
-	ctx context.Context,
-	name string,
-	parentAgent agent.Agent,
-) ([]session.Event, error) {
+func (owner *Service) buildSeed(ctx context.Context, name string, events []session.Event) ([]session.Event, error) {
 	builder, found := owner.dependencies.SeedBuilders.Find(name)
 	if !found {
-		return nil, &subagent.Error{
-			Code: subagent.ErrorNoSeedBuilder,
-			Message: fmt.Sprintf(
-				"no subagent SeedBuilder registered for %q",
-				name,
-			),
-		}
+		return nil, &subagent.Error{Code: subagent.ErrorNoSeedBuilder, Message: fmt.Sprintf("no subagent SeedBuilder registered for %q", name)}
 	}
-	parentSession := parentAgent.SessionValue()
-	if parentSession == nil {
-		return nil, errors.New("subagent: parent Session is unavailable")
-	}
-	seedValue, seedErr := builder.BuildSeed(
-		ctx,
-		parentSession.Events(),
-	)
-	if seedErr != nil {
-		return nil, seedErr
+	seedValue, err := builder.BuildSeed(ctx, events)
+	if err != nil {
+		return nil, err
 	}
 	return seedValue.EventPrefix(), nil
 }
 
-func watch(running *oneShotExecution, handle agent.Handle) {
-	idleResult := make(chan error, 1)
-	go func() {
-		idleResult <- handle.Subject.WhenIdle(context.Background())
-	}()
-	select {
-	case <-handle.ClosingSignal():
-		running.Stop(sharedexecution.CloseExternal)
-	case <-idleResult:
-		running.Stop(sharedexecution.CloseNormal)
-	}
+func watch(running *oneShotExecution, child agentclient.Agent) {
+	_ = child.WhenIdle(context.Background())
+	running.Stop(sharedexecution.CloseNormal)
 }

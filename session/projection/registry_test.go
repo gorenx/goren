@@ -1,14 +1,10 @@
 package projection
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
-	"reflect"
-	"sync"
 	"testing"
 
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
 
@@ -23,7 +19,6 @@ type projectionFixtureUnit struct {
 
 type stagedFailureUnit struct {
 	key               string
-	mu                sync.Mutex
 	applyFailureValue string
 	applyFailures     int
 	viewFailureValue  string
@@ -88,12 +83,10 @@ func (subject *stagedFailureUnit) ApplyState(
 	if err := json.Unmarshal(committed.Data, &value); err != nil {
 		return Transition{}, err
 	}
-	subject.mu.Lock()
 	fail := value == subject.applyFailureValue && subject.applyFailures > 0
 	if fail {
 		subject.applyFailures--
 	}
-	subject.mu.Unlock()
 	if fail {
 		return Transition{}, errors.New("injected apply failure")
 	}
@@ -111,457 +104,240 @@ func (subject *stagedFailureUnit) ViewState(
 	if err := json.Unmarshal(state, &value); err != nil {
 		return nil, err
 	}
-	subject.mu.Lock()
 	fail := value == subject.viewFailureValue && subject.viewFailures > 0
 	if fail {
 		subject.viewFailures--
 	}
-	subject.mu.Unlock()
 	if fail {
 		return nil, errors.New("injected view failure")
 	}
 	return append(json.RawMessage(nil), state...), nil
 }
 
-type projectionFailureReporter struct{}
-
-func (projectionFailureReporter) ReportEventFailure(context.Context, plugin.EventFailure) {}
-
-func (projectionFailureReporter) ReportPostCommitFailure(session.PostCommitFailure) {}
-
-type projectionFixtureObserver struct {
-	plugin.Base
-	mu       sync.Mutex
-	registry Registry
-	changes  []Change
-}
-
-func (*projectionFixtureObserver) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name: "fixture-session-projection-observer",
-		Requires: []plugin.ServiceType{
-			plugin.ServiceOf[Registry](),
-		},
-		Events: []plugin.EventSubscription{
-			plugin.EventOf[Changed](),
-		},
+func historyOf(values ...string) []session.Event {
+	var events []session.Event
+	for index, value := range values {
+		encoded, _ := json.Marshal(value)
+		events = append(events, session.Event{
+			Seq:  int64(index),
+			Type: projectionFixtureEventName,
+			Data: encoded,
+		})
 	}
+	return events
 }
 
-func (observer *projectionFixtureObserver) Apply(context.Context) error {
-	projectionService, err := plugin.Require[Registry](observer)
+func registerUnit(t *testing.T, owner *Projection, definition Unit) RegistrationID {
+	t.Helper()
+	id, err := owner.registry.Register(definition)
 	if err != nil {
-		return err
+		t.Fatal(err)
 	}
-	observer.registry = projectionService
-	return nil
+	return id
 }
 
-func (*projectionFixtureObserver) Dispose(context.Context) error {
-	return nil
-}
-
-func (observer *projectionFixtureObserver) ObserveEvent(
-	_ context.Context,
-	fact plugin.Event,
-) error {
-	projectionChange, matches := fact.(Changed)
-	if !matches {
-		return nil
-	}
-	observer.mu.Lock()
-	observer.changes = append(observer.changes, projectionChange.Change)
-	observer.mu.Unlock()
-	return nil
-}
-
-func (observer *projectionFixtureObserver) observedChanges() []Change {
-	observer.mu.Lock()
-	defer observer.mu.Unlock()
-	return append([]Change(nil), observer.changes...)
-}
-
-type projectionFixture struct {
-	store    session.LiveStore
-	registry *DriveRegistry
-	observer *projectionFixtureObserver
-}
-
-type sessionStoreProbe struct {
-	plugin.Base
-	store session.LiveStore
-}
-
-func (*sessionStoreProbe) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name: "session-projection-store-probe",
-		Requires: []plugin.ServiceType{
-			plugin.ServiceOf[session.LiveStore](),
-		},
-	}
-}
-
-func (probe *sessionStoreProbe) Apply(context.Context) error {
-	liveStore, err := plugin.Require[session.LiveStore](probe)
-	if err != nil {
-		return err
-	}
-	probe.store = liveStore
-	return nil
-}
-
-func (*sessionStoreProbe) Dispose(context.Context) error { return nil }
-
-func newProjectionFixture(testingContext *testing.T) projectionFixture {
-	testingContext.Helper()
-	reporter := projectionFailureReporter{}
-	sessionPlugin, err := session.NewPlugin(
-		session.MemoryStoreOptions{
-			PostCommitFailures: reporter,
-		},
-	)
-	if err != nil {
-		testingContext.Fatal(err)
-	}
-	projectionService := NewDriveRegistry()
-	observer := &projectionFixtureObserver{}
-	storeProbe := &sessionStoreProbe{}
-	runtimeEngine := plugin.NewRuntime(
-		plugin.RuntimeSettings{
-			EventFailures: reporter,
-		},
-	)
-	if _, err := runtimeEngine.Start(
-		context.Background(),
-		observer,
-		projectionService,
-		sessionPlugin,
-		storeProbe,
-	); err != nil {
-		testingContext.Fatal(err)
-	}
-	testingContext.Cleanup(func() {
-		if err := runtimeEngine.Shutdown(context.Background()); err != nil {
-			testingContext.Error(err)
-		}
+func TestRegistryLateFoldAndDuplicateObservation(t *testing.T) {
+	owner := NewRegistry().NewProjection()
+	source := historyOf("before", "after")
+	registerUnit(t, owner, projectionFixtureUnit{
+		key:     "fixture",
+		version: 1,
 	})
-	return projectionFixture{
-		store:    storeProbe.store,
-		registry: projectionService,
-		observer: observer,
+	prefix := source
+	prefix = prefix[:1]
+	initial, err := owner.Snapshot(prefix)
+	if err != nil || initial.AsOfSeq != 0 || string(initial.Values["fixture"]) != `"before"` {
+		t.Fatalf("late snapshot = %#v, %v", initial, err)
+	}
+	changes, err := owner.Observe(source, 1)
+	if err != nil || len(changes) != 1 || changes[0].Seq != 1 || string(changes[0].Value) != `"after"` {
+		t.Fatalf("changes = %#v, %v", changes, err)
+	}
+	changes[0].Value[0] = '!'
+	historical, err := owner.Snapshot(prefix)
+	if err != nil || historical.AsOfSeq != 0 || string(historical.Values["fixture"]) != `"before"` {
+		t.Fatalf("historical snapshot = %#v, %v", historical, err)
+	}
+	duplicate, err := owner.Observe(source, 1)
+	if err != nil || len(duplicate) != 0 {
+		t.Fatalf("duplicate = %#v, %v", duplicate, err)
+	}
+	current, err := owner.Snapshot(source)
+	if err != nil || string(current.Values["fixture"]) != `"after"` {
+		t.Fatalf("current = %#v, %v", current, err)
 	}
 }
 
-func TestDriveRegistryFoldsLateStateAndPublishesWholeValues(t *testing.T) {
-	t.Parallel()
-	requestContext := context.Background()
-	fixture := newProjectionFixture(t)
-	handle, err := fixture.store.Create(requestContext, nil, session.CreateOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	conversation := handle.Session()
-	{
-		draft, err := session.NewEventDraft(projectionFixtureEvent,
-			"before-registration")
-		if err == nil {
-			_, err = conversation.Commit(context.Background(), session.Batch(draft))
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := fixture.registry.Register(
-		projectionFixtureUnit{
-			key:     "fixture",
-			version: 1,
-		},
-	); err != nil {
-		t.Fatal(err)
-	}
-
-	initial, err := fixture.registry.Snapshot(conversation)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if initial.AsOfSeq != 0 || string(initial.Values["fixture"]) != `"before-registration"` {
-		t.Fatalf("late snapshot = %#v", initial)
-	}
-	draft, err := session.NewEventDraft(projectionFixtureEvent,
-		"after-registration")
-	if err != nil {
-		t.Fatal(err)
-	}
-	receipt, err := conversation.Commit(context.Background(), session.Batch(draft))
-	if err != nil {
-		t.Fatal(err)
-	}
-	committed := receipt.Events[0]
-	changes := fixture.observer.observedChanges()
-	if len(changes) != 1 || changes[0].Key != "fixture" || changes[0].Seq != committed.Seq ||
-		string(changes[0].Value) != `"after-registration"` {
-		t.Fatalf("changes = %#v", changes)
-	}
-}
-
-func TestDriveRegistryStagesCellsAndCatchesUpAfterApplyFailure(t *testing.T) {
-	t.Parallel()
-	fixture := newProjectionFixture(t)
-	first := &stagedFailureUnit{
-		key:            "first",
-		unchangedValue: "tail",
-	}
-	second := &stagedFailureUnit{
-		key:               "second",
-		applyFailureValue: "retry",
-		applyFailures:     1,
-		unchangedValue:    "tail",
-	}
-	for _, projectionUnit := range []Unit{first, second} {
-		if _, err := fixture.registry.Register(projectionUnit); err != nil {
-			t.Fatal(err)
-		}
-	}
-	handle, err := fixture.store.Create(context.Background(), nil, session.CreateOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	conversation := handle.Session()
-	base := commitProjectionFixtureValue(t, conversation, "base")
-	assertProjectionFixtureCells(t, fixture.registry, conversation, base.Seq, `"base"`)
-	if changes := fixture.observer.observedChanges(); len(changes) != 2 {
-		t.Fatalf("base changes = %#v", changes)
-	}
-
-	failed := commitProjectionFixtureValue(t, conversation, "retry")
-	assertProjectionFixtureCells(t, fixture.registry, conversation, base.Seq, `"base"`)
-	if changes := fixture.observer.observedChanges(); len(changes) != 2 {
-		t.Fatalf("changes after failed seq %d = %#v", failed.Seq, changes)
-	}
-
-	recovered := commitProjectionFixtureValue(t, conversation, "tail")
-	assertProjectionFixtureCells(t, fixture.registry, conversation, recovered.Seq, `"tail"`)
-	changes := fixture.observer.observedChanges()
-	if len(changes) != 4 {
-		t.Fatalf("recovered changes = %#v", changes)
-	}
-	for index, projectionKey := range []string{"first", "second"} {
-		observed := changes[index+2]
-		if observed.Key != projectionKey || observed.Seq != recovered.Seq ||
-			string(observed.Value) != `"tail"` {
-			t.Fatalf("recovered change %d = %#v", index, observed)
-		}
+func TestRegistryStagesAllUnitsBeforeInstallingState(t *testing.T) {
+	for _, mode := range []string{"apply", "view"} {
+		t.Run(mode, func(t *testing.T) {
+			owner := NewRegistry().NewProjection()
+			first := &stagedFailureUnit{
+				key:            "first",
+				unchangedValue: "tail",
+			}
+			second := &stagedFailureUnit{
+				key:            "second",
+				unchangedValue: "tail",
+			}
+			if mode == "apply" {
+				second.applyFailureValue = "retry"
+				second.applyFailures = 1
+			} else {
+				second.viewFailureValue = "retry"
+				second.viewFailures = 1
+			}
+			registerUnit(t, owner, first)
+			registerUnit(t, owner, second)
+			source := historyOf("base", "retry", "tail")
+			changes, err := owner.Observe(source, 0)
+			if err != nil || len(changes) != 2 {
+				t.Fatalf("base = %#v, %v", changes, err)
+			}
+			changes, err = owner.Observe(source, 1)
+			if err == nil || len(changes) != 0 {
+				t.Fatalf("failure = %#v, %v", changes, err)
+			}
+			for key, entry := range owner.registry.registrations {
+				cell := owner.cells[entry]
+				if cell.observedSeq != 0 || string(cell.state) != `"base"` {
+					t.Fatalf("partial install %s: %#v", key, cell)
+				}
+			}
+			if mode == "view" {
+				prefix := source
+				prefix = prefix[:2]
+				restored, err := owner.Snapshot(prefix)
+				if err != nil || restored.AsOfSeq != 1 || string(restored.Values["first"]) != `"retry"` || string(restored.Values["second"]) != `"retry"` {
+					t.Fatalf("snapshot retry = %#v, %v", restored, err)
+				}
+			} else {
+				changes, err = owner.Observe(source, 2)
+				if err != nil || len(changes) != 2 {
+					t.Fatalf("catchup = %#v, %v", changes, err)
+				}
+				for _, changed := range changes {
+					if changed.Seq != 2 || string(changed.Value) != `"tail"` {
+						t.Fatalf("catchup change = %#v", changed)
+					}
+				}
+			}
+		})
 	}
 }
 
-func TestDriveRegistryStagesCellsBeforeValidatingAllViews(t *testing.T) {
-	t.Parallel()
-	fixture := newProjectionFixture(t)
-	first := &stagedFailureUnit{
-		key: "first",
+func TestRegistryRegistrationIDsAndCreationIsolation(t *testing.T) {
+	owner := NewRegistry().NewProjection()
+	definition := projectionFixtureUnit{
+		key:     "fixture",
+		version: 1,
 	}
-	second := &stagedFailureUnit{
-		key:              "second",
-		viewFailureValue: "retry-view",
-		viewFailures:     1,
+	first := registerUnit(t, owner, definition)
+	second := registerUnit(t, owner, definition)
+	if first == second {
+		t.Fatal("registrations reused identity")
 	}
-	for _, projectionUnit := range []Unit{first, second} {
-		if _, err := fixture.registry.Register(projectionUnit); err != nil {
-			t.Fatal(err)
-		}
+	incompatible := definition
+	incompatible.version = 2
+	if _, err := owner.registry.Register(incompatible); err == nil {
+		t.Fatal("incompatible version accepted")
 	}
-	handle, err := fixture.store.Create(context.Background(), nil, session.CreateOptions{})
-	if err != nil {
+	owner.registry.Remove(first)
+	owner.registry.Remove(first)
+	if len(owner.registry.registrations) != 1 {
+		t.Fatal("duplicate removal released another registration")
+	}
+	old := historyOf("old")
+	replacement := historyOf("new")
+	independent := owner.registry.NewProjection()
+	if _, err := owner.Snapshot(old); err != nil {
 		t.Fatal(err)
 	}
-	conversation := handle.Session()
-	base := commitProjectionFixtureValue(t, conversation, "base")
-	assertProjectionFixtureCells(t, fixture.registry, conversation, base.Seq, `"base"`)
-
-	failed := commitProjectionFixtureValue(t, conversation, "retry-view")
-	assertProjectionFixtureCells(t, fixture.registry, conversation, base.Seq, `"base"`)
-	if changes := fixture.observer.observedChanges(); len(changes) != 2 {
-		t.Fatalf("changes after failed view at seq %d = %#v", failed.Seq, changes)
-	}
-
-	projectionSnapshot, err := fixture.registry.Snapshot(conversation)
-	if err != nil {
+	if _, err := independent.Snapshot(replacement); err != nil {
 		t.Fatal(err)
 	}
-	if projectionSnapshot.AsOfSeq != failed.Seq ||
-		string(projectionSnapshot.Values["first"]) != `"retry-view"` ||
-		string(projectionSnapshot.Values["second"]) != `"retry-view"` {
-		t.Fatalf("recovered snapshot = %#v", projectionSnapshot)
+	entry := owner.registry.registrations["fixture"]
+	if string(owner.cells[entry].state) != `"old"` || string(independent.cells[entry].state) != `"new"` {
+		t.Fatal("independent folds shared state")
 	}
-	assertProjectionFixtureCells(t, fixture.registry, conversation, failed.Seq, `"retry-view"`)
-}
-
-func TestDriveRegistryReferenceCountsCompatibleUnits(t *testing.T) {
-	t.Parallel()
-	requestContext := context.Background()
-	fixture := newProjectionFixture(t)
-	firstHandle, err := fixture.registry.Register(
-		projectionFixtureUnit{
-			key:     "fixture",
-			version: 1,
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
+	owner.registry.Remove(second)
+	if len(owner.registry.registrations) != 0 {
+		t.Fatal("last removal left registration")
 	}
-	secondHandle, err := fixture.registry.Register(
-		projectionFixtureUnit{
-			key:     "fixture",
-			version: 1,
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := fixture.registry.Register(
-		projectionFixtureUnit{
-			key:     "fixture",
-			version: 2,
-		},
-	); err == nil {
-		t.Fatal("stateVersion mismatch was accepted")
-	}
-	handle, err := fixture.store.Create(requestContext, nil, session.CreateOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	conversation := handle.Session()
-	if err := firstHandle.Release(requestContext); err != nil {
-		t.Fatal(err)
-	}
-	projectionSnapshot, err := fixture.registry.Snapshot(conversation)
-	if err != nil || len(projectionSnapshot.Values) != 1 {
-		t.Fatalf("snapshot after first release = (%#v, %v)", projectionSnapshot, err)
-	}
-	if err := secondHandle.Release(requestContext); err != nil {
-		t.Fatal(err)
-	}
-	projectionSnapshot, err = fixture.registry.Snapshot(conversation)
-	if err != nil || len(projectionSnapshot.Values) != 0 {
-		t.Fatalf("snapshot after last release = (%#v, %v)", projectionSnapshot, err)
+	registerUnit(t, owner, incompatible)
+	owner.registry.Remove(second)
+	if owner.registry.registrations["fixture"].projectionUnit.StateVersion() != 2 {
+		t.Fatal("old ID removed replacement")
 	}
 }
 
-func TestDriveRegistryCheckpointRestoreUsesVersionedTail(t *testing.T) {
-	t.Parallel()
-	requestContext := context.Background()
-	fixture := newProjectionFixture(t)
-	if _, err := fixture.registry.Register(
-		projectionFixtureUnit{
-			key:     "fixture",
-			version: 1,
-		},
-	); err != nil {
-		t.Fatal(err)
-	}
-	handle, err := fixture.store.Create(requestContext, nil, session.CreateOptions{})
+func TestRegistryCheckpointRestoreUsesVersionedTail(t *testing.T) {
+	owner := NewRegistry().NewProjection()
+	registerUnit(t, owner, projectionFixtureUnit{
+		key:     "fixture",
+		version: 1,
+	})
+	source := historyOf("one", "two")
+	prefix := source
+	prefix = prefix[:1]
+	rows, err := owner.Checkpoint(prefix)
 	if err != nil {
 		t.Fatal(err)
 	}
-	conversation := handle.Session()
-	{
-		draft, err := session.NewEventDraft(projectionFixtureEvent, "one")
-		if err == nil {
-			_, err = conversation.Commit(context.Background(), session.Batch(draft))
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	rows, err := fixture.registry.Checkpoint(conversation)
-	if err != nil {
-		t.Fatal(err)
-	}
-	{
-		draft, err := session.NewEventDraft(projectionFixtureEvent, "two")
-		if err == nil {
-			_, err = conversation.Commit(context.Background(), session.Batch(draft))
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	floor := fixture.registry.RestoreFloor(rows)
+	floor := owner.registry.RestoreFloor(rows)
 	if floor == nil || *floor != 0 {
-		t.Fatalf("restore floor = %v", floor)
+		t.Fatalf("floor = %v", floor)
 	}
-	restored, err := fixture.registry.Restore(rows, conversation.Events(), *floor)
-	if err != nil {
+	restored, err := owner.registry.Restore(rows, source, *floor)
+	if err != nil || restored.Snapshot.AsOfSeq != 1 || string(restored.Snapshot.Values["fixture"]) != `"two"` || restored.Checkpoint["fixture"].Seq != 1 || restored.Checkpoint["fixture"].Version != 1 {
+		t.Fatalf("restore = %#v, %v", restored, err)
+	}
+	if _, err := owner.registry.Restore(Checkpoint{}, source[1:], 1); err == nil {
+		t.Fatal("partial restore without checkpoint accepted")
+	}
+	rows["fixture"].Value[0] = '!'
+	current, err := owner.Checkpoint(prefix)
+	if err != nil || string(current["fixture"].Value) != `"one"` {
+		t.Fatalf("checkpoint escaped: %#v, %v", current, err)
+	}
+}
+
+func TestProjectionRejectsIncompleteHistory(t *testing.T) {
+	owner := NewRegistry().NewProjection()
+	for _, source := range [][]session.Event{
+		{{Seq: 1}},
+		{{Seq: 0}, {Seq: 2}},
+	} {
+		if _, err := owner.Snapshot(source); err == nil {
+			t.Fatalf("invalid history accepted: %#v", source)
+		}
+	}
+	if _, err := owner.Observe(historyOf("one"), 1); err == nil {
+		t.Fatal("missing sequence accepted")
+	}
+}
+
+func TestProjectionRebuildsAfterSameKeyRegistrationReplacement(t *testing.T) {
+	directory := NewRegistry()
+	owner := directory.NewProjection()
+	original := registerUnit(t, owner, projectionFixtureUnit{
+		key:     "fixture",
+		version: 1,
+	})
+	if _, err := owner.Snapshot(historyOf("old")); err != nil {
 		t.Fatal(err)
 	}
-	if string(restored.Snapshot.Values["fixture"]) != `"two"` || restored.Snapshot.AsOfSeq != 1 {
-		t.Fatalf("restored snapshot = %#v", restored.Snapshot)
+	previous := directory.registrations["fixture"]
+	directory.Remove(original)
+	registerUnit(t, owner, projectionFixtureUnit{
+		key:     "fixture",
+		version: 1,
+	})
+	result, err := owner.Snapshot(historyOf("new"))
+	if err != nil || string(result.Values["fixture"]) != `"new"` {
+		t.Fatalf("replacement reused old state: %#v, %v", result, err)
 	}
-	wantRow := CheckpointRow{
-		Version: 1,
-		Seq:     1,
-		Value:   json.RawMessage(`"two"`),
-	}
-	if !reflect.DeepEqual(restored.Checkpoint["fixture"], wantRow) {
-		t.Fatalf("restored row = %#v", restored.Checkpoint["fixture"])
-	}
-	if _, err := fixture.registry.Restore(
-		Checkpoint{},
-		conversation.Events()[1:],
-		1,
-	); err == nil {
-		t.Fatal("partial restore without a checkpoint succeeded")
-	}
-}
-
-func commitProjectionFixtureValue(
-	testingContext *testing.T,
-	conversation session.Context,
-	value string,
-) session.Event {
-	testingContext.Helper()
-	draft, err := session.NewEventDraft(projectionFixtureEvent, value)
-	if err != nil {
-		testingContext.Fatal(err)
-	}
-	receipt, err := conversation.Commit(context.Background(), session.Batch(draft))
-	if err != nil {
-		testingContext.Fatal(err)
-	}
-	if len(receipt.Events) != 1 {
-		testingContext.Fatalf("committed events = %#v", receipt.Events)
-	}
-	return receipt.Events[0]
-}
-
-func assertProjectionFixtureCells(
-	testingContext *testing.T,
-	registryOwner *DriveRegistry,
-	conversation session.Context,
-	wantSeq int64,
-	wantState string,
-) {
-	testingContext.Helper()
-	registryOwner.mu.Lock()
-	defer registryOwner.mu.Unlock()
-	for _, projectionKey := range []string{"first", "second"} {
-		entry := registryOwner.registrations[projectionKey]
-		if entry == nil {
-			testingContext.Fatalf("projection %q is not registered", projectionKey)
-		}
-		cell, found := entry.cells[conversation]
-		if !found {
-			testingContext.Fatalf("projection %q cell is absent", projectionKey)
-		}
-		if cell.observedSeq != wantSeq || string(cell.state) != wantState {
-			testingContext.Fatalf(
-				"projection %q cell = {seq:%d state:%s}, want {seq:%d state:%s}",
-				projectionKey,
-				cell.observedSeq,
-				cell.state,
-				wantSeq,
-				wantState,
-			)
-		}
+	if _, found := owner.cells[previous]; found {
+		t.Fatal("removed registration retained a cell")
 	}
 }

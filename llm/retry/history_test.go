@@ -160,9 +160,9 @@ func TestDecodeRetryRecordPreservesUnionAndRejectsMalformedFailure(t *testing.T)
 	}
 }
 
-func openRetrySession(t *testing.T, providerRoute string) session.Context {
+func openRetrySession(t *testing.T, providerRoute string) *session.Log {
 	t.Helper()
-	conversation, err := session.New(session.SessionID("retry-fixture"), session.CreateOptions{})
+	conversation, err := session.NewLog(session.SessionID("retry-fixture"), session.CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

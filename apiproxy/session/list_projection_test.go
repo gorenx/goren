@@ -6,8 +6,6 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/gorenx/goren/agent"
-	api "github.com/gorenx/goren/apiproxy"
 	"github.com/gorenx/goren/session"
 	sesspersist "github.com/gorenx/goren/session/persistence"
 	sessproj "github.com/gorenx/goren/session/projection"
@@ -65,26 +63,24 @@ func TestSessionListMetadataProjectionTracksMonotonicSummaryFacts(t *testing.T) 
 }
 
 type listLiveStore struct {
-	session.LiveStore
-	conversation session.Context
+	conversation *Snapshot
 }
 
-func (store listLiveStore) List() []session.Context {
-	if store.conversation == nil {
-		return nil
+func (source listLiveStore) List(context.Context) ([]Snapshot, error) {
+	if source.conversation == nil {
+		return nil, nil
 	}
-	return []session.Context{store.conversation}
+	return []Snapshot{*source.conversation}, nil
 }
-
-func (store listLiveStore) Get(identifier session.SessionID) (session.Context, bool) {
-	if store.conversation == nil || store.conversation.ID() != identifier {
-		return nil, false
+func (source listLiveStore) Read(_ context.Context, identifier session.SessionID) (*Snapshot, error) {
+	if source.conversation == nil || source.conversation.Header.ID != identifier {
+		return nil, nil
 	}
-	return store.conversation, true
+	return source.conversation, nil
 }
 
 type listPersistence struct {
-	sesspersist.Persistence
+	History
 	headers      []session.Header
 	inspectCalls int
 }
@@ -134,6 +130,7 @@ type listCache struct {
 }
 
 func (cache *listCache) CachedSnapshot(
+	context.Context,
 	session.Header,
 ) (*sessproj.Snapshot, error) {
 	if cache.err != nil || !cache.found {
@@ -149,14 +146,6 @@ func (cache *listCache) ColdSnapshot(
 ) (sessproj.Snapshot, error) {
 	cache.coldCalls++
 	return cache.coldSnapshot, cache.coldErr
-}
-
-type emptyAgentRegistry struct {
-	agent.Registry
-}
-
-func (emptyAgentRegistry) Get(session.SessionID) (agent.Agent, bool) {
-	return nil, false
 }
 
 func TestColdSessionListUsesCachedProjectionWithoutInspect(t *testing.T) {
@@ -178,7 +167,6 @@ func TestColdSessionListUsesCachedProjectionWithoutInspect(t *testing.T) {
 		headers: []session.Header{header},
 	}
 	reader := &sessionReader{
-		agents:      emptyAgentRegistry{},
 		sessions:    listLiveStore{},
 		persistence: durability,
 		cache: &listCache{
@@ -239,7 +227,6 @@ func TestColdSessionListCacheMissRestoresProjection(t *testing.T) {
 		},
 	}
 	reader := &sessionReader{
-		agents:      emptyAgentRegistry{},
 		sessions:    listLiveStore{},
 		persistence: durability,
 		cache:       cache,
@@ -291,7 +278,6 @@ func TestSessionListCursorContinuesWithoutRepeatingHeaders(t *testing.T) {
 		},
 	}
 	reader := &sessionReader{
-		agents:      emptyAgentRegistry{},
 		sessions:    listLiveStore{},
 		persistence: durability,
 	}
@@ -308,7 +294,7 @@ func TestSessionListCursorContinuesWithoutRepeatingHeaders(t *testing.T) {
 	if err != nil || encoded == nil {
 		t.Fatalf("encoded cursor = (%#v, %v)", encoded, err)
 	}
-	decoded, err := decodeSessionListPage(api.SessionListRequest{
+	decoded, err := decodeSessionListPage(ListRequest{
 		Cursor: encoded,
 		Limit:  sequencePointer(2),
 	})

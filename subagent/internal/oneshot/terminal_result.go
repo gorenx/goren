@@ -10,15 +10,11 @@ import (
 )
 
 func readTerminal(
-	conversation session.Context,
+	events []session.Event,
 	boundary int64,
 	cancelled bool,
 	structured *structuredOutput,
 ) (subagent.Terminal, error) {
-	if conversation == nil {
-		return subagent.Terminal{}, errors.New("subagent: OneShot child Session is nil")
-	}
-	events := conversation.Events()
 	if boundary < 0 || boundary > int64(len(events)) {
 		return subagent.Terminal{}, errors.New("subagent: invalid OneShot execution boundary")
 	}

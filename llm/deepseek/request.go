@@ -48,13 +48,16 @@ func (backend *Adapter) openStream(
 	if identityValue == "" {
 		return nil, "", errors.New("llm-deepseek: anonymous user id is empty")
 	}
-	wireValue, err := SerializeRequest(requestOptions, connection.Defaults)
+	wireValue, err := backend.serializeRequest(operationContext, requestOptions, connection.Defaults)
 	if err != nil {
 		return nil, "", err
 	}
 	payload, err := json.Marshal(wireValue)
 	if err != nil {
 		return nil, "", fmt.Errorf("llm-deepseek: encode request: %w", err)
+	}
+	if len(payload) > 48<<20 {
+		return nil, "", llm.MustLlmError("DeepSeek request exceeds 48 MiB.", "INVALID_REQUEST")
 	}
 	endpoint := connection.BaseURL + "/chat/completions"
 	httpRequest, err := http.NewRequestWithContext(

@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/subagent"
 	"github.com/gorenx/goren/tools"
 )
+
+// DefaultToolName is the canonical default model-visible delegation tool name.
+const DefaultToolName = "subagent"
 
 var foregroundOutputSchema = json.RawMessage(`{
   "oneOf": [
@@ -43,51 +45,51 @@ type arguments struct {
 	RunInBackground *bool  `json:"run_in_background,omitempty"`
 }
 
-// delegationTool translates one model Tool call into a Subagent Start command.
+// Tool translates one model Tool call into a Subagent Start command.
 // It has no Plugin registration lifecycle.
-type delegationTool struct {
+type Tool struct {
 	settings Settings
 	starter  subagent.Starter
 }
 
-func newDelegationTool(
+// New validates settings and constructs a tool without registering any effects.
+func New(
 	toolSettings Settings,
-	starter subagent.Starter,
-) (*delegationTool, error) {
-	if starter == nil {
+	launcher subagent.Starter,
+) (*Tool, error) {
+	if err := validateSettings(toolSettings); err != nil {
+		return nil, err
+	}
+	if launcher == nil {
 		return nil, errors.New("subagent delegation Tool requires Starter")
 	}
-	return &delegationTool{
+	return &Tool{
 		settings: cloneSettings(toolSettings),
-		starter:  starter,
+		starter:  launcher,
 	}, nil
 }
 
-func (adapter *delegationTool) definition(
-	builder subagent.SeedBuilder,
-) tools.ToolDefinition {
-	description, promptDescription := seedWording(
-		builder.ContextPolicy(),
-	)
+// Definition builds a detached definition from the selected seed strategy's value.
+func (adapter *Tool) Definition(policy subagent.ParentContextPolicy) (tools.ToolDefinition, error) {
+	if policy != subagent.NoParentContext && policy != subagent.CompletedParentTurns {
+		return tools.ToolDefinition{}, errors.New("subagent tool: unsupported parent context policy")
+	}
+	description, promptDescription := seedWording(policy)
 	description += adapter.schedulingWording()
 	return tools.ToolDefinition{
 		Name:        adapter.settings.ToolName,
 		Description: description,
 		Parameters:  adapter.parameterSchema(promptDescription),
 		Output: tools.ToolOutputDefinition{
-			Schema:   foregroundOutputSchema,
-			Renderer: tools.OutputRendererFunc(renderOutput),
+			Schema:   append(json.RawMessage(nil), foregroundOutputSchema...),
+			Renderer: adapter,
 		},
-		Executor: tools.ExecutorFunc(adapter.execute),
-		ConcurrencyBehavior: tools.ConcurrencyClassifierFunc(func(
-			json.RawMessage,
-		) bool {
-			return true
-		}),
-	}
+		Executor:            adapter,
+		ConcurrencyBehavior: adapter,
+	}, nil
 }
 
-func (adapter *delegationTool) parameterSchema(
+func (adapter *Tool) parameterSchema(
 	promptDescription string,
 ) json.RawMessage {
 	properties := map[string]any{
@@ -122,12 +124,13 @@ func (adapter *delegationTool) parameterSchema(
 	return rawValue
 }
 
-func (adapter *delegationTool) execute(
+// Execute translates one tool call into a child start request and renders its result.
+func (adapter *Tool) Execute(
 	rawArguments json.RawMessage,
 	runContext tools.ToolRunContext,
 ) (json.RawMessage, error) {
-	parentAgent, matches := runContext.Execution.Subject.(agent.Agent)
-	if !matches || parentAgent == nil {
+	parentID := runContext.Execution.SessionID
+	if parentID == "" {
 		return nil, errors.New("subagent tool requires a calling Agent")
 	}
 	var request arguments
@@ -145,7 +148,7 @@ func (adapter *delegationTool) execute(
 		command, commandErr := subagent.NewContinuableStart(
 			subagent.ContinuableOptions{
 				Prompt:       prompt,
-				Parent:       parentAgent,
+				ParentID:     parentID,
 				AgentOptions: adapter.settings.AgentOptions,
 				MaxDepth:     adapter.settings.MaxDepth,
 				ToolFilter:   adapter.settings.ToolFilter,
@@ -172,7 +175,7 @@ func (adapter *delegationTool) execute(
 	command, commandErr := subagent.NewOneShotStart(
 		subagent.OneShotOptions{
 			Prompt:       prompt,
-			Parent:       parentAgent,
+			ParentID:     parentID,
 			AgentOptions: adapter.settings.AgentOptions,
 			MaxDepth:     adapter.settings.MaxDepth,
 			ToolFilter:   adapter.settings.ToolFilter,
@@ -218,7 +221,7 @@ func (adapter *delegationTool) execute(
 	})
 }
 
-func (adapter *delegationTool) resolveBackground(request arguments) (bool, error) {
+func (adapter *Tool) resolveBackground(request arguments) (bool, error) {
 	if !adapter.settings.EnableRunInBackground {
 		if request.RunInBackground != nil && *request.RunInBackground {
 			return false, errors.New(
@@ -268,7 +271,8 @@ func failedTerminal(terminal subagent.Terminal) error {
 	return errors.New(headline)
 }
 
-func renderOutput(
+// Render projects a completed delegation into model-facing content.
+func (adapter *Tool) Render(
 	_ json.RawMessage,
 	rawValue json.RawMessage,
 ) ([]agentmessage.ContentBlock, error) {
@@ -316,7 +320,7 @@ func seedWording(policy subagent.ParentContextPolicy) (string, string) {
 	return "Delegate a self-contained task to a separate subagent working in its own context. You receive its result, not its intermediate steps.", "The complete, self-contained task for the subagent. It does not share this conversation's context."
 }
 
-func (adapter *delegationTool) schedulingWording() string {
+func (adapter *Tool) schedulingWording() string {
 	if !adapter.settings.EnableRunInBackground {
 		return " This call waits for the subagent and returns its result."
 	}
@@ -329,3 +333,14 @@ func (adapter *delegationTool) schedulingWording() string {
 func stringPointer(value string) *string {
 	return &value
 }
+
+// Instructions supplies optional prompt text; registration belongs to the consumer.
+func (adapter *Tool) Instructions() string {
+	if !adapter.settings.EnableRunInBackground || adapter.settings.BackgroundMode != BackgroundContinuable {
+		return ""
+	}
+	return "Use " + adapter.settings.ToolName + " in the background by default. Start independent delegations together and continue useful work while they run. Set `run_in_background: false` only when your next action depends on that subagent's result."
+}
+
+// ConcurrencySafe allows independent delegated calls to overlap.
+func (*Tool) ConcurrencySafe(json.RawMessage) bool { return true }

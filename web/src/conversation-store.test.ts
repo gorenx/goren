@@ -26,6 +26,40 @@ describe('ConversationStore', () => {
     vi.unstubAllGlobals()
   })
 
+  it('refuses images on a text model without automatically selecting another model', async () => {
+    const host = installMockHost({ existingSession: true })
+    const store = new ConversationStore(translate)
+    await store.start()
+    const baseFetch = globalThis.fetch
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const envelope = JSON.parse(String(init?.body))
+      if (envelope.method === 'session.models') return new Response(JSON.stringify({ rpcId: envelope.rpcId, result: { ok: true, value: { current: { provider: 'deepseek-official', model: 'deepseek-v4-flash' }, groups: [] } } }))
+      return baseFetch(input, init)
+    }))
+    await expect(store.submitPrompt('', [{ type: 'image', mediaType: 'image/png', data: 'AQ==', name: 'picture' }])).rejects.toThrow('composer.switchVision')
+    expect(host.calls.some(entry => entry.method === 'session.selectModel' || entry.method === 'session.prompt')).toBe(false)
+    store.dispose()
+  })
+
+  it('keeps execution running after cancel acknowledgement until the Host reports idle', async () => {
+    const host = installMockHost({ existingSession: true })
+    const store = new ConversationStore(translate)
+    await store.start()
+    const socket = MockWebSocket.instances.find(item => item.url.endsWith('/api/events.host'))!
+    socket.receive({ type: 'server-request', rpcId: 'running', payload: {
+      type: 'host/session-status', sessionId: session.sessionId, running: true,
+    } })
+    expect(store.currentSession()?.running).toBe(true)
+    await store.cancelCurrentTurn()
+    expect(host.calls).toContainEqual(expect.objectContaining({ method: 'session.cancel', payload: { sessionId: session.sessionId } }))
+    expect(store.currentSession()?.running).toBe(true)
+    socket.receive({ type: 'server-request', rpcId: 'idle', payload: {
+      type: 'host/session-status', sessionId: session.sessionId, running: false,
+    } })
+    expect(store.currentSession()?.running).toBe(false)
+    store.dispose()
+  })
+
   it('bootstraps one empty Host into a selected durable Session', async () => {
     const host = installMockHost()
     const store = new ConversationStore(translate)
@@ -49,6 +83,36 @@ describe('ConversationStore', () => {
       'session.list',
     ])
 
+    store.dispose()
+  })
+
+  it('loads existing history when the bound catalog is unavailable', async () => {
+    const host = installMockHost({ existingSession: true, boundDefinitionsFailure: 'Unknown method: bound.list' })
+    const store = new ConversationStore(translate)
+
+    await store.start()
+
+    expect(store.snapshot().phase).toBe('ready')
+    expect(store.snapshot().currentSessionId).toBe(session.sessionId)
+    expect(host.methods).toContain('session.history')
+    expect(host.methods).not.toContain('session.create')
+    expect(store.snapshot().boundDefinitionsLoaded).toBe(false)
+    expect(store.snapshot().error).toBe('Unknown method: bound.list')
+    store.dispose()
+  })
+
+  it('does not wait for the bound catalog before selecting an existing Session', async () => {
+    let release: (() => void) | undefined
+    const pending = new Promise<void>(resolve => { release = resolve })
+    installMockHost({ existingSession: true, boundDefinitionsWait: pending })
+    const store = new ConversationStore(translate)
+
+    await store.start()
+
+    expect(store.snapshot().phase).toBe('ready')
+    expect(store.snapshot().currentSessionId).toBe(session.sessionId)
+    expect(store.snapshot().boundDefinitionsLoaded).toBe(false)
+    release?.()
     store.dispose()
   })
 
@@ -503,6 +567,8 @@ interface MockHostOptions {
   historyWait?: Promise<void>
   listWait?: Promise<void>
   sessionPages?: Record<string, { items: SessionSummary[], nextCursor?: string }>
+  boundDefinitionsFailure?: string
+  boundDefinitionsWait?: Promise<void>
   boundDefinitions?: BoundDefinition[]
   boundTools?: BoundToolOption[]
   boundToolsFailure?: string
@@ -558,6 +624,13 @@ function installMockHost(options: MockHostOptions = {}): {
       }
       break
     case 'bound.list':
+      await options.boundDefinitionsWait
+      if (options.boundDefinitionsFailure !== undefined) {
+        return response({
+          rpcId: call.rpcId,
+          result: { ok: false, error: { message: options.boundDefinitionsFailure } },
+        })
+      }
       value = { definitions: boundDefinitions }
       break
     case 'bound.tools':
@@ -654,6 +727,9 @@ function installMockHost(options: MockHostOptions = {}): {
       value = {
         sessionId: createdSession.sessionId,
       }
+      break
+    case 'session.cancel':
+      value = { accepted: true }
       break
     case 'session.history':
       await options.historyWait

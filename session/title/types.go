@@ -4,14 +4,12 @@ package title
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"strings"
 
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
 )
 
@@ -206,20 +204,6 @@ func (problem *SessionTitleInvalidError) Error() string {
 		return "session title must contain visible characters"
 	}
 	return problem.Message
-}
-
-// ProviderHandle owns one optional title Provider registration.
-type ProviderHandle interface {
-	Release(context.Context) error
-}
-
-// TitleService is the log-backed title read/write and provider-registration contract.
-type TitleService interface {
-	plugin.Service
-	Get(session.Context) (*Snapshot, error)
-	Rename(context.Context, session.Context, string) (*Snapshot, error)
-	Refresh(context.Context, session.Context) (*Snapshot, error)
-	Register(Provider) (ProviderHandle, error)
 }
 
 func validateEventData(payload EventData) error {

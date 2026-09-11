@@ -95,12 +95,12 @@ func TestInspectLogRejectsInvalidLifecycleRelationships(t *testing.T) {
 	failureText := "failed"
 	testCases := []struct {
 		name      string
-		populate  func(*testing.T, session.Context)
+		populate  func(*testing.T, *session.Log)
 		wantError string
 	}{
 		{
 			name: "numbered start outside turn",
-			populate: func(testingContext *testing.T, conversation session.Context) {
+			populate: func(testingContext *testing.T, conversation *session.Log) {
 				appendCompactionStart(
 					testingContext,
 					conversation,
@@ -113,7 +113,7 @@ func TestInspectLogRejectsInvalidLifecycleRelationships(t *testing.T) {
 		},
 		{
 			name: "standalone start inside turn",
-			populate: func(testingContext *testing.T, conversation session.Context) {
+			populate: func(testingContext *testing.T, conversation *session.Log) {
 				appendTurnStart(testingContext, conversation, 1)
 				appendCompactionStart(testingContext, conversation, testCompactionID, nil, nil)
 			},
@@ -121,7 +121,7 @@ func TestInspectLogRejectsInvalidLifecycleRelationships(t *testing.T) {
 		},
 		{
 			name: "nested start",
-			populate: func(testingContext *testing.T, conversation session.Context) {
+			populate: func(testingContext *testing.T, conversation *session.Log) {
 				appendTurnStart(testingContext, conversation, 1)
 				appendCompactionStart(
 					testingContext,
@@ -142,7 +142,7 @@ func TestInspectLogRejectsInvalidLifecycleRelationships(t *testing.T) {
 		},
 		{
 			name: "summary without start",
-			populate: func(testingContext *testing.T, conversation session.Context) {
+			populate: func(testingContext *testing.T, conversation *session.Log) {
 				appendCompactionSummary(
 					testingContext,
 					conversation,
@@ -155,7 +155,7 @@ func TestInspectLogRejectsInvalidLifecycleRelationships(t *testing.T) {
 		},
 		{
 			name: "summary id mismatch",
-			populate: func(testingContext *testing.T, conversation session.Context) {
+			populate: func(testingContext *testing.T, conversation *session.Log) {
 				appendTurnStart(testingContext, conversation, 1)
 				appendCompactionStart(
 					testingContext,
@@ -176,7 +176,7 @@ func TestInspectLogRejectsInvalidLifecycleRelationships(t *testing.T) {
 		},
 		{
 			name: "summary command mismatch",
-			populate: func(testingContext *testing.T, conversation session.Context) {
+			populate: func(testingContext *testing.T, conversation *session.Log) {
 				appendTurnStart(testingContext, conversation, 1)
 				appendCompactionStart(
 					testingContext,
@@ -197,7 +197,7 @@ func TestInspectLogRejectsInvalidLifecycleRelationships(t *testing.T) {
 		},
 		{
 			name: "repeated summary",
-			populate: func(testingContext *testing.T, conversation session.Context) {
+			populate: func(testingContext *testing.T, conversation *session.Log) {
 				appendTurnStart(testingContext, conversation, 1)
 				appendCompactionStart(
 					testingContext,
@@ -225,7 +225,7 @@ func TestInspectLogRejectsInvalidLifecycleRelationships(t *testing.T) {
 		},
 		{
 			name: "empty shadow set",
-			populate: func(testingContext *testing.T, conversation session.Context) {
+			populate: func(testingContext *testing.T, conversation *session.Log) {
 				appendTurnStart(testingContext, conversation, 1)
 				appendCompactionStart(
 					testingContext,
@@ -246,7 +246,7 @@ func TestInspectLogRejectsInvalidLifecycleRelationships(t *testing.T) {
 		},
 		{
 			name: "wrong shadow endpoints",
-			populate: func(testingContext *testing.T, conversation session.Context) {
+			populate: func(testingContext *testing.T, conversation *session.Log) {
 				appendTurnStart(testingContext, conversation, 1)
 				appendCompactionStart(
 					testingContext,
@@ -273,7 +273,7 @@ func TestInspectLogRejectsInvalidLifecycleRelationships(t *testing.T) {
 		},
 		{
 			name: "end wrong owner",
-			populate: func(testingContext *testing.T, conversation session.Context) {
+			populate: func(testingContext *testing.T, conversation *session.Log) {
 				appendTurnStart(testingContext, conversation, 1)
 				appendCompactionStart(
 					testingContext,
@@ -295,7 +295,7 @@ func TestInspectLogRejectsInvalidLifecycleRelationships(t *testing.T) {
 		},
 		{
 			name: "successful end without summary",
-			populate: func(testingContext *testing.T, conversation session.Context) {
+			populate: func(testingContext *testing.T, conversation *session.Log) {
 				appendTurnStart(testingContext, conversation, 1)
 				appendCompactionStart(
 					testingContext,
@@ -317,7 +317,7 @@ func TestInspectLogRejectsInvalidLifecycleRelationships(t *testing.T) {
 		},
 		{
 			name: "turn boundary crosses numbered attempt",
-			populate: func(testingContext *testing.T, conversation session.Context) {
+			populate: func(testingContext *testing.T, conversation *session.Log) {
 				appendTurnStart(testingContext, conversation, 1)
 				appendCompactionStart(
 					testingContext,
@@ -345,7 +345,7 @@ func TestInspectLogEndSeedClearsOnlyInheritedOpenAttempt(t *testing.T) {
 	t.Parallel()
 	standaloneSource := newCompactionSession(t, "stale-standalone-source")
 	appendCompactionStart(t, standaloneSource, testCompactionID, nil, nil)
-	replayed, err := session.New("stale-standalone-replay", session.CreateOptions{
+	replayed, err := session.NewLog("stale-standalone-replay", session.CreateOptions{
 		Seed: standaloneSource.Events(),
 	})
 	if err != nil {
@@ -363,7 +363,7 @@ func TestInspectLogEndSeedClearsOnlyInheritedOpenAttempt(t *testing.T) {
 	appendCompactionStart(t, repairSource, testCompactionID, nil, nil)
 	appendTurnStart(t, repairSource, 1)
 	appendTurnEnd(t, repairSource, 1)
-	repaired, err := session.New("repair-replay", session.CreateOptions{
+	repaired, err := session.NewLog("repair-replay", session.CreateOptions{
 		Seed: repairSource.Events(),
 	})
 	if err != nil {
@@ -379,7 +379,7 @@ func TestInspectLogEndSeedClearsOnlyInheritedOpenAttempt(t *testing.T) {
 	appendTurnEnd(t, closedSource, 1)
 	failureText := "failed after crossing turn"
 	appendCompactionEnd(t, closedSource, testCompactionID, nil, nil, &failureText)
-	closedReplay, err := session.New("closed-replay", session.CreateOptions{
+	closedReplay, err := session.NewLog("closed-replay", session.CreateOptions{
 		Seed: closedSource.Events(),
 	})
 	if err != nil {
@@ -390,7 +390,7 @@ func TestInspectLogEndSeedClearsOnlyInheritedOpenAttempt(t *testing.T) {
 
 func appendTurnStart(
 	testingContext *testing.T,
-	conversation session.Context,
+	conversation *session.Log,
 	turnValue int64,
 ) {
 	testingContext.Helper()
@@ -410,7 +410,7 @@ func appendTurnStart(
 
 func appendTurnEnd(
 	testingContext *testing.T,
-	conversation session.Context,
+	conversation *session.Log,
 	turnValue int64,
 ) {
 	testingContext.Helper()
@@ -431,7 +431,7 @@ func appendTurnEnd(
 
 func appendCompactionStart(
 	testingContext *testing.T,
-	conversation session.Context,
+	conversation *session.Log,
 	compactionID ID,
 	sourceCommandID *string,
 	turnValue *int64,
@@ -455,7 +455,7 @@ func appendCompactionStart(
 
 func appendCompactionSummary(
 	testingContext *testing.T,
-	conversation session.Context,
+	conversation *session.Log,
 	compactionID ID,
 	sourceCommandID *string,
 	shadowedSeqs []int64,
@@ -502,7 +502,7 @@ func validSummaryValue(
 
 func appendCompactionEnd(
 	testingContext *testing.T,
-	conversation session.Context,
+	conversation *session.Log,
 	compactionID ID,
 	sourceCommandID *string,
 	turnValue *int64,
@@ -528,7 +528,7 @@ func appendCompactionEnd(
 
 func appendCheckpointReplacement(
 	testingContext *testing.T,
-	conversation session.Context,
+	conversation *session.Log,
 	originalSeq int64,
 	compactionID ID,
 	sourceCommandID *string,
@@ -566,7 +566,7 @@ func appendCheckpointReplacement(
 
 func assertInspectionError(
 	testingContext *testing.T,
-	conversation session.Context,
+	conversation *session.Log,
 	wantError string,
 ) {
 	testingContext.Helper()

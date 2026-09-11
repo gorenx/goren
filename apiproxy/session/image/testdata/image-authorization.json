@@ -1,0 +1,536 @@
+{
+  "cases": [
+    {
+      "name": "direct",
+      "events": [
+        {
+          "type": "fixture/direct",
+          "seq": 0,
+          "time": 1,
+          "data": {
+            "content": [
+              {
+                "type": "image",
+                "attachment": {
+                  "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "mediaType": "image/png",
+                  "bytes": 1,
+                  "width": 1,
+                  "height": 1,
+                  "name": "sample.png"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "request": {
+        "sessionId": "conversation",
+        "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "value": {
+        "attachment": {
+          "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "mediaType": "image/png",
+          "bytes": 1,
+          "width": 1,
+          "height": 1,
+          "name": "sample.png"
+        },
+        "data": "AQ=="
+      }
+    },
+    {
+      "name": "unrelated-stream-shape",
+      "events": [
+        {
+          "type": "fixture/direct",
+          "seq": 0,
+          "time": 1,
+          "data": {
+            "content": [
+              {
+                "type": "image",
+                "attachment": {
+                  "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "mediaType": "image/png",
+                  "bytes": 1,
+                  "width": 1,
+                  "height": 1,
+                  "name": "sample.png"
+                }
+              }
+            ],
+            "stream": "extension data"
+          }
+        }
+      ],
+      "request": {
+        "sessionId": "conversation",
+        "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "value": {
+        "attachment": {
+          "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "mediaType": "image/png",
+          "bytes": 1,
+          "width": 1,
+          "height": 1,
+          "name": "sample.png"
+        },
+        "data": "AQ=="
+      }
+    },
+    {
+      "name": "nested",
+      "events": [
+        {
+          "type": "tool/result",
+          "seq": 0,
+          "time": 1,
+          "data": {
+            "content": [
+              null,
+              [],
+              {
+                "type": "tool-result",
+                "content": [
+                  {
+                    "type": "tool-result",
+                    "content": [
+                      {
+                        "type": "image",
+                        "attachment": {
+                          "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                          "mediaType": "image/png",
+                          "bytes": 1,
+                          "width": 1,
+                          "height": 1,
+                          "name": "sample.png"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "request": {
+        "sessionId": "conversation",
+        "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "value": {
+        "attachment": {
+          "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "mediaType": "image/png",
+          "bytes": 1,
+          "width": 1,
+          "height": 1,
+          "name": "sample.png"
+        },
+        "data": "AQ=="
+      }
+    },
+    {
+      "name": "message",
+      "events": [
+        {
+          "type": "assistant/message",
+          "seq": 0,
+          "time": 1,
+          "data": {
+            "message": {
+              "content": [
+                {
+                  "type": "image",
+                  "attachment": {
+                    "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "mediaType": "image/png",
+                    "bytes": 1,
+                    "width": 1,
+                    "height": 1,
+                    "name": "sample.png"
+                  }
+                }
+              ]
+            },
+            "stream": []
+          }
+        }
+      ],
+      "request": {
+        "sessionId": "conversation",
+        "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "value": {
+        "attachment": {
+          "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "mediaType": "image/png",
+          "bytes": 1,
+          "width": 1,
+          "height": 1,
+          "name": "sample.png"
+        },
+        "data": "AQ=="
+      }
+    },
+    {
+      "name": "inserted",
+      "events": [
+        {
+          "type": "agent/inbox/spliced",
+          "seq": 0,
+          "time": 1,
+          "data": {
+            "inserted": [
+              {
+                "content": [
+                  {
+                    "type": "image",
+                    "attachment": {
+                      "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "mediaType": "image/png",
+                      "bytes": 1,
+                      "width": 1,
+                      "height": 1,
+                      "name": "sample.png"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "request": {
+        "sessionId": "conversation",
+        "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "value": {
+        "attachment": {
+          "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "mediaType": "image/png",
+          "bytes": 1,
+          "width": 1,
+          "height": 1,
+          "name": "sample.png"
+        },
+        "data": "AQ=="
+      }
+    },
+    {
+      "name": "attempt",
+      "events": [
+        {
+          "type": "assistant/attempt",
+          "seq": 0,
+          "time": 1,
+          "data": {
+            "stream": [
+              {
+                "type": "chunk",
+                "time": 1,
+                "chunk": {
+                  "type": "block-end",
+                  "index": 0,
+                  "block": {
+                    "type": "image",
+                    "attachment": {
+                      "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "mediaType": "image/png",
+                      "bytes": 1,
+                      "width": 1,
+                      "height": 1,
+                      "name": "sample.png"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "request": {
+        "sessionId": "conversation",
+        "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "value": {
+        "attachment": {
+          "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "mediaType": "image/png",
+          "bytes": 1,
+          "width": 1,
+          "height": 1,
+          "name": "sample.png"
+        },
+        "data": "AQ=="
+      }
+    },
+    {
+      "name": "settlement",
+      "events": [
+        {
+          "type": "assistant/message",
+          "seq": 0,
+          "time": 1,
+          "data": {
+            "stream": [
+              {
+                "type": "chunk",
+                "time": 1,
+                "chunk": {
+                  "type": "block-end",
+                  "index": 0,
+                  "block": {
+                    "type": "image",
+                    "attachment": {
+                      "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "mediaType": "image/png",
+                      "bytes": 1,
+                      "width": 1,
+                      "height": 1,
+                      "name": "sample.png"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "request": {
+        "sessionId": "conversation",
+        "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "value": {
+        "attachment": {
+          "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "mediaType": "image/png",
+          "bytes": 1,
+          "width": 1,
+          "height": 1,
+          "name": "sample.png"
+        },
+        "data": "AQ=="
+      }
+    },
+    {
+      "name": "unrelated-stream",
+      "events": [
+        {
+          "type": "fixture/unrelated",
+          "seq": 0,
+          "time": 1,
+          "data": {
+            "stream": [
+              {
+                "type": "chunk",
+                "time": 1,
+                "chunk": {
+                  "type": "block-end",
+                  "index": 0,
+                  "block": {
+                    "type": "image",
+                    "attachment": {
+                      "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "mediaType": "image/png",
+                      "bytes": 1,
+                      "width": 1,
+                      "height": 1,
+                      "name": "sample.png"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "request": {
+        "sessionId": "conversation",
+        "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "value": null
+    },
+    {
+      "name": "non-tool-nesting",
+      "events": [
+        {
+          "type": "fixture/unrelated",
+          "seq": 0,
+          "time": 1,
+          "data": {
+            "content": [
+              {
+                "type": "text",
+                "content": [
+                  {
+                    "type": "image",
+                    "attachment": {
+                      "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "mediaType": "image/png",
+                      "bytes": 1,
+                      "width": 1,
+                      "height": 1,
+                      "name": "sample.png"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "request": {
+        "sessionId": "conversation",
+        "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "value": null
+    },
+    {
+      "name": "unrelated-field",
+      "events": [
+        {
+          "type": "fixture/unrelated",
+          "seq": 0,
+          "time": 1,
+          "data": {
+            "other": {
+              "type": "image",
+              "attachment": {
+                "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "mediaType": "image/png",
+                "bytes": 1,
+                "width": 1,
+                "height": 1,
+                "name": "sample.png"
+              }
+            }
+          }
+        }
+      ],
+      "request": {
+        "sessionId": "conversation",
+        "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "value": null
+    },
+    {
+      "name": "incomplete-block",
+      "events": [
+        {
+          "type": "assistant/attempt",
+          "seq": 0,
+          "time": 1,
+          "data": {
+            "stream": [
+              {
+                "type": "chunk",
+                "time": 1,
+                "chunk": {
+                  "type": "block-start",
+                  "index": 0,
+                  "block": {
+                    "type": "image",
+                    "attachment": {
+                      "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "mediaType": "image/png",
+                      "bytes": 1,
+                      "width": 1,
+                      "height": 1,
+                      "name": "sample.png"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "request": {
+        "sessionId": "conversation",
+        "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "value": null
+    },
+    {
+      "name": "unrelated-record",
+      "events": [
+        {
+          "type": "assistant/attempt",
+          "seq": 0,
+          "time": 1,
+          "data": {
+            "stream": [
+              {
+                "type": "other",
+                "time": 1,
+                "chunk": {
+                  "type": "block-end",
+                  "index": 0,
+                  "block": {
+                    "type": "image",
+                    "attachment": {
+                      "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "mediaType": "image/png",
+                      "bytes": 1,
+                      "width": 1,
+                      "height": 1,
+                      "name": "sample.png"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "request": {
+        "sessionId": "conversation",
+        "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "value": null
+    },
+    {
+      "name": "different-image",
+      "events": [
+        {
+          "type": "fixture/direct",
+          "seq": 0,
+          "time": 1,
+          "data": {
+            "content": [
+              {
+                "type": "image",
+                "attachment": {
+                  "attachmentId": "different",
+                  "mediaType": "image/png",
+                  "bytes": 1,
+                  "width": 1,
+                  "height": 1,
+                  "name": "sample.png"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "request": {
+        "sessionId": "conversation",
+        "attachmentId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "value": null
+    }
+  ],
+  "source": {
+    "revision": "5dda764ed3aa172535a7967b06ff95d9cbfe536a",
+    "symbols": [
+      "commands.ts:referencedImage",
+      "commands.ts:imageInEvent",
+      "commands.ts:imageBlockIn",
+      "assistant-stream.ts:assistantStreamChunks"
+    ]
+  }
+}

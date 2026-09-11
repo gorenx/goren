@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"context"
 	"encoding/json"
 	"slices"
 
@@ -47,22 +46,6 @@ type ConfigurableProvider struct {
 	SettingsNS   string   `json:"settingsNs"`
 	SettingsPath []string `json:"settingsPath"`
 	Declared     *bool    `json:"declared,omitempty"`
-}
-
-// ModelDiscoveryRequest describes a draft endpoint interrogation.
-type ModelDiscoveryRequest struct {
-	Provider string
-	BaseURL  string
-	API      string
-	APIKey   string
-}
-
-// DiscoveredModel is candidate metadata reported by a provider endpoint.
-type DiscoveredModel struct {
-	ID            string `json:"id"`
-	Name          string `json:"name,omitempty"`
-	ContextWindow *int   `json:"contextWindow,omitempty"`
-	MaxTokens     *int   `json:"maxTokens,omitempty"`
 }
 
 // ModelInfo is advisory model metadata from one active provider route.
@@ -135,22 +118,6 @@ type GenerateOptions struct {
 	Tools     []ToolSchema
 	SessionID string
 	Purpose   CallPurpose
-}
-
-// RuntimeWaterfallInput marks GenerateOptions as the LLM streaming extension input.
-func (GenerateOptions) RuntimeWaterfallInput() {}
-
-// ModelDiscovery resolves candidate metadata for a draft endpoint.
-type ModelDiscovery interface {
-	Discover(context.Context, ModelDiscoveryRequest) ([]DiscoveredModel, error)
-}
-
-// ModelDiscoveryFunc adapts a function to ModelDiscovery.
-type ModelDiscoveryFunc func(context.Context, ModelDiscoveryRequest) ([]DiscoveredModel, error)
-
-// Discover invokes the adapted function.
-func (operation ModelDiscoveryFunc) Discover(requestContext context.Context, request ModelDiscoveryRequest) ([]DiscoveredModel, error) {
-	return operation(requestContext, request)
 }
 
 func callConfigEqual(left CallConfig, right CallConfig) bool {

@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -68,25 +69,30 @@ type listEntry struct {
 	Depth  *int64  `json:"depth,omitempty"`
 }
 
-func (adapter *controlTools) listDefinition() tools.ToolDefinition {
+func (owner *controlTools) listDefinition() tools.ToolDefinition {
+	adapter := &listTool{
+		directory: owner.directory,
+		activity:  owner.activity,
+	}
+
 	return tools.ToolDefinition{
 		Name:        "list_agents",
 		Description: "List continuable background subagents by durable id and label. children lists direct children; descendants walks the complete tree without resuming cold Agents.",
 		Parameters:  listParameters,
 		Output: tools.ToolOutputDefinition{
 			Schema:   listOutput,
-			Renderer: tools.OutputRendererFunc(renderList),
+			Renderer: adapter,
 		},
-		Executor: tools.ExecutorFunc(adapter.listAgents),
+		Executor: adapter,
 	}
 }
 
-func (adapter *controlTools) listAgents(
+func (adapter *listTool) Execute(
 	rawArguments json.RawMessage,
 	runContext tools.ToolRunContext,
 ) (json.RawMessage, error) {
-	parentAgent, matches := runContext.Execution.Subject.(agent.Agent)
-	if !matches || parentAgent == nil {
+	parentID := runContext.Execution.SessionID
+	if parentID == "" {
 		return nil, errors.New("list_agents requires a calling Agent")
 	}
 	var request listArguments
@@ -101,20 +107,24 @@ func (adapter *controlTools) listAgents(
 	case "children":
 		rows, listErr := adapter.directory.ListChildren(
 			runContext.Context,
-			parentAgent.ID(),
+			parentID,
 		)
 		if listErr != nil {
 			return nil, listErr
 		}
 		for _, row := range rows {
-			if projected, included := adapter.project(row, nil, nil); included {
+			projected, included, projectErr := adapter.project(runContext.Context, row, nil, nil)
+			if projectErr != nil {
+				return nil, projectErr
+			}
+			if included {
 				entries = append(entries, projected)
 			}
 		}
 	case "descendants":
 		rows, listErr := adapter.directory.ListDescendants(
 			runContext.Context,
-			parentAgent.ID(),
+			parentID,
 		)
 		if listErr != nil {
 			return nil, listErr
@@ -122,11 +132,16 @@ func (adapter *controlTools) listAgents(
 		for _, row := range rows {
 			parentID := string(row.ParentID)
 			depth := row.Depth
-			if projected, included := adapter.project(
+			projected, included, projectErr := adapter.project(
+				runContext.Context,
 				row.Entry,
 				&parentID,
 				&depth,
-			); included {
+			)
+			if projectErr != nil {
+				return nil, projectErr
+			}
+			if included {
 				entries = append(entries, projected)
 			}
 		}
@@ -136,30 +151,33 @@ func (adapter *controlTools) listAgents(
 	return json.Marshal(entries)
 }
 
-func (adapter *controlTools) project(
+func (adapter *listTool) project(
+	requestContext context.Context,
 	entry subagent.ChildEntry,
 	parentID *string,
 	depth *int64,
-) (listEntry, bool) {
+) (listEntry, bool, error) {
 	switch row := entry.(type) {
 	case subagent.ContinuableChildEntry:
+		status, err := adapter.status(requestContext, row.ID)
 		return listEntry{
 			Kind:   "child",
 			ID:     string(row.ID),
 			Label:  row.Label,
-			Status: adapter.status(row.ID),
+			Status: status,
 			Parent: parentID,
 			Depth:  depth,
-		}, true
+		}, true, err
 	case subagent.BoundChildEntry:
+		status, err := adapter.status(requestContext, row.ID)
 		return listEntry{
 			Kind:   "child",
 			ID:     string(row.ID),
 			Label:  row.Label,
-			Status: adapter.status(row.ID),
+			Status: status,
 			Parent: parentID,
 			Depth:  depth,
-		}, true
+		}, true, err
 	case subagent.DiagnosticEntry:
 		return listEntry{
 			Kind:   "diagnostic",
@@ -167,26 +185,29 @@ func (adapter *controlTools) project(
 			Reason: string(row.Reason),
 			Parent: parentID,
 			Depth:  depth,
-		}, true
+		}, true, nil
 	case subagent.OneShotChildEntry:
-		return listEntry{}, false
+		return listEntry{}, false, nil
 	default:
-		return listEntry{}, false
+		return listEntry{}, false, nil
 	}
 }
 
-func (adapter *controlTools) status(childID session.SessionID) string {
-	childAgent, found := adapter.agents.Get(childID)
+func (adapter *listTool) status(requestContext context.Context, childID session.SessionID) (string, error) {
+	status, found, err := adapter.activity.Status(requestContext, childID)
+	if err != nil {
+		return "", err
+	}
 	if !found {
-		return "ready"
+		return "ready", nil
 	}
-	if childAgent.StatusValue() == agent.StatusRunning {
-		return "running"
+	if status == agent.StatusRunning {
+		return "running", nil
 	}
-	return "idle"
+	return "idle", nil
 }
 
-func renderList(
+func (adapter *listTool) Render(
 	rawArguments json.RawMessage,
 	rawValue json.RawMessage,
 ) ([]agentmessage.ContentBlock, error) {
@@ -256,4 +277,9 @@ func int64OrZero(value *int64) int64 {
 		return 0
 	}
 	return *value
+}
+
+type listTool struct {
+	directory subagent.ChildDirectory
+	activity  activityReader
 }

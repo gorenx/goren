@@ -8,7 +8,6 @@ import (
 
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/internal/jsonvalue"
-	"github.com/gorenx/goren/plugin"
 )
 
 // StreamChunk is one provider-neutral raw streaming item.
@@ -182,12 +181,6 @@ func (entry FinishChunk) MarshalJSON() ([]byte, error) {
 type ChunkStream interface {
 	Next(context.Context) (StreamChunk, bool, error)
 	Close(context.Context) error
-}
-
-// StreamOutput carries a routed stream through the typed Waterfall boundary.
-type StreamOutput struct {
-	plugin.WaterfallOutputBase
-	Stream ChunkStream
 }
 
 // IsTokenDelta reports whether a stream chunk contains non-empty model output.

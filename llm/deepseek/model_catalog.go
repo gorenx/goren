@@ -64,7 +64,7 @@ func (backend *Adapter) ResolveModel(requestContext context.Context, providerRou
 			Provider:        providerRoute,
 			ID:              modelID,
 			Name:            modelID,
-			InputModalities: []llm.ModelModality{llm.ModalityText},
+			InputModalities: inputModalities(modelID),
 		}
 	} else {
 		resolved.ModelInfo = modelInfo(providerRoute, *configured)
@@ -97,7 +97,7 @@ func modelInfo(providerRoute string, catalogEntry CatalogModel) llm.ModelInfo {
 		ID:              catalogEntry.ID,
 		Name:            modelName,
 		Description:     description,
-		InputModalities: []llm.ModelModality{llm.ModalityText},
+		InputModalities: inputModalities(catalogEntry.ID),
 	}
 }
 
@@ -134,4 +134,11 @@ func reasoningInfo(defaults RequestDefaults) *llm.ModelReasoningInfo {
 		},
 		DefaultEffort: defaultEffort,
 	}
+}
+
+func inputModalities(identifier string) []llm.ModelModality {
+	if identifier == VisionModelID {
+		return []llm.ModelModality{llm.ModalityText, llm.ModalityImage}
+	}
+	return []llm.ModelModality{llm.ModalityText}
 }

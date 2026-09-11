@@ -18,7 +18,7 @@ func TestProjectionUnitsServeSourceCompatibleEmptyViews(t *testing.T) {
 	t.Parallel()
 	projections := registeredProjectionFixture(t)
 	conversation := newConversation(t, "projection-empty")
-	snapshot, err := projections.Snapshot(conversation)
+	snapshot, err := projections.Snapshot(conversation.Events())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestTokenUsageProjectionReplacesSameStepSample(t *testing.T) {
 		OutputTokens: 2,
 	}
 	appendUsageChunk(t, conversation, firstUsage)
-	firstSnapshot, err := projections.Snapshot(conversation)
+	firstSnapshot, err := projections.Snapshot(conversation.Events())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestTokenUsageProjectionReplacesSameStepSample(t *testing.T) {
 		&finalUsage,
 		&emptySources,
 	)
-	finalSnapshot, err := projections.Snapshot(conversation)
+	finalSnapshot, err := projections.Snapshot(conversation.Events())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestPressureAndBreakdownTrackSurfaceAndMeteredCompaction(t *testing.T) {
 	}
 	lastSeq := appendUser(t, conversation, "a follow-up that grows the surface")
 
-	before, err := projections.Snapshot(conversation)
+	before, err := projections.Snapshot(conversation.Events())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,8 +177,8 @@ func TestPressureAndBreakdownTrackSurfaceAndMeteredCompaction(t *testing.T) {
 		t.Fatalf("pressure before compaction = %#v", pressureBefore)
 	}
 
-	meterService := newTokenMeter()
-	measuredBefore, err := meterService.Measure(context.Background(), conversation, nil)
+	meterService := new(TokenMeter)
+	measuredBefore, err := meterService.Measure(context.Background(), conversation.Events(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +236,7 @@ func TestPressureAndBreakdownTrackSurfaceAndMeteredCompaction(t *testing.T) {
 		}
 	}
 
-	after, err := projections.Snapshot(conversation)
+	after, err := projections.Snapshot(conversation.Events())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +249,7 @@ func TestPressureAndBreakdownTrackSurfaceAndMeteredCompaction(t *testing.T) {
 	}
 	var breakdown ContextBreakdownProjection
 	decodeProjectionValue(t, after.Values, ContextBreakdownProjectionKey, &breakdown)
-	measuredAfter, err := meterService.Measure(context.Background(), conversation, nil)
+	measuredAfter, err := meterService.Measure(context.Background(), conversation.Events(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +306,7 @@ func TestSurfaceProjectionRejectsAdjacentMismatchedClaim(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := projections.Snapshot(conversation); err == nil ||
+	if _, err := projections.Snapshot(conversation.Events()); err == nil ||
 		!strings.Contains(err.Error(), "no adjacent shadow price") {
 		t.Fatalf("snapshot error = %v", err)
 	}
@@ -319,7 +319,7 @@ func TestProjectionCheckpointRemainsBoundedAndRestoresViews(t *testing.T) {
 	for index := 0; index < 32; index++ {
 		appendUser(t, conversation, "message")
 	}
-	rows, err := projections.Checkpoint(conversation)
+	rows, err := projections.Checkpoint(conversation.Events())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +344,7 @@ func TestProjectionCheckpointRemainsBoundedAndRestoresViews(t *testing.T) {
 	if err := json.Unmarshal(encoded, &restoredRows); err != nil {
 		t.Fatal(err)
 	}
-	restoredRegistry := registeredProjectionFixture(t)
+	restoredRegistry := registeredUnits(t)
 	values, err := restoredRegistry.ViewCheckpoint(restoredRows)
 	if err != nil {
 		t.Fatal(err)
@@ -356,25 +356,25 @@ func TestProjectionCheckpointRemainsBoundedAndRestoresViews(t *testing.T) {
 	}
 }
 
-func registeredProjectionFixture(testingContext *testing.T) *sessionprojection.DriveRegistry {
-	testingContext.Helper()
-	projections := sessionprojection.NewDriveRegistry()
-	units := []sessionprojection.Unit{
-		tokenUsageUnit{},
-		contextPressureUnit{},
-		contextBreakdownUnit{},
-	}
-	for _, unitValue := range units {
-		if _, err := projections.Register(unitValue); err != nil {
-			testingContext.Fatal(err)
+func registeredProjectionFixture(t *testing.T) *sessionprojection.Projection {
+	t.Helper()
+	return registeredUnits(t).NewProjection()
+}
+
+func registeredUnits(t *testing.T) *sessionprojection.Registry {
+	t.Helper()
+	registry := sessionprojection.NewRegistry()
+	for _, unit := range Units() {
+		if _, err := registry.Register(unit); err != nil {
+			t.Fatal(err)
 		}
 	}
-	return projections
+	return registry
 }
 
 func appendUsageChunk(
 	testingContext *testing.T,
-	conversation session.Context,
+	conversation *session.Log,
 	usageValue llm.TokenUsage,
 ) {
 	testingContext.Helper()

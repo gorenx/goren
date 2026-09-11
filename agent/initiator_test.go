@@ -2,6 +2,7 @@ package agent_test
 
 import (
 	"context"
+	"github.com/gorenx/goren/session"
 	"testing"
 
 	agentcore "github.com/gorenx/goren/agent"
@@ -9,8 +10,8 @@ import (
 
 func TestInitiatorContextIsExplicitNestedAndClearable(t *testing.T) {
 	t.Parallel()
-	parent := newRegistryAgent("initiator-parent")
-	child := newRegistryAgent("initiator-child")
+	parent := session.SessionID("initiator-parent")
+	child := session.SessionID("initiator-child")
 
 	parentContext, err := agentcore.WithInitiator(context.Background(), parent)
 	if err != nil {

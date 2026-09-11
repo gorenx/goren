@@ -10,7 +10,6 @@ import (
 
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/compaction"
-	"github.com/gorenx/goren/llm/tokenmeter"
 	"github.com/gorenx/goren/session"
 )
 
@@ -18,14 +17,6 @@ type pricingStub struct {
 	price       int64
 	failOnCall  int
 	estimateHit int
-}
-
-func (*pricingStub) Measure(
-	context.Context,
-	session.Context,
-	*session.EpochHeader,
-) (tokenmeter.Measurement, error) {
-	return tokenmeter.Measurement{}, nil
 }
 
 func (stub *pricingStub) EstimateMessage(agentmessage.Message) (int64, error) {
@@ -230,7 +221,7 @@ func TestPruneSessionCommitsShadowPriceAndReplacementAdjacently(t *testing.T) {
 	if err != nil || len(second.Pruned) != 0 || second.CharsRemoved != 0 {
 		t.Fatalf("second pass = %#v, %v", second, err)
 	}
-	replayed, err := session.New("prune-replay", session.CreateOptions{
+	replayed, err := session.NewLog("prune-replay", session.CreateOptions{
 		Seed: conversation.Events(),
 	})
 	if err != nil {
@@ -316,7 +307,7 @@ func TestPruneSessionPreservesMergeExtendedToolResultData(t *testing.T) {
 		t.Fatal(err)
 	}
 	seed[0].Data = encoded
-	conversation, err := session.New("extended-replay", session.CreateOptions{
+	conversation, err := session.NewLog("extended-replay", session.CreateOptions{
 		Seed: seed,
 	})
 	if err != nil {
@@ -368,25 +359,27 @@ func TestResolveConfigUsesSourceDefaultsAndRejectsOversizedEmission(t *testing.T
 
 func newPrunerFixture(
 	testingContext *testing.T,
-	meterService tokenmeter.Meter,
+	meterService Estimator,
 	rawSettings Config,
-) *ToolResultPruner {
+) *prunerFixture {
 	testingContext.Helper()
-	resolved, err := ResolveConfig(rawSettings)
+	implementation, err := New(rawSettings)
 	if err != nil {
 		testingContext.Fatal(err)
 	}
-	implementation := newToolResultPruner(resolved)
-	implementation.bind(meterService)
-	return implementation
+	return &prunerFixture{
+		ToolResultPruner: implementation,
+		estimator:        meterService,
+	}
+
 }
 
 func newPrunerSession(
 	testingContext *testing.T,
 	identifier session.SessionID,
-) session.Context {
+) *session.Log {
 	testingContext.Helper()
-	conversation, err := session.New(identifier, session.CreateOptions{})
+	conversation, err := session.NewLog(identifier, session.CreateOptions{})
 	if err != nil {
 		testingContext.Fatal(err)
 	}
@@ -395,7 +388,7 @@ func newPrunerSession(
 
 func appendToolResultFixture(
 	testingContext *testing.T,
-	conversation session.Context,
+	conversation *session.Log,
 	callID agentmessage.CallID,
 	content []agentmessage.ContentBlock,
 	isError bool,
@@ -454,4 +447,21 @@ func jsonEqual(left json.RawMessage, right json.RawMessage) bool {
 	return json.Unmarshal(left, &leftValue) == nil &&
 		json.Unmarshal(right, &rightValue) == nil &&
 		reflect.DeepEqual(leftValue, rightValue)
+}
+
+// prunerFixture executes the same WritePlan protocol as Session, without an Actor.
+type prunerFixture struct {
+	*ToolResultPruner
+	estimator Estimator
+}
+
+func (fixture *prunerFixture) PruneSession(ctx context.Context, history *session.Log) (Result, error) {
+	plan, err := fixture.NewPlan(history.Snapshot(), fixture.estimator)
+	if err != nil {
+		return Result{}, err
+	}
+	if _, err := history.Commit(ctx, plan); err != nil {
+		return Result{}, err
+	}
+	return plan.Result(), nil
 }

@@ -12,7 +12,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/gorenx/goren/agent"
-	"github.com/gorenx/goren/tools"
+	toolregistry "github.com/gorenx/goren/tools/registry"
 )
 
 const maximumSafeInteger = int64(1<<53 - 1)
@@ -25,7 +25,7 @@ type Draft struct {
 	SystemPrompt    string
 	AgentOptions    *agent.Options
 	MaxDepth        *int64
-	ToolRestriction *tools.ToolRestriction
+	ToolRestriction *toolregistry.ToolRestriction
 	Extensions      []string
 }
 
@@ -37,7 +37,7 @@ type Definition struct {
 	SystemPrompt    string
 	AgentOptions    *agent.Options
 	MaxDepth        *int64
-	ToolRestriction *tools.ToolRestriction
+	ToolRestriction *toolregistry.ToolRestriction
 	Extensions      []string
 }
 
@@ -143,8 +143,8 @@ func cloneAgentOptions(source *agent.Options) *agent.Options {
 }
 
 func cloneToolRestriction(
-	restriction *tools.ToolRestriction,
-) (*tools.ToolRestriction, error) {
+	restriction *toolregistry.ToolRestriction,
+) (*toolregistry.ToolRestriction, error) {
 	if restriction == nil {
 		return nil, nil
 	}
@@ -153,7 +153,7 @@ func cloneToolRestriction(
 			"subagent/bound: toolRestriction must declare allow and/or deny",
 		)
 	}
-	return &tools.ToolRestriction{
+	return &toolregistry.ToolRestriction{
 		Allow: cloneStrings(restriction.Allow),
 		Deny:  cloneStrings(restriction.Deny),
 	}, nil
@@ -490,7 +490,7 @@ func decodeMaximumDepth(field jsonField[int64]) (*int64, error) {
 }
 
 func encodeToolRestriction(
-	restriction *tools.ToolRestriction,
+	restriction *toolregistry.ToolRestriction,
 ) *toolRestrictionJSON {
 	if restriction == nil {
 		return nil
@@ -509,7 +509,7 @@ func encodeToolRestriction(
 
 func decodeToolRestriction(
 	field jsonField[toolRestrictionFields],
-) (*tools.ToolRestriction, error) {
+) (*toolregistry.ToolRestriction, error) {
 	if !field.present {
 		return nil, nil
 	}
@@ -533,7 +533,7 @@ func decodeToolRestriction(
 			"subagent/bound: toolRestriction.deny must be an array of strings",
 		)
 	}
-	return &tools.ToolRestriction{
+	return &toolregistry.ToolRestriction{
 		Allow: clonePresentStrings(field.value.Allow),
 		Deny:  clonePresentStrings(field.value.Deny),
 	}, nil

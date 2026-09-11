@@ -4,11 +4,68 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/internal/jsonvalue"
 )
+
+// ToolExecutionSuccess is a validated canonical value and its projections.
+type ToolExecutionSuccess struct {
+	Value              json.RawMessage
+	Content            []agentmessage.ContentBlock
+	Meta               json.RawMessage
+	AdditionalContexts []agentmessage.UserMessage
+	// ConcludesTurn means this Tool success ends the current Agent Turn; Agent
+	// Loop must not automatically start another model request for its result.
+	ConcludesTurn bool
+}
+
+// Failed reports false.
+func (*ToolExecutionSuccess) Failed() bool { return false }
+
+// ContentBlocks returns the result's model-facing content.
+func (outcome *ToolExecutionSuccess) ContentBlocks() []agentmessage.ContentBlock {
+	if outcome == nil {
+		return nil
+	}
+	detached, _ := agentmessage.CloneContentBlocks(outcome.Content)
+	return detached
+}
+
+// AdditionalContextMessages returns detached next-step context in authored order.
+func (outcome *ToolExecutionSuccess) AdditionalContextMessages() []agentmessage.UserMessage {
+	if outcome == nil {
+		return nil
+	}
+	detached, _ := cloneUserMessages(outcome.AdditionalContexts)
+	return detached
+}
+
+// SuccessValue returns a detached canonical value.
+func (outcome *ToolExecutionSuccess) SuccessValue() (json.RawMessage, bool) {
+	if outcome == nil {
+		return nil, false
+	}
+	return append(json.RawMessage(nil), outcome.Value...), true
+}
+
+// FailureDetail reports that a successful result has no failure.
+func (*ToolExecutionSuccess) FailureDetail() (ToolFailure, bool) {
+	return ToolFailure{}, false
+}
+
+// PresentationMeta returns detached tool-private presentation metadata.
+func (outcome *ToolExecutionSuccess) PresentationMeta() json.RawMessage {
+	if outcome == nil {
+		return nil
+	}
+	return append(json.RawMessage(nil), outcome.Meta...)
+}
+
+// ConcludesAgentTurn reports whether this success terminates the current turn.
+func (outcome *ToolExecutionSuccess) ConcludesAgentTurn() bool {
+	return outcome != nil && outcome.ConcludesTurn
+}
 
 func (outcome *ToolExecutionSuccess) cloneResult() (ToolExecutionResult, error) {
 	if outcome == nil {
@@ -37,13 +94,6 @@ func (outcome *ToolExecutionSuccess) cloneResult() (ToolExecutionResult, error) 
 		AdditionalContexts: additionalContexts,
 		ConcludesTurn:      outcome.ConcludesTurn,
 	}, nil
-}
-
-func (outcome *canonicalToolExecutionSuccess) cloneResult() (ToolExecutionResult, error) {
-	if outcome == nil || outcome.normalized == nil {
-		return nil, errors.New("tools: nil canonical success result")
-	}
-	return outcome.normalized.cloneResult()
 }
 
 func (outcome *ToolExecutionFailure) cloneResult() (ToolExecutionResult, error) {
@@ -85,89 +135,6 @@ func cloneOptionalJSON(rawValue json.RawMessage) (json.RawMessage, error) {
 	return jsonvalue.Clone(rawValue)
 }
 
-func errorResult(cause error) *ToolExecutionFailure {
-	message := "unknown tool failure"
-	if cause != nil {
-		message = cause.Error()
-	}
-	var coded CodedError
-	var info *ToolErrorInfo
-	if errors.As(cause, &coded) {
-		info = &ToolErrorInfo{
-			Name: coded.ToolErrorName(),
-			Code: coded.ToolErrorCode(),
-		}
-	}
-	return &ToolExecutionFailure{
-		Error: ToolFailure{
-			Message: message,
-			Info:    info,
-		},
-		Content: []agentmessage.ContentBlock{agentmessage.NewTextBlock("Error: " + message)},
-	}
-}
-
-func abortedResult(bodyInvoked bool, prior ...ToolExecutionResult) *ToolExecutionFailure {
-	var additionalContexts []agentmessage.UserMessage
-	if len(prior) != 0 && prior[0] != nil {
-		additionalContexts = prior[0].AdditionalContextMessages()
-	}
-	var outcome *ToolExecutionFailure
-	if bodyInvoked {
-		outcome = errorResult(&abortError{
-			message: "tool call aborted",
-			code:    ToolAborted,
-		})
-	} else {
-		outcome = errorResult(&abortError{
-			message: "tool call aborted before dispatch",
-			code:    ToolAbortedBeforeDispatch,
-		})
-	}
-	outcome.AdditionalContexts = additionalContexts
-	return outcome
-}
-
-func failureMessage(content []agentmessage.ContentBlock) string {
-	parts := make([]string, 0, len(content))
-	for _, entry := range content {
-		if readable, supported := entry.(agentmessage.PlainTextContent); supported {
-			if textValue, available := readable.PlainText(); available {
-				parts = append(parts, textValue)
-				continue
-			}
-		}
-		parts = append(parts, "["+entry.ContentType()+" content]")
-	}
-	message := strings.Join(parts, "\n")
-	if message == "" {
-		return "tool result blocked by post-execute policy"
-	}
-	return message
-}
-
-func replaceResultContent(outcome ToolExecutionResult, content []agentmessage.ContentBlock) ToolExecutionResult {
-	switch retained := outcome.(type) {
-	case *ToolExecutionSuccess:
-		return &ToolExecutionSuccess{
-			Value:              retained.Value,
-			Content:            content,
-			Meta:               retained.Meta,
-			AdditionalContexts: retained.AdditionalContexts,
-			ConcludesTurn:      retained.ConcludesTurn,
-		}
-	case *ToolExecutionFailure:
-		return &ToolExecutionFailure{
-			Error:              retained.Error,
-			Content:            content,
-			Meta:               retained.Meta,
-			AdditionalContexts: retained.AdditionalContexts,
-		}
-	default:
-		return errorResult(errors.New("tools: unsupported result implementation"))
-	}
-}
-
 type resultSnapshot struct {
 	failed             bool
 	content            []agentmessage.ContentBlock
@@ -179,12 +146,15 @@ type resultSnapshot struct {
 	concludesTurn      bool
 }
 
-func newResultSnapshot(outcome ToolExecutionResult) (ToolResultSnapshot, error) {
+// SnapshotResult validates a result and returns an immutable observer view.
+func SnapshotResult(outcome ToolExecutionResult) (ToolResultSnapshot, error) {
 	detached, err := outcome.cloneResult()
 	if err != nil {
 		return nil, err
 	}
-	resultView := &resultSnapshot{failed: detached.Failed()}
+	resultView := &resultSnapshot{
+		failed: detached.Failed(),
+	}
 	switch retained := detached.(type) {
 	case *ToolExecutionSuccess:
 		resultView.content = retained.Content
@@ -256,51 +226,10 @@ func cloneUserMessages(source []agentmessage.UserMessage) ([]agentmessage.UserMe
 	return detached, nil
 }
 
-func appendAdditionalContexts(outcome ToolExecutionResult, additions []agentmessage.UserMessage) (ToolExecutionResult, error) {
-	detached, err := outcome.cloneResult()
-	if err != nil {
-		return nil, err
+// CloneResult validates and detaches a result crossing the execution boundary.
+func CloneResult(outcome ToolExecutionResult) (ToolExecutionResult, error) {
+	if outcome == nil {
+		return nil, errors.New("tools: nil result")
 	}
-	additionalContexts, err := cloneUserMessages(additions)
-	if err != nil {
-		return nil, err
-	}
-	switch retained := detached.(type) {
-	case *ToolExecutionSuccess:
-		retained.AdditionalContexts = append(retained.AdditionalContexts, additionalContexts...)
-	case *ToolExecutionFailure:
-		retained.AdditionalContexts = append(retained.AdditionalContexts, additionalContexts...)
-	default:
-		return nil, errors.New("tools: unsupported result implementation")
-	}
-	return detached, nil
-}
-
-func prependAdditionalContexts(
-	outcome ToolExecutionResult,
-	additions []agentmessage.UserMessage,
-) (ToolExecutionResult, error) {
-	detached, err := outcome.cloneResult()
-	if err != nil {
-		return nil, err
-	}
-	additionalContexts, err := cloneUserMessages(additions)
-	if err != nil {
-		return nil, err
-	}
-	switch retained := detached.(type) {
-	case *ToolExecutionSuccess:
-		retained.AdditionalContexts = append(
-			additionalContexts,
-			retained.AdditionalContexts...,
-		)
-	case *ToolExecutionFailure:
-		retained.AdditionalContexts = append(
-			additionalContexts,
-			retained.AdditionalContexts...,
-		)
-	default:
-		return nil, errors.New("tools: unsupported result implementation")
-	}
-	return detached, nil
+	return outcome.cloneResult()
 }

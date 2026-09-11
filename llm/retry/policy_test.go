@@ -23,14 +23,9 @@ func TestPolicyKeyAndJitteredExponentialDelay(t *testing.T) {
 	}
 
 	samples := []float64{0, 1, 0.5, 0.5}
-	randomSample := func() float64 {
-		value := samples[0]
-		samples = samples[1:]
-		return value
-	}
 	want := []float64{450, 1_100, 2_000, 2_000}
 	for retryNumber, wantDelay := range want {
-		got, delayErr := localDelay(resolved, int64(retryNumber+1), randomSample)
+		got, delayErr := localDelay(resolved, int64(retryNumber+1), samples[retryNumber])
 		if delayErr != nil {
 			t.Fatal(delayErr)
 		}

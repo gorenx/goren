@@ -2,20 +2,16 @@ package tools
 
 import (
 	"context"
-
-	"github.com/gorenx/goren/plugin"
 )
 
-// ResultObserver observes final Tool results inside one plain Tool ToolLayer.
+// ResultObserver observes final Tool results after one call completes.
 // Implementations are ordinary business objects, not Plugin observers.
 type ResultObserver interface {
 	ObserveToolResult(context.Context, ExecutionCompleted) error
 }
 
-// PreExecuteRequest is the immutable input of the pre-dispatch policy
-// Waterfall. Middleware may decide, deny, ask, or delegate.
+// PreExecuteRequest is the immutable input of the pre-dispatch policy. Middleware may decide, deny, ask, or delegate.
 type PreExecuteRequest struct {
-	plugin.WaterfallInputBase
 	toolCall ToolExecution
 }
 
@@ -26,14 +22,12 @@ func (input PreExecuteRequest) Execution() ToolExecution {
 
 // PreExecuteOutcome is the typed pre-dispatch policy result.
 type PreExecuteOutcome struct {
-	plugin.WaterfallOutputBase
 	Decision PreToolDecision
 }
 
-// ExecuteRequest is the immutable input of the around-dispatch Waterfall.
+// ExecuteRequest is the immutable input of the around-dispatch policy.
 // Middleware may replace only the context passed to the downstream Action.
 type ExecuteRequest struct {
-	plugin.WaterfallInputBase
 	toolCall ToolExecution
 }
 
@@ -44,14 +38,12 @@ func (input ExecuteRequest) Execution() ToolExecution {
 
 // ExecuteOutcome is the typed around-dispatch result.
 type ExecuteOutcome struct {
-	plugin.WaterfallOutputBase
 	Result ToolExecutionResult
 }
 
 // PostExecuteRequest contains the immutable execution and detached result seen
 // by post-dispatch policy.
 type PostExecuteRequest struct {
-	plugin.WaterfallInputBase
 	toolCall   ToolExecution
 	resultView ToolResultSnapshot
 }
@@ -68,7 +60,6 @@ func (input PostExecuteRequest) Result() ToolResultSnapshot {
 
 // PostExecuteOutcome is the typed post-dispatch policy result.
 type PostExecuteOutcome struct {
-	plugin.WaterfallOutputBase
 	Decision PostToolDecision
 }
 
@@ -83,12 +74,6 @@ func (ExecutionCompleted) EventName() string {
 	return ResultEventName
 }
 
-// EventDelivery contains observer failures outside the authoritative Tool
-// outcome while reporting them through Runtime's EventFailureReporter.
-func (ExecutionCompleted) EventDelivery() plugin.DeliveryPolicy {
-	return plugin.DeliveryBestEffort
-}
-
 // Execution returns a detached view of the final call.
 func (completed ExecutionCompleted) Execution() ToolExecution {
 	return cloneExecution(completed.toolCall)
@@ -99,17 +84,35 @@ func (completed ExecutionCompleted) Result() ToolResultSnapshot {
 	return completed.resultView
 }
 
-// RegistryChanged reports a successful Tool definition or restriction change.
-type RegistryChanged struct{}
+// DefinitionsTopic carries complete, committed tool definition views.
+const DefinitionsTopic = "tools/definitions"
 
-// EventName returns the canonical Harness Event name.
-func (RegistryChanged) EventName() string {
-	return ChangeEventName
+// NewPreExecuteRequest captures input for pre-dispatch policy.
+func NewPreExecuteRequest(input ToolExecution) PreExecuteRequest {
+	return PreExecuteRequest{
+		toolCall: cloneExecution(input),
+	}
 }
 
-// EventDelivery keeps registry mutation and notification ordered. A failed
-// observer rejects an add; lifecycle removals remain removed and report the
-// notification failure to their caller.
-func (RegistryChanged) EventDelivery() plugin.DeliveryPolicy {
-	return plugin.DeliveryOrdered
+// NewExecuteRequest captures input for execution middleware.
+func NewExecuteRequest(input ToolExecution) ExecuteRequest {
+	return ExecuteRequest{
+		toolCall: cloneExecution(input),
+	}
+}
+
+// NewPostExecuteRequest combines detached input with an immutable result view.
+func NewPostExecuteRequest(input ToolExecution, view ToolResultSnapshot) PostExecuteRequest {
+	return PostExecuteRequest{
+		toolCall:   cloneExecution(input),
+		resultView: view,
+	}
+}
+
+// NewExecutionCompleted combines detached input with an immutable final result view.
+func NewExecutionCompleted(input ToolExecution, view ToolResultSnapshot) ExecutionCompleted {
+	return ExecutionCompleted{
+		toolCall:   cloneExecution(input),
+		resultView: view,
+	}
 }

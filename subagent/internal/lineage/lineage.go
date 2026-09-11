@@ -21,8 +21,13 @@ type Lineage struct {
 }
 
 // From resolves one direct child lineage and enforces the caller's depth cap.
-func From(parentAgent agent.Agent, maxDepth *int64) (Lineage, error) {
-	if parentAgent == nil || parentAgent.SessionValue() == nil {
+func From(
+	parentID session.SessionID,
+	parentHeader session.Header,
+	parentOptions agent.Options,
+	maxDepth *int64,
+) (Lineage, error) {
+	if parentID == "" {
 		return Lineage{}, errors.New(
 			"subagent: child lineage requires a parent Agent and Session",
 		)
@@ -33,8 +38,6 @@ func From(parentAgent agent.Agent, maxDepth *int64) (Lineage, error) {
 		)
 	}
 	parentDepth := int64(0)
-	parentOptions := parentAgent.OptionsValue()
-	parentHeader := parentAgent.SessionValue().Header()
 	if parentHeader.DelegationDepth != nil {
 		parentDepth = *parentHeader.DelegationDepth
 	}
@@ -52,7 +55,7 @@ func From(parentAgent agent.Agent, maxDepth *int64) (Lineage, error) {
 		)
 	}
 	return Lineage{
-		parentID: parentAgent.ID(),
+		parentID: parentID,
 		header:   parentHeader,
 		options:  parentOptions,
 		depth:    childDepth,

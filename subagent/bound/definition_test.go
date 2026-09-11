@@ -8,7 +8,7 @@ import (
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/session"
 	boundcontract "github.com/gorenx/goren/subagent/bound"
-	"github.com/gorenx/goren/tools"
+	toolregistry "github.com/gorenx/goren/tools/registry"
 )
 
 func TestDefinitionRoundTripsStrictly(t *testing.T) {
@@ -26,7 +26,7 @@ func TestDefinitionRoundTripsStrictly(t *testing.T) {
 				MaxTokens: &maximumTokens,
 			},
 			MaxDepth: &maximumDepth,
-			ToolRestriction: &tools.ToolRestriction{
+			ToolRestriction: &toolregistry.ToolRestriction{
 				Allow: []string{"search"},
 			},
 			Extensions: []string{"memory", "report"},
@@ -265,7 +265,7 @@ func TestDefinitionValidationAndSnapshotIsolation(t *testing.T) {
 			candidate: boundcontract.Draft{
 				Name:            "researcher",
 				SystemPrompt:    "prompt",
-				ToolRestriction: &tools.ToolRestriction{},
+				ToolRestriction: &toolregistry.ToolRestriction{},
 			},
 			revision: 1,
 		},
@@ -300,7 +300,7 @@ func TestDefinitionValidationAndSnapshotIsolation(t *testing.T) {
 		AgentOptions: &agent.Options{
 			MaxTokens: &maximumTokens,
 		},
-		ToolRestriction: &tools.ToolRestriction{
+		ToolRestriction: &toolregistry.ToolRestriction{
 			Allow: allow,
 		},
 		Extensions: extensions,
@@ -321,7 +321,7 @@ func TestDefinitionValidationAndSnapshotIsolation(t *testing.T) {
 		boundcontract.Draft{
 			Name:         "disabled-tools",
 			SystemPrompt: "prompt",
-			ToolRestriction: &tools.ToolRestriction{
+			ToolRestriction: &toolregistry.ToolRestriction{
 				Allow: []string{},
 			},
 		},

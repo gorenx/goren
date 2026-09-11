@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"flag"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -10,155 +10,74 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gorenx/goren/internal/assembly"
-	"github.com/gorenx/goren/llm/deepseek"
-	"github.com/gorenx/goren/plugin"
+	"github.com/gorenx/goren/internal/server"
+	"github.com/gorenx/goren/mcpclient"
 )
 
-type commandConfig struct {
-	address           string
-	version           string
-	dataDirectory     string
-	sessionDatabase   string
-	workspaceDatabase string
-}
-
-type storagePaths struct {
-	dataDirectory     string
-	sessionDatabase   string
-	workspaceDatabase string
-}
-
 func main() {
-	settings := parseConfig()
-	workingDirectory, err := os.Getwd()
+	err := run()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "resolve working directory:", err)
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
 
-	failureSink, err := assembly.NewDiagnostics(func(problem error) {
-		fmt.Fprintln(os.Stderr, "contained runtime failure:", problem)
-	})
+func run() error {
+	settings := parseConfig()
+	cwd, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "create diagnostics:", err)
-		os.Exit(1)
+		return err
 	}
 	configDirectory, err := os.UserConfigDir()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "resolve user config directory:", err)
-		os.Exit(1)
+		return err
 	}
 	paths, err := settings.resolveStorage(filepath.Join(configDirectory, "goren"))
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "resolve data storage paths:", err)
-		os.Exit(1)
+		return err
 	}
-	directory, err := assembly.NewCatalog(assembly.Environment{
-		WorkingDirectory: workingDirectory,
-		Diagnostics:      failureSink,
-	})
+	var externalServers []mcpclient.Config
+	for _, path := range settings.mcpFiles {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		configured, err := mcpclient.DecodeConfig(data)
+		if err != nil {
+			return err
+		}
+		externalServers = append(externalServers, configured)
+	}
+	process, err := server.New(server.Config{
+		Address:           settings.address,
+		Version:           settings.version,
+		WorkingDirectory:  cwd,
+		SessionDatabase:   paths.sessionDatabase,
+		WorkspaceDatabase: paths.workspaceDatabase,
+		CredentialsPath:   filepath.Join(filepath.Dir(paths.sessionDatabase), ".credentials.json"),
+		MCP:               externalServers,
+	}, processEnvironment{})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "create Factory Catalog:", err)
-		os.Exit(1)
+		return err
 	}
-	specs, err := assembly.DefaultSpecs(
-		settings.address,
-		settings.version,
-		paths.sessionDatabase,
-		paths.workspaceDatabase,
-	)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "create server composition:", err)
-		os.Exit(1)
-	}
-
-	lifecycle, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	lifetime, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	assembledServer, err := assembly.BuildServer(lifecycle, directory, specs)
+	err = process.Start(lifetime)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "build server Plugin tree:", err)
-		os.Exit(1)
+		return err
 	}
-	runtimeEngine := plugin.NewRuntime(plugin.RuntimeSettings{
-		EventFailures: failureSink,
-	})
-	if _, err = runtimeEngine.Start(lifecycle, assembledServer); err != nil {
-		fmt.Fprintln(os.Stderr, "start server composition:", err)
-		os.Exit(1)
+	fmt.Fprintf(os.Stdout, "Goren Agent started\n  Web: http://%s\n  Workspace: %s\n  Data: %s\n", process.Address(), cwd, paths.dataDirectory)
+	var failure error
+	select {
+	case <-lifetime.Done():
+	case failure = <-process.Done():
 	}
-	boundAddress := assembledServer.BoundAddress()
-	credentialPath := filepath.Join(filepath.Dir(paths.sessionDatabase), ".credentials.json")
-	fmt.Fprintf(
-		os.Stdout,
-		"Goren Agent started\n  Web: http://%s\n  Workspace: %s\n  Data: %s\n  Session DB: %s\n  Workspace DB: %s\n  Model: %s / %s\n  Credentials: %s (environment %s takes precedence)\n",
-		boundAddress,
-		workingDirectory,
-		paths.dataDirectory,
-		paths.sessionDatabase,
-		paths.workspaceDatabase,
-		deepseek.ProviderRoute,
-		deepseek.DefaultModelID,
-		credentialPath,
-		deepseek.DefaultAPIKeyEnv,
-	)
-	<-lifecycle.Done()
-	closeContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	cleanup, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := runtimeEngine.Shutdown(closeContext); err != nil {
-		fmt.Fprintln(os.Stderr, "stop server composition:", err)
-		os.Exit(1)
-	}
+	return errors.Join(failure, process.Close(cleanup))
 }
 
-func parseConfig() commandConfig {
-	address := flag.String("listen", "127.0.0.1:3080", "Echo listen address")
-	version := flag.String("version", "dev", "host.describe version")
-	dataDirectory := flag.String("data-dir", "", "data storage directory (default: user config directory)")
-	sessionDatabase := flag.String("session-db", "", "SQLite Session database path (default: <data-dir>/sessions.sqlite)")
-	workspaceDatabase := flag.String("workspace-db", "", "SQLite Workspace database path (default: <data-dir>/workspaces.sqlite)")
-	flag.Parse()
-	return commandConfig{
-		address:           *address,
-		version:           *version,
-		dataDirectory:     *dataDirectory,
-		sessionDatabase:   *sessionDatabase,
-		workspaceDatabase: *workspaceDatabase,
-	}
-}
+type processEnvironment struct{}
 
-func (settings commandConfig) resolveStorage(defaultDataDirectory string) (storagePaths, error) {
-	dataDirectory := settings.dataDirectory
-	if dataDirectory == "" {
-		dataDirectory = defaultDataDirectory
-	}
-	dataDirectory, err := filepath.Abs(dataDirectory)
-	if err != nil {
-		return storagePaths{}, fmt.Errorf("data directory: %w", err)
-	}
-	sessionDatabase, err := resolveStoragePath(settings.sessionDatabase, filepath.Join(dataDirectory, "sessions.sqlite"))
-	if err != nil {
-		return storagePaths{}, fmt.Errorf("Session database: %w", err)
-	}
-	workspaceDatabase, err := resolveStoragePath(settings.workspaceDatabase, filepath.Join(dataDirectory, "workspaces.sqlite"))
-	if err != nil {
-		return storagePaths{}, fmt.Errorf("Workspace database: %w", err)
-	}
-	return storagePaths{
-		dataDirectory:     filepath.Clean(dataDirectory),
-		sessionDatabase:   sessionDatabase,
-		workspaceDatabase: workspaceDatabase,
-	}, nil
-}
-
-func resolveStoragePath(configuredPath string, fallbackPath string) (string, error) {
-	selectedPath := configuredPath
-	if selectedPath == "" {
-		selectedPath = fallbackPath
-	}
-	absolutePath, err := filepath.Abs(selectedPath)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Clean(absolutePath), nil
-}
+func (processEnvironment) Lookup(name string) (string, bool) { return os.LookupEnv(name) }
+func (processEnvironment) UserHomeDir() (string, error)      { return os.UserHomeDir() }

@@ -10,7 +10,7 @@ import (
 
 type sessionRecord struct {
 	header  session.Header
-	live    session.Context
+	live    LiveSession
 	ordinal int
 }
 

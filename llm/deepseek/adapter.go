@@ -40,6 +40,7 @@ type Clock interface {
 
 // AdapterDependencies contains the capabilities required by the DeepSeek adapter.
 type AdapterDependencies struct {
+	Pictures    ImageReader
 	Connections ConnectionSource
 	Credentials APIKeyResolver
 	Identity    UserIDProvider
@@ -50,6 +51,7 @@ type AdapterDependencies struct {
 
 // Adapter is the direct DeepSeek chat-completions outbound adapter.
 type Adapter struct {
+	pictures    ImageReader
 	connections ConnectionSource
 	credentials APIKeyResolver
 	identity    UserIDProvider
@@ -88,6 +90,7 @@ func NewAdapter(dependencies AdapterDependencies) (*Adapter, error) {
 		version = DefaultHarnessVersion
 	}
 	return &Adapter{
+		pictures:    dependencies.Pictures,
 		connections: dependencies.Connections,
 		credentials: dependencies.Credentials,
 		identity:    dependencies.Identity,

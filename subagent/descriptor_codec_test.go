@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/tools"
+	toolregistry "github.com/gorenx/goren/tools/registry"
 )
 
 func TestSnapshotDescriptorNormalizesAndDetachesVariants(t *testing.T) {
@@ -32,7 +32,7 @@ func TestSnapshotDescriptorNormalizesAndDetachesVariants(t *testing.T) {
 	continuableData, err := SnapshotDescriptor(ContinuableDescriptor{
 		Provider: "fork",
 		Label:    "research",
-		ToolFilter: &tools.ToolRestriction{
+		ToolFilter: &toolregistry.ToolRestriction{
 			Allow: allowValues,
 		},
 	})

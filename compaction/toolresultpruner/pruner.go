@@ -1,7 +1,6 @@
 package toolresultpruner
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,29 +8,23 @@ import (
 
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/compaction"
-	"github.com/gorenx/goren/llm/tokenmeter"
 	"github.com/gorenx/goren/session"
 )
 
-// ToolResultPruner owns deterministic pruning policy and Session replacement
-// orchestration. Plugin only owns its Runtime publication and dependency lifecycle.
+// ToolResultPruner owns deterministic Unicode pruning rules, without Session resources.
 type ToolResultPruner struct {
 	settings ResolvedConfig
-	meter    tokenmeter.Meter
 }
 
-func newToolResultPruner(settings ResolvedConfig) *ToolResultPruner {
+// New validates budgets before constructing a business pruner.
+func New(input Config) (*ToolResultPruner, error) {
+	settings, err := ResolveConfig(input)
+	if err != nil {
+		return nil, err
+	}
 	return &ToolResultPruner{
 		settings: settings,
-	}
-}
-
-func (implementation *ToolResultPruner) bind(meter tokenmeter.Meter) {
-	implementation.meter = meter
-}
-
-func (implementation *ToolResultPruner) release() {
-	implementation.meter = nil
+	}, nil
 }
 
 // MeasureContent counts text blocks in Unicode code points.
@@ -63,22 +56,22 @@ func (*ToolResultPruner) MeasureContent(blocks []agentmessage.ContentBlock) (int
 }
 
 // PruneContent retains head/marker/tail while preserving rich-block order.
-func (implementation *ToolResultPruner) PruneContent(
+func (impl *ToolResultPruner) PruneContent(
 	blocks []agentmessage.ContentBlock,
 ) ([]agentmessage.ContentBlock, bool, error) {
-	totalChars, err := implementation.MeasureContent(blocks)
+	totalChars, err := impl.MeasureContent(blocks)
 	if err != nil {
 		return nil, false, err
 	}
-	if totalChars <= implementation.settings.ThresholdChars {
+	if totalChars <= impl.settings.ThresholdChars {
 		return nil, false, nil
 	}
 	detachedBlocks, err := agentmessage.CloneContentBlocks(blocks)
 	if err != nil {
 		return nil, false, err
 	}
-	removedStart := implementation.settings.HeadChars
-	removedEnd := totalChars - implementation.settings.TailChars
+	removedStart := impl.settings.HeadChars
+	removedEnd := totalChars - impl.settings.TailChars
 	prunedBlocks := make([]agentmessage.ContentBlock, 0, len(blocks)+1)
 	consumedChars := 0
 	markerInserted := false
@@ -123,11 +116,11 @@ func (implementation *ToolResultPruner) PruneContent(
 			"toolresultpruner: failed to locate removed text span",
 		)
 	}
-	charsAfter, err := implementation.MeasureContent(prunedBlocks)
+	charsAfter, err := impl.MeasureContent(prunedBlocks)
 	if err != nil {
 		return nil, false, err
 	}
-	if charsAfter > implementation.settings.ThresholdChars || charsAfter >= totalChars {
+	if charsAfter > impl.settings.ThresholdChars || charsAfter >= totalChars {
 		return nil, false, errors.New(
 			"toolresultpruner: replacement must be smaller and within threshold",
 		)
@@ -135,47 +128,12 @@ func (implementation *ToolResultPruner) PruneContent(
 	return prunedBlocks, true, nil
 }
 
-// PruneSession builds all shadow-price and replacement events from the Snapshot
-// visible at the FIFO head and commits the complete batch atomically.
-func (implementation *ToolResultPruner) PruneSession(
-	requestContext context.Context,
-	conversation session.Context,
-) (Result, error) {
-	if requestContext == nil {
-		return Result{}, errors.New("toolresultpruner: Context is nil")
-	}
-	if conversation == nil {
-		return Result{}, errors.New("toolresultpruner: Session is nil")
-	}
-	if implementation.meter == nil {
-		return Result{}, errors.New("toolresultpruner: Token Meter is not bound")
-	}
-	if err := requestContext.Err(); err != nil {
-		return Result{}, err
-	}
-	plan := &pruningPlan{
-		pruner: implementation,
-	}
-	if _, err := conversation.Commit(requestContext, plan); err != nil {
-		return Result{}, err
-	}
-	return plan.result, nil
-}
-
-type pruningPlan struct {
-	pruner *ToolResultPruner
-	result Result
-}
-
-func (plan *pruningPlan) Build(
-	requestContext context.Context,
-	currentSnapshot session.Snapshot,
-) ([]session.EventDraft, error) {
+func (impl *ToolResultPruner) prepare(currentSnapshot session.Snapshot, pricing Estimator) ([]session.EventDraft, Result, error) {
 	candidates := make([]session.Event, 0)
 	for _, sequence := range currentSnapshot.Surface.Nodes {
 		if sequence < 0 || sequence >= int64(len(currentSnapshot.Events)) ||
 			currentSnapshot.Events[sequence].Seq != sequence {
-			return nil, fmt.Errorf(
+			return nil, Result{}, fmt.Errorf(
 				"toolresultpruner: Surface seq %d has no matching Event",
 				sequence,
 			)
@@ -189,50 +147,47 @@ func (plan *pruningPlan) Build(
 	outcome := Result{}
 	nextSequence := currentSnapshot.Barrier.NextSeq
 	for _, candidate := range candidates {
-		if requestContext.Err() != nil {
-			return nil, context.Cause(requestContext)
-		}
 		facts, err := decodeToolResultCandidate(candidate)
 		if err != nil {
-			return nil, err
+			return nil, Result{}, err
 		}
 		blocks := facts.message.ContentValue()
 		if len(blocks) != 1 {
-			return nil, fmt.Errorf(
+			return nil, Result{}, fmt.Errorf(
 				"toolresultpruner: tool/result at seq %d has invalid content",
 				candidate.Seq,
 			)
 		}
 		blockValue, valid := blocks[0].(agentmessage.ToolResultBlock)
 		if !valid {
-			return nil, fmt.Errorf(
+			return nil, Result{}, fmt.Errorf(
 				"toolresultpruner: tool/result at seq %d has another block type",
 				candidate.Seq,
 			)
 		}
-		prunedContent, changed, err := plan.pruner.PruneContent(
+		prunedContent, changed, err := impl.PruneContent(
 			blockValue.Content,
 		)
 		if err != nil {
-			return nil, err
+			return nil, Result{}, err
 		}
 		if !changed {
 			continue
 		}
-		charsBefore, err := plan.pruner.MeasureContent(blockValue.Content)
+		charsBefore, err := impl.MeasureContent(blockValue.Content)
 		if err != nil {
-			return nil, err
+			return nil, Result{}, err
 		}
-		charsAfter, err := plan.pruner.MeasureContent(prunedContent)
+		charsAfter, err := impl.MeasureContent(prunedContent)
 		if err != nil {
-			return nil, err
+			return nil, Result{}, err
 		}
-		shadowedTokens, err := plan.pruner.meter.EstimateMessage(facts.message)
+		shadowedTokens, err := pricing.EstimateMessage(facts.message)
 		if err != nil {
-			return nil, err
+			return nil, Result{}, err
 		}
 		if shadowedTokens < 0 || shadowedTokens > 1<<53-1 {
-			return nil, errors.New(
+			return nil, Result{}, errors.New(
 				"toolresultpruner: Token Meter returned an invalid shadow price",
 			)
 		}
@@ -248,14 +203,14 @@ func (plan *pruningPlan) Build(
 			},
 		)
 		if err != nil {
-			return nil, err
+			return nil, Result{}, err
 		}
 		replacementDraft, err := session.NewToolResultContentReplacementDraft(
 			candidate,
 			prunedContent,
 		)
 		if err != nil {
-			return nil, err
+			return nil, Result{}, err
 		}
 		drafts = append(drafts, pruneDraft, replacementDraft)
 		outcome.Pruned = append(outcome.Pruned, Entry{
@@ -268,8 +223,7 @@ func (plan *pruningPlan) Build(
 		outcome.CharsRemoved += charsBefore - charsAfter
 		nextSequence += 2
 	}
-	plan.result = outcome
-	return drafts, nil
+	return drafts, outcome, nil
 }
 
 type toolResultFacts struct {
@@ -353,4 +307,4 @@ func boundedIndex(value int, length int) int {
 	return value
 }
 
-var _ Pruner = (*ToolResultPruner)(nil)
+var _ session.WritePlan = (*Plan)(nil)

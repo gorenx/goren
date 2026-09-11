@@ -1,67 +1,13 @@
 package llm
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"reflect"
-	"slices"
 )
 
-type adapterRoute struct {
-	backend  Adapter
-	metadata ProviderInfo
-	policy   RetryPolicy
-}
-
-type adapterRegistrationState struct {
-	owner    *Runtime
-	backend  Adapter
-	owned    []string
-	disposed bool
-}
-
-type adapterHandle struct {
-	state *adapterRegistrationState
-}
-
-func (owner *Runtime) RegisterAdapter(
-	requestContext context.Context,
-	providers []string,
-	backend Adapter,
-) (AdapterRegistrationHandle, error) {
-	if backend == nil {
-		return nil, errors.New("llm: adapter is nil")
-	}
-	backendValue := reflect.ValueOf(backend)
-	if backendValue.Kind() != reflect.Pointer || backendValue.IsNil() {
-		return nil, MustLlmError("an adapter must be a non-nil pointer so instance ownership is stable", "INVALID_ADAPTER")
-	}
-	if len(providers) == 0 {
-		return nil, MustLlmError("an adapter must register at least one provider", "INVALID_ADAPTER")
-	}
-	candidates, err := owner.describeRoutes(providers, backend)
-	if err != nil {
-		return nil, err
-	}
-	state := &adapterRegistrationState{
-		owner:   owner,
-		backend: backend,
-	}
-	if err := owner.commitRoutes(state, candidates); err != nil {
-		return nil, err
-	}
-	if err := owner.publishUpdate(requestContext); err != nil {
-		return nil, errors.Join(err, state.releaseOwned(requestContext))
-	}
-	return &adapterHandle{
-		state: state,
-	}, nil
-}
-
-func (owner *Runtime) describeRoutes(providers []string, backend Adapter) ([]adapterRoute, error) {
+func describeRoutes(providers []string, backend Adapter) ([]Binding, error) {
 	unique := make(map[string]struct{}, len(providers))
-	candidates := make([]adapterRoute, 0, len(providers))
+	candidates := make([]Binding, 0, len(providers))
 	for _, providerRoute := range providers {
 		if providerRoute == "" {
 			return nil, MustLlmError("adapter provider names must be non-empty", "INVALID_ADAPTER")
@@ -103,7 +49,7 @@ func (owner *Runtime) describeRoutes(providers []string, backend Adapter) ([]ada
 		if err := validateResolvedPolicy(policy); err != nil {
 			return nil, MustLlmError(fmt.Sprintf("invalid retry policy for provider %q: %v", providerRoute, err), "INVALID_ADAPTER")
 		}
-		candidates = append(candidates, adapterRoute{
+		candidates = append(candidates, Binding{
 			backend:  backend,
 			metadata: metadata,
 			policy:   policy,
@@ -133,86 +79,4 @@ func validateResolvedPolicy(policy RetryPolicy) error {
 	default:
 		return errors.New("policy implementation is unsupported")
 	}
-}
-
-func (owner *Runtime) commitRoutes(state *adapterRegistrationState, candidates []adapterRoute) error {
-	owner.mu.Lock()
-	defer owner.mu.Unlock()
-	if owner.closed {
-		return MustLlmError("the LLM Runtime is closed", "REGISTRATION_DISPOSED")
-	}
-	if state.disposed {
-		return MustLlmError("a disposed adapter registration cannot replace its routes", "REGISTRATION_DISPOSED")
-	}
-	ownedSet := make(map[string]struct{}, len(state.owned))
-	for _, providerRoute := range state.owned {
-		ownedSet[providerRoute] = struct{}{}
-	}
-	for _, candidate := range candidates {
-		providerRoute := candidate.metadata.ID
-		if _, held := owner.routes[providerRoute]; held {
-			if _, own := ownedSet[providerRoute]; !own {
-				return MustLlmError(fmt.Sprintf("an adapter for provider %q is already registered", providerRoute), "DUPLICATE_ADAPTER")
-			}
-		}
-	}
-	for _, providerRoute := range state.owned {
-		delete(owner.routes, providerRoute)
-		owner.routeOrder = slices.DeleteFunc(owner.routeOrder, func(existingRoute string) bool {
-			return existingRoute == providerRoute
-		})
-	}
-	state.owned = state.owned[:0]
-	for index := range candidates {
-		candidate := candidates[index]
-		providerRoute := candidate.metadata.ID
-		owner.routes[providerRoute] = &candidate
-		owner.routeOrder = append(owner.routeOrder, providerRoute)
-		state.owned = append(state.owned, providerRoute)
-	}
-	return nil
-}
-
-func (state *adapterRegistrationState) releaseOwned(closeContext context.Context) error {
-	owner := state.owner
-	owner.mu.Lock()
-	if state.disposed {
-		owner.mu.Unlock()
-		return nil
-	}
-	state.disposed = true
-	changed := len(state.owned) != 0
-	for _, providerRoute := range state.owned {
-		delete(owner.routes, providerRoute)
-		owner.routeOrder = slices.DeleteFunc(owner.routeOrder, func(existingRoute string) bool {
-			return existingRoute == providerRoute
-		})
-	}
-	state.owned = nil
-	owner.mu.Unlock()
-	if changed {
-		return owner.publishUpdate(closeContext)
-	}
-	return nil
-}
-
-func (handleState *adapterHandle) Replace(requestContext context.Context, providers []string) error {
-	if handleState == nil || handleState.state == nil {
-		return MustLlmError("a disposed adapter registration cannot replace its routes", "REGISTRATION_DISPOSED")
-	}
-	candidates, err := handleState.state.owner.describeRoutes(providers, handleState.state.backend)
-	if err != nil {
-		return err
-	}
-	if err := handleState.state.owner.commitRoutes(handleState.state, candidates); err != nil {
-		return err
-	}
-	return handleState.state.owner.publishUpdate(requestContext)
-}
-
-func (handleState *adapterHandle) Release(closeContext context.Context) error {
-	if handleState == nil || handleState.state == nil {
-		return nil
-	}
-	return handleState.state.releaseOwned(closeContext)
 }

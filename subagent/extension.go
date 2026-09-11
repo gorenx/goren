@@ -3,7 +3,8 @@ package subagent
 import (
 	"context"
 
-	"github.com/gorenx/goren/agent"
+	"github.com/gorenx/goren/systemprompt"
+	toolregistry "github.com/gorenx/goren/tools/registry"
 )
 
 // ExtensionOption configures one Extension registration. Its fields remain
@@ -34,10 +35,17 @@ type ExtensionRegistration interface {
 	Unregister(context.Context) error
 }
 
-// Extension contributes one cohesive Setup to an unpublished child Agent.
-// It is an ordinary business object and never mounts or owns a Plugin.
+// ChildConfiguration is the detached configuration assembled before the Agent
+// Registry receives a child creation request.
+type ChildConfiguration struct {
+	PromptSections []systemprompt.PromptSection
+	Tools          toolregistry.Catalog
+}
+
+// Extension contributes to one unpublished child configuration. It receives
+// no Agent, Scope, Actor address, or lifecycle owner.
 type Extension interface {
-	agent.Setup
+	ConfigureChild(context.Context, *ChildConfiguration) error
 }
 
 // ExtensionRegistry owns Extensions installed into unpublished and resident

@@ -3,7 +3,6 @@ package subagents
 import (
 	"context"
 
-	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
@@ -36,7 +35,7 @@ type continuable interface {
 	) (subagent.Execution, error)
 	Resume(
 		context.Context,
-		agent.Agent,
+		session.SessionID,
 		session.SessionID,
 		agentmessage.UserMessage,
 	) (agentmessage.MessageID, error)
@@ -54,15 +53,15 @@ type bound interface {
 		context.Context,
 		boundcontract.Replacement,
 	) (boundcontract.Definition, error)
-	SessionStarted(agent.Agent)
+	SessionStarted(session.SessionID)
 	HasBinding(
 		context.Context,
-		agent.Agent,
+		session.SessionID,
 		session.SessionID,
 	) (bool, error)
 	Followup(
 		context.Context,
-		agent.Agent,
+		session.SessionID,
 		session.SessionID,
 		agentmessage.UserMessage,
 	) (agentmessage.MessageID, error)
@@ -71,7 +70,6 @@ type bound interface {
 		boundcontract.Address,
 		boundcontract.Input,
 	) (boundcontract.Receipt, error)
-	AgentDisposed(context.Context, agent.Agent) error
 }
 
 type admissionState uint8

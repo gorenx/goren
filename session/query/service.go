@@ -11,43 +11,31 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"sync"
 	"unicode/utf8"
 
-	"github.com/gorenx/goren/plugin"
 	"github.com/gorenx/goren/session"
-	sesspersist "github.com/gorenx/goren/session/persistence"
 )
 
 // Config contains provider-independent search pagination policy.
 type Config struct {
-	DefaultLimit                int
-	MaximumLimit                int
-	ReadWindowMax               *int
-	PersistedInspectConcurrency int
+	DefaultLimit  int
+	MaximumLimit  int
+	ReadWindowMax *int
 }
 
-// Service is the stateful live-preferred Session Query domain object. It
-// serializes observation, index reconciliation, and query execution so a page
-// and its cursor always refer to one derived generation.
+// Service evaluates one observed Session corpus. Its owner serializes calls.
+// Storage lifecycle and source acquisition belong to actor orchestration.
 type Service struct {
-	plugin.Base
-	mutex       sync.Mutex
-	opener      IndexOpener
-	sessions    session.LiveStore
-	persistence sesspersist.Persistence
-	index       Index
-	settings    Config
-	instance    string
+	sources  map[session.SessionID]Source
+	index    Index
+	settings Config
+	instance string
 }
 
-// New constructs the Session Query Service Plugin without opening its Index.
-func New(
-	opener IndexOpener,
-	settings Config,
-) (*Service, error) {
-	if opener == nil {
-		return nil, errors.New("session query: IndexOpener is required")
+// New validates query policy without opening storage or acquiring sources.
+func New(backend Index, settings Config) (*Service, error) {
+	if backend == nil {
+		return nil, errors.New("session query: Index is required")
 	}
 	resolved, err := ValidateConfig(settings)
 	if err != nil {
@@ -57,61 +45,15 @@ func New(
 	if err != nil {
 		return nil, fmt.Errorf("session query: create service identity: %w", err)
 	}
-	owner := &Service{
-		opener:   opener,
+	return &Service{
+		sources:  make(map[session.SessionID]Source),
+		index:    backend,
 		settings: resolved,
 		instance: identity,
-	}
-	return owner, nil
+	}, nil
 }
 
-// Manifest declares the Query Service and its source dependencies.
-func (owner *Service) Manifest() plugin.Manifest {
-	return plugin.Manifest{
-		Name: PluginName,
-		Provides: []plugin.ProvidedService{
-			plugin.NewProvidedService[QueryService](owner),
-		},
-		Requires: []plugin.ServiceType{
-			plugin.ServiceOf[session.LiveStore](),
-			plugin.ServiceOf[sesspersist.Persistence](),
-		},
-	}
-}
-
-// Apply resolves source Services and acquires the disposable Index.
-func (owner *Service) Apply(requestContext context.Context) error {
-	if err := requestContext.Err(); err != nil {
-		return err
-	}
-	sessions, err := plugin.Require[session.LiveStore](owner)
-	if err != nil {
-		return err
-	}
-	persistence, err := plugin.Require[sesspersist.Persistence](owner)
-	if err != nil {
-		return err
-	}
-	derivedIndex, err := owner.opener.OpenIndex(requestContext)
-	if err != nil {
-		return err
-	}
-	if derivedIndex == nil {
-		return errors.New("session query: IndexOpener returned nil Index")
-	}
-	owner.sessions = sessions
-	owner.persistence = persistence
-	owner.index = derivedIndex
-	return nil
-}
-
-// Dispose waits behind active operations and closes the owned Index.
-func (owner *Service) Dispose(closeContext context.Context) error {
-	return owner.Close(closeContext)
-}
-
-// ValidateConfig resolves defaults and rejects invalid provider-independent
-// query policy.
+// ValidateConfig resolves and validates query bounds.
 func ValidateConfig(settings Config) (Config, error) {
 	if settings.DefaultLimit == 0 {
 		settings.DefaultLimit = DefaultLimit
@@ -123,9 +65,6 @@ func ValidateConfig(settings Config) (Config, error) {
 		defaultWindow := DefaultReadWindow
 		settings.ReadWindowMax = &defaultWindow
 	}
-	if settings.PersistedInspectConcurrency == 0 {
-		settings.PersistedInspectConcurrency = DefaultInspectors
-	}
 	if settings.DefaultLimit < 1 || settings.MaximumLimit < 1 || settings.DefaultLimit > settings.MaximumLimit {
 		return Config{}, failure(
 			ErrorInvalidConfig,
@@ -136,13 +75,8 @@ func ValidateConfig(settings Config) (Config, error) {
 	if *settings.ReadWindowMax < 0 {
 		return Config{}, failure(ErrorInvalidConfig, "session query: readWindowMax must be non-negative", nil)
 	}
-	if settings.PersistedInspectConcurrency < 1 {
-		return Config{}, failure(
-			ErrorInvalidConfig,
-			"session query: persistedInspectConcurrency must be positive",
-			nil,
-		)
-	}
+	window := *settings.ReadWindowMax
+	settings.ReadWindowMax = &window
 	return settings, nil
 }
 
@@ -159,8 +93,6 @@ func (owner *Service) SearchSessions(
 	if err != nil {
 		return SessionSearchPage{}, err
 	}
-	owner.mutex.Lock()
-	defer owner.mutex.Unlock()
 	indexed, err := owner.reconcile(requestContext)
 	if err != nil {
 		return SessionSearchPage{}, err
@@ -214,8 +146,6 @@ func (owner *Service) SearchEvents(
 	if err != nil {
 		return EventSearchPage{}, err
 	}
-	owner.mutex.Lock()
-	defer owner.mutex.Unlock()
 	indexed, err := owner.reconcile(requestContext)
 	if err != nil {
 		return EventSearchPage{}, err
@@ -261,16 +191,6 @@ func (owner *Service) SearchEvents(
 	return page, nil
 }
 
-// Close waits behind any active operation and closes the owned derived index.
-func (owner *Service) Close(closeContext context.Context) error {
-	owner.mutex.Lock()
-	defer owner.mutex.Unlock()
-	if owner.index == nil {
-		return nil
-	}
-	return owner.index.Close(closeContext)
-}
-
 type desiredSource struct {
 	header         session.Header
 	live           bool
@@ -306,23 +226,6 @@ func (owner *Service) reconcile(requestContext context.Context) (IndexSnapshot, 
 			continue
 		}
 		entries := source.entries
-		if replaceDocuments && entries == nil {
-			if owner.persistence == nil {
-				return IndexSnapshot{}, failure(
-					ErrorSessionNotFound,
-					fmt.Sprintf("session query: persisted session %q disappeared during reconciliation", identifier),
-					nil,
-				)
-			}
-			loaded, inspectErr := owner.persistence.Inspect(requestContext, identifier)
-			if inspectErr != nil {
-				return IndexSnapshot{}, persistenceFailure("inspect", inspectErr)
-			}
-			if !headersEqual(source.header, loaded.Header) {
-				return IndexSnapshot{}, sourceConflict(source.header, loaded.Header)
-			}
-			entries = loaded.Events
-		}
 		var documents []Document
 		if replaceDocuments {
 			documents, err = BuildDocuments(identifier, entries)
@@ -361,50 +264,21 @@ func (owner *Service) observeCorpus(requestContext context.Context) (map[session
 	if err := contextFailure(requestContext); err != nil {
 		return nil, err
 	}
-	desired := make(map[session.SessionID]desiredSource)
-	if owner.persistence != nil {
-		err := owner.walkSnapshots(requestContext, func(snapshot sesspersist.Snapshot) (bool, error) {
-			if _, duplicate := desired[snapshot.Header.ID]; duplicate {
-				return false, failure(
-					ErrorSourceConflict,
-					fmt.Sprintf("session query: persistence listed session %q more than once", snapshot.Header.ID),
-					nil,
-				)
-			}
-			desired[snapshot.Header.ID] = desiredSource{
-				header: cloneHeader(snapshot.Header), persisted: true,
-				sourceRevision: "persisted:" + string(snapshot.Revision),
-			}
-			return true, nil
-		})
+	desired := make(map[session.SessionID]desiredSource, len(owner.sources))
+	for identifier, source := range owner.sources {
+		revision, err := sourceRevision(source.Log)
 		if err != nil {
-			return nil, persistenceFailure("list snapshots", err)
+			return nil, err
 		}
-	}
-	for _, conversation := range owner.sessions.List() {
-		metadata := conversation.Header()
-		entries := conversation.Events()
-		existing, persisted := desired[metadata.ID]
-		if persisted && !headersEqual(metadata, existing.header) {
-			return nil, sourceConflict(metadata, existing.header)
+		desired[identifier] = desiredSource{
+			header:         source.Log.Header,
+			live:           source.Live,
+			persisted:      source.Persisted,
+			sourceRevision: revision,
+			entries:        source.Log.Events,
 		}
-		desired[metadata.ID] = desiredSource{
-			header: cloneHeader(metadata), live: true, persisted: persisted,
-			sourceRevision: liveRevision(conversation, entries), entries: entries,
-		}
-	}
-	if err := contextFailure(requestContext); err != nil {
-		return nil, err
 	}
 	return desired, nil
-}
-
-func liveRevision(conversation session.Context, entries []session.Event) string {
-	last := session.Event{Seq: -1}
-	if len(entries) != 0 {
-		last = entries[len(entries)-1]
-	}
-	return fmt.Sprintf("live:%p:%d:%d:%d", conversation, len(entries), last.Seq, last.Time)
 }
 
 func sourceConflict(left session.Header, right session.Header) error {
@@ -695,13 +569,6 @@ func indexFailure(cause error) error {
 		return failure(ErrorAborted, "session query: index operation was aborted", cause)
 	}
 	return failure(ErrorIndexFailed, "session query: derived index failed", cause)
-}
-
-func persistenceFailure(operation string, cause error) error {
-	if errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
-		return failure(ErrorAborted, "session query: persistence operation was aborted", cause)
-	}
-	return failure(ErrorPersistence, "session query: persistence "+operation+" failed", cause)
 }
 
 // UnicodeCodePoints returns the number of Unicode scalar values in text and

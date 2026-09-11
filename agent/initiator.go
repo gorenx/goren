@@ -3,27 +3,28 @@ package agent
 import (
 	"context"
 	"errors"
+	"github.com/gorenx/goren/session"
 )
 
 type initiatorContextKey struct{}
 
 type initiatorContextValue struct {
-	subject Agent
-	defined bool
+	identifier session.SessionID
+	defined    bool
 }
 
-// WithInitiator returns a derived context carrying explicit same-process causal
+// WithInitiator returns a derived context carrying explicit identity-only causal
 // attribution. It does not resolve identity or grant authorization.
-func WithInitiator(requestContext context.Context, subject Agent) (context.Context, error) {
-	if requestContext == nil || subject == nil {
-		return nil, errors.New("agent: initiator Context and Agent are required")
+func WithInitiator(requestContext context.Context, identifier session.SessionID) (context.Context, error) {
+	if requestContext == nil || identifier == "" {
+		return nil, errors.New("agent: initiator Context and Agent ID are required")
 	}
 	return context.WithValue(
 		requestContext,
 		initiatorContextKey{},
 		initiatorContextValue{
-			subject: subject,
-			defined: true,
+			identifier: identifier,
+			defined:    true,
 		},
 	), nil
 }
@@ -43,22 +44,22 @@ func WithoutInitiator(requestContext context.Context) (context.Context, error) {
 }
 
 // InitiatorFrom reads optional causal attribution from one explicit call chain.
-func InitiatorFrom(requestContext context.Context) (Agent, bool) {
+func InitiatorFrom(requestContext context.Context) (session.SessionID, bool) {
 	if requestContext == nil {
-		return nil, false
+		return "", false
 	}
 	value, found := requestContext.Value(initiatorContextKey{}).(initiatorContextValue)
-	if !found || !value.defined || value.subject == nil {
-		return nil, false
+	if !found || !value.defined || value.identifier == "" {
+		return "", false
 	}
-	return value.subject, true
+	return value.identifier, true
 }
 
 // RequireInitiator rejects an Agent-less call chain.
-func RequireInitiator(requestContext context.Context) (Agent, error) {
-	subject, found := InitiatorFrom(requestContext)
+func RequireInitiator(requestContext context.Context) (session.SessionID, error) {
+	identifier, found := InitiatorFrom(requestContext)
 	if !found {
-		return nil, errors.New("agent: no initiating Agent is active")
+		return "", errors.New("agent: no initiating Agent is active")
 	}
-	return subject, nil
+	return identifier, nil
 }

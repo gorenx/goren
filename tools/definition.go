@@ -5,77 +5,39 @@ import (
 	"time"
 
 	"github.com/gorenx/goren/agentmessage"
+	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/session"
 )
 
 // Executor runs one already-snapshotted tool call and returns a canonical JSON
 // value. Implementations must observe ToolRunContext.Context and settle owned
 // work before returning.
 type Executor interface {
-	Execute(json.RawMessage, ToolRunContext) (json.RawMessage, error)
-}
-
-// ExecutorFunc adapts a function to Executor.
-type ExecutorFunc func(json.RawMessage, ToolRunContext) (json.RawMessage, error)
-
-// Execute invokes the adapted function.
-func (operation ExecutorFunc) Execute(arguments json.RawMessage, runContext ToolRunContext) (json.RawMessage, error) {
-	return operation(arguments, runContext)
+	Execute(arguments json.RawMessage, runContext ToolRunContext) (value json.RawMessage, err error)
 }
 
 // OutputRenderer projects validated arguments and a validated canonical value
 // into model-facing content.
 type OutputRenderer interface {
-	Render(json.RawMessage, json.RawMessage) ([]agentmessage.ContentBlock, error)
-}
-
-// OutputRendererFunc adapts a function to OutputRenderer.
-type OutputRendererFunc func(json.RawMessage, json.RawMessage) ([]agentmessage.ContentBlock, error)
-
-// Render invokes the adapted function.
-func (operation OutputRendererFunc) Render(arguments json.RawMessage, value json.RawMessage) ([]agentmessage.ContentBlock, error) {
-	return operation(arguments, value)
+	Render(arguments json.RawMessage, value json.RawMessage) (content []agentmessage.ContentBlock, err error)
 }
 
 // PresentationProjector derives replayable tool-private UI metadata from one
 // top-level successful value.
 type PresentationProjector interface {
-	Project(json.RawMessage, json.RawMessage) (json.RawMessage, error)
-}
-
-// PresentationProjectorFunc adapts a function to PresentationProjector.
-type PresentationProjectorFunc func(json.RawMessage, json.RawMessage) (json.RawMessage, error)
-
-// Project invokes the adapted function.
-func (operation PresentationProjectorFunc) Project(arguments json.RawMessage, value json.RawMessage) (json.RawMessage, error) {
-	return operation(arguments, value)
+	Project(arguments json.RawMessage, value json.RawMessage) (metadata json.RawMessage, err error)
 }
 
 // ContentFinalizer performs the snapshotted definition-owned last-mile
-// content transform. replace=false preserves the supplied content.
+// content transform. replaceContent=false preserves the supplied content.
 type ContentFinalizer interface {
-	Finalize(ToolExecution, ToolResultSnapshot) (content []agentmessage.ContentBlock, replace bool)
-}
-
-// ContentFinalizerFunc adapts a function to ContentFinalizer.
-type ContentFinalizerFunc func(ToolExecution, ToolResultSnapshot) ([]agentmessage.ContentBlock, bool)
-
-// Finalize invokes the adapted function.
-func (operation ContentFinalizerFunc) Finalize(toolCall ToolExecution, resultView ToolResultSnapshot) ([]agentmessage.ContentBlock, bool) {
-	return operation(toolCall, resultView)
+	Finalize(toolCall ToolExecution, resultView ToolResultSnapshot) (content []agentmessage.ContentBlock, replaceContent bool)
 }
 
 // ConcurrencyClassifier opts a call into overlap with sibling tool calls.
 // False, absence, or panic is fail-closed exclusive scheduling.
 type ConcurrencyClassifier interface {
-	ConcurrencySafe(json.RawMessage) bool
-}
-
-// ConcurrencyClassifierFunc adapts a function to ConcurrencyClassifier.
-type ConcurrencyClassifierFunc func(json.RawMessage) bool
-
-// ConcurrencySafe invokes the adapted function.
-func (operation ConcurrencyClassifierFunc) ConcurrencySafe(arguments json.RawMessage) bool {
-	return operation(arguments)
+	ConcurrencySafe(arguments json.RawMessage) (safe bool)
 }
 
 // ToolOutputDefinition owns the successful value schema and its projections.
@@ -95,4 +57,42 @@ type ToolDefinition struct {
 	FinalizeContent     ContentFinalizer
 	Timeout             time.Duration
 	ConcurrencyBehavior ConcurrencyClassifier
+}
+
+// Definitions is the complete committed tool catalog for one Session.
+// KnownNames includes tools hidden from the model-facing Schemas.
+// Publishers must not mutate it after handing it to the actor framework.
+type Definitions struct {
+	AgentID    session.SessionID
+	Schemas    []llm.ToolSchema
+	KnownNames []string
+}
+
+// Descriptor is the immutable execution contract borrowed from one tool implementation.
+// It deliberately excludes the body and owned resources.
+type Descriptor struct {
+	Name                string
+	Description         string
+	Parameters          json.RawMessage
+	Output              ToolOutputDefinition
+	FinalizeContent     ContentFinalizer
+	Timeout             time.Duration
+	ConcurrencyBehavior ConcurrencyClassifier
+}
+
+// Describe detaches schemas while retaining borrowed output and policy behavior.
+func (definition ToolDefinition) Describe() Descriptor {
+	return Descriptor{
+		Name:        definition.Name,
+		Description: definition.Description,
+		Parameters:  append(json.RawMessage(nil), definition.Parameters...),
+		Output: ToolOutputDefinition{
+			Schema:           append(json.RawMessage(nil), definition.Output.Schema...),
+			Renderer:         definition.Output.Renderer,
+			PresentationMeta: definition.Output.PresentationMeta,
+		},
+		FinalizeContent:     definition.FinalizeContent,
+		Timeout:             definition.Timeout,
+		ConcurrencyBehavior: definition.ConcurrencyBehavior,
+	}
 }

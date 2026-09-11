@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"sync"
 
-	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentmessage"
+	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/subagent"
 	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/tools"
+	toolregistry "github.com/gorenx/goren/tools/registry"
 )
 
 const (
@@ -17,98 +19,64 @@ const (
 	structuredPromptText = "When you have your final answer, you MUST report it by calling the `structured_output` tool with arguments matching its parameter schema exactly. Do not finish with a plain text answer: only the tool call counts as your result."
 )
 
-var structuredResultSchema = json.RawMessage(`{
-  "type": "object",
-  "properties": {
-    "recorded": {
-      "type": "boolean",
-      "const": true
-    }
-  },
-  "required": ["recorded"],
-  "additionalProperties": false
-}`)
+var structuredResultSchema = json.RawMessage(`{"type":"object","properties":{"recorded":{"type":"boolean","const":true}},"required":["recorded"],"additionalProperties":false}`)
 
-// structuredOutput owns the result Tool, prompt, guard, and captured value
-// installed into one exact OneShot child Scope.
 type structuredOutput struct {
 	mutex    sync.Mutex
 	schema   json.RawMessage
-	staged   map[tools.ToolExecutionToken]json.RawMessage
+	staged   map[agentmessage.CallID]json.RawMessage
 	captured json.RawMessage
 }
 
 func newStructuredOutput(schema json.RawMessage) *structuredOutput {
 	return &structuredOutput{
 		schema: append(json.RawMessage(nil), schema...),
-		staged: make(map[tools.ToolExecutionToken]json.RawMessage),
+		staged: make(map[agentmessage.CallID]json.RawMessage),
 	}
 }
 
-func (output *structuredOutput) Apply(
-	ctx context.Context,
-	_ agent.Agent,
-	editor agent.ScopeEditor,
-) error {
-	if err := editor.AddTool(
-		ctx,
-		tools.ToolDefinition{
-			Name:        structuredOutputTool,
-			Description: "Report the final structured result exactly once.",
-			Parameters:  output.schema,
-			Output: tools.ToolOutputDefinition{
-				Schema: structuredResultSchema,
-				Renderer: tools.OutputRendererFunc(func(
-					json.RawMessage,
-					json.RawMessage,
-				) ([]agentmessage.ContentBlock, error) {
-					return []agentmessage.ContentBlock{
-						agentmessage.NewTextBlock("Structured output recorded."),
-					}, nil
-				}),
-			},
-			Executor: tools.ExecutorFunc(output.execute),
-		},
-	); err != nil {
-		return err
+func (output *structuredOutput) Configure(configuration *subagent.ChildConfiguration) {
+	configuration.Tools.Schemas = append(configuration.Tools.Schemas, llm.ToolSchema{
+		Name:        structuredOutputTool,
+		Description: "Report the final structured result exactly once.",
+		Parameters:  output.schema,
+	})
+	if configuration.Tools.Policies == nil {
+		configuration.Tools.Policies = make(map[string]toolregistry.Policy)
 	}
-	if err := editor.AddPromptSection(
-		ctx,
-		systemprompt.PromptSection{
-			Name:  structuredPromptName,
-			Order: 190,
-			Text:  systemprompt.StaticText(structuredPromptText),
-		},
-	); err != nil {
-		return err
+	configuration.Tools.Policies[structuredOutputTool] = toolregistry.Policy{
+		Results: output,
+		Guards:  []tools.ToolGuard{tools.ToolGuardFunc(output.denyAfterCapture)},
 	}
-	if err := editor.AddToolGuard(
-		ctx,
-		structuredOutputTool,
-		tools.ToolGuardFunc(output.denyAfterCapture),
-	); err != nil {
-		return err
-	}
-	return editor.ObserveToolResults(output)
+	configuration.PromptSections = append(configuration.PromptSections, systemprompt.PromptSection{
+		Name:  structuredPromptName,
+		Order: 190,
+		Text:  systemprompt.StaticText(structuredPromptText),
+	})
 }
 
-func (output *structuredOutput) execute(
-	arguments json.RawMessage,
-	runContext tools.ToolRunContext,
-) (json.RawMessage, error) {
+func (output *structuredOutput) definition() tools.ToolDefinition {
+	return tools.ToolDefinition{
+		Name:        structuredOutputTool,
+		Description: "Report the final structured result exactly once.",
+		Parameters:  output.schema,
+		Output: tools.ToolOutputDefinition{
+			Schema:   structuredResultSchema,
+			Renderer: output,
+		},
+		Executor: output,
+	}
+}
+
+func (output *structuredOutput) Execute(arguments json.RawMessage, runContext tools.ToolRunContext) (json.RawMessage, error) {
 	output.mutex.Lock()
-	output.staged[runContext.Execution.Token] = append(
-		json.RawMessage(nil),
-		arguments...,
-	)
+	output.staged[runContext.Execution.CallID] = append(json.RawMessage(nil), arguments...)
 	output.mutex.Unlock()
 	runContext.ConcludeTurn()
 	return json.RawMessage(`{"recorded":true}`), nil
 }
 
-func (output *structuredOutput) denyAfterCapture(
-	tools.ToolExecution,
-) (string, bool) {
+func (output *structuredOutput) denyAfterCapture(tools.ToolExecution) (string, bool) {
 	output.mutex.Lock()
 	defer output.mutex.Unlock()
 	if output.captured == nil && len(output.staged) == 0 {
@@ -117,24 +85,18 @@ func (output *structuredOutput) denyAfterCapture(
 	return "structured output already recorded: the execution is complete", true
 }
 
-func (output *structuredOutput) ObserveToolResult(
-	_ context.Context,
-	completed tools.ExecutionCompleted,
-) error {
-	if completed.Execution().Name != structuredOutputTool {
+func (output *structuredOutput) ObserveToolResult(_ context.Context, completed tools.ExecutionCompleted) error {
+	executionValue := completed.Execution()
+	if executionValue.Name != structuredOutputTool {
 		return nil
 	}
-	executionValue := completed.Execution()
 	output.mutex.Lock()
-	staged, found := output.staged[executionValue.Token]
-	if found {
-		delete(output.staged, executionValue.Token)
-	}
-	if found && !completed.Result().Failed() &&
-		executionValue.Parent.IsZero() && output.captured == nil {
+	defer output.mutex.Unlock()
+	staged, found := output.staged[executionValue.CallID]
+	delete(output.staged, executionValue.CallID)
+	if found && !completed.Result().Failed() && executionValue.RootCallID == executionValue.CallID && output.captured == nil {
 		output.captured = append(json.RawMessage(nil), staged...)
 	}
-	output.mutex.Unlock()
 	return nil
 }
 
@@ -144,5 +106,8 @@ func (output *structuredOutput) Captured() json.RawMessage {
 	return append(json.RawMessage(nil), output.captured...)
 }
 
-var _ agent.Setup = (*structuredOutput)(nil)
+func (output *structuredOutput) Render(json.RawMessage, json.RawMessage) ([]agentmessage.ContentBlock, error) {
+	return []agentmessage.ContentBlock{agentmessage.NewTextBlock("Structured output recorded.")}, nil
+}
+
 var _ tools.ResultObserver = (*structuredOutput)(nil)

@@ -4,40 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
-	"sync"
 	"testing"
 
 	agentcore "github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 )
-
-type inboxRecorder struct {
-	mu        sync.Mutex
-	inserted  []agentmessage.MessageID
-	discarded []agentmessage.MessageID
-	claimed   []agentmessage.MessageID
-	turns     []int64
-}
-
-func (records *inboxRecorder) Inserted(message agentmessage.UserMessage) {
-	records.mu.Lock()
-	defer records.mu.Unlock()
-	records.inserted = append(records.inserted, message.StableID())
-}
-
-func (records *inboxRecorder) Discarded(message agentmessage.UserMessage) {
-	records.mu.Lock()
-	defer records.mu.Unlock()
-	records.discarded = append(records.discarded, message.StableID())
-}
-
-func (records *inboxRecorder) Claimed(message agentmessage.UserMessage, turn int64) {
-	records.mu.Lock()
-	defer records.mu.Unlock()
-	records.claimed = append(records.claimed, message.StableID())
-	records.turns = append(records.turns, turn)
-}
 
 func userMessage(t *testing.T, text string) agentmessage.UserMessage {
 	t.Helper()
@@ -58,188 +30,202 @@ func userMessage(t *testing.T, text string) agentmessage.UserMessage {
 	return message
 }
 
-func TestInboxReplaysAndRejectsInvalidDurableSplices(t *testing.T) {
-	t.Parallel()
-	conversation, err := session.New("inbox-replay", session.CreateOptions{})
+func inboxFixture(t *testing.T) (*session.Log, *agentcore.Inbox) {
+	t.Helper()
+	conversation, err := session.NewLog("inbox", session.CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := userMessage(t, "first")
-	{
-		draft, err := session.NewEventDraft(agentcore.InboxSpliced, agentcore.InboxSplice{
-			Target:   agentcore.NextTurn,
-			Start:    0,
-			Inserted: []agentmessage.UserMessage{first},
-		})
-		if err == nil {
-			_, err = conversation.Commit(context.Background(), session.Batch(draft))
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	pending, err := agentcore.NewInbox(conversation, &inboxRecorder{})
+	pending, err := agentcore.NewInbox(conversation.Header(), conversation.Events())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := pending.NextTurn(); len(got) != 1 || got[0].StableID() != first.StableID() {
-		t.Fatalf("replayed next-turn = %#v", got)
-	}
+	return conversation, pending
+}
 
-	broken, err := session.New("inbox-broken", session.CreateOptions{})
+func applyInboxEdit(t *testing.T, conversation *session.Log, pending *agentcore.Inbox, edit agentcore.InboxEdit) agentcore.InboxChanges {
+	t.Helper()
+	committed, err := conversation.Commit(context.Background(), session.Batch(edit.Drafts...))
 	if err != nil {
 		t.Fatal(err)
 	}
-	{
-		draft, err := session.NewEventDraft(agentcore.InboxSpliced, agentcore.InboxSplice{
-			Target:   agentcore.NextTurn,
-			Start:    1,
-			Inserted: []agentmessage.UserMessage{},
-		})
-		if err == nil {
-			_, err = broken.Commit(context.Background(), session.Batch(draft))
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
+	changes, err := pending.Apply(committed.Events)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := agentcore.NewInbox(broken, &inboxRecorder{}); err == nil {
-		t.Fatal("invalid persisted splice was accepted")
+	return changes
+}
+
+func appendInbox(t *testing.T, conversation *session.Log, pending *agentcore.Inbox, target agentcore.InboxTarget, message agentmessage.UserMessage) {
+	t.Helper()
+	edit, err := pending.PrepareAppend(target, message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes := applyInboxEdit(t, conversation, pending, edit)
+	if len(changes.Inserted) != 1 || changes.Inserted[0].StableID() != message.StableID() {
+		t.Fatalf("inserted = %#v", changes)
 	}
 }
 
-func TestInboxMutationsCommitBeforeNotifications(t *testing.T) {
-	t.Parallel()
-	conversation, err := session.New("inbox-mutations", session.CreateOptions{})
+func messageIDs(messages []agentmessage.UserMessage) []agentmessage.MessageID {
+	result := make([]agentmessage.MessageID, len(messages))
+	for index, message := range messages {
+		result[index] = message.StableID()
+	}
+	return result
+}
+
+func TestInboxPreparationDoesNotApplyUncommittedWork(t *testing.T) {
+	conversation, pending := inboxFixture(t)
+	message := userMessage(t, "pending")
+	edit, err := pending.PrepareAppend(agentcore.NextTurn, message)
 	if err != nil {
 		t.Fatal(err)
 	}
-	records := &inboxRecorder{}
-	pending, err := agentcore.NewInbox(conversation, records)
+	if pending.HasPending() || len(conversation.Events()) != 0 {
+		t.Fatal("preparation changed live state")
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := conversation.Commit(cancelled, session.Batch(edit.Drafts...)); err == nil {
+		t.Fatal("cancelled commit succeeded")
+	}
+	if pending.HasPending() || len(conversation.Events()) != 0 {
+		t.Fatal("failed commit changed state")
+	}
+	committed, err := conversation.Commit(context.Background(), session.Batch(edit.Drafts...))
 	if err != nil {
 		t.Fatal(err)
-	}
-	turnMessage := userMessage(t, "turn")
-	stepMessage := userMessage(t, "step")
-	replacement := userMessage(t, "replacement")
-	if err := pending.Append(agentcore.NextTurn, turnMessage); err != nil {
-		t.Fatal(err)
-	}
-	if err := pending.Append(agentcore.NextStep, stepMessage); err != nil {
-		t.Fatal(err)
-	}
-	changed, err := pending.Replace(turnMessage.StableID(), replacement)
-	if err != nil || !changed {
-		t.Fatalf("replace = %t, %v", changed, err)
-	}
-	claimedMessages, err := pending.Claim(agentcore.NextTurn, 7)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantClaimed := []agentmessage.MessageID{stepMessage.StableID(), replacement.StableID()}
-	gotClaimed := []agentmessage.MessageID{claimedMessages[0].StableID(), claimedMessages[1].StableID()}
-	if !reflect.DeepEqual(gotClaimed, wantClaimed) {
-		t.Fatalf("claimed = %#v, want %#v", gotClaimed, wantClaimed)
 	}
 	if pending.HasPending() {
-		t.Fatal("Inbox remains pending after claim")
+		t.Fatal("commit implicitly mutated Inbox")
 	}
-	if !reflect.DeepEqual(records.claimed, wantClaimed) || !reflect.DeepEqual(records.turns, []int64{7, 7}) {
-		t.Fatalf("claim notifications = %#v / %#v", records.claimed, records.turns)
-	}
-	if !reflect.DeepEqual(records.discarded, []agentmessage.MessageID{turnMessage.StableID()}) {
-		t.Fatalf("discard notifications = %#v", records.discarded)
-	}
-
-	entries := conversation.Events()
-	if len(entries) != 5 {
-		t.Fatalf("durable event count = %d, want 5", len(entries))
-	}
-	var claimSplice agentcore.InboxSplice
-	if err := json.Unmarshal(entries[len(entries)-1].Data, &claimSplice); err != nil {
+	if _, err := pending.Apply(committed.Events); err != nil {
 		t.Fatal(err)
 	}
-	if claimSplice.Outcome != "" || claimSplice.RemovedCount == nil || *claimSplice.RemovedCount != 1 || claimSplice.Inserted == nil {
-		t.Fatalf("claim splice = %#v", claimSplice)
+	recovered, err := agentcore.NewInbox(conversation.Header(), conversation.Events())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(messageIDs(recovered.NextTurn()), []agentmessage.MessageID{message.StableID()}) {
+		t.Fatal("recovery differs")
+	}
+}
+
+func TestInboxReplacementAndClaimCommitAsOneBatch(t *testing.T) {
+	conversation, pending := inboxFixture(t)
+	turn := userMessage(t, "turn")
+	step := userMessage(t, "step")
+	replacement := userMessage(t, "replacement")
+	appendInbox(t, conversation, pending, agentcore.NextTurn, turn)
+	appendInbox(t, conversation, pending, agentcore.NextStep, step)
+	edit, err := pending.PrepareReplace(turn.StableID(), replacement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes := applyInboxEdit(t, conversation, pending, edit)
+	if !reflect.DeepEqual(messageIDs(changes.Discarded), []agentmessage.MessageID{turn.StableID()}) {
+		t.Fatal("replacement did not discard old message")
+	}
+	edit, err = pending.PrepareClaim(agentcore.NextTurn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []agentmessage.MessageID{step.StableID(), replacement.StableID()}
+	if len(edit.Drafts) != 2 || !reflect.DeepEqual(messageIDs(edit.Removed), want) {
+		t.Fatalf("claim = %#v", edit)
+	}
+	if !pending.HasPending() {
+		t.Fatal("preparation claimed messages early")
+	}
+	changes = applyInboxEdit(t, conversation, pending, edit)
+	if pending.HasPending() || !reflect.DeepEqual(messageIDs(changes.Claimed), want) || len(changes.Discarded) != 0 {
+		t.Fatalf("claim changes = %#v", changes)
+	}
+	entries := conversation.Events()
+	if len(entries) != 5 {
+		t.Fatalf("events = %d", len(entries))
+	}
+	var mutation agentcore.InboxSplice
+	if err := json.Unmarshal(entries[4].Data, &mutation); err != nil {
+		t.Fatal(err)
+	}
+	if mutation.Outcome != "" || mutation.Inserted == nil {
+		t.Fatalf("claim wire = %#v", mutation)
 	}
 }
 
 func TestInboxClearOrdersCancellationsAndRejectsDuplicates(t *testing.T) {
-	t.Parallel()
-	conversation, err := session.New("inbox-clear", session.CreateOptions{})
+	conversation, pending := inboxFixture(t)
+	turn := userMessage(t, "turn")
+	step := userMessage(t, "step")
+	appendInbox(t, conversation, pending, agentcore.NextTurn, turn)
+	appendInbox(t, conversation, pending, agentcore.NextStep, step)
+	if _, err := pending.PrepareAppend(agentcore.NextStep, turn); err == nil {
+		t.Fatal("duplicate identity accepted across lists")
+	}
+	edit, err := pending.PrepareClear()
 	if err != nil {
 		t.Fatal(err)
 	}
-	records := &inboxRecorder{}
-	pending, err := agentcore.NewInbox(conversation, records)
-	if err != nil {
-		t.Fatal(err)
+	if len(edit.Drafts) != 2 {
+		t.Fatal("clear must prepare both lists together")
 	}
-	turnMessage := userMessage(t, "turn")
-	stepMessage := userMessage(t, "step")
-	if err := pending.Append(agentcore.NextTurn, turnMessage); err != nil {
-		t.Fatal(err)
+	changes := applyInboxEdit(t, conversation, pending, edit)
+	want := []agentmessage.MessageID{step.StableID(), turn.StableID()}
+	if !reflect.DeepEqual(messageIDs(changes.Discarded), want) || len(changes.Claimed) != 0 || pending.HasPending() {
+		t.Fatalf("clear = %#v", changes)
 	}
-	if err := pending.Append(agentcore.NextStep, stepMessage); err != nil {
-		t.Fatal(err)
-	}
-	if err := pending.Append(agentcore.NextStep, turnMessage); err == nil {
-		t.Fatal("duplicate pending identity was accepted")
-	}
-	if err := pending.Clear(); err != nil {
-		t.Fatal(err)
-	}
-	if want := []agentmessage.MessageID{stepMessage.StableID(), turnMessage.StableID()}; !reflect.DeepEqual(records.discarded, want) {
-		t.Fatalf("discard order = %#v, want %#v", records.discarded, want)
-	}
-	entries := conversation.Events()
-	for _, index := range []int{2, 3} {
-		var splice agentcore.InboxSplice
-		if err := json.Unmarshal(entries[index].Data, &splice); err != nil {
-			t.Fatal(err)
-		}
-		if splice.Outcome != agentcore.InboxCanceled {
-			t.Fatalf("clear event %d outcome = %q", index, splice.Outcome)
-		}
-	}
-	before := len(entries)
-	if err := pending.Clear(); err != nil {
-		t.Fatal(err)
-	}
-	if len(conversation.Events()) != before {
-		t.Fatal("empty clear appended events")
+	edit, err = pending.PrepareClear()
+	if err != nil || len(edit.Drafts) != 0 {
+		t.Fatalf("empty clear = %#v, %v", edit, err)
 	}
 }
 
-func TestInboxConcurrentAppendsRemainDurableAndUnique(t *testing.T) {
-	conversation, err := session.New("inbox-concurrent", session.CreateOptions{})
+func TestInboxApplyRejectsWholeInvalidBatch(t *testing.T) {
+	conversation, pending := inboxFixture(t)
+	first := userMessage(t, "first")
+	edit, err := pending.PrepareAppend(agentcore.NextTurn, first)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pending, err := agentcore.NewInbox(conversation, &inboxRecorder{})
+	committed, err := conversation.Commit(context.Background(), session.Batch(edit.Drafts...))
 	if err != nil {
 		t.Fatal(err)
 	}
-	messages := make([]agentmessage.UserMessage, 32)
-	for index := range messages {
-		messages[index] = userMessage(t, "concurrent")
+	entries := append([]session.Event(nil), committed.Events...)
+	entries = append(entries, committed.Events[0].Clone())
+	entries[1].Seq++
+	if _, err := pending.Apply(entries); err == nil {
+		t.Fatal("duplicate splice accepted")
 	}
-	var group sync.WaitGroup
-	errorsByIndex := make([]error, len(messages))
-	group.Add(len(messages))
-	for index := range messages {
-		go func(messageIndex int) {
-			defer group.Done()
-			errorsByIndex[messageIndex] = pending.Append(agentcore.NextTurn, messages[messageIndex])
-		}(index)
+	if pending.HasPending() {
+		t.Fatal("invalid batch partially applied")
 	}
-	group.Wait()
-	for _, appendErr := range errorsByIndex {
-		if appendErr != nil {
-			t.Fatal(appendErr)
-		}
+	if _, err := agentcore.NewInbox(conversation.Header(), entries); err == nil {
+		t.Fatal("invalid durable batch restored")
 	}
-	if len(pending.NextTurn()) != len(messages) || len(conversation.Events()) != len(messages) {
-		t.Fatalf("concurrent state/events = %d/%d", len(pending.NextTurn()), len(conversation.Events()))
+	if _, err := pending.Apply(committed.Events); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInboxRecoverySkipsSeedHistory(t *testing.T) {
+	conversation, pending := inboxFixture(t)
+	appendInbox(t, conversation, pending, agentcore.NextTurn, userMessage(t, "inherited"))
+	metadata := conversation.Header()
+	boundary := int64(1)
+	metadata.SeedLength = &boundary
+	restored, err := agentcore.NewInbox(metadata, conversation.Events())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.HasPending() {
+		t.Fatal("inherited work was replayed")
+	}
+	boundary = 2
+	if _, err := agentcore.NewInbox(metadata, conversation.Events()); err == nil {
+		t.Fatal("missing seed history accepted")
 	}
 }

@@ -1,0 +1,58 @@
+{
+  "discover": {
+    "resultType": "complete",
+    "supportedVersions": [
+      "2026-07-28"
+    ],
+    "capabilities": {
+      "tools": {
+        "listChanged": true
+      }
+    }
+  },
+  "inputRequired": {
+    "resultType": "input_required",
+    "requestState": "typescript-round-state",
+    "inputRequests": {
+      "formInput": {
+        "method": "elicitation/create",
+        "params": {
+          "mode": "form",
+          "message": "Select a count",
+          "requestedSchema": {
+            "type": "object",
+            "properties": {
+              "count": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "count"
+            ]
+          }
+        }
+      },
+      "urlInput": {
+        "method": "elicitation/create",
+        "params": {
+          "mode": "url",
+          "message": "Complete the external interaction",
+          "elicitationId": "typescript-link",
+          "url": "https://example.com/interaction"
+        }
+      }
+    }
+  },
+  "complete": {
+    "resultType": "complete",
+    "content": [
+      {
+        "type": "text",
+        "text": "protocol fixture completed"
+      }
+    ],
+    "structuredContent": {
+      "complete": true
+    }
+  }
+}

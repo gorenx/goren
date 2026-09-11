@@ -79,7 +79,10 @@ func resolveAligned(
 }
 
 func resolveLive(candidate sessionRecord, prepared listing) subagent.ChildEntry {
-	projectionSnapshot, err := prepared.dependencies.projections.Snapshot(candidate.live)
+	projectionSnapshot, err := prepared.dependencies.projections.Snapshot(
+		candidate.live.Header(),
+		candidate.live.Events(),
+	)
 	if err != nil {
 		return diagnostic(candidate.header.ID, subagent.DiagnosticCorrupt)
 	}
