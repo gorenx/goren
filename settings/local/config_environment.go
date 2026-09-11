@@ -1,12 +1,12 @@
 package local
 
-import "strconv"
+import (
+	"os"
+	"strconv"
+)
 
-func localEnvironment(lookup func(string) (string, bool)) (Config, error) {
+func localEnvironment() (Config, error) {
 	var decoded Config
-	if lookup == nil {
-		return decoded, nil
-	}
 	for _, entry := range []struct {
 		name  string
 		field **string
@@ -56,11 +56,11 @@ func localEnvironment(lookup func(string) (string, bool)) (Config, error) {
 			field: &decoded.LLM.DeepSeek.BaseURL,
 		},
 	} {
-		if value, exists := lookup(entry.name); exists {
+		if value, exists := os.LookupEnv(entry.name); exists {
 			*entry.field = &value
 		}
 	}
-	if raw, exists := lookup("GOREN_REQUEST_TIMEOUT_MS"); exists {
+	if raw, exists := os.LookupEnv("GOREN_REQUEST_TIMEOUT_MS"); exists {
 		for _, character := range raw {
 			if character < '0' || character > '9' {
 				return Config{}, ErrInvalid

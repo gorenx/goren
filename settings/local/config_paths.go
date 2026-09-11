@@ -17,13 +17,16 @@ func (input *Config) resolvePaths(directory string) {
 		&input.Settings.Database,
 	} {
 		if *field != nil {
-			**field = localPath(directory, **field)
+			resolved := localPath(directory, **field)
+			*field = &resolved
 		}
 	}
 	if input.MCP.Files != nil {
+		resolved := make([]string, len(*input.MCP.Files))
 		for index, path := range *input.MCP.Files {
-			(*input.MCP.Files)[index] = localPath(directory, path)
+			resolved[index] = localPath(directory, path)
 		}
+		input.MCP.Files = &resolved
 	}
 }
 

@@ -3,13 +3,25 @@ package main
 import (
 	"errors"
 	"flag"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gorenx/goren/settings/local"
 )
 
 func TestCommandConfigSuppliesOnlyExplicitOverrides(t *testing.T) {
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(name, "GOREN_") || name == "DEEPSEEK_BASE_URL" {
+			t.Setenv(name, "")
+			if err := os.Unsetenv(name); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
 	options, err := parseConfig(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -26,7 +38,7 @@ func TestCommandConfigSuppliesOnlyExplicitOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	input, err := local.Load(options.path, options.overrides, nil)
+	input, err := local.Load(options.path, options.overrides)
 	if err != nil {
 		t.Fatal(err)
 	}

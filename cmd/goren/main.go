@@ -34,7 +34,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	input, err := local.Load(options.path, options.overrides, os.LookupEnv)
+	input, err := local.Load(options.path, options.overrides)
 	if err != nil {
 		return err
 	}

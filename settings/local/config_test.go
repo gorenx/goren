@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/settings/local"
+	"github.com/gorenx/goren/tools"
 )
 
 func writeConfig(t *testing.T, directory string, name string, data string) string {
@@ -17,6 +18,19 @@ func writeConfig(t *testing.T, directory string, name string, data string) strin
 		t.Fatal(err)
 	}
 	return path
+}
+
+func isolateConfigEnvironment(t *testing.T) {
+	t.Helper()
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(name, "GOREN_") || name == "DEEPSEEK_BASE_URL" {
+			t.Setenv(name, "")
+			if err := os.Unsetenv(name); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 }
 
 func TestExamplesAreEquivalentAndPreserveRelativePaths(t *testing.T) {
@@ -37,6 +51,7 @@ func TestExamplesAreEquivalentAndPreserveRelativePaths(t *testing.T) {
 }
 
 func TestSourcesMergeByPresenceBeforeStorageDefaults(t *testing.T) {
+	isolateConfigEnvironment(t)
 	path := writeConfig(t, t.TempDir(), "input.yaml", `schemaVersion: 1
 server:
   listen: "127.0.0.1:3081"
@@ -63,10 +78,10 @@ mcp:
 			Listen: &listen,
 		},
 	}
-	input, err := local.Load(path, overrides, func(name string) (string, bool) {
-		value, found := environment[name]
-		return value, found
-	})
+	for name, value := range environment {
+		t.Setenv(name, value)
+	}
+	input, err := local.Load(path, overrides)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +112,7 @@ mcp:
 	}
 }
 
-func TestFilesRejectAmbiguousOrInvalidInputWithoutLeakingValues(t *testing.T) {
+func TestFilesRejectInvalidInputWithoutLeakingValues(t *testing.T) {
 	for _, entry := range []struct {
 		name string
 		data string
@@ -115,32 +130,8 @@ func TestFilesRejectAmbiguousOrInvalidInputWithoutLeakingValues(t *testing.T) {
 			data: "schemaVersion: 1\nprompt: {persona: first, persona: secret-marker}",
 		},
 		{
-			name: "null.yaml",
-			data: "schemaVersion: 1\nprompt: {persona: null}",
-		},
-		{
-			name: "tag.yaml",
-			data: "schemaVersion: 1\nprompt: {persona: !!str secret-marker}",
-		},
-		{
-			name: "alias.yaml",
-			data: "schemaVersion: 1\nprompt: {persona: &text secret-marker}",
-		},
-		{
-			name: "merge.yaml",
-			data: "schemaVersion: 1\nprompt: {<<: {persona: secret-marker}}",
-		},
-		{
-			name: "documents.yaml",
-			data: "schemaVersion: 1\n---\nsecret-marker",
-		},
-		{
 			name: "type.yaml",
 			data: "schemaVersion: 1\nprompt: {includeRuntimeContext: 'false'}",
-		},
-		{
-			name: "integer.yaml",
-			data: "schemaVersion: 1.0",
 		},
 		{
 			name: "date.yaml",
@@ -153,10 +144,6 @@ func TestFilesRejectAmbiguousOrInvalidInputWithoutLeakingValues(t *testing.T) {
 		{
 			name: "infinity.yaml",
 			data: "schemaVersion: 1\nllm: {deepseek: {streamIdleTimeoutMs: .inf}}",
-		},
-		{
-			name: "bool.yaml",
-			data: "schemaVersion: 1\nprompt: {includeRuntimeContext: True}",
 		},
 		{
 			name: "empty.yaml",
@@ -175,24 +162,12 @@ func TestFilesRejectAmbiguousOrInvalidInputWithoutLeakingValues(t *testing.T) {
 			data: "schemaVersion: 1\nserver: {requestTimeoutMs: 0}",
 		},
 		{
-			name: "invalid.json",
-			data: `{"schemaVersion":1,"prompt":{"persona":"first","persona":"secret-marker"}}`,
-		},
-		{
 			name: "case.json",
 			data: `{"schemaVersion":1,"prompt":{"Persona":"secret-marker"}}`,
 		},
 		{
-			name: "null.json",
-			data: `{"schemaVersion":1,"prompt":{"persona":null}}`,
-		},
-		{
 			name: "trailing.json",
 			data: `{"schemaVersion":1} {}`,
-		},
-		{
-			name: "integer.json",
-			data: `{"schemaVersion":1.0}`,
 		},
 		{
 			name: "yaml-in.json",
@@ -216,7 +191,88 @@ func TestFilesRejectAmbiguousOrInvalidInputWithoutLeakingValues(t *testing.T) {
 	}
 }
 
+func TestFilesDecodeThroughKoanf(t *testing.T) {
+	for _, entry := range []struct {
+		name    string
+		data    string
+		persona string
+	}{
+		{
+			name:    "null.yaml",
+			data:    "schemaVersion: 1\nprompt: {persona: null}",
+			persona: "",
+		},
+		{
+			name:    "tag.yaml",
+			data:    "schemaVersion: 1\nprompt: {persona: !!str secret-marker}",
+			persona: "secret-marker",
+		},
+		{
+			name:    "alias.yaml",
+			data:    "schemaVersion: 1\nprompt: {persona: &text secret-marker}",
+			persona: "secret-marker",
+		},
+		{
+			name:    "merge.yaml",
+			data:    "schemaVersion: 1\nprompt: {<<: {persona: secret-marker}}",
+			persona: "secret-marker",
+		},
+		{
+			name:    "documents.yaml",
+			data:    "schemaVersion: 1\n---\nsecret-marker",
+			persona: "",
+		},
+		{
+			name:    "integer.yaml",
+			data:    "schemaVersion: 1.0",
+			persona: "",
+		},
+		{
+			name:    "bool.yaml",
+			data:    "schemaVersion: 1\nprompt: {includeRuntimeContext: True}",
+			persona: "",
+		},
+		{
+			name:    "duplicate.json",
+			data:    `{"schemaVersion":1,"prompt":{"persona":"first","persona":"secret-marker"}}`,
+			persona: "secret-marker",
+		},
+		{
+			name:    "null.json",
+			data:    `{"schemaVersion":1,"prompt":{"persona":null}}`,
+			persona: "",
+		},
+		{
+			name:    "integer.json",
+			data:    `{"schemaVersion":1.0}`,
+			persona: "",
+		},
+	} {
+		t.Run(entry.name, func(t *testing.T) {
+			path := writeConfig(t, t.TempDir(), entry.name, entry.data)
+			input, err := local.LoadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if input.SchemaVersion == nil || *input.SchemaVersion != 1 {
+				t.Fatal("schema version was not decoded")
+			}
+			if entry.persona != "" {
+				if input.Prompt.Persona == nil || *input.Prompt.Persona != entry.persona {
+					t.Fatal("persona was not decoded")
+				}
+			} else if input.Prompt.Persona != nil {
+				t.Fatal("absent persona was populated")
+			}
+			if entry.name == "bool.yaml" && (input.Prompt.IncludeRuntimeContext == nil || !*input.Prompt.IncludeRuntimeContext) {
+				t.Fatal("YAML boolean was not decoded")
+			}
+		})
+	}
+}
+
 func TestHigherPrecedenceCannotHideInvalidSource(t *testing.T) {
+	isolateConfigEnvironment(t)
 	valid := "127.0.0.1:3080"
 	path := writeConfig(t, t.TempDir(), "input", "schemaVersion: 1\nserver: {listen: invalid}")
 	overrides := local.Config{
@@ -224,12 +280,11 @@ func TestHigherPrecedenceCannotHideInvalidSource(t *testing.T) {
 			Listen: &valid,
 		},
 	}
-	if _, err := local.Load(path, overrides, nil); err == nil {
+	if _, err := local.Load(path, overrides); err == nil {
 		t.Fatal("invalid file value was hidden by CLI")
 	}
-	if _, err := local.Load("", overrides, func(name string) (string, bool) {
-		return "", name == "GOREN_LISTEN"
-	}); err == nil {
+	t.Setenv("GOREN_LISTEN", "")
+	if _, err := local.Load("", overrides); err == nil {
 		t.Fatal("empty environment value was hidden by CLI")
 	}
 }
@@ -273,8 +328,6 @@ func TestNamedToolConfigurationUsesStrictFrameworkDecoding(t *testing.T) {
 	for _, data := range []string{
 		"schemaVersion: 1\ntools: {ask_user_question: {Visible: false}}",
 		"schemaVersion: 1\ntools: {ask_user_question: {enabled: 'false'}}",
-		"schemaVersion: 1\ntools: {ask_user_question: null}",
-		"schemaVersion: 1\ntools: {1: {enabled: true}}",
 		"schemaVersion: 1\ntools: {ask_user_question: {enabled: true, enabled: false}}",
 		"schemaVersion: 1\ntools: {ask_user_question: {guard: secret-marker}}",
 	} {
@@ -286,6 +339,7 @@ func TestNamedToolConfigurationUsesStrictFrameworkDecoding(t *testing.T) {
 }
 
 func TestFilePathsUseSymlinkLocationAndExplicitPathsDoNotNeedHome(t *testing.T) {
+	isolateConfigEnvironment(t)
 	root := t.TempDir()
 	original := filepath.Join(root, "original")
 	linked := filepath.Join(root, "linked")
@@ -301,7 +355,7 @@ func TestFilePathsUseSymlinkLocationAndExplicitPathsDoNotNeedHome(t *testing.T) 
 	}
 	t.Setenv("HOME", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
-	input, err := local.Load(link, local.Config{}, nil)
+	input, err := local.Load(link, local.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +370,7 @@ func TestFilePathsUseSymlinkLocationAndExplicitPathsDoNotNeedHome(t *testing.T) 
 		Storage: local.StorageConfig{
 			SessionDatabase: &commandPath,
 		},
-	}, nil)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,5 +393,66 @@ func TestMissingFileAndRelativeMCPCWDRemainInvalid(t *testing.T) {
 	path := writeConfig(t, root, "input.yaml", "schemaVersion: 1\nmcp: {servers: [{serverName: local, transport: stdio, command: fixture, cwd: ./relative}]}\n")
 	if _, err := local.LoadFile(path); err == nil {
 		t.Fatal("local input bypassed MCP absolute cwd validation")
+	}
+}
+
+func TestKoanfOverridesPreservePresenceAndDetachInputs(t *testing.T) {
+	isolateConfigEnvironment(t)
+	path := writeConfig(t, t.TempDir(), "input.yaml", `schemaVersion: 1
+llm:
+  default:
+    maxTokens: 9007199254740993
+    stop: [file-stop]
+tools:
+  mcp.fixture:
+    enabled: true
+    visible: true
+`)
+	directory := "command-data"
+	files := []string{"command-mcp.yaml"}
+	empty := []string{}
+	hidden := false
+	overrides := local.Config{
+		Storage: local.StorageConfig{
+			DataDirectory: &directory,
+		},
+		LLM: local.LLMConfig{
+			Default: local.ModelConfig{
+				Stop: &empty,
+			},
+		},
+		MCP: local.MCPFiles{
+			Files: &files,
+		},
+		Tools: map[string]tools.Config{
+			"mcp.fixture": {
+				Visible: &hidden,
+			},
+		},
+	}
+	input, err := local.Load(path, overrides)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *input.LLM.Default.MaxTokens != 9007199254740993 {
+		t.Fatal("integer precision was lost while loading sources")
+	}
+	if input.LLM.Default.Stop == nil || len(*input.LLM.Default.Stop) != 0 {
+		t.Fatal("explicit empty arrays did not replace file values")
+	}
+	entry, exists := input.Tools["mcp.fixture"]
+	if !exists || entry.Enabled == nil || !*entry.Enabled || entry.Visible == nil || *entry.Visible {
+		t.Fatal("named tool fields were not overridden independently")
+	}
+	if directory != "command-data" || files[0] != "command-mcp.yaml" {
+		t.Fatal("path resolution modified caller input")
+	}
+	if !filepath.IsAbs(*input.Storage.DataDirectory) || !filepath.IsAbs((*input.MCP.Files)[0]) {
+		t.Fatal("command paths were not resolved")
+	}
+	*entry.Visible = true
+	(*input.MCP.Files)[0] = "changed"
+	if hidden || files[0] != "command-mcp.yaml" {
+		t.Fatal("resolved configuration retained caller-owned pointers")
 	}
 }

@@ -4,9 +4,15 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/go-viper/mapstructure/v2"
 	"github.com/gorenx/goren/mcpclient"
-	configfile "github.com/gorenx/goren/settings/local/internal/file"
+	jsonparser "github.com/knadh/koanf/parsers/json"
+	yamlparser "github.com/knadh/koanf/parsers/yaml"
+	fileprovider "github.com/knadh/koanf/providers/file"
+	structprovider "github.com/knadh/koanf/providers/structs"
+	"github.com/knadh/koanf/v2"
 )
 
 // LoadFile reads exactly the supplied YAML or JSON file. There is no implicit
@@ -21,7 +27,7 @@ func LoadFile(path string) (Config, error) {
 		return Config{}, ErrInvalid
 	}
 	var decoded Config
-	if err := configfile.Read(absolute, &decoded); err != nil {
+	if err := readConfigFile(absolute, &decoded); err != nil {
 		return Config{}, err
 	}
 	if decoded.SchemaVersion == nil || *decoded.SchemaVersion != 1 {
@@ -35,9 +41,9 @@ func LoadFile(path string) (Config, error) {
 }
 
 // Load combines file, whitelisted environment, and explicit CLI overrides
-// in that order. Lookup is a stateless environment boundary; nil ignores it.
+// in that order. Environment values come from the current process.
 // It returns named inputs, leaving capability defaults to their owners.
-func Load(path string, overrides Config, lookup func(string) (string, bool)) (Config, error) {
+func Load(path string, overrides Config) (Config, error) {
 	var fromFile Config
 	if path != "" {
 		decoded, err := LoadFile(path)
@@ -46,15 +52,11 @@ func Load(path string, overrides Config, lookup func(string) (string, bool)) (Co
 		}
 		fromFile = decoded
 	}
-	fromEnvironment, err := localEnvironment(lookup)
+	fromEnvironment, err := localEnvironment()
 	if err != nil {
 		return Config{}, err
 	}
-	// Detach caller-owned slices and pointers before normalizing their paths.
-	var fromCommand Config
-	if err := configfile.Merge(&fromCommand, overrides); err != nil {
-		return Config{}, err
-	}
+	fromCommand := overrides
 	if err := fromCommand.validate(); err != nil {
 		return Config{}, err
 	}
@@ -64,9 +66,15 @@ func Load(path string, overrides Config, lookup func(string) (string, bool)) (Co
 	}
 	fromEnvironment.resolvePaths(cwd)
 	fromCommand.resolvePaths(cwd)
+	loaded := koanf.New(".")
+	for _, source := range []Config{fromFile, fromEnvironment, fromCommand} {
+		if err := loaded.Load(structprovider.Provider(source, "json"), nil); err != nil {
+			return Config{}, ErrInvalid
+		}
+	}
 	var merged Config
-	if err := configfile.Merge(&merged, fromFile, fromEnvironment, fromCommand); err != nil {
-		return Config{}, err
+	if err := loaded.UnmarshalWithConf("", &merged, configDecodeOptions()); err != nil {
+		return Config{}, ErrInvalid
 	}
 	if err := merged.validate(); err != nil {
 		return Config{}, err
@@ -87,7 +95,7 @@ func (input Config) Connections() ([]mcpclient.Config, error) {
 	if input.MCP.Files != nil {
 		for _, path := range *input.MCP.Files {
 			var decoded mcpclient.Config
-			if err := configfile.Read(path, &decoded); err != nil {
+			if err := readConfigFile(path, &decoded); err != nil {
 				return nil, err
 			}
 			entries = append(entries, decoded)
@@ -103,4 +111,39 @@ func (input Config) Connections() ([]mcpclient.Config, error) {
 		entries[index] = validated
 	}
 	return entries, nil
+}
+
+func readConfigFile(path string, destination any) error {
+	var format koanf.Parser
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".json":
+		format = jsonparser.Parser()
+	case "", ".yaml", ".yml":
+		format = yamlparser.Parser()
+	default:
+		return ErrInvalid
+	}
+	loaded := koanf.New(".")
+	if err := loaded.Load(fileprovider.Provider(path), format); err != nil {
+		return ErrInvalid
+	}
+	if err := loaded.UnmarshalWithConf("", destination, configDecodeOptions()); err != nil {
+		return ErrInvalid
+	}
+	return nil
+}
+
+// configDecodeOptions reuses owner JSON tags and rejects unknown fields without coercing strings.
+func configDecodeOptions() koanf.UnmarshalConf {
+	return koanf.UnmarshalConf{
+		Tag: "json",
+		DecoderConfig: &mapstructure.DecoderConfig{
+			ErrorUnused:      true,
+			ZeroFields:       true,
+			WeaklyTypedInput: false,
+			MatchName: func(key string, field string) bool {
+				return key == field
+			},
+		},
+	}
 }

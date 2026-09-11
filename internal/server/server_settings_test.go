@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,6 +26,16 @@ func (source environment) Lookup(string) (string, bool) { return "", false }
 func (source environment) UserHomeDir() (string, error) { return source.directory, nil }
 
 func TestFileConfigurationReachesRealServer(t *testing.T) {
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(name, "GOREN_") || name == "DEEPSEEK_BASE_URL" {
+			t.Setenv(name, "")
+			if err := os.Unsetenv(name); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
 	for _, format := range []string{"yaml", "json"} {
 		t.Run(format, func(t *testing.T) {
 			root := t.TempDir()
@@ -36,7 +47,7 @@ func TestFileConfigurationReachesRealServer(t *testing.T) {
 			if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			input, err := local.Load(path, local.Config{}, nil)
+			input, err := local.Load(path, local.Config{})
 			if err != nil {
 				t.Fatal(err)
 			}
