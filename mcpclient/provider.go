@@ -15,6 +15,10 @@ type provider struct {
 	name       string
 }
 
+var _ tool.IdentifiedProvider = (*provider)(nil)
+
+func (source *provider) ProviderID() tools.ProviderID { return source.connection.ProviderID() }
+
 func (source *provider) Open(ctx context.Context) (tool.Implementation, error) {
 	if err := ctx.Err(); err != nil {
 		return tool.Implementation{}, err
@@ -22,7 +26,11 @@ func (source *provider) Open(ctx context.Context) (tool.Implementation, error) {
 	source.connection.mutex.Lock()
 	entry, exists := source.connection.entries[source.name]
 	closed := source.connection.closed
+	paused := source.connection.paused
 	source.connection.mutex.Unlock()
+	if paused {
+		return tool.Implementation{}, ErrDraining
+	}
 	if !exists || closed {
 		return tool.Implementation{}, errors.New("mcpclient: tool is no longer available")
 	}

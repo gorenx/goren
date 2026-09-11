@@ -18,13 +18,6 @@ type Resource interface {
 	Close(context.Context) error
 }
 
-// Provider constructs an implementation from bound configuration and borrowed
-// capabilities. Each Open returns independent owned resources, including any
-// partially constructed resources that still require cleanup when Open fails.
-type Provider interface {
-	Open(context.Context) (Implementation, error)
-}
-
 // Implementation combines tool behavior with optional owned resources.
 // Each prepared implementation must own a distinct resource lifetime.
 type Implementation struct {

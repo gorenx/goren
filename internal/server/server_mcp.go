@@ -5,7 +5,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/mcpclient"
+	"github.com/gorenx/goren/tools"
 	toolregistry "github.com/gorenx/goren/tools/registry"
 	registryactor "github.com/gorenx/goren/tools/registry/actor"
 	"github.com/gorenx/goren/tools/tool"
@@ -40,12 +41,18 @@ func (owner *Server) initializeMCP(ctx context.Context, questions userquestions.
 	return []tool.ProviderSource{owner.mcp}, nil
 }
 
-func publishMCP(ctx context.Context, system goakt.ActorSystem, directory *goakt.GrainIdentity, timeout time.Duration, name string, entries []llm.ToolSchema) error {
+func publishMCP(ctx context.Context, system goakt.ActorSystem, directory *goakt.GrainIdentity, timeout time.Duration, name string, connection *mcpclient.Connection) error {
+	configuration := toolregistry.Catalog{}
+	if connection != nil {
+		configuration.Schemas = connection.Schemas()
+		configuration.ProviderIDs = make(map[string]tools.ProviderID, len(configuration.Schemas))
+		for _, entry := range configuration.Schemas {
+			configuration.ProviderIDs[entry.Name] = connection.ProviderID()
+		}
+	}
 	payload, err := system.AskGrain(ctx, directory, registryactor.RegisterSource{
-		Name: name,
-		Catalog: toolregistry.Catalog{
-			Schemas: entries,
-		},
+		Name:    name,
+		Catalog: configuration,
 	}, timeout)
 	if err != nil {
 		return err

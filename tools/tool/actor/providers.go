@@ -75,5 +75,23 @@ func (bindings *Providers) resolve(name string) (tool.Provider, error) {
 	return selected, nil
 }
 
+func (bindings *Providers) resolveBinding(name string, expected tools.ProviderID) (tool.Provider, error) {
+	selected, err := bindings.resolve(name)
+	if err != nil {
+		return nil, err
+	}
+	var actual tools.ProviderID
+	if identified, valid := selected.(tool.IdentifiedProvider); valid {
+		actual = identified.ProviderID()
+		if actual == "" {
+			return nil, errors.New("tools: replaceable Provider identity is empty")
+		}
+	}
+	if actual != expected {
+		return nil, errors.New("tools: Provider changed since catalog publication")
+	}
+	return selected, nil
+}
+
 // ID identifies this ToolActor dependency in the framework extension collection.
 func (*Providers) ID() string { return providersID }

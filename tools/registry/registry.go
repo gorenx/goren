@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -31,6 +32,9 @@ type Policy struct {
 // entries override inherited tools without copying their schemas.
 type Catalog struct {
 	Schemas []llm.ToolSchema
+	// ProviderIDs identifies replaceable implementations by canonical tool name.
+	// Only global sources may supply these values, for their own schemas.
+	ProviderIDs map[string]tools.ProviderID
 	// Restriction intersects inherited membership. Nil Allow is unrestricted;
 	// a non-nil empty Allow admits no inherited tool.
 	Restriction *ToolRestriction
@@ -67,6 +71,33 @@ type Registry struct {
 	// sessions maps a Session ID (e.g. "session-1") to only its custom schemas
 	// and policy fields. Global values are not copied into these entries.
 	sessions map[session.SessionID]Catalog
+	// configured contains complete user flags accepted independently of source
+	// publication. It never owns Schema or execution-policy capabilities.
+	configured map[string]tools.Config
+}
+
+// ConfigureTool accepts a complete configuration for an existing tool. Schema,
+// Provider identity and execution-policy capabilities remain with their source.
+func (owner *Registry) ConfigureTool(name string, configuration tools.Config) error {
+	if !validName(name) {
+		return errors.New("tools: invalid configuration name")
+	}
+	found := false
+	for _, source := range owner.sources {
+		for _, entry := range source.Schemas {
+			if entry.Name == name {
+				found = true
+			}
+		}
+	}
+	if !found {
+		return errors.New("tools: configuration requires an existing tool")
+	}
+	if owner.configured == nil {
+		owner.configured = make(map[string]tools.Config)
+	}
+	owner.configured[name] = configuration.Clone()
+	return nil
 }
 
 // RegisterSource replaces a complete global source. Names cannot collide across sources.
@@ -114,6 +145,9 @@ func (owner *Registry) ConfigureSession(identifier session.SessionID, input Cata
 	if identifier == "" {
 		return errors.New("tools: Session identity is required")
 	}
+	if len(input.ProviderIDs) != 0 {
+		return errors.New("tools: Session configuration cannot select Providers")
+	}
 	captured, err := snapshotCatalog(input)
 	if err != nil {
 		return err
@@ -136,11 +170,24 @@ func (owner *Registry) RemoveSession(identifier session.SessionID) {
 
 // Read returns detached unmerged values. Global names have deterministic order.
 func (owner *Registry) Read(identifier session.SessionID) Configuration {
-	combined := Catalog{Policies: make(map[string]Policy)}
+	combined := Catalog{
+		Policies:    make(map[string]Policy),
+		ProviderIDs: make(map[string]tools.ProviderID),
+	}
 	for _, entries := range owner.sources {
 		combined.Schemas = append(combined.Schemas, entries.Schemas...)
+		maps.Copy(combined.ProviderIDs, entries.ProviderIDs)
 		for name, policy := range entries.Policies {
 			combined.Policies[name] = policy
+		}
+	}
+	for _, entry := range combined.Schemas {
+		if configuration, present := owner.configured[entry.Name]; present {
+			enabled, visible := configuration.Resolve()
+			policy := combined.Policies[entry.Name]
+			policy.Enabled = &enabled
+			policy.Visible = &visible
+			combined.Policies[entry.Name] = policy
 		}
 	}
 	sort.Slice(combined.Schemas, func(left int, right int) bool { return combined.Schemas[left].Name < combined.Schemas[right].Name })
@@ -153,6 +200,7 @@ func (owner *Registry) Read(identifier session.SessionID) Configuration {
 // Clone detaches schema bytes and optional values from caller mutation.
 func (input Catalog) Clone() Catalog {
 	input.Schemas = slices.Clone(input.Schemas)
+	input.ProviderIDs = maps.Clone(input.ProviderIDs)
 	if input.Restriction != nil {
 		input.Restriction = &ToolRestriction{
 			Allow: slices.Clone(input.Restriction.Allow),
@@ -205,6 +253,13 @@ func snapshotCatalog(input Catalog) (Catalog, error) {
 	for name := range captured.Policies {
 		if !validName(name) {
 			return Catalog{}, fmt.Errorf("tools: invalid policy name %q", name)
+		}
+	}
+	for name, identifier := range captured.ProviderIDs {
+		if !names[name] ||
+			identifier == "" ||
+			strings.TrimSpace(string(identifier)) != string(identifier) {
+			return Catalog{}, errors.New("tools: Provider identity requires an owned schema and a nonempty value")
 		}
 	}
 	return captured, nil

@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/tools"
 	"github.com/gorenx/goren/tools/execution"
 	toolregistry "github.com/gorenx/goren/tools/registry"
 )
@@ -13,14 +14,18 @@ import (
 // Tool is one effective schema and policy after inheritance has been resolved.
 // Disabled entries are absent; visibility does not remove execution membership.
 type Tool struct {
-	Schema   llm.ToolSchema
-	Visible  bool
-	Policies execution.Policies
+	Schema     llm.ToolSchema
+	ProviderID tools.ProviderID
+	Visible    bool
+	Policies   execution.Policies
 }
 
 // Merge resolves Session schemas by name and policy fields by explicit presence.
 // Registry input remains unchanged; returned schemas own their parameter bytes.
 func Merge(input toolregistry.Configuration) ([]Tool, error) {
+	if len(input.Custom.ProviderIDs) != 0 {
+		return nil, errors.New("tools: Session configuration cannot select Providers")
+	}
 	captured := toolregistry.Configuration{
 		Global: input.Global.Clone(),
 		Custom: input.Custom.Clone(),
@@ -72,9 +77,10 @@ func Merge(input toolregistry.Configuration) ([]Tool, error) {
 		}
 		if enabled {
 			effective = append(effective, Tool{
-				Schema:   entry,
-				Visible:  visible,
-				Policies: policies,
+				Schema:     entry,
+				ProviderID: captured.Global.ProviderIDs[name],
+				Visible:    visible,
+				Policies:   policies,
 			})
 		}
 	}

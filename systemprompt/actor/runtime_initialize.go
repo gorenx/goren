@@ -23,9 +23,12 @@ type promptPrepared struct {
 }
 
 func (owner *RuntimeGrain) initializeRuntime(gc *goakt.GrainContext, input InitializeRuntime) {
-	if owner.runtime != nil || owner.initialization != nil ||
-		owner.closed || input.AgentID == "" ||
-		input.PromptRegistry == nil || input.ToolsRuntime == nil {
+	if owner.runtime != nil ||
+		owner.initialization != nil ||
+		owner.closed ||
+		input.AgentID == "" ||
+		input.PromptRegistry == nil ||
+		input.ToolsRuntime == nil {
 		gc.Response(RuntimeInitialized{
 			Err: errors.New("systemprompt: uninitialized Runtime and registry routes are required"),
 		})
@@ -96,17 +99,14 @@ func (owner *RuntimeGrain) initializeTools(gc *goakt.GrainContext, input promptP
 		owner.finishInitialization(operation, input.err)
 		return
 	}
-	base := input.result.Snapshot
-	if len(operation.input.Sections) != 0 {
-		layer := systemprompt.DeriveLayer(base)
-		for _, section := range operation.input.Sections {
-			if _, err := layer.AddSection(gc.Context(), section); err != nil {
-				owner.finishInitialization(operation, err)
-				return
-			}
+	layer := systemprompt.DeriveLayer(input.result.Snapshot)
+	for _, section := range operation.input.Sections {
+		if _, err := layer.AddSection(gc.Context(), section); err != nil {
+			owner.finishInitialization(operation, err)
+			return
 		}
-		base = layer.Capture()
 	}
+	base := layer.Capture()
 	candidate, err := systemprompt.NewRuntime(operation.input.AgentID, base)
 	if err != nil {
 		owner.finishInitialization(operation, err)
@@ -137,6 +137,9 @@ func (owner *RuntimeGrain) initializeTools(gc *goakt.GrainContext, input promptP
 			}
 			if failure == nil {
 				owner.runtime = candidate
+				owner.layer = layer
+				owner.registry = operation.input.PromptRegistry
+				owner.version = input.result.Version
 			}
 			owner.finishInitialization(operation, failure)
 		},

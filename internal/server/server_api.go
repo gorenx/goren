@@ -17,7 +17,7 @@ import (
 	commandactor "github.com/gorenx/goren/commands/actor"
 	credentialslocal "github.com/gorenx/goren/credentials/local"
 	llmactor "github.com/gorenx/goren/llm/actor"
-	"github.com/gorenx/goren/llm/deepseek"
+	"github.com/gorenx/goren/llm/modelconfig"
 	"github.com/gorenx/goren/session/persistence"
 	cacheactor "github.com/gorenx/goren/session/projectioncache/actor"
 	cachesqlite "github.com/gorenx/goren/session/projectioncache/sqlite"
@@ -25,6 +25,7 @@ import (
 	queryactor "github.com/gorenx/goren/session/query/actor"
 	sessionregistry "github.com/gorenx/goren/session/registry"
 	"github.com/gorenx/goren/session/title"
+	settingsactor "github.com/gorenx/goren/settings/actor"
 	promptactor "github.com/gorenx/goren/systemprompt/actor"
 	toolactor "github.com/gorenx/goren/tools/tool/actor"
 	workspaceactor "github.com/gorenx/goren/workspace/actor"
@@ -42,11 +43,11 @@ func (owner *Server) initializeAPI(ctx context.Context, constructors *toolactor.
 	if err != nil {
 		return err
 	}
-	_, err = initializeModels(ctx, system, DefaultModelConfig())
+	modelSettings, err := initializeModels(ctx, system, owner.settings.Models)
 	if err != nil {
 		return err
 	}
-	_, err = initializePrompts(ctx, system, owner.settings.Prompt)
+	promptRegistry, err := initializePrompts(ctx, system, owner.settings.Prompt)
 	if err != nil {
 		return err
 	}
@@ -246,11 +247,17 @@ func (owner *Server) initializeAPI(ctx context.Context, constructors *toolactor.
 	if err != nil {
 		return err
 	}
+	preferences, err := settingsactor.NewClient(ctx, system)
+	if err != nil {
+		return err
+	}
+	connections := &mcpDirectory{
+		system:   system,
+		identity: owner.mcpIdentity,
+	}
 	owner.api, err = apiproxy.NewServer(ctx, apiproxy.Dependencies{
-		MCP: &mcpDirectory{
-			system:   system,
-			identity: owner.mcpIdentity,
-		},
+		MCP:      connections,
+		Settings: preferences,
 		Sessions: sessionapi.Dependencies{
 			Storage:     owner.settings.Attachments,
 			Agents:      agents,
@@ -271,6 +278,7 @@ func (owner *Server) initializeAPI(ctx context.Context, constructors *toolactor.
 			version:  owner.settings.Version,
 			cwd:      owner.settings.WorkingDirectory,
 			sessions: reader,
+			models:   modelSettings,
 		},
 	}, apiproxy.Options{
 		Sessions: sessionapi.Options{
@@ -282,6 +290,20 @@ func (owner *Server) initializeAPI(ctx context.Context, constructors *toolactor.
 	}
 	err = owner.initializeToolProviders(ctx, sessions, constructors)
 	if err != nil {
+		return err
+	}
+	exposedTools := make(map[string]struct{})
+	for name := range owner.settings.userBaseline().Tools {
+		exposedTools[name] = struct{}{}
+	}
+	if _, err := owner.preferences.Bind(ctx, system, promptSettings{
+		registry: promptRegistry,
+	}, connections, toolSettings{
+		system:   system,
+		registry: tools,
+		timeout:  owner.settings.Timeout,
+		names:    exposedTools,
+	}); err != nil {
 		return err
 	}
 	listener, err := eventadapter.SpawnSubscriber(ctx, system, "api.sessions", owner.api.SessionEvents())
@@ -303,6 +325,7 @@ type description struct {
 	version  string
 	cwd      string
 	sessions sessionapi.LiveSessions
+	models   modelconfig.Reader
 }
 
 func (source *description) DescribeHost(ctx context.Context) (apiproxy.HostDescription, error) {
@@ -310,11 +333,15 @@ func (source *description) DescribeHost(ctx context.Context) (apiproxy.HostDescr
 	if err != nil {
 		return apiproxy.HostDescription{}, err
 	}
+	current, err := source.models.CurrentConfig(ctx)
+	if err != nil {
+		return apiproxy.HostDescription{}, err
+	}
 	return apiproxy.HostDescription{
 		Version:          source.version,
 		CWD:              source.cwd,
-		Provider:         deepseek.ProviderRoute,
-		Model:            deepseek.DefaultModelID,
+		Provider:         current.Definition.Default.Provider,
+		Model:            current.Definition.Default.Model,
 		AttachedSessions: len(snapshots),
 	}, nil
 }

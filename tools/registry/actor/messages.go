@@ -3,6 +3,7 @@ package toolactor
 
 import (
 	"github.com/gorenx/goren/session"
+	"github.com/gorenx/goren/tools"
 	toolregistry "github.com/gorenx/goren/tools/registry"
 )
 
@@ -20,6 +21,12 @@ type RegisterSource struct {
 
 // RemoveSource withdraws one global source's configuration.
 type RemoveSource struct{ Name string }
+
+// ConfigureTool replaces the complete editable flags of an existing tool.
+type ConfigureTool struct {
+	Name   string
+	Config tools.Config
+}
 
 // ConfigureSession replaces the Session's custom schema and policy set.
 type ConfigureSession struct {

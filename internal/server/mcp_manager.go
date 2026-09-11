@@ -9,6 +9,7 @@ import (
 
 	mcpapi "github.com/gorenx/goren/apiproxy/mcp"
 	"github.com/gorenx/goren/mcpclient"
+	"github.com/gorenx/goren/tools"
 	"github.com/gorenx/goren/tools/tool"
 	"github.com/gorenx/goren/userquestions"
 	goakt "github.com/tochemey/goakt/v4/actor"
@@ -26,12 +27,15 @@ type mcpManager struct {
 	mutations chan struct{}
 	mu        sync.RWMutex
 	entries   map[string]mcpEntry
-	workers   sync.WaitGroup
+	// retained owns replaced connections until Close confirms resource release.
+	// These bindings are never selected by Provider or included in the catalog.
+	retained map[tools.ProviderID]*mcpclient.Connection
+	workers  sync.WaitGroup
 }
 
 type mcpEntry struct {
 	connection *mcpclient.Connection
-	transport  string
+	config     mcpclient.Config
 }
 
 func newMCPManager(system goakt.ActorSystem, directory *goakt.GrainIdentity, timeout time.Duration, questions userquestions.UserQuestions) *mcpManager {
@@ -45,6 +49,7 @@ func newMCPManager(system goakt.ActorSystem, directory *goakt.GrainIdentity, tim
 		cancel:    cancel,
 		mutations: make(chan struct{}, 1),
 		entries:   make(map[string]mcpEntry),
+		retained:  make(map[tools.ProviderID]*mcpclient.Connection),
 	}
 }
 
@@ -62,6 +67,13 @@ func (owner *mcpManager) acquire(ctx context.Context) error {
 }
 
 func (owner *mcpManager) connect(ctx context.Context, settings mcpclient.Config) (mcpapi.View, error) {
+	if ctx == nil {
+		return mcpapi.View{}, errors.New("server: MCP context is required")
+	}
+	validated, err := settings.Validate()
+	if err != nil {
+		return mcpapi.View{}, err
+	}
 	bounded, cancel := context.WithCancel(ctx)
 	defer cancel()
 	stop := context.AfterFunc(owner.lifetime, cancel)
@@ -79,33 +91,13 @@ func (owner *mcpManager) connect(ctx context.Context, settings mcpclient.Config)
 	if exists {
 		return mcpapi.View{}, errors.New("server: MCP name already connected")
 	}
-	connection, err := mcpclient.Open(bounded, settings, owner.questions)
-	if err != nil {
+	if err := owner.replaceConnection(bounded, validated); err != nil {
 		return mcpapi.View{}, err
 	}
-	entry := mcpEntry{
-		connection: connection,
-		transport:  settings.Transport,
-	}
-	owner.mu.Lock()
-	owner.entries[settings.ServerName] = entry
-	owner.mu.Unlock()
-	if err := publishMCP(bounded, owner.system, owner.directory, owner.timeout, "mcp:"+settings.ServerName, connection.Schemas()); err != nil {
-		// Keep ownership until cleanup succeeds; process shutdown can retry it.
-		cleanup, release := context.WithTimeout(context.Background(), owner.timeout)
-		defer release()
-		withdrawal := publishMCP(cleanup, owner.system, owner.directory, owner.timeout, "mcp:"+settings.ServerName, nil)
-		closed := connection.Close(cleanup)
-		if withdrawal == nil && closed == nil {
-			owner.mu.Lock()
-			delete(owner.entries, settings.ServerName)
-			owner.mu.Unlock()
-		}
-		return mcpapi.View{}, errors.Join(err, withdrawal, closed)
-	}
-	owner.workers.Add(1)
-	go owner.watch(settings.ServerName, connection)
-	return mcpView(settings.ServerName, entry), nil
+	owner.mu.RLock()
+	entry := owner.entries[validated.ServerName]
+	owner.mu.RUnlock()
+	return mcpView(validated.ServerName, entry), nil
 }
 
 // Provider resolves the current connection without waiting for network I/O.
@@ -150,7 +142,7 @@ func mcpView(name string, entry mcpEntry) mcpapi.View {
 	}
 	return mcpapi.View{
 		ServerName: name,
-		Transport:  entry.transport,
+		Transport:  entry.config.Transport,
 		Status:     status,
 		ToolCount:  count,
 	}

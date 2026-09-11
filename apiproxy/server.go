@@ -17,6 +17,7 @@ import (
 	settingsapi "github.com/gorenx/goren/apiproxy/settings"
 	"github.com/gorenx/goren/apiproxy/stream"
 	workspaceapi "github.com/gorenx/goren/apiproxy/workspace"
+	usersettings "github.com/gorenx/goren/settings"
 )
 
 // Dependencies supplies domain capabilities; composition owns their lifecycle.
@@ -29,7 +30,7 @@ type Dependencies struct {
 	Credentials credentialsapi.Provider
 	Description HostDescriptionProvider
 	Presets     presetapi.Roster
-	Settings    settingsapi.Describer
+	Settings    usersettings.Settings
 	MCP         mcpapi.Directory
 }
 

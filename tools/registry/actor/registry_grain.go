@@ -37,6 +37,8 @@ func (owner *RegistryGrain) OnReceive(gc *goakt.GrainContext) {
 		err = owner.registry.RegisterSource(input.Name, input.Catalog)
 	case RemoveSource:
 		owner.registry.RemoveSource(input.Name)
+	case ConfigureTool:
+		err = owner.registry.ConfigureTool(input.Name, input.Config)
 	case ConfigureSession:
 		change.SessionID = input.SessionID
 		err = owner.registry.ConfigureSession(input.SessionID, input.Catalog)

@@ -1,6 +1,11 @@
 // Package tools defines tool contracts, execution policy, and canonical results.
 package tools
 
+// ProviderID identifies an immutable process-local implementation binding.
+// It is separate from model schema versions and committed tool identities.
+// Empty identifies a statically installed, unversioned Provider.
+type ProviderID string
+
 const (
 	// ServiceName is the canonical Cordis service name.
 	ServiceName = "tools"

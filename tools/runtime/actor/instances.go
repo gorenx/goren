@@ -35,8 +35,12 @@ func NewInstances(
 	creationID string,
 	timeout time.Duration,
 ) (*Instances, error) {
-	if system == nil || runtime == nil || directory == nil ||
-		agentID == "" || creationID == "" || timeout <= 0 {
+	if system == nil ||
+		runtime == nil ||
+		directory == nil ||
+		agentID == "" ||
+		creationID == "" ||
+		timeout <= 0 {
 		return nil, errors.New("tools: instance owners, Agent creation and positive timeout are required")
 	}
 	return &Instances{
@@ -59,6 +63,7 @@ func (endpoint *Instances) Prepare(ctx context.Context, revision tool.Revision, 
 		CreationID: instance.CreationID,
 		Revision:   revision,
 		Schema:     entry.Schema,
+		ProviderID: entry.ProviderID,
 		Context:    ctx,
 	})
 }

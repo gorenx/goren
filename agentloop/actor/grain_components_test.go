@@ -91,7 +91,7 @@ func (owner *sessionGrain) OnReceive(gc *goakt.GrainContext) {
 	case sessionSetup:
 		owner.history = input.history
 		gc.Response(struct{}{})
-	case promptactor.ApplyTools:
+	case promptactor.ApplyConfiguration:
 		gc.Response(promptactor.Completion{})
 	case promptactor.Assemble:
 		gc.Response(promptactor.Assembled{
@@ -186,7 +186,7 @@ func (owner *stoppingEndpoint) OnReceive(gc *goakt.GrainContext) {
 		owner.phase = input.phase
 		owner.failCancel = input.failCancel
 		gc.Response(struct{}{})
-	case promptactor.ApplyTools:
+	case promptactor.ApplyConfiguration:
 		gc.Response(promptactor.Completion{})
 	case promptactor.Assemble:
 		if owner.phase != "prompt" {

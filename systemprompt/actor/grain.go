@@ -40,6 +40,20 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 		owner.layer = incoming.Layer
 		owner.version = 1
 		gc.Response(Completion{})
+	case ApplyBaseline:
+		if owner.layer == nil {
+			gc.Response(Completion{
+				Err: ErrUnavailable,
+			})
+			return
+		}
+		err := owner.layer.ApplyBaseline(incoming.Context, incoming.Config)
+		if err == nil {
+			owner.version++
+		}
+		gc.Response(Completion{
+			Err: err,
+		})
 	case Prepare:
 		if owner.layer == nil {
 			gc.Response(Prepared{

@@ -17,9 +17,10 @@ const disabledRuntimeContextSuppressor = "configuration:runtime-context-disabled
 // Inherited definitions are value snapshots; it never retains a parent or Plugin.
 // Its owner must serialize registration, capture, base updates, and close.
 type PromptLayer struct {
-	settings ValidatedConfig
-	store    *promptStore
-	base     Snapshot
+	settings      ValidatedConfig
+	configEntries []RegistrationID
+	store         *promptStore
+	base          Snapshot
 }
 
 // AddSection adds one named section to this exact layer.
@@ -145,6 +146,39 @@ func (owner *PromptLayer) Capture() Snapshot {
 	}
 }
 
+// ApplyBaseline atomically replaces configuration-owned definitions in a root
+// layer, retaining every unrelated registration and its removal identity.
+// Previously captured snapshots continue to describe the previous baseline.
+func (owner *PromptLayer) ApplyBaseline(ctx context.Context, input Config) error {
+	if err := validatePromptMutationContext(ctx); err != nil {
+		return err
+	}
+	if len(owner.base.layers) != 0 {
+		return errors.New("systemprompt: baseline configuration belongs to the root layer")
+	}
+	validated, err := ValidateConfig(input)
+	if err != nil {
+		return err
+	}
+	candidate := &PromptLayer{
+		settings: validated,
+		store:    owner.store.clone(),
+	}
+	for _, identifier := range owner.configEntries {
+		candidate.store.remove(identifier)
+	}
+	if err := candidate.initialize(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	owner.settings = candidate.settings
+	owner.store = candidate.store
+	owner.configEntries = candidate.configEntries
+	return nil
+}
+
 // SetBase explicitly replaces inherited definitions with a captured value.
 // The caller serializes this operation with other registration changes.
 func (owner *PromptLayer) SetBase(inherited Snapshot) {
@@ -157,6 +191,7 @@ func (owner *PromptLayer) close() {
 	}
 	owner.store.clear()
 	owner.base = Snapshot{}
+	owner.configEntries = nil
 
 }
 

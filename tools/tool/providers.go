@@ -1,6 +1,18 @@
 package tool
 
-import "maps"
+import (
+	"context"
+	"maps"
+
+	"github.com/gorenx/goren/tools"
+)
+
+// Provider constructs an implementation from bound configuration and borrowed
+// capabilities. Each Open returns independent owned resources, including any
+// partially constructed resources that still require cleanup when Open fails.
+type Provider interface {
+	Open(context.Context) (Implementation, error)
+}
 
 // Providers supplies compiled tool implementations to the common ToolActor.
 // Composition owns these borrowed constructors; Schema Registry never stores them.
@@ -13,6 +25,13 @@ type Providers map[string]Provider
 // The source owns its catalog; Tool owns each implementation returned by Open.
 type ProviderSource interface {
 	Provider(string) (Provider, bool)
+}
+
+// IdentifiedProvider binds dynamically replaceable work to a catalog identity.
+// Its ID and backing implementation must stay immutable after publication.
+type IdentifiedProvider interface {
+	Provider
+	ProviderID() tools.ProviderID
 }
 
 // Clone detaches name bindings while preserving borrowed constructors.

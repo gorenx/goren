@@ -22,25 +22,31 @@ func DeriveLayer(base Snapshot) *PromptLayer {
 
 func (owner *PromptLayer) initialize() error {
 	if owner.settings.includeHarnessIdentity {
-		if _, err := owner.store.addSection(PromptSection{
+		identifier, err := owner.store.addSection(PromptSection{
 			Name:  harnessIdentityName,
 			Order: harnessIdentityOrder,
 			Text:  StaticText(harnessIdentityText),
-		}); err != nil {
+		})
+		if err != nil {
 			return err
 		}
+		owner.configEntries = append(owner.configEntries, identifier)
 	}
-	if _, err := owner.store.addSection(PromptSection{
+	identifier, err := owner.store.addSection(PromptSection{
 		Name:  PersonaSection,
 		Order: PersonaOrder,
 		Text:  StaticText(owner.settings.persona),
-	}); err != nil {
+	})
+	if err != nil {
 		return err
 	}
+	owner.configEntries = append(owner.configEntries, identifier)
 	if !owner.settings.includeRuntimeContext {
-		if _, err := owner.store.addSuppressor(disabledRuntimeContextSuppressor); err != nil {
+		identifier, err := owner.store.addSuppressor(disabledRuntimeContextSuppressor)
+		if err != nil {
 			return err
 		}
+		owner.configEntries = append(owner.configEntries, identifier)
 	}
 	return nil
 }

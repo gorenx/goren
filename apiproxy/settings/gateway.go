@@ -4,108 +4,167 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	rpc "github.com/gorenx/goren/apiproxy/rpc"
+	"sort"
 
+	"github.com/gorenx/goren/apiproxy/rpc"
 	"github.com/gorenx/goren/connection"
+	"github.com/gorenx/goren/settings"
 )
 
 const settingsAbsentMessage = "settings service is absent: this deployment does not mount a settings provider (e.g. @deepseek-ai/dsh-settings-file) in its composition"
 
-// Describer is the consumer-owned redacted Settings catalog capability.
-type Describer interface {
-	DescribeSettings(context.Context) (DescribeValue, error)
-}
-
-// Gateway projects an optional Settings Provider onto the Host API.
+// Gateway maps the Settings business capability to the Host wire contract.
+// It owns neither user state nor Actor/SQLite lifetimes.
 type Gateway struct {
-	describer Describer
+	service settings.Settings
 }
 
-// NewGateway creates a Settings projection. A nil Provider preserves
-// the source API's explicit absent-service business failure.
-func NewGateway(source Describer) *Gateway {
+// NewGateway accepts a domain implementation, including settings/actor.Client.
+// Nil preserves the existing absent-service failure.
+func NewGateway(source settings.Settings) *Gateway {
 	return &Gateway{
-		describer: source,
+		service: source,
 	}
 }
 
-// Describe returns a redacted catalog or the canonical absent-service failure.
-func (owner *Gateway) Describe(
-	requestContext context.Context,
-	_ rpc.Request[DescribeRequest],
-) (rpc.Outcome[DescribeValue], error) {
-	if owner.describer == nil {
-		return rpc.Fail[DescribeValue](rpc.NewRPCError(
-			connection.ErrorInternal, settingsAbsentMessage, struct{}{},
-		)), nil
+// Describe projects local, user and target values without exposing credentials.
+func (owner *Gateway) Describe(ctx context.Context, _ rpc.Request[DescribeRequest]) (rpc.Outcome[DescribeValue], error) {
+	if owner.service == nil {
+		return rpc.Fail[DescribeValue](rpc.NewRPCError(connection.ErrorInternal, settingsAbsentMessage, struct{}{})), nil
 	}
-	description, err := owner.describer.DescribeSettings(requestContext)
+	projection, err := owner.service.Describe(ctx)
 	if err != nil {
 		return rpc.Outcome[DescribeValue]{}, err
 	}
-	validated, err := validateSettingsDescription(description)
+	description, err := describeSnapshot(projection)
 	if err != nil {
 		return rpc.Outcome[DescribeValue]{}, err
 	}
-	return rpc.OK(validated), nil
+	return rpc.OK(description), nil
 }
 
-func validateSettingsDescription(description DescribeValue) (DescribeValue, error) {
-	namespaces := make([]NamespaceView, 0, len(description.Namespaces))
-	seen := make(map[string]struct{}, len(description.Namespaces))
-	for _, namespace := range description.Namespaces {
-		if namespace.NS == "" {
-			return DescribeValue{}, errors.New("apiproxy: Settings Provider returned an empty namespace")
-		}
-		if _, exists := seen[namespace.NS]; exists {
-			return DescribeValue{}, fmt.Errorf("apiproxy: Settings Provider returned duplicate namespace %q", namespace.NS)
-		}
-		seen[namespace.NS] = struct{}{}
-		if namespace.Applies != ApplyLive && namespace.Applies != ApplyRestart {
-			return DescribeValue{}, fmt.Errorf(
-				"apiproxy: Settings namespace %q returned invalid applies %q", namespace.NS, namespace.Applies,
-			)
-		}
-		if namespace.Revision < 0 {
-			return DescribeValue{}, fmt.Errorf(
-				"apiproxy: Settings namespace %q returned negative revision", namespace.NS,
-			)
-		}
-		if !json.Valid(namespace.Schema) ||
-			!json.Valid(namespace.Value) ||
-			!validOptionalJSON(namespace.Base) ||
-			!validOptionalJSON(namespace.User) {
-			return DescribeValue{}, fmt.Errorf(
-				"apiproxy: Settings namespace %q returned invalid JSON", namespace.NS,
-			)
-		}
-		namespace.Schema = append(json.RawMessage(nil), namespace.Schema...)
-		namespace.Value = append(json.RawMessage(nil), namespace.Value...)
-		namespace.Base = cloneRawMessagePointer(namespace.Base)
-		namespace.User = cloneRawMessagePointer(namespace.User)
-		secrets := make([]SecretView, 0, len(namespace.Secrets))
-		for _, secret := range namespace.Secrets {
-			secrets = append(secrets, SecretView{
-				Path: append([]string{}, secret.Path...),
-				Set:  secret.Set,
-			})
-		}
-		namespace.Secrets = secrets
-		namespaces = append(namespaces, namespace)
+func describeSnapshot(projection settings.Snapshot) (DescribeValue, error) {
+	known := make(map[settings.Group]struct{})
+	for _, identifier := range projection.Base.Groups() {
+		known[identifier] = struct{}{}
 	}
-	description.Namespaces = namespaces
-	return description, nil
+	for _, identifier := range projection.Target.Groups() {
+		known[identifier] = struct{}{}
+	}
+	for identifier := range projection.State.Versions {
+		known[identifier] = struct{}{}
+	}
+	ordered := make([]settings.Group, 0, len(known))
+	for identifier := range known {
+		ordered = append(ordered, identifier)
+	}
+	sort.Slice(ordered, func(left, right int) bool {
+		if ordered[left].Section != ordered[right].Section {
+			return ordered[left].Section < ordered[right].Section
+		}
+		return ordered[left].Name < ordered[right].Name
+	})
+	namespaces := make([]NamespaceView, 0, len(ordered))
+	for _, identifier := range ordered {
+		namespace, schema, mode := groupSchema(identifier.Section)
+		base, err := json.Marshal(groupValue(projection.Base, identifier))
+		if err != nil {
+			return DescribeValue{}, settings.ErrInvalid
+		}
+		user, err := json.Marshal(groupValue(projection.State.User, identifier))
+		if err != nil {
+			return DescribeValue{}, settings.ErrInvalid
+		}
+		value, err := json.Marshal(groupValue(projection.Target, identifier))
+		if err != nil {
+			return DescribeValue{}, settings.ErrInvalid
+		}
+		baseJSON := json.RawMessage(base)
+		userJSON := json.RawMessage(user)
+		application := projection.Applications[identifier]
+		failure := ""
+		if application.Error != "" {
+			failure = settings.ErrApplication.Error()
+		}
+		namespaces = append(namespaces, NamespaceView{
+			NS:              namespace,
+			Name:            identifier.Name,
+			Schema:          json.RawMessage(schema),
+			Value:           value,
+			Base:            &baseJSON,
+			User:            &userJSON,
+			Applies:         mode,
+			Secrets:         []SecretView{},
+			Revision:        projection.State.Version(identifier),
+			AppliedRevision: &application.AppliedRevision,
+			PendingRestart:  application.PendingRestart,
+			ApplyError:      failure,
+		})
+	}
+	return DescribeValue{
+		Writable:    true,
+		HasDocument: false,
+		Namespaces:  namespaces,
+	}, nil
 }
 
-func validOptionalJSON(encoded *json.RawMessage) bool {
-	return encoded == nil || json.Valid(*encoded)
-}
-
-func cloneRawMessagePointer(source *json.RawMessage) *json.RawMessage {
-	if source == nil {
+// groupValue erases the typed value only while mapping the outbound API view.
+func groupValue(input settings.Values, identifier settings.Group) any {
+	if !input.Has(identifier) {
 		return nil
 	}
-	detached := append(json.RawMessage(nil), (*source)...)
-	return &detached
+	switch identifier.Section {
+	case settings.ToolSection:
+		return input.Tools[identifier.Name]
+	case settings.ProviderSection:
+		return input.Providers[identifier.Name]
+	case settings.PromptSection:
+		return input.Prompts[identifier.Name]
+	case settings.MCPSection:
+		return input.MCP[identifier.Name]
+	default:
+		return nil
+	}
+}
+
+func groupSchema(kind settings.Section) (string, string, ApplyMode) {
+	switch kind {
+	case settings.ToolSection:
+		return "tool", toolSchema, ApplyLive
+	case settings.ProviderSection:
+		return "llmprovider", providerSchema, ApplyRestart
+	case settings.PromptSection:
+		return "prompt", promptSchema, ApplyLive
+	case settings.MCPSection:
+		return "mcp", mcpSchema, ApplyLive
+	default:
+		return "", "{}", ApplyLive
+	}
+}
+
+func groupView(projection settings.Snapshot, namespace string, name string) (NamespaceView, error) {
+	description, err := describeSnapshot(projection)
+	if err != nil {
+		return NamespaceView{}, err
+	}
+	for _, entry := range description.Namespaces {
+		if entry.NS == namespace && entry.Name == name {
+			return entry, nil
+		}
+	}
+	return NamespaceView{}, errors.New("settings: unknown group")
+}
+
+func businessSection(namespace string) settings.Section {
+	switch namespace {
+	case "tool":
+		return settings.ToolSection
+	case "llmprovider":
+		return settings.ProviderSection
+	case "prompt":
+		return settings.PromptSection
+	case "mcp":
+		return settings.MCPSection
+	}
+	return 0
 }

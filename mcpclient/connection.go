@@ -11,7 +11,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/tools"
 	"github.com/gorenx/goren/userquestions"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -20,6 +22,7 @@ import (
 // Connection owns one SDK transport, subscription and in-flight calls. It is safe
 // for concurrent tool calls; Refresh is serialized and publishes whole snapshots.
 type Connection struct {
+	providerID    tools.ProviderID
 	settings      Config
 	session       *protocolSession
 	lifetime      context.Context
@@ -29,7 +32,9 @@ type Connection struct {
 	entries       map[string]remoteTool
 	failure       error
 	closed        bool
-	calls         sync.WaitGroup
+	active        int
+	idle          chan struct{}
+	paused        bool
 	notifications *subscription
 	done          chan struct{}
 	closeOnce     sync.Once
@@ -49,6 +54,7 @@ func Open(ctx context.Context, settings Config, questions userquestions.UserQues
 	}
 	lifetime, cancel := context.WithCancel(context.Background())
 	owner := &Connection{
+		providerID:    tools.ProviderID(uuid.NewString()),
 		settings:      validated,
 		lifetime:      lifetime,
 		cancel:        cancel,
@@ -174,12 +180,15 @@ func (owner *Connection) Close(ctx context.Context) error {
 	owner.closeOnce.Do(func() {
 		owner.mutex.Lock()
 		owner.closed = true
+		idle := owner.idle
 		owner.mutex.Unlock()
 		owner.cancel()
 		go func() {
 			owner.closeErr = owner.session.close()
 			<-owner.done
-			owner.calls.Wait()
+			if idle != nil {
+				<-idle
+			}
 			close(owner.released)
 		}()
 	})
@@ -189,19 +198,4 @@ func (owner *Connection) Close(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-}
-
-func (owner *Connection) begin(ctx context.Context) (context.Context, func(), error) {
-	if ctx == nil {
-		return nil, nil, errors.New("mcpclient: operation context is required")
-	}
-	owner.mutex.Lock()
-	defer owner.mutex.Unlock()
-	if owner.closed || owner.lifetime.Err() != nil {
-		return nil, nil, errors.New("mcpclient: connection is unavailable")
-	}
-	work, cancel := context.WithCancel(ctx)
-	stop := context.AfterFunc(owner.lifetime, cancel)
-	owner.calls.Add(1)
-	return work, func() { stop(); cancel(); owner.calls.Done() }, nil
 }

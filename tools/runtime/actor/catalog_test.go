@@ -15,9 +15,10 @@ import (
 	"github.com/tochemey/goakt/v4/log"
 )
 
-func startCatalog(t *testing.T, pubsub bool, entries tool.Providers) (goakt.ActorSystem, *goakt.GrainIdentity, *runtimeactor.Catalog) {
+func startCatalog(t *testing.T, pubsub bool, entries tool.Providers, sources ...tool.ProviderSource) (goakt.ActorSystem, *goakt.GrainIdentity, *runtimeactor.Catalog) {
 	t.Helper()
-	constructors, err := toolactor.NewProviders(entries)
+	constructors := &toolactor.Providers{}
+	err := constructors.Install(entries, sources...)
 	if err != nil {
 		t.Fatal(err)
 	}

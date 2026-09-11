@@ -11,6 +11,12 @@ type Initialize struct {
 	Layer *systemprompt.PromptLayer
 }
 
+// ApplyBaseline replaces only configuration-owned shared prompt definitions.
+type ApplyBaseline struct {
+	Context context.Context
+	Config  systemprompt.Config
+}
+
 // Prepare captures registration membership without invoking user strategies.
 type Prepare struct{}
 

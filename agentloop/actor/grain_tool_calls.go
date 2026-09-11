@@ -136,7 +136,7 @@ func (endpoint toolPort) Configure(receiver agentloop.ConfigurationReceiver) err
 func (endpoint toolPort) applyDefinitions(definitions tools.Definitions, receiver agentloop.ConfigurationReceiver) error {
 	return endpoint.scope.request(
 		endpoint.scope.owner.prompt,
-		promptactor.ApplyTools{
+		promptactor.ApplyConfiguration{
 			AgentID: definitions.AgentID,
 			Definitions: systemprompt.ToolDefinitions{
 				Schemas:    definitions.Schemas,

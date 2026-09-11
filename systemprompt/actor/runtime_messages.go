@@ -21,8 +21,16 @@ type InitializeRuntime struct {
 	Sections []systemprompt.PromptSection
 }
 
-// ApplyTools delivers a detached view of a committed tools event.
+// ApplyTools installs a committed tool view without switching shared prompt definitions.
+// Subscription delivery is independent of the Turn configuration boundary.
 type ApplyTools struct {
+	AgentID     session.SessionID
+	Definitions systemprompt.ToolDefinitions
+}
+
+// ApplyConfiguration installs the acknowledged tools and refreshes shared prompt
+// definitions at a Turn boundary. Local sections and active snapshots are retained.
+type ApplyConfiguration struct {
 	AgentID session.SessionID
 
 	Definitions systemprompt.ToolDefinitions

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"github.com/gorenx/goren/mcpclient"
@@ -40,7 +41,7 @@ func (owner *mcpManager) watch(name string, connection *mcpclient.Connection) {
 			if exists && current.connection == connection {
 				if err := connection.Refresh(owner.lifetime); err != nil {
 					slog.Warn("MCP tools refresh failed")
-				} else if err := publishMCP(owner.lifetime, owner.system, owner.directory, owner.timeout, "mcp:"+name, connection.Schemas()); err != nil {
+				} else if err := publishMCP(owner.lifetime, owner.system, owner.directory, owner.timeout, "mcp:"+name, connection); err != nil {
 					slog.Error("MCP tool publication failed")
 				}
 			}
@@ -90,10 +91,11 @@ func (owner *mcpManager) close(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+	var failures []error
 	for _, entry := range owner.entries {
 		if err := entry.connection.Close(ctx); err != nil {
-			return err
+			failures = append(failures, err)
 		}
 	}
-	return nil
+	return errors.Join(append(failures, owner.closeRetained(ctx))...)
 }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/google/uuid"
+	"maps"
 	"slices"
 )
 
@@ -234,4 +235,19 @@ func validateEntryName(kind string, name string) error {
 		return errors.New("systemprompt: " + kind + " name must be non-empty")
 	}
 	return nil
+}
+
+// clone isolates membership changes while retaining immutable text/variable strategies.
+func (storage *promptStore) clone() *promptStore {
+	return &promptStore{
+		snapshotValue: storage.snapshotValue,
+		sections:      maps.Clone(storage.sections),
+		sectionOrder:  slices.Clone(storage.sectionOrder),
+		contexts:      maps.Clone(storage.contexts),
+		contextOrder:  slices.Clone(storage.contextOrder),
+		variables:     maps.Clone(storage.variables),
+		variableOrder: slices.Clone(storage.variableOrder),
+		suppressors:   maps.Clone(storage.suppressors),
+		entries:       maps.Clone(storage.entries),
+	}
 }

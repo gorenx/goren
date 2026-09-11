@@ -19,7 +19,6 @@ type Grain struct {
 	agentID    session.SessionID
 	authority  *goakt.GrainIdentity
 	business   *tool.Tool
-	provider   tool.Provider
 	active     *operation
 	// calls maps an executing invocation's CallID to its reply and cancellation
 	// handles. The entry exists until that body returns; it contains no policy or
@@ -81,12 +80,25 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 			})
 			return
 		}
+		constructors, valid := gc.ActorSystem().Extension(providersID).(*Providers)
+		if !valid {
+			gc.Response(Completion{
+				Err: errors.New("tools: tool providers are not installed"),
+			})
+			return
+		}
+		source, err := constructors.resolveBinding(owner.business.Name(), input.ProviderID)
+		if err != nil {
+			gc.Response(Completion{
+				Err: err,
+			})
+			return
+		}
 		current := owner.deferOperation(gc)
 		if current == nil {
 			return
 		}
 		business := owner.business
-		source := owner.provider
 		owner.schedule(gc, current, input.Context, func(ctx context.Context) error {
 			return business.Provision(ctx, input.Revision, source, input.Schema)
 		})

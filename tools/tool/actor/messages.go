@@ -29,11 +29,12 @@ func RuntimeName(agentID string, toolName string) string {
 }
 
 // Provision constructs a candidate under the caller-owned update boundary.
-// The implementation is bound by Initialize from process-local composition.
+// ProviderID must match the implementation selected from process-local composition.
 type Provision struct {
 	CreationID string
 	Revision   tool.Revision
 	Schema     llm.ToolSchema
+	ProviderID tools.ProviderID
 	Context    context.Context
 }
 

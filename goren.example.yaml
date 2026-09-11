@@ -1,0 +1,85 @@
+# Goren 配置方案示例：加载器尚未实现，当前 CLI 尚不支持 --config。
+# 实施后用法：goren --config ./goren.example.yaml
+# 默认格式为 YAML，也支持字段与数据等价的 JSON。
+# 文件内相对路径以本文件所在目录为基准；不展开 ~ 或 ${VAR}。
+# 可覆盖字段：Web 用户设置 > 显式 CLI > 环境变量 > 本文件 > 内置默认。
+# 省略字段表示继承；不要用 null 表示省略。数组整表替换。
+
+# 文件格式版本，必填；当前方案只接受 1。
+schemaVersion: 1
+
+# 服务进程配置，仅作为本地部署输入。
+server:
+  # HTTP、WebSocket 与 Web 共用监听地址。
+  listen: "127.0.0.1:3080"
+  # 请求等待及启动失败清理预算，单位毫秒，必须大于 0。
+  # 不是整个模型生成过程的总时限。
+  requestTimeoutMs: 10000
+
+# 业务数据存储位置；不是 Session 的 Workspace 工作目录。
+storage:
+  # 省略时使用系统用户配置目录下的 goren；本例显式使用 ./data。
+  dataDirectory: "./data"
+  # Session 日志数据库；省略时位于最终 dataDirectory 下。
+  sessionDatabase: "./data/sessions.sqlite"
+  # Workspace 记录数据库；省略时位于最终 dataDirectory 下。
+  workspaceDatabase: "./data/workspaces.sqlite"
+  # Session 查询数据库；省略时跟随最终 Session 数据库目录。
+  queryDatabase: "./data/query.sqlite"
+  # Session 投影缓存；省略时跟随最终 Session 数据库目录。
+  cacheDatabase: "./data/projections.sqlite"
+  # 当前 Credentials 本地存储适配器的文件位置，不是 API key 值。
+  credentialsPath: "./data/.credentials.json"
+
+# Settings 服务的引导配置，必须先定位数据库才能读取用户覆盖。
+settings:
+  # 用户覆盖 SQLite 文件；此路径不能被 Web 用户设置反向覆盖。
+  database: "./data/settings.sqlite"
+
+# LLM 接入与新 Session 的默认选择；已有 Session 使用自身记录的选择。
+llm:
+  # 新 Session 创建默认模板；不代表所有 Session 的当前参数。
+  default:
+    # 选择已装配的 Provider route；字符串不能凭空启用新适配器。
+    provider: "deepseek-official"
+    # 默认模型；Session 可以另行选择，合法性由 LLM owner 校验。
+    model: "deepseek-v4-flash"
+  # 当前已装配 DeepSeek Provider 的非秘密接入参数，可被 Web 覆盖。
+  deepseek:
+    # 凭据引用名，不是密钥。API key 经 Credentials Manager 读取/编辑。
+    apiKeyEnv: "DEEPSEEK_API_KEY"
+    # Provider endpoint，禁止在 URL 中嵌入凭据。
+    baseURL: "https://api.deepseek.com"
+    # 模型流空闲超时，单位毫秒；不等于生成总时长限制。
+    streamIdleTimeoutMs: 300000
+
+# 全局基础 Prompt，可在 Web 修改；具体应用时机见实施方案。
+prompt:
+  # 是否加入内置 Harness 身份提示；显式 false 必须保留。
+  includeHarnessIdentity: true
+  # 是否包含已注册的运行上下文；false 会跳过相关提供者。
+  includeRuntimeContext: true
+  # 基础角色/回答偏好，普通文本，不执行代码；空字符串合法。
+  persona: "请使用简体中文回答。"
+  # 工具向模型呈现的顺序，不是工具执行顺序。
+  # 必须保留 <unlisted-tools> 标记；空数组不合法。
+  toolOrder:
+    - "<unlisted-tools>"
+
+# MCP 连接定义。无条目时不主动连接，Web 可以管理已开放范围的连接。
+mcp:
+  # 内联连接列表，元素使用 mcpclient.Config 的具名字段。
+  # 本例为空，避免仅复制示例就启动子进程或访问外部 MCP Server。
+  servers: []
+  # 独立 MCP 配置文件路径；相对本文件目录，每文件声明一个 Server。
+  # 支持 YAML/JSON，独立文件内的非空 cwd 仍须是绝对路径。
+  files: []
+
+# 已装配公开工具的完整配置；不允许修改执行守卫、Schema 或内部 approval 工具。
+tools:
+  # 名称必须对应当前组合根装配的公开工具。
+  ask_user_question:
+    # 是否启用工具；省略时使用 Tools 默认值 true。
+    enabled: true
+    # 是否向模型呈现定义；false 不等于撤销内部调用能力，省略时为 true。
+    visible: true

@@ -165,6 +165,7 @@ func sameTools(left, right []Tool) bool {
 	for index, entry := range left {
 		other := right[index]
 		if entry.Schema.Name != other.Schema.Name ||
+			entry.ProviderID != other.ProviderID ||
 			entry.Schema.Version != other.Schema.Version ||
 			entry.Schema.Description != other.Schema.Description ||
 			!bytes.Equal(entry.Schema.Parameters, other.Schema.Parameters) ||

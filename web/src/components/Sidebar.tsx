@@ -10,9 +10,10 @@ interface SidebarProps {
   onToggle: () => void
   onOpenBoundDefinitions: () => void
   onOpenMCP: () => void
+  onOpenSettings: () => void
 }
 
-export function Sidebar({ store, snapshot, collapsed, onToggle, onOpenBoundDefinitions, onOpenMCP }: SidebarProps): React.JSX.Element {
+export function Sidebar({ store, snapshot, collapsed, onToggle, onOpenBoundDefinitions, onOpenMCP, onOpenSettings }: SidebarProps): React.JSX.Element {
   const { activeLanguage, translate } = useI18n()
   const createLabel = snapshot.creatingSession
     ? translate('sidebar.creatingConversation')
@@ -95,6 +96,7 @@ export function Sidebar({ store, snapshot, collapsed, onToggle, onOpenBoundDefin
       </nav>
 
     <footer className="mt-auto shrink-0 border-t border-black/[0.05] p-4">
+      <button type="button" className="mb-3 w-full rounded-lg border border-black/[0.08] bg-white px-2 py-2 text-xs font-medium text-secondary hover:text-ink" aria-label={translate('settings.title')} title={translate('settings.title')} onClick={onOpenSettings}>{collapsed ? '⚙' : translate('settings.title')}</button>
       <button
         type="button"
         className="mb-3 w-full rounded-lg border border-black/[0.08] bg-white px-2 py-2 text-xs font-medium text-secondary hover:text-ink"

@@ -37,7 +37,7 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) {
 		})
 		return
 	}
-	source, err := constructors.resolve(input.Name)
+	_, err := constructors.resolve(input.Name)
 	if err != nil {
 		gc.Response(Completion{
 			Err: err,
@@ -88,7 +88,6 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) {
 			business, err := tool.New(input.Name)
 			if err == nil {
 				owner.business = business
-				owner.provider = source
 				owner.creationID = input.CreationID
 				owner.agentID = input.AgentID
 				owner.authority = input.Authority

@@ -5,6 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/coder/websocket"
+	"github.com/gorenx/goren/connection"
+	"github.com/gorenx/goren/llm/deepseek"
+	"github.com/gorenx/goren/mcpclient"
+	"github.com/gorenx/goren/tools"
+	registryactor "github.com/gorenx/goren/tools/registry/actor"
+	"github.com/gorenx/goren/tools/tool"
+	goakt "github.com/tochemey/goakt/v4/actor"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -12,13 +20,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/coder/websocket"
-	"github.com/gorenx/goren/connection"
-	"github.com/gorenx/goren/llm/deepseek"
-	"github.com/gorenx/goren/mcpclient"
-	registryactor "github.com/gorenx/goren/tools/registry/actor"
-	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
 func TestHTTPMCPToolActorElicitationAndCatalogChanges(t *testing.T) {
@@ -294,5 +295,215 @@ func testHTTPMCPAgent(t *testing.T, dynamic bool) {
 		if strings.HasPrefix(entry.Name, "mcp_") {
 			t.Fatal("disconnected tools remained in the Agent catalog")
 		}
+	}
+}
+
+type mcpSource struct {
+	result      string
+	toolName    string
+	entered     chan struct{}
+	release     <-chan struct{}
+	calls       atomic.Int32
+	listens     atomic.Int32
+	closed      atomic.Int32
+	canceled    atomic.Int32
+	unavailable atomic.Bool
+}
+
+func (remote *mcpSource) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	var message struct {
+		ID     json.RawMessage `json:"id"`
+		Method string          `json:"method"`
+	}
+	if json.NewDecoder(request.Body).Decode(&message) != nil {
+		writer.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if remote.unavailable.Load() {
+		writer.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	writer.Header().Set("Content-Type", "application/json")
+	respond := func(result string) {
+		fmt.Fprintf(writer, `{"jsonrpc":"2.0","id":%s,"result":%s}`, message.ID, result)
+	}
+	switch message.Method {
+	case "server/discover":
+		respond(`{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{"listChanged":true}}}`)
+	case "tools/list":
+		name := remote.toolName
+		if name == "" {
+			name = "read"
+		}
+		respond(fmt.Sprintf(`{"resultType":"complete","tools":[{"name":%q,"inputSchema":{"type":"object"}}]}`, name))
+	case "subscriptions/listen":
+		remote.listens.Add(1)
+		defer remote.closed.Add(1)
+		writer.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(writer, "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/subscriptions/acknowledged\",\"params\":{\"notifications\":{\"toolsListChanged\":true},\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":\"sub\"}}}\n\n")
+		writer.(http.Flusher).Flush()
+		<-request.Context().Done()
+	case "tools/call":
+		remote.calls.Add(1)
+		if remote.release != nil {
+			writer.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(writer, ": waiting\n\n")
+			writer.(http.Flusher).Flush()
+			remote.entered <- struct{}{}
+			select {
+			case <-remote.release:
+				fmt.Fprintf(writer, "data: {\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"resultType\":\"complete\",\"content\":[]}}\n\n", message.ID)
+			case <-request.Context().Done():
+				remote.canceled.Add(1)
+			}
+			return
+		}
+		respond(fmt.Sprintf(`{"resultType":"complete","content":[{"type":"text","text":%q}]}`, remote.result))
+	default:
+		writer.WriteHeader(http.StatusBadRequest)
+	}
+}
+
+func TestHTTPMCPReconnectionRebindsExistingSession(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	first := &mcpSource{
+		result: "first endpoint result",
+	}
+	second := &mcpSource{
+		result: "second endpoint result",
+	}
+	firstHTTP := httptest.NewServer(first)
+	defer firstHTTP.Close()
+	secondHTTP := httptest.NewServer(second)
+	defer secondHTTP.Close()
+	name := mcpclient.ToolName("fixture", "read")
+	var modelCalls atomic.Int32
+	modelHTTP := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var input struct {
+			Messages json.RawMessage `json:"messages"`
+			Tools    json.RawMessage `json:"tools"`
+		}
+		if json.NewDecoder(request.Body).Decode(&input) != nil {
+			t.Error("bad model request")
+			return
+		}
+		step := modelCalls.Add(1)
+		if !bytes.Contains(input.Tools, []byte(name)) {
+			t.Error("MCP tool disappeared during reconnection")
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+		if step%2 == 1 {
+			fmt.Fprintf(writer, "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"read-%d\",\"type\":\"function\",\"function\":{\"name\":%q,\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n", step, name)
+		} else {
+			expected := first.result
+			if step == 4 {
+				expected = second.result
+			}
+			if !bytes.Contains(input.Messages, []byte(expected)) {
+				t.Errorf("endpoint result missing at model call %d", step)
+			}
+			fmt.Fprint(writer, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		}
+		fmt.Fprint(writer, "data: [DONE]\n\n")
+	}))
+	defer modelHTTP.Close()
+	root := t.TempDir()
+	process, err := New(Config{
+		Address:           "127.0.0.1:0",
+		WorkingDirectory:  root,
+		SessionDatabase:   filepath.Join(root, "sessions.sqlite"),
+		WorkspaceDatabase: filepath.Join(root, "workspaces.sqlite"),
+		CredentialsPath:   filepath.Join(root, "credentials.json"),
+		Provider: deepseek.Config{
+			BaseURL: &modelHTTP.URL,
+		},
+		MCP: []mcpclient.Config{
+			{
+				ServerName: "fixture",
+				Transport:  "streamable-http",
+				URL:        firstHTTP.URL,
+			},
+		},
+	}, providerEnvironment{
+		home: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := process.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	}()
+	callHTTP(t, ctx, process, "credentials.set", json.RawMessage(`{"ref":"DEEPSEEK_API_KEY","value":"test-key"}`))
+	callHTTP(t, ctx, process, "session.create", json.RawMessage(`{"sessionId":"mcp-agent"}`))
+	feed, _, err := websocket.Dial(ctx, "ws://"+process.Address()+connection.MuxEventsPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer feed.CloseNow()
+	turn := func() {
+		t.Helper()
+		callHTTP(t, ctx, process, "session.prompt", json.RawMessage(`{"sessionId":"mcp-agent","mode":"queue","content":[{"type":"text","text":"Read MCP"}]}`))
+		for {
+			frame := readConversationFrame(t, ctx, feed)
+			if frame.Method == "question/requested" {
+				if !answerHTTP(t, ctx, process, frame.RPCID, json.RawMessage(`{"sessionId":"mcp-agent","answer":{"answers":[{"id":"mcp-consent","selected":["Continue"]}]}}`)).Accepted {
+					t.Fatal("MCP consent rejected")
+				}
+			}
+			if frame.Method == "session/event" && bytes.Contains(frame.Payload, []byte(`"type":"turn/end"`)) {
+				return
+			}
+		}
+	}
+	directory, err := goakt.GrainOf[*registryactor.RegistryGrain](ctx, process.system, registryactor.RegistryName, goakt.WithLongLivedGrain())
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := func() tools.ProviderID {
+		t.Helper()
+		payload, err := process.system.AskGrain(ctx, directory, registryactor.ReadConfiguration{
+			SessionID: "mcp-agent",
+		}, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		identifier := payload.(registryactor.Configuration).Value.Global.ProviderIDs[name]
+		source, exists := process.mcp.Provider(name)
+		identified, valid := source.(tool.IdentifiedProvider)
+		if !exists ||
+			!valid ||
+			identifier == "" {
+			t.Fatal("MCP catalog has no identifiable Provider")
+		}
+		if identifier != identified.ProviderID() {
+			t.Fatal("MCP catalog and implementation identities differ")
+		}
+		return identifier
+	}
+	previous := binding()
+	turn()
+	callHTTP(t, ctx, process, "mcp.disconnect", json.RawMessage(`{"serverName":"fixture"}`))
+	request, err := json.Marshal(map[string]string{
+		"serverName": "fixture",
+		"url":        secondHTTP.URL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	callHTTP(t, ctx, process, "mcp.connect", request)
+	if current := binding(); current == previous {
+		t.Fatal("new MCP connection reused the old Provider identity")
+	}
+	turn()
+	if first.calls.Load() != 1 ||
+		second.calls.Load() != 1 ||
+		modelCalls.Load() != 4 {
+		t.Fatalf("calls first/second/model=%d/%d/%d", first.calls.Load(), second.calls.Load(), modelCalls.Load())
 	}
 }

@@ -125,6 +125,10 @@ func schemas(entries map[string]remoteTool) []llm.ToolSchema {
 	return result
 }
 
+// ProviderID identifies this connection's immutable Provider binding.
+// Catalog refreshes retain it; replacing the Connection changes it.
+func (owner *Connection) ProviderID() tools.ProviderID { return owner.providerID }
+
 // Provider resolves one explicit public/raw binding without network I/O.
 func (owner *Connection) Provider(name string) (tool.Provider, bool) {
 	owner.mutex.Lock()
