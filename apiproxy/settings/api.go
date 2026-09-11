@@ -6,11 +6,14 @@ import (
 
 	rpc "github.com/gorenx/goren/apiproxy/rpc"
 	"github.com/gorenx/goren/settings"
+	"github.com/gorenx/goren/subagent/companion"
 	"github.com/gorenx/goren/tools"
 )
 
 // Settings methods share the Host privileged access boundary.
 const (
+	UpdateCompanionMethod  = "settings.updateCompanion"
+	ResetCompanionMethod   = "settings.resetCompanion"
 	DescribeMethod         = "settings.describe"
 	UpdateToolMethod       = "settings.updateTool"
 	ResetToolMethod        = "settings.resetTool"
@@ -30,8 +33,9 @@ type DescribeRequest struct{}
 type ApplyMode string
 
 const (
-	ApplyLive    ApplyMode = "live"
-	ApplyRestart ApplyMode = "restart"
+	ApplyNewInstance ApplyMode = "new_instance"
+	ApplyLive        ApplyMode = "live"
+	ApplyRestart     ApplyMode = "restart"
 )
 
 // SecretView reports a redacted secret slot without its value.
@@ -124,6 +128,8 @@ type RetryApplicationRequest struct {
 
 // API exposes the catalog and distinct Settings business operations.
 type API interface {
+	UpdateCompanion(context.Context, rpc.Request[UpdateCompanionRequest]) (rpc.Outcome[NamespaceView], error)
+	ResetCompanion(context.Context, rpc.Request[ResetCompanionRequest]) (rpc.Outcome[NamespaceView], error)
 	UpdateTool(context.Context, rpc.Request[UpdateToolRequest]) (rpc.Outcome[NamespaceView], error)
 	ResetTool(context.Context, rpc.Request[ResetToolRequest]) (rpc.Outcome[NamespaceView], error)
 	Describe(context.Context, rpc.Request[DescribeRequest]) (rpc.Outcome[DescribeValue], error)
@@ -138,6 +144,12 @@ type API interface {
 
 // Register installs the catalog, typed updates, resets and application retry endpoint.
 func Register(methods *rpc.Catalog, endpoint API) error {
+	if err := rpc.RegisterUnary(methods, UpdateCompanionMethod, DecodeUpdateCompanionRequest, endpoint.UpdateCompanion); err != nil {
+		return err
+	}
+	if err := rpc.RegisterUnary(methods, ResetCompanionMethod, DecodeResetCompanionRequest, endpoint.ResetCompanion); err != nil {
+		return err
+	}
 	if err := rpc.RegisterUnary(methods, DescribeMethod, rpc.DecodeObject[DescribeRequest], endpoint.Describe); err != nil {
 		return err
 	}
@@ -166,4 +178,17 @@ func Register(methods *rpc.Catalog, endpoint API) error {
 		return err
 	}
 	return rpc.RegisterUnary(methods, RetryApplicationMethod, DecodeRetryApplicationRequest, endpoint.RetryApplication)
+}
+
+// UpdateCompanionRequest replaces one complete named configuration.
+type UpdateCompanionRequest struct {
+	Name             string           `json:"name"`
+	ExpectedRevision int64            `json:"expectedRevision"`
+	Config           companion.Config `json:"config"`
+}
+
+// ResetCompanionRequest clears the complete named override.
+type ResetCompanionRequest struct {
+	Name             string `json:"name"`
+	ExpectedRevision int64  `json:"expectedRevision"`
 }

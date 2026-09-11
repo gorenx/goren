@@ -7,6 +7,7 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/llm/deepseek"
 	"github.com/gorenx/goren/settings/local"
+	"github.com/gorenx/goren/subagent/companion"
 	"github.com/gorenx/goren/tools"
 	catalogactor "github.com/gorenx/goren/tools/registry/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
@@ -27,6 +28,7 @@ import (
 
 // Config contains process paths and owner-defined configuration, never secrets.
 type Config struct {
+	Companions map[string]companion.Config
 	// Attachments is a borrowed image capability shared by admission and reads.
 	// Nil creates an owned original-image Store beside SessionDatabase.
 	// Composition closes an injected capability after Server.Close.
@@ -116,6 +118,7 @@ func (settings Config) userBaseline() usersettings.Values {
 		}.Clone()
 	}
 	return usersettings.Values{
+		Companions: settings.Companions,
 		Providers: map[string]usersettings.ProviderConfig{
 			"deepseek": provider.Clone(),
 		},
@@ -129,6 +132,7 @@ func (settings Config) userBaseline() usersettings.Values {
 
 func (settings Config) withUserSettings(target usersettings.Values) Config {
 	selected := target.Clone()
+	settings.Companions = selected.Companions
 	settings.Provider.APIKeyEnv = selected.Providers["deepseek"].APIKeyEnv
 	settings.Provider.BaseURL = selected.Providers["deepseek"].BaseURL
 	// Local source precedence has already been resolved into the baseline. An
@@ -198,6 +202,9 @@ func ConfigFromLocal(input local.Config, directory string, version string) (Conf
 	}
 	provider := input.LLM.DeepSeek.Clone()
 	output := Config{
+		Companions: (usersettings.Values{
+			Companions: input.Companions,
+		}).Clone().Companions,
 		Version:           version,
 		WorkingDirectory:  directory,
 		SessionDatabase:   *input.Storage.SessionDatabase,

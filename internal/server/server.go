@@ -100,6 +100,10 @@ func (settings Config) Validate(platform anonymoususerid.Environment) (Config, e
 	if settings.CacheDatabase == "" {
 		settings.CacheDatabase = filepath.Join(filepath.Dir(settings.SessionDatabase), "projections.sqlite")
 	}
+	if err := settings.userBaseline().Validate(); err != nil {
+		return Config{}, err
+	}
+	settings.Companions = settings.userBaseline().Clone().Companions
 	settings.Tools = settings.Tools.Clone()
 	settings.Providers = settings.Providers.Clone()
 	settings.MCP = append([]mcpclient.Config(nil), settings.MCP...)

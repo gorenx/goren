@@ -7,6 +7,7 @@ import (
 	"context"
 
 	"github.com/gorenx/goren/settings"
+	"github.com/gorenx/goren/subagent/companion"
 	"github.com/gorenx/goren/tools"
 )
 
@@ -142,4 +143,29 @@ func (input UpdateTool) apply(owner *settings.Service) (settings.Snapshot, error
 func (input ResetTool) context() context.Context { return input.Context }
 func (input ResetTool) apply(owner *settings.Service) (settings.Snapshot, error) {
 	return owner.ResetTool(input.Context, input.Name, input.ExpectedRevision)
+}
+
+// UpdateCompanion replaces one complete named group.
+type UpdateCompanion struct {
+	Context          context.Context
+	Name             string
+	ExpectedRevision int64
+	Config           companion.Config
+}
+
+// ResetCompanion clears one complete named override.
+type ResetCompanion struct {
+	Context          context.Context
+	Name             string
+	ExpectedRevision int64
+}
+
+func (input UpdateCompanion) context() context.Context { return input.Context }
+func (input UpdateCompanion) apply(owner *settings.Service) (settings.Snapshot, error) {
+	return owner.UpdateCompanion(input.Context, input.Name, input.ExpectedRevision, input.Config)
+}
+
+func (input ResetCompanion) context() context.Context { return input.Context }
+func (input ResetCompanion) apply(owner *settings.Service) (settings.Snapshot, error) {
+	return owner.ResetCompanion(input.Context, input.Name, input.ExpectedRevision)
 }

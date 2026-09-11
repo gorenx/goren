@@ -144,3 +144,21 @@ func rejectedUpdate(namespace string, code connection.RPCErrorCode, message stri
 		NS: namespace,
 	}))
 }
+
+// UpdateCompanion forwards a complete named replacement to the Settings owner.
+func (owner *Gateway) UpdateCompanion(ctx context.Context, call rpc.Request[UpdateCompanionRequest]) (rpc.Outcome[NamespaceView], error) {
+	if owner.service == nil {
+		return absentSettings(), nil
+	}
+	projection, err := owner.service.UpdateCompanion(ctx, call.Payload.Name, call.Payload.ExpectedRevision, call.Payload.Config)
+	return updateOutcome("companion", call.Payload.Name, call.Payload.ExpectedRevision, projection, err)
+}
+
+// ResetCompanion clears one complete named override through the Settings owner.
+func (owner *Gateway) ResetCompanion(ctx context.Context, call rpc.Request[ResetCompanionRequest]) (rpc.Outcome[NamespaceView], error) {
+	if owner.service == nil {
+		return absentSettings(), nil
+	}
+	projection, err := owner.service.ResetCompanion(ctx, call.Payload.Name, call.Payload.ExpectedRevision)
+	return updateOutcome("companion", call.Payload.Name, call.Payload.ExpectedRevision, projection, err)
+}

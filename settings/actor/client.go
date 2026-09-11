@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/gorenx/goren/settings"
+	"github.com/gorenx/goren/subagent/companion"
 	"github.com/gorenx/goren/tools"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
@@ -143,3 +144,22 @@ func (endpoint *Client) call(ctx context.Context, message any) (settings.Snapsho
 }
 
 var _ settings.Settings = (*Client)(nil)
+
+// UpdateCompanion replaces one complete named configuration.
+func (endpoint *Client) UpdateCompanion(ctx context.Context, name string, expected int64, configuration companion.Config) (settings.Snapshot, error) {
+	return endpoint.call(ctx, UpdateCompanion{
+		Context:          ctx,
+		Name:             name,
+		ExpectedRevision: expected,
+		Config:           configuration.Clone(),
+	})
+}
+
+// ResetCompanion clears the complete named override.
+func (endpoint *Client) ResetCompanion(ctx context.Context, name string, expected int64) (settings.Snapshot, error) {
+	return endpoint.call(ctx, ResetCompanion{
+		Context:          ctx,
+		Name:             name,
+		ExpectedRevision: expected,
+	})
+}

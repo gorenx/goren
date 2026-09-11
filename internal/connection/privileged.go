@@ -19,6 +19,8 @@ var privilegedMethods = map[string]struct{}{
 	"settings.updatePrompt":     {},
 	"settings.updateTool":       {},
 	"settings.resetTool":        {},
+	"settings.updateCompanion":  {},
+	"settings.resetCompanion":   {},
 	"settings.updateMCP":        {},
 	"settings.retryApplication": {},
 	"settings.resetProvider":    {},

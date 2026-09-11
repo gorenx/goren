@@ -1,14 +1,17 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"io"
 	"sort"
 	"strings"
 
 	"github.com/gorenx/goren/settings"
 	"github.com/gorenx/goren/settings/internal/sqlite/internal/dbsql"
+	"github.com/gorenx/goren/subagent/companion"
 	"github.com/gorenx/goren/tools"
 )
 
@@ -53,6 +56,23 @@ func (owner *Adapter) Load(ctx context.Context) (settings.State, error) {
 			continue
 		}
 		switch identifier.Section {
+		case settings.CompanionSection:
+			if stored.User.Companions == nil {
+				stored.User.Companions = make(map[string]companion.Config)
+			}
+			var decoded companion.Config
+			decoder := json.NewDecoder(bytes.NewReader([]byte(row.OverridesJson)))
+			decoder.DisallowUnknownFields()
+			err = decoder.Decode(&decoded)
+			if err == nil {
+				if decoder.Decode(new(any)) != io.EOF {
+					err = settings.ErrStorage
+				}
+			}
+			if err == nil {
+				err = decoded.Validate()
+			}
+			stored.User.Companions[name] = decoded
 		case settings.ToolSection:
 			if stored.User.Tools == nil {
 				stored.User.Tools = make(map[string]tools.Config)
@@ -121,6 +141,8 @@ func (owner *Adapter) Commit(ctx context.Context, change settings.ChangeSet) err
 		var value any
 		if change.Next.User.Has(identifier) {
 			switch identifier.Section {
+			case settings.CompanionSection:
+				value = change.Next.User.Companions[identifier.Name]
 			case settings.ToolSection:
 				value = change.Next.User.Tools[identifier.Name]
 			case settings.ProviderSection:
@@ -155,6 +177,8 @@ func (owner *Adapter) Commit(ctx context.Context, change settings.ChangeSet) err
 
 func sectionName(kind settings.Section) string {
 	switch kind {
+	case settings.CompanionSection:
+		return "companion"
 	case settings.ToolSection:
 		return "tool"
 	case settings.ProviderSection:
@@ -170,6 +194,8 @@ func sectionName(kind settings.Section) string {
 
 func sectionKind(name string) settings.Section {
 	switch name {
+	case "companion":
+		return settings.CompanionSection
 	case "tool":
 		return settings.ToolSection
 	case "llmprovider":

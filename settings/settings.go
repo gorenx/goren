@@ -2,6 +2,7 @@ package settings
 
 import (
 	"context"
+	"github.com/gorenx/goren/subagent/companion"
 	"github.com/gorenx/goren/tools"
 )
 
@@ -17,6 +18,8 @@ import (
 // but its owner has not accepted the whole change. Cancellation after commit
 // does not undo the saved target; Describe allows the caller to reconcile it.
 type Settings interface {
+	UpdateCompanion(context.Context, string, int64, companion.Config) (Snapshot, error)
+	ResetCompanion(context.Context, string, int64) (Snapshot, error)
 	Describe(context.Context) (Snapshot, error)
 	UpdateTool(context.Context, string, int64, tools.Config) (Snapshot, error)
 	ResetTool(context.Context, string, int64) (Snapshot, error)

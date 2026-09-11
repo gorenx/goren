@@ -14,6 +14,7 @@ const (
 	PromptSection
 	MCPSection
 	ToolSection
+	CompanionSection
 )
 
 const maximumRevision int64 = 9_007_199_254_740_991
@@ -43,7 +44,7 @@ func (identifier Group) Valid() bool {
 		return false
 	}
 	switch identifier.Section {
-	case ProviderSection, PromptSection, MCPSection, ToolSection:
+	case ProviderSection, PromptSection, MCPSection, ToolSection, CompanionSection:
 		return true
 	default:
 		return false

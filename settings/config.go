@@ -14,6 +14,7 @@ import (
 	"github.com/gorenx/goren/credentials"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/mcpclient"
+	"github.com/gorenx/goren/subagent/companion"
 	"github.com/gorenx/goren/systemprompt"
 	"github.com/gorenx/goren/tools"
 )
@@ -77,19 +78,21 @@ type MCPConfig struct {
 
 // Values contains Provider/Prompt configuration and independently named MCP groups.
 type Values struct {
-	Providers map[string]ProviderConfig
-	Prompts   map[string]PromptConfig
-	MCP       map[string]MCPConfig
-	Tools     map[string]tools.Config
+	Companions map[string]companion.Config
+	Providers  map[string]ProviderConfig
+	Prompts    map[string]PromptConfig
+	MCP        map[string]MCPConfig
+	Tools      map[string]tools.Config
 }
 
 // Clone returns detached configuration, including optional fields and lists.
 func (input Values) Clone() Values {
 	return Values{
-		Providers: cloneGroups(input.Providers),
-		Prompts:   cloneGroups(input.Prompts),
-		MCP:       cloneGroups(input.MCP),
-		Tools:     cloneGroups(input.Tools),
+		Companions: cloneGroups(input.Companions),
+		Providers:  cloneGroups(input.Providers),
+		Prompts:    cloneGroups(input.Prompts),
+		MCP:        cloneGroups(input.MCP),
+		Tools:      cloneGroups(input.Tools),
 	}
 }
 
@@ -227,6 +230,11 @@ func (input PromptConfig) Validate() error {
 
 // Validate checks every named group's complete configuration.
 func (input Values) Validate() error {
+	for name, entry := range input.Companions {
+		if companion.ValidateName(name) != nil || entry.Validate() != nil {
+			return ErrInvalid
+		}
+	}
 	for name, entry := range input.Providers {
 		if !(Group{
 			Section: ProviderSection,
@@ -268,6 +276,9 @@ func (input Values) Validate() error {
 // Has reports whether an explicit complete group is present.
 func (input Values) Has(identifier Group) bool {
 	switch identifier.Section {
+	case CompanionSection:
+		_, found := input.Companions[identifier.Name]
+		return found
 	case ProviderSection:
 		_, found := input.Providers[identifier.Name]
 		return found
@@ -295,6 +306,12 @@ func Resolve(baseline Values, overrides Values) (Values, error) {
 		return Values{}, err
 	}
 	output := baseline.Clone()
+	for name, entry := range overrides.Companions {
+		if output.Companions == nil {
+			output.Companions = make(map[string]companion.Config)
+		}
+		output.Companions[name] = entry.Clone()
+	}
 	for name, entry := range overrides.Providers {
 		if _, installed := baseline.Providers[name]; !installed {
 			return Values{}, ErrInvalid
@@ -365,7 +382,13 @@ func valuesEqual(left Values, right Values) bool {
 
 // Groups returns the explicit identities in stable capability/name order.
 func (input Values) Groups() []Group {
-	output := make([]Group, 0, len(input.Providers)+len(input.Prompts)+len(input.MCP)+len(input.Tools))
+	output := make([]Group, 0, len(input.Providers)+len(input.Prompts)+len(input.MCP)+len(input.Tools)+len(input.Companions))
+	for name := range input.Companions {
+		output = append(output, Group{
+			Section: CompanionSection,
+			Name:    name,
+		})
+	}
 	for name := range input.Providers {
 		output = append(output, Group{
 			Section: ProviderSection,

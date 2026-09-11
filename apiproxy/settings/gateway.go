@@ -114,6 +114,8 @@ func groupValue(input settings.Values, identifier settings.Group) any {
 		return nil
 	}
 	switch identifier.Section {
+	case settings.CompanionSection:
+		return input.Companions[identifier.Name]
 	case settings.ToolSection:
 		return input.Tools[identifier.Name]
 	case settings.ProviderSection:
@@ -129,6 +131,8 @@ func groupValue(input settings.Values, identifier settings.Group) any {
 
 func groupSchema(kind settings.Section) (string, string, ApplyMode) {
 	switch kind {
+	case settings.CompanionSection:
+		return "companion", companionSchema, ApplyNewInstance
 	case settings.ToolSection:
 		return "tool", toolSchema, ApplyLive
 	case settings.ProviderSection:
@@ -157,6 +161,8 @@ func groupView(projection settings.Snapshot, namespace string, name string) (Nam
 
 func businessSection(namespace string) settings.Section {
 	switch namespace {
+	case "companion":
+		return settings.CompanionSection
 	case "tool":
 		return settings.ToolSection
 	case "llmprovider":

@@ -1,6 +1,7 @@
 package local
 
 import (
+	"github.com/gorenx/goren/subagent/companion"
 	"math"
 	"net"
 	"strconv"
@@ -9,6 +10,11 @@ import (
 )
 
 func (input Config) validate() error {
+	for name, entry := range input.Companions {
+		if companion.ValidateName(name) != nil || entry.Validate() != nil {
+			return ErrInvalid
+		}
+	}
 	if input.SchemaVersion != nil && *input.SchemaVersion != 1 {
 		return ErrInvalid
 	}

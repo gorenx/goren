@@ -5,6 +5,7 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/mcpclient"
 	"github.com/gorenx/goren/settings"
+	"github.com/gorenx/goren/subagent/companion"
 	"github.com/gorenx/goren/tools"
 )
 
@@ -12,14 +13,15 @@ import (
 // named values only; composition maps them to each runtime capability's config.
 // Pointer fields distinguish omission from explicit empty, zero and false.
 type Config struct {
-	Tools         map[string]tools.Config `json:"tools,omitempty"`
-	SchemaVersion *int                    `json:"schemaVersion,omitempty"`
-	Server        ServerConfig            `json:"server,omitempty"`
-	Storage       StorageConfig           `json:"storage,omitempty"`
-	Settings      DatabaseConfig          `json:"settings,omitempty"`
-	LLM           LLMConfig               `json:"llm,omitempty"`
-	Prompt        settings.PromptConfig   `json:"prompt,omitempty"`
-	MCP           MCPFiles                `json:"mcp,omitempty"`
+	Companions    map[string]companion.Config `json:"companions,omitempty"`
+	Tools         map[string]tools.Config     `json:"tools,omitempty"`
+	SchemaVersion *int                        `json:"schemaVersion,omitempty"`
+	Server        ServerConfig                `json:"server,omitempty"`
+	Storage       StorageConfig               `json:"storage,omitempty"`
+	Settings      DatabaseConfig              `json:"settings,omitempty"`
+	LLM           LLMConfig                   `json:"llm,omitempty"`
+	Prompt        settings.PromptConfig       `json:"prompt,omitempty"`
+	MCP           MCPFiles                    `json:"mcp,omitempty"`
 }
 
 // ServerConfig describes process inputs, not a Session's workspace directory.

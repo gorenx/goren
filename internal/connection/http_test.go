@@ -434,6 +434,8 @@ func TestPrivilegedMethodsRemainLoopbackOnlyOnTrustedHost(t *testing.T) {
 		"settings.mutate",
 		"settings.updateProvider",
 		"settings.updatePrompt",
+		"settings.updateCompanion",
+		"settings.resetCompanion",
 		"settings.updateMCP",
 		"settings.updateTool",
 		"settings.retryApplication",

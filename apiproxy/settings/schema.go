@@ -66,3 +66,23 @@ const toolSchema = `{
   "visible":{"type":"boolean","default":true}
  }
 }`
+
+const companionSchema = `{
+ "$schema":"https://json-schema.org/draft/2020-12/schema",
+ "type":"object","additionalProperties":false,
+ "properties":{
+  "enabled":{"type":"boolean"},
+  "inherit":{"type":"object","additionalProperties":false,"properties":{
+   "model":{"type":"boolean"},"prompt":{"type":"boolean"},
+   "tools":{"enum":["none","all"]},"mcp":{"type":"boolean"}
+  }},
+  "model":{"type":"object","additionalProperties":false,"properties":{
+   "provider":{"type":"string"},"model":{"type":"string"},
+   "maxTokens":{"type":"integer","minimum":1,"maximum":9007199254740991}
+  }},
+  "prompt":` + promptSchema + `,
+  "tools":{"type":"object","additionalProperties":` + toolSchema + `},
+  "mcp":{"type":"array","items":{"$ref":"#/$defs/mcp/properties/connection"}}
+ },
+ "$defs":{"mcp":` + mcpSchema + `}
+}`
