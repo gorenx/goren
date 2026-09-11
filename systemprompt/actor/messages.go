@@ -22,6 +22,8 @@ type Prepare struct{}
 
 // Prepared is the value used to evaluate one model request outside the mailbox.
 type Prepared struct {
+	// Config is captured together with Snapshot from the same root baseline.
+	Config   systemprompt.Config
 	Version  uint64
 	Snapshot systemprompt.Snapshot
 	Err      error

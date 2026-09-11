@@ -28,7 +28,7 @@ type ConfigureTool struct {
 	Config tools.Config
 }
 
-// ConfigureSession replaces the Session's custom schema and policy set.
+// ConfigureSession replaces the Session catalog, including its inheritance choice.
 type ConfigureSession struct {
 	SessionID session.SessionID
 	Catalog   toolregistry.Catalog

@@ -13,7 +13,7 @@ import (
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
-// InitializeRuntime binds an Agent creation and applies its initial overrides.
+// InitializeRuntime binds an Agent creation and applies its initial Session catalog.
 // Only the Agent lifecycle owner starts this Runtime and authorizes its activation.
 type InitializeRuntime struct {
 	AgentID    session.SessionID

@@ -15,15 +15,19 @@ func (owner *Grain) checkCreation(identifier string) error {
 	return nil
 }
 
-func (owner *Grain) prepareClose(identifier string) error {
-	err := owner.checkCreation(identifier)
+func (owner *Grain) prepareClose(input agentactor.PrepareClose) error {
+	err := owner.checkCreation(input.CreationID)
 	if err != nil {
 		return err
 	}
 	if owner.initialization != nil {
 		return errors.New("agentloop: initialization has not finished")
 	}
-	return owner.business.PrepareClose(owner.deliveries != 0 || owner.callID != "" || len(owner.calls) != 0)
+	executing := owner.deliveries != 0 || owner.callID != "" || len(owner.calls) != 0
+	if input.FinishCurrent {
+		return owner.business.Drain(executing)
+	}
+	return owner.business.PrepareClose(executing)
 }
 
 func (owner *Grain) closeResources(gc *goakt.GrainContext, input agentactor.CloseResources) {
@@ -67,7 +71,7 @@ type closePreparation struct {
 }
 
 func (owner *Grain) requestClosePreparation(gc *goakt.GrainContext, input agentactor.PrepareClose) {
-	failure := owner.prepareClose(input.CreationID)
+	failure := owner.prepareClose(input)
 	if !errors.Is(failure, agentloop.ErrPending) || !owner.busy() {
 		gc.Response(agentactor.Prepared{Err: failure})
 		return
@@ -75,6 +79,13 @@ func (owner *Grain) requestClosePreparation(gc *goakt.GrainContext, input agenta
 	reply := gc.DeferResponse()
 	if reply == nil {
 		gc.Response(agentactor.Prepared{Err: errors.New("agentloop: close preparation requires an asynchronous request")})
+		return
+	}
+	if input.FinishCurrent {
+		owner.awaitClosePreparation(gc, closePreparation{
+			creationID: input.CreationID,
+			reply:      reply,
+		})
 		return
 	}
 	owner.cancelOperations(gc, completeCancel{

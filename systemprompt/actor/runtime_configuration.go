@@ -3,6 +3,8 @@ package promptactor
 import (
 	"errors"
 
+	"github.com/gorenx/goren/systemprompt"
+
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
@@ -26,6 +28,37 @@ func (owner *RuntimeGrain) applyConfiguration(gc *goakt.GrainContext, input Appl
 		gc.Response(Completion{
 			Err: err,
 		})
+		return
+	}
+	if input.Config != nil {
+		prepared, err := preparePrompt(*input.Config)
+		if err != nil {
+			gc.Response(Completion{
+				Err: err,
+			})
+			return
+		}
+		layer := systemprompt.DeriveLayer(prepared.Snapshot)
+		for _, section := range owner.sections {
+			if _, err := layer.AddSection(gc.Context(), section); err != nil {
+				gc.Response(Completion{
+					Err: err,
+				})
+				return
+			}
+		}
+		candidate.SetDefinitions(layer.Capture())
+		owner.runtime = &candidate
+		owner.layer = layer
+		owner.settings = prepared.Config
+		owner.registry = nil
+		owner.version = 0
+		gc.Response(Completion{})
+		return
+	}
+	if owner.registry == nil {
+		owner.runtime = &candidate
+		gc.Response(Completion{})
 		return
 	}
 	retained := gc.DeferResponse()
@@ -56,10 +89,28 @@ func (owner *RuntimeGrain) applyConfiguration(gc *goakt.GrainContext, input Appl
 			candidate.SetDefinitions(owner.layer.Capture())
 			owner.runtime = &candidate
 			owner.version = result.Version
+			owner.settings = result.Config.Clone()
 		}
 		owner.configuration = nil
 		retained.Response(Completion{
 			Err: failure,
 		})
 	})
+}
+
+// preparePrompt uses the same owner validation and built-in definitions as the
+// process baseline, without registering another shared owner or retaining it.
+func preparePrompt(settings systemprompt.Config) (Prepared, error) {
+	validated, err := systemprompt.ValidateConfig(settings)
+	if err != nil {
+		return Prepared{}, err
+	}
+	layer, err := systemprompt.NewLayer(validated)
+	if err != nil {
+		return Prepared{}, err
+	}
+	return Prepared{
+		Config:   layer.Configuration(),
+		Snapshot: layer.Capture(),
+	}, nil
 }

@@ -64,6 +64,7 @@ func newInstallation(
 	prompt := &promptClient{
 		tools: tools,
 		input: promptactor.InitializeRuntime{
+			Config:         input.Prompt,
 			AgentID:        input.Creation.AgentID,
 			PromptRegistry: input.PromptRegistry,
 			CreationID:     input.Creation.CreationID,

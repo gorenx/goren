@@ -43,7 +43,7 @@ func (endpoint *Catalog) Read(ctx context.Context, identifier session.SessionID)
 	return reply.Value, nil
 }
 
-// ConfigureSession records explicitly supplied custom values before initialization.
+// ConfigureSession records an explicitly supplied Session catalog before initialization.
 func (endpoint *Catalog) ConfigureSession(ctx context.Context, identifier session.SessionID, input toolregistry.Catalog) error {
 	payload, err := endpoint.system.AskGrain(ctx, endpoint.target, catalogactor.ConfigureSession{
 		SessionID: identifier,

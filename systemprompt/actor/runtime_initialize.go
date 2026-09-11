@@ -3,6 +3,7 @@ package promptactor
 import (
 	"context"
 	"errors"
+	"slices"
 
 	"github.com/gorenx/goren/systemprompt"
 	toolactor "github.com/gorenx/goren/tools/runtime/actor"
@@ -27,7 +28,7 @@ func (owner *RuntimeGrain) initializeRuntime(gc *goakt.GrainContext, input Initi
 		owner.initialization != nil ||
 		owner.closed ||
 		input.AgentID == "" ||
-		input.PromptRegistry == nil ||
+		(input.PromptRegistry == nil && input.Config == nil) ||
 		input.ToolsRuntime == nil {
 		gc.Response(RuntimeInitialized{
 			Err: errors.New("systemprompt: uninitialized Runtime and registry routes are required"),
@@ -46,6 +47,11 @@ func (owner *RuntimeGrain) initializeRuntime(gc *goakt.GrainContext, input Initi
 			Err: ErrAsyncRequest,
 		})
 		return
+	}
+	input.Sections = slices.Clone(input.Sections)
+	if input.Config != nil {
+		captured := input.Config.Clone()
+		input.Config = &captured
 	}
 	ctx, cancel := context.WithCancel(gc.Context())
 	operation := &runtimeInitialization{
@@ -67,6 +73,15 @@ func (owner *RuntimeGrain) initializeRuntime(gc *goakt.GrainContext, input Initi
 		}
 	}); err != nil {
 		owner.finishInitialization(operation, err)
+		return
+	}
+	if input.Config != nil {
+		prepared, failure := preparePrompt(*input.Config)
+		completed <- promptPrepared{
+			operation: operation,
+			result:    prepared,
+			err:       failure,
+		}
 		return
 	}
 	gc.RequestGrain(
@@ -139,6 +154,11 @@ func (owner *RuntimeGrain) initializeTools(gc *goakt.GrainContext, input promptP
 				owner.runtime = candidate
 				owner.layer = layer
 				owner.registry = operation.input.PromptRegistry
+				if operation.input.Config != nil {
+					owner.registry = nil
+				}
+				owner.settings = input.result.Config.Clone()
+				owner.sections = operation.input.Sections
 				owner.version = input.result.Version
 			}
 			owner.finishInitialization(operation, failure)

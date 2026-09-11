@@ -20,6 +20,8 @@ var ErrAsyncRequest = errors.New("systemprompt: asynchronous request required")
 type RuntimeGrain struct {
 	runtime        *systemprompt.Runtime
 	layer          *systemprompt.PromptLayer
+	settings       systemprompt.Config
+	sections       []systemprompt.PromptSection
 	registry       *goakt.GrainIdentity
 	version        uint64
 	configuration  *goakt.GrainReply
@@ -71,6 +73,8 @@ func (owner *RuntimeGrain) OnDeactivate(context.Context, *goakt.GrainProps) erro
 	}
 	owner.runtime = nil
 	owner.layer = nil
+	owner.settings = systemprompt.Config{}
+	owner.sections = nil
 	owner.registry = nil
 	owner.version = 0
 	return nil
@@ -88,7 +92,9 @@ func (owner *RuntimeGrain) OnReceive(gc *goakt.GrainContext) {
 			})
 			return
 		}
-		gc.Response(RuntimeView{})
+		gc.Response(RuntimeView{
+			Config: owner.settings.Clone(),
+		})
 	case InitializeRuntime:
 		owner.initializeRuntime(gc, incoming)
 	case promptPrepared:
@@ -123,6 +129,8 @@ func (owner *RuntimeGrain) OnReceive(gc *goakt.GrainContext) {
 			if owner.closing != nil {
 				owner.runtime = nil
 				owner.layer = nil
+				owner.settings = systemprompt.Config{}
+				owner.sections = nil
 				owner.registry = nil
 				owner.version = 0
 				owner.closed = true
@@ -156,6 +164,8 @@ func (owner *RuntimeGrain) OnReceive(gc *goakt.GrainContext) {
 		}
 		owner.runtime = nil
 		owner.layer = nil
+		owner.settings = systemprompt.Config{}
+		owner.sections = nil
 		owner.registry = nil
 		owner.version = 0
 		owner.closed = true

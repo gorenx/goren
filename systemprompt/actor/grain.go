@@ -63,6 +63,7 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 		}
 		gc.Response(Prepared{
 			Version:  owner.version,
+			Config:   owner.layer.Configuration(),
 			Snapshot: owner.layer.Capture(),
 		})
 	case Register:

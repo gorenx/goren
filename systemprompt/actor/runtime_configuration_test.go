@@ -114,8 +114,12 @@ func TestRuntimeConfigurationRefreshesBaselineOnlyAtTurnBoundary(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	payload, err := request(targets[0], promptactor.ReadRuntime{})
+	if err != nil || payload.(promptactor.RuntimeView).Config.Persona != "old global persona" {
+		t.Fatalf("query exposed unadopted shared config: %#v %v", payload, err)
+	}
 	// A tool notification must not switch the shared prompt baseline mid-Turn.
-	payload, err := running.AskGrain(ctx, targets[0], promptactor.ApplyTools{
+	payload, err = running.AskGrain(ctx, targets[0], promptactor.ApplyTools{
 		AgentID: "global-agent",
 	}, time.Second)
 	if err != nil || payload.(promptactor.Completion).Err != nil {

@@ -35,6 +35,8 @@ type CreateAgent struct {
 	ToolsRegistry   *goakt.GrainIdentity
 	// Tools overrides the registered defaults for this Agent lifetime.
 	Tools *toolregistry.Catalog
+	// Prompt selects an independent prompt baseline; nil uses the shared registry.
+	Prompt *systemprompt.Config
 	// PromptSections are local definitions captured for this Agent lifetime.
 	PromptSections []systemprompt.PromptSection
 	// Commands enables the independent command runtime when its global Registry is supplied.
@@ -69,6 +71,7 @@ type CreateChildAgent struct {
 	Restore        bool
 	Options        session.CreateOptions
 	AgentOptions   *agent.Options
+	Prompt         *systemprompt.Config
 	Tools          *toolregistry.Catalog
 	PromptSections []systemprompt.PromptSection
 }
@@ -136,6 +139,10 @@ func (input CreateAgent) clone() CreateAgent {
 		captured := input.AgentOptions.Clone()
 		input.AgentOptions = &captured
 	}
+	if input.Prompt != nil {
+		captured := input.Prompt.Clone()
+		input.Prompt = &captured
+	}
 	input.Handlers = input.Handlers.Clone()
 	input.PromptSections = slices.Clone(input.PromptSections)
 	if input.Tools != nil {
@@ -162,6 +169,7 @@ func (original CreateAgent) matches(input CreateAgent) bool {
 		original.Timeout != input.Timeout ||
 		!reflect.DeepEqual(original.Tools, input.Tools) ||
 		!reflect.DeepEqual(original.PromptSections, input.PromptSections) ||
+		!reflect.DeepEqual(original.Prompt, input.Prompt) ||
 		!sameRoute(original.SessionRegistry, input.SessionRegistry) ||
 		!sameRoute(original.ModelConfig, input.ModelConfig) ||
 		original.ModelRouter != input.ModelRouter ||

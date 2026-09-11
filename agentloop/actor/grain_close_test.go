@@ -67,10 +67,16 @@ func TestRegistryClosesDescendantsBeforeParentAndRetriesPendingChild(t *testing.
 			AgentID:    identifier,
 			CreationID: "original",
 		}
+		options := session.CreateOptions{}
+		if parent != nil {
+			identifier := parent.AgentID
+			options.Metadata.ParentSession = &identifier
+		}
 		created := request[sessionactor.Initialized](t, directoryDriver, directoryReplies, sessionregistry.CreateSession{
 			SessionID:  identifier,
 			CreationID: creation.CreationID,
 			Storage:    backend,
+			Options:    options,
 		})
 		if created.Err != nil {
 			t.Fatal(created.Err)
@@ -81,8 +87,9 @@ func TestRegistryClosesDescendantsBeforeParentAndRetriesPendingChild(t *testing.
 		}
 		drivers[identifier], replies[identifier] = grainDriver(t, system, execution)
 		if result := request[agentregistry.Ready](t, authorityDriver, authorityReplies, agentregistry.CreateAgent{
-			ModelRouter: routes.router,
-			Middleware:  routes.middleware, Creation: creation,
+			ModelRouter:     routes.router,
+			Middleware:      routes.middleware,
+			Creation:        creation,
 			Parent:          parent,
 			Storage:         backend,
 			SessionRegistry: directory,

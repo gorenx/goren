@@ -148,8 +148,24 @@ func (subject *ReactLoopAgent) Apply(entries []session.Event) (agent.InboxChange
 // PrepareClose freezes admission and preserves input whose execution has not
 // started. A proposed Turn still owns an uncertain start commit and must settle.
 func (subject *ReactLoopAgent) PrepareClose(executing bool) error {
+	return subject.prepareClose(executing, false)
+}
+
+// Drain freezes input admission without cancelling active work. Unstarted input
+// remains durable for restoration; completion still requires the current Flush.
+func (subject *ReactLoopAgent) Drain(executing bool) error {
+	if !subject.lifetime.ready() {
+		return ErrState
+	}
+	return subject.prepareClose(executing, true)
+}
+
+func (subject *ReactLoopAgent) prepareClose(executing bool, finishCurrent bool) error {
 	subject.lifetime.beginClose()
-	if subject.state != executionIdle {
+	if finishCurrent {
+		subject.preserveInbox = true
+		subject.runAfterCompletion = false
+	} else if subject.state != executionIdle {
 		subject.cancelExecution(agent.DisposedCancel{}, true)
 		subject.preserveInbox = true
 		subject.runAfterCompletion = false

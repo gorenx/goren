@@ -88,9 +88,7 @@ func (input Config) Validate() error {
 // Clone detaches all mutable configuration, preserving omission semantics.
 func (input Config) Clone() Config {
 	input.Model = input.Model.Clone()
-	input.Prompt.IncludeHarnessIdentity = copyBool(input.Prompt.IncludeHarnessIdentity)
-	input.Prompt.IncludeRuntimeContext = copyBool(input.Prompt.IncludeRuntimeContext)
-	input.Prompt.ToolOrder = slices.Clone(input.Prompt.ToolOrder)
+	input.Prompt = input.Prompt.Clone()
 	input.Tools = maps.Clone(input.Tools)
 	for name, flags := range input.Tools {
 		input.Tools[name] = flags.Clone()
@@ -100,12 +98,4 @@ func (input Config) Clone() Config {
 		input.MCP[index].Args = slices.Clone(input.MCP[index].Args)
 	}
 	return input
-}
-
-func copyBool(source *bool) *bool {
-	if source == nil {
-		return nil
-	}
-	value := *source
-	return &value
 }

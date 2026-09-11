@@ -200,3 +200,16 @@ func (owner *PromptLayer) Close(context.Context) error {
 	owner.close()
 	return nil
 }
+
+// Configuration returns the root layer's adopted configuration as detached values.
+// Derived layers contain definitions rather than a separate configurable baseline.
+func (owner *PromptLayer) Configuration() Config {
+	identity := owner.settings.includeHarnessIdentity
+	runtimeContext := owner.settings.includeRuntimeContext
+	return Config{
+		IncludeHarnessIdentity: &identity,
+		IncludeRuntimeContext:  &runtimeContext,
+		Persona:                owner.settings.persona,
+		ToolOrder:              slices.Clone(owner.settings.toolOrder),
+	}
+}

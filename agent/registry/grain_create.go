@@ -61,6 +61,11 @@ func (owner *Grain) createChildAgent(gc *goakt.GrainContext, input CreateChildAg
 		catalog := input.Tools.Clone()
 		derived.Tools = &catalog
 	}
+	derived.Prompt = nil
+	if input.Prompt != nil {
+		captured := input.Prompt.Clone()
+		derived.Prompt = &captured
+	}
 	derived.PromptSections = slices.Clone(input.PromptSections)
 	owner.createAgent(gc, derived)
 }
