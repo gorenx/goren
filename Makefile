@@ -2,18 +2,22 @@ DATA_DIR ?= $(CURDIR)
 LISTEN ?= 127.0.0.1:3080
 VERSION ?= dev
 GO ?= go
-GOREN_TMPDIR ?= $(if $(TMPDIR),$(TMPDIR),/tmp)
-GOREN_GO_CACHE ?= $(GOREN_TMPDIR)/goren-go-build-cache
+GOREN_BIN ?= $(CURDIR)/.cache/goren
+WEB_BUILD_INPUTS := $(shell find web/src -type f) web/index.html web/package.json web/pnpm-lock.yaml web/tsconfig.json web/vite.config.ts
 
-export GOCACHE := $(GOREN_GO_CACHE)
+.PHONY: web-build build run plugin-fmt plugin-build plugin-test plugin-test-race plugin-vet architecture-test diff-check plugin-check
 
-.PHONY: web-build run plugin-fmt plugin-build plugin-test plugin-test-race plugin-vet architecture-test diff-check plugin-check
+web-build: web/dist/index.html
 
-web-build:
+web/dist/index.html: $(WEB_BUILD_INPUTS)
 	pnpm -C web run build
 
-run: web-build
-	$(GO) run ./cmd/goren --listen "$(LISTEN)" --version "$(VERSION)" --data-dir "$(abspath $(DATA_DIR))"
+build: web-build
+	mkdir -p "$(dir $(GOREN_BIN))"
+	$(GO) build -o "$(GOREN_BIN)" ./cmd/goren
+
+run: build
+	"$(GOREN_BIN)" --listen "$(LISTEN)" --version "$(VERSION)" --data-dir "$(abspath $(DATA_DIR))"
 
 plugin-fmt:
 	gofmt -w plugin
