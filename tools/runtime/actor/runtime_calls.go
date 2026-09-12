@@ -105,8 +105,8 @@ func (owner *Runtime) findCall(creationID string, identifier agentmessage.CallID
 func (owner *Runtime) prepareCall(gc *goakt.GrainContext, input PrepareCall) {
 	if owner.creationID == "" ||
 		owner.creationID != input.CreationID ||
-		owner.toolRuntime == nil ||
-		owner.active != nil ||
+		owner.collection == nil ||
+		owner.request != nil ||
 		owner.policyRequest != nil ||
 		input.Input.SessionID != owner.agentID ||
 		input.Input.CallID == "" ||
@@ -116,7 +116,7 @@ func (owner *Runtime) prepareCall(gc *goakt.GrainContext, input PrepareCall) {
 		})
 		return
 	}
-	snapshot, err := owner.toolRuntime.Snapshot()
+	snapshot, err := owner.collection.Snapshot()
 	if err != nil {
 		gc.Response(CallResult{
 			Err: err,
@@ -145,7 +145,7 @@ func (owner *Runtime) prepareCall(gc *goakt.GrainContext, input PrepareCall) {
 	owner.calls[input.Input.CallID] = current
 	owner.policyRequest = current
 	input.Input.Arguments = append([]byte(nil), input.Input.Arguments...)
-	instances := owner.instances
+	instances := owner.newToolClient(gc)
 	policies := snapshot.Policies[input.Input.Name]
 	err = gc.PipeToSelf(func() (payload any, failure error) {
 		defer recoverCall(current, &payload)

@@ -14,7 +14,7 @@ import (
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
-// These messages belong to the Runtime's Instances adapter, not Agent Registry.
+// These messages belong to the Runtime's ToolActor client, not Agent Registry.
 type createTool struct {
 	CreationID string
 	Name       string
@@ -81,7 +81,7 @@ func (owner *Runtime) receiveTools(gc *goakt.GrainContext) bool {
 			gc.Response(toolInstance{Err: errors.New("tools: wrong Runtime creation")})
 			return true
 		}
-		instance := owner.tools[input.Name]
+		instance := owner.actors[input.Name]
 		if instance == nil {
 			gc.Response(toolInstance{})
 			return true
@@ -92,11 +92,11 @@ func (owner *Runtime) receiveTools(gc *goakt.GrainContext) bool {
 			Ready:      instance.phase == toolInitialized,
 		})
 	case removeTool:
-		if input.CreationID != owner.creationID || owner.active == nil {
+		if input.CreationID != owner.creationID || owner.request == nil {
 			gc.Response(Completion{Err: errors.New("tools: removal requires the current Runtime operation")})
 			return true
 		}
-		instance := owner.tools[input.Name]
+		instance := owner.actors[input.Name]
 		if instance == nil {
 			gc.Response(Completion{})
 			return true
@@ -106,7 +106,7 @@ func (owner *Runtime) receiveTools(gc *goakt.GrainContext) bool {
 		gc.Response(toolactor.Completion{Err: owner.claimTool(input)})
 	case toolLifecycleResult:
 		gc.NoErr()
-		if owner.tools[input.name] != input.instance || input.instance.active != input.request {
+		if owner.actors[input.name] != input.instance || input.instance.active != input.request {
 			return true
 		}
 		input.request.cancel()
@@ -115,7 +115,7 @@ func (owner *Runtime) receiveTools(gc *goakt.GrainContext) bool {
 		input.instance.phase = input.phase
 		if input.request.remove {
 			if input.err == nil {
-				delete(owner.tools, input.name)
+				delete(owner.actors, input.name)
 			}
 			input.request.reply.Response(Completion{Err: input.err})
 		} else {
@@ -134,7 +134,7 @@ func (owner *Runtime) receiveTools(gc *goakt.GrainContext) bool {
 
 func (owner *Runtime) createTool(gc *goakt.GrainContext, input createTool) {
 	if input.CreationID != owner.creationID ||
-		owner.active == nil ||
+		owner.request == nil ||
 		input.Name == "" ||
 		strings.TrimSpace(input.Name) != input.Name ||
 		input.Name == tools.RunCodeName ||
@@ -142,13 +142,13 @@ func (owner *Runtime) createTool(gc *goakt.GrainContext, input createTool) {
 		gc.Response(toolInstance{Err: errors.New("tools: valid tool name and current Runtime operation are required")})
 		return
 	}
-	instance := owner.tools[input.Name]
+	instance := owner.actors[input.Name]
 	if instance == nil {
 		instance = &toolLifecycle{creationID: uuid.NewString()}
-		if owner.tools == nil {
-			owner.tools = make(map[string]*toolLifecycle)
+		if owner.actors == nil {
+			owner.actors = make(map[string]*toolLifecycle)
 		}
-		owner.tools[input.Name] = instance
+		owner.actors[input.Name] = instance
 	}
 	if instance.phase >= toolClosing {
 		gc.Response(toolInstance{Err: errors.New("tools: tool lifetime is closing")})
@@ -166,7 +166,7 @@ func (owner *Runtime) createTool(gc *goakt.GrainContext, input createTool) {
 }
 
 func (owner *Runtime) claimTool(input toolactor.Claim) error {
-	instance := owner.tools[input.Name]
+	instance := owner.actors[input.Name]
 	if input.AgentCreationID != owner.creationID ||
 		input.AgentID != owner.agentID ||
 		instance == nil ||
@@ -220,8 +220,8 @@ func (owner *Runtime) scheduleTool(gc *goakt.GrainContext, name string, instance
 	agentID := owner.agentID
 	authority := gc.Self()
 	system := gc.ActorSystem()
-	directory := owner.catalog.target
-	timeout := owner.instances.timeout
+	directory := owner.registry
+	timeout := owner.replyTimeout
 	var providers tool.ProviderSource
 	if owner.connections != nil {
 		providers = owner.connections
@@ -345,5 +345,16 @@ func (owner *Runtime) scheduleTool(gc *goakt.GrainContext, name string, instance
 			}
 			confirmed <- failure
 		})
+	}
+}
+
+func (owner *Runtime) newToolClient(gc *goakt.GrainContext) *toolClient {
+	return &toolClient{
+		system:     gc.ActorSystem(),
+		runtime:    gc.Self(),
+		directory:  owner.registry,
+		agentID:    owner.agentID,
+		creationID: owner.creationID,
+		timeout:    owner.replyTimeout,
 	}
 }

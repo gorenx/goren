@@ -13,9 +13,9 @@ import (
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
-// Instances binds one Agent's update task to its lifecycle and tool owners.
-// Only the serial update task may access it; never call it from Actor Receive.
-type Instances struct {
+// toolClient sends lifecycle and execution requests for one Agent. It owns no
+// tool records and is captured only by the task performing those requests.
+type toolClient struct {
 	system     goakt.ActorSystem
 	runtime    *goakt.GrainIdentity
 	directory  *goakt.GrainIdentity
@@ -24,37 +24,10 @@ type Instances struct {
 	timeout    time.Duration
 }
 
-var _ toolruntime.Instances = (*Instances)(nil)
-
-// NewInstances binds existing owners without starting Actors or opening tools.
-func NewInstances(
-	system goakt.ActorSystem,
-	runtime *goakt.GrainIdentity,
-	directory *goakt.GrainIdentity,
-	agentID session.SessionID,
-	creationID string,
-	timeout time.Duration,
-) (*Instances, error) {
-	if system == nil ||
-		runtime == nil ||
-		directory == nil ||
-		agentID == "" ||
-		creationID == "" ||
-		timeout <= 0 {
-		return nil, errors.New("tools: instance owners, Agent creation and positive timeout are required")
-	}
-	return &Instances{
-		system:     system,
-		runtime:    runtime,
-		directory:  directory,
-		agentID:    agentID,
-		creationID: creationID,
-		timeout:    timeout,
-	}, nil
-}
+var _ toolruntime.Instances = (*toolClient)(nil)
 
 // Prepare confirms a tool lifetime, then asks its ToolActor to prepare work for the effective schema.
-func (endpoint *Instances) Prepare(ctx context.Context, revision tool.Revision, entry toolruntime.Tool) error {
+func (endpoint *toolClient) Prepare(ctx context.Context, revision tool.Revision, entry toolruntime.Tool) error {
 	instance, err := endpoint.confirmCreation(ctx, entry.Schema.Name)
 	if err != nil {
 		return err
@@ -69,7 +42,7 @@ func (endpoint *Instances) Prepare(ctx context.Context, revision tool.Revision, 
 }
 
 // Commit switches the prepared work after Update has prepared every requested tool.
-func (endpoint *Instances) Commit(ctx context.Context, revision tool.Revision, name string) error {
+func (endpoint *toolClient) Commit(ctx context.Context, revision tool.Revision, name string) error {
 	instance, err := endpoint.confirmCreation(ctx, name)
 	if err != nil {
 		return err
@@ -81,7 +54,7 @@ func (endpoint *Instances) Commit(ctx context.Context, revision tool.Revision, n
 }
 
 // Retire releases the implementation replaced by the committed revision.
-func (endpoint *Instances) Retire(ctx context.Context, revision tool.Revision, name string) error {
+func (endpoint *toolClient) Retire(ctx context.Context, revision tool.Revision, name string) error {
 	instance, err := endpoint.confirmCreation(ctx, name)
 	if err != nil {
 		return err
@@ -94,7 +67,7 @@ func (endpoint *Instances) Retire(ctx context.Context, revision tool.Revision, n
 }
 
 // Abort cleans an attempted candidate only after initialization admitted Provision.
-func (endpoint *Instances) Abort(ctx context.Context, revision tool.Revision, name string) error {
+func (endpoint *toolClient) Abort(ctx context.Context, revision tool.Revision, name string) error {
 	payload, err := endpoint.request(ctx, endpoint.runtime, findTool{
 		CreationID: endpoint.creationID,
 		Name:       name,
@@ -120,7 +93,7 @@ func (endpoint *Instances) Abort(ctx context.Context, revision tool.Revision, na
 }
 
 // Remove retains the exact lifetime on failure, including an uncertain reply.
-func (endpoint *Instances) Remove(ctx context.Context, name string) error {
+func (endpoint *toolClient) Remove(ctx context.Context, name string) error {
 	payload, err := endpoint.request(ctx, endpoint.runtime, removeTool{
 		CreationID: endpoint.creationID,
 		Name:       name,
@@ -135,7 +108,7 @@ func (endpoint *Instances) Remove(ctx context.Context, name string) error {
 	return result.Err
 }
 
-func (endpoint *Instances) confirmCreation(ctx context.Context, name string) (toolInstance, error) {
+func (endpoint *toolClient) confirmCreation(ctx context.Context, name string) (toolInstance, error) {
 	payload, err := endpoint.request(ctx, endpoint.runtime, createTool{
 		CreationID: endpoint.creationID,
 		Name:       name,
@@ -150,7 +123,7 @@ func (endpoint *Instances) confirmCreation(ctx context.Context, name string) (to
 	return result, result.Err
 }
 
-func (endpoint *Instances) complete(ctx context.Context, target *goakt.GrainIdentity, message any) error {
+func (endpoint *toolClient) complete(ctx context.Context, target *goakt.GrainIdentity, message any) error {
 	payload, err := endpoint.request(ctx, target, message)
 	if err != nil {
 		return err
@@ -162,7 +135,7 @@ func (endpoint *Instances) complete(ctx context.Context, target *goakt.GrainIden
 	return reply.Err
 }
 
-func (endpoint *Instances) request(ctx context.Context, target *goakt.GrainIdentity, message any) (any, error) {
+func (endpoint *toolClient) request(ctx context.Context, target *goakt.GrainIdentity, message any) (any, error) {
 	if ctx == nil {
 		return nil, errors.New("tools: instance request context is required")
 	}

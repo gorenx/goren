@@ -44,7 +44,7 @@ func (owner *Runtime) receiveConnections(gc *goakt.GrainContext) bool {
 			})
 			return true
 		}
-		if owner.active != nil || owner.retries[input.Name] != nil {
+		if owner.request != nil || owner.retries[input.Name] != nil {
 			gc.Response(Completion{
 				Err: errors.New("tools: connection lifecycle operation is already running"),
 			})

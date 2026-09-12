@@ -20,8 +20,8 @@ func (owner *Runtime) receiveConfiguration(gc *goakt.GrainContext) bool {
 	case RefreshConfiguration:
 		if input.ID == "" ||
 			input.CreationID != owner.creationID ||
-			owner.toolRuntime == nil ||
-			owner.active != nil ||
+			owner.collection == nil ||
+			owner.request != nil ||
 			len(owner.calls) != 0 {
 			gc.Response(Definitions{Err: errors.New("tools: configuration requires an idle runtime and current creation")})
 			return true
@@ -30,7 +30,7 @@ func (owner *Runtime) receiveConfiguration(gc *goakt.GrainContext) bool {
 			owner.changed = true
 		}
 		if !owner.changed || len(owner.retries) != 0 {
-			definitions, err := owner.toolRuntime.Definitions()
+			definitions, err := owner.collection.Definitions()
 			gc.Response(Definitions{
 				Value: definitions,
 				Err:   err,
@@ -46,11 +46,15 @@ func (owner *Runtime) receiveConfiguration(gc *goakt.GrainContext) bool {
 			reply:     reply,
 			refreshID: input.ID,
 		}
-		owner.active = current
+		owner.request = current
 		owner.changed = false
-		business := owner.toolRuntime
-		directory := owner.catalog
-		instances := owner.instances
+		business := owner.collection
+		directory := &Catalog{
+			system:  gc.ActorSystem(),
+			target:  owner.registry,
+			timeout: owner.replyTimeout,
+		}
+		instances := owner.newToolClient(gc)
 		peers := owner.connections
 		agentID := owner.agentID
 		owner.schedule(gc, current, func(ctx context.Context) error {
@@ -80,10 +84,10 @@ func (owner *Runtime) receiveConfiguration(gc *goakt.GrainContext) bool {
 		})
 	case CancelConfiguration:
 		if input.CreationID == owner.creationID &&
-			owner.active != nil &&
-			owner.active.refreshID == input.ID &&
-			owner.active.cancel != nil {
-			owner.active.cancel()
+			owner.request != nil &&
+			owner.request.refreshID == input.ID &&
+			owner.request.cancel != nil {
+			owner.request.cancel()
 		}
 		gc.Response(Completion{})
 	default:
@@ -93,17 +97,17 @@ func (owner *Runtime) receiveConfiguration(gc *goakt.GrainContext) bool {
 }
 
 func (owner *Runtime) finishRefresh(gc *goakt.GrainContext, current *operation, failure error) {
-	if owner.active != current {
+	if owner.request != current {
 		return
 	}
 	current.cancel()
-	owner.active = nil
+	owner.request = nil
 	if failure != nil {
 		owner.changed = true
 		current.reply.Response(Definitions{Err: failure})
 		return
 	}
-	definitions, err := owner.toolRuntime.Definitions()
+	definitions, err := owner.collection.Definitions()
 	if err == nil {
 		topic := gc.ActorSystem().TopicActor()
 		if topic == nil {

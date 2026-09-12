@@ -17,7 +17,7 @@ import (
 
 // Scheduler captures only confirmed tool lifetimes and their settled descriptors.
 // The caller drains every execution before changing or closing those lifetimes.
-func (endpoint *Instances) Scheduler(
+func (endpoint *toolClient) Scheduler(
 	ctx context.Context,
 	snapshot toolruntime.Snapshot,
 	policies execution.Policies,
