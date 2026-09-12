@@ -45,7 +45,9 @@ export function SettingsDialog({ onClose, onCredentialChanged, initial }: { onCl
       if (controller.signal.aborted) return
       const result = decodeSettingsCatalog(raw)
       setCatalog(result)
-      select(result.namespaces.find(group => group.ns === initial?.ns && (initial.name === undefined || group.name === initial.name)) ?? result.namespaces[0])
+      const chosen = result.namespaces.find(group => group.ns === initial?.ns && (initial.name === undefined || group.name === initial.name))
+      select(chosen ?? (initial?.name === undefined ? result.namespaces[0] : undefined))
+      if (initial?.name !== undefined && chosen === undefined) setFailure('load')
     }).catch(() => { if (!controller.signal.aborted) setFailure('load') })
     return () => {
       controller.abort()
@@ -141,6 +143,7 @@ export function SettingsDialog({ onClose, onCredentialChanged, initial }: { onCl
           {selected !== undefined && <>
             <h3>{translate(settingsLabels[selected.ns])} / {creating ? translate('settings.newGroup') : selected.name}</h3>
             {!creating && <p className="settings-help">{translate(selected.user == null ? 'settings.inherited' : 'settings.overridden')}</p>}
+            {saved && !selected.pendingRestart && <p className="settings-status" role="status">{translate(selected.applies === 'new_instance' ? 'companion.policySaved' : 'settings.saved')}</p>}
             {selected.pendingRestart && <p className="settings-status" role="status">{translate('settings.pendingRestart')}</p>}
             <form onSubmit={event => { event.preventDefault(); void write('update') }}>
               <fieldset disabled={busy || !catalog?.writable}>

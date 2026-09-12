@@ -174,11 +174,6 @@ func TestRegistryChoosesOnlyRemainingResourceResponsibilities(t *testing.T) {
 	expected := []agent.Resource{
 		{Kind: agent.Work},
 		{
-			Kind: agent.Child,
-			Name: string(child),
-		},
-		{Kind: agent.CommandRuntime},
-		{
 			Kind:  agent.Capability,
 			Index: 1,
 		},
@@ -186,11 +181,16 @@ func TestRegistryChoosesOnlyRemainingResourceResponsibilities(t *testing.T) {
 			Kind:  agent.Capability,
 			Index: 0,
 		},
+		{
+			Kind: agent.Child,
+			Name: string(child),
+		},
+		{Kind: agent.CommandRuntime},
 		{Kind: agent.Execution},
 		{Kind: agent.ToolsRuntime},
 		{Kind: agent.PromptRuntime},
 		{Kind: agent.Conversation},
-		{Kind: agent.Activation},
+		{Kind: agent.AgentLoop},
 	}
 	for index := len(expected) - 1; index >= 0; index-- {
 		owned := expected[index]

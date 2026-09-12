@@ -23,6 +23,7 @@ type Manager struct {
 	registry *goakt.GrainIdentity
 	settings settings.Settings
 	resolver Resolver
+	observer *companionactor.Reader
 }
 
 // NewManager binds the existing owners without creating a parent or child.
@@ -35,11 +36,16 @@ func NewManager(
 	if system == nil || registry == nil || configuration == nil || resolver == nil {
 		return nil, companions.ErrInvalid
 	}
+	observer, err := companionactor.NewReader(system, registry)
+	if err != nil {
+		return nil, err
+	}
 	return &Manager{
 		system:   system,
 		registry: registry,
 		settings: configuration,
 		resolver: resolver,
+		observer: observer,
 	}, nil
 }
 
@@ -66,7 +72,20 @@ func (source *Manager) List(ctx context.Context, input companionapi.ListRequest)
 		return companionapi.Listing{}, err
 	}
 	for _, view := range views {
-		result.Items = append(result.Items, project(view))
+		item := project(view)
+		if view.Phase == companionactor.Ready {
+			activity, failure := source.observer.Activity(ctx, sender.Creation(), view.Creation)
+			if ctx.Err() != nil {
+				return companionapi.Listing{}, ctx.Err()
+			}
+			if failure != nil {
+				item.Activity = "unavailable"
+				item.Failure = true
+			} else {
+				item.Activity = string(activity)
+			}
+		}
+		result.Items = append(result.Items, item)
 	}
 	return result, nil
 }

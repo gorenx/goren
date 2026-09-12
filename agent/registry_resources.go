@@ -12,7 +12,7 @@ type ResourceKind uint8
 const (
 	// Work requires confirmation that accepted execution has ended.
 	Work ResourceKind = iota
-	// Child requires the registered descendant to close before parent resources.
+	// Child closes descendants still registered after their managing capabilities stop.
 	Child
 	// CommandRuntime owns the Agent's command registrations and endpoint.
 	CommandRuntime
@@ -26,8 +26,8 @@ const (
 	PromptRuntime
 	// Conversation owns Session registration, flush and shutdown responsibility.
 	Conversation
-	// Activation retains the execution endpoint until all dependencies have closed.
-	Activation
+	// AgentLoop retains the AgentLoop Grain until all dependencies have closed.
+	AgentLoop
 )
 
 // Resource identifies a cleanup responsibility without a runtime address.
@@ -46,7 +46,7 @@ func (directory *Registry) TrackResource(identifier session.SessionID, owned Res
 	if !found || entry.lifecycle == Closed {
 		return errors.New("agent: resource owner is not registered")
 	}
-	if owned.Kind > Activation || owned.Kind == Child || owned.Index < 0 ||
+	if owned.Kind > AgentLoop || owned.Kind == Child || owned.Index < 0 ||
 		(owned.Kind != Capability && owned.Index != 0) ||
 		owned.Name != "" {
 		return errors.New("agent: invalid resource responsibility")
@@ -129,15 +129,17 @@ func releaseBefore(left, right Resource) bool {
 	return left.Name < right.Name
 }
 
+// Work settles before capability shutdown. Capabilities close the children they
+// manage; Registry then releases remaining children before parent infrastructure.
 // Priorities declare release dependencies independently of enum values.
 var releasePriority = map[ResourceKind]int{
 	Work:           0,
-	Child:          1,
-	CommandRuntime: 2,
-	Capability:     3,
+	Capability:     1,
+	Child:          2,
+	CommandRuntime: 3,
 	Execution:      4,
 	ToolsRuntime:   5,
 	PromptRuntime:  7,
 	Conversation:   8,
-	Activation:     9,
+	AgentLoop:      9,
 }

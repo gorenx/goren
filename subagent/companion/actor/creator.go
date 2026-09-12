@@ -44,10 +44,11 @@ type Creator struct {
 func (owner *Creator) Start(
 	ctx context.Context,
 	parent, child agentregistry.Creation,
-	configuration string,
+	configName string,
+	cwd *string,
 ) (agentregistry.Ready, error) {
 	if owner == nil || ctx == nil || owner.System == nil || owner.Registry == nil ||
-		owner.Tools == nil || owner.Settings == nil || owner.Storage == nil || configuration == "" {
+		owner.Tools == nil || owner.Settings == nil || owner.Storage == nil || configName == "" {
 		return agentregistry.Ready{}, companions.ErrInvalid
 	}
 	if err := ctx.Err(); err != nil {
@@ -66,7 +67,7 @@ func (owner *Creator) Start(
 	if err != nil {
 		return agentregistry.Ready{}, err
 	}
-	initial, found := view.Target.Agents[configuration]
+	initial, found := view.Target.Agents[configName]
 	if !found {
 		return agentregistry.Ready{}, fmt.Errorf("%w: named Agent configuration is absent", companions.ErrInvalid)
 	}
@@ -92,7 +93,7 @@ func (owner *Creator) Start(
 	}
 	input := agentregistry.CreateChildAgent{
 		Manager:           manager,
-		ConfigurationName: configuration,
+		ConfigurationName: configName,
 		Role:              agent.CompanionRole,
 		Parent:            parent,
 		Child:             child,
@@ -105,6 +106,9 @@ func (owner *Creator) Start(
 	}
 	if !input.Restore {
 		input.Options.Metadata.Origin = session.OriginSubagent
+		if cwd != nil {
+			input.Options.Metadata.CWD = new(*cwd)
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return agentregistry.Ready{}, err

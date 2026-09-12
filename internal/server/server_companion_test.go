@@ -71,6 +71,9 @@ func TestServerInstallsDefaultCompanionForEachParent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if result := companionResult(t, ctx, process, "session.models", payloadForSession(t, "absent-session")); result.OK || result.Error == nil || result.Error.Code != connection.ErrorSessionNotFound {
+		t.Fatalf("missing Session model query: %+v", result)
+	}
 	children := make(map[string]string)
 	for _, parentID := range []string{"first-parent", "second-parent"} {
 		payload, err := json.Marshal(struct {
@@ -118,6 +121,36 @@ func TestServerInstallsDefaultCompanionForEachParent(t *testing.T) {
 		}
 		if rows[0].Label != "reviewer" || rows[0].ID == "" || rows[0].ID == parentID {
 			t.Fatalf("parent %s has incorrect child: %+v", parentID, rows)
+		}
+		var listed struct {
+			Items []struct {
+				CWD             string `json:"cwd"`
+				SessionID       string `json:"sessionId"`
+				ParentSessionID string `json:"parentSessionId"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(callHTTP(t, ctx, process, "session.list", json.RawMessage(`{}`)), &listed); err != nil {
+			t.Fatal(err)
+		}
+		visible := false
+		for _, entry := range listed.Items {
+			if entry.SessionID == rows[0].ID && entry.ParentSessionID == parentID && entry.CWD == root {
+				visible = true
+			}
+		}
+		if !visible {
+			t.Fatalf("Companion missing from ordinary Session list: %+v", listed)
+		}
+		for _, identifier := range []string{parentID, rows[0].ID} {
+			var models struct {
+				Current *json.RawMessage `json:"current"`
+			}
+			if err := json.Unmarshal(callHTTP(t, ctx, process, "session.models", payloadForSession(t, identifier)), &models); err != nil {
+				t.Fatal(err)
+			}
+			if models.Current == nil {
+				t.Fatalf("running Agent %s lost its model selection", identifier)
+			}
 		}
 		children[parentID] = rows[0].ID
 		child := serverReady(t, ctx, process, rows[0].ID)
@@ -173,6 +206,27 @@ func TestServerInstallsDefaultCompanionForEachParent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Opening a stored child in the Web model picker must remain read-only.
+	for _, originalChild := range children {
+		var models struct {
+			Current *json.RawMessage `json:"current"`
+		}
+		if err := json.Unmarshal(callHTTP(t, ctx, process, "session.models", payloadForSession(t, originalChild)), &models); err != nil {
+			t.Fatal(err)
+		}
+		if models.Current != nil {
+			t.Fatal("stopped child unexpectedly has a runtime model selection")
+		}
+		response, err := process.system.AskGrain(ctx, process.agents, agentregistry.FindAgent{
+			AgentID: session.SessionID(originalChild),
+		}, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.(agentregistry.Ready).Err == nil {
+			t.Fatal("reading models restored a child outside Steward")
+		}
+	}
 	for parentID, originalChild := range children {
 		payload, err := json.Marshal(struct {
 			SessionID string `json:"sessionId"`
@@ -199,6 +253,52 @@ func TestServerInstallsDefaultCompanionForEachParent(t *testing.T) {
 				t.Fatalf("parent %s did not restore child %s: rows=%+v err=%v", parentID, originalChild, rows, listErr)
 			}
 		}
+		// A restored parent has no creation metadata in its Registry request.
+		// New children must inherit the directory from its persisted Session.
+		request, err := json.Marshal(companionapi.CreateRequest{
+			ParentSessionID: session.SessionID(parentID),
+			Name:            "after-recovery",
+			Config: &companions.Config{
+				Enabled:       true,
+				Configuration: "review-config",
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var created companionapi.View
+		if err := json.Unmarshal(callHTTP(t, ctx, process, companionapi.CreateMethod, request), &created); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			var listed struct {
+				Items []struct {
+					SessionID session.SessionID `json:"sessionId"`
+					CWD       string            `json:"cwd"`
+				} `json:"items"`
+			}
+			if err := json.Unmarshal(callHTTP(t, ctx, process, "session.list", json.RawMessage(`{}`)), &listed); err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, entry := range listed.Items {
+				if entry.SessionID == created.ChildSessionID {
+					if entry.CWD != root {
+						t.Fatalf("new child after parent recovery has CWD %q, want %q", entry.CWD, root)
+					}
+					found = true
+				}
+			}
+			if found {
+				break
+			}
+			select {
+			case <-time.After(5 * time.Millisecond):
+			case <-ctx.Done():
+				t.Fatal("new child after parent recovery is absent from Session list")
+			}
+		}
+
 	}
 }
 
@@ -597,5 +697,8 @@ func TestCompanionPreparationFailureRestartsThroughHTTP(t *testing.T) {
 	}
 	if current := serverReady(t, ctx, process, "retry-parent"); current.Creation != parent.Creation {
 		t.Fatal("child preparation retry replaced parent")
+	}
+	if recovered.Activity != "idle" {
+		t.Fatalf("ready child has no observed activity: %+v", recovered)
 	}
 }

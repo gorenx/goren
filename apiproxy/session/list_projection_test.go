@@ -310,3 +310,45 @@ func TestSessionListCursorContinuesWithoutRepeatingHeaders(t *testing.T) {
 		t.Fatalf("pages = (%#v, %#v)", first, second)
 	}
 }
+
+func TestSessionListIncludesChildrenWithoutCWD(t *testing.T) {
+	for _, live := range []bool{false, true} {
+		name := "stored"
+		if live {
+			name = "live"
+		}
+		t.Run(name, func(t *testing.T) {
+			parent := session.SessionID("parent")
+			header := session.Header{
+				Version:       session.FormatVersion,
+				ID:            "child",
+				ParentSession: &parent,
+				Origin:        session.OriginSubagent,
+			}
+			source := listLiveStore{}
+			if live {
+				source.conversation = &Snapshot{
+					Header: header,
+				}
+			}
+			reader := &sessionReader{
+				sessions: source,
+				persistence: &listPersistence{
+					headers: []session.Header{header, {
+						Version: session.FormatVersion,
+						ID:      "headless-root",
+					}},
+				},
+			}
+			page, err := reader.visibleSessionSummaries(context.Background(), sesspersist.SessionPage{
+				Limit: defaultSessionListPageSize,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(page.items) != 1 || page.items[0].SessionID != "child" || string(page.items[0].ParentSessionID) != string(parent) {
+				t.Fatalf("child listing = %#v", page.items)
+			}
+		})
+	}
+}

@@ -1,5 +1,5 @@
 export interface SessionModels {
- current: { provider: string; model: string }
+ current: { provider: string; model: string } | null
  groups: Array<{ id: string; name: string; models: Array<{ id: string; name: string }> }>
 }
 import { imageTypes, type ImageInput, type ImageRef } from './images'
@@ -89,7 +89,7 @@ export class ConversationStore {
       this.#api.connect()
       await this.refreshSessions()
       if (this.#value.sessions.length === 0) await this.createSession()
-      else await this.selectSession(this.#value.sessions[0].sessionId)
+      else await this.selectSession((this.#value.sessions.find(entry => entry.parentSessionId === undefined && entry.origin !== 'subagent') ?? this.#value.sessions[0]).sessionId)
       this.#patch({ phase: 'ready' })
     } catch (error) {
       this.#fail(error, true)
@@ -109,7 +109,6 @@ export class ConversationStore {
     })
     if (listVersion !== this.#sessionListVersion) return
     const sessions = [...(result.items ?? [])]
-      .filter(item => item.origin !== 'subagent')
     // A selected older Session may be outside the first sidebar page.
     const selected = this.currentSession()
     if (selected !== undefined && !sessions.some(item => item.sessionId === selected.sessionId)) sessions.push(selected)
@@ -131,7 +130,7 @@ export class ConversationStore {
         limit: sessionListPageSize,
       })
       if (listVersion !== this.#sessionListVersion) return
-      const appended = (result.items ?? []).filter(item => item.origin !== 'subagent')
+      const appended = result.items ?? []
       this.#patch({
         sessions: appendSessions(this.#value.sessions, appended),
         nextSessionCursor: result.nextCursor,
@@ -398,8 +397,8 @@ export class ConversationStore {
     this.#patch({ localTitles, composerState: 'composer.queued' })
     try {
       if (pictures.length > 0) {
-        const catalog = await this.#api.call<{ current: { provider: string; model: string } }>('session.models', { sessionId })
-        if (catalog.current.model !== 'deepseek-v4-flash-vision-exp') {
+        const catalog = await this.#api.call<{ current: { provider: string; model: string } | null }>('session.models', { sessionId })
+        if (catalog.current?.model !== 'deepseek-v4-flash-vision-exp') {
           throw new Error(this.#translateText('composer.switchVision'))
         }
       }

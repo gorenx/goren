@@ -54,6 +54,8 @@ type recovery struct {
 }
 
 type loaded struct {
+	// cwd is the parent directory read with the relationship snapshot.
+	cwd *string
 	// entries contains relationships projected from the parent's own log, without runtime routes.
 	entries []companions.Companion
 	// defaults contains Settings policies fixed after the relationship read, including preparation failures.
@@ -72,6 +74,8 @@ type steward struct {
 	failure error
 	// parent fixes the exact lifetime to which this management capability is bound.
 	parent agentregistry.Creation
+	// cwd supplies the parent directory when creating a new child Session.
+	cwd *string
 	// registry is the borrowed Agent Registry endpoint owning identity and resource ledgers.
 	registry *goakt.GrainIdentity
 	// session is the borrowed parent Session endpoint storing relationship facts.
@@ -270,6 +274,7 @@ func (owner *steward) prepare(gc *goakt.GrainContext, input start) error {
 		if failure == nil && ready.Registration.Role == agent.CompanionRole {
 			failure = agent.ErrRole
 		}
+		var cwd *string
 		var entries []companions.Companion
 		var defaults []automatic
 		if failure == nil {
@@ -281,6 +286,9 @@ func (owner *steward) prepare(gc *goakt.GrainContext, input start) error {
 				failure = companions.ErrInvalid
 			}
 			if failure == nil {
+				if snapshot.Header.CWD != nil {
+					cwd = new(*snapshot.Header.CWD)
+				}
 				entries, failure = companions.CompanionsFromEvents(input.Parent.AgentID, snapshot.Snapshot.Events)
 			}
 		}
@@ -292,6 +300,7 @@ func (owner *steward) prepare(gc *goakt.GrainContext, input start) error {
 			}
 		}
 		return loaded{
+			cwd:       cwd,
 			entries:   entries,
 			defaults:  defaults,
 			err:       failure,
@@ -322,6 +331,7 @@ func (owner *steward) loaded(gc *goakt.GrainContext, result loaded) {
 	if result.err != nil {
 		return
 	}
+	owner.cwd = result.cwd
 	owner.state = active
 	for _, entry := range result.entries {
 		retained := &companion{

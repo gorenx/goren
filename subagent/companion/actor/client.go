@@ -20,8 +20,9 @@ import (
 // Start returns only after the admitted creation request settles. Errors retain
 // cleanup responsibility in Registry; cancellation must not abandon that request.
 // The configuration name is a Settings reference, independent of Session identity.
+// CWD is supplied for first creation only; restoration retains persisted metadata.
 type ChildCreator interface {
-	Start(context.Context, agentregistry.Creation, agentregistry.Creation, string) (agentregistry.Ready, error)
+	Start(context.Context, agentregistry.Creation, agentregistry.Creation, string, *string) (agentregistry.Ready, error)
 	Resolve(context.Context, agentregistry.Creation, companions.Config, settings.Values) (settings.Values, error)
 }
 

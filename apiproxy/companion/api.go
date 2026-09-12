@@ -56,6 +56,8 @@ type RestartRequest struct {
 
 // View contains the durable target and current phase without private errors.
 type View struct {
+	// Activity is idle, running, or unavailable for a lifecycle-ready child.
+	Activity string `json:"activity,omitempty"`
 	// Configuration identifies the independent Settings entry used by this Companion.
 	Configuration   string            `json:"configuration,omitempty"`
 	ParentSessionID session.SessionID `json:"parentSessionId"`

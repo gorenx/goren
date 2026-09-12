@@ -125,7 +125,7 @@ var componentResources = map[ComponentKind]ResourceKind{
 	SessionComponent:    Conversation,
 	ToolsComponent:      ToolsRuntime,
 	PromptComponent:     PromptRuntime,
-	AgentComponent:      Activation,
+	AgentComponent:      AgentLoop,
 	CommandsComponent:   CommandRuntime,
 	AdditionalComponent: Capability,
 }

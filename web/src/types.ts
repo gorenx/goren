@@ -16,6 +16,7 @@ export interface SessionProjections {
 }
 
 export interface SessionSummary {
+  parentSessionId?: string
   sessionId: string
   updatedAt: number
   running: boolean

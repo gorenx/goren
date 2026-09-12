@@ -172,6 +172,56 @@
     scrollbar-color: rgb(126 135 148 / 0.28) transparent;
   }
 
+  .session-branch {
+    position: relative;
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    min-width: 0;
+  }
+
+  .session-status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #d05b5b;
+  }
+
+  .session-status-dot.is-running {
+    background: #269b65;
+    box-shadow: 0 0 0 2px rgb(38 155 101 / 0.12);
+  }
+
+  .session-branch > .session-item {
+    flex: 1;
+    min-width: 0;
+    grid-template-columns: 6px minmax(0, 1fr) auto;
+  }
+
+  .session-branch-line {
+    position: absolute;
+    inset-inline-start: 7px;
+    top: -3px;
+    height: calc(50% + 3px);
+    width: 8px;
+    border-inline-start: 1px solid #b9c2cf;
+    border-bottom: 1px solid #b9c2cf;
+    border-end-start-radius: 4px;
+    pointer-events: none;
+  }
+
+  .session-branch-toggle {
+    flex: 0 0 24px;
+    height: 32px;
+    border-radius: 6px;
+    color: var(--color-secondary);
+    cursor: pointer;
+  }
+
+  .session-branch-toggle:hover {
+    background: rgb(32 46 72 / 0.055);
+  }
+
   .session-item {
     position: relative;
     display: grid;

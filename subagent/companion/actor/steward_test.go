@@ -81,7 +81,7 @@ type childFixture struct {
 	settings settings.Settings
 }
 
-func (fixture *childFixture) Start(ctx context.Context, parent, child agentregistry.Creation, configuration string) (agentregistry.Ready, error) {
+func (fixture *childFixture) Start(ctx context.Context, parent, child agentregistry.Creation, configurationName string, cwd *string) (agentregistry.Ready, error) {
 	fixture.mu.Lock()
 	gate := fixture.gate
 	failure := fixture.failure
@@ -107,7 +107,7 @@ func (fixture *childFixture) Start(ctx context.Context, parent, child agentregis
 	if err != nil {
 		return agentregistry.Ready{}, err
 	}
-	initial, found := selected.Target.Agents[configuration]
+	initial, found := selected.Target.Agents[configurationName]
 	if !found {
 		return agentregistry.Ready{}, errors.New("test: referenced configuration is absent")
 	}

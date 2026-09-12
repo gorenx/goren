@@ -85,8 +85,9 @@ function Fields({ fields, value, onChange, prefix }: {
   })}</>
 }
 
-export function SettingsFields({ kind, value, onChange, configurations }: {
+export function SettingsFields({ kind, value, onChange, configurations, scope = kind }: {
   kind: SettingsKind
+  scope?: string
   configurations?: string[]
   value: SettingsValue
   onChange: (value: SettingsValue) => void
@@ -95,7 +96,7 @@ export function SettingsFields({ kind, value, onChange, configurations }: {
   if (kind === 'companion') {
     const inheritance = isRecord(value.inherit) ? value.inherit : {}
     return <>
-      <Fields fields={[{ key: 'enabled', label: 'settings.enabled', type: 'boolean', required: true }]} value={value} onChange={onChange} prefix={kind} />
+      <Fields fields={[{ key: 'enabled', label: 'settings.enabled', type: 'boolean', required: true }]} value={{ enabled: false, ...value }} onChange={onChange} prefix={scope} />
       <label className="settings-field">{translate('companion.configuration')}<select className="credential-input" value={String(value.configuration ?? '')} onChange={event => onChange(replaceField(value, 'configuration', event.target.value || undefined))}><option value="">{translate('settings.default')}</option>{configurations?.map(name => <option key={name}>{name}</option>)}</select></label>
       <Fields fields={[{ key: 'model', label: 'companion.inheritModel', type: 'boolean', required: true }, { key: 'prompt', label: 'companion.inheritPrompt', type: 'boolean', required: true }, { key: 'mcp', label: 'companion.inheritMCP', type: 'boolean', required: true }]} value={{ model: false, prompt: false, mcp: false, ...inheritance }} onChange={entry => onChange({ ...value, inherit: entry })} prefix="inherit" />
       <label className="settings-field">{translate('companion.inheritTools')}<select className="credential-input" value={String(inheritance.tools ?? 'none')} onChange={event => onChange({ ...value, inherit: { ...inheritance, tools: event.target.value } })}><option value="none">{translate('companion.none')}</option><option value="all">{translate('companion.all')}</option></select></label>
@@ -105,26 +106,26 @@ export function SettingsFields({ kind, value, onChange, configurations }: {
   if (kind === 'agent') {
     const prompts = isRecord(value.prompts) ? value.prompts : {}
     return <>
-      <Fields fields={[{ key: 'provider', label: 'settings.provider', type: 'string' }, { key: 'model', label: 'companion.model', type: 'string' }, { key: 'maxTokens', label: 'companion.maxTokens', type: 'number', minimum: 1, integer: true }]} value={isRecord(value.model) ? value.model : {}} onChange={entry => onChange({ ...value, model: entry })} prefix="agent-model" />
-      <Fields fields={promptFields} value={isRecord(prompts.default) ? prompts.default : {}} onChange={entry => onChange({ ...value, prompts: { ...prompts, default: entry } })} prefix="agent-prompt" />
+      <Fields fields={[{ key: 'provider', label: 'settings.provider', type: 'string' }, { key: 'model', label: 'companion.model', type: 'string' }, { key: 'maxTokens', label: 'companion.maxTokens', type: 'number', minimum: 1, integer: true }]} value={isRecord(value.model) ? value.model : {}} onChange={entry => onChange({ ...value, model: entry })} prefix={`${scope}-model`} />
+      <Fields fields={promptFields} value={isRecord(prompts.default) ? prompts.default : {}} onChange={entry => onChange({ ...value, prompts: { ...prompts, default: entry } })} prefix={`${scope}-prompt`} />
       <NamedFields kind="tool" value={isRecord(value.tools) ? value.tools : {}} onChange={entry => onChange({ ...value, tools: entry })} />
       <NamedFields kind="mcp" value={isRecord(value.mcp) ? value.mcp : {}} onChange={entry => onChange({ ...value, mcp: entry })} />
       <p className="settings-help">{translate('companion.agentHint')}</p>
     </>
   }
   if (kind === 'mcp') return <>
-    <Fields fields={[{ key: 'enabled', label: 'settings.enabled', type: 'boolean', required: true }]} value={value} onChange={onChange} prefix={kind} />
-    <Fields fields={mcpFields} value={isRecord(value.connection) ? value.connection : {}} onChange={entry => onChange({ ...value, connection: entry })} prefix="mcp-connection" />
+    <Fields fields={[{ key: 'enabled', label: 'settings.enabled', type: 'boolean', required: true }]} value={value} onChange={onChange} prefix={scope} />
+    <Fields fields={mcpFields} value={isRecord(value.connection) ? value.connection : {}} onChange={entry => onChange({ ...value, connection: entry })} prefix={`${scope}-connection`} />
   </>
   if (kind !== 'llmprovider') return <>
-    <Fields fields={kind === 'prompt' ? promptFields : toolFields} value={value} onChange={onChange} prefix={kind} />
+    <Fields fields={kind === 'prompt' ? promptFields : toolFields} value={value} onChange={onChange} prefix={scope} />
     <p className="settings-help">{translate(kind === 'prompt' ? 'settings.promptHint' : 'settings.toolHint')}</p>
   </>
   const retry = isRecord(value.retryPolicy) ? value.retryPolicy : undefined
   const backoff = retry !== undefined && isRecord(retry.backoff) ? retry.backoff : undefined
   const changeRetry = (entry: SettingsValue | undefined): void => onChange(replaceField(value, 'retryPolicy', entry))
   return <>
-    <Fields fields={providerFields} value={value} onChange={onChange} prefix={kind} />
+    <Fields fields={providerFields} value={value} onChange={onChange} prefix={scope} />
     <details className="settings-advanced">
       <summary>{translate('settings.retryPolicy')}</summary>
       <label className="settings-default"><input type="checkbox" checked={retry !== undefined} onChange={event => changeRetry(event.target.checked ? {} : undefined)} />{translate('settings.customRetry')}</label>
@@ -150,7 +151,7 @@ function NamedFields({ kind, value, onChange }: { kind: 'tool' | 'mcp'; value: S
   return <section className="settings-advanced">
     <h4>{translate(kind === 'tool' ? 'settings.tool' : 'settings.mcp')}</h4>
     {Object.entries(value).map(([key, entry]) => <details key={key} className="settings-advanced"><summary>{key}</summary>
-      <SettingsFields kind={kind} value={isRecord(entry) ? entry : {}} onChange={updated => onChange({ ...value, [key]: updated })} />
+      <SettingsFields kind={kind} scope={`${kind}-${encodeURIComponent(key)}`} value={isRecord(entry) ? entry : {}} onChange={updated => onChange({ ...value, [key]: updated })} />
       <button type="button" className="credential-remove" onClick={() => onChange(replaceField(value, key, undefined))}>{translate('companion.remove')}</button>
     </details>)}
     <label className="settings-field">{translate(kind === 'tool' ? 'companion.addTool' : 'companion.addMCP')}<input className="credential-input" value={name} onChange={event => setName(event.target.value)} /></label>

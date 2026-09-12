@@ -17,6 +17,7 @@ import (
 	llmactor "github.com/gorenx/goren/llm/actor"
 	"github.com/gorenx/goren/llm/modelconfig"
 	"github.com/gorenx/goren/mcpclient"
+	sessionactor "github.com/gorenx/goren/session/actor"
 	"github.com/gorenx/goren/settings"
 	companions "github.com/gorenx/goren/subagent/companion"
 	"github.com/gorenx/goren/subagent/tools/control"
@@ -176,6 +177,17 @@ func TestCreatorRestoresNamedConfigurationThroughOrdinaryOwners(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := awaitPhase(t, sender, "reviewer", Ready)
+	conversation, err := goakt.GrainOf[*sessionactor.Grain](t.Context(), fixture.system,
+		sessionactor.RuntimeName(string(first.Creation.AgentID)), goakt.WithLongLivedGrain())
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := request[sessionactor.View](t, fixture.system, conversation, sessionactor.Read{
+		CreationID: first.Creation.CreationID,
+	})
+	if metadata.Err != nil || metadata.Header.CWD != nil {
+		t.Fatalf("child of parent without CWD acquired a directory: %+v", metadata)
+	}
 	assertConfiguration := func(current View, expected string) {
 		t.Helper()
 		selected := request[llmactor.ConfigurationResult](t, fixture.system, fixture.input.ModelConfig, llmactor.ReadConfiguration{
@@ -288,7 +300,7 @@ func TestCreatorRestoresNamedConfigurationThroughOrdinaryOwners(t *testing.T) {
 				AgentID:    "unadmitted",
 				CreationID: failureAt,
 			}
-			if _, err := starter.Start(ctx, expected, child, name); err == nil {
+			if _, err := starter.Start(ctx, expected, child, name, nil); err == nil {
 				t.Fatal("invalid creation succeeded")
 			}
 			missing := request[agentregistry.Ready](t, fixture.system, fixture.authority, agentregistry.FindAgent{

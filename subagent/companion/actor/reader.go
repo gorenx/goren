@@ -81,7 +81,7 @@ func (observer *Reader) List(ctx context.Context, input control.Listing) ([]cont
 		case Starting, Draining, Stopping, Stopped, StartFailed, CloseFailed:
 			row.Status = string(phase)
 		case Ready:
-			observed, failure := observer.activity(ctx, parent, current.Creation)
+			observed, failure := observer.Activity(ctx, parent, current.Creation)
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
@@ -110,7 +110,9 @@ func (observer *Reader) admit(ctx context.Context, parent agentregistry.Creation
 	return errors.Join(err, admitted.Err)
 }
 
-func (observer *Reader) activity(ctx context.Context, parent, child agentregistry.Creation) (agent.Status, error) {
+// Activity reads the exact child lifetime and verifies its direct parent and role.
+// Management and model-visible queries share this observation; neither owns execution state.
+func (observer *Reader) Activity(ctx context.Context, parent, child agentregistry.Creation) (agent.Status, error) {
 	if child.AgentID == "" || child.CreationID == "" {
 		return "", agentregistry.ErrCreation
 	}

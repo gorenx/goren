@@ -38,12 +38,12 @@ describe('SettingsDialog', () => {
       else if (body.method.startsWith('credentials.')) value = {}
       else {
         if (rejectWrite) return Response.json({ rpcId: body.rpcId, result: { ok: false, error: { code: 'settings-conflict', message: 'private-marker' } } })
-        const kind = body.method.includes('Tool') ? 'tool' : body.method.includes('MCP') ? 'mcp' : body.method.includes('Provider') ? 'llmprovider' : 'prompt'
+        const kind = body.method.includes('Companion') ? 'companion' : body.method.includes('Agent') ? 'agent' : body.method.includes('Tool') ? 'tool' : body.method.includes('MCP') ? 'mcp' : body.method.includes('Provider') ? 'llmprovider' : 'prompt'
         const existing = groups.find(group => group.name === body.payload.name && group.ns === kind)
         const target = body.method.startsWith('settings.reset') ? existing?.base ?? null : body.payload.config as Record<string, unknown>
         const revision = Number(body.payload.expectedRevision) + 1
         const result: SettingsGroup = {
-          ns: kind, name: String(body.payload.name), applies: kind === 'llmprovider' ? 'restart' : 'agent_restart',
+          ns: kind, name: String(body.payload.name), applies: kind === 'llmprovider' ? 'restart' : kind === 'companion' ? 'new_instance' : 'agent_restart',
           value: target, user: body.method.startsWith('settings.reset') ? null : target,
           base: existing?.base, revision, pendingRestart: kind === 'llmprovider',
         }
@@ -136,6 +136,23 @@ describe('SettingsDialog', () => {
     await save()
     expect(calls.at(-1)).toEqual({ method: 'settings.updateMCP', payload: { name: 'testa', expectedRevision: 0, config: { enabled: true, connection: { serverName: 'testa', transport: 'streamable-http', url: 'http://localhost:3000/mcp' } } } })
     expect(calls.some(entry => entry.method === 'mcp.connect')).toBe(false)
+  })
+
+  it('creates Companion policies with explicit no-tool-inheritance and separate save semantics', async () => {
+    await renderDialog()
+    await click('New Companion policy')
+    await fill('#settings-new-name', 'reviewer')
+    await save()
+    expect(calls).toContainEqual({ method: 'settings.updateCompanion', payload: { name: 'reviewer', expectedRevision: 0, config: { enabled: true, inherit: { tools: 'none' } } } })
+  })
+
+  it('creates named Agent values through the existing Settings owner', async () => {
+    await renderDialog()
+    await click('New Agent configuration')
+    await fill('#settings-new-name', 'review-config')
+    await save()
+    expect(calls).toContainEqual({ method: 'settings.updateAgent', payload: { name: 'review-config', expectedRevision: 0, config: {} } })
+    expect(calls.some(call => call.method.startsWith('bound.'))).toBe(false)
   })
 
   it('uses the saved Provider reference for credentials and reports restart separately', async () => {

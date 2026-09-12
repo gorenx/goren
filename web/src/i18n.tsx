@@ -1,6 +1,14 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 
 const simplifiedChinese = {
+  "sidebar.notRunning": "未运行",
+  "sidebar.expandChildren": "展开 {name} 的子会话",
+  "sidebar.collapseChildren": "收起 {name} 的子会话",
+  "companion.running": "正在工作",
+  "companion.idle": "空闲 · 可接收任务",
+  "companion.childUnavailable": "不可用 · 可尝试重启",
+  "companion.policySaved": "已保存。新建 Companion 时使用此配置。",
+  "companion.selectPolicy": "选择已保存的 Companion 配置",
   "companion.manage": "伴生 Agent",
   "companion.configuration": "Agent 配置",
   "companion.policy": "Companion 配置",
@@ -119,6 +127,8 @@ const simplifiedChinese = {
   'composer.vision': '发送前请手动选择 DeepSeek 视觉模型。',
   'composer.switchVision': '当前模型不支持图片，请切换到 DeepSeek-V4-Flash-Vision 后重试。',
   'composer.model': '选择模型',
+  'composer.loadingModel': '读取模型…',
+  'composer.agentInactive': 'Agent 未运行',
   'composer.imageError': '请选择 PNG、JPEG、WebP 或 GIF，每张不超过 20 MiB，最多 20 张。',
   'message.imageFailed': '图片加载失败',
   'message.imageLoading': '正在加载图片…',
@@ -266,6 +276,14 @@ export type TranslationValues = Readonly<Record<string, string | number>>
 export type Translator = (messageKey: MessageKey, values?: TranslationValues) => string
 
 const english = {
+  "sidebar.notRunning": "Not running",
+  "sidebar.expandChildren": "Expand child sessions of {name}",
+  "sidebar.collapseChildren": "Collapse child sessions of {name}",
+  "companion.running": "Working",
+  "companion.idle": "Idle · ready for tasks",
+  "companion.childUnavailable": "Unavailable · restart to recover",
+  "companion.policySaved": "Saved. New companions will use this policy.",
+  "companion.selectPolicy": "Choose a saved Companion policy",
   "companion.manage": "Companions",
   "companion.configuration": "Agent configuration",
   "companion.policy": "Companion policy",
@@ -384,6 +402,8 @@ const english = {
   'composer.vision': 'Select a DeepSeek vision model before sending images.',
   'composer.switchVision': 'This model does not support images. Select DeepSeek-V4-Flash-Vision and try again.',
   'composer.model': 'Select model',
+  'composer.loadingModel': 'Loading model…',
+  'composer.agentInactive': 'Agent not running',
   'composer.imageError': 'Choose PNG, JPEG, WebP or GIF, up to 20 MiB each and 20 images.',
   'message.imageFailed': 'Unable to load image',
   'message.imageLoading': 'Loading image…',

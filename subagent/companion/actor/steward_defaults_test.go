@@ -246,9 +246,9 @@ func (barrier *retryCreator) Resolve(ctx context.Context, _ agentregistry.Creati
 	return values.Clone(), nil
 }
 
-func (barrier *retryCreator) Start(ctx context.Context, parent, child agentregistry.Creation, name string) (agentregistry.Ready, error) {
+func (barrier *retryCreator) Start(ctx context.Context, parent, child agentregistry.Creation, name string, cwd *string) (agentregistry.Ready, error) {
 	barrier.starts.Add(1)
-	return barrier.ChildCreator.Start(ctx, parent, child, name)
+	return barrier.ChildCreator.Start(ctx, parent, child, name, cwd)
 }
 
 func TestDefaultPreparationRetrySettlesBeforeParentClose(t *testing.T) {
@@ -327,5 +327,20 @@ func TestDefaultPreparationRetrySettlesBeforeParentClose(t *testing.T) {
 	}
 	if barrier.starts.Load() != 0 {
 		t.Fatal("late preparation started a child after parent close")
+	}
+}
+
+func TestDefaultCompanionWithoutNamedValuesUsesCapabilityDefaults(t *testing.T) {
+	fixture := newStewardship(t)
+	if _, err := fixture.creator.settings.UpdateCompanion(t.Context(), "minimal", 0, companions.Config{
+		Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	installer, sender, input := installParent(t, fixture, fixture.authority)
+	awaitInstallation(t, fixture, installer, input.Creation, Ready)
+	current := awaitPhase(t, sender, "minimal", Ready)
+	if !current.Persisted || current.Companion.Configuration == "" {
+		t.Fatalf("default configuration was not saved for the child: %+v", current)
 	}
 }

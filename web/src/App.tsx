@@ -6,6 +6,7 @@ import { DetailsPanel } from './components/DetailsPanel'
 import { CloseIcon } from './icons'
 import { CredentialDialog } from './components/CredentialDialog'
 import { SettingsDialog } from './components/SettingsDialog'
+import { CompanionDialog } from './components/CompanionDialog'
 import { MCPDialog } from './components/MCPDialog'
 import { useI18n } from './i18n'
 
@@ -17,6 +18,7 @@ export function App(): React.JSX.Element {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [credentialsOpen, setCredentialsOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [companionsOpen, setCompanionsOpen] = useState(false)
   const [mcpOpen, setMCPOpen] = useState(false)
   const [onboardingDismissed, setOnboardingDismissed] = useState(false)
   const snapshot = useSyncExternalStore(store.subscribe, store.snapshot)
@@ -50,11 +52,12 @@ export function App(): React.JSX.Element {
 
   return (
     <div className="app-grid" data-sidebar-collapsed={sidebarCollapsed || undefined}>
-    <Sidebar store={store} snapshot={snapshot} collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(value => !value)} onOpenMCP={() => setMCPOpen(true)} onOpenSettings={() => setSettingsOpen(true)} />
+    <Sidebar store={store} snapshot={snapshot} collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(value => !value)} onOpenCompanions={() => setCompanionsOpen(true)} onOpenMCP={() => setMCPOpen(true)} onOpenSettings={() => setSettingsOpen(true)} />
       <ConversationPane store={store} snapshot={snapshot} onOpenCredentials={() => setCredentialsOpen(true)} />
       <DetailsPanel store={store} snapshot={snapshot} />
     {credentialsOpen && <CredentialDialog store={store} snapshot={snapshot} onClose={closeCredentials} />}
     {settingsOpen && <SettingsDialog onClose={() => { setSettingsOpen(false); void store.refreshCredential().catch(() => { /* The store reports the failure. */ }) }} onCredentialChanged={() => store.refreshCredential()} />}
+    {companionsOpen && <CompanionDialog key={snapshot.currentSessionId} sessionId={snapshot.currentSessionId} onClose={() => setCompanionsOpen(false)} />}
     {mcpOpen && <MCPDialog key={snapshot.currentSessionId} sessionId={snapshot.currentSessionId} onClose={() => setMCPOpen(false)} onOpenSettings={() => { setMCPOpen(false); setSettingsOpen(true) }} />}
       {snapshot.error !== undefined && (
         <div className="toast" role="alert">

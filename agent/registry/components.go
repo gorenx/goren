@@ -132,7 +132,7 @@ func newInstallation(
 func installExecution(releases map[agent.Resource]releaser, endpoint *agentClient) {
 	releases[agent.Resource{Kind: agent.Work}] = &executionWait{endpoint: endpoint}
 	releases[agent.Resource{Kind: agent.Execution}] = &executionRelease{endpoint: endpoint}
-	releases[agent.Resource{Kind: agent.Activation}] = &activationRelease{endpoint: endpoint}
+	releases[agent.Resource{Kind: agent.AgentLoop}] = &agentLoopRelease{endpoint: endpoint}
 }
 
 func (installed *installation) commandRoute() *goakt.GrainIdentity {
@@ -387,12 +387,12 @@ func (request *executionRelease) Close(gc *goakt.GrainContext, reply chan<- erro
 	)
 }
 
-// activationRelease stops the endpoint after Session has confirmed flush and close.
-type activationRelease struct {
+// agentLoopRelease stops the AgentLoop Grain after Session confirms flush and close.
+type agentLoopRelease struct {
 	endpoint *agentClient
 }
 
-func (request *activationRelease) Close(gc *goakt.GrainContext, reply chan<- error) {
+func (request *agentLoopRelease) Close(gc *goakt.GrainContext, reply chan<- error) {
 	deactivate(gc, request.endpoint.Runtime(), reply)
 }
 

@@ -47,7 +47,13 @@ func defaultPolicies(
 	return selected
 }
 
-func prepareDefault(ctx context.Context, parent agentregistry.Creation, name string, view settings.Snapshot, creator ChildCreator) automatic {
+func prepareDefault(
+	ctx context.Context,
+	parent agentregistry.Creation,
+	name string,
+	view settings.Snapshot,
+	creator ChildCreator,
+) automatic {
 	selected := automatic{
 		request: Create{
 			Name: name,
@@ -64,7 +70,7 @@ func prepareDefault(ctx context.Context, parent agentregistry.Creation, name str
 		return selected
 	}
 	values, found := view.Target.Agents[policy.Configuration]
-	if !found {
+	if !found && policy.Configuration != "" {
 		selected.err = companions.ErrInvalid
 		return selected
 	}

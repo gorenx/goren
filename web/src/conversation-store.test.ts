@@ -26,6 +26,29 @@ describe('ConversationStore', () => {
     vi.unstubAllGlobals()
   })
 
+  it('retains child Sessions and reads their history and live output independently', async () => {
+    const child = { ...session, sessionId: 'child', parentSessionId: session.sessionId, origin: 'subagent' }
+    const host = installMockHost({ existingSession: true, sessionPages: { first: { items: [child, session] } } })
+    const store = new ConversationStore(translate)
+    await store.start()
+    expect(store.snapshot().currentSessionId).toBe(session.sessionId)
+    expect(store.snapshot().sessions).toContainEqual(child)
+    await store.selectSession('child')
+    expect(host.calls).toContainEqual({ method: 'session.history', payload: { sessionId: 'child', maxMessages: 20 } })
+    const mux = MockWebSocket.instances.find(socket => socket.url.endsWith('/api/events.mux'))!
+    mux.open()
+    mux.receive({ type: 'server-request', rpcId: 'child-output', payload: {
+      type: 'session/event', sessionId: 'child', event: {
+        type: 'assistant/chunk', seq: 3, time: 20,
+        data: { chunk: { type: 'text-delta', text: 'child output' } },
+      },
+    } })
+    expect(store.currentMessages().some(message => message.text === 'child output')).toBe(true)
+    await store.selectSession(session.sessionId)
+    expect(store.currentMessages().some(message => message.text === 'child output')).toBe(false)
+    store.dispose()
+  })
+
   it.each(['/b', null])('uses the native folder picker result %s without submitting a prompt', async pickedPath => {
     const host = installMockHost({ existingSession: true, workspaces: workspaceListing(), pickedPath })
     const store = new ConversationStore(translate)

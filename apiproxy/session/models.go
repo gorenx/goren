@@ -2,6 +2,7 @@ package sessionapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/session"
+	sesspersist "github.com/gorenx/goren/session/persistence"
 )
 
 // Models is the Session API's directory and exact selection validation boundary.
@@ -24,6 +26,8 @@ type Models interface {
 }
 
 type sessionModels struct {
+	agents    Agents
+	history   History
 	access    *sessionAccess
 	models    Models
 	sessions  LiveSessions
@@ -31,9 +35,23 @@ type sessionModels struct {
 }
 
 func (selectionFlow *sessionModels) Models(requestContext context.Context, call rpc.Request[ModelsRequest]) (rpc.Outcome[ModelsValue], error) {
-	subject, refused := selectionFlow.access.ordinaryAgent(requestContext, call.Payload.SessionID)
-	if refused != nil {
-		return rpc.Fail[ModelsValue](*refused), nil
+	// Reading the model picker must not restore an Agent. In particular, only
+	// the parent's Steward may restore a stopped Companion.
+	subject, err := selectionFlow.agents.Resolve(requestContext, session.SessionID(call.Payload.SessionID))
+	if err != nil {
+		return rpc.Outcome[ModelsValue]{}, err
+	}
+	if subject == nil {
+		if _, err := selectionFlow.history.Inspect(requestContext, session.SessionID(call.Payload.SessionID)); err != nil {
+			var missing *sesspersist.NotFoundError
+			if errors.As(err, &missing) {
+				return rpc.Fail[ModelsValue](sessionNotFoundError(call.Payload.SessionID)), nil
+			}
+			return rpc.Outcome[ModelsValue]{}, err
+		}
+		return rpc.OK(ModelsValue{
+			Groups: []llmapi.ModelProviderGroup{},
+		}), nil
 	}
 	current, err := selectionFlow.models.Configuration(requestContext, subject.ID())
 	if err != nil {
@@ -51,7 +69,7 @@ func (selectionFlow *sessionModels) Models(requestContext context.Context, call 
 		return provider.ID == current.Provider
 	})
 	return rpc.OK(ModelsValue{
-		Current:  modelSelectionValue(current),
+		Current:  new(modelSelectionValue(current)),
 		Routable: routable,
 		Groups:   groups,
 		Failures: failures,

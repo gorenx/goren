@@ -133,3 +133,66 @@ func TestChildCreationSelectsAndOwnsAdditionalComponents(t *testing.T) {
 		})
 	}
 }
+
+func TestCapabilityCloseFailureRetainsChildrenUntilRetry(t *testing.T) {
+	system, authority, input := creationFixture(t)
+	events := make(chan string, 8)
+	route, err := goakt.GrainOf[*componentOwner](t.Context(), system, "manager", goakt.WithLongLivedGrain())
+	if err != nil {
+		t.Fatal(err)
+	}
+	askLifecycle[struct{}](t, system, route, componentBehavior{
+		events:   events,
+		failStop: true,
+	})
+	input.Components = []*goakt.GrainIdentity{route}
+	parent := askLifecycle[agentregistry.Ready](t, system, authority, input)
+	if parent.Err != nil {
+		t.Fatal(parent.Err)
+	}
+	child := askLifecycle[agentregistry.Ready](t, system, authority, agentregistry.CreateChildAgent{
+		Parent: parent.Creation,
+		Child: agentregistry.Creation{
+			AgentID:    "retained-child",
+			CreationID: "first",
+		},
+		Components: []*goakt.GrainIdentity{},
+	})
+	if child.Err != nil {
+		t.Fatal(child.Err)
+	}
+	failed := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{
+		Creation: parent.Creation,
+	})
+	if failed.Err == nil {
+		t.Fatal("capability failure was discarded")
+	}
+	remaining := askLifecycle[agentregistry.CloseAccepted](t, system, authority, agentregistry.BeginClose{
+		Creation: parent.Creation,
+	})
+	if remaining.Err != nil || len(remaining.Children) != 1 || remaining.Children[0] != child.Creation {
+		t.Fatalf("Registry closed the child before its manager settled: %+v", remaining)
+	}
+	for _, identity := range []agentregistry.Creation{parent.Creation, child.Creation} {
+		admitted := askLifecycle[agentregistry.Completion](t, system, authority, agentregistry.CheckAdmission{
+			Creation: identity,
+		})
+		if !errors.Is(admitted.Err, agent.ErrClosing) {
+			t.Fatalf("closing tree admitted work or lost retained resources: %v", admitted.Err)
+		}
+	}
+	completed := askLifecycle[agentactor.Closed](t, system, authority, agentregistry.CloseAgent{
+		Creation: parent.Creation,
+	})
+	if completed.Err != nil {
+		t.Fatal(completed.Err)
+	}
+	for _, identity := range []agentregistry.Creation{parent.Creation, child.Creation} {
+		admitted := askLifecycle[agentregistry.Completion](t, system, authority, agentregistry.CheckAdmission{
+			Creation: identity,
+		})
+		if !errors.Is(admitted.Err, agentregistry.ErrCreation) {
+			t.Fatalf("retry retained a released lifetime: %v", admitted.Err)
+		}
+	}
+}

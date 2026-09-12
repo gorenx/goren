@@ -219,7 +219,7 @@ func (owner *Grain) claim(input agentactor.Claim) error {
 		current.executor != nil && !current.executor.Equal(input.Executor) {
 		return ErrInstance
 	}
-	for _, kind := range []agent.ResourceKind{agent.Work, agent.Execution, agent.Activation} {
+	for _, kind := range []agent.ResourceKind{agent.Work, agent.Execution, agent.AgentLoop} {
 		err := owner.directory.TrackResource(input.AgentID, agent.Resource{Kind: kind})
 		if err != nil {
 			return err

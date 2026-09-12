@@ -97,9 +97,10 @@ func (owner *steward) startChild(gc *goakt.GrainContext, entry *companion) {
 	creator := owner.creator
 	parent := owner.parent
 	child := entry.creation
-	configuration := entry.relationship.Configuration
+	configurationName := entry.relationship.Configuration
+	cwd := owner.cwd
 	err := gc.PipeToSelf(func() (any, error) {
-		ready, failure := creator.Start(ctx, parent, child, configuration)
+		ready, failure := creator.Start(ctx, parent, child, configurationName, cwd)
 		if failure == nil {
 			failure = ready.Err
 		}
