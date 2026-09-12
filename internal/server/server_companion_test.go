@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
@@ -13,6 +15,7 @@ import (
 	commandsapi "github.com/gorenx/goren/apiproxy/commands"
 	companionapi "github.com/gorenx/goren/apiproxy/companion"
 	"github.com/gorenx/goren/connection"
+	"github.com/gorenx/goren/mcpclient"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/settings"
 	companions "github.com/gorenx/goren/subagent/companion"
@@ -58,11 +61,11 @@ func TestServerInstallsDefaultCompanionForEachParent(t *testing.T) {
 	if err := process.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
+	defer func() {
 		if err := process.Close(context.Background()); err != nil {
 			t.Error(err)
 		}
-	})
+	}()
 	observer, err := companionactor.NewReader(process.system, process.agents)
 	if err != nil {
 		t.Fatal(err)
@@ -198,6 +201,112 @@ func TestServerInstallsDefaultCompanionForEachParent(t *testing.T) {
 	}
 }
 
+func TestCompanionMCPConnectionsRemainSessionScoped(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	remote := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var call struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&call); err != nil {
+			t.Errorf("decode MCP request: %v", err)
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		switch call.Method {
+		case "server/discover":
+			fmt.Fprintf(writer, `{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{"listChanged":true}}}}`, call.ID)
+		case "tools/list":
+			fmt.Fprintf(writer, `{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","tools":[{"name":"collect","inputSchema":{"type":"object"}}]}}`, call.ID)
+		case "subscriptions/listen":
+			writer.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(writer, "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/subscriptions/acknowledged\",\"params\":{\"notifications\":{\"toolsListChanged\":true},\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":\"sub\"}}}\n\n")
+			writer.(http.Flusher).Flush()
+			<-request.Context().Done()
+		default:
+			t.Errorf("unexpected MCP method: %s", call.Method)
+			writer.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	defer remote.Close()
+	root := t.TempDir()
+	process, err := New(Config{
+		Address:           "127.0.0.1:0",
+		WorkingDirectory:  root,
+		SessionDatabase:   filepath.Join(root, "sessions.sqlite"),
+		WorkspaceDatabase: filepath.Join(root, "workspaces.sqlite"),
+		CredentialsPath:   filepath.Join(root, "credentials.json"),
+		Agents: map[string]settings.Values{
+			"mcp-child": {
+				MCP: map[string]settings.MCPConfig{
+					"fixture": {
+						Enabled: true,
+						Connection: mcpclient.Config{
+							ServerName: "fixture",
+							Transport:  "streamable-http",
+							URL:        remote.URL,
+						},
+					},
+				},
+			},
+		},
+		Companions: map[string]companions.Config{
+			"helper": {
+				Enabled:       true,
+				Configuration: "mcp-child",
+			},
+		},
+	}, providerEnvironment{
+		home: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := process.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	}()
+	providers := make(map[string]tools.ProviderID)
+	for _, parentID := range []string{"first-parent", "second-parent"} {
+		callHTTP(t, ctx, process, "session.create", payloadForSession(t, parentID))
+		var child companionapi.View
+		for {
+			result := callHTTP(t, ctx, process, companionapi.ListMethod, json.RawMessage(`{"parentSessionId":"`+parentID+`"}`))
+			var listing companionapi.Listing
+			if err := json.Unmarshal(result, &listing); err != nil {
+				t.Fatal(err)
+			}
+			if listing.Phase == "ready" && len(listing.Items) == 1 && listing.Items[0].Phase == "ready" {
+				child = listing.Items[0]
+				break
+			}
+			select {
+			case <-time.After(5 * time.Millisecond):
+			case <-ctx.Done():
+				t.Fatalf("Companion MCP child did not start for %s: %+v", parentID, listing)
+			}
+		}
+		name := mcpclient.ToolName("fixture", "collect")
+		identifier := readMCPRuntime(t, ctx, process, child.ChildSessionID).ProviderIDs[name]
+		if identifier == "" {
+			t.Fatalf("Companion %s did not receive MCP tool %s", child.ChildSessionID, name)
+		}
+		providers[parentID] = identifier
+	}
+	if providers["first-parent"] == providers["second-parent"] {
+		t.Fatal("two Companion Sessions shared one MCP Provider binding")
+	}
+	if initial := readMCPRuntime(t, ctx, process, "first-parent").ProviderIDs[mcpclient.ToolName("fixture", "collect")]; initial != "" {
+		t.Fatal("Companion MCP tool leaked into parent Session")
+	}
+}
+
 func serverReady(t *testing.T, ctx context.Context, process *Server, identifier string) agentregistry.Ready {
 	t.Helper()
 	payload, err := process.system.AskGrain(ctx, process.agents, agentregistry.FindAgent{
@@ -239,7 +348,7 @@ func TestCompanionManagementHTTP(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
 	root := t.TempDir()
-	process, err := New(Config{
+	configuration := Config{
 		Address:           "127.0.0.1:0",
 		WorkingDirectory:  root,
 		SessionDatabase:   filepath.Join(root, "sessions.sqlite"),
@@ -254,7 +363,8 @@ func TestCompanionManagementHTTP(t *testing.T) {
 				},
 			},
 		},
-	}, providerEnvironment{
+	}
+	process, err := New(configuration, providerEnvironment{
 		home: root,
 	})
 	if err != nil {
@@ -269,9 +379,9 @@ func TestCompanionManagementHTTP(t *testing.T) {
 		}
 	})
 	callHTTP(t, ctx, process, "session.create", json.RawMessage(`{"sessionId":"managed-parent"}`))
-	var listing companionapi.Listing
 	read := func() companionapi.Listing {
 		t.Helper()
+		var listing companionapi.Listing
 		encoded := callHTTP(t, ctx, process, companionapi.ListMethod, json.RawMessage(`{"parentSessionId":"managed-parent"}`))
 		if err := json.Unmarshal(encoded, &listing); err != nil {
 			t.Fatal(err)
@@ -339,6 +449,30 @@ func TestCompanionManagementHTTP(t *testing.T) {
 	}
 	if removed.Revision != 3 || !removed.Removed || removed.Enabled {
 		t.Fatalf("tombstone was not recorded: %+v", removed)
+	}
+	if err := process.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	process, err = New(configuration, providerEnvironment{
+		home: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	callHTTP(t, ctx, process, "session.create", json.RawMessage(`{"sessionId":"managed-parent"}`))
+	for {
+		current := read()
+		if current.Phase == "ready" && len(current.Items) == 1 && current.Items[0].Name == "reviewer" && current.Items[0].Removed && current.Items[0].ChildSessionID == created.ChildSessionID && current.Items[0].CreationID == "" {
+			break
+		}
+		select {
+		case <-time.After(5 * time.Millisecond):
+		case <-ctx.Done():
+			t.Fatalf("removed Companion revived after restart: %+v", current)
+		}
 	}
 }
 

@@ -108,6 +108,11 @@ func TestDescriptorDecodeSeparatesUnsupportedAndCorrupt(t *testing.T) {
 			rawValue:    json.RawMessage(`{"version":2,"mode":"continuable","provider":"spawn","label":"child","toolFilter":{}}`),
 			wantMessage: "must declare allow and/or deny",
 		},
+		{
+			name:        "removed Bound mode",
+			rawValue:    json.RawMessage(`{"version":2,"mode":"bound","name":"resident"}`),
+			wantMessage: "persisted descriptor mode",
+		},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
