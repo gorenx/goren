@@ -5,7 +5,6 @@ import { ConversationPane } from './components/ConversationPane'
 import { DetailsPanel } from './components/DetailsPanel'
 import { CloseIcon } from './icons'
 import { CredentialDialog } from './components/CredentialDialog'
-import { BoundDefinitionDialog } from './components/BoundDefinitionDialog'
 import { SettingsDialog } from './components/SettingsDialog'
 import { MCPDialog } from './components/MCPDialog'
 import { useI18n } from './i18n'
@@ -17,7 +16,6 @@ export function App(): React.JSX.Element {
   const [store] = useState(() => new ConversationStore((messageKey, values) => translateRef.current(messageKey, values)))
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [credentialsOpen, setCredentialsOpen] = useState(false)
-  const [boundDefinitionsOpen, setBoundDefinitionsOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [mcpOpen, setMCPOpen] = useState(false)
   const [onboardingDismissed, setOnboardingDismissed] = useState(false)
@@ -52,11 +50,10 @@ export function App(): React.JSX.Element {
 
   return (
     <div className="app-grid" data-sidebar-collapsed={sidebarCollapsed || undefined}>
-    <Sidebar store={store} snapshot={snapshot} collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(value => !value)} onOpenBoundDefinitions={() => setBoundDefinitionsOpen(true)} onOpenMCP={() => setMCPOpen(true)} onOpenSettings={() => setSettingsOpen(true)} />
+    <Sidebar store={store} snapshot={snapshot} collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(value => !value)} onOpenMCP={() => setMCPOpen(true)} onOpenSettings={() => setSettingsOpen(true)} />
       <ConversationPane store={store} snapshot={snapshot} onOpenCredentials={() => setCredentialsOpen(true)} />
       <DetailsPanel store={store} snapshot={snapshot} />
     {credentialsOpen && <CredentialDialog store={store} snapshot={snapshot} onClose={closeCredentials} />}
-    {boundDefinitionsOpen && <BoundDefinitionDialog store={store} snapshot={snapshot} onClose={() => setBoundDefinitionsOpen(false)} />}
     {settingsOpen && <SettingsDialog onClose={() => { setSettingsOpen(false); void store.refreshCredential().catch(() => { /* The store reports the failure. */ }) }} onCredentialChanged={() => store.refreshCredential()} />}
     {mcpOpen && <MCPDialog key={snapshot.currentSessionId} sessionId={snapshot.currentSessionId} onClose={() => setMCPOpen(false)} onOpenSettings={() => { setMCPOpen(false); setSettingsOpen(true) }} />}
       {snapshot.error !== undefined && (

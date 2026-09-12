@@ -3,11 +3,11 @@ import { HarnessAPI, RPCError } from '../api'
 import { useI18n } from '../i18n'
 import { CloseIcon } from '../icons'
 import { isRecord } from '../types'
-import { decodeSettingsCatalog, decodeSettingsGroup, settingsIdentity, settingsLabels, settingsMethods, type SettingsCatalog, type SettingsGroup, type SettingsValue } from '../settings'
+import { decodeSettingsCatalog, decodeSettingsGroup, settingsIdentity, settingsLabels, settingsMethods, type SettingsKind, type SettingsCatalog, type SettingsGroup, type SettingsValue } from '../settings'
 import { SettingsFields } from './SettingsFields'
 import { SettingsCredential } from './SettingsCredential'
 
-export function SettingsDialog({ onClose, onCredentialChanged }: { onClose: () => void; onCredentialChanged?: () => Promise<void> }): React.JSX.Element {
+export function SettingsDialog({ onClose, onCredentialChanged, initial }: { onClose: () => void; onCredentialChanged?: () => Promise<void>; initial?: { ns: SettingsKind; name?: string } }): React.JSX.Element {
   const { translate } = useI18n()
   const translateRef = useRef(translate)
   translateRef.current = translate
@@ -45,7 +45,7 @@ export function SettingsDialog({ onClose, onCredentialChanged }: { onClose: () =
       if (controller.signal.aborted) return
       const result = decodeSettingsCatalog(raw)
       setCatalog(result)
-      select(result.namespaces[0])
+      select(result.namespaces.find(group => group.ns === initial?.ns && (initial.name === undefined || group.name === initial.name)) ?? result.namespaces[0])
     }).catch(() => { if (!controller.signal.aborted) setFailure('load') })
     return () => {
       controller.abort()
@@ -84,6 +84,7 @@ export function SettingsDialog({ onClose, onCredentialChanged }: { onClose: () =
     if (selected.ns === 'llmprovider' && isRecord(complete.retryPolicy) && Array.isArray(complete.retryPolicy.retryableCodes)) complete.retryPolicy.retryableCodes = complete.retryPolicy.retryableCodes.filter(line => line !== '')
     const config = selected.ns === 'mcp' ? { ...draft, connection: { ...(draft.connection as SettingsValue), serverName: name, transport: 'streamable-http' } } : complete
     const method = settingsMethods[selected.ns][operation]
+    if (method === undefined) { pending.current = false; setBusy(false); return }
     const payload = operation === 'update' ? { name, expectedRevision: selected.revision, config } : { name, expectedRevision: selected.revision }
     try {
       const result = decodeSettingsGroup(await api.call(method, payload, signal))
@@ -102,6 +103,11 @@ export function SettingsDialog({ onClose, onCredentialChanged }: { onClose: () =
 
   const createMCP = (): void => {
     select({ ns: 'mcp', name: 'new', revision: 0, applies: 'agent_restart', value: { enabled: true, connection: { transport: 'streamable-http', url: '' } } })
+    setCreating(true)
+    setNewName('')
+  }
+  const createNamed = (kind: 'agent' | 'companion'): void => {
+    select({ ns: kind, name: 'new', revision: 0, applies: kind === 'companion' ? 'new_instance' : 'agent_restart', value: kind === 'companion' ? { enabled: true, inherit: { tools: 'none' } } : {} })
     setCreating(true)
     setNewName('')
   }
@@ -125,6 +131,7 @@ export function SettingsDialog({ onClose, onCredentialChanged }: { onClose: () =
         <nav className="settings-nav" aria-label={translate('settings.groups')}>
           {catalog?.namespaces.map(group => <button type="button" key={settingsIdentity(group)} disabled={busy || dirty} aria-current={!creating && selected !== undefined && settingsIdentity(group) === settingsIdentity(selected) ? 'true' : undefined} onClick={() => select(group)}><span>{translate(settingsLabels[group.ns])}</span><strong>{group.name}</strong></button>)}
           {catalog?.writable && <button type="button" disabled={busy || dirty} onClick={createMCP}>{translate('settings.addMCP')}</button>}
+          {catalog?.writable && <><button type="button" disabled={busy || dirty} onClick={() => createNamed('agent')}>{translate('companion.addConfiguration')}</button><button type="button" disabled={busy || dirty} onClick={() => createNamed('companion')}>{translate('companion.addPolicy')}</button></>}
           <button type="button" className="settings-reload" disabled={busy || dirty} onClick={() => void reload()}>{translate('settings.reload')}</button>
         </nav>
         <div className="settings-content" aria-busy={busy}>
@@ -138,7 +145,7 @@ export function SettingsDialog({ onClose, onCredentialChanged }: { onClose: () =
             <form onSubmit={event => { event.preventDefault(); void write('update') }}>
               <fieldset disabled={busy || !catalog?.writable}>
                 {creating && <label className="settings-field" htmlFor="settings-new-name">{translate('mcp.name')}<input id="settings-new-name" className="credential-input" required autoComplete="off" value={newName} onChange={event => { setNewName(event.target.value); setDirty(true) }} /></label>}
-                <SettingsFields kind={selected.ns} value={draft} onChange={change} />
+                <SettingsFields kind={selected.ns} value={draft} onChange={change} configurations={catalog?.namespaces.filter(group => group.ns === 'agent').map(group => group.name)} />
               </fieldset>
               <p className="settings-help">{translate('settings.replaceHint')}</p>
               <div className="settings-actions">
@@ -147,7 +154,7 @@ export function SettingsDialog({ onClose, onCredentialChanged }: { onClose: () =
               </div>
             </form>
             <div className="settings-actions settings-secondary-actions">
-              {!creating && selected.user != null && <button type="button" className="credential-remove" disabled={busy || dirty || !catalog?.writable || failure === 'conflict'} onClick={() => void write('reset')}>{translate('settings.reset')}</button>}
+              {!creating && selected.ns !== 'agent' && selected.user != null && <button type="button" className="credential-remove" disabled={busy || dirty || !catalog?.writable || failure === 'conflict'} onClick={() => void write('reset')}>{translate('settings.reset')}</button>}
               {(dirty || creating) && <button type="button" className="credential-cancel" disabled={busy} onClick={() => select(creating ? catalog?.namespaces[0] : selected)}>{translate('settings.discard')}</button>}
             </div>
             {!creating && <details className="settings-advanced"><summary>{translate('settings.sources')}</summary><h4>{translate('settings.local')}</h4><pre>{JSON.stringify(selected.base ?? null, null, 2)}</pre><h4>{translate('settings.user')}</h4><pre>{JSON.stringify(selected.user ?? null, null, 2)}</pre></details>}

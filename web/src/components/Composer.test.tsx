@@ -28,12 +28,6 @@ const snapshot: ConversationSnapshot = {
   onlineDownlinks: 2,
   composerState: 'composer.ready',
 	credentialLoaded: true,
-	boundDefinitionsLoaded: true,
-	boundDefinitions: [],
-	boundToolsState: 'ready',
-	boundTools: [],
-	boundExtensionsState: 'ready',
-	boundExtensions: [],
 }
 
 interface ComposerFixture {

@@ -8,12 +8,11 @@ interface SidebarProps {
   snapshot: ConversationSnapshot
   collapsed: boolean
   onToggle: () => void
-  onOpenBoundDefinitions: () => void
   onOpenMCP: () => void
   onOpenSettings: () => void
 }
 
-export function Sidebar({ store, snapshot, collapsed, onToggle, onOpenBoundDefinitions, onOpenMCP, onOpenSettings }: SidebarProps): React.JSX.Element {
+export function Sidebar({ store, snapshot, collapsed, onToggle, onOpenMCP, onOpenSettings }: SidebarProps): React.JSX.Element {
   const { activeLanguage, translate } = useI18n()
   const createLabel = snapshot.creatingSession
     ? translate('sidebar.creatingConversation')
@@ -106,15 +105,7 @@ export function Sidebar({ store, snapshot, collapsed, onToggle, onOpenBoundDefin
       >
         {collapsed ? 'M' : translate('mcp.manage')}
       </button>
-      <button
-        type="button"
-        className="mb-3 w-full rounded-lg border border-black/[0.08] bg-white px-2 py-2 text-xs font-medium text-secondary hover:text-ink"
-        aria-label={translate('bound.manage')}
-        title={translate('bound.manage')}
-        onClick={onOpenBoundDefinitions}
-      >
-        {collapsed ? 'B' : translate('bound.manage')}
-      </button>
+
         <div className={`flex items-center ${collapsed ? 'justify-center' : 'gap-2.5'}`}>
           <span className={`connection-dot ${snapshot.onlineDownlinks > 0 ? 'is-online' : ''}`} aria-hidden="true" />
           {!collapsed && (

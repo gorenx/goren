@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useI18n, type MessageKey } from '../i18n'
 import type { SettingsKind, SettingsValue } from '../settings'
 import { isRecord } from '../types'
@@ -84,12 +85,33 @@ function Fields({ fields, value, onChange, prefix }: {
   })}</>
 }
 
-export function SettingsFields({ kind, value, onChange }: {
+export function SettingsFields({ kind, value, onChange, configurations }: {
   kind: SettingsKind
+  configurations?: string[]
   value: SettingsValue
   onChange: (value: SettingsValue) => void
 }): React.JSX.Element {
   const { translate } = useI18n()
+  if (kind === 'companion') {
+    const inheritance = isRecord(value.inherit) ? value.inherit : {}
+    return <>
+      <Fields fields={[{ key: 'enabled', label: 'settings.enabled', type: 'boolean', required: true }]} value={value} onChange={onChange} prefix={kind} />
+      <label className="settings-field">{translate('companion.configuration')}<select className="credential-input" value={String(value.configuration ?? '')} onChange={event => onChange(replaceField(value, 'configuration', event.target.value || undefined))}><option value="">{translate('settings.default')}</option>{configurations?.map(name => <option key={name}>{name}</option>)}</select></label>
+      <Fields fields={[{ key: 'model', label: 'companion.inheritModel', type: 'boolean', required: true }, { key: 'prompt', label: 'companion.inheritPrompt', type: 'boolean', required: true }, { key: 'mcp', label: 'companion.inheritMCP', type: 'boolean', required: true }]} value={{ model: false, prompt: false, mcp: false, ...inheritance }} onChange={entry => onChange({ ...value, inherit: entry })} prefix="inherit" />
+      <label className="settings-field">{translate('companion.inheritTools')}<select className="credential-input" value={String(inheritance.tools ?? 'none')} onChange={event => onChange({ ...value, inherit: { ...inheritance, tools: event.target.value } })}><option value="none">{translate('companion.none')}</option><option value="all">{translate('companion.all')}</option></select></label>
+      <p className="settings-help">{translate('companion.templateHint')}</p>
+    </>
+  }
+  if (kind === 'agent') {
+    const prompts = isRecord(value.prompts) ? value.prompts : {}
+    return <>
+      <Fields fields={[{ key: 'provider', label: 'settings.provider', type: 'string' }, { key: 'model', label: 'companion.model', type: 'string' }, { key: 'maxTokens', label: 'companion.maxTokens', type: 'number', minimum: 1, integer: true }]} value={isRecord(value.model) ? value.model : {}} onChange={entry => onChange({ ...value, model: entry })} prefix="agent-model" />
+      <Fields fields={promptFields} value={isRecord(prompts.default) ? prompts.default : {}} onChange={entry => onChange({ ...value, prompts: { ...prompts, default: entry } })} prefix="agent-prompt" />
+      <NamedFields kind="tool" value={isRecord(value.tools) ? value.tools : {}} onChange={entry => onChange({ ...value, tools: entry })} />
+      <NamedFields kind="mcp" value={isRecord(value.mcp) ? value.mcp : {}} onChange={entry => onChange({ ...value, mcp: entry })} />
+      <p className="settings-help">{translate('companion.agentHint')}</p>
+    </>
+  }
   if (kind === 'mcp') return <>
     <Fields fields={[{ key: 'enabled', label: 'settings.enabled', type: 'boolean', required: true }]} value={value} onChange={onChange} prefix={kind} />
     <Fields fields={mcpFields} value={isRecord(value.connection) ? value.connection : {}} onChange={entry => onChange({ ...value, connection: entry })} prefix="mcp-connection" />
@@ -114,4 +136,24 @@ export function SettingsFields({ kind, value, onChange }: {
       </>}
     </details>
   </>
+}
+
+function NamedFields({ kind, value, onChange }: { kind: 'tool' | 'mcp'; value: SettingsValue; onChange: (entry: SettingsValue) => void }): React.JSX.Element {
+  const { translate } = useI18n()
+  const [name, setName] = useState('')
+  const add = (): void => {
+    const key = name.trim()
+    if (key === '' || Object.hasOwn(value, key)) return
+    onChange({ ...value, [key]: kind === 'tool' ? {} : { enabled: true, connection: { serverName: key, transport: 'streamable-http', url: '' } } })
+    setName('')
+  }
+  return <section className="settings-advanced">
+    <h4>{translate(kind === 'tool' ? 'settings.tool' : 'settings.mcp')}</h4>
+    {Object.entries(value).map(([key, entry]) => <details key={key} className="settings-advanced"><summary>{key}</summary>
+      <SettingsFields kind={kind} value={isRecord(entry) ? entry : {}} onChange={updated => onChange({ ...value, [key]: updated })} />
+      <button type="button" className="credential-remove" onClick={() => onChange(replaceField(value, key, undefined))}>{translate('companion.remove')}</button>
+    </details>)}
+    <label className="settings-field">{translate(kind === 'tool' ? 'companion.addTool' : 'companion.addMCP')}<input className="credential-input" value={name} onChange={event => setName(event.target.value)} /></label>
+    <button type="button" className="credential-cancel" disabled={name.trim() === '' || Object.hasOwn(value, name.trim())} onClick={add}>{translate(kind === 'tool' ? 'companion.addTool' : 'companion.addMCP')}</button>
+  </section>
 }

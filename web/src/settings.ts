@@ -1,7 +1,7 @@
 import type { MessageKey } from './i18n'
 import { isRecord } from './types'
 
-export type SettingsKind = 'llmprovider' | 'prompt' | 'tool' | 'mcp'
+export type SettingsKind = 'llmprovider' | 'prompt' | 'tool' | 'mcp' | 'agent' | 'companion'
 export type SettingsValue = Record<string, unknown>
 
 export interface SettingsGroup {
@@ -12,7 +12,7 @@ export interface SettingsGroup {
   user?: SettingsValue | null
   pendingRestart?: boolean
   revision: number
-  applies: 'agent_restart' | 'restart'
+  applies: 'agent_restart' | 'restart' | 'new_instance'
 }
 
 export interface SettingsCatalog {
@@ -21,6 +21,8 @@ export interface SettingsCatalog {
 }
 
 export const settingsMethods = {
+  agent: { update: 'settings.updateAgent', reset: undefined },
+  companion: { update: 'settings.updateCompanion', reset: 'settings.resetCompanion' },
   llmprovider: { update: 'settings.updateProvider', reset: 'settings.resetProvider' },
   prompt: { update: 'settings.updatePrompt', reset: 'settings.resetPrompt' },
   tool: { update: 'settings.updateTool', reset: 'settings.resetTool' },
@@ -28,6 +30,8 @@ export const settingsMethods = {
 } as const
 
 export const settingsLabels: Record<SettingsKind, MessageKey> = {
+  agent: 'companion.configuration',
+  companion: 'companion.policy',
   llmprovider: 'settings.provider',
   prompt: 'settings.prompt',
   tool: 'settings.tool',
@@ -44,7 +48,7 @@ export function decodeSettingsGroup(raw: unknown): SettingsGroup {
     || typeof raw.name !== 'string' || raw.name.length === 0
     || typeof raw.revision !== 'number' || !Number.isSafeInteger(raw.revision) || raw.revision < 0
     || (raw.value !== null && !isRecord(raw.value))
-    || (raw.applies !== 'agent_restart' && raw.applies !== 'restart')
+    || (raw.applies !== 'agent_restart' && raw.applies !== 'restart' && raw.applies !== 'new_instance')
     || (raw.base !== undefined && raw.base !== null && !isRecord(raw.base))
     || (raw.pendingRestart !== undefined && typeof raw.pendingRestart !== 'boolean')
     || (raw.user !== undefined && raw.user !== null && !isRecord(raw.user))) throw new Error('Invalid settings group')

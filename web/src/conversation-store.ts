@@ -7,12 +7,6 @@ import { HarnessAPI } from './api'
 import { decodeSettingsCatalog } from './settings'
 import type {
   ConversationSnapshot,
-  BoundDefinition,
-  BoundDefinitionDraft,
-  BoundDefinitionValue,
-  BoundExtensionsValue,
-  BoundListValue,
-  BoundToolsValue,
   CredentialsDescribeValue,
   HostDescription,
   MessageRow,
@@ -50,12 +44,6 @@ const initialSnapshot: ConversationSnapshot = {
   onlineDownlinks: 0,
   composerState: 'composer.connecting',
   credentialLoaded: false,
-  boundDefinitionsLoaded: false,
-  boundDefinitions: [],
-  boundToolsState: 'idle',
-  boundTools: [],
-  boundExtensionsState: 'idle',
-  boundExtensions: [],
 }
 
 const historyPageMessages = 20
@@ -98,7 +86,6 @@ export class ConversationStore {
       this.#patch({ host, composerState: 'composer.syncingSessions' })
       // Auxiliary configuration must not gate Session history or the composer.
       void this.refreshCredential().catch(() => { /* refreshCredential reports the failure. */ })
-      void this.refreshBoundDefinitions().catch(error => this.#fail(error))
       this.#api.connect()
       await this.refreshSessions()
       if (this.#value.sessions.length === 0) await this.createSession()
@@ -198,90 +185,6 @@ export class ConversationStore {
       if (!this.#value.credentialLoaded || ref === undefined) throw new Error(this.#translateText('settings.keyFailure'))
       await this.#api.call<unknown>('credentials.unset', { ref })
       await this.refreshCredential()
-    } catch (error) {
-      this.#fail(error)
-      throw error
-    }
-  }
-
-  async refreshBoundDefinitions(): Promise<void> {
-    const result = await this.#api.call<BoundListValue>('bound.list', {})
-    this.#patch({
-      boundDefinitions: result.definitions ?? [],
-      boundDefinitionsLoaded: true,
-    })
-  }
-
-  async refreshBoundTools(): Promise<void> {
-    if (this.#value.boundToolsState === 'loading') return
-    this.#patch({
-      boundToolsState: 'loading',
-      boundToolsError: undefined,
-    })
-    try {
-      const result = await this.#api.call<BoundToolsValue>('bound.tools', {})
-      this.#patch({
-        boundTools: result.tools ?? [],
-        boundToolsState: 'ready',
-        boundToolsError: undefined,
-      })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      this.#patch({
-        boundToolsState: 'failed',
-        boundToolsError: message,
-      })
-      console.error(error)
-    }
-  }
-
-  async refreshBoundExtensions(): Promise<void> {
-    if (this.#value.boundExtensionsState === 'loading') return
-    this.#patch({
-      boundExtensionsState: 'loading',
-      boundExtensionsError: undefined,
-    })
-    try {
-      const result = await this.#api.call<BoundExtensionsValue>('bound.extensions', {})
-      this.#patch({
-        boundExtensions: result.extensions ?? [],
-        boundExtensionsState: 'ready',
-        boundExtensionsError: undefined,
-      })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      this.#patch({
-        boundExtensionsState: 'failed',
-        boundExtensionsError: message,
-      })
-      console.error(error)
-    }
-  }
-
-  async createBoundDefinition(draft: BoundDefinitionDraft): Promise<BoundDefinition> {
-    try {
-      const result = await this.#api.call<BoundDefinitionValue>('bound.create', {
-        definition: draft,
-      })
-      await this.refreshBoundDefinitions()
-      return result.definition
-    } catch (error) {
-      this.#fail(error)
-      throw error
-    }
-  }
-
-  async replaceBoundDefinition(
-    expectedRevision: number,
-    draft: BoundDefinitionDraft,
-  ): Promise<BoundDefinition> {
-    try {
-      const result = await this.#api.call<BoundDefinitionValue>('bound.replace', {
-        expectedRevision,
-        definition: draft,
-      })
-      await this.refreshBoundDefinitions()
-      return result.definition
     } catch (error) {
       this.#fail(error)
       throw error
